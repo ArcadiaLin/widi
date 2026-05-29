@@ -1,0 +1,68 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+*.tsbuildinfo
+# packages/*/node_modules/
+packages/*/dist/
+packages/*/dist-chrome/
+packages/*/dist-firefox/
+apps/*/dist/
+*.cpuprofile
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.tox/
+.nox/
+.coverage
+htmlcov/
+
+# Environment
+.env
+
+# Editor files
+.vscode/
+.zed/
+.idea/
+*.swp
+*.swo
+*~
+
+# Package specific
+.npm/
+coverage/
+.nyc_output/
+.pi_config/
+tui-debug.log
+compaction-results/
+.opencode/
+syntax.jsonl
+out.jsonl
+pi-*.html
+out.html
+packages/coding-agent/binaries/
+todo.md
+plans/
+.pi/hf-sessions/
+.pi/hf-sessions-backup/
+collect.sh
+
+# temp_references
+temp_references/
+.claude
+.codex
+run_test/
+Runs/
+
+# runtime_test
+apps/widi-agent/.widi/agent/Sessions
+apps/widi-agent/.widi/agent/auth.json
+apps/widi-agent/.widi/agent/models.json
+apps/widi-agent/.widi/agent/Runs/

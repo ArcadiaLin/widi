@@ -1,0 +1,37 @@
+{
+  "name": "widi-pi",
+  "version": "0.0.0",
+	"private": true,
+	"description": "WIDI Pi is a terminal coding harness based on the pi-agent-core",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"bin": {
+		"widi-harness": "./dist/cli.js"
+	},
+	"scripts": {
+		"clean": "shx rm -rf dist",
+		"build": "tsgo -p tsconfig.build.json",
+		"check": "tsgo --noEmit -p tsconfig.json",
+		"cli": "tsx src/cli.ts",
+		"test": "vitest --run"
+	},
+	"dependencies": {
+		"@anthropic-ai/sandbox-runtime": "^0.0.26",
+		"@types/proper-lockfile": "^4.1.4",
+		"@earendil-works/pi-agent-core": "^0.75.5",
+		"@earendil-works/pi-ai": "^0.75.3",
+		"@earendil-works/pi-tui": "^0.75.5",
+		"dotenv": "^17.4.2",
+		"openai": "^6.26.0",
+		"smol-toml": "^1.6.1",
+		"typebox": "^1.1.24"
+	},
+	"devDependencies": {
+		"@types/node": "^24.3.0",
+		"vitest": "^3.2.4"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	}
+}

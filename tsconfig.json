@@ -1,0 +1,29 @@
+{
+	"extends": "./tsconfig.base.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"paths": {
+			"*": ["./*"],
+			"@earendil-works/pi-ai": ["./pi/packages/ai/src/index.ts"],
+			"@earendil-works/pi-ai/oauth": ["./pi/packages/ai/src/oauth.ts"],
+			"@earendil-works/pi-ai/*": ["./pi/packages/ai/src/*.ts", "./pi/packages/ai/src/providers/*.ts"],
+			"@earendil-works/pi-ai/dist/*": ["./pi/packages/ai/src/*"],
+			"@earendil-works/pi-agent-core": ["./pi/packages/agent/src/index.ts"],
+			"@earendil-works/pi-agent-core/*": ["./pi/packages/agent/src/*"],
+			"@earendil-works/pi-tui": ["./pi/packages/tui/src/index.ts"],
+			"@earendil-works/pi-tui/*": ["./pi/packages/tui/src/*"],
+			"typebox": ["./node_modules/typebox"]
+		}
+	},
+	"include": [
+		"pi/packages/ai/src/**/*",
+		"pi/packages/ai/test/**/*",
+		"pi/packages/agent/src/**/*",
+		"pi/packages/agent/test/**/*",
+		"pi/packages/tui/src/**/*",
+		"pi/packages/tui/test/**/*",
+		"apps/widi-pi/src/**/*",
+		"apps/widi-pi/tests/**/*"
+	],
+	"exclude": ["**/dist/**"]
+}
