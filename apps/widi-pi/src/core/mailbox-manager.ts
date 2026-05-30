@@ -1,3 +1,3 @@
-export class MaiboxManager {
+export class MailboxManager {
   
 }

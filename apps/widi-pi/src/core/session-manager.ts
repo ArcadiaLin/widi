@@ -1,3 +1,3 @@
-export class SessionManger {
+export class SessionManager {
   
 }
