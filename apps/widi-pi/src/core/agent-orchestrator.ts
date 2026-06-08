@@ -15,8 +15,8 @@ import {
   ExtensionRunner,
 } from "./extension-runner.js";
 import {
-  SessionManager,
-} from "./session-manager.js";
+  PersistenceManager,
+} from "./persistence-manager.js";
 import {
   SettingManager,
 } from "./setting-manager.js";
@@ -38,7 +38,7 @@ export type OrchestratorEventListener = (event: OrchestratorEvent) => Promise<vo
 export interface AgentOrchestratorConfigs {
   executionEnv: ExecutionEnv;
   resourceLoader: ResourceLoader;
-  sessionManager: SessionManager;
+  persistenceManager: PersistenceManager;
   settingManager: SettingManager;
   mailboxManager: MailboxManager;
 }
@@ -57,7 +57,7 @@ export class AgentOrchestrator {
   readonly agents: Map<AgentId, AgentHarness> = new Map();
   readonly executionEnv: ExecutionEnv;
   readonly resourceLoader: ResourceLoader;
-  readonly sessionManager: SessionManager;
+  readonly persistenceManager: PersistenceManager;
   readonly settingManager: SettingManager;
   readonly mailboxManager: MailboxManager;
 
@@ -67,7 +67,7 @@ export class AgentOrchestrator {
   constructor(config: AgentOrchestratorConfigs) {
     this.executionEnv = config.executionEnv;
     this.resourceLoader = config.resourceLoader;
-    this.sessionManager = config.sessionManager;
+    this.persistenceManager = config.persistenceManager;
     this.settingManager = config.settingManager;
     this.mailboxManager = config.mailboxManager;
   }
@@ -89,4 +89,6 @@ export class AgentOrchestrator {
 
     return agentId;
   }
+
+  private async _loadSessionRepo()
 }

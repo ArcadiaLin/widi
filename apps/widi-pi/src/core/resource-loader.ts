@@ -33,12 +33,12 @@ export interface ResourceLoaderOptions {
 export class ResourceLoader {
   private readonly _executionEnv: ExecutionEnv;
   private readonly _cwd: string;
-  private readonly _agentDir?: string;
+  private readonly _agentDir!: string;
 
   constructor(options: ResourceLoaderOptions) {
     this._executionEnv = options.executionEnv;
     this._cwd = options.cwd;
-    this._agentDir = options.agentDir;
+    this._agentDir = options.agentDir ?? DEFAULT_AGENT_DIR;
   }
 
   /**
@@ -83,7 +83,7 @@ export class ResourceLoader {
     const resolved: Array<{ path: string; source: ResourceSource }> = [];
 
     for (const root of roots) {
-      const resourceRoot = await this._joinPath(root.path, DEFAULT_AGENT_DIR, resourceDirName);
+      const resourceRoot = await this._joinPath(root.path, this._agentDir, resourceDirName);
       // Empty names mean "load the whole resource directory". Otherwise each name is resolved as a direct child.
       // future skill meybe support namespace like "namespace/skill_name", then we need to resolve each part of the path.
       const paths = names.length === 0
