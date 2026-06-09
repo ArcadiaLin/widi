@@ -9,7 +9,8 @@
 			"@earendil-works/pi-ai/*": ["./pi/packages/ai/src/*.ts", "./pi/packages/ai/src/providers/*.ts"],
 			"@earendil-works/pi-ai/dist/*": ["./pi/packages/ai/src/*"],
 			"@earendil-works/pi-agent-core": ["./pi/packages/agent/src/index.ts"],
-			"@earendil-works/pi-agent-core/*": ["./pi/packages/agent/src/*"],
+            "@earendil-works/pi-agent-core/node": ["./pi/packages/agent/src/node.ts"],
+            "@earendil-works/pi-agent-core/*": ["./pi/packages/agent/src/*.ts"],
 			"@earendil-works/pi-tui": ["./pi/packages/tui/src/index.ts"],
 			"@earendil-works/pi-tui/*": ["./pi/packages/tui/src/*"],
 			"typebox": ["./node_modules/typebox"]

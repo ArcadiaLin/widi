@@ -1,5 +1,7 @@
 # WIDI Multi-Agent 持久化设计
 
+**这个文档已经过时，不再参考**
+
 本文记录 WIDI multi-agent 系统的持久化边界、目录结构、fork/restore 语义，以及自定义 session storage 如何对接 Pi `AgentHarness`。
 
 ## 设计原则

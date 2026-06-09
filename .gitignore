@@ -66,3 +66,6 @@ apps/widi-agent/.widi/agent/Sessions
 apps/widi-agent/.widi/agent/auth.json
 apps/widi-agent/.widi/agent/models.json
 apps/widi-agent/.widi/agent/Runs/
+
+# test config
+.widi/

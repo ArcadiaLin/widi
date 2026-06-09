@@ -1,4 +1,5 @@
 export type AgentProfile = {
+  readonly id: string;
   readonly label: string;
   readonly description?: string;
   readonly systemPrompt: string;
@@ -17,4 +18,6 @@ export type AgentProfile = {
     readonly canRequestUser?: boolean;
     readonly maibox?: boolean;
   }
+
+  readonly extensionReferences?: Record<string, unknown>;
 }

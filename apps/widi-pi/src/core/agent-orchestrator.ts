@@ -3,10 +3,17 @@
  * 
  * This Class is shared between all run modes (interactive, print, rpc).
  */
-import type {
+import {
+  Model
+} from "@earendil-works/pi-ai"
+import {
   AgentHarness,
+  AgentHarnessOptions,
   AgentHarnessEvent,
   ExecutionEnv,
+  AgentHarnessResources,
+  type Session,
+  type SessionMetadata,
 } from "@earendil-works/pi-agent-core";
 import type {
   AgentProfile,
@@ -20,9 +27,6 @@ import {
 import {
   SettingManager,
 } from "./setting-manager.js";
-import {
-  MailboxManager,
-} from "./mailbox-manager.js";
 import {
   ResourceLoader,
 } from "./resource-loader.js";
@@ -40,7 +44,6 @@ export interface AgentOrchestratorConfigs {
   resourceLoader: ResourceLoader;
   persistenceManager: PersistenceManager;
   settingManager: SettingManager;
-  mailboxManager: MailboxManager;
 }
 
 export interface SpawnAgentHarnessOptions {
@@ -59,7 +62,6 @@ export class AgentOrchestrator {
   readonly resourceLoader: ResourceLoader;
   readonly persistenceManager: PersistenceManager;
   readonly settingManager: SettingManager;
-  readonly mailboxManager: MailboxManager;
 
   private _unscribeAgentHarness: Map<AgentId, () => Promise<void> | void> = new Map();
   private _eventListeners: OrchestratorEventListener[] = [];
@@ -69,12 +71,11 @@ export class AgentOrchestrator {
     this.resourceLoader = config.resourceLoader;
     this.persistenceManager = config.persistenceManager;
     this.settingManager = config.settingManager;
-    this.mailboxManager = config.mailboxManager;
   }
 
   async spawnAgentHarness(options: SpawnAgentHarnessOptions) {
-    let agentId = this._allocateAgentId(options.profile);
     const agentProfile = options.profileOverrride ? { ...options.profile, ...options.profileOverrride } : options.profile;
+    // phase 1 - create not resume
   }
 
   private _allocateAgentId(profile: AgentProfile): AgentId {
@@ -90,5 +91,39 @@ export class AgentOrchestrator {
     return agentId;
   }
 
-  private async _loadSessionRepo()
+  private async _createAgentHarness(
+    profile: AgentProfile,
+    tools: any = [],
+    model: Model<any>,
+  ): Promise<AgentHarness> {
+    const agentId = this._allocateAgentId(profile);
+    const LoadedSkill = await this.resourceLoader.loadSkills(profile.skills);
+    const LoadedPromptTemplate = await this.resourceLoader.loadPromptTemplates(profile.promptTemplates);
+
+    const resources: AgentHarnessResources = {
+      // this step ignore thie "ResourceSource", may be has any other usage;
+      skills: LoadedSkill.skills.map(({ skill }) => skill),
+      promptTemplates: LoadedPromptTemplate.promptTemplates.map(({ promptTemplate }) => promptTemplate),
+    }
+
+    const session = await this.persistenceManager.createAgentSession({
+      agentId: agentId,
+      agentProfile: profile
+    });
+    // resourceLoader also return a resource diagnostics, so todo is dealing with diagnostics
+    // such as _dealDisgnostics()
+    // const resourceDiagnostics = {
+
+    // }
+
+    const harness = new AgentHarness({
+      env: this.executionEnv,
+      session: session,
+      resources: resources,
+      tools: tools,
+      systemPrompt: profile.systemPrompt,
+      model: model,
+    })
+    return harness;
+  }
 }
