@@ -13,6 +13,8 @@ Workspace packages:
 
 The checked-in `pi/` directory is a full upstream repository kept in-tree so WIDI can track upstream changes while resolving the Pi packages locally during root type checks.
 
+`pi-agent-harness` specifically refers to `pi/packages/agent/src/harness`, a submodule or abstraction within `@earendil-works/pi-agent-core`.
+
 ## Current Focus
 
 - Default all runtime design and implementation work to `apps/widi-pi`.

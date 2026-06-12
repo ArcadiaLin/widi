@@ -83,7 +83,11 @@ export class ResourceLoader {
     const resolved: Array<{ path: string; source: ResourceSource }> = [];
 
     for (const root of roots) {
-      const resourceRoot = await this._joinPath(root.path, this._agentDir, resourceDirName);
+      // For "cwd", we load from a subdirectory (e.g. ".widi/skills") to avoid potential conflicts with user files. For "agent_dir", we load directly from the specified directory to allow flexible project structures.
+      if (root.kind === "cwd") {
+        root.path = await this._joinPath(root.path, DEFAULT_AGENT_DIR);
+      }
+      const resourceRoot = await this._joinPath(root.path, resourceDirName);
       // Empty names mean "load the whole resource directory". Otherwise each name is resolved as a direct child.
       // future skill meybe support namespace like "namespace/skill_name", then we need to resolve each part of the path.
       const paths = names.length === 0
@@ -109,7 +113,7 @@ export class ResourceLoader {
   }
 
   // private _withNamespace
-
+  
   private async _joinPath(...parts: string[]): Promise<string> {
     const result = await this._executionEnv.joinPath(parts);
     if (!result.ok) {

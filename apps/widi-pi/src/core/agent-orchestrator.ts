@@ -33,6 +33,9 @@ import {
 import type {
   AgentId,
 } from "./types.js";
+import {
+  ModelRegistry,
+} from "./model-registry.js";
 
 export type OrchestratorEvent = 
   | { readonly type: "agent_harness_event"; agentId: AgentId; event: AgentHarnessEvent }
@@ -44,10 +47,12 @@ export interface AgentOrchestratorConfigs {
   resourceLoader: ResourceLoader;
   persistenceManager: PersistenceManager;
   settingManager: SettingManager;
+  modelRegistry: ModelRegistry;
 }
 
 export interface SpawnAgentHarnessOptions {
   profile: AgentProfile;
+  resume?: boolean;
   /**
    * yet not implemented, whether to focus this agent after spawn, default to false
    */
@@ -76,6 +81,9 @@ export class AgentOrchestrator {
   async spawnAgentHarness(options: SpawnAgentHarnessOptions) {
     const agentProfile = options.profileOverrride ? { ...options.profile, ...options.profileOverrride } : options.profile;
     // phase 1 - create not resume
+    if (!options.resume) {
+      // Implementation for creating a new agent harness
+    }
   }
 
   private _allocateAgentId(profile: AgentProfile): AgentId {
