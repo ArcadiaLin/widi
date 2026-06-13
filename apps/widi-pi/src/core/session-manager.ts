@@ -1,5 +1,5 @@
 /**
- * PersistenceManager owns session repositories used by AgentOrchestrator.
+ * SessionManager owns session repositories used by AgentOrchestrator.
  *
  * Pi's JsonlSessionRepo writes the session metadata/header line when create()
  * is called. After that, AgentHarness writes through the returned Session; WIDI
@@ -23,7 +23,7 @@ import type {
   AgentProfile,
 } from "./agent-profile.ts";
 
-export interface PersistenceManagerConfigs {
+export interface SessionManagerConfigs {
   fs: FileSystem;
   cwd: string;
   sessionsRoot: string;
@@ -40,13 +40,13 @@ type ResumeAgentSessionOptions = {
   metadata: JsonlSessionMetadata;
 }
 
-export class PersistenceManager {
+export class SessionManager {
   readonly sessionRepo: JsonlSessionRepo;
   private readonly _cwd: string;
   private readonly _agentSessions: Map<AgentId, Session<SessionMetadata>> = new Map();
   private readonly _memorySessionRepo: InMemorySessionRepo = new InMemorySessionRepo();
 
-  constructor(config: PersistenceManagerConfigs) {
+  constructor(config: SessionManagerConfigs) {
     this._cwd = config.cwd;
     this.sessionRepo = new JsonlSessionRepo({
       fs: config.fs,

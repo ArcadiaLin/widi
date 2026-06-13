@@ -7,10 +7,6 @@ export type AgentProfile = {
   readonly tools?: readonly string[];
   readonly skills?: readonly string[];
   readonly promptTemplates?: readonly string[];
-  readonly defaultModel?: {
-    readonly provider: string;
-    readonly modelId: string;
-  }
 
   readonly capabilities?: {
     readonly acceptsUserInput?: boolean;
