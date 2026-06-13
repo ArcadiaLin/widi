@@ -1,0 +1,258 @@
+import type {
+	ExecutionEnv,
+	ExecutionEnvExecOptions,
+	ExecutionError,
+	FileError,
+	FileInfo,
+	Result,
+} from "@earendil-works/pi-agent-core";
+import { ExecutionError as PiExecutionError, FileError as PiFileError, err, ok } from "@earendil-works/pi-agent-core";
+import { describe, expect, it } from "vitest";
+import {
+	AuthStorage,
+	FileAuthStorageBackend,
+	InMemoryAuthStorageBackend,
+	type LockResult,
+} from "../../src/core/auth-storage.ts";
+import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
+
+class MemoryExecutionEnv implements ExecutionEnv {
+	cwd = "/workspace";
+	readonly files = new Map<string, string>();
+	readonly writes: Array<{ path: string; content: string | Uint8Array }> = [];
+
+	async exists(path: string): Promise<Result<boolean, FileError>> {
+		return ok(this.files.has(path));
+	}
+
+	async readTextFile(path: string): Promise<Result<string, FileError>> {
+		const content = this.files.get(path);
+		if (content === undefined) {
+			return err(new PiFileError("not_found", `File not found: ${path}`, path));
+		}
+		return ok(content);
+	}
+
+	async writeFile(path: string, content: string | Uint8Array): Promise<Result<void, FileError>> {
+		this.writes.push({ path, content });
+		this.files.set(path, typeof content === "string" ? content : new TextDecoder().decode(content));
+		return ok(undefined);
+	}
+
+	async exec(
+		_command: string,
+		_options?: ExecutionEnvExecOptions,
+	): Promise<Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>> {
+		return err(new PiExecutionError("shell_unavailable", "not supported"));
+	}
+
+	async absolutePath(path: string): Promise<Result<string, FileError>> {
+		return ok(path.startsWith("/") ? path : `${this.cwd}/${path}`);
+	}
+
+	async joinPath(parts: string[]): Promise<Result<string, FileError>> {
+		return ok(parts.join("/").replace(/\/+/g, "/"));
+	}
+
+	async readTextLines(): Promise<Result<string[], FileError>> {
+		return err(new PiFileError("not_supported", "not supported"));
+	}
+
+	async readBinaryFile(): Promise<Result<Uint8Array, FileError>> {
+		return err(new PiFileError("not_supported", "not supported"));
+	}
+
+	async appendFile(): Promise<Result<void, FileError>> {
+		return err(new PiFileError("not_supported", "not supported"));
+	}
+
+	async fileInfo(): Promise<Result<FileInfo, FileError>> {
+		return err(new PiFileError("not_supported", "not supported"));
+	}
+
+	async listDir(): Promise<Result<FileInfo[], FileError>> {
+		return err(new PiFileError("not_supported", "not supported"));
+	}
+
+	async canonicalPath(path: string): Promise<Result<string, FileError>> {
+		return ok(path);
+	}
+
+	async createDir(): Promise<Result<void, FileError>> {
+		return ok(undefined);
+	}
+
+	async remove(path: string): Promise<Result<void, FileError>> {
+		this.files.delete(path);
+		return ok(undefined);
+	}
+
+	async createTempDir(): Promise<Result<string, FileError>> {
+		return err(new PiFileError("not_supported", "not supported"));
+	}
+
+	async createTempFile(): Promise<Result<string, FileError>> {
+		return err(new PiFileError("not_supported", "not supported"));
+	}
+
+	async cleanup(): Promise<void> {}
+}
+
+function createConfigValueResolver(env: MemoryExecutionEnv): ConfigValueResolver {
+	return new ConfigValueResolver(env, {
+		getEnv: (name) => {
+			if (name === "TEST_API_KEY") return "from-env";
+			return undefined;
+		},
+	});
+}
+
+describe("FileAuthStorageBackend", () => {
+	it("creates a missing auth file and exposes current content to the lock callback", async () => {
+		const env = new MemoryExecutionEnv();
+		const storage = new FileAuthStorageBackend(env, ".widi/auth.json");
+
+		const result = await storage.withLockAsync(async (current): Promise<LockResult<string>> => {
+			return { result: current ?? "missing" };
+		});
+
+		expect(result).toBe("{}");
+		expect(env.files.get(".widi/auth.json")).toBe("{}");
+		expect(env.writes).toEqual([{ path: ".widi/auth.json", content: "{}" }]);
+	});
+
+	it("writes next content when the callback returns it", async () => {
+		const env = new MemoryExecutionEnv();
+		env.files.set(".widi/auth.json", '{"openai":{"type":"api_key","key":"old"}}');
+		const storage = new FileAuthStorageBackend(env, ".widi/auth.json");
+
+		const result = await storage.withLockAsync(async (current): Promise<LockResult<number>> => {
+			expect(current).toBe('{"openai":{"type":"api_key","key":"old"}}');
+			return { result: 42, next: '{"openai":{"type":"api_key","key":"new"}}' };
+		});
+
+		expect(result).toBe(42);
+		expect(env.files.get(".widi/auth.json")).toBe('{"openai":{"type":"api_key","key":"new"}}');
+	});
+
+	it("serializes overlapping operations within one backend instance", async () => {
+		const env = new MemoryExecutionEnv();
+		env.files.set(".widi/auth.json", "0");
+		const storage = new FileAuthStorageBackend(env, ".widi/auth.json");
+		const order: string[] = [];
+		let releaseFirst: (() => void) | undefined;
+		let markFirstStarted: (() => void) | undefined;
+		const firstStarted = new Promise<void>((resolve) => {
+			markFirstStarted = resolve;
+		});
+
+		const first = storage.withLockAsync(async (current): Promise<LockResult<string>> => {
+			order.push(`first:${current}`);
+			markFirstStarted?.();
+			await new Promise<void>((resolve) => {
+				releaseFirst = resolve;
+			});
+			return { result: "first", next: "1" };
+		});
+
+		const second = storage.withLockAsync(async (current): Promise<LockResult<string>> => {
+			order.push(`second:${current}`);
+			return { result: "second", next: "2" };
+		});
+
+		await firstStarted;
+		expect(order).toEqual(["first:0"]);
+		releaseFirst?.();
+
+		await expect(first).resolves.toBe("first");
+		await expect(second).resolves.toBe("second");
+		expect(order).toEqual(["first:0", "second:1"]);
+		expect(env.files.get(".widi/auth.json")).toBe("2");
+	});
+});
+
+describe("InMemoryAuthStorageBackend", () => {
+	it("stores next content across async lock calls", async () => {
+		const storage = new InMemoryAuthStorageBackend();
+
+		await expect(
+			storage.withLockAsync(async (current): Promise<LockResult<string | undefined>> => {
+				return { result: current, next: "saved" };
+			}),
+		).resolves.toBeUndefined();
+
+		await expect(
+			storage.withLockAsync(async (current): Promise<LockResult<string | undefined>> => {
+				return { result: current };
+			}),
+		).resolves.toBe("saved");
+	});
+
+	it("can start from auth storage data", async () => {
+		const storage = new InMemoryAuthStorageBackend({
+			openai: { type: "api_key", key: "secret" },
+		});
+
+		await expect(
+			storage.withLockAsync(async (current): Promise<LockResult<string | undefined>> => {
+				return { result: current };
+			}),
+		).resolves.toBe(JSON.stringify({ openai: { type: "api_key", key: "secret" } }, null, 2));
+	});
+});
+
+describe("AuthStorage", () => {
+	it("loads credentials from storage during initialize", async () => {
+		const env = new MemoryExecutionEnv();
+		env.files.set(".widi/auth.json", JSON.stringify({ openai: { type: "api_key", key: "stored" } }));
+		const storage = AuthStorage.fromStorage(new FileAuthStorageBackend(env, ".widi/auth.json"), {
+			configValueResolver: createConfigValueResolver(env),
+		});
+
+		await storage.initialize();
+
+		expect(storage.get("openai")).toEqual({ type: "api_key", key: "stored" });
+		expect(storage.has("openai")).toBe(true);
+		expect(storage.list()).toEqual(["openai"]);
+	});
+
+	it("persists set and remove operations", async () => {
+		const env = new MemoryExecutionEnv();
+		const storage = AuthStorage.fromStorage(new FileAuthStorageBackend(env, ".widi/auth.json"), {
+			configValueResolver: createConfigValueResolver(env),
+		});
+		await storage.initialize();
+
+		await storage.set("openai", { type: "api_key", key: "saved" });
+		expect(JSON.parse(env.files.get(".widi/auth.json") ?? "{}")).toEqual({
+			openai: { type: "api_key", key: "saved" },
+		});
+
+		await storage.remove("openai");
+		expect(JSON.parse(env.files.get(".widi/auth.json") ?? "{}")).toEqual({});
+	});
+
+	it("resolves stored API key config values through ConfigValueResolver", async () => {
+		const env = new MemoryExecutionEnv();
+		const storage = AuthStorage.inMemory(
+			{ configValueResolver: createConfigValueResolver(env) },
+			{ openai: { type: "api_key", key: "$TEST_API_KEY" } },
+		);
+		await storage.initialize();
+
+		await expect(storage.getApiKey("openai")).resolves.toBe("from-env");
+	});
+
+	it("uses runtime API key overrides before stored credentials", async () => {
+		const env = new MemoryExecutionEnv();
+		const storage = AuthStorage.inMemory(
+			{ configValueResolver: createConfigValueResolver(env) },
+			{ openai: { type: "api_key", key: "stored" } },
+		);
+		await storage.initialize();
+		storage.setRuntimeApiKey("openai", "runtime");
+
+		await expect(storage.getApiKey("openai")).resolves.toBe("runtime");
+		expect(storage.getAuthStatus("openai")).toEqual({ configured: true, source: "stored" });
+	});
+});
