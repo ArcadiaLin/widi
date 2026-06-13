@@ -12,11 +12,14 @@ import {
   type AgentHarnessResources,
   type AgentTool,
   type ExecutionEnv,
+  type Session,
+  type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import type {
   AgentProfile,
 } from "./agent-profile.js";
 import {
+  type AgentSessionMetadata,
   SessionManager,
 } from "./session-manager.ts";
 import {
@@ -31,12 +34,24 @@ import type {
 import {
   type ModelRegistry,
 } from "./model-registry.js";
+import type {
+  ExtendedJsonlSessionMetadata,
+} from "../storage/jsonl-repo.ts";
 
 export type OrchestratorEvent = 
   | { readonly type: "agent_harness_event"; agentId: AgentId; event: AgentHarnessEvent }
   | { readonly type: "agent_spawned"; agentId: AgentId; profile: AgentProfile; model: Model<any> }
+  | { readonly type: "agent_resumed"; agentId: AgentId; profile: AgentProfile; model: Model<any> }
+  | {
+    readonly type: "agent_profile_missing";
+    agentId: AgentId;
+    missingProfileId: string;
+    missingProfileLabel?: string;
+    fallbackProfileId: string;
+  }
 
 export type OrchestratorEventListener = (event: OrchestratorEvent) => Promise<void> | void;
+export type AgentProfileResolver = (profileId: string) => AgentProfile | undefined | Promise<AgentProfile | undefined>;
 
 export interface AgentOrchestratorConfigs {
   executionEnv: ExecutionEnv;
@@ -46,16 +61,27 @@ export interface AgentOrchestratorConfigs {
   modelRegistry: ModelRegistry;
   defaultProfile: AgentProfile;
   defaultModel: Model<any>;
+  resolveProfile?: AgentProfileResolver;
 }
 
-export interface SpawnAgentHarnessOptions {
-  profile?: AgentProfile;
+interface SpawnAgentHarnessCommonOptions {
   model?: Model<any>;
   inheritModelFromAgentId?: AgentId;
-  resume?: boolean;
-  profileOverride?: Partial<AgentProfile>;
   tools?: AgentTool[];
 }
+
+export interface SpawnAgentHarnessCreateOptions extends SpawnAgentHarnessCommonOptions {
+  resume?: false;
+  profile?: AgentProfile;
+  profileOverride?: Partial<AgentProfile>;
+}
+
+export interface SpawnAgentHarnessResumeOptions extends SpawnAgentHarnessCommonOptions {
+  resume: true;
+  metadata: ExtendedJsonlSessionMetadata;
+}
+
+export type SpawnAgentHarnessOptions = SpawnAgentHarnessCreateOptions | SpawnAgentHarnessResumeOptions;
 
 export interface SpawnAgentHarnessResult {
   agentId: AgentId;
@@ -71,6 +97,7 @@ export class AgentOrchestrator {
   readonly sessionManager: SessionManager;
   readonly settingManager: SettingManager;
   readonly modelRegistry: ModelRegistry;
+  private readonly _resolveProfile?: AgentProfileResolver;
 
   private _unsubscribeAgentHarness: Map<AgentId, () => void> = new Map();
   private _eventListeners: Set<OrchestratorEventListener> = new Set();
@@ -83,15 +110,12 @@ export class AgentOrchestrator {
     this.modelRegistry = config.modelRegistry;
     this._defaultProfile = config.defaultProfile;
     this._defaultModel = config.defaultModel;
-  }
-
-  async spawnMainAgentHarness(options: Omit<SpawnAgentHarnessOptions, "profile"> = {}): Promise<SpawnAgentHarnessResult> {
-    return await this.spawnAgentHarness({ ...options, profile: this._defaultProfile, model: options.model ?? this._defaultModel });
+    this._resolveProfile = config.resolveProfile;
   }
 
   async spawnAgentHarness(options: SpawnAgentHarnessOptions = {}): Promise<SpawnAgentHarnessResult> {
     if (options.resume) {
-      throw new Error("Resuming agent harness sessions is not implemented yet.");
+      return await this._resumeAgentHarness(options);
     }
 
     const baseProfile = options.profile ?? this._defaultProfile;
@@ -170,12 +194,119 @@ export class AgentOrchestrator {
     return this._defaultModel;
   }
 
+  private async _resolveResumeProfile(agentId: AgentId, metadata: ExtendedJsonlSessionMetadata): Promise<AgentProfile> {
+    const profileReference = metadata.metadata?.profile;
+    if (!profileReference?.id) {
+      return this._defaultProfile;
+    }
+
+    const resolvedProfile = await this._resolveProfile?.(profileReference.id);
+    if (resolvedProfile) {
+      return resolvedProfile;
+    }
+
+    if (profileReference.id !== this._defaultProfile.id) {
+      await this._emit({
+        type: "agent_profile_missing",
+        agentId,
+        missingProfileId: profileReference.id,
+        missingProfileLabel: profileReference.label,
+        fallbackProfileId: this._defaultProfile.id,
+      });
+    }
+    return this._defaultProfile;
+  }
+
+  private _resolveResumeModel(options: SpawnAgentHarnessResumeOptions, contextModel: { provider: string; modelId: string } | null): Model<any> {
+    if (options.model || options.inheritModelFromAgentId) {
+      return this._resolveSpawnModel(options);
+    }
+
+    if (!contextModel) {
+      return this._defaultModel;
+    }
+
+    const model = this.modelRegistry.find(contextModel.provider, contextModel.modelId);
+    if (!model) {
+      throw new Error(`Cannot resume model ${contextModel.provider}/${contextModel.modelId}: model is not registered.`);
+    }
+    return model;
+  }
+
+  private _resolveThinkingLevel(level: string): ThinkingLevel {
+    if (
+      level === "off" ||
+      level === "minimal" ||
+      level === "low" ||
+      level === "medium" ||
+      level === "high" ||
+      level === "xhigh"
+    ) {
+      return level;
+    }
+    throw new Error(`Cannot resume session with invalid thinking level: ${level}`);
+  }
+
   private async _createAgentHarness(
     profile: AgentProfile,
     tools: AgentTool[] = [],
     model: Model<any>,
   ): Promise<SpawnAgentHarnessResult> {
     const agentId = this._allocateAgentId(profile);
+    const session = await this.sessionManager.createAgentSession({
+      agentId: agentId,
+      agentProfile: profile
+    });
+
+    const harness = await this._buildAgentHarness({
+      agentId,
+      profile,
+      session,
+      tools,
+      model,
+    });
+    await this._emit({ type: "agent_spawned", agentId, profile, model });
+    return { agentId, harness };
+  }
+
+  private async _resumeAgentHarness(options: SpawnAgentHarnessResumeOptions): Promise<SpawnAgentHarnessResult> {
+    const agentId = options.metadata.id;
+    const cachedHarness = this.agents.get(agentId);
+    if (cachedHarness) {
+      return { agentId, harness: cachedHarness };
+    }
+
+    const profile = await this._resolveResumeProfile(agentId, options.metadata);
+    const session = await this.sessionManager.resumeAgentSession({
+      agentId,
+      metadata: options.metadata,
+    });
+    const context = await session.buildContext();
+    const model = this._resolveResumeModel(options, context.model);
+    const harness = await this._buildAgentHarness({
+      agentId,
+      profile,
+      session,
+      tools: options.tools ?? [],
+      model,
+      thinkingLevel: this._resolveThinkingLevel(context.thinkingLevel),
+      activeToolNames: context.activeToolNames ?? undefined,
+    });
+
+    await this._emit({ type: "agent_resumed", agentId, profile, model });
+    return { agentId, harness };
+  }
+
+  private async _buildAgentHarness(options: {
+    agentId: AgentId;
+    profile: AgentProfile;
+    session: Session<AgentSessionMetadata>;
+    tools: AgentTool[];
+    model: Model<any>;
+    thinkingLevel?: ThinkingLevel;
+    activeToolNames?: string[];
+  }): Promise<AgentHarness> {
+    const { agentId, profile, session, tools, model } = options;
     const LoadedSkill = await this.resourceLoader.loadSkills(profile.skills);
     const LoadedPromptTemplate = await this.resourceLoader.loadPromptTemplates(profile.promptTemplates);
 
@@ -185,10 +316,6 @@ export class AgentOrchestrator {
       promptTemplates: LoadedPromptTemplate.promptTemplates.map(({ promptTemplate }) => promptTemplate),
     }
 
-    const session = await this.sessionManager.createAgentSession({
-      agentId: agentId,
-      agentProfile: profile
-    });
     // resourceLoader also return a resource diagnostics, so todo is dealing with diagnostics
     // such as _dealDisgnostics()
     // const resourceDiagnostics = {
@@ -202,6 +329,8 @@ export class AgentOrchestrator {
       tools: tools,
       systemPrompt: profile.systemPrompt,
       model: model,
+      thinkingLevel: options.thinkingLevel,
+      activeToolNames: options.activeToolNames,
       getApiKeyAndHeaders: async (requestModel) => {
         const result = await this.modelRegistry.getApiKeyAndHeaders(requestModel);
         if (!result.ok) {
@@ -214,8 +343,7 @@ export class AgentOrchestrator {
     this._unsubscribeAgentHarness.set(agentId, harness.subscribe((event) => {
       void this._emit({ type: "agent_harness_event", agentId, event });
     }));
-    await this._emit({ type: "agent_spawned", agentId, profile, model });
-    return { agentId, harness };
+    return harness;
   }
 
   private async _emit(event: OrchestratorEvent): Promise<void> {
