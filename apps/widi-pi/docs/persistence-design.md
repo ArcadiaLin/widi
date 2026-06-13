@@ -1,6 +1,7 @@
 # WIDI Multi-Agent 持久化设计
 
-**这个文档已经过时，不再参考**
+**这个文档已经过时，不再参考。当前 session JSONL 处理以
+`apps/widi-pi/docs/session-storage.md` 为准；本文中的 `type: "widi_session"` 等历史草案不再采用。**
 
 本文记录 WIDI multi-agent 系统的持久化边界、目录结构、fork/restore 语义，以及自定义 session storage 如何对接 Pi `AgentHarness`。
 

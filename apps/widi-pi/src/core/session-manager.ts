@@ -1,21 +1,23 @@
 /**
  * SessionManager owns session repositories used by AgentOrchestrator.
  *
- * Pi's JsonlSessionRepo writes the session metadata/header line when create()
- * is called. After that, AgentHarness writes through the returned Session; WIDI
- * should not manage JsonlSessionStorage directly.
+ * The local JSONL adapter keeps Pi session tree semantics intact and only
+ * extends the session header with metadata needed to rebuild harness context.
  */
 
 import type {
   FileSystem,
-  JsonlSessionMetadata,
   Session,
   SessionMetadata,
 } from "@earendil-works/pi-agent-core";
 import {
   InMemorySessionRepo,
-  JsonlSessionRepo,
 } from "@earendil-works/pi-agent-core";
+import {
+	JsonlSessionRepo,
+  type ExtendedJsonlSessionMetadata,
+  type JsonlSessionPathLayout,
+} from "../storage/jsonl-repo.ts";
 import type {
   AgentId,
 } from "./types.ts";
@@ -23,10 +25,13 @@ import type {
   AgentProfile,
 } from "./agent-profile.ts";
 
+export type AgentSessionMetadata = SessionMetadata | ExtendedJsonlSessionMetadata;
+
 export interface SessionManagerConfigs {
   fs: FileSystem;
   cwd: string;
   sessionsRoot: string;
+  sessionPathLayout?: JsonlSessionPathLayout;
 }
 
 type CreateAgentSessionOptions = {
@@ -37,13 +42,13 @@ type CreateAgentSessionOptions = {
 
 type ResumeAgentSessionOptions = {
   agentId: AgentId;
-  metadata: JsonlSessionMetadata;
+  metadata: ExtendedJsonlSessionMetadata;
 }
 
 export class SessionManager {
   readonly sessionRepo: JsonlSessionRepo;
   private readonly _cwd: string;
-  private readonly _agentSessions: Map<AgentId, Session<SessionMetadata>> = new Map();
+  private readonly _agentSessions: Map<AgentId, Session<AgentSessionMetadata>> = new Map();
   private readonly _memorySessionRepo: InMemorySessionRepo = new InMemorySessionRepo();
 
   constructor(config: SessionManagerConfigs) {
@@ -51,10 +56,11 @@ export class SessionManager {
     this.sessionRepo = new JsonlSessionRepo({
       fs: config.fs,
       sessionsRoot: config.sessionsRoot,
+      pathLayout: config.sessionPathLayout,
     });
   }
 
-  async createAgentSession(options: CreateAgentSessionOptions): Promise<Session<SessionMetadata>> {
+  async createAgentSession(options: CreateAgentSessionOptions): Promise<Session<AgentSessionMetadata>> {
     const cachedSession = this._agentSessions.get(options.agentId);
     if (cachedSession) {
       return cachedSession;
@@ -67,17 +73,26 @@ export class SessionManager {
     return session;
   }
 
-  async resumeAgentSession(options: ResumeAgentSessionOptions): Promise<Session<SessionMetadata>> {
-    return this._agentSessions.get(options.agentId) ?? await this.sessionRepo.open(options.metadata);
+  async resumeAgentSession(options: ResumeAgentSessionOptions): Promise<Session<AgentSessionMetadata>> {
+    const cachedSession = this._agentSessions.get(options.agentId);
+    if (cachedSession) {
+      return cachedSession;
+    }
+    const session = await this.sessionRepo.open(options.metadata);
+    this._agentSessions.set(options.agentId, session);
+    return session;
   }
 
-  private async _createPersistentAgentSession(options: CreateAgentSessionOptions): Promise<Session<JsonlSessionMetadata>> {
+  private async _createPersistentAgentSession(options: CreateAgentSessionOptions): Promise<Session<ExtendedJsonlSessionMetadata>> {
     // TODO: Add file locking before multiple WIDI processes can write the same sessionsRoot.
     // TODO: Add extension persistence once extension lifecycle and storage boundaries are defined.
     return this.sessionRepo.create({
       id: options.agentId,
       cwd: this._cwd,
       parentSessionPath: options.parentSessionPath,
+      metadata: {
+        profile: options.agentProfile,
+      },
     });
   }
 
