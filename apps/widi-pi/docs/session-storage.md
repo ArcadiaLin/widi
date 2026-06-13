@@ -39,11 +39,7 @@ JSONL 文件仍然采用“首行 header，后续每行一个 session tree entry
   "metadata": {
     "profile": {
       "id": "main",
-      "label": "Main Agent",
-      "systemPrompt": "You are WIDI.",
-      "persist": true,
-      "skills": ["code"],
-      "promptTemplates": ["review"]
+      "label": "Main Agent"
     }
   }
 }
@@ -59,7 +55,7 @@ JSONL 文件仍然采用“首行 header，后续每行一个 session tree entry
 - `ExtendedJsonlSessionListOptions`
 - `JsonlSessionPathLayout`
 
-当前只有 `metadata.profile` 已经写入。它保存的是创建持久 session 时使用的 `AgentProfile` 快照，用于 resume 时重建 harness 的 profile 上下文。
+当前只有 `metadata.profile` 已经写入。它保存的是创建持久 session 时使用的 profile 引用。`id` 用于 resume 时重新加载当前 profile，`label` 只是列表展示和诊断快照。
 
 ## Entry 语义
 
@@ -126,7 +122,7 @@ header 之后的每一行仍然是 `@earendil-works/pi-agent-core` 的 `SessionT
 - 临时 session 使用 Pi 的 `InMemorySessionRepo`。
 - 已打开的 session 按 `agentId` 缓存在 `_agentSessions` 中。
 
-创建持久 session 时，`SessionManager` 会把 `AgentProfile` 写入 header metadata：
+创建持久 session 时，`SessionManager` 会把 profile 引用写入 header metadata：
 
 ```ts
 this.sessionRepo.create({
@@ -134,7 +130,10 @@ this.sessionRepo.create({
   cwd: this._cwd,
   parentSessionPath: options.parentSessionPath,
   metadata: {
-    profile: options.agentProfile,
+    profile: {
+      id: options.agentProfile.id,
+      label: options.agentProfile.label,
+    },
   },
 });
 ```
@@ -160,9 +159,10 @@ resume 持久 session 时，调用方传入 `ExtendedJsonlSessionMetadata`，`Se
 1. 通过 `sessionRepo.list()` 或上层 index 得到候选 `ExtendedJsonlSessionMetadata`。
 2. UI、RPC 或 CLI 选择一个 metadata。
 3. `SessionManager.resumeAgentSession({ agentId, metadata })` 打开 session。
-4. `AgentOrchestrator` 从 `metadata.metadata?.profile` 得到 profile。
-5. `session.buildContext()` 从当前 leaf 恢复 messages、model、thinking level 和 active tools。
-6. orchestrator 用恢复出的 profile、model 和 session 创建新的 `AgentHarness`。
+4. `AgentOrchestrator` 从 `metadata.metadata?.profile?.id` 得到 profile id。
+5. profile loader 或 profile registry 按 id 加载当前 profile；如果 profile 已删除，回退到 `defaultProfile`。
+6. `session.buildContext()` 从当前 leaf 恢复 messages、model、thinking level 和 active tools。
+7. orchestrator 用恢复出的 profile、model 和 session 创建新的 `AgentHarness`。
 
 第 4-6 步属于 orchestrator resume 分支，storage 已经准备好数据，但 orchestrator 侧还需要继续接入。
 
@@ -172,13 +172,26 @@ resume 持久 session 时，调用方传入 `ExtendedJsonlSessionMetadata`，`Se
 
 当前建议：
 
-- 可以保存 `profile` 快照，因为 system prompt、skills、prompt templates 等不在 session tree 中。
-- 可以未来保存 profile id、profile version、resource snapshot id、runtime profile id 等稳定引用。
+- 可以保存 `profile` 引用，例如 `{ id, label }`。
+- 可以未来保存 profile version、resource snapshot id、runtime profile id 等稳定引用。
 - 不保存 API key、OAuth token、临时环境变量、ExecutionEnv 实例、函数或大型资源正文。
 - 不把 `metadata` 当作事件日志；会随时间增长的内容应进入独立 log 或 session entries。
 - 不在 metadata 里声明新的 session type；session type 仍然是 header 的 `type: "session"`。
 
-现在选择保存完整 `AgentProfile` 快照，是为了在 profile registry 尚未稳定时保证 resume 有足够上下文。架构稳定后可以改为 `profileId + profileSnapshotHash + override`，再通过 migration 兼容旧文件。
+现在选择保存 profile id，是为了让 session header 只记录可恢复的外部上下文引用。`label` 不参与匹配。system prompt、skills、prompt templates、resources 等由当前 profile 加载流程重新生成。
+
+## Profile Loader 骨架
+
+`apps/widi-pi/src/core/agent-profile.ts` 已经提供 `AgentProfileLoader` 骨架。它使用 `ExecutionEnv` 从指定 markdown 文件或目录加载 profile，并返回 profiles 与 diagnostics。
+
+当前 loader 只建立边界：
+
+- markdown body 暂时作为 `systemPrompt`。
+- frontmatter 暂时读取 `id`、`label`、`description`、`persist`、`tools`、`skills`、`promptTemplates`。
+- diagnostics 使用 `file_info_failed`、`list_failed`、`read_failed`、`parse_failed`、`invalid_metadata`。
+- 复杂 YAML schema、profile 继承、资源引用校验、按 id registry 查询等后续再补。
+
+resume 时 storage 不直接加载 profile。它只暴露 `metadata.profile.id`，由 orchestrator 或更高层 profile registry 使用 loader 查找当前 profile。找不到时，当前策略是回退到 `defaultProfile`，并在 orchestrator 侧产生诊断或事件。
 
 ## 暂不处理
 

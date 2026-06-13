@@ -1,9 +1,9 @@
 import type { FileSystem, LeafEntry, SessionMetadata, SessionStorage, SessionTreeEntry } from "@earendil-works/pi-agent-core";
 import { SessionError, toError, uuidv7 } from "@earendil-works/pi-agent-core";
-import type { AgentProfile } from "../core/agent-profile.ts";
+import type { AgentProfileReference } from "../core/agent-profile.ts";
 
 export interface JsonlSessionHeaderMetadata {
-	profile?: AgentProfile;
+	profile?: AgentProfileReference;
 	[key: string]: unknown;
 }
 
@@ -97,9 +97,7 @@ function parseHeaderLine(line: string, filePath: string): SessionHeader {
 	if (parsed.parentSession !== undefined && typeof parsed.parentSession !== "string") {
 		throw invalidSession(filePath, "session header parentSession must be a string");
 	}
-	if (parsed.metadata !== undefined && !isRecord(parsed.metadata)) {
-		throw invalidSession(filePath, "session header metadata must be an object");
-	}
+	const metadata = parseHeaderMetadata(parsed.metadata, filePath);
 	return {
 		type: "session",
 		version: 3,
@@ -107,7 +105,31 @@ function parseHeaderLine(line: string, filePath: string): SessionHeader {
 		timestamp: parsed.timestamp,
 		cwd: parsed.cwd,
 		parentSession: parsed.parentSession,
-		metadata: parsed.metadata,
+		metadata,
+	};
+}
+
+function parseHeaderMetadata(value: unknown, filePath: string): JsonlSessionHeaderMetadata | undefined {
+	if (value === undefined) return undefined;
+	if (!isRecord(value)) {
+		throw invalidSession(filePath, "session header metadata must be an object");
+	}
+	if (value.profile === undefined) return value as JsonlSessionHeaderMetadata;
+	if (!isRecord(value.profile)) {
+		throw invalidSession(filePath, "session header metadata.profile must be an object");
+	}
+	if (typeof value.profile.id !== "string" || !value.profile.id) {
+		throw invalidSession(filePath, "session header metadata.profile is missing id");
+	}
+	if (value.profile.label !== undefined && typeof value.profile.label !== "string") {
+		throw invalidSession(filePath, "session header metadata.profile label must be a string");
+	}
+	return {
+		...value,
+		profile: {
+			id: value.profile.id,
+			label: value.profile.label,
+		},
 	};
 }
 

@@ -136,20 +136,21 @@ const profile: AgentProfile = {
 };
 
 describe("SessionManager", () => {
-	it("stores agent profile metadata in extended jsonl session headers", async () => {
+	it("stores agent profile references in extended jsonl session headers", async () => {
 		const fs = new MemoryFileSystem();
 		const manager = new SessionManager({ fs, cwd: "/workspace/project", sessionsRoot: "/sessions" });
 
 		await manager.createAgentSession({ agentId: "main", agentProfile: profile });
 		const [metadata] = await manager.sessionRepo.list({ cwd: "/workspace/project" });
+		const profileReference = { id: profile.id, label: profile.label };
 
-		expect(metadata?.metadata?.profile).toEqual(profile);
+		expect(metadata?.metadata?.profile).toEqual(profileReference);
 		const headerLine = fs.files.get(metadata!.path)?.split("\n")[0];
 		expect(JSON.parse(headerLine!)).toMatchObject({
 			type: "session",
 			version: 3,
 			id: "main",
-			metadata: { profile },
+			metadata: { profile: profileReference },
 		});
 	});
 });

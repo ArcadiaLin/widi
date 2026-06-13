@@ -24,6 +24,9 @@ import type {
 import type {
   AgentProfile,
 } from "./agent-profile.ts";
+import {
+  toAgentProfileReference,
+} from "./agent-profile.ts";
 
 export type AgentSessionMetadata = SessionMetadata | ExtendedJsonlSessionMetadata;
 
@@ -91,7 +94,7 @@ export class SessionManager {
       cwd: this._cwd,
       parentSessionPath: options.parentSessionPath,
       metadata: {
-        profile: options.agentProfile,
+        profile: toAgentProfileReference(options.agentProfile),
       },
     });
   }
