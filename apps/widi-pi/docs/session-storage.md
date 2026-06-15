@@ -182,12 +182,12 @@ resume 持久 session 时，调用方传入 `ExtendedJsonlSessionMetadata`，`Se
 
 ## Profile Loader 骨架
 
-`apps/widi-pi/src/core/agent-profile.ts` 已经提供 `AgentProfileLoader` 骨架。它使用 `ExecutionEnv` 从指定 markdown 文件或目录加载 profile，并返回 profiles 与 diagnostics。
+`apps/widi-pi/src/core/agent-profile.ts` 已经提供 `AgentProfileLoader` 骨架。它使用 `ExecutionEnv` 从 agent dir 与 project `.widi/profiles` 加载 profile，并返回 profiles 与 diagnostics。orchestrator 如何消费 profile、resources、extensions 与 diagnostics 的后续设计记录在 `apps/widi-pi/docs/profile-orchestration.md`。
 
 当前 loader 只建立边界：
 
 - markdown body 暂时作为 `systemPrompt`。
-- frontmatter 暂时读取 `id`、`label`、`description`、`persist`、`tools`、`skills`、`promptTemplates`。
+- frontmatter 暂时读取 `id`、`label`、`description`、`persist`、`tools`、`skills`、`promptTemplates`、`extensions`、`missingExtensionSeverity`。
 - diagnostics 使用 `file_info_failed`、`list_failed`、`read_failed`、`parse_failed`、`invalid_metadata`。
 - 复杂 YAML schema、profile 继承、资源引用校验、按 id registry 查询等后续再补。
 
