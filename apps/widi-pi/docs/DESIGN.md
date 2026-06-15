@@ -14,7 +14,7 @@ Pi 的 `AgentHarness` 负责单个 agent 的模型交互、session tree、resour
 - 把 multi-agent 编排作为一等能力，而不是外部脚本或子进程技巧。
 - 让 shell/runtime 能力通过 `ExecutionEnv` 明确受控。
 - 让 profile、resources、tools、extensions 都成为可声明、可恢复、可诊断的 runtime dependency。
-- 允许 extension 组合 core 能力实现 `/team`、`/flow`、`/goal`、MCP、sandbox 等复杂工作流。
+- 允许 extension 组合 core 能力实现 `/team`、`/flow`、`/goal`、MCP、sandbox 等复杂产品模式。
 
 ## 非目标
 
@@ -25,11 +25,11 @@ Pi 的 `AgentHarness` 负责单个 agent 的模型交互、session tree、resour
 - 不把 multi-agent 仅实现为多个独立进程之间的松散调用。
 - 不在 session metadata 中保存大型快照、API key、runtime 对象或 extension 实例。
 - 不先承诺最终 UI、RPC、TUI 命令形态。
-- 不把 mailbox 作为 core primitive；mailbox/team 是基于 core channel 能力实现的 extension 模式。
+- 不把具体产品交互模式作为 core primitive；它们应基于 core channel 能力由 extension 或 preset 实现。
 
 ## 核心边界
 
-`AgentHarness` 是单 agent 执行内核。它不应该直接知道 multi-agent run、profile registry、extension registry 或其他 agent 的生命周期。
+`AgentHarness` 是单 agent 执行内核。它不应该直接知道 multi-agent 编排、profile registry、extension registry 或其他 agent 的生命周期。
 
 `AgentOrchestrator` 是 runtime coordinator。它负责通过 profile、resources、tools、sessions、models 与 extensions 组装和管理多个 harness，并把跨 agent 的事情放到可观察、可诊断的主路径上。
 
@@ -37,7 +37,7 @@ Pi 的 `AgentHarness` 负责单个 agent 的模型交互、session tree、resour
 
 `ResourceLoader`、profile registry、extension registry、tool registry、model registry、auth storage 都属于 runtime dependency layer。它们解析依赖，但不拥有 agent lifecycle。
 
-`Channel` 是 core 通信抽象。A2A 与 human-request 都应建立在 channel 语义上。Mailbox 不进入 core；它应作为 extension 或 coding-agent 组配集合实现。
+`Channel` 是 core 通信抽象。A2A 与 human-request 都应建立在 channel 语义上。具体产品交互模式不进入 core；它们应作为 extension 或 coding-agent 组配集合实现。
 
 Extension 具备接近 orchestrator 的能力：core 执行每个关键能力时，都应允许 extension 通过 hook 观察、拦截、补充或改写，就像 Pi coding-agent extension 一样。但 extension 不能直接接管已经存储好的 profile、session 或 resource registry；它必须通过 orchestrator 暴露的受控入口参与 runtime。
 
@@ -55,7 +55,7 @@ Pi coding-agent 的 extension 已经可以注册 tool/command/provider、拦截 
 
 区别在于：WIDI 的跨 agent 能力必须经过 orchestrator、channel 和 diagnostics。extension 可以定义 team/flow/goal 等模式，但不能私下维护不可观察的 agent lifecycle 或 A2A 通信。
 
-在 core 构建完成后，`widi-pi` 可以首先提供一个 coding-agent 组配集合：默认 profile、默认 tools、预装 extensions 与 adapter 组合成具体产品体验。基于 mailbox 的 team 模式就属于这个层级。
+在 core 构建完成后，`widi-pi` 可以首先提供一个 coding-agent 组配集合：默认 profile、默认 tools、预装 extensions 与 adapter 组合成具体产品体验。具体 team、flow 或 goal 模式属于这个层级。
 
 ## 推荐分层
 

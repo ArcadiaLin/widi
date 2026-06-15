@@ -18,20 +18,27 @@ Channel 负责异步语义。
 
 当 agent 正在 streaming、执行 tool、等待 human response 或处理其他 channel message 时，新消息需要明确的排序、中断、取消、超时和冲突策略。
 
+Channel event 不是 persisted channel log。
+
+Core 可以发出 channel events 来表达投递、排队、拒绝、取消、呈现和超时等事实。是否持久化 channel history 属于 adapter、extension 或 preset 的选择，不进入 core persisted state。
+
 ## Human Request
 
 `human-request` 是 Channel 的子集。它是目标为 human-facing adapter 的结构化请求，可能等待响应。
 
 human-request 的响应通常不进入 session。只有当 human-request 是 tool call 的一部分时，响应才作为 tool result 自然进入 Pi session tree。除此之外，core 不应额外管理 session 写入。
 
-## Mailbox
-
-Mailbox 不是 core primitive。
-
-如果需要 mailbox/team 语义，应由 extension 基于 Channel 实现。Core 只保证 channel routing、diagnostics、agent lifecycle 和必要的 persistence hook。
-
 ## 非职责
 
 - 不定义最终消息数据结构。
-- 不定义 mailbox 存储协议。
+- 不定义具体产品交互模式的存储协议。
 - 不替代 Pi session tree。
+- 不提供通用 channel log persistence。
+
+## TODO
+
+- [ ] 定义 channel source/target/timing/delivery strategy 的最小概念模型。
+- [ ] 明确 agent busy、streaming、tool running、human waiting 时的投递策略集合。
+- [ ] 定义 channel events 与 orchestrator diagnostics 的关系。
+- [ ] 定义 human-request 由 built-in tool 发起时如何映射到 tool result。
+- [ ] 明确 adapter/extension 如何选择持久化自己的 channel history。
