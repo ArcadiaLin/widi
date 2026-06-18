@@ -1,3 +1,7 @@
+/**
+ * TODO on extension runs what to do?
+ */
+
 import type { ExecutionEnv, FileInfo } from "@earendil-works/pi-agent-core";
 import { DEFAULT_AGENT_DIR } from "./constants/config.js";
 import {

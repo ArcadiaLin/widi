@@ -28,9 +28,6 @@ import {
 import {
   ResourceLoader,
 } from "./resource-loader.js";
-import type {
-  AgentId,
-} from "./types.js";
 import {
   type ModelRegistry,
 } from "./model-registry.js";
@@ -63,6 +60,8 @@ export interface AgentOrchestratorConfigs {
   defaultModel: Model<any>;
   resolveProfile?: AgentProfileResolver;
 }
+
+export type AgentId = string;
 
 interface SpawnAgentHarnessCommonOptions {
   model?: Model<any>;

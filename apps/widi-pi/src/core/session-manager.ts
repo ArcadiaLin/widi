@@ -17,16 +17,16 @@ import {
 	JsonlSessionRepo,
   type ExtendedJsonlSessionMetadata,
   type JsonlSessionPathLayout,
-} from "../storage/jsonl-repo.ts";
+} from "../storage/jsonl-repo.js";
 import type {
   AgentId,
-} from "./types.ts";
+} from "./agent-orchestrator.js";
 import type {
   AgentProfile,
-} from "./agent-profile.ts";
+} from "./agent-profile.js";
 import {
   toAgentProfileReference,
-} from "./agent-profile.ts";
+} from "./agent-profile.js";
 
 export type AgentSessionMetadata = SessionMetadata | ExtendedJsonlSessionMetadata;
 

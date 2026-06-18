@@ -24,6 +24,17 @@ Diagnostics 应贯穿 runtime。
 - Dependency diagnostics：resources、extensions、tools、models 的解析问题。
 - Runtime diagnostics：extension activation、tool execution policy、auth/runtime permission、channel delivery。
 
+Tool registry 当前已经定义局部 diagnostic codes：
+
+- `tool_define_conflict`：多个来源定义同名 tool，registry 按 priority/顺序保留一个。
+- `tool_patch_target_missing`：patch 指向不存在的 tool。
+- `tool_patch_field_conflict`：多个 patch 修改同一覆盖字段，priority/顺序决定最终值。
+- `tool_requested_duplicate` / `tool_requested_missing`：profile/policy 请求的工具重复或不存在。
+- `tool_active_duplicate` / `tool_active_missing`：resume 或 runtime policy 提供的 active tool names 重复或不可见。
+- `tool_invalid_name`：definition、patch target 或 name list 包含空名字。
+
+这些 codes 目前停留在 `ToolRegistryResolveResult.diagnostics`，还没有汇总到 orchestrator event。接入 orchestrator 时应保留 code，并补充 agent/profile/session context。
+
 Policy 决定处理结果。
 
 同一个 diagnostic 可以导致继续、降级、标记 agent unavailable、要求用户选择、或让 core capability 失败。Core 负责产生和汇总事实，caller layer 或 runtime policy 负责决定结果。
