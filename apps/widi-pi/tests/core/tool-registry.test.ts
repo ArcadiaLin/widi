@@ -1,10 +1,11 @@
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentToolResult, AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import {
 	createAgentToolFromResolvedTool,
 	ToolRegistry,
 } from "../../src/core/tools/tool-registry.ts";
+import { InMemoryToolTracker } from "../../src/core/tools/tracker.ts";
 import type {
 	SessionFact,
 	SessionFactDefinition,
@@ -74,6 +75,30 @@ function createTool(name: string, content: string = name): ToolDefinition<typeof
 			content: [{ type: "text", text: content }],
 			details: undefined,
 		}),
+	};
+}
+
+function createUpdatingTool(): ToolDefinition<typeof emptyParams, { count: number }> {
+	return {
+		name: "update",
+		label: "update",
+		description: "update tool",
+		parameters: emptyParams,
+		tracking: {
+			mode: "metadata",
+			describeUpdate: (update) => update.details,
+			describeResult: (result) => result.details,
+		},
+		execute: async (_toolCallId, _params, context) => {
+			context.onUpdate?.({
+				content: [{ type: "text", text: "partial" }],
+				details: { count: 1 },
+			});
+			return {
+				content: [{ type: "text", text: "done" }],
+				details: { count: 2 },
+			};
+		},
 	};
 }
 
@@ -188,5 +213,144 @@ describe("ToolRegistry", () => {
 				source: extensionSource,
 			}),
 		);
+	});
+
+	it("tracks resolved tool execution with minimal metadata by default", async () => {
+		const registry = new ToolRegistry();
+		registry.addContribution({ type: "define", source: coreSource, tool: createTool("read", "ok") });
+		const tracker = new InMemoryToolTracker();
+		const resolvedTool = registry.resolve().getTool("read");
+		const agentTool = createAgentToolFromResolvedTool(resolvedTool!, {
+			session: new MemorySessionFactStore(),
+			tracker,
+		});
+
+		await agentTool.execute("call-1", {});
+
+		expect(tracker.list()).toHaveLength(1);
+		expect(tracker.list()[0]).toMatchObject({
+			toolCallId: "call-1",
+			toolName: "read",
+			source: coreSource,
+			status: "succeeded",
+			metadata: undefined,
+			updates: [],
+			result: undefined,
+		});
+	});
+
+	it("does not track tools with tracking disabled", async () => {
+		const registry = new ToolRegistry();
+		registry.addContribution({
+			type: "define",
+			source: coreSource,
+			tool: {
+				...createTool("quiet", "ok"),
+				tracking: false,
+			},
+		});
+		const tracker = new InMemoryToolTracker();
+		const resolvedTool = registry.resolve().getTool("quiet");
+		const agentTool = createAgentToolFromResolvedTool(resolvedTool!, {
+			session: new MemorySessionFactStore(),
+			tracker,
+		});
+
+		await agentTool.execute("call-1", {});
+
+		expect(tracker.list()).toEqual([]);
+	});
+
+	it("stores tracking metadata extracted from params, updates, and results", async () => {
+		const registry = new ToolRegistry();
+		registry.addContribution({ type: "define", source: coreSource, tool: createUpdatingTool() });
+		const tracker = new InMemoryToolTracker();
+		const updates: Array<Parameters<AgentToolUpdateCallback<unknown>>[0]> = [];
+		const resolvedTool = registry.resolve().getTool("update");
+		const agentTool = createAgentToolFromResolvedTool(resolvedTool!, {
+			session: new MemorySessionFactStore(),
+			tracker,
+		});
+
+		await agentTool.execute("call-1", {}, undefined, (update) => updates.push(update));
+
+		expect(updates).toEqual([
+			{
+				content: [{ type: "text", text: "partial" }],
+				details: { count: 1 },
+			},
+		]);
+		expect(tracker.list()[0]).toMatchObject({
+			status: "succeeded",
+			updates: [{ count: 1 }],
+			result: { count: 2 },
+		});
+	});
+
+	it("marks failed executions while preserving thrown errors", async () => {
+		const registry = new ToolRegistry();
+		const error = new Error("boom");
+		registry.addContribution({
+			type: "define",
+			source: coreSource,
+			tool: {
+				...createTool("fail"),
+				tracking: {
+					mode: "metadata",
+					describeError: (caught) => caught instanceof Error ? caught.message : String(caught),
+				},
+				execute: async () => {
+					throw error;
+				},
+			},
+		});
+		const tracker = new InMemoryToolTracker();
+		const resolvedTool = registry.resolve().getTool("fail");
+		const agentTool = createAgentToolFromResolvedTool(resolvedTool!, {
+			session: new MemorySessionFactStore(),
+			tracker,
+		});
+
+		await expect(agentTool.execute("call-1", {})).rejects.toBe(error);
+		expect(tracker.list()[0]).toMatchObject({
+			status: "failed",
+			error: "boom",
+		});
+	});
+
+	it("lets patches override tracking policy", async () => {
+		const registry = new ToolRegistry();
+		registry.addContribution({
+			type: "define",
+			source: coreSource,
+			tool: {
+				...createTool("read"),
+				tracking: false,
+			},
+		});
+		registry.addContribution({
+			type: "patch",
+			source: extensionSource,
+			targetToolName: "read",
+			patch: {
+				tracking: {
+					mode: "metadata",
+					describeParams: () => ({ enabledBy: "ext" }),
+				},
+			},
+		});
+		const tracker = new InMemoryToolTracker();
+		const resolvedTool = registry.resolve().getTool("read");
+		const agentTool = createAgentToolFromResolvedTool(resolvedTool!, {
+			session: new MemorySessionFactStore(),
+			tracker,
+		});
+
+		await agentTool.execute("call-1", {});
+
+		expect(tracker.list()[0]).toMatchObject({
+			status: "succeeded",
+			metadata: { enabledBy: "ext" },
+		});
 	});
 });

@@ -5,6 +5,7 @@ import type {
 	ToolExecutionMode,
 } from "@earendil-works/pi-agent-core";
 import type { Static, TSchema } from "typebox";
+import type { ToolTracker, ToolTrackingPolicy } from "./tracker.ts";
 
 export type ToolExecutionEnvCapability = "filesystem" | "shell";
 
@@ -129,6 +130,7 @@ export interface ToolExecutionContext<TDetails, TState> {
 	onUpdate: AgentToolUpdateCallback<TDetails> | undefined;
 	session: SessionFactStore;
 	extension: ToolExtensionContext | undefined;
+	tracker: ToolTracker | undefined;
 	getState?: () => TState;
 	setState?: (state: TState) => void;
 }
@@ -173,6 +175,7 @@ export interface ToolDefinitionPatch<
 	executionMode?: ToolExecutionMode;
 	executionEnv?: ToolExecutionEnvRequirement;
 	sessionFacts?: readonly SessionFactDefinition[];
+	tracking?: false | ToolTrackingPolicy<Static<TParamsSchema>, TDetails>;
 	createState?: (event: Extract<ToolStateEvent<Static<TParamsSchema>, TDetails>, { type: "tool_call_created" }>) => TState;
 	reduceState?: (state: TState, event: ToolStateEvent<Static<TParamsSchema>, TDetails>) => TState;
 	execute?: ToolExecute<TParamsSchema, TDetails, TState>;
@@ -239,6 +242,7 @@ export interface ToolDefinition<
 	executionMode?: ToolExecutionMode;
 	executionEnv?: ToolExecutionEnvRequirement;
 	sessionFacts?: readonly SessionFactDefinition[];
+	tracking?: false | ToolTrackingPolicy<Static<TParamsSchema>, TDetails>;
 
 	createState?: (event: Extract<ToolStateEvent<Static<TParamsSchema>, TDetails>, { type: "tool_call_created" }>) => TState;
 	reduceState?: (

@@ -1,5 +1,7 @@
-import type { AgentTool, ExecutionEnv } from "@earendil-works/pi-agent-core";
+import type { AgentTool, AgentToolResult, ExecutionEnv } from "@earendil-works/pi-agent-core";
 import type { TSchema } from "typebox";
+import { noopToolTracker } from "./tracker.ts";
+import type { ToolTracker, ToolTrackingPolicy } from "./tracker.ts";
 import type {
 	SessionFactStore,
 	ToolContribution,
@@ -73,6 +75,7 @@ export interface ToolRegistryResolveResult {
 export interface ToolAgentAdapterContext {
 	env?: ExecutionEnv;
 	session: SessionFactStore;
+	tracker?: ToolTracker;
 	extension?: ToolExtensionContext;
 	createExtensionContext?: (source: ToolContributionSource, toolName: string) => ToolExtensionContext | undefined;
 	getState?: (toolCallId: string, toolName: string) => unknown;
@@ -107,6 +110,7 @@ const patchReplaceFields = [
 	"prepareArguments",
 	"executionMode",
 	"executionEnv",
+	"tracking",
 	"createState",
 	"reduceState",
 	"execute",
@@ -380,8 +384,50 @@ export function createAgentToolFromResolvedTool(
 		parameters: definition.parameters,
 		prepareArguments: definition.prepareArguments,
 		executionMode: definition.executionMode,
-		execute: (toolCallId, params, signal, onUpdate) =>
-			definition.execute(toolCallId, params, createToolExecutionContext(resolvedTool, toolCallId, context, signal, onUpdate)),
+		execute: async (toolCallId, params, signal, onUpdate) => {
+			const tracker = context.tracker ?? noopToolTracker;
+			const tracking = definition.tracking;
+			const trackingId = tracking === false
+				? undefined
+				: tracker.start({
+						toolCallId,
+						toolName: definition.name,
+						source: resolvedTool.source,
+						metadata: describeParams(tracking, params),
+					}).trackingId;
+			const trackedOnUpdate: typeof onUpdate = (update) => {
+				if (trackingId) {
+					tracker.update(trackingId, {
+						update: describeUpdate(tracking, update),
+					});
+				}
+				onUpdate?.(update);
+			};
+			const executionContext = createToolExecutionContext(
+				resolvedTool,
+				toolCallId,
+				context,
+				signal,
+				trackedOnUpdate,
+				tracker,
+			);
+			try {
+				const result = await definition.execute(toolCallId, params, executionContext);
+				if (trackingId) {
+					tracker.finish(trackingId, {
+						result: describeResult(tracking, result),
+					});
+				}
+				return result;
+			} catch (error) {
+				if (trackingId) {
+					tracker.fail(trackingId, {
+						error: describeError(tracking, error),
+					});
+				}
+				throw error;
+			}
+		},
 	};
 }
 
@@ -405,6 +451,7 @@ function applyPatch(
 	if (patch.executionMode !== undefined) next.executionMode = patch.executionMode;
 	if (patch.executionEnv !== undefined) next.executionEnv = patch.executionEnv;
 	if (patch.sessionFacts !== undefined) next.sessionFacts = [...(next.sessionFacts ?? []), ...patch.sessionFacts];
+	if (patch.tracking !== undefined) next.tracking = patch.tracking;
 	if (patch.createState !== undefined) next.createState = patch.createState;
 	if (patch.reduceState !== undefined) next.reduceState = patch.reduceState;
 
@@ -424,6 +471,7 @@ function createToolExecutionContext(
 	context: ToolAgentAdapterContext,
 	signal: AbortSignal | undefined,
 	onUpdate: Parameters<AgentTool<TSchema, unknown>["execute"]>[3],
+	tracker: ToolTracker,
 ): ToolExecutionContext<unknown, unknown> {
 	const extension =
 		context.createExtensionContext?.(resolvedTool.source, resolvedTool.definition.name) ?? context.extension;
@@ -433,6 +481,7 @@ function createToolExecutionContext(
 		onUpdate,
 		session: context.session,
 		extension,
+		tracker,
 		getState: context.getState ? () => context.getState?.(toolCallId, resolvedTool.definition.name) : undefined,
 		setState: context.setState
 			? (state) => context.setState?.(toolCallId, resolvedTool.definition.name, state)
@@ -490,4 +539,24 @@ function isResolvedTool(value: ResolvedTool | undefined): value is ResolvedTool 
 
 function formatSource(source: ToolContributionSource): string {
 	return `${source.kind}:${source.id}`;
+}
+
+function describeParams(tracking: false | ToolTrackingPolicy | undefined, params: unknown): unknown {
+	if (!tracking || tracking.mode === "minimal") return undefined;
+	return tracking.describeParams?.(params);
+}
+
+function describeUpdate(tracking: false | ToolTrackingPolicy | undefined, update: AgentToolResult<unknown>): unknown {
+	if (!tracking || tracking.mode === "minimal") return undefined;
+	return tracking.describeUpdate?.(update);
+}
+
+function describeResult(tracking: false | ToolTrackingPolicy | undefined, result: AgentToolResult<unknown>): unknown {
+	if (!tracking || tracking.mode === "minimal") return undefined;
+	return tracking.describeResult?.(result);
+}
+
+function describeError(tracking: false | ToolTrackingPolicy | undefined, error: unknown): unknown {
+	if (!tracking || tracking.mode === "minimal") return undefined;
+	return tracking.describeError?.(error);
 }

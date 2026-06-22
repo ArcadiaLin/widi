@@ -59,6 +59,12 @@ WIDI extension 不只注册新 tool，也可以对 core/built-in tool 注册 pat
 - `aroundExecute` 内部需要的 extension context 是否按 patch source 绑定；当前 registry adapter 只提供 resolved tool 级 context。
 - patch 失败、restore 失败、permission denied 应如何进入统一 diagnostic。
 
+Extension 可以自定义 tool tracking。
+
+Tool tracker 是 core 的 runtime-only 可观察状态，所有 resolved tools 默认以 minimal 模式被记录。Extension 不需要直接依赖 tracker API；如果只想改变记录内容，应通过 tool patch 修改 `tracking` policy，例如关闭某个 tool 的 tracking，或从 params/update/result/error 中抽取 metadata。只有需要改变实际执行行为时，才使用 `aroundExecute` 或替换 execute。
+
+这让 extension 开发保持轻量：普通 extension 只贡献 tool 或 patch；需要可观察性时 patch `tracking`；需要执行控制时 patch execute pipeline。
+
 ## Pi Extension 参考
 
 Pi coding-agent extension 已经支持注册 tool/command/provider、拦截 input/tool/system prompt/provider request、发起 UI 交互、注入消息、写扩展状态、定制渲染和触发 session 操作。
