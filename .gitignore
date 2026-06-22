@@ -69,4 +69,4 @@ apps/widi-agent/.widi/agent/Runs/
 
 # test config
 .widi/
-.chat_notes/
+chat_notes/
