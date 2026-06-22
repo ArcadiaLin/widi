@@ -142,7 +142,7 @@ withLockAsync(fn)
 
 - 实现带文件锁的 `FileAuthStorageBackend`。
 - 在默认 `ExecutionEnv` 外包一层 config I/O runtime，统一串行化配置读写。
-- 在应用入口创建一个 runtime service，集中分发 `executionEnv`、`configValueResolver`、`authStorage`、`modelRegistry`。
+- 在应用入口创建一个 runtime service，集中分发 `executionEnv`、`settingManager`、`configValueResolver`、`authStorage`、`modelRegistry`。
 
 ## 设计判断
 
@@ -151,6 +151,7 @@ withLockAsync(fn)
 关键边界是：
 
 - `ExecutionEnv` 只表达 runtime I/O 与 shell 能力。
+- `SettingManager` 表达 global/project settings、project trust 和配置持久化边界。
 - `ConfigValueResolver.getEnv()` 单独表达环境变量来源。
 - `AuthStorageBackend` 表达凭据存储与锁。
 - `ModelRegistry` 不直接读写 auth 文件，也不直接访问 `process.env` 或 Node shell。
@@ -160,7 +161,8 @@ withLockAsync(fn)
 - [x] 实现 `ConfigValueResolver`，支持 literal、env template、escaped literal 和 `!command`。
 - [x] 实现 `AuthStorage`，支持 in-memory/file backend、runtime override、fallback resolver 和 OAuth credential path。
 - [x] 实现 `ModelRegistry`，支持内置模型、自定义 `models.json`、provider/model override、headers/auth 解析和 auth status 查询。
+- [x] 实现 `SettingManager`，支持 in-memory/file backend、global/project scope、project trust、merge、flush 和 typed getters/setters。
 - [ ] 设计带多进程锁的 auth/config storage backend。
-- [ ] 明确 runtime service 的形状，以及它是否负责统一创建 `ExecutionEnv`、`ConfigValueResolver`、`AuthStorage` 和 `ModelRegistry`。
+- [ ] 明确 runtime service 的形状，以及它是否负责统一创建 `ExecutionEnv`、`SettingManager`、`ConfigValueResolver`、`AuthStorage` 和 `ModelRegistry`。
 - [ ] 梳理 `models.json` schema 文档和示例。
 - [ ] 评估多 agent 场景下是共享一套 runtime 与 auth storage，还是按 profile/workspace 隔离。
