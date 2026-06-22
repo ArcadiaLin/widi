@@ -59,11 +59,11 @@ WIDI extension 不只注册新 tool，也可以对 core/built-in tool 注册 pat
 - `aroundExecute` 内部需要的 extension context 是否按 patch source 绑定；当前 registry adapter 只提供 resolved tool 级 context。
 - patch 失败、restore 失败、permission denied 应如何进入统一 diagnostic。
 
-Extension 可以自定义 tool tracking。
+Extension 可以实现 tool tracking。
 
-Tool tracker 是 core 的 runtime-only 可观察状态，所有 resolved tools 默认以 minimal 模式被记录。Extension 不需要直接依赖 tracker API；如果只想改变记录内容，应通过 tool patch 修改 `tracking` policy，例如关闭某个 tool 的 tracking，或从 params/update/result/error 中抽取 metadata。只有需要改变实际执行行为时，才使用 `aroundExecute` 或替换 execute。
+Tool tracking 不进入 core primitive。它应作为 extension pattern：通过 `aroundExecute` 包装目标 tool，在 execute 前 start，在 `context.onUpdate` 中 update，在成功或抛错时 finish/fail。
 
-这让 extension 开发保持轻量：普通 extension 只贡献 tool 或 patch；需要可观察性时 patch `tracking`；需要执行控制时 patch execute pipeline。
+`apps/widi-pi/examples/tool-tracker-extension.ts` 保留了一个未接入 runtime 的示例骨架，用于展示这种模式。Extension 开发需要注意这个语义：观察、审计、耗时统计和轻量 run tracking 适合 `aroundExecute`；真正改变 tool 行为时才替换 `execute`。
 
 ## Pi Extension 参考
 

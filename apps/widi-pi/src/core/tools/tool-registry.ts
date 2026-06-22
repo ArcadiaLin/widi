@@ -1,19 +1,21 @@
-import type { AgentTool, AgentToolResult, ExecutionEnv } from "@earendil-works/pi-agent-core";
+import type { AgentTool, ExecutionEnv } from "@earendil-works/pi-agent-core";
 import type { TSchema } from "typebox";
-import { noopToolTracker } from "./tracker.ts";
-import type { ToolTracker, ToolTrackingPolicy } from "./tracker.ts";
 import type {
 	SessionFactStore,
 	ToolContribution,
 	ToolContributionSource,
 	ToolDefinition,
 	ToolDefinitionPatch,
-	ToolExtensionContext,
 	ToolExecutionContext,
+	ToolExtensionContext,
 } from "./types.ts";
 
 type RegistryToolDefinition = ToolDefinition<TSchema, unknown, unknown>;
-type RegistryToolDefinitionPatch = ToolDefinitionPatch<TSchema, unknown, unknown>;
+type RegistryToolDefinitionPatch = ToolDefinitionPatch<
+	TSchema,
+	unknown,
+	unknown
+>;
 export type AnyToolContribution = ToolContribution<TSchema, unknown, unknown>;
 
 export type ToolRegistryDiagnosticSeverity = "info" | "warning" | "error";
@@ -75,9 +77,11 @@ export interface ToolRegistryResolveResult {
 export interface ToolAgentAdapterContext {
 	env?: ExecutionEnv;
 	session: SessionFactStore;
-	tracker?: ToolTracker;
 	extension?: ToolExtensionContext;
-	createExtensionContext?: (source: ToolContributionSource, toolName: string) => ToolExtensionContext | undefined;
+	createExtensionContext?: (
+		source: ToolContributionSource,
+		toolName: string,
+	) => ToolExtensionContext | undefined;
 	getState?: (toolCallId: string, toolName: string) => unknown;
 	setState?: (toolCallId: string, toolName: string, state: unknown) => void;
 }
@@ -110,7 +114,6 @@ const patchReplaceFields = [
 	"prepareArguments",
 	"executionMode",
 	"executionEnv",
-	"tracking",
 	"createState",
 	"reduceState",
 	"execute",
@@ -119,8 +122,6 @@ const patchReplaceFields = [
 export class ToolRegistry {
 	private readonly _contributions: StoredContribution[] = [];
 	private _nextOrder = 0;
-
-	constructor() {}
 
 	static from(contributions: readonly AnyToolContribution[]): ToolRegistry {
 		const registry = new ToolRegistry();
@@ -168,7 +169,11 @@ export class ToolRegistry {
 
 		const resolvedByName = new Map<string, ResolvedTool>();
 		for (const [name, entry] of definitions) {
-			const resolved = this._resolveDefinition(entry, patchesByTarget.get(name) ?? [], diagnostics);
+			const resolved = this._resolveDefinition(
+				entry,
+				patchesByTarget.get(name) ?? [],
+				diagnostics,
+			);
 			resolvedByName.set(name, resolved);
 		}
 
@@ -187,10 +192,22 @@ export class ToolRegistry {
 		}
 
 		const allTools = Array.from(resolvedByName.values());
-		const visibleToolNames = this._resolveVisibleToolNames(options.requestedToolNames, resolvedByName, diagnostics);
-		const tools = visibleToolNames.map((name) => resolvedByName.get(name)).filter(isResolvedTool);
-		const visibleByName = new Map(tools.map((tool) => [tool.definition.name, tool]));
-		const activeToolNames = this._resolveActiveToolNames(options.activeToolNames, visibleByName, diagnostics);
+		const visibleToolNames = this._resolveVisibleToolNames(
+			options.requestedToolNames,
+			resolvedByName,
+			diagnostics,
+		);
+		const tools = visibleToolNames
+			.map((name) => resolvedByName.get(name))
+			.filter(isResolvedTool);
+		const visibleByName = new Map(
+			tools.map((tool) => [tool.definition.name, tool]),
+		);
+		const activeToolNames = this._resolveActiveToolNames(
+			options.activeToolNames,
+			visibleByName,
+			diagnostics,
+		);
 
 		return {
 			allTools,
@@ -234,7 +251,10 @@ export class ToolRegistry {
 			return;
 		}
 
-		const winner = compareDefinitionPriority(previousEntry, nextEntry) <= 0 ? previousEntry : nextEntry;
+		const winner =
+			compareDefinitionPriority(previousEntry, nextEntry) <= 0
+				? previousEntry
+				: nextEntry;
 		const ignored = winner === previousEntry ? nextEntry : previousEntry;
 		definitions.set(toolName, winner);
 		diagnostics.push({
@@ -269,7 +289,8 @@ export class ToolRegistry {
 
 		const patch: PatchEntry = {
 			targetToolName,
-			patch: stored.contribution.patch as unknown as RegistryToolDefinitionPatch,
+			patch: stored.contribution
+				.patch as unknown as RegistryToolDefinitionPatch,
 			source: stored.contribution.source,
 			priority: stored.contribution.priority ?? 0,
 			order: stored.order,
@@ -286,7 +307,10 @@ export class ToolRegistry {
 	): ResolvedTool {
 		let definition = entry.definition;
 		const appliedPatches = [...patches].sort(comparePatchApplyOrder);
-		const fieldOwners = new Map<keyof RegistryToolDefinitionPatch, PatchEntry>();
+		const fieldOwners = new Map<
+			keyof RegistryToolDefinitionPatch,
+			PatchEntry
+		>();
 
 		for (const patchEntry of appliedPatches) {
 			for (const field of patchReplaceFields) {
@@ -327,7 +351,11 @@ export class ToolRegistry {
 		if (!requestedToolNames) {
 			return Array.from(resolvedByName.keys());
 		}
-		const names = normalizeToolNames(requestedToolNames, "tool_requested_duplicate", diagnostics);
+		const names = normalizeToolNames(
+			requestedToolNames,
+			"tool_requested_duplicate",
+			diagnostics,
+		);
 		const visibleToolNames: string[] = [];
 		for (const name of names) {
 			if (resolvedByName.has(name)) {
@@ -353,7 +381,11 @@ export class ToolRegistry {
 		if (!activeToolNames) {
 			return Array.from(visibleByName.keys());
 		}
-		const names = normalizeToolNames(activeToolNames, "tool_active_duplicate", diagnostics);
+		const names = normalizeToolNames(
+			activeToolNames,
+			"tool_active_duplicate",
+			diagnostics,
+		);
 		const resolvedActiveToolNames: string[] = [];
 		for (const name of names) {
 			if (visibleByName.has(name)) {
@@ -384,50 +416,18 @@ export function createAgentToolFromResolvedTool(
 		parameters: definition.parameters,
 		prepareArguments: definition.prepareArguments,
 		executionMode: definition.executionMode,
-		execute: async (toolCallId, params, signal, onUpdate) => {
-			const tracker = context.tracker ?? noopToolTracker;
-			const tracking = definition.tracking;
-			const trackingId = tracking === false
-				? undefined
-				: tracker.start({
-						toolCallId,
-						toolName: definition.name,
-						source: resolvedTool.source,
-						metadata: describeParams(tracking, params),
-					}).trackingId;
-			const trackedOnUpdate: typeof onUpdate = (update) => {
-				if (trackingId) {
-					tracker.update(trackingId, {
-						update: describeUpdate(tracking, update),
-					});
-				}
-				onUpdate?.(update);
-			};
-			const executionContext = createToolExecutionContext(
-				resolvedTool,
+		execute: (toolCallId, params, signal, onUpdate) =>
+			definition.execute(
 				toolCallId,
-				context,
-				signal,
-				trackedOnUpdate,
-				tracker,
-			);
-			try {
-				const result = await definition.execute(toolCallId, params, executionContext);
-				if (trackingId) {
-					tracker.finish(trackingId, {
-						result: describeResult(tracking, result),
-					});
-				}
-				return result;
-			} catch (error) {
-				if (trackingId) {
-					tracker.fail(trackingId, {
-						error: describeError(tracking, error),
-					});
-				}
-				throw error;
-			}
-		},
+				params,
+				createToolExecutionContext(
+					resolvedTool,
+					toolCallId,
+					context,
+					signal,
+					onUpdate,
+				),
+			),
 	};
 }
 
@@ -435,7 +435,9 @@ export function createAgentToolsFromResolvedTools(
 	resolvedTools: readonly ResolvedTool[],
 	context: ToolAgentAdapterContext,
 ): Array<AgentTool<TSchema, unknown>> {
-	return resolvedTools.map((resolvedTool) => createAgentToolFromResolvedTool(resolvedTool, context));
+	return resolvedTools.map((resolvedTool) =>
+		createAgentToolFromResolvedTool(resolvedTool, context),
+	);
 }
 
 function applyPatch(
@@ -445,20 +447,25 @@ function applyPatch(
 	const next: RegistryToolDefinition = { ...definition };
 	if (patch.label !== undefined) next.label = patch.label;
 	if (patch.description !== undefined) next.description = patch.description;
-	if (patch.promptSnippet !== undefined) next.promptSnippet = patch.promptSnippet;
-	if (patch.promptGuidelines !== undefined) next.promptGuidelines = [...patch.promptGuidelines];
-	if (patch.prepareArguments !== undefined) next.prepareArguments = patch.prepareArguments;
-	if (patch.executionMode !== undefined) next.executionMode = patch.executionMode;
+	if (patch.promptSnippet !== undefined)
+		next.promptSnippet = patch.promptSnippet;
+	if (patch.promptGuidelines !== undefined)
+		next.promptGuidelines = [...patch.promptGuidelines];
+	if (patch.prepareArguments !== undefined)
+		next.prepareArguments = patch.prepareArguments;
+	if (patch.executionMode !== undefined)
+		next.executionMode = patch.executionMode;
 	if (patch.executionEnv !== undefined) next.executionEnv = patch.executionEnv;
-	if (patch.sessionFacts !== undefined) next.sessionFacts = [...(next.sessionFacts ?? []), ...patch.sessionFacts];
-	if (patch.tracking !== undefined) next.tracking = patch.tracking;
+	if (patch.sessionFacts !== undefined)
+		next.sessionFacts = [...(next.sessionFacts ?? []), ...patch.sessionFacts];
 	if (patch.createState !== undefined) next.createState = patch.createState;
 	if (patch.reduceState !== undefined) next.reduceState = patch.reduceState;
 
 	const execute = patch.execute ?? next.execute;
 	if (patch.aroundExecute) {
 		const aroundExecute = patch.aroundExecute;
-		next.execute = (toolCallId, params, context) => aroundExecute(execute, toolCallId, params, context);
+		next.execute = (toolCallId, params, context) =>
+			aroundExecute(execute, toolCallId, params, context);
 	} else if (patch.execute) {
 		next.execute = patch.execute;
 	}
@@ -471,20 +478,24 @@ function createToolExecutionContext(
 	context: ToolAgentAdapterContext,
 	signal: AbortSignal | undefined,
 	onUpdate: Parameters<AgentTool<TSchema, unknown>["execute"]>[3],
-	tracker: ToolTracker,
 ): ToolExecutionContext<unknown, unknown> {
 	const extension =
-		context.createExtensionContext?.(resolvedTool.source, resolvedTool.definition.name) ?? context.extension;
+		context.createExtensionContext?.(
+			resolvedTool.source,
+			resolvedTool.definition.name,
+		) ?? context.extension;
 	return {
 		env: context.env,
 		signal,
 		onUpdate,
 		session: context.session,
 		extension,
-		tracker,
-		getState: context.getState ? () => context.getState?.(toolCallId, resolvedTool.definition.name) : undefined,
+		getState: context.getState
+			? () => context.getState?.(toolCallId, resolvedTool.definition.name)
+			: undefined,
 		setState: context.setState
-			? (state) => context.setState?.(toolCallId, resolvedTool.definition.name, state)
+			? (state) =>
+					context.setState?.(toolCallId, resolvedTool.definition.name, state)
 			: undefined,
 	};
 }
@@ -523,7 +534,10 @@ function normalizeToolNames(
 	return normalized;
 }
 
-function compareDefinitionPriority(left: DefinitionEntry, right: DefinitionEntry): number {
+function compareDefinitionPriority(
+	left: DefinitionEntry,
+	right: DefinitionEntry,
+): number {
 	if (left.priority !== right.priority) return right.priority - left.priority;
 	return left.order - right.order;
 }
@@ -533,30 +547,12 @@ function comparePatchApplyOrder(left: PatchEntry, right: PatchEntry): number {
 	return left.order - right.order;
 }
 
-function isResolvedTool(value: ResolvedTool | undefined): value is ResolvedTool {
+function isResolvedTool(
+	value: ResolvedTool | undefined,
+): value is ResolvedTool {
 	return value !== undefined;
 }
 
 function formatSource(source: ToolContributionSource): string {
 	return `${source.kind}:${source.id}`;
-}
-
-function describeParams(tracking: false | ToolTrackingPolicy | undefined, params: unknown): unknown {
-	if (!tracking || tracking.mode === "minimal") return undefined;
-	return tracking.describeParams?.(params);
-}
-
-function describeUpdate(tracking: false | ToolTrackingPolicy | undefined, update: AgentToolResult<unknown>): unknown {
-	if (!tracking || tracking.mode === "minimal") return undefined;
-	return tracking.describeUpdate?.(update);
-}
-
-function describeResult(tracking: false | ToolTrackingPolicy | undefined, result: AgentToolResult<unknown>): unknown {
-	if (!tracking || tracking.mode === "minimal") return undefined;
-	return tracking.describeResult?.(result);
-}
-
-function describeError(tracking: false | ToolTrackingPolicy | undefined, error: unknown): unknown {
-	if (!tracking || tracking.mode === "minimal") return undefined;
-	return tracking.describeError?.(error);
 }

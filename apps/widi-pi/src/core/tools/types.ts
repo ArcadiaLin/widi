@@ -5,7 +5,6 @@ import type {
 	ToolExecutionMode,
 } from "@earendil-works/pi-agent-core";
 import type { Static, TSchema } from "typebox";
-import type { ToolTracker, ToolTrackingPolicy } from "./tracker.ts";
 
 export type ToolExecutionEnvCapability = "filesystem" | "shell";
 
@@ -41,7 +40,10 @@ export interface SessionFact<TPayload = unknown> {
 	toolCallId?: string;
 }
 
-export type SessionFactDraft<TPayload = unknown> = Omit<SessionFact<TPayload>, "id" | "parentId" | "timestamp">;
+export type SessionFactDraft<TPayload = unknown> = Omit<
+	SessionFact<TPayload>,
+	"id" | "parentId" | "timestamp"
+>;
 
 export interface SessionFactQuery {
 	namespace?: string;
@@ -52,7 +54,10 @@ export interface SessionFactQuery {
 	toolCallId?: string;
 }
 
-export interface SessionFactDefinition<TPayload = unknown, TRestored = TPayload> {
+export interface SessionFactDefinition<
+	TPayload = unknown,
+	TRestored = TPayload,
+> {
 	/**
 	 * Stored as Pi customType. For tool-owned facts this should be the tool name.
 	 */
@@ -65,16 +70,28 @@ export interface SessionFactDefinition<TPayload = unknown, TRestored = TPayload>
 }
 
 export interface SessionFactStore {
-	append<TPayload>(fact: SessionFactDraft<TPayload>): Promise<SessionFact<TPayload>>;
-	get<TPayload = unknown>(id: string): Promise<SessionFact<TPayload> | undefined>;
-	find<TPayload = unknown>(query?: SessionFactQuery): Promise<Array<SessionFact<TPayload>>>;
+	append<TPayload>(
+		fact: SessionFactDraft<TPayload>,
+	): Promise<SessionFact<TPayload>>;
+	get<TPayload = unknown>(
+		id: string,
+	): Promise<SessionFact<TPayload> | undefined>;
+	find<TPayload = unknown>(
+		query?: SessionFactQuery,
+	): Promise<Array<SessionFact<TPayload>>>;
 	restore<TPayload = unknown, TRestored = TPayload>(
 		definition: SessionFactDefinition<TPayload, TRestored>,
 		query?: Omit<SessionFactQuery, "namespace" | "factType" | "version">,
 	): Promise<TRestored[]>;
 }
 
-export type ToolCallPhase = "created" | "arguments_streaming" | "arguments_ready" | "executing" | "done" | "error";
+export type ToolCallPhase =
+	| "created"
+	| "arguments_streaming"
+	| "arguments_ready"
+	| "executing"
+	| "done"
+	| "error";
 
 export interface ToolCallStateBase<TParams> {
 	toolCallId: string;
@@ -130,7 +147,6 @@ export interface ToolExecutionContext<TDetails, TState> {
 	onUpdate: AgentToolUpdateCallback<TDetails> | undefined;
 	session: SessionFactStore;
 	extension: ToolExtensionContext | undefined;
-	tracker: ToolTracker | undefined;
 	getState?: () => TState;
 	setState?: (state: TState) => void;
 }
@@ -175,9 +191,16 @@ export interface ToolDefinitionPatch<
 	executionMode?: ToolExecutionMode;
 	executionEnv?: ToolExecutionEnvRequirement;
 	sessionFacts?: readonly SessionFactDefinition[];
-	tracking?: false | ToolTrackingPolicy<Static<TParamsSchema>, TDetails>;
-	createState?: (event: Extract<ToolStateEvent<Static<TParamsSchema>, TDetails>, { type: "tool_call_created" }>) => TState;
-	reduceState?: (state: TState, event: ToolStateEvent<Static<TParamsSchema>, TDetails>) => TState;
+	createState?: (
+		event: Extract<
+			ToolStateEvent<Static<TParamsSchema>, TDetails>,
+			{ type: "tool_call_created" }
+		>,
+	) => TState;
+	reduceState?: (
+		state: TState,
+		event: ToolStateEvent<Static<TParamsSchema>, TDetails>,
+	) => TState;
 	execute?: ToolExecute<TParamsSchema, TDetails, TState>;
 	aroundExecute?: ToolExecuteMiddleware<TParamsSchema, TDetails, TState>;
 }
@@ -242,9 +265,13 @@ export interface ToolDefinition<
 	executionMode?: ToolExecutionMode;
 	executionEnv?: ToolExecutionEnvRequirement;
 	sessionFacts?: readonly SessionFactDefinition[];
-	tracking?: false | ToolTrackingPolicy<Static<TParamsSchema>, TDetails>;
 
-	createState?: (event: Extract<ToolStateEvent<Static<TParamsSchema>, TDetails>, { type: "tool_call_created" }>) => TState;
+	createState?: (
+		event: Extract<
+			ToolStateEvent<Static<TParamsSchema>, TDetails>,
+			{ type: "tool_call_created" }
+		>,
+	) => TState;
 	reduceState?: (
 		state: TState,
 		event: ToolStateEvent<Static<TParamsSchema>, TDetails>,
