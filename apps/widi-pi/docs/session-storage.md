@@ -185,7 +185,7 @@ resume 持久 session 时，调用方传入 `ExtendedJsonlSessionMetadata`，`Se
 6. `session.buildContext()` 从当前 leaf 恢复 messages、model、thinking level 和 active tools。
 7. orchestrator 用恢复出的 profile、model 和 session 创建新的 `AgentHarness`。
 
-第 4-6 步属于 orchestrator resume 分支，storage 已经准备好数据，但 orchestrator 侧还需要继续接入。
+当前 orchestrator resume 分支已经接入第 4-7 步的基础路径：它会读取 profile reference，通过 resolver 尝试恢复 profile，读取 session context 中的 model、thinking level 和 active tools，并创建新的 `AgentHarness`。仍未完成的是 profile missing 的 policy-driven diagnostic、profile registry、resource diagnostics 汇总，以及 active tools 与当前 tool registry 的一致性校验。
 
 ## Metadata 使用原则
 
@@ -213,7 +213,7 @@ resume 持久 session 时，调用方传入 `ExtendedJsonlSessionMetadata`，`Se
 - diagnostics 使用 `file_info_failed`、`list_failed`、`read_failed`、`parse_failed`、`invalid_metadata`。
 - 复杂 YAML schema、profile 继承、资源引用校验、按 id registry 查询等后续再补。
 
-resume 时 storage 不直接加载 profile。它只暴露 `metadata.profile.id`，由 orchestrator 或更高层 profile registry 使用 loader 查找当前 profile。找不到时，当前策略是回退到 `defaultProfile`，并在 orchestrator 侧产生诊断或事件。
+resume 时 storage 不直接加载 profile。它只暴露 `metadata.profile.id`，由 orchestrator 或更高层 profile registry 使用 loader 查找当前 profile。找不到时，当前策略是回退到 `defaultProfile`，并在 orchestrator 侧产生 `agent_profile_missing` event；后续仍要改成 policy-driven diagnostic path。
 
 ## 暂不处理
 

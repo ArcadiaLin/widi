@@ -244,4 +244,53 @@ describe("ToolRegistry", () => {
 			}),
 		);
 	});
+
+	it("passes human request capability into tool execution context", async () => {
+		const registry = new ToolRegistry();
+		registry.addContribution({
+			type: "define",
+			source: coreSource,
+			tool: {
+				name: "ask",
+				label: "Ask",
+				description: "Ask human",
+				parameters: emptyParams,
+				execute: async (_toolCallId, _params, context) => {
+					const response = await context.human?.request({
+						kind: "confirm",
+						title: "Confirm",
+						message: "Continue?",
+					});
+					return {
+						content: [
+							{
+								type: "text",
+								text:
+									response?.kind === "confirm" && response.confirmed
+										? "yes"
+										: "no",
+							},
+						],
+						details: response,
+					};
+				},
+			},
+		});
+		const resolvedTool = registry.resolve().getTool("ask");
+		expect(resolvedTool).toBeDefined();
+		if (!resolvedTool) throw new Error("Expected ask tool to resolve.");
+		const agentTool = createAgentToolFromResolvedTool(resolvedTool, {
+			session: new MemorySessionFactStore(),
+			human: {
+				request: async () => ({ kind: "confirm", confirmed: true }),
+			},
+		});
+
+		const result = await agentTool.execute("call-1", {});
+
+		expect(result).toEqual({
+			content: [{ type: "text", text: "yes" }],
+			details: { kind: "confirm", confirmed: true },
+		});
+	});
 });

@@ -22,7 +22,7 @@ Diagnostics 应贯穿 runtime。
 
 - Profile diagnostics：profile 文件、schema、metadata、fallback、override。
 - Dependency diagnostics：resources、extensions、tools、models 的解析问题。
-- Runtime diagnostics：extension activation、tool execution policy、auth/runtime permission、channel delivery。
+- Runtime diagnostics：extension activation、tool execution policy、auth/runtime permission、client delivery。
 
 Tool registry 当前已经定义局部 diagnostic codes：
 
@@ -52,8 +52,11 @@ Extension 可以产生 diagnostics，也可以观察 diagnostics。但 extension
 
 ## TODO
 
-- [ ] 定义统一 diagnostic shape：severity、code、message、source、agent/profile context、recoverable。
+- [x] 定义 command/client/human-request 使用的最小 `OrchestratorDiagnostic` shape。
+- [x] 通过 orchestrator event 暴露 command rejection、client delivery failure、human request unhandled/timeout/aborted/cancelled。
+- [ ] 扩展统一 diagnostic shape，覆盖 profile、resource、extension、tool 和 model/auth context。
 - [ ] 区分 profile、dependency、runtime、extension diagnostic code namespace。
 - [ ] 定义 severity 与 policy 的关系，包含 unavailable、fail、continue、user selection。
 - [ ] 将 resource/profile/extension/tool/model/auth diagnostics 接入 orchestrator event 或 result。
+- [x] 增加 focused tests 覆盖 command rejection 与 human-request diagnostics。
 - [ ] 增加 focused tests 覆盖 spawn 和 resume 路径的 diagnostics。

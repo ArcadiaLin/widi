@@ -1,0 +1,34 @@
+# Pi Upstream Roadmap
+
+本文档集中记录 WIDI 未来可能需要回到 Pi 上游实现或协商的能力。它不是当前 `apps/widi-pi` 的实现承诺，而是避免把上游缺口硬塞进 WIDI core 的提醒清单。
+
+## Session Metadata Extension
+
+WIDI 需要在恢复 multi-agent runtime 时保存小型 recovery references，例如 profile reference、preset reference、extension declaration reference 或 subagent relation id。
+
+当前原则是：不把大型快照、runtime object、API key、extension instance 写入 session metadata。未来如果 Pi session metadata 支持 typed/custom extension section，WIDI 可以减少自己的外层 metadata 适配。
+
+## ExecutionEnv Locking
+
+部分 tool 或 extension workflow 需要文件系统/运行时的互斥语义，例如写文件、应用 patch、沙箱提交或跨 tool 的 artifact mutation。
+
+WIDI 不应在每个 tool 中私造锁协议。更理想的是 Pi `ExecutionEnv` 或其相邻 runtime capability 提供统一 lock/transaction/lease 语义，让 tool、extension 和 harness-adjacent 操作共享同一并发边界。
+
+## Harness Queue Control
+
+`AgentHarness` 当前能通过 `steer`、`followUp`、`nextTurn` 入队，并通过 `queue_update` 暴露队列状态。`abort()` 会清空 steer/followUp 并 abort 当前 run，但没有细粒度 queue item id，也没有单条取消或完整 queue control。
+
+WIDI command layer 不应伪造第二套 queue。未来如果要支持 UI 取消单条 steer/followUp/nextTurn，Pi harness 需要先暴露稳定 queue item id，并提供类似 `clearQueuedInput`、`cancelQueuedInput(id)` 或按 queue 类型清理的 API。随后 WIDI 才能把这类能力作为 orchestrator command/client interaction 暴露。
+
+## Notes
+
+- 这些能力应优先在 Pi 层形成稳定语义，再由 WIDI orchestrator 包装。
+- WIDI 可以先在 docs/tests 中标出缺口，但不应以私有状态模拟上游 queue 或 session metadata 行为。
+- Extension dynamic workflow 应继续通过 orchestrator command/helper 编排；需要上游支持的仅是底层 harness/session/runtime 原语。
+
+## TODO
+
+- [x] 在 WIDI 文档中记录 session metadata、ExecutionEnv locking 和 harness queue control 三类上游缺口。
+- [ ] 与 Pi upstream 对齐 session metadata typed/custom extension section。
+- [ ] 与 Pi upstream 对齐 ExecutionEnv lock/transaction/lease 原语。
+- [ ] 与 Pi upstream 对齐 harness queue item id 和 queued input cancellation API。

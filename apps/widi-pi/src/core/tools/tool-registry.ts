@@ -1,5 +1,6 @@
 import type { AgentTool, ExecutionEnv } from "@earendil-works/pi-agent-core";
 import type { TSchema } from "typebox";
+import type { ToolHumanHost } from "../orchestrator/human-request.ts";
 import type {
 	SessionFactStore,
 	ToolContribution,
@@ -77,6 +78,7 @@ export interface ToolRegistryResolveResult {
 export interface ToolAgentAdapterContext {
 	env?: ExecutionEnv;
 	session: SessionFactStore;
+	human?: ToolHumanHost;
 	extension?: ToolExtensionContext;
 	createExtensionContext?: (
 		source: ToolContributionSource,
@@ -490,6 +492,7 @@ function createToolExecutionContext(
 		onUpdate,
 		session: context.session,
 		extension,
+		human: context.human,
 		getState: context.getState
 			? () => context.getState?.(toolCallId, resolvedTool.definition.name)
 			: undefined,

@@ -10,7 +10,7 @@ Profile、preset 或 config 中声明的 extension 是可恢复、可解析的 d
 
 Extension 通过 hook 插入 core 能力。
 
-Orchestrator 执行每个关键能力时，都应有 extension 观察、拦截、补充或改写的机会。包括 agent lifecycle、profile/resource/tool 解析、channel routing、model/runtime 请求、diagnostics 和 adapter interaction。
+Orchestrator 执行每个关键能力时，都应有 extension 观察、拦截、补充或改写的机会。包括 agent lifecycle、profile/resource/tool 解析、command dispatch、client interaction、model/runtime 请求、diagnostics 和 adapter interaction。
 
 Extension hook permission 必须可描述。
 
@@ -69,7 +69,7 @@ Tool tracking 不进入 core primitive。它应作为 extension pattern：通过
 
 Pi coding-agent extension 已经支持注册 tool/command/provider、拦截 input/tool/system prompt/provider request、发起 UI 交互、注入消息、写扩展状态、定制渲染和触发 session 操作。
 
-WIDI extension 应至少保留这种自由度，并扩展到 multi-agent runtime。但跨 agent 操作必须经过 orchestrator/channel/diagnostics。
+WIDI extension 应至少保留这种自由度，并扩展到 multi-agent runtime。但跨 agent 操作必须经过 orchestrator command/helper 和 diagnostics。
 
 ## 非职责
 
@@ -83,11 +83,13 @@ WIDI extension 应至少保留这种自由度，并扩展到 multi-agent runtime
 
 ## TODO
 
+- [x] 将 tool tracking 明确为 extension pattern，并保留未接入 runtime 的示例骨架。
+- [x] 让 tool registry 支持 extension-style `define`/`patch` contribution。
 - [ ] 定义 extension declaration 的 identity、source、version/compatibility 和 missing policy。
 - [ ] 设计 extension registry/loader/activation lifecycle。
 - [ ] 为 hook 点列出 permission：observe、intercept、mutate、invoke capability。
-- [ ] 定义 extension-contributed tools/resources/channels/diagnostics 如何进入对应 registry。
+- [ ] 定义 extension-contributed resources/commands/diagnostics 如何进入对应 registry。
 - [ ] 定义 extension tool patch contribution 的权限、priority 来源和 runtime context 绑定。
-- [ ] 定义基于 Pi `custom` entry 的 session fact API、fact definition 注册和恢复错误 diagnostics。
+- [ ] 实现 extension 使用 session fact API 的注册、恢复和错误 diagnostics。
 - [ ] 定义 extension-owned storage 的边界、路径授权和 diagnostics。
 - [ ] 区分 missing extension、activation failed、runtime diagnostic 三类问题。

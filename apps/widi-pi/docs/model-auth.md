@@ -157,7 +157,10 @@ withLockAsync(fn)
 
 ## TODO
 
-- 设计带多进程锁的 auth/config storage backend。
-- 明确 runtime service 的形状，以及它是否负责统一创建 `ExecutionEnv`、`ConfigValueResolver`、`AuthStorage` 和 `ModelRegistry`。
-- 梳理 `models.json` schema 文档和示例。
-- 评估多 agent 场景下是共享一套 runtime 与 auth storage，还是按 profile/workspace 隔离。
+- [x] 实现 `ConfigValueResolver`，支持 literal、env template、escaped literal 和 `!command`。
+- [x] 实现 `AuthStorage`，支持 in-memory/file backend、runtime override、fallback resolver 和 OAuth credential path。
+- [x] 实现 `ModelRegistry`，支持内置模型、自定义 `models.json`、provider/model override、headers/auth 解析和 auth status 查询。
+- [ ] 设计带多进程锁的 auth/config storage backend。
+- [ ] 明确 runtime service 的形状，以及它是否负责统一创建 `ExecutionEnv`、`ConfigValueResolver`、`AuthStorage` 和 `ModelRegistry`。
+- [ ] 梳理 `models.json` schema 文档和示例。
+- [ ] 评估多 agent 场景下是共享一套 runtime 与 auth storage，还是按 profile/workspace 隔离。

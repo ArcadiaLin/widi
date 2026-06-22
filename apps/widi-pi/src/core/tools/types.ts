@@ -5,6 +5,7 @@ import type {
 	ToolExecutionMode,
 } from "@earendil-works/pi-agent-core";
 import type { Static, TSchema } from "typebox";
+import type { ToolHumanHost } from "../orchestrator/human-request.ts";
 
 export type ToolExecutionEnvCapability = "filesystem" | "shell";
 
@@ -147,6 +148,7 @@ export interface ToolExecutionContext<TDetails, TState> {
 	onUpdate: AgentToolUpdateCallback<TDetails> | undefined;
 	session: SessionFactStore;
 	extension: ToolExtensionContext | undefined;
+	human: ToolHumanHost | undefined;
 	getState?: () => TState;
 	setState?: (state: TState) => void;
 }

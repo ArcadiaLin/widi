@@ -25,7 +25,7 @@ Pi 的 `AgentHarness` 负责单个 agent 的模型交互、session tree、resour
 - 不把 multi-agent 仅实现为多个独立进程之间的松散调用。
 - 不在 session metadata 中保存大型快照、API key、runtime 对象或 extension 实例。
 - 不先承诺最终 UI、RPC、TUI 命令形态。
-- 不把具体产品交互模式作为 core primitive；它们应基于 core channel 能力由 extension 或 preset 实现。
+- 不把具体产品交互模式作为 core primitive；它们应基于 orchestrator command/client 能力由 extension 或 preset 实现。
 
 ## 核心边界
 
@@ -37,13 +37,13 @@ Pi 的 `AgentHarness` 负责单个 agent 的模型交互、session tree、resour
 
 `ResourceLoader`、profile registry、extension registry、tool registry、model registry、auth storage 都属于 runtime dependency layer。它们解析依赖，但不拥有 agent lifecycle。
 
-`Channel` 是 core 通信抽象。A2A 与 human-request 都应建立在 channel 语义上。具体产品交互模式不进入 core；它们应作为 extension 或 coding-agent 组配集合实现。
+Orchestrator command/client 是 core 的受控操作入口和输出 fanout 语义。A2A 与 human-request 都应经过 `AgentOrchestrator`，但不引入独立通信层。具体产品交互模式不进入 core；它们应作为 extension 或 coding-agent 组配集合实现。
 
 Extension 具备接近 orchestrator 的能力：core 执行每个关键能力时，都应允许 extension 通过 hook 观察、拦截、补充或改写，就像 Pi coding-agent extension 一样。但 extension 不能直接接管已经存储好的 profile、session 或 resource registry；它必须通过 orchestrator 暴露的受控入口参与 runtime。
 
 ## Human Request
 
-`human-request` 是 Channel 的子集。它是一类目标为 human-facing adapter、可能等待 human response 的结构化消息。
+`human-request` 是 orchestrator 的结构化人机请求能力。它目标为 human-facing client，可能等待 human response。
 
 `human-request` 的响应通常不进入 agent session。只有当它作为 tool call 的结果发生时，才自然进入 Pi session tree；这时它已经是 tool message，不需要 core 额外管理 session 写入。
 
@@ -53,7 +53,7 @@ Extension 具备接近 orchestrator 的能力：core 执行每个关键能力时
 
 Pi coding-agent 的 extension 已经可以注册 tool/command/provider、拦截 input/tool/system prompt/provider request、发起 UI 交互、写扩展状态、定制渲染并触发 session 操作。WIDI extension 应该至少具备同等级自由度，并额外支持 multi-agent 编排。
 
-区别在于：WIDI 的跨 agent 能力必须经过 orchestrator、channel 和 diagnostics。extension 可以定义 team/flow/goal 等模式，但不能私下维护不可观察的 agent lifecycle 或 A2A 通信。
+区别在于：WIDI 的跨 agent 能力必须经过 orchestrator command/helper 和 diagnostics。extension 可以定义 team/flow/goal 等模式，但不能私下维护不可观察的 agent lifecycle 或 A2A 通信。
 
 在 core 构建完成后，`widi-pi` 可以首先提供一个 coding-agent 组配集合：默认 profile、默认 tools、预装 extensions 与 adapter 组合成具体产品体验。具体 team、flow 或 goal 模式属于这个层级。
 
@@ -69,7 +69,7 @@ Pi coding-agent 的 extension 已经可以注册 tool/command/provider、拦截 
 
 3. Orchestration layer
 
-   agent lifecycle、session lifecycle、channel routing、diagnostics、agent-human request、A2A。
+   agent lifecycle、session lifecycle、command dispatch、client fanout、diagnostics、agent-human request、A2A。
 
 4. Application adapter layer
 
@@ -78,11 +78,12 @@ Pi coding-agent 的 extension 已经可以注册 tool/command/provider、拦截 
 ## Core 文档
 
 - [Orchestrator](core/orchestrator.md)
-- [Channels](core/channels.md)
+- [Orchestrator Commands](core/orchestrator-commands.md)
 - [Extensions](core/extensions.md)
 - [Profiles And Resources](core/profiles-and-resources.md)
 - [Tools And Capabilities](core/tools-and-capabilities.md)
 - [Diagnostics](core/diagnostics.md)
 - [Sessions And Runtime](core/sessions-and-runtime.md)
+- [Pi Upstream Roadmap](core/pi-upstream-roadmap.md)
 
 这些文档只记录核心理念，不定义最终 API。
