@@ -5,16 +5,24 @@ import type {
 	SessionStorage,
 	SessionTreeEntry,
 } from "@earendil-works/pi-agent-core";
-import { Session, SessionError, toError, uuidv7 } from "@earendil-works/pi-agent-core";
 import {
-	JsonlSessionStorage,
-	loadJsonlSessionMetadata,
+	Session,
+	SessionError,
+	toError,
+	uuidv7,
+} from "@earendil-works/pi-agent-core";
+import {
 	type ExtendedJsonlSessionMetadata,
 	type JsonlSessionHeaderMetadata,
+	JsonlSessionStorage,
+	loadJsonlSessionMetadata,
 } from "./jsonl-storage.ts";
 
 export type JsonlSessionPathLayout = "by-cwd" | "flat";
-export type { ExtendedJsonlSessionMetadata, JsonlSessionHeaderMetadata } from "./jsonl-storage.ts";
+export type {
+	ExtendedJsonlSessionMetadata,
+	JsonlSessionHeaderMetadata,
+} from "./jsonl-storage.ts";
 
 export interface ExtendedJsonlSessionCreateOptions {
 	id?: string;
@@ -56,7 +64,11 @@ function getFileSystemResultOrThrow<TValue>(
 ): TValue {
 	if (!result.ok) {
 		const code = result.error.code === "not_found" ? "not_found" : "storage";
-		throw new SessionError(code, `${message}: ${result.error.message}`, result.error);
+		throw new SessionError(
+			code,
+			`${message}: ${result.error.message}`,
+			result.error,
+		);
 	}
 	return result.value;
 }
@@ -68,13 +80,19 @@ async function getEntriesToFork(
 	if (!options.entryId) return storage.getEntries();
 	const target = await storage.getEntry(options.entryId);
 	if (!target) {
-		throw new SessionError("invalid_fork_target", `Entry ${options.entryId} not found`);
+		throw new SessionError(
+			"invalid_fork_target",
+			`Entry ${options.entryId} not found`,
+		);
 	}
 	if ((options.position ?? "before") === "at") {
 		return storage.getPathToRoot(target.id);
 	}
 	if (target.type !== "message" || target.message.role !== "user") {
-		throw new SessionError("invalid_fork_target", `Entry ${options.entryId} is not a user message`);
+		throw new SessionError(
+			"invalid_fork_target",
+			`Entry ${options.entryId} is not a user message`,
+		);
 	}
 	return storage.getPathToRoot(target.parentId);
 }
@@ -85,7 +103,11 @@ export class JsonlSessionRepo {
 	private readonly pathLayout: JsonlSessionPathLayout;
 	private sessionsRoot: string | undefined;
 
-	constructor(options: { fs: JsonlSessionRepoFileSystem; sessionsRoot: string; pathLayout?: JsonlSessionPathLayout }) {
+	constructor(options: {
+		fs: JsonlSessionRepoFileSystem;
+		sessionsRoot: string;
+		pathLayout?: JsonlSessionPathLayout;
+	}) {
 		this.fs = options.fs;
 		this.sessionsRootInput = options.sessionsRoot;
 		this.pathLayout = options.pathLayout ?? "by-cwd";
@@ -112,7 +134,11 @@ export class JsonlSessionRepo {
 		);
 	}
 
-	private async createSessionFilePath(cwd: string, sessionId: string, timestamp: string): Promise<string> {
+	private async createSessionFilePath(
+		cwd: string,
+		sessionId: string,
+		timestamp: string,
+	): Promise<string> {
 		return getFileSystemResultOrThrow(
 			await this.fs.joinPath([
 				await this.getSessionDir(cwd),
@@ -122,7 +148,9 @@ export class JsonlSessionRepo {
 		);
 	}
 
-	async create(options: ExtendedJsonlSessionCreateOptions): Promise<Session<ExtendedJsonlSessionMetadata>> {
+	async create(
+		options: ExtendedJsonlSessionCreateOptions,
+	): Promise<Session<ExtendedJsonlSessionMetadata>> {
 		const id = options.id ?? uuidv7();
 		const createdAt = createTimestamp();
 		const sessionDir = await this.getSessionDir(options.cwd);
@@ -130,7 +158,11 @@ export class JsonlSessionRepo {
 			await this.fs.createDir(sessionDir, { recursive: true }),
 			`Failed to create session directory ${sessionDir}`,
 		);
-		const filePath = await this.createSessionFilePath(options.cwd, id, createdAt);
+		const filePath = await this.createSessionFilePath(
+			options.cwd,
+			id,
+			createdAt,
+		);
 		const storage = await JsonlSessionStorage.create(this.fs, filePath, {
 			cwd: options.cwd,
 			sessionId: id,
@@ -140,37 +172,63 @@ export class JsonlSessionRepo {
 		return new Session(storage);
 	}
 
-	async open(metadata: ExtendedJsonlSessionMetadata): Promise<Session<ExtendedJsonlSessionMetadata>> {
+	async open(
+		metadata: ExtendedJsonlSessionMetadata,
+	): Promise<Session<ExtendedJsonlSessionMetadata>> {
 		if (
-			!getFileSystemResultOrThrow(await this.fs.exists(metadata.path), `Failed to check session ${metadata.path}`)
+			!getFileSystemResultOrThrow(
+				await this.fs.exists(metadata.path),
+				`Failed to check session ${metadata.path}`,
+			)
 		) {
-			throw new SessionError("not_found", `Session not found: ${metadata.path}`);
+			throw new SessionError(
+				"not_found",
+				`Session not found: ${metadata.path}`,
+			);
 		}
 		const storage = await JsonlSessionStorage.open(this.fs, metadata.path);
 		return new Session(storage);
 	}
 
-	async list(options: ExtendedJsonlSessionListOptions = {}): Promise<ExtendedJsonlSessionMetadata[]> {
-		const dirs = options.cwd ? [await this.getSessionDir(options.cwd)] : await this.listSessionDirs();
+	async list(
+		options: ExtendedJsonlSessionListOptions = {},
+	): Promise<ExtendedJsonlSessionMetadata[]> {
+		const dirs = options.cwd
+			? [await this.getSessionDir(options.cwd)]
+			: await this.listSessionDirs();
 		const sessions: ExtendedJsonlSessionMetadata[] = [];
 		for (const dir of dirs) {
-			if (!getFileSystemResultOrThrow(await this.fs.exists(dir), `Failed to check session directory ${dir}`)) {
+			if (
+				!getFileSystemResultOrThrow(
+					await this.fs.exists(dir),
+					`Failed to check session directory ${dir}`,
+				)
+			) {
 				continue;
 			}
 			const files = getFileSystemResultOrThrow(
 				await this.fs.listDir(dir),
 				`Failed to list sessions in ${dir}`,
-			).filter((file) => file.kind !== "directory" && file.name.endsWith(".jsonl"));
+			).filter(
+				(file) => file.kind !== "directory" && file.name.endsWith(".jsonl"),
+			);
 			for (const file of files) {
 				try {
 					sessions.push(await loadJsonlSessionMetadata(this.fs, file.path));
 				} catch (error) {
 					const cause = toError(error);
-					if (!(cause instanceof SessionError) || cause.code !== "invalid_session") throw cause;
+					if (
+						!(cause instanceof SessionError) ||
+						cause.code !== "invalid_session"
+					)
+						throw cause;
 				}
 			}
 		}
-		sessions.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+		sessions.sort(
+			(a, b) =>
+				new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+		);
 		return sessions;
 	}
 
@@ -224,6 +282,8 @@ export class JsonlSessionRepo {
 			await this.fs.listDir(sessionsRoot),
 			`Failed to list sessions root ${sessionsRoot}`,
 		);
-		return entries.filter((entry) => entry.kind === "directory").map((entry) => entry.path);
+		return entries
+			.filter((entry) => entry.kind === "directory")
+			.map((entry) => entry.path);
 	}
 }

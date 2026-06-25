@@ -4,6 +4,12 @@ import type {
 	FileInfo,
 } from "@earendil-works/pi-agent-core";
 import { DEFAULT_PROFILE_DIR } from "./constants/resource.js";
+import {
+	type CoreDiagnostic,
+	createDiagnostic,
+	type DiagnosticSeverity,
+	type DiagnosticSource,
+} from "./diagnostics.ts";
 
 export type AgentProfile = {
 	readonly id: string;
@@ -38,22 +44,22 @@ export type AgentProfileReference = {
 };
 
 export type AgentProfileDiagnosticCode =
-	| "file_info_failed"
-	| "list_failed"
-	| "read_failed"
-	| "parse_failed"
-	| "invalid_metadata"
-	| "invalid_profile"
-	| "id_filename_mismatch"
-	| "duplicate_profile_id"
-	| "profile_source_overridden"
-	| "profile_id_case_conflict"
-	| "profile_missing"
-	| "profile_disabled"
-	| "profile_override_not_persistable"
-	| "source_missing";
+	| "profile.file_info_failed"
+	| "profile.list_failed"
+	| "profile.read_failed"
+	| "profile.parse_failed"
+	| "profile.invalid_metadata"
+	| "profile.invalid"
+	| "profile.id_filename_mismatch"
+	| "profile.duplicate_id"
+	| "profile.source_overridden"
+	| "profile.id_case_conflict"
+	| "profile.missing"
+	| "profile.disabled"
+	| "profile.override_not_persistable"
+	| "profile.source_missing";
 
-export type AgentProfileDiagnosticSeverity = "info" | "warning" | "error";
+export type AgentProfileDiagnosticSeverity = DiagnosticSeverity;
 
 export type AgentProfileSourceKind =
 	| "settings"
@@ -69,15 +75,7 @@ export type AgentProfileSource = {
 	readonly label?: string;
 };
 
-export type AgentProfileDiagnostic = {
-	readonly type: AgentProfileDiagnosticSeverity;
-	readonly code: AgentProfileDiagnosticCode;
-	readonly message: string;
-	readonly path?: string;
-	readonly entryId?: string;
-	readonly profileId?: string;
-	readonly source?: AgentProfileSource;
-};
+export type AgentProfileDiagnostic = CoreDiagnostic;
 
 export type SourcedAgentProfile = {
 	readonly profile: AgentProfile;
@@ -298,13 +296,13 @@ export class FileProfileStorageBackend implements ProfileStorageBackend {
 		if (!entry?.source.path) {
 			return {
 				ok: false,
-				diagnostic: {
-					type: "error",
-					code: "read_failed",
+				diagnostic: createProfileDiagnostic({
+					severity: "error",
+					code: "profile.read_failed",
 					message: `Unknown profile storage entry: ${entryId}`,
 					entryId,
 					source: entry?.source,
-				},
+				}),
 			};
 		}
 
@@ -313,7 +311,7 @@ export class FileProfileStorageBackend implements ProfileStorageBackend {
 			return {
 				ok: false,
 				diagnostic: fileErrorDiagnostic(
-					"read_failed",
+					"profile.read_failed",
 					result.error,
 					entry.source,
 					entryId,
@@ -347,8 +345,8 @@ export class FileProfileStorageBackend implements ProfileStorageBackend {
 				diagnostics: [
 					fileErrorDiagnostic(
 						infoResult.error.code === "not_found"
-							? "source_missing"
-							: "file_info_failed",
+							? "profile.source_missing"
+							: "profile.file_info_failed",
 						infoResult.error,
 						source,
 					),
@@ -378,7 +376,11 @@ export class FileProfileStorageBackend implements ProfileStorageBackend {
 			return {
 				entries: [],
 				diagnostics: [
-					fileErrorDiagnostic("list_failed", entriesResult.error, source),
+					fileErrorDiagnostic(
+						"profile.list_failed",
+						entriesResult.error,
+						source,
+					),
 				],
 			};
 		}
@@ -488,12 +490,12 @@ export class InMemoryProfileStorageBackend implements ProfileStorageBackend {
 		if (!item) {
 			return {
 				ok: false,
-				diagnostic: {
-					type: "error",
-					code: "read_failed",
+				diagnostic: createProfileDiagnostic({
+					severity: "error",
+					code: "profile.read_failed",
 					message: `Unknown profile storage entry: ${entryId}`,
 					entryId,
-				},
+				}),
 			};
 		}
 		return { ok: true, entry: item.entry, content: item.content };
@@ -538,18 +540,24 @@ export class CompositeProfileStorageBackend implements ProfileStorageBackend {
 		if (!source) {
 			return {
 				ok: false,
-				diagnostic: {
-					type: "error",
-					code: "read_failed",
+				diagnostic: createProfileDiagnostic({
+					severity: "error",
+					code: "profile.read_failed",
 					message: `Unknown profile storage entry: ${entryId}`,
 					entryId,
-				},
+				}),
 			};
 		}
 
 		const result = await source.backend.readEntry(source.entryId);
 		if (!result.ok) {
-			return { ok: false, diagnostic: { ...result.diagnostic, entryId } };
+			return {
+				ok: false,
+				diagnostic: {
+					...result.diagnostic,
+					details: { ...result.diagnostic.details, entryId },
+				},
+			};
 		}
 		return {
 			ok: true,
@@ -589,12 +597,13 @@ export class AgentProfileRegistry {
 				profileId: normalizedProfileId,
 				diagnostics: [
 					...index.diagnostics,
-					{
-						type: "error",
-						code: "profile_missing",
+					createProfileDiagnostic({
+						severity: "error",
+						code: "profile.missing",
 						message: `Profile not found: ${normalizedProfileId}`,
 						profileId: normalizedProfileId,
-					},
+						phase: "resolve",
+					}),
 				],
 			};
 		}
@@ -655,7 +664,7 @@ export class AgentProfileRegistry {
 					diagnosticForEntry(
 						selected.entry,
 						"error",
-						"parse_failed",
+						"profile.parse_failed",
 						parsed.error,
 						normalizedProfileId,
 					),
@@ -757,7 +766,7 @@ export class AgentProfileRegistry {
 				const diagnostic = diagnosticForEntry(
 					entry,
 					"error",
-					"parse_failed",
+					"profile.parse_failed",
 					parsed.error,
 					entry.filenameId,
 				);
@@ -908,25 +917,35 @@ function diagnosticsForProfileSelection(
 	);
 
 	if (highest.length > 1) {
-		diagnostics.push({
-			type: "error",
-			code: "duplicate_profile_id",
-			message: `Duplicate profile id at the same priority: ${profileId}`,
-			profileId,
-			source: selected.entry.source,
-		});
+		diagnostics.push(
+			createProfileDiagnostic({
+				severity: "error",
+				code: "profile.duplicate_id",
+				message: `Duplicate profile id at the same priority: ${profileId}`,
+				profileId,
+				source: selected.entry.source,
+				phase: "resolve",
+			}),
+		);
 	}
 
 	for (const candidate of candidates) {
 		if (candidate.entry.source.priority >= highestPriority) continue;
-		diagnostics.push({
-			type: "info",
-			code: "profile_source_overridden",
-			message: `Profile ${profileId} from ${formatSource(candidate.entry.source)} is overridden by ${formatSource(selected.entry.source)}.`,
-			profileId,
-			entryId: candidate.entry.entryId,
-			source: candidate.entry.source,
-		});
+		diagnostics.push(
+			createProfileDiagnostic({
+				severity: "info",
+				code: "profile.source_overridden",
+				message: `Profile ${profileId} from ${formatSource(candidate.entry.source)} is overridden by ${formatSource(selected.entry.source)}.`,
+				profileId,
+				entryId: candidate.entry.entryId,
+				source: candidate.entry.source,
+				phase: "resolve",
+				details: {
+					selectedEntryId: selected.entry.entryId,
+					selectedSource: selected.entry.source,
+				},
+			}),
+		);
 	}
 
 	return diagnostics;
@@ -947,11 +966,14 @@ function caseConflictDiagnostics(
 	for (const ids of byLowercase.values()) {
 		const uniqueIds = [...new Set(ids)];
 		if (uniqueIds.length <= 1) continue;
-		diagnostics.push({
-			type: "warning",
-			code: "profile_id_case_conflict",
-			message: `Profile ids differ only by case: ${uniqueIds.join(", ")}`,
-		});
+		diagnostics.push(
+			createProfileDiagnostic({
+				severity: "warning",
+				code: "profile.id_case_conflict",
+				message: `Profile ids differ only by case: ${uniqueIds.join(", ")}`,
+				details: { profileIds: uniqueIds },
+			}),
+		);
 	}
 	return diagnostics;
 }
@@ -1001,7 +1023,7 @@ function parseAgentProfile(
 		diagnostics,
 	);
 
-	if (diagnostics.some((diagnostic) => diagnostic.type === "error")) {
+	if (diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
 		return { profile: undefined, diagnostics };
 	}
 
@@ -1046,7 +1068,7 @@ function parseAgentProfileMetadata(
 			diagnosticForEntry(
 				entry,
 				"error",
-				"invalid_profile",
+				"profile.invalid",
 				"Profile id is missing.",
 			),
 		);
@@ -1056,7 +1078,7 @@ function parseAgentProfileMetadata(
 	const idValidation = validateProfileId(id);
 	if (idValidation) {
 		diagnostics.push(
-			diagnosticForEntry(entry, "error", "invalid_profile", idValidation, id),
+			diagnosticForEntry(entry, "error", "profile.invalid", idValidation, id),
 		);
 		return {
 			metadata: undefined,
@@ -1070,7 +1092,7 @@ function parseAgentProfileMetadata(
 			diagnosticForEntry(
 				entry,
 				"warning",
-				"id_filename_mismatch",
+				"profile.id_filename_mismatch",
 				`Profile id "${rawId}" does not match filename-derived id "${filenameId}".`,
 				rawId,
 			),
@@ -1082,7 +1104,7 @@ function parseAgentProfileMetadata(
 			diagnosticForEntry(
 				entry,
 				"warning",
-				"invalid_metadata",
+				"profile.invalid_metadata",
 				"Profile markdown body is empty; systemPrompt will be empty until the schema is finalized.",
 				id,
 			),
@@ -1171,7 +1193,7 @@ function readBoolean(
 		diagnosticForEntry(
 			entry,
 			"error",
-			"invalid_metadata",
+			"profile.invalid_metadata",
 			`Profile field "${fieldName}" must be a boolean.`,
 		),
 	);
@@ -1190,7 +1212,7 @@ function readStringArray(
 			diagnosticForEntry(
 				entry,
 				"error",
-				"invalid_metadata",
+				"profile.invalid_metadata",
 				`Profile field "${fieldName}" must be an array of strings.`,
 			),
 		);
@@ -1204,7 +1226,7 @@ function readStringArray(
 				diagnosticForEntry(
 					entry,
 					"error",
-					"invalid_metadata",
+					"profile.invalid_metadata",
 					`Profile field "${fieldName}" must be an array of non-empty strings.`,
 				),
 			);
@@ -1228,7 +1250,7 @@ function readMissingExtensionSeverity(
 		diagnosticForEntry(
 			entry,
 			"error",
-			"invalid_metadata",
+			"profile.invalid_metadata",
 			'Profile field "missingExtensionSeverity" must be "ignore", "warning", or "error".',
 		),
 	);
@@ -1246,7 +1268,7 @@ function readCapabilities(
 			diagnosticForEntry(
 				entry,
 				"error",
-				"invalid_metadata",
+				"profile.invalid_metadata",
 				'Profile field "capabilities" must be an object.',
 			),
 		);
@@ -1271,7 +1293,7 @@ function readCapabilities(
 				diagnosticForEntry(
 					entry,
 					"error",
-					"invalid_metadata",
+					"profile.invalid_metadata",
 					`Profile capability "${key}" must be a boolean.`,
 				),
 			);
@@ -1308,20 +1330,19 @@ function hasControlCharacter(value: string): boolean {
 
 function diagnosticForEntry(
 	entry: ProfileStorageEntry,
-	type: AgentProfileDiagnosticSeverity,
+	severity: AgentProfileDiagnosticSeverity,
 	code: AgentProfileDiagnosticCode,
 	message: string,
 	profileId?: string,
 ): AgentProfileDiagnostic {
-	return {
-		type,
+	return createProfileDiagnostic({
+		severity,
 		code,
 		message,
-		path: entry.source.path,
 		entryId: entry.entryId,
 		profileId,
 		source: entry.source,
-	};
+	});
 }
 
 function fileErrorDiagnostic(
@@ -1330,13 +1351,62 @@ function fileErrorDiagnostic(
 	source: AgentProfileSource,
 	entryId?: string,
 ): AgentProfileDiagnostic {
-	return {
-		type: code === "source_missing" ? "warning" : "error",
+	return createProfileDiagnostic({
+		severity: code === "profile.source_missing" ? "warning" : "error",
 		code,
 		message: error.message,
-		path: source.path,
 		entryId,
 		source,
+	});
+}
+
+function createProfileDiagnostic(options: {
+	readonly severity: AgentProfileDiagnosticSeverity;
+	readonly code: AgentProfileDiagnosticCode;
+	readonly message: string;
+	readonly entryId?: string;
+	readonly profileId?: string;
+	readonly source?: AgentProfileSource;
+	readonly phase?: CoreDiagnostic["phase"];
+	readonly details?: Record<string, unknown>;
+}): AgentProfileDiagnostic {
+	return createDiagnostic({
+		domain: "profile",
+		code: options.code,
+		severity: options.severity,
+		disposition: options.severity === "error" ? "blocked" : "reported",
+		recoverable: true,
+		message: options.message,
+		source: options.source
+			? diagnosticSourceFromProfileSource(options.source, options.entryId)
+			: options.profileId
+				? { kind: "profile", id: options.profileId }
+				: undefined,
+		profileId: options.profileId,
+		phase: options.phase ?? "load",
+		details: {
+			entryId: options.entryId,
+			profileSource: options.source,
+			...options.details,
+		},
+	});
+}
+
+function diagnosticSourceFromProfileSource(
+	source: AgentProfileSource,
+	entryId: string | undefined,
+): DiagnosticSource {
+	if (source.path) {
+		return {
+			kind: "path",
+			path: source.path,
+			label: source.label ?? source.kind,
+		};
+	}
+	return {
+		kind: "registry",
+		name: "profile",
+		key: entryId,
 	};
 }
 

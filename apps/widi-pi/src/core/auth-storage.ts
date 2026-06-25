@@ -7,6 +7,7 @@
  * ConfigValueResolver.
  */
 
+import type { ExecutionEnv } from "@earendil-works/pi-agent-core";
 import {
 	findEnvKeys,
 	getEnvApiKey,
@@ -14,10 +15,14 @@ import {
 	type OAuthLoginCallbacks,
 	type OAuthProviderId,
 } from "@earendil-works/pi-ai";
-import { getOAuthApiKey, getOAuthProvider, getOAuthProviders } from "@earendil-works/pi-ai/oauth";
-import type { ExecutionEnv } from "@earendil-works/pi-agent-core";
+import {
+	getOAuthApiKey,
+	getOAuthProvider,
+	getOAuthProviders,
+} from "@earendil-works/pi-ai/oauth";
 import { DEFAULT_AGENT_DIR } from "./constants/config.js";
-import { ConfigValueResolver } from "./resolve-config-value.js";
+import { type CoreDiagnostic, createDiagnostic } from "./diagnostics.ts";
+import type { ConfigValueResolver } from "./resolve-config-value.js";
 
 export type ApiKeyCredential = {
 	type: "api_key";
@@ -34,7 +39,13 @@ export type AuthStorageData = Record<string, AuthCredential>;
 
 export type AuthStatus = {
 	configured: boolean;
-	source?: "stored" | "runtime" | "environment" | "fallback" | "models_json_key" | "models_json_command";
+	source?:
+		| "stored"
+		| "runtime"
+		| "environment"
+		| "fallback"
+		| "models_json_key"
+		| "models_json_command";
 	label?: string;
 };
 
@@ -42,6 +53,8 @@ export type LockResult<T> = {
 	result: T;
 	next?: string;
 };
+
+export type AuthDiagnostic = CoreDiagnostic;
 
 const DEFAULT_AUTH_PATH = `${DEFAULT_AGENT_DIR}/auth.json`;
 
@@ -65,7 +78,9 @@ class AsyncLock {
 }
 
 export interface AuthStorageBackend {
-	withLockAsync<T>(fn: (current: string | undefined) => Promise<LockResult<T>>): Promise<T>;
+	withLockAsync<T>(
+		fn: (current: string | undefined) => Promise<LockResult<T>>,
+	): Promise<T>;
 }
 
 /**
@@ -80,12 +95,17 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 	private readonly authPath: string;
 	private readonly lock = new AsyncLock();
 
-	constructor(executionEnv: ExecutionEnv, authPath: string = DEFAULT_AUTH_PATH) {
+	constructor(
+		executionEnv: ExecutionEnv,
+		authPath: string = DEFAULT_AUTH_PATH,
+	) {
 		this.executionEnv = executionEnv;
 		this.authPath = authPath;
 	}
 
-	async withLockAsync<T>(fn: (current: string | undefined) => Promise<LockResult<T>>): Promise<T> {
+	async withLockAsync<T>(
+		fn: (current: string | undefined) => Promise<LockResult<T>>,
+	): Promise<T> {
 		return await this.lock.run(async () => {
 			await this.ensureFileExists();
 			const current = await this.readCurrent();
@@ -137,7 +157,9 @@ export class InMemoryAuthStorageBackend implements AuthStorageBackend {
 		}
 	}
 
-	async withLockAsync<T>(fn: (current: string | undefined) => Promise<LockResult<T>>): Promise<T> {
+	async withLockAsync<T>(
+		fn: (current: string | undefined) => Promise<LockResult<T>>,
+	): Promise<T> {
 		return await this.lock.run(async () => {
 			const { result, next } = await fn(this.value);
 			if (next !== undefined) {
@@ -157,25 +179,46 @@ export class AuthStorage {
 	private readonly runtimeOverrides: Map<string, string> = new Map();
 	private fallbackResolver?: (provider: string) => string | undefined;
 	private loadError: Error | null = null;
+	private loadDiagnostic: AuthDiagnostic | undefined;
 	private errors: Error[] = [];
+	private diagnostics: AuthDiagnostic[] = [];
 	private readonly storage: AuthStorageBackend;
 	private readonly configValueResolver: ConfigValueResolver;
 
-	private constructor(storage: AuthStorageBackend, options: AuthStorageOptions) {
+	private constructor(
+		storage: AuthStorageBackend,
+		options: AuthStorageOptions,
+	) {
 		this.storage = storage;
 		this.configValueResolver = options.configValueResolver;
 	}
 
-	static create(executionEnv: ExecutionEnv, options: AuthStorageOptions, authPath?: string): AuthStorage {
-		return new AuthStorage(new FileAuthStorageBackend(executionEnv, authPath), options);
+	static create(
+		executionEnv: ExecutionEnv,
+		options: AuthStorageOptions,
+		authPath?: string,
+	): AuthStorage {
+		return new AuthStorage(
+			new FileAuthStorageBackend(executionEnv, authPath),
+			options,
+		);
 	}
 
-	static fromStorage(storage: AuthStorageBackend, options: AuthStorageOptions): AuthStorage {
+	static fromStorage(
+		storage: AuthStorageBackend,
+		options: AuthStorageOptions,
+	): AuthStorage {
 		return new AuthStorage(storage, options);
 	}
 
-	static inMemory(options: AuthStorageOptions, data: AuthStorageData = {}): AuthStorage {
-		return AuthStorage.fromStorage(new InMemoryAuthStorageBackend(data), options);
+	static inMemory(
+		options: AuthStorageOptions,
+		data: AuthStorageData = {},
+	): AuthStorage {
+		return AuthStorage.fromStorage(
+			new InMemoryAuthStorageBackend(data),
+			options,
+		);
 	}
 
 	/**
@@ -207,13 +250,26 @@ export class AuthStorage {
 	 *
 	 * ModelRegistry uses this for provider API keys declared in models.json.
 	 */
-	setFallbackResolver(resolver: (provider: string) => string | undefined): void {
+	setFallbackResolver(
+		resolver: (provider: string) => string | undefined,
+	): void {
 		this.fallbackResolver = resolver;
 	}
 
-	private recordError(error: unknown): void {
-		const normalizedError = error instanceof Error ? error : new Error(String(error));
+	private recordError(
+		error: unknown,
+		code:
+			| "auth.load_failed"
+			| "auth.persist_failed"
+			| "auth.oauth_refresh_failed",
+		provider?: string,
+	): AuthDiagnostic {
+		const normalizedError =
+			error instanceof Error ? error : new Error(String(error));
 		this.errors.push(normalizedError);
+		const diagnostic = createAuthDiagnostic(code, normalizedError, provider);
+		this.diagnostics.push(diagnostic);
+		return diagnostic;
 	}
 
 	private parseStorageData(content: string | undefined): AuthStorageData {
@@ -235,13 +291,17 @@ export class AuthStorage {
 			});
 			this.data = this.parseStorageData(content);
 			this.loadError = null;
+			this.loadDiagnostic = undefined;
 		} catch (error) {
 			this.loadError = error as Error;
-			this.recordError(error);
+			this.loadDiagnostic = this.recordError(error, "auth.load_failed");
 		}
 	}
 
-	private async persistProviderChange(provider: string, credential: AuthCredential | undefined): Promise<void> {
+	private async persistProviderChange(
+		provider: string,
+		credential: AuthCredential | undefined,
+	): Promise<void> {
 		if (this.loadError) {
 			return;
 		}
@@ -258,7 +318,7 @@ export class AuthStorage {
 				return { result: undefined, next: JSON.stringify(merged, null, 2) };
 			});
 		} catch (error) {
-			this.recordError(error);
+			this.recordError(error, "auth.persist_failed", provider);
 		}
 	}
 
@@ -330,7 +390,11 @@ export class AuthStorage {
 		}
 
 		if (this.fallbackResolver?.(provider)) {
-			return { configured: false, source: "fallback", label: "custom provider config" };
+			return {
+				configured: false,
+				source: "fallback",
+				label: "custom provider config",
+			};
 		}
 
 		return { configured: false };
@@ -349,10 +413,23 @@ export class AuthStorage {
 		return drained;
 	}
 
+	getLoadDiagnostic(): AuthDiagnostic | undefined {
+		return this.loadDiagnostic;
+	}
+
+	drainDiagnostics(): AuthDiagnostic[] {
+		const drained = [...this.diagnostics];
+		this.diagnostics = [];
+		return drained;
+	}
+
 	/**
 	 * Login to an OAuth provider and persist the returned credentials.
 	 */
-	async login(providerId: OAuthProviderId, callbacks: OAuthLoginCallbacks): Promise<void> {
+	async login(
+		providerId: OAuthProviderId,
+		callbacks: OAuthLoginCallbacks,
+	): Promise<void> {
 		const provider = getOAuthProvider(providerId);
 		if (!provider) {
 			throw new Error(`Unknown OAuth provider: ${providerId}`);
@@ -387,6 +464,7 @@ export class AuthStorage {
 			const currentData = this.parseStorageData(current);
 			this.data = currentData;
 			this.loadError = null;
+			this.loadDiagnostic = undefined;
 
 			const cred = currentData[providerId];
 			if (cred?.type !== "oauth") {
@@ -394,7 +472,9 @@ export class AuthStorage {
 			}
 
 			if (Date.now() < cred.expires) {
-				return { result: { apiKey: provider.getApiKey(cred), newCredentials: cred } };
+				return {
+					result: { apiKey: provider.getApiKey(cred), newCredentials: cred },
+				};
 			}
 
 			const oauthCreds: Record<string, OAuthCredentials> = {};
@@ -415,6 +495,7 @@ export class AuthStorage {
 			};
 			this.data = merged;
 			this.loadError = null;
+			this.loadDiagnostic = undefined;
 			return { result: refreshed, next: JSON.stringify(merged, null, 2) };
 		});
 	}
@@ -429,7 +510,10 @@ export class AuthStorage {
 	 * 4. Environment variable
 	 * 5. Fallback resolver, unless disabled by the caller
 	 */
-	async getApiKey(providerId: string, options?: { includeFallback?: boolean }): Promise<string | undefined> {
+	async getApiKey(
+		providerId: string,
+		options?: { includeFallback?: boolean },
+	): Promise<string | undefined> {
 		const runtimeKey = this.runtimeOverrides.get(providerId);
 		if (runtimeKey) {
 			return runtimeKey;
@@ -454,11 +538,14 @@ export class AuthStorage {
 						return result.apiKey;
 					}
 				} catch (error) {
-					this.recordError(error);
+					this.recordError(error, "auth.oauth_refresh_failed", providerId);
 					// Refresh failed. Re-read storage in case another process refreshed first.
 					await this.reload();
 					const updatedCred = this.data[providerId];
-					if (updatedCred?.type === "oauth" && Date.now() < updatedCred.expires) {
+					if (
+						updatedCred?.type === "oauth" &&
+						Date.now() < updatedCred.expires
+					) {
 						// Another actor refreshed successfully; use those credentials.
 						return provider.getApiKey(updatedCred);
 					}
@@ -485,4 +572,33 @@ export class AuthStorage {
 	getOAuthProviders() {
 		return getOAuthProviders();
 	}
+}
+
+function createAuthDiagnostic(
+	code:
+		| "auth.load_failed"
+		| "auth.persist_failed"
+		| "auth.oauth_refresh_failed",
+	error: Error,
+	provider: string | undefined,
+): AuthDiagnostic {
+	return createDiagnostic({
+		domain: "auth",
+		code,
+		severity: "error",
+		disposition: "degraded",
+		recoverable: true,
+		message: error.message,
+		source: {
+			kind: "registry",
+			name: "auth",
+			key: provider,
+		},
+		provider,
+		phase: code === "auth.load_failed" ? "load" : "runtime",
+		details: {
+			errorName: error.name,
+			errorMessage: error.message,
+		},
+	});
 }

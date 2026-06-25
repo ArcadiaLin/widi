@@ -15,8 +15,12 @@ const ENV_VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const ENV_VAR_NAME_PREFIX_RE = /^[A-Za-z_][A-Za-z0-9_]*/;
 const LEGACY_ENV_VAR_NAME_RE = /^[A-Z_][A-Z0-9_]*$/;
 
-type TemplatePart = { type: "literal"; value: string } | { type: "env"; name: string };
-type ConfigValueReference = { type: "command"; config: string } | { type: "template"; parts: TemplatePart[] };
+type TemplatePart =
+	| { type: "literal"; value: string }
+	| { type: "env"; name: string };
+type ConfigValueReference =
+	| { type: "command"; config: string }
+	| { type: "template"; parts: TemplatePart[] };
 
 function appendLiteral(parts: TemplatePart[], value: string): void {
 	if (!value) return;
@@ -109,12 +113,17 @@ function getTemplateEnvVarNames(parts: TemplatePart[]): string[] {
 export class ConfigValueResolver {
 	private readonly executionEnv: ExecutionEnv;
 	private readonly commandTimeoutSeconds: number;
-	private readonly commandResultCache: Map<string, string | undefined> = new Map();
+	private readonly commandResultCache: Map<string, string | undefined> =
+		new Map();
 	private readonly getEnvValue: GetEnv;
 
-	constructor(executionEnv: ExecutionEnv, options: ConfigValueResolverOptions = {}) {
+	constructor(
+		executionEnv: ExecutionEnv,
+		options: ConfigValueResolverOptions = {},
+	) {
 		this.executionEnv = executionEnv;
-		this.commandTimeoutSeconds = options.commandTimeoutSeconds ?? DEFAULT_COMMAND_TIMEOUT_SECONDS;
+		this.commandTimeoutSeconds =
+			options.commandTimeoutSeconds ?? DEFAULT_COMMAND_TIMEOUT_SECONDS;
 		this.getEnvValue = options.getEnv ?? ((name) => process.env[name]);
 	}
 
@@ -140,7 +149,9 @@ export class ConfigValueResolver {
 	getConfigValueEnvVarName(config: string): string | undefined {
 		const reference = parseConfigValueReference(config);
 		if (reference.type !== "template") return undefined;
-		return reference.parts.length === 1 && reference.parts[0]?.type === "env" ? reference.parts[0].name : undefined;
+		return reference.parts.length === 1 && reference.parts[0]?.type === "env"
+			? reference.parts[0].name
+			: undefined;
 	}
 
 	/**
@@ -151,7 +162,9 @@ export class ConfigValueResolver {
 	 */
 	getConfigValueEnvVarNames(config: string): string[] {
 		const reference = parseConfigValueReference(config);
-		return reference.type === "template" ? getTemplateEnvVarNames(reference.parts) : [];
+		return reference.type === "template"
+			? getTemplateEnvVarNames(reference.parts)
+			: [];
 	}
 
 	/**
@@ -207,7 +220,9 @@ export class ConfigValueResolver {
 	 *
 	 * Template values are unaffected because environment lookup is delegated to getEnv().
 	 */
-	async resolveConfigValueUncached(config: string): Promise<string | undefined> {
+	async resolveConfigValueUncached(
+		config: string,
+	): Promise<string | undefined> {
 		const reference = parseConfigValueReference(config);
 		if (reference.type === "command") {
 			return await this.executeCommandUncached(reference.config);
@@ -221,7 +236,10 @@ export class ConfigValueResolver {
 	 * Error messages distinguish shell command failures from one or more missing environment
 	 * variables, which lets callers surface actionable auth/config diagnostics.
 	 */
-	async resolveConfigValueOrThrow(config: string, description: string): Promise<string> {
+	async resolveConfigValueOrThrow(
+		config: string,
+		description: string,
+	): Promise<string> {
 		const resolvedValue = await this.resolveConfigValueUncached(config);
 		if (resolvedValue !== undefined) {
 			return resolvedValue;
@@ -229,15 +247,21 @@ export class ConfigValueResolver {
 
 		const reference = parseConfigValueReference(config);
 		if (reference.type === "command") {
-			throw new Error(`Failed to resolve ${description} from shell command: ${reference.config.slice(1)}`);
+			throw new Error(
+				`Failed to resolve ${description} from shell command: ${reference.config.slice(1)}`,
+			);
 		}
 
 		const missingEnvVars = await this.getMissingConfigValueEnvVarNames(config);
 		if (missingEnvVars.length === 1) {
-			throw new Error(`Failed to resolve ${description} from environment variable: ${missingEnvVars[0]}`);
+			throw new Error(
+				`Failed to resolve ${description} from environment variable: ${missingEnvVars[0]}`,
+			);
 		}
 		if (missingEnvVars.length > 1) {
-			throw new Error(`Failed to resolve ${description} from environment variables: ${missingEnvVars.join(", ")}`);
+			throw new Error(
+				`Failed to resolve ${description} from environment variables: ${missingEnvVars.join(", ")}`,
+			);
 		}
 
 		throw new Error(`Failed to resolve ${description}`);
@@ -249,7 +273,9 @@ export class ConfigValueResolver {
 	 * Headers that resolve to undefined or an empty string are omitted. Use resolveHeadersOrThrow()
 	 * when every configured header must resolve successfully.
 	 */
-	async resolveHeaders(headers: Record<string, string> | undefined): Promise<Record<string, string> | undefined> {
+	async resolveHeaders(
+		headers: Record<string, string> | undefined,
+	): Promise<Record<string, string> | undefined> {
 		if (!headers) return undefined;
 		const resolved: Record<string, string> = {};
 		for (const [key, value] of Object.entries(headers)) {
@@ -274,7 +300,10 @@ export class ConfigValueResolver {
 		if (!headers) return undefined;
 		const resolved: Record<string, string> = {};
 		for (const [key, value] of Object.entries(headers)) {
-			resolved[key] = await this.resolveConfigValueOrThrow(value, `${description} header "${key}"`);
+			resolved[key] = await this.resolveConfigValueOrThrow(
+				value,
+				`${description} header "${key}"`,
+			);
 		}
 		return Object.keys(resolved).length > 0 ? resolved : undefined;
 	}
@@ -284,7 +313,9 @@ export class ConfigValueResolver {
 		this.commandResultCache.clear();
 	}
 
-	private async resolveTemplate(parts: TemplatePart[]): Promise<string | undefined> {
+	private async resolveTemplate(
+		parts: TemplatePart[],
+	): Promise<string | undefined> {
 		let resolved = "";
 		for (const part of parts) {
 			if (part.type === "literal") {
@@ -299,7 +330,9 @@ export class ConfigValueResolver {
 		return resolved;
 	}
 
-	private async executeCommand(commandConfig: string): Promise<string | undefined> {
+	private async executeCommand(
+		commandConfig: string,
+	): Promise<string | undefined> {
 		if (this.commandResultCache.has(commandConfig)) {
 			return this.commandResultCache.get(commandConfig);
 		}
@@ -309,9 +342,13 @@ export class ConfigValueResolver {
 		return result;
 	}
 
-	private async executeCommandUncached(commandConfig: string): Promise<string | undefined> {
+	private async executeCommandUncached(
+		commandConfig: string,
+	): Promise<string | undefined> {
 		const command = commandConfig.slice(1);
-		const result = await this.executionEnv.exec(command, { timeout: this.commandTimeoutSeconds });
+		const result = await this.executionEnv.exec(command, {
+			timeout: this.commandTimeoutSeconds,
+		});
 		if (!result.ok || result.value.exitCode !== 0) {
 			return undefined;
 		}

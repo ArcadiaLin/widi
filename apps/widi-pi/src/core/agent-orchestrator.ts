@@ -861,7 +861,11 @@ export class AgentOrchestrator {
 			agentId,
 			metadata: options.metadata,
 		});
-		const context = await session.buildContext();
+		const context = (await session.buildContext()) as Awaited<
+			ReturnType<typeof session.buildContext>
+		> & {
+			activeToolNames?: string[] | null;
+		};
 		const model = this._resolveResumeModel(options, context.model);
 		const harness = await this._buildAgentHarness({
 			agentId,

@@ -187,10 +187,15 @@ describe("ToolRegistry", () => {
 		expect(result.getTool("read")?.source).toEqual(extensionSource);
 		expect(result.diagnostics).toContainEqual(
 			expect.objectContaining({
-				code: "tool_define_conflict",
+				code: "tool.define_conflict",
+				domain: "tool",
 				toolName: "read",
-				source: coreSource,
-				targetSource: extensionSource,
+				source: { kind: "registry", name: "tool:read", key: "core:builtin" },
+				targetSource: { kind: "extension", id: "ext" },
+				details: expect.objectContaining({
+					contributionSource: coreSource,
+					targetContributionSource: extensionSource,
+				}),
 			}),
 		);
 	});
@@ -216,11 +221,11 @@ describe("ToolRegistry", () => {
 		expect(result.toolNames).toEqual(["read"]);
 		expect(result.activeToolNames).toEqual(["read"]);
 		expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
-			"tool_requested_duplicate",
-			"tool_requested_missing",
-			"tool_active_duplicate",
-			"tool_active_missing",
-			"tool_active_missing",
+			"tool.requested_duplicate",
+			"tool.requested_missing",
+			"tool.active_duplicate",
+			"tool.active_missing",
+			"tool.active_missing",
 		]);
 	});
 
@@ -238,9 +243,12 @@ describe("ToolRegistry", () => {
 		expect(result.tools).toEqual([]);
 		expect(result.diagnostics).toContainEqual(
 			expect.objectContaining({
-				code: "tool_patch_target_missing",
+				code: "tool.patch_target_missing",
 				toolName: "write",
-				source: extensionSource,
+				source: { kind: "extension", id: "ext" },
+				details: expect.objectContaining({
+					contributionSource: extensionSource,
+				}),
 			}),
 		);
 	});

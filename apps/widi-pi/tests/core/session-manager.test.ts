@@ -1,5 +1,14 @@
-import type { FileError, FileInfo, FileSystem, Result } from "@earendil-works/pi-agent-core";
-import { FileError as PiFileError, err, ok } from "@earendil-works/pi-agent-core";
+import type {
+	FileError,
+	FileInfo,
+	FileSystem,
+	Result,
+} from "@earendil-works/pi-agent-core";
+import {
+	err,
+	ok,
+	FileError as PiFileError,
+} from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import type { AgentProfile } from "../../src/core/agent-profile.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
@@ -32,33 +41,56 @@ class MemoryFileSystem implements FileSystem {
 		const normalized = this.normalize(path);
 		const content = this.files.get(normalized);
 		if (content === undefined) {
-			return err(new PiFileError("not_found", `File not found: ${normalized}`, normalized));
+			return err(
+				new PiFileError(
+					"not_found",
+					`File not found: ${normalized}`,
+					normalized,
+				),
+			);
 		}
 		return ok(content);
 	}
 
-	async readTextLines(path: string, options?: { maxLines?: number }): Promise<Result<string[], FileError>> {
+	async readTextLines(
+		path: string,
+		options?: { maxLines?: number },
+	): Promise<Result<string[], FileError>> {
 		const result = await this.readTextFile(path);
 		if (!result.ok) return result;
 		const lines = result.value.split("\n");
-		return ok(options?.maxLines === undefined ? lines : lines.slice(0, options.maxLines));
+		return ok(
+			options?.maxLines === undefined
+				? lines
+				: lines.slice(0, options.maxLines),
+		);
 	}
 
 	async readBinaryFile(): Promise<Result<Uint8Array, FileError>> {
 		return err(new PiFileError("not_supported", "not supported"));
 	}
 
-	async writeFile(path: string, content: string | Uint8Array): Promise<Result<void, FileError>> {
+	async writeFile(
+		path: string,
+		content: string | Uint8Array,
+	): Promise<Result<void, FileError>> {
 		const normalized = this.normalize(path);
 		this.dirs.add(this.dirname(normalized));
-		this.files.set(normalized, typeof content === "string" ? content : new TextDecoder().decode(content));
+		this.files.set(
+			normalized,
+			typeof content === "string" ? content : new TextDecoder().decode(content),
+		);
 		return ok(undefined);
 	}
 
-	async appendFile(path: string, content: string | Uint8Array): Promise<Result<void, FileError>> {
+	async appendFile(
+		path: string,
+		content: string | Uint8Array,
+	): Promise<Result<void, FileError>> {
 		const normalized = this.normalize(path);
 		const current = this.files.get(normalized) ?? "";
-		const next = typeof content === "string" ? content : new TextDecoder().decode(content);
+		const next =
+			typeof content === "string" ? content : new TextDecoder().decode(content);
 		this.files.set(normalized, current + next);
 		return ok(undefined);
 	}
@@ -70,17 +102,31 @@ class MemoryFileSystem implements FileSystem {
 	async listDir(path: string): Promise<Result<FileInfo[], FileError>> {
 		const dir = this.normalize(path);
 		if (!this.dirs.has(dir)) {
-			return err(new PiFileError("not_found", `Directory not found: ${dir}`, dir));
+			return err(
+				new PiFileError("not_found", `Directory not found: ${dir}`, dir),
+			);
 		}
 
 		const entries: FileInfo[] = [];
 		for (const directory of this.dirs) {
 			if (directory === dir || this.dirname(directory) !== dir) continue;
-			entries.push({ name: directory.slice(directory.lastIndexOf("/") + 1), path: directory, kind: "directory", size: 0, mtimeMs: 0 });
+			entries.push({
+				name: directory.slice(directory.lastIndexOf("/") + 1),
+				path: directory,
+				kind: "directory",
+				size: 0,
+				mtimeMs: 0,
+			});
 		}
 		for (const [filePath, content] of this.files) {
 			if (this.dirname(filePath) !== dir) continue;
-			entries.push({ name: filePath.slice(filePath.lastIndexOf("/") + 1), path: filePath, kind: "file", size: content.length, mtimeMs: 0 });
+			entries.push({
+				name: filePath.slice(filePath.lastIndexOf("/") + 1),
+				path: filePath,
+				kind: "file",
+				size: content.length,
+				mtimeMs: 0,
+			});
 		}
 		return ok(entries);
 	}
@@ -94,10 +140,22 @@ class MemoryFileSystem implements FileSystem {
 		return ok(this.files.has(normalized) || this.dirs.has(normalized));
 	}
 
-	async createDir(path: string, options?: { recursive?: boolean }): Promise<Result<void, FileError>> {
+	async createDir(
+		path: string,
+		options?: { recursive?: boolean },
+	): Promise<Result<void, FileError>> {
 		const normalized = this.normalize(path);
-		if (options?.recursive === false && !this.dirs.has(this.dirname(normalized))) {
-			return err(new PiFileError("not_found", `Parent not found: ${this.dirname(normalized)}`, normalized));
+		if (
+			options?.recursive === false &&
+			!this.dirs.has(this.dirname(normalized))
+		) {
+			return err(
+				new PiFileError(
+					"not_found",
+					`Parent not found: ${this.dirname(normalized)}`,
+					normalized,
+				),
+			);
 		}
 
 		let current = "";
@@ -138,15 +196,26 @@ const profile: AgentProfile = {
 describe("SessionManager", () => {
 	it("stores agent profile references in extended jsonl session headers", async () => {
 		const fs = new MemoryFileSystem();
-		const manager = new SessionManager({ fs, cwd: "/workspace/project", sessionsRoot: "/sessions" });
+		const manager = new SessionManager({
+			fs,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+		});
 
-		await manager.createAgentSession({ agentId: "main", agentProfile: profile });
-		const [metadata] = await manager.sessionRepo.list({ cwd: "/workspace/project" });
+		await manager.createAgentSession({
+			agentId: "main",
+			agentProfile: profile,
+		});
+		const [metadata] = await manager.sessionRepo.list({
+			cwd: "/workspace/project",
+		});
 		const profileReference = { id: profile.id, label: profile.label };
 
 		expect(metadata?.metadata?.profile).toEqual(profileReference);
-		const headerLine = fs.files.get(metadata!.path)?.split("\n")[0];
-		expect(JSON.parse(headerLine!)).toMatchObject({
+		if (!metadata) throw new Error("Expected session metadata.");
+		const headerLine = fs.files.get(metadata.path)?.split("\n")[0];
+		if (!headerLine) throw new Error("Expected session header line.");
+		expect(JSON.parse(headerLine)).toMatchObject({
 			type: "session",
 			version: 3,
 			id: "main",

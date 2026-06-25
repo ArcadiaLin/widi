@@ -1,5 +1,6 @@
 import type { ExecutionEnv, FileError } from "@earendil-works/pi-agent-core";
 import { DEFAULT_AGENT_DIR } from "./constants/config.js";
+import { type CoreDiagnostic, createDiagnostic } from "./diagnostics.ts";
 
 export interface CompactionSettings {
 	/** Default: true. */
@@ -162,6 +163,8 @@ export interface SettingsError {
 	scope: SettingsScope;
 	error: Error;
 }
+
+export type SettingsDiagnostic = CoreDiagnostic;
 
 export type SettingsLockResult<T> = {
 	result: T;
@@ -419,6 +422,7 @@ export class SettingManager {
 	private projectSettingsLoadError: Error | null;
 	private writeQueue: Promise<void> = Promise.resolve();
 	private errors: SettingsError[];
+	private diagnostics: SettingsDiagnostic[];
 	private readonly modifiedFields: Set<keyof Settings> = new Set();
 	private readonly modifiedNestedFields: Map<keyof Settings, Set<string>> =
 		new Map();
@@ -442,6 +446,7 @@ export class SettingManager {
 		this.globalSettingsLoadError = null;
 		this.projectSettingsLoadError = null;
 		this.errors = [];
+		this.diagnostics = [];
 	}
 
 	private static createLoaded(
@@ -461,6 +466,9 @@ export class SettingManager {
 		manager.globalSettingsLoadError = globalLoadError;
 		manager.projectSettingsLoadError = projectLoadError;
 		manager.errors = [...initialErrors];
+		manager.diagnostics = initialErrors.map(({ scope, error }) =>
+			createSettingsDiagnostic(scope, "settings.load_failed", error, "load"),
+		);
 		manager.storage = storage;
 		return manager;
 	}
@@ -588,7 +596,14 @@ export class SettingManager {
 		);
 		this.projectSettings = projectLoad.settings;
 		this.projectSettingsLoadError = projectLoad.error;
-		if (projectLoad.error) this.recordError("project", projectLoad.error);
+		if (projectLoad.error) {
+			this.recordError(
+				"project",
+				projectLoad.error,
+				"settings.load_failed",
+				"load",
+			);
+		}
 		this.settings = deepMergeSettings(
 			this.globalSettings,
 			this.projectSettings,
@@ -603,7 +618,12 @@ export class SettingManager {
 		);
 		if (globalLoad.error) {
 			this.globalSettingsLoadError = globalLoad.error;
-			this.recordError("global", globalLoad.error);
+			this.recordError(
+				"global",
+				globalLoad.error,
+				"settings.load_failed",
+				"load",
+			);
 		} else {
 			this.globalSettings = globalLoad.settings;
 			this.globalSettingsLoadError = null;
@@ -616,7 +636,12 @@ export class SettingManager {
 		);
 		if (projectLoad.error) {
 			this.projectSettingsLoadError = projectLoad.error;
-			this.recordError("project", projectLoad.error);
+			this.recordError(
+				"project",
+				projectLoad.error,
+				"settings.load_failed",
+				"load",
+			);
 		} else {
 			this.projectSettings = projectLoad.settings;
 			this.projectSettingsLoadError = null;
@@ -643,6 +668,12 @@ export class SettingManager {
 	drainErrors(): SettingsError[] {
 		const drained = [...this.errors];
 		this.errors = [];
+		return drained;
+	}
+
+	drainDiagnostics(): SettingsDiagnostic[] {
+		const drained = [...this.diagnostics];
+		this.diagnostics = [];
 		return drained;
 	}
 
@@ -1126,10 +1157,18 @@ export class SettingManager {
 		}
 	}
 
-	private recordError(scope: SettingsScope, error: unknown): void {
+	private recordError(
+		scope: SettingsScope,
+		error: unknown,
+		code: "settings.load_failed" | "settings.write_failed",
+		phase: CoreDiagnostic["phase"],
+	): void {
 		const normalizedError =
 			error instanceof Error ? error : new Error(String(error));
 		this.errors.push({ scope, error: normalizedError });
+		this.diagnostics.push(
+			createSettingsDiagnostic(scope, code, normalizedError, phase),
+		);
 	}
 
 	private clearModifiedScope(scope: SettingsScope): void {
@@ -1150,7 +1189,7 @@ export class SettingManager {
 				this.clearModifiedScope(scope);
 			})
 			.catch((error) => {
-				this.recordError(scope, error);
+				this.recordError(scope, error, "settings.write_failed", "runtime");
 			});
 	}
 
@@ -1251,6 +1290,28 @@ export class SettingManager {
 			);
 		});
 	}
+}
+
+function createSettingsDiagnostic(
+	scope: SettingsScope,
+	code: "settings.load_failed" | "settings.write_failed",
+	error: Error,
+	phase: CoreDiagnostic["phase"],
+): SettingsDiagnostic {
+	return createDiagnostic({
+		domain: "settings",
+		code,
+		severity: "error",
+		disposition: "degraded",
+		recoverable: true,
+		message: error.message,
+		source: { kind: "settings", scope },
+		phase,
+		details: {
+			errorName: error.name,
+			errorMessage: error.message,
+		},
+	});
 }
 
 export { SettingManager as SettingsManager };

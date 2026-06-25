@@ -6,7 +6,13 @@ import type {
 	FileInfo,
 	Result,
 } from "@earendil-works/pi-agent-core";
-import { ExecutionError as PiExecutionError, FileError as PiFileError, err, ok } from "@earendil-works/pi-agent-core";
+import {
+	err,
+	ok,
+	ExecutionError as PiExecutionError,
+	FileError as PiFileError,
+} from "@earendil-works/pi-agent-core";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import { ModelRegistry } from "../../src/core/model-registry.ts";
@@ -28,15 +34,23 @@ class MemoryExecutionEnv implements ExecutionEnv {
 		return ok(content);
 	}
 
-	async writeFile(path: string, content: string | Uint8Array): Promise<Result<void, FileError>> {
-		this.files.set(path, typeof content === "string" ? content : new TextDecoder().decode(content));
+	async writeFile(
+		path: string,
+		content: string | Uint8Array,
+	): Promise<Result<void, FileError>> {
+		this.files.set(
+			path,
+			typeof content === "string" ? content : new TextDecoder().decode(content),
+		);
 		return ok(undefined);
 	}
 
 	async exec(
 		command: string,
 		_options?: ExecutionEnvExecOptions,
-	): Promise<Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>> {
+	): Promise<
+		Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>
+	> {
 		if (command === "token-command") {
 			return ok({ stdout: "command-token\n", stderr: "", exitCode: 0 });
 		}
@@ -105,7 +119,10 @@ function createResolver(env: MemoryExecutionEnv): ConfigValueResolver {
 	});
 }
 
-async function createRegistry(env: MemoryExecutionEnv, modelsJsonPath?: string): Promise<ModelRegistry> {
+async function createRegistry(
+	env: MemoryExecutionEnv,
+	modelsJsonPath?: string,
+): Promise<ModelRegistry> {
 	const configValueResolver = createResolver(env);
 	const authStorage = AuthStorage.inMemory({ configValueResolver });
 	return await ModelRegistry.create({
@@ -164,8 +181,9 @@ describe("ModelRegistry", () => {
 			provider: "custom",
 			baseUrl: "https://example.test/v1",
 		});
+		if (!model) throw new Error("Expected custom model to resolve.");
 		await expect(registry.getAvailable()).resolves.toContain(model);
-		await expect(registry.getApiKeyAndHeaders(model!)).resolves.toEqual({
+		await expect(registry.getApiKeyAndHeaders(model)).resolves.toEqual({
 			ok: true,
 			apiKey: "env-token",
 			headers: {
@@ -185,7 +203,17 @@ describe("ModelRegistry", () => {
 						baseUrl: "https://example.test/v1",
 						apiKey: "!token-command",
 						api: "openai-completions",
-						models: [{ id: "model", name: "Model", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1000, maxTokens: 100 }],
+						models: [
+							{
+								id: "model",
+								name: "Model",
+								reasoning: false,
+								input: ["text"],
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+								contextWindow: 1000,
+								maxTokens: 100,
+							},
+						],
 					},
 				},
 			}),
@@ -193,8 +221,9 @@ describe("ModelRegistry", () => {
 
 		const registry = await createRegistry(env, ".widi/models.json");
 		const model = registry.find("commanded", "model");
+		if (!model) throw new Error("Expected commanded model to resolve.");
 
-		await expect(registry.getApiKeyAndHeaders(model!)).resolves.toEqual({
+		await expect(registry.getApiKeyAndHeaders(model)).resolves.toEqual({
 			ok: true,
 			apiKey: "command-token",
 			headers: undefined,
@@ -209,5 +238,83 @@ describe("ModelRegistry", () => {
 
 		expect(registry.getAll().length).toBeGreaterThan(0);
 		expect(registry.getError()).toContain("Failed to parse models.json");
+		expect(registry.getLoadDiagnostic()).toEqual(
+			expect.objectContaining({
+				domain: "model",
+				code: "model.load_failed",
+				disposition: "degraded",
+				source: {
+					kind: "path",
+					path: ".widi/models.json",
+					label: "models.json",
+				},
+				phase: "load",
+			}),
+		);
+		expect(registry.drainDiagnostics()).toContainEqual(
+			expect.objectContaining({ code: "model.load_failed" }),
+		);
+	});
+
+	it("records diagnostics for authHeader models without API keys", async () => {
+		const env = new MemoryExecutionEnv();
+		const registry = await createRegistry(env);
+		const model = createTestModel("missing-auth");
+		registry.registerProvider("missing-auth", { authHeader: true });
+
+		await expect(registry.getApiKeyAndHeaders(model)).resolves.toEqual({
+			ok: false,
+			error: 'No API key found for "missing-auth"',
+		});
+		expect(registry.drainDiagnostics()).toContainEqual(
+			expect.objectContaining({
+				domain: "model",
+				code: "model.auth_missing",
+				disposition: "blocked",
+				provider: "missing-auth",
+				modelId: "test-model",
+			}),
+		);
+	});
+
+	it("records diagnostics for request auth resolution failures", async () => {
+		const env = new MemoryExecutionEnv();
+		const registry = await createRegistry(env);
+		const model = createTestModel("missing-env");
+		registry.registerProvider("missing-env", {
+			apiKey: "$MISSING_MODEL_API_KEY",
+		});
+
+		const result = await registry.getApiKeyAndHeaders(model);
+
+		expect(result).toEqual({
+			ok: false,
+			error:
+				'Failed to resolve API key for provider "missing-env" from environment variable: MISSING_MODEL_API_KEY',
+		});
+		expect(registry.drainDiagnostics()).toContainEqual(
+			expect.objectContaining({
+				domain: "model",
+				code: "model.auth_resolution_failed",
+				disposition: "blocked",
+				provider: "missing-env",
+				modelId: "test-model",
+			}),
+		);
 	});
 });
+
+function createTestModel(provider: string): Model<Api> {
+	return {
+		id: "test-model",
+		name: "Test Model",
+		api: "openai-completions" as Api,
+		provider,
+		baseUrl: "https://example.test/v1",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 1000,
+		maxTokens: 100,
+	} as Model<Api>;
+}

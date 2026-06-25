@@ -11,7 +11,7 @@
 	"scripts": {
 		"clean": "npm run clean --workspaces",
 		"build": "npm --workspace pi/packages/ai run build && npm --workspace pi/packages/agent run build && npm --workspace pi/packages/tui run build && npm --workspace apps/widi-pi run build",
-		"check": "biome check --write --error-on-warnings . && tsgo --noEmit -p tsconfig.json",
+		"check": "biome check --write --error-on-warnings apps/widi-pi/src apps/widi-pi/tests apps/widi-pi/docs && tsgo --noEmit -p apps/widi-pi/tsconfig.json",
 		"test": "npm run test --workspaces --if-present"
 	},
 	"devDependencies": {

@@ -1,1 +1,1 @@
-export { type ExtensionRunner } from "./runner.ts";
+export type { ExtensionRunner } from "./runner.ts";

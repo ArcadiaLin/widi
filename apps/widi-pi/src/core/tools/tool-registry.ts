@@ -1,5 +1,12 @@
 import type { AgentTool, ExecutionEnv } from "@earendil-works/pi-agent-core";
 import type { TSchema } from "typebox";
+import {
+	type CoreDiagnostic,
+	createDiagnostic,
+	type DiagnosticDisposition,
+	type DiagnosticSeverity,
+	type DiagnosticSource,
+} from "../diagnostics.ts";
 import type { ToolHumanHost } from "../orchestrator/human-request.ts";
 import type {
 	SessionFactStore,
@@ -19,27 +26,19 @@ type RegistryToolDefinitionPatch = ToolDefinitionPatch<
 >;
 export type AnyToolContribution = ToolContribution<TSchema, unknown, unknown>;
 
-export type ToolRegistryDiagnosticSeverity = "info" | "warning" | "error";
+export type ToolRegistryDiagnosticSeverity = DiagnosticSeverity;
 
 export type ToolRegistryDiagnosticCode =
-	| "tool_define_conflict"
-	| "tool_patch_target_missing"
-	| "tool_patch_field_conflict"
-	| "tool_requested_duplicate"
-	| "tool_requested_missing"
-	| "tool_active_duplicate"
-	| "tool_active_missing"
-	| "tool_invalid_name";
+	| "tool.define_conflict"
+	| "tool.patch_target_missing"
+	| "tool.patch_field_conflict"
+	| "tool.requested_duplicate"
+	| "tool.requested_missing"
+	| "tool.active_duplicate"
+	| "tool.active_missing"
+	| "tool.invalid_name";
 
-export interface ToolRegistryDiagnostic {
-	severity: ToolRegistryDiagnosticSeverity;
-	code: ToolRegistryDiagnosticCode;
-	message: string;
-	toolName?: string;
-	source?: ToolContributionSource;
-	targetSource?: ToolContributionSource;
-	recoverable: boolean;
-}
+export type ToolRegistryDiagnostic = CoreDiagnostic;
 
 export interface ToolRegistryResolveOptions {
 	/**
@@ -182,14 +181,16 @@ export class ToolRegistry {
 		for (const [targetToolName, patches] of patchesByTarget) {
 			if (definitions.has(targetToolName)) continue;
 			for (const patch of patches) {
-				diagnostics.push({
-					severity: "warning",
-					code: "tool_patch_target_missing",
-					message: `Tool patch from ${formatSource(patch.source)} targets missing tool '${targetToolName}'.`,
-					toolName: targetToolName,
-					source: patch.source,
-					recoverable: true,
-				});
+				diagnostics.push(
+					createToolDiagnostic({
+						severity: "warning",
+						code: "tool.patch_target_missing",
+						disposition: "degraded",
+						message: `Tool patch from ${formatSource(patch.source)} targets missing tool '${targetToolName}'.`,
+						toolName: targetToolName,
+						source: patch.source,
+					}),
+				);
 			}
 		}
 
@@ -231,13 +232,15 @@ export class ToolRegistry {
 
 		const toolName = stored.contribution.tool.name.trim();
 		if (!toolName) {
-			diagnostics.push({
-				severity: "error",
-				code: "tool_invalid_name",
-				message: `Tool definition from ${formatSource(stored.contribution.source)} has an empty name.`,
-				source: stored.contribution.source,
-				recoverable: true,
-			});
+			diagnostics.push(
+				createToolDiagnostic({
+					severity: "error",
+					code: "tool.invalid_name",
+					disposition: "degraded",
+					message: `Tool definition from ${formatSource(stored.contribution.source)} has an empty name.`,
+					source: stored.contribution.source,
+				}),
+			);
 			return;
 		}
 
@@ -259,15 +262,16 @@ export class ToolRegistry {
 				: nextEntry;
 		const ignored = winner === previousEntry ? nextEntry : previousEntry;
 		definitions.set(toolName, winner);
-		diagnostics.push({
-			severity: "warning",
-			code: "tool_define_conflict",
-			message: `Tool '${toolName}' is defined by both ${formatSource(previousEntry.source)} and ${formatSource(nextEntry.source)}; keeping ${formatSource(winner.source)}.`,
-			toolName,
-			source: ignored.source,
-			targetSource: winner.source,
-			recoverable: true,
-		});
+		diagnostics.push(
+			createToolDiagnostic({
+				severity: "warning",
+				code: "tool.define_conflict",
+				message: `Tool '${toolName}' is defined by both ${formatSource(previousEntry.source)} and ${formatSource(nextEntry.source)}; keeping ${formatSource(winner.source)}.`,
+				toolName,
+				source: ignored.source,
+				targetSource: winner.source,
+			}),
+		);
 	}
 
 	private _addPatch(
@@ -279,13 +283,15 @@ export class ToolRegistry {
 
 		const targetToolName = stored.contribution.targetToolName.trim();
 		if (!targetToolName) {
-			diagnostics.push({
-				severity: "error",
-				code: "tool_invalid_name",
-				message: `Tool patch from ${formatSource(stored.contribution.source)} has an empty target tool name.`,
-				source: stored.contribution.source,
-				recoverable: true,
-			});
+			diagnostics.push(
+				createToolDiagnostic({
+					severity: "error",
+					code: "tool.invalid_name",
+					disposition: "degraded",
+					message: `Tool patch from ${formatSource(stored.contribution.source)} has an empty target tool name.`,
+					source: stored.contribution.source,
+				}),
+			);
 			return;
 		}
 
@@ -319,15 +325,17 @@ export class ToolRegistry {
 				if (patchEntry.patch[field] === undefined) continue;
 				const previousOwner = fieldOwners.get(field);
 				if (previousOwner) {
-					diagnostics.push({
-						severity: "warning",
-						code: "tool_patch_field_conflict",
-						message: `Tool '${entry.definition.name}' field '${field}' is patched by both ${formatSource(previousOwner.source)} and ${formatSource(patchEntry.source)}; priority order decides the final value.`,
-						toolName: entry.definition.name,
-						source: patchEntry.source,
-						targetSource: previousOwner.source,
-						recoverable: true,
-					});
+					diagnostics.push(
+						createToolDiagnostic({
+							severity: "warning",
+							code: "tool.patch_field_conflict",
+							message: `Tool '${entry.definition.name}' field '${field}' is patched by both ${formatSource(previousOwner.source)} and ${formatSource(patchEntry.source)}; priority order decides the final value.`,
+							toolName: entry.definition.name,
+							source: patchEntry.source,
+							targetSource: previousOwner.source,
+							details: { field },
+						}),
+					);
 				}
 				fieldOwners.set(field, patchEntry);
 			}
@@ -355,7 +363,7 @@ export class ToolRegistry {
 		}
 		const names = normalizeToolNames(
 			requestedToolNames,
-			"tool_requested_duplicate",
+			"tool.requested_duplicate",
 			diagnostics,
 		);
 		const visibleToolNames: string[] = [];
@@ -364,13 +372,15 @@ export class ToolRegistry {
 				visibleToolNames.push(name);
 				continue;
 			}
-			diagnostics.push({
-				severity: "warning",
-				code: "tool_requested_missing",
-				message: `Requested tool '${name}' is not registered.`,
-				toolName: name,
-				recoverable: true,
-			});
+			diagnostics.push(
+				createToolDiagnostic({
+					severity: "warning",
+					code: "tool.requested_missing",
+					disposition: "degraded",
+					message: `Requested tool '${name}' is not registered.`,
+					toolName: name,
+				}),
+			);
 		}
 		return visibleToolNames;
 	}
@@ -385,7 +395,7 @@ export class ToolRegistry {
 		}
 		const names = normalizeToolNames(
 			activeToolNames,
-			"tool_active_duplicate",
+			"tool.active_duplicate",
 			diagnostics,
 		);
 		const resolvedActiveToolNames: string[] = [];
@@ -394,13 +404,15 @@ export class ToolRegistry {
 				resolvedActiveToolNames.push(name);
 				continue;
 			}
-			diagnostics.push({
-				severity: "warning",
-				code: "tool_active_missing",
-				message: `Active tool '${name}' is not visible in the resolved tool set.`,
-				toolName: name,
-				recoverable: true,
-			});
+			diagnostics.push(
+				createToolDiagnostic({
+					severity: "warning",
+					code: "tool.active_missing",
+					disposition: "degraded",
+					message: `Active tool '${name}' is not visible in the resolved tool set.`,
+					toolName: name,
+				}),
+			);
 		}
 		return resolvedActiveToolNames;
 	}
@@ -505,7 +517,7 @@ function createToolExecutionContext(
 
 function normalizeToolNames(
 	names: readonly string[],
-	duplicateCode: "tool_requested_duplicate" | "tool_active_duplicate",
+	duplicateCode: "tool.requested_duplicate" | "tool.active_duplicate",
 	diagnostics: ToolRegistryDiagnostic[],
 ): string[] {
 	const seen = new Set<string>();
@@ -513,28 +525,88 @@ function normalizeToolNames(
 	for (const rawName of names) {
 		const name = rawName.trim();
 		if (!name) {
-			diagnostics.push({
-				severity: "error",
-				code: "tool_invalid_name",
-				message: "Tool name list contains an empty name.",
-				recoverable: true,
-			});
+			diagnostics.push(
+				createToolDiagnostic({
+					severity: "error",
+					code: "tool.invalid_name",
+					disposition: "degraded",
+					message: "Tool name list contains an empty name.",
+				}),
+			);
 			continue;
 		}
 		if (seen.has(name)) {
-			diagnostics.push({
-				severity: "warning",
-				code: duplicateCode,
-				message: `Tool name '${name}' is listed more than once; keeping the first occurrence.`,
-				toolName: name,
-				recoverable: true,
-			});
+			diagnostics.push(
+				createToolDiagnostic({
+					severity: "warning",
+					code: duplicateCode,
+					message: `Tool name '${name}' is listed more than once; keeping the first occurrence.`,
+					toolName: name,
+				}),
+			);
 			continue;
 		}
 		seen.add(name);
 		normalized.push(name);
 	}
 	return normalized;
+}
+
+function createToolDiagnostic(options: {
+	readonly severity: ToolRegistryDiagnosticSeverity;
+	readonly code: ToolRegistryDiagnosticCode;
+	readonly message: string;
+	readonly disposition?: DiagnosticDisposition;
+	readonly toolName?: string;
+	readonly source?: ToolContributionSource;
+	readonly targetSource?: ToolContributionSource;
+	readonly details?: Record<string, unknown>;
+}): ToolRegistryDiagnostic {
+	return createDiagnostic({
+		domain: "tool",
+		code: options.code,
+		severity: options.severity,
+		disposition:
+			options.disposition ??
+			(options.severity === "error" ? "degraded" : "reported"),
+		recoverable: true,
+		message: options.message,
+		source: options.source
+			? diagnosticSourceFromToolContribution(options.source, options.toolName)
+			: options.toolName
+				? { kind: "tool", name: options.toolName }
+				: undefined,
+		targetSource: options.targetSource
+			? diagnosticSourceFromToolContribution(
+					options.targetSource,
+					options.toolName,
+				)
+			: undefined,
+		toolName: options.toolName,
+		phase: "resolve",
+		details: {
+			contributionSource: options.source,
+			targetContributionSource: options.targetSource,
+			...options.details,
+		},
+	});
+}
+
+function diagnosticSourceFromToolContribution(
+	source: ToolContributionSource,
+	toolName: string | undefined,
+): DiagnosticSource {
+	if (source.kind === "extension") {
+		return {
+			kind: "extension",
+			id: source.id,
+		};
+	}
+	return {
+		kind: "registry",
+		name: toolName ? `tool:${toolName}` : "tool",
+		key: `${source.kind}:${source.id}`,
+	};
 }
 
 function compareDefinitionPriority(

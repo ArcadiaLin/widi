@@ -1,3 +1,12 @@
+/**
+ * Shared diagnostics contract for core modules.
+ *
+ * This file is not a stateful runtime service and does not decide policy or UI
+ * presentation. It defines the canonical diagnostic shape plus small helpers and
+ * compatibility adapters so WIDI-owned modules can emit structured diagnostics
+ * directly, while upstream shapes can be normalized at the boundary.
+ */
+
 import type {
 	PromptTemplateDiagnostic,
 	SkillDiagnostic,

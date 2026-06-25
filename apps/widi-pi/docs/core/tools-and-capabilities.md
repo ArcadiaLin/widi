@@ -44,7 +44,7 @@ Registry 输出是 resolved tools：
 - `activeToolNames` 是可见工具中实际启用的名字。
 - `diagnostics` 记录冲突、缺失、重复和无效名字。
 
-同名 `define` 不是推荐的覆盖机制。Registry 会按 priority 和注册顺序选出 deterministic winner，并产生 `tool_define_conflict` diagnostic。修改既有 tool 应使用 `patch`，这样 extension 注入能被诊断、排序和审计。
+同名 `define` 不是推荐的覆盖机制。Registry 会按 priority 和注册顺序选出 deterministic winner，并产生 `tool.define_conflict` diagnostic。修改既有 tool 应使用 `patch`，这样 extension 注入能被诊断、排序和审计。
 
 Patch 规则：
 
@@ -52,7 +52,7 @@ Patch 规则：
 - 后应用的 metadata、prompt、argument preparation、execution env、state reducer 和 execute 覆盖前者。
 - `aroundExecute` 会包装当前 execute；高 priority patch 因为后应用，会成为更外层 wrapper。
 - `sessionFacts` 追加合并，用于让 tool 或 extension 声明可恢复事实。
-- patch 目标不存在时产生 `tool_patch_target_missing` diagnostic，不会创建隐式 tool。
+- patch 目标不存在时产生 `tool.patch_target_missing` diagnostic，不会创建隐式 tool。
 
 Tool visibility 规则：
 

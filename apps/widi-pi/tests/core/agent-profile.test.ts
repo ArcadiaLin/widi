@@ -266,7 +266,7 @@ describe("AgentProfileRegistry", () => {
 		});
 		expect(result.diagnostics).toContainEqual(
 			expect.objectContaining({
-				code: "profile_source_overridden",
+				code: "profile.source_overridden",
 				profileId: "worker",
 			}),
 		);
@@ -296,7 +296,7 @@ describe("AgentProfileRegistry", () => {
 		if (result.ok) throw new Error("Expected duplicate profile failure.");
 		expect(result.reason).toBe("duplicate_profile_id");
 		expect(result.diagnostics).toContainEqual(
-			expect.objectContaining({ code: "duplicate_profile_id" }),
+			expect.objectContaining({ code: "profile.duplicate_id" }),
 		);
 	});
 
@@ -324,7 +324,7 @@ describe("AgentProfileRegistry", () => {
 		expect(filename.ok).toBe(false);
 		if (declared.ok) {
 			expect(declared.diagnostics).toContainEqual(
-				expect.objectContaining({ code: "id_filename_mismatch" }),
+				expect.objectContaining({ code: "profile.id_filename_mismatch" }),
 			);
 		}
 		if (!filename.ok) {
@@ -377,7 +377,7 @@ describe("AgentProfileRegistry", () => {
 
 		expect(result.profiles).toEqual([]);
 		expect(result.diagnostics).toContainEqual(
-			expect.objectContaining({ code: "source_missing" }),
+			expect.objectContaining({ code: "profile.source_missing" }),
 		);
 	});
 });

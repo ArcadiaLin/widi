@@ -16,6 +16,9 @@ import { describe, expect, it } from "vitest";
 import {
 	InMemorySettingsStorage,
 	SettingManager,
+	type SettingsLockResult,
+	type SettingsScope,
+	type SettingsStorage,
 } from "../../src/core/setting-manager.ts";
 
 class MemoryExecutionEnv implements ExecutionEnv {
@@ -136,6 +139,37 @@ class MemoryExecutionEnv implements ExecutionEnv {
 	async cleanup(): Promise<void> {}
 }
 
+class TestSettingsStorage implements SettingsStorage {
+	private readonly data: Record<SettingsScope, string | undefined> = {
+		global: undefined,
+		project: undefined,
+	};
+	readonly readFailures = new Set<SettingsScope>();
+	readonly writeFailures = new Set<SettingsScope>();
+
+	constructor(global?: string, project?: string) {
+		this.data.global = global;
+		this.data.project = project;
+	}
+
+	async withLockAsync<T>(
+		scope: SettingsScope,
+		fn: (current: string | undefined) => Promise<SettingsLockResult<T>>,
+	): Promise<T> {
+		if (this.readFailures.has(scope)) {
+			throw new Error(`${scope} read failed`);
+		}
+		const { result, next } = await fn(this.data[scope]);
+		if (next !== undefined) {
+			if (this.writeFailures.has(scope)) {
+				throw new Error(`${scope} write failed`);
+			}
+			this.data[scope] = next;
+		}
+		return result;
+	}
+}
+
 describe("SettingManager", () => {
 	it("merges project settings over global settings when project is trusted", async () => {
 		const storage = new InMemorySettingsStorage(
@@ -229,5 +263,50 @@ describe("SettingManager", () => {
 		).toEqual({
 			compaction: { enabled: false, reserveTokens: 1234 },
 		});
+	});
+
+	it("drains diagnostics for settings load failures while preserving drainErrors", async () => {
+		const storage = new TestSettingsStorage();
+		storage.readFailures.add("global");
+
+		const manager = await SettingManager.fromStorage(storage);
+
+		expect(manager.drainErrors()).toEqual([
+			expect.objectContaining({
+				scope: "global",
+				error: expect.objectContaining({ message: "global read failed" }),
+			}),
+		]);
+		expect(manager.drainDiagnostics()).toEqual([
+			expect.objectContaining({
+				domain: "settings",
+				code: "settings.load_failed",
+				severity: "error",
+				disposition: "degraded",
+				source: { kind: "settings", scope: "global" },
+				phase: "load",
+			}),
+		]);
+	});
+
+	it("drains diagnostics for settings write failures", async () => {
+		const storage = new TestSettingsStorage();
+		storage.writeFailures.add("global");
+		const manager = await SettingManager.fromStorage(storage);
+
+		manager.setDefaultModel("broken-write");
+		await manager.flush();
+
+		expect(manager.drainDiagnostics()).toContainEqual(
+			expect.objectContaining({
+				domain: "settings",
+				code: "settings.write_failed",
+				source: { kind: "settings", scope: "global" },
+				phase: "runtime",
+				details: expect.objectContaining({
+					errorMessage: "global write failed",
+				}),
+			}),
+		);
 	});
 });
