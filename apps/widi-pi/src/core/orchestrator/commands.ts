@@ -10,7 +10,7 @@ import type {
 	ImageContent,
 	Model,
 } from "@earendil-works/pi-ai";
-import type { OrchestratorDiagnostic } from "./diagnostics.ts";
+import type { OrchestratorDiagnostic } from "../diagnostics.ts";
 import type { HumanRequestDraft, HumanResponse } from "./human-request.ts";
 
 export type RuntimeModel = Model<Api>;

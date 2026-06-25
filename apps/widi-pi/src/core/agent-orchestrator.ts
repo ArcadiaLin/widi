@@ -20,18 +20,23 @@ import type {
 	AgentProfileOverride,
 	AgentProfileRegistry,
 } from "./agent-profile.js";
+import {
+	type DiagnosticDisposition,
+	type DiagnosticSource,
+	type OrchestratorDiagnostic,
+	OrchestratorError,
+	toCoreDiagnosticFromPromptTemplateDiagnostic,
+	toCoreDiagnosticFromSkillDiagnostic,
+} from "./diagnostics.ts";
 import type { ModelRegistry } from "./model-registry.js";
 import type { OrchestratorClient } from "./orchestrator/clients.ts";
 import type {
+	OperationSource,
 	OrchestratorCommand,
 	OrchestratorCommandResult,
 	OrchestratorCommandValue,
 	RuntimeModel,
 } from "./orchestrator/commands.ts";
-import {
-	type OrchestratorDiagnostic,
-	OrchestratorError,
-} from "./orchestrator/diagnostics.ts";
 import type {
 	HumanRequest,
 	HumanRequestEnvelope,
@@ -431,9 +436,9 @@ export class AgentOrchestrator {
 			return { ok: true, commandId, value };
 		} catch (error) {
 			const diagnostic = toDiagnostic(error, {
-				code: "orchestrator_command_failed",
+				code: "orchestrator.command_failed",
 				message: error instanceof Error ? error.message : String(error),
-				source: command.source,
+				operationSource: command.source,
 				agentId: "agentId" in command ? command.agentId : undefined,
 				commandId,
 				recoverable: true,
@@ -463,14 +468,14 @@ export class AgentOrchestrator {
 		};
 
 		if (!requestHuman) {
-			const diagnostic: OrchestratorDiagnostic = {
+			const diagnostic = createOrchestratorDiagnostic({
 				severity: "error",
-				code: "human_request_unhandled",
+				code: "orchestrator.human_request_unhandled",
 				message: "No orchestrator client can handle human requests.",
-				source: request.source,
+				operationSource: request.source,
 				requestId,
 				recoverable: true,
-			};
+			});
 			await this._publishDiagnostic(diagnostic);
 			throw new OrchestratorError(diagnostic);
 		}
@@ -503,14 +508,16 @@ export class AgentOrchestrator {
 					reject(new OrchestratorError(diagnostic));
 				};
 				abortHandler = () => {
-					rejectWithDiagnostic({
-						severity: "error",
-						code: "human_request_aborted",
-						message: "Human request was aborted.",
-						source: request.source,
-						requestId,
-						recoverable: true,
-					});
+					rejectWithDiagnostic(
+						createOrchestratorDiagnostic({
+							severity: "error",
+							code: "orchestrator.human_request_aborted",
+							message: "Human request was aborted.",
+							operationSource: request.source,
+							requestId,
+							recoverable: true,
+						}),
+					);
 				};
 				controller.signal.addEventListener("abort", abortHandler, {
 					once: true,
@@ -524,16 +531,16 @@ export class AgentOrchestrator {
 						completedAt: now(),
 					});
 					rejectWithDiagnostic(
-						{
+						createOrchestratorDiagnostic({
 							severity: "error",
-							code: "human_request_cancelled",
+							code: "orchestrator.human_request_cancelled",
 							message: reason
 								? `Human request was cancelled: ${reason}`
 								: "Human request was cancelled.",
-							source: request.source,
+							operationSource: request.source,
 							requestId,
 							recoverable: true,
-						},
+						}),
 						() => controller.abort(),
 					);
 				};
@@ -545,14 +552,14 @@ export class AgentOrchestrator {
 							completedAt: now(),
 						});
 						rejectWithDiagnostic(
-							{
+							createOrchestratorDiagnostic({
 								severity: "error",
-								code: "human_request_timeout",
+								code: "orchestrator.human_request_timeout",
 								message: "Human request timed out.",
-								source: request.source,
+								operationSource: request.source,
 								requestId,
 								recoverable: true,
-							},
+							}),
 							() => controller.abort(),
 						);
 					}, request.timeoutMs);
@@ -590,9 +597,9 @@ export class AgentOrchestrator {
 		} catch (error) {
 			this._pendingHumanRequests.delete(requestId);
 			const diagnostic = toDiagnostic(error, {
-				code: "orchestrator_command_failed",
+				code: "orchestrator.command_failed",
 				message: error instanceof Error ? error.message : String(error),
-				source: request.source,
+				operationSource: request.source,
 				requestId,
 				recoverable: true,
 			});
@@ -677,13 +684,16 @@ export class AgentOrchestrator {
 	): Promise<AgentProfile> {
 		const profileReference = metadata.metadata?.profile;
 		if (!profileReference?.id) {
-			throw new OrchestratorError({
-				severity: "error",
-				code: "agent_profile_resolution_failed",
-				message: `Cannot resume agent ${agentId}: session metadata does not contain a profile reference.`,
-				agentId,
-				recoverable: true,
-			});
+			throw new OrchestratorError(
+				createOrchestratorDiagnostic({
+					severity: "error",
+					code: "profile.resolution_failed",
+					message: `Cannot resume agent ${agentId}: session metadata does not contain a profile reference.`,
+					agentId,
+					phase: "resume",
+					recoverable: true,
+				}),
+			);
 		}
 		return await this._resolveProfileById(profileReference.id, agentId);
 	}
@@ -694,25 +704,29 @@ export class AgentOrchestrator {
 	): Promise<AgentProfile> {
 		const result = await this.profileRegistry.resolveProfile(profileId);
 		if (!result.ok) {
-			const diagnostic: OrchestratorDiagnostic = {
+			const diagnostic = createOrchestratorDiagnostic({
 				severity: "error",
-				code: "agent_profile_resolution_failed",
+				code: "profile.resolution_failed",
 				message: `Cannot resolve profile ${profileId}: ${result.reason}.`,
 				agentId,
+				profileId,
+				phase: "resolve",
 				recoverable: true,
-			};
+			});
 			await this._publishDiagnostic(diagnostic);
 			throw new OrchestratorError(diagnostic);
 		}
 
 		if (!this._isProfileEnabled(result.profile.id)) {
-			const diagnostic: OrchestratorDiagnostic = {
+			const diagnostic = createOrchestratorDiagnostic({
 				severity: "error",
-				code: "agent_profile_disabled",
+				code: "profile.disabled",
 				message: `Profile is disabled by runtime policy: ${result.profile.id}`,
 				agentId,
+				profileId: result.profile.id,
+				phase: "resolve",
 				recoverable: true,
-			};
+			});
 			await this._publishDiagnostic(diagnostic);
 			throw new OrchestratorError(diagnostic);
 		}
@@ -736,12 +750,14 @@ export class AgentOrchestrator {
 		}
 
 		if ("id" in override) {
-			const diagnostic: OrchestratorDiagnostic = {
+			const diagnostic = createOrchestratorDiagnostic({
 				severity: "error",
-				code: "agent_profile_resolution_failed",
+				code: "profile.override_invalid",
 				message: "Profile override cannot change profile id.",
+				profileId: profile.id,
+				phase: "create",
 				recoverable: true,
-			};
+			});
 			await this._publishDiagnostic(diagnostic);
 			throw new OrchestratorError(diagnostic);
 		}
@@ -754,13 +770,15 @@ export class AgentOrchestrator {
 				: profile.capabilities,
 		};
 		if (merged.persist && changesRecoverableProfileFields(override)) {
-			const diagnostic: OrchestratorDiagnostic = {
+			const diagnostic = createOrchestratorDiagnostic({
 				severity: "error",
-				code: "agent_profile_override_not_persistable",
+				code: "profile.override_not_persistable",
 				message:
 					"Profile override changes recoverable profile fields and cannot create a persistent session.",
+				profileId: profile.id,
+				phase: "create",
 				recoverable: true,
-			};
+			});
 			await this._publishDiagnostic(diagnostic);
 			throw new OrchestratorError(diagnostic);
 		}
@@ -874,6 +892,26 @@ export class AgentOrchestrator {
 			profile.promptTemplates,
 		);
 
+		const resourceDiagnostics: OrchestratorDiagnostic[] = [
+			...LoadedSkill.diagnostics.map((diagnostic) =>
+				toCoreDiagnosticFromSkillDiagnostic(diagnostic, {
+					agentId,
+					profileId: profile.id,
+					phase: "resolve",
+				}),
+			),
+			...LoadedPromptTemplate.diagnostics.map((diagnostic) =>
+				toCoreDiagnosticFromPromptTemplateDiagnostic(diagnostic, {
+					agentId,
+					profileId: profile.id,
+					phase: "resolve",
+				}),
+			),
+		];
+		for (const diagnostic of resourceDiagnostics) {
+			await this._publishDiagnostic(diagnostic);
+		}
+
 		const resources: AgentHarnessResources = {
 			// this step ignore thie "ResourceSource", may be has any other usage;
 			skills: LoadedSkill.skills.map(({ skill }) => skill),
@@ -881,12 +919,6 @@ export class AgentOrchestrator {
 				({ promptTemplate }) => promptTemplate,
 			),
 		};
-
-		// resourceLoader also return a resource diagnostics, so todo is dealing with diagnostics
-		// such as _dealDisgnostics()
-		// const resourceDiagnostics = {
-
-		// }
 
 		const harness = new AgentHarness({
 			env: this.executionEnv,
@@ -1017,12 +1049,13 @@ export class AgentOrchestrator {
 				await client.receive(event);
 			} catch (error) {
 				await this._publishDiagnostic(
-					{
+					createOrchestratorDiagnostic({
 						severity: "warning",
-						code: "orchestrator_client_failed",
+						code: "orchestrator.client_failed",
 						message: error instanceof Error ? error.message : String(error),
+						disposition: "reported",
 						recoverable: true,
-					},
+					}),
 					{ sendToClients: false },
 				);
 			}
@@ -1058,21 +1091,79 @@ export class AgentOrchestrator {
 
 function toDiagnostic(
 	error: unknown,
-	fallback: Omit<OrchestratorDiagnostic, "severity"> & {
+	fallback: Omit<
+		OrchestratorDiagnostic,
+		"domain" | "disposition" | "severity" | "source"
+	> & {
 		severity?: OrchestratorDiagnostic["severity"];
+		disposition?: DiagnosticDisposition;
+		operationSource?: OperationSource;
 	},
 ): OrchestratorDiagnostic {
 	if (error instanceof OrchestratorError) return error.diagnostic;
-	return {
+	return createOrchestratorDiagnostic({
 		severity: fallback.severity ?? "error",
+		disposition: fallback.disposition,
 		code: fallback.code,
 		message: fallback.message,
-		source: fallback.source,
+		operationSource: fallback.operationSource,
 		agentId: fallback.agentId,
 		requestId: fallback.requestId,
 		commandId: fallback.commandId,
 		recoverable: fallback.recoverable,
+	});
+}
+
+function createOrchestratorDiagnostic(
+	diagnostic: Omit<
+		OrchestratorDiagnostic,
+		"domain" | "disposition" | "source"
+	> & {
+		readonly domain?: OrchestratorDiagnostic["domain"];
+		readonly disposition?: DiagnosticDisposition;
+		readonly source?: DiagnosticSource;
+		readonly operationSource?: OperationSource;
+	},
+): OrchestratorDiagnostic {
+	const {
+		domain,
+		disposition,
+		operationSource: inputOperationSource,
+		source: inputSource,
+		...rest
+	} = diagnostic;
+	const source = inputSource ?? operationSource(inputOperationSource);
+	return {
+		...rest,
+		domain: domain ?? domainFromDiagnosticCode(diagnostic.code),
+		disposition: disposition ?? "blocked",
+		source,
 	};
+}
+
+function domainFromDiagnosticCode(
+	code: string,
+): OrchestratorDiagnostic["domain"] {
+	const [domain] = code.split(".");
+	if (
+		domain === "profile" ||
+		domain === "resource" ||
+		domain === "tool" ||
+		domain === "model" ||
+		domain === "auth" ||
+		domain === "settings" ||
+		domain === "extension" ||
+		domain === "orchestrator"
+	) {
+		return domain;
+	}
+	return "orchestrator";
+}
+
+function operationSource(
+	source: OperationSource | undefined,
+): DiagnosticSource | undefined {
+	return source ? { kind: "operation", source } : undefined;
 }
 
 function changesRecoverableProfileFields(

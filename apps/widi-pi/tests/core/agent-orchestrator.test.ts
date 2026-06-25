@@ -450,7 +450,7 @@ describe("AgentOrchestrator", () => {
 		});
 
 		await expect(orchestrator.spawnAgentHarness()).rejects.toMatchObject({
-			code: "agent_profile_disabled",
+			code: "profile.disabled",
 		});
 	});
 
@@ -463,7 +463,7 @@ describe("AgentOrchestrator", () => {
 				profileOverride: { systemPrompt: "temporary prompt" },
 			}),
 		).rejects.toMatchObject({
-			code: "agent_profile_override_not_persistable",
+			code: "profile.override_not_persistable",
 		});
 	});
 
@@ -537,7 +537,7 @@ describe("AgentOrchestrator", () => {
 		expect(idleSteer).toMatchObject({
 			ok: false,
 			diagnostic: {
-				code: "orchestrator_command_failed",
+				code: "orchestrator.command_failed",
 				agentId,
 			},
 		});
@@ -550,7 +550,7 @@ describe("AgentOrchestrator", () => {
 		expect(missingAgent).toMatchObject({
 			ok: false,
 			diagnostic: {
-				code: "orchestrator_command_failed",
+				code: "orchestrator.command_failed",
 				agentId: "missing",
 			},
 		});
@@ -589,7 +589,7 @@ describe("AgentOrchestrator", () => {
 				message: "Continue?",
 			}),
 		).rejects.toMatchObject({
-			code: "human_request_unhandled",
+			code: "orchestrator.human_request_unhandled",
 		});
 	});
 
@@ -614,7 +614,7 @@ describe("AgentOrchestrator", () => {
 				timeoutMs: 1,
 			}),
 		).rejects.toMatchObject({
-			code: "human_request_timeout",
+			code: "orchestrator.human_request_timeout",
 		});
 		expect(events).toContainEqual(
 			expect.objectContaining({ type: "human_request_timeout" }),
@@ -658,7 +658,7 @@ describe("AgentOrchestrator", () => {
 			orchestrator.cancelHumanRequest(pending.request.id, "dismissed"),
 		).resolves.toBe(true);
 		await expect(requestPromise).rejects.toMatchObject({
-			code: "human_request_cancelled",
+			code: "orchestrator.human_request_cancelled",
 		});
 		expect(clientSignal?.aborted).toBe(true);
 		expect(events).toContainEqual(
