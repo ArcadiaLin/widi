@@ -120,6 +120,8 @@ export interface Settings {
 	images?: ImageSettings;
 	/** Model patterns used by model cycling/selectors. */
 	enabledModels?: string[];
+	/** Profile ids allowed by runtime policy. Undefined means no restriction. */
+	enabledProfiles?: string[];
 	/** Default: "tree". */
 	doubleEscapeAction?: "fork" | "tree" | "none";
 	/** Default: "default". */
@@ -927,6 +929,28 @@ export class SettingManager {
 	setProjectProfilePaths(paths: string[]): void {
 		this.updateProjectField("profiles", (settings) => {
 			settings.profiles = [...paths];
+		});
+	}
+
+	getEnabledProfiles(): string[] | undefined {
+		return this.settings.enabledProfiles
+			? [...this.settings.enabledProfiles]
+			: undefined;
+	}
+
+	setEnabledProfiles(profileIds: string[] | undefined): void {
+		this.globalSettings.enabledProfiles = profileIds
+			? [...new Set(profileIds)]
+			: undefined;
+		this.markModified("enabledProfiles");
+		this.save();
+	}
+
+	setProjectEnabledProfiles(profileIds: string[] | undefined): void {
+		this.updateProjectField("enabledProfiles", (settings) => {
+			settings.enabledProfiles = profileIds
+				? [...new Set(profileIds)]
+				: undefined;
 		});
 	}
 

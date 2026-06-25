@@ -7,6 +7,9 @@ export interface OrchestratorDiagnostic {
 	code:
 		| "orchestrator_command_failed"
 		| "orchestrator_client_failed"
+		| "agent_profile_resolution_failed"
+		| "agent_profile_disabled"
+		| "agent_profile_override_not_persistable"
 		| "human_request_unhandled"
 		| "human_request_timeout"
 		| "human_request_aborted"

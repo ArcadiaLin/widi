@@ -143,12 +143,14 @@ describe("SettingManager", () => {
 				defaultProvider: "openai",
 				defaultModel: "gpt-5",
 				defaultProfile: "main",
+				enabledProfiles: ["main", "reviewer"],
 				profiles: ["~/.widi/profiles"],
 				compaction: { enabled: true, reserveTokens: 1000 },
 			},
 			{
 				defaultModel: "gpt-5-mini",
 				defaultProfile: "project-main",
+				enabledProfiles: ["project-main"],
 				profiles: [".widi/profiles"],
 				compaction: { keepRecentTokens: 2000 },
 			},
@@ -159,6 +161,7 @@ describe("SettingManager", () => {
 		expect(manager.getDefaultProvider()).toBe("openai");
 		expect(manager.getDefaultModel()).toBe("gpt-5-mini");
 		expect(manager.getDefaultProfile()).toBe("project-main");
+		expect(manager.getEnabledProfiles()).toEqual(["project-main"]);
 		expect(manager.getProfilePaths()).toEqual([".widi/profiles"]);
 		expect(manager.getCompactionSettings()).toEqual({
 			enabled: true,
@@ -191,6 +194,7 @@ describe("SettingManager", () => {
 		});
 
 		manager.setDefaultModelAndProvider("test-provider", "test-model");
+		manager.setEnabledProfiles(["main", "main", "reviewer"]);
 		manager.setCompactionEnabled(false);
 		await manager.flush();
 
@@ -199,6 +203,7 @@ describe("SettingManager", () => {
 		).toEqual({
 			defaultProvider: "test-provider",
 			defaultModel: "test-model",
+			enabledProfiles: ["main", "reviewer"],
 			compaction: { enabled: false },
 		});
 	});

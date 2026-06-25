@@ -15,7 +15,11 @@ import {
 } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { ExtendedJsonlSessionMetadata } from "../storage/jsonl-repo.ts";
-import type { AgentProfile } from "./agent-profile.js";
+import type {
+	AgentProfile,
+	AgentProfileOverride,
+	AgentProfileRegistry,
+} from "./agent-profile.js";
 import type { ModelRegistry } from "./model-registry.js";
 import type { OrchestratorClient } from "./orchestrator/clients.ts";
 import type {
@@ -103,31 +107,21 @@ export type OrchestratorEvent =
 			agentId: AgentId;
 			profile: AgentProfile;
 			model: RuntimeModel;
-	  }
-	| {
-			readonly type: "agent_profile_missing";
-			agentId: AgentId;
-			missingProfileId: string;
-			missingProfileLabel?: string;
-			fallbackProfileId: string;
 	  };
 
 export type OrchestratorEventListener = (
 	event: OrchestratorEvent,
 ) => Promise<void> | void;
-export type AgentProfileResolver = (
-	profileId: string,
-) => AgentProfile | undefined | Promise<AgentProfile | undefined>;
-
 export interface AgentOrchestratorConfigs {
 	executionEnv: ExecutionEnv;
 	resourceLoader: ResourceLoader;
 	sessionManager: SessionManager;
 	settingManager: SettingManager;
 	modelRegistry: ModelRegistry;
-	defaultProfile: AgentProfile;
+	profileRegistry: AgentProfileRegistry;
+	defaultProfileId: string;
+	enabledProfileIds?: readonly string[];
 	defaultModel: RuntimeModel;
-	resolveProfile?: AgentProfileResolver;
 }
 
 export type AgentId = string;
@@ -182,8 +176,8 @@ interface SpawnAgentHarnessCommonOptions {
 export interface SpawnAgentHarnessCreateOptions
 	extends SpawnAgentHarnessCommonOptions {
 	resume?: false;
-	profile?: AgentProfile;
-	profileOverride?: Partial<AgentProfile>;
+	profileId?: string;
+	profileOverride?: AgentProfileOverride;
 }
 
 export interface SpawnAgentHarnessResumeOptions
@@ -203,14 +197,15 @@ export interface SpawnAgentHarnessResult {
 
 export class AgentOrchestrator {
 	private _defaultModel: RuntimeModel;
-	private _defaultProfile: AgentProfile;
+	private _defaultProfileId: string;
+	private _enabledProfileIds: readonly string[] | undefined;
 	readonly agents: Map<AgentId, AgentHarness> = new Map();
 	readonly executionEnv: ExecutionEnv;
 	readonly resourceLoader: ResourceLoader;
 	readonly sessionManager: SessionManager;
 	readonly settingManager: SettingManager;
 	readonly modelRegistry: ModelRegistry;
-	private readonly _resolveProfile?: AgentProfileResolver;
+	readonly profileRegistry: AgentProfileRegistry;
 
 	private _unsubscribeAgentHarness: Map<AgentId, () => void> = new Map();
 	private _eventListeners: Set<OrchestratorEventListener> = new Set();
@@ -227,9 +222,12 @@ export class AgentOrchestrator {
 		this.sessionManager = config.sessionManager;
 		this.settingManager = config.settingManager;
 		this.modelRegistry = config.modelRegistry;
-		this._defaultProfile = config.defaultProfile;
+		this.profileRegistry = config.profileRegistry;
+		this._defaultProfileId = config.defaultProfileId;
+		this._enabledProfileIds = config.enabledProfileIds
+			? [...config.enabledProfileIds]
+			: undefined;
 		this._defaultModel = config.defaultModel;
-		this._resolveProfile = config.resolveProfile;
 	}
 
 	async spawnAgentHarness(
@@ -239,10 +237,7 @@ export class AgentOrchestrator {
 			return await this._resumeAgentHarness(options);
 		}
 
-		const baseProfile = options.profile ?? this._defaultProfile;
-		const agentProfile = options.profileOverride
-			? { ...baseProfile, ...options.profileOverride }
-			: baseProfile;
+		const agentProfile = await this._resolveCreateProfile(options);
 		const model = this._resolveSpawnModel(options);
 		return await this._createAgentHarness(
 			agentProfile,
@@ -259,12 +254,20 @@ export class AgentOrchestrator {
 		this._defaultModel = model;
 	}
 
-	getDefaultProfile(): AgentProfile {
-		return this._defaultProfile;
+	getDefaultProfileId(): string {
+		return this._defaultProfileId;
 	}
 
-	setDefaultProfile(profile: AgentProfile): void {
-		this._defaultProfile = profile;
+	setDefaultProfileId(profileId: string): void {
+		this._defaultProfileId = profileId;
+	}
+
+	getEnabledProfileIds(): readonly string[] | undefined {
+		return this._enabledProfileIds ? [...this._enabledProfileIds] : undefined;
+	}
+
+	setEnabledProfileIds(profileIds: readonly string[] | undefined): void {
+		this._enabledProfileIds = profileIds ? [...profileIds] : undefined;
 	}
 
 	getAgentHarness(agentId: AgentId): AgentHarness | undefined {
@@ -660,30 +663,108 @@ export class AgentOrchestrator {
 		return this._defaultModel;
 	}
 
+	private async _resolveCreateProfile(
+		options: SpawnAgentHarnessCreateOptions,
+	): Promise<AgentProfile> {
+		const profileId = options.profileId ?? this._defaultProfileId;
+		const profile = await this._resolveProfileById(profileId, undefined);
+		return await this._applyProfileOverride(profile, options.profileOverride);
+	}
+
 	private async _resolveResumeProfile(
 		agentId: AgentId,
 		metadata: ExtendedJsonlSessionMetadata,
 	): Promise<AgentProfile> {
 		const profileReference = metadata.metadata?.profile;
 		if (!profileReference?.id) {
-			return this._defaultProfile;
-		}
-
-		const resolvedProfile = await this._resolveProfile?.(profileReference.id);
-		if (resolvedProfile) {
-			return resolvedProfile;
-		}
-
-		if (profileReference.id !== this._defaultProfile.id) {
-			await this._emit({
-				type: "agent_profile_missing",
+			throw new OrchestratorError({
+				severity: "error",
+				code: "agent_profile_resolution_failed",
+				message: `Cannot resume agent ${agentId}: session metadata does not contain a profile reference.`,
 				agentId,
-				missingProfileId: profileReference.id,
-				missingProfileLabel: profileReference.label,
-				fallbackProfileId: this._defaultProfile.id,
+				recoverable: true,
 			});
 		}
-		return this._defaultProfile;
+		return await this._resolveProfileById(profileReference.id, agentId);
+	}
+
+	private async _resolveProfileById(
+		profileId: string,
+		agentId: AgentId | undefined,
+	): Promise<AgentProfile> {
+		const result = await this.profileRegistry.resolveProfile(profileId);
+		if (!result.ok) {
+			const diagnostic: OrchestratorDiagnostic = {
+				severity: "error",
+				code: "agent_profile_resolution_failed",
+				message: `Cannot resolve profile ${profileId}: ${result.reason}.`,
+				agentId,
+				recoverable: true,
+			};
+			await this._publishDiagnostic(diagnostic);
+			throw new OrchestratorError(diagnostic);
+		}
+
+		if (!this._isProfileEnabled(result.profile.id)) {
+			const diagnostic: OrchestratorDiagnostic = {
+				severity: "error",
+				code: "agent_profile_disabled",
+				message: `Profile is disabled by runtime policy: ${result.profile.id}`,
+				agentId,
+				recoverable: true,
+			};
+			await this._publishDiagnostic(diagnostic);
+			throw new OrchestratorError(diagnostic);
+		}
+
+		return result.profile;
+	}
+
+	private _isProfileEnabled(profileId: string): boolean {
+		return (
+			this._enabledProfileIds === undefined ||
+			this._enabledProfileIds.includes(profileId)
+		);
+	}
+
+	private async _applyProfileOverride(
+		profile: AgentProfile,
+		override: AgentProfileOverride | undefined,
+	): Promise<AgentProfile> {
+		if (!override) {
+			return profile;
+		}
+
+		if ("id" in override) {
+			const diagnostic: OrchestratorDiagnostic = {
+				severity: "error",
+				code: "agent_profile_resolution_failed",
+				message: "Profile override cannot change profile id.",
+				recoverable: true,
+			};
+			await this._publishDiagnostic(diagnostic);
+			throw new OrchestratorError(diagnostic);
+		}
+
+		const merged: AgentProfile = {
+			...profile,
+			...override,
+			capabilities: override.capabilities
+				? { ...profile.capabilities, ...override.capabilities }
+				: profile.capabilities,
+		};
+		if (merged.persist && changesRecoverableProfileFields(override)) {
+			const diagnostic: OrchestratorDiagnostic = {
+				severity: "error",
+				code: "agent_profile_override_not_persistable",
+				message:
+					"Profile override changes recoverable profile fields and cannot create a persistent session.",
+				recoverable: true,
+			};
+			await this._publishDiagnostic(diagnostic);
+			throw new OrchestratorError(diagnostic);
+		}
+		return merged;
 	}
 
 	private _resolveResumeModel(
@@ -992,6 +1073,20 @@ function toDiagnostic(
 		commandId: fallback.commandId,
 		recoverable: fallback.recoverable,
 	};
+}
+
+function changesRecoverableProfileFields(
+	override: AgentProfileOverride,
+): boolean {
+	return (
+		override.systemPrompt !== undefined ||
+		override.tools !== undefined ||
+		override.skills !== undefined ||
+		override.promptTemplates !== undefined ||
+		override.extensions !== undefined ||
+		override.capabilities !== undefined ||
+		override.persist !== undefined
+	);
 }
 
 function now(): string {

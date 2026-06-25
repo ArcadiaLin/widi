@@ -13,7 +13,11 @@ import {
 	FileError as PiFileError,
 } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
-import { AgentProfileLoader } from "../../src/core/agent-profile.ts";
+import {
+	AgentProfileRegistry,
+	FileProfileStorageBackend,
+	InMemoryProfileStorageBackend,
+} from "../../src/core/agent-profile.ts";
 
 class MemoryExecutionEnv implements ExecutionEnv {
 	cwd = "/workspace";
@@ -217,8 +221,8 @@ class MemoryExecutionEnv implements ExecutionEnv {
 	async cleanup(): Promise<void> {}
 }
 
-describe("AgentProfileLoader", () => {
-	it("loads named profiles from agent and cwd profile roots", async () => {
+describe("AgentProfileRegistry", () => {
+	it("resolves project profiles over user profiles as whole-profile override", async () => {
 		const env = new MemoryExecutionEnv();
 		await env.createDir("/home/user/.widi/profiles", { recursive: true });
 		await env.createDir("/workspace/project/.widi/profiles", {
@@ -226,41 +230,109 @@ describe("AgentProfileLoader", () => {
 		});
 		await env.writeFile(
 			"/home/user/.widi/profiles/worker.md",
-			"---\nid: global-worker\nlabel: Global Worker\npersist: true\nskills: [code]\nprompt-templates: [review]\nextensions: [mailbox]\nmissing-extension-severity: error\n---\nGlobal prompt",
+			"---\nid: worker\nlabel: User Worker\npersist: true\nskills: [code]\n---\nUser prompt",
 		);
 		await env.writeFile(
 			"/workspace/project/.widi/profiles/worker.md",
-			"---\nid: project-worker\nlabel: Project Worker\n---\nProject prompt",
+			"---\nid: worker\nlabel: Project Worker\n---\nProject prompt",
 		);
 
-		const loader = new AgentProfileLoader({
-			executionEnv: env,
-			cwd: "/workspace/project",
-			agentDir: "/home/user/.widi",
-		});
-		const result = await loader.loadProfiles(["worker"]);
+		const registry = new AgentProfileRegistry(
+			new FileProfileStorageBackend(env, [
+				{
+					kind: "agent_dir",
+					path: "/home/user/.widi/profiles",
+					priority: 100,
+					missingBehavior: "silent",
+				},
+				{
+					kind: "cwd",
+					path: "/workspace/project/.widi/profiles",
+					priority: 200,
+					missingBehavior: "silent",
+				},
+			]),
+		);
 
-		expect(result.diagnostics).toEqual([]);
-		expect(result.profiles.map(({ profile }) => profile.id)).toEqual([
-			"global-worker",
-			"project-worker",
-		]);
-		expect(result.profiles[0]?.profile).toMatchObject({
-			label: "Global Worker",
-			systemPrompt: "Global prompt",
-			persist: true,
-			skills: ["code"],
-			promptTemplates: ["review"],
-			extensions: ["mailbox"],
-			missingExtensionSeverity: "error",
+		const result = await registry.resolveProfile("worker");
+
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error("Expected profile to resolve.");
+		expect(result.profile).toMatchObject({
+			id: "worker",
+			label: "Project Worker",
+			systemPrompt: "Project prompt",
+			persist: false,
 		});
-		expect(result.profiles.map(({ source }) => source)).toEqual([
-			{ kind: "agent_dir", path: "/home/user/.widi/profiles/worker.md" },
-			{ kind: "cwd", path: "/workspace/project/.widi/profiles/worker.md" },
-		]);
+		expect(result.diagnostics).toContainEqual(
+			expect.objectContaining({
+				code: "profile_source_overridden",
+				profileId: "worker",
+			}),
+		);
 	});
 
-	it("loads every direct markdown profile when no profile names are provided", async () => {
+	it("hard fails duplicate profile ids at the same priority", async () => {
+		const registry = new AgentProfileRegistry(
+			new InMemoryProfileStorageBackend([
+				{
+					entryId: "memory:a",
+					filenameId: "a",
+					source: { kind: "memory", priority: 100 },
+					content: "---\nid: reviewer\n---\nA",
+				},
+				{
+					entryId: "memory:b",
+					filenameId: "b",
+					source: { kind: "memory", priority: 100 },
+					content: "---\nid: reviewer\n---\nB",
+				},
+			]),
+		);
+
+		const result = await registry.resolveProfile("reviewer");
+
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error("Expected duplicate profile failure.");
+		expect(result.reason).toBe("duplicate_profile_id");
+		expect(result.diagnostics).toContainEqual(
+			expect.objectContaining({ code: "duplicate_profile_id" }),
+		);
+	});
+
+	it("indexes declared ids and does not treat filename as an alias", async () => {
+		const env = new MemoryExecutionEnv();
+		await env.writeFile(
+			"/profiles/special.md",
+			"---\nid: reviewer\nlabel: Reviewer\n---\nReview prompt",
+		);
+		const registry = new AgentProfileRegistry(
+			new FileProfileStorageBackend(env, [
+				{
+					kind: "settings",
+					path: "/profiles/special.md",
+					priority: 300,
+					missingBehavior: "diagnostic",
+				},
+			]),
+		);
+
+		const declared = await registry.resolveProfile("reviewer");
+		const filename = await registry.resolveProfile("special");
+
+		expect(declared.ok).toBe(true);
+		expect(filename.ok).toBe(false);
+		if (declared.ok) {
+			expect(declared.diagnostics).toContainEqual(
+				expect.objectContaining({ code: "id_filename_mismatch" }),
+			);
+		}
+		if (!filename.ok) {
+			expect(filename.reason).toBe("profile_missing");
+		}
+	});
+
+	it("lists only summaries for resolvable direct markdown children", async () => {
 		const env = new MemoryExecutionEnv();
 		await env.createDir("/workspace/project/.widi/profiles/nested", {
 			recursive: true,
@@ -268,51 +340,44 @@ describe("AgentProfileLoader", () => {
 		await env.writeFile("/workspace/project/.widi/profiles/b.md", "B prompt");
 		await env.writeFile("/workspace/project/.widi/profiles/a.md", "A prompt");
 		await env.writeFile(
-			"/workspace/project/.widi/profiles/note.txt",
-			"ignored",
-		);
-		await env.writeFile(
 			"/workspace/project/.widi/profiles/nested/ignored.md",
 			"ignored",
 		);
+		const registry = new AgentProfileRegistry(
+			new FileProfileStorageBackend(env, [
+				{
+					kind: "cwd",
+					path: "/workspace/project/.widi/profiles",
+					priority: 200,
+					missingBehavior: "silent",
+				},
+			]),
+		);
 
-		const loader = new AgentProfileLoader({
-			executionEnv: env,
-			cwd: "/workspace/project",
-			agentDir: "",
-		});
-		const result = await loader.loadProfiles();
+		const result = await registry.listProfiles();
 
-		expect(result.diagnostics).toEqual([]);
-		expect(result.profiles.map(({ profile }) => profile.id)).toEqual([
-			"a",
-			"b",
-		]);
-		expect(result.profiles.map(({ source }) => source.path)).toEqual([
-			"/workspace/project/.widi/profiles/a.md",
-			"/workspace/project/.widi/profiles/b.md",
-		]);
+		expect(result.profiles.map((profile) => profile.id)).toEqual(["a", "b"]);
+		expect(result.profiles[0]).not.toHaveProperty("systemPrompt");
 	});
 
-	it("keeps explicit path loading available", async () => {
+	it("diagnoses missing explicit profile sources", async () => {
 		const env = new MemoryExecutionEnv();
-		await env.writeFile(
-			"/profiles/special.md",
-			"---\nlabel: Special\n---\nSpecial prompt",
+		const registry = new AgentProfileRegistry(
+			new FileProfileStorageBackend(env, [
+				{
+					kind: "settings",
+					path: "/missing.md",
+					priority: 300,
+					missingBehavior: "diagnostic",
+				},
+			]),
 		);
-		const loader = new AgentProfileLoader({
-			executionEnv: env,
-			cwd: "/workspace/project",
-			agentDir: "",
-		});
 
-		const result = await loader.loadProfileFromPath("/profiles/special.md");
+		const result = await registry.listProfiles();
 
-		expect(result.diagnostics).toEqual([]);
-		expect(result.profile).toMatchObject({
-			id: "special",
-			label: "Special",
-			systemPrompt: "Special prompt",
-		});
+		expect(result.profiles).toEqual([]);
+		expect(result.diagnostics).toContainEqual(
+			expect.objectContaining({ code: "source_missing" }),
+		);
 	});
 });

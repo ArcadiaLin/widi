@@ -20,7 +20,11 @@ import {
 	AgentOrchestrator,
 	type OrchestratorEvent,
 } from "../../src/core/agent-orchestrator.ts";
-import type { AgentProfile } from "../../src/core/agent-profile.ts";
+import {
+	type AgentProfile,
+	AgentProfileRegistry,
+	InMemoryProfileStorageBackend,
+} from "../../src/core/agent-profile.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import { ModelRegistry } from "../../src/core/model-registry.ts";
 import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
@@ -325,6 +329,7 @@ async function createModelRegistry(
 
 async function createOrchestrator(
 	env: MemoryExecutionEnv,
+	options: { enabledProfileIds?: readonly string[] } = {},
 ): Promise<AgentOrchestrator> {
 	return new AgentOrchestrator({
 		executionEnv: env,
@@ -339,11 +344,20 @@ async function createOrchestrator(
 		}),
 		settingManager: new SettingManager(),
 		modelRegistry: await createModelRegistry(env),
-		defaultProfile,
+		profileRegistry: createProfileRegistry(),
+		defaultProfileId: defaultProfile.id,
+		enabledProfileIds: options.enabledProfileIds,
 		defaultModel,
-		resolveProfile: (profileId) =>
-			profileId === restoredProfile.id ? restoredProfile : undefined,
 	});
+}
+
+function createProfileRegistry(): AgentProfileRegistry {
+	return new AgentProfileRegistry(
+		InMemoryProfileStorageBackend.fromProfiles([
+			{ profile: defaultProfile },
+			{ profile: restoredProfile },
+		]),
+	);
 }
 
 describe("AgentOrchestrator", () => {
@@ -373,10 +387,9 @@ describe("AgentOrchestrator", () => {
 			sessionManager,
 			settingManager: new SettingManager(),
 			modelRegistry,
-			defaultProfile,
+			profileRegistry: createProfileRegistry(),
+			defaultProfileId: defaultProfile.id,
 			defaultModel,
-			resolveProfile: (profileId) =>
-				profileId === restoredProfile.id ? restoredProfile : undefined,
 		});
 		orchestrator.subscribe((event) => {
 			events.push(event);
@@ -428,6 +441,30 @@ describe("AgentOrchestrator", () => {
 				event: expect.objectContaining({ type: "queue_update" }),
 			}),
 		);
+	});
+
+	it("rejects disabled profiles during create", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env, {
+			enabledProfileIds: ["worker"],
+		});
+
+		await expect(orchestrator.spawnAgentHarness()).rejects.toMatchObject({
+			code: "agent_profile_disabled",
+		});
+	});
+
+	it("rejects persistent profile overrides that change recoverable fields", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+
+		await expect(
+			orchestrator.spawnAgentHarness({
+				profileOverride: { systemPrompt: "temporary prompt" },
+			}),
+		).rejects.toMatchObject({
+			code: "agent_profile_override_not_persistable",
+		});
 	});
 
 	it("dispatches agent query and mutation operations", async () => {
