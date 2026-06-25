@@ -49,6 +49,11 @@ import type {
 	SessionManager,
 } from "./session-manager.ts";
 import type { SettingManager } from "./setting-manager.js";
+import { SessionBackedSessionFactStore } from "./tools/session-fact-store.ts";
+import {
+	createAgentToolsFromResolvedTools,
+	ToolRegistry,
+} from "./tools/tool-registry.ts";
 
 export type OrchestratorEvent =
 	| {
@@ -125,6 +130,7 @@ export interface AgentOrchestratorConfigs {
 	settingManager: SettingManager;
 	modelRegistry: ModelRegistry;
 	profileRegistry: AgentProfileRegistry;
+	toolRegistry?: ToolRegistry;
 	defaultProfileId: string;
 	enabledProfileIds?: readonly string[];
 	defaultModel: RuntimeModel;
@@ -176,7 +182,6 @@ function validateToolNames(
 interface SpawnAgentHarnessCommonOptions {
 	model?: RuntimeModel;
 	inheritModelFromAgentId?: AgentId;
-	tools?: AgentTool[];
 }
 
 export interface SpawnAgentHarnessCreateOptions
@@ -212,6 +217,7 @@ export class AgentOrchestrator {
 	readonly settingManager: SettingManager;
 	readonly modelRegistry: ModelRegistry;
 	readonly profileRegistry: AgentProfileRegistry;
+	readonly toolRegistry: ToolRegistry;
 
 	private _unsubscribeAgentHarness: Map<AgentId, () => void> = new Map();
 	private _eventListeners: Set<OrchestratorEventListener> = new Set();
@@ -229,6 +235,7 @@ export class AgentOrchestrator {
 		this.settingManager = config.settingManager;
 		this.modelRegistry = config.modelRegistry;
 		this.profileRegistry = config.profileRegistry;
+		this.toolRegistry = config.toolRegistry ?? new ToolRegistry();
 		this._defaultProfileId = config.defaultProfileId;
 		this._enabledProfileIds = config.enabledProfileIds
 			? [...config.enabledProfileIds]
@@ -246,11 +253,7 @@ export class AgentOrchestrator {
 
 		const agentProfile = await this._resolveCreateProfile(options);
 		const model = this._resolveSpawnModel(options);
-		return await this._createAgentHarness(
-			agentProfile,
-			options.tools ?? [],
-			model,
-		);
+		return await this._createAgentHarness(agentProfile, model);
 	}
 
 	getDefaultModel(): RuntimeModel {
@@ -834,7 +837,6 @@ export class AgentOrchestrator {
 
 	private async _createAgentHarness(
 		profile: AgentProfile,
-		tools: AgentTool[] = [],
 		model: RuntimeModel,
 	): Promise<SpawnAgentHarnessResult> {
 		const agentId = this._allocateAgentId(profile);
@@ -847,7 +849,6 @@ export class AgentOrchestrator {
 			agentId,
 			profile,
 			session,
-			tools,
 			model,
 		});
 		await this._emit({ type: "agent_spawned", agentId, profile, model });
@@ -878,7 +879,6 @@ export class AgentOrchestrator {
 			agentId,
 			profile,
 			session,
-			tools: options.tools ?? [],
 			model,
 			thinkingLevel: this._resolveThinkingLevel(context.thinkingLevel),
 			activeToolNames: context.activeToolNames ?? undefined,
@@ -892,12 +892,11 @@ export class AgentOrchestrator {
 		agentId: AgentId;
 		profile: AgentProfile;
 		session: Session<AgentSessionMetadata>;
-		tools: AgentTool[];
 		model: RuntimeModel;
 		thinkingLevel?: ThinkingLevel;
 		activeToolNames?: string[];
 	}): Promise<AgentHarness> {
-		const { agentId, profile, session, tools, model } = options;
+		const { agentId, profile, session, model } = options;
 		const LoadedSkill = await this.resourceLoader.loadSkills(profile.skills);
 		const LoadedPromptTemplate = await this.resourceLoader.loadPromptTemplates(
 			profile.promptTemplates,
@@ -928,16 +927,43 @@ export class AgentOrchestrator {
 				({ promptTemplate }) => promptTemplate,
 			),
 		};
+		const toolRegistry = ToolRegistry.from(
+			this.toolRegistry.getContributions(),
+		);
+		const resolvedTools = toolRegistry.resolve({
+			requestedToolNames: profile.tools,
+			activeToolNames: options.activeToolNames,
+		});
+		await this._publishDiagnostics(
+			resolvedTools.diagnostics.map((diagnostic) => ({
+				...diagnostic,
+				agentId,
+				profileId: profile.id,
+				phase: "resolve",
+			})),
+		);
+		const sessionFacts = new SessionBackedSessionFactStore(session);
+		const agentTools = createAgentToolsFromResolvedTools(resolvedTools.tools, {
+			env: this.executionEnv,
+			session: sessionFacts,
+			human: {
+				request: async (request) =>
+					await this.requestHuman({
+						...request,
+						source: { kind: "agent", agentId },
+					}),
+			},
+		});
 
 		const harness = new AgentHarness({
 			env: this.executionEnv,
 			session: session,
 			resources: resources,
-			tools: tools,
+			tools: agentTools,
 			systemPrompt: profile.systemPrompt,
 			model: model,
 			thinkingLevel: options.thinkingLevel,
-			activeToolNames: options.activeToolNames,
+			activeToolNames: [...resolvedTools.activeToolNames],
 			getApiKeyAndHeaders: async (requestModel) => {
 				const result =
 					await this.modelRegistry.getApiKeyAndHeaders(requestModel);
@@ -952,9 +978,8 @@ export class AgentOrchestrator {
 		});
 		this.agents.set(agentId, harness);
 		this._agentToolStates.set(agentId, {
-			tools: [...tools],
-			activeToolNames:
-				options.activeToolNames ?? tools.map((tool) => tool.name),
+			tools: [...agentTools],
+			activeToolNames: [...resolvedTools.activeToolNames],
 		});
 		this._unsubscribeAgentHarness.set(
 			agentId,

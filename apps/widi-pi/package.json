@@ -19,9 +19,9 @@
 	"dependencies": {
 		"@anthropic-ai/sandbox-runtime": "^0.0.26",
 		"@types/proper-lockfile": "^4.1.4",
-		"@earendil-works/pi-agent-core": "^0.75.5",
-		"@earendil-works/pi-ai": "^0.75.3",
-		"@earendil-works/pi-tui": "^0.75.5",
+		"@earendil-works/pi-agent-core": "^0.79.9",
+		"@earendil-works/pi-ai": "^0.79.9",
+		"@earendil-works/pi-tui": "^0.79.9",
 		"dotenv": "^17.4.2",
 		"openai": "^6.26.0",
 		"smol-toml": "^1.6.1",

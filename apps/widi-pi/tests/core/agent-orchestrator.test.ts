@@ -1,5 +1,4 @@
 import type {
-	AgentTool,
 	ExecutionEnv,
 	ExecutionEnvExecOptions,
 	ExecutionError,
@@ -40,6 +39,8 @@ import {
 	type SettingsScope,
 	type SettingsStorage,
 } from "../../src/core/setting-manager.ts";
+import { ToolRegistry } from "../../src/core/tools/tool-registry.ts";
+import type { ToolDefinition } from "../../src/core/tools/types.ts";
 import type { ExtendedJsonlSessionMetadata } from "../../src/storage/jsonl-repo.ts";
 
 function expectExtendedMetadata(metadata: {
@@ -313,17 +314,6 @@ const restoredModel: Model<"openai-completions"> = {
 	name: "Restored Model",
 };
 
-const echoTool: AgentTool = {
-	name: "echo",
-	label: "Echo",
-	description: "Echo test tool",
-	parameters: Type.Object({}),
-	execute: async () => ({
-		content: [{ type: "text", text: "echo" }],
-		details: undefined,
-	}),
-};
-
 async function createModelRegistry(
 	env: MemoryExecutionEnv,
 ): Promise<ModelRegistry> {
@@ -355,7 +345,12 @@ async function createModelRegistry(
 
 async function createOrchestrator(
 	env: MemoryExecutionEnv,
-	options: { enabledProfileIds?: readonly string[] } = {},
+	options: {
+		enabledProfileIds?: readonly string[];
+		profileRegistry?: AgentProfileRegistry;
+		defaultProfileId?: string;
+		toolRegistry?: ToolRegistry;
+	} = {},
 ): Promise<AgentOrchestrator> {
 	return new AgentOrchestrator({
 		executionEnv: env,
@@ -370,8 +365,9 @@ async function createOrchestrator(
 		}),
 		settingManager: new SettingManager(),
 		modelRegistry: await createModelRegistry(env),
-		profileRegistry: createProfileRegistry(),
-		defaultProfileId: defaultProfile.id,
+		profileRegistry: options.profileRegistry ?? createProfileRegistry(),
+		toolRegistry: options.toolRegistry,
+		defaultProfileId: options.defaultProfileId ?? defaultProfile.id,
 		enabledProfileIds: options.enabledProfileIds,
 		defaultModel,
 	});
@@ -384,6 +380,34 @@ function createProfileRegistry(): AgentProfileRegistry {
 			{ profile: restoredProfile },
 		]),
 	);
+}
+
+function createToolDefinition(
+	name: string,
+	text: string = name,
+): ToolDefinition {
+	return {
+		name,
+		label: name,
+		description: `${name} tool`,
+		parameters: Type.Object({}),
+		execute: async () => ({
+			content: [{ type: "text", text }],
+			details: undefined,
+		}),
+	};
+}
+
+function createToolRegistry(...tools: ToolDefinition[]): ToolRegistry {
+	const registry = new ToolRegistry();
+	for (const tool of tools) {
+		registry.addContribution({
+			type: "define",
+			source: { kind: "core", id: "test" },
+			tool,
+		});
+	}
+	return registry;
 }
 
 describe("AgentOrchestrator", () => {
@@ -594,14 +618,14 @@ describe("AgentOrchestrator", () => {
 
 	it("dispatches agent query and mutation operations", async () => {
 		const env = new MemoryExecutionEnv();
-		const orchestrator = await createOrchestrator(env);
+		const orchestrator = await createOrchestrator(env, {
+			toolRegistry: createToolRegistry(createToolDefinition("echo", "echo")),
+		});
 		const commandEvents: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
 			commandEvents.push(event);
 		});
-		const { agentId, harness } = await orchestrator.spawnAgentHarness({
-			tools: [echoTool],
-		});
+		const { agentId, harness } = await orchestrator.spawnAgentHarness();
 
 		const modelResult = await orchestrator.dispatch({
 			kind: "agent.getModel",
@@ -644,6 +668,134 @@ describe("AgentOrchestrator", () => {
 			expect.objectContaining({
 				type: "command_completed",
 				command: expect.objectContaining({ kind: "agent.setActiveTools" }),
+			}),
+		);
+	});
+
+	it("resolves profile requested tools through ToolRegistry diagnostics", async () => {
+		const env = new MemoryExecutionEnv();
+		const toolProfile: AgentProfile = {
+			...defaultProfile,
+			id: "tool-profile",
+			label: "Tool Profile",
+			persist: false,
+			tools: ["echo", "missing", "echo"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: toolProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: toolProfile }]),
+			),
+			toolRegistry: createToolRegistry(createToolDefinition("echo", "echo")),
+		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+
+		const { agentId } = await orchestrator.spawnAgentHarness();
+
+		expect(orchestrator.getAgentTools(agentId)).toEqual([
+			expect.objectContaining({ name: "echo" }),
+		]);
+		expect(
+			events
+				.filter((event) => event.type === "diagnostic")
+				.map((event) => event.diagnostic.code),
+		).toEqual(["tool.requested_duplicate", "tool.requested_missing"]);
+	});
+
+	it("filters missing resume active tools through ToolRegistry diagnostics", async () => {
+		const env = new MemoryExecutionEnv();
+		const sessionManager = new SessionManager({
+			fs: env,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+		});
+		const session = await sessionManager.createAgentSession({
+			agentId: "worker-agent",
+			agentProfile: restoredProfile,
+		});
+		await session.appendActiveToolsChange(["echo", "ghost"]);
+		const metadata = expectExtendedMetadata(await session.getMetadata());
+		const resumeSessionManager = new SessionManager({
+			fs: env,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+		});
+		const orchestrator = new AgentOrchestrator({
+			executionEnv: env,
+			resourceLoader: new ResourceLoader({
+				executionEnv: env,
+				cwd: "/workspace/project",
+			}),
+			sessionManager: resumeSessionManager,
+			settingManager: new SettingManager(),
+			modelRegistry: await createModelRegistry(env),
+			profileRegistry: createProfileRegistry(),
+			toolRegistry: createToolRegistry(createToolDefinition("echo", "echo")),
+			defaultProfileId: defaultProfile.id,
+			defaultModel,
+		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+
+		const { agentId } = await orchestrator.spawnAgentHarness({
+			resume: true,
+			metadata,
+		});
+
+		expect(orchestrator.getAgentActiveTools(agentId)).toEqual([
+			expect.objectContaining({ name: "echo" }),
+		]);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					code: "tool.active_missing",
+					toolName: "ghost",
+					agentId,
+					profileId: restoredProfile.id,
+				}),
+			}),
+		);
+	});
+
+	it("reports conflicts between registry tool contributions", async () => {
+		const env = new MemoryExecutionEnv();
+		const toolRegistry = new ToolRegistry();
+		toolRegistry.addContribution({
+			type: "define",
+			source: { kind: "core", id: "base" },
+			tool: createToolDefinition("echo", "base"),
+		});
+		toolRegistry.addContribution({
+			type: "define",
+			source: { kind: "extension", id: "override" },
+			tool: createToolDefinition("echo", "override"),
+		});
+		const orchestrator = await createOrchestrator(env, { toolRegistry });
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+
+		const { agentId } = await orchestrator.spawnAgentHarness();
+
+		expect(orchestrator.getAgentTools(agentId)).toEqual([
+			expect.objectContaining({ name: "echo" }),
+		]);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					code: "tool.define_conflict",
+					toolName: "echo",
+					agentId,
+					profileId: defaultProfile.id,
+				}),
 			}),
 		);
 	});

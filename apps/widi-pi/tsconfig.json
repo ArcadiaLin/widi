@@ -1,7 +1,40 @@
 {
 	"extends": "../../tsconfig.base.json",
 	"compilerOptions": {
-		"noEmit": true
+		"noEmit": true,
+		"paths": {
+			"@earendil-works/pi-ai": ["../../pi/packages/ai/src/index.ts"],
+			"@earendil-works/pi-ai/base": ["../../pi/packages/ai/src/base.ts"],
+			"@earendil-works/pi-ai/oauth": ["../../pi/packages/ai/src/oauth.ts"],
+			"@earendil-works/pi-ai/*": [
+				"../../pi/packages/ai/src/*.ts",
+				"../../pi/packages/ai/src/providers/*.ts",
+				"../../pi/packages/ai/src/providers/images/*.ts"
+			],
+			"@earendil-works/pi-agent-core": [
+				"../../pi/packages/agent/src/index.ts"
+			],
+			"@earendil-works/pi-agent-core/base": [
+				"../../pi/packages/agent/src/base.ts"
+			],
+			"@earendil-works/pi-agent-core/node": [
+				"../../pi/packages/agent/src/node.ts"
+			],
+			"@earendil-works/pi-agent-core/*": [
+				"../../pi/packages/agent/src/*.ts"
+			],
+			"@earendil-works/pi-tui": ["../../pi/packages/tui/src/index.ts"],
+			"@earendil-works/pi-tui/*": ["../../pi/packages/tui/src/*.ts"],
+			"openai": ["./node_modules/openai/index.d.mts"],
+			"openai/*": ["./node_modules/openai/*"],
+			"typebox": ["./node_modules/typebox/build/index.d.mts"],
+			"typebox/compile": [
+				"./node_modules/typebox/build/compile/index.d.mts"
+			],
+			"typebox/error": ["./node_modules/typebox/build/error/index.d.mts"],
+			"typebox/value": ["./node_modules/typebox/build/value/index.d.mts"],
+			"typebox/*": ["./node_modules/typebox/build/*/index.d.mts"]
+		}
 	},
 	"include": ["src/**/*.ts", "tests/**/*.ts"],
 	"exclude": ["node_modules", "dist"]

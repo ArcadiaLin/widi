@@ -12,6 +12,7 @@ import {
 import { describe, expect, it } from "vitest";
 import type { AgentProfile } from "../../src/core/agent-profile.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
+import { SessionBackedSessionFactStore } from "../../src/core/tools/session-fact-store.ts";
 
 class MemoryFileSystem implements FileSystem {
 	cwd = "/workspace";
@@ -220,6 +221,90 @@ describe("SessionManager", () => {
 			version: 3,
 			id: "main",
 			metadata: { profile: profileReference },
+		});
+	});
+
+	it("stores session facts as Pi custom entries in the managed session", async () => {
+		const fs = new MemoryFileSystem();
+		const manager = new SessionManager({
+			fs,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+		});
+		const session = await manager.createAgentSession({
+			agentId: "main",
+			agentProfile: profile,
+		});
+		const store = new SessionBackedSessionFactStore(session);
+
+		const stored = await store.append({
+			namespace: "write",
+			source: "tool",
+			sourceName: "write",
+			factType: "preview",
+			version: 1,
+			toolCallId: "call-1",
+			payload: { path: "src/app.ts", bytes: 42 },
+		});
+		const found = await store.find<{ path: string; bytes: number }>({
+			namespace: "write",
+			source: "tool",
+			sourceName: "write",
+			factType: "preview",
+			version: 1,
+			toolCallId: "call-1",
+		});
+		const restored = await store.restore<
+			{ path: string; bytes: number },
+			string
+		>(
+			{
+				namespace: "write",
+				source: "tool",
+				sourceName: "write",
+				factType: "preview",
+				version: 1,
+				restore: (fact) => fact.payload.path,
+			},
+			{ toolCallId: "call-1" },
+		);
+		const [metadata] = await manager.sessionRepo.list({
+			cwd: "/workspace/project",
+		});
+		if (!metadata) throw new Error("Expected session metadata.");
+		const rawLines = fs.files
+			.get(metadata.path)
+			?.split("\n")
+			.filter((line) => line.trim());
+		const customLine = rawLines?.find((line) => line.includes('"custom"'));
+		if (!customLine) throw new Error("Expected custom session entry.");
+
+		expect(stored).toMatchObject({
+			namespace: "write",
+			source: "tool",
+			sourceName: "write",
+			factType: "preview",
+			version: 1,
+			toolCallId: "call-1",
+			payload: { path: "src/app.ts", bytes: 42 },
+		});
+		expect(stored.id).toEqual(expect.any(String));
+		expect(stored.timestamp).toEqual(expect.any(String));
+		expect(found).toHaveLength(1);
+		expect(found[0]?.id).toBe(stored.id);
+		expect(restored).toEqual(["src/app.ts"]);
+		expect(JSON.parse(customLine)).toMatchObject({
+			type: "custom",
+			id: stored.id,
+			customType: "write",
+			data: {
+				source: "tool",
+				sourceName: "write",
+				factType: "preview",
+				version: 1,
+				toolCallId: "call-1",
+				payload: { path: "src/app.ts", bytes: 42 },
+			},
 		});
 	});
 });

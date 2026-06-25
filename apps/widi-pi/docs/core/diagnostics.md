@@ -238,7 +238,7 @@ UI/RPC/CLI 不直接轮询 Settings、Auth、Model、ProfileRegistry 或 Resourc
 Orchestrator 负责在 runtime 边界汇总并发布 diagnostics：
 
 - 启动期：UI 注册 listener/client 后调用 `emitStartupDiagnostics()`，drain Settings、Auth 和 Model registry 的 startup diagnostics；`spawnAgentHarness()` 也会在创建 agent 前 drain 一次，避免启动问题完全沉默。
-- Agent create/resume：profile resolve 和 resource load 产生的 diagnostics 会在 spawn/resume 路径发布。
+- Agent create/resume：profile resolve、resource load 和 tool registry resolve 产生的 diagnostics 会在 spawn/resume 路径发布。
 - Model request auth：`getApiKeyAndHeaders` 产生的 model/auth diagnostics 会在 provider auth callback 后 drain 并发布。
 - Command/human request：blocking errors 继续通过 command result 或 thrown `OrchestratorError` 暴露，同时也发布 `diagnostic` event。
 
@@ -277,7 +277,7 @@ Drain 型模块发布后会清空本地队列；result 型模块只在当前 ope
 - [x] 将 profile diagnostics 接入 orchestrator diagnostic event。
 - [x] 将 model/auth startup 与 request auth diagnostics 接入 orchestrator diagnostic event。
 - [x] ToolRegistry diagnostics 保留在 `ToolRegistryResolveResult.diagnostics`。
-- [ ] 将 ToolRegistry diagnostics 接入 orchestrator event；前提是 orchestrator 开始拥有 tool registry resolve。
+- [x] 将 ToolRegistry diagnostics 接入 orchestrator event；orchestrator create/resume harness build 已经过 `ToolRegistry.resolve()`。
 - [ ] 将 extension diagnostics 接入 orchestrator diagnostic event。
 - [x] 增加 focused tests 覆盖 command rejection 与 human-request diagnostics。
 - [x] 增加 focused tests 覆盖 startup diagnostics 与 spawn profile diagnostics。

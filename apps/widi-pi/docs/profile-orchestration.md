@@ -23,7 +23,7 @@
 5. resume 时按 metadata 中的 profile id 调用 registry；找不到、禁用、重复或无效时结构化失败，不 fallback。
 6. 构建 harness 时用 `profile.skills`、`profile.promptTemplates`、`profile.systemPrompt`。
 
-这说明 orchestrator 已经接入第一版 profile registry contract。Profile、resource、model/auth 和 command/human-request diagnostics 已经通过 orchestrator `diagnostic` event 统一发布；extension diagnostics 和 ToolRegistry 接入仍未完成。
+这说明 orchestrator 已经接入第一版 profile registry contract。Profile、resource、model/auth、tool registry 和 command/human-request diagnostics 已经通过 orchestrator `diagnostic` event 统一发布；extension diagnostics 仍未完成。
 
 ## 主要缺漏
 
@@ -69,9 +69,9 @@
 
 ### Tools
 
-`AgentProfile.tools` 当前没有被 orchestrator 消费。创建 agent 时实际使用的是 `SpawnAgentHarnessOptions.tools`。
+`AgentProfile.tools` 已在 orchestrator harness build 时作为 ToolRegistry `requestedToolNames` 消费。创建或恢复 agent 时不再传入 raw `AgentTool[]`；所有 `AgentTool` 都应由 registry resolve 后的 `ToolDefinition` wrap 而来。
 
-`ToolRegistry` 已经提供 definition/contribution 解析能力，但尚未接入 `_buildAgentHarness()`。推荐语义是：`profile.tools` 表示 profile/policy 请求暴露给当前 harness 的 tool names，即 registry resolve 的 `requestedToolNames`。它不是 tool definition 本身，也不是 capability。
+`ToolRegistry` 已经提供 definition/contribution 解析能力并接入 `_buildAgentHarness()`。`profile.tools` 表示 profile/policy 请求暴露给当前 harness 的 tool names，即 registry resolve 的 `requestedToolNames`。它不是 tool definition 本身，也不是 capability。
 
 当前 registry 行为：
 
@@ -80,7 +80,9 @@
 - 未提供 `activeToolNames` 时，默认启用所有可见工具。
 - resume 提供旧 `activeToolNames` 时，registry 会按当前可见工具校验，过滤不存在的名字并产生 diagnostic。
 
-因此后续 orchestrator 接入时应把 `profile.tools` 传给 registry，把 `session.buildContext().activeToolNames` 传给 registry，并把 registry diagnostics 发布为 orchestrator `diagnostic` event。`SpawnAgentHarnessOptions.tools` 应逐步收敛为测试/adapter escape hatch，或转成 adapter contribution 后再进入 registry。
+当前 orchestrator 会把 `profile.tools` 传给 registry，把 resume context 中的 `activeToolNames` 传给 registry，并把 registry diagnostics 发布为 orchestrator `diagnostic` event。调用方需要新增工具时，应注册 tool contribution，而不是传入 Pi runtime closure。
+
+Tool execution context 已经包含 `SessionFactStore`。它由 orchestrator 在 harness build 时用当前 agent 的真实 Pi `Session` 构造，供 tool/extension 写入 WIDI session facts。这个能力不属于 profile schema；profile 只影响哪些 tools 被 resolve，后续还需要定义 fact definition 如何随 tool/extension contribution 注册、在 resume 时恢复，以及恢复失败如何产生 diagnostics。
 
 ### Capabilities
 
@@ -178,7 +180,9 @@ orchestrator 不应直接打印 diagnostics。当前统一出口是 orchestrator
 - [ ] 定义 extension activation failure 与 missing extension 的不同 diagnostic code。
 - [x] 明确 `profile.tools` 的推荐语义：registry requested tool names。
 - [x] 实现 `ToolRegistry.resolve()` 的 requested/active tool name 校验和 diagnostics。
-- [ ] 将 `profile.tools` 和 resume `activeToolNames` 接入 `ToolRegistry.resolve()`，并把 diagnostics 汇总到 orchestrator。
+- [x] 将 `profile.tools` 和 resume/runtime `activeToolNames` 接入 `ToolRegistry.resolve()`，并把 diagnostics 汇总到 orchestrator。
+- [x] 将 `SessionFactStore` 注入 tool execution context，并基于当前 agent Pi `Session` 写入 `custom` entry。
+- [ ] 定义 tool/extension `SessionFactDefinition` 的注册、resume 恢复和 diagnostic 汇总流程。
 - [ ] 明确 `capabilities` 到 tools/events 的映射规则，例如 spawn、request user、direct user input。
 - [x] 定义第一版 `profileOverride` 规则：禁止覆盖 id；修改恢复关键字段时不能创建 persistent session。
 - [x] 明确 `profileOverride` 不写入 session metadata；需要 resume 的差异进入正式 profile。
