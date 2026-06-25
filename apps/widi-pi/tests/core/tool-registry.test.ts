@@ -6,11 +6,6 @@ import {
 	ToolRegistry,
 } from "../../src/core/tools/tool-registry.ts";
 import type {
-	SessionFact,
-	SessionFactDefinition,
-	SessionFactDraft,
-	SessionFactQuery,
-	SessionFactStore,
 	ToolContributionSource,
 	ToolDefinition,
 } from "../../src/core/tools/types.ts";
@@ -22,70 +17,6 @@ const extensionSource: ToolContributionSource = {
 	kind: "extension",
 	id: "ext",
 };
-
-class MemorySessionFactStore implements SessionFactStore {
-	private readonly facts: SessionFact[] = [];
-
-	async append<TPayload>(
-		fact: SessionFactDraft<TPayload>,
-	): Promise<SessionFact<TPayload>> {
-		const stored = {
-			...fact,
-			id: `fact-${this.facts.length + 1}`,
-			parentId: null,
-			timestamp: "2026-06-16T00:00:00.000Z",
-		};
-		this.facts.push(stored);
-		return stored;
-	}
-
-	async get<TPayload = unknown>(
-		id: string,
-	): Promise<SessionFact<TPayload> | undefined> {
-		return this.facts.find((fact) => fact.id === id) as
-			| SessionFact<TPayload>
-			| undefined;
-	}
-
-	async find<TPayload = unknown>(
-		query: SessionFactQuery = {},
-	): Promise<Array<SessionFact<TPayload>>> {
-		return this.facts.filter((fact) => {
-			if (query.namespace !== undefined && fact.namespace !== query.namespace)
-				return false;
-			if (query.source !== undefined && fact.source !== query.source)
-				return false;
-			if (
-				query.sourceName !== undefined &&
-				fact.sourceName !== query.sourceName
-			)
-				return false;
-			if (query.factType !== undefined && fact.factType !== query.factType)
-				return false;
-			if (query.version !== undefined && fact.version !== query.version)
-				return false;
-			if (
-				query.toolCallId !== undefined &&
-				fact.toolCallId !== query.toolCallId
-			)
-				return false;
-			return true;
-		}) as Array<SessionFact<TPayload>>;
-	}
-
-	async restore<TPayload = unknown, TRestored = TPayload>(
-		definition: SessionFactDefinition<TPayload, TRestored>,
-		query: Omit<SessionFactQuery, "namespace" | "factType" | "version"> = {},
-	): Promise<TRestored[]> {
-		const facts = await this.find<TPayload>({
-			...query,
-			namespace: definition.namespace,
-			factType: definition.factType,
-			version: definition.version,
-		});
-		return Promise.all(facts.map((fact) => definition.restore(fact)));
-	}
-}
 
 function createTool(
 	name: string,
@@ -152,9 +83,7 @@ describe("ToolRegistry", () => {
 			"sandbox",
 		]);
 
-		const agentTool = createAgentToolFromResolvedTool(resolvedTool, {
-			session: new MemorySessionFactStore(),
-		});
+		const agentTool = createAgentToolFromResolvedTool(resolvedTool, {});
 		const toolResult = await agentTool.execute("call-1", {});
 
 		expect(toolResult.content).toEqual([{ type: "text", text: "base" }]);
@@ -288,7 +217,6 @@ describe("ToolRegistry", () => {
 		expect(resolvedTool).toBeDefined();
 		if (!resolvedTool) throw new Error("Expected ask tool to resolve.");
 		const agentTool = createAgentToolFromResolvedTool(resolvedTool, {
-			session: new MemorySessionFactStore(),
 			human: {
 				request: async () => ({ kind: "confirm", confirmed: true }),
 			},

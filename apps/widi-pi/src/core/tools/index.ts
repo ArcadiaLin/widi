@@ -1,4 +1,3 @@
-export { SessionBackedSessionFactStore } from "./session-fact-store.ts";
 export type {
 	AnyToolContribution,
 	ResolvedTool,
@@ -14,11 +13,6 @@ export {
 	ToolRegistry,
 } from "./tool-registry.ts";
 export type {
-	SessionFact,
-	SessionFactDefinition,
-	SessionFactDraft,
-	SessionFactQuery,
-	SessionFactStore,
 	ToolContribution,
 	ToolContributionSource,
 	ToolDefinition,

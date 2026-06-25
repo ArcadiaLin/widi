@@ -49,7 +49,6 @@ import type {
 	SessionManager,
 } from "./session-manager.ts";
 import type { SettingManager } from "./setting-manager.js";
-import { SessionBackedSessionFactStore } from "./tools/session-fact-store.ts";
 import {
 	createAgentToolsFromResolvedTools,
 	ToolRegistry,
@@ -942,10 +941,8 @@ export class AgentOrchestrator {
 				phase: "resolve",
 			})),
 		);
-		const sessionFacts = new SessionBackedSessionFactStore(session);
 		const agentTools = createAgentToolsFromResolvedTools(resolvedTools.tools, {
 			env: this.executionEnv,
-			session: sessionFacts,
 			human: {
 				request: async (request) =>
 					await this.requestHuman({

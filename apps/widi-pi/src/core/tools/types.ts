@@ -20,72 +20,6 @@ export interface ToolExecutionEnvRequirement {
 	capabilities?: readonly ToolExecutionEnvCapability[];
 }
 
-export type SessionFactSource = "tool" | "extension" | "core";
-
-export interface SessionFact<TPayload = unknown> {
-	id: string;
-	parentId: string | null;
-	timestamp: string;
-	/**
-	 * Stored as Pi customType. For tool-owned facts this should be the tool name.
-	 */
-	namespace: string;
-	source: SessionFactSource;
-	sourceName: string;
-	/**
-	 * Stable fact name within namespace, such as "preview" or "artifact".
-	 */
-	factType: string;
-	version: number;
-	payload: TPayload;
-	toolCallId?: string;
-}
-
-export type SessionFactDraft<TPayload = unknown> = Omit<
-	SessionFact<TPayload>,
-	"id" | "parentId" | "timestamp"
->;
-
-export interface SessionFactQuery {
-	namespace?: string;
-	source?: SessionFactSource;
-	sourceName?: string;
-	factType?: string;
-	version?: number;
-	toolCallId?: string;
-}
-
-export interface SessionFactDefinition<
-	TPayload = unknown,
-	TRestored = TPayload,
-> {
-	/**
-	 * Stored as Pi customType. For tool-owned facts this should be the tool name.
-	 */
-	namespace: string;
-	source?: SessionFactSource;
-	sourceName?: string;
-	factType: string;
-	version: number;
-	restore(fact: SessionFact<TPayload>): TRestored | Promise<TRestored>;
-}
-
-export interface SessionFactStore {
-	append<TPayload>(
-		fact: SessionFactDraft<TPayload>,
-	): Promise<SessionFact<TPayload>>;
-	get<TPayload = unknown>(
-		id: string,
-	): Promise<SessionFact<TPayload> | undefined>;
-	find<TPayload = unknown>(
-		query?: SessionFactQuery,
-	): Promise<Array<SessionFact<TPayload>>>;
-	restore<TPayload = unknown, TRestored = TPayload>(
-		definition: SessionFactDefinition<TPayload, TRestored>,
-		query?: Omit<SessionFactQuery, "namespace" | "factType" | "version">,
-	): Promise<TRestored[]>;
-}
-
 export type ToolCallPhase =
 	| "created"
 	| "arguments_streaming"
@@ -146,7 +80,6 @@ export interface ToolExecutionContext<TDetails, TState> {
 	env: ExecutionEnv | undefined;
 	signal: AbortSignal | undefined;
 	onUpdate: AgentToolUpdateCallback<TDetails> | undefined;
-	session: SessionFactStore;
 	extension: ToolExtensionContext | undefined;
 	human: ToolHumanHost | undefined;
 	getState?: () => TState;
@@ -155,7 +88,6 @@ export interface ToolExecutionContext<TDetails, TState> {
 
 export interface ToolExtensionContext {
 	extensionId: string;
-	session: SessionFactStore;
 	host?: unknown;
 }
 
@@ -192,7 +124,6 @@ export interface ToolDefinitionPatch<
 	prepareArguments?: (args: unknown) => Static<TParamsSchema>;
 	executionMode?: ToolExecutionMode;
 	executionEnv?: ToolExecutionEnvRequirement;
-	sessionFacts?: readonly SessionFactDefinition[];
 	createState?: (
 		event: Extract<
 			ToolStateEvent<Static<TParamsSchema>, TDetails>,
@@ -266,7 +197,6 @@ export interface ToolDefinition<
 
 	executionMode?: ToolExecutionMode;
 	executionEnv?: ToolExecutionEnvRequirement;
-	sessionFacts?: readonly SessionFactDefinition[];
 
 	createState?: (
 		event: Extract<

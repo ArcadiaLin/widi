@@ -9,7 +9,6 @@ import {
 } from "../diagnostics.ts";
 import type { ToolHumanHost } from "../orchestrator/human-request.ts";
 import type {
-	SessionFactStore,
 	ToolContribution,
 	ToolContributionSource,
 	ToolDefinition,
@@ -76,7 +75,6 @@ export interface ToolRegistryResolveResult {
 
 export interface ToolAgentAdapterContext {
 	env?: ExecutionEnv;
-	session: SessionFactStore;
 	human?: ToolHumanHost;
 	extension?: ToolExtensionContext;
 	createExtensionContext?: (
@@ -470,8 +468,6 @@ function applyPatch(
 	if (patch.executionMode !== undefined)
 		next.executionMode = patch.executionMode;
 	if (patch.executionEnv !== undefined) next.executionEnv = patch.executionEnv;
-	if (patch.sessionFacts !== undefined)
-		next.sessionFacts = [...(next.sessionFacts ?? []), ...patch.sessionFacts];
 	if (patch.createState !== undefined) next.createState = patch.createState;
 	if (patch.reduceState !== undefined) next.reduceState = patch.reduceState;
 
@@ -502,7 +498,6 @@ function createToolExecutionContext(
 		env: context.env,
 		signal,
 		onUpdate,
-		session: context.session,
 		extension,
 		human: context.human,
 		getState: context.getState

@@ -74,36 +74,21 @@ header 之后的每一行仍然是 `@earendil-works/pi-agent-core` 的 `SessionT
 
 这些 entry 继续由 `AgentHarness` 追加和消费。storage 只负责 append、索引、label cache、leaf 切换和 `getPathToRoot()` 等 `SessionStorage` 接口要求的行为。
 
-WIDI session fact 不新增 Pi session entry type。它复用 Pi 已有的 `custom` entry。Tool-owned fact 的 `namespace` 直接使用 tool name，并在落盘时映射为 Pi `customType`；extension/core-owned fact 可以使用自己的稳定 namespace：
+WIDI core 不新增 session entry type，也不为 built-in tools 增加额外的 session persistence facade。Built-in tool 的可恢复数据应进入 Pi 已有的 tool call arguments、tool result `content` 和 typed `details`。
+
+Pi 的 `custom` entry 仍是 session tree 的合法 entry，storage 负责原样保存和读回：
 
 ```json
 {
   "type": "custom",
-  "customType": "write",
+  "customType": "example.extension",
   "data": {
-    "source": "tool",
-    "sourceName": "write",
-    "factType": "preview",
-    "version": 1,
-    "toolCallId": "call_123",
-    "payload": {}
+    "version": 1
   }
 }
 ```
 
-Pi storage 只负责原样保存和读回 `custom` entry。WIDI 的 `SessionBackedSessionFactStore` 在其上提供 session fact API：`namespace`、`source`、`sourceName`、`factType`、`version` 和 `payload` 共同标识一类可恢复事实。Tool 与 extension 都可以通过受控 API 追加这类 fact，并在 resume 时通过 `SessionFactDefinition.restore` 恢复 typed state。缺少 fact definition 时不丢弃、不解释，只作为原始 `custom` entry 留在 session tree 中，并可通过 `SessionFactStore.find()` 读回。
-
-Session fact 适合保存和当前 session 分支强相关的小型事实，例如 tool call preview、sandbox artifact reference、extension checkpoint reference。它不适合保存 API key、runtime object、大型 artifact 正文、多 session index 或 extension 私有数据库。
-
-当前 `SessionBackedSessionFactStore` 的实现边界：
-
-- 它不创建新的 storage backend，只包住 `SessionManager` 已创建或恢复的 Pi `Session`。
-- `append()` 直接写 Pi `custom` entry，因此持久 session 会进入本地 JSONL，临时 session 会进入 Pi in-memory storage。
-- `get()` 和 `find()` 只解释符合 WIDI fact shape 的 `custom` entry；其它 `custom` entry 保留为原始 Pi entry。
-- `find()` 当前读取整份 session tree，还没有区分当前 leaf path、历史分支和 fork 来源。
-- payload 目前由调用方负责保持小型、可 JSON 序列化和不含敏感信息。
-
-这些边界意味着 session fact 已经可以作为受控持久化入口，但还不是完整恢复系统。自动恢复、schema validation、branch scope、diagnostics 和 compaction/export policy 都需要在后续补齐。
+WIDI core 当前不解释 `custom` entry 的 data shape。未来 extension runner 可以提供 extension-owned custom entry API，用于和当前 session tree 强相关的小型 extension 状态。branch scope、fork、schema validation、diagnostics、compaction/export/debug policy 都应在 extension API 中定义。大型 artifact、多 session index、产品模式状态仍属于 extension-owned storage。
 
 因此当前实现保持了 Pi 会话树能力：
 
@@ -208,7 +193,7 @@ resume 持久 session 时，调用方传入 `ExtendedJsonlSessionMetadata`，`Se
 - 不保存 API key、OAuth token、临时环境变量、ExecutionEnv 实例、函数或大型资源正文。
 - 不把 `metadata` 当作事件日志；会随时间增长的内容应进入独立 log 或 session entries。
 - 不在 metadata 里声明新的 session type；session type 仍然是 header 的 `type: "session"`。
-- 不把 tool/extension 的可恢复运行事实塞进 metadata；这些事实应进入 session fact 或 extension-owned storage。
+- 不把 tool/extension 的可恢复运行数据塞进 metadata；built-in tool 使用 Pi tool result details，extension 根据作用域选择 custom entry 或 extension-owned storage。
 
 现在选择保存 profile id，是为了让 session header 只记录可恢复的外部上下文引用。`label` 不参与匹配。system prompt、skills、prompt templates、resources 等由当前 profile 加载流程重新生成。
 

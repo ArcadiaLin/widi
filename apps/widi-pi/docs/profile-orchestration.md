@@ -82,7 +82,7 @@
 
 当前 orchestrator 会把 `profile.tools` 传给 registry，把 resume context 中的 `activeToolNames` 传给 registry，并把 registry diagnostics 发布为 orchestrator `diagnostic` event。调用方需要新增工具时，应注册 tool contribution，而不是传入 Pi runtime closure。
 
-Tool execution context 已经包含 `SessionFactStore`。它由 orchestrator 在 harness build 时用当前 agent 的真实 Pi `Session` 构造，供 tool/extension 写入 WIDI session facts。这个能力不属于 profile schema；profile 只影响哪些 tools 被 resolve，后续还需要定义 fact definition 如何随 tool/extension contribution 注册、在 resume 时恢复，以及恢复失败如何产生 diagnostics。
+Tool execution context 不提供 core session persistence facade。Built-in tool 的可恢复数据应跟随 Pi coding-agent 的路径进入 tool call arguments、tool result `content` 和 typed `details`。未来 extension 如果需要和 session tree 强相关的小型状态，应通过 extension-owned custom entry API 进入 Pi `custom` entry；这不属于 profile schema。
 
 ### Capabilities
 
@@ -181,8 +181,7 @@ orchestrator 不应直接打印 diagnostics。当前统一出口是 orchestrator
 - [x] 明确 `profile.tools` 的推荐语义：registry requested tool names。
 - [x] 实现 `ToolRegistry.resolve()` 的 requested/active tool name 校验和 diagnostics。
 - [x] 将 `profile.tools` 和 resume/runtime `activeToolNames` 接入 `ToolRegistry.resolve()`，并把 diagnostics 汇总到 orchestrator。
-- [x] 将 `SessionFactStore` 注入 tool execution context，并基于当前 agent Pi `Session` 写入 `custom` entry。
-- [ ] 定义 tool/extension `SessionFactDefinition` 的注册、resume 恢复和 diagnostic 汇总流程。
+- [ ] 定义 extension-owned custom entry API 与 profile/tool/extension diagnostics 的关系。
 - [ ] 明确 `capabilities` 到 tools/events 的映射规则，例如 spawn、request user、direct user input。
 - [x] 定义第一版 `profileOverride` 规则：禁止覆盖 id；修改恢复关键字段时不能创建 persistent session。
 - [x] 明确 `profileOverride` 不写入 session metadata；需要 resume 的差异进入正式 profile。
