@@ -12,17 +12,17 @@ ProfileId 是声明身份。
 
 `ProfileId` 用于 profile registry lookup、recovery reference 和 diagnostics。它不是文件名，也不是 `AgentId`。文件名只能作为 loader 的发现路径或默认 id 来源。
 
-DefaultProfile 是调用层输入。
+DefaultProfileId 是调用层输入。
 
-`DefaultProfile` 可以用于创建新 agent 时未显式指定 profile 的默认输入，但不是 resume profile 缺失时的自动 fallback。缺失 profile 的 fallback、失败、用户选择或 unavailable 都应由 caller policy 决定。
+`defaultProfileId` 用于创建新 agent 时未显式指定 profile 的默认 lookup 输入，但不是 resume profile 缺失时的自动 fallback。缺失 profile 的失败、用户选择或 unavailable 都应由 caller policy 决定。
 
 Profile 应可解析、可恢复、可诊断。
 
-持久 session 只需要保存 profile reference。恢复时，core 用当前 profile registry 重新解析 profile，再构建 harness。这样可以让 profile 随配置演进，但也要求缺失、冲突和 fallback 都有清晰 diagnostics。
+持久 session 只需要保存 profile reference。恢复时，core 用当前 profile registry 重新解析 profile，再构建 harness。这样可以让 profile 随配置演进，但也要求缺失、冲突和 policy decision 都有清晰 diagnostics。
 
 Profile registry 拥有索引语义。
 
-Profile loader 负责读取和解析 profile 文件。Profile registry 负责按 `ProfileId` 建索引，处理 source priority、冲突、validation 和 diagnostics。
+Profile storage backend 负责发现和读取 profile source。Profile registry 负责解析 markdown/frontmatter、按 `ProfileId` 建索引，并处理 source priority、冲突、validation 和 diagnostics。
 
 Profile storage backend 只负责 source discovery。
 
@@ -44,9 +44,9 @@ Resources 是 dependency，不是 profile 内容。
 
 Skills、prompt templates、extension 依赖和工具可见性都应作为 dependency 被解析。解析结果应包含来源和 diagnostics，让 orchestrator 决定继续、降级或失败。
 
-Resource loader 和 resource registry 分工不同。
+Resource loader 和未来 resource registry 分工不同。
 
-Resource loader 负责从具体来源读取/解析 resource declaration。Resource registry 负责按 identity 组织 resources，处理 duplicate、priority、source 和 validation diagnostics。
+Resource loader 负责从具体来源读取/解析 resource declaration。第一版不引入 resource registry，避免在 resources 尚未复杂化前过早建立索引层。若后续需要跨来源 identity、duplicate、priority 或 validation policy，再引入 resource registry。
 
 Harness resources 是 resource 子集。
 
@@ -126,7 +126,7 @@ Registry API 语义：
 - `inspectProfiles()`：返回所有 candidates 的 metadata、source、status 和 diagnostics，包括 shadowed、duplicate、invalid、parse failed；默认不返回 raw content 或完整 prompt。
 - `reload()` / `invalidate()`：显式清理 cache。不做 filesystem watcher。
 
-Registry 不解析 resources。`skills`、`promptTemplates`、`extensions` 等字段只做声明形态 validation，实际 resource dependency resolution 在 resource registry / harness build 阶段完成。
+Registry 不解析 resources。`skills`、`promptTemplates`、`extensions` 等字段只做声明形态 validation，实际 resource dependency resolution 在 resource loader / harness build 阶段完成。
 
 ## Orchestrator Policy
 
@@ -166,7 +166,7 @@ Persistent session metadata 只保存 profile reference，例如 `{ id, label? }
 - [x] 将 orchestrator default profile 输入收敛为 `defaultProfileId`。
 - [x] 引入 profile storage backend：file、in-memory、composite，以及低优先级 builtin default source。
 - [ ] 将 runtime composition 接入真实 profile registry roots、settings paths 与 builtin default source。
-- [ ] 统一 profile/orchestrator diagnostics shape、severity 和 UI/RPC 汇总路径。
-- [ ] 引入 resource registry，处理 duplicate、priority、source 和 validation diagnostics。
+- [x] 统一 profile/orchestrator diagnostics shape，并通过 orchestrator `diagnostic` event 汇总到 UI/RPC 边界。
+- [ ] 评估是否需要 resource registry；当前 resource loader 保持轻量，Pi resource diagnostics 通过 adapter 进入 `CoreDiagnostic`。
 - [ ] 区分 explicit resource missing、default directory missing、parse failed、duplicate identity。
 - [ ] 定义哪些 resolved resources 会变成 Pi harness resources。

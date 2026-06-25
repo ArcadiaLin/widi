@@ -25,12 +25,21 @@ import {
 	AgentProfileRegistry,
 	InMemoryProfileStorageBackend,
 } from "../../src/core/agent-profile.ts";
-import { AuthStorage } from "../../src/core/auth-storage.ts";
+import {
+	AuthStorage,
+	type AuthStorageBackend,
+	type LockResult,
+} from "../../src/core/auth-storage.ts";
 import { ModelRegistry } from "../../src/core/model-registry.ts";
 import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
 import { ResourceLoader } from "../../src/core/resource-loader.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
-import { SettingManager } from "../../src/core/setting-manager.ts";
+import {
+	SettingManager,
+	type SettingsLockResult,
+	type SettingsScope,
+	type SettingsStorage,
+} from "../../src/core/setting-manager.ts";
 import type { ExtendedJsonlSessionMetadata } from "../../src/storage/jsonl-repo.ts";
 
 function expectExtendedMetadata(metadata: {
@@ -254,6 +263,23 @@ class MemoryExecutionEnv implements ExecutionEnv {
 	async cleanup(): Promise<void> {}
 }
 
+class FailingSettingsStorage implements SettingsStorage {
+	async withLockAsync<T>(
+		scope: SettingsScope,
+		_fn: (current: string | undefined) => Promise<SettingsLockResult<T>>,
+	): Promise<T> {
+		throw new Error(`${scope} settings failed`);
+	}
+}
+
+class FailingAuthStorageBackend implements AuthStorageBackend {
+	async withLockAsync<T>(
+		_fn: (current: string | undefined) => Promise<LockResult<T>>,
+	): Promise<T> {
+		throw new Error("auth storage failed");
+	}
+}
+
 const defaultProfile: AgentProfile = {
 	id: "main",
 	label: "Main Agent",
@@ -361,6 +387,105 @@ function createProfileRegistry(): AgentProfileRegistry {
 }
 
 describe("AgentOrchestrator", () => {
+	it("emits drained startup diagnostics through the diagnostic event", async () => {
+		const env = new MemoryExecutionEnv();
+		const configValueResolver = new ConfigValueResolver(env);
+		const authStorage = AuthStorage.fromStorage(
+			new FailingAuthStorageBackend(),
+			{ configValueResolver },
+		);
+		env.files.set("/workspace/project/models.json", "{ invalid");
+		const modelRegistry = await ModelRegistry.create({
+			executionEnv: env,
+			authStorage,
+			configValueResolver,
+			modelsJsonPath: "/workspace/project/models.json",
+		});
+		const settingManager = await SettingManager.fromStorage(
+			new FailingSettingsStorage(),
+		);
+		const orchestrator = new AgentOrchestrator({
+			executionEnv: env,
+			resourceLoader: new ResourceLoader({
+				executionEnv: env,
+				cwd: "/workspace/project",
+			}),
+			sessionManager: new SessionManager({
+				fs: env,
+				cwd: "/workspace/project",
+				sessionsRoot: "/sessions",
+			}),
+			settingManager,
+			modelRegistry,
+			profileRegistry: createProfileRegistry(),
+			defaultProfileId: defaultProfile.id,
+			defaultModel,
+		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+
+		await orchestrator.emitStartupDiagnostics();
+		await orchestrator.emitStartupDiagnostics();
+
+		const diagnosticCodes = events
+			.filter((event) => event.type === "diagnostic")
+			.map((event) => event.diagnostic.code);
+		expect(diagnosticCodes).toContain("settings.load_failed");
+		expect(diagnosticCodes).toContain("auth.load_failed");
+		expect(diagnosticCodes).toContain("model.load_failed");
+		expect(
+			diagnosticCodes.filter((code) => code === "model.load_failed"),
+		).toHaveLength(1);
+	});
+
+	it("emits profile registry diagnostics while spawning agents", async () => {
+		const env = new MemoryExecutionEnv();
+		const profileRegistry = new AgentProfileRegistry(
+			new InMemoryProfileStorageBackend([
+				{
+					entryId: "memory:main",
+					filenameId: "filename-main",
+					content: "---\nid: main\nlabel: Main Agent\n---\ndefault prompt",
+				},
+			]),
+		);
+		const orchestrator = new AgentOrchestrator({
+			executionEnv: env,
+			resourceLoader: new ResourceLoader({
+				executionEnv: env,
+				cwd: "/workspace/project",
+			}),
+			sessionManager: new SessionManager({
+				fs: env,
+				cwd: "/workspace/project",
+				sessionsRoot: "/sessions",
+			}),
+			settingManager: new SettingManager(),
+			modelRegistry: await createModelRegistry(env),
+			profileRegistry,
+			defaultProfileId: defaultProfile.id,
+			defaultModel,
+		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+
+		await orchestrator.spawnAgentHarness();
+
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					code: "profile.id_filename_mismatch",
+					profileId: "main",
+				}),
+			}),
+		);
+	});
+
 	it("resumes a persisted agent harness from session metadata", async () => {
 		const env = new MemoryExecutionEnv();
 		const sessionManager = new SessionManager({

@@ -70,7 +70,7 @@ const authStorage = AuthStorage.create(executionEnv, { configValueResolver });
 3. 运行时通过 `registerProvider()` 注册的动态 provider。
 
 `models.json` 是可选文件。读取失败或 schema 校验失败时，错误会保存在
-`ModelRegistry.getError()`，但 registry 仍然保留内置模型，避免一个损坏的自定义配置让整个模型列表不可用。
+`ModelRegistry.getError()`，但 registry 仍然保留内置模型，避免一个损坏的自定义配置让整个模型列表不可用。同一失败也会记录为 `model.load_failed` diagnostic，可通过 `getLoadDiagnostic()` 或 `drainDiagnostics()` 读取。
 
 合并规则：
 
@@ -126,6 +126,16 @@ authStorage.getApiKey(model.provider, { includeFallback: false })
 
 这个分层可以避免 UI 或模型发现阶段触发昂贵或有副作用的命令执行和 OAuth refresh。
 
+## Diagnostics
+
+`SettingManager`、`AuthStorage` 和 `ModelRegistry` 已接入统一 `CoreDiagnostic` shape，同时保留旧 API：
+
+- `SettingManager.drainDiagnostics()` 返回 `settings.load_failed`、`settings.write_failed`；旧 `drainErrors()` 保留。
+- `AuthStorage.getLoadDiagnostic()` / `drainDiagnostics()` 返回 `auth.load_failed`、`auth.persist_failed`、`auth.oauth_refresh_failed`；旧 `drainErrors()` 保留。
+- `ModelRegistry.getLoadDiagnostic()` / `drainDiagnostics()` 返回 `model.load_failed`、`model.auth_missing`、`model.auth_resolution_failed`；旧 `getError()` 与 `ResolvedRequestAuth` 返回 shape 保留。
+
+Orchestrator 在 startup boundary drain settings/auth/model load diagnostics，并在 provider auth callback 后 drain request auth diagnostics，再通过统一 `diagnostic` event 发布给 UI/RPC/CLI。
+
 ## 锁与并发边界
 
 当前 `FileAuthStorageBackend` 内部有一个 in-process `AsyncLock`，用于串行化同一个进程内对 `auth.json` 的 read-modify-write。
@@ -162,6 +172,7 @@ withLockAsync(fn)
 - [x] 实现 `AuthStorage`，支持 in-memory/file backend、runtime override、fallback resolver 和 OAuth credential path。
 - [x] 实现 `ModelRegistry`，支持内置模型、自定义 `models.json`、provider/model override、headers/auth 解析和 auth status 查询。
 - [x] 实现 `SettingManager`，支持 in-memory/file backend、global/project scope、project trust、merge、flush 和 typed getters/setters。
+- [x] 为 Settings/Auth/Model 增加 `CoreDiagnostic` API，并通过 orchestrator startup/request auth boundary 发布 diagnostics。
 - [ ] 设计带多进程锁的 auth/config storage backend。
 - [ ] 明确 runtime service 的形状，以及它是否负责统一创建 `ExecutionEnv`、`SettingManager`、`ConfigValueResolver`、`AuthStorage` 和 `ModelRegistry`。
 - [ ] 梳理 `models.json` schema 文档和示例。

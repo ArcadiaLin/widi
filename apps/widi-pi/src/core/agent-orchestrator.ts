@@ -23,6 +23,7 @@ import type {
 import {
 	type DiagnosticDisposition,
 	type DiagnosticSource,
+	dedupeDiagnostics,
 	type OrchestratorDiagnostic,
 	OrchestratorError,
 	toCoreDiagnosticFromPromptTemplateDiagnostic,
@@ -238,6 +239,7 @@ export class AgentOrchestrator {
 	async spawnAgentHarness(
 		options: SpawnAgentHarnessOptions = {},
 	): Promise<SpawnAgentHarnessResult> {
+		await this.emitStartupDiagnostics();
 		if (options.resume) {
 			return await this._resumeAgentHarness(options);
 		}
@@ -273,6 +275,10 @@ export class AgentOrchestrator {
 
 	setEnabledProfileIds(profileIds: readonly string[] | undefined): void {
 		this._enabledProfileIds = profileIds ? [...profileIds] : undefined;
+	}
+
+	async emitStartupDiagnostics(): Promise<void> {
+		await this._publishDiagnostics(this._drainCoreDiagnostics());
 	}
 
 	getAgentHarness(agentId: AgentId): AgentHarness | undefined {
@@ -703,6 +709,7 @@ export class AgentOrchestrator {
 		agentId: AgentId | undefined,
 	): Promise<AgentProfile> {
 		const result = await this.profileRegistry.resolveProfile(profileId);
+		await this._publishDiagnostics(result.diagnostics);
 		if (!result.ok) {
 			const diagnostic = createOrchestratorDiagnostic({
 				severity: "error",
@@ -912,9 +919,7 @@ export class AgentOrchestrator {
 				}),
 			),
 		];
-		for (const diagnostic of resourceDiagnostics) {
-			await this._publishDiagnostic(diagnostic);
-		}
+		await this._publishDiagnostics(resourceDiagnostics);
 
 		const resources: AgentHarnessResources = {
 			// this step ignore thie "ResourceSource", may be has any other usage;
@@ -936,6 +941,7 @@ export class AgentOrchestrator {
 			getApiKeyAndHeaders: async (requestModel) => {
 				const result =
 					await this.modelRegistry.getApiKeyAndHeaders(requestModel);
+				await this._publishDiagnostics(this._drainCoreDiagnostics());
 				if (!result.ok) {
 					throw new Error(result.error);
 				}
@@ -1078,6 +1084,23 @@ export class AgentOrchestrator {
 			},
 			options,
 		);
+	}
+
+	private async _publishDiagnostics(
+		diagnostics: readonly OrchestratorDiagnostic[],
+		options: { sendToClients?: boolean } = {},
+	): Promise<void> {
+		for (const diagnostic of dedupeDiagnostics(diagnostics)) {
+			await this._publishDiagnostic(diagnostic, options);
+		}
+	}
+
+	private _drainCoreDiagnostics(): OrchestratorDiagnostic[] {
+		return [
+			...this.settingManager.drainDiagnostics(),
+			...this.modelRegistry.authStorage.drainDiagnostics(),
+			...this.modelRegistry.drainDiagnostics(),
+		];
 	}
 
 	private _createCommandId(): string {

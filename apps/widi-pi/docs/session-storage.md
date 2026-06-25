@@ -185,7 +185,7 @@ resume 持久 session 时，调用方传入 `ExtendedJsonlSessionMetadata`，`Se
 6. `session.buildContext()` 从当前 leaf 恢复 messages、model、thinking level 和 active tools。
 7. orchestrator 用恢复出的 profile、model 和 session 创建新的 `AgentHarness`。
 
-当前 orchestrator resume 分支已经接入第 4-7 步的基础路径：它会读取 profile reference，通过 `AgentProfileRegistry` 恢复 profile，读取 session context 中的 model、thinking level 和 active tools，并创建新的 `AgentHarness`。profile 缺失不再回退到 default profile。仍未完成的是 resource diagnostics 汇总，以及 active tools 与当前 tool registry 的一致性校验。
+当前 orchestrator resume 分支已经接入第 4-7 步的基础路径：它会读取 profile reference，通过 `AgentProfileRegistry` 恢复 profile，读取 session context 中的 model、thinking level 和 active tools，并创建新的 `AgentHarness`。profile 缺失不再回退到 default profile。Profile/resource diagnostics 会通过 orchestrator `diagnostic` event 发布。仍未完成的是 active tools 与当前 tool registry 的一致性校验。
 
 ## Metadata 使用原则
 
