@@ -1,4 +1,11 @@
 export type {
+	WriteOperations,
+	WriteToolDetails,
+	WriteToolInput,
+	WriteToolOptions,
+} from "./coding/write.ts";
+export { createWriteToolDefinition } from "./coding/write.ts";
+export type {
 	AnyToolContribution,
 	ResolvedTool,
 	ToolAgentAdapterContext,
@@ -19,4 +26,5 @@ export type {
 	ToolDefinitionPatch,
 	ToolExecutionContext,
 	ToolExtensionContext,
+	ToolLifecycleEvent,
 } from "./types.ts";

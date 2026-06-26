@@ -63,7 +63,7 @@ describe("ToolRegistry", () => {
 			targetToolName: "write",
 			priority: 10,
 			patch: {
-				label: "Write via sandbox",
+				description: "Write via sandbox",
 				aroundExecute: async (next, toolCallId, params, context) => {
 					calls.push("sandbox:before");
 					const result = await next(toolCallId, params, context);
@@ -77,7 +77,7 @@ describe("ToolRegistry", () => {
 		const resolvedTool = result.getTool("write");
 		expect(resolvedTool).toBeDefined();
 		if (!resolvedTool) throw new Error("Expected write tool to resolve.");
-		expect(resolvedTool.definition.label).toBe("Write via sandbox");
+		expect(resolvedTool.definition.description).toBe("Write via sandbox");
 		expect(resolvedTool.patches.map((patch) => patch.source.id)).toEqual([
 			"audit",
 			"sandbox",
@@ -164,7 +164,7 @@ describe("ToolRegistry", () => {
 			type: "patch",
 			source: extensionSource,
 			targetToolName: "write",
-			patch: { label: "Write elsewhere" },
+			patch: { description: "Write elsewhere" },
 		});
 
 		const result = registry.resolve();

@@ -1,4 +1,5 @@
 import type {
+	AgentHarnessEvent,
 	ExecutionEnv,
 	ExecutionEnvExecOptions,
 	ExecutionError,
@@ -12,7 +13,7 @@ import {
 	ExecutionError as PiExecutionError,
 	FileError as PiFileError,
 } from "@earendil-works/pi-agent-core";
-import type { Model } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import {
@@ -410,6 +411,34 @@ function createToolRegistry(...tools: ToolDefinition[]): ToolRegistry {
 	return registry;
 }
 
+function createAssistantPartial(
+	content: AssistantMessage["content"],
+): AssistantMessage {
+	return {
+		role: "assistant",
+		content,
+		api: "responses",
+		provider: "openai",
+		model: "test-model",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			cost: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				total: 0,
+			},
+			totalTokens: 0,
+		},
+		stopReason: "toolUse",
+		timestamp: 0,
+	};
+}
+
 describe("AgentOrchestrator", () => {
 	it("emits drained startup diagnostics through the diagnostic event", async () => {
 		const env = new MemoryExecutionEnv();
@@ -643,9 +672,10 @@ describe("AgentOrchestrator", () => {
 		});
 		expect(toolsResult).toMatchObject({ ok: true });
 		if (!toolsResult.ok) throw new Error("Expected getTools to succeed.");
-		expect(toolsResult.value).toEqual([
-			expect.objectContaining({ name: "echo" }),
-		]);
+		expect(toolsResult.value).toEqual({
+			toolNames: ["echo"],
+			activeToolNames: ["echo"],
+		});
 
 		const setModelResult = await orchestrator.dispatch({
 			kind: "agent.setModel",
@@ -664,6 +694,21 @@ describe("AgentOrchestrator", () => {
 		});
 		expect(setActiveToolsResult.ok).toBe(true);
 		expect(orchestrator.getAgentActiveTools(agentId)).toEqual([]);
+		const setToolsResult = await orchestrator.dispatch({
+			kind: "agent.setTools",
+			source: { kind: "system" },
+			agentId,
+			toolNames: ["echo", "missing", "echo"],
+			activeToolNames: ["echo", "ghost"],
+		});
+		expect(setToolsResult.ok).toBe(true);
+		expect(orchestrator.getAgentTools(agentId)).toEqual({
+			toolNames: ["echo"],
+			activeToolNames: ["echo"],
+		});
+		expect(harness.getTools()).toEqual([
+			expect.objectContaining({ name: "echo" }),
+		]);
 		expect(commandEvents).toContainEqual(
 			expect.objectContaining({
 				type: "command_completed",
@@ -695,9 +740,10 @@ describe("AgentOrchestrator", () => {
 
 		const { agentId } = await orchestrator.spawnAgentHarness();
 
-		expect(orchestrator.getAgentTools(agentId)).toEqual([
-			expect.objectContaining({ name: "echo" }),
-		]);
+		expect(orchestrator.getAgentTools(agentId)).toEqual({
+			toolNames: ["echo"],
+			activeToolNames: ["echo"],
+		});
 		expect(
 			events
 				.filter((event) => event.type === "diagnostic")
@@ -747,9 +793,7 @@ describe("AgentOrchestrator", () => {
 			metadata,
 		});
 
-		expect(orchestrator.getAgentActiveTools(agentId)).toEqual([
-			expect.objectContaining({ name: "echo" }),
-		]);
+		expect(orchestrator.getAgentActiveTools(agentId)).toEqual(["echo"]);
 		expect(events).toContainEqual(
 			expect.objectContaining({
 				type: "diagnostic",
@@ -784,9 +828,10 @@ describe("AgentOrchestrator", () => {
 
 		const { agentId } = await orchestrator.spawnAgentHarness();
 
-		expect(orchestrator.getAgentTools(agentId)).toEqual([
-			expect.objectContaining({ name: "echo" }),
-		]);
+		expect(orchestrator.getAgentTools(agentId)).toEqual({
+			toolNames: ["echo"],
+			activeToolNames: ["echo"],
+		});
 		expect(events).toContainEqual(
 			expect.objectContaining({
 				type: "diagnostic",
@@ -797,6 +842,194 @@ describe("AgentOrchestrator", () => {
 					profileId: defaultProfile.id,
 				}),
 			}),
+		);
+	});
+
+	it("emits normalized tool lifecycle events from harness events", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env, {
+			toolRegistry: createToolRegistry(createToolDefinition("plain")),
+		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const handleHarnessEvent = (
+			orchestrator as unknown as {
+				_handleAgentHarnessEvent(
+					agentId: string,
+					event: AgentHarnessEvent,
+				): Promise<void>;
+			}
+		)._handleAgentHarnessEvent.bind(orchestrator);
+		const partial = createAssistantPartial([
+			{
+				type: "toolCall",
+				id: "call-1",
+				name: "plain",
+				arguments: {},
+			},
+		]);
+
+		await handleHarnessEvent(agentId, {
+			type: "message_update",
+			message: partial,
+			assistantMessageEvent: {
+				type: "toolcall_start",
+				contentIndex: 0,
+				partial,
+			},
+		});
+		await handleHarnessEvent(agentId, {
+			type: "message_update",
+			message: partial,
+			assistantMessageEvent: {
+				type: "toolcall_delta",
+				contentIndex: 0,
+				delta: '{"value"',
+				partial,
+			},
+		});
+		await handleHarnessEvent(agentId, {
+			type: "message_update",
+			message: partial,
+			assistantMessageEvent: {
+				type: "toolcall_end",
+				contentIndex: 0,
+				toolCall: {
+					type: "toolCall",
+					id: "call-1",
+					name: "plain",
+					arguments: { value: "input" },
+				},
+				partial,
+			},
+		});
+		await handleHarnessEvent(agentId, {
+			type: "tool_execution_start",
+			toolCallId: "call-1",
+			toolName: "plain",
+			args: { value: "input" },
+		});
+		await handleHarnessEvent(agentId, {
+			type: "tool_execution_update",
+			toolCallId: "call-1",
+			toolName: "plain",
+			args: { value: "input" },
+			partialResult: {
+				content: [{ type: "text", text: "partial" }],
+				details: { progress: 1 },
+			},
+		});
+		await handleHarnessEvent(agentId, {
+			type: "tool_execution_end",
+			toolCallId: "call-1",
+			toolName: "plain",
+			result: {
+				content: [{ type: "text", text: "done" }],
+				details: { value: "input" },
+			},
+			isError: false,
+		});
+
+		const lifecycleEvents = events.filter(
+			(event) => event.type === "tool_lifecycle_event",
+		);
+		expect(events[events.length - 2]).toMatchObject({
+			type: "agent_harness_event",
+			agentId,
+			event: { type: "tool_execution_end" },
+		});
+		expect(lifecycleEvents).toEqual([
+			expect.objectContaining({
+				event: {
+					type: "tool_call_created",
+					contentIndex: 0,
+					toolCallId: "call-1",
+					toolName: "plain",
+				},
+			}),
+			expect.objectContaining({
+				event: {
+					type: "arguments_delta",
+					contentIndex: 0,
+					delta: '{"value"',
+					toolCallId: "call-1",
+					toolName: "plain",
+				},
+			}),
+			expect.objectContaining({
+				event: {
+					type: "arguments_ready",
+					contentIndex: 0,
+					toolCallId: "call-1",
+					toolName: "plain",
+					args: { value: "input" },
+				},
+			}),
+			expect.objectContaining({
+				event: {
+					type: "execution_started",
+					toolCallId: "call-1",
+					toolName: "plain",
+					args: { value: "input" },
+				},
+			}),
+			expect.objectContaining({
+				event: {
+					type: "execution_update",
+					toolCallId: "call-1",
+					toolName: "plain",
+					partialResult: {
+						content: [{ type: "text", text: "partial" }],
+						details: { progress: 1 },
+					},
+				},
+			}),
+			expect.objectContaining({
+				event: {
+					type: "execution_result",
+					toolCallId: "call-1",
+					toolName: "plain",
+					result: {
+						content: [{ type: "text", text: "done" }],
+						details: { value: "input" },
+					},
+					isError: false,
+				},
+			}),
+		]);
+	});
+
+	it("forwards raw events without lifecycle facts when not tool-related", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const handleHarnessEvent = (
+			orchestrator as unknown as {
+				_handleAgentHarnessEvent(
+					agentId: string,
+					event: AgentHarnessEvent,
+				): Promise<void>;
+			}
+		)._handleAgentHarnessEvent.bind(orchestrator);
+
+		await handleHarnessEvent(agentId, { type: "turn_start" });
+
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "agent_harness_event",
+				agentId,
+				event: { type: "turn_start" },
+			}),
+		);
+		expect(events.some((event) => event.type === "tool_lifecycle_event")).toBe(
+			false,
 		);
 	});
 

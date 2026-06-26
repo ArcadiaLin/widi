@@ -28,7 +28,7 @@ Tool Registry 属于 dependency layer。
 
 Tool Registry 解析 built-in tools、extension-contributed tools 和 adapter-contributed tools，处理 name conflicts、availability 和 diagnostics，并为某个 agent harness 生成最终 tools。
 
-当前实现先落在 `apps/widi-pi/src/core/tools/tool-registry.ts`。它负责 tool definition 解析和 Pi `AgentTool` adapter，并已接入 orchestrator create/resume harness build；它不直接激活 extension。
+当前实现先落在 `apps/widi-pi/src/core/tools/tool-registry.ts`。它负责 tool definition 解析和 Pi `AgentTool` adapter，并已接入 orchestrator create/resume/runtime tool update 路径；它不直接激活 extension，也不负责 runtime event 转发。
 
 ## Tool Registry
 
@@ -49,7 +49,7 @@ Registry 输出是 resolved tools：
 Patch 规则：
 
 - patch 按 priority 从低到高应用；同 priority 按注册顺序应用。
-- 后应用的 metadata、prompt、argument preparation、execution env、state reducer 和 execute 覆盖前者。
+- 后应用的 `description`、`parameters`、`strict` 和 `execute` 覆盖前者。
 - `aroundExecute` 会包装当前 execute；高 priority patch 因为后应用，会成为更外层 wrapper。
 - patch 目标不存在时产生 `tool.patch_target_missing` diagnostic，不会创建隐式 tool。
 
@@ -62,6 +62,8 @@ Tool visibility 规则：
 
 Pi coding-agent 当前是 definition-first：built-in tools、custom tools 和 extension tools 最终都变成 `ToolDefinition`，再 wrap 成 Pi `AgentTool`。它的 extension runner 对同名 extension tool 采用 first registration wins，最终合成时 extension/custom tool 可以覆盖 built-in。WIDI 参考了这个 definition-first 结构，但用显式 `define`/`patch` contribution 替代裸 Map 覆盖，以便支持更强 diagnostics 和 extension 注入。
 
+ToolRegistry 是唯一的 `ToolDefinition -> AgentTool` wrap 入口。Create/resume harness 和 runtime `agent.setTools` 都应通过 registry resolve 后的 wrapped tools 更新 harness。裸 `AgentTool[]` 不再作为 orchestrator command API 暴露。
+
 ## Extension
 
 Extension 可以注册 tool，也可以通过 hook 影响 tool 可用性。但 tool 是否进入某个 agent harness，应由 orchestrator/tool registry 基于 profile 和 policy 决定。
@@ -72,7 +74,7 @@ Tool Registry 应把 tool 输入视为贡献集合，而不是裸数组：
 
 - `define` contribution 新增一个 tool。
 - `patch` contribution 以 tool name 为目标修改既有 tool。
-- patch 可以替换 metadata、prompt snippet、argument preparation、execution env requirement、state reducer 或 execute。
+- patch 可以替换 `description`、`parameters`、`strict` 或 `execute`。
 - patch 也可以通过 `aroundExecute` 包装既有 execute，用于审计、重写参数、转发到 sandbox、替换文件写入 backend 等。
 - 多个 patch 按来源、priority 和 policy 合成，冲突应产生 diagnostic。
 
@@ -80,11 +82,29 @@ Tool Registry 应把 tool 输入视为贡献集合，而不是裸数组：
 
 Tool tracking 也属于这种轻量 wrapper 场景。它不应进入 core tool definition 或 registry adapter；需要记录 tool run 时，extension 可以用 `aroundExecute` 包装目标 tool，并自行决定记录字段、保留期限和暴露方式。`apps/widi-pi/examples/tool-tracker-extension.ts` 是这个方向的示范骨架。
 
-## Tool State
+## Tool Lifecycle Events
 
-WIDI tool definition 不直接依赖 UI。Tool call streaming、arguments ready、execution update、result 和 error 都应先归入 tool state。TUI、RPC、HTML export 或其他 adapter 消费这个 state 并落实展示。
+WIDI core 不持有 tool preview 或状态。Tool definition 只描述可执行工具，ToolRegistry 只负责 contribution resolve、patch、diagnostics，以及显式 `ToolDefinition -> AgentTool` wrap。
 
-这保留 Pi coding-agent 的流式 tool UI 能力，同时避免 tool registry 直接依赖某个 UI 实现。
+Orchestrator 是当前 runtime event hub。它保留两条事件轨道：
+
+- `agent_harness_event` 原样透传 Pi `AgentHarnessEvent`，用于调试、日志和未来兼容。
+- `tool_lifecycle_event` 发布 WIDI 归一化的 tool-call facts，供 UI 和 extension runner 稳定消费。
+
+第一版 lifecycle event 覆盖：
+
+- `tool_call_created`
+- `arguments_delta`
+- `arguments_ready`
+- `execution_started`
+- `execution_update`
+- `execution_result`
+
+`tool_call_created`、`arguments_delta` 和 `arguments_ready` 来自 `message_update.assistantMessageEvent.toolcall_*`。Orchestrator 只维护短生命周期的 `contentIndex -> toolCall` 映射来补全 streaming facts；它不是 tool state，不暴露、不持久化、不参与 UI 设计。
+
+`execution_started`、`execution_update` 和 `execution_result` 来自 Pi `tool_execution_*` events。`execution_result.isError` 表示 Pi harness 认为最终结果是错误结果。
+
+UI preview/state 不属于 core。TUI、RPC、HTML export 或 extension runner 可以基于 `tool_lifecycle_event`、tool name、arguments、result content/details 自行派生展示状态。Extension patch 也不拥有 lifecycle state API；它只能 patch definition/execution 字段，或用 `aroundExecute` 观察执行。
 
 ## Tool Result Persistence
 
@@ -112,8 +132,9 @@ Tool tracking、审计和 checkpoint 更适合作为 extension pattern：用 `ar
 - [x] 设计 tool registry 的来源优先级、冲突处理和 availability 诊断。
 - [x] 定义 `define`/`patch` tool contribution 的合成顺序、冲突策略和 diagnostics。
 - [x] 将 tool human request 能力收敛为 `context.human.request(...)`。
-- [ ] 为 built-in tool wrapper 增加示例，先覆盖 `write` 的 sandbox/backend 替换场景，并采用 Pi 风格 tool call/result/details 持久化。
+- [x] 落地第一版 WIDI-owned `write` tool definition，采用 Pi 风格 tool call/result/details 持久化。
+- [ ] 将 built-in `write` 接入默认 builtin registry，并补 sandbox/backend patch 示例与 Pi parity 对照。
 - [ ] 定义 extension-owned custom entry API：append/read 权限、branch scope、fork、compaction、export、debug view 和 diagnostics。
 - [ ] 定义 Profile Capability 到 Tool Visibility 和 runtime policy 的映射。
-- [x] 移除 create/resume raw `AgentTool[]` 输入；AgentTool 只由 ToolRegistry resolve 后的 ToolDefinition wrap 产生。
+- [x] 移除 create/resume/runtime command raw `AgentTool[]` 输入；AgentTool 只由 ToolRegistry resolve 后的 ToolDefinition wrap 产生。
 - [x] 校验 resume/runtime active tool names 与当前 registry 解析结果的一致性。

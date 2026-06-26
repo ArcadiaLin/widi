@@ -17,13 +17,9 @@ import type {
 	ToolExtensionContext,
 } from "./types.ts";
 
-type RegistryToolDefinition = ToolDefinition<TSchema, unknown, unknown>;
-type RegistryToolDefinitionPatch = ToolDefinitionPatch<
-	TSchema,
-	unknown,
-	unknown
->;
-export type AnyToolContribution = ToolContribution<TSchema, unknown, unknown>;
+type RegistryToolDefinition = ToolDefinition<TSchema, unknown>;
+type RegistryToolDefinitionPatch = ToolDefinitionPatch<TSchema, unknown>;
+export type AnyToolContribution = ToolContribution<TSchema, unknown>;
 
 export type ToolRegistryDiagnosticSeverity = DiagnosticSeverity;
 
@@ -81,8 +77,6 @@ export interface ToolAgentAdapterContext {
 		source: ToolContributionSource,
 		toolName: string,
 	) => ToolExtensionContext | undefined;
-	getState?: (toolCallId: string, toolName: string) => unknown;
-	setState?: (toolCallId: string, toolName: string, state: unknown) => void;
 }
 
 interface StoredContribution {
@@ -106,15 +100,9 @@ interface PatchEntry {
 }
 
 const patchReplaceFields = [
-	"label",
 	"description",
-	"promptSnippet",
-	"promptGuidelines",
-	"prepareArguments",
-	"executionMode",
-	"executionEnv",
-	"createState",
-	"reduceState",
+	"parameters",
+	"strict",
 	"execute",
 ] as const satisfies readonly (keyof RegistryToolDefinitionPatch)[];
 
@@ -128,8 +116,8 @@ export class ToolRegistry {
 		return registry;
 	}
 
-	addContribution<TParamsSchema extends TSchema, TDetails, TState>(
-		contribution: ToolContribution<TParamsSchema, TDetails, TState>,
+	addContribution<TParamsSchema extends TSchema, TDetails>(
+		contribution: ToolContribution<TParamsSchema, TDetails>,
 	): void {
 		this._contributions.push({
 			contribution: contribution as unknown as AnyToolContribution,
@@ -432,13 +420,7 @@ export function createAgentToolFromResolvedTool(
 			definition.execute(
 				toolCallId,
 				params,
-				createToolExecutionContext(
-					resolvedTool,
-					toolCallId,
-					context,
-					signal,
-					onUpdate,
-				),
+				createToolExecutionContext(resolvedTool, context, signal, onUpdate),
 			),
 	};
 }
@@ -457,19 +439,9 @@ function applyPatch(
 	patch: RegistryToolDefinitionPatch,
 ): RegistryToolDefinition {
 	const next: RegistryToolDefinition = { ...definition };
-	if (patch.label !== undefined) next.label = patch.label;
 	if (patch.description !== undefined) next.description = patch.description;
-	if (patch.promptSnippet !== undefined)
-		next.promptSnippet = patch.promptSnippet;
-	if (patch.promptGuidelines !== undefined)
-		next.promptGuidelines = [...patch.promptGuidelines];
-	if (patch.prepareArguments !== undefined)
-		next.prepareArguments = patch.prepareArguments;
-	if (patch.executionMode !== undefined)
-		next.executionMode = patch.executionMode;
-	if (patch.executionEnv !== undefined) next.executionEnv = patch.executionEnv;
-	if (patch.createState !== undefined) next.createState = patch.createState;
-	if (patch.reduceState !== undefined) next.reduceState = patch.reduceState;
+	if (patch.parameters !== undefined) next.parameters = patch.parameters;
+	if (patch.strict !== undefined) next.strict = patch.strict;
 
 	const execute = patch.execute ?? next.execute;
 	if (patch.aroundExecute) {
@@ -484,11 +456,10 @@ function applyPatch(
 
 function createToolExecutionContext(
 	resolvedTool: ResolvedTool,
-	toolCallId: string,
 	context: ToolAgentAdapterContext,
 	signal: AbortSignal | undefined,
 	onUpdate: Parameters<AgentTool<TSchema, unknown>["execute"]>[3],
-): ToolExecutionContext<unknown, unknown> {
+): ToolExecutionContext<unknown> {
 	const extension =
 		context.createExtensionContext?.(
 			resolvedTool.source,
@@ -500,13 +471,6 @@ function createToolExecutionContext(
 		onUpdate,
 		extension,
 		human: context.human,
-		getState: context.getState
-			? () => context.getState?.(toolCallId, resolvedTool.definition.name)
-			: undefined,
-		setState: context.setState
-			? (state) =>
-					context.setState?.(toolCallId, resolvedTool.definition.name, state)
-			: undefined,
 	};
 }
 

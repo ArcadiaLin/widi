@@ -13,7 +13,7 @@ import {
 	type Session,
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import type { ImageContent } from "@earendil-works/pi-ai";
+import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
 import type { ExtendedJsonlSessionMetadata } from "../storage/jsonl-repo.ts";
 import type {
 	AgentProfile,
@@ -32,6 +32,7 @@ import {
 import type { ModelRegistry } from "./model-registry.js";
 import type { OrchestratorClient } from "./orchestrator/clients.ts";
 import type {
+	AgentToolsSnapshot,
 	OperationSource,
 	OrchestratorCommand,
 	OrchestratorCommandResult,
@@ -53,12 +54,18 @@ import {
 	createAgentToolsFromResolvedTools,
 	ToolRegistry,
 } from "./tools/tool-registry.ts";
+import type { ToolLifecycleEvent } from "./tools/types.ts";
 
 export type OrchestratorEvent =
 	| {
 			readonly type: "agent_harness_event";
 			agentId: AgentId;
 			event: AgentHarnessEvent;
+	  }
+	| {
+			readonly type: "tool_lifecycle_event";
+			agentId: AgentId;
+			event: ToolLifecycleEvent;
 	  }
 	| {
 			readonly type: "command_accepted";
@@ -143,39 +150,24 @@ interface PendingHumanRequest {
 	cancel(reason?: string): Promise<void>;
 }
 
-interface AgentToolState {
+interface AgentToolSet {
 	tools: AgentTool[];
+	toolNames: string[];
+	requestedToolNames: string[] | undefined;
 	activeToolNames: string[];
+	profileId: string;
 }
 
-interface AgentToolStateHarness {
+interface StreamingToolCallRef {
+	toolCallId?: string;
+	toolName?: string;
+}
+
+interface AgentToolSetHarness {
 	getTools(): AgentTool[];
 	setTools(tools: AgentTool[], activeToolNames?: string[]): Promise<void>;
 	getActiveTools(): AgentTool[];
 	setActiveTools(toolNames: string[]): Promise<void>;
-}
-
-function validateToolNames(
-	toolNames: readonly string[],
-	tools: readonly AgentTool[],
-) {
-	const toolsByName = new Set(tools.map((tool) => tool.name));
-	const seen = new Set<string>();
-	const duplicates = new Set<string>();
-	const missing: string[] = [];
-	for (const name of toolNames) {
-		if (seen.has(name)) duplicates.add(name);
-		seen.add(name);
-		if (!toolsByName.has(name)) missing.push(name);
-	}
-	if (duplicates.size > 0) {
-		throw new Error(
-			`Duplicate active tool name(s): ${[...duplicates].join(", ")}`,
-		);
-	}
-	if (missing.length > 0) {
-		throw new Error(`Unknown active tool name(s): ${missing.join(", ")}`);
-	}
 }
 
 interface SpawnAgentHarnessCommonOptions {
@@ -220,7 +212,9 @@ export class AgentOrchestrator {
 
 	private _unsubscribeAgentHarness: Map<AgentId, () => void> = new Map();
 	private _eventListeners: Set<OrchestratorEventListener> = new Set();
-	private _agentToolStates: Map<AgentId, AgentToolState> = new Map();
+	private _agentToolSets: Map<AgentId, AgentToolSet> = new Map();
+	private _streamingToolCalls: Map<AgentId, Map<number, StreamingToolCallRef>> =
+		new Map();
 	private _clients: Map<string, OrchestratorClient<OrchestratorEvent>> =
 		new Map();
 	private _pendingHumanRequests: Map<string, PendingHumanRequest> = new Map();
@@ -295,44 +289,34 @@ export class AgentOrchestrator {
 		await this._requireAgentHarness(agentId).setModel(model);
 	}
 
-	getAgentTools(agentId: AgentId): AgentTool[] {
-		const harness = this._requireAgentHarness(agentId) as AgentHarness &
-			Partial<AgentToolStateHarness>;
-		return (
-			harness.getTools?.() ?? [...this._requireAgentToolState(agentId).tools]
-		);
+	getAgentTools(agentId: AgentId): AgentToolsSnapshot {
+		const state = this._requireAgentToolSet(agentId);
+		return {
+			toolNames: [...state.toolNames],
+			activeToolNames: [...state.activeToolNames],
+		};
 	}
 
 	async setAgentTools(
 		agentId: AgentId,
-		tools: AgentTool[],
+		toolNames: string[],
 		activeToolNames?: string[],
 	): Promise<void> {
 		const harness = this._requireAgentHarness(agentId) as AgentHarness &
-			Partial<AgentToolStateHarness>;
-		const nextActiveToolNames =
-			activeToolNames ?? this._requireAgentToolState(agentId).activeToolNames;
-		validateToolNames(nextActiveToolNames, tools);
-		await harness.setTools?.(tools, activeToolNames);
-		this._agentToolStates.set(agentId, {
-			tools: [...tools],
-			activeToolNames: [...nextActiveToolNames],
+			Partial<AgentToolSetHarness>;
+		const currentState = this._requireAgentToolSet(agentId);
+		const next = await this._resolveAgentTools({
+			agentId,
+			profileId: currentState.profileId,
+			requestedToolNames: toolNames,
+			activeToolNames,
 		});
+		await harness.setTools?.(next.tools, [...next.activeToolNames]);
+		this._agentToolSets.set(agentId, next);
 	}
 
-	getAgentActiveTools(agentId: AgentId): AgentTool[] {
-		const harness = this._requireAgentHarness(agentId) as AgentHarness &
-			Partial<AgentToolStateHarness>;
-		if (harness.getActiveTools) {
-			return harness.getActiveTools();
-		}
-		const state = this._requireAgentToolState(agentId);
-		const toolsByName = new Map(state.tools.map((tool) => [tool.name, tool]));
-		return state.activeToolNames.map((name) => {
-			const tool = toolsByName.get(name);
-			if (!tool) throw new Error(`Unknown active tool: ${name}`);
-			return tool;
-		});
+	getAgentActiveTools(agentId: AgentId): string[] {
+		return [...this._requireAgentToolSet(agentId).activeToolNames];
 	}
 
 	async setAgentActiveTools(
@@ -340,14 +324,16 @@ export class AgentOrchestrator {
 		toolNames: string[],
 	): Promise<void> {
 		const harness = this._requireAgentHarness(agentId) as AgentHarness &
-			Partial<AgentToolStateHarness>;
-		const state = this._requireAgentToolState(agentId);
-		validateToolNames(toolNames, state.tools);
-		await harness.setActiveTools?.(toolNames);
-		this._agentToolStates.set(agentId, {
-			tools: [...state.tools],
-			activeToolNames: [...toolNames],
+			Partial<AgentToolSetHarness>;
+		const currentState = this._requireAgentToolSet(agentId);
+		const next = await this._resolveAgentTools({
+			agentId,
+			profileId: currentState.profileId,
+			requestedToolNames: currentState.requestedToolNames,
+			activeToolNames: toolNames,
 		});
+		await harness.setTools?.(next.tools, [...next.activeToolNames]);
+		this._agentToolSets.set(agentId, next);
 	}
 
 	async promptAgent(
@@ -926,41 +912,22 @@ export class AgentOrchestrator {
 				({ promptTemplate }) => promptTemplate,
 			),
 		};
-		const toolRegistry = ToolRegistry.from(
-			this.toolRegistry.getContributions(),
-		);
-		const resolvedTools = toolRegistry.resolve({
+		const agentToolSet = await this._resolveAgentTools({
+			agentId,
+			profileId: profile.id,
 			requestedToolNames: profile.tools,
 			activeToolNames: options.activeToolNames,
-		});
-		await this._publishDiagnostics(
-			resolvedTools.diagnostics.map((diagnostic) => ({
-				...diagnostic,
-				agentId,
-				profileId: profile.id,
-				phase: "resolve",
-			})),
-		);
-		const agentTools = createAgentToolsFromResolvedTools(resolvedTools.tools, {
-			env: this.executionEnv,
-			human: {
-				request: async (request) =>
-					await this.requestHuman({
-						...request,
-						source: { kind: "agent", agentId },
-					}),
-			},
 		});
 
 		const harness = new AgentHarness({
 			env: this.executionEnv,
 			session: session,
 			resources: resources,
-			tools: agentTools,
+			tools: agentToolSet.tools,
 			systemPrompt: profile.systemPrompt,
 			model: model,
 			thinkingLevel: options.thinkingLevel,
-			activeToolNames: [...resolvedTools.activeToolNames],
+			activeToolNames: [...agentToolSet.activeToolNames],
 			getApiKeyAndHeaders: async (requestModel) => {
 				const result =
 					await this.modelRegistry.getApiKeyAndHeaders(requestModel);
@@ -974,17 +941,56 @@ export class AgentOrchestrator {
 			},
 		});
 		this.agents.set(agentId, harness);
-		this._agentToolStates.set(agentId, {
-			tools: [...agentTools],
-			activeToolNames: [...resolvedTools.activeToolNames],
-		});
+		this._agentToolSets.set(agentId, agentToolSet);
 		this._unsubscribeAgentHarness.set(
 			agentId,
 			harness.subscribe((event) => {
-				void this._emit({ type: "agent_harness_event", agentId, event });
+				void this._handleAgentHarnessEvent(agentId, event);
 			}),
 		);
 		return harness;
+	}
+
+	private async _resolveAgentTools(options: {
+		agentId: AgentId;
+		profileId: string;
+		requestedToolNames: readonly string[] | undefined;
+		activeToolNames?: readonly string[];
+	}): Promise<AgentToolSet> {
+		const toolRegistry = ToolRegistry.from(
+			this.toolRegistry.getContributions(),
+		);
+		const resolvedTools = toolRegistry.resolve({
+			requestedToolNames: options.requestedToolNames,
+			activeToolNames: options.activeToolNames,
+		});
+		await this._publishDiagnostics(
+			resolvedTools.diagnostics.map((diagnostic) => ({
+				...diagnostic,
+				agentId: options.agentId,
+				profileId: options.profileId,
+				phase: "resolve",
+			})),
+		);
+		const agentTools = createAgentToolsFromResolvedTools(resolvedTools.tools, {
+			env: this.executionEnv,
+			human: {
+				request: async (request) =>
+					await this.requestHuman({
+						...request,
+						source: { kind: "agent", agentId: options.agentId },
+					}),
+			},
+		});
+		return {
+			tools: [...agentTools],
+			toolNames: [...resolvedTools.toolNames],
+			requestedToolNames: options.requestedToolNames
+				? [...options.requestedToolNames]
+				: undefined,
+			activeToolNames: [...resolvedTools.activeToolNames],
+			profileId: options.profileId,
+		};
 	}
 
 	private _requireAgentHarness(agentId: AgentId): AgentHarness {
@@ -995,12 +1001,141 @@ export class AgentOrchestrator {
 		return harness;
 	}
 
-	private _requireAgentToolState(agentId: AgentId): AgentToolState {
-		const state = this._agentToolStates.get(agentId);
+	private _requireAgentToolSet(agentId: AgentId): AgentToolSet {
+		const state = this._agentToolSets.get(agentId);
 		if (!state) {
 			throw new Error(`Unknown agent tool state: ${agentId}`);
 		}
 		return state;
+	}
+
+	private async _handleAgentHarnessEvent(
+		agentId: AgentId,
+		event: AgentHarnessEvent,
+	): Promise<void> {
+		await this._emit({ type: "agent_harness_event", agentId, event });
+		const lifecycleEvent = this._toToolLifecycleEvent(agentId, event);
+		if (lifecycleEvent) {
+			await this._emit({
+				type: "tool_lifecycle_event",
+				agentId,
+				event: lifecycleEvent,
+			});
+		}
+	}
+
+	private _toToolLifecycleEvent(
+		agentId: AgentId,
+		event: AgentHarnessEvent,
+	): ToolLifecycleEvent | undefined {
+		if (event.type === "message_update") {
+			const assistantEvent = event.assistantMessageEvent;
+			if (assistantEvent.type === "toolcall_start") {
+				const ref = this._rememberStreamingToolCall(agentId, {
+					contentIndex: assistantEvent.contentIndex,
+					...streamingToolCallRefFromPartial(
+						assistantEvent.partial,
+						assistantEvent.contentIndex,
+					),
+				});
+				return {
+					type: "tool_call_created",
+					contentIndex: assistantEvent.contentIndex,
+					toolCallId: ref.toolCallId,
+					toolName: ref.toolName,
+				};
+			}
+			if (assistantEvent.type === "toolcall_delta") {
+				const ref = this._getStreamingToolCall(
+					agentId,
+					assistantEvent.contentIndex,
+				);
+				return {
+					type: "arguments_delta",
+					contentIndex: assistantEvent.contentIndex,
+					delta: assistantEvent.delta,
+					toolCallId: ref?.toolCallId,
+					toolName: ref?.toolName,
+				};
+			}
+			if (assistantEvent.type === "toolcall_end") {
+				this._forgetStreamingToolCall(agentId, assistantEvent.contentIndex);
+				return {
+					type: "arguments_ready",
+					contentIndex: assistantEvent.contentIndex,
+					toolCallId: assistantEvent.toolCall.id,
+					toolName: assistantEvent.toolCall.name,
+					args: assistantEvent.toolCall.arguments,
+				};
+			}
+			return undefined;
+		}
+
+		if (event.type === "tool_execution_start") {
+			return {
+				type: "execution_started",
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				args: event.args,
+			};
+		}
+
+		if (event.type === "tool_execution_update") {
+			return {
+				type: "execution_update",
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				partialResult: event.partialResult,
+			};
+		}
+
+		if (event.type === "tool_execution_end") {
+			return {
+				type: "execution_result",
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				result: event.result,
+				isError: event.isError,
+			};
+		}
+
+		return undefined;
+	}
+
+	private _rememberStreamingToolCall(
+		agentId: AgentId,
+		ref: StreamingToolCallRef & { contentIndex: number },
+	): StreamingToolCallRef {
+		let refs = this._streamingToolCalls.get(agentId);
+		if (!refs) {
+			refs = new Map<number, StreamingToolCallRef>();
+			this._streamingToolCalls.set(agentId, refs);
+		}
+		const next = {
+			toolCallId: ref.toolCallId,
+			toolName: ref.toolName,
+		};
+		refs.set(ref.contentIndex, next);
+		return next;
+	}
+
+	private _getStreamingToolCall(
+		agentId: AgentId,
+		contentIndex: number,
+	): StreamingToolCallRef | undefined {
+		return this._streamingToolCalls.get(agentId)?.get(contentIndex);
+	}
+
+	private _forgetStreamingToolCall(
+		agentId: AgentId,
+		contentIndex: number,
+	): void {
+		const refs = this._streamingToolCalls.get(agentId);
+		if (!refs) return;
+		refs.delete(contentIndex);
+		if (refs.size === 0) {
+			this._streamingToolCalls.delete(agentId);
+		}
 	}
 
 	private async _executeCommand(
@@ -1050,7 +1185,7 @@ export class AgentOrchestrator {
 			case "agent.setTools":
 				await this.setAgentTools(
 					command.agentId,
-					command.tools,
+					command.toolNames,
 					command.activeToolNames,
 				);
 				return undefined;
@@ -1227,6 +1362,20 @@ function changesRecoverableProfileFields(
 		override.capabilities !== undefined ||
 		override.persist !== undefined
 	);
+}
+
+function streamingToolCallRefFromPartial(
+	partial: AssistantMessage,
+	contentIndex: number,
+): StreamingToolCallRef {
+	const content = partial.content[contentIndex];
+	if (!content || content.type !== "toolCall") {
+		return {};
+	}
+	return {
+		toolCallId: content.id,
+		toolName: content.name,
+	};
 }
 
 function now(): string {

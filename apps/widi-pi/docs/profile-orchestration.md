@@ -69,7 +69,7 @@
 
 ### Tools
 
-`AgentProfile.tools` 已在 orchestrator harness build 时作为 ToolRegistry `requestedToolNames` 消费。创建或恢复 agent 时不再传入 raw `AgentTool[]`；所有 `AgentTool` 都应由 registry resolve 后的 `ToolDefinition` wrap 而来。
+`AgentProfile.tools` 已在 orchestrator harness build 时作为 ToolRegistry `requestedToolNames` 消费。创建、恢复和 runtime `agent.setTools` 时不再传入 raw `AgentTool[]`；所有 `AgentTool` 都应由 registry resolve 后的 `ToolDefinition` wrap 而来。
 
 `ToolRegistry` 已经提供 definition/contribution 解析能力并接入 `_buildAgentHarness()`。`profile.tools` 表示 profile/policy 请求暴露给当前 harness 的 tool names，即 registry resolve 的 `requestedToolNames`。它不是 tool definition 本身，也不是 capability。
 

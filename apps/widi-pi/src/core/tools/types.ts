@@ -7,8 +7,16 @@ import type {
 import type { Static, TSchema } from "typebox";
 import type { ToolHumanHost } from "../orchestrator/human-request.ts";
 
+/** Runtime capabilities a tool may require from the harness execution environment. */
 export type ToolExecutionEnvCapability = "filesystem" | "shell";
 
+/**
+ * Declarative execution-environment requirement for a tool.
+ *
+ * Tool definitions do not construct or own runtime resources. They declare what
+ * they need, and the orchestrator/registry adapter decides whether the current
+ * harness can supply a matching {@link ExecutionEnv}.
+ */
 export interface ToolExecutionEnvRequirement {
 	/**
 	 * Host-provided execution environment required by this tool.
@@ -20,194 +28,241 @@ export interface ToolExecutionEnvRequirement {
 	capabilities?: readonly ToolExecutionEnvCapability[];
 }
 
-export type ToolCallPhase =
-	| "created"
-	| "arguments_streaming"
-	| "arguments_ready"
-	| "executing"
-	| "done"
-	| "error";
-
-export interface ToolCallStateBase<TParams> {
-	toolCallId: string;
-	toolName: string;
-	phase: ToolCallPhase;
-	rawArguments: string;
-	partialArguments?: Partial<TParams>;
-	params?: TParams;
-}
-
-export type ToolStateEvent<TParams, TDetails> =
+/**
+ * UI-neutral facts emitted for tool-call lifecycle changes.
+ *
+ * The orchestrator derives these from Pi harness events and forwards them as a
+ * stable protocol for UI and extension hosts. These are facts, not preview or
+ * state updates: consumers decide how to render, aggregate, or persist them.
+ */
+export type ToolLifecycleEvent =
 	| {
+			/** A new streamed tool call appeared before arguments are complete. */
 			type: "tool_call_created";
+			contentIndex: number;
+			toolCallId?: string;
+			toolName?: string;
+	  }
+	| {
+			/** One argument-stream delta arrived. */
+			type: "arguments_delta";
+			contentIndex: number;
+			delta: string;
+			toolCallId?: string;
+			toolName?: string;
+	  }
+	| {
+			/** Arguments are complete according to the provider stream. */
+			type: "arguments_ready";
+			contentIndex: number;
 			toolCallId: string;
 			toolName: string;
+			args: unknown;
 	  }
 	| {
-			type: "arguments_delta";
-			toolCallId: string;
-			delta: string;
-			rawArguments: string;
-			partialArguments?: Partial<TParams>;
-	  }
-	| {
-			type: "arguments_ready";
-			toolCallId: string;
-			params: TParams;
-	  }
-	| {
+			/** Tool execution is about to run. */
 			type: "execution_started";
 			toolCallId: string;
-			params: TParams;
+			toolName: string;
+			args: unknown;
 	  }
 	| {
+			/** Tool produced an intermediate update through onUpdate. */
 			type: "execution_update";
 			toolCallId: string;
-			update: AgentToolResult<TDetails>;
+			toolName: string;
+			partialResult: unknown;
 	  }
 	| {
+			/** Tool finished and produced its final structured result. */
 			type: "execution_result";
 			toolCallId: string;
-			result: AgentToolResult<TDetails>;
-	  }
-	| {
-			type: "execution_error";
-			toolCallId: string;
-			error: unknown;
+			toolName: string;
+			result: unknown;
+			/** True when the harness treats the final result as an error. */
+			isError: boolean;
 	  };
 
-export interface ToolExecutionContext<TDetails, TState> {
+/**
+ * Runtime context passed to a WIDI tool execution function.
+ *
+ * This is the adapter boundary between resolved WIDI tool definitions and Pi
+ * `AgentTool` closures. It carries host capabilities such as {@link ExecutionEnv}
+ * and human request handling. Tool preview/state is intentionally outside this
+ * context; consumers derive it from orchestrator lifecycle events.
+ */
+export interface ToolExecutionContext<TDetails> {
+	/** Current harness execution environment, if the runtime supplied one. */
 	env: ExecutionEnv | undefined;
+	/** Abort signal for the current tool call. */
 	signal: AbortSignal | undefined;
+	/** Pi-compatible callback for streaming tool updates. */
 	onUpdate: AgentToolUpdateCallback<TDetails> | undefined;
+	/** Extension context bound to the contribution currently executing. */
 	extension: ToolExtensionContext | undefined;
+	/** Host for controlled user interaction from tools. */
 	human: ToolHumanHost | undefined;
-	getState?: () => TState;
-	setState?: (state: TState) => void;
 }
 
+/**
+ * Context visible to extension-contributed tool code.
+ *
+ * The shape is deliberately small until the extension runner is designed. It
+ * identifies the extension and leaves `host` as the future controlled capability
+ * surface, rather than exposing core internals directly.
+ */
 export interface ToolExtensionContext {
+	/** Stable id of the extension whose contribution is executing. */
 	extensionId: string;
+	/** Future extension host/capability object. */
 	host?: unknown;
 }
 
+/** Execute function implemented by a WIDI tool definition. */
 export type ToolExecute<
 	TParamsSchema extends TSchema = TSchema,
 	TDetails = unknown,
-	TState = unknown,
 > = (
 	toolCallId: string,
 	params: Static<TParamsSchema>,
-	context: ToolExecutionContext<TDetails, TState>,
+	context: ToolExecutionContext<TDetails>,
 ) => Promise<AgentToolResult<TDetails>>;
 
+/**
+ * Middleware used by tool patches to wrap an existing execute function.
+ *
+ * This is the preferred extension mechanism for auditing, confirmation,
+ * sandboxing, argument rewriting, and backend delegation when the original tool
+ * behavior should remain mostly intact.
+ */
 export type ToolExecuteMiddleware<
 	TParamsSchema extends TSchema = TSchema,
 	TDetails = unknown,
-	TState = unknown,
 > = (
-	next: ToolExecute<TParamsSchema, TDetails, TState>,
+	next: ToolExecute<TParamsSchema, TDetails>,
 	toolCallId: string,
 	params: Static<TParamsSchema>,
-	context: ToolExecutionContext<TDetails, TState>,
+	context: ToolExecutionContext<TDetails>,
 ) => Promise<AgentToolResult<TDetails>>;
 
+/**
+ * Partial tool definition applied to an existing tool by the registry.
+ *
+ * Patches are ordered by registry priority and contribution order. They can
+ * replace the model-facing description, parameters, strict metadata, or execute
+ * function. `aroundExecute` wraps the current execute function instead of
+ * replacing it.
+ */
 export interface ToolDefinitionPatch<
 	TParamsSchema extends TSchema = TSchema,
 	TDetails = unknown,
-	TState = ToolCallStateBase<Static<TParamsSchema>>,
 > {
-	label?: string;
+	/** Model-visible description passed to Pi AgentTool. */
 	description?: string;
-	promptSnippet?: string;
-	promptGuidelines?: readonly string[];
-	prepareArguments?: (args: unknown) => Static<TParamsSchema>;
-	executionMode?: ToolExecutionMode;
-	executionEnv?: ToolExecutionEnvRequirement;
-	createState?: (
-		event: Extract<
-			ToolStateEvent<Static<TParamsSchema>, TDetails>,
-			{ type: "tool_call_created" }
-		>,
-	) => TState;
-	reduceState?: (
-		state: TState,
-		event: ToolStateEvent<Static<TParamsSchema>, TDetails>,
-	) => TState;
-	execute?: ToolExecute<TParamsSchema, TDetails, TState>;
-	aroundExecute?: ToolExecuteMiddleware<TParamsSchema, TDetails, TState>;
+	/** TypeBox schema for model arguments. */
+	parameters?: TParamsSchema;
+	/** Future provider strict-mode flag. Currently retained by WIDI metadata. */
+	strict?: boolean;
+	/** Replace the tool execute implementation. */
+	execute?: ToolExecute<TParamsSchema, TDetails>;
+	/** Wrap the current execute implementation. */
+	aroundExecute?: ToolExecuteMiddleware<TParamsSchema, TDetails>;
 }
 
+/**
+ * Stable provenance for a tool contribution.
+ *
+ * Diagnostics and conflict resolution use this to explain where a tool
+ * definition or patch came from.
+ */
 export interface ToolContributionSource {
+	/** Contribution owner class. */
 	kind: "core" | "extension" | "adapter";
+	/** Stable owner id within the kind, such as `builtin` or an extension id. */
 	id: string;
 }
 
+/** Registry contribution that defines a new named tool. */
 export interface ToolDefinitionContribution<
 	TParamsSchema extends TSchema = TSchema,
 	TDetails = unknown,
-	TState = ToolCallStateBase<Static<TParamsSchema>>,
 > {
 	type: "define";
+	/** Source used for diagnostics, priority ties, and extension context. */
 	source: ToolContributionSource;
+	/** Higher priority definitions win conflicts; default is registry-defined zero. */
 	priority?: number;
-	tool: ToolDefinition<TParamsSchema, TDetails, TState>;
+	/** Complete WIDI-owned tool definition. */
+	tool: ToolDefinition<TParamsSchema, TDetails>;
 }
 
+/** Registry contribution that modifies an existing named tool. */
 export interface ToolPatchContribution<
 	TParamsSchema extends TSchema = TSchema,
 	TDetails = unknown,
-	TState = ToolCallStateBase<Static<TParamsSchema>>,
 > {
 	type: "patch";
+	/** Source used for diagnostics, patch ordering, and extension context. */
 	source: ToolContributionSource;
+	/** Existing tool name this patch targets. Missing targets produce diagnostics. */
 	targetToolName: string;
+	/** Higher priority patches apply later and wrap farther outside. */
 	priority?: number;
-	patch: ToolDefinitionPatch<TParamsSchema, TDetails, TState>;
+	/** Partial definition or execute middleware to apply. */
+	patch: ToolDefinitionPatch<TParamsSchema, TDetails>;
 }
 
+/**
+ * Input unit consumed by ToolRegistry.
+ *
+ * Core, extensions, and temporary adapters all contribute definitions or
+ * patches. The registry resolves these contributions into a deterministic tool
+ * set for one agent harness.
+ */
 export type ToolContribution<
 	TParamsSchema extends TSchema = TSchema,
 	TDetails = unknown,
-	TState = ToolCallStateBase<Static<TParamsSchema>>,
 > =
-	| ToolDefinitionContribution<TParamsSchema, TDetails, TState>
-	| ToolPatchContribution<TParamsSchema, TDetails, TState>;
+	| ToolDefinitionContribution<TParamsSchema, TDetails>
+	| ToolPatchContribution<TParamsSchema, TDetails>;
 
 /**
  * WIDI-owned tool definition.
  *
- * The tool owns execution metadata and a pure state reducer. UI layers consume
- * the resulting state instead of being referenced by the tool registry.
+ * This is not Pi's runtime closure directly. It is the declarative/runtime
+ * boundary owned by WIDI: the registry can diagnose, patch, filter, and finally
+ * wrap it into a Pi `AgentTool`. It owns execution metadata and the execute
+ * closure only. UI preview/state is derived outside the tool from orchestrator
+ * lifecycle events and tool results.
  */
 export interface ToolDefinition<
 	TParamsSchema extends TSchema = TSchema,
 	TDetails = unknown,
-	TState = ToolCallStateBase<Static<TParamsSchema>>,
 > {
+	/** Stable model-visible and session-visible tool name. */
 	name: string;
+	/** Short label for debug/UI surfaces. */
 	label: string;
+	/** Model-visible description passed to Pi AgentTool. */
 	description: string;
 
+	/** Optional system-prompt snippet used when composing tool guidance. */
 	promptSnippet?: string;
+	/** Optional additional prompt guidance. */
 	promptGuidelines?: string[];
 
+	/** TypeBox schema for model arguments. */
 	parameters: TParamsSchema;
+	/** Future provider strict-mode flag. Currently retained by WIDI metadata. */
+	strict?: boolean;
+	/** Normalize raw model arguments before execution. */
 	prepareArguments?: (args: unknown) => Static<TParamsSchema>;
 
+	/** Pi tool execution scheduling mode. */
 	executionMode?: ToolExecutionMode;
+	/** Runtime capabilities required for execution. */
 	executionEnv?: ToolExecutionEnvRequirement;
 
-	createState?: (
-		event: Extract<
-			ToolStateEvent<Static<TParamsSchema>, TDetails>,
-			{ type: "tool_call_created" }
-		>,
-	) => TState;
-	reduceState?: (
-		state: TState,
-		event: ToolStateEvent<Static<TParamsSchema>, TDetails>,
-	) => TState;
-
-	execute: ToolExecute<TParamsSchema, TDetails, TState>;
+	/** Execute the tool after arguments have been prepared and validated. */
+	execute: ToolExecute<TParamsSchema, TDetails>;
 }

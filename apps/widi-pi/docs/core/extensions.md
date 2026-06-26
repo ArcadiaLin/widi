@@ -42,12 +42,13 @@ Extension 可以修改既有 tools。
 
 WIDI extension 不只注册新 tool，也可以对 core/built-in tool 注册 patch contribution。Patch 必须进入 tool registry 的 resolved pipeline，而不是直接改写某个 runtime object。允许的修改包括：
 
-- 改写 prompt metadata 或 availability。
+- 改写 `description`、`parameters` 或 `strict` metadata。
 - 包装 execute，例如审计、确认、沙箱转发、远程执行。
 - 替换 execute，例如让 `write` 写到不同 backend。
-- 补充或替换 tool state reducer，让 UI-facing state 反映 extension 注入的行为。
 
 这种设计让 active tool name 保持稳定。例如 extension 可以修改 `write` 的执行行为，但最终 resolved tool 仍叫 `write`，session 中的 active tools 和历史 tool call 仍可解释。
+
+Extension 不拥有 core tool 状态接口。Core 不提供共享的 tool preview 或状态 API；展示数据应由 UI 或 extension host 基于 orchestrator `tool_lifecycle_event`、tool arguments 和 tool result 派生。
 
 当前 `ToolRegistry` 已支持 `define` 与 `patch` contribution，但 extension lifecycle 仍未落地。后续 extension loader/runner 的职责是把 extension declaration 解析为 contribution 集合，再交给 registry resolve；registry 不直接加载 extension、不执行 activation hook，也不决定 missing extension policy。
 

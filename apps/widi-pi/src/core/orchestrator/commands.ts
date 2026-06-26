@@ -1,6 +1,5 @@
 import type {
 	AbortResult,
-	AgentTool,
 	CompactResult,
 	NavigateTreeResult,
 } from "@earendil-works/pi-agent-core";
@@ -14,6 +13,11 @@ import type { OrchestratorDiagnostic } from "../diagnostics.ts";
 import type { HumanRequestDraft, HumanResponse } from "./human-request.ts";
 
 export type RuntimeModel = Model<Api>;
+
+export interface AgentToolsSnapshot {
+	toolNames: string[];
+	activeToolNames: string[];
+}
 
 export type OperationSource =
 	| { kind: "human"; adapterId?: string }
@@ -78,7 +82,7 @@ export type OrchestratorCommand =
 	| (OrchestratorCommandBase & {
 			kind: "agent.setTools";
 			agentId: string;
-			tools: AgentTool[];
+			toolNames: string[];
 			activeToolNames?: string[];
 	  })
 	| (OrchestratorCommandBase & {
@@ -101,7 +105,8 @@ export type OrchestratorCommandValue =
 	| CompactResult
 	| NavigateTreeResult
 	| RuntimeModel
-	| AgentTool[]
+	| AgentToolsSnapshot
+	| string[]
 	| HumanResponse
 	| undefined;
 
