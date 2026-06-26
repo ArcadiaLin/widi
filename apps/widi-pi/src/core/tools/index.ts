@@ -1,4 +1,17 @@
 export type {
+	BashExecOptions,
+	BashOperations,
+	BashToolDetails,
+	BashToolInput,
+	BashToolOptions,
+	BashTruncationResult,
+} from "./coding/bash.ts";
+export {
+	BASH_DEFAULT_MAX_BYTES,
+	BASH_DEFAULT_MAX_LINES,
+	createBashToolDefinition,
+} from "./coding/bash.ts";
+export type {
 	ReadOperations,
 	ReadToolDetails,
 	ReadToolInput,

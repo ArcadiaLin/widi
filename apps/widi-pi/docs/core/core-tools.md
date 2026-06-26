@@ -13,6 +13,64 @@ Core tools 是 WIDI core 原生维护的 `ToolDefinition`。它们通常包装 `
 
 Coding tools 面向文件读写和代码修改。当前已落地 `read` 与 `write` 的 WIDI-owned definition，但默认 builtin registry 接入仍由后续工作完成。
 
+### `bash`
+
+`bash` 执行 shell command，返回 stdout 和 stderr。它复刻 Pi coding-agent 的 bash tool 用户可见语义：输出从 tail 截断，失败时把已有输出和退出状态拼在同一个错误文本里，截断时把完整输出保存到临时文件并写入 `details.fullOutputPath`。
+
+Definition:
+
+- Source: `apps/widi-pi/src/core/tools/coding/bash.ts`
+- Factory: `createBashToolDefinition(options?)`
+- Name / label: `bash`
+- Execution env: `{ kind: "harness", capabilities: ["shell", "filesystem"] }`
+
+Input schema:
+
+- `command: string`: 要执行的 bash command。
+- `timeout?: number`: command timeout，单位为秒。缺省时没有 tool-level timeout。
+
+Behavior:
+
+- 默认通过 `ExecutionEnv.exec(command, options)` 执行，而不是在 tool 内直接 `spawn` 本地进程。
+- `options.cwd` 默认为 `ExecutionEnv.cwd`，也可以通过 factory `cwd` option 覆盖。
+- `options.commandPrefix` 存在时，会以 `${commandPrefix}\n${command}` 作为实际执行 command。
+- stdout 和 stderr 都进入同一个输出流，保持 backend 回调到达顺序。
+- 如果 backend 没有通过 `onStdout` / `onStderr` streaming 输出，tool 会回退使用 `ExecutionEnv.exec` 返回的 `stdout` 和 `stderr`。
+- 执行期间如果提供了 `onUpdate`，有输出 chunk 时会发送当前 snapshot。
+- `bash` 是阻塞式同步 tool：`execute()` 会等待 `ExecutionEnv.exec` 完成后才返回最终 tool result。
+- `onUpdate` 只服务 UI/事件层 partial result；它不会让 tool call 提前结束，也不会唤醒模型继续推理。
+- 当前 `bash` 不提供 session id、poll 或 write-stdin 语义。Codex 风格长命令续跑应由未来 interactive shell session capability 承担。
+- command 无输出时，成功结果文本为 `(no output)`。
+
+Default truncation:
+
+- `BASH_DEFAULT_MAX_LINES = 2000`
+- `BASH_DEFAULT_MAX_BYTES = 50 * 1024`
+- bash 输出从 tail 截断，优先保留最后的输出，适合展示最终错误或汇总。
+- 命中 line limit 时，结果末尾追加 `Showing lines ... Full output: ...`。
+- 命中 byte limit 时，结果末尾追加 `Showing lines ... (50.0KB limit). Full output: ...`。
+- 如果最后一行本身超过 byte limit，会保留该行末尾的部分内容，并标记 `lastLinePartial`。
+
+Result:
+
+- `content`: 单个 `{ type: "text", text }`。
+- `details.truncation`: 仅在截断触发时存在，记录截断原因、总行数、总 bytes、输出行数、输出 bytes 和限制值。
+- `details.fullOutputPath`: 仅在截断触发时存在，指向保存完整输出的临时文件。
+
+Failure behavior:
+
+- 非零 exit code 会抛错，错误文本为当前输出加 `Command exited with code ${exitCode}`。
+- abort 会抛错，错误文本为当前输出加 `Command aborted`。
+- timeout 会抛错，错误文本为当前输出加 `Command timed out after ${timeout} seconds`。
+- 其他 `ExecutionEnv.exec` failure 会原样向外抛出。
+
+Override seams:
+
+- `operations.exec`
+- `operations.createFullOutputFile`
+
+WIDI 当前没有复刻 Pi bash tool 的 TUI render、elapsed timer、本地 shell transport、process tree kill 或 detached child tracking；这些属于 Pi coding-agent 的本地进程/UI backend。WIDI 的 tool 层只依赖 `ExecutionEnv.exec`，具体 shell/backend 行为由 execution environment 或 extension patch 决定。
+
 ### `read`
 
 `read` 读取文件内容。它尽量复刻 Pi coding-agent 的 read tool 核心语义：文本内容进入 tool result `content`，文件路径、大小和截断信息进入 typed `details`。
