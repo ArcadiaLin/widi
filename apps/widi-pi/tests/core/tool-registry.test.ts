@@ -5,15 +5,12 @@ import {
 	createAgentToolFromResolvedTool,
 	ToolRegistry,
 } from "../../src/core/tools/tool-registry.ts";
-import type {
-	ToolContributionSource,
-	ToolDefinition,
-} from "../../src/core/tools/types.ts";
+import type { ToolDefinition, ToolSource } from "../../src/core/tools/types.ts";
 
 const emptyParams = Type.Object({});
 
-const coreSource: ToolContributionSource = { kind: "core", id: "builtin" };
-const extensionSource: ToolContributionSource = {
+const coreSource: ToolSource = { kind: "core", id: "builtin" };
+const extensionSource: ToolSource = {
 	kind: "extension",
 	id: "ext",
 };
@@ -35,20 +32,13 @@ function createTool(
 }
 
 describe("ToolRegistry", () => {
-	it("resolves define and patch contributions with deterministic middleware order", async () => {
+	it("resolves defined tools and patches with deterministic middleware order", async () => {
 		const calls: string[] = [];
 		const registry = new ToolRegistry();
-		registry.addContribution({
-			type: "define",
-			source: coreSource,
-			tool: createTool("write", "base"),
-		});
-		registry.addContribution({
-			type: "patch",
-			source: { kind: "extension", id: "audit" },
-			targetToolName: "write",
-			priority: 5,
-			patch: {
+		registry.defineTool(createTool("write", "base"), coreSource);
+		registry.patchTool(
+			"write",
+			{
 				aroundExecute: async (next, toolCallId, params, context) => {
 					calls.push("audit:before");
 					const result = await next(toolCallId, params, context);
@@ -56,13 +46,11 @@ describe("ToolRegistry", () => {
 					return result;
 				},
 			},
-		});
-		registry.addContribution({
-			type: "patch",
-			source: { kind: "extension", id: "sandbox" },
-			targetToolName: "write",
-			priority: 10,
-			patch: {
+			{ kind: "extension", id: "audit" },
+		);
+		registry.patchTool(
+			"write",
+			{
 				description: "Write via sandbox",
 				aroundExecute: async (next, toolCallId, params, context) => {
 					calls.push("sandbox:before");
@@ -71,7 +59,8 @@ describe("ToolRegistry", () => {
 					return result;
 				},
 			},
-		});
+			{ kind: "extension", id: "sandbox" },
+		);
 
 		const result = registry.resolve();
 		const resolvedTool = result.getTool("write");
@@ -97,33 +86,27 @@ describe("ToolRegistry", () => {
 
 	it("keeps one definition for duplicate tool names and reports a conflict", () => {
 		const registry = new ToolRegistry();
-		registry.addContribution({
-			type: "define",
-			source: coreSource,
-			priority: 0,
-			tool: createTool("read", "core"),
-		});
-		registry.addContribution({
-			type: "define",
-			source: extensionSource,
-			priority: 10,
-			tool: createTool("read", "extension"),
-		});
+		registry.defineTool(createTool("read", "core"), coreSource);
+		registry.defineTool(createTool("read", "extension"), extensionSource);
 
 		const result = registry.resolve();
 
 		expect(result.getToolDefinition("read")?.label).toBe("read");
-		expect(result.getTool("read")?.source).toEqual(extensionSource);
+		expect(result.getTool("read")?.source).toEqual(coreSource);
 		expect(result.diagnostics).toContainEqual(
 			expect.objectContaining({
 				code: "tool.define_conflict",
 				domain: "tool",
 				toolName: "read",
-				source: { kind: "registry", name: "tool:read", key: "core:builtin" },
-				targetSource: { kind: "extension", id: "ext" },
+				source: { kind: "extension", id: "ext" },
+				targetSource: {
+					kind: "registry",
+					name: "tool:read",
+					key: "core:builtin",
+				},
 				details: expect.objectContaining({
-					contributionSource: coreSource,
-					targetContributionSource: extensionSource,
+					toolSource: extensionSource,
+					targetToolSource: coreSource,
 				}),
 			}),
 		);
@@ -131,16 +114,8 @@ describe("ToolRegistry", () => {
 
 	it("reports missing requested and active tools while keeping valid names", () => {
 		const registry = new ToolRegistry();
-		registry.addContribution({
-			type: "define",
-			source: coreSource,
-			tool: createTool("read"),
-		});
-		registry.addContribution({
-			type: "define",
-			source: coreSource,
-			tool: createTool("write"),
-		});
+		registry.defineTool(createTool("read"), coreSource);
+		registry.defineTool(createTool("write"), coreSource);
 
 		const result = registry.resolve({
 			requestedToolNames: ["read", "missing", "read"],
@@ -160,12 +135,11 @@ describe("ToolRegistry", () => {
 
 	it("reports patches that target missing tools", () => {
 		const registry = new ToolRegistry();
-		registry.addContribution({
-			type: "patch",
-			source: extensionSource,
-			targetToolName: "write",
-			patch: { description: "Write elsewhere" },
-		});
+		registry.patchTool(
+			"write",
+			{ description: "Write elsewhere" },
+			extensionSource,
+		);
 
 		const result = registry.resolve();
 
@@ -176,7 +150,7 @@ describe("ToolRegistry", () => {
 				toolName: "write",
 				source: { kind: "extension", id: "ext" },
 				details: expect.objectContaining({
-					contributionSource: extensionSource,
+					toolSource: extensionSource,
 				}),
 			}),
 		);
@@ -184,19 +158,14 @@ describe("ToolRegistry", () => {
 
 	it("reports parameters patches that do not also patch execution", () => {
 		const registry = new ToolRegistry();
-		registry.addContribution({
-			type: "define",
-			source: coreSource,
-			tool: createTool("write"),
-		});
-		registry.addContribution({
-			type: "patch",
-			source: extensionSource,
-			targetToolName: "write",
-			patch: {
+		registry.defineTool(createTool("write"), coreSource);
+		registry.patchTool(
+			"write",
+			{
 				parameters: Type.Object({ path: Type.String() }),
 			},
-		});
+			extensionSource,
+		);
 
 		const result = registry.resolve();
 
@@ -215,10 +184,8 @@ describe("ToolRegistry", () => {
 	it("binds extension context to the patch currently executing", async () => {
 		const events: string[] = [];
 		const registry = new ToolRegistry();
-		registry.addContribution({
-			type: "define",
-			source: coreSource,
-			tool: {
+		registry.defineTool(
+			{
 				...createTool("write"),
 				execute: async (_toolCallId, _params, context) => {
 					events.push(`execute:${context.extension?.extensionId}`);
@@ -228,18 +195,18 @@ describe("ToolRegistry", () => {
 					};
 				},
 			},
-		});
-		registry.addContribution({
-			type: "patch",
-			source: { kind: "extension", id: "audit" },
-			targetToolName: "write",
-			patch: {
+			coreSource,
+		);
+		registry.patchTool(
+			"write",
+			{
 				aroundExecute: async (next, toolCallId, params, context) => {
 					events.push(`patch:${context.extension?.extensionId}`);
 					return await next(toolCallId, params, context);
 				},
 			},
-		});
+			{ kind: "extension", id: "audit" },
+		);
 		const resolvedTool = registry.resolve().getTool("write");
 		expect(resolvedTool).toBeDefined();
 		if (!resolvedTool) throw new Error("Expected write tool to resolve.");
@@ -254,10 +221,8 @@ describe("ToolRegistry", () => {
 
 	it("passes human request capability into tool execution context", async () => {
 		const registry = new ToolRegistry();
-		registry.addContribution({
-			type: "define",
-			source: coreSource,
-			tool: {
+		registry.defineTool(
+			{
 				name: "ask",
 				label: "Ask",
 				description: "Ask human",
@@ -282,7 +247,8 @@ describe("ToolRegistry", () => {
 					};
 				},
 			},
-		});
+			coreSource,
+		);
 		const resolvedTool = registry.resolve().getTool("ask");
 		expect(resolvedTool).toBeDefined();
 		if (!resolvedTool) throw new Error("Expected ask tool to resolve.");

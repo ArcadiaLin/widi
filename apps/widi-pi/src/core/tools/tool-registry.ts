@@ -9,18 +9,16 @@ import {
 } from "../diagnostics.ts";
 import type { ToolHumanHost } from "../orchestrator/human-request.ts";
 import type {
-	ToolContribution,
-	ToolContributionSource,
 	ToolDefinition,
 	ToolDefinitionPatch,
 	ToolExecute,
 	ToolExecutionContext,
 	ToolExtensionContext,
+	ToolSource,
 } from "./types.ts";
 
 type RegistryToolDefinition = ToolDefinition<TSchema, unknown>;
 type RegistryToolDefinitionPatch = ToolDefinitionPatch<TSchema, unknown>;
-export type AnyToolContribution = ToolContribution<TSchema, unknown>;
 
 export type ToolRegistryDiagnosticSeverity = DiagnosticSeverity;
 
@@ -50,14 +48,12 @@ export interface ToolRegistryResolveOptions {
 }
 
 export interface ResolvedToolPatch {
-	source: ToolContributionSource;
-	priority: number;
+	source: ToolSource;
 }
 
 export interface ResolvedTool {
 	definition: RegistryToolDefinition;
-	source: ToolContributionSource;
-	priority: number;
+	source: ToolSource;
 	patches: readonly ResolvedToolPatch[];
 }
 
@@ -76,28 +72,35 @@ export interface ToolAgentAdapterContext {
 	human?: ToolHumanHost;
 	extension?: ToolExtensionContext;
 	createExtensionContext?: (
-		source: ToolContributionSource,
+		source: ToolSource,
 		toolName: string,
 	) => ToolExtensionContext | undefined;
 }
 
-interface StoredContribution {
-	contribution: AnyToolContribution;
-	order: number;
-}
+type StoredToolRegistration =
+	| {
+			kind: "define";
+			definition: RegistryToolDefinition;
+			source: ToolSource;
+			order: number;
+	  }
+	| {
+			kind: "patch";
+			targetToolName: string;
+			patch: RegistryToolDefinitionPatch;
+			source: ToolSource;
+			order: number;
+	  };
 
 interface DefinitionEntry {
 	definition: RegistryToolDefinition;
-	source: ToolContributionSource;
-	priority: number;
-	order: number;
+	source: ToolSource;
 }
 
 interface PatchEntry {
 	targetToolName: string;
 	patch: RegistryToolDefinitionPatch;
-	source: ToolContributionSource;
-	priority: number;
+	source: ToolSource;
 	order: number;
 }
 
@@ -105,7 +108,7 @@ const bindToolExecutionContextSymbol = Symbol("bindToolExecutionContext");
 
 type BindableToolExecutionContext<TDetails> = ToolExecutionContext<TDetails> & {
 	[bindToolExecutionContextSymbol]?: (
-		source: ToolContributionSource,
+		source: ToolSource,
 	) => ToolExecutionContext<TDetails>;
 };
 
@@ -117,38 +120,40 @@ const patchReplaceFields = [
 ] as const satisfies readonly (keyof RegistryToolDefinitionPatch)[];
 
 export class ToolRegistry {
-	private readonly _contributions: StoredContribution[] = [];
+	private readonly _registrations: StoredToolRegistration[] = [];
 	private _nextOrder = 0;
 
-	static from(contributions: readonly AnyToolContribution[]): ToolRegistry {
-		const registry = new ToolRegistry();
-		registry.addContributions(contributions);
-		return registry;
-	}
-
-	addContribution<TParamsSchema extends TSchema, TDetails>(
-		contribution: ToolContribution<TParamsSchema, TDetails>,
+	defineTool<TParamsSchema extends TSchema, TDetails>(
+		tool: ToolDefinition<TParamsSchema, TDetails>,
+		source: ToolSource,
 	): void {
-		this._contributions.push({
-			contribution: contribution as unknown as AnyToolContribution,
+		this._registrations.push({
+			kind: "define",
+			definition: tool as unknown as RegistryToolDefinition,
+			source,
 			order: this._nextOrder,
 		});
 		this._nextOrder += 1;
 	}
 
-	addContributions(contributions: readonly AnyToolContribution[]): void {
-		for (const contribution of contributions) {
-			this.addContribution(contribution);
-		}
+	patchTool<TParamsSchema extends TSchema, TDetails>(
+		targetToolName: string,
+		patch: ToolDefinitionPatch<TParamsSchema, TDetails>,
+		source: ToolSource,
+	): void {
+		this._registrations.push({
+			kind: "patch",
+			targetToolName,
+			patch: patch as unknown as RegistryToolDefinitionPatch,
+			source,
+			order: this._nextOrder,
+		});
+		this._nextOrder += 1;
 	}
 
 	clear(): void {
-		this._contributions.length = 0;
+		this._registrations.length = 0;
 		this._nextOrder = 0;
-	}
-
-	getContributions(): readonly AnyToolContribution[] {
-		return this._contributions.map(({ contribution }) => contribution);
 	}
 
 	resolve(options: ToolRegistryResolveOptions = {}): ToolRegistryResolveResult {
@@ -156,8 +161,8 @@ export class ToolRegistry {
 		const definitions = new Map<string, DefinitionEntry>();
 		const patchesByTarget = new Map<string, PatchEntry[]>();
 
-		for (const stored of this._contributions) {
-			if (stored.contribution.type === "define") {
+		for (const stored of this._registrations) {
+			if (stored.kind === "define") {
 				this._addDefinition(definitions, diagnostics, stored);
 			} else {
 				this._addPatch(patchesByTarget, diagnostics, stored);
@@ -222,29 +227,25 @@ export class ToolRegistry {
 	private _addDefinition(
 		definitions: Map<string, DefinitionEntry>,
 		diagnostics: ToolRegistryDiagnostic[],
-		stored: StoredContribution,
+		stored: Extract<StoredToolRegistration, { kind: "define" }>,
 	): void {
-		if (stored.contribution.type !== "define") return;
-
-		const toolName = stored.contribution.tool.name.trim();
+		const toolName = stored.definition.name.trim();
 		if (!toolName) {
 			diagnostics.push(
 				createToolDiagnostic({
 					severity: "error",
 					code: "tool.invalid_name",
 					disposition: "degraded",
-					message: `Tool definition from ${formatSource(stored.contribution.source)} has an empty name.`,
-					source: stored.contribution.source,
+					message: `Tool definition from ${formatSource(stored.source)} has an empty name.`,
+					source: stored.source,
 				}),
 			);
 			return;
 		}
 
 		const nextEntry: DefinitionEntry = {
-			definition: stored.contribution.tool as unknown as RegistryToolDefinition,
-			source: stored.contribution.source,
-			priority: stored.contribution.priority ?? 0,
-			order: stored.order,
+			definition: stored.definition,
+			source: stored.source,
 		};
 		const previousEntry = definitions.get(toolName);
 		if (!previousEntry) {
@@ -252,20 +253,14 @@ export class ToolRegistry {
 			return;
 		}
 
-		const winner =
-			compareDefinitionPriority(previousEntry, nextEntry) <= 0
-				? previousEntry
-				: nextEntry;
-		const ignored = winner === previousEntry ? nextEntry : previousEntry;
-		definitions.set(toolName, winner);
 		diagnostics.push(
 			createToolDiagnostic({
 				severity: "warning",
 				code: "tool.define_conflict",
-				message: `Tool '${toolName}' is defined by both ${formatSource(previousEntry.source)} and ${formatSource(nextEntry.source)}; keeping ${formatSource(winner.source)}.`,
+				message: `Tool '${toolName}' is defined by both ${formatSource(previousEntry.source)} and ${formatSource(nextEntry.source)}; keeping ${formatSource(previousEntry.source)}.`,
 				toolName,
-				source: ignored.source,
-				targetSource: winner.source,
+				source: nextEntry.source,
+				targetSource: previousEntry.source,
 			}),
 		);
 	}
@@ -273,19 +268,17 @@ export class ToolRegistry {
 	private _addPatch(
 		patchesByTarget: Map<string, PatchEntry[]>,
 		diagnostics: ToolRegistryDiagnostic[],
-		stored: StoredContribution,
+		stored: Extract<StoredToolRegistration, { kind: "patch" }>,
 	): void {
-		if (stored.contribution.type !== "patch") return;
-
-		const targetToolName = stored.contribution.targetToolName.trim();
+		const targetToolName = stored.targetToolName.trim();
 		if (!targetToolName) {
 			diagnostics.push(
 				createToolDiagnostic({
 					severity: "error",
 					code: "tool.invalid_name",
 					disposition: "degraded",
-					message: `Tool patch from ${formatSource(stored.contribution.source)} has an empty target tool name.`,
-					source: stored.contribution.source,
+					message: `Tool patch from ${formatSource(stored.source)} has an empty target tool name.`,
+					source: stored.source,
 				}),
 			);
 			return;
@@ -293,10 +286,8 @@ export class ToolRegistry {
 
 		const patch: PatchEntry = {
 			targetToolName,
-			patch: stored.contribution
-				.patch as unknown as RegistryToolDefinitionPatch,
-			source: stored.contribution.source,
-			priority: stored.contribution.priority ?? 0,
+			patch: stored.patch,
+			source: stored.source,
 			order: stored.order,
 		};
 		const patches = patchesByTarget.get(targetToolName) ?? [];
@@ -341,7 +332,7 @@ export class ToolRegistry {
 						createToolDiagnostic({
 							severity: "warning",
 							code: "tool.patch_field_conflict",
-							message: `Tool '${entry.definition.name}' field '${field}' is patched by both ${formatSource(previousOwner.source)} and ${formatSource(patchEntry.source)}; priority order decides the final value.`,
+							message: `Tool '${entry.definition.name}' field '${field}' is patched by both ${formatSource(previousOwner.source)} and ${formatSource(patchEntry.source)}; registration order decides the final value.`,
 							toolName: entry.definition.name,
 							source: patchEntry.source,
 							targetSource: previousOwner.source,
@@ -357,10 +348,8 @@ export class ToolRegistry {
 		return {
 			definition,
 			source: entry.source,
-			priority: entry.priority,
 			patches: appliedPatches.map((patch) => ({
 				source: patch.source,
-				priority: patch.priority,
 			})),
 		};
 	}
@@ -506,7 +495,7 @@ function createToolExecutionContext(
 	signal: AbortSignal | undefined,
 	onUpdate: Parameters<AgentTool<TSchema, unknown>["execute"]>[3],
 ): ToolExecutionContext<unknown> {
-	const bindContext = (source: ToolContributionSource) => ({
+	const bindContext = (source: ToolSource) => ({
 		env: context.env,
 		signal,
 		onUpdate,
@@ -521,7 +510,7 @@ function createToolExecutionContext(
 
 function bindToolExecutionContext<TDetails>(
 	context: ToolExecutionContext<TDetails>,
-	source: ToolContributionSource,
+	source: ToolSource,
 ): ToolExecutionContext<TDetails> {
 	const bindContext = (context as BindableToolExecutionContext<TDetails>)[
 		bindToolExecutionContextSymbol
@@ -591,8 +580,8 @@ function createToolDiagnostic(options: {
 	readonly message: string;
 	readonly disposition?: DiagnosticDisposition;
 	readonly toolName?: string;
-	readonly source?: ToolContributionSource;
-	readonly targetSource?: ToolContributionSource;
+	readonly source?: ToolSource;
+	readonly targetSource?: ToolSource;
 	readonly details?: Record<string, unknown>;
 }): ToolRegistryDiagnostic {
 	return createDiagnostic({
@@ -605,28 +594,25 @@ function createToolDiagnostic(options: {
 		recoverable: true,
 		message: options.message,
 		source: options.source
-			? diagnosticSourceFromToolContribution(options.source, options.toolName)
+			? diagnosticSourceFromToolSource(options.source, options.toolName)
 			: options.toolName
 				? { kind: "tool", name: options.toolName }
 				: undefined,
 		targetSource: options.targetSource
-			? diagnosticSourceFromToolContribution(
-					options.targetSource,
-					options.toolName,
-				)
+			? diagnosticSourceFromToolSource(options.targetSource, options.toolName)
 			: undefined,
 		toolName: options.toolName,
 		phase: "resolve",
 		details: {
-			contributionSource: options.source,
-			targetContributionSource: options.targetSource,
+			toolSource: options.source,
+			targetToolSource: options.targetSource,
 			...options.details,
 		},
 	});
 }
 
-function diagnosticSourceFromToolContribution(
-	source: ToolContributionSource,
+function diagnosticSourceFromToolSource(
+	source: ToolSource,
 	toolName: string | undefined,
 ): DiagnosticSource {
 	if (source.kind === "extension") {
@@ -642,16 +628,7 @@ function diagnosticSourceFromToolContribution(
 	};
 }
 
-function compareDefinitionPriority(
-	left: DefinitionEntry,
-	right: DefinitionEntry,
-): number {
-	if (left.priority !== right.priority) return right.priority - left.priority;
-	return left.order - right.order;
-}
-
 function comparePatchApplyOrder(left: PatchEntry, right: PatchEntry): number {
-	if (left.priority !== right.priority) return left.priority - right.priority;
 	return left.order - right.order;
 }
 
@@ -661,6 +638,6 @@ function isResolvedTool(
 	return value !== undefined;
 }
 
-function formatSource(source: ToolContributionSource): string {
+function formatSource(source: ToolSource): string {
 	return `${source.kind}:${source.id}`;
 }

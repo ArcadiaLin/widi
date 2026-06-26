@@ -957,10 +957,7 @@ export class AgentOrchestrator {
 		requestedToolNames: readonly string[] | undefined;
 		activeToolNames?: readonly string[];
 	}): Promise<AgentToolSet> {
-		const toolRegistry = ToolRegistry.from(
-			this.toolRegistry.getContributions(),
-		);
-		const resolvedTools = toolRegistry.resolve({
+		const resolvedTools = this.toolRegistry.resolve({
 			requestedToolNames: options.requestedToolNames,
 			activeToolNames: options.activeToolNames,
 		});

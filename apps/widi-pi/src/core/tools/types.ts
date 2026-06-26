@@ -98,7 +98,7 @@ export interface ToolExecutionContext<TDetails> {
 	signal: AbortSignal | undefined;
 	/** Pi-compatible callback for streaming tool updates. */
 	onUpdate: AgentToolUpdateCallback<TDetails> | undefined;
-	/** Extension context bound to the contribution currently executing. */
+	/** Extension context bound to the tool source currently executing. */
 	extension: ToolExtensionContext | undefined;
 	/** Host for controlled user interaction from tools. */
 	human: ToolHumanHost | undefined;
@@ -148,10 +148,9 @@ export type ToolExecuteMiddleware<
 /**
  * Partial tool definition applied to an existing tool by the registry.
  *
- * Patches are ordered by registry priority and contribution order. They can
- * replace the model-facing description, parameters, strict metadata, or execute
- * function. `aroundExecute` wraps the current execute function instead of
- * replacing it.
+ * Patches are applied in registration order. They can replace the model-facing
+ * description, parameters, strict metadata, or execute function.
+ * `aroundExecute` wraps the current execute function instead of replacing it.
  */
 export interface ToolDefinitionPatch<
 	TParamsSchema extends TSchema = TSchema,
@@ -170,61 +169,17 @@ export interface ToolDefinitionPatch<
 }
 
 /**
- * Stable provenance for a tool contribution.
+ * Stable provenance for a tool registration.
  *
  * Diagnostics and conflict resolution use this to explain where a tool
  * definition or patch came from.
  */
-export interface ToolContributionSource {
-	/** Contribution owner class. */
+export interface ToolSource {
+	/** Registration owner class. */
 	kind: "core" | "extension" | "adapter";
 	/** Stable owner id within the kind, such as `builtin` or an extension id. */
 	id: string;
 }
-
-/** Registry contribution that defines a new named tool. */
-export interface ToolDefinitionContribution<
-	TParamsSchema extends TSchema = TSchema,
-	TDetails = unknown,
-> {
-	type: "define";
-	/** Source used for diagnostics, priority ties, and extension context. */
-	source: ToolContributionSource;
-	/** Higher priority definitions win conflicts; default is registry-defined zero. */
-	priority?: number;
-	/** Complete WIDI-owned tool definition. */
-	tool: ToolDefinition<TParamsSchema, TDetails>;
-}
-
-/** Registry contribution that modifies an existing named tool. */
-export interface ToolPatchContribution<
-	TParamsSchema extends TSchema = TSchema,
-	TDetails = unknown,
-> {
-	type: "patch";
-	/** Source used for diagnostics, patch ordering, and extension context. */
-	source: ToolContributionSource;
-	/** Existing tool name this patch targets. Missing targets produce diagnostics. */
-	targetToolName: string;
-	/** Higher priority patches apply later and wrap farther outside. */
-	priority?: number;
-	/** Partial definition or execute middleware to apply. */
-	patch: ToolDefinitionPatch<TParamsSchema, TDetails>;
-}
-
-/**
- * Input unit consumed by ToolRegistry.
- *
- * Core, extensions, and temporary adapters all contribute definitions or
- * patches. The registry resolves these contributions into a deterministic tool
- * set for one agent harness.
- */
-export type ToolContribution<
-	TParamsSchema extends TSchema = TSchema,
-	TDetails = unknown,
-> =
-	| ToolDefinitionContribution<TParamsSchema, TDetails>
-	| ToolPatchContribution<TParamsSchema, TDetails>;
 
 /**
  * WIDI-owned tool definition.

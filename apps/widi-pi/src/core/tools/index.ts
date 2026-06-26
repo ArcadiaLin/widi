@@ -6,7 +6,6 @@ export type {
 } from "./coding/write.ts";
 export { createWriteToolDefinition } from "./coding/write.ts";
 export type {
-	AnyToolContribution,
 	ResolvedTool,
 	ToolAgentAdapterContext,
 	ToolRegistryDiagnostic,
@@ -20,11 +19,10 @@ export {
 	ToolRegistry,
 } from "./tool-registry.ts";
 export type {
-	ToolContribution,
-	ToolContributionSource,
 	ToolDefinition,
 	ToolDefinitionPatch,
 	ToolExecutionContext,
 	ToolExtensionContext,
 	ToolLifecycleEvent,
+	ToolSource,
 } from "./types.ts";

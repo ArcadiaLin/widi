@@ -1,8 +1,8 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Static, TSchema } from "typebox";
 import type {
-	ToolContributionSource,
-	ToolPatchContribution,
+	ToolDefinitionPatch,
+	ToolSource,
 } from "../src/core/tools/types.ts";
 
 export type ToolTrackingMode = "minimal" | "metadata" | "tail" | "full";
@@ -11,7 +11,7 @@ export type ToolRunStatus = "running" | "succeeded" | "failed";
 export interface ToolRunStart {
 	toolCallId: string;
 	toolName: string;
-	source: ToolContributionSource;
+	source: ToolSource;
 	metadata?: unknown;
 }
 
@@ -34,7 +34,7 @@ export interface ToolRunSnapshot {
 	trackingId: string;
 	toolCallId: string;
 	toolName: string;
-	source: ToolContributionSource;
+	source: ToolSource;
 	status: ToolRunStatus;
 	startedAt: string;
 	endedAt?: string;
@@ -72,11 +72,11 @@ export interface ToolTrackingPolicy<TParams = unknown, TDetails = unknown> {
 	describeError?: (error: unknown) => unknown;
 }
 
-export interface ToolTrackerContributionOptions<
+export interface ToolTrackerPatchOptions<
 	TParamsSchema extends TSchema = TSchema,
 	TDetails = unknown,
 > {
-	source: ToolContributionSource;
+	source: ToolSource;
 	targetToolName: string;
 	tracker: ToolTracker;
 	policy?: false | ToolTrackingPolicy<Static<TParamsSchema>, TDetails>;
@@ -88,7 +88,7 @@ interface MutableToolRun {
 	trackingId: string;
 	toolCallId: string;
 	toolName: string;
-	source: ToolContributionSource;
+	source: ToolSource;
 	status: ToolRunStatus;
 	startedAt: string;
 	startedAtMs: number;
@@ -199,47 +199,45 @@ export class InMemoryToolTracker implements ToolTracker {
 	}
 }
 
-export function createToolTrackerContribution(
-	options: ToolTrackerContributionOptions,
-): ToolPatchContribution<TSchema, unknown, unknown> {
+export function createToolTrackerPatch<
+	TParamsSchema extends TSchema = TSchema,
+	TDetails = unknown,
+>(
+	options: ToolTrackerPatchOptions<TParamsSchema, TDetails>,
+): ToolDefinitionPatch<TParamsSchema, TDetails> {
 	const { source, targetToolName, tracker, policy } = options;
 	return {
-		type: "patch",
-		source,
-		targetToolName,
-		patch: {
-			aroundExecute: async (next, toolCallId, params, context) => {
-				if (policy === false) {
-					return next(toolCallId, params, context);
-				}
-				const started = tracker.start({
-					toolCallId,
-					toolName: targetToolName,
-					source,
-					metadata: describeParams(policy, params),
+		aroundExecute: async (next, toolCallId, params, context) => {
+			if (policy === false) {
+				return next(toolCallId, params, context);
+			}
+			const started = tracker.start({
+				toolCallId,
+				toolName: targetToolName,
+				source,
+				metadata: describeParams(policy, params),
+			});
+			const trackedOnUpdate: typeof context.onUpdate = (update) => {
+				tracker.update(started.trackingId, {
+					update: describeUpdate(policy, update),
 				});
-				const trackedOnUpdate: typeof context.onUpdate = (update) => {
-					tracker.update(started.trackingId, {
-						update: describeUpdate(policy, update),
-					});
-					context.onUpdate?.(update);
-				};
-				try {
-					const result = await next(toolCallId, params, {
-						...context,
-						onUpdate: trackedOnUpdate,
-					});
-					tracker.finish(started.trackingId, {
-						result: describeResult(policy, result),
-					});
-					return result;
-				} catch (error) {
-					tracker.fail(started.trackingId, {
-						error: describeError(policy, error),
-					});
-					throw error;
-				}
-			},
+				context.onUpdate?.(update);
+			};
+			try {
+				const result = await next(toolCallId, params, {
+					...context,
+					onUpdate: trackedOnUpdate,
+				});
+				tracker.finish(started.trackingId, {
+					result: describeResult(policy, result),
+				});
+				return result;
+			} catch (error) {
+				tracker.fail(started.trackingId, {
+					error: describeError(policy, error),
+				});
+				throw error;
+			}
 		},
 	};
 }

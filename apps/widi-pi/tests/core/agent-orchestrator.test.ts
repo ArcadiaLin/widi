@@ -402,11 +402,7 @@ function createToolDefinition(
 function createToolRegistry(...tools: ToolDefinition[]): ToolRegistry {
 	const registry = new ToolRegistry();
 	for (const tool of tools) {
-		registry.addContribution({
-			type: "define",
-			source: { kind: "core", id: "test" },
-			tool,
-		});
+		registry.defineTool(tool, { kind: "core", id: "test" });
 	}
 	return registry;
 }
@@ -807,18 +803,16 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
-	it("reports conflicts between registry tool contributions", async () => {
+	it("reports conflicts between registry tool registrations", async () => {
 		const env = new MemoryExecutionEnv();
 		const toolRegistry = new ToolRegistry();
-		toolRegistry.addContribution({
-			type: "define",
-			source: { kind: "core", id: "base" },
-			tool: createToolDefinition("echo", "base"),
+		toolRegistry.defineTool(createToolDefinition("echo", "base"), {
+			kind: "core",
+			id: "base",
 		});
-		toolRegistry.addContribution({
-			type: "define",
-			source: { kind: "extension", id: "override" },
-			tool: createToolDefinition("echo", "override"),
+		toolRegistry.defineTool(createToolDefinition("echo", "override"), {
+			kind: "extension",
+			id: "override",
 		});
 		const orchestrator = await createOrchestrator(env, { toolRegistry });
 		const events: OrchestratorEvent[] = [];
