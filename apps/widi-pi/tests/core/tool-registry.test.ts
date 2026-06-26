@@ -182,6 +182,76 @@ describe("ToolRegistry", () => {
 		);
 	});
 
+	it("reports parameters patches that do not also patch execution", () => {
+		const registry = new ToolRegistry();
+		registry.addContribution({
+			type: "define",
+			source: coreSource,
+			tool: createTool("write"),
+		});
+		registry.addContribution({
+			type: "patch",
+			source: extensionSource,
+			targetToolName: "write",
+			patch: {
+				parameters: Type.Object({ path: Type.String() }),
+			},
+		});
+
+		const result = registry.resolve();
+
+		expect(result.diagnostics).toContainEqual(
+			expect.objectContaining({
+				code: "tool.patch_contract_risk",
+				toolName: "write",
+				source: { kind: "extension", id: "ext" },
+				details: expect.objectContaining({
+					field: "parameters",
+				}),
+			}),
+		);
+	});
+
+	it("binds extension context to the patch currently executing", async () => {
+		const events: string[] = [];
+		const registry = new ToolRegistry();
+		registry.addContribution({
+			type: "define",
+			source: coreSource,
+			tool: {
+				...createTool("write"),
+				execute: async (_toolCallId, _params, context) => {
+					events.push(`execute:${context.extension?.extensionId}`);
+					return {
+						content: [{ type: "text", text: "base" }],
+						details: undefined,
+					};
+				},
+			},
+		});
+		registry.addContribution({
+			type: "patch",
+			source: { kind: "extension", id: "audit" },
+			targetToolName: "write",
+			patch: {
+				aroundExecute: async (next, toolCallId, params, context) => {
+					events.push(`patch:${context.extension?.extensionId}`);
+					return await next(toolCallId, params, context);
+				},
+			},
+		});
+		const resolvedTool = registry.resolve().getTool("write");
+		expect(resolvedTool).toBeDefined();
+		if (!resolvedTool) throw new Error("Expected write tool to resolve.");
+		const agentTool = createAgentToolFromResolvedTool(resolvedTool, {
+			createExtensionContext: (source) => ({ extensionId: source.id }),
+		});
+
+		await agentTool.execute("call-1", {});
+
+		expect(events).toEqual(["patch:audit", "execute:builtin"]);
+	});
+
 	it("passes human request capability into tool execution context", async () => {
 		const registry = new ToolRegistry();
 		registry.addContribution({

@@ -165,11 +165,12 @@ Tool registry 直接产出 `CoreDiagnostic`，当前 codes 包括：
 - `tool.define_conflict`：多个来源定义同名 tool，registry 按 priority/顺序保留一个。
 - `tool.patch_target_missing`：patch 指向不存在的 tool。
 - `tool.patch_field_conflict`：多个 patch 修改同一覆盖字段，priority/顺序决定最终值。
+- `tool.patch_contract_risk`：patch 修改参数 schema 但没有同步 patch execute/aroundExecute，旧执行逻辑可能不匹配新参数。
 - `tool.requested_duplicate` / `tool.requested_missing`：profile/policy 请求的工具重复或不存在。
 - `tool.active_duplicate` / `tool.active_missing`：resume 或 runtime policy 提供的 active tool names 重复或不可见。
 - `tool.invalid_name`：definition、patch target 或 name list 包含空名字。
 
-这些 codes 目前停留在 `ToolRegistryResolveResult.diagnostics`，还没有汇总到 orchestrator event。接入 orchestrator 时应保留 code，并补充 agent/profile/session context。
+这些 codes 由 `ToolRegistryResolveResult.diagnostics` 产出，并在 orchestrator create/resume/runtime tool resolve 时补充 agent/profile context 后发布为 diagnostic event。
 
 Settings、Auth 和 Model registry 也直接产出 `CoreDiagnostic`，同时保留旧 error/string API 作为兼容层：
 

@@ -13,6 +13,7 @@ import type {
 	ToolContributionSource,
 	ToolDefinition,
 	ToolDefinitionPatch,
+	ToolExecute,
 	ToolExecutionContext,
 	ToolExtensionContext,
 } from "./types.ts";
@@ -27,6 +28,7 @@ export type ToolRegistryDiagnosticCode =
 	| "tool.define_conflict"
 	| "tool.patch_target_missing"
 	| "tool.patch_field_conflict"
+	| "tool.patch_contract_risk"
 	| "tool.requested_duplicate"
 	| "tool.requested_missing"
 	| "tool.active_duplicate"
@@ -98,6 +100,14 @@ interface PatchEntry {
 	priority: number;
 	order: number;
 }
+
+const bindToolExecutionContextSymbol = Symbol("bindToolExecutionContext");
+
+type BindableToolExecutionContext<TDetails> = ToolExecutionContext<TDetails> & {
+	[bindToolExecutionContextSymbol]?: (
+		source: ToolContributionSource,
+	) => ToolExecutionContext<TDetails>;
+};
 
 const patchReplaceFields = [
 	"description",
@@ -307,6 +317,22 @@ export class ToolRegistry {
 		>();
 
 		for (const patchEntry of appliedPatches) {
+			if (
+				patchEntry.patch.parameters !== undefined &&
+				patchEntry.patch.execute === undefined &&
+				patchEntry.patch.aroundExecute === undefined
+			) {
+				diagnostics.push(
+					createToolDiagnostic({
+						severity: "warning",
+						code: "tool.patch_contract_risk",
+						message: `Tool '${entry.definition.name}' parameters are patched by ${formatSource(patchEntry.source)} without an execute or aroundExecute patch; the existing execute implementation may not match the new schema.`,
+						toolName: entry.definition.name,
+						source: patchEntry.source,
+						details: { field: "parameters" },
+					}),
+				);
+			}
 			for (const field of patchReplaceFields) {
 				if (patchEntry.patch[field] === undefined) continue;
 				const previousOwner = fieldOwners.get(field);
@@ -325,7 +351,7 @@ export class ToolRegistry {
 				}
 				fieldOwners.set(field, patchEntry);
 			}
-			definition = applyPatch(definition, patchEntry.patch);
+			definition = applyPatch(definition, patchEntry);
 		}
 
 		return {
@@ -436,20 +462,40 @@ export function createAgentToolsFromResolvedTools(
 
 function applyPatch(
 	definition: RegistryToolDefinition,
-	patch: RegistryToolDefinitionPatch,
+	patchEntry: PatchEntry,
 ): RegistryToolDefinition {
+	const patch = patchEntry.patch;
 	const next: RegistryToolDefinition = { ...definition };
 	if (patch.description !== undefined) next.description = patch.description;
 	if (patch.parameters !== undefined) next.parameters = patch.parameters;
 	if (patch.strict !== undefined) next.strict = patch.strict;
 
-	const execute = patch.execute ?? next.execute;
+	const previousExecute = next.execute;
+	const patchExecute = patch.execute;
+	const execute: ToolExecute<TSchema, unknown> = patchExecute
+		? (toolCallId, params, context) =>
+				patchExecute(
+					toolCallId,
+					params,
+					bindToolExecutionContext(context, patchEntry.source),
+				)
+		: previousExecute;
 	if (patch.aroundExecute) {
 		const aroundExecute = patch.aroundExecute;
 		next.execute = (toolCallId, params, context) =>
-			aroundExecute(execute, toolCallId, params, context);
+			aroundExecute(
+				(nextToolCallId, nextParams, nextContext) =>
+					execute(
+						nextToolCallId,
+						nextParams,
+						restoreInnerToolExecutionContext(nextContext, context),
+					),
+				toolCallId,
+				params,
+				bindToolExecutionContext(context, patchEntry.source),
+			);
 	} else if (patch.execute) {
-		next.execute = patch.execute;
+		next.execute = execute;
 	}
 	return next;
 }
@@ -460,17 +506,45 @@ function createToolExecutionContext(
 	signal: AbortSignal | undefined,
 	onUpdate: Parameters<AgentTool<TSchema, unknown>["execute"]>[3],
 ): ToolExecutionContext<unknown> {
-	const extension =
-		context.createExtensionContext?.(
-			resolvedTool.source,
-			resolvedTool.definition.name,
-		) ?? context.extension;
-	return {
+	const bindContext = (source: ToolContributionSource) => ({
 		env: context.env,
 		signal,
 		onUpdate,
-		extension,
+		extension:
+			context.createExtensionContext?.(source, resolvedTool.definition.name) ??
+			context.extension,
 		human: context.human,
+		[bindToolExecutionContextSymbol]: bindContext,
+	});
+	return bindContext(resolvedTool.source);
+}
+
+function bindToolExecutionContext<TDetails>(
+	context: ToolExecutionContext<TDetails>,
+	source: ToolContributionSource,
+): ToolExecutionContext<TDetails> {
+	const bindContext = (context as BindableToolExecutionContext<TDetails>)[
+		bindToolExecutionContextSymbol
+	];
+	return bindContext?.(source) ?? context;
+}
+
+function restoreInnerToolExecutionContext<TDetails>(
+	context: ToolExecutionContext<TDetails>,
+	innerContext: ToolExecutionContext<TDetails>,
+): ToolExecutionContext<TDetails> {
+	const bindContext = (innerContext as BindableToolExecutionContext<TDetails>)[
+		bindToolExecutionContextSymbol
+	];
+	return {
+		env: context.env,
+		signal: context.signal,
+		onUpdate: context.onUpdate,
+		extension: innerContext.extension,
+		human: context.human,
+		...(bindContext
+			? { [bindToolExecutionContextSymbol]: bindContext }
+			: undefined),
 	};
 }
 

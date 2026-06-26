@@ -56,7 +56,6 @@ Extension 不拥有 core tool 状态接口。Core 不提供共享的 tool previe
 
 - extension patch 是否需要 permission，例如能否替换 execute、能否只允许 `aroundExecute`。
 - 多个 extension patch 同一字段时，priority 的来源是 extension declaration、profile policy，还是 extension 自身声明。
-- `aroundExecute` 内部需要的 extension context 是否按 patch source 绑定；当前 registry adapter 只提供 resolved tool 级 context。
 - patch 失败、restore 失败、permission denied 应如何进入统一 diagnostic。
 
 Extension 可以实现 tool tracking。

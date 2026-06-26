@@ -1071,6 +1071,15 @@ export class AgentOrchestrator {
 			return undefined;
 		}
 
+		if (
+			event.type === "message_end" ||
+			event.type === "turn_end" ||
+			event.type === "agent_end"
+		) {
+			this._forgetAllStreamingToolCalls(agentId);
+			return undefined;
+		}
+
 		if (event.type === "tool_execution_start") {
 			return {
 				type: "execution_started",
@@ -1136,6 +1145,10 @@ export class AgentOrchestrator {
 		if (refs.size === 0) {
 			this._streamingToolCalls.delete(agentId);
 		}
+	}
+
+	private _forgetAllStreamingToolCalls(agentId: AgentId): void {
+		this._streamingToolCalls.delete(agentId);
 	}
 
 	private async _executeCommand(

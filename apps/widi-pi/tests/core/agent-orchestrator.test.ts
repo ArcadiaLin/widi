@@ -1033,6 +1033,77 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
+	it("clears streaming tool-call refs when a message ends", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env, {
+			toolRegistry: createToolRegistry(createToolDefinition("plain")),
+		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const handleHarnessEvent = (
+			orchestrator as unknown as {
+				_handleAgentHarnessEvent(
+					agentId: string,
+					event: AgentHarnessEvent,
+				): Promise<void>;
+			}
+		)._handleAgentHarnessEvent.bind(orchestrator);
+		const partial = createAssistantPartial([
+			{
+				type: "toolCall",
+				id: "call-1",
+				name: "plain",
+				arguments: {},
+			},
+		]);
+
+		await handleHarnessEvent(agentId, {
+			type: "message_update",
+			message: partial,
+			assistantMessageEvent: {
+				type: "toolcall_start",
+				contentIndex: 0,
+				partial,
+			},
+		});
+		await handleHarnessEvent(agentId, {
+			type: "message_end",
+			message: {
+				...partial,
+				stopReason: "error",
+				errorMessage: "stream failed",
+			},
+		});
+		await handleHarnessEvent(agentId, {
+			type: "message_update",
+			message: createAssistantPartial([]),
+			assistantMessageEvent: {
+				type: "toolcall_delta",
+				contentIndex: 0,
+				delta: "{}",
+				partial: createAssistantPartial([]),
+			},
+		});
+
+		const lifecycleEvents = events.filter(
+			(event) => event.type === "tool_lifecycle_event",
+		);
+		expect(lifecycleEvents.at(-1)).toEqual(
+			expect.objectContaining({
+				event: {
+					type: "arguments_delta",
+					contentIndex: 0,
+					delta: "{}",
+					toolCallId: undefined,
+					toolName: undefined,
+				},
+			}),
+		);
+	});
+
 	it("rejects invalid commands without throwing", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
