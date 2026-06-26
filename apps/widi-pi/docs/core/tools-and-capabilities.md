@@ -51,6 +51,8 @@ Patch 规则：
 - patch 按 priority 从低到高应用；同 priority 按注册顺序应用。
 - 后应用的 `description`、`parameters`、`strict` 和 `execute` 覆盖前者。
 - `aroundExecute` 会包装当前 execute；高 priority patch 因为后应用，会成为更外层 wrapper。
+- `aroundExecute` 执行时，`context.extension` 绑定当前 patch source；调用 `next()` 时恢复内层 contribution 的 context，避免外层 extension context 泄漏到 core/base execute。
+- patch 修改 `parameters` 但没有同步修改 `execute` 或 `aroundExecute` 时，会产生 `tool.patch_contract_risk` diagnostic。因为模型看到的新 schema 可能不再匹配旧 execute 逻辑。
 - patch 目标不存在时产生 `tool.patch_target_missing` diagnostic，不会创建隐式 tool。
 
 Tool visibility 规则：
@@ -76,6 +78,7 @@ Tool Registry 应把 tool 输入视为贡献集合，而不是裸数组：
 - `patch` contribution 以 tool name 为目标修改既有 tool。
 - patch 可以替换 `description`、`parameters`、`strict` 或 `execute`。
 - patch 也可以通过 `aroundExecute` 包装既有 execute，用于审计、重写参数、转发到 sandbox、替换文件写入 backend 等。
+- patch 执行上下文按 patch source 绑定；base execute 仍使用定义来源的 context。
 - 多个 patch 按来源、priority 和 policy 合成，冲突应产生 diagnostic。
 
 例如，extension 修改 built-in `write` tool 不应直接改 registry 中的 write 对象。它应注册一个针对 `write` 的 patch：轻量场景用 `aroundExecute` 包住原始写入；完整替换场景用 `execute` 替换行为。最终暴露给 `AgentHarness` 的仍是名为 `write` 的 resolved tool，active tool names 和 session resume 才能保持稳定。
@@ -100,7 +103,7 @@ Orchestrator 是当前 runtime event hub。它保留两条事件轨道：
 - `execution_update`
 - `execution_result`
 
-`tool_call_created`、`arguments_delta` 和 `arguments_ready` 来自 `message_update.assistantMessageEvent.toolcall_*`。Orchestrator 只维护短生命周期的 `contentIndex -> toolCall` 映射来补全 streaming facts；它不是 tool state，不暴露、不持久化、不参与 UI 设计。
+`tool_call_created`、`arguments_delta` 和 `arguments_ready` 来自 `message_update.assistantMessageEvent.toolcall_*`。Orchestrator 只维护短生命周期的 `contentIndex -> toolCall` 映射来补全 streaming facts；它不是 tool state，不暴露、不持久化、不参与 UI 设计。该映射会在 `toolcall_end`、`message_end`、`turn_end` 或 `agent_end` 时清理，避免中断流留下 stale refs。
 
 `execution_started`、`execution_update` 和 `execution_result` 来自 Pi `tool_execution_*` events。`execution_result.isError` 表示 Pi harness 认为最终结果是错误结果。
 
@@ -133,6 +136,8 @@ Tool tracking、审计和 checkpoint 更适合作为 extension pattern：用 `ar
 - [x] 定义 `define`/`patch` tool contribution 的合成顺序、冲突策略和 diagnostics。
 - [x] 将 tool human request 能力收敛为 `context.human.request(...)`。
 - [x] 落地第一版 WIDI-owned `write` tool definition，采用 Pi 风格 tool call/result/details 持久化。
+- [x] 将 orchestrator harness events 归一化为 `tool_lifecycle_event`，并删除 core tool state/reducer 方案。
+- [x] 为 extension patch context 绑定和 parameters/execute contract risk 增加 registry 语义与 diagnostics。
 - [ ] 将 built-in `write` 接入默认 builtin registry，并补 sandbox/backend patch 示例与 Pi parity 对照。
 - [ ] 定义 extension-owned custom entry API：append/read 权限、branch scope、fork、compaction、export、debug view 和 diagnostics。
 - [ ] 定义 Profile Capability 到 Tool Visibility 和 runtime policy 的映射。

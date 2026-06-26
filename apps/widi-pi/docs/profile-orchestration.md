@@ -82,7 +82,11 @@
 
 当前 orchestrator 会把 `profile.tools` 传给 registry，把 resume context 中的 `activeToolNames` 传给 registry，并把 registry diagnostics 发布为 orchestrator `diagnostic` event。调用方需要新增工具时，应注册 tool contribution，而不是传入 Pi runtime closure。
 
+Runtime command 同样遵守这个边界。`agent.getTools` 返回 tool names 与 active tool names snapshot；`agent.setTools` 和 `agent.setActiveTools` 只接收名字，由 orchestrator 再次调用 `ToolRegistry.resolve()`。因此 profile create、session resume 和 runtime mutation 三条路径共享同一套可见性、active filtering 和 diagnostics 语义。
+
 Tool execution context 不提供 core session persistence facade。Built-in tool 的可恢复数据应跟随 Pi coding-agent 的路径进入 tool call arguments、tool result `content` 和 typed `details`。未来 extension 如果需要和 session tree 强相关的小型状态，应通过 extension-owned custom entry API 进入 Pi `custom` entry；这不属于 profile schema。
+
+Tool execution 的 UI 展示也不属于 profile schema。Orchestrator 会发布 `tool_lifecycle_event`，UI/RPC/extension runner 可基于 tool name、arguments 和 result details 派生展示数据。
 
 ### Capabilities
 
@@ -181,6 +185,7 @@ orchestrator 不应直接打印 diagnostics。当前统一出口是 orchestrator
 - [x] 明确 `profile.tools` 的推荐语义：registry requested tool names。
 - [x] 实现 `ToolRegistry.resolve()` 的 requested/active tool name 校验和 diagnostics。
 - [x] 将 `profile.tools` 和 resume/runtime `activeToolNames` 接入 `ToolRegistry.resolve()`，并把 diagnostics 汇总到 orchestrator。
+- [x] 将 runtime `agent.getTools`/`agent.setTools` 收敛为 names/snapshot API，移除 raw `AgentTool[]` command 入口。
 - [ ] 定义 extension-owned custom entry API 与 profile/tool/extension diagnostics 的关系。
 - [ ] 明确 `capabilities` 到 tools/events 的映射规则，例如 spawn、request user、direct user input。
 - [x] 定义第一版 `profileOverride` 规则：禁止覆盖 id；修改恢复关键字段时不能创建 persistent session。

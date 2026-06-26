@@ -278,7 +278,7 @@ Drain 型模块发布后会清空本地队列；result 型模块只在当前 ope
 - [x] 将 profile diagnostics 接入 orchestrator diagnostic event。
 - [x] 将 model/auth startup 与 request auth diagnostics 接入 orchestrator diagnostic event。
 - [x] ToolRegistry diagnostics 保留在 `ToolRegistryResolveResult.diagnostics`。
-- [x] 将 ToolRegistry diagnostics 接入 orchestrator event；orchestrator create/resume harness build 已经过 `ToolRegistry.resolve()`。
+- [x] 将 ToolRegistry diagnostics 接入 orchestrator event；orchestrator create/resume harness build 和 runtime tool mutation 已经过 `ToolRegistry.resolve()`。
 - [ ] 将 extension diagnostics 接入 orchestrator diagnostic event。
 - [x] 增加 focused tests 覆盖 command rejection 与 human-request diagnostics。
 - [x] 增加 focused tests 覆盖 startup diagnostics 与 spawn profile diagnostics。

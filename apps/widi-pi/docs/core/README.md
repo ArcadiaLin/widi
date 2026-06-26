@@ -10,7 +10,7 @@
 - `orchestrator commands`：agent、human、extension、external transport 进入 orchestrator 的操作入口和 client fanout 语义。
 - `extensions`：通过 hook 插入 core 能力的扩展系统。
 - `profiles and resources`：声明式 agent 配置与依赖解析。
-- `tools and capabilities`：tool 可见性、能力声明与 runtime policy。
+- `tools and capabilities`：tool 可见性、能力声明、registry patch、lifecycle event 与 runtime policy。
 - `diagnostics`：profile、dependency、runtime 问题的结构化输出。
 - `sessions and runtime`：Pi session、ExecutionEnv、model/auth 的边界。
 - `settings runtime`：global/project settings、trust gate、runtime overrides 与配置持久化边界。
