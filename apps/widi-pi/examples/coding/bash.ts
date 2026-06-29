@@ -6,7 +6,10 @@ import type {
 	Result,
 } from "@earendil-works/pi-agent-core";
 import { type Static, Type } from "typebox";
-import type { ToolDefinition, ToolExecutionContext } from "../types.ts";
+import type {
+	ToolDefinition,
+	ToolExecutionContext,
+} from "../../src/core/extension/types.ts";
 
 export const BASH_DEFAULT_MAX_LINES = 2000;
 export const BASH_DEFAULT_MAX_BYTES = 50 * 1024;
@@ -51,18 +54,17 @@ export interface BashExecOptions {
 
 export interface BashOperations {
 	exec?: (
-		env: ExecutionEnv,
 		command: string,
 		options: BashExecOptions,
 	) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 	createFullOutputFile?: (
-		env: ExecutionEnv,
 		content: string,
 		abortSignal?: AbortSignal,
 	) => Promise<string>;
 }
 
 export interface BashToolOptions {
+	env?: ExecutionEnv;
 	operations?: BashOperations;
 	commandPrefix?: string;
 	cwd?: string;
@@ -83,10 +85,6 @@ export function createBashToolDefinition(
 		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${BASH_DEFAULT_MAX_LINES} lines or ${BASH_DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.`,
 		promptSnippet: "Execute bash commands (ls, grep, find, etc.)",
 		parameters: bashSchema,
-		executionEnv: {
-			kind: "harness",
-			capabilities: ["shell", "filesystem"],
-		},
 		execute: async (_toolCallId, params, context) =>
 			await executeBashTool(params, context, options),
 	};
@@ -97,19 +95,13 @@ async function executeBashTool(
 	context: ToolExecutionContext<BashToolDetails | undefined>,
 	options: BashToolOptions,
 ): Promise<AgentToolResult<BashToolDetails | undefined>> {
-	const env = context.env;
-	if (!env) {
-		throw new Error(
-			"bash tool requires an execution environment with shell support.",
-		);
-	}
-
 	const output = new BashOutputAccumulator();
 	let receivedStreamOutput = false;
 	const resolvedCommand = options.commandPrefix
 		? `${options.commandPrefix}\n${command}`
 		: command;
-	const cwd = options.cwd ?? env.cwd;
+	const cwd = options.cwd ?? options.env?.cwd;
+	if (!cwd) throw missingBashEnvError("shell");
 
 	const handleOutput = (chunk: string): void => {
 		receivedStreamOutput = true;
@@ -119,7 +111,7 @@ async function executeBashTool(
 
 	let result: { stdout: string; stderr: string; exitCode: number };
 	try {
-		result = await execBashCommand(env, resolvedCommand, {
+		result = await execBashCommand(options.env, resolvedCommand, {
 			cwd,
 			timeout,
 			abortSignal: context.signal,
@@ -130,7 +122,7 @@ async function executeBashTool(
 	} catch (error) {
 		const snapshot = await finishOutput(
 			output,
-			env,
+			options.env,
 			context,
 			options.operations,
 		);
@@ -153,7 +145,12 @@ async function executeBashTool(
 		output.append(result.stderr);
 	}
 
-	const snapshot = await finishOutput(output, env, context, options.operations);
+	const snapshot = await finishOutput(
+		output,
+		options.env,
+		context,
+		options.operations,
+	);
 	const { text, details } = formatOutput(snapshot, output.getLastLineBytes());
 	if (result.exitCode !== 0) {
 		throw new Error(
@@ -168,13 +165,14 @@ interface ExecCommandOptions extends BashExecOptions {
 }
 
 async function execBashCommand(
-	env: ExecutionEnv,
+	env: ExecutionEnv | undefined,
 	command: string,
 	options: ExecCommandOptions,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	if (options.operations?.exec) {
-		return await options.operations.exec(env, command, options);
+		return await options.operations.exec(command, options);
 	}
+	if (!env) throw missingBashEnvError("shell");
 	const result = await env.exec(command, {
 		cwd: options.cwd,
 		timeout: options.timeout,
@@ -187,7 +185,7 @@ async function execBashCommand(
 
 async function finishOutput(
 	output: BashOutputAccumulator,
-	env: ExecutionEnv,
+	env: ExecutionEnv | undefined,
 	context: ToolExecutionContext<BashToolDetails | undefined>,
 	operations: BashOperations | undefined,
 ): Promise<BashOutputSnapshot> {
@@ -220,14 +218,15 @@ function emitOutputUpdate(
 }
 
 async function createFullOutputFile(
-	env: ExecutionEnv,
+	env: ExecutionEnv | undefined,
 	content: string,
 	abortSignal: AbortSignal | undefined,
 	operations: BashOperations | undefined,
 ): Promise<string> {
 	if (operations?.createFullOutputFile) {
-		return await operations.createFullOutputFile(env, content, abortSignal);
+		return await operations.createFullOutputFile(content, abortSignal);
 	}
+	if (!env) throw missingBashEnvError("filesystem");
 	const path = fileSystemValueOrThrow(
 		await env.createTempFile({
 			prefix: "widi-bash-",
@@ -410,5 +409,11 @@ function isExecutionError(
 		error.name === "ExecutionError" &&
 		"code" in error &&
 		error.code === code
+	);
+}
+
+function missingBashEnvError(capability: "filesystem" | "shell"): Error {
+	return new Error(
+		`bash tool requires an execution environment with ${capability} support.`,
 	);
 }

@@ -29,6 +29,7 @@ import {
 	toCoreDiagnosticFromPromptTemplateDiagnostic,
 	toCoreDiagnosticFromSkillDiagnostic,
 } from "./diagnostics.ts";
+import type { ToolLifecycleEvent } from "./extension/types.ts";
 import type { ModelRegistry } from "./model-registry.js";
 import type { OrchestratorClient } from "./orchestrator/clients.ts";
 import type {
@@ -54,7 +55,6 @@ import {
 	createAgentToolsFromResolvedTools,
 	ToolRegistry,
 } from "./tools/tool-registry.ts";
-import type { ToolLifecycleEvent } from "./tools/types.ts";
 
 export type OrchestratorEvent =
 	| {
@@ -970,7 +970,6 @@ export class AgentOrchestrator {
 			})),
 		);
 		const agentTools = createAgentToolsFromResolvedTools(resolvedTools.tools, {
-			env: this.executionEnv,
 			human: {
 				request: async (request) =>
 					await this.requestHuman({

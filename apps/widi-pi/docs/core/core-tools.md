@@ -1,8 +1,10 @@
-# Core Tools
+# Tool Examples
 
-Core tools 是 WIDI core 原生维护的 `ToolDefinition`。它们通常包装 `ExecutionEnv`、orchestrator 或其他 core capability，并通过 `ToolRegistry` resolve 后交给 Pi `AgentHarness`。
+本文记录已经移出 core 的 historical tool examples。它们通常闭包捕获 backend、orchestrator 或其他 runtime capability，并可作为理解 `ToolDefinition` shape 的参考。
 
-以后新增 core tool 时，应在本文对应 domain 下新增章节，记录以下信息：
+当前 `apps/widi-pi/examples/coding/*` 下的 coding tools 是 frozen legacy examples：它们不再位于 core、不再由 core barrel 导出、不接入默认 runtime composition，也不再补 Pi parity、backend abstraction 或新 coding 能力。本文只记录历史行为和与 Pi coding-agent 的差异。
+
+以后若新增随产品分发的 core tool，应先重新明确 ownership，再在对应文档中记录以下信息：
 
 - tool name、用途和输入 schema。
 - 依赖的 execution environment capability。
@@ -11,7 +13,7 @@ Core tools 是 WIDI core 原生维护的 `ToolDefinition`。它们通常包装 `
 
 ## Coding
 
-Coding tools 面向文件读写和代码修改。当前已落地 `read` 与 `write` 的 WIDI-owned definition，但默认 builtin registry 接入仍由后续工作完成。
+Coding examples 面向文件读写和代码修改。`bash`、`read` 与 `write` 曾作为 WIDI-owned definitions 落地，现在只作为 examples 保留；本文只记录 tool 本身的历史行为和差异。
 
 ### `bash`
 
@@ -19,10 +21,10 @@ Coding tools 面向文件读写和代码修改。当前已落地 `read` 与 `wri
 
 Definition:
 
-- Source: `apps/widi-pi/src/core/tools/coding/bash.ts`
+- Source: `apps/widi-pi/examples/coding/bash.ts`
 - Factory: `createBashToolDefinition(options?)`
 - Name / label: `bash`
-- Execution env: `{ kind: "harness", capabilities: ["shell", "filesystem"] }`
+- Backend: factory options `env?: ExecutionEnv` 或 `operations`
 
 Input schema:
 
@@ -31,8 +33,8 @@ Input schema:
 
 Behavior:
 
-- 默认通过 `ExecutionEnv.exec(command, options)` 执行，而不是在 tool 内直接 `spawn` 本地进程。
-- `options.cwd` 默认为 `ExecutionEnv.cwd`，也可以通过 factory `cwd` option 覆盖。
+- 默认通过 factory 捕获的 `ExecutionEnv.exec(command, options)` 执行，而不是在 tool 内直接 `spawn` 本地进程。
+- `options.cwd` 默认为捕获的 `ExecutionEnv.cwd`，也可以通过 factory `cwd` option 覆盖。
 - `options.commandPrefix` 存在时，会以 `${commandPrefix}\n${command}` 作为实际执行 command。
 - stdout 和 stderr 都进入同一个输出流，保持 backend 回调到达顺序。
 - 如果 backend 没有通过 `onStdout` / `onStderr` streaming 输出，tool 会回退使用 `ExecutionEnv.exec` 返回的 `stdout` 和 `stderr`。
@@ -69,7 +71,7 @@ Override seams:
 - `operations.exec`
 - `operations.createFullOutputFile`
 
-WIDI 当前没有复刻 Pi bash tool 的 TUI render、elapsed timer、本地 shell transport、process tree kill 或 detached child tracking；这些属于 Pi coding-agent 的本地进程/UI backend。WIDI 的 tool 层只依赖 `ExecutionEnv.exec`，具体 shell/backend 行为由 execution environment 或 extension patch 决定。
+WIDI 当前没有复刻 Pi bash tool 的 TUI render、elapsed timer、本地 shell transport、process tree kill 或 detached child tracking；这些属于 Pi coding-agent 的本地进程/UI backend。这个 legacy tool 不再继续追 Pi parity；未来 shell/coding backend 应由 extension runner/backend 方向重新设计。
 
 ### `read`
 
@@ -77,10 +79,10 @@ WIDI 当前没有复刻 Pi bash tool 的 TUI render、elapsed timer、本地 she
 
 Definition:
 
-- Source: `apps/widi-pi/src/core/tools/coding/read.ts`
+- Source: `apps/widi-pi/examples/coding/read.ts`
 - Factory: `createReadToolDefinition(options?)`
 - Name / label: `read`
-- Execution env: `{ kind: "harness", capabilities: ["filesystem"] }`
+- Backend: factory options `env?: ExecutionEnv` 或 `operations`
 - Supported image extensions: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`
 
 Input schema:
@@ -91,8 +93,8 @@ Input schema:
 
 Text behavior:
 
-- 通过 `ExecutionEnv.absolutePath(path)` 解析 `absolutePath`。
-- 通过 `ExecutionEnv.readTextFile(path)` 读取文本。
+- 默认通过 factory 捕获的 `ExecutionEnv.absolutePath(path)` 解析 `absolutePath`。
+- 默认通过 factory 捕获的 `ExecutionEnv.readTextFile(path)` 读取文本。
 - `offset` 会转换为 0-indexed start line；小于 1 的值会被压到第一行。
 - 当 `offset` 超过文件总行数时抛错：`Offset ${offset} is beyond end of file (...)`。
 - `limit` 存在时先按行切片；如果后面还有内容，会在输出末尾追加 continuation notice。
@@ -134,18 +136,18 @@ Override seams:
 - `operations.readBinaryFile`
 - `operations.detectImageMimeType`
 
-这些 seams 主要服务测试、sandbox/backend patch 和未来 extension adapter；默认行为仍走 `ExecutionEnv`。
+这些 seams 主要服务测试和当前 legacy 兼容；默认行为仍走 factory 捕获的 `ExecutionEnv`。未来 extension adapter/backend 不应继续扩展这个 legacy tool。
 
 ### `write`
 
-`write` 创建或覆盖文件。它是 WIDI 第一版落地的 coding core tool，采用 Pi 风格 tool call/result/details 持久化：正文来自 tool call arguments，成功结果只返回短文本和结构化 details。
+`write` 创建或覆盖文件。它是 WIDI 第一版落地的 coding product tool definition，采用 Pi 风格 tool call/result/details 持久化：正文来自 tool call arguments，成功结果只返回短文本和结构化 details。
 
 Definition:
 
-- Source: `apps/widi-pi/src/core/tools/coding/write.ts`
+- Source: `apps/widi-pi/examples/coding/write.ts`
 - Factory: `createWriteToolDefinition(options?)`
 - Name / label: `write`
-- Execution env: `{ kind: "harness", capabilities: ["filesystem"] }`
+- Backend: factory options `env?: ExecutionEnv` 或 `operations`
 
 Input schema:
 
@@ -154,8 +156,8 @@ Input schema:
 
 Behavior:
 
-- 通过 `ExecutionEnv.absolutePath(path)` 解析 `absolutePath`。
-- 通过 `ExecutionEnv.writeFile(path, content)` 创建或覆盖文件。
+- 默认通过 factory 捕获的 `ExecutionEnv.absolutePath(path)` 解析 `absolutePath`。
+- 默认通过 factory 捕获的 `ExecutionEnv.writeFile(path, content)` 创建或覆盖文件。
 - 默认语义是完整重写，不做 patch、merge 或 append。
 - 文件系统 backend 如果支持创建父目录，应在 `writeFile` 层完成；tool 本身不额外实现目录创建。
 - 如果缺少 execution env，会抛错：`write tool requires an execution environment with filesystem support.`
@@ -179,4 +181,4 @@ Override seams:
 - `operations.absolutePath`
 - `operations.writeFile`
 
-这些 seams 用于测试、sandbox/backend patch 和未来 extension adapter。需要修改写入策略时，优先通过 `ToolRegistry.patchTool("write", ...)` 或 factory operations 注入，而不是直接修改已注册的 tool object。
+这些 seams 用于测试和当前 legacy 兼容。需要临时修改写入策略时，可通过 `ToolRegistry.patchTool("write", ...)` 或 factory operations 注入；长期不应继续扩展这个 legacy tool。

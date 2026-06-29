@@ -162,9 +162,9 @@ interface CoreDiagnostic {
 
 Tool registry 直接产出 `CoreDiagnostic`，当前 codes 包括：
 
-- `tool.define_conflict`：多个来源定义同名 tool，registry 按 priority/顺序保留一个。
+- `tool.define_conflict`：多个来源定义同名 tool，registry 保留最先注册的 definition，后续同名 define 只产生 diagnostic。
 - `tool.patch_target_missing`：patch 指向不存在的 tool。
-- `tool.patch_field_conflict`：多个 patch 修改同一覆盖字段，priority/顺序决定最终值。
+- `tool.patch_field_conflict`：多个 patch 修改同一覆盖字段，注册顺序决定最终值。
 - `tool.patch_contract_risk`：patch 修改参数 schema 但没有同步 patch execute/aroundExecute，旧执行逻辑可能不匹配新参数。
 - `tool.requested_duplicate` / `tool.requested_missing`：profile/policy 请求的工具重复或不存在。
 - `tool.active_duplicate` / `tool.active_missing`：resume 或 runtime policy 提供的 active tool names 重复或不可见。
