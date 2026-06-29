@@ -32,8 +32,8 @@ import {
 import {
 	type ExtensionActions,
 	type ExtensionFactory,
+	ExtensionLoader,
 	ExtensionRunner,
-	type ExtensionScope,
 	type ToolLifecycleEvent,
 } from "./extension/index.ts";
 import type { ModelRegistry } from "./model-registry.js";
@@ -143,7 +143,7 @@ export interface AgentOrchestratorConfigs {
 	modelRegistry: ModelRegistry;
 	profileRegistry: AgentProfileRegistry;
 	toolRegistry?: ToolRegistry;
-	extensionRunner?: ExtensionRunner;
+	extensionLoader?: ExtensionLoader;
 	defaultProfileId: string;
 	enabledProfileIds?: readonly string[];
 	defaultModel: RuntimeModel;
@@ -216,12 +216,12 @@ export class AgentOrchestrator {
 	readonly modelRegistry: ModelRegistry;
 	readonly profileRegistry: AgentProfileRegistry;
 	readonly toolRegistry: ToolRegistry;
-	readonly extensionRunner: ExtensionRunner;
+	readonly extensionLoader: ExtensionLoader;
 
 	private _unsubscribeAgentHarness: Map<AgentId, () => void> = new Map();
 	private _eventListeners: Set<OrchestratorEventListener> = new Set();
 	private _agentToolSets: Map<AgentId, AgentToolSet> = new Map();
-	private _agentExtensionScopes: Map<AgentId, ExtensionScope> = new Map();
+	private _agentExtensionRunners: Map<AgentId, ExtensionRunner> = new Map();
 	private _streamingToolCalls: Map<AgentId, Map<number, StreamingToolCallRef>> =
 		new Map();
 	private _clients: Map<string, OrchestratorClient<OrchestratorEvent>> =
@@ -238,7 +238,7 @@ export class AgentOrchestrator {
 		this.modelRegistry = config.modelRegistry;
 		this.profileRegistry = config.profileRegistry;
 		this.toolRegistry = config.toolRegistry ?? new ToolRegistry();
-		this.extensionRunner = config.extensionRunner ?? new ExtensionRunner();
+		this.extensionLoader = config.extensionLoader ?? new ExtensionLoader();
 		this._defaultProfileId = config.defaultProfileId;
 		this._enabledProfileIds = config.enabledProfileIds
 			? [...config.enabledProfileIds]
@@ -291,7 +291,7 @@ export class AgentOrchestrator {
 		extensionId: string,
 		factory: ExtensionFactory,
 	): () => void {
-		return this.extensionRunner.registerExtensionFactory(extensionId, factory);
+		return this.extensionLoader.registerExtensionFactory(extensionId, factory);
 	}
 
 	getAgentHarness(agentId: AgentId): AgentHarness | undefined {
@@ -929,15 +929,18 @@ export class AgentOrchestrator {
 				({ promptTemplate }) => promptTemplate,
 			),
 		};
-		const extensionScope = await this.extensionRunner.activateForAgent({
+		const loadedExtensionScope = await this.extensionLoader.loadForAgent({
 			agentId,
 			profileId: profile.id,
 			extensionIds: profile.extensions,
 			missingExtensionSeverity: profile.missingExtensionSeverity,
+		});
+		const extensionRunner = new ExtensionRunner({
+			loadedScope: loadedExtensionScope,
 			actions: this._createExtensionActions(),
 		});
-		this._agentExtensionScopes.set(agentId, extensionScope);
-		await this._publishDiagnostics(extensionScope.diagnostics);
+		this._agentExtensionRunners.set(agentId, extensionRunner);
+		await this._publishDiagnostics(extensionRunner.diagnostics);
 
 		const agentToolSet = await this._resolveAgentTools({
 			agentId,
@@ -1030,8 +1033,8 @@ export class AgentOrchestrator {
 
 	private _createScopedToolRegistry(agentId: AgentId): ToolRegistry {
 		const registry = this.toolRegistry.clone();
-		const extensionScope = this._agentExtensionScopes.get(agentId);
-		extensionScope?.defineToolsTo(registry);
+		const extensionRunner = this._agentExtensionRunners.get(agentId);
+		extensionRunner?.defineToolsTo(registry);
 		return registry;
 	}
 
@@ -1070,10 +1073,10 @@ export class AgentOrchestrator {
 		event: AgentHarnessEvent,
 	): Promise<void> {
 		await this._emit({ type: "agent_harness_event", agentId, event });
-		const extensionScope = this._agentExtensionScopes.get(agentId);
-		if (extensionScope) {
+		const extensionRunner = this._agentExtensionRunners.get(agentId);
+		if (extensionRunner) {
 			await this._publishDiagnostics(
-				await extensionScope.emit({
+				await extensionRunner.emit({
 					type: "agent_harness_event",
 					agentId,
 					event,
@@ -1087,9 +1090,9 @@ export class AgentOrchestrator {
 				agentId,
 				event: lifecycleEvent,
 			});
-			if (extensionScope) {
+			if (extensionRunner) {
 				await this._publishDiagnostics(
-					await extensionScope.emit({
+					await extensionRunner.emit({
 						type: "tool_lifecycle_event",
 						agentId,
 						event: lifecycleEvent,

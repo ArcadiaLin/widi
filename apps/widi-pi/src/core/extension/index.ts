@@ -1,8 +1,13 @@
 export {
-	type ActivateExtensionScopeOptions,
-	ExtensionRunner,
-	ExtensionScope,
+	type ExtensionHandlerRegistration,
+	ExtensionLoader,
 	type ExtensionToolContribution,
+	type LoadExtensionScopeOptions,
+	type LoadedExtensionScope,
+} from "./loader.ts";
+export {
+	ExtensionRunner,
+	type ExtensionRunnerOptions,
 } from "./runner.ts";
 export type {
 	ExtensionActions,

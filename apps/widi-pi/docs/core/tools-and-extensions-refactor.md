@@ -2,9 +2,9 @@
 
 本文是下一阶段 tool/extension 重构草案。它记录目标方向，不描述当前已经完全落地的实现。
 
-当前重点是 **extension runner + Orchestrator + 现有 ToolRegistry 的接合**。本阶段不做 built-in coding extension 迁移，也不把 `ToolRegistry` 改造成 provider 聚合器。目标是先让 WIDI 的 extension 接入方式尽量贴近 Pi coding-agent，同时保留 WIDI 已有的 registry 设计：tool 定义、patch、source、diagnostics、profile visibility、active tool names 和最终 wrap-to-`AgentTool` 都仍由 registry 管理。
+当前重点是 **extension loader/runner + Orchestrator + 现有 ToolRegistry 的接合**。本阶段不做 built-in coding extension 迁移，也不把 `ToolRegistry` 改造成 provider 聚合器。目标是先让 WIDI 的 extension 接入方式尽量贴近 Pi coding-agent，同时保留 WIDI 已有的 registry 设计：tool 定义、patch、source、diagnostics、profile visibility、active tool names 和最终 wrap-to-`AgentTool` 都仍由 registry 管理。
 
-Phase 1 的交付物是文档边界，不是代码迁移：所有 core docs 应一致表达当前 coding tools 已移出 core，作为 frozen legacy examples 保留；extension runner 的第一目标是通过 Orchestrator 激活 agent/profile scoped extension scope，并让 `registerTool` 贡献到 scoped registry overlay。高级 patch/storage/loader 能力后置设计。
+Phase 1 的交付物是文档边界，不是代码迁移：所有 core docs 应一致表达当前 coding tools 已移出 core，作为 frozen legacy examples 保留；extension loader/runner 的第一目标是通过 Orchestrator 激活 agent/profile scoped extension scope，并让 `registerTool` 贡献到 scoped registry overlay。高级 patch/storage/file-module loader 能力后置设计。
 
 ## 背景
 
@@ -23,7 +23,7 @@ WIDI 早期的 `ToolDefinition.execute(..., context)` 把 `ExecutionEnv` 注入 
 
 因此，coding tools 长期看不应继续被视作 core primitive。它们更像一个随产品分发的 capability pack。
 
-不过这不是当前阶段要解决的问题。当前阶段只处理 extension runner 如何经由 WIDI `AgentOrchestrator` 为当前 agent/profile 贡献 tool 和 handlers，以及 registry 如何继续作为 runtime 的唯一 tool 管理层。
+不过这不是当前阶段要解决的问题。当前阶段只处理 extension loader/runner 如何经由 WIDI `AgentOrchestrator` 为当前 agent/profile 贡献 tool 和 handlers，以及 registry 如何继续作为 runtime 的唯一 tool 管理层。
 
 ## Pi Reference
 
@@ -60,7 +60,7 @@ WIDI 应参考这个结构，但不需要照搬 Pi 的所有目录和内置 codi
 - **Legacy coding examples**：当前已经存在的 `read/write/bash`，已移到 `apps/widi-pi/examples/coding/`，只保留为参考实现，不继续补功能、Pi parity 或 backend abstraction。
 - **External extension tools**：用户、项目或插件 extension 贡献的 tools。
 
-Core 负责 runtime composition、diagnostics、profile visibility、active tool names 和 lifecycle event。Extension runner 由 Orchestrator 拥有，负责激活 extension，并把 extension 注册的 tool 和 handlers 作为当前 agent/profile scope 的 contributions 交给 Orchestrator。
+Core 负责 runtime composition、diagnostics、profile visibility、active tool names 和 lifecycle event。Extension loader/runner 由 Orchestrator 拥有：loader 负责激活 extension factory 并产出 loaded scope，runner 负责将 loaded scope 绑定到 Orchestrator actions 并处理 runtime emit。
 
 本阶段目标：
 
@@ -111,7 +111,7 @@ apps/widi-pi/src/core/extension/types.ts
 - profile visibility / active tool names resolution。
 - wrap-to-`AgentTool` 的唯一出口。
 
-Extension runner 是 scoped resolve 的上游贡献者，不替代 registry，也不绕过 registry；它不应把 per-agent extension state 直接写入全局 registry。
+Extension loader/runner 是 scoped resolve 的上游贡献者，不替代 registry，也不绕过 registry；它不应把 per-agent extension state 直接写入全局 registry。
 
 ## Extension Runner Registration
 
@@ -133,20 +133,27 @@ WIDI 与 Pi coding-agent 的关键差异是 multi-agent 底层来自 `AgentHarne
 - Extension handlers 由 Orchestrator 在 command、agent harness event、tool lifecycle、human request 等边界触发。
 - Extension 可以获得 Orchestrator 绑定出来的强编排 facade，但不直接拿 raw `AgentOrchestrator`、raw `AgentHarness` 或内部 maps。
 
-Runner/manager 的职责：
+Loader 的职责：
 
 - 管理内存 extension factory registry。
-- 根据 profile extension ids 激活 agent/profile scoped extension runtime。
+- 根据 profile extension ids 激活 agent/profile scoped extension。
 - 创建 extension-scoped API。
 - 执行 activation。
 - 收集 extension 注册的 `ToolDefinition` 和 lifecycle handlers。
-- 记录 activation diagnostics、invalid declaration、missing factory、handler errors 等问题。
-- 为 Orchestrator 提供当前 agent scope 的 contributions。
+- 记录 activation diagnostics、invalid declaration、missing factory 等问题。
+- 产出 loaded extension scope。
+
+Runner 的职责：
+
+- 绑定 loaded extension scope 与 Orchestrator actions facade。
+- 将 loaded scope 的 tool contributions 写入 scoped registry overlay。
+- 在 Orchestrator 转发 harness/lifecycle events 时执行 scoped handlers。
+- 将 handler errors 转成 runtime diagnostics。
 
 Orchestrator 的职责：
 
-- 拥有 extension runner/manager。
-- 在 `_buildAgentHarness` 前激活当前 agent/profile 的 extension scope。
+- 拥有 extension loader，并为每个 agent 创建 extension runner。
+- 在 `_buildAgentHarness` 前通过 loader 加载当前 agent/profile 的 extension scope。
 - 在 `_resolveAgentTools` 时合成 core/global registry 和当前 agent extension contributions。
 - 在 `setAgentTools`、`setAgentActiveTools` 或 extension reload 后重新 resolve 并调用 harness `setTools`。
 - 将 harness event 和 tool lifecycle event 转发给 scoped extension handlers。
@@ -365,27 +372,27 @@ Core 仍可以拥有少量 agent collaboration tools。它们直接暴露 WIDI c
 - Tool 的 backend 选择发生在 factory/extension activation 阶段；legacy coding examples 不再承载新的 backend 设计。
 - `npm run check` 通过，现有 tool 行为不倒退。
 
-### Phase 3: Extension Runner MVP
+### Phase 3: Extension Loader/Runner MVP
 
-目标：实现最小 Orchestrator-owned extension activation，让 extension 可以为当前 agent/profile 注册 tool definition 和少量 lifecycle handlers。
+目标：实现最小 Orchestrator-owned extension loader/runner，让 extension 可以为当前 agent/profile 注册 tool definition 和少量 lifecycle handlers。
 
-状态：已完成 MVP。当前实现支持内存 factory registration、agent/profile scoped activation、`registerTool`、`agent_harness_event` / `tool_lifecycle_event` handlers、missing factory / activation / handler diagnostics，以及 scoped registry overlay。
+状态：已完成 MVP。当前实现拆分为 `ExtensionLoader` 和 `ExtensionRunner`：loader 支持内存 factory registration、agent/profile scoped activation、`registerTool`、`agent_harness_event` / `tool_lifecycle_event` handler collection、missing factory / activation diagnostics；runner 绑定 loaded scope 与 Orchestrator actions，负责 scoped registry overlay、handler emit 和 handler diagnostics。
 
 - 定义 extension identity、source metadata、factory 和 activation lifecycle。
 - 支持内存 extension factory registry，例如 `registerExtensionFactory(extensionId, factory)`。
 - Profile `extensions` 先从内存 factory registry 解析，不做真实文件/模块 loader。
 - Extension API 暴露 `registerTool(tool)` 和命名 lifecycle handler registration。
-- Runner/manager 产生 agent/profile scoped contributions，不写入全局 `ToolRegistry`。
+- Loader 产生 agent/profile scoped loaded scope；runner 绑定 runtime actions 并贡献到 scoped registry overlay，不写入全局 `ToolRegistry`。
 - Activation errors、missing factory、handler errors 进入 diagnostics。
 
 建议步骤：
 
-1. 新建 Orchestrator-owned extension runner/manager。
+1. 新建 Orchestrator-owned extension loader 和 per-agent extension runner。
 2. 新增内存 factory registry；暂不做 ESM dynamic import、trust、path resolution 或 reload。
-3. 在 agent spawn/resume 时根据 `AgentProfile.extensions` 激活当前 agent scope。
-4. Runner 提供 extension-scoped API，先包含 `registerTool` 和少量命名 handlers。
-5. Runner 记录 loaded extensions、activation diagnostics、contributed tool names 和 registered handlers。
-6. Orchestrator 保存 agent extension scope，并在 harness event/tool lifecycle/command 边界触发 handlers。
+3. 在 agent spawn/resume 时根据 `AgentProfile.extensions` load 当前 agent scope。
+4. Loader 提供 extension-scoped activation API，先包含 `registerTool` 和少量命名 handlers。
+5. Loader 记录 loaded extensions、activation diagnostics、contributed tool names 和 registered handlers。
+6. Orchestrator 保存 per-agent extension runner，并在 harness event/tool lifecycle/command 边界触发 handlers。
 
 验收：
 
@@ -397,12 +404,12 @@ Core 仍可以拥有少量 agent collaboration tools。它们直接暴露 WIDI c
 
 ### Phase 4: ToolRegistry Integration Hardening
 
-目标：强化 scoped runner 与现有 registry 的集成，而不是替换 registry。
+目标：强化 scoped loader/runner 与现有 registry 的集成，而不是替换 registry。
 
 状态：scoped registry overlay 的基础能力已随 Phase 3 落地；debug facts、source shape hardening 和更多 reload/diagnostics 场景仍留在本阶段。
 
 - 保留 `defineTool` / `patchTool` 作为 registry 的核心入口。
-- Extension runner 只贡献当前 agent scope 的 definition、source 和 handlers。
+- Extension loader/runner 只贡献当前 agent scope 的 definition、source 和 handlers。
 - Registry 继续处理 duplicate、visibility、active names、patch 和 wrap-to-`AgentTool`。
 - Debug view 展示 loaded extensions、resolved tools 和 diagnostics。
 
@@ -418,7 +425,7 @@ Core 仍可以拥有少量 agent collaboration tools。它们直接暴露 WIDI c
 
 验收：
 
-- Registry 行为不因 extension runner 引入而改变。
+- Registry 行为不因 extension loader/runner 引入而改变。
 - Extension tool 与 core tool 走同一 resolve、diagnostic 和 wrap 流程。
 - ToolRegistry 仍是 runtime 的唯一 tool 管理层。
 - 同一进程中的不同 agents 可以拥有不同 extension tool set。
