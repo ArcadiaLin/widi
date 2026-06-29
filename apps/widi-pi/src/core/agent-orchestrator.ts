@@ -60,7 +60,7 @@ import type { SettingManager } from "./setting-manager.js";
 import {
 	createAgentToolsFromResolvedTools,
 	ToolRegistry,
-} from "./tools/tool-registry.ts";
+} from "./tool-registry.ts";
 
 export type OrchestratorEvent =
 	| {

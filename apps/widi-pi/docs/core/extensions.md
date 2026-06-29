@@ -2,7 +2,7 @@
 
 Extension 是 `widi-pi` 的高自由度扩展机制。它应能像 Pi coding-agent extension 一样深度参与 runtime，但不能绕过 core 的可观察边界。
 
-当前 Phase 1 的目标不是实现完整 extension runtime，而是把 extension runner 与现有 `ToolRegistry` 的边界整理清楚。第一版 runner 应优先支持 Pi 风格的 activation + `registerTool`，并把注册结果交给 WIDI `ToolRegistry.defineTool`。`ToolRegistry` 继续负责 source、diagnostics、patch、visibility、active tools 和最终 wrap-to-`AgentTool`。
+当前目标不是实现完整 extension runtime，而是把 extension loader/runner、Orchestrator 与 `ToolRegistry` 的边界整理清楚。第一版 loader 支持 Pi 风格的 activation + `registerTool`，runner 将当前 agent/profile 的 loaded scope 注入 scoped registry overlay。`ToolRegistry` 继续负责 source、diagnostics、patch、visibility、active tools 和最终 wrap-to-`AgentTool`。
 
 ## 核心理念
 
@@ -52,7 +52,7 @@ WIDI extension 不只注册新 tool，也可以对 core/product tool 注册 patc
 
 Extension 不拥有 core tool 状态接口。Core 不提供共享的 tool preview 或状态 API；展示数据应由 UI 或 extension host 基于 orchestrator `tool_lifecycle_event`、tool arguments 和 tool result 派生。
 
-当前 `ToolRegistry` 已支持 `defineTool(tool, source)` 与 `patchTool(targetToolName, patch, source)`，但 extension lifecycle 仍未落地。后续 extension loader/runner 的职责是把 extension declaration 激活为 registry 调用和 hook 注册；registry 不直接加载 extension、不执行 activation hook，也不决定 missing extension policy。
+当前 `ToolRegistry` 已支持 `defineTool(tool, source)` 与 `patchTool(targetToolName, patch, source)`。Extension loader/runner 的职责是把 extension declaration 激活为当前 agent/profile 的 loaded scope，再由 Orchestrator 在 resolve 边界把该 scope 写入 scoped registry overlay；registry 不直接加载 extension、不执行 activation hook，也不决定 missing extension policy。
 
 Patch 执行时的 `context.extension` 按当前 patch source 绑定；调用 `next()` 时会恢复内层 tool source 的 context。这样 extension 可以安全地在 `aroundExecute` 中使用自己的权限、storage 和 diagnostics 上下文，同时不会把自身身份泄漏到 core/base execute。
 
@@ -175,7 +175,7 @@ WIDI 的当前形态更偏 core-first：
 - Permission model：尤其是 patch `execute` replacement、filesystem/shell/model/session/orchestrator capability。
 - Debug/inspection command：查看 loaded extensions、registered hooks、resolved tools、patches、diagnostics。
 
-下一步不应直接写业务 extension。应先实现一个最小 runner spike：加载一个本地 extension factory，提供 extension-scoped `registerTool`，把注册结果接入当前 `ToolRegistry.defineTool`，并通过 diagnostics/debug view 展示激活结果。`patchTool`、hook event matrix、command/provider registration 和 session custom entry API 应在 permission 与 diagnostics 规则明确后再开放。
+下一步不应直接写业务 extension。应先继续加固最小 loader/runner：加载一个本地 extension factory，提供 extension-scoped `registerTool`，把注册结果作为当前 agent/profile scope 接入 scoped registry overlay，并通过 diagnostics/debug view 展示激活结果。`patchTool`、hook event matrix、command/provider registration 和 session custom entry API 应在 permission 与 diagnostics 规则明确后再开放。
 
 ## 非职责
 

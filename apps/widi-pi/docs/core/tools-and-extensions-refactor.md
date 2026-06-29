@@ -406,7 +406,7 @@ Core 仍可以拥有少量 agent collaboration tools。它们直接暴露 WIDI c
 
 目标：强化 scoped loader/runner 与现有 registry 的集成，而不是替换 registry。
 
-状态：scoped registry overlay 的基础能力已随 Phase 3 落地；debug facts、source shape hardening 和更多 reload/diagnostics 场景仍留在本阶段。
+状态：scoped registry overlay 的基础能力已随 Phase 3 落地；`ToolRegistry` ownership 已迁到 `src/core/tool-registry.ts`，不再保留 `src/core/tools/tool-registry.ts` 兼容路径。Debug facts、source shape hardening 和更多 reload/diagnostics 场景仍留在本阶段。
 
 - 保留 `defineTool` / `patchTool` 作为 registry 的核心入口。
 - Extension loader/runner 只贡献当前 agent scope 的 definition、source 和 handlers。

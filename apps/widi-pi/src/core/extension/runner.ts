@@ -1,5 +1,5 @@
 import { type CoreDiagnostic, createDiagnostic } from "../diagnostics.ts";
-import type { ToolRegistry } from "../tools/tool-registry.ts";
+import type { ToolRegistry } from "../tool-registry.ts";
 import type {
 	ExtensionHandlerRegistration,
 	LoadedExtensionScope,

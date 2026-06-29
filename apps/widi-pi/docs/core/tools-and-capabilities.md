@@ -28,7 +28,7 @@ Tool Registry 属于 dependency layer。
 
 Tool Registry 解析 core/product tools、extension-contributed tools 和 adapter-contributed tools，处理 name conflicts、availability 和 diagnostics，并为某个 agent harness 生成最终 tools。
 
-当前实现先落在 `apps/widi-pi/src/core/tools/tool-registry.ts`。它负责 tool definition 解析和 Pi `AgentTool` adapter，并已接入 orchestrator create/resume/runtime tool update 路径；它不直接激活 extension，也不负责 runtime event 转发。
+当前实现位于 `apps/widi-pi/src/core/tool-registry.ts`。它负责 tool definition 解析和 Pi `AgentTool` adapter，并已接入 orchestrator create/resume/runtime tool update 路径；它不直接激活 extension，也不负责 runtime event 转发。
 
 ## Tool Registry
 

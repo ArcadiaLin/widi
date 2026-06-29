@@ -40,7 +40,7 @@ import {
 	type SettingsScope,
 	type SettingsStorage,
 } from "../../src/core/setting-manager.ts";
-import { ToolRegistry } from "../../src/core/tools/tool-registry.ts";
+import { ToolRegistry } from "../../src/core/tool-registry.ts";
 import type { ToolDefinition } from "../../src/core/tools/types.ts";
 import type { ExtendedJsonlSessionMetadata } from "../../src/storage/jsonl-repo.ts";
 
