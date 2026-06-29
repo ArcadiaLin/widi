@@ -2,9 +2,9 @@
 
 本文是下一阶段 tool/extension 重构草案。它记录目标方向，不描述当前已经完全落地的实现。
 
-当前重点是 **extension runner + 现有 ToolRegistry 的接合**。本阶段不做 built-in coding extension 迁移，也不把 `ToolRegistry` 改造成 provider 聚合器。目标是先让 WIDI 的 extension 接入方式尽量贴近 Pi coding-agent，同时保留 WIDI 已有的 registry 设计：tool 定义、patch、source、diagnostics、profile visibility、active tool names 和最终 wrap-to-`AgentTool` 都仍由 registry 管理。
+当前重点是 **extension runner + Orchestrator + 现有 ToolRegistry 的接合**。本阶段不做 built-in coding extension 迁移，也不把 `ToolRegistry` 改造成 provider 聚合器。目标是先让 WIDI 的 extension 接入方式尽量贴近 Pi coding-agent，同时保留 WIDI 已有的 registry 设计：tool 定义、patch、source、diagnostics、profile visibility、active tool names 和最终 wrap-to-`AgentTool` 都仍由 registry 管理。
 
-Phase 1 的交付物是文档边界，不是代码迁移：所有 core docs 应一致表达当前 coding tools 已移出 core，作为 frozen legacy examples 保留；extension runner 的第一目标是 `registerTool -> ToolRegistry.defineTool`，高级 patch/hook/storage 能力后置设计。
+Phase 1 的交付物是文档边界，不是代码迁移：所有 core docs 应一致表达当前 coding tools 已移出 core，作为 frozen legacy examples 保留；extension runner 的第一目标是通过 Orchestrator 激活 agent/profile scoped extension scope，并让 `registerTool` 贡献到 scoped registry overlay。高级 patch/storage/loader 能力后置设计。
 
 ## 背景
 
@@ -23,7 +23,7 @@ WIDI 早期的 `ToolDefinition.execute(..., context)` 把 `ExecutionEnv` 注入 
 
 因此，coding tools 长期看不应继续被视作 core primitive。它们更像一个随产品分发的 capability pack。
 
-不过这不是当前阶段要解决的问题。当前阶段只处理 extension runner 如何向 WIDI `ToolRegistry` 注册 tool，以及 registry 如何继续作为 runtime 的唯一 tool 管理层。
+不过这不是当前阶段要解决的问题。当前阶段只处理 extension runner 如何经由 WIDI `AgentOrchestrator` 为当前 agent/profile 贡献 tool 和 handlers，以及 registry 如何继续作为 runtime 的唯一 tool 管理层。
 
 ## Pi Reference
 
@@ -60,12 +60,12 @@ WIDI 应参考这个结构，但不需要照搬 Pi 的所有目录和内置 codi
 - **Legacy coding examples**：当前已经存在的 `read/write/bash`，已移到 `apps/widi-pi/examples/coding/`，只保留为参考实现，不继续补功能、Pi parity 或 backend abstraction。
 - **External extension tools**：用户、项目或插件 extension 贡献的 tools。
 
-Core 负责 runtime composition、diagnostics、profile visibility、active tool names 和 lifecycle event。Extension runner 负责激活 extension，并把 extension 注册的 tool 贡献到 `ToolRegistry`。
+Core 负责 runtime composition、diagnostics、profile visibility、active tool names 和 lifecycle event。Extension runner 由 Orchestrator 拥有，负责激活 extension，并把 extension 注册的 tool 和 handlers 作为当前 agent/profile scope 的 contributions 交给 Orchestrator。
 
 本阶段目标：
 
 - 建立与 Pi coding-agent 接近的 extension runner 语义。
-- Extension API 第一版以 `registerTool` 为核心，而不是要求 extension 实现 provider 聚合接口。
+- Extension API 第一版以 `registerTool` 和少量命名 lifecycle handlers 为核心，而不是要求 extension 实现 provider 聚合接口。
 - ToolRegistry 保持 WIDI 当前设计，继续负责冲突、patch、resolve 和最终 `AgentTool` 生成。
 - 不迁移 `read/write/bash` 到 built-in coding extension，也不继续维护它们作为主线 coding tool set。
 - 不引入 tool load order、priority 或 provider order。
@@ -94,7 +94,7 @@ apps/widi-pi/src/core/extension/types.ts
 它是 runtime tool manager：
 
 - 收集 core agent tools。
-- 收集 external extension tools。
+- 在 scoped resolve 中接收当前 agent/profile 的 external extension tools。
 - 处理 name conflict 和 diagnostics。
 - 根据 profile/policy 解析 visible tools。
 - 解析 active tool names。
@@ -111,28 +111,45 @@ apps/widi-pi/src/core/extension/types.ts
 - profile visibility / active tool names resolution。
 - wrap-to-`AgentTool` 的唯一出口。
 
-Extension runner 是 registry 的上游贡献者，不替代 registry，也不绕过 registry。
+Extension runner 是 scoped resolve 的上游贡献者，不替代 registry，也不绕过 registry；它不应把 per-agent extension state 直接写入全局 registry。
 
 ## Extension Runner Registration
 
-第一阶段 extension runner 应尽量对齐 Pi coding-agent 的 extension 体验：extension activation 时拿到一个受控 API，通过 API 注册 tool definition。
+第一阶段 extension runner 应尽量对齐 Pi coding-agent 的 extension 体验：extension activation 时拿到一个受控 API，通过 API 注册 tool definition 和 lifecycle handlers。
 
 概念上接近：
 
 ```ts
 interface ExtensionApi {
 	registerTool(tool: ToolDefinition): void;
+	on(event: ExtensionEventName, handler: ExtensionHandler): void;
 }
 ```
 
-Runner 的职责：
+WIDI 与 Pi coding-agent 的关键差异是 multi-agent 底层来自 `AgentHarness`，而 `AgentHarness` 并不理解 extension。Extension 的接入点必须是 `AgentOrchestrator`：
 
-- 加载 extension declaration / factory。
+- Orchestrator 在 spawn/resume 时根据当前 `AgentProfile.extensions` 激活 extension scope。
+- Harness 只接收最终 `AgentTool[]`，不接收 extension runner，也不暴露 extension API。
+- Extension handlers 由 Orchestrator 在 command、agent harness event、tool lifecycle、human request 等边界触发。
+- Extension 可以获得 Orchestrator 绑定出来的强编排 facade，但不直接拿 raw `AgentOrchestrator`、raw `AgentHarness` 或内部 maps。
+
+Runner/manager 的职责：
+
+- 管理内存 extension factory registry。
+- 根据 profile extension ids 激活 agent/profile scoped extension runtime。
 - 创建 extension-scoped API。
 - 执行 activation。
-- 收集 extension 注册的 `ToolDefinition`。
-- 用 extension source metadata 调用 `ToolRegistry.defineTool(tool, source)`。
-- 将 activation errors、duplicate tool、invalid declaration 等问题转成 diagnostics。
+- 收集 extension 注册的 `ToolDefinition` 和 lifecycle handlers。
+- 记录 activation diagnostics、invalid declaration、missing factory、handler errors 等问题。
+- 为 Orchestrator 提供当前 agent scope 的 contributions。
+
+Orchestrator 的职责：
+
+- 拥有 extension runner/manager。
+- 在 `_buildAgentHarness` 前激活当前 agent/profile 的 extension scope。
+- 在 `_resolveAgentTools` 时合成 core/global registry 和当前 agent extension contributions。
+- 在 `setAgentTools`、`setAgentActiveTools` 或 extension reload 后重新 resolve 并调用 harness `setTools`。
+- 将 harness event 和 tool lifecycle event 转发给 scoped extension handlers。
 
 Registry 的职责保持不变：
 
@@ -141,7 +158,68 @@ Registry 的职责保持不变：
 - 处理 patch。
 - 在 resolve 末端生成 `AgentTool[]`。
 
-这样可以获得 Pi 的 extension activation 形态，但不会把 WIDI registry 的 source、diagnostics、patch 和 active tool 逻辑拆散。
+这样可以获得 Pi 的 extension activation 形态，但不会把 WIDI registry 的 source、diagnostics、patch 和 active tool 逻辑拆散，也不会让某个 agent/profile 的 extension tool 泄漏到其他 agent。
+
+## Extension Scope And Registry Overlay
+
+Extension contribution 默认是 agent/profile scoped，而不是写入全局 `ToolRegistry`。
+
+当前 `ToolRegistry` 仍可以保持无 scope、无 priority、无 provider 聚合的简单模型。Scope 由 Orchestrator 在 resolve 前组装：
+
+```text
+core/global registrations
++ current agent extension scope registrations
+-> temporary scoped registry / registry snapshot
+-> resolve
+-> AgentTool[]
+-> AgentHarness
+```
+
+实现上可以选择临时 registry、registry snapshot 或 overlay helper；关键语义是全局 core registry 不持有 per-agent extension state。
+
+这个设计保证：
+
+- Extension tool 不跨 agent 泄漏。
+- 同一个 extension factory 可以为不同 profile/agent 激活不同 scope。
+- `ToolRegistry` 继续只负责“当前 runtime tool set”的 resolve 语义。
+- Orchestrator 明确掌握 `agentId/profileId/extensions` 的边界。
+- 未来支持 reload 时，只需要重建对应 agent scope 并重新 `setTools`。
+
+## Extension Context And Orchestration Facade
+
+WIDI extension 应允许 agent 编排，但通过稳定 facade 暴露能力，而不是直接暴露 raw `AgentOrchestrator`。
+
+Pi coding-agent 的参考形态是强 facade：`ExtensionContext` 暴露 runtime 查询、abort、compact、system prompt 等能力；command context 额外暴露 `newSession`、`fork`、`navigateTree`、`switchSession`、`reload`；`pi.*` API 暴露 message、tool、model 等操作。这些能力由 session runtime 绑定，而不是让 extension 直接持有内部 session object。
+
+WIDI 对应的 MVP 应分为两层：
+
+- `ExtensionContext`：普通 lifecycle handler 使用，包含 `agentId`、`profileId`、extension identity、diagnostics、human request、有限查询能力和当前 signal。
+- `ExtensionOrchestrationContext` 或 `ExtensionCommandContext`：command/tool/explicit orchestration handler 使用，允许强 agent 操作。
+
+强编排 facade 可以包括：
+
+- `spawnAgent(...)`。
+- `promptAgent(agentId, text, options?)`。
+- `steerAgent(agentId, text, options?)`。
+- `followUpAgent(agentId, text, options?)`。
+- `nextTurnAgent(agentId, text, options?)`。
+- `abortAgent(agentId)`。
+- `compactAgent(agentId, customInstructions?)`。
+- `navigateAgentTree(agentId, targetId, options?)`。
+- `getAgentTools(agentId)` / `setAgentTools(agentId, toolNames, activeToolNames?)` / `setAgentActiveTools(agentId, toolNames)`.
+- `getAgentModel(agentId)` / `setAgentModel(agentId, model)`.
+- `requestHuman(request)`。
+- `dispatch(command)` for stable orchestrator commands.
+
+不应暴露：
+
+- Raw `AgentOrchestrator` instance。
+- Raw `AgentHarness` instance。
+- `agents` map。
+- Raw `ToolRegistry` mutation surface。
+- client maps、pending human request maps、streaming tool call maps 等内部状态。
+
+如果 context 会跨 session replacement、reload 或 agent teardown 存活，应参考 Pi 的 `assertActive/invalidate` 语义，避免 stale context 继续操作旧 runtime。
 
 ## Patch Model
 
@@ -230,7 +308,7 @@ Core 仍可以拥有少量 agent collaboration tools。它们直接暴露 WIDI c
 - 新增本草案。
 - 明确 `ExecutionEnv` 不是 coding tool runtime abstraction。
 - 明确 coding tools 是未来 built-in extension/backend 候选，不是本阶段目标。
-- 明确本阶段重点是 extension runner 和 `ToolRegistry` 接合。
+- 明确本阶段重点是 extension runner、Orchestrator 和 `ToolRegistry` 接合。
 - 标注当前 `examples/coding/*` 为 frozen legacy examples。
 - 同步 `extensions`、`tools and capabilities`、`core tools`、`sessions and runtime`、`diagnostics` 的相关表述。
 
@@ -289,34 +367,42 @@ Core 仍可以拥有少量 agent collaboration tools。它们直接暴露 WIDI c
 
 ### Phase 3: Extension Runner MVP
 
-目标：实现最小 extension activation，让 extension 可以注册 tool definition。
+目标：实现最小 Orchestrator-owned extension activation，让 extension 可以为当前 agent/profile 注册 tool definition 和少量 lifecycle handlers。
 
-- 定义 extension declaration、identity、source metadata 和 activation lifecycle。
-- 支持本地 extension factory activation。
-- Extension API 暴露 `registerTool(tool)`。
-- Runner 把 extension 注册的 tool 转交给 `ToolRegistry.defineTool(tool, source)`。
-- Activation errors 进入 diagnostics。
+状态：已完成 MVP。当前实现支持内存 factory registration、agent/profile scoped activation、`registerTool`、`agent_harness_event` / `tool_lifecycle_event` handlers、missing factory / activation / handler diagnostics，以及 scoped registry overlay。
+
+- 定义 extension identity、source metadata、factory 和 activation lifecycle。
+- 支持内存 extension factory registry，例如 `registerExtensionFactory(extensionId, factory)`。
+- Profile `extensions` 先从内存 factory registry 解析，不做真实文件/模块 loader。
+- Extension API 暴露 `registerTool(tool)` 和命名 lifecycle handler registration。
+- Runner/manager 产生 agent/profile scoped contributions，不写入全局 `ToolRegistry`。
+- Activation errors、missing factory、handler errors 进入 diagnostics。
 
 建议步骤：
 
-1. 新建 extension runner，不改变现有 orchestrator tool resolve 行为。
-2. Runner 提供 extension-scoped API。
-3. API 首先只包含 `registerTool`。
-4. Runner 记录 loaded extensions、activation diagnostics 和 contributed tool names。
-5. Runner 调用现有 `ToolRegistry.defineTool`，不新增 provider 聚合层。
+1. 新建 Orchestrator-owned extension runner/manager。
+2. 新增内存 factory registry；暂不做 ESM dynamic import、trust、path resolution 或 reload。
+3. 在 agent spawn/resume 时根据 `AgentProfile.extensions` 激活当前 agent scope。
+4. Runner 提供 extension-scoped API，先包含 `registerTool` 和少量命名 handlers。
+5. Runner 记录 loaded extensions、activation diagnostics、contributed tool names 和 registered handlers。
+6. Orchestrator 保存 agent extension scope，并在 harness event/tool lifecycle/command 边界触发 handlers。
 
 验收：
 
-- 一个本地 extension 可以注册 tool，并通过 registry 进入 harness。
+- 一个内存 factory extension 可以注册 tool，并只对声明该 extension 的 agent/profile 可见。
 - Extension tool 的 source/provenance 可诊断。
-- Orchestrator create/resume/runtime `setTools` 仍只消费 registry resolve 结果。
+- Orchestrator create/resume/runtime `setTools` 仍只消费 scoped registry resolve 结果。
+- `AgentHarness` 不接收 extension runner，不直接暴露 extension API。
+- Extension handler 可以通过 facade 做受控 agent 编排，但拿不到 raw `AgentOrchestrator` 或 raw `AgentHarness`。
 
 ### Phase 4: ToolRegistry Integration Hardening
 
-目标：强化 runner 与现有 registry 的集成，而不是替换 registry。
+目标：强化 scoped runner 与现有 registry 的集成，而不是替换 registry。
+
+状态：scoped registry overlay 的基础能力已随 Phase 3 落地；debug facts、source shape hardening 和更多 reload/diagnostics 场景仍留在本阶段。
 
 - 保留 `defineTool` / `patchTool` 作为 registry 的核心入口。
-- Extension runner 只贡献 definition 和 source。
+- Extension runner 只贡献当前 agent scope 的 definition、source 和 handlers。
 - Registry 继续处理 duplicate、visibility、active names、patch 和 wrap-to-`AgentTool`。
 - Debug view 展示 loaded extensions、resolved tools 和 diagnostics。
 
@@ -324,15 +410,18 @@ Core 仍可以拥有少量 agent collaboration tools。它们直接暴露 WIDI c
 
 1. 给 extension source 设计稳定 shape。
 2. 将 extension activation diagnostics 接入现有 `CoreDiagnostic`。
-3. 保证 duplicate tool 仍是 first definition wins。
-4. 保证 active tool names 不需要理解 extension runner。
-5. 保证 resolved facts 能区分 core tool 与 extension tool。
+3. 实现 core/global registry + current agent extension scope 的临时 registry/snapshot/overlay。
+4. 保证 duplicate tool 仍是 first definition wins。
+5. 保证 active tool names 不需要理解 extension runner。
+6. 保证 resolved facts 能区分 core tool 与 extension tool。
+7. 保证 extension scope 不跨 agent 泄漏。
 
 验收：
 
 - Registry 行为不因 extension runner 引入而改变。
 - Extension tool 与 core tool 走同一 resolve、diagnostic 和 wrap 流程。
 - ToolRegistry 仍是 runtime 的唯一 tool 管理层。
+- 同一进程中的不同 agents 可以拥有不同 extension tool set。
 
 ### Phase 5: Extension API Parity
 
@@ -340,22 +429,26 @@ Core 仍可以拥有少量 agent collaboration tools。它们直接暴露 WIDI c
 
 - 对齐 extension factory / activation 形态。
 - 明确 activation context 能拿到哪些 runtime 信息。
+- 明确 `ExtensionContext` 与 `ExtensionCommandContext` / `ExtensionOrchestrationContext` 的能力边界。
+- 完善 agent orchestration facade。
 - 决定是否暴露 `patchTool`。
-- 设计 trust gate、reload、missing extension policy。
+- 设计真实 file/module loader、trust gate、reload、missing extension policy。
 
 建议步骤：
 
 1. 对比 `pi/packages/coding-agent/src/core/extensions` 的 API 面。
 2. 保持 `registerTool` 语义一致。
-3. 暂不引入 order/priority。
-4. 如果暴露 patch，先限定 permission 和 diagnostics。
-5. 为 extension declaration/version/compatibility 补测试。
+3. 将 WIDI multi-agent orchestration facade 对齐到 Pi 的强 facade 思路，但不暴露 raw runtime objects。
+4. 暂不引入 order/priority。
+5. 如果暴露 patch，先限定 permission 和 diagnostics。
+6. 为 extension declaration/version/compatibility 补测试。
 
 验收：
 
 - WIDI extension 作者能用接近 Pi coding-agent 的方式注册 tool。
 - WIDI registry 的行为仍可预测。
 - External extension 不需要理解 `AgentHarness` 或直接构造最终 `AgentTool[]`。
+- External extension 可以通过稳定 facade 做明确授权的 agent 编排。
 
 ### Phase 6: Patch And Advanced Runtime Capabilities
 
@@ -378,13 +471,15 @@ Core 仍可以拥有少量 agent collaboration tools。它们直接暴露 WIDI c
 
 ## Non-goals
 
-- 不在本阶段实现用户动态 extension loader。
+- 不在 Phase 3 实现用户动态 extension loader、真实文件/模块加载、dynamic import cache busting 或 trust gate。
 - 不在本阶段实现 built-in coding extension。
 - 不在本阶段迁移 `read/write/bash` 到 extension 目录；它们已移到 examples。
 - 不在本阶段继续维护或扩展 `read/write/bash` 行为；只保留最小兼容。
 - 不把 `ToolRegistry` 改成 provider 聚合器。
 - 不把 coding runtime backend 塞进 core `ExecutionEnv`。
 - 不让 extension 绕过 registry 直接替换 `AgentHarness` tools。
+- 不让 extension 直接持有 raw `AgentOrchestrator`、raw `AgentHarness` 或内部 mutable maps。
+- 不把 per-agent extension contribution 写入全局 registry 状态。
 - 不恢复 tool-local `TState` 到 core definition。
 - 不让 core 解释 coding extension 的 backend state。
 - 不把 `AgentHarness` 改造成理解 extension 的 runtime；它仍只接收 `AgentTool[]`。
@@ -394,7 +489,8 @@ Core 仍可以拥有少量 agent collaboration tools。它们直接暴露 WIDI c
 - Core agent tools 是否仍使用同一个 `ToolDefinition`，还是直接提供 Pi `AgentTool`。
 - `patchTool` 是否继续是正式 extension API，还是只保留 internal compatibility。
 - Extension declaration/version/compatibility 的最小字段是什么。
-- Extension activation context 应暴露哪些 runtime capability。
+- Phase 4/5 的真实 file/module loader 如何处理 trust、path resolution、reload 和 import cache。
+- `ExtensionContext` 与 `ExtensionOrchestrationContext` 的最小 API 面应包含哪些具体 command。
 - Coding extension backend 如何表达 local/sandbox/remote 的选择。
 - Profile capabilities 如何映射到 extension availability，而不把 tool visibility 当作 capability。
 - Debug view 展示 extension、tool、patch、source 和 diagnostics 的具体结构。

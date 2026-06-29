@@ -839,6 +839,138 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
+	it("activates extension tools per profile without mutating the global registry", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const plainProfile: AgentProfile = {
+			...defaultProfile,
+			id: "plain-profile",
+			label: "Plain Profile",
+			persist: false,
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+					{ profile: plainProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("sample", (api) => {
+			api.registerTool(createToolDefinition("sampleTool", "sample"));
+		});
+
+		const { agentId: extensionAgentId } =
+			await orchestrator.spawnAgentHarness();
+		const { agentId: plainAgentId } = await orchestrator.spawnAgentHarness({
+			profileId: plainProfile.id,
+		});
+
+		expect(orchestrator.getAgentTools(extensionAgentId)).toEqual({
+			toolNames: ["sampleTool"],
+			activeToolNames: ["sampleTool"],
+		});
+		expect(orchestrator.getAgentTools(plainAgentId)).toEqual({
+			toolNames: [],
+			activeToolNames: [],
+		});
+		expect(orchestrator.toolRegistry.resolve().toolNames).toEqual([]);
+	});
+
+	it("emits extension diagnostics for missing factories", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["missing"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+
+		const { agentId } = await orchestrator.spawnAgentHarness();
+
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					domain: "extension",
+					code: "extension.factory_missing",
+					extensionId: "missing",
+					agentId,
+					profileId: extensionProfile.id,
+				}),
+			}),
+		);
+	});
+
+	it("routes tool lifecycle events to scoped extension handlers", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["observer"],
+		};
+		const observed: string[] = [];
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+			toolRegistry: createToolRegistry(createToolDefinition("plain")),
+		});
+		orchestrator.registerExtensionFactory("observer", (api) => {
+			api.on("tool_lifecycle_event", (event, context) => {
+				const tools = context.actions.getAgentTools(context.agentId);
+				observed.push(
+					`${context.extensionId}:${context.profileId}:${event.event.type}:${tools.toolNames.join(",")}`,
+				);
+			});
+		});
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const handleHarnessEvent = (
+			orchestrator as unknown as {
+				_handleAgentHarnessEvent(
+					agentId: string,
+					event: AgentHarnessEvent,
+				): Promise<void>;
+			}
+		)._handleAgentHarnessEvent.bind(orchestrator);
+
+		await handleHarnessEvent(agentId, {
+			type: "tool_execution_start",
+			toolCallId: "call-1",
+			toolName: "plain",
+			args: {},
+		});
+
+		expect(observed).toEqual([
+			`observer:${extensionProfile.id}:execution_started:plain`,
+		]);
+	});
+
 	it("emits normalized tool lifecycle events from harness events", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env, {

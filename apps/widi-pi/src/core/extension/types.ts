@@ -1,10 +1,20 @@
 import type {
+	AgentHarnessEvent,
 	AgentToolResult,
 	AgentToolUpdateCallback,
 	ToolExecutionMode,
 } from "@earendil-works/pi-agent-core";
 import type { Static, TSchema } from "typebox";
-import type { ToolHumanHost } from "../orchestrator/human-request.ts";
+import type {
+	AgentToolsSnapshot,
+	OrchestratorCommand,
+	OrchestratorCommandResult,
+} from "../orchestrator/commands.ts";
+import type {
+	HumanRequest,
+	HumanResponse,
+	ToolHumanHost,
+} from "../orchestrator/human-request.ts";
 
 /**
  * UI-neutral facts emitted for tool-call lifecycle changes.
@@ -60,6 +70,70 @@ export type ToolLifecycleEvent =
 			/** True when the harness treats the final result as an error. */
 			isError: boolean;
 	  };
+
+export type ExtensionEventName = "agent_harness_event" | "tool_lifecycle_event";
+
+export type ExtensionEvent =
+	| {
+			type: "agent_harness_event";
+			agentId: string;
+			event: AgentHarnessEvent;
+	  }
+	| {
+			type: "tool_lifecycle_event";
+			agentId: string;
+			event: ToolLifecycleEvent;
+	  };
+
+export interface ExtensionActions {
+	getAgentTools(agentId: string): AgentToolsSnapshot;
+	setAgentTools(
+		agentId: string,
+		toolNames: string[],
+		activeToolNames?: string[],
+	): Promise<void>;
+	setAgentActiveTools(agentId: string, toolNames: string[]): Promise<void>;
+	requestHuman(request: HumanRequest): Promise<HumanResponse>;
+	dispatch(command: OrchestratorCommand): Promise<OrchestratorCommandResult>;
+}
+
+export interface ExtensionContext {
+	extensionId: string;
+	agentId: string;
+	profileId: string;
+	actions: ExtensionActions;
+}
+
+export type ExtensionHandler<TEvent extends ExtensionEvent = ExtensionEvent> = (
+	event: TEvent,
+	context: ExtensionContext,
+) => Promise<void> | void;
+
+export type ExtensionHandlerFor<TName extends ExtensionEventName> =
+	TName extends "agent_harness_event"
+		? ExtensionHandler<Extract<ExtensionEvent, { type: "agent_harness_event" }>>
+		: TName extends "tool_lifecycle_event"
+			? ExtensionHandler<
+					Extract<ExtensionEvent, { type: "tool_lifecycle_event" }>
+				>
+			: never;
+
+export interface ExtensionActivationApi {
+	readonly extensionId: string;
+	readonly agentId: string;
+	readonly profileId: string;
+	registerTool<TParamsSchema extends TSchema, TDetails>(
+		tool: ToolDefinition<TParamsSchema, TDetails>,
+	): void;
+	on<TName extends ExtensionEventName>(
+		eventName: TName,
+		handler: ExtensionHandlerFor<TName>,
+	): void;
+}
+
+export type ExtensionFactory = (
+	api: ExtensionActivationApi,
+) => Promise<void> | void;
 
 /**
  * Runtime context passed to a WIDI tool execution function.

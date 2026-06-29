@@ -155,6 +155,13 @@ export class ToolRegistry {
 		this._nextOrder = 0;
 	}
 
+	clone(): ToolRegistry {
+		const registry = new ToolRegistry();
+		registry._registrations.push(...this._registrations);
+		registry._nextOrder = this._nextOrder;
+		return registry;
+	}
+
 	resolve(options: ToolRegistryResolveOptions = {}): ToolRegistryResolveResult {
 		const diagnostics: ToolRegistryDiagnostic[] = [];
 		const definitions = new Map<string, DefinitionEntry>();
