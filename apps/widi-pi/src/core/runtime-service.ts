@@ -1,5 +1,10 @@
-import type { ExecutionEnv, FileError } from "@earendil-works/pi-agent-core";
+import type {
+	ExecutionEnv,
+	FileError,
+	ThinkingLevel,
+} from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
+import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import {
 	AgentOrchestrator,
 	type AgentOrchestratorConfigs,
@@ -53,6 +58,7 @@ export interface CreateWidiRuntimeOptions {
 	readonly sessionRoot?: string;
 	readonly defaultProfileId?: string;
 	readonly defaultModel?: RuntimeModel;
+	readonly defaultThinkingLevel?: ThinkingLevel;
 	readonly enabledProfileIds?: readonly string[];
 	readonly toolRegistry?: ToolRegistry;
 	readonly extensionLoader?: ExtensionLoader;
@@ -66,6 +72,10 @@ export type RuntimeDefaultModelSource =
 	| "runtime_override"
 	| "settings"
 	| "available_fallback";
+export type RuntimeDefaultThinkingLevelSource =
+	| "runtime_override"
+	| "settings"
+	| "builtin_fallback";
 
 export interface RuntimeDefaultProfileResolution {
 	readonly id: string;
@@ -79,6 +89,13 @@ export interface RuntimeDefaultModelResolution {
 	readonly source: RuntimeDefaultModelSource;
 }
 
+export interface RuntimeDefaultThinkingLevelResolution {
+	readonly level: ThinkingLevel;
+	readonly requestedLevel: ThinkingLevel;
+	readonly source: RuntimeDefaultThinkingLevelSource;
+	readonly clamped: boolean;
+}
+
 export interface WidiRuntimeServices {
 	readonly cwd: string;
 	readonly agentDir: string;
@@ -88,6 +105,7 @@ export interface WidiRuntimeServices {
 	readonly profileRoots: readonly FileProfileRoot[];
 	readonly defaultProfile: RuntimeDefaultProfileResolution;
 	readonly defaultModel: RuntimeDefaultModelResolution;
+	readonly defaultThinkingLevel: RuntimeDefaultThinkingLevelResolution;
 	readonly extensionDiscovery: ExtensionDiscoveryResult;
 	readonly executionEnv: ExecutionEnv;
 	readonly settingManager: SettingManager;
@@ -460,6 +478,63 @@ function createDefaultModelResolvedDiagnostic(
 	});
 }
 
+const DEFAULT_THINKING_LEVEL: ThinkingLevel = "medium";
+
+function resolveDefaultThinkingLevel(options: {
+	readonly model: RuntimeModel;
+	readonly explicitDefaultThinkingLevel?: ThinkingLevel;
+	readonly settingsDefaultThinkingLevel?: ThinkingLevel;
+}): {
+	readonly resolution: RuntimeDefaultThinkingLevelResolution;
+	readonly diagnostic: CoreDiagnostic;
+} {
+	const requestedLevel =
+		options.explicitDefaultThinkingLevel ??
+		options.settingsDefaultThinkingLevel ??
+		DEFAULT_THINKING_LEVEL;
+	const source: RuntimeDefaultThinkingLevelSource =
+		options.explicitDefaultThinkingLevel !== undefined
+			? "runtime_override"
+			: options.settingsDefaultThinkingLevel !== undefined
+				? "settings"
+				: "builtin_fallback";
+	const level = clampThinkingLevel(
+		options.model,
+		requestedLevel,
+	) as ThinkingLevel;
+	const resolution: RuntimeDefaultThinkingLevelResolution = {
+		level,
+		requestedLevel,
+		source,
+		clamped: level !== requestedLevel,
+	};
+	return {
+		resolution,
+		diagnostic: createDefaultThinkingLevelResolvedDiagnostic(resolution),
+	};
+}
+
+function createDefaultThinkingLevelResolvedDiagnostic(
+	resolution: RuntimeDefaultThinkingLevelResolution,
+): CoreDiagnostic {
+	return createDiagnostic({
+		domain: "model",
+		code: "model.default_thinking_level_resolved",
+		severity: "info",
+		disposition: "reported",
+		recoverable: true,
+		message: `Default thinking level resolved to ${resolution.level} from ${resolution.source}.`,
+		source: { kind: "registry", name: "model", key: "thinkingLevel" },
+		phase: "resolve",
+		details: {
+			defaultSource: resolution.source,
+			level: resolution.level,
+			requestedLevel: resolution.requestedLevel,
+			clamped: resolution.clamped,
+		},
+	});
+}
+
 export async function createWidiRuntime(
 	options: CreateWidiRuntimeOptions,
 ): Promise<WidiRuntime> {
@@ -529,6 +604,11 @@ export async function createWidiRuntime(
 		settingManager,
 		explicitDefaultModel: options.defaultModel,
 	});
+	const defaultThinkingLevel = resolveDefaultThinkingLevel({
+		model: defaultModel.model,
+		explicitDefaultThinkingLevel: options.defaultThinkingLevel,
+		settingsDefaultThinkingLevel: settingManager.getDefaultThinkingLevel(),
+	});
 	const sessionRoot = await absolutePath(
 		executionEnv,
 		options.sessionRoot ??
@@ -586,6 +666,7 @@ export async function createWidiRuntime(
 		profileRoots: profileRegistryResult.roots,
 		defaultProfile: defaultProfile.resolution,
 		defaultModel: defaultModel.resolution,
+		defaultThinkingLevel: defaultThinkingLevel.resolution,
 		extensionDiscovery,
 		executionEnv,
 		settingManager,
@@ -611,6 +692,7 @@ export async function createWidiRuntime(
 		enabledProfileIds:
 			options.enabledProfileIds ?? settingManager.getEnabledProfiles(),
 		defaultModel: defaultModel.model,
+		defaultThinkingLevel: defaultThinkingLevel.resolution.level,
 	};
 	const orchestrator = new AgentOrchestrator(orchestratorConfig);
 	const diagnostics = [
@@ -621,6 +703,7 @@ export async function createWidiRuntime(
 		...modelRegistry.drainDiagnostics(),
 		...defaultProfile.diagnostics,
 		defaultModel.diagnostic,
+		defaultThinkingLevel.diagnostic,
 		...extensionDiscovery.diagnostics,
 	];
 

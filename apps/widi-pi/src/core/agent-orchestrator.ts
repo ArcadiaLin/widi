@@ -147,6 +147,7 @@ export interface AgentOrchestratorConfigs {
 	defaultProfileId: string;
 	enabledProfileIds?: readonly string[];
 	defaultModel: RuntimeModel;
+	defaultThinkingLevel?: ThinkingLevel;
 }
 
 export type AgentId = string;
@@ -180,6 +181,7 @@ interface AgentToolSetHarness {
 interface SpawnAgentHarnessCommonOptions {
 	model?: RuntimeModel;
 	inheritModelFromAgentId?: AgentId;
+	thinkingLevel?: ThinkingLevel;
 }
 
 export interface SpawnAgentHarnessCreateOptions
@@ -206,6 +208,7 @@ export interface SpawnAgentHarnessResult {
 
 export class AgentOrchestrator {
 	private _defaultModel: RuntimeModel;
+	private _defaultThinkingLevel: ThinkingLevel | undefined;
 	private _defaultProfileId: string;
 	private _enabledProfileIds: readonly string[] | undefined;
 	readonly agents: Map<AgentId, AgentHarness> = new Map();
@@ -244,6 +247,7 @@ export class AgentOrchestrator {
 			? [...config.enabledProfileIds]
 			: undefined;
 		this._defaultModel = config.defaultModel;
+		this._defaultThinkingLevel = config.defaultThinkingLevel;
 	}
 
 	async spawnAgentHarness(
@@ -256,7 +260,9 @@ export class AgentOrchestrator {
 
 		const agentProfile = await this._resolveCreateProfile(options);
 		const model = this._resolveSpawnModel(options);
-		return await this._createAgentHarness(agentProfile, model);
+		return await this._createAgentHarness(agentProfile, model, {
+			thinkingLevel: options.thinkingLevel ?? this._defaultThinkingLevel,
+		});
 	}
 
 	getDefaultModel(): RuntimeModel {
@@ -265,6 +271,14 @@ export class AgentOrchestrator {
 
 	setDefaultModel(model: RuntimeModel): void {
 		this._defaultModel = model;
+	}
+
+	getDefaultThinkingLevel(): ThinkingLevel | undefined {
+		return this._defaultThinkingLevel;
+	}
+
+	setDefaultThinkingLevel(thinkingLevel: ThinkingLevel | undefined): void {
+		this._defaultThinkingLevel = thinkingLevel;
 	}
 
 	getDefaultProfileId(): string {
@@ -840,6 +854,7 @@ export class AgentOrchestrator {
 	private async _createAgentHarness(
 		profile: AgentProfile,
 		model: RuntimeModel,
+		options: { thinkingLevel?: ThinkingLevel } = {},
 	): Promise<SpawnAgentHarnessResult> {
 		const agentId = this._allocateAgentId(profile);
 		const session = await this.sessionManager.createAgentSession({
@@ -852,6 +867,7 @@ export class AgentOrchestrator {
 			profile,
 			session,
 			model,
+			thinkingLevel: options.thinkingLevel,
 		});
 		await this._emit({ type: "agent_spawned", agentId, profile, model });
 		return { agentId, harness };

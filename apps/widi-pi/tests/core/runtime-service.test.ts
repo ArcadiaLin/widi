@@ -226,6 +226,13 @@ const defaultModel: Model<"openai-completions"> = {
 	maxTokens: 100,
 };
 
+const reasoningModel: Model<"openai-completions"> = {
+	...defaultModel,
+	id: "reasoning-model",
+	name: "Reasoning Model",
+	reasoning: true,
+};
+
 function profileMarkdown(id: string): string {
 	return `---
 id: ${id}
@@ -325,6 +332,13 @@ describe("createWidiRuntime", () => {
 			modelId: "test-model",
 			source: "runtime_override",
 		});
+		expect(runtime.services.defaultThinkingLevel).toEqual({
+			level: "off",
+			requestedLevel: "medium",
+			source: "builtin_fallback",
+			clamped: true,
+		});
+		expect(runtime.orchestrator.getDefaultThinkingLevel()).toBe("off");
 		expect(runtime.diagnostics).toContainEqual(
 			expect.objectContaining({
 				code: "profile.default_resolved",
@@ -338,6 +352,17 @@ describe("createWidiRuntime", () => {
 				code: "model.default_resolved",
 				details: expect.objectContaining({
 					defaultSource: "runtime_override",
+				}),
+			}),
+		);
+		expect(runtime.diagnostics).toContainEqual(
+			expect.objectContaining({
+				code: "model.default_thinking_level_resolved",
+				details: expect.objectContaining({
+					defaultSource: "builtin_fallback",
+					level: "off",
+					requestedLevel: "medium",
+					clamped: true,
 				}),
 			}),
 		);
@@ -417,7 +442,8 @@ describe("createWidiRuntime", () => {
 			agentDir: "/home/user/.widi",
 			executionEnv: env,
 			defaultProfileId: "project",
-			defaultModel,
+			defaultModel: reasoningModel,
+			defaultThinkingLevel: "high",
 			trustOverride: true,
 		});
 
@@ -428,8 +454,14 @@ describe("createWidiRuntime", () => {
 		});
 		expect(runtime.services.defaultModel).toEqual({
 			provider: "test-provider",
-			modelId: "test-model",
+			modelId: "reasoning-model",
 			source: "runtime_override",
+		});
+		expect(runtime.services.defaultThinkingLevel).toEqual({
+			level: "high",
+			requestedLevel: "high",
+			source: "runtime_override",
+			clamped: false,
 		});
 	});
 
@@ -672,6 +704,50 @@ describe("createWidiRuntime", () => {
 				details: expect.objectContaining({ defaultSource: "settings" }),
 			}),
 		);
+	});
+
+	it("resolves default thinking level from settings", async () => {
+		const env = new MemoryExecutionEnv();
+		env.addFile(
+			"/home/user/.widi/settings.json",
+			JSON.stringify({ defaultThinkingLevel: "high" }),
+		);
+
+		const runtime = await createWidiRuntime({
+			cwd: "/workspace/project",
+			agentDir: "/home/user/.widi",
+			executionEnv: env,
+			defaultModel: reasoningModel,
+		});
+
+		expect(runtime.services.defaultThinkingLevel).toEqual({
+			level: "high",
+			requestedLevel: "high",
+			source: "settings",
+			clamped: false,
+		});
+		expect(runtime.orchestrator.getDefaultThinkingLevel()).toBe("high");
+		expect(runtime.diagnostics).toContainEqual(
+			expect.objectContaining({
+				code: "model.default_thinking_level_resolved",
+				details: expect.objectContaining({ defaultSource: "settings" }),
+			}),
+		);
+	});
+
+	it("passes default thinking level to newly spawned harnesses", async () => {
+		const env = new MemoryExecutionEnv();
+		const runtime = await createWidiRuntime({
+			cwd: "/workspace/project",
+			agentDir: "/home/user/.widi",
+			executionEnv: env,
+			defaultModel: reasoningModel,
+			defaultThinkingLevel: "medium",
+		});
+
+		const result = await runtime.orchestrator.spawnAgentHarness();
+
+		expect(result.harness.getThinkingLevel()).toBe("medium");
 	});
 
 	it("falls back to the first available model when settings do not specify one", async () => {
