@@ -942,7 +942,7 @@ describe("AgentOrchestrator", () => {
 			toolRegistry: createToolRegistry(createToolDefinition("plain")),
 		});
 		orchestrator.registerExtensionFactory("observer", (api) => {
-			api.on("tool_lifecycle_event", (event, context) => {
+			api.observe("tool_lifecycle_event", (event, context) => {
 				const tools = context.actions.getAgentTools(context.agentId);
 				observed.push(
 					`${context.extensionId}:${context.profileId}:${event.event.type}:${tools.toolNames.join(",")}`,
@@ -969,6 +969,143 @@ describe("AgentOrchestrator", () => {
 		expect(observed).toEqual([
 			`observer:${extensionProfile.id}:execution_started:plain`,
 		]);
+	});
+
+	it("bridges scoped extension interceptors into AgentHarness hooks", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["first", "second"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("first", (api) => {
+			api.intercept("before_agent_start", () => ({
+				messages: [
+					{
+						role: "user",
+						content: "first",
+						timestamp: 1,
+					},
+				],
+				systemPrompt: "first prompt",
+			}));
+			api.intercept("context", (event) => ({
+				messages: [
+					...event.messages,
+					{ role: "user", content: "first context", timestamp: 2 },
+				],
+			}));
+			api.intercept("tool_call", () => ({
+				block: true,
+				reason: "blocked by first",
+			}));
+			api.intercept("tool_result", () => ({
+				content: [{ type: "text", text: "first result" }],
+				details: { first: true },
+				terminate: true,
+			}));
+		});
+		orchestrator.registerExtensionFactory("second", (api) => {
+			api.intercept("before_agent_start", () => ({
+				messages: [
+					{
+						role: "user",
+						content: "second",
+						timestamp: 3,
+					},
+				],
+				systemPrompt: "second prompt",
+			}));
+			api.intercept("context", (event) => ({
+				messages: [
+					...event.messages,
+					{ role: "user", content: "second context", timestamp: 4 },
+				],
+			}));
+			api.intercept("tool_call", () => {
+				throw new Error("blocked tool_call should short-circuit");
+			});
+			api.intercept("tool_result", () => ({
+				content: [{ type: "text", text: "second result" }],
+				isError: true,
+			}));
+		});
+
+		const { harness } = await orchestrator.spawnAgentHarness();
+		const handlers = (
+			harness as unknown as {
+				handlers: Map<string, Set<(event: unknown) => Promise<unknown>>>;
+			}
+		).handlers;
+		const runHook = async (name: string, event: unknown) => {
+			const handler = Array.from(handlers.get(name) ?? [])[0];
+			if (!handler) throw new Error(`Missing harness hook: ${name}`);
+			return await handler(event);
+		};
+
+		await expect(
+			runHook("before_agent_start", {
+				type: "before_agent_start",
+				prompt: "go",
+				systemPrompt: "base prompt",
+				resources: {},
+			}),
+		).resolves.toEqual({
+			messages: [
+				{ role: "user", content: "first", timestamp: 1 },
+				{ role: "user", content: "second", timestamp: 3 },
+			],
+			systemPrompt: "second prompt",
+		});
+		await expect(
+			runHook("context", {
+				type: "context",
+				messages: [{ role: "user", content: "base", timestamp: 0 }],
+			}),
+		).resolves.toEqual({
+			messages: [
+				{ role: "user", content: "base", timestamp: 0 },
+				{ role: "user", content: "first context", timestamp: 2 },
+				{ role: "user", content: "second context", timestamp: 4 },
+			],
+		});
+		await expect(
+			runHook("tool_call", {
+				type: "tool_call",
+				toolCallId: "call-1",
+				toolName: "write",
+				input: {},
+			}),
+		).resolves.toEqual({
+			block: true,
+			reason: "blocked by first",
+		});
+		await expect(
+			runHook("tool_result", {
+				type: "tool_result",
+				toolCallId: "call-1",
+				toolName: "write",
+				input: {},
+				content: [{ type: "text", text: "base result" }],
+				details: undefined,
+				isError: false,
+			}),
+		).resolves.toEqual({
+			content: [{ type: "text", text: "second result" }],
+			details: { first: true },
+			isError: true,
+			terminate: true,
+		});
 	});
 
 	it("emits normalized tool lifecycle events from harness events", async () => {

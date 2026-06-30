@@ -1,8 +1,13 @@
 import type {
 	AgentHarnessEvent,
+	AgentHarnessEventResultMap,
 	AgentToolResult,
 	AgentToolUpdateCallback,
+	BeforeAgentStartEvent,
+	ContextEvent,
+	ToolCallEvent,
 	ToolExecutionMode,
+	ToolResultEvent,
 } from "@earendil-works/pi-agent-core";
 import type { Static, TSchema } from "typebox";
 import type {
@@ -71,9 +76,11 @@ export type ToolLifecycleEvent =
 			isError: boolean;
 	  };
 
-export type ExtensionEventName = "agent_harness_event" | "tool_lifecycle_event";
+export type ExtensionObservedEventName =
+	| "agent_harness_event"
+	| "tool_lifecycle_event";
 
-export type ExtensionEvent =
+export type ExtensionObservedEvent =
 	| {
 			type: "agent_harness_event";
 			agentId: string;
@@ -84,6 +91,41 @@ export type ExtensionEvent =
 			agentId: string;
 			event: ToolLifecycleEvent;
 	  };
+
+/**
+ * WIDI intentionally exposes only the stable MVP interceptors today.
+ *
+ * Full AgentHarness hook candidates include:
+ * - before_agent_start, context, tool_call, tool_result
+ * - before_provider_request, before_provider_payload
+ * - session_before_compact, session_before_tree
+ * - observer-like own events with no return value: after_provider_response,
+ *   session_compact, session_tree, model_update, thinking_level_update,
+ *   resources_update, tools_update, queue_update, save_point, abort, settled
+ *
+ * Provider and session hooks are deferred until permission, diagnostics, and
+ * stale-context semantics are explicit.
+ */
+export type ExtensionInterceptorName =
+	| "before_agent_start"
+	| "context"
+	| "tool_call"
+	| "tool_result";
+
+export interface ExtensionInterceptorEventMap {
+	before_agent_start: BeforeAgentStartEvent;
+	context: ContextEvent;
+	tool_call: ToolCallEvent;
+	tool_result: ToolResultEvent;
+}
+
+export type ExtensionInterceptorEventFor<
+	TName extends ExtensionInterceptorName,
+> = ExtensionInterceptorEventMap[TName];
+
+export type ExtensionInterceptorResultFor<
+	TName extends ExtensionInterceptorName,
+> = AgentHarnessEventResultMap[TName];
 
 export interface ExtensionActions {
 	getAgentTools(agentId: string): AgentToolsSnapshot;
@@ -104,19 +146,27 @@ export interface ExtensionContext {
 	actions: ExtensionActions;
 }
 
-export type ExtensionHandler<TEvent extends ExtensionEvent = ExtensionEvent> = (
-	event: TEvent,
-	context: ExtensionContext,
-) => Promise<void> | void;
+export type ExtensionObserver<
+	TEvent extends ExtensionObservedEvent = ExtensionObservedEvent,
+> = (event: TEvent, context: ExtensionContext) => Promise<void> | void;
 
-export type ExtensionHandlerFor<TName extends ExtensionEventName> =
+export type ExtensionObserverFor<TName extends ExtensionObservedEventName> =
 	TName extends "agent_harness_event"
-		? ExtensionHandler<Extract<ExtensionEvent, { type: "agent_harness_event" }>>
+		? ExtensionObserver<
+				Extract<ExtensionObservedEvent, { type: "agent_harness_event" }>
+			>
 		: TName extends "tool_lifecycle_event"
-			? ExtensionHandler<
-					Extract<ExtensionEvent, { type: "tool_lifecycle_event" }>
+			? ExtensionObserver<
+					Extract<ExtensionObservedEvent, { type: "tool_lifecycle_event" }>
 				>
 			: never;
+
+export type ExtensionInterceptorFor<TName extends ExtensionInterceptorName> = (
+	event: ExtensionInterceptorEventFor<TName>,
+	context: ExtensionContext,
+) =>
+	| Promise<ExtensionInterceptorResultFor<TName>>
+	| ExtensionInterceptorResultFor<TName>;
 
 export interface ExtensionActivationApi {
 	readonly extensionId: string;
@@ -125,9 +175,13 @@ export interface ExtensionActivationApi {
 	registerTool<TParamsSchema extends TSchema, TDetails>(
 		tool: ToolDefinition<TParamsSchema, TDetails>,
 	): void;
-	on<TName extends ExtensionEventName>(
+	observe<TName extends ExtensionObservedEventName>(
 		eventName: TName,
-		handler: ExtensionHandlerFor<TName>,
+		handler: ExtensionObserverFor<TName>,
+	): void;
+	intercept<TName extends ExtensionInterceptorName>(
+		eventName: TName,
+		handler: ExtensionInterceptorFor<TName>,
 	): void;
 }
 

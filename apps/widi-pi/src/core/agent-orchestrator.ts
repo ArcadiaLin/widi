@@ -972,13 +972,47 @@ export class AgentOrchestrator {
 		});
 		this.agents.set(agentId, harness);
 		this._agentToolSets.set(agentId, agentToolSet);
-		this._unsubscribeAgentHarness.set(
+		const unsubscribeInterceptors = this._registerExtensionInterceptors(
 			agentId,
-			harness.subscribe((event) => {
-				void this._handleAgentHarnessEvent(agentId, event);
-			}),
+			harness,
 		);
+		const unsubscribeHarnessEvents = harness.subscribe((event) => {
+			void this._handleAgentHarnessEvent(agentId, event);
+		});
+		this._unsubscribeAgentHarness.set(agentId, () => {
+			unsubscribeHarnessEvents();
+			for (const unsubscribe of unsubscribeInterceptors) {
+				unsubscribe();
+			}
+		});
 		return harness;
+	}
+
+	private _registerExtensionInterceptors(
+		agentId: AgentId,
+		harness: AgentHarness,
+	): Array<() => void> {
+		const extensionRunner = this._agentExtensionRunners.get(agentId);
+		if (!extensionRunner) return [];
+		return [
+			harness.on(
+				"before_agent_start",
+				async (event) =>
+					await extensionRunner.intercept<"before_agent_start">(event),
+			),
+			harness.on(
+				"context",
+				async (event) => await extensionRunner.intercept<"context">(event),
+			),
+			harness.on(
+				"tool_call",
+				async (event) => await extensionRunner.intercept<"tool_call">(event),
+			),
+			harness.on(
+				"tool_result",
+				async (event) => await extensionRunner.intercept<"tool_result">(event),
+			),
+		];
 	}
 
 	private async _resolveAgentTools(options: {
@@ -1076,7 +1110,7 @@ export class AgentOrchestrator {
 		const extensionRunner = this._agentExtensionRunners.get(agentId);
 		if (extensionRunner) {
 			await this._publishDiagnostics(
-				await extensionRunner.emit({
+				await extensionRunner.emitObserved({
 					type: "agent_harness_event",
 					agentId,
 					event,
@@ -1092,7 +1126,7 @@ export class AgentOrchestrator {
 			});
 			if (extensionRunner) {
 				await this._publishDiagnostics(
-					await extensionRunner.emit({
+					await extensionRunner.emitObserved({
 						type: "tool_lifecycle_event",
 						agentId,
 						event: lifecycleEvent,

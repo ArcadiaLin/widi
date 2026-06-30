@@ -65,7 +65,7 @@ Core 负责 runtime composition、diagnostics、profile visibility、active tool
 本阶段目标：
 
 - 建立与 Pi coding-agent 接近的 extension runner 语义。
-- Extension API 第一版以 `registerTool` 和少量命名 lifecycle handlers 为核心，而不是要求 extension 实现 provider 聚合接口。
+- Extension API 第一版以 `registerTool`、命名 observers 和少量 interceptors 为核心，而不是要求 extension 实现 provider 聚合接口。
 - ToolRegistry 保持 WIDI 当前设计，继续负责冲突、patch、resolve 和最终 `AgentTool` 生成。
 - 不迁移 `read/write/bash` 到 built-in coding extension，也不继续维护它们作为主线 coding tool set。
 - 不引入 tool load order、priority 或 provider order。
@@ -115,14 +115,15 @@ Extension loader/runner 是 scoped resolve 的上游贡献者，不替代 regist
 
 ## Extension Runner Registration
 
-第一阶段 extension runner 应尽量对齐 Pi coding-agent 的 extension 体验：extension activation 时拿到一个受控 API，通过 API 注册 tool definition 和 lifecycle handlers。
+第一阶段 extension runner 应尽量对齐 Pi coding-agent 的 extension 体验：extension activation 时拿到一个受控 API，通过 API 注册 tool definition、observers 和 interceptors。
 
 概念上接近：
 
 ```ts
 interface ExtensionApi {
 	registerTool(tool: ToolDefinition): void;
-	on(event: ExtensionEventName, handler: ExtensionHandler): void;
+	observe(event: ExtensionObservedEventName, handler: ExtensionObserver): void;
+	intercept(event: ExtensionInterceptorName, handler: ExtensionInterceptor): void;
 }
 ```
 
@@ -130,7 +131,7 @@ WIDI 与 Pi coding-agent 的关键差异是 multi-agent 底层来自 `AgentHarne
 
 - Orchestrator 在 spawn/resume 时根据当前 `AgentProfile.extensions` 激活 extension scope。
 - Harness 只接收最终 `AgentTool[]`，不接收 extension runner，也不暴露 extension API。
-- Extension handlers 由 Orchestrator 在 command、agent harness event、tool lifecycle、human request 等边界触发。
+- Extension observer handlers 由 Orchestrator 在 agent harness event、tool lifecycle 等边界触发；interceptor handlers 由 Orchestrator 桥接到 `AgentHarness.on(...)`。
 - Extension 可以获得 Orchestrator 绑定出来的强编排 facade，但不直接拿 raw `AgentOrchestrator`、raw `AgentHarness` 或内部 maps。
 
 Loader 的职责：
@@ -139,7 +140,7 @@ Loader 的职责：
 - 根据 profile extension ids 激活 agent/profile scoped extension。
 - 创建 extension-scoped API。
 - 执行 activation。
-- 收集 extension 注册的 `ToolDefinition` 和 lifecycle handlers。
+- 收集 extension 注册的 `ToolDefinition`、observer handlers 和 interceptor handlers。
 - 记录 activation diagnostics、invalid declaration、missing factory 等问题。
 - 产出 loaded extension scope。
 
@@ -147,7 +148,8 @@ Runner 的职责：
 
 - 绑定 loaded extension scope 与 Orchestrator actions facade。
 - 将 loaded scope 的 tool contributions 写入 scoped registry overlay。
-- 在 Orchestrator 转发 harness/lifecycle events 时执行 scoped handlers。
+- 在 Orchestrator 转发 harness/lifecycle events 时执行 scoped observers。
+- 在 Orchestrator 注册的 harness hook bridge 中执行 scoped interceptors。
 - 将 handler errors 转成 runtime diagnostics。
 
 Orchestrator 的职责：
@@ -374,14 +376,14 @@ Core 仍可以拥有少量 agent collaboration tools。它们直接暴露 WIDI c
 
 ### Phase 3: Extension Loader/Runner MVP
 
-目标：实现最小 Orchestrator-owned extension loader/runner，让 extension 可以为当前 agent/profile 注册 tool definition 和少量 lifecycle handlers。
+目标：实现最小 Orchestrator-owned extension loader/runner，让 extension 可以为当前 agent/profile 注册 tool definition、observers 和少量 interceptors。
 
 状态：已完成 MVP。当前实现拆分为 `ExtensionLoader` 和 `ExtensionRunner`：loader 支持内存 factory registration、agent/profile scoped activation、`registerTool`、`agent_harness_event` / `tool_lifecycle_event` handler collection、missing factory / activation diagnostics；runner 绑定 loaded scope 与 Orchestrator actions，负责 scoped registry overlay、handler emit 和 handler diagnostics。
 
 - 定义 extension identity、source metadata、factory 和 activation lifecycle。
 - 支持内存 extension factory registry，例如 `registerExtensionFactory(extensionId, factory)`。
 - Profile `extensions` 先从内存 factory registry 解析，不做真实文件/模块 loader。
-- Extension API 暴露 `registerTool(tool)` 和命名 lifecycle handler registration。
+- Extension API 暴露 `registerTool(tool)`、`observe(...)` 和命名 `intercept(...)` registration。
 - Loader 产生 agent/profile scoped loaded scope；runner 绑定 runtime actions 并贡献到 scoped registry overlay，不写入全局 `ToolRegistry`。
 - Activation errors、missing factory、handler errors 进入 diagnostics。
 
@@ -390,9 +392,9 @@ Core 仍可以拥有少量 agent collaboration tools。它们直接暴露 WIDI c
 1. 新建 Orchestrator-owned extension loader 和 per-agent extension runner。
 2. 新增内存 factory registry；暂不做 ESM dynamic import、trust、path resolution 或 reload。
 3. 在 agent spawn/resume 时根据 `AgentProfile.extensions` load 当前 agent scope。
-4. Loader 提供 extension-scoped activation API，先包含 `registerTool` 和少量命名 handlers。
-5. Loader 记录 loaded extensions、activation diagnostics、contributed tool names 和 registered handlers。
-6. Orchestrator 保存 per-agent extension runner，并在 harness event/tool lifecycle/command 边界触发 handlers。
+4. Loader 提供 extension-scoped activation API，包含 `registerTool`、`observe` 和 `intercept`。
+5. Loader 记录 loaded extensions、activation diagnostics、contributed tool names、observer handlers 和 interceptor handlers。
+6. Orchestrator 保存 per-agent extension runner，并在 harness event/tool lifecycle 边界触发 observers，在 harness hook 边界触发 interceptors。
 
 验收：
 
@@ -400,7 +402,7 @@ Core 仍可以拥有少量 agent collaboration tools。它们直接暴露 WIDI c
 - Extension tool 的 source/provenance 可诊断。
 - Orchestrator create/resume/runtime `setTools` 仍只消费 scoped registry resolve 结果。
 - `AgentHarness` 不接收 extension runner，不直接暴露 extension API。
-- Extension handler 可以通过 facade 做受控 agent 编排，但拿不到 raw `AgentOrchestrator` 或 raw `AgentHarness`。
+- Extension observer/interceptor 可以通过 facade 做受控 agent 编排，但拿不到 raw `AgentOrchestrator` 或 raw `AgentHarness`。
 
 ### Phase 4: ToolRegistry Integration Hardening
 
@@ -434,12 +436,21 @@ Core 仍可以拥有少量 agent collaboration tools。它们直接暴露 WIDI c
 
 目标：继续贴近 Pi coding-agent extension API，但只暴露 WIDI 已经能稳定支持的能力。
 
+状态：MVP 已落地 `observe(...)` / `intercept(...)` 双通道。`observe` 用于旁路观察，handler error 降级为 runtime diagnostic；`intercept` 用于执行链拦截，handler error 按 harness hook error 传播。当前只开放 `before_agent_start`、`context`、`tool_call`、`tool_result` 四个稳定 hook；provider/session 级 hook 以代码注释列出但暂缓暴露。
+
 - 对齐 extension factory / activation 形态。
 - 明确 activation context 能拿到哪些 runtime 信息。
 - 明确 `ExtensionContext` 与 `ExtensionCommandContext` / `ExtensionOrchestrationContext` 的能力边界。
 - 完善 agent orchestration facade。
 - 决定是否暴露 `patchTool`。
 - 设计真实 file/module loader、trust gate、reload、missing extension policy。
+
+已落地的 interceptor 组合语义：
+
+- `before_agent_start`：`messages` 累加，`systemPrompt` 后一个非 `undefined` 结果覆盖前一个。
+- `context`：`messages` 链式传递，每个 handler 接收上一个 handler 的输出。
+- `tool_call`：任一 handler 返回 `block: true` 即阻止，`reason` 使用第一个 block result。
+- `tool_result`：patch 按注册顺序应用，后者覆盖同字段；`terminate: true` 一旦出现就保留。
 
 建议步骤：
 

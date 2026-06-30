@@ -169,8 +169,8 @@ WIDI 的当前形态更偏 core-first：
 
 - Extension declaration、identity、version/compatibility、source metadata 和 missing policy。
 - Extension loader：路径/package 解析、trust gate、activation、reload、error isolation。
-- Extension API：第一阶段的 `registerTool`，以及后续 `patchTool`、`on`、`registerCommand`、resource/provider registration 等入口。
-- Hook event matrix：哪些事件可 observe/intercept/mutate，返回值如何合成，错误如何降级。
+- Extension API：已具备 `registerTool`、`observe` 和 MVP `intercept`；后续仍需设计 `patchTool`、`registerCommand`、resource/provider registration 等入口。
+- Hook event matrix：已落地 observer 与四个 MVP interceptor；provider/session hook、mutate 权限、更多返回值合成和 permission 仍需继续设计。
 - Extension-owned storage 与 session `custom` entry API。
 - Permission model：尤其是 patch `execute` replacement、filesystem/shell/model/session/orchestrator capability。
 - Debug/inspection command：查看 loaded extensions、registered hooks、resolved tools、patches、diagnostics。
@@ -205,7 +205,8 @@ WIDI 的当前形态更偏 core-first：
 - [x] 让 `aroundExecute` / patch `execute` 的 runtime context 按 patch source 绑定，并在 `next()` 时恢复内层 context。
 - [ ] 定义 extension declaration 的 identity、source、version/compatibility 和 missing policy。
 - [ ] 设计 extension registry/loader/activation lifecycle。
-- [ ] 为 hook 点列出 permission：observe、intercept、mutate、invoke capability。
+- [x] 为 MVP hook 点区分 observe 与 intercept；`before_agent_start`、`context`、`tool_call`、`tool_result` 已桥接到 `AgentHarness.on(...)`。
+- [ ] 继续为 provider/session hook 点列出 permission：observe、intercept、mutate、invoke capability。
 - [ ] 定义 extension-contributed resources/commands/diagnostics 如何进入对应 registry。
 - [ ] 定义 extension tool patch 的权限、加载顺序和 runtime context 绑定。
 - [ ] 实现 extension 使用 custom entry API 的写入、读取、恢复和错误 diagnostics。

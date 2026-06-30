@@ -5,21 +5,31 @@ import {
 } from "../diagnostics.ts";
 import type {
 	ExtensionActivationApi,
-	ExtensionEventName,
 	ExtensionFactory,
-	ExtensionHandlerFor,
+	ExtensionInterceptorFor,
+	ExtensionInterceptorName,
+	ExtensionObservedEventName,
+	ExtensionObserverFor,
 	ToolDefinition,
 	ToolSource,
 } from "./types.ts";
 
 type ExtensionToolDefinition = ToolDefinition;
 
-export interface ExtensionHandlerRegistration<
-	TName extends ExtensionEventName,
+export interface ExtensionObserverRegistration<
+	TName extends ExtensionObservedEventName,
 > {
 	extensionId: string;
 	eventName: TName;
-	handler: ExtensionHandlerFor<TName>;
+	handler: ExtensionObserverFor<TName>;
+}
+
+export interface ExtensionInterceptorRegistration<
+	TName extends ExtensionInterceptorName,
+> {
+	extensionId: string;
+	eventName: TName;
+	handler: ExtensionInterceptorFor<TName>;
 }
 
 export interface LoadExtensionScopeOptions {
@@ -41,9 +51,13 @@ export interface LoadedExtensionScope {
 	extensionIds: readonly string[];
 	diagnostics: readonly CoreDiagnostic[];
 	toolContributions: readonly ExtensionToolContribution[];
-	handlers: ReadonlyMap<
-		ExtensionEventName,
-		readonly ExtensionHandlerRegistration<ExtensionEventName>[]
+	observerHandlers: ReadonlyMap<
+		ExtensionObservedEventName,
+		readonly ExtensionObserverRegistration<ExtensionObservedEventName>[]
+	>;
+	interceptorHandlers: ReadonlyMap<
+		ExtensionInterceptorName,
+		readonly ExtensionInterceptorRegistration<ExtensionInterceptorName>[]
 	>;
 }
 
@@ -71,9 +85,13 @@ export class ExtensionLoader {
 	): Promise<LoadedExtensionScope> {
 		const diagnostics: CoreDiagnostic[] = [];
 		const toolContributions: ExtensionToolContribution[] = [];
-		const handlers = new Map<
-			ExtensionEventName,
-			ExtensionHandlerRegistration<ExtensionEventName>[]
+		const observerHandlers = new Map<
+			ExtensionObservedEventName,
+			ExtensionObserverRegistration<ExtensionObservedEventName>[]
+		>();
+		const interceptorHandlers = new Map<
+			ExtensionInterceptorName,
+			ExtensionInterceptorRegistration<ExtensionInterceptorName>[]
 		>();
 		const extensionIds = normalizeExtensionIds(options.extensionIds ?? []);
 
@@ -97,7 +115,8 @@ export class ExtensionLoader {
 						agentId: options.agentId,
 						profileId: options.profileId,
 						toolContributions,
-						handlers,
+						observerHandlers,
+						interceptorHandlers,
 					}),
 				);
 			} catch (error) {
@@ -120,7 +139,8 @@ export class ExtensionLoader {
 			extensionIds,
 			diagnostics,
 			toolContributions,
-			handlers,
+			observerHandlers,
+			interceptorHandlers,
 		};
 	}
 }
@@ -130,9 +150,13 @@ function createActivationApi(options: {
 	agentId: string;
 	profileId: string;
 	toolContributions: ExtensionToolContribution[];
-	handlers: Map<
-		ExtensionEventName,
-		ExtensionHandlerRegistration<ExtensionEventName>[]
+	observerHandlers: Map<
+		ExtensionObservedEventName,
+		ExtensionObserverRegistration<ExtensionObservedEventName>[]
+	>;
+	interceptorHandlers: Map<
+		ExtensionInterceptorName,
+		ExtensionInterceptorRegistration<ExtensionInterceptorName>[]
 	>;
 }): ExtensionActivationApi {
 	return {
@@ -146,14 +170,24 @@ function createActivationApi(options: {
 				source: { kind: "extension", id: options.extensionId },
 			});
 		},
-		on: (eventName, handler) => {
-			const registrations = options.handlers.get(eventName) ?? [];
+		observe: (eventName, handler) => {
+			const registrations = options.observerHandlers.get(eventName) ?? [];
 			registrations.push({
 				extensionId: options.extensionId,
 				eventName,
-				handler: handler as ExtensionHandlerFor<ExtensionEventName>,
+				handler: handler as ExtensionObserverFor<ExtensionObservedEventName>,
 			});
-			options.handlers.set(eventName, registrations);
+			options.observerHandlers.set(eventName, registrations);
+		},
+		intercept: (eventName, handler) => {
+			const registrations = options.interceptorHandlers.get(eventName) ?? [];
+			registrations.push({
+				extensionId: options.extensionId,
+				eventName,
+				handler:
+					handler as unknown as ExtensionInterceptorFor<ExtensionInterceptorName>,
+			});
+			options.interceptorHandlers.set(eventName, registrations);
 		},
 	};
 }
