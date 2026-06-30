@@ -333,6 +333,7 @@ describe("createWidiRuntime", () => {
 
 	it("connects settings resource and extension paths to loaders", async () => {
 		const env = new MemoryExecutionEnv();
+		env.addDir("/custom/extensions/runtime-smoke");
 		env.addFile(
 			"/home/user/.widi/settings.json",
 			JSON.stringify({
@@ -362,6 +363,66 @@ describe("createWidiRuntime", () => {
 		expect(runtime.services.extensionLoader.getRoots()).toContainEqual({
 			kind: "settings",
 			path: "/custom/extensions",
+		});
+		expect(runtime.services.extensionDiscovery.candidates).toContainEqual({
+			id: "runtime-smoke",
+			kind: "directory",
+			path: "/custom/extensions/runtime-smoke",
+			root: {
+				kind: "settings",
+				path: "/custom/extensions",
+			},
+		});
+	});
+
+	it("reports missing settings extension roots through runtime diagnostics", async () => {
+		const env = new MemoryExecutionEnv();
+		env.addFile(
+			"/home/user/.widi/settings.json",
+			JSON.stringify({ extensions: ["/missing/extensions"] }),
+		);
+
+		const runtime = await createWidiRuntime({
+			cwd: "/workspace/project",
+			agentDir: "/home/user/.widi",
+			executionEnv: env,
+			defaultModel,
+		});
+
+		expect(runtime.diagnostics).toContainEqual(
+			expect.objectContaining({ code: "extension.source_missing" }),
+		);
+	});
+
+	it("gates project extension discovery on project trust", async () => {
+		const env = new MemoryExecutionEnv();
+		env.addDir("/workspace/project/.widi/extensions/project-extension");
+
+		const untrustedRuntime = await createWidiRuntime({
+			cwd: "/workspace/project",
+			agentDir: "/home/user/.widi",
+			executionEnv: env,
+			defaultModel,
+		});
+		expect(untrustedRuntime.services.extensionDiscovery.candidates).toEqual([]);
+
+		const trustedRuntime = await createWidiRuntime({
+			cwd: "/workspace/project",
+			agentDir: "/home/user/.widi",
+			executionEnv: env,
+			defaultModel,
+			trustOverride: true,
+		});
+		expect(
+			trustedRuntime.services.extensionDiscovery.candidates,
+		).toContainEqual({
+			id: "project-extension",
+			kind: "directory",
+			path: "/workspace/project/.widi/extensions/project-extension",
+			root: {
+				kind: "cwd",
+				path: "/workspace/project/.widi/extensions",
+			},
 		});
 	});
 

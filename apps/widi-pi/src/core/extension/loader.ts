@@ -1,3 +1,8 @@
+import type {
+	ExecutionEnv,
+	FileError,
+	FileInfo,
+} from "@earendil-works/pi-agent-core";
 import {
 	type CoreDiagnostic,
 	createDiagnostic,
@@ -61,6 +66,21 @@ export interface ExtensionRoot {
 	readonly path: string;
 }
 
+export type ExtensionDiscoveryCandidateKind = "directory" | "file";
+
+export interface ExtensionDiscoveryCandidate {
+	readonly id: string;
+	readonly root: ExtensionRoot;
+	readonly path: string;
+	readonly kind: ExtensionDiscoveryCandidateKind;
+}
+
+export interface ExtensionDiscoveryResult {
+	readonly roots: readonly ExtensionRoot[];
+	readonly candidates: readonly ExtensionDiscoveryCandidate[];
+	readonly diagnostics: readonly CoreDiagnostic[];
+}
+
 export interface ExtensionLoaderOptions {
 	readonly roots?: readonly ExtensionRoot[];
 }
@@ -91,6 +111,59 @@ export class ExtensionLoader {
 
 	getRoots(): readonly ExtensionRoot[] {
 		return [...this._roots];
+	}
+
+	async discover(
+		executionEnv: ExecutionEnv,
+	): Promise<ExtensionDiscoveryResult> {
+		const candidates: ExtensionDiscoveryCandidate[] = [];
+		const diagnostics: CoreDiagnostic[] = [];
+
+		for (const root of this._roots) {
+			const infoResult = await executionEnv.fileInfo(root.path);
+			if (!infoResult.ok) {
+				if (infoResult.error.code === "not_found" && root.kind !== "settings") {
+					continue;
+				}
+				diagnostics.push(
+					createExtensionDiscoveryDiagnostic({
+						code:
+							infoResult.error.code === "not_found"
+								? "extension.source_missing"
+								: "extension.file_info_failed",
+						severity:
+							infoResult.error.code === "not_found" ? "warning" : "error",
+						message:
+							infoResult.error.code === "not_found"
+								? `Extension source not found: ${root.path}`
+								: `Failed to inspect extension source ${root.path}: ${infoResult.error.message}`,
+						root,
+						error: infoResult.error,
+					}),
+				);
+				continue;
+			}
+
+			if (infoResult.value.kind === "directory") {
+				const result = await discoverDirectory(executionEnv, root);
+				candidates.push(...result.candidates);
+				diagnostics.push(...result.diagnostics);
+				continue;
+			}
+
+			const candidate = candidateFromFileInfo(root, infoResult.value);
+			if (candidate) {
+				candidates.push(candidate);
+			}
+		}
+
+		return {
+			roots: this.getRoots(),
+			candidates: candidates.sort((left, right) =>
+				left.path.localeCompare(right.path),
+			),
+			diagnostics,
+		};
 	}
 
 	registerExtensionFactory(
@@ -241,6 +314,113 @@ function normalizeExtensionIds(extensionIds: readonly string[]): string[] {
 		normalized.push(extensionId);
 	}
 	return normalized;
+}
+
+async function discoverDirectory(
+	executionEnv: ExecutionEnv,
+	root: ExtensionRoot,
+): Promise<{
+	readonly candidates: readonly ExtensionDiscoveryCandidate[];
+	readonly diagnostics: readonly CoreDiagnostic[];
+}> {
+	const listResult = await executionEnv.listDir(root.path);
+	if (!listResult.ok) {
+		return {
+			candidates: [],
+			diagnostics: [
+				createExtensionDiscoveryDiagnostic({
+					code: "extension.list_failed",
+					severity: "error",
+					message: `Failed to list extension source ${root.path}: ${listResult.error.message}`,
+					root,
+					error: listResult.error,
+				}),
+			],
+		};
+	}
+
+	return {
+		candidates: listResult.value.flatMap((entry) => {
+			const candidate = candidateFromFileInfo(root, entry);
+			return candidate ? [candidate] : [];
+		}),
+		diagnostics: [],
+	};
+}
+
+function candidateFromFileInfo(
+	root: ExtensionRoot,
+	fileInfo: FileInfo,
+): ExtensionDiscoveryCandidate | undefined {
+	if (fileInfo.kind === "directory") {
+		return {
+			id: basename(fileInfo.path),
+			root,
+			path: fileInfo.path,
+			kind: "directory",
+		};
+	}
+	if (fileInfo.kind !== "file") {
+		return undefined;
+	}
+
+	const id = extensionFileId(fileInfo.path);
+	if (!id) {
+		return undefined;
+	}
+	return {
+		id,
+		root,
+		path: fileInfo.path,
+		kind: "file",
+	};
+}
+
+function extensionFileId(path: string): string | undefined {
+	const name = basename(path);
+	for (const extension of [".js", ".mjs", ".cjs", ".ts"]) {
+		if (name.endsWith(extension) && name.length > extension.length) {
+			return name.slice(0, -extension.length);
+		}
+	}
+	return undefined;
+}
+
+function basename(path: string): string {
+	const normalized = path.replace(/\/+$/, "");
+	const index = normalized.lastIndexOf("/");
+	return index === -1 ? normalized : normalized.slice(index + 1);
+}
+
+function createExtensionDiscoveryDiagnostic(options: {
+	code:
+		| "extension.source_missing"
+		| "extension.file_info_failed"
+		| "extension.list_failed";
+	severity: DiagnosticSeverity;
+	message: string;
+	root: ExtensionRoot;
+	error?: FileError;
+}): CoreDiagnostic {
+	return createDiagnostic({
+		domain: "extension",
+		code: options.code,
+		severity: options.severity,
+		disposition: options.severity === "error" ? "degraded" : "reported",
+		recoverable: true,
+		message: options.message,
+		source: {
+			kind: "extension",
+			id: basename(options.root.path),
+			path: options.root.path,
+		},
+		phase: "load",
+		details: {
+			root: options.root,
+			errorCode: options.error?.code,
+			errorMessage: options.error?.message,
+		},
+	});
 }
 
 function createMissingFactoryDiagnostic(options: {

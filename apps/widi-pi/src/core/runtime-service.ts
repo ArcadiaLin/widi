@@ -26,7 +26,11 @@ import {
 	createDiagnostic,
 	OrchestratorError,
 } from "./diagnostics.ts";
-import { ExtensionLoader, type ExtensionRoot } from "./extension/index.ts";
+import {
+	type ExtensionDiscoveryResult,
+	ExtensionLoader,
+	type ExtensionRoot,
+} from "./extension/index.ts";
 import { ModelRegistry } from "./model-registry.js";
 import type { RuntimeModel } from "./orchestrator/commands.js";
 import {
@@ -78,6 +82,7 @@ export interface WidiRuntimeServices {
 	readonly profileRoots: readonly FileProfileRoot[];
 	readonly defaultProfile: RuntimeDefaultProfileResolution;
 	readonly defaultModel: RuntimeDefaultModelResolution;
+	readonly extensionDiscovery: ExtensionDiscoveryResult;
 	readonly executionEnv: ExecutionEnv;
 	readonly settingManager: SettingManager;
 	readonly configValueResolver: ConfigValueResolver;
@@ -509,6 +514,7 @@ export async function createWidiRuntime(
 				settingsPaths: settingManager.getExtensionPaths(),
 			}),
 		});
+	const extensionDiscovery = await extensionLoader.discover(executionEnv);
 	const toolRegistry = options.toolRegistry ?? new ToolRegistry();
 	const services: WidiRuntimeServices = {
 		cwd,
@@ -519,6 +525,7 @@ export async function createWidiRuntime(
 		profileRoots: profileRegistryResult.roots,
 		defaultProfile: defaultProfile.resolution,
 		defaultModel: defaultModel.resolution,
+		extensionDiscovery,
 		executionEnv,
 		settingManager,
 		configValueResolver,
@@ -552,6 +559,7 @@ export async function createWidiRuntime(
 		...authStorage.drainDiagnostics(),
 		...modelRegistry.drainDiagnostics(),
 		...defaultProfile.diagnostics,
+		...extensionDiscovery.diagnostics,
 	];
 
 	return {

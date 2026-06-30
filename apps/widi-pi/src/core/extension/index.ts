@@ -1,4 +1,7 @@
 export {
+	type ExtensionDiscoveryCandidate,
+	type ExtensionDiscoveryCandidateKind,
+	type ExtensionDiscoveryResult,
 	type ExtensionInterceptorRegistration,
 	ExtensionLoader,
 	type ExtensionObserverRegistration,
