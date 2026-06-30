@@ -937,7 +937,6 @@ export class AgentOrchestrator {
 		});
 		const extensionRunner = new ExtensionRunner({
 			loadedScope: loadedExtensionScope,
-			actions: this._createExtensionActions(),
 		});
 		this._agentExtensionRunners.set(agentId, extensionRunner);
 		await this._publishDiagnostics(extensionRunner.diagnostics);
@@ -972,6 +971,15 @@ export class AgentOrchestrator {
 		});
 		this.agents.set(agentId, harness);
 		this._agentToolSets.set(agentId, agentToolSet);
+		extensionRunner.bindCore(this._createExtensionActions(), {
+			getSignal: () => undefined,
+			isIdle: () => true,
+		});
+		extensionRunner.bindCommandContext({
+			waitForIdle: async () => {
+				await harness.waitForIdle();
+			},
+		});
 		const unsubscribeInterceptors = this._registerExtensionInterceptors(
 			agentId,
 			harness,

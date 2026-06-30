@@ -13,7 +13,10 @@ export {
 export type {
 	ExtensionActions,
 	ExtensionActivationApi,
+	ExtensionCommandContext,
+	ExtensionCommandContextActions,
 	ExtensionContext,
+	ExtensionContextActions,
 	ExtensionFactory,
 	ExtensionInterceptorEventFor,
 	ExtensionInterceptorFor,

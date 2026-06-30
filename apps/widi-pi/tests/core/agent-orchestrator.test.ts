@@ -1108,6 +1108,64 @@ describe("AgentOrchestrator", () => {
 		});
 	});
 
+	it("binds extension runner core and command contexts after harness creation", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["observer"],
+		};
+		const observed: string[] = [];
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("observer", (api) => {
+			api.observe("agent_harness_event", (_event, context) => {
+				observed.push(
+					`${context.extensionId}:${context.profileId}:${context.isIdle()}:${context.actions.getAgentTools(context.agentId).toolNames.length}`,
+				);
+			});
+		});
+
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const runner = (
+			orchestrator as unknown as {
+				_agentExtensionRunners: Map<
+					string,
+					{
+						createCommandContext(extensionId?: string): {
+							extensionId: string;
+							waitForIdle(): Promise<void>;
+						};
+					}
+				>;
+			}
+		)._agentExtensionRunners.get(agentId);
+		if (!runner) throw new Error("Expected extension runner.");
+		const commandContext = runner.createCommandContext("observer");
+		await commandContext.waitForIdle();
+		const handleHarnessEvent = (
+			orchestrator as unknown as {
+				_handleAgentHarnessEvent(
+					agentId: string,
+					event: AgentHarnessEvent,
+				): Promise<void>;
+			}
+		)._handleAgentHarnessEvent.bind(orchestrator);
+
+		await handleHarnessEvent(agentId, { type: "turn_start" });
+
+		expect(commandContext.extensionId).toBe("observer");
+		expect(observed).toEqual([`observer:${extensionProfile.id}:true:0`]);
+	});
+
 	it("emits normalized tool lifecycle events from harness events", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env, {

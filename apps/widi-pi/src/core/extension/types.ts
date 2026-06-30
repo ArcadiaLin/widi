@@ -139,11 +139,26 @@ export interface ExtensionActions {
 	dispatch(command: OrchestratorCommand): Promise<OrchestratorCommandResult>;
 }
 
+export interface ExtensionContextActions {
+	getSignal?(): AbortSignal | undefined;
+	isIdle?(): boolean;
+}
+
+export interface ExtensionCommandContextActions {
+	waitForIdle(): Promise<void>;
+}
+
 export interface ExtensionContext {
 	extensionId: string;
 	agentId: string;
 	profileId: string;
 	actions: ExtensionActions;
+	readonly signal: AbortSignal | undefined;
+	isIdle(): boolean;
+}
+
+export interface ExtensionCommandContext extends ExtensionContext {
+	waitForIdle(): Promise<void>;
 }
 
 export type ExtensionObserver<

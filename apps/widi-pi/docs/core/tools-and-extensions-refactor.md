@@ -436,7 +436,7 @@ Core 仍可以拥有少量 agent collaboration tools。它们直接暴露 WIDI c
 
 目标：继续贴近 Pi coding-agent extension API，但只暴露 WIDI 已经能稳定支持的能力。
 
-状态：MVP 已落地 `observe(...)` / `intercept(...)` 双通道。`observe` 用于旁路观察，handler error 降级为 runtime diagnostic；`intercept` 用于执行链拦截，handler error 按 harness hook error 传播。当前只开放 `before_agent_start`、`context`、`tool_call`、`tool_result` 四个稳定 hook；provider/session 级 hook 以代码注释列出但暂缓暴露。
+状态：MVP 已落地 `observe(...)` / `intercept(...)` 双通道。`observe` 用于旁路观察，handler error 降级为 runtime diagnostic；`intercept` 用于执行链拦截，handler error 按 harness hook error 传播。当前只开放 `before_agent_start`、`context`、`tool_call`、`tool_result` 四个稳定 hook；provider/session 级 hook 以代码注释列出但暂缓暴露。Runner 已改为 Pi 风格的 capability binder：先加载 scoped extension scope，再由 Orchestrator 在 harness 创建后调用 `bindCore(...)` / `bindCommandContext(...)` 注入 runtime 能力；handler 执行时通过 `createContext(...)` / `createCommandContext(...)` 获取 lazy context，而不是在 runner 构造时塞入扁平 action bag。
 
 - 对齐 extension factory / activation 形态。
 - 明确 activation context 能拿到哪些 runtime 信息。

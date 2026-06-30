@@ -13,6 +13,10 @@ import type {
 } from "./loader.ts";
 import type {
 	ExtensionActions,
+	ExtensionCommandContext,
+	ExtensionCommandContextActions,
+	ExtensionContext,
+	ExtensionContextActions,
 	ExtensionInterceptorEventFor,
 	ExtensionInterceptorFor,
 	ExtensionInterceptorName,
@@ -24,7 +28,6 @@ import type {
 
 export interface ExtensionRunnerOptions {
 	loadedScope: LoadedExtensionScope;
-	actions: ExtensionActions;
 }
 
 export class ExtensionRunner {
@@ -33,16 +36,70 @@ export class ExtensionRunner {
 	readonly extensionIds: readonly string[];
 	readonly diagnostics: readonly CoreDiagnostic[];
 
-	private readonly _actions: ExtensionActions;
 	private readonly _loadedScope: LoadedExtensionScope;
+	private _actions: ExtensionActions = createUnboundActions();
+	private _contextActions: ExtensionContextActions = {};
+	private _commandContextActions: ExtensionCommandContextActions = {
+		waitForIdle: async () => {},
+	};
+	private _staleMessage: string | undefined;
 
 	constructor(options: ExtensionRunnerOptions) {
 		this._loadedScope = options.loadedScope;
-		this._actions = options.actions;
 		this.agentId = options.loadedScope.agentId;
 		this.profileId = options.loadedScope.profileId;
 		this.extensionIds = [...options.loadedScope.extensionIds];
 		this.diagnostics = [...options.loadedScope.diagnostics];
+	}
+
+	bindCore(
+		actions: ExtensionActions,
+		contextActions: ExtensionContextActions,
+	): void {
+		this._actions = actions;
+		this._contextActions = contextActions;
+	}
+
+	bindCommandContext(actions?: ExtensionCommandContextActions): void {
+		this._commandContextActions = actions ?? {
+			waitForIdle: async () => {},
+		};
+	}
+
+	createContext(extensionId = this.extensionIds[0] ?? ""): ExtensionContext {
+		const runner = this;
+		return {
+			extensionId,
+			agentId: this.agentId,
+			profileId: this.profileId,
+			actions: this._createContextActions(),
+			get signal() {
+				runner._assertActive();
+				return runner._contextActions.getSignal?.();
+			},
+			isIdle: () => {
+				this._assertActive();
+				return this._contextActions.isIdle?.() ?? true;
+			},
+		};
+	}
+
+	createCommandContext(
+		extensionId = this.extensionIds[0] ?? "",
+	): ExtensionCommandContext {
+		return {
+			...this.createContext(extensionId),
+			waitForIdle: async () => {
+				this._assertActive();
+				await this._commandContextActions.waitForIdle();
+			},
+		};
+	}
+
+	invalidate(
+		message = "This extension context is stale after runtime replacement or reload.",
+	): void {
+		this._staleMessage = message;
 	}
 
 	defineToolsTo(registry: ToolRegistry): void {
@@ -56,12 +113,10 @@ export class ExtensionRunner {
 		const handlers = this._loadedScope.observerHandlers.get(event.type) ?? [];
 		for (const registration of handlers) {
 			try {
-				await (registration.handler as ExtensionObserver)(event, {
-					extensionId: registration.extensionId,
-					agentId: this.agentId,
-					profileId: this.profileId,
-					actions: this._actions,
-				});
+				await (registration.handler as ExtensionObserver)(
+					event,
+					this.createContext(registration.extensionId),
+				);
 			} catch (error) {
 				diagnostics.push(this._createHandlerDiagnostic(registration, error));
 			}
@@ -186,13 +241,39 @@ export class ExtensionRunner {
 	): Promise<ExtensionInterceptorResultFor<TName>> {
 		return await (registration.handler as ExtensionInterceptorFor<TName>)(
 			event,
-			{
-				extensionId: registration.extensionId,
-				agentId: this.agentId,
-				profileId: this.profileId,
-				actions: this._actions,
-			},
+			this.createContext(registration.extensionId),
 		);
+	}
+
+	private _assertActive(): void {
+		if (this._staleMessage) {
+			throw new Error(this._staleMessage);
+		}
+	}
+
+	private _createContextActions(): ExtensionActions {
+		return {
+			getAgentTools: (agentId) => {
+				this._assertActive();
+				return this._actions.getAgentTools(agentId);
+			},
+			setAgentTools: async (agentId, toolNames, activeToolNames) => {
+				this._assertActive();
+				await this._actions.setAgentTools(agentId, toolNames, activeToolNames);
+			},
+			setAgentActiveTools: async (agentId, toolNames) => {
+				this._assertActive();
+				await this._actions.setAgentActiveTools(agentId, toolNames);
+			},
+			requestHuman: async (request) => {
+				this._assertActive();
+				return await this._actions.requestHuman(request);
+			},
+			dispatch: async (command) => {
+				this._assertActive();
+				return await this._actions.dispatch(command);
+			},
+		};
 	}
 
 	private _createHandlerDiagnostic(
@@ -220,4 +301,17 @@ export class ExtensionRunner {
 
 function formatError(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function createUnboundActions(): ExtensionActions {
+	const notBound = () => {
+		throw new Error("Extension runner core actions are not bound.");
+	};
+	return {
+		getAgentTools: () => notBound(),
+		setAgentTools: async () => notBound(),
+		setAgentActiveTools: async () => notBound(),
+		requestHuman: async () => notBound(),
+		dispatch: async () => notBound(),
+	};
 }
