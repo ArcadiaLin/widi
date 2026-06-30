@@ -58,8 +58,14 @@ export interface CreateWidiRuntimeOptions {
 	readonly extensionLoader?: ExtensionLoader;
 }
 
-export type RuntimeDefaultProfileSource = "override" | "settings" | "builtin";
-export type RuntimeDefaultModelSource = "override" | "settings" | "available";
+export type RuntimeDefaultProfileSource =
+	| "runtime_override"
+	| "settings"
+	| "builtin_fallback";
+export type RuntimeDefaultModelSource =
+	| "runtime_override"
+	| "settings"
+	| "available_fallback";
 
 export interface RuntimeDefaultProfileResolution {
 	readonly id: string;
@@ -289,10 +295,10 @@ async function resolveDefaultProfileId(options: {
 		"default";
 	const source: RuntimeDefaultProfileSource =
 		options.explicitDefaultProfileId !== undefined
-			? "override"
+			? "runtime_override"
 			: options.settingsDefaultProfileId !== undefined
 				? "settings"
-				: "builtin";
+				: "builtin_fallback";
 	const result = await options.profileRegistry.resolveProfile(profileId);
 	if (!result.ok) {
 		throw new OrchestratorError(
@@ -306,17 +312,42 @@ async function resolveDefaultProfileId(options: {
 				source: { kind: "profile", id: profileId },
 				phase: "resolve",
 				profileId,
+				details: { defaultSource: source },
 			}),
 		);
 	}
-	return {
-		resolution: {
-			id: result.profile.id,
-			source,
-			profileSource: result.source,
-		},
-		diagnostics: result.diagnostics,
+	const resolution: RuntimeDefaultProfileResolution = {
+		id: result.profile.id,
+		source,
+		profileSource: result.source,
 	};
+	return {
+		resolution,
+		diagnostics: [
+			...result.diagnostics,
+			createDefaultProfileResolvedDiagnostic(resolution),
+		],
+	};
+}
+
+function createDefaultProfileResolvedDiagnostic(
+	resolution: RuntimeDefaultProfileResolution,
+): CoreDiagnostic {
+	return createDiagnostic({
+		domain: "profile",
+		code: "profile.default_resolved",
+		severity: "info",
+		disposition: "reported",
+		recoverable: true,
+		message: `Default profile resolved to ${resolution.id} from ${resolution.source}.`,
+		source: { kind: "profile", id: resolution.id },
+		phase: "resolve",
+		profileId: resolution.id,
+		details: {
+			defaultSource: resolution.source,
+			profileSource: resolution.profileSource,
+		},
+	});
 }
 
 async function resolveDefaultModel(options: {
@@ -326,15 +357,18 @@ async function resolveDefaultModel(options: {
 }): Promise<{
 	readonly model: RuntimeModel;
 	readonly resolution: RuntimeDefaultModelResolution;
+	readonly diagnostic: CoreDiagnostic;
 }> {
 	if (options.explicitDefaultModel) {
+		const resolution: RuntimeDefaultModelResolution = {
+			provider: options.explicitDefaultModel.provider,
+			modelId: options.explicitDefaultModel.id,
+			source: "runtime_override",
+		};
 		return {
 			model: options.explicitDefaultModel,
-			resolution: {
-				provider: options.explicitDefaultModel.provider,
-				modelId: options.explicitDefaultModel.id,
-				source: "override",
-			},
+			resolution,
+			diagnostic: createDefaultModelResolvedDiagnostic(resolution),
 		};
 	}
 
@@ -343,13 +377,15 @@ async function resolveDefaultModel(options: {
 	if (defaultProvider && defaultModelId) {
 		const model = options.modelRegistry.find(defaultProvider, defaultModelId);
 		if (model && (await options.modelRegistry.hasConfiguredAuth(model))) {
+			const resolution: RuntimeDefaultModelResolution = {
+				provider: model.provider,
+				modelId: model.id,
+				source: "settings",
+			};
 			return {
 				model,
-				resolution: {
-					provider: model.provider,
-					modelId: model.id,
-					source: "settings",
-				},
+				resolution,
+				diagnostic: createDefaultModelResolvedDiagnostic(resolution),
 			};
 		}
 		throw new OrchestratorError(
@@ -368,19 +404,22 @@ async function resolveDefaultModel(options: {
 				phase: "resolve",
 				provider: defaultProvider,
 				modelId: defaultModelId,
+				details: { defaultSource: "settings" },
 			}),
 		);
 	}
 
 	const [availableModel] = await options.modelRegistry.getAvailable();
 	if (availableModel) {
+		const resolution: RuntimeDefaultModelResolution = {
+			provider: availableModel.provider,
+			modelId: availableModel.id,
+			source: "available_fallback",
+		};
 		return {
 			model: availableModel,
-			resolution: {
-				provider: availableModel.provider,
-				modelId: availableModel.id,
-				source: "available",
-			},
+			resolution,
+			diagnostic: createDefaultModelResolvedDiagnostic(resolution),
 		};
 	}
 
@@ -397,6 +436,28 @@ async function resolveDefaultModel(options: {
 			phase: "resolve",
 		}),
 	);
+}
+
+function createDefaultModelResolvedDiagnostic(
+	resolution: RuntimeDefaultModelResolution,
+): CoreDiagnostic {
+	return createDiagnostic({
+		domain: "model",
+		code: "model.default_resolved",
+		severity: "info",
+		disposition: "reported",
+		recoverable: true,
+		message: `Default model resolved to ${resolution.provider}/${resolution.modelId} from ${resolution.source}.`,
+		source: {
+			kind: "registry",
+			name: "model",
+			key: `${resolution.provider}/${resolution.modelId}`,
+		},
+		phase: "resolve",
+		provider: resolution.provider,
+		modelId: resolution.modelId,
+		details: { defaultSource: resolution.source },
+	});
 }
 
 export async function createWidiRuntime(
@@ -559,6 +620,7 @@ export async function createWidiRuntime(
 		...authStorage.drainDiagnostics(),
 		...modelRegistry.drainDiagnostics(),
 		...defaultProfile.diagnostics,
+		defaultModel.diagnostic,
 		...extensionDiscovery.diagnostics,
 	];
 

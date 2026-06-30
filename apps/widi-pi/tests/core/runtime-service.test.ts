@@ -235,7 +235,71 @@ persist: true
 You are ${id}.`;
 }
 
+function modelsJson(provider: string, modelId: string): string {
+	return JSON.stringify({
+		providers: {
+			[provider]: {
+				api: "openai-completions",
+				baseUrl: "https://example.test/v1",
+				apiKey: "test-key",
+				models: [
+					{
+						id: modelId,
+						name: modelId,
+						reasoning: false,
+						input: ["text"],
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						contextWindow: 1000,
+						maxTokens: 100,
+					},
+				],
+			},
+		},
+	});
+}
+
 describe("createWidiRuntime", () => {
+	it("reports damaged global settings through runtime diagnostics", async () => {
+		const env = new MemoryExecutionEnv();
+		env.addFile("/home/user/.widi/settings.json", "{ invalid json");
+
+		const runtime = await createWidiRuntime({
+			cwd: "/workspace/project",
+			agentDir: "/home/user/.widi",
+			executionEnv: env,
+			defaultModel,
+		});
+
+		expect(runtime.diagnostics).toContainEqual(
+			expect.objectContaining({
+				code: "settings.load_failed",
+				source: { kind: "settings", scope: "global" },
+			}),
+		);
+		expect(runtime.orchestrator.getDefaultProfileId()).toBe("default");
+	});
+
+	it("reports damaged trusted project settings through runtime diagnostics", async () => {
+		const env = new MemoryExecutionEnv();
+		env.addFile("/workspace/project/.widi/settings.json", "{ invalid json");
+
+		const runtime = await createWidiRuntime({
+			cwd: "/workspace/project",
+			agentDir: "/home/user/.widi",
+			executionEnv: env,
+			defaultModel,
+			trustOverride: true,
+		});
+
+		expect(runtime.diagnostics).toContainEqual(
+			expect.objectContaining({
+				code: "settings.load_failed",
+				source: { kind: "settings", scope: "project" },
+			}),
+		);
+		expect(runtime.orchestrator.getDefaultProfileId()).toBe("default");
+	});
+
 	it("creates services and an orchestrator without spawning an agent", async () => {
 		const env = new MemoryExecutionEnv();
 		const runtime = await createWidiRuntime({
@@ -253,14 +317,30 @@ describe("createWidiRuntime", () => {
 		expect(runtime.orchestrator.agents.size).toBe(0);
 		expect(runtime.services.defaultProfile).toMatchObject({
 			id: "default",
-			source: "builtin",
+			source: "builtin_fallback",
 			profileSource: { kind: "builtin" },
 		});
 		expect(runtime.services.defaultModel).toEqual({
 			provider: "test-provider",
 			modelId: "test-model",
-			source: "override",
+			source: "runtime_override",
 		});
+		expect(runtime.diagnostics).toContainEqual(
+			expect.objectContaining({
+				code: "profile.default_resolved",
+				details: expect.objectContaining({
+					defaultSource: "builtin_fallback",
+				}),
+			}),
+		);
+		expect(runtime.diagnostics).toContainEqual(
+			expect.objectContaining({
+				code: "model.default_resolved",
+				details: expect.objectContaining({
+					defaultSource: "runtime_override",
+				}),
+			}),
+		);
 	});
 
 	it("gates project profiles when project trust is not granted", async () => {
@@ -303,8 +383,53 @@ describe("createWidiRuntime", () => {
 		expect(runtime.services.projectTrust.trusted).toBe(true);
 		expect(runtime.services.defaultProfile).toMatchObject({
 			id: "project",
-			source: "override",
+			source: "runtime_override",
 			profileSource: { kind: "cwd" },
+		});
+	});
+
+	it("prefers runtime default overrides over settings defaults", async () => {
+		const env = new MemoryExecutionEnv();
+		env.addFile(
+			"/home/user/.widi/settings.json",
+			JSON.stringify({
+				defaultProfile: "settings-profile",
+				defaultProvider: "settings-provider",
+				defaultModel: "settings-model",
+				profiles: ["/custom/profiles"],
+			}),
+		);
+		env.addFile(
+			"/custom/profiles/settings-profile.md",
+			profileMarkdown("settings-profile"),
+		);
+		env.addFile(
+			"/workspace/project/.widi/profiles/project.md",
+			profileMarkdown("project"),
+		);
+		env.addFile(
+			"/home/user/.widi/agent/models.json",
+			modelsJson("settings-provider", "settings-model"),
+		);
+
+		const runtime = await createWidiRuntime({
+			cwd: "/workspace/project",
+			agentDir: "/home/user/.widi",
+			executionEnv: env,
+			defaultProfileId: "project",
+			defaultModel,
+			trustOverride: true,
+		});
+
+		expect(runtime.services.defaultProfile).toMatchObject({
+			id: "project",
+			source: "runtime_override",
+			profileSource: { kind: "cwd" },
+		});
+		expect(runtime.services.defaultModel).toEqual({
+			provider: "test-provider",
+			modelId: "test-model",
+			source: "runtime_override",
 		});
 	});
 
@@ -510,6 +635,99 @@ describe("createWidiRuntime", () => {
 		expect(runtime.diagnostics).toContainEqual(
 			expect.objectContaining({ code: "profile.source_missing" }),
 		);
+	});
+
+	it("resolves default model from settings", async () => {
+		const env = new MemoryExecutionEnv();
+		env.addFile(
+			"/home/user/.widi/settings.json",
+			JSON.stringify({
+				defaultProvider: "settings-provider",
+				defaultModel: "settings-model",
+			}),
+		);
+		env.addFile(
+			"/home/user/.widi/agent/models.json",
+			modelsJson("settings-provider", "settings-model"),
+		);
+
+		const runtime = await createWidiRuntime({
+			cwd: "/workspace/project",
+			agentDir: "/home/user/.widi",
+			executionEnv: env,
+		});
+
+		expect(runtime.services.defaultModel).toEqual({
+			provider: "settings-provider",
+			modelId: "settings-model",
+			source: "settings",
+		});
+		expect(runtime.orchestrator.getDefaultModel()).toMatchObject({
+			provider: "settings-provider",
+			id: "settings-model",
+		});
+		expect(runtime.diagnostics).toContainEqual(
+			expect.objectContaining({
+				code: "model.default_resolved",
+				details: expect.objectContaining({ defaultSource: "settings" }),
+			}),
+		);
+	});
+
+	it("falls back to the first available model when settings do not specify one", async () => {
+		const env = new MemoryExecutionEnv();
+		env.addFile(
+			"/home/user/.widi/agent/models.json",
+			modelsJson("available-provider", "available-model"),
+		);
+
+		const runtime = await createWidiRuntime({
+			cwd: "/workspace/project",
+			agentDir: "/home/user/.widi",
+			executionEnv: env,
+		});
+
+		expect(runtime.services.defaultModel).toEqual({
+			provider: "available-provider",
+			modelId: "available-model",
+			source: "available_fallback",
+		});
+		expect(runtime.diagnostics).toContainEqual(
+			expect.objectContaining({
+				code: "model.default_resolved",
+				details: expect.objectContaining({
+					defaultSource: "available_fallback",
+				}),
+			}),
+		);
+	});
+
+	it("fails fast when settings default model is unavailable", async () => {
+		const env = new MemoryExecutionEnv();
+		env.addFile(
+			"/home/user/.widi/settings.json",
+			JSON.stringify({
+				defaultProvider: "settings-provider",
+				defaultModel: "missing-model",
+			}),
+		);
+		env.addFile(
+			"/home/user/.widi/agent/models.json",
+			modelsJson("settings-provider", "settings-model"),
+		);
+
+		await expect(
+			createWidiRuntime({
+				cwd: "/workspace/project",
+				agentDir: "/home/user/.widi",
+				executionEnv: env,
+			}),
+		).rejects.toMatchObject({
+			code: "model.default_unavailable",
+			diagnostic: expect.objectContaining({
+				details: expect.objectContaining({ defaultSource: "settings" }),
+			}),
+		});
 	});
 
 	it("prefers explicit session root over settings and fallback", async () => {

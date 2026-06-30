@@ -22,8 +22,9 @@
 - [x] 将 `SettingManager.getProfilePaths()` 接入真实 profile roots，组合 settings paths、project `.widi/profiles`、agent dir profiles 和 builtin default profile。
 - [x] 将 settings 中的 `skills`、`prompts`、`extensions` paths 接入 resource/extension discovery，而不是只停留在 typed getters。
   - Runtime composition 阶段边界：`skills`/`prompts` 接入 `ResourceLoader` roots；`extensions` 接入 `ExtensionLoader.discover()`，只产出 discovery candidates 和 diagnostics，不执行 file/module load 或 activation。完整 extension declaration、file/module loader、trust/reload/permission/activation diagnostics 留在 P0 Extension 完善阶段。
-- [ ] 明确 default profile/model 的来源：settings、CLI/runtime override、builtin fallback 的优先级和 diagnostics。
-- [ ] 为 runtime service 增加 focused tests，覆盖损坏 settings、缺失 profile root、project trust 和 builtin default source。
+- [x] 明确 default profile/model 的来源：settings、CLI/runtime override、builtin fallback 的优先级和 diagnostics。
+  - Default profile 优先级：runtime override > settings `defaultProfile` > builtin `default` fallback。Default model 优先级：runtime override > settings `defaultProvider`/`defaultModel` > first available configured model fallback。Runtime service 暴露 resolved source facts，并为成功解析与 fail-fast 错误提供 diagnostics。
+- [x] 为 runtime service 增加 focused tests，覆盖损坏 settings、缺失 profile root、project trust 和 builtin default source。
 
 ## P0: Agent Record And Lifecycle
 
