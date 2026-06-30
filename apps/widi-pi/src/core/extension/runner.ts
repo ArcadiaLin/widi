@@ -102,9 +102,17 @@ export class ExtensionRunner {
 		this._staleMessage = message;
 	}
 
-	defineToolsTo(registry: ToolRegistry): void {
+	contributeToolsTo(registry: ToolRegistry): void {
 		for (const contribution of this._loadedScope.toolContributions) {
-			registry.defineTool(contribution.definition, contribution.source);
+			if (contribution.kind === "define") {
+				registry.defineTool(contribution.definition, contribution.source);
+			} else {
+				registry.patchTool(
+					contribution.targetToolName,
+					contribution.patch,
+					contribution.source,
+				);
+			}
 		}
 	}
 

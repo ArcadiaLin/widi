@@ -884,6 +884,86 @@ describe("AgentOrchestrator", () => {
 		expect(orchestrator.toolRegistry.resolve().toolNames).toEqual([]);
 	});
 
+	it("applies scoped extension tool patches in activation order", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["patcher"],
+		};
+		const plainProfile: AgentProfile = {
+			...defaultProfile,
+			id: "plain-profile",
+			label: "Plain Profile",
+			persist: false,
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+					{ profile: plainProfile },
+				]),
+			),
+			toolRegistry: createToolRegistry(createToolDefinition("plain", "base")),
+		});
+		orchestrator.registerExtensionFactory("patcher", (api) => {
+			api.patchTool("late", {
+				description: "patched late tool",
+			});
+			api.registerTool(createToolDefinition("late", "late-base"));
+			api.patchTool("plain", {
+				description: "patched plain tool",
+				execute: async () => ({
+					content: [{ type: "text", text: "patched" }],
+					details: { source: "patcher" },
+				}),
+			});
+		});
+
+		const { agentId: extensionAgentId, harness: extensionHarness } =
+			await orchestrator.spawnAgentHarness();
+		const { agentId: plainAgentId, harness: plainHarness } =
+			await orchestrator.spawnAgentHarness({ profileId: plainProfile.id });
+		const patchedPlain = extensionHarness
+			.getTools()
+			.find((tool) => tool.name === "plain");
+		const lateTool = extensionHarness
+			.getTools()
+			.find((tool) => tool.name === "late");
+		const unpatchedPlain = plainHarness
+			.getTools()
+			.find((tool) => tool.name === "plain");
+		if (!patchedPlain || !lateTool || !unpatchedPlain) {
+			throw new Error("Expected test tools to resolve.");
+		}
+
+		await expect(patchedPlain.execute("call-1", {})).resolves.toEqual({
+			content: [{ type: "text", text: "patched" }],
+			details: { source: "patcher" },
+		});
+		await expect(unpatchedPlain.execute("call-2", {})).resolves.toEqual({
+			content: [{ type: "text", text: "base" }],
+			details: undefined,
+		});
+		expect(lateTool.description).toBe("patched late tool");
+		expect(orchestrator.getAgentTools(extensionAgentId)).toEqual({
+			toolNames: ["plain", "late"],
+			activeToolNames: ["plain", "late"],
+		});
+		expect(orchestrator.getAgentTools(plainAgentId)).toEqual({
+			toolNames: ["plain"],
+			activeToolNames: ["plain"],
+		});
+		expect(
+			orchestrator.toolRegistry.resolve().getToolDefinition("plain"),
+		).toMatchObject({
+			description: "plain tool",
+		});
+	});
+
 	it("emits extension diagnostics for missing factories", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = {

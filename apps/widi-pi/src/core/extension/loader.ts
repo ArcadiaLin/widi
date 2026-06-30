@@ -11,10 +11,12 @@ import type {
 	ExtensionObservedEventName,
 	ExtensionObserverFor,
 	ToolDefinition,
+	ToolDefinitionPatch,
 	ToolSource,
 } from "./types.ts";
 
 type ExtensionToolDefinition = ToolDefinition;
+type ExtensionToolDefinitionPatch = ToolDefinitionPatch;
 
 export interface ExtensionObserverRegistration<
 	TName extends ExtensionObservedEventName,
@@ -39,11 +41,20 @@ export interface LoadExtensionScopeOptions {
 	missingExtensionSeverity?: "ignore" | "warning" | "error";
 }
 
-export interface ExtensionToolContribution {
-	extensionId: string;
-	definition: ExtensionToolDefinition;
-	source: ToolSource;
-}
+export type ExtensionToolContribution =
+	| {
+			kind: "define";
+			extensionId: string;
+			definition: ExtensionToolDefinition;
+			source: ToolSource;
+	  }
+	| {
+			kind: "patch";
+			extensionId: string;
+			targetToolName: string;
+			patch: ExtensionToolDefinitionPatch;
+			source: ToolSource;
+	  };
 
 export interface LoadedExtensionScope {
 	agentId: string;
@@ -165,8 +176,18 @@ function createActivationApi(options: {
 		profileId: options.profileId,
 		registerTool: (tool) => {
 			options.toolContributions.push({
+				kind: "define",
 				extensionId: options.extensionId,
 				definition: tool as ExtensionToolDefinition,
+				source: { kind: "extension", id: options.extensionId },
+			});
+		},
+		patchTool: (targetToolName, patch) => {
+			options.toolContributions.push({
+				kind: "patch",
+				extensionId: options.extensionId,
+				targetToolName,
+				patch: patch as ExtensionToolDefinitionPatch,
 				source: { kind: "extension", id: options.extensionId },
 			});
 		},

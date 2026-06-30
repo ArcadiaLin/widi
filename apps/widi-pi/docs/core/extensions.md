@@ -169,13 +169,13 @@ WIDI 的当前形态更偏 core-first：
 
 - Extension declaration、identity、version/compatibility、source metadata 和 missing policy。
 - Extension loader：路径/package 解析、trust gate、activation、reload、error isolation。
-- Extension API：已具备 `registerTool`、`observe` 和 MVP `intercept`；后续仍需设计 `patchTool`、`registerCommand`、resource/provider registration 等入口。
+- Extension API：已具备 `registerTool`、activation-time `patchTool`、`observe` 和 MVP `intercept`；后续仍需设计 `registerCommand`、resource/provider registration 等入口。
 - Hook event matrix：已落地 observer 与四个 MVP interceptor；provider/session hook、mutate 权限、更多返回值合成和 permission 仍需继续设计。
 - Extension-owned storage 与 session `custom` entry API。
 - Permission model：尤其是 patch `execute` replacement、filesystem/shell/model/session/orchestrator capability。
 - Debug/inspection command：查看 loaded extensions、registered hooks、resolved tools、patches、diagnostics。
 
-下一步不应直接写业务 extension。应先继续加固最小 loader/runner：加载一个本地 extension factory，提供 extension-scoped `registerTool`，把注册结果作为当前 agent/profile scope 接入 scoped registry overlay，并通过 diagnostics/debug view 展示激活结果。`patchTool`、hook event matrix、command/provider registration 和 session custom entry API 应在 permission 与 diagnostics 规则明确后再开放。
+下一步不应直接写业务 extension。应继续加固 loader/runner：通过 diagnostics/debug view 展示 extension activation、registered hooks、defined tools、patches 和 resolved tools。Hook event matrix、command/provider registration 和 session custom entry API 应在 permission 与 diagnostics 规则明确后再开放。
 
 ## 非职责
 

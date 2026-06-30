@@ -190,6 +190,10 @@ export interface ExtensionActivationApi {
 	registerTool<TParamsSchema extends TSchema, TDetails>(
 		tool: ToolDefinition<TParamsSchema, TDetails>,
 	): void;
+	patchTool<TParamsSchema extends TSchema, TDetails>(
+		targetToolName: string,
+		patch: ToolDefinitionPatch<TParamsSchema, TDetails>,
+	): void;
 	observe<TName extends ExtensionObservedEventName>(
 		eventName: TName,
 		handler: ExtensionObserverFor<TName>,

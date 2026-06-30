@@ -1076,7 +1076,7 @@ export class AgentOrchestrator {
 	private _createScopedToolRegistry(agentId: AgentId): ToolRegistry {
 		const registry = this.toolRegistry.clone();
 		const extensionRunner = this._agentExtensionRunners.get(agentId);
-		extensionRunner?.defineToolsTo(registry);
+		extensionRunner?.contributeToolsTo(registry);
 		return registry;
 	}
 

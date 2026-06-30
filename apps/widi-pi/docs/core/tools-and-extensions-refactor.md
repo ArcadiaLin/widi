@@ -232,20 +232,17 @@ WIDI 对应的 MVP 应分为两层：
 
 ## Patch Model
 
-当前 `patchTool`/`aroundExecute` 能表达审计、确认、sandbox 转发和 backend replacement。但 external extension 是否可以 patch tool，不一定是第一阶段必须能力。
+当前 `patchTool`/`aroundExecute` 能表达审计、确认、sandbox 转发和 backend replacement。Phase 6A 已将 patch 暴露为 activation-time extension API。
 
-建议迁移时分两步：
+当前 MVP 语义：
 
-1. 先保留现有 patch 能力以避免倒退，但不把新设计建立在 patch 必须存在之上。
-2. 等 extension permission model 明确后，再决定 patch 是否作为正式 extension API 暴露。
-
-正式暴露 patch 前，需要先回答：
-
-- 哪些 extension 可以替换 `execute`。
-- 哪些 extension 只能 `aroundExecute`。
-- 多个 patch 的加载顺序如何解释。
-- patch 失败、permission denied、contract risk 如何诊断。
+- `patchTool` 直接复用完整 `ToolDefinitionPatch`。
+- Extension 可以 patch metadata、`parameters`、`aroundExecute` 和 replace `execute`。
+- Patch 只在 activation 阶段声明，不进入 runtime context/actions。
+- 多个 patch 按 activation contribution 顺序 replay 到 scoped registry，由 `ToolRegistry` registration order 决定最终合成。
+- invalid target、missing target、field conflict、contract risk 继续由 `ToolRegistry` 产出 diagnostics。
 - patch 的 extension context 如何绑定，`next()` 如何恢复内层 tool source context。
+- 后续如需要 permission model，再设计 metadata-only / `aroundExecute` / replace `execute` 分级。
 
 ## Deferred: Built-in Coding Extension
 
@@ -442,7 +439,7 @@ Core 仍可以拥有少量 agent collaboration tools。它们直接暴露 WIDI c
 - 明确 activation context 能拿到哪些 runtime 信息。
 - 明确 `ExtensionContext` 与 `ExtensionCommandContext` / `ExtensionOrchestrationContext` 的能力边界。
 - 完善 agent orchestration facade。
-- 决定是否暴露 `patchTool`。
+- `patchTool` 已在 Phase 6A 作为 activation-time API 暴露。
 - 设计真实 file/module loader、trust gate、reload、missing extension policy。
 
 已落地的 interceptor 组合语义：
@@ -468,14 +465,56 @@ Core 仍可以拥有少量 agent collaboration tools。它们直接暴露 WIDI c
 - External extension 不需要理解 `AgentHarness` 或直接构造最终 `AgentTool[]`。
 - External extension 可以通过稳定 facade 做明确授权的 agent 编排。
 
-### Phase 6: Patch And Advanced Runtime Capabilities
+### Phase 6A: Patch API Formalization
 
-目标：在 extension runner 和 registry 集成稳定后，再恢复或正式化高级 patch/runtime 能力。
+目标：正式决定 external extension 如何使用 `patchTool`，让 extension 可以安全修改既有 tool 行为，同时保持 registry diagnostics、source provenance 和 active tool names 可解释。
+
+状态：MVP 已落地。`ExtensionActivationApi.patchTool(...)` 直接复用完整 `ToolDefinitionPatch`，允许 metadata patch、`parameters` patch、`aroundExecute` 和 replace `execute`。Patch 是 activation-time declaration，不进入 runtime context/actions；loader 不做 target 校验，invalid/missing/conflict/contract-risk 继续由 `ToolRegistry.resolve()` 产出 `tool.*` diagnostics。
+
+建议工作：
+
+- `registerTool` / `patchTool` 使用同一个 `toolContributions` 数组，严格保留 activation 调用顺序。
+- Runner 通过 `contributeToolsTo(registry)` 将 scoped contributions replay 到临时 registry overlay。
+- Extension-contributed define/patch source 均由 loader 固定为 `{ kind: "extension", id: extensionId }`，API 不接受自定义 source。
+- Patch target 可以前向引用稍后 register 的 tool；最终 missing target 由 registry diagnostics 处理。
+- Activation 过程中若 factory 后续抛错，已收集的 partial contributions 保留，同时发布 `extension.activation_failed`。
+- 后续如需要 permission model，再设计 metadata-only / `aroundExecute` / replace `execute` 分级。
+
+验收：
+
+- Extension 可以在受控 API 中 patch 既有 tool。
+- Patch 行为有确定加载顺序和 registry diagnostics。
+- ToolRegistry 仍是 patch 合成和 wrap-to-`AgentTool` 的唯一出口。
+- Patch 不要求 extension 直接接触 global registry 或 raw harness tools。
+
+### Phase 6B: Extension State And Custom Entries
+
+目标：为 extension-owned state 提供最小 session 恢复通道，明确 custom entry / custom message 的写入、读取、恢复和 diagnostics 语义。
+
+建议工作：
+
+- 设计 `appendEntry` / custom entry API 是否进入 `bindCore`。
+- 设计 custom message 是否进入 LLM context、是否触发 turn、如何被 UI/RPC 展示。
+- 定义 custom entry 的 branch scope：当前 branch、全 session tree、还是显式 query。
+- 定义 fork、branch move、compaction、export、debug view 如何处理 extension entries。
+- 定义 payload 的 JSON serializable、大小限制、schema validation 和敏感信息 policy。
+- 定义 missing extension、version mismatch、restore failed 时的 diagnostics。
+
+验收：
+
+- Extension 能写入可恢复的小型 session-local state。
+- Core 不解释 extension custom payload，只提供存取和 diagnostics 边界。
+- Custom entry 不被误用为大型 extension 数据库。
+
+### Phase 6C: File Module Loader, Trust, Reload, And Runtime Backends
+
+目标：在 permission 和 state 边界明确后，再引入真实 extension discovery/loading/reload 以及高级 runtime backend。
 
 候选工作：
 
-- 决定 `patchTool` 是否对 external extension 开放。
-- 设计 patch permission：metadata-only、aroundExecute、replace execute。
+- 设计真实 file/module loader、path/package resolution、dynamic import cache policy。
+- 设计 project trust gate、extension declaration、version/compatibility。
+- 设计 reload 与 stale context invalidation。
 - 评估 built-in coding extension 是否进入下一阶段。
 - 设计 coding backend：local/sandbox/remote。
 - 设计 interactive shell session、managed `fd/rg`、glob/search backend。
@@ -483,7 +522,7 @@ Core 仍可以拥有少量 agent collaboration tools。它们直接暴露 WIDI c
 
 验收：
 
-- Patch 行为有权限、加载顺序和 diagnostics。
+- Extension 可以从真实声明或文件模块加载，并有 trust/reload/error isolation。
 - 如果后续启动 coding extension，backend 演进不要求 core registry 理解 backend state。
 - Core agent tools 和 coding extension tools 的 ownership 清晰分离。
 
@@ -505,9 +544,8 @@ Core 仍可以拥有少量 agent collaboration tools。它们直接暴露 WIDI c
 ## Open Questions
 
 - Core agent tools 是否仍使用同一个 `ToolDefinition`，还是直接提供 Pi `AgentTool`。
-- `patchTool` 是否继续是正式 extension API，还是只保留 internal compatibility。
 - Extension declaration/version/compatibility 的最小字段是什么。
-- Phase 4/5 的真实 file/module loader 如何处理 trust、path resolution、reload 和 import cache。
+- Phase 6C 的真实 file/module loader 如何处理 trust、path resolution、reload 和 import cache。
 - `ExtensionContext` 与 `ExtensionOrchestrationContext` 的最小 API 面应包含哪些具体 command。
 - Coding extension backend 如何表达 local/sandbox/remote 的选择。
 - Profile capabilities 如何映射到 extension availability，而不把 tool visibility 当作 capability。
