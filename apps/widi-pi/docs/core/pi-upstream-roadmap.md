@@ -38,8 +38,4 @@ WIDI command layer 不应伪造第二套 queue。未来如果要支持 UI 取消
 
 ## TODO
 
-- [x] 在 WIDI 文档中记录 session metadata、ExecutionEnv locking 和 harness queue control 三类上游缺口。
-- [ ] 与 Pi upstream 对齐 session metadata typed/custom extension section。
-- [ ] 与 Pi upstream 对齐 ExecutionEnv lock/transaction/lease 原语。
-- [ ] 与 Pi upstream 对齐 ExecutionEnv interactive shell session 原语，包括 start、poll、write stdin、cancel、yield timeout、output cursor/truncation 和 resource cleanup。
-- [ ] 与 Pi upstream 对齐 harness queue item id 和 queued input cancellation API。
+Pi upstream 对齐任务集中维护在 [WIDI 下一阶段 TODO](../TODO.md)。本文件只记录哪些底层原语不应长期硬塞进 WIDI core。

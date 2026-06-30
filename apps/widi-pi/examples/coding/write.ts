@@ -5,7 +5,10 @@ import type {
 	Result,
 } from "@earendil-works/pi-agent-core";
 import { type Static, Type } from "typebox";
-import type { ToolDefinition, ToolExecutionContext } from "../types.ts";
+import type {
+	ToolDefinition,
+	ToolExecutionContext,
+} from "../../src/core/extension/types.ts";
 
 const writeSchema = Type.Object({
 	path: Type.String({
@@ -26,17 +29,12 @@ export interface WriteOperations {
 	/**
 	 * Resolve the queue key and result details path for the target file.
 	 */
-	absolutePath?: (
-		env: ExecutionEnv,
-		path: string,
-		abortSignal?: AbortSignal,
-	) => Promise<string>;
+	absolutePath?: (path: string, abortSignal?: AbortSignal) => Promise<string>;
 	/**
 	 * Create or overwrite the target file. Implementations should create parent
 	 * directories when their backend supports that behavior.
 	 */
 	writeFile?: (
-		env: ExecutionEnv,
 		path: string,
 		content: string,
 		abortSignal?: AbortSignal,
@@ -44,6 +42,7 @@ export interface WriteOperations {
 }
 
 export interface WriteToolOptions {
+	env?: ExecutionEnv;
 	operations?: WriteOperations;
 }
 
@@ -61,33 +60,31 @@ export function createWriteToolDefinition(
 		promptSnippet: "Create or overwrite files",
 		promptGuidelines: ["Use write only for new files or complete rewrites."],
 		parameters: writeSchema,
-		executionEnv: { kind: "harness", capabilities: ["filesystem"] },
 		execute: async (_toolCallId, params, context) =>
-			await executeWriteTool(params, context, options.operations),
+			await executeWriteTool(params, context, options),
 	};
 }
 
 async function executeWriteTool(
 	{ path, content }: WriteToolInput,
 	context: ToolExecutionContext<WriteToolDetails>,
-	operations: WriteOperations | undefined,
+	options: WriteToolOptions,
 ): Promise<AgentToolResult<WriteToolDetails>> {
-	const env = context.env;
-	if (!env) {
-		throw new Error(
-			"write tool requires an execution environment with filesystem support.",
-		);
-	}
-
 	const absolutePath = await resolveWritePath(
-		env,
 		path,
 		context.signal,
-		operations,
+		options.env,
+		options.operations,
 	);
 	return await withFileMutationQueue(absolutePath, async () => {
 		throwIfAborted(context.signal);
-		await writeFile(env, path, content, context.signal, operations);
+		await writeFile(
+			path,
+			content,
+			context.signal,
+			options.env,
+			options.operations,
+		);
 		throwIfAborted(context.signal);
 
 		const details = {
@@ -108,28 +105,30 @@ async function executeWriteTool(
 }
 
 async function resolveWritePath(
-	env: ExecutionEnv,
 	path: string,
 	abortSignal: AbortSignal | undefined,
+	env: ExecutionEnv | undefined,
 	operations: WriteOperations | undefined,
 ): Promise<string> {
 	if (operations?.absolutePath) {
-		return await operations.absolutePath(env, path, abortSignal);
+		return await operations.absolutePath(path, abortSignal);
 	}
+	if (!env) throw missingWriteEnvError();
 	return fileSystemValueOrThrow(await env.absolutePath(path, abortSignal));
 }
 
 async function writeFile(
-	env: ExecutionEnv,
 	path: string,
 	content: string,
 	abortSignal: AbortSignal | undefined,
+	env: ExecutionEnv | undefined,
 	operations: WriteOperations | undefined,
 ): Promise<void> {
 	if (operations?.writeFile) {
-		await operations.writeFile(env, path, content, abortSignal);
+		await operations.writeFile(path, content, abortSignal);
 		return;
 	}
+	if (!env) throw missingWriteEnvError();
 	fileSystemValueOrThrow(await env.writeFile(path, content, abortSignal));
 }
 
@@ -175,4 +174,10 @@ function fileSystemValueOrThrow<TValue>(
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
 	if (signal?.aborted) throw new Error("Operation aborted");
+}
+
+function missingWriteEnvError(): Error {
+	return new Error(
+		"write tool requires an execution environment with filesystem support.",
+	);
 }

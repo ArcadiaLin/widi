@@ -1,1 +1,40 @@
-export type { ExtensionRunner } from "./runner.ts";
+export {
+	type ExtensionInterceptorRegistration,
+	ExtensionLoader,
+	type ExtensionObserverRegistration,
+	type ExtensionToolContribution,
+	type LoadExtensionScopeOptions,
+	type LoadedExtensionScope,
+} from "./loader.ts";
+export {
+	ExtensionRunner,
+	type ExtensionRunnerOptions,
+} from "./runner.ts";
+export type {
+	ExtensionActions,
+	ExtensionActivationApi,
+	ExtensionCommandContext,
+	ExtensionCommandContextActions,
+	ExtensionContext,
+	ExtensionContextActions,
+	ExtensionCustomEntry,
+	ExtensionFactory,
+	ExtensionInterceptorEventFor,
+	ExtensionInterceptorFor,
+	ExtensionInterceptorName,
+	ExtensionInterceptorResultFor,
+	ExtensionObservedEvent,
+	ExtensionObservedEventName,
+	ExtensionObserver,
+	ExtensionObserverFor,
+	ExtensionSessionActions,
+	ExtensionSessionContext,
+	ToolDefinition,
+	ToolDefinitionPatch,
+	ToolExecute,
+	ToolExecuteMiddleware,
+	ToolExecutionContext,
+	ToolExtensionContext,
+	ToolLifecycleEvent,
+	ToolSource,
+} from "./types.ts";

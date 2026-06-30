@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
 	createAgentToolFromResolvedTool,
 	ToolRegistry,
-} from "../../src/core/tools/tool-registry.ts";
+} from "../../src/core/tool-registry.ts";
 import type { ToolDefinition, ToolSource } from "../../src/core/tools/types.ts";
 
 const emptyParams = Type.Object({});

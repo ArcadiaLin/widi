@@ -40,7 +40,7 @@ import {
 	type SettingsScope,
 	type SettingsStorage,
 } from "../../src/core/setting-manager.ts";
-import { ToolRegistry } from "../../src/core/tools/tool-registry.ts";
+import { ToolRegistry } from "../../src/core/tool-registry.ts";
 import type { ToolDefinition } from "../../src/core/tools/types.ts";
 import type { ExtendedJsonlSessionMetadata } from "../../src/storage/jsonl-repo.ts";
 
@@ -837,6 +837,474 @@ describe("AgentOrchestrator", () => {
 				}),
 			}),
 		);
+	});
+
+	it("activates extension tools per profile without mutating the global registry", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const plainProfile: AgentProfile = {
+			...defaultProfile,
+			id: "plain-profile",
+			label: "Plain Profile",
+			persist: false,
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+					{ profile: plainProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("sample", (api) => {
+			api.registerTool(createToolDefinition("sampleTool", "sample"));
+		});
+
+		const { agentId: extensionAgentId } =
+			await orchestrator.spawnAgentHarness();
+		const { agentId: plainAgentId } = await orchestrator.spawnAgentHarness({
+			profileId: plainProfile.id,
+		});
+
+		expect(orchestrator.getAgentTools(extensionAgentId)).toEqual({
+			toolNames: ["sampleTool"],
+			activeToolNames: ["sampleTool"],
+		});
+		expect(orchestrator.getAgentTools(plainAgentId)).toEqual({
+			toolNames: [],
+			activeToolNames: [],
+		});
+		expect(orchestrator.toolRegistry.resolve().toolNames).toEqual([]);
+	});
+
+	it("applies scoped extension tool patches in activation order", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["patcher"],
+		};
+		const plainProfile: AgentProfile = {
+			...defaultProfile,
+			id: "plain-profile",
+			label: "Plain Profile",
+			persist: false,
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+					{ profile: plainProfile },
+				]),
+			),
+			toolRegistry: createToolRegistry(createToolDefinition("plain", "base")),
+		});
+		orchestrator.registerExtensionFactory("patcher", (api) => {
+			api.patchTool("late", {
+				description: "patched late tool",
+			});
+			api.registerTool(createToolDefinition("late", "late-base"));
+			api.patchTool("plain", {
+				description: "patched plain tool",
+				execute: async () => ({
+					content: [{ type: "text", text: "patched" }],
+					details: { source: "patcher" },
+				}),
+			});
+		});
+
+		const { agentId: extensionAgentId, harness: extensionHarness } =
+			await orchestrator.spawnAgentHarness();
+		const { agentId: plainAgentId, harness: plainHarness } =
+			await orchestrator.spawnAgentHarness({ profileId: plainProfile.id });
+		const patchedPlain = extensionHarness
+			.getTools()
+			.find((tool) => tool.name === "plain");
+		const lateTool = extensionHarness
+			.getTools()
+			.find((tool) => tool.name === "late");
+		const unpatchedPlain = plainHarness
+			.getTools()
+			.find((tool) => tool.name === "plain");
+		if (!patchedPlain || !lateTool || !unpatchedPlain) {
+			throw new Error("Expected test tools to resolve.");
+		}
+
+		await expect(patchedPlain.execute("call-1", {})).resolves.toEqual({
+			content: [{ type: "text", text: "patched" }],
+			details: { source: "patcher" },
+		});
+		await expect(unpatchedPlain.execute("call-2", {})).resolves.toEqual({
+			content: [{ type: "text", text: "base" }],
+			details: undefined,
+		});
+		expect(lateTool.description).toBe("patched late tool");
+		expect(orchestrator.getAgentTools(extensionAgentId)).toEqual({
+			toolNames: ["plain", "late"],
+			activeToolNames: ["plain", "late"],
+		});
+		expect(orchestrator.getAgentTools(plainAgentId)).toEqual({
+			toolNames: ["plain"],
+			activeToolNames: ["plain"],
+		});
+		expect(
+			orchestrator.toolRegistry.resolve().getToolDefinition("plain"),
+		).toMatchObject({
+			description: "plain tool",
+		});
+	});
+
+	it("emits extension diagnostics for missing factories", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["missing"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+
+		const { agentId } = await orchestrator.spawnAgentHarness();
+
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					domain: "extension",
+					code: "extension.factory_missing",
+					extensionId: "missing",
+					agentId,
+					profileId: extensionProfile.id,
+				}),
+			}),
+		);
+	});
+
+	it("routes tool lifecycle events to scoped extension handlers", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["observer"],
+		};
+		const observed: string[] = [];
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+			toolRegistry: createToolRegistry(createToolDefinition("plain")),
+		});
+		orchestrator.registerExtensionFactory("observer", (api) => {
+			api.observe("tool_lifecycle_event", (event, context) => {
+				const tools = context.actions.getAgentTools(context.agentId);
+				observed.push(
+					`${context.extensionId}:${context.profileId}:${event.event.type}:${tools.toolNames.join(",")}`,
+				);
+			});
+		});
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const handleHarnessEvent = (
+			orchestrator as unknown as {
+				_handleAgentHarnessEvent(
+					agentId: string,
+					event: AgentHarnessEvent,
+				): Promise<void>;
+			}
+		)._handleAgentHarnessEvent.bind(orchestrator);
+
+		await handleHarnessEvent(agentId, {
+			type: "tool_execution_start",
+			toolCallId: "call-1",
+			toolName: "plain",
+			args: {},
+		});
+
+		expect(observed).toEqual([
+			`observer:${extensionProfile.id}:execution_started:plain`,
+		]);
+	});
+
+	it("bridges scoped extension interceptors into AgentHarness hooks", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["first", "second"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("first", (api) => {
+			api.intercept("before_agent_start", () => ({
+				messages: [
+					{
+						role: "user",
+						content: "first",
+						timestamp: 1,
+					},
+				],
+				systemPrompt: "first prompt",
+			}));
+			api.intercept("context", (event) => ({
+				messages: [
+					...event.messages,
+					{ role: "user", content: "first context", timestamp: 2 },
+				],
+			}));
+			api.intercept("tool_call", () => ({
+				block: true,
+				reason: "blocked by first",
+			}));
+			api.intercept("tool_result", () => ({
+				content: [{ type: "text", text: "first result" }],
+				details: { first: true },
+				terminate: true,
+			}));
+		});
+		orchestrator.registerExtensionFactory("second", (api) => {
+			api.intercept("before_agent_start", () => ({
+				messages: [
+					{
+						role: "user",
+						content: "second",
+						timestamp: 3,
+					},
+				],
+				systemPrompt: "second prompt",
+			}));
+			api.intercept("context", (event) => ({
+				messages: [
+					...event.messages,
+					{ role: "user", content: "second context", timestamp: 4 },
+				],
+			}));
+			api.intercept("tool_call", () => {
+				throw new Error("blocked tool_call should short-circuit");
+			});
+			api.intercept("tool_result", () => ({
+				content: [{ type: "text", text: "second result" }],
+				isError: true,
+			}));
+		});
+
+		const { harness } = await orchestrator.spawnAgentHarness();
+		const handlers = (
+			harness as unknown as {
+				handlers: Map<string, Set<(event: unknown) => Promise<unknown>>>;
+			}
+		).handlers;
+		const runHook = async (name: string, event: unknown) => {
+			const handler = Array.from(handlers.get(name) ?? [])[0];
+			if (!handler) throw new Error(`Missing harness hook: ${name}`);
+			return await handler(event);
+		};
+
+		await expect(
+			runHook("before_agent_start", {
+				type: "before_agent_start",
+				prompt: "go",
+				systemPrompt: "base prompt",
+				resources: {},
+			}),
+		).resolves.toEqual({
+			messages: [
+				{ role: "user", content: "first", timestamp: 1 },
+				{ role: "user", content: "second", timestamp: 3 },
+			],
+			systemPrompt: "second prompt",
+		});
+		await expect(
+			runHook("context", {
+				type: "context",
+				messages: [{ role: "user", content: "base", timestamp: 0 }],
+			}),
+		).resolves.toEqual({
+			messages: [
+				{ role: "user", content: "base", timestamp: 0 },
+				{ role: "user", content: "first context", timestamp: 2 },
+				{ role: "user", content: "second context", timestamp: 4 },
+			],
+		});
+		await expect(
+			runHook("tool_call", {
+				type: "tool_call",
+				toolCallId: "call-1",
+				toolName: "write",
+				input: {},
+			}),
+		).resolves.toEqual({
+			block: true,
+			reason: "blocked by first",
+		});
+		await expect(
+			runHook("tool_result", {
+				type: "tool_result",
+				toolCallId: "call-1",
+				toolName: "write",
+				input: {},
+				content: [{ type: "text", text: "base result" }],
+				details: undefined,
+				isError: false,
+			}),
+		).resolves.toEqual({
+			content: [{ type: "text", text: "second result" }],
+			details: { first: true },
+			isError: true,
+			terminate: true,
+		});
+	});
+
+	it("binds extension runner core and command contexts after harness creation", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["observer"],
+		};
+		const observed: string[] = [];
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("observer", (api) => {
+			api.observe("agent_harness_event", (_event, context) => {
+				observed.push(
+					`${context.extensionId}:${context.profileId}:${context.isIdle()}:${context.actions.getAgentTools(context.agentId).toolNames.length}`,
+				);
+			});
+		});
+
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const runner = (
+			orchestrator as unknown as {
+				_agentExtensionRunners: Map<
+					string,
+					{
+						createCommandContext(extensionId?: string): {
+							extensionId: string;
+							waitForIdle(): Promise<void>;
+						};
+					}
+				>;
+			}
+		)._agentExtensionRunners.get(agentId);
+		if (!runner) throw new Error("Expected extension runner.");
+		const commandContext = runner.createCommandContext("observer");
+		await commandContext.waitForIdle();
+		const handleHarnessEvent = (
+			orchestrator as unknown as {
+				_handleAgentHarnessEvent(
+					agentId: string,
+					event: AgentHarnessEvent,
+				): Promise<void>;
+			}
+		)._handleAgentHarnessEvent.bind(orchestrator);
+
+		await handleHarnessEvent(agentId, { type: "turn_start" });
+
+		expect(commandContext.extensionId).toBe("observer");
+		expect(observed).toEqual([`observer:${extensionProfile.id}:true:0`]);
+	});
+
+	it("binds extension session context to scoped agent custom entries", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: true,
+			extensions: ["stateful"],
+		};
+		const observed: string[] = [];
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("stateful", (api) => {
+			api.observe("agent_harness_event", async (_event, context) => {
+				const before = await context.session.findEntries<{ count: number }>(
+					"state",
+				);
+				await context.session.appendEntry("state", {
+					count: before.length + 1,
+				});
+				const after = await context.session.findEntries<{ count: number }>(
+					"state",
+				);
+				observed.push(
+					`${context.extensionId}:${after.map((entry) => entry.data?.count).join(",")}`,
+				);
+			});
+		});
+
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const handleHarnessEvent = (
+			orchestrator as unknown as {
+				_handleAgentHarnessEvent(
+					agentId: string,
+					event: AgentHarnessEvent,
+				): Promise<void>;
+			}
+		)._handleAgentHarnessEvent.bind(orchestrator);
+
+		await handleHarnessEvent(agentId, { type: "turn_start" });
+		await handleHarnessEvent(agentId, { type: "turn_start" });
+
+		expect(observed).toEqual(["stateful:1", "stateful:1,2"]);
+		await expect(
+			orchestrator.sessionManager.findExtensionCustomEntries(
+				agentId,
+				"stateful",
+				"state",
+			),
+		).resolves.toMatchObject([
+			{ type: "state", data: { count: 1 } },
+			{ type: "state", data: { count: 2 } },
+		]);
 	});
 
 	it("emits normalized tool lifecycle events from harness events", async () => {

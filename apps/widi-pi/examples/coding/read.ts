@@ -5,7 +5,10 @@ import type {
 	Result,
 } from "@earendil-works/pi-agent-core";
 import { type Static, Type } from "typebox";
-import type { ToolDefinition, ToolExecutionContext } from "../types.ts";
+import type {
+	ToolDefinition,
+	ToolExecutionContext,
+} from "../../src/core/extension/types.ts";
 
 export const READ_DEFAULT_MAX_LINES = 2000;
 export const READ_DEFAULT_MAX_BYTES = 50 * 1024;
@@ -49,18 +52,9 @@ export interface ReadTruncationResult {
 }
 
 export interface ReadOperations {
-	absolutePath?: (
-		env: ExecutionEnv,
-		path: string,
-		abortSignal?: AbortSignal,
-	) => Promise<string>;
-	readTextFile?: (
-		env: ExecutionEnv,
-		path: string,
-		abortSignal?: AbortSignal,
-	) => Promise<string>;
+	absolutePath?: (path: string, abortSignal?: AbortSignal) => Promise<string>;
+	readTextFile?: (path: string, abortSignal?: AbortSignal) => Promise<string>;
 	readBinaryFile?: (
-		env: ExecutionEnv,
 		path: string,
 		abortSignal?: AbortSignal,
 	) => Promise<Uint8Array>;
@@ -72,6 +66,7 @@ export interface ReadOperations {
 }
 
 export interface ReadToolOptions {
+	env?: ExecutionEnv;
 	operations?: ReadOperations;
 }
 
@@ -85,45 +80,37 @@ export function createReadToolDefinition(
 		promptSnippet: "Read file contents",
 		promptGuidelines: ["Use read to examine files instead of cat or sed."],
 		parameters: readSchema,
-		executionEnv: { kind: "harness", capabilities: ["filesystem"] },
 		execute: async (_toolCallId, params, context) =>
-			await executeReadTool(params, context, options.operations),
+			await executeReadTool(params, context, options),
 	};
 }
 
 async function executeReadTool(
 	params: ReadToolInput,
 	context: ToolExecutionContext<ReadToolDetails>,
-	operations: ReadOperations | undefined,
+	options: ReadToolOptions,
 ): Promise<AgentToolResult<ReadToolDetails>> {
-	const env = context.env;
-	if (!env) {
-		throw new Error(
-			"read tool requires an execution environment with filesystem support.",
-		);
-	}
-
 	throwIfAborted(context.signal);
 	const absolutePath = await resolveReadPath(
-		env,
 		params.path,
 		context.signal,
-		operations,
+		options.env,
+		options.operations,
 	);
 	const mimeType = await detectImageMimeType(
 		params.path,
 		absolutePath,
 		context.signal,
-		operations,
+		options.operations,
 	);
 	throwIfAborted(context.signal);
 
 	if (mimeType) {
 		const bytes = await readBinaryFile(
-			env,
 			params.path,
 			context.signal,
-			operations,
+			options.env,
+			options.operations,
 		);
 		throwIfAborted(context.signal);
 		return {
@@ -145,10 +132,10 @@ async function executeReadTool(
 	}
 
 	const textContent = await readTextFile(
-		env,
 		params.path,
 		context.signal,
-		operations,
+		options.env,
+		options.operations,
 	);
 	throwIfAborted(context.signal);
 	const { outputText, details } = formatReadTextResult(
@@ -225,38 +212,41 @@ function formatReadTextResult(
 }
 
 async function resolveReadPath(
-	env: ExecutionEnv,
 	path: string,
 	abortSignal: AbortSignal | undefined,
+	env: ExecutionEnv | undefined,
 	operations: ReadOperations | undefined,
 ): Promise<string> {
 	if (operations?.absolutePath) {
-		return await operations.absolutePath(env, path, abortSignal);
+		return await operations.absolutePath(path, abortSignal);
 	}
+	if (!env) throw missingReadEnvError();
 	return fileSystemValueOrThrow(await env.absolutePath(path, abortSignal));
 }
 
 async function readTextFile(
-	env: ExecutionEnv,
 	path: string,
 	abortSignal: AbortSignal | undefined,
+	env: ExecutionEnv | undefined,
 	operations: ReadOperations | undefined,
 ): Promise<string> {
 	if (operations?.readTextFile) {
-		return await operations.readTextFile(env, path, abortSignal);
+		return await operations.readTextFile(path, abortSignal);
 	}
+	if (!env) throw missingReadEnvError();
 	return fileSystemValueOrThrow(await env.readTextFile(path, abortSignal));
 }
 
 async function readBinaryFile(
-	env: ExecutionEnv,
 	path: string,
 	abortSignal: AbortSignal | undefined,
+	env: ExecutionEnv | undefined,
 	operations: ReadOperations | undefined,
 ): Promise<Uint8Array> {
 	if (operations?.readBinaryFile) {
-		return await operations.readBinaryFile(env, path, abortSignal);
+		return await operations.readBinaryFile(path, abortSignal);
 	}
+	if (!env) throw missingReadEnvError();
 	return fileSystemValueOrThrow(await env.readBinaryFile(path, abortSignal));
 }
 
@@ -375,4 +365,10 @@ function fileSystemValueOrThrow<TValue>(
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
 	if (signal?.aborted) throw new Error("Operation aborted");
+}
+
+function missingReadEnvError(): Error {
+	return new Error(
+		"read tool requires an execution environment with filesystem support.",
+	);
 }

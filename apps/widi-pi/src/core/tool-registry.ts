@@ -1,4 +1,4 @@
-import type { AgentTool, ExecutionEnv } from "@earendil-works/pi-agent-core";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { TSchema } from "typebox";
 import {
 	type CoreDiagnostic,
@@ -6,8 +6,7 @@ import {
 	type DiagnosticDisposition,
 	type DiagnosticSeverity,
 	type DiagnosticSource,
-} from "../diagnostics.ts";
-import type { ToolHumanHost } from "../orchestrator/human-request.ts";
+} from "./diagnostics.ts";
 import type {
 	ToolDefinition,
 	ToolDefinitionPatch,
@@ -15,7 +14,8 @@ import type {
 	ToolExecutionContext,
 	ToolExtensionContext,
 	ToolSource,
-} from "./types.ts";
+} from "./extension/types.ts";
+import type { ToolHumanHost } from "./orchestrator/human-request.ts";
 
 type RegistryToolDefinition = ToolDefinition<TSchema, unknown>;
 type RegistryToolDefinitionPatch = ToolDefinitionPatch<TSchema, unknown>;
@@ -68,7 +68,6 @@ export interface ToolRegistryResolveResult {
 }
 
 export interface ToolAgentAdapterContext {
-	env?: ExecutionEnv;
 	human?: ToolHumanHost;
 	extension?: ToolExtensionContext;
 	createExtensionContext?: (
@@ -154,6 +153,13 @@ export class ToolRegistry {
 	clear(): void {
 		this._registrations.length = 0;
 		this._nextOrder = 0;
+	}
+
+	clone(): ToolRegistry {
+		const registry = new ToolRegistry();
+		registry._registrations.push(...this._registrations);
+		registry._nextOrder = this._nextOrder;
+		return registry;
 	}
 
 	resolve(options: ToolRegistryResolveOptions = {}): ToolRegistryResolveResult {
@@ -496,7 +502,6 @@ function createToolExecutionContext(
 	onUpdate: Parameters<AgentTool<TSchema, unknown>["execute"]>[3],
 ): ToolExecutionContext<unknown> {
 	const bindContext = (source: ToolSource) => ({
-		env: context.env,
 		signal,
 		onUpdate,
 		extension:
@@ -526,7 +531,6 @@ function restoreInnerToolExecutionContext<TDetails>(
 		bindToolExecutionContextSymbol
 	];
 	return {
-		env: context.env,
 		signal: context.signal,
 		onUpdate: context.onUpdate,
 		extension: innerContext.extension,

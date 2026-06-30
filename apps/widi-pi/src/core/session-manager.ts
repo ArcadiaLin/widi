@@ -9,6 +9,7 @@ import type {
 	FileSystem,
 	Session,
 	SessionMetadata,
+	SessionTreeEntry,
 } from "@earendil-works/pi-agent-core";
 import { InMemorySessionRepo } from "@earendil-works/pi-agent-core";
 import {
@@ -23,6 +24,14 @@ import { toAgentProfileReference } from "./agent-profile.js";
 export type AgentSessionMetadata =
 	| SessionMetadata
 	| ExtendedJsonlSessionMetadata;
+
+export interface AgentExtensionCustomEntry<T = unknown> {
+	id: string;
+	parentId: string | null;
+	timestamp: string;
+	type: string;
+	data?: T;
+}
 
 export interface SessionManagerConfigs {
 	fs: FileSystem;
@@ -86,6 +95,43 @@ export class SessionManager {
 		return session;
 	}
 
+	async appendExtensionCustomEntry<T = unknown>(
+		agentId: AgentId,
+		extensionId: string,
+		type: string,
+		data?: T,
+	): Promise<string> {
+		const localType = normalizeExtensionCustomType(type);
+		assertJsonSerializable(data);
+		return await this._requireAgentSession(agentId).appendCustomEntry(
+			toPersistedExtensionCustomType(extensionId, localType),
+			data,
+		);
+	}
+
+	async findExtensionCustomEntries<T = unknown>(
+		agentId: AgentId,
+		extensionId: string,
+		type?: string,
+	): Promise<AgentExtensionCustomEntry<T>[]> {
+		const localType =
+			type === undefined ? undefined : normalizeExtensionCustomType(type);
+		const session = this._requireAgentSession(agentId);
+		const storage = session.getStorage();
+		const entries = await storage.getPathToRoot(await storage.getLeafId());
+		const prefix = toPersistedExtensionCustomTypePrefix(extensionId);
+		const result: AgentExtensionCustomEntry<T>[] = [];
+
+		for (const entry of entries) {
+			const customEntry = toExtensionCustomEntry<T>(entry, prefix);
+			if (!customEntry) continue;
+			if (localType !== undefined && customEntry.type !== localType) continue;
+			result.push(customEntry);
+		}
+
+		return result;
+	}
+
 	private async _createPersistentAgentSession(
 		options: CreateAgentSessionOptions,
 	): Promise<Session<ExtendedJsonlSessionMetadata>> {
@@ -106,4 +152,77 @@ export class SessionManager {
 	): Promise<Session<SessionMetadata>> {
 		return this._memorySessionRepo.create({ id: agentId });
 	}
+
+	private _requireAgentSession(
+		agentId: AgentId,
+	): Session<AgentSessionMetadata> {
+		const session = this._agentSessions.get(agentId);
+		if (!session) {
+			throw new Error(`Unknown agent session: ${agentId}`);
+		}
+		return session;
+	}
+}
+
+const EXTENSION_CUSTOM_TYPE_PATTERN = /^[a-zA-Z0-9._:-]+$/;
+
+function normalizeExtensionCustomType(type: string): string {
+	const normalized = type.trim();
+	if (!normalized) {
+		throw new Error("Extension custom entry type must not be empty.");
+	}
+	if (!EXTENSION_CUSTOM_TYPE_PATTERN.test(normalized)) {
+		throw new Error(
+			"Extension custom entry type must contain only letters, numbers, '.', '_', ':', and '-'.",
+		);
+	}
+	return normalized;
+}
+
+function toPersistedExtensionCustomType(
+	extensionId: string,
+	localType: string,
+): string {
+	return `${toPersistedExtensionCustomTypePrefix(extensionId)}${localType}`;
+}
+
+function toPersistedExtensionCustomTypePrefix(extensionId: string): string {
+	return `extension:${extensionId}:`;
+}
+
+function assertJsonSerializable(data: unknown): void {
+	if (data === undefined) return;
+	let serialized: string | undefined;
+	try {
+		serialized = JSON.stringify(data);
+	} catch (error) {
+		throw new Error(
+			`Extension custom entry data must be JSON serializable: ${formatError(error)}`,
+		);
+	}
+	if (serialized === undefined) {
+		throw new Error("Extension custom entry data must be JSON serializable.");
+	}
+}
+
+function toExtensionCustomEntry<T>(
+	entry: SessionTreeEntry,
+	prefix: string,
+): AgentExtensionCustomEntry<T> | undefined {
+	if (entry.type !== "custom") return undefined;
+	if (!entry.customType.startsWith(prefix)) return undefined;
+	const customEntry: AgentExtensionCustomEntry<T> = {
+		id: entry.id,
+		parentId: entry.parentId,
+		timestamp: entry.timestamp,
+		type: entry.customType.slice(prefix.length),
+	};
+	if (Object.hasOwn(entry, "data")) {
+		customEntry.data = entry.data as T;
+	}
+	return customEntry;
+}
+
+function formatError(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }

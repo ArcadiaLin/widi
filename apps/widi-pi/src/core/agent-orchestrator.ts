@@ -29,6 +29,13 @@ import {
 	toCoreDiagnosticFromPromptTemplateDiagnostic,
 	toCoreDiagnosticFromSkillDiagnostic,
 } from "./diagnostics.ts";
+import {
+	type ExtensionActions,
+	type ExtensionFactory,
+	ExtensionLoader,
+	ExtensionRunner,
+	type ToolLifecycleEvent,
+} from "./extension/index.ts";
 import type { ModelRegistry } from "./model-registry.js";
 import type { OrchestratorClient } from "./orchestrator/clients.ts";
 import type {
@@ -53,8 +60,7 @@ import type { SettingManager } from "./setting-manager.js";
 import {
 	createAgentToolsFromResolvedTools,
 	ToolRegistry,
-} from "./tools/tool-registry.ts";
-import type { ToolLifecycleEvent } from "./tools/types.ts";
+} from "./tool-registry.ts";
 
 export type OrchestratorEvent =
 	| {
@@ -137,6 +143,7 @@ export interface AgentOrchestratorConfigs {
 	modelRegistry: ModelRegistry;
 	profileRegistry: AgentProfileRegistry;
 	toolRegistry?: ToolRegistry;
+	extensionLoader?: ExtensionLoader;
 	defaultProfileId: string;
 	enabledProfileIds?: readonly string[];
 	defaultModel: RuntimeModel;
@@ -209,10 +216,12 @@ export class AgentOrchestrator {
 	readonly modelRegistry: ModelRegistry;
 	readonly profileRegistry: AgentProfileRegistry;
 	readonly toolRegistry: ToolRegistry;
+	readonly extensionLoader: ExtensionLoader;
 
 	private _unsubscribeAgentHarness: Map<AgentId, () => void> = new Map();
 	private _eventListeners: Set<OrchestratorEventListener> = new Set();
 	private _agentToolSets: Map<AgentId, AgentToolSet> = new Map();
+	private _agentExtensionRunners: Map<AgentId, ExtensionRunner> = new Map();
 	private _streamingToolCalls: Map<AgentId, Map<number, StreamingToolCallRef>> =
 		new Map();
 	private _clients: Map<string, OrchestratorClient<OrchestratorEvent>> =
@@ -229,6 +238,7 @@ export class AgentOrchestrator {
 		this.modelRegistry = config.modelRegistry;
 		this.profileRegistry = config.profileRegistry;
 		this.toolRegistry = config.toolRegistry ?? new ToolRegistry();
+		this.extensionLoader = config.extensionLoader ?? new ExtensionLoader();
 		this._defaultProfileId = config.defaultProfileId;
 		this._enabledProfileIds = config.enabledProfileIds
 			? [...config.enabledProfileIds]
@@ -275,6 +285,13 @@ export class AgentOrchestrator {
 
 	async emitStartupDiagnostics(): Promise<void> {
 		await this._publishDiagnostics(this._drainCoreDiagnostics());
+	}
+
+	registerExtensionFactory(
+		extensionId: string,
+		factory: ExtensionFactory,
+	): () => void {
+		return this.extensionLoader.registerExtensionFactory(extensionId, factory);
 	}
 
 	getAgentHarness(agentId: AgentId): AgentHarness | undefined {
@@ -912,6 +929,18 @@ export class AgentOrchestrator {
 				({ promptTemplate }) => promptTemplate,
 			),
 		};
+		const loadedExtensionScope = await this.extensionLoader.loadForAgent({
+			agentId,
+			profileId: profile.id,
+			extensionIds: profile.extensions,
+			missingExtensionSeverity: profile.missingExtensionSeverity,
+		});
+		const extensionRunner = new ExtensionRunner({
+			loadedScope: loadedExtensionScope,
+		});
+		this._agentExtensionRunners.set(agentId, extensionRunner);
+		await this._publishDiagnostics(extensionRunner.diagnostics);
+
 		const agentToolSet = await this._resolveAgentTools({
 			agentId,
 			profileId: profile.id,
@@ -942,13 +971,71 @@ export class AgentOrchestrator {
 		});
 		this.agents.set(agentId, harness);
 		this._agentToolSets.set(agentId, agentToolSet);
-		this._unsubscribeAgentHarness.set(
+		extensionRunner.bindCore(this._createExtensionActions(), {
+			getSignal: () => undefined,
+			isIdle: () => true,
+			session: {
+				appendEntry: async (extensionId, type, data) =>
+					await this.sessionManager.appendExtensionCustomEntry(
+						agentId,
+						extensionId,
+						type,
+						data,
+					),
+				findEntries: async (extensionId, type) =>
+					await this.sessionManager.findExtensionCustomEntries(
+						agentId,
+						extensionId,
+						type,
+					),
+			},
+		});
+		extensionRunner.bindCommandContext({
+			waitForIdle: async () => {
+				await harness.waitForIdle();
+			},
+		});
+		const unsubscribeInterceptors = this._registerExtensionInterceptors(
 			agentId,
-			harness.subscribe((event) => {
-				void this._handleAgentHarnessEvent(agentId, event);
-			}),
+			harness,
 		);
+		const unsubscribeHarnessEvents = harness.subscribe((event) => {
+			void this._handleAgentHarnessEvent(agentId, event);
+		});
+		this._unsubscribeAgentHarness.set(agentId, () => {
+			unsubscribeHarnessEvents();
+			for (const unsubscribe of unsubscribeInterceptors) {
+				unsubscribe();
+			}
+		});
 		return harness;
+	}
+
+	private _registerExtensionInterceptors(
+		agentId: AgentId,
+		harness: AgentHarness,
+	): Array<() => void> {
+		const extensionRunner = this._agentExtensionRunners.get(agentId);
+		if (!extensionRunner) return [];
+		return [
+			harness.on(
+				"before_agent_start",
+				async (event) =>
+					await extensionRunner.intercept<"before_agent_start">(event),
+			),
+			harness.on(
+				"context",
+				async (event) => await extensionRunner.intercept<"context">(event),
+			),
+			harness.on(
+				"tool_call",
+				async (event) => await extensionRunner.intercept<"tool_call">(event),
+			),
+			harness.on(
+				"tool_result",
+				async (event) => await extensionRunner.intercept<"tool_result">(event),
+			),
+		];
 	}
 
 	private async _resolveAgentTools(options: {
@@ -957,7 +1044,8 @@ export class AgentOrchestrator {
 		requestedToolNames: readonly string[] | undefined;
 		activeToolNames?: readonly string[];
 	}): Promise<AgentToolSet> {
-		const resolvedTools = this.toolRegistry.resolve({
+		const toolRegistry = this._createScopedToolRegistry(options.agentId);
+		const resolvedTools = toolRegistry.resolve({
 			requestedToolNames: options.requestedToolNames,
 			activeToolNames: options.activeToolNames,
 		});
@@ -970,7 +1058,6 @@ export class AgentOrchestrator {
 			})),
 		);
 		const agentTools = createAgentToolsFromResolvedTools(resolvedTools.tools, {
-			env: this.executionEnv,
 			human: {
 				request: async (request) =>
 					await this.requestHuman({
@@ -978,6 +1065,17 @@ export class AgentOrchestrator {
 						source: { kind: "agent", agentId: options.agentId },
 					}),
 			},
+			createExtensionContext: (source) =>
+				source.kind === "extension"
+					? {
+							extensionId: source.id,
+							host: {
+								agentId: options.agentId,
+								profileId: options.profileId,
+								actions: this._createExtensionActions(),
+							},
+						}
+					: undefined,
 		});
 		return {
 			tools: [...agentTools],
@@ -987,6 +1085,27 @@ export class AgentOrchestrator {
 				: undefined,
 			activeToolNames: [...resolvedTools.activeToolNames],
 			profileId: options.profileId,
+		};
+	}
+
+	private _createScopedToolRegistry(agentId: AgentId): ToolRegistry {
+		const registry = this.toolRegistry.clone();
+		const extensionRunner = this._agentExtensionRunners.get(agentId);
+		extensionRunner?.contributeToolsTo(registry);
+		return registry;
+	}
+
+	private _createExtensionActions(): ExtensionActions {
+		return {
+			getAgentTools: (agentId) => this.getAgentTools(agentId),
+			setAgentTools: async (agentId, toolNames, activeToolNames) => {
+				await this.setAgentTools(agentId, toolNames, activeToolNames);
+			},
+			setAgentActiveTools: async (agentId, toolNames) => {
+				await this.setAgentActiveTools(agentId, toolNames);
+			},
+			requestHuman: async (request) => await this.requestHuman(request),
+			dispatch: async (command) => await this.dispatch(command),
 		};
 	}
 
@@ -1011,6 +1130,16 @@ export class AgentOrchestrator {
 		event: AgentHarnessEvent,
 	): Promise<void> {
 		await this._emit({ type: "agent_harness_event", agentId, event });
+		const extensionRunner = this._agentExtensionRunners.get(agentId);
+		if (extensionRunner) {
+			await this._publishDiagnostics(
+				await extensionRunner.emitObserved({
+					type: "agent_harness_event",
+					agentId,
+					event,
+				}),
+			);
+		}
 		const lifecycleEvent = this._toToolLifecycleEvent(agentId, event);
 		if (lifecycleEvent) {
 			await this._emit({
@@ -1018,6 +1147,15 @@ export class AgentOrchestrator {
 				agentId,
 				event: lifecycleEvent,
 			});
+			if (extensionRunner) {
+				await this._publishDiagnostics(
+					await extensionRunner.emitObserved({
+						type: "tool_lifecycle_event",
+						agentId,
+						event: lifecycleEvent,
+					}),
+				);
+			}
 		}
 	}
 
