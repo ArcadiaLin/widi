@@ -18,8 +18,8 @@
 
 ## P0: Runtime Composition
 
-- [ ] 设计并实现应用级 runtime service，统一创建 `ExecutionEnv`、`SettingManager`、`ConfigValueResolver`、`AuthStorage`、`ModelRegistry`、`AgentProfileRegistry`、`ResourceLoader`、`SessionManager`、`ToolRegistry`、`ExtensionLoader` 和 `AgentOrchestrator`。
-- [ ] 将 `SettingManager.getProfilePaths()` 接入真实 profile roots，组合 settings paths、project `.widi/profiles`、agent dir profiles 和 builtin default profile。
+- [x] 设计并实现应用级 runtime service，统一创建 `ExecutionEnv`、`SettingManager`、`ConfigValueResolver`、`AuthStorage`、`ModelRegistry`、`AgentProfileRegistry`、`ResourceLoader`、`SessionManager`、`ToolRegistry`、`ExtensionLoader` 和 `AgentOrchestrator`。
+- [x] 将 `SettingManager.getProfilePaths()` 接入真实 profile roots，组合 settings paths、project `.widi/profiles`、agent dir profiles 和 builtin default profile。
 - [ ] 将 settings 中的 `skills`、`prompts`、`extensions` paths 接入 resource/extension discovery，而不是只停留在 typed getters。
 - [ ] 明确 default profile/model 的来源：settings、CLI/runtime override、builtin fallback 的优先级和 diagnostics。
 - [ ] 为 runtime service 增加 focused tests，覆盖损坏 settings、缺失 profile root、project trust 和 builtin default source。

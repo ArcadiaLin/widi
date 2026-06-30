@@ -2,6 +2,7 @@ export {
 	type ExtensionInterceptorRegistration,
 	ExtensionLoader,
 	type ExtensionObserverRegistration,
+	type ExtensionRoot,
 	type ExtensionToolContribution,
 	type LoadExtensionScopeOptions,
 	type LoadedExtensionScope,

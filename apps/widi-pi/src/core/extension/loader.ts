@@ -56,6 +56,15 @@ export type ExtensionToolContribution =
 			source: ToolSource;
 	  };
 
+export interface ExtensionRoot {
+	readonly kind: "agent_dir" | "cwd" | "settings";
+	readonly path: string;
+}
+
+export interface ExtensionLoaderOptions {
+	readonly roots?: readonly ExtensionRoot[];
+}
+
 export interface LoadedExtensionScope {
 	agentId: string;
 	profileId: string;
@@ -74,6 +83,15 @@ export interface LoadedExtensionScope {
 
 export class ExtensionLoader {
 	private readonly _factories = new Map<string, ExtensionFactory>();
+	private readonly _roots: readonly ExtensionRoot[];
+
+	constructor(options: ExtensionLoaderOptions = {}) {
+		this._roots = options.roots ? [...options.roots] : [];
+	}
+
+	getRoots(): readonly ExtensionRoot[] {
+		return [...this._roots];
+	}
 
 	registerExtensionFactory(
 		extensionId: string,

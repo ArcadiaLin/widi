@@ -1,5 +1,562 @@
-/**
- * Provide runtime services for the application
- *
- * ExecutionEnv
- */
+import type { ExecutionEnv, FileError } from "@earendil-works/pi-agent-core";
+import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
+import {
+	AgentOrchestrator,
+	type AgentOrchestratorConfigs,
+} from "./agent-orchestrator.js";
+import {
+	AgentProfileRegistry,
+	type AgentProfileSource,
+	createBuiltinProfileStorageBackend,
+	createDefaultProfileRoots,
+	type FileProfileRoot,
+	FileProfileStorageBackend,
+	type ProfileStorageBackend,
+	type ProfileStorageListResult,
+	type ProfileStorageReadResult,
+} from "./agent-profile.js";
+import { AuthStorage } from "./auth-storage.js";
+import {
+	DEFAULT_AGENT_DIR,
+	DEFAULT_AGENT_PERSISTENCE_DIR,
+	DEFAULT_MODELSJSON_PATH,
+} from "./constants/config.js";
+import {
+	type CoreDiagnostic,
+	createDiagnostic,
+	OrchestratorError,
+} from "./diagnostics.ts";
+import { ExtensionLoader, type ExtensionRoot } from "./extension/index.ts";
+import { ModelRegistry } from "./model-registry.js";
+import type { RuntimeModel } from "./orchestrator/commands.js";
+import {
+	type ProjectTrustResolution,
+	ProjectTrustStore,
+	resolveProjectTrust,
+} from "./project-trust.js";
+import { ConfigValueResolver } from "./resolve-config-value.js";
+import { ResourceLoader, type ResourceRoot } from "./resource-loader.js";
+import { SessionManager } from "./session-manager.js";
+import { SettingManager } from "./setting-manager.js";
+import { ToolRegistry } from "./tool-registry.ts";
+
+export interface CreateWidiRuntimeOptions {
+	readonly cwd: string;
+	readonly agentDir?: string;
+	readonly projectConfigDir?: string;
+	readonly executionEnv?: ExecutionEnv;
+	readonly trustOverride?: boolean;
+	readonly sessionRoot?: string;
+	readonly defaultProfileId?: string;
+	readonly defaultModel?: RuntimeModel;
+	readonly enabledProfileIds?: readonly string[];
+	readonly toolRegistry?: ToolRegistry;
+	readonly extensionLoader?: ExtensionLoader;
+}
+
+export type RuntimeDefaultProfileSource = "override" | "settings" | "builtin";
+export type RuntimeDefaultModelSource = "override" | "settings" | "available";
+
+export interface RuntimeDefaultProfileResolution {
+	readonly id: string;
+	readonly source: RuntimeDefaultProfileSource;
+	readonly profileSource: AgentProfileSource;
+}
+
+export interface RuntimeDefaultModelResolution {
+	readonly provider: string;
+	readonly modelId: string;
+	readonly source: RuntimeDefaultModelSource;
+}
+
+export interface WidiRuntimeServices {
+	readonly cwd: string;
+	readonly agentDir: string;
+	readonly projectConfigDir: string;
+	readonly sessionRoot: string;
+	readonly projectTrust: ProjectTrustResolution;
+	readonly profileRoots: readonly FileProfileRoot[];
+	readonly defaultProfile: RuntimeDefaultProfileResolution;
+	readonly defaultModel: RuntimeDefaultModelResolution;
+	readonly executionEnv: ExecutionEnv;
+	readonly settingManager: SettingManager;
+	readonly configValueResolver: ConfigValueResolver;
+	readonly authStorage: AuthStorage;
+	readonly modelRegistry: ModelRegistry;
+	readonly profileRegistry: AgentProfileRegistry;
+	readonly resourceLoader: ResourceLoader;
+	readonly sessionManager: SessionManager;
+	readonly toolRegistry: ToolRegistry;
+	readonly extensionLoader: ExtensionLoader;
+}
+
+export interface WidiRuntime {
+	readonly services: WidiRuntimeServices;
+	readonly orchestrator: AgentOrchestrator;
+	readonly diagnostics: readonly CoreDiagnostic[];
+}
+
+function fileSystemValueOrThrow<TValue>(
+	result: { ok: true; value: TValue } | { ok: false; error: FileError },
+): TValue {
+	if (!result.ok) throw result.error;
+	return result.value;
+}
+
+class CompositeProfileStorageBackend implements ProfileStorageBackend {
+	private readonly backends: readonly ProfileStorageBackend[];
+	private readonly entries = new Map<string, ProfileStorageBackend>();
+
+	constructor(backends: readonly ProfileStorageBackend[]) {
+		this.backends = [...backends];
+	}
+
+	async listEntries(): Promise<ProfileStorageListResult> {
+		this.entries.clear();
+		const entries: ProfileStorageListResult["entries"] = [];
+		const diagnostics: ProfileStorageListResult["diagnostics"] = [];
+
+		for (const backend of this.backends) {
+			const result = await backend.listEntries();
+			entries.push(...result.entries);
+			diagnostics.push(...result.diagnostics);
+			for (const entry of result.entries) {
+				this.entries.set(entry.entryId, backend);
+			}
+		}
+
+		return { entries, diagnostics };
+	}
+
+	async readEntry(entryId: string): Promise<ProfileStorageReadResult> {
+		const backend = this.entries.get(entryId);
+		if (!backend) {
+			return {
+				ok: false,
+				diagnostic: createDiagnostic({
+					domain: "profile",
+					code: "profile.read_failed",
+					severity: "error",
+					disposition: "degraded",
+					recoverable: true,
+					message: `Unknown profile storage entry: ${entryId}`,
+					phase: "load",
+				}),
+			};
+		}
+		return await backend.readEntry(entryId);
+	}
+}
+
+async function joinPath(
+	executionEnv: ExecutionEnv,
+	parts: readonly string[],
+): Promise<string> {
+	return fileSystemValueOrThrow(await executionEnv.joinPath([...parts]));
+}
+
+async function absolutePath(
+	executionEnv: ExecutionEnv,
+	path: string,
+): Promise<string> {
+	return fileSystemValueOrThrow(await executionEnv.absolutePath(path));
+}
+
+async function resolveSettingsPaths(
+	executionEnv: ExecutionEnv,
+	paths: readonly string[],
+): Promise<ResourceRoot[]> {
+	return await Promise.all(
+		paths.map(async (path) => ({
+			kind: "settings" as const,
+			path: await absolutePath(executionEnv, path),
+		})),
+	);
+}
+
+async function createResourceRoots(options: {
+	readonly executionEnv: ExecutionEnv;
+	readonly cwd: string;
+	readonly agentDir: string;
+	readonly projectConfigDir: string;
+	readonly projectTrusted: boolean;
+	readonly settingsPaths: readonly string[];
+}): Promise<ResourceRoot[]> {
+	return [
+		...(await resolveSettingsPaths(
+			options.executionEnv,
+			options.settingsPaths,
+		)),
+		...(options.projectTrusted
+			? [
+					{
+						kind: "cwd" as const,
+						path: options.cwd,
+					},
+				]
+			: []),
+		{
+			kind: "agent_dir" as const,
+			path: options.agentDir,
+		},
+	];
+}
+
+async function createExtensionRoots(options: {
+	readonly executionEnv: ExecutionEnv;
+	readonly cwd: string;
+	readonly agentDir: string;
+	readonly projectConfigDir: string;
+	readonly projectTrusted: boolean;
+	readonly settingsPaths: readonly string[];
+}): Promise<ExtensionRoot[]> {
+	const settingsRoots = await Promise.all(
+		options.settingsPaths.map(async (path) => ({
+			kind: "settings" as const,
+			path: await absolutePath(options.executionEnv, path),
+		})),
+	);
+	return [
+		...settingsRoots,
+		...(options.projectTrusted
+			? [
+					{
+						kind: "cwd" as const,
+						path: await joinPath(options.executionEnv, [
+							options.cwd,
+							options.projectConfigDir,
+							"extensions",
+						]),
+					},
+				]
+			: []),
+		{
+			kind: "agent_dir" as const,
+			path: await joinPath(options.executionEnv, [
+				options.agentDir,
+				"extensions",
+			]),
+		},
+	];
+}
+
+async function createProfileRegistry(options: {
+	readonly executionEnv: ExecutionEnv;
+	readonly cwd: string;
+	readonly agentDir: string;
+	readonly projectTrusted: boolean;
+	readonly settingsProfilePaths: readonly string[];
+}): Promise<{
+	readonly registry: AgentProfileRegistry;
+	readonly roots: readonly FileProfileRoot[];
+}> {
+	const roots = await createDefaultProfileRoots({
+		executionEnv: options.executionEnv,
+		cwd: options.cwd,
+		agentDir: options.agentDir,
+		settingsProfilePaths: options.settingsProfilePaths,
+	});
+	const trustedRoots = options.projectTrusted
+		? roots
+		: roots.filter((root) => root.kind !== "cwd");
+	return {
+		registry: new AgentProfileRegistry(
+			new CompositeProfileStorageBackend([
+				new FileProfileStorageBackend(options.executionEnv, trustedRoots),
+				createBuiltinProfileStorageBackend(),
+			]),
+		),
+		roots: trustedRoots,
+	};
+}
+
+async function resolveDefaultProfileId(options: {
+	readonly profileRegistry: AgentProfileRegistry;
+	readonly explicitDefaultProfileId?: string;
+	readonly settingsDefaultProfileId?: string;
+}): Promise<{
+	readonly resolution: RuntimeDefaultProfileResolution;
+	readonly diagnostics: readonly CoreDiagnostic[];
+}> {
+	const profileId =
+		options.explicitDefaultProfileId ??
+		options.settingsDefaultProfileId ??
+		"default";
+	const source: RuntimeDefaultProfileSource =
+		options.explicitDefaultProfileId !== undefined
+			? "override"
+			: options.settingsDefaultProfileId !== undefined
+				? "settings"
+				: "builtin";
+	const result = await options.profileRegistry.resolveProfile(profileId);
+	if (!result.ok) {
+		throw new OrchestratorError(
+			createDiagnostic({
+				domain: "profile",
+				code: "profile.default_resolution_failed",
+				severity: "error",
+				disposition: "blocked",
+				recoverable: true,
+				message: `Cannot resolve default profile ${profileId}: ${result.reason}.`,
+				source: { kind: "profile", id: profileId },
+				phase: "resolve",
+				profileId,
+			}),
+		);
+	}
+	return {
+		resolution: {
+			id: result.profile.id,
+			source,
+			profileSource: result.source,
+		},
+		diagnostics: result.diagnostics,
+	};
+}
+
+async function resolveDefaultModel(options: {
+	readonly modelRegistry: ModelRegistry;
+	readonly settingManager: SettingManager;
+	readonly explicitDefaultModel?: RuntimeModel;
+}): Promise<{
+	readonly model: RuntimeModel;
+	readonly resolution: RuntimeDefaultModelResolution;
+}> {
+	if (options.explicitDefaultModel) {
+		return {
+			model: options.explicitDefaultModel,
+			resolution: {
+				provider: options.explicitDefaultModel.provider,
+				modelId: options.explicitDefaultModel.id,
+				source: "override",
+			},
+		};
+	}
+
+	const defaultProvider = options.settingManager.getDefaultProvider();
+	const defaultModelId = options.settingManager.getDefaultModel();
+	if (defaultProvider && defaultModelId) {
+		const model = options.modelRegistry.find(defaultProvider, defaultModelId);
+		if (model && (await options.modelRegistry.hasConfiguredAuth(model))) {
+			return {
+				model,
+				resolution: {
+					provider: model.provider,
+					modelId: model.id,
+					source: "settings",
+				},
+			};
+		}
+		throw new OrchestratorError(
+			createDiagnostic({
+				domain: "model",
+				code: "model.default_unavailable",
+				severity: "error",
+				disposition: "blocked",
+				recoverable: true,
+				message: `Default model is unavailable: ${defaultProvider}/${defaultModelId}.`,
+				source: {
+					kind: "registry",
+					name: "model",
+					key: `${defaultProvider}/${defaultModelId}`,
+				},
+				phase: "resolve",
+				provider: defaultProvider,
+				modelId: defaultModelId,
+			}),
+		);
+	}
+
+	const [availableModel] = await options.modelRegistry.getAvailable();
+	if (availableModel) {
+		return {
+			model: availableModel,
+			resolution: {
+				provider: availableModel.provider,
+				modelId: availableModel.id,
+				source: "available",
+			},
+		};
+	}
+
+	throw new OrchestratorError(
+		createDiagnostic({
+			domain: "model",
+			code: "model.default_missing",
+			severity: "error",
+			disposition: "blocked",
+			recoverable: true,
+			message:
+				"No configured model is available. Configure auth or pass an explicit default model.",
+			source: { kind: "registry", name: "model" },
+			phase: "resolve",
+		}),
+	);
+}
+
+export async function createWidiRuntime(
+	options: CreateWidiRuntimeOptions,
+): Promise<WidiRuntime> {
+	const executionEnv =
+		options.executionEnv ?? new NodeExecutionEnv({ cwd: options.cwd });
+	const cwd = await absolutePath(executionEnv, options.cwd);
+	const agentDir = await absolutePath(
+		executionEnv,
+		options.agentDir ?? DEFAULT_AGENT_DIR,
+	);
+	const projectConfigDir = options.projectConfigDir ?? DEFAULT_AGENT_DIR;
+
+	const globalSettingManager = await SettingManager.create(executionEnv, {
+		cwd,
+		agentDir,
+		projectConfigDir,
+		projectTrusted: false,
+	});
+	const trustStore = new ProjectTrustStore({ executionEnv, agentDir });
+	const projectTrust = await resolveProjectTrust({
+		cwd,
+		executionEnv,
+		trustStore,
+		trustOverride: options.trustOverride,
+		defaultProjectTrust: globalSettingManager.getDefaultProjectTrust(),
+		projectConfigDir,
+	});
+
+	const settingManager = await SettingManager.create(executionEnv, {
+		cwd,
+		agentDir,
+		projectConfigDir,
+		projectTrusted: projectTrust.trusted,
+	});
+	const configValueResolver = new ConfigValueResolver(executionEnv);
+	const authStorage = AuthStorage.create(
+		executionEnv,
+		{
+			configValueResolver,
+		},
+		await joinPath(executionEnv, [agentDir, "auth.json"]),
+	);
+	const modelRegistry = await ModelRegistry.create({
+		executionEnv,
+		authStorage,
+		configValueResolver,
+		modelsJsonPath: await joinPath(executionEnv, [
+			agentDir,
+			DEFAULT_MODELSJSON_PATH,
+		]),
+	});
+	const profileRegistryResult = await createProfileRegistry({
+		executionEnv,
+		cwd,
+		agentDir,
+		projectTrusted: projectTrust.trusted,
+		settingsProfilePaths: settingManager.getProfilePaths(),
+	});
+	const profileRegistry = profileRegistryResult.registry;
+	const defaultProfile = await resolveDefaultProfileId({
+		profileRegistry,
+		explicitDefaultProfileId: options.defaultProfileId,
+		settingsDefaultProfileId: settingManager.getDefaultProfile(),
+	});
+	const defaultModel = await resolveDefaultModel({
+		modelRegistry,
+		settingManager,
+		explicitDefaultModel: options.defaultModel,
+	});
+	const sessionRoot = await absolutePath(
+		executionEnv,
+		options.sessionRoot ??
+			settingManager.getSessionDir() ??
+			(await joinPath(executionEnv, [agentDir, DEFAULT_AGENT_PERSISTENCE_DIR])),
+	);
+	const skillRoots = await createResourceRoots({
+		executionEnv,
+		cwd,
+		agentDir,
+		projectConfigDir,
+		projectTrusted: projectTrust.trusted,
+		settingsPaths: settingManager.getSkillPaths(),
+	});
+	const promptTemplateRoots = await createResourceRoots({
+		executionEnv,
+		cwd,
+		agentDir,
+		projectConfigDir,
+		projectTrusted: projectTrust.trusted,
+		settingsPaths: settingManager.getPromptTemplatePaths(),
+	});
+	const resourceLoader = new ResourceLoader({
+		executionEnv,
+		cwd,
+		agentDir,
+		skillRoots,
+		promptTemplateRoots,
+	});
+	const sessionManager = new SessionManager({
+		fs: executionEnv,
+		cwd,
+		sessionsRoot: sessionRoot,
+	});
+	const extensionLoader =
+		options.extensionLoader ??
+		new ExtensionLoader({
+			roots: await createExtensionRoots({
+				executionEnv,
+				cwd,
+				agentDir,
+				projectConfigDir,
+				projectTrusted: projectTrust.trusted,
+				settingsPaths: settingManager.getExtensionPaths(),
+			}),
+		});
+	const toolRegistry = options.toolRegistry ?? new ToolRegistry();
+	const services: WidiRuntimeServices = {
+		cwd,
+		agentDir,
+		projectConfigDir,
+		sessionRoot,
+		projectTrust,
+		profileRoots: profileRegistryResult.roots,
+		defaultProfile: defaultProfile.resolution,
+		defaultModel: defaultModel.resolution,
+		executionEnv,
+		settingManager,
+		configValueResolver,
+		authStorage,
+		modelRegistry,
+		profileRegistry,
+		resourceLoader,
+		sessionManager,
+		toolRegistry,
+		extensionLoader,
+	};
+	const orchestratorConfig: AgentOrchestratorConfigs = {
+		executionEnv,
+		resourceLoader,
+		sessionManager,
+		settingManager,
+		modelRegistry,
+		profileRegistry,
+		toolRegistry,
+		extensionLoader,
+		defaultProfileId: defaultProfile.resolution.id,
+		enabledProfileIds:
+			options.enabledProfileIds ?? settingManager.getEnabledProfiles(),
+		defaultModel: defaultModel.model,
+	};
+	const orchestrator = new AgentOrchestrator(orchestratorConfig);
+	const diagnostics = [
+		...globalSettingManager.drainDiagnostics(),
+		...(projectTrust.diagnostic ? [projectTrust.diagnostic] : []),
+		...settingManager.drainDiagnostics(),
+		...authStorage.drainDiagnostics(),
+		...modelRegistry.drainDiagnostics(),
+		...defaultProfile.diagnostics,
+	];
+
+	return {
+		services,
+		orchestrator,
+		diagnostics,
+	};
+}

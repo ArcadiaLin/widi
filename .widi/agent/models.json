@@ -1,0 +1,28 @@
+{
+  "providers": {
+    "widi-fixture": {
+      "name": "WIDI Fixture Provider",
+      "api": "openai-completions",
+      "baseUrl": "https://example.invalid/v1",
+      "apiKey": "!printf widi-fixture-key",
+      "models": [
+        {
+          "id": "widi-fixture-model",
+          "name": "WIDI Fixture Model",
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 100000,
+          "maxTokens": 4096
+        }
+      ]
+    }
+  }
+}
