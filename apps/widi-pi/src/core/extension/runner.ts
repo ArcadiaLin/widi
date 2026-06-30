@@ -24,6 +24,7 @@ import type {
 	ExtensionObservedEvent,
 	ExtensionObservedEventName,
 	ExtensionObserver,
+	ExtensionSessionContext,
 } from "./types.ts";
 
 export interface ExtensionRunnerOptions {
@@ -73,6 +74,7 @@ export class ExtensionRunner {
 			agentId: this.agentId,
 			profileId: this.profileId,
 			actions: this._createContextActions(),
+			session: this._createSessionContext(extensionId),
 			get signal() {
 				runner._assertActive();
 				return runner._contextActions.getSignal?.();
@@ -282,6 +284,34 @@ export class ExtensionRunner {
 				return await this._actions.dispatch(command);
 			},
 		};
+	}
+
+	private _createSessionContext(extensionId: string): ExtensionSessionContext {
+		return {
+			appendEntry: async (type, data) => {
+				this._assertActive();
+				return await this._requireSessionActions().appendEntry(
+					extensionId,
+					type,
+					data,
+				);
+			},
+			findEntries: async (type) => {
+				this._assertActive();
+				return await this._requireSessionActions().findEntries(
+					extensionId,
+					type,
+				);
+			},
+		};
+	}
+
+	private _requireSessionActions() {
+		const session = this._contextActions.session;
+		if (!session) {
+			throw new Error("Extension runner session actions are not bound.");
+		}
+		return session;
 	}
 
 	private _createHandlerDiagnostic(

@@ -261,25 +261,4 @@ Drain 型模块发布后会清空本地队列；result 型模块只在当前 ope
 
 ## TODO
 
-- [x] 定义 command/client/human-request 使用的最小 `OrchestratorDiagnostic` shape。
-- [x] 通过 orchestrator event 暴露 command rejection、client delivery failure、human request unhandled/timeout/aborted/cancelled。
-- [x] 设计统一 diagnostic shape，覆盖 profile、resource、extension、tool 和 model/auth context。
-- [x] 区分 diagnostic domain 与 namespaced code。
-- [x] 定义 severity 与 disposition 的关系，允许 error 不阻断当前流程。
-- [x] 设计 message template 与 params 机制，并保留 fallback message。
-- [x] 设计标准化 diagnostic source、requestedBy、related 和 phase 字段。
-- [x] 将 `orchestrator/diagnostics.ts` 移到 `core/diagnostics.ts`，并提供兼容 alias。
-- [x] 实现 `CoreDiagnostic`、`DiagnosticError`、message formatter 和基础 helper。
-- [x] ProfileRegistry 直接产出 `CoreDiagnostic`。
-- [x] ToolRegistry 直接产出 `CoreDiagnostic`。
-- [x] Settings/Auth/Model 新增 diagnostics API，并保留旧 error/string API。
-- [x] 实现 resource diagnostic adapter，兼容 Pi `SkillDiagnostic` 与 `PromptTemplateDiagnostic`。
-- [x] 将 resource loader diagnostics 接入 orchestrator diagnostic event。
-- [x] 将 profile diagnostics 接入 orchestrator diagnostic event。
-- [x] 将 model/auth startup 与 request auth diagnostics 接入 orchestrator diagnostic event。
-- [x] ToolRegistry diagnostics 保留在 `ToolRegistryResolveResult.diagnostics`。
-- [x] 将 ToolRegistry diagnostics 接入 orchestrator event；orchestrator create/resume harness build 和 runtime tool mutation 已经过 `ToolRegistry.resolve()`。
-- [ ] 将 extension diagnostics 接入 orchestrator diagnostic event。
-- [x] 增加 focused tests 覆盖 command rejection 与 human-request diagnostics。
-- [x] 增加 focused tests 覆盖 startup diagnostics 与 spawn profile diagnostics。
-- [ ] 增加 focused tests 覆盖 resume 路径的 diagnostics。
+后续任务集中维护在 [WIDI 下一阶段 TODO](../TODO.md)，本文件只保留 diagnostics 机制边界和当前行为。

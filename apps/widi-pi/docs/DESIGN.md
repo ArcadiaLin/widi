@@ -77,6 +77,7 @@ Pi coding-agent 的 extension 已经可以注册 tool/command/provider、拦截 
 
 ## Core 文档
 
+- [下一阶段 TODO](TODO.md)
 - [Orchestrator](core/orchestrator.md)
 - [Orchestrator Commands](core/orchestrator-commands.md)
 - [Extensions](core/extensions.md)

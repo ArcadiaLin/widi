@@ -142,10 +142,36 @@ export interface ExtensionActions {
 export interface ExtensionContextActions {
 	getSignal?(): AbortSignal | undefined;
 	isIdle?(): boolean;
+	session?: ExtensionSessionActions;
 }
 
 export interface ExtensionCommandContextActions {
 	waitForIdle(): Promise<void>;
+}
+
+export interface ExtensionCustomEntry<T = unknown> {
+	id: string;
+	parentId: string | null;
+	timestamp: string;
+	type: string;
+	data?: T;
+}
+
+export interface ExtensionSessionContext {
+	appendEntry<T = unknown>(type: string, data?: T): Promise<string>;
+	findEntries<T = unknown>(type?: string): Promise<ExtensionCustomEntry<T>[]>;
+}
+
+export interface ExtensionSessionActions {
+	appendEntry<T = unknown>(
+		extensionId: string,
+		type: string,
+		data?: T,
+	): Promise<string>;
+	findEntries<T = unknown>(
+		extensionId: string,
+		type?: string,
+	): Promise<ExtensionCustomEntry<T>[]>;
 }
 
 export interface ExtensionContext {
@@ -153,6 +179,7 @@ export interface ExtensionContext {
 	agentId: string;
 	profileId: string;
 	actions: ExtensionActions;
+	session: ExtensionSessionContext;
 	readonly signal: AbortSignal | undefined;
 	isIdle(): boolean;
 }

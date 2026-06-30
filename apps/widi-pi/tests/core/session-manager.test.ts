@@ -222,4 +222,107 @@ describe("SessionManager", () => {
 			metadata: { profile: profileReference },
 		});
 	});
+
+	it("stores namespaced extension custom entries on the current branch path", async () => {
+		const fs = new MemoryFileSystem();
+		const manager = new SessionManager({
+			fs,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+		});
+		const session = await manager.createAgentSession({
+			agentId: "main",
+			agentProfile: profile,
+		});
+
+		const firstId = await manager.appendExtensionCustomEntry(
+			"main",
+			"writer",
+			"state",
+			{ value: 1 },
+		);
+		await manager.appendExtensionCustomEntry("main", "writer", "note", {
+			value: 2,
+		});
+		await manager.appendExtensionCustomEntry("main", "other", "state", {
+			value: "other",
+		});
+		const secondId = await manager.appendExtensionCustomEntry(
+			"main",
+			"writer",
+			"state",
+			{ value: 3 },
+		);
+
+		await expect(
+			manager.findExtensionCustomEntries<{ value: number }>(
+				"main",
+				"writer",
+				"state",
+			),
+		).resolves.toEqual([
+			expect.objectContaining({
+				id: firstId,
+				type: "state",
+				data: { value: 1 },
+			}),
+			expect.objectContaining({
+				id: secondId,
+				type: "state",
+				data: { value: 3 },
+			}),
+		]);
+		await expect(
+			manager.findExtensionCustomEntries("main", "writer"),
+		).resolves.toMatchObject([
+			{ type: "state", data: { value: 1 } },
+			{ type: "note", data: { value: 2 } },
+			{ type: "state", data: { value: 3 } },
+		]);
+		await expect(
+			manager.findExtensionCustomEntries("main", "writer", "missing"),
+		).resolves.toEqual([]);
+
+		const storageCustomEntries = await session
+			.getStorage()
+			.findEntries("custom");
+		expect(storageCustomEntries.map((entry) => entry.customType)).toEqual([
+			"extension:writer:state",
+			"extension:writer:note",
+			"extension:other:state",
+			"extension:writer:state",
+		]);
+
+		await session.getStorage().setLeafId(firstId);
+		await expect(
+			manager.findExtensionCustomEntries("main", "writer", "state"),
+		).resolves.toMatchObject([{ id: firstId, type: "state" }]);
+	});
+
+	it("validates extension custom entry type and JSON serializability", async () => {
+		const manager = new SessionManager({
+			fs: new MemoryFileSystem(),
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+		});
+		await manager.createAgentSession({
+			agentId: "main",
+			agentProfile: profile,
+		});
+		const circular: { self?: unknown } = {};
+		circular.self = circular;
+
+		await expect(
+			manager.appendExtensionCustomEntry("main", "writer", " ", {}),
+		).rejects.toThrow("must not be empty");
+		await expect(
+			manager.appendExtensionCustomEntry("main", "writer", "bad/type", {}),
+		).rejects.toThrow("must contain only");
+		await expect(
+			manager.appendExtensionCustomEntry("main", "writer", "state", () => {}),
+		).rejects.toThrow("JSON serializable");
+		await expect(
+			manager.appendExtensionCustomEntry("main", "writer", "state", circular),
+		).rejects.toThrow("JSON serializable");
+	});
 });

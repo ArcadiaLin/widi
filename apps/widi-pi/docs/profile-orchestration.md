@@ -23,7 +23,7 @@
 5. resume 时按 metadata 中的 profile id 调用 registry；找不到、禁用、重复或无效时结构化失败，不 fallback。
 6. 构建 harness 时用 `profile.skills`、`profile.promptTemplates`、`profile.systemPrompt`。
 
-这说明 orchestrator 已经接入第一版 profile registry contract。Profile、resource、model/auth、tool registry 和 command/human-request diagnostics 已经通过 orchestrator `diagnostic` event 统一发布；extension diagnostics 仍未完成。
+这说明 orchestrator 已经接入第一版 profile registry contract。Profile、resource、model/auth、tool registry、command/human-request 和 extension loader/runner MVP diagnostics 已经通过 orchestrator `diagnostic` event 统一发布；真实 extension discovery、trust、reload、permission 和 debug view 仍未完成。
 
 ## 主要缺漏
 
@@ -57,13 +57,22 @@
 
 ### Extensions
 
-`AgentProfile.extensions` 已声明 profile 需要的 extension，但 extension lifecycle 仍是空白：
+`AgentProfile.extensions` 已声明 profile 需要的 extension。当前 lifecycle 是内存 factory MVP：
 
-- `ExtensionRunner` 还没有 loader、registry、activation API。
-- orchestrator 没有根据 `profile.extensions` 解析 extension。
-- `missingExtensionSeverity` 还没有被执行。
-- extension 启动失败、缺失、版本不兼容、权限不足等情况还没有统一 diagnostic shape。
-- session metadata 暂时没有保存 extension runtime 状态。
+- `ExtensionLoader` 根据 `profile.extensions` 从内存 factory registry 解析 extension。
+- `missingExtensionSeverity` 已用于 missing factory diagnostic 的 severity；`ignore` 不发诊断，`warning`/`error` 继续创建 harness 并报告 degraded diagnostic。
+- activation 失败会产生 `extension.activation_failed`，observer handler 失败会产生 `extension.handler_failed`。
+- `ExtensionRunner` 将 loaded scope 作为当前 agent 的 scoped registry overlay，支持 activation-time `registerTool` / `patchTool`。
+- runtime context 已提供 actions、human request、dispatch、tool mutation，以及 `ctx.session` custom entry facade。
+
+仍缺：
+
+- 真实 file/module loader、extension source metadata、version/compatibility。
+- trust gate、reload、stale context 生命周期管理的完整产品路径。
+- permission model：patch execute、filesystem/shell/model/session/orchestrator capability。
+- extension commands、provider/resource contribution 和更完整 hook matrix。
+- debug view：loaded extensions、hooks、tool contributions、patches、diagnostics、custom entries。
+- session metadata 暂时不保存 extension runtime 状态。已保存的 extension custom entries 属于 Pi session body 的 append-only entries，不是 extension instance snapshot。
 
 推荐先把 `extensions` 视为 profile 的声明式依赖列表，而不是已激活 extension 实例。缺失等级只影响启动策略，不应该改变 profile schema。
 
@@ -84,7 +93,7 @@
 
 Runtime command 同样遵守这个边界。`agent.getTools` 返回 tool names 与 active tool names snapshot；`agent.setTools` 和 `agent.setActiveTools` 只接收名字，由 orchestrator 再次调用 `ToolRegistry.resolve()`。因此 profile create、session resume 和 runtime mutation 三条路径共享同一套可见性、active filtering 和 diagnostics 语义。
 
-Tool execution context 不提供 core session persistence facade。Built-in tool 的可恢复数据应跟随 Pi coding-agent 的路径进入 tool call arguments、tool result `content` 和 typed `details`。未来 extension 如果需要和 session tree 强相关的小型状态，应通过 extension-owned custom entry API 进入 Pi `custom` entry；这不属于 profile schema。
+Tool execution context 不提供 core session persistence facade。Built-in tool 的可恢复数据应跟随 Pi coding-agent 的路径进入 tool call arguments、tool result `content` 和 typed `details`。Extension 如果需要和 session tree 强相关的小型状态，应通过 extension-owned custom entry API 进入 Pi `custom` entry；这不属于 profile schema。
 
 Tool execution 的 UI 展示也不属于 profile schema。Orchestrator 会发布 `tool_lifecycle_event`，UI/RPC/extension runner 可基于 tool name、arguments 和 result details 派生展示数据。
 
@@ -167,30 +176,4 @@ orchestrator 不应直接打印 diagnostics。当前统一出口是 orchestrator
 
 ## TODO
 
-- [x] 实现 markdown/frontmatter profile loading 与 profile storage backend，从 agent dir 与 project `.widi/profiles` 加载 profile 并返回 diagnostics。
-- [x] 实现 `ResourceLoader`，从 agent dir 与 project `.widi` 加载 skills/prompt templates。
-- [x] 让 `SessionManager` 在创建持久 agent session 时写入 profile reference，并让 resume 通过 resolver 恢复 profile。
-- [x] 引入 `ProfileRegistry`，统一管理 profile id 到 sourced profile 的解析、优先级、冲突和 diagnostics。
-- [x] 让 `AgentOrchestrator` 接收 concrete `AgentProfileRegistry`，不再接收 `AgentProfile | undefined` resolver。
-- [x] 定义 command/client/human-request 使用的最小 `OrchestratorDiagnostic` 类型。
-- [x] 将 `OrchestratorDiagnostic` 收敛为 `CoreDiagnostic` alias，覆盖 profile、resource、tool、model/auth、extension source shape。
-- [x] 新增 orchestrator `diagnostic` event，作为 UI/RPC/CLI 的统一 diagnostics 出口。
-- [x] 在 `_buildAgentHarness()` 中处理 `loadSkills()` 与 `loadPromptTemplates()` 返回的 diagnostics，并发布 core resource diagnostics。
-- [ ] 定义 resource diagnostic severity：缺失显式声明资源是否为 warning/error，默认目录不存在是否忽略。
-- [ ] 决定 resource source 是否进入 harness metadata、debug command 或 session custom entry。
-- [ ] 定义 duplicate resource 策略：同名 skill/template 是覆盖、合并、保留全部还是报诊断。
-- [ ] 实现 extension registry/loader，并让 orchestrator 消费 `profile.extensions`。
-- [ ] 执行 `profile.missingExtensionSeverity`：`ignore` 跳过，`warning` 继续并发诊断，`error` 阻止 harness 创建。
-- [ ] 定义 extension activation failure 与 missing extension 的不同 diagnostic code。
-- [x] 明确 `profile.tools` 的推荐语义：registry requested tool names。
-- [x] 实现 `ToolRegistry.resolve()` 的 requested/active tool name 校验和 diagnostics。
-- [x] 将 `profile.tools` 和 resume/runtime `activeToolNames` 接入 `ToolRegistry.resolve()`，并把 diagnostics 汇总到 orchestrator。
-- [x] 将 runtime `agent.getTools`/`agent.setTools` 收敛为 names/snapshot API，移除 raw `AgentTool[]` command 入口。
-- [ ] 定义 extension-owned custom entry API 与 profile/tool/extension diagnostics 的关系。
-- [ ] 明确 `capabilities` 到 tools/events 的映射规则，例如 spawn、request user、direct user input。
-- [x] 定义第一版 `profileOverride` 规则：禁止覆盖 id；修改恢复关键字段时不能创建 persistent session。
-- [x] 明确 `profileOverride` 不写入 session metadata；需要 resume 的差异进入正式 profile。
-- [x] 定义第一版 profile missing policy：缺失、禁用、重复、无效时结构化失败，不 fallback。
-- [ ] 将 runtime composition 接入真实 profile roots、settings paths 和 builtin default source。
-- [x] 为 startup diagnostics 与 spawn profile diagnostics 增加 focused tests。
-- [ ] 为 resume profile/resource/extension diagnostics 增加 focused tests。
+Profile orchestration 后续任务集中维护在 [WIDI 下一阶段 TODO](TODO.md)。本文件只保留当前 profile、resource、tool、extension 与 diagnostics 的编排边界。

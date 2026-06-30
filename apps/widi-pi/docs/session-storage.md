@@ -88,7 +88,7 @@ Pi 的 `custom` entry 仍是 session tree 的合法 entry，storage 负责原样
 }
 ```
 
-WIDI core 当前不解释 `custom` entry 的 data shape。未来 extension runner 可以提供 extension-owned custom entry API，用于和当前 session tree 强相关的小型 extension 状态。branch scope、fork、schema validation、diagnostics、compaction/export/debug policy 都应在 extension API 中定义。大型 artifact、多 session index、产品模式状态仍属于 extension-owned storage。
+WIDI core 当前不解释 `custom` entry 的 data shape。Extension runner 已提供 `ctx.session.appendEntry()` / `findEntries()` MVP，用于和当前 session tree 强相关的小型 extension 状态。当前 API 只开放 extension namespace 下的 append-only `custom` entries，并按 current branch path 读取。fork、schema validation、diagnostics、compaction/export/debug policy 仍需在 extension API 中继续定义。大型 artifact、多 session index、产品模式状态仍属于 extension-owned storage。
 
 因此当前实现保持了 Pi 会话树能力：
 

@@ -155,18 +155,4 @@ Persistent session metadata 只保存 profile reference，例如 `{ id, label? }
 
 ## TODO
 
-- [x] 实现 markdown/frontmatter profile loader，覆盖 agent dir 与 project `.widi/profiles`。
-- [x] 实现 skills/prompt templates resource loader，并在 harness build 时注入 Pi resources。
-- [x] 在 persistent session metadata 中保存 profile reference，并在 resume 时通过 resolver 恢复 profile。
-- [x] 引入 profile registry，按 `ProfileId` 解析 sourced profile 并产生 diagnostics。
-- [x] 定义 profile id 与文件名不一致时的索引和 diagnostic 规则。
-- [x] 将 resume profile 缺失改为 policy-driven diagnostic，不默认 fallback 到 `DefaultProfile`。
-- [x] 定义 create-time profile override 的校验路径，尤其是恢复关键字段与 persistent session 的关系。
-- [x] 引入 `enabledProfiles` setting，并在 orchestrator policy 层按 `ProfileId` 过滤。
-- [x] 将 orchestrator default profile 输入收敛为 `defaultProfileId`。
-- [x] 引入 profile storage backend：file、in-memory、composite，以及低优先级 builtin default source。
-- [ ] 将 runtime composition 接入真实 profile registry roots、settings paths 与 builtin default source。
-- [x] 统一 profile/orchestrator diagnostics shape，并通过 orchestrator `diagnostic` event 汇总到 UI/RPC 边界。
-- [ ] 评估是否需要 resource registry；当前 resource loader 保持轻量，Pi resource diagnostics 通过 adapter 进入 `CoreDiagnostic`。
-- [ ] 区分 explicit resource missing、default directory missing、parse failed、duplicate identity。
-- [ ] 定义哪些 resolved resources 会变成 Pi harness resources。
+Profile/resource 后续任务集中维护在 [WIDI 下一阶段 TODO](../TODO.md)。本文件只保留 profile registry、resource loading 和 orchestrator policy 的边界。

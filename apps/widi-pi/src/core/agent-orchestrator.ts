@@ -974,6 +974,21 @@ export class AgentOrchestrator {
 		extensionRunner.bindCore(this._createExtensionActions(), {
 			getSignal: () => undefined,
 			isIdle: () => true,
+			session: {
+				appendEntry: async (extensionId, type, data) =>
+					await this.sessionManager.appendExtensionCustomEntry(
+						agentId,
+						extensionId,
+						type,
+						data,
+					),
+				findEntries: async (extensionId, type) =>
+					await this.sessionManager.findExtensionCustomEntries(
+						agentId,
+						extensionId,
+						type,
+					),
+			},
 		});
 		extensionRunner.bindCommandContext({
 			waitForIdle: async () => {

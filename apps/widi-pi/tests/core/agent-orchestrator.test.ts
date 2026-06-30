@@ -1246,6 +1246,67 @@ describe("AgentOrchestrator", () => {
 		expect(observed).toEqual([`observer:${extensionProfile.id}:true:0`]);
 	});
 
+	it("binds extension session context to scoped agent custom entries", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: true,
+			extensions: ["stateful"],
+		};
+		const observed: string[] = [];
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("stateful", (api) => {
+			api.observe("agent_harness_event", async (_event, context) => {
+				const before = await context.session.findEntries<{ count: number }>(
+					"state",
+				);
+				await context.session.appendEntry("state", {
+					count: before.length + 1,
+				});
+				const after = await context.session.findEntries<{ count: number }>(
+					"state",
+				);
+				observed.push(
+					`${context.extensionId}:${after.map((entry) => entry.data?.count).join(",")}`,
+				);
+			});
+		});
+
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const handleHarnessEvent = (
+			orchestrator as unknown as {
+				_handleAgentHarnessEvent(
+					agentId: string,
+					event: AgentHarnessEvent,
+				): Promise<void>;
+			}
+		)._handleAgentHarnessEvent.bind(orchestrator);
+
+		await handleHarnessEvent(agentId, { type: "turn_start" });
+		await handleHarnessEvent(agentId, { type: "turn_start" });
+
+		expect(observed).toEqual(["stateful:1", "stateful:1,2"]);
+		await expect(
+			orchestrator.sessionManager.findExtensionCustomEntries(
+				agentId,
+				"stateful",
+				"state",
+			),
+		).resolves.toMatchObject([
+			{ type: "state", data: { count: 1 } },
+			{ type: "state", data: { count: 2 } },
+		]);
+	});
+
 	it("emits normalized tool lifecycle events from harness events", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env, {
