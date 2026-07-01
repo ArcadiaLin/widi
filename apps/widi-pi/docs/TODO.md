@@ -28,10 +28,10 @@
 
 ## P0: Agent Record And Lifecycle
 
-- [ ] 将 `AgentOrchestrator.agents: Map<AgentId, AgentHarness>` 收敛为 agent record。
-- [ ] Agent record 至少包含：`agentId`、status、profile reference/source、session metadata、model、harness、tool snapshot、extension runner、resource diagnostics、extension diagnostics。
-- [ ] 定义 status：`creating`、`ready`、`running`、`idle`、`unavailable`、`disposed`。
-- [ ] 实现 status query command/debug API。
+- [x] 将 `AgentOrchestrator.agents: Map<AgentId, AgentHarness>` 收敛为 agent record。
+- [x] Agent record 至少包含：`agentId`、status、profile reference/source、session metadata、model、harness、tool snapshot、extension runner、resource diagnostics、extension diagnostics。
+- [x] 定义 status：`creating`、`ready`、`running`、`idle`、`unavailable`、`disposed`。
+- [x] 实现 status query command/debug API。
 - [ ] 实现 dispose lifecycle：unsubscribe harness events/interceptors、invalidate extension runner、清理 pending human requests、释放 runtime resources。
 - [ ] 定义 unavailable agent：subagent 或恢复分支失败时保留 agent record 和 diagnostics，但不创建 broken harness。
 - [ ] 增加 unavailable/resume failure tests。

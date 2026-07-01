@@ -713,6 +713,76 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
+	it("exposes lightweight agent record status and inspect snapshots", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env, {
+			toolRegistry: createToolRegistry(createToolDefinition("echo", "echo")),
+		});
+		const { agentId } = await orchestrator.spawnAgentHarness();
+
+		expect(orchestrator.getAgentStatus(agentId)).toBe("ready");
+		expect(orchestrator.getAgentHarness(agentId)).toBeDefined();
+		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
+			agentId,
+			status: "ready",
+			profile: {
+				reference: { id: defaultProfile.id, label: defaultProfile.label },
+				entryId: "memory:main",
+			},
+			hasHarness: true,
+			toolSnapshot: {
+				toolNames: ["echo"],
+				activeToolNames: ["echo"],
+			},
+			resourceDiagnostics: [],
+			extensionDiagnostics: [],
+			diagnostics: [],
+		});
+
+		const statusResult = await orchestrator.dispatch({
+			kind: "agent.getStatus",
+			source: { kind: "system" },
+			agentId,
+		});
+		expect(statusResult).toMatchObject({
+			ok: true,
+			value: "ready",
+		});
+
+		const inspectResult = await orchestrator.dispatch({
+			kind: "agent.inspect",
+			source: { kind: "system" },
+			agentId,
+		});
+		expect(inspectResult).toMatchObject({
+			ok: true,
+			value: {
+				agentId,
+				status: "ready",
+				hasHarness: true,
+			},
+		});
+
+		const handleHarnessEvent = (
+			orchestrator as unknown as {
+				_handleAgentHarnessEvent(
+					agentId: string,
+					event: AgentHarnessEvent,
+				): Promise<void>;
+			}
+		)._handleAgentHarnessEvent.bind(orchestrator);
+
+		await handleHarnessEvent(agentId, { type: "turn_start" });
+		expect(orchestrator.getAgentStatus(agentId)).toBe("running");
+
+		await handleHarnessEvent(agentId, {
+			type: "turn_end",
+			message: createAssistantPartial([{ type: "text", text: "done" }]),
+			toolResults: [],
+		});
+		expect(orchestrator.getAgentStatus(agentId)).toBe("idle");
+	});
+
 	it("resolves profile requested tools through ToolRegistry diagnostics", async () => {
 		const env = new MemoryExecutionEnv();
 		const toolProfile: AgentProfile = {
@@ -1215,19 +1285,7 @@ describe("AgentOrchestrator", () => {
 		});
 
 		const { agentId } = await orchestrator.spawnAgentHarness();
-		const runner = (
-			orchestrator as unknown as {
-				_agentExtensionRunners: Map<
-					string,
-					{
-						createCommandContext(extensionId?: string): {
-							extensionId: string;
-							waitForIdle(): Promise<void>;
-						};
-					}
-				>;
-			}
-		)._agentExtensionRunners.get(agentId);
+		const runner = orchestrator.agents.get(agentId)?.extensionRunner;
 		if (!runner) throw new Error("Expected extension runner.");
 		const commandContext = runner.createCommandContext("observer");
 		await commandContext.waitForIdle();
@@ -1243,7 +1301,7 @@ describe("AgentOrchestrator", () => {
 		await handleHarnessEvent(agentId, { type: "turn_start" });
 
 		expect(commandContext.extensionId).toBe("observer");
-		expect(observed).toEqual([`observer:${extensionProfile.id}:true:0`]);
+		expect(observed).toEqual([`observer:${extensionProfile.id}:false:0`]);
 	});
 
 	it("binds extension session context to scoped agent custom entries", async () => {

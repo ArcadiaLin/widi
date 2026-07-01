@@ -9,6 +9,10 @@ import type {
 	ImageContent,
 	Model,
 } from "@earendil-works/pi-ai";
+import type {
+	AgentLifecycleStatus,
+	AgentRecordSnapshot,
+} from "../agent-orchestrator.ts";
 import type { OrchestratorDiagnostic } from "../diagnostics.ts";
 import type { HumanRequestDraft, HumanResponse } from "./human-request.ts";
 
@@ -94,6 +98,8 @@ export type OrchestratorCommand =
 			agentId: string;
 			toolNames: string[];
 	  })
+	| (OrchestratorCommandBase & { kind: "agent.getStatus"; agentId: string })
+	| (OrchestratorCommandBase & { kind: "agent.inspect"; agentId: string })
 	| (OrchestratorCommandBase & {
 			kind: "human.request";
 			request: HumanRequestDraft;
@@ -106,6 +112,8 @@ export type OrchestratorCommandValue =
 	| NavigateTreeResult
 	| RuntimeModel
 	| AgentToolsSnapshot
+	| AgentLifecycleStatus
+	| AgentRecordSnapshot
 	| string[]
 	| HumanResponse
 	| undefined;

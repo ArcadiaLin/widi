@@ -18,8 +18,11 @@ import type { ExtendedJsonlSessionMetadata } from "../storage/jsonl-repo.ts";
 import type {
 	AgentProfile,
 	AgentProfileOverride,
+	AgentProfileReference,
 	AgentProfileRegistry,
+	AgentProfileSource,
 } from "./agent-profile.js";
+import { toAgentProfileReference } from "./agent-profile.js";
 import {
 	type DiagnosticDisposition,
 	type DiagnosticSource,
@@ -152,6 +155,48 @@ export interface AgentOrchestratorConfigs {
 
 export type AgentId = string;
 
+export type AgentLifecycleStatus =
+	| "creating"
+	| "ready"
+	| "running"
+	| "idle"
+	| "unavailable"
+	| "disposed";
+
+export interface AgentProfileRecordReference {
+	readonly reference: AgentProfileReference;
+	readonly source?: AgentProfileSource;
+	readonly entryId?: string;
+}
+
+export interface AgentRecord {
+	readonly agentId: AgentId;
+	status: AgentLifecycleStatus;
+	readonly profile: AgentProfileRecordReference;
+	sessionMetadata?: AgentSessionMetadata;
+	model: RuntimeModel;
+	harness?: AgentHarness;
+	toolSnapshot?: AgentToolsSnapshot;
+	extensionRunner?: ExtensionRunner;
+	resourceDiagnostics: OrchestratorDiagnostic[];
+	extensionDiagnostics: OrchestratorDiagnostic[];
+	diagnostics: OrchestratorDiagnostic[];
+}
+
+export interface AgentRecordSnapshot {
+	readonly agentId: AgentId;
+	readonly status: AgentLifecycleStatus;
+	readonly profile: AgentProfileRecordReference;
+	readonly sessionMetadata?: AgentSessionMetadata;
+	readonly model: RuntimeModel;
+	readonly hasHarness: boolean;
+	readonly toolSnapshot?: AgentToolsSnapshot;
+	readonly extensionIds: readonly string[];
+	readonly resourceDiagnostics: readonly OrchestratorDiagnostic[];
+	readonly extensionDiagnostics: readonly OrchestratorDiagnostic[];
+	readonly diagnostics: readonly OrchestratorDiagnostic[];
+}
+
 interface PendingHumanRequest {
 	envelope: HumanRequestEnvelope;
 	controller: AbortController;
@@ -164,6 +209,12 @@ interface AgentToolSet {
 	requestedToolNames: string[] | undefined;
 	activeToolNames: string[];
 	profileId: string;
+}
+
+interface ResolvedAgentProfile {
+	profile: AgentProfile;
+	source: AgentProfileSource;
+	entryId: string;
 }
 
 interface StreamingToolCallRef {
@@ -211,7 +262,7 @@ export class AgentOrchestrator {
 	private _defaultThinkingLevel: ThinkingLevel | undefined;
 	private _defaultProfileId: string;
 	private _enabledProfileIds: readonly string[] | undefined;
-	readonly agents: Map<AgentId, AgentHarness> = new Map();
+	readonly agents: Map<AgentId, AgentRecord> = new Map();
 	readonly executionEnv: ExecutionEnv;
 	readonly resourceLoader: ResourceLoader;
 	readonly sessionManager: SessionManager;
@@ -224,7 +275,6 @@ export class AgentOrchestrator {
 	private _unsubscribeAgentHarness: Map<AgentId, () => void> = new Map();
 	private _eventListeners: Set<OrchestratorEventListener> = new Set();
 	private _agentToolSets: Map<AgentId, AgentToolSet> = new Map();
-	private _agentExtensionRunners: Map<AgentId, ExtensionRunner> = new Map();
 	private _streamingToolCalls: Map<AgentId, Map<number, StreamingToolCallRef>> =
 		new Map();
 	private _clients: Map<string, OrchestratorClient<OrchestratorEvent>> =
@@ -309,15 +359,24 @@ export class AgentOrchestrator {
 	}
 
 	getAgentHarness(agentId: AgentId): AgentHarness | undefined {
-		return this.agents.get(agentId);
+		return this.agents.get(agentId)?.harness;
+	}
+
+	getAgentStatus(agentId: AgentId): AgentLifecycleStatus {
+		return this._requireAgentRecord(agentId).status;
+	}
+
+	inspectAgent(agentId: AgentId): AgentRecordSnapshot {
+		return this._snapshotAgentRecord(this._requireAgentRecord(agentId));
 	}
 
 	getAgentModel(agentId: AgentId): RuntimeModel {
-		return this._requireAgentHarness(agentId).getModel();
+		return this._requireAgentRecord(agentId).model;
 	}
 
 	async setAgentModel(agentId: AgentId, model: RuntimeModel): Promise<void> {
 		await this._requireAgentHarness(agentId).setModel(model);
+		this._requireAgentRecord(agentId).model = model;
 	}
 
 	getAgentTools(agentId: AgentId): AgentToolsSnapshot {
@@ -343,7 +402,7 @@ export class AgentOrchestrator {
 			activeToolNames,
 		});
 		await harness.setTools?.(next.tools, [...next.activeToolNames]);
-		this._agentToolSets.set(agentId, next);
+		this._setAgentToolSet(agentId, next);
 	}
 
 	getAgentActiveTools(agentId: AgentId): string[] {
@@ -364,7 +423,7 @@ export class AgentOrchestrator {
 			activeToolNames: toolNames,
 		});
 		await harness.setTools?.(next.tools, [...next.activeToolNames]);
-		this._agentToolSets.set(agentId, next);
+		this._setAgentToolSet(agentId, next);
 	}
 
 	async promptAgent(
@@ -372,7 +431,9 @@ export class AgentOrchestrator {
 		text: string,
 		options?: { images?: ImageContent[] },
 	) {
-		return await this._requireAgentHarness(agentId).prompt(text, options);
+		return await this._runHarnessOperation(agentId, async (harness) => {
+			return await harness.prompt(text, options);
+		});
 	}
 
 	async steerAgent(
@@ -396,7 +457,9 @@ export class AgentOrchestrator {
 		text: string,
 		options?: { images?: ImageContent[] },
 	): Promise<void> {
-		await this._requireAgentHarness(agentId).nextTurn(text, options);
+		await this._runHarnessOperation(agentId, async (harness) => {
+			await harness.nextTurn(text, options);
+		});
 	}
 
 	async abortAgent(agentId: AgentId) {
@@ -404,7 +467,9 @@ export class AgentOrchestrator {
 	}
 
 	async compactAgent(agentId: AgentId, customInstructions?: string) {
-		return await this._requireAgentHarness(agentId).compact(customInstructions);
+		return await this._runHarnessOperation(agentId, async (harness) => {
+			return await harness.compact(customInstructions);
+		});
 	}
 
 	async navigateAgentTree(
@@ -417,10 +482,9 @@ export class AgentOrchestrator {
 			label?: string;
 		},
 	) {
-		return await this._requireAgentHarness(agentId).navigateTree(
-			targetId,
-			options,
-		);
+		return await this._runHarnessOperation(agentId, async (harness) => {
+			return await harness.navigateTree(targetId, options);
+		});
 	}
 
 	registerClient(client: OrchestratorClient<OrchestratorEvent>): () => void {
@@ -683,13 +747,13 @@ export class AgentOrchestrator {
 		}
 
 		if (options.inheritModelFromAgentId) {
-			const sourceHarness = this.agents.get(options.inheritModelFromAgentId);
-			if (!sourceHarness) {
+			const sourceRecord = this.agents.get(options.inheritModelFromAgentId);
+			if (!sourceRecord) {
 				throw new Error(
 					`Cannot inherit model from unknown agent: ${options.inheritModelFromAgentId}`,
 				);
 			}
-			return sourceHarness.getModel();
+			return sourceRecord.model;
 		}
 
 		return this._defaultModel;
@@ -697,16 +761,25 @@ export class AgentOrchestrator {
 
 	private async _resolveCreateProfile(
 		options: SpawnAgentHarnessCreateOptions,
-	): Promise<AgentProfile> {
+	): Promise<ResolvedAgentProfile> {
 		const profileId = options.profileId ?? this._defaultProfileId;
-		const profile = await this._resolveProfileById(profileId, undefined);
-		return await this._applyProfileOverride(profile, options.profileOverride);
+		const resolvedProfile = await this._resolveProfileById(
+			profileId,
+			undefined,
+		);
+		return {
+			...resolvedProfile,
+			profile: await this._applyProfileOverride(
+				resolvedProfile.profile,
+				options.profileOverride,
+			),
+		};
 	}
 
 	private async _resolveResumeProfile(
 		agentId: AgentId,
 		metadata: ExtendedJsonlSessionMetadata,
-	): Promise<AgentProfile> {
+	): Promise<ResolvedAgentProfile> {
 		const profileReference = metadata.metadata?.profile;
 		if (!profileReference?.id) {
 			throw new OrchestratorError(
@@ -726,7 +799,7 @@ export class AgentOrchestrator {
 	private async _resolveProfileById(
 		profileId: string,
 		agentId: AgentId | undefined,
-	): Promise<AgentProfile> {
+	): Promise<ResolvedAgentProfile> {
 		const result = await this.profileRegistry.resolveProfile(profileId);
 		await this._publishDiagnostics(result.diagnostics);
 		if (!result.ok) {
@@ -757,7 +830,11 @@ export class AgentOrchestrator {
 			throw new OrchestratorError(diagnostic);
 		}
 
-		return result.profile;
+		return {
+			profile: result.profile,
+			source: result.source,
+			entryId: result.entryId,
+		};
 	}
 
 	private _isProfileEnabled(profileId: string): boolean {
@@ -852,23 +929,36 @@ export class AgentOrchestrator {
 	}
 
 	private async _createAgentHarness(
-		profile: AgentProfile,
+		resolvedProfile: ResolvedAgentProfile,
 		model: RuntimeModel,
 		options: { thinkingLevel?: ThinkingLevel } = {},
 	): Promise<SpawnAgentHarnessResult> {
+		const { profile } = resolvedProfile;
 		const agentId = this._allocateAgentId(profile);
 		const session = await this.sessionManager.createAgentSession({
 			agentId: agentId,
 			agentProfile: profile,
 		});
+		const sessionMetadata = await session.getMetadata();
+		this.agents.set(
+			agentId,
+			this._createAgentRecord({
+				agentId,
+				status: "creating",
+				resolvedProfile,
+				sessionMetadata,
+				model,
+			}),
+		);
 
 		const harness = await this._buildAgentHarness({
 			agentId,
-			profile,
+			resolvedProfile,
 			session,
 			model,
 			thinkingLevel: options.thinkingLevel,
 		});
+		await this._setAgentStatus(agentId, "ready");
 		await this._emit({ type: "agent_spawned", agentId, profile, model });
 		return { agentId, harness };
 	}
@@ -877,44 +967,65 @@ export class AgentOrchestrator {
 		options: SpawnAgentHarnessResumeOptions,
 	): Promise<SpawnAgentHarnessResult> {
 		const agentId = options.metadata.id;
-		const cachedHarness = this.agents.get(agentId);
-		if (cachedHarness) {
-			return { agentId, harness: cachedHarness };
+		const cachedRecord = this.agents.get(agentId);
+		if (cachedRecord?.harness) {
+			return { agentId, harness: cachedRecord.harness };
 		}
 
-		const profile = await this._resolveResumeProfile(agentId, options.metadata);
+		const resolvedProfile = await this._resolveResumeProfile(
+			agentId,
+			options.metadata,
+		);
+		const { profile } = resolvedProfile;
 		const session = await this.sessionManager.resumeAgentSession({
 			agentId,
 			metadata: options.metadata,
 		});
+		const sessionMetadata = await session.getMetadata();
 		const context = (await session.buildContext()) as Awaited<
 			ReturnType<typeof session.buildContext>
 		> & {
 			activeToolNames?: string[] | null;
 		};
 		const model = this._resolveResumeModel(options, context.model);
+		this.agents.set(
+			agentId,
+			this._createAgentRecord({
+				agentId,
+				status: "creating",
+				resolvedProfile,
+				sessionMetadata,
+				model,
+			}),
+		);
 		const harness = await this._buildAgentHarness({
 			agentId,
-			profile,
+			resolvedProfile,
 			session,
 			model,
 			thinkingLevel: this._resolveThinkingLevel(context.thinkingLevel),
 			activeToolNames: context.activeToolNames ?? undefined,
 		});
 
+		await this._setAgentStatus(agentId, "ready");
 		await this._emit({ type: "agent_resumed", agentId, profile, model });
 		return { agentId, harness };
 	}
 
 	private async _buildAgentHarness(options: {
 		agentId: AgentId;
-		profile: AgentProfile;
+		resolvedProfile: ResolvedAgentProfile;
 		session: Session<AgentSessionMetadata>;
 		model: RuntimeModel;
 		thinkingLevel?: ThinkingLevel;
 		activeToolNames?: string[];
 	}): Promise<AgentHarness> {
-		const { agentId, profile, session, model } = options;
+		const {
+			agentId,
+			resolvedProfile: { profile },
+			session,
+			model,
+		} = options;
 		const LoadedSkill = await this.resourceLoader.loadSkills(profile.skills);
 		const LoadedPromptTemplate = await this.resourceLoader.loadPromptTemplates(
 			profile.promptTemplates,
@@ -954,8 +1065,12 @@ export class AgentOrchestrator {
 		const extensionRunner = new ExtensionRunner({
 			loadedScope: loadedExtensionScope,
 		});
-		this._agentExtensionRunners.set(agentId, extensionRunner);
 		await this._publishDiagnostics(extensionRunner.diagnostics);
+		this._addAgentDiagnostics(agentId, {
+			resourceDiagnostics,
+			extensionDiagnostics: [...extensionRunner.diagnostics],
+		});
+		this._requireAgentRecord(agentId).extensionRunner = extensionRunner;
 
 		const agentToolSet = await this._resolveAgentTools({
 			agentId,
@@ -985,11 +1100,11 @@ export class AgentOrchestrator {
 					: undefined;
 			},
 		});
-		this.agents.set(agentId, harness);
-		this._agentToolSets.set(agentId, agentToolSet);
+		this._requireAgentRecord(agentId).harness = harness;
+		this._setAgentToolSet(agentId, agentToolSet);
 		extensionRunner.bindCore(this._createExtensionActions(), {
 			getSignal: () => undefined,
-			isIdle: () => true,
+			isIdle: () => this._requireAgentRecord(agentId).status !== "running",
 			session: {
 				appendEntry: async (extensionId, type, data) =>
 					await this.sessionManager.appendExtensionCustomEntry(
@@ -1031,7 +1146,7 @@ export class AgentOrchestrator {
 		agentId: AgentId,
 		harness: AgentHarness,
 	): Array<() => void> {
-		const extensionRunner = this._agentExtensionRunners.get(agentId);
+		const extensionRunner = this.agents.get(agentId)?.extensionRunner;
 		if (!extensionRunner) return [];
 		return [
 			harness.on(
@@ -1106,7 +1221,7 @@ export class AgentOrchestrator {
 
 	private _createScopedToolRegistry(agentId: AgentId): ToolRegistry {
 		const registry = this.toolRegistry.clone();
-		const extensionRunner = this._agentExtensionRunners.get(agentId);
+		const extensionRunner = this.agents.get(agentId)?.extensionRunner;
 		extensionRunner?.contributeToolsTo(registry);
 		return registry;
 	}
@@ -1125,8 +1240,137 @@ export class AgentOrchestrator {
 		};
 	}
 
+	private _createAgentRecord(options: {
+		agentId: AgentId;
+		status: AgentLifecycleStatus;
+		resolvedProfile: ResolvedAgentProfile;
+		sessionMetadata?: AgentSessionMetadata;
+		model: RuntimeModel;
+	}): AgentRecord {
+		return {
+			agentId: options.agentId,
+			status: options.status,
+			profile: {
+				reference: toAgentProfileReference(options.resolvedProfile.profile),
+				source: options.resolvedProfile.source,
+				entryId: options.resolvedProfile.entryId,
+			},
+			sessionMetadata: options.sessionMetadata,
+			model: options.model,
+			resourceDiagnostics: [],
+			extensionDiagnostics: [],
+			diagnostics: [],
+		};
+	}
+
+	private _snapshotAgentRecord(record: AgentRecord): AgentRecordSnapshot {
+		return {
+			agentId: record.agentId,
+			status: record.status,
+			profile: { ...record.profile },
+			sessionMetadata: record.sessionMetadata,
+			model: record.model,
+			hasHarness: record.harness !== undefined,
+			toolSnapshot: record.toolSnapshot
+				? {
+						toolNames: [...record.toolSnapshot.toolNames],
+						activeToolNames: [...record.toolSnapshot.activeToolNames],
+					}
+				: undefined,
+			extensionIds: record.extensionRunner
+				? [...record.extensionRunner.extensionIds]
+				: [],
+			resourceDiagnostics: [...record.resourceDiagnostics],
+			extensionDiagnostics: [...record.extensionDiagnostics],
+			diagnostics: [...record.diagnostics],
+		};
+	}
+
+	private _requireAgentRecord(agentId: AgentId): AgentRecord {
+		const record = this.agents.get(agentId);
+		if (!record) {
+			throw new Error(`Unknown agent: ${agentId}`);
+		}
+		return record;
+	}
+
+	private _setAgentToolSet(agentId: AgentId, toolSet: AgentToolSet): void {
+		const record = this._requireAgentRecord(agentId);
+		this._agentToolSets.set(agentId, toolSet);
+		record.toolSnapshot = {
+			toolNames: [...toolSet.toolNames],
+			activeToolNames: [...toolSet.activeToolNames],
+		};
+	}
+
+	private _addAgentDiagnostics(
+		agentId: AgentId,
+		diagnostics: {
+			resourceDiagnostics?: readonly OrchestratorDiagnostic[];
+			extensionDiagnostics?: readonly OrchestratorDiagnostic[];
+			diagnostics?: readonly OrchestratorDiagnostic[];
+		},
+	): void {
+		const record = this.agents.get(agentId);
+		if (!record) return;
+		const resourceDiagnostics = diagnostics.resourceDiagnostics ?? [];
+		const extensionDiagnostics = diagnostics.extensionDiagnostics ?? [];
+		const generalDiagnostics = diagnostics.diagnostics ?? [];
+		record.resourceDiagnostics.push(...resourceDiagnostics);
+		record.extensionDiagnostics.push(...extensionDiagnostics);
+		record.diagnostics.push(
+			...resourceDiagnostics,
+			...extensionDiagnostics,
+			...generalDiagnostics,
+		);
+	}
+
+	private _setAgentStatus(
+		agentId: AgentId,
+		status: AgentLifecycleStatus,
+	): void {
+		const record = this._requireAgentRecord(agentId);
+		if (record.status === "disposed" || record.status === "unavailable") {
+			return;
+		}
+		record.status = status;
+	}
+
+	private async _runHarnessOperation<T>(
+		agentId: AgentId,
+		operation: (harness: AgentHarness) => Promise<T>,
+	): Promise<T> {
+		const harness = this._requireAgentHarness(agentId);
+		this._setAgentStatus(agentId, "running");
+		try {
+			return await operation(harness);
+		} finally {
+			if (this._requireAgentRecord(agentId).status === "running") {
+				this._setAgentStatus(agentId, "idle");
+			}
+		}
+	}
+
+	private _updateAgentStatusFromHarnessEvent(
+		agentId: AgentId,
+		event: AgentHarnessEvent,
+	): void {
+		if (event.type === "agent_start" || event.type === "turn_start") {
+			this._setAgentStatus(agentId, "running");
+			return;
+		}
+		if (
+			event.type === "agent_end" ||
+			event.type === "turn_end" ||
+			event.type === "abort" ||
+			event.type === "settled"
+		) {
+			this._setAgentStatus(agentId, "idle");
+		}
+	}
+
 	private _requireAgentHarness(agentId: AgentId): AgentHarness {
-		const harness = this.agents.get(agentId);
+		const harness = this._requireAgentRecord(agentId).harness;
 		if (!harness) {
 			throw new Error(`Unknown agent: ${agentId}`);
 		}
@@ -1134,6 +1378,7 @@ export class AgentOrchestrator {
 	}
 
 	private _requireAgentToolSet(agentId: AgentId): AgentToolSet {
+		this._requireAgentRecord(agentId);
 		const state = this._agentToolSets.get(agentId);
 		if (!state) {
 			throw new Error(`Unknown agent tool state: ${agentId}`);
@@ -1145,16 +1390,19 @@ export class AgentOrchestrator {
 		agentId: AgentId,
 		event: AgentHarnessEvent,
 	): Promise<void> {
+		await this._updateAgentStatusFromHarnessEvent(agentId, event);
 		await this._emit({ type: "agent_harness_event", agentId, event });
-		const extensionRunner = this._agentExtensionRunners.get(agentId);
+		const extensionRunner = this.agents.get(agentId)?.extensionRunner;
 		if (extensionRunner) {
-			await this._publishDiagnostics(
-				await extensionRunner.emitObserved({
-					type: "agent_harness_event",
-					agentId,
-					event,
-				}),
-			);
+			const diagnostics = await extensionRunner.emitObserved({
+				type: "agent_harness_event",
+				agentId,
+				event,
+			});
+			this._addAgentDiagnostics(agentId, {
+				extensionDiagnostics: diagnostics,
+			});
+			await this._publishDiagnostics(diagnostics);
 		}
 		const lifecycleEvent = this._toToolLifecycleEvent(agentId, event);
 		if (lifecycleEvent) {
@@ -1164,13 +1412,15 @@ export class AgentOrchestrator {
 				event: lifecycleEvent,
 			});
 			if (extensionRunner) {
-				await this._publishDiagnostics(
-					await extensionRunner.emitObserved({
-						type: "tool_lifecycle_event",
-						agentId,
-						event: lifecycleEvent,
-					}),
-				);
+				const diagnostics = await extensionRunner.emitObserved({
+					type: "tool_lifecycle_event",
+					agentId,
+					event: lifecycleEvent,
+				});
+				this._addAgentDiagnostics(agentId, {
+					extensionDiagnostics: diagnostics,
+				});
+				await this._publishDiagnostics(diagnostics);
 			}
 		}
 	}
@@ -1358,6 +1608,10 @@ export class AgentOrchestrator {
 			case "agent.setActiveTools":
 				await this.setAgentActiveTools(command.agentId, command.toolNames);
 				return undefined;
+			case "agent.getStatus":
+				return this.getAgentStatus(command.agentId);
+			case "agent.inspect":
+				return this.inspectAgent(command.agentId);
 			case "human.request":
 				return await this.requestHuman({
 					...command.request,
