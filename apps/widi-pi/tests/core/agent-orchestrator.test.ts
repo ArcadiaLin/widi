@@ -1191,11 +1191,54 @@ describe("AgentOrchestrator", () => {
 			toolNames: ["sampleTool"],
 			activeToolNames: ["sampleTool"],
 		});
+		expect(orchestrator.inspectAgent(extensionAgentId)).toMatchObject({
+			extensionIds: ["sample"],
+			extensions: [{ id: "sample", source: { kind: "factory" } }],
+		});
 		expect(orchestrator.getAgentTools(plainAgentId)).toEqual({
 			toolNames: [],
 			activeToolNames: [],
 		});
+		expect(orchestrator.inspectAgent(plainAgentId)).toMatchObject({
+			extensionIds: [],
+			extensions: [],
+		});
 		expect(orchestrator.toolRegistry.resolve().toolNames).toEqual([]);
+	});
+
+	it("normalizes extension ids and records loaded source facts", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: [" sample ", "", "sample", "missing"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("sample", (api) => {
+			api.registerTool(createToolDefinition("sampleTool", "sample"));
+		});
+
+		const { agentId } = await orchestrator.spawnAgentHarness();
+
+		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
+			extensionIds: ["sample", "missing"],
+			extensions: [{ id: "sample", source: { kind: "factory" } }],
+			extensionDiagnostics: [
+				expect.objectContaining({
+					code: "extension.factory_missing",
+					extensionId: "missing",
+				}),
+			],
+		});
 	});
 
 	it("applies scoped extension tool patches in activation order", async () => {
@@ -1302,6 +1345,10 @@ describe("AgentOrchestrator", () => {
 
 		const { agentId } = await orchestrator.spawnAgentHarness();
 
+		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
+			extensionIds: ["missing"],
+			extensions: [],
+		});
 		expect(events).toContainEqual(
 			expect.objectContaining({
 				type: "diagnostic",

@@ -2,14 +2,21 @@ export {
 	type ExtensionDiscoveryCandidate,
 	type ExtensionDiscoveryCandidateKind,
 	type ExtensionDiscoveryResult,
+	type ExtensionIdentity,
 	type ExtensionInterceptorRegistration,
+	type ExtensionLoadAvailableResult,
 	ExtensionLoader,
 	type ExtensionObserverRegistration,
 	type ExtensionRoot,
+	type ExtensionSource,
 	type ExtensionToolContribution,
 	type LoadExtensionScopeOptions,
 	type LoadedExtensionScope,
 } from "./loader.ts";
+export {
+	type ExtensionModuleImporter,
+	JitiExtensionModuleImporter,
+} from "./module-importer.ts";
 export {
 	ExtensionRunner,
 	type ExtensionRunnerOptions,

@@ -33,7 +33,9 @@ import {
 } from "./diagnostics.ts";
 import {
 	type ExtensionDiscoveryResult,
+	type ExtensionLoadAvailableResult,
 	ExtensionLoader,
+	type ExtensionModuleImporter,
 	type ExtensionRoot,
 } from "./extension/index.ts";
 import { ModelRegistry } from "./model-registry.js";
@@ -62,6 +64,7 @@ export interface CreateWidiRuntimeOptions {
 	readonly enabledProfileIds?: readonly string[];
 	readonly toolRegistry?: ToolRegistry;
 	readonly extensionLoader?: ExtensionLoader;
+	readonly extensionModuleImporter?: ExtensionModuleImporter;
 }
 
 export type RuntimeDefaultProfileSource =
@@ -107,6 +110,7 @@ export interface WidiRuntimeServices {
 	readonly defaultModel: RuntimeDefaultModelResolution;
 	readonly defaultThinkingLevel: RuntimeDefaultThinkingLevelResolution;
 	readonly extensionDiscovery: ExtensionDiscoveryResult;
+	readonly extensionLoad: ExtensionLoadAvailableResult;
 	readonly executionEnv: ExecutionEnv;
 	readonly settingManager: SettingManager;
 	readonly configValueResolver: ConfigValueResolver;
@@ -646,6 +650,7 @@ export async function createWidiRuntime(
 	const extensionLoader =
 		options.extensionLoader ??
 		new ExtensionLoader({
+			moduleImporter: options.extensionModuleImporter,
 			roots: await createExtensionRoots({
 				executionEnv,
 				cwd,
@@ -655,7 +660,9 @@ export async function createWidiRuntime(
 				settingsPaths: settingManager.getExtensionPaths(),
 			}),
 		});
-	const extensionDiscovery = await extensionLoader.discover(executionEnv);
+	const extensionLoad =
+		await extensionLoader.loadAvailableExtensions(executionEnv);
+	const extensionDiscovery = extensionLoad.discovery;
 	const toolRegistry = options.toolRegistry ?? new ToolRegistry();
 	const services: WidiRuntimeServices = {
 		cwd,
@@ -668,6 +675,7 @@ export async function createWidiRuntime(
 		defaultModel: defaultModel.resolution,
 		defaultThinkingLevel: defaultThinkingLevel.resolution,
 		extensionDiscovery,
+		extensionLoad,
 		executionEnv,
 		settingManager,
 		configValueResolver,
@@ -704,7 +712,7 @@ export async function createWidiRuntime(
 		...defaultProfile.diagnostics,
 		defaultModel.diagnostic,
 		defaultThinkingLevel.diagnostic,
-		...extensionDiscovery.diagnostics,
+		...extensionLoad.diagnostics,
 	];
 
 	return {

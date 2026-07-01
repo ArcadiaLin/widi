@@ -35,6 +35,7 @@ import {
 import {
 	type ExtensionActions,
 	type ExtensionFactory,
+	type ExtensionIdentity,
 	ExtensionLoader,
 	ExtensionRunner,
 	type ToolLifecycleEvent,
@@ -192,6 +193,7 @@ export interface AgentRecordSnapshot {
 	readonly hasHarness: boolean;
 	readonly toolSnapshot?: AgentToolsSnapshot;
 	readonly extensionIds: readonly string[];
+	readonly extensions: readonly ExtensionIdentity[];
 	readonly resourceDiagnostics: readonly OrchestratorDiagnostic[];
 	readonly extensionDiagnostics: readonly OrchestratorDiagnostic[];
 	readonly diagnostics: readonly OrchestratorDiagnostic[];
@@ -1417,6 +1419,9 @@ export class AgentOrchestrator {
 				: undefined,
 			extensionIds: record.extensionRunner
 				? [...record.extensionRunner.extensionIds]
+				: [],
+			extensions: record.extensionRunner
+				? [...record.extensionRunner.extensions]
 				: [],
 			resourceDiagnostics: [...record.resourceDiagnostics],
 			extensionDiagnostics: [...record.extensionDiagnostics],

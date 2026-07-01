@@ -6,13 +6,13 @@
 
 `widi-pi` 已经完成了 core runtime 的若干底座：profile registry、settings/auth/model registry、JSONL session adapter、orchestrator command/client/human-request、ToolRegistry、extension loader/runner MVP、observer/interceptor MVP、extension tool define/patch，以及 extension `custom` entry 的 session-local state MVP。
 
-项目仍处于“core demo 可跑，product harness 未完整”的阶段。主要缺口不是单点 API，而是 runtime composition、extension discovery/trust/reload、agent record、coding tools、debug view、权限和多 agent 协作语义尚未收口。
+项目仍处于“core demo 可跑，product harness 未完整”的阶段。主要缺口不是单点 API，而是 runtime composition、extension discovery/trust/reload、agent record、coding tools、debug view、runtime policy 和多 agent 协作语义尚未收口。
 
 ## 依赖主线
 
 1. Runtime composition 先把 settings、profile roots、resource roots、extension roots、model/auth、session root 和 default profile/model 接成一个稳定入口。
 2. Agent record 再替代 `Map<AgentId, AgentHarness>`，承载 status、profile/source、session metadata、resolved resources/tools/extensions 和 diagnostics。
-3. Extension loader/runner 基于 agent record 补齐 file/module loader、trust、reload、permission、diagnostics 和 debug view。
+3. Extension loader/runner 基于 agent record 补齐 file/module loader、trust、reload、diagnostics 和 debug view。
 4. Coding extension 在 extension 机制稳定后提供 read/write/edit/bash/grep/find/ls 等产品工具；core 不再把这些当成 primitive。
 5. Agent collaboration tools 通过 orchestrator command/helper 实现，所有 agent lifecycle、A2A、human request 和 diagnostics 仍经过 orchestrator。
 
@@ -21,7 +21,7 @@
 - [x] 设计并实现应用级 runtime service，统一创建 `ExecutionEnv`、`SettingManager`、`ConfigValueResolver`、`AuthStorage`、`ModelRegistry`、`AgentProfileRegistry`、`ResourceLoader`、`SessionManager`、`ToolRegistry`、`ExtensionLoader` 和 `AgentOrchestrator`。
 - [x] 将 `SettingManager.getProfilePaths()` 接入真实 profile roots，组合 settings paths、project `.widi/profiles`、agent dir profiles 和 builtin default profile。
 - [x] 将 settings 中的 `skills`、`prompts`、`extensions` paths 接入 resource/extension discovery，而不是只停留在 typed getters。
-  - Runtime composition 阶段边界：`skills`/`prompts` 接入 `ResourceLoader` roots；`extensions` 接入 `ExtensionLoader.discover()`，只产出 discovery candidates 和 diagnostics，不执行 file/module load 或 activation。完整 extension declaration、file/module loader、trust/reload/permission/activation diagnostics 留在 P0 Extension 完善阶段。
+  - Runtime composition 阶段边界：`skills`/`prompts` 接入 `ResourceLoader` roots；`extensions` 接入 `ExtensionLoader.discover()`，只产出 discovery candidates 和 diagnostics，不执行 file/module load 或 activation。完整 file/module loader、trust/reload/activation diagnostics 留在 P0 Extension 完善阶段。
 - [x] 明确 default profile/model 的来源：settings、CLI/runtime override、builtin fallback 的优先级和 diagnostics。
   - Default profile 优先级：runtime override > settings `defaultProfile` > builtin `default` fallback。Default model 优先级：runtime override > settings `defaultProvider`/`defaultModel` > first available configured model fallback。Default thinking level 优先级：runtime override > settings `defaultThinkingLevel` > builtin `medium` fallback，并按 resolved model capability clamp。Runtime service 暴露 resolved source facts，并为成功解析与 fail-fast 错误提供 diagnostics。
 - [x] 为 runtime service 增加 focused tests，覆盖损坏 settings、缺失 profile root、project trust 和 builtin default source。
@@ -42,13 +42,13 @@
 - [x] Activation-time `registerTool()` / `patchTool()`。
 - [x] Runtime `observe()` / `intercept()` MVP：`before_agent_start`、`context`、`tool_call`、`tool_result`。
 - [x] Extension `ctx.session.appendEntry()` / `findEntries()` MVP：当前 extension namespace、current branch path、append-only custom state。
-- [ ] 定义 extension declaration：id、source、version/compatibility、missing policy、permission request。
-- [ ] 实现 file/module loader：path/package resolution、`package.json` manifest、direct file、directory index、cache busting。
+- [x] 定义轻量 extension identity/source facts：`id`、`source`；保持 Pi-style default factory author API，不引入 manifest/declaration、version、missing policy 或独立 permission request。
+- [x] 实现轻量 file/module factory loader：direct file、directory index、`package.json` entry manifest、jiti import、cache busting、id conflict diagnostics；本轮不做 npm package name resolution。
 - [ ] 接入 project trust gate；project-local extension 默认需要 trust。
 - [ ] 实现 reload：重新 discover/load extension，替换 runner，旧 context stale，刷新 scoped tool registry。
 - [ ] 将 extension missing/activation/runtime/handler/custom-entry diagnostics 全部纳入 orchestrator event，并补齐 source/phase/disposition。
 - [ ] 增加 debug view：loaded extensions、registered hooks、tool contributions、patches、diagnostics、stale state。
-- [ ] 定义 permission model：metadata patch、aroundExecute、replace execute、session custom entry、human request、dispatch、model/provider、filesystem/shell。
+- [x] 不引入独立 extension permission model；extension 共享 project trust 与 agent runtime policy，避免把 Pi-style extension authoring 做成重型 manifest/permission 开发。
 - [ ] 增加 `registerCommand()` MVP，并让 extension command 通过 orchestrator command/client 边界执行。
 - [ ] 设计 provider/resource contribution：extension 如何注册 provider、skills、prompt templates 或动态 resources。
 - [ ] 明确 provider/session hook matrix，决定 observe/intercept/mutate 的最小开放集。

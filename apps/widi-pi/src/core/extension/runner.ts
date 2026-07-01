@@ -7,6 +7,7 @@ import type {
 import { type CoreDiagnostic, createDiagnostic } from "../diagnostics.ts";
 import type { ToolRegistry } from "../tool-registry.ts";
 import type {
+	ExtensionIdentity,
 	ExtensionInterceptorRegistration,
 	ExtensionObserverRegistration,
 	LoadedExtensionScope,
@@ -35,6 +36,7 @@ export class ExtensionRunner {
 	readonly agentId: string;
 	readonly profileId: string;
 	readonly extensionIds: readonly string[];
+	readonly extensions: readonly ExtensionIdentity[];
 	readonly diagnostics: readonly CoreDiagnostic[];
 
 	private readonly _loadedScope: LoadedExtensionScope;
@@ -50,6 +52,7 @@ export class ExtensionRunner {
 		this.agentId = options.loadedScope.agentId;
 		this.profileId = options.loadedScope.profileId;
 		this.extensionIds = [...options.loadedScope.extensionIds];
+		this.extensions = [...options.loadedScope.extensions];
 		this.diagnostics = [...options.loadedScope.diagnostics];
 	}
 

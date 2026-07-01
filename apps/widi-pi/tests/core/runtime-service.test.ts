@@ -14,6 +14,10 @@ import {
 } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
+import type {
+	ExtensionFactory,
+	ExtensionModuleImporter,
+} from "../../src/core/extension/index.ts";
 import { createWidiRuntime } from "../../src/core/runtime-service.ts";
 
 class MemoryExecutionEnv implements ExecutionEnv {
@@ -211,6 +215,22 @@ class MemoryExecutionEnv implements ExecutionEnv {
 	> {
 		return err(new PiExecutionError("shell_unavailable", "not supported"));
 	}
+}
+
+class FakeModuleImporter implements ExtensionModuleImporter {
+	readonly imports: string[] = [];
+	private readonly factories = new Map<string, ExtensionFactory | undefined>();
+
+	setFactory(path: string, factory: ExtensionFactory | undefined): void {
+		this.factories.set(path, factory);
+	}
+
+	async importFactory(path: string): Promise<ExtensionFactory | undefined> {
+		this.imports.push(path);
+		return this.factories.get(path);
+	}
+
+	clearCache(): void {}
 }
 
 const defaultModel: Model<"openai-completions"> = {
@@ -529,6 +549,54 @@ describe("createWidiRuntime", () => {
 				kind: "settings",
 				path: "/custom/extensions",
 			},
+		});
+	});
+
+	it("loads settings extension modules during runtime composition", async () => {
+		const env = new MemoryExecutionEnv();
+		env.addFile(
+			"/home/user/.widi/settings.json",
+			JSON.stringify({ extensions: ["/custom/extensions"] }),
+		);
+		env.addFile(
+			"/home/user/.widi/profiles/extension-profile.md",
+			`---
+id: extension-profile
+label: Extension Profile
+persist: false
+extensions: [runtime-smoke]
+---
+You are extension-profile.`,
+		);
+		env.addFile("/custom/extensions/runtime-smoke.ts", "");
+		const importer = new FakeModuleImporter();
+		importer.setFactory("/custom/extensions/runtime-smoke.ts", () => {});
+
+		const runtime = await createWidiRuntime({
+			cwd: "/workspace/project",
+			agentDir: "/home/user/.widi",
+			executionEnv: env,
+			defaultModel,
+			defaultProfileId: "extension-profile",
+			extensionModuleImporter: importer,
+		});
+		const { agentId } = await runtime.orchestrator.spawnAgentHarness();
+
+		expect(importer.imports).toEqual(["/custom/extensions/runtime-smoke.ts"]);
+		expect(runtime.services.extensionLoad.loaded).toEqual([
+			{
+				id: "runtime-smoke",
+				source: {
+					kind: "file",
+					path: "/custom/extensions/runtime-smoke.ts",
+					resolvedPath: "/custom/extensions/runtime-smoke.ts",
+					root: { kind: "settings", path: "/custom/extensions" },
+				},
+			},
+		]);
+		expect(runtime.orchestrator.inspectAgent(agentId)).toMatchObject({
+			extensionIds: ["runtime-smoke"],
+			extensions: runtime.services.extensionLoad.loaded,
 		});
 	});
 
