@@ -199,6 +199,7 @@ export interface AgentRecordSnapshot {
 
 interface PendingHumanRequest {
 	envelope: HumanRequestEnvelope;
+	agentId?: AgentId;
 	controller: AbortController;
 	cancel(reason?: string): Promise<void>;
 }
@@ -466,6 +467,61 @@ export class AgentOrchestrator {
 		return await this._requireAgentHarness(agentId).abort();
 	}
 
+	async disposeAgent(agentId: AgentId, reason?: string): Promise<void> {
+		const record = this._requireAgentRecord(agentId);
+		const harness = record.harness;
+		if (harness) {
+			await this._disposeAgentHarness(agentId, harness);
+		}
+
+		const unsubscribe = this._unsubscribeAgentHarness.get(agentId);
+		if (unsubscribe) {
+			try {
+				unsubscribe();
+			} catch (error) {
+				await this._recordAgentLifecycleFailure(
+					agentId,
+					"orchestrator.agent_dispose_failed",
+					`Failed to unsubscribe agent ${agentId} harness handlers: ${formatError(error)}`,
+					error,
+				);
+			}
+			this._unsubscribeAgentHarness.delete(agentId);
+		}
+
+		record.extensionRunner?.invalidate("Agent has been disposed.");
+		delete record.harness;
+		this._agentToolSets.delete(agentId);
+		this._forgetAllStreamingToolCalls(agentId);
+		await this._cancelHumanRequestsForAgent(
+			agentId,
+			reason ?? `Agent disposed: ${agentId}`,
+		);
+		this._forceAgentStatus(agentId, "disposed");
+	}
+
+	async disposeAll(reason?: string): Promise<void> {
+		for (const agentId of [...this.agents.keys()]) {
+			await this.disposeAgent(agentId, reason);
+		}
+		await this._cancelAllHumanRequests(reason ?? "Orchestrator disposed.");
+		this._streamingToolCalls.clear();
+		try {
+			await this.executionEnv.cleanup();
+		} catch (error) {
+			await this._publishDiagnostic(
+				createOrchestratorDiagnostic({
+					severity: "warning",
+					disposition: "reported",
+					code: "orchestrator.dispose_all_failed",
+					message: `Failed to cleanup execution environment: ${formatError(error)}`,
+					phase: "runtime",
+					recoverable: true,
+				}),
+			);
+		}
+	}
+
 	async compactAgent(agentId: AgentId, customInstructions?: string) {
 		return await this._runHarnessOperation(agentId, async (harness) => {
 			return await harness.compact(customInstructions);
@@ -670,6 +726,7 @@ export class AgentOrchestrator {
 			});
 			this._pendingHumanRequests.set(requestId, {
 				envelope,
+				agentId: agentIdFromOperationSource(request.source),
 				controller,
 				cancel: (reason) => cancelPending(reason),
 			});
@@ -972,44 +1029,66 @@ export class AgentOrchestrator {
 			return { agentId, harness: cachedRecord.harness };
 		}
 
-		const resolvedProfile = await this._resolveResumeProfile(
-			agentId,
-			options.metadata,
-		);
-		const { profile } = resolvedProfile;
-		const session = await this.sessionManager.resumeAgentSession({
-			agentId,
-			metadata: options.metadata,
-		});
-		const sessionMetadata = await session.getMetadata();
-		const context = (await session.buildContext()) as Awaited<
-			ReturnType<typeof session.buildContext>
-		> & {
-			activeToolNames?: string[] | null;
-		};
-		const model = this._resolveResumeModel(options, context.model);
-		this.agents.set(
-			agentId,
-			this._createAgentRecord({
+		let resolvedProfile: ResolvedAgentProfile | undefined;
+		let sessionMetadata: AgentSessionMetadata | undefined = options.metadata;
+		let model = this._defaultModel;
+		try {
+			resolvedProfile = await this._resolveResumeProfile(
 				agentId,
-				status: "creating",
+				options.metadata,
+			);
+			const { profile } = resolvedProfile;
+			const session = await this.sessionManager.resumeAgentSession({
+				agentId,
+				metadata: options.metadata,
+			});
+			sessionMetadata = await session.getMetadata();
+			const context = (await session.buildContext()) as Awaited<
+				ReturnType<typeof session.buildContext>
+			> & {
+				activeToolNames?: string[] | null;
+			};
+			model = this._resolveResumeModel(options, context.model);
+			this.agents.set(
+				agentId,
+				this._createAgentRecord({
+					agentId,
+					status: "creating",
+					resolvedProfile,
+					sessionMetadata,
+					model,
+				}),
+			);
+			const harness = await this._buildAgentHarness({
+				agentId,
 				resolvedProfile,
+				session,
+				model,
+				thinkingLevel: this._resolveThinkingLevel(context.thinkingLevel),
+				activeToolNames: context.activeToolNames ?? undefined,
+			});
+
+			await this._setAgentStatus(agentId, "ready");
+			await this._emit({ type: "agent_resumed", agentId, profile, model });
+			return { agentId, harness };
+		} catch (error) {
+			const diagnostic = toDiagnostic(error, {
+				code: "orchestrator.agent_unavailable",
+				message: `Cannot resume agent ${agentId}: ${formatError(error)}`,
+				agentId,
+				recoverable: true,
+			});
+			this._markAgentUnavailable({
+				agentId,
+				resolvedProfile,
+				metadata: options.metadata,
 				sessionMetadata,
 				model,
-			}),
-		);
-		const harness = await this._buildAgentHarness({
-			agentId,
-			resolvedProfile,
-			session,
-			model,
-			thinkingLevel: this._resolveThinkingLevel(context.thinkingLevel),
-			activeToolNames: context.activeToolNames ?? undefined,
-		});
-
-		await this._setAgentStatus(agentId, "ready");
-		await this._emit({ type: "agent_resumed", agentId, profile, model });
-		return { agentId, harness };
+				diagnostic,
+			});
+			await this._publishDiagnostic(diagnostic);
+			throw error;
+		}
 	}
 
 	private async _buildAgentHarness(options: {
@@ -1263,6 +1342,65 @@ export class AgentOrchestrator {
 		};
 	}
 
+	private _createAgentRecordFromProfileReference(options: {
+		agentId: AgentId;
+		status: AgentLifecycleStatus;
+		profile: AgentProfileRecordReference;
+		sessionMetadata?: AgentSessionMetadata;
+		model: RuntimeModel;
+	}): AgentRecord {
+		return {
+			agentId: options.agentId,
+			status: options.status,
+			profile: options.profile,
+			sessionMetadata: options.sessionMetadata,
+			model: options.model,
+			resourceDiagnostics: [],
+			extensionDiagnostics: [],
+			diagnostics: [],
+		};
+	}
+
+	private _markAgentUnavailable(options: {
+		agentId: AgentId;
+		resolvedProfile: ResolvedAgentProfile | undefined;
+		metadata: ExtendedJsonlSessionMetadata;
+		sessionMetadata?: AgentSessionMetadata;
+		model: RuntimeModel;
+		diagnostic: OrchestratorDiagnostic;
+	}): void {
+		const existing = this.agents.get(options.agentId);
+		const profile = options.resolvedProfile
+			? {
+					reference: toAgentProfileReference(options.resolvedProfile.profile),
+					source: options.resolvedProfile.source,
+					entryId: options.resolvedProfile.entryId,
+				}
+			: {
+					reference: options.metadata.metadata?.profile ?? {
+						id: "unknown",
+					},
+				};
+		this.agents.set(options.agentId, {
+			...this._createAgentRecordFromProfileReference({
+				agentId: options.agentId,
+				status: "unavailable",
+				profile,
+				sessionMetadata: options.sessionMetadata,
+				model: options.model,
+			}),
+			resourceDiagnostics: existing?.resourceDiagnostics
+				? [...existing.resourceDiagnostics]
+				: [],
+			extensionDiagnostics: existing?.extensionDiagnostics
+				? [...existing.extensionDiagnostics]
+				: [],
+			diagnostics: [...(existing?.diagnostics ?? []), options.diagnostic],
+		});
+		this._agentToolSets.delete(options.agentId);
+		this._forgetAllStreamingToolCalls(options.agentId);
+	}
+
 	private _snapshotAgentRecord(record: AgentRecord): AgentRecordSnapshot {
 		return {
 			agentId: record.agentId,
@@ -1325,6 +1463,30 @@ export class AgentOrchestrator {
 		);
 	}
 
+	private async _recordAgentLifecycleFailure(
+		agentId: AgentId,
+		code: string,
+		message: string,
+		error: unknown,
+	): Promise<void> {
+		const diagnostic = createOrchestratorDiagnostic({
+			severity: "warning",
+			disposition: "reported",
+			code,
+			message,
+			agentId,
+			phase: "runtime",
+			recoverable: true,
+			details: {
+				error: formatError(error),
+			},
+		});
+		this._addAgentDiagnostics(agentId, {
+			diagnostics: [diagnostic],
+		});
+		await this._publishDiagnostic(diagnostic);
+	}
+
 	private _setAgentStatus(
 		agentId: AgentId,
 		status: AgentLifecycleStatus,
@@ -1334,6 +1496,80 @@ export class AgentOrchestrator {
 			return;
 		}
 		record.status = status;
+	}
+
+	private _forceAgentStatus(
+		agentId: AgentId,
+		status: AgentLifecycleStatus,
+	): void {
+		this._requireAgentRecord(agentId).status = status;
+	}
+
+	private async _disposeAgentHarness(
+		agentId: AgentId,
+		harness: AgentHarness,
+	): Promise<void> {
+		try {
+			await harness.abort();
+		} catch (error) {
+			await this._recordAgentLifecycleFailure(
+				agentId,
+				"orchestrator.agent_dispose_failed",
+				`Failed to abort agent ${agentId} during dispose: ${formatError(error)}`,
+				error,
+			);
+		}
+		try {
+			await harness.waitForIdle();
+		} catch (error) {
+			await this._recordAgentLifecycleFailure(
+				agentId,
+				"orchestrator.agent_dispose_failed",
+				`Failed waiting for agent ${agentId} to become idle during dispose: ${formatError(error)}`,
+				error,
+			);
+		}
+	}
+
+	private async _cancelHumanRequestsForAgent(
+		agentId: AgentId,
+		reason: string,
+	): Promise<void> {
+		for (const [requestId, pending] of [...this._pendingHumanRequests]) {
+			if (pending.agentId !== agentId) continue;
+			try {
+				await pending.cancel(reason);
+			} catch (error) {
+				await this._recordAgentLifecycleFailure(
+					agentId,
+					"orchestrator.agent_dispose_failed",
+					`Failed to cancel human request ${requestId} for agent ${agentId}: ${formatError(error)}`,
+					error,
+				);
+			}
+			this._pendingHumanRequests.delete(requestId);
+		}
+	}
+
+	private async _cancelAllHumanRequests(reason: string): Promise<void> {
+		for (const [requestId, pending] of [...this._pendingHumanRequests]) {
+			try {
+				await pending.cancel(reason);
+			} catch (error) {
+				await this._publishDiagnostic(
+					createOrchestratorDiagnostic({
+						severity: "warning",
+						disposition: "reported",
+						code: "orchestrator.dispose_all_failed",
+						message: `Failed to cancel human request ${requestId}: ${formatError(error)}`,
+						requestId,
+						phase: "runtime",
+						recoverable: true,
+					}),
+				);
+			}
+			this._pendingHumanRequests.delete(requestId);
+		}
 	}
 
 	private async _runHarnessOperation<T>(
@@ -1612,6 +1848,9 @@ export class AgentOrchestrator {
 				return this.getAgentStatus(command.agentId);
 			case "agent.inspect":
 				return this.inspectAgent(command.agentId);
+			case "agent.dispose":
+				await this.disposeAgent(command.agentId, command.reason);
+				return undefined;
 			case "human.request":
 				return await this.requestHuman({
 					...command.request,
@@ -1768,6 +2007,16 @@ function operationSource(
 	return source ? { kind: "operation", source } : undefined;
 }
 
+function agentIdFromOperationSource(
+	source: OperationSource | undefined,
+): AgentId | undefined {
+	if (!source) return undefined;
+	if (source.kind === "agent" || source.kind === "tool") {
+		return source.agentId;
+	}
+	return undefined;
+}
+
 function changesRecoverableProfileFields(
 	override: AgentProfileOverride,
 ): boolean {
@@ -1794,6 +2043,10 @@ function streamingToolCallRefFromPartial(
 		toolCallId: content.id,
 		toolName: content.name,
 	};
+}
+
+function formatError(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 function now(): string {

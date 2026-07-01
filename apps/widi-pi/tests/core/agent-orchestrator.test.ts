@@ -58,6 +58,7 @@ class MemoryExecutionEnv implements ExecutionEnv {
 	cwd = "/workspace";
 	readonly files = new Map<string, string>();
 	readonly dirs = new Set<string>(["/"]);
+	cleanupCalls = 0;
 
 	private normalize(path: string): string {
 		const absolute = path.startsWith("/") ? path : `${this.cwd}/${path}`;
@@ -262,7 +263,9 @@ class MemoryExecutionEnv implements ExecutionEnv {
 		return err(new PiExecutionError("shell_unavailable", "not supported"));
 	}
 
-	async cleanup(): Promise<void> {}
+	async cleanup(): Promise<void> {
+		this.cleanupCalls += 1;
+	}
 }
 
 class FailingSettingsStorage implements SettingsStorage {
@@ -344,12 +347,25 @@ async function createModelRegistry(
 	return registry;
 }
 
+async function createEmptyModelRegistry(
+	env: MemoryExecutionEnv,
+): Promise<ModelRegistry> {
+	const configValueResolver = new ConfigValueResolver(env);
+	const authStorage = AuthStorage.inMemory({ configValueResolver });
+	return await ModelRegistry.inMemory({
+		executionEnv: env,
+		authStorage,
+		configValueResolver,
+	});
+}
+
 async function createOrchestrator(
 	env: MemoryExecutionEnv,
 	options: {
 		enabledProfileIds?: readonly string[];
 		profileRegistry?: AgentProfileRegistry;
 		defaultProfileId?: string;
+		modelRegistry?: ModelRegistry;
 		toolRegistry?: ToolRegistry;
 	} = {},
 ): Promise<AgentOrchestrator> {
@@ -365,7 +381,7 @@ async function createOrchestrator(
 			sessionsRoot: "/sessions",
 		}),
 		settingManager: new SettingManager(),
-		modelRegistry: await createModelRegistry(env),
+		modelRegistry: options.modelRegistry ?? (await createModelRegistry(env)),
 		profileRegistry: options.profileRegistry ?? createProfileRegistry(),
 		toolRegistry: options.toolRegistry,
 		defaultProfileId: options.defaultProfileId ?? defaultProfile.id,
@@ -588,6 +604,100 @@ describe("AgentOrchestrator", () => {
 		});
 	});
 
+	it("keeps an unavailable record when resume profile resolution fails", async () => {
+		const env = new MemoryExecutionEnv();
+		const sessionManager = new SessionManager({
+			fs: env,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+		});
+		const session = await sessionManager.createAgentSession({
+			agentId: "worker-agent",
+			agentProfile: restoredProfile,
+		});
+		const metadata = expectExtendedMetadata(await session.getMetadata());
+		const orchestrator = new AgentOrchestrator({
+			executionEnv: env,
+			resourceLoader: new ResourceLoader({
+				executionEnv: env,
+				cwd: "/workspace/project",
+			}),
+			sessionManager,
+			settingManager: new SettingManager(),
+			modelRegistry: await createModelRegistry(env),
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: defaultProfile },
+				]),
+			),
+			defaultProfileId: defaultProfile.id,
+			defaultModel,
+		});
+
+		await expect(
+			orchestrator.spawnAgentHarness({ resume: true, metadata }),
+		).rejects.toMatchObject({
+			code: "profile.resolution_failed",
+		});
+
+		expect(orchestrator.getAgentStatus("worker-agent")).toBe("unavailable");
+		expect(orchestrator.getAgentHarness("worker-agent")).toBeUndefined();
+		expect(orchestrator.inspectAgent("worker-agent")).toMatchObject({
+			agentId: "worker-agent",
+			status: "unavailable",
+			profile: {
+				reference: { id: restoredProfile.id, label: restoredProfile.label },
+			},
+			hasHarness: false,
+			diagnostics: [
+				expect.objectContaining({ code: "profile.resolution_failed" }),
+			],
+		});
+	});
+
+	it("keeps an unavailable record when resume model restoration fails", async () => {
+		const env = new MemoryExecutionEnv();
+		const sessionManager = new SessionManager({
+			fs: env,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+		});
+		const session = await sessionManager.createAgentSession({
+			agentId: "worker-agent",
+			agentProfile: restoredProfile,
+		});
+		await session.appendModelChange(restoredModel.provider, restoredModel.id);
+		await session.appendThinkingLevelChange("medium");
+		const metadata = expectExtendedMetadata(await session.getMetadata());
+		const orchestrator = new AgentOrchestrator({
+			executionEnv: env,
+			resourceLoader: new ResourceLoader({
+				executionEnv: env,
+				cwd: "/workspace/project",
+			}),
+			sessionManager,
+			settingManager: new SettingManager(),
+			modelRegistry: await createEmptyModelRegistry(env),
+			profileRegistry: createProfileRegistry(),
+			defaultProfileId: defaultProfile.id,
+			defaultModel,
+		});
+
+		await expect(
+			orchestrator.spawnAgentHarness({ resume: true, metadata }),
+		).rejects.toThrow("model is not registered");
+
+		expect(orchestrator.inspectAgent("worker-agent")).toMatchObject({
+			agentId: "worker-agent",
+			status: "unavailable",
+			model: expect.objectContaining({ id: defaultModel.id }),
+			hasHarness: false,
+			diagnostics: [
+				expect.objectContaining({ code: "orchestrator.agent_unavailable" }),
+			],
+		});
+	});
+
 	it("fans harness events out through registered clients", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
@@ -781,6 +891,140 @@ describe("AgentOrchestrator", () => {
 			toolResults: [],
 		});
 		expect(orchestrator.getAgentStatus(agentId)).toBe("idle");
+	});
+
+	it("disposes agents best-effort and leaves an inspectable stale record", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["stateful"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("stateful", () => {});
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const runner = orchestrator.agents.get(agentId)?.extensionRunner;
+		if (!runner) throw new Error("Expected extension runner.");
+		const commandContext = runner.createCommandContext("stateful");
+
+		const disposeResult = await orchestrator.dispatch({
+			kind: "agent.dispose",
+			source: { kind: "system" },
+			agentId,
+			reason: "test cleanup",
+		});
+
+		expect(disposeResult).toMatchObject({ ok: true });
+		expect(orchestrator.getAgentStatus(agentId)).toBe("disposed");
+		expect(orchestrator.getAgentHarness(agentId)).toBeUndefined();
+		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
+			agentId,
+			status: "disposed",
+			hasHarness: false,
+			extensionIds: ["stateful"],
+		});
+		await expect(commandContext.waitForIdle()).rejects.toThrow(
+			"Agent has been disposed.",
+		);
+	});
+
+	it("dispose cancels only human requests bound to that agent", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const events: OrchestratorEvent[] = [];
+		const signals = new Map<string, AbortSignal | undefined>();
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async (request, signal) => {
+				signals.set(request.title, signal);
+				return await new Promise<never>(() => {});
+			},
+		});
+		const { agentId: firstAgentId } = await orchestrator.spawnAgentHarness();
+		const { agentId: secondAgentId } = await orchestrator.spawnAgentHarness();
+
+		const firstRequest = orchestrator.requestHuman({
+			source: { kind: "agent", agentId: firstAgentId },
+			kind: "confirm",
+			title: "first",
+			message: "First?",
+		});
+		const secondRequest = orchestrator.requestHuman({
+			source: { kind: "agent", agentId: secondAgentId },
+			kind: "confirm",
+			title: "second",
+			message: "Second?",
+		});
+		let secondSettled = false;
+		secondRequest.catch(() => {
+			secondSettled = true;
+		});
+		await Promise.resolve();
+
+		await orchestrator.disposeAgent(firstAgentId, "agent disposed");
+
+		await expect(firstRequest).rejects.toMatchObject({
+			code: "orchestrator.human_request_cancelled",
+		});
+		expect(signals.get("first")?.aborted).toBe(true);
+		expect(signals.get("second")?.aborted).toBe(false);
+		await Promise.resolve();
+		expect(secondSettled).toBe(false);
+		const secondPending = events.find(
+			(
+				event,
+			): event is Extract<
+				OrchestratorEvent,
+				{ type: "human_request_pending" }
+			> =>
+				event.type === "human_request_pending" &&
+				event.request.title === "second",
+		);
+		if (!secondPending) throw new Error("Expected second pending request.");
+		await orchestrator.cancelHumanRequest(secondPending.request.id, "done");
+		await expect(secondRequest).rejects.toMatchObject({
+			code: "orchestrator.human_request_cancelled",
+		});
+	});
+
+	it("disposeAll disposes every agent and cancels remaining human requests", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async () => await new Promise<never>(() => {}),
+		});
+		const { agentId: firstAgentId } = await orchestrator.spawnAgentHarness();
+		const { agentId: secondAgentId } = await orchestrator.spawnAgentHarness();
+		const request = orchestrator.requestHuman({
+			source: { kind: "system" },
+			kind: "confirm",
+			title: "global",
+			message: "Global?",
+		});
+		request.catch(() => {});
+		await Promise.resolve();
+
+		await orchestrator.disposeAll("shutdown");
+
+		expect(orchestrator.getAgentStatus(firstAgentId)).toBe("disposed");
+		expect(orchestrator.getAgentStatus(secondAgentId)).toBe("disposed");
+		expect(env.cleanupCalls).toBe(1);
+		await expect(request).rejects.toMatchObject({
+			code: "orchestrator.human_request_cancelled",
+		});
 	});
 
 	it("resolves profile requested tools through ToolRegistry diagnostics", async () => {

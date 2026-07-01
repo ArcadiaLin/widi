@@ -101,6 +101,11 @@ export type OrchestratorCommand =
 	| (OrchestratorCommandBase & { kind: "agent.getStatus"; agentId: string })
 	| (OrchestratorCommandBase & { kind: "agent.inspect"; agentId: string })
 	| (OrchestratorCommandBase & {
+			kind: "agent.dispose";
+			agentId: string;
+			reason?: string;
+	  })
+	| (OrchestratorCommandBase & {
 			kind: "human.request";
 			request: HumanRequestDraft;
 	  });

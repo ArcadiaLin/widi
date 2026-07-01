@@ -32,9 +32,9 @@
 - [x] Agent record 至少包含：`agentId`、status、profile reference/source、session metadata、model、harness、tool snapshot、extension runner、resource diagnostics、extension diagnostics。
 - [x] 定义 status：`creating`、`ready`、`running`、`idle`、`unavailable`、`disposed`。
 - [x] 实现 status query command/debug API。
-- [ ] 实现 dispose lifecycle：unsubscribe harness events/interceptors、invalidate extension runner、清理 pending human requests、释放 runtime resources。
-- [ ] 定义 unavailable agent：subagent 或恢复分支失败时保留 agent record 和 diagnostics，但不创建 broken harness。
-- [ ] 增加 unavailable/resume failure tests。
+- [x] 实现 dispose lifecycle：unsubscribe harness events/interceptors、invalidate extension runner、清理 pending human requests、释放 runtime resources。
+- [x] 定义 unavailable agent：subagent 或恢复分支失败时保留 agent record 和 diagnostics，但不创建 broken harness。
+- [x] 增加 unavailable/resume failure tests。
 
 ## P0: Extension 完善
 
