@@ -245,6 +245,43 @@ export async function hasTrustRequiringProjectResources(options: {
 	return false;
 }
 
+export async function createProjectExtensionTrustDiagnostics(options: {
+	readonly executionEnv: ExecutionEnv;
+	readonly cwd: string;
+	readonly projectConfigDir?: string;
+	readonly projectTrusted: boolean;
+}): Promise<CoreDiagnostic[]> {
+	if (options.projectTrusted) return [];
+
+	const cwd = fileSystemValueOrThrow(
+		await options.executionEnv.absolutePath(options.cwd),
+	);
+	const projectConfigDir = options.projectConfigDir ?? DEFAULT_AGENT_DIR;
+	const path = fileSystemValueOrThrow(
+		await options.executionEnv.joinPath([cwd, projectConfigDir, "extensions"]),
+	);
+	const infoResult = await options.executionEnv.fileInfo(path);
+	if (!infoResult.ok || infoResult.value.kind !== "directory") {
+		return [];
+	}
+
+	return [
+		createDiagnostic({
+			domain: "extension",
+			code: "extension.project_untrusted",
+			severity: "warning",
+			disposition: "reported",
+			recoverable: true,
+			message: `Project extensions were skipped because the project is not trusted: ${path}`,
+			source: { kind: "extension", id: "project", path },
+			phase: "load",
+			details: {
+				root: { kind: "cwd", path },
+			},
+		}),
+	];
+}
+
 export async function resolveProjectTrust(
 	options: ResolveProjectTrustOptions,
 ): Promise<ProjectTrustResolution> {

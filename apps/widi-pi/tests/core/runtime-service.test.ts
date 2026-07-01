@@ -651,6 +651,65 @@ You are extension-profile.`,
 		});
 	});
 
+	it("skips untrusted project extension modules with diagnostics", async () => {
+		const env = new MemoryExecutionEnv();
+		env.addFile("/workspace/project/.widi/extensions/project-extension.ts", "");
+		const importer = new FakeModuleImporter();
+		importer.setFactory(
+			"/workspace/project/.widi/extensions/project-extension.ts",
+			() => {},
+		);
+
+		const untrustedRuntime = await createWidiRuntime({
+			cwd: "/workspace/project",
+			agentDir: "/home/user/.widi",
+			executionEnv: env,
+			defaultModel,
+			extensionModuleImporter: importer,
+		});
+
+		expect(importer.imports).toEqual([]);
+		expect(untrustedRuntime.services.extensionDiscovery.candidates).toEqual([]);
+		expect(untrustedRuntime.diagnostics).toContainEqual(
+			expect.objectContaining({
+				code: "extension.project_untrusted",
+				source: {
+					kind: "extension",
+					id: "project",
+					path: "/workspace/project/.widi/extensions",
+				},
+			}),
+		);
+
+		const trustedRuntime = await createWidiRuntime({
+			cwd: "/workspace/project",
+			agentDir: "/home/user/.widi",
+			executionEnv: env,
+			defaultModel,
+			trustOverride: true,
+			extensionModuleImporter: importer,
+		});
+
+		expect(importer.imports).toEqual([
+			"/workspace/project/.widi/extensions/project-extension.ts",
+		]);
+		expect(trustedRuntime.services.extensionLoad.loaded).toEqual([
+			{
+				id: "project-extension",
+				source: {
+					kind: "file",
+					path: "/workspace/project/.widi/extensions/project-extension.ts",
+					resolvedPath:
+						"/workspace/project/.widi/extensions/project-extension.ts",
+					root: {
+						kind: "cwd",
+						path: "/workspace/project/.widi/extensions",
+					},
+				},
+			},
+		]);
+	});
+
 	it("combines settings, project, agent dir, and builtin profile sources", async () => {
 		const env = new MemoryExecutionEnv();
 		env.addFile(

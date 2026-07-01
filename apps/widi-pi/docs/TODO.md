@@ -44,7 +44,7 @@
 - [x] Extension `ctx.session.appendEntry()` / `findEntries()` MVP：当前 extension namespace、current branch path、append-only custom state。
 - [x] 定义轻量 extension identity/source facts：`id`、`source`；保持 Pi-style default factory author API，不引入 manifest/declaration、version、missing policy 或独立 permission request。
 - [x] 实现轻量 file/module factory loader：direct file、directory index、`package.json` entry manifest、jiti import、cache busting、id conflict diagnostics；本轮不做 npm package name resolution。
-- [ ] 接入 project trust gate；project-local extension 默认需要 trust。
+- [x] 接入 project trust gate；implicit project-local `.widi/extensions` 默认需要 trust，untrusted 时跳过并产生 diagnostic。
 - [ ] 实现 reload：重新 discover/load extension，替换 runner，旧 context stale，刷新 scoped tool registry。
 - [ ] 将 extension missing/activation/runtime/handler/custom-entry diagnostics 全部纳入 orchestrator event，并补齐 source/phase/disposition。
 - [ ] 增加 debug view：loaded extensions、registered hooks、tool contributions、patches、diagnostics、stale state。

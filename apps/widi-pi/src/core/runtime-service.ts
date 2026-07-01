@@ -41,6 +41,7 @@ import {
 import { ModelRegistry } from "./model-registry.js";
 import type { RuntimeModel } from "./orchestrator/commands.js";
 import {
+	createProjectExtensionTrustDiagnostics,
 	type ProjectTrustResolution,
 	ProjectTrustStore,
 	resolveProjectTrust,
@@ -566,6 +567,13 @@ export async function createWidiRuntime(
 		defaultProjectTrust: globalSettingManager.getDefaultProjectTrust(),
 		projectConfigDir,
 	});
+	const projectExtensionTrustDiagnostics =
+		await createProjectExtensionTrustDiagnostics({
+			executionEnv,
+			cwd,
+			projectConfigDir,
+			projectTrusted: projectTrust.trusted,
+		});
 
 	const settingManager = await SettingManager.create(executionEnv, {
 		cwd,
@@ -712,6 +720,7 @@ export async function createWidiRuntime(
 		...defaultProfile.diagnostics,
 		defaultModel.diagnostic,
 		defaultThinkingLevel.diagnostic,
+		...projectExtensionTrustDiagnostics,
 		...extensionLoad.diagnostics,
 	];
 
