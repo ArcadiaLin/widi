@@ -44,6 +44,9 @@ import type { ModelRegistry } from "./model-registry.js";
 import type { OrchestratorClient } from "./orchestrator/clients.ts";
 import type {
 	AgentToolsSnapshot,
+	ExtensionReloadAgentResult,
+	ExtensionReloadAgentSkipReason,
+	ExtensionReloadResult,
 	OperationSource,
 	OrchestratorCommand,
 	OrchestratorCommandResult,
@@ -211,8 +214,13 @@ interface AgentToolSet {
 	toolNames: string[];
 	requestedToolNames: string[] | undefined;
 	activeToolNames: string[];
+	activeToolSelection: ActiveToolSelection;
 	profileId: string;
 }
+
+type ActiveToolSelection =
+	| { readonly mode: "default_all" }
+	| { readonly mode: "explicit"; readonly toolNames: readonly string[] };
 
 interface ResolvedAgentProfile {
 	profile: AgentProfile;
@@ -276,6 +284,8 @@ export class AgentOrchestrator {
 	readonly extensionLoader: ExtensionLoader;
 
 	private _unsubscribeAgentHarness: Map<AgentId, () => void> = new Map();
+	private _unsubscribeAgentExtensionInterceptors: Map<AgentId, () => void> =
+		new Map();
 	private _eventListeners: Set<OrchestratorEventListener> = new Set();
 	private _agentToolSets: Map<AgentId, AgentToolSet> = new Map();
 	private _streamingToolCalls: Map<AgentId, Map<number, StreamingToolCallRef>> =
@@ -402,7 +412,10 @@ export class AgentOrchestrator {
 			agentId,
 			profileId: currentState.profileId,
 			requestedToolNames: toolNames,
-			activeToolNames,
+			activeToolSelection:
+				activeToolNames === undefined
+					? { mode: "default_all" }
+					: { mode: "explicit", toolNames: activeToolNames },
 		});
 		await harness.setTools?.(next.tools, [...next.activeToolNames]);
 		this._setAgentToolSet(agentId, next);
@@ -423,7 +436,7 @@ export class AgentOrchestrator {
 			agentId,
 			profileId: currentState.profileId,
 			requestedToolNames: currentState.requestedToolNames,
-			activeToolNames: toolNames,
+			activeToolSelection: { mode: "explicit", toolNames },
 		});
 		await harness.setTools?.(next.tools, [...next.activeToolNames]);
 		this._setAgentToolSet(agentId, next);
@@ -490,6 +503,21 @@ export class AgentOrchestrator {
 			}
 			this._unsubscribeAgentHarness.delete(agentId);
 		}
+		const unsubscribeExtensionInterceptors =
+			this._unsubscribeAgentExtensionInterceptors.get(agentId);
+		if (unsubscribeExtensionInterceptors) {
+			try {
+				unsubscribeExtensionInterceptors();
+			} catch (error) {
+				await this._recordAgentLifecycleFailure(
+					agentId,
+					"orchestrator.agent_dispose_failed",
+					`Failed to unsubscribe agent ${agentId} extension interceptors: ${formatError(error)}`,
+					error,
+				);
+			}
+			this._unsubscribeAgentExtensionInterceptors.delete(agentId);
+		}
 
 		record.extensionRunner?.invalidate("Agent has been disposed.");
 		delete record.harness;
@@ -522,6 +550,31 @@ export class AgentOrchestrator {
 				}),
 			);
 		}
+	}
+
+	async reloadExtensions(
+		options: { agentIds?: readonly AgentId[] } = {},
+	): Promise<ExtensionReloadResult> {
+		const catalog = await this.extensionLoader.reloadAvailableExtensions(
+			this.executionEnv,
+		);
+		await this._publishDiagnostics(catalog.diagnostics);
+
+		const agentIds = options.agentIds
+			? [...new Set(options.agentIds)]
+			: [...this.agents.keys()];
+		const agents: ExtensionReloadAgentResult[] = [];
+		for (const agentId of agentIds) {
+			agents.push(await this._reloadAgentExtensions(agentId));
+		}
+
+		return {
+			catalog: {
+				loaded: [...catalog.loaded],
+				diagnostics: [...catalog.diagnostics],
+			},
+			agents,
+		};
 	}
 
 	async compactAgent(agentId: AgentId, customInstructions?: string) {
@@ -1137,15 +1190,7 @@ export class AgentOrchestrator {
 				({ promptTemplate }) => promptTemplate,
 			),
 		};
-		const loadedExtensionScope = await this.extensionLoader.loadForAgent({
-			agentId,
-			profileId: profile.id,
-			extensionIds: profile.extensions,
-			missingExtensionSeverity: profile.missingExtensionSeverity,
-		});
-		const extensionRunner = new ExtensionRunner({
-			loadedScope: loadedExtensionScope,
-		});
+		const extensionRunner = await this._createExtensionRunner(agentId, profile);
 		await this._publishDiagnostics(extensionRunner.diagnostics);
 		this._addAgentDiagnostics(agentId, {
 			resourceDiagnostics,
@@ -1157,7 +1202,10 @@ export class AgentOrchestrator {
 			agentId,
 			profileId: profile.id,
 			requestedToolNames: profile.tools,
-			activeToolNames: options.activeToolNames,
+			activeToolSelection:
+				options.activeToolNames === undefined
+					? { mode: "default_all" }
+					: { mode: "explicit", toolNames: options.activeToolNames },
 		});
 
 		const harness = new AgentHarness({
@@ -1183,6 +1231,43 @@ export class AgentOrchestrator {
 		});
 		this._requireAgentRecord(agentId).harness = harness;
 		this._setAgentToolSet(agentId, agentToolSet);
+		this._bindExtensionRunner(agentId, harness, extensionRunner);
+		const unsubscribeInterceptors = this._registerExtensionInterceptors(
+			harness,
+			extensionRunner,
+		);
+		const unsubscribeHarnessEvents = harness.subscribe((event) => {
+			void this._handleAgentHarnessEvent(agentId, event);
+		});
+		this._unsubscribeAgentHarness.set(agentId, unsubscribeHarnessEvents);
+		this._unsubscribeAgentExtensionInterceptors.set(agentId, () => {
+			for (const unsubscribe of unsubscribeInterceptors) {
+				unsubscribe();
+			}
+		});
+		return harness;
+	}
+
+	private async _createExtensionRunner(
+		agentId: AgentId,
+		profile: AgentProfile,
+	): Promise<ExtensionRunner> {
+		const loadedExtensionScope = await this.extensionLoader.loadForAgent({
+			agentId,
+			profileId: profile.id,
+			extensionIds: profile.extensions,
+			missingExtensionSeverity: profile.missingExtensionSeverity,
+		});
+		return new ExtensionRunner({
+			loadedScope: loadedExtensionScope,
+		});
+	}
+
+	private _bindExtensionRunner(
+		agentId: AgentId,
+		harness: AgentHarness,
+		extensionRunner: ExtensionRunner,
+	): void {
 		extensionRunner.bindCore(this._createExtensionActions(), {
 			getSignal: () => undefined,
 			isIdle: () => this._requireAgentRecord(agentId).status !== "running",
@@ -1207,28 +1292,12 @@ export class AgentOrchestrator {
 				await harness.waitForIdle();
 			},
 		});
-		const unsubscribeInterceptors = this._registerExtensionInterceptors(
-			agentId,
-			harness,
-		);
-		const unsubscribeHarnessEvents = harness.subscribe((event) => {
-			void this._handleAgentHarnessEvent(agentId, event);
-		});
-		this._unsubscribeAgentHarness.set(agentId, () => {
-			unsubscribeHarnessEvents();
-			for (const unsubscribe of unsubscribeInterceptors) {
-				unsubscribe();
-			}
-		});
-		return harness;
 	}
 
 	private _registerExtensionInterceptors(
-		agentId: AgentId,
 		harness: AgentHarness,
+		extensionRunner: ExtensionRunner,
 	): Array<() => void> {
-		const extensionRunner = this.agents.get(agentId)?.extensionRunner;
-		if (!extensionRunner) return [];
 		return [
 			harness.on(
 				"before_agent_start",
@@ -1254,12 +1323,23 @@ export class AgentOrchestrator {
 		agentId: AgentId;
 		profileId: string;
 		requestedToolNames: readonly string[] | undefined;
-		activeToolNames?: readonly string[];
+		activeToolSelection?: ActiveToolSelection;
+		extensionRunner?: ExtensionRunner;
 	}): Promise<AgentToolSet> {
-		const toolRegistry = this._createScopedToolRegistry(options.agentId);
+		const activeToolSelection = options.activeToolSelection ?? {
+			mode: "default_all",
+		};
+		const activeToolNames =
+			activeToolSelection.mode === "explicit"
+				? activeToolSelection.toolNames
+				: undefined;
+		const toolRegistry = this._createScopedToolRegistry(
+			options.agentId,
+			options.extensionRunner,
+		);
 		const resolvedTools = toolRegistry.resolve({
 			requestedToolNames: options.requestedToolNames,
-			activeToolNames: options.activeToolNames,
+			activeToolNames,
 		});
 		await this._publishDiagnostics(
 			resolvedTools.diagnostics.map((diagnostic) => ({
@@ -1296,14 +1376,25 @@ export class AgentOrchestrator {
 				? [...options.requestedToolNames]
 				: undefined,
 			activeToolNames: [...resolvedTools.activeToolNames],
+			activeToolSelection:
+				activeToolSelection.mode === "explicit"
+					? {
+							mode: "explicit",
+							toolNames: [...resolvedTools.activeToolNames],
+						}
+					: { mode: "default_all" },
 			profileId: options.profileId,
 		};
 	}
 
-	private _createScopedToolRegistry(agentId: AgentId): ToolRegistry {
+	private _createScopedToolRegistry(
+		agentId: AgentId,
+		extensionRunner?: ExtensionRunner,
+	): ToolRegistry {
 		const registry = this.toolRegistry.clone();
-		const extensionRunner = this.agents.get(agentId)?.extensionRunner;
-		extensionRunner?.contributeToolsTo(registry);
+		(
+			extensionRunner ?? this.agents.get(agentId)?.extensionRunner
+		)?.contributeToolsTo(registry);
 		return registry;
 	}
 
@@ -1490,6 +1581,162 @@ export class AgentOrchestrator {
 			diagnostics: [diagnostic],
 		});
 		await this._publishDiagnostic(diagnostic);
+	}
+
+	private async _reloadAgentExtensions(
+		agentId: AgentId,
+	): Promise<ExtensionReloadAgentResult> {
+		const record = this.agents.get(agentId);
+		if (!record) {
+			const diagnostic = this._createExtensionReloadDiagnostic({
+				code: "extension.reload_agent_failed",
+				severity: "warning",
+				message: `Cannot reload extensions for unknown agent: ${agentId}`,
+				agentId,
+			});
+			await this._publishDiagnostic(diagnostic);
+			return {
+				agentId,
+				status: "failed",
+				reason: "unknown_agent",
+				diagnostics: [diagnostic],
+			};
+		}
+
+		const before = this._snapshotAgentRecord(record);
+		const skipReason = this._extensionReloadSkipReason(record);
+		if (skipReason) {
+			const diagnostic = this._createExtensionReloadDiagnostic({
+				code: "extension.reload_agent_skipped",
+				severity: "warning",
+				message: `Skipped extension reload for agent ${agentId}: ${skipReason}.`,
+				agentId,
+			});
+			this._addAgentDiagnostics(agentId, {
+				extensionDiagnostics: [diagnostic],
+			});
+			await this._publishDiagnostic(diagnostic);
+			return {
+				agentId,
+				status: "skipped",
+				reason: skipReason,
+				diagnostics: [diagnostic],
+				before,
+				after: this._snapshotAgentRecord(record),
+			};
+		}
+
+		try {
+			const harness = record.harness as AgentHarness &
+				Partial<AgentToolSetHarness>;
+			const currentToolSet = this._requireAgentToolSet(agentId);
+			const oldRunner = record.extensionRunner;
+			const resolvedProfile = await this._resolveProfileById(
+				record.profile.reference.id,
+				agentId,
+			);
+			const nextRunner = await this._createExtensionRunner(
+				agentId,
+				resolvedProfile.profile,
+			);
+			const nextToolSet = await this._resolveAgentTools({
+				agentId,
+				profileId: resolvedProfile.profile.id,
+				requestedToolNames: currentToolSet.requestedToolNames,
+				activeToolSelection:
+					currentToolSet.activeToolSelection.mode === "explicit"
+						? {
+								mode: "explicit",
+								toolNames: currentToolSet.activeToolNames,
+							}
+						: { mode: "default_all" },
+				extensionRunner: nextRunner,
+			});
+
+			this._bindExtensionRunner(agentId, harness, nextRunner);
+			await harness.setTools?.(nextToolSet.tools, [
+				...nextToolSet.activeToolNames,
+			]);
+
+			const unsubscribeOldInterceptors =
+				this._unsubscribeAgentExtensionInterceptors.get(agentId);
+			unsubscribeOldInterceptors?.();
+			this._unsubscribeAgentExtensionInterceptors.delete(agentId);
+			const unsubscribeInterceptors = this._registerExtensionInterceptors(
+				harness,
+				nextRunner,
+			);
+			this._unsubscribeAgentExtensionInterceptors.set(agentId, () => {
+				for (const unsubscribe of unsubscribeInterceptors) {
+					unsubscribe();
+				}
+			});
+			record.extensionRunner = nextRunner;
+			record.extensionDiagnostics = [...nextRunner.diagnostics];
+			record.diagnostics.push(...nextRunner.diagnostics);
+			this._setAgentToolSet(agentId, nextToolSet);
+			oldRunner?.invalidate("Extension runtime has been reloaded.");
+			await this._publishDiagnostics(nextRunner.diagnostics);
+
+			return {
+				agentId,
+				status: "reloaded",
+				diagnostics: [...nextRunner.diagnostics],
+				before,
+				after: this._snapshotAgentRecord(record),
+			};
+		} catch (error) {
+			const diagnostic = this._createExtensionReloadDiagnostic({
+				code: "extension.reload_agent_failed",
+				severity: "error",
+				message: `Failed to reload extensions for agent ${agentId}: ${formatError(error)}`,
+				agentId,
+				details: { error: formatError(error) },
+			});
+			this._addAgentDiagnostics(agentId, {
+				extensionDiagnostics: [diagnostic],
+			});
+			await this._publishDiagnostic(diagnostic);
+			return {
+				agentId,
+				status: "failed",
+				diagnostics: [diagnostic],
+				before,
+				after: this._snapshotAgentRecord(record),
+			};
+		}
+	}
+
+	private _extensionReloadSkipReason(
+		record: AgentRecord,
+	): ExtensionReloadAgentSkipReason | undefined {
+		if (record.status === "creating") return "creating";
+		if (record.status === "running") return "running";
+		if (record.status === "disposed") return "disposed";
+		if (record.status === "unavailable") return "unavailable";
+		if (!record.harness) return "missing_harness";
+		return undefined;
+	}
+
+	private _createExtensionReloadDiagnostic(options: {
+		code: "extension.reload_agent_failed" | "extension.reload_agent_skipped";
+		severity: OrchestratorDiagnostic["severity"];
+		message: string;
+		agentId: AgentId;
+		details?: Record<string, unknown>;
+	}): OrchestratorDiagnostic {
+		return createOrchestratorDiagnostic({
+			domain: "extension",
+			severity: options.severity,
+			disposition: options.severity === "error" ? "degraded" : "reported",
+			code: options.code,
+			message: options.message,
+			agentId: options.agentId,
+			phase: "runtime",
+			recoverable: true,
+			source: { kind: "extension", id: "reload" },
+			details: options.details,
+		});
 	}
 
 	private _setAgentStatus(
@@ -1856,6 +2103,8 @@ export class AgentOrchestrator {
 			case "agent.dispose":
 				await this.disposeAgent(command.agentId, command.reason);
 				return undefined;
+			case "extension.reload":
+				return await this.reloadExtensions({ agentIds: command.agentIds });
 			case "human.request":
 				return await this.requestHuman({
 					...command.request,

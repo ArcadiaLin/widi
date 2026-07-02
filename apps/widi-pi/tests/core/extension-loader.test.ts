@@ -326,4 +326,24 @@ describe("ExtensionLoader file/module loading", () => {
 		);
 		expect(activationSource).toBe("memory");
 	});
+
+	it("clears the module cache before reloading available extensions", async () => {
+		const env = new MemoryExecutionEnv();
+		env.addFile("/extensions/sample.ts");
+		const importer = new FakeModuleImporter();
+		importer.setFactory("/extensions/sample.ts", () => {});
+		const loader = new ExtensionLoader({
+			roots: [{ kind: "settings", path: "/extensions" }],
+			moduleImporter: importer,
+		});
+
+		await loader.loadAvailableExtensions(env);
+		await loader.reloadAvailableExtensions(env);
+
+		expect(importer.clearCalls).toBe(1);
+		expect(importer.imports).toEqual([
+			"/extensions/sample.ts",
+			"/extensions/sample.ts",
+		]);
+	});
 });

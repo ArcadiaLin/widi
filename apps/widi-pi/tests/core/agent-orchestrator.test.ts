@@ -1241,6 +1241,141 @@ describe("AgentOrchestrator", () => {
 		});
 	});
 
+	it("reloads idle agent extension runners and activates new tools in default-all mode", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("sample", (api) => {
+			api.registerTool(createToolDefinition("alpha", "alpha"));
+		});
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const oldRunner = orchestrator.agents.get(agentId)?.extensionRunner;
+		if (!oldRunner) throw new Error("Expected extension runner.");
+		const oldContext = oldRunner.createCommandContext("sample");
+		orchestrator.registerExtensionFactory("sample", (api) => {
+			api.registerTool(createToolDefinition("alpha", "alpha"));
+			api.registerTool(createToolDefinition("beta", "beta"));
+		});
+
+		const result = await orchestrator.dispatch({
+			kind: "extension.reload",
+			source: { kind: "system" },
+		});
+
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error("Expected reload to succeed.");
+		expect(result.value).toMatchObject({
+			agents: [{ agentId, status: "reloaded" }],
+		});
+		expect(orchestrator.getAgentTools(agentId)).toEqual({
+			toolNames: ["alpha", "beta"],
+			activeToolNames: ["alpha", "beta"],
+		});
+		await expect(oldContext.waitForIdle()).rejects.toThrow(
+			"Extension runtime has been reloaded.",
+		);
+	});
+
+	it("preserves explicit active tool selections across extension reload", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("sample", (api) => {
+			api.registerTool(createToolDefinition("alpha", "alpha"));
+		});
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		await orchestrator.setAgentActiveTools(agentId, ["alpha"]);
+		orchestrator.registerExtensionFactory("sample", (api) => {
+			api.registerTool(createToolDefinition("alpha", "alpha"));
+			api.registerTool(createToolDefinition("beta", "beta"));
+		});
+
+		const result = await orchestrator.reloadExtensions();
+
+		expect(result.agents).toMatchObject([{ agentId, status: "reloaded" }]);
+		expect(orchestrator.getAgentTools(agentId)).toEqual({
+			toolNames: ["alpha", "beta"],
+			activeToolNames: ["alpha"],
+		});
+	});
+
+	it("skips running agents during extension reload and keeps old tools", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("sample", (api) => {
+			api.registerTool(createToolDefinition("alpha", "alpha"));
+		});
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const handleHarnessEvent = (
+			orchestrator as unknown as {
+				_handleAgentHarnessEvent(
+					agentId: string,
+					event: AgentHarnessEvent,
+				): Promise<void>;
+			}
+		)._handleAgentHarnessEvent.bind(orchestrator);
+		await handleHarnessEvent(agentId, { type: "turn_start" });
+		orchestrator.registerExtensionFactory("sample", (api) => {
+			api.registerTool(createToolDefinition("beta", "beta"));
+		});
+
+		const result = await orchestrator.reloadExtensions();
+
+		expect(result.agents).toMatchObject([
+			{ agentId, status: "skipped", reason: "running" },
+		]);
+		expect(result.agents[0]?.diagnostics).toContainEqual(
+			expect.objectContaining({
+				code: "extension.reload_agent_skipped",
+				agentId,
+			}),
+		);
+		expect(orchestrator.getAgentTools(agentId)).toEqual({
+			toolNames: ["alpha"],
+			activeToolNames: ["alpha"],
+		});
+	});
+
 	it("applies scoped extension tool patches in activation order", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = {

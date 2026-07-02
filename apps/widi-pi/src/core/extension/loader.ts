@@ -319,6 +319,13 @@ export class ExtensionLoader {
 		};
 	}
 
+	async reloadAvailableExtensions(
+		executionEnv: ExecutionEnv,
+	): Promise<ExtensionLoadAvailableResult> {
+		this.clearExtensionModuleCache();
+		return await this.loadAvailableExtensions(executionEnv);
+	}
+
 	async loadForAgent(
 		options: LoadExtensionScopeOptions,
 	): Promise<LoadedExtensionScope> {

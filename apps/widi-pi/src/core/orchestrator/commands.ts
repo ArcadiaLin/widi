@@ -14,6 +14,7 @@ import type {
 	AgentRecordSnapshot,
 } from "../agent-orchestrator.ts";
 import type { OrchestratorDiagnostic } from "../diagnostics.ts";
+import type { ExtensionIdentity } from "../extension/index.ts";
 import type { HumanRequestDraft, HumanResponse } from "./human-request.ts";
 
 export type RuntimeModel = Model<Api>;
@@ -21,6 +22,33 @@ export type RuntimeModel = Model<Api>;
 export interface AgentToolsSnapshot {
 	toolNames: string[];
 	activeToolNames: string[];
+}
+
+export type ExtensionReloadAgentStatus = "reloaded" | "skipped" | "failed";
+
+export type ExtensionReloadAgentSkipReason =
+	| "creating"
+	| "running"
+	| "disposed"
+	| "unavailable"
+	| "missing_harness"
+	| "unknown_agent";
+
+export interface ExtensionReloadAgentResult {
+	agentId: string;
+	status: ExtensionReloadAgentStatus;
+	reason?: ExtensionReloadAgentSkipReason;
+	diagnostics: readonly OrchestratorDiagnostic[];
+	before?: AgentRecordSnapshot;
+	after?: AgentRecordSnapshot;
+}
+
+export interface ExtensionReloadResult {
+	catalog: {
+		loaded: readonly ExtensionIdentity[];
+		diagnostics: readonly OrchestratorDiagnostic[];
+	};
+	agents: readonly ExtensionReloadAgentResult[];
 }
 
 export type OperationSource =
@@ -106,6 +134,10 @@ export type OrchestratorCommand =
 			reason?: string;
 	  })
 	| (OrchestratorCommandBase & {
+			kind: "extension.reload";
+			agentIds?: readonly string[];
+	  })
+	| (OrchestratorCommandBase & {
 			kind: "human.request";
 			request: HumanRequestDraft;
 	  });
@@ -117,6 +149,7 @@ export type OrchestratorCommandValue =
 	| NavigateTreeResult
 	| RuntimeModel
 	| AgentToolsSnapshot
+	| ExtensionReloadResult
 	| AgentLifecycleStatus
 	| AgentRecordSnapshot
 	| string[]
