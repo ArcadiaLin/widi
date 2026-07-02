@@ -8,12 +8,10 @@
  */
 
 import type { ExecutionEnv } from "@earendil-works/pi-agent-core";
-import {
-	findEnvKeys,
-	getEnvApiKey,
-	type OAuthCredentials,
-	type OAuthLoginCallbacks,
-	type OAuthProviderId,
+import type {
+	OAuthCredentials,
+	OAuthLoginCallbacks,
+	OAuthProviderId,
 } from "@earendil-works/pi-ai";
 import {
 	getOAuthApiKey,
@@ -367,7 +365,6 @@ export class AuthStorage {
 	hasAuth(provider: string): boolean {
 		if (this.runtimeOverrides.has(provider)) return true;
 		if (this.data[provider]) return true;
-		if (getEnvApiKey(provider)) return true;
 		if (this.fallbackResolver?.(provider)) return true;
 		return false;
 	}
@@ -382,11 +379,6 @@ export class AuthStorage {
 
 		if (this.runtimeOverrides.has(provider)) {
 			return { configured: false, source: "runtime", label: "--api-key" };
-		}
-
-		const envKeys = findEnvKeys(provider);
-		if (envKeys?.[0]) {
-			return { configured: false, source: "environment", label: envKeys[0] };
 		}
 
 		if (this.fallbackResolver?.(provider)) {
@@ -555,9 +547,6 @@ export class AuthStorage {
 
 			return provider.getApiKey(cred);
 		}
-
-		const envKey = getEnvApiKey(providerId);
-		if (envKey) return envKey;
 
 		if (options?.includeFallback !== false) {
 			return this.fallbackResolver?.(providerId) ?? undefined;

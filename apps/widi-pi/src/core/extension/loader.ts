@@ -6,6 +6,7 @@ import type {
 import {
 	type CoreDiagnostic,
 	createDiagnostic,
+	type DiagnosticDisposition,
 	type DiagnosticSeverity,
 } from "../diagnostics.ts";
 import {
@@ -377,6 +378,8 @@ export class ExtensionLoader {
 					createExtensionDiagnostic({
 						code: "extension.activation_failed",
 						severity: "error",
+						disposition: "blocked",
+						phase: "create",
 						message: `Extension '${extensionId}' activation failed: ${formatError(error)}`,
 						extensionId,
 						agentId: options.agentId,
@@ -954,6 +957,8 @@ function createMissingFactoryDiagnostic(options: {
 	return createExtensionDiagnostic({
 		code: "extension.factory_missing",
 		severity: options.severity,
+		disposition: options.severity === "error" ? "blocked" : "degraded",
+		phase: "resolve",
 		message: `Extension '${options.extensionId}' is requested by profile '${options.profileId}' but no factory is registered.`,
 		extensionId: options.extensionId,
 		agentId: options.agentId,
@@ -964,6 +969,8 @@ function createMissingFactoryDiagnostic(options: {
 function createExtensionDiagnostic(options: {
 	code: string;
 	severity: DiagnosticSeverity;
+	disposition?: DiagnosticDisposition;
+	phase?: CoreDiagnostic["phase"];
 	message: string;
 	extensionId: string;
 	agentId: string;
@@ -974,11 +981,13 @@ function createExtensionDiagnostic(options: {
 		domain: "extension",
 		code: options.code,
 		severity: options.severity,
-		disposition: options.severity === "error" ? "degraded" : "reported",
+		disposition:
+			options.disposition ??
+			(options.severity === "error" ? "degraded" : "reported"),
 		recoverable: true,
 		message: options.message,
 		source: { kind: "extension", id: options.extensionId },
-		phase: "resolve",
+		phase: options.phase ?? "resolve",
 		agentId: options.agentId,
 		profileId: options.profileId,
 		extensionId: options.extensionId,

@@ -1,11 +1,11 @@
 import type {
 	AgentHarnessEvent,
 	ExecutionEnv,
-	ExecutionEnvExecOptions,
 	ExecutionError,
 	FileError,
 	FileInfo,
 	Result,
+	ShellExecOptions,
 } from "@earendil-works/pi-agent-core";
 import {
 	err,
@@ -256,7 +256,7 @@ class MemoryExecutionEnv implements ExecutionEnv {
 
 	async exec(
 		_command: string,
-		_options?: ExecutionEnvExecOptions,
+		_options?: ShellExecOptions,
 	): Promise<
 		Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>
 	> {
@@ -1223,6 +1223,10 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
 		orchestrator.registerExtensionFactory("sample", (api) => {
 			api.registerTool(createToolDefinition("sampleTool", "sample"));
 		});
@@ -1239,6 +1243,78 @@ describe("AgentOrchestrator", () => {
 				}),
 			],
 		});
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					code: "extension.factory_missing",
+					disposition: "degraded",
+					phase: "resolve",
+					extensionId: "missing",
+					agentId,
+					profileId: extensionProfile.id,
+					source: { kind: "extension", id: "missing" },
+				}),
+			}),
+		);
+	});
+
+	it("keeps an unavailable record when extension activation fails", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["broken"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		orchestrator.registerExtensionFactory("broken", () => {
+			throw new Error("activation exploded");
+		});
+
+		await expect(orchestrator.spawnAgentHarness()).rejects.toThrow(
+			"activation exploded",
+		);
+
+		const agentId = "extension-profile";
+		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
+			agentId,
+			status: "unavailable",
+			hasHarness: false,
+			extensionDiagnostics: [
+				expect.objectContaining({
+					code: "extension.activation_failed",
+					disposition: "blocked",
+					phase: "create",
+					extensionId: "broken",
+					agentId,
+					profileId: extensionProfile.id,
+				}),
+			],
+		});
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					code: "extension.activation_failed",
+					disposition: "blocked",
+					phase: "create",
+					source: { kind: "extension", id: "broken" },
+				}),
+			}),
+		);
 	});
 
 	it("reloads idle agent extension runners and activates new tools in default-all mode", async () => {
@@ -1490,9 +1566,12 @@ describe("AgentOrchestrator", () => {
 				diagnostic: expect.objectContaining({
 					domain: "extension",
 					code: "extension.factory_missing",
+					disposition: "degraded",
+					phase: "resolve",
 					extensionId: "missing",
 					agentId,
 					profileId: extensionProfile.id,
+					source: { kind: "extension", id: "missing" },
 				}),
 			}),
 		);
@@ -1545,6 +1624,69 @@ describe("AgentOrchestrator", () => {
 		expect(observed).toEqual([
 			`observer:${extensionProfile.id}:execution_started:plain`,
 		]);
+	});
+
+	it("publishes diagnostics for observer failures and continues observers", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["broken", "healthy"],
+		};
+		const observed: string[] = [];
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		orchestrator.registerExtensionFactory("broken", (api) => {
+			api.observe("agent_harness_event", () => {
+				throw new Error("observer exploded");
+			});
+		});
+		orchestrator.registerExtensionFactory("healthy", (api) => {
+			api.observe("agent_harness_event", () => {
+				observed.push("healthy");
+			});
+		});
+
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const handleHarnessEvent = (
+			orchestrator as unknown as {
+				_handleAgentHarnessEvent(
+					agentId: string,
+					event: AgentHarnessEvent,
+				): Promise<void>;
+			}
+		)._handleAgentHarnessEvent.bind(orchestrator);
+
+		await handleHarnessEvent(agentId, { type: "turn_start" });
+
+		expect(observed).toEqual(["healthy"]);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					code: "extension.handler_failed",
+					disposition: "degraded",
+					phase: "runtime",
+					extensionId: "broken",
+					agentId,
+					profileId: extensionProfile.id,
+					source: { kind: "extension", id: "broken" },
+					details: { eventName: "agent_harness_event" },
+				}),
+			}),
+		);
 	});
 
 	it("bridges scoped extension interceptors into AgentHarness hooks", async () => {
@@ -1684,6 +1826,74 @@ describe("AgentOrchestrator", () => {
 		});
 	});
 
+	it("publishes diagnostics for interceptor failures and stops the hook chain", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["broken", "healthy"],
+		};
+		let healthyCalled = false;
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		orchestrator.registerExtensionFactory("broken", (api) => {
+			api.intercept("context", () => {
+				throw new Error("interceptor exploded");
+			});
+		});
+		orchestrator.registerExtensionFactory("healthy", (api) => {
+			api.intercept("context", (event) => {
+				healthyCalled = true;
+				return { messages: event.messages };
+			});
+		});
+
+		const { agentId, harness } = await orchestrator.spawnAgentHarness();
+		const handlers = (
+			harness as unknown as {
+				handlers: Map<string, Set<(event: unknown) => Promise<unknown>>>;
+			}
+		).handlers;
+		const handler = Array.from(handlers.get("context") ?? [])[0];
+		if (!handler) throw new Error("Missing context hook.");
+
+		await expect(
+			handler({
+				type: "context",
+				messages: [{ role: "user", content: "base", timestamp: 0 }],
+			}),
+		).resolves.toBeUndefined();
+
+		expect(healthyCalled).toBe(false);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					code: "extension.handler_failed",
+					disposition: "degraded",
+					phase: "runtime",
+					extensionId: "broken",
+					agentId,
+					profileId: extensionProfile.id,
+					source: { kind: "extension", id: "broken" },
+					details: { eventName: "context" },
+				}),
+			}),
+		);
+	});
+
 	it("binds extension runner core and command contexts after harness creation", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = {
@@ -1789,6 +1999,80 @@ describe("AgentOrchestrator", () => {
 			{ type: "state", data: { count: 1 } },
 			{ type: "state", data: { count: 2 } },
 		]);
+	});
+
+	it("publishes diagnostics for extension custom-entry action failures", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: true,
+			extensions: ["stateful"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		orchestrator.registerExtensionFactory("stateful", (api) => {
+			api.observe("agent_harness_event", async (_event, context) => {
+				await context.session.appendEntry("bad/type", {});
+			});
+		});
+
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const handleHarnessEvent = (
+			orchestrator as unknown as {
+				_handleAgentHarnessEvent(
+					agentId: string,
+					event: AgentHarnessEvent,
+				): Promise<void>;
+			}
+		)._handleAgentHarnessEvent.bind(orchestrator);
+
+		await handleHarnessEvent(agentId, { type: "turn_start" });
+
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					code: "extension.custom_entry_append_failed",
+					disposition: "degraded",
+					phase: "runtime",
+					extensionId: "stateful",
+					agentId,
+					profileId: extensionProfile.id,
+					source: { kind: "extension", id: "stateful" },
+					details: expect.objectContaining({ action: "appendEntry" }),
+				}),
+			}),
+		);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					code: "extension.handler_failed",
+					extensionId: "stateful",
+					details: { eventName: "agent_harness_event" },
+				}),
+			}),
+		);
+		expect(orchestrator.inspectAgent(agentId).extensionDiagnostics).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					code: "extension.custom_entry_append_failed",
+				}),
+				expect.objectContaining({ code: "extension.handler_failed" }),
+			]),
+		);
 	});
 
 	it("emits normalized tool lifecycle events from harness events", async () => {

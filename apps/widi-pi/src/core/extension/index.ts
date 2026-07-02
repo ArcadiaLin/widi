@@ -22,6 +22,7 @@ export {
 	type ExtensionRunnerOptions,
 } from "./runner.ts";
 export type {
+	ExtensionActionFailure,
 	ExtensionActions,
 	ExtensionActivationApi,
 	ExtensionCommandContext,

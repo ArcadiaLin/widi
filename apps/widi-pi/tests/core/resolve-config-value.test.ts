@@ -1,10 +1,10 @@
 import type {
 	ExecutionEnv,
-	ExecutionEnvExecOptions,
 	ExecutionError,
 	FileError,
 	FileInfo,
 	Result,
+	ShellExecOptions,
 } from "@earendil-works/pi-agent-core";
 import {
 	err,
@@ -17,7 +17,7 @@ import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
 
 interface ExecCall {
 	command: string;
-	options?: ExecutionEnvExecOptions;
+	options?: ShellExecOptions;
 }
 
 class FakeExecutionEnv implements ExecutionEnv {
@@ -40,7 +40,7 @@ class FakeExecutionEnv implements ExecutionEnv {
 
 	async exec(
 		command: string,
-		options?: ExecutionEnvExecOptions,
+		options?: ShellExecOptions,
 	): Promise<
 		Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>
 	> {

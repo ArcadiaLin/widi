@@ -33,9 +33,13 @@ import {
 	toCoreDiagnosticFromSkillDiagnostic,
 } from "./diagnostics.ts";
 import {
+	type ExtensionActionFailure,
 	type ExtensionActions,
 	type ExtensionFactory,
 	type ExtensionIdentity,
+	type ExtensionInterceptorEventFor,
+	type ExtensionInterceptorName,
+	type ExtensionInterceptorResultFor,
 	ExtensionLoader,
 	ExtensionRunner,
 	type ToolLifecycleEvent,
@@ -1063,16 +1067,32 @@ export class AgentOrchestrator {
 			}),
 		);
 
-		const harness = await this._buildAgentHarness({
-			agentId,
-			resolvedProfile,
-			session,
-			model,
-			thinkingLevel: options.thinkingLevel,
-		});
-		await this._setAgentStatus(agentId, "ready");
-		await this._emit({ type: "agent_spawned", agentId, profile, model });
-		return { agentId, harness };
+		try {
+			const harness = await this._buildAgentHarness({
+				agentId,
+				resolvedProfile,
+				session,
+				model,
+				thinkingLevel: options.thinkingLevel,
+			});
+			await this._setAgentStatus(agentId, "ready");
+			await this._emit({ type: "agent_spawned", agentId, profile, model });
+			return { agentId, harness };
+		} catch (error) {
+			const diagnostic = toDiagnostic(error, {
+				code: "orchestrator.agent_unavailable",
+				message: `Cannot create agent ${agentId}: ${formatError(error)}`,
+				agentId,
+				profileId: profile.id,
+				phase: "create",
+				recoverable: true,
+			});
+			this._markExistingAgentUnavailable(agentId, diagnostic);
+			if (!(error instanceof OrchestratorError)) {
+				await this._publishDiagnostic(diagnostic);
+			}
+			throw error;
+		}
 	}
 
 	private async _resumeAgentHarness(
@@ -1197,6 +1217,12 @@ export class AgentOrchestrator {
 			extensionDiagnostics: [...extensionRunner.diagnostics],
 		});
 		this._requireAgentRecord(agentId).extensionRunner = extensionRunner;
+		const blockedExtensionDiagnostic = extensionRunner.diagnostics.find(
+			isBlockedExtensionDiagnostic,
+		);
+		if (blockedExtensionDiagnostic) {
+			throw new OrchestratorError(blockedExtensionDiagnostic);
+		}
 
 		const agentToolSet = await this._resolveAgentTools({
 			agentId,
@@ -1211,28 +1237,19 @@ export class AgentOrchestrator {
 		const harness = new AgentHarness({
 			env: this.executionEnv,
 			session: session,
+			models: this.modelRegistry.getRuntime(),
 			resources: resources,
 			tools: agentToolSet.tools,
 			systemPrompt: profile.systemPrompt,
 			model: model,
 			thinkingLevel: options.thinkingLevel,
 			activeToolNames: [...agentToolSet.activeToolNames],
-			getApiKeyAndHeaders: async (requestModel) => {
-				const result =
-					await this.modelRegistry.getApiKeyAndHeaders(requestModel);
-				await this._publishDiagnostics(this._drainCoreDiagnostics());
-				if (!result.ok) {
-					throw new Error(result.error);
-				}
-				return result.apiKey || result.headers
-					? { apiKey: result.apiKey ?? "", headers: result.headers }
-					: undefined;
-			},
 		});
 		this._requireAgentRecord(agentId).harness = harness;
 		this._setAgentToolSet(agentId, agentToolSet);
 		this._bindExtensionRunner(agentId, harness, extensionRunner);
 		const unsubscribeInterceptors = this._registerExtensionInterceptors(
+			agentId,
 			harness,
 			extensionRunner,
 		);
@@ -1271,6 +1288,14 @@ export class AgentOrchestrator {
 		extensionRunner.bindCore(this._createExtensionActions(), {
 			getSignal: () => undefined,
 			isIdle: () => this._requireAgentRecord(agentId).status !== "running",
+			reportActionFailure: async (failure) => {
+				const diagnostic = this._createExtensionActionFailureDiagnostic({
+					agentId,
+					profileId: extensionRunner.profileId,
+					failure,
+				});
+				await this._recordAndPublishExtensionDiagnostics(agentId, [diagnostic]);
+			},
 			session: {
 				appendEntry: async (extensionId, type, data) =>
 					await this.sessionManager.appendExtensionCustomEntry(
@@ -1295,6 +1320,7 @@ export class AgentOrchestrator {
 	}
 
 	private _registerExtensionInterceptors(
+		agentId: AgentId,
 		harness: AgentHarness,
 		extensionRunner: ExtensionRunner,
 	): Array<() => void> {
@@ -1302,19 +1328,38 @@ export class AgentOrchestrator {
 			harness.on(
 				"before_agent_start",
 				async (event) =>
-					await extensionRunner.intercept<"before_agent_start">(event),
+					await this._runExtensionInterceptor<"before_agent_start">(
+						agentId,
+						extensionRunner,
+						event,
+					),
 			),
 			harness.on(
 				"context",
-				async (event) => await extensionRunner.intercept<"context">(event),
+				async (event) =>
+					await this._runExtensionInterceptor<"context">(
+						agentId,
+						extensionRunner,
+						event,
+					),
 			),
 			harness.on(
 				"tool_call",
-				async (event) => await extensionRunner.intercept<"tool_call">(event),
+				async (event) =>
+					await this._runExtensionInterceptor<"tool_call">(
+						agentId,
+						extensionRunner,
+						event,
+					),
 			),
 			harness.on(
 				"tool_result",
-				async (event) => await extensionRunner.intercept<"tool_result">(event),
+				async (event) =>
+					await this._runExtensionInterceptor<"tool_result">(
+						agentId,
+						extensionRunner,
+						event,
+					),
 			),
 		];
 	}
@@ -1494,6 +1539,27 @@ export class AgentOrchestrator {
 		this._forgetAllStreamingToolCalls(options.agentId);
 	}
 
+	private _markExistingAgentUnavailable(
+		agentId: AgentId,
+		diagnostic: OrchestratorDiagnostic,
+	): void {
+		const record = this.agents.get(agentId);
+		if (!record) return;
+		delete record.harness;
+		record.status = "unavailable";
+		if (!record.diagnostics.includes(diagnostic)) {
+			record.diagnostics.push(diagnostic);
+		}
+		if (
+			diagnostic.domain === "extension" &&
+			!record.extensionDiagnostics.includes(diagnostic)
+		) {
+			record.extensionDiagnostics.push(diagnostic);
+		}
+		this._agentToolSets.delete(agentId);
+		this._forgetAllStreamingToolCalls(agentId);
+	}
+
 	private _snapshotAgentRecord(record: AgentRecord): AgentRecordSnapshot {
 		return {
 			agentId: record.agentId,
@@ -1583,6 +1649,53 @@ export class AgentOrchestrator {
 		await this._publishDiagnostic(diagnostic);
 	}
 
+	private async _recordAndPublishExtensionDiagnostics(
+		agentId: AgentId,
+		diagnostics: readonly OrchestratorDiagnostic[],
+	): Promise<void> {
+		this._addAgentDiagnostics(agentId, {
+			extensionDiagnostics: diagnostics,
+		});
+		await this._publishDiagnostics(diagnostics);
+	}
+
+	private async _runExtensionInterceptor<
+		TName extends ExtensionInterceptorName,
+	>(
+		agentId: AgentId,
+		extensionRunner: ExtensionRunner,
+		event: ExtensionInterceptorEventFor<TName>,
+	): Promise<ExtensionInterceptorResultFor<TName>> {
+		const run = await extensionRunner.interceptWithDiagnostics(event);
+		await this._recordAndPublishExtensionDiagnostics(agentId, run.diagnostics);
+		return run.result;
+	}
+
+	private _createExtensionActionFailureDiagnostic(options: {
+		agentId: AgentId;
+		profileId: string;
+		failure: ExtensionActionFailure;
+	}): OrchestratorDiagnostic {
+		const { failure } = options;
+		return createOrchestratorDiagnostic({
+			domain: "extension",
+			code: failure.code,
+			severity: "warning",
+			disposition: "degraded",
+			recoverable: true,
+			message: `Extension '${failure.extensionId}' action '${failure.action}' failed: ${formatError(failure.error)}`,
+			source: { kind: "extension", id: failure.extensionId },
+			phase: "runtime",
+			agentId: options.agentId,
+			profileId: options.profileId,
+			extensionId: failure.extensionId,
+			details: {
+				action: failure.action,
+				error: formatError(failure.error),
+			},
+		});
+	}
+
 	private async _reloadAgentExtensions(
 		agentId: AgentId,
 	): Promise<ExtensionReloadAgentResult> {
@@ -1663,6 +1776,7 @@ export class AgentOrchestrator {
 			unsubscribeOldInterceptors?.();
 			this._unsubscribeAgentExtensionInterceptors.delete(agentId);
 			const unsubscribeInterceptors = this._registerExtensionInterceptors(
+				agentId,
 				harness,
 				nextRunner,
 			);
@@ -1887,10 +2001,7 @@ export class AgentOrchestrator {
 				agentId,
 				event,
 			});
-			this._addAgentDiagnostics(agentId, {
-				extensionDiagnostics: diagnostics,
-			});
-			await this._publishDiagnostics(diagnostics);
+			await this._recordAndPublishExtensionDiagnostics(agentId, diagnostics);
 		}
 		const lifecycleEvent = this._toToolLifecycleEvent(agentId, event);
 		if (lifecycleEvent) {
@@ -1905,10 +2016,7 @@ export class AgentOrchestrator {
 					agentId,
 					event: lifecycleEvent,
 				});
-				this._addAgentDiagnostics(agentId, {
-					extensionDiagnostics: diagnostics,
-				});
-				await this._publishDiagnostics(diagnostics);
+				await this._recordAndPublishExtensionDiagnostics(agentId, diagnostics);
 			}
 		}
 	}
@@ -2234,6 +2342,14 @@ function createOrchestratorDiagnostic(
 		disposition: disposition ?? "blocked",
 		source,
 	};
+}
+
+function isBlockedExtensionDiagnostic(
+	diagnostic: OrchestratorDiagnostic,
+): boolean {
+	return (
+		diagnostic.domain === "extension" && diagnostic.disposition === "blocked"
+	);
 }
 
 function domainFromDiagnosticCode(

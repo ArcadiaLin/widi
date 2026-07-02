@@ -9,10 +9,10 @@ import type { ToolRegistry } from "../tool-registry.ts";
 import type {
 	ExtensionIdentity,
 	ExtensionInterceptorRegistration,
-	ExtensionObserverRegistration,
 	LoadedExtensionScope,
 } from "./loader.ts";
 import type {
+	ExtensionActionFailure,
 	ExtensionActions,
 	ExtensionCommandContext,
 	ExtensionCommandContextActions,
@@ -23,13 +23,19 @@ import type {
 	ExtensionInterceptorName,
 	ExtensionInterceptorResultFor,
 	ExtensionObservedEvent,
-	ExtensionObservedEventName,
 	ExtensionObserver,
 	ExtensionSessionContext,
 } from "./types.ts";
 
 export interface ExtensionRunnerOptions {
 	loadedScope: LoadedExtensionScope;
+}
+
+export interface ExtensionInterceptorRun<
+	TName extends ExtensionInterceptorName,
+> {
+	result: ExtensionInterceptorResultFor<TName>;
+	diagnostics: readonly CoreDiagnostic[];
 }
 
 export class ExtensionRunner {
@@ -76,7 +82,7 @@ export class ExtensionRunner {
 			extensionId,
 			agentId: this.agentId,
 			profileId: this.profileId,
-			actions: this._createContextActions(),
+			actions: this._createContextActions(extensionId),
 			session: this._createSessionContext(extensionId),
 			get signal() {
 				runner._assertActive();
@@ -140,44 +146,65 @@ export class ExtensionRunner {
 	async intercept<TName extends ExtensionInterceptorName>(
 		event: ExtensionInterceptorEventFor<TName>,
 	): Promise<ExtensionInterceptorResultFor<TName>> {
+		return (await this.interceptWithDiagnostics(event)).result;
+	}
+
+	async interceptWithDiagnostics<TName extends ExtensionInterceptorName>(
+		event: ExtensionInterceptorEventFor<TName>,
+	): Promise<ExtensionInterceptorRun<TName>> {
 		const handlers = this._loadedScope.interceptorHandlers.get(
 			event.type as TName,
 		);
 		if (!handlers || handlers.length === 0) {
-			return undefined as ExtensionInterceptorResultFor<TName>;
+			return {
+				result: undefined as ExtensionInterceptorResultFor<TName>,
+				diagnostics: [],
+			};
 		}
+		const diagnostics: CoreDiagnostic[] = [];
+		let result: ExtensionInterceptorResultFor<TName>;
 		if (event.type === "before_agent_start") {
-			return (await this._interceptBeforeAgentStart(
+			result = (await this._interceptBeforeAgentStart(
 				event as ExtensionInterceptorEventFor<"before_agent_start">,
 				handlers as ExtensionInterceptorRegistration<"before_agent_start">[],
+				diagnostics,
 			)) as ExtensionInterceptorResultFor<TName>;
-		}
-		if (event.type === "context") {
-			return (await this._interceptContext(
+		} else if (event.type === "context") {
+			result = (await this._interceptContext(
 				event as ExtensionInterceptorEventFor<"context">,
 				handlers as ExtensionInterceptorRegistration<"context">[],
+				diagnostics,
 			)) as ExtensionInterceptorResultFor<TName>;
-		}
-		if (event.type === "tool_call") {
-			return (await this._interceptToolCall(
+		} else if (event.type === "tool_call") {
+			result = (await this._interceptToolCall(
 				event as ExtensionInterceptorEventFor<"tool_call">,
 				handlers as ExtensionInterceptorRegistration<"tool_call">[],
+				diagnostics,
+			)) as ExtensionInterceptorResultFor<TName>;
+		} else {
+			result = (await this._interceptToolResult(
+				event as ExtensionInterceptorEventFor<"tool_result">,
+				handlers as ExtensionInterceptorRegistration<"tool_result">[],
+				diagnostics,
 			)) as ExtensionInterceptorResultFor<TName>;
 		}
-		return (await this._interceptToolResult(
-			event as ExtensionInterceptorEventFor<"tool_result">,
-			handlers as ExtensionInterceptorRegistration<"tool_result">[],
-		)) as ExtensionInterceptorResultFor<TName>;
+		return { result, diagnostics };
 	}
 
 	private async _interceptBeforeAgentStart(
 		event: ExtensionInterceptorEventFor<"before_agent_start">,
 		registrations: ExtensionInterceptorRegistration<"before_agent_start">[],
+		diagnostics: CoreDiagnostic[],
 	): Promise<BeforeAgentStartResult | undefined> {
 		const result: BeforeAgentStartResult = {};
 		let hasResult = false;
 		for (const registration of registrations) {
-			const nextResult = await this._runInterceptor(registration, event);
+			const nextResult = await this._runInterceptor(
+				registration,
+				event,
+				diagnostics,
+			);
+			if (diagnostics.length > 0) return undefined;
 			if (nextResult === undefined) continue;
 			hasResult = true;
 			if (nextResult.messages) {
@@ -193,14 +220,20 @@ export class ExtensionRunner {
 	private async _interceptContext(
 		event: ExtensionInterceptorEventFor<"context">,
 		registrations: ExtensionInterceptorRegistration<"context">[],
+		diagnostics: CoreDiagnostic[],
 	): Promise<ContextResult | undefined> {
 		let messages = [...event.messages];
 		let hasResult = false;
 		for (const registration of registrations) {
-			const nextResult = await this._runInterceptor(registration, {
-				...event,
-				messages,
-			});
+			const nextResult = await this._runInterceptor(
+				registration,
+				{
+					...event,
+					messages,
+				},
+				diagnostics,
+			);
+			if (diagnostics.length > 0) return undefined;
 			if (nextResult === undefined) continue;
 			hasResult = true;
 			messages = nextResult.messages;
@@ -211,9 +244,15 @@ export class ExtensionRunner {
 	private async _interceptToolCall(
 		event: ExtensionInterceptorEventFor<"tool_call">,
 		registrations: ExtensionInterceptorRegistration<"tool_call">[],
+		diagnostics: CoreDiagnostic[],
 	): Promise<ToolCallResult | undefined> {
 		for (const registration of registrations) {
-			const result = await this._runInterceptor(registration, event);
+			const result = await this._runInterceptor(
+				registration,
+				event,
+				diagnostics,
+			);
+			if (diagnostics.length > 0) return undefined;
 			if (result?.block) {
 				return { block: true, reason: result.reason };
 			}
@@ -224,12 +263,18 @@ export class ExtensionRunner {
 	private async _interceptToolResult(
 		event: ExtensionInterceptorEventFor<"tool_result">,
 		registrations: ExtensionInterceptorRegistration<"tool_result">[],
+		diagnostics: CoreDiagnostic[],
 	): Promise<ToolResultPatch | undefined> {
 		const patch: ToolResultPatch = {};
 		let hasPatch = false;
 		let nextEvent = event;
 		for (const registration of registrations) {
-			const result = await this._runInterceptor(registration, nextEvent);
+			const result = await this._runInterceptor(
+				registration,
+				nextEvent,
+				diagnostics,
+			);
+			if (diagnostics.length > 0) return undefined;
 			if (result === undefined) continue;
 			hasPatch = true;
 			if (Object.hasOwn(result, "content")) patch.content = result.content;
@@ -251,11 +296,17 @@ export class ExtensionRunner {
 	private async _runInterceptor<TName extends ExtensionInterceptorName>(
 		registration: ExtensionInterceptorRegistration<TName>,
 		event: ExtensionInterceptorEventFor<TName>,
+		diagnostics: CoreDiagnostic[],
 	): Promise<ExtensionInterceptorResultFor<TName>> {
-		return await (registration.handler as ExtensionInterceptorFor<TName>)(
-			event,
-			this.createContext(registration.extensionId),
-		);
+		try {
+			return await (registration.handler as ExtensionInterceptorFor<TName>)(
+				event,
+				this.createContext(registration.extensionId),
+			);
+		} catch (error) {
+			diagnostics.push(this._createHandlerDiagnostic(registration, error));
+			return undefined as ExtensionInterceptorResultFor<TName>;
+		}
 	}
 
 	private _assertActive(): void {
@@ -264,7 +315,7 @@ export class ExtensionRunner {
 		}
 	}
 
-	private _createContextActions(): ExtensionActions {
+	private _createContextActions(extensionId: string): ExtensionActions {
 		return {
 			getAgentTools: (agentId) => {
 				this._assertActive();
@@ -272,19 +323,63 @@ export class ExtensionRunner {
 			},
 			setAgentTools: async (agentId, toolNames, activeToolNames) => {
 				this._assertActive();
-				await this._actions.setAgentTools(agentId, toolNames, activeToolNames);
+				try {
+					await this._actions.setAgentTools(
+						agentId,
+						toolNames,
+						activeToolNames,
+					);
+				} catch (error) {
+					await this._reportActionFailure({
+						extensionId,
+						action: "setAgentTools",
+						code: "extension.action_failed",
+						error,
+					});
+					throw error;
+				}
 			},
 			setAgentActiveTools: async (agentId, toolNames) => {
 				this._assertActive();
-				await this._actions.setAgentActiveTools(agentId, toolNames);
+				try {
+					await this._actions.setAgentActiveTools(agentId, toolNames);
+				} catch (error) {
+					await this._reportActionFailure({
+						extensionId,
+						action: "setAgentActiveTools",
+						code: "extension.action_failed",
+						error,
+					});
+					throw error;
+				}
 			},
 			requestHuman: async (request) => {
 				this._assertActive();
-				return await this._actions.requestHuman(request);
+				try {
+					return await this._actions.requestHuman(request);
+				} catch (error) {
+					await this._reportActionFailure({
+						extensionId,
+						action: "requestHuman",
+						code: "extension.action_failed",
+						error,
+					});
+					throw error;
+				}
 			},
 			dispatch: async (command) => {
 				this._assertActive();
-				return await this._actions.dispatch(command);
+				try {
+					return await this._actions.dispatch(command);
+				} catch (error) {
+					await this._reportActionFailure({
+						extensionId,
+						action: "dispatch",
+						code: "extension.action_failed",
+						error,
+					});
+					throw error;
+				}
 			},
 		};
 	}
@@ -293,18 +388,38 @@ export class ExtensionRunner {
 		return {
 			appendEntry: async (type, data) => {
 				this._assertActive();
-				return await this._requireSessionActions().appendEntry(
-					extensionId,
-					type,
-					data,
-				);
+				try {
+					return await this._requireSessionActions().appendEntry(
+						extensionId,
+						type,
+						data,
+					);
+				} catch (error) {
+					await this._reportActionFailure({
+						extensionId,
+						action: "appendEntry",
+						code: "extension.custom_entry_append_failed",
+						error,
+					});
+					throw error;
+				}
 			},
 			findEntries: async (type) => {
 				this._assertActive();
-				return await this._requireSessionActions().findEntries(
-					extensionId,
-					type,
-				);
+				try {
+					return await this._requireSessionActions().findEntries(
+						extensionId,
+						type,
+					);
+				} catch (error) {
+					await this._reportActionFailure({
+						extensionId,
+						action: "findEntries",
+						code: "extension.custom_entry_find_failed",
+						error,
+					});
+					throw error;
+				}
 			},
 		};
 	}
@@ -317,15 +432,24 @@ export class ExtensionRunner {
 		return session;
 	}
 
+	private async _reportActionFailure(
+		failure: ExtensionActionFailure,
+	): Promise<void> {
+		await this._contextActions.reportActionFailure?.(failure);
+	}
+
 	private _createHandlerDiagnostic(
-		registration: ExtensionObserverRegistration<ExtensionObservedEventName>,
+		registration: {
+			readonly extensionId: string;
+			readonly eventName: string;
+		},
 		error: unknown,
 	): CoreDiagnostic {
 		return createDiagnostic({
 			domain: "extension",
 			code: "extension.handler_failed",
 			severity: "warning",
-			disposition: "reported",
+			disposition: "degraded",
 			recoverable: true,
 			message: `Extension '${registration.extensionId}' handler '${registration.eventName}' failed: ${formatError(error)}`,
 			source: { kind: "extension", id: registration.extensionId },

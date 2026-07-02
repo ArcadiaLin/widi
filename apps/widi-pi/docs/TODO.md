@@ -46,7 +46,7 @@
 - [x] 实现轻量 file/module factory loader：direct file、directory index、`package.json` entry manifest、jiti import、cache busting、id conflict diagnostics；本轮不做 npm package name resolution。
 - [x] 接入 project trust gate；implicit project-local `.widi/extensions` 默认需要 trust，untrusted 时跳过并产生 diagnostic。
 - [x] 实现 reload：基于当前 extension roots 重新 discover/load extension，替换 eligible agent runner，旧 context stale，刷新 scoped tool registry；settings/trust/roots recomposition 留给 runtime reload。
-- [ ] 将 extension missing/activation/runtime/handler/custom-entry diagnostics 全部纳入 orchestrator event，并补齐 source/phase/disposition。
+- [x] 桥接 extension errors 到 orchestrator diagnostic event：覆盖 missing、activation throw、handler throw、custom-entry action failure；仅补齐 debug view 必需的 extensionId/source/phase/disposition。
 - [ ] 增加 debug view：loaded extensions、registered hooks、tool contributions、patches、diagnostics、stale state。
 - [x] 不引入独立 extension permission model；extension 共享 project trust 与 agent runtime policy，避免把 Pi-style extension authoring 做成重型 manifest/permission 开发。
 - [ ] 增加 `registerCommand()` MVP，并让 extension command 通过 orchestrator command/client 边界执行。

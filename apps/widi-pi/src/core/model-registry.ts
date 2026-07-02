@@ -8,21 +8,37 @@ import {
 	type Api,
 	type AssistantMessageEventStream,
 	type Context,
-	getModels,
-	getProviders,
-	type KnownProvider,
+	createModels,
+	createProvider,
 	type Model,
+	type Models,
+	type MutableModels,
 	type OAuthProviderInterface,
 	type OpenAICompletionsCompat,
 	type OpenAIResponsesCompat,
-	registerApiProvider,
-	resetApiProviders,
+	type Provider,
+	type ProviderAuth,
+	type ProviderHeaders,
+	type ProviderStreams,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
+import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
+import { azureOpenAIResponsesApi } from "@earendil-works/pi-ai/api/azure-openai-responses.lazy";
+import { bedrockConverseStreamApi } from "@earendil-works/pi-ai/api/bedrock-converse-stream.lazy";
+import { googleGenerativeAIApi } from "@earendil-works/pi-ai/api/google-generative-ai.lazy";
+import { googleVertexApi } from "@earendil-works/pi-ai/api/google-vertex.lazy";
+import { mistralConversationsApi } from "@earendil-works/pi-ai/api/mistral-conversations.lazy";
+import { openAICodexResponsesApi } from "@earendil-works/pi-ai/api/openai-codex-responses.lazy";
+import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
+import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import {
 	registerOAuthProvider,
 	resetOAuthProviders,
 } from "@earendil-works/pi-ai/oauth";
+import {
+	builtinProviders,
+	getBuiltinProviders,
+} from "@earendil-works/pi-ai/providers/all";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
@@ -227,7 +243,7 @@ export type ResolvedRequestAuth =
 	| {
 			ok: true;
 			apiKey?: string;
-			headers?: Record<string, string>;
+			headers?: ProviderHeaders;
 	  }
 	| {
 			ok: false;
@@ -257,6 +273,39 @@ function emptyCustomModelsResult(error?: string): CustomModelsResult {
 		modelOverrides: new Map(),
 		error,
 	};
+}
+
+function createApiStreams(api: Api): ProviderStreams {
+	switch (api) {
+		case "anthropic-messages":
+			return anthropicMessagesApi();
+		case "openai-completions":
+			return openAICompletionsApi();
+		case "openai-responses":
+			return openAIResponsesApi();
+		case "openai-codex-responses":
+			return openAICodexResponsesApi();
+		case "azure-openai-responses":
+			return azureOpenAIResponsesApi();
+		case "google-generative-ai":
+			return googleGenerativeAIApi();
+		case "google-vertex":
+			return googleVertexApi();
+		case "mistral-conversations":
+			return mistralConversationsApi();
+		case "bedrock-converse-stream":
+			return bedrockConverseStreamApi();
+		default:
+			throw new Error(`No API implementation registered for api: ${api}`);
+	}
+}
+
+function providerDisplayName(providerName: string): string {
+	return providerName
+		.split(/[-_]/g)
+		.filter(Boolean)
+		.map((part) => part[0]?.toUpperCase() + part.slice(1))
+		.join(" ");
 }
 
 function formatValidationPath(error: TLocalizedValidationError): string {
@@ -381,7 +430,7 @@ function applyModelOverride(
  * Model registry - loads built-in models, custom models, and request auth config.
  */
 export class ModelRegistry {
-	private models: Model<Api>[] = [];
+	private readonly runtime: MutableModels;
 	private readonly providerRequestConfigs: Map<string, ProviderRequestConfig> =
 		new Map();
 	private readonly modelRequestHeaders: Map<string, Record<string, string>> =
@@ -406,6 +455,15 @@ export class ModelRegistry {
 		this.authStorage = options.authStorage;
 		this.configValueResolver = options.configValueResolver;
 		this.modelsJsonPath = options.modelsJsonPath;
+		this.runtime = createModels({
+			authContext: {
+				env: async (name) => await this.configValueResolver.getEnv(name),
+				fileExists: async (path) => {
+					const result = await this.executionEnv.exists(path);
+					return result.ok ? result.value : false;
+				},
+			},
+		});
 	}
 
 	static async create(options: ModelRegistryOptions): Promise<ModelRegistry> {
@@ -454,8 +512,7 @@ export class ModelRegistry {
 		this.loadError = undefined;
 		this.loadDiagnostic = undefined;
 
-		// Dynamic API/OAuth providers are rebuilt from registeredProviders below.
-		resetApiProviders();
+		this.runtime.clearProviders();
 		resetOAuthProviders();
 
 		await this.loadModels();
@@ -488,7 +545,11 @@ export class ModelRegistry {
 	 * If models.json had errors, the registry still exposes built-in models.
 	 */
 	getAll(): Model<Api>[] {
-		return this.models;
+		return [...this.runtime.getModels()];
+	}
+
+	getRuntime(): Models {
+		return this.runtime;
 	}
 
 	/**
@@ -498,7 +559,7 @@ export class ModelRegistry {
 	 */
 	async getAvailable(): Promise<Model<Api>[]> {
 		const available: Model<Api>[] = [];
-		for (const model of this.models) {
+		for (const model of this.runtime.getModels()) {
 			if (await this.hasConfiguredAuth(model)) {
 				available.push(model);
 			}
@@ -510,9 +571,7 @@ export class ModelRegistry {
 	 * Find a model by provider and model id.
 	 */
 	find(provider: string, modelId: string): Model<Api> | undefined {
-		return this.models.find(
-			(model) => model.provider === provider && model.id === modelId,
-		);
+		return this.runtime.getModel(provider, modelId);
 	}
 
 	/**
@@ -521,16 +580,19 @@ export class ModelRegistry {
 	 * Auth can come from AuthStorage or from request auth declared in models.json.
 	 */
 	async hasConfiguredAuth(model: Model<Api>): Promise<boolean> {
-		const providerApiKey = this.providerRequestConfigs.get(
-			model.provider,
-		)?.apiKey;
-		return (
-			this.authStorage.hasAuth(model.provider) ||
-			(providerApiKey !== undefined &&
-				(await this.configValueResolver.isConfigValueConfigured(
-					providerApiKey,
-				)))
-		);
+		try {
+			return (await this.runtime.getAuth(model)) !== undefined;
+		} catch (error) {
+			this.recordModelDiagnostic(
+				createModelRequestDiagnostic(
+					"model.auth_resolution_failed",
+					error instanceof Error ? error.message : String(error),
+					model,
+					error,
+				),
+			);
+			return false;
+		}
 	}
 
 	/**
@@ -540,14 +602,25 @@ export class ModelRegistry {
 	 * !command config values share the same ExecutionEnv boundary as auth keys.
 	 */
 	async getApiKeyAndHeaders(model: Model<Api>): Promise<ResolvedRequestAuth> {
+		const apiKeyFromAuthStorage = await this.authStorage.getApiKey(
+			model.provider,
+			{ includeFallback: false },
+		);
+		return await this.resolveConfiguredRequestAuth(
+			model,
+			apiKeyFromAuthStorage,
+		);
+	}
+
+	private async resolveConfiguredRequestAuth(
+		model: Model<Api>,
+		baseApiKey?: string,
+		baseHeaders?: ProviderHeaders,
+	): Promise<ResolvedRequestAuth> {
 		try {
 			const providerConfig = this.providerRequestConfigs.get(model.provider);
-			const apiKeyFromAuthStorage = await this.authStorage.getApiKey(
-				model.provider,
-				{ includeFallback: false },
-			);
 			const apiKey =
-				apiKeyFromAuthStorage ??
+				baseApiKey ??
 				(providerConfig?.apiKey
 					? await this.configValueResolver.resolveConfigValueOrThrow(
 							providerConfig.apiKey,
@@ -567,9 +640,9 @@ export class ModelRegistry {
 				`model "${model.provider}/${model.id}"`,
 			);
 
-			let headers =
-				model.headers || providerHeaders || modelHeaders
-					? { ...model.headers, ...providerHeaders, ...modelHeaders }
+			let headers: ProviderHeaders | undefined =
+				baseHeaders || providerHeaders || modelHeaders
+					? { ...baseHeaders, ...providerHeaders, ...modelHeaders }
 					: undefined;
 
 			// Some providers expect the resolved API key as an Authorization header.
@@ -613,6 +686,26 @@ export class ModelRegistry {
 		const authStatus = this.authStorage.getAuthStatus(provider);
 		if (authStatus.source) {
 			return authStatus;
+		}
+
+		const [model] = this.runtime.getModels(provider);
+		if (model) {
+			try {
+				const result = await this.runtime.getAuth(model);
+				if (result?.source) {
+					return {
+						configured: true,
+						source:
+							result.source === "stored credential" ? "stored" : "environment",
+						label: result.source,
+					};
+				}
+				if (result) {
+					return { configured: true, source: "environment" };
+				}
+			} catch {
+				return authStatus;
+			}
 		}
 
 		const providerApiKey = this.providerRequestConfigs.get(provider)?.apiKey;
@@ -711,33 +804,25 @@ export class ModelRegistry {
 			// Keep built-in models available even if custom model loading fails.
 		}
 
-		const builtInModels = this.loadBuiltInModels(
-			providerOverrides,
-			modelOverrides,
-		);
-		let combined = this.mergeCustomModels(builtInModels, customModels);
-
-		// OAuth providers may alter model metadata once credentials are known.
-		for (const oauthProvider of this.authStorage.getOAuthProviders()) {
-			const cred = this.authStorage.get(oauthProvider.id);
-			if (cred?.type === "oauth" && oauthProvider.modifyModels) {
-				combined = oauthProvider.modifyModels(combined, cred);
-			}
-		}
-
-		this.models = combined;
+		this.loadBuiltInProviders(providerOverrides, modelOverrides, customModels);
 	}
 
-	private loadBuiltInModels(
+	private loadBuiltInProviders(
 		providerOverrides: Map<string, ProviderOverride>,
 		modelOverrides: Map<string, Map<string, ModelOverride>>,
-	): Model<Api>[] {
-		return getProviders().flatMap((provider) => {
-			const models = getModels(provider as KnownProvider) as Model<Api>[];
-			const providerOverride = providerOverrides.get(provider);
-			const perModelOverrides = modelOverrides.get(provider);
+		customModels: readonly Model<Api>[],
+	): void {
+		const customModelsByProvider = new Map<string, Model<Api>[]>();
+		for (const model of customModels) {
+			const models = customModelsByProvider.get(model.provider) ?? [];
+			models.push(model);
+			customModelsByProvider.set(model.provider, models);
+		}
 
-			return models.map((sourceModel) => {
+		for (const provider of builtinProviders()) {
+			const providerOverride = providerOverrides.get(provider.id);
+			const perModelOverrides = modelOverrides.get(provider.id);
+			const models = provider.getModels().map((sourceModel) => {
 				let model = sourceModel;
 
 				// Apply provider-level baseUrl/compat overrides from models.json.
@@ -757,28 +842,166 @@ export class ModelRegistry {
 
 				return model;
 			});
-		});
+
+			const mergedModels = this.mergeProviderModels(
+				models,
+				customModelsByProvider.get(provider.id) ?? [],
+			);
+			customModelsByProvider.delete(provider.id);
+			this.runtime.setProvider(
+				this.createConfiguredProvider(provider, mergedModels),
+			);
+		}
+
+		for (const [providerName, models] of customModelsByProvider.entries()) {
+			this.runtime.setProvider(this.createCustomProvider(providerName, models));
+		}
 	}
 
-	private mergeCustomModels(
-		builtInModels: Model<Api>[],
-		customModels: Model<Api>[],
+	private mergeProviderModels(
+		builtInModels: readonly Model<Api>[],
+		customModels: readonly Model<Api>[],
 	): Model<Api>[] {
 		const merged = [...builtInModels];
 		for (const customModel of customModels) {
 			const existingIndex = merged.findIndex(
-				(model) =>
-					model.provider === customModel.provider &&
-					model.id === customModel.id,
+				(model) => model.id === customModel.id,
 			);
-			if (existingIndex >= 0) {
-				// Custom models win when provider+id matches a built-in model.
-				merged[existingIndex] = customModel;
-			} else {
-				merged.push(customModel);
-			}
+			if (existingIndex >= 0) merged[existingIndex] = customModel;
+			else merged.push(customModel);
 		}
 		return merged;
+	}
+
+	private createConfiguredProvider(
+		provider: Provider,
+		models: readonly Model<Api>[],
+	): Provider {
+		return {
+			...provider,
+			auth: this.createProviderAuth(provider.id, provider.auth),
+			getModels: () => models,
+		};
+	}
+
+	private createCustomProvider(
+		providerName: string,
+		models: readonly Model<Api>[],
+	): Provider {
+		const apiStreams = new Map<Api, ProviderStreams>();
+		for (const model of models) {
+			if (!apiStreams.has(model.api)) {
+				apiStreams.set(model.api, createApiStreams(model.api));
+			}
+		}
+		const api =
+			apiStreams.size === 1
+				? [...apiStreams.values()][0]
+				: Object.fromEntries(apiStreams.entries());
+		return createProvider({
+			id: providerName,
+			name: providerDisplayName(providerName),
+			auth: this.createProviderAuth(providerName),
+			models,
+			api,
+		});
+	}
+
+	private createDynamicProvider(
+		providerName: string,
+		config: ProviderConfigInput,
+		models: readonly Model<Api>[],
+	): Provider {
+		const customStreamSimple = config.streamSimple;
+		const apiStreams = new Map<Api, ProviderStreams>();
+		for (const model of models) {
+			if (apiStreams.has(model.api)) continue;
+			apiStreams.set(
+				model.api,
+				customStreamSimple && model.api === config.api
+					? {
+							stream: (requestModel, context, options) =>
+								customStreamSimple(
+									requestModel,
+									context,
+									options as SimpleStreamOptions,
+								),
+							streamSimple: customStreamSimple,
+						}
+					: createApiStreams(model.api),
+			);
+		}
+		const api =
+			apiStreams.size === 1
+				? [...apiStreams.values()][0]
+				: Object.fromEntries(apiStreams.entries());
+		return createProvider({
+			id: providerName,
+			name: config.name ?? providerDisplayName(providerName),
+			auth: this.createProviderAuth(providerName),
+			models,
+			api,
+		});
+	}
+
+	private createProviderAuth(
+		providerName: string,
+		baseAuth?: ProviderAuth,
+	): ProviderAuth {
+		const baseApiKeyAuth = baseAuth?.apiKey;
+		return {
+			...baseAuth,
+			apiKey: {
+				name:
+					baseApiKeyAuth?.name ??
+					`${providerDisplayName(providerName)} API key`,
+				login: baseApiKeyAuth?.login,
+				resolve: async (input) => {
+					let baseResult:
+						| Awaited<
+								ReturnType<NonNullable<ProviderAuth["apiKey"]>["resolve"]>
+						  >
+						| undefined;
+					const storedApiKey = await this.authStorage.getApiKey(providerName, {
+						includeFallback: false,
+					});
+					if (storedApiKey) {
+						baseResult = baseApiKeyAuth
+							? await baseApiKeyAuth.resolve({
+									...input,
+									credential: { type: "api_key", key: storedApiKey },
+								})
+							: { auth: { apiKey: storedApiKey }, source: "stored credential" };
+					} else if (baseApiKeyAuth) {
+						baseResult = await baseApiKeyAuth.resolve(input);
+					}
+
+					const configuredAuth = await this.resolveConfiguredRequestAuth(
+						input.model as Model<Api>,
+						baseResult?.auth.apiKey,
+						baseResult?.auth.headers,
+					);
+					if (!configuredAuth.ok) {
+						throw new Error(configuredAuth.error);
+					}
+					if (
+						!configuredAuth.apiKey &&
+						!configuredAuth.headers &&
+						!baseResult?.auth.baseUrl
+					) {
+						return undefined;
+					}
+					return {
+						auth: {
+							apiKey: configuredAuth.apiKey,
+							headers: configuredAuth.headers,
+							baseUrl: baseResult?.auth.baseUrl,
+						},
+						source: baseResult?.source,
+					};
+				},
+			},
+		};
 	}
 
 	private async loadCustomModels(
@@ -877,7 +1100,7 @@ export class ModelRegistry {
 	}
 
 	private validateConfig(config: ModelsConfig): void {
-		const builtInProviders = new Set<string>(getProviders());
+		const builtInProviders = new Set<string>(getBuiltinProviders());
 
 		for (const [providerName, providerConfig] of Object.entries(
 			config.providers,
@@ -943,7 +1166,7 @@ export class ModelRegistry {
 
 	private parseModels(config: ModelsConfig): Model<Api>[] {
 		const models: Model<Api>[] = [];
-		const builtInProviders = new Set<string>(getProviders());
+		const builtInProviders = new Set<string>(getBuiltinProviders());
 		// Cache built-in defaults per provider; custom models often inherit api/baseUrl.
 		const builtInDefaultsCache = new Map<
 			string,
@@ -956,7 +1179,10 @@ export class ModelRegistry {
 			if (!builtInProviders.has(providerName)) return undefined;
 			const cached = builtInDefaultsCache.get(providerName);
 			if (cached) return cached;
-			const builtIn = getModels(providerName as KnownProvider) as Model<Api>[];
+			const builtIn =
+				builtinProviders()
+					.find((provider) => provider.id === providerName)
+					?.getModels() ?? [];
 			if (builtIn.length === 0) return undefined;
 			const defaults = { api: builtIn[0].api, baseUrl: builtIn[0].baseUrl };
 			builtInDefaultsCache.set(providerName, defaults);
@@ -1115,34 +1341,10 @@ export class ModelRegistry {
 			registerOAuthProvider({ ...config.oauth, id: providerName });
 		}
 
-		// Register a custom stream implementation for this provider's API shape.
-		if (config.streamSimple) {
-			const streamSimple = config.streamSimple;
-			if (!config.api) {
-				throw new Error(
-					`Provider ${providerName}: "api" is required when registering streamSimple.`,
-				);
-			}
-			registerApiProvider(
-				{
-					api: config.api,
-					stream: (model, context, options) =>
-						streamSimple(model, context, options as SimpleStreamOptions),
-					streamSimple,
-				},
-				`provider:${providerName}`,
-			);
-		}
-
 		this.storeProviderRequestConfig(providerName, config);
 
 		if (config.models && config.models.length > 0) {
-			// Full replacement: remove existing models for this provider.
-			this.models = this.models.filter(
-				(model) => model.provider !== providerName,
-			);
-
-			// Parse and add the dynamic provider's models.
+			const models: Model<Api>[] = [];
 			for (const modelDef of config.models) {
 				const api = modelDef.api || config.api;
 				const baseUrl = modelDef.baseUrl ?? config.baseUrl;
@@ -1153,7 +1355,7 @@ export class ModelRegistry {
 				}
 				this.storeModelHeaders(providerName, modelDef.id, modelDef.headers);
 
-				this.models.push({
+				models.push({
 					id: modelDef.id,
 					name: modelDef.name,
 					api: api as Api,
@@ -1170,19 +1372,30 @@ export class ModelRegistry {
 				} as Model<Api>);
 			}
 
-			// Apply OAuth model mutation when credentials are available.
 			if (config.oauth?.modifyModels) {
 				const cred = this.authStorage.get(providerName);
 				if (cred?.type === "oauth") {
-					this.models = config.oauth.modifyModels(this.models, cred);
+					this.runtime.setProvider(
+						this.createDynamicProvider(
+							providerName,
+							config,
+							config.oauth.modifyModels(models, cred),
+						),
+					);
+					return;
 				}
 			}
+			this.runtime.setProvider(
+				this.createDynamicProvider(providerName, config, models),
+			);
 		} else if (config.baseUrl || config.headers) {
-			// Override-only: update existing models; request headers resolve per request.
-			this.models = this.models.map((model) => {
-				if (model.provider !== providerName) return model;
-				return { ...model, baseUrl: config.baseUrl ?? model.baseUrl };
-			});
+			const provider = this.runtime.getProvider(providerName);
+			if (!provider) return;
+			const models = provider.getModels().map((model) => ({
+				...model,
+				baseUrl: config.baseUrl ?? model.baseUrl,
+			}));
+			this.runtime.setProvider(this.createConfiguredProvider(provider, models));
 		}
 	}
 

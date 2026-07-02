@@ -143,6 +143,7 @@ export interface ExtensionContextActions {
 	getSignal?(): AbortSignal | undefined;
 	isIdle?(): boolean;
 	session?: ExtensionSessionActions;
+	reportActionFailure?(failure: ExtensionActionFailure): Promise<void>;
 }
 
 export interface ExtensionCommandContextActions {
@@ -172,6 +173,19 @@ export interface ExtensionSessionActions {
 		extensionId: string,
 		type?: string,
 	): Promise<ExtensionCustomEntry<T>[]>;
+}
+
+export interface ExtensionActionFailure {
+	extensionId: string;
+	action:
+		| "dispatch"
+		| "findEntries"
+		| "requestHuman"
+		| "setAgentActiveTools"
+		| "setAgentTools"
+		| "appendEntry";
+	code: string;
+	error: unknown;
 }
 
 export interface ExtensionContext {

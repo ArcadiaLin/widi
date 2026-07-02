@@ -1,10 +1,10 @@
 import type {
 	ExecutionEnv,
-	ExecutionEnvExecOptions,
 	ExecutionError,
 	FileError,
 	FileInfo,
 	Result,
+	ShellExecOptions,
 } from "@earendil-works/pi-agent-core";
 import {
 	err,
@@ -47,7 +47,7 @@ class MemoryExecutionEnv implements ExecutionEnv {
 
 	async exec(
 		command: string,
-		_options?: ExecutionEnvExecOptions,
+		_options?: ShellExecOptions,
 	): Promise<
 		Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>
 	> {
