@@ -1194,6 +1194,20 @@ describe("AgentOrchestrator", () => {
 		expect(orchestrator.inspectAgent(extensionAgentId)).toMatchObject({
 			extensionIds: ["sample"],
 			extensions: [{ id: "sample", source: { kind: "factory" } }],
+			extensionSnapshot: {
+				extensionIds: ["sample"],
+				extensions: [{ id: "sample", source: { kind: "factory" } }],
+				hooks: [],
+				toolContributions: [
+					{
+						kind: "define",
+						extensionId: "sample",
+						toolName: "sampleTool",
+						source: { kind: "extension", id: "sample" },
+					},
+				],
+				stale: { stale: false },
+			},
 		});
 		expect(orchestrator.getAgentTools(plainAgentId)).toEqual({
 			toolNames: [],
@@ -1202,8 +1216,80 @@ describe("AgentOrchestrator", () => {
 		expect(orchestrator.inspectAgent(plainAgentId)).toMatchObject({
 			extensionIds: [],
 			extensions: [],
+			extensionSnapshot: {
+				extensionIds: [],
+				extensions: [],
+				hooks: [],
+				toolContributions: [],
+				stale: { stale: false },
+			},
 		});
 		expect(orchestrator.toolRegistry.resolve().toolNames).toEqual([]);
+	});
+
+	it("exposes extension hooks, tool contributions, and patch facts through inspect", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+			toolRegistry: createToolRegistry(createToolDefinition("base")),
+		});
+		orchestrator.registerExtensionFactory("sample", (api) => {
+			api.observe("tool_lifecycle_event", () => {});
+			api.intercept("context", (event) => ({ messages: event.messages }));
+			api.registerTool(createToolDefinition("sampleTool", "sample"));
+			api.patchTool("base", {
+				description: "patched base",
+				aroundExecute: async (next, toolCallId, params, context) =>
+					await next(toolCallId, params, context),
+			});
+		});
+
+		const { agentId } = await orchestrator.spawnAgentHarness();
+
+		expect(orchestrator.inspectAgent(agentId).extensionSnapshot).toEqual({
+			extensionIds: ["sample"],
+			extensions: [{ id: "sample", source: { kind: "factory" } }],
+			hooks: [
+				{
+					kind: "observe",
+					extensionId: "sample",
+					eventName: "tool_lifecycle_event",
+				},
+				{
+					kind: "intercept",
+					extensionId: "sample",
+					eventName: "context",
+				},
+			],
+			toolContributions: [
+				{
+					kind: "define",
+					extensionId: "sample",
+					toolName: "sampleTool",
+					source: { kind: "extension", id: "sample" },
+				},
+				{
+					kind: "patch",
+					extensionId: "sample",
+					targetToolName: "base",
+					patchedFields: ["description", "aroundExecute"],
+					source: { kind: "extension", id: "sample" },
+				},
+			],
+			stale: { stale: false },
+		});
 	});
 
 	it("normalizes extension ids and records loaded source facts", async () => {
@@ -1236,6 +1322,11 @@ describe("AgentOrchestrator", () => {
 		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
 			extensionIds: ["sample", "missing"],
 			extensions: [{ id: "sample", source: { kind: "factory" } }],
+			extensionSnapshot: {
+				extensionIds: ["sample", "missing"],
+				extensions: [{ id: "sample", source: { kind: "factory" } }],
+				stale: { stale: false },
+			},
 			extensionDiagnostics: [
 				expect.objectContaining({
 					code: "extension.factory_missing",
@@ -1354,7 +1445,35 @@ describe("AgentOrchestrator", () => {
 		expect(result.ok).toBe(true);
 		if (!result.ok) throw new Error("Expected reload to succeed.");
 		expect(result.value).toMatchObject({
-			agents: [{ agentId, status: "reloaded" }],
+			agents: [
+				{
+					agentId,
+					status: "reloaded",
+					before: {
+						extensionSnapshot: {
+							stale: {
+								stale: true,
+								message: "Extension runtime has been reloaded.",
+							},
+						},
+					},
+					after: {
+						extensionSnapshot: {
+							stale: { stale: false },
+							toolContributions: [
+								expect.objectContaining({
+									kind: "define",
+									toolName: "alpha",
+								}),
+								expect.objectContaining({
+									kind: "define",
+									toolName: "beta",
+								}),
+							],
+						},
+					},
+				},
+			],
 		});
 		expect(orchestrator.getAgentTools(agentId)).toEqual({
 			toolNames: ["alpha", "beta"],

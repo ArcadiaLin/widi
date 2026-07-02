@@ -42,6 +42,7 @@ import {
 	type ExtensionInterceptorResultFor,
 	ExtensionLoader,
 	ExtensionRunner,
+	type ExtensionRunnerSnapshot,
 	type ToolLifecycleEvent,
 } from "./extension/index.ts";
 import type { ModelRegistry } from "./model-registry.js";
@@ -201,6 +202,7 @@ export interface AgentRecordSnapshot {
 	readonly toolSnapshot?: AgentToolsSnapshot;
 	readonly extensionIds: readonly string[];
 	readonly extensions: readonly ExtensionIdentity[];
+	readonly extensionSnapshot: ExtensionRunnerSnapshot;
 	readonly resourceDiagnostics: readonly OrchestratorDiagnostic[];
 	readonly extensionDiagnostics: readonly OrchestratorDiagnostic[];
 	readonly diagnostics: readonly OrchestratorDiagnostic[];
@@ -1583,6 +1585,9 @@ export class AgentOrchestrator {
 			extensions: record.extensionRunner
 				? [...record.extensionRunner.extensions]
 				: [],
+			extensionSnapshot: record.extensionRunner
+				? record.extensionRunner.inspect()
+				: createEmptyExtensionSnapshot(),
 			resourceDiagnostics: [...record.resourceDiagnostics],
 			extensionDiagnostics: [...record.extensionDiagnostics],
 			diagnostics: [...record.diagnostics],
@@ -1793,13 +1798,19 @@ export class AgentOrchestrator {
 			record.diagnostics.push(...nextRunner.diagnostics);
 			this._setAgentToolSet(agentId, nextToolSet);
 			oldRunner?.invalidate("Extension runtime has been reloaded.");
+			const staleBefore = oldRunner
+				? {
+						...before,
+						extensionSnapshot: oldRunner.inspect(),
+					}
+				: before;
 			await this._publishDiagnostics(nextRunner.diagnostics);
 
 			return {
 				agentId,
 				status: "reloaded",
 				diagnostics: [...nextRunner.diagnostics],
-				before,
+				before: staleBefore,
 				after: this._snapshotAgentRecord(record),
 			};
 		} catch (error) {
@@ -2353,6 +2364,16 @@ function isBlockedExtensionDiagnostic(
 	return (
 		diagnostic.domain === "extension" && diagnostic.disposition === "blocked"
 	);
+}
+
+function createEmptyExtensionSnapshot(): ExtensionRunnerSnapshot {
+	return {
+		extensionIds: [],
+		extensions: [],
+		hooks: [],
+		toolContributions: [],
+		stale: { stale: false },
+	};
 }
 
 function domainFromDiagnosticCode(

@@ -9,6 +9,7 @@ import type { ToolRegistry } from "../tool-registry.ts";
 import type {
 	ExtensionIdentity,
 	ExtensionInterceptorRegistration,
+	ExtensionToolContribution,
 	LoadedExtensionScope,
 } from "./loader.ts";
 import type {
@@ -37,6 +38,52 @@ export interface ExtensionInterceptorRun<
 	result: ExtensionInterceptorResultFor<TName>;
 	diagnostics: readonly CoreDiagnostic[];
 }
+
+export type ExtensionHookSnapshot =
+	| {
+			kind: "observe";
+			extensionId: string;
+			eventName: ExtensionObservedEvent["type"];
+	  }
+	| {
+			kind: "intercept";
+			extensionId: string;
+			eventName: ExtensionInterceptorName;
+	  };
+
+export type ExtensionToolContributionSnapshot =
+	| {
+			kind: "define";
+			extensionId: string;
+			toolName: string;
+			source: ExtensionToolContribution["source"];
+	  }
+	| {
+			kind: "patch";
+			extensionId: string;
+			targetToolName: string;
+			patchedFields: readonly string[];
+			source: ExtensionToolContribution["source"];
+	  };
+
+export interface ExtensionRunnerSnapshot {
+	extensionIds: readonly string[];
+	extensions: readonly ExtensionIdentity[];
+	hooks: readonly ExtensionHookSnapshot[];
+	toolContributions: readonly ExtensionToolContributionSnapshot[];
+	stale: {
+		readonly stale: boolean;
+		readonly message?: string;
+	};
+}
+
+const patchInspectableFields = [
+	"description",
+	"parameters",
+	"strict",
+	"execute",
+	"aroundExecute",
+] as const;
 
 export class ExtensionRunner {
 	readonly agentId: string;
@@ -111,6 +158,58 @@ export class ExtensionRunner {
 		message = "This extension context is stale after runtime replacement or reload.",
 	): void {
 		this._staleMessage = message;
+	}
+
+	inspect(): ExtensionRunnerSnapshot {
+		const hooks: ExtensionHookSnapshot[] = [];
+		for (const handlers of this._loadedScope.observerHandlers.values()) {
+			for (const registration of handlers) {
+				hooks.push({
+					kind: "observe",
+					extensionId: registration.extensionId,
+					eventName: registration.eventName,
+				});
+			}
+		}
+		for (const handlers of this._loadedScope.interceptorHandlers.values()) {
+			for (const registration of handlers) {
+				hooks.push({
+					kind: "intercept",
+					extensionId: registration.extensionId,
+					eventName: registration.eventName,
+				});
+			}
+		}
+
+		return {
+			extensionIds: [...this.extensionIds],
+			extensions: [...this.extensions],
+			hooks,
+			toolContributions: this._loadedScope.toolContributions.map(
+				(contribution) => {
+					if (contribution.kind === "define") {
+						return {
+							kind: "define",
+							extensionId: contribution.extensionId,
+							toolName: contribution.definition.name,
+							source: contribution.source,
+						};
+					}
+					return {
+						kind: "patch",
+						extensionId: contribution.extensionId,
+						targetToolName: contribution.targetToolName,
+						patchedFields: patchInspectableFields.filter((field) =>
+							Object.hasOwn(contribution.patch, field),
+						),
+						source: contribution.source,
+					};
+				},
+			),
+			stale: this._staleMessage
+				? { stale: true, message: this._staleMessage }
+				: { stale: false },
+		};
 	}
 
 	contributeToolsTo(registry: ToolRegistry): void {

@@ -18,8 +18,11 @@ export {
 	JitiExtensionModuleImporter,
 } from "./module-importer.ts";
 export {
+	type ExtensionHookSnapshot,
 	ExtensionRunner,
 	type ExtensionRunnerOptions,
+	type ExtensionRunnerSnapshot,
+	type ExtensionToolContributionSnapshot,
 } from "./runner.ts";
 export type {
 	ExtensionActionFailure,
