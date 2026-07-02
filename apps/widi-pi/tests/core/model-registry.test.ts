@@ -21,6 +21,7 @@ import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
 class MemoryExecutionEnv implements ExecutionEnv {
 	cwd = "/workspace";
 	readonly files = new Map<string, string>();
+	readonly executedCommands: string[] = [];
 
 	async exists(path: string): Promise<Result<boolean, FileError>> {
 		return ok(this.files.has(path));
@@ -51,6 +52,7 @@ class MemoryExecutionEnv implements ExecutionEnv {
 	): Promise<
 		Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>
 	> {
+		this.executedCommands.push(command);
 		if (command === "token-command") {
 			return ok({ stdout: "command-token\n", stderr: "", exitCode: 0 });
 		}
@@ -223,11 +225,54 @@ describe("ModelRegistry", () => {
 		const model = registry.find("commanded", "model");
 		if (!model) throw new Error("Expected commanded model to resolve.");
 
+		await expect(registry.getAvailable()).resolves.toContain(model);
+		expect(env.executedCommands).toEqual([]);
+		await expect(registry.getProviderAuthStatus("commanded")).resolves.toEqual({
+			configured: true,
+			source: "models_json_command",
+		});
+		expect(env.executedCommands).toEqual([]);
 		await expect(registry.getApiKeyAndHeaders(model)).resolves.toEqual({
 			ok: true,
 			apiKey: "command-token",
 			headers: undefined,
 		});
+		expect(env.executedCommands).toEqual(["token-command"]);
+	});
+
+	it("passes stored OAuth credentials through Pi Models so provider toAuth can override request baseUrl", async () => {
+		const env = new MemoryExecutionEnv();
+		const configValueResolver = createResolver(env);
+		const authStorage = AuthStorage.inMemory(
+			{ configValueResolver },
+			{
+				"github-copilot": {
+					type: "oauth",
+					access: "proxy-ep=proxy.enterprise.example;",
+					refresh: "refresh",
+					expires: Date.now() + 60_000,
+				},
+			},
+		);
+		const registry = await ModelRegistry.create({
+			executionEnv: env,
+			authStorage,
+			configValueResolver,
+		});
+		const model = registry
+			.getAll()
+			.find((candidate) => candidate.provider === "github-copilot");
+		if (!model) throw new Error("Expected GitHub Copilot model to resolve.");
+
+		await expect(registry.getRuntime().getAuth(model)).resolves.toEqual(
+			expect.objectContaining({
+				auth: expect.objectContaining({
+					apiKey: "proxy-ep=proxy.enterprise.example;",
+					baseUrl: "https://api.enterprise.example",
+				}),
+				source: "OAuth",
+			}),
+		);
 	});
 
 	it("keeps built-in models and records load errors for invalid models.json", async () => {

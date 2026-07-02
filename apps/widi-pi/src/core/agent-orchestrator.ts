@@ -306,6 +306,9 @@ export class AgentOrchestrator {
 		this.sessionManager = config.sessionManager;
 		this.settingManager = config.settingManager;
 		this.modelRegistry = config.modelRegistry;
+		this.modelRegistry.setDiagnosticPublisher(
+			async (diagnostics) => await this._publishDiagnostics(diagnostics),
+		);
 		this.profileRegistry = config.profileRegistry;
 		this.toolRegistry = config.toolRegistry ?? new ToolRegistry();
 		this.extensionLoader = config.extensionLoader ?? new ExtensionLoader();

@@ -320,6 +320,39 @@ describe("AuthStorage", () => {
 		await storage.initialize();
 
 		await expect(storage.getApiKey("openai")).resolves.toBe("from-env");
+		await expect(storage.read("openai")).resolves.toEqual({
+			type: "api_key",
+			key: "from-env",
+		});
+	});
+
+	it("persists CredentialStore modify updates", async () => {
+		const env = new MemoryExecutionEnv();
+		const storage = AuthStorage.inMemory(
+			{ configValueResolver: createConfigValueResolver(env) },
+			{
+				test: {
+					type: "oauth",
+					access: "old",
+					refresh: "refresh",
+					expires: Date.now() - 1,
+				},
+			},
+		);
+		await storage.initialize();
+
+		await expect(
+			storage.modify("test", async (current) =>
+				current?.type === "oauth"
+					? { ...current, access: "new", expires: Date.now() + 1000 }
+					: undefined,
+			),
+		).resolves.toEqual(
+			expect.objectContaining({ type: "oauth", access: "new" }),
+		);
+		expect(storage.get("test")).toEqual(
+			expect.objectContaining({ type: "oauth", access: "new" }),
+		);
 	});
 
 	it("uses runtime API key overrides before stored credentials", async () => {
@@ -430,5 +463,34 @@ describe("AuthStorage", () => {
 		} finally {
 			unregisterOAuthProvider(providerId);
 		}
+	});
+
+	it("records OAuth refresh diagnostics from CredentialStore modify failures", async () => {
+		const env = new MemoryExecutionEnv();
+		const storage = AuthStorage.inMemory(
+			{ configValueResolver: createConfigValueResolver(env) },
+			{
+				test: {
+					type: "oauth",
+					access: "access",
+					refresh: "refresh",
+					expires: Date.now() - 1,
+				},
+			},
+		);
+		await storage.initialize();
+
+		await expect(
+			storage.modify("test", async () => {
+				throw new Error("refresh failed");
+			}),
+		).rejects.toThrow("refresh failed");
+		expect(storage.drainDiagnostics()).toContainEqual(
+			expect.objectContaining({
+				domain: "auth",
+				code: "auth.oauth_refresh_failed",
+				provider: "test",
+			}),
+		);
 	});
 });

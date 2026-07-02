@@ -6,6 +6,8 @@ import type { ExecutionEnv } from "@earendil-works/pi-agent-core";
 import {
 	type AnthropicMessagesCompat,
 	type Api,
+	type ApiStreamOptions,
+	type AssistantMessage,
 	type AssistantMessageEventStream,
 	type Context,
 	createModels,
@@ -251,6 +253,9 @@ export type ResolvedRequestAuth =
 	  };
 
 export type ModelDiagnostic = CoreDiagnostic;
+type DiagnosticPublisher = (
+	diagnostics: readonly ModelDiagnostic[],
+) => Promise<void> | void;
 
 interface CustomModelsResult {
 	models: Model<Api>[];
@@ -431,6 +436,7 @@ function applyModelOverride(
  */
 export class ModelRegistry {
 	private readonly runtime: MutableModels;
+	private readonly runtimeWithDiagnostics: Models;
 	private readonly providerRequestConfigs: Map<string, ProviderRequestConfig> =
 		new Map();
 	private readonly modelRequestHeaders: Map<string, Record<string, string>> =
@@ -440,6 +446,7 @@ export class ModelRegistry {
 	private loadError: string | undefined;
 	private loadDiagnostic: ModelDiagnostic | undefined;
 	private diagnostics: ModelDiagnostic[] = [];
+	private diagnosticPublisher: DiagnosticPublisher | undefined;
 	readonly authStorage: AuthStorage;
 	readonly configValueResolver: ConfigValueResolver;
 	private readonly executionEnv: ExecutionEnv;
@@ -456,6 +463,7 @@ export class ModelRegistry {
 		this.configValueResolver = options.configValueResolver;
 		this.modelsJsonPath = options.modelsJsonPath;
 		this.runtime = createModels({
+			credentials: this.authStorage,
 			authContext: {
 				env: async (name) => await this.configValueResolver.getEnv(name),
 				fileExists: async (path) => {
@@ -464,6 +472,12 @@ export class ModelRegistry {
 				},
 			},
 		});
+		this.runtimeWithDiagnostics = new DiagnosticPublishingModels(
+			this.runtime,
+			async () => {
+				await this.publishRuntimeDiagnostics();
+			},
+		);
 	}
 
 	static async create(options: ModelRegistryOptions): Promise<ModelRegistry> {
@@ -549,7 +563,11 @@ export class ModelRegistry {
 	}
 
 	getRuntime(): Models {
-		return this.runtime;
+		return this.runtimeWithDiagnostics;
+	}
+
+	setDiagnosticPublisher(publisher: DiagnosticPublisher | undefined): void {
+		this.diagnosticPublisher = publisher;
 	}
 
 	/**
@@ -580,6 +598,18 @@ export class ModelRegistry {
 	 * Auth can come from AuthStorage or from request auth declared in models.json.
 	 */
 	async hasConfiguredAuth(model: Model<Api>): Promise<boolean> {
+		if (this.authStorage.hasAuth(model.provider)) {
+			return true;
+		}
+		const providerApiKey = this.providerRequestConfigs.get(
+			model.provider,
+		)?.apiKey;
+		if (providerApiKey !== undefined) {
+			return await this.configValueResolver.isConfigValueConfigured(
+				providerApiKey,
+			);
+		}
+
 		try {
 			return (await this.runtime.getAuth(model)) !== undefined;
 		} catch (error) {
@@ -688,6 +718,29 @@ export class ModelRegistry {
 			return authStatus;
 		}
 
+		const providerApiKey = this.providerRequestConfigs.get(provider)?.apiKey;
+		if (providerApiKey) {
+			if (this.configValueResolver.isCommandConfigValue(providerApiKey)) {
+				return { configured: true, source: "models_json_command" };
+			}
+
+			const envVarNames =
+				this.configValueResolver.getConfigValueEnvVarNames(providerApiKey);
+			if (envVarNames.length > 0) {
+				return (await this.configValueResolver.isConfigValueConfigured(
+					providerApiKey,
+				))
+					? {
+							configured: true,
+							source: "environment",
+							label: envVarNames.join(", "),
+						}
+					: { configured: false };
+			}
+
+			return { configured: true, source: "models_json_key" };
+		}
+
 		const [model] = this.runtime.getModels(provider);
 		if (model) {
 			try {
@@ -708,30 +761,7 @@ export class ModelRegistry {
 			}
 		}
 
-		const providerApiKey = this.providerRequestConfigs.get(provider)?.apiKey;
-		if (!providerApiKey) {
-			return authStatus;
-		}
-
-		if (this.configValueResolver.isCommandConfigValue(providerApiKey)) {
-			return { configured: true, source: "models_json_command" };
-		}
-
-		const envVarNames =
-			this.configValueResolver.getConfigValueEnvVarNames(providerApiKey);
-		if (envVarNames.length > 0) {
-			return (await this.configValueResolver.isConfigValueConfigured(
-				providerApiKey,
-			))
-				? {
-						configured: true,
-						source: "environment",
-						label: envVarNames.join(", "),
-					}
-				: { configured: false };
-		}
-
-		return { configured: true, source: "models_json_key" };
+		return authStatus;
 	}
 
 	/**
@@ -962,18 +992,13 @@ export class ModelRegistry {
 								ReturnType<NonNullable<ProviderAuth["apiKey"]>["resolve"]>
 						  >
 						| undefined;
-					const storedApiKey = await this.authStorage.getApiKey(providerName, {
-						includeFallback: false,
-					});
-					if (storedApiKey) {
-						baseResult = baseApiKeyAuth
-							? await baseApiKeyAuth.resolve({
-									...input,
-									credential: { type: "api_key", key: storedApiKey },
-								})
-							: { auth: { apiKey: storedApiKey }, source: "stored credential" };
-					} else if (baseApiKeyAuth) {
+					if (baseApiKeyAuth) {
 						baseResult = await baseApiKeyAuth.resolve(input);
+					} else if (input.credential?.key) {
+						baseResult = {
+							auth: { apiKey: input.credential.key },
+							source: "stored credential",
+						};
 					}
 
 					const configuredAuth = await this.resolveConfiguredRequestAuth(
@@ -1401,6 +1426,113 @@ export class ModelRegistry {
 
 	private recordModelDiagnostic(diagnostic: ModelDiagnostic): void {
 		this.diagnostics.push(diagnostic);
+	}
+
+	private async publishRuntimeDiagnostics(): Promise<void> {
+		if (!this.diagnosticPublisher) {
+			return;
+		}
+		const diagnostics = [
+			...this.authStorage.drainDiagnostics(),
+			...this.drainDiagnostics(),
+		];
+		if (diagnostics.length > 0) {
+			await this.diagnosticPublisher(diagnostics);
+		}
+	}
+}
+
+class DiagnosticPublishingModels implements Models {
+	private readonly base: Models;
+	private readonly publishDiagnostics: () => Promise<void>;
+
+	constructor(base: Models, publishDiagnostics: () => Promise<void>) {
+		this.base = base;
+		this.publishDiagnostics = publishDiagnostics;
+	}
+
+	getProviders(): readonly Provider[] {
+		return this.base.getProviders();
+	}
+
+	getProvider(id: string): Provider | undefined {
+		return this.base.getProvider(id);
+	}
+
+	getModels(provider?: string): readonly Model<Api>[] {
+		return this.base.getModels(provider);
+	}
+
+	getModel(provider: string, id: string): Model<Api> | undefined {
+		return this.base.getModel(provider, id);
+	}
+
+	async refresh(provider?: string): Promise<void> {
+		try {
+			await this.base.refresh(provider);
+		} finally {
+			await this.publishDiagnostics();
+		}
+	}
+
+	async getAuth(model: Model<Api>) {
+		try {
+			return await this.base.getAuth(model);
+		} finally {
+			await this.publishDiagnostics();
+		}
+	}
+
+	stream<TApi extends Api>(
+		model: Model<TApi>,
+		context: Context,
+		options?: ApiStreamOptions<TApi>,
+	): AssistantMessageEventStream {
+		return this.watchStream(this.base.stream(model, context, options));
+	}
+
+	async complete<TApi extends Api>(
+		model: Model<TApi>,
+		context: Context,
+		options?: ApiStreamOptions<TApi>,
+	): Promise<AssistantMessage> {
+		try {
+			return await this.base.complete(model, context, options);
+		} finally {
+			await this.publishDiagnostics();
+		}
+	}
+
+	streamSimple(
+		model: Model<Api>,
+		context: Context,
+		options?: SimpleStreamOptions,
+	): AssistantMessageEventStream {
+		return this.watchStream(this.base.streamSimple(model, context, options));
+	}
+
+	async completeSimple(
+		model: Model<Api>,
+		context: Context,
+		options?: SimpleStreamOptions,
+	): Promise<AssistantMessage> {
+		try {
+			return await this.base.completeSimple(model, context, options);
+		} finally {
+			await this.publishDiagnostics();
+		}
+	}
+
+	private watchStream(
+		stream: AssistantMessageEventStream,
+	): AssistantMessageEventStream {
+		void stream
+			.result()
+			.finally(async () => {
+				await this.publishDiagnostics();
+			})
+			.catch(() => {});
+		return stream;
 	}
 }
 

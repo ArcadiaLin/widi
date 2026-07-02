@@ -9,9 +9,11 @@
 
 import type { ExecutionEnv } from "@earendil-works/pi-agent-core";
 import type {
+	CredentialStore,
 	OAuthCredentials,
 	OAuthLoginCallbacks,
 	OAuthProviderId,
+	Credential as PiCredential,
 } from "@earendil-works/pi-ai";
 import {
 	getOAuthApiKey,
@@ -172,7 +174,7 @@ export interface AuthStorageOptions {
 	configValueResolver: ConfigValueResolver;
 }
 
-export class AuthStorage {
+export class AuthStorage implements CredentialStore {
 	private data: AuthStorageData = {};
 	private readonly runtimeOverrides: Map<string, string> = new Map();
 	private fallbackResolver?: (provider: string) => string | undefined;
@@ -344,6 +346,81 @@ export class AuthStorage {
 	}
 
 	/**
+	 * CredentialStore read path used by Pi's Models runtime.
+	 *
+	 * Stored API key values may be WIDI config values, so request-time reads
+	 * expose the resolved key while keeping the persisted credential unchanged.
+	 */
+	async read(providerId: string): Promise<PiCredential | undefined> {
+		const runtimeKey = this.runtimeOverrides.get(providerId);
+		if (runtimeKey) {
+			return { type: "api_key", key: runtimeKey };
+		}
+		return await this.resolveCredentialForRead(this.data[providerId]);
+	}
+
+	/**
+	 * Serialized CredentialStore write path.
+	 *
+	 * Pi's Models runtime uses this for OAuth refresh, where the callback must
+	 * see the current raw credential and the returned credential must be
+	 * persisted atomically with that read.
+	 */
+	async modify(
+		providerId: string,
+		fn: (
+			current: PiCredential | undefined,
+		) => Promise<PiCredential | undefined>,
+	): Promise<PiCredential | undefined> {
+		let postCredential: AuthCredential | undefined;
+		let recordedFailure = false;
+		try {
+			await this.storage.withLockAsync(async (current) => {
+				const currentData = this.parseStorageData(current);
+				this.data = currentData;
+				this.loadError = null;
+				this.loadDiagnostic = undefined;
+
+				let nextCredential: PiCredential | undefined;
+				try {
+					nextCredential = await fn(currentData[providerId]);
+				} catch (error) {
+					if (currentData[providerId]?.type === "oauth") {
+						this.recordError(error, "auth.oauth_refresh_failed", providerId);
+						recordedFailure = true;
+					}
+					throw error;
+				}
+				if (nextCredential === undefined) {
+					postCredential = currentData[providerId];
+					return { result: postCredential };
+				}
+
+				const merged: AuthStorageData = {
+					...currentData,
+					[providerId]: nextCredential as AuthCredential,
+				};
+				this.data = merged;
+				postCredential = merged[providerId];
+				return {
+					result: postCredential,
+					next: JSON.stringify(merged, null, 2),
+				};
+			});
+		} catch (error) {
+			if (!recordedFailure) {
+				this.recordError(error, "auth.persist_failed", providerId);
+			}
+			throw error;
+		}
+		return postCredential;
+	}
+
+	async delete(providerId: string): Promise<void> {
+		await this.remove(providerId);
+	}
+
+	/**
 	 * List all providers with stored credentials.
 	 */
 	list(): string[] {
@@ -397,6 +474,18 @@ export class AuthStorage {
 	 */
 	getAll(): AuthStorageData {
 		return { ...this.data };
+	}
+
+	private async resolveCredentialForRead(
+		credential: AuthCredential | undefined,
+	): Promise<PiCredential | undefined> {
+		if (!credential || credential.type !== "api_key") {
+			return credential;
+		}
+		return {
+			...credential,
+			key: await this.configValueResolver.resolveConfigValue(credential.key),
+		};
 	}
 
 	drainErrors(): Error[] {
