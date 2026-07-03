@@ -6,13 +6,13 @@
 
 `widi-pi` 已经完成了 core runtime 的若干底座：profile registry、settings/auth/model registry、JSONL session adapter、orchestrator command/client/human-request、ToolRegistry、extension loader/runner MVP、observer/interceptor MVP、extension tool define/patch，以及 extension `custom` entry 的 session-local state MVP。
 
-项目仍处于“core demo 可跑，product harness 未完整”的阶段。主要缺口不是单点 API，而是 runtime composition、extension discovery/trust/reload、agent record、coding tools、debug view、runtime policy 和多 agent 协作语义尚未收口。
+项目仍处于“core demo 可跑，product harness 未完整”的阶段。主要缺口不是单点 API，而是 runtime composition、extension discovery/trust/reload、agent record、coding tools、debug view UI、runtime policy 和多 agent 协作语义尚未收口。
 
 ## 依赖主线
 
 1. Runtime composition 先把 settings、profile roots、resource roots、extension roots、model/auth、session root 和 default profile/model 接成一个稳定入口。
 2. Agent record 再替代 `Map<AgentId, AgentHarness>`，承载 status、profile/source、session metadata、resolved resources/tools/extensions 和 diagnostics。
-3. Extension loader/runner 基于 agent record 补齐 file/module loader、trust、reload、diagnostics 和 debug view。
+3. Extension loader/runner 基于 agent record 补齐 file/module loader、trust、reload、diagnostics 和 inspect facts；debug view UI 延后到产品层。
 4. Coding extension 在 extension 机制稳定后提供 read/write/edit/bash/grep/find/ls 等产品工具；core 不再把这些当成 primitive。
 5. Agent collaboration tools 通过 orchestrator command/helper 实现，所有 agent lifecycle、A2A、human request 和 diagnostics 仍经过 orchestrator。
 
@@ -47,7 +47,7 @@
 - [x] 接入 project trust gate；implicit project-local `.widi/extensions` 默认需要 trust，untrusted 时跳过并产生 diagnostic。
 - [x] 实现 reload：基于当前 extension roots 重新 discover/load extension，替换 eligible agent runner，旧 context stale，刷新 scoped tool registry；settings/trust/roots recomposition 留给 runtime reload。
 - [x] 桥接 extension errors 到 orchestrator diagnostic event：覆盖 missing、activation throw、handler throw、custom-entry action failure；仅补齐 debug view 必需的 extensionId/source/phase/disposition。
-- [ ] 增加 debug view：loaded extensions、registered hooks、tool contributions、patches、diagnostics、stale state。
+- [x] 增加 `agent.inspect` extension facts：loaded extensions、registered hooks、tool contributions、patches、diagnostics、stale state；不实现 debug view UI。
 - [x] 不引入独立 extension permission model；extension 共享 project trust 与 agent runtime policy，避免把 Pi-style extension authoring 做成重型 manifest/permission 开发。
 - [ ] 增加 `registerCommand()` MVP，并让 extension command 通过 orchestrator command/client 边界执行。
 - [ ] 设计 provider/resource contribution：extension 如何注册 provider、skills、prompt templates 或动态 resources。
@@ -78,7 +78,7 @@
 
 ## P1: Diagnostics And Debug
 
-- [ ] 增加 `agent.inspect` 或 debug command，展示 profile、resources、tools、active tools、extensions、session metadata、custom entries 摘要和 diagnostics。
+- [ ] 增加 debug view/UI 或 RPC presentation，基于现有 `agent.inspect` facts 展示 profile、resources、tools、active tools、extensions、session metadata、custom entries 摘要和 diagnostics。
 - [ ] 定义 resource diagnostics severity：explicit missing、default dir missing、parse failed、duplicate identity。
 - [ ] 将 resume 路径 diagnostics 测试补齐：profile missing/disabled、resource diagnostics、active tool missing、extension missing。
 - [ ] 标准化 extension diagnostic code：`extension.missing`、`extension.load_failed`、`extension.invalid_manifest`、`extension.version_incompatible`、`extension.permission_denied`、`extension.activation_failed`、`extension.handler_failed`。
