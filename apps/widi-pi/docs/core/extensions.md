@@ -2,7 +2,7 @@
 
 Extension 是 `widi-pi` 的高自由度扩展机制。它应能像 Pi coding-agent extension 一样深度参与 runtime，但不能绕过 core 的可观察边界。
 
-当前目标不是实现完整 extension runtime，而是把 extension loader/runner、Orchestrator 与 `ToolRegistry` 的边界整理清楚。第一版 loader 支持 Pi 风格的 activation + `registerTool`，runner 将当前 agent/profile 的 loaded scope 注入 scoped registry overlay。`ToolRegistry` 继续负责 source、diagnostics、patch、visibility、active tools 和最终 wrap-to-`AgentTool`。
+当前目标不是宣称 extension runtime 已经稳定，而是把 extension loader/runner、Orchestrator、Command 和 `ToolRegistry` 的边界整理清楚。当前 loader/runner 已支持 factory/file/module activation、project trust gate、reload、tool define/patch、command contribution、observer/interceptor、session custom entry 和 inspect facts。`ToolRegistry` 继续负责 source、diagnostics、patch、visibility、active tools 和最终 wrap-to-`AgentTool`。
 
 ## 核心理念
 
@@ -14,9 +14,9 @@ Extension 通过 hook 插入 core 能力。
 
 Orchestrator 执行每个关键能力时，都应有 extension 观察、拦截、补充或改写的机会。包括 agent lifecycle、profile/resource/tool 解析、command dispatch、client interaction、model/runtime 请求、diagnostics 和 adapter interaction。
 
-Extension hook permission 必须可描述。
+Extension hook 能力必须可描述。
 
-每个 hook 点应明确 extension 能 observe、intercept、mutate，还是 invoke controlled core capabilities。Extension 的自由度来自这些权限，而不是绕过 core state ownership。
+每个 hook 点应明确 extension 能 observe、intercept、mutate，还是 invoke controlled core capabilities。Extension 的自由度来自这些受控入口，而不是绕过 core state ownership。安全边界优先依赖 project trust、runtime policy 和受控 API。
 
 Extension 可以组合 core 能力。
 
@@ -32,13 +32,13 @@ Extension 不能直接拥有已存储 core state。
 
 Extension 可以拥有自己的 storage。
 
-Extension-owned storage 用于 extension/preset 的产品交互模式和多 session 组合。Core 可以提供路径、权限、diagnostics、lifecycle hook 或 capability API，但不解释其中的数据模型。
+Extension-owned storage 用于 extension/preset 的产品交互模式和多 session 组合。Core 可以提供路径、diagnostics、lifecycle hook 或 capability API，但不解释其中的数据模型。
 
 Custom entry 是 extension-owned 恢复通道。
 
 Extension-owned storage 之外，当前 MVP 已在 runtime context 暴露 `ctx.session.appendEntry()` / `ctx.session.findEntries()`，用于写入和当前 session tree 强相关的小型 extension state。Core 不提供共享 state layer，也不解释 `custom` entry 的 data shape。
 
-当前 MVP 只支持 namespaced `custom` entry：extension 传入 local type，core 落库为 `extension:<extensionId>:<localType>`，读取时返回 local type。读取范围是 current branch path，返回 root-to-leaf 顺序；写入是 append-only，不提供 delete/update。`custom_message`、触发 turn、进入 LLM context、UI/RPC 展示、fork/compaction/export/debug policy 仍待定义。
+当前 MVP 只支持 namespaced `custom` entry：extension 传入 local type，core 落库为 `extension:<extensionId>:<localType>`，读取时返回 local type。读取范围是 current branch path，返回 root-to-leaf 顺序；写入是 append-only，不提供 delete/update。`custom_message`、触发 turn、进入 LLM context、UI/RPC 展示、fork/compaction/export policy 仍待定义。
 
 这层能力用于“当前 session 可恢复 extension 状态”，不是 extension 私有数据库。大型 artifact、多 session index、产品模式状态仍属于 extension-owned storage。WIDI-owned tools 的可恢复数据走 Pi tool call arguments、tool result `content` 和 typed `details`。
 
@@ -56,13 +56,12 @@ Extension 不拥有 core tool 状态接口。Core 不提供共享的 tool previe
 
 当前 `ToolRegistry` 已支持 `defineTool(tool, source)` 与 `patchTool(targetToolName, patch, source)`。Extension loader/runner 的职责是把 extension declaration 激活为当前 agent/profile 的 loaded scope，再由 Orchestrator 在 resolve 边界把该 scope 写入 scoped registry overlay；registry 不直接加载 extension、不执行 activation hook，也不决定 missing extension policy。
 
-Patch 执行时的 `context.extension` 按当前 patch source 绑定；调用 `next()` 时会恢复内层 tool source 的 context。这样 extension 可以安全地在 `aroundExecute` 中使用自己的权限、storage 和 diagnostics 上下文，同时不会把自身身份泄漏到 core/base execute。
+Patch 执行时的 `context.extension` 按当前 patch source 绑定；调用 `next()` 时会恢复内层 tool source 的 context。这样 extension 可以在 `aroundExecute` 中使用自己的 context、storage 和 diagnostics 上下文，同时不会把自身身份泄漏到 core/base execute。
 
 需要继续设计的细节：
 
-- extension patch 是否需要 permission，例如能否替换 execute、能否只允许 `aroundExecute`。
 - 多个 extension patch 同一字段时，只按注册顺序决定最终值；extension loader 需要让加载顺序可解释、可诊断。
-- patch 失败、restore 失败、permission denied 应如何进入统一 diagnostic。
+- patch 失败、restore 失败或 runtime action 失败应如何进入统一 diagnostic。
 
 Extension 可以实现 tool tracking。
 
@@ -72,17 +71,21 @@ Tool tracking 不进入 core primitive。它应作为 extension pattern：通过
 
 ## 当前实现
 
-当前实现是 Orchestrator-owned extension runner MVP，不是完整第三方扩展系统：
+当前实现是 Orchestrator-owned extension runner MVP，可用于内部/product extension 验证，但还不是稳定第三方扩展系统：
 
 - `ExtensionLoader` 支持内存 factory registry：`registerExtensionFactory(extensionId, factory)`。
-- `loadForAgent()` 按当前 agent/profile 的 `profile.extensions` 激活 scope，并处理 missing factory / activation diagnostics。
-- Activation API 支持 `registerTool()`、`patchTool()`、`observe()` 和 `intercept()`。
+- `ExtensionLoader.discover()` / module importer 支持 direct file、directory index、轻量 `package.json` entry、jiti import、cache busting、id conflict diagnostics 和 project trust gate。
+- `loadForAgent()` 按当前 agent/profile 的 `profile.extensions` 激活 scope，并处理 missing、load failed、activation failed 和 id/source diagnostics。
+- Runtime reload 已能重新 discover/load extension catalog，并替换 eligible agent runner；旧 context 会被标记 stale。
+- Activation API 支持 `registerTool()`、`patchTool()`、`registerCommand()`、`observe()` 和 `intercept()`。
 - `ExtensionRunner` 将 loaded scope 贡献到当前 agent 的 scoped `ToolRegistry` overlay，不污染 global registry。
+- Extension command 通过 UI-neutral `inputInvoke` 注册，当前由 `agent.input` 解析并执行 handler。
 - Orchestrator 已将 `before_agent_start`、`context`、`tool_call`、`tool_result` 四个 harness hook 桥接到 interceptors。
 - Orchestrator 已将 raw `agent_harness_event` 和归一化 `tool_lifecycle_event` 桥接到 observers；observer error 变成 `extension.handler_failed` diagnostic。
 - Runner 使用 lazy context：`bindCore()` / `bindCommandContext()` 后，handler 通过 `createContext()` / `createCommandContext()` 获取 actions、human request、dispatch、tool mutation 和 session custom entry facade。
+- `agent.inspect` 已能暴露 loaded extensions、registered hooks、commands、tool contributions、patches、diagnostics 和 stale state。
 
-这些能力足够验证 ToolRegistry、hook、diagnostics 和 session custom entry 的主路径，但还不足以交付真实用户 extension：缺少 file/module discovery、trust gate、reload、permission、version/compatibility、commands/provider/resources registration、debug view 和完整 UI/RPC adapter。
+这些能力足够验证 ToolRegistry、hook、diagnostics、reload、input command 和 session custom entry 的主路径。仍不足以作为稳定第三方 extension surface：provider/resource registration、更多 hook matrix、extension-owned storage、product presentation 和完整 RPC adapter 尚未收口。
 
 ## Pi Extension 对比
 
@@ -114,28 +117,25 @@ WIDI 的当前形态更偏 core-first：
 已具备：
 
 - Tool definition/patch 的稳定 core API，不再暴露 contribution DSL 或 priority。
-- Tool source provenance，可用于 diagnostics、debug view 和未来 extension context。
+- Tool source provenance，可用于 diagnostics、inspect facts 和未来 extension context。
 - Patch composition、`aroundExecute` context 绑定、human request 和 execution env adapter。
 - Tool lifecycle facts，可供 UI 和未来 extension host 观察 tool call/run。
 - CoreDiagnostic 管道已能承载 tool/profile/model/session 等模块的结构化问题。
-- 内存 factory loader、observer/interceptor MVP、scoped registry overlay 和 session custom entry MVP。
+- 内存 factory loader、file/module loader、project trust gate、reload、observer/interceptor MVP、extension input command MVP、scoped registry overlay、inspect facts 和 session custom entry MVP。
 
 仍缺：
 
-- Extension declaration、identity、version/compatibility、source metadata 和 missing policy。
-- Extension loader：路径/package 解析、trust gate、activation、reload、error isolation。
-- Extension API：已具备 `registerTool`、activation-time `patchTool`、`observe` 和 MVP `intercept`；后续仍需设计 `registerCommand`、resource/provider registration 等入口。
-- Hook event matrix：已落地 observer 与四个 MVP interceptor；provider/session hook、mutate 权限、更多返回值合成和 permission 仍需继续设计。
-- Extension-owned storage；session `custom` entry 已有 MVP，但 fork/compaction/export/debug/custom_message policy 未定义。
-- Permission model：尤其是 patch `execute` replacement、filesystem/shell/model/session/orchestrator capability。
-- Debug/inspection command：查看 loaded extensions、registered hooks、resolved tools、patches、diagnostics。
+- Extension API：已具备 `registerTool`、activation-time `patchTool`、`registerCommand`、`observe` 和 MVP `intercept`；后续仍需设计 resource/provider registration 等入口。
+- Hook event matrix：已落地 observer 与四个 MVP interceptor；provider/session hook、mutate 行为和更多返回值合成仍需继续设计。
+- Extension-owned storage；session `custom` entry 已有 MVP，但 fork/compaction/export/custom_message policy 未定义。
+- Product presentation：`agent.inspect` 已有 facts，但还没有产品级 UI/RPC 呈现。
 
-下一步应继续加固 loader/runner：通过 diagnostics/debug view 展示 extension activation、registered hooks、defined tools、patches、resolved tools 和 custom entries。真实 file/module loader、trust/reload、permission、command/provider/resource registration 稳定后，再把 coding extension 或 team/flow/goal extension 作为 product surface。
+下一步应继续加固 hook matrix、provider/resource registration、extension-owned storage 和 product presentation。等这些边界稳定后，再把 coding extension 或 team/flow/goal extension 作为 product surface。
 
 ## 非职责
 
 - 不私有维护 agent lifecycle。
-- 不私有维护 A2A 通信。
+- 不私有维护跨 agent 通信。
 - 不直接修改持久 profile/session 文件。
 - 不把 extension runtime state 当作可恢复 core state。
 - 不把 extension-owned storage 升格为 core persisted state。
@@ -144,4 +144,4 @@ WIDI 的当前形态更偏 core-first：
 
 ## TODO
 
-Extension 后续任务集中维护在 [WIDI 下一阶段 TODO](../TODO.md)。本文件只保留 extension 机制边界、当前能力和与 Pi coding-agent 的差异。
+Extension 后续任务集中维护在 [WIDI 下一阶段 TODO](../TODO.md)。模块执行顺序见 [Runtime Lifecycle](./runtime-lifecycle.md)。本文件只保留 extension 机制边界、当前能力和与 Pi coding-agent 的差异。

@@ -22,7 +22,7 @@ Diagnostics 应贯穿 runtime。
 
 - Profile diagnostics：profile 文件、schema、metadata、fallback、override。
 - Dependency diagnostics：resources、extensions、tools、models 的解析问题。
-- Runtime diagnostics：extension activation、tool execution policy、auth/runtime permission、client delivery。
+- Runtime diagnostics：extension activation、tool execution policy、auth/runtime boundary、client delivery。
 
 Diagnostic code 应带 namespace。
 
@@ -193,9 +193,7 @@ Extension diagnostics 应预留独立 namespace：
 
 - `extension.missing`
 - `extension.load_failed`
-- `extension.invalid_manifest`
 - `extension.version_incompatible`
-- `extension.permission_denied`
 - `extension.activation_failed`
 - `extension.timeout`
 - `extension.runtime`

@@ -23,7 +23,7 @@
 5. resume 时按 metadata 中的 profile id 调用 registry；找不到、禁用、重复或无效时结构化失败，不 fallback。
 6. 构建 harness 时用 `profile.skills`、`profile.promptTemplates`、`profile.systemPrompt`。
 
-这说明 orchestrator 已经接入第一版 profile registry contract。Profile、resource、model/auth、tool registry、command/human-request 和 extension loader/runner MVP diagnostics 已经通过 orchestrator `diagnostic` event 统一发布；真实 extension discovery、trust、reload、permission 和 debug view 仍未完成。
+这说明 orchestrator 已经接入第一版 profile registry contract。Profile、resource、model/auth、tool registry、command/human-request 和 extension loader/runner diagnostics 已经通过 orchestrator `diagnostic` event 统一发布；extension discovery、trust、reload 和 inspect facts 已经落地，provider/resource contribution 与产品级 presentation 仍未完成。
 
 ## 主要缺漏
 
@@ -57,21 +57,19 @@
 
 ### Extensions
 
-`AgentProfile.extensions` 已声明 profile 需要的 extension。当前 lifecycle 是内存 factory MVP：
+`AgentProfile.extensions` 已声明 profile 需要的 extension。当前 lifecycle 已从内存 factory MVP 扩展到 file/module loader：
 
-- `ExtensionLoader` 根据 `profile.extensions` 从内存 factory registry 解析 extension。
+- `ExtensionLoader` 根据 `profile.extensions` 从内存 factory registry 或 discovered file/module catalog 解析 extension。
 - `missingExtensionSeverity` 已用于 missing factory diagnostic 的 severity；`ignore` 不发诊断，`warning`/`error` 继续创建 harness 并报告 degraded diagnostic。
 - activation 失败会产生 `extension.activation_failed`，observer handler 失败会产生 `extension.handler_failed`。
-- `ExtensionRunner` 将 loaded scope 作为当前 agent 的 scoped registry overlay，支持 activation-time `registerTool` / `patchTool`。
+- `ExtensionRunner` 将 loaded scope 作为当前 agent 的 scoped registry overlay，支持 activation-time `registerTool` / `patchTool` / `registerCommand`。
 - runtime context 已提供 actions、human request、dispatch、tool mutation，以及 `ctx.session` custom entry facade。
+- reload 已支持替换 eligible agent runner，旧 context 会变成 stale。
 
 仍缺：
 
-- 真实 file/module loader、extension source metadata、version/compatibility。
-- trust gate、reload、stale context 生命周期管理的完整产品路径。
-- permission model：patch execute、filesystem/shell/model/session/orchestrator capability。
-- extension commands、provider/resource contribution 和更完整 hook matrix。
-- debug view：loaded extensions、hooks、tool contributions、patches、diagnostics、custom entries。
+- provider/resource contribution 和更完整 hook matrix。
+- extension-owned storage 与产品级 presentation。
 - session metadata 暂时不保存 extension runtime 状态。已保存的 extension custom entries 属于 Pi session body 的 append-only entries，不是 extension instance snapshot。
 
 推荐先把 `extensions` 视为 profile 的声明式依赖列表，而不是已激活 extension 实例。缺失等级只影响启动策略，不应该改变 profile schema。

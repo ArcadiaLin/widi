@@ -8,12 +8,11 @@
 
 - `TODO`：当前阶段集中 TODO 链，位于 [`../TODO.md`](../TODO.md)。
 - `orchestrator`：multi-agent runtime coordinator。
-- `orchestrator commands`：agent、human、extension、external transport 进入 orchestrator 的操作入口和 client fanout 语义。
+- `runtime lifecycle`：runtime 模块顺序、agent 创建/恢复、事件传递、extension 执行点和持久化边界。
 - `command experiment`：实验性的可选 command runtime 设计。
 - `extensions`：通过 hook 插入 core 能力的扩展系统。
 - `profiles and resources`：声明式 agent 配置与依赖解析。
 - `tools and capabilities`：tool 可见性、能力声明、registry patch、lifecycle event 与 runtime policy。
-- `tools and extensions refactor`：extension loader/runner、Orchestrator 与 ToolRegistry 接合的重构草案。
 - `diagnostics`：profile、dependency、runtime 问题的结构化输出。
 - `sessions and runtime`：Pi session、ExecutionEnv、model/auth 的边界。
 - `settings runtime`：global/project settings、trust gate、runtime overrides 与配置持久化边界。

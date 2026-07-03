@@ -25,7 +25,7 @@ Command 的意义是提供一个更可描述的中间层：
 - `Command.listInputCommands()` 输出 client/debug 可消费的 UI-neutral visible command facts。
 - extension 通过 `registerCommand()` 贡献 `inputInvoke` 和 handler。
 
-`AgentOrchestrator.dispatch()` 仍负责 command lifecycle event：`command_accepted`、`command_completed`、`command_rejected`。Command 不拥有 client fanout，不替代 harness queue，也不持久化 command log。
+`AgentOrchestrator.dispatch()` 仍负责 command lifecycle event：`command_accepted`、`command_completed`、`command_rejected`。Command 不拥有 client fanout，不替代 harness queue，也不持久化 command log。事件传递顺序见 [Runtime Lifecycle](./runtime-lifecycle.md)。
 
 ## Experimental Boundaries
 

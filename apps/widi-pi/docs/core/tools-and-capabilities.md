@@ -89,7 +89,7 @@ Tool tracking 也属于这种轻量 wrapper 场景。它不应进入 core tool d
 
 WIDI core 不持有 tool preview 或状态。Tool definition 只描述可执行工具，ToolRegistry 只负责 registration resolve、patch、diagnostics，以及显式 `ToolDefinition -> AgentTool` wrap。
 
-Orchestrator 是当前 runtime event hub。它保留两条事件轨道：
+Orchestrator 是当前 runtime event hub。它保留两条事件轨道；完整传递顺序见 [Runtime Lifecycle](./runtime-lifecycle.md)。
 
 - `agent_harness_event` 原样透传 Pi `AgentHarnessEvent`，用于调试、日志和未来兼容。
 - `tool_lifecycle_event` 发布 WIDI 归一化的 tool-call facts，供 UI 和 extension runner 稳定消费。
@@ -130,4 +130,4 @@ Tool tracking、审计和 checkpoint 更适合作为 extension pattern：用 `ar
 
 ## TODO
 
-Tool/capability 后续任务集中维护在 [WIDI 下一阶段 TODO](../TODO.md)。本文件只保留 ToolRegistry、visibility、lifecycle event 和 persistence 边界。
+Tool/capability 后续任务集中维护在 [WIDI 下一阶段 TODO](../TODO.md)。本文件只保留 ToolRegistry、visibility、tool lifecycle facts 和 persistence 边界。
