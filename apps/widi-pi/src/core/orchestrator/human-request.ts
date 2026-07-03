@@ -1,4 +1,4 @@
-import type { OperationSource } from "./commands.ts";
+import type { OperationSource } from "../command/index.ts";
 
 export type HumanRequestKind = "confirm" | "select" | "input" | "custom";
 

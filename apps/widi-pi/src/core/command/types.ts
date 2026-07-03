@@ -15,7 +15,10 @@ import type {
 } from "../agent-orchestrator.ts";
 import type { OrchestratorDiagnostic } from "../diagnostics.ts";
 import type { ExtensionIdentity } from "../extension/index.ts";
-import type { HumanRequestDraft, HumanResponse } from "./human-request.ts";
+import type {
+	HumanRequestDraft,
+	HumanResponse,
+} from "../orchestrator/human-request.ts";
 
 export type RuntimeModel = Model<Api>;
 
@@ -49,38 +52,6 @@ export interface InputCommandInfo {
 	readonly inputInvoke: CommandInputInvoke;
 	readonly source: InputCommandSource;
 }
-
-export const builtinInputCommands = [
-	{
-		kind: "agent.abort",
-		inputInvoke: {
-			name: "abort",
-			description: "Abort the current agent run.",
-		},
-	},
-	{
-		kind: "agent.compact",
-		inputInvoke: {
-			name: "compact",
-			description: "Compact the current agent session.",
-			argumentHint: "[instructions]",
-		},
-	},
-	{
-		kind: "agent.inspect",
-		inputInvoke: {
-			name: "inspect",
-			description: "Inspect the current agent runtime facts.",
-		},
-	},
-	{
-		kind: "extension.reload",
-		inputInvoke: {
-			name: "reload",
-			description: "Reload extensions for the current agent.",
-		},
-	},
-] as const satisfies readonly BuiltinInputCommandDefinition[];
 
 export type ExtensionReloadAgentStatus = "reloaded" | "skipped" | "failed";
 
@@ -117,50 +88,50 @@ export type OperationSource =
 	| { kind: "system" }
 	| { kind: "external"; id: string };
 
-interface OrchestratorCommandBase {
+interface CommandBase {
 	id?: string;
 	source: OperationSource;
 }
 
-export type OrchestratorCommand =
-	| (OrchestratorCommandBase & {
+export type CommandRequest =
+	| (CommandBase & {
 			kind: "agent.input";
 			agentId: string;
 			text: string;
 			images?: ImageContent[];
 			inputInvoke?: boolean;
 	  })
-	| (OrchestratorCommandBase & {
+	| (CommandBase & {
 			kind: "agent.prompt";
 			agentId: string;
 			text: string;
 			images?: ImageContent[];
 	  })
-	| (OrchestratorCommandBase & {
+	| (CommandBase & {
 			kind: "agent.steer";
 			agentId: string;
 			text: string;
 			images?: ImageContent[];
 	  })
-	| (OrchestratorCommandBase & {
+	| (CommandBase & {
 			kind: "agent.followUp";
 			agentId: string;
 			text: string;
 			images?: ImageContent[];
 	  })
-	| (OrchestratorCommandBase & {
+	| (CommandBase & {
 			kind: "agent.nextTurn";
 			agentId: string;
 			text: string;
 			images?: ImageContent[];
 	  })
-	| (OrchestratorCommandBase & { kind: "agent.abort"; agentId: string })
-	| (OrchestratorCommandBase & {
+	| (CommandBase & { kind: "agent.abort"; agentId: string })
+	| (CommandBase & {
 			kind: "agent.compact";
 			agentId: string;
 			customInstructions?: string;
 	  })
-	| (OrchestratorCommandBase & {
+	| (CommandBase & {
 			kind: "agent.navigateTree";
 			agentId: string;
 			targetId: string;
@@ -169,49 +140,49 @@ export type OrchestratorCommand =
 			replaceInstructions?: boolean;
 			label?: string;
 	  })
-	| (OrchestratorCommandBase & { kind: "agent.getModel"; agentId: string })
-	| (OrchestratorCommandBase & {
+	| (CommandBase & { kind: "agent.getModel"; agentId: string })
+	| (CommandBase & {
 			kind: "agent.setModel";
 			agentId: string;
 			model: RuntimeModel;
 	  })
-	| (OrchestratorCommandBase & { kind: "agent.getTools"; agentId: string })
-	| (OrchestratorCommandBase & {
+	| (CommandBase & { kind: "agent.getTools"; agentId: string })
+	| (CommandBase & {
 			kind: "agent.setTools";
 			agentId: string;
 			toolNames: string[];
 			activeToolNames?: string[];
 	  })
-	| (OrchestratorCommandBase & {
+	| (CommandBase & {
 			kind: "agent.getActiveTools";
 			agentId: string;
 	  })
-	| (OrchestratorCommandBase & {
+	| (CommandBase & {
 			kind: "agent.getInputCommands";
 			agentId: string;
 	  })
-	| (OrchestratorCommandBase & {
+	| (CommandBase & {
 			kind: "agent.setActiveTools";
 			agentId: string;
 			toolNames: string[];
 	  })
-	| (OrchestratorCommandBase & { kind: "agent.getStatus"; agentId: string })
-	| (OrchestratorCommandBase & { kind: "agent.inspect"; agentId: string })
-	| (OrchestratorCommandBase & {
+	| (CommandBase & { kind: "agent.getStatus"; agentId: string })
+	| (CommandBase & { kind: "agent.inspect"; agentId: string })
+	| (CommandBase & {
 			kind: "agent.dispose";
 			agentId: string;
 			reason?: string;
 	  })
-	| (OrchestratorCommandBase & {
+	| (CommandBase & {
 			kind: "extension.reload";
 			agentIds?: readonly string[];
 	  })
-	| (OrchestratorCommandBase & {
+	| (CommandBase & {
 			kind: "human.request";
 			request: HumanRequestDraft;
 	  });
 
-export type OrchestratorCommandValue =
+export type CommandValue =
 	| AssistantMessage
 	| AbortResult
 	| CompactResult
@@ -226,6 +197,10 @@ export type OrchestratorCommandValue =
 	| HumanResponse
 	| undefined;
 
-export type OrchestratorCommandResult =
-	| { ok: true; commandId: string; value: OrchestratorCommandValue }
+export type CommandResult =
+	| { ok: true; commandId: string; value: CommandValue }
 	| { ok: false; commandId: string; diagnostic: OrchestratorDiagnostic };
+
+export type OrchestratorCommand = CommandRequest;
+export type OrchestratorCommandValue = CommandValue;
+export type OrchestratorCommandResult = CommandResult;

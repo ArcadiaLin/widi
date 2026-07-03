@@ -21,6 +21,7 @@ import {
 	type ProfileStorageReadResult,
 } from "./agent-profile.js";
 import { AuthStorage } from "./auth-storage.js";
+import { Command, type RuntimeModel } from "./command/index.ts";
 import {
 	DEFAULT_AGENT_DIR,
 	DEFAULT_AGENT_PERSISTENCE_DIR,
@@ -39,7 +40,6 @@ import {
 	type ExtensionRoot,
 } from "./extension/index.ts";
 import { ModelRegistry } from "./model-registry.js";
-import type { RuntimeModel } from "./orchestrator/commands.js";
 import {
 	createProjectExtensionTrustDiagnostics,
 	type ProjectTrustResolution,
@@ -122,10 +122,12 @@ export interface WidiRuntimeServices {
 	readonly sessionManager: SessionManager;
 	readonly toolRegistry: ToolRegistry;
 	readonly extensionLoader: ExtensionLoader;
+	readonly command: Command;
 }
 
 export interface WidiRuntime {
 	readonly services: WidiRuntimeServices;
+	readonly command: Command;
 	readonly orchestrator: AgentOrchestrator;
 	readonly diagnostics: readonly CoreDiagnostic[];
 }
@@ -672,6 +674,23 @@ export async function createWidiRuntime(
 		await extensionLoader.loadAvailableExtensions(executionEnv);
 	const extensionDiscovery = extensionLoad.discovery;
 	const toolRegistry = options.toolRegistry ?? new ToolRegistry();
+	const orchestratorConfig: AgentOrchestratorConfigs = {
+		executionEnv,
+		resourceLoader,
+		sessionManager,
+		settingManager,
+		modelRegistry,
+		profileRegistry,
+		toolRegistry,
+		extensionLoader,
+		defaultProfileId: defaultProfile.resolution.id,
+		enabledProfileIds:
+			options.enabledProfileIds ?? settingManager.getEnabledProfiles(),
+		defaultModel: defaultModel.model,
+		defaultThinkingLevel: defaultThinkingLevel.resolution.level,
+	};
+	const orchestrator = new AgentOrchestrator(orchestratorConfig);
+	const command = new Command({ orchestrator });
 	const services: WidiRuntimeServices = {
 		cwd,
 		agentDir,
@@ -694,23 +713,8 @@ export async function createWidiRuntime(
 		sessionManager,
 		toolRegistry,
 		extensionLoader,
+		command,
 	};
-	const orchestratorConfig: AgentOrchestratorConfigs = {
-		executionEnv,
-		resourceLoader,
-		sessionManager,
-		settingManager,
-		modelRegistry,
-		profileRegistry,
-		toolRegistry,
-		extensionLoader,
-		defaultProfileId: defaultProfile.resolution.id,
-		enabledProfileIds:
-			options.enabledProfileIds ?? settingManager.getEnabledProfiles(),
-		defaultModel: defaultModel.model,
-		defaultThinkingLevel: defaultThinkingLevel.resolution.level,
-	};
-	const orchestrator = new AgentOrchestrator(orchestratorConfig);
 	const diagnostics = [
 		...globalSettingManager.drainDiagnostics(),
 		...(projectTrust.diagnostic ? [projectTrust.diagnostic] : []),
@@ -726,6 +730,7 @@ export async function createWidiRuntime(
 
 	return {
 		services,
+		command,
 		orchestrator,
 		diagnostics,
 	};

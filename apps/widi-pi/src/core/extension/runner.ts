@@ -4,8 +4,8 @@ import type {
 	ToolCallResult,
 	ToolResultPatch,
 } from "@earendil-works/pi-agent-core";
+import type { CommandInputInvoke } from "../command/index.ts";
 import { type CoreDiagnostic, createDiagnostic } from "../diagnostics.ts";
-import type { CommandInputInvoke } from "../orchestrator/commands.ts";
 import type { ToolRegistry } from "../tool-registry.ts";
 import type {
 	ExtensionCommandContribution,

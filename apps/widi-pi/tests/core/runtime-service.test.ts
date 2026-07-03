@@ -342,6 +342,7 @@ describe("createWidiRuntime", () => {
 		expect(runtime.orchestrator.getDefaultProfileId()).toBe("default");
 		expect(runtime.orchestrator.getDefaultModel()).toBe(defaultModel);
 		expect(runtime.orchestrator.agents.size).toBe(0);
+		expect(runtime.services.command).toBe(runtime.command);
 		expect(runtime.services.defaultProfile).toMatchObject({
 			id: "default",
 			source: "builtin_fallback",

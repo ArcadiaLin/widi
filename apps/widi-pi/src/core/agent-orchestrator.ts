@@ -23,6 +23,23 @@ import type {
 	AgentProfileSource,
 } from "./agent-profile.js";
 import { toAgentProfileReference } from "./agent-profile.js";
+import type {
+	AgentToolsSnapshot,
+	ExtensionReloadAgentResult,
+	ExtensionReloadAgentSkipReason,
+	ExtensionReloadResult,
+	InputCommandInfo,
+	OperationSource,
+	OrchestratorCommand,
+	OrchestratorCommandResult,
+	OrchestratorCommandValue,
+	RuntimeModel,
+} from "./command/index.ts";
+import {
+	executeCommand,
+	executeInput,
+	listInputCommands,
+} from "./command/index.ts";
 import {
 	type DiagnosticDisposition,
 	type DiagnosticSource,
@@ -47,20 +64,6 @@ import {
 } from "./extension/index.ts";
 import type { ModelRegistry } from "./model-registry.js";
 import type { OrchestratorClient } from "./orchestrator/clients.ts";
-import type {
-	AgentToolsSnapshot,
-	BuiltinInputCommandKind,
-	ExtensionReloadAgentResult,
-	ExtensionReloadAgentSkipReason,
-	ExtensionReloadResult,
-	InputCommandInfo,
-	OperationSource,
-	OrchestratorCommand,
-	OrchestratorCommandResult,
-	OrchestratorCommandValue,
-	RuntimeModel,
-} from "./orchestrator/commands.ts";
-import { builtinInputCommands } from "./orchestrator/commands.ts";
 import type {
 	HumanRequest,
 	HumanRequestEnvelope,
@@ -395,6 +398,13 @@ export class AgentOrchestrator {
 		return this._snapshotAgentRecord(this._requireAgentRecord(agentId));
 	}
 
+	async recordExtensionDiagnostics(
+		agentId: AgentId,
+		diagnostics: readonly OrchestratorDiagnostic[],
+	): Promise<void> {
+		await this._recordAndPublishExtensionDiagnostics(agentId, diagnostics);
+	}
+
 	getAgentModel(agentId: AgentId): RuntimeModel {
 		return this._requireAgentRecord(agentId).model;
 	}
@@ -438,30 +448,7 @@ export class AgentOrchestrator {
 	}
 
 	getAgentInputCommands(agentId: AgentId): InputCommandInfo[] {
-		const record = this._requireAgentRecord(agentId);
-		const builtinCommands = builtinInputCommands.map(
-			(command): InputCommandInfo => ({
-				inputInvoke: command.inputInvoke,
-				source: {
-					kind: "builtin",
-					commandKind: command.kind,
-				},
-			}),
-		);
-		const reservedNames = builtinCommands.map(
-			(command) => command.inputInvoke.name,
-		);
-		const extensionCommands =
-			record.extensionRunner?.getInputCommands({ reservedNames }).map(
-				(command): InputCommandInfo => ({
-					inputInvoke: command.inputInvoke,
-					source: {
-						kind: "extension",
-						extensionId: command.extensionId,
-					},
-				}),
-			) ?? [];
-		return [...builtinCommands, ...extensionCommands];
+		return listInputCommands(this, agentId);
 	}
 
 	async setAgentActiveTools(
@@ -486,39 +473,7 @@ export class AgentOrchestrator {
 		text: string,
 		options?: { images?: ImageContent[]; inputInvoke?: boolean },
 	): Promise<OrchestratorCommandValue> {
-		if (options?.inputInvoke !== false) {
-			const invocation = parseInputInvocation(text);
-			if (invocation) {
-				const builtin = builtinInputCommands.find(
-					(command) => command.inputInvoke.name === invocation.name,
-				);
-				if (builtin) {
-					return await this._executeBuiltinInputCommand(
-						builtin.kind,
-						agentId,
-						invocation.args,
-					);
-				}
-
-				const reservedNames = builtinInputCommands.map(
-					(command) => command.inputInvoke.name,
-				);
-				const extensionCommand = this._requireAgentRecord(
-					agentId,
-				).extensionRunner?.getInputCommand(invocation.name, { reservedNames });
-				if (extensionCommand) {
-					await this._executeExtensionInputCommand(
-						agentId,
-						extensionCommand.extensionId,
-						invocation.name,
-						invocation.args,
-					);
-					return undefined;
-				}
-			}
-		}
-
-		return await this.promptAgent(agentId, text, { images: options?.images });
+		return await executeInput(this, agentId, text, options);
 	}
 
 	async promptAgent(
@@ -2226,140 +2181,10 @@ export class AgentOrchestrator {
 		this._streamingToolCalls.delete(agentId);
 	}
 
-	private async _executeBuiltinInputCommand(
-		commandKind: BuiltinInputCommandKind,
-		agentId: AgentId,
-		args: string,
-	): Promise<OrchestratorCommandValue> {
-		switch (commandKind) {
-			case "agent.abort":
-				return await this.abortAgent(agentId);
-			case "agent.compact":
-				return await this.compactAgent(agentId, args.trim() || undefined);
-			case "agent.inspect":
-				return this.inspectAgent(agentId);
-			case "extension.reload":
-				return await this.reloadExtensions({ agentIds: [agentId] });
-		}
-	}
-
-	private async _executeExtensionInputCommand(
-		agentId: AgentId,
-		extensionId: string,
-		inputName: string,
-		args: string,
-	): Promise<void> {
-		const record = this._requireAgentRecord(agentId);
-		const runner = record.extensionRunner;
-		if (!runner) return;
-		const reservedNames = builtinInputCommands.map(
-			(command) => command.inputInvoke.name,
-		);
-		const command = runner.getInputCommand(inputName, { reservedNames });
-		if (!command) return;
-
-		try {
-			await command.handler(args, runner.createCommandContext(extensionId));
-		} catch (error) {
-			const diagnostic = createOrchestratorDiagnostic({
-				domain: "extension",
-				code: "extension.command_failed",
-				severity: "warning",
-				disposition: "degraded",
-				recoverable: true,
-				message: `Extension '${extensionId}' input command '/${inputName}' failed: ${formatError(error)}`,
-				source: { kind: "extension", id: extensionId },
-				phase: "runtime",
-				agentId,
-				profileId: runner.profileId,
-				extensionId,
-				details: {
-					inputName,
-					error: formatError(error),
-				},
-			});
-			await this._recordAndPublishExtensionDiagnostics(agentId, [diagnostic]);
-		}
-	}
-
 	private async _executeCommand(
 		command: OrchestratorCommand,
 	): Promise<OrchestratorCommandValue> {
-		switch (command.kind) {
-			case "agent.input":
-				return await this.inputAgent(command.agentId, command.text, {
-					images: command.images,
-					inputInvoke: command.inputInvoke,
-				});
-			case "agent.prompt":
-				return await this.promptAgent(command.agentId, command.text, {
-					images: command.images,
-				});
-			case "agent.steer":
-				await this.steerAgent(command.agentId, command.text, {
-					images: command.images,
-				});
-				return undefined;
-			case "agent.followUp":
-				await this.followUpAgent(command.agentId, command.text, {
-					images: command.images,
-				});
-				return undefined;
-			case "agent.nextTurn":
-				await this.nextTurnAgent(command.agentId, command.text, {
-					images: command.images,
-				});
-				return undefined;
-			case "agent.abort":
-				return await this.abortAgent(command.agentId);
-			case "agent.compact":
-				return await this.compactAgent(
-					command.agentId,
-					command.customInstructions,
-				);
-			case "agent.navigateTree":
-				return await this.navigateAgentTree(command.agentId, command.targetId, {
-					summarize: command.summarize,
-					customInstructions: command.customInstructions,
-					replaceInstructions: command.replaceInstructions,
-					label: command.label,
-				});
-			case "agent.getModel":
-				return this.getAgentModel(command.agentId);
-			case "agent.setModel":
-				await this.setAgentModel(command.agentId, command.model);
-				return undefined;
-			case "agent.getTools":
-				return this.getAgentTools(command.agentId);
-			case "agent.setTools":
-				await this.setAgentTools(
-					command.agentId,
-					command.toolNames,
-					command.activeToolNames,
-				);
-				return undefined;
-			case "agent.getActiveTools":
-				return this.getAgentActiveTools(command.agentId);
-			case "agent.getInputCommands":
-				return this.getAgentInputCommands(command.agentId);
-			case "agent.setActiveTools":
-				await this.setAgentActiveTools(command.agentId, command.toolNames);
-				return undefined;
-			case "agent.getStatus":
-				return this.getAgentStatus(command.agentId);
-			case "agent.inspect":
-				return this.inspectAgent(command.agentId);
-			case "agent.dispose":
-				await this.disposeAgent(command.agentId, command.reason);
-				return undefined;
-			case "extension.reload":
-				return await this.reloadExtensions({ agentIds: command.agentIds });
-			case "human.request":
-				return await this.requestHuman({
-					...command.request,
-					source: command.source,
-				});
-		}
+		return await executeCommand(this, command);
 	}
 
 	private async _emit(
@@ -2564,22 +2389,6 @@ function streamingToolCallRefFromPartial(
 	return {
 		toolCallId: content.id,
 		toolName: content.name,
-	};
-}
-
-function parseInputInvocation(
-	text: string,
-): { readonly name: string; readonly args: string } | undefined {
-	if (!text.startsWith("/")) return undefined;
-	const body = text.slice(1);
-	if (!body.trim()) return undefined;
-	const match = /^(\S+)(?:\s+([\s\S]*))?$/u.exec(body);
-	if (!match) return undefined;
-	const name = match[1];
-	if (!name) return undefined;
-	return {
-		name,
-		args: match[2] ?? "",
 	};
 }
 

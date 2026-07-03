@@ -15,7 +15,7 @@ import type {
 	CommandInputInvoke,
 	OrchestratorCommand,
 	OrchestratorCommandResult,
-} from "../orchestrator/commands.ts";
+} from "../command/index.ts";
 import type {
 	HumanRequest,
 	HumanResponse,

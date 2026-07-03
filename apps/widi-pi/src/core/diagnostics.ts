@@ -11,7 +11,7 @@ import type {
 	PromptTemplateDiagnostic,
 	SkillDiagnostic,
 } from "@earendil-works/pi-agent-core";
-import type { OperationSource } from "./orchestrator/commands.js";
+import type { OperationSource } from "./command/index.ts";
 
 export type DiagnosticSeverity = "info" | "warning" | "error";
 
