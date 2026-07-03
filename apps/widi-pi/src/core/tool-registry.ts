@@ -15,7 +15,7 @@ import type {
 	ToolExtensionContext,
 	ToolSource,
 } from "./extension/types.ts";
-import type { ToolHumanHost } from "./orchestrator/human-request.ts";
+import type { ToolHumanHost } from "./human-request.ts";
 
 type RegistryToolDefinition = ToolDefinition<TSchema, unknown>;
 type RegistryToolDefinitionPatch = ToolDefinitionPatch<TSchema, unknown>;

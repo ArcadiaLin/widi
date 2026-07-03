@@ -15,10 +15,7 @@ import type {
 } from "../agent-orchestrator.ts";
 import type { OrchestratorDiagnostic } from "../diagnostics.ts";
 import type { ExtensionIdentity } from "../extension/index.ts";
-import type {
-	HumanRequestDraft,
-	HumanResponse,
-} from "../orchestrator/human-request.ts";
+import type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
 import type {
 	AgentSessionCandidate,
 	AgentSessionSnapshot,

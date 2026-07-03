@@ -26,7 +26,7 @@ import {
 	DEFAULT_AGENT_DIR,
 	DEFAULT_AGENT_PERSISTENCE_DIR,
 	DEFAULT_MODELSJSON_PATH,
-} from "./constants/config.js";
+} from "./constants.js";
 import {
 	type CoreDiagnostic,
 	createDiagnostic,

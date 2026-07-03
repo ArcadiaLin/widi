@@ -20,7 +20,7 @@ import type {
 	HumanRequest,
 	HumanResponse,
 	ToolHumanHost,
-} from "../orchestrator/human-request.ts";
+} from "../human-request.ts";
 
 /**
  * UI-neutral facts emitted for tool-call lifecycle changes.

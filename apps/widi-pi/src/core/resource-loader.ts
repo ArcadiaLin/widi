@@ -9,12 +9,12 @@ import {
 	loadSourcedPromptTemplates,
 	loadSourcedSkills,
 } from "@earendil-works/pi-agent-core";
-import { DEFAULT_AGENT_DIR } from "./constants/config.js";
 import {
+	DEFAULT_AGENT_DIR,
 	DEFAULT_PROMPTTEMPLATE_DIR,
 	DEFAULT_PROMPTtEMPALTE_FILE_EXTENSION,
 	DEFAULT_SKILL_DIR,
-} from "./constants/resource.js";
+} from "./constants.js";
 
 type ResourceSource =
 	| { readonly kind: "agent_dir"; readonly path: string }

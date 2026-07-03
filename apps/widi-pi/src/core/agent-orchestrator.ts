@@ -23,6 +23,7 @@ import type {
 	AgentProfileSource,
 } from "./agent-profile.js";
 import { toAgentProfileReference } from "./agent-profile.js";
+import type { OrchestratorClient } from "./client.ts";
 import type {
 	AgentListResult,
 	AgentSessionCommandResult,
@@ -67,13 +68,12 @@ import {
 	type ExtensionRunnerSnapshot,
 	type ToolLifecycleEvent,
 } from "./extension/index.ts";
-import type { ModelRegistry } from "./model-registry.js";
-import type { OrchestratorClient } from "./orchestrator/clients.ts";
 import type {
 	HumanRequest,
 	HumanRequestEnvelope,
 	HumanResponse,
-} from "./orchestrator/human-request.ts";
+} from "./human-request.ts";
+import type { ModelRegistry } from "./model-registry.js";
 import type { ResourceLoader } from "./resource-loader.js";
 import type {
 	AgentSessionMetadata,

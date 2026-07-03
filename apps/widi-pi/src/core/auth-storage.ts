@@ -20,7 +20,7 @@ import {
 	getOAuthProvider,
 	getOAuthProviders,
 } from "@earendil-works/pi-ai/oauth";
-import { DEFAULT_AGENT_DIR } from "./constants/config.js";
+import { DEFAULT_AGENT_DIR } from "./constants.js";
 import { type CoreDiagnostic, createDiagnostic } from "./diagnostics.ts";
 import type { ConfigValueResolver } from "./resolve-config-value.js";
 

@@ -3,7 +3,7 @@ import type {
 	FileError,
 	FileInfo,
 } from "@earendil-works/pi-agent-core";
-import { DEFAULT_PROFILE_DIR } from "./constants/resource.js";
+import { DEFAULT_PROFILE_DIR } from "./constants.js";
 import {
 	type CoreDiagnostic,
 	createDiagnostic,

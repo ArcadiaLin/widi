@@ -45,7 +45,7 @@ import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
 import { type AuthStatus, AuthStorage } from "./auth-storage.js";
-import { DEFAULT_MODELSJSON_PATH } from "./constants/config.js";
+import { DEFAULT_MODELSJSON_PATH } from "./constants.js";
 import { type CoreDiagnostic, createDiagnostic } from "./diagnostics.ts";
 import { ConfigValueResolver } from "./resolve-config-value.js";
 

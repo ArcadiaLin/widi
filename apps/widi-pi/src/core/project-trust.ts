@@ -1,5 +1,5 @@
 import type { ExecutionEnv, FileError } from "@earendil-works/pi-agent-core";
-import { DEFAULT_AGENT_DIR } from "./constants/config.js";
+import { DEFAULT_AGENT_DIR } from "./constants.js";
 import { type CoreDiagnostic, createDiagnostic } from "./diagnostics.ts";
 import type { DefaultProjectTrust } from "./setting-manager.js";
 
