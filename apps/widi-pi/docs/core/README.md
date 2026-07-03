@@ -9,6 +9,7 @@
 - `TODO`：当前阶段集中 TODO 链，位于 [`../TODO.md`](../TODO.md)。
 - `orchestrator`：multi-agent runtime coordinator。
 - `orchestrator commands`：agent、human、extension、external transport 进入 orchestrator 的操作入口和 client fanout 语义。
+- `command experiment`：实验性的可选 command runtime 设计。
 - `extensions`：通过 hook 插入 core 能力的扩展系统。
 - `profiles and resources`：声明式 agent 配置与依赖解析。
 - `tools and capabilities`：tool 可见性、能力声明、registry patch、lifecycle event 与 runtime policy。

@@ -8,13 +8,15 @@
 
 项目仍处于“core demo 可跑，product harness 未完整”的阶段。主要缺口不是单点 API，而是 runtime composition、extension discovery/trust/reload、agent record、coding tools、debug view UI、runtime policy 和多 agent 协作语义尚未收口。
 
+Command 目前视为实验性设计。它尝试在 core 中提供一层可选 command runtime，用来更清楚地描述和组合核心能力集合，并在尽量不触及 UI 层、交互层的前提下，给 extension 提供更多可注册的 human/client-facing 能力。这个方向不应过早固化为唯一入口；runtime consumer 既可以选择导入并使用 Command，也可以直接控制 `AgentOrchestrator` 的原子化行为。
+
 ## 依赖主线
 
 1. Runtime composition 先把 settings、profile roots、resource roots、extension roots、model/auth、session root 和 default profile/model 接成一个稳定入口。
 2. Agent record 再替代 `Map<AgentId, AgentHarness>`，承载 status、profile/source、session metadata、resolved resources/tools/extensions 和 diagnostics。
 3. Extension loader/runner 基于 agent record 补齐 file/module loader、trust、reload、diagnostics 和 inspect facts；debug view UI 延后到产品层。
-4. Command 基于现有 `agent.input`、built-in inputInvoke 和 extension `registerCommand()` MVP 收敛 command request 类型、source provenance、resolve、execute、diagnostics 和 inspect facts。
-5. Command 和未来 product tools 直接操作 orchestrator runtime；如有真实稳定性压力，再从实际调用点抽取小 facade。
+4. Command 基于现有 `agent.input`、built-in inputInvoke 和 extension `registerCommand()` MVP，作为实验性 runtime 继续验证 command request、source provenance、resolve、execute、diagnostics 和 inspect facts 是否能描述 core capability 集合。
+5. Command、extension command 和未来 product tools 可以直接操作 orchestrator runtime；如有真实稳定性压力，再从实际调用点抽取小 facade。
 6. Coding extension 在 extension 机制稳定后提供 read/write/edit/bash/grep/find/ls 等产品工具；core 不再把这些当成 primitive。
 7. Agent collaboration tools 通过 orchestrator command/helper 实现，所有 agent lifecycle、A2A、human request 和 diagnostics 仍经过 orchestrator。
 
@@ -53,10 +55,14 @@
 - [x] 不引入独立 extension permission model；extension 共享 project trust 与 agent runtime policy，避免把 Pi-style extension authoring 做成重型 manifest/permission 开发。
 - [x] 增加 `registerCommand()` MVP：extension command 必须声明 UI-neutral `inputInvoke`，由 `agent.input` 统一解析并通过 orchestrator command/client 边界执行。
 - [x] 将 command/inputInvoke MVP 收敛为 `core/command` runtime module：command request 类型、built-in input command、input parser、command execution 和 runtime-service 暴露。
-- [ ] 补齐 Command resolved facts：source provenance、input name conflict diagnostics、resolved command inspect facts。
-- [ ] 评估 extension command runtime context：当前沿用 extension context；如有真实稳定性压力，再拆更窄的 command context。
 - [ ] 设计 provider/resource contribution：extension 如何注册 provider、skills、prompt templates 或动态 resources。
 - [ ] 明确 provider/session hook matrix，决定 observe/intercept/mutate 的最小开放集。
+
+## P0 (Experimental): Command Runtime
+
+- [ ] 明确 Command 的可选导出边界：允许 consumer 选择 `Command` runtime，也允许直接使用 orchestrator 原子能力。
+- [ ] 补齐最小 resolved facts：source provenance、input name conflict diagnostics、resolved command inspect facts。
+- [ ] 评估 extension command runtime context：当前沿用 extension context；如有真实稳定性压力，再拆更窄的 command context。
 
 ## P0: 基础 Coding Tools
 
