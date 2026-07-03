@@ -146,6 +146,30 @@ export async function executeCommand(
 			return undefined;
 		case "agent.abort":
 			return await orchestrator.abortAgent(command.agentId);
+		case "agent.new":
+			return await orchestrator.newAgentSessionFromAgent(command.agentId);
+		case "agent.listAgents":
+			return orchestrator.listAgents();
+		case "agent.listSessions":
+			return await orchestrator.listAgentSessions();
+		case "agent.resume":
+			return await orchestrator.resumeAgentSessionByReference(
+				command.reference,
+			);
+		case "agent.getSession":
+			return await orchestrator.getAgentSession(command.agentId);
+		case "agent.getSessionTree":
+			return await orchestrator.getAgentSessionTree(command.agentId);
+		case "agent.setSessionName":
+			return await orchestrator.setAgentSessionName(
+				command.agentId,
+				command.name,
+			);
+		case "agent.fork":
+			return await orchestrator.forkAgentSessionFromAgent(
+				command.agentId,
+				command.options,
+			);
 		case "agent.compact":
 			return await orchestrator.compactAgent(
 				command.agentId,
@@ -216,11 +240,58 @@ async function executeBuiltinInputCommand(
 			return await orchestrator.abortAgent(agentId);
 		case "agent.compact":
 			return await orchestrator.compactAgent(agentId, args.trim() || undefined);
+		case "agent.followUp":
+			await orchestrator.followUpAgent(
+				agentId,
+				requireInputText("follow-up", args),
+			);
+			return undefined;
+		case "agent.fork": {
+			const entryId = args.trim() || undefined;
+			return await orchestrator.forkAgentSessionFromAgent(
+				agentId,
+				entryId ? { entryId } : undefined,
+			);
+		}
 		case "agent.inspect":
 			return orchestrator.inspectAgent(agentId);
+		case "agent.listAgents":
+			return orchestrator.listAgents();
+		case "agent.setSessionName":
+			return await orchestrator.setAgentSessionName(
+				agentId,
+				requireInputText("name", args),
+			);
+		case "agent.new":
+			return await orchestrator.newAgentSessionFromAgent(agentId);
 		case "extension.reload":
 			return await orchestrator.reloadExtensions({ agentIds: [agentId] });
+		case "agent.resume": {
+			const reference = args.trim();
+			if (!reference) return await orchestrator.listAgentSessions();
+			return await orchestrator.resumeAgentSessionByReference(reference);
+		}
+		case "agent.listSessions":
+			return await orchestrator.listAgentSessions();
+		case "agent.getStatus":
+			return orchestrator.getAgentStatus(agentId);
+		case "agent.steer":
+			await orchestrator.steerAgent(agentId, requireInputText("steer", args));
+			return undefined;
+		case "agent.getSessionTree": {
+			const targetId = args.trim();
+			if (!targetId) return await orchestrator.getAgentSessionTree(agentId);
+			return await orchestrator.navigateAgentTree(agentId, targetId);
+		}
 	}
+}
+
+function requireInputText(commandName: string, args: string): string {
+	const text = args.trim();
+	if (!text) {
+		throw new Error(`Input command /${commandName} requires text.`);
+	}
+	return text;
 }
 
 async function executeExtensionInputCommand(

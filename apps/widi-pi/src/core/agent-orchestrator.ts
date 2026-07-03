@@ -24,6 +24,11 @@ import type {
 } from "./agent-profile.js";
 import { toAgentProfileReference } from "./agent-profile.js";
 import type {
+	AgentListResult,
+	AgentSessionCommandResult,
+	AgentSessionListResult,
+	AgentSessionSnapshot,
+	AgentSessionTreeSnapshot,
 	AgentToolsSnapshot,
 	ExtensionReloadAgentResult,
 	ExtensionReloadAgentSkipReason,
@@ -72,6 +77,7 @@ import type {
 import type { ResourceLoader } from "./resource-loader.js";
 import type {
 	AgentSessionMetadata,
+	ForkAgentSessionOptions,
 	SessionManager,
 } from "./session-manager.ts";
 import type { SettingManager } from "./setting-manager.js";
@@ -396,6 +402,89 @@ export class AgentOrchestrator {
 
 	inspectAgent(agentId: AgentId): AgentRecordSnapshot {
 		return this._snapshotAgentRecord(this._requireAgentRecord(agentId));
+	}
+
+	listAgents(): AgentListResult {
+		return {
+			agents: Array.from(this.agents.values()).map((record) =>
+				this._snapshotAgentRecord(record),
+			),
+		};
+	}
+
+	async newAgentSessionFromAgent(
+		agentId: AgentId,
+	): Promise<AgentSessionCommandResult> {
+		const sourceRecord = this._requireAgentRecord(agentId);
+		const result = await this.spawnAgentHarness({
+			profileId: sourceRecord.profile.reference.id,
+			model: sourceRecord.model,
+		});
+		return {
+			agentId: result.agentId,
+			snapshot: this.inspectAgent(result.agentId),
+		};
+	}
+
+	async getAgentSession(agentId: AgentId): Promise<AgentSessionSnapshot> {
+		this._requireAgentRecord(agentId);
+		return await this.sessionManager.getAgentSessionSnapshot(agentId);
+	}
+
+	async getAgentSessionTree(
+		agentId: AgentId,
+	): Promise<AgentSessionTreeSnapshot> {
+		this._requireAgentRecord(agentId);
+		return await this.sessionManager.getAgentSessionTree(agentId);
+	}
+
+	async setAgentSessionName(
+		agentId: AgentId,
+		name: string,
+	): Promise<AgentSessionSnapshot> {
+		this._requireAgentRecord(agentId);
+		return await this.sessionManager.setAgentSessionName(agentId, name);
+	}
+
+	async forkAgentSessionFromAgent(
+		agentId: AgentId,
+		options?: ForkAgentSessionOptions,
+	): Promise<AgentSessionCommandResult> {
+		const sourceRecord = this._requireAgentRecord(agentId);
+		const metadata = await this.sessionManager.forkAgentSession(
+			agentId,
+			options,
+		);
+		const result = await this.spawnAgentHarness({
+			resume: true,
+			metadata,
+			model: sourceRecord.model,
+		});
+		return {
+			agentId: result.agentId,
+			snapshot: this.inspectAgent(result.agentId),
+		};
+	}
+
+	async listAgentSessions(): Promise<AgentSessionListResult> {
+		return {
+			sessions: await this.sessionManager.listAgentSessionCandidates(),
+		};
+	}
+
+	async resumeAgentSessionByReference(
+		reference: string,
+	): Promise<AgentSessionCommandResult> {
+		const metadata =
+			await this.sessionManager.resolveAgentSessionReference(reference);
+		const result = await this.spawnAgentHarness({
+			resume: true,
+			metadata,
+		});
+		return {
+			agentId: result.agentId,
+			snapshot: this.inspectAgent(result.agentId),
+		};
 	}
 
 	async recordExtensionDiagnostics(

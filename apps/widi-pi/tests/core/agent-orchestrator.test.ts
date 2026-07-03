@@ -54,6 +54,31 @@ function expectExtendedMetadata(metadata: {
 	return metadata as ExtendedJsonlSessionMetadata;
 }
 
+function writeSessionFile(
+	env: MemoryExecutionEnv,
+	path: string,
+	options: {
+		id: string;
+		timestamp: string;
+		cwd?: string;
+		profileId?: string;
+	},
+): void {
+	const header = {
+		type: "session",
+		version: 3,
+		id: options.id,
+		timestamp: options.timestamp,
+		cwd: options.cwd ?? "/workspace/project",
+		metadata: options.profileId
+			? { profile: { id: options.profileId } }
+			: undefined,
+	};
+	env.dirs.add("/sessions");
+	env.dirs.add("/sessions/--workspace-project--");
+	env.files.set(path, `${JSON.stringify(header)}\n`);
+}
+
 class MemoryExecutionEnv implements ExecutionEnv {
 	cwd = "/workspace";
 	readonly files = new Map<string, string>();
@@ -893,6 +918,439 @@ describe("AgentOrchestrator", () => {
 		expect(orchestrator.getAgentStatus(agentId)).toBe("idle");
 	});
 
+	it("executes runtime input aliases for steer, follow-up, and status", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId, harness } = await orchestrator.spawnAgentHarness();
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		(harness as unknown as { phase: "turn" }).phase = "turn";
+
+		await expect(
+			orchestrator.dispatch({
+				kind: "agent.input",
+				source: { kind: "human" },
+				agentId,
+				text: "/steer keep going",
+			}),
+		).resolves.toMatchObject({ ok: true });
+		await expect(
+			orchestrator.dispatch({
+				kind: "agent.input",
+				source: { kind: "human" },
+				agentId,
+				text: "/follow-up summarize next",
+			}),
+		).resolves.toMatchObject({ ok: true });
+		await expect(
+			orchestrator.dispatch({
+				kind: "agent.input",
+				source: { kind: "human" },
+				agentId,
+				text: "/status",
+			}),
+		).resolves.toMatchObject({ ok: true, value: "ready" });
+
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "agent_harness_event",
+				event: expect.objectContaining({
+					type: "queue_update",
+					steer: [
+						expect.objectContaining({
+							role: "user",
+							content: [{ type: "text", text: "keep going" }],
+						}),
+					],
+				}),
+			}),
+		);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "agent_harness_event",
+				event: expect.objectContaining({
+					type: "queue_update",
+					followUp: [
+						expect.objectContaining({
+							role: "user",
+							content: [{ type: "text", text: "summarize next" }],
+						}),
+					],
+				}),
+			}),
+		);
+	});
+
+	it("rejects empty steer and follow-up input aliases", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+
+		await expect(
+			orchestrator.dispatch({
+				kind: "agent.input",
+				source: { kind: "human" },
+				agentId,
+				text: "/steer",
+			}),
+		).resolves.toMatchObject({
+			ok: false,
+			diagnostic: {
+				message: "Input command /steer requires text.",
+			},
+		});
+		await expect(
+			orchestrator.dispatch({
+				kind: "agent.input",
+				source: { kind: "human" },
+				agentId,
+				text: "/follow-up",
+			}),
+		).resolves.toMatchObject({
+			ok: false,
+			diagnostic: {
+				message: "Input command /follow-up requires text.",
+			},
+		});
+	});
+
+	it("starts a new empty session from the current agent", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+
+		const result = await orchestrator.dispatch({
+			kind: "agent.input",
+			source: { kind: "human" },
+			agentId,
+			text: "/new",
+		});
+
+		expect(result).toMatchObject({
+			ok: true,
+			value: {
+				agentId: "main-agent-2",
+				snapshot: {
+					agentId: "main-agent-2",
+					status: "ready",
+					hasHarness: true,
+					profile: {
+						reference: {
+							id: defaultProfile.id,
+							label: defaultProfile.label,
+						},
+					},
+					model: expect.objectContaining({ id: defaultModel.id }),
+				},
+			},
+		});
+		expect(orchestrator.getAgentStatus(agentId)).toBe("ready");
+	});
+
+	it("lists and resumes sessions through runtime commands", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const session = await orchestrator.sessionManager.createAgentSession({
+			agentId: "worker-agent",
+			agentProfile: restoredProfile,
+		});
+		await session.appendModelChange(restoredModel.provider, restoredModel.id);
+		await session.appendThinkingLevelChange("medium");
+		const metadata = expectExtendedMetadata(await session.getMetadata());
+
+		await expect(
+			orchestrator.dispatch({
+				kind: "agent.listSessions",
+				source: { kind: "system" },
+			}),
+		).resolves.toMatchObject({
+			ok: true,
+			value: {
+				sessions: expect.arrayContaining([
+					expect.objectContaining({
+						id: "worker-agent",
+						path: metadata.path,
+						profile: { id: restoredProfile.id, label: restoredProfile.label },
+					}),
+					expect.objectContaining({ id: agentId }),
+				]),
+			},
+		});
+		await expect(
+			orchestrator.dispatch({
+				kind: "agent.input",
+				source: { kind: "human" },
+				agentId,
+				text: "/resume",
+			}),
+		).resolves.toMatchObject({
+			ok: true,
+			value: {
+				sessions: expect.arrayContaining([
+					expect.objectContaining({ id: "worker-agent" }),
+					expect.objectContaining({ id: agentId }),
+				]),
+			},
+		});
+
+		const result = await orchestrator.dispatch({
+			kind: "agent.input",
+			source: { kind: "human" },
+			agentId,
+			text: `/resume ${metadata.path}`,
+		});
+
+		expect(result).toMatchObject({
+			ok: true,
+			value: {
+				agentId: "worker-agent",
+				snapshot: {
+					agentId: "worker-agent",
+					status: "ready",
+					model: expect.objectContaining({ id: restoredModel.id }),
+				},
+			},
+		});
+	});
+
+	it("does not implicitly resume ambiguous session ids", async () => {
+		const env = new MemoryExecutionEnv();
+		writeSessionFile(
+			env,
+			"/sessions/--workspace-project--/2026-01-02T00-00-00-000Z_same.jsonl",
+			{
+				id: "same",
+				timestamp: "2026-01-02T00:00:00.000Z",
+				profileId: defaultProfile.id,
+			},
+		);
+		writeSessionFile(
+			env,
+			"/sessions/--workspace-project--/2026-01-01T00-00-00-000Z_same.jsonl",
+			{
+				id: "same",
+				timestamp: "2026-01-01T00:00:00.000Z",
+				profileId: defaultProfile.id,
+			},
+		);
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+
+		await expect(
+			orchestrator.dispatch({
+				kind: "agent.input",
+				source: { kind: "human" },
+				agentId,
+				text: "/resume same",
+			}),
+		).resolves.toMatchObject({
+			ok: false,
+			diagnostic: {
+				message: "Ambiguous agent session reference: same",
+			},
+		});
+	});
+
+	it("lists runtime agents and persisted sessions through input aliases", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+
+		await expect(
+			orchestrator.dispatch({
+				kind: "agent.input",
+				source: { kind: "human" },
+				agentId,
+				text: "/agent",
+			}),
+		).resolves.toMatchObject({
+			ok: true,
+			value: {
+				agents: [
+					expect.objectContaining({
+						agentId,
+						status: "ready",
+						hasHarness: true,
+					}),
+				],
+			},
+		});
+		await expect(
+			orchestrator.dispatch({
+				kind: "agent.input",
+				source: { kind: "human" },
+				agentId,
+				text: "/session",
+			}),
+		).resolves.toMatchObject({
+			ok: true,
+			value: {
+				sessions: [
+					expect.objectContaining({
+						id: agentId,
+						profile: { id: defaultProfile.id, label: defaultProfile.label },
+					}),
+				],
+			},
+		});
+	});
+
+	it("names and inspects the current session tree through input aliases", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const session = await orchestrator.sessionManager.createAgentSession({
+			agentId,
+			agentProfile: defaultProfile,
+		});
+		const userEntryId = await session.appendMessage({
+			role: "user",
+			content: "revise this",
+			timestamp: 1,
+		});
+
+		await expect(
+			orchestrator.dispatch({
+				kind: "agent.input",
+				source: { kind: "human" },
+				agentId,
+				text: "/name Planning Session",
+			}),
+		).resolves.toMatchObject({
+			ok: true,
+			value: {
+				name: "Planning Session",
+			},
+		});
+		await expect(
+			orchestrator.dispatch({
+				kind: "agent.input",
+				source: { kind: "human" },
+				agentId,
+				text: "/tree",
+			}),
+		).resolves.toMatchObject({
+			ok: true,
+			value: {
+				name: "Planning Session",
+				entries: [
+					expect.objectContaining({ id: userEntryId, type: "message" }),
+					expect.objectContaining({
+						type: "session_info",
+						name: "Planning Session",
+					}),
+				],
+				pathToRoot: [
+					expect.objectContaining({ id: userEntryId }),
+					expect.objectContaining({ type: "session_info" }),
+				],
+			},
+		});
+	});
+
+	it("navigates the session tree when /tree receives an entry id", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const session = await orchestrator.sessionManager.createAgentSession({
+			agentId,
+			agentProfile: defaultProfile,
+		});
+		const userEntryId = await session.appendMessage({
+			role: "user",
+			content: "edit this",
+			timestamp: 1,
+		});
+		await session.appendMessage({
+			role: "user",
+			content: "current leaf",
+			timestamp: 2,
+		});
+
+		await expect(
+			orchestrator.dispatch({
+				kind: "agent.input",
+				source: { kind: "human" },
+				agentId,
+				text: `/tree ${userEntryId}`,
+			}),
+		).resolves.toMatchObject({
+			ok: true,
+			value: {
+				cancelled: false,
+				editorText: "edit this",
+			},
+		});
+		await expect(orchestrator.getAgentSession(agentId)).resolves.toMatchObject({
+			leafId: null,
+			pathToRoot: [],
+		});
+	});
+
+	it("forks the current session into an idle runtime agent", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const session = await orchestrator.sessionManager.createAgentSession({
+			agentId,
+			agentProfile: defaultProfile,
+		});
+		const keptEntryId = await session.appendMessage({
+			role: "user",
+			content: "keep me",
+			timestamp: 1,
+		});
+		const targetEntryId = await session.appendMessage({
+			role: "user",
+			content: "fork before me",
+			timestamp: 2,
+		});
+
+		const result = await orchestrator.dispatch({
+			kind: "agent.input",
+			source: { kind: "human" },
+			agentId,
+			text: `/fork ${targetEntryId}`,
+		});
+
+		expect(result).toMatchObject({
+			ok: true,
+			value: {
+				agentId: expect.not.stringMatching(`^${agentId}$`),
+				snapshot: {
+					status: "ready",
+					hasHarness: true,
+					model: expect.objectContaining({ id: defaultModel.id }),
+				},
+			},
+		});
+		if (
+			!result.ok ||
+			!result.value ||
+			typeof result.value !== "object" ||
+			!("agentId" in result.value)
+		) {
+			throw new Error("Expected fork command result.");
+		}
+		const forkedAgentId = result.value.agentId;
+		const forkedTree = await orchestrator.getAgentSessionTree(forkedAgentId);
+		expect(forkedTree).toMatchObject({
+			metadata: {
+				id: forkedAgentId,
+				parentSessionPath: expect.any(String),
+			},
+			entries: [expect.objectContaining({ id: keptEntryId })],
+			leafId: keptEntryId,
+		});
+		expect(forkedTree.entries.some((entry) => entry.id === targetEntryId)).toBe(
+			false,
+		);
+		expect(orchestrator.getAgentStatus(agentId)).toBe("ready");
+	});
+
 	it("disposes agents best-effort and leaves an inspectable stale record", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = {
@@ -1429,12 +1887,52 @@ describe("AgentOrchestrator", () => {
 				source: { kind: "builtin", commandKind: "agent.compact" },
 			}),
 			expect.objectContaining({
+				inputInvoke: expect.objectContaining({ name: "follow-up" }),
+				source: { kind: "builtin", commandKind: "agent.followUp" },
+			}),
+			expect.objectContaining({
+				inputInvoke: expect.objectContaining({ name: "fork" }),
+				source: { kind: "builtin", commandKind: "agent.fork" },
+			}),
+			expect.objectContaining({
 				inputInvoke: expect.objectContaining({ name: "inspect" }),
 				source: { kind: "builtin", commandKind: "agent.inspect" },
 			}),
 			expect.objectContaining({
+				inputInvoke: expect.objectContaining({ name: "agent" }),
+				source: { kind: "builtin", commandKind: "agent.listAgents" },
+			}),
+			expect.objectContaining({
+				inputInvoke: expect.objectContaining({ name: "name" }),
+				source: { kind: "builtin", commandKind: "agent.setSessionName" },
+			}),
+			expect.objectContaining({
+				inputInvoke: expect.objectContaining({ name: "new" }),
+				source: { kind: "builtin", commandKind: "agent.new" },
+			}),
+			expect.objectContaining({
 				inputInvoke: expect.objectContaining({ name: "reload" }),
 				source: { kind: "builtin", commandKind: "extension.reload" },
+			}),
+			expect.objectContaining({
+				inputInvoke: expect.objectContaining({ name: "resume" }),
+				source: { kind: "builtin", commandKind: "agent.resume" },
+			}),
+			expect.objectContaining({
+				inputInvoke: expect.objectContaining({ name: "session" }),
+				source: { kind: "builtin", commandKind: "agent.listSessions" },
+			}),
+			expect.objectContaining({
+				inputInvoke: expect.objectContaining({ name: "status" }),
+				source: { kind: "builtin", commandKind: "agent.getStatus" },
+			}),
+			expect.objectContaining({
+				inputInvoke: expect.objectContaining({ name: "steer" }),
+				source: { kind: "builtin", commandKind: "agent.steer" },
+			}),
+			expect.objectContaining({
+				inputInvoke: expect.objectContaining({ name: "tree" }),
+				source: { kind: "builtin", commandKind: "agent.getSessionTree" },
 			}),
 			{
 				inputInvoke: {

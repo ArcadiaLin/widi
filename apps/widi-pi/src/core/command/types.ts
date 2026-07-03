@@ -19,12 +19,38 @@ import type {
 	HumanRequestDraft,
 	HumanResponse,
 } from "../orchestrator/human-request.ts";
+import type {
+	AgentSessionCandidate,
+	AgentSessionSnapshot,
+	AgentSessionTreeSnapshot,
+	ForkAgentSessionOptions,
+} from "../session-manager.ts";
+
+export type {
+	AgentSessionCandidate,
+	AgentSessionSnapshot,
+	AgentSessionTreeSnapshot,
+	ForkAgentSessionOptions,
+} from "../session-manager.ts";
 
 export type RuntimeModel = Model<Api>;
 
 export interface AgentToolsSnapshot {
 	toolNames: string[];
 	activeToolNames: string[];
+}
+
+export interface AgentSessionCommandResult {
+	readonly agentId: string;
+	readonly snapshot: AgentRecordSnapshot;
+}
+
+export interface AgentSessionListResult {
+	readonly sessions: readonly AgentSessionCandidate[];
+}
+
+export interface AgentListResult {
+	readonly agents: readonly AgentRecordSnapshot[];
 }
 
 export interface CommandInputInvoke {
@@ -36,7 +62,17 @@ export interface CommandInputInvoke {
 export type BuiltinInputCommandKind =
 	| "agent.abort"
 	| "agent.compact"
+	| "agent.followUp"
+	| "agent.fork"
+	| "agent.getSessionTree"
 	| "agent.inspect"
+	| "agent.listAgents"
+	| "agent.listSessions"
+	| "agent.new"
+	| "agent.resume"
+	| "agent.setSessionName"
+	| "agent.getStatus"
+	| "agent.steer"
 	| "extension.reload";
 
 export interface BuiltinInputCommandDefinition {
@@ -126,6 +162,22 @@ export type CommandRequest =
 			images?: ImageContent[];
 	  })
 	| (CommandBase & { kind: "agent.abort"; agentId: string })
+	| (CommandBase & { kind: "agent.new"; agentId: string })
+	| (CommandBase & { kind: "agent.listAgents" })
+	| (CommandBase & { kind: "agent.listSessions" })
+	| (CommandBase & { kind: "agent.resume"; reference: string })
+	| (CommandBase & { kind: "agent.getSession"; agentId: string })
+	| (CommandBase & { kind: "agent.getSessionTree"; agentId: string })
+	| (CommandBase & {
+			kind: "agent.setSessionName";
+			agentId: string;
+			name: string;
+	  })
+	| (CommandBase & {
+			kind: "agent.fork";
+			agentId: string;
+			options?: ForkAgentSessionOptions;
+	  })
 	| (CommandBase & {
 			kind: "agent.compact";
 			agentId: string;
@@ -189,6 +241,11 @@ export type CommandValue =
 	| NavigateTreeResult
 	| RuntimeModel
 	| AgentToolsSnapshot
+	| AgentSessionCommandResult
+	| AgentSessionListResult
+	| AgentListResult
+	| AgentSessionSnapshot
+	| AgentSessionTreeSnapshot
 	| ExtensionReloadResult
 	| AgentLifecycleStatus
 	| AgentRecordSnapshot

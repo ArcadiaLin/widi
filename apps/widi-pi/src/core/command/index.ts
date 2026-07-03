@@ -10,6 +10,11 @@ export {
 } from "./command.ts";
 export { parseInputInvocation } from "./input.ts";
 export type {
+	AgentListResult,
+	AgentSessionCommandResult,
+	AgentSessionListResult,
+	AgentSessionSnapshot,
+	AgentSessionTreeSnapshot,
 	AgentToolsSnapshot,
 	BuiltinInputCommandDefinition,
 	BuiltinInputCommandKind,

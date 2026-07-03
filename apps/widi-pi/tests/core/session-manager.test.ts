@@ -193,6 +193,34 @@ const profile: AgentProfile = {
 	promptTemplates: ["review"],
 };
 
+function writeSessionFile(
+	fs: MemoryFileSystem,
+	path: string,
+	options: {
+		id: string;
+		timestamp: string;
+		cwd?: string;
+		parentSession?: string;
+		profileId?: string;
+	},
+): void {
+	const cwd = options.cwd ?? "/workspace/project";
+	const header = {
+		type: "session",
+		version: 3,
+		id: options.id,
+		timestamp: options.timestamp,
+		cwd,
+		parentSession: options.parentSession,
+		metadata: options.profileId
+			? { profile: { id: options.profileId } }
+			: undefined,
+	};
+	fs.dirs.add("/sessions");
+	fs.dirs.add("/sessions/--workspace-project--");
+	fs.files.set(path, `${JSON.stringify(header)}\n`);
+}
+
 describe("SessionManager", () => {
 	it("stores agent profile references in extended jsonl session headers", async () => {
 		const fs = new MemoryFileSystem();
@@ -220,6 +248,115 @@ describe("SessionManager", () => {
 			version: 3,
 			id: "main",
 			metadata: { profile: profileReference },
+		});
+	});
+
+	it("lists current cwd agent session candidates", async () => {
+		const fs = new MemoryFileSystem();
+		writeSessionFile(
+			fs,
+			"/sessions/--workspace-project--/2026-01-02T00-00-00-000Z_alpha.jsonl",
+			{
+				id: "alpha",
+				timestamp: "2026-01-02T00:00:00.000Z",
+				profileId: "main",
+			},
+		);
+		writeSessionFile(
+			fs,
+			"/sessions/--workspace-project--/2026-01-01T00-00-00-000Z_beta.jsonl",
+			{
+				id: "beta",
+				timestamp: "2026-01-01T00:00:00.000Z",
+				parentSession: "/sessions/source.jsonl",
+			},
+		);
+		const manager = new SessionManager({
+			fs,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+		});
+
+		await expect(manager.listAgentSessionCandidates()).resolves.toEqual([
+			{
+				id: "alpha",
+				path: "/sessions/--workspace-project--/2026-01-02T00-00-00-000Z_alpha.jsonl",
+				createdAt: "2026-01-02T00:00:00.000Z",
+				cwd: "/workspace/project",
+				profile: { id: "main" },
+			},
+			{
+				id: "beta",
+				path: "/sessions/--workspace-project--/2026-01-01T00-00-00-000Z_beta.jsonl",
+				createdAt: "2026-01-01T00:00:00.000Z",
+				cwd: "/workspace/project",
+				parentSessionPath: "/sessions/source.jsonl",
+			},
+		]);
+	});
+
+	it("resolves session references by path before id", async () => {
+		const fs = new MemoryFileSystem();
+		writeSessionFile(
+			fs,
+			"/sessions/--workspace-project--/2026-01-02T00-00-00-000Z_alpha.jsonl",
+			{
+				id: "same",
+				timestamp: "2026-01-02T00:00:00.000Z",
+			},
+		);
+		writeSessionFile(fs, "/sessions/--workspace-project--/same.jsonl", {
+			id: "path-target",
+			timestamp: "2026-01-03T00:00:00.000Z",
+		});
+		const manager = new SessionManager({
+			fs,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+		});
+
+		await expect(
+			manager.resolveAgentSessionReference(
+				"/sessions/--workspace-project--/same.jsonl",
+			),
+		).resolves.toMatchObject({ id: "path-target" });
+		await expect(
+			manager.resolveAgentSessionReference("same"),
+		).resolves.toMatchObject({ id: "same" });
+	});
+
+	it("rejects ambiguous session ids with candidate facts", async () => {
+		const fs = new MemoryFileSystem();
+		writeSessionFile(
+			fs,
+			"/sessions/--workspace-project--/2026-01-02T00-00-00-000Z_same.jsonl",
+			{
+				id: "same",
+				timestamp: "2026-01-02T00:00:00.000Z",
+			},
+		);
+		writeSessionFile(
+			fs,
+			"/sessions/--workspace-project--/2026-01-01T00-00-00-000Z_same.jsonl",
+			{
+				id: "same",
+				timestamp: "2026-01-01T00:00:00.000Z",
+			},
+		);
+		const manager = new SessionManager({
+			fs,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+		});
+
+		await expect(
+			manager.resolveAgentSessionReference("same"),
+		).rejects.toMatchObject({
+			reason: "ambiguous",
+			candidates: [
+				expect.objectContaining({ id: "same" }),
+				expect.objectContaining({ id: "same" }),
+			],
 		});
 	});
 
@@ -297,6 +434,70 @@ describe("SessionManager", () => {
 		await expect(
 			manager.findExtensionCustomEntries("main", "writer", "state"),
 		).resolves.toMatchObject([{ id: firstId, type: "state" }]);
+	});
+
+	it("snapshots, names, and forks persistent agent sessions", async () => {
+		const fs = new MemoryFileSystem();
+		const manager = new SessionManager({
+			fs,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+		});
+		const session = await manager.createAgentSession({
+			agentId: "main",
+			agentProfile: profile,
+		});
+		const userEntryId = await session.appendMessage({
+			role: "user",
+			content: "hello",
+			timestamp: 1,
+		});
+		await manager.setAgentSessionName("main", "Design Thread");
+
+		await expect(
+			manager.getAgentSessionSnapshot("main"),
+		).resolves.toMatchObject({
+			name: "Design Thread",
+			leafId: expect.any(String),
+			pathToRoot: [
+				expect.objectContaining({
+					id: userEntryId,
+					type: "message",
+				}),
+				expect.objectContaining({
+					type: "session_info",
+					name: "Design Thread",
+				}),
+			],
+		});
+		await expect(manager.getAgentSessionTree("main")).resolves.toMatchObject({
+			entries: [
+				expect.objectContaining({ id: userEntryId }),
+				expect.objectContaining({ type: "session_info" }),
+			],
+		});
+
+		const sourceMetadata = await session.getMetadata();
+		if (!("path" in sourceMetadata)) {
+			throw new Error("Expected persisted source metadata.");
+		}
+		const forkedMetadata = await manager.forkAgentSession("main");
+
+		expect(forkedMetadata.id).not.toBe("main");
+		expect(forkedMetadata.parentSessionPath).toBe(sourceMetadata.path);
+		expect(forkedMetadata.metadata?.profile).toEqual({
+			id: profile.id,
+			label: profile.label,
+		});
+		await expect(
+			manager.getAgentSessionTree(forkedMetadata.id),
+		).resolves.toMatchObject({
+			name: "Design Thread",
+			entries: [
+				expect.objectContaining({ id: userEntryId }),
+				expect.objectContaining({ type: "session_info" }),
+			],
+		});
 	});
 
 	it("validates extension custom entry type and JSON serializability", async () => {

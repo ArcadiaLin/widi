@@ -6,8 +6,10 @@
  */
 
 import type {
+	FileError,
 	FileSystem,
 	Session,
+	SessionForkOptions,
 	SessionMetadata,
 	SessionTreeEntry,
 } from "@earendil-works/pi-agent-core";
@@ -18,7 +20,7 @@ import {
 	JsonlSessionRepo,
 } from "../storage/jsonl-repo.js";
 import type { AgentId } from "./agent-orchestrator.js";
-import type { AgentProfile } from "./agent-profile.js";
+import type { AgentProfile, AgentProfileReference } from "./agent-profile.js";
 import { toAgentProfileReference } from "./agent-profile.js";
 
 export type AgentSessionMetadata =
@@ -31,6 +33,55 @@ export interface AgentExtensionCustomEntry<T = unknown> {
 	timestamp: string;
 	type: string;
 	data?: T;
+}
+
+export interface AgentSessionCandidate {
+	readonly id: string;
+	readonly path: string;
+	readonly createdAt: string;
+	readonly cwd: string;
+	readonly parentSessionPath?: string;
+	readonly profile?: AgentProfileReference;
+}
+
+export interface AgentSessionSnapshot {
+	readonly metadata: AgentSessionMetadata;
+	readonly name?: string;
+	readonly leafId: string | null;
+	readonly pathToRoot: readonly SessionTreeEntry[];
+}
+
+export interface AgentSessionTreeSnapshot extends AgentSessionSnapshot {
+	readonly entries: readonly SessionTreeEntry[];
+}
+
+export interface ForkAgentSessionOptions {
+	readonly entryId?: string;
+	readonly position?: SessionForkOptions["position"];
+}
+
+export type AgentSessionResolutionFailureReason = "not_found" | "ambiguous";
+
+export class AgentSessionResolutionError extends Error {
+	readonly reason: AgentSessionResolutionFailureReason;
+	readonly reference: string;
+	readonly candidates: readonly AgentSessionCandidate[];
+
+	constructor(options: {
+		readonly reason: AgentSessionResolutionFailureReason;
+		readonly reference: string;
+		readonly candidates: readonly AgentSessionCandidate[];
+	}) {
+		const message =
+			options.reason === "ambiguous"
+				? `Ambiguous agent session reference: ${options.reference}`
+				: `Agent session not found: ${options.reference}`;
+		super(message);
+		this.name = "AgentSessionResolutionError";
+		this.reason = options.reason;
+		this.reference = options.reference;
+		this.candidates = [...options.candidates];
+	}
 }
 
 export interface SessionManagerConfigs {
@@ -53,6 +104,7 @@ type ResumeAgentSessionOptions = {
 
 export class SessionManager {
 	readonly sessionRepo: JsonlSessionRepo;
+	private readonly _fs: FileSystem;
 	private readonly _cwd: string;
 	private readonly _agentSessions: Map<AgentId, Session<AgentSessionMetadata>> =
 		new Map();
@@ -60,11 +112,64 @@ export class SessionManager {
 		new InMemorySessionRepo();
 
 	constructor(config: SessionManagerConfigs) {
+		this._fs = config.fs;
 		this._cwd = config.cwd;
 		this.sessionRepo = new JsonlSessionRepo({
 			fs: config.fs,
 			sessionsRoot: config.sessionsRoot,
 			pathLayout: config.sessionPathLayout,
+		});
+	}
+
+	async listAgentSessionCandidates(): Promise<AgentSessionCandidate[]> {
+		const sessions = await this.sessionRepo.list({ cwd: this._cwd });
+		return sessions.map(toAgentSessionCandidate);
+	}
+
+	async resolveAgentSessionReference(
+		reference: string,
+	): Promise<ExtendedJsonlSessionMetadata> {
+		const normalized = reference.trim();
+		if (!normalized) {
+			throw new AgentSessionResolutionError({
+				reason: "not_found",
+				reference,
+				candidates: [],
+			});
+		}
+
+		const sessions = await this.sessionRepo.list({ cwd: this._cwd });
+		const absoluteReference = fileSystemValueOrThrow(
+			await this._fs.absolutePath(normalized),
+			`Failed to resolve session reference ${normalized}`,
+		);
+		const pathMatches = sessions.filter(
+			(session) =>
+				session.path === normalized || session.path === absoluteReference,
+		);
+		if (pathMatches.length === 1) return pathMatches[0];
+		if (pathMatches.length > 1) {
+			throw new AgentSessionResolutionError({
+				reason: "ambiguous",
+				reference: normalized,
+				candidates: pathMatches.map(toAgentSessionCandidate),
+			});
+		}
+
+		const idMatches = sessions.filter((session) => session.id === normalized);
+		if (idMatches.length === 1) return idMatches[0];
+		if (idMatches.length > 1) {
+			throw new AgentSessionResolutionError({
+				reason: "ambiguous",
+				reference: normalized,
+				candidates: idMatches.map(toAgentSessionCandidate),
+			});
+		}
+
+		throw new AgentSessionResolutionError({
+			reason: "not_found",
+			reference: normalized,
+			candidates: [],
 		});
 	}
 
@@ -93,6 +198,51 @@ export class SessionManager {
 		const session = await this.sessionRepo.open(options.metadata);
 		this._agentSessions.set(options.agentId, session);
 		return session;
+	}
+
+	async getAgentSessionSnapshot(
+		agentId: AgentId,
+	): Promise<AgentSessionSnapshot> {
+		const session = this._requireAgentSession(agentId);
+		return await this._snapshotSession(session);
+	}
+
+	async getAgentSessionTree(
+		agentId: AgentId,
+	): Promise<AgentSessionTreeSnapshot> {
+		const session = this._requireAgentSession(agentId);
+		return {
+			...(await this._snapshotSession(session)),
+			entries: await session.getEntries(),
+		};
+	}
+
+	async setAgentSessionName(
+		agentId: AgentId,
+		name: string,
+	): Promise<AgentSessionSnapshot> {
+		const session = this._requireAgentSession(agentId);
+		await session.appendSessionName(name);
+		return await this._snapshotSession(session);
+	}
+
+	async forkAgentSession(
+		agentId: AgentId,
+		options: ForkAgentSessionOptions = {},
+	): Promise<ExtendedJsonlSessionMetadata> {
+		const sourceSession = this._requireAgentSession(agentId);
+		const metadata = await sourceSession.getMetadata();
+		if (!isExtendedJsonlSessionMetadata(metadata)) {
+			throw new Error(`Cannot fork ephemeral agent session: ${agentId}`);
+		}
+		const forkedSession = await this.sessionRepo.fork(metadata, {
+			cwd: this._cwd,
+			entryId: options.entryId,
+			position: options.position,
+		});
+		const forkedMetadata = await forkedSession.getMetadata();
+		this._agentSessions.set(forkedMetadata.id, forkedSession);
+		return forkedMetadata;
 	}
 
 	async appendExtensionCustomEntry<T = unknown>(
@@ -162,6 +312,51 @@ export class SessionManager {
 		}
 		return session;
 	}
+
+	private async _snapshotSession(
+		session: Session<AgentSessionMetadata>,
+	): Promise<AgentSessionSnapshot> {
+		return {
+			metadata: await session.getMetadata(),
+			name: await session.getSessionName(),
+			leafId: await session.getLeafId(),
+			pathToRoot: await session.getBranch(),
+		};
+	}
+}
+
+function isExtendedJsonlSessionMetadata(
+	metadata: AgentSessionMetadata,
+): metadata is ExtendedJsonlSessionMetadata {
+	return (
+		"path" in metadata &&
+		typeof metadata.path === "string" &&
+		"cwd" in metadata &&
+		typeof metadata.cwd === "string"
+	);
+}
+
+function fileSystemValueOrThrow<TValue>(
+	result: { ok: true; value: TValue } | { ok: false; error: FileError },
+	message: string,
+): TValue {
+	if (!result.ok) {
+		throw new Error(`${message}: ${result.error.message}`);
+	}
+	return result.value;
+}
+
+function toAgentSessionCandidate(
+	metadata: ExtendedJsonlSessionMetadata,
+): AgentSessionCandidate {
+	return {
+		id: metadata.id,
+		path: metadata.path,
+		createdAt: metadata.createdAt,
+		cwd: metadata.cwd,
+		parentSessionPath: metadata.parentSessionPath,
+		profile: metadata.metadata?.profile,
+	};
 }
 
 const EXTENSION_CUSTOM_TYPE_PATTERN = /^[a-zA-Z0-9._:-]+$/;
