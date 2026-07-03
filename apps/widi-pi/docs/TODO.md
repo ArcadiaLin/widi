@@ -4,7 +4,7 @@
 
 ## 当前判断
 
-`widi-pi` 已经完成了 core runtime 的若干底座：profile registry、settings/auth/model registry、JSONL session adapter、orchestrator command/client/human-request、ToolRegistry、extension loader/runner MVP、observer/interceptor MVP、extension tool define/patch，以及 extension `custom` entry 的 session-local state MVP。
+`widi-pi` 已经完成了 core runtime 的若干底座：profile registry、settings/auth/model registry、JSONL session adapter、orchestrator command/client/human-request、ToolRegistry、extension loader/runner MVP、observer/interceptor MVP、extension tool define/patch、extension `custom` entry 的 session-local state MVP，以及 `agent.input` / extension `registerCommand()` 的 inputInvoke MVP。
 
 项目仍处于“core demo 可跑，product harness 未完整”的阶段。主要缺口不是单点 API，而是 runtime composition、extension discovery/trust/reload、agent record、coding tools、debug view UI、runtime policy 和多 agent 协作语义尚未收口。
 
@@ -13,8 +13,10 @@
 1. Runtime composition 先把 settings、profile roots、resource roots、extension roots、model/auth、session root 和 default profile/model 接成一个稳定入口。
 2. Agent record 再替代 `Map<AgentId, AgentHarness>`，承载 status、profile/source、session metadata、resolved resources/tools/extensions 和 diagnostics。
 3. Extension loader/runner 基于 agent record 补齐 file/module loader、trust、reload、diagnostics 和 inspect facts；debug view UI 延后到产品层。
-4. Coding extension 在 extension 机制稳定后提供 read/write/edit/bash/grep/find/ls 等产品工具；core 不再把这些当成 primitive。
-5. Agent collaboration tools 通过 orchestrator command/helper 实现，所有 agent lifecycle、A2A、human request 和 diagnostics 仍经过 orchestrator。
+4. Command 基于现有 `OrchestratorCommand`、`agent.input`、built-in inputInvoke 和 extension `registerCommand()` MVP 收敛 command definition、source provenance、resolve、execute、diagnostics 和 inspect facts。
+5. Runtime services facade 为 Command、tool、extension command、hook 和 agent collaboration tools 提供受控 runtime capability；不暴露 raw orchestrator、raw harness 或内部 maps。
+6. Coding extension 在 extension 机制稳定后提供 read/write/edit/bash/grep/find/ls 等产品工具；core 不再把这些当成 primitive。
+7. Agent collaboration tools 通过 orchestrator command/helper 实现，所有 agent lifecycle、A2A、human request 和 diagnostics 仍经过 orchestrator。
 
 ## P0: Runtime Composition
 
@@ -49,7 +51,9 @@
 - [x] 桥接 extension errors 到 orchestrator diagnostic event：覆盖 missing、activation throw、handler throw、custom-entry action failure；仅补齐 debug view 必需的 extensionId/source/phase/disposition。
 - [x] 增加 `agent.inspect` extension facts：loaded extensions、registered hooks、tool contributions、patches、diagnostics、stale state；不实现 debug view UI。
 - [x] 不引入独立 extension permission model；extension 共享 project trust 与 agent runtime policy，避免把 Pi-style extension authoring 做成重型 manifest/permission 开发。
-- [ ] 增加 `registerCommand()` MVP，并让 extension command 通过 orchestrator command/client 边界执行。
+- [x] 增加 `registerCommand()` MVP：extension command 必须声明 UI-neutral `inputInvoke`，由 `agent.input` 统一解析并通过 orchestrator command/client 边界执行。
+- [ ] 将 command/inputInvoke MVP 收敛为 `Command` runtime module：core/extension/adapter command definitions、source provenance、input name conflict diagnostics、resolved command inspect facts 和 command execution。
+- [ ] 定义 extension command runtime context：只暴露 runtime services facade，不暴露 raw orchestrator、raw harness、agents map 或 command internals mutation surface。
 - [ ] 设计 provider/resource contribution：extension 如何注册 provider、skills、prompt templates 或动态 resources。
 - [ ] 明确 provider/session hook matrix，决定 observe/intercept/mutate 的最小开放集。
 
@@ -68,6 +72,7 @@
 
 ## P0: Agent 协作 Tools
 
+- [ ] 定义 runtime services facade：供 Command、extension command、tool execute、hooks 和 agent collaboration tools 受控调用 runtime capabilities，按上下文裁剪 commands/agent/human/session 能力。
 - [ ] 定义 agent collaboration facade：spawn/resume child agent、prompt/steer/followUp、wait/abort、inspect status、collect summary。
 - [ ] 实现最小 built-in/extension tools：`agent_spawn`、`agent_prompt`、`agent_wait`、`agent_status`、`agent_handoff`。
 - [ ] 所有协作 tool 只能通过 orchestrator dispatch/helper 操作 agent，不直接持有 raw harness。

@@ -24,6 +24,64 @@ export interface AgentToolsSnapshot {
 	activeToolNames: string[];
 }
 
+export interface CommandInputInvoke {
+	readonly name: string;
+	readonly description?: string;
+	readonly argumentHint?: string;
+}
+
+export type BuiltinInputCommandKind =
+	| "agent.abort"
+	| "agent.compact"
+	| "agent.inspect"
+	| "extension.reload";
+
+export interface BuiltinInputCommandDefinition {
+	readonly kind: BuiltinInputCommandKind;
+	readonly inputInvoke: CommandInputInvoke;
+}
+
+export type InputCommandSource =
+	| { readonly kind: "builtin"; readonly commandKind: BuiltinInputCommandKind }
+	| { readonly kind: "extension"; readonly extensionId: string };
+
+export interface InputCommandInfo {
+	readonly inputInvoke: CommandInputInvoke;
+	readonly source: InputCommandSource;
+}
+
+export const builtinInputCommands = [
+	{
+		kind: "agent.abort",
+		inputInvoke: {
+			name: "abort",
+			description: "Abort the current agent run.",
+		},
+	},
+	{
+		kind: "agent.compact",
+		inputInvoke: {
+			name: "compact",
+			description: "Compact the current agent session.",
+			argumentHint: "[instructions]",
+		},
+	},
+	{
+		kind: "agent.inspect",
+		inputInvoke: {
+			name: "inspect",
+			description: "Inspect the current agent runtime facts.",
+		},
+	},
+	{
+		kind: "extension.reload",
+		inputInvoke: {
+			name: "reload",
+			description: "Reload extensions for the current agent.",
+		},
+	},
+] as const satisfies readonly BuiltinInputCommandDefinition[];
+
 export type ExtensionReloadAgentStatus = "reloaded" | "skipped" | "failed";
 
 export type ExtensionReloadAgentSkipReason =
@@ -65,6 +123,13 @@ interface OrchestratorCommandBase {
 }
 
 export type OrchestratorCommand =
+	| (OrchestratorCommandBase & {
+			kind: "agent.input";
+			agentId: string;
+			text: string;
+			images?: ImageContent[];
+			inputInvoke?: boolean;
+	  })
 	| (OrchestratorCommandBase & {
 			kind: "agent.prompt";
 			agentId: string;
@@ -122,6 +187,10 @@ export type OrchestratorCommand =
 			agentId: string;
 	  })
 	| (OrchestratorCommandBase & {
+			kind: "agent.getInputCommands";
+			agentId: string;
+	  })
+	| (OrchestratorCommandBase & {
 			kind: "agent.setActiveTools";
 			agentId: string;
 			toolNames: string[];
@@ -152,6 +221,7 @@ export type OrchestratorCommandValue =
 	| ExtensionReloadResult
 	| AgentLifecycleStatus
 	| AgentRecordSnapshot
+	| InputCommandInfo[]
 	| string[]
 	| HumanResponse
 	| undefined;

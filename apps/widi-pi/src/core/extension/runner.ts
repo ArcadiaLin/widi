@@ -5,8 +5,10 @@ import type {
 	ToolResultPatch,
 } from "@earendil-works/pi-agent-core";
 import { type CoreDiagnostic, createDiagnostic } from "../diagnostics.ts";
+import type { CommandInputInvoke } from "../orchestrator/commands.ts";
 import type { ToolRegistry } from "../tool-registry.ts";
 import type {
+	ExtensionCommandContribution,
 	ExtensionIdentity,
 	ExtensionInterceptorRegistration,
 	ExtensionToolContribution,
@@ -70,11 +72,23 @@ export interface ExtensionRunnerSnapshot {
 	extensionIds: readonly string[];
 	extensions: readonly ExtensionIdentity[];
 	hooks: readonly ExtensionHookSnapshot[];
+	commands: readonly ExtensionCommandSnapshot[];
 	toolContributions: readonly ExtensionToolContributionSnapshot[];
 	stale: {
 		readonly stale: boolean;
 		readonly message?: string;
 	};
+}
+
+export interface ExtensionCommandSnapshot {
+	readonly extensionId: string;
+	readonly inputInvoke: CommandInputInvoke;
+}
+
+export interface ResolvedExtensionCommand {
+	readonly extensionId: string;
+	readonly inputInvoke: CommandInputInvoke;
+	readonly handler: ExtensionCommandContribution["handler"];
 }
 
 const patchInspectableFields = [
@@ -154,6 +168,24 @@ export class ExtensionRunner {
 		};
 	}
 
+	getInputCommands(
+		options: { reservedNames?: readonly string[] } = {},
+	): ResolvedExtensionCommand[] {
+		return resolveExtensionCommands(
+			this._loadedScope.commandContributions,
+			options.reservedNames ?? [],
+		);
+	}
+
+	getInputCommand(
+		name: string,
+		options: { reservedNames?: readonly string[] } = {},
+	): ResolvedExtensionCommand | undefined {
+		return this.getInputCommands(options).find(
+			(command) => command.inputInvoke.name === name,
+		);
+	}
+
 	invalidate(
 		message = "This extension context is stale after runtime replacement or reload.",
 	): void {
@@ -185,6 +217,10 @@ export class ExtensionRunner {
 			extensionIds: [...this.extensionIds],
 			extensions: [...this.extensions],
 			hooks,
+			commands: this.getInputCommands().map((command) => ({
+				extensionId: command.extensionId,
+				inputInvoke: { ...command.inputInvoke },
+			})),
 			toolContributions: this._loadedScope.toolContributions.map(
 				(contribution) => {
 					if (contribution.kind === "define") {
@@ -565,6 +601,41 @@ export class ExtensionRunner {
 
 function formatError(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function resolveExtensionCommands(
+	contributions: readonly ExtensionCommandContribution[],
+	reservedNames: readonly string[],
+): ResolvedExtensionCommand[] {
+	const takenNames = new Set(reservedNames);
+	const counts = new Map<string, number>();
+	for (const contribution of contributions) {
+		const name = contribution.inputInvoke.name;
+		counts.set(name, (counts.get(name) ?? 0) + 1);
+	}
+
+	const seen = new Map<string, number>();
+	return contributions.map((contribution) => {
+		const name = contribution.inputInvoke.name;
+		const occurrence = (seen.get(name) ?? 0) + 1;
+		seen.set(name, occurrence);
+		let invocationName =
+			(counts.get(name) ?? 0) > 1 ? `${name}:${occurrence}` : name;
+		while (takenNames.has(invocationName)) {
+			const suffix = (seen.get(name) ?? occurrence) + 1;
+			seen.set(name, suffix);
+			invocationName = `${name}:${suffix}`;
+		}
+		takenNames.add(invocationName);
+		return {
+			extensionId: contribution.extensionId,
+			inputInvoke: {
+				...contribution.inputInvoke,
+				name: invocationName,
+			},
+			handler: contribution.handler,
+		};
+	});
 }
 
 function createUnboundActions(): ExtensionActions {

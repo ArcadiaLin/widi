@@ -12,6 +12,7 @@ import type {
 import type { Static, TSchema } from "typebox";
 import type {
 	AgentToolsSnapshot,
+	CommandInputInvoke,
 	OrchestratorCommand,
 	OrchestratorCommandResult,
 } from "../orchestrator/commands.ts";
@@ -202,6 +203,16 @@ export interface ExtensionCommandContext extends ExtensionContext {
 	waitForIdle(): Promise<void>;
 }
 
+export type ExtensionCommandHandler = (
+	args: string,
+	context: ExtensionCommandContext,
+) => Promise<void> | void;
+
+export interface ExtensionCommandDefinition {
+	readonly inputInvoke: CommandInputInvoke;
+	readonly handler: ExtensionCommandHandler;
+}
+
 export type ExtensionObserver<
 	TEvent extends ExtensionObservedEvent = ExtensionObservedEvent,
 > = (event: TEvent, context: ExtensionContext) => Promise<void> | void;
@@ -235,6 +246,7 @@ export interface ExtensionActivationApi {
 		targetToolName: string,
 		patch: ToolDefinitionPatch<TParamsSchema, TDetails>,
 	): void;
+	registerCommand(command: ExtensionCommandDefinition): void;
 	observe<TName extends ExtensionObservedEventName>(
 		eventName: TName,
 		handler: ExtensionObserverFor<TName>,

@@ -11,6 +11,10 @@ describe("ExtensionRunner inspect", () => {
 		loader.registerExtensionFactory("sample", (api) => {
 			api.observe("agent_harness_event", () => {});
 			api.intercept("tool_call", () => undefined);
+			api.registerCommand({
+				inputInvoke: { name: "sample", description: "Sample command" },
+				handler: () => {},
+			});
 			api.registerTool({
 				name: "sampleTool",
 				label: "Sample Tool",
@@ -50,6 +54,15 @@ describe("ExtensionRunner inspect", () => {
 				eventName: "tool_call",
 			},
 		]);
+		expect(snapshot.commands).toEqual([
+			{
+				extensionId: "sample",
+				inputInvoke: {
+					name: "sample",
+					description: "Sample command",
+				},
+			},
+		]);
 		expect(snapshot.toolContributions).toEqual([
 			{
 				kind: "define",
@@ -66,6 +79,7 @@ describe("ExtensionRunner inspect", () => {
 			},
 		]);
 		expect(snapshot.hooks[0]).not.toHaveProperty("handler");
+		expect(snapshot.commands[0]).not.toHaveProperty("handler");
 		expect(snapshot.toolContributions[0]).not.toHaveProperty("definition");
 		expect(snapshot.toolContributions[1]).not.toHaveProperty("patch");
 	});

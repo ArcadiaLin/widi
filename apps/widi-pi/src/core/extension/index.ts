@@ -1,4 +1,5 @@
 export {
+	type ExtensionCommandContribution,
 	type ExtensionDiscoveryCandidate,
 	type ExtensionDiscoveryCandidateKind,
 	type ExtensionDiscoveryResult,
@@ -18,11 +19,13 @@ export {
 	JitiExtensionModuleImporter,
 } from "./module-importer.ts";
 export {
+	type ExtensionCommandSnapshot,
 	type ExtensionHookSnapshot,
 	ExtensionRunner,
 	type ExtensionRunnerOptions,
 	type ExtensionRunnerSnapshot,
 	type ExtensionToolContributionSnapshot,
+	type ResolvedExtensionCommand,
 } from "./runner.ts";
 export type {
 	ExtensionActionFailure,
@@ -30,6 +33,8 @@ export type {
 	ExtensionActivationApi,
 	ExtensionCommandContext,
 	ExtensionCommandContextActions,
+	ExtensionCommandDefinition,
+	ExtensionCommandHandler,
 	ExtensionContext,
 	ExtensionContextActions,
 	ExtensionCustomEntry,

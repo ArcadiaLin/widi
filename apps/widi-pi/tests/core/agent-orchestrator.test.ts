@@ -1198,6 +1198,7 @@ describe("AgentOrchestrator", () => {
 				extensionIds: ["sample"],
 				extensions: [{ id: "sample", source: { kind: "factory" } }],
 				hooks: [],
+				commands: [],
 				toolContributions: [
 					{
 						kind: "define",
@@ -1220,6 +1221,7 @@ describe("AgentOrchestrator", () => {
 				extensionIds: [],
 				extensions: [],
 				hooks: [],
+				commands: [],
 				toolContributions: [],
 				stale: { stale: false },
 			},
@@ -1248,6 +1250,10 @@ describe("AgentOrchestrator", () => {
 		orchestrator.registerExtensionFactory("sample", (api) => {
 			api.observe("tool_lifecycle_event", () => {});
 			api.intercept("context", (event) => ({ messages: event.messages }));
+			api.registerCommand({
+				inputInvoke: { name: "sample", description: "Sample command" },
+				handler: () => {},
+			});
 			api.registerTool(createToolDefinition("sampleTool", "sample"));
 			api.patchTool("base", {
 				description: "patched base",
@@ -1271,6 +1277,15 @@ describe("AgentOrchestrator", () => {
 					kind: "intercept",
 					extensionId: "sample",
 					eventName: "context",
+				},
+			],
+			commands: [
+				{
+					extensionId: "sample",
+					inputInvoke: {
+						name: "sample",
+						description: "Sample command",
+					},
 				},
 			],
 			toolContributions: [
@@ -1348,6 +1363,88 @@ describe("AgentOrchestrator", () => {
 				}),
 			}),
 		);
+	});
+
+	it("executes extension input commands through agent.input", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("sample", (api) => {
+			api.registerCommand({
+				inputInvoke: {
+					name: "mark",
+					description: "Append a marker entry",
+					argumentHint: "<text>",
+				},
+				handler: async (args, context) => {
+					await context.session.appendEntry("marker", { args });
+				},
+			});
+		});
+		const { agentId } = await orchestrator.spawnAgentHarness();
+
+		const result = await orchestrator.dispatch({
+			kind: "agent.input",
+			source: { kind: "human" },
+			agentId,
+			text: "/mark hello world",
+		});
+
+		expect(result).toMatchObject({
+			ok: true,
+			value: undefined,
+		});
+		expect(
+			await orchestrator.sessionManager.findExtensionCustomEntries(
+				agentId,
+				"sample",
+				"marker",
+			),
+		).toMatchObject([
+			{
+				type: "marker",
+				data: { args: "hello world" },
+			},
+		]);
+		expect(orchestrator.getAgentInputCommands(agentId)).toEqual([
+			expect.objectContaining({
+				inputInvoke: expect.objectContaining({ name: "abort" }),
+				source: { kind: "builtin", commandKind: "agent.abort" },
+			}),
+			expect.objectContaining({
+				inputInvoke: expect.objectContaining({ name: "compact" }),
+				source: { kind: "builtin", commandKind: "agent.compact" },
+			}),
+			expect.objectContaining({
+				inputInvoke: expect.objectContaining({ name: "inspect" }),
+				source: { kind: "builtin", commandKind: "agent.inspect" },
+			}),
+			expect.objectContaining({
+				inputInvoke: expect.objectContaining({ name: "reload" }),
+				source: { kind: "builtin", commandKind: "extension.reload" },
+			}),
+			{
+				inputInvoke: {
+					name: "mark",
+					description: "Append a marker entry",
+					argumentHint: "<text>",
+				},
+				source: { kind: "extension", extensionId: "sample" },
+			},
+		]);
 	});
 
 	it("keeps an unavailable record when extension activation fails", async () => {

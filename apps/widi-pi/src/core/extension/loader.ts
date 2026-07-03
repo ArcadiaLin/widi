@@ -15,6 +15,8 @@ import {
 } from "./module-importer.ts";
 import type {
 	ExtensionActivationApi,
+	ExtensionCommandDefinition,
+	ExtensionCommandHandler,
 	ExtensionFactory,
 	ExtensionInterceptorFor,
 	ExtensionInterceptorName,
@@ -27,6 +29,12 @@ import type {
 
 type ExtensionToolDefinition = ToolDefinition;
 type ExtensionToolDefinitionPatch = ToolDefinitionPatch;
+
+export interface ExtensionCommandContribution {
+	extensionId: string;
+	inputInvoke: ExtensionCommandDefinition["inputInvoke"];
+	handler: ExtensionCommandHandler;
+}
 
 export interface ExtensionObserverRegistration<
 	TName extends ExtensionObservedEventName,
@@ -125,6 +133,7 @@ export interface LoadedExtensionScope {
 	extensions: readonly ExtensionIdentity[];
 	diagnostics: readonly CoreDiagnostic[];
 	toolContributions: readonly ExtensionToolContribution[];
+	commandContributions: readonly ExtensionCommandContribution[];
 	observerHandlers: ReadonlyMap<
 		ExtensionObservedEventName,
 		readonly ExtensionObserverRegistration<ExtensionObservedEventName>[]
@@ -332,6 +341,7 @@ export class ExtensionLoader {
 	): Promise<LoadedExtensionScope> {
 		const diagnostics: CoreDiagnostic[] = [];
 		const toolContributions: ExtensionToolContribution[] = [];
+		const commandContributions: ExtensionCommandContribution[] = [];
 		const observerHandlers = new Map<
 			ExtensionObservedEventName,
 			ExtensionObserverRegistration<ExtensionObservedEventName>[]
@@ -369,6 +379,7 @@ export class ExtensionLoader {
 						agentId: options.agentId,
 						profileId: options.profileId,
 						toolContributions,
+						commandContributions,
 						observerHandlers,
 						interceptorHandlers,
 					}),
@@ -396,6 +407,7 @@ export class ExtensionLoader {
 			extensions,
 			diagnostics,
 			toolContributions,
+			commandContributions,
 			observerHandlers,
 			interceptorHandlers,
 		};
@@ -710,6 +722,7 @@ function createActivationApi(options: {
 	agentId: string;
 	profileId: string;
 	toolContributions: ExtensionToolContribution[];
+	commandContributions: ExtensionCommandContribution[];
 	observerHandlers: Map<
 		ExtensionObservedEventName,
 		ExtensionObserverRegistration<ExtensionObservedEventName>[]
@@ -738,6 +751,14 @@ function createActivationApi(options: {
 				targetToolName,
 				patch: patch as ExtensionToolDefinitionPatch,
 				source: { kind: "extension", id: options.extensionId },
+			});
+		},
+		registerCommand: (command) => {
+			const inputInvoke = normalizeInputInvoke(command.inputInvoke);
+			options.commandContributions.push({
+				extensionId: options.extensionId,
+				inputInvoke,
+				handler: command.handler,
 			});
 		},
 		observe: (eventName, handler) => {
@@ -772,6 +793,24 @@ function normalizeExtensionIds(extensionIds: readonly string[]): string[] {
 		normalized.push(extensionId);
 	}
 	return normalized;
+}
+
+function normalizeInputInvoke(
+	inputInvoke: ExtensionCommandDefinition["inputInvoke"],
+): ExtensionCommandDefinition["inputInvoke"] {
+	const name = inputInvoke.name.trim();
+	if (!name) {
+		throw new Error("Extension command inputInvoke.name must not be empty.");
+	}
+	if (name.startsWith("/") || /\s/u.test(name)) {
+		throw new Error(
+			"Extension command inputInvoke.name must not start with '/' or contain whitespace.",
+		);
+	}
+	return {
+		...inputInvoke,
+		name,
+	};
 }
 
 async function discoverDirectory(
