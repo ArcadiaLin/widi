@@ -38,4 +38,4 @@ WIDI command layer 不应伪造第二套 queue。未来如果要支持 UI 取消
 
 ## TODO
 
-Pi upstream 对齐任务集中维护在 [WIDI 下一阶段 TODO](../TODO.md)。本文件只记录哪些底层原语不应长期硬塞进 WIDI core。
+Pi upstream 对齐任务集中维护在 [Milestones](../TODO.md) 与 [Backlog](../BACKLOG.md)。本文件只记录哪些底层原语不应长期硬塞进 WIDI core。

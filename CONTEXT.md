@@ -5,11 +5,11 @@ This glossary defines the core language used by `widi-pi`, a multi-agent runtime
 ## Language
 
 **Core**:
-The recoverable and diagnosable agent runtime foundation of `widi-pi`, including orchestration, dependency registries, channels, diagnostics, sessions, and runtime boundaries. Product interaction modes, concrete UI commands, and coding-agent presets are built on top of Core rather than being Core primitives.
+The recoverable and diagnosable agent runtime foundation of `widi-pi`, including orchestration, dependency registries, client fanout, human requests, diagnostics, sessions, and runtime boundaries. Product interaction modes, concrete UI presentation, and coding-agent presets are built on top of Core rather than being Core primitives.
 _Avoid_: Product feature set, preset, application adapter
 
 **Orchestrator**:
-The Core runtime coordinator that keeps cross-agent lifecycle, dependency resolution, channel routing, diagnostics, and harness assembly on the observable main path. It is not the owner of file parsing, UI presentation, product modes, or extension-private behavior.
+The Core runtime coordinator that keeps cross-agent lifecycle, dependency resolution, client fanout, human request routing, slash command execution, diagnostics, and harness assembly on the observable main path. It is not the owner of file parsing, UI presentation, product modes, or extension-private behavior.
 _Avoid_: Master controller, application adapter, feature container
 
 **Agent**:
@@ -49,7 +49,7 @@ The Core dependency registry that resolves a **ProfileId** into a sourced **Agen
 _Avoid_: Markdown loader, resolveProfile callback, default profile
 
 **Profile Capability**:
-A declaration on an **AgentProfile** describing which runtime behaviors the assembled **Agent** is allowed to participate in. It connects profile intent to runtime policy, channel policy, and tool visibility, but it is not a tool list or a Core Capability.
+A declaration on an **AgentProfile** describing which runtime behaviors the assembled **Agent** is allowed to participate in, such as accepting user input or spawning agents. It connects profile intent to runtime policy (including slash command gating) and tool visibility, but it is not a tool list or a Core Capability.
 _Avoid_: Core capability, tool list, product feature
 
 **Resource**:
@@ -81,7 +81,7 @@ A resolved **Resource** passed into a Pi **AgentHarness** as part of its resourc
 _Avoid_: Any dependency, profile, extension
 
 **Runtime State**:
-The in-process state needed to run an **Agent**, such as harness instances, resolved dependencies, active extensions, model objects, channel queues, and availability. Runtime State is not automatically recoverable across processes.
+The in-process state needed to run an **Agent**, such as harness instances, resolved dependencies, active extensions, model objects, harness queues, and availability. Runtime State is not automatically recoverable across processes.
 _Avoid_: Persisted state, session metadata
 
 **Runtime Boundary**:
@@ -94,22 +94,22 @@ _Avoid_: Runtime state, object snapshot, secret storage
 
 **Session**:
 The Pi single-agent history produced by one **AgentHarness**, including messages, tool results, model/tool/thinking changes, compaction, branch summaries, and branch leaf state. Its metadata may carry small recovery references used by WIDI to rebuild surrounding runtime, but the session body is not the full **Agent** state.
-_Avoid_: Agent state store, channel log, multi-session store
+_Avoid_: Agent state store, event log, multi-session store
 
 **Recovery Reference**:
 A small, stable, serializable reference stored in metadata so WIDI can rebuild runtime dependencies during resume. It may identify declarations such as profiles, presets, extensions, or resources, but it is not extension runtime state or a snapshot of loaded objects.
 _Avoid_: Extension state, object snapshot, extra info
 
-**Channel**:
-The Core communication semantics for routing and presenting messages between agents, humans, extensions, policy, and external transports. A Channel defines source visibility, target, timing, async behavior, and delivery strategy; it is not a session or bare transport.
-_Avoid_: Message bus, session log, transport
+**Slash Command**:
+The Orchestrator-owned human input protocol that parses `/name` input into gated, observable operations or inline input transforms. It is an input capability of the Orchestrator with its own event track, not a separate runtime, not a programmatic API, and not a UI widget.
+_Avoid_: Command runtime, RPC schema, UI command palette
 
 **Diagnostic**:
 A structured Core record of a profile, dependency, runtime, or extension problem. A Diagnostic is not UI copy and not merely a warning; severity and policy decide whether execution continues, degrades, marks an Agent unavailable, or fails.
 _Avoid_: Log line, thrown error, UI message
 
 **Human Request**:
-A human-facing request pattern within **Channel** semantics that may wait for a human response. It can be initiated by a tool call, in which case the response enters the Pi **Session** as a tool result; outside a tool call it remains channel/runtime interaction.
+A structured human-facing request routed by the **Orchestrator** to registered clients, which may wait for a human response. It can be initiated by a tool call, in which case the response enters the Pi **Session** as a tool result; outside a tool call it remains orchestrator runtime interaction.
 _Avoid_: Session message, standalone tool, UI prompt
 
 **Core Capability**:
@@ -129,7 +129,7 @@ The Core dependency registry that resolves built-in tools, extension-contributed
 _Avoid_: Orchestrator tool array, profile tools field
 
 **Extension**:
-A runtime participant activated by **Core** that can observe, intercept, supplement, or rewrite Core Capability execution through controlled hooks and contributions. It may contribute tools, channels, resource providers, diagnostics, and adapter interactions, but it does not privately own Core persisted state.
+A runtime participant activated by **Core** that can observe, intercept, supplement, or rewrite Core Capability execution through controlled hooks and contributions. It may contribute tools, slash commands, resource providers, diagnostics, and adapter interactions, but it does not privately own Core persisted state.
 _Avoid_: Plugin package, sidecar controller, private runtime
 
 **Extension Declaration**:
@@ -157,16 +157,16 @@ A product-oriented assembly built on **Core**, such as a coding-agent setup with
 _Avoid_: Core, profile, extension
 
 **Product Interaction Mode**:
-A user-facing interaction pattern assembled by a **Preset** or **Extension** using Core capabilities, agents, sessions, channels, tools, and extension-owned storage when needed. Core does not define its lifecycle or state model.
+A user-facing interaction pattern assembled by a **Preset** or **Extension** using Core capabilities, agents, sessions, events, tools, and extension-owned storage when needed. Core does not define its lifecycle or state model.
 _Avoid_: Core primitive, multi-session core abstraction
 
 ## Flagged Ambiguities
 
 **Run**:
-Do not use Run as a Core storage or lifecycle boundary. Multiple-session coordination belongs to extensions or presets that use Core Agents, Sessions, Channels, Diagnostics, and their own storage when needed.
+Do not use Run as a Core storage or lifecycle boundary. Multiple-session coordination belongs to extensions or presets that use Core Agents, Sessions, orchestrator events, Diagnostics, and their own storage when needed.
 
-**Channel Log**:
-Do not use Channel Log as Core persisted state. Core may emit channel events for observability, while persistent channel history belongs to adapters, extensions, or presets when they need it.
+**Event Log**:
+Do not use an event log as Core persisted state. Core emits orchestrator events (harness events, tool lifecycle facts, command events, diagnostics) for observability, while persistent event history belongs to adapters, extensions, or presets when they need it.
 
 **Profile Fallback**:
 Do not treat fallback to a default profile as universal Core resume behavior. Missing resume profiles produce diagnostics; fallback, failure, user selection, or marking an Agent unavailable are policy decisions owned by the caller layer.
@@ -181,4 +181,4 @@ Do not silently merge or override duplicate Resources in Core. Duplicate resourc
 
 Developer: Should team interaction behavior be part of Core?
 
-Domain expert: No. Core provides the channel and orchestration foundation; team interaction behavior is an extension or preset that uses those foundations.
+Domain expert: No. Core provides the orchestration, event, and human-request foundation; team interaction behavior is an extension or preset that uses those foundations.

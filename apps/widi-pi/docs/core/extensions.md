@@ -2,7 +2,7 @@
 
 Extension 是 `widi-pi` 的高自由度扩展机制。它应能像 Pi coding-agent extension 一样深度参与 runtime，但不能绕过 core 的可观察边界。
 
-当前目标不是宣称 extension runtime 已经稳定，而是把 extension loader/runner、Orchestrator、Command 和 `ToolRegistry` 的边界整理清楚。当前 loader/runner 已支持 factory/file/module activation、project trust gate、reload、tool define/patch、command contribution、observer/interceptor、session custom entry 和 inspect facts。`ToolRegistry` 继续负责 source、diagnostics、patch、visibility、active tools 和最终 wrap-to-`AgentTool`。
+当前目标不是宣称 extension runtime 已经稳定，而是把 extension loader/runner、Orchestrator、slash command 和 `ToolRegistry` 的边界整理清楚。当前 loader/runner 已支持 factory/file/module activation、project trust gate、reload、tool define/patch、command contribution、observer/interceptor、session custom entry 和 inspect facts。`ToolRegistry` 继续负责 source、diagnostics、patch、visibility、active tools 和最终 wrap-to-`AgentTool`。
 
 ## 核心理念
 
@@ -79,11 +79,12 @@ Tool tracking 不进入 core primitive。它应作为 extension pattern：通过
 - Runtime reload 已能重新 discover/load extension catalog，并替换 eligible agent runner；旧 context 会被标记 stale。
 - Activation API 支持 `registerTool()`、`patchTool()`、`registerCommand()`、`observe()` 和 `intercept()`。
 - `ExtensionRunner` 将 loaded scope 贡献到当前 agent 的 scoped `ToolRegistry` overlay，不污染 global registry。
-- Extension command 通过 UI-neutral `inputInvoke` 注册，当前由 `agent.input` 解析并执行 handler。
+- Extension slash command 通过 `registerCommand()` 注册 UI-neutral 事实（name、description、argumentHint）与执行形态——`handler(args, ctx)`（line 命令，任意副作用）或 `expand(arg)`（inline 纯展开）二选一；由 orchestrator `inputAgent` 统一解析、门控并执行。契约详见 [Command Experiment](./command-experiment.md)（`inputInvoke` 字段名随收编退役）。
 - Orchestrator 已将 `before_agent_start`、`context`、`tool_call`、`tool_result` 四个 harness hook 桥接到 interceptors。
 - Orchestrator 已将 raw `agent_harness_event` 和归一化 `tool_lifecycle_event` 桥接到 observers；observer error 变成 `extension.handler_failed` diagnostic。
-- Runner 使用 lazy context：`bindCore()` / `bindCommandContext()` 后，handler 通过 `createContext()` / `createCommandContext()` 获取 actions、human request、dispatch、tool mutation 和 session custom entry facade。
+- Runner 使用 lazy context：`bindCore()` / `bindCommandContext()` 后，handler 通过 `createContext()` / `createCommandContext()` 获取 actions、human request、tool mutation 和 session custom entry facade（actions 的全量 `dispatch` 将随 M1 移除；own-agent scope 收敛属 M2）。
 - `agent.inspect` 已能暴露 loaded extensions、registered hooks、commands、tool contributions、patches、diagnostics 和 stale state。
+- Interceptor 失败语义（当前事实，M2 定案）：四个 `_intercept*` 中任一 handler 抛错，本次拦截**丢弃所有 extension 的合成结果**并降级为 warning diagnostic，harness 按"无拦截结果"继续。装了审计/安全 extension 的用户会在另一个不相干 extension 出错时静默失去防护——M2 需在"跳过失败者保留其余"与"显式 fail-closed"之间定案。
 
 这些能力足够验证 ToolRegistry、hook、diagnostics、reload、input command 和 session custom entry 的主路径。仍不足以作为稳定第三方 extension surface：provider/resource registration、更多 hook matrix、extension-owned storage、product presentation 和完整 RPC adapter 尚未收口。
 
@@ -130,7 +131,7 @@ WIDI 的当前形态更偏 core-first：
 - Extension-owned storage；session `custom` entry 已有 MVP，但 fork/compaction/export/custom_message policy 未定义。
 - Product presentation：`agent.inspect` 已有 facts，但还没有产品级 UI/RPC 呈现。
 
-下一步应继续加固 hook matrix、provider/resource registration、extension-owned storage 和 product presentation。等这些边界稳定后，再把 coding extension 或 team/flow/goal extension 作为 product surface。
+Hook matrix、provider/resource registration、extension-owned storage 和 product presentation 的设计收口已列为 M4 milestone（设计先行，见 [Milestones](../TODO.md)）。等这些边界稳定后，再把 team/flow/goal 类 extension 作为 product surface；coding tools 已裁决为 core built-in（见 DESIGN.md），不再依赖 extension 形态交付。
 
 ## 非职责
 
@@ -144,4 +145,4 @@ WIDI 的当前形态更偏 core-first：
 
 ## TODO
 
-Extension 后续任务集中维护在 [WIDI 下一阶段 TODO](../TODO.md)。模块执行顺序见 [Runtime Lifecycle](./runtime-lifecycle.md)。本文件只保留 extension 机制边界、当前能力和与 Pi coding-agent 的差异。
+Extension 后续任务按 milestone 维护在 [Milestones](../TODO.md) 与 [Backlog](../BACKLOG.md)。模块执行顺序见 [Runtime Lifecycle](./runtime-lifecycle.md)。本文件只保留 extension 机制边界、当前能力和与 Pi coding-agent 的差异。

@@ -6,7 +6,7 @@ Tools 是 agent 可调用入口。Core Capability 是 core 原生 runtime 能力
 
 Core Capability 不是 Tool。
 
-Core Capability 是 core 原生提供、可通过受控 API 调用的 runtime 能力，例如创建 agent、dispatch command、request human、解析 profile、加载 resource 或发出 diagnostic。
+Core Capability 是 core 原生提供、可通过受控 API 调用的 runtime 能力，例如创建 agent、prompt/steer agent、request human、解析 profile、加载 resource 或发出 diagnostic。orchestrator 的原子方法是这些能力的唯一事实面；slash command 只是它们面向 human input 的协议（见 [Command Experiment](./command-experiment.md)）。
 
 Product Tool 暴露 Runtime Capability。
 
@@ -130,4 +130,4 @@ Tool tracking、审计和 checkpoint 更适合作为 extension pattern：用 `ar
 
 ## TODO
 
-Tool/capability 后续任务集中维护在 [WIDI 下一阶段 TODO](../TODO.md)。本文件只保留 ToolRegistry、visibility、tool lifecycle facts 和 persistence 边界。
+Tool/capability 后续任务按 milestone 维护在 [Milestones](../TODO.md) 与 [Backlog](../BACKLOG.md)。本文件只保留 ToolRegistry、visibility、tool lifecycle facts 和 persistence 边界。

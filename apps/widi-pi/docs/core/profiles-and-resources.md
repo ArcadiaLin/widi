@@ -155,4 +155,4 @@ Persistent session metadata 只保存 profile reference，例如 `{ id, label? }
 
 ## TODO
 
-Profile/resource 后续任务集中维护在 [WIDI 下一阶段 TODO](../TODO.md)。本文件只保留 profile registry、resource loading 和 orchestrator policy 的边界。
+Profile/resource 后续任务按 milestone 维护在 [Milestones](../TODO.md) 与 [Backlog](../BACKLOG.md)。本文件只保留 profile registry、resource loading 和 orchestrator policy 的边界。
