@@ -6,12 +6,12 @@
 
 WIDI core runtime 由几类模块组合：
 
-- Runtime composition：创建 `ExecutionEnv`、settings、auth、model registry、profile registry、resource loader、session manager、tool registry、extension loader、orchestrator 和可选 command runtime。
+- Runtime composition：创建 `ExecutionEnv`、settings、auth、model registry、profile registry、resource loader、session manager、tool registry、extension loader 和 orchestrator。
 - Dependency layer：解析 profile、resources、model/auth、extensions、tools 和 sessions。它们提供 facts、diagnostics 和 runtime dependencies，但不拥有 agent lifecycle。
-- Orchestration layer：`AgentOrchestrator` 拥有 agent record、harness lifecycle、command dispatch、human request、client fanout、extension binding 和 diagnostics publish。
+- Orchestration layer：`AgentOrchestrator` 拥有 agent record、harness lifecycle、slash command 执行、human request、client fanout、extension binding 和 diagnostics publish。
 - Harness layer：Pi `AgentHarness` 负责单 agent turn、queue、session tree、model/tool execution 和 raw harness events。
-- Extension layer：`ExtensionLoader` 激活 declaration，`ExtensionRunner` 保存当前 agent/profile 的 loaded scope，并通过 observers、interceptors、tool contributions、command contributions 和 session custom entry facade 插入 runtime。
-- Adapter layer：TUI、RPC、stdout、CLI 或 product preset 注册 client、提交 command、处理 human request，并消费 orchestrator events。
+- Extension layer：`ExtensionLoader` 激活 declaration，`ExtensionRunner` 保存当前 agent/profile 的 loaded scope，并通过 observers、interceptors、tool contributions、slash command contributions 和 session custom entry facade 插入 runtime。
+- Adapter layer：TUI、RPC、stdout、CLI 或 product preset 注册 client、提交 input（`inputAgent`）或调用原子方法、处理 human request，并消费 orchestrator events。
 
 ## Runtime Composition Order
 
@@ -22,9 +22,8 @@ WIDI core runtime 由几类模块组合：
 3. 创建 config/auth/model/profile/resource/session/tool/extension 相关 registry 或 loader。
 4. 解析 default profile、default model 和 default thinking level，收集 diagnostics。
 5. discovery/load extension catalog。当前实现已支持 file/module discovery、trust gate、activation diagnostics 和 reload 所需 facts，但稳定第三方 extension API 仍未完成。
-6. 创建 `AgentOrchestrator`，注入 dependency layer 和 defaults。
-7. 创建可选 `Command` runtime。Command 不是强制 façade；consumer 可以使用它，也可以直接操作 orchestrator 原子能力。
-8. 返回 runtime services、orchestrator、command 和 startup diagnostics。
+6. 创建 `AgentOrchestrator`，注入 dependency layer 和 defaults。slash command 解析是 orchestrator 创建选项（可关闭），不是独立 runtime。
+7. 返回 runtime services、orchestrator 和 startup diagnostics。
 
 Runtime composition 不创建产品 UI，也不决定 `/team`、`/flow`、`/goal` 等交互模式。这些属于 adapter、preset 或 extension。
 
@@ -47,18 +46,20 @@ Runtime composition 不创建产品 UI，也不决定 `/team`、`/flow`、`/goal
 
 任何 adapter、extension 或 tool 都不应直接创建 sibling/child harness。跨 agent lifecycle 必须回到 orchestrator。
 
-## Command Lifecycle
+## Slash Command Lifecycle
 
-Command 是实验性、可选 runtime。当前 command lifecycle 由 `AgentOrchestrator.dispatch()` 负责：
+Slash command 是 orchestrator 自身的 human input 能力，唯一入口是 `inputAgent(agentId, text)`（迁移中，目标语义与裁决全文见 [Command Experiment](./command-experiment.md)）：
 
-1. caller 提交 typed command，带 `source`。
-2. orchestrator 分配或接受 `commandId`。
-3. emit `command_accepted`。
-4. 执行 command。当前实现通过 `core/command` switch 调用 orchestrator runtime；`agent.input` 可解析 built-in 或 extension `inputInvoke`。
-5. 成功时 emit `command_completed`，携带 result。
-6. 失败时转为 diagnostic，emit `command_rejected`，并 publish diagnostic。
+1. 两阶段解析：整行 line command 匹配；未命中则做 inline `/name:arg` 扫描；均未命中按普通 prompt 走，不发 command 事件。
+2. 命中 registry → emit `command_detected`（附 commandId、name、source、placement）。
+3. `_commandGateway` 检查 profile `commands` policy、`scope`、agent status；失败 → emit `command_rejected` + diagnostic，保证无副作用。
+4. 必填参数缺失 → `argumentsCompletion` human request；无 client/超时/拒绝 → `command_rejected`，不降级为普通 prompt。
+5. emit `command_accepted`，执行 built-in binding、extension handler 或 inline expand。
+6. 成功 → emit `command_completed`（只带摘要，完整 result 由 `InputResult` 返回值承载）；执行中抛错 → 转 diagnostic，emit `command_failed`。
 
-Command 不拥有 client fanout，不定义 UI，不持久化 command log，也不重新定义 Pi harness queue。`steer`、`followUp`、`nextTurn` 的真实排队和消费继续由 Pi harness `queue_update`、`settled` 等 events 表达。
+`command_rejected`（执行前拦下，无副作用）与 `command_failed`（执行中失败，可能有部分副作用）语义分离。extension command 与 built-in 走同一条事件轨道。
+
+Slash command 不拥有 client fanout，不定义 UI，不持久化 command log，也不重新定义 Pi harness queue。`steer`、`followUp`、`nextTurn` 的真实排队和消费继续由 Pi harness `queue_update`、`settled` 等 events 表达。programmatic consumer 不使用 slash command——直接调用 orchestrator 原子方法。
 
 ## Event Layers
 
@@ -268,6 +269,8 @@ agent_start | turn_start
 
 agent_end | turn_end | settled
   -> record.status = ready/idle according to harness/record state
+     // `ready` 只在创建瞬间出现且无消费者；
+     // M2 收敛为 creating/running/idle/unavailable/disposed
 
 dispose
   -> unsubscribe harness events/interceptors
@@ -286,9 +289,9 @@ Observer failures do not stop the raw harness event from existing. They become e
 - Tool contribution：orchestrator resolve tools 时，将 extension contributions replay 到 scoped `ToolRegistry` overlay。
 - Interceptor：orchestrator 将 harness `before_agent_start`、`context`、`tool_call`、`tool_result` 桥接给 runner interceptors。
 - Observer：orchestrator 将 `agent_harness_event` 和 `tool_lifecycle_event` 送给 runner observers。
-- Command：extension `registerCommand()` 提供 `inputInvoke` 和 handler，当前通过 `agent.input` 触发。
+- Slash command：extension `registerCommand()` 提供 name/description/argumentHint 与执行形态（`handler` 或 `expand` 二选一），由 orchestrator `inputAgent` 统一解析、门控并执行（契约见 [Command Experiment](./command-experiment.md)）。
 - Session custom entry：extension context 暴露 namespaced `appendEntry()` / `findEntries()`，用于当前 session branch 上的小型 append-only state。
-- Runtime actions：extension context 可通过受控 actions 调用 dispatch、human request、get/set tools 等能力。
+- Runtime actions：extension context 可通过受控 actions 调用 human request、get/set tools 等具名能力（全量 `dispatch` 将随 M1 移除，scope 收敛为 own-agent 属 M2）。
 
 未来仍需定义的 execution points 包括 provider/resource contribution、更多 session/provider hooks、extension-owned storage、product presentation 和稳定第三方 extension API。
 
@@ -296,9 +299,9 @@ Observer failures do not stop the raw harness event from existing. They become e
 
 `human-request` 是 orchestrator runtime 能力，不属于 Pi session body。
 
-1. caller 通过 orchestrator 或 extension/tool facade 发起 request，携带 source。
+1. caller 通过 orchestrator 或 extension/tool facade 发起 request，携带 source。slash command 的 `argumentsCompletion` 补全是 core 内第一个消费场景。
 2. orchestrator 创建 request envelope，emit `human_request_pending`。
-3. 第一个支持 `requestHuman` 的 client 处理请求。
+3. 第一个支持 `requestHuman` 的 client 处理请求（first-client-wins 是现状而非设计承诺；多 client 路由语义在 M3 出现真实场景时定义）。
 4. 成功时 emit `human_request_resolved` 并返回 response。
 5. timeout 时 emit `human_request_timeout` 并让等待方失败。
 6. cancellation 时 emit `human_request_cancelled` 并让等待方失败。
@@ -335,11 +338,11 @@ Diagnostics 是 runtime facts，不等同于 session history。是否在 UI/RPC 
 
 - 不定义最终 UI/RPC 呈现。
 - 不把 extension runtime state 写入 core session。
-- 不让 extension 绕过 orchestrator 持有 raw harness 或 agents map。
+- 不让 extension 绕过 orchestrator 持有 raw harness 或 agents map（当前 `agents`/`getAgentHarness` 仍公开，机制化收紧在 M2——在此之前这是纪律而非强制）。
 - 不让 ToolRegistry 负责 extension activation。
-- 不让 Command 成为强制入口。
+- 不把 slash command 当作 programmatic API——代码消费者使用 orchestrator 原子方法。
 - 不维护第二套 agent queue 或 tool preview state。
 
 ## TODO
 
-Runtime lifecycle 后续任务集中维护在 [WIDI 下一阶段 TODO](../TODO.md)。本文只记录模块顺序、事件传递和持久化边界。
+Runtime lifecycle 后续任务按 milestone 维护在 [Milestones](../TODO.md) 与 [Backlog](../BACKLOG.md)。本文只记录模块顺序、事件传递和持久化边界。

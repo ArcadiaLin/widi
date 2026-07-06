@@ -1,150 +1,58 @@
-# WIDI 下一阶段 TODO
+# WIDI Milestones
 
-本文档是当前阶段唯一的集中 TODO 链。分机制文档只记录边界和当前事实；新增任务先落到这里，避免 checklist 分散、过期。
+本文档只记录当前与近期 milestone 的 blocking 项和验收标准。纪律：
 
-## 当前判断
+- 完成项在 milestone 收尾时整段删除，不打勾堆积——git history 是账本。
+- 入 milestone 的门槛是 consumer 举证：每一条都必须能回答"哪个已存在的 consumer/测试需要它"。答不出的进 [BACKLOG](BACKLOG.md)。
+- 机制边界与设计裁决记录在各机制文档，本文档不复述。
 
-`widi-pi` 已经完成了 core runtime 的若干底座：profile registry、settings/auth/model registry、JSONL session adapter、orchestrator command/client/human-request、ToolRegistry、extension loader/runner MVP、observer/interceptor MVP、extension tool define/patch、extension `custom` entry 的 session-local state MVP，以及 `agent.input` / extension `registerCommand()` 的 inputInvoke MVP。
+## M1: Command 收编（当前）
 
-项目仍处于“core demo 可跑，product harness 未完整”的阶段。主要缺口不是单点 API，而是 coding tools、agent collaboration tools、runtime policy 和产品级 presentation 尚未收口。
+目标：终结 command 伪可选层（review 问题 1/2），slash command 成为 orchestrator 自身的 input 能力。全部裁决与五 PR 切片见 [Command Experiment](core/command-experiment.md)。
 
-Command 目前视为实验性设计。它尝试在 core 中提供一层可选 command runtime，用来更清楚地描述和组合核心能力集合，并在尽量不触及 UI 层、交互层的前提下，给 extension 提供更多可注册的 human/client-facing 能力。这个方向不应过早固化为唯一入口；runtime consumer 既可以选择导入并使用 Command，也可以直接控制 `AgentOrchestrator` 的原子化行为。
+- [ ] PR 1 — 文档修真：command-experiment 定稿；runtime-lifecycle、DESIGN、orchestrator、extensions 对应章节改写；TODO/BACKLOG 重组；CONTEXT.md 术语修真（Channel 移除）。
+- [ ] PR 2 — 代码布局整理（零行为变化）：`OperationSource` 迁出 `command/types.ts`；`slash-command.ts` 定型 + 两阶段解析器；`extension/command.ts` 草稿并入 `extension/types.ts`；result 类型归位。
+- [ ] PR 3 — `inputAgent` 收编：built-in 绑定表、`_commandGateway`、`InputResult` 返回契约、`command_detected`/`command_failed` 事件、profile `commands` 字段解析。
+- [ ] PR 4 — 删除：`dispatch()`、`Command` 类、`CommandRequest`/`CommandValue` union、`ExtensionActions.dispatch`、`command/` 目录；`tests/core/agent-orchestrator.test.ts` 29 处调用点改写。
+- [ ] PR 5+ — 增量能力逐命令落地：inline 扫描与 expand 执行、argumentsCompletion human request、`/model`、`setAgentThinkingLevel` + `/thinking`、`/skill`、`/prompt`。
 
-## 依赖主线
+验收：不存在两个事件语义不同的 command 入口；每条"不让 X 做 Y"（保留字、gateway、fall-back 禁止、expand 无副作用）都能指到一行强制它的代码。
 
-1. Runtime composition 先把 settings、profile roots、resource roots、extension roots、model/auth、session root 和 default profile/model 接成一个稳定入口。
-2. Agent record 再替代 `Map<AgentId, AgentHarness>`，承载 status、profile/source、session metadata、resolved resources/tools/extensions 和 diagnostics。
-3. Extension loader/runner 基于 agent record 继续补齐 provider/resource contribution、hook matrix、extension-owned storage 和 product presentation。
-4. Command 基于现有 `agent.input`、built-in inputInvoke 和 extension `registerCommand()` MVP，作为实验性 runtime 继续验证 command request、source provenance、resolve、execute、diagnostics 和 inspect facts 是否能描述 core capability 集合。
-5. Command、extension command 和未来 product tools 可以直接操作 orchestrator runtime；如有真实稳定性压力，再从实际调用点抽取小 facade。
-6. Coding extension 在 extension 机制稳定后提供 read/write/edit/bash/grep/find/ls 等产品工具；core 不再把这些当成 primitive。
-7. Agent collaboration tools 通过 orchestrator command/helper 实现，所有 agent lifecycle、cross-agent collaboration、human request 和 diagnostics 仍经过 orchestrator。
+## M2: 边界收敛 + 第一个真实 consumer
 
-## P0: Runtime Composition
+对应 review M1/M2 中 command 之外的部分。前半全部是减法，后半是第一个产品消费者：
 
-- [x] 设计并实现应用级 runtime service，统一创建 `ExecutionEnv`、`SettingManager`、`ConfigValueResolver`、`AuthStorage`、`ModelRegistry`、`AgentProfileRegistry`、`ResourceLoader`、`SessionManager`、`ToolRegistry`、`ExtensionLoader` 和 `AgentOrchestrator`。
-- [x] 将 `SettingManager.getProfilePaths()` 接入真实 profile roots，组合 settings paths、project `.widi/profiles`、agent dir profiles 和 builtin default profile。
-- [x] 将 settings 中的 `skills`、`prompts`、`extensions` paths 接入 resource/extension discovery，而不是只停留在 typed getters。
-  - Runtime composition 阶段边界：`skills`/`prompts` 接入 `ResourceLoader` roots；`extensions` 接入 `ExtensionLoader.discover()`，只产出 discovery candidates 和 diagnostics，不执行 file/module load 或 activation。完整 file/module loader、trust/reload/activation diagnostics 留在 P0 Extension 完善阶段。
-- [x] 明确 default profile/model 的来源：settings、CLI/runtime override、builtin fallback 的优先级和 diagnostics。
-  - Default profile 优先级：runtime override > settings `defaultProfile` > builtin `default` fallback。Default model 优先级：runtime override > settings `defaultProvider`/`defaultModel` > first available configured model fallback。Default thinking level 优先级：runtime override > settings `defaultThinkingLevel` > builtin `medium` fallback，并按 resolved model capability clamp。Runtime service 暴露 resolved source facts，并为成功解析与 fail-fast 错误提供 diagnostics。
-- [x] 为 runtime service 增加 focused tests，覆盖损坏 settings、缺失 profile root、project trust 和 builtin default source。
+- [ ] `src/core/tools/` 占位清理：删除 `coding/` 七个空文件；`tools/types.ts` 与 `tools/index.ts` 重复 re-export 二留一。
+- [ ] Tool 契约类型（`ToolDefinition`/`ToolDefinitionPatch`/`ToolSource`/`ToolExecutionContext`/`ToolLifecycleEvent`）从 `extension/types.ts` 迁到 core 层，解开 dependency 层对 extension 层的依赖倒置。
+- [ ] `agents` map 与 `getAgentHarness()` 私有化，对外只留 snapshot 查询；`spawnAgentHarness` 改名 `spawnAgent`，只返回 `agentId`。
+- [ ] `ExtensionActions` scope 化：actions 默认锁定 own agent（agentId 由 context 注入），跨 agent 操作等 M3 collaboration facade。
+- [ ] Interceptor 失败语义定案：改为"跳过失败者、保留其余 extension 结果"，或显式 fail-closed 并写进 extensions.md（当前：一个 handler 抛错静默丢弃全部合成结果）。
+- [ ] Agent status 收敛：删除 `ready` 或补消费者（当前事件路径只产 `running`/`idle`，`ready` 仅创建瞬间出现）。
+- [ ] 显式声明单进程写入假设（session/auth/config storage 共用此裁决），或实现文件锁。
+- [ ] package.json 修真：删除虚假入口（`main`/`bin`/`cli` 指向不存在的文件）与未使用依赖；README 写明 bootstrap 顺序（submodule → build pi → test）。
+- [ ] Core built-in coding tools 第一版（裁决见 [DESIGN.md](DESIGN.md#coding-tools)）：read/write/edit 最小集复刻 pi-coding-agent，`source: core` 进 ToolRegistry；`/skill` 依赖的 read 能力在此就绪。
+- [ ] 最小 stdout/CLI adapter：只消费 orchestrator events + `inputAgent`，用真实调用压力反向检验 ToolRegistry、hook、diagnostics——当前所有 API 只被测试消费过。
 
-## P0: Agent Record And Lifecycle
+## M3: Multi-agent 最小闭环
 
-- [x] 将 `AgentOrchestrator.agents: Map<AgentId, AgentHarness>` 收敛为 agent record。
-- [x] Agent record 至少包含：`agentId`、status、profile reference/source、session metadata、model、harness、tool snapshot、extension runner、resource diagnostics、extension diagnostics。
-- [x] 定义 status：`creating`、`ready`、`running`、`idle`、`unavailable`、`disposed`。
-- [x] 实现 status query command/debug API。
-- [x] 实现 dispose lifecycle：unsubscribe harness events/interceptors、invalidate extension runner、清理 pending human requests、释放 runtime resources。
-- [x] 定义 unavailable agent：subagent 或恢复分支失败时保留 agent record 和 diagnostics，但不创建 broken harness。
-- [x] 增加 unavailable/resume failure tests。
+- [ ] Collaboration facade（orchestrator helper），由 profile `capabilities.canSpawn` 门控。
+- [ ] `agent_spawn` / `agent_prompt` / `agent_wait` / `agent_status` 四个 core tools（`agent_handoff` 语义未定义，不做）。
+- [ ] `AgentRecord` 增加 `spawnedBy` lineage 事实，复核 slash command `scope: "user-facing"` 的 gateway 判据。
+- [ ] Cross-agent human-request 路由：多 client 语义在此定义（此前维持 first-client-wins）。
+- [ ] `/spawn` slash command。
+- [ ] Multi-agent 测试：spawn、并发、abort、dispose、unavailable 恢复。
 
-## P0: Extension 完善
+验收：spawn → collaborate → recover 有真实流程测试；"原生 multi-agent"的差异化声明第一次有代码背书。
 
-- [x] 内存 factory loader：`registerExtensionFactory()`。
-- [x] Activation-time `registerTool()` / `patchTool()`。
-- [x] Runtime `observe()` / `intercept()` MVP：`before_agent_start`、`context`、`tool_call`、`tool_result`。
-- [x] Extension `ctx.session.appendEntry()` / `findEntries()` MVP：当前 extension namespace、current branch path、append-only custom state。
-- [x] 定义轻量 extension identity/source facts：`id`、`source`；保持 Pi-style default factory author API。
-- [x] 实现轻量 file/module factory loader：direct file、directory index、`package.json` entry、jiti import、cache busting、id conflict diagnostics；本轮不做 npm package name resolution。
-- [x] 接入 project trust gate；implicit project-local `.widi/extensions` 默认需要 trust，untrusted 时跳过并产生 diagnostic。
-- [x] 实现 reload：基于当前 extension roots 重新 discover/load extension，替换 eligible agent runner，旧 context stale，刷新 scoped tool registry；settings/trust/roots recomposition 留给 runtime reload。
-- [x] 桥接 extension errors 到 orchestrator diagnostic event：覆盖 missing、activation throw、handler throw、custom-entry action failure，并补齐 inspect 所需的 extensionId/source/phase/disposition。
-- [x] 增加 `agent.inspect` extension facts：loaded extensions、registered hooks、tool contributions、patches、diagnostics、stale state；product presentation 后续再做。
-- [x] 让 extension 共享 project trust 与 agent runtime policy，避免把 Pi-style extension authoring 做成重型开发面。
-- [x] 增加 `registerCommand()` MVP：extension command 必须声明 UI-neutral `inputInvoke`，由 `agent.input` 统一解析并通过 orchestrator command/client 边界执行。
-- [x] 将 command/inputInvoke MVP 收敛为 `core/command` runtime module：command request 类型、built-in input command、input parser、command execution 和 runtime-service 暴露。
-- [ ] 设计 provider/resource contribution：extension 如何注册 provider、skills、prompt templates 或动态 resources。
-- [ ] 明确 provider/session hook matrix，决定 observe/intercept/mutate 的最小开放集。
+## M4: Extension Surface 收口
 
-## P0 (Experimental): Command Runtime
+Extension 是设计缺口最大的一块：当前 loader/runner 是 MVP，能跑内部验证，但离"可交付的第三方扩展面"还有整层设计没做。本 milestone **设计先行**——每个条目先产出裁决文档（进 `docs/core/`，风格与 command-experiment.md 相同：裁决 + 边界 + 代码锚点），再进实现；裁决文档可以在 M2/M3 期间并行推进，实现在 M3 后落地。
 
-- [ ] 明确 Command 的可选导出边界：允许 consumer 选择 `Command` runtime，也允许直接使用 orchestrator 原子能力。
-- [ ] 补齐最小 resolved facts：source provenance、input name conflict diagnostics、resolved command inspect facts。
-- [ ] 评估 extension command runtime context：当前沿用 extension context；如有真实稳定性压力，再拆更窄的 command context。
+- [ ] Hook matrix 裁决：provider/session hook 开放哪些、每个 hook 点是 observe/intercept/mutate 中的哪一档、返回值如何合成、失败语义（承接 M2 的 interceptor 定案）。开放门槛沿用 consumer 举证。
+- [ ] Provider/resource contribution 裁决：extension 如何注册 provider、skills、prompt templates 或动态 resources；与 ResourceLoader/ModelRegistry 的所有权边界；参照 ToolRegistry 的 registration-with-provenance 模式。
+- [ ] Extension-owned storage 裁决：core 提供什么（路径、diagnostics、lifecycle hook），不解释什么（数据模型）；与 session custom entry 的分工线。
+- [ ] Session custom entry policy：fork、branch move、compaction、export、`custom_message` 语义（当前 MVP 只有 append-only + current branch path）。
+- [ ] 稳定第三方 extension API 裁决：activation API 面冻结范围、版本兼容策略、`extension.version_incompatible` 的语义。
+- [ ] Product presentation：`agent.inspect` facts 的产品级 UI/RPC 呈现形态。
 
-## P0: 基础 Coding Tools
-
-当前 `apps/widi-pi/examples/coding/{bash,read,write}.ts` 是 frozen legacy examples，不属于 core runtime composition。
-
-- [ ] 决定 built-in coding extension 的包/目录形态，例如 `extensions/coding` 或 app preset 内置 factory。
-- [ ] 从 Pi coding-agent 对齐 product tool set：`read`、`write`、`edit`、`bash`、`grep`、`find`、`ls`。
-- [ ] 先实现 read/write/edit 的最小可交付版本：path resolution、binary/image policy、truncation、typed details、mutation queue、错误文本。
-- [ ] 再实现 search tools：优先使用 `rg`/`fd` 或可注入 backend；缺失依赖时产生清晰 diagnostic。
-- [ ] 设计 bash backend：短期可用阻塞式 `ExecutionEnv.exec()`；长期等 interactive shell session 原语。
-- [ ] 所有 coding tools 都以 extension `registerTool()` 贡献，ToolRegistry 负责 visibility、active tools、patch 和 diagnostics。
-- [ ] 增加 tool result compatibility tests，验证 Pi-style `content`/`details` 可从 session 恢复。
-- [ ] 明确 sandbox/local/remote backend 的选择不进入 `ToolDefinition` 通用 contract，而由 extension activation 闭包捕获。
-
-## P0: Agent 协作 Tools
-
-- [ ] 定义 agent collaboration runtime access：Command、extension command、tool execute、hooks 和 agent collaboration tools 直接操作 orchestrator runtime；如需要再抽取最小 facade。
-- [ ] 定义 agent collaboration facade：spawn/resume child agent、prompt/steer/followUp、wait/abort、inspect status、collect summary。
-- [ ] 实现最小 built-in/extension tools：`agent_spawn`、`agent_prompt`、`agent_wait`、`agent_status`、`agent_handoff`。
-- [ ] 所有协作 tool 只能通过 orchestrator dispatch/helper 操作 agent，不直接持有 raw harness。
-- [ ] 明确 session 记录策略：协作请求/结果作为 tool call/result 进入调用 agent session；被调用 agent 使用自己的 Pi session。
-- [ ] 定义 cross-agent human-request 策略：被调用 agent 请求人类时如何路由 source、target 和 timeout。
-- [ ] 定义 subagent unavailable 恢复路径：父流程可继续，diagnostics 可见。
-- [ ] 增加 multi-agent tests：spawn、失败恢复、并发、abort、tool visibility、diagnostics。
-
-## P1: Diagnostics And Presentation
-
-- [ ] 增加 UI/RPC presentation，基于现有 `agent.inspect` facts 展示 profile、resources、tools、active tools、extensions、session metadata、custom entries 摘要和 diagnostics。
-- [ ] 定义 resource diagnostics severity：explicit missing、default dir missing、parse failed、duplicate identity。
-- [ ] 将 resume 路径 diagnostics 测试补齐：profile missing/disabled、resource diagnostics、active tool missing、extension missing。
-- [ ] 标准化 extension diagnostic code：`extension.missing`、`extension.load_failed`、`extension.version_incompatible`、`extension.activation_failed`、`extension.handler_failed`。
-- [ ] 为 diagnostic event 增加 stable id 或 operation correlation，便于 UI/RPC 去重与回放。
-
-## P1: Session And State
-
-- [x] 本地 JSONL adapter 支持 header `metadata.profile`。
-- [x] Storage 原样保存 Pi `custom` / `custom_message` entries。
-- [x] Extension custom state MVP 使用 namespaced `custom` entry。
-- [ ] 定义 custom entry fork、branch move、compaction、export 和 presentation policy。
-- [ ] 定义 missing extension、version mismatch、restore failed 时如何展示已有 custom entries。
-- [ ] 评估 custom message：是否进入 LLM context、是否显示、是否触发 turn、与 `sendMessage` 的关系。
-- [ ] 设计 header metadata schema version/migration。
-- [ ] 实现多进程文件锁或明确单进程写入假设。
-- [ ] 与 Pi upstream 对齐 typed/custom session metadata，决定本地 adapter 是否长期保留。
-
-## P1: Profiles And Resources
-
-- [ ] 定义 profile `capabilities` 到 runtime policy 的映射：`acceptsUserInput`、`canSpawn`、`canRequestUser`。
-- [ ] 评估是否需要 resource registry；当前 resource loader 只做轻量加载。
-- [ ] 定义 duplicate skill/prompt template 的处理：diagnostic、覆盖、合并或保留全部。
-- [ ] 决定 resolved resource source 是否进入 inspect facts、harness metadata 或 session custom entry。
-- [ ] 梳理 profile frontmatter schema 文档和示例。
-
-## P1: Model/Auth/Settings
-
-- [ ] 梳理 `models.json` schema 文档和示例。
-- [ ] 设计带多进程锁的 auth/config storage backend。
-- [ ] 评估多 agent 场景下 auth/model/settings 是按 workspace 共享，还是按 profile/runtime 隔离。
-- [ ] 将 provider registration 从 Pi global reset 模式收敛为更可控的 runtime scope，或记录当前全局副作用边界。
-
-## P2: UI/RPC/Product Preset
-
-- [ ] 明确第一版 WIDI product preset：默认 profile、默认 model policy、默认 coding extension、默认 tools、默认 extension set。
-- [ ] 设计最小 CLI/TUI/RPC adapter 边界：只通过 orchestrator events/commands 交互。
-- [ ] 增加 session selector、profile selector、model auth guidance、diagnostics panel 的 product TODO。
-- [ ] 评估 `/team`、`/flow`、`/goal` 应作为 extension 还是 preset commands。
-
-## Pi Upstream 对齐
-
-- [ ] Session metadata typed/custom extension section。
-- [ ] ExecutionEnv lock/transaction/lease。
-- [ ] Interactive shell session：start、poll、write stdin、cancel、yield timeout、output cursor/truncation、cleanup。
-- [ ] Harness queue item id 与 queued input cancellation。
-- [ ] Provider registration scope，避免应用层频繁 reset global provider registry。
-
-## Demo/原型状态清单
-
-- `runtime-service.ts` 仍是 5 行占位，不能承担真实 runtime composition。
-- `AgentOrchestrator` 仍以 `Map<AgentId, AgentHarness>` 为中心，缺少 agent record/status/dispose/unavailable。
-- `ExtensionLoader` 已支持 factory/file/module loader、trust 和 reload，但 provider/resource contribution 与 product presentation 尚未收口。
-- `ExtensionRunner` 已可运行 MVP hooks，但 command/provider/resource/session hook 面还窄。
-- `ToolRegistry` 是较成熟底座，但 product presentation 与 runtime policy 尚未收口。
-- `apps/widi-pi/examples/coding/*` 是参考实现，不是产品工具。
-- `ResourceLoader` 仍是轻量 loader，不是 registry。
-- `SessionManager` 已能管理 profile metadata 和 extension custom entries，但缺少 migration/lock/debug/export policy。
+验收：每条"extension 能/不能做 X"的宣言都有裁决文档 + 代码锚点；第一个第三方视角 extension（非仓库内测试）能只依赖公开契约完成 tool + slash command + observer 的组合。

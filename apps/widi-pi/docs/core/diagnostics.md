@@ -34,7 +34,7 @@ Diagnostic code 应带 namespace。
 - `tool.requested_missing`
 - `extension.activation_failed`
 - `model.auth_missing`
-- `orchestrator.command_failed`
+- `command.not_permitted`
 
 Domain 是稳定分类，code 是稳定机器可读原因。UI 可以按 domain/code 做本地化、分组、过滤或帮助链接。
 
@@ -259,4 +259,4 @@ Drain 型模块发布后会清空本地队列；result 型模块只在当前 ope
 
 ## TODO
 
-后续任务集中维护在 [WIDI 下一阶段 TODO](../TODO.md)，本文件只保留 diagnostics 机制边界和当前行为。
+后续任务按 milestone 维护在 [Milestones](../TODO.md) 与 [Backlog](../BACKLOG.md)，本文件只保留 diagnostics 机制边界和当前行为。

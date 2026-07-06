@@ -312,5 +312,5 @@ withLockAsync(fn)
 
 ## TODO
 
-Model/auth/settings 后续任务集中维护在 [WIDI 下一阶段 TODO](TODO.md)。本文件只保留当前模型、
+Model/auth/settings 后续任务按 milestone 维护在 [Milestones](TODO.md) 与 [Backlog](BACKLOG.md)。本文件只保留当前模型、
 认证和配置解析边界。

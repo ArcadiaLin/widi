@@ -23,7 +23,7 @@
 5. resume 时按 metadata 中的 profile id 调用 registry；找不到、禁用、重复或无效时结构化失败，不 fallback。
 6. 构建 harness 时用 `profile.skills`、`profile.promptTemplates`、`profile.systemPrompt`。
 
-这说明 orchestrator 已经接入第一版 profile registry contract。Profile、resource、model/auth、tool registry、command/human-request 和 extension loader/runner diagnostics 已经通过 orchestrator `diagnostic` event 统一发布；extension discovery、trust、reload 和 inspect facts 已经落地，provider/resource contribution 与产品级 presentation 仍未完成。
+这说明 orchestrator 已经接入第一版 profile registry contract。Profile、resource、model/auth、tool registry、slash command/human-request 和 extension loader/runner diagnostics 已经通过 orchestrator `diagnostic` event 统一发布；extension discovery、trust、reload 和 inspect facts 已经落地，provider/resource contribution 与产品级 presentation 仍未完成。
 
 ## 主要缺漏
 
@@ -63,7 +63,7 @@
 - `missingExtensionSeverity` 已用于 missing factory diagnostic 的 severity；`ignore` 不发诊断，`warning`/`error` 继续创建 harness 并报告 degraded diagnostic。
 - activation 失败会产生 `extension.activation_failed`，observer handler 失败会产生 `extension.handler_failed`。
 - `ExtensionRunner` 将 loaded scope 作为当前 agent 的 scoped registry overlay，支持 activation-time `registerTool` / `patchTool` / `registerCommand`。
-- runtime context 已提供 actions、human request、dispatch、tool mutation，以及 `ctx.session` custom entry facade。
+- runtime context 已提供 actions、human request、tool mutation，以及 `ctx.session` custom entry facade（actions 的全量 `dispatch` 将随 M1 Command 收编移除）。
 - reload 已支持替换 eligible agent runner，旧 context 会变成 stale。
 
 仍缺：
@@ -89,7 +89,7 @@
 
 当前 orchestrator 会把 `profile.tools` 传给 registry，把 resume context 中的 `activeToolNames` 传给 registry，并把 registry diagnostics 发布为 orchestrator `diagnostic` event。调用方需要新增工具时，应注册 tool contribution，而不是传入 Pi runtime closure。
 
-Runtime command 同样遵守这个边界。`agent.getTools` 返回 tool names 与 active tool names snapshot；`agent.setTools` 和 `agent.setActiveTools` 只接收名字，由 orchestrator 再次调用 `ToolRegistry.resolve()`。因此 profile create、session resume 和 runtime mutation 三条路径共享同一套可见性、active filtering 和 diagnostics 语义。
+Runtime mutation 同样遵守这个边界。`getAgentTools` 返回 tool names 与 active tool names snapshot；`setAgentTools` 和 `setAgentActiveTools` 只接收名字，由 orchestrator 再次调用 `ToolRegistry.resolve()`。因此 profile create、session resume 和 runtime mutation 三条路径共享同一套可见性、active filtering 和 diagnostics 语义。
 
 Tool execution context 不提供 core session persistence facade。Built-in tool 的可恢复数据应跟随 Pi coding-agent 的路径进入 tool call arguments、tool result `content` 和 typed `details`。Extension 如果需要和 session tree 强相关的小型状态，应通过 extension-owned custom entry API 进入 Pi `custom` entry；这不属于 profile schema。
 
@@ -97,15 +97,13 @@ Tool execution 的 UI 展示也不属于 profile schema。Orchestrator 会发布
 
 ### Capabilities
 
-`capabilities` 目前未参与任何决策。
+`capabilities` 的消费状态：
 
-需要明确哪些地方消费它：
+- `acceptsUserInput`：**第一个真实消费者已裁决**——slash command gateway 用它判定 `scope: "user-facing"` 命令（`/new`、`/fork`、`/resume`）能否在该 agent 上执行（M1 PR 3 落地，见 [Command Experiment](core/command-experiment.md)）。
+- `canSpawn`：M3 collaboration facade 用它门控 `agent_spawn` 等 core tools 的可见性。
+- `canRequestUser`：尚无消费者，条目在 [BACKLOG](BACKLOG.md)。
 
-- `acceptsUserInput` 是否影响 UI/RPC 是否允许用户直接对该 agent 发消息。
-- `canSpawn` 是否影响 agent 是否能创建子 agent。
-- `canRequestUser` 是否影响 request-user 类工具是否注册。
-
-这些能力应由 orchestrator 或 tool registry 转换成实际可用工具和事件策略，不能只停留在 profile 类型上。
+纪律不变：解析而不消费的 policy 字段是最危险的文档化谎言——每个字段要么有消费者，要么删除解析代码。profile 另有独立的 `commands` 门控字段（`enabled`/`deny`），不属于 `capabilities`，定义见 command-experiment.md。
 
 ### Profile Override
 
@@ -174,4 +172,4 @@ orchestrator 不应直接打印 diagnostics。当前统一出口是 orchestrator
 
 ## TODO
 
-Profile orchestration 后续任务集中维护在 [WIDI 下一阶段 TODO](TODO.md)。本文件只保留当前 profile、resource、tool、extension 与 diagnostics 的编排边界。
+Profile orchestration 后续任务按 milestone 维护在 [Milestones](TODO.md) 与 [Backlog](BACKLOG.md)。本文件只保留当前 profile、resource、tool、extension 与 diagnostics 的编排边界。
