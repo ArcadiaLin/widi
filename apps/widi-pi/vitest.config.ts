@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import codspeedPlugin from "@codspeed/vitest-plugin";
 import { defineConfig } from "vitest/config";
 
 const repoRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -15,39 +16,66 @@ const sourceAliases = [
 	},
 	{
 		find: "@earendil-works/pi-ai/api/anthropic-messages.lazy",
-		replacement: resolve(repoRoot, "pi/packages/ai/src/api/anthropic-messages.lazy.ts"),
+		replacement: resolve(
+			repoRoot,
+			"pi/packages/ai/src/api/anthropic-messages.lazy.ts",
+		),
 	},
 	{
 		find: "@earendil-works/pi-ai/api/azure-openai-responses.lazy",
-		replacement: resolve(repoRoot, "pi/packages/ai/src/api/azure-openai-responses.lazy.ts"),
+		replacement: resolve(
+			repoRoot,
+			"pi/packages/ai/src/api/azure-openai-responses.lazy.ts",
+		),
 	},
 	{
 		find: "@earendil-works/pi-ai/api/bedrock-converse-stream.lazy",
-		replacement: resolve(repoRoot, "pi/packages/ai/src/api/bedrock-converse-stream.lazy.ts"),
+		replacement: resolve(
+			repoRoot,
+			"pi/packages/ai/src/api/bedrock-converse-stream.lazy.ts",
+		),
 	},
 	{
 		find: "@earendil-works/pi-ai/api/google-generative-ai.lazy",
-		replacement: resolve(repoRoot, "pi/packages/ai/src/api/google-generative-ai.lazy.ts"),
+		replacement: resolve(
+			repoRoot,
+			"pi/packages/ai/src/api/google-generative-ai.lazy.ts",
+		),
 	},
 	{
 		find: "@earendil-works/pi-ai/api/google-vertex.lazy",
-		replacement: resolve(repoRoot, "pi/packages/ai/src/api/google-vertex.lazy.ts"),
+		replacement: resolve(
+			repoRoot,
+			"pi/packages/ai/src/api/google-vertex.lazy.ts",
+		),
 	},
 	{
 		find: "@earendil-works/pi-ai/api/mistral-conversations.lazy",
-		replacement: resolve(repoRoot, "pi/packages/ai/src/api/mistral-conversations.lazy.ts"),
+		replacement: resolve(
+			repoRoot,
+			"pi/packages/ai/src/api/mistral-conversations.lazy.ts",
+		),
 	},
 	{
 		find: "@earendil-works/pi-ai/api/openai-codex-responses.lazy",
-		replacement: resolve(repoRoot, "pi/packages/ai/src/api/openai-codex-responses.lazy.ts"),
+		replacement: resolve(
+			repoRoot,
+			"pi/packages/ai/src/api/openai-codex-responses.lazy.ts",
+		),
 	},
 	{
 		find: "@earendil-works/pi-ai/api/openai-completions.lazy",
-		replacement: resolve(repoRoot, "pi/packages/ai/src/api/openai-completions.lazy.ts"),
+		replacement: resolve(
+			repoRoot,
+			"pi/packages/ai/src/api/openai-completions.lazy.ts",
+		),
 	},
 	{
 		find: "@earendil-works/pi-ai/api/openai-responses.lazy",
-		replacement: resolve(repoRoot, "pi/packages/ai/src/api/openai-responses.lazy.ts"),
+		replacement: resolve(
+			repoRoot,
+			"pi/packages/ai/src/api/openai-responses.lazy.ts",
+		),
 	},
 	{
 		find: "@earendil-works/pi-ai/providers/all",
@@ -80,6 +108,7 @@ const sourceAliases = [
 ];
 
 export default defineConfig({
+	plugins: [codspeedPlugin()],
 	resolve: {
 		alias: sourceAliases,
 	},
