@@ -1,6 +1,6 @@
 # Orchestrator
 
-`AgentOrchestrator` 是 `widi-pi` 的 runtime coordinator。它不是单个 agent 的实现，也不是 UI/RPC adapter，而是把 profile、session、resources、tools、models、extensions、slash commands 与 clients 组合成可运行 agent runtime 的中心。
+`AgentOrchestrator` 是 `widi-pi` 的 runtime coordinator。它不是单个 agent 的实现，也不是 UI/RPC adapter，而是把 profile、session、resources、tools、models、extensions、command input 与 clients 组合成可运行 agent runtime 的中心。
 
 ## 核心理念
 
@@ -24,9 +24,9 @@ Orchestrator 负责跨 agent 可观察性。
 
 所有跨 agent 协作、human-request、extension 插入、resource 缺失、profile 解析失败和 runtime 降级，都应通过 orchestrator 的事件或 diagnostics 暴露，而不是隐藏在 extension 或 tool 的私有状态中。
 
-Orchestrator 拥有 slash command 与 client 能力。
+Orchestrator 拥有 command input 与 client 能力。
 
-二者都不是独立 runtime 模块。原子方法（`promptAgent`、`steerAgent`、`forkAgentSessionFromAgent`……）是唯一的 capability 事实，programmatic consumer 直接调用；slash command 是 orchestrator 内置的 human input 协议（解析、注册、门控、参数补全、`command_*` 事件轨道），唯一入口是 `inputAgent`。TUI、stdout、RPC adapter 通过 orchestrator 注册 client、订阅 orchestrator event、提交 input 或发起 human-request。曾经的 typed command runtime 实验已裁决删除，见 [Command Experiment](./command-experiment.md)。
+二者都不是独立 runtime 模块。原子方法（`promptAgent`、`steerAgent`、`forkAgentSessionFromAgent`……）是唯一的 capability 事实，programmatic consumer 直接调用；command input 是 orchestrator 内置的 human input 协议（trigger 解析、注册、门控、参数补全、`command_*` 事件轨道），唯一入口是 `inputAgent`。TUI、stdout、RPC adapter 通过 orchestrator 注册 client、订阅 orchestrator event、提交 input 或发起 human-request。曾经的 typed command runtime 实验已裁决删除，见 [Command Experiment](./command-experiment.md)。
 
 Orchestrator 负责 harness output fanout。
 
@@ -50,7 +50,7 @@ Profile、resource、extension、tool、model/auth 都应该由对应 registry/l
 - Session custom entry：namespaced `appendEntry()` / `findEntries()`。
 - Runtime actions：human request、get/set tools 等具名受控能力。
 
-未定义、不承诺的方向（进入 [BACKLOG](../BACKLOG.md) 前不是边界）：agent 创建/恢复前后 hook、profile/resource 解析 hook、slash command 执行前后拦截、human-request lifecycle hook、model/auth action hook、provider/resource contribution。
+未定义、不承诺的方向（进入 [BACKLOG](../BACKLOG.md) 前不是边界）：agent 创建/恢复前后 hook、profile/resource 解析 hook、command 执行前后拦截、human-request lifecycle hook、model/auth action hook、provider/resource contribution。
 
 原则不变：插入能力应接近 Pi coding-agent extension 的自由度，但所有跨 agent 动作必须回到 orchestrator 主路径。任何新 hook 的开放都需要 consumer 举证。
 

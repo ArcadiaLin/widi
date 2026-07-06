@@ -63,6 +63,7 @@ describe("ExtensionRunner inspect", () => {
 					description: "Sample command",
 					source: { kind: "extension", extensionId: "sample" },
 					placement: "line",
+					trigger: "/",
 				},
 			},
 		]);

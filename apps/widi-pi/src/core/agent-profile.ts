@@ -29,6 +29,16 @@ export type AgentProfile = {
 		readonly canSpawn?: boolean;
 		readonly canRequestUser?: boolean;
 	};
+
+	/** Input-triggered command gating; absent means all commands allowed. */
+	readonly commands?: AgentProfileCommandPolicy;
+};
+
+export type AgentProfileCommandPolicy = {
+	/** false disables command parsing for agents on this profile. */
+	readonly enabled?: boolean;
+	/** Command names denied for this profile, built-in and extension alike. */
+	readonly deny?: readonly string[];
 };
 
 export type AgentProfileOverride = Partial<Omit<AgentProfile, "id">>;
@@ -188,6 +198,7 @@ type AgentProfileFrontmatter = {
 	readonly "prompt-templates"?: unknown;
 	readonly extensions?: unknown;
 	readonly capabilities?: unknown;
+	readonly commands?: unknown;
 	readonly missingExtensionSeverity?: unknown;
 	readonly "missing-extension-severity"?: unknown;
 	readonly [key: string]: unknown;
@@ -1016,6 +1027,7 @@ function parseAgentProfile(
 		entry,
 		diagnostics,
 	);
+	const commands = readCommandPolicy(frontmatter.commands, entry, diagnostics);
 	const missingExtensionSeverity = readMissingExtensionSeverity(
 		frontmatter.missingExtensionSeverity ??
 			frontmatter["missing-extension-severity"],
@@ -1040,6 +1052,7 @@ function parseAgentProfile(
 			extensions,
 			missingExtensionSeverity,
 			capabilities,
+			commands,
 		},
 		diagnostics,
 	};
@@ -1140,10 +1153,15 @@ function parseProfileMarkdown(
 	}
 
 	const frontmatter: Record<string, unknown> = {};
-	const frontmatterText = normalized.slice(4, endIndex);
-	for (const line of frontmatterText.split("\n")) {
+	const lines = normalized.slice(4, endIndex).split("\n");
+	let index = 0;
+	while (index < lines.length) {
+		const line = lines[index];
 		const trimmed = line.trim();
-		if (!trimmed || trimmed.startsWith("#")) continue;
+		if (!trimmed || trimmed.startsWith("#")) {
+			index += 1;
+			continue;
+		}
 		const separatorIndex = trimmed.indexOf(":");
 		if (separatorIndex === -1) {
 			return { ok: false, error: `Cannot parse frontmatter line: ${trimmed}` };
@@ -1151,7 +1169,41 @@ function parseProfileMarkdown(
 
 		const key = trimmed.slice(0, separatorIndex).trim();
 		const rawValue = trimmed.slice(separatorIndex + 1).trim();
-		frontmatter[key] = parseSimpleFrontmatterValue(rawValue);
+		if (rawValue !== "") {
+			frontmatter[key] = parseSimpleFrontmatterValue(rawValue);
+			index += 1;
+			continue;
+		}
+
+		// A key without a value opens a one-level nested mapping (used by
+		// "capabilities" and "commands"); its entries are the indented lines.
+		const indent = line.length - line.trimStart().length;
+		const child: Record<string, unknown> = {};
+		index += 1;
+		while (index < lines.length) {
+			const childLine = lines[index];
+			const childTrimmed = childLine.trim();
+			if (!childTrimmed || childTrimmed.startsWith("#")) {
+				index += 1;
+				continue;
+			}
+			if (childLine.length - childLine.trimStart().length <= indent) break;
+			const childSeparatorIndex = childTrimmed.indexOf(":");
+			const childRawValue =
+				childSeparatorIndex === -1
+					? ""
+					: childTrimmed.slice(childSeparatorIndex + 1).trim();
+			if (childSeparatorIndex === -1 || childRawValue === "") {
+				return {
+					ok: false,
+					error: `Cannot parse nested frontmatter line: ${childTrimmed}`,
+				};
+			}
+			child[childTrimmed.slice(0, childSeparatorIndex).trim()] =
+				parseSimpleFrontmatterValue(childRawValue);
+			index += 1;
+		}
+		frontmatter[key] = child;
 	}
 
 	return {
@@ -1304,6 +1356,43 @@ function readCapabilities(
 	return Object.keys(capabilities).length > 0 ? capabilities : undefined;
 }
 
+function readCommandPolicy(
+	value: unknown,
+	entry: ProfileStorageEntry,
+	diagnostics: AgentProfileDiagnostic[],
+): AgentProfileCommandPolicy | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		diagnostics.push(
+			diagnosticForEntry(
+				entry,
+				"error",
+				"profile.invalid_metadata",
+				'Profile field "commands" must be an object.',
+			),
+		);
+		return undefined;
+	}
+
+	const record = value as Record<string, unknown>;
+	const enabled = readBoolean(
+		record.enabled,
+		"commands.enabled",
+		entry,
+		diagnostics,
+	);
+	const deny = readStringArray(
+		record.deny,
+		"commands.deny",
+		entry,
+		diagnostics,
+	);
+	const policy: { enabled?: boolean; deny?: readonly string[] } = {};
+	if (enabled !== undefined) policy.enabled = enabled;
+	if (deny !== undefined) policy.deny = deny;
+	return Object.keys(policy).length > 0 ? policy : undefined;
+}
+
 function validateProfileId(id: string): string | undefined {
 	if (!id.trim()) {
 		return "Profile id must be non-empty.";
@@ -1438,6 +1527,21 @@ function serializeProfile(profile: AgentProfile): string {
 		lines.push(
 			`missing-extension-severity: ${profile.missingExtensionSeverity}`,
 		);
+	}
+	if (profile.capabilities) {
+		lines.push("capabilities:");
+		for (const [key, value] of Object.entries(profile.capabilities)) {
+			if (value !== undefined) lines.push(`  ${key}: ${value}`);
+		}
+	}
+	if (profile.commands) {
+		lines.push("commands:");
+		if (profile.commands.enabled !== undefined) {
+			lines.push(`  enabled: ${profile.commands.enabled}`);
+		}
+		if (profile.commands.deny) {
+			lines.push(`  deny: ${serializeStringArray(profile.commands.deny)}`);
+		}
 	}
 	lines.push("---", profile.systemPrompt);
 	return lines.join("\n");

@@ -3,6 +3,7 @@ import type {
 	FileError,
 	FileInfo,
 } from "@earendil-works/pi-agent-core";
+import { type CommandPlacement, isCommandName } from "../command.ts";
 import {
 	type CoreDiagnostic,
 	createDiagnostic,
@@ -33,6 +34,8 @@ type ExtensionToolDefinitionPatch = ToolDefinitionPatch;
 export interface ExtensionCommandContribution {
 	extensionId: string;
 	name: string;
+	placement: CommandPlacement;
+	trigger: string;
 	description?: string;
 	argumentHint?: string;
 	handler: ExtensionCommandHandler;
@@ -760,6 +763,8 @@ function createActivationApi(options: {
 			options.commandContributions.push({
 				extensionId: options.extensionId,
 				name: definition.name,
+				placement: definition.placement ?? "line",
+				trigger: definition.trigger ?? "/",
 				description: definition.description,
 				argumentHint: definition.argumentHint,
 				handler: definition.handler,
@@ -806,14 +811,22 @@ function normalizeCommandDefinition(
 	if (!name) {
 		throw new Error("Extension command name must not be empty.");
 	}
-	if (name.startsWith("/") || /\s/u.test(name)) {
+	if (!isCommandName(name)) {
 		throw new Error(
-			"Extension command name must not start with '/' or contain whitespace.",
+			"Extension command name must not be empty or contain ':' or whitespace.",
+		);
+	}
+	const trigger = command.trigger?.trim() ?? "/";
+	if (!trigger || /[\s:]/u.test(trigger)) {
+		throw new Error(
+			"Extension command trigger must not be empty or contain ':' or whitespace.",
 		);
 	}
 	return {
 		...command,
 		name,
+		placement: "line",
+		trigger,
 	};
 }
 

@@ -874,16 +874,25 @@ describe("AgentOrchestrator", () => {
 			events.push(event);
 		});
 		(harness as unknown as { phase: "turn" }).phase = "turn";
+		const handleHarnessEvent = (
+			orchestrator as unknown as {
+				_handleAgentHarnessEvent(
+					agentId: string,
+					event: AgentHarnessEvent,
+				): Promise<void>;
+			}
+		)._handleAgentHarnessEvent.bind(orchestrator);
+		await handleHarnessEvent(agentId, { type: "turn_start" });
 
 		await expect(
-			orchestrator.inputAgent(agentId, "/steer keep going"),
+			orchestrator.inputAgent(agentId, "/steer:keep going"),
 		).resolves.toMatchObject({ kind: "command" });
 		await expect(
-			orchestrator.inputAgent(agentId, "/follow-up summarize next"),
+			orchestrator.inputAgent(agentId, "/follow-up:summarize next"),
 		).resolves.toMatchObject({ kind: "command" });
 		await expect(
 			orchestrator.inputAgent(agentId, "/status"),
-		).resolves.toMatchObject({ kind: "command", value: "ready" });
+		).resolves.toMatchObject({ kind: "command", value: "running" });
 
 		expect(events).toContainEqual(
 			expect.objectContaining({
@@ -915,27 +924,143 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
-	it("rejects empty steer and follow-up input aliases", async () => {
+	it("rejects command input with missing required arguments before execution", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
 		const { agentId } = await orchestrator.spawnAgentHarness();
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const handleHarnessEvent = (
+			orchestrator as unknown as {
+				_handleAgentHarnessEvent(
+					agentId: string,
+					event: AgentHarnessEvent,
+				): Promise<void>;
+			}
+		)._handleAgentHarnessEvent.bind(orchestrator);
+		await handleHarnessEvent(agentId, { type: "turn_start" });
 
 		await expect(
 			orchestrator.inputAgent(agentId, "/steer"),
 		).resolves.toMatchObject({
-			kind: "failed",
+			kind: "rejected",
 			diagnostic: {
-				message: "Slash command /steer requires text.",
+				code: "command.arguments_required",
+				message: "Command /steer requires an argument.",
 			},
 		});
 		await expect(
 			orchestrator.inputAgent(agentId, "/follow-up"),
 		).resolves.toMatchObject({
-			kind: "failed",
+			kind: "rejected",
 			diagnostic: {
-				message: "Slash command /follow-up requires text.",
+				code: "command.arguments_required",
+				message: "Command /follow-up requires an argument.",
 			},
 		});
+		// Rejected before execution: no command_accepted for either input.
+		expect(events).not.toContainEqual(
+			expect.objectContaining({ type: "command_accepted" }),
+		);
+	});
+
+	it("prunes and rejects commands denied by profile policy", async () => {
+		const env = new MemoryExecutionEnv();
+		const policyProfile: AgentProfile = {
+			...defaultProfile,
+			id: "policy",
+			commands: { deny: ["abort"] },
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: policyProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: policyProfile },
+				]),
+			),
+		});
+		const { agentId } = await orchestrator.spawnAgentHarness();
+
+		const names = orchestrator.listCommands(agentId).map((c) => c.name);
+		expect(names).not.toContain("abort");
+		expect(names).toContain("status");
+		await expect(
+			orchestrator.inputAgent(agentId, "/abort"),
+		).resolves.toMatchObject({
+			kind: "rejected",
+			diagnostic: { code: "command.not_permitted", agentId },
+		});
+	});
+
+	it("hides user-facing commands from agents that do not accept user input", async () => {
+		const env = new MemoryExecutionEnv();
+		const workerProfile: AgentProfile = {
+			...defaultProfile,
+			id: "background-worker",
+			capabilities: { acceptsUserInput: false },
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: workerProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: workerProfile },
+				]),
+			),
+		});
+		const { agentId } = await orchestrator.spawnAgentHarness();
+
+		const names = orchestrator.listCommands(agentId).map((c) => c.name);
+		expect(names).not.toContain("new");
+		expect(names).not.toContain("fork");
+		expect(names).not.toContain("resume");
+		expect(names).toContain("status");
+		await expect(
+			orchestrator.inputAgent(agentId, "/new"),
+		).resolves.toMatchObject({
+			kind: "rejected",
+			diagnostic: { code: "command.not_permitted", agentId },
+		});
+	});
+
+	it("treats input as plain prompt when command parsing is disabled", async () => {
+		const env = new MemoryExecutionEnv();
+		const chatProfile: AgentProfile = {
+			...defaultProfile,
+			id: "chat-only",
+			commands: { enabled: false },
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: chatProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: chatProfile },
+					{ profile: defaultProfile },
+				]),
+			),
+		});
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const prompted: string[] = [];
+		const promptStub = async (_agentId: string, text: string) => {
+			prompted.push(text);
+			return { role: "assistant" } as AssistantMessage;
+		};
+		Object.assign(orchestrator, { promptAgent: promptStub });
+
+		expect(orchestrator.listCommands(agentId)).toEqual([]);
+		await expect(
+			orchestrator.inputAgent(agentId, "/status"),
+		).resolves.toMatchObject({ kind: "prompt" });
+
+		// The per-call switch has the same semantics on a command-enabled agent.
+		const { agentId: commandAgentId } = await orchestrator.spawnAgentHarness({
+			profileId: defaultProfile.id,
+		});
+		await expect(
+			orchestrator.inputAgent(commandAgentId, "/status", { commands: false }),
+		).resolves.toMatchObject({ kind: "prompt" });
+		expect(prompted).toEqual(["/status", "/status"]);
 	});
 
 	it("starts a new empty session from the current agent", async () => {
@@ -1002,7 +1127,7 @@ describe("AgentOrchestrator", () => {
 
 		const result = await orchestrator.inputAgent(
 			agentId,
-			`/resume ${metadata.path}`,
+			`/resume:${metadata.path}`,
 		);
 
 		expect(result).toMatchObject({
@@ -1042,7 +1167,7 @@ describe("AgentOrchestrator", () => {
 		const { agentId } = await orchestrator.spawnAgentHarness();
 
 		await expect(
-			orchestrator.inputAgent(agentId, "/resume same"),
+			orchestrator.inputAgent(agentId, "/resume:same"),
 		).resolves.toMatchObject({
 			kind: "failed",
 			diagnostic: {
@@ -1100,7 +1225,7 @@ describe("AgentOrchestrator", () => {
 		});
 
 		await expect(
-			orchestrator.inputAgent(agentId, "/name Planning Session"),
+			orchestrator.inputAgent(agentId, "/name:Planning Session"),
 		).resolves.toMatchObject({
 			kind: "command",
 			value: {
@@ -1148,7 +1273,7 @@ describe("AgentOrchestrator", () => {
 		});
 
 		await expect(
-			orchestrator.inputAgent(agentId, `/tree ${userEntryId}`),
+			orchestrator.inputAgent(agentId, `/tree:${userEntryId}`),
 		).resolves.toMatchObject({
 			kind: "command",
 			value: {
@@ -1183,7 +1308,7 @@ describe("AgentOrchestrator", () => {
 
 		const result = await orchestrator.inputAgent(
 			agentId,
-			`/fork ${targetEntryId}`,
+			`/fork:${targetEntryId}`,
 		);
 
 		expect(result).toMatchObject({
@@ -1610,6 +1735,7 @@ describe("AgentOrchestrator", () => {
 						description: "Sample command",
 						source: { kind: "extension", extensionId: "sample" },
 						placement: "line",
+						trigger: "/",
 					},
 				},
 			],
@@ -1719,7 +1845,7 @@ describe("AgentOrchestrator", () => {
 		});
 		const { agentId } = await orchestrator.spawnAgentHarness();
 
-		const result = await orchestrator.inputAgent(agentId, "/mark hello world");
+		const result = await orchestrator.inputAgent(agentId, "/mark:hello world");
 
 		expect(result).toMatchObject({
 			kind: "command",
@@ -1800,6 +1926,7 @@ describe("AgentOrchestrator", () => {
 				argumentHint: "<text>",
 				source: { kind: "extension", extensionId: "sample" },
 				placement: "line",
+				trigger: "/",
 				available: true,
 			},
 		]);
@@ -2903,18 +3030,25 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
-	it("reports invalid slash commands without wrapping programmatic calls", async () => {
+	it("reports invalid commands without wrapping programmatic calls", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
 		const { agentId } = await orchestrator.spawnAgentHarness();
 
-		const idleSteer = await orchestrator.inputAgent(agentId, "/steer steer");
+		const idleSteer = await orchestrator.inputAgent(agentId, "/steer:steer");
 		expect(idleSteer).toMatchObject({
-			kind: "failed",
+			kind: "rejected",
 			diagnostic: {
-				code: "orchestrator.command_failed",
+				code: "command.not_available",
 				agentId,
 			},
+		});
+		// The same status fact surfaces as availability in listCommands.
+		expect(
+			orchestrator.listCommands(agentId).find((c) => c.name === "steer"),
+		).toMatchObject({
+			available: false,
+			unavailableReason: expect.stringContaining("running"),
 		});
 
 		expect(() => orchestrator.getAgentModel("missing")).toThrow(

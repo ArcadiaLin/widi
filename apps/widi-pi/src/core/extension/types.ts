@@ -10,6 +10,7 @@ import type {
 	ToolResultEvent,
 } from "@earendil-works/pi-agent-core";
 import type { Static, TSchema } from "typebox";
+import type { CommandPlacement } from "../command.ts";
 import type {
 	HumanRequest,
 	HumanResponse,
@@ -203,6 +204,8 @@ export type ExtensionCommandHandler = (
 
 export interface ExtensionCommandDefinition {
 	readonly name: string;
+	readonly placement?: Extract<CommandPlacement, "line">;
+	readonly trigger?: string;
 	readonly description?: string;
 	readonly argumentHint?: string;
 	readonly handler: ExtensionCommandHandler;

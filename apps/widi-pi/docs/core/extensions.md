@@ -2,7 +2,7 @@
 
 Extension 是 `widi-pi` 的高自由度扩展机制。它应能像 Pi coding-agent extension 一样深度参与 runtime，但不能绕过 core 的可观察边界。
 
-当前目标不是宣称 extension runtime 已经稳定，而是把 extension loader/runner、Orchestrator、slash command 和 `ToolRegistry` 的边界整理清楚。当前 loader/runner 已支持 factory/file/module activation、project trust gate、reload、tool define/patch、command contribution、observer/interceptor、session custom entry 和 inspect facts。`ToolRegistry` 继续负责 source、diagnostics、patch、visibility、active tools 和最终 wrap-to-`AgentTool`。
+当前目标不是宣称 extension runtime 已经稳定，而是把 extension loader/runner、Orchestrator、command input 和 `ToolRegistry` 的边界整理清楚。当前 loader/runner 已支持 factory/file/module activation、project trust gate、reload、tool define/patch、command contribution、observer/interceptor、session custom entry 和 inspect facts。`ToolRegistry` 继续负责 source、diagnostics、patch、visibility、active tools 和最终 wrap-to-`AgentTool`。
 
 ## 核心理念
 
@@ -79,7 +79,7 @@ Tool tracking 不进入 core primitive。它应作为 extension pattern：通过
 - Runtime reload 已能重新 discover/load extension catalog，并替换 eligible agent runner；旧 context 会被标记 stale。
 - Activation API 支持 `registerTool()`、`patchTool()`、`registerCommand()`、`observe()` 和 `intercept()`。
 - `ExtensionRunner` 将 loaded scope 贡献到当前 agent 的 scoped `ToolRegistry` overlay，不污染 global registry。
-- Extension slash command 通过 `registerCommand()` 注册 UI-neutral 事实（name、description、argumentHint）与执行形态——`handler(args, ctx)`（line 命令，任意副作用）或 `expand(arg)`（inline 纯展开）二选一；由 orchestrator `inputAgent` 统一解析、门控并执行。契约详见 [Command Experiment](./command-experiment.md)（`inputInvoke` 字段名随收编退役）。
+- Extension command 通过 `registerCommand()` 注册 UI-neutral 事实（name、trigger、description、argumentHint）与执行形态。当前代码只支持 `handler(argument, ctx)` line 命令；inline `expand(argument)` 后续接入。所有 command 由 orchestrator `inputAgent` 按统一 trigger 模板解析、门控并执行。契约详见 [Command Experiment](./command-experiment.md)（`inputInvoke` 字段名随收编退役）。
 - Orchestrator 已将 `before_agent_start`、`context`、`tool_call`、`tool_result` 四个 harness hook 桥接到 interceptors。
 - Orchestrator 已将 raw `agent_harness_event` 和归一化 `tool_lifecycle_event` 桥接到 observers；observer error 变成 `extension.handler_failed` diagnostic。
 - Runner 使用 lazy context：`bindCore()` / `bindCommandContext()` 后，handler 通过 `createContext()` / `createCommandContext()` 获取 actions、human request、tool mutation 和 session custom entry facade（actions 的全量 `dispatch` 将随 M1 移除；own-agent scope 收敛属 M2）。

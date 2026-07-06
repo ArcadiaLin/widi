@@ -17,6 +17,7 @@ import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
 import type { ExtendedJsonlSessionMetadata } from "../storage/jsonl-repo.ts";
 import type {
 	AgentProfile,
+	AgentProfileCommandPolicy,
 	AgentProfileOverride,
 	AgentProfileReference,
 	AgentProfileRegistry,
@@ -24,6 +25,13 @@ import type {
 } from "./agent-profile.js";
 import { toAgentProfileReference } from "./agent-profile.js";
 import type { OrchestratorClient } from "./client.ts";
+import {
+	type Command,
+	type CommandInvocation,
+	type InputResult,
+	type ParsedLineCommand,
+	parseLineCommand,
+} from "./command.ts";
 import {
 	type DiagnosticDisposition,
 	type DiagnosticSource,
@@ -65,12 +73,6 @@ import type {
 } from "./session-manager.ts";
 import type { SettingManager } from "./setting-manager.js";
 import {
-	type InputResult,
-	parseLineSlashCommand,
-	type SlashCommand,
-	type SlashCommandInvocation,
-} from "./slash-command.ts";
-import {
 	createAgentToolsFromResolvedTools,
 	ToolRegistry,
 } from "./tool-registry.ts";
@@ -89,33 +91,33 @@ export type OrchestratorEvent =
 	| {
 			readonly type: "command_detected";
 			commandId: string;
-			command: SlashCommandInvocation;
+			command: CommandInvocation;
 			createdAt: string;
 	  }
 	| {
 			readonly type: "command_accepted";
 			commandId: string;
-			command: SlashCommandInvocation;
+			command: CommandInvocation;
 			createdAt: string;
 	  }
 	| {
 			readonly type: "command_completed";
 			commandId: string;
-			command: SlashCommandInvocation;
+			command: CommandInvocation;
 			result: unknown;
 			completedAt: string;
 	  }
 	| {
 			readonly type: "command_failed";
 			commandId: string;
-			command: SlashCommandInvocation;
+			command: CommandInvocation;
 			diagnostic: OrchestratorDiagnostic;
 			completedAt: string;
 	  }
 	| {
 			readonly type: "command_rejected";
 			commandId: string;
-			command?: SlashCommandInvocation;
+			command?: CommandInvocation;
 			diagnostic: OrchestratorDiagnostic;
 			completedAt: string;
 	  }
@@ -196,6 +198,9 @@ export interface AgentRecord {
 	readonly agentId: AgentId;
 	status: AgentLifecycleStatus;
 	readonly profile: AgentProfileRecordReference;
+	// Command gating facts snapshotted from the resolved profile.
+	readonly capabilities?: AgentProfile["capabilities"];
+	readonly commandPolicy?: AgentProfileCommandPolicy;
 	sessionMetadata?: AgentSessionMetadata;
 	model: RuntimeModel;
 	harness?: AgentHarness;
@@ -300,13 +305,19 @@ interface AgentToolSetHarness {
 	setActiveTools(toolNames: string[]): Promise<void>;
 }
 
-interface LineSlashCommandBinding {
-	readonly command: SlashCommand;
+// Command status requirement declared on a binding: returns the reason the
+// current agent status blocks the command, or undefined when it may run.
+type CommandStatusCheck = (status: AgentLifecycleStatus) => string | undefined;
+
+interface LineCommandBinding {
+	readonly command: Command;
+	readonly checkStatus?: CommandStatusCheck;
 	execute(args: string): Promise<unknown>;
 }
 
-interface BuiltInSlashCommandBinding {
-	readonly command: SlashCommand;
+interface BuiltInCommandBinding {
+	readonly command: Command;
+	readonly checkStatus?: CommandStatusCheck;
 	execute(
 		orchestrator: AgentOrchestrator,
 		agentId: AgentId,
@@ -468,18 +479,29 @@ export class AgentOrchestrator {
 		};
 	}
 
-	// Slash command registry
-	listCommands(agentId: AgentId): SlashCommand[] {
+	// Command registry
+	listCommands(agentId: AgentId): Command[] {
 		const record = this._requireAgentRecord(agentId);
-		const builtInCommands = BUILT_IN_SLASH_COMMANDS.map((binding) =>
-			this._withCommandAvailability(record, binding.command),
+		if (record.commandPolicy?.enabled === false) return [];
+		// Static gating (profile deny, scope) prunes the list; dynamic gating
+		// (agent status) is reported as per-command availability instead.
+		const builtInCommands = BUILT_IN_COMMANDS.filter(
+			(binding) => !this._commandPolicyDenial(record, binding.command),
+		).map((binding) =>
+			this._withCommandAvailability(
+				record,
+				binding.command,
+				binding.checkStatus,
+			),
 		);
-		const reservedNames = builtInCommands.map((command) => command.name);
 		const extensionCommands =
 			record.extensionRunner
-				?.getCommands({ reservedNames })
-				.map((command) =>
-					this._withCommandAvailability(record, command.command),
+				?.getCommands({ reservedCommands: getBuiltInCommands() })
+				.filter(
+					(resolved) => !this._commandPolicyDenial(record, resolved.command),
+				)
+				.map((resolved) =>
+					this._withCommandAvailability(record, resolved.command),
 				) ?? [];
 		return [...builtInCommands, ...extensionCommands];
 	}
@@ -628,21 +650,28 @@ export class AgentOrchestrator {
 	async inputAgent(
 		agentId: AgentId,
 		text: string,
-		options?: { images?: ImageContent[]; inputInvoke?: boolean },
+		options?: { images?: ImageContent[]; commands?: boolean },
 	): Promise<InputResult> {
-		if (options?.inputInvoke === false) {
+		const record = this._requireAgentRecord(agentId);
+		// Command parsing can be turned off per call or by profile policy;
+		// either way the input goes to the agent as a plain prompt.
+		if (
+			options?.commands === false ||
+			record.commandPolicy?.enabled === false
+		) {
 			return {
 				kind: "prompt",
 				message: await this.promptAgent(agentId, text, {
-					images: options.images ? [...options.images] : undefined,
+					images: options?.images ? [...options.images] : undefined,
 				}),
 			};
 		}
 
-		const parsed = parseLineSlashCommand(text);
-		const command = parsed
-			? this._findLineSlashCommand(agentId, parsed.name)
-			: undefined;
+		const parsed = parseLineCommand(
+			text,
+			this._getLineCommandTriggers(agentId),
+		);
+		const command = parsed ? this._findLineCommand(agentId, parsed) : undefined;
 		if (!parsed || !command) {
 			return {
 				kind: "prompt",
@@ -653,9 +682,10 @@ export class AgentOrchestrator {
 		}
 
 		const commandId = this._createCommandId();
-		const invocation: SlashCommandInvocation = {
+		const invocation: CommandInvocation = {
 			name: command.command.name,
-			args: parsed.args,
+			trigger: command.command.trigger,
+			argument: parsed.argument,
 			source: command.command.source,
 			placement: command.command.placement,
 		};
@@ -666,7 +696,8 @@ export class AgentOrchestrator {
 			createdAt: now(),
 		});
 
-		const gatewayDiagnostic = this._commandGateway(agentId, command.command);
+		// Gateway: rejected before execution, guaranteed side-effect free.
+		const gatewayDiagnostic = this._commandGateway(record, command, commandId);
 		if (gatewayDiagnostic) {
 			await this._emit({
 				type: "command_rejected",
@@ -679,6 +710,30 @@ export class AgentOrchestrator {
 			return { kind: "rejected", commandId, diagnostic: gatewayDiagnostic };
 		}
 
+		// Argument check: a declared-required argument that is missing rejects
+		// the command instead of degrading the input to a plain prompt.
+		// TODO(argumentsCompletion): request completion from a client first.
+		if (command.command.arguments?.required && !parsed.argument.trim()) {
+			const diagnostic = createOrchestratorDiagnostic({
+				severity: "error",
+				code: "command.arguments_required",
+				message: `Command ${command.command.trigger}${command.command.name} requires an argument.`,
+				operationSource: { kind: "human" },
+				agentId,
+				commandId,
+				recoverable: true,
+			});
+			await this._emit({
+				type: "command_rejected",
+				commandId,
+				command: invocation,
+				diagnostic,
+				completedAt: now(),
+			});
+			await this._publishDiagnostic(diagnostic);
+			return { kind: "rejected", commandId, diagnostic };
+		}
+
 		await this._emit({
 			type: "command_accepted",
 			commandId,
@@ -687,7 +742,7 @@ export class AgentOrchestrator {
 		});
 
 		try {
-			const value = await command.execute(parsed.args);
+			const value = await command.execute(parsed.argument);
 			await this._emit({
 				type: "command_completed",
 				commandId,
@@ -1694,6 +1749,8 @@ export class AgentOrchestrator {
 				source: options.resolvedProfile.source,
 				entryId: options.resolvedProfile.entryId,
 			},
+			capabilities: options.resolvedProfile.profile.capabilities,
+			commandPolicy: options.resolvedProfile.profile.commands,
 			sessionMetadata: options.sessionMetadata,
 			model: options.model,
 			resourceDiagnostics: [],
@@ -1706,6 +1763,8 @@ export class AgentOrchestrator {
 		agentId: AgentId;
 		status: AgentLifecycleStatus;
 		profile: AgentProfileRecordReference;
+		capabilities?: AgentProfile["capabilities"];
+		commandPolicy?: AgentProfileCommandPolicy;
 		sessionMetadata?: AgentSessionMetadata;
 		model: RuntimeModel;
 	}): AgentRecord {
@@ -1713,6 +1772,8 @@ export class AgentOrchestrator {
 			agentId: options.agentId,
 			status: options.status,
 			profile: options.profile,
+			capabilities: options.capabilities,
+			commandPolicy: options.commandPolicy,
 			sessionMetadata: options.sessionMetadata,
 			model: options.model,
 			resourceDiagnostics: [],
@@ -1746,6 +1807,8 @@ export class AgentOrchestrator {
 				agentId: options.agentId,
 				status: "unavailable",
 				profile,
+				capabilities: options.resolvedProfile?.profile.capabilities,
+				commandPolicy: options.resolvedProfile?.profile.commands,
 				sessionMetadata: options.sessionMetadata,
 				model: options.model,
 			}),
@@ -2448,26 +2511,33 @@ export class AgentOrchestrator {
 		return id;
 	}
 
-	// Slash command input path
-	private _findLineSlashCommand(
+	// Command input path
+	private _findLineCommand(
 		agentId: AgentId,
-		name: string,
-	): LineSlashCommandBinding | undefined {
-		const builtIn = BUILT_IN_SLASH_COMMANDS.find(
-			(binding) => binding.command.name === name,
+		parsed: ParsedLineCommand,
+	): LineCommandBinding | undefined {
+		const builtIn = BUILT_IN_COMMANDS.find(
+			(binding) =>
+				binding.command.placement === "line" &&
+				binding.command.trigger === parsed.trigger &&
+				binding.command.name === parsed.name,
 		);
 		if (builtIn) {
 			return {
 				command: builtIn.command,
+				checkStatus: builtIn.checkStatus,
 				execute: async (args) => await builtIn.execute(this, agentId, args),
 			};
 		}
 
 		const extensionCommand = this._requireAgentRecord(
 			agentId,
-		).extensionRunner?.getCommand(name, {
-			reservedNames: getBuiltInSlashCommandNames(),
-		});
+		).extensionRunner?.getCommand(
+			{ placement: "line", trigger: parsed.trigger, name: parsed.name },
+			{
+				reservedCommands: getBuiltInCommands(),
+			},
+		);
 		if (!extensionCommand) return undefined;
 		return {
 			command: extensionCommand.command,
@@ -2485,36 +2555,91 @@ export class AgentOrchestrator {
 
 	private _withCommandAvailability(
 		record: AgentRecord,
-		command: SlashCommand,
-	): SlashCommand {
-		const diagnostic = this._commandGateway(record.agentId, command);
-		if (!diagnostic) return { ...command, available: true };
-		return {
-			...command,
-			available: false,
-			unavailableReason: diagnostic.message,
-		};
+		command: Command,
+		checkStatus?: CommandStatusCheck,
+	): Command {
+		const unavailableReason = checkStatus?.(record.status);
+		if (!unavailableReason) return { ...command, available: true };
+		return { ...command, available: false, unavailableReason };
 	}
 
-	// Slash command gateway
+	// Command gateway: the sole execution-time arbiter. Checks, in order,
+	// profile policy (deny), scope, then agent status declared on the binding.
 	private _commandGateway(
-		agentId: AgentId,
-		command: SlashCommand,
+		record: AgentRecord,
+		binding: Pick<LineCommandBinding, "command" | "checkStatus">,
+		commandId: string,
 	): OrchestratorDiagnostic | undefined {
-		this._requireAgentRecord(agentId);
-		void command;
+		const denial = this._commandPolicyDenial(record, binding.command);
+		if (denial) {
+			return createOrchestratorDiagnostic({
+				severity: "error",
+				code: "command.not_permitted",
+				message: denial,
+				operationSource: { kind: "human" },
+				agentId: record.agentId,
+				commandId,
+				recoverable: true,
+			});
+		}
+		const unavailable = binding.checkStatus?.(record.status);
+		if (unavailable) {
+			return createOrchestratorDiagnostic({
+				severity: "error",
+				code: "command.not_available",
+				message: unavailable,
+				operationSource: { kind: "human" },
+				agentId: record.agentId,
+				commandId,
+				recoverable: true,
+			});
+		}
 		return undefined;
+	}
+
+	// Static command gating: profile deny list and scope. Both listCommands
+	// (list pruning) and the gateway (execution rejection) consume this fact.
+	private _commandPolicyDenial(
+		record: AgentRecord,
+		command: Command,
+	): string | undefined {
+		if (record.commandPolicy?.deny?.includes(command.name)) {
+			return `Command ${command.trigger}${command.name} is denied by profile policy.`;
+		}
+		if (
+			command.scope === "user-facing" &&
+			record.capabilities?.acceptsUserInput === false
+		) {
+			return `Command ${command.trigger}${command.name} is only available on agents that accept user input.`;
+		}
+		return undefined;
+	}
+
+	private _getLineCommandTriggers(agentId: AgentId): string[] {
+		const record = this._requireAgentRecord(agentId);
+		const triggers = BUILT_IN_COMMANDS.filter(
+			(binding) => binding.command.placement === "line",
+		).map((binding) => binding.command.trigger);
+		for (const command of record.extensionRunner?.getCommands({
+			reservedCommands: getBuiltInCommands(),
+		}) ?? []) {
+			if (command.command.placement === "line") {
+				triggers.push(command.command.trigger);
+			}
+		}
+		return [...new Set(triggers)];
 	}
 }
 
-// Built-in slash command execution
-const BUILT_IN_SLASH_COMMANDS: readonly BuiltInSlashCommandBinding[] = [
+// Built-in command execution
+const BUILT_IN_COMMANDS: readonly BuiltInCommandBinding[] = [
 	{
 		command: {
 			name: "abort",
+			placement: "line",
+			trigger: "/",
 			description: "Abort the current agent run.",
 			source: { kind: "built-in" },
-			placement: "line",
 		},
 		execute: async (orchestrator, agentId) =>
 			await orchestrator.abortAgent(agentId),
@@ -2522,10 +2647,11 @@ const BUILT_IN_SLASH_COMMANDS: readonly BuiltInSlashCommandBinding[] = [
 	{
 		command: {
 			name: "compact",
+			placement: "line",
+			trigger: "/",
 			description: "Compact the current agent session.",
 			argumentHint: "[instructions]",
 			source: { kind: "built-in" },
-			placement: "line",
 		},
 		execute: async (orchestrator, agentId, args) =>
 			await orchestrator.compactAgent(agentId, args.trim() || undefined),
@@ -2533,28 +2659,27 @@ const BUILT_IN_SLASH_COMMANDS: readonly BuiltInSlashCommandBinding[] = [
 	{
 		command: {
 			name: "follow-up",
+			placement: "line",
+			trigger: "/",
 			description: "Queue a follow-up for the current agent.",
 			argumentHint: "<text>",
 			source: { kind: "built-in" },
-			placement: "line",
 			arguments: { required: true },
 		},
 		execute: async (orchestrator, agentId, args) => {
-			await orchestrator.followUpAgent(
-				agentId,
-				requireSlashCommandText("follow-up", args),
-			);
+			await orchestrator.followUpAgent(agentId, args.trim());
 			return undefined;
 		},
 	},
 	{
 		command: {
 			name: "fork",
+			placement: "line",
+			trigger: "/",
 			description: "Fork the current agent session.",
 			argumentHint: "[entry]",
 			source: { kind: "built-in" },
 			scope: "user-facing",
-			placement: "line",
 		},
 		execute: async (orchestrator, agentId, args) => {
 			const entryId = args.trim() || undefined;
@@ -2567,9 +2692,10 @@ const BUILT_IN_SLASH_COMMANDS: readonly BuiltInSlashCommandBinding[] = [
 	{
 		command: {
 			name: "inspect",
+			placement: "line",
+			trigger: "/",
 			description: "Inspect the current agent runtime facts.",
 			source: { kind: "built-in" },
-			placement: "line",
 		},
 		execute: async (orchestrator, agentId) =>
 			orchestrator.inspectAgent(agentId),
@@ -2577,34 +2703,34 @@ const BUILT_IN_SLASH_COMMANDS: readonly BuiltInSlashCommandBinding[] = [
 	{
 		command: {
 			name: "agent",
+			placement: "line",
+			trigger: "/",
 			description: "List runtime agents.",
 			source: { kind: "built-in" },
-			placement: "line",
 		},
 		execute: async (orchestrator) => orchestrator.listAgents(),
 	},
 	{
 		command: {
 			name: "name",
+			placement: "line",
+			trigger: "/",
 			description: "Name the current agent session.",
 			argumentHint: "<name>",
 			source: { kind: "built-in" },
-			placement: "line",
 			arguments: { required: true },
 		},
 		execute: async (orchestrator, agentId, args) =>
-			await orchestrator.setAgentSessionName(
-				agentId,
-				requireSlashCommandText("name", args),
-			),
+			await orchestrator.setAgentSessionName(agentId, args.trim()),
 	},
 	{
 		command: {
 			name: "new",
+			placement: "line",
+			trigger: "/",
 			description: "Start a new session from the current agent.",
 			source: { kind: "built-in" },
 			scope: "user-facing",
-			placement: "line",
 		},
 		execute: async (orchestrator, agentId) =>
 			await orchestrator.newAgentSessionFromAgent(agentId),
@@ -2612,9 +2738,10 @@ const BUILT_IN_SLASH_COMMANDS: readonly BuiltInSlashCommandBinding[] = [
 	{
 		command: {
 			name: "reload",
+			placement: "line",
+			trigger: "/",
 			description: "Reload extensions for the current agent.",
 			source: { kind: "built-in" },
-			placement: "line",
 		},
 		execute: async (orchestrator, agentId) =>
 			await orchestrator.reloadExtensions({ agentIds: [agentId] }),
@@ -2622,12 +2749,17 @@ const BUILT_IN_SLASH_COMMANDS: readonly BuiltInSlashCommandBinding[] = [
 	{
 		command: {
 			name: "resume",
+			placement: "line",
+			trigger: "/",
 			description: "Resume an existing agent session.",
 			argumentHint: "[session]",
 			source: { kind: "built-in" },
 			scope: "user-facing",
-			placement: "line",
 		},
+		checkStatus: (status) =>
+			status === "running"
+				? "Command /resume is not available while the agent is running."
+				: undefined,
 		execute: async (orchestrator, _agentId, args) => {
 			const reference = args.trim();
 			if (!reference) return await orchestrator.listAgentSessions();
@@ -2637,18 +2769,20 @@ const BUILT_IN_SLASH_COMMANDS: readonly BuiltInSlashCommandBinding[] = [
 	{
 		command: {
 			name: "session",
+			placement: "line",
+			trigger: "/",
 			description: "List persisted agent sessions.",
 			source: { kind: "built-in" },
-			placement: "line",
 		},
 		execute: async (orchestrator) => await orchestrator.listAgentSessions(),
 	},
 	{
 		command: {
 			name: "status",
+			placement: "line",
+			trigger: "/",
 			description: "Get the current agent status.",
 			source: { kind: "built-in" },
-			placement: "line",
 		},
 		execute: async (orchestrator, agentId) =>
 			orchestrator.getAgentStatus(agentId),
@@ -2656,27 +2790,30 @@ const BUILT_IN_SLASH_COMMANDS: readonly BuiltInSlashCommandBinding[] = [
 	{
 		command: {
 			name: "steer",
+			placement: "line",
+			trigger: "/",
 			description: "Steer the current running agent.",
 			argumentHint: "<text>",
 			source: { kind: "built-in" },
-			placement: "line",
 			arguments: { required: true },
 		},
+		checkStatus: (status) =>
+			status === "running"
+				? undefined
+				: `Command /steer requires a running agent (status: ${status}).`,
 		execute: async (orchestrator, agentId, args) => {
-			await orchestrator.steerAgent(
-				agentId,
-				requireSlashCommandText("steer", args),
-			);
+			await orchestrator.steerAgent(agentId, args.trim());
 			return undefined;
 		},
 	},
 	{
 		command: {
 			name: "tree",
+			placement: "line",
+			trigger: "/",
 			description: "Inspect or navigate the current session tree.",
 			argumentHint: "[entry]",
 			source: { kind: "built-in" },
-			placement: "line",
 		},
 		execute: async (orchestrator, agentId, args) => {
 			const targetId = args.trim();
@@ -2686,16 +2823,8 @@ const BUILT_IN_SLASH_COMMANDS: readonly BuiltInSlashCommandBinding[] = [
 	},
 ];
 
-function getBuiltInSlashCommandNames(): string[] {
-	return BUILT_IN_SLASH_COMMANDS.map((binding) => binding.command.name);
-}
-
-function requireSlashCommandText(commandName: string, args: string): string {
-	const text = args.trim();
-	if (!text) {
-		throw new Error(`Slash command /${commandName} requires text.`);
-	}
-	return text;
+function getBuiltInCommands(): Command[] {
+	return BUILT_IN_COMMANDS.map((binding) => binding.command);
 }
 
 function toDiagnostic(

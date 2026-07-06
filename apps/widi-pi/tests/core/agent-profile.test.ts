@@ -360,6 +360,48 @@ describe("AgentProfileRegistry", () => {
 		expect(result.profiles[0]).not.toHaveProperty("systemPrompt");
 	});
 
+	it("parses the commands policy from frontmatter", async () => {
+		const env = new MemoryExecutionEnv();
+		await env.createDir("/workspace/project/.widi/profiles", {
+			recursive: true,
+		});
+		await env.writeFile(
+			"/workspace/project/.widi/profiles/gated.md",
+			"---\nid: gated\ncommands:\n  enabled: true\n  deny: [abort, steer]\n---\nGated prompt",
+		);
+		await env.writeFile(
+			"/workspace/project/.widi/profiles/broken.md",
+			"---\nid: broken\ncommands:\n  enabled: sometimes\n---\nBroken prompt",
+		);
+		const registry = new AgentProfileRegistry(
+			new FileProfileStorageBackend(env, [
+				{
+					kind: "cwd",
+					path: "/workspace/project/.widi/profiles",
+					priority: 200,
+					missingBehavior: "silent",
+				},
+			]),
+		);
+
+		const gated = await registry.resolveProfile("gated");
+		expect(gated.ok).toBe(true);
+		if (gated.ok) {
+			expect(gated.profile.commands).toEqual({
+				enabled: true,
+				deny: ["abort", "steer"],
+			});
+		}
+
+		const broken = await registry.resolveProfile("broken");
+		expect(broken.ok).toBe(false);
+		if (!broken.ok) {
+			expect(broken.diagnostics).toContainEqual(
+				expect.objectContaining({ code: "profile.invalid_metadata" }),
+			);
+		}
+	});
+
 	it("diagnoses missing explicit profile sources", async () => {
 		const env = new MemoryExecutionEnv();
 		const registry = new AgentProfileRegistry(

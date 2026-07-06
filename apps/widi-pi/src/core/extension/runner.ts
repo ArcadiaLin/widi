@@ -4,8 +4,8 @@ import type {
 	ToolCallResult,
 	ToolResultPatch,
 } from "@earendil-works/pi-agent-core";
+import { type Command, commandKey } from "../command.ts";
 import { type CoreDiagnostic, createDiagnostic } from "../diagnostics.ts";
-import type { SlashCommand } from "../slash-command.ts";
 import type { ToolRegistry } from "../tool-registry.ts";
 import type {
 	ExtensionCommandContribution,
@@ -82,12 +82,12 @@ export interface ExtensionRunnerSnapshot {
 
 export interface ExtensionCommandSnapshot {
 	readonly extensionId: string;
-	readonly command: SlashCommand;
+	readonly command: Command;
 }
 
 export interface ResolvedExtensionCommand {
 	readonly extensionId: string;
-	readonly command: SlashCommand;
+	readonly command: Command;
 	readonly handler: ExtensionCommandContribution["handler"];
 }
 
@@ -169,20 +169,20 @@ export class ExtensionRunner {
 	}
 
 	getCommands(
-		options: { reservedNames?: readonly string[] } = {},
+		options: { reservedCommands?: readonly Command[] } = {},
 	): ResolvedExtensionCommand[] {
 		return resolveExtensionCommands(
 			this._loadedScope.commandContributions,
-			options.reservedNames ?? [],
+			options.reservedCommands ?? [],
 		);
 	}
 
 	getCommand(
-		name: string,
-		options: { reservedNames?: readonly string[] } = {},
+		command: Pick<Command, "placement" | "trigger" | "name">,
+		options: { reservedCommands?: readonly Command[] } = {},
 	): ResolvedExtensionCommand | undefined {
 		return this.getCommands(options).find(
-			(command) => command.command.name === name,
+			(resolved) => commandKey(resolved.command) === commandKey(command),
 		);
 	}
 
@@ -591,39 +591,52 @@ function formatError(error: unknown): string {
 
 function resolveExtensionCommands(
 	contributions: readonly ExtensionCommandContribution[],
-	reservedNames: readonly string[],
+	reservedCommands: readonly Command[],
 ): ResolvedExtensionCommand[] {
-	const takenNames = new Set(reservedNames);
+	const takenCommandKeys = new Set(reservedCommands.map(commandKey));
 	const counts = new Map<string, number>();
 	for (const contribution of contributions) {
-		const name = contribution.name;
-		counts.set(name, (counts.get(name) ?? 0) + 1);
+		const key = commandKey(contribution);
+		counts.set(key, (counts.get(key) ?? 0) + 1);
 	}
 
 	const seen = new Map<string, number>();
 	return contributions.map((contribution) => {
-		const name = contribution.name;
-		const occurrence = (seen.get(name) ?? 0) + 1;
-		seen.set(name, occurrence);
+		const contributionKey = commandKey(contribution);
+		const occurrence = (seen.get(contributionKey) ?? 0) + 1;
+		seen.set(contributionKey, occurrence);
 		let invocationName =
-			(counts.get(name) ?? 0) > 1 ? `${name}:${occurrence}` : name;
-		while (takenNames.has(invocationName)) {
-			const suffix = (seen.get(name) ?? occurrence) + 1;
-			seen.set(name, suffix);
-			invocationName = `${name}:${suffix}`;
+			(counts.get(contributionKey) ?? 0) > 1
+				? `${contribution.name}-${occurrence}`
+				: contribution.name;
+		let candidateKey = commandKey({
+			placement: contribution.placement,
+			trigger: contribution.trigger,
+			name: invocationName,
+		});
+		while (takenCommandKeys.has(candidateKey)) {
+			const suffix = (seen.get(contributionKey) ?? occurrence) + 1;
+			seen.set(contributionKey, suffix);
+			invocationName = `${contribution.name}-${suffix}`;
+			candidateKey = commandKey({
+				placement: contribution.placement,
+				trigger: contribution.trigger,
+				name: invocationName,
+			});
 		}
-		takenNames.add(invocationName);
+		takenCommandKeys.add(candidateKey);
 		return {
 			extensionId: contribution.extensionId,
 			command: {
 				name: invocationName,
+				placement: contribution.placement,
+				trigger: contribution.trigger,
 				description: contribution.description,
 				argumentHint: contribution.argumentHint,
 				source: {
 					kind: "extension",
 					extensionId: contribution.extensionId,
 				},
-				placement: "line",
 			},
 			handler: contribution.handler,
 		};

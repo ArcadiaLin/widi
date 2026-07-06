@@ -12,7 +12,8 @@
 - `skills`、`promptTemplates` 传给 `ResourceLoader`，由 loader 从 agent dir 与 project `.widi` 目录解析。
 - `extensions` 声明 profile 需要哪些 extension。
 - `missingExtensionSeverity` 声明 extension 缺失时的处理等级。
-- `capabilities` 目前只是声明字段，orchestrator 还没有消费。
+- `capabilities.acceptsUserInput` 由 command gateway 消费（scope 判定）；其余成员见 [Capabilities](#capabilities)。
+- `commands`（`enabled`/`deny`）由 command gateway 与 `listCommands` 消费，定义见 [Command Experiment](core/command-experiment.md)。
 
 `AgentOrchestrator` 当前只在这些位置使用 profile：
 
@@ -23,7 +24,7 @@
 5. resume 时按 metadata 中的 profile id 调用 registry；找不到、禁用、重复或无效时结构化失败，不 fallback。
 6. 构建 harness 时用 `profile.skills`、`profile.promptTemplates`、`profile.systemPrompt`。
 
-这说明 orchestrator 已经接入第一版 profile registry contract。Profile、resource、model/auth、tool registry、slash command/human-request 和 extension loader/runner diagnostics 已经通过 orchestrator `diagnostic` event 统一发布；extension discovery、trust、reload 和 inspect facts 已经落地，provider/resource contribution 与产品级 presentation 仍未完成。
+这说明 orchestrator 已经接入第一版 profile registry contract。Profile、resource、model/auth、tool registry、command input/human-request 和 extension loader/runner diagnostics 已经通过 orchestrator `diagnostic` event 统一发布；extension discovery、trust、reload 和 inspect facts 已经落地，provider/resource contribution 与产品级 presentation 仍未完成。
 
 ## 主要缺漏
 
@@ -99,7 +100,7 @@ Tool execution 的 UI 展示也不属于 profile schema。Orchestrator 会发布
 
 `capabilities` 的消费状态：
 
-- `acceptsUserInput`：**第一个真实消费者已裁决**——slash command gateway 用它判定 `scope: "user-facing"` 命令（`/new`、`/fork`、`/resume`）能否在该 agent 上执行（M1 PR 3 落地，见 [Command Experiment](core/command-experiment.md)）。
+- `acceptsUserInput`：**第一个真实消费者已落地**——command gateway 用它判定 `scope: "user-facing"` 命令（`/new`、`/fork`、`/resume`）能否在该 agent 上执行，`listCommands` 按同一事实剪列表（见 [Command Experiment](core/command-experiment.md)）。
 - `canSpawn`：M3 collaboration facade 用它门控 `agent_spawn` 等 core tools 的可见性。
 - `canRequestUser`：尚无消费者，条目在 [BACKLOG](BACKLOG.md)。
 

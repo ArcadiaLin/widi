@@ -8,13 +8,11 @@
 
 ## M1: Command 收编（当前）
 
-目标：终结 command 伪可选层（review 问题 1/2），slash command 成为 orchestrator 自身的 input 能力。全部裁决与五 PR 切片见 [Command Experiment](core/command-experiment.md)。
+目标：终结 command 伪可选层（review 问题 1/2），trigger-based command input 成为 orchestrator 自身的 input 能力。全部裁决与阶段切片见 [Command Experiment](core/command-experiment.md)。
 
-- [ ] PR 1 — 文档修真：command-experiment 定稿；runtime-lifecycle、DESIGN、orchestrator、extensions 对应章节改写；TODO/BACKLOG 重组；CONTEXT.md 术语修真（Channel 移除）。
-- [ ] PR 2 — 代码布局整理（零行为变化）：`OperationSource` 迁出 `command/types.ts`；`slash-command.ts` 定型 + 两阶段解析器；`extension/command.ts` 草稿并入 `extension/types.ts`；result 类型归位。
-- [ ] PR 3 — `inputAgent` 收编：built-in 绑定表、`_commandGateway`、`InputResult` 返回契约、`command_detected`/`command_failed` 事件、profile `commands` 字段解析。
-- [ ] PR 4 — 删除：`dispatch()`、`Command` 类、`CommandRequest`/`CommandValue` union、`ExtensionActions.dispatch`、`command/` 目录；`tests/core/agent-orchestrator.test.ts` 29 处调用点改写。
-- [ ] PR 5+ — 增量能力逐命令落地：inline 扫描与 expand 执行、argumentsCompletion human request、`/model`、`setAgentThinkingLevel` + `/thinking`、`/skill`、`/prompt`。
+阶段 1–4（文档修真、代码布局、`inputAgent` 收编 + gateway、dispatch 删除）已完成，账本见 git history。
+
+- [ ] 阶段 5+ — 增量能力逐命令落地：inline 扫描与 expand 执行、argumentsCompletion human request、`/model`、`setAgentThinkingLevel` + `/thinking`、`<skill:...>`、`<prompt:...>`。
 
 验收：不存在两个事件语义不同的 command 入口；每条"不让 X 做 Y"（保留字、gateway、fall-back 禁止、expand 无副作用）都能指到一行强制它的代码。
 
@@ -37,9 +35,9 @@
 
 - [ ] Collaboration facade（orchestrator helper），由 profile `capabilities.canSpawn` 门控。
 - [ ] `agent_spawn` / `agent_prompt` / `agent_wait` / `agent_status` 四个 core tools（`agent_handoff` 语义未定义，不做）。
-- [ ] `AgentRecord` 增加 `spawnedBy` lineage 事实，复核 slash command `scope: "user-facing"` 的 gateway 判据。
+- [ ] `AgentRecord` 增加 `spawnedBy` lineage 事实，复核 command `scope: "user-facing"` 的 gateway 判据。
 - [ ] Cross-agent human-request 路由：多 client 语义在此定义（此前维持 first-client-wins）。
-- [ ] `/spawn` slash command。
+- [ ] `/spawn` command。
 - [ ] Multi-agent 测试：spawn、并发、abort、dispose、unavailable 恢复。
 
 验收：spawn → collaborate → recover 有真实流程测试；"原生 multi-agent"的差异化声明第一次有代码背书。
@@ -55,4 +53,4 @@ Extension 是设计缺口最大的一块：当前 loader/runner 是 MVP，能跑
 - [ ] 稳定第三方 extension API 裁决：activation API 面冻结范围、版本兼容策略、`extension.version_incompatible` 的语义。
 - [ ] Product presentation：`agent.inspect` facts 的产品级 UI/RPC 呈现形态。
 
-验收：每条"extension 能/不能做 X"的宣言都有裁决文档 + 代码锚点；第一个第三方视角 extension（非仓库内测试）能只依赖公开契约完成 tool + slash command + observer 的组合。
+验收：每条"extension 能/不能做 X"的宣言都有裁决文档 + 代码锚点；第一个第三方视角 extension（非仓库内测试）能只依赖公开契约完成 tool + command + observer 的组合。

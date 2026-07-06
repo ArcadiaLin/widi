@@ -24,7 +24,7 @@ Extension surface 的设计与收口已升级为 [M4 milestone](TODO.md#m4-exten
 
 ## Profiles And Resources
 
-- Profile `capabilities` 到 runtime policy 的剩余映射：`canRequestUser`（`acceptsUserInput` 已被 slash command gateway 消费，`canSpawn` 属 M3）。
+- Profile `capabilities` 到 runtime policy 的剩余映射：`canRequestUser`（`acceptsUserInput` 已被 command gateway 消费，`canSpawn` 属 M3）。
 - `capabilities` 字段更名评估（review 建议 `permissions`/`policy`，与 Core Capability 消歧）。
 - Resource registry 评估：当前 resource loader 只做轻量加载，等 resources 复杂化再决定。
 - Duplicate skill/prompt template 处理：diagnostic、覆盖、合并或保留全部。

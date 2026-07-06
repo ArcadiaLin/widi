@@ -6,7 +6,7 @@ Tools 是 agent 可调用入口。Core Capability 是 core 原生 runtime 能力
 
 Core Capability 不是 Tool。
 
-Core Capability 是 core 原生提供、可通过受控 API 调用的 runtime 能力，例如创建 agent、prompt/steer agent、request human、解析 profile、加载 resource 或发出 diagnostic。orchestrator 的原子方法是这些能力的唯一事实面；slash command 只是它们面向 human input 的协议（见 [Command Experiment](./command-experiment.md)）。
+Core Capability 是 core 原生提供、可通过受控 API 调用的 runtime 能力，例如创建 agent、prompt/steer agent、request human、解析 profile、加载 resource 或发出 diagnostic。orchestrator 的原子方法是这些能力的唯一事实面；command input 只是它们面向 human input 的 trigger-based 协议（见 [Command Experiment](./command-experiment.md)）。
 
 Product Tool 暴露 Runtime Capability。
 
