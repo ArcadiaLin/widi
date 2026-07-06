@@ -735,14 +735,7 @@ describe("AgentOrchestrator", () => {
 		});
 		const { agentId } = await orchestrator.spawnAgentHarness();
 
-		const result = await orchestrator.dispatch({
-			kind: "agent.nextTurn",
-			source: { kind: "system" },
-			agentId,
-			text: "next",
-		});
-
-		expect(result.ok).toBe(true);
+		await orchestrator.nextTurnAgent(agentId, "next");
 		expect(clientEvents).toContainEqual(
 			expect.objectContaining({
 				type: "agent_harness_event",
@@ -787,52 +780,25 @@ describe("AgentOrchestrator", () => {
 		});
 		const { agentId, harness } = await orchestrator.spawnAgentHarness();
 
-		const modelResult = await orchestrator.dispatch({
-			kind: "agent.getModel",
-			source: { kind: "system" },
-			agentId,
+		expect(orchestrator.getAgentModel(agentId)).toMatchObject({
+			id: defaultModel.id,
 		});
-		expect(modelResult).toMatchObject({ ok: true });
-		if (!modelResult.ok) throw new Error("Expected getModel to succeed.");
-		expect(modelResult.value).toMatchObject({ id: defaultModel.id });
 
-		const toolsResult = await orchestrator.dispatch({
-			kind: "agent.getTools",
-			source: { kind: "system" },
-			agentId,
-		});
-		expect(toolsResult).toMatchObject({ ok: true });
-		if (!toolsResult.ok) throw new Error("Expected getTools to succeed.");
-		expect(toolsResult.value).toEqual({
+		expect(orchestrator.getAgentTools(agentId)).toEqual({
 			toolNames: ["echo"],
 			activeToolNames: ["echo"],
 		});
 
-		const setModelResult = await orchestrator.dispatch({
-			kind: "agent.setModel",
-			source: { kind: "system" },
-			agentId,
-			model: restoredModel,
-		});
-		expect(setModelResult.ok).toBe(true);
+		await orchestrator.setAgentModel(agentId, restoredModel);
 		expect(harness.getModel()).toMatchObject({ id: restoredModel.id });
 
-		const setActiveToolsResult = await orchestrator.dispatch({
-			kind: "agent.setActiveTools",
-			source: { kind: "system" },
-			agentId,
-			toolNames: [],
-		});
-		expect(setActiveToolsResult.ok).toBe(true);
+		await orchestrator.setAgentActiveTools(agentId, []);
 		expect(orchestrator.getAgentActiveTools(agentId)).toEqual([]);
-		const setToolsResult = await orchestrator.dispatch({
-			kind: "agent.setTools",
-			source: { kind: "system" },
+		await orchestrator.setAgentTools(
 			agentId,
-			toolNames: ["echo", "missing", "echo"],
-			activeToolNames: ["echo", "ghost"],
-		});
-		expect(setToolsResult.ok).toBe(true);
+			["echo", "missing", "echo"],
+			["echo", "ghost"],
+		);
 		expect(orchestrator.getAgentTools(agentId)).toEqual({
 			toolNames: ["echo"],
 			activeToolNames: ["echo"],
@@ -840,11 +806,8 @@ describe("AgentOrchestrator", () => {
 		expect(harness.getTools()).toEqual([
 			expect.objectContaining({ name: "echo" }),
 		]);
-		expect(commandEvents).toContainEqual(
-			expect.objectContaining({
-				type: "command_completed",
-				command: expect.objectContaining({ kind: "agent.setActiveTools" }),
-			}),
+		expect(commandEvents).not.toContainEqual(
+			expect.objectContaining({ type: "command_completed" }),
 		);
 	});
 
@@ -874,28 +837,12 @@ describe("AgentOrchestrator", () => {
 			diagnostics: [],
 		});
 
-		const statusResult = await orchestrator.dispatch({
-			kind: "agent.getStatus",
-			source: { kind: "system" },
-			agentId,
-		});
-		expect(statusResult).toMatchObject({
-			ok: true,
-			value: "ready",
-		});
+		expect(orchestrator.getAgentStatus(agentId)).toBe("ready");
 
-		const inspectResult = await orchestrator.dispatch({
-			kind: "agent.inspect",
-			source: { kind: "system" },
+		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
 			agentId,
-		});
-		expect(inspectResult).toMatchObject({
-			ok: true,
-			value: {
-				agentId,
-				status: "ready",
-				hasHarness: true,
-			},
+			status: "ready",
+			hasHarness: true,
 		});
 
 		const handleHarnessEvent = (
@@ -929,29 +876,14 @@ describe("AgentOrchestrator", () => {
 		(harness as unknown as { phase: "turn" }).phase = "turn";
 
 		await expect(
-			orchestrator.dispatch({
-				kind: "agent.input",
-				source: { kind: "human" },
-				agentId,
-				text: "/steer keep going",
-			}),
-		).resolves.toMatchObject({ ok: true });
+			orchestrator.inputAgent(agentId, "/steer keep going"),
+		).resolves.toMatchObject({ kind: "command" });
 		await expect(
-			orchestrator.dispatch({
-				kind: "agent.input",
-				source: { kind: "human" },
-				agentId,
-				text: "/follow-up summarize next",
-			}),
-		).resolves.toMatchObject({ ok: true });
+			orchestrator.inputAgent(agentId, "/follow-up summarize next"),
+		).resolves.toMatchObject({ kind: "command" });
 		await expect(
-			orchestrator.dispatch({
-				kind: "agent.input",
-				source: { kind: "human" },
-				agentId,
-				text: "/status",
-			}),
-		).resolves.toMatchObject({ ok: true, value: "ready" });
+			orchestrator.inputAgent(agentId, "/status"),
+		).resolves.toMatchObject({ kind: "command", value: "ready" });
 
 		expect(events).toContainEqual(
 			expect.objectContaining({
@@ -989,29 +921,19 @@ describe("AgentOrchestrator", () => {
 		const { agentId } = await orchestrator.spawnAgentHarness();
 
 		await expect(
-			orchestrator.dispatch({
-				kind: "agent.input",
-				source: { kind: "human" },
-				agentId,
-				text: "/steer",
-			}),
+			orchestrator.inputAgent(agentId, "/steer"),
 		).resolves.toMatchObject({
-			ok: false,
+			kind: "failed",
 			diagnostic: {
-				message: "Input command /steer requires text.",
+				message: "Slash command /steer requires text.",
 			},
 		});
 		await expect(
-			orchestrator.dispatch({
-				kind: "agent.input",
-				source: { kind: "human" },
-				agentId,
-				text: "/follow-up",
-			}),
+			orchestrator.inputAgent(agentId, "/follow-up"),
 		).resolves.toMatchObject({
-			ok: false,
+			kind: "failed",
 			diagnostic: {
-				message: "Input command /follow-up requires text.",
+				message: "Slash command /follow-up requires text.",
 			},
 		});
 	});
@@ -1021,15 +943,10 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env);
 		const { agentId } = await orchestrator.spawnAgentHarness();
 
-		const result = await orchestrator.dispatch({
-			kind: "agent.input",
-			source: { kind: "human" },
-			agentId,
-			text: "/new",
-		});
+		const result = await orchestrator.inputAgent(agentId, "/new");
 
 		expect(result).toMatchObject({
-			ok: true,
+			kind: "command",
 			value: {
 				agentId: "main-agent-2",
 				snapshot: {
@@ -1061,33 +978,20 @@ describe("AgentOrchestrator", () => {
 		await session.appendThinkingLevelChange("medium");
 		const metadata = expectExtendedMetadata(await session.getMetadata());
 
-		await expect(
-			orchestrator.dispatch({
-				kind: "agent.listSessions",
-				source: { kind: "system" },
-			}),
-		).resolves.toMatchObject({
-			ok: true,
-			value: {
-				sessions: expect.arrayContaining([
-					expect.objectContaining({
-						id: "worker-agent",
-						path: metadata.path,
-						profile: { id: restoredProfile.id, label: restoredProfile.label },
-					}),
-					expect.objectContaining({ id: agentId }),
-				]),
-			},
+		await expect(orchestrator.listAgentSessions()).resolves.toMatchObject({
+			sessions: expect.arrayContaining([
+				expect.objectContaining({
+					id: "worker-agent",
+					path: metadata.path,
+					profile: { id: restoredProfile.id, label: restoredProfile.label },
+				}),
+				expect.objectContaining({ id: agentId }),
+			]),
 		});
 		await expect(
-			orchestrator.dispatch({
-				kind: "agent.input",
-				source: { kind: "human" },
-				agentId,
-				text: "/resume",
-			}),
+			orchestrator.inputAgent(agentId, "/resume"),
 		).resolves.toMatchObject({
-			ok: true,
+			kind: "command",
 			value: {
 				sessions: expect.arrayContaining([
 					expect.objectContaining({ id: "worker-agent" }),
@@ -1096,15 +1000,13 @@ describe("AgentOrchestrator", () => {
 			},
 		});
 
-		const result = await orchestrator.dispatch({
-			kind: "agent.input",
-			source: { kind: "human" },
+		const result = await orchestrator.inputAgent(
 			agentId,
-			text: `/resume ${metadata.path}`,
-		});
+			`/resume ${metadata.path}`,
+		);
 
 		expect(result).toMatchObject({
-			ok: true,
+			kind: "command",
 			value: {
 				agentId: "worker-agent",
 				snapshot: {
@@ -1140,14 +1042,9 @@ describe("AgentOrchestrator", () => {
 		const { agentId } = await orchestrator.spawnAgentHarness();
 
 		await expect(
-			orchestrator.dispatch({
-				kind: "agent.input",
-				source: { kind: "human" },
-				agentId,
-				text: "/resume same",
-			}),
+			orchestrator.inputAgent(agentId, "/resume same"),
 		).resolves.toMatchObject({
-			ok: false,
+			kind: "failed",
 			diagnostic: {
 				message: "Ambiguous agent session reference: same",
 			},
@@ -1160,14 +1057,9 @@ describe("AgentOrchestrator", () => {
 		const { agentId } = await orchestrator.spawnAgentHarness();
 
 		await expect(
-			orchestrator.dispatch({
-				kind: "agent.input",
-				source: { kind: "human" },
-				agentId,
-				text: "/agent",
-			}),
+			orchestrator.inputAgent(agentId, "/agent"),
 		).resolves.toMatchObject({
-			ok: true,
+			kind: "command",
 			value: {
 				agents: [
 					expect.objectContaining({
@@ -1179,14 +1071,9 @@ describe("AgentOrchestrator", () => {
 			},
 		});
 		await expect(
-			orchestrator.dispatch({
-				kind: "agent.input",
-				source: { kind: "human" },
-				agentId,
-				text: "/session",
-			}),
+			orchestrator.inputAgent(agentId, "/session"),
 		).resolves.toMatchObject({
-			ok: true,
+			kind: "command",
 			value: {
 				sessions: [
 					expect.objectContaining({
@@ -1213,27 +1100,17 @@ describe("AgentOrchestrator", () => {
 		});
 
 		await expect(
-			orchestrator.dispatch({
-				kind: "agent.input",
-				source: { kind: "human" },
-				agentId,
-				text: "/name Planning Session",
-			}),
+			orchestrator.inputAgent(agentId, "/name Planning Session"),
 		).resolves.toMatchObject({
-			ok: true,
+			kind: "command",
 			value: {
 				name: "Planning Session",
 			},
 		});
 		await expect(
-			orchestrator.dispatch({
-				kind: "agent.input",
-				source: { kind: "human" },
-				agentId,
-				text: "/tree",
-			}),
+			orchestrator.inputAgent(agentId, "/tree"),
 		).resolves.toMatchObject({
-			ok: true,
+			kind: "command",
 			value: {
 				name: "Planning Session",
 				entries: [
@@ -1271,14 +1148,9 @@ describe("AgentOrchestrator", () => {
 		});
 
 		await expect(
-			orchestrator.dispatch({
-				kind: "agent.input",
-				source: { kind: "human" },
-				agentId,
-				text: `/tree ${userEntryId}`,
-			}),
+			orchestrator.inputAgent(agentId, `/tree ${userEntryId}`),
 		).resolves.toMatchObject({
-			ok: true,
+			kind: "command",
 			value: {
 				cancelled: false,
 				editorText: "edit this",
@@ -1309,15 +1181,13 @@ describe("AgentOrchestrator", () => {
 			timestamp: 2,
 		});
 
-		const result = await orchestrator.dispatch({
-			kind: "agent.input",
-			source: { kind: "human" },
+		const result = await orchestrator.inputAgent(
 			agentId,
-			text: `/fork ${targetEntryId}`,
-		});
+			`/fork ${targetEntryId}`,
+		);
 
 		expect(result).toMatchObject({
-			ok: true,
+			kind: "command",
 			value: {
 				agentId: expect.not.stringMatching(`^${agentId}$`),
 				snapshot: {
@@ -1328,10 +1198,11 @@ describe("AgentOrchestrator", () => {
 			},
 		});
 		if (
-			!result.ok ||
+			result.kind !== "command" ||
 			!result.value ||
 			typeof result.value !== "object" ||
-			!("agentId" in result.value)
+			!("agentId" in result.value) ||
+			typeof result.value.agentId !== "string"
 		) {
 			throw new Error("Expected fork command result.");
 		}
@@ -1374,14 +1245,7 @@ describe("AgentOrchestrator", () => {
 		if (!runner) throw new Error("Expected extension runner.");
 		const commandContext = runner.createCommandContext("stateful");
 
-		const disposeResult = await orchestrator.dispatch({
-			kind: "agent.dispose",
-			source: { kind: "system" },
-			agentId,
-			reason: "test cleanup",
-		});
-
-		expect(disposeResult).toMatchObject({ ok: true });
+		await orchestrator.disposeAgent(agentId, "test cleanup");
 		expect(orchestrator.getAgentStatus(agentId)).toBe("disposed");
 		expect(orchestrator.getAgentHarness(agentId)).toBeUndefined();
 		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
@@ -1709,7 +1573,8 @@ describe("AgentOrchestrator", () => {
 			api.observe("tool_lifecycle_event", () => {});
 			api.intercept("context", (event) => ({ messages: event.messages }));
 			api.registerCommand({
-				inputInvoke: { name: "sample", description: "Sample command" },
+				name: "sample",
+				description: "Sample command",
 				handler: () => {},
 			});
 			api.registerTool(createToolDefinition("sampleTool", "sample"));
@@ -1740,9 +1605,11 @@ describe("AgentOrchestrator", () => {
 			commands: [
 				{
 					extensionId: "sample",
-					inputInvoke: {
+					command: {
 						name: "sample",
 						description: "Sample command",
+						source: { kind: "extension", extensionId: "sample" },
+						placement: "line",
 					},
 				},
 			],
@@ -1842,11 +1709,9 @@ describe("AgentOrchestrator", () => {
 		});
 		orchestrator.registerExtensionFactory("sample", (api) => {
 			api.registerCommand({
-				inputInvoke: {
-					name: "mark",
-					description: "Append a marker entry",
-					argumentHint: "<text>",
-				},
+				name: "mark",
+				description: "Append a marker entry",
+				argumentHint: "<text>",
 				handler: async (args, context) => {
 					await context.session.appendEntry("marker", { args });
 				},
@@ -1854,15 +1719,10 @@ describe("AgentOrchestrator", () => {
 		});
 		const { agentId } = await orchestrator.spawnAgentHarness();
 
-		const result = await orchestrator.dispatch({
-			kind: "agent.input",
-			source: { kind: "human" },
-			agentId,
-			text: "/mark hello world",
-		});
+		const result = await orchestrator.inputAgent(agentId, "/mark hello world");
 
 		expect(result).toMatchObject({
-			ok: true,
+			kind: "command",
 			value: undefined,
 		});
 		expect(
@@ -1877,70 +1737,70 @@ describe("AgentOrchestrator", () => {
 				data: { args: "hello world" },
 			},
 		]);
-		expect(orchestrator.getAgentInputCommands(agentId)).toEqual([
+		expect(orchestrator.listCommands(agentId)).toEqual([
 			expect.objectContaining({
-				inputInvoke: expect.objectContaining({ name: "abort" }),
-				source: { kind: "builtin", commandKind: "agent.abort" },
+				name: "abort",
+				source: { kind: "built-in" },
 			}),
 			expect.objectContaining({
-				inputInvoke: expect.objectContaining({ name: "compact" }),
-				source: { kind: "builtin", commandKind: "agent.compact" },
+				name: "compact",
+				source: { kind: "built-in" },
 			}),
 			expect.objectContaining({
-				inputInvoke: expect.objectContaining({ name: "follow-up" }),
-				source: { kind: "builtin", commandKind: "agent.followUp" },
+				name: "follow-up",
+				source: { kind: "built-in" },
 			}),
 			expect.objectContaining({
-				inputInvoke: expect.objectContaining({ name: "fork" }),
-				source: { kind: "builtin", commandKind: "agent.fork" },
+				name: "fork",
+				source: { kind: "built-in" },
 			}),
 			expect.objectContaining({
-				inputInvoke: expect.objectContaining({ name: "inspect" }),
-				source: { kind: "builtin", commandKind: "agent.inspect" },
+				name: "inspect",
+				source: { kind: "built-in" },
 			}),
 			expect.objectContaining({
-				inputInvoke: expect.objectContaining({ name: "agent" }),
-				source: { kind: "builtin", commandKind: "agent.listAgents" },
+				name: "agent",
+				source: { kind: "built-in" },
 			}),
 			expect.objectContaining({
-				inputInvoke: expect.objectContaining({ name: "name" }),
-				source: { kind: "builtin", commandKind: "agent.setSessionName" },
+				name: "name",
+				source: { kind: "built-in" },
 			}),
 			expect.objectContaining({
-				inputInvoke: expect.objectContaining({ name: "new" }),
-				source: { kind: "builtin", commandKind: "agent.new" },
+				name: "new",
+				source: { kind: "built-in" },
 			}),
 			expect.objectContaining({
-				inputInvoke: expect.objectContaining({ name: "reload" }),
-				source: { kind: "builtin", commandKind: "extension.reload" },
+				name: "reload",
+				source: { kind: "built-in" },
 			}),
 			expect.objectContaining({
-				inputInvoke: expect.objectContaining({ name: "resume" }),
-				source: { kind: "builtin", commandKind: "agent.resume" },
+				name: "resume",
+				source: { kind: "built-in" },
 			}),
 			expect.objectContaining({
-				inputInvoke: expect.objectContaining({ name: "session" }),
-				source: { kind: "builtin", commandKind: "agent.listSessions" },
+				name: "session",
+				source: { kind: "built-in" },
 			}),
 			expect.objectContaining({
-				inputInvoke: expect.objectContaining({ name: "status" }),
-				source: { kind: "builtin", commandKind: "agent.getStatus" },
+				name: "status",
+				source: { kind: "built-in" },
 			}),
 			expect.objectContaining({
-				inputInvoke: expect.objectContaining({ name: "steer" }),
-				source: { kind: "builtin", commandKind: "agent.steer" },
+				name: "steer",
+				source: { kind: "built-in" },
 			}),
 			expect.objectContaining({
-				inputInvoke: expect.objectContaining({ name: "tree" }),
-				source: { kind: "builtin", commandKind: "agent.getSessionTree" },
+				name: "tree",
+				source: { kind: "built-in" },
 			}),
 			{
-				inputInvoke: {
-					name: "mark",
-					description: "Append a marker entry",
-					argumentHint: "<text>",
-				},
+				name: "mark",
+				description: "Append a marker entry",
+				argumentHint: "<text>",
 				source: { kind: "extension", extensionId: "sample" },
+				placement: "line",
+				available: true,
 			},
 		]);
 	});
@@ -2032,14 +1892,9 @@ describe("AgentOrchestrator", () => {
 			api.registerTool(createToolDefinition("beta", "beta"));
 		});
 
-		const result = await orchestrator.dispatch({
-			kind: "extension.reload",
-			source: { kind: "system" },
-		});
+		const result = await orchestrator.reloadExtensions();
 
-		expect(result.ok).toBe(true);
-		if (!result.ok) throw new Error("Expected reload to succeed.");
-		expect(result.value).toMatchObject({
+		expect(result).toMatchObject({
 			agents: [
 				{
 					agentId,
@@ -3048,37 +2903,23 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
-	it("rejects invalid commands without throwing", async () => {
+	it("reports invalid slash commands without wrapping programmatic calls", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
 		const { agentId } = await orchestrator.spawnAgentHarness();
 
-		const idleSteer = await orchestrator.dispatch({
-			kind: "agent.steer",
-			source: { kind: "system" },
-			agentId,
-			text: "steer",
-		});
+		const idleSteer = await orchestrator.inputAgent(agentId, "/steer steer");
 		expect(idleSteer).toMatchObject({
-			ok: false,
+			kind: "failed",
 			diagnostic: {
 				code: "orchestrator.command_failed",
 				agentId,
 			},
 		});
 
-		const missingAgent = await orchestrator.dispatch({
-			kind: "agent.getModel",
-			source: { kind: "system" },
-			agentId: "missing",
-		});
-		expect(missingAgent).toMatchObject({
-			ok: false,
-			diagnostic: {
-				code: "orchestrator.command_failed",
-				agentId: "missing",
-			},
-		});
+		expect(() => orchestrator.getAgentModel("missing")).toThrow(
+			"Unknown agent: missing",
+		);
 	});
 
 	it("resolves human requests through the first capable client", async () => {

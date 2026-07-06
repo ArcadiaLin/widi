@@ -4,8 +4,8 @@ import type {
 	ToolCallResult,
 	ToolResultPatch,
 } from "@earendil-works/pi-agent-core";
-import type { CommandInputInvoke } from "../command/index.ts";
 import { type CoreDiagnostic, createDiagnostic } from "../diagnostics.ts";
+import type { SlashCommand } from "../slash-command.ts";
 import type { ToolRegistry } from "../tool-registry.ts";
 import type {
 	ExtensionCommandContribution,
@@ -82,12 +82,12 @@ export interface ExtensionRunnerSnapshot {
 
 export interface ExtensionCommandSnapshot {
 	readonly extensionId: string;
-	readonly inputInvoke: CommandInputInvoke;
+	readonly command: SlashCommand;
 }
 
 export interface ResolvedExtensionCommand {
 	readonly extensionId: string;
-	readonly inputInvoke: CommandInputInvoke;
+	readonly command: SlashCommand;
 	readonly handler: ExtensionCommandContribution["handler"];
 }
 
@@ -168,7 +168,7 @@ export class ExtensionRunner {
 		};
 	}
 
-	getInputCommands(
+	getCommands(
 		options: { reservedNames?: readonly string[] } = {},
 	): ResolvedExtensionCommand[] {
 		return resolveExtensionCommands(
@@ -177,12 +177,12 @@ export class ExtensionRunner {
 		);
 	}
 
-	getInputCommand(
+	getCommand(
 		name: string,
 		options: { reservedNames?: readonly string[] } = {},
 	): ResolvedExtensionCommand | undefined {
-		return this.getInputCommands(options).find(
-			(command) => command.inputInvoke.name === name,
+		return this.getCommands(options).find(
+			(command) => command.command.name === name,
 		);
 	}
 
@@ -217,9 +217,9 @@ export class ExtensionRunner {
 			extensionIds: [...this.extensionIds],
 			extensions: [...this.extensions],
 			hooks,
-			commands: this.getInputCommands().map((command) => ({
+			commands: this.getCommands().map((command) => ({
 				extensionId: command.extensionId,
-				inputInvoke: { ...command.inputInvoke },
+				command: { ...command.command },
 			})),
 			toolContributions: this._loadedScope.toolContributions.map(
 				(contribution) => {
@@ -502,20 +502,6 @@ export class ExtensionRunner {
 					throw error;
 				}
 			},
-			dispatch: async (command) => {
-				this._assertActive();
-				try {
-					return await this._actions.dispatch(command);
-				} catch (error) {
-					await this._reportActionFailure({
-						extensionId,
-						action: "dispatch",
-						code: "extension.action_failed",
-						error,
-					});
-					throw error;
-				}
-			},
 		};
 	}
 
@@ -610,13 +596,13 @@ function resolveExtensionCommands(
 	const takenNames = new Set(reservedNames);
 	const counts = new Map<string, number>();
 	for (const contribution of contributions) {
-		const name = contribution.inputInvoke.name;
+		const name = contribution.name;
 		counts.set(name, (counts.get(name) ?? 0) + 1);
 	}
 
 	const seen = new Map<string, number>();
 	return contributions.map((contribution) => {
-		const name = contribution.inputInvoke.name;
+		const name = contribution.name;
 		const occurrence = (seen.get(name) ?? 0) + 1;
 		seen.set(name, occurrence);
 		let invocationName =
@@ -629,9 +615,15 @@ function resolveExtensionCommands(
 		takenNames.add(invocationName);
 		return {
 			extensionId: contribution.extensionId,
-			inputInvoke: {
-				...contribution.inputInvoke,
+			command: {
 				name: invocationName,
+				description: contribution.description,
+				argumentHint: contribution.argumentHint,
+				source: {
+					kind: "extension",
+					extensionId: contribution.extensionId,
+				},
+				placement: "line",
 			},
 			handler: contribution.handler,
 		};
@@ -647,6 +639,5 @@ function createUnboundActions(): ExtensionActions {
 		setAgentTools: async () => notBound(),
 		setAgentActiveTools: async () => notBound(),
 		requestHuman: async () => notBound(),
-		dispatch: async () => notBound(),
 	};
 }

@@ -21,7 +21,6 @@ import {
 	type ProfileStorageReadResult,
 } from "./agent-profile.js";
 import { AuthStorage } from "./auth-storage.js";
-import { Command, type RuntimeModel } from "./command/index.ts";
 import {
 	DEFAULT_AGENT_DIR,
 	DEFAULT_AGENT_PERSISTENCE_DIR,
@@ -48,6 +47,7 @@ import {
 } from "./project-trust.js";
 import { ConfigValueResolver } from "./resolve-config-value.js";
 import { ResourceLoader, type ResourceRoot } from "./resource-loader.js";
+import type { RuntimeModel } from "./runtime-types.ts";
 import { SessionManager } from "./session-manager.js";
 import { SettingManager } from "./setting-manager.js";
 import { ToolRegistry } from "./tool-registry.ts";
@@ -122,12 +122,10 @@ export interface WidiRuntimeServices {
 	readonly sessionManager: SessionManager;
 	readonly toolRegistry: ToolRegistry;
 	readonly extensionLoader: ExtensionLoader;
-	readonly command: Command;
 }
 
 export interface WidiRuntime {
 	readonly services: WidiRuntimeServices;
-	readonly command: Command;
 	readonly orchestrator: AgentOrchestrator;
 	readonly diagnostics: readonly CoreDiagnostic[];
 }
@@ -690,7 +688,6 @@ export async function createWidiRuntime(
 		defaultThinkingLevel: defaultThinkingLevel.resolution.level,
 	};
 	const orchestrator = new AgentOrchestrator(orchestratorConfig);
-	const command = new Command({ orchestrator });
 	const services: WidiRuntimeServices = {
 		cwd,
 		agentDir,
@@ -713,7 +710,6 @@ export async function createWidiRuntime(
 		sessionManager,
 		toolRegistry,
 		extensionLoader,
-		command,
 	};
 	const diagnostics = [
 		...globalSettingManager.drainDiagnostics(),
@@ -730,7 +726,6 @@ export async function createWidiRuntime(
 
 	return {
 		services,
-		command,
 		orchestrator,
 		diagnostics,
 	};

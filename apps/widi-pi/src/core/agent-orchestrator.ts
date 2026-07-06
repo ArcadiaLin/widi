@@ -24,28 +24,6 @@ import type {
 } from "./agent-profile.js";
 import { toAgentProfileReference } from "./agent-profile.js";
 import type { OrchestratorClient } from "./client.ts";
-import type {
-	AgentListResult,
-	AgentSessionCommandResult,
-	AgentSessionListResult,
-	AgentSessionSnapshot,
-	AgentSessionTreeSnapshot,
-	AgentToolsSnapshot,
-	ExtensionReloadAgentResult,
-	ExtensionReloadAgentSkipReason,
-	ExtensionReloadResult,
-	InputCommandInfo,
-	OperationSource,
-	OrchestratorCommand,
-	OrchestratorCommandResult,
-	OrchestratorCommandValue,
-	RuntimeModel,
-} from "./command/index.ts";
-import {
-	executeCommand,
-	executeInput,
-	listInputCommands,
-} from "./command/index.ts";
 import {
 	type DiagnosticDisposition,
 	type DiagnosticSource,
@@ -74,13 +52,24 @@ import type {
 	HumanResponse,
 } from "./human-request.ts";
 import type { ModelRegistry } from "./model-registry.js";
+import type { OperationSource } from "./operation-source.ts";
 import type { ResourceLoader } from "./resource-loader.js";
+import type { AgentToolsSnapshot, RuntimeModel } from "./runtime-types.ts";
 import type {
+	AgentSessionCandidate,
 	AgentSessionMetadata,
+	AgentSessionSnapshot,
+	AgentSessionTreeSnapshot,
 	ForkAgentSessionOptions,
 	SessionManager,
 } from "./session-manager.ts";
 import type { SettingManager } from "./setting-manager.js";
+import {
+	type InputResult,
+	parseLineSlashCommand,
+	type SlashCommand,
+	type SlashCommandInvocation,
+} from "./slash-command.ts";
 import {
 	createAgentToolsFromResolvedTools,
 	ToolRegistry,
@@ -98,22 +87,35 @@ export type OrchestratorEvent =
 			event: ToolLifecycleEvent;
 	  }
 	| {
+			readonly type: "command_detected";
+			commandId: string;
+			command: SlashCommandInvocation;
+			createdAt: string;
+	  }
+	| {
 			readonly type: "command_accepted";
 			commandId: string;
-			command: OrchestratorCommand;
+			command: SlashCommandInvocation;
 			createdAt: string;
 	  }
 	| {
 			readonly type: "command_completed";
 			commandId: string;
-			command: OrchestratorCommand;
-			result: OrchestratorCommandValue;
+			command: SlashCommandInvocation;
+			result: unknown;
+			completedAt: string;
+	  }
+	| {
+			readonly type: "command_failed";
+			commandId: string;
+			command: SlashCommandInvocation;
+			diagnostic: OrchestratorDiagnostic;
 			completedAt: string;
 	  }
 	| {
 			readonly type: "command_rejected";
 			commandId: string;
-			command?: OrchestratorCommand;
+			command?: SlashCommandInvocation;
 			diagnostic: OrchestratorDiagnostic;
 			completedAt: string;
 	  }
@@ -220,6 +222,46 @@ export interface AgentRecordSnapshot {
 	readonly diagnostics: readonly OrchestratorDiagnostic[];
 }
 
+export interface AgentSessionCommandResult {
+	readonly agentId: AgentId;
+	readonly snapshot: AgentRecordSnapshot;
+}
+
+export interface AgentSessionListResult {
+	readonly sessions: readonly AgentSessionCandidate[];
+}
+
+export interface AgentListResult {
+	readonly agents: readonly AgentRecordSnapshot[];
+}
+
+export type ExtensionReloadAgentStatus = "reloaded" | "skipped" | "failed";
+
+export type ExtensionReloadAgentSkipReason =
+	| "creating"
+	| "running"
+	| "disposed"
+	| "unavailable"
+	| "missing_harness"
+	| "unknown_agent";
+
+export interface ExtensionReloadAgentResult {
+	readonly agentId: string;
+	readonly status: ExtensionReloadAgentStatus;
+	readonly reason?: ExtensionReloadAgentSkipReason;
+	readonly diagnostics: readonly OrchestratorDiagnostic[];
+	readonly before?: AgentRecordSnapshot;
+	readonly after?: AgentRecordSnapshot;
+}
+
+export interface ExtensionReloadResult {
+	readonly catalog: {
+		readonly loaded: readonly ExtensionIdentity[];
+		readonly diagnostics: readonly OrchestratorDiagnostic[];
+	};
+	readonly agents: readonly ExtensionReloadAgentResult[];
+}
+
 interface PendingHumanRequest {
 	envelope: HumanRequestEnvelope;
 	agentId?: AgentId;
@@ -256,6 +298,20 @@ interface AgentToolSetHarness {
 	setTools(tools: AgentTool[], activeToolNames?: string[]): Promise<void>;
 	getActiveTools(): AgentTool[];
 	setActiveTools(toolNames: string[]): Promise<void>;
+}
+
+interface LineSlashCommandBinding {
+	readonly command: SlashCommand;
+	execute(args: string): Promise<unknown>;
+}
+
+interface BuiltInSlashCommandBinding {
+	readonly command: SlashCommand;
+	execute(
+		orchestrator: AgentOrchestrator,
+		agentId: AgentId,
+		args: string,
+	): Promise<unknown>;
 }
 
 interface SpawnAgentHarnessCommonOptions {
@@ -412,6 +468,22 @@ export class AgentOrchestrator {
 		};
 	}
 
+	// Slash command registry
+	listCommands(agentId: AgentId): SlashCommand[] {
+		const record = this._requireAgentRecord(agentId);
+		const builtInCommands = BUILT_IN_SLASH_COMMANDS.map((binding) =>
+			this._withCommandAvailability(record, binding.command),
+		);
+		const reservedNames = builtInCommands.map((command) => command.name);
+		const extensionCommands =
+			record.extensionRunner
+				?.getCommands({ reservedNames })
+				.map((command) =>
+					this._withCommandAvailability(record, command.command),
+				) ?? [];
+		return [...builtInCommands, ...extensionCommands];
+	}
+
 	async newAgentSessionFromAgent(
 		agentId: AgentId,
 	): Promise<AgentSessionCommandResult> {
@@ -536,10 +608,6 @@ export class AgentOrchestrator {
 		return [...this._requireAgentToolSet(agentId).activeToolNames];
 	}
 
-	getAgentInputCommands(agentId: AgentId): InputCommandInfo[] {
-		return listInputCommands(this, agentId);
-	}
-
 	async setAgentActiveTools(
 		agentId: AgentId,
 		toolNames: string[],
@@ -561,8 +629,92 @@ export class AgentOrchestrator {
 		agentId: AgentId,
 		text: string,
 		options?: { images?: ImageContent[]; inputInvoke?: boolean },
-	): Promise<OrchestratorCommandValue> {
-		return await executeInput(this, agentId, text, options);
+	): Promise<InputResult> {
+		if (options?.inputInvoke === false) {
+			return {
+				kind: "prompt",
+				message: await this.promptAgent(agentId, text, {
+					images: options.images ? [...options.images] : undefined,
+				}),
+			};
+		}
+
+		const parsed = parseLineSlashCommand(text);
+		const command = parsed
+			? this._findLineSlashCommand(agentId, parsed.name)
+			: undefined;
+		if (!parsed || !command) {
+			return {
+				kind: "prompt",
+				message: await this.promptAgent(agentId, text, {
+					images: options?.images ? [...options.images] : undefined,
+				}),
+			};
+		}
+
+		const commandId = this._createCommandId();
+		const invocation: SlashCommandInvocation = {
+			name: command.command.name,
+			args: parsed.args,
+			source: command.command.source,
+			placement: command.command.placement,
+		};
+		await this._emit({
+			type: "command_detected",
+			commandId,
+			command: invocation,
+			createdAt: now(),
+		});
+
+		const gatewayDiagnostic = this._commandGateway(agentId, command.command);
+		if (gatewayDiagnostic) {
+			await this._emit({
+				type: "command_rejected",
+				commandId,
+				command: invocation,
+				diagnostic: gatewayDiagnostic,
+				completedAt: now(),
+			});
+			await this._publishDiagnostic(gatewayDiagnostic);
+			return { kind: "rejected", commandId, diagnostic: gatewayDiagnostic };
+		}
+
+		await this._emit({
+			type: "command_accepted",
+			commandId,
+			command: invocation,
+			createdAt: now(),
+		});
+
+		try {
+			const value = await command.execute(parsed.args);
+			await this._emit({
+				type: "command_completed",
+				commandId,
+				command: invocation,
+				result: value,
+				completedAt: now(),
+			});
+			return { kind: "command", commandId, name: command.command.name, value };
+		} catch (error) {
+			const diagnostic = toDiagnostic(error, {
+				code: "orchestrator.command_failed",
+				message: error instanceof Error ? error.message : String(error),
+				operationSource: { kind: "human" },
+				agentId,
+				commandId,
+				recoverable: true,
+			});
+			await this._emit({
+				type: "command_failed",
+				commandId,
+				command: invocation,
+				diagnostic,
+				completedAt: now(),
+			});
+			await this._publishDiagnostic(diagnostic);
+			return { kind: "failed", commandId, diagnostic };
+		}
 	}
 
 	async promptAgent(
@@ -728,48 +880,6 @@ export class AgentOrchestrator {
 				this._clients.delete(client.id);
 			}
 		};
-	}
-
-	async dispatch(
-		command: OrchestratorCommand,
-	): Promise<OrchestratorCommandResult> {
-		const commandId = command.id ?? this._createCommandId();
-		await this._emit({
-			type: "command_accepted",
-			commandId,
-			command,
-			createdAt: now(),
-		});
-
-		try {
-			const value = await this._executeCommand(command);
-			await this._emit({
-				type: "command_completed",
-				commandId,
-				command,
-				result: value,
-				completedAt: now(),
-			});
-			return { ok: true, commandId, value };
-		} catch (error) {
-			const diagnostic = toDiagnostic(error, {
-				code: "orchestrator.command_failed",
-				message: error instanceof Error ? error.message : String(error),
-				operationSource: command.source,
-				agentId: "agentId" in command ? command.agentId : undefined,
-				commandId,
-				recoverable: true,
-			});
-			await this._emit({
-				type: "command_rejected",
-				commandId,
-				command,
-				diagnostic,
-				completedAt: now(),
-			});
-			await this._publishDiagnostic(diagnostic);
-			return { ok: false, commandId, diagnostic };
-		}
 	}
 
 	async requestHuman(request: HumanRequest): Promise<HumanResponse> {
@@ -1566,7 +1676,6 @@ export class AgentOrchestrator {
 				await this.setAgentActiveTools(agentId, toolNames);
 			},
 			requestHuman: async (request) => await this.requestHuman(request),
-			dispatch: async (command) => await this.dispatch(command),
 		};
 	}
 
@@ -2270,12 +2379,6 @@ export class AgentOrchestrator {
 		this._streamingToolCalls.delete(agentId);
 	}
 
-	private async _executeCommand(
-		command: OrchestratorCommand,
-	): Promise<OrchestratorCommandValue> {
-		return await executeCommand(this, command);
-	}
-
 	private async _emit(
 		event: OrchestratorEvent,
 		options: { sendToClients?: boolean } = {},
@@ -2333,6 +2436,11 @@ export class AgentOrchestrator {
 			...this.modelRegistry.drainDiagnostics(),
 		];
 	}
+	private _createHumanRequestId(): string {
+		const id = `human-request-${this._nextHumanRequestId}`;
+		this._nextHumanRequestId += 1;
+		return id;
+	}
 
 	private _createCommandId(): string {
 		const id = `orchestrator-command-${this._nextCommandId}`;
@@ -2340,11 +2448,254 @@ export class AgentOrchestrator {
 		return id;
 	}
 
-	private _createHumanRequestId(): string {
-		const id = `human-request-${this._nextHumanRequestId}`;
-		this._nextHumanRequestId += 1;
-		return id;
+	// Slash command input path
+	private _findLineSlashCommand(
+		agentId: AgentId,
+		name: string,
+	): LineSlashCommandBinding | undefined {
+		const builtIn = BUILT_IN_SLASH_COMMANDS.find(
+			(binding) => binding.command.name === name,
+		);
+		if (builtIn) {
+			return {
+				command: builtIn.command,
+				execute: async (args) => await builtIn.execute(this, agentId, args),
+			};
+		}
+
+		const extensionCommand = this._requireAgentRecord(
+			agentId,
+		).extensionRunner?.getCommand(name, {
+			reservedNames: getBuiltInSlashCommandNames(),
+		});
+		if (!extensionCommand) return undefined;
+		return {
+			command: extensionCommand.command,
+			execute: async (args) => {
+				const runner = this._requireAgentRecord(agentId).extensionRunner;
+				if (!runner) return undefined;
+				await extensionCommand.handler(
+					args,
+					runner.createCommandContext(extensionCommand.extensionId),
+				);
+				return undefined;
+			},
+		};
 	}
+
+	private _withCommandAvailability(
+		record: AgentRecord,
+		command: SlashCommand,
+	): SlashCommand {
+		const diagnostic = this._commandGateway(record.agentId, command);
+		if (!diagnostic) return { ...command, available: true };
+		return {
+			...command,
+			available: false,
+			unavailableReason: diagnostic.message,
+		};
+	}
+
+	// Slash command gateway
+	private _commandGateway(
+		agentId: AgentId,
+		command: SlashCommand,
+	): OrchestratorDiagnostic | undefined {
+		this._requireAgentRecord(agentId);
+		void command;
+		return undefined;
+	}
+}
+
+// Built-in slash command execution
+const BUILT_IN_SLASH_COMMANDS: readonly BuiltInSlashCommandBinding[] = [
+	{
+		command: {
+			name: "abort",
+			description: "Abort the current agent run.",
+			source: { kind: "built-in" },
+			placement: "line",
+		},
+		execute: async (orchestrator, agentId) =>
+			await orchestrator.abortAgent(agentId),
+	},
+	{
+		command: {
+			name: "compact",
+			description: "Compact the current agent session.",
+			argumentHint: "[instructions]",
+			source: { kind: "built-in" },
+			placement: "line",
+		},
+		execute: async (orchestrator, agentId, args) =>
+			await orchestrator.compactAgent(agentId, args.trim() || undefined),
+	},
+	{
+		command: {
+			name: "follow-up",
+			description: "Queue a follow-up for the current agent.",
+			argumentHint: "<text>",
+			source: { kind: "built-in" },
+			placement: "line",
+			arguments: { required: true },
+		},
+		execute: async (orchestrator, agentId, args) => {
+			await orchestrator.followUpAgent(
+				agentId,
+				requireSlashCommandText("follow-up", args),
+			);
+			return undefined;
+		},
+	},
+	{
+		command: {
+			name: "fork",
+			description: "Fork the current agent session.",
+			argumentHint: "[entry]",
+			source: { kind: "built-in" },
+			scope: "user-facing",
+			placement: "line",
+		},
+		execute: async (orchestrator, agentId, args) => {
+			const entryId = args.trim() || undefined;
+			return await orchestrator.forkAgentSessionFromAgent(
+				agentId,
+				entryId ? { entryId } : undefined,
+			);
+		},
+	},
+	{
+		command: {
+			name: "inspect",
+			description: "Inspect the current agent runtime facts.",
+			source: { kind: "built-in" },
+			placement: "line",
+		},
+		execute: async (orchestrator, agentId) =>
+			orchestrator.inspectAgent(agentId),
+	},
+	{
+		command: {
+			name: "agent",
+			description: "List runtime agents.",
+			source: { kind: "built-in" },
+			placement: "line",
+		},
+		execute: async (orchestrator) => orchestrator.listAgents(),
+	},
+	{
+		command: {
+			name: "name",
+			description: "Name the current agent session.",
+			argumentHint: "<name>",
+			source: { kind: "built-in" },
+			placement: "line",
+			arguments: { required: true },
+		},
+		execute: async (orchestrator, agentId, args) =>
+			await orchestrator.setAgentSessionName(
+				agentId,
+				requireSlashCommandText("name", args),
+			),
+	},
+	{
+		command: {
+			name: "new",
+			description: "Start a new session from the current agent.",
+			source: { kind: "built-in" },
+			scope: "user-facing",
+			placement: "line",
+		},
+		execute: async (orchestrator, agentId) =>
+			await orchestrator.newAgentSessionFromAgent(agentId),
+	},
+	{
+		command: {
+			name: "reload",
+			description: "Reload extensions for the current agent.",
+			source: { kind: "built-in" },
+			placement: "line",
+		},
+		execute: async (orchestrator, agentId) =>
+			await orchestrator.reloadExtensions({ agentIds: [agentId] }),
+	},
+	{
+		command: {
+			name: "resume",
+			description: "Resume an existing agent session.",
+			argumentHint: "[session]",
+			source: { kind: "built-in" },
+			scope: "user-facing",
+			placement: "line",
+		},
+		execute: async (orchestrator, _agentId, args) => {
+			const reference = args.trim();
+			if (!reference) return await orchestrator.listAgentSessions();
+			return await orchestrator.resumeAgentSessionByReference(reference);
+		},
+	},
+	{
+		command: {
+			name: "session",
+			description: "List persisted agent sessions.",
+			source: { kind: "built-in" },
+			placement: "line",
+		},
+		execute: async (orchestrator) => await orchestrator.listAgentSessions(),
+	},
+	{
+		command: {
+			name: "status",
+			description: "Get the current agent status.",
+			source: { kind: "built-in" },
+			placement: "line",
+		},
+		execute: async (orchestrator, agentId) =>
+			orchestrator.getAgentStatus(agentId),
+	},
+	{
+		command: {
+			name: "steer",
+			description: "Steer the current running agent.",
+			argumentHint: "<text>",
+			source: { kind: "built-in" },
+			placement: "line",
+			arguments: { required: true },
+		},
+		execute: async (orchestrator, agentId, args) => {
+			await orchestrator.steerAgent(
+				agentId,
+				requireSlashCommandText("steer", args),
+			);
+			return undefined;
+		},
+	},
+	{
+		command: {
+			name: "tree",
+			description: "Inspect or navigate the current session tree.",
+			argumentHint: "[entry]",
+			source: { kind: "built-in" },
+			placement: "line",
+		},
+		execute: async (orchestrator, agentId, args) => {
+			const targetId = args.trim();
+			if (!targetId) return await orchestrator.getAgentSessionTree(agentId);
+			return await orchestrator.navigateAgentTree(agentId, targetId);
+		},
+	},
+];
+
+function getBuiltInSlashCommandNames(): string[] {
+	return BUILT_IN_SLASH_COMMANDS.map((binding) => binding.command.name);
+}
+
+function requireSlashCommandText(commandName: string, args: string): string {
+	const text = args.trim();
+	if (!text) {
+		throw new Error(`Slash command /${commandName} requires text.`);
+	}
+	return text;
 }
 
 function toDiagnostic(

@@ -32,7 +32,9 @@ type ExtensionToolDefinitionPatch = ToolDefinitionPatch;
 
 export interface ExtensionCommandContribution {
 	extensionId: string;
-	inputInvoke: ExtensionCommandDefinition["inputInvoke"];
+	name: string;
+	description?: string;
+	argumentHint?: string;
 	handler: ExtensionCommandHandler;
 }
 
@@ -754,11 +756,13 @@ function createActivationApi(options: {
 			});
 		},
 		registerCommand: (command) => {
-			const inputInvoke = normalizeInputInvoke(command.inputInvoke);
+			const definition = normalizeCommandDefinition(command);
 			options.commandContributions.push({
 				extensionId: options.extensionId,
-				inputInvoke,
-				handler: command.handler,
+				name: definition.name,
+				description: definition.description,
+				argumentHint: definition.argumentHint,
+				handler: definition.handler,
 			});
 		},
 		observe: (eventName, handler) => {
@@ -795,20 +799,20 @@ function normalizeExtensionIds(extensionIds: readonly string[]): string[] {
 	return normalized;
 }
 
-function normalizeInputInvoke(
-	inputInvoke: ExtensionCommandDefinition["inputInvoke"],
-): ExtensionCommandDefinition["inputInvoke"] {
-	const name = inputInvoke.name.trim();
+function normalizeCommandDefinition(
+	command: ExtensionCommandDefinition,
+): ExtensionCommandDefinition {
+	const name = command.name.trim();
 	if (!name) {
-		throw new Error("Extension command inputInvoke.name must not be empty.");
+		throw new Error("Extension command name must not be empty.");
 	}
 	if (name.startsWith("/") || /\s/u.test(name)) {
 		throw new Error(
-			"Extension command inputInvoke.name must not start with '/' or contain whitespace.",
+			"Extension command name must not start with '/' or contain whitespace.",
 		);
 	}
 	return {
-		...inputInvoke,
+		...command,
 		name,
 	};
 }

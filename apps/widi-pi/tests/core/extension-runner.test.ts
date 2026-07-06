@@ -12,7 +12,8 @@ describe("ExtensionRunner inspect", () => {
 			api.observe("agent_harness_event", () => {});
 			api.intercept("tool_call", () => undefined);
 			api.registerCommand({
-				inputInvoke: { name: "sample", description: "Sample command" },
+				name: "sample",
+				description: "Sample command",
 				handler: () => {},
 			});
 			api.registerTool({
@@ -57,9 +58,11 @@ describe("ExtensionRunner inspect", () => {
 		expect(snapshot.commands).toEqual([
 			{
 				extensionId: "sample",
-				inputInvoke: {
+				command: {
 					name: "sample",
 					description: "Sample command",
+					source: { kind: "extension", extensionId: "sample" },
+					placement: "line",
 				},
 			},
 		]);

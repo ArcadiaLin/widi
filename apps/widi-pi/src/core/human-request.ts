@@ -1,6 +1,11 @@
-import type { OperationSource } from "./command/index.ts";
+import type { OperationSource } from "./operation-source.ts";
 
-export type HumanRequestKind = "confirm" | "select" | "input" | "custom";
+export type HumanRequestKind =
+	| "confirm"
+	| "select"
+	| "input"
+	| "custom"
+	| "argumentsCompletion";
 
 export interface HumanRequest {
 	source: OperationSource;

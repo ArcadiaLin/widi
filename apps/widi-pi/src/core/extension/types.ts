@@ -11,16 +11,11 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import type { Static, TSchema } from "typebox";
 import type {
-	AgentToolsSnapshot,
-	CommandInputInvoke,
-	OrchestratorCommand,
-	OrchestratorCommandResult,
-} from "../command/index.ts";
-import type {
 	HumanRequest,
 	HumanResponse,
 	ToolHumanHost,
 } from "../human-request.ts";
+import type { AgentToolsSnapshot } from "../runtime-types.ts";
 
 /**
  * UI-neutral facts emitted for tool-call lifecycle changes.
@@ -137,7 +132,6 @@ export interface ExtensionActions {
 	): Promise<void>;
 	setAgentActiveTools(agentId: string, toolNames: string[]): Promise<void>;
 	requestHuman(request: HumanRequest): Promise<HumanResponse>;
-	dispatch(command: OrchestratorCommand): Promise<OrchestratorCommandResult>;
 }
 
 export interface ExtensionContextActions {
@@ -179,7 +173,6 @@ export interface ExtensionSessionActions {
 export interface ExtensionActionFailure {
 	extensionId: string;
 	action:
-		| "dispatch"
 		| "findEntries"
 		| "requestHuman"
 		| "setAgentActiveTools"
@@ -209,7 +202,9 @@ export type ExtensionCommandHandler = (
 ) => Promise<void> | void;
 
 export interface ExtensionCommandDefinition {
-	readonly inputInvoke: CommandInputInvoke;
+	readonly name: string;
+	readonly description?: string;
+	readonly argumentHint?: string;
 	readonly handler: ExtensionCommandHandler;
 }
 
