@@ -1,3 +1,4 @@
+import type { Skill } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type {
 	AgentId,
@@ -381,7 +382,43 @@ export const BUILT_IN_INLINE_COMMANDS: readonly BuiltInInlineCommandBinding[] =
 				(await orchestrator.getAgentPromptTemplate(agentId, args.trim()))
 					.content,
 		},
+		{
+			command: {
+				name: "skill",
+				placement: "inline",
+				trigger: "<",
+				closeTrigger: ">",
+				description: "Apply a skill inline.",
+				argumentHint: "<skill_name>",
+				source: { kind: "built-in" },
+				arguments: {
+					required: true,
+					complete: async (context) =>
+						(
+							await context.orchestrator.listAgentSkillCandidates(
+								context.agentId,
+							)
+						).skills,
+				},
+			},
+			expand: async (orchestrator, agentId, args) =>
+				formatSkillExpansion(
+					await orchestrator.getAgentSkill(agentId, args.trim()),
+				),
+		},
 	];
+
+// The expansion carries metadata and guidance only; the skill body stays in
+// the skill file and is loaded on demand by the agent's read tooling.
+function formatSkillExpansion(skill: Skill): string {
+	return [
+		`<skill name="${skill.name}">`,
+		skill.description,
+		`Skill file: ${skill.filePath}`,
+		"Read the skill file for the full instructions before applying it.",
+		"</skill>",
+	].join("\n");
+}
 
 export function getBuiltInCommands(): Command[] {
 	return [

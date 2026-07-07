@@ -1697,6 +1697,78 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
+	it("expands inline skill commands with metadata and guidance only", async () => {
+		const env = new MemoryExecutionEnv();
+		await env.writeFile(
+			"/workspace/project/.widi/skills/code-review/SKILL.md",
+			[
+				"---",
+				"name: code-review",
+				"description: Review code for issues.",
+				"---",
+				"SECRET BODY INSTRUCTIONS",
+			].join("\n"),
+		);
+		// writeFile only registers the immediate parent; the loader walks
+		// from the skills root, which must exist as a directory.
+		env.dirs.add("/workspace/project/.widi/skills");
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const prompted: string[] = [];
+		Object.assign(orchestrator, {
+			promptAgent: async (_agentId: string, text: string) => {
+				prompted.push(text);
+				return { role: "assistant" } as AssistantMessage;
+			},
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "please <skill:code-review> now"),
+		).resolves.toMatchObject({ kind: "prompt" });
+		expect(prompted).toHaveLength(1);
+		const expanded = prompted[0] ?? "";
+		expect(expanded).toContain('<skill name="code-review">');
+		expect(expanded).toContain("Review code for issues.");
+		expect(expanded).toContain(
+			"Skill file: /workspace/project/.widi/skills/code-review/SKILL.md",
+		);
+		// The skill body stays in the file; the expansion is metadata-only.
+		expect(expanded).not.toContain("SECRET BODY INSTRUCTIONS");
+
+		await expect(
+			orchestrator.listAgentSkillCandidates(agentId),
+		).resolves.toEqual({
+			skills: [
+				{
+					value: "code-review",
+					label: "code-review",
+					description: "Review code for issues.",
+				},
+			],
+		});
+	});
+
+	it("rejects the whole input when an inline skill is unknown", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const prompted: string[] = [];
+		Object.assign(orchestrator, {
+			promptAgent: async (_agentId: string, text: string) => {
+				prompted.push(text);
+				return { role: "assistant" } as AssistantMessage;
+			},
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "try <skill:nope> now"),
+		).resolves.toMatchObject({
+			kind: "failed",
+			diagnostic: { code: "skill.not_found" },
+		});
+		expect(prompted).toEqual([]);
+	});
+
 	it("prunes and rejects commands denied by profile policy", async () => {
 		const env = new MemoryExecutionEnv();
 		const policyProfile: AgentProfile = {

@@ -19,7 +19,7 @@
 - [x] `/model` + `/thinking` settings commands（候选来自 modelRegistry / thinkingLevelMap，无参返回候选列表）。
 - [x] argumentsCompletion human request（替换参数缺失直接 reject 的过渡行为；gateway 补参后复查、`allowFreeInput`、Client 渲染契约随本切片落地）。
 - [x] inline 扫描与 expand 管线 + `<prompt:...>` 首个消费者。
-- [ ] `<skill:...>`（候选来自 profile skills；正文加载随 M2 read 就绪）。
+- [x] `<skill:...>`（候选来自 profile skills；正文加载随 M2 read 就绪）。
 
 验收：不存在两个事件语义不同的 command 入口；每条"不让 X 做 Y"（保留字、gateway、fall-back 禁止、expand 无副作用）都能指到一行强制它的代码。
 

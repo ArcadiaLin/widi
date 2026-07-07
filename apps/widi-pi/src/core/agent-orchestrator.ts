@@ -12,6 +12,7 @@ import {
 	type ExecutionEnv,
 	type PromptTemplate,
 	type Session,
+	type Skill,
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import {
@@ -271,6 +272,10 @@ export interface AgentThinkingLevelCandidateListResult {
 
 export interface AgentPromptTemplateCandidateListResult {
 	readonly templates: readonly CommandCandidate[];
+}
+
+export interface AgentSkillCandidateListResult {
+	readonly skills: readonly CommandCandidate[];
 }
 
 export interface AgentThinkingLevelCommandResult {
@@ -776,6 +781,57 @@ export class AgentOrchestrator {
 			),
 		);
 		return loaded.promptTemplates.map(({ promptTemplate }) => promptTemplate);
+	}
+
+	async listAgentSkillCandidates(
+		agentId: AgentId,
+	): Promise<AgentSkillCandidateListResult> {
+		const skills = await this._loadAgentSkills(agentId);
+		return {
+			skills: skills.map((skill) => ({
+				value: skill.name,
+				label: skill.name,
+				description: skill.description,
+			})),
+		};
+	}
+
+	async getAgentSkill(agentId: AgentId, name: string): Promise<Skill> {
+		const skills = await this._loadAgentSkills(agentId);
+		const skill = skills.find((candidate) => candidate.name === name);
+		if (!skill) {
+			throw new OrchestratorError(
+				createOrchestratorDiagnostic({
+					severity: "error",
+					code: "skill.not_found",
+					message: `Skill not found: ${name}`,
+					agentId,
+					recoverable: true,
+				}),
+			);
+		}
+		return skill;
+	}
+
+	private async _loadAgentSkills(agentId: AgentId): Promise<Skill[]> {
+		const record = this._requireAgentRecord(agentId);
+		const resolvedProfile = await this._resolveProfileById(
+			record.profile.reference.id,
+			agentId,
+		);
+		const loaded = await this.resourceLoader.loadSkills(
+			resolvedProfile.profile.skills,
+		);
+		await this._publishDiagnostics(
+			loaded.diagnostics.map((diagnostic) =>
+				toCoreDiagnosticFromSkillDiagnostic(diagnostic, {
+					agentId,
+					profileId: resolvedProfile.profile.id,
+					phase: "resolve",
+				}),
+			),
+		);
+		return loaded.skills.map(({ skill }) => skill);
 	}
 
 	async setAgentThinkingLevelByName(
