@@ -10,6 +10,7 @@ import {
 	type AgentHarnessResources,
 	type AgentTool,
 	type ExecutionEnv,
+	type PromptTemplate,
 	type Session,
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
@@ -32,15 +33,19 @@ import { toAgentProfileReference } from "./agent-profile.js";
 import type { OrchestratorClient } from "./client.ts";
 import {
 	BUILT_IN_COMMANDS,
+	BUILT_IN_INLINE_COMMANDS,
+	type BuiltInInlineCommandBinding,
 	type Command,
 	type CommandArgumentsCompletionPayload,
 	type CommandCandidate,
 	type CommandInvocation,
 	type CommandStatusCheck,
 	getBuiltInCommands,
+	type InlineCommandMatch,
 	type InputResult,
 	type ParsedLineCommand,
 	parseLineCommand,
+	scanInlineCommands,
 } from "./command.ts";
 import {
 	type DiagnosticDisposition,
@@ -102,12 +107,15 @@ export type OrchestratorEvent =
 			readonly type: "command_detected";
 			commandId: string;
 			command: CommandInvocation;
+			// Correlates the inline expansions of one input; absent on line commands.
+			inputId?: string;
 			createdAt: string;
 	  }
 	| {
 			readonly type: "command_accepted";
 			commandId: string;
 			command: CommandInvocation;
+			inputId?: string;
 			createdAt: string;
 	  }
 	| {
@@ -115,6 +123,7 @@ export type OrchestratorEvent =
 			commandId: string;
 			command: CommandInvocation;
 			result: unknown;
+			inputId?: string;
 			completedAt: string;
 	  }
 	| {
@@ -122,6 +131,7 @@ export type OrchestratorEvent =
 			commandId: string;
 			command: CommandInvocation;
 			diagnostic: OrchestratorDiagnostic;
+			inputId?: string;
 			completedAt: string;
 	  }
 	| {
@@ -129,6 +139,7 @@ export type OrchestratorEvent =
 			commandId: string;
 			command?: CommandInvocation;
 			diagnostic: OrchestratorDiagnostic;
+			inputId?: string;
 			completedAt: string;
 	  }
 	| {
@@ -256,6 +267,10 @@ export interface AgentModelCandidateListResult {
 
 export interface AgentThinkingLevelCandidateListResult {
 	readonly levels: readonly CommandCandidate[];
+}
+
+export interface AgentPromptTemplateCandidateListResult {
+	readonly templates: readonly CommandCandidate[];
 }
 
 export interface AgentThinkingLevelCommandResult {
@@ -391,6 +406,7 @@ export class AgentOrchestrator {
 		new Map();
 	private _pendingHumanRequests: Map<string, PendingHumanRequest> = new Map();
 	private _nextCommandId = 1;
+	private _nextInputId = 1;
 	private _nextHumanRequestId = 1;
 
 	constructor(config: AgentOrchestratorConfigs) {
@@ -706,6 +722,62 @@ export class AgentOrchestrator {
 		await this._requireAgentHarness(agentId).setThinkingLevel(level);
 	}
 
+	async listAgentPromptTemplateCandidates(
+		agentId: AgentId,
+	): Promise<AgentPromptTemplateCandidateListResult> {
+		const templates = await this._loadAgentPromptTemplates(agentId);
+		return {
+			templates: templates.map((template) => ({
+				value: template.name,
+				label: template.name,
+				description: template.description,
+			})),
+		};
+	}
+
+	async getAgentPromptTemplate(
+		agentId: AgentId,
+		name: string,
+	): Promise<PromptTemplate> {
+		const templates = await this._loadAgentPromptTemplates(agentId);
+		const template = templates.find((candidate) => candidate.name === name);
+		if (!template) {
+			throw new OrchestratorError(
+				createOrchestratorDiagnostic({
+					severity: "error",
+					code: "prompt_template.not_found",
+					message: `Prompt template not found: ${name}`,
+					agentId,
+					recoverable: true,
+				}),
+			);
+		}
+		return template;
+	}
+
+	private async _loadAgentPromptTemplates(
+		agentId: AgentId,
+	): Promise<PromptTemplate[]> {
+		const record = this._requireAgentRecord(agentId);
+		const resolvedProfile = await this._resolveProfileById(
+			record.profile.reference.id,
+			agentId,
+		);
+		const loaded = await this.resourceLoader.loadPromptTemplates(
+			resolvedProfile.profile.promptTemplates,
+		);
+		await this._publishDiagnostics(
+			loaded.diagnostics.map((diagnostic) =>
+				toCoreDiagnosticFromPromptTemplateDiagnostic(diagnostic, {
+					agentId,
+					profileId: resolvedProfile.profile.id,
+					phase: "resolve",
+				}),
+			),
+		);
+		return loaded.promptTemplates.map(({ promptTemplate }) => promptTemplate);
+	}
+
 	async setAgentThinkingLevelByName(
 		agentId: AgentId,
 		levelName: string,
@@ -805,6 +877,12 @@ export class AgentOrchestrator {
 		);
 		const command = parsed ? this._findLineCommand(agentId, parsed) : undefined;
 		if (!parsed || !command) {
+			const inlineResult = await this._expandInlineInput(
+				agentId,
+				text,
+				options,
+			);
+			if (inlineResult) return inlineResult;
 			return {
 				kind: "prompt",
 				message: await this.promptAgent(agentId, text, {
@@ -2673,11 +2751,190 @@ export class AgentOrchestrator {
 		return id;
 	}
 
+	private _createInputId(): string {
+		const id = `orchestrator-input-${this._nextInputId}`;
+		this._nextInputId += 1;
+		return id;
+	}
+
 	// Command input path
+
+	// Scans a line-command miss for inline commands and expands them in
+	// place. Returns undefined when the input contains none (the caller
+	// falls through to the plain prompt path). All-or-nothing: any gateway,
+	// completion, or expand failure drops the whole input - a half-expanded
+	// prompt must never reach the model.
+	private async _expandInlineInput(
+		agentId: AgentId,
+		text: string,
+		options?: { images?: ImageContent[] },
+	): Promise<InputResult | undefined> {
+		const matches = scanInlineCommands(
+			text,
+			BUILT_IN_INLINE_COMMANDS.map((binding) => binding.command),
+		);
+		if (matches.length === 0) return undefined;
+
+		const inputId = this._createInputId();
+		const expansions: Array<{
+			match: InlineCommandMatch;
+			commandId: string;
+			invocation: CommandInvocation;
+			replacement: string;
+		}> = [];
+		for (const match of matches) {
+			const binding = this._findInlineCommand(match);
+			if (!binding) continue;
+			const commandId = this._createCommandId();
+			let invocation: CommandInvocation = {
+				name: match.name,
+				trigger: match.trigger,
+				argument: match.argument,
+				source: binding.command.source,
+				placement: "inline",
+			};
+			await this._emit({
+				type: "command_detected",
+				commandId,
+				command: invocation,
+				inputId,
+				createdAt: now(),
+			});
+
+			const rejectWith = async (
+				diagnostic: OrchestratorDiagnostic,
+			): Promise<InputResult> => {
+				await this._emit({
+					type: "command_rejected",
+					commandId,
+					command: invocation,
+					diagnostic,
+					inputId,
+					completedAt: now(),
+				});
+				await this._publishDiagnostic(diagnostic);
+				return { kind: "rejected", commandId, diagnostic };
+			};
+
+			const gatewayDiagnostic = this._commandGateway(
+				this._requireAgentRecord(agentId),
+				{ command: binding.command },
+				commandId,
+			);
+			if (gatewayDiagnostic) return await rejectWith(gatewayDiagnostic);
+
+			let commandArgument = match.argument;
+			if (binding.command.arguments?.required && !commandArgument.trim()) {
+				const completion = await this._completeCommandArguments({
+					agentId,
+					commandId,
+					binding,
+					invocation,
+					argumentPrefix: match.argument,
+				});
+				if (!completion.ok) return await rejectWith(completion.diagnostic);
+				commandArgument = completion.argument;
+				invocation = { ...invocation, argument: commandArgument };
+				const staleDiagnostic = this._commandGateway(
+					this._requireAgentRecord(agentId),
+					{ command: binding.command },
+					commandId,
+				);
+				if (staleDiagnostic) return await rejectWith(staleDiagnostic);
+			}
+
+			await this._emit({
+				type: "command_accepted",
+				commandId,
+				command: invocation,
+				inputId,
+				createdAt: now(),
+			});
+			try {
+				const replacement = await binding.expand(
+					this,
+					agentId,
+					commandArgument,
+				);
+				await this._emit({
+					type: "command_completed",
+					commandId,
+					command: invocation,
+					result: replacement,
+					inputId,
+					completedAt: now(),
+				});
+				expansions.push({ match, commandId, invocation, replacement });
+			} catch (error) {
+				const diagnostic = toDiagnostic(error, {
+					code: "orchestrator.command_failed",
+					message: error instanceof Error ? error.message : String(error),
+					operationSource: { kind: "human" },
+					agentId,
+					commandId,
+					recoverable: true,
+				});
+				await this._emit({
+					type: "command_failed",
+					commandId,
+					command: invocation,
+					diagnostic,
+					inputId,
+					completedAt: now(),
+				});
+				await this._publishDiagnostic(diagnostic);
+				return { kind: "failed", commandId, diagnostic };
+			}
+		}
+		if (expansions.length === 0) return undefined;
+
+		let expandedText = "";
+		let cursor = 0;
+		for (const expansion of expansions) {
+			expandedText += text.slice(cursor, expansion.match.start);
+			expandedText += expansion.replacement;
+			cursor = expansion.match.end;
+		}
+		expandedText += text.slice(cursor);
+
+		// Dual record: the user message carries the expanded text the model
+		// actually sees; the custom entry preserves the original input and
+		// expansion positions for UI replay.
+		await this.sessionManager.appendCommandExpansionEntry(agentId, {
+			inputId,
+			originalText: text,
+			expansions: expansions.map((expansion) => ({
+				commandId: expansion.commandId,
+				name: expansion.invocation.name,
+				trigger: expansion.invocation.trigger,
+				argument: expansion.invocation.argument,
+				start: expansion.match.start,
+				end: expansion.match.end,
+			})),
+		});
+
+		return {
+			kind: "prompt",
+			message: await this.promptAgent(agentId, expandedText, {
+				images: options?.images ? [...options.images] : undefined,
+			}),
+		};
+	}
+
+	private _findInlineCommand(
+		match: InlineCommandMatch,
+	): BuiltInInlineCommandBinding | undefined {
+		return BUILT_IN_INLINE_COMMANDS.find(
+			(binding) =>
+				binding.command.trigger === match.trigger &&
+				binding.command.name === match.name,
+		);
+	}
+
 	private async _completeCommandArguments(options: {
 		agentId: AgentId;
 		commandId: string;
-		binding: LineCommandBinding;
+		binding: Pick<LineCommandBinding, "command">;
 		invocation: CommandInvocation;
 		argumentPrefix: string;
 	}): Promise<CommandArgumentsCompletionResult> {

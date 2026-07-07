@@ -60,6 +60,16 @@ export interface ParsedLineCommand {
 	readonly argument: string;
 }
 
+export interface InlineCommandMatch {
+	readonly trigger: string;
+	readonly name: string;
+	readonly argument: string;
+	// Token offsets in the original input; consumers splice replacements
+	// and record expansion positions from these.
+	readonly start: number;
+	readonly end: number;
+}
+
 export interface CommandInvocation {
 	readonly name: string;
 	readonly trigger: string;
@@ -101,6 +111,18 @@ export interface BuiltInCommandBinding {
 		agentId: AgentId,
 		args: string,
 	): Promise<unknown>;
+}
+
+// Inline bindings carry a pure expand executor instead of execute: the
+// expansion product replaces the command token and the rewritten input
+// continues as a plain prompt. Expansion must stay side-effect free.
+export interface BuiltInInlineCommandBinding {
+	readonly command: Command;
+	expand(
+		orchestrator: AgentOrchestrator,
+		agentId: AgentId,
+		args: string,
+	): Promise<string>;
 }
 
 // Built-in command execution
@@ -334,8 +356,38 @@ export const BUILT_IN_COMMANDS: readonly BuiltInCommandBinding[] = [
 	},
 ];
 
+export const BUILT_IN_INLINE_COMMANDS: readonly BuiltInInlineCommandBinding[] =
+	[
+		{
+			command: {
+				name: "prompt",
+				placement: "inline",
+				trigger: "<",
+				closeTrigger: ">",
+				description: "Insert a prompt template inline.",
+				argumentHint: "<template>",
+				source: { kind: "built-in" },
+				arguments: {
+					required: true,
+					complete: async (context) =>
+						(
+							await context.orchestrator.listAgentPromptTemplateCandidates(
+								context.agentId,
+							)
+						).templates,
+				},
+			},
+			expand: async (orchestrator, agentId, args) =>
+				(await orchestrator.getAgentPromptTemplate(agentId, args.trim()))
+					.content,
+		},
+	];
+
 export function getBuiltInCommands(): Command[] {
-	return BUILT_IN_COMMANDS.map((binding) => binding.command);
+	return [
+		...BUILT_IN_COMMANDS.map((binding) => binding.command),
+		...BUILT_IN_INLINE_COMMANDS.map((binding) => binding.command),
+	];
 }
 
 export function parseLineCommand(
@@ -360,6 +412,101 @@ export function parseLineCommand(
 		name: rawName,
 		argument: separatorIndex === -1 ? "" : body.slice(separatorIndex + 1),
 	};
+}
+
+// Inline command tokens must sit on whitespace or text boundaries. With a
+// closeTrigger the argument runs to the closeTrigger (spaces allowed);
+// without one it runs to the next whitespace. Tokens that match no given
+// inline command are plain text and produce no match.
+export function scanInlineCommands(
+	text: string,
+	commands: readonly Command[],
+): InlineCommandMatch[] {
+	const inlineCommands = commands.filter(
+		(command) => command.placement === "inline",
+	);
+	if (inlineCommands.length === 0) return [];
+	const matches: InlineCommandMatch[] = [];
+	let index = 0;
+	while (index < text.length) {
+		if (index > 0 && !isWhitespace(text[index - 1] ?? "")) {
+			index += 1;
+			continue;
+		}
+		const match = matchInlineCommandAt(text, index, inlineCommands);
+		if (match) {
+			matches.push(match);
+			index = match.end;
+			continue;
+		}
+		index += 1;
+	}
+	return matches;
+}
+
+function matchInlineCommandAt(
+	text: string,
+	start: number,
+	commands: readonly Command[],
+): InlineCommandMatch | undefined {
+	for (const command of commands) {
+		const head = `${command.trigger}${command.name}`;
+		if (!text.startsWith(head, start)) continue;
+		const cursor = start + head.length;
+		if (command.closeTrigger) {
+			if (text.startsWith(command.closeTrigger, cursor)) {
+				const end = cursor + command.closeTrigger.length;
+				if (!isInlineBoundary(text, end)) continue;
+				return {
+					trigger: command.trigger,
+					name: command.name,
+					argument: "",
+					start,
+					end,
+				};
+			}
+			if (text[cursor] !== ":") continue;
+			const closeIndex = text.indexOf(command.closeTrigger, cursor + 1);
+			if (closeIndex === -1) continue;
+			const end = closeIndex + command.closeTrigger.length;
+			if (!isInlineBoundary(text, end)) continue;
+			return {
+				trigger: command.trigger,
+				name: command.name,
+				argument: text.slice(cursor + 1, closeIndex),
+				start,
+				end,
+			};
+		}
+		if (isInlineBoundary(text, cursor)) {
+			return {
+				trigger: command.trigger,
+				name: command.name,
+				argument: "",
+				start,
+				end: cursor,
+			};
+		}
+		if (text[cursor] !== ":") continue;
+		let end = cursor + 1;
+		while (end < text.length && !isWhitespace(text[end] ?? "")) end += 1;
+		return {
+			trigger: command.trigger,
+			name: command.name,
+			argument: text.slice(cursor + 1, end),
+			start,
+			end,
+		};
+	}
+	return undefined;
+}
+
+function isInlineBoundary(text: string, index: number): boolean {
+	return index >= text.length || isWhitespace(text[index] ?? "");
+}
+
+function isWhitespace(char: string): boolean {
+	return /\s/u.test(char);
 }
 
 export function commandKey(

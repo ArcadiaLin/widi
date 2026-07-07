@@ -1538,6 +1538,165 @@ describe("AgentOrchestrator", () => {
 		expect(humanRequested).toBe(false);
 	});
 
+	it("expands inline prompt commands and records the original input", async () => {
+		const env = new MemoryExecutionEnv();
+		await env.writeFile(
+			"/workspace/project/.widi/prompt_templates/focus.md",
+			"Focus on correctness.",
+		);
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const prompted: string[] = [];
+		Object.assign(orchestrator, {
+			promptAgent: async (_agentId: string, text: string) => {
+				prompted.push(text);
+				return { role: "assistant" } as AssistantMessage;
+			},
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "review this <prompt:focus> please"),
+		).resolves.toMatchObject({ kind: "prompt" });
+		expect(prompted).toEqual(["review this Focus on correctness. please"]);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "command_detected",
+				inputId: "orchestrator-input-1",
+				command: expect.objectContaining({
+					name: "prompt",
+					trigger: "<",
+					argument: "focus",
+					placement: "inline",
+				}),
+			}),
+		);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "command_completed",
+				inputId: "orchestrator-input-1",
+				result: "Focus on correctness.",
+			}),
+		);
+		const sessionFiles = [...env.files.entries()].filter(([path]) =>
+			path.startsWith("/sessions/"),
+		);
+		const expansionRecord = sessionFiles.find(([, content]) =>
+			content.includes("core:command_expansion"),
+		);
+		expect(expansionRecord).toBeDefined();
+		expect(expansionRecord?.[1]).toContain("review this <prompt:focus> please");
+	});
+
+	it("rejects the whole input when an inline expansion fails", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const prompted: string[] = [];
+		Object.assign(orchestrator, {
+			promptAgent: async (_agentId: string, text: string) => {
+				prompted.push(text);
+				return { role: "assistant" } as AssistantMessage;
+			},
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "check <prompt:missing> now"),
+		).resolves.toMatchObject({
+			kind: "failed",
+			diagnostic: { code: "prompt_template.not_found" },
+		});
+		expect(prompted).toEqual([]);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "command_failed",
+				command: expect.objectContaining({
+					name: "prompt",
+					placement: "inline",
+				}),
+			}),
+		);
+	});
+
+	it("completes missing inline command arguments before expansion", async () => {
+		const env = new MemoryExecutionEnv();
+		await env.writeFile(
+			"/workspace/project/.widi/prompt_templates/focus.md",
+			"Focus on correctness.",
+		);
+		await env.writeFile(
+			"/workspace/project/.widi/prompt_templates/deep.md",
+			"Dig deeper.",
+		);
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async (request) => {
+				expect(request).toMatchObject({
+					kind: "argumentsCompletion",
+					placeholder: "<template>",
+					allowFreeInput: true,
+				});
+				expect(request.options).toEqual(
+					expect.arrayContaining(["deep", "focus"]),
+				);
+				return { kind: "select", value: "deep" };
+			},
+		});
+		const prompted: string[] = [];
+		Object.assign(orchestrator, {
+			promptAgent: async (_agentId: string, text: string) => {
+				prompted.push(text);
+				return { role: "assistant" } as AssistantMessage;
+			},
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "start <prompt> now"),
+		).resolves.toMatchObject({ kind: "prompt" });
+		expect(prompted).toEqual(["start Dig deeper. now"]);
+	});
+
+	it("keeps unmatched inline tokens as plain prompt text", async () => {
+		const env = new MemoryExecutionEnv();
+		await env.writeFile(
+			"/workspace/project/.widi/prompt_templates/focus.md",
+			"Focus on correctness.",
+		);
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const prompted: string[] = [];
+		Object.assign(orchestrator, {
+			promptAgent: async (_agentId: string, text: string) => {
+				prompted.push(text);
+				return { role: "assistant" } as AssistantMessage;
+			},
+		});
+
+		// Unregistered name and a non-boundary token are both plain text.
+		await orchestrator.inputAgent(agentId, "look <unknown:x> here");
+		await orchestrator.inputAgent(agentId, "tail <prompt:focus>, done");
+		expect(prompted).toEqual([
+			"look <unknown:x> here",
+			"tail <prompt:focus>, done",
+		]);
+		expect(events).not.toContainEqual(
+			expect.objectContaining({ type: "command_detected" }),
+		);
+	});
+
 	it("prunes and rejects commands denied by profile policy", async () => {
 		const env = new MemoryExecutionEnv();
 		const policyProfile: AgentProfile = {
