@@ -17,6 +17,7 @@ import {
 	type AssistantMessage,
 	getSupportedThinkingLevels,
 	type ImageContent,
+	type ModelThinkingLevel,
 } from "@earendil-works/pi-ai";
 import type { ExtendedJsonlSessionMetadata } from "../storage/jsonl-repo.ts";
 import type {
@@ -2925,14 +2926,18 @@ function parseModelReference(
 	};
 }
 
-const THINKING_LEVELS = [
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-] as const satisfies readonly ThinkingLevel[];
+const THINKING_LEVEL_SET = {
+	off: true,
+	minimal: true,
+	low: true,
+	medium: true,
+	high: true,
+	xhigh: true,
+} as const satisfies Record<ThinkingLevel | ModelThinkingLevel, true>;
+
+const THINKING_LEVELS = Object.keys(
+	THINKING_LEVEL_SET,
+) as (keyof typeof THINKING_LEVEL_SET)[];
 
 function parseThinkingLevel(level: string): ThinkingLevel | undefined {
 	const trimmed = level.trim();
