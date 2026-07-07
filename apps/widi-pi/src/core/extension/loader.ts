@@ -813,7 +813,7 @@ function normalizeCommandDefinition(
 	}
 	if (!isCommandName(name)) {
 		throw new Error(
-			"Extension command name must not be empty or contain ':' or whitespace.",
+			"Extension command name must start with a letter or digit and contain only letters, digits, '.', '_', or '-'.",
 		);
 	}
 	const trigger = command.trigger?.trim() ?? "/";

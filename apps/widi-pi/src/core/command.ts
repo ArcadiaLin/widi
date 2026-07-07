@@ -104,5 +104,5 @@ export function commandKey(
 }
 
 export function isCommandName(name: string): boolean {
-	return name.length > 0 && !/[\s:]/u.test(name);
+	return /^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(name);
 }
