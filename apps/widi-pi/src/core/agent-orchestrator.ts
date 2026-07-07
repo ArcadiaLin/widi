@@ -33,6 +33,7 @@ import type { OrchestratorClient } from "./client.ts";
 import {
 	BUILT_IN_COMMANDS,
 	type Command,
+	type CommandArgumentsCompletionPayload,
 	type CommandCandidate,
 	type CommandInvocation,
 	type CommandStatusCheck,
@@ -331,6 +332,10 @@ interface LineCommandBinding {
 	readonly checkStatus?: CommandStatusCheck;
 	execute(args: string): Promise<unknown>;
 }
+
+type CommandArgumentsCompletionResult =
+	| { readonly ok: true; readonly argument: string }
+	| { readonly ok: false; readonly diagnostic: OrchestratorDiagnostic };
 
 interface SpawnAgentHarnessCommonOptions {
 	model?: RuntimeModel;
@@ -837,43 +842,54 @@ export class AgentOrchestrator {
 			return { kind: "rejected", commandId, diagnostic: gatewayDiagnostic };
 		}
 
-		// Argument check: a declared-required argument that is missing rejects
-		// the command instead of degrading the input to a plain prompt.
-		// TODO(argumentsCompletion): request completion from a client first.
+		let commandArgument = parsed.argument;
+		let executionInvocation = invocation;
+
+		// Argument check: a declared-required argument that is missing asks a
+		// client for completion before rejecting the command.
 		if (command.command.arguments?.required && !parsed.argument.trim()) {
-			const diagnostic = createOrchestratorDiagnostic({
-				severity: "error",
-				code: "command.arguments_required",
-				message: `Command ${command.command.trigger}${command.command.name} requires an argument.`,
-				operationSource: { kind: "human" },
+			const completion = await this._completeCommandArguments({
 				agentId,
 				commandId,
-				recoverable: true,
+				binding: command,
+				invocation,
+				argumentPrefix: parsed.argument,
 			});
-			await this._emit({
-				type: "command_rejected",
-				commandId,
-				command: invocation,
-				diagnostic,
-				completedAt: now(),
-			});
-			await this._publishDiagnostic(diagnostic);
-			return { kind: "rejected", commandId, diagnostic };
+			if (!completion.ok) {
+				await this._emit({
+					type: "command_rejected",
+					commandId,
+					command: invocation,
+					diagnostic: completion.diagnostic,
+					completedAt: now(),
+				});
+				await this._publishDiagnostic(completion.diagnostic);
+				return {
+					kind: "rejected",
+					commandId,
+					diagnostic: completion.diagnostic,
+				};
+			}
+			commandArgument = completion.argument;
+			executionInvocation = {
+				...invocation,
+				argument: commandArgument,
+			};
 		}
 
 		await this._emit({
 			type: "command_accepted",
 			commandId,
-			command: invocation,
+			command: executionInvocation,
 			createdAt: now(),
 		});
 
 		try {
-			const value = await command.execute(parsed.argument);
+			const value = await command.execute(commandArgument);
 			await this._emit({
 				type: "command_completed",
 				commandId,
-				command: invocation,
+				command: executionInvocation,
 				result: value,
 				completedAt: now(),
 			});
@@ -890,7 +906,7 @@ export class AgentOrchestrator {
 			await this._emit({
 				type: "command_failed",
 				commandId,
-				command: invocation,
+				command: executionInvocation,
 				diagnostic,
 				completedAt: now(),
 			});
@@ -2639,6 +2655,97 @@ export class AgentOrchestrator {
 	}
 
 	// Command input path
+	private async _completeCommandArguments(options: {
+		agentId: AgentId;
+		commandId: string;
+		binding: LineCommandBinding;
+		invocation: CommandInvocation;
+		argumentPrefix: string;
+	}): Promise<CommandArgumentsCompletionResult> {
+		const { agentId, commandId, binding, invocation, argumentPrefix } = options;
+		let response: HumanResponse;
+		try {
+			// A complete() failure short-circuits before any human request.
+			const candidates = [
+				...((await binding.command.arguments?.complete?.({
+					agentId,
+					command: binding.command,
+					argumentPrefix,
+					orchestrator: this,
+				})) ?? []),
+			];
+			const payload: CommandArgumentsCompletionPayload = {
+				commandId,
+				command: invocation,
+				argumentHint: binding.command.argumentHint,
+				argumentPrefix,
+				candidates,
+			};
+			response = await this.requestHuman({
+				source: { kind: "agent", agentId },
+				kind: "argumentsCompletion",
+				title: `Complete ${binding.command.trigger}${binding.command.name} arguments`,
+				message: `Command ${binding.command.trigger}${binding.command.name} requires an argument.`,
+				options:
+					candidates.length > 0
+						? candidates.map((candidate) => candidate.value)
+						: undefined,
+				placeholder: binding.command.argumentHint,
+				payload,
+			});
+		} catch (error) {
+			const failureDiagnostic = toDiagnostic(error, {
+				code: "command.arguments_completion_failed",
+				message: `Failed to complete arguments for command ${binding.command.trigger}${binding.command.name}: ${formatError(error)}`,
+				operationSource: { kind: "human" },
+				agentId,
+				commandId,
+				recoverable: true,
+			});
+			return {
+				ok: false,
+				diagnostic: this._createCommandArgumentsRequiredDiagnostic({
+					agentId,
+					commandId,
+					command: binding.command,
+					details: commandArgumentsCompletionFailureDetails(failureDiagnostic),
+				}),
+			};
+		}
+
+		if (response.kind !== "input" && response.kind !== "select") {
+			return {
+				ok: false,
+				diagnostic: this._createCommandArgumentsRequiredDiagnostic({
+					agentId,
+					commandId,
+					command: binding.command,
+					details: {
+						completionFailureCode:
+							"command.arguments_completion_invalid_response",
+						responseKind: response.kind,
+					},
+				}),
+			};
+		}
+		const argument = response.value;
+		if (argument === undefined || !argument.trim()) {
+			return {
+				ok: false,
+				diagnostic: this._createCommandArgumentsRequiredDiagnostic({
+					agentId,
+					commandId,
+					command: binding.command,
+					details: {
+						completionFailureCode: "command.arguments_completion_empty",
+						responseKind: response.kind,
+					},
+				}),
+			};
+		}
+		return { ok: true, argument };
+	}
+
 	private _findLineCommand(
 		agentId: AgentId,
 		parsed: ParsedLineCommand,
@@ -2678,6 +2785,24 @@ export class AgentOrchestrator {
 				return undefined;
 			},
 		};
+	}
+
+	private _createCommandArgumentsRequiredDiagnostic(options: {
+		agentId: AgentId;
+		commandId: string;
+		command: Command;
+		details?: Record<string, unknown>;
+	}): OrchestratorDiagnostic {
+		return createOrchestratorDiagnostic({
+			severity: "error",
+			code: "command.arguments_required",
+			message: `Command ${options.command.trigger}${options.command.name} requires an argument.`,
+			operationSource: { kind: "human" },
+			agentId: options.agentId,
+			commandId: options.commandId,
+			recoverable: true,
+			details: options.details,
+		});
 	}
 
 	private _withCommandAvailability(
@@ -2892,6 +3017,16 @@ function agentIdFromOperationSource(
 		return source.agentId;
 	}
 	return undefined;
+}
+
+function commandArgumentsCompletionFailureDetails(
+	diagnostic: OrchestratorDiagnostic,
+): Record<string, unknown> {
+	return {
+		completionFailureCode: diagnostic.code,
+		completionFailureMessage: diagnostic.message,
+		requestId: diagnostic.requestId,
+	};
 }
 
 function changesRecoverableProfileFields(

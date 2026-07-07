@@ -1063,14 +1063,40 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
-	it("rejects command input with missing required arguments before execution", async () => {
+	it("completes missing required command arguments before execution", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const { agentId, harness } = await orchestrator.spawnAgentHarness();
 		const events: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
 			events.push(event);
 		});
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async (request) => {
+				expect(request).toMatchObject({
+					kind: "argumentsCompletion",
+					title: "Complete /steer arguments",
+					message: "Command /steer requires an argument.",
+					placeholder: "<text>",
+					payload: {
+						commandId: "orchestrator-command-1",
+						command: {
+							name: "steer",
+							trigger: "/",
+							argument: "",
+							source: { kind: "built-in" },
+							placement: "line",
+						},
+						argumentHint: "<text>",
+						argumentPrefix: "",
+						candidates: [],
+					},
+				});
+				return { kind: "input", value: "keep going" };
+			},
+		});
+		(harness as unknown as { phase: "turn" }).phase = "turn";
 		const handleHarnessEvent = (
 			orchestrator as unknown as {
 				_handleAgentHarnessEvent(
@@ -1083,13 +1109,68 @@ describe("AgentOrchestrator", () => {
 
 		await expect(
 			orchestrator.inputAgent(agentId, "/steer"),
-		).resolves.toMatchObject({
-			kind: "rejected",
-			diagnostic: {
-				code: "command.arguments_required",
-				message: "Command /steer requires an argument.",
-			},
+		).resolves.toMatchObject({ kind: "command", name: "steer" });
+		expect(
+			events
+				.filter(
+					(event) =>
+						event.type === "command_detected" ||
+						event.type === "human_request_pending" ||
+						event.type === "human_request_resolved" ||
+						event.type === "command_accepted" ||
+						event.type === "command_completed",
+				)
+				.map((event) => event.type),
+		).toEqual([
+			"command_detected",
+			"human_request_pending",
+			"human_request_resolved",
+			"command_accepted",
+			"command_completed",
+		]);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "command_detected",
+				command: expect.objectContaining({ argument: "" }),
+			}),
+		);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "command_accepted",
+				command: expect.objectContaining({ argument: "keep going" }),
+			}),
+		);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "command_completed",
+				command: expect.objectContaining({ argument: "keep going" }),
+			}),
+		);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "agent_harness_event",
+				event: expect.objectContaining({
+					type: "queue_update",
+					steer: [
+						expect.objectContaining({
+							role: "user",
+							content: [{ type: "text", text: "keep going" }],
+						}),
+					],
+				}),
+			}),
+		);
+	});
+
+	it("rejects missing required command arguments when no client can complete them", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
 		});
+
 		await expect(
 			orchestrator.inputAgent(agentId, "/follow-up"),
 		).resolves.toMatchObject({
@@ -1099,9 +1180,104 @@ describe("AgentOrchestrator", () => {
 				message: "Command /follow-up requires an argument.",
 			},
 		});
-		// Rejected before execution: no command_accepted for either input.
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "command_rejected",
+				diagnostic: expect.objectContaining({
+					code: "command.arguments_required",
+					details: expect.objectContaining({
+						completionFailureCode: "orchestrator.human_request_unhandled",
+						requestId: "human-request-1",
+					}),
+				}),
+			}),
+		);
 		expect(events).not.toContainEqual(
 			expect.objectContaining({ type: "command_accepted" }),
+		);
+		expect(events).not.toContainEqual(
+			expect.objectContaining({ type: "command_failed" }),
+		);
+	});
+
+	it("rejects blank completed command arguments before execution", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async () => ({ kind: "input", value: "  " }),
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "/name"),
+		).resolves.toMatchObject({
+			kind: "rejected",
+			diagnostic: {
+				code: "command.arguments_required",
+				message: "Command /name requires an argument.",
+				details: {
+					completionFailureCode: "command.arguments_completion_empty",
+					responseKind: "input",
+				},
+			},
+		});
+		expect(events).toContainEqual(
+			expect.objectContaining({ type: "command_rejected" }),
+		);
+		expect(events).not.toContainEqual(
+			expect.objectContaining({ type: "command_accepted" }),
+		);
+		expect(events).not.toContainEqual(
+			expect.objectContaining({ type: "command_failed" }),
+		);
+	});
+
+	it("rejects cancelled argument completion before execution", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const pendingRequest = new Promise<
+			Extract<OrchestratorEvent, { type: "human_request_pending" }>
+		>((resolve) => {
+			orchestrator.subscribe((event) => {
+				if (event.type === "human_request_pending") resolve(event);
+			});
+		});
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async () => await new Promise<never>(() => {}),
+		});
+
+		const result = orchestrator.inputAgent(agentId, "/follow-up");
+		const pending = await pendingRequest;
+
+		await expect(
+			orchestrator.cancelHumanRequest(pending.request.id, "dismissed"),
+		).resolves.toBe(true);
+		await expect(result).resolves.toMatchObject({
+			kind: "rejected",
+			diagnostic: {
+				code: "command.arguments_required",
+				details: expect.objectContaining({
+					completionFailureCode: "orchestrator.human_request_cancelled",
+					requestId: pending.request.id,
+				}),
+			},
+		});
+		expect(events).not.toContainEqual(
+			expect.objectContaining({ type: "command_accepted" }),
+		);
+		expect(events).not.toContainEqual(
+			expect.objectContaining({ type: "command_failed" }),
 		);
 	});
 

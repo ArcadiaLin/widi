@@ -35,6 +35,7 @@ export interface CommandCompletionContext {
 	readonly agentId: string;
 	readonly command: Command;
 	readonly argumentPrefix: string;
+	readonly orchestrator: AgentOrchestrator;
 }
 
 export interface CommandCandidate {
@@ -44,6 +45,14 @@ export interface CommandCandidate {
 }
 
 export type CommandCandidates = readonly CommandCandidate[];
+
+export interface CommandArgumentsCompletionPayload {
+	readonly commandId: string;
+	readonly command: CommandInvocation;
+	readonly argumentHint?: string;
+	readonly argumentPrefix: string;
+	readonly candidates: CommandCandidates;
+}
 
 export interface ParsedLineCommand {
 	readonly trigger: string;
@@ -181,6 +190,10 @@ export const BUILT_IN_COMMANDS: readonly BuiltInCommandBinding[] = [
 			description: "Set the current agent model.",
 			argumentHint: "[provider/model]",
 			source: { kind: "built-in" },
+			arguments: {
+				complete: async (context) =>
+					(await context.orchestrator.listAvailableModelCandidates()).models,
+			},
 		},
 		execute: async (orchestrator, agentId, args) => {
 			const reference = args.trim();
@@ -196,6 +209,11 @@ export const BUILT_IN_COMMANDS: readonly BuiltInCommandBinding[] = [
 			description: "Set the current agent thinking level.",
 			argumentHint: "[level]",
 			source: { kind: "built-in" },
+			arguments: {
+				complete: async (context) =>
+					context.orchestrator.listAgentThinkingLevelCandidates(context.agentId)
+						.levels,
+			},
 		},
 		execute: async (orchestrator, agentId, args) => {
 			const level = args.trim();

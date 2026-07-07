@@ -207,8 +207,9 @@ Command 对参数有结构要求，这是 input-triggered command 相对普通 p
 
 `HumanRequestKind` 已增加 `"argumentsCompletion"`（`src/core/human-request.ts`）。流程：
 
-- 命中 command 且声明 `arguments.required` 但输入未携带参数时，orchestrator 发起 `argumentsCompletion` human request。`payload` 携带 command name、`argumentHint` 和候选列表（若 `complete()` 存在）。
-- client 返回的 `input`/`select` 值作为 args 继续执行；无可用 client、超时或用户拒绝 → `command_rejected`（recoverable diagnostic），**不静默 fall back 成普通 prompt**——用户明确输入了命令，把残缺命令当聊天文本发给模型是最坏的失败模式。
+- 命中 command 且声明 `arguments.required` 但输入未携带参数时，orchestrator 发起 `argumentsCompletion` human request。`payload` 是 `CommandArgumentsCompletionPayload`：`commandId`、原始 `command` invocation、`argumentHint`、`argumentPrefix` 和候选列表（若 `complete()` 存在）。
+- client 返回的 `input`/`select` 值作为 args 继续执行；其他 response kind、`undefined` 或 blank string 均视为未补全。无可用 client、超时、取消或用户拒绝 → `command_rejected`（recoverable diagnostic），**不静默 fall back 成普通 prompt**——用户明确输入了命令，把残缺命令当聊天文本发给模型是最坏的失败模式。
+- 补参失败后的 command diagnostic code 保持 `command.arguments_required`，`details` 记录 `completionFailureCode`、`requestId` 等 human request 失败事实；human request 自身的 diagnostic event 仍作为支撑遥测发布。
 
 候选来源按 command 归属：
 
@@ -310,7 +311,7 @@ export interface ExtensionCommandDefinition {
 0. **built-in 绑定表迁至 `command.ts`（零行为变化布局 commit）**。`BuiltInCommandBinding`、`BUILT_IN_COMMANDS`、`getBuiltInCommands()` 归位 command 事实模块，orchestrator 直接 import（裁决见[解析归属](#解析归属不建-commandregistry-类2026-07-07-裁决)）。必须先于一切新 command 落地——后续每个切片都往这张表加条目，先搬家，加条目的 commit 才不混入布局变更。
 1. **`setAgentThinkingLevel(agentId, level)` 原子方法**。纯方法面补缺（见 [Settings Commands](#settings-commands) 命名缺口），下一 turn 生效；无 `reasoning` 能力的 model 上报错。command 落地前方法必须先在。
 2. **`/model` + `/thinking` settings commands**。绑定 `setAgentModel` / `setAgentThinkingLevel`；候选来自 `modelRegistry.getAvailable()` / 当前 model 的 `thinkingLevelMap`；无参时以 command value 返回候选列表（同 `/session` 形态），不依赖 argumentsCompletion。
-3. **argumentsCompletion human request**。替换"参数缺失直接 `command_rejected`"的过渡行为：先发 `argumentsCompletion` 请求，无 client / 超时 / 拒绝再 reject；候选消费 binding 的 `complete()` 事实，与 client 补全共用一份定义。既有消费者：`/steer`、`/follow-up`、`/name` 的必填参数，切片 2 的候选源。
+3. **argumentsCompletion human request**。已替换"参数缺失直接 `command_rejected`"的过渡行为：先发 `argumentsCompletion` 请求，无 client / 超时 / 拒绝再 reject；候选消费 binding 的 `complete()` 事实，与 client 补全共用一份定义。既有消费者：`/steer`、`/follow-up`、`/name` 的必填参数，切片 2 的候选源。
 4. **inline 扫描与 expand 管线 + `<prompt:...>`**。`parseLineCommand` 未命中后的 inline 扫描、expand 执行体校验、`placement: "inline"` 事件、session 双份记录、任一失败整段 reject。`<prompt:...>` 纯文本插入，作为管线的首个消费者一起落，避免无消费者的裸机制。
 5. **`<skill:...>`**。候选来自 profile skills（`ResourceLoader.loadSkills()`）；展开产物只含 metadata 与指引，正文按需加载依赖 M2 coding tools 的 read 最小集——本切片可先落，正文加载能力随 M2 就绪。
 
@@ -331,4 +332,3 @@ export interface ExtensionCommandDefinition {
 待定：
 
 - `<skill:...>`、`<prompt:...>` 展开产物的具体模板文本（事实源已就绪，格式随实现定）。
-- argumentsCompletion 的 `HumanResponse` 形态：暂定复用现有 `input`/`select` 值形态，不加新 response kind；实现时若 payload 不够再议。
