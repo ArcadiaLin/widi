@@ -1281,6 +1281,60 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
+	it("rejects completed command arguments when the gateway went stale", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId, harness } = await orchestrator.spawnAgentHarness();
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const handleHarnessEvent = (
+			orchestrator as unknown as {
+				_handleAgentHarnessEvent(
+					agentId: string,
+					event: AgentHarnessEvent,
+				): Promise<void>;
+			}
+		)._handleAgentHarnessEvent.bind(orchestrator);
+		(harness as unknown as { phase: "turn" }).phase = "turn";
+		await handleHarnessEvent(agentId, { type: "turn_start" });
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async () => {
+				// The turn ends while the human is completing the argument.
+				await handleHarnessEvent(agentId, {
+					type: "turn_end",
+					message: createAssistantPartial([{ type: "text", text: "done" }]),
+					toolResults: [],
+				});
+				return { kind: "input", value: "keep going" };
+			},
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "/steer"),
+		).resolves.toMatchObject({
+			kind: "rejected",
+			diagnostic: {
+				code: "command.not_available",
+				message: "Command /steer requires a running agent (status: idle).",
+			},
+		});
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "command_rejected",
+				command: expect.objectContaining({ argument: "keep going" }),
+			}),
+		);
+		expect(events).not.toContainEqual(
+			expect.objectContaining({ type: "command_accepted" }),
+		);
+		expect(events).not.toContainEqual(
+			expect.objectContaining({ type: "command_failed" }),
+		);
+	});
+
 	it("prunes and rejects commands denied by profile policy", async () => {
 		const env = new MemoryExecutionEnv();
 		const policyProfile: AgentProfile = {

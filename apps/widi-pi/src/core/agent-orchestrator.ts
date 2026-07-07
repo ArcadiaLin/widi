@@ -875,6 +875,25 @@ export class AgentOrchestrator {
 				...invocation,
 				argument: commandArgument,
 			};
+			// The human wait can outlive the gateway's precondition (e.g.
+			// /steer's running turn); recheck so the stale command still
+			// rejects side-effect free instead of failing mid-execution.
+			const staleDiagnostic = this._commandGateway(
+				this._requireAgentRecord(agentId),
+				command,
+				commandId,
+			);
+			if (staleDiagnostic) {
+				await this._emit({
+					type: "command_rejected",
+					commandId,
+					command: executionInvocation,
+					diagnostic: staleDiagnostic,
+					completedAt: now(),
+				});
+				await this._publishDiagnostic(staleDiagnostic);
+				return { kind: "rejected", commandId, diagnostic: staleDiagnostic };
+			}
 		}
 
 		await this._emit({
