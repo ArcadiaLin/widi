@@ -2743,6 +2743,77 @@ describe("AgentOrchestrator", () => {
 		]);
 	});
 
+	it("completes extension command arguments via a narrowed candidate callback", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		const completionCalls: unknown[][] = [];
+		orchestrator.registerExtensionFactory("sample", (api) => {
+			api.registerCommand({
+				name: "deploy",
+				description: "Deploy a target",
+				argumentHint: "<target>",
+				arguments: {
+					required: true,
+					getArgumentsCompletion: (...callbackArgs: unknown[]) => {
+						completionCalls.push(callbackArgs);
+						return [
+							{ value: "staging", label: "Staging" },
+							{ value: "production" },
+						];
+					},
+				},
+				handler: async (args, context) => {
+					await context.session.appendEntry("deployed", { args });
+				},
+			});
+		});
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async (request) => {
+				expect(request).toMatchObject({
+					kind: "argumentsCompletion",
+					options: ["staging", "production"],
+					allowFreeInput: true,
+					payload: expect.objectContaining({
+						candidates: [
+							{ value: "staging", label: "Staging" },
+							{ value: "production" },
+						],
+					}),
+				});
+				return { kind: "select", value: "staging" };
+			},
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "/deploy"),
+		).resolves.toMatchObject({ kind: "command", name: "deploy" });
+		// The callback saw the argument prefix only - no orchestrator handle.
+		expect(completionCalls).toEqual([[""]]);
+		expect(
+			await orchestrator.sessionManager.findExtensionCustomEntries(
+				agentId,
+				"sample",
+				"deployed",
+			),
+		).toMatchObject([{ type: "deployed", data: { args: "staging" } }]);
+	});
+
 	it("keeps an unavailable record when extension activation fails", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = {

@@ -217,7 +217,7 @@ Command 对参数有结构要求，这是 input-triggered command 相对普通 p
 - **Built-in** 的候选直接来自 orchestrator 事实：`/resume` → `listAgentSessions()`，`/tree` → session tree entries，`/skill` → profile 声明的 skills。
 - **Extension** 通过契约里的 `getArgumentsCompletion(argumentPrefix)` 提供。
 
-补参路径现状仅覆盖 built-in（`ExtensionCommandDefinition` 尚无 `arguments` 字段）。将来接入时 extension 的候选回调**不得接收完整 orchestrator 句柄**——`CommandCompletionContext.orchestrator` 是 built-in 专属事实，extension 侧要么镜像 `execute` 的 binding 层闭包模式，要么消费经 runner 收窄的 context。
+Extension 的候选回调只接收 `argumentPrefix`，**不接收完整 orchestrator 句柄**——`CommandCompletionContext.orchestrator` 是 built-in 专属事实，runner 在把贡献归一化为 `Command` fact 时收窄（`runner.ts` 的 `toCommandArguments`）。
 
 同一候选源支撑两种消费模式：
 
@@ -288,6 +288,10 @@ export interface ExtensionCommandDefinition {
   readonly placement?: "line";         // 当前 extension command 只支持 line handler
   readonly description?: string;
   readonly argumentHint?: string;
+  readonly arguments?: {
+    readonly required?: boolean;       // 必填缺失走 argumentsCompletion
+    getArgumentsCompletion?(argumentPrefix: string): Promise<CommandCandidates> | CommandCandidates;
+  };
   readonly handler: (argument: string, ctx: ExtensionCommandContext) => Promise<void> | void;
 }
 ```
@@ -298,7 +302,7 @@ export interface ExtensionCommandDefinition {
 
 - **共享 runtime binding，不共享作者侧 definition**。orchestrator 内部把 built-in 与 extension 都 adapter 成 `{ command: Command; execute(context): Promise<unknown> }` 这类 normalized binding；但 built-in 的作者侧执行体仍可直接访问 orchestrator 内部，extension 的作者侧执行体只拿 `ExtensionCommandContext`。强行统一作者侧 `CommandDefinition` 会迫使 built-in 走 context 注入，或迫使 extension 拿到 orchestrator 内部面——两个方向都错。
 - **共享可见事实与事件轨道**。`registerCommand()` 的贡献在 `listCommands()` 中以 `source: { kind: "extension", extensionId }` 出现，执行走同一条 detected→accepted→completed/failed 事件序列。
-- 后续 `getArgumentsCompletion` 返回候选事实而非 `HumanRequest`——发不发 human request、发给谁，是 orchestrator 的裁决，extension 只提供候选。
+- `getArgumentsCompletion` 返回候选事实而非 `HumanRequest`（已落地）——发不发 human request、发给谁，是 orchestrator 的裁决，extension 只提供候选。
 - built-in 的 `placement + trigger + name` 组合保留；extension 之间同 key 冲突由 runner 归一化并产出可见事实，后续可收敛为 first-registration-wins + diagnostic。
 - Profile 的 `commands.deny` 对 extension command 同样生效。
 

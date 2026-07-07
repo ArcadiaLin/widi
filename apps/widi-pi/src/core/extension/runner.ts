@@ -4,7 +4,7 @@ import type {
 	ToolCallResult,
 	ToolResultPatch,
 } from "@earendil-works/pi-agent-core";
-import { type Command, commandKey } from "../command.ts";
+import { type Command, type CommandArguments, commandKey } from "../command.ts";
 import { type CoreDiagnostic, createDiagnostic } from "../diagnostics.ts";
 import type { ToolRegistry } from "../tool-registry.ts";
 import type {
@@ -17,6 +17,7 @@ import type {
 import type {
 	ExtensionActionFailure,
 	ExtensionActions,
+	ExtensionCommandArguments,
 	ExtensionCommandContext,
 	ExtensionCommandContextActions,
 	ExtensionContext,
@@ -633,6 +634,7 @@ function resolveExtensionCommands(
 				trigger: contribution.trigger,
 				description: contribution.description,
 				argumentHint: contribution.argumentHint,
+				arguments: toCommandArguments(contribution.arguments),
 				source: {
 					kind: "extension",
 					extensionId: contribution.extensionId,
@@ -641,6 +643,22 @@ function resolveExtensionCommands(
 			handler: contribution.handler,
 		};
 	});
+}
+
+// Narrowing boundary: the extension completion callback receives the
+// argument prefix only - never the orchestrator handle carried by the
+// core CommandCompletionContext.
+function toCommandArguments(
+	args: ExtensionCommandArguments | undefined,
+): CommandArguments | undefined {
+	if (!args) return undefined;
+	const getCompletion = args.getArgumentsCompletion?.bind(args);
+	return {
+		required: args.required,
+		complete: getCompletion
+			? async (context) => await getCompletion(context.argumentPrefix)
+			: undefined,
+	};
 }
 
 function createUnboundActions(): ExtensionActions {
