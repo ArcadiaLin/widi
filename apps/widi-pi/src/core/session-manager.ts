@@ -35,6 +35,25 @@ export interface AgentExtensionCustomEntry<T = unknown> {
 	data?: T;
 }
 
+// Core-owned custom entry recording the pre-expansion input of an inline
+// command expansion. The user message stores the expanded text (the model's
+// factual context); this entry preserves the original input and expansion
+// positions for UI replay.
+export const COMMAND_EXPANSION_CUSTOM_TYPE = "core:command_expansion";
+
+export interface CommandExpansionEntryData {
+	readonly inputId: string;
+	readonly originalText: string;
+	readonly expansions: ReadonlyArray<{
+		readonly commandId: string;
+		readonly name: string;
+		readonly trigger: string;
+		readonly argument: string;
+		readonly start: number;
+		readonly end: number;
+	}>;
+}
+
 export interface AgentSessionCandidate {
 	readonly id: string;
 	readonly path: string;
@@ -243,6 +262,16 @@ export class SessionManager {
 		const forkedMetadata = await forkedSession.getMetadata();
 		this._agentSessions.set(forkedMetadata.id, forkedSession);
 		return forkedMetadata;
+	}
+
+	async appendCommandExpansionEntry(
+		agentId: AgentId,
+		data: CommandExpansionEntryData,
+	): Promise<string> {
+		return await this._requireAgentSession(agentId).appendCustomEntry(
+			COMMAND_EXPANSION_CUSTOM_TYPE,
+			data,
+		);
 	}
 
 	async appendExtensionCustomEntry<T = unknown>(

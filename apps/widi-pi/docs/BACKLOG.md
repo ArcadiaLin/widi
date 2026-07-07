@@ -12,13 +12,19 @@
 
 ## Extension
 
-Extension surface 的设计与收口已升级为 [M4 milestone](TODO.md#m4-extension-surface-收口)（hook matrix、provider/resource contribution、extension-owned storage、custom entry policy、第三方 API、product presentation），不在 backlog 重复维护。
+Extension surface 的设计与实施已收编为 [ME milestone](TODO.md#me-extension-surfacem2-之后m3-之前)，方案见 [Extension Experiment](core/extension-experiment.md)，不在 backlog 重复维护。ME 明确排除、留此待举证的：
+
+- Product presentation：`agent.inspect` facts 的产品级 UI/RPC 呈现（随 client adapter 工作举证）。
+- Extension 间 EventBus（pi `events` 对应物）。
+- `setLabel`（依赖 pi session label 的 upstream 对齐）。
+- `user_bash` hook（依赖 M2 coding tools 的 bash 能力）。
+- Client adapter 的 extension host（shortcut/flag/renderer 等 UI 自由度的承载处）。
 
 ## Session And State
 
 - Missing extension、version mismatch、restore failed 时如何展示已有 custom entries。
 - Header metadata schema version/migration（在出现第二个写入者之前不做）。
-- （custom entry fork/compaction/export 与 `custom_message` policy 已入 [M4](TODO.md#m4-extension-surface-收口)。）
+- （custom entry fork/compaction/export 与 `custom_message` policy 已入 [ME 切片 7](TODO.md#me-extension-surfacem2-之后m3-之前)。）
 - 与 Pi upstream 对齐 typed/custom session metadata 后，评估本地 adapter 是否长期保留。
 - Inline command 展开的 session custom entry 具体 shape（原始输入 + 展开位置，裁决见 command-experiment.md）。
 

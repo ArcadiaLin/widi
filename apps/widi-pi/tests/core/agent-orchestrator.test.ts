@@ -30,6 +30,8 @@ import {
 	type AuthStorageBackend,
 	type LockResult,
 } from "../../src/core/auth-storage.ts";
+import type { Command, CommandInvocation } from "../../src/core/command.ts";
+import type { OrchestratorDiagnostic } from "../../src/core/diagnostics.ts";
 import { ModelRegistry } from "../../src/core/model-registry.ts";
 import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
 import { ResourceLoader } from "../../src/core/resource-loader.ts";
@@ -343,6 +345,14 @@ const restoredModel: Model<"openai-completions"> = {
 	name: "Restored Model",
 };
 
+const reasoningModel: Model<"openai-completions"> = {
+	...defaultModel,
+	id: "reasoning-model",
+	name: "Reasoning Model",
+	reasoning: true,
+	thinkingLevelMap: { minimal: null, high: "high" },
+};
+
 async function createModelRegistry(
 	env: MemoryExecutionEnv,
 ): Promise<ModelRegistry> {
@@ -366,6 +376,16 @@ async function createModelRegistry(
 				cost: restoredModel.cost,
 				contextWindow: restoredModel.contextWindow,
 				maxTokens: restoredModel.maxTokens,
+			},
+			{
+				id: reasoningModel.id,
+				name: reasoningModel.name,
+				reasoning: true,
+				thinkingLevelMap: reasoningModel.thinkingLevelMap,
+				input: ["text"],
+				cost: reasoningModel.cost,
+				contextWindow: reasoningModel.contextWindow,
+				maxTokens: reasoningModel.maxTokens,
 			},
 		],
 	});
@@ -473,6 +493,53 @@ function createAssistantPartial(
 		},
 		stopReason: "toolUse",
 		timestamp: 0,
+	};
+}
+
+type CompleteCommandArguments = (options: {
+	agentId: string;
+	commandId: string;
+	binding: { command: Command; execute(args: string): Promise<unknown> };
+	invocation: CommandInvocation;
+	argumentPrefix: string;
+}) => Promise<
+	| { ok: true; argument: string }
+	| { ok: false; diagnostic: OrchestratorDiagnostic }
+>;
+
+// Unit fixture for _completeCommandArguments: no built-in declares both
+// required and complete() yet, so the candidate branches are exercised
+// against a synthetic binding until a real consumer lands.
+function createArgumentsCompletionFixture(
+	orchestrator: AgentOrchestrator,
+	complete?: NonNullable<Command["arguments"]>["complete"],
+): {
+	completeCommandArguments: CompleteCommandArguments;
+	binding: { command: Command; execute(args: string): Promise<unknown> };
+	invocation: CommandInvocation;
+} {
+	const command: Command = {
+		name: "demo",
+		placement: "line",
+		trigger: "/",
+		argumentHint: "<value>",
+		source: { kind: "built-in" },
+		arguments: { required: true, complete },
+	};
+	return {
+		completeCommandArguments: (
+			orchestrator as unknown as {
+				_completeCommandArguments: CompleteCommandArguments;
+			}
+		)._completeCommandArguments.bind(orchestrator),
+		binding: { command, execute: async () => undefined },
+		invocation: {
+			name: command.name,
+			trigger: command.trigger,
+			argument: "",
+			source: command.source,
+			placement: command.placement,
+		},
 	};
 }
 
@@ -792,6 +859,10 @@ describe("AgentOrchestrator", () => {
 		await orchestrator.setAgentModel(agentId, restoredModel);
 		expect(harness.getModel()).toMatchObject({ id: restoredModel.id });
 
+		await orchestrator.setAgentModel(agentId, reasoningModel);
+		await orchestrator.setAgentThinkingLevel(agentId, "high");
+		expect(harness.getThinkingLevel()).toBe("high");
+
 		await orchestrator.setAgentActiveTools(agentId, []);
 		expect(orchestrator.getAgentActiveTools(agentId)).toEqual([]);
 		await orchestrator.setAgentTools(
@@ -809,6 +880,123 @@ describe("AgentOrchestrator", () => {
 		expect(commandEvents).not.toContainEqual(
 			expect.objectContaining({ type: "command_completed" }),
 		);
+	});
+
+	it("rejects agent thinking level changes unsupported by the current model", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId, harness } = await orchestrator.spawnAgentHarness();
+
+		await expect(
+			orchestrator.setAgentThinkingLevel(agentId, "medium"),
+		).rejects.toMatchObject({
+			code: "model.thinking_not_supported",
+			diagnostic: expect.objectContaining({
+				provider: defaultModel.provider,
+				modelId: defaultModel.id,
+			}),
+		});
+		expect(harness.getThinkingLevel()).toBe("off");
+
+		await orchestrator.setAgentModel(agentId, reasoningModel);
+		await expect(
+			orchestrator.setAgentThinkingLevel(agentId, "minimal"),
+		).rejects.toMatchObject({
+			code: "model.thinking_level_not_supported",
+			diagnostic: expect.objectContaining({
+				provider: reasoningModel.provider,
+				modelId: reasoningModel.id,
+				details: {
+					level: "minimal",
+					supportedLevels: ["off", "low", "medium", "high"],
+				},
+			}),
+		});
+		expect(harness.getThinkingLevel()).toBe("off");
+	});
+
+	it("executes model and thinking settings commands through agent input", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId, harness } = await orchestrator.spawnAgentHarness();
+
+		await expect(orchestrator.inputAgent(agentId, "/model")).resolves.toEqual(
+			expect.objectContaining({
+				kind: "command",
+				name: "model",
+				value: {
+					models: expect.arrayContaining([
+						{
+							value: `${restoredModel.provider}/${restoredModel.id}`,
+							label: restoredModel.name,
+							description: `${restoredModel.provider}/${restoredModel.id}`,
+						},
+						{
+							value: `${reasoningModel.provider}/${reasoningModel.id}`,
+							label: reasoningModel.name,
+							description: `${reasoningModel.provider}/${reasoningModel.id}`,
+						},
+					]),
+				},
+			}),
+		);
+
+		await expect(
+			orchestrator.inputAgent(agentId, "/thinking"),
+		).resolves.toEqual(
+			expect.objectContaining({
+				kind: "failed",
+				diagnostic: expect.objectContaining({
+					code: "model.thinking_not_supported",
+					modelId: defaultModel.id,
+				}),
+			}),
+		);
+
+		await expect(
+			orchestrator.inputAgent(
+				agentId,
+				`/model:${reasoningModel.provider}/${reasoningModel.id}`,
+			),
+		).resolves.toEqual(
+			expect.objectContaining({
+				kind: "command",
+				name: "model",
+				value: expect.objectContaining({
+					id: reasoningModel.id,
+					provider: reasoningModel.provider,
+				}),
+			}),
+		);
+		expect(harness.getModel()).toMatchObject({ id: reasoningModel.id });
+
+		await expect(
+			orchestrator.inputAgent(agentId, "/thinking"),
+		).resolves.toEqual(
+			expect.objectContaining({
+				kind: "command",
+				name: "thinking",
+				value: {
+					levels: [
+						{ value: "off", label: "off" },
+						{ value: "low", label: "low" },
+						{ value: "medium", label: "medium" },
+						{ value: "high", label: "high" },
+					],
+				},
+			}),
+		);
+
+		await expect(
+			orchestrator.inputAgent(agentId, "/thinking:high"),
+		).resolves.toEqual(
+			expect.objectContaining({
+				kind: "command",
+				name: "thinking",
+				value: { level: "high" },
+			}),
+		);
+		expect(harness.getThinkingLevel()).toBe("high");
 	});
 
 	it("exposes lightweight agent record status and inspect snapshots", async () => {
@@ -924,14 +1112,41 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
-	it("rejects command input with missing required arguments before execution", async () => {
+	it("completes missing required command arguments before execution", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const { agentId, harness } = await orchestrator.spawnAgentHarness();
 		const events: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
 			events.push(event);
 		});
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async (request) => {
+				expect(request).toMatchObject({
+					kind: "argumentsCompletion",
+					title: "Complete /steer arguments",
+					message: "Command /steer requires an argument.",
+					placeholder: "<text>",
+					allowFreeInput: true,
+					payload: {
+						commandId: "orchestrator-command-1",
+						command: {
+							name: "steer",
+							trigger: "/",
+							argument: "",
+							source: { kind: "built-in" },
+							placement: "line",
+						},
+						argumentHint: "<text>",
+						argumentPrefix: "",
+						candidates: [],
+					},
+				});
+				return { kind: "input", value: "keep going" };
+			},
+		});
+		(harness as unknown as { phase: "turn" }).phase = "turn";
 		const handleHarnessEvent = (
 			orchestrator as unknown as {
 				_handleAgentHarnessEvent(
@@ -944,13 +1159,68 @@ describe("AgentOrchestrator", () => {
 
 		await expect(
 			orchestrator.inputAgent(agentId, "/steer"),
-		).resolves.toMatchObject({
-			kind: "rejected",
-			diagnostic: {
-				code: "command.arguments_required",
-				message: "Command /steer requires an argument.",
-			},
+		).resolves.toMatchObject({ kind: "command", name: "steer" });
+		expect(
+			events
+				.filter(
+					(event) =>
+						event.type === "command_detected" ||
+						event.type === "human_request_pending" ||
+						event.type === "human_request_resolved" ||
+						event.type === "command_accepted" ||
+						event.type === "command_completed",
+				)
+				.map((event) => event.type),
+		).toEqual([
+			"command_detected",
+			"human_request_pending",
+			"human_request_resolved",
+			"command_accepted",
+			"command_completed",
+		]);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "command_detected",
+				command: expect.objectContaining({ argument: "" }),
+			}),
+		);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "command_accepted",
+				command: expect.objectContaining({ argument: "keep going" }),
+			}),
+		);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "command_completed",
+				command: expect.objectContaining({ argument: "keep going" }),
+			}),
+		);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "agent_harness_event",
+				event: expect.objectContaining({
+					type: "queue_update",
+					steer: [
+						expect.objectContaining({
+							role: "user",
+							content: [{ type: "text", text: "keep going" }],
+						}),
+					],
+				}),
+			}),
+		);
+	});
+
+	it("rejects missing required command arguments when no client can complete them", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
 		});
+
 		await expect(
 			orchestrator.inputAgent(agentId, "/follow-up"),
 		).resolves.toMatchObject({
@@ -960,10 +1230,543 @@ describe("AgentOrchestrator", () => {
 				message: "Command /follow-up requires an argument.",
 			},
 		});
-		// Rejected before execution: no command_accepted for either input.
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "command_rejected",
+				diagnostic: expect.objectContaining({
+					code: "command.arguments_required",
+					details: expect.objectContaining({
+						completionFailureCode: "orchestrator.human_request_unhandled",
+						requestId: "human-request-1",
+					}),
+				}),
+			}),
+		);
 		expect(events).not.toContainEqual(
 			expect.objectContaining({ type: "command_accepted" }),
 		);
+		expect(events).not.toContainEqual(
+			expect.objectContaining({ type: "command_failed" }),
+		);
+	});
+
+	it("rejects blank completed command arguments before execution", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async () => ({ kind: "input", value: "  " }),
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "/name"),
+		).resolves.toMatchObject({
+			kind: "rejected",
+			diagnostic: {
+				code: "command.arguments_required",
+				message: "Command /name requires an argument.",
+				details: {
+					completionFailureCode: "command.arguments_completion_empty",
+					responseKind: "input",
+				},
+			},
+		});
+		expect(events).toContainEqual(
+			expect.objectContaining({ type: "command_rejected" }),
+		);
+		expect(events).not.toContainEqual(
+			expect.objectContaining({ type: "command_accepted" }),
+		);
+		expect(events).not.toContainEqual(
+			expect.objectContaining({ type: "command_failed" }),
+		);
+	});
+
+	it("rejects cancelled argument completion before execution", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const pendingRequest = new Promise<
+			Extract<OrchestratorEvent, { type: "human_request_pending" }>
+		>((resolve) => {
+			orchestrator.subscribe((event) => {
+				if (event.type === "human_request_pending") resolve(event);
+			});
+		});
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async () => await new Promise<never>(() => {}),
+		});
+
+		const result = orchestrator.inputAgent(agentId, "/follow-up");
+		const pending = await pendingRequest;
+
+		await expect(
+			orchestrator.cancelHumanRequest(pending.request.id, "dismissed"),
+		).resolves.toBe(true);
+		await expect(result).resolves.toMatchObject({
+			kind: "rejected",
+			diagnostic: {
+				code: "command.arguments_required",
+				details: expect.objectContaining({
+					completionFailureCode: "orchestrator.human_request_cancelled",
+					requestId: pending.request.id,
+				}),
+			},
+		});
+		expect(events).not.toContainEqual(
+			expect.objectContaining({ type: "command_accepted" }),
+		);
+		expect(events).not.toContainEqual(
+			expect.objectContaining({ type: "command_failed" }),
+		);
+	});
+
+	it("rejects completed command arguments when the gateway went stale", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId, harness } = await orchestrator.spawnAgentHarness();
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const handleHarnessEvent = (
+			orchestrator as unknown as {
+				_handleAgentHarnessEvent(
+					agentId: string,
+					event: AgentHarnessEvent,
+				): Promise<void>;
+			}
+		)._handleAgentHarnessEvent.bind(orchestrator);
+		(harness as unknown as { phase: "turn" }).phase = "turn";
+		await handleHarnessEvent(agentId, { type: "turn_start" });
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async () => {
+				// The turn ends while the human is completing the argument.
+				await handleHarnessEvent(agentId, {
+					type: "turn_end",
+					message: createAssistantPartial([{ type: "text", text: "done" }]),
+					toolResults: [],
+				});
+				return { kind: "input", value: "keep going" };
+			},
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "/steer"),
+		).resolves.toMatchObject({
+			kind: "rejected",
+			diagnostic: {
+				code: "command.not_available",
+				message: "Command /steer requires a running agent (status: idle).",
+			},
+		});
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "command_rejected",
+				command: expect.objectContaining({ argument: "keep going" }),
+			}),
+		);
+		expect(events).not.toContainEqual(
+			expect.objectContaining({ type: "command_accepted" }),
+		);
+		expect(events).not.toContainEqual(
+			expect.objectContaining({ type: "command_failed" }),
+		);
+	});
+
+	it("offers completion candidates and accepts a select response", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const { completeCommandArguments, binding, invocation } =
+			createArgumentsCompletionFixture(orchestrator, async (context) => {
+				expect(context.agentId).toBe(agentId);
+				expect(context.argumentPrefix).toBe("");
+				expect(context.orchestrator).toBe(orchestrator);
+				return [
+					{ value: "alpha", label: "Alpha", description: "First candidate" },
+					{ value: "beta" },
+				];
+			});
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async (request) => {
+				expect(request).toMatchObject({
+					kind: "argumentsCompletion",
+					options: ["alpha", "beta"],
+					placeholder: "<value>",
+					allowFreeInput: true,
+					payload: {
+						command: invocation,
+						argumentHint: "<value>",
+						argumentPrefix: "",
+						candidates: [
+							{
+								value: "alpha",
+								label: "Alpha",
+								description: "First candidate",
+							},
+							{ value: "beta" },
+						],
+					},
+				});
+				return { kind: "select", value: "beta" };
+			},
+		});
+
+		await expect(
+			completeCommandArguments({
+				agentId,
+				commandId: "orchestrator-command-test",
+				binding,
+				invocation,
+				argumentPrefix: "",
+			}),
+		).resolves.toEqual({ ok: true, argument: "beta" });
+	});
+
+	it("treats select responses without a value as missing completion", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const { completeCommandArguments, binding, invocation } =
+			createArgumentsCompletionFixture(orchestrator, async () => [
+				{ value: "alpha" },
+			]);
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async () => ({ kind: "select", value: undefined }),
+		});
+
+		await expect(
+			completeCommandArguments({
+				agentId,
+				commandId: "orchestrator-command-test",
+				binding,
+				invocation,
+				argumentPrefix: "",
+			}),
+		).resolves.toMatchObject({
+			ok: false,
+			diagnostic: {
+				code: "command.arguments_required",
+				details: {
+					completionFailureCode: "command.arguments_completion_empty",
+					responseKind: "select",
+				},
+			},
+		});
+	});
+
+	it("rejects argument completion responses of unexpected kinds", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const { completeCommandArguments, binding, invocation } =
+			createArgumentsCompletionFixture(orchestrator);
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async () => ({ kind: "confirm", confirmed: true }),
+		});
+
+		await expect(
+			completeCommandArguments({
+				agentId,
+				commandId: "orchestrator-command-test",
+				binding,
+				invocation,
+				argumentPrefix: "",
+			}),
+		).resolves.toMatchObject({
+			ok: false,
+			diagnostic: {
+				code: "command.arguments_required",
+				details: {
+					completionFailureCode:
+						"command.arguments_completion_invalid_response",
+					responseKind: "confirm",
+				},
+			},
+		});
+	});
+
+	it("short-circuits argument completion when the candidate source fails", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const { completeCommandArguments, binding, invocation } =
+			createArgumentsCompletionFixture(orchestrator, async () => {
+				throw new Error("candidate source unavailable");
+			});
+		let humanRequested = false;
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async () => {
+				humanRequested = true;
+				return { kind: "input", value: "never" };
+			},
+		});
+
+		await expect(
+			completeCommandArguments({
+				agentId,
+				commandId: "orchestrator-command-test",
+				binding,
+				invocation,
+				argumentPrefix: "",
+			}),
+		).resolves.toMatchObject({
+			ok: false,
+			diagnostic: {
+				code: "command.arguments_required",
+				details: expect.objectContaining({
+					completionFailureCode: "command.arguments_completion_failed",
+				}),
+			},
+		});
+		expect(humanRequested).toBe(false);
+	});
+
+	it("expands inline prompt commands and records the original input", async () => {
+		const env = new MemoryExecutionEnv();
+		await env.writeFile(
+			"/workspace/project/.widi/prompt_templates/focus.md",
+			"Focus on correctness.",
+		);
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const prompted: string[] = [];
+		Object.assign(orchestrator, {
+			promptAgent: async (_agentId: string, text: string) => {
+				prompted.push(text);
+				return { role: "assistant" } as AssistantMessage;
+			},
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "review this <prompt:focus> please"),
+		).resolves.toMatchObject({ kind: "prompt" });
+		expect(prompted).toEqual(["review this Focus on correctness. please"]);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "command_detected",
+				inputId: "orchestrator-input-1",
+				command: expect.objectContaining({
+					name: "prompt",
+					trigger: "<",
+					argument: "focus",
+					placement: "inline",
+				}),
+			}),
+		);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "command_completed",
+				inputId: "orchestrator-input-1",
+				result: "Focus on correctness.",
+			}),
+		);
+		const sessionFiles = [...env.files.entries()].filter(([path]) =>
+			path.startsWith("/sessions/"),
+		);
+		const expansionRecord = sessionFiles.find(([, content]) =>
+			content.includes("core:command_expansion"),
+		);
+		expect(expansionRecord).toBeDefined();
+		expect(expansionRecord?.[1]).toContain("review this <prompt:focus> please");
+	});
+
+	it("rejects the whole input when an inline expansion fails", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const prompted: string[] = [];
+		Object.assign(orchestrator, {
+			promptAgent: async (_agentId: string, text: string) => {
+				prompted.push(text);
+				return { role: "assistant" } as AssistantMessage;
+			},
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "check <prompt:missing> now"),
+		).resolves.toMatchObject({
+			kind: "failed",
+			diagnostic: { code: "prompt_template.not_found" },
+		});
+		expect(prompted).toEqual([]);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "command_failed",
+				command: expect.objectContaining({
+					name: "prompt",
+					placement: "inline",
+				}),
+			}),
+		);
+	});
+
+	it("completes missing inline command arguments before expansion", async () => {
+		const env = new MemoryExecutionEnv();
+		await env.writeFile(
+			"/workspace/project/.widi/prompt_templates/focus.md",
+			"Focus on correctness.",
+		);
+		await env.writeFile(
+			"/workspace/project/.widi/prompt_templates/deep.md",
+			"Dig deeper.",
+		);
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async (request) => {
+				expect(request).toMatchObject({
+					kind: "argumentsCompletion",
+					placeholder: "<template>",
+					allowFreeInput: true,
+				});
+				expect(request.options).toEqual(
+					expect.arrayContaining(["deep", "focus"]),
+				);
+				return { kind: "select", value: "deep" };
+			},
+		});
+		const prompted: string[] = [];
+		Object.assign(orchestrator, {
+			promptAgent: async (_agentId: string, text: string) => {
+				prompted.push(text);
+				return { role: "assistant" } as AssistantMessage;
+			},
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "start <prompt> now"),
+		).resolves.toMatchObject({ kind: "prompt" });
+		expect(prompted).toEqual(["start Dig deeper. now"]);
+	});
+
+	it("keeps unmatched inline tokens as plain prompt text", async () => {
+		const env = new MemoryExecutionEnv();
+		await env.writeFile(
+			"/workspace/project/.widi/prompt_templates/focus.md",
+			"Focus on correctness.",
+		);
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const prompted: string[] = [];
+		Object.assign(orchestrator, {
+			promptAgent: async (_agentId: string, text: string) => {
+				prompted.push(text);
+				return { role: "assistant" } as AssistantMessage;
+			},
+		});
+
+		// Unregistered name and a non-boundary token are both plain text.
+		await orchestrator.inputAgent(agentId, "look <unknown:x> here");
+		await orchestrator.inputAgent(agentId, "tail <prompt:focus>, done");
+		expect(prompted).toEqual([
+			"look <unknown:x> here",
+			"tail <prompt:focus>, done",
+		]);
+		expect(events).not.toContainEqual(
+			expect.objectContaining({ type: "command_detected" }),
+		);
+	});
+
+	it("expands inline skill commands with metadata and guidance only", async () => {
+		const env = new MemoryExecutionEnv();
+		await env.writeFile(
+			"/workspace/project/.widi/skills/code-review/SKILL.md",
+			[
+				"---",
+				"name: code-review",
+				"description: Review code for issues.",
+				"---",
+				"SECRET BODY INSTRUCTIONS",
+			].join("\n"),
+		);
+		// writeFile only registers the immediate parent; the loader walks
+		// from the skills root, which must exist as a directory.
+		env.dirs.add("/workspace/project/.widi/skills");
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const prompted: string[] = [];
+		Object.assign(orchestrator, {
+			promptAgent: async (_agentId: string, text: string) => {
+				prompted.push(text);
+				return { role: "assistant" } as AssistantMessage;
+			},
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "please <skill:code-review> now"),
+		).resolves.toMatchObject({ kind: "prompt" });
+		expect(prompted).toHaveLength(1);
+		const expanded = prompted[0] ?? "";
+		expect(expanded).toContain('<skill name="code-review">');
+		expect(expanded).toContain("Review code for issues.");
+		expect(expanded).toContain(
+			"Skill file: /workspace/project/.widi/skills/code-review/SKILL.md",
+		);
+		// The skill body stays in the file; the expansion is metadata-only.
+		expect(expanded).not.toContain("SECRET BODY INSTRUCTIONS");
+
+		await expect(
+			orchestrator.listAgentSkillCandidates(agentId),
+		).resolves.toEqual({
+			skills: [
+				{
+					value: "code-review",
+					label: "code-review",
+					description: "Review code for issues.",
+				},
+			],
+		});
+	});
+
+	it("rejects the whole input when an inline skill is unknown", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const prompted: string[] = [];
+		Object.assign(orchestrator, {
+			promptAgent: async (_agentId: string, text: string) => {
+				prompted.push(text);
+				return { role: "assistant" } as AssistantMessage;
+			},
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "try <skill:nope> now"),
+		).resolves.toMatchObject({
+			kind: "failed",
+			diagnostic: { code: "skill.not_found" },
+		});
+		expect(prompted).toEqual([]);
 	});
 
 	it("prunes and rejects commands denied by profile policy", async () => {
@@ -1889,6 +2692,14 @@ describe("AgentOrchestrator", () => {
 				source: { kind: "built-in" },
 			}),
 			expect.objectContaining({
+				name: "model",
+				source: { kind: "built-in" },
+			}),
+			expect.objectContaining({
+				name: "thinking",
+				source: { kind: "built-in" },
+			}),
+			expect.objectContaining({
 				name: "name",
 				source: { kind: "built-in" },
 			}),
@@ -1930,6 +2741,77 @@ describe("AgentOrchestrator", () => {
 				available: true,
 			},
 		]);
+	});
+
+	it("completes extension command arguments via a narrowed candidate callback", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		const completionCalls: unknown[][] = [];
+		orchestrator.registerExtensionFactory("sample", (api) => {
+			api.registerCommand({
+				name: "deploy",
+				description: "Deploy a target",
+				argumentHint: "<target>",
+				arguments: {
+					required: true,
+					getArgumentsCompletion: (...callbackArgs: unknown[]) => {
+						completionCalls.push(callbackArgs);
+						return [
+							{ value: "staging", label: "Staging" },
+							{ value: "production" },
+						];
+					},
+				},
+				handler: async (args, context) => {
+					await context.session.appendEntry("deployed", { args });
+				},
+			});
+		});
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async (request) => {
+				expect(request).toMatchObject({
+					kind: "argumentsCompletion",
+					options: ["staging", "production"],
+					allowFreeInput: true,
+					payload: expect.objectContaining({
+						candidates: [
+							{ value: "staging", label: "Staging" },
+							{ value: "production" },
+						],
+					}),
+				});
+				return { kind: "select", value: "staging" };
+			},
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "/deploy"),
+		).resolves.toMatchObject({ kind: "command", name: "deploy" });
+		// The callback saw the argument prefix only - no orchestrator handle.
+		expect(completionCalls).toEqual([[""]]);
+		expect(
+			await orchestrator.sessionManager.findExtensionCustomEntries(
+				agentId,
+				"sample",
+				"deployed",
+			),
+		).toMatchObject([{ type: "deployed", data: { args: "staging" } }]);
 	});
 
 	it("keeps an unavailable record when extension activation fails", async () => {

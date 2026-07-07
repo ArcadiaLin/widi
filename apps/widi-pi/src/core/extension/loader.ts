@@ -16,6 +16,7 @@ import {
 } from "./module-importer.ts";
 import type {
 	ExtensionActivationApi,
+	ExtensionCommandArguments,
 	ExtensionCommandDefinition,
 	ExtensionCommandHandler,
 	ExtensionFactory,
@@ -38,6 +39,7 @@ export interface ExtensionCommandContribution {
 	trigger: string;
 	description?: string;
 	argumentHint?: string;
+	arguments?: ExtensionCommandArguments;
 	handler: ExtensionCommandHandler;
 }
 
@@ -767,6 +769,7 @@ function createActivationApi(options: {
 				trigger: definition.trigger ?? "/",
 				description: definition.description,
 				argumentHint: definition.argumentHint,
+				arguments: definition.arguments,
 				handler: definition.handler,
 			});
 		},
@@ -813,7 +816,7 @@ function normalizeCommandDefinition(
 	}
 	if (!isCommandName(name)) {
 		throw new Error(
-			"Extension command name must not be empty or contain ':' or whitespace.",
+			"Extension command name must start with a letter or digit and contain only letters, digits, '.', '_', or '-'.",
 		);
 	}
 	const trigger = command.trigger?.trim() ?? "/";

@@ -10,7 +10,7 @@ import type {
 	ToolResultEvent,
 } from "@earendil-works/pi-agent-core";
 import type { Static, TSchema } from "typebox";
-import type { CommandPlacement } from "../command.ts";
+import type { CommandCandidates, CommandPlacement } from "../command.ts";
 import type {
 	HumanRequest,
 	HumanResponse,
@@ -202,12 +202,24 @@ export type ExtensionCommandHandler = (
 	context: ExtensionCommandContext,
 ) => Promise<void> | void;
 
+// Argument facts on the author-side contract. getArgumentsCompletion
+// returns candidate facts only - whether and how a human request is
+// issued is the orchestrator's ruling, and the callback never receives
+// an orchestrator handle (the runner narrows the completion context).
+export interface ExtensionCommandArguments {
+	readonly required?: boolean;
+	getArgumentsCompletion?(
+		argumentPrefix: string,
+	): Promise<CommandCandidates> | CommandCandidates;
+}
+
 export interface ExtensionCommandDefinition {
 	readonly name: string;
 	readonly placement?: Extract<CommandPlacement, "line">;
 	readonly trigger?: string;
 	readonly description?: string;
 	readonly argumentHint?: string;
+	readonly arguments?: ExtensionCommandArguments;
 	readonly handler: ExtensionCommandHandler;
 }
 

@@ -82,9 +82,9 @@ Tool tracking 不进入 core primitive。它应作为 extension pattern：通过
 - Extension command 通过 `registerCommand()` 注册 UI-neutral 事实（name、trigger、description、argumentHint）与执行形态。当前代码只支持 `handler(argument, ctx)` line 命令；inline `expand(argument)` 后续接入。所有 command 由 orchestrator `inputAgent` 按统一 trigger 模板解析、门控并执行。契约详见 [Command Experiment](./command-experiment.md)（`inputInvoke` 字段名随收编退役）。
 - Orchestrator 已将 `before_agent_start`、`context`、`tool_call`、`tool_result` 四个 harness hook 桥接到 interceptors。
 - Orchestrator 已将 raw `agent_harness_event` 和归一化 `tool_lifecycle_event` 桥接到 observers；observer error 变成 `extension.handler_failed` diagnostic。
-- Runner 使用 lazy context：`bindCore()` / `bindCommandContext()` 后，handler 通过 `createContext()` / `createCommandContext()` 获取 actions、human request、tool mutation 和 session custom entry facade（actions 的全量 `dispatch` 将随 M1 移除；own-agent scope 收敛属 M2）。
+- Runner 使用 lazy context：`bindCore()` / `bindCommandContext()` 后，handler 通过 `createContext()` / `createCommandContext()` 获取 actions、human request、tool mutation 和 session custom entry facade（全量 `dispatch` 已随 M1 移除；own-agent scope 收敛属 ME 切片 3）。
 - `agent.inspect` 已能暴露 loaded extensions、registered hooks、commands、tool contributions、patches、diagnostics 和 stale state。
-- Interceptor 失败语义（当前事实，M2 定案）：四个 `_intercept*` 中任一 handler 抛错，本次拦截**丢弃所有 extension 的合成结果**并降级为 warning diagnostic，harness 按"无拦截结果"继续。装了审计/安全 extension 的用户会在另一个不相干 extension 出错时静默失去防护——M2 需在"跳过失败者保留其余"与"显式 fail-closed"之间定案。
+- Interceptor 失败语义（当前事实，ME 切片 1 定案）：四个 `_intercept*` 中任一 handler 抛错，本次拦截**丢弃所有 extension 的合成结果**并降级为 warning diagnostic，harness 按"无拦截结果"继续。装了审计/安全 extension 的用户会在另一个不相干 extension 出错时静默失去防护——ME 已裁决方向：合成类跳过失败者保留其余，`tool_call` 拦截 fail-closed（见 [Extension Experiment](./extension-experiment.md)）。
 
 这些能力足够验证 ToolRegistry、hook、diagnostics、reload、input command 和 session custom entry 的主路径。仍不足以作为稳定第三方 extension surface：provider/resource registration、更多 hook matrix、extension-owned storage、product presentation 和完整 RPC adapter 尚未收口。
 
@@ -131,7 +131,7 @@ WIDI 的当前形态更偏 core-first：
 - Extension-owned storage；session `custom` entry 已有 MVP，但 fork/compaction/export/custom_message policy 未定义。
 - Product presentation：`agent.inspect` 已有 facts，但还没有产品级 UI/RPC 呈现。
 
-Hook matrix、provider/resource registration、extension-owned storage 和 product presentation 的设计收口已列为 M4 milestone（设计先行，见 [Milestones](../TODO.md)）。等这些边界稳定后，再把 team/flow/goal 类 extension 作为 product surface；coding tools 已裁决为 core built-in（见 DESIGN.md），不再依赖 extension 形态交付。
+Hook matrix、provider/resource registration、extension-owned storage 的推进已收编为 ME milestone，总方案（目标公式、pi 能力对照表、裁决原则、切片）见 [Extension Experiment](./extension-experiment.md)；product presentation 移入 backlog 随 client adapter 举证。等这些边界稳定后，再把 team/flow/goal 类 extension 作为 product surface；coding tools 已裁决为 core built-in（见 DESIGN.md），不再依赖 extension 形态交付。
 
 ## 非职责
 

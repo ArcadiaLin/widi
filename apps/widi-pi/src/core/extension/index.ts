@@ -31,6 +31,7 @@ export type {
 	ExtensionActionFailure,
 	ExtensionActions,
 	ExtensionActivationApi,
+	ExtensionCommandArguments,
 	ExtensionCommandContext,
 	ExtensionCommandContextActions,
 	ExtensionCommandDefinition,

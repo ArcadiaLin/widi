@@ -10,10 +10,17 @@ import {
 	type AgentHarnessResources,
 	type AgentTool,
 	type ExecutionEnv,
+	type PromptTemplate,
 	type Session,
+	type Skill,
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
+import {
+	type AssistantMessage,
+	getSupportedThinkingLevels,
+	type ImageContent,
+	type ModelThinkingLevel,
+} from "@earendil-works/pi-ai";
 import type { ExtendedJsonlSessionMetadata } from "../storage/jsonl-repo.ts";
 import type {
 	AgentProfile,
@@ -26,11 +33,20 @@ import type {
 import { toAgentProfileReference } from "./agent-profile.js";
 import type { OrchestratorClient } from "./client.ts";
 import {
+	BUILT_IN_COMMANDS,
+	BUILT_IN_INLINE_COMMANDS,
+	type BuiltInInlineCommandBinding,
 	type Command,
+	type CommandArgumentsCompletionPayload,
+	type CommandCandidate,
 	type CommandInvocation,
+	type CommandStatusCheck,
+	getBuiltInCommands,
+	type InlineCommandMatch,
 	type InputResult,
 	type ParsedLineCommand,
 	parseLineCommand,
+	scanInlineCommands,
 } from "./command.ts";
 import {
 	type DiagnosticDisposition,
@@ -92,12 +108,15 @@ export type OrchestratorEvent =
 			readonly type: "command_detected";
 			commandId: string;
 			command: CommandInvocation;
+			// Correlates the inline expansions of one input; absent on line commands.
+			inputId?: string;
 			createdAt: string;
 	  }
 	| {
 			readonly type: "command_accepted";
 			commandId: string;
 			command: CommandInvocation;
+			inputId?: string;
 			createdAt: string;
 	  }
 	| {
@@ -105,6 +124,7 @@ export type OrchestratorEvent =
 			commandId: string;
 			command: CommandInvocation;
 			result: unknown;
+			inputId?: string;
 			completedAt: string;
 	  }
 	| {
@@ -112,6 +132,7 @@ export type OrchestratorEvent =
 			commandId: string;
 			command: CommandInvocation;
 			diagnostic: OrchestratorDiagnostic;
+			inputId?: string;
 			completedAt: string;
 	  }
 	| {
@@ -119,6 +140,7 @@ export type OrchestratorEvent =
 			commandId: string;
 			command?: CommandInvocation;
 			diagnostic: OrchestratorDiagnostic;
+			inputId?: string;
 			completedAt: string;
 	  }
 	| {
@@ -240,6 +262,26 @@ export interface AgentListResult {
 	readonly agents: readonly AgentRecordSnapshot[];
 }
 
+export interface AgentModelCandidateListResult {
+	readonly models: readonly CommandCandidate[];
+}
+
+export interface AgentThinkingLevelCandidateListResult {
+	readonly levels: readonly CommandCandidate[];
+}
+
+export interface AgentPromptTemplateCandidateListResult {
+	readonly templates: readonly CommandCandidate[];
+}
+
+export interface AgentSkillCandidateListResult {
+	readonly skills: readonly CommandCandidate[];
+}
+
+export interface AgentThinkingLevelCommandResult {
+	readonly level: ThinkingLevel;
+}
+
 export type ExtensionReloadAgentStatus = "reloaded" | "skipped" | "failed";
 
 export type ExtensionReloadAgentSkipReason =
@@ -305,25 +347,15 @@ interface AgentToolSetHarness {
 	setActiveTools(toolNames: string[]): Promise<void>;
 }
 
-// Command status requirement declared on a binding: returns the reason the
-// current agent status blocks the command, or undefined when it may run.
-type CommandStatusCheck = (status: AgentLifecycleStatus) => string | undefined;
-
 interface LineCommandBinding {
 	readonly command: Command;
 	readonly checkStatus?: CommandStatusCheck;
 	execute(args: string): Promise<unknown>;
 }
 
-interface BuiltInCommandBinding {
-	readonly command: Command;
-	readonly checkStatus?: CommandStatusCheck;
-	execute(
-		orchestrator: AgentOrchestrator,
-		agentId: AgentId,
-		args: string,
-	): Promise<unknown>;
-}
+type CommandArgumentsCompletionResult =
+	| { readonly ok: true; readonly argument: string }
+	| { readonly ok: false; readonly diagnostic: OrchestratorDiagnostic };
 
 interface SpawnAgentHarnessCommonOptions {
 	model?: RuntimeModel;
@@ -379,6 +411,7 @@ export class AgentOrchestrator {
 		new Map();
 	private _pendingHumanRequests: Map<string, PendingHumanRequest> = new Map();
 	private _nextCommandId = 1;
+	private _nextInputId = 1;
 	private _nextHumanRequestId = 1;
 
 	constructor(config: AgentOrchestratorConfigs) {
@@ -597,6 +630,233 @@ export class AgentOrchestrator {
 		this._requireAgentRecord(agentId).model = model;
 	}
 
+	async listAvailableModelCandidates(): Promise<AgentModelCandidateListResult> {
+		const models = await this.modelRegistry.getAvailable();
+		return {
+			models: models.map((model) => ({
+				value: modelReference(model),
+				label: model.name,
+				description: modelReference(model),
+			})),
+		};
+	}
+
+	async setAgentModelByReference(
+		agentId: AgentId,
+		reference: string,
+	): Promise<RuntimeModel> {
+		const parsed = parseModelReference(reference);
+		if (!parsed) {
+			throw new OrchestratorError(
+				createOrchestratorDiagnostic({
+					severity: "error",
+					code: "model.reference_invalid",
+					message: `Model reference must use provider/model syntax: ${reference}`,
+					source: { kind: "registry", name: "model", key: reference },
+					agentId,
+					phase: "runtime",
+					recoverable: true,
+				}),
+			);
+		}
+		const models = await this.modelRegistry.getAvailable();
+		const model = models.find(
+			(candidate) =>
+				candidate.provider === parsed.provider &&
+				candidate.id === parsed.modelId,
+		);
+		if (!model) {
+			throw new OrchestratorError(
+				createOrchestratorDiagnostic({
+					severity: "error",
+					code: "model.not_available",
+					message: `Model is not available: ${parsed.provider}/${parsed.modelId}`,
+					source: {
+						kind: "registry",
+						name: "model",
+						key: `${parsed.provider}/${parsed.modelId}`,
+					},
+					agentId,
+					provider: parsed.provider,
+					modelId: parsed.modelId,
+					phase: "runtime",
+					recoverable: true,
+				}),
+			);
+		}
+		await this.setAgentModel(agentId, model);
+		return model;
+	}
+
+	listAgentThinkingLevelCandidates(
+		agentId: AgentId,
+	): AgentThinkingLevelCandidateListResult {
+		const record = this._requireAgentRecord(agentId);
+		return {
+			levels: this._getAgentThinkingLevelCandidates(record),
+		};
+	}
+
+	async setAgentThinkingLevel(
+		agentId: AgentId,
+		level: ThinkingLevel,
+	): Promise<void> {
+		const record = this._requireAgentRecord(agentId);
+		if (!record.model.reasoning) {
+			throw new OrchestratorError(
+				this._createAgentThinkingNotSupportedDiagnostic(record),
+			);
+		}
+		const supportedLevels = getSupportedThinkingLevels(record.model);
+		if (!supportedLevels.includes(level)) {
+			throw new OrchestratorError(
+				createOrchestratorDiagnostic({
+					severity: "error",
+					code: "model.thinking_level_not_supported",
+					message: `Thinking level ${level} is not supported by model ${record.model.provider}/${record.model.id}.`,
+					source: { kind: "registry", name: "model", key: "thinkingLevel" },
+					agentId,
+					provider: record.model.provider,
+					modelId: record.model.id,
+					phase: "runtime",
+					recoverable: true,
+					details: { level, supportedLevels },
+				}),
+			);
+		}
+		await this._requireAgentHarness(agentId).setThinkingLevel(level);
+	}
+
+	async listAgentPromptTemplateCandidates(
+		agentId: AgentId,
+	): Promise<AgentPromptTemplateCandidateListResult> {
+		const templates = await this._loadAgentPromptTemplates(agentId);
+		return {
+			templates: templates.map((template) => ({
+				value: template.name,
+				label: template.name,
+				description: template.description,
+			})),
+		};
+	}
+
+	async getAgentPromptTemplate(
+		agentId: AgentId,
+		name: string,
+	): Promise<PromptTemplate> {
+		const templates = await this._loadAgentPromptTemplates(agentId);
+		const template = templates.find((candidate) => candidate.name === name);
+		if (!template) {
+			throw new OrchestratorError(
+				createOrchestratorDiagnostic({
+					severity: "error",
+					code: "prompt_template.not_found",
+					message: `Prompt template not found: ${name}`,
+					agentId,
+					recoverable: true,
+				}),
+			);
+		}
+		return template;
+	}
+
+	private async _loadAgentPromptTemplates(
+		agentId: AgentId,
+	): Promise<PromptTemplate[]> {
+		const record = this._requireAgentRecord(agentId);
+		const resolvedProfile = await this._resolveProfileById(
+			record.profile.reference.id,
+			agentId,
+		);
+		const loaded = await this.resourceLoader.loadPromptTemplates(
+			resolvedProfile.profile.promptTemplates,
+		);
+		await this._publishDiagnostics(
+			loaded.diagnostics.map((diagnostic) =>
+				toCoreDiagnosticFromPromptTemplateDiagnostic(diagnostic, {
+					agentId,
+					profileId: resolvedProfile.profile.id,
+					phase: "resolve",
+				}),
+			),
+		);
+		return loaded.promptTemplates.map(({ promptTemplate }) => promptTemplate);
+	}
+
+	async listAgentSkillCandidates(
+		agentId: AgentId,
+	): Promise<AgentSkillCandidateListResult> {
+		const skills = await this._loadAgentSkills(agentId);
+		return {
+			skills: skills.map((skill) => ({
+				value: skill.name,
+				label: skill.name,
+				description: skill.description,
+			})),
+		};
+	}
+
+	async getAgentSkill(agentId: AgentId, name: string): Promise<Skill> {
+		const skills = await this._loadAgentSkills(agentId);
+		const skill = skills.find((candidate) => candidate.name === name);
+		if (!skill) {
+			throw new OrchestratorError(
+				createOrchestratorDiagnostic({
+					severity: "error",
+					code: "skill.not_found",
+					message: `Skill not found: ${name}`,
+					agentId,
+					recoverable: true,
+				}),
+			);
+		}
+		return skill;
+	}
+
+	private async _loadAgentSkills(agentId: AgentId): Promise<Skill[]> {
+		const record = this._requireAgentRecord(agentId);
+		const resolvedProfile = await this._resolveProfileById(
+			record.profile.reference.id,
+			agentId,
+		);
+		const loaded = await this.resourceLoader.loadSkills(
+			resolvedProfile.profile.skills,
+		);
+		await this._publishDiagnostics(
+			loaded.diagnostics.map((diagnostic) =>
+				toCoreDiagnosticFromSkillDiagnostic(diagnostic, {
+					agentId,
+					profileId: resolvedProfile.profile.id,
+					phase: "resolve",
+				}),
+			),
+		);
+		return loaded.skills.map(({ skill }) => skill);
+	}
+
+	async setAgentThinkingLevelByName(
+		agentId: AgentId,
+		levelName: string,
+	): Promise<AgentThinkingLevelCommandResult> {
+		const level = parseThinkingLevel(levelName);
+		if (!level) {
+			throw new OrchestratorError(
+				createOrchestratorDiagnostic({
+					severity: "error",
+					code: "model.thinking_level_invalid",
+					message: `Invalid thinking level: ${levelName}`,
+					source: { kind: "registry", name: "model", key: "thinkingLevel" },
+					agentId,
+					phase: "runtime",
+					recoverable: true,
+					details: { level: levelName, supportedLevels: THINKING_LEVELS },
+				}),
+			);
+		}
+		await this.setAgentThinkingLevel(agentId, level);
+		return { level };
+	}
+
 	getAgentTools(agentId: AgentId): AgentToolsSnapshot {
 		const state = this._requireAgentToolSet(agentId);
 		return {
@@ -673,6 +933,12 @@ export class AgentOrchestrator {
 		);
 		const command = parsed ? this._findLineCommand(agentId, parsed) : undefined;
 		if (!parsed || !command) {
+			const inlineResult = await this._expandInlineInput(
+				agentId,
+				text,
+				options,
+			);
+			if (inlineResult) return inlineResult;
 			return {
 				kind: "prompt",
 				message: await this.promptAgent(agentId, text, {
@@ -710,43 +976,73 @@ export class AgentOrchestrator {
 			return { kind: "rejected", commandId, diagnostic: gatewayDiagnostic };
 		}
 
-		// Argument check: a declared-required argument that is missing rejects
-		// the command instead of degrading the input to a plain prompt.
-		// TODO(argumentsCompletion): request completion from a client first.
+		let commandArgument = parsed.argument;
+		let executionInvocation = invocation;
+
+		// Argument check: a declared-required argument that is missing asks a
+		// client for completion before rejecting the command.
 		if (command.command.arguments?.required && !parsed.argument.trim()) {
-			const diagnostic = createOrchestratorDiagnostic({
-				severity: "error",
-				code: "command.arguments_required",
-				message: `Command ${command.command.trigger}${command.command.name} requires an argument.`,
-				operationSource: { kind: "human" },
+			const completion = await this._completeCommandArguments({
 				agentId,
 				commandId,
-				recoverable: true,
+				binding: command,
+				invocation,
+				argumentPrefix: parsed.argument,
 			});
-			await this._emit({
-				type: "command_rejected",
+			if (!completion.ok) {
+				await this._emit({
+					type: "command_rejected",
+					commandId,
+					command: invocation,
+					diagnostic: completion.diagnostic,
+					completedAt: now(),
+				});
+				await this._publishDiagnostic(completion.diagnostic);
+				return {
+					kind: "rejected",
+					commandId,
+					diagnostic: completion.diagnostic,
+				};
+			}
+			commandArgument = completion.argument;
+			executionInvocation = {
+				...invocation,
+				argument: commandArgument,
+			};
+			// The human wait can outlive the gateway's precondition (e.g.
+			// /steer's running turn); recheck so the stale command still
+			// rejects side-effect free instead of failing mid-execution.
+			const staleDiagnostic = this._commandGateway(
+				this._requireAgentRecord(agentId),
+				command,
 				commandId,
-				command: invocation,
-				diagnostic,
-				completedAt: now(),
-			});
-			await this._publishDiagnostic(diagnostic);
-			return { kind: "rejected", commandId, diagnostic };
+			);
+			if (staleDiagnostic) {
+				await this._emit({
+					type: "command_rejected",
+					commandId,
+					command: executionInvocation,
+					diagnostic: staleDiagnostic,
+					completedAt: now(),
+				});
+				await this._publishDiagnostic(staleDiagnostic);
+				return { kind: "rejected", commandId, diagnostic: staleDiagnostic };
+			}
 		}
 
 		await this._emit({
 			type: "command_accepted",
 			commandId,
-			command: invocation,
+			command: executionInvocation,
 			createdAt: now(),
 		});
 
 		try {
-			const value = await command.execute(parsed.argument);
+			const value = await command.execute(commandArgument);
 			await this._emit({
 				type: "command_completed",
 				commandId,
-				command: invocation,
+				command: executionInvocation,
 				result: value,
 				completedAt: now(),
 			});
@@ -763,7 +1059,7 @@ export class AgentOrchestrator {
 			await this._emit({
 				type: "command_failed",
 				commandId,
-				command: invocation,
+				command: executionInvocation,
 				diagnostic,
 				completedAt: now(),
 			});
@@ -2511,7 +2807,278 @@ export class AgentOrchestrator {
 		return id;
 	}
 
+	private _createInputId(): string {
+		const id = `orchestrator-input-${this._nextInputId}`;
+		this._nextInputId += 1;
+		return id;
+	}
+
 	// Command input path
+
+	// Scans a line-command miss for inline commands and expands them in
+	// place. Returns undefined when the input contains none (the caller
+	// falls through to the plain prompt path). All-or-nothing: any gateway,
+	// completion, or expand failure drops the whole input - a half-expanded
+	// prompt must never reach the model.
+	private async _expandInlineInput(
+		agentId: AgentId,
+		text: string,
+		options?: { images?: ImageContent[] },
+	): Promise<InputResult | undefined> {
+		const matches = scanInlineCommands(
+			text,
+			BUILT_IN_INLINE_COMMANDS.map((binding) => binding.command),
+		);
+		if (matches.length === 0) return undefined;
+
+		const inputId = this._createInputId();
+		const expansions: Array<{
+			match: InlineCommandMatch;
+			commandId: string;
+			invocation: CommandInvocation;
+			replacement: string;
+		}> = [];
+		for (const match of matches) {
+			const binding = this._findInlineCommand(match);
+			if (!binding) continue;
+			const commandId = this._createCommandId();
+			let invocation: CommandInvocation = {
+				name: match.name,
+				trigger: match.trigger,
+				argument: match.argument,
+				source: binding.command.source,
+				placement: "inline",
+			};
+			await this._emit({
+				type: "command_detected",
+				commandId,
+				command: invocation,
+				inputId,
+				createdAt: now(),
+			});
+
+			const rejectWith = async (
+				diagnostic: OrchestratorDiagnostic,
+			): Promise<InputResult> => {
+				await this._emit({
+					type: "command_rejected",
+					commandId,
+					command: invocation,
+					diagnostic,
+					inputId,
+					completedAt: now(),
+				});
+				await this._publishDiagnostic(diagnostic);
+				return { kind: "rejected", commandId, diagnostic };
+			};
+
+			const gatewayDiagnostic = this._commandGateway(
+				this._requireAgentRecord(agentId),
+				{ command: binding.command },
+				commandId,
+			);
+			if (gatewayDiagnostic) return await rejectWith(gatewayDiagnostic);
+
+			let commandArgument = match.argument;
+			if (binding.command.arguments?.required && !commandArgument.trim()) {
+				const completion = await this._completeCommandArguments({
+					agentId,
+					commandId,
+					binding,
+					invocation,
+					argumentPrefix: match.argument,
+				});
+				if (!completion.ok) return await rejectWith(completion.diagnostic);
+				commandArgument = completion.argument;
+				invocation = { ...invocation, argument: commandArgument };
+				const staleDiagnostic = this._commandGateway(
+					this._requireAgentRecord(agentId),
+					{ command: binding.command },
+					commandId,
+				);
+				if (staleDiagnostic) return await rejectWith(staleDiagnostic);
+			}
+
+			await this._emit({
+				type: "command_accepted",
+				commandId,
+				command: invocation,
+				inputId,
+				createdAt: now(),
+			});
+			try {
+				const replacement = await binding.expand(
+					this,
+					agentId,
+					commandArgument,
+				);
+				await this._emit({
+					type: "command_completed",
+					commandId,
+					command: invocation,
+					result: replacement,
+					inputId,
+					completedAt: now(),
+				});
+				expansions.push({ match, commandId, invocation, replacement });
+			} catch (error) {
+				const diagnostic = toDiagnostic(error, {
+					code: "orchestrator.command_failed",
+					message: error instanceof Error ? error.message : String(error),
+					operationSource: { kind: "human" },
+					agentId,
+					commandId,
+					recoverable: true,
+				});
+				await this._emit({
+					type: "command_failed",
+					commandId,
+					command: invocation,
+					diagnostic,
+					inputId,
+					completedAt: now(),
+				});
+				await this._publishDiagnostic(diagnostic);
+				return { kind: "failed", commandId, diagnostic };
+			}
+		}
+		if (expansions.length === 0) return undefined;
+
+		let expandedText = "";
+		let cursor = 0;
+		for (const expansion of expansions) {
+			expandedText += text.slice(cursor, expansion.match.start);
+			expandedText += expansion.replacement;
+			cursor = expansion.match.end;
+		}
+		expandedText += text.slice(cursor);
+
+		// Dual record: the user message carries the expanded text the model
+		// actually sees; the custom entry preserves the original input and
+		// expansion positions for UI replay.
+		await this.sessionManager.appendCommandExpansionEntry(agentId, {
+			inputId,
+			originalText: text,
+			expansions: expansions.map((expansion) => ({
+				commandId: expansion.commandId,
+				name: expansion.invocation.name,
+				trigger: expansion.invocation.trigger,
+				argument: expansion.invocation.argument,
+				start: expansion.match.start,
+				end: expansion.match.end,
+			})),
+		});
+
+		return {
+			kind: "prompt",
+			message: await this.promptAgent(agentId, expandedText, {
+				images: options?.images ? [...options.images] : undefined,
+			}),
+		};
+	}
+
+	private _findInlineCommand(
+		match: InlineCommandMatch,
+	): BuiltInInlineCommandBinding | undefined {
+		return BUILT_IN_INLINE_COMMANDS.find(
+			(binding) =>
+				binding.command.trigger === match.trigger &&
+				binding.command.name === match.name,
+		);
+	}
+
+	private async _completeCommandArguments(options: {
+		agentId: AgentId;
+		commandId: string;
+		binding: Pick<LineCommandBinding, "command">;
+		invocation: CommandInvocation;
+		argumentPrefix: string;
+	}): Promise<CommandArgumentsCompletionResult> {
+		const { agentId, commandId, binding, invocation, argumentPrefix } = options;
+		let response: HumanResponse;
+		try {
+			// A complete() failure short-circuits before any human request.
+			const candidates = [
+				...((await binding.command.arguments?.complete?.({
+					agentId,
+					command: binding.command,
+					argumentPrefix,
+					orchestrator: this,
+				})) ?? []),
+			];
+			const payload: CommandArgumentsCompletionPayload = {
+				commandId,
+				command: invocation,
+				argumentHint: binding.command.argumentHint,
+				argumentPrefix,
+				candidates,
+			};
+			response = await this.requestHuman({
+				source: { kind: "agent", agentId },
+				kind: "argumentsCompletion",
+				title: `Complete ${binding.command.trigger}${binding.command.name} arguments`,
+				message: `Command ${binding.command.trigger}${binding.command.name} requires an argument.`,
+				options:
+					candidates.length > 0
+						? candidates.map((candidate) => candidate.value)
+						: undefined,
+				placeholder: binding.command.argumentHint,
+				allowFreeInput: true,
+				payload,
+			});
+		} catch (error) {
+			const failureDiagnostic = toDiagnostic(error, {
+				code: "command.arguments_completion_failed",
+				message: `Failed to complete arguments for command ${binding.command.trigger}${binding.command.name}: ${formatError(error)}`,
+				operationSource: { kind: "human" },
+				agentId,
+				commandId,
+				recoverable: true,
+			});
+			return {
+				ok: false,
+				diagnostic: this._createCommandArgumentsRequiredDiagnostic({
+					agentId,
+					commandId,
+					command: binding.command,
+					details: commandArgumentsCompletionFailureDetails(failureDiagnostic),
+				}),
+			};
+		}
+
+		if (response.kind !== "input" && response.kind !== "select") {
+			return {
+				ok: false,
+				diagnostic: this._createCommandArgumentsRequiredDiagnostic({
+					agentId,
+					commandId,
+					command: binding.command,
+					details: {
+						completionFailureCode:
+							"command.arguments_completion_invalid_response",
+						responseKind: response.kind,
+					},
+				}),
+			};
+		}
+		const argument = response.value;
+		if (argument === undefined || !argument.trim()) {
+			return {
+				ok: false,
+				diagnostic: this._createCommandArgumentsRequiredDiagnostic({
+					agentId,
+					commandId,
+					command: binding.command,
+					details: {
+						completionFailureCode: "command.arguments_completion_empty",
+						responseKind: response.kind,
+					},
+				}),
+			};
+		}
+		return { ok: true, argument };
+	}
+
 	private _findLineCommand(
 		agentId: AgentId,
 		parsed: ParsedLineCommand,
@@ -2553,6 +3120,24 @@ export class AgentOrchestrator {
 		};
 	}
 
+	private _createCommandArgumentsRequiredDiagnostic(options: {
+		agentId: AgentId;
+		commandId: string;
+		command: Command;
+		details?: Record<string, unknown>;
+	}): OrchestratorDiagnostic {
+		return createOrchestratorDiagnostic({
+			severity: "error",
+			code: "command.arguments_required",
+			message: `Command ${options.command.trigger}${options.command.name} requires an argument.`,
+			operationSource: { kind: "human" },
+			agentId: options.agentId,
+			commandId: options.commandId,
+			recoverable: true,
+			details: options.details,
+		});
+	}
+
 	private _withCommandAvailability(
 		record: AgentRecord,
 		command: Command,
@@ -2561,6 +3146,36 @@ export class AgentOrchestrator {
 		const unavailableReason = checkStatus?.(record.status);
 		if (!unavailableReason) return { ...command, available: true };
 		return { ...command, available: false, unavailableReason };
+	}
+
+	private _getAgentThinkingLevelCandidates(
+		record: AgentRecord,
+	): CommandCandidate[] {
+		if (!record.model.reasoning) {
+			throw new OrchestratorError(
+				this._createAgentThinkingNotSupportedDiagnostic(record),
+			);
+		}
+		return getSupportedThinkingLevels(record.model).map((level) => ({
+			value: level,
+			label: level,
+		}));
+	}
+
+	private _createAgentThinkingNotSupportedDiagnostic(
+		record: AgentRecord,
+	): OrchestratorDiagnostic {
+		return createOrchestratorDiagnostic({
+			severity: "error",
+			code: "model.thinking_not_supported",
+			message: `Model ${record.model.provider}/${record.model.id} does not support thinking levels.`,
+			source: { kind: "registry", name: "model", key: "thinkingLevel" },
+			agentId: record.agentId,
+			provider: record.model.provider,
+			modelId: record.model.id,
+			phase: "runtime",
+			recoverable: true,
+		});
 	}
 
 	// Command gateway: the sole execution-time arbiter. Checks, in order,
@@ -2629,202 +3244,6 @@ export class AgentOrchestrator {
 		}
 		return [...new Set(triggers)];
 	}
-}
-
-// Built-in command execution
-const BUILT_IN_COMMANDS: readonly BuiltInCommandBinding[] = [
-	{
-		command: {
-			name: "abort",
-			placement: "line",
-			trigger: "/",
-			description: "Abort the current agent run.",
-			source: { kind: "built-in" },
-		},
-		execute: async (orchestrator, agentId) =>
-			await orchestrator.abortAgent(agentId),
-	},
-	{
-		command: {
-			name: "compact",
-			placement: "line",
-			trigger: "/",
-			description: "Compact the current agent session.",
-			argumentHint: "[instructions]",
-			source: { kind: "built-in" },
-		},
-		execute: async (orchestrator, agentId, args) =>
-			await orchestrator.compactAgent(agentId, args.trim() || undefined),
-	},
-	{
-		command: {
-			name: "follow-up",
-			placement: "line",
-			trigger: "/",
-			description: "Queue a follow-up for the current agent.",
-			argumentHint: "<text>",
-			source: { kind: "built-in" },
-			arguments: { required: true },
-		},
-		execute: async (orchestrator, agentId, args) => {
-			await orchestrator.followUpAgent(agentId, args.trim());
-			return undefined;
-		},
-	},
-	{
-		command: {
-			name: "fork",
-			placement: "line",
-			trigger: "/",
-			description: "Fork the current agent session.",
-			argumentHint: "[entry]",
-			source: { kind: "built-in" },
-			scope: "user-facing",
-		},
-		execute: async (orchestrator, agentId, args) => {
-			const entryId = args.trim() || undefined;
-			return await orchestrator.forkAgentSessionFromAgent(
-				agentId,
-				entryId ? { entryId } : undefined,
-			);
-		},
-	},
-	{
-		command: {
-			name: "inspect",
-			placement: "line",
-			trigger: "/",
-			description: "Inspect the current agent runtime facts.",
-			source: { kind: "built-in" },
-		},
-		execute: async (orchestrator, agentId) =>
-			orchestrator.inspectAgent(agentId),
-	},
-	{
-		command: {
-			name: "agent",
-			placement: "line",
-			trigger: "/",
-			description: "List runtime agents.",
-			source: { kind: "built-in" },
-		},
-		execute: async (orchestrator) => orchestrator.listAgents(),
-	},
-	{
-		command: {
-			name: "name",
-			placement: "line",
-			trigger: "/",
-			description: "Name the current agent session.",
-			argumentHint: "<name>",
-			source: { kind: "built-in" },
-			arguments: { required: true },
-		},
-		execute: async (orchestrator, agentId, args) =>
-			await orchestrator.setAgentSessionName(agentId, args.trim()),
-	},
-	{
-		command: {
-			name: "new",
-			placement: "line",
-			trigger: "/",
-			description: "Start a new session from the current agent.",
-			source: { kind: "built-in" },
-			scope: "user-facing",
-		},
-		execute: async (orchestrator, agentId) =>
-			await orchestrator.newAgentSessionFromAgent(agentId),
-	},
-	{
-		command: {
-			name: "reload",
-			placement: "line",
-			trigger: "/",
-			description: "Reload extensions for the current agent.",
-			source: { kind: "built-in" },
-		},
-		execute: async (orchestrator, agentId) =>
-			await orchestrator.reloadExtensions({ agentIds: [agentId] }),
-	},
-	{
-		command: {
-			name: "resume",
-			placement: "line",
-			trigger: "/",
-			description: "Resume an existing agent session.",
-			argumentHint: "[session]",
-			source: { kind: "built-in" },
-			scope: "user-facing",
-		},
-		checkStatus: (status) =>
-			status === "running"
-				? "Command /resume is not available while the agent is running."
-				: undefined,
-		execute: async (orchestrator, _agentId, args) => {
-			const reference = args.trim();
-			if (!reference) return await orchestrator.listAgentSessions();
-			return await orchestrator.resumeAgentSessionByReference(reference);
-		},
-	},
-	{
-		command: {
-			name: "session",
-			placement: "line",
-			trigger: "/",
-			description: "List persisted agent sessions.",
-			source: { kind: "built-in" },
-		},
-		execute: async (orchestrator) => await orchestrator.listAgentSessions(),
-	},
-	{
-		command: {
-			name: "status",
-			placement: "line",
-			trigger: "/",
-			description: "Get the current agent status.",
-			source: { kind: "built-in" },
-		},
-		execute: async (orchestrator, agentId) =>
-			orchestrator.getAgentStatus(agentId),
-	},
-	{
-		command: {
-			name: "steer",
-			placement: "line",
-			trigger: "/",
-			description: "Steer the current running agent.",
-			argumentHint: "<text>",
-			source: { kind: "built-in" },
-			arguments: { required: true },
-		},
-		checkStatus: (status) =>
-			status === "running"
-				? undefined
-				: `Command /steer requires a running agent (status: ${status}).`,
-		execute: async (orchestrator, agentId, args) => {
-			await orchestrator.steerAgent(agentId, args.trim());
-			return undefined;
-		},
-	},
-	{
-		command: {
-			name: "tree",
-			placement: "line",
-			trigger: "/",
-			description: "Inspect or navigate the current session tree.",
-			argumentHint: "[entry]",
-			source: { kind: "built-in" },
-		},
-		execute: async (orchestrator, agentId, args) => {
-			const targetId = args.trim();
-			if (!targetId) return await orchestrator.getAgentSessionTree(agentId);
-			return await orchestrator.navigateAgentTree(agentId, targetId);
-		},
-	},
-];
-
-function getBuiltInCommands(): Command[] {
-	return BUILT_IN_COMMANDS.map((binding) => binding.command);
 }
 
 function toDiagnostic(
@@ -2933,6 +3352,16 @@ function agentIdFromOperationSource(
 	return undefined;
 }
 
+function commandArgumentsCompletionFailureDetails(
+	diagnostic: OrchestratorDiagnostic,
+): Record<string, unknown> {
+	return {
+		completionFailureCode: diagnostic.code,
+		completionFailureMessage: diagnostic.message,
+		requestId: diagnostic.requestId,
+	};
+}
+
 function changesRecoverableProfileFields(
 	override: AgentProfileOverride,
 ): boolean {
@@ -2945,6 +3374,44 @@ function changesRecoverableProfileFields(
 		override.capabilities !== undefined ||
 		override.persist !== undefined
 	);
+}
+
+function modelReference(model: RuntimeModel): string {
+	return `${model.provider}/${model.id}`;
+}
+
+function parseModelReference(
+	reference: string,
+): { provider: string; modelId: string } | undefined {
+	const trimmed = reference.trim();
+	const slashIndex = trimmed.indexOf("/");
+	if (slashIndex <= 0 || slashIndex === trimmed.length - 1) {
+		return undefined;
+	}
+	return {
+		provider: trimmed.slice(0, slashIndex),
+		modelId: trimmed.slice(slashIndex + 1),
+	};
+}
+
+const THINKING_LEVEL_SET = {
+	off: true,
+	minimal: true,
+	low: true,
+	medium: true,
+	high: true,
+	xhigh: true,
+} as const satisfies Record<ThinkingLevel | ModelThinkingLevel, true>;
+
+const THINKING_LEVELS = Object.keys(
+	THINKING_LEVEL_SET,
+) as (keyof typeof THINKING_LEVEL_SET)[];
+
+function parseThinkingLevel(level: string): ThinkingLevel | undefined {
+	const trimmed = level.trim();
+	return THINKING_LEVELS.some((candidate) => candidate === trimmed)
+		? (trimmed as ThinkingLevel)
+		: undefined;
 }
 
 function streamingToolCallRefFromPartial(
