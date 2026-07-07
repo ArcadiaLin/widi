@@ -25,18 +25,32 @@
 
 ## M2: 边界收敛 + 第一个真实 consumer
 
-对应 review M1/M2 中 command 之外的部分。前半全部是减法，后半是第一个产品消费者：
+对应 review M1/M2 中 command 与 extension 之外的部分（extension 相关条目已收编进 ME）。前半是减法，后半是第一个产品消费者：
 
 - [ ] `src/core/tools/` 占位清理：删除 `coding/` 七个空文件；`tools/types.ts` 与 `tools/index.ts` 重复 re-export 二留一。
-- [ ] Tool 契约类型（`ToolDefinition`/`ToolDefinitionPatch`/`ToolSource`/`ToolExecutionContext`/`ToolLifecycleEvent`）从 `extension/types.ts` 迁到 core 层，解开 dependency 层对 extension 层的依赖倒置。
 - [ ] `agents` map 与 `getAgentHarness()` 私有化，对外只留 snapshot 查询；`spawnAgentHarness` 改名 `spawnAgent`，只返回 `agentId`。
-- [ ] `ExtensionActions` scope 化：actions 默认锁定 own agent（agentId 由 context 注入），跨 agent 操作等 M3 collaboration facade。
-- [ ] Interceptor 失败语义定案：改为"跳过失败者、保留其余 extension 结果"，或显式 fail-closed 并写进 extensions.md（当前：一个 handler 抛错静默丢弃全部合成结果）。
 - [ ] Agent status 收敛：删除 `ready` 或补消费者（当前事件路径只产 `running`/`idle`，`ready` 仅创建瞬间出现）。
 - [ ] 显式声明单进程写入假设（session/auth/config storage 共用此裁决），或实现文件锁。
 - [ ] package.json 修真：删除虚假入口（`main`/`bin`/`cli` 指向不存在的文件）与未使用依赖；README 写明 bootstrap 顺序（submodule → build pi → test）。
 - [ ] Core built-in coding tools 第一版（裁决见 [DESIGN.md](DESIGN.md#coding-tools)）：read/write/edit 最小集复刻 pi-coding-agent，`source: core` 进 ToolRegistry；`/skill` 依赖的 read 能力在此就绪。
 - [ ] 最小 stdout/CLI adapter：只消费 orchestrator events + `inputAgent`，用真实调用压力反向检验 ToolRegistry、hook、diagnostics——当前所有 API 只被测试消费过。
+
+## ME: Extension Surface（M2 之后、M3 之前）
+
+目标公式、pi 能力对照表、裁决原则与切片细节见 [Extension Experiment](core/extension-experiment.md)。锚点 consumer：审计/策略 extension（consumer 举证均指向它，除注明者外）。原 M4 的设计条目全部收编于此，随对应切片落地：
+
+- [ ] 切片 0：Tool 契约类型（`ToolDefinition`/`ToolDefinitionPatch`/`ToolSource`/`ToolExecutionContext`/`ToolLifecycleEvent`）从 `extension/types.ts` 迁 core 层（零行为变化布局，解依赖倒置）。
+- [ ] 切片 1：Interceptor 失败语义定案 + 实施——合成类跳过失败者保留其余，`tool_call` 拦截 fail-closed；写进 extensions.md。
+- [ ] 切片 2：`ExtensionActions` scope 化（own-agent 默认，agentId 由 context 注入，capabilities 接线）+ 在 scoped 前提下补齐动作/查询面（send/steer/followUp、setSessionName、exec、getCommands、setModel/thinkingLevel）。
+- [ ] 切片 3：审计锚点 extension 落库为仓库内真实测试 consumer，反向检验切片 1/2。
+- [ ] 切片 4：Hook matrix 第一批（observe 档）：`command_*`、`human_request_*`、diagnostics、session lifecycle、model/thinking select；每个 hook 标 observe/intercept/mutate 档位。
+- [ ] 切片 5：`input` interceptor（拦截在 command 解析之前，改写后重走完整解析与 gateway）。
+- [ ] 切片 6：Extension-owned storage 裁决 + custom entry policy（fork/compaction/export/`custom_message`）；extension inline `expand` 契约顺带接入。
+- [ ] 切片 7：Resource contribution（skills/prompt templates 贡献，registration-with-provenance，ResourceLoader 所有权边界）。
+- [ ] 切片 8：Provider contribution（ModelRegistry register/unregister provider；auth 所有权不移交；provider hook 视 pi harness 暴露评估）。
+- [ ] 切片 9：API 面冻结：公开契约清单、版本兼容策略、`extension.version_incompatible`；第三方视角验收 extension。
+
+验收：对照表每项归属落定（core 已落 / client 层含事实对应物 / backlog 含举证缺口）；每条"extension 能/不能做 X"有裁决 + 代码锚点；审计 extension 在他人抛错时不失防有回归测试；第三方视角 extension 只依赖公开契约完成 tool + command + observer 组合。
 
 ## M3: Multi-agent 最小闭环
 
@@ -49,15 +63,4 @@
 
 验收：spawn → collaborate → recover 有真实流程测试；"原生 multi-agent"的差异化声明第一次有代码背书。
 
-## M4: Extension Surface 收口
-
-Extension 是设计缺口最大的一块：当前 loader/runner 是 MVP，能跑内部验证，但离"可交付的第三方扩展面"还有整层设计没做。本 milestone **设计先行**——每个条目先产出裁决文档（进 `docs/core/`，风格与 command-experiment.md 相同：裁决 + 边界 + 代码锚点），再进实现；裁决文档可以在 M2/M3 期间并行推进，实现在 M3 后落地。
-
-- [ ] Hook matrix 裁决：provider/session hook 开放哪些、每个 hook 点是 observe/intercept/mutate 中的哪一档、返回值如何合成、失败语义（承接 M2 的 interceptor 定案）。开放门槛沿用 consumer 举证。
-- [ ] Provider/resource contribution 裁决：extension 如何注册 provider、skills、prompt templates 或动态 resources；与 ResourceLoader/ModelRegistry 的所有权边界；参照 ToolRegistry 的 registration-with-provenance 模式。
-- [ ] Extension-owned storage 裁决：core 提供什么（路径、diagnostics、lifecycle hook），不解释什么（数据模型）；与 session custom entry 的分工线。
-- [ ] Session custom entry policy：fork、branch move、compaction、export、`custom_message` 语义（当前 MVP 只有 append-only + current branch path）。
-- [ ] 稳定第三方 extension API 裁决：activation API 面冻结范围、版本兼容策略、`extension.version_incompatible` 的语义。
-- [ ] Product presentation：`agent.inspect` facts 的产品级 UI/RPC 呈现形态。
-
-验收：每条"extension 能/不能做 X"的宣言都有裁决文档 + 代码锚点；第一个第三方视角 extension（非仓库内测试）能只依赖公开契约完成 tool + command + observer 的组合。
+（原 M4 "Extension Surface 收口" 已整体收编进 ME，2026-07-07 裁决；Product presentation——`agent.inspect` facts 的产品级 UI/RPC 呈现——移入 [BACKLOG](BACKLOG.md)，随 client adapter 工作举证。）
