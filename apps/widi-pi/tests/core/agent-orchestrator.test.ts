@@ -30,6 +30,8 @@ import {
 	type AuthStorageBackend,
 	type LockResult,
 } from "../../src/core/auth-storage.ts";
+import type { Command, CommandInvocation } from "../../src/core/command.ts";
+import type { OrchestratorDiagnostic } from "../../src/core/diagnostics.ts";
 import { ModelRegistry } from "../../src/core/model-registry.ts";
 import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
 import { ResourceLoader } from "../../src/core/resource-loader.ts";
@@ -491,6 +493,53 @@ function createAssistantPartial(
 		},
 		stopReason: "toolUse",
 		timestamp: 0,
+	};
+}
+
+type CompleteCommandArguments = (options: {
+	agentId: string;
+	commandId: string;
+	binding: { command: Command; execute(args: string): Promise<unknown> };
+	invocation: CommandInvocation;
+	argumentPrefix: string;
+}) => Promise<
+	| { ok: true; argument: string }
+	| { ok: false; diagnostic: OrchestratorDiagnostic }
+>;
+
+// Unit fixture for _completeCommandArguments: no built-in declares both
+// required and complete() yet, so the candidate branches are exercised
+// against a synthetic binding until a real consumer lands.
+function createArgumentsCompletionFixture(
+	orchestrator: AgentOrchestrator,
+	complete?: NonNullable<Command["arguments"]>["complete"],
+): {
+	completeCommandArguments: CompleteCommandArguments;
+	binding: { command: Command; execute(args: string): Promise<unknown> };
+	invocation: CommandInvocation;
+} {
+	const command: Command = {
+		name: "demo",
+		placement: "line",
+		trigger: "/",
+		argumentHint: "<value>",
+		source: { kind: "built-in" },
+		arguments: { required: true, complete },
+	};
+	return {
+		completeCommandArguments: (
+			orchestrator as unknown as {
+				_completeCommandArguments: CompleteCommandArguments;
+			}
+		)._completeCommandArguments.bind(orchestrator),
+		binding: { command, execute: async () => undefined },
+		invocation: {
+			name: command.name,
+			trigger: command.trigger,
+			argument: "",
+			source: command.source,
+			placement: command.placement,
+		},
 	};
 }
 
@@ -1333,6 +1382,158 @@ describe("AgentOrchestrator", () => {
 		expect(events).not.toContainEqual(
 			expect.objectContaining({ type: "command_failed" }),
 		);
+	});
+
+	it("offers completion candidates and accepts a select response", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const { completeCommandArguments, binding, invocation } =
+			createArgumentsCompletionFixture(orchestrator, async (context) => {
+				expect(context.agentId).toBe(agentId);
+				expect(context.argumentPrefix).toBe("");
+				expect(context.orchestrator).toBe(orchestrator);
+				return [
+					{ value: "alpha", label: "Alpha", description: "First candidate" },
+					{ value: "beta" },
+				];
+			});
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async (request) => {
+				expect(request).toMatchObject({
+					kind: "argumentsCompletion",
+					options: ["alpha", "beta"],
+					placeholder: "<value>",
+					payload: {
+						command: invocation,
+						argumentHint: "<value>",
+						argumentPrefix: "",
+						candidates: [
+							{
+								value: "alpha",
+								label: "Alpha",
+								description: "First candidate",
+							},
+							{ value: "beta" },
+						],
+					},
+				});
+				return { kind: "select", value: "beta" };
+			},
+		});
+
+		await expect(
+			completeCommandArguments({
+				agentId,
+				commandId: "orchestrator-command-test",
+				binding,
+				invocation,
+				argumentPrefix: "",
+			}),
+		).resolves.toEqual({ ok: true, argument: "beta" });
+	});
+
+	it("treats select responses without a value as missing completion", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const { completeCommandArguments, binding, invocation } =
+			createArgumentsCompletionFixture(orchestrator, async () => [
+				{ value: "alpha" },
+			]);
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async () => ({ kind: "select", value: undefined }),
+		});
+
+		await expect(
+			completeCommandArguments({
+				agentId,
+				commandId: "orchestrator-command-test",
+				binding,
+				invocation,
+				argumentPrefix: "",
+			}),
+		).resolves.toMatchObject({
+			ok: false,
+			diagnostic: {
+				code: "command.arguments_required",
+				details: {
+					completionFailureCode: "command.arguments_completion_empty",
+					responseKind: "select",
+				},
+			},
+		});
+	});
+
+	it("rejects argument completion responses of unexpected kinds", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const { completeCommandArguments, binding, invocation } =
+			createArgumentsCompletionFixture(orchestrator);
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async () => ({ kind: "confirm", confirmed: true }),
+		});
+
+		await expect(
+			completeCommandArguments({
+				agentId,
+				commandId: "orchestrator-command-test",
+				binding,
+				invocation,
+				argumentPrefix: "",
+			}),
+		).resolves.toMatchObject({
+			ok: false,
+			diagnostic: {
+				code: "command.arguments_required",
+				details: {
+					completionFailureCode:
+						"command.arguments_completion_invalid_response",
+					responseKind: "confirm",
+				},
+			},
+		});
+	});
+
+	it("short-circuits argument completion when the candidate source fails", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId } = await orchestrator.spawnAgentHarness();
+		const { completeCommandArguments, binding, invocation } =
+			createArgumentsCompletionFixture(orchestrator, async () => {
+				throw new Error("candidate source unavailable");
+			});
+		let humanRequested = false;
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async () => {
+				humanRequested = true;
+				return { kind: "input", value: "never" };
+			},
+		});
+
+		await expect(
+			completeCommandArguments({
+				agentId,
+				commandId: "orchestrator-command-test",
+				binding,
+				invocation,
+				argumentPrefix: "",
+			}),
+		).resolves.toMatchObject({
+			ok: false,
+			diagnostic: {
+				code: "command.arguments_required",
+				details: expect.objectContaining({
+					completionFailureCode: "command.arguments_completion_failed",
+				}),
+			},
+		});
+		expect(humanRequested).toBe(false);
 	});
 
 	it("prunes and rejects commands denied by profile policy", async () => {
