@@ -375,6 +375,16 @@ async function createModelRegistry(
 				contextWindow: restoredModel.contextWindow,
 				maxTokens: restoredModel.maxTokens,
 			},
+			{
+				id: reasoningModel.id,
+				name: reasoningModel.name,
+				reasoning: true,
+				thinkingLevelMap: reasoningModel.thinkingLevelMap,
+				input: ["text"],
+				cost: reasoningModel.cost,
+				contextWindow: reasoningModel.contextWindow,
+				maxTokens: reasoningModel.maxTokens,
+			},
 		],
 	});
 	return registry;
@@ -854,6 +864,90 @@ describe("AgentOrchestrator", () => {
 			}),
 		});
 		expect(harness.getThinkingLevel()).toBe("off");
+	});
+
+	it("executes model and thinking settings commands through agent input", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId, harness } = await orchestrator.spawnAgentHarness();
+
+		await expect(orchestrator.inputAgent(agentId, "/model")).resolves.toEqual(
+			expect.objectContaining({
+				kind: "command",
+				name: "model",
+				value: {
+					models: expect.arrayContaining([
+						{
+							value: `${restoredModel.provider}/${restoredModel.id}`,
+							label: restoredModel.name,
+							description: `${restoredModel.provider}/${restoredModel.id}`,
+						},
+						{
+							value: `${reasoningModel.provider}/${reasoningModel.id}`,
+							label: reasoningModel.name,
+							description: `${reasoningModel.provider}/${reasoningModel.id}`,
+						},
+					]),
+				},
+			}),
+		);
+
+		await expect(
+			orchestrator.inputAgent(agentId, "/thinking"),
+		).resolves.toEqual(
+			expect.objectContaining({
+				kind: "failed",
+				diagnostic: expect.objectContaining({
+					code: "model.thinking_not_supported",
+					modelId: defaultModel.id,
+				}),
+			}),
+		);
+
+		await expect(
+			orchestrator.inputAgent(
+				agentId,
+				`/model:${reasoningModel.provider}/${reasoningModel.id}`,
+			),
+		).resolves.toEqual(
+			expect.objectContaining({
+				kind: "command",
+				name: "model",
+				value: expect.objectContaining({
+					id: reasoningModel.id,
+					provider: reasoningModel.provider,
+				}),
+			}),
+		);
+		expect(harness.getModel()).toMatchObject({ id: reasoningModel.id });
+
+		await expect(
+			orchestrator.inputAgent(agentId, "/thinking"),
+		).resolves.toEqual(
+			expect.objectContaining({
+				kind: "command",
+				name: "thinking",
+				value: {
+					levels: [
+						{ value: "off", label: "off" },
+						{ value: "low", label: "low" },
+						{ value: "medium", label: "medium" },
+						{ value: "high", label: "high" },
+					],
+				},
+			}),
+		);
+
+		await expect(
+			orchestrator.inputAgent(agentId, "/thinking:high"),
+		).resolves.toEqual(
+			expect.objectContaining({
+				kind: "command",
+				name: "thinking",
+				value: { level: "high" },
+			}),
+		);
+		expect(harness.getThinkingLevel()).toBe("high");
 	});
 
 	it("exposes lightweight agent record status and inspect snapshots", async () => {
@@ -1931,6 +2025,14 @@ describe("AgentOrchestrator", () => {
 			}),
 			expect.objectContaining({
 				name: "agent",
+				source: { kind: "built-in" },
+			}),
+			expect.objectContaining({
+				name: "model",
+				source: { kind: "built-in" },
+			}),
+			expect.objectContaining({
+				name: "thinking",
 				source: { kind: "built-in" },
 			}),
 			expect.objectContaining({

@@ -32,6 +32,7 @@ import type { OrchestratorClient } from "./client.ts";
 import {
 	BUILT_IN_COMMANDS,
 	type Command,
+	type CommandCandidate,
 	type CommandInvocation,
 	type CommandStatusCheck,
 	getBuiltInCommands,
@@ -245,6 +246,18 @@ export interface AgentSessionListResult {
 
 export interface AgentListResult {
 	readonly agents: readonly AgentRecordSnapshot[];
+}
+
+export interface AgentModelCandidateListResult {
+	readonly models: readonly CommandCandidate[];
+}
+
+export interface AgentThinkingLevelCandidateListResult {
+	readonly levels: readonly CommandCandidate[];
+}
+
+export interface AgentThinkingLevelCommandResult {
+	readonly level: ThinkingLevel;
 }
 
 export type ExtensionReloadAgentStatus = "reloaded" | "skipped" | "failed";
@@ -590,6 +603,73 @@ export class AgentOrchestrator {
 		this._requireAgentRecord(agentId).model = model;
 	}
 
+	async listAvailableModelCandidates(): Promise<AgentModelCandidateListResult> {
+		const models = await this.modelRegistry.getAvailable();
+		return {
+			models: models.map((model) => ({
+				value: modelReference(model),
+				label: model.name,
+				description: modelReference(model),
+			})),
+		};
+	}
+
+	async setAgentModelByReference(
+		agentId: AgentId,
+		reference: string,
+	): Promise<RuntimeModel> {
+		const parsed = parseModelReference(reference);
+		if (!parsed) {
+			throw new OrchestratorError(
+				createOrchestratorDiagnostic({
+					severity: "error",
+					code: "model.reference_invalid",
+					message: `Model reference must use provider/model syntax: ${reference}`,
+					source: { kind: "registry", name: "model", key: reference },
+					agentId,
+					phase: "runtime",
+					recoverable: true,
+				}),
+			);
+		}
+		const models = await this.modelRegistry.getAvailable();
+		const model = models.find(
+			(candidate) =>
+				candidate.provider === parsed.provider &&
+				candidate.id === parsed.modelId,
+		);
+		if (!model) {
+			throw new OrchestratorError(
+				createOrchestratorDiagnostic({
+					severity: "error",
+					code: "model.not_available",
+					message: `Model is not available: ${parsed.provider}/${parsed.modelId}`,
+					source: {
+						kind: "registry",
+						name: "model",
+						key: `${parsed.provider}/${parsed.modelId}`,
+					},
+					agentId,
+					provider: parsed.provider,
+					modelId: parsed.modelId,
+					phase: "runtime",
+					recoverable: true,
+				}),
+			);
+		}
+		await this.setAgentModel(agentId, model);
+		return model;
+	}
+
+	listAgentThinkingLevelCandidates(
+		agentId: AgentId,
+	): AgentThinkingLevelCandidateListResult {
+		const record = this._requireAgentRecord(agentId);
+		return {
+			levels: this._getAgentThinkingLevelCandidates(record),
+		};
+	}
+
 	async setAgentThinkingLevel(
 		agentId: AgentId,
 		level: ThinkingLevel,
@@ -597,17 +677,7 @@ export class AgentOrchestrator {
 		const record = this._requireAgentRecord(agentId);
 		if (!record.model.reasoning) {
 			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					code: "model.thinking_not_supported",
-					message: `Model ${record.model.provider}/${record.model.id} does not support thinking levels.`,
-					source: { kind: "registry", name: "model", key: "thinkingLevel" },
-					agentId,
-					provider: record.model.provider,
-					modelId: record.model.id,
-					phase: "runtime",
-					recoverable: true,
-				}),
+				this._createAgentThinkingNotSupportedDiagnostic(record),
 			);
 		}
 		const supportedLevels = getSupportedThinkingLevels(record.model);
@@ -628,6 +698,29 @@ export class AgentOrchestrator {
 			);
 		}
 		await this._requireAgentHarness(agentId).setThinkingLevel(level);
+	}
+
+	async setAgentThinkingLevelByName(
+		agentId: AgentId,
+		levelName: string,
+	): Promise<AgentThinkingLevelCommandResult> {
+		const level = parseThinkingLevel(levelName);
+		if (!level) {
+			throw new OrchestratorError(
+				createOrchestratorDiagnostic({
+					severity: "error",
+					code: "model.thinking_level_invalid",
+					message: `Invalid thinking level: ${levelName}`,
+					source: { kind: "registry", name: "model", key: "thinkingLevel" },
+					agentId,
+					phase: "runtime",
+					recoverable: true,
+					details: { level: levelName, supportedLevels: THINKING_LEVELS },
+				}),
+			);
+		}
+		await this.setAgentThinkingLevel(agentId, level);
+		return { level };
 	}
 
 	getAgentTools(agentId: AgentId): AgentToolsSnapshot {
@@ -2596,6 +2689,36 @@ export class AgentOrchestrator {
 		return { ...command, available: false, unavailableReason };
 	}
 
+	private _getAgentThinkingLevelCandidates(
+		record: AgentRecord,
+	): CommandCandidate[] {
+		if (!record.model.reasoning) {
+			throw new OrchestratorError(
+				this._createAgentThinkingNotSupportedDiagnostic(record),
+			);
+		}
+		return getSupportedThinkingLevels(record.model).map((level) => ({
+			value: level,
+			label: level,
+		}));
+	}
+
+	private _createAgentThinkingNotSupportedDiagnostic(
+		record: AgentRecord,
+	): OrchestratorDiagnostic {
+		return createOrchestratorDiagnostic({
+			severity: "error",
+			code: "model.thinking_not_supported",
+			message: `Model ${record.model.provider}/${record.model.id} does not support thinking levels.`,
+			source: { kind: "registry", name: "model", key: "thinkingLevel" },
+			agentId: record.agentId,
+			provider: record.model.provider,
+			modelId: record.model.id,
+			phase: "runtime",
+			recoverable: true,
+		});
+	}
+
 	// Command gateway: the sole execution-time arbiter. Checks, in order,
 	// profile policy (deny), scope, then agent status declared on the binding.
 	private _commandGateway(
@@ -2782,6 +2905,40 @@ function changesRecoverableProfileFields(
 		override.capabilities !== undefined ||
 		override.persist !== undefined
 	);
+}
+
+function modelReference(model: RuntimeModel): string {
+	return `${model.provider}/${model.id}`;
+}
+
+function parseModelReference(
+	reference: string,
+): { provider: string; modelId: string } | undefined {
+	const trimmed = reference.trim();
+	const slashIndex = trimmed.indexOf("/");
+	if (slashIndex <= 0 || slashIndex === trimmed.length - 1) {
+		return undefined;
+	}
+	return {
+		provider: trimmed.slice(0, slashIndex),
+		modelId: trimmed.slice(slashIndex + 1),
+	};
+}
+
+const THINKING_LEVELS = [
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+] as const satisfies readonly ThinkingLevel[];
+
+function parseThinkingLevel(level: string): ThinkingLevel | undefined {
+	const trimmed = level.trim();
+	return THINKING_LEVELS.some((candidate) => candidate === trimmed)
+		? (trimmed as ThinkingLevel)
+		: undefined;
 }
 
 function streamingToolCallRefFromPartial(

@@ -175,6 +175,36 @@ export const BUILT_IN_COMMANDS: readonly BuiltInCommandBinding[] = [
 	},
 	{
 		command: {
+			name: "model",
+			placement: "line",
+			trigger: "/",
+			description: "Set the current agent model.",
+			argumentHint: "[provider/model]",
+			source: { kind: "built-in" },
+		},
+		execute: async (orchestrator, agentId, args) => {
+			const reference = args.trim();
+			if (!reference) return await orchestrator.listAvailableModelCandidates();
+			return await orchestrator.setAgentModelByReference(agentId, reference);
+		},
+	},
+	{
+		command: {
+			name: "thinking",
+			placement: "line",
+			trigger: "/",
+			description: "Set the current agent thinking level.",
+			argumentHint: "[level]",
+			source: { kind: "built-in" },
+		},
+		execute: async (orchestrator, agentId, args) => {
+			const level = args.trim();
+			if (!level) return orchestrator.listAgentThinkingLevelCandidates(agentId);
+			return await orchestrator.setAgentThinkingLevelByName(agentId, level);
+		},
+	},
+	{
+		command: {
 			name: "name",
 			placement: "line",
 			trigger: "/",
