@@ -18,6 +18,22 @@ WIDI extension 自由度 =
 2. **orchestrator 自由度是增量卖点**：command 事实面、事件轨道、profile 门控、multi-agent（M3 后）都是 pi 单 agent app 结构上没有的。
 3. **UI 减法不是能力缺失**，而是位置裁决：core 保证事实可达（events、inspect、listCommands、human request），呈现自由（渲染、快捷键、CLI flag）由 client adapter 的 extension host 提供。core 里永远不出现 `ctx.ui`。
 
+## 形状与形态：差异示例
+
+"≥ pi 但不按 API 形状复刻"的实感对照——同一能力，pi 的形状 vs WIDI 的形态：
+
+| pi API（形状） | WIDI 形态 | 差别的实质 |
+| --- | --- | --- |
+| `sendUserMessage(content, { deliverAs: "steer" })`，作用于隐含的"当前会话" | scoped action → `steerAgent(agentId, text)` 原子方法，agentId 由 context 注入 | pi 的"当前"是 app 全局隐含状态；WIDI 显式 agent 作用域，且动作落在既有方法面，事件/审计轨道免费获得 |
+| `setModel(model)` 返回 `false` 表示没 API key | `setAgentModelByReference(agentId, ref)`，失败抛 `model.reference_invalid` / auth diagnostic | pi 用布尔吞掉失败原因；WIDI 的失败是结构化 diagnostic，遥测与 UI 都能解释 |
+| `registerProvider(name, config)` 直接改全局模型表 | ModelRegistry contribution：registration-with-provenance + 冲突 diagnostic，auth storage 所有权不动 | pi 是"改状态"；WIDI 是"注册事实"——可追溯、可 inspect、reload 可重放 |
+| `getArgumentCompletions(prefix)` 返回 TUI 的 `AutocompleteItem[]` | `arguments.getArgumentsCompletion(prefix)` 返回 `CommandCandidates`，同一份事实喂 client 补全与 argumentsCompletion human request 兜底 | pi 的候选只活在自家 TUI；WIDI 的候选是 UI 中立事实，stdout/RPC client 也走得通（已落地） |
+| `ctx.ui.confirm/select/input(...)` 直接驱动 UI 控件 | `requestHuman({ kind, options, allowFreeInput, payload })` 能力中立信封 | 渲染契约归 client（见 command-experiment.md Client 渲染契约）；core 表达的是"需要人类裁决"这个事实，不是控件 |
+| `registerMessageRenderer(customType, renderer)` | 无 renderer 通道：extension 写 custom entry / 发事件，client adapter 自行渲染 | 呈现自由从 core 移到 client；core 的义务是事实可达，不是像素 |
+| `on("session_before_compact", handler)` 返回值语义靠实现约定 | interceptor 带声明档位 + 返回值合成规则 + 成文失败语义 | pi 的 hook 行为散在实现里；WIDI 每个 hook 的 observe/intercept/mutate 档与失败语义是可引用的裁决 |
+
+规律：pi 把自由度给成**方法**（隐含当前会话、直接改状态、直连 UI），WIDI 把同一自由度给成**事实与受控入口**（显式作用域、注册与事件、能力中立请求）。多付的代价是形态设计，换回的是审计轨道、multi-agent 安全和任意 adapter 的可呈现性。
+
 ## 能力对照表
 
 基线：pi `ExtensionAPI`（`pi/packages/coding-agent/src/core/extensions/types.ts`）。归属三类：**core**（WIDI core 落地）、**client**（UI 减法，归 adapter）、**backlog**（无 consumer 举证或依赖未就绪）。
@@ -75,18 +91,19 @@ WIDI 独有（pi 无对应）：`command_detected/accepted/completed/rejected/fa
 
 ## ME Milestone 切片
 
-锚点 consumer：**审计/策略 extension**（观察全事件流、拦截 tool_call/input、按策略 reject；仓库内真实测试 consumer，非示例骨架）。切片按依赖排定，每片独立可验收：
+锚点 consumer：**审计/策略 extension**（观察全事件流、拦截 tool_call/input、按策略 reject；仓库内真实测试 consumer，非示例骨架）。ME 实施所需的 M2 条目已直接迁入本 milestone（切片 0 与切片 2，2026-07-07 裁决）——extension 是当前注意力焦点，不让地基项散在别的 milestone 里等排期。切片按依赖排定，每片独立可验收：
 
-0. **tool 契约类型迁 core 层**（零行为变化布局 commit，原 M2 条目）。`ToolDefinition`/`ToolDefinitionPatch`/`ToolSource`/`ToolExecutionContext`/`ToolLifecycleEvent` 从 `extension/types.ts` 迁出，解开 dependency 层对 extension 层的依赖倒置（review 问题 7）。一切后续类型工作的前置。
-1. **Interceptor 失败语义定案 + 实施**（原 M2 条目）。裁决：合成类 hook（`context`、`before_agent_start`、`tool_result`）跳过失败者、保留其余 extension 结果；`tool_call` 拦截失败 **fail-closed**（block 该 tool call 并出 diagnostic）——审计 extension 不能因不相干 extension 的 bug 静默失防，这就是举证。写进 [Extensions](./extensions.md)。
-2. **ExtensionActions scope 化 + 能力面补齐**（原 M2 条目扩容）。agentId 由 context 注入；own-agent 默认；`capabilities.canRequestUser` 等接线；在 scoped 前提下补齐对照表"动作/查询面"的 core 项（send/steer/followUp、setSessionName、exec、getCommands、setModel/thinkingLevel）。
-3. **审计锚点 extension 落库**。只消费公开契约（observe 全事件 + tool_call 拦截 + 策略 reject + custom entry 审计账本），作为真实测试 consumer 反向检验切片 1/2。
-4. **Hook matrix 第一批（observe 档）**。`command_*`、`human_request_*`、diagnostics、session lifecycle、model/thinking select 桥接给 observer；对照表档位落定。
-5. **`input` interceptor**。裁决点：拦截发生在 `inputAgent` 的 command 解析**之前**（与 pi 语义一致，策略 extension 可整段改写/拒绝输入）；改写后的文本重新走完整解析与 gateway，不许绕过。
-6. **Extension-owned storage 裁决 + custom entry policy**。fork/compaction/export/`custom_message` 语义定案；extension inline `expand` 契约顺带接入（expand 语义已由 command 管线就绪）。
-7. **Resource contribution**。extension 贡献 skills/prompt templates，进 ResourceLoader 所有权边界，registration-with-provenance。
-8. **Provider contribution（后段）**。ModelRegistry 的 register/unregister provider（模型集、baseUrl、OAuth 桥接；auth storage 所有权不移交）；provider request/headers/response hook 视 pi harness 暴露程度评估桥接或走 upstream roadmap。
-9. **API 面冻结**。公开契约清单、版本兼容策略、`extension.version_incompatible` 语义；第三方视角验收 extension（只依赖公开契约完成 tool + command + observer 组合）。
+0. **tools 布局清理 + tool 契约类型迁 core 层**（零行为变化布局 commit，原 M2 条目合并迁入）。删除 `src/core/tools/coding/` 七个空占位；`tools/types.ts` 与 `tools/index.ts` 重复 re-export 二留一；`ToolDefinition`/`ToolDefinitionPatch`/`ToolSource`/`ToolExecutionContext`/`ToolLifecycleEvent` 从 `extension/types.ts` 迁出，解开 dependency 层对 extension 层的依赖倒置（review 问题 7）。同一批文件的布局归位，一切后续类型工作的前置。
+1. **Interceptor 失败语义定案 + 实施**（原 M2 条目迁入）。裁决：合成类 hook（`context`、`before_agent_start`、`tool_result`）跳过失败者、保留其余 extension 结果；`tool_call` 拦截失败 **fail-closed**（block 该 tool call 并出 diagnostic）——审计 extension 不能因不相干 extension 的 bug 静默失防，这就是举证。写进 [Extensions](./extensions.md)。
+2. **Orchestrator 公开面收口**（原 M2 条目迁入）。`agents` map 与 `getAgentHarness()` 私有化，对外只留 snapshot 查询；`spawnAgentHarness` 改名 `spawnAgent`，只返回 `agentId`。先于 scoped actions 动公开面，避免切片 3 返工。
+3. **ExtensionActions scope 化 + 能力面补齐**。agentId 由 context 注入；own-agent 默认；`capabilities.canRequestUser` 等接线；在 scoped 前提下补齐对照表"动作/查询面"的 core 项（send/steer/followUp、setSessionName、exec、getCommands、setModel/thinkingLevel）。
+4. **审计锚点 extension 落库**。只消费公开契约（observe 全事件 + tool_call 拦截 + 策略 reject + custom entry 审计账本），作为真实测试 consumer 反向检验切片 1/3。
+5. **Hook matrix 第一批（observe 档）**。`command_*`、`human_request_*`、diagnostics、session lifecycle、model/thinking select 桥接给 observer；对照表档位落定。
+6. **`input` interceptor**。已裁决（2026-07-07）：拦截发生在 `inputAgent` 的 command 解析**之前**（与 pi 语义一致，策略 extension 可整段改写/拒绝输入）；改写后的文本重新走完整解析与 gateway，不许绕过。
+7. **Extension-owned storage 裁决 + custom entry policy**。fork/compaction/export/`custom_message` 语义定案；extension inline `expand` 契约顺带接入（expand 语义已由 command 管线就绪）。
+8. **Resource contribution**。extension 贡献 skills/prompt templates，进 ResourceLoader 所有权边界，registration-with-provenance。
+9. **Provider contribution（后段）**。ModelRegistry 的 register/unregister provider（模型集、baseUrl、OAuth 桥接；auth storage 所有权不移交）；provider request/headers/response hook 视 pi harness 暴露程度评估桥接或走 upstream roadmap。
+10. **API 面冻结**。公开契约清单、版本兼容策略、`extension.version_incompatible` 语义；第三方视角验收 extension（只依赖公开契约完成 tool + command + observer 组合）。
 
 ## 验收标准
 

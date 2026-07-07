@@ -82,7 +82,7 @@ Tool tracking 不进入 core primitive。它应作为 extension pattern：通过
 - Extension command 通过 `registerCommand()` 注册 UI-neutral 事实（name、trigger、description、argumentHint）与执行形态。当前代码只支持 `handler(argument, ctx)` line 命令；inline `expand(argument)` 后续接入。所有 command 由 orchestrator `inputAgent` 按统一 trigger 模板解析、门控并执行。契约详见 [Command Experiment](./command-experiment.md)（`inputInvoke` 字段名随收编退役）。
 - Orchestrator 已将 `before_agent_start`、`context`、`tool_call`、`tool_result` 四个 harness hook 桥接到 interceptors。
 - Orchestrator 已将 raw `agent_harness_event` 和归一化 `tool_lifecycle_event` 桥接到 observers；observer error 变成 `extension.handler_failed` diagnostic。
-- Runner 使用 lazy context：`bindCore()` / `bindCommandContext()` 后，handler 通过 `createContext()` / `createCommandContext()` 获取 actions、human request、tool mutation 和 session custom entry facade（全量 `dispatch` 已随 M1 移除；own-agent scope 收敛属 ME 切片 2）。
+- Runner 使用 lazy context：`bindCore()` / `bindCommandContext()` 后，handler 通过 `createContext()` / `createCommandContext()` 获取 actions、human request、tool mutation 和 session custom entry facade（全量 `dispatch` 已随 M1 移除；own-agent scope 收敛属 ME 切片 3）。
 - `agent.inspect` 已能暴露 loaded extensions、registered hooks、commands、tool contributions、patches、diagnostics 和 stale state。
 - Interceptor 失败语义（当前事实，ME 切片 1 定案）：四个 `_intercept*` 中任一 handler 抛错，本次拦截**丢弃所有 extension 的合成结果**并降级为 warning diagnostic，harness 按"无拦截结果"继续。装了审计/安全 extension 的用户会在另一个不相干 extension 出错时静默失去防护——ME 已裁决方向：合成类跳过失败者保留其余，`tool_call` 拦截 fail-closed（见 [Extension Experiment](./extension-experiment.md)）。
 

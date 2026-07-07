@@ -24,7 +24,7 @@ Extension surface 的设计与实施已收编为 [ME milestone](TODO.md#me-exten
 
 - Missing extension、version mismatch、restore failed 时如何展示已有 custom entries。
 - Header metadata schema version/migration（在出现第二个写入者之前不做）。
-- （custom entry fork/compaction/export 与 `custom_message` policy 已入 [ME 切片 6](TODO.md#me-extension-surfacem2-之后m3-之前)。）
+- （custom entry fork/compaction/export 与 `custom_message` policy 已入 [ME 切片 7](TODO.md#me-extension-surfacem2-之后m3-之前)。）
 - 与 Pi upstream 对齐 typed/custom session metadata 后，评估本地 adapter 是否长期保留。
 - Inline command 展开的 session custom entry 具体 shape（原始输入 + 展开位置，裁决见 command-experiment.md）。
 
