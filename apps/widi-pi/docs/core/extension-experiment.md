@@ -112,6 +112,26 @@ WIDI 独有（pi 无对应）：`command_detected/accepted/completed/rejected/fa
 - 审计/策略 extension 作为仓库内真实 consumer 全绿，且在另一 extension 抛错时不失防（切片 1 语义的回归测试）。
 - 第三方视角 extension 只依赖公开契约完成 tool + command + observer 组合。
 
+## 依赖面就绪度与落实注意（2026-07-07 评估）
+
+ME 开工前对三个依赖面的就绪裁定，落实各切片时按此执行：
+
+**Orchestrator 原子方法面：齐备，瓶颈在收口与包装。** 切片 3 要暴露的每个动作/查询都已有原子方法背书（input 系、session 系、model/thinking 系、tools 系、`listCommands`、`requestHuman`、resource 事实）。落实注意：
+
+- `exec` 不走 orchestrator 而走 `ExecutionEnv`，暴露前必须补一条 trust 裁决（project trust 未通过时给不给 exec）——切片 3 落地时写进本文档。
+- custom message 形态的 `sendMessage`（`customType`/`display`/`triggerTurn`）载体虽在（`nextTurnAgent` 等），语义依赖切片 7 的 `custom_message` policy，切片 3 只暴露 plain 的 prompt/steer/followUp。
+- 公开面目前太宽而非太窄（`agents` map、`getAgentHarness` 仍 public）——收口（切片 2）必须先于暴露（切片 3），顺序不可倒。
+
+**SessionManager：extension 通道已就绪且形态正确，契约未稳。** extension 从不直接拿 SessionManager——`ExtensionSessionContext` 只给 namespaced `appendEntry`/`findEntries`（current branch、append-only），符合 narrowed context 原则，可继续使用。落实注意：fork/compaction/export/`custom_message` policy 定案（切片 7）之前，不对第三方承诺 custom entry 是稳定 API——这也是切片 10 排最后的原因。
+
+**SettingManager：不暴露给 extension（裁决）。** 三个理由：
+
+1. 键面未稳定是既有裁决（command-experiment.md 拒绝 `/set` 的同一理由）——上百个 pi 继承的平铺 getter/setter 冻结成 extension API 就是把没想清楚的面焊死；
+2. 内含提权键：`setProjectTrusted`、`setExtensionPaths`、`setPackages`——extension 可写即等于拆 trust gate / 自我持久化，任何设计下都不给；
+3. settings 文件是共享持久 core state，extension 直接写入违反 extensions.md"不能直接拥有已存储 core state"，与 `/model` 不写 settings 文件是同一条纪律。
+
+Extension 的设置类需求三分：自己的状态 → extension-owned storage（切片 7）；读 runtime 事实 → scoped actions / inspect；改共享 settings → 不开，真实场景出现时再评估"白名单键 + human request 确认"的受控入口（届时补裁决段）。
+
 ## 非目标
 
 - 不做 `ctx.ui` 或任何 core 内 UI 通道；client adapter 的 extension host 是独立工作（随最小 stdout/CLI adapter 之后评估）。
