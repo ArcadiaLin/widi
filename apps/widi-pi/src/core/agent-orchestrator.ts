@@ -13,7 +13,11 @@ import {
 	type Session,
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
+import {
+	type AssistantMessage,
+	getSupportedThinkingLevels,
+	type ImageContent,
+} from "@earendil-works/pi-ai";
 import type { ExtendedJsonlSessionMetadata } from "../storage/jsonl-repo.ts";
 import type {
 	AgentProfile,
@@ -584,6 +588,46 @@ export class AgentOrchestrator {
 	async setAgentModel(agentId: AgentId, model: RuntimeModel): Promise<void> {
 		await this._requireAgentHarness(agentId).setModel(model);
 		this._requireAgentRecord(agentId).model = model;
+	}
+
+	async setAgentThinkingLevel(
+		agentId: AgentId,
+		level: ThinkingLevel,
+	): Promise<void> {
+		const record = this._requireAgentRecord(agentId);
+		if (!record.model.reasoning) {
+			throw new OrchestratorError(
+				createOrchestratorDiagnostic({
+					severity: "error",
+					code: "model.thinking_not_supported",
+					message: `Model ${record.model.provider}/${record.model.id} does not support thinking levels.`,
+					source: { kind: "registry", name: "model", key: "thinkingLevel" },
+					agentId,
+					provider: record.model.provider,
+					modelId: record.model.id,
+					phase: "runtime",
+					recoverable: true,
+				}),
+			);
+		}
+		const supportedLevels = getSupportedThinkingLevels(record.model);
+		if (!supportedLevels.includes(level)) {
+			throw new OrchestratorError(
+				createOrchestratorDiagnostic({
+					severity: "error",
+					code: "model.thinking_level_not_supported",
+					message: `Thinking level ${level} is not supported by model ${record.model.provider}/${record.model.id}.`,
+					source: { kind: "registry", name: "model", key: "thinkingLevel" },
+					agentId,
+					provider: record.model.provider,
+					modelId: record.model.id,
+					phase: "runtime",
+					recoverable: true,
+					details: { level, supportedLevels },
+				}),
+			);
+		}
+		await this._requireAgentHarness(agentId).setThinkingLevel(level);
 	}
 
 	getAgentTools(agentId: AgentId): AgentToolsSnapshot {

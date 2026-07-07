@@ -343,6 +343,14 @@ const restoredModel: Model<"openai-completions"> = {
 	name: "Restored Model",
 };
 
+const reasoningModel: Model<"openai-completions"> = {
+	...defaultModel,
+	id: "reasoning-model",
+	name: "Reasoning Model",
+	reasoning: true,
+	thinkingLevelMap: { minimal: null, high: "high" },
+};
+
 async function createModelRegistry(
 	env: MemoryExecutionEnv,
 ): Promise<ModelRegistry> {
@@ -792,6 +800,10 @@ describe("AgentOrchestrator", () => {
 		await orchestrator.setAgentModel(agentId, restoredModel);
 		expect(harness.getModel()).toMatchObject({ id: restoredModel.id });
 
+		await orchestrator.setAgentModel(agentId, reasoningModel);
+		await orchestrator.setAgentThinkingLevel(agentId, "high");
+		expect(harness.getThinkingLevel()).toBe("high");
+
 		await orchestrator.setAgentActiveTools(agentId, []);
 		expect(orchestrator.getAgentActiveTools(agentId)).toEqual([]);
 		await orchestrator.setAgentTools(
@@ -809,6 +821,39 @@ describe("AgentOrchestrator", () => {
 		expect(commandEvents).not.toContainEqual(
 			expect.objectContaining({ type: "command_completed" }),
 		);
+	});
+
+	it("rejects agent thinking level changes unsupported by the current model", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const { agentId, harness } = await orchestrator.spawnAgentHarness();
+
+		await expect(
+			orchestrator.setAgentThinkingLevel(agentId, "medium"),
+		).rejects.toMatchObject({
+			code: "model.thinking_not_supported",
+			diagnostic: expect.objectContaining({
+				provider: defaultModel.provider,
+				modelId: defaultModel.id,
+			}),
+		});
+		expect(harness.getThinkingLevel()).toBe("off");
+
+		await orchestrator.setAgentModel(agentId, reasoningModel);
+		await expect(
+			orchestrator.setAgentThinkingLevel(agentId, "minimal"),
+		).rejects.toMatchObject({
+			code: "model.thinking_level_not_supported",
+			diagnostic: expect.objectContaining({
+				provider: reasoningModel.provider,
+				modelId: reasoningModel.id,
+				details: {
+					level: "minimal",
+					supportedLevels: ["off", "low", "medium", "high"],
+				},
+			}),
+		});
+		expect(harness.getThinkingLevel()).toBe("off");
 	});
 
 	it("exposes lightweight agent record status and inspect snapshots", async () => {
