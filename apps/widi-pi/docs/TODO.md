@@ -28,7 +28,7 @@
 对应 review M1/M2 中 command 与 extension 之外的部分（extension 相关及其地基条目——tools 占位清理、tool 契约迁移、`agents` map 私有化、ExtensionActions scope 化、interceptor 失败语义——已收编进 ME）。前半是减法，后半是第一个产品消费者：
 
 - [x] Agent status 收敛：删除 `ready` 或补消费者（当前事件路径只产 `running`/`idle`，`ready` 仅创建瞬间出现）。
-- [ ] 显式声明单进程写入假设（session/auth/config storage 共用此裁决），或实现文件锁。
+- [x] 显式声明单进程写入假设（session/auth/config storage 共用此裁决），或实现文件锁。
 - [ ] package.json 修真：删除虚假入口（`main`/`bin`/`cli` 指向不存在的文件）与未使用依赖；README 写明 bootstrap 顺序（submodule → build pi → test）。
 - [ ] Core built-in coding tools 第一版（裁决见 [DESIGN.md](DESIGN.md#coding-tools)）：read/write/edit 最小集复刻 pi-coding-agent，`source: core` 进 ToolRegistry；`/skill` 依赖的 read 能力在此就绪。
 - [ ] 最小 stdout/CLI adapter：只消费 orchestrator events + `inputAgent`，用真实调用压力反向检验 ToolRegistry、hook、diagnostics——当前所有 API 只被测试消费过。

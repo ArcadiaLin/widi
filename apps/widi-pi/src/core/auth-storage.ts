@@ -58,6 +58,9 @@ export type AuthDiagnostic = CoreDiagnostic;
 
 const DEFAULT_AUTH_PATH = `${DEFAULT_AGENT_DIR}/auth.json`;
 
+// Process-local FIFO lock. This serializes async callers inside the current
+// WIDI process only; it is not a filesystem lock and does not coordinate other
+// WIDI processes sharing the same auth.json.
 class AsyncLock {
 	private tail: Promise<void> = Promise.resolve();
 
@@ -86,9 +89,10 @@ export interface AuthStorageBackend {
 /**
  * Credential storage backed by an auth.json file.
  *
- * The in-process lock serializes writes for this backend today. A later
- * ExecutionEnv implementation can add multi-process locking behind the same
- * read/write boundary without changing AuthStorage's public API.
+ * The in-process lock serializes writes for this backend today. It does not
+ * make shared auth.json writes safe across WIDI processes. A later ExecutionEnv
+ * implementation can add multi-process locking behind the same read/write
+ * boundary without changing AuthStorage's public API.
  */
 export class FileAuthStorageBackend implements AuthStorageBackend {
 	private readonly executionEnv: ExecutionEnv;
@@ -620,7 +624,7 @@ export class AuthStorage implements CredentialStore {
 					}
 				} catch (error) {
 					this.recordError(error, "auth.oauth_refresh_failed", providerId);
-					// Refresh failed. Re-read storage in case another process refreshed first.
+					// Refresh failed. Re-read storage in case another backend actor refreshed first.
 					await this.reload();
 					const updatedCred = this.data[providerId];
 					if (

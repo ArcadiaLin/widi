@@ -314,7 +314,9 @@ export class SessionManager {
 	private async _createPersistentAgentSession(
 		options: CreateAgentSessionOptions,
 	): Promise<Session<ExtendedJsonlSessionMetadata>> {
-		// TODO: Add file locking before multiple WIDI processes can write the same sessionsRoot.
+		// Persistent JSONL sessions currently follow the M2 single-process storage
+		// boundary. Without an ExecutionEnv lock/transaction primitive, multiple
+		// WIDI processes writing the same sessionsRoot are unsupported.
 		// TODO: Add extension persistence once extension lifecycle and storage boundaries are defined.
 		return this.sessionRepo.create({
 			id: options.agentId,

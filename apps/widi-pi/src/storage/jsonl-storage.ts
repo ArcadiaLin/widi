@@ -299,6 +299,13 @@ async function loadJsonlStorage(
 	return { header, entries, leafId };
 }
 
+/**
+ * JSONL session storage keeps an in-memory index and appends to one session file.
+ *
+ * This is safe for callers sharing this storage instance in one WIDI process. It
+ * is not a cross-process transaction layer; concurrent processes can diverge from
+ * the in-memory index and corrupt ordering semantics without an ExecutionEnv lock.
+ */
 export class JsonlSessionStorage
 	implements SessionStorage<ExtendedJsonlSessionMetadata>
 {

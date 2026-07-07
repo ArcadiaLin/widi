@@ -183,6 +183,9 @@ type SettingFileSystem = Pick<
 	"joinPath" | "readTextFile" | "writeFile" | "exists"
 >;
 
+// Process-local FIFO lock. This serializes async callers inside the current
+// WIDI process only; it is not a filesystem lock and does not coordinate other
+// WIDI processes sharing the same settings files.
 class AsyncLock {
 	private tail: Promise<void> = Promise.resolve();
 
@@ -301,6 +304,14 @@ function migrateSettings(settings: Record<string, unknown>): Settings {
 	return settings as Settings;
 }
 
+/**
+ * File-backed settings storage for global and project settings.
+ *
+ * Locks are scoped per settings file inside this process. They protect
+ * read/merge/write cycles from concurrent callers in the same WIDI runtime, but
+ * they do not make one agentDir or project config directory safe for multiple
+ * writer processes.
+ */
 export class FileSettingsStorage implements SettingsStorage {
 	private readonly fs: SettingFileSystem;
 	private readonly cwd: string;
@@ -420,6 +431,9 @@ export class SettingManager {
 	private projectTrusted: boolean;
 	private globalSettingsLoadError: Error | null;
 	private projectSettingsLoadError: Error | null;
+	// Process-local save queue. This preserves mutation order before the storage
+	// backend lock runs, but it does not coordinate writes from other WIDI
+	// processes.
 	private writeQueue: Promise<void> = Promise.resolve();
 	private errors: SettingsError[];
 	private diagnostics: SettingsDiagnostic[];
