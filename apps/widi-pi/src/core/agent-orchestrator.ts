@@ -30,7 +30,10 @@ import type {
 	AgentProfileRegistry,
 	AgentProfileSource,
 } from "./agent-profile.js";
-import { toAgentProfileReference } from "./agent-profile.js";
+import {
+	parseAgentProfileReference,
+	toAgentProfileReference,
+} from "./agent-profile.js";
 import type { OrchestratorClient } from "./client.ts";
 import {
 	BUILT_IN_COMMANDS,
@@ -1469,8 +1472,10 @@ export class AgentOrchestrator {
 		agentId: AgentId,
 		metadata: ExtendedJsonlSessionMetadata,
 	): Promise<ResolvedAgentProfile> {
-		const profileReference = metadata.metadata?.profile;
-		if (!profileReference?.id) {
+		const profileReference = parseAgentProfileReference(
+			metadata.metadata?.profile,
+		);
+		if (!profileReference) {
 			throw new OrchestratorError(
 				createOrchestratorDiagnostic({
 					severity: "error",
@@ -2093,9 +2098,9 @@ export class AgentOrchestrator {
 					entryId: options.resolvedProfile.entryId,
 				}
 			: {
-					reference: options.metadata.metadata?.profile ?? {
-						id: "unknown",
-					},
+					reference: parseAgentProfileReference(
+						options.metadata.metadata?.profile,
+					) ?? { id: "unknown" },
 				};
 		this.agents.set(options.agentId, {
 			...this._createAgentRecordFromProfileReference({

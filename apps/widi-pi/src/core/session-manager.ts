@@ -21,7 +21,10 @@ import {
 } from "../storage/jsonl-repo.js";
 import type { AgentId } from "./agent-orchestrator.js";
 import type { AgentProfile, AgentProfileReference } from "./agent-profile.js";
-import { toAgentProfileReference } from "./agent-profile.js";
+import {
+	parseAgentProfileReference,
+	toAgentProfileReference,
+} from "./agent-profile.js";
 
 export type AgentSessionMetadata =
 	| SessionMetadata
@@ -386,7 +389,7 @@ function toAgentSessionCandidate(
 		createdAt: metadata.createdAt,
 		cwd: metadata.cwd,
 		parentSessionPath: metadata.parentSessionPath,
-		profile: metadata.metadata?.profile,
+		profile: parseAgentProfileReference(metadata.metadata?.profile),
 	};
 }
 

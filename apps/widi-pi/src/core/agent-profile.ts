@@ -248,6 +248,22 @@ export function toAgentProfileReference(
 	};
 }
 
+/**
+ * Narrow an untyped session header metadata value to a profile reference.
+ * Storage keeps header metadata opaque, so consumers validate the shape here.
+ */
+export function parseAgentProfileReference(
+	value: unknown,
+): AgentProfileReference | undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	const record = value as { id?: unknown; label?: unknown };
+	if (typeof record.id !== "string" || !record.id) return undefined;
+	return {
+		id: record.id,
+		label: typeof record.label === "string" ? record.label : undefined,
+	};
+}
+
 export function createDefaultProfileRoots(options: {
 	readonly executionEnv: ExecutionEnv;
 	readonly cwd: string;

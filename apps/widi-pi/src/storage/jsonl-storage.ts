@@ -6,12 +6,10 @@ import type {
 	SessionTreeEntry,
 } from "@earendil-works/pi-agent-core";
 import { SessionError, toError, uuidv7 } from "@earendil-works/pi-agent-core";
-import type { AgentProfileReference } from "../core/agent-profile.ts";
 
-export interface JsonlSessionHeaderMetadata {
-	profile?: AgentProfileReference;
-	[key: string]: unknown;
-}
+// Storage treats header metadata as an opaque JSON object; shape validation
+// (for example the profile reference) belongs to consumers.
+export type JsonlSessionHeaderMetadata = Record<string, unknown>;
 
 export interface ExtendedJsonlSessionMetadata extends SessionMetadata {
 	cwd: string;
@@ -58,7 +56,9 @@ function buildLabelsById(entries: SessionTreeEntry[]): Map<string, string> {
 
 function generateEntryId(byId: { has(id: string): boolean }): string {
 	for (let i = 0; i < 100; i++) {
-		const id = uuidv7().slice(0, 8);
+		// The uuidv7 prefix is timestamp-derived and nearly constant between
+		// calls, so short ids must come from the random tail.
+		const id = uuidv7().slice(-8);
 		if (!byId.has(id)) return id;
 	}
 	return uuidv7();
@@ -143,7 +143,12 @@ function parseHeaderLine(line: string, filePath: string): SessionHeader {
 			"session header parentSession must be a string",
 		);
 	}
-	const metadata = parseHeaderMetadata(parsed.metadata, filePath);
+	if (
+		parsed.metadata !== undefined &&
+		(!isRecord(parsed.metadata) || Array.isArray(parsed.metadata))
+	) {
+		throw invalidSession(filePath, "session header metadata must be an object");
+	}
 	return {
 		type: "session",
 		version: 3,
@@ -151,46 +156,7 @@ function parseHeaderLine(line: string, filePath: string): SessionHeader {
 		timestamp: parsed.timestamp,
 		cwd: parsed.cwd,
 		parentSession: parsed.parentSession,
-		metadata,
-	};
-}
-
-function parseHeaderMetadata(
-	value: unknown,
-	filePath: string,
-): JsonlSessionHeaderMetadata | undefined {
-	if (value === undefined) return undefined;
-	if (!isRecord(value)) {
-		throw invalidSession(filePath, "session header metadata must be an object");
-	}
-	if (value.profile === undefined) return value as JsonlSessionHeaderMetadata;
-	if (!isRecord(value.profile)) {
-		throw invalidSession(
-			filePath,
-			"session header metadata.profile must be an object",
-		);
-	}
-	if (typeof value.profile.id !== "string" || !value.profile.id) {
-		throw invalidSession(
-			filePath,
-			"session header metadata.profile is missing id",
-		);
-	}
-	if (
-		value.profile.label !== undefined &&
-		typeof value.profile.label !== "string"
-	) {
-		throw invalidSession(
-			filePath,
-			"session header metadata.profile label must be a string",
-		);
-	}
-	return {
-		...value,
-		profile: {
-			id: value.profile.id,
-			label: value.profile.label,
-		},
+		metadata: parsed.metadata,
 	};
 }
 

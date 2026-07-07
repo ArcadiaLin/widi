@@ -11,9 +11,16 @@
 - `pi/*` 是上游/vendor 代码，当前不直接修改。
 - `AgentHarness` 仍然只需要 Pi 的 `Session` 与 `SessionTreeEntry`。
 - resume harness 时除了 message tree，还需要知道创建 harness 的外部上下文，例如 `AgentProfile`。
-- Pi 当前 JSONL header 没有自定义 metadata 扩展点，因此先在应用侧使用本地 adapter。
+- Pi 当前 JSONL header 没有自定义 metadata 扩展点，`JsonlSessionStorage` 的构造函数与
+  header 解析都是模块私有，无法通过继承扩展，因此先在应用侧使用本地 adapter。
 
 核心边界是：自定义 storage 不包裹、不改写、不重新定义后续 session entries；它只扩展首行 header，并补充当前应用需要的路径规划。
+
+adapter 对 header `metadata` 完全不透明：storage 只校验"存在则必须是 JSON object"，原样存取。
+`metadata.profile` 的形状校验由消费方完成（`agent-profile.ts` 的 `parseAgentProfileReference`）。
+这份 adapter 与上游 `jsonl-storage.ts` / `jsonl-repo.ts` 的差异被刻意压缩为一个最小补丁，
+对应的 upstream 提案见 fork 分支
+[`ArcadiaLin/pi#jsonl-header-metadata`](https://github.com/ArcadiaLin/pi/tree/jsonl-header-metadata)。
 
 ## 文件格式
 
@@ -56,6 +63,11 @@ JSONL 文件仍然采用“首行 header，后续每行一个 session tree entry
 - `JsonlSessionPathLayout`
 
 当前只有 `metadata.profile` 已经写入。它保存的是创建持久 session 时使用的 profile 引用。`id` 用于 resume 时重新加载当前 profile，`label` 只是列表展示和诊断快照。
+
+`JsonlSessionHeaderMetadata` 现在就是 `Record<string, unknown>`：storage 不认识 `profile`
+这个 key。读取端（session manager 的候选列表、orchestrator 的 resume 路径）统一通过
+`parseAgentProfileReference` 把 untyped 值收窄为 `AgentProfileReference`，收窄失败按
+"没有 profile 引用"处理，由 orchestrator 产生 diagnostic。
 
 ## Entry 语义
 
@@ -208,7 +220,7 @@ resume 持久 session 时，调用方传入 `ExtendedJsonlSessionMetadata`，`Se
 - diagnostics 已覆盖文件读取、parse、metadata validation、duplicate id、source override、profile missing/disabled 等第一版 code。
 - 复杂 YAML schema、profile 继承和资源引用校验后续再补。
 
-resume 时 storage 不直接加载 profile。它只暴露 `metadata.profile.id`，由 orchestrator 使用 profile registry 查找当前 profile。找不到、被禁用或解析失败时，orchestrator 产生 policy-driven diagnostic，并且不创建 harness。
+resume 时 storage 不直接加载 profile。它只暴露 opaque 的 header metadata，orchestrator 先用 `parseAgentProfileReference` 收窄出 `metadata.profile.id`，再使用 profile registry 查找当前 profile。引用缺失、找不到、被禁用或解析失败时，orchestrator 产生 policy-driven diagnostic，并且不创建 harness。
 
 ## 暂不处理
 
