@@ -208,7 +208,7 @@ Command 对参数有结构要求，这是 input-triggered command 相对普通 p
 `HumanRequestKind` 已增加 `"argumentsCompletion"`（`src/core/human-request.ts`）。流程：
 
 - 命中 command 且声明 `arguments.required` 但输入未携带参数时，orchestrator 发起 `argumentsCompletion` human request。`payload` 是 `CommandArgumentsCompletionPayload`：`commandId`、原始 `command` invocation、`argumentHint`、`argumentPrefix` 和候选列表（若 `complete()` 存在）。请求恒置 `allowFreeInput: true`——参数补全天然接受候选之外的自由输入（见 [Client 渲染契约](#client-渲染契约)）。
-- client 返回的 `input`/`select` 值作为 args 继续执行；其他 response kind、`undefined` 或 blank string 均视为未补全。无可用 client、超时、取消或用户拒绝 → `command_rejected`（recoverable diagnostic），**不静默 fall back 成普通 prompt**——用户明确输入了命令，把残缺命令当聊天文本发给模型是最坏的失败模式。
+- client 返回的 `input`/`select` 值作为 args 继续执行；其他 response kind、`undefined` 或 blank string 均视为未补全。无可用 client、超时（仅当调用方设置 `timeoutMs`）、取消或用户拒绝 → `command_rejected`（recoverable diagnostic），**不静默 fall back 成普通 prompt**——用户明确输入了命令，把残缺命令当聊天文本发给模型是最坏的失败模式。
 - 补参失败后的 command diagnostic code 保持 `command.arguments_required`，`details` 记录 `completionFailureCode`、`requestId` 等 human request 失败事实；human request 自身的 diagnostic event 仍作为支撑遥测发布。
 - 补参成功后 gateway **复查一次**：human 等待可能比 gateway 前提活得长（如 `/steer` 要求的 running turn 在用户打字期间结束），复查让过期的 command 仍以 `command_rejected` 无副作用收场，而不是执行中途 `command_failed`。
 
@@ -217,12 +217,24 @@ Command 对参数有结构要求，这是 input-triggered command 相对普通 p
 - **Built-in** 的候选直接来自 orchestrator 事实：`/resume` → `listAgentSessions()`，`/tree` → session tree entries，`/skill` → profile 声明的 skills。
 - **Extension** 通过契约里的 `getArgumentsCompletion(argumentPrefix)` 提供。
 
+补参路径现状仅覆盖 built-in（`ExtensionCommandDefinition` 尚无 `arguments` 字段）。将来接入时 extension 的候选回调**不得接收完整 orchestrator 句柄**——`CommandCompletionContext.orchestrator` 是 built-in 专属事实，extension 侧要么镜像 `execute` 的 binding 层闭包模式，要么消费经 runner 收窄的 context。
+
 同一候选源支撑两种消费模式：
 
 1. **Runtime 补全**（上述 human request 路径）：保证没有富 UI 的 client（stdout、RPC）也能走通带参命令。
 2. **Client 补全**：UI 在输入过程中主动查询候选渲染 completion menu，参数就位后提交的输入直接通过参数检查，human request 不触发。
 
 也就是说 human request 是兜底轨道，富 client 可以完全绕开它，两边消费同一份事实，不出现两套 completion 定义。
+
+### Client 渲染契约
+
+Human request 的统一呈现是选择题；自由输入是可选能力而非例外形态（`allowFreeInput` 字段，2026-07-07 裁决）：
+
+- **双轨渲染**：`options` 只携带候选 value，是无富 UI client 的降级渲染最小面；label、description 等富信息只进 `payload`。未来新增 kind 遵守同一阶梯，不往信封顶层加渲染字段。
+- **`allowFreeInput`**：缺省按 kind 固有形态（`input` 恒自由输入，`confirm`/`select` 恒否）；置 true 时 client 在候选之外提供自由输入入口。`argumentsCompletion` 恒置 true——补参天然接受候选之外的值。
+- **自由输入不兼容 command**：自由输入的值是字面值，任何一侧都不对它做 command 解析。argumentsCompletion 的补全值直接进 `execute`，从不回流 `parseLineCommand`。
+- **应答约定**：`select` = 选了候选，`input` = 自由输入。`argumentsCompletion` 接受这两种，其余 response kind 由 orchestrator 以 `arguments_completion_invalid_response` 拒绝（强制点：`_completeCommandArguments` 的 kind 检查），client 无需自行防御。
+- **超时**：orchestrator 不设默认 `timeoutMs`——交互式补参没有合理的超时值；超时是调用方通过字段主动选择的行为，悬挂请求的逃生门是 `cancelHumanRequest`。
 
 ## Built-in Commands
 

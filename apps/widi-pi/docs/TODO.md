@@ -14,10 +14,10 @@
 
 阶段 5+ 按依赖排定的 commit 切片（细节见 command-experiment.md 阶段 5+ 节）：
 
-- [ ] built-in 绑定表迁至 `command.ts`（零行为变化布局 commit，先于一切新 command）。
-- [ ] `setAgentThinkingLevel(agentId, level)` 原子方法。
-- [ ] `/model` + `/thinking` settings commands（候选来自 modelRegistry / thinkingLevelMap，无参返回候选列表）。
-- [ ] argumentsCompletion human request（替换参数缺失直接 reject 的过渡行为）。
+- [x] built-in 绑定表迁至 `command.ts`（零行为变化布局 commit，先于一切新 command）。
+- [x] `setAgentThinkingLevel(agentId, level)` 原子方法。
+- [x] `/model` + `/thinking` settings commands（候选来自 modelRegistry / thinkingLevelMap，无参返回候选列表）。
+- [x] argumentsCompletion human request（替换参数缺失直接 reject 的过渡行为；gateway 补参后复查、`allowFreeInput`、Client 渲染契约随本切片落地）。
 - [ ] inline 扫描与 expand 管线 + `<prompt:...>` 首个消费者。
 - [ ] `<skill:...>`（候选来自 profile skills；正文加载随 M2 read 就绪）。
 
