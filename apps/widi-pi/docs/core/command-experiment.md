@@ -74,7 +74,7 @@ export interface CommandArguments {
 
 注册来源有两个，**运行时绑定共享，可见事实统一**：
 
-- **Built-in**：orchestrator 持有的静态绑定表（现 `command/builtin.ts` 迁入）。每条 binding = `Command` 事实 + 内部 `execute(context)` / 后续 `expand(context)` 执行体。built-in 当前默认 `trigger: "/"`，名字在同一 `placement + trigger` 下保留，extension 不能覆盖。
+- **Built-in**：静态绑定表，定义在 `command.ts`（迁移见[解析归属裁决](#解析归属不建-commandregistry-类2026-07-07-裁决)），orchestrator 直接 import 并持有运行时 lookup。每条 binding = `Command` 事实 + `execute(orchestrator, agentId, args)` / 后续 `expand` 执行体，只消费公开原子方法。built-in 当前默认 `trigger: "/"`，名字在同一 `placement + trigger` 下保留，extension 不能覆盖。
 - **Extension**：`registerCommand()` 贡献，随 extension runner per-agent 存活（见 [Extension Surface](#extension-surface)）。extension 当前只支持 line handler，默认 `trigger: "/"`，允许声明其他 trigger。
 
 对外只暴露统一事实，不暴露执行体：
@@ -84,6 +84,28 @@ listCommands(agentId: AgentId): Command[]
 ```
 
 `listCommands` 输出的是**该 agent 可见**的 command：静态判据（profile `commands` policy、`scope`）直接剪列表——被 deny 的、非 user-facing agent 上的 `/new` 不出现；动态判据（agent status）**不剪列表**，而是作为每项的 `available: boolean` + `unavailableReason` 事实输出——`/steer` 在 idle 时仍在列表里但标注不可用。这样菜单稳定不闪烁，UI 自己决定置灰还是隐藏；列表只是快照，执行时 gateway 仍是唯一裁决。client 可按 `trigger` 唤醒菜单、按 `placement` 过滤 line/inline 子集，RPC 的能力宣告也消费这一个事实，core 不关心呈现形态。
+
+### 解析归属：不建 CommandRegistry 类（2026-07-07 裁决）
+
+阶段 3/4 落地后曾评估引入与 ToolRegistry 同构的 `CommandRegistry` 类，外加 agent runtime build 期物化的 `AgentCommandSet`（`allLineBindings` / `listedCommands` / `lineTriggers` 三视图）。裁决：**否。command 的解析与门控是 orchestrator input 路径的私有行为，保持惰性查询，不物化、不建 registry 类。**（本节标题的 "Command Registry" 指注册与可见事实这套机制，不是一个类。）
+
+理由：
+
+1. **提案要解决的四条 profile 语义已全部实现，且不需要 registry。** deny/scope 命中时明确 rejected 而非降级为 prompt——`_findLineCommand` 查 binding 不看 deny，`_commandGateway` 是执行期唯一仲裁者；`listCommands()` 应用 `_commandPolicyDenial` 做静态剪裁；`_getLineCommandTriggers` 取自全部 binding，denied command 不会被误当普通输入。三视图恰是这三个私有方法的惰性等价物，物化只是把已有查询换了个数据结构。
+2. **ToolRegistry 的复杂度由 patch 语义挣回**：`aroundExecute` 包装与 context source 绑定、patch 字段冲突诊断、注册顺序语义、requested/active 两层名字解析。command 一样都没有——无 patch 概念、只有 built-in 与 extension 两种来源、冲突规则一句话（built-in 名字保留，由 runner 的 `reservedCommands` 参数强制）。
+3. **build 期快照有反向代价**：extension 若动态增删 command，快照需要失效/重建逻辑；每次 input 现查 runner 天然新鲜，command 列表规模下扫描成本可忽略。
+
+同轮补充裁决——**built-in 绑定表迁至 `command.ts`，但不做 runtime-service 构建期注入**。binding 执行体签名是 `(orchestrator, agentId, args)`，只消费公开原子方法，表本身是纯声明事实，搬到 `command.ts` 是零行为变化的布局归位（command.ts = 类型 + parser + built-in 表的完整 command 事实模块，对 `AgentOrchestrator` 仅 `import type`）；orchestrator 继续直接 import 该常量。评估过"runtime-service 构建期把表注入 orchestrator 构造参数"，裁决否，理由：
+
+1. **绑定不闭包任何构建期状态**。执行体到执行时才拿 `(orchestrator, agentId)`，候选事实（modelRegistry、skills）也经 orchestrator 触达；注入只是把常量多递两跳，不产生新自由度。extension command 需要构建期组装是因为 `profile.extensions` 是真实构建期变量，built-in 无对应物。
+2. **可注入意味着可变，但该可变性没有消费者**。没有场景需要一个 built-in 集合不同的 orchestrator；per-agent 差异已由 profile `deny`/`enabled`/`scope` 承担。
+3. **注入重开验证面**。表作为静态常量时"built-in 名字保留"是编译期事实；变成实例参数后重名/缺项/diagnostics 的问题链会把 mini-registry 逼回来。
+4. **与 ToolRegistry 的对称是形式对称、实质不对称**。tool 多来源、可 patch、profile 按名选择，构建期组装有实活；command 三者皆无。
+
+复议条件（满足其一时再提取 resolver 与构建期组装，提取点就是上述三个私有方法）：
+
+- command 出现第三种来源（用户/项目级 command 文件、MCP prompts 等），冲突处理不再适合塞在 `reservedCommands` 参数里，且该来源确属构建期发现；
+- command 出现 patch/override 语义。
 
 ## Execution Flow And Events
 
@@ -202,7 +224,7 @@ Command 对参数有结构要求，这是 input-triggered command 相对普通 p
 
 ## Built-in Commands
 
-Built-in 集合直接定义在 orchestrator 侧（现 `command/builtin.ts` 迁入），是 Multi-Agent Core 完整操作面的一部分。现状 + 规划：
+Built-in 集合定义在 `command.ts` 的静态绑定表中（orchestrator 直接 import，见[解析归属裁决](#解析归属不建-commandregistry-类2026-07-07-裁决)），是 Multi-Agent Core 完整操作面的一部分。现状 + 规划：
 
 | Command | 绑定 | scope | 参数 | 状态 |
 | --- | --- | --- | --- | --- |
@@ -283,7 +305,14 @@ export interface ExtensionCommandDefinition {
 
 **阶段 4 — 删除，不留过渡期**。旧 `Command` 类、`CommandRequest`/`CommandValue`/`CommandResult` union、`dispatch()` 与 `_executeCommand` switch、`ExtensionActions.dispatch`、`command/` 目录整体。消费面已核实：`tests/core/agent-orchestrator.test.ts` 的 29 处 `dispatch()` 调用（机械改写为原子方法或 `inputAgent`）、`runtime-service.ts:693` 的 `new Command()` 组合——没有产品消费者，deprecated 过渡期只会延长双入口状态。**阶段 4 完成后 dispatch 不复存在，双入口状态在本阶段内终结，不跨阶段过夜。**
 
-**阶段 5+ — 增量能力，按命令逐个落**。inline 扫描与 expand 执行、argumentsCompletion human request、`/model`、`setAgentThinkingLevel` + `/thinking`、`<skill:...>`、`<prompt:...>`。每个命令独立可验收，任何一个卡住不阻塞已收编的主干。
+**阶段 5+ — 增量能力，按命令逐个落**。每个切片独立可验收、测试全绿，任何一个卡住不阻塞已收编的主干。commit 顺序按依赖排定：
+
+0. **built-in 绑定表迁至 `command.ts`（零行为变化布局 commit）**。`BuiltInCommandBinding`、`BUILT_IN_COMMANDS`、`getBuiltInCommands()` 归位 command 事实模块，orchestrator 直接 import（裁决见[解析归属](#解析归属不建-commandregistry-类2026-07-07-裁决)）。必须先于一切新 command 落地——后续每个切片都往这张表加条目，先搬家，加条目的 commit 才不混入布局变更。
+1. **`setAgentThinkingLevel(agentId, level)` 原子方法**。纯方法面补缺（见 [Settings Commands](#settings-commands) 命名缺口），下一 turn 生效；无 `reasoning` 能力的 model 上报错。command 落地前方法必须先在。
+2. **`/model` + `/thinking` settings commands**。绑定 `setAgentModel` / `setAgentThinkingLevel`；候选来自 `modelRegistry.getAvailable()` / 当前 model 的 `thinkingLevelMap`；无参时以 command value 返回候选列表（同 `/session` 形态），不依赖 argumentsCompletion。
+3. **argumentsCompletion human request**。替换"参数缺失直接 `command_rejected`"的过渡行为：先发 `argumentsCompletion` 请求，无 client / 超时 / 拒绝再 reject；候选消费 binding 的 `complete()` 事实，与 client 补全共用一份定义。既有消费者：`/steer`、`/follow-up`、`/name` 的必填参数，切片 2 的候选源。
+4. **inline 扫描与 expand 管线 + `<prompt:...>`**。`parseLineCommand` 未命中后的 inline 扫描、expand 执行体校验、`placement: "inline"` 事件、session 双份记录、任一失败整段 reject。`<prompt:...>` 纯文本插入，作为管线的首个消费者一起落，避免无消费者的裸机制。
+5. **`<skill:...>`**。候选来自 profile skills（`ResourceLoader.loadSkills()`）；展开产物只含 metadata 与指引，正文按需加载依赖 M2 coding tools 的 read 最小集——本切片可先落，正文加载能力随 M2 就绪。
 
 验收标准沿用 review 的纪律：阶段 4 后不存在两个事件语义不同的 command 入口；每一条"不让 X 做 Y"（保留字、gateway、fall-back 禁止、expand 无副作用）都能指到一行强制它的代码。
 
@@ -297,7 +326,7 @@ export interface ExtensionCommandDefinition {
 
 已裁决（原待定项）：main-agent 判定 → `scope: "user-facing"` 消费 `capabilities.acceptsUserInput`；返回契约 → 判别式 `InputResult`，`command_completed` 只带摘要；解析模板 → 固定 `<trigger><name>` / `<trigger><name>:<argument>`，argument 是单个 raw string；session 记录 → message 存展开、custom entry 存原文；inline 能力 → `placement: "inline"` + 可选 `closeTrigger` 声明模板，binding 校验执行体；`dispatch()` → 直接删无过渡；`listCommands` → policy/scope 静态剪列表 + status 作 availability 标注；`<prompt:...>` → 纯文本插入无占位符；`/thinking` → 下一 turn 生效。
 
-已裁决（补充）：`inputInvoke` 开关随契约退役，改名为 `inputAgent` 选项 `commands: false`，并新增 profile 级 `commands.enabled: false` 等价开关；参数缺失在 argumentsCompletion 落地前直接 `command_rejected`（code `command.arguments_required`），不降级为 prompt。
+已裁决（补充）：`inputInvoke` 开关随契约退役，改名为 `inputAgent` 选项 `commands: false`，并新增 profile 级 `commands.enabled: false` 等价开关；参数缺失在 argumentsCompletion 落地前直接 `command_rejected`（code `command.arguments_required`），不降级为 prompt；不建 `CommandRegistry` 类 / build 期 `AgentCommandSet`——解析与门控保持 orchestrator 私有惰性查询（见 [解析归属](#解析归属不建-commandregistry-类2026-07-07-裁决)）。
 
 待定：
 

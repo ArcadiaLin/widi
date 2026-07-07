@@ -10,9 +10,16 @@
 
 目标：终结 command 伪可选层（review 问题 1/2），trigger-based command input 成为 orchestrator 自身的 input 能力。全部裁决与阶段切片见 [Command Experiment](core/command-experiment.md)。
 
-阶段 1–4（文档修真、代码布局、`inputAgent` 收编 + gateway、dispatch 删除）已完成，账本见 git history。
+阶段 1–4（文档修真、代码布局、`inputAgent` 收编 + gateway、dispatch 删除）已完成，账本见 git history。裁决补充：不建 `CommandRegistry` 类 / `AgentCommandSet`，解析与门控保持 orchestrator 私有惰性查询；built-in 绑定表迁 `command.ts` 但不做 runtime-service 构建期注入（裁决与复议条件见 command-experiment.md 解析归属节）。
 
-- [ ] 阶段 5+ — 增量能力逐命令落地：inline 扫描与 expand 执行、argumentsCompletion human request、`/model`、`setAgentThinkingLevel` + `/thinking`、`<skill:...>`、`<prompt:...>`。
+阶段 5+ 按依赖排定的 commit 切片（细节见 command-experiment.md 阶段 5+ 节）：
+
+- [ ] built-in 绑定表迁至 `command.ts`（零行为变化布局 commit，先于一切新 command）。
+- [ ] `setAgentThinkingLevel(agentId, level)` 原子方法。
+- [ ] `/model` + `/thinking` settings commands（候选来自 modelRegistry / thinkingLevelMap，无参返回候选列表）。
+- [ ] argumentsCompletion human request（替换参数缺失直接 reject 的过渡行为）。
+- [ ] inline 扫描与 expand 管线 + `<prompt:...>` 首个消费者。
+- [ ] `<skill:...>`（候选来自 profile skills；正文加载随 M2 read 就绪）。
 
 验收：不存在两个事件语义不同的 command 入口；每条"不让 X 做 Y"（保留字、gateway、fall-back 禁止、expand 无副作用）都能指到一行强制它的代码。
 
