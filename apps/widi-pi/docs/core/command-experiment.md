@@ -207,7 +207,7 @@ Command 对参数有结构要求，这是 input-triggered command 相对普通 p
 
 `HumanRequestKind` 已增加 `"argumentsCompletion"`（`src/core/human-request.ts`）。流程：
 
-- 命中 command 且声明 `arguments.required` 但输入未携带参数时，orchestrator 发起 `argumentsCompletion` human request。`payload` 是 `CommandArgumentsCompletionPayload`：`commandId`、原始 `command` invocation、`argumentHint`、`argumentPrefix` 和候选列表（若 `complete()` 存在）。
+- 命中 command 且声明 `arguments.required` 但输入未携带参数时，orchestrator 发起 `argumentsCompletion` human request。`payload` 是 `CommandArgumentsCompletionPayload`：`commandId`、原始 `command` invocation、`argumentHint`、`argumentPrefix` 和候选列表（若 `complete()` 存在）。请求恒置 `allowFreeInput: true`——参数补全天然接受候选之外的自由输入（见 [Client 渲染契约](#client-渲染契约)）。
 - client 返回的 `input`/`select` 值作为 args 继续执行；其他 response kind、`undefined` 或 blank string 均视为未补全。无可用 client、超时、取消或用户拒绝 → `command_rejected`（recoverable diagnostic），**不静默 fall back 成普通 prompt**——用户明确输入了命令，把残缺命令当聊天文本发给模型是最坏的失败模式。
 - 补参失败后的 command diagnostic code 保持 `command.arguments_required`，`details` 记录 `completionFailureCode`、`requestId` 等 human request 失败事实；human request 自身的 diagnostic event 仍作为支撑遥测发布。
 - 补参成功后 gateway **复查一次**：human 等待可能比 gateway 前提活得长（如 `/steer` 要求的 running turn 在用户打字期间结束），复查让过期的 command 仍以 `command_rejected` 无副作用收场，而不是执行中途 `command_failed`。

@@ -1128,6 +1128,7 @@ describe("AgentOrchestrator", () => {
 					title: "Complete /steer arguments",
 					message: "Command /steer requires an argument.",
 					placeholder: "<text>",
+					allowFreeInput: true,
 					payload: {
 						commandId: "orchestrator-command-1",
 						command: {
@@ -1405,6 +1406,7 @@ describe("AgentOrchestrator", () => {
 					kind: "argumentsCompletion",
 					options: ["alpha", "beta"],
 					placeholder: "<value>",
+					allowFreeInput: true,
 					payload: {
 						command: invocation,
 						argumentHint: "<value>",

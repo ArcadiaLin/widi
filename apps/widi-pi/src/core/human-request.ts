@@ -14,6 +14,10 @@ export interface HumanRequest {
 	message?: string;
 	options?: readonly string[];
 	placeholder?: string;
+	// Whether the client should offer free-form input alongside options.
+	// Absent means the kind's inherent form (input: always, confirm/select:
+	// never). Free input is a literal value: never parsed as a command.
+	allowFreeInput?: boolean;
 	payload?: unknown;
 	timeoutMs?: number;
 	signal?: AbortSignal;

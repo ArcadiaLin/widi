@@ -2710,6 +2710,7 @@ export class AgentOrchestrator {
 						? candidates.map((candidate) => candidate.value)
 						: undefined,
 				placeholder: binding.command.argumentHint,
+				allowFreeInput: true,
 				payload,
 			});
 		} catch (error) {
