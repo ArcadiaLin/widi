@@ -204,7 +204,6 @@ export type AgentId = string;
 
 export type AgentLifecycleStatus =
 	| "creating"
-	| "ready"
 	| "running"
 	| "idle"
 	| "unavailable"
@@ -1649,7 +1648,7 @@ export class AgentOrchestrator {
 				model,
 				thinkingLevel: options.thinkingLevel,
 			});
-			await this._setAgentStatus(agentId, "ready");
+			await this._setAgentStatus(agentId, "idle");
 			await this._emit({ type: "agent_spawned", agentId, profile, model });
 			return { agentId, harness };
 		} catch (error) {
@@ -1717,7 +1716,7 @@ export class AgentOrchestrator {
 				activeToolNames: context.activeToolNames ?? undefined,
 			});
 
-			await this._setAgentStatus(agentId, "ready");
+			await this._setAgentStatus(agentId, "idle");
 			await this._emit({ type: "agent_resumed", agentId, profile, model });
 			return { agentId, harness };
 		} catch (error) {

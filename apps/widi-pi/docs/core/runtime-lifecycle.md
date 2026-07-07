@@ -267,10 +267,8 @@ Status update rule:
 agent_start | turn_start
   -> record.status = running
 
-agent_end | turn_end | settled
-  -> record.status = ready/idle according to harness/record state
-     // `ready` 只在创建瞬间出现且无消费者；
-     // M2 收敛为 creating/running/idle/unavailable/disposed
+agent_end | turn_end | abort | settled
+  -> record.status = idle
 
 dispose
   -> unsubscribe harness events/interceptors

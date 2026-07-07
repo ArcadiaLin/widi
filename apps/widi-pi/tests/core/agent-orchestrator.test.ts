@@ -1006,11 +1006,11 @@ describe("AgentOrchestrator", () => {
 		});
 		const { agentId } = await orchestrator.spawnAgentHarness();
 
-		expect(orchestrator.getAgentStatus(agentId)).toBe("ready");
+		expect(orchestrator.getAgentStatus(agentId)).toBe("idle");
 		expect(orchestrator.getAgentHarness(agentId)).toBeDefined();
 		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
 			agentId,
-			status: "ready",
+			status: "idle",
 			profile: {
 				reference: { id: defaultProfile.id, label: defaultProfile.label },
 				entryId: "memory:main",
@@ -1025,11 +1025,11 @@ describe("AgentOrchestrator", () => {
 			diagnostics: [],
 		});
 
-		expect(orchestrator.getAgentStatus(agentId)).toBe("ready");
+		expect(orchestrator.getAgentStatus(agentId)).toBe("idle");
 
 		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
 			agentId,
-			status: "ready",
+			status: "idle",
 			hasHarness: true,
 		});
 
@@ -1879,7 +1879,7 @@ describe("AgentOrchestrator", () => {
 				agentId: "main-agent-2",
 				snapshot: {
 					agentId: "main-agent-2",
-					status: "ready",
+					status: "idle",
 					hasHarness: true,
 					profile: {
 						reference: {
@@ -1891,7 +1891,7 @@ describe("AgentOrchestrator", () => {
 				},
 			},
 		});
-		expect(orchestrator.getAgentStatus(agentId)).toBe("ready");
+		expect(orchestrator.getAgentStatus(agentId)).toBe("idle");
 	});
 
 	it("lists and resumes sessions through runtime commands", async () => {
@@ -1939,7 +1939,7 @@ describe("AgentOrchestrator", () => {
 				agentId: "worker-agent",
 				snapshot: {
 					agentId: "worker-agent",
-					status: "ready",
+					status: "idle",
 					model: expect.objectContaining({ id: restoredModel.id }),
 				},
 			},
@@ -1992,7 +1992,7 @@ describe("AgentOrchestrator", () => {
 				agents: [
 					expect.objectContaining({
 						agentId,
-						status: "ready",
+						status: "idle",
 						hasHarness: true,
 					}),
 				],
@@ -2119,7 +2119,7 @@ describe("AgentOrchestrator", () => {
 			value: {
 				agentId: expect.not.stringMatching(`^${agentId}$`),
 				snapshot: {
-					status: "ready",
+					status: "idle",
 					hasHarness: true,
 					model: expect.objectContaining({ id: defaultModel.id }),
 				},
@@ -2147,7 +2147,7 @@ describe("AgentOrchestrator", () => {
 		expect(forkedTree.entries.some((entry) => entry.id === targetEntryId)).toBe(
 			false,
 		);
-		expect(orchestrator.getAgentStatus(agentId)).toBe("ready");
+		expect(orchestrator.getAgentStatus(agentId)).toBe("idle");
 	});
 
 	it("disposes agents best-effort and leaves an inspectable stale record", async () => {
