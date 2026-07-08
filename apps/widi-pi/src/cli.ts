@@ -8,6 +8,8 @@
  * reason to import core internals.
  */
 
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { AgentHarnessEvent } from "@earendil-works/pi-agent-core";
 import type {
@@ -251,7 +253,10 @@ async function main(): Promise<void> {
 	const options = parseArgs(process.argv.slice(2));
 	const runtime = await createWidiRuntime({
 		cwd: options.cwd,
-		agentDir: options.agentDir,
+		// The core default (".widi") resolves relative to cwd, which is the
+		// project config dir convention. The user-level agent dir default is
+		// this adapter's decision.
+		agentDir: options.agentDir ?? join(homedir(), ".widi"),
 		defaultProfileId: options.profileId,
 	});
 	const orchestrator: AgentOrchestrator = runtime.orchestrator;
