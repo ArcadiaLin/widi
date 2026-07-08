@@ -51,6 +51,7 @@ import type { RuntimeModel } from "./runtime-types.ts";
 import { SessionManager } from "./session-manager.js";
 import { SettingManager } from "./setting-manager.js";
 import { ToolRegistry } from "./tool-registry.ts";
+import { registerCoreCodingTools } from "./tools/coding/builtin.ts";
 
 export interface CreateWidiRuntimeOptions {
 	readonly cwd: string;
@@ -672,6 +673,7 @@ export async function createWidiRuntime(
 		await extensionLoader.loadAvailableExtensions(executionEnv);
 	const extensionDiscovery = extensionLoad.discovery;
 	const toolRegistry = options.toolRegistry ?? new ToolRegistry();
+	registerCoreCodingTools(toolRegistry, cwd);
 	const orchestratorConfig: AgentOrchestratorConfigs = {
 		executionEnv,
 		resourceLoader,

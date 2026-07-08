@@ -388,6 +388,26 @@ describe("createWidiRuntime", () => {
 		);
 	});
 
+	it("registers core built-in coding tools in the tool registry", async () => {
+		const env = new MemoryExecutionEnv();
+		const runtime = await createWidiRuntime({
+			cwd: "/workspace/project",
+			agentDir: "/home/user/.widi",
+			executionEnv: env,
+			defaultModel,
+		});
+
+		const resolved = runtime.services.toolRegistry.resolve();
+		expect(resolved.toolNames).toEqual(["read", "write", "edit"]);
+		for (const name of ["read", "write", "edit"]) {
+			expect(resolved.getTool(name)?.source).toEqual({
+				kind: "core",
+				id: "builtin",
+			});
+		}
+		expect(resolved.diagnostics).toEqual([]);
+	});
+
 	it("gates project profiles when project trust is not granted", async () => {
 		const env = new MemoryExecutionEnv();
 		env.addFile(
