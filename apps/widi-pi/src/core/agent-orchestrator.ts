@@ -10,6 +10,7 @@ import {
 	type AgentHarnessResources,
 	type AgentTool,
 	type ExecutionEnv,
+	formatSkillsForSystemPrompt,
 	type JsonlSessionMetadata,
 	type PromptTemplate,
 	type Session,
@@ -1818,7 +1819,10 @@ export class AgentOrchestrator {
 			models: this.modelRegistry.getRuntime(),
 			resources: resources,
 			tools: agentToolSet.tools,
-			systemPrompt: profile.systemPrompt,
+			// Callback instead of a string so the skills listing tracks the
+			// harness's current resources and active tools at each turn start.
+			systemPrompt: ({ resources: current, activeTools }) =>
+				buildAgentSystemPrompt(profile.systemPrompt, current, activeTools),
 			model: model,
 			thinkingLevel: options.thinkingLevel,
 			activeToolNames: [...agentToolSet.activeToolNames],
@@ -3364,6 +3368,25 @@ function commandArgumentsCompletionFailureDetails(
 		completionFailureMessage: diagnostic.message,
 		requestId: diagnostic.requestId,
 	};
+}
+
+/**
+ * Compose the harness system prompt from the profile prompt plus a
+ * model-visible skills listing (agentskills.io block via pi-agent-core).
+ * The listing tells the model to read the skill file, so it is only
+ * appended when a read tool is active; skills stay reachable through the
+ * `<skill:...>` inline command either way.
+ */
+export function buildAgentSystemPrompt(
+	basePrompt: string,
+	resources: AgentHarnessResources,
+	activeTools: readonly { name: string }[],
+): string {
+	const hasReadTool = activeTools.some((tool) => tool.name === "read");
+	if (!hasReadTool) return basePrompt;
+	const skillsSection = formatSkillsForSystemPrompt(resources.skills ?? []);
+	if (skillsSection === "") return basePrompt;
+	return `${basePrompt}\n\n${skillsSection}`;
 }
 
 function changesRecoverableProfileFields(

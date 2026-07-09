@@ -19,6 +19,7 @@ import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import {
 	AgentOrchestrator,
+	buildAgentSystemPrompt,
 	type OrchestratorEvent,
 } from "../../src/core/agent-orchestrator.ts";
 import {
@@ -1746,6 +1747,76 @@ describe("AgentOrchestrator", () => {
 				},
 			],
 		});
+	});
+
+	it("lists loaded skills in the harness system prompt when a read tool is active", async () => {
+		const env = new MemoryExecutionEnv();
+		await env.writeFile(
+			"/workspace/project/.widi/skills/code-review/SKILL.md",
+			[
+				"---",
+				"name: code-review",
+				"description: Review code for issues.",
+				"---",
+				"SECRET BODY INSTRUCTIONS",
+			].join("\n"),
+		);
+		env.dirs.add("/workspace/project/.widi/skills");
+		const orchestrator = await createOrchestrator(env);
+		const { harness } = await orchestrator.spawnAgentHarness();
+
+		const systemPrompt = (
+			harness as unknown as {
+				systemPrompt: (context: {
+					resources: unknown;
+					activeTools: { name: string }[];
+				}) => string | Promise<string>;
+			}
+		).systemPrompt;
+		expect(typeof systemPrompt).toBe("function");
+
+		const withRead = await systemPrompt({
+			resources: harness.getResources(),
+			activeTools: [{ name: "read" }],
+		});
+		expect(withRead.startsWith("default prompt")).toBe(true);
+		expect(withRead).toContain("<available_skills>");
+		expect(withRead).toContain("<name>code-review</name>");
+		expect(withRead).toContain(
+			"<location>/workspace/project/.widi/skills/code-review/SKILL.md</location>",
+		);
+		// The skill body stays in the file; the listing is metadata-only.
+		expect(withRead).not.toContain("SECRET BODY INSTRUCTIONS");
+
+		const withoutRead = await systemPrompt({
+			resources: harness.getResources(),
+			activeTools: [{ name: "write" }],
+		});
+		expect(withoutRead).toBe("default prompt");
+	});
+
+	it("keeps the base system prompt when skills are absent or model-hidden", () => {
+		const skill = {
+			name: "code-review",
+			description: "Review code for issues.",
+			content: "BODY",
+			filePath: "/skills/code-review/SKILL.md",
+		};
+		expect(
+			buildAgentSystemPrompt("base prompt", {}, [{ name: "read" }]),
+		).toBe("base prompt");
+		expect(
+			buildAgentSystemPrompt(
+				"base prompt",
+				{ skills: [{ ...skill, disableModelInvocation: true }] },
+				[{ name: "read" }],
+			),
+		).toBe("base prompt");
+		expect(
+			buildAgentSystemPrompt("base prompt", { skills: [skill] }, [
+				{ name: "read" },
+			]),
+		).toContain("<available_skills>");
 	});
 
 	it("rejects the whole input when an inline skill is unknown", async () => {

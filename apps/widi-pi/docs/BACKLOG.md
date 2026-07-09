@@ -44,6 +44,7 @@ Extension surface 的设计与实施已收编为 [ME milestone](TODO.md#me-exten
 - 多 agent 场景下 auth/model/settings 按 workspace 共享还是按 profile/runtime 隔离。
 - Provider registration 从 Pi global reset 模式收敛为 runtime scope，或记录当前全局副作用边界。
 - 通用 `/set <key> <value>` settings command 评估（等第三个 settings 类需求，见 command-experiment.md）。
+- `enableSkillCommands` 悬空设置处置（2026-07-09 发现）：setting-manager 有字段与 getter（默认 true）但无任何消费者。字面语义（skill 名注册为 line command）与现有两条通道——`<skill:...>` inline 展开、system prompt 的 `<available_skills>` 列表——是第三种语义。要么接线并写清与前两者的分工，要么删除字段。
 
 ## UI / RPC / Product Preset
 
