@@ -9,6 +9,7 @@
 - Resume 路径 diagnostics 测试补齐：profile missing/disabled、resource diagnostics、active tool missing、extension missing。
 - Extension diagnostic code 标准化：`extension.missing`、`extension.load_failed`、`extension.version_incompatible`、`extension.activation_failed`、`extension.handler_failed`。
 - Diagnostic event 增加 stable id 或 operation correlation，便于 UI/RPC 去重与回放。
+- Discovery 路径规范化去重（CLI adapter 反向检验发现，2026-07-09）：当 cwd 的项目 `.widi` 与 `agentDir` 指向同一目录时，profile/extension 被重复发现——`profile.source_overridden` 出现自指消息（"X is overridden by X"）且发两次，`extension.entry_missing` 对同一 extension 发三次。Discovery 应对 root 路径做 canonicalize + 去重，或至少让 override diagnostic 跳过同路径。
 
 ## Extension
 
@@ -47,7 +48,8 @@ Extension surface 的设计与实施已收编为 [ME milestone](TODO.md#me-exten
 ## UI / RPC / Product Preset
 
 - 第一版 WIDI product preset：默认 profile、model policy、coding tools 可见性、extension set。
-- 最小 CLI/TUI/RPC adapter 边界：只通过 orchestrator events + `inputAgent` + 原子方法交互（最小 stdout adapter 已入 M2）。
+- 最小 CLI/TUI/RPC adapter 边界：只通过 orchestrator events + `inputAgent` + 原子方法交互（最小 stdout adapter 已落地，见 TODO M2）。
+- "Active agent" 一等事实（CLI adapter 反向检验发现，2026-07-09）：`cli.ts` 的 `getNextAgentId` 被迫硬编码 `fork`/`new`/`resume` 命令名并从未类型化的 `InputResult.value` 挖 `agentId`——adapter 不该内建命令语义。候选形态：InputResult 类型化 command 结果，或 orchestrator 事件面出 "active agent changed" 事实。随 ME 切片 2/3 的公开面收口一并裁决。
 - Session selector、profile selector、model auth guidance、diagnostics panel 的 product TODO。
 - `/team`、`/flow`、`/goal` 作为 extension 还是 preset 的评估。
 - RPC/serialization schema：等真实 RPC consumer 出现，从 `listCommands()` 事实 + 原子方法签名生成。

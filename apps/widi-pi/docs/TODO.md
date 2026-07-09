@@ -31,7 +31,7 @@
 - [x] 显式声明单进程写入假设（session/auth/config storage 共用此裁决），或实现文件锁。
 - [x] package.json 修真：删除虚假入口（`main`/`bin`/`cli` 指向不存在的文件）与未使用依赖；README 写明 bootstrap 顺序（submodule → build pi → test）。
 - [x] Core built-in coding tools 第一版（裁决见 [DESIGN.md](DESIGN.md#coding-tools)）：read/write/edit 最小集复刻 pi-coding-agent，`source: core` 进 ToolRegistry；`/skill` 依赖的 read 能力在此就绪。
-- [ ] 最小 stdout/CLI adapter：只消费 orchestrator events + `inputAgent`，用真实调用压力反向检验 ToolRegistry、hook、diagnostics——当前所有 API 只被测试消费过。
+- [x] 最小 stdout/CLI adapter：只消费 orchestrator events + `inputAgent`，用真实调用压力反向检验 ToolRegistry、hook、diagnostics——当前所有 API 只被测试消费过。已落地 `src/cli.ts`（真实 vllm 端点验证过 chat/thinking、read/write/edit、`/model`）；反向检验发现两项已录 [BACKLOG](BACKLOG.md)：discovery 路径去重（diagnostic 重复+自指）、adapter 缺"active agent"一等事实。
 
 ## ME: Extension Surface（M2 之后、M3 之前）
 

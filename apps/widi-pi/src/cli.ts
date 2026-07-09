@@ -251,7 +251,11 @@ function pickOption(
 	) {
 		return options[byNumber - 1];
 	}
-	return options.find((option) => option === answer) ?? answer;
+	const matched = options.find((option) => option === answer);
+	if (matched !== undefined) return matched;
+	// Select accepts free input only when the request opts in; otherwise an
+	// unmatched answer means "no value".
+	return request.allowFreeInput === true ? answer : undefined;
 }
 
 function getNextAgentId(result: InputResult): string | undefined {
