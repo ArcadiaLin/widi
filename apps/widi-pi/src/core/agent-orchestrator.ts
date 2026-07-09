@@ -741,6 +741,36 @@ export class AgentOrchestrator {
 		return { level };
 	}
 
+	private _getAgentThinkingLevelCandidates(
+		record: AgentRecord,
+	): CommandCandidate[] {
+		if (!record.model.reasoning) {
+			throw new OrchestratorError(
+				this._createAgentThinkingNotSupportedDiagnostic(record),
+			);
+		}
+		return getSupportedThinkingLevels(record.model).map((level) => ({
+			value: level,
+			label: level,
+		}));
+	}
+
+	private _createAgentThinkingNotSupportedDiagnostic(
+		record: AgentRecord,
+	): OrchestratorDiagnostic {
+		return createOrchestratorDiagnostic({
+			severity: "error",
+			code: "model.thinking_not_supported",
+			message: `Model ${record.model.provider}/${record.model.id} does not support thinking levels.`,
+			source: { kind: "registry", name: "model", key: "thinkingLevel" },
+			agentId: record.agentId,
+			provider: record.model.provider,
+			modelId: record.model.id,
+			phase: "runtime",
+			recoverable: true,
+		});
+	}
+
 	getAgentTools(agentId: AgentId): AgentToolsSnapshot {
 		const state = this._requireAgentToolSet(agentId);
 		return {
@@ -791,6 +821,9 @@ export class AgentOrchestrator {
 		this._setAgentToolSet(agentId, next);
 	}
 
+	// Command input is an AgentOrchestrator public runtime surface. It stays
+	// here with command ids, gateway checks, argument completion, inline
+	// expansion, event emission, and session writes.
 	async inputAgent(
 		agentId: AgentId,
 		text: string,
@@ -2281,6 +2314,13 @@ export class AgentOrchestrator {
 			...this.modelRegistry.drainDiagnostics(),
 		];
 	}
+
+	// Command input runtime surface.
+	//
+	// This is intentionally not a collaborator yet: command input is the
+	// orchestrator's public ingress for human text. Keep ids, gateway,
+	// argument completion, inline expansion, command events, and session
+	// expansion writes together until a future narrow-host extraction exists.
 	private _createCommandId(): string {
 		const id = `orchestrator-command-${this._nextCommandId}`;
 		this._nextCommandId += 1;
@@ -2292,8 +2332,6 @@ export class AgentOrchestrator {
 		this._nextInputId += 1;
 		return id;
 	}
-
-	// Command input path
 
 	// Scans a line-command miss for inline commands and expands them in
 	// place. Returns undefined when the input contains none (the caller
@@ -2626,36 +2664,6 @@ export class AgentOrchestrator {
 		const unavailableReason = checkStatus?.(record.status);
 		if (!unavailableReason) return { ...command, available: true };
 		return { ...command, available: false, unavailableReason };
-	}
-
-	private _getAgentThinkingLevelCandidates(
-		record: AgentRecord,
-	): CommandCandidate[] {
-		if (!record.model.reasoning) {
-			throw new OrchestratorError(
-				this._createAgentThinkingNotSupportedDiagnostic(record),
-			);
-		}
-		return getSupportedThinkingLevels(record.model).map((level) => ({
-			value: level,
-			label: level,
-		}));
-	}
-
-	private _createAgentThinkingNotSupportedDiagnostic(
-		record: AgentRecord,
-	): OrchestratorDiagnostic {
-		return createOrchestratorDiagnostic({
-			severity: "error",
-			code: "model.thinking_not_supported",
-			message: `Model ${record.model.provider}/${record.model.id} does not support thinking levels.`,
-			source: { kind: "registry", name: "model", key: "thinkingLevel" },
-			agentId: record.agentId,
-			provider: record.model.provider,
-			modelId: record.model.id,
-			phase: "runtime",
-			recoverable: true,
-		});
 	}
 
 	// Command gateway: the sole execution-time arbiter. Checks, in order,
