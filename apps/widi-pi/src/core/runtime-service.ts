@@ -47,11 +47,11 @@ import {
 } from "./project-trust.js";
 import { ConfigValueResolver } from "./resolve-config-value.js";
 import { ResourceLoader, type ResourceRoot } from "./resource-loader.js";
-import type { RuntimeModel } from "./runtime-types.ts";
 import { SessionManager } from "./session-manager.js";
 import { SettingManager } from "./setting-manager.js";
 import { ToolRegistry } from "./tool-registry.ts";
 import { registerCoreCodingTools } from "./tools/coding/builtin.ts";
+import type { RuntimeModel } from "./types.ts";
 
 export interface CreateWidiRuntimeOptions {
 	readonly cwd: string;

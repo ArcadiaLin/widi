@@ -9,12 +9,12 @@ import type {
 import type { TSchema } from "typebox";
 import type { CommandCandidates, CommandPlacement } from "../command.ts";
 import type { HumanRequest, HumanResponse } from "../human-request.ts";
-import type { AgentToolsSnapshot } from "../runtime-types.ts";
 import type {
 	ToolDefinition,
 	ToolDefinitionPatch,
 	ToolLifecycleEvent,
 } from "../tools/types.ts";
+import type { AgentToolsSnapshot } from "../types.ts";
 
 // The tool contract lives in the core tools layer (ME slice 0 dependency
 // inversion); the extension layer consumes and re-exports it for its own

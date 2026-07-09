@@ -251,3 +251,85 @@ function createResourceDiagnostic(options: {
 		},
 	});
 }
+
+/**
+ * Build an orchestrator-domain diagnostic, defaulting domain from the code
+ * prefix and disposition to "blocked".
+ */
+export function createOrchestratorDiagnostic(
+	diagnostic: Omit<
+		OrchestratorDiagnostic,
+		"domain" | "disposition" | "source"
+	> & {
+		readonly domain?: OrchestratorDiagnostic["domain"];
+		readonly disposition?: DiagnosticDisposition;
+		readonly source?: DiagnosticSource;
+		readonly operationSource?: OperationSource;
+	},
+): OrchestratorDiagnostic {
+	const {
+		domain,
+		disposition,
+		operationSource: inputOperationSource,
+		source: inputSource,
+		...rest
+	} = diagnostic;
+	const source = inputSource ?? operationSource(inputOperationSource);
+	return {
+		...rest,
+		domain: domain ?? domainFromDiagnosticCode(diagnostic.code),
+		disposition: disposition ?? "blocked",
+		source,
+	};
+}
+
+/** Unwrap an OrchestratorError's diagnostic, or build one from the fallback. */
+export function toDiagnostic(
+	error: unknown,
+	fallback: Omit<
+		OrchestratorDiagnostic,
+		"domain" | "disposition" | "severity" | "source"
+	> & {
+		severity?: OrchestratorDiagnostic["severity"];
+		disposition?: DiagnosticDisposition;
+		operationSource?: OperationSource;
+	},
+): OrchestratorDiagnostic {
+	if (error instanceof OrchestratorError) return error.diagnostic;
+	return createOrchestratorDiagnostic({
+		severity: fallback.severity ?? "error",
+		disposition: fallback.disposition,
+		code: fallback.code,
+		message: fallback.message,
+		operationSource: fallback.operationSource,
+		agentId: fallback.agentId,
+		requestId: fallback.requestId,
+		commandId: fallback.commandId,
+		recoverable: fallback.recoverable,
+	});
+}
+
+function domainFromDiagnosticCode(
+	code: string,
+): OrchestratorDiagnostic["domain"] {
+	const [domain] = code.split(".");
+	if (
+		domain === "profile" ||
+		domain === "resource" ||
+		domain === "tool" ||
+		domain === "model" ||
+		domain === "auth" ||
+		domain === "settings" ||
+		domain === "extension" ||
+		domain === "orchestrator"
+	) {
+		return domain;
+	}
+	return "orchestrator";
+}
+
+function operationSource(
+	source: OperationSource | undefined,
+): DiagnosticSource | undefined {
+	return source ? { kind: "operation", source } : undefined;
+}

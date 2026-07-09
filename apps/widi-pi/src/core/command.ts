@@ -2,7 +2,7 @@ import type { Skill } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentOrchestrator } from "./agent-orchestrator.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
-import type { AgentId, AgentLifecycleStatus } from "./runtime-types.ts";
+import type { AgentId, AgentLifecycleStatus } from "./types.ts";
 
 export type CommandPlacement = "line" | "inline";
 

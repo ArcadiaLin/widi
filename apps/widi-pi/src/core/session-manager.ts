@@ -24,7 +24,7 @@ import {
 	parseAgentProfileReference,
 	toAgentProfileReference,
 } from "./agent-profile.js";
-import type { AgentId } from "./runtime-types.ts";
+import type { AgentId } from "./types.ts";
 
 export type AgentSessionMetadata = SessionMetadata | JsonlSessionMetadata;
 

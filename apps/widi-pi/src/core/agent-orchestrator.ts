@@ -27,6 +27,7 @@ import type {
 	AgentProfile,
 	AgentProfileCommandPolicy,
 	AgentProfileOverride,
+	AgentProfileReference,
 	AgentProfileRegistry,
 	AgentProfileSource,
 } from "./agent-profile.js";
@@ -52,18 +53,19 @@ import {
 	scanInlineCommands,
 } from "./command.ts";
 import {
-	type DiagnosticDisposition,
-	type DiagnosticSource,
+	createOrchestratorDiagnostic,
 	dedupeDiagnostics,
 	type OrchestratorDiagnostic,
 	OrchestratorError,
 	toCoreDiagnosticFromPromptTemplateDiagnostic,
 	toCoreDiagnosticFromSkillDiagnostic,
+	toDiagnostic,
 } from "./diagnostics.ts";
 import {
 	type ExtensionActionFailure,
 	type ExtensionActions,
 	type ExtensionFactory,
+	type ExtensionIdentity,
 	type ExtensionInterceptorEventFor,
 	type ExtensionInterceptorName,
 	type ExtensionInterceptorResultFor,
@@ -78,38 +80,10 @@ import type {
 	HumanResponse,
 } from "./human-request.ts";
 import type { ModelRegistry } from "./model-registry.js";
-import type { OperationSource } from "./operation-source.ts";
-import type {
-	AgentListResult,
-	AgentModelCandidateListResult,
-	AgentOrchestratorConfigs,
-	AgentProfileRecordReference,
-	AgentPromptTemplateCandidateListResult,
-	AgentRecord,
-	AgentRecordSnapshot,
-	AgentSessionCommandResult,
-	AgentSessionListResult,
-	AgentSkillCandidateListResult,
-	AgentThinkingLevelCandidateListResult,
-	AgentThinkingLevelCommandResult,
-	ExtensionReloadAgentResult,
-	ExtensionReloadAgentSkipReason,
-	ExtensionReloadResult,
-	OrchestratorEvent,
-	OrchestratorEventListener,
-	SpawnAgentHarnessCreateOptions,
-	SpawnAgentHarnessOptions,
-	SpawnAgentHarnessResult,
-	SpawnAgentHarnessResumeOptions,
-} from "./orchestrator-types.ts";
+import { agentIdFromOperationSource } from "./operation-source.ts";
 import type { ResourceLoader } from "./resource-loader.js";
 import type {
-	AgentId,
-	AgentLifecycleStatus,
-	AgentToolsSnapshot,
-	RuntimeModel,
-} from "./runtime-types.ts";
-import type {
+	AgentSessionCandidate,
 	AgentSessionMetadata,
 	AgentSessionSnapshot,
 	AgentSessionTreeSnapshot,
@@ -121,36 +95,163 @@ import {
 	createAgentToolsFromResolvedTools,
 	ToolRegistry,
 } from "./tool-registry.ts";
-
-// The orchestrator remains the single import site for its contract types;
-// definitions live in orchestrator-types.ts (and identity types in
-// runtime-types.ts) so other core modules can consume them without importing
-// this implementation module.
-export type {
-	AgentListResult,
-	AgentModelCandidateListResult,
-	AgentOrchestratorConfigs,
-	AgentProfileRecordReference,
-	AgentPromptTemplateCandidateListResult,
-	AgentRecord,
-	AgentRecordSnapshot,
-	AgentSessionCommandResult,
-	AgentSessionListResult,
-	AgentSkillCandidateListResult,
-	AgentThinkingLevelCandidateListResult,
-	AgentThinkingLevelCommandResult,
-	ExtensionReloadAgentResult,
-	ExtensionReloadAgentSkipReason,
-	ExtensionReloadAgentStatus,
-	ExtensionReloadResult,
+import type {
+	AgentId,
+	AgentLifecycleStatus,
+	AgentToolsSnapshot,
 	OrchestratorEvent,
 	OrchestratorEventListener,
-	SpawnAgentHarnessCreateOptions,
-	SpawnAgentHarnessOptions,
-	SpawnAgentHarnessResult,
-	SpawnAgentHarnessResumeOptions,
-} from "./orchestrator-types.ts";
-export type { AgentId, AgentLifecycleStatus } from "./runtime-types.ts";
+	RuntimeModel,
+} from "./types.ts";
+
+export type {
+	AgentId,
+	AgentLifecycleStatus,
+	OrchestratorEvent,
+	OrchestratorEventListener,
+} from "./types.ts";
+
+export interface AgentOrchestratorConfigs {
+	executionEnv: ExecutionEnv;
+	resourceLoader: ResourceLoader;
+	sessionManager: SessionManager;
+	settingManager: SettingManager;
+	modelRegistry: ModelRegistry;
+	profileRegistry: AgentProfileRegistry;
+	toolRegistry?: ToolRegistry;
+	extensionLoader?: ExtensionLoader;
+	defaultProfileId: string;
+	enabledProfileIds?: readonly string[];
+	defaultModel: RuntimeModel;
+	defaultThinkingLevel?: ThinkingLevel;
+}
+
+export interface AgentProfileRecordReference {
+	readonly reference: AgentProfileReference;
+	readonly source?: AgentProfileSource;
+	readonly entryId?: string;
+}
+
+export interface AgentRecord {
+	readonly agentId: AgentId;
+	status: AgentLifecycleStatus;
+	readonly profile: AgentProfileRecordReference;
+	// Command gating facts snapshotted from the resolved profile.
+	readonly capabilities?: AgentProfile["capabilities"];
+	readonly commandPolicy?: AgentProfileCommandPolicy;
+	sessionMetadata?: AgentSessionMetadata;
+	model: RuntimeModel;
+	harness?: AgentHarness;
+	toolSnapshot?: AgentToolsSnapshot;
+	extensionRunner?: ExtensionRunner;
+	resourceDiagnostics: OrchestratorDiagnostic[];
+	extensionDiagnostics: OrchestratorDiagnostic[];
+	diagnostics: OrchestratorDiagnostic[];
+}
+
+export interface AgentRecordSnapshot {
+	readonly agentId: AgentId;
+	readonly status: AgentLifecycleStatus;
+	readonly profile: AgentProfileRecordReference;
+	readonly sessionMetadata?: AgentSessionMetadata;
+	readonly model: RuntimeModel;
+	readonly hasHarness: boolean;
+	readonly toolSnapshot?: AgentToolsSnapshot;
+	readonly extensionIds: readonly string[];
+	readonly extensions: readonly ExtensionIdentity[];
+	readonly extensionSnapshot: ExtensionRunnerSnapshot;
+	readonly resourceDiagnostics: readonly OrchestratorDiagnostic[];
+	readonly extensionDiagnostics: readonly OrchestratorDiagnostic[];
+	readonly diagnostics: readonly OrchestratorDiagnostic[];
+}
+
+export interface AgentSessionCommandResult {
+	readonly agentId: AgentId;
+	readonly snapshot: AgentRecordSnapshot;
+}
+
+export interface AgentSessionListResult {
+	readonly sessions: readonly AgentSessionCandidate[];
+}
+
+export interface AgentListResult {
+	readonly agents: readonly AgentRecordSnapshot[];
+}
+
+export interface AgentModelCandidateListResult {
+	readonly models: readonly CommandCandidate[];
+}
+
+export interface AgentThinkingLevelCandidateListResult {
+	readonly levels: readonly CommandCandidate[];
+}
+
+export interface AgentPromptTemplateCandidateListResult {
+	readonly templates: readonly CommandCandidate[];
+}
+
+export interface AgentSkillCandidateListResult {
+	readonly skills: readonly CommandCandidate[];
+}
+
+export interface AgentThinkingLevelCommandResult {
+	readonly level: ThinkingLevel;
+}
+
+export type ExtensionReloadAgentStatus = "reloaded" | "skipped" | "failed";
+
+export type ExtensionReloadAgentSkipReason =
+	| "creating"
+	| "running"
+	| "disposed"
+	| "unavailable"
+	| "missing_harness"
+	| "unknown_agent";
+
+export interface ExtensionReloadAgentResult {
+	readonly agentId: string;
+	readonly status: ExtensionReloadAgentStatus;
+	readonly reason?: ExtensionReloadAgentSkipReason;
+	readonly diagnostics: readonly OrchestratorDiagnostic[];
+	readonly before?: AgentRecordSnapshot;
+	readonly after?: AgentRecordSnapshot;
+}
+
+export interface ExtensionReloadResult {
+	readonly catalog: {
+		readonly loaded: readonly ExtensionIdentity[];
+		readonly diagnostics: readonly OrchestratorDiagnostic[];
+	};
+	readonly agents: readonly ExtensionReloadAgentResult[];
+}
+
+interface SpawnAgentHarnessCommonOptions {
+	model?: RuntimeModel;
+	inheritModelFromAgentId?: AgentId;
+	thinkingLevel?: ThinkingLevel;
+}
+
+export interface SpawnAgentHarnessCreateOptions
+	extends SpawnAgentHarnessCommonOptions {
+	resume?: false;
+	profileId?: string;
+	profileOverride?: AgentProfileOverride;
+}
+
+export interface SpawnAgentHarnessResumeOptions
+	extends SpawnAgentHarnessCommonOptions {
+	resume: true;
+	metadata: JsonlSessionMetadata;
+}
+
+export type SpawnAgentHarnessOptions =
+	| SpawnAgentHarnessCreateOptions
+	| SpawnAgentHarnessResumeOptions;
+
+export interface SpawnAgentHarnessResult {
+	agentId: AgentId;
+	harness: AgentHarness;
+}
 
 interface PendingHumanRequest {
 	envelope: HumanRequestEnvelope;
@@ -3066,58 +3167,6 @@ export class AgentOrchestrator {
 	}
 }
 
-function toDiagnostic(
-	error: unknown,
-	fallback: Omit<
-		OrchestratorDiagnostic,
-		"domain" | "disposition" | "severity" | "source"
-	> & {
-		severity?: OrchestratorDiagnostic["severity"];
-		disposition?: DiagnosticDisposition;
-		operationSource?: OperationSource;
-	},
-): OrchestratorDiagnostic {
-	if (error instanceof OrchestratorError) return error.diagnostic;
-	return createOrchestratorDiagnostic({
-		severity: fallback.severity ?? "error",
-		disposition: fallback.disposition,
-		code: fallback.code,
-		message: fallback.message,
-		operationSource: fallback.operationSource,
-		agentId: fallback.agentId,
-		requestId: fallback.requestId,
-		commandId: fallback.commandId,
-		recoverable: fallback.recoverable,
-	});
-}
-
-function createOrchestratorDiagnostic(
-	diagnostic: Omit<
-		OrchestratorDiagnostic,
-		"domain" | "disposition" | "source"
-	> & {
-		readonly domain?: OrchestratorDiagnostic["domain"];
-		readonly disposition?: DiagnosticDisposition;
-		readonly source?: DiagnosticSource;
-		readonly operationSource?: OperationSource;
-	},
-): OrchestratorDiagnostic {
-	const {
-		domain,
-		disposition,
-		operationSource: inputOperationSource,
-		source: inputSource,
-		...rest
-	} = diagnostic;
-	const source = inputSource ?? operationSource(inputOperationSource);
-	return {
-		...rest,
-		domain: domain ?? domainFromDiagnosticCode(diagnostic.code),
-		disposition: disposition ?? "blocked",
-		source,
-	};
-}
-
 function isBlockedExtensionDiagnostic(
 	diagnostic: OrchestratorDiagnostic,
 ): boolean {
@@ -3135,41 +3184,6 @@ function createEmptyExtensionSnapshot(): ExtensionRunnerSnapshot {
 		toolContributions: [],
 		stale: { stale: false },
 	};
-}
-
-function domainFromDiagnosticCode(
-	code: string,
-): OrchestratorDiagnostic["domain"] {
-	const [domain] = code.split(".");
-	if (
-		domain === "profile" ||
-		domain === "resource" ||
-		domain === "tool" ||
-		domain === "model" ||
-		domain === "auth" ||
-		domain === "settings" ||
-		domain === "extension" ||
-		domain === "orchestrator"
-	) {
-		return domain;
-	}
-	return "orchestrator";
-}
-
-function operationSource(
-	source: OperationSource | undefined,
-): DiagnosticSource | undefined {
-	return source ? { kind: "operation", source } : undefined;
-}
-
-function agentIdFromOperationSource(
-	source: OperationSource | undefined,
-): AgentId | undefined {
-	if (!source) return undefined;
-	if (source.kind === "agent" || source.kind === "tool") {
-		return source.agentId;
-	}
-	return undefined;
 }
 
 function commandArgumentsCompletionFailureDetails(

@@ -1,0 +1,117 @@
+import type { AgentHarnessEvent } from "@earendil-works/pi-agent-core";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import type { AgentProfile } from "./agent-profile.js";
+import type { CommandInvocation } from "./command.ts";
+import type { OrchestratorDiagnostic } from "./diagnostics.ts";
+import type { HumanRequestEnvelope, HumanResponse } from "./human-request.ts";
+import type { ToolLifecycleEvent } from "./tools/types.ts";
+
+export type RuntimeModel = Model<Api>;
+
+/** Runtime-local agent identity allocated by the orchestrator. */
+export type AgentId = string;
+
+export type AgentLifecycleStatus =
+	| "creating"
+	| "running"
+	| "idle"
+	| "unavailable"
+	| "disposed";
+
+export interface AgentToolsSnapshot {
+	readonly toolNames: string[];
+	readonly activeToolNames: string[];
+}
+
+export type OrchestratorEvent =
+	| {
+			readonly type: "agent_harness_event";
+			agentId: AgentId;
+			event: AgentHarnessEvent;
+	  }
+	| {
+			readonly type: "tool_lifecycle_event";
+			agentId: AgentId;
+			event: ToolLifecycleEvent;
+	  }
+	| {
+			readonly type: "command_detected";
+			commandId: string;
+			command: CommandInvocation;
+			// Correlates the inline expansions of one input; absent on line commands.
+			inputId?: string;
+			createdAt: string;
+	  }
+	| {
+			readonly type: "command_accepted";
+			commandId: string;
+			command: CommandInvocation;
+			inputId?: string;
+			createdAt: string;
+	  }
+	| {
+			readonly type: "command_completed";
+			commandId: string;
+			command: CommandInvocation;
+			result: unknown;
+			inputId?: string;
+			completedAt: string;
+	  }
+	| {
+			readonly type: "command_failed";
+			commandId: string;
+			command: CommandInvocation;
+			diagnostic: OrchestratorDiagnostic;
+			inputId?: string;
+			completedAt: string;
+	  }
+	| {
+			readonly type: "command_rejected";
+			commandId: string;
+			command?: CommandInvocation;
+			diagnostic: OrchestratorDiagnostic;
+			inputId?: string;
+			completedAt: string;
+	  }
+	| {
+			readonly type: "human_request_pending";
+			request: HumanRequestEnvelope;
+	  }
+	| {
+			readonly type: "human_request_resolved";
+			requestId: string;
+			response: HumanResponse;
+			completedAt: string;
+	  }
+	| {
+			readonly type: "human_request_timeout";
+			requestId: string;
+			completedAt: string;
+	  }
+	| {
+			readonly type: "human_request_cancelled";
+			requestId: string;
+			reason?: string;
+			completedAt: string;
+	  }
+	| {
+			readonly type: "diagnostic";
+			diagnostic: OrchestratorDiagnostic;
+			createdAt: string;
+	  }
+	| {
+			readonly type: "agent_spawned";
+			agentId: AgentId;
+			profile: AgentProfile;
+			model: RuntimeModel;
+	  }
+	| {
+			readonly type: "agent_resumed";
+			agentId: AgentId;
+			profile: AgentProfile;
+			model: RuntimeModel;
+	  };
+
+export type OrchestratorEventListener = (
+	event: OrchestratorEvent,
+) => Promise<void> | void;
