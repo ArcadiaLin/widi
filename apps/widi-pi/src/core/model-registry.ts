@@ -2,7 +2,10 @@
  * Model registry - manages built-in and custom models, resolves request auth.
  */
 
-import type { ExecutionEnv } from "@earendil-works/pi-agent-core";
+import type {
+	ExecutionEnv,
+	ThinkingLevel,
+} from "@earendil-works/pi-agent-core";
 import {
 	type AnthropicMessagesCompat,
 	type Api,
@@ -14,6 +17,7 @@ import {
 	createProvider,
 	type Model,
 	type Models,
+	type ModelThinkingLevel,
 	type MutableModels,
 	type OAuthProviderInterface,
 	type OpenAICompletionsCompat,
@@ -269,6 +273,44 @@ export interface ModelRegistryOptions {
 	authStorage?: AuthStorage;
 	configValueResolver?: ConfigValueResolver;
 	modelsJsonPath?: string;
+}
+
+export function modelReference(model: Model<Api>): string {
+	return `${model.provider}/${model.id}`;
+}
+
+export function parseModelReference(
+	reference: string,
+): { provider: string; modelId: string } | undefined {
+	const trimmed = reference.trim();
+	const slashIndex = trimmed.indexOf("/");
+	if (slashIndex <= 0 || slashIndex === trimmed.length - 1) {
+		return undefined;
+	}
+	return {
+		provider: trimmed.slice(0, slashIndex),
+		modelId: trimmed.slice(slashIndex + 1),
+	};
+}
+
+export const THINKING_LEVEL_SET = {
+	off: true,
+	minimal: true,
+	low: true,
+	medium: true,
+	high: true,
+	xhigh: true,
+} as const satisfies Record<ThinkingLevel | ModelThinkingLevel, true>;
+
+export const THINKING_LEVELS = Object.keys(
+	THINKING_LEVEL_SET,
+) as (keyof typeof THINKING_LEVEL_SET)[];
+
+export function parseThinkingLevel(level: string): ThinkingLevel | undefined {
+	const trimmed = level.trim();
+	return THINKING_LEVELS.some((candidate) => candidate === trimmed)
+		? (trimmed as ThinkingLevel)
+		: undefined;
 }
 
 function emptyCustomModelsResult(error?: string): CustomModelsResult {

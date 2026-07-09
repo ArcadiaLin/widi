@@ -20,7 +20,6 @@ import {
 import {
 	getSupportedThinkingLevels,
 	type ImageContent,
-	type ModelThinkingLevel,
 } from "@earendil-works/pi-ai";
 import type {
 	AgentProfile,
@@ -76,7 +75,13 @@ import {
 import { HarnessEventFacts } from "./harness-event-facts.ts";
 import type { HumanRequest, HumanResponse } from "./human-request.ts";
 import { HumanRequestBroker } from "./human-request.ts";
-import type { ModelRegistry } from "./model-registry.js";
+import {
+	type ModelRegistry,
+	modelReference,
+	parseModelReference,
+	parseThinkingLevel,
+	THINKING_LEVELS,
+} from "./model-registry.js";
 import type { ResourceLoader } from "./resource-loader.js";
 import type {
 	AgentSessionCandidate,
@@ -1331,16 +1336,8 @@ export class AgentOrchestrator {
 	}
 
 	private _resolveThinkingLevel(level: string): ThinkingLevel {
-		if (
-			level === "off" ||
-			level === "minimal" ||
-			level === "low" ||
-			level === "medium" ||
-			level === "high" ||
-			level === "xhigh"
-		) {
-			return level;
-		}
+		const parsed = parseThinkingLevel(level);
+		if (parsed && parsed === level) return parsed;
 		throw new Error(
 			`Cannot resume session with invalid thinking level: ${level}`,
 		);
@@ -2778,44 +2775,6 @@ function changesRecoverableProfileFields(
 		override.capabilities !== undefined ||
 		override.persist !== undefined
 	);
-}
-
-function modelReference(model: RuntimeModel): string {
-	return `${model.provider}/${model.id}`;
-}
-
-function parseModelReference(
-	reference: string,
-): { provider: string; modelId: string } | undefined {
-	const trimmed = reference.trim();
-	const slashIndex = trimmed.indexOf("/");
-	if (slashIndex <= 0 || slashIndex === trimmed.length - 1) {
-		return undefined;
-	}
-	return {
-		provider: trimmed.slice(0, slashIndex),
-		modelId: trimmed.slice(slashIndex + 1),
-	};
-}
-
-const THINKING_LEVEL_SET = {
-	off: true,
-	minimal: true,
-	low: true,
-	medium: true,
-	high: true,
-	xhigh: true,
-} as const satisfies Record<ThinkingLevel | ModelThinkingLevel, true>;
-
-const THINKING_LEVELS = Object.keys(
-	THINKING_LEVEL_SET,
-) as (keyof typeof THINKING_LEVEL_SET)[];
-
-function parseThinkingLevel(level: string): ThinkingLevel | undefined {
-	const trimmed = level.trim();
-	return THINKING_LEVELS.some((candidate) => candidate === trimmed)
-		? (trimmed as ThinkingLevel)
-		: undefined;
 }
 
 function formatError(error: unknown): string {
