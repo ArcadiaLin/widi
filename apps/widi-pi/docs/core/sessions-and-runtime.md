@@ -18,7 +18,7 @@ WIDI-owned tools 不引入额外的 session persistence facade。可恢复数据
 
 这不改变“session body 不保存 WIDI agent state”的边界：agent lifecycle、多 session 编排、command/client history 和 extension 私有数据库仍不进入 session body。Tool result 是 Pi harness 运行产物，不是 WIDI runtime state。
 
-Historical `write`、`read` 和 `bash` examples 已移出 core。它们的可恢复数据仍应通过 Pi tool call/result 表达：正文或输出进入 tool call/result，结构化信息进入 typed `details`，不通过 core tool state 或 custom entry 写入额外恢复数据。
+Historical `write`、`read` 和 `bash` examples 已从仓库删除（`read`/`write`/`edit` 现为 `src/core/tools/coding/` 下的真实 core 实现）。Coding tools 的可恢复数据仍应通过 Pi tool call/result 表达：正文或输出进入 tool call/result，结构化信息进入 typed `details`，不通过 core tool state 或 custom entry 写入额外恢复数据。
 
 Pi `custom` entry 仍由 storage 原样保留，但 WIDI core 不解释它。当前 extension runner 已暴露 `ctx.session.appendEntry()` / `findEntries()` MVP，用于和当前 session tree 强相关的小型扩展状态。MVP 只支持当前 extension namespace、current branch path、append-only state；fork、compaction、export、`custom_message` 和 restore diagnostics policy 后续再定。
 

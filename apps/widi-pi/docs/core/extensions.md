@@ -67,7 +67,7 @@ Extension 可以实现 tool tracking。
 
 Tool tracking 不进入 core primitive。它应作为 extension pattern：通过 `aroundExecute` 包装目标 tool，在 execute 前 start，在 `context.onUpdate` 中 update，在成功或抛错时 finish/fail。
 
-`apps/widi-pi/examples/tool-tracker-extension.ts` 保留了一个未接入 runtime 的示例骨架，用于展示这种模式。Extension 开发需要注意这个语义：观察、审计、耗时统计和轻量 run tracking 适合 `aroundExecute`；真正改变 tool 行为时才替换 `execute`。
+Extension 开发需要注意这个语义：观察、审计、耗时统计和轻量 run tracking 适合 `aroundExecute`（契约见 `ToolDefinitionPatch`，由 ToolRegistry patch 管线按注册顺序合成）；真正改变 tool 行为时才替换 `execute`。
 
 ## 当前实现
 
