@@ -1802,9 +1802,9 @@ describe("AgentOrchestrator", () => {
 			content: "BODY",
 			filePath: "/skills/code-review/SKILL.md",
 		};
-		expect(
-			buildAgentSystemPrompt("base prompt", {}, [{ name: "read" }]),
-		).toBe("base prompt");
+		expect(buildAgentSystemPrompt("base prompt", {}, [{ name: "read" }])).toBe(
+			"base prompt",
+		);
 		expect(
 			buildAgentSystemPrompt(
 				"base prompt",

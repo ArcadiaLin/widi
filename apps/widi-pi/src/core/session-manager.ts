@@ -19,12 +19,12 @@ import {
 	InMemorySessionRepo,
 	JsonlSessionRepo,
 } from "@earendil-works/pi-agent-core";
-import type { AgentId } from "./agent-orchestrator.js";
 import type { AgentProfile, AgentProfileReference } from "./agent-profile.js";
 import {
 	parseAgentProfileReference,
 	toAgentProfileReference,
 } from "./agent-profile.js";
+import type { AgentId } from "./runtime-types.ts";
 
 export type AgentSessionMetadata = SessionMetadata | JsonlSessionMetadata;
 
