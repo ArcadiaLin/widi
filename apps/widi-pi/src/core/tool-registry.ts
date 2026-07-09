@@ -7,6 +7,7 @@ import {
 	type DiagnosticSeverity,
 	type DiagnosticSource,
 } from "./diagnostics.ts";
+import type { ToolHumanHost } from "./human-request.ts";
 import type {
 	ToolDefinition,
 	ToolDefinitionPatch,
@@ -14,8 +15,7 @@ import type {
 	ToolExecutionContext,
 	ToolExtensionContext,
 	ToolSource,
-} from "./extension/types.ts";
-import type { ToolHumanHost } from "./human-request.ts";
+} from "./tools/types.ts";
 
 type RegistryToolDefinition = ToolDefinition<TSchema, unknown>;
 type RegistryToolDefinitionPatch = ToolDefinitionPatch<TSchema, unknown>;
