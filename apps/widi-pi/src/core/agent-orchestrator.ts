@@ -18,7 +18,6 @@ import {
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import {
-	type AssistantMessage,
 	getSupportedThinkingLevels,
 	type ImageContent,
 	type ModelThinkingLevel,
@@ -73,8 +72,8 @@ import {
 	type ExtensionInterceptorResultFor,
 	ExtensionLoader,
 	ExtensionRunner,
-	type ToolLifecycleEvent,
 } from "./extension/index.ts";
+import { HarnessEventFacts } from "./harness-event-facts.ts";
 import type { HumanRequest, HumanResponse } from "./human-request.ts";
 import { HumanRequestBroker } from "./human-request.ts";
 import type { ModelRegistry } from "./model-registry.js";
@@ -236,11 +235,6 @@ interface ResolvedAgentProfile {
 	entryId: string;
 }
 
-interface StreamingToolCallRef {
-	toolCallId?: string;
-	toolName?: string;
-}
-
 interface AgentToolSetHarness {
 	getTools(): AgentTool[];
 	setTools(tools: AgentTool[], activeToolNames?: string[]): Promise<void>;
@@ -278,8 +272,7 @@ export class AgentOrchestrator {
 		new Map();
 	private _eventListeners: Set<OrchestratorEventListener> = new Set();
 	private _agentToolSets: Map<AgentId, AgentToolSet> = new Map();
-	private _streamingToolCalls: Map<AgentId, Map<number, StreamingToolCallRef>> =
-		new Map();
+	private readonly _harnessEventFacts = new HarnessEventFacts();
 	private _clients: Map<string, OrchestratorClient<OrchestratorEvent>> =
 		new Map();
 	private readonly _humanRequests: HumanRequestBroker;
@@ -1034,7 +1027,7 @@ export class AgentOrchestrator {
 		record.extensionRunner?.invalidate("Agent has been disposed.");
 		delete record.harness;
 		this._agentToolSets.delete(agentId);
-		this._forgetAllStreamingToolCalls(agentId);
+		this._harnessEventFacts.forgetAllStreamingToolCalls(agentId);
 		await this._humanRequests.cancelForAgent(
 			agentId,
 			reason ?? `Agent disposed: ${agentId}`,
@@ -1047,7 +1040,7 @@ export class AgentOrchestrator {
 			await this.disposeAgent(agentId, reason);
 		}
 		await this._humanRequests.cancelAll(reason ?? "Orchestrator disposed.");
-		this._streamingToolCalls.clear();
+		this._harnessEventFacts.clearStreamingToolCalls();
 		try {
 			await this.executionEnv.cleanup();
 		} catch (error) {
@@ -1807,7 +1800,7 @@ export class AgentOrchestrator {
 			diagnostics: [...(existing?.diagnostics ?? []), options.diagnostic],
 		});
 		this._agentToolSets.delete(options.agentId);
-		this._forgetAllStreamingToolCalls(options.agentId);
+		this._harnessEventFacts.forgetAllStreamingToolCalls(options.agentId);
 	}
 
 	private _markExistingAgentUnavailable(
@@ -1828,7 +1821,7 @@ export class AgentOrchestrator {
 			record.extensionDiagnostics.push(diagnostic);
 		}
 		this._agentToolSets.delete(agentId);
-		this._forgetAllStreamingToolCalls(agentId);
+		this._harnessEventFacts.forgetAllStreamingToolCalls(agentId);
 	}
 
 	private _requireAgentRecord(agentId: AgentId): AgentRecord {
@@ -2213,7 +2206,10 @@ export class AgentOrchestrator {
 			});
 			await this._recordAndPublishExtensionDiagnostics(agentId, diagnostics);
 		}
-		const lifecycleEvent = this._toToolLifecycleEvent(agentId, event);
+		const lifecycleEvent = this._harnessEventFacts.toToolLifecycleEvent(
+			agentId,
+			event,
+		);
 		if (lifecycleEvent) {
 			await this._emit({
 				type: "tool_lifecycle_event",
@@ -2229,133 +2225,6 @@ export class AgentOrchestrator {
 				await this._recordAndPublishExtensionDiagnostics(agentId, diagnostics);
 			}
 		}
-	}
-
-	private _toToolLifecycleEvent(
-		agentId: AgentId,
-		event: AgentHarnessEvent,
-	): ToolLifecycleEvent | undefined {
-		if (event.type === "message_update") {
-			const assistantEvent = event.assistantMessageEvent;
-			if (assistantEvent.type === "toolcall_start") {
-				const ref = this._rememberStreamingToolCall(agentId, {
-					contentIndex: assistantEvent.contentIndex,
-					...streamingToolCallRefFromPartial(
-						assistantEvent.partial,
-						assistantEvent.contentIndex,
-					),
-				});
-				return {
-					type: "tool_call_created",
-					contentIndex: assistantEvent.contentIndex,
-					toolCallId: ref.toolCallId,
-					toolName: ref.toolName,
-				};
-			}
-			if (assistantEvent.type === "toolcall_delta") {
-				const ref = this._getStreamingToolCall(
-					agentId,
-					assistantEvent.contentIndex,
-				);
-				return {
-					type: "arguments_delta",
-					contentIndex: assistantEvent.contentIndex,
-					delta: assistantEvent.delta,
-					toolCallId: ref?.toolCallId,
-					toolName: ref?.toolName,
-				};
-			}
-			if (assistantEvent.type === "toolcall_end") {
-				this._forgetStreamingToolCall(agentId, assistantEvent.contentIndex);
-				return {
-					type: "arguments_ready",
-					contentIndex: assistantEvent.contentIndex,
-					toolCallId: assistantEvent.toolCall.id,
-					toolName: assistantEvent.toolCall.name,
-					args: assistantEvent.toolCall.arguments,
-				};
-			}
-			return undefined;
-		}
-
-		if (
-			event.type === "message_end" ||
-			event.type === "turn_end" ||
-			event.type === "agent_end"
-		) {
-			this._forgetAllStreamingToolCalls(agentId);
-			return undefined;
-		}
-
-		if (event.type === "tool_execution_start") {
-			return {
-				type: "execution_started",
-				toolCallId: event.toolCallId,
-				toolName: event.toolName,
-				args: event.args,
-			};
-		}
-
-		if (event.type === "tool_execution_update") {
-			return {
-				type: "execution_update",
-				toolCallId: event.toolCallId,
-				toolName: event.toolName,
-				partialResult: event.partialResult,
-			};
-		}
-
-		if (event.type === "tool_execution_end") {
-			return {
-				type: "execution_result",
-				toolCallId: event.toolCallId,
-				toolName: event.toolName,
-				result: event.result,
-				isError: event.isError,
-			};
-		}
-
-		return undefined;
-	}
-
-	private _rememberStreamingToolCall(
-		agentId: AgentId,
-		ref: StreamingToolCallRef & { contentIndex: number },
-	): StreamingToolCallRef {
-		let refs = this._streamingToolCalls.get(agentId);
-		if (!refs) {
-			refs = new Map<number, StreamingToolCallRef>();
-			this._streamingToolCalls.set(agentId, refs);
-		}
-		const next = {
-			toolCallId: ref.toolCallId,
-			toolName: ref.toolName,
-		};
-		refs.set(ref.contentIndex, next);
-		return next;
-	}
-
-	private _getStreamingToolCall(
-		agentId: AgentId,
-		contentIndex: number,
-	): StreamingToolCallRef | undefined {
-		return this._streamingToolCalls.get(agentId)?.get(contentIndex);
-	}
-
-	private _forgetStreamingToolCall(
-		agentId: AgentId,
-		contentIndex: number,
-	): void {
-		const refs = this._streamingToolCalls.get(agentId);
-		if (!refs) return;
-		refs.delete(contentIndex);
-		if (refs.size === 0) {
-			this._streamingToolCalls.delete(agentId);
-		}
-	}
-
-	private _forgetAllStreamingToolCalls(agentId: AgentId): void {
-		this._streamingToolCalls.delete(agentId);
 	}
 
 	private async _emit(
@@ -2947,20 +2816,6 @@ function parseThinkingLevel(level: string): ThinkingLevel | undefined {
 	return THINKING_LEVELS.some((candidate) => candidate === trimmed)
 		? (trimmed as ThinkingLevel)
 		: undefined;
-}
-
-function streamingToolCallRefFromPartial(
-	partial: AssistantMessage,
-	contentIndex: number,
-): StreamingToolCallRef {
-	const content = partial.content[contentIndex];
-	if (!content || content.type !== "toolCall") {
-		return {};
-	}
-	return {
-		toolCallId: content.id,
-		toolName: content.name,
-	};
 }
 
 function formatError(error: unknown): string {
