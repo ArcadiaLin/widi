@@ -11,6 +11,14 @@
 - Diagnostic event 增加 stable id 或 operation correlation，便于 UI/RPC 去重与回放。
 - Discovery 路径规范化去重（CLI adapter 反向检验发现，2026-07-09）：当 cwd 的项目 `.widi` 与 `agentDir` 指向同一目录时，profile/extension 被重复发现——`profile.source_overridden` 出现自指消息（"X is overridden by X"）且发两次，`extension.entry_missing` 对同一 extension 发三次。Discovery 应对 root 路径做 canonicalize + 去重，或至少让 override diagnostic 跳过同路径。
 
+## Core Layout / Refactor
+
+- Command gateway runtime collaborator：`inputAgent`、line/inline command execution、argument completion、gateway、command/input id 与 `command_*` event emission 已具备独立状态机形态。下一步可按 [Runtime Modules](core/runtime-modules.md) 的 narrow-host 规则从 `AgentOrchestrator` 抽出；`command.ts` 保持 command facts/parser/built-in binding 表，不承载执行状态机。
+- `AgentRecord` 内部状态与 public snapshot 分离：ME 切片 2 公开面收口时一起裁决，避免 `AgentRecord` 继续作为 semi-public mutable shape 泄漏。
+- 大文件后续拆分候选：`model-registry.ts`（models.json load/merge vs availability/query vs auth bridge）、`agent-profile.ts`（reference 解析 vs storage backend vs registry resolve/override）、`setting-manager.ts`（IO/migrate/merge vs typed getter/setter vs trust/extension-path privileged keys）、`extension/loader.ts`（discovery vs import/activation vs diagnostics）。
+- 三份 `normalizePath` 语义分叉合并评估：settings 路径键、project trust 路径身份、虚拟 FS 段解析不是同一语义；统一前需要 characterization tests。
+- `create*Diagnostic` 包装工厂化评估：当前各模块 wrapper 承载 domain 默认值与 code narrowing；没有第二消费者前不做泛化。
+
 ## Extension
 
 Extension surface 的设计与实施已收编为 [ME milestone](TODO.md#me-extension-surfacem2-之后m3-之前)，方案见 [Extension Experiment](core/extension-experiment.md)，不在 backlog 重复维护。ME 明确排除、留此待举证的：

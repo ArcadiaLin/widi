@@ -249,6 +249,10 @@ Drain 型模块发布后会清空本地队列；result 型模块只在当前 ope
 - `createDiagnostic(...)`
 - `dedupeDiagnostics(...)`
 - `diagnosticToError(...)`
+- `createOrchestratorDiagnostic(...)`
+- `toDiagnostic(error, fallback)`
+
+`createOrchestratorDiagnostic(...)` 和 `toDiagnostic(...)` 是给 orchestrator-domain runtime modules 复用的 construction helper。它们不意味着 diagnostic 只能由 `AgentOrchestrator` 类产生；例如 `HumanRequestBroker` 会直接用它们把 no-client、abort、timeout、cancel 等 request lifecycle failure 变成统一 diagnostic facts，再通过 host 回到 orchestrator publish path。
 
 ## 非职责
 

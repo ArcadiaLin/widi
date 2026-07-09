@@ -3,7 +3,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentProfile } from "./agent-profile.js";
 import type { CommandInvocation } from "./command.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
-import type { HumanRequestEnvelope, HumanResponse } from "./human-request.ts";
+import type { HumanRequestEvent } from "./human-request.ts";
 import type { ToolLifecycleEvent } from "./tools/types.ts";
 
 export type RuntimeModel = Model<Api>;
@@ -73,27 +73,7 @@ export type OrchestratorEvent =
 			inputId?: string;
 			completedAt: string;
 	  }
-	| {
-			readonly type: "human_request_pending";
-			request: HumanRequestEnvelope;
-	  }
-	| {
-			readonly type: "human_request_resolved";
-			requestId: string;
-			response: HumanResponse;
-			completedAt: string;
-	  }
-	| {
-			readonly type: "human_request_timeout";
-			requestId: string;
-			completedAt: string;
-	  }
-	| {
-			readonly type: "human_request_cancelled";
-			requestId: string;
-			reason?: string;
-			completedAt: string;
-	  }
+	| HumanRequestEvent
 	| {
 			readonly type: "diagnostic";
 			diagnostic: OrchestratorDiagnostic;

@@ -7,8 +7,10 @@
 WIDI core runtime 由几类模块组合：
 
 - Runtime composition：创建 `ExecutionEnv`、settings、auth、model registry、profile registry、resource loader、session manager、tool registry、extension loader 和 orchestrator。
+- Shared protocol layer：`core/types.ts` 放跨 core 共享的 runtime facts（agent id/status、runtime model、tool snapshot、orchestrator events），不承载某个 owner 的 config/result/record 类型。
 - Dependency layer：解析 profile、resources、model/auth、extensions、tools 和 sessions。它们提供 facts、diagnostics 和 runtime dependencies，但不拥有 agent lifecycle。
-- Orchestration layer：`AgentOrchestrator` 拥有 agent record、harness lifecycle、command input 执行、human request、client fanout、extension binding 和 diagnostics publish。
+- Orchestration layer：`AgentOrchestrator` 拥有 agent record、harness lifecycle、command input 执行、client fanout、extension binding 和 diagnostics publish；它挂载 runtime collaborators，并把它们的事件接回统一 event/diagnostic path。
+- Runtime collaborators：例如 `human-request.ts` 的 `HumanRequestBroker`。这类模块可以拥有局部 runtime state 和生命周期，但通过 narrow host 回到 orchestrator，不直接持有 clients map、agents map 或 harness。
 - Harness layer：Pi `AgentHarness` 负责单 agent turn、queue、session tree、model/tool execution 和 raw harness events。
 - Extension layer：`ExtensionLoader` 激活 declaration，`ExtensionRunner` 保存当前 agent/profile 的 loaded scope，并通过 observers、interceptors、tool contributions、command contributions 和 session custom entry facade 插入 runtime。
 - Adapter layer：TUI、RPC、stdout、CLI 或 product preset 注册 client、提交 input（`inputAgent`）或调用原子方法、处理 human request，并消费 orchestrator events。
@@ -22,7 +24,7 @@ WIDI core runtime 由几类模块组合：
 3. 创建 config/auth/model/profile/resource/session/tool/extension 相关 registry 或 loader。
 4. 解析 default profile、default model 和 default thinking level，收集 diagnostics。
 5. discovery/load extension catalog。当前实现已支持 file/module discovery、trust gate、activation diagnostics 和 reload 所需 facts，但稳定第三方 extension API 仍未完成。
-6. 创建 `AgentOrchestrator`，注入 dependency layer 和 defaults。command 解析是 orchestrator 创建选项（可关闭），不是独立 runtime。
+6. 创建 `AgentOrchestrator`，注入 dependency layer 和 defaults。orchestrator 构造并挂载 human-request broker；command input 仍是 orchestrator input 路径，不是独立 runtime。
 7. 返回 runtime services、orchestrator 和 startup diagnostics。
 
 Runtime composition 不创建产品 UI，也不决定 `/team`、`/flow`、`/goal` 等交互模式。这些属于 adapter、preset 或 extension。
@@ -37,7 +39,7 @@ Runtime composition 不创建产品 UI，也不决定 `/team`、`/flow`、`/goal
 4. 为当前 agent/profile 创建 extension runner：`ExtensionLoader.loadForAgent()` 激活 profile 声明的 extensions，并收集 missing/activation diagnostics。
 5. 基于 global `ToolRegistry` clone scoped registry，并 replay 当前 extension runner 的 tool definitions/patches。
 6. `ToolRegistry.resolve()` 输出 visible tools、active tools 和 diagnostics。
-7. 将 resolved `ToolDefinition` wrap 成 Pi `AgentTool[]`，注入 human request host 和 extension tool context。
+7. 将 resolved `ToolDefinition` wrap 成 Pi `AgentTool[]`，注入 human request host 和 extension tool context。tool 侧 human request 最终回到 orchestrator 的 `requestHuman()`，再委托给 `HumanRequestBroker`。
 8. 创建或恢复 Pi `AgentHarness`。
 9. 绑定 extension core context、command context 和 session custom entry facade。
 10. 注册 extension interceptors 到 harness hooks：`before_agent_start`、`context`、`tool_call`、`tool_result`。
@@ -279,6 +281,18 @@ dispose
 
 Observer failures do not stop the raw harness event from existing. They become extension diagnostics and return to the orchestrator diagnostic path.
 
+Human request events 不是 Pi harness events，而是 `HumanRequestBroker` 在 request lifecycle 中产生的 orchestrator facts：
+
+```text
+HumanRequestBroker
+  -> human_request_pending / resolved / timeout / cancelled
+    -> AgentOrchestrator._emit
+      -> subscribers
+      -> clients
+```
+
+因此 human request 的 pending/cancel/timeout 状态不属于 harness，也不进入 session body；但它仍通过统一 `OrchestratorEvent` fanout 被 adapter 和未来 observer 消费。
+
 ## Extension Execution Points
 
 当前实现已经落地的 extension 插入点：
@@ -295,14 +309,14 @@ Observer failures do not stop the raw harness event from existing. They become e
 
 ## Human Request Lifecycle
 
-`human-request` 是 orchestrator runtime 能力，不属于 Pi session body。
+`human-request` 是 core runtime module，不属于 Pi session body。当前实现由 `HumanRequestBroker` 持有 request-local 状态，`AgentOrchestrator` 只作为 host 提供 client lookup、event fanout 和 diagnostic publish。
 
-1. caller 通过 orchestrator 或 extension/tool facade 发起 request，携带 source。command input 的 `argumentsCompletion` 补全是 core 内第一个消费场景。
-2. orchestrator 创建 request envelope，emit `human_request_pending`。
-3. 第一个支持 `requestHuman` 的 client 处理请求（first-client-wins 是现状而非设计承诺；多 client 路由语义在 M3 出现真实场景时定义）。
-4. 成功时 emit `human_request_resolved` 并返回 response。
-5. timeout 时 emit `human_request_timeout` 并让等待方失败。
-6. cancellation 时 emit `human_request_cancelled` 并让等待方失败。
+1. caller 通过 orchestrator 或 extension/tool facade 发起 request，携带 `OperationSource`。command input 的 `argumentsCompletion` 补全是 core 内第一个消费场景。
+2. `HumanRequestBroker` 分配 `human-request-N` id，创建 request envelope，记录 pending state。
+3. broker 通过 host 查找第一个支持 `requestHuman` 的 client 并 emit `human_request_pending`（first-client-wins 是现状而非设计承诺；多 client 路由语义在 M3 出现真实场景时定义）。
+4. 成功时 broker 删除 pending state，emit `human_request_resolved` 并返回 response。
+5. timeout 时 broker emit `human_request_timeout`，abort request，并让等待方以 `OrchestratorError` 失败。
+6. cancellation 时 broker emit `human_request_cancelled`，abort request，并让等待方以 `OrchestratorError` 失败。agent dispose 只取消同 agent source 的 pending request；orchestrator dispose 取消全部 pending request。
 
 只有当 human request 作为 tool execution 的一部分被编码进 tool result 时，它才自然进入 Pi session tree。orchestrator 不额外写 session。
 
@@ -326,7 +340,7 @@ Pi session tree 保存单 agent harness 运行产物：messages、tool calls/res
 所有模块应将问题表达为 diagnostics，而不是只抛普通错误：
 
 - dependency layer 产生 profile/resource/model/auth/extension/tool diagnostics。
-- orchestrator 为 command failure、client failure、human request failure、extension action failure 补充 source、agentId、profileId、commandId 等上下文。
+- orchestrator 与 runtime collaborators 为 command failure、client failure、human request failure、extension action failure 补充 source、agentId、profileId、commandId/requestId 等上下文。
 - diagnostics 通过 orchestrator publish/fanout 进入 client/debug surface。
 - unavailable agent 应保留 diagnostics，便于上层 extension/preset 恢复其他 agent。
 

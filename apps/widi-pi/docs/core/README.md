@@ -8,6 +8,7 @@
 
 - `TODO`：milestone 序列与验收标准，位于 [`../TODO.md`](../TODO.md)；非当前 milestone 条目见 [`../BACKLOG.md`](../BACKLOG.md)。
 - `orchestrator`：multi-agent runtime coordinator。
+- `runtime modules`：`src/core/` 直属 runtime modules 的组织规则，特别是共享 `core/types.ts` 与 owner-local types 的边界。
 - `runtime lifecycle`：runtime 模块顺序、agent 创建/恢复、事件传递、extension 执行点和持久化边界。
 - `command experiment`：command 独立 runtime 实验的裁决记录与 trigger-based command input 设计（registry、事件、门控、inline、参数补全、迁移计划）。
 - `extensions`：通过 hook 插入 core 能力的扩展系统。

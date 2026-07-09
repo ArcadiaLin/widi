@@ -74,13 +74,9 @@ import {
 	type ExtensionRunnerSnapshot,
 	type ToolLifecycleEvent,
 } from "./extension/index.ts";
-import type {
-	HumanRequest,
-	HumanRequestEnvelope,
-	HumanResponse,
-} from "./human-request.ts";
+import type { HumanRequest, HumanResponse } from "./human-request.ts";
+import { HumanRequestBroker } from "./human-request.ts";
 import type { ModelRegistry } from "./model-registry.js";
-import { agentIdFromOperationSource } from "./operation-source.ts";
 import type { ResourceLoader } from "./resource-loader.js";
 import type {
 	AgentSessionCandidate,
@@ -253,13 +249,6 @@ export interface SpawnAgentHarnessResult {
 	harness: AgentHarness;
 }
 
-interface PendingHumanRequest {
-	envelope: HumanRequestEnvelope;
-	agentId?: AgentId;
-	controller: AbortController;
-	cancel(reason?: string): Promise<void>;
-}
-
 interface AgentToolSet {
 	tools: AgentTool[];
 	toolNames: string[];
@@ -325,10 +314,9 @@ export class AgentOrchestrator {
 		new Map();
 	private _clients: Map<string, OrchestratorClient<OrchestratorEvent>> =
 		new Map();
-	private _pendingHumanRequests: Map<string, PendingHumanRequest> = new Map();
+	private readonly _humanRequests: HumanRequestBroker;
 	private _nextCommandId = 1;
 	private _nextInputId = 1;
-	private _nextHumanRequestId = 1;
 
 	constructor(config: AgentOrchestratorConfigs) {
 		this.executionEnv = config.executionEnv;
@@ -348,6 +336,20 @@ export class AgentOrchestrator {
 			: undefined;
 		this._defaultModel = config.defaultModel;
 		this._defaultThinkingLevel = config.defaultThinkingLevel;
+		this._humanRequests = new HumanRequestBroker({
+			findHumanRequestHandler: () =>
+				Array.from(this._clients.values()).find((entry) => entry.requestHuman)
+					?.requestHuman,
+			emit: async (event) => {
+				await this._emit(event);
+			},
+			publishDiagnostic: async (diagnostic) => {
+				await this._publishDiagnostic(diagnostic);
+			},
+			recordAgentLifecycleFailure: async (agentId, code, message, error) => {
+				await this._recordAgentLifecycleFailure(agentId, code, message, error);
+			},
+		});
 	}
 
 	async spawnAgentHarness(
@@ -1065,7 +1067,7 @@ export class AgentOrchestrator {
 		delete record.harness;
 		this._agentToolSets.delete(agentId);
 		this._forgetAllStreamingToolCalls(agentId);
-		await this._cancelHumanRequestsForAgent(
+		await this._humanRequests.cancelForAgent(
 			agentId,
 			reason ?? `Agent disposed: ${agentId}`,
 		);
@@ -1076,7 +1078,7 @@ export class AgentOrchestrator {
 		for (const agentId of [...this.agents.keys()]) {
 			await this.disposeAgent(agentId, reason);
 		}
-		await this._cancelAllHumanRequests(reason ?? "Orchestrator disposed.");
+		await this._humanRequests.cancelAll(reason ?? "Orchestrator disposed.");
 		this._streamingToolCalls.clear();
 		try {
 			await this.executionEnv.cleanup();
@@ -1150,167 +1152,14 @@ export class AgentOrchestrator {
 	}
 
 	async requestHuman(request: HumanRequest): Promise<HumanResponse> {
-		const client = Array.from(this._clients.values()).find(
-			(entry) => entry.requestHuman,
-		);
-		const requestHuman = client?.requestHuman;
-		const requestId = this._createHumanRequestId();
-		const envelope: HumanRequestEnvelope = {
-			...request,
-			id: requestId,
-			createdAt: now(),
-		};
-
-		if (!requestHuman) {
-			const diagnostic = createOrchestratorDiagnostic({
-				severity: "error",
-				code: "orchestrator.human_request_unhandled",
-				message: "No orchestrator client can handle human requests.",
-				operationSource: request.source,
-				requestId,
-				recoverable: true,
-			});
-			await this._publishDiagnostic(diagnostic);
-			throw new OrchestratorError(diagnostic);
-		}
-
-		const controller = new AbortController();
-		const abortFromCaller = () => controller.abort();
-		request.signal?.addEventListener("abort", abortFromCaller, { once: true });
-
-		let timeoutId: ReturnType<typeof setTimeout> | undefined;
-		let cancelPending: (reason?: string) => Promise<void> = async () => {};
-		try {
-			const responsePromise = new Promise<HumanResponse>((resolve, reject) => {
-				let settled = false;
-				let abortHandler: (() => void) | undefined;
-				const cleanup = () => {
-					if (timeoutId) clearTimeout(timeoutId);
-					request.signal?.removeEventListener("abort", abortFromCaller);
-					if (abortHandler) {
-						controller.signal.removeEventListener("abort", abortHandler);
-					}
-				};
-				const rejectWithDiagnostic = (
-					diagnostic: OrchestratorDiagnostic,
-					beforeReject?: () => void,
-				) => {
-					if (settled) return;
-					settled = true;
-					cleanup();
-					beforeReject?.();
-					reject(new OrchestratorError(diagnostic));
-				};
-				abortHandler = () => {
-					rejectWithDiagnostic(
-						createOrchestratorDiagnostic({
-							severity: "error",
-							code: "orchestrator.human_request_aborted",
-							message: "Human request was aborted.",
-							operationSource: request.source,
-							requestId,
-							recoverable: true,
-						}),
-					);
-				};
-				controller.signal.addEventListener("abort", abortHandler, {
-					once: true,
-				});
-				cancelPending = async (reason) => {
-					if (settled) return;
-					await this._emit({
-						type: "human_request_cancelled",
-						requestId,
-						reason,
-						completedAt: now(),
-					});
-					rejectWithDiagnostic(
-						createOrchestratorDiagnostic({
-							severity: "error",
-							code: "orchestrator.human_request_cancelled",
-							message: reason
-								? `Human request was cancelled: ${reason}`
-								: "Human request was cancelled.",
-							operationSource: request.source,
-							requestId,
-							recoverable: true,
-						}),
-						() => controller.abort(),
-					);
-				};
-				if (request.timeoutMs !== undefined) {
-					timeoutId = setTimeout(() => {
-						void this._emit({
-							type: "human_request_timeout",
-							requestId,
-							completedAt: now(),
-						});
-						rejectWithDiagnostic(
-							createOrchestratorDiagnostic({
-								severity: "error",
-								code: "orchestrator.human_request_timeout",
-								message: "Human request timed out.",
-								operationSource: request.source,
-								requestId,
-								recoverable: true,
-							}),
-							() => controller.abort(),
-						);
-					}, request.timeoutMs);
-				}
-				requestHuman(envelope, controller.signal).then(
-					(value) => {
-						if (settled) return;
-						settled = true;
-						cleanup();
-						resolve(value);
-					},
-					(error) => {
-						if (settled) return;
-						settled = true;
-						cleanup();
-						reject(error);
-					},
-				);
-			});
-			this._pendingHumanRequests.set(requestId, {
-				envelope,
-				agentId: agentIdFromOperationSource(request.source),
-				controller,
-				cancel: (reason) => cancelPending(reason),
-			});
-			await this._emit({ type: "human_request_pending", request: envelope });
-			const response = await responsePromise;
-			this._pendingHumanRequests.delete(requestId);
-			await this._emit({
-				type: "human_request_resolved",
-				requestId,
-				response,
-				completedAt: now(),
-			});
-			return response;
-		} catch (error) {
-			this._pendingHumanRequests.delete(requestId);
-			const diagnostic = toDiagnostic(error, {
-				code: "orchestrator.command_failed",
-				message: error instanceof Error ? error.message : String(error),
-				operationSource: request.source,
-				requestId,
-				recoverable: true,
-			});
-			await this._publishDiagnostic(diagnostic);
-			throw new OrchestratorError(diagnostic);
-		}
+		return await this._humanRequests.request(request);
 	}
 
 	async cancelHumanRequest(
 		requestId: string,
 		reason?: string,
 	): Promise<boolean> {
-		const pending = this._pendingHumanRequests.get(requestId);
-		if (!pending) return false;
-		await pending.cancel(reason);
-		return true;
+		return await this._humanRequests.cancel(requestId, reason);
 	}
 
 	subscribe(listener: OrchestratorEventListener): () => void {
@@ -2408,47 +2257,6 @@ export class AgentOrchestrator {
 		}
 	}
 
-	private async _cancelHumanRequestsForAgent(
-		agentId: AgentId,
-		reason: string,
-	): Promise<void> {
-		for (const [requestId, pending] of [...this._pendingHumanRequests]) {
-			if (pending.agentId !== agentId) continue;
-			try {
-				await pending.cancel(reason);
-			} catch (error) {
-				await this._recordAgentLifecycleFailure(
-					agentId,
-					"orchestrator.agent_dispose_failed",
-					`Failed to cancel human request ${requestId} for agent ${agentId}: ${formatError(error)}`,
-					error,
-				);
-			}
-			this._pendingHumanRequests.delete(requestId);
-		}
-	}
-
-	private async _cancelAllHumanRequests(reason: string): Promise<void> {
-		for (const [requestId, pending] of [...this._pendingHumanRequests]) {
-			try {
-				await pending.cancel(reason);
-			} catch (error) {
-				await this._publishDiagnostic(
-					createOrchestratorDiagnostic({
-						severity: "warning",
-						disposition: "reported",
-						code: "orchestrator.dispose_all_failed",
-						message: `Failed to cancel human request ${requestId}: ${formatError(error)}`,
-						requestId,
-						phase: "runtime",
-						recoverable: true,
-					}),
-				);
-			}
-			this._pendingHumanRequests.delete(requestId);
-		}
-	}
-
 	private async _runHarnessOperation<T>(
 		agentId: AgentId,
 		operation: (harness: AgentHarness) => Promise<T>,
@@ -2716,12 +2524,6 @@ export class AgentOrchestrator {
 			...this.modelRegistry.drainDiagnostics(),
 		];
 	}
-	private _createHumanRequestId(): string {
-		const id = `human-request-${this._nextHumanRequestId}`;
-		this._nextHumanRequestId += 1;
-		return id;
-	}
-
 	private _createCommandId(): string {
 		const id = `orchestrator-command-${this._nextCommandId}`;
 		this._nextCommandId += 1;

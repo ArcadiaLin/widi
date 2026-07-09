@@ -24,9 +24,11 @@ Orchestrator 负责跨 agent 可观察性。
 
 所有跨 agent 协作、human-request、extension 插入、resource 缺失、profile 解析失败和 runtime 降级，都应通过 orchestrator 的事件或 diagnostics 暴露，而不是隐藏在 extension 或 tool 的私有状态中。
 
-Orchestrator 拥有 command input 与 client 能力。
+Orchestrator 拥有 command input、client fanout 和 runtime collaborator 挂载。
 
-二者都不是独立 runtime 模块。原子方法（`promptAgent`、`steerAgent`、`forkAgentSessionFromAgent`……）是唯一的 capability 事实，programmatic consumer 直接调用；command input 是 orchestrator 内置的 human input 协议（trigger 解析、注册、门控、参数补全、`command_*` 事件轨道），唯一入口是 `inputAgent`。TUI、stdout、RPC adapter 通过 orchestrator 注册 client、订阅 orchestrator event、提交 input 或发起 human-request。曾经的 typed command runtime 实验已裁决删除，见 [Command Experiment](./command-experiment.md)。
+原子方法（`promptAgent`、`steerAgent`、`forkAgentSessionFromAgent`……）是唯一的 capability 事实，programmatic consumer 直接调用；command input 是 orchestrator 内置的 human input 协议（trigger 解析、注册、门控、参数补全、`command_*` 事件轨道），唯一入口是 `inputAgent`。TUI、stdout、RPC adapter 通过 orchestrator 注册 client、订阅 orchestrator event、提交 input 或发起 human-request。曾经的 typed command runtime 实验已裁决删除，见 [Command Experiment](./command-experiment.md)。
+
+Human request 已从 orchestrator 内联状态机收敛为 `human-request.ts` runtime collaborator。Orchestrator 仍是对外入口和 event/diagnostic fanout owner，但 request id、pending map、timeout、abort、cancel 由 `HumanRequestBroker` 拥有。这个边界让 human-request 成为 core runtime module，而不是纯类型文件或 UI adapter 细节。
 
 Orchestrator 负责 harness output fanout。
 
@@ -57,6 +59,7 @@ Profile、resource、extension、tool、model/auth 都应该由对应 registry/l
 ## 非职责
 
 - 不拥有具体 UI 呈现。
+- 不把 human request 渲染策略放进 core；core 只发布能力中立 request facts。
 - 不直接解析 markdown/profile/resource 文件。
 - 不把 extension 私有状态当作 core state。
 - 不把具体产品交互模式固化为 core primitive。
