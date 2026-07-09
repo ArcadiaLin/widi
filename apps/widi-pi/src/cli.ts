@@ -16,6 +16,7 @@ import type {
 	AgentOrchestrator,
 	OrchestratorEvent,
 } from "./core/agent-orchestrator.ts";
+import type { InputResult } from "./core/command.ts";
 import type { OrchestratorDiagnostic } from "./core/diagnostics.ts";
 import type {
 	HumanRequestEnvelope,
@@ -243,10 +244,32 @@ function pickOption(
 	if (answer === "") return undefined;
 	const options = request.options ?? [];
 	const byNumber = Number.parseInt(answer, 10);
-	if (Number.isFinite(byNumber) && byNumber >= 1 && byNumber <= options.length) {
+	if (
+		Number.isFinite(byNumber) &&
+		byNumber >= 1 &&
+		byNumber <= options.length
+	) {
 		return options[byNumber - 1];
 	}
 	return options.find((option) => option === answer) ?? answer;
+}
+
+function getNextAgentId(result: InputResult): string | undefined {
+	if (
+		result.kind !== "command" ||
+		(result.name !== "fork" &&
+			result.name !== "new" &&
+			result.name !== "resume")
+	) {
+		return undefined;
+	}
+	if (typeof result.value !== "object" || result.value === null) {
+		return undefined;
+	}
+	const agentId = (result.value as { agentId?: unknown }).agentId;
+	return typeof agentId === "string" && agentId.length > 0
+		? agentId
+		: undefined;
 }
 
 async function main(): Promise<void> {
@@ -277,21 +300,39 @@ async function main(): Promise<void> {
 	}
 	orchestrator.subscribe(renderEvent);
 
-	const { agentId } = await orchestrator.spawnAgentHarness();
+	let agentId: string | undefined;
+	async function ensureAgentId(): Promise<string> {
+		if (agentId !== undefined) return agentId;
+		const result = await orchestrator.spawnAgentHarness();
+		agentId = result.agentId;
+		return agentId;
+	}
 
 	writeLine(`[cli] cwd=${runtime.services.cwd}`);
-	writeLine(`[cli] type a prompt, or /<command>; .exit quits`);
+	writeLine(
+		`[cli] type a prompt, or /<command>; first input starts a run; /exit quits`,
+	);
 
 	for (;;) {
 		const line = await lines.next("> ");
 		if (line === undefined) break; // stdin closed
 		const input = line.trim();
 		if (input === "") continue;
-		if (input === ".exit") break;
+		if (input === ".exit" || input === "/exit") break;
 		try {
-			await orchestrator.inputAgent(agentId, input);
+			const result = await orchestrator.inputAgent(
+				await ensureAgentId(),
+				input,
+			);
+			const nextAgentId = getNextAgentId(result);
+			if (nextAgentId) {
+				agentId = nextAgentId;
+				writeLine(`[cli] active agent=${agentId}`);
+			}
 		} catch (error) {
-			writeLine(`[error] ${error instanceof Error ? error.message : String(error)}`);
+			writeLine(
+				`[error] ${error instanceof Error ? error.message : String(error)}`,
+			);
 		}
 	}
 
@@ -300,6 +341,8 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-	console.error(error instanceof Error ? (error.stack ?? error.message) : error);
+	console.error(
+		error instanceof Error ? (error.stack ?? error.message) : error,
+	);
 	process.exit(1);
 });

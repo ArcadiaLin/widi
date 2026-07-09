@@ -9,7 +9,8 @@
     "build": "tsgo -p tsconfig.build.json",
     "check": "tsgo --noEmit -p tsconfig.json",
     "test": "vitest --run",
-    "cli": "tsx --tsconfig tsconfig.json src/cli.ts"
+    "cli": "tsx --tsconfig tsconfig.json src/cli.ts",
+    "cli:widi-config": "tsx --tsconfig tsconfig.json src/cli.ts --cwd \"$npm_config_local_prefix\" --agent-dir \"$npm_config_local_prefix/.widi\" --profile widi-dev"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.79.9",

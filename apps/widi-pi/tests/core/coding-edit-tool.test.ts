@@ -65,7 +65,10 @@ describe("core edit tool", () => {
 
 		const result = await tool.execute(
 			"call-1",
-			{ path: "file.ts", edits: [{ oldText: "const b = 2;", newText: "const b = 20;" }] },
+			{
+				path: "file.ts",
+				edits: [{ oldText: "const b = 2;", newText: "const b = 20;" }],
+			},
 			emptyExecutionContext,
 		);
 
@@ -156,7 +159,9 @@ describe("core edit tool", () => {
 			"call-1",
 			{
 				path: "doc.md",
-				edits: [{ oldText: 'says "hello" here', newText: 'says "goodbye" here' }],
+				edits: [
+					{ oldText: 'says "hello" here', newText: 'says "goodbye" here' },
+				],
 			},
 			emptyExecutionContext,
 		);
