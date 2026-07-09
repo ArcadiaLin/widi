@@ -10,6 +10,7 @@ import {
 	type AgentHarnessResources,
 	type AgentTool,
 	type ExecutionEnv,
+	type JsonlSessionMetadata,
 	type PromptTemplate,
 	type Session,
 	type Skill,
@@ -21,7 +22,6 @@ import {
 	type ImageContent,
 	type ModelThinkingLevel,
 } from "@earendil-works/pi-ai";
-import type { ExtendedJsonlSessionMetadata } from "../storage/jsonl-repo.ts";
 import type {
 	AgentProfile,
 	AgentProfileCommandPolicy,
@@ -375,7 +375,7 @@ export interface SpawnAgentHarnessCreateOptions
 export interface SpawnAgentHarnessResumeOptions
 	extends SpawnAgentHarnessCommonOptions {
 	resume: true;
-	metadata: ExtendedJsonlSessionMetadata;
+	metadata: JsonlSessionMetadata;
 }
 
 export type SpawnAgentHarnessOptions =
@@ -1470,7 +1470,7 @@ export class AgentOrchestrator {
 
 	private async _resolveResumeProfile(
 		agentId: AgentId,
-		metadata: ExtendedJsonlSessionMetadata,
+		metadata: JsonlSessionMetadata,
 	): Promise<ResolvedAgentProfile> {
 		const profileReference = parseAgentProfileReference(
 			metadata.metadata?.profile,
@@ -2085,7 +2085,7 @@ export class AgentOrchestrator {
 	private _markAgentUnavailable(options: {
 		agentId: AgentId;
 		resolvedProfile: ResolvedAgentProfile | undefined;
-		metadata: ExtendedJsonlSessionMetadata;
+		metadata: JsonlSessionMetadata;
 		sessionMetadata?: AgentSessionMetadata;
 		model: RuntimeModel;
 		diagnostic: OrchestratorDiagnostic;

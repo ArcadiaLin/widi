@@ -4,6 +4,7 @@ import type {
 	ExecutionError,
 	FileError,
 	FileInfo,
+	JsonlSessionMetadata,
 	Result,
 	ShellExecOptions,
 } from "@earendil-works/pi-agent-core";
@@ -44,16 +45,15 @@ import {
 } from "../../src/core/setting-manager.ts";
 import { ToolRegistry } from "../../src/core/tool-registry.ts";
 import type { ToolDefinition } from "../../src/core/tools/types.ts";
-import type { ExtendedJsonlSessionMetadata } from "../../src/storage/jsonl-repo.ts";
 
 function expectExtendedMetadata(metadata: {
 	id: string;
 	createdAt: string;
-}): ExtendedJsonlSessionMetadata {
+}): JsonlSessionMetadata {
 	if (!("path" in metadata) || typeof metadata.path !== "string") {
 		throw new Error("Expected persistent JSONL session metadata.");
 	}
-	return metadata as ExtendedJsonlSessionMetadata;
+	return metadata as JsonlSessionMetadata;
 }
 
 function writeSessionFile(

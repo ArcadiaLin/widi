@@ -1,24 +1,24 @@
 /**
  * SessionManager owns session repositories used by AgentOrchestrator.
  *
- * The local JSONL adapter keeps Pi session tree semantics intact and only
- * extends the session header with metadata needed to rebuild harness context.
+ * Persistent sessions use pi-agent-core JSONL storage. WIDI stores profile
+ * references in the JSONL session header metadata so resume can rebuild harness
+ * context.
  */
 
 import type {
 	FileError,
 	FileSystem,
+	JsonlSessionMetadata,
 	Session,
 	SessionForkOptions,
 	SessionMetadata,
 	SessionTreeEntry,
 } from "@earendil-works/pi-agent-core";
-import { InMemorySessionRepo } from "@earendil-works/pi-agent-core";
 import {
-	type ExtendedJsonlSessionMetadata,
-	type JsonlSessionPathLayout,
+	InMemorySessionRepo,
 	JsonlSessionRepo,
-} from "../storage/jsonl-repo.js";
+} from "@earendil-works/pi-agent-core";
 import type { AgentId } from "./agent-orchestrator.js";
 import type { AgentProfile, AgentProfileReference } from "./agent-profile.js";
 import {
@@ -26,9 +26,7 @@ import {
 	toAgentProfileReference,
 } from "./agent-profile.js";
 
-export type AgentSessionMetadata =
-	| SessionMetadata
-	| ExtendedJsonlSessionMetadata;
+export type AgentSessionMetadata = SessionMetadata | JsonlSessionMetadata;
 
 export interface AgentExtensionCustomEntry<T = unknown> {
 	id: string;
@@ -110,7 +108,6 @@ export interface SessionManagerConfigs {
 	fs: FileSystem;
 	cwd: string;
 	sessionsRoot: string;
-	sessionPathLayout?: JsonlSessionPathLayout;
 }
 
 type CreateAgentSessionOptions = {
@@ -121,7 +118,7 @@ type CreateAgentSessionOptions = {
 
 type ResumeAgentSessionOptions = {
 	agentId: AgentId;
-	metadata: ExtendedJsonlSessionMetadata;
+	metadata: JsonlSessionMetadata;
 };
 
 export class SessionManager {
@@ -139,7 +136,6 @@ export class SessionManager {
 		this.sessionRepo = new JsonlSessionRepo({
 			fs: config.fs,
 			sessionsRoot: config.sessionsRoot,
-			pathLayout: config.sessionPathLayout,
 		});
 	}
 
@@ -150,7 +146,7 @@ export class SessionManager {
 
 	async resolveAgentSessionReference(
 		reference: string,
-	): Promise<ExtendedJsonlSessionMetadata> {
+	): Promise<JsonlSessionMetadata> {
 		const normalized = reference.trim();
 		if (!normalized) {
 			throw new AgentSessionResolutionError({
@@ -251,10 +247,10 @@ export class SessionManager {
 	async forkAgentSession(
 		agentId: AgentId,
 		options: ForkAgentSessionOptions = {},
-	): Promise<ExtendedJsonlSessionMetadata> {
+	): Promise<JsonlSessionMetadata> {
 		const sourceSession = this._requireAgentSession(agentId);
 		const metadata = await sourceSession.getMetadata();
-		if (!isExtendedJsonlSessionMetadata(metadata)) {
+		if (!isJsonlSessionMetadata(metadata)) {
 			throw new Error(`Cannot fork ephemeral agent session: ${agentId}`);
 		}
 		const forkedSession = await this.sessionRepo.fork(metadata, {
@@ -316,7 +312,7 @@ export class SessionManager {
 
 	private async _createPersistentAgentSession(
 		options: CreateAgentSessionOptions,
-	): Promise<Session<ExtendedJsonlSessionMetadata>> {
+	): Promise<Session<JsonlSessionMetadata>> {
 		// Persistent JSONL sessions currently follow the M2 single-process storage
 		// boundary. Without an ExecutionEnv lock/transaction primitive, multiple
 		// WIDI processes writing the same sessionsRoot are unsupported.
@@ -359,9 +355,9 @@ export class SessionManager {
 	}
 }
 
-function isExtendedJsonlSessionMetadata(
+function isJsonlSessionMetadata(
 	metadata: AgentSessionMetadata,
-): metadata is ExtendedJsonlSessionMetadata {
+): metadata is JsonlSessionMetadata {
 	return (
 		"path" in metadata &&
 		typeof metadata.path === "string" &&
@@ -381,7 +377,7 @@ function fileSystemValueOrThrow<TValue>(
 }
 
 function toAgentSessionCandidate(
-	metadata: ExtendedJsonlSessionMetadata,
+	metadata: JsonlSessionMetadata,
 ): AgentSessionCandidate {
 	return {
 		id: metadata.id,

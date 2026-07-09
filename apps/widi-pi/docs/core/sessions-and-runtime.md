@@ -50,7 +50,7 @@ Settings 是 runtime policy 输入。
 
 持久 agent 使用 JSONL session。临时 agent 使用 in-memory session。多 session 的组合、恢复和存储属于 extension 或 preset 的编排边界，但不能破坏 Pi session tree 的单 agent 语义。
 
-当前 WIDI storage 只声明单进程写入支持。Session JSONL、auth storage 与 settings/config storage 可以在同一个 WIDI 进程内串行化写入，但多个 WIDI 进程同时写同一个 `agentDir`、project config 或 `sessionsRoot` 暂时处于支持边界外，结果未定义。
+当前 WIDI persistence 只声明单进程写入支持。Session JSONL、auth storage 与 settings/config storage 可以在同一个 WIDI 进程内串行化写入，但多个 WIDI 进程同时写同一个 `agentDir`、project config 或 `sessionsRoot` 暂时处于支持边界外，结果未定义。
 
 这个限制不是产品目标，而是当前 runtime capability 的事实边界：Pi `ExecutionEnv` 尚未提供统一的 lock/transaction/lease primitive，WIDI 不在各 storage backend 中私造互不兼容的本地文件锁协议。多进程写入安全未来可能支持，但应等整体项目边界稳定后，通过 Pi upstream 能力或必要的 harness/runtime fork 统一实现。
 
