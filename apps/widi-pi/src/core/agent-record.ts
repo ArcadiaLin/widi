@@ -1,0 +1,152 @@
+import type { AgentHarness } from "@earendil-works/pi-agent-core";
+import type {
+	AgentProfile,
+	AgentProfileCommandPolicy,
+	AgentProfileReference,
+	AgentProfileSource,
+} from "./agent-profile.js";
+import { toAgentProfileReference } from "./agent-profile.js";
+import type { OrchestratorDiagnostic } from "./diagnostics.ts";
+import type {
+	ExtensionIdentity,
+	ExtensionRunner,
+	ExtensionRunnerSnapshot,
+} from "./extension/index.ts";
+import type { AgentSessionMetadata } from "./session-manager.ts";
+import type {
+	AgentId,
+	AgentLifecycleStatus,
+	AgentToolsSnapshot,
+	RuntimeModel,
+} from "./types.ts";
+
+export interface AgentProfileRecordReference {
+	readonly reference: AgentProfileReference;
+	readonly source?: AgentProfileSource;
+	readonly entryId?: string;
+}
+
+export interface AgentRecord {
+	readonly agentId: AgentId;
+	status: AgentLifecycleStatus;
+	readonly profile: AgentProfileRecordReference;
+	// Command gating facts snapshotted from the resolved profile.
+	readonly capabilities?: AgentProfile["capabilities"];
+	readonly commandPolicy?: AgentProfileCommandPolicy;
+	sessionMetadata?: AgentSessionMetadata;
+	model: RuntimeModel;
+	harness?: AgentHarness;
+	toolSnapshot?: AgentToolsSnapshot;
+	extensionRunner?: ExtensionRunner;
+	resourceDiagnostics: OrchestratorDiagnostic[];
+	extensionDiagnostics: OrchestratorDiagnostic[];
+	diagnostics: OrchestratorDiagnostic[];
+}
+
+export interface AgentRecordSnapshot {
+	readonly agentId: AgentId;
+	readonly status: AgentLifecycleStatus;
+	readonly profile: AgentProfileRecordReference;
+	readonly sessionMetadata?: AgentSessionMetadata;
+	readonly model: RuntimeModel;
+	readonly hasHarness: boolean;
+	readonly toolSnapshot?: AgentToolsSnapshot;
+	readonly extensionIds: readonly string[];
+	readonly extensions: readonly ExtensionIdentity[];
+	readonly extensionSnapshot: ExtensionRunnerSnapshot;
+	readonly resourceDiagnostics: readonly OrchestratorDiagnostic[];
+	readonly extensionDiagnostics: readonly OrchestratorDiagnostic[];
+	readonly diagnostics: readonly OrchestratorDiagnostic[];
+}
+
+export function createAgentRecord(options: {
+	readonly agentId: AgentId;
+	readonly status: AgentLifecycleStatus;
+	readonly resolvedProfile: {
+		readonly profile: AgentProfile;
+		readonly source: AgentProfileSource;
+		readonly entryId: string;
+	};
+	readonly sessionMetadata?: AgentSessionMetadata;
+	readonly model: RuntimeModel;
+}): AgentRecord {
+	return {
+		agentId: options.agentId,
+		status: options.status,
+		profile: {
+			reference: toAgentProfileReference(options.resolvedProfile.profile),
+			source: options.resolvedProfile.source,
+			entryId: options.resolvedProfile.entryId,
+		},
+		capabilities: options.resolvedProfile.profile.capabilities,
+		commandPolicy: options.resolvedProfile.profile.commands,
+		sessionMetadata: options.sessionMetadata,
+		model: options.model,
+		resourceDiagnostics: [],
+		extensionDiagnostics: [],
+		diagnostics: [],
+	};
+}
+
+export function createAgentRecordFromProfileReference(options: {
+	readonly agentId: AgentId;
+	readonly status: AgentLifecycleStatus;
+	readonly profile: AgentProfileRecordReference;
+	readonly capabilities?: AgentProfile["capabilities"];
+	readonly commandPolicy?: AgentProfileCommandPolicy;
+	readonly sessionMetadata?: AgentSessionMetadata;
+	readonly model: RuntimeModel;
+}): AgentRecord {
+	return {
+		agentId: options.agentId,
+		status: options.status,
+		profile: options.profile,
+		capabilities: options.capabilities,
+		commandPolicy: options.commandPolicy,
+		sessionMetadata: options.sessionMetadata,
+		model: options.model,
+		resourceDiagnostics: [],
+		extensionDiagnostics: [],
+		diagnostics: [],
+	};
+}
+
+export function snapshotAgentRecord(record: AgentRecord): AgentRecordSnapshot {
+	return {
+		agentId: record.agentId,
+		status: record.status,
+		profile: { ...record.profile },
+		sessionMetadata: record.sessionMetadata,
+		model: record.model,
+		hasHarness: record.harness !== undefined,
+		toolSnapshot: record.toolSnapshot
+			? {
+					toolNames: [...record.toolSnapshot.toolNames],
+					activeToolNames: [...record.toolSnapshot.activeToolNames],
+				}
+			: undefined,
+		extensionIds: record.extensionRunner
+			? [...record.extensionRunner.extensionIds]
+			: [],
+		extensions: record.extensionRunner
+			? [...record.extensionRunner.extensions]
+			: [],
+		extensionSnapshot: record.extensionRunner
+			? record.extensionRunner.inspect()
+			: createEmptyExtensionSnapshot(),
+		resourceDiagnostics: [...record.resourceDiagnostics],
+		extensionDiagnostics: [...record.extensionDiagnostics],
+		diagnostics: [...record.diagnostics],
+	};
+}
+
+export function createEmptyExtensionSnapshot(): ExtensionRunnerSnapshot {
+	return {
+		extensionIds: [],
+		extensions: [],
+		hooks: [],
+		commands: [],
+		toolContributions: [],
+		stale: { stale: false },
+	};
+}

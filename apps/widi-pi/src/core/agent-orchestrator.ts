@@ -25,16 +25,18 @@ import {
 } from "@earendil-works/pi-ai";
 import type {
 	AgentProfile,
-	AgentProfileCommandPolicy,
 	AgentProfileOverride,
-	AgentProfileReference,
 	AgentProfileRegistry,
 	AgentProfileSource,
 } from "./agent-profile.js";
+import { parseAgentProfileReference } from "./agent-profile.js";
 import {
-	parseAgentProfileReference,
-	toAgentProfileReference,
-} from "./agent-profile.js";
+	type AgentRecord,
+	type AgentRecordSnapshot,
+	createAgentRecord,
+	createAgentRecordFromProfileReference,
+	snapshotAgentRecord,
+} from "./agent-record.ts";
 import type { OrchestratorClient } from "./client.ts";
 import {
 	BUILT_IN_COMMANDS,
@@ -71,7 +73,6 @@ import {
 	type ExtensionInterceptorResultFor,
 	ExtensionLoader,
 	ExtensionRunner,
-	type ExtensionRunnerSnapshot,
 	type ToolLifecycleEvent,
 } from "./extension/index.ts";
 import type { HumanRequest, HumanResponse } from "./human-request.ts";
@@ -101,6 +102,12 @@ import type {
 } from "./types.ts";
 
 export type {
+	AgentProfileRecordReference,
+	AgentRecord,
+	AgentRecordSnapshot,
+} from "./agent-record.ts";
+
+export type {
 	AgentId,
 	AgentLifecycleStatus,
 	OrchestratorEvent,
@@ -120,45 +127,6 @@ export interface AgentOrchestratorConfigs {
 	enabledProfileIds?: readonly string[];
 	defaultModel: RuntimeModel;
 	defaultThinkingLevel?: ThinkingLevel;
-}
-
-export interface AgentProfileRecordReference {
-	readonly reference: AgentProfileReference;
-	readonly source?: AgentProfileSource;
-	readonly entryId?: string;
-}
-
-export interface AgentRecord {
-	readonly agentId: AgentId;
-	status: AgentLifecycleStatus;
-	readonly profile: AgentProfileRecordReference;
-	// Command gating facts snapshotted from the resolved profile.
-	readonly capabilities?: AgentProfile["capabilities"];
-	readonly commandPolicy?: AgentProfileCommandPolicy;
-	sessionMetadata?: AgentSessionMetadata;
-	model: RuntimeModel;
-	harness?: AgentHarness;
-	toolSnapshot?: AgentToolsSnapshot;
-	extensionRunner?: ExtensionRunner;
-	resourceDiagnostics: OrchestratorDiagnostic[];
-	extensionDiagnostics: OrchestratorDiagnostic[];
-	diagnostics: OrchestratorDiagnostic[];
-}
-
-export interface AgentRecordSnapshot {
-	readonly agentId: AgentId;
-	readonly status: AgentLifecycleStatus;
-	readonly profile: AgentProfileRecordReference;
-	readonly sessionMetadata?: AgentSessionMetadata;
-	readonly model: RuntimeModel;
-	readonly hasHarness: boolean;
-	readonly toolSnapshot?: AgentToolsSnapshot;
-	readonly extensionIds: readonly string[];
-	readonly extensions: readonly ExtensionIdentity[];
-	readonly extensionSnapshot: ExtensionRunnerSnapshot;
-	readonly resourceDiagnostics: readonly OrchestratorDiagnostic[];
-	readonly extensionDiagnostics: readonly OrchestratorDiagnostic[];
-	readonly diagnostics: readonly OrchestratorDiagnostic[];
 }
 
 export interface AgentSessionCommandResult {
@@ -419,13 +387,13 @@ export class AgentOrchestrator {
 	}
 
 	inspectAgent(agentId: AgentId): AgentRecordSnapshot {
-		return this._snapshotAgentRecord(this._requireAgentRecord(agentId));
+		return snapshotAgentRecord(this._requireAgentRecord(agentId));
 	}
 
 	listAgents(): AgentListResult {
 		return {
 			agents: Array.from(this.agents.values()).map((record) =>
-				this._snapshotAgentRecord(record),
+				snapshotAgentRecord(record),
 			),
 		};
 	}
@@ -1399,7 +1367,7 @@ export class AgentOrchestrator {
 		const sessionMetadata = await session.getMetadata();
 		this.agents.set(
 			agentId,
-			this._createAgentRecord({
+			createAgentRecord({
 				agentId,
 				status: "creating",
 				resolvedProfile,
@@ -1467,7 +1435,7 @@ export class AgentOrchestrator {
 			model = this._resolveResumeModel(options, context.model);
 			this.agents.set(
 				agentId,
-				this._createAgentRecord({
+				createAgentRecord({
 					agentId,
 					status: "creating",
 					resolvedProfile,
@@ -1800,54 +1768,6 @@ export class AgentOrchestrator {
 		};
 	}
 
-	private _createAgentRecord(options: {
-		agentId: AgentId;
-		status: AgentLifecycleStatus;
-		resolvedProfile: ResolvedAgentProfile;
-		sessionMetadata?: AgentSessionMetadata;
-		model: RuntimeModel;
-	}): AgentRecord {
-		return {
-			agentId: options.agentId,
-			status: options.status,
-			profile: {
-				reference: toAgentProfileReference(options.resolvedProfile.profile),
-				source: options.resolvedProfile.source,
-				entryId: options.resolvedProfile.entryId,
-			},
-			capabilities: options.resolvedProfile.profile.capabilities,
-			commandPolicy: options.resolvedProfile.profile.commands,
-			sessionMetadata: options.sessionMetadata,
-			model: options.model,
-			resourceDiagnostics: [],
-			extensionDiagnostics: [],
-			diagnostics: [],
-		};
-	}
-
-	private _createAgentRecordFromProfileReference(options: {
-		agentId: AgentId;
-		status: AgentLifecycleStatus;
-		profile: AgentProfileRecordReference;
-		capabilities?: AgentProfile["capabilities"];
-		commandPolicy?: AgentProfileCommandPolicy;
-		sessionMetadata?: AgentSessionMetadata;
-		model: RuntimeModel;
-	}): AgentRecord {
-		return {
-			agentId: options.agentId,
-			status: options.status,
-			profile: options.profile,
-			capabilities: options.capabilities,
-			commandPolicy: options.commandPolicy,
-			sessionMetadata: options.sessionMetadata,
-			model: options.model,
-			resourceDiagnostics: [],
-			extensionDiagnostics: [],
-			diagnostics: [],
-		};
-	}
-
 	private _markAgentUnavailable(options: {
 		agentId: AgentId;
 		resolvedProfile: ResolvedAgentProfile | undefined;
@@ -1857,27 +1777,27 @@ export class AgentOrchestrator {
 		diagnostic: OrchestratorDiagnostic;
 	}): void {
 		const existing = this.agents.get(options.agentId);
-		const profile = options.resolvedProfile
-			? {
-					reference: toAgentProfileReference(options.resolvedProfile.profile),
-					source: options.resolvedProfile.source,
-					entryId: options.resolvedProfile.entryId,
-				}
-			: {
-					reference: parseAgentProfileReference(
-						options.metadata.metadata?.profile,
-					) ?? { id: "unknown" },
-				};
+		const record = options.resolvedProfile
+			? createAgentRecord({
+					agentId: options.agentId,
+					status: "unavailable",
+					resolvedProfile: options.resolvedProfile,
+					sessionMetadata: options.sessionMetadata,
+					model: options.model,
+				})
+			: createAgentRecordFromProfileReference({
+					agentId: options.agentId,
+					status: "unavailable",
+					profile: {
+						reference: parseAgentProfileReference(
+							options.metadata.metadata?.profile,
+						) ?? { id: "unknown" },
+					},
+					sessionMetadata: options.sessionMetadata,
+					model: options.model,
+				});
 		this.agents.set(options.agentId, {
-			...this._createAgentRecordFromProfileReference({
-				agentId: options.agentId,
-				status: "unavailable",
-				profile,
-				capabilities: options.resolvedProfile?.profile.capabilities,
-				commandPolicy: options.resolvedProfile?.profile.commands,
-				sessionMetadata: options.sessionMetadata,
-				model: options.model,
-			}),
+			...record,
 			resourceDiagnostics: existing?.resourceDiagnostics
 				? [...existing.resourceDiagnostics]
 				: [],
@@ -1909,35 +1829,6 @@ export class AgentOrchestrator {
 		}
 		this._agentToolSets.delete(agentId);
 		this._forgetAllStreamingToolCalls(agentId);
-	}
-
-	private _snapshotAgentRecord(record: AgentRecord): AgentRecordSnapshot {
-		return {
-			agentId: record.agentId,
-			status: record.status,
-			profile: { ...record.profile },
-			sessionMetadata: record.sessionMetadata,
-			model: record.model,
-			hasHarness: record.harness !== undefined,
-			toolSnapshot: record.toolSnapshot
-				? {
-						toolNames: [...record.toolSnapshot.toolNames],
-						activeToolNames: [...record.toolSnapshot.activeToolNames],
-					}
-				: undefined,
-			extensionIds: record.extensionRunner
-				? [...record.extensionRunner.extensionIds]
-				: [],
-			extensions: record.extensionRunner
-				? [...record.extensionRunner.extensions]
-				: [],
-			extensionSnapshot: record.extensionRunner
-				? record.extensionRunner.inspect()
-				: createEmptyExtensionSnapshot(),
-			resourceDiagnostics: [...record.resourceDiagnostics],
-			extensionDiagnostics: [...record.extensionDiagnostics],
-			diagnostics: [...record.diagnostics],
-		};
 	}
 
 	private _requireAgentRecord(agentId: AgentId): AgentRecord {
@@ -2070,7 +1961,7 @@ export class AgentOrchestrator {
 			};
 		}
 
-		const before = this._snapshotAgentRecord(record);
+		const before = snapshotAgentRecord(record);
 		const skipReason = this._extensionReloadSkipReason(record);
 		if (skipReason) {
 			const diagnostic = this._createExtensionReloadDiagnostic({
@@ -2089,7 +1980,7 @@ export class AgentOrchestrator {
 				reason: skipReason,
 				diagnostics: [diagnostic],
 				before,
-				after: this._snapshotAgentRecord(record),
+				after: snapshotAgentRecord(record),
 			};
 		}
 
@@ -2157,7 +2048,7 @@ export class AgentOrchestrator {
 				status: "reloaded",
 				diagnostics: [...nextRunner.diagnostics],
 				before: staleBefore,
-				after: this._snapshotAgentRecord(record),
+				after: snapshotAgentRecord(record),
 			};
 		} catch (error) {
 			const diagnostic = this._createExtensionReloadDiagnostic({
@@ -2176,7 +2067,7 @@ export class AgentOrchestrator {
 				status: "failed",
 				diagnostics: [diagnostic],
 				before,
-				after: this._snapshotAgentRecord(record),
+				after: snapshotAgentRecord(record),
 			};
 		}
 	}
@@ -2975,17 +2866,6 @@ function isBlockedExtensionDiagnostic(
 	return (
 		diagnostic.domain === "extension" && diagnostic.disposition === "blocked"
 	);
-}
-
-function createEmptyExtensionSnapshot(): ExtensionRunnerSnapshot {
-	return {
-		extensionIds: [],
-		extensions: [],
-		hooks: [],
-		commands: [],
-		toolContributions: [],
-		stale: { stale: false },
-	};
 }
 
 function commandArgumentsCompletionFailureDetails(
