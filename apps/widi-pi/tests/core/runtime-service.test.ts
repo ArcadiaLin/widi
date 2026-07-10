@@ -341,7 +341,7 @@ describe("createWidiRuntime", () => {
 		expect(runtime.services.sessionRoot).toBe("/home/user/.widi/runs");
 		expect(runtime.orchestrator.getDefaultProfileId()).toBe("default");
 		expect(runtime.orchestrator.getDefaultModel()).toBe(defaultModel);
-		expect(runtime.orchestrator.agents.size).toBe(0);
+		expect(runtime.orchestrator.listAgents().agents).toHaveLength(0);
 		expect(runtime.services.defaultProfile).toMatchObject({
 			id: "default",
 			source: "builtin_fallback",
@@ -600,7 +600,7 @@ You are extension-profile.`,
 			defaultProfileId: "extension-profile",
 			extensionModuleImporter: importer,
 		});
-		const { agentId } = await runtime.orchestrator.spawnAgentHarness();
+		const agentId = await runtime.orchestrator.spawnAgent();
 
 		expect(importer.imports).toEqual(["/custom/extensions/runtime-smoke.ts"]);
 		expect(runtime.services.extensionLoad.loaded).toEqual([
@@ -892,9 +892,9 @@ You are extension-profile.`,
 			defaultThinkingLevel: "medium",
 		});
 
-		const result = await runtime.orchestrator.spawnAgentHarness();
+		const agentId = await runtime.orchestrator.spawnAgent();
 
-		expect(result.harness.getThinkingLevel()).toBe("medium");
+		expect(runtime.orchestrator.getAgentThinkingLevel(agentId)).toBe("medium");
 	});
 
 	it("falls back to the first available model when settings do not specify one", async () => {

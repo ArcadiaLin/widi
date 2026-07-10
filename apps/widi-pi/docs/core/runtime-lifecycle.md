@@ -307,7 +307,7 @@ Diagnostics 是 runtime facts，不等同于 session history。是否在 UI/RPC 
 
 - 不定义最终 UI/RPC 呈现。
 - 不把 extension runtime state 写入 core session。
-- 不让 extension 绕过 orchestrator 持有 raw harness 或 agents map（当前 `agents`/`getAgentHarness` 仍公开，机制化收紧在 M2——在此之前这是纪律而非强制）。
+- 不让 extension 绕过 orchestrator 持有 raw harness 或 agents map（已机制化，ME 切片 2：`_agents` map 私有、`getAgentHarness` 删除、`spawnAgent` 只返回 `agentId`，公开面不存在返回 `AgentHarness` 或可变 `AgentRecord` 的路径）。
 - 不让 ToolRegistry 负责 extension activation。
 - 不把 command input 当作 programmatic API——代码消费者使用 orchestrator 原子方法。
 - 不维护第二套 agent queue 或 tool preview state。

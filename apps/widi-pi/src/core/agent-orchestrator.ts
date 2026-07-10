@@ -106,7 +106,6 @@ import type {
 
 export type {
 	AgentProfileRecordReference,
-	AgentRecord,
 	AgentRecordSnapshot,
 } from "./agent-record.ts";
 
@@ -192,30 +191,28 @@ export interface ExtensionReloadResult {
 	readonly agents: readonly ExtensionReloadAgentResult[];
 }
 
-interface SpawnAgentHarnessCommonOptions {
+interface SpawnAgentCommonOptions {
 	model?: RuntimeModel;
 	inheritModelFromAgentId?: AgentId;
 	thinkingLevel?: ThinkingLevel;
 }
 
-export interface SpawnAgentHarnessCreateOptions
-	extends SpawnAgentHarnessCommonOptions {
+export interface SpawnAgentCreateOptions extends SpawnAgentCommonOptions {
 	resume?: false;
 	profileId?: string;
 	profileOverride?: AgentProfileOverride;
 }
 
-export interface SpawnAgentHarnessResumeOptions
-	extends SpawnAgentHarnessCommonOptions {
+export interface SpawnAgentResumeOptions extends SpawnAgentCommonOptions {
 	resume: true;
 	metadata: JsonlSessionMetadata;
 }
 
-export type SpawnAgentHarnessOptions =
-	| SpawnAgentHarnessCreateOptions
-	| SpawnAgentHarnessResumeOptions;
+export type SpawnAgentOptions =
+	| SpawnAgentCreateOptions
+	| SpawnAgentResumeOptions;
 
-export interface SpawnAgentHarnessResult {
+interface SpawnedAgentHarness {
 	agentId: AgentId;
 	harness: AgentHarness;
 }
@@ -261,7 +258,7 @@ export class AgentOrchestrator {
 	private _defaultThinkingLevel: ThinkingLevel | undefined;
 	private _defaultProfileId: string;
 	private _enabledProfileIds: readonly string[] | undefined;
-	readonly agents: Map<AgentId, AgentRecord> = new Map();
+	private readonly _agents: Map<AgentId, AgentRecord> = new Map();
 	readonly executionEnv: ExecutionEnv;
 	readonly resourceLoader: ResourceLoader;
 	readonly sessionManager: SessionManager;
@@ -316,19 +313,18 @@ export class AgentOrchestrator {
 		});
 	}
 
-	async spawnAgentHarness(
-		options: SpawnAgentHarnessOptions = {},
-	): Promise<SpawnAgentHarnessResult> {
+	async spawnAgent(options: SpawnAgentOptions = {}): Promise<AgentId> {
 		await this.emitStartupDiagnostics();
 		if (options.resume) {
-			return await this._resumeAgentHarness(options);
+			return (await this._resumeAgentHarness(options)).agentId;
 		}
 
 		const agentProfile = await this._resolveCreateProfile(options);
 		const model = this._resolveSpawnModel(options);
-		return await this._createAgentHarness(agentProfile, model, {
+		const spawned = await this._createAgentHarness(agentProfile, model, {
 			thinkingLevel: options.thinkingLevel ?? this._defaultThinkingLevel,
 		});
+		return spawned.agentId;
 	}
 
 	getDefaultModel(): RuntimeModel {
@@ -374,10 +370,6 @@ export class AgentOrchestrator {
 		return this.extensionLoader.registerExtensionFactory(extensionId, factory);
 	}
 
-	getAgentHarness(agentId: AgentId): AgentHarness | undefined {
-		return this.agents.get(agentId)?.harness;
-	}
-
 	getAgentStatus(agentId: AgentId): AgentLifecycleStatus {
 		return this._requireAgentRecord(agentId).status;
 	}
@@ -388,7 +380,7 @@ export class AgentOrchestrator {
 
 	listAgents(): AgentListResult {
 		return {
-			agents: Array.from(this.agents.values()).map((record) =>
+			agents: Array.from(this._agents.values()).map((record) =>
 				snapshotAgentRecord(record),
 			),
 		};
@@ -425,13 +417,13 @@ export class AgentOrchestrator {
 		agentId: AgentId,
 	): Promise<AgentSessionCommandResult> {
 		const sourceRecord = this._requireAgentRecord(agentId);
-		const result = await this.spawnAgentHarness({
+		const spawnedAgentId = await this.spawnAgent({
 			profileId: sourceRecord.profile.reference.id,
 			model: sourceRecord.model,
 		});
 		return {
-			agentId: result.agentId,
-			snapshot: this.inspectAgent(result.agentId),
+			agentId: spawnedAgentId,
+			snapshot: this.inspectAgent(spawnedAgentId),
 		};
 	}
 
@@ -464,14 +456,14 @@ export class AgentOrchestrator {
 			agentId,
 			options,
 		);
-		const result = await this.spawnAgentHarness({
+		const spawnedAgentId = await this.spawnAgent({
 			resume: true,
 			metadata,
 			model: sourceRecord.model,
 		});
 		return {
-			agentId: result.agentId,
-			snapshot: this.inspectAgent(result.agentId),
+			agentId: spawnedAgentId,
+			snapshot: this.inspectAgent(spawnedAgentId),
 		};
 	}
 
@@ -486,13 +478,13 @@ export class AgentOrchestrator {
 	): Promise<AgentSessionCommandResult> {
 		const metadata =
 			await this.sessionManager.resolveAgentSessionReference(reference);
-		const result = await this.spawnAgentHarness({
+		const spawnedAgentId = await this.spawnAgent({
 			resume: true,
 			metadata,
 		});
 		return {
-			agentId: result.agentId,
-			snapshot: this.inspectAgent(result.agentId),
+			agentId: spawnedAgentId,
+			snapshot: this.inspectAgent(spawnedAgentId),
 		};
 	}
 
@@ -577,6 +569,10 @@ export class AgentOrchestrator {
 		return {
 			levels: this._getAgentThinkingLevelCandidates(record),
 		};
+	}
+
+	getAgentThinkingLevel(agentId: AgentId): ThinkingLevel {
+		return this._requireAgentHarness(agentId).getThinkingLevel();
 	}
 
 	async setAgentThinkingLevel(
@@ -1071,7 +1067,7 @@ export class AgentOrchestrator {
 	}
 
 	async disposeAll(reason?: string): Promise<void> {
-		for (const agentId of [...this.agents.keys()]) {
+		for (const agentId of [...this._agents.keys()]) {
 			await this.disposeAgent(agentId, reason);
 		}
 		await this._humanRequests.cancelAll(reason ?? "Orchestrator disposed.");
@@ -1101,7 +1097,7 @@ export class AgentOrchestrator {
 
 		const agentIds = options.agentIds
 			? [...new Set(options.agentIds)]
-			: [...this.agents.keys()];
+			: [...this._agents.keys()];
 		const agents: ExtensionReloadAgentResult[] = [];
 		for (const agentId of agentIds) {
 			agents.push(await this._reloadAgentExtensions(agentId));
@@ -1183,7 +1179,7 @@ export class AgentOrchestrator {
 		let agentId: AgentId = base;
 		let suffix = 2;
 
-		while (this.agents.has(agentId)) {
+		while (this._agents.has(agentId)) {
 			agentId = `${base}-${suffix}`;
 			suffix += 1;
 		}
@@ -1191,13 +1187,13 @@ export class AgentOrchestrator {
 		return agentId;
 	}
 
-	private _resolveSpawnModel(options: SpawnAgentHarnessOptions): RuntimeModel {
+	private _resolveSpawnModel(options: SpawnAgentOptions): RuntimeModel {
 		if (options.model) {
 			return options.model;
 		}
 
 		if (options.inheritModelFromAgentId) {
-			const sourceRecord = this.agents.get(options.inheritModelFromAgentId);
+			const sourceRecord = this._agents.get(options.inheritModelFromAgentId);
 			if (!sourceRecord) {
 				throw new Error(
 					`Cannot inherit model from unknown agent: ${options.inheritModelFromAgentId}`,
@@ -1210,7 +1206,7 @@ export class AgentOrchestrator {
 	}
 
 	private async _resolveCreateProfile(
-		options: SpawnAgentHarnessCreateOptions,
+		options: SpawnAgentCreateOptions,
 	): Promise<ResolvedAgentProfile> {
 		const profileId = options.profileId ?? this._defaultProfileId;
 		const resolvedProfile = await this._resolveProfileById(
@@ -1341,7 +1337,7 @@ export class AgentOrchestrator {
 	}
 
 	private _resolveResumeModel(
-		options: SpawnAgentHarnessResumeOptions,
+		options: SpawnAgentResumeOptions,
 		contextModel: { provider: string; modelId: string } | null,
 	): RuntimeModel {
 		if (options.model || options.inheritModelFromAgentId) {
@@ -1376,7 +1372,7 @@ export class AgentOrchestrator {
 		resolvedProfile: ResolvedAgentProfile,
 		model: RuntimeModel,
 		options: { thinkingLevel?: ThinkingLevel } = {},
-	): Promise<SpawnAgentHarnessResult> {
+	): Promise<SpawnedAgentHarness> {
 		const { profile } = resolvedProfile;
 		const agentId = this._allocateAgentId(profile);
 		const session = await this.sessionManager.createAgentSession({
@@ -1384,7 +1380,7 @@ export class AgentOrchestrator {
 			agentProfile: profile,
 		});
 		const sessionMetadata = await session.getMetadata();
-		this.agents.set(
+		this._agents.set(
 			agentId,
 			createAgentRecord({
 				agentId,
@@ -1424,10 +1420,10 @@ export class AgentOrchestrator {
 	}
 
 	private async _resumeAgentHarness(
-		options: SpawnAgentHarnessResumeOptions,
-	): Promise<SpawnAgentHarnessResult> {
+		options: SpawnAgentResumeOptions,
+	): Promise<SpawnedAgentHarness> {
 		const agentId = options.metadata.id;
-		const cachedRecord = this.agents.get(agentId);
+		const cachedRecord = this._agents.get(agentId);
 		if (cachedRecord?.harness) {
 			return { agentId, harness: cachedRecord.harness };
 		}
@@ -1452,7 +1448,7 @@ export class AgentOrchestrator {
 				activeToolNames?: string[] | null;
 			};
 			model = this._resolveResumeModel(options, context.model);
-			this.agents.set(
+			this._agents.set(
 				agentId,
 				createAgentRecord({
 					agentId,
@@ -1769,7 +1765,7 @@ export class AgentOrchestrator {
 	): ToolRegistry {
 		const registry = this.toolRegistry.clone();
 		(
-			extensionRunner ?? this.agents.get(agentId)?.extensionRunner
+			extensionRunner ?? this._agents.get(agentId)?.extensionRunner
 		)?.contributeToolsTo(registry);
 		return registry;
 	}
@@ -1795,7 +1791,7 @@ export class AgentOrchestrator {
 		model: RuntimeModel;
 		diagnostic: OrchestratorDiagnostic;
 	}): void {
-		const existing = this.agents.get(options.agentId);
+		const existing = this._agents.get(options.agentId);
 		const record = options.resolvedProfile
 			? createAgentRecord({
 					agentId: options.agentId,
@@ -1815,7 +1811,7 @@ export class AgentOrchestrator {
 					sessionMetadata: options.sessionMetadata,
 					model: options.model,
 				});
-		this.agents.set(options.agentId, {
+		this._agents.set(options.agentId, {
 			...record,
 			resourceDiagnostics: existing?.resourceDiagnostics
 				? [...existing.resourceDiagnostics]
@@ -1832,7 +1828,7 @@ export class AgentOrchestrator {
 		agentId: AgentId,
 		diagnostic: OrchestratorDiagnostic,
 	): void {
-		const record = this.agents.get(agentId);
+		const record = this._agents.get(agentId);
 		if (!record) return;
 		delete record.harness;
 		record.status = "unavailable";
@@ -1849,7 +1845,7 @@ export class AgentOrchestrator {
 	}
 
 	private _requireAgentRecord(agentId: AgentId): AgentRecord {
-		const record = this.agents.get(agentId);
+		const record = this._agents.get(agentId);
 		if (!record) {
 			throw new Error(`Unknown agent: ${agentId}`);
 		}
@@ -1873,7 +1869,7 @@ export class AgentOrchestrator {
 			diagnostics?: readonly OrchestratorDiagnostic[];
 		},
 	): void {
-		const record = this.agents.get(agentId);
+		const record = this._agents.get(agentId);
 		if (!record) return;
 		const resourceDiagnostics = diagnostics.resourceDiagnostics ?? [];
 		const extensionDiagnostics = diagnostics.extensionDiagnostics ?? [];
@@ -1961,7 +1957,7 @@ export class AgentOrchestrator {
 	private async _reloadAgentExtensions(
 		agentId: AgentId,
 	): Promise<ExtensionReloadAgentResult> {
-		const record = this.agents.get(agentId);
+		const record = this._agents.get(agentId);
 		if (!record) {
 			const diagnostic = this._createExtensionReloadDiagnostic({
 				code: "extension.reload_agent_failed",
@@ -2221,7 +2217,7 @@ export class AgentOrchestrator {
 	): Promise<void> {
 		await this._updateAgentStatusFromHarnessEvent(agentId, event);
 		await this._emit({ type: "agent_harness_event", agentId, event });
-		const extensionRunner = this.agents.get(agentId)?.extensionRunner;
+		const extensionRunner = this._agents.get(agentId)?.extensionRunner;
 		if (extensionRunner) {
 			const diagnostics = await extensionRunner.emitObserved({
 				type: "agent_harness_event",

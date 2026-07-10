@@ -158,7 +158,7 @@ orchestrator resume 流程：
 
 ## Metadata 使用原则
 
-`metadata` 应只保存 resume harness 所需的、小型、可 JSON 序列化的信息。
+`metadata` 应只保存 resume agent 所需的、小型、可 JSON 序列化的信息。
 
 当前建议：
 

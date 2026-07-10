@@ -299,8 +299,7 @@ async function main(): Promise<void> {
 	let agentId: string | undefined;
 	async function ensureAgentId(): Promise<string> {
 		if (agentId !== undefined) return agentId;
-		const result = await orchestrator.spawnAgentHarness();
-		agentId = result.agentId;
+		agentId = await orchestrator.spawnAgent();
 		return agentId;
 	}
 

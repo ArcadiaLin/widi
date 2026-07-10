@@ -1,4 +1,5 @@
 import type {
+	AgentHarness,
 	AgentHarnessEvent,
 	ExecutionEnv,
 	ExecutionError,
@@ -27,6 +28,7 @@ import {
 	AgentProfileRegistry,
 	InMemoryProfileStorageBackend,
 } from "../../src/core/agent-profile.ts";
+import type { AgentRecord } from "../../src/core/agent-record.ts";
 import {
 	AuthStorage,
 	type AuthStorageBackend,
@@ -47,6 +49,30 @@ import {
 import { ToolRegistry } from "../../src/core/tool-registry.ts";
 import { registerCoreCodingTools } from "../../src/core/tools/coding/builtin.ts";
 import type { ToolDefinition } from "../../src/core/tools/types.ts";
+
+// White-box access to the orchestrator's private agent records. Tests that
+// drive harness internals (phase, hook handlers, propagated state) or the
+// extension runner reach the live record here; everything observable stays
+// on the public snapshot surface.
+function requireAgentRecord(
+	orchestrator: AgentOrchestrator,
+	agentId: string,
+): AgentRecord {
+	const record = (
+		orchestrator as unknown as { _agents: Map<string, AgentRecord> }
+	)._agents.get(agentId);
+	if (!record) throw new Error(`Unknown agent record: ${agentId}`);
+	return record;
+}
+
+function requireAgentHarness(
+	orchestrator: AgentOrchestrator,
+	agentId: string,
+): AgentHarness {
+	const harness = requireAgentRecord(orchestrator, agentId).harness;
+	if (!harness) throw new Error(`Missing agent harness: ${agentId}`);
+	return harness;
+}
 
 function expectExtendedMetadata(metadata: {
 	id: string;
@@ -638,7 +664,7 @@ describe("AgentOrchestrator", () => {
 			events.push(event);
 		});
 
-		await orchestrator.spawnAgentHarness();
+		await orchestrator.spawnAgent();
 
 		expect(events).toContainEqual(
 			expect.objectContaining({
@@ -685,17 +711,19 @@ describe("AgentOrchestrator", () => {
 			events.push(event);
 		});
 
-		const result = await orchestrator.spawnAgentHarness({
+		const agentId = await orchestrator.spawnAgent({
 			resume: true,
 			metadata,
 		});
 
-		expect(result.agentId).toBe("worker-agent");
-		expect(result.harness.getModel()).toMatchObject({
-			provider: restoredModel.provider,
-			id: restoredModel.id,
-		});
-		expect(result.harness.getThinkingLevel()).toBe("medium");
+		expect(agentId).toBe("worker-agent");
+		expect(requireAgentHarness(orchestrator, agentId).getModel()).toMatchObject(
+			{
+				provider: restoredModel.provider,
+				id: restoredModel.id,
+			},
+		);
+		expect(orchestrator.getAgentThinkingLevel(agentId)).toBe("medium");
 		expect(events).toContainEqual({
 			type: "agent_resumed",
 			agentId: "worker-agent",
@@ -735,13 +763,13 @@ describe("AgentOrchestrator", () => {
 		});
 
 		await expect(
-			orchestrator.spawnAgentHarness({ resume: true, metadata }),
+			orchestrator.spawnAgent({ resume: true, metadata }),
 		).rejects.toMatchObject({
 			code: "profile.resolution_failed",
 		});
 
 		expect(orchestrator.getAgentStatus("worker-agent")).toBe("unavailable");
-		expect(orchestrator.getAgentHarness("worker-agent")).toBeUndefined();
+		expect(orchestrator.inspectAgent("worker-agent").hasHarness).toBe(false);
 		expect(orchestrator.inspectAgent("worker-agent")).toMatchObject({
 			agentId: "worker-agent",
 			status: "unavailable",
@@ -784,7 +812,7 @@ describe("AgentOrchestrator", () => {
 		});
 
 		await expect(
-			orchestrator.spawnAgentHarness({ resume: true, metadata }),
+			orchestrator.spawnAgent({ resume: true, metadata }),
 		).rejects.toThrow("model is not registered");
 
 		expect(orchestrator.inspectAgent("worker-agent")).toMatchObject({
@@ -808,7 +836,7 @@ describe("AgentOrchestrator", () => {
 				clientEvents.push(event);
 			},
 		});
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 
 		await orchestrator.nextTurnAgent(agentId, "next");
 		expect(clientEvents).toContainEqual(
@@ -826,7 +854,7 @@ describe("AgentOrchestrator", () => {
 			enabledProfileIds: ["worker"],
 		});
 
-		await expect(orchestrator.spawnAgentHarness()).rejects.toMatchObject({
+		await expect(orchestrator.spawnAgent()).rejects.toMatchObject({
 			code: "profile.disabled",
 		});
 	});
@@ -836,7 +864,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env);
 
 		await expect(
-			orchestrator.spawnAgentHarness({
+			orchestrator.spawnAgent({
 				profileOverride: { systemPrompt: "temporary prompt" },
 			}),
 		).rejects.toMatchObject({
@@ -853,7 +881,8 @@ describe("AgentOrchestrator", () => {
 		orchestrator.subscribe((event) => {
 			commandEvents.push(event);
 		});
-		const { agentId, harness } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, agentId);
 
 		expect(orchestrator.getAgentModel(agentId)).toMatchObject({
 			id: defaultModel.id,
@@ -869,7 +898,7 @@ describe("AgentOrchestrator", () => {
 
 		await orchestrator.setAgentModel(agentId, reasoningModel);
 		await orchestrator.setAgentThinkingLevel(agentId, "high");
-		expect(harness.getThinkingLevel()).toBe("high");
+		expect(orchestrator.getAgentThinkingLevel(agentId)).toBe("high");
 
 		await orchestrator.setAgentActiveTools(agentId, []);
 		expect(orchestrator.getAgentActiveTools(agentId)).toEqual([]);
@@ -893,7 +922,7 @@ describe("AgentOrchestrator", () => {
 	it("rejects agent thinking level changes unsupported by the current model", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		const { agentId, harness } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 
 		await expect(
 			orchestrator.setAgentThinkingLevel(agentId, "medium"),
@@ -904,7 +933,7 @@ describe("AgentOrchestrator", () => {
 				modelId: defaultModel.id,
 			}),
 		});
-		expect(harness.getThinkingLevel()).toBe("off");
+		expect(orchestrator.getAgentThinkingLevel(agentId)).toBe("off");
 
 		await orchestrator.setAgentModel(agentId, reasoningModel);
 		await expect(
@@ -920,13 +949,14 @@ describe("AgentOrchestrator", () => {
 				},
 			}),
 		});
-		expect(harness.getThinkingLevel()).toBe("off");
+		expect(orchestrator.getAgentThinkingLevel(agentId)).toBe("off");
 	});
 
 	it("executes model and thinking settings commands through agent input", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		const { agentId, harness } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, agentId);
 
 		await expect(orchestrator.inputAgent(agentId, "/model")).resolves.toEqual(
 			expect.objectContaining({
@@ -1004,7 +1034,7 @@ describe("AgentOrchestrator", () => {
 				value: { level: "high" },
 			}),
 		);
-		expect(harness.getThinkingLevel()).toBe("high");
+		expect(orchestrator.getAgentThinkingLevel(agentId)).toBe("high");
 	});
 
 	it("exposes lightweight agent record status and inspect snapshots", async () => {
@@ -1012,10 +1042,10 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			toolRegistry: createToolRegistry(createToolDefinition("echo", "echo")),
 		});
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 
 		expect(orchestrator.getAgentStatus(agentId)).toBe("idle");
-		expect(orchestrator.getAgentHarness(agentId)).toBeDefined();
+		expect(orchestrator.inspectAgent(agentId).hasHarness).toBe(true);
 		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
 			agentId,
 			status: "idle",
@@ -1064,7 +1094,8 @@ describe("AgentOrchestrator", () => {
 	it("executes runtime input aliases for steer, follow-up, and status", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		const { agentId, harness } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, agentId);
 		const events: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
 			events.push(event);
@@ -1123,7 +1154,8 @@ describe("AgentOrchestrator", () => {
 	it("completes missing required command arguments before execution", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		const { agentId, harness } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, agentId);
 		const events: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
 			events.push(event);
@@ -1223,7 +1255,7 @@ describe("AgentOrchestrator", () => {
 	it("rejects missing required command arguments when no client can complete them", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const events: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
 			events.push(event);
@@ -1261,7 +1293,7 @@ describe("AgentOrchestrator", () => {
 	it("rejects blank completed command arguments before execution", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const events: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
 			events.push(event);
@@ -1298,7 +1330,7 @@ describe("AgentOrchestrator", () => {
 	it("rejects cancelled argument completion before execution", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const events: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
 			events.push(event);
@@ -1342,7 +1374,8 @@ describe("AgentOrchestrator", () => {
 	it("rejects completed command arguments when the gateway went stale", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		const { agentId, harness } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, agentId);
 		const events: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
 			events.push(event);
@@ -1396,7 +1429,7 @@ describe("AgentOrchestrator", () => {
 	it("offers completion candidates and accepts a select response", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const { completeCommandArguments, binding, invocation } =
 			createArgumentsCompletionFixture(orchestrator, async (context) => {
 				expect(context.agentId).toBe(agentId);
@@ -1447,7 +1480,7 @@ describe("AgentOrchestrator", () => {
 	it("treats select responses without a value as missing completion", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const { completeCommandArguments, binding, invocation } =
 			createArgumentsCompletionFixture(orchestrator, async () => [
 				{ value: "alpha" },
@@ -1480,7 +1513,7 @@ describe("AgentOrchestrator", () => {
 	it("rejects argument completion responses of unexpected kinds", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const { completeCommandArguments, binding, invocation } =
 			createArgumentsCompletionFixture(orchestrator);
 		orchestrator.registerClient({
@@ -1512,7 +1545,7 @@ describe("AgentOrchestrator", () => {
 	it("short-circuits argument completion when the candidate source fails", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const { completeCommandArguments, binding, invocation } =
 			createArgumentsCompletionFixture(orchestrator, async () => {
 				throw new Error("candidate source unavailable");
@@ -1553,7 +1586,7 @@ describe("AgentOrchestrator", () => {
 			"Focus on correctness.",
 		);
 		const orchestrator = await createOrchestrator(env);
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const events: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
 			events.push(event);
@@ -1602,7 +1635,7 @@ describe("AgentOrchestrator", () => {
 	it("rejects the whole input when an inline expansion fails", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const events: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
 			events.push(event);
@@ -1644,7 +1677,7 @@ describe("AgentOrchestrator", () => {
 			"Dig deeper.",
 		);
 		const orchestrator = await createOrchestrator(env);
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		orchestrator.registerClient({
 			id: "human",
 			requestHuman: async (request) => {
@@ -1680,7 +1713,7 @@ describe("AgentOrchestrator", () => {
 			"Focus on correctness.",
 		);
 		const orchestrator = await createOrchestrator(env);
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const events: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
 			events.push(event);
@@ -1721,7 +1754,7 @@ describe("AgentOrchestrator", () => {
 		// from the skills root, which must exist as a directory.
 		env.dirs.add("/workspace/project/.widi/skills");
 		const orchestrator = await createOrchestrator(env);
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const prompted: string[] = [];
 		Object.assign(orchestrator, {
 			promptAgent: async (_agentId: string, text: string) => {
@@ -1772,7 +1805,8 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			toolRegistry: createCoreCodingToolRegistry(),
 		});
-		const { agentId, harness } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, agentId);
 
 		const systemPrompt = (
 			harness as unknown as {
@@ -1835,7 +1869,7 @@ describe("AgentOrchestrator", () => {
 	it("rejects the whole input when an inline skill is unknown", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const prompted: string[] = [];
 		Object.assign(orchestrator, {
 			promptAgent: async (_agentId: string, text: string) => {
@@ -1868,7 +1902,7 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 
 		const names = orchestrator.listCommands(agentId).map((c) => c.name);
 		expect(names).not.toContain("abort");
@@ -1896,7 +1930,7 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 
 		const names = orchestrator.listCommands(agentId).map((c) => c.name);
 		expect(names).not.toContain("new");
@@ -1927,7 +1961,7 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const prompted: string[] = [];
 		const promptStub = async (_agentId: string, text: string) => {
 			prompted.push(text);
@@ -1941,7 +1975,7 @@ describe("AgentOrchestrator", () => {
 		).resolves.toMatchObject({ kind: "prompt" });
 
 		// The per-call switch has the same semantics on a command-enabled agent.
-		const { agentId: commandAgentId } = await orchestrator.spawnAgentHarness({
+		const commandAgentId = await orchestrator.spawnAgent({
 			profileId: defaultProfile.id,
 		});
 		await expect(
@@ -1953,7 +1987,7 @@ describe("AgentOrchestrator", () => {
 	it("starts a new empty session from the current agent", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 
 		const result = await orchestrator.inputAgent(agentId, "/new");
 
@@ -1981,7 +2015,7 @@ describe("AgentOrchestrator", () => {
 	it("lists and resumes sessions through runtime commands", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const session = await orchestrator.sessionManager.createAgentSession({
 			agentId: "worker-agent",
 			agentProfile: restoredProfile,
@@ -2051,7 +2085,7 @@ describe("AgentOrchestrator", () => {
 			},
 		);
 		const orchestrator = await createOrchestrator(env);
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 
 		await expect(
 			orchestrator.inputAgent(agentId, "/resume:same"),
@@ -2066,7 +2100,7 @@ describe("AgentOrchestrator", () => {
 	it("lists runtime agents and persisted sessions through input aliases", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 
 		await expect(
 			orchestrator.inputAgent(agentId, "/agent"),
@@ -2100,7 +2134,7 @@ describe("AgentOrchestrator", () => {
 	it("names and inspects the current session tree through input aliases", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const session = await orchestrator.sessionManager.createAgentSession({
 			agentId,
 			agentProfile: defaultProfile,
@@ -2143,7 +2177,7 @@ describe("AgentOrchestrator", () => {
 	it("navigates the session tree when /tree receives an entry id", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const session = await orchestrator.sessionManager.createAgentSession({
 			agentId,
 			agentProfile: defaultProfile,
@@ -2177,7 +2211,7 @@ describe("AgentOrchestrator", () => {
 	it("forks the current session into an idle runtime agent", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const session = await orchestrator.sessionManager.createAgentSession({
 			agentId,
 			agentProfile: defaultProfile,
@@ -2252,14 +2286,13 @@ describe("AgentOrchestrator", () => {
 			),
 		});
 		orchestrator.registerExtensionFactory("stateful", () => {});
-		const { agentId } = await orchestrator.spawnAgentHarness();
-		const runner = orchestrator.agents.get(agentId)?.extensionRunner;
+		const agentId = await orchestrator.spawnAgent();
+		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
 		if (!runner) throw new Error("Expected extension runner.");
 		const commandContext = runner.createCommandContext("stateful");
 
 		await orchestrator.disposeAgent(agentId, "test cleanup");
 		expect(orchestrator.getAgentStatus(agentId)).toBe("disposed");
-		expect(orchestrator.getAgentHarness(agentId)).toBeUndefined();
 		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
 			agentId,
 			status: "disposed",
@@ -2286,8 +2319,8 @@ describe("AgentOrchestrator", () => {
 				return await new Promise<never>(() => {});
 			},
 		});
-		const { agentId: firstAgentId } = await orchestrator.spawnAgentHarness();
-		const { agentId: secondAgentId } = await orchestrator.spawnAgentHarness();
+		const firstAgentId = await orchestrator.spawnAgent();
+		const secondAgentId = await orchestrator.spawnAgent();
 
 		const firstRequest = orchestrator.requestHuman({
 			source: { kind: "agent", agentId: firstAgentId },
@@ -2340,8 +2373,8 @@ describe("AgentOrchestrator", () => {
 			id: "human",
 			requestHuman: async () => await new Promise<never>(() => {}),
 		});
-		const { agentId: firstAgentId } = await orchestrator.spawnAgentHarness();
-		const { agentId: secondAgentId } = await orchestrator.spawnAgentHarness();
+		const firstAgentId = await orchestrator.spawnAgent();
+		const secondAgentId = await orchestrator.spawnAgent();
 		const request = orchestrator.requestHuman({
 			source: { kind: "system" },
 			kind: "confirm",
@@ -2382,7 +2415,7 @@ describe("AgentOrchestrator", () => {
 			events.push(event);
 		});
 
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 
 		expect(orchestrator.getAgentTools(agentId)).toEqual({
 			toolNames: ["echo"],
@@ -2432,7 +2465,7 @@ describe("AgentOrchestrator", () => {
 			events.push(event);
 		});
 
-		const { agentId } = await orchestrator.spawnAgentHarness({
+		const agentId = await orchestrator.spawnAgent({
 			resume: true,
 			metadata,
 		});
@@ -2468,7 +2501,7 @@ describe("AgentOrchestrator", () => {
 			events.push(event);
 		});
 
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 
 		expect(orchestrator.getAgentTools(agentId)).toEqual({
 			toolNames: ["echo"],
@@ -2515,9 +2548,8 @@ describe("AgentOrchestrator", () => {
 			api.registerTool(createToolDefinition("sampleTool", "sample"));
 		});
 
-		const { agentId: extensionAgentId } =
-			await orchestrator.spawnAgentHarness();
-		const { agentId: plainAgentId } = await orchestrator.spawnAgentHarness({
+		const extensionAgentId = await orchestrator.spawnAgent();
+		const plainAgentId = await orchestrator.spawnAgent({
 			profileId: plainProfile.id,
 		});
 
@@ -2597,7 +2629,7 @@ describe("AgentOrchestrator", () => {
 			});
 		});
 
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 
 		expect(orchestrator.inspectAgent(agentId).extensionSnapshot).toEqual({
 			extensionIds: ["sample"],
@@ -2670,7 +2702,7 @@ describe("AgentOrchestrator", () => {
 			api.registerTool(createToolDefinition("sampleTool", "sample"));
 		});
 
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 
 		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
 			extensionIds: ["sample", "missing"],
@@ -2730,7 +2762,7 @@ describe("AgentOrchestrator", () => {
 				},
 			});
 		});
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 
 		const result = await orchestrator.inputAgent(agentId, "/mark:hello world");
 
@@ -2865,7 +2897,7 @@ describe("AgentOrchestrator", () => {
 				},
 			});
 		});
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		orchestrator.registerClient({
 			id: "human",
 			requestHuman: async (request) => {
@@ -2923,7 +2955,7 @@ describe("AgentOrchestrator", () => {
 			throw new Error("activation exploded");
 		});
 
-		await expect(orchestrator.spawnAgentHarness()).rejects.toThrow(
+		await expect(orchestrator.spawnAgent()).rejects.toThrow(
 			"activation exploded",
 		);
 
@@ -2976,8 +3008,8 @@ describe("AgentOrchestrator", () => {
 		orchestrator.registerExtensionFactory("sample", (api) => {
 			api.registerTool(createToolDefinition("alpha", "alpha"));
 		});
-		const { agentId } = await orchestrator.spawnAgentHarness();
-		const oldRunner = orchestrator.agents.get(agentId)?.extensionRunner;
+		const agentId = await orchestrator.spawnAgent();
+		const oldRunner = requireAgentRecord(orchestrator, agentId).extensionRunner;
 		if (!oldRunner) throw new Error("Expected extension runner.");
 		const oldContext = oldRunner.createCommandContext("sample");
 		orchestrator.registerExtensionFactory("sample", (api) => {
@@ -3047,7 +3079,7 @@ describe("AgentOrchestrator", () => {
 		orchestrator.registerExtensionFactory("sample", (api) => {
 			api.registerTool(createToolDefinition("alpha", "alpha"));
 		});
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		await orchestrator.setAgentActiveTools(agentId, ["alpha"]);
 		orchestrator.registerExtensionFactory("sample", (api) => {
 			api.registerTool(createToolDefinition("alpha", "alpha"));
@@ -3083,7 +3115,7 @@ describe("AgentOrchestrator", () => {
 		orchestrator.registerExtensionFactory("sample", (api) => {
 			api.registerTool(createToolDefinition("alpha", "alpha"));
 		});
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const handleHarnessEvent = (
 			orchestrator as unknown as {
 				_handleAgentHarnessEvent(
@@ -3153,10 +3185,15 @@ describe("AgentOrchestrator", () => {
 			});
 		});
 
-		const { agentId: extensionAgentId, harness: extensionHarness } =
-			await orchestrator.spawnAgentHarness();
-		const { agentId: plainAgentId, harness: plainHarness } =
-			await orchestrator.spawnAgentHarness({ profileId: plainProfile.id });
+		const extensionAgentId = await orchestrator.spawnAgent();
+		const extensionHarness = requireAgentHarness(
+			orchestrator,
+			extensionAgentId,
+		);
+		const plainAgentId = await orchestrator.spawnAgent({
+			profileId: plainProfile.id,
+		});
+		const plainHarness = requireAgentHarness(orchestrator, plainAgentId);
 		const patchedPlain = extensionHarness
 			.getTools()
 			.find((tool) => tool.name === "plain");
@@ -3216,7 +3253,7 @@ describe("AgentOrchestrator", () => {
 			events.push(event);
 		});
 
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 
 		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
 			extensionIds: ["missing"],
@@ -3268,7 +3305,7 @@ describe("AgentOrchestrator", () => {
 				);
 			});
 		});
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const handleHarnessEvent = (
 			orchestrator as unknown as {
 				_handleAgentHarnessEvent(
@@ -3325,7 +3362,7 @@ describe("AgentOrchestrator", () => {
 			});
 		});
 
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const handleHarnessEvent = (
 			orchestrator as unknown as {
 				_handleAgentHarnessEvent(
@@ -3425,7 +3462,8 @@ describe("AgentOrchestrator", () => {
 			}));
 		});
 
-		const { harness } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, agentId);
 		const handlers = (
 			harness as unknown as {
 				handlers: Map<string, Set<(event: unknown) => Promise<unknown>>>;
@@ -3534,7 +3572,8 @@ describe("AgentOrchestrator", () => {
 			});
 		});
 
-		const { agentId, harness } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, agentId);
 		const handlers = (
 			harness as unknown as {
 				handlers: Map<string, Set<(event: unknown) => Promise<unknown>>>;
@@ -3618,8 +3657,8 @@ describe("AgentOrchestrator", () => {
 			});
 		});
 
-		const { agentId } = await orchestrator.spawnAgentHarness();
-		const runner = orchestrator.agents.get(agentId)?.extensionRunner;
+		const agentId = await orchestrator.spawnAgent();
+		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
 		if (!runner) throw new Error("Expected extension runner.");
 		const commandContext = runner.createCommandContext("observer");
 		await commandContext.waitForIdle();
@@ -3673,7 +3712,7 @@ describe("AgentOrchestrator", () => {
 			});
 		});
 
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const handleHarnessEvent = (
 			orchestrator as unknown as {
 				_handleAgentHarnessEvent(
@@ -3726,7 +3765,7 @@ describe("AgentOrchestrator", () => {
 			});
 		});
 
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const handleHarnessEvent = (
 			orchestrator as unknown as {
 				_handleAgentHarnessEvent(
@@ -3782,7 +3821,7 @@ describe("AgentOrchestrator", () => {
 		orchestrator.subscribe((event) => {
 			events.push(event);
 		});
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const handleHarnessEvent = (
 			orchestrator as unknown as {
 				_handleAgentHarnessEvent(
@@ -3884,7 +3923,7 @@ describe("AgentOrchestrator", () => {
 		orchestrator.subscribe((event) => {
 			events.push(event);
 		});
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const handleHarnessEvent = (
 			orchestrator as unknown as {
 				_handleAgentHarnessEvent(
@@ -3914,7 +3953,7 @@ describe("AgentOrchestrator", () => {
 		orchestrator.subscribe((event) => {
 			events.push(event);
 		});
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 		const handleHarnessEvent = (
 			orchestrator as unknown as {
 				_handleAgentHarnessEvent(
@@ -3982,7 +4021,7 @@ describe("AgentOrchestrator", () => {
 	it("reports invalid commands without wrapping programmatic calls", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		const { agentId } = await orchestrator.spawnAgentHarness();
+		const agentId = await orchestrator.spawnAgent();
 
 		const idleSteer = await orchestrator.inputAgent(agentId, "/steer:steer");
 		expect(idleSteer).toMatchObject({

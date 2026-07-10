@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-`AgentProfile` 当前是创建 `AgentHarness` 的声明式配置：
+`AgentProfile` 当前是创建 agent 的声明式配置（agent 是 runtime entity，`AgentHarness` 只是其中一项运行时依赖，见 [Orchestrator](core/orchestrator.md) 核心理念）：
 
 - `id`、`label` 用于 profile 引用、session metadata 和 agent id 分配。
 - `systemPrompt` 直接传给 `AgentHarness`。
@@ -54,14 +54,14 @@
 - 同一个 resource 从 agent dir 与 cwd 同时加载时是否允许重复。
 - resource source 是否应暴露给 UI、日志或 debug command。
 
-第一版只做报告，不阻止 harness 创建。仍需定义 explicit/default resource 缺失、parse failed 和 duplicate resource 的 severity/disposition 策略。
+第一版只做报告，不阻止 agent 创建。仍需定义 explicit/default resource 缺失、parse failed 和 duplicate resource 的 severity/disposition 策略。
 
 ### Extensions
 
 `AgentProfile.extensions` 已声明 profile 需要的 extension。当前 lifecycle 已从内存 factory MVP 扩展到 file/module loader：
 
 - `ExtensionLoader` 根据 `profile.extensions` 从内存 factory registry 或 discovered file/module catalog 解析 extension。
-- `missingExtensionSeverity` 已用于 missing factory diagnostic 的 severity；`ignore` 不发诊断，`warning`/`error` 继续创建 harness 并报告 degraded diagnostic。
+- `missingExtensionSeverity` 已用于 missing factory diagnostic 的 severity；`ignore` 不发诊断，`warning`/`error` 继续创建 agent 并报告 degraded diagnostic。
 - activation 失败会产生 `extension.activation_failed`，observer handler 失败会产生 `extension.handler_failed`。
 - `ExtensionRunner` 将 loaded scope 作为当前 agent 的 scoped registry overlay，支持 activation-time `registerTool` / `patchTool` / `registerCommand`。
 - runtime context 已提供 actions、human request、tool mutation，以及 `ctx.session` custom entry facade（actions 的全量 `dispatch` 将随 M1 Command 收编移除）。
