@@ -41,7 +41,7 @@
 - [x] 切片 1：Interceptor 失败语义定案 + 实施——合成类跳过失败者保留其余，`tool_call` 拦截 fail-closed；契约见 extensions.md。
 - [x] 切片 2：Orchestrator 公开面收口——`agents` map 与 `getAgentHarness()` 私有化，对外只留 snapshot 查询；`spawnAgentHarness` 改名 `spawnAgent`，只返回 `agentId`。已落地：`AgentRecord` 可变类型不再公开 re-export，公开面无返回 `AgentHarness`/可变 record 的路径；顺带增补 `getAgentThinkingLevel` 原子 getter（对照表表述对齐，切片 3 复用）。
 - [x] 切片 3：`ExtensionActions` scope 化（own-agent 默认，agentId 由 context 注入，capabilities 接线）+ 在 scoped 前提下补齐动作/查询面（send/steer/followUp、setSessionName、exec、getCommands、setModel/thinkingLevel）。已落地：action 签名无 agentId（orchestrator↔runner 绑定走内部 `ExtensionCoreActions`）；`requestHuman` source 注入不可伪造 + `canRequestUser` 门控（首个消费者）；exec project trust 门控（裁决见 extension-experiment.md 切片 3 记录）；tool host actions 复用同一 scoped 管线；契约见 extensions.md Scoped Actions 节。
-- [ ] 切片 4：审计锚点 extension 落库为仓库内真实测试 consumer，反向检验切片 1/3。
+- [x] 切片 4：审计锚点 extension 落库为仓库内真实测试 consumer，反向检验切片 1/3。已落地：`tests/extensions/audit-extension.ts` 组合 raw observer、`tool_call` policy（default allow / deny / ask）与 custom-entry 账本；ask 经 scoped `requestHuman`，拒绝、capability denial 或 action 失败均 fail-closed。六条独立集成测试覆盖账本、source 注入、`canRequestUser` 门控，以及他人 observer/tool interceptor 抛错时不失防。当前只落 tests，待 product preset 真实引用再毕业到 src；裁决全文见 extension-experiment.md 切片 4 记录。
 - [ ] 切片 5：Hook matrix 第一批（observe 档）：`command_*`、`human_request_*`、diagnostics、session lifecycle、model/thinking select；每个 hook 标 observe/intercept/mutate 档位。
 - [ ] 切片 6：`input` interceptor（已裁决：拦截在 command 解析之前，改写后重走完整解析与 gateway）。
 - [ ] 切片 7：Extension-owned storage 裁决 + custom entry policy（fork/compaction/export/`custom_message`）；extension inline `expand` 契约顺带接入。
