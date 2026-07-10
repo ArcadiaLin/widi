@@ -107,7 +107,7 @@ Hook point 是 extension 运行时插入点的总称，不是 observer/intercept
 | `before_agent_start` / `context` / `tool_result` | Pi typed hook | mutate | 返回值按下节规则合成 | own agent |
 | `tool_call` | Pi typed hook | intercept | 可 block；失败 fail-closed | own agent |
 
-Orchestrator `_emit()` 是 canonical observer 的唯一桥接点，顺序为 core listeners → clients → own-agent extension observers。一个 observer 抛错不改变原 runtime 操作结果；diagnostic 仍写 AgentRecord 并发给 core listeners/clients。为避免 `diagnostic → observer failure → extension.handler_failed → diagnostic observer` 无限反馈，observer dispatch 期间产生的 diagnostic 不再次送入 extension observers。
+Orchestrator `_emit()` 是 canonical observer 的唯一桥接点，顺序为 core listeners → clients → own-agent extension observers。一个 observer 抛错不改变原 runtime 操作结果；diagnostic 仍写 AgentRecord 并发给 core listeners/clients。为避免 `diagnostic → observer failure → extension.handler_failed → diagnostic observer` 无限反馈，observer dispatch 期间产生的 diagnostic 不再次送入 extension observers。Stale runner（agent dispose 后仍留在 record 上）不再接收任何 observer 事件——stale context 的动作面只会失败；reload 场景事件送当前 runner。
 
 Pi 的 `session_before_switch` 在当前 WIDI 中没有对应物：WIDI 的 new/resume 创建另一个 runtime Agent，不原地替换当前 session。`disposeAgent()` 也没有关闭 SessionManager 中的 session，因此当前不发布 `session_shutdown` 伪事实。compact/tree/model/thinking 已在 raw harness event 中完整可达，不增加同义事件轨道。
 

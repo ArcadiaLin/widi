@@ -495,6 +495,97 @@ describe("audit extension consumer", () => {
 		).toHaveLength(1);
 	});
 
+	it("keeps routing diagnostics to observers after interleaved dispatches", async () => {
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const slow: ExtensionFactory = (api) => {
+			api.observe("agent_harness_event", async () => {
+				await gate;
+			});
+		};
+		const { orchestrator, agentId } = await createAuditHarness(
+			{ recordCoreEvents: ["diagnostic"] },
+			{ beforeAudit: [{ id: "slow", factory: slow }] },
+		);
+
+		// Two harness events for the same agent whose observer dispatches
+		// overlap, like events arriving while an observer is still awaiting.
+		const first = emitHarnessEvent(orchestrator, agentId, {
+			type: "turn_start",
+		});
+		const second = emitHarnessEvent(orchestrator, agentId, {
+			type: "turn_start",
+		});
+		release();
+		await Promise.all([first, second]);
+
+		await orchestrator.recordExtensionDiagnostics(agentId, [
+			createOrchestratorDiagnostic({
+				domain: "extension",
+				severity: "warning",
+				disposition: "reported",
+				code: "extension.audit_test",
+				message: "Audit diagnostic",
+				source: { kind: "extension", id: "audit-test" },
+				agentId,
+				extensionId: "audit-test",
+				phase: "runtime",
+				recoverable: true,
+			}),
+		]);
+
+		await expect(
+			readAuditEntries<AuditEventEntry>(
+				orchestrator,
+				agentId,
+				AUDIT_EVENT_ENTRY_TYPE,
+			),
+		).resolves.toMatchObject([
+			{ data: { source: "orchestrator", eventType: "diagnostic" } },
+		]);
+	});
+
+	it("stops dispatching to observers after the agent is disposed", async () => {
+		const observed: string[] = [];
+		const probe: ExtensionFactory = (api) => {
+			api.observe("diagnostic", (event) => {
+				observed.push(event.diagnostic.code);
+			});
+		};
+		const { orchestrator, agentId, events } = await createAuditHarness(
+			{},
+			{ beforeAudit: [{ id: "probe", factory: probe }] },
+		);
+
+		await orchestrator.disposeAgent(agentId);
+		observed.length = 0;
+		await orchestrator.recordExtensionDiagnostics(agentId, [
+			createOrchestratorDiagnostic({
+				domain: "extension",
+				severity: "warning",
+				disposition: "reported",
+				code: "extension.audit_test",
+				message: "Audit diagnostic",
+				source: { kind: "extension", id: "audit-test" },
+				agentId,
+				extensionId: "audit-test",
+				phase: "runtime",
+				recoverable: true,
+			}),
+		]);
+
+		expect(observed).toEqual([]);
+		expect(
+			events.filter(
+				(event) =>
+					event.type === "diagnostic" &&
+					event.diagnostic.code === "extension.handler_failed",
+			),
+		).toHaveLength(0);
+	});
+
 	it("fails closed on another tool interceptor error without disabling audit", async () => {
 		let firstCall = true;
 		const broken: ExtensionFactory = (api) => {

@@ -204,6 +204,10 @@ export class ExtensionRunner {
 		this._staleMessage = message;
 	}
 
+	isStale(): boolean {
+		return this._staleMessage !== undefined;
+	}
+
 	inspect(): ExtensionRunnerSnapshot {
 		const hooks: ExtensionHookSnapshot[] = [];
 		for (const handlers of this._loadedScope.observerHandlers.values()) {

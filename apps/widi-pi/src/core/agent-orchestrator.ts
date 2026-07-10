@@ -2363,18 +2363,25 @@ export class AgentOrchestrator {
 		const agentId = this._extensionObservedAgentId(event);
 		if (!agentId) return;
 		const extensionRunner = this._agents.get(agentId)?.extensionRunner;
-		if (!extensionRunner) return;
+		// A stale runner (agent disposed) keeps its record but must not
+		// receive further events: its context actions can only fail.
+		if (!extensionRunner || extensionRunner.isStale()) return;
 
-		const depth = this._extensionObserverDispatchDepth.get(agentId) ?? 0;
-		this._extensionObserverDispatchDepth.set(agentId, depth + 1);
+		this._extensionObserverDispatchDepth.set(
+			agentId,
+			(this._extensionObserverDispatchDepth.get(agentId) ?? 0) + 1,
+		);
 		try {
 			const diagnostics = await extensionRunner.emitObserved(event);
 			await this._recordAndPublishExtensionDiagnostics(agentId, diagnostics);
 		} finally {
-			if (depth === 0) {
+			// Dispatches for one agent can interleave, so decrement the live
+			// counter instead of restoring a pre-increment snapshot.
+			const depth = this._extensionObserverDispatchDepth.get(agentId) ?? 1;
+			if (depth <= 1) {
 				this._extensionObserverDispatchDepth.delete(agentId);
 			} else {
-				this._extensionObserverDispatchDepth.set(agentId, depth);
+				this._extensionObserverDispatchDepth.set(agentId, depth - 1);
 			}
 		}
 	}

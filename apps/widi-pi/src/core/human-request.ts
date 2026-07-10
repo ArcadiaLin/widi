@@ -8,6 +8,7 @@ import {
 	agentIdFromOperationSource,
 	type OperationSource,
 } from "./operation-source.ts";
+import type { AgentId } from "./types.ts";
 
 export type HumanRequestKind =
 	| "confirm"
@@ -52,25 +53,25 @@ export interface ToolHumanHost {
 export type HumanRequestEvent =
 	| {
 			readonly type: "human_request_pending";
-			agentId?: string;
+			agentId?: AgentId;
 			request: HumanRequestEnvelope;
 	  }
 	| {
 			readonly type: "human_request_resolved";
-			agentId?: string;
+			agentId?: AgentId;
 			requestId: string;
 			response: HumanResponse;
 			completedAt: string;
 	  }
 	| {
 			readonly type: "human_request_timeout";
-			agentId?: string;
+			agentId?: AgentId;
 			requestId: string;
 			completedAt: string;
 	  }
 	| {
 			readonly type: "human_request_cancelled";
-			agentId?: string;
+			agentId?: AgentId;
 			requestId: string;
 			reason?: string;
 			completedAt: string;
@@ -86,7 +87,7 @@ export interface HumanRequestBrokerHost {
 	emit(event: HumanRequestEvent): Promise<void>;
 	publishDiagnostic(diagnostic: OrchestratorDiagnostic): Promise<void>;
 	recordAgentLifecycleFailure(
-		agentId: string,
+		agentId: AgentId,
 		code: string,
 		message: string,
 		error: unknown,
@@ -94,7 +95,7 @@ export interface HumanRequestBrokerHost {
 }
 
 interface PendingHumanRequest {
-	agentId?: string;
+	agentId?: AgentId;
 	cancel(reason?: string): Promise<void>;
 }
 
@@ -110,7 +111,7 @@ export class HumanRequestBroker {
 
 	async request(
 		request: HumanRequest,
-		options: { agentId?: string } = {},
+		options: { agentId?: AgentId } = {},
 	): Promise<HumanResponse> {
 		const requestHuman = this.host.findHumanRequestHandler();
 		const requestId = this.createRequestId();
@@ -304,7 +305,7 @@ export class HumanRequestBroker {
 		return true;
 	}
 
-	async cancelForAgent(agentId: string, reason: string): Promise<void> {
+	async cancelForAgent(agentId: AgentId, reason: string): Promise<void> {
 		for (const [requestId, pending] of [...this.pendingRequests]) {
 			if (pending.agentId !== agentId) continue;
 			try {
