@@ -1,7 +1,7 @@
 # Command Experiment
 
-> **状态：实验裁决已出，正在迁移。**
-> Command 作为独立可选 runtime 的实验结束，结论是否定的：command 不是一层独立 runtime，而是 orchestrator 自身的 input 能力。本文档记录裁决理由、目标形态和迁移边界。`src/core/command/` 在迁移完成后删除。
+> **状态：实验裁决已落地。**
+> Command 作为独立可选 runtime 的实验结束，结论是否定的：command 不是一层独立 runtime，而是 orchestrator 自身的 input 能力。本文档记录裁决理由、当前形态和后续边界。历史 `src/core/command/` 目录已删除，command facts 由 `src/core/command.ts` 承载。
 
 ## Motivation
 
@@ -131,7 +131,7 @@ inputAgent(agentId, text)
        │    └─ 无 client / 超时 / 拒绝 → emit command_rejected + diagnostic，结束
        ├─ emit command_accepted        // 门控与参数就绪，即将执行
        ├─ 执行 built-in binding 或 extension handler
-       ├─ 成功 → emit command_completed（附 result 摘要）
+       ├─ 成功 → emit command_completed（附 result）
        └─ 抛错 → 转 diagnostic → emit command_failed
 ```
 
@@ -143,7 +143,7 @@ inputAgent(agentId, text)
 - 旧 `dispatch()` 用 `command_rejected` 同时表达两者，拆开是为了让审计/恢复逻辑能区分"没做"和"做砸了"。
 - 未命中 registry 的 `<trigger><name>` 文本不发事件——它不是 command，是普通输入。这维持现状语义（fall through 到 prompt），避免把用户口头的 trigger 误报成命令失败。
 
-所有 command 执行**只有这一条事件轨道**。extension command 与 built-in command 走完全相同的 detected→accepted→completed/failed 序列（旧实现中 extension command 失败只记 diagnostic 不发事件，统一掉）。事件传递顺序与 client fanout 见 [Runtime Lifecycle](./runtime-lifecycle.md)（该文档 command 章节需随迁移改写）。
+所有 command 执行**只有这一条事件轨道**。extension command 与 built-in command 走完全相同的 detected→accepted→completed/failed 序列（旧实现中 extension command 失败只记 diagnostic 不发事件，统一掉）。事件传递顺序与 client fanout 见 [Runtime Lifecycle](./runtime-lifecycle.md)。
 
 **返回契约**：`inputAgent` 返回小的判别式 union，调用方同步拿结果，不被迫订阅事件：
 
@@ -155,7 +155,7 @@ export type InputResult =
   | { kind: "failed"; commandId: string; diagnostic: OrchestratorDiagnostic };
 ```
 
-`value` 是 `unknown`——不复活 17 成员的 `CommandValue` union，需要精确类型的调用方直接用原子方法。由此 `command_completed` 事件只携带摘要（commandId、name、ok），完整 result 由返回值承载，事件轨道专注审计而非取值。
+`value` 是 `unknown`——不复活 17 成员的 `CommandValue` union，需要精确类型的调用方直接用原子方法。`command_completed` 事件当前携带同一个 `result: unknown`，方便 adapter/RPC 做一次性渲染或转发；需要稳定精确类型的 programmatic consumer 仍应直接调用 orchestrator 原子方法，而不是反解析事件 payload。
 
 ## Inline Commands
 
@@ -342,7 +342,7 @@ export interface ExtensionCommandDefinition {
 - **Command log 持久化**、client fanout 变更、Pi harness queue 语义重定义——均维持现状边界。
 - **多 client 的 human request 路由**。argumentsCompletion 暂沿用 first-client-wins，多 client 语义随 M3 真实场景再定义。
 
-已裁决（原待定项）：main-agent 判定 → `scope: "user-facing"` 消费 `capabilities.acceptsUserInput`；返回契约 → 判别式 `InputResult`，`command_completed` 只带摘要；解析模板 → 固定 `<trigger><name>` / `<trigger><name>:<argument>`，argument 是单个 raw string；session 记录 → message 存展开、custom entry 存原文；inline 能力 → `placement: "inline"` + 可选 `closeTrigger` 声明模板，binding 校验执行体；`dispatch()` → 直接删无过渡；`listCommands` → policy/scope 静态剪列表 + status 作 availability 标注；`<prompt:...>` → 纯文本插入无占位符；`/thinking` → 下一 turn 生效。
+已裁决（原待定项）：main-agent 判定 → `scope: "user-facing"` 消费 `capabilities.acceptsUserInput`；返回契约 → 判别式 `InputResult`，`command_completed` 带 `result: unknown`；解析模板 → 固定 `<trigger><name>` / `<trigger><name>:<argument>`，argument 是单个 raw string；session 记录 → message 存展开、custom entry 存原文；inline 能力 → `placement: "inline"` + 可选 `closeTrigger` 声明模板，binding 校验执行体；`dispatch()` → 直接删无过渡；`listCommands` → policy/scope 静态剪列表 + status 作 availability 标注；`<prompt:...>` → 纯文本插入无占位符；`/thinking` → 下一 turn 生效。
 
 已裁决（补充）：`inputInvoke` 开关随契约退役，改名为 `inputAgent` 选项 `commands: false`，并新增 profile 级 `commands.enabled: false` 等价开关；参数缺失在 argumentsCompletion 落地前直接 `command_rejected`（code `command.arguments_required`），不降级为 prompt；不建 `CommandRegistry` 类 / build 期 `AgentCommandSet`——解析与门控保持 orchestrator 私有惰性查询（见 [解析归属](#解析归属不建-commandregistry-类2026-07-07-裁决)）。
 

@@ -50,14 +50,14 @@ Runtime composition 不创建产品 UI，也不决定 `/team`、`/flow`、`/goal
 
 ## Command Input Lifecycle
 
-Command input 是 orchestrator 自身的 human input 能力，唯一入口是 `inputAgent(agentId, text)`（迁移中，目标语义与裁决全文见 [Command Experiment](./command-experiment.md)）：
+Command input 是 orchestrator 自身的 human input 能力，唯一入口是 `inputAgent(agentId, text)`（当前语义与裁决全文见 [Command Experiment](./command-experiment.md)）：
 
 1. 两阶段解析：整行 line command 按已注册 `trigger` + 固定 `<trigger><name>:<argument>` 模板匹配；未命中则做 inline command 扫描；均未命中按普通 prompt 走，不发 command 事件。
 2. 命中 registry → emit `command_detected`（附 commandId、trigger、name、source、placement）。
 3. `_commandGateway` 检查 profile `commands` policy、`scope`、agent status；失败 → emit `command_rejected` + diagnostic，保证无副作用。
 4. 必填参数缺失 → `argumentsCompletion` human request；无 client/超时/拒绝 → `command_rejected`，不降级为普通 prompt。
 5. emit `command_accepted`，执行 built-in binding、extension handler 或 inline expand。
-6. 成功 → emit `command_completed`（只带摘要，完整 result 由 `InputResult` 返回值承载）；执行中抛错 → 转 diagnostic，emit `command_failed`。
+6. 成功 → emit `command_completed`（携带 `result: unknown`，与 `InputResult` 的 command value 同源）；执行中抛错 → 转 diagnostic，emit `command_failed`。
 
 `command_rejected`（执行前拦下，无副作用）与 `command_failed`（执行中失败，可能有部分副作用）语义分离。extension command 与 built-in 走同一条事件轨道。
 

@@ -45,6 +45,7 @@ import {
 	type SettingsStorage,
 } from "../../src/core/setting-manager.ts";
 import { ToolRegistry } from "../../src/core/tool-registry.ts";
+import { registerCoreCodingTools } from "../../src/core/tools/coding/builtin.ts";
 import type { ToolDefinition } from "../../src/core/tools/types.ts";
 
 function expectExtendedMetadata(metadata: {
@@ -466,6 +467,12 @@ function createToolRegistry(...tools: ToolDefinition[]): ToolRegistry {
 	for (const tool of tools) {
 		registry.defineTool(tool, { kind: "core", id: "test" });
 	}
+	return registry;
+}
+
+function createCoreCodingToolRegistry(): ToolRegistry {
+	const registry = new ToolRegistry();
+	registerCoreCodingTools(registry, "/workspace/project");
 	return registry;
 }
 
@@ -1749,7 +1756,7 @@ describe("AgentOrchestrator", () => {
 		});
 	});
 
-	it("lists loaded skills in the harness system prompt when a read tool is active", async () => {
+	it("lists loaded skills in the harness system prompt when the resolved read tool is active", async () => {
 		const env = new MemoryExecutionEnv();
 		await env.writeFile(
 			"/workspace/project/.widi/skills/code-review/SKILL.md",
@@ -1762,8 +1769,10 @@ describe("AgentOrchestrator", () => {
 			].join("\n"),
 		);
 		env.dirs.add("/workspace/project/.widi/skills");
-		const orchestrator = await createOrchestrator(env);
-		const { harness } = await orchestrator.spawnAgentHarness();
+		const orchestrator = await createOrchestrator(env, {
+			toolRegistry: createCoreCodingToolRegistry(),
+		});
+		const { agentId, harness } = await orchestrator.spawnAgentHarness();
 
 		const systemPrompt = (
 			harness as unknown as {
@@ -1774,10 +1783,13 @@ describe("AgentOrchestrator", () => {
 			}
 		).systemPrompt;
 		expect(typeof systemPrompt).toBe("function");
+		expect(orchestrator.getAgentTools(agentId).activeToolNames).toContain(
+			"read",
+		);
 
 		const withRead = await systemPrompt({
 			resources: harness.getResources(),
-			activeTools: [{ name: "read" }],
+			activeTools: harness.getActiveTools(),
 		});
 		expect(withRead.startsWith("default prompt")).toBe(true);
 		expect(withRead).toContain("<available_skills>");
@@ -1788,9 +1800,10 @@ describe("AgentOrchestrator", () => {
 		// The skill body stays in the file; the listing is metadata-only.
 		expect(withRead).not.toContain("SECRET BODY INSTRUCTIONS");
 
+		await orchestrator.setAgentActiveTools(agentId, ["write"]);
 		const withoutRead = await systemPrompt({
 			resources: harness.getResources(),
-			activeTools: [{ name: "write" }],
+			activeTools: harness.getActiveTools(),
 		});
 		expect(withoutRead).toBe("default prompt");
 	});
@@ -4071,6 +4084,90 @@ describe("AgentOrchestrator", () => {
 		});
 		expect(events).toContainEqual(
 			expect.objectContaining({ type: "human_request_timeout" }),
+		);
+	});
+
+	it("aborts pending human requests from the caller signal", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const controller = new AbortController();
+		const events: OrchestratorEvent[] = [];
+		let clientSignal: AbortSignal | undefined;
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async (_request, signal) => {
+				clientSignal = signal;
+				return await new Promise<never>(() => {});
+			},
+		});
+
+		const requestPromise = orchestrator.requestHuman({
+			source: { kind: "system" },
+			kind: "confirm",
+			title: "Confirm",
+			message: "Continue?",
+			signal: controller.signal,
+		});
+		await Promise.resolve();
+		controller.abort();
+
+		await expect(requestPromise).rejects.toMatchObject({
+			code: "orchestrator.human_request_aborted",
+		});
+		expect(clientSignal?.aborted).toBe(true);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					code: "orchestrator.human_request_aborted",
+				}),
+			}),
+		);
+	});
+
+	it("rejects pre-aborted human requests before notifying clients", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const controller = new AbortController();
+		const events: OrchestratorEvent[] = [];
+		let requestHandled = false;
+		controller.abort();
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async () => {
+				requestHandled = true;
+				return await new Promise<never>(() => {});
+			},
+		});
+
+		await expect(
+			orchestrator.requestHuman({
+				source: { kind: "system" },
+				kind: "confirm",
+				title: "Confirm",
+				message: "Continue?",
+				signal: controller.signal,
+			}),
+		).rejects.toMatchObject({
+			code: "orchestrator.human_request_aborted",
+		});
+		expect(requestHandled).toBe(false);
+		expect(events.some((event) => event.type === "human_request_pending")).toBe(
+			false,
+		);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					code: "orchestrator.human_request_aborted",
+				}),
+			}),
 		);
 	});
 

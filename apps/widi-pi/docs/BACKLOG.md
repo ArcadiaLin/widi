@@ -26,7 +26,7 @@ Extension surface 的设计与实施已收编为 [ME milestone](TODO.md#me-exten
 - Product presentation：`agent.inspect` facts 的产品级 UI/RPC 呈现（随 client adapter 工作举证）。
 - Extension 间 EventBus（pi `events` 对应物）。
 - `setLabel`（依赖 pi session label 的 upstream 对齐）。
-- `user_bash` hook（依赖 M2 coding tools 的 bash 能力）。
+- `user_bash` hook（依赖未来 bash tool 能力）。
 - Client adapter 的 extension host（shortcut/flag/renderer 等 UI 自由度的承载处）。
 
 ## Session And State

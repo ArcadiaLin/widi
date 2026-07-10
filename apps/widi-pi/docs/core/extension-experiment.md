@@ -45,23 +45,23 @@ WIDI extension 自由度 =
 | `before_agent_start` / `context` / `tool_call` / `tool_result` | 四个 interceptor 已有（runner MVP） | core，已落 |
 | `agent_start/end`、`turn_start/end`、`message_*` | raw `agent_harness_event` observer 可达 | core，已落（归一化档不做，raw 够用，见裁决 3） |
 | `tool_execution_*` | `tool_lifecycle_event` observer 已有 | core，已落 |
-| `session_start/info_changed/before_switch/before_fork/before_compact/compact/shutdown/before_tree/tree` | 无 | core，ME 切片 4（先 observe 档，intercept 档按举证逐个开） |
-| `model_select` / `thinking_level_select` | 无 | core，ME 切片 4（observe 档） |
-| `input` | 无 | core，ME 切片 5（intercept 档，策略 extension 举证） |
-| `before_provider_request/headers`、`after_provider_response` | 无（依赖 pi harness 暴露程度） | core，ME 切片 8 随 provider 面评估 |
-| `user_bash` | 无 bash 能力 | backlog（依赖 M2 coding tools） |
+| `session_start/info_changed/before_switch/before_fork/before_compact/compact/shutdown/before_tree/tree` | 无 | core，ME 切片 5（先 observe 档，intercept 档按举证逐个开） |
+| `model_select` / `thinking_level_select` | 无 | core，ME 切片 5（observe 档） |
+| `input` | 无 | core，ME 切片 6（intercept 档，策略 extension 举证） |
+| `before_provider_request/headers`、`after_provider_response` | 无（依赖 pi harness 暴露程度） | core，ME 切片 9 随 provider 面评估 |
+| `user_bash` | 无 bash 能力 | backlog（依赖未来 bash tool 能力） |
 | `project_trust` | loader trust gate（声明式，非 hook） | core，已落；差异接受，不做 hook 化 |
-| `resources_discover` | 无 | core，ME 切片 7（resource contribution） |
+| `resources_discover` | 无 | core，ME 切片 8（resource contribution） |
 
-WIDI 独有（pi 无对应）：`command_detected/accepted/completed/rejected/failed`、`human_request_*`、diagnostics 流的 observer 档——ME 切片 4 一并桥接，这是审计 extension 的主粮。
+WIDI 独有（pi 无对应）：`command_detected/accepted/completed/rejected/failed`、`human_request_*`、diagnostics 流的 observer 档——ME 切片 5 一并桥接，这是审计 extension 的主粮。
 
 ### 注册面
 
 | pi | WIDI 现状 | 归属 |
 | --- | --- | --- |
 | `registerTool` | 已有，且多 `patchTool`（pi 无 patch 语义） | core，已超出 |
-| `registerCommand` | 已有，且 trigger/placement/arguments 是声明事实、走统一事件轨道与 gateway | core，已超出；extension inline `expand` 待接（ME 切片 6 顺带） |
-| `registerProvider` / `unregisterProvider` | 无 | core，ME 切片 8（ModelRegistry registration-with-provenance，auth 所有权不移交） |
+| `registerCommand` | 已有，且 trigger/placement/arguments 是声明事实、走统一事件轨道与 gateway | core，已超出；extension inline `expand` 待接（ME 切片 7 顺带） |
+| `registerProvider` / `unregisterProvider` | 无 | core，ME 切片 9（ModelRegistry registration-with-provenance，auth 所有权不移交） |
 | `registerShortcut` / `registerFlag` / `getFlag` | 无 | client |
 | `registerMessageRenderer` / `registerEntryRenderer` | 无 | client |
 
@@ -69,14 +69,14 @@ WIDI 独有（pi 无对应）：`command_detected/accepted/completed/rejected/fa
 
 | pi | WIDI 现状 | 归属 |
 | --- | --- | --- |
-| `sendMessage` / `sendUserMessage`（steer/followUp/nextTurn） | 原子方法在（prompt/steer/followUp），actions 未暴露 | core，ME 切片 2 scope 化后暴露；custom message 语义依赖切片 6 policy |
-| `appendEntry` / `findEntries` | session custom entry MVP 已有 | core，已落；policy 待切片 6 |
-| `setSessionName` / `getSessionName` | `setAgentSessionName` 在，actions 未暴露 | core，ME 切片 2 |
+| `sendMessage` / `sendUserMessage`（steer/followUp/nextTurn） | 原子方法在（prompt/steer/followUp），actions 未暴露 | core，ME 切片 3 scope 化后暴露；custom message 语义依赖切片 7 policy |
+| `appendEntry` / `findEntries` | session custom entry MVP 已有 | core，已落；policy 待切片 7 |
+| `setSessionName` / `getSessionName` | `setAgentSessionName` 在，actions 未暴露 | core，ME 切片 3 |
 | `setLabel` | pi session label，WIDI 无对应 | backlog（upstream 对齐项） |
-| `exec` | `ExecutionEnv` 在，context 未暴露 | core，ME 切片 2（trust gate 约束写明） |
-| `getActiveTools` / `getAllTools` / `setActiveTools` | `ExtensionActions` 已有 | core，已落（切片 2 收 own-agent scope） |
-| `getCommands` | `listCommands` 在，context 未暴露 | core，ME 切片 2 |
-| `setModel` / `get/setThinkingLevel` | 原子方法在，actions 未暴露 | core，ME 切片 2 |
+| `exec` | `ExecutionEnv` 在，context 未暴露 | core，ME 切片 3（trust gate 约束写明） |
+| `getActiveTools` / `getAllTools` / `setActiveTools` | `ExtensionActions` 已有 | core，已落（切片 3 收 own-agent scope） |
+| `getCommands` | `listCommands` 在，context 未暴露 | core，ME 切片 3 |
+| `setModel` / `get/setThinkingLevel` | 原子方法在，actions 未暴露 | core，ME 切片 3 |
 | `events`（extension 间 EventBus） | 无 | backlog（无 consumer 举证） |
 | `ctx.ui` / `hasUI` / `mode` | 无 | client；core 的对应物是 `requestHuman` |
 

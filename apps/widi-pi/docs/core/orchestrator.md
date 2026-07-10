@@ -6,7 +6,7 @@
 
 Agent 不是 AgentHarness。
 
-Agent 是 WIDI runtime entity，由 `AgentId` 标识，并由 profile、Pi `AgentHarness`、session、model state、resolved dependencies 和 runtime status 共同构成。当前实现中 `Map<AgentId, AgentHarness>` 只是早期压缩表达，长期概念上不能把二者等同。
+Agent 是 WIDI runtime entity，由 `AgentId` 标识，并由 profile、Pi `AgentHarness`、session、model state、resolved dependencies 和 runtime status 共同构成。当前实现中 orchestrator 持有 `Map<AgentId, AgentRecord>`；`AgentHarness` 只是 record 内的一项运行时依赖，不能把二者等同。
 
 AgentId 是 runtime-local identity。
 

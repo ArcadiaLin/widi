@@ -128,17 +128,31 @@ export class HumanRequestBroker {
 
 		const controller = new AbortController();
 		const abortFromCaller = () => controller.abort();
-		request.signal?.addEventListener("abort", abortFromCaller, { once: true });
 
 		let timeoutId: ReturnType<typeof setTimeout> | undefined;
 		let cancelPending: (reason?: string) => Promise<void> = async () => {};
 		try {
+			if (request.signal?.aborted) {
+				throw new OrchestratorError(
+					createOrchestratorDiagnostic({
+						severity: "error",
+						code: "orchestrator.human_request_aborted",
+						message: "Human request was aborted.",
+						operationSource: request.source,
+						requestId,
+						recoverable: true,
+					}),
+				);
+			}
 			const responsePromise = new Promise<HumanResponse>((resolve, reject) => {
 				let settled = false;
 				let abortHandler: (() => void) | undefined;
+				let callerAbortRegistered = false;
 				const cleanup = () => {
 					if (timeoutId) clearTimeout(timeoutId);
-					request.signal?.removeEventListener("abort", abortFromCaller);
+					if (callerAbortRegistered) {
+						request.signal?.removeEventListener("abort", abortFromCaller);
+					}
 					if (abortHandler) {
 						controller.signal.removeEventListener("abort", abortHandler);
 					}
@@ -168,6 +182,14 @@ export class HumanRequestBroker {
 				controller.signal.addEventListener("abort", abortHandler, {
 					once: true,
 				});
+				if (request.signal?.aborted) {
+					controller.abort();
+				} else {
+					request.signal?.addEventListener("abort", abortFromCaller, {
+						once: true,
+					});
+					callerAbortRegistered = request.signal !== undefined;
+				}
 				cancelPending = async (reason) => {
 					if (settled) return;
 					await this.host.emit({

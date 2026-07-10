@@ -6,16 +6,18 @@
   "type": "module",
   "scripts": {
     "clean": "shx rm -rf dist",
-    "build": "tsgo -p tsconfig.build.json",
+    "build": "npm run build:deps && npm run build:app",
+    "build:app": "tsgo -p tsconfig.build.json",
+    "build:deps": "tsgo -p ../../pi/packages/ai/tsconfig.build.json && tsgo -p ../../pi/packages/agent/tsconfig.build.json && tsgo -p ../../pi/packages/tui/tsconfig.build.json",
     "check": "tsgo --noEmit -p tsconfig.json",
     "test": "vitest --run",
     "cli": "tsx --tsconfig tsconfig.json src/cli.ts",
     "cli:widi-config": "tsx --tsconfig tsconfig.json src/cli.ts --cwd \"$npm_config_local_prefix\" --agent-dir \"$npm_config_local_prefix/.widi\" --profile widi-dev"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "^0.79.9",
-    "@earendil-works/pi-ai": "^0.79.9",
-    "@earendil-works/pi-tui": "^0.79.9",
+    "@earendil-works/pi-agent-core": "^0.80.3",
+    "@earendil-works/pi-ai": "^0.80.3",
+    "@earendil-works/pi-tui": "^0.80.3",
     "diff": "8.0.4",
     "jiti": "^2.7.0",
     "typebox": "^1.1.24"
