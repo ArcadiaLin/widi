@@ -776,7 +776,7 @@ function createActivationApi(options: {
 			registrations.push({
 				extensionId: options.extensionId,
 				eventName,
-				handler,
+				handler: handler as unknown as ExtensionObserver,
 			});
 			options.observerHandlers.set(eventName, registrations);
 		},

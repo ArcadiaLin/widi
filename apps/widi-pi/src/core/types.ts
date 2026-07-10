@@ -30,6 +30,7 @@ export type OrchestratorEvent =
 	  }
 	| {
 			readonly type: "command_detected";
+			agentId: AgentId;
 			commandId: string;
 			command: CommandInvocation;
 			// Correlates the inline expansions of one input; absent on line commands.
@@ -38,6 +39,7 @@ export type OrchestratorEvent =
 	  }
 	| {
 			readonly type: "command_accepted";
+			agentId: AgentId;
 			commandId: string;
 			command: CommandInvocation;
 			inputId?: string;
@@ -45,6 +47,7 @@ export type OrchestratorEvent =
 	  }
 	| {
 			readonly type: "command_completed";
+			agentId: AgentId;
 			commandId: string;
 			command: CommandInvocation;
 			result: unknown;
@@ -53,6 +56,7 @@ export type OrchestratorEvent =
 	  }
 	| {
 			readonly type: "command_failed";
+			agentId: AgentId;
 			commandId: string;
 			command: CommandInvocation;
 			diagnostic: OrchestratorDiagnostic;
@@ -61,6 +65,7 @@ export type OrchestratorEvent =
 	  }
 	| {
 			readonly type: "command_rejected";
+			agentId: AgentId;
 			commandId: string;
 			command?: CommandInvocation;
 			diagnostic: OrchestratorDiagnostic;
@@ -84,6 +89,19 @@ export type OrchestratorEvent =
 			agentId: AgentId;
 			profile: AgentProfile;
 			model: RuntimeModel;
+	  }
+	| {
+			readonly type: "agent_session_info_changed";
+			agentId: AgentId;
+			name?: string;
+			changedAt: string;
+	  }
+	| {
+			readonly type: "agent_session_forked";
+			agentId: AgentId;
+			forkedSessionId: string;
+			entryId?: string;
+			createdAt: string;
 	  };
 
 export type OrchestratorEventListener = (

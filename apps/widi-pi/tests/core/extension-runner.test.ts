@@ -26,6 +26,10 @@ describe("ExtensionRunner inspect", () => {
 		const loader = new ExtensionLoader();
 		loader.registerExtensionFactory("sample", (api) => {
 			api.observe("agent_harness_event", () => {});
+			api.observe("command_completed", (event) => {
+				void event.result;
+				void event.agentId;
+			});
 			api.intercept("tool_call", () => undefined);
 			api.registerCommand({
 				name: "sample",
@@ -64,6 +68,11 @@ describe("ExtensionRunner inspect", () => {
 				kind: "observe",
 				extensionId: "sample",
 				eventName: "agent_harness_event",
+			},
+			{
+				kind: "observe",
+				extensionId: "sample",
+				eventName: "command_completed",
 			},
 			{
 				kind: "intercept",

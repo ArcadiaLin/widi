@@ -8,6 +8,7 @@ import {
 	agentIdFromOperationSource,
 	type OperationSource,
 } from "./operation-source.ts";
+import type { AgentId } from "./types.ts";
 
 export type HumanRequestKind =
 	| "confirm"
@@ -52,21 +53,25 @@ export interface ToolHumanHost {
 export type HumanRequestEvent =
 	| {
 			readonly type: "human_request_pending";
+			agentId?: AgentId;
 			request: HumanRequestEnvelope;
 	  }
 	| {
 			readonly type: "human_request_resolved";
+			agentId?: AgentId;
 			requestId: string;
 			response: HumanResponse;
 			completedAt: string;
 	  }
 	| {
 			readonly type: "human_request_timeout";
+			agentId?: AgentId;
 			requestId: string;
 			completedAt: string;
 	  }
 	| {
 			readonly type: "human_request_cancelled";
+			agentId?: AgentId;
 			requestId: string;
 			reason?: string;
 			completedAt: string;
@@ -82,7 +87,7 @@ export interface HumanRequestBrokerHost {
 	emit(event: HumanRequestEvent): Promise<void>;
 	publishDiagnostic(diagnostic: OrchestratorDiagnostic): Promise<void>;
 	recordAgentLifecycleFailure(
-		agentId: string,
+		agentId: AgentId,
 		code: string,
 		message: string,
 		error: unknown,
@@ -90,7 +95,7 @@ export interface HumanRequestBrokerHost {
 }
 
 interface PendingHumanRequest {
-	agentId?: string;
+	agentId?: AgentId;
 	cancel(reason?: string): Promise<void>;
 }
 
@@ -104,9 +109,14 @@ export class HumanRequestBroker {
 		this.host = host;
 	}
 
-	async request(request: HumanRequest): Promise<HumanResponse> {
+	async request(
+		request: HumanRequest,
+		options: { agentId?: AgentId } = {},
+	): Promise<HumanResponse> {
 		const requestHuman = this.host.findHumanRequestHandler();
 		const requestId = this.createRequestId();
+		const agentId =
+			options.agentId ?? agentIdFromOperationSource(request.source);
 		const envelope: HumanRequestEnvelope = {
 			...request,
 			id: requestId,
@@ -119,6 +129,7 @@ export class HumanRequestBroker {
 				code: "orchestrator.human_request_unhandled",
 				message: "No orchestrator client can handle human requests.",
 				operationSource: request.source,
+				agentId,
 				requestId,
 				recoverable: true,
 			});
@@ -139,6 +150,7 @@ export class HumanRequestBroker {
 						code: "orchestrator.human_request_aborted",
 						message: "Human request was aborted.",
 						operationSource: request.source,
+						agentId,
 						requestId,
 						recoverable: true,
 					}),
@@ -174,6 +186,7 @@ export class HumanRequestBroker {
 							code: "orchestrator.human_request_aborted",
 							message: "Human request was aborted.",
 							operationSource: request.source,
+							agentId,
 							requestId,
 							recoverable: true,
 						}),
@@ -194,6 +207,7 @@ export class HumanRequestBroker {
 					if (settled) return;
 					await this.host.emit({
 						type: "human_request_cancelled",
+						agentId,
 						requestId,
 						reason,
 						completedAt: now(),
@@ -206,6 +220,7 @@ export class HumanRequestBroker {
 								? `Human request was cancelled: ${reason}`
 								: "Human request was cancelled.",
 							operationSource: request.source,
+							agentId,
 							requestId,
 							recoverable: true,
 						}),
@@ -216,6 +231,7 @@ export class HumanRequestBroker {
 					timeoutId = setTimeout(() => {
 						void this.host.emit({
 							type: "human_request_timeout",
+							agentId,
 							requestId,
 							completedAt: now(),
 						});
@@ -225,6 +241,7 @@ export class HumanRequestBroker {
 								code: "orchestrator.human_request_timeout",
 								message: "Human request timed out.",
 								operationSource: request.source,
+								agentId,
 								requestId,
 								recoverable: true,
 							}),
@@ -248,17 +265,19 @@ export class HumanRequestBroker {
 				);
 			});
 			this.pendingRequests.set(requestId, {
-				agentId: agentIdFromOperationSource(request.source),
+				agentId,
 				cancel: (reason) => cancelPending(reason),
 			});
 			await this.host.emit({
 				type: "human_request_pending",
+				agentId,
 				request: envelope,
 			});
 			const response = await responsePromise;
 			this.pendingRequests.delete(requestId);
 			await this.host.emit({
 				type: "human_request_resolved",
+				agentId,
 				requestId,
 				response,
 				completedAt: now(),
@@ -270,6 +289,7 @@ export class HumanRequestBroker {
 				code: "orchestrator.command_failed",
 				message: error instanceof Error ? error.message : String(error),
 				operationSource: request.source,
+				agentId,
 				requestId,
 				recoverable: true,
 			});
@@ -285,7 +305,7 @@ export class HumanRequestBroker {
 		return true;
 	}
 
-	async cancelForAgent(agentId: string, reason: string): Promise<void> {
+	async cancelForAgent(agentId: AgentId, reason: string): Promise<void> {
 		for (const [requestId, pending] of [...this.pendingRequests]) {
 			if (pending.agentId !== agentId) continue;
 			try {
