@@ -44,7 +44,7 @@ WIDI extension 自由度 =
 | --- | --- | --- |
 | `before_agent_start` / `context` / `tool_call` / `tool_result` | 四个 interceptor 已有（runner MVP） | core，已落 |
 | `agent_start/end`、`turn_start/end`、`message_*` | raw `agent_harness_event` observer 可达 | core，已落（归一化档不做，raw 够用，见裁决 3） |
-| `tool_execution_*` | `tool_lifecycle_event` observer 已有 | core，已落 |
+| `tool_execution_*` | raw `agent_harness_event` observer 可达 | core，已落（与其他 harness events 共用唯一口径） |
 | `session_start/info_changed/before_switch/before_fork/before_compact/compact/shutdown/before_tree/tree` | 无 | core，ME 切片 5（先 observe 档，intercept 档按举证逐个开） |
 | `model_select` / `thinking_level_select` | 无 | core，ME 切片 5（observe 档） |
 | `input` | 无 | core，ME 切片 6（intercept 档，策略 extension 举证） |
@@ -84,7 +84,7 @@ WIDI 独有（pi 无对应）：`command_detected/accepted/completed/rejected/fa
 
 1. **Scope-by-default**：context 注入 agentId，actions 默认锁定 own agent；跨 agent 操作只经 M3 collaboration facade 并受 `capabilities` 门控。这是 review 问题 3 的机制化，不再靠纪律。
 2. **Narrowed context**：extension 回调永远拿不到 orchestrator 句柄；每项能力以最小事实进出（先例：command 补参回调只收 `argumentPrefix`，`runner.ts` 的 `toCommandArguments`）。
-3. **Raw 优先，归一化按举证**：harness 事件以 raw observe 暴露，不为想象中的消费者建第二套归一化事件；只有当两个以上 consumer 重复解析同一 raw 流时才提取（`tool_lifecycle_event` 是这么挣来的）。
+3. **Raw 是唯一口径，归一化按举证**：harness 事件只以 raw `agent_harness_event` observe 暴露，不为想象中的消费者建第二套归一化事件。原 `tool_lifecycle_event` 在 extension 完善前删除：仓库内没有真实 consumer，转换只改名、丢失部分 Pi 字段并造成双轨。只有出现至少两个真实 consumer 重复解析同一 raw 流，且能举证需要新增的共同语义时，才重新评估派生协议。
 4. **每个 hook 标档位**：observe / intercept / mutate 三档在对照表与实现中一一对应；开 intercept 档必须同时写失败语义与返回值合成规则。
 5. **Registration-with-provenance**：一切贡献面（tool 已有、command 已有、resource/provider 待落）沿用 ToolRegistry 模板——first-registration-wins + diagnostic、来源可追溯、inspect 可见。
 6. **UI 减法的补偿义务**：每砍一个 pi 的 UI API，对照表必须写明 core 的事实对应物（renderer → events+custom entry；shortcut/flag → client host；`ctx.ui` → human request），不许出现"砍了但事实不可达"的洞。
@@ -93,7 +93,7 @@ WIDI 独有（pi 无对应）：`command_detected/accepted/completed/rejected/fa
 
 锚点 consumer：**审计/策略 extension**（观察全事件流、拦截 tool_call/input、按策略 reject；仓库内真实测试 consumer，非示例骨架）。ME 实施所需的 M2 条目已直接迁入本 milestone（切片 0 与切片 2，2026-07-07 裁决）——extension 是当前注意力焦点，不让地基项散在别的 milestone 里等排期。切片按依赖排定，每片独立可验收：
 
-0. **tools 布局清理 + tool 契约类型迁 core 层**（零行为变化布局 commit，原 M2 条目合并迁入，已完成 2026-07-09）。占位清理实际清单与原表述略有出入：`coding/` 剩余 4 个空占位（read/write/edit 已实现）+ 重复 re-export 的 `tools/index.ts` + `agent-collaboration/` 5 个零引用占位，连同 `examples/` 遗留代码一并删除。tool 契约 8 类型（`ToolDefinition`/`ToolDefinitionPatch`/`ToolSource`/`ToolExecute`/`ToolExecuteMiddleware`/`ToolExecutionContext`/`ToolExtensionContext`/`ToolLifecycleEvent`）从 `extension/types.ts` 迁至 `tools/types.ts` 真实定义，extension 层反向消费并兼容 re-export，`tool-registry.ts` 改从 tools 层 import——依赖倒置（review 问题 7）解除。
+0. **tools 布局清理 + tool 契约类型迁 core 层**（零行为变化布局 commit，原 M2 条目合并迁入，已完成 2026-07-09）。占位清理实际清单与原表述略有出入：`coding/` 剩余 4 个空占位（read/write/edit 已实现）+ 重复 re-export 的 `tools/index.ts` + `agent-collaboration/` 5 个零引用占位，连同 `examples/` 遗留代码一并删除。tool 契约 7 类型（`ToolDefinition`/`ToolDefinitionPatch`/`ToolSource`/`ToolExecute`/`ToolExecuteMiddleware`/`ToolExecutionContext`/`ToolExtensionContext`）从 `extension/types.ts` 迁至 `tools/types.ts` 真实定义，extension 层反向消费并兼容 re-export，`tool-registry.ts` 改从 tools 层 import——依赖倒置（review 问题 7）解除。随后无 consumer 的 `ToolLifecycleEvent` 转换轨道在 extension 完善前删除，统一回到 raw Pi event 口径。
 1. **Interceptor 失败语义定案 + 实施**（原 M2 条目迁入）。裁决：合成类 hook（`context`、`before_agent_start`、`tool_result`）跳过失败者、保留其余 extension 结果；`tool_call` 拦截失败 **fail-closed**（block 该 tool call 并出 diagnostic）——审计 extension 不能因不相干 extension 的 bug 静默失防，这就是举证。写进 [Extensions](./extensions.md)。
 2. **Orchestrator 公开面收口**（原 M2 条目迁入）。`agents` map 与 `getAgentHarness()` 私有化，对外只留 snapshot 查询；`spawnAgentHarness` 改名 `spawnAgent`，只返回 `agentId`。先于 scoped actions 动公开面，避免切片 3 返工。
 3. **ExtensionActions scope 化 + 能力面补齐**。agentId 由 context 注入；own-agent 默认；`capabilities.canRequestUser` 等接线；在 scoped 前提下补齐对照表"动作/查询面"的 core 项（send/steer/followUp、setSessionName、exec、getCommands、setModel/thinkingLevel）。

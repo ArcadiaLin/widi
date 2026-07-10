@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { AgentHarnessEvent } from "@earendil-works/pi-agent-core";
+import { CliStreamWriter } from "./cli-stream-writer.ts";
 import type {
 	AgentOrchestrator,
 	OrchestratorEvent,
@@ -60,29 +61,12 @@ function requireValue(argv: string[], index: number, flag: string): string {
 }
 
 function printDiagnostic(diagnostic: OrchestratorDiagnostic): void {
-	process.stdout.write(
-		`[diagnostic:${diagnostic.severity}] ${diagnostic.code}: ${diagnostic.message}\n`,
+	streamWriter.writeLine(
+		`[diagnostic:${diagnostic.severity}] ${diagnostic.code}: ${diagnostic.message}`,
 	);
 }
 
-/**
- * Streaming render state. The CLI writes deltas inline; any non-delta output
- * must first close an open streaming line so lines stay whole.
- */
-let streamOpen = false;
-
-function writeDelta(text: string): void {
-	streamOpen = true;
-	process.stdout.write(text);
-}
-
-function writeLine(text: string): void {
-	if (streamOpen) {
-		process.stdout.write("\n");
-		streamOpen = false;
-	}
-	process.stdout.write(`${text}\n`);
-}
+const streamWriter = new CliStreamWriter((text) => process.stdout.write(text));
 
 function shortJson(value: unknown, maxLength = 200): string {
 	let text: string;
@@ -100,19 +84,17 @@ function renderEvent(event: OrchestratorEvent): void {
 		case "agent_harness_event":
 			renderHarnessEvent(event.event);
 			return;
-		case "tool_lifecycle_event":
-			return;
 		case "command_detected":
 		case "command_accepted":
 			return;
 		case "command_completed":
-			writeLine(
+			streamWriter.writeLine(
 				`[command:${event.command.name}] ${shortJson(event.result, 2000)}`,
 			);
 			return;
 		case "command_failed":
 		case "command_rejected":
-			writeLine(
+			streamWriter.writeLine(
 				`[command:${event.command?.name ?? "?"}:${event.type === "command_failed" ? "failed" : "rejected"}] ${event.diagnostic.message}`,
 			);
 			return;
@@ -120,12 +102,12 @@ function renderEvent(event: OrchestratorEvent): void {
 			printDiagnostic(event.diagnostic);
 			return;
 		case "agent_spawned":
-			writeLine(
+			streamWriter.writeLine(
 				`[agent] spawned ${event.agentId} profile=${event.profile.id} model=${event.model.provider}/${event.model.id}`,
 			);
 			return;
 		case "agent_resumed":
-			writeLine(`[agent] resumed ${event.agentId}`);
+			streamWriter.writeLine(`[agent] resumed ${event.agentId}`);
 			return;
 		default:
 			return;
@@ -136,19 +118,27 @@ function renderHarnessEvent(event: AgentHarnessEvent): void {
 	switch (event.type) {
 		case "message_update": {
 			const streamEvent = event.assistantMessageEvent;
-			if (streamEvent.type === "text_delta" && streamEvent.delta) {
-				writeDelta(streamEvent.delta);
+			if (streamEvent.type === "text_start") {
+				streamWriter.endThinking();
+			} else if (streamEvent.type === "text_delta" && streamEvent.delta) {
+				streamWriter.writeTextDelta(streamEvent.delta);
 			} else if (streamEvent.type === "thinking_start") {
-				writeLine("[thinking]");
+				streamWriter.startThinking();
 			} else if (streamEvent.type === "thinking_delta" && streamEvent.delta) {
-				writeDelta(streamEvent.delta);
+				streamWriter.writeThinkingDelta(streamEvent.delta);
 			} else if (streamEvent.type === "thinking_end") {
-				writeLine("[/thinking]");
+				streamWriter.endThinking();
 			}
 			return;
 		}
+		case "message_end":
+			streamWriter.endMessage();
+			return;
 		case "tool_execution_start":
-			writeLine(`[tool:${event.toolName}] ${shortJson(event.args)}`);
+			streamWriter.endMessage();
+			streamWriter.writeLine(
+				`[tool:${event.toolName}] ${shortJson(event.args)}`,
+			);
 			return;
 		case "tool_execution_end": {
 			const result = event.result as {
@@ -159,13 +149,15 @@ function renderHarnessEvent(event: AgentHarnessEvent): void {
 					?.filter((item) => item.type === "text")
 					.map((item) => item.text ?? "")
 					.join("\n") ?? "";
-			writeLine(
+			streamWriter.endMessage();
+			streamWriter.writeLine(
 				`[tool:${event.toolName}:${event.isError ? "error" : "ok"}] ${shortJson(text)}`,
 			);
 			return;
 		}
 		case "agent_end":
-			writeLine("[turn done]");
+			streamWriter.endMessage();
+			streamWriter.writeLine("[turn done]");
 			return;
 		default:
 			return;
@@ -216,11 +208,11 @@ async function promptHuman(
 	lines: LineReader,
 	request: HumanRequestEnvelope,
 ): Promise<HumanResponse> {
-	writeLine(`[human:${request.kind}] ${request.title}`);
-	if (request.message) writeLine(request.message);
+	streamWriter.writeLine(`[human:${request.kind}] ${request.title}`);
+	if (request.message) streamWriter.writeLine(request.message);
 	if (request.options && request.options.length > 0) {
 		for (const [index, option] of request.options.entries()) {
-			writeLine(`  ${index + 1}. ${option}`);
+			streamWriter.writeLine(`  ${index + 1}. ${option}`);
 		}
 	}
 	const answer = ((await lines.next("human> ")) ?? "").trim();
@@ -312,8 +304,8 @@ async function main(): Promise<void> {
 		return agentId;
 	}
 
-	writeLine(`[cli] cwd=${runtime.services.cwd}`);
-	writeLine(
+	streamWriter.writeLine(`[cli] cwd=${runtime.services.cwd}`);
+	streamWriter.writeLine(
 		`[cli] type a prompt, or /<command>; first input starts a run; /exit quits`,
 	);
 
@@ -331,10 +323,10 @@ async function main(): Promise<void> {
 			const nextAgentId = getNextAgentId(result);
 			if (nextAgentId) {
 				agentId = nextAgentId;
-				writeLine(`[cli] active agent=${agentId}`);
+				streamWriter.writeLine(`[cli] active agent=${agentId}`);
 			}
 		} catch (error) {
-			writeLine(
+			streamWriter.writeLine(
 				`[error] ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}

@@ -9,11 +9,7 @@ import type {
 import type { TSchema } from "typebox";
 import type { CommandCandidates, CommandPlacement } from "../command.ts";
 import type { HumanRequest, HumanResponse } from "../human-request.ts";
-import type {
-	ToolDefinition,
-	ToolDefinitionPatch,
-	ToolLifecycleEvent,
-} from "../tools/types.ts";
+import type { ToolDefinition, ToolDefinitionPatch } from "../tools/types.ts";
 import type { AgentToolsSnapshot } from "../types.ts";
 
 // The tool contract lives in the core tools layer (ME slice 0 dependency
@@ -26,25 +22,16 @@ export type {
 	ToolExecuteMiddleware,
 	ToolExecutionContext,
 	ToolExtensionContext,
-	ToolLifecycleEvent,
 	ToolSource,
 } from "../tools/types.ts";
 
-export type ExtensionObservedEventName =
-	| "agent_harness_event"
-	| "tool_lifecycle_event";
+export type ExtensionObservedEventName = ExtensionObservedEvent["type"];
 
-export type ExtensionObservedEvent =
-	| {
-			type: "agent_harness_event";
-			agentId: string;
-			event: AgentHarnessEvent;
-	  }
-	| {
-			type: "tool_lifecycle_event";
-			agentId: string;
-			event: ToolLifecycleEvent;
-	  };
+export type ExtensionObservedEvent = {
+	type: "agent_harness_event";
+	agentId: string;
+	event: AgentHarnessEvent;
+};
 
 /**
  * WIDI intentionally exposes only the stable MVP interceptors today.
@@ -184,17 +171,6 @@ export type ExtensionObserver<
 	TEvent extends ExtensionObservedEvent = ExtensionObservedEvent,
 > = (event: TEvent, context: ExtensionContext) => Promise<void> | void;
 
-export type ExtensionObserverFor<TName extends ExtensionObservedEventName> =
-	TName extends "agent_harness_event"
-		? ExtensionObserver<
-				Extract<ExtensionObservedEvent, { type: "agent_harness_event" }>
-			>
-		: TName extends "tool_lifecycle_event"
-			? ExtensionObserver<
-					Extract<ExtensionObservedEvent, { type: "tool_lifecycle_event" }>
-				>
-			: never;
-
 export type ExtensionInterceptorFor<TName extends ExtensionInterceptorName> = (
 	event: ExtensionInterceptorEventFor<TName>,
 	context: ExtensionContext,
@@ -214,9 +190,9 @@ export interface ExtensionActivationApi {
 		patch: ToolDefinitionPatch<TParamsSchema, TDetails>,
 	): void;
 	registerCommand(command: ExtensionCommandDefinition): void;
-	observe<TName extends ExtensionObservedEventName>(
-		eventName: TName,
-		handler: ExtensionObserverFor<TName>,
+	observe(
+		eventName: ExtensionObservedEventName,
+		handler: ExtensionObserver,
 	): void;
 	intercept<TName extends ExtensionInterceptorName>(
 		eventName: TName,

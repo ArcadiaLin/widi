@@ -47,7 +47,6 @@ export type {
 	ExtensionObservedEvent,
 	ExtensionObservedEventName,
 	ExtensionObserver,
-	ExtensionObserverFor,
 	ExtensionSessionActions,
 	ExtensionSessionContext,
 	ToolDefinition,
@@ -56,6 +55,5 @@ export type {
 	ToolExecuteMiddleware,
 	ToolExecutionContext,
 	ToolExtensionContext,
-	ToolLifecycleEvent,
 	ToolSource,
 } from "./types.ts";

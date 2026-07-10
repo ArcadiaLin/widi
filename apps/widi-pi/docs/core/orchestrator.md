@@ -34,9 +34,9 @@ Orchestrator 负责 harness output fanout。
 
 每个 `AgentHarness` 创建或恢复后，orchestrator 统一订阅其 events，并把 harness event 作为 `agent_harness_event` fan out 给 clients。UI/RPC adapter 不应直接订阅 harness。
 
-Orchestrator 负责 tool lifecycle facts。
+Orchestrator 原样转发 tool events。
 
-`agent_harness_event` 保留 Pi 原始事件。除此之外，orchestrator 会把 Pi `message_update.assistantMessageEvent.toolcall_*` 和 `tool_execution_*` 归一化为 `tool_lifecycle_event`。这条事件轨道只表达 tool call facts，不创建 preview/state，不参与 session persistence。UI、RPC 和 extension runner 可以基于这些 facts 自行派生展示数据。
+`agent_harness_event` 是唯一 harness event 口径。Pi `message_update.assistantMessageEvent.toolcall_*` 和 `tool_execution_*` 事件通过其 `event` 字段原样到达 subscriber、client 和 extension observer；orchestrator 不转换名称、不裁剪字段，也不维护第二套 tool lifecycle facts。UI、RPC 和 extension runner 可以基于 raw events 自行派生展示数据。
 
 Orchestrator 不直接解析文件。
 
@@ -48,7 +48,7 @@ Profile、resource、extension、tool、model/auth 都应该由对应 registry/l
 
 - Activation：`registerTool()`、`patchTool()`、`registerCommand()`、`observe()`、`intercept()`。
 - Interceptor：`before_agent_start`、`context`、`tool_call`、`tool_result` 四个 harness hook。
-- Observer：`agent_harness_event`、`tool_lifecycle_event` 两条事件轨道。
+- Observer：raw `agent_harness_event` 事件轨道。
 - Session custom entry：namespaced `appendEntry()` / `findEntries()`。
 - Runtime actions：human request、get/set tools 等具名受控能力。
 

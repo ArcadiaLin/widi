@@ -8,7 +8,6 @@ import {
 	createReadToolDefinition,
 	type ReadToolDetails,
 } from "../../src/core/tools/coding/read.ts";
-import type { ToolLifecycleEvent } from "../../src/core/tools/types.ts";
 
 class MemoryReadOperations {
 	readonly files = new Map<string, Buffer>();
@@ -222,7 +221,7 @@ describe("core read tool", () => {
 		).rejects.toThrow("limit must be a positive line count");
 	});
 
-	it("returns lifecycle-compatible execution results through the registry adapter", async () => {
+	it("returns structured execution results through the registry adapter", async () => {
 		const operations = new MemoryReadOperations();
 		operations.set("/workspace/project/file.txt", "hello");
 		const registry = new ToolRegistry();
@@ -238,25 +237,13 @@ describe("core read tool", () => {
 		const agentTool = createAgentToolFromResolvedTool(resolved, {});
 
 		const result = await agentTool.execute("call-1", { path: "file.txt" });
-		const lifecycleEvent: ToolLifecycleEvent = {
-			type: "execution_result",
-			toolCallId: "call-1",
-			toolName: "read",
-			result,
-			isError: false,
-		};
 
-		expect(lifecycleEvent).toMatchObject({
-			type: "execution_result",
-			toolName: "read",
-			result: {
-				content: [{ type: "text", text: "hello" }],
-				details: {
-					absolutePath: "/workspace/project/file.txt",
-					mediaKind: "text",
-				},
+		expect(result).toMatchObject({
+			content: [{ type: "text", text: "hello" }],
+			details: {
+				absolutePath: "/workspace/project/file.txt",
+				mediaKind: "text",
 			},
-			isError: false,
 		});
 	});
 });

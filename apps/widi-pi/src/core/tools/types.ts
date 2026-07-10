@@ -7,61 +7,6 @@ import type { Static, TSchema } from "typebox";
 import type { ToolHumanHost } from "../human-request.ts";
 
 /**
- * UI-neutral facts emitted for tool-call lifecycle changes.
- *
- * The orchestrator derives these from Pi harness events and forwards them as a
- * stable protocol for UI and extension hosts. These are facts, not preview or
- * state updates: consumers decide how to render, aggregate, or persist them.
- */
-export type ToolLifecycleEvent =
-	| {
-			/** A new streamed tool call appeared before arguments are complete. */
-			type: "tool_call_created";
-			contentIndex: number;
-			toolCallId?: string;
-			toolName?: string;
-	  }
-	| {
-			/** One argument-stream delta arrived. */
-			type: "arguments_delta";
-			contentIndex: number;
-			delta: string;
-			toolCallId?: string;
-			toolName?: string;
-	  }
-	| {
-			/** Arguments are complete according to the provider stream. */
-			type: "arguments_ready";
-			contentIndex: number;
-			toolCallId: string;
-			toolName: string;
-			args: unknown;
-	  }
-	| {
-			/** Tool execution is about to run. */
-			type: "execution_started";
-			toolCallId: string;
-			toolName: string;
-			args: unknown;
-	  }
-	| {
-			/** Tool produced an intermediate update through onUpdate. */
-			type: "execution_update";
-			toolCallId: string;
-			toolName: string;
-			partialResult: unknown;
-	  }
-	| {
-			/** Tool finished and produced its final structured result. */
-			type: "execution_result";
-			toolCallId: string;
-			toolName: string;
-			result: unknown;
-			/** True when the harness treats the final result as an error. */
-			isError: boolean;
-	  };
-
-/**
  * Runtime context passed to a WIDI tool execution function.
  *
  * This is the adapter boundary between resolved WIDI tool definitions and Pi
@@ -163,8 +108,8 @@ export interface ToolSource {
  * This is not Pi's runtime closure directly. It is the declarative/runtime
  * boundary owned by WIDI: the registry can diagnose, patch, filter, and finally
  * wrap it into a Pi `AgentTool`. It owns execution metadata and the execute
- * closure only. UI preview/state is derived outside the tool from orchestrator
- * lifecycle events and tool results.
+ * closure only. UI preview/state is derived outside the tool from raw harness
+ * events and tool results.
  */
 export interface ToolDefinition<
 	TParamsSchema extends TSchema = TSchema,

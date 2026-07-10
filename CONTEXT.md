@@ -166,7 +166,7 @@ _Avoid_: Core primitive, multi-session core abstraction
 Do not use Run as a Core storage or lifecycle boundary. Multiple-session coordination belongs to extensions or presets that use Core Agents, Sessions, orchestrator events, Diagnostics, and their own storage when needed.
 
 **Event Log**:
-Do not use an event log as Core persisted state. Core emits orchestrator events (harness events, tool lifecycle facts, command events, diagnostics) for observability, while persistent event history belongs to adapters, extensions, or presets when they need it.
+Do not use an event log as Core persisted state. Core emits orchestrator events (raw harness events, command events, diagnostics) for observability, while persistent event history belongs to adapters, extensions, or presets when they need it.
 
 **Profile Fallback**:
 Do not treat fallback to a default profile as universal Core resume behavior. Missing resume profiles produce diagnostics; fallback, failure, user selection, or marking an Agent unavailable are policy decisions owned by the caller layer.

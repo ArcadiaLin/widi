@@ -23,7 +23,7 @@ import type {
 	ExtensionInterceptorFor,
 	ExtensionInterceptorName,
 	ExtensionObservedEventName,
-	ExtensionObserverFor,
+	ExtensionObserver,
 	ToolDefinition,
 	ToolDefinitionPatch,
 	ToolSource,
@@ -43,12 +43,10 @@ export interface ExtensionCommandContribution {
 	handler: ExtensionCommandHandler;
 }
 
-export interface ExtensionObserverRegistration<
-	TName extends ExtensionObservedEventName,
-> {
+export interface ExtensionObserverRegistration {
 	extensionId: string;
-	eventName: TName;
-	handler: ExtensionObserverFor<TName>;
+	eventName: ExtensionObservedEventName;
+	handler: ExtensionObserver;
 }
 
 export interface ExtensionInterceptorRegistration<
@@ -143,7 +141,7 @@ export interface LoadedExtensionScope {
 	commandContributions: readonly ExtensionCommandContribution[];
 	observerHandlers: ReadonlyMap<
 		ExtensionObservedEventName,
-		readonly ExtensionObserverRegistration<ExtensionObservedEventName>[]
+		readonly ExtensionObserverRegistration[]
 	>;
 	interceptorHandlers: ReadonlyMap<
 		ExtensionInterceptorName,
@@ -351,7 +349,7 @@ export class ExtensionLoader {
 		const commandContributions: ExtensionCommandContribution[] = [];
 		const observerHandlers = new Map<
 			ExtensionObservedEventName,
-			ExtensionObserverRegistration<ExtensionObservedEventName>[]
+			ExtensionObserverRegistration[]
 		>();
 		const interceptorHandlers = new Map<
 			ExtensionInterceptorName,
@@ -732,7 +730,7 @@ function createActivationApi(options: {
 	commandContributions: ExtensionCommandContribution[];
 	observerHandlers: Map<
 		ExtensionObservedEventName,
-		ExtensionObserverRegistration<ExtensionObservedEventName>[]
+		ExtensionObserverRegistration[]
 	>;
 	interceptorHandlers: Map<
 		ExtensionInterceptorName,
@@ -778,7 +776,7 @@ function createActivationApi(options: {
 			registrations.push({
 				extensionId: options.extensionId,
 				eventName,
-				handler: handler as ExtensionObserverFor<ExtensionObservedEventName>,
+				handler,
 			});
 			options.observerHandlers.set(eventName, registrations);
 		},

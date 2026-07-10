@@ -2582,7 +2582,7 @@ describe("AgentOrchestrator", () => {
 			toolRegistry: createToolRegistry(createToolDefinition("base")),
 		});
 		orchestrator.registerExtensionFactory("sample", (api) => {
-			api.observe("tool_lifecycle_event", () => {});
+			api.observe("agent_harness_event", () => {});
 			api.intercept("context", (event) => ({ messages: event.messages }));
 			api.registerCommand({
 				name: "sample",
@@ -2606,7 +2606,7 @@ describe("AgentOrchestrator", () => {
 				{
 					kind: "observe",
 					extensionId: "sample",
-					eventName: "tool_lifecycle_event",
+					eventName: "agent_harness_event",
 				},
 				{
 					kind: "intercept",
@@ -3239,7 +3239,7 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
-	it("routes tool lifecycle events to scoped extension handlers", async () => {
+	it("routes raw harness events to scoped extension handlers", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = {
 			...defaultProfile,
@@ -3249,6 +3249,7 @@ describe("AgentOrchestrator", () => {
 			extensions: ["observer"],
 		};
 		const observed: string[] = [];
+		let observedEvent: AgentHarnessEvent | undefined;
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
@@ -3259,7 +3260,8 @@ describe("AgentOrchestrator", () => {
 			toolRegistry: createToolRegistry(createToolDefinition("plain")),
 		});
 		orchestrator.registerExtensionFactory("observer", (api) => {
-			api.observe("tool_lifecycle_event", (event, context) => {
+			api.observe("agent_harness_event", (event, context) => {
+				observedEvent = event.event;
 				const tools = context.actions.getAgentTools(context.agentId);
 				observed.push(
 					`${context.extensionId}:${context.profileId}:${event.event.type}:${tools.toolNames.join(",")}`,
@@ -3276,15 +3278,17 @@ describe("AgentOrchestrator", () => {
 			}
 		)._handleAgentHarnessEvent.bind(orchestrator);
 
-		await handleHarnessEvent(agentId, {
+		const harnessEvent = {
 			type: "tool_execution_start",
 			toolCallId: "call-1",
 			toolName: "plain",
 			args: {},
-		});
+		} satisfies AgentHarnessEvent;
+		await handleHarnessEvent(agentId, harnessEvent);
 
+		expect(observedEvent).toBe(harnessEvent);
 		expect(observed).toEqual([
-			`observer:${extensionProfile.id}:execution_started:plain`,
+			`observer:${extensionProfile.id}:tool_execution_start:plain`,
 		]);
 	});
 
@@ -3737,7 +3741,7 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
-	it("emits normalized tool lifecycle events from harness events", async () => {
+	it("forwards raw tool harness events without transformation", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env, {
 			toolRegistry: createToolRegistry(createToolDefinition("plain")),
@@ -3804,7 +3808,7 @@ describe("AgentOrchestrator", () => {
 			toolName: "plain",
 			args: { value: "input" },
 		});
-		await handleHarnessEvent(agentId, {
+		const updateEvent = {
 			type: "tool_execution_update",
 			toolCallId: "call-1",
 			toolName: "plain",
@@ -3813,7 +3817,8 @@ describe("AgentOrchestrator", () => {
 				content: [{ type: "text", text: "partial" }],
 				details: { progress: 1 },
 			},
-		});
+		} satisfies AgentHarnessEvent;
+		await handleHarnessEvent(agentId, updateEvent);
 		await handleHarnessEvent(agentId, {
 			type: "tool_execution_end",
 			toolCallId: "call-1",
@@ -3825,76 +3830,22 @@ describe("AgentOrchestrator", () => {
 			isError: false,
 		});
 
-		const lifecycleEvents = events.filter(
-			(event) => event.type === "tool_lifecycle_event",
+		const rawToolEvents = events.filter(
+			(
+				event,
+			): event is Extract<OrchestratorEvent, { type: "agent_harness_event" }> =>
+				event.type === "agent_harness_event",
 		);
-		expect(events[events.length - 2]).toMatchObject({
+		expect(rawToolEvents).toHaveLength(6);
+		expect(rawToolEvents[4]?.event).toBe(updateEvent);
+		expect(rawToolEvents[4]).toEqual({
 			type: "agent_harness_event",
 			agentId,
-			event: { type: "tool_execution_end" },
+			event: updateEvent,
 		});
-		expect(lifecycleEvents).toEqual([
-			expect.objectContaining({
-				event: {
-					type: "tool_call_created",
-					contentIndex: 0,
-					toolCallId: "call-1",
-					toolName: "plain",
-				},
-			}),
-			expect.objectContaining({
-				event: {
-					type: "arguments_delta",
-					contentIndex: 0,
-					delta: '{"value"',
-					toolCallId: "call-1",
-					toolName: "plain",
-				},
-			}),
-			expect.objectContaining({
-				event: {
-					type: "arguments_ready",
-					contentIndex: 0,
-					toolCallId: "call-1",
-					toolName: "plain",
-					args: { value: "input" },
-				},
-			}),
-			expect.objectContaining({
-				event: {
-					type: "execution_started",
-					toolCallId: "call-1",
-					toolName: "plain",
-					args: { value: "input" },
-				},
-			}),
-			expect.objectContaining({
-				event: {
-					type: "execution_update",
-					toolCallId: "call-1",
-					toolName: "plain",
-					partialResult: {
-						content: [{ type: "text", text: "partial" }],
-						details: { progress: 1 },
-					},
-				},
-			}),
-			expect.objectContaining({
-				event: {
-					type: "execution_result",
-					toolCallId: "call-1",
-					toolName: "plain",
-					result: {
-						content: [{ type: "text", text: "done" }],
-						details: { value: "input" },
-					},
-					isError: false,
-				},
-			}),
-		]);
 	});
 
-	it("forwards raw events without lifecycle facts when not tool-related", async () => {
+	it("forwards non-tool raw harness events", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
 		const events: OrchestratorEvent[] = [];
@@ -3920,12 +3871,9 @@ describe("AgentOrchestrator", () => {
 				event: { type: "turn_start" },
 			}),
 		);
-		expect(events.some((event) => event.type === "tool_lifecycle_event")).toBe(
-			false,
-		);
 	});
 
-	it("clears streaming tool-call refs when a message ends", async () => {
+	it("forwards streaming tool-call events without derived refs", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env, {
 			toolRegistry: createToolRegistry(createToolDefinition("plain")),
@@ -3980,20 +3928,23 @@ describe("AgentOrchestrator", () => {
 			},
 		});
 
-		const lifecycleEvents = events.filter(
-			(event) => event.type === "tool_lifecycle_event",
+		const rawEvents = events.filter(
+			(
+				event,
+			): event is Extract<OrchestratorEvent, { type: "agent_harness_event" }> =>
+				event.type === "agent_harness_event",
 		);
-		expect(lifecycleEvents.at(-1)).toEqual(
-			expect.objectContaining({
-				event: {
-					type: "arguments_delta",
+		expect(rawEvents.at(-1)).toMatchObject({
+			event: {
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_delta",
 					contentIndex: 0,
 					delta: "{}",
-					toolCallId: undefined,
-					toolName: undefined,
+					partial: createAssistantPartial([]),
 				},
-			}),
-		);
+			},
+		});
 	});
 
 	it("reports invalid commands without wrapping programmatic calls", async () => {

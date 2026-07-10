@@ -72,7 +72,6 @@ import {
 	ExtensionLoader,
 	ExtensionRunner,
 } from "./extension/index.ts";
-import { HarnessEventFacts } from "./harness-event-facts.ts";
 import type { HumanRequest, HumanResponse } from "./human-request.ts";
 import { HumanRequestBroker } from "./human-request.ts";
 import {
@@ -277,7 +276,6 @@ export class AgentOrchestrator {
 		new Map();
 	private _eventListeners: Set<OrchestratorEventListener> = new Set();
 	private _agentToolSets: Map<AgentId, AgentToolSet> = new Map();
-	private readonly _harnessEventFacts = new HarnessEventFacts();
 	private _clients: Map<string, OrchestratorClient<OrchestratorEvent>> =
 		new Map();
 	private readonly _humanRequests: HumanRequestBroker;
@@ -1065,7 +1063,6 @@ export class AgentOrchestrator {
 		record.extensionRunner?.invalidate("Agent has been disposed.");
 		delete record.harness;
 		this._agentToolSets.delete(agentId);
-		this._harnessEventFacts.forgetAllStreamingToolCalls(agentId);
 		await this._humanRequests.cancelForAgent(
 			agentId,
 			reason ?? `Agent disposed: ${agentId}`,
@@ -1078,7 +1075,6 @@ export class AgentOrchestrator {
 			await this.disposeAgent(agentId, reason);
 		}
 		await this._humanRequests.cancelAll(reason ?? "Orchestrator disposed.");
-		this._harnessEventFacts.clearStreamingToolCalls();
 		try {
 			await this.executionEnv.cleanup();
 		} catch (error) {
@@ -1830,7 +1826,6 @@ export class AgentOrchestrator {
 			diagnostics: [...(existing?.diagnostics ?? []), options.diagnostic],
 		});
 		this._agentToolSets.delete(options.agentId);
-		this._harnessEventFacts.forgetAllStreamingToolCalls(options.agentId);
 	}
 
 	private _markExistingAgentUnavailable(
@@ -1851,7 +1846,6 @@ export class AgentOrchestrator {
 			record.extensionDiagnostics.push(diagnostic);
 		}
 		this._agentToolSets.delete(agentId);
-		this._harnessEventFacts.forgetAllStreamingToolCalls(agentId);
 	}
 
 	private _requireAgentRecord(agentId: AgentId): AgentRecord {
@@ -2235,25 +2229,6 @@ export class AgentOrchestrator {
 				event,
 			});
 			await this._recordAndPublishExtensionDiagnostics(agentId, diagnostics);
-		}
-		const lifecycleEvent = this._harnessEventFacts.toToolLifecycleEvent(
-			agentId,
-			event,
-		);
-		if (lifecycleEvent) {
-			await this._emit({
-				type: "tool_lifecycle_event",
-				agentId,
-				event: lifecycleEvent,
-			});
-			if (extensionRunner) {
-				const diagnostics = await extensionRunner.emitObserved({
-					type: "tool_lifecycle_event",
-					agentId,
-					event: lifecycleEvent,
-				});
-				await this._recordAndPublishExtensionDiagnostics(agentId, diagnostics);
-			}
 		}
 	}
 

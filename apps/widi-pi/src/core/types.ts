@@ -4,7 +4,6 @@ import type { AgentProfile } from "./agent-profile.js";
 import type { CommandInvocation } from "./command.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
 import type { HumanRequestEvent } from "./human-request.ts";
-import type { ToolLifecycleEvent } from "./tools/types.ts";
 
 export type RuntimeModel = Model<Api>;
 
@@ -28,11 +27,6 @@ export type OrchestratorEvent =
 			readonly type: "agent_harness_event";
 			agentId: AgentId;
 			event: AgentHarnessEvent;
-	  }
-	| {
-			readonly type: "tool_lifecycle_event";
-			agentId: AgentId;
-			event: ToolLifecycleEvent;
 	  }
 	| {
 			readonly type: "command_detected";

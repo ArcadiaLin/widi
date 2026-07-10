@@ -89,25 +89,11 @@ Tool tracking 也属于这种轻量 wrapper 场景。它不应进入 core tool d
 
 WIDI core 不持有 tool preview 或状态。Tool definition 只描述可执行工具，ToolRegistry 只负责 registration resolve、patch、diagnostics，以及显式 `ToolDefinition -> AgentTool` wrap。
 
-Orchestrator 是当前 runtime event hub。它保留两条事件轨道；完整传递顺序见 [Runtime Lifecycle](./runtime-lifecycle.md)。
+Orchestrator 是当前 runtime event hub。它只通过 `agent_harness_event` 原样透传 Pi `AgentHarnessEvent`；不会筛选字段、改写事件名或派生第二条 tool event 轨道。完整传递顺序见 [Runtime Lifecycle](./runtime-lifecycle.md)。
 
-- `agent_harness_event` 原样透传 Pi `AgentHarnessEvent`，用于调试、日志和未来兼容。
-- `tool_lifecycle_event` 发布 WIDI 归一化的 tool-call facts，供 UI 和 extension runner 稳定消费。
+Tool call streaming 使用 Pi `message_update.assistantMessageEvent.toolcall_start/toolcall_delta/toolcall_end`；tool execution 使用 Pi `tool_execution_start/tool_execution_update/tool_execution_end`。其中的 `partial`、`args`、`partialResult`、`result` 和 provider-specific 数据都随原始事件保留。
 
-第一版 lifecycle event 覆盖：
-
-- `tool_call_created`
-- `arguments_delta`
-- `arguments_ready`
-- `execution_started`
-- `execution_update`
-- `execution_result`
-
-`tool_call_created`、`arguments_delta` 和 `arguments_ready` 来自 `message_update.assistantMessageEvent.toolcall_*`。Orchestrator 只维护短生命周期的 `contentIndex -> toolCall` 映射来补全 streaming facts；它不是 tool state，不暴露、不持久化、不参与 UI 设计。该映射会在 `toolcall_end`、`message_end`、`turn_end` 或 `agent_end` 时清理，避免中断流留下 stale refs。
-
-`execution_started`、`execution_update` 和 `execution_result` 来自 Pi `tool_execution_*` events。`execution_result.isError` 表示 Pi harness 认为最终结果是错误结果。
-
-UI preview/state 不属于 core。TUI、RPC、HTML export 或 extension runner 可以基于 `tool_lifecycle_event`、tool name、arguments、result content/details 自行派生展示状态。Extension patch 也不拥有 lifecycle state API；它只能 patch definition/execution 字段，或用 `aroundExecute` 观察执行。
+UI preview/state 不属于 core。TUI、RPC、HTML export 或 extension runner 可以基于 raw `agent_harness_event` 中的 tool events 自行派生展示状态。Extension patch 也不拥有 lifecycle state API；它只能 patch definition/execution 字段，或用 `aroundExecute` 观察执行。
 
 ## Tool Result Persistence
 
@@ -130,4 +116,4 @@ Tool tracking、审计和 checkpoint 更适合作为 extension pattern：用 `ar
 
 ## TODO
 
-Tool/capability 后续任务按 milestone 维护在 [Milestones](../TODO.md) 与 [Backlog](../BACKLOG.md)。本文件只保留 ToolRegistry、visibility、tool lifecycle facts 和 persistence 边界。
+Tool/capability 后续任务按 milestone 维护在 [Milestones](../TODO.md) 与 [Backlog](../BACKLOG.md)。本文件只保留 ToolRegistry、visibility、raw tool events 和 persistence 边界。

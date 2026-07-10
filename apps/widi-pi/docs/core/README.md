@@ -13,7 +13,7 @@
 - `command experiment`：command 独立 runtime 实验的裁决记录与 trigger-based command input 设计（registry、事件、门控、inline、参数补全、迁移计划）。
 - `extensions`：通过 hook 插入 core 能力的扩展系统。
 - `profiles and resources`：声明式 agent 配置与依赖解析。
-- `tools and capabilities`：tool 可见性、能力声明、registry patch、lifecycle event 与 runtime policy。
+- `tools and capabilities`：tool 可见性、能力声明、registry patch、raw harness events 与 runtime policy。
 - `diagnostics`：profile、dependency、runtime 问题的结构化输出。
 - `sessions and runtime`：Pi session、ExecutionEnv、model/auth 与 settings 的边界。
 - `pi upstream roadmap`：需要回到 Pi 上游沉淀的底层原语。

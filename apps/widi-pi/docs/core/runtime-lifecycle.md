@@ -74,11 +74,9 @@ AgentHarness Scope
       -> status update
       -> orchestrator `agent_harness_event`
       -> extension observer: agent_harness_event
-      -> optional WIDI tool_lifecycle_event
-      -> extension observer: tool_lifecycle_event
 ```
 
-`agent_harness_event` 保留 Pi 原始事件，用于日志、inspect、RPC passthrough 和兼容尚未归一化的事件。`tool_lifecycle_event` 是 WIDI 归一化 facts，只表达 tool call/run 事实，不创建 preview/state，不参与 session persistence。
+`agent_harness_event` 是唯一 harness event 口径。它的 `event` 字段保留同一个 Pi `AgentHarnessEvent` 对象，用于日志、inspect、RPC passthrough、UI 和 extension observer；orchestrator 不改名、不删字段，也不派生第二套 tool event。
 
 ## AgentHarness Scope
 
@@ -204,44 +202,9 @@ Meaning:
 - `message_update`: streaming assistant deltas. Only assistant messages emit updates.
 - `tool_execution_*`: actual tool runtime execution, independent from assistant streaming deltas.
 
-## Tool Lifecycle Facts
+## Tool Events
 
-WIDI derives stable tool facts from two Pi event families:
-
-```text
-Assistant message stream
-  message_update(toolcall_start)
-    -> tool_lifecycle_event(tool_call_created)
-
-  message_update(toolcall_delta)
-    -> tool_lifecycle_event(arguments_delta)
-
-  message_update(toolcall_end)
-    -> tool_lifecycle_event(arguments_ready)
-
-Tool execution
-  tool_execution_start
-    -> tool_lifecycle_event(execution_started)
-
-  tool_execution_update
-    -> tool_lifecycle_event(execution_update)
-
-  tool_execution_end
-    -> tool_lifecycle_event(execution_result)
-```
-
-Current WIDI facts:
-
-- `tool_call_created`
-- `arguments_delta`
-- `arguments_ready`
-- `execution_started`
-- `execution_update`
-- `execution_result`
-
-`tool_call_created`、`arguments_delta`、`arguments_ready` 来自 Pi assistant message streaming events。Orchestrator 只维护短生命周期的 `contentIndex -> toolCall` 映射来补全 streaming facts；该映射不是 tool state，会在 `toolcall_end`、`message_end`、`turn_end` 或 `agent_end` 后清理。
-
-`execution_started`、`execution_update`、`execution_result` 来自 Pi tool execution events。UI、RPC 和 extension 可以基于这些 facts、tool arguments、result content/details 派生展示状态。
+Tool events 直接沿用 Pi `AgentHarnessEvent`：assistant streaming 位于 `message_update.assistantMessageEvent.toolcall_start/toolcall_delta/toolcall_end`，执行阶段使用 `tool_execution_start/tool_execution_update/tool_execution_end`。WIDI 不为这些事件改名或维护 `contentIndex -> toolCall` 补全状态；consumer 直接读取 Pi 提供的完整 `partial`、`args`、`partialResult`、`result` 和 `isError`。
 
 ## Orchestrator Fanout Scope
 
@@ -255,12 +218,6 @@ AgentHarnessEvent
        -> clients
   -> ExtensionRunner.emitObserved(agent_harness_event)
        -> extension diagnostics?
-  -> derive ToolLifecycleEvent?
-       -> emit OrchestratorEvent.tool_lifecycle_event
-            -> subscribers
-            -> clients
-       -> ExtensionRunner.emitObserved(tool_lifecycle_event)
-            -> extension diagnostics?
 ```
 
 Status update rule:
@@ -300,7 +257,7 @@ HumanRequestBroker
 - Activation：`ExtensionLoader.loadForAgent()` 执行 extension factory，收集 tool/command/observer/interceptor contributions。
 - Tool contribution：orchestrator resolve tools 时，将 extension contributions replay 到 scoped `ToolRegistry` overlay。
 - Interceptor：orchestrator 将 harness `before_agent_start`、`context`、`tool_call`、`tool_result` 桥接给 runner interceptors。
-- Observer：orchestrator 将 `agent_harness_event` 和 `tool_lifecycle_event` 送给 runner observers。
+- Observer：orchestrator 将 raw `agent_harness_event` 送给 runner observers。
 - Command contribution：extension `registerCommand()` 提供 name/trigger/description/argumentHint 与 line handler，由 orchestrator `inputAgent` 统一解析、门控并执行；inline `expand` 后续接入（契约见 [Command Experiment](./command-experiment.md)）。
 - Session custom entry：extension context 暴露 namespaced `appendEntry()` / `findEntries()`，用于当前 session branch 上的小型 append-only state。
 - Runtime actions：extension context 可通过受控 actions 调用 human request、get/set tools 等具名能力（全量 `dispatch` 将随 M1 移除，scope 收敛为 own-agent 属 M2）。
@@ -330,7 +287,7 @@ Pi session tree 保存单 agent harness 运行产物：messages、tool calls/res
 - command/client event log。
 - extension runner instance。
 - extension-owned database。
-- tool lifecycle preview/state。
+- tool preview/state。
 - runtime objects、API keys、tool closures。
 
 可恢复的小型 references 可以进入 session metadata，例如 profile reference。WIDI-owned tool 的可恢复上下文应优先进入 Pi tool call arguments、tool result `content` 和 typed `details`。Extension session custom entry 只用于与当前 session branch 强相关的小型 extension state。
