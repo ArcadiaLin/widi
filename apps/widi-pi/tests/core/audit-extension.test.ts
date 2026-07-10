@@ -6,6 +6,7 @@ import {
 	AgentProfileRegistry,
 	InMemoryProfileStorageBackend,
 } from "../../src/core/agent-profile.ts";
+import { createOrchestratorDiagnostic } from "../../src/core/diagnostics.ts";
 import type {
 	ExtensionCustomEntry,
 	ExtensionFactory,
@@ -28,6 +29,7 @@ import {
 
 interface AuditHarnessOptions {
 	readonly capabilities?: AgentProfile["capabilities"];
+	readonly persist?: boolean;
 	readonly beforeAudit?: readonly {
 		readonly id: string;
 		readonly factory: ExtensionFactory;
@@ -46,7 +48,7 @@ async function createAuditHarness(
 		id: "audit-profile",
 		label: "Audit Profile",
 		systemPrompt: "Audit test prompt",
-		persist: false,
+		persist: options.persist ?? false,
 		extensions: [...(options.beforeAudit ?? []).map(({ id }) => id), "audit"],
 		capabilities: options.capabilities,
 	};
@@ -122,7 +124,7 @@ async function readAuditEntries<T>(
 describe("audit extension consumer", () => {
 	it("records selected harness events and default-allow verdicts", async () => {
 		const { orchestrator, agentId } = await createAuditHarness({
-			recordEvents: ["turn_start"],
+			recordHarnessEvents: ["turn_start"],
 		});
 
 		await emitHarnessEvent(orchestrator, agentId, { type: "turn_start" });
@@ -136,7 +138,9 @@ describe("audit extension consumer", () => {
 				agentId,
 				AUDIT_EVENT_ENTRY_TYPE,
 			),
-		).resolves.toMatchObject([{ data: { eventType: "turn_start" } }]);
+		).resolves.toMatchObject([
+			{ data: { source: "harness", eventType: "turn_start" } },
+		]);
 		await expect(
 			readAuditEntries<AuditVerdictEntry>(
 				orchestrator,
@@ -184,9 +188,136 @@ describe("audit extension consumer", () => {
 		]);
 	});
 
+	it("records agent-scoped orchestrator facts in order", async () => {
+		const { orchestrator, agentId, events } = await createAuditHarness(
+			{
+				recordCoreEvents: [
+					"command_detected",
+					"command_completed",
+					"human_request_pending",
+					"human_request_resolved",
+					"diagnostic",
+					"agent_session_info_changed",
+					"agent_session_forked",
+				],
+			},
+			{ persist: true },
+		);
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async () => ({ kind: "confirm", confirmed: true }),
+		});
+
+		await orchestrator.inputAgent(agentId, "/status");
+		await orchestrator.requestHuman({
+			source: { kind: "agent", agentId },
+			kind: "confirm",
+			title: "Continue?",
+		});
+		await orchestrator.setAgentSessionName(agentId, "Audited session");
+		await orchestrator.recordExtensionDiagnostics(agentId, [
+			createOrchestratorDiagnostic({
+				domain: "extension",
+				severity: "warning",
+				disposition: "reported",
+				code: "extension.audit_test",
+				message: "Audit diagnostic",
+				source: { kind: "extension", id: "audit-test" },
+				agentId,
+				extensionId: "audit-test",
+				phase: "runtime",
+				recoverable: true,
+			}),
+		]);
+		await orchestrator.forkAgentSessionFromAgent(agentId);
+
+		const entries = await readAuditEntries<AuditEventEntry>(
+			orchestrator,
+			agentId,
+			AUDIT_EVENT_ENTRY_TYPE,
+		);
+		expect(entries.map((entry) => entry.data?.eventType)).toEqual([
+			"command_detected",
+			"command_completed",
+			"human_request_pending",
+			"human_request_resolved",
+			"agent_session_info_changed",
+			"diagnostic",
+			"agent_session_forked",
+		]);
+		expect(
+			entries.every((entry) => entry.data?.source === "orchestrator"),
+		).toBe(true);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "agent_session_info_changed",
+				agentId,
+				name: "Audited session",
+			}),
+		);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "agent_session_forked",
+				agentId,
+				forkedSessionId: expect.any(String),
+			}),
+		);
+	});
+
+	it("does not leak orchestrator events across agent runners", async () => {
+		const { orchestrator, agentId } = await createAuditHarness({
+			recordCoreEvents: ["command_completed"],
+		});
+		const otherAgentId = await orchestrator.spawnAgent();
+
+		await orchestrator.inputAgent(agentId, "/status");
+
+		await expect(
+			readAuditEntries<AuditEventEntry>(
+				orchestrator,
+				agentId,
+				AUDIT_EVENT_ENTRY_TYPE,
+			),
+		).resolves.toMatchObject([
+			{ data: { source: "orchestrator", eventType: "command_completed" } },
+		]);
+		await expect(
+			readAuditEntries<AuditEventEntry>(
+				orchestrator,
+				otherAgentId,
+				AUDIT_EVENT_ENTRY_TYPE,
+			),
+		).resolves.toEqual([]);
+	});
+
+	it("does not fan global diagnostics out to agent-scoped runners", async () => {
+		const { orchestrator, agentId } = await createAuditHarness({
+			recordCoreEvents: ["diagnostic"],
+		});
+
+		await expect(
+			orchestrator.requestHuman({
+				source: { kind: "system" },
+				kind: "confirm",
+				title: "No client",
+			}),
+		).rejects.toMatchObject({
+			code: "orchestrator.human_request_unhandled",
+		});
+
+		await expect(
+			readAuditEntries<AuditEventEntry>(
+				orchestrator,
+				agentId,
+				AUDIT_EVENT_ENTRY_TYPE,
+			),
+		).resolves.toEqual([]);
+	});
+
 	it("asks the human with an injected extension source", async () => {
 		const { orchestrator, agentId } = await createAuditHarness({
 			ask: [{ tool: "write", prompt: "Allow this write?" }],
+			recordCoreEvents: ["human_request_pending", "human_request_resolved"],
 		});
 		const responses = ["allow", "deny"];
 		const requests: unknown[] = [];
@@ -231,6 +362,17 @@ describe("audit extension consumer", () => {
 			{
 				data: { toolCallId: "call-4", outcome: "blocked", decidedBy: "human" },
 			},
+		]);
+		const eventEntries = await readAuditEntries<AuditEventEntry>(
+			orchestrator,
+			agentId,
+			AUDIT_EVENT_ENTRY_TYPE,
+		);
+		expect(eventEntries.map((entry) => entry.data?.eventType)).toEqual([
+			"human_request_pending",
+			"human_request_resolved",
+			"human_request_pending",
+			"human_request_resolved",
 		]);
 	});
 
@@ -282,7 +424,7 @@ describe("audit extension consumer", () => {
 			});
 		};
 		const { orchestrator, agentId, events } = await createAuditHarness(
-			{ recordEvents: ["turn_start"] },
+			{ recordHarnessEvents: ["turn_start"] },
 			{ beforeAudit: [{ id: "broken", factory: broken }] },
 		);
 
@@ -294,7 +436,9 @@ describe("audit extension consumer", () => {
 				agentId,
 				AUDIT_EVENT_ENTRY_TYPE,
 			),
-		).resolves.toMatchObject([{ data: { eventType: "turn_start" } }]);
+		).resolves.toMatchObject([
+			{ data: { source: "harness", eventType: "turn_start" } },
+		]);
 		expect(events).toContainEqual(
 			expect.objectContaining({
 				type: "diagnostic",
@@ -305,6 +449,50 @@ describe("audit extension consumer", () => {
 				}),
 			}),
 		);
+	});
+
+	it("publishes diagnostic observer failures once without feeding them back", async () => {
+		const broken: ExtensionFactory = (api) => {
+			api.observe("diagnostic", () => {
+				throw new Error("diagnostic observer exploded");
+			});
+		};
+		const { orchestrator, agentId, events } = await createAuditHarness(
+			{ recordCoreEvents: ["diagnostic"] },
+			{ beforeAudit: [{ id: "broken", factory: broken }] },
+		);
+
+		await orchestrator.recordExtensionDiagnostics(agentId, [
+			createOrchestratorDiagnostic({
+				domain: "extension",
+				severity: "warning",
+				disposition: "reported",
+				code: "extension.audit_test",
+				message: "Audit diagnostic",
+				source: { kind: "extension", id: "audit-test" },
+				agentId,
+				extensionId: "audit-test",
+				phase: "runtime",
+				recoverable: true,
+			}),
+		]);
+
+		await expect(
+			readAuditEntries<AuditEventEntry>(
+				orchestrator,
+				agentId,
+				AUDIT_EVENT_ENTRY_TYPE,
+			),
+		).resolves.toMatchObject([
+			{ data: { source: "orchestrator", eventType: "diagnostic" } },
+		]);
+		expect(
+			events.filter(
+				(event) =>
+					event.type === "diagnostic" &&
+					event.diagnostic.code === "extension.handler_failed",
+			),
+		).toHaveLength(1);
 	});
 
 	it("fails closed on another tool interceptor error without disabling audit", async () => {

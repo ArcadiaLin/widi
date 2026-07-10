@@ -1,5 +1,8 @@
 import type { AgentHarnessEvent } from "@earendil-works/pi-agent-core";
-import type { ExtensionFactory } from "../../src/core/extension/index.ts";
+import type {
+	ExtensionFactory,
+	ExtensionObservedEventName,
+} from "../../src/core/extension/index.ts";
 
 export const AUDIT_EVENT_ENTRY_TYPE = "event";
 export const AUDIT_VERDICT_ENTRY_TYPE = "verdict";
@@ -17,11 +20,16 @@ export interface AuditAskRule {
 export interface AuditPolicy {
 	readonly deny?: readonly AuditDenyRule[];
 	readonly ask?: readonly AuditAskRule[];
-	readonly recordEvents?: readonly AgentHarnessEvent["type"][];
+	readonly recordHarnessEvents?: readonly AgentHarnessEvent["type"][];
+	readonly recordCoreEvents?: readonly Exclude<
+		ExtensionObservedEventName,
+		"agent_harness_event"
+	>[];
 }
 
 export interface AuditEventEntry {
-	readonly eventType: AgentHarnessEvent["type"];
+	readonly source: "harness" | "orchestrator";
+	readonly eventType: string;
 }
 
 export interface AuditVerdictEntry {
@@ -39,16 +47,25 @@ export function createAuditExtension(policy: AuditPolicy): ExtensionFactory {
 	const askRules = new Map(
 		(policy.ask ?? []).map((rule) => [rule.tool, rule] as const),
 	);
-	const recordedEvents = new Set(policy.recordEvents ?? []);
+	const recordedHarnessEvents = new Set(policy.recordHarnessEvents ?? []);
+	const recordedCoreEvents = new Set(policy.recordCoreEvents ?? []);
 
 	return (api) => {
 		api.observe("agent_harness_event", async (event, context) => {
-			if (!recordedEvents.has(event.event.type)) return;
+			if (!recordedHarnessEvents.has(event.event.type)) return;
 			await context.session.appendEntry<AuditEventEntry>(
 				AUDIT_EVENT_ENTRY_TYPE,
-				{ eventType: event.event.type },
+				{ source: "harness", eventType: event.event.type },
 			);
 		});
+		for (const eventName of recordedCoreEvents) {
+			api.observe(eventName, async (event, context) => {
+				await context.session.appendEntry<AuditEventEntry>(
+					AUDIT_EVENT_ENTRY_TYPE,
+					{ source: "orchestrator", eventType: event.type },
+				);
+			});
+		}
 
 		api.intercept("tool_call", async (event, context) => {
 			const denied = denyRules.get(event.toolName);

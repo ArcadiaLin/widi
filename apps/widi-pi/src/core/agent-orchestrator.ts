@@ -70,6 +70,7 @@ import {
 	type ExtensionInterceptorName,
 	type ExtensionInterceptorResultFor,
 	ExtensionLoader,
+	type ExtensionObservedEvent,
 	ExtensionRunner,
 } from "./extension/index.ts";
 import type { HumanRequest, HumanResponse } from "./human-request.ts";
@@ -272,6 +273,7 @@ export class AgentOrchestrator {
 	private _unsubscribeAgentExtensionInterceptors: Map<AgentId, () => void> =
 		new Map();
 	private _eventListeners: Set<OrchestratorEventListener> = new Set();
+	private _extensionObserverDispatchDepth: Map<AgentId, number> = new Map();
 	private _agentToolSets: Map<AgentId, AgentToolSet> = new Map();
 	private _clients: Map<string, OrchestratorClient<OrchestratorEvent>> =
 		new Map();
@@ -444,7 +446,17 @@ export class AgentOrchestrator {
 		name: string,
 	): Promise<AgentSessionSnapshot> {
 		this._requireAgentRecord(agentId);
-		return await this.sessionManager.setAgentSessionName(agentId, name);
+		const snapshot = await this.sessionManager.setAgentSessionName(
+			agentId,
+			name,
+		);
+		await this._emit({
+			type: "agent_session_info_changed",
+			agentId,
+			name: snapshot.name,
+			changedAt: now(),
+		});
+		return snapshot;
 	}
 
 	async forkAgentSessionFromAgent(
@@ -456,6 +468,13 @@ export class AgentOrchestrator {
 			agentId,
 			options,
 		);
+		await this._emit({
+			type: "agent_session_forked",
+			agentId,
+			forkedSessionId: metadata.id,
+			entryId: options?.entryId,
+			createdAt: now(),
+		});
 		const spawnedAgentId = await this.spawnAgent({
 			resume: true,
 			metadata,
@@ -868,6 +887,7 @@ export class AgentOrchestrator {
 		};
 		await this._emit({
 			type: "command_detected",
+			agentId,
 			commandId,
 			command: invocation,
 			createdAt: now(),
@@ -878,6 +898,7 @@ export class AgentOrchestrator {
 		if (gatewayDiagnostic) {
 			await this._emit({
 				type: "command_rejected",
+				agentId,
 				commandId,
 				command: invocation,
 				diagnostic: gatewayDiagnostic,
@@ -903,6 +924,7 @@ export class AgentOrchestrator {
 			if (!completion.ok) {
 				await this._emit({
 					type: "command_rejected",
+					agentId,
 					commandId,
 					command: invocation,
 					diagnostic: completion.diagnostic,
@@ -931,6 +953,7 @@ export class AgentOrchestrator {
 			if (staleDiagnostic) {
 				await this._emit({
 					type: "command_rejected",
+					agentId,
 					commandId,
 					command: executionInvocation,
 					diagnostic: staleDiagnostic,
@@ -943,6 +966,7 @@ export class AgentOrchestrator {
 
 		await this._emit({
 			type: "command_accepted",
+			agentId,
 			commandId,
 			command: executionInvocation,
 			createdAt: now(),
@@ -952,6 +976,7 @@ export class AgentOrchestrator {
 			const value = await command.execute(commandArgument);
 			await this._emit({
 				type: "command_completed",
+				agentId,
 				commandId,
 				command: executionInvocation,
 				result: value,
@@ -969,6 +994,7 @@ export class AgentOrchestrator {
 			});
 			await this._emit({
 				type: "command_failed",
+				agentId,
 				commandId,
 				command: executionInvocation,
 				diagnostic,
@@ -1144,6 +1170,13 @@ export class AgentOrchestrator {
 
 	async requestHuman(request: HumanRequest): Promise<HumanResponse> {
 		return await this._humanRequests.request(request);
+	}
+
+	private async _requestHumanForAgent(
+		agentId: AgentId,
+		request: HumanRequest,
+	): Promise<HumanResponse> {
+		return await this._humanRequests.request(request, { agentId });
 	}
 
 	async cancelHumanRequest(
@@ -1803,7 +1836,7 @@ export class AgentOrchestrator {
 						}),
 					);
 				}
-				return await this.requestHuman({
+				return await this._requestHumanForAgent(agentId, {
 					...request,
 					source: { kind: "extension", extensionId },
 				});
@@ -1981,7 +2014,13 @@ export class AgentOrchestrator {
 		this._addAgentDiagnostics(agentId, {
 			extensionDiagnostics: diagnostics,
 		});
-		await this._publishDiagnostics(diagnostics);
+		await this._publishDiagnostics(diagnostics, {
+			// A diagnostic produced while an observer is handling another event is
+			// still recorded and published to core consumers, but must not feed back
+			// into diagnostic observers and recurse indefinitely.
+			observeExtensions:
+				(this._extensionObserverDispatchDepth.get(agentId) ?? 0) === 0,
+		});
 	}
 
 	private async _runExtensionInterceptor<
@@ -2284,47 +2323,105 @@ export class AgentOrchestrator {
 	): Promise<void> {
 		this._updateAgentStatusFromHarnessEvent(agentId, event);
 		await this._emit({ type: "agent_harness_event", agentId, event });
+	}
+
+	private _isExtensionObservedEvent(
+		event: OrchestratorEvent,
+	): event is ExtensionObservedEvent {
+		switch (event.type) {
+			case "agent_harness_event":
+			case "agent_resumed":
+			case "agent_session_forked":
+			case "agent_session_info_changed":
+			case "agent_spawned":
+			case "command_accepted":
+			case "command_completed":
+			case "command_detected":
+			case "command_failed":
+			case "command_rejected":
+			case "diagnostic":
+			case "human_request_cancelled":
+			case "human_request_pending":
+			case "human_request_resolved":
+			case "human_request_timeout":
+				return true;
+		}
+		return false;
+	}
+
+	private _extensionObservedAgentId(
+		event: ExtensionObservedEvent,
+	): AgentId | undefined {
+		return event.type === "diagnostic"
+			? event.diagnostic.agentId
+			: event.agentId;
+	}
+
+	private async _emitToExtensionObservers(
+		event: ExtensionObservedEvent,
+	): Promise<void> {
+		const agentId = this._extensionObservedAgentId(event);
+		if (!agentId) return;
 		const extensionRunner = this._agents.get(agentId)?.extensionRunner;
-		if (extensionRunner) {
-			const diagnostics = await extensionRunner.emitObserved({
-				type: "agent_harness_event",
-				agentId,
-				event,
-			});
+		if (!extensionRunner) return;
+
+		const depth = this._extensionObserverDispatchDepth.get(agentId) ?? 0;
+		this._extensionObserverDispatchDepth.set(agentId, depth + 1);
+		try {
+			const diagnostics = await extensionRunner.emitObserved(event);
 			await this._recordAndPublishExtensionDiagnostics(agentId, diagnostics);
+		} finally {
+			if (depth === 0) {
+				this._extensionObserverDispatchDepth.delete(agentId);
+			} else {
+				this._extensionObserverDispatchDepth.set(agentId, depth);
+			}
 		}
 	}
 
 	private async _emit(
 		event: OrchestratorEvent,
-		options: { sendToClients?: boolean } = {},
+		options: {
+			sendToClients?: boolean;
+			observeExtensions?: boolean;
+		} = {},
 	): Promise<void> {
 		for (const listener of this._eventListeners) {
 			await listener(event);
 		}
-		if (options.sendToClients === false) return;
-		for (const client of this._clients.values()) {
-			if (!client.receive) continue;
-			try {
-				await client.receive(event);
-			} catch (error) {
-				await this._publishDiagnostic(
-					createOrchestratorDiagnostic({
-						severity: "warning",
-						code: "orchestrator.client_failed",
-						message: error instanceof Error ? error.message : String(error),
-						disposition: "reported",
-						recoverable: true,
-					}),
-					{ sendToClients: false },
-				);
+		if (options.sendToClients !== false) {
+			for (const client of this._clients.values()) {
+				if (!client.receive) continue;
+				try {
+					await client.receive(event);
+				} catch (error) {
+					await this._publishDiagnostic(
+						createOrchestratorDiagnostic({
+							severity: "warning",
+							code: "orchestrator.client_failed",
+							message: error instanceof Error ? error.message : String(error),
+							disposition: "reported",
+							recoverable: true,
+						}),
+						{ sendToClients: false },
+					);
+				}
 			}
+		}
+		if (
+			options.observeExtensions !== false &&
+			this._isExtensionObservedEvent(event)
+		) {
+			await this._emitToExtensionObservers(event);
 		}
 	}
 
 	private async _publishDiagnostic(
 		diagnostic: OrchestratorDiagnostic,
-		options: { sendToClients?: boolean } = {},
+		options: {
+			sendToClients?: boolean;
+			observeExtensions?: boolean;
+		} = {},
 	): Promise<void> {
 		await this._emit(
 			{
@@ -2338,7 +2435,10 @@ export class AgentOrchestrator {
 
 	private async _publishDiagnostics(
 		diagnostics: readonly OrchestratorDiagnostic[],
-		options: { sendToClients?: boolean } = {},
+		options: {
+			sendToClients?: boolean;
+			observeExtensions?: boolean;
+		} = {},
 	): Promise<void> {
 		for (const diagnostic of dedupeDiagnostics(diagnostics)) {
 			await this._publishDiagnostic(diagnostic, options);
@@ -2407,6 +2507,7 @@ export class AgentOrchestrator {
 			};
 			await this._emit({
 				type: "command_detected",
+				agentId,
 				commandId,
 				command: invocation,
 				inputId,
@@ -2418,6 +2519,7 @@ export class AgentOrchestrator {
 			): Promise<InputResult> => {
 				await this._emit({
 					type: "command_rejected",
+					agentId,
 					commandId,
 					command: invocation,
 					diagnostic,
@@ -2457,6 +2559,7 @@ export class AgentOrchestrator {
 
 			await this._emit({
 				type: "command_accepted",
+				agentId,
 				commandId,
 				command: invocation,
 				inputId,
@@ -2470,6 +2573,7 @@ export class AgentOrchestrator {
 				);
 				await this._emit({
 					type: "command_completed",
+					agentId,
 					commandId,
 					command: invocation,
 					result: replacement,
@@ -2488,6 +2592,7 @@ export class AgentOrchestrator {
 				});
 				await this._emit({
 					type: "command_failed",
+					agentId,
 					commandId,
 					command: invocation,
 					diagnostic,
