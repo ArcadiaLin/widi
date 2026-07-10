@@ -63,7 +63,7 @@ import {
 } from "./diagnostics.ts";
 import {
 	type ExtensionActionFailure,
-	type ExtensionActions,
+	type ExtensionCoreActions,
 	type ExtensionFactory,
 	type ExtensionIdentity,
 	type ExtensionInterceptorEventFor,
@@ -1399,7 +1399,7 @@ export class AgentOrchestrator {
 				model,
 				thinkingLevel: options.thinkingLevel,
 			});
-			await this._setAgentStatus(agentId, "idle");
+			this._setAgentStatus(agentId, "idle");
 			await this._emit({ type: "agent_spawned", agentId, profile, model });
 			return { agentId, harness };
 		} catch (error) {
@@ -1467,7 +1467,7 @@ export class AgentOrchestrator {
 				activeToolNames: context.activeToolNames ?? undefined,
 			});
 
-			await this._setAgentStatus(agentId, "idle");
+			this._setAgentStatus(agentId, "idle");
 			await this._emit({ type: "agent_resumed", agentId, profile, model });
 			return { agentId, harness };
 		} catch (error) {
@@ -1729,17 +1729,24 @@ export class AgentOrchestrator {
 						source: { kind: "agent", agentId: options.agentId },
 					}),
 			},
-			createExtensionContext: (source) =>
-				source.kind === "extension"
-					? {
-							extensionId: source.id,
-							host: {
-								agentId: options.agentId,
-								profileId: options.profileId,
-								actions: this._createExtensionActions(),
-							},
-						}
-					: undefined,
+			// Extension-contributed tools get the same runner-scoped actions as
+			// extension handlers; a reload re-resolves tools, so contexts never
+			// outlive their runner's stale boundary.
+			createExtensionContext: (source) => {
+				if (source.kind !== "extension") return undefined;
+				const extensionRunner =
+					options.extensionRunner ??
+					this._agents.get(options.agentId)?.extensionRunner;
+				if (!extensionRunner) return undefined;
+				return {
+					extensionId: source.id,
+					host: {
+						agentId: options.agentId,
+						profileId: options.profileId,
+						actions: extensionRunner.createContext(source.id).actions,
+					},
+				};
+			},
 		});
 		return {
 			tools: [...agentTools],
@@ -1770,7 +1777,7 @@ export class AgentOrchestrator {
 		return registry;
 	}
 
-	private _createExtensionActions(): ExtensionActions {
+	private _createExtensionActions(): ExtensionCoreActions {
 		return {
 			getAgentTools: (agentId) => this.getAgentTools(agentId),
 			setAgentTools: async (agentId, toolNames, activeToolNames) => {
@@ -1779,7 +1786,67 @@ export class AgentOrchestrator {
 			setAgentActiveTools: async (agentId, toolNames) => {
 				await this.setAgentActiveTools(agentId, toolNames);
 			},
-			requestHuman: async (request) => await this.requestHuman(request),
+			requestHuman: async (agentId, extensionId, request) => {
+				const record = this._requireAgentRecord(agentId);
+				if (record.capabilities?.canRequestUser === false) {
+					throw new OrchestratorError(
+						createOrchestratorDiagnostic({
+							severity: "error",
+							code: "extension.human_request_denied",
+							message: `Extension '${extensionId}' human request is denied by profile capability canRequestUser.`,
+							source: { kind: "extension", id: extensionId },
+							agentId,
+							profileId: record.profile.reference.id,
+							extensionId,
+							phase: "runtime",
+							recoverable: true,
+						}),
+					);
+				}
+				return await this.requestHuman({
+					...request,
+					source: { kind: "extension", extensionId },
+				});
+			},
+			promptAgent: async (agentId, text, options) => {
+				await this.promptAgent(agentId, text, options);
+			},
+			steerAgent: async (agentId, text, options) => {
+				await this.steerAgent(agentId, text, options);
+			},
+			followUpAgent: async (agentId, text, options) => {
+				await this.followUpAgent(agentId, text, options);
+			},
+			setAgentSessionName: async (agentId, name) => {
+				await this.setAgentSessionName(agentId, name);
+			},
+			listCommands: (agentId) => this.listCommands(agentId),
+			setAgentModelByReference: async (agentId, reference) =>
+				await this.setAgentModelByReference(agentId, reference),
+			getAgentThinkingLevel: (agentId) => this.getAgentThinkingLevel(agentId),
+			setAgentThinkingLevel: async (agentId, level) => {
+				await this.setAgentThinkingLevel(agentId, level);
+			},
+			// Trust ruling (extension-experiment.md): exec runs arbitrary
+			// commands in the project cwd, so it is denied until the project
+			// trust gate has passed.
+			exec: async (agentId, extensionId, command, options) => {
+				if (!this.settingManager.isProjectTrusted()) {
+					throw new OrchestratorError(
+						createOrchestratorDiagnostic({
+							severity: "error",
+							code: "extension.exec_denied",
+							message: `Extension '${extensionId}' exec is denied because the project is not trusted.`,
+							source: { kind: "extension", id: extensionId },
+							agentId,
+							extensionId,
+							phase: "runtime",
+							recoverable: true,
+						}),
+					);
+				}
+				return await this.executionEnv.exec(command, options);
+			},
 		};
 	}
 
@@ -2215,7 +2282,7 @@ export class AgentOrchestrator {
 		agentId: AgentId,
 		event: AgentHarnessEvent,
 	): Promise<void> {
-		await this._updateAgentStatusFromHarnessEvent(agentId, event);
+		this._updateAgentStatusFromHarnessEvent(agentId, event);
 		await this._emit({ type: "agent_harness_event", agentId, event });
 		const extensionRunner = this._agents.get(agentId)?.extensionRunner;
 		if (extensionRunner) {

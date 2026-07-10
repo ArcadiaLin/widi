@@ -3299,7 +3299,7 @@ describe("AgentOrchestrator", () => {
 		orchestrator.registerExtensionFactory("observer", (api) => {
 			api.observe("agent_harness_event", (event, context) => {
 				observedEvent = event.event;
-				const tools = context.actions.getAgentTools(context.agentId);
+				const tools = context.actions.getTools();
 				observed.push(
 					`${context.extensionId}:${context.profileId}:${event.event.type}:${tools.toolNames.join(",")}`,
 				);
@@ -3652,7 +3652,7 @@ describe("AgentOrchestrator", () => {
 		orchestrator.registerExtensionFactory("observer", (api) => {
 			api.observe("agent_harness_event", (_event, context) => {
 				observed.push(
-					`${context.extensionId}:${context.profileId}:${context.isIdle()}:${context.actions.getAgentTools(context.agentId).toolNames.length}`,
+					`${context.extensionId}:${context.profileId}:${context.isIdle()}:${context.actions.getTools().toolNames.length}`,
 				);
 			});
 		});
@@ -3809,6 +3809,293 @@ describe("AgentOrchestrator", () => {
 				}),
 				expect.objectContaining({ code: "extension.handler_failed" }),
 			]),
+		);
+	});
+
+	it("exposes scoped prompt, steer, and follow-up extension actions", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("sample", () => {});
+		const agentId = await orchestrator.spawnAgent();
+		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+		if (!runner) throw new Error("Expected extension runner.");
+		const context = runner.createContext("sample");
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const prompted: string[] = [];
+		Object.assign(orchestrator, {
+			promptAgent: async (targetAgentId: string, text: string) => {
+				prompted.push(`${targetAgentId}:${text}`);
+				return { role: "assistant" } as AssistantMessage;
+			},
+		});
+		const harness = requireAgentHarness(orchestrator, agentId);
+		(harness as unknown as { phase: "turn" }).phase = "turn";
+
+		await context.actions.prompt("start here");
+		await context.actions.steer("keep going");
+		await context.actions.followUp("summarize next");
+
+		expect(prompted).toEqual([`${agentId}:start here`]);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "agent_harness_event",
+				agentId,
+				event: expect.objectContaining({
+					type: "queue_update",
+					steer: [
+						expect.objectContaining({
+							role: "user",
+							content: [{ type: "text", text: "keep going" }],
+						}),
+					],
+				}),
+			}),
+		);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "agent_harness_event",
+				agentId,
+				event: expect.objectContaining({
+					type: "queue_update",
+					followUp: [
+						expect.objectContaining({
+							role: "user",
+							content: [{ type: "text", text: "summarize next" }],
+						}),
+					],
+				}),
+			}),
+		);
+	});
+
+	it("exposes scoped session, command, model, and thinking extension actions", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: true,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("sample", () => {});
+		const agentId = await orchestrator.spawnAgent();
+		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+		if (!runner) throw new Error("Expected extension runner.");
+		const context = runner.createContext("sample");
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+
+		await context.actions.setSessionName("audited session");
+		await expect(orchestrator.getAgentSession(agentId)).resolves.toMatchObject({
+			name: "audited session",
+		});
+
+		expect(context.actions.getCommands()).toEqual(
+			orchestrator.listCommands(agentId),
+		);
+
+		const model = await context.actions.setModel(
+			"test-provider/reasoning-model",
+		);
+		expect(model.id).toBe("reasoning-model");
+		expect(orchestrator.getAgentModel(agentId).id).toBe("reasoning-model");
+		await context.actions.setThinkingLevel("high");
+		expect(context.actions.getThinkingLevel()).toBe("high");
+		expect(orchestrator.getAgentThinkingLevel(agentId)).toBe("high");
+
+		await expect(context.actions.setModel("bogus")).rejects.toMatchObject({
+			diagnostic: expect.objectContaining({ code: "model.reference_invalid" }),
+		});
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					code: "extension.action_failed",
+					extensionId: "sample",
+					agentId,
+					details: expect.objectContaining({ action: "setModel" }),
+				}),
+			}),
+		);
+	});
+
+	it("injects the extension source into human requests", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("sample", () => {});
+		const agentId = await orchestrator.spawnAgent();
+		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+		if (!runner) throw new Error("Expected extension runner.");
+		const context = runner.createContext("sample");
+		let captured: unknown;
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async (request) => {
+				captured = request;
+				return { kind: "confirm", confirmed: true };
+			},
+		});
+
+		await expect(
+			context.actions.requestHuman({ kind: "confirm", title: "Approve?" }),
+		).resolves.toEqual({ kind: "confirm", confirmed: true });
+		expect(captured).toMatchObject({
+			kind: "confirm",
+			title: "Approve?",
+			source: { kind: "extension", extensionId: "sample" },
+		});
+	});
+
+	it("denies extension human requests when the profile capability disallows them", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+			capabilities: { canRequestUser: false },
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("sample", () => {});
+		const agentId = await orchestrator.spawnAgent();
+		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+		if (!runner) throw new Error("Expected extension runner.");
+		const context = runner.createContext("sample");
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async () => ({ kind: "confirm", confirmed: true }),
+		});
+
+		await expect(
+			context.actions.requestHuman({ kind: "confirm", title: "Approve?" }),
+		).rejects.toMatchObject({
+			diagnostic: expect.objectContaining({
+				code: "extension.human_request_denied",
+				extensionId: "sample",
+				agentId,
+			}),
+		});
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					code: "extension.action_failed",
+					extensionId: "sample",
+					details: expect.objectContaining({ action: "requestHuman" }),
+				}),
+			}),
+		);
+	});
+
+	it("gates extension exec on project trust", async () => {
+		const env = new MemoryExecutionEnv();
+		const execCalls: string[] = [];
+		env.exec = async (command) => {
+			execCalls.push(command);
+			return ok({ stdout: "exec-ok", stderr: "", exitCode: 0 });
+		};
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("sample", () => {});
+		const agentId = await orchestrator.spawnAgent();
+		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+		if (!runner) throw new Error("Expected extension runner.");
+		const context = runner.createContext("sample");
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+
+		await expect(context.actions.exec("echo hi")).resolves.toEqual({
+			ok: true,
+			value: { stdout: "exec-ok", stderr: "", exitCode: 0 },
+		});
+		expect(execCalls).toEqual(["echo hi"]);
+
+		await orchestrator.settingManager.setProjectTrusted(false);
+		await expect(context.actions.exec("echo hi")).rejects.toMatchObject({
+			diagnostic: expect.objectContaining({
+				code: "extension.exec_denied",
+				extensionId: "sample",
+				agentId,
+			}),
+		});
+		expect(execCalls).toEqual(["echo hi"]);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					code: "extension.action_failed",
+					extensionId: "sample",
+					details: expect.objectContaining({ action: "exec" }),
+				}),
+			}),
 		);
 	});
 

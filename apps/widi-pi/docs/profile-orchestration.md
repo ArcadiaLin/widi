@@ -64,7 +64,7 @@
 - `missingExtensionSeverity` 已用于 missing factory diagnostic 的 severity；`ignore` 不发诊断，`warning`/`error` 继续创建 agent 并报告 degraded diagnostic。
 - activation 失败会产生 `extension.activation_failed`，observer handler 失败会产生 `extension.handler_failed`。
 - `ExtensionRunner` 将 loaded scope 作为当前 agent 的 scoped registry overlay，支持 activation-time `registerTool` / `patchTool` / `registerCommand`。
-- runtime context 已提供 actions、human request、tool mutation，以及 `ctx.session` custom entry facade（actions 的全量 `dispatch` 将随 M1 Command 收编移除）。
+- runtime context 已提供 own-agent scoped actions（prompt/steer/followUp、session name、commands、model/thinking、exec、human request、tool mutation），以及 `ctx.session` custom entry facade；契约见 [Extensions](core/extensions.md) Scoped Actions 契约节。
 - reload 已支持替换 eligible agent runner，旧 context 会变成 stale。
 
 仍缺：
@@ -102,7 +102,7 @@ Tool execution 的 UI 展示也不属于 profile schema。Orchestrator 会原样
 
 - `acceptsUserInput`：**第一个真实消费者已落地**——command gateway 用它判定 `scope: "user-facing"` 命令（`/new`、`/fork`、`/resume`）能否在该 agent 上执行，`listCommands` 按同一事实剪列表（见 [Command Experiment](core/command-experiment.md)）。
 - `canSpawn`：M3 collaboration facade 用它门控 `agent_spawn` 等 core tools 的可见性。
-- `canRequestUser`：尚无消费者，条目在 [BACKLOG](BACKLOG.md)。
+- `canRequestUser`：**第一个真实消费者已落地**（ME 切片 3）——extension scoped `requestHuman` 按它门控，`false` 时拒绝并抛 `extension.human_request_denied`。
 
 纪律不变：解析而不消费的 policy 字段是最危险的文档化谎言——每个字段要么有消费者，要么删除解析代码。profile 另有独立的 `commands` 门控字段（`enabled`/`deny`），不属于 `capabilities`，定义见 command-experiment.md。
 

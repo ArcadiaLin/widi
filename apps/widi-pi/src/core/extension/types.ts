@@ -3,14 +3,23 @@ import type {
 	AgentHarnessEventResultMap,
 	BeforeAgentStartEvent,
 	ContextEvent,
+	ExecutionError,
+	Result,
+	ShellExecOptions,
+	ThinkingLevel,
 	ToolCallEvent,
 	ToolResultEvent,
 } from "@earendil-works/pi-agent-core";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import type { TSchema } from "typebox";
-import type { CommandCandidates, CommandPlacement } from "../command.ts";
-import type { HumanRequest, HumanResponse } from "../human-request.ts";
+import type {
+	Command,
+	CommandCandidates,
+	CommandPlacement,
+} from "../command.ts";
+import type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
 import type { ToolDefinition, ToolDefinitionPatch } from "../tools/types.ts";
-import type { AgentToolsSnapshot } from "../types.ts";
+import type { AgentToolsSnapshot, RuntimeModel } from "../types.ts";
 
 // The tool contract lives in the core tools layer (ME slice 0 dependency
 // inversion); the extension layer consumes and re-exports it for its own
@@ -68,7 +77,45 @@ export type ExtensionInterceptorResultFor<
 	TName extends ExtensionInterceptorName,
 > = AgentHarnessEventResultMap[TName];
 
+export type ExtensionExecResult = Result<
+	{ stdout: string; stderr: string; exitCode: number },
+	ExecutionError
+>;
+
+/**
+ * Agent-scoped action surface handed to extension authors. Every action is
+ * bound to the extension's own agent; the agent id is injected by the runner
+ * and never appears in a signature. Cross-agent operations are not part of
+ * this contract (they belong to the M3 collaboration facade).
+ */
 export interface ExtensionActions {
+	getTools(): AgentToolsSnapshot;
+	setTools(toolNames: string[], activeToolNames?: string[]): Promise<void>;
+	setActiveTools(toolNames: string[]): Promise<void>;
+	// The request source is injected by the runner as
+	// { kind: "extension", extensionId } and cannot be forged.
+	requestHuman(request: HumanRequestDraft): Promise<HumanResponse>;
+	prompt(text: string, options?: { images?: ImageContent[] }): Promise<void>;
+	steer(text: string, options?: { images?: ImageContent[] }): Promise<void>;
+	followUp(text: string, options?: { images?: ImageContent[] }): Promise<void>;
+	setSessionName(name: string): Promise<void>;
+	getCommands(): Command[];
+	setModel(reference: string): Promise<RuntimeModel>;
+	getThinkingLevel(): ThinkingLevel;
+	setThinkingLevel(level: ThinkingLevel): Promise<void>;
+	// Denied with a structured diagnostic when the project is not trusted.
+	exec(
+		command: string,
+		options?: ShellExecOptions,
+	): Promise<ExtensionExecResult>;
+}
+
+/**
+ * Binding contract between the orchestrator and the runner. Agent ids stay
+ * explicit here; the runner narrows this surface into the scoped
+ * ExtensionActions above. Not part of the extension-author API.
+ */
+export interface ExtensionCoreActions {
 	getAgentTools(agentId: string): AgentToolsSnapshot;
 	setAgentTools(
 		agentId: string,
@@ -76,7 +123,40 @@ export interface ExtensionActions {
 		activeToolNames?: string[],
 	): Promise<void>;
 	setAgentActiveTools(agentId: string, toolNames: string[]): Promise<void>;
-	requestHuman(request: HumanRequest): Promise<HumanResponse>;
+	requestHuman(
+		agentId: string,
+		extensionId: string,
+		request: HumanRequestDraft,
+	): Promise<HumanResponse>;
+	promptAgent(
+		agentId: string,
+		text: string,
+		options?: { images?: ImageContent[] },
+	): Promise<void>;
+	steerAgent(
+		agentId: string,
+		text: string,
+		options?: { images?: ImageContent[] },
+	): Promise<void>;
+	followUpAgent(
+		agentId: string,
+		text: string,
+		options?: { images?: ImageContent[] },
+	): Promise<void>;
+	setAgentSessionName(agentId: string, name: string): Promise<void>;
+	listCommands(agentId: string): Command[];
+	setAgentModelByReference(
+		agentId: string,
+		reference: string,
+	): Promise<RuntimeModel>;
+	getAgentThinkingLevel(agentId: string): ThinkingLevel;
+	setAgentThinkingLevel(agentId: string, level: ThinkingLevel): Promise<void>;
+	exec(
+		agentId: string,
+		extensionId: string,
+		command: string,
+		options?: ShellExecOptions,
+	): Promise<ExtensionExecResult>;
 }
 
 export interface ExtensionContextActions {
@@ -118,11 +198,18 @@ export interface ExtensionSessionActions {
 export interface ExtensionActionFailure {
 	extensionId: string;
 	action:
+		| "appendEntry"
+		| "exec"
 		| "findEntries"
+		| "followUp"
+		| "prompt"
 		| "requestHuman"
-		| "setAgentActiveTools"
-		| "setAgentTools"
-		| "appendEntry";
+		| "setActiveTools"
+		| "setModel"
+		| "setSessionName"
+		| "setThinkingLevel"
+		| "setTools"
+		| "steer";
 	code: string;
 	error: unknown;
 }

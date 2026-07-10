@@ -22,6 +22,7 @@ import type {
 	ExtensionCommandContextActions,
 	ExtensionContext,
 	ExtensionContextActions,
+	ExtensionCoreActions,
 	ExtensionInterceptorEventFor,
 	ExtensionInterceptorFor,
 	ExtensionInterceptorName,
@@ -118,7 +119,7 @@ export class ExtensionRunner {
 	readonly diagnostics: readonly CoreDiagnostic[];
 
 	private readonly _loadedScope: LoadedExtensionScope;
-	private _actions: ExtensionActions = createUnboundActions();
+	private _actions: ExtensionCoreActions = createUnboundActions();
 	private _contextActions: ExtensionContextActions = {};
 	private _commandContextActions: ExtensionCommandContextActions = {
 		waitForIdle: async () => {},
@@ -135,7 +136,7 @@ export class ExtensionRunner {
 	}
 
 	bindCore(
-		actions: ExtensionActions,
+		actions: ExtensionCoreActions,
 		contextActions: ExtensionContextActions,
 	): void {
 		this._actions = actions;
@@ -465,98 +466,130 @@ export class ExtensionRunner {
 		}
 	}
 
+	// Narrowing boundary: the scoped author-facing actions inject this
+	// runner's agent id and the calling extension's id; neither ever appears
+	// in an ExtensionActions signature.
 	private _createContextActions(extensionId: string): ExtensionActions {
+		const agentId = this.agentId;
+		const failure = (
+			action: ExtensionActionFailure["action"],
+		): Omit<ExtensionActionFailure, "error"> => ({
+			extensionId,
+			action,
+			code: "extension.action_failed",
+		});
 		return {
-			getAgentTools: (agentId) => {
+			getTools: () => {
 				this._assertActive();
 				return this._actions.getAgentTools(agentId);
 			},
-			setAgentTools: async (agentId, toolNames, activeToolNames) => {
-				this._assertActive();
-				try {
+			setTools: async (toolNames, activeToolNames) => {
+				await this._runReportedAction(failure("setTools"), async () => {
 					await this._actions.setAgentTools(
 						agentId,
 						toolNames,
 						activeToolNames,
 					);
-				} catch (error) {
-					await this._reportActionFailure({
-						extensionId,
-						action: "setAgentTools",
-						code: "extension.action_failed",
-						error,
-					});
-					throw error;
-				}
+				});
 			},
-			setAgentActiveTools: async (agentId, toolNames) => {
-				this._assertActive();
-				try {
+			setActiveTools: async (toolNames) => {
+				await this._runReportedAction(failure("setActiveTools"), async () => {
 					await this._actions.setAgentActiveTools(agentId, toolNames);
-				} catch (error) {
-					await this._reportActionFailure({
-						extensionId,
-						action: "setAgentActiveTools",
-						code: "extension.action_failed",
-						error,
-					});
-					throw error;
-				}
+				});
 			},
-			requestHuman: async (request) => {
+			requestHuman: async (request) =>
+				await this._runReportedAction(
+					failure("requestHuman"),
+					async () =>
+						await this._actions.requestHuman(agentId, extensionId, request),
+				),
+			prompt: async (text, options) => {
+				await this._runReportedAction(failure("prompt"), async () => {
+					await this._actions.promptAgent(agentId, text, options);
+				});
+			},
+			steer: async (text, options) => {
+				await this._runReportedAction(failure("steer"), async () => {
+					await this._actions.steerAgent(agentId, text, options);
+				});
+			},
+			followUp: async (text, options) => {
+				await this._runReportedAction(failure("followUp"), async () => {
+					await this._actions.followUpAgent(agentId, text, options);
+				});
+			},
+			setSessionName: async (name) => {
+				await this._runReportedAction(failure("setSessionName"), async () => {
+					await this._actions.setAgentSessionName(agentId, name);
+				});
+			},
+			getCommands: () => {
 				this._assertActive();
-				try {
-					return await this._actions.requestHuman(request);
-				} catch (error) {
-					await this._reportActionFailure({
-						extensionId,
-						action: "requestHuman",
-						code: "extension.action_failed",
-						error,
-					});
-					throw error;
-				}
+				return this._actions.listCommands(agentId);
 			},
+			setModel: async (reference) =>
+				await this._runReportedAction(
+					failure("setModel"),
+					async () =>
+						await this._actions.setAgentModelByReference(agentId, reference),
+				),
+			getThinkingLevel: () => {
+				this._assertActive();
+				return this._actions.getAgentThinkingLevel(agentId);
+			},
+			setThinkingLevel: async (level) => {
+				await this._runReportedAction(failure("setThinkingLevel"), async () => {
+					await this._actions.setAgentThinkingLevel(agentId, level);
+				});
+			},
+			exec: async (command, options) =>
+				await this._runReportedAction(
+					failure("exec"),
+					async () =>
+						await this._actions.exec(agentId, extensionId, command, options),
+				),
 		};
+	}
+
+	private async _runReportedAction<T>(
+		failure: Omit<ExtensionActionFailure, "error">,
+		run: () => Promise<T>,
+	): Promise<T> {
+		this._assertActive();
+		try {
+			return await run();
+		} catch (error) {
+			await this._reportActionFailure({ ...failure, error });
+			throw error;
+		}
 	}
 
 	private _createSessionContext(extensionId: string): ExtensionSessionContext {
 		return {
-			appendEntry: async (type, data) => {
-				this._assertActive();
-				try {
-					return await this._requireSessionActions().appendEntry(
-						extensionId,
-						type,
-						data,
-					);
-				} catch (error) {
-					await this._reportActionFailure({
+			appendEntry: async (type, data) =>
+				await this._runReportedAction(
+					{
 						extensionId,
 						action: "appendEntry",
 						code: "extension.custom_entry_append_failed",
-						error,
-					});
-					throw error;
-				}
-			},
-			findEntries: async (type) => {
-				this._assertActive();
-				try {
-					return await this._requireSessionActions().findEntries(
-						extensionId,
-						type,
-					);
-				} catch (error) {
-					await this._reportActionFailure({
+					},
+					async () =>
+						await this._requireSessionActions().appendEntry(
+							extensionId,
+							type,
+							data,
+						),
+				),
+			findEntries: async (type) =>
+				await this._runReportedAction(
+					{
 						extensionId,
 						action: "findEntries",
 						code: "extension.custom_entry_find_failed",
-						error,
-					});
-					throw error;
-				}
-			},
+					},
+					async () =>
+						await this._requireSessionActions().findEntries(extensionId, type),
+				),
 		};
 	}
 
@@ -675,7 +708,7 @@ function toCommandArguments(
 	};
 }
 
-function createUnboundActions(): ExtensionActions {
+function createUnboundActions(): ExtensionCoreActions {
 	const notBound = () => {
 		throw new Error("Extension runner core actions are not bound.");
 	};
@@ -684,5 +717,14 @@ function createUnboundActions(): ExtensionActions {
 		setAgentTools: async () => notBound(),
 		setAgentActiveTools: async () => notBound(),
 		requestHuman: async () => notBound(),
+		promptAgent: async () => notBound(),
+		steerAgent: async () => notBound(),
+		followUpAgent: async () => notBound(),
+		setAgentSessionName: async () => notBound(),
+		listCommands: () => notBound(),
+		setAgentModelByReference: async () => notBound(),
+		getAgentThinkingLevel: () => notBound(),
+		setAgentThinkingLevel: async () => notBound(),
+		exec: async () => notBound(),
 	};
 }
