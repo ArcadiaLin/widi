@@ -3492,7 +3492,7 @@ describe("AgentOrchestrator", () => {
 		});
 	});
 
-	it("publishes diagnostics for interceptor failures and stops the hook chain", async () => {
+	it("publishes interceptor diagnostics and preserves runner failure semantics", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = {
 			...defaultProfile,
@@ -3502,6 +3502,7 @@ describe("AgentOrchestrator", () => {
 			extensions: ["broken", "healthy"],
 		};
 		let healthyCalled = false;
+		let healthyToolCallCalled = false;
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
@@ -3518,11 +3519,18 @@ describe("AgentOrchestrator", () => {
 			api.intercept("context", () => {
 				throw new Error("interceptor exploded");
 			});
+			api.intercept("tool_call", () => {
+				throw new Error("tool call interceptor exploded");
+			});
 		});
 		orchestrator.registerExtensionFactory("healthy", (api) => {
 			api.intercept("context", (event) => {
 				healthyCalled = true;
 				return { messages: event.messages };
+			});
+			api.intercept("tool_call", () => {
+				healthyToolCallCalled = true;
+				return undefined;
 			});
 		});
 
@@ -3532,17 +3540,31 @@ describe("AgentOrchestrator", () => {
 				handlers: Map<string, Set<(event: unknown) => Promise<unknown>>>;
 			}
 		).handlers;
-		const handler = Array.from(handlers.get("context") ?? [])[0];
-		if (!handler) throw new Error("Missing context hook.");
+		const runHook = async (name: string, event: unknown) => {
+			const handler = Array.from(handlers.get(name) ?? [])[0];
+			if (!handler) throw new Error(`Missing harness hook: ${name}`);
+			return await handler(event);
+		};
 
 		await expect(
-			handler({
+			runHook("context", {
 				type: "context",
 				messages: [{ role: "user", content: "base", timestamp: 0 }],
 			}),
-		).resolves.toBeUndefined();
+		).resolves.toEqual({
+			messages: [{ role: "user", content: "base", timestamp: 0 }],
+		});
+		await expect(
+			runHook("tool_call", {
+				type: "tool_call",
+				toolCallId: "call-1",
+				toolName: "write",
+				input: {},
+			}),
+		).resolves.toEqual({ block: true });
 
-		expect(healthyCalled).toBe(false);
+		expect(healthyCalled).toBe(true);
+		expect(healthyToolCallCalled).toBe(false);
 		expect(events).toContainEqual(
 			expect.objectContaining({
 				type: "diagnostic",
@@ -3555,6 +3577,16 @@ describe("AgentOrchestrator", () => {
 					profileId: extensionProfile.id,
 					source: { kind: "extension", id: "broken" },
 					details: { eventName: "context" },
+				}),
+			}),
+		);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					code: "extension.handler_failed",
+					extensionId: "broken",
+					details: { eventName: "tool_call" },
 				}),
 			}),
 		);

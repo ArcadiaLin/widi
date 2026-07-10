@@ -37,8 +37,8 @@
 
 目标公式、pi 能力对照表、形状差异示例、裁决原则与切片细节见 [Extension Experiment](core/extension-experiment.md)。锚点 consumer：审计/策略 extension（consumer 举证均指向它，除注明者外）。原 M4 的设计条目全部收编于此；ME 实施所需的 M2 地基项（切片 0/1/2）已直接迁入：
 
-- [x] 切片 0：tools 布局清理（删 `coding/` 空占位、`types.ts`/`index.ts` 二留一）+ Tool 契约类型从 `extension/types.ts` 迁 core 层（零行为变化布局，解依赖倒置）。已落地：tool 契约 8 类型现定义于 `tools/types.ts`，extension 层反向消费并兼容 re-export；占位清理连同 `agent-collaboration/` 五个零引用占位与 `examples/` 一并删除。
-- [ ] 切片 1：Interceptor 失败语义定案 + 实施——合成类跳过失败者保留其余，`tool_call` 拦截 fail-closed；写进 extensions.md。
+- [x] 切片 0：tools 布局清理（删 `coding/` 空占位、`types.ts`/`index.ts` 二留一）+ Tool 契约类型从 `extension/types.ts` 迁 core 层（零行为变化布局，解依赖倒置）。已落地：tool 契约 7 类型现定义于 `tools/types.ts`，extension 层反向消费并兼容 re-export；占位清理连同 `agent-collaboration/` 五个零引用占位与 `examples/` 一并删除。随后无 consumer 的 `ToolLifecycleEvent` 转换轨道删除，统一回到 raw Pi event 口径。
+- [x] 切片 1：Interceptor 失败语义定案 + 实施——合成类跳过失败者保留其余，`tool_call` 拦截 fail-closed；契约见 extensions.md。
 - [ ] 切片 2：Orchestrator 公开面收口——`agents` map 与 `getAgentHarness()` 私有化，对外只留 snapshot 查询；`spawnAgentHarness` 改名 `spawnAgent`，只返回 `agentId`。
 - [ ] 切片 3：`ExtensionActions` scope 化（own-agent 默认，agentId 由 context 注入，capabilities 接线）+ 在 scoped 前提下补齐动作/查询面（send/steer/followUp、setSessionName、exec、getCommands、setModel/thinkingLevel）。
 - [ ] 切片 4：审计锚点 extension 落库为仓库内真实测试 consumer，反向检验切片 1/3。

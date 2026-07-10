@@ -45,7 +45,7 @@ WIDI extension 自由度 =
 | `before_agent_start` / `context` / `tool_call` / `tool_result` | 四个 interceptor 已有（runner MVP） | core，已落 |
 | `agent_start/end`、`turn_start/end`、`message_*` | raw `agent_harness_event` observer 可达 | core，已落（归一化档不做，raw 够用，见裁决 3） |
 | `tool_execution_*` | raw `agent_harness_event` observer 可达 | core，已落（与其他 harness events 共用唯一口径） |
-| `session_start/info_changed/before_switch/before_fork/before_compact/compact/shutdown/before_tree/tree` | 无 | core，ME 切片 5（先 observe 档，intercept 档按举证逐个开） |
+| `session_start`/`info_changed`/`before_switch`/`before_fork`</br>/`before_compact`/`compact/shutdown`/`before_tree`/`tree` | 无 | core，ME 切片 5（先 observe 档，intercept 档按举证逐个开） |
 | `model_select` / `thinking_level_select` | 无 | core，ME 切片 5（observe 档） |
 | `input` | 无 | core，ME 切片 6（intercept 档，策略 extension 举证） |
 | `before_provider_request/headers`、`after_provider_response` | 无（依赖 pi harness 暴露程度） | core，ME 切片 9 随 provider 面评估 |
@@ -94,7 +94,7 @@ WIDI 独有（pi 无对应）：`command_detected/accepted/completed/rejected/fa
 锚点 consumer：**审计/策略 extension**（观察全事件流、拦截 tool_call/input、按策略 reject；仓库内真实测试 consumer，非示例骨架）。ME 实施所需的 M2 条目已直接迁入本 milestone（切片 0 与切片 2，2026-07-07 裁决）——extension 是当前注意力焦点，不让地基项散在别的 milestone 里等排期。切片按依赖排定，每片独立可验收：
 
 0. **tools 布局清理 + tool 契约类型迁 core 层**（零行为变化布局 commit，原 M2 条目合并迁入，已完成 2026-07-09）。占位清理实际清单与原表述略有出入：`coding/` 剩余 4 个空占位（read/write/edit 已实现）+ 重复 re-export 的 `tools/index.ts` + `agent-collaboration/` 5 个零引用占位，连同 `examples/` 遗留代码一并删除。tool 契约 7 类型（`ToolDefinition`/`ToolDefinitionPatch`/`ToolSource`/`ToolExecute`/`ToolExecuteMiddleware`/`ToolExecutionContext`/`ToolExtensionContext`）从 `extension/types.ts` 迁至 `tools/types.ts` 真实定义，extension 层反向消费并兼容 re-export，`tool-registry.ts` 改从 tools 层 import——依赖倒置（review 问题 7）解除。随后无 consumer 的 `ToolLifecycleEvent` 转换轨道在 extension 完善前删除，统一回到 raw Pi event 口径。
-1. **Interceptor 失败语义定案 + 实施**（原 M2 条目迁入）。裁决：合成类 hook（`context`、`before_agent_start`、`tool_result`）跳过失败者、保留其余 extension 结果；`tool_call` 拦截失败 **fail-closed**（block 该 tool call 并出 diagnostic）——审计 extension 不能因不相干 extension 的 bug 静默失防，这就是举证。写进 [Extensions](./extensions.md)。
+1. **Interceptor 失败语义定案 + 实施**（原 M2 条目迁入，已完成 2026-07-10）。合成类 hook（`context`、`before_agent_start`、`tool_result`）按注册顺序合成，跳过失败者并保留其余 extension 结果；`tool_call` 拦截失败 **fail-closed**，立即 block 当前 tool call 并产生 diagnostic。Runner 单元测试覆盖三类合成管线与失败短路，orchestrator 集成测试覆盖 diagnostic/结果透传；完整契约见 [Extensions](./extensions.md)。
 2. **Orchestrator 公开面收口**（原 M2 条目迁入）。`agents` map 与 `getAgentHarness()` 私有化，对外只留 snapshot 查询；`spawnAgentHarness` 改名 `spawnAgent`，只返回 `agentId`。先于 scoped actions 动公开面，避免切片 3 返工。
 3. **ExtensionActions scope 化 + 能力面补齐**。agentId 由 context 注入；own-agent 默认；`capabilities.canRequestUser` 等接线；在 scoped 前提下补齐对照表"动作/查询面"的 core 项（send/steer/followUp、setSessionName、exec、getCommands、setModel/thinkingLevel）。
 4. **审计锚点 extension 落库**。只消费公开契约（observe 全事件 + tool_call 拦截 + 策略 reject + custom entry 审计账本），作为真实测试 consumer 反向检验切片 1/3。

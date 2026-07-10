@@ -42,6 +42,16 @@ export interface ExtensionInterceptorRun<
 	diagnostics: readonly CoreDiagnostic[];
 }
 
+type ExtensionInterceptorHandlerRun<TName extends ExtensionInterceptorName> =
+	| {
+			ok: true;
+			result: ExtensionInterceptorResultFor<TName>;
+	  }
+	| {
+			ok: false;
+			diagnostic: CoreDiagnostic;
+	  };
+
 export type ExtensionHookSnapshot =
 	| {
 			kind: "observe";
@@ -335,12 +345,12 @@ export class ExtensionRunner {
 		const result: BeforeAgentStartResult = {};
 		let hasResult = false;
 		for (const registration of registrations) {
-			const nextResult = await this._runInterceptor(
-				registration,
-				event,
-				diagnostics,
-			);
-			if (diagnostics.length > 0) return undefined;
+			const run = await this._runInterceptor(registration, event);
+			if (!run.ok) {
+				diagnostics.push(run.diagnostic);
+				continue;
+			}
+			const nextResult = run.result;
 			if (nextResult === undefined) continue;
 			hasResult = true;
 			if (nextResult.messages) {
@@ -361,15 +371,15 @@ export class ExtensionRunner {
 		let messages = [...event.messages];
 		let hasResult = false;
 		for (const registration of registrations) {
-			const nextResult = await this._runInterceptor(
-				registration,
-				{
-					...event,
-					messages,
-				},
-				diagnostics,
-			);
-			if (diagnostics.length > 0) return undefined;
+			const run = await this._runInterceptor(registration, {
+				...event,
+				messages,
+			});
+			if (!run.ok) {
+				diagnostics.push(run.diagnostic);
+				continue;
+			}
+			const nextResult = run.result;
 			if (nextResult === undefined) continue;
 			hasResult = true;
 			messages = nextResult.messages;
@@ -383,12 +393,12 @@ export class ExtensionRunner {
 		diagnostics: CoreDiagnostic[],
 	): Promise<ToolCallResult | undefined> {
 		for (const registration of registrations) {
-			const result = await this._runInterceptor(
-				registration,
-				event,
-				diagnostics,
-			);
-			if (diagnostics.length > 0) return undefined;
+			const run = await this._runInterceptor(registration, event);
+			if (!run.ok) {
+				diagnostics.push(run.diagnostic);
+				return { block: true };
+			}
+			const result = run.result;
 			if (result?.block) {
 				return { block: true, reason: result.reason };
 			}
@@ -405,12 +415,12 @@ export class ExtensionRunner {
 		let hasPatch = false;
 		let nextEvent = event;
 		for (const registration of registrations) {
-			const result = await this._runInterceptor(
-				registration,
-				nextEvent,
-				diagnostics,
-			);
-			if (diagnostics.length > 0) return undefined;
+			const run = await this._runInterceptor(registration, nextEvent);
+			if (!run.ok) {
+				diagnostics.push(run.diagnostic);
+				continue;
+			}
+			const result = run.result;
 			if (result === undefined) continue;
 			hasPatch = true;
 			if (Object.hasOwn(result, "content")) patch.content = result.content;
@@ -432,16 +442,20 @@ export class ExtensionRunner {
 	private async _runInterceptor<TName extends ExtensionInterceptorName>(
 		registration: ExtensionInterceptorRegistration<TName>,
 		event: ExtensionInterceptorEventFor<TName>,
-		diagnostics: CoreDiagnostic[],
-	): Promise<ExtensionInterceptorResultFor<TName>> {
+	): Promise<ExtensionInterceptorHandlerRun<TName>> {
 		try {
-			return await (registration.handler as ExtensionInterceptorFor<TName>)(
-				event,
-				this.createContext(registration.extensionId),
-			);
+			return {
+				ok: true,
+				result: await (registration.handler as ExtensionInterceptorFor<TName>)(
+					event,
+					this.createContext(registration.extensionId),
+				),
+			};
 		} catch (error) {
-			diagnostics.push(this._createHandlerDiagnostic(registration, error));
-			return undefined as ExtensionInterceptorResultFor<TName>;
+			return {
+				ok: false,
+				diagnostic: this._createHandlerDiagnostic(registration, error),
+			};
 		}
 	}
 
