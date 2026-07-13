@@ -363,3 +363,191 @@ function createTestModel(provider: string): Model<Api> {
 		maxTokens: 100,
 	} as Model<Api>;
 }
+
+function extensionProviderConfig(baseUrl = "https://gateway.test/v1") {
+	return {
+		baseUrl,
+		apiKey: "gateway-key",
+		api: "openai-completions" as Api,
+		models: [
+			{
+				id: "gateway-model",
+				name: "Gateway Model",
+				reasoning: false,
+				input: ["text"] as ("text" | "image")[],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 32000,
+				maxTokens: 4096,
+			},
+		],
+	};
+}
+
+describe("ModelRegistry extension providers", () => {
+	it("registers with provenance and rejects conflicting or incomplete registrations", async () => {
+		const env = new MemoryExecutionEnv();
+		env.files.set(
+			".widi/models.json",
+			JSON.stringify({
+				providers: {
+					custom: {
+						baseUrl: "https://example.test/v1",
+						apiKey: "user-key",
+						api: "openai-completions",
+						models: [
+							{
+								id: "custom-model",
+								name: "Custom Model",
+							},
+						],
+					},
+				},
+			}),
+		);
+		const registry = await createRegistry(env, ".widi/models.json");
+		registry.registerProvider("dyn", { baseUrl: "https://dyn.test/v1" });
+
+		expect(
+			registry.registerExtensionProvider("gateway", extensionProviderConfig(), {
+				extensionId: "alpha",
+				agentId: "agent-1",
+			}),
+		).toEqual({ ok: true });
+		expect(registry.find("gateway", "gateway-model")).toBeDefined();
+		expect(registry.getExtensionProviderRegistrations()).toEqual([
+			{
+				providerName: "gateway",
+				extensionId: "alpha",
+				agentIds: ["agent-1"],
+			},
+		]);
+
+		expect(
+			registry.registerExtensionProvider(
+				"anthropic",
+				extensionProviderConfig(),
+				{ extensionId: "alpha", agentId: "agent-1" },
+			),
+		).toEqual({ ok: false, reason: "conflict", conflictWith: "builtin" });
+		expect(
+			registry.registerExtensionProvider("custom", extensionProviderConfig(), {
+				extensionId: "alpha",
+				agentId: "agent-1",
+			}),
+		).toEqual({ ok: false, reason: "conflict", conflictWith: "models_json" });
+		expect(
+			registry.registerExtensionProvider("dyn", extensionProviderConfig(), {
+				extensionId: "alpha",
+				agentId: "agent-1",
+			}),
+		).toEqual({ ok: false, reason: "conflict", conflictWith: "runtime" });
+		expect(
+			registry.registerExtensionProvider("gateway", extensionProviderConfig(), {
+				extensionId: "beta",
+				agentId: "agent-2",
+			}),
+		).toEqual({
+			ok: false,
+			reason: "conflict",
+			conflictWith: "extension",
+			ownerExtensionId: "alpha",
+		});
+		expect(
+			registry.registerExtensionProvider(
+				"no-models",
+				{ baseUrl: "https://gateway.test/v1", apiKey: "key" },
+				{ extensionId: "alpha", agentId: "agent-1" },
+			),
+		).toEqual({
+			ok: false,
+			reason: "invalid",
+			message: 'Provider no-models: extension providers must define "models".',
+		});
+	});
+
+	it("upserts same-extension registrations across agents and removes by refcount", async () => {
+		const env = new MemoryExecutionEnv();
+		const registry = await createRegistry(env);
+
+		expect(
+			registry.registerExtensionProvider("gateway", extensionProviderConfig(), {
+				extensionId: "alpha",
+				agentId: "agent-1",
+			}),
+		).toEqual({ ok: true });
+		expect(
+			registry.registerExtensionProvider(
+				"gateway",
+				extensionProviderConfig("https://gateway-v2.test/v1"),
+				{ extensionId: "alpha", agentId: "agent-2" },
+			),
+		).toEqual({ ok: true });
+		expect(registry.getExtensionProviderRegistrations()).toEqual([
+			{
+				providerName: "gateway",
+				extensionId: "alpha",
+				agentIds: ["agent-1", "agent-2"],
+			},
+		]);
+		expect(registry.find("gateway", "gateway-model")).toMatchObject({
+			baseUrl: "https://gateway-v2.test/v1",
+		});
+
+		await expect(
+			registry.unregisterExtensionProviders("agent-1"),
+		).resolves.toEqual([]);
+		expect(registry.find("gateway", "gateway-model")).toBeDefined();
+		await expect(
+			registry.unregisterExtensionProviders("agent-2"),
+		).resolves.toEqual(["gateway"]);
+		expect(registry.find("gateway", "gateway-model")).toBe(undefined);
+		expect(registry.getExtensionProviderRegistrations()).toEqual([]);
+	});
+
+	it("replays extension providers across refresh and drops newly conflicting names with a diagnostic", async () => {
+		const env = new MemoryExecutionEnv();
+		const registry = await createRegistry(env, ".widi/models.json");
+		expect(
+			registry.registerExtensionProvider("gateway", extensionProviderConfig(), {
+				extensionId: "alpha",
+				agentId: "agent-1",
+			}),
+		).toEqual({ ok: true });
+
+		await registry.refresh();
+		expect(registry.find("gateway", "gateway-model")).toBeDefined();
+
+		// models.json claims the name: first-registration-wins re-runs on
+		// refresh and the extension provider drops with a diagnostic.
+		env.files.set(
+			".widi/models.json",
+			JSON.stringify({
+				providers: {
+					gateway: {
+						baseUrl: "https://user-owned.test/v1",
+						apiKey: "user-key",
+						api: "openai-completions",
+						models: [
+							{
+								id: "user-model",
+								name: "User Model",
+							},
+						],
+					},
+				},
+			}),
+		);
+		await registry.refresh();
+
+		expect(registry.getExtensionProviderRegistrations()).toEqual([]);
+		expect(registry.find("gateway", "gateway-model")).toBe(undefined);
+		expect(registry.find("gateway", "user-model")).toBeDefined();
+		expect(registry.drainDiagnostics()).toContainEqual(
+			expect.objectContaining({
+				code: "extension.provider_conflict",
+				extensionId: "alpha",
+				details: { providerName: "gateway", conflictWith: "models_json" },
+			}),
+		);
+	});
+});

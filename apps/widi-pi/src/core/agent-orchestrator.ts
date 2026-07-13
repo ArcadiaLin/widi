@@ -80,10 +80,12 @@ import { HumanRequestBroker } from "./human-request.ts";
 import {
 	type ModelRegistry,
 	modelReference,
+	type ProviderConfigInput,
 	parseModelReference,
 	parseThinkingLevel,
 	THINKING_LEVELS,
 } from "./model-registry.js";
+import type { ConfigValueResolver } from "./resolve-config-value.js";
 import type {
 	ExtensionResourcePathContribution,
 	ResourceLoader,
@@ -1293,6 +1295,7 @@ export class AgentOrchestrator {
 		}
 
 		record.extensionRunner?.invalidate("Agent has been disposed.");
+		await this._withdrawExtensionProviderContributions(agentId);
 		delete record.harness;
 		this._agentToolSets.delete(agentId);
 		await this._humanRequests.cancelForAgent(
@@ -1762,6 +1765,14 @@ export class AgentOrchestrator {
 		if (blockedExtensionDiagnostic) {
 			throw new OrchestratorError(blockedExtensionDiagnostic);
 		}
+		// Contributed providers register before the harness exists so their
+		// models are selectable from the first turn. Spawn/resume model
+		// resolution happens earlier still and cannot reference them.
+		await this._applyExtensionProviderContributions(
+			agentId,
+			profile.id,
+			extensionRunner,
+		);
 
 		const loadedSkills = await this._loadMergedAgentSkills({
 			agentId,
@@ -1858,6 +1869,107 @@ export class AgentOrchestrator {
 		});
 	}
 
+	private async _applyExtensionProviderContributions(
+		agentId: AgentId,
+		profileId: string,
+		extensionRunner: ExtensionRunner,
+	): Promise<void> {
+		const contributions = extensionRunner.getProviderContributions();
+		if (contributions.length === 0) return;
+		const diagnostics: OrchestratorDiagnostic[] = [];
+		const projectTrusted = this.settingManager.isProjectTrusted();
+		for (const contribution of contributions) {
+			const diagnosticBase = {
+				source: {
+					kind: "extension",
+					id: contribution.extensionId,
+				},
+				agentId,
+				profileId,
+				extensionId: contribution.extensionId,
+				phase: "create",
+				recoverable: true,
+			} as const;
+			// Trust ruling (extension-experiment.md slice 9): `!command` config
+			// values resolve through ExecutionEnv.exec at request time, so an
+			// untrusted project rejects the whole registration - the same family
+			// as the scoped exec gate.
+			if (
+				!projectTrusted &&
+				hasCommandConfigValues(
+					contribution.config,
+					this.modelRegistry.configValueResolver,
+				)
+			) {
+				diagnostics.push(
+					createOrchestratorDiagnostic({
+						...diagnosticBase,
+						severity: "error",
+						disposition: "degraded",
+						code: "extension.provider_trust_denied",
+						message: `Extension '${contribution.extensionId}' provider '${contribution.providerName}' uses command config values and was denied because the project is not trusted.`,
+						details: { providerName: contribution.providerName },
+					}),
+				);
+				continue;
+			}
+			const result = this.modelRegistry.registerExtensionProvider(
+				contribution.providerName,
+				contribution.config,
+				{ extensionId: contribution.extensionId, agentId },
+			);
+			if (result.ok) continue;
+			if (result.reason === "conflict") {
+				diagnostics.push(
+					createOrchestratorDiagnostic({
+						...diagnosticBase,
+						severity: "warning",
+						disposition: "reported",
+						code: "extension.provider_conflict",
+						message: `Extension '${contribution.extensionId}' provider '${contribution.providerName}' conflicts with a ${result.conflictWith} provider and was skipped.`,
+						details: {
+							providerName: contribution.providerName,
+							conflictWith: result.conflictWith,
+							ownerExtensionId: result.ownerExtensionId,
+						},
+					}),
+				);
+				continue;
+			}
+			diagnostics.push(
+				createOrchestratorDiagnostic({
+					...diagnosticBase,
+					severity: "error",
+					disposition: "degraded",
+					code: "extension.provider_invalid",
+					message: `Extension '${contribution.extensionId}' provider '${contribution.providerName}' was rejected: ${result.message}`,
+					details: {
+						providerName: contribution.providerName,
+						errorMessage: result.message,
+					},
+				}),
+			);
+		}
+		if (diagnostics.length === 0) return;
+		this._addAgentDiagnostics(agentId, { extensionDiagnostics: diagnostics });
+		await this._publishDiagnostics(diagnostics);
+	}
+
+	private async _withdrawExtensionProviderContributions(
+		agentId: AgentId,
+	): Promise<void> {
+		try {
+			await this.modelRegistry.unregisterExtensionProviders(agentId);
+		} catch (error) {
+			await this._recordAgentLifecycleFailure(
+				agentId,
+				"extension.provider_unregister_failed",
+				`Failed to withdraw extension providers for agent ${agentId}: ${formatError(error)}`,
+				error,
+			);
+		}
+	}
+
 	private _bindExtensionRunner(
 		agentId: AgentId,
 		harness: AgentHarness,
@@ -1907,6 +2019,15 @@ export class AgentOrchestrator {
 				"before_agent_start",
 				async (event) =>
 					await this._runExtensionInterceptor<"before_agent_start">(
+						agentId,
+						extensionRunner,
+						event,
+					),
+			),
+			harness.on(
+				"before_provider_request",
+				async (event) =>
+					await this._runExtensionInterceptor<"before_provider_request">(
 						agentId,
 						extensionRunner,
 						event,
@@ -2371,6 +2492,15 @@ export class AgentOrchestrator {
 			record.extensionDiagnostics = [...nextRunner.diagnostics];
 			record.diagnostics.push(...nextRunner.diagnostics);
 			this._setAgentToolSet(agentId, nextToolSet);
+			// Provider contributions follow the runner lifecycle: the stale
+			// runner's registrations are withdrawn before the reloaded runner
+			// re-registers its own.
+			await this._withdrawExtensionProviderContributions(agentId);
+			await this._applyExtensionProviderContributions(
+				agentId,
+				resolvedProfile.profile.id,
+				nextRunner,
+			);
 			oldRunner?.invalidate("Extension runtime has been reloaded.");
 			const staleBefore = oldRunner
 				? {
@@ -3188,6 +3318,24 @@ function listResourcePathContributions(
 				? [{ extensionId: contribution.extensionId, paths }]
 				: [];
 		},
+	);
+}
+
+// Every config-value channel in a provider config: the provider api key and
+// the provider- and model-level request headers.
+function hasCommandConfigValues(
+	config: ProviderConfigInput,
+	resolver: ConfigValueResolver,
+): boolean {
+	const values = [
+		config.apiKey,
+		...Object.values(config.headers ?? {}),
+		...(config.models ?? []).flatMap((model) =>
+			Object.values(model.headers ?? {}),
+		),
+	];
+	return values.some(
+		(value) => value !== undefined && resolver.isCommandConfigValue(value),
 	);
 }
 

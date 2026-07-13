@@ -108,11 +108,16 @@ pi-ai Models runtime
 
 ## 模型来源与合并规则
 
-当前模型列表由三类来源组成：
+当前模型列表由四类来源组成：
 
 1. pi-ai 内置 provider。
 2. `models.json` 中定义的 custom provider/model 与 override。
 3. 运行时通过 `registerProvider()` 注册的 dynamic provider。
+4. extension 经激活期 `registerProvider()` 贡献的 provider（ME 切片 9）：
+   `registerExtensionProvider()` 走严格校验路径（只许新 provider 名、必须带完整
+   models），按 (extension, agent) 记账，runner reload/dispose 时经
+   `unregisterExtensionProviders()` 撤销；契约见
+   [Extensions](core/extensions.md)。
 
 `models.json` 是可选文件。读取失败或 schema 校验失败时，错误会保存在
 `ModelRegistry.getError()`，但 registry 仍然保留内置模型，避免一个损坏的自定义配置

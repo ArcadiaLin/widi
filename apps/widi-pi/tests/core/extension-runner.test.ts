@@ -576,3 +576,106 @@ describe("ExtensionRunner interceptors", () => {
 		]);
 	});
 });
+
+describe("ExtensionRunner before_provider_request pipeline", () => {
+	const baseEvent = {
+		type: "before_provider_request" as const,
+		model: { provider: "gateway", id: "gateway-model" } as never,
+		sessionId: "session-1",
+	};
+
+	it("composes sequential patches, shows each handler the patched options, and encodes deletes", async () => {
+		const seenByLast: Array<Record<string, string> | undefined> = [];
+		const runner = await createRunner([
+			[
+				"first",
+				(api) => {
+					api.intercept("before_provider_request", () => ({
+						streamOptions: {
+							timeoutMs: 5000,
+							headers: { legacy: undefined, "X-A": "1" },
+						},
+					}));
+				},
+			],
+			[
+				"last",
+				(api) => {
+					api.intercept("before_provider_request", (event) => {
+						seenByLast.push(event.streamOptions.headers);
+						return { streamOptions: { headers: { "X-A": "2" } } };
+					});
+				},
+			],
+		]);
+
+		const run = await runner.interceptWithDiagnostics({
+			...baseEvent,
+			streamOptions: { timeoutMs: 1000, headers: { legacy: "x" } },
+		});
+
+		expect(seenByLast).toEqual([{ "X-A": "1" }]);
+		expect(run.result).toEqual({
+			streamOptions: {
+				timeoutMs: 5000,
+				headers: { legacy: undefined, "X-A": "2" },
+			},
+		});
+		expect(run.diagnostics).toEqual([]);
+	});
+
+	it("skips a failing handler and keeps the remaining patches", async () => {
+		const runner = await createRunner([
+			[
+				"broken",
+				(api) => {
+					api.intercept("before_provider_request", () => {
+						throw new Error("boom");
+					});
+				},
+			],
+			[
+				"stamp",
+				(api) => {
+					api.intercept("before_provider_request", () => ({
+						streamOptions: { metadata: { audited: true } },
+					}));
+				},
+			],
+		]);
+
+		const run = await runner.interceptWithDiagnostics({
+			...baseEvent,
+			streamOptions: {},
+		});
+
+		expect(run.result).toEqual({
+			streamOptions: { metadata: { audited: true } },
+		});
+		expect(run.diagnostics).toEqual([
+			expect.objectContaining({
+				code: "extension.handler_failed",
+				extensionId: "broken",
+				details: { eventName: "before_provider_request" },
+			}),
+		]);
+	});
+
+	it("returns undefined when no handler patches the request", async () => {
+		const runner = await createRunner([
+			[
+				"observer",
+				(api) => {
+					api.intercept("before_provider_request", () => undefined);
+				},
+			],
+		]);
+
+		const run = await runner.interceptWithDiagnostics({
+			...baseEvent,
+			streamOptions: { timeoutMs: 1000 },
+		});
+
+		expect(run.result).toBe(undefined);
+	});
+});

@@ -28,6 +28,7 @@ import type {
 	ExtensionInterceptorName,
 	ExtensionObservedEventName,
 	ExtensionObserver,
+	ExtensionProviderConfig,
 	ToolDefinition,
 	ToolDefinitionPatch,
 	ToolSource,
@@ -63,6 +64,12 @@ export interface ExtensionResourceContribution {
 	readonly extensionId: string;
 	readonly skillPaths: readonly string[];
 	readonly promptTemplatePaths: readonly string[];
+}
+
+export interface ExtensionProviderContribution {
+	readonly extensionId: string;
+	readonly providerName: string;
+	readonly config: ExtensionProviderConfig;
 }
 
 export interface ExtensionObserverRegistration {
@@ -162,6 +169,7 @@ export interface LoadedExtensionScope {
 	toolContributions: readonly ExtensionToolContribution[];
 	commandContributions: readonly ExtensionCommandContribution[];
 	resourceContributions: readonly ExtensionResourceContribution[];
+	providerContributions: readonly ExtensionProviderContribution[];
 	observerHandlers: ReadonlyMap<
 		ExtensionObservedEventName,
 		readonly ExtensionObserverRegistration[]
@@ -371,6 +379,7 @@ export class ExtensionLoader {
 		const toolContributions: ExtensionToolContribution[] = [];
 		const commandContributions: ExtensionCommandContribution[] = [];
 		const resourceContributions: ExtensionResourceContribution[] = [];
+		const providerContributions: ExtensionProviderContribution[] = [];
 		const observerHandlers = new Map<
 			ExtensionObservedEventName,
 			ExtensionObserverRegistration[]
@@ -410,6 +419,7 @@ export class ExtensionLoader {
 						toolContributions,
 						commandContributions,
 						resourceContributions,
+						providerContributions,
 						observerHandlers,
 						interceptorHandlers,
 					}),
@@ -439,6 +449,7 @@ export class ExtensionLoader {
 			toolContributions,
 			commandContributions,
 			resourceContributions,
+			providerContributions,
 			observerHandlers,
 			interceptorHandlers,
 		};
@@ -755,6 +766,7 @@ function createActivationApi(options: {
 	toolContributions: ExtensionToolContribution[];
 	commandContributions: ExtensionCommandContribution[];
 	resourceContributions: ExtensionResourceContribution[];
+	providerContributions: ExtensionProviderContribution[];
 	observerHandlers: Map<
 		ExtensionObservedEventName,
 		ExtensionObserverRegistration[]
@@ -821,6 +833,17 @@ function createActivationApi(options: {
 				extensionId: options.extensionId,
 				skillPaths,
 				promptTemplatePaths,
+			});
+		},
+		registerProvider: (providerName, config) => {
+			const normalized = providerName.trim();
+			if (!normalized) {
+				throw new Error("Extension provider name must not be empty.");
+			}
+			options.providerContributions.push({
+				extensionId: options.extensionId,
+				providerName: normalized,
+				config,
 			});
 		},
 		observe: (eventName, handler) => {

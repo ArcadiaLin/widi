@@ -2999,6 +2999,7 @@ describe("AgentOrchestrator", () => {
 				},
 			],
 			resourceContributions: [],
+			providerContributions: [],
 			stale: { stale: false },
 		});
 	});

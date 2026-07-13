@@ -30,6 +30,9 @@ Extension surface 的设计与实施已收编为 [ME milestone](TODO.md#me-exten
 - Client adapter 的 extension host（shortcut/flag/renderer 等 UI 自由度的承载处）。
 - `custom_message` 通道（pi `sendMessage`：持久 + 进模型 context + extension 归因，ME 切片 7 裁决不做）：待真实 consumer 举证；届时需一并定 deliverAs/triggerTurn 排队语义与 customType namespace。
 - Per-extension storage 目录/KV API（ME 切片 7 裁决不做）：custom entry 覆盖 session 相关状态，大存储 extension 经 `exec` 自理；真实需求出现时需一并裁决多进程写入、reload 与 trust 边界。
+- `before_provider_payload` hook（ME 切片 9 裁决推迟）：改 raw wire payload，`unknown` 类型、API 形状相关、最难审计；pi harness 已暴露，待真实 consumer 举证失败语义与类型契约后桥接。
+- OAuth login 发起面（ME 切片 9 裁决推迟）：extension `oauth` 配置已收编（refresh/getApiKey/modifyModels 可用），但 `login(callbacks)` 是人类交互流程，widi 无 /login command；待 /login command 或 client adapter host 举证，届时需定 login 回调（URL 打开、code 输入）的 human request 形态。
+- Extension provider 受控 override 入口（ME 切片 9 裁决不做）：pi 的 `registerProvider("anthropic", { baseUrl })` 代理场景不收编，override 通道归 models.json；真实企业代理 extension 场景出现时评估「override 事实记录 + human request 确认」的受控形态。
 
 ## Session And State
 
@@ -51,7 +54,7 @@ Extension surface 的设计与实施已收编为 [ME milestone](TODO.md#me-exten
 - `models.json` schema 文档和示例。
 - 带多进程锁的 auth/config storage backend（依赖 M2 的单进程假设裁决）。
 - 多 agent 场景下 auth/model/settings 按 workspace 共享还是按 profile/runtime 隔离。
-- Provider registration 从 Pi global reset 模式收敛为 runtime scope，或记录当前全局副作用边界。
+- Provider registration 从 Pi global reset 模式收敛为 runtime scope，或记录当前全局副作用边界。（extension 注册面的全局边界已随 ME 切片 9 裁决记录：global + provenance、生命周期绑 runner；pi-ai OAuth registry 的 process-global `resetOAuthProviders` 副作用仍在，多 registry 实例并存时需收敛。）
 - 通用 `/set <key> <value>` settings command 评估（等第三个 settings 类需求，见 command-experiment.md）。
 - `enableSkillCommands` 悬空设置处置（2026-07-09 发现）：setting-manager 有字段与 getter（默认 true）但无任何消费者。字面语义（skill 名注册为 line command）与现有两条通道——`<skill:...>` inline 展开、system prompt 的 `<available_skills>` 列表——是第三种语义。要么接线并写清与前两者的分工，要么删除字段。
 

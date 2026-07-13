@@ -1,6 +1,7 @@
 import type {
 	AgentHarnessEventResultMap,
 	BeforeAgentStartEvent,
+	BeforeProviderRequestEvent,
 	ContextEvent,
 	ExecutionError,
 	Result,
@@ -17,6 +18,7 @@ import type {
 	CommandPlacement,
 } from "../command.ts";
 import type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
+import type { ProviderConfigInput } from "../model-registry.ts";
 import type { ToolDefinition, ToolDefinitionPatch } from "../tools/types.ts";
 import type {
 	AgentToolsSnapshot,
@@ -68,21 +70,25 @@ export type ExtensionObservedEventFor<
 > = Extract<ExtensionObservedEvent, { type: TName }>;
 
 /**
- * WIDI intentionally exposes only the stable MVP interceptors today.
+ * WIDI intentionally exposes only interceptors with settled semantics.
  *
  * Full AgentHarness hook candidates include:
- * - before_agent_start, context, tool_call, tool_result
- * - before_provider_request, before_provider_payload
+ * - before_agent_start, context, tool_call, tool_result,
+ *   before_provider_request (all exposed below)
+ * - before_provider_payload (mutates the raw wire payload; deferred to
+ *   backlog until a consumer justifies its failure semantics)
  * - session_before_compact, session_before_tree
  * - observer-like own events with no return value: after_provider_response,
  *   session_compact, session_tree, model_update, thinking_level_update,
  *   resources_update, tools_update, queue_update, save_point, abort, settled
+ *   (all reachable through the raw `agent_harness_event` observer)
  *
- * Provider and session hooks are deferred until permission, diagnostics, and
+ * Session hooks are deferred until permission, diagnostics, and
  * stale-context semantics are explicit.
  */
 export type ExtensionInterceptorName =
 	| "before_agent_start"
+	| "before_provider_request"
 	| "context"
 	| "input"
 	| "tool_call"
@@ -116,6 +122,7 @@ export type ExtensionInputResult =
 // Pi harness hooks share the Pi result contract; input is WIDI-owned.
 export interface ExtensionInterceptorEventMap {
 	before_agent_start: BeforeAgentStartEvent;
+	before_provider_request: BeforeProviderRequestEvent;
 	context: ContextEvent;
 	input: ExtensionInputEvent;
 	tool_call: ToolCallEvent;
@@ -124,6 +131,7 @@ export interface ExtensionInterceptorEventMap {
 
 export interface ExtensionInterceptorResultMap {
 	before_agent_start: AgentHarnessEventResultMap["before_agent_start"];
+	before_provider_request: AgentHarnessEventResultMap["before_provider_request"];
 	context: AgentHarnessEventResultMap["context"];
 	input: ExtensionInputResult;
 	tool_call: AgentHarnessEventResultMap["tool_call"];
@@ -353,6 +361,18 @@ export interface ExtensionResourcePaths {
 	readonly promptTemplatePaths?: readonly string[];
 }
 
+/**
+ * Activation-time provider registration config (ME slice 9). The provider
+ * name must be new - built-in, models.json, and other extensions' names are
+ * not overridable (first-registration-wins, no proxy/override channel) - and
+ * the config must define complete models. Credential ownership does not move:
+ * `apiKey` is a config value reference resolved by the core at request time,
+ * and OAuth credentials persist in core AuthStorage. Registration is global
+ * (the model table is a process-wide fact) but its lifecycle is bound to the
+ * declaring runner: reload re-registers, dispose withdraws.
+ */
+export type ExtensionProviderConfig = ProviderConfigInput;
+
 export type ExtensionObserver<
 	TEvent extends ExtensionObservedEvent = ExtensionObservedEvent,
 > = (event: TEvent, context: ExtensionContext) => Promise<void> | void;
@@ -380,6 +400,7 @@ export interface ExtensionActivationApi {
 	): void;
 	registerCommand(command: ExtensionCommandDefinition): void;
 	contributeResources(paths: ExtensionResourcePaths): void;
+	registerProvider(providerName: string, config: ExtensionProviderConfig): void;
 	observe<TName extends ExtensionObservedEventName>(
 		eventName: TName,
 		handler: ExtensionObserverFor<TName>,

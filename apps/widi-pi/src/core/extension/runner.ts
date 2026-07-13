@@ -1,5 +1,8 @@
 import type {
+	AgentHarnessStreamOptions,
+	AgentHarnessStreamOptionsPatch,
 	BeforeAgentStartResult,
+	BeforeProviderRequestResult,
 	ContextResult,
 	ToolCallResult,
 	ToolResultPatch,
@@ -12,6 +15,7 @@ import type {
 	ExtensionCommandContribution,
 	ExtensionIdentity,
 	ExtensionInterceptorRegistration,
+	ExtensionProviderContribution,
 	ExtensionResourceContribution,
 	ExtensionToolContribution,
 	LoadedExtensionScope,
@@ -108,6 +112,15 @@ export type ExtensionToolContributionSnapshot =
 			source: ExtensionToolContribution["source"];
 	  };
 
+// Provider contribution facts stay secret-free: model ids and an OAuth flag
+// only - never the config value references (a literal apiKey is a secret).
+export interface ExtensionProviderContributionSnapshot {
+	readonly extensionId: string;
+	readonly providerName: string;
+	readonly modelIds: readonly string[];
+	readonly oauth: boolean;
+}
+
 export interface ExtensionRunnerSnapshot {
 	extensionIds: readonly string[];
 	extensions: readonly ExtensionIdentity[];
@@ -115,6 +128,7 @@ export interface ExtensionRunnerSnapshot {
 	commands: readonly ExtensionCommandSnapshot[];
 	toolContributions: readonly ExtensionToolContributionSnapshot[];
 	resourceContributions: readonly ExtensionResourceContribution[];
+	providerContributions: readonly ExtensionProviderContributionSnapshot[];
 	stale: {
 		readonly stale: boolean;
 		readonly message?: string;
@@ -243,6 +257,10 @@ export class ExtensionRunner {
 		return this._loadedScope.resourceContributions;
 	}
 
+	getProviderContributions(): readonly ExtensionProviderContribution[] {
+		return this._loadedScope.providerContributions;
+	}
+
 	invalidate(
 		message = "This extension context is stale after runtime replacement or reload.",
 	): void {
@@ -308,6 +326,14 @@ export class ExtensionRunner {
 					extensionId: contribution.extensionId,
 					skillPaths: [...contribution.skillPaths],
 					promptTemplatePaths: [...contribution.promptTemplatePaths],
+				}),
+			),
+			providerContributions: this._loadedScope.providerContributions.map(
+				(contribution) => ({
+					extensionId: contribution.extensionId,
+					providerName: contribution.providerName,
+					modelIds: (contribution.config.models ?? []).map((model) => model.id),
+					oauth: contribution.config.oauth !== undefined,
 				}),
 			),
 			stale: this._staleMessage
@@ -387,6 +413,12 @@ export class ExtensionRunner {
 				handlers as ExtensionInterceptorRegistration<"before_agent_start">[],
 				diagnostics,
 			)) as ExtensionInterceptorResultFor<TName>;
+		} else if (event.type === "before_provider_request") {
+			result = (await this._interceptBeforeProviderRequest(
+				event as ExtensionInterceptorEventFor<"before_provider_request">,
+				handlers as ExtensionInterceptorRegistration<"before_provider_request">[],
+				diagnostics,
+			)) as ExtensionInterceptorResultFor<TName>;
 		} else if (event.type === "context") {
 			result = (await this._interceptContext(
 				event as ExtensionInterceptorEventFor<"context">,
@@ -433,6 +465,37 @@ export class ExtensionRunner {
 			}
 		}
 		return hasResult ? result : undefined;
+	}
+
+	// Provider request pipeline (ME slice 9): context-style composition - each
+	// handler sees the stream options as patched so far, and a failed handler
+	// is skipped without touching the request (this is a shaping hook, not a
+	// policy gate). The composed change is returned as a single faithful
+	// base-to-final patch, including key deletes.
+	private async _interceptBeforeProviderRequest(
+		event: ExtensionInterceptorEventFor<"before_provider_request">,
+		registrations: ExtensionInterceptorRegistration<"before_provider_request">[],
+		diagnostics: CoreDiagnostic[],
+	): Promise<BeforeProviderRequestResult | undefined> {
+		const base = cloneStreamOptions(event.streamOptions);
+		let current = base;
+		let hasResult = false;
+		for (const registration of registrations) {
+			const run = await this._runInterceptor(registration, {
+				...event,
+				streamOptions: cloneStreamOptions(current),
+			});
+			if (!run.ok) {
+				diagnostics.push(run.diagnostic);
+				continue;
+			}
+			const nextResult = run.result;
+			if (nextResult?.streamOptions === undefined) continue;
+			hasResult = true;
+			current = applyStreamOptionsPatch(current, nextResult.streamOptions);
+		}
+		if (!hasResult) return undefined;
+		return { streamOptions: diffStreamOptions(event.streamOptions, current) };
 	}
 
 	private async _interceptContext(
@@ -753,6 +816,106 @@ export class ExtensionRunner {
 
 function formatError(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function cloneStreamOptions(
+	streamOptions: AgentHarnessStreamOptions,
+): AgentHarnessStreamOptions {
+	return {
+		...streamOptions,
+		headers: streamOptions.headers ? { ...streamOptions.headers } : undefined,
+		metadata: streamOptions.metadata
+			? { ...streamOptions.metadata }
+			: undefined,
+	};
+}
+
+// Mirrors the Pi harness patch semantics (module-private upstream): scalar
+// keys apply when present, header/metadata patches merge key-wise with
+// `undefined` deleting a key and an explicit `undefined` map clearing all.
+function applyStreamOptionsPatch(
+	base: AgentHarnessStreamOptions,
+	patch: AgentHarnessStreamOptionsPatch,
+): AgentHarnessStreamOptions {
+	const result = cloneStreamOptions(base);
+
+	if (Object.hasOwn(patch, "transport")) result.transport = patch.transport;
+	if (Object.hasOwn(patch, "timeoutMs")) result.timeoutMs = patch.timeoutMs;
+	if (Object.hasOwn(patch, "maxRetries")) result.maxRetries = patch.maxRetries;
+	if (Object.hasOwn(patch, "maxRetryDelayMs")) {
+		result.maxRetryDelayMs = patch.maxRetryDelayMs;
+	}
+	if (Object.hasOwn(patch, "cacheRetention")) {
+		result.cacheRetention = patch.cacheRetention;
+	}
+
+	if (Object.hasOwn(patch, "headers")) {
+		if (patch.headers === undefined) {
+			result.headers = undefined;
+		} else {
+			const headers = { ...(result.headers ?? {}) };
+			for (const [key, value] of Object.entries(patch.headers)) {
+				if (value === undefined) delete headers[key];
+				else headers[key] = value;
+			}
+			result.headers = Object.keys(headers).length > 0 ? headers : undefined;
+		}
+	}
+
+	if (Object.hasOwn(patch, "metadata")) {
+		if (patch.metadata === undefined) {
+			result.metadata = undefined;
+		} else {
+			const metadata = { ...(result.metadata ?? {}) };
+			for (const [key, value] of Object.entries(patch.metadata)) {
+				if (value === undefined) delete metadata[key];
+				else metadata[key] = value;
+			}
+			result.metadata = Object.keys(metadata).length > 0 ? metadata : undefined;
+		}
+	}
+
+	return result;
+}
+
+// Encode base-to-final as one patch. Key-wise deletes keep the encoding
+// faithful for composed handler chains that removed headers or metadata.
+function diffStreamOptions(
+	base: AgentHarnessStreamOptions,
+	final: AgentHarnessStreamOptions,
+): AgentHarnessStreamOptionsPatch {
+	const patch: AgentHarnessStreamOptionsPatch = {};
+	if (base.transport !== final.transport) patch.transport = final.transport;
+	if (base.timeoutMs !== final.timeoutMs) patch.timeoutMs = final.timeoutMs;
+	if (base.maxRetries !== final.maxRetries) {
+		patch.maxRetries = final.maxRetries;
+	}
+	if (base.maxRetryDelayMs !== final.maxRetryDelayMs) {
+		patch.maxRetryDelayMs = final.maxRetryDelayMs;
+	}
+	if (base.cacheRetention !== final.cacheRetention) {
+		patch.cacheRetention = final.cacheRetention;
+	}
+
+	const headerPatch = diffRecord(base.headers, final.headers);
+	if (headerPatch) patch.headers = headerPatch;
+	const metadataPatch = diffRecord(base.metadata, final.metadata);
+	if (metadataPatch) patch.metadata = metadataPatch;
+	return patch;
+}
+
+function diffRecord<T>(
+	base: Record<string, T> | undefined,
+	final: Record<string, T> | undefined,
+): Record<string, T | undefined> | undefined {
+	const patch: Record<string, T | undefined> = {};
+	for (const key of Object.keys(base ?? {})) {
+		if (!Object.hasOwn(final ?? {}, key)) patch[key] = undefined;
+	}
+	for (const [key, value] of Object.entries(final ?? {})) {
+		if (base?.[key] !== value) patch[key] = value;
+	}
+	return Object.keys(patch).length > 0 ? patch : undefined;
 }
 
 function resolveExtensionCommands(

@@ -268,6 +268,39 @@ interface CustomModelsResult {
 	error: string | undefined;
 }
 
+export interface ExtensionProviderProvenance {
+	extensionId: string;
+	agentId: string;
+}
+
+export type ExtensionProviderConflict =
+	| "builtin"
+	| "extension"
+	| "models_json"
+	| "runtime";
+
+export type ExtensionProviderRegistrationResult =
+	| { ok: true }
+	| {
+			ok: false;
+			reason: "conflict";
+			conflictWith: ExtensionProviderConflict;
+			ownerExtensionId?: string;
+	  }
+	| { ok: false; reason: "invalid"; message: string };
+
+export interface ExtensionProviderRegistrationSnapshot {
+	providerName: string;
+	extensionId: string;
+	agentIds: readonly string[];
+}
+
+interface ExtensionProviderRegistration {
+	config: ProviderConfigInput;
+	extensionId: string;
+	registrantAgentIds: Set<string>;
+}
+
 export interface ModelRegistryOptions {
 	executionEnv: ExecutionEnv;
 	authStorage?: AuthStorage;
@@ -485,6 +518,10 @@ export class ModelRegistry {
 		new Map();
 	private readonly registeredProviders: Map<string, ProviderConfigInput> =
 		new Map();
+	private readonly extensionProviders: Map<
+		string,
+		ExtensionProviderRegistration
+	> = new Map();
 	private loadError: string | undefined;
 	private loadDiagnostic: ModelDiagnostic | undefined;
 	private diagnostics: ModelDiagnostic[] = [];
@@ -575,6 +612,28 @@ export class ModelRegistry {
 
 		for (const [providerName, config] of this.registeredProviders.entries()) {
 			this.applyProviderConfig(providerName, config);
+		}
+
+		// Extension registrations replay last and re-check first-registration-wins:
+		// a models.json edit or runtime registration that claimed the name since
+		// the extension registered drops the extension provider with a diagnostic.
+		for (const [
+			providerName,
+			registration,
+		] of this.extensionProviders.entries()) {
+			const conflict = this.findCoreProviderConflict(providerName);
+			if (conflict) {
+				this.extensionProviders.delete(providerName);
+				this.recordModelDiagnostic(
+					createExtensionProviderDroppedDiagnostic(
+						providerName,
+						registration.extensionId,
+						conflict,
+					),
+				);
+				continue;
+			}
+			this.applyProviderConfig(providerName, registration.config);
 		}
 	}
 
@@ -853,6 +912,129 @@ export class ModelRegistry {
 		if (!this.registeredProviders.has(providerName)) return;
 		this.registeredProviders.delete(providerName);
 		await this.refresh();
+	}
+
+	/**
+	 * Register a provider contributed by an extension (ME slice 9).
+	 *
+	 * Extension registrations are stricter than runtime ones: the provider
+	 * name must be new (first-registration-wins against built-ins, models.json
+	 * and other extensions - no override channel) and the config must define
+	 * complete models. The same extension may re-register its provider from
+	 * another agent scope; the registration is tracked per contributing agent
+	 * so a runner lifecycle boundary can withdraw it.
+	 */
+	registerExtensionProvider(
+		providerName: string,
+		config: ProviderConfigInput,
+		provenance: ExtensionProviderProvenance,
+	): ExtensionProviderRegistrationResult {
+		const name = providerName.trim();
+		if (!name) {
+			return {
+				ok: false,
+				reason: "invalid",
+				message: "Provider name must not be empty.",
+			};
+		}
+		const existing = this.extensionProviders.get(name);
+		if (existing && existing.extensionId !== provenance.extensionId) {
+			return {
+				ok: false,
+				reason: "conflict",
+				conflictWith: "extension",
+				ownerExtensionId: existing.extensionId,
+			};
+		}
+		if (!existing) {
+			const conflict = this.findCoreProviderConflict(name);
+			if (conflict) {
+				return { ok: false, reason: "conflict", conflictWith: conflict };
+			}
+		}
+		if (!config.models || config.models.length === 0) {
+			return {
+				ok: false,
+				reason: "invalid",
+				message: `Provider ${name}: extension providers must define "models".`,
+			};
+		}
+		try {
+			this.validateProviderConfig(name, config);
+			this.applyProviderConfig(name, config);
+		} catch (error) {
+			return {
+				ok: false,
+				reason: "invalid",
+				message: error instanceof Error ? error.message : String(error),
+			};
+		}
+		if (existing) {
+			existing.config = config;
+			existing.registrantAgentIds.add(provenance.agentId);
+		} else {
+			this.extensionProviders.set(name, {
+				config,
+				extensionId: provenance.extensionId,
+				registrantAgentIds: new Set([provenance.agentId]),
+			});
+		}
+		return { ok: true };
+	}
+
+	/**
+	 * Withdraw an agent's extension provider registrations (runner lifecycle
+	 * boundary: reload and dispose). A provider is removed once its last
+	 * registrant agent exits; removal rebuilds the runtime so no replaced
+	 * provider state lingers.
+	 */
+	async unregisterExtensionProviders(agentId: string): Promise<string[]> {
+		const removed: string[] = [];
+		for (const [name, registration] of this.extensionProviders.entries()) {
+			registration.registrantAgentIds.delete(agentId);
+			if (registration.registrantAgentIds.size === 0) {
+				this.extensionProviders.delete(name);
+				removed.push(name);
+			}
+		}
+		if (removed.length > 0) {
+			await this.refresh();
+		}
+		return removed;
+	}
+
+	/**
+	 * Extension provider provenance facts: name, owning extension, and the
+	 * agents whose runners currently hold the registration.
+	 */
+	getExtensionProviderRegistrations(): ExtensionProviderRegistrationSnapshot[] {
+		return [...this.extensionProviders.entries()].map(
+			([providerName, registration]) => ({
+				providerName,
+				extensionId: registration.extensionId,
+				agentIds: [...registration.registrantAgentIds],
+			}),
+		);
+	}
+
+	private findCoreProviderConflict(
+		providerName: string,
+	): Exclude<ExtensionProviderConflict, "extension"> | undefined {
+		if (new Set<string>(getBuiltinProviders()).has(providerName)) {
+			return "builtin";
+		}
+		if (this.registeredProviders.has(providerName)) {
+			return "runtime";
+		}
+		// Anything else already present in the runtime or holding request auth
+		// config was declared by models.json.
+		if (
+			this.runtime.getProvider(providerName) ||
+			this.providerRequestConfigs.has(providerName)
+		) {
+			return "models_json";
+		}
+		return undefined;
 	}
 
 	private async loadModels(): Promise<void> {
@@ -1626,6 +1808,25 @@ function createModelRequestDiagnostic(
 			errorName: normalizedError?.name,
 			errorMessage: normalizedError?.message ?? message,
 		},
+	});
+}
+
+function createExtensionProviderDroppedDiagnostic(
+	providerName: string,
+	extensionId: string,
+	conflictWith: ExtensionProviderConflict,
+): ModelDiagnostic {
+	return createDiagnostic({
+		domain: "extension",
+		code: "extension.provider_conflict",
+		severity: "warning",
+		disposition: "reported",
+		recoverable: true,
+		message: `Extension '${extensionId}' provider '${providerName}' conflicts with a ${conflictWith} provider and was dropped on refresh.`,
+		source: { kind: "extension", id: extensionId },
+		phase: "load",
+		extensionId,
+		details: { providerName, conflictWith },
 	});
 }
 

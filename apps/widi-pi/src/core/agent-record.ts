@@ -169,6 +169,7 @@ export function createEmptyExtensionSnapshot(): ExtensionRunnerSnapshot {
 		commands: [],
 		toolContributions: [],
 		resourceContributions: [],
+		providerContributions: [],
 		stale: { stale: false },
 	};
 }
