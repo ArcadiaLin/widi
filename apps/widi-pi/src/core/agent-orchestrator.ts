@@ -290,6 +290,7 @@ export class AgentOrchestrator {
 		new Map();
 	private _eventListeners: Set<OrchestratorEventListener> = new Set();
 	private _extensionObserverDispatchDepth: Map<AgentId, number> = new Map();
+	private _agentRunSignals: Map<AgentId, AbortSignal> = new Map();
 	private _agentToolSets: Map<AgentId, AgentToolSet> = new Map();
 	private _clients: Map<string, OrchestratorClient<OrchestratorEvent>> =
 		new Map();
@@ -1298,6 +1299,7 @@ export class AgentOrchestrator {
 		record.extensionRunner?.invalidate("Agent has been disposed.");
 		await this._withdrawExtensionProviderContributions(agentId);
 		delete record.harness;
+		this._agentRunSignals.delete(agentId);
 		this._agentToolSets.delete(agentId);
 		await this._humanRequests.cancelForAgent(
 			agentId,
@@ -1843,8 +1845,8 @@ export class AgentOrchestrator {
 			harness,
 			extensionRunner,
 		);
-		const unsubscribeHarnessEvents = harness.subscribe((event) => {
-			void this._handleAgentHarnessEvent(agentId, event);
+		const unsubscribeHarnessEvents = harness.subscribe((event, signal) => {
+			void this._handleSubscribedAgentHarnessEvent(agentId, event, signal);
 		});
 		this._unsubscribeAgentHarness.set(agentId, unsubscribeHarnessEvents);
 		this._unsubscribeAgentExtensionInterceptors.set(agentId, () => {
@@ -1977,7 +1979,7 @@ export class AgentOrchestrator {
 		extensionRunner: ExtensionRunner,
 	): void {
 		extensionRunner.bindCore(this._createExtensionActions(), {
-			getSignal: () => undefined,
+			getSignal: () => this._agentRunSignals.get(agentId),
 			isIdle: () => this._requireAgentRecord(agentId).status !== "running",
 			reportActionFailure: async (failure) => {
 				const diagnostic = this._createExtensionActionFailureDiagnostic({
@@ -2683,6 +2685,29 @@ export class AgentOrchestrator {
 	): Promise<void> {
 		this._updateAgentStatusFromHarnessEvent(agentId, event);
 		await this._emit({ type: "agent_harness_event", agentId, event });
+	}
+
+	private async _handleSubscribedAgentHarnessEvent(
+		agentId: AgentId,
+		event: AgentHarnessEvent,
+		signal?: AbortSignal,
+	): Promise<void> {
+		if (signal) {
+			this._agentRunSignals.set(agentId, signal);
+		}
+		try {
+			await this._handleAgentHarnessEvent(agentId, event);
+		} finally {
+			// Keep the run signal visible to settled observers, then clear only
+			// the signal belonging to this run. A queued next turn may already
+			// have installed its own signal while observer dispatch was pending.
+			if (
+				event.type === "settled" &&
+				this._agentRunSignals.get(agentId) === signal
+			) {
+				this._agentRunSignals.delete(agentId);
+			}
+		}
 	}
 
 	private _isExtensionObservedEvent(
