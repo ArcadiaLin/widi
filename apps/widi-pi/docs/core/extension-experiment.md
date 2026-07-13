@@ -138,6 +138,7 @@ ME 收口后对 extension surface 做了一次全面审计（对照 pi `Extensio
 
 - **对照表盲区补录**：pi `ExtensionContext`/`ExtensionCommandContext` 运行时能力此前未进对照表，已按三档归属补录（见上方「运行时 context 面」节）；`getAllTools` 与 `getSessionName` 两行表述失真已修正。
 - **接线补齐（四项，原子方法均原已存在）**：scoped `getModel`/`listModelCandidates`/`abort`/`compact` 进 `ExtensionActions`；`getSessionName` 补齐 claim/reality 缺口（`getAgentSessionName` 原子 getter 新增）。abort 的锚点 consumer 是 audit extension 的 `abortOn` kill-switch 策略（阻断单次 tool call 之外终止整个 run）。
+- **signal 接线修正**：全面审计后的复核发现 `ctx.signal` 虽已列入公开契约，orchestrator 仍固定绑定为 `undefined`。现从 harness subscriber 的 run signal 建立 agent-scoped 当前 run 事实：首个 run event 起可见，`settled` observers 完成后清除，dispose 同步清除；`before_agent_start` 发生在上游创建 run signal 之前，仍返回 `undefined`。
 - **改名**：`registerExtensionFactory` → `registerExtension`（切片 10 放宽入参为 `ExtensionModule` 后名实不符；orchestrator/loader/全部测试同步，不留旧名兼容）。
 - **边角修正**：extension command 与保留字冲突的重命名后缀改为从 `-1` 起（原实现从 `-2` 起跳）；`ExtensionRunner.createContext()` 在无 loaded extension 时改为 throw（原产出空串归因 context）。
 - **核实为真的声称**：`after_provider_response` 经 raw `agent_harness_event` 可达（pi `emitOwn` 确入 subscribe 流）；`ToolDefinition` 字段面完整（`promptSnippet`/`promptGuidelines`/`prepareArguments`/`executionMode`）；harness 八个 hook 中未暴露的三个均在 backlog 有案。

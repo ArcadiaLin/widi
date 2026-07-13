@@ -22,6 +22,7 @@ import {
 } from "../../src/core/auth-storage.ts";
 import type { Command, CommandInvocation } from "../../src/core/command.ts";
 import type { OrchestratorDiagnostic } from "../../src/core/diagnostics.ts";
+import type { ExtensionContext } from "../../src/core/extension/api.ts";
 import { ModelRegistry } from "../../src/core/model-registry.ts";
 import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
 import { ResourceLoader } from "../../src/core/resource-loader.ts";
@@ -3654,6 +3655,60 @@ describe("AgentOrchestrator", () => {
 		expect(observed).toEqual([
 			`observer:${extensionProfile.id}:tool_execution_start:plain`,
 		]);
+	});
+
+	it("exposes the current run signal to extension contexts until settled", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["observer"],
+		};
+		const observedSignals: Array<AbortSignal | undefined> = [];
+		let capturedContext: ExtensionContext | undefined;
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtension("observer", (api) => {
+			api.observe("agent_harness_event", (_event, context) => {
+				capturedContext = context;
+				observedSignals.push(context.signal);
+			});
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const handleSubscribedHarnessEvent = (
+			orchestrator as unknown as {
+				_handleSubscribedAgentHarnessEvent(
+					agentId: string,
+					event: AgentHarnessEvent,
+					signal?: AbortSignal,
+				): Promise<void>;
+			}
+		)._handleSubscribedAgentHarnessEvent.bind(orchestrator);
+		const controller = new AbortController();
+
+		await handleSubscribedHarnessEvent(
+			agentId,
+			{ type: "turn_start" },
+			controller.signal,
+		);
+		expect(observedSignals).toEqual([controller.signal]);
+		expect(capturedContext?.signal).toBe(controller.signal);
+
+		await handleSubscribedHarnessEvent(
+			agentId,
+			{ type: "settled", nextTurnCount: 0 },
+			controller.signal,
+		);
+		expect(observedSignals).toEqual([controller.signal, controller.signal]);
+		expect(capturedContext?.signal).toBeUndefined();
 	});
 
 	it("publishes diagnostics for observer failures and continues observers", async () => {

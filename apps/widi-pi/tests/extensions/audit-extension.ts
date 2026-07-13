@@ -2,7 +2,7 @@ import type { AgentHarnessEvent } from "@earendil-works/pi-agent-core";
 import type {
 	ExtensionFactory,
 	ExtensionObservedEventName,
-} from "../../src/core/extension/index.ts";
+} from "../../src/core/extension/api.ts";
 
 export const AUDIT_EVENT_ENTRY_TYPE = "event";
 export const AUDIT_VERDICT_ENTRY_TYPE = "verdict";
