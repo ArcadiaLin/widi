@@ -57,7 +57,9 @@ export type ExtensionObservedEvent = Extract<
 			| "human_request_cancelled"
 			| "human_request_pending"
 			| "human_request_resolved"
-			| "human_request_timeout";
+			| "human_request_timeout"
+			| "input_blocked"
+			| "input_transformed";
 	}
 >;
 
@@ -82,14 +84,50 @@ export type ExtensionObservedEventFor<
 export type ExtensionInterceptorName =
 	| "before_agent_start"
 	| "context"
+	| "input"
 	| "tool_call"
 	| "tool_result";
 
+/**
+ * WIDI-native input interceptor event (ME slice 6). Fired by inputAgent for
+ * every human text ingress before any command parsing, including the
+ * commands-disabled short circuit; a rewritten text re-enters the full
+ * parse/gateway pipeline. Not a Pi harness hook.
+ */
+export interface ExtensionInputEvent {
+	readonly type: "input";
+	readonly text: string;
+	readonly images?: readonly ImageContent[];
+}
+
+/**
+ * `undefined` passes the input through unchanged. A transform result rewrites
+ * the text (and optionally the images; omitted images keep the current ones)
+ * and feeds the next handler. A block result rejects the whole input and
+ * short-circuits the pipeline; there is no pi-style "handled" escape hatch -
+ * consuming input to run custom logic is a block plus scoped actions, and
+ * owning command syntax is registerCommand.
+ */
+export type ExtensionInputResult =
+	| { text: string; images?: readonly ImageContent[] }
+	| { block: true; reason?: string }
+	| undefined;
+
+// Pi harness hooks share the Pi result contract; input is WIDI-owned.
 export interface ExtensionInterceptorEventMap {
 	before_agent_start: BeforeAgentStartEvent;
 	context: ContextEvent;
+	input: ExtensionInputEvent;
 	tool_call: ToolCallEvent;
 	tool_result: ToolResultEvent;
+}
+
+export interface ExtensionInterceptorResultMap {
+	before_agent_start: AgentHarnessEventResultMap["before_agent_start"];
+	context: AgentHarnessEventResultMap["context"];
+	input: ExtensionInputResult;
+	tool_call: AgentHarnessEventResultMap["tool_call"];
+	tool_result: AgentHarnessEventResultMap["tool_result"];
 }
 
 export type ExtensionInterceptorEventFor<
@@ -98,7 +136,7 @@ export type ExtensionInterceptorEventFor<
 
 export type ExtensionInterceptorResultFor<
 	TName extends ExtensionInterceptorName,
-> = AgentHarnessEventResultMap[TName];
+> = ExtensionInterceptorResultMap[TName];
 
 export type ExtensionExecResult = Result<
 	{ stdout: string; stderr: string; exitCode: number },

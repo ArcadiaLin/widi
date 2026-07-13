@@ -93,6 +93,14 @@ export type InputResult =
 			readonly kind: "failed";
 			readonly commandId: string;
 			readonly diagnostic: OrchestratorDiagnostic;
+	  }
+	// An extension input interceptor rejected the whole input before command
+	// parsing (ME slice 6); nothing reached the model or a command.
+	| {
+			readonly kind: "blocked";
+			readonly inputId: string;
+			readonly reason?: string;
+			readonly blockedBy: string;
 	  };
 
 // Command status requirement declared on a binding: returns the reason the

@@ -1585,6 +1585,245 @@ describe("AgentOrchestrator", () => {
 		expect(prompted).toEqual(["/status", "/status"]);
 	});
 
+	it("re-parses extension-transformed input as a command", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "rewriter-profile",
+			persist: false,
+			extensions: ["rewriter"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("rewriter", (api) => {
+			api.intercept("input", (event) => {
+				if (event.text === "use reasoning") {
+					return {
+						text: `/model:${reasoningModel.provider}/${reasoningModel.id}`,
+					};
+				}
+				if (event.text === "/status") {
+					return { text: "plain question" };
+				}
+				return undefined;
+			});
+		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, agentId);
+
+		// Text rewritten into a command goes through the full parse/gateway
+		// pipeline and executes for real.
+		await expect(
+			orchestrator.inputAgent(agentId, "use reasoning"),
+		).resolves.toMatchObject({ kind: "command", name: "model" });
+		expect(harness.getModel()).toMatchObject({ id: reasoningModel.id });
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "input_transformed",
+				agentId,
+				inputId: expect.any(String),
+				originalText: "use reasoning",
+				text: `/model:${reasoningModel.provider}/${reasoningModel.id}`,
+				transformedBy: ["rewriter"],
+			}),
+		);
+
+		// A command rewritten into plain text stops being a command.
+		const prompted: string[] = [];
+		Object.assign(orchestrator, {
+			promptAgent: async (_agentId: string, text: string) => {
+				prompted.push(text);
+				return { role: "assistant" } as AssistantMessage;
+			},
+		});
+		await expect(
+			orchestrator.inputAgent(agentId, "/status"),
+		).resolves.toMatchObject({ kind: "prompt" });
+		expect(prompted).toEqual(["plain question"]);
+	});
+
+	it("blocks intercepted input before command parsing and publishes the fact", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "policy-profile",
+			persist: false,
+			extensions: ["policy"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("policy", (api) => {
+			api.intercept("input", (event) =>
+				event.text.includes("secret")
+					? { block: true, reason: "Sensitive input." }
+					: undefined,
+			);
+		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const prompted: string[] = [];
+		Object.assign(orchestrator, {
+			promptAgent: async (_agentId: string, text: string) => {
+				prompted.push(text);
+				return { role: "assistant" } as AssistantMessage;
+			},
+		});
+
+		// The blocked text is a would-be command; interception precedes
+		// parsing, so no command event is ever detected.
+		await expect(
+			orchestrator.inputAgent(agentId, "/status secret"),
+		).resolves.toEqual({
+			kind: "blocked",
+			inputId: expect.any(String),
+			reason: "Sensitive input.",
+			blockedBy: "policy",
+		});
+		expect(prompted).toEqual([]);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "input_blocked",
+				agentId,
+				originalText: "/status secret",
+				reason: "Sensitive input.",
+				blockedBy: "policy",
+			}),
+		);
+		expect(events).not.toContainEqual(
+			expect.objectContaining({ type: "command_detected" }),
+		);
+	});
+
+	it("intercepts input even when command parsing is disabled", async () => {
+		const env = new MemoryExecutionEnv();
+		const chatProfile: AgentProfile = {
+			...defaultProfile,
+			id: "chat-policy",
+			persist: false,
+			commands: { enabled: false },
+			extensions: ["policy"],
+		};
+		const commandProfile: AgentProfile = {
+			...defaultProfile,
+			id: "command-policy",
+			persist: false,
+			extensions: ["policy"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: chatProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: chatProfile },
+					{ profile: commandProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("policy", (api) => {
+			api.intercept("input", () => ({
+				block: true,
+				reason: "All input is denied.",
+			}));
+		});
+		const prompted: string[] = [];
+		Object.assign(orchestrator, {
+			promptAgent: async (_agentId: string, text: string) => {
+				prompted.push(text);
+				return { role: "assistant" } as AssistantMessage;
+			},
+		});
+
+		const chatAgentId = await orchestrator.spawnAgent();
+		await expect(
+			orchestrator.inputAgent(chatAgentId, "hello"),
+		).resolves.toMatchObject({ kind: "blocked" });
+
+		// The per-call switch cannot bypass an input policy either.
+		const commandAgentId = await orchestrator.spawnAgent({
+			profileId: commandProfile.id,
+		});
+		await expect(
+			orchestrator.inputAgent(commandAgentId, "hello", { commands: false }),
+		).resolves.toMatchObject({ kind: "blocked" });
+		expect(prompted).toEqual([]);
+	});
+
+	it("rejects input fail-closed when an input interceptor throws", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "broken-input-profile",
+			persist: false,
+			extensions: ["broken", "healthy"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		let healthyCalled = false;
+		orchestrator.registerExtensionFactory("broken", (api) => {
+			api.intercept("input", () => {
+				throw new Error("input policy exploded");
+			});
+		});
+		orchestrator.registerExtensionFactory("healthy", (api) => {
+			api.intercept("input", () => {
+				healthyCalled = true;
+				return undefined;
+			});
+		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const agentId = await orchestrator.spawnAgent();
+
+		await expect(
+			orchestrator.inputAgent(agentId, "hello"),
+		).resolves.toMatchObject({ kind: "blocked", blockedBy: "broken" });
+		expect(healthyCalled).toBe(false);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					code: "extension.handler_failed",
+					extensionId: "broken",
+					details: { eventName: "input" },
+				}),
+			}),
+		);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "input_blocked",
+				agentId,
+				originalText: "hello",
+				blockedBy: "broken",
+			}),
+		);
+	});
+
 	it("starts a new empty session from the current agent", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);

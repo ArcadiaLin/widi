@@ -72,6 +72,31 @@ export type OrchestratorEvent =
 			inputId?: string;
 			completedAt: string;
 	  }
+	// Input interception facts (ME slice 6): the model-facing text can differ
+	// from the human original, so both are published with extension attribution.
+	| {
+			readonly type: "input_transformed";
+			agentId: AgentId;
+			// Shared with the command events of the same input (inline expansion).
+			inputId: string;
+			originalText: string;
+			text: string;
+			// Extensions that returned a rewrite, in application order.
+			transformedBy: readonly string[];
+			createdAt: string;
+	  }
+	| {
+			readonly type: "input_blocked";
+			agentId: AgentId;
+			inputId: string;
+			originalText: string;
+			reason?: string;
+			// The extension whose handler ended the pipeline - a deliberate
+			// block, or a crash blocked fail-closed (the extension.handler_failed
+			// diagnostic tells the two apart).
+			blockedBy: string;
+			createdAt: string;
+	  }
 	| HumanRequestEvent
 	| {
 			readonly type: "diagnostic";

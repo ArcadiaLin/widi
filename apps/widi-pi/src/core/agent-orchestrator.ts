@@ -843,6 +843,60 @@ export class AgentOrchestrator {
 		options?: { images?: ImageContent[]; commands?: boolean },
 	): Promise<InputResult> {
 		const record = this._requireAgentRecord(agentId);
+
+		// Input interception (ME slice 6) runs before any command parsing,
+		// including the commands-disabled short circuit: it is an input hook,
+		// not a command hook, so a caller cannot bypass an input policy with
+		// options.commands. Interception runs exactly once; the rewritten text
+		// re-enters the full parse/gateway pipeline below.
+		let inputText = text;
+		let inputImages = options?.images;
+		let inputId: string | undefined;
+		const runner = record.extensionRunner;
+		if (runner && !runner.isStale()) {
+			const run = await runner.interceptInput({
+				type: "input",
+				text: inputText,
+				images: inputImages,
+			});
+			await this._recordAndPublishExtensionDiagnostics(
+				agentId,
+				run.diagnostics,
+			);
+			if (run.kind === "block") {
+				inputId = this._createInputId();
+				await this._emit({
+					type: "input_blocked",
+					agentId,
+					inputId,
+					originalText: text,
+					reason: run.reason,
+					blockedBy: run.blockedBy,
+					createdAt: now(),
+				});
+				return {
+					kind: "blocked",
+					inputId,
+					reason: run.reason,
+					blockedBy: run.blockedBy,
+				};
+			}
+			if (run.kind === "transform") {
+				inputId = this._createInputId();
+				await this._emit({
+					type: "input_transformed",
+					agentId,
+					inputId,
+					originalText: text,
+					text: run.text,
+					transformedBy: run.transformedBy,
+					createdAt: now(),
+				});
+				inputText = run.text;
+				inputImages = run.images ? [...run.images] : inputImages;
+			}
+		}
+
 		// Command parsing can be turned off per call or by profile policy;
 		// either way the input goes to the agent as a plain prompt.
 		if (
@@ -851,28 +905,27 @@ export class AgentOrchestrator {
 		) {
 			return {
 				kind: "prompt",
-				message: await this.promptAgent(agentId, text, {
-					images: options?.images ? [...options.images] : undefined,
+				message: await this.promptAgent(agentId, inputText, {
+					images: inputImages ? [...inputImages] : undefined,
 				}),
 			};
 		}
 
 		const parsed = parseLineCommand(
-			text,
+			inputText,
 			this._getLineCommandTriggers(agentId),
 		);
 		const command = parsed ? this._findLineCommand(agentId, parsed) : undefined;
 		if (!parsed || !command) {
-			const inlineResult = await this._expandInlineInput(
-				agentId,
-				text,
-				options,
-			);
+			const inlineResult = await this._expandInlineInput(agentId, inputText, {
+				images: inputImages,
+				inputId,
+			});
 			if (inlineResult) return inlineResult;
 			return {
 				kind: "prompt",
-				message: await this.promptAgent(agentId, text, {
-					images: options?.images ? [...options.images] : undefined,
+				message: await this.promptAgent(agentId, inputText, {
+					images: inputImages ? [...inputImages] : undefined,
 				}),
 			};
 		}
@@ -2344,6 +2397,8 @@ export class AgentOrchestrator {
 			case "human_request_pending":
 			case "human_request_resolved":
 			case "human_request_timeout":
+			case "input_blocked":
+			case "input_transformed":
 				return true;
 		}
 		return false;
@@ -2486,7 +2541,9 @@ export class AgentOrchestrator {
 	private async _expandInlineInput(
 		agentId: AgentId,
 		text: string,
-		options?: { images?: ImageContent[] },
+		// A caller that already published input facts (interception) passes its
+		// inputId so one input's transform and expansion facts correlate.
+		options?: { images?: ImageContent[]; inputId?: string },
 	): Promise<InputResult | undefined> {
 		const matches = scanInlineCommands(
 			text,
@@ -2494,7 +2551,7 @@ export class AgentOrchestrator {
 		);
 		if (matches.length === 0) return undefined;
 
-		const inputId = this._createInputId();
+		const inputId = options?.inputId ?? this._createInputId();
 		const expansions: Array<{
 			match: InlineCommandMatch;
 			commandId: string;

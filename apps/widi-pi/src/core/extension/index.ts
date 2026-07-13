@@ -21,6 +21,7 @@ export {
 export {
 	type ExtensionCommandSnapshot,
 	type ExtensionHookSnapshot,
+	type ExtensionInputInterceptRun,
 	ExtensionRunner,
 	type ExtensionRunnerOptions,
 	type ExtensionRunnerSnapshot,
@@ -42,6 +43,8 @@ export type {
 	ExtensionCustomEntry,
 	ExtensionExecResult,
 	ExtensionFactory,
+	ExtensionInputEvent,
+	ExtensionInputResult,
 	ExtensionInterceptorEventFor,
 	ExtensionInterceptorFor,
 	ExtensionInterceptorName,

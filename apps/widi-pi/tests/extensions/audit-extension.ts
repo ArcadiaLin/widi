@@ -6,6 +6,7 @@ import type {
 
 export const AUDIT_EVENT_ENTRY_TYPE = "event";
 export const AUDIT_VERDICT_ENTRY_TYPE = "verdict";
+export const AUDIT_INPUT_VERDICT_ENTRY_TYPE = "input-verdict";
 
 export interface AuditDenyRule {
 	readonly tool: string;
@@ -17,9 +18,15 @@ export interface AuditAskRule {
 	readonly prompt: string;
 }
 
+export interface AuditInputDenyRule {
+	readonly match: string;
+	readonly reason: string;
+}
+
 export interface AuditPolicy {
 	readonly deny?: readonly AuditDenyRule[];
 	readonly ask?: readonly AuditAskRule[];
+	readonly denyInput?: readonly AuditInputDenyRule[];
 	readonly recordHarnessEvents?: readonly AgentHarnessEvent["type"][];
 	readonly recordCoreEvents?: readonly Exclude<
 		ExtensionObservedEventName,
@@ -40,6 +47,13 @@ export interface AuditVerdictEntry {
 	readonly reason?: string;
 }
 
+export interface AuditInputVerdictEntry {
+	readonly text: string;
+	readonly outcome: "allowed" | "blocked";
+	readonly decidedBy: "default" | "deny_rule";
+	readonly reason?: string;
+}
+
 export function createAuditExtension(policy: AuditPolicy): ExtensionFactory {
 	const denyRules = new Map(
 		(policy.deny ?? []).map((rule) => [rule.tool, rule] as const),
@@ -47,6 +61,7 @@ export function createAuditExtension(policy: AuditPolicy): ExtensionFactory {
 	const askRules = new Map(
 		(policy.ask ?? []).map((rule) => [rule.tool, rule] as const),
 	);
+	const inputDenyRules = [...(policy.denyInput ?? [])];
 	const recordedHarnessEvents = new Set(policy.recordHarnessEvents ?? []);
 	const recordedCoreEvents = new Set(policy.recordCoreEvents ?? []);
 
@@ -64,6 +79,24 @@ export function createAuditExtension(policy: AuditPolicy): ExtensionFactory {
 					AUDIT_EVENT_ENTRY_TYPE,
 					{ source: "orchestrator", eventType: event.type },
 				);
+			});
+		}
+
+		if (inputDenyRules.length > 0) {
+			api.intercept("input", async (event, context) => {
+				const denied = inputDenyRules.find((rule) =>
+					event.text.includes(rule.match),
+				);
+				await context.session.appendEntry<AuditInputVerdictEntry>(
+					AUDIT_INPUT_VERDICT_ENTRY_TYPE,
+					{
+						text: event.text,
+						outcome: denied ? "blocked" : "allowed",
+						decidedBy: denied ? "deny_rule" : "default",
+						reason: denied?.reason,
+					},
+				);
+				return denied ? { block: true, reason: denied.reason } : undefined;
 			});
 		}
 

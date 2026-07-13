@@ -311,6 +311,151 @@ describe("ExtensionRunner interceptors", () => {
 		]);
 	});
 
+	it("chains input transforms and keeps untouched images by reference", async () => {
+		const seenTexts: string[] = [];
+		const runner = await createRunner([
+			[
+				"first",
+				(api) => {
+					api.intercept("input", (event) => {
+						seenTexts.push(event.text);
+						return { text: `${event.text} first` };
+					});
+				},
+			],
+			[
+				"pass",
+				(api) => {
+					api.intercept("input", (event) => {
+						seenTexts.push(event.text);
+						return undefined;
+					});
+				},
+			],
+			[
+				"last",
+				(api) => {
+					api.intercept("input", (event) => {
+						seenTexts.push(event.text);
+						return { text: `${event.text} last` };
+					});
+				},
+			],
+		]);
+		const images = [
+			{ type: "image" as const, data: "aGk=", mimeType: "image/png" },
+		];
+
+		const run = await runner.interceptInput({
+			type: "input",
+			text: "base",
+			images,
+		});
+
+		expect(seenTexts).toEqual(["base", "base first", "base first"]);
+		expect(run).toMatchObject({
+			kind: "transform",
+			text: "base first last",
+			transformedBy: ["first", "last"],
+			diagnostics: [],
+		});
+		if (run.kind !== "transform") throw new Error("expected transform");
+		expect(run.images).toBe(images);
+	});
+
+	it("short-circuits input on the first block with attribution", async () => {
+		let lastCalled = false;
+		const runner = await createRunner([
+			[
+				"first",
+				(api) => {
+					api.intercept("input", (event) => ({ text: `${event.text}!` }));
+				},
+			],
+			[
+				"policy",
+				(api) => {
+					api.intercept("input", () => ({
+						block: true,
+						reason: "Input is denied.",
+					}));
+				},
+			],
+			[
+				"last",
+				(api) => {
+					api.intercept("input", () => {
+						lastCalled = true;
+						return undefined;
+					});
+				},
+			],
+		]);
+
+		const run = await runner.interceptInput({ type: "input", text: "base" });
+
+		expect(run).toEqual({
+			kind: "block",
+			reason: "Input is denied.",
+			blockedBy: "policy",
+			diagnostics: [],
+		});
+		expect(lastCalled).toBe(false);
+	});
+
+	it("blocks input fail-closed when a handler throws", async () => {
+		let lastCalled = false;
+		const runner = await createRunner([
+			[
+				"broken",
+				(api) => {
+					api.intercept("input", () => {
+						throw new Error("input policy exploded");
+					});
+				},
+			],
+			[
+				"last",
+				(api) => {
+					api.intercept("input", () => {
+						lastCalled = true;
+						return undefined;
+					});
+				},
+			],
+		]);
+
+		const run = await runner.interceptInput({ type: "input", text: "base" });
+
+		expect(run).toMatchObject({
+			kind: "block",
+			blockedBy: "broken",
+			diagnostics: [
+				expect.objectContaining({
+					code: "extension.handler_failed",
+					extensionId: "broken",
+					details: { eventName: "input" },
+				}),
+			],
+		});
+		expect(lastCalled).toBe(false);
+	});
+
+	it("passes input through when no handler rewrites it", async () => {
+		const runner = await createRunner([
+			[
+				"pass",
+				(api) => {
+					api.intercept("input", () => undefined);
+				},
+			],
+		]);
+
+		await expect(
+			runner.interceptInput({ type: "input", text: "base" }),
+		).resolves.toEqual({ kind: "pass", diagnostics: [] });
+	});
+
 	it("blocks tool_call when an interceptor fails", async () => {
 		let lastCalled = false;
 		const runner = await createRunner([

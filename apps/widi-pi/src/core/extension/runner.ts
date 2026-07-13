@@ -4,6 +4,7 @@ import type {
 	ToolCallResult,
 	ToolResultPatch,
 } from "@earendil-works/pi-agent-core";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import { type Command, type CommandArguments, commandKey } from "../command.ts";
 import { type CoreDiagnostic, createDiagnostic } from "../diagnostics.ts";
 import type { ToolRegistry } from "../tool-registry.ts";
@@ -23,6 +24,8 @@ import type {
 	ExtensionContext,
 	ExtensionContextActions,
 	ExtensionCoreActions,
+	ExtensionInputEvent,
+	ExtensionInputResult,
 	ExtensionInterceptorEventFor,
 	ExtensionInterceptorFor,
 	ExtensionInterceptorName,
@@ -42,6 +45,28 @@ export interface ExtensionInterceptorRun<
 	result: ExtensionInterceptorResultFor<TName>;
 	diagnostics: readonly CoreDiagnostic[];
 }
+
+// Input runs carry extension attribution so the orchestrator can publish
+// input_transformed/input_blocked facts without re-deriving blame.
+export type ExtensionInputInterceptRun = {
+	diagnostics: readonly CoreDiagnostic[];
+} & (
+	| { kind: "pass" }
+	| {
+			kind: "transform";
+			text: string;
+			images?: readonly ImageContent[];
+			// Extensions that returned a rewrite, in application order.
+			transformedBy: readonly string[];
+	  }
+	| {
+			kind: "block";
+			reason?: string;
+			// The extension whose handler ended the pipeline - a deliberate
+			// block, or a crash blocked fail-closed.
+			blockedBy: string;
+	  }
+);
 
 type ExtensionInterceptorHandlerRun<TName extends ExtensionInterceptorName> =
 	| {
@@ -312,6 +337,21 @@ export class ExtensionRunner {
 				diagnostics: [],
 			};
 		}
+		if (event.type === "input") {
+			const run = await this.interceptInput(
+				event as ExtensionInterceptorEventFor<"input">,
+			);
+			const result: ExtensionInputResult =
+				run.kind === "block"
+					? { block: true, reason: run.reason }
+					: run.kind === "transform"
+						? { text: run.text, images: run.images }
+						: undefined;
+			return {
+				result: result as ExtensionInterceptorResultFor<TName>,
+				diagnostics: run.diagnostics,
+			};
+		}
 		const diagnostics: CoreDiagnostic[] = [];
 		let result: ExtensionInterceptorResultFor<TName>;
 		if (event.type === "before_agent_start") {
@@ -442,6 +482,53 @@ export class ExtensionRunner {
 			};
 		}
 		return hasPatch ? patch : undefined;
+	}
+
+	// Input pipeline (ME slice 6): each handler sees the text as rewritten so
+	// far (like context); the first block short-circuits (like tool_call). A
+	// crashed handler blocks fail-closed - an input policy must not be
+	// bypassed by its own failure.
+	async interceptInput(
+		event: ExtensionInputEvent,
+	): Promise<ExtensionInputInterceptRun> {
+		const registrations = (this._loadedScope.interceptorHandlers.get("input") ??
+			[]) as readonly ExtensionInterceptorRegistration<"input">[];
+		const diagnostics: CoreDiagnostic[] = [];
+		const transformedBy: string[] = [];
+		let text = event.text;
+		let images = event.images;
+		for (const registration of registrations) {
+			const run = await this._runInterceptor(registration, {
+				type: "input",
+				text,
+				images,
+			});
+			if (!run.ok) {
+				diagnostics.push(run.diagnostic);
+				return {
+					kind: "block",
+					diagnostics,
+					blockedBy: registration.extensionId,
+				};
+			}
+			const result = run.result;
+			if (result === undefined) continue;
+			if ("block" in result) {
+				return {
+					kind: "block",
+					diagnostics,
+					reason: result.reason,
+					blockedBy: registration.extensionId,
+				};
+			}
+			transformedBy.push(registration.extensionId);
+			text = result.text;
+			images = result.images ?? images;
+		}
+		if (text === event.text && images === event.images) {
+			return { kind: "pass", diagnostics };
+		}
+		return { kind: "transform", diagnostics, text, images, transformedBy };
 	}
 
 	private async _runInterceptor<TName extends ExtensionInterceptorName>(

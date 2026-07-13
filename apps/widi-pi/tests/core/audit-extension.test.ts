@@ -14,8 +14,10 @@ import type {
 import type { OrchestratorEvent } from "../../src/core/types.ts";
 import {
 	AUDIT_EVENT_ENTRY_TYPE,
+	AUDIT_INPUT_VERDICT_ENTRY_TYPE,
 	AUDIT_VERDICT_ENTRY_TYPE,
 	type AuditEventEntry,
+	type AuditInputVerdictEntry,
 	type AuditPolicy,
 	type AuditVerdictEntry,
 	createAuditExtension,
@@ -414,6 +416,106 @@ describe("audit extension consumer", () => {
 					}),
 				}),
 			]),
+		);
+	});
+
+	it("blocks denied input, records the verdict, and observes its own fact", async () => {
+		const { orchestrator, agentId, events } = await createAuditHarness({
+			denyInput: [{ match: "secret", reason: "Sensitive input." }],
+			recordCoreEvents: ["input_blocked"],
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "/status"),
+		).resolves.toMatchObject({ kind: "command", name: "status" });
+		await expect(
+			orchestrator.inputAgent(agentId, "share the secret"),
+		).resolves.toEqual({
+			kind: "blocked",
+			inputId: expect.any(String),
+			reason: "Sensitive input.",
+			blockedBy: "audit",
+		});
+
+		await expect(
+			readAuditEntries<AuditInputVerdictEntry>(
+				orchestrator,
+				agentId,
+				AUDIT_INPUT_VERDICT_ENTRY_TYPE,
+			),
+		).resolves.toMatchObject([
+			{
+				data: { text: "/status", outcome: "allowed", decidedBy: "default" },
+			},
+			{
+				data: {
+					text: "share the secret",
+					outcome: "blocked",
+					decidedBy: "deny_rule",
+					reason: "Sensitive input.",
+				},
+			},
+		]);
+		await expect(
+			readAuditEntries<AuditEventEntry>(
+				orchestrator,
+				agentId,
+				AUDIT_EVENT_ENTRY_TYPE,
+			),
+		).resolves.toMatchObject([
+			{ data: { source: "orchestrator", eventType: "input_blocked" } },
+		]);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "input_blocked",
+				agentId,
+				originalText: "share the secret",
+				blockedBy: "audit",
+			}),
+		);
+	});
+
+	it("keeps input auditing when another input interceptor fails on later input", async () => {
+		let firstCall = true;
+		const broken: ExtensionFactory = (api) => {
+			api.intercept("input", () => {
+				if (!firstCall) return undefined;
+				firstCall = false;
+				throw new Error("input policy exploded");
+			});
+		};
+		const { orchestrator, agentId, events } = await createAuditHarness(
+			{ denyInput: [{ match: "secret", reason: "Sensitive input." }] },
+			{ beforeAudit: [{ id: "broken", factory: broken }] },
+		);
+
+		// First input fails closed on the broken extension before audit runs.
+		await expect(
+			orchestrator.inputAgent(agentId, "/status"),
+		).resolves.toMatchObject({ kind: "blocked", blockedBy: "broken" });
+		// The next input reaches the audit policy, which still enforces.
+		await expect(
+			orchestrator.inputAgent(agentId, "share the secret"),
+		).resolves.toMatchObject({ kind: "blocked", blockedBy: "audit" });
+
+		await expect(
+			readAuditEntries<AuditInputVerdictEntry>(
+				orchestrator,
+				agentId,
+				AUDIT_INPUT_VERDICT_ENTRY_TYPE,
+			),
+		).resolves.toMatchObject([
+			{ data: { text: "share the secret", outcome: "blocked" } },
+		]);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					code: "extension.handler_failed",
+					extensionId: "broken",
+					details: { eventName: "input" },
+				}),
+			}),
 		);
 	});
 

@@ -101,6 +101,16 @@ function renderEvent(event: OrchestratorEvent): void {
 		case "diagnostic":
 			printDiagnostic(event.diagnostic);
 			return;
+		case "input_transformed":
+			streamWriter.writeLine(
+				`[input] rewritten by ${event.transformedBy.join(", ")}: ${shortJson(event.text)}`,
+			);
+			return;
+		case "input_blocked":
+			streamWriter.writeLine(
+				`[input] blocked by ${event.blockedBy}${event.reason ? `: ${event.reason}` : ""}`,
+			);
+			return;
 		case "agent_spawned":
 			streamWriter.writeLine(
 				`[agent] spawned ${event.agentId} profile=${event.profile.id} model=${event.model.provider}/${event.model.id}`,
