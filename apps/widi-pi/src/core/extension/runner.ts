@@ -704,6 +704,11 @@ export class ExtensionRunner {
 					await this._actions.setAgentSessionName(agentId, name);
 				});
 			},
+			getSessionName: async () =>
+				await this._runReportedAction(
+					failure("getSessionName"),
+					async () => await this._actions.getAgentSessionName(agentId),
+				),
 			getCommands: () => {
 				this._assertActive();
 				return this._actions.listCommands(agentId);
@@ -1021,6 +1026,7 @@ function createUnboundActions(): ExtensionCoreActions {
 		steerAgent: async () => notBound(),
 		followUpAgent: async () => notBound(),
 		setAgentSessionName: async () => notBound(),
+		getAgentSessionName: async () => notBound(),
 		listCommands: () => notBound(),
 		setAgentModelByReference: async () => notBound(),
 		getAgentThinkingLevel: () => notBound(),

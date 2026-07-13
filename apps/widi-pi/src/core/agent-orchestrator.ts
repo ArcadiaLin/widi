@@ -65,12 +65,12 @@ import {
 import {
 	type ExtensionActionFailure,
 	type ExtensionCoreActions,
-	type ExtensionFactory,
 	type ExtensionIdentity,
 	type ExtensionInterceptorEventFor,
 	type ExtensionInterceptorName,
 	type ExtensionInterceptorResultFor,
 	ExtensionLoader,
+	type ExtensionModule,
 	type ExtensionObservedEvent,
 	type ExtensionResourceContribution,
 	ExtensionRunner,
@@ -383,9 +383,9 @@ export class AgentOrchestrator {
 
 	registerExtensionFactory(
 		extensionId: string,
-		factory: ExtensionFactory,
+		module: ExtensionModule,
 	): () => void {
-		return this.extensionLoader.registerExtensionFactory(extensionId, factory);
+		return this.extensionLoader.registerExtensionFactory(extensionId, module);
 	}
 
 	getAgentStatus(agentId: AgentId): AgentLifecycleStatus {
@@ -455,6 +455,10 @@ export class AgentOrchestrator {
 	): Promise<AgentSessionTreeSnapshot> {
 		this._requireAgentRecord(agentId);
 		return await this.sessionManager.getAgentSessionTree(agentId);
+	}
+
+	async getAgentSessionName(agentId: AgentId): Promise<string | undefined> {
+		return (await this.getAgentSession(agentId)).name;
 	}
 
 	async setAgentSessionName(
@@ -2192,6 +2196,8 @@ export class AgentOrchestrator {
 			setAgentSessionName: async (agentId, name) => {
 				await this.setAgentSessionName(agentId, name);
 			},
+			getAgentSessionName: async (agentId) =>
+				await this.getAgentSessionName(agentId),
 			listCommands: (agentId) => this.listCommands(agentId),
 			setAgentModelByReference: async (agentId, reference) =>
 				await this.setAgentModelByReference(agentId, reference),

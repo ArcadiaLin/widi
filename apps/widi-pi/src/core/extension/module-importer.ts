@@ -1,34 +1,30 @@
 import { createJiti } from "jiti";
-import type { ExtensionFactory } from "./types.ts";
 
 export interface ExtensionModuleImporter {
-	importFactory(entryPath: string): Promise<ExtensionFactory | undefined>;
+	importModule(entryPath: string): Promise<unknown>;
 	clearCache(): void;
 }
 
 export class JitiExtensionModuleImporter implements ExtensionModuleImporter {
-	private readonly factories = new Map<string, ExtensionFactory | undefined>();
+	private readonly modules = new Map<string, unknown>();
 	private readonly jiti = createJiti(import.meta.url, {
 		moduleCache: false,
 	});
 	private generation = 0;
 
-	async importFactory(
-		entryPath: string,
-	): Promise<ExtensionFactory | undefined> {
+	async importModule(entryPath: string): Promise<unknown> {
 		const cacheKey = `${this.generation}:${entryPath}`;
-		if (this.factories.has(cacheKey)) {
-			return this.factories.get(cacheKey);
+		if (this.modules.has(cacheKey)) {
+			return this.modules.get(cacheKey);
 		}
 
 		const module = await this.jiti.import(entryPath, { default: true });
-		const factory = typeof module === "function" ? module : undefined;
-		this.factories.set(cacheKey, factory as ExtensionFactory | undefined);
-		return factory as ExtensionFactory | undefined;
+		this.modules.set(cacheKey, module);
+		return module;
 	}
 
 	clearCache(): void {
-		this.factories.clear();
+		this.modules.clear();
 		this.generation++;
 	}
 }

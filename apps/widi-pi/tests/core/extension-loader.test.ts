@@ -14,8 +14,10 @@ import {
 } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import {
+	EXTENSION_API_VERSION,
 	ExtensionLoader,
 	type ExtensionModuleImporter,
+	MIN_SUPPORTED_EXTENSION_API_VERSION,
 } from "../../src/core/extension/index.ts";
 import type { ExtensionFactory } from "../../src/core/extension/types.ts";
 
@@ -199,16 +201,20 @@ class MemoryExecutionEnv implements ExecutionEnv {
 
 class FakeModuleImporter implements ExtensionModuleImporter {
 	readonly imports: string[] = [];
-	private readonly factories = new Map<string, ExtensionFactory | undefined>();
+	private readonly modules = new Map<string, unknown>();
 	clearCalls = 0;
 
 	setFactory(path: string, factory: ExtensionFactory | undefined): void {
-		this.factories.set(path, factory);
+		this.modules.set(path, factory);
 	}
 
-	async importFactory(path: string): Promise<ExtensionFactory | undefined> {
+	setModule(path: string, module: unknown): void {
+		this.modules.set(path, module);
+	}
+
+	async importModule(path: string): Promise<unknown> {
 		this.imports.push(path);
-		return this.factories.get(path);
+		return this.modules.get(path);
 	}
 
 	clearCache(): void {
@@ -396,5 +402,147 @@ describe("ExtensionLoader file/module loading", () => {
 			"/extensions/sample.ts",
 			"/extensions/sample.ts",
 		]);
+	});
+});
+
+describe("ExtensionLoader api version gate", () => {
+	it("activates a versioned module definition targeting the current version", async () => {
+		const env = new MemoryExecutionEnv();
+		env.addFile("/extensions/sample.ts");
+		const importer = new FakeModuleImporter();
+		let activated = false;
+		importer.setModule("/extensions/sample.ts", {
+			apiVersion: EXTENSION_API_VERSION,
+			activate: () => {
+				activated = true;
+			},
+		});
+		const loader = new ExtensionLoader({
+			roots: [{ kind: "settings", path: "/extensions" }],
+			moduleImporter: importer,
+		});
+
+		const result = await loader.loadAvailableExtensions(env);
+		const scope = await loader.loadForAgent({
+			agentId: "agent",
+			profileId: "profile",
+			extensionIds: ["sample"],
+		});
+
+		expect(result.loaded).toHaveLength(1);
+		expect(result.diagnostics).toEqual([]);
+		expect(scope.diagnostics).toEqual([]);
+		expect(activated).toBe(true);
+	});
+
+	it("refuses a module declaring an unsupported api version at load and resolve", async () => {
+		const env = new MemoryExecutionEnv();
+		env.addFile("/extensions/sample.ts");
+		const importer = new FakeModuleImporter();
+		let activated = false;
+		importer.setModule("/extensions/sample.ts", {
+			apiVersion: EXTENSION_API_VERSION + 1,
+			activate: () => {
+				activated = true;
+			},
+		});
+		const loader = new ExtensionLoader({
+			roots: [{ kind: "settings", path: "/extensions" }],
+			moduleImporter: importer,
+		});
+
+		const result = await loader.loadAvailableExtensions(env);
+		const scope = await loader.loadForAgent({
+			agentId: "agent",
+			profileId: "profile",
+			extensionIds: ["sample"],
+		});
+
+		expect(result.loaded).toEqual([]);
+		expect(result.diagnostics).toContainEqual(
+			expect.objectContaining({
+				code: "extension.version_incompatible",
+				extensionId: "sample",
+				severity: "error",
+				details: expect.objectContaining({
+					declaredApiVersion: EXTENSION_API_VERSION + 1,
+					supportedApiVersions: {
+						min: MIN_SUPPORTED_EXTENSION_API_VERSION,
+						max: EXTENSION_API_VERSION,
+					},
+				}),
+			}),
+		);
+		expect(activated).toBe(false);
+		expect(scope.extensions).toEqual([]);
+		// The requesting agent sees the true reason, not a missing factory.
+		expect(scope.diagnostics).toContainEqual(
+			expect.objectContaining({
+				code: "extension.version_incompatible",
+				extensionId: "sample",
+				disposition: "blocked",
+			}),
+		);
+		expect(scope.diagnostics).not.toContainEqual(
+			expect.objectContaining({ code: "extension.factory_missing" }),
+		);
+	});
+
+	it("rejects an in-memory definition with an unsupported version per agent", async () => {
+		const loader = new ExtensionLoader();
+		let activated = false;
+		const dispose = loader.registerExtensionFactory("sample", {
+			apiVersion: 0,
+			activate: () => {
+				activated = true;
+			},
+		});
+
+		const scope = await loader.loadForAgent({
+			agentId: "agent",
+			profileId: "profile",
+			extensionIds: ["sample"],
+		});
+
+		expect(activated).toBe(false);
+		expect(scope.extensions).toEqual([]);
+		expect(scope.diagnostics).toContainEqual(
+			expect.objectContaining({
+				code: "extension.version_incompatible",
+				extensionId: "sample",
+			}),
+		);
+
+		// Withdrawing the incompatible registration returns the id to missing.
+		dispose();
+		const after = await loader.loadForAgent({
+			agentId: "agent",
+			profileId: "profile",
+			extensionIds: ["sample"],
+		});
+		expect(after.diagnostics).toContainEqual(
+			expect.objectContaining({ code: "extension.factory_missing" }),
+		);
+	});
+
+	it("rejects a module whose default export is neither factory nor definition", async () => {
+		const env = new MemoryExecutionEnv();
+		env.addFile("/extensions/sample.ts");
+		const importer = new FakeModuleImporter();
+		importer.setModule("/extensions/sample.ts", { apiVersion: 1 });
+		const loader = new ExtensionLoader({
+			roots: [{ kind: "settings", path: "/extensions" }],
+			moduleImporter: importer,
+		});
+
+		const result = await loader.loadAvailableExtensions(env);
+
+		expect(result.loaded).toEqual([]);
+		expect(result.diagnostics).toContainEqual(
+			expect.objectContaining({
+				code: "extension.factory_invalid",
+				extensionId: "sample",
+			}),
+		);
 	});
 });

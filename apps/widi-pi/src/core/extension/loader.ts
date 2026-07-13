@@ -15,6 +15,11 @@ import {
 	type DiagnosticSeverity,
 } from "../diagnostics.ts";
 import {
+	EXTENSION_API_VERSION,
+	isSupportedExtensionApiVersion,
+	MIN_SUPPORTED_EXTENSION_API_VERSION,
+} from "./api.ts";
+import {
 	type ExtensionModuleImporter,
 	JitiExtensionModuleImporter,
 } from "./module-importer.ts";
@@ -26,6 +31,7 @@ import type {
 	ExtensionInlineCommandExpand,
 	ExtensionInterceptorFor,
 	ExtensionInterceptorName,
+	ExtensionModule,
 	ExtensionObservedEventName,
 	ExtensionObserver,
 	ExtensionProviderConfig,
@@ -180,9 +186,19 @@ export interface LoadedExtensionScope {
 	>;
 }
 
+interface IncompatibleExtensionRecord {
+	readonly identity: ExtensionIdentity;
+	readonly declaredApiVersion: number;
+	readonly fromModule: boolean;
+}
+
 export class ExtensionLoader {
 	private readonly _factories = new Map<string, ExtensionFactory>();
 	private readonly _factoryIdentities = new Map<string, ExtensionIdentity>();
+	private readonly _incompatible = new Map<
+		string,
+		IncompatibleExtensionRecord
+	>();
 	private readonly _moduleFactories = new Map<string, ExtensionFactory>();
 	private readonly _moduleImporter: ExtensionModuleImporter;
 	private readonly _roots: readonly ExtensionRoot[];
@@ -269,17 +285,46 @@ export class ExtensionLoader {
 
 	registerExtensionFactory(
 		extensionId: string,
-		factory: ExtensionFactory,
+		module: ExtensionModule,
 	): () => void {
 		const normalizedId = extensionId.trim();
 		if (!normalizedId) {
 			throw new Error("Extension id must not be empty.");
 		}
-		this._factories.set(normalizedId, factory);
-		this._factoryIdentities.set(normalizedId, {
+		const resolved = resolveExtensionModule(module);
+		if (!resolved) {
+			throw new Error(
+				"Extension module must be a factory function or an { apiVersion, activate } definition.",
+			);
+		}
+		const identity: ExtensionIdentity = {
 			id: normalizedId,
 			source: { kind: "factory" },
-		});
+		};
+
+		if (
+			resolved.declaredApiVersion !== undefined &&
+			!isSupportedExtensionApiVersion(resolved.declaredApiVersion)
+		) {
+			this._factories.delete(normalizedId);
+			this._factoryIdentities.delete(normalizedId);
+			const record: IncompatibleExtensionRecord = {
+				identity,
+				declaredApiVersion: resolved.declaredApiVersion,
+				fromModule: false,
+			};
+			this._incompatible.set(normalizedId, record);
+			return () => {
+				if (this._incompatible.get(normalizedId) === record) {
+					this._incompatible.delete(normalizedId);
+				}
+			};
+		}
+
+		this._incompatible.delete(normalizedId);
+		const factory = resolved.factory;
+		this._factories.set(normalizedId, factory);
+		this._factoryIdentities.set(normalizedId, identity);
 		return () => {
 			if (this._factories.get(normalizedId) === factory) {
 				this._factories.delete(normalizedId);
@@ -301,7 +346,11 @@ export class ExtensionLoader {
 			diagnostics.push(...entry.diagnostics);
 			if (!entry.entry) continue;
 
-			if (this._factories.has(candidate.id)) {
+			const registeredIncompatible = this._incompatible.get(candidate.id);
+			if (
+				this._factories.has(candidate.id) ||
+				(registeredIncompatible && !registeredIncompatible.fromModule)
+			) {
 				diagnostics.push(
 					createExtensionLoadDiagnostic({
 						code: "extension.id_conflict",
@@ -315,9 +364,9 @@ export class ExtensionLoader {
 				continue;
 			}
 
-			let factory: ExtensionFactory | undefined;
+			let moduleExport: unknown;
 			try {
-				factory = await this._moduleImporter.importFactory(
+				moduleExport = await this._moduleImporter.importModule(
 					entry.entry.entryPath,
 				);
 			} catch (error) {
@@ -334,12 +383,13 @@ export class ExtensionLoader {
 				continue;
 			}
 
-			if (!factory) {
+			const resolved = resolveExtensionModule(moduleExport);
+			if (!resolved) {
 				diagnostics.push(
 					createExtensionLoadDiagnostic({
 						code: "extension.factory_invalid",
 						severity: "error",
-						message: `Extension '${candidate.id}' from ${entry.entry.entryPath} does not export a default factory function.`,
+						message: `Extension '${candidate.id}' from ${entry.entry.entryPath} does not default-export a factory function or an { apiVersion, activate } definition.`,
 						extensionId: candidate.id,
 						source: entry.entry.source,
 						details: { candidate },
@@ -348,12 +398,39 @@ export class ExtensionLoader {
 				continue;
 			}
 
-			this._factories.set(candidate.id, factory);
-			this._moduleFactories.set(candidate.id, factory);
 			const identity = {
 				id: candidate.id,
 				source: entry.entry.source,
 			};
+
+			if (
+				resolved.declaredApiVersion !== undefined &&
+				!isSupportedExtensionApiVersion(resolved.declaredApiVersion)
+			) {
+				this._incompatible.set(candidate.id, {
+					identity,
+					declaredApiVersion: resolved.declaredApiVersion,
+					fromModule: true,
+				});
+				diagnostics.push(
+					createExtensionLoadDiagnostic({
+						code: "extension.version_incompatible",
+						severity: "error",
+						message: `Extension '${candidate.id}' from ${entry.entry.entryPath} targets extension API version ${resolved.declaredApiVersion}; this runtime supports ${formatSupportedApiVersions()}.`,
+						extensionId: candidate.id,
+						source: entry.entry.source,
+						details: {
+							candidate,
+							declaredApiVersion: resolved.declaredApiVersion,
+							supportedApiVersions: supportedApiVersionsDetail(),
+						},
+					}),
+				);
+				continue;
+			}
+
+			this._factories.set(candidate.id, resolved.factory);
+			this._moduleFactories.set(candidate.id, resolved.factory);
 			this._factoryIdentities.set(candidate.id, identity);
 			loaded.push(identity);
 		}
@@ -392,6 +469,27 @@ export class ExtensionLoader {
 		const extensions: ExtensionIdentity[] = [];
 
 		for (const extensionId of extensionIds) {
+			const incompatible = this._incompatible.get(extensionId);
+			if (incompatible) {
+				diagnostics.push(
+					createExtensionDiagnostic({
+						code: "extension.version_incompatible",
+						severity: "error",
+						disposition: "blocked",
+						phase: "resolve",
+						message: `Extension '${extensionId}' targets extension API version ${incompatible.declaredApiVersion}; this runtime supports ${formatSupportedApiVersions()}.`,
+						extensionId,
+						agentId: options.agentId,
+						profileId: options.profileId,
+						details: {
+							declaredApiVersion: incompatible.declaredApiVersion,
+							supportedApiVersions: supportedApiVersionsDetail(),
+						},
+					}),
+				);
+				continue;
+			}
+
 			const factory = this._factories.get(extensionId);
 			if (!factory) {
 				const diagnostic = createMissingFactoryDiagnostic({
@@ -463,7 +561,49 @@ export class ExtensionLoader {
 			}
 		}
 		this._moduleFactories.clear();
+		for (const [extensionId, record] of this._incompatible) {
+			if (record.fromModule) {
+				this._incompatible.delete(extensionId);
+			}
+		}
 	}
+}
+
+interface ResolvedExtensionModule {
+	readonly factory: ExtensionFactory;
+	readonly declaredApiVersion?: number;
+}
+
+function resolveExtensionModule(
+	module: unknown,
+): ResolvedExtensionModule | undefined {
+	if (typeof module === "function") {
+		return { factory: module as ExtensionFactory };
+	}
+	if (
+		isRecord(module) &&
+		typeof module.activate === "function" &&
+		typeof module.apiVersion === "number"
+	) {
+		return {
+			factory: module.activate as ExtensionFactory,
+			declaredApiVersion: module.apiVersion,
+		};
+	}
+	return undefined;
+}
+
+function formatSupportedApiVersions(): string {
+	return MIN_SUPPORTED_EXTENSION_API_VERSION === EXTENSION_API_VERSION
+		? `version ${EXTENSION_API_VERSION}`
+		: `versions ${MIN_SUPPORTED_EXTENSION_API_VERSION} through ${EXTENSION_API_VERSION}`;
+}
+
+function supportedApiVersionsDetail(): { min: number; max: number } {
+	return {
+		min: MIN_SUPPORTED_EXTENSION_API_VERSION,
+		max: EXTENSION_API_VERSION,
+	};
 }
 
 interface ResolvedExtensionEntry {
@@ -1056,7 +1196,8 @@ function createExtensionLoadDiagnostic(options: {
 		| "extension.factory_invalid"
 		| "extension.id_conflict"
 		| "extension.invalid_manifest"
-		| "extension.load_failed";
+		| "extension.load_failed"
+		| "extension.version_incompatible";
 	severity: DiagnosticSeverity;
 	message: string;
 	extensionId: string;

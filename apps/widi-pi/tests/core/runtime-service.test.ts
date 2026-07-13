@@ -225,7 +225,7 @@ class FakeModuleImporter implements ExtensionModuleImporter {
 		this.factories.set(path, factory);
 	}
 
-	async importFactory(path: string): Promise<ExtensionFactory | undefined> {
+	async importModule(path: string): Promise<unknown> {
 		this.imports.push(path);
 		return this.factories.get(path);
 	}

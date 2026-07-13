@@ -4243,6 +4243,9 @@ describe("AgentOrchestrator", () => {
 		await expect(orchestrator.getAgentSession(agentId)).resolves.toMatchObject({
 			name: "audited session",
 		});
+		await expect(context.actions.getSessionName()).resolves.toBe(
+			"audited session",
+		);
 
 		expect(context.actions.getCommands()).toEqual(
 			orchestrator.listCommands(agentId),

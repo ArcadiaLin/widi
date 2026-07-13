@@ -7,7 +7,7 @@
 - UI/RPC presentation：基于现有 `agent.inspect` facts 展示 profile、resources、tools、active tools、extensions、session metadata、custom entries 摘要和 diagnostics。
 - Resource diagnostics severity 定义：explicit missing、default dir missing、parse failed、duplicate identity。
 - Resume 路径 diagnostics 测试补齐：profile missing/disabled、resource diagnostics、active tool missing、extension missing。
-- Extension diagnostic code 标准化：`extension.missing`、`extension.load_failed`、`extension.version_incompatible`、`extension.activation_failed`、`extension.handler_failed`。
+- Extension diagnostic code 标准化：全部 code（`extension.factory_missing`、`extension.load_failed`、`extension.activation_failed`、`extension.handler_failed`、`extension.version_incompatible`——后者已随 ME 切片 10 落地）已存在，剩余是命名口径统一评估（如 `factory_missing` vs 文档曾用的 `missing`）。
 - Diagnostic event 增加 stable id 或 operation correlation，便于 UI/RPC 去重与回放。
 - Discovery 路径规范化去重（CLI adapter 反向检验发现，2026-07-09）：当 cwd 的项目 `.widi` 与 `agentDir` 指向同一目录时，profile/extension 被重复发现——`profile.source_overridden` 出现自指消息（"X is overridden by X"）且发两次，`extension.entry_missing` 对同一 extension 发三次。Discovery 应对 root 路径做 canonicalize + 去重，或至少让 override diagnostic 跳过同路径。
 
@@ -36,7 +36,7 @@ Extension surface 的设计与实施已收编为 [ME milestone](TODO.md#me-exten
 
 ## Session And State
 
-- Missing extension / version mismatch / restore failed 时孤儿 custom entries 的产品展示：归 client adapter，依赖 ME 切片 10 的 `extension.version_incompatible` 语义。core 侧保留语义已裁决（2026-07-13）：条目原样保留、不删不隐藏、经 `getAgentSessionTree` 可达，见 extensions.md custom entry 契约节。
+- Missing extension / version mismatch / restore failed 时孤儿 custom entries 的产品展示：归 client adapter。`extension.version_incompatible` 语义已随 ME 切片 10 定案（2026-07-13）：blocked 档、依赖它的 spawn/resume 失败，见 extensions.md 公开契约节。core 侧保留语义已裁决（2026-07-13）：条目原样保留、不删不隐藏、经 `getAgentSessionTree` 可达，见 extensions.md custom entry 契约节。
 - Header metadata schema version/migration（在出现第二个写入者之前不做）。
 - （custom entry fork/compaction/export 与 `custom_message` policy 已随 ME 切片 7 定案，2026-07-13；契约见 extensions.md，未收编项的举证缺口见上方 Extension 节。）
 - Inline command 展开的 session custom entry 具体 shape（原始输入 + 展开位置，裁决见 command-experiment.md）。

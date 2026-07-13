@@ -168,6 +168,7 @@ export interface ExtensionActions {
 	steer(text: string, options?: { images?: ImageContent[] }): Promise<void>;
 	followUp(text: string, options?: { images?: ImageContent[] }): Promise<void>;
 	setSessionName(name: string): Promise<void>;
+	getSessionName(): Promise<string | undefined>;
 	getCommands(): Command[];
 	setModel(reference: string): Promise<RuntimeModel>;
 	getThinkingLevel(): ThinkingLevel;
@@ -213,6 +214,7 @@ export interface ExtensionCoreActions {
 		options?: { images?: ImageContent[] },
 	): Promise<void>;
 	setAgentSessionName(agentId: string, name: string): Promise<void>;
+	getAgentSessionName(agentId: string): Promise<string | undefined>;
 	listCommands(agentId: string): Command[];
 	setAgentModelByReference(
 		agentId: string,
@@ -271,6 +273,7 @@ export interface ExtensionActionFailure {
 		| "exec"
 		| "findEntries"
 		| "followUp"
+		| "getSessionName"
 		| "prompt"
 		| "requestHuman"
 		| "setActiveTools"
@@ -414,3 +417,23 @@ export interface ExtensionActivationApi {
 export type ExtensionFactory = (
 	api: ExtensionActivationApi,
 ) => Promise<void> | void;
+
+/**
+ * Versioned extension declaration (ME slice 10). `apiVersion` names the
+ * extension API version the extension targets; the loader refuses to activate
+ * an extension declaring an unsupported version and reports
+ * `extension.version_incompatible` instead. A bare factory omits the
+ * declaration and is treated as targeting the current version.
+ */
+export interface ExtensionDefinition {
+	readonly apiVersion: number;
+	readonly activate: ExtensionFactory;
+}
+
+/**
+ * What an extension module default-exports, and what
+ * `registerExtensionFactory` accepts: a bare factory or a versioned
+ * definition. One declaration shape covers all three extension sources
+ * (factory, file, package).
+ */
+export type ExtensionModule = ExtensionFactory | ExtensionDefinition;
