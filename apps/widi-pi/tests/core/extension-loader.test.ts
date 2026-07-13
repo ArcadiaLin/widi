@@ -277,6 +277,32 @@ describe("ExtensionLoader file/module loading", () => {
 		);
 	});
 
+	it("collects normalized resource path contributions per extension", async () => {
+		const loader = new ExtensionLoader();
+		loader.registerExtensionFactory("contributor", (api) => {
+			api.contributeResources({
+				skillPaths: [" /skills ", "", "/skills", "/more-skills"],
+				promptTemplatePaths: ["/templates"],
+			});
+			// An all-empty declaration contributes nothing.
+			api.contributeResources({ skillPaths: ["  "] });
+		});
+
+		const scope = await loader.loadForAgent({
+			agentId: "agent",
+			profileId: "profile",
+			extensionIds: ["contributor"],
+		});
+
+		expect(scope.resourceContributions).toEqual([
+			{
+				extensionId: "contributor",
+				skillPaths: ["/skills", "/more-skills"],
+				promptTemplatePaths: ["/templates"],
+			},
+		]);
+	});
+
 	it("loads the first package manifest entry and warns about extras", async () => {
 		const env = new MemoryExecutionEnv();
 		env.addFile(

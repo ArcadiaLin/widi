@@ -13,8 +13,10 @@ import {
 	formatSkillsForSystemPrompt,
 	type JsonlSessionMetadata,
 	type PromptTemplate,
+	type PromptTemplateDiagnostic,
 	type Session,
 	type Skill,
+	type SkillDiagnostic,
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import {
@@ -70,6 +72,7 @@ import {
 	type ExtensionInterceptorResultFor,
 	ExtensionLoader,
 	type ExtensionObservedEvent,
+	type ExtensionResourceContribution,
 	ExtensionRunner,
 } from "./extension/index.ts";
 import type { HumanRequest, HumanResponse } from "./human-request.ts";
@@ -81,7 +84,11 @@ import {
 	parseThinkingLevel,
 	THINKING_LEVELS,
 } from "./model-registry.js";
-import type { ResourceLoader } from "./resource-loader.js";
+import type {
+	ExtensionResourcePathContribution,
+	ResourceLoader,
+	ResourceSource,
+} from "./resource-loader.js";
 import type {
 	AgentSessionCandidate,
 	AgentSessionMetadata,
@@ -672,19 +679,64 @@ export class AgentOrchestrator {
 			record.profile.reference.id,
 			agentId,
 		);
-		const loaded = await this.resourceLoader.loadPromptTemplates(
-			resolvedProfile.profile.promptTemplates,
-		);
-		await this._publishDiagnostics(
-			loaded.diagnostics.map((diagnostic) =>
-				toCoreDiagnosticFromPromptTemplateDiagnostic(diagnostic, {
-					agentId,
-					profileId: resolvedProfile.profile.id,
-					phase: "resolve",
-				}),
-			),
-		);
+		const loaded = await this._loadMergedAgentPromptTemplates({
+			agentId,
+			profile: resolvedProfile.profile,
+			extensionRunner: activeExtensionRunner(record),
+		});
+		await this._publishDiagnostics(loaded.diagnostics);
 		return loaded.promptTemplates.map(({ promptTemplate }) => promptTemplate);
+	}
+
+	private async _loadMergedAgentPromptTemplates(options: {
+		agentId: AgentId;
+		profile: AgentProfile;
+		extensionRunner?: ExtensionRunner;
+	}): Promise<{
+		promptTemplates: Array<{
+			promptTemplate: PromptTemplate;
+			source: ResourceSource;
+		}>;
+		diagnostics: OrchestratorDiagnostic[];
+	}> {
+		const { agentId, profile, extensionRunner } = options;
+		const toResourceDiagnostic = (
+			diagnostic: PromptTemplateDiagnostic & { source?: ResourceSource },
+		) =>
+			toCoreDiagnosticFromPromptTemplateDiagnostic(diagnostic, {
+				agentId,
+				profileId: profile.id,
+				phase: "resolve",
+			});
+		const loaded = await this.resourceLoader.loadPromptTemplates(
+			profile.promptTemplates,
+		);
+		const diagnostics = loaded.diagnostics.map(toResourceDiagnostic);
+		const contributions = listResourcePathContributions(
+			extensionRunner,
+			(contribution) => contribution.promptTemplatePaths,
+		);
+		if (contributions.length === 0) {
+			return { promptTemplates: loaded.promptTemplates, diagnostics };
+		}
+		const contributed =
+			await this.resourceLoader.loadContributedPromptTemplates(contributions);
+		diagnostics.push(...contributed.diagnostics.map(toResourceDiagnostic));
+		const merged = this._mergeContributedResources({
+			agentId,
+			profileId: profile.id,
+			resourceType: "prompt_template",
+			registered: loaded.promptTemplates.map((entry) => ({
+				name: entry.promptTemplate.name,
+				entry,
+			})),
+			contributed: contributed.promptTemplates.map((entry) => ({
+				name: entry.promptTemplate.name,
+				entry,
+			})),
+		});
+		diagnostics.push(...merged.diagnostics);
+		return { promptTemplates: merged.resources, diagnostics };
 	}
 
 	async listAgentSkillCandidates(
@@ -723,19 +775,107 @@ export class AgentOrchestrator {
 			record.profile.reference.id,
 			agentId,
 		);
-		const loaded = await this.resourceLoader.loadSkills(
-			resolvedProfile.profile.skills,
-		);
-		await this._publishDiagnostics(
-			loaded.diagnostics.map((diagnostic) =>
-				toCoreDiagnosticFromSkillDiagnostic(diagnostic, {
-					agentId,
-					profileId: resolvedProfile.profile.id,
-					phase: "resolve",
-				}),
-			),
-		);
+		const loaded = await this._loadMergedAgentSkills({
+			agentId,
+			profile: resolvedProfile.profile,
+			extensionRunner: activeExtensionRunner(record),
+		});
+		await this._publishDiagnostics(loaded.diagnostics);
 		return loaded.skills.map(({ skill }) => skill);
+	}
+
+	private async _loadMergedAgentSkills(options: {
+		agentId: AgentId;
+		profile: AgentProfile;
+		extensionRunner?: ExtensionRunner;
+	}): Promise<{
+		skills: Array<{ skill: Skill; source: ResourceSource }>;
+		diagnostics: OrchestratorDiagnostic[];
+	}> {
+		const { agentId, profile, extensionRunner } = options;
+		const toResourceDiagnostic = (
+			diagnostic: SkillDiagnostic & { source?: ResourceSource },
+		) =>
+			toCoreDiagnosticFromSkillDiagnostic(diagnostic, {
+				agentId,
+				profileId: profile.id,
+				phase: "resolve",
+			});
+		const loaded = await this.resourceLoader.loadSkills(profile.skills);
+		const diagnostics = loaded.diagnostics.map(toResourceDiagnostic);
+		const contributions = listResourcePathContributions(
+			extensionRunner,
+			(contribution) => contribution.skillPaths,
+		);
+		if (contributions.length === 0) {
+			return { skills: loaded.skills, diagnostics };
+		}
+		const contributed =
+			await this.resourceLoader.loadContributedSkills(contributions);
+		diagnostics.push(...contributed.diagnostics.map(toResourceDiagnostic));
+		const merged = this._mergeContributedResources({
+			agentId,
+			profileId: profile.id,
+			resourceType: "skill",
+			registered: loaded.skills.map((entry) => ({
+				name: entry.skill.name,
+				entry,
+			})),
+			contributed: contributed.skills.map((entry) => ({
+				name: entry.skill.name,
+				entry,
+			})),
+		});
+		diagnostics.push(...merged.diagnostics);
+		return { skills: merged.resources, diagnostics };
+	}
+
+	// First-registration-wins (ME slice 8): core-owned profile/cwd resources
+	// register first and always win; extension contributions then resolve in
+	// activation order. A name collision drops the later contribution with a
+	// diagnostic instead of renaming it - skill and template names must not
+	// change shape between declaration and invocation.
+	private _mergeContributedResources<
+		T extends { source: ResourceSource },
+	>(options: {
+		agentId: AgentId;
+		profileId: string;
+		resourceType: "skill" | "prompt_template";
+		registered: Array<{ name: string; entry: T }>;
+		contributed: Array<{ name: string; entry: T }>;
+	}): { resources: T[]; diagnostics: OrchestratorDiagnostic[] } {
+		const takenNames = new Set(options.registered.map((item) => item.name));
+		const resources = options.registered.map((item) => item.entry);
+		const diagnostics: OrchestratorDiagnostic[] = [];
+		for (const { name, entry } of options.contributed) {
+			if (takenNames.has(name)) {
+				const extensionId =
+					entry.source.kind === "extension"
+						? entry.source.extensionId
+						: undefined;
+				diagnostics.push(
+					createOrchestratorDiagnostic({
+						severity: "warning",
+						disposition: "reported",
+						code: "extension.resource_conflict",
+						message: `Extension '${extensionId}' ${options.resourceType} '${name}' conflicts with an already registered ${options.resourceType} and was skipped.`,
+						agentId: options.agentId,
+						profileId: options.profileId,
+						extensionId,
+						recoverable: true,
+						details: {
+							resourceType: options.resourceType,
+							name,
+							path: entry.source.path,
+						},
+					}),
+				);
+				continue;
+			}
+			takenNames.add(name);
+			resources.push(entry);
+		}
+		return { resources, diagnostics };
 	}
 
 	async setAgentThinkingLevelByName(
@@ -1607,40 +1747,12 @@ export class AgentOrchestrator {
 			session,
 			model,
 		} = options;
-		const LoadedSkill = await this.resourceLoader.loadSkills(profile.skills);
-		const LoadedPromptTemplate = await this.resourceLoader.loadPromptTemplates(
-			profile.promptTemplates,
-		);
-
-		const resourceDiagnostics: OrchestratorDiagnostic[] = [
-			...LoadedSkill.diagnostics.map((diagnostic) =>
-				toCoreDiagnosticFromSkillDiagnostic(diagnostic, {
-					agentId,
-					profileId: profile.id,
-					phase: "resolve",
-				}),
-			),
-			...LoadedPromptTemplate.diagnostics.map((diagnostic) =>
-				toCoreDiagnosticFromPromptTemplateDiagnostic(diagnostic, {
-					agentId,
-					profileId: profile.id,
-					phase: "resolve",
-				}),
-			),
-		];
-		await this._publishDiagnostics(resourceDiagnostics);
-
-		const resources: AgentHarnessResources = {
-			// this step ignore thie "ResourceSource", may be has any other usage;
-			skills: LoadedSkill.skills.map(({ skill }) => skill),
-			promptTemplates: LoadedPromptTemplate.promptTemplates.map(
-				({ promptTemplate }) => promptTemplate,
-			),
-		};
+		// The extension runner exists before resource loading so contributed
+		// skill/prompt paths (ME slice 8) join the same load-and-merge pass as
+		// profile resources.
 		const extensionRunner = await this._createExtensionRunner(agentId, profile);
 		await this._publishDiagnostics(extensionRunner.diagnostics);
 		this._addAgentDiagnostics(agentId, {
-			resourceDiagnostics,
 			extensionDiagnostics: [...extensionRunner.diagnostics],
 		});
 		this._requireAgentRecord(agentId).extensionRunner = extensionRunner;
@@ -1650,6 +1762,42 @@ export class AgentOrchestrator {
 		if (blockedExtensionDiagnostic) {
 			throw new OrchestratorError(blockedExtensionDiagnostic);
 		}
+
+		const loadedSkills = await this._loadMergedAgentSkills({
+			agentId,
+			profile,
+			extensionRunner,
+		});
+		const loadedPromptTemplates = await this._loadMergedAgentPromptTemplates({
+			agentId,
+			profile,
+			extensionRunner,
+		});
+		const resourceDiagnostics: OrchestratorDiagnostic[] = [
+			...loadedSkills.diagnostics,
+			...loadedPromptTemplates.diagnostics,
+		];
+		await this._publishDiagnostics(resourceDiagnostics);
+		this._addAgentDiagnostics(agentId, { resourceDiagnostics });
+
+		const resources: AgentHarnessResources = {
+			skills: loadedSkills.skills.map(({ skill }) => skill),
+			promptTemplates: loadedPromptTemplates.promptTemplates.map(
+				({ promptTemplate }) => promptTemplate,
+			),
+		};
+		this._requireAgentRecord(agentId).resources = {
+			skills: loadedSkills.skills.map(({ skill, source }) => ({
+				name: skill.name,
+				source,
+			})),
+			promptTemplates: loadedPromptTemplates.promptTemplates.map(
+				({ promptTemplate, source }) => ({
+					name: promptTemplate.name,
+					source,
+				}),
+			),
+		};
 
 		const agentToolSet = await this._resolveAgentTools({
 			agentId,
@@ -3018,6 +3166,29 @@ export function buildAgentSystemPrompt(
 	const skillsSection = formatSkillsForSystemPrompt(resources.skills ?? []);
 	if (skillsSection === "") return basePrompt;
 	return `${basePrompt}\n\n${skillsSection}`;
+}
+
+// Stale runners keep no contribution rights: like inline commands, resources
+// contributed by a replaced runner drop out of the live loading pipelines.
+function activeExtensionRunner(
+	record: AgentRecord,
+): ExtensionRunner | undefined {
+	const runner = record.extensionRunner;
+	return runner && !runner.isStale() ? runner : undefined;
+}
+
+function listResourcePathContributions(
+	extensionRunner: ExtensionRunner | undefined,
+	pathsOf: (contribution: ExtensionResourceContribution) => readonly string[],
+): ExtensionResourcePathContribution[] {
+	return (extensionRunner?.getResourceContributions() ?? []).flatMap(
+		(contribution) => {
+			const paths = pathsOf(contribution);
+			return paths.length > 0
+				? [{ extensionId: contribution.extensionId, paths }]
+				: [];
+		},
+	);
 }
 
 function changesRecoverableProfileFields(

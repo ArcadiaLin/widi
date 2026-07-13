@@ -12,6 +12,7 @@ import type {
 	ExtensionCommandContribution,
 	ExtensionIdentity,
 	ExtensionInterceptorRegistration,
+	ExtensionResourceContribution,
 	ExtensionToolContribution,
 	LoadedExtensionScope,
 } from "./loader.ts";
@@ -113,6 +114,7 @@ export interface ExtensionRunnerSnapshot {
 	hooks: readonly ExtensionHookSnapshot[];
 	commands: readonly ExtensionCommandSnapshot[];
 	toolContributions: readonly ExtensionToolContributionSnapshot[];
+	resourceContributions: readonly ExtensionResourceContribution[];
 	stale: {
 		readonly stale: boolean;
 		readonly message?: string;
@@ -237,6 +239,10 @@ export class ExtensionRunner {
 		);
 	}
 
+	getResourceContributions(): readonly ExtensionResourceContribution[] {
+		return this._loadedScope.resourceContributions;
+	}
+
 	invalidate(
 		message = "This extension context is stale after runtime replacement or reload.",
 	): void {
@@ -296,6 +302,13 @@ export class ExtensionRunner {
 						source: contribution.source,
 					};
 				},
+			),
+			resourceContributions: this._loadedScope.resourceContributions.map(
+				(contribution) => ({
+					extensionId: contribution.extensionId,
+					skillPaths: [...contribution.skillPaths],
+					promptTemplatePaths: [...contribution.promptTemplatePaths],
+				}),
 			),
 			stale: this._staleMessage
 				? { stale: true, message: this._staleMessage }

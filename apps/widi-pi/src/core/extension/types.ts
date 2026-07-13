@@ -340,6 +340,19 @@ export type ExtensionCommandDefinition =
 	| ExtensionLineCommandDefinition
 	| ExtensionInlineCommandDefinition;
 
+/**
+ * Activation-time resource path declaration (ME slice 8). The extension only
+ * hands the core additional skill / prompt template paths to read; the
+ * ResourceLoader stays the sole filesystem reader and interpreter, and the
+ * contribution is scoped to the declaring runner's agent. A name that
+ * collides with an already-registered resource loses first-registration-wins
+ * and is dropped with a diagnostic.
+ */
+export interface ExtensionResourcePaths {
+	readonly skillPaths?: readonly string[];
+	readonly promptTemplatePaths?: readonly string[];
+}
+
 export type ExtensionObserver<
 	TEvent extends ExtensionObservedEvent = ExtensionObservedEvent,
 > = (event: TEvent, context: ExtensionContext) => Promise<void> | void;
@@ -366,6 +379,7 @@ export interface ExtensionActivationApi {
 		patch: ToolDefinitionPatch<TParamsSchema, TDetails>,
 	): void;
 	registerCommand(command: ExtensionCommandDefinition): void;
+	contributeResources(paths: ExtensionResourcePaths): void;
 	observe<TName extends ExtensionObservedEventName>(
 		eventName: TName,
 		handler: ExtensionObserverFor<TName>,

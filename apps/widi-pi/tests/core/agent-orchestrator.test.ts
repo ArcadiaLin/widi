@@ -33,6 +33,7 @@ import {
 	type SettingsStorage,
 } from "../../src/core/setting-manager.ts";
 import { ToolRegistry } from "../../src/core/tool-registry.ts";
+import { createResourceExtension } from "../extensions/resource-extension.ts";
 import {
 	createCoreCodingToolRegistry,
 	createEmptyModelRegistry,
@@ -2007,6 +2008,246 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
+	it("loads extension-contributed skills and prompt templates into the core pipelines", async () => {
+		const env = new MemoryExecutionEnv();
+		await env.writeFile(
+			"/ext/reviewer/skills/security-review/SKILL.md",
+			[
+				"---",
+				"name: security-review",
+				"description: Review changes for security issues.",
+				"---",
+				"BODY",
+			].join("\n"),
+		);
+		env.dirs.add("/ext/reviewer/skills");
+		await env.writeFile(
+			"/ext/reviewer/templates/focus.md",
+			"Focus on correctness.",
+		);
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "contributor-profile",
+			persist: false,
+			extensions: ["contributor"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory(
+			"contributor",
+			createResourceExtension({
+				skillPaths: ["/ext/reviewer/skills"],
+				promptTemplatePaths: ["/ext/reviewer/templates"],
+			}),
+		);
+		const agentId = await orchestrator.spawnAgent();
+		const prompted: string[] = [];
+		Object.assign(orchestrator, {
+			promptAgent: async (_agentId: string, text: string) => {
+				prompted.push(text);
+				return { role: "assistant" } as AssistantMessage;
+			},
+		});
+
+		await expect(
+			orchestrator.listAgentSkillCandidates(agentId),
+		).resolves.toEqual({
+			skills: [
+				{
+					value: "security-review",
+					label: "security-review",
+					description: "Review changes for security issues.",
+				},
+			],
+		});
+		await expect(
+			orchestrator.inputAgent(agentId, "run <skill:security-review> here"),
+		).resolves.toMatchObject({ kind: "prompt" });
+		await expect(
+			orchestrator.inputAgent(agentId, "use <prompt:focus> now"),
+		).resolves.toMatchObject({ kind: "prompt" });
+		expect(prompted[0]).toContain('<skill name="security-review">');
+		expect(prompted[1]).toBe("use Focus on correctness. now");
+
+		// Registration and resolved provenance are both inspect facts.
+		const snapshot = orchestrator.inspectAgent(agentId);
+		expect(snapshot.extensionSnapshot.resourceContributions).toEqual([
+			{
+				extensionId: "contributor",
+				skillPaths: ["/ext/reviewer/skills"],
+				promptTemplatePaths: ["/ext/reviewer/templates"],
+			},
+		]);
+		expect(snapshot.resources?.skills).toContainEqual({
+			name: "security-review",
+			source: {
+				kind: "extension",
+				extensionId: "contributor",
+				path: "/ext/reviewer/skills",
+			},
+		});
+		expect(snapshot.resources?.promptTemplates).toContainEqual({
+			name: "focus",
+			source: {
+				kind: "extension",
+				extensionId: "contributor",
+				path: "/ext/reviewer/templates",
+			},
+		});
+	});
+
+	it("keeps the core resource and drops a conflicting extension contribution with a diagnostic", async () => {
+		const env = new MemoryExecutionEnv();
+		await env.writeFile(
+			"/workspace/project/.widi/skills/code-review/SKILL.md",
+			[
+				"---",
+				"name: code-review",
+				"description: Core review skill.",
+				"---",
+				"BODY",
+			].join("\n"),
+		);
+		env.dirs.add("/workspace/project/.widi/skills");
+		await env.writeFile(
+			"/ext/skills/code-review/SKILL.md",
+			[
+				"---",
+				"name: code-review",
+				"description: Extension review skill.",
+				"---",
+				"BODY",
+			].join("\n"),
+		);
+		env.dirs.add("/ext/skills");
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "conflict-profile",
+			persist: false,
+			extensions: ["contributor"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory(
+			"contributor",
+			createResourceExtension({ skillPaths: ["/ext/skills"] }),
+		);
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const agentId = await orchestrator.spawnAgent();
+
+		// First-registration-wins: the core skill keeps the name.
+		await expect(
+			orchestrator.getAgentSkill(agentId, "code-review"),
+		).resolves.toMatchObject({
+			description: "Core review skill.",
+			filePath: "/workspace/project/.widi/skills/code-review/SKILL.md",
+		});
+		await expect(
+			orchestrator.listAgentSkillCandidates(agentId),
+		).resolves.toEqual({
+			skills: [
+				{
+					value: "code-review",
+					label: "code-review",
+					description: "Core review skill.",
+				},
+			],
+		});
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					code: "extension.resource_conflict",
+					extensionId: "contributor",
+					details: expect.objectContaining({
+						resourceType: "skill",
+						name: "code-review",
+						path: "/ext/skills",
+					}),
+				}),
+			}),
+		);
+		expect(
+			orchestrator.inspectAgent(agentId).resourceDiagnostics,
+		).toContainEqual(
+			expect.objectContaining({ code: "extension.resource_conflict" }),
+		);
+		expect(orchestrator.inspectAgent(agentId).resources?.skills).toEqual([
+			{
+				name: "code-review",
+				source: expect.objectContaining({ kind: "cwd" }),
+			},
+		]);
+	});
+
+	it("drops contributed resources from the pipelines when the runner is stale", async () => {
+		const env = new MemoryExecutionEnv();
+		await env.writeFile(
+			"/workspace/project/.widi/skills/code-review/SKILL.md",
+			["---", "name: code-review", "description: Core.", "---", "BODY"].join(
+				"\n",
+			),
+		);
+		env.dirs.add("/workspace/project/.widi/skills");
+		await env.writeFile(
+			"/ext/skills/security-review/SKILL.md",
+			[
+				"---",
+				"name: security-review",
+				"description: Contributed.",
+				"---",
+				"BODY",
+			].join("\n"),
+		);
+		env.dirs.add("/ext/skills");
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "stale-contributor-profile",
+			persist: false,
+			extensions: ["contributor"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory(
+			"contributor",
+			createResourceExtension({ skillPaths: ["/ext/skills"] }),
+		);
+		const agentId = await orchestrator.spawnAgent();
+
+		const before = await orchestrator.listAgentSkillCandidates(agentId);
+		expect(before.skills.map((skill) => skill.value)).toEqual([
+			"code-review",
+			"security-review",
+		]);
+
+		requireAgentRecord(orchestrator, agentId).extensionRunner?.invalidate(
+			"stale for test",
+		);
+		const after = await orchestrator.listAgentSkillCandidates(agentId);
+		expect(after.skills.map((skill) => skill.value)).toEqual(["code-review"]);
+	});
+
 	it("persists input rewrites as a core input-transform entry", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = {
@@ -2757,6 +2998,7 @@ describe("AgentOrchestrator", () => {
 					source: { kind: "extension", id: "sample" },
 				},
 			],
+			resourceContributions: [],
 			stale: { stale: false },
 		});
 	});

@@ -59,6 +59,12 @@ export type ExtensionCommandContribution =
 			expand: ExtensionInlineCommandExpand;
 	  };
 
+export interface ExtensionResourceContribution {
+	readonly extensionId: string;
+	readonly skillPaths: readonly string[];
+	readonly promptTemplatePaths: readonly string[];
+}
+
 export interface ExtensionObserverRegistration {
 	extensionId: string;
 	eventName: ExtensionObservedEventName;
@@ -155,6 +161,7 @@ export interface LoadedExtensionScope {
 	diagnostics: readonly CoreDiagnostic[];
 	toolContributions: readonly ExtensionToolContribution[];
 	commandContributions: readonly ExtensionCommandContribution[];
+	resourceContributions: readonly ExtensionResourceContribution[];
 	observerHandlers: ReadonlyMap<
 		ExtensionObservedEventName,
 		readonly ExtensionObserverRegistration[]
@@ -363,6 +370,7 @@ export class ExtensionLoader {
 		const diagnostics: CoreDiagnostic[] = [];
 		const toolContributions: ExtensionToolContribution[] = [];
 		const commandContributions: ExtensionCommandContribution[] = [];
+		const resourceContributions: ExtensionResourceContribution[] = [];
 		const observerHandlers = new Map<
 			ExtensionObservedEventName,
 			ExtensionObserverRegistration[]
@@ -401,6 +409,7 @@ export class ExtensionLoader {
 						profileId: options.profileId,
 						toolContributions,
 						commandContributions,
+						resourceContributions,
 						observerHandlers,
 						interceptorHandlers,
 					}),
@@ -429,6 +438,7 @@ export class ExtensionLoader {
 			diagnostics,
 			toolContributions,
 			commandContributions,
+			resourceContributions,
 			observerHandlers,
 			interceptorHandlers,
 		};
@@ -744,6 +754,7 @@ function createActivationApi(options: {
 	profileId: string;
 	toolContributions: ExtensionToolContribution[];
 	commandContributions: ExtensionCommandContribution[];
+	resourceContributions: ExtensionResourceContribution[];
 	observerHandlers: Map<
 		ExtensionObservedEventName,
 		ExtensionObserverRegistration[]
@@ -800,6 +811,18 @@ function createActivationApi(options: {
 				handler: command.handler,
 			});
 		},
+		contributeResources: (paths) => {
+			const skillPaths = normalizeResourcePaths(paths.skillPaths);
+			const promptTemplatePaths = normalizeResourcePaths(
+				paths.promptTemplatePaths,
+			);
+			if (skillPaths.length === 0 && promptTemplatePaths.length === 0) return;
+			options.resourceContributions.push({
+				extensionId: options.extensionId,
+				skillPaths,
+				promptTemplatePaths,
+			});
+		},
 		observe: (eventName, handler) => {
 			const registrations = options.observerHandlers.get(eventName) ?? [];
 			registrations.push({
@@ -820,6 +843,20 @@ function createActivationApi(options: {
 			options.interceptorHandlers.set(eventName, registrations);
 		},
 	};
+}
+
+function normalizeResourcePaths(
+	paths: readonly string[] | undefined,
+): string[] {
+	const seen = new Set<string>();
+	const normalized: string[] = [];
+	for (const rawPath of paths ?? []) {
+		const path = rawPath.trim();
+		if (!path || seen.has(path)) continue;
+		seen.add(path);
+		normalized.push(path);
+	}
+	return normalized;
 }
 
 function normalizeExtensionIds(extensionIds: readonly string[]): string[] {

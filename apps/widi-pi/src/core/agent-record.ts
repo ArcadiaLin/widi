@@ -12,6 +12,7 @@ import type {
 	ExtensionRunner,
 	ExtensionRunnerSnapshot,
 } from "./extension/index.ts";
+import type { ResourceSource } from "./resource-loader.ts";
 import type { AgentSessionMetadata } from "./session-manager.ts";
 import type {
 	AgentId,
@@ -26,6 +27,18 @@ export interface AgentProfileRecordReference {
 	readonly entryId?: string;
 }
 
+// Resolved resource provenance facts (ME slice 8): which named resources the
+// agent harness was built with and which root or extension each came from.
+export interface AgentResourceFact {
+	readonly name: string;
+	readonly source: ResourceSource;
+}
+
+export interface AgentResourcesSnapshot {
+	readonly skills: readonly AgentResourceFact[];
+	readonly promptTemplates: readonly AgentResourceFact[];
+}
+
 export interface AgentRecord {
 	readonly agentId: AgentId;
 	status: AgentLifecycleStatus;
@@ -37,6 +50,7 @@ export interface AgentRecord {
 	model: RuntimeModel;
 	harness?: AgentHarness;
 	toolSnapshot?: AgentToolsSnapshot;
+	resources?: AgentResourcesSnapshot;
 	extensionRunner?: ExtensionRunner;
 	resourceDiagnostics: OrchestratorDiagnostic[];
 	extensionDiagnostics: OrchestratorDiagnostic[];
@@ -51,6 +65,7 @@ export interface AgentRecordSnapshot {
 	readonly model: RuntimeModel;
 	readonly hasHarness: boolean;
 	readonly toolSnapshot?: AgentToolsSnapshot;
+	readonly resources?: AgentResourcesSnapshot;
 	readonly extensionIds: readonly string[];
 	readonly extensions: readonly ExtensionIdentity[];
 	readonly extensionSnapshot: ExtensionRunnerSnapshot;
@@ -125,6 +140,12 @@ export function snapshotAgentRecord(record: AgentRecord): AgentRecordSnapshot {
 					activeToolNames: [...record.toolSnapshot.activeToolNames],
 				}
 			: undefined,
+		resources: record.resources
+			? {
+					skills: [...record.resources.skills],
+					promptTemplates: [...record.resources.promptTemplates],
+				}
+			: undefined,
 		extensionIds: record.extensionRunner
 			? [...record.extensionRunner.extensionIds]
 			: [],
@@ -147,6 +168,7 @@ export function createEmptyExtensionSnapshot(): ExtensionRunnerSnapshot {
 		hooks: [],
 		commands: [],
 		toolContributions: [],
+		resourceContributions: [],
 		stale: { stale: false },
 	};
 }

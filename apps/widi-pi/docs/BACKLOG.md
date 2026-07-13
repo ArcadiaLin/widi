@@ -41,9 +41,9 @@ Extension surface 的设计与实施已收编为 [ME milestone](TODO.md#me-exten
 ## Profiles And Resources
 
 - `capabilities` 字段更名评估（review 建议 `permissions`/`policy`，与 Core Capability 消歧）。（到 runtime policy 的映射已无剩余待举证项：`acceptsUserInput` 归 command gateway，`canRequestUser` 归 extension scoped `requestHuman`（ME 切片 3），`canSpawn` 属 M3。）
-- Resource registry 评估：当前 resource loader 只做轻量加载，等 resources 复杂化再决定。
-- Duplicate skill/prompt template 处理：diagnostic、覆盖、合并或保留全部。
-- Resolved resource source 是否进入 inspect facts、harness metadata 或 session custom entry。
+- （Resource registry 评估已随 ME 切片 8 定案并落地，2026-07-13：不建 registry 类，loader 保持轻量路径解析，extension 贡献走激活期路径声明 `contributeResources()`；见 extension-experiment.md 切片 8 记录。）
+- Duplicate skill/prompt template 处理：diagnostic、覆盖、合并或保留全部。（extension 贡献与 core 资源的冲突已随 ME 切片 8 落地：first-registration-wins + `extension.resource_conflict` diagnostic；core roots 之间的重复处理仍待定。）
+- Resolved resource source 进 inspect facts 已随 ME 切片 8 落地（2026-07-13，agent snapshot `resources` 事实）；是否进 harness metadata 或 session custom entry 维持待举证。
 - Profile frontmatter schema 文档和示例（含 `commands` 门控字段）。
 
 ## Model / Auth / Settings
