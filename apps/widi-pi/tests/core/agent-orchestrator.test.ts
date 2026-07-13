@@ -1824,6 +1824,250 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
+	it("expands extension inline commands through the full command pipeline", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "glossary-profile",
+			persist: false,
+			extensions: ["glossary"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		// The expansion data lives in the factory closure; the expand callback
+		// receives the argument only (side-effect free by shape).
+		const glossary = new Map([["tdd", "test-driven development"]]);
+		orchestrator.registerExtensionFactory("glossary", (api) => {
+			api.registerCommand({
+				name: "glossary",
+				placement: "inline",
+				description: "Expand a glossary term.",
+				expand: (argument) => glossary.get(argument) ?? argument,
+			});
+		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const prompted: string[] = [];
+		Object.assign(orchestrator, {
+			promptAgent: async (_agentId: string, text: string) => {
+				prompted.push(text);
+				return { role: "assistant" } as AssistantMessage;
+			},
+		});
+
+		expect(orchestrator.listCommands(agentId)).toContainEqual(
+			expect.objectContaining({
+				name: "glossary",
+				placement: "inline",
+				trigger: "<",
+				closeTrigger: ">",
+			}),
+		);
+		await expect(
+			orchestrator.inputAgent(agentId, "explain <glossary:tdd> briefly"),
+		).resolves.toMatchObject({ kind: "prompt" });
+		expect(prompted).toEqual(["explain test-driven development briefly"]);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "command_completed",
+				command: expect.objectContaining({
+					name: "glossary",
+					trigger: "<",
+					argument: "tdd",
+					placement: "inline",
+					source: { kind: "extension", extensionId: "glossary" },
+				}),
+				result: "test-driven development",
+			}),
+		);
+		// The dual record covers extension expansions too.
+		const tree = await orchestrator.getAgentSessionTree(agentId);
+		expect(tree.entries).toContainEqual(
+			expect.objectContaining({
+				type: "custom",
+				customType: "core:command_expansion",
+				data: expect.objectContaining({
+					originalText: "explain <glossary:tdd> briefly",
+				}),
+			}),
+		);
+	});
+
+	it("rejects the whole input when an extension inline expansion fails", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "broken-glossary-profile",
+			persist: false,
+			extensions: ["glossary"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("glossary", (api) => {
+			api.registerCommand({
+				name: "glossary",
+				placement: "inline",
+				expand: () => {
+					throw new Error("glossary unavailable");
+				},
+			});
+		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const prompted: string[] = [];
+		Object.assign(orchestrator, {
+			promptAgent: async (_agentId: string, text: string) => {
+				prompted.push(text);
+				return { role: "assistant" } as AssistantMessage;
+			},
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "explain <glossary:tdd> briefly"),
+		).resolves.toMatchObject({
+			kind: "failed",
+			diagnostic: { code: "orchestrator.command_failed" },
+		});
+		expect(prompted).toEqual([]);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "command_failed",
+				command: expect.objectContaining({
+					name: "glossary",
+					placement: "inline",
+					source: { kind: "extension", extensionId: "glossary" },
+				}),
+			}),
+		);
+	});
+
+	it("treats extension inline tokens as plain text when the runner is stale", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "stale-glossary-profile",
+			persist: false,
+			extensions: ["glossary"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("glossary", (api) => {
+			api.registerCommand({
+				name: "glossary",
+				placement: "inline",
+				expand: () => "expanded",
+			});
+		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const agentId = await orchestrator.spawnAgent();
+		requireAgentRecord(orchestrator, agentId).extensionRunner?.invalidate(
+			"stale for test",
+		);
+		const prompted: string[] = [];
+		Object.assign(orchestrator, {
+			promptAgent: async (_agentId: string, text: string) => {
+				prompted.push(text);
+				return { role: "assistant" } as AssistantMessage;
+			},
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "explain <glossary:tdd> briefly"),
+		).resolves.toMatchObject({ kind: "prompt" });
+		expect(prompted).toEqual(["explain <glossary:tdd> briefly"]);
+		expect(events).not.toContainEqual(
+			expect.objectContaining({ type: "command_detected" }),
+		);
+	});
+
+	it("persists input rewrites as a core input-transform entry", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "rewriter-entry-profile",
+			persist: false,
+			extensions: ["rewriter"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtensionFactory("rewriter", (api) => {
+			api.intercept("input", (event) => {
+				if (event.text.includes("secret")) {
+					return { block: true, reason: "Sensitive input." };
+				}
+				return { text: `${event.text}!` };
+			});
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const prompted: string[] = [];
+		Object.assign(orchestrator, {
+			promptAgent: async (_agentId: string, text: string) => {
+				prompted.push(text);
+				return { role: "assistant" } as AssistantMessage;
+			},
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "hello"),
+		).resolves.toMatchObject({ kind: "prompt" });
+		expect(prompted).toEqual(["hello!"]);
+		const findTransformEntries = async () =>
+			(await orchestrator.getAgentSessionTree(agentId)).entries.filter(
+				(entry) =>
+					entry.type === "custom" &&
+					entry.customType === "core:input_transform",
+			);
+		await expect(findTransformEntries()).resolves.toMatchObject([
+			{
+				data: {
+					inputId: expect.any(String),
+					originalText: "hello",
+					text: "hello!",
+					transformedBy: ["rewriter"],
+				},
+			},
+		]);
+
+		// Blocked input never reaches the session: no entry is written.
+		await expect(
+			orchestrator.inputAgent(agentId, "share the secret"),
+		).resolves.toMatchObject({ kind: "blocked" });
+		await expect(findTransformEntries()).resolves.toHaveLength(1);
+	});
+
 	it("starts a new empty session from the current agent", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);

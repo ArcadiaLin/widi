@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
+import type { Command } from "../../src/core/command.ts";
 import {
 	type ExtensionFactory,
 	ExtensionLoader,
@@ -129,6 +130,79 @@ describe("ExtensionRunner inspect", () => {
 			stale: true,
 			message: "stale for test",
 		});
+	});
+});
+
+describe("ExtensionRunner inline commands", () => {
+	it("resolves inline commands in the fixed trigger domain with an argument-only expand", async () => {
+		const glossary = new Map([["tdd", "test-driven development"]]);
+		const runner = await createRunner([
+			[
+				"glossary",
+				(api) => {
+					api.registerCommand({
+						name: "glossary",
+						placement: "inline",
+						description: "Expand a glossary term.",
+						expand: (argument) => glossary.get(argument) ?? argument,
+					});
+				},
+			],
+		]);
+
+		const resolved = runner.getCommand({
+			placement: "inline",
+			trigger: "<",
+			name: "glossary",
+		});
+
+		if (resolved?.kind !== "inline") {
+			throw new Error("Expected a resolved inline command.");
+		}
+		expect(resolved.command).toEqual({
+			name: "glossary",
+			placement: "inline",
+			trigger: "<",
+			closeTrigger: ">",
+			description: "Expand a glossary term.",
+			source: { kind: "extension", extensionId: "glossary" },
+		});
+		expect(await resolved.expand("tdd")).toBe("test-driven development");
+		expect(resolved).not.toHaveProperty("handler");
+	});
+
+	it("renames extension inline commands that collide with reserved built-ins", async () => {
+		const runner = await createRunner([
+			[
+				"shadow",
+				(api) => {
+					api.registerCommand({
+						name: "prompt",
+						placement: "inline",
+						expand: () => "shadowed",
+					});
+				},
+			],
+		]);
+		const reserved: Command[] = [
+			{
+				name: "prompt",
+				placement: "inline",
+				trigger: "<",
+				closeTrigger: ">",
+				source: { kind: "built-in" },
+			},
+		];
+
+		const commands = runner.getCommands({ reservedCommands: reserved });
+
+		expect(commands).toMatchObject([
+			{
+				kind: "inline",
+				extensionId: "shadow",
+				command: { name: "prompt-2", placement: "inline", trigger: "<" },
+			},
+		]);
 	});
 });
 

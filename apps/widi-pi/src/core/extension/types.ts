@@ -305,7 +305,7 @@ export interface ExtensionCommandArguments {
 	): Promise<CommandCandidates> | CommandCandidates;
 }
 
-export interface ExtensionCommandDefinition {
+export interface ExtensionLineCommandDefinition {
 	readonly name: string;
 	readonly placement?: Extract<CommandPlacement, "line">;
 	readonly trigger?: string;
@@ -314,6 +314,31 @@ export interface ExtensionCommandDefinition {
 	readonly arguments?: ExtensionCommandArguments;
 	readonly handler: ExtensionCommandHandler;
 }
+
+/**
+ * Inline expansion is side-effect free by shape (ME slice 7): the callback
+ * receives the argument string only - no context or actions handle - and
+ * returns the replacement text. Data an expansion needs is captured in the
+ * factory closure at activation time.
+ */
+export type ExtensionInlineCommandExpand = (
+	argument: string,
+) => Promise<string> | string;
+
+// Inline commands share the fixed built-in trigger domain
+// (`<name:argument>`); there is no trigger field to declare.
+export interface ExtensionInlineCommandDefinition {
+	readonly name: string;
+	readonly placement: Extract<CommandPlacement, "inline">;
+	readonly description?: string;
+	readonly argumentHint?: string;
+	readonly arguments?: ExtensionCommandArguments;
+	readonly expand: ExtensionInlineCommandExpand;
+}
+
+export type ExtensionCommandDefinition =
+	| ExtensionLineCommandDefinition
+	| ExtensionInlineCommandDefinition;
 
 export type ExtensionObserver<
 	TEvent extends ExtensionObservedEvent = ExtensionObservedEvent,

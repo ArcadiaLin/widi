@@ -6,6 +6,12 @@ import type { AgentId, AgentLifecycleStatus } from "./types.ts";
 
 export type CommandPlacement = "line" | "inline";
 
+// Inline commands live in one fixed trigger domain (`<name:argument>`);
+// built-in and extension inline commands share it so input scanning stays a
+// single syntax.
+export const INLINE_COMMAND_TRIGGER = "<";
+export const INLINE_COMMAND_CLOSE_TRIGGER = ">";
+
 export interface Command {
 	readonly name: string;
 	readonly placement: CommandPlacement;
@@ -368,8 +374,8 @@ export const BUILT_IN_INLINE_COMMANDS: readonly BuiltInInlineCommandBinding[] =
 			command: {
 				name: "prompt",
 				placement: "inline",
-				trigger: "<",
-				closeTrigger: ">",
+				trigger: INLINE_COMMAND_TRIGGER,
+				closeTrigger: INLINE_COMMAND_CLOSE_TRIGGER,
 				description: "Insert a prompt template inline.",
 				argumentHint: "<template>",
 				source: { kind: "built-in" },
@@ -391,8 +397,8 @@ export const BUILT_IN_INLINE_COMMANDS: readonly BuiltInInlineCommandBinding[] =
 			command: {
 				name: "skill",
 				placement: "inline",
-				trigger: "<",
-				closeTrigger: ">",
+				trigger: INLINE_COMMAND_TRIGGER,
+				closeTrigger: INLINE_COMMAND_CLOSE_TRIGGER,
 				description: "Apply a skill inline.",
 				argumentHint: "<skill_name>",
 				source: { kind: "built-in" },

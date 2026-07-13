@@ -28,12 +28,14 @@ Extension surface 的设计与实施已收编为 [ME milestone](TODO.md#me-exten
 - `setLabel`（依赖 pi session label 的 upstream 对齐）。
 - `user_bash` hook（依赖未来 bash tool 能力）。
 - Client adapter 的 extension host（shortcut/flag/renderer 等 UI 自由度的承载处）。
+- `custom_message` 通道（pi `sendMessage`：持久 + 进模型 context + extension 归因，ME 切片 7 裁决不做）：待真实 consumer 举证；届时需一并定 deliverAs/triggerTurn 排队语义与 customType namespace。
+- Per-extension storage 目录/KV API（ME 切片 7 裁决不做）：custom entry 覆盖 session 相关状态，大存储 extension 经 `exec` 自理；真实需求出现时需一并裁决多进程写入、reload 与 trust 边界。
 
 ## Session And State
 
-- Missing extension、version mismatch、restore failed 时如何展示已有 custom entries。
+- Missing extension / version mismatch / restore failed 时孤儿 custom entries 的产品展示：归 client adapter，依赖 ME 切片 10 的 `extension.version_incompatible` 语义。core 侧保留语义已裁决（2026-07-13）：条目原样保留、不删不隐藏、经 `getAgentSessionTree` 可达，见 extensions.md custom entry 契约节。
 - Header metadata schema version/migration（在出现第二个写入者之前不做）。
-- （custom entry fork/compaction/export 与 `custom_message` policy 已入 [ME 切片 7](TODO.md#me-extension-surfacem2-之后m3-之前)。）
+- （custom entry fork/compaction/export 与 `custom_message` policy 已随 ME 切片 7 定案，2026-07-13；契约见 extensions.md，未收编项的举证缺口见上方 Extension 节。）
 - Inline command 展开的 session custom entry 具体 shape（原始输入 + 展开位置，裁决见 command-experiment.md）。
 
 ## Profiles And Resources

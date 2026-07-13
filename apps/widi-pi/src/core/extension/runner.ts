@@ -21,9 +21,11 @@ import type {
 	ExtensionCommandArguments,
 	ExtensionCommandContext,
 	ExtensionCommandContextActions,
+	ExtensionCommandHandler,
 	ExtensionContext,
 	ExtensionContextActions,
 	ExtensionCoreActions,
+	ExtensionInlineCommandExpand,
 	ExtensionInputEvent,
 	ExtensionInputResult,
 	ExtensionInterceptorEventFor,
@@ -122,11 +124,23 @@ export interface ExtensionCommandSnapshot {
 	readonly command: Command;
 }
 
-export interface ResolvedExtensionCommand {
+export interface ResolvedExtensionLineCommand {
+	readonly kind: "line";
 	readonly extensionId: string;
 	readonly command: Command;
-	readonly handler: ExtensionCommandContribution["handler"];
+	readonly handler: ExtensionCommandHandler;
 }
+
+export interface ResolvedExtensionInlineCommand {
+	readonly kind: "inline";
+	readonly extensionId: string;
+	readonly command: Command;
+	readonly expand: ExtensionInlineCommandExpand;
+}
+
+export type ResolvedExtensionCommand =
+	| ResolvedExtensionLineCommand
+	| ResolvedExtensionInlineCommand;
 
 const patchInspectableFields = [
 	"description",
@@ -764,19 +778,38 @@ function resolveExtensionCommands(
 			});
 		}
 		takenCommandKeys.add(candidateKey);
+		const source = {
+			kind: "extension",
+			extensionId: contribution.extensionId,
+		} as const;
+		if (contribution.placement === "inline") {
+			return {
+				kind: "inline",
+				extensionId: contribution.extensionId,
+				command: {
+					name: invocationName,
+					placement: "inline",
+					trigger: contribution.trigger,
+					closeTrigger: contribution.closeTrigger,
+					description: contribution.description,
+					argumentHint: contribution.argumentHint,
+					arguments: toCommandArguments(contribution.arguments),
+					source,
+				},
+				expand: contribution.expand,
+			};
+		}
 		return {
+			kind: "line",
 			extensionId: contribution.extensionId,
 			command: {
 				name: invocationName,
-				placement: contribution.placement,
+				placement: "line",
 				trigger: contribution.trigger,
 				description: contribution.description,
 				argumentHint: contribution.argumentHint,
 				arguments: toCommandArguments(contribution.arguments),
-				source: {
-					kind: "extension",
-					extensionId: contribution.extensionId,
-				},
+				source,
 			},
 			handler: contribution.handler,
 		};

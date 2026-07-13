@@ -39,7 +39,6 @@ import type { OrchestratorClient } from "./client.ts";
 import {
 	BUILT_IN_COMMANDS,
 	BUILT_IN_INLINE_COMMANDS,
-	type BuiltInInlineCommandBinding,
 	type Command,
 	type CommandArgumentsCompletionPayload,
 	type CommandCandidate,
@@ -248,6 +247,14 @@ interface LineCommandBinding {
 	readonly command: Command;
 	readonly checkStatus?: CommandStatusCheck;
 	execute(args: string): Promise<unknown>;
+}
+
+// Inline bindings normalize to an argument-only expand: built-ins close over
+// the orchestrator here; extension expands are argument-only by contract
+// (side-effect free by shape, ME slice 7).
+interface InlineCommandBinding {
+	readonly command: Command;
+	expand(args: string): Promise<string>;
 }
 
 type CommandArgumentsCompletionResult =
@@ -891,6 +898,16 @@ export class AgentOrchestrator {
 					text: run.text,
 					transformedBy: run.transformedBy,
 					createdAt: now(),
+				});
+				// Dual record (ME slice 7): the session carries the rewritten
+				// text downstream, so the original input must stay recoverable
+				// after resume. Blocked input writes no entry - nothing of it
+				// reaches the session.
+				await this.sessionManager.appendInputTransformEntry(agentId, {
+					inputId,
+					originalText: text,
+					text: run.text,
+					transformedBy: run.transformedBy,
 				});
 				inputText = run.text;
 				inputImages = run.images ? [...run.images] : inputImages;
@@ -2545,10 +2562,10 @@ export class AgentOrchestrator {
 		// inputId so one input's transform and expansion facts correlate.
 		options?: { images?: ImageContent[]; inputId?: string },
 	): Promise<InputResult | undefined> {
-		const matches = scanInlineCommands(
-			text,
-			BUILT_IN_INLINE_COMMANDS.map((binding) => binding.command),
-		);
+		const matches = scanInlineCommands(text, [
+			...BUILT_IN_INLINE_COMMANDS.map((binding) => binding.command),
+			...this._listExtensionInlineCommands(agentId),
+		]);
 		if (matches.length === 0) return undefined;
 
 		const inputId = options?.inputId ?? this._createInputId();
@@ -2559,7 +2576,7 @@ export class AgentOrchestrator {
 			replacement: string;
 		}> = [];
 		for (const match of matches) {
-			const binding = this._findInlineCommand(match);
+			const binding = this._findInlineCommand(agentId, match);
 			if (!binding) continue;
 			const commandId = this._createCommandId();
 			let invocation: CommandInvocation = {
@@ -2630,11 +2647,7 @@ export class AgentOrchestrator {
 				createdAt: now(),
 			});
 			try {
-				const replacement = await binding.expand(
-					this,
-					agentId,
-					commandArgument,
-				);
+				const replacement = await binding.expand(commandArgument);
 				await this._emit({
 					type: "command_completed",
 					agentId,
@@ -2703,13 +2716,40 @@ export class AgentOrchestrator {
 	}
 
 	private _findInlineCommand(
+		agentId: AgentId,
 		match: InlineCommandMatch,
-	): BuiltInInlineCommandBinding | undefined {
-		return BUILT_IN_INLINE_COMMANDS.find(
+	): InlineCommandBinding | undefined {
+		const builtIn = BUILT_IN_INLINE_COMMANDS.find(
 			(binding) =>
 				binding.command.trigger === match.trigger &&
 				binding.command.name === match.name,
 		);
+		if (builtIn) {
+			return {
+				command: builtIn.command,
+				expand: async (args) => await builtIn.expand(this, agentId, args),
+			};
+		}
+		const runner = this._requireAgentRecord(agentId).extensionRunner;
+		if (!runner || runner.isStale()) return undefined;
+		const resolved = runner.getCommand(
+			{ placement: "inline", trigger: match.trigger, name: match.name },
+			{ reservedCommands: getBuiltInCommands() },
+		);
+		if (!resolved || resolved.kind !== "inline") return undefined;
+		return {
+			command: resolved.command,
+			expand: async (args) => await resolved.expand(args),
+		};
+	}
+
+	private _listExtensionInlineCommands(agentId: AgentId): Command[] {
+		const runner = this._requireAgentRecord(agentId).extensionRunner;
+		if (!runner || runner.isStale()) return [];
+		return runner
+			.getCommands({ reservedCommands: getBuiltInCommands() })
+			.filter((resolved) => resolved.kind === "inline")
+			.map((resolved) => resolved.command);
 	}
 
 	private async _completeCommandArguments(options: {
@@ -2830,7 +2870,9 @@ export class AgentOrchestrator {
 				reservedCommands: getBuiltInCommands(),
 			},
 		);
-		if (!extensionCommand) return undefined;
+		if (!extensionCommand || extensionCommand.kind !== "line") {
+			return undefined;
+		}
 		return {
 			command: extensionCommand.command,
 			execute: async (args) => {

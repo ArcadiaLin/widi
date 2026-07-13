@@ -55,6 +55,20 @@ export interface CommandExpansionEntryData {
 	}>;
 }
 
+// Core-owned custom entry recording an extension input rewrite (ME slice 7).
+// Same dual-record discipline as command expansion: the session only carries
+// the rewritten text the model saw, so the human's original input must stay
+// recoverable after resume. Blocked input writes nothing - it never reached
+// the model and left no session state to explain.
+export const INPUT_TRANSFORM_CUSTOM_TYPE = "core:input_transform";
+
+export interface InputTransformEntryData {
+	readonly inputId: string;
+	readonly originalText: string;
+	readonly text: string;
+	readonly transformedBy: readonly string[];
+}
+
 export interface AgentSessionCandidate {
 	readonly id: string;
 	readonly path: string;
@@ -269,6 +283,16 @@ export class SessionManager {
 	): Promise<string> {
 		return await this._requireAgentSession(agentId).appendCustomEntry(
 			COMMAND_EXPANSION_CUSTOM_TYPE,
+			data,
+		);
+	}
+
+	async appendInputTransformEntry(
+		agentId: AgentId,
+		data: InputTransformEntryData,
+	): Promise<string> {
+		return await this._requireAgentSession(agentId).appendCustomEntry(
+			INPUT_TRANSFORM_CUSTOM_TYPE,
 			data,
 		);
 	}

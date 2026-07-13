@@ -436,6 +436,54 @@ describe("SessionManager", () => {
 		).resolves.toMatchObject([{ id: firstId, type: "state" }]);
 	});
 
+	it("keeps extension custom entries as branch facts across fork and compaction", async () => {
+		const fs = new MemoryFileSystem();
+		const manager = new SessionManager({
+			fs,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+		});
+		const session = await manager.createAgentSession({
+			agentId: "main",
+			agentProfile: profile,
+		});
+		await session.appendMessage({
+			role: "user",
+			content: "first",
+			timestamp: 1,
+		});
+		await manager.appendExtensionCustomEntry("main", "writer", "state", {
+			value: 1,
+		});
+		const secondUserId = await session.appendMessage({
+			role: "user",
+			content: "second",
+			timestamp: 2,
+		});
+		await manager.appendExtensionCustomEntry("main", "writer", "state", {
+			value: 2,
+		});
+
+		// Fork before the second user message: the copied path carries the
+		// first entry; the later entry stays on the source branch only.
+		const forkedMetadata = await manager.forkAgentSession("main", {
+			entryId: secondUserId,
+		});
+		await expect(
+			manager.findExtensionCustomEntries(forkedMetadata.id, "writer", "state"),
+		).resolves.toMatchObject([{ data: { value: 1 } }]);
+		await expect(
+			manager.findExtensionCustomEntries("main", "writer", "state"),
+		).resolves.toMatchObject([{ data: { value: 1 } }, { data: { value: 2 } }]);
+
+		// Compaction is a context fact, not a storage fact: entries behind the
+		// cut stay visible to findEntries.
+		await session.appendCompaction("compacted", secondUserId, 100);
+		await expect(
+			manager.findExtensionCustomEntries("main", "writer", "state"),
+		).resolves.toMatchObject([{ data: { value: 1 } }, { data: { value: 2 } }]);
+	});
+
 	it("snapshots, names, and forks persistent agent sessions", async () => {
 		const fs = new MemoryFileSystem();
 		const manager = new SessionManager({

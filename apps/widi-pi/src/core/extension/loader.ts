@@ -3,7 +3,11 @@ import type {
 	FileError,
 	FileInfo,
 } from "@earendil-works/pi-agent-core";
-import { type CommandPlacement, isCommandName } from "../command.ts";
+import {
+	INLINE_COMMAND_CLOSE_TRIGGER,
+	INLINE_COMMAND_TRIGGER,
+	isCommandName,
+} from "../command.ts";
 import {
 	type CoreDiagnostic,
 	createDiagnostic,
@@ -17,9 +21,9 @@ import {
 import type {
 	ExtensionActivationApi,
 	ExtensionCommandArguments,
-	ExtensionCommandDefinition,
 	ExtensionCommandHandler,
 	ExtensionFactory,
+	ExtensionInlineCommandExpand,
 	ExtensionInterceptorFor,
 	ExtensionInterceptorName,
 	ExtensionObservedEventName,
@@ -32,16 +36,28 @@ import type {
 type ExtensionToolDefinition = ToolDefinition;
 type ExtensionToolDefinitionPatch = ToolDefinitionPatch;
 
-export interface ExtensionCommandContribution {
-	extensionId: string;
-	name: string;
-	placement: CommandPlacement;
-	trigger: string;
-	description?: string;
-	argumentHint?: string;
-	arguments?: ExtensionCommandArguments;
-	handler: ExtensionCommandHandler;
-}
+export type ExtensionCommandContribution =
+	| {
+			extensionId: string;
+			placement: "line";
+			name: string;
+			trigger: string;
+			description?: string;
+			argumentHint?: string;
+			arguments?: ExtensionCommandArguments;
+			handler: ExtensionCommandHandler;
+	  }
+	| {
+			extensionId: string;
+			placement: "inline";
+			name: string;
+			trigger: string;
+			closeTrigger: string;
+			description?: string;
+			argumentHint?: string;
+			arguments?: ExtensionCommandArguments;
+			expand: ExtensionInlineCommandExpand;
+	  };
 
 export interface ExtensionObserverRegistration {
 	extensionId: string;
@@ -759,16 +775,29 @@ function createActivationApi(options: {
 			});
 		},
 		registerCommand: (command) => {
-			const definition = normalizeCommandDefinition(command);
+			if (command.placement === "inline") {
+				options.commandContributions.push({
+					extensionId: options.extensionId,
+					placement: "inline",
+					name: normalizeCommandName(command.name),
+					trigger: INLINE_COMMAND_TRIGGER,
+					closeTrigger: INLINE_COMMAND_CLOSE_TRIGGER,
+					description: command.description,
+					argumentHint: command.argumentHint,
+					arguments: command.arguments,
+					expand: command.expand,
+				});
+				return;
+			}
 			options.commandContributions.push({
 				extensionId: options.extensionId,
-				name: definition.name,
-				placement: definition.placement ?? "line",
-				trigger: definition.trigger ?? "/",
-				description: definition.description,
-				argumentHint: definition.argumentHint,
-				arguments: definition.arguments,
-				handler: definition.handler,
+				placement: "line",
+				name: normalizeCommandName(command.name),
+				trigger: normalizeLineCommandTrigger(command.trigger),
+				description: command.description,
+				argumentHint: command.argumentHint,
+				arguments: command.arguments,
+				handler: command.handler,
 			});
 		},
 		observe: (eventName, handler) => {
@@ -805,30 +834,27 @@ function normalizeExtensionIds(extensionIds: readonly string[]): string[] {
 	return normalized;
 }
 
-function normalizeCommandDefinition(
-	command: ExtensionCommandDefinition,
-): ExtensionCommandDefinition {
-	const name = command.name.trim();
-	if (!name) {
+function normalizeCommandName(name: string): string {
+	const normalized = name.trim();
+	if (!normalized) {
 		throw new Error("Extension command name must not be empty.");
 	}
-	if (!isCommandName(name)) {
+	if (!isCommandName(normalized)) {
 		throw new Error(
 			"Extension command name must start with a letter or digit and contain only letters, digits, '.', '_', or '-'.",
 		);
 	}
-	const trigger = command.trigger?.trim() ?? "/";
-	if (!trigger || /[\s:]/u.test(trigger)) {
+	return normalized;
+}
+
+function normalizeLineCommandTrigger(trigger: string | undefined): string {
+	const normalized = trigger?.trim() ?? "/";
+	if (!normalized || /[\s:]/u.test(normalized)) {
 		throw new Error(
 			"Extension command trigger must not be empty or contain ':' or whitespace.",
 		);
 	}
-	return {
-		...command,
-		name,
-		placement: "line",
-		trigger,
-	};
+	return normalized;
 }
 
 async function discoverDirectory(
