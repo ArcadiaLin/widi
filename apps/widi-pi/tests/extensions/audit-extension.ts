@@ -18,6 +18,13 @@ export interface AuditAskRule {
 	readonly prompt: string;
 }
 
+// Kill switch: abort the whole run when the tool is requested, not just
+// block the single call.
+export interface AuditAbortRule {
+	readonly tool: string;
+	readonly reason: string;
+}
+
 export interface AuditInputDenyRule {
 	readonly match: string;
 	readonly reason: string;
@@ -26,6 +33,7 @@ export interface AuditInputDenyRule {
 export interface AuditPolicy {
 	readonly deny?: readonly AuditDenyRule[];
 	readonly ask?: readonly AuditAskRule[];
+	readonly abortOn?: readonly AuditAbortRule[];
 	readonly denyInput?: readonly AuditInputDenyRule[];
 	readonly recordHarnessEvents?: readonly AgentHarnessEvent["type"][];
 	readonly recordCoreEvents?: readonly Exclude<
@@ -43,7 +51,12 @@ export interface AuditVerdictEntry {
 	readonly toolCallId: string;
 	readonly toolName: string;
 	readonly outcome: "allowed" | "blocked";
-	readonly decidedBy: "default" | "deny_rule" | "human" | "human_unavailable";
+	readonly decidedBy:
+		| "abort_rule"
+		| "default"
+		| "deny_rule"
+		| "human"
+		| "human_unavailable";
 	readonly reason?: string;
 }
 
@@ -60,6 +73,9 @@ export function createAuditExtension(policy: AuditPolicy): ExtensionFactory {
 	);
 	const askRules = new Map(
 		(policy.ask ?? []).map((rule) => [rule.tool, rule] as const),
+	);
+	const abortRules = new Map(
+		(policy.abortOn ?? []).map((rule) => [rule.tool, rule] as const),
 	);
 	const inputDenyRules = [...(policy.denyInput ?? [])];
 	const recordedHarnessEvents = new Set(policy.recordHarnessEvents ?? []);
@@ -101,6 +117,27 @@ export function createAuditExtension(policy: AuditPolicy): ExtensionFactory {
 		}
 
 		api.intercept("tool_call", async (event, context) => {
+			const abortRule = abortRules.get(event.toolName);
+			if (abortRule) {
+				try {
+					await context.actions.abort();
+				} catch {
+					// The kill switch stays fail-closed: the tool call is blocked
+					// below even when the abort action itself fails.
+				}
+				await context.session.appendEntry<AuditVerdictEntry>(
+					AUDIT_VERDICT_ENTRY_TYPE,
+					{
+						toolCallId: event.toolCallId,
+						toolName: event.toolName,
+						outcome: "blocked",
+						decidedBy: "abort_rule",
+						reason: abortRule.reason,
+					},
+				);
+				return { block: true, reason: abortRule.reason };
+			}
+
 			const denied = denyRules.get(event.toolName);
 			if (denied) {
 				await context.session.appendEntry<AuditVerdictEntry>(

@@ -64,9 +64,9 @@ async function createAuditHarness(
 		),
 	});
 	for (const extension of options.beforeAudit ?? []) {
-		orchestrator.registerExtensionFactory(extension.id, extension.factory);
+		orchestrator.registerExtension(extension.id, extension.factory);
 	}
-	orchestrator.registerExtensionFactory("audit", createAuditExtension(policy));
+	orchestrator.registerExtension("audit", createAuditExtension(policy));
 	const events: OrchestratorEvent[] = [];
 	orchestrator.subscribe((event) => {
 		events.push(event);
@@ -185,6 +185,42 @@ describe("audit extension consumer", () => {
 					outcome: "blocked",
 					decidedBy: "deny_rule",
 					reason: "Repository is read-only.",
+				},
+			},
+		]);
+	});
+
+	it("aborts the run through the scoped kill switch and blocks the call", async () => {
+		const { orchestrator, agentId } = await createAuditHarness({
+			abortOn: [{ tool: "bash", reason: "Shell access ends the run." }],
+		});
+		const aborted: string[] = [];
+		Object.assign(orchestrator, {
+			abortAgent: async (abortedAgentId: string) => {
+				aborted.push(abortedAgentId);
+			},
+		});
+
+		await expect(
+			runToolCall(orchestrator, agentId, "call-3", "bash"),
+		).resolves.toEqual({
+			block: true,
+			reason: "Shell access ends the run.",
+		});
+		expect(aborted).toEqual([agentId]);
+		await expect(
+			readAuditEntries<AuditVerdictEntry>(
+				orchestrator,
+				agentId,
+				AUDIT_VERDICT_ENTRY_TYPE,
+			),
+		).resolves.toMatchObject([
+			{
+				data: {
+					toolCallId: "call-3",
+					outcome: "blocked",
+					decidedBy: "abort_rule",
+					reason: "Shell access ends the run.",
 				},
 			},
 		]);

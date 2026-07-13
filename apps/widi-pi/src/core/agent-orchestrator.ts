@@ -381,11 +381,8 @@ export class AgentOrchestrator {
 		await this._publishDiagnostics(this._drainCoreDiagnostics());
 	}
 
-	registerExtensionFactory(
-		extensionId: string,
-		module: ExtensionModule,
-	): () => void {
-		return this.extensionLoader.registerExtensionFactory(extensionId, module);
+	registerExtension(extensionId: string, module: ExtensionModule): () => void {
+		return this.extensionLoader.registerExtension(extensionId, module);
 	}
 
 	getAgentStatus(agentId: AgentId): AgentLifecycleStatus {
@@ -2201,9 +2198,18 @@ export class AgentOrchestrator {
 			listCommands: (agentId) => this.listCommands(agentId),
 			setAgentModelByReference: async (agentId, reference) =>
 				await this.setAgentModelByReference(agentId, reference),
+			getAgentModel: (agentId) => this.getAgentModel(agentId),
+			listModelCandidates: async () =>
+				(await this.listAvailableModelCandidates()).models,
 			getAgentThinkingLevel: (agentId) => this.getAgentThinkingLevel(agentId),
 			setAgentThinkingLevel: async (agentId, level) => {
 				await this.setAgentThinkingLevel(agentId, level);
+			},
+			abortAgent: async (agentId) => {
+				await this.abortAgent(agentId);
+			},
+			compactAgent: async (agentId, customInstructions) => {
+				await this.compactAgent(agentId, customInstructions);
 			},
 			// Trust ruling (extension-experiment.md): exec runs arbitrary
 			// commands in the project cwd, so it is denied until the project

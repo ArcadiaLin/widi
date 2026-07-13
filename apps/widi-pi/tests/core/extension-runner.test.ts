@@ -12,7 +12,7 @@ async function createRunner(
 ): Promise<ExtensionRunner> {
 	const loader = new ExtensionLoader();
 	for (const [extensionId, factory] of factories) {
-		loader.registerExtensionFactory(extensionId, factory);
+		loader.registerExtension(extensionId, factory);
 	}
 	const scope = await loader.loadForAgent({
 		agentId: "agent",
@@ -25,7 +25,7 @@ async function createRunner(
 describe("ExtensionRunner inspect", () => {
 	it("exposes serializable facts without handler or tool implementation closures", async () => {
 		const loader = new ExtensionLoader();
-		loader.registerExtensionFactory("sample", (api) => {
+		loader.registerExtension("sample", (api) => {
 			api.observe("agent_harness_event", () => {});
 			api.observe("command_completed", (event) => {
 				void event.result;
@@ -116,7 +116,7 @@ describe("ExtensionRunner inspect", () => {
 
 	it("reports stale state after invalidation", async () => {
 		const loader = new ExtensionLoader();
-		loader.registerExtensionFactory("sample", () => {});
+		loader.registerExtension("sample", () => {});
 		const scope = await loader.loadForAgent({
 			agentId: "agent",
 			profileId: "profile",
@@ -200,7 +200,7 @@ describe("ExtensionRunner inline commands", () => {
 			{
 				kind: "inline",
 				extensionId: "shadow",
-				command: { name: "prompt-2", placement: "inline", trigger: "<" },
+				command: { name: "prompt-1", placement: "inline", trigger: "<" },
 			},
 		]);
 	});

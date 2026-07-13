@@ -171,8 +171,16 @@ export interface ExtensionActions {
 	getSessionName(): Promise<string | undefined>;
 	getCommands(): Command[];
 	setModel(reference: string): Promise<RuntimeModel>;
+	getModel(): RuntimeModel;
+	// Candidate values are model references accepted by setModel.
+	listModelCandidates(): Promise<CommandCandidates>;
 	getThinkingLevel(): ThinkingLevel;
 	setThinkingLevel(level: ThinkingLevel): Promise<void>;
+	// Aborts the agent's current run; queued steer/followUp input is cleared.
+	abort(): Promise<void>;
+	// Triggers session compaction; completion facts arrive via the raw
+	// `session_compact` harness event.
+	compact(customInstructions?: string): Promise<void>;
 	// Denied with a structured diagnostic when the project is not trusted.
 	exec(
 		command: string,
@@ -220,8 +228,12 @@ export interface ExtensionCoreActions {
 		agentId: string,
 		reference: string,
 	): Promise<RuntimeModel>;
+	getAgentModel(agentId: string): RuntimeModel;
+	listModelCandidates(): Promise<CommandCandidates>;
 	getAgentThinkingLevel(agentId: string): ThinkingLevel;
 	setAgentThinkingLevel(agentId: string, level: ThinkingLevel): Promise<void>;
+	abortAgent(agentId: string): Promise<void>;
+	compactAgent(agentId: string, customInstructions?: string): Promise<void>;
 	exec(
 		agentId: string,
 		extensionId: string,
@@ -269,11 +281,14 @@ export interface ExtensionSessionActions {
 export interface ExtensionActionFailure {
 	extensionId: string;
 	action:
+		| "abort"
 		| "appendEntry"
+		| "compact"
 		| "exec"
 		| "findEntries"
 		| "followUp"
 		| "getSessionName"
+		| "listModelCandidates"
 		| "prompt"
 		| "requestHuman"
 		| "setActiveTools"
@@ -431,9 +446,8 @@ export interface ExtensionDefinition {
 }
 
 /**
- * What an extension module default-exports, and what
- * `registerExtensionFactory` accepts: a bare factory or a versioned
- * definition. One declaration shape covers all three extension sources
- * (factory, file, package).
+ * What an extension module default-exports, and what `registerExtension`
+ * accepts: a bare factory or a versioned definition. One declaration shape
+ * covers all three extension sources (factory, file, package).
  */
 export type ExtensionModule = ExtensionFactory | ExtensionDefinition;

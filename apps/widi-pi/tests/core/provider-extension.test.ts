@@ -58,7 +58,7 @@ async function createProviderHarness(
 		await orchestrator.settingManager.setProjectTrusted(false);
 	}
 	for (const extension of extensions) {
-		orchestrator.registerExtensionFactory(extension.id, extension.factory);
+		orchestrator.registerExtension(extension.id, extension.factory);
 	}
 	const events: OrchestratorEvent[] = [];
 	orchestrator.subscribe((event) => {
@@ -348,7 +348,7 @@ describe("provider extension consumer", () => {
 		]);
 
 		// A reloaded runner that stops contributing withdraws the provider.
-		orchestrator.registerExtensionFactory("gateway", () => {});
+		orchestrator.registerExtension("gateway", () => {});
 		await orchestrator.reloadExtensions({ agentIds: [agentId] });
 		expect(modelRegistry.getExtensionProviderRegistrations()).toEqual([]);
 		expect(modelRegistry.find("gateway", "gateway-model")).toBe(undefined);

@@ -283,10 +283,7 @@ export class ExtensionLoader {
 		this._moduleImporter.clearCache();
 	}
 
-	registerExtensionFactory(
-		extensionId: string,
-		module: ExtensionModule,
-	): () => void {
+	registerExtension(extensionId: string, module: ExtensionModule): () => void {
 		const normalizedId = extensionId.trim();
 		if (!normalizedId) {
 			throw new Error("Extension id must not be empty.");

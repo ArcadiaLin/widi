@@ -37,7 +37,7 @@ async function createThirdPartyOrchestrator(module: ExtensionModule): Promise<{
 			InMemoryProfileStorageBackend.fromProfiles([{ profile }]),
 		),
 	});
-	orchestrator.registerExtensionFactory("third-party", module);
+	orchestrator.registerExtension("third-party", module);
 	const events: OrchestratorEvent[] = [];
 	orchestrator.subscribe((event) => {
 		events.push(event);

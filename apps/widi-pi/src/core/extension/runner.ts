@@ -204,7 +204,12 @@ export class ExtensionRunner {
 		};
 	}
 
-	createContext(extensionId = this.extensionIds[0] ?? ""): ExtensionContext {
+	createContext(extensionId = this.extensionIds[0]): ExtensionContext {
+		if (!extensionId) {
+			throw new Error(
+				"Extension context requires an extension id; this runner has no loaded extensions.",
+			);
+		}
 		const runner = this;
 		return {
 			extensionId,
@@ -224,7 +229,7 @@ export class ExtensionRunner {
 	}
 
 	createCommandContext(
-		extensionId = this.extensionIds[0] ?? "",
+		extensionId = this.extensionIds[0],
 	): ExtensionCommandContext {
 		return {
 			...this.createContext(extensionId),
@@ -719,6 +724,15 @@ export class ExtensionRunner {
 					async () =>
 						await this._actions.setAgentModelByReference(agentId, reference),
 				),
+			getModel: () => {
+				this._assertActive();
+				return this._actions.getAgentModel(agentId);
+			},
+			listModelCandidates: async () =>
+				await this._runReportedAction(
+					failure("listModelCandidates"),
+					async () => await this._actions.listModelCandidates(),
+				),
 			getThinkingLevel: () => {
 				this._assertActive();
 				return this._actions.getAgentThinkingLevel(agentId);
@@ -726,6 +740,16 @@ export class ExtensionRunner {
 			setThinkingLevel: async (level) => {
 				await this._runReportedAction(failure("setThinkingLevel"), async () => {
 					await this._actions.setAgentThinkingLevel(agentId, level);
+				});
+			},
+			abort: async () => {
+				await this._runReportedAction(failure("abort"), async () => {
+					await this._actions.abortAgent(agentId);
+				});
+			},
+			compact: async (customInstructions) => {
+				await this._runReportedAction(failure("compact"), async () => {
+					await this._actions.compactAgent(agentId, customInstructions);
 				});
 			},
 			exec: async (command, options) =>
@@ -938,19 +962,19 @@ function resolveExtensionCommands(
 	return contributions.map((contribution) => {
 		const contributionKey = commandKey(contribution);
 		const occurrence = (seen.get(contributionKey) ?? 0) + 1;
-		seen.set(contributionKey, occurrence);
+		// Duplicated names start suffixed by occurrence; a unique name starts
+		// plain and falls back to `${name}-1`, `${name}-2`, ... when it
+		// collides with a reserved command.
+		let suffix = (counts.get(contributionKey) ?? 0) > 1 ? occurrence : 0;
 		let invocationName =
-			(counts.get(contributionKey) ?? 0) > 1
-				? `${contribution.name}-${occurrence}`
-				: contribution.name;
+			suffix > 0 ? `${contribution.name}-${suffix}` : contribution.name;
 		let candidateKey = commandKey({
 			placement: contribution.placement,
 			trigger: contribution.trigger,
 			name: invocationName,
 		});
 		while (takenCommandKeys.has(candidateKey)) {
-			const suffix = (seen.get(contributionKey) ?? occurrence) + 1;
-			seen.set(contributionKey, suffix);
+			suffix += 1;
 			invocationName = `${contribution.name}-${suffix}`;
 			candidateKey = commandKey({
 				placement: contribution.placement,
@@ -958,6 +982,7 @@ function resolveExtensionCommands(
 				name: invocationName,
 			});
 		}
+		seen.set(contributionKey, Math.max(occurrence, suffix));
 		takenCommandKeys.add(candidateKey);
 		const source = {
 			kind: "extension",
@@ -1029,8 +1054,12 @@ function createUnboundActions(): ExtensionCoreActions {
 		getAgentSessionName: async () => notBound(),
 		listCommands: () => notBound(),
 		setAgentModelByReference: async () => notBound(),
+		getAgentModel: () => notBound(),
+		listModelCandidates: async () => notBound(),
 		getAgentThinkingLevel: () => notBound(),
 		setAgentThinkingLevel: async () => notBound(),
+		abortAgent: async () => notBound(),
+		compactAgent: async () => notBound(),
 		exec: async () => notBound(),
 	};
 }

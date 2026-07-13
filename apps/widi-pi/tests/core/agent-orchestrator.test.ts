@@ -1602,7 +1602,7 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		orchestrator.registerExtensionFactory("rewriter", (api) => {
+		orchestrator.registerExtension("rewriter", (api) => {
 			api.intercept("input", (event) => {
 				if (event.text === "use reasoning") {
 					return {
@@ -1669,7 +1669,7 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		orchestrator.registerExtensionFactory("policy", (api) => {
+		orchestrator.registerExtension("policy", (api) => {
 			api.intercept("input", (event) =>
 				event.text.includes("secret")
 					? { block: true, reason: "Sensitive input." }
@@ -1738,7 +1738,7 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		orchestrator.registerExtensionFactory("policy", (api) => {
+		orchestrator.registerExtension("policy", (api) => {
 			api.intercept("input", () => ({
 				block: true,
 				reason: "All input is denied.",
@@ -1784,12 +1784,12 @@ describe("AgentOrchestrator", () => {
 			),
 		});
 		let healthyCalled = false;
-		orchestrator.registerExtensionFactory("broken", (api) => {
+		orchestrator.registerExtension("broken", (api) => {
 			api.intercept("input", () => {
 				throw new Error("input policy exploded");
 			});
 		});
-		orchestrator.registerExtensionFactory("healthy", (api) => {
+		orchestrator.registerExtension("healthy", (api) => {
 			api.intercept("input", () => {
 				healthyCalled = true;
 				return undefined;
@@ -1844,7 +1844,7 @@ describe("AgentOrchestrator", () => {
 		// The expansion data lives in the factory closure; the expand callback
 		// receives the argument only (side-effect free by shape).
 		const glossary = new Map([["tdd", "test-driven development"]]);
-		orchestrator.registerExtensionFactory("glossary", (api) => {
+		orchestrator.registerExtension("glossary", (api) => {
 			api.registerCommand({
 				name: "glossary",
 				placement: "inline",
@@ -1919,7 +1919,7 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		orchestrator.registerExtensionFactory("glossary", (api) => {
+		orchestrator.registerExtension("glossary", (api) => {
 			api.registerCommand({
 				name: "glossary",
 				placement: "inline",
@@ -1976,7 +1976,7 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		orchestrator.registerExtensionFactory("glossary", (api) => {
+		orchestrator.registerExtension("glossary", (api) => {
 			api.registerCommand({
 				name: "glossary",
 				placement: "inline",
@@ -2039,7 +2039,7 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		orchestrator.registerExtensionFactory(
+		orchestrator.registerExtension(
 			"contributor",
 			createResourceExtension({
 				skillPaths: ["/ext/reviewer/skills"],
@@ -2140,7 +2140,7 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		orchestrator.registerExtensionFactory(
+		orchestrator.registerExtension(
 			"contributor",
 			createResourceExtension({ skillPaths: ["/ext/skills"] }),
 		);
@@ -2229,7 +2229,7 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		orchestrator.registerExtensionFactory(
+		orchestrator.registerExtension(
 			"contributor",
 			createResourceExtension({ skillPaths: ["/ext/skills"] }),
 		);
@@ -2264,7 +2264,7 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		orchestrator.registerExtensionFactory("rewriter", (api) => {
+		orchestrator.registerExtension("rewriter", (api) => {
 			api.intercept("input", (event) => {
 				if (event.text.includes("secret")) {
 					return { block: true, reason: "Sensitive input." };
@@ -2610,7 +2610,7 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		orchestrator.registerExtensionFactory("stateful", () => {});
+		orchestrator.registerExtension("stateful", () => {});
 		const agentId = await orchestrator.spawnAgent();
 		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
 		if (!runner) throw new Error("Expected extension runner.");
@@ -2869,7 +2869,7 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		orchestrator.registerExtensionFactory("sample", (api) => {
+		orchestrator.registerExtension("sample", (api) => {
 			api.registerTool(createToolDefinition("sampleTool", "sample"));
 		});
 
@@ -2938,7 +2938,7 @@ describe("AgentOrchestrator", () => {
 			),
 			toolRegistry: createToolRegistry(createToolDefinition("base")),
 		});
-		orchestrator.registerExtensionFactory("sample", (api) => {
+		orchestrator.registerExtension("sample", (api) => {
 			api.observe("agent_harness_event", () => {});
 			api.intercept("context", (event) => ({ messages: event.messages }));
 			api.registerCommand({
@@ -3025,7 +3025,7 @@ describe("AgentOrchestrator", () => {
 		orchestrator.subscribe((event) => {
 			events.push(event);
 		});
-		orchestrator.registerExtensionFactory("sample", (api) => {
+		orchestrator.registerExtension("sample", (api) => {
 			api.registerTool(createToolDefinition("sampleTool", "sample"));
 		});
 
@@ -3079,7 +3079,7 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		orchestrator.registerExtensionFactory("sample", (api) => {
+		orchestrator.registerExtension("sample", (api) => {
 			api.registerCommand({
 				name: "mark",
 				description: "Append a marker entry",
@@ -3204,7 +3204,7 @@ describe("AgentOrchestrator", () => {
 			),
 		});
 		const completionCalls: unknown[][] = [];
-		orchestrator.registerExtensionFactory("sample", (api) => {
+		orchestrator.registerExtension("sample", (api) => {
 			api.registerCommand({
 				name: "deploy",
 				description: "Deploy a target",
@@ -3278,7 +3278,7 @@ describe("AgentOrchestrator", () => {
 		orchestrator.subscribe((event) => {
 			events.push(event);
 		});
-		orchestrator.registerExtensionFactory("broken", () => {
+		orchestrator.registerExtension("broken", () => {
 			throw new Error("activation exploded");
 		});
 
@@ -3332,14 +3332,14 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		orchestrator.registerExtensionFactory("sample", (api) => {
+		orchestrator.registerExtension("sample", (api) => {
 			api.registerTool(createToolDefinition("alpha", "alpha"));
 		});
 		const agentId = await orchestrator.spawnAgent();
 		const oldRunner = requireAgentRecord(orchestrator, agentId).extensionRunner;
 		if (!oldRunner) throw new Error("Expected extension runner.");
 		const oldContext = oldRunner.createCommandContext("sample");
-		orchestrator.registerExtensionFactory("sample", (api) => {
+		orchestrator.registerExtension("sample", (api) => {
 			api.registerTool(createToolDefinition("alpha", "alpha"));
 			api.registerTool(createToolDefinition("beta", "beta"));
 		});
@@ -3403,12 +3403,12 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		orchestrator.registerExtensionFactory("sample", (api) => {
+		orchestrator.registerExtension("sample", (api) => {
 			api.registerTool(createToolDefinition("alpha", "alpha"));
 		});
 		const agentId = await orchestrator.spawnAgent();
 		await orchestrator.setAgentActiveTools(agentId, ["alpha"]);
-		orchestrator.registerExtensionFactory("sample", (api) => {
+		orchestrator.registerExtension("sample", (api) => {
 			api.registerTool(createToolDefinition("alpha", "alpha"));
 			api.registerTool(createToolDefinition("beta", "beta"));
 		});
@@ -3439,7 +3439,7 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		orchestrator.registerExtensionFactory("sample", (api) => {
+		orchestrator.registerExtension("sample", (api) => {
 			api.registerTool(createToolDefinition("alpha", "alpha"));
 		});
 		const agentId = await orchestrator.spawnAgent();
@@ -3452,7 +3452,7 @@ describe("AgentOrchestrator", () => {
 			}
 		)._handleAgentHarnessEvent.bind(orchestrator);
 		await handleHarnessEvent(agentId, { type: "turn_start" });
-		orchestrator.registerExtensionFactory("sample", (api) => {
+		orchestrator.registerExtension("sample", (api) => {
 			api.registerTool(createToolDefinition("beta", "beta"));
 		});
 
@@ -3498,7 +3498,7 @@ describe("AgentOrchestrator", () => {
 			),
 			toolRegistry: createToolRegistry(createToolDefinition("plain", "base")),
 		});
-		orchestrator.registerExtensionFactory("patcher", (api) => {
+		orchestrator.registerExtension("patcher", (api) => {
 			api.patchTool("late", {
 				description: "patched late tool",
 			});
@@ -3623,7 +3623,7 @@ describe("AgentOrchestrator", () => {
 			),
 			toolRegistry: createToolRegistry(createToolDefinition("plain")),
 		});
-		orchestrator.registerExtensionFactory("observer", (api) => {
+		orchestrator.registerExtension("observer", (api) => {
 			api.observe("agent_harness_event", (event, context) => {
 				observedEvent = event.event;
 				const tools = context.actions.getTools();
@@ -3678,12 +3678,12 @@ describe("AgentOrchestrator", () => {
 		orchestrator.subscribe((event) => {
 			events.push(event);
 		});
-		orchestrator.registerExtensionFactory("broken", (api) => {
+		orchestrator.registerExtension("broken", (api) => {
 			api.observe("agent_harness_event", () => {
 				throw new Error("observer exploded");
 			});
 		});
-		orchestrator.registerExtensionFactory("healthy", (api) => {
+		orchestrator.registerExtension("healthy", (api) => {
 			api.observe("agent_harness_event", () => {
 				observed.push("healthy");
 			});
@@ -3736,7 +3736,7 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		orchestrator.registerExtensionFactory("first", (api) => {
+		orchestrator.registerExtension("first", (api) => {
 			api.intercept("before_agent_start", () => ({
 				messages: [
 					{
@@ -3763,7 +3763,7 @@ describe("AgentOrchestrator", () => {
 				terminate: true,
 			}));
 		});
-		orchestrator.registerExtensionFactory("second", (api) => {
+		orchestrator.registerExtension("second", (api) => {
 			api.intercept("before_agent_start", () => ({
 				messages: [
 					{
@@ -3880,7 +3880,7 @@ describe("AgentOrchestrator", () => {
 		orchestrator.subscribe((event) => {
 			events.push(event);
 		});
-		orchestrator.registerExtensionFactory("broken", (api) => {
+		orchestrator.registerExtension("broken", (api) => {
 			api.intercept("context", () => {
 				throw new Error("interceptor exploded");
 			});
@@ -3888,7 +3888,7 @@ describe("AgentOrchestrator", () => {
 				throw new Error("tool call interceptor exploded");
 			});
 		});
-		orchestrator.registerExtensionFactory("healthy", (api) => {
+		orchestrator.registerExtension("healthy", (api) => {
 			api.intercept("context", (event) => {
 				healthyCalled = true;
 				return { messages: event.messages };
@@ -3976,7 +3976,7 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		orchestrator.registerExtensionFactory("observer", (api) => {
+		orchestrator.registerExtension("observer", (api) => {
 			api.observe("agent_harness_event", (_event, context) => {
 				observed.push(
 					`${context.extensionId}:${context.profileId}:${context.isIdle()}:${context.actions.getTools().toolNames.length}`,
@@ -4022,7 +4022,7 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		orchestrator.registerExtensionFactory("stateful", (api) => {
+		orchestrator.registerExtension("stateful", (api) => {
 			api.observe("agent_harness_event", async (_event, context) => {
 				const before = await context.session.findEntries<{ count: number }>(
 					"state",
@@ -4086,7 +4086,7 @@ describe("AgentOrchestrator", () => {
 		orchestrator.subscribe((event) => {
 			events.push(event);
 		});
-		orchestrator.registerExtensionFactory("stateful", (api) => {
+		orchestrator.registerExtension("stateful", (api) => {
 			api.observe("agent_harness_event", async (_event, context) => {
 				await context.session.appendEntry("bad/type", {});
 			});
@@ -4156,7 +4156,7 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		orchestrator.registerExtensionFactory("sample", () => {});
+		orchestrator.registerExtension("sample", () => {});
 		const agentId = await orchestrator.spawnAgent();
 		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
 		if (!runner) throw new Error("Expected extension runner.");
@@ -4229,7 +4229,7 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		orchestrator.registerExtensionFactory("sample", () => {});
+		orchestrator.registerExtension("sample", () => {});
 		const agentId = await orchestrator.spawnAgent();
 		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
 		if (!runner) throw new Error("Expected extension runner.");
@@ -4259,6 +4259,29 @@ describe("AgentOrchestrator", () => {
 		await context.actions.setThinkingLevel("high");
 		expect(context.actions.getThinkingLevel()).toBe("high");
 		expect(orchestrator.getAgentThinkingLevel(agentId)).toBe("high");
+
+		expect(context.actions.getModel().id).toBe("reasoning-model");
+		await expect(context.actions.listModelCandidates()).resolves.toContainEqual(
+			expect.objectContaining({ value: "test-provider/reasoning-model" }),
+		);
+
+		const aborted: string[] = [];
+		const compacted: [string, string | undefined][] = [];
+		Object.assign(orchestrator, {
+			abortAgent: async (abortedAgentId: string) => {
+				aborted.push(abortedAgentId);
+			},
+			compactAgent: async (
+				compactedAgentId: string,
+				customInstructions?: string,
+			) => {
+				compacted.push([compactedAgentId, customInstructions]);
+			},
+		});
+		await context.actions.abort();
+		await context.actions.compact("keep decisions");
+		expect(aborted).toEqual([agentId]);
+		expect(compacted).toEqual([[agentId, "keep decisions"]]);
 
 		await expect(context.actions.setModel("bogus")).rejects.toMatchObject({
 			diagnostic: expect.objectContaining({ code: "model.reference_invalid" }),
@@ -4293,7 +4316,7 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		orchestrator.registerExtensionFactory("sample", () => {});
+		orchestrator.registerExtension("sample", () => {});
 		const agentId = await orchestrator.spawnAgent();
 		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
 		if (!runner) throw new Error("Expected extension runner.");
@@ -4335,7 +4358,7 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		orchestrator.registerExtensionFactory("sample", () => {});
+		orchestrator.registerExtension("sample", () => {});
 		const agentId = await orchestrator.spawnAgent();
 		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
 		if (!runner) throw new Error("Expected extension runner.");
@@ -4392,7 +4415,7 @@ describe("AgentOrchestrator", () => {
 				]),
 			),
 		});
-		orchestrator.registerExtensionFactory("sample", () => {});
+		orchestrator.registerExtension("sample", () => {});
 		const agentId = await orchestrator.spawnAgent();
 		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
 		if (!runner) throw new Error("Expected extension runner.");

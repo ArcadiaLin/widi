@@ -27,10 +27,14 @@ Extension surface 的设计与实施已收编为 [ME milestone](TODO.md#me-exten
 - Extension 间 EventBus（pi `events` 对应物）。
 - `setLabel`（依赖 pi session label 的 upstream 对齐）。
 - `user_bash` hook（依赖未来 bash tool 能力）。
-- Client adapter 的 extension host（shortcut/flag/renderer 等 UI 自由度的承载处）。
+- Client adapter 的 extension host（shortcut/flag/renderer 及 notify/status 类轻量单向用户提示的承载处；notify 格随 2026-07-13 审计补录）。
 - `custom_message` 通道（pi `sendMessage`：持久 + 进模型 context + extension 归因，ME 切片 7 裁决不做）：待真实 consumer 举证；届时需一并定 deliverAs/triggerTurn 排队语义与 customType namespace。
 - Per-extension storage 目录/KV API（ME 切片 7 裁决不做）：custom entry 覆盖 session 相关状态，大存储 extension 经 `exec` 自理；真实需求出现时需一并裁决多进程写入、reload 与 trust 边界。
 - `before_provider_payload` hook（ME 切片 9 裁决推迟）：改 raw wire payload，`unknown` 类型、API 形状相关、最难审计；pi harness 已暴露，待真实 consumer 举证失败语义与类型契约后桥接。
+- Session 只读 facade（pi `ctx.sessionManager` 对应物，2026-07-13 审计补录）：extension 当前只能读自己的 custom entries；「总结会话」类 consumer 出现后定 scoped 只读形态（branch path、entry 类型过滤、与 custom entry namespace 的关系）。
+- `getContextUsage`（2026-07-13 审计补录）：compaction 策略 extension 的前提事实；需先定 token 用量事实的来源与新鲜度口径。
+- `message_end` mutate 档（2026-07-13 审计补录）：pi coding-agent 可替换最终 assistant 消息（脱敏场景）；pi harness 无此 hook，收编需 WIDI 自建档位并定失败语义。
+- Tool 元数据查询面（2026-07-13 审计补录）：scoped `getTools` 只回名字集；pi `getAllTools` 含 parameters schema、promptGuidelines、provenance。tool 文档/代理类 consumer 举证后扩展。
 - OAuth login 发起面（ME 切片 9 裁决推迟）：extension `oauth` 配置已收编（refresh/getApiKey/modifyModels 可用），但 `login(callbacks)` 是人类交互流程，widi 无 /login command；待 /login command 或 client adapter host 举证，届时需定 login 回调（URL 打开、code 输入）的 human request 形态。
 - Extension provider 受控 override 入口（ME 切片 9 裁决不做）：pi 的 `registerProvider("anthropic", { baseUrl })` 代理场景不收编，override 通道归 models.json；真实企业代理 extension 场景出现时评估「override 事实记录 + human request 确认」的受控形态。
 

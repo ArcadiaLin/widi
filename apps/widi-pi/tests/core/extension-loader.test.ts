@@ -260,7 +260,7 @@ describe("ExtensionLoader file/module loading", () => {
 
 	it("rejects extension commands whose name embeds the trigger", async () => {
 		const loader = new ExtensionLoader();
-		loader.registerExtensionFactory("sample", (api) => {
+		loader.registerExtension("sample", (api) => {
 			api.registerCommand({
 				name: "/mark",
 				handler: () => {},
@@ -285,7 +285,7 @@ describe("ExtensionLoader file/module loading", () => {
 
 	it("collects normalized resource path contributions per extension", async () => {
 		const loader = new ExtensionLoader();
-		loader.registerExtensionFactory("contributor", (api) => {
+		loader.registerExtension("contributor", (api) => {
 			api.contributeResources({
 				skillPaths: [" /skills ", "", "/skills", "/more-skills"],
 				promptTemplatePaths: ["/templates"],
@@ -362,7 +362,7 @@ describe("ExtensionLoader file/module loading", () => {
 			roots: [{ kind: "settings", path: "/extensions" }],
 			moduleImporter: importer,
 		});
-		loader.registerExtensionFactory("sample", () => {
+		loader.registerExtension("sample", () => {
 			activationSource = "memory";
 		});
 
@@ -491,7 +491,7 @@ describe("ExtensionLoader api version gate", () => {
 	it("rejects an in-memory definition with an unsupported version per agent", async () => {
 		const loader = new ExtensionLoader();
 		let activated = false;
-		const dispose = loader.registerExtensionFactory("sample", {
+		const dispose = loader.registerExtension("sample", {
 			apiVersion: 0,
 			activate: () => {
 				activated = true;
