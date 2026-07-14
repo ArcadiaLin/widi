@@ -51,6 +51,17 @@
 
 验收：对照表每项归属落定（core 已落 / client 层含事实对应物 / backlog 含举证缺口）；每条"extension 能/不能做 X"有裁决 + 代码锚点；审计 extension 在他人抛错时不失防有回归测试；第三方视角 extension 只依赖公开契约完成 tool + command + observer 组合。
 
+## CT: Coding Tools 收敛（M3 前）
+
+详细任务、提交切片和验收矩阵见 [Coding Tools Implementation TODO](coding-tools-todo.md)。本阶段补齐 `bash/grep/find/ls`，并把 `read` 从图片分类升级为可返回 provider-compatible `ImageContent` 的完整实现。
+
+- [ ] 七个 core coding tools 全部通过 ToolRegistry 注册和执行，不包含 TUI dependency。
+- [ ] Bash streaming/process lifecycle、grep/find 搜索 backend、ls 目录读取和共享 truncation 基础设施完成。
+- [ ] Read 图片 MIME、转换/缩放、`images.autoResize/blockImages` policy 和 build 资产完成。
+- [ ] Package tests、build、真实 smoke test 和根 `npm run check` 通过。
+
+验收：默认 tool registry 无 diagnostic 地解析七个 coding tools；文本、图片、搜索、命令执行均有 typed result 和 abort/truncation 回归测试；完整实现不修改 `pi/*`。
+
 ## M3: Multi-agent 最小闭环
 
 - [ ] Collaboration facade（orchestrator helper），由 profile `capabilities.canSpawn` 门控。
