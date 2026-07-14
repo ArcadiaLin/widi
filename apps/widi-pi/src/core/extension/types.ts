@@ -152,6 +152,20 @@ export type ExtensionExecResult = Result<
 >;
 
 /**
+ * Result of an extension-initiated compaction. The compaction entry is
+ * already persisted when this value resolves - it is an observation, not a
+ * mutation channel (mutation is the deferred `session_before_compact` hook).
+ * WIDI owns this shape; the upstream harness return type is structural and
+ * not exported by `pi-agent-core`.
+ */
+export interface ExtensionCompactionResult {
+	summary: string;
+	firstKeptEntryId: string;
+	tokensBefore: number;
+	details?: unknown;
+}
+
+/**
  * Agent-scoped action surface handed to extension authors. Every action is
  * bound to the extension's own agent; the agent id is injected by the runner
  * and never appears in a signature. Cross-agent operations are not part of
@@ -169,6 +183,8 @@ export interface ExtensionActions {
 	followUp(text: string, options?: { images?: ImageContent[] }): Promise<void>;
 	setSessionName(name: string): Promise<void>;
 	getSessionName(): Promise<string | undefined>;
+	// Requires an idle harness; rejects with the harness busy error otherwise.
+	compact(customInstructions?: string): Promise<ExtensionCompactionResult>;
 	getCommands(): Command[];
 	setModel(reference: string): Promise<RuntimeModel>;
 	getModel(): RuntimeModel;
@@ -178,9 +194,6 @@ export interface ExtensionActions {
 	setThinkingLevel(level: ThinkingLevel): Promise<void>;
 	// Aborts the agent's current run; queued steer/followUp input is cleared.
 	abort(): Promise<void>;
-	// Triggers session compaction; completion facts arrive via the raw
-	// `session_compact` harness event.
-	compact(customInstructions?: string): Promise<void>;
 	// Denied with a structured diagnostic when the project is not trusted.
 	exec(
 		command: string,
@@ -223,6 +236,10 @@ export interface ExtensionCoreActions {
 	): Promise<void>;
 	setAgentSessionName(agentId: string, name: string): Promise<void>;
 	getAgentSessionName(agentId: string): Promise<string | undefined>;
+	compactAgent(
+		agentId: string,
+		customInstructions?: string,
+	): Promise<ExtensionCompactionResult>;
 	listCommands(agentId: string): Command[];
 	setAgentModelByReference(
 		agentId: string,
@@ -233,7 +250,6 @@ export interface ExtensionCoreActions {
 	getAgentThinkingLevel(agentId: string): ThinkingLevel;
 	setAgentThinkingLevel(agentId: string, level: ThinkingLevel): Promise<void>;
 	abortAgent(agentId: string): Promise<void>;
-	compactAgent(agentId: string, customInstructions?: string): Promise<void>;
 	exec(
 		agentId: string,
 		extensionId: string,
@@ -249,8 +265,67 @@ export interface ExtensionContextActions {
 	reportActionFailure?(failure: ExtensionActionFailure): Promise<void>;
 }
 
+/**
+ * Session control facade results (extension-api-followup ruling). WIDI does
+ * not impersonate pi's in-place session switch: new/fork/resume spawn a new
+ * runtime agent and report its id; whether a client switches its active agent
+ * is the client adapter's decision, driven by canonical orchestrator events.
+ * The shapes are WIDI-owned narrowings - no SessionManager handle, mutable
+ * entries, or session paths for writing cross the boundary.
+ */
+export interface ExtensionSessionCommandResult {
+	agentId: string;
+	sessionId?: string;
+}
+
+export interface ExtensionForkSessionOptions {
+	entryId?: string;
+}
+
+export interface ExtensionNavigateTreeOptions {
+	summarize?: boolean;
+	customInstructions?: string;
+	replaceInstructions?: boolean;
+	label?: string;
+}
+
+export interface ExtensionNavigateTreeResult {
+	cancelled: boolean;
+}
+
+export interface ExtensionSessionCandidate {
+	id: string;
+	path: string;
+	createdAt: string;
+	cwd: string;
+	profileId?: string;
+}
+
+/**
+ * Binding contract for command-context capabilities. Session control enters
+ * the extension surface only here - a human-triggered execution context -
+ * never the plain observer/interceptor context; the orchestrator additionally
+ * gates spawn-class operations (new/fork/resume) on the profile capability
+ * `canSpawn` and requires an idle agent for operations that read or move the
+ * current session (fork/navigateTree).
+ */
 export interface ExtensionCommandContextActions {
 	waitForIdle(): Promise<void>;
+	newSession(extensionId: string): Promise<ExtensionSessionCommandResult>;
+	forkSession(
+		extensionId: string,
+		options?: ExtensionForkSessionOptions,
+	): Promise<ExtensionSessionCommandResult>;
+	navigateTree(
+		extensionId: string,
+		targetId: string,
+		options?: ExtensionNavigateTreeOptions,
+	): Promise<ExtensionNavigateTreeResult>;
+	listSessions(extensionId: string): Promise<ExtensionSessionCandidate[]>;
+	resumeSession(
+		extensionId: string,
+		reference: string,
+	): Promise<ExtensionSessionCommandResult>;
 }
 
 export interface ExtensionCustomEntry<T = unknown> {
@@ -287,10 +362,15 @@ export interface ExtensionActionFailure {
 		| "exec"
 		| "findEntries"
 		| "followUp"
+		| "forkSession"
 		| "getSessionName"
 		| "listModelCandidates"
+		| "listSessions"
+		| "navigateTree"
+		| "newSession"
 		| "prompt"
 		| "requestHuman"
+		| "resumeSession"
 		| "setActiveTools"
 		| "setModel"
 		| "setSessionName"
@@ -313,6 +393,16 @@ export interface ExtensionContext {
 
 export interface ExtensionCommandContext extends ExtensionContext {
 	waitForIdle(): Promise<void>;
+	newSession(): Promise<ExtensionSessionCommandResult>;
+	forkSession(
+		options?: ExtensionForkSessionOptions,
+	): Promise<ExtensionSessionCommandResult>;
+	navigateTree(
+		targetId: string,
+		options?: ExtensionNavigateTreeOptions,
+	): Promise<ExtensionNavigateTreeResult>;
+	listSessions(): Promise<ExtensionSessionCandidate[]>;
+	resumeSession(reference: string): Promise<ExtensionSessionCommandResult>;
 }
 
 export type ExtensionCommandHandler = (

@@ -216,16 +216,35 @@ Input 拦截事实的 session 持久化（切片 6 遗留裁决）：改写落 c
 | `requestHuman(draft)` | `requestHuman` | source 由 runner 注入为 `{ kind: "extension", extensionId }`，不可伪造；profile `capabilities.canRequestUser === false` 时抛 `extension.human_request_denied` |
 | `prompt` / `steer` / `followUp` | `promptAgent` / `steerAgent` / `followUpAgent` | 均返回 void（结果经 raw event 流可达）；custom message 形态等切片 7 policy |
 | `setSessionName` / `getSessionName` | `setAgentSessionName` / `getAgentSessionName` | 读取为 async（session 事实来自 SessionManager） |
+| `compact(customInstructions?)` | `compactAgent` | 返回 `ExtensionCompactionResult`（summary、firstKeptEntryId、tokensBefore、details）；结果已持久化，是观察通道不是修改通道；harness 非 idle 时以 busy 错误拒绝 |
 | `getCommands` | `listCommands` | 与 client 同一门控口径（profile deny、scope、availability） |
 | `setModel(reference)` / `getModel` / `getThinkingLevel` / `setThinkingLevel` | `setAgentModelByReference` / `getAgentModel` / `getAgentThinkingLevel` / `setAgentThinkingLevel` | 失败为结构化 diagnostic（`model.reference_invalid` 等） |
 | `listModelCandidates` | `listAvailableModelCandidates` | 候选 `value` 即 `setModel` 可用的 model reference |
 | `abort` | `abortAgent` | 终止当前 run，排队的 steer/followUp 一并清空 |
-| `compact(customInstructions?)` | `compactAgent` | 完成事实经 raw `session_compact` harness event 可达 |
 | `exec(command, options)` | `ExecutionEnv.exec` | project trust 未通过时抛 `extension.exec_denied`，命令不执行（裁决见 [Extension Experiment](./extension-experiment.md) 切片 3 记录） |
 
 失败语义：async action 抛错时 runner 上报 `extension.action_failed`（warning、degraded，`details.action` 含 action 名）并原样 rethrow 给调用方；同步查询（`getTools`/`getCommands`/`getThinkingLevel`）只做 stale 检查不上报。reload 后 stale runner 上的任何 action 立即抛错。
 
 Extension 贡献的 tool 在 execute context 中拿到的 host actions 走同一 runner scoped 管线；reload 会重新 resolve tools 并重建 context，因此 tool context 不会越过其 runner 的 stale 边界。
+
+### Session 控制 facade（command context）
+
+Session 控制只挂在 `ExtensionCommandContext` 上（extension line command 的人类触发执行上下文），普通 observer/interceptor context 不携带这些方法。裁决锚点是 operation-source 策略——"人类触发的执行上下文 + agent idle + profile capability 允许"——command context 只是当前唯一满足条件的 ingress（裁决记录见 chat_notes/extension-api-followup.md）。
+
+| 方法 | 背书的 orchestrator 原子方法 | 门控 |
+| --- | --- | --- |
+| `newSession()` | `newAgentSessionFromAgent` | `canSpawn` |
+| `forkSession(options?)` | `forkAgentSessionFromAgent` | `canSpawn` + idle |
+| `navigateTree(targetId, options?)` | `navigateAgentTree` | idle；own-agent，不跨 agent |
+| `listSessions()` | `listAgentSessions` | 无（只读事实） |
+| `resumeSession(reference)` | `resumeAgentSessionByReference` | `canSpawn` |
+
+- spawn 类操作（new/fork/resume）都会创建新的 runtime agent；profile `capabilities.canSpawn === false` 时抛 `extension.session_control_denied`。这是 `canSpawn` 的首个 runtime enforcement 点。
+- fork/navigateTree 读写当前 session，要求 agent idle（`status !== "running"`，与 `isIdle()` 口径一致），否则抛 `extension.session_not_idle`；extension 可先 `await waitForIdle()`。new/resume 不动源 session，不要求 idle。
+- new/fork/resume 返回 `ExtensionSessionCommandResult`（新 `agentId` + 可选 `sessionId`）。WIDI 不伪装 pi 的原地 session 替换；是否切换 client 的 active agent 由 client adapter 依据 canonical event（`agent_spawned` / `agent_session_forked`）决定。`switchSession` 语义因此命名为 `resumeSession`。
+- 所有结果是 WIDI-owned 收窄类型：不暴露 `SessionManager`、可变 session entry 或任意 session path 写入；`navigateTree` 结果只含 `cancelled`（`editorText` 归 client 轨道）。
+- 失败语义与 scoped actions 相同：runner 上报 `extension.action_failed`（`details.action` 为方法名）并原样 rethrow。
+- commands 被 profile policy 关闭的部署当前同时失去 session 控制入口（该 profile 本就不面向用户命令）；将来新增的人类触发 ingress 复用同一 gate，无需重新裁决边界。
 
 ## Pi Extension 对比
 

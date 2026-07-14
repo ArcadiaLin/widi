@@ -4354,6 +4354,259 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
+	it("returns the compaction result from the compact extension action", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtension("sample", () => {});
+		const agentId = await orchestrator.spawnAgent();
+		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+		if (!runner) throw new Error("Expected extension runner.");
+		const context = runner.createContext("sample");
+		const compacted: string[] = [];
+		Object.assign(orchestrator, {
+			compactAgent: async (
+				targetAgentId: string,
+				customInstructions?: string,
+			) => {
+				compacted.push(`${targetAgentId}:${customInstructions ?? ""}`);
+				return {
+					summary: "compacted summary",
+					firstKeptEntryId: "entry-1",
+					tokensBefore: 1234,
+				};
+			},
+		});
+
+		await expect(
+			context.actions.compact("keep architecture decisions"),
+		).resolves.toEqual({
+			summary: "compacted summary",
+			firstKeptEntryId: "entry-1",
+			tokensBefore: 1234,
+		});
+		expect(compacted).toEqual([`${agentId}:keep architecture decisions`]);
+	});
+
+	it("reports compact extension action failures as diagnostics and rethrows", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtension("sample", () => {});
+		const agentId = await orchestrator.spawnAgent();
+		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+		if (!runner) throw new Error("Expected extension runner.");
+		const context = runner.createContext("sample");
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+
+		// A fresh agent has nothing to compact, so the real harness rejects.
+		await expect(context.actions.compact()).rejects.toThrow();
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					code: "extension.action_failed",
+					extensionId: "sample",
+					agentId,
+					details: expect.objectContaining({ action: "compact" }),
+				}),
+			}),
+		);
+	});
+
+	it("exposes session control on the extension command context", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: true,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+					{ profile: restoredProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtension("sample", () => {});
+		const agentId = await orchestrator.spawnAgent();
+		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+		if (!runner) throw new Error("Expected extension runner.");
+		const context = runner.createCommandContext("sample");
+		const session = await orchestrator.sessionManager.createAgentSession({
+			agentId,
+			agentProfile: extensionProfile,
+		});
+		const keptEntryId = await session.appendMessage({
+			role: "user",
+			content: "keep me",
+			timestamp: 1,
+		});
+		const targetEntryId = await session.appendMessage({
+			role: "user",
+			content: "fork before me",
+			timestamp: 2,
+		});
+
+		const created = await context.newSession();
+		expect(created.agentId).not.toBe(agentId);
+		expect(orchestrator.getAgentStatus(created.agentId)).toBe("idle");
+
+		const forked = await context.forkSession({ entryId: targetEntryId });
+		expect(forked.agentId).not.toBe(agentId);
+		const forkedTree = await orchestrator.getAgentSessionTree(forked.agentId);
+		expect(forkedTree.entries).toMatchObject([
+			expect.objectContaining({ id: keptEntryId }),
+		]);
+
+		const sessions = await context.listSessions();
+		expect(sessions).toContainEqual(
+			expect.objectContaining({
+				id: agentId,
+				profileId: extensionProfile.id,
+			}),
+		);
+
+		const worker = await orchestrator.sessionManager.createAgentSession({
+			agentId: "worker-agent",
+			agentProfile: restoredProfile,
+		});
+		const workerMetadata = expectExtendedMetadata(await worker.getMetadata());
+		const resumed = await context.resumeSession(workerMetadata.path);
+		expect(resumed.agentId).toBe("worker-agent");
+
+		// The narrowed result drops editorText: the extension learns the
+		// navigation fact only.
+		await expect(context.navigateTree(keptEntryId)).resolves.toEqual({
+			cancelled: false,
+		});
+	});
+
+	it("denies spawn-class session control when profile capability canSpawn is false", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+			capabilities: { canSpawn: false },
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtension("sample", () => {});
+		const agentId = await orchestrator.spawnAgent();
+		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+		if (!runner) throw new Error("Expected extension runner.");
+		const context = runner.createCommandContext("sample");
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+
+		const denied = expect.objectContaining({
+			code: "extension.session_control_denied",
+		});
+		await expect(context.newSession()).rejects.toMatchObject({
+			diagnostic: denied,
+		});
+		await expect(context.forkSession()).rejects.toMatchObject({
+			diagnostic: denied,
+		});
+		await expect(context.resumeSession("any")).rejects.toMatchObject({
+			diagnostic: denied,
+		});
+		// Read-only listing is not spawn-class and stays available.
+		await expect(context.listSessions()).resolves.toBeDefined();
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					code: "extension.action_failed",
+					extensionId: "sample",
+					agentId,
+					details: expect.objectContaining({ action: "newSession" }),
+				}),
+			}),
+		);
+	});
+
+	it("requires an idle agent for extension fork and tree navigation", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtension("sample", () => {});
+		const agentId = await orchestrator.spawnAgent();
+		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+		if (!runner) throw new Error("Expected extension runner.");
+		const context = runner.createCommandContext("sample");
+		Object.assign(requireAgentRecord(orchestrator, agentId), {
+			status: "running",
+		});
+
+		const notIdle = expect.objectContaining({
+			code: "extension.session_not_idle",
+		});
+		await expect(context.forkSession()).rejects.toMatchObject({
+			diagnostic: notIdle,
+		});
+		await expect(context.navigateTree("entry-1")).rejects.toMatchObject({
+			diagnostic: notIdle,
+		});
+	});
+
 	it("injects the extension source into human requests", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = {

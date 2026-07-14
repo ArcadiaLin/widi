@@ -39,7 +39,13 @@ export {
 export type {
 	ExtensionActionFailure,
 	ExtensionCommandContextActions,
+	ExtensionCompactionResult,
 	ExtensionContextActions,
 	ExtensionCoreActions,
+	ExtensionForkSessionOptions,
+	ExtensionNavigateTreeOptions,
+	ExtensionNavigateTreeResult,
 	ExtensionSessionActions,
+	ExtensionSessionCandidate,
+	ExtensionSessionCommandResult,
 } from "./types.ts";

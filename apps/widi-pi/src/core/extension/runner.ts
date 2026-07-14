@@ -176,9 +176,8 @@ export class ExtensionRunner {
 	private readonly _loadedScope: LoadedExtensionScope;
 	private _actions: ExtensionCoreActions = createUnboundActions();
 	private _contextActions: ExtensionContextActions = {};
-	private _commandContextActions: ExtensionCommandContextActions = {
-		waitForIdle: async () => {},
-	};
+	private _commandContextActions: ExtensionCommandContextActions =
+		createUnboundCommandContextActions();
 	private _staleMessage: string | undefined;
 
 	constructor(options: ExtensionRunnerOptions) {
@@ -199,9 +198,8 @@ export class ExtensionRunner {
 	}
 
 	bindCommandContext(actions?: ExtensionCommandContextActions): void {
-		this._commandContextActions = actions ?? {
-			waitForIdle: async () => {},
-		};
+		this._commandContextActions =
+			actions ?? createUnboundCommandContextActions();
 	}
 
 	createContext(extensionId = this.extensionIds[0]): ExtensionContext {
@@ -231,12 +229,55 @@ export class ExtensionRunner {
 	createCommandContext(
 		extensionId = this.extensionIds[0],
 	): ExtensionCommandContext {
+		const failure = (
+			action: ExtensionActionFailure["action"],
+		): Omit<ExtensionActionFailure, "error"> => ({
+			extensionId,
+			action,
+			code: "extension.action_failed",
+		});
 		return {
 			...this.createContext(extensionId),
 			waitForIdle: async () => {
 				this._assertActive();
 				await this._commandContextActions.waitForIdle();
 			},
+			newSession: async () =>
+				await this._runReportedAction(
+					failure("newSession"),
+					async () => await this._commandContextActions.newSession(extensionId),
+				),
+			forkSession: async (options) =>
+				await this._runReportedAction(
+					failure("forkSession"),
+					async () =>
+						await this._commandContextActions.forkSession(extensionId, options),
+				),
+			navigateTree: async (targetId, options) =>
+				await this._runReportedAction(
+					failure("navigateTree"),
+					async () =>
+						await this._commandContextActions.navigateTree(
+							extensionId,
+							targetId,
+							options,
+						),
+				),
+			listSessions: async () =>
+				await this._runReportedAction(
+					failure("listSessions"),
+					async () =>
+						await this._commandContextActions.listSessions(extensionId),
+				),
+			resumeSession: async (reference) =>
+				await this._runReportedAction(
+					failure("resumeSession"),
+					async () =>
+						await this._commandContextActions.resumeSession(
+							extensionId,
+							reference,
+						),
+				),
 		};
 	}
 
@@ -714,6 +755,12 @@ export class ExtensionRunner {
 					failure("getSessionName"),
 					async () => await this._actions.getAgentSessionName(agentId),
 				),
+			compact: async (customInstructions) =>
+				await this._runReportedAction(
+					failure("compact"),
+					async () =>
+						await this._actions.compactAgent(agentId, customInstructions),
+				),
 			getCommands: () => {
 				this._assertActive();
 				return this._actions.listCommands(agentId);
@@ -745,11 +792,6 @@ export class ExtensionRunner {
 			abort: async () => {
 				await this._runReportedAction(failure("abort"), async () => {
 					await this._actions.abortAgent(agentId);
-				});
-			},
-			compact: async (customInstructions) => {
-				await this._runReportedAction(failure("compact"), async () => {
-					await this._actions.compactAgent(agentId, customInstructions);
 				});
 			},
 			exec: async (command, options) =>
@@ -1038,6 +1080,23 @@ function toCommandArguments(
 	};
 }
 
+// waitForIdle stays a no-op when unbound (an idle fact without a harness is
+// vacuously settled); session control must never silently no-op, so unbound
+// session operations throw.
+function createUnboundCommandContextActions(): ExtensionCommandContextActions {
+	const notBound = () => {
+		throw new Error("Extension runner command context actions are not bound.");
+	};
+	return {
+		waitForIdle: async () => {},
+		newSession: async () => notBound(),
+		forkSession: async () => notBound(),
+		navigateTree: async () => notBound(),
+		listSessions: async () => notBound(),
+		resumeSession: async () => notBound(),
+	};
+}
+
 function createUnboundActions(): ExtensionCoreActions {
 	const notBound = () => {
 		throw new Error("Extension runner core actions are not bound.");
@@ -1052,6 +1111,7 @@ function createUnboundActions(): ExtensionCoreActions {
 		followUpAgent: async () => notBound(),
 		setAgentSessionName: async () => notBound(),
 		getAgentSessionName: async () => notBound(),
+		compactAgent: async () => notBound(),
 		listCommands: () => notBound(),
 		setAgentModelByReference: async () => notBound(),
 		getAgentModel: () => notBound(),
@@ -1059,7 +1119,6 @@ function createUnboundActions(): ExtensionCoreActions {
 		getAgentThinkingLevel: () => notBound(),
 		setAgentThinkingLevel: async () => notBound(),
 		abortAgent: async () => notBound(),
-		compactAgent: async () => notBound(),
 		exec: async () => notBound(),
 	};
 }
