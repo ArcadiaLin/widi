@@ -53,6 +53,44 @@ import {
 	restoredProfile,
 } from "../helpers/orchestrator.ts";
 
+// Drives the private harness-event bridge directly (same private-access
+// precedent as requireAgentRecord): a real settled fact requires a full model
+// run, which unit tests never perform.
+async function emitSettled(
+	orchestrator: AgentOrchestrator,
+	agentId: string,
+	nextTurnCount: number,
+): Promise<void> {
+	await (
+		orchestrator as unknown as {
+			_handleAgentHarnessEvent(
+				agentId: string,
+				event: AgentHarnessEvent,
+			): Promise<void>;
+		}
+	)._handleAgentHarnessEvent(agentId, { type: "settled", nextTurnCount });
+}
+
+function overflowAssistantMessage(): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text: "big turn" }],
+		api: defaultModel.api,
+		provider: defaultModel.provider,
+		model: defaultModel.id,
+		usage: {
+			input: 900,
+			output: 100,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 1000,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: 2,
+	};
+}
+
 function expectExtendedMetadata(metadata: {
 	id: string;
 	createdAt: string;
@@ -2592,6 +2630,94 @@ describe("AgentOrchestrator", () => {
 			false,
 		);
 		expect(orchestrator.getAgentStatus(agentId)).toBe("idle");
+	});
+
+	it("auto-compacts on settled when the context threshold is exceeded", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const agentId = await orchestrator.spawnAgent();
+		const session = await orchestrator.sessionManager.createAgentSession({
+			agentId,
+			agentProfile: defaultProfile,
+		});
+		await session.appendMessage({ role: "user", content: "hi", timestamp: 1 });
+		// defaultModel.contextWindow is 1000 and the default reserve is 16384,
+		// so any positive usage is over threshold.
+		await session.appendMessage(overflowAssistantMessage());
+		const compacted: string[] = [];
+		Object.assign(orchestrator, {
+			compactAgent: async (targetAgentId: string) => {
+				compacted.push(targetAgentId);
+				return { summary: "s", firstKeptEntryId: "e", tokensBefore: 1000 };
+			},
+		});
+
+		// A settled fact with queued next turns defers to the next settled.
+		await emitSettled(orchestrator, agentId, 1);
+		expect(compacted).toEqual([]);
+
+		await emitSettled(orchestrator, agentId, 0);
+		expect(compacted).toEqual([agentId]);
+	});
+
+	it("skips auto-compaction when disabled or without assistant usage", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const agentId = await orchestrator.spawnAgent();
+		const session = await orchestrator.sessionManager.createAgentSession({
+			agentId,
+			agentProfile: defaultProfile,
+		});
+		const compacted: string[] = [];
+		Object.assign(orchestrator, {
+			compactAgent: async (targetAgentId: string) => {
+				compacted.push(targetAgentId);
+				return { summary: "s", firstKeptEntryId: "e", tokensBefore: 1000 };
+			},
+		});
+
+		// No assistant usage on the branch yet: nothing to measure.
+		await emitSettled(orchestrator, agentId, 0);
+		expect(compacted).toEqual([]);
+
+		await session.appendMessage(overflowAssistantMessage());
+		orchestrator.settingManager.setCompactionEnabled(false);
+		await emitSettled(orchestrator, agentId, 0);
+		expect(compacted).toEqual([]);
+	});
+
+	it("reports failed auto-compaction as a warning diagnostic", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const agentId = await orchestrator.spawnAgent();
+		const session = await orchestrator.sessionManager.createAgentSession({
+			agentId,
+			agentProfile: defaultProfile,
+		});
+		await session.appendMessage(overflowAssistantMessage());
+		Object.assign(orchestrator, {
+			compactAgent: async () => {
+				throw new Error("summary model unavailable");
+			},
+		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+
+		await emitSettled(orchestrator, agentId, 0);
+
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					severity: "warning",
+					code: "compaction.auto_failed",
+					agentId,
+					message: expect.stringContaining("summary model unavailable"),
+				}),
+			}),
+		);
 	});
 
 	it("disposes agents best-effort and leaves an inspectable stale record", async () => {

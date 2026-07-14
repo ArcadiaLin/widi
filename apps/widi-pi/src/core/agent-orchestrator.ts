@@ -9,14 +9,17 @@ import {
 	type AgentHarnessEvent,
 	type AgentHarnessResources,
 	type AgentTool,
+	calculateContextTokens,
 	type ExecutionEnv,
 	formatSkillsForSystemPrompt,
+	getLastAssistantUsage,
 	type JsonlSessionMetadata,
 	type PromptTemplate,
 	type PromptTemplateDiagnostic,
 	type Session,
 	type Skill,
 	type SkillDiagnostic,
+	shouldCompact,
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import {
@@ -293,6 +296,7 @@ export class AgentOrchestrator {
 	private _extensionObserverDispatchDepth: Map<AgentId, number> = new Map();
 	private _agentRunSignals: Map<AgentId, AbortSignal> = new Map();
 	private _agentToolSets: Map<AgentId, AgentToolSet> = new Map();
+	private _autoCompactingAgents: Set<AgentId> = new Set();
 	private _clients: Map<string, OrchestratorClient<OrchestratorEvent>> =
 		new Map();
 	private readonly _humanRequests: HumanRequestBroker;
@@ -2777,6 +2781,54 @@ export class AgentOrchestrator {
 	): Promise<void> {
 		this._updateAgentStatusFromHarnessEvent(agentId, event);
 		await this._emit({ type: "agent_harness_event", agentId, event });
+		// Auto-compaction rides the settled fact: the harness is idle and its
+		// pending session writes are flushed, so the branch and the last
+		// assistant usage are durable. A settled with queued next turns is
+		// skipped - the next run starts immediately and compaction would race
+		// its busy check.
+		if (event.type === "settled" && event.nextTurnCount === 0) {
+			await this._maybeAutoCompactAgent(agentId);
+		}
+	}
+
+	// Threshold trigger for automatic compaction (settings compaction.enabled /
+	// reserveTokens). The check consumes the same facts as the upstream
+	// harness: last assistant usage on the current branch versus the model
+	// context window. Failure is a warning diagnostic, never a thrown error -
+	// an uncompactable over-threshold session keeps running until the provider
+	// rejects it, which is the same behavior as before this trigger existed.
+	private async _maybeAutoCompactAgent(agentId: AgentId): Promise<void> {
+		const settings = this.settingManager.getCompactionSettings();
+		if (!settings.enabled) return;
+		if (this._autoCompactingAgents.has(agentId)) return;
+		const record = this._agents.get(agentId);
+		if (!record || record.status !== "idle" || !record.harness) return;
+		this._autoCompactingAgents.add(agentId);
+		try {
+			const snapshot =
+				await this.sessionManager.getAgentSessionSnapshot(agentId);
+			const usage = getLastAssistantUsage([...snapshot.pathToRoot]);
+			if (!usage) return;
+			const contextTokens = calculateContextTokens(usage);
+			if (!shouldCompact(contextTokens, record.model.contextWindow, settings)) {
+				return;
+			}
+			await this.compactAgent(agentId);
+		} catch (error) {
+			await this._publishDiagnostic(
+				createOrchestratorDiagnostic({
+					severity: "warning",
+					code: "compaction.auto_failed",
+					message: `Automatic compaction failed for agent ${agentId}: ${formatError(error)}`,
+					operationSource: { kind: "system" },
+					agentId,
+					phase: "runtime",
+					recoverable: true,
+				}),
+			);
+		} finally {
+			this._autoCompactingAgents.delete(agentId);
+		}
 	}
 
 	private async _handleSubscribedAgentHarnessEvent(
