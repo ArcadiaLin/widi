@@ -26,15 +26,17 @@
 - `read`：UTF-8 文本、offset/limit、head truncation、binary/image 分类。
 - `write`：创建父目录、覆盖写、typed details、单文件 mutation queue。
 - `edit`：批量精确替换、fuzzy normalization、BOM/换行保留、diff/patch details、单文件 mutation queue。
-- 共享：路径解析、文件 operations、mutation queue、head truncation。
+- `bash`：streaming update、abort、timeout、非零退出、tail truncation、完整输出落盘（切片 1）。
+- `grep`：rg --json backend、context lines、match limit、单行截断（切片 2）。
+- `find`：rg --files 枚举加 WIDI 层 glob 匹配、确定性排序、result limit（切片 2）。
+- `ls`：case-insensitive 排序、dotfiles、目录后缀、entry limit（切片 2）。
+- 共享：路径解析、文件 operations、mutation queue、head/tail truncation、output accumulator、进程生命周期 helper、rg resolve/spawn backend、glob 匹配。
 
 缺失：
 
-- `bash`、`grep`、`find`、`ls` definition 和测试。
-- Bash tail truncation、流式输出累计、完整输出落盘和可靠进程生命周期。
-- Grep 单行截断工具。
-- `read` 图片结果、MIME 探测、转换/缩放和图片设置接线。
-- 七个 built-in tools 的 runtime 注册与验收。
+- `read` 图片结果、MIME 探测、转换/缩放和图片设置接线（切片 3）。
+- system prompt composition 对 `promptSnippet`/`promptGuidelines` 的消费（切片 4）。
+- 七工具注册收尾、smoke test 与文档验收（切片 4）。
 
 ## 实施原则
 
@@ -57,7 +59,7 @@
 
 - `grep` 和 `find` 的默认本地 backend 都使用 `rg`，避免同时引入 `fd`（上游 `find` 使用 `fd`，这是有意偏离）。
 - `grep` 使用 `rg --json` 获取结构化 match event。
-- `find` 使用 `rg --files` 加 glob 参数获取 gitignore-aware 文件列表。
+- `find` 使用 `rg --files` 获取 gitignore-aware 文件列表；用户 glob 在 WIDI 层匹配，因为 rg 的正向 `--glob` 会 override 全部 ignore 逻辑，把 gitignored 文件重新捞回来。
 - executable 路径从显式 option 或 `PATH` 解析；不可用时抛出明确错误。
 - 不在 tool execute 中联网下载 `rg`。
 - 所有用户输入都作为 argv 元素传给 `spawn`，不得拼接进 shell command。
@@ -75,76 +77,76 @@
 
 ### `truncate.ts`
 
-- [ ] 增加 `GREP_MAX_LINE_LENGTH = 500`。
-- [ ] 增加 `truncateTail()`，保留最后 N 行或最后 N bytes。
-- [ ] Tail byte truncation 在最后一行自身超过限制时允许返回该行尾部的 partial line，并设置 `lastLinePartial`。
-- [ ] 增加 UTF-8 边界安全的 tail byte slicing。
-- [ ] 增加 `truncateLine()`，返回 `{ text, wasTruncated }`。
-- [ ] 保持现有 `TruncationResult` 结构兼容 `read`。
-- [ ] 增加 trailing newline、空内容、多字节字符、首/尾超长单行测试。
+- [x] 增加 `GREP_MAX_LINE_LENGTH = 500`。
+- [x] 增加 `truncateTail()`，保留最后 N 行或最后 N bytes。
+- [x] Tail byte truncation 在最后一行自身超过限制时允许返回该行尾部的 partial line，并设置 `lastLinePartial`。
+- [x] 增加 UTF-8 边界安全的 tail byte slicing。
+- [x] 增加 `truncateLine()`，返回 `{ text, wasTruncated }`。
+- [x] 保持现有 `TruncationResult` 结构兼容 `read`。
+- [x] 增加 trailing newline、空内容、多字节字符、首/尾超长单行测试。
 
 ### `output-accumulator.ts`
 
-- [ ] 新增有界内存的流式输出累计器。
-- [ ] 使用 streaming `TextDecoder`，正确处理跨 chunk 的 UTF-8 字符。
-- [ ] 维护 decoded tail、总 bytes、总行数和最后一行 bytes。
-- [ ] snapshot 使用 `truncateTail()`，适合展示命令结尾和错误。
-- [ ] 仅在超过展示限制或明确请求持久化时创建临时文件。
-- [ ] 临时文件写入原始输出 bytes，不因 UTF-8 decode 或截断损失内容。
-- [ ] 提供显式 `finish()` 和 `closeTempFile()` 生命周期。
-- [ ] operations resolve 后忽略迟到的 output callback。
-- [ ] 覆盖 line-only truncation、byte truncation、split UTF-8、迟到输出和临时文件完整性测试。
+- [x] 新增有界内存的流式输出累计器。
+- [x] 使用 streaming `TextDecoder`，正确处理跨 chunk 的 UTF-8 字符。
+- [x] 维护 decoded tail、总 bytes、总行数和最后一行 bytes。
+- [x] snapshot 使用 `truncateTail()`，适合展示命令结尾和错误。
+- [x] 仅在超过展示限制或明确请求持久化时创建临时文件。
+- [x] 临时文件写入原始输出 bytes，不因 UTF-8 decode 或截断损失内容。
+- [x] 提供显式 `finish()` 和 `closeTempFile()` 生命周期。
+- [x] operations resolve 后忽略迟到的 output callback。
+- [x] 覆盖 line-only truncation、byte truncation、split UTF-8、迟到输出和临时文件完整性测试。
 
 ### 进程生命周期 helper
 
 放在 `coding/process.ts` 或等价的 coding-owned helper 中，不让 `bash.ts` 和搜索工具分别实现一套；切片 2 的 grep/find 复用它。此 helper 不负责 shell command 解析，也不依赖 TUI。
 
-- [ ] 提供 typed spawn helper，支持 stdout/stderr pipe、cwd、env 和 abort。
-- [ ] Unix 使用 detached process group；abort/timeout 时终止整个进程树。
-- [ ] Windows 使用 `taskkill /F /T` 或等价的可靠 process-tree 终止策略。
-- [ ] 等待 child exit 后继续消费短时间内仍在输出的 inherited pipe。
-- [ ] 后台 descendant 静默持有 pipe 时必须通过 idle grace 结束等待，不能无限挂起。
-- [ ] stdout/stderr listener、abort listener 和 timeout handle 必须在所有结局中清理。
-- [ ] 测试 spawn failure、abort、timeout、exit 后迟到输出和静默 inherited pipe。
+- [x] 提供 typed spawn helper，支持 stdout/stderr pipe、cwd、env 和 abort。
+- [x] Unix 使用 detached process group；abort/timeout 时终止整个进程树。
+- [x] Windows 使用 `taskkill /F /T` 或等价的可靠 process-tree 终止策略。
+- [x] 等待 child exit 后继续消费短时间内仍在输出的 inherited pipe。
+- [x] 后台 descendant 静默持有 pipe 时必须通过 idle grace 结束等待，不能无限挂起。
+- [x] stdout/stderr listener、abort listener 和 timeout handle 必须在所有结局中清理。
+- [x] 测试 spawn failure、abort、timeout、exit 后迟到输出和静默 inherited pipe。
 
 ### `bash` definition
 
-- [ ] 新增 `bash.ts` 和 `BashToolInput`：`command`、可选 `timeout` 秒数。
-- [ ] 校验 timeout 是有限正数，且不超过 Node timer 上限。
-- [ ] 定义 `BashOperations.exec(command, cwd, options)` 注入边界。
-- [ ] 默认 backend 支持显式 `shellPath`、环境变量和 stdin command transport。
-- [ ] 支持 `commandPrefix`，以换行连接 prefix 与用户 command。
-- [ ] 设置 `promptSnippet` 和必要的 prompt guidelines。
+- [x] 新增 `bash.ts` 和 `BashToolInput`：`command`、可选 `timeout` 秒数。
+- [x] 校验 timeout 是有限正数，且不超过 Node timer 上限。
+- [x] 定义 `BashOperations.exec(command, cwd, options)` 注入边界。
+- [x] 默认 backend 支持显式 `shellPath`、环境变量和 stdin command transport。
+- [x] 支持 `commandPrefix`，以换行连接 prefix 与用户 command。
+- [x] 设置 `promptSnippet` 和必要的 prompt guidelines。
 
 ### `bash` execution
 
-- [ ] 合并 stdout 和 stderr，保持到达顺序。
-- [ ] 使用 `OutputAccumulator` 保留最后 2000 行或 50KB。
-- [ ] `context.onUpdate` 首先发空 partial result，再以约 100ms 节流推送输出 snapshot。
-- [ ] tool promise settle 后不再接受或发送 update。
-- [ ] 空输出成功时返回 `(no output)`。
-- [ ] 非零 exit code 抛错，并在错误中保留已有输出和退出码。
-- [ ] Timeout 和 abort 抛错，并在错误中保留已有输出。
-- [ ] 截断时在 content 中给出展示行范围和 full output path。
-- [ ] `BashToolDetails` 包含可选 `truncation` 和 `fullOutputPath`。
+- [x] 合并 stdout 和 stderr，保持到达顺序。
+- [x] 使用 `OutputAccumulator` 保留最后 2000 行或 50KB。
+- [x] `context.onUpdate` 首先发空 partial result，再以约 100ms 节流推送输出 snapshot。
+- [x] tool promise settle 后不再接受或发送 update。
+- [x] 空输出成功时返回 `(no output)`。
+- [x] 非零 exit code 抛错，并在错误中保留已有输出和退出码。
+- [x] Timeout 和 abort 抛错，并在错误中保留已有输出。
+- [x] 截断时在 content 中给出展示行范围和 full output path。
+- [x] `BashToolDetails` 包含可选 `truncation` 和 `fullOutputPath`。
 
 ### 注册与设置接线
 
-- [ ] 在 `builtin.ts` 注册 `bash`。
-- [ ] runtime 从 `SettingManager.getShellPath()` 和 `getShellCommandPrefix()` 传入配置。
+- [x] 在 `builtin.ts` 注册 `bash`。
+- [x] runtime 从 `SettingManager.getShellPath()` 和 `getShellCommandPrefix()` 传入配置。
 
 ### 测试
 
 `coding-tools-shared.test.ts` 覆盖 truncation、accumulator 和 process helper；新增 `coding-bash-tool.test.ts` 覆盖：
 
-- [ ] 简单命令和无输出命令。
-- [ ] stdout/stderr 合并。
-- [ ] 非零退出、timeout、abort、cwd 不存在、shell 不存在。
-- [ ] command prefix 和自定义 shell path。
-- [ ] chatty output update 节流。
-- [ ] UTF-8 字符跨 chunk。
-- [ ] 行数与 bytes 截断、完整输出文件。
-- [ ] exit 后迟到输出不丢失，operations resolve 后迟到 callback 不污染结果。
+- [x] 简单命令和无输出命令。
+- [x] stdout/stderr 合并。
+- [x] 非零退出、timeout、abort、cwd 不存在、shell 不存在。
+- [x] command prefix 和自定义 shell path。
+- [x] chatty output update 节流。
+- [x] UTF-8 字符跨 chunk。
+- [x] 行数与 bytes 截断、完整输出文件。
+- [x] exit 后迟到输出不丢失，operations resolve 后迟到 callback 不污染结果。
 
 ## 切片 2：`ls`、`grep`、`find`
 
@@ -152,57 +154,57 @@ grep 和 find 共享 `rg` 的 executable resolve/spawn backend，一起实现避
 
 ### `ls`
 
-- [ ] 新增 `ls.ts`，参数为可选 `path` 和 `limit`。
-- [ ] 定义 `LsOperations.exists/stat/readdir`，默认使用 Node filesystem。
-- [ ] 校验 limit 是有限正整数；默认 500。
-- [ ] 路径相对 cwd 解析，missing path 和 non-directory 给出不同错误。
-- [ ] 包含 dotfiles。
-- [ ] 按 case-insensitive 字母序稳定排序。
-- [ ] 目录条目追加 `/`。
-- [ ] 无法 stat 的单个 entry 跳过，不让整个 listing 失败。
-- [ ] 按 entry limit 和 50KB 限制输出，写入 `entryLimitReached`/`truncation` details。
-- [ ] 空目录返回 `(empty directory)`。
+- [x] 新增 `ls.ts`，参数为可选 `path` 和 `limit`。
+- [x] 定义 `LsOperations.exists/stat/readdir`，默认使用 Node filesystem。
+- [x] 校验 limit 是有限正整数；默认 500。
+- [x] 路径相对 cwd 解析，missing path 和 non-directory 给出不同错误。
+- [x] 包含 dotfiles。
+- [x] 按 case-insensitive 字母序稳定排序。
+- [x] 目录条目追加 `/`。
+- [x] 无法 stat 的单个 entry 跳过，不让整个 listing 失败。
+- [x] 按 entry limit 和 50KB 限制输出，写入 `entryLimitReached`/`truncation` details。
+- [x] 空目录返回 `(empty directory)`。
 
 ### `grep`
 
-- [ ] 新增 `grep.ts`，参数为 `pattern`、可选 `path/glob/ignoreCase/literal/context/limit`。
-- [ ] 默认 limit 100，context 默认 0。
-- [ ] 校验 context 是非负整数，limit 是正整数。
-- [ ] 定义可注入 backend，至少隔离 executable resolve/spawn 和 context file read。
-- [ ] 默认 backend 使用 `rg --json --line-number --color=never --hidden`。
-- [ ] `--` 必须出现在 pattern/path 之前，flag-like pattern 不得成为 rg option。
-- [ ] rg exit 0 为有匹配，exit 1 为无匹配，其他 exit code 为执行错误。
-- [ ] 单文件搜索仍显示 basename 和 line number。
-- [ ] 目录搜索输出相对 search root 的 POSIX path。
-- [ ] 无 context 时直接使用 rg match event 的文本。
-- [ ] 有 context 时按文件读取内容并格式化前后行。
-- [ ] match 行格式为 `path:line: text`，context 行格式为 `path-line- text`。
-- [ ] 每个输出行通过 `truncateLine()` 限制到 500 chars。
-- [ ] 达到 match limit 时停止子进程并记录 `matchLimitReached`。
-- [ ] 最终输出按 50KB head truncation，并记录 `truncation`。
-- [ ] 无匹配返回 `No matches found`。
+- [x] 新增 `grep.ts`，参数为 `pattern`、可选 `path/glob/ignoreCase/literal/context/limit`。
+- [x] 默认 limit 100，context 默认 0。
+- [x] 校验 context 是非负整数，limit 是正整数。
+- [x] 定义可注入 backend，至少隔离 executable resolve/spawn 和 context file read。
+- [x] 默认 backend 使用 `rg --json --line-number --color=never --hidden`。
+- [x] `--` 必须出现在 pattern/path 之前，flag-like pattern 不得成为 rg option。
+- [x] rg exit 0 为有匹配，exit 1 为无匹配，其他 exit code 为执行错误。
+- [x] 单文件搜索仍显示 basename 和 line number。
+- [x] 目录搜索输出相对 search root 的 POSIX path。
+- [x] 无 context 时直接使用 rg match event 的文本。
+- [x] 有 context 时按文件读取内容并格式化前后行。
+- [x] match 行格式为 `path:line: text`，context 行格式为 `path-line- text`。
+- [x] 每个输出行通过 `truncateLine()` 限制到 500 chars。
+- [x] 达到 match limit 时停止子进程并记录 `matchLimitReached`。
+- [x] 最终输出按 50KB head truncation，并记录 `truncation`。
+- [x] 无匹配返回 `No matches found`。
 
 ### `find`
 
-- [ ] 新增 `find.ts`，参数为 `pattern`、可选 `path/limit`。
-- [ ] 默认 limit 1000，校验为正整数。
-- [ ] 默认 backend 使用 `rg --files --hidden --no-require-git`，依赖 rg 的 ignore/gitignore 语义。
-- [ ] 固定排除 `.git` 和 `node_modules`；不要排除其他未被 gitignore 的 dotfiles。
-- [ ] 把用户 glob 作为独立 argv 传递，不经 shell。
-- [ ] 输出相对 search root 的 POSIX path。
-- [ ] 结果排序必须确定；若 rg 顺序不作为契约，则在 WIDI 层排序。
-- [ ] 达到 result limit 时停止读取并记录 `resultLimitReached`。
-- [ ] 最终输出按 50KB head truncation。
-- [ ] 无结果返回 `No files found matching pattern`。
+- [x] 新增 `find.ts`，参数为 `pattern`、可选 `path/limit`。
+- [x] 默认 limit 1000，校验为正整数。
+- [x] 默认 backend 使用 `rg --files --hidden --sort path`；`--no-require-git` 仅在 search root 不在 git repo 内时添加（修订：固定添加会把父级 `.gitignore` 应用进 nested repo）。
+- [x] 固定排除 `.git` 和 `node_modules`；不要排除其他未被 gitignore 的 dotfiles。
+- [x] 用户 glob 不传给 rg（修订：正向 `--glob` override ignore 规则），在 WIDI 层对相对路径做 glob 匹配；用户输入仍不经 shell。
+- [x] 输出相对 search root 的 POSIX path。
+- [x] 结果排序必须确定：使用 `rg --sort path`，limit 早停得到确定性前缀。
+- [x] 达到 result limit 时停止读取并记录 `resultLimitReached`。
+- [x] 最终输出按 50KB head truncation。
+- [x] 无结果返回 `No files found matching pattern`。
 
-需要先用 characterization test 固定 `rg --files` 对 nested repository 和父级 `.gitignore` 的实际行为；如果不能达到上游 `fd` 语义，再评估引入 `fd`，不要预先增加第二个 executable 依赖。
+Characterization 结论（已固定为 `coding-find-tool.test.ts` 中的测试）：git repo 内 rg 默认让父级 `.gitignore` 停在 nested repo 边界，`--no-require-git` 则会跨边界应用父级规则，因此该 flag 只在 repo 外使用；正向 `--glob` override 全部 ignore 逻辑，因此用户 glob 移到 WIDI 层匹配。两项合计达到了上游 `fd` 语义，未引入 `fd`。
 
 ### 注册与测试
 
-- [ ] 在 `builtin.ts` 注册 `ls`、`grep`、`find`；runtime 传入可选 rg executable path。
-- [ ] `coding-ls-tool.test.ts`：排序、dotfiles、目录后缀、空目录、limit、missing 和 abort。
-- [ ] `coding-grep-tool.test.ts`：regex、literal、ignoreCase、glob；单文件 basename、目录相对路径；context lines 和 match limit；long line truncation；gitignore、hidden file 和无匹配；flag-like pattern 注入防护；rg missing、rg error 和 abort。
-- [ ] `coding-find-tool.test.ts`：path-containing glob、hidden file、gitignore、nested repo boundary、invalid glob、limit、missing path 和 abort。
+- [x] 在 `builtin.ts` 注册 `ls`、`grep`、`find`；runtime 传入可选 rg executable path。
+- [x] `coding-ls-tool.test.ts`：排序、dotfiles、目录后缀、空目录、limit、missing 和 abort。
+- [x] `coding-grep-tool.test.ts`：regex、literal、ignoreCase、glob；单文件 basename、目录相对路径；context lines 和 match limit；long line truncation；gitignore、hidden file 和无匹配；flag-like pattern 注入防护；rg missing、rg error 和 abort。
+- [x] `coding-find-tool.test.ts`：path-containing glob、hidden file、gitignore、nested repo boundary、invalid glob、limit、missing path 和 abort。
 
 ## 切片 3：`read` 图片能力与全局图片 policy
 

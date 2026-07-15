@@ -2,6 +2,9 @@ import type { ToolRegistry } from "../../tool-registry.ts";
 import type { ToolSource } from "../types.ts";
 import { createBashToolDefinition } from "./bash.ts";
 import { createEditToolDefinition } from "./edit.ts";
+import { createFindToolDefinition } from "./find.ts";
+import { createGrepToolDefinition } from "./grep.ts";
+import { createLsToolDefinition } from "./ls.ts";
 import { createReadToolDefinition } from "./read.ts";
 import { createWriteToolDefinition } from "./write.ts";
 
@@ -16,6 +19,8 @@ export interface CoreCodingToolOptions {
 	shellPath?: string;
 	/** Command prefix prepended to every bash command. */
 	shellCommandPrefix?: string;
+	/** Explicit ripgrep executable path for the grep and find tools. */
+	rgPath?: string;
 }
 
 /**
@@ -41,4 +46,13 @@ export function registerCoreCodingTools(
 	);
 	registry.defineTool(createEditToolDefinition(cwd), coreBuiltinToolSource);
 	registry.defineTool(createWriteToolDefinition(cwd), coreBuiltinToolSource);
+	registry.defineTool(
+		createGrepToolDefinition(cwd, { rgPath: options.rgPath }),
+		coreBuiltinToolSource,
+	);
+	registry.defineTool(
+		createFindToolDefinition(cwd, { rgPath: options.rgPath }),
+		coreBuiltinToolSource,
+	);
+	registry.defineTool(createLsToolDefinition(cwd), coreBuiltinToolSource);
 }

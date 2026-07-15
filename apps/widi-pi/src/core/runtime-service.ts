@@ -676,6 +676,7 @@ export async function createWidiRuntime(
 	registerCoreCodingTools(toolRegistry, cwd, {
 		shellPath: settingManager.getShellPath(),
 		shellCommandPrefix: settingManager.getShellCommandPrefix(),
+		rgPath: settingManager.getRgPath(),
 	});
 	const orchestratorConfig: AgentOrchestratorConfigs = {
 		executionEnv,
