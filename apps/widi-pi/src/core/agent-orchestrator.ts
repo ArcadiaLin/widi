@@ -1899,10 +1899,9 @@ export class AgentOrchestrator {
 				phase: "create",
 				recoverable: true,
 			} as const;
-			// Trust ruling (extension-experiment.md slice 9): `!command` config
-			// values resolve through ExecutionEnv.exec at request time, so an
-			// untrusted project rejects the whole registration - the same family
-			// as the scoped exec gate.
+			// Trust ruling: `!command` config values resolve through
+			// ExecutionEnv.exec at request time, so an untrusted project rejects
+			// the whole registration - the same family as the scoped exec gate.
 			if (
 				!projectTrusted &&
 				hasCommandConfigValues(
@@ -2318,9 +2317,8 @@ export class AgentOrchestrator {
 			abortAgent: async (agentId) => {
 				await this.abortAgent(agentId);
 			},
-			// Trust ruling (extension-experiment.md): exec runs arbitrary
-			// commands in the project cwd, so it is denied until the project
-			// trust gate has passed.
+			// Trust ruling: exec runs arbitrary commands in the project cwd, so
+			// it is denied until the project trust gate has passed.
 			exec: async (agentId, extensionId, command, options) => {
 				if (!this.settingManager.isProjectTrusted()) {
 					throw new OrchestratorError(
