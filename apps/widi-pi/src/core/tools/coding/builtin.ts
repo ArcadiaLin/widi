@@ -21,6 +21,10 @@ export interface CoreCodingToolOptions {
 	shellCommandPrefix?: string;
 	/** Explicit ripgrep executable path for the grep and find tools. */
 	rgPath?: string;
+	/** Default: true. Resize images read by the read tool to inline limits. */
+	autoResizeImages?: boolean;
+	/** Default: false. The read tool returns text-only notes for images. */
+	blockImages?: boolean;
 }
 
 /**
@@ -36,7 +40,13 @@ export function registerCoreCodingTools(
 	cwd: string,
 	options: CoreCodingToolOptions = {},
 ): void {
-	registry.defineTool(createReadToolDefinition(cwd), coreBuiltinToolSource);
+	registry.defineTool(
+		createReadToolDefinition(cwd, {
+			autoResizeImages: options.autoResizeImages,
+			blockImages: options.blockImages,
+		}),
+		coreBuiltinToolSource,
+	);
 	registry.defineTool(
 		createBashToolDefinition(cwd, {
 			shellPath: options.shellPath,

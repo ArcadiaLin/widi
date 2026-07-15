@@ -81,6 +81,7 @@ import {
 } from "./extension/index.ts";
 import type { HumanRequest, HumanResponse } from "./human-request.ts";
 import { HumanRequestBroker } from "./human-request.ts";
+import { stripImagesFromMessages } from "./image-policy.ts";
 import {
 	type ModelRegistry,
 	modelReference,
@@ -2133,15 +2134,23 @@ export class AgentOrchestrator {
 						event,
 					),
 			),
-			harness.on(
-				"context",
-				async (event) =>
-					await this._runExtensionInterceptor<"context">(
-						agentId,
-						extensionRunner,
-						event,
-					),
-			),
+			// The blockImages policy applies after extension results inside this
+			// single handler: the harness keeps only the last non-undefined hook
+			// result, so a separately registered filter hook could be overridden
+			// by an extension transform.
+			harness.on("context", async (event) => {
+				const result = await this._runExtensionInterceptor<"context">(
+					agentId,
+					extensionRunner,
+					event,
+				);
+				if (!this.settingManager.getImageSettings().blockImages) {
+					return result;
+				}
+				return {
+					messages: stripImagesFromMessages(result?.messages ?? event.messages),
+				};
+			}),
 			harness.on(
 				"tool_call",
 				async (event) =>
@@ -3470,22 +3479,75 @@ function commandArgumentsCompletionFailureDetails(
 }
 
 /**
- * Compose the harness system prompt from the profile prompt plus a
- * model-visible skills listing (agentskills.io block via pi-agent-core).
- * The listing tells the model to read the skill file, so it is only
- * appended when a read tool is active; skills stay reachable through the
- * `<skill:...>` inline command either way.
+ * Prompt guidance carried by an active tool. WIDI adapter tools
+ * (`WidiAgentTool`) match this shape; plain Pi tools contribute nothing.
+ */
+export interface ToolPromptGuidance {
+	name: string;
+	promptSnippet?: string;
+	promptGuidelines?: readonly string[];
+}
+
+/**
+ * Compose the tool guidance section from the active tools' promptSnippet and
+ * promptGuidelines. Snippets keep the active tool order; guidelines are
+ * deduplicated by exact text so shared guidance appears once. Returns an
+ * empty string when no active tool contributes guidance.
+ */
+export function formatToolGuidanceForSystemPrompt(
+	activeTools: readonly ToolPromptGuidance[],
+): string {
+	const snippetLines: string[] = [];
+	const guidelineLines: string[] = [];
+	const seenGuidelines = new Set<string>();
+	for (const tool of activeTools) {
+		const snippet = tool.promptSnippet?.trim();
+		if (snippet) {
+			snippetLines.push(`- ${tool.name}: ${snippet}`);
+		}
+		for (const guideline of tool.promptGuidelines ?? []) {
+			const normalized = guideline.trim();
+			if (!normalized || seenGuidelines.has(normalized)) continue;
+			seenGuidelines.add(normalized);
+			guidelineLines.push(`- ${normalized}`);
+		}
+	}
+
+	const parts: string[] = [];
+	if (snippetLines.length > 0) {
+		parts.push(`Available tools:\n${snippetLines.join("\n")}`);
+	}
+	if (guidelineLines.length > 0) {
+		parts.push(`Tool guidelines:\n${guidelineLines.join("\n")}`);
+	}
+	return parts.join("\n\n");
+}
+
+/**
+ * Compose the harness system prompt from the profile prompt plus the active
+ * tools' prompt guidance and a model-visible skills listing (agentskills.io
+ * block via pi-agent-core). The skills listing tells the model to read the
+ * skill file, so it is only appended when a read tool is active; skills stay
+ * reachable through the `<skill:...>` inline command either way.
  */
 export function buildAgentSystemPrompt(
 	basePrompt: string,
 	resources: AgentHarnessResources,
-	activeTools: readonly { name: string }[],
+	activeTools: readonly ToolPromptGuidance[],
 ): string {
+	const sections = [basePrompt];
+	const toolGuidance = formatToolGuidanceForSystemPrompt(activeTools);
+	if (toolGuidance !== "") {
+		sections.push(toolGuidance);
+	}
 	const hasReadTool = activeTools.some((tool) => tool.name === "read");
-	if (!hasReadTool) return basePrompt;
-	const skillsSection = formatSkillsForSystemPrompt(resources.skills ?? []);
-	if (skillsSection === "") return basePrompt;
-	return `${basePrompt}\n\n${skillsSection}`;
+	if (hasReadTool) {
+		const skillsSection = formatSkillsForSystemPrompt(resources.skills ?? []);
+		if (skillsSection !== "") {
+			sections.push(skillsSection);
+		}
+	}
+	return sections.join("\n\n");
 }
 
 // Stale runners keep no contribution rights: like inline commands, resources

@@ -172,7 +172,7 @@ export function createBashToolDefinition(
 			"Execute bash commands for builds, tests, and version control",
 		promptGuidelines: [
 			"Use bash for building, testing, version control, and commands not covered by a dedicated tool.",
-			"Prefer read for viewing files rather than cat or sed.",
+			"Do not use bash to replace read, grep, find, or ls; the dedicated tools are more precise.",
 		],
 		parameters: bashSchema,
 		execute: async (_toolCallId, { command, timeout }, context) => {

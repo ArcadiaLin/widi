@@ -2,6 +2,11 @@ import { TextDecoder } from "node:util";
 import { type Static, Type } from "typebox";
 import type { ToolDefinition } from "../types.ts";
 import {
+	detectSupportedImageMimeType,
+	IMAGE_MIME_SNIFF_BYTES,
+} from "./image/mime.ts";
+import { type ImageProcessor, processImage } from "./image/process-image.ts";
+import {
 	type CodingToolFileOperations,
 	createLocalCodingToolFileOperations,
 } from "./operations.ts";
@@ -16,22 +21,39 @@ import {
 
 const readSchema = Type.Object({
 	path: Type.String({
-		description:
-			"Path to the UTF-8 text file to read, relative to cwd or absolute.",
+		description: "Path to the file to read, relative to cwd or absolute.",
 	}),
 	offset: Type.Optional(
 		Type.Number({
-			description: "1-indexed line number to start reading from.",
+			description:
+				"1-indexed line number to start reading from. Text files only.",
 		}),
 	),
 	limit: Type.Optional(
 		Type.Number({
-			description: "Maximum number of lines to read.",
+			description: "Maximum number of lines to read. Text files only.",
 		}),
 	),
 });
 
 export type ReadToolInput = Static<typeof readSchema>;
+
+export interface ReadImageDetails {
+	/** MIME type detected from the file content. */
+	originalMimeType: string;
+	/** Final MIME type sent to the model. Absent when blocked or omitted. */
+	mimeType?: string;
+	converted: boolean;
+	resized: boolean;
+	originalWidth?: number;
+	originalHeight?: number;
+	width?: number;
+	height?: number;
+	/** True when images.blockImages suppressed the image data. */
+	blocked?: boolean;
+	/** Set when image processing failed and the image was omitted. */
+	omittedReason?: string;
+}
 
 export interface ReadToolDetails {
 	path: string;
@@ -47,17 +69,44 @@ export interface ReadToolDetails {
 	unsupported?: {
 		reason: string;
 	};
+	image?: ReadImageDetails;
+}
+
+/**
+ * Pluggable image handling for the read tool. Override these to fake image
+ * processing in tests or delegate detection to a remote backend.
+ */
+export interface ReadImageOperations {
+	/**
+	 * Detect the image MIME type, or return null for non-images. The default
+	 * sniffs the leading bytes of the already-read buffer and never trusts
+	 * file extensions.
+	 */
+	detectImageMimeType: (
+		absolutePath: string,
+		buffer: Buffer,
+	) => Promise<string | null> | string | null;
+	/** Convert and resize image bytes for inline provider delivery. */
+	processImage: ImageProcessor;
+}
+
+export function createLocalReadImageOperations(): ReadImageOperations {
+	return {
+		detectImageMimeType: (_absolutePath, buffer) =>
+			detectSupportedImageMimeType(buffer.subarray(0, IMAGE_MIME_SNIFF_BYTES)),
+		processImage,
+	};
 }
 
 export interface ReadToolOptions {
 	operations?: Pick<CodingToolFileOperations, "access" | "readFile">;
+	imageOperations?: ReadImageOperations;
 	maxLines?: number;
 	maxBytes?: number;
-}
-
-interface ImageSignature {
-	kind: string;
-	matches(buffer: Buffer): boolean;
+	/** Default: true. Resize images to inline provider limits. */
+	autoResizeImages?: boolean;
+	/** Default: false. Return a text-only note instead of image data. */
+	blockImages?: boolean;
 }
 
 const utf8Decoder = new TextDecoder("utf-8", {
@@ -65,64 +114,26 @@ const utf8Decoder = new TextDecoder("utf-8", {
 	ignoreBOM: true,
 });
 
-const imageSignatures: readonly ImageSignature[] = [
-	{
-		kind: "PNG",
-		matches: (buffer) =>
-			buffer.length >= 8 &&
-			buffer[0] === 0x89 &&
-			buffer[1] === 0x50 &&
-			buffer[2] === 0x4e &&
-			buffer[3] === 0x47 &&
-			buffer[4] === 0x0d &&
-			buffer[5] === 0x0a &&
-			buffer[6] === 0x1a &&
-			buffer[7] === 0x0a,
-	},
-	{
-		kind: "JPEG",
-		matches: (buffer) =>
-			buffer.length >= 3 &&
-			buffer[0] === 0xff &&
-			buffer[1] === 0xd8 &&
-			buffer[2] === 0xff,
-	},
-	{
-		kind: "GIF",
-		matches: (buffer) =>
-			buffer.subarray(0, 6).toString("ascii") === "GIF87a" ||
-			buffer.subarray(0, 6).toString("ascii") === "GIF89a",
-	},
-	{
-		kind: "WEBP",
-		matches: (buffer) =>
-			buffer.length >= 12 &&
-			buffer.subarray(0, 4).toString("ascii") === "RIFF" &&
-			buffer.subarray(8, 12).toString("ascii") === "WEBP",
-	},
-	{
-		kind: "BMP",
-		matches: (buffer) =>
-			buffer.length >= 2 && buffer[0] === 0x42 && buffer[1] === 0x4d,
-	},
-];
-
 export function createReadToolDefinition(
 	cwd: string,
 	options: ReadToolOptions = {},
 ): ToolDefinition<typeof readSchema, ReadToolDetails> {
 	const operations =
 		options.operations ?? createLocalCodingToolFileOperations();
+	const imageOperations =
+		options.imageOperations ?? createLocalReadImageOperations();
 	const maxLines = options.maxLines ?? DEFAULT_MAX_LINES;
 	const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
+	const autoResizeImages = options.autoResizeImages ?? true;
+	const blockImages = options.blockImages ?? false;
 
 	return {
 		name: "read",
 		label: "read",
-		description: `Read a UTF-8 text file. Output is truncated to ${maxLines} lines or ${formatSize(maxBytes)}, whichever is hit first. Use offset and limit to read large files in chunks. Image and binary files are reported as unsupported in this first core version.`,
-		promptSnippet: "Read UTF-8 text file contents",
+		description: `Read a file. Supports UTF-8 text files and images (JPEG, PNG, GIF, WEBP, BMP). Images are returned as inline attachments; BMP is converted to PNG. Text output is truncated to ${maxLines} lines or ${formatSize(maxBytes)}, whichever is hit first; use offset and limit to read large text files in chunks. Other binary files are not supported.`,
+		promptSnippet: "Read text file contents or an image",
 		promptGuidelines: [
-			"Use read to inspect text files before editing them.",
+			"Use read instead of bash cat or sed to inspect files.",
 			"Use offset and limit when a file is large or the result says more lines remain.",
 		],
 		parameters: readSchema,
@@ -135,14 +146,25 @@ export function createReadToolDefinition(
 			const buffer = await operations.readFile(absolutePath);
 			throwIfAborted(context.signal);
 
-			const unsupportedImage = detectImageKind(buffer);
-			if (unsupportedImage) {
-				return createUnsupportedResult({
+			const imageMimeType = await imageOperations.detectImageMimeType(
+				absolutePath,
+				buffer,
+			);
+			throwIfAborted(context.signal);
+			if (imageMimeType) {
+				if (input.offset !== undefined || input.limit !== undefined) {
+					throw new Error(
+						"Read tool input is invalid. offset and limit are not supported for image files.",
+					);
+				}
+				return await createImageReadResult({
 					path: input.path,
 					absolutePath,
-					bytes: buffer.byteLength,
-					mediaKind: "image",
-					reason: `${unsupportedImage} image files are not supported by the core read tool yet.`,
+					buffer,
+					imageMimeType,
+					imageOperations,
+					autoResizeImages,
+					blockImages,
 				});
 			}
 
@@ -151,7 +173,6 @@ export function createReadToolDefinition(
 					path: input.path,
 					absolutePath,
 					bytes: buffer.byteLength,
-					mediaKind: "binary",
 					reason:
 						"Binary or non-UTF-8 files are not supported by the core read tool.",
 				});
@@ -189,11 +210,113 @@ function validateReadInput(input: ReadToolInput): void {
 	}
 }
 
+async function createImageReadResult(options: {
+	path: string;
+	absolutePath: string;
+	buffer: Buffer;
+	imageMimeType: string;
+	imageOperations: ReadImageOperations;
+	autoResizeImages: boolean;
+	blockImages: boolean;
+}) {
+	const baseDetails: ReadToolDetails = {
+		path: options.path,
+		absolutePath: options.absolutePath,
+		mediaKind: "image",
+		bytes: options.buffer.byteLength,
+	};
+
+	if (options.blockImages) {
+		// No base64 payload is generated at all, so blocked images do not
+		// inflate the session transcript.
+		return {
+			content: [
+				{
+					type: "text" as const,
+					text: `Read image file [${options.imageMimeType}]\n[Image blocked: the images.blockImages setting prevents sending images to model providers.]`,
+				},
+			],
+			details: {
+				...baseDetails,
+				image: {
+					originalMimeType: options.imageMimeType,
+					converted: false,
+					resized: false,
+					blocked: true,
+				},
+			},
+		};
+	}
+
+	const processed = await options.imageOperations.processImage(
+		options.buffer,
+		options.imageMimeType,
+		{ autoResize: options.autoResizeImages },
+	);
+
+	if (!processed.ok) {
+		return {
+			content: [
+				{
+					type: "text" as const,
+					text: `Read image file [${options.imageMimeType}]\n[Image omitted: ${processed.reason}.]`,
+				},
+			],
+			details: {
+				...baseDetails,
+				image: {
+					originalMimeType: options.imageMimeType,
+					converted: false,
+					resized: false,
+					omittedReason: processed.reason,
+				},
+			},
+		};
+	}
+
+	const noteLines = [`Read image file [${processed.mimeType}]`];
+	if (processed.convertedFrom) {
+		noteLines.push(
+			`[Image converted from ${processed.convertedFrom} to ${processed.mimeType}.]`,
+		);
+	}
+	const dimensions = processed.dimensions;
+	if (dimensions?.wasResized) {
+		const scale = dimensions.originalWidth / dimensions.width;
+		noteLines.push(
+			`[Image: original ${dimensions.originalWidth}x${dimensions.originalHeight}, displayed at ${dimensions.width}x${dimensions.height}. Multiply coordinates by ${scale.toFixed(2)} to map to original image.]`,
+		);
+	}
+
+	return {
+		content: [
+			{ type: "text" as const, text: noteLines.join("\n") },
+			{
+				type: "image" as const,
+				data: processed.data,
+				mimeType: processed.mimeType,
+			},
+		],
+		details: {
+			...baseDetails,
+			image: {
+				originalMimeType: options.imageMimeType,
+				mimeType: processed.mimeType,
+				converted: processed.convertedFrom !== undefined,
+				resized: dimensions?.wasResized ?? false,
+				originalWidth: dimensions?.originalWidth,
+				originalHeight: dimensions?.originalHeight,
+				width: dimensions?.width,
+				height: dimensions?.height,
+			},
+		},
+	};
+}
+
 function createUnsupportedResult(options: {
 	path: string;
 	absolutePath: string;
 	bytes: number;
-	mediaKind: "image" | "binary";
 	reason: string;
 }) {
 	return {
@@ -206,7 +329,7 @@ function createUnsupportedResult(options: {
 		details: {
 			path: options.path,
 			absolutePath: options.absolutePath,
-			mediaKind: options.mediaKind,
+			mediaKind: "binary" as const,
 			bytes: options.bytes,
 			unsupported: { reason: options.reason },
 		},
@@ -317,10 +440,6 @@ function formatReadContent(options: {
 	}
 
 	return outputText;
-}
-
-function detectImageKind(buffer: Buffer): string | undefined {
-	return imageSignatures.find((signature) => signature.matches(buffer))?.kind;
 }
 
 function isUtf8TextBuffer(buffer: Buffer): boolean {
