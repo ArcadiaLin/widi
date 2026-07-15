@@ -18,32 +18,26 @@ external script or subprocess trick.
   configuration (system prompt, tools, skills, prompt templates, extensions)
   with a registry that handles source priority, duplicates, and parse or
   validation diagnostics.
-- **Sessions** (`src/core/session-manager.ts`, `src/storage/`): persistent
+- **Sessions** (`src/core/session-manager.ts`): persistent
   JSONL sessions that keep Pi's session tree semantics and can be resumed into
   a fresh harness — including reloading the profile the session was created
   with (see "Session storage" below).
-- **Tool registry** (`src/core/tool-registry.ts`, `src/core/tools/`): built-in
-  coding tools and agent collaboration tools registered as core tools, with a
-  patch pipeline so extensions can rewrap any tool's backend.
-- **Extension loader/runner** (`src/core/extension/`): hooks to register and
-  patch tools, observe or intercept runtime events, and keep small
-  session-local state via Pi custom entries.
+- **Tool registry** (`src/core/tool-registry.ts`, `src/core/tools/`): seven
+  built-in coding tools, with a patch pipeline so extensions can rewrap any
+  tool's backend. Agent collaboration tools are the next core milestone.
+- **Extension loader/runner** (`src/core/extension/`): API v1 for tools,
+  commands, resources, providers, observers/interceptors, scoped actions, and
+  small session-local state via Pi custom entries.
 - **Runtime composition** (`src/core/runtime-service.ts`): wires settings,
   profiles, resources, model/auth, sessions, tools, extensions, and the
   orchestrator into one runtime.
 
 ## Status
 
-Work proceeds in consumer-driven milestones (see
-[`docs/TODO.md`](docs/TODO.md)):
-
-- **M1 — command consolidation: done.** Trigger-based command input is an
-  orchestrator capability; the separate command runtime experiment was
-  retired after review.
-- **M2 — boundary convergence and the first real consumer: in progress.**
-  Core built-in coding tools (read done; write/edit next) and a minimal
-  stdout/CLI adapter that exercises the runtime outside of tests.
-- **ME — extension surface** and **M3 — agent collaboration tools** follow.
+Work proceeds through three high-level milestones: the minimal MultiAgent
+collaboration loop, diagnostic construction closer to domain runtimes, and
+core readability improvements. See the
+[`Chinese milestone document`](docs/zh-CN/TODO.md).
 
 ## Session storage
 
@@ -52,26 +46,24 @@ an optional, opaque `metadata` object on the header line, used to store the
 context needed to rebuild a harness on resume — currently the agent profile
 reference, readable at list time without scanning entries.
 
-Upstream Pi has no extension point for this today, so `src/storage/` carries a
-copy of upstream `jsonl-storage.ts`/`jsonl-repo.ts` whose diff is kept minimal
-on purpose: it doubles as the proposed upstream change, prototyped on
-[`ArcadiaLin/pi#jsonl-header-metadata`](https://github.com/ArcadiaLin/pi/tree/jsonl-header-metadata).
-Design notes: [`docs/session-storage.md`](docs/session-storage.md).
+WIDI uses Pi's `JsonlSessionRepo` directly. Header metadata remains an opaque,
+small recovery-reference field rather than a second session protocol. Design
+notes: [`sessions-and-runtime.md`](docs/zh-CN/core/sessions-and-runtime.md).
 
 ## Documentation
 
-Design documents currently live in Chinese under [`docs/`](docs/); the code,
-identifiers, and diagnostics are English throughout.
+Documentation has a stable language entry at [`docs/`](docs/); the current
+canonical set is Simplified Chinese under `docs/zh-CN/`. Code, identifiers,
+and diagnostics are English throughout.
 
-- [`docs/DESIGN.md`](docs/DESIGN.md) — core design boundaries and settled
+- [`docs/zh-CN/DESIGN.md`](docs/zh-CN/DESIGN.md) — core design boundaries and settled
   decisions (command, coding tools, collaboration).
-- [`docs/core/`](docs/core/) — per-mechanism notes: orchestrator, runtime
-  lifecycle, extensions, profiles and resources, tools and capabilities,
-  diagnostics, sessions.
-- [`docs/core/pi-upstream-roadmap.md`](docs/core/pi-upstream-roadmap.md) —
+- [`docs/zh-CN/core/`](docs/zh-CN/core/) — canonical runtime, extension,
+  profile/resource, session, tool, diagnostics, and upstream mechanism notes.
+- [`docs/zh-CN/core/pi-upstream-roadmap.md`](docs/zh-CN/core/pi-upstream-roadmap.md) —
   primitives WIDI deliberately does not fake locally and hopes to see settle
-  in Pi upstream (session metadata, ExecutionEnv locking, harness queue
-  control).
+  in Pi upstream (ExecutionEnv locking, interactive shell sessions, harness
+  queue control, provider scope).
 - [`../../CONTEXT.md`](../../CONTEXT.md) — the glossary that pins down core
   terms (in English).
 

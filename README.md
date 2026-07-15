@@ -6,12 +6,11 @@ WIDI is a multi-agent runtime built on the `AgentHarness` module of [Pi](https:/
 
 To be precise about what this repository is today: a runtime core with a documented architecture and a test suite, not yet a usable coding-agent product. What might still make it worth reading:
 
-**It is a real consumer of Pi's harness module.** `pi-coding-agent` runs on its own `AgentSession` runtime and does not use `AgentHarness`; the harness is a clean module without a first-party product consumer so far. WIDI builds its entire runtime on it — session tree, resume, compaction, queue semantics — and feeds the gaps it hits back upstream instead of patching the submodule: missing primitives are recorded in [`pi-upstream-roadmap.md`](apps/widi-pi/docs/core/pi-upstream-roadmap.md), and concrete proposals are kept as minimal diffs (current example: opaque JSONL session header metadata, prototyped on
-[`ArcadiaLin/pi#jsonl-header-metadata`](https://github.com/ArcadiaLin/pi/tree/jsonl-header-metadata) with the consuming code in `apps/widi-pi/src/storage`).
+**It is a real consumer of Pi's harness module.** `pi-coding-agent` runs on its own `AgentSession` runtime and does not use `AgentHarness`; the harness is a clean module without a first-party product consumer so far. WIDI builds its entire runtime on it — session tree, resume, compaction, queue semantics — and feeds the gaps it hits back upstream instead of patching the submodule. Missing primitives are recorded in the [`Pi upstream roadmap`](apps/widi-pi/docs/zh-CN/core/pi-upstream-roadmap.md); WIDI now consumes Pi's JSONL session repository directly, including opaque header metadata used for recovery references.
 
 **Agents are runtime entities, not processes.** Pi's experimental orchestrator package supervises full coding-agent instances as RPC subprocesses. WIDI takes the other branch of that trade-off: multiple harnesses live in one process and share a tool registry, profile registry, session repo, and diagnostics channel, so agent lifecycle, availability, and recovery are observable inside the runtime rather than across process boundaries. This costs the isolation a process model gives you; the bet is that first-class orchestration semantics are worth it, and it is a bet — the collaboration tools that would prove it are still on the roadmap.
 
-**Decisions are recorded, including the failed ones.** Milestones only accept work that names an existing consumer or test that needs it ([`TODO.md`](apps/widi-pi/docs/TODO.md)). The command-runtime experiment was reviewed, judged a failure, and its reversal is documented with reasons ([`command-experiment.md`](apps/widi-pi/docs/core/command-experiment.md)). Boundaries are stated instead of implied — for example, session/auth/config storage declares a single-process write assumption rather than shipping a half-locked file protocol.
+**Decisions are recorded, including the failed ones.** Milestones stay at planning level and only admit work with a concrete runtime goal ([`TODO.md`](apps/widi-pi/docs/zh-CN/TODO.md)). Settled boundaries live in canonical mechanism documents; detailed implementation history stays in Git. For example, command input is documented as an orchestrator-owned protocol in [`runtime.md`](apps/widi-pi/docs/zh-CN/core/runtime.md), and session/auth/config storage explicitly declares a single-process write assumption rather than shipping a half-locked file protocol.
 
 ## At a glance
 
@@ -23,7 +22,7 @@ Three ways to get more than one agent out of the Pi codebase today:
 | An "agent" is | the app session | an RPC subprocess | a runtime entity: profile + harness + session + status |
 | Shared across agents | — (single agent) | nothing — per-process state | tool registry, profile registry, session repo, diagnostics channel |
 | Failure surface | app/UI messages | process exit, RPC errors | structured diagnostics (`profile.*`, `model.*`, `extension.*`) with recoverability flags |
-| Extension scope | single-agent app events (shipped, mature) | — | tool register/patch + interceptor MVP today; orchestration-level hooks planned (ME) |
+| Extension scope | single-agent app events (shipped, mature) | — | API v1: tool register/patch, commands, resources/providers, scoped actions, observers/interceptors |
 
 Two pipelines that are already landed and tested. Input handling (M1) — commands are an orchestrator input protocol, not a UI feature:
 
@@ -52,11 +51,9 @@ sessions/*.jsonl ──→ list(): read line 1 only ──→ candidates (id, cw
 
 ## Status
 
-- **M1 — command consolidation: done.** Trigger-based command input is an orchestrator capability (inline expansion, argument completion via human requests); the separate command runtime was retired.
-- **M2 — in progress.** Core built-in coding tools (read landed, write/edit next) and a minimal stdout/CLI adapter — until that adapter lands, tests are the runtime's main consumer.
-- **ME (extension surface) and M3 (agent collaboration tools) follow.** Extension claims wait until ME ships; the design intent is hooks at the orchestration level (agent lifecycle, human requests, cross-agent diagnostics) that a single-agent extension API cannot see.
+The runtime foundation, seven core coding tools, command input, structured diagnostics, and extension API v1 are implemented. Current milestones are deliberately high-level: close the minimal multi-agent collaboration loop, move diagnostic construction toward domain runtimes, then improve core readability. See the [Chinese milestones](apps/widi-pi/docs/zh-CN/TODO.md).
 
-Design documents under [`apps/widi-pi/docs/`](apps/widi-pi/docs/) are currently written in Chinese; code, identifiers, and diagnostics are English throughout. See [`apps/widi-pi/README.md`](apps/widi-pi/README.md) for the module-by-module overview.
+Documentation uses a stable [language entry point](apps/widi-pi/docs/README.md); the current canonical set is Simplified Chinese. Code, identifiers, and diagnostics are English throughout. See [`apps/widi-pi/README.md`](apps/widi-pi/README.md) for the module-by-module overview.
 
 ## Workspace layout
 
