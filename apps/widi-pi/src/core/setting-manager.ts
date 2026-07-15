@@ -1,4 +1,8 @@
-import type { ExecutionEnv, FileError } from "@earendil-works/pi-agent-core";
+import type {
+	ExecutionEnv,
+	FileError,
+	ThinkingLevel,
+} from "@earendil-works/pi-agent-core";
 import { DEFAULT_AGENT_DIR } from "./constants.js";
 import { type CoreDiagnostic, createDiagnostic } from "./diagnostics.ts";
 
@@ -66,13 +70,7 @@ export interface WarningSettings {
 }
 
 export type DefaultProjectTrust = "ask" | "always" | "never";
-export type ThinkingLevelSetting =
-	| "off"
-	| "minimal"
-	| "low"
-	| "medium"
-	| "high"
-	| "xhigh";
+export type ThinkingLevelSetting = ThinkingLevel;
 
 export type PackageSource =
 	| string

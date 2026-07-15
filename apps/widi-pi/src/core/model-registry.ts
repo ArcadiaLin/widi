@@ -111,6 +111,7 @@ const ThinkingLevelMapSchema = Type.Object({
 	medium: Type.Optional(ThinkingLevelMapValueSchema),
 	high: Type.Optional(ThinkingLevelMapValueSchema),
 	xhigh: Type.Optional(ThinkingLevelMapValueSchema),
+	max: Type.Optional(ThinkingLevelMapValueSchema),
 });
 
 const OpenAICompletionsCompatSchema = Type.Object({
@@ -333,6 +334,7 @@ export const THINKING_LEVEL_SET = {
 	medium: true,
 	high: true,
 	xhigh: true,
+	max: true,
 } as const satisfies Record<ThinkingLevel | ModelThinkingLevel, true>;
 
 export const THINKING_LEVELS = Object.keys(
