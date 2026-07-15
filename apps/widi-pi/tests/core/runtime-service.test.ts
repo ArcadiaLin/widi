@@ -398,8 +398,8 @@ describe("createWidiRuntime", () => {
 		});
 
 		const resolved = runtime.services.toolRegistry.resolve();
-		expect(resolved.toolNames).toEqual(["read", "write", "edit"]);
-		for (const name of ["read", "write", "edit"]) {
+		expect(resolved.toolNames).toEqual(["read", "bash", "edit", "write"]);
+		for (const name of ["read", "bash", "edit", "write"]) {
 			expect(resolved.getTool(name)?.source).toEqual({
 				kind: "core",
 				id: "builtin",

@@ -673,7 +673,10 @@ export async function createWidiRuntime(
 		await extensionLoader.loadAvailableExtensions(executionEnv);
 	const extensionDiscovery = extensionLoad.discovery;
 	const toolRegistry = options.toolRegistry ?? new ToolRegistry();
-	registerCoreCodingTools(toolRegistry, cwd);
+	registerCoreCodingTools(toolRegistry, cwd, {
+		shellPath: settingManager.getShellPath(),
+		shellCommandPrefix: settingManager.getShellCommandPrefix(),
+	});
 	const orchestratorConfig: AgentOrchestratorConfigs = {
 		executionEnv,
 		resourceLoader,
