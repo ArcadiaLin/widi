@@ -1,0 +1,817 @@
+# WIDI Pi 第一版 TUI 详细设计
+
+状态：设计草案；架构裁决已确认，等待文档审阅、实施计划与代码实现。
+
+本文定义 `widi-pi` 第一版交互式终端应用的产品范围、架构边界、状态模型、事件归约、组件结构、core 契约补充、实施顺序和验收标准。它是实施规格，不替代 [`DESIGN.md`](DESIGN.md) 与 [`core/`](core/) 下描述长期 core 边界的机制文档。
+
+## 1. 目标
+
+第一版 TUI 要在不修改 Pi 单 agent 语义、不把 UI 放进 core、不预建远程 client facade 的前提下，提供一个可以实际使用的 WIDI 终端 coding harness：
+
+- 基于 `@earendil-works/pi-tui` 构建连续对话式终端界面。
+- 参考 Claude Code 的聊天优先布局、消息层级和底部状态呈现。
+- 一个 `WidiRuntime` 内同时管理多个彼此隔离的 WIDI Agent。
+- 允许后台 agent 继续运行，并用底部 agent strip 展示状态和待处理事项。
+- 通过配置化按键进入 agent 选择模式，再用上下键与 Enter 切换 active agent。
+- 让 human input、command、human request、diagnostic 与 raw harness event 都沿现有 orchestrator 主路径工作。
+- 为后续 collaboration capability、专用 selector 和更多交互模式保留清晰扩展点，但不在第一版提前实现。
+
+第一版不是 multi-agent collaboration 产品。多个 agent 共享同一个 runtime dependency layer，但拥有各自的 harness、session、profile、model、extension runtime 和 lifecycle。它们可以同时运行和被同一 TUI 切换查看，却不会自动互相委派、通信或形成父子关系。
+
+## 2. 已确认的关键裁决
+
+### 2.1 Consumer 直接使用 runtime
+
+第一版不增加 `WidiClient` facade。TUI 是可信的同进程 application consumer，直接持有 `WidiRuntime`，并只通过 `AgentOrchestrator` 的公共方法查询和操作 core。
+
+```text
+WidiTuiApplication
+  -> WidiRuntime
+       -> AgentOrchestrator
+            -> Agent A / Harness A / Session A
+            -> Agent B / Harness B / Session B
+            -> Agent C / Harness C / Session C
+```
+
+不允许 TUI 读取 orchestrator 私有 agent map、直接持有 harness，或绕过 orchestrator 操作 session、extensions 和 lifecycle。
+
+只有出现真实的远程 RPC、跨进程 transport 或多个复杂 consumer 需要统一协议时，才重新评估 client facade。届时 facade 应从已经验证的 consumer 调用集合中提炼，而不是预先镜像 orchestrator 的全部方法。
+
+### 2.2 一个 runtime 管理多个 agent
+
+默认部署单位是“一个进程、一个 cwd、一个 `WidiRuntime`、多个 Agent”。这些 agent 共享：
+
+- settings、project trust 和 config resolution。
+- auth storage 与 model registry。
+- profile、resource、tool 与 extension dependency services。
+- session manager 和 execution environment。
+- orchestrator event、diagnostic 与 human-request 边界。
+
+只有需要不同 cwd、不同 credential boundary 或真正的 execution isolation 时，才创建多个 runtime。多 runtime 不属于第一版 TUI 状态模型。
+
+### 2.3 UI 状态属于 TUI application
+
+以下状态属于具体 TUI，不进入 core，也不进入 Pi session：
+
+- active agent。
+- agent selector 当前选中项。
+- 每个 agent 的 render timeline projection。
+- unread、attention 和 collapsed/expanded UI 状态。
+- editor draft、autocomplete snapshot 和 overlay queue。
+- global notices 的展示与关闭状态。
+
+Core 继续拥有 Agent、session、runtime lifecycle、commands、diagnostics 和 human request 的真实事实。
+
+### 2.4 采用底部 Agent Strip 布局
+
+第一版采用聊天优先的单列布局，agent strip 常驻底部：
+
+```text
+header / startup notices
+chat transcript
+working status / human request overlay
+editor + autocomplete
+footer
+agent strip
+```
+
+宽终端直接显示多个 agent 的 label、status 和 attention；窄终端只显示 active agent 与聚合计数，完整列表通过 agent selector 查看。agent strip 不应无限换行挤压 chat viewport。
+
+### 2.5 切换只改变视图
+
+切换 active agent 不暂停、不 abort、不 dispose 后台 agent，也不改变其 session。切换动作只更新 TUI application state、刷新该 agent 的 command autocomplete，并将 chat components 绑定到目标 projection。
+
+## 3. 第一版范围
+
+### 3.1 包含
+
+- runtime composition、startup diagnostics 和默认 agent 创建。
+- user、assistant、thinking 状态和 tool execution 的终端呈现。
+- assistant text streaming。
+- line/inline command 的 core 执行。
+- 由 `listCommands(agentId)` 产生的 autocomplete snapshot。
+- 多个独立 agent 的后台事件归约。
+- 底部 agent strip 和 agent selector。
+- human request 的 confirm、select、input、arguments completion 与 custom fallback。
+- global 与 per-agent diagnostics。
+- `/new`、`/fork`、`/resume` 产生新 agent 后的自动切换。
+- resume/fork agent 的当前 session branch history hydration。
+- graceful shutdown。
+- 最小可配置 app keybindings。
+
+### 3.2 不包含
+
+- agent 间委派、消息、等待、join 或 parent/child relationship。
+- team、flow、goal 等 product interaction mode。
+- `WidiClient`、RPC、socket 或跨进程 transport。
+- extension 自定义 widget、header、footer、editor 或快捷键贡献。
+- 完整 settings、model、session、tree 专用 selector。
+- 图片粘贴、拖放与 terminal image rendering。
+- 多 cwd workspace 或多个 runtime 的统一导航。
+- 主题编辑器和用户主题文件。
+- 持久化 TUI unread、selection、draft 和折叠状态。
+- 为兼容其他 terminal app 而建立第二套 UI protocol。
+
+第一版仍允许尚无专用界面的 built-in command 通过普通 command 输入执行，并以通用 command result 或 human request 呈现；“没有专用 selector”不等于移除 core 功能。
+
+## 4. 现有基础与必要补充
+
+### 4.1 已可直接复用
+
+`AgentOrchestrator` 已提供第一版需要的主要能力：
+
+- `spawnAgent()`、`disposeAgent()`、`disposeAll()`。
+- `listAgents()`、`inspectAgent()`、`getAgentStatus()`。
+- `inputAgent()`、`steerAgent()`、`followUpAgent()`、`abortAgent()`。
+- `listCommands()` 及 command argument completion closures。
+- `getAgentSession()`、`getAgentSessionTree()`、session new/fork/resume 操作。
+- `subscribe()` 全局事件订阅。
+- `registerClient()` 与 human request handler。
+- raw `AgentHarnessEvent`、canonical command events 和 structured diagnostics。
+
+第一版 TUI 不使用 `subscribeAgent()`：当前实现只检查顶层 event 的 `agentId`，匹配不到 `diagnostic.diagnostic.agentId`。全局 `subscribe()` 才能完整接收 per-agent diagnostics，并由 projector 统一路由。
+
+`pi-tui` 已提供：
+
+- `TUI`、`ProcessTerminal`、`Container` 与 overlay。
+- `Editor`、`Markdown`、`Text`、`Loader`、`SelectList`。
+- `CombinedAutocompleteProvider`。
+- `KeybindingsManager` 和 TUI keybinding definitions。
+- differential rendering、terminal width handling 和 input buffering。
+
+### 4.2 Core 必须补充的两个通用契约
+
+#### HumanRequestEnvelope.agentId
+
+当前 `human_request_pending` event 包含 `agentId`，但传给 `requestHuman()` handler 的 `HumanRequestEnvelope` 不包含它，而且 handler 会在 pending event 发布前开始运行。多 agent consumer 无法稳定判断请求来源。
+
+第一版要求：
+
+```ts
+export interface HumanRequestEnvelope extends Omit<HumanRequest, "signal"> {
+	id: string;
+	agentId?: AgentId;
+	createdAt: string;
+}
+```
+
+Broker 在解析出 agent id 后，将同一值同时写入 envelope 与 human-request events。CLI、TUI、RPC 和 automation 都可消费该字段；它不是 UI 专用信息。
+
+#### agent_status_changed
+
+当前 status 是 core-owned state，但 consumer 只能通过 raw harness event 猜测 `running` / `idle`，且无法可靠观察 `unavailable` / `disposed`。
+
+第一版要求增加 canonical event：
+
+```ts
+{
+	readonly type: "agent_status_changed";
+	agentId: AgentId;
+	previousStatus?: AgentLifecycleStatus;
+	status: AgentLifecycleStatus;
+	changedAt: string;
+}
+```
+
+Status transition 必须先更新 agent record，再发送 event。首次注册 agent record 时 `previousStatus` 为空、`status` 为 `creating`；相同 status 不重复发送。`creating`、`running`、`idle`、`unavailable`、`disposed` 都使用同一事件，不增加平行的 UI status state machine。
+
+`agent_spawned` / `agent_resumed` 继续只表示 harness 构建成功，不能为了满足 UI 初始化顺序而提前到 extension activation 或 harness build 之前。由此，status、diagnostic 或 human request 可以先于 spawn/resume success event 到达。TUI projector 必须对任何未知 `agentId` 懒建 provisional projection；后续 spawn/resume event 再补全 profile/model/snapshot 并启动 hydration。这个裁决同时覆盖构建失败：没有 spawn/resume success event 的 agent 仍可通过 status 与 diagnostic 进入 `unavailable` projection。
+
+Raw harness events 继续作为消息、tool 和 stream 的事实来源；canonical status event 只表达 WIDI Agent lifecycle。
+
+## 5. TUI Application 架构
+
+### 5.1 顶层职责
+
+`WidiTuiApplication` 是具体交互模式的 coordinator。它负责：
+
+- 组装并启动 pi-tui component tree。
+- 创建或接收 `WidiRuntime`。
+- 在 agent 创建前订阅 orchestrator events。
+- 注册 human request handler。
+- 持有 application state 与 event projector。
+- 将 editor submit、快捷键和 selector selection 转为 orchestrator public method call。
+- 捕获 application-level unexpected failure。
+- 关闭 overlay、取消订阅、停止 TUI 并 dispose runtime。
+
+它不负责：
+
+- profile/resource/tool/extension 解析。
+- command parsing 与 execution gateway。
+- agent lifecycle 真相。
+- session persistence。
+- 直接实现 ANSI rendering。
+
+### 5.2 建议模块
+
+```text
+src/
+  tui-entry.ts
+  tui/
+    application.ts
+    state.ts
+    event-projector.ts
+    session-hydrator.ts
+    autocomplete.ts
+    keybindings.ts
+    theme.ts
+    format.ts
+    components/
+      chat-view.ts
+      user-message.ts
+      assistant-message.ts
+      tool-execution.ts
+      status-view.ts
+      footer.ts
+      agent-strip.ts
+      agent-selector.ts
+      human-request-view.ts
+      notice-view.ts
+```
+
+文件名是实施建议，不是必须一次性创建的空架构。只有出现真实代码职责时才拆分；单次使用、单行逻辑保持内联。
+
+当前 `src/cli.ts` 作为最小 line consumer 在 TUI 开发期保留。先增加独立 `tui-entry.ts` 和 workspace script，验收通过后再决定是否让 package binary 默认进入 TUI。不得为了切换入口直接删除现有 CLI 行为。
+
+## 6. Application State
+
+### 6.1 顶层状态
+
+```ts
+export interface TuiApplicationState {
+	activeAgentId?: AgentId;
+	agents: Map<AgentId, AgentViewState>;
+	globalNotices: NoticeItem[];
+	humanRequests: PendingHumanRequestView[];
+	mode: "editor" | "agent-selector" | "human-request";
+	shuttingDown: boolean;
+}
+```
+
+`mode` 只描述键盘焦点与 overlay 所属交互模式，不描述 core 状态。
+
+### 6.2 Per-agent projection
+
+```ts
+export interface AgentViewState {
+	agentId: AgentId;
+	snapshot?: AgentRecordSnapshot;
+	status: AgentLifecycleStatus;
+	timeline: TimelineItem[];
+	commands: Command[];
+	commandRevision: number;
+	unreadCount: number;
+	attention: AgentAttention;
+	hydration: "pending" | "ready" | "failed";
+	bufferedEvents: OrchestratorEvent[];
+	pendingInput?: PendingInput;
+}
+
+export type AgentAttention =
+	| "none"
+	| "completed"
+	| "human-request"
+	| "warning"
+	| "error";
+
+export interface PendingInput {
+	originalText: string;
+	submittedAt: string;
+	lineCommandCandidate: boolean;
+}
+```
+
+`snapshot` 是最近一次 query 的只读事实快照，在 provisional 阶段可以为空；`status` 由 canonical status event 更新。它们不是对 core record 的可写镜像。收到未知 agent 的事件时，projector 先以 `agentId`、事件携带的 status/diagnostic facts 建立 projection，再由 application 在 listener 返回后调度 `inspectAgent()` 补全 snapshot。
+
+`commands` 是 autocomplete snapshot，不是 command registry。执行时始终调用 `inputAgent()`，由 core 重新解析并执行 gateway。
+
+每个 agent 最多有一个等待 user-message 事实的 `PendingInput`。Idle prompt 不并发，running 状态只允许 line-command candidate 进入 core，因此这个约束不建立新的 queue。Pending input 不等于乐观消息：它只在真实 `message_start(user)` 到达时提供 human-facing original text；command-only、blocked 或 throw 路径会清除或恢复它。
+
+### 6.3 Timeline
+
+```ts
+export type TimelineItem =
+	| UserMessageItem
+	| AssistantMessageItem
+	| ToolExecutionItem
+	| ThinkingStatusItem
+	| DiagnosticItem
+	| CommandResultItem
+	| SessionMarkerItem;
+```
+
+Timeline 保存 domain-oriented render facts，不保存 pi-tui `Component` instance。Component 根据 item identity 创建或更新，避免 application state 与 pi-tui object lifecycle 互相污染。
+
+每个 streaming message 与 tool execution 必须有稳定 key：
+
+- message 使用 session entry id（hydration）或当前 stream-local id（live event）。
+- tool 使用 `toolCallId`。
+- command 使用 `commandId`。
+- diagnostic 优先使用 `diagnostic.id`，否则使用现有 diagnostic dedupe facts 生成 view key。
+
+## 7. Component Tree 与布局
+
+### 7.1 Root tree
+
+```text
+TUI
+  HeaderContainer
+  StartupNoticeContainer
+  ChatContainer
+  StatusContainer
+  EditorContainer
+  Footer
+  AgentStrip
+  Overlay: AgentSelector | HumanRequestView
+```
+
+`ChatContainer` 只承载当前 active agent 的 timeline components。后台 agent event 只更新 projection；切换时重新绑定可见 components。
+
+`Editor` 始终是默认 focus target。捕获 overlay 关闭后必须显式恢复 editor focus。
+
+### 7.2 Chat rendering
+
+- User message 以 `❯` 引导，保留原始换行。
+- Assistant text 使用 `Markdown`。
+- Thinking 默认只显示状态行，例如 `✻ Thinking…` 与完成后的耗时；第一版不显示 raw thinking content。
+- Tool start 显示 `● <toolName> <argument summary>`。
+- Tool update 只替换同一个 tool item 的 partial status，不追加无限日志项。
+- Tool end 显示 success/error、短结果预览和截断提示。完整 result 保留在 projection，以便后续增加 expand 行为；第一版不提供复杂 per-tool navigation。
+- Diagnostic 使用稳定 severity glyph 和 fallback message，不在 TUI 重写 diagnostic decision。
+- Command result 只在确有用户可见 value 时显示；`undefined` 不产生空白行。
+
+Tool arguments 和 result 必须通过 typed formatter 处理，不能把任意对象直接插入 terminal。Formatter 负责 JSON fallback、最大行数、最大字符数和敏感字段最小暴露；安全策略仍由 core/tool contract 决定，formatter 只负责展示边界。
+
+### 7.3 Responsive Agent Strip
+
+宽度充足时：
+
+```text
+● main  idle    ● reviewer  running 8s    ! researcher  needs input
+```
+
+宽度不足时：
+
+```text
+● main idle · 1 running · 1 attention · ← agents
+```
+
+Agent strip 规则：
+
+- active agent 排第一并使用强调色。
+- attention 高于普通 running/idle；error 高于 warning，human request 高于 completed。
+- 构建失败或 resume 失败的 `unavailable` agent 显示在 strip 和 selector 中，使用 error attention；它不可接收输入，但用户仍可查看 diagnostics。
+- disposed agent 不显示在主 strip，但仍可由 debug/inspect command 查询。
+- 超出可用宽度的 agent 归入 `+N` 聚合，不换成多行。
+- 所有输出使用 `visibleWidth()` / `truncateToWidth()`，任何 component 行不得超过 render width。
+
+### 7.4 Agent Selector
+
+Agent selector 使用 pi-tui `SelectList` 作为 capturing overlay：
+
+- label：session name；没有 name 时使用 profile label 或 agent id。
+- description：status、model、elapsed/unread 与 attention reason。
+- up/down：使用 `tui.select.up` / `tui.select.down`。
+- Enter：使用 `tui.select.confirm`。
+- Esc：使用 `tui.select.cancel`。
+- 选择 active agent 后关闭 overlay、清除该 agent unread/completed attention、恢复 editor focus。
+
+Selector 不直接 dispose、spawn 或 mutate agent。第一版创建新 agent 通过 `/new` 或 application 明确 action 完成，而不是把 `SelectList` 变成 lifecycle owner。
+
+## 8. 启动与关闭生命周期
+
+### 8.1 启动顺序
+
+```text
+parse application options
+  -> createWidiRuntime()
+  -> create merged KeybindingsManager and call setKeybindings()
+  -> create TuiApplicationState and components
+  -> subscribe orchestrator events
+  -> register human-request client
+  -> tui.start()
+  -> publish/display startup diagnostics
+  -> spawn initial agent
+  -> hydrate current session branch
+  -> inspectAgent() + listCommands()
+  -> set active agent
+  -> requestRender()
+```
+
+必须在 `spawnAgent()` 前订阅事件，避免丢失 `agent_spawned`、status 与 dependency diagnostics。
+
+Pi-tui 必须在 extension 或 core 行为可能发起 human request 前完成初始化，否则 handler 没有可用的 overlay host。
+
+初始 agent spawn 失败时，application 保留 provisional/unavailable projection，将其设为当前诊断视图并禁用 editor submit。用户可以查看错误并退出或修复配置后重启；第一版不伪造一个可运行 fallback agent。其他 agent 的 spawn/resume 失败不抢占当前 active agent，只在 strip 中增加 unavailable/error 项。
+
+### 8.2 Lazy model run
+
+启动创建 agent 和 harness，但不发送 model request。第一个有效用户 prompt 才开始模型 run。这样 autocomplete、agent strip 与 diagnostics 在首次输入前已经可用，同时不会仅因打开应用产生模型费用。
+
+### 8.3 关闭顺序
+
+```text
+set shuttingDown
+  -> reject new editor submissions
+  -> close/cancel local overlays
+  -> unregister human-request client
+  -> unsubscribe events
+  -> disposeAll("tui exit")
+  -> tui.stop()
+  -> restore terminal state
+```
+
+如果 `disposeAll()` 产生 diagnostic，应用应尽可能通过现有 TUI notice 或最终 stderr fallback 报告，但必须保证 `tui.stop()` 在 `finally` 中执行。退出过程幂等；重复 Ctrl+D、signal 或 fatal error 不执行两次 cleanup。
+
+## 9. Event → State → Render
+
+### 9.1 单向流
+
+```text
+OrchestratorEvent
+  -> EventProjector.apply(event)
+  -> mutate deterministic application projection
+  -> invalidate affected visible components
+  -> tui.requestRender()
+```
+
+Orchestrator 会等待 event listener。Listener 必须同步且轻量：不得在 listener 内读取文件、hydrate session、等待 command query 或执行昂贵 Markdown render。需要异步工作的事件只标记 dirty state，并由 application task queue 在 listener 返回后处理。任何携带未知 `agentId` 的 event 都先通过 `ensureAgentProjection(agentId)` 建立 provisional state，不因尚未收到 spawn/resume success event 而丢弃。
+
+### 9.2 事件归约表
+
+Projector 的输入始终是顶层 `OrchestratorEvent`。遇到 `{ type: "agent_harness_event", agentId, event }` 时，先保留外层 `agentId`，再按内层 `event.type` 归约。下表使用 `harness.*` 标记这些内层 raw events；没有此前缀的条目才是顶层 canonical orchestrator events。
+
+| Event | Projection 行为 | 可见行为 |
+| --- | --- | --- |
+| `agent_spawned` / `agent_resumed` | 创建或补全 `AgentViewState`，标记 hydration pending | strip 增加或补全 agent |
+| `agent_status_changed` | 更新 status，标记 command snapshot dirty | strip/footer 更新 |
+| `harness.message_start(user)` | 消费该 agent 的 pending original text（存在时），否则使用 event message；追加 user item | active chat 显示输入 |
+| `harness.message_start(assistant)` | 建立 streaming assistant item | active chat 建立响应区 |
+| `harness.message_update` | 按 stream id 合并 delta | 只更新当前 assistant component |
+| `harness.message_end` | 完成 message，冻结最终 content | active chat 完成 Markdown |
+| `harness.tool_execution_start` | 以 toolCallId 创建 item | 显示 tool start |
+| `harness.tool_execution_update` | 替换 partial result | 更新原 item |
+| `harness.tool_execution_end` | 写入 result/isError，标记完成 | 显示摘要或错误 |
+| `harness.queue_update` | 更新 steer/follow-up/nextTurn 数量 | footer/status 提示 |
+| `command_*` | 更新 command status/result | 需要时显示 result |
+| `diagnostic` | 路由到 agent 或 global notices | severity 对应 attention |
+| `human_request_*` | 更新 request/attention | overlay 或 strip 提示 |
+| `harness.model_update` / `harness.thinking_level_update` | 更新 snapshot display facts | footer 更新 |
+| `harness.session_tree` / `harness.session_compact` | 标记 timeline rehydrate | 异步重建当前 branch |
+
+Tool result message 与 `tool_execution_end` 表达同一执行结果时，projector 不重复渲染第二份 tool result。Session hydration 则从 persisted message/tool-call/tool-result 重建同一种 `ToolExecutionItem`。
+
+### 9.3 后台 agent
+
+所有 agent event 都进入各自 projection。只有 active agent 的 components 被 invalidate 和 rebind；后台 event 更新：
+
+- status。
+- timeline。
+- unread count。
+- attention。
+
+后台完成不抢占 focus。后台 human request 打开全局 overlay，但标题必须显示 agent identity；关闭后回到原 active agent 和 editor draft。
+
+如果 human request 在 spawn/resume success event 前到达，handler 使用 envelope 的 `agentId` 尝试 `inspectAgent()` 获取 profile/session label；查询失败时回退显示 agent id，不能等待 `human_request_pending` event 才决定标题。
+
+## 10. Session History Hydration
+
+### 10.1 来源
+
+恢复历史使用 orchestrator 公共方法返回的 `AgentSessionSnapshot.pathToRoot`。需要完整 tree selector 时才调用 `getAgentSessionTree()`；第一版 chat hydration 不扫描非当前 branch。
+
+### 10.2 Hydrator 职责
+
+`SessionHydrator` 将当前 branch entries 转为与 live projector 相同的 `TimelineItem`：
+
+- message entries 转为 user/assistant items。
+- assistant tool call 与后续 tool result 组合为 tool item。
+- compaction/branch summary 转为 session marker。
+- model/thinking/tools change 更新 display facts，不伪装成普通 chat message。
+- WIDI input-transform custom entry 在可关联时用于显示 human original text；model-facing transformed text仍保留为可解释 metadata。
+- 未知 custom entry 默认跳过，不把 extension 私有数据随意打印到终端。
+
+Human-facing user message 统一显示人类原始输入，而不是 inline expansion 或 extension transform 后的 model-facing text。Hydration 通过 `core:command_expansion` / `core:input_transform` custom entry 还原 original text；live path 则在 application 调用 `inputAgent()` 前保存 `PendingInput.originalText`，等真实 `message_start(user)` 到达后才消费并创建 timeline item。非本 TUI 发起、没有 pending input 可关联的 user message 回退显示 harness event 携带的 model-facing text。
+
+`command_*` event 的 `inputId` 可以关联同一输入中的 transform 与多个 inline expansion facts，但 `message_start(user)` 不携带 `inputId`，所以第一版不使用它作为 live user-message join key。Per-agent idle prompt 的单 in-flight 约束才是 pending original text 与下一条 user message 的关联保证。
+
+### 10.3 Hydration 与 live event 竞争
+
+Agent projection 创建后进入 `pending`：
+
+1. event listener 将该 agent 的 render-relevant live events放入 `bufferedEvents`。
+2. hydrator 读取 `pathToRoot` 并生成基础 timeline。
+3. 按接收顺序重放 buffered events。
+4. 状态切换为 `ready`，清空 buffer。
+
+Hydration failure 不让 agent 变成 unavailable。它产生 application notice，projection 标记 `failed`，随后仍可显示 live events。
+
+## 11. 输入与 Command
+
+### 11.1 普通提交
+
+Editor submit 时必须捕获当时的 `activeAgentId`。异步完成回调不能重新读取当前 active agent，因为用户可能已切换。
+
+```text
+editor submit
+  -> capture agentId and text
+  -> validate local interaction state
+  -> record PendingInput and clear/add editor history when accepted
+  -> call orchestrator.inputAgent(agentId, text)
+  -> UI updates from events
+  -> inspect InputResult only for navigation/result control
+```
+
+TUI 不乐观追加 user 或 assistant message；两者均以 harness events为事实来源，避免 error、transform 或 blocked input 造成重复和假消息。`message_start(user)` 到达后消费 pending input；command-only success 清除 pending input，blocked/throw 在没有 user message 时恢复原始 editor text。
+
+### 11.2 Running agent 的输入规则
+
+Pi `AgentHarness.prompt()` 在 busy 时会失败，而 steer、follow-up 和 next-turn 是不同语义。第一版不隐式重解释普通输入：
+
+- Agent `idle`：普通文本调用 `inputAgent()`。
+- Agent `running`：普通文本保留在 editor，并提示使用 `/steer:<text>` 或 `/follow-up:<text>`。
+- Agent `running` 且输入以当前 command snapshot 中的 line-command trigger 开始：仍调用 `inputAgent()`，由 core 完成精确解析和 gateway 检查。TUI 只识别 trigger，不解析 command name 或 argument。
+- Inline command 是 prompt expansion，不是独立运行操作；包含 inline command 的普通文本在 Agent `running` 时与其他普通文本一样保留在 editor。
+- Human request overlay 打开时：editor 不提交到任何 agent。
+
+Trigger 命中不保证 command name 存在。例如 running agent 上的 `/typo` 会被 core 解析出 line trigger，但找不到 binding 后回落到 prompt path，随后由 busy harness throw。Application 必须 catch 这个异常、恢复尚未产生 user message 的原始 editor text，并显示 local notice；不能假定 `inputAgent()` 永远返回 `InputResult`。
+
+后续只有在真实使用反馈证明需要时，才增加“running 时 Enter 默认 steer”之类的 product policy。
+
+### 11.3 Command autocomplete
+
+`listCommands(agentId)` 返回该 agent 经 profile policy、extension contribution 和当前 status 解析后的实时命令视图。TUI 将它适配为 pi-tui autocomplete item：
+
+- line command 显示 trigger、name、description、argument hint 与 availability。
+- `available: false` 的命令可以显示但置灰，并展示 `unavailableReason`。
+- `Command.arguments.complete()` 只在用户进入参数位置后调用。
+- inline command 可以由 WIDI command provider 使用自身 trigger/closeTrigger 产生候选。
+- file completion 委托 `CombinedAutocompleteProvider`；WIDI provider 不重写路径扫描。
+
+Command snapshot 在以下情况标记 dirty 并异步刷新：
+
+- active agent 切换。
+- agent status changed。
+- agent spawn/resume/new/fork。
+- extension reload 完成。
+- profile/runtime mutation 改变 command contribution 或 policy。
+
+刷新使用 generation token：旧请求晚于新请求完成时不得覆盖新 snapshot。Command execution 永远不依赖缓存命中。
+
+### 11.4 Navigation result
+
+`/new`、`/fork`、`/resume` 的 `InputResult` 或 `command_completed.result` 可以包含新 `agentId`。Application 验证该 id 已存在于 `listAgents()` / projection 后，将其设为 active agent并触发 hydration。旧 agent 保留在 runtime 和 strip 中。
+
+## 12. Human Request
+
+### 12.1 Queue
+
+TUI 注册一个 human request handler，内部维护 FIFO queue。同一时刻只显示一个 capturing overlay；其他 request 的 promise 保持 pending。
+
+Core 当前按 client 注册顺序选择第一个提供 `requestHuman` 的 handler，不广播请求。第一版只注册一个 TUI human-request client，并保存 unregister handle；不得假设多个 client 会同时收到同一请求。
+
+每个 queue item 保存：
+
+- envelope 与 `agentId`。
+- response resolve/reject。
+- abort signal listener。
+- enqueue time。
+
+### 12.2 呈现
+
+- `confirm`：明确 yes/no，Esc 返回 `confirmed: false`。
+- `select`：`SelectList`，Esc 返回 `value: undefined`。
+- `input` / `argumentsCompletion`：独立 input/editor，空值按 contract 返回 `undefined`。
+- `custom`：第一版只支持可安全 fallback 为文本或 option 的 payload；无法解释时显示 diagnostic-friendly notice，并返回 `{ kind: "custom", value: undefined }`。
+
+Overlay 标题始终包含 requesting agent label。后台请求不改变 active agent；answer 完成后清除其 human-request attention，如果还有 unread/diagnostic 则按更低优先级状态继续显示。
+
+### 12.3 Abort、timeout 与 dispose
+
+- Signal abort：立即从 queue 移除，关闭当前 overlay，并处理下一项。
+- Core timeout/cancel event：清除对应 request UI，不再提交迟到 response。
+- Agent dispose：core 取消该 agent pending request，TUI 只消费结果 event。
+- Application shutdown：先关闭 local queue，再 unregister client，避免 cleanup 过程中打开新 overlay。
+
+## 13. Diagnostics 与错误
+
+### 13.1 展示来源
+
+- `runtime.diagnostics`：startup notice 区。
+- `diagnostic` event with agentId：对应 agent timeline 与 attention。
+- `diagnostic` event without agentId：global notices。
+- `InputResult.failed/rejected`：控制流结果，不重复生成 diagnostic item。
+- `inputAgent()` 或其他 orchestrator operation throw `OrchestratorError`：使用其 diagnostic 参与同一 dedupe，不重复显示已经到达的 diagnostic event。
+- Harness busy/invalid-state 等未进入 structured diagnostic event 的已知 operation error：显示 agent-local application notice，并恢复仍未被 `message_start(user)` 消费的提交文本。
+- 未结构化 unexpected application error：local notice；只有 TUI 已停止或无法渲染时才写 stderr fallback。
+
+TUI active 期间禁止使用普通 `console.log()` / `console.error()` 输出业务信息，否则会破坏 pi-tui differential rendering。
+
+所有 application→orchestrator 异步调用都通过同一个 operation wrapper 完成 cleanup、pending input 处理和 error normalization。这个 wrapper 不把 harness error 重新定义成 core diagnostic；它只保证 consumer 有可见反馈且不会留下 disabled editor、未关闭 loader 或未处理 rejection。
+
+### 13.2 Dedupe
+
+Diagnostic 优先用 `id` 去重；没有 id 时使用 core 已定义的 code/source/agent/operation correlation facts生成 view key。相同 diagnostic 被 throw、return 和 event 同时观察时只展示一次。
+
+### 13.3 Attention 优先级
+
+```text
+error > human-request > warning > completed > none
+```
+
+切换到 agent 只清除 unread/completed，不自动清除 warning/error。Diagnostic 是否消失必须由后续事实、reload 或明确 UI dismiss 决定，不能因“看过”而假装问题已解决。
+
+## 14. Keybindings
+
+App keybinding 通过 declaration merging 和 `KeybindingDefinitions` 注册，使用一个包含 TUI defaults 与 WIDI defaults 的 `KeybindingsManager`。
+
+Pi-tui 的 `SelectList`、`Editor` 等组件通过全局 `getKeybindings()` 读取 manager。Application 必须在创建任何 pi-tui component 之前构造合并后的 manager，并调用 `setKeybindings(manager)`；只把 manager 保存在 `WidiTuiApplication` 字段上不足以影响组件内部按键匹配。
+
+第一版 app actions：
+
+```ts
+export interface WidiAppKeybindings {
+	"app.agents.open": true;
+	"app.interrupt": true;
+	"app.exit": true;
+}
+```
+
+建议 defaults：
+
+- `app.agents.open`：`left`，仅在 editor empty、没有 autocomplete、没有 overlay 时触发。
+- `app.interrupt`：`escape`，优先级为关闭 autocomplete/overlay，再 abort active running agent。
+- `app.exit`：`ctrl+d`，仅 editor empty 时退出。
+
+Agent selector 内部使用 `tui.select.*`，不重新声明上下键与 Enter。组件不得出现 `matchesKey(data, "left")` 等硬编码业务按键检查；只匹配 action id。
+
+如果 `left` 与 editor 光标移动冲突，`app.agents.open` 的 local condition 必须先确认 editor 为空且光标没有可移动内容。用户后续可以通过 keybinding config 修改 default，而不改 component code。
+
+## 15. 实施阶段
+
+### 阶段 1：Core 可观察性补充
+
+1. 给 `HumanRequestEnvelope` 增加 `agentId`，更新 broker、tests 与现有 CLI consumer types。
+2. 增加 `agent_status_changed` event。
+3. 将所有 status mutation 收敛到一个会去重、更新 record、按顺序 emit 的 transition path。
+4. 覆盖 create、run、idle、unavailable、dispose 与 failure tests。
+
+完成标准：headless test consumer 不解析 raw harness event，也能准确追踪所有 agent status 和 human request 来源。
+
+### 阶段 2：Projection 与 Hydration
+
+1. 定义 TUI-only state 与 timeline item。
+2. 实现 deterministic event projector。
+3. 实现 current-branch session hydrator。
+4. 实现 hydration buffer/replay 和 diagnostic dedupe。
+
+完成标准：不启动真实 terminal，即可用 fixtures 重建多个 agent 的 live/resumed view state。
+
+### 阶段 3：最小单 agent TUI
+
+1. 创建 pi-tui root、theme、editor、chat、status 和 footer。
+2. 连接默认 agent startup、input 与 assistant streaming。
+3. 渲染 tool lifecycle、thinking status 和 diagnostics。
+4. 实现 graceful shutdown。
+
+完成标准：单 agent 场景替代当前 line CLI 的主要人工 smoke test，但尚不切换默认 binary。
+
+### 阶段 4：Commands 与 Human Request
+
+1. 将 `listCommands()` 适配到 autocomplete。
+2. 实现 arguments completion 与 inline command provider。
+3. 实现 human request FIFO overlay。
+4. 处理 command result、blocked/transformed input 和运行状态规则。
+
+完成标准：built-in 与 extension commands 仍由 core 执行，TUI 不包含 command switch statement。
+
+### 阶段 5：多 Agent 导航
+
+1. 实现 responsive agent strip。
+2. 实现 agent selector 与 app keybindings。
+3. 实现 background unread/attention。
+4. 处理 new/fork/resume 自动切换和 hydration。
+
+完成标准：验收场景中两个 agent 可以并行运行、切换和处理 human request，不丢 event。
+
+### 阶段 6：入口与稳定化
+
+1. 增加 workspace TUI script。
+2. 在不同 terminal width、CJK、长 Markdown 和大 tool output 下验证。
+3. 运行 package tests 与 root `npm run check`。
+4. 人工验收后再决定 package binary 默认入口以及 line CLI 的保留方式。
+
+完成标准：没有未处理 rejection、terminal raw-mode 泄漏或 shutdown hang。
+
+## 16. 测试设计
+
+### 16.1 EventProjector 单元测试
+
+- user/assistant message start-update-end。
+- 多个 text/thinking block 的 streaming 合并。
+- tool start-update-end 与 toolResult 去重。
+- command detected/accepted/completed/failed/rejected。
+- input transformed/blocked。
+- live inline expansion / input transform 使用 pending original text，resume hydration 后显示一致。
+- per-agent 与 global diagnostics。
+- background unread 与 attention priority。
+- status transition。
+- status/diagnostic/human request 先于 spawn/resume success event 时懒建 provisional projection，后续正确补全。
+- spawn/resume failure 只留下 unavailable projection 时仍可见且不可输入。
+- event 到达 hydration pending agent 时的 buffer/replay。
+
+### 16.2 SessionHydrator 单元测试
+
+- fresh empty session。
+- user/assistant branch history。
+- tool call/result pairing。
+- compaction 与 branch summary markers。
+- model/thinking/tools changes。
+- input transform original text。
+- unknown custom entry。
+- malformed/unsupported entry 的 degraded notice。
+
+### 16.3 Application 测试
+
+- startup 在 spawn 前订阅。
+- initial spawn failure 保留 unavailable 诊断视图并禁用 editor；后台 spawn/resume failure 不抢占 active agent。
+- submit 捕获原 active agent id，切换后 completion 不串台。
+- running agent 普通输入不调用 prompt。
+- 以 line-command trigger 开始的 input 在 running 时仍进入 core gateway，普通/inline prompt 不调用 core。
+- running agent 的未知 `/typo` 回落到 busy prompt 时，application 捕获 throw、恢复输入并只显示一次 notice。
+- command snapshot generation 防止 stale overwrite。
+- new/fork/resume result 自动切换。
+- unexpected error 不重复 diagnostic。
+- shutdown 幂等并恢复 terminal。
+
+### 16.4 Human request 测试
+
+- background agent envelope identity。
+- FIFO concurrency。
+- confirm/select/input/argumentsCompletion。
+- signal abort、timeout、agent dispose 与 application shutdown。
+- overlay 关闭后 focus 恢复。
+
+### 16.5 Component 与 terminal 测试
+
+优先复用 pi-tui 的 virtual terminal/test patterns：
+
+- 40、80、120 column render。
+- CJK label 与 description width。
+- agent strip `+N` 聚合。
+- selector up/down/Enter/Esc。
+- autocomplete disabled/enabled commands。
+- merged keybindings 在 component 创建前通过 `setKeybindings()` 安装。
+- streaming update 不产生全量重复 component。
+- 每一行 visible width 不超过 component render width。
+
+### 16.6 Core contract 测试
+
+- envelope 与 pending/resolved/cancelled/timeout event 使用相同 agentId。
+- 首次 `creating` status event 的 `previousStatus` 为空，并可先于 spawn/resume success event。
+- 每个实际 status transition 只发一个 event。
+- status event 在 record mutation 之后可被 listener 查询。
+- unavailable/disposed 可观察。
+- client/event listener failure 仍产生结构化 diagnostic。
+
+## 17. 验收场景
+
+必须通过以下人工 smoke flow：
+
+```text
+启动 WIDI TUI
+  -> 看到 startup facts 与默认 agent
+  -> 输入 prompt
+  -> 看到 user message、assistant streaming 与 tool execution
+  -> 使用 /new 创建第二个 agent
+  -> 第二个 agent 开始运行
+  -> 切回第一个 agent并继续查看/输入
+  -> 底部显示第二个 agent 完成或需要 human request
+  -> 打开 agent selector
+  -> 上下移动并 Enter 切换
+  -> 看到第二个 agent 的完整 current-branch 对话与 diagnostics
+  -> 回答其 human request
+  -> 正常退出
+```
+
+验收期间必须确认：
+
+- 后台 agent 未因切换而停止。
+- event 没有进入错误 agent timeline。
+- human request 标题显示正确 agent。
+- command autocomplete 随 agent/status 更新。
+- terminal 退出后 echo、cursor 和 raw mode 恢复。
+- session resume 后历史与后续 live event 连续且不重复。
+
+## 18. 演进触发条件
+
+只有出现以下真实需求时才扩展边界：
+
+- RPC/远程 consumer：提炼 transport-neutral client contract。
+- Agent collaboration：在 core collaboration facade 和 canonical events 上增加 relation/coordination projection。
+- Extension UI：定义 client-side extension host，不让 extension 直接持有 TUI application。
+- 多 runtime workspace：新增更高层 application owner，不修改单 runtime orchestrator 语义。
+- Running input 默认 steer：由用户行为与 queue UX 验证后成为 product policy。
+- 专用 session/tree/model/settings UI：复用现有 core query/action，不建立平行状态源。
+
+第一版实现应持续遵守一个约束：core 提供事实与操作，TUI consumer 保存展示投影并决定交互；任何一侧都不复制另一侧的权威状态机。

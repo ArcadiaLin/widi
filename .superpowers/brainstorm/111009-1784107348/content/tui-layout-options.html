@@ -1,0 +1,124 @@
+<style>
+  .layout-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 18px; margin-top: 22px; }
+  .terminal-card { cursor: pointer; border: 2px solid #313744; border-radius: 12px; overflow: hidden; background: #111318; transition: border-color .15s, transform .15s; }
+  .terminal-card:hover { border-color: #78859b; transform: translateY(-2px); }
+  .terminal-card.selected { border-color: #d49a58; box-shadow: 0 0 0 2px rgba(212,154,88,.18); }
+  .terminal-title { display:flex; justify-content:space-between; padding: 9px 13px; background:#20242c; color:#c8ced8; font: 12px ui-monospace, monospace; }
+  .terminal { min-height: 430px; padding: 17px 18px; color:#d5d8de; font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
+  .dim { color:#747c89; } .muted { color:#9ba3af; } .accent { color:#e4ad6c; } .user { color:#f2f3f5; }
+  .tool { color:#aeb7c5; } .ok { color:#83c092; } .warn { color:#dbbc7f; } .blue { color:#7fbbb3; }
+  .rule { color:#4a515d; } .cursor { display:inline-block; width:7px; height:14px; background:#d8dbe0; vertical-align:-2px; }
+  .card-copy { padding: 15px 17px 18px; border-top:1px solid #2c313a; background:#181b21; }
+  .card-copy h3 { margin:0 0 6px; color:#f0f1f3; font-size:16px; }
+  .card-copy p { margin:0; color:#9ca4b1; font-size:13px; }
+  .recommend { color:#e4ad6c; font-size:11px; text-transform:uppercase; letter-spacing:.08em; }
+</style>
+
+<h2>WIDI 第一版 TUI：agent 导航放在哪里？</h2>
+<p class="subtitle">三种都沿用 Claude Code 的连续对话外观。点击你更希望作为第一版基础的布局。</p>
+
+<div class="layout-grid">
+  <div class="terminal-card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="terminal-title"><span>方案 A · 底部 Agent Strip</span><span class="recommend">推荐</span></div>
+    <div class="terminal"><span class="accent">WIDI</span> <span class="muted">v0.1 · sonnet · ~/projs/widi</span>
+
+<span class="user">❯ 分析一下当前 command 边界</span>
+
+我会先检查 command input 与 extension contribution 的边界。
+
+<span class="tool">● Read apps/widi-pi/src/core/command.ts</span>
+<span class="tool">● Read apps/widi-pi/src/core/agent-orchestrator.ts</span>
+
+当前 command 是 human-input protocol，programmatic consumer
+仍然直接调用 orchestrator 的原子操作。
+
+<span class="dim">✻ Worked for 18s</span>
+
+
+<span class="rule">────────────────────────────────────────────</span>
+❯ <span class="cursor"></span>
+<span class="rule">────────────────────────────────────────────</span>
+<span class="dim">~/p/widi · ctx 36k · main idle · ← agents</span>
+
+<span class="ok">● main</span>             <span class="dim">idle</span>
+<span class="blue">● reviewer</span>         <span class="dim">running · 8s</span>
+<span class="warn">! researcher</span>       <span class="dim">needs input</span></div>
+    <div class="card-copy">
+      <h3>聊天优先，agent 常驻底部</h3>
+      <p>最接近参考稿。平时能看到所有 agent 的简要状态，按 ← 后用 ↑↓/Enter 切换。</p>
+    </div>
+  </div>
+
+  <div class="terminal-card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="terminal-title"><span>方案 B · 左侧 Agent Rail</span><span></span></div>
+    <div class="terminal" style="padding:0; display:grid; grid-template-columns:125px 1fr; min-height:464px">
+      <div style="padding:16px 11px;background:#171a20;border-right:1px solid #343a44"><span class="accent">WIDI</span>
+
+<span class="ok">● main</span>
+  <span class="dim">idle</span>
+
+<span class="blue">● reviewer</span>
+  <span class="dim">running</span>
+
+<span class="warn">! researcher</span>
+  <span class="dim">question</span>
+
+<span class="dim">＋ new agent</span></div>
+      <div style="padding:16px"><span class="muted">main · sonnet · ~/projs/widi</span>
+
+<span class="user">❯ 分析一下当前 command 边界</span>
+
+我会先检查 command input 与 extension contribution 的边界。
+
+<span class="tool">● Read command.ts</span>
+<span class="tool">● Read agent-orchestrator.ts</span>
+
+当前 command 是 human-input protocol，programmatic consumer 仍然直接调用 orchestrator 的原子操作。
+
+<span class="dim">✻ Worked for 18s</span>
+
+
+<span class="rule">─────────────────────</span>
+❯ <span class="cursor"></span>
+<span class="rule">─────────────────────</span>
+<span class="dim">ctx 36k · main idle</span></div>
+    </div>
+    <div class="card-copy">
+      <h3>多 agent 优先，状态更清楚</h3>
+      <p>切换更直接，但长期占用终端宽度；窄窗口和代码输出的可读性较差。</p>
+    </div>
+  </div>
+
+  <div class="terminal-card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="terminal-title"><span>方案 C · 按需 Overlay</span><span></span></div>
+    <div class="terminal"><span class="accent">WIDI</span> <span class="muted">v0.1 · sonnet · ~/projs/widi</span>
+
+<span class="user">❯ 分析一下当前 command 边界</span>
+
+我会先检查 command input 与 extension contribution 的边界。
+
+<span class="tool">● Read apps/widi-pi/src/core/command.ts</span>
+
+当前 command 是 human-input protocol，programmatic consumer
+仍然直接调用 orchestrator 的原子操作。
+
+        ┌─ <span class="accent">Select agent</span> ─────────────────┐
+        │ <span class="ok">→ main</span>          idle              │
+        │   reviewer      running · 8s      │
+        │   researcher    needs input       │
+        │                                      │
+        │ <span class="dim">↑↓ select · enter switch · esc close</span> │
+        └──────────────────────────────────────┘
+
+<span class="rule">────────────────────────────────────────────</span>
+❯
+<span class="rule">────────────────────────────────────────────</span>
+<span class="dim">~/p/widi · ctx 36k · main idle · ← agents</span></div>
+    <div class="card-copy">
+      <h3>界面最干净，只在切换时出现</h3>
+      <p>主画面最简洁，但后台状态不常驻；需要依赖 footer 的 attention 提示。</p>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top:20px">建议选择 A：底部 strip 负责态势感知，按 ← 后可把同一区域扩展为 C 的选择 overlay。</p>
