@@ -4,8 +4,14 @@ import {
 	createAgentToolFromResolvedTool,
 	ToolRegistry,
 } from "../../src/core/tool-registry.ts";
+import type {
+	ImageProcessor,
+	ProcessImageResult,
+} from "../../src/core/tools/coding/image/process-image.ts";
 import {
+	createLocalReadImageOperations,
 	createReadToolDefinition,
+	type ReadImageOperations,
 	type ReadToolDetails,
 } from "../../src/core/tools/coding/read.ts";
 
@@ -44,6 +50,34 @@ const emptyExecutionContext = {
 	extension: undefined,
 	human: undefined,
 };
+
+/** Valid PNG header: signature plus a minimal IHDR chunk. */
+const PNG_FILE = Buffer.concat([
+	Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+	Buffer.from([0, 0, 0, 13]),
+	Buffer.from("IHDR", "ascii"),
+	Buffer.alloc(13 + 4),
+]);
+
+function makeImageOperations(
+	processImage: ImageProcessor,
+): ReadImageOperations {
+	return {
+		detectImageMimeType: createLocalReadImageOperations().detectImageMimeType,
+		processImage,
+	};
+}
+
+function successProcessor(
+	overrides: Partial<Extract<ProcessImageResult, { ok: true }>> = {},
+): ImageProcessor {
+	return async () => ({
+		ok: true,
+		data: "cHJvY2Vzc2Vk",
+		mimeType: "image/png",
+		...overrides,
+	});
+}
 
 function getTextContent(result: AgentToolResult<ReadToolDetails>): string {
 	const [content] = result.content;
@@ -149,8 +183,9 @@ describe("core read tool", () => {
 		});
 	});
 
-	it("reports image files as unsupported structured results", async () => {
+	it("treats files that only spoof an image signature as binary", async () => {
 		const operations = new MemoryReadOperations();
+		// PNG signature without an IHDR chunk fails image detection.
 		operations.set(
 			"/workspace/project/image.png",
 			Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
@@ -164,14 +199,9 @@ describe("core read tool", () => {
 		);
 
 		expect(getTextContent(result)).toBe(
-			"Cannot read image.png: PNG image files are not supported by the core read tool yet.",
+			"Cannot read image.png: Binary or non-UTF-8 files are not supported by the core read tool.",
 		);
-		expect(result.details).toMatchObject({
-			mediaKind: "image",
-			unsupported: {
-				reason: "PNG image files are not supported by the core read tool yet.",
-			},
-		});
+		expect(result.details.mediaKind).toBe("binary");
 	});
 
 	it("reports binary files as unsupported structured results", async () => {
@@ -219,6 +249,219 @@ describe("core read tool", () => {
 				emptyExecutionContext,
 			),
 		).rejects.toThrow("limit must be a positive line count");
+	});
+
+	it("returns a text note and an image block for image files", async () => {
+		const operations = new MemoryReadOperations();
+		operations.set("/workspace/project/image.png", PNG_FILE);
+		const seenCalls: Array<{
+			mimeType: string;
+			autoResize: boolean | undefined;
+		}> = [];
+		const imageOperations = makeImageOperations(
+			async (bytes, mimeType, options) => {
+				seenCalls.push({ mimeType, autoResize: options?.autoResize });
+				expect(Buffer.from(bytes).equals(PNG_FILE)).toBe(true);
+				return { ok: true, data: "cHJvY2Vzc2Vk", mimeType: "image/png" };
+			},
+		);
+		const tool = createReadToolDefinition("/workspace/project", {
+			operations,
+			imageOperations,
+		});
+
+		const result = await tool.execute(
+			"call-1",
+			{ path: "image.png" },
+			emptyExecutionContext,
+		);
+
+		expect(result.content).toEqual([
+			{ type: "text", text: "Read image file [image/png]" },
+			{ type: "image", data: "cHJvY2Vzc2Vk", mimeType: "image/png" },
+		]);
+		expect(result.details).toMatchObject({
+			mediaKind: "image",
+			bytes: PNG_FILE.byteLength,
+			image: {
+				originalMimeType: "image/png",
+				mimeType: "image/png",
+				converted: false,
+				resized: false,
+			},
+		});
+		expect(seenCalls).toEqual([{ mimeType: "image/png", autoResize: true }]);
+	});
+
+	it("notes conversion and resize hints with dimension details", async () => {
+		const operations = new MemoryReadOperations();
+		operations.set("/workspace/project/photo.png", PNG_FILE);
+		const tool = createReadToolDefinition("/workspace/project", {
+			operations,
+			imageOperations: makeImageOperations(
+				successProcessor({
+					mimeType: "image/jpeg",
+					convertedFrom: "image/png",
+					dimensions: {
+						originalWidth: 4000,
+						originalHeight: 3000,
+						width: 2000,
+						height: 1500,
+						wasResized: true,
+					},
+				}),
+			),
+		});
+
+		const result = await tool.execute(
+			"call-1",
+			{ path: "photo.png" },
+			emptyExecutionContext,
+		);
+
+		expect(getTextContent(result)).toBe(
+			[
+				"Read image file [image/jpeg]",
+				"[Image converted from image/png to image/jpeg.]",
+				"[Image: original 4000x3000, displayed at 2000x1500. Multiply coordinates by 2.00 to map to original image.]",
+			].join("\n"),
+		);
+		expect(result.details.image).toMatchObject({
+			originalMimeType: "image/png",
+			mimeType: "image/jpeg",
+			converted: true,
+			resized: true,
+			originalWidth: 4000,
+			originalHeight: 3000,
+			width: 2000,
+			height: 1500,
+		});
+	});
+
+	it("passes autoResizeImages=false through to the processor", async () => {
+		const operations = new MemoryReadOperations();
+		operations.set("/workspace/project/image.png", PNG_FILE);
+		let seenAutoResize: boolean | undefined;
+		const tool = createReadToolDefinition("/workspace/project", {
+			operations,
+			autoResizeImages: false,
+			imageOperations: makeImageOperations(async (_bytes, _mime, options) => {
+				seenAutoResize = options?.autoResize;
+				return { ok: true, data: "cHJvY2Vzc2Vk", mimeType: "image/png" };
+			}),
+		});
+
+		await tool.execute("call-1", { path: "image.png" }, emptyExecutionContext);
+
+		expect(seenAutoResize).toBe(false);
+	});
+
+	it("returns a text-only blocked note when blockImages is enabled", async () => {
+		const operations = new MemoryReadOperations();
+		operations.set("/workspace/project/image.png", PNG_FILE);
+		let processorCalled = false;
+		const tool = createReadToolDefinition("/workspace/project", {
+			operations,
+			blockImages: true,
+			imageOperations: makeImageOperations(async () => {
+				processorCalled = true;
+				return { ok: true, data: "cHJvY2Vzc2Vk", mimeType: "image/png" };
+			}),
+		});
+
+		const result = await tool.execute(
+			"call-1",
+			{ path: "image.png" },
+			emptyExecutionContext,
+		);
+
+		expect(processorCalled).toBe(false);
+		expect(result.content).toEqual([
+			{
+				type: "text",
+				text: "Read image file [image/png]\n[Image blocked: the images.blockImages setting prevents sending images to model providers.]",
+			},
+		]);
+		expect(result.details.image).toMatchObject({
+			originalMimeType: "image/png",
+			blocked: true,
+		});
+	});
+
+	it("returns a text-only omitted note when image processing fails", async () => {
+		const operations = new MemoryReadOperations();
+		operations.set("/workspace/project/image.png", PNG_FILE);
+		const tool = createReadToolDefinition("/workspace/project", {
+			operations,
+			imageOperations: makeImageOperations(async () => ({
+				ok: false,
+				reason: "could not be resized below the inline image size limit",
+			})),
+		});
+
+		const result = await tool.execute(
+			"call-1",
+			{ path: "image.png" },
+			emptyExecutionContext,
+		);
+
+		expect(result.content).toEqual([
+			{
+				type: "text",
+				text: "Read image file [image/png]\n[Image omitted: could not be resized below the inline image size limit.]",
+			},
+		]);
+		expect(result.details.image).toMatchObject({
+			originalMimeType: "image/png",
+			omittedReason: "could not be resized below the inline image size limit",
+		});
+	});
+
+	it("rejects offset and limit for image files", async () => {
+		const operations = new MemoryReadOperations();
+		operations.set("/workspace/project/image.png", PNG_FILE);
+		const tool = createReadToolDefinition("/workspace/project", {
+			operations,
+			imageOperations: makeImageOperations(successProcessor()),
+		});
+
+		await expect(
+			tool.execute(
+				"call-1",
+				{ path: "image.png", offset: 1 },
+				emptyExecutionContext,
+			),
+		).rejects.toThrow("offset and limit are not supported for image files");
+		await expect(
+			tool.execute(
+				"call-1",
+				{ path: "image.png", limit: 5 },
+				emptyExecutionContext,
+			),
+		).rejects.toThrow("offset and limit are not supported for image files");
+	});
+
+	it("keeps image content through the registry adapter", async () => {
+		const operations = new MemoryReadOperations();
+		operations.set("/workspace/project/image.png", PNG_FILE);
+		const registry = new ToolRegistry();
+		registry.defineTool(
+			createReadToolDefinition("/workspace/project", {
+				operations,
+				imageOperations: makeImageOperations(successProcessor()),
+			}),
+			{ kind: "core", id: "builtin" },
+		);
+		const resolved = registry.resolve().getTool("read");
+		if (!resolved) throw new Error("Expected read tool to resolve.");
+		const agentTool = createAgentToolFromResolvedTool(resolved, {});
+
+		const result = await agentTool.execute("call-1", { path: "image.png" });
+
+		expect(result.content).toEqual([
+			{ type: "text", text: "Read image file [image/png]" },
+			{ type: "image", data: "cHJvY2Vzc2Vk", mimeType: "image/png" },
+		]);
 	});
 
 	it("returns structured execution results through the registry adapter", async () => {

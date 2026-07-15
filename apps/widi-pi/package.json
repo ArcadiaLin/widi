@@ -18,6 +18,7 @@
     "@earendil-works/pi-agent-core": "^0.80.3",
     "@earendil-works/pi-ai": "^0.80.3",
     "@earendil-works/pi-tui": "^0.80.3",
+    "@silvia-odwyer/photon-node": "^0.3.4",
     "diff": "8.0.4",
     "jiti": "^2.7.0",
     "typebox": "^1.1.24"

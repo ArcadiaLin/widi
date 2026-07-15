@@ -15,7 +15,11 @@ import {
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
-import { ModelRegistry } from "../../src/core/model-registry.ts";
+import {
+	ModelRegistry,
+	parseThinkingLevel,
+	THINKING_LEVELS,
+} from "../../src/core/model-registry.ts";
 import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
 
 class MemoryExecutionEnv implements ExecutionEnv {
@@ -144,6 +148,19 @@ describe("ModelRegistry", () => {
 		expect(registry.getError()).toBeUndefined();
 	});
 
+	it("supports the upstream max thinking level", () => {
+		expect(THINKING_LEVELS).toEqual([
+			"off",
+			"minimal",
+			"low",
+			"medium",
+			"high",
+			"xhigh",
+			"max",
+		]);
+		expect(parseThinkingLevel("max")).toBe("max");
+	});
+
 	it("loads custom models and resolves provider request auth through shared ExecutionEnv resolver", async () => {
 		const env = new MemoryExecutionEnv();
 		env.files.set(
@@ -163,7 +180,8 @@ describe("ModelRegistry", () => {
 							{
 								id: "custom-model",
 								name: "Custom Model",
-								reasoning: false,
+								reasoning: true,
+								thinkingLevelMap: { max: "max" },
 								input: ["text"],
 								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 								contextWindow: 128000,
@@ -182,6 +200,7 @@ describe("ModelRegistry", () => {
 			id: "custom-model",
 			provider: "custom",
 			baseUrl: "https://example.test/v1",
+			thinkingLevelMap: { max: "max" },
 		});
 		if (!model) throw new Error("Expected custom model to resolve.");
 		await expect(registry.getAvailable()).resolves.toContain(model);

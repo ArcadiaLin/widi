@@ -30,7 +30,7 @@
 - [x] Agent status 收敛：删除 `ready` 或补消费者（当前事件路径只产 `running`/`idle`，`ready` 仅创建瞬间出现）。
 - [x] 显式声明单进程写入假设（session/auth/config storage 共用此裁决），或实现文件锁。
 - [x] package.json 修真：删除虚假入口（`main`/`bin`/`cli` 指向不存在的文件）与未使用依赖；README 写明 bootstrap 顺序（submodule → build pi → test）。
-- [x] Core built-in coding tools 第一版（裁决见 [DESIGN.md](DESIGN.md#coding-tools)）：read/write/edit 最小集复刻 pi-coding-agent，`source: core` 进 ToolRegistry；`/skill` 依赖的 read 能力在此就绪。
+- [x] Core built-in coding tools 首切片（裁决见 [DESIGN.md](DESIGN.md#coding-tools)）：先落 read/write/edit，`source: core` 进 ToolRegistry；`/skill` 依赖的 read 能力在此就绪。完整七工具集合的后续收敛已完成，实施账本见 [Coding Tools Implementation TODO](coding-tools-todo.md)。
 - [x] 最小 stdout/CLI adapter：只消费 orchestrator events + `inputAgent`，用真实调用压力反向检验 ToolRegistry、hook、diagnostics——当前所有 API 只被测试消费过。已落地 `src/cli.ts`（真实 vllm 端点验证过 chat/thinking、read/write/edit、`/model`）；反向检验发现两项已录 [BACKLOG](BACKLOG.md)：discovery 路径去重（diagnostic 重复+自指）、adapter 缺"active agent"一等事实。
 
 ## ME: Extension Surface（M2 之后、M3 之前）
@@ -50,17 +50,6 @@
 - [x] 切片 10：API 面冻结：公开契约清单、版本兼容策略、`extension.version_incompatible`；第三方视角验收 extension。已落地：`extension/api.ts` 作者唯一 barrel（API v1，整数版本 + `[min, current]` 支持区间，上游类型 by-reference 枚举冻结）；`ExtensionDefinition`（`{ apiVersion, activate }`）统一三种 source 的版本声明，裸 factory 视为当前版本；不兼容版本 load/注册期拦截 + per-agent `extension.version_incompatible`（blocked——依赖它的 spawn/resume 失败，与 activation_failed 同族），不走 missing policy。锚点 consumer `tests/extensions/third-party-extension.ts` 只依赖公开契约完成 tool + command + observer 组合。七项裁决全文见 extension-experiment.md 切片 10 记录。
 
 验收：对照表每项归属落定（core 已落 / client 层含事实对应物 / backlog 含举证缺口）；每条"extension 能/不能做 X"有裁决 + 代码锚点；审计 extension 在他人抛错时不失防有回归测试；第三方视角 extension 只依赖公开契约完成 tool + command + observer 组合。
-
-## CT: Coding Tools 收敛（M3 前）
-
-详细任务、提交切片和验收矩阵见 [Coding Tools Implementation TODO](coding-tools-todo.md)。本阶段补齐 `bash/grep/find/ls`，并把 `read` 从图片分类升级为可返回 provider-compatible `ImageContent` 的完整实现。
-
-- [ ] 七个 core coding tools 全部通过 ToolRegistry 注册和执行，不包含 TUI dependency。
-- [ ] Bash streaming/process lifecycle、grep/find 搜索 backend、ls 目录读取和共享 truncation 基础设施完成。
-- [ ] Read 图片 MIME、转换/缩放、`images.autoResize/blockImages` policy 和 build 资产完成。
-- [ ] Package tests、build、真实 smoke test 和根 `npm run check` 通过。
-
-验收：默认 tool registry 无 diagnostic 地解析七个 coding tools；文本、图片、搜索、命令执行均有 typed result 和 abort/truncation 回归测试；完整实现不修改 `pi/*`。
 
 ## M3: Multi-agent 最小闭环
 

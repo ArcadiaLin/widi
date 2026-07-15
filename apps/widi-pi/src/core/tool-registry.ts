@@ -425,15 +425,29 @@ export class ToolRegistry {
 	}
 }
 
+/**
+ * Pi AgentTool produced by the WIDI adapter. Carries the WIDI definition's
+ * prompt guidance so system prompt composition can consume it from the
+ * harness's active tool list without reaching back into the registry.
+ */
+export interface WidiAgentTool extends AgentTool<TSchema, unknown> {
+	/** Optional system-prompt snippet copied from the WIDI tool definition. */
+	promptSnippet?: string;
+	/** Optional prompt guidance bullets copied from the WIDI tool definition. */
+	promptGuidelines?: readonly string[];
+}
+
 export function createAgentToolFromResolvedTool(
 	resolvedTool: ResolvedTool,
 	context: ToolAgentAdapterContext,
-): AgentTool<TSchema, unknown> {
+): WidiAgentTool {
 	const definition = resolvedTool.definition;
 	return {
 		name: definition.name,
 		label: definition.label,
 		description: definition.description,
+		promptSnippet: definition.promptSnippet,
+		promptGuidelines: definition.promptGuidelines,
 		parameters: definition.parameters,
 		prepareArguments: definition.prepareArguments,
 		executionMode: definition.executionMode,
@@ -449,7 +463,7 @@ export function createAgentToolFromResolvedTool(
 export function createAgentToolsFromResolvedTools(
 	resolvedTools: readonly ResolvedTool[],
 	context: ToolAgentAdapterContext,
-): Array<AgentTool<TSchema, unknown>> {
+): WidiAgentTool[] {
 	return resolvedTools.map((resolvedTool) =>
 		createAgentToolFromResolvedTool(resolvedTool, context),
 	);

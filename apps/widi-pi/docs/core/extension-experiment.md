@@ -52,7 +52,7 @@ WIDI extension 自由度 =
 | `model_select` / `thinking_level_select` | 运行时变化由 raw `model_update` / `thinking_level_update` 可达；初始模型由 `agent_spawned` / `agent_resumed` 可达 | core，已落（切片 5 完成矩阵裁决，不增加归一化副本） |
 | `input` | `intercept("input")` 于 `inputAgent` command 解析前拦截，可改写/拒绝，fail-closed | core，已落（切片 6）；pi 对 extension 发起消息（source: extension）的覆盖为差异接受——scoped `prompt`/`steer`/`followUp` 不过 input hook，归因由 operation source 承担 |
 | `before_provider_request`、`after_provider_response` | `intercept("before_provider_request")` streamOptions patch 管线（mutate 档，失败跳过）；`after_provider_response` 经 raw `agent_harness_event` 可达 | core，已落（切片 9；pi harness 三 hook 全暴露，评估完成）。`before_provider_payload`（改 wire payload）最锋利且难审计，backlog 等举证 |
-| `user_bash` | 无 bash 能力 | backlog（依赖未来 bash tool 能力） |
+| `user_bash` | bash tool 已落地，无独立 hook consumer | backlog（待 consumer 举证独立于普通 tool interceptor 的语义） |
 | `project_trust` | loader trust gate（声明式，非 hook） | core，已落；差异接受，不做 hook 化 |
 | `resources_discover` | `contributeResources()` 激活期路径声明 | core，已落（切片 8）；不复刻 hook 形态，reload 重激活即重声明 |
 

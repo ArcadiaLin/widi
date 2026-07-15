@@ -1,6 +1,6 @@
 # Coding Tools Implementation TODO
 
-本文档定义 `apps/widi-pi/src/core/tools/coding` 从当前 `read/write/edit` 最小集补齐为完整 coding-agent 工具集的实施任务。目标集合已经由 [DESIGN.md](DESIGN.md#coding-tools) 裁决为：
+本文档记录 `apps/widi-pi/src/core/tools/coding` 从最初的 `read/write/edit` 最小集补齐为完整 coding-agent 工具集的实施过程。目标集合已经由 [DESIGN.md](DESIGN.md#coding-tools) 裁决为：
 
 - `read`
 - `write`
@@ -23,18 +23,19 @@
 
 已实现：
 
-- `read`：UTF-8 文本、offset/limit、head truncation、binary/image 分类。
+- `read`：UTF-8 文本、offset/limit、head truncation、binary 分类；图片 MIME 内容探测、photon 转换/缩放（worker + in-process fallback）、blockImages/autoResize 设置接线（切片 3）。
 - `write`：创建父目录、覆盖写、typed details、单文件 mutation queue。
 - `edit`：批量精确替换、fuzzy normalization、BOM/换行保留、diff/patch details、单文件 mutation queue。
-- 共享：路径解析、文件 operations、mutation queue、head truncation。
+- `bash`：streaming update、abort、timeout、非零退出、tail truncation、完整输出落盘（切片 1）。
+- `grep`：rg --json backend、context lines、match limit、单行截断（切片 2）。
+- `find`：rg --files 枚举加 WIDI 层 glob 匹配、确定性排序、result limit（切片 2）。
+- `ls`：case-insensitive 排序、dotfiles、目录后缀、entry limit（切片 2）。
+- 共享：路径解析、文件 operations、mutation queue、head/tail truncation、output accumulator、进程生命周期 helper、rg resolve/spawn backend、glob 匹配、image 模块（mime/photon/exif/resize/process）。
+- runtime policy：`images.blockImages` 在 harness context hook 中统一过滤 provider-bound 消息里的图片。
+- system prompt：按 active tool 顺序消费 `promptSnippet`，去重并消费 `promptGuidelines`，用于指导精确选用七个工具（切片 4）。
+- 验收：七工具固定顺序注册、profile visibility/resume 校验、真实临时目录 smoke test、package tests、build 和根 check 均已覆盖（切片 4）。
 
-缺失：
-
-- `bash`、`grep`、`find`、`ls` definition 和测试。
-- Bash tail truncation、流式输出累计、完整输出落盘和可靠进程生命周期。
-- Grep 单行截断工具。
-- `read` 图片结果、MIME 探测、转换/缩放和图片设置接线。
-- 七个 built-in tools 的 runtime 注册与验收。
+未完成项：无。本文档定义的四个切片均已完成。
 
 ## 实施原则
 
@@ -55,246 +56,235 @@
 
 ### 外部 executable
 
-- `grep` 和 `find` 的默认本地 backend 都使用 `rg`，避免同时引入 `fd`。
+- `grep` 和 `find` 的默认本地 backend 都使用 `rg`，避免同时引入 `fd`（上游 `find` 使用 `fd`，这是有意偏离）。
 - `grep` 使用 `rg --json` 获取结构化 match event。
-- `find` 使用 `rg --files` 加 glob 参数获取 gitignore-aware 文件列表。
+- `find` 使用 `rg --files` 获取 gitignore-aware 文件列表；用户 glob 在 WIDI 层匹配，因为 rg 的正向 `--glob` 会 override 全部 ignore 逻辑，把 gitignored 文件重新捞回来。
 - executable 路径从显式 option 或 `PATH` 解析；不可用时抛出明确错误。
 - 不在 tool execute 中联网下载 `rg`。
 - 所有用户输入都作为 argv 元素传给 `spawn`，不得拼接进 shell command。
 
-## 切片 1：共享输出基础设施
+### 切片与提交
+
+任务分为四个切片。每个切片以"工具注册进 ToolRegistry 并通过对应 Vitest 文件"为验收单位；切片内部提交粒度自由，但不要跨切片留半成品接线。每个提交保持根 `npm run check` 通过。
+
+- 注册随切片走：每落地一个工具就在 `builtin.ts` 注册，最终顺序固定为 `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`，与 Pi coding-agent `ToolName` 顺序一致。
+- `registerCoreCodingTools()` 接受 typed options，或由 runtime 构造 definitions 后逐一注册；不要把 `SettingManager` 本身传进 tool 模块。runtime 侧的 option 接线随需要它的工具切片落地（shell 配置随 bash、rg 路径随 grep/find、图片设置随 read）。
+
+## 切片 1：`bash` 与共享输出/进程基础设施
+
+`truncateTail`、output accumulator 和 process helper 的首个消费者都是 bash，与 bash definition 同切片交付，避免出现无验收锚点的中间提交。
 
 ### `truncate.ts`
 
-- [ ] 增加 `GREP_MAX_LINE_LENGTH = 500`。
-- [ ] 增加 `truncateTail()`，保留最后 N 行或最后 N bytes。
-- [ ] Tail byte truncation 在最后一行自身超过限制时允许返回该行尾部的 partial line，并设置 `lastLinePartial`。
-- [ ] 增加 UTF-8 边界安全的 tail byte slicing。
-- [ ] 增加 `truncateLine()`，返回 `{ text, wasTruncated }`。
-- [ ] 保持现有 `TruncationResult` 结构兼容 `read`。
-- [ ] 增加 trailing newline、空内容、多字节字符、首/尾超长单行测试。
+- [x] 增加 `GREP_MAX_LINE_LENGTH = 500`。
+- [x] 增加 `truncateTail()`，保留最后 N 行或最后 N bytes。
+- [x] Tail byte truncation 在最后一行自身超过限制时允许返回该行尾部的 partial line，并设置 `lastLinePartial`。
+- [x] 增加 UTF-8 边界安全的 tail byte slicing。
+- [x] 增加 `truncateLine()`，返回 `{ text, wasTruncated }`。
+- [x] 保持现有 `TruncationResult` 结构兼容 `read`。
+- [x] 增加 trailing newline、空内容、多字节字符、首/尾超长单行测试。
 
 ### `output-accumulator.ts`
 
-- [ ] 新增有界内存的流式输出累计器。
-- [ ] 使用 streaming `TextDecoder`，正确处理跨 chunk 的 UTF-8 字符。
-- [ ] 维护 decoded tail、总 bytes、总行数和最后一行 bytes。
-- [ ] snapshot 使用 `truncateTail()`，适合展示命令结尾和错误。
-- [ ] 仅在超过展示限制或明确请求持久化时创建临时文件。
-- [ ] 临时文件写入原始输出 bytes，不因 UTF-8 decode 或截断损失内容。
-- [ ] 提供显式 `finish()` 和 `closeTempFile()` 生命周期。
-- [ ] operations resolve 后忽略迟到的 output callback。
-- [ ] 覆盖 line-only truncation、byte truncation、split UTF-8、迟到输出和临时文件完整性测试。
+- [x] 新增有界内存的流式输出累计器。
+- [x] 使用 streaming `TextDecoder`，正确处理跨 chunk 的 UTF-8 字符。
+- [x] 维护 decoded tail、总 bytes、总行数和最后一行 bytes。
+- [x] snapshot 使用 `truncateTail()`，适合展示命令结尾和错误。
+- [x] 仅在超过展示限制或明确请求持久化时创建临时文件。
+- [x] 临时文件写入原始输出 bytes，不因 UTF-8 decode 或截断损失内容。
+- [x] 提供显式 `finish()` 和 `closeTempFile()` 生命周期。
+- [x] operations resolve 后忽略迟到的 output callback。
+- [x] 覆盖 line-only truncation、byte truncation、split UTF-8、迟到输出和临时文件完整性测试。
 
-## 切片 2：可靠的本地进程执行
+### 进程生命周期 helper
 
-建议把进程生命周期放在 `coding/process.ts` 或等价的 coding-owned helper 中，不让 `bash.ts` 和搜索工具分别实现一套。
+放在 `coding/process.ts` 或等价的 coding-owned helper 中，不让 `bash.ts` 和搜索工具分别实现一套；切片 2 的 grep/find 复用它。此 helper 不负责 shell command 解析，也不依赖 TUI。
 
-- [ ] 提供 typed spawn helper，支持 stdout/stderr pipe、cwd、env 和 abort。
-- [ ] Unix 使用 detached process group；abort/timeout 时终止整个进程树。
-- [ ] Windows 使用 `taskkill /F /T` 或等价的可靠 process-tree 终止策略。
-- [ ] 等待 child exit 后继续消费短时间内仍在输出的 inherited pipe。
-- [ ] 后台 descendant 静默持有 pipe 时必须通过 idle grace 结束等待，不能无限挂起。
-- [ ] stdout/stderr listener、abort listener 和 timeout handle 必须在所有结局中清理。
-- [ ] 测试 spawn failure、abort、timeout、exit 后迟到输出和静默 inherited pipe。
+- [x] 提供 typed spawn helper，支持 stdout/stderr pipe、cwd、env 和 abort。
+- [x] Unix 使用 detached process group；abort/timeout 时终止整个进程树。
+- [x] Windows 使用 `taskkill /F /T` 或等价的可靠 process-tree 终止策略。
+- [x] 等待 child exit 后继续消费短时间内仍在输出的 inherited pipe。
+- [x] 后台 descendant 静默持有 pipe 时必须通过 idle grace 结束等待，不能无限挂起。
+- [x] stdout/stderr listener、abort listener 和 timeout handle 必须在所有结局中清理。
+- [x] 测试 spawn failure、abort、timeout、exit 后迟到输出和静默 inherited pipe。
 
-此 helper 不负责 shell command 解析，也不依赖 TUI。
+### `bash` definition
 
-## 切片 3：`bash`
+- [x] 新增 `bash.ts` 和 `BashToolInput`：`command`、可选 `timeout` 秒数。
+- [x] 校验 timeout 是有限正数，且不超过 Node timer 上限。
+- [x] 定义 `BashOperations.exec(command, cwd, options)` 注入边界。
+- [x] 默认 backend 支持显式 `shellPath`、环境变量和 stdin command transport。
+- [x] 支持 `commandPrefix`，以换行连接 prefix 与用户 command。
+- [x] 设置 `promptSnippet` 和必要的 prompt guidelines。
 
-### Definition
+### `bash` execution
 
-- [ ] 新增 `bash.ts` 和 `BashToolInput`：`command`、可选 `timeout` 秒数。
-- [ ] 校验 timeout 是有限正数，且不超过 Node timer 上限。
-- [ ] 定义 `BashOperations.exec(command, cwd, options)` 注入边界。
-- [ ] 默认 backend 支持显式 `shellPath`、环境变量和 stdin command transport。
-- [ ] 支持 `commandPrefix`，以换行连接 prefix 与用户 command。
-- [ ] runtime 从 `SettingManager.getShellPath()` 和 `getShellCommandPrefix()` 传入配置。
-- [ ] 设置 `promptSnippet` 和必要的 prompt guidelines。
+- [x] 合并 stdout 和 stderr，保持到达顺序。
+- [x] 使用 `OutputAccumulator` 保留最后 2000 行或 50KB。
+- [x] `context.onUpdate` 首先发空 partial result，再以约 100ms 节流推送输出 snapshot。
+- [x] tool promise settle 后不再接受或发送 update。
+- [x] 空输出成功时返回 `(no output)`。
+- [x] 非零 exit code 抛错，并在错误中保留已有输出和退出码。
+- [x] Timeout 和 abort 抛错，并在错误中保留已有输出。
+- [x] 截断时在 content 中给出展示行范围和 full output path。
+- [x] `BashToolDetails` 包含可选 `truncation` 和 `fullOutputPath`。
 
-### Execution
+### 注册与设置接线
 
-- [ ] 合并 stdout 和 stderr，保持到达顺序。
-- [ ] 使用 `OutputAccumulator` 保留最后 2000 行或 50KB。
-- [ ] `context.onUpdate` 首先发空 partial result，再以约 100ms 节流推送输出 snapshot。
-- [ ] tool promise settle 后不再接受或发送 update。
-- [ ] 空输出成功时返回 `(no output)`。
-- [ ] 非零 exit code 抛错，并在错误中保留已有输出和退出码。
-- [ ] Timeout 和 abort 抛错，并在错误中保留已有输出。
-- [ ] 截断时在 content 中给出展示行范围和 full output path。
-- [ ] `BashToolDetails` 包含可选 `truncation` 和 `fullOutputPath`。
-
-### 测试
-
-- [ ] 简单命令和无输出命令。
-- [ ] stdout/stderr 合并。
-- [ ] 非零退出、timeout、abort、cwd 不存在、shell 不存在。
-- [ ] command prefix 和自定义 shell path。
-- [ ] chatty output update 节流。
-- [ ] UTF-8 字符跨 chunk。
-- [ ] 行数与 bytes 截断、完整输出文件。
-- [ ] exit 后迟到输出不丢失，operations resolve 后迟到 callback 不污染结果。
-
-## 切片 4：`ls`
-
-- [ ] 新增 `ls.ts`，参数为可选 `path` 和 `limit`。
-- [ ] 定义 `LsOperations.exists/stat/readdir`，默认使用 Node filesystem。
-- [ ] 校验 limit 是有限正整数；默认 500。
-- [ ] 路径相对 cwd 解析，missing path 和 non-directory 给出不同错误。
-- [ ] 包含 dotfiles。
-- [ ] 按 case-insensitive 字母序稳定排序。
-- [ ] 目录条目追加 `/`。
-- [ ] 无法 stat 的单个 entry 跳过，不让整个 listing 失败。
-- [ ] 按 entry limit 和 50KB 限制输出，写入 `entryLimitReached`/`truncation` details。
-- [ ] 空目录返回 `(empty directory)`。
-- [ ] 覆盖排序、dotfiles、目录后缀、空目录、limit、missing 和 abort 测试。
-
-## 切片 5：`grep`
-
-### Definition 和 backend
-
-- [ ] 新增 `grep.ts`，参数为 `pattern`、可选 `path/glob/ignoreCase/literal/context/limit`。
-- [ ] 默认 limit 100，context 默认 0。
-- [ ] 校验 context 是非负整数，limit 是正整数。
-- [ ] 定义可注入 backend，至少隔离 executable resolve/spawn 和 context file read。
-- [ ] 默认 backend 使用 `rg --json --line-number --color=never --hidden`。
-- [ ] `--` 必须出现在 pattern/path 之前，flag-like pattern 不得成为 rg option。
-- [ ] rg exit 0 为有匹配，exit 1 为无匹配，其他 exit code 为执行错误。
-
-### 输出
-
-- [ ] 单文件搜索仍显示 basename 和 line number。
-- [ ] 目录搜索输出相对 search root 的 POSIX path。
-- [ ] 无 context 时直接使用 rg match event 的文本。
-- [ ] 有 context 时按文件读取内容并格式化前后行。
-- [ ] match 行格式为 `path:line: text`，context 行格式为 `path-line- text`。
-- [ ] 每个输出行通过 `truncateLine()` 限制到 500 chars。
-- [ ] 达到 match limit 时停止子进程并记录 `matchLimitReached`。
-- [ ] 最终输出按 50KB head truncation，并记录 `truncation`。
-- [ ] 无匹配返回 `No matches found`。
+- [x] 在 `builtin.ts` 注册 `bash`。
+- [x] runtime 从 `SettingManager.getShellPath()` 和 `getShellCommandPrefix()` 传入配置。
 
 ### 测试
 
-- [ ] regex、literal、ignoreCase 和 glob。
-- [ ] 单文件 basename、目录相对路径。
-- [ ] context lines 和全局 match limit。
-- [ ] long line truncation。
-- [ ] gitignore、hidden file 和无匹配。
-- [ ] flag-like pattern 注入防护。
-- [ ] rg missing、rg error 和 abort。
+`coding-tools-shared.test.ts` 覆盖 truncation、accumulator 和 process helper；新增 `coding-bash-tool.test.ts` 覆盖：
 
-## 切片 6：`find`
+- [x] 简单命令和无输出命令。
+- [x] stdout/stderr 合并。
+- [x] 非零退出、timeout、abort、cwd 不存在、shell 不存在。
+- [x] command prefix 和自定义 shell path。
+- [x] chatty output update 节流。
+- [x] UTF-8 字符跨 chunk。
+- [x] 行数与 bytes 截断、完整输出文件。
+- [x] exit 后迟到输出不丢失，operations resolve 后迟到 callback 不污染结果。
 
-- [ ] 新增 `find.ts`，参数为 `pattern`、可选 `path/limit`。
-- [ ] 默认 limit 1000，校验为正整数。
-- [ ] 默认 backend 使用 `rg --files --hidden --no-require-git`，依赖 rg 的 ignore/gitignore 语义。
-- [ ] 固定排除 `.git` 和 `node_modules`；不要排除其他未被 gitignore 的 dotfiles。
-- [ ] 把用户 glob 作为独立 argv 传递，不经 shell。
-- [ ] 输出相对 search root 的 POSIX path。
-- [ ] 结果排序必须确定；若 rg 顺序不作为契约，则在 WIDI 层排序。
-- [ ] 达到 result limit 时停止读取并记录 `resultLimitReached`。
-- [ ] 最终输出按 50KB head truncation。
-- [ ] 无结果返回 `No files found matching pattern`。
-- [ ] 覆盖 path-containing glob、hidden file、gitignore、nested repo boundary、invalid glob、limit、missing path 和 abort 测试。
+## 切片 2：`ls`、`grep`、`find`
 
-需要先用 characterization test 固定 `rg --files` 对 nested repository 和父级 `.gitignore` 的实际行为；如果不能达到上游 `fd` 语义，再评估引入 `fd`，不要预先增加第二个 executable 依赖。
+grep 和 find 共享 `rg` 的 executable resolve/spawn backend，一起实现避免 backend 接口返工；ls 体量小，随同切片交付。
 
-## 切片 7：`read` 图片能力
+### `ls`
+
+- [x] 新增 `ls.ts`，参数为可选 `path` 和 `limit`。
+- [x] 定义 `LsOperations.exists/stat/readdir`，默认使用 Node filesystem。
+- [x] 校验 limit 是有限正整数；默认 500。
+- [x] 路径相对 cwd 解析，missing path 和 non-directory 给出不同错误。
+- [x] 包含 dotfiles。
+- [x] 按 case-insensitive 字母序稳定排序。
+- [x] 目录条目追加 `/`。
+- [x] 无法 stat 的单个 entry 跳过，不让整个 listing 失败。
+- [x] 按 entry limit 和 50KB 限制输出，写入 `entryLimitReached`/`truncation` details。
+- [x] 空目录返回 `(empty directory)`。
+
+### `grep`
+
+- [x] 新增 `grep.ts`，参数为 `pattern`、可选 `path/glob/ignoreCase/literal/context/limit`。
+- [x] 默认 limit 100，context 默认 0。
+- [x] 校验 context 是非负整数，limit 是正整数。
+- [x] 定义可注入 backend，至少隔离 executable resolve/spawn 和 context file read。
+- [x] 默认 backend 使用 `rg --json --line-number --color=never --hidden`。
+- [x] `--` 必须出现在 pattern/path 之前，flag-like pattern 不得成为 rg option。
+- [x] rg exit 0 为有匹配，exit 1 为无匹配，其他 exit code 为执行错误。
+- [x] 单文件搜索仍显示 basename 和 line number。
+- [x] 目录搜索输出相对 search root 的 POSIX path。
+- [x] 无 context 时直接使用 rg match event 的文本。
+- [x] 有 context 时按文件读取内容并格式化前后行。
+- [x] match 行格式为 `path:line: text`，context 行格式为 `path-line- text`。
+- [x] 每个输出行通过 `truncateLine()` 限制到 500 chars。
+- [x] 达到 match limit 时停止子进程并记录 `matchLimitReached`。
+- [x] 最终输出按 50KB head truncation，并记录 `truncation`。
+- [x] 无匹配返回 `No matches found`。
+
+### `find`
+
+- [x] 新增 `find.ts`，参数为 `pattern`、可选 `path/limit`。
+- [x] 默认 limit 1000，校验为正整数。
+- [x] 默认 backend 使用 `rg --files --hidden --sort path`；`--no-require-git` 仅在 search root 不在 git repo 内时添加（修订：固定添加会把父级 `.gitignore` 应用进 nested repo）。
+- [x] 固定排除 `.git` 和 `node_modules`；不要排除其他未被 gitignore 的 dotfiles。
+- [x] 用户 glob 不传给 rg（修订：正向 `--glob` override ignore 规则），在 WIDI 层对相对路径做 glob 匹配；用户输入仍不经 shell。
+- [x] 输出相对 search root 的 POSIX path。
+- [x] 结果排序必须确定：使用 `rg --sort path`，limit 早停得到确定性前缀。
+- [x] 达到 result limit 时停止读取并记录 `resultLimitReached`。
+- [x] 最终输出按 50KB head truncation。
+- [x] 无结果返回 `No files found matching pattern`。
+
+Characterization 结论（已固定为 `coding-find-tool.test.ts` 中的测试）：git repo 内 rg 默认让父级 `.gitignore` 停在 nested repo 边界，`--no-require-git` 则会跨边界应用父级规则，因此该 flag 只在 repo 外使用；正向 `--glob` override 全部 ignore 逻辑，因此用户 glob 移到 WIDI 层匹配。两项合计达到了上游 `fd` 语义，未引入 `fd`。
+
+### 注册与测试
+
+- [x] 在 `builtin.ts` 注册 `ls`、`grep`、`find`；runtime 传入可选 rg executable path。
+- [x] `coding-ls-tool.test.ts`：排序、dotfiles、目录后缀、空目录、limit、missing 和 abort。
+- [x] `coding-grep-tool.test.ts`：regex、literal、ignoreCase、glob；单文件 basename、目录相对路径；context lines 和 match limit；long line truncation；gitignore、hidden file 和无匹配；flag-like pattern 注入防护；rg missing、rg error 和 abort。
+- [x] `coding-find-tool.test.ts`：path-containing glob、hidden file、gitignore、nested repo boundary、invalid glob、limit、missing path 和 abort。
+
+## 切片 3：`read` 图片能力与全局图片 policy
+
+保持独立切片：photon 依赖、worker/WASM 构建风险和跨 runtime 的 blockImages policy 都与其他切片无关。
 
 ### MIME 探测
 
-- [ ] 把当前 `read.ts` 内部 image signature 判断抽成 `image/mime.ts` 或等价纯函数模块。
-- [ ] 支持 JPEG、PNG、GIF、WEBP、BMP 的内容探测，不按扩展名猜测。
-- [ ] 拒绝异常 JPEG、animated PNG 或无法安全解析的伪装文件。
-- [ ] MIME 探测只读取小段 header；operations 注入需要允许远程 backend 自定义探测。
-- [ ] 非图片仍走严格 UTF-8 文本或 binary unsupported 分支。
+- [x] 把当前 `read.ts` 内部 image signature 判断抽成 `image/mime.ts` 或等价纯函数模块。
+- [x] 支持 JPEG、PNG、GIF、WEBP、BMP 的内容探测，不按扩展名猜测。
+- [x] 拒绝异常 JPEG、animated PNG 或无法安全解析的伪装文件。
+- [x] MIME 探测只读取小段 header；operations 注入需要允许远程 backend 自定义探测（修订：默认探测作用于已经通过 `operations.readFile` 读到的 buffer 的前 4100 bytes，而不是单独开 file handle——这样 memory/远程 backend 无需额外接口即可正确探测；`ReadImageOperations.detectImageMimeType(absolutePath, buffer)` 仍可整体替换）。
+- [x] 非图片仍走严格 UTF-8 文本或 binary unsupported 分支；伪装 image signature 的文件落入 binary 分支。
 
 ### 图片处理
 
-- [ ] 在 `apps/widi-pi/package.json` 直接声明 `@silvia-odwyer/photon-node`，不依赖未声明的上游传递依赖。
-- [ ] 参考 Pi 的 Photon 实现移植图片 normalize、EXIF orientation、conversion 和 resize helper，去除 TUI 相关逻辑。
-- [ ] PNG/JPEG/GIF/WEBP 可以直接作为 provider 支持格式；BMP 转为 PNG。
-- [ ] 默认按 provider inline 限制进行尺寸和编码大小压缩。
-- [ ] CPU 密集的 decode/resize 默认在 worker thread 执行，并提供 worker 不可用时的 in-process fallback。
-- [ ] 构建配置必须包含 worker entry 和 Photon WASM 资产；源码运行与 `dist` 运行都要验证。
-- [ ] `ReadToolOptions` 增加 `autoResizeImages` 和 typed image processor operations，测试不加载真实 WASM。
+- [x] 在 `apps/widi-pi/package.json` 直接声明 `@silvia-odwyer/photon-node`，不依赖未声明的上游传递依赖。
+- [x] 参考 Pi 的 Photon 实现移植图片 normalize、EXIF orientation、conversion 和 resize helper，去除 TUI 相关逻辑（修订：photon 加载不用上游的 `await import()` + fs patch——photon-node 是 CJS，`image/photon.ts` 用 createRequire 做延迟同步加载，是仓库"top-level imports only"规则的唯一例外，理由是同步 WASM 编译不能发生在 CLI 启动路径上，且缺失资产必须降级为图片读取失败而不是启动崩溃；WASM 始终从 node_modules 内部相对加载，无需 Bun 路径 patch）。
+- [x] PNG/JPEG/GIF/WEBP 可以直接作为 provider 支持格式；BMP 转为 PNG。
+- [x] 默认按 provider inline 限制进行尺寸和编码大小压缩。
+- [x] CPU 密集的 decode/resize 默认在 worker thread 执行，并提供 worker 不可用时的 in-process fallback（源码运行下 worker entry 是 `.ts`，依赖 Node >=22.19 原生 type stripping；dist 运行加载编译后的 `.js`）。
+- [x] 构建配置必须包含 worker entry 和 Photon WASM 资产；源码运行与 `dist` 运行都要验证（`resize-worker.ts` 随 `tsgo` 正常编译进 dist；两种运行方式均已用真实 PNG 3000x2 -> 2000x1 验证 worker 与 WASM 可加载）。
+- [x] `ReadToolOptions` 增加 `autoResizeImages` 和 typed image processor operations，测试不加载真实 WASM（read 工具测试注入 fake `ImageProcessor`；真实 WASM 覆盖在独立的 `coding-image.test.ts`）。
 
 ### Read result
 
-- [ ] 图片读取成功时返回一条 text note 加一个 `ImageContent` block。
-- [ ] Text note 写明最终 MIME；发生转换或缩放时包含转换、原始尺寸和显示尺寸提示。
-- [ ] 图片处理失败时返回 text-only omitted note，不抛出伪文件读取错误。
-- [ ] `ReadToolDetails` 对图片记录原始 bytes、原始/最终 MIME、是否转换、是否缩放和尺寸信息。
-- [ ] 更新 `read` description，明确支持的图片格式和文本截断规则。
-- [ ] `offset/limit` 对图片忽略还是拒绝必须固定为一种行为；建议拒绝并给出明确参数错误，避免静默忽略模型输入。
+- [x] 图片读取成功时返回一条 text note 加一个 `ImageContent` block。
+- [x] Text note 写明最终 MIME；发生转换或缩放时包含转换、原始尺寸和显示尺寸提示。
+- [x] 图片处理失败时返回 text-only omitted note，不抛出伪文件读取错误。
+- [x] `ReadToolDetails` 对图片记录原始 bytes、原始/最终 MIME、是否转换、是否缩放和尺寸信息（`details.image`）。
+- [x] 更新 `read` description，明确支持的图片格式和文本截断规则。
+- [x] `offset/limit` 对图片忽略还是拒绝必须固定为一种行为；已定为拒绝并给出明确参数错误。
 
 ### Model 和禁图策略
 
-- [ ] 不把当前 model 塞进 WIDI `ToolExecutionContext`。Pi AI 的 `transformMessages()` 已会在非视觉模型请求中把 tool image block 降级为 text placeholder。
-- [ ] `images.blockImages` 必须成为真实 runtime policy，而不是只在 `read` 中局部生效。
-- [ ] 在进入 provider request 前统一过滤 user/tool images，保证“阻止所有图片发送给 provider”的设置语义成立。
-- [ ] `read` 在 blockImages 开启时返回 text-only blocked note，不生成 base64 image block，避免无用的 session 体积。
-- [ ] `images.autoResize` 从 `SettingManager.getImageSettings()` 接入 read definition。
-- [ ] 非视觉模型、blockImages 和普通 vision model 三条路径分别测试。
+- [x] 不把当前 model 塞进 WIDI `ToolExecutionContext`。Pi AI 的 `transformMessages()` 已会在非视觉模型请求中把 tool image block 降级为 text placeholder（该行为已固定为 `image-policy.test.ts` 中的 characterization 测试）。
+- [x] `images.blockImages` 必须成为真实 runtime policy，而不是只在 `read` 中局部生效（`src/core/image-policy.ts` + orchestrator context hook）。
+- [x] 在进入 provider request 前统一过滤 user/tool images（修订：harness `emitHook` 对多个 handler 只保留最后一个非 undefined 结果、不做链式合并，所以过滤不注册为独立 hook，而是在 orchestrator 唯一的 `context` handler 内部、extension interceptor 结果之上应用，保证 extension transform 不会把图片重新带回 payload）。
+- [x] `read` 在 blockImages 开启时返回 text-only blocked note，不生成 base64 image block，避免无用的 session 体积。
+- [x] `images.autoResize` 从 `SettingManager.getImageSettings()` 接入 read definition（连同 blockImages 经 `CoreCodingToolOptions` 传入）。
+- [x] 非视觉模型、blockImages 和普通 vision model 三条路径分别测试。
 
-### 图片测试
+### 测试与构建验证
 
-- [ ] MIME signature：合法和伪装 JPEG/PNG/GIF/WEBP/BMP。
-- [ ] BMP 转 PNG、EXIF orientation、超尺寸 resize、无需 resize。
-- [ ] Processor failure 返回 text-only note。
-- [ ] `ImageContent` base64 和 MIME 正确。
-- [ ] Registry adapter 和 Pi session tool result 能保存 image content。
-- [ ] 非视觉模型 provider request 中图片被替换为 placeholder。
-- [ ] blockImages 时 user input 和 tool result 图片均不进入 provider payload。
-- [ ] `npm --workspace apps/widi-pi run build` 后 worker/WASM 可加载。
+扩展 `coding-read-tool.test.ts`；image helper 测试进独立的 `coding-image.test.ts`（需要加载真实 WASM，不与纯函数共享测试混放），策略过滤进 `image-policy.test.ts`。
 
-## 切片 8：注册、设置与公开出口
+- [x] MIME signature：合法和伪装 JPEG/PNG/GIF/WEBP/BMP。
+- [x] BMP 转 PNG、EXIF orientation、超尺寸 resize、无需 resize。
+- [x] Processor failure 返回 text-only note。
+- [x] `ImageContent` base64 和 MIME 正确。
+- [x] Registry adapter 和 Pi session tool result 能保存 image content（adapter 透传已测；`ToolResultMessage.content` 类型本身允许 image block）。
+- [x] 非视觉模型 provider request 中图片被替换为 placeholder。
+- [x] blockImages 时 user input 和 tool result 图片均不进入 provider payload（`stripImagesFromMessages` 对 user 与 toolResult 消息分别测试）。
+- [x] 运行 `npm --workspace apps/widi-pi run build` 并验证 worker/WASM 可加载；单纯 typecheck 无法发现 worker 或 WASM 资产缺失。
 
-- [ ] `builtin.ts` 注册顺序固定为 `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`，与 Pi coding-agent 主工具顺序保持接近。
-- [ ] `registerCoreCodingTools()` 接受 typed options，或由 runtime 构造 definitions 后逐一注册；不要把 `SettingManager` 本身传进 tool 模块。
-- [ ] Runtime 传入 shell path、shell command prefix、image auto-resize、block-images policy 和可选 rg executable path。
-- [ ] 根据实际外部消费者决定是否增加 `coding/index.ts`。只有存在跨模块批量 import 需求时才添加，避免纯 barrel 文件。
-- [ ] Runtime service 测试断言七个 core tool names、source 和 registration order。
-- [ ] Profile 未声明 `tools` 时七个工具默认可见；显式 profile allowlist 继续只控制 visibility。
-- [ ] Session resume 的旧 active tool names 继续通过 ToolRegistry 校验，不做兼容别名。
+## 切片 4：prompt guidance、注册收尾与验收
 
-## 切片 9：Prompt guidance
+### Prompt guidance
 
-- [ ] 确认 `promptSnippet` 和 `promptGuidelines` 已被 WIDI system prompt composition 消费。
-- [ ] 如果仍未消费，先补唯一 composition 路径，再依赖这些字段改善 tool selection。
-- [ ] `read` guideline 优先读取文件，不用 bash `cat/sed`。
-- [ ] `grep` guideline 用于内容搜索，`find` 用于路径搜索，`ls` 用于单层目录浏览。
-- [ ] `write` 只用于新文件或完整重写；局部变更使用 `edit`。
-- [ ] `bash` 用于构建、测试、版本控制和无法由专用工具表达的命令，不替代精确的 read/grep/find。
+`promptSnippet` 和 `promptGuidelines` 通过唯一 system prompt composition 路径消费，用于改善 tool selection。
 
-## 切片 10：验证和文档修真
+- [x] 补 WIDI system prompt composition 对 `promptSnippet`/`promptGuidelines` 的消费。
+- [x] `read` guideline 优先读取文件，不用 bash `cat/sed`。
+- [x] `grep` guideline 用于内容搜索，`find` 用于路径搜索，`ls` 用于单层目录浏览。
+- [x] `write` 只用于新文件或完整重写；局部变更使用 `edit`。
+- [x] `bash` 用于构建、测试、版本控制和无法由专用工具表达的命令，不替代精确的 read/grep/find/ls。
 
-- [ ] 新增 `coding-bash-tool.test.ts`。
-- [ ] 新增 `coding-grep-tool.test.ts`。
-- [ ] 新增 `coding-find-tool.test.ts`。
-- [ ] 新增 `coding-ls-tool.test.ts`。
-- [ ] 扩展 `coding-read-tool.test.ts` 覆盖图片。
-- [ ] 扩展 `coding-tools-shared.test.ts` 覆盖 tail truncation、process helper 和 image helpers 中适合共享测试的部分。
-- [ ] 先运行新增工具相关测试，再运行完整 package tests。
-- [ ] 运行 `npm --workspace apps/widi-pi run build`，验证图片 worker/资产和 Node ESM 路径。
-- [ ] 从仓库根运行 `npm run check`。
-- [ ] 用真实临时目录做一次七工具 smoke test，不依赖 TUI。
-- [ ] 更新 [TODO.md](TODO.md)、[DESIGN.md](DESIGN.md) 和相关机制文档中的“最小集/未来 bash”陈述。
-- [ ] Bash 落地后复核 [BACKLOG.md](BACKLOG.md) 中 `user_bash` hook 的 consumer 条件，但不在本任务顺带实现 hook。
+### 注册收尾
 
-## 推荐提交顺序
+- [x] `builtin.ts` 注册顺序固化为 `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`。
+- [x] Runtime service 测试断言七个 core tool names、source 和 registration order。
+- [x] Profile 未声明 `tools` 时七个工具默认可见；显式 profile allowlist 继续只控制 visibility。
+- [x] Session resume 的旧 active tool names 继续通过 ToolRegistry 校验，不做兼容别名。
+- [x] 根据实际外部消费者决定是否增加 `coding/index.ts`：当前无跨模块批量 import 需求，不增加纯 barrel 文件。
 
-1. Truncation 和 output accumulator，纯共享逻辑与测试。
-2. Process helper 和 bash local backend，含进程生命周期回归测试。
-3. Bash definition、settings 接线和测试。
-4. Ls definition 和测试。
-5. Rg backend、grep definition 和测试。
-6. Find definition、gitignore characterization 和测试。
-7. 图片 MIME/processor 基础设施和依赖资产。
-8. Read image result、global blockImages policy 和测试。
-9. Built-in 注册、runtime 集成、prompt composition 和文档修真。
+### 验收与文档
 
-每个提交都应保持 `npm run check` 通过；涉及某个工具的提交同时运行对应 Vitest 文件。图片基础设施提交还必须运行 package build，单纯 typecheck 无法发现 worker 或 WASM 资产缺失。
+- [x] 运行完整 package tests 和 `npm --workspace apps/widi-pi run build`。
+- [x] 从仓库根运行 `npm run check`。
+- [x] 用真实临时目录做一次七工具 smoke test，不依赖 TUI（`coding-tools-smoke.test.ts`）。
+- [x] 更新 [TODO.md](TODO.md)、[DESIGN.md](DESIGN.md) 和相关机制文档中的"最小集/未来 bash"陈述。
+- [x] Bash 落地后复核 [BACKLOG.md](BACKLOG.md) 中 `user_bash` hook 的 consumer 条件：bash 能力依赖已解除，但 hook 仍无真实 consumer，不在本任务实现。
 
 ## 完成标准
 

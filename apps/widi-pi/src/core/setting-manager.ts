@@ -1,4 +1,8 @@
-import type { ExecutionEnv, FileError } from "@earendil-works/pi-agent-core";
+import type {
+	ExecutionEnv,
+	FileError,
+	ThinkingLevel,
+} from "@earendil-works/pi-agent-core";
 import { DEFAULT_AGENT_DIR } from "./constants.js";
 import { type CoreDiagnostic, createDiagnostic } from "./diagnostics.ts";
 
@@ -66,13 +70,7 @@ export interface WarningSettings {
 }
 
 export type DefaultProjectTrust = "ask" | "always" | "never";
-export type ThinkingLevelSetting =
-	| "off"
-	| "minimal"
-	| "low"
-	| "medium"
-	| "high"
-	| "xhigh";
+export type ThinkingLevelSetting = ThinkingLevel;
 
 export type PackageSource =
 	| string
@@ -103,6 +101,8 @@ export interface Settings {
 	quietStartup?: boolean;
 	defaultProjectTrust?: DefaultProjectTrust;
 	shellCommandPrefix?: string;
+	/** Explicit ripgrep executable path used by the grep and find tools. */
+	rgPath?: string;
 	npmCommand?: string[];
 	packages?: PackageSource[];
 	/** Local profile file or directory paths. */
@@ -932,6 +932,16 @@ export class SettingManager {
 	setShellCommandPrefix(prefix: string | undefined): void {
 		this.globalSettings.shellCommandPrefix = prefix;
 		this.markModified("shellCommandPrefix");
+		this.save();
+	}
+
+	getRgPath(): string | undefined {
+		return this.settings.rgPath;
+	}
+
+	setRgPath(path: string | undefined): void {
+		this.globalSettings.rgPath = path;
+		this.markModified("rgPath");
 		this.save();
 	}
 

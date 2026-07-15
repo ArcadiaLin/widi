@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,10 +7,13 @@ import {
 	createLocalCodingToolFileOperations,
 	isMissingPathError,
 } from "../../src/core/tools/coding/operations.ts";
+import { OutputAccumulator } from "../../src/core/tools/coding/output-accumulator.ts";
 import { resolveToCwd } from "../../src/core/tools/coding/path-utils.ts";
 import {
 	formatSize,
 	truncateHead,
+	truncateLine,
+	truncateTail,
 } from "../../src/core/tools/coding/truncate.ts";
 
 function deferred<T>(): {
@@ -177,5 +180,126 @@ describe("coding tool shared primitives", () => {
 		expect(formatSize(512)).toBe("512B");
 		expect(formatSize(1536)).toBe("1.5KB");
 		expect(formatSize(2 * 1024 * 1024)).toBe("2.0MB");
+	});
+
+	it("truncates command output from the tail by line and byte limits", () => {
+		const byLines = truncateTail("one\ntwo\nthree", {
+			maxLines: 2,
+			maxBytes: 100,
+		});
+		expect(byLines).toMatchObject({
+			content: "two\nthree",
+			truncated: true,
+			truncatedBy: "lines",
+			totalLines: 3,
+			outputLines: 2,
+			lastLinePartial: false,
+		});
+
+		const byBytes = truncateTail("alpha\nbeta\ngamma", {
+			maxLines: 10,
+			maxBytes: 9,
+		});
+		expect(byBytes).toMatchObject({
+			content: "gamma",
+			truncated: true,
+			truncatedBy: "bytes",
+			outputLines: 1,
+			lastLinePartial: false,
+		});
+	});
+
+	it("returns untruncated tail results for empty or in-limit content", () => {
+		expect(truncateTail("", { maxLines: 10, maxBytes: 100 })).toMatchObject({
+			content: "",
+			truncated: false,
+			totalLines: 0,
+		});
+		expect(
+			truncateTail("only line\n", { maxLines: 10, maxBytes: 100 }),
+		).toMatchObject({
+			content: "only line\n",
+			truncated: false,
+			totalLines: 1,
+		});
+	});
+
+	it("keeps a partial tail of a single oversized line on a codepoint boundary", () => {
+		// "é" is two UTF-8 bytes; the byte limit must not split it mid-codepoint.
+		const line = `${"é".repeat(6)}`;
+		const result = truncateTail(line, { maxLines: 10, maxBytes: 5 });
+		expect(result.truncated).toBe(true);
+		expect(result.lastLinePartial).toBe(true);
+		expect(Buffer.byteLength(result.content, "utf-8")).toBeLessThanOrEqual(5);
+		// Two "é" (4 bytes) fit under the 5-byte limit; a third would be 6.
+		expect(result.content).toBe("éé");
+	});
+
+	it("truncates long single lines with a suffix", () => {
+		expect(truncateLine("short", 10)).toEqual({
+			text: "short",
+			wasTruncated: false,
+		});
+		expect(truncateLine("0123456789abc", 10)).toEqual({
+			text: "0123456789... [truncated]",
+			wasTruncated: true,
+		});
+	});
+
+	it("accumulates output with line-limited tail snapshots", () => {
+		const acc = new OutputAccumulator({ maxLines: 2, maxBytes: 1000 });
+		acc.append(Buffer.from("one\ntwo\nthree\nfour\n"));
+		acc.finish();
+		const snapshot = acc.snapshot();
+		expect(snapshot.truncation.truncated).toBe(true);
+		expect(snapshot.truncation.truncatedBy).toBe("lines");
+		expect(snapshot.truncation.totalLines).toBe(4);
+		expect(snapshot.content).toBe("three\nfour");
+	});
+
+	it("accumulates output with byte-limited tail snapshots", () => {
+		const acc = new OutputAccumulator({ maxLines: 1000, maxBytes: 6 });
+		acc.append(Buffer.from("alpha\nbeta\ngamma\n"));
+		acc.finish();
+		const snapshot = acc.snapshot();
+		expect(snapshot.truncation.truncated).toBe(true);
+		expect(snapshot.truncation.truncatedBy).toBe("bytes");
+		expect(Buffer.byteLength(snapshot.content, "utf-8")).toBeLessThanOrEqual(6);
+		expect(snapshot.content).toBe("gamma");
+	});
+
+	it("decodes multi-byte UTF-8 characters split across chunks", () => {
+		const acc = new OutputAccumulator();
+		const euro = Buffer.from("€", "utf-8"); // 0xE2 0x82 0xAC
+		acc.append(Buffer.concat([Buffer.from("price "), euro.subarray(0, 1)]));
+		acc.append(Buffer.concat([euro.subarray(1), Buffer.from("5")]));
+		acc.finish();
+		expect(acc.snapshot().content).toBe("price €5");
+	});
+
+	it("throws when appending after finish", () => {
+		const acc = new OutputAccumulator();
+		acc.append(Buffer.from("data"));
+		acc.finish();
+		expect(() => acc.append(Buffer.from("more"))).toThrow(
+			"Cannot append to a finished output accumulator",
+		);
+	});
+
+	it("spills the full raw output to a temp file without loss", async () => {
+		const acc = new OutputAccumulator({ maxLines: 1, maxBytes: 8 });
+		const chunk1 = Buffer.from("first line is long\n");
+		const chunk2 = Buffer.from("second line is also long\n");
+		acc.append(chunk1);
+		acc.append(chunk2);
+		acc.finish();
+		const snapshot = acc.snapshot({ persistIfTruncated: true });
+		expect(snapshot.fullOutputPath).toBeDefined();
+		if (snapshot.fullOutputPath) {
+			tempRoots.push(snapshot.fullOutputPath);
+			await acc.closeTempFile();
+			const persisted = await readFile(snapshot.fullOutputPath);
+			expect(persisted).toEqual(Buffer.concat([chunk1, chunk2]));
+		}
 	});
 });

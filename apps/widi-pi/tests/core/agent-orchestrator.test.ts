@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import {
 	AgentOrchestrator,
 	buildAgentSystemPrompt,
+	formatToolGuidanceForSystemPrompt,
 	type OrchestratorEvent,
 } from "../../src/core/agent-orchestrator.ts";
 import {
@@ -1480,7 +1481,72 @@ describe("AgentOrchestrator", () => {
 			resources: harness.getResources(),
 			activeTools: harness.getActiveTools(),
 		});
-		expect(withoutRead).toBe("default prompt");
+		expect(withoutRead).not.toContain("<available_skills>");
+		expect(withoutRead).toContain(
+			"Available tools:\n- write: Create or overwrite files",
+		);
+	});
+
+	it("composes tool guidance from active tool snippets and guidelines", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env, {
+			toolRegistry: createCoreCodingToolRegistry(),
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, agentId);
+		const systemPrompt = (
+			harness as unknown as {
+				systemPrompt: (context: {
+					resources: unknown;
+					activeTools: { name: string }[];
+				}) => string | Promise<string>;
+			}
+		).systemPrompt;
+
+		const prompt = await systemPrompt({
+			resources: harness.getResources(),
+			activeTools: harness.getActiveTools(),
+		});
+
+		expect(prompt.startsWith("default prompt")).toBe(true);
+		// Snippets keep the fixed registration order.
+		const snippetOrder = ["read", "bash", "edit", "write", "grep", "find", "ls"]
+			.map((name) => prompt.indexOf(`\n- ${name}: `))
+			.filter((index) => index >= 0);
+		expect(snippetOrder).toHaveLength(7);
+		expect([...snippetOrder].sort((a, b) => a - b)).toEqual(snippetOrder);
+		// The slice 4 guidance themes are present.
+		expect(prompt).toContain(
+			"Use read instead of bash cat or sed to inspect files.",
+		);
+		expect(prompt).toContain(
+			"Use grep for content searches; use find for file path searches.",
+		);
+		expect(prompt).toContain(
+			"Use ls to browse a single directory level; use find for recursive path searches.",
+		);
+		expect(prompt).toContain(
+			"Use write only for new files or complete rewrites; use edit for partial changes.",
+		);
+		expect(prompt).toContain(
+			"Use bash for building, testing, version control, and commands not covered by a dedicated tool.",
+		);
+	});
+
+	it("deduplicates guidance and omits the section without contributions", () => {
+		expect(
+			formatToolGuidanceForSystemPrompt([
+				{ name: "a", promptSnippet: "First", promptGuidelines: ["Shared."] },
+				{ name: "b", promptGuidelines: ["Shared.", "  ", "Extra."] },
+				{ name: "c" },
+			]),
+		).toBe(
+			"Available tools:\n- a: First\n\nTool guidelines:\n- Shared.\n- Extra.",
+		);
+		expect(formatToolGuidanceForSystemPrompt([{ name: "plain" }])).toBe("");
+		expect(buildAgentSystemPrompt("base prompt", {}, [{ name: "plain" }])).toBe(
+			"base prompt",
+		);
 	});
 
 	it("keeps the base system prompt when skills are absent or model-hidden", () => {

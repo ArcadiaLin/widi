@@ -26,7 +26,7 @@ Extension surface 的设计与实施已收编为 [ME milestone](TODO.md#me-exten
 - Product presentation：`agent.inspect` facts 的产品级 UI/RPC 呈现（随 client adapter 工作举证）。
 - Extension 间 EventBus（pi `events` 对应物）。
 - `setLabel`（依赖 pi session label 的 upstream 对齐）。
-- `user_bash` hook（依赖未来 bash tool 能力）。
+- `user_bash` hook：bash tool 已落地，能力依赖已解除；仍没有真实 consumer 证明需要独立于普通 bash tool call/interceptor 的 hook，继续待举证。
 - Client adapter 的 extension host（shortcut/flag/renderer 及 notify/status 类轻量单向用户提示的承载处；notify 格随 2026-07-13 审计补录）。
 - `custom_message` 通道（pi `sendMessage`：持久 + 进模型 context + extension 归因，ME 切片 7 裁决不做）：待真实 consumer 举证；届时需一并定 deliverAs/triggerTurn 排队语义与 customType namespace。
 - Per-extension storage 目录/KV API（ME 切片 7 裁决不做）：custom entry 覆盖 session 相关状态，大存储 extension 经 `exec` 自理；真实需求出现时需一并裁决多进程写入、reload 与 trust 边界。
