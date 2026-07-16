@@ -38,6 +38,10 @@ export type { CoreDiagnostic } from "../diagnostics.ts";
 export type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
 export type { AgentToolsSnapshot, RuntimeModel } from "../types.ts";
 export type {
+	ExtensionDiagnosticDisposition,
+	ExtensionDiagnosticDraft,
+	ExtensionMessage,
+	ExtensionMessageKind,
 	ExtensionStatus,
 	ExtensionStatusProgress,
 	ExtensionStatusSnapshot,

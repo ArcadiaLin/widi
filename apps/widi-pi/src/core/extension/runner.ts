@@ -759,6 +759,27 @@ export class ExtensionRunner {
 					await this._actions.clearStatus(agentId, extensionId, key, commandId);
 				});
 			},
+			publishMessage: async (message) =>
+				await this._runReportedAction(
+					failure("publishMessage"),
+					async () =>
+						await this._actions.publishMessage(
+							agentId,
+							extensionId,
+							message,
+							commandId,
+						),
+				),
+			reportDiagnostic: async (draft) => {
+				await this._runReportedAction(failure("reportDiagnostic"), async () => {
+					await this._actions.reportDiagnostic(
+						agentId,
+						extensionId,
+						draft,
+						commandId,
+					);
+				});
+			},
 			prompt: async (text, options) => {
 				await this._runReportedAction(failure("prompt"), async () => {
 					await this._actions.promptAgent(agentId, text, options);
@@ -1138,6 +1159,8 @@ function createUnboundActions(): ExtensionCoreActions {
 		emitOutput: async () => notBound(),
 		setStatus: async () => notBound(),
 		clearStatus: async () => notBound(),
+		publishMessage: async () => notBound(),
+		reportDiagnostic: async () => notBound(),
 		promptAgent: async () => notBound(),
 		steerAgent: async () => notBound(),
 		followUpAgent: async () => notBound(),

@@ -3,7 +3,10 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentProfile } from "./agent-profile.js";
 import type { CommandInvocation } from "./command.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
-import type { ExtensionStatus } from "./extension/presentation.ts";
+import type {
+	ExtensionMessage,
+	ExtensionStatus,
+} from "./extension/presentation.ts";
 import type { HumanRequestEvent } from "./human-request.ts";
 
 export type RuntimeModel = Model<Api>;
@@ -131,6 +134,18 @@ export type OrchestratorEvent =
 			// Absent means the keyed status was cleared.
 			status?: ExtensionStatus;
 			changedAt: string;
+	  }
+	| {
+			readonly type: "extension_message_published";
+			presentationId: string;
+			// Session custom entry id: the stable identity consumers use to
+			// dedupe between this live event and hydration.
+			entryId: string;
+			agentId: AgentId;
+			extensionId: string;
+			commandId?: string;
+			message: ExtensionMessage;
+			createdAt: string;
 	  }
 	| HumanRequestEvent
 	| {

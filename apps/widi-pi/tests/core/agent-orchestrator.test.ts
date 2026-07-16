@@ -28,7 +28,10 @@ import type { ExtensionContext } from "../../src/core/extension/api.ts";
 import { ModelRegistry } from "../../src/core/model-registry.ts";
 import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
 import { ResourceLoader } from "../../src/core/resource-loader.ts";
-import { SessionManager } from "../../src/core/session-manager.ts";
+import {
+	EXTENSION_MESSAGE_CUSTOM_TYPE,
+	SessionManager,
+} from "../../src/core/session-manager.ts";
 import {
 	SettingManager,
 	type SettingsLockResult,
@@ -4026,6 +4029,424 @@ describe("AgentOrchestrator", () => {
 					event.type === "diagnostic" &&
 					event.diagnostic.code === "extension.action_failed" &&
 					event.diagnostic.details?.action === "setStatus",
+			),
+		).toHaveLength(invalidCalls.length);
+	});
+
+	it("persists published extension messages and shares one entry id across action, event, and session", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		const published: Array<{ entryId: string }> = [];
+		orchestrator.registerExtension("sample", (api) => {
+			api.registerCommand({
+				name: "publish-report",
+				handler: async (_args, context) => {
+					const draft: { kind: "markdown"; title: string; content: string } = {
+						kind: "markdown",
+						title: "Index Summary",
+						content: "Indexed 672 files.",
+					};
+					published.push(await context.actions.publishMessage(draft));
+					draft.title = "mutated after publish";
+					published.push(
+						await context.actions.publishMessage({
+							kind: "text",
+							content: "plain follow-up",
+						}),
+					);
+				},
+			});
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const events: OrchestratorEvent[] = [];
+		const extensionObservedEvents: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		Object.assign(orchestrator, {
+			_isExtensionObservedEvent: () => true,
+			_emitToExtensionObservers: async (event: OrchestratorEvent) => {
+				extensionObservedEvents.push(event);
+			},
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "/publish-report"),
+		).resolves.toMatchObject({ kind: "command" });
+
+		const messageEvents = events.filter(
+			(
+				event,
+			): event is Extract<
+				OrchestratorEvent,
+				{ type: "extension_message_published" }
+			> => event.type === "extension_message_published",
+		);
+		expect(messageEvents).toEqual([
+			{
+				type: "extension_message_published",
+				presentationId: "orchestrator-presentation-1",
+				entryId: expect.any(String),
+				agentId,
+				extensionId: "sample",
+				commandId: "orchestrator-command-1",
+				message: {
+					kind: "markdown",
+					title: "Index Summary",
+					content: "Indexed 672 files.",
+				},
+				createdAt: expect.any(String),
+			},
+			{
+				type: "extension_message_published",
+				presentationId: "orchestrator-presentation-2",
+				entryId: expect.any(String),
+				agentId,
+				extensionId: "sample",
+				commandId: "orchestrator-command-1",
+				message: { kind: "text", content: "plain follow-up" },
+				createdAt: expect.any(String),
+			},
+		]);
+		expect(published.map(({ entryId }) => entryId)).toEqual(
+			messageEvents.map(({ entryId }) => entryId),
+		);
+
+		const tree = await orchestrator.getAgentSessionTree(agentId);
+		const messageEntries = tree.entries.filter(
+			(entry) =>
+				entry.type === "custom" &&
+				entry.customType === EXTENSION_MESSAGE_CUSTOM_TYPE,
+		);
+		expect(messageEntries.map((entry) => entry.id)).toEqual(
+			messageEvents.map(({ entryId }) => entryId),
+		);
+		expect(messageEntries[0]).toMatchObject({
+			data: {
+				extensionId: "sample",
+				commandId: "orchestrator-command-1",
+				message: {
+					kind: "markdown",
+					title: "Index Summary",
+					content: "Indexed 672 files.",
+				},
+			},
+		});
+		expect(messageEntries[1]).toMatchObject({
+			data: {
+				extensionId: "sample",
+				message: { kind: "text", content: "plain follow-up" },
+			},
+		});
+		expect(extensionObservedEvents).not.toContainEqual(
+			expect.objectContaining({ type: "extension_message_published" }),
+		);
+	});
+
+	it("rejects invalid extension messages without persisting entries or events", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtension("sample", () => {});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+		if (!runner) throw new Error("Expected extension runner.");
+		const actions = runner.createContext("sample").actions;
+
+		const invalidCalls = [
+			() =>
+				actions.publishMessage({
+					kind: "html" as "text",
+					content: "Report",
+				}),
+			() => actions.publishMessage({ kind: "text", content: "" }),
+			() =>
+				actions.publishMessage({
+					kind: "text",
+					content: "é".repeat(32_769),
+				}),
+			() =>
+				actions.publishMessage({
+					kind: "text",
+					title: "   ",
+					content: "Report",
+				}),
+			() =>
+				actions.publishMessage({
+					kind: "text",
+					title: "é".repeat(2_049),
+					content: "Report",
+				}),
+		];
+		for (const invalidCall of invalidCalls) {
+			await expect(invalidCall()).rejects.toThrow();
+		}
+
+		expect(events).not.toContainEqual(
+			expect.objectContaining({ type: "extension_message_published" }),
+		);
+		const tree = await orchestrator.getAgentSessionTree(agentId);
+		expect(tree.entries).not.toContainEqual(
+			expect.objectContaining({
+				customType: EXTENSION_MESSAGE_CUSTOM_TYPE,
+			}),
+		);
+		expect(
+			events.filter(
+				(event) =>
+					event.type === "diagnostic" &&
+					event.diagnostic.code === "extension.action_failed" &&
+					event.diagnostic.details?.action === "publishMessage",
+			),
+		).toHaveLength(invalidCalls.length);
+	});
+
+	it("namespaces extension-reported diagnostics and treats each report as an independent fact", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtension("sample", (api) => {
+			api.registerCommand({
+				name: "report-issues",
+				handler: async (_args, context) => {
+					const details: Record<string, unknown> = {
+						endpoint: "https://policy.internal",
+						attempts: 2,
+					};
+					await context.actions.reportDiagnostic({
+						severity: "warning",
+						code: "remote_policy_unreachable",
+						message: "Remote policy service is unavailable",
+						details,
+					});
+					details.attempts = 99;
+					await context.actions.reportDiagnostic({
+						severity: "warning",
+						code: "remote_policy_unreachable",
+						message: "Remote policy service is unavailable",
+					});
+					await context.actions.reportDiagnostic({
+						severity: "error",
+						disposition: "degraded",
+						code: "cache.corrupt",
+						message: "Index cache is corrupt",
+					});
+				},
+			});
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const events: OrchestratorEvent[] = [];
+		const extensionObservedEvents: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		Object.assign(orchestrator, {
+			_isExtensionObservedEvent: () => true,
+			_emitToExtensionObservers: async (event: OrchestratorEvent) => {
+				extensionObservedEvents.push(event);
+			},
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "/report-issues"),
+		).resolves.toMatchObject({ kind: "command" });
+
+		const reportedEvents = events.filter(
+			(event): event is Extract<OrchestratorEvent, { type: "diagnostic" }> =>
+				event.type === "diagnostic" &&
+				event.diagnostic.code.startsWith("extension.sample."),
+		);
+		expect(reportedEvents.map((event) => event.diagnostic)).toEqual([
+			expect.objectContaining({
+				id: "orchestrator-diagnostic-1",
+				domain: "extension",
+				code: "extension.sample.remote_policy_unreachable",
+				severity: "warning",
+				disposition: "reported",
+				recoverable: true,
+				message: "Remote policy service is unavailable",
+				source: { kind: "extension", id: "sample" },
+				agentId,
+				commandId: "orchestrator-command-1",
+				extensionId: "sample",
+				details: { endpoint: "https://policy.internal", attempts: 2 },
+			}),
+			expect.objectContaining({
+				id: "orchestrator-diagnostic-2",
+				code: "extension.sample.remote_policy_unreachable",
+				disposition: "reported",
+			}),
+			expect.objectContaining({
+				id: "orchestrator-diagnostic-3",
+				code: "extension.sample.cache.corrupt",
+				severity: "error",
+				disposition: "degraded",
+			}),
+		]);
+		const record = requireAgentRecord(orchestrator, agentId);
+		expect(record.extensionDiagnostics).toContainEqual(
+			expect.objectContaining({
+				code: "extension.sample.cache.corrupt",
+			}),
+		);
+		expect(
+			extensionObservedEvents.filter(
+				(event) =>
+					event.type === "diagnostic" &&
+					event.diagnostic.code.startsWith("extension.sample."),
+			),
+		).toEqual([]);
+	});
+
+	it("rejects invalid extension diagnostic drafts without publishing", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtension("sample", () => {});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+		if (!runner) throw new Error("Expected extension runner.");
+		const actions = runner.createContext("sample").actions;
+		const circular: Record<string, unknown> = {};
+		circular.self = circular;
+
+		const invalidCalls = [
+			() =>
+				actions.reportDiagnostic({
+					severity: "fatal" as "error",
+					code: "bad",
+					message: "Report",
+				}),
+			() =>
+				actions.reportDiagnostic({
+					severity: "warning",
+					disposition: "blocked" as "reported",
+					code: "bad",
+					message: "Report",
+				}),
+			() =>
+				actions.reportDiagnostic({
+					severity: "warning",
+					code: "has space",
+					message: "Report",
+				}),
+			() =>
+				actions.reportDiagnostic({
+					severity: "warning",
+					code: "",
+					message: "Report",
+				}),
+			() =>
+				actions.reportDiagnostic({
+					severity: "warning",
+					code: "c".repeat(129),
+					message: "Report",
+				}),
+			() =>
+				actions.reportDiagnostic({
+					severity: "warning",
+					code: "bad",
+					message: "   ",
+				}),
+			() =>
+				actions.reportDiagnostic({
+					severity: "warning",
+					code: "bad",
+					message: "é".repeat(2_049),
+				}),
+			() =>
+				actions.reportDiagnostic({
+					severity: "warning",
+					code: "bad",
+					message: "Report",
+					details: circular,
+				}),
+			() =>
+				actions.reportDiagnostic({
+					severity: "warning",
+					code: "bad",
+					message: "Report",
+					details: { blob: "a".repeat(16_400) },
+				}),
+		];
+		for (const invalidCall of invalidCalls) {
+			await expect(invalidCall()).rejects.toThrow();
+		}
+
+		expect(
+			events.filter(
+				(event) =>
+					event.type === "diagnostic" &&
+					event.diagnostic.code.startsWith("extension.sample."),
+			),
+		).toEqual([]);
+		expect(
+			events.filter(
+				(event) =>
+					event.type === "diagnostic" &&
+					event.diagnostic.code === "extension.action_failed" &&
+					event.diagnostic.details?.action === "reportDiagnostic",
 			),
 		).toHaveLength(invalidCalls.length);
 	});

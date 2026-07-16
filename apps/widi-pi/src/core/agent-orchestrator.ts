@@ -82,8 +82,11 @@ import {
 import {
 	assertExtensionOutputText,
 	assertExtensionStatusKey,
+	type ExtensionMessage,
 	type ExtensionStatus,
 	type ExtensionStatusSnapshot,
+	validateExtensionDiagnosticDraft,
+	validateExtensionMessage,
 	validateExtensionStatus,
 } from "./extension/presentation.ts";
 import { ExtensionStatusRegistry } from "./extension/status-registry.ts";
@@ -313,6 +316,7 @@ export class AgentOrchestrator {
 	private _nextCommandId = 1;
 	private _nextInputId = 1;
 	private _nextPresentationId = 1;
+	private _nextReportedDiagnosticId = 1;
 
 	constructor(config: AgentOrchestratorConfigs) {
 		this.executionEnv = config.executionEnv;
@@ -2363,6 +2367,59 @@ export class AgentOrchestrator {
 					{ observeExtensions: false },
 				);
 			},
+			reportDiagnostic: async (agentId, extensionId, draft, commandId) => {
+				const record = this._requireAgentRecord(agentId);
+				const validatedDraft = validateExtensionDiagnosticDraft(draft);
+				const diagnostic = createOrchestratorDiagnostic({
+					id: this._createReportedDiagnosticId(),
+					domain: "extension",
+					code: `extension.${extensionId}.${validatedDraft.code}`,
+					severity: validatedDraft.severity,
+					disposition: validatedDraft.disposition ?? "reported",
+					recoverable: true,
+					message: validatedDraft.message,
+					source: { kind: "extension", id: extensionId },
+					phase: "runtime",
+					agentId,
+					commandId,
+					profileId: record.profile.reference.id,
+					extensionId,
+					details: validatedDraft.details,
+				});
+				this._addAgentDiagnostics(agentId, {
+					extensionDiagnostics: [diagnostic],
+				});
+				// Extension-published facts never feed back into extension
+				// observers, regardless of observer dispatch depth.
+				await this._publishDiagnostic(diagnostic, {
+					observeExtensions: false,
+				});
+			},
+			publishMessage: async (agentId, extensionId, message, commandId) => {
+				this._requireAgentRecord(agentId);
+				const validatedMessage: ExtensionMessage =
+					validateExtensionMessage(message);
+				// Session write comes first: the entry id is the stable identity
+				// the event and the action result both carry.
+				const entryId = await this.sessionManager.appendExtensionMessageEntry(
+					agentId,
+					{ extensionId, message: validatedMessage, commandId },
+				);
+				await this._emit(
+					{
+						type: "extension_message_published",
+						presentationId: this._createPresentationId(),
+						entryId,
+						agentId,
+						extensionId,
+						commandId,
+						message: validatedMessage,
+						createdAt: now(),
+					},
+					{ observeExtensions: false },
+				);
+				return { entryId };
+			},
 			promptAgent: async (agentId, text, options) => {
 				await this.promptAgent(agentId, text, options);
 			},
@@ -3152,6 +3209,14 @@ export class AgentOrchestrator {
 	private _createPresentationId(): string {
 		const id = `orchestrator-presentation-${this._nextPresentationId}`;
 		this._nextPresentationId += 1;
+		return id;
+	}
+
+	// Every extension-reported diagnostic is an independent fact: the fresh
+	// core id keeps dedupeDiagnostics from ever merging repeated reports.
+	private _createReportedDiagnosticId(): string {
+		const id = `orchestrator-diagnostic-${this._nextReportedDiagnosticId}`;
+		this._nextReportedDiagnosticId += 1;
 		return id;
 	}
 

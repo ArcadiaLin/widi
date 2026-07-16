@@ -25,7 +25,11 @@ import type {
 	OrchestratorEvent,
 	RuntimeModel,
 } from "../types.ts";
-import type { ExtensionStatus } from "./presentation.ts";
+import type {
+	ExtensionDiagnosticDraft,
+	ExtensionMessage,
+	ExtensionStatus,
+} from "./presentation.ts";
 
 // The tool contract lives in the core tools layer (ME slice 0 dependency
 // inversion); the extension layer consumes and re-exports it for its own
@@ -187,6 +191,17 @@ export interface ExtensionActions {
 	// replaces the previous value; clearing a missing key is a no-op.
 	setStatus(key: string, status: ExtensionStatus): Promise<void>;
 	clearStatus(key: string): Promise<void>;
+	// Durable presentation content: persisted as a core:extension_message
+	// session custom entry before the event is published, never model
+	// context. The returned entryId matches the persisted entry and the
+	// canonical event, so consumers dedupe hydration against live events.
+	publishMessage(message: ExtensionMessage): Promise<{ entryId: string }>;
+	// Reported facts join the core diagnostic pipeline: domain, source,
+	// agentId, and extensionId are injected, the local code is namespaced to
+	// extension.<extensionId>.<code>, and every report gets a fresh core id -
+	// no cross-report dedupe. Reported diagnostics never feed back into
+	// extension observers.
+	reportDiagnostic(draft: ExtensionDiagnosticDraft): Promise<void>;
 	prompt(text: string, options?: { images?: ImageContent[] }): Promise<void>;
 	steer(text: string, options?: { images?: ImageContent[] }): Promise<void>;
 	followUp(text: string, options?: { images?: ImageContent[] }): Promise<void>;
@@ -247,6 +262,18 @@ export interface ExtensionCoreActions {
 		agentId: string,
 		extensionId: string,
 		key: string,
+		commandId?: string,
+	): Promise<void>;
+	publishMessage(
+		agentId: string,
+		extensionId: string,
+		message: ExtensionMessage,
+		commandId?: string,
+	): Promise<{ entryId: string }>;
+	reportDiagnostic(
+		agentId: string,
+		extensionId: string,
+		draft: ExtensionDiagnosticDraft,
 		commandId?: string,
 	): Promise<void>;
 	promptAgent(
