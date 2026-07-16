@@ -110,7 +110,7 @@ Core 不建立 `CommandRegistry` 类。当前来源只有静态 built-in binding
 
 ## Human request
 
-`HumanRequestBroker` 拥有 request id、pending map、timeout、abort、cancel 和 `human_request_*` event。Orchestrator 提供 narrow host，并通过统一入口授权调用。
+`HumanRequestBroker` 拥有 request id、pending map、timeout、abort、cancel 和 `human_request_*` event。Orchestrator 提供 narrow host，并通过统一入口授权调用。Broker 在 handler 运行前解析请求来源的 `agentId`，同一值写入 `HumanRequestEnvelope` 与全部 `human_request_*` events；envelope 不携带调用方 `signal`，handler 只通过独立参数接收 broker-owned signal。
 
 Human request 选择第一个可处理请求的 client；跨 client 路由语义随真实 multi-agent 场景定义。Pending request 是 runtime-local state，不进入 session。只有 request 作为 tool result 的一部分时，response 才自然进入 Pi session tree。
 

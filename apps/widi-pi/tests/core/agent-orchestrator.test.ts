@@ -1077,6 +1077,9 @@ describe("AgentOrchestrator", () => {
 
 		const result = orchestrator.inputAgent(agentId, "/follow-up");
 		const pending = await pendingRequest;
+		expect(pending.request.agentId).toBe(agentId);
+		expect(pending.request.agentId).toBe(pending.agentId);
+		expect(pending.request).not.toHaveProperty("signal");
 
 		await expect(
 			orchestrator.cancelHumanRequest(pending.request.id, "dismissed"),
@@ -3553,13 +3556,27 @@ describe("AgentOrchestrator", () => {
 			commandEvents
 				.filter((event) => event.type === "extension_output")
 				.map((event) => ({
+					presentationId: event.presentationId,
 					agentId: event.agentId,
 					extensionId: event.extensionId,
+					commandId: event.commandId,
 					text: event.text,
 				})),
 		).toEqual([
-			{ agentId, extensionId: "sample", text: "step 1" },
-			{ agentId, extensionId: "sample", text: "step 2" },
+			{
+				presentationId: "orchestrator-presentation-1",
+				agentId,
+				extensionId: "sample",
+				commandId: "orchestrator-command-1",
+				text: "step 1",
+			},
+			{
+				presentationId: "orchestrator-presentation-2",
+				agentId,
+				extensionId: "sample",
+				commandId: "orchestrator-command-1",
+				text: "step 2",
+			},
 		]);
 		expect(extensionObservedEvents).not.toContainEqual(
 			expect.objectContaining({ type: "extension_output" }),
@@ -5566,6 +5583,7 @@ describe("AgentOrchestrator", () => {
 			> => event.type === "human_request_pending",
 		);
 		if (!pending) throw new Error("Expected pending human request event.");
+		expect(pending.request.agentId).toBeUndefined();
 
 		await expect(
 			orchestrator.cancelHumanRequest(pending.request.id, "dismissed"),

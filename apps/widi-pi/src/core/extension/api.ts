@@ -1,13 +1,18 @@
 /**
- * Frozen extension-author API surface (ME slice 10).
+ * Extension-author API surface (ME slice 10).
  *
  * Everything a third-party extension may depend on is exported from this
  * module, plus the upstream types enumerated by reference in the public
  * contract (docs/zh-CN/core/extensions.md): the Pi typed hook events/results, the
  * raw `AgentHarnessEvent`, `ImageContent`, `ThinkingLevel`,
  * `ShellExecOptions`, `Result`/`ExecutionError`, and typebox `TSchema`.
- * Breaking changes to this surface - including breaking changes to those
- * upstream types - bump EXTENSION_API_VERSION.
+ *
+ * Versioning policy (presentation-protocol ruling): the extension API has no
+ * public release yet, so version 1 is still reshaped in place - presentation
+ * actions and contract adjustments land on v1 without a bump. The surface
+ * freezes at the first public release; from then on breaking changes to it -
+ * including breaking changes to those upstream types - bump
+ * EXTENSION_API_VERSION.
  */
 
 export const EXTENSION_API_VERSION: number = 1;

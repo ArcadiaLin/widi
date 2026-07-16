@@ -110,8 +110,13 @@ export type OrchestratorEvent =
 	// fed back to extension observers.
 	| {
 			readonly type: "extension_output";
+			// Core-generated stable identity: consumers use it as the output
+			// item's view key and for RPC/log correlation.
+			presentationId: string;
 			agentId: AgentId;
 			extensionId: string;
+			// Present when emitted from a line-command execution context.
+			commandId?: string;
 			text: string;
 			createdAt: string;
 	  }

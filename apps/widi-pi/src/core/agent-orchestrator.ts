@@ -260,7 +260,7 @@ interface AgentToolSetHarness {
 interface LineCommandBinding {
 	readonly command: Command;
 	readonly checkStatus?: CommandStatusCheck;
-	execute(args: string): Promise<unknown>;
+	execute(args: string, commandId: string): Promise<unknown>;
 }
 
 // Inline bindings normalize to an argument-only expand: built-ins close over
@@ -303,6 +303,7 @@ export class AgentOrchestrator {
 	private readonly _humanRequests: HumanRequestBroker;
 	private _nextCommandId = 1;
 	private _nextInputId = 1;
+	private _nextPresentationId = 1;
 
 	constructor(config: AgentOrchestratorConfigs) {
 		this.executionEnv = config.executionEnv;
@@ -1193,7 +1194,7 @@ export class AgentOrchestrator {
 		});
 
 		try {
-			const value = await command.execute(commandArgument);
+			const value = await command.execute(commandArgument, commandId);
 			await this._emit({
 				type: "command_completed",
 				agentId,
@@ -2286,12 +2287,14 @@ export class AgentOrchestrator {
 					source: { kind: "extension", extensionId },
 				});
 			},
-			emitOutput: async (agentId, extensionId, text) => {
+			emitOutput: async (agentId, extensionId, text, commandId) => {
 				await this._emit(
 					{
 						type: "extension_output",
+						presentationId: this._createPresentationId(),
 						agentId,
 						extensionId,
+						commandId,
 						text,
 						createdAt: now(),
 					},
@@ -3048,6 +3051,12 @@ export class AgentOrchestrator {
 		return id;
 	}
 
+	private _createPresentationId(): string {
+		const id = `orchestrator-presentation-${this._nextPresentationId}`;
+		this._nextPresentationId += 1;
+		return id;
+	}
+
 	// Scans a line-command miss for inline commands and expands them in
 	// place. Returns undefined when the input contains none (the caller
 	// falls through to the plain prompt path). All-or-nothing: any gateway,
@@ -3373,12 +3382,14 @@ export class AgentOrchestrator {
 		}
 		return {
 			command: extensionCommand.command,
-			execute: async (args) => {
+			execute: async (args, commandId) => {
 				const runner = this._requireAgentRecord(agentId).extensionRunner;
 				if (!runner) return undefined;
 				return await extensionCommand.handler(
 					args,
-					runner.createCommandContext(extensionCommand.extensionId),
+					runner.createCommandContext(extensionCommand.extensionId, {
+						commandId,
+					}),
 				);
 			},
 		};

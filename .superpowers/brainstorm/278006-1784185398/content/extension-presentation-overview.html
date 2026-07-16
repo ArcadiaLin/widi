@@ -246,11 +246,11 @@
         <h3>1. Output</h3>
         <span class="sig">emitOutput(text: string): Promise&lt;void&gt;</span>
         <p>命令或任务执行中的追加式文本。完成痕迹由 extension 自己 emit（如 “✓ Index build completed”），不由 status 折叠产生。</p>
-        <p>identity/correlation 待补：presentationId 是 output item 的稳定 view key，commandId 关联所属命令。</p>
+        <p>presentationId 是 output item 的稳定 view key，commandId 关联所属命令，均由 core 生成注入。</p>
         <span class="badge ephemeral">ephemeral</span>
         <span class="badge">append-only</span>
         <span class="badge">timeline</span>
-        <span class="badge">基础已实现 · identity/correlation 待补</span>
+        <span class="badge">已实现（含 presentationId / commandId）</span>
       </div>
       <div class="channel">
         <h3>2. Status</h3>
@@ -308,12 +308,12 @@ clearStatus(key: string): Promise&lt;void&gt;</span>
         <h3>6. Human Request</h3>
         <span class="sig">requestHuman(draft: HumanRequestDraft):
   Promise&lt;HumanResponse&gt;</span>
-        <p>唯一需要 consumer 返回响应的交互通道。HumanRequestEnvelope 必须补 agentId，不能依赖 pending event 补身份。TUI 以 capturing overlay 呈现，按键走 tui.select.* keybinding map。</p>
+        <p>唯一需要 consumer 返回响应的交互通道。HumanRequestEnvelope 已携带 broker 解析的 agentId，不依赖 pending event 补身份。TUI 以 capturing overlay 呈现，按键走 tui.select.* keybinding map。</p>
         <p>resolved 后追加 ephemeral 折叠留痕：confirm 显示 Yes/No；select 的答案 ∈ options 时显示该项（候选文本本就展示过），free input 回退 “Answered”；input / argumentsCompletion / custom 一律只显示 “Answered”，不回显潜在敏感值。</p>
         <span class="badge core">request broker</span>
         <span class="badge">response</span>
         <span class="badge">overlay</span>
-        <span class="badge">broker 已实现 · envelope.agentId 待补</span>
+        <span class="badge">已实现（含 envelope.agentId）</span>
       </div>
     </div>
   </section>
@@ -349,7 +349,7 @@ clearStatus(key: string): Promise&lt;void&gt;</span>
 }
 
 <span class="dim">human_request_pending</span> {
-  agentId, request: HumanRequestEnvelope  <span class="muted">// envelope 增补 agentId 后与外层一致</span>
+  agentId, request: HumanRequestEnvelope  <span class="muted">// envelope.agentId 与外层一致</span>
 }
 <span class="dim">human_request_resolved</span> {
   agentId, requestId, response, completedAt
@@ -451,8 +451,8 @@ Remote policy service is unavailable; local rules remain active.
   <section>
     <h3>实施排序与跨文档任务</h3>
     <div class="rollout">
-      <div class="rollout-item"><span class="step">前置</span><span><strong>API v1 开发期重塑</strong>：extension API 尚未公开发布，presentation actions 直接补进 v1、更新后重新冻结，不升 v2；首次公开发布后才要求兼容演进。<code>ExtensionActionFailure.action</code> 增加 setStatus / clearStatus / notify / publishMessage / reportDiagnostic 五个成员。</span></div>
-      <div class="rollout-item"><span class="step">已有基础</span><span>Output（extension_output）、Diagnostic 事件流、Human Request broker 已实现。Output 仍需补 presentationId / commandId；HumanRequestEnvelope 仍需补 agentId；Diagnostic 需补 reportDiagnostic 作者入口与 core-generated id。</span></div>
+      <div class="rollout-item"><span class="step">前置 ✓</span><span><strong>API v1 开发期重塑</strong>（已完成）：版本策略改为“公开发布前允许原地重塑”，不升 v2；<code>ExtensionActionFailure.action</code> 已增加五个 presentation 成员；action 签名随各通道实现落地。</span></div>
+      <div class="rollout-item"><span class="step">基础 ✓</span><span>Output（extension_output）、Diagnostic 事件流、Human Request broker 已实现。Output 的 presentationId / commandId 与 HumanRequestEnvelope.agentId 已落地（含测试）；Diagnostic 尚缺 reportDiagnostic 作者入口与 core-generated id（步骤 3）。</span></div>
       <div class="rollout-item"><span class="step">1</span><span><strong>Status</strong>：registry + listExtensionStatuses + canonical event + reload/dispose cleanup。对 TUI 体验增益最大，且牵动 orchestrator query API，与 TUI 阶段 3/4 并行敲定。</span></div>
       <div class="rollout-item"><span class="step">2</span><span><strong>Persistent Message</strong>：core:extension_message entry + action 返回 entryId + canonical event + hydrator 恢复/entryId 去重。必须赶在 TUI 阶段 2 hydrator 定型前裁决 entry type。</span></div>
       <div class="rollout-item"><span class="step">3</span><span><strong>reportDiagnostic 作者入口</strong>：复用既有管线，工作量最小，随任一批次落地。</span></div>

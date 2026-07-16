@@ -223,7 +223,14 @@ export interface ExtensionCoreActions {
 		extensionId: string,
 		request: HumanRequestDraft,
 	): Promise<HumanResponse>;
-	emitOutput(agentId: string, extensionId: string, text: string): Promise<void>;
+	// commandId is present when the call comes from a line-command execution
+	// context; the orchestrator writes it into the extension_output event.
+	emitOutput(
+		agentId: string,
+		extensionId: string,
+		text: string,
+		commandId?: string,
+	): Promise<void>;
 	promptAgent(
 		agentId: string,
 		text: string,
@@ -360,9 +367,13 @@ export interface ExtensionSessionActions {
 
 export interface ExtensionActionFailure {
 	extensionId: string;
+	// The presentation actions (clearStatus/notify/publishMessage/
+	// reportDiagnostic/setStatus) are declared ahead of their ExtensionActions
+	// methods; the v1 dev-phase reshape lands each with its channel.
 	action:
 		| "abort"
 		| "appendEntry"
+		| "clearStatus"
 		| "compact"
 		| "emitOutput"
 		| "exec"
@@ -374,7 +385,10 @@ export interface ExtensionActionFailure {
 		| "listSessions"
 		| "navigateTree"
 		| "newSession"
+		| "notify"
 		| "prompt"
+		| "publishMessage"
+		| "reportDiagnostic"
 		| "requestHuman"
 		| "resumeSession"
 		| "setActiveTools"

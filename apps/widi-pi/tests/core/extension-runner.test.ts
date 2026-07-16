@@ -157,6 +157,33 @@ describe("ExtensionRunner scoped output action", () => {
 		expect(calls).toEqual([["agent", "sample", "working"]]);
 	});
 
+	it("threads the command id from a command context into output", async () => {
+		const runner = await createRunner([["sample", () => {}]]);
+		const calls: Array<[string, string, string, string | undefined]> = [];
+		const unboundActions = (
+			runner as unknown as { _actions: ExtensionCoreActions }
+		)._actions;
+		runner.bindCore(
+			{
+				...unboundActions,
+				emitOutput: async (agentId, extensionId, text, commandId) => {
+					calls.push([agentId, extensionId, text, commandId]);
+				},
+			},
+			{},
+		);
+
+		await runner
+			.createCommandContext("sample", { commandId: "command-7" })
+			.actions.emitOutput("from command");
+		await runner.createContext("sample").actions.emitOutput("plain");
+
+		expect(calls).toEqual([
+			["agent", "sample", "from command", "command-7"],
+			["agent", "sample", "plain", undefined],
+		]);
+	});
+
 	it("reports output delivery failures before rethrowing", async () => {
 		const runner = await createRunner([["sample", () => {}]]);
 		const failure = new Error("output delivery failed");

@@ -37,6 +37,10 @@ export type HumanRequestDraft = Omit<HumanRequest, "source">;
 
 export interface HumanRequestEnvelope extends Omit<HumanRequest, "signal"> {
 	id: string;
+	// The requesting agent, resolved by the broker before the handler runs;
+	// carries the same value as the human_request_* events so multi-agent
+	// consumers never depend on the pending event for identity.
+	agentId?: AgentId;
 	createdAt: string;
 }
 
@@ -117,9 +121,13 @@ export class HumanRequestBroker {
 		const requestId = this.createRequestId();
 		const agentId =
 			options.agentId ?? agentIdFromOperationSource(request.source);
+		// The caller's signal must not travel inside the envelope: handlers get
+		// the broker-owned signal as a separate argument.
+		const { signal: _callerSignal, ...requestFacts } = request;
 		const envelope: HumanRequestEnvelope = {
-			...request,
+			...requestFacts,
 			id: requestId,
+			agentId,
 			createdAt: now(),
 		};
 

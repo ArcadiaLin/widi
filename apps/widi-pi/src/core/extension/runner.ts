@@ -228,6 +228,7 @@ export class ExtensionRunner {
 
 	createCommandContext(
 		extensionId = this.extensionIds[0],
+		options: { commandId?: string } = {},
 	): ExtensionCommandContext {
 		const failure = (
 			action: ExtensionActionFailure["action"],
@@ -238,6 +239,9 @@ export class ExtensionRunner {
 		});
 		return {
 			...this.createContext(extensionId),
+			// Command contexts carry the executing command's id so presentation
+			// actions correlate with the command_* events of the same execution.
+			actions: this._createContextActions(extensionId, options.commandId),
 			waitForIdle: async () => {
 				this._assertActive();
 				await this._commandContextActions.waitForIdle();
@@ -695,8 +699,12 @@ export class ExtensionRunner {
 
 	// Narrowing boundary: the scoped author-facing actions inject this
 	// runner's agent id and the calling extension's id; neither ever appears
-	// in an ExtensionActions signature.
-	private _createContextActions(extensionId: string): ExtensionActions {
+	// in an ExtensionActions signature. commandId is set only for command
+	// contexts and flows into presentation actions.
+	private _createContextActions(
+		extensionId: string,
+		commandId?: string,
+	): ExtensionActions {
 		const agentId = this.agentId;
 		const failure = (
 			action: ExtensionActionFailure["action"],
@@ -732,7 +740,7 @@ export class ExtensionRunner {
 				),
 			emitOutput: async (text) => {
 				await this._runReportedAction(failure("emitOutput"), async () => {
-					await this._actions.emitOutput(agentId, extensionId, text);
+					await this._actions.emitOutput(agentId, extensionId, text, commandId);
 				});
 			},
 			prompt: async (text, options) => {
