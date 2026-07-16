@@ -58,6 +58,7 @@ collect.sh
 temp_references/
 .claude
 .codex
+.superpowers/brainstorm/*/state/
 run_test/
 Runs/
 
