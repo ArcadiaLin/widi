@@ -148,7 +148,7 @@ describe("ModelRegistry", () => {
 		expect(registry.getError()).toBeUndefined();
 	});
 
-	it("supports the upstream max thinking level", () => {
+	it("uses Pi canonical thinking levels", () => {
 		expect(THINKING_LEVELS).toEqual([
 			"off",
 			"minimal",
@@ -156,9 +156,8 @@ describe("ModelRegistry", () => {
 			"medium",
 			"high",
 			"xhigh",
-			"max",
 		]);
-		expect(parseThinkingLevel("max")).toBe("max");
+		expect(parseThinkingLevel("max")).toBeUndefined();
 	});
 
 	it("loads custom models and resolves provider request auth through shared ExecutionEnv resolver", async () => {
@@ -181,7 +180,7 @@ describe("ModelRegistry", () => {
 								id: "custom-model",
 								name: "Custom Model",
 								reasoning: true,
-								thinkingLevelMap: { max: "max" },
+								thinkingLevelMap: { xhigh: "max" },
 								input: ["text"],
 								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 								contextWindow: 128000,
@@ -200,7 +199,7 @@ describe("ModelRegistry", () => {
 			id: "custom-model",
 			provider: "custom",
 			baseUrl: "https://example.test/v1",
-			thinkingLevelMap: { max: "max" },
+			thinkingLevelMap: { xhigh: "max" },
 		});
 		if (!model) throw new Error("Expected custom model to resolve.");
 		await expect(registry.getAvailable()).resolves.toContain(model);
