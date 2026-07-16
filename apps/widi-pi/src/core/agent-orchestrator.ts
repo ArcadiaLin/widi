@@ -79,6 +79,18 @@ import {
 	ExtensionRunner,
 	type ExtensionSessionCommandResult,
 } from "./extension/index.ts";
+import {
+	assertExtensionNotificationText,
+	assertExtensionOutputText,
+	assertExtensionStatusKey,
+	type ExtensionMessage,
+	type ExtensionStatus,
+	type ExtensionStatusSnapshot,
+	validateExtensionDiagnosticDraft,
+	validateExtensionMessage,
+	validateExtensionStatus,
+} from "./extension/presentation.ts";
+import { ExtensionStatusRegistry } from "./extension/status-registry.ts";
 import type { HumanRequest, HumanResponse } from "./human-request.ts";
 import { HumanRequestBroker } from "./human-request.ts";
 import { stripImagesFromMessages } from "./image-policy.ts";
@@ -298,12 +310,14 @@ export class AgentOrchestrator {
 	private _agentRunSignals: Map<AgentId, AbortSignal> = new Map();
 	private _agentToolSets: Map<AgentId, AgentToolSet> = new Map();
 	private _autoCompactingAgents: Set<AgentId> = new Set();
+	private readonly _extensionStatuses = new ExtensionStatusRegistry();
 	private _clients: Map<string, OrchestratorClient<OrchestratorEvent>> =
 		new Map();
 	private readonly _humanRequests: HumanRequestBroker;
 	private _nextCommandId = 1;
 	private _nextInputId = 1;
 	private _nextPresentationId = 1;
+	private _nextReportedDiagnosticId = 1;
 
 	constructor(config: AgentOrchestratorConfigs) {
 		this.executionEnv = config.executionEnv;
@@ -407,6 +421,11 @@ export class AgentOrchestrator {
 				snapshotAgentRecord(record),
 			),
 		};
+	}
+
+	listExtensionStatuses(agentId: AgentId): ExtensionStatusSnapshot[] {
+		this._requireAgentRecord(agentId);
+		return this._extensionStatuses.list(agentId);
 	}
 
 	// Command registry
@@ -1304,6 +1323,7 @@ export class AgentOrchestrator {
 		}
 
 		record.extensionRunner?.invalidate("Agent has been disposed.");
+		await this._clearExtensionStatusesForAgent(agentId);
 		await this._withdrawExtensionProviderContributions(agentId);
 		delete record.harness;
 		this._agentRunSignals.delete(agentId);
@@ -2288,6 +2308,7 @@ export class AgentOrchestrator {
 				});
 			},
 			emitOutput: async (agentId, extensionId, text, commandId) => {
+				assertExtensionOutputText(text);
 				await this._emit(
 					{
 						type: "extension_output",
@@ -2300,6 +2321,121 @@ export class AgentOrchestrator {
 					},
 					{ observeExtensions: false },
 				);
+			},
+			notify: async (agentId, extensionId, text, commandId) => {
+				this._requireAgentRecord(agentId);
+				assertExtensionNotificationText(text);
+				await this._emit(
+					{
+						type: "extension_notification",
+						presentationId: this._createPresentationId(),
+						agentId,
+						extensionId,
+						commandId,
+						text,
+						createdAt: now(),
+					},
+					{ observeExtensions: false },
+				);
+			},
+			setStatus: async (agentId, extensionId, key, status, commandId) => {
+				this._requireAgentRecord(agentId);
+				assertExtensionStatusKey(key);
+				const validatedStatus: ExtensionStatus =
+					validateExtensionStatus(status);
+				const changedAt = now();
+				const snapshot = this._extensionStatuses.set(
+					agentId,
+					extensionId,
+					key,
+					validatedStatus,
+					changedAt,
+				);
+				await this._emit(
+					{
+						type: "extension_status_changed",
+						presentationId: this._createPresentationId(),
+						agentId,
+						extensionId,
+						commandId,
+						key,
+						status: snapshot.status,
+						changedAt,
+					},
+					{ observeExtensions: false },
+				);
+			},
+			clearStatus: async (agentId, extensionId, key, commandId) => {
+				this._requireAgentRecord(agentId);
+				assertExtensionStatusKey(key);
+				if (!this._extensionStatuses.clear(agentId, extensionId, key)) {
+					return;
+				}
+				await this._emit(
+					{
+						type: "extension_status_changed",
+						presentationId: this._createPresentationId(),
+						agentId,
+						extensionId,
+						commandId,
+						key,
+						changedAt: now(),
+					},
+					{ observeExtensions: false },
+				);
+			},
+			reportDiagnostic: async (agentId, extensionId, draft, commandId) => {
+				const record = this._requireAgentRecord(agentId);
+				const validatedDraft = validateExtensionDiagnosticDraft(draft);
+				const diagnostic = createOrchestratorDiagnostic({
+					id: this._createReportedDiagnosticId(),
+					domain: "extension",
+					code: `extension.${extensionId}.${validatedDraft.code}`,
+					severity: validatedDraft.severity,
+					disposition: validatedDraft.disposition ?? "reported",
+					recoverable: true,
+					message: validatedDraft.message,
+					source: { kind: "extension", id: extensionId },
+					phase: "runtime",
+					agentId,
+					commandId,
+					profileId: record.profile.reference.id,
+					extensionId,
+					details: validatedDraft.details,
+				});
+				this._addAgentDiagnostics(agentId, {
+					extensionDiagnostics: [diagnostic],
+				});
+				// Extension-published facts never feed back into extension
+				// observers, regardless of observer dispatch depth.
+				await this._publishDiagnostic(diagnostic, {
+					observeExtensions: false,
+				});
+			},
+			publishMessage: async (agentId, extensionId, message, commandId) => {
+				this._requireAgentRecord(agentId);
+				const validatedMessage: ExtensionMessage =
+					validateExtensionMessage(message);
+				// Session write comes first: the entry id is the stable identity
+				// the event and the action result both carry.
+				const entryId = await this.sessionManager.appendExtensionMessageEntry(
+					agentId,
+					{ extensionId, message: validatedMessage, commandId },
+				);
+				await this._emit(
+					{
+						type: "extension_message_published",
+						presentationId: this._createPresentationId(),
+						entryId,
+						agentId,
+						extensionId,
+						commandId,
+						message: validatedMessage,
+						createdAt: now(),
+					},
+					{ observeExtensions: false },
+				);
+				return { entryId };
 			},
 			promptAgent: async (agentId, text, options) => {
 				await this.promptAgent(agentId, text, options);
@@ -2632,6 +2768,10 @@ export class AgentOrchestrator {
 				nextRunner,
 			);
 			oldRunner?.invalidate("Extension runtime has been reloaded.");
+			// Clear before publishing the new runner's diagnostics: diagnostic
+			// events reach the new runner's observers, and statuses they set
+			// must survive the reload cleanup.
+			await this._clearExtensionStatusesForAgent(agentId);
 			const staleBefore = oldRunner
 				? {
 						...before,
@@ -2962,12 +3102,30 @@ export class AgentOrchestrator {
 	private async _emit(
 		event: OrchestratorEvent,
 		options: {
+			sendToListeners?: boolean;
 			sendToClients?: boolean;
 			observeExtensions?: boolean;
 		} = {},
 	): Promise<void> {
-		for (const listener of this._eventListeners) {
-			await listener(event);
+		const listenerFailures: OrchestratorDiagnostic[] = [];
+		if (options.sendToListeners !== false) {
+			for (const listener of this._eventListeners) {
+				try {
+					await listener(event);
+				} catch (error) {
+					listenerFailures.push(
+						createOrchestratorDiagnostic({
+							severity: "warning",
+							code: "orchestrator.listener_failed",
+							message: formatError(error),
+							disposition: "reported",
+							recoverable: true,
+							agentId: "agentId" in event ? event.agentId : undefined,
+							details: { eventType: event.type },
+						}),
+					);
+				}
+			}
 		}
 		if (options.sendToClients !== false) {
 			for (const client of this._clients.values()) {
@@ -2982,8 +3140,14 @@ export class AgentOrchestrator {
 							message: error instanceof Error ? error.message : String(error),
 							disposition: "reported",
 							recoverable: true,
+							agentId: "agentId" in event ? event.agentId : undefined,
+							details: { eventType: event.type },
 						}),
-						{ sendToClients: false },
+						{
+							sendToListeners: options.sendToListeners,
+							sendToClients: false,
+							observeExtensions: false,
+						},
 					);
 				}
 			}
@@ -2994,11 +3158,18 @@ export class AgentOrchestrator {
 		) {
 			await this._emitToExtensionObservers(event);
 		}
+		for (const diagnostic of listenerFailures) {
+			await this._publishDiagnostic(diagnostic, {
+				sendToListeners: false,
+				observeExtensions: false,
+			});
+		}
 	}
 
 	private async _publishDiagnostic(
 		diagnostic: OrchestratorDiagnostic,
 		options: {
+			sendToListeners?: boolean;
 			sendToClients?: boolean;
 			observeExtensions?: boolean;
 		} = {},
@@ -3016,6 +3187,7 @@ export class AgentOrchestrator {
 	private async _publishDiagnostics(
 		diagnostics: readonly OrchestratorDiagnostic[],
 		options: {
+			sendToListeners?: boolean;
 			sendToClients?: boolean;
 			observeExtensions?: boolean;
 		} = {},
@@ -3055,6 +3227,33 @@ export class AgentOrchestrator {
 		const id = `orchestrator-presentation-${this._nextPresentationId}`;
 		this._nextPresentationId += 1;
 		return id;
+	}
+
+	// Every extension-reported diagnostic is an independent fact: the fresh
+	// core id keeps dedupeDiagnostics from ever merging repeated reports.
+	private _createReportedDiagnosticId(): string {
+		const id = `orchestrator-diagnostic-${this._nextReportedDiagnosticId}`;
+		this._nextReportedDiagnosticId += 1;
+		return id;
+	}
+
+	private async _clearExtensionStatusesForAgent(
+		agentId: AgentId,
+	): Promise<void> {
+		const snapshots = this._extensionStatuses.clearAgent(agentId);
+		for (const snapshot of snapshots) {
+			await this._emit(
+				{
+					type: "extension_status_changed",
+					presentationId: this._createPresentationId(),
+					agentId,
+					extensionId: snapshot.extensionId,
+					key: snapshot.key,
+					changedAt: now(),
+				},
+				{ observeExtensions: false },
+			);
+		}
 	}
 
 	// Scans a line-command miss for inline commands and expands them in

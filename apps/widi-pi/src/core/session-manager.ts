@@ -24,6 +24,7 @@ import {
 	parseAgentProfileReference,
 	toAgentProfileReference,
 } from "./agent-profile.js";
+import type { ExtensionMessage } from "./extension/presentation.ts";
 import type { AgentId } from "./types.ts";
 
 export type AgentSessionMetadata = SessionMetadata | JsonlSessionMetadata;
@@ -67,6 +68,17 @@ export interface InputTransformEntryData {
 	readonly originalText: string;
 	readonly text: string;
 	readonly transformedBy: readonly string[];
+}
+
+// Core-owned custom entry persisting an extension's published presentation
+// message. It never becomes model context; the entry id is the stable
+// identity consumers dedupe on between live events and hydration.
+export const EXTENSION_MESSAGE_CUSTOM_TYPE = "core:extension_message";
+
+export interface ExtensionMessageEntryData {
+	readonly extensionId: string;
+	readonly message: ExtensionMessage;
+	readonly commandId?: string;
 }
 
 export interface AgentSessionCandidate {
@@ -293,6 +305,16 @@ export class SessionManager {
 	): Promise<string> {
 		return await this._requireAgentSession(agentId).appendCustomEntry(
 			INPUT_TRANSFORM_CUSTOM_TYPE,
+			data,
+		);
+	}
+
+	async appendExtensionMessageEntry(
+		agentId: AgentId,
+		data: ExtensionMessageEntryData,
+	): Promise<string> {
+		return await this._requireAgentSession(agentId).appendCustomEntry(
+			EXTENSION_MESSAGE_CUSTOM_TYPE,
 			data,
 		);
 	}

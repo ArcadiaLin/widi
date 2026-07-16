@@ -12,6 +12,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { AgentHarnessEvent } from "@earendil-works/pi-agent-core";
+import {
+	formatExtensionMessageEvent,
+	formatExtensionNotificationEvent,
+	formatExtensionStatusEvent,
+} from "./cli-event-format.ts";
 import { CliStreamWriter } from "./cli-stream-writer.ts";
 import type {
 	AgentOrchestrator,
@@ -104,6 +109,22 @@ function renderEvent(event: OrchestratorEvent): void {
 		case "extension_output":
 			streamWriter.endMessage();
 			streamWriter.writeLine(`[extension:${event.extensionId}] ${event.text}`);
+			return;
+		case "extension_notification":
+			streamWriter.endMessage();
+			streamWriter.writeLine(formatExtensionNotificationEvent(event));
+			return;
+		case "extension_status_changed": {
+			const line = formatExtensionStatusEvent(event);
+			if (line) {
+				streamWriter.endMessage();
+				streamWriter.writeLine(line);
+			}
+			return;
+		}
+		case "extension_message_published":
+			streamWriter.endMessage();
+			streamWriter.writeLine(formatExtensionMessageEvent(event));
 			return;
 		case "input_transformed":
 			streamWriter.writeLine(

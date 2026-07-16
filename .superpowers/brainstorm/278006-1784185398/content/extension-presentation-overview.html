@@ -215,7 +215,7 @@
       <div class="arch-column">
         <h3>WIDI Core Ownership</h3>
         <div class="arch-item">自动绑定 <strong>agentId / extensionId</strong>；extension 不可伪造 attribution</div>
-        <div class="arch-item">自动生成 <strong>presentationId</strong>：output / notification 的稳定 view key，兼作 RPC/日志关联身份（tui-v1 §6.3 的 projector local key 裁决随之废止）</div>
+        <div class="arch-item">自动生成 <strong>presentationId</strong>：output / status / persistent message / notification 的 runtime event key；persistent hydration 去重另用 entryId</div>
         <div class="arch-item"><strong>commandId 关联</strong>：line-command execution 将 commandId 传给 runner 的 command context；observer/interceptor/tool context 不携带 commandId，事件中该字段可选缺席</div>
         <div class="arch-item">status registry：<strong>(agent, extension, key)</strong> → status + updatedAt，提供 <strong>listExtensionStatuses(agentId)</strong> 快照查询</div>
         <div class="arch-item">persistent message：<strong>先写 session（core:extension_message custom entry），拿到 entryId 后再发布 event</strong>；永不进入 model context</div>
@@ -264,7 +264,7 @@ clearStatus(key: string): Promise&lt;void&gt;</span>
         <span class="badge core">core registry</span>
         <span class="badge">replace/clear</span>
         <span class="badge">snapshot query</span>
-        <span class="badge new">新增</span>
+        <span class="badge">已实现（含 lifecycle / validation / CLI）</span>
       </div>
       <div class="channel">
         <h3>3. Notification</h3>
@@ -273,7 +273,7 @@ clearStatus(key: string): Promise&lt;void&gt;</span>
         <span class="badge ephemeral">ephemeral</span>
         <span class="badge">fire-once</span>
         <span class="badge">notice</span>
-        <span class="badge new">新增 · 推迟候选</span>
+        <span class="badge">已实现（4 KiB / commandId / CLI）</span>
       </div>
       <div class="channel">
         <h3>4. Persistent Message</h3>
@@ -286,7 +286,7 @@ clearStatus(key: string): Promise&lt;void&gt;</span>
         <span class="badge session">session</span>
         <span class="badge">append-only</span>
         <span class="badge">timeline</span>
-        <span class="badge new">新增</span>
+        <span class="badge">core 已实现（含 entryId / validation / CLI）</span>
       </div>
       <div class="channel">
         <h3>5. Diagnostic</h3>
@@ -300,9 +300,9 @@ clearStatus(key: string): Promise&lt;void&gt;</span>
         <p>复用 CoreDiagnostic：domain=extension，source/agentId/extensionId 由 core 注入；local code 被规范化为 extension.&lt;extensionId&gt;.&lt;code&gt;。disposition 缺省为 reported，作者不能自称 blocked。该 action 产生的 diagnostic 不回灌 extension observers。</p>
         <p>每次上报生成新的 core id，是独立事实：dedupe 只合并同一事实的多路径观察（throw / return / event），不合并重复上报。持续性问题由 attention 的持续性表达，作者不应轮询式重报同一 code。</p>
         <span class="badge core">diagnostic flow</span>
-        <span class="badge">dedupe</span>
+        <span class="badge">fresh id</span>
         <span class="badge">attention</span>
-        <span class="badge new">新增入口 · 复用管线</span>
+        <span class="badge">已实现（fresh id / validation / attribution）</span>
       </div>
       <div class="channel">
         <h3>6. Human Request</h3>
@@ -424,12 +424,12 @@ Remote policy service is unavailable; local rules remain active.
 
   <section>
     <h3>CLI 有界纯文本降级（确定性映射）</h3>
-    <div class="cli-map"><span class="dim">output      </span>[indexer] Scanning workspace files
-<span class="dim">setStatus   </span>[indexer] status build: Building symbol index (418/672)
+    <div class="cli-map"><span class="dim">output      </span>[extension:indexer] Scanning workspace files
+<span class="dim">setStatus   </span>[extension:indexer] status build: Building symbol index (418/672) <span class="muted">（total 未知时输出 (418/?)）</span>
 <span class="dim">clearStatus </span><span class="muted">（不打印）</span>
-<span class="dim">notify      </span>[audit] notice: Report generated in 2.1s
-<span class="dim">diagnostic  </span>[audit] warning extension.audit.remote_policy_unreachable: Remote policy service is unavailable
-<span class="dim">persistent  </span>[indexer] Index Summary
+<span class="dim">notify      </span>[extension:audit] notice: Report generated in 2.1s <span class="muted">（折叠为空格，text 最多显示 240 字符）</span>
+<span class="dim">diagnostic  </span>[diagnostic:warning] extension.audit.remote_policy_unreachable: Remote policy service is unavailable
+<span class="dim">persistent  </span>[extension:indexer] Index Summary
             Indexed 672 files and 14,208 symbols. <span class="muted">（有界截断，markdown 按纯文本输出）</span>
 <span class="dim">human req.  </span><span class="muted">沿用现有 CLI prompt 流程</span></div>
   </section>
@@ -452,12 +452,12 @@ Remote policy service is unavailable; local rules remain active.
     <h3>实施排序与跨文档任务</h3>
     <div class="rollout">
       <div class="rollout-item"><span class="step">前置 ✓</span><span><strong>API v1 开发期重塑</strong>（已完成）：版本策略改为“公开发布前允许原地重塑”，不升 v2；<code>ExtensionActionFailure.action</code> 已增加五个 presentation 成员；action 签名随各通道实现落地。</span></div>
-      <div class="rollout-item"><span class="step">基础 ✓</span><span>Output（extension_output）、Diagnostic 事件流、Human Request broker 已实现。Output 的 presentationId / commandId 与 HumanRequestEnvelope.agentId 已落地（含测试）；Diagnostic 尚缺 reportDiagnostic 作者入口与 core-generated id（步骤 3）。</span></div>
-      <div class="rollout-item"><span class="step">1</span><span><strong>Status</strong>：registry + listExtensionStatuses + canonical event + reload/dispose cleanup。对 TUI 体验增益最大，且牵动 orchestrator query API，与 TUI 阶段 3/4 并行敲定。</span></div>
-      <div class="rollout-item"><span class="step">2</span><span><strong>Persistent Message</strong>：core:extension_message entry + action 返回 entryId + canonical event + hydrator 恢复/entryId 去重。必须赶在 TUI 阶段 2 hydrator 定型前裁决 entry type。</span></div>
-      <div class="rollout-item"><span class="step">3</span><span><strong>reportDiagnostic 作者入口</strong>：复用既有管线，工作量最小，随任一批次落地。</span></div>
-      <div class="rollout-item"><span class="step">4</span><span><strong>notify</strong>：最后实现或推迟——六通道中唯一可被 emitOutput 近似替代的，符合“演进触发条件”原则。</span></div>
-      <div class="rollout-item"><span class="step">同步</span><span><strong>tui-v1-design.md 更新清单</strong>：timeline item 增加 PersistentMessageItem 与 ephemeral HumanRequestTraceItem；§6.3 extension_output 的 projector local view key 裁决改为直接使用 presentationId；§9.2 归约表增加 extension_status_changed / extension_message_published / extension_notification；§10.2 hydrator 恢复 core:extension_message 并按 entryId 去重；§12.2 增加留痕隐私规则（confirm / select ∈ options / 其余 Answered）；组件树增加 status 槽位与 neutral chips；§16 测试补 status 快照查询顺序、chips +N、敏感回答不回显、commandId correlation。</span></div>
+      <div class="rollout-item"><span class="step">基础 ✓</span><span>Output（extension_output）、Diagnostic 事件流、Human Request broker 已实现。Output 的 presentationId / commandId、HumanRequestEnvelope.agentId、payload bounds 与 listener/client failure isolation 已落地（含测试）。</span></div>
+      <div class="rollout-item"><span class="step">1 ✓</span><span><strong>Status（已完成）</strong>：setStatus / clearStatus、registry、listExtensionStatuses、canonical event、mutation-first、commandId correlation、observer no-feedback、validation、成功 reload / dispose cleanup、skipped / failed reload preservation 与 CLI 降级均已落地。</span></div>
+      <div class="rollout-item"><span class="step">2 ✓</span><span><strong>Persistent Message（core 已完成）</strong>：core:extension_message entry、action 返回 entryId、canonical event、kind/title/content validation 与 CLI 降级均已落地；entry type 已在 TUI 阶段 2 hydrator 定型前裁决，hydrator 恢复/entryId 去重随 TUI 阶段 2 实现。</span></div>
+      <div class="rollout-item"><span class="step">3 ✓</span><span><strong>reportDiagnostic 作者入口（已完成）</strong>：复用标准 diagnostic event，fresh core id、local code namespace、agent/profile/extension attribution、可选 commandId、draft validation 与 observer no-feedback 均已落地。</span></div>
+      <div class="rollout-item"><span class="step">4 ✓</span><span><strong>notify（已完成）</strong>：notify action、extension_notification、4 KiB UTF-8 validation、presentationId / commandId、observer no-feedback、listener/client failure isolation 与 CLI 单行降级均已落地。它保持 info-only transient notice，不退化为 timeline output 或 diagnostic。</span></div>
+      <div class="rollout-item"><span class="step">同步 ✓</span><span><strong>tui-v1-design.md 已同步</strong>：六类通道的 projection、durability、identity、hydration、attention 与测试要求均已写入；TUI 部署可以直接消费完整 presentation protocol。</span></div>
     </div>
   </section>
 </div>

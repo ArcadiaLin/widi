@@ -743,6 +743,48 @@ export class ExtensionRunner {
 					await this._actions.emitOutput(agentId, extensionId, text, commandId);
 				});
 			},
+			notify: async (text) => {
+				await this._runReportedAction(failure("notify"), async () => {
+					await this._actions.notify(agentId, extensionId, text, commandId);
+				});
+			},
+			setStatus: async (key, status) => {
+				await this._runReportedAction(failure("setStatus"), async () => {
+					await this._actions.setStatus(
+						agentId,
+						extensionId,
+						key,
+						status,
+						commandId,
+					);
+				});
+			},
+			clearStatus: async (key) => {
+				await this._runReportedAction(failure("clearStatus"), async () => {
+					await this._actions.clearStatus(agentId, extensionId, key, commandId);
+				});
+			},
+			publishMessage: async (message) =>
+				await this._runReportedAction(
+					failure("publishMessage"),
+					async () =>
+						await this._actions.publishMessage(
+							agentId,
+							extensionId,
+							message,
+							commandId,
+						),
+				),
+			reportDiagnostic: async (draft) => {
+				await this._runReportedAction(failure("reportDiagnostic"), async () => {
+					await this._actions.reportDiagnostic(
+						agentId,
+						extensionId,
+						draft,
+						commandId,
+					);
+				});
+			},
 			prompt: async (text, options) => {
 				await this._runReportedAction(failure("prompt"), async () => {
 					await this._actions.promptAgent(agentId, text, options);
@@ -1120,6 +1162,11 @@ function createUnboundActions(): ExtensionCoreActions {
 		setAgentActiveTools: async () => notBound(),
 		requestHuman: async () => notBound(),
 		emitOutput: async () => notBound(),
+		notify: async () => notBound(),
+		setStatus: async () => notBound(),
+		clearStatus: async () => notBound(),
+		publishMessage: async () => notBound(),
+		reportDiagnostic: async () => notBound(),
 		promptAgent: async () => notBound(),
 		steerAgent: async () => notBound(),
 		followUpAgent: async () => notBound(),

@@ -219,6 +219,359 @@ describe("ExtensionRunner scoped output action", () => {
 	});
 });
 
+describe("ExtensionRunner scoped notification action", () => {
+	it("injects attribution and threads command ids into notifications", async () => {
+		const runner = await createRunner([["sample", () => {}]]);
+		const calls: Array<[string, string, string, string | undefined]> = [];
+		const unboundActions = (
+			runner as unknown as { _actions: ExtensionCoreActions }
+		)._actions;
+		runner.bindCore(
+			{
+				...unboundActions,
+				notify: async (agentId, extensionId, text, commandId) => {
+					calls.push([agentId, extensionId, text, commandId]);
+				},
+			},
+			{},
+		);
+
+		await runner.createContext("sample").actions.notify("plain");
+		await runner
+			.createCommandContext("sample", { commandId: "command-7" })
+			.actions.notify("from command");
+
+		expect(calls).toEqual([
+			["agent", "sample", "plain", undefined],
+			["agent", "sample", "from command", "command-7"],
+		]);
+	});
+
+	it("reports notification delivery failures before rethrowing", async () => {
+		const runner = await createRunner([["sample", () => {}]]);
+		const failure = new Error("notification delivery failed");
+		const reported: ExtensionActionFailure[] = [];
+		const unboundActions = (
+			runner as unknown as { _actions: ExtensionCoreActions }
+		)._actions;
+		runner.bindCore(
+			{
+				...unboundActions,
+				notify: async () => {
+					throw failure;
+				},
+			},
+			{
+				reportActionFailure: async (actionFailure) => {
+					reported.push(actionFailure);
+				},
+			},
+		);
+
+		await expect(
+			runner.createContext("sample").actions.notify("ready"),
+		).rejects.toBe(failure);
+		expect(reported).toEqual([
+			{
+				extensionId: "sample",
+				action: "notify",
+				code: "extension.action_failed",
+				error: failure,
+			},
+		]);
+	});
+});
+
+describe("ExtensionRunner scoped status actions", () => {
+	it("injects attribution and threads command ids into status mutations", async () => {
+		const runner = await createRunner([["sample", () => {}]]);
+		const calls: Array<
+			| [
+					"set",
+					string,
+					string,
+					string,
+					{ text: string; progress?: { completed: number; total?: number } },
+					string | undefined,
+			  ]
+			| ["clear", string, string, string, string | undefined]
+		> = [];
+		const unboundActions = (
+			runner as unknown as { _actions: ExtensionCoreActions }
+		)._actions;
+		runner.bindCore(
+			{
+				...unboundActions,
+				setStatus: async (
+					agentId: string,
+					extensionId: string,
+					key: string,
+					status: {
+						text: string;
+						progress?: { completed: number; total?: number };
+					},
+					commandId?: string,
+				) => {
+					calls.push(["set", agentId, extensionId, key, status, commandId]);
+				},
+				clearStatus: async (
+					agentId: string,
+					extensionId: string,
+					key: string,
+					commandId?: string,
+				) => {
+					calls.push(["clear", agentId, extensionId, key, commandId]);
+				},
+			},
+			{},
+		);
+
+		await runner
+			.createContext("sample")
+			.actions.setStatus("index", { text: "Scanning" });
+		const commandActions = runner.createCommandContext("sample", {
+			commandId: "command-7",
+		}).actions;
+		await commandActions.setStatus("index", {
+			text: "Building",
+			progress: { completed: 2, total: 5 },
+		});
+		await commandActions.clearStatus("index");
+
+		expect(calls).toEqual([
+			["set", "agent", "sample", "index", { text: "Scanning" }, undefined],
+			[
+				"set",
+				"agent",
+				"sample",
+				"index",
+				{ text: "Building", progress: { completed: 2, total: 5 } },
+				"command-7",
+			],
+			["clear", "agent", "sample", "index", "command-7"],
+		]);
+	});
+
+	it("reports status action failures before rethrowing", async () => {
+		const runner = await createRunner([["sample", () => {}]]);
+		const failure = new Error("status delivery failed");
+		const reported: ExtensionActionFailure[] = [];
+		const unboundActions = (
+			runner as unknown as { _actions: ExtensionCoreActions }
+		)._actions;
+		runner.bindCore(
+			{
+				...unboundActions,
+				setStatus: async () => {
+					throw failure;
+				},
+				clearStatus: async () => {
+					throw failure;
+				},
+			},
+			{
+				reportActionFailure: async (actionFailure) => {
+					reported.push(actionFailure);
+				},
+			},
+		);
+		const actions = runner.createContext("sample").actions;
+
+		await expect(actions.setStatus("index", { text: "Scanning" })).rejects.toBe(
+			failure,
+		);
+		await expect(actions.clearStatus("index")).rejects.toBe(failure);
+		expect(reported.map(({ action }) => action)).toEqual([
+			"setStatus",
+			"clearStatus",
+		]);
+	});
+});
+
+describe("ExtensionRunner scoped message actions", () => {
+	it("injects attribution, threads command ids, and returns the entry id", async () => {
+		const runner = await createRunner([["sample", () => {}]]);
+		const calls: Array<
+			[
+				string,
+				string,
+				{ kind: string; title?: string; content: string },
+				string | undefined,
+			]
+		> = [];
+		const unboundActions = (
+			runner as unknown as { _actions: ExtensionCoreActions }
+		)._actions;
+		runner.bindCore(
+			{
+				...unboundActions,
+				publishMessage: async (
+					agentId: string,
+					extensionId: string,
+					message: {
+						kind: "text" | "markdown" | "code";
+						title?: string;
+						content: string;
+					},
+					commandId?: string,
+				) => {
+					calls.push([agentId, extensionId, message, commandId]);
+					return { entryId: `entry-${calls.length}` };
+				},
+			},
+			{},
+		);
+
+		await expect(
+			runner
+				.createContext("sample")
+				.actions.publishMessage({ kind: "text", content: "plain" }),
+		).resolves.toEqual({ entryId: "entry-1" });
+		await expect(
+			runner
+				.createCommandContext("sample", { commandId: "command-7" })
+				.actions.publishMessage({
+					kind: "markdown",
+					title: "Summary",
+					content: "Done.",
+				}),
+		).resolves.toEqual({ entryId: "entry-2" });
+
+		expect(calls).toEqual([
+			["agent", "sample", { kind: "text", content: "plain" }, undefined],
+			[
+				"agent",
+				"sample",
+				{ kind: "markdown", title: "Summary", content: "Done." },
+				"command-7",
+			],
+		]);
+	});
+
+	it("reports publish message failures before rethrowing", async () => {
+		const runner = await createRunner([["sample", () => {}]]);
+		const failure = new Error("message persistence failed");
+		const reported: ExtensionActionFailure[] = [];
+		const unboundActions = (
+			runner as unknown as { _actions: ExtensionCoreActions }
+		)._actions;
+		runner.bindCore(
+			{
+				...unboundActions,
+				publishMessage: async () => {
+					throw failure;
+				},
+			},
+			{
+				reportActionFailure: async (actionFailure) => {
+					reported.push(actionFailure);
+				},
+			},
+		);
+
+		await expect(
+			runner
+				.createContext("sample")
+				.actions.publishMessage({ kind: "text", content: "plain" }),
+		).rejects.toBe(failure);
+		expect(reported.map(({ action }) => action)).toEqual(["publishMessage"]);
+	});
+});
+
+describe("ExtensionRunner scoped diagnostic actions", () => {
+	it("injects attribution and threads command ids into reports", async () => {
+		const runner = await createRunner([["sample", () => {}]]);
+		const calls: Array<
+			[
+				string,
+				string,
+				{ severity: string; code: string; message: string },
+				string | undefined,
+			]
+		> = [];
+		const unboundActions = (
+			runner as unknown as { _actions: ExtensionCoreActions }
+		)._actions;
+		runner.bindCore(
+			{
+				...unboundActions,
+				reportDiagnostic: async (
+					agentId: string,
+					extensionId: string,
+					draft: {
+						severity: "info" | "warning" | "error";
+						code: string;
+						message: string;
+					},
+					commandId?: string,
+				) => {
+					calls.push([agentId, extensionId, draft, commandId]);
+				},
+			},
+			{},
+		);
+
+		await runner.createContext("sample").actions.reportDiagnostic({
+			severity: "info",
+			code: "scan.finished",
+			message: "Scan finished",
+		});
+		await runner
+			.createCommandContext("sample", { commandId: "command-7" })
+			.actions.reportDiagnostic({
+				severity: "warning",
+				code: "cache.stale",
+				message: "Cache is stale",
+			});
+
+		expect(calls).toEqual([
+			[
+				"agent",
+				"sample",
+				{ severity: "info", code: "scan.finished", message: "Scan finished" },
+				undefined,
+			],
+			[
+				"agent",
+				"sample",
+				{ severity: "warning", code: "cache.stale", message: "Cache is stale" },
+				"command-7",
+			],
+		]);
+	});
+
+	it("reports diagnostic action failures before rethrowing", async () => {
+		const runner = await createRunner([["sample", () => {}]]);
+		const failure = new Error("diagnostic pipeline failed");
+		const reported: ExtensionActionFailure[] = [];
+		const unboundActions = (
+			runner as unknown as { _actions: ExtensionCoreActions }
+		)._actions;
+		runner.bindCore(
+			{
+				...unboundActions,
+				reportDiagnostic: async () => {
+					throw failure;
+				},
+			},
+			{
+				reportActionFailure: async (actionFailure) => {
+					reported.push(actionFailure);
+				},
+			},
+		);
+
+		await expect(
+			runner.createContext("sample").actions.reportDiagnostic({
+				severity: "warning",
+				code: "cache.stale",
+				message: "Cache is stale",
+			}),
+		).rejects.toBe(failure);
+		expect(reported.map(({ action }) => action)).toEqual(["reportDiagnostic"]);
+	});
+});
+
 describe("ExtensionRunner inline commands", () => {
 	it("resolves inline commands in the fixed trigger domain with an argument-only expand", async () => {
 		const glossary = new Map([["tdd", "test-driven development"]]);

@@ -136,6 +136,52 @@ api.registerCommand({
 
 每次调用产生一条独立、append-only plain-text event；顺序 `await` 才保证调用顺序。它不合并进度项、不进入 model context、不写 session，重启或 resume 后不会恢复。
 
+只需要短暂告知用户一个成功或信息事实时使用 `notify()`：
+
+```ts
+await context.actions.notify("Report generated in 2.1s");
+```
+
+Notify 是 info-only、fire-once 的 transient notice。Consumer 决定显示位置和时长；它不进入 timeline、model context 或 session，重启或 resume 后不会恢复。Text 必须非空白且不超过 4 KiB（UTF-8 字节）。它没有 severity、code、dedupe、clear 或 attention：需要展示过程痕迹使用 `emitOutput`，需要 warning/error 或降级事实使用 `reportDiagnostic`。
+
+需要可替换的当前状态时使用 `setStatus()`，完成后显式 `clearStatus()`：
+
+```ts
+await context.actions.setStatus("index", {
+  text: "Building symbol index",
+  progress: { completed: 418, total: 672 },
+});
+await context.actions.clearStatus("index");
+```
+
+Status 按 extension 自己的 key replace，不进入 timeline、session 或 model context。Command 完成不会自动 clear；成功 reload 或 agent dispose 会由 core 清理。
+
+需要在 resume 后恢复的展示内容时使用 `publishMessage()`：
+
+```ts
+const { entryId } = await context.actions.publishMessage({
+  kind: "markdown",
+  title: "Index Summary",
+  content: "Indexed **672 files** and **14,208 symbols**.",
+});
+```
+
+Core 先写 `core:extension_message` session entry，再发布 live event；返回值、entry 与 event 使用同一个 `entryId`。Message 不进入 model context。`text`、`markdown`、`code` 是 transport-neutral 语义，具体 consumer 可以降级为有界 plain text。
+
+已知问题使用 `reportDiagnostic()`，不要用 output/status 模拟 warning 或 error：
+
+```ts
+await context.actions.reportDiagnostic({
+  severity: "warning",
+  disposition: "degraded",
+  code: "remote_policy_unreachable",
+  message: "Remote policy service is unavailable",
+  details: { attempts: 2 },
+});
+```
+
+Core 注入 agent/extension attribution，并把 code 规范化为 `extension.<extensionId>.<code>`。Local code 只使用字母、数字、`.`、`_`、`-`，最长 128 UTF-8 bytes；message 最长 4 KiB，JSON details 最长 16 KiB。作者只能声明 `reported` 或 `degraded`，不能自称 `blocked`。每次调用生成独立 diagnostic id；不要轮询式重复上报同一持续问题。
+
 Inline command 是无副作用的文本展开：
 
 ```ts
@@ -216,6 +262,10 @@ Callback context 绑定 extension 自己的 agent。常用 actions：
 - prompt/steer/followUp、abort、compact。
 - requestHuman。
 - emitOutput：向 client 追加 own-agent 的 ephemeral plain-text output，不回灌 observer。
+- notify：发布 own-agent 的 info-only transient notice，不进入 timeline/session，也不产生 attention。
+- setStatus/clearStatus：维护 keyed runtime current state，不进入 timeline/session。
+- publishMessage：写入可恢复的展示消息，返回稳定 entryId。
+- reportDiagnostic：发布带 core attribution 的结构化问题事实。
 - get/set session name、model、thinking level。
 - list commands/model candidates。
 - exec trusted project command。

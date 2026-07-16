@@ -3,6 +3,10 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentProfile } from "./agent-profile.js";
 import type { CommandInvocation } from "./command.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
+import type {
+	ExtensionMessage,
+	ExtensionStatus,
+} from "./extension/presentation.ts";
 import type { HumanRequestEvent } from "./human-request.ts";
 
 export type RuntimeModel = Model<Api>;
@@ -118,6 +122,40 @@ export type OrchestratorEvent =
 			// Present when emitted from a line-command execution context.
 			commandId?: string;
 			text: string;
+			createdAt: string;
+	  }
+	// Transient info-only notice. Consumers choose its display lifetime; it
+	// does not imply severity, attention, persistence, dedupe, or clear.
+	| {
+			readonly type: "extension_notification";
+			presentationId: string;
+			agentId: AgentId;
+			extensionId: string;
+			commandId?: string;
+			text: string;
+			createdAt: string;
+	  }
+	| {
+			readonly type: "extension_status_changed";
+			presentationId: string;
+			agentId: AgentId;
+			extensionId: string;
+			commandId?: string;
+			key: string;
+			// Absent means the keyed status was cleared.
+			status?: ExtensionStatus;
+			changedAt: string;
+	  }
+	| {
+			readonly type: "extension_message_published";
+			presentationId: string;
+			// Session custom entry id: the stable identity consumers use to
+			// dedupe between this live event and hydration.
+			entryId: string;
+			agentId: AgentId;
+			extensionId: string;
+			commandId?: string;
+			message: ExtensionMessage;
 			createdAt: string;
 	  }
 	| HumanRequestEvent
