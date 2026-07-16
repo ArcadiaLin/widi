@@ -25,6 +25,7 @@ import type {
 	OrchestratorEvent,
 	RuntimeModel,
 } from "../types.ts";
+import type { ExtensionStatus } from "./presentation.ts";
 
 // The tool contract lives in the core tools layer (ME slice 0 dependency
 // inversion); the extension layer consumes and re-exports it for its own
@@ -182,6 +183,10 @@ export interface ExtensionActions {
 	// prompt/steer, it does not reach the model or the session. Repeated calls
 	// create separate output items; sequentially awaiting calls preserves order.
 	emitOutput(text: string): Promise<void>;
+	// Keyed runtime current state for client status areas. Reusing a key
+	// replaces the previous value; clearing a missing key is a no-op.
+	setStatus(key: string, status: ExtensionStatus): Promise<void>;
+	clearStatus(key: string): Promise<void>;
 	prompt(text: string, options?: { images?: ImageContent[] }): Promise<void>;
 	steer(text: string, options?: { images?: ImageContent[] }): Promise<void>;
 	followUp(text: string, options?: { images?: ImageContent[] }): Promise<void>;
@@ -229,6 +234,19 @@ export interface ExtensionCoreActions {
 		agentId: string,
 		extensionId: string,
 		text: string,
+		commandId?: string,
+	): Promise<void>;
+	setStatus(
+		agentId: string,
+		extensionId: string,
+		key: string,
+		status: ExtensionStatus,
+		commandId?: string,
+	): Promise<void>;
+	clearStatus(
+		agentId: string,
+		extensionId: string,
+		key: string,
 		commandId?: string,
 	): Promise<void>;
 	promptAgent(
@@ -394,6 +412,7 @@ export interface ExtensionActionFailure {
 		| "setActiveTools"
 		| "setModel"
 		| "setSessionName"
+		| "setStatus"
 		| "setThinkingLevel"
 		| "setTools"
 		| "steer";

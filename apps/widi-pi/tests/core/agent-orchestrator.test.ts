@@ -1,4 +1,5 @@
 import type {
+	AgentHarness,
 	AgentHarnessEvent,
 	JsonlSessionMetadata,
 } from "@earendil-works/pi-agent-core";
@@ -2897,14 +2898,48 @@ describe("AgentOrchestrator", () => {
 		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
 		if (!runner) throw new Error("Expected extension runner.");
 		const commandContext = runner.createCommandContext("stateful");
+		await commandContext.actions.setStatus("sync", {
+			text: "Synchronizing",
+			progress: { completed: 1, total: 3 },
+		});
+		await commandContext.actions.setStatus("watch", {
+			text: "Watching workspace",
+		});
 		const events: OrchestratorEvent[] = [];
+		const statusSnapshotsDuringClear: unknown[] = [];
 		orchestrator.subscribe((event) => {
 			events.push(event);
+			if (event.type === "extension_status_changed" && !event.status) {
+				statusSnapshotsDuringClear.push(
+					orchestrator.listExtensionStatuses(agentId),
+				);
+			}
 		});
 
 		await orchestrator.disposeAgent(agentId, "test cleanup");
 		await orchestrator.disposeAgent(agentId, "already disposed");
 		expect(orchestrator.getAgentStatus(agentId)).toBe("disposed");
+		expect(orchestrator.listExtensionStatuses(agentId)).toEqual([]);
+		expect(statusSnapshotsDuringClear).toEqual([[], []]);
+		expect(
+			events
+				.filter(
+					(
+						event,
+					): event is Extract<
+						OrchestratorEvent,
+						{ type: "extension_status_changed" }
+					> => event.type === "extension_status_changed" && !event.status,
+				)
+				.map((event) => event.key),
+		).toEqual(["sync", "watch"]);
+		expect(
+			events
+				.filter(
+					(event) => event.type === "extension_status_changed" && !event.status,
+				)
+				.every((event) => !Object.hasOwn(event, "status")),
+		).toBe(true);
 		expect(agentStatusChangedEvents(events)).toMatchObject([
 			{ agentId, previousStatus: "idle", status: "disposed" },
 		]);
@@ -3590,6 +3625,411 @@ describe("AgentOrchestrator", () => {
 		expect([...env.files.values()].join("\n")).not.toContain("step 2");
 	});
 
+	it("isolates event listener failures from extension output delivery", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtension("sample", (api) => {
+			api.registerCommand({
+				name: "report",
+				handler: async (_args, context) => {
+					await context.actions.emitOutput("working");
+					return "done";
+				},
+			});
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const delivered: OrchestratorEvent[] = [];
+		const clientEvents: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			if (event.type === "extension_output") {
+				throw new Error("listener exploded");
+			}
+		});
+		orchestrator.subscribe((event) => {
+			delivered.push(event);
+		});
+		orchestrator.registerClient({
+			id: "output-client",
+			receive: (event) => {
+				clientEvents.push(event);
+			},
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "/report"),
+		).resolves.toMatchObject({
+			kind: "command",
+			value: "done",
+		});
+		expect(delivered).toContainEqual(
+			expect.objectContaining({
+				type: "extension_output",
+				text: "working",
+			}),
+		);
+		expect(
+			clientEvents.filter(
+				(event) =>
+					event.type === "diagnostic" &&
+					event.diagnostic.code === "orchestrator.listener_failed",
+			),
+		).toHaveLength(1);
+	});
+
+	it("isolates client receive failures from extension output delivery", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtension("sample", (api) => {
+			api.registerCommand({
+				name: "report",
+				handler: async (_args, context) => {
+					await context.actions.emitOutput("working");
+					return "done";
+				},
+			});
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		orchestrator.registerClient({
+			id: "broken-output-client",
+			receive: (event) => {
+				if (event.type === "extension_output") {
+					throw new Error("client exploded");
+				}
+			},
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "/report"),
+		).resolves.toMatchObject({
+			kind: "command",
+			value: "done",
+		});
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					code: "orchestrator.client_failed",
+					message: "client exploded",
+				}),
+			}),
+		);
+	});
+
+	it("rejects empty and oversized extension output payloads", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtension("sample", (api) => {
+			api.registerCommand({
+				name: "empty-output",
+				handler: async (_args, context) => {
+					await context.actions.emitOutput("");
+				},
+			});
+			api.registerCommand({
+				name: "large-output",
+				handler: async (_args, context) => {
+					await context.actions.emitOutput("x".repeat(65_537));
+				},
+			});
+		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const agentId = await orchestrator.spawnAgent();
+
+		await expect(
+			orchestrator.inputAgent(agentId, "/empty-output"),
+		).resolves.toMatchObject({ kind: "failed" });
+		await expect(
+			orchestrator.inputAgent(agentId, "/large-output"),
+		).resolves.toMatchObject({ kind: "failed" });
+		expect(events).not.toContainEqual(
+			expect.objectContaining({ type: "extension_output" }),
+		);
+		expect(
+			events.filter(
+				(event) =>
+					event.type === "diagnostic" &&
+					event.diagnostic.code === "extension.action_failed" &&
+					event.diagnostic.details?.action === "emitOutput",
+			),
+		).toHaveLength(2);
+	});
+
+	it("stores keyed extension status and emits mutation-first canonical events", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtension("sample", (api) => {
+			api.registerCommand({
+				name: "status-flow",
+				handler: async (_args, context) => {
+					const first = { text: "Scanning" };
+					await context.actions.setStatus("index", first);
+					first.text = "mutated after set";
+					await context.actions.setStatus("index", {
+						text: "Building",
+						progress: { completed: 2, total: 5 },
+					});
+					await context.actions.clearStatus("index");
+					await context.actions.clearStatus("missing");
+					await context.actions.setStatus("ready", { text: "Ready" });
+				},
+			});
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const events: OrchestratorEvent[] = [];
+		const snapshotsDuringEvents: unknown[] = [];
+		const extensionObservedEvents: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+			if (event.type === "extension_status_changed") {
+				snapshotsDuringEvents.push(
+					orchestrator.listExtensionStatuses(event.agentId),
+				);
+			}
+		});
+		Object.assign(orchestrator, {
+			_isExtensionObservedEvent: () => true,
+			_emitToExtensionObservers: async (event: OrchestratorEvent) => {
+				extensionObservedEvents.push(event);
+			},
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "/status-flow"),
+		).resolves.toMatchObject({ kind: "command" });
+
+		const statusEvents = events.filter(
+			(event) => event.type === "extension_status_changed",
+		);
+		expect(statusEvents).toEqual([
+			{
+				type: "extension_status_changed",
+				presentationId: "orchestrator-presentation-1",
+				agentId,
+				extensionId: "sample",
+				commandId: "orchestrator-command-1",
+				key: "index",
+				status: { text: "Scanning" },
+				changedAt: expect.any(String),
+			},
+			{
+				type: "extension_status_changed",
+				presentationId: "orchestrator-presentation-2",
+				agentId,
+				extensionId: "sample",
+				commandId: "orchestrator-command-1",
+				key: "index",
+				status: {
+					text: "Building",
+					progress: { completed: 2, total: 5 },
+				},
+				changedAt: expect.any(String),
+			},
+			{
+				type: "extension_status_changed",
+				presentationId: "orchestrator-presentation-3",
+				agentId,
+				extensionId: "sample",
+				commandId: "orchestrator-command-1",
+				key: "index",
+				status: undefined,
+				changedAt: expect.any(String),
+			},
+			{
+				type: "extension_status_changed",
+				presentationId: "orchestrator-presentation-4",
+				agentId,
+				extensionId: "sample",
+				commandId: "orchestrator-command-1",
+				key: "ready",
+				status: { text: "Ready" },
+				changedAt: expect.any(String),
+			},
+		]);
+		expect(Object.hasOwn(statusEvents[2] ?? {}, "status")).toBe(false);
+		expect(snapshotsDuringEvents).toMatchObject([
+			[
+				{
+					agentId,
+					extensionId: "sample",
+					key: "index",
+					status: { text: "Scanning" },
+				},
+			],
+			[
+				{
+					agentId,
+					extensionId: "sample",
+					key: "index",
+					status: {
+						text: "Building",
+						progress: { completed: 2, total: 5 },
+					},
+				},
+			],
+			[],
+			[
+				{
+					agentId,
+					extensionId: "sample",
+					key: "ready",
+					status: { text: "Ready" },
+				},
+			],
+		]);
+		expect(orchestrator.listExtensionStatuses(agentId)).toMatchObject([
+			{
+				agentId,
+				extensionId: "sample",
+				key: "ready",
+				status: { text: "Ready" },
+				updatedAt: expect.any(String),
+			},
+		]);
+		expect(extensionObservedEvents).not.toContainEqual(
+			expect.objectContaining({ type: "extension_status_changed" }),
+		);
+
+		const snapshot = orchestrator.listExtensionStatuses(agentId);
+		(snapshot[0]?.status as { text: string }).text = "consumer mutation";
+		expect(orchestrator.listExtensionStatuses(agentId)[0]?.status.text).toBe(
+			"Ready",
+		);
+	});
+
+	it("rejects invalid extension status keys, text, and progress", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtension("sample", () => {});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+		if (!runner) throw new Error("Expected extension runner.");
+		const actions = runner.createContext("sample").actions;
+
+		const invalidCalls = [
+			() => actions.setStatus("", { text: "Ready" }),
+			() => actions.setStatus("é".repeat(65), { text: "Ready" }),
+			() => actions.setStatus("ready", { text: "" }),
+			() => actions.setStatus("ready", { text: "é".repeat(2_049) }),
+			() =>
+				actions.setStatus("ready", {
+					text: "Ready",
+					progress: { completed: -1 },
+				}),
+			() =>
+				actions.setStatus("ready", {
+					text: "Ready",
+					progress: { completed: 1.5 },
+				}),
+			() =>
+				actions.setStatus("ready", {
+					text: "Ready",
+					progress: { completed: 2, total: 1 },
+				}),
+			() =>
+				actions.setStatus("ready", {
+					text: "Ready",
+					progress: { completed: 1, total: -1 },
+				}),
+		];
+		for (const invalidCall of invalidCalls) {
+			await expect(invalidCall()).rejects.toThrow();
+		}
+
+		expect(orchestrator.listExtensionStatuses(agentId)).toEqual([]);
+		expect(events).not.toContainEqual(
+			expect.objectContaining({ type: "extension_status_changed" }),
+		);
+		expect(
+			events.filter(
+				(event) =>
+					event.type === "diagnostic" &&
+					event.diagnostic.code === "extension.action_failed" &&
+					event.diagnostic.details?.action === "setStatus",
+			),
+		).toHaveLength(invalidCalls.length);
+	});
+
 	it("completes extension command arguments via a narrowed candidate callback", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = {
@@ -3750,6 +4190,20 @@ describe("AgentOrchestrator", () => {
 		const oldRunner = requireAgentRecord(orchestrator, agentId).extensionRunner;
 		if (!oldRunner) throw new Error("Expected extension runner.");
 		const oldContext = oldRunner.createCommandContext("sample");
+		await oldContext.actions.setStatus("index", {
+			text: "Indexing",
+			progress: { completed: 2, total: 5 },
+		});
+		const events: OrchestratorEvent[] = [];
+		const statusSnapshotsDuringClear: unknown[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+			if (event.type === "extension_status_changed" && !event.status) {
+				statusSnapshotsDuringClear.push(
+					orchestrator.listExtensionStatuses(agentId),
+				);
+			}
+		});
 		orchestrator.registerExtension("sample", (api) => {
 			api.registerTool(createToolDefinition("alpha", "alpha"));
 			api.registerTool(createToolDefinition("beta", "beta"));
@@ -3792,6 +4246,27 @@ describe("AgentOrchestrator", () => {
 			toolNames: ["alpha", "beta"],
 			activeToolNames: ["alpha", "beta"],
 		});
+		expect(orchestrator.listExtensionStatuses(agentId)).toEqual([]);
+		expect(statusSnapshotsDuringClear).toEqual([[]]);
+		const clearEvent = events.find(
+			(
+				event,
+			): event is Extract<
+				OrchestratorEvent,
+				{ type: "extension_status_changed" }
+			> =>
+				event.type === "extension_status_changed" &&
+				event.extensionId === "sample" &&
+				event.key === "index" &&
+				event.status === undefined,
+		);
+		expect(clearEvent).toMatchObject({
+			type: "extension_status_changed",
+			agentId,
+			extensionId: "sample",
+			key: "index",
+		});
+		expect(Object.hasOwn(clearEvent ?? {}, "status")).toBe(false);
 		await expect(oldContext.waitForIdle()).rejects.toThrow(
 			"Extension runtime has been reloaded.",
 		);
@@ -3854,6 +4329,11 @@ describe("AgentOrchestrator", () => {
 			api.registerTool(createToolDefinition("alpha", "alpha"));
 		});
 		const agentId = await orchestrator.spawnAgent();
+		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+		if (!runner) throw new Error("Expected extension runner.");
+		await runner
+			.createContext("sample")
+			.actions.setStatus("index", { text: "Indexing" });
 		const handleHarnessEvent = (
 			orchestrator as unknown as {
 				_handleAgentHarnessEvent(
@@ -3882,6 +4362,59 @@ describe("AgentOrchestrator", () => {
 			toolNames: ["alpha"],
 			activeToolNames: ["alpha"],
 		});
+		expect(orchestrator.listExtensionStatuses(agentId)).toMatchObject([
+			{
+				extensionId: "sample",
+				key: "index",
+				status: { text: "Indexing" },
+			},
+		]);
+	});
+
+	it("preserves extension statuses when extension reload fails", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtension("sample", () => {});
+		const agentId = await orchestrator.spawnAgent();
+		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+		if (!runner) throw new Error("Expected extension runner.");
+		await runner
+			.createContext("sample")
+			.actions.setStatus("index", { text: "Indexing" });
+		const harness = requireAgentHarness(
+			orchestrator,
+			agentId,
+		) as AgentHarness & {
+			setTools?: () => Promise<void>;
+		};
+		harness.setTools = async () => {
+			throw new Error("reload tool binding failed");
+		};
+
+		const result = await orchestrator.reloadExtensions();
+
+		expect(result.agents).toMatchObject([{ agentId, status: "failed" }]);
+		expect(orchestrator.listExtensionStatuses(agentId)).toMatchObject([
+			{
+				extensionId: "sample",
+				key: "index",
+				status: { text: "Indexing" },
+			},
+		]);
 	});
 
 	it("applies scoped extension tool patches in activation order", async () => {
@@ -5405,22 +5938,45 @@ describe("AgentOrchestrator", () => {
 	it("resolves human requests through the first capable client", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
+		const agentId = await orchestrator.spawnAgent();
+		const events: OrchestratorEvent[] = [];
+		let handledAgentId: string | undefined;
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
 		orchestrator.registerClient({
 			id: "human",
-			requestHuman: async (request) => ({
-				kind: "confirm",
-				confirmed: request.title === "Confirm",
-			}),
+			requestHuman: async (request) => {
+				handledAgentId = request.agentId;
+				return {
+					kind: "confirm",
+					confirmed: request.title === "Confirm",
+				};
+			},
 		});
 
 		await expect(
 			orchestrator.requestHuman({
-				source: { kind: "system" },
+				source: { kind: "agent", agentId },
 				kind: "confirm",
 				title: "Confirm",
 				message: "Continue?",
 			}),
 		).resolves.toEqual({ kind: "confirm", confirmed: true });
+		expect(handledAgentId).toBe(agentId);
+		const requestEvents = events.filter(
+			(event) =>
+				event.type === "human_request_pending" ||
+				event.type === "human_request_resolved",
+		);
+		expect(requestEvents).toMatchObject([
+			{
+				type: "human_request_pending",
+				agentId,
+				request: { agentId },
+			},
+			{ type: "human_request_resolved", agentId },
+		]);
 	});
 
 	it("rejects human requests with no capable endpoint", async () => {
@@ -5450,10 +6006,11 @@ describe("AgentOrchestrator", () => {
 			id: "human",
 			requestHuman: async () => new Promise<never>(() => {}),
 		});
+		const agentId = await orchestrator.spawnAgent();
 
 		await expect(
 			orchestrator.requestHuman({
-				source: { kind: "system" },
+				source: { kind: "agent", agentId },
 				kind: "confirm",
 				title: "Confirm",
 				message: "Continue?",
@@ -5463,7 +6020,10 @@ describe("AgentOrchestrator", () => {
 			code: "orchestrator.human_request_timeout",
 		});
 		expect(events).toContainEqual(
-			expect.objectContaining({ type: "human_request_timeout" }),
+			expect.objectContaining({
+				type: "human_request_timeout",
+				agentId,
+			}),
 		);
 	});
 
@@ -5483,9 +6043,10 @@ describe("AgentOrchestrator", () => {
 				return await new Promise<never>(() => {});
 			},
 		});
+		const agentId = await orchestrator.spawnAgent();
 
 		const requestPromise = orchestrator.requestHuman({
-			source: { kind: "system" },
+			source: { kind: "agent", agentId },
 			kind: "confirm",
 			title: "Confirm",
 			message: "Continue?",
@@ -5566,9 +6127,10 @@ describe("AgentOrchestrator", () => {
 				return await new Promise<never>(() => {});
 			},
 		});
+		const agentId = await orchestrator.spawnAgent();
 
 		const requestPromise = orchestrator.requestHuman({
-			source: { kind: "system" },
+			source: { kind: "agent", agentId },
 			kind: "confirm",
 			title: "Confirm",
 			message: "Continue?",
@@ -5583,7 +6145,8 @@ describe("AgentOrchestrator", () => {
 			> => event.type === "human_request_pending",
 		);
 		if (!pending) throw new Error("Expected pending human request event.");
-		expect(pending.request.agentId).toBeUndefined();
+		expect(pending.agentId).toBe(agentId);
+		expect(pending.request.agentId).toBe(agentId);
 
 		await expect(
 			orchestrator.cancelHumanRequest(pending.request.id, "dismissed"),
@@ -5595,6 +6158,7 @@ describe("AgentOrchestrator", () => {
 		expect(events).toContainEqual(
 			expect.objectContaining({
 				type: "human_request_cancelled",
+				agentId,
 				requestId: pending.request.id,
 				reason: "dismissed",
 			}),

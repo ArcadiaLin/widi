@@ -264,7 +264,7 @@ clearStatus(key: string): Promise&lt;void&gt;</span>
         <span class="badge core">core registry</span>
         <span class="badge">replace/clear</span>
         <span class="badge">snapshot query</span>
-        <span class="badge new">新增</span>
+        <span class="badge">已实现（含 lifecycle / validation / CLI）</span>
       </div>
       <div class="channel">
         <h3>3. Notification</h3>
@@ -424,8 +424,8 @@ Remote policy service is unavailable; local rules remain active.
 
   <section>
     <h3>CLI 有界纯文本降级（确定性映射）</h3>
-    <div class="cli-map"><span class="dim">output      </span>[indexer] Scanning workspace files
-<span class="dim">setStatus   </span>[indexer] status build: Building symbol index (418/672)
+    <div class="cli-map"><span class="dim">output      </span>[extension:indexer] Scanning workspace files
+<span class="dim">setStatus   </span>[extension:indexer] status build: Building symbol index (418/672) <span class="muted">（total 未知时输出 (418/?)）</span>
 <span class="dim">clearStatus </span><span class="muted">（不打印）</span>
 <span class="dim">notify      </span>[audit] notice: Report generated in 2.1s
 <span class="dim">diagnostic  </span>[audit] warning extension.audit.remote_policy_unreachable: Remote policy service is unavailable
@@ -452,8 +452,8 @@ Remote policy service is unavailable; local rules remain active.
     <h3>实施排序与跨文档任务</h3>
     <div class="rollout">
       <div class="rollout-item"><span class="step">前置 ✓</span><span><strong>API v1 开发期重塑</strong>（已完成）：版本策略改为“公开发布前允许原地重塑”，不升 v2；<code>ExtensionActionFailure.action</code> 已增加五个 presentation 成员；action 签名随各通道实现落地。</span></div>
-      <div class="rollout-item"><span class="step">基础 ✓</span><span>Output（extension_output）、Diagnostic 事件流、Human Request broker 已实现。Output 的 presentationId / commandId 与 HumanRequestEnvelope.agentId 已落地（含测试）；Diagnostic 尚缺 reportDiagnostic 作者入口与 core-generated id（步骤 3）。</span></div>
-      <div class="rollout-item"><span class="step">1</span><span><strong>Status</strong>：registry + listExtensionStatuses + canonical event + reload/dispose cleanup。对 TUI 体验增益最大，且牵动 orchestrator query API，与 TUI 阶段 3/4 并行敲定。</span></div>
+      <div class="rollout-item"><span class="step">基础 ✓</span><span>Output（extension_output）、Diagnostic 事件流、Human Request broker 已实现。Output 的 presentationId / commandId、HumanRequestEnvelope.agentId、payload bounds 与 listener/client failure isolation 已落地（含测试）；Diagnostic 尚缺 reportDiagnostic 作者入口与 core-generated id（步骤 3）。</span></div>
+      <div class="rollout-item"><span class="step">1 ✓</span><span><strong>Status（已完成）</strong>：setStatus / clearStatus、registry、listExtensionStatuses、canonical event、mutation-first、commandId correlation、observer no-feedback、validation、成功 reload / dispose cleanup、skipped / failed reload preservation 与 CLI 降级均已落地。</span></div>
       <div class="rollout-item"><span class="step">2</span><span><strong>Persistent Message</strong>：core:extension_message entry + action 返回 entryId + canonical event + hydrator 恢复/entryId 去重。必须赶在 TUI 阶段 2 hydrator 定型前裁决 entry type。</span></div>
       <div class="rollout-item"><span class="step">3</span><span><strong>reportDiagnostic 作者入口</strong>：复用既有管线，工作量最小，随任一批次落地。</span></div>
       <div class="rollout-item"><span class="step">4</span><span><strong>notify</strong>：最后实现或推迟——六通道中唯一可被 emitOutput 近似替代的，符合“演进触发条件”原则。</span></div>

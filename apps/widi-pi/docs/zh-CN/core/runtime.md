@@ -21,6 +21,7 @@ Orchestrator 拥有：
 - harness event 订阅和 client fanout。
 - command input 的执行状态机。
 - human-request collaborator 的挂载与对外能力入口。
+- extension presentation status registry 与 snapshot query。
 - dependency diagnostics 的上下文补充与统一发布。
 - extension runner 与 harness、command、session context 的绑定。
 
@@ -141,7 +142,9 @@ AgentHarnessEvent
 
 Core 不维护第二套 tool lifecycle facts。Assistant tool-call streaming 和 `tool_execution_*` 的 arguments、partial result、result 与 provider-specific 数据均由 raw event 保留。
 
-Canonical orchestrator facts（command、human request、diagnostic、agent/session、input、extension output）经同一 `_emit()` 路径发送。`extension_output` 只发送给 listeners/clients，并在调用点显式关闭 extension observer 回灌。其他 observer failure 不改变原操作结果；它产生 `extension.handler_failed` diagnostic。Diagnostic observer 处理中产生的新 diagnostic 不回灌 extension observer，避免递归。
+Canonical orchestrator facts（command、human request、diagnostic、agent/session、input、extension output/status）经同一 `_emit()` 路径发送。`extension_output` 与 `extension_status_changed` 只发送给 listeners/clients，并在调用点显式关闭 extension observer 回灌。单个 listener/client delivery failure 会产生结构化 diagnostic，但不会中断其余订阅者或让 presentation action 失败。其他 observer failure 不改变原操作结果；它产生 `extension.handler_failed` diagnostic。Diagnostic observer 处理中产生的新 diagnostic 不回灌 extension observer，避免递归。
+
+Extension status 是 runtime current state。Registry 按 `(agentId, extensionId, key)` 保存 `{ status, updatedAt }`，`listExtensionStatuses(agentId)` 返回防御性快照。Mutation 遵循“先改 registry、后 emit”顺序；clear event 的 `status` 缺席。成功 extension reload 与 agent dispose 清空该 agent 的条目并发 clear events，skipped/failed reload 不清空。Command 完成不会隐式改变 status。
 
 Harness status 更新遵循事实事件：run/turn 开始进入 `running`；结束、abort 或 settled 回到 `idle`；dispose 解绑 harness/extension、取消 pending request 并进入 `disposed`。
 
@@ -152,6 +155,7 @@ Pi session tree 保存单 agent messages、tool calls/results、model/thinking/t
 - agent lifecycle/status。
 - command/client event log。
 - append-only `extension_output` client event。
+- keyed extension status registry 与 `extension_status_changed` event。
 - pending human request。
 - extension runner instance 或大型 extension database。
 - runtime objects、API keys 和 tool closures。

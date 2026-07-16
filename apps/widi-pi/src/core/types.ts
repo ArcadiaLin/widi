@@ -3,6 +3,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentProfile } from "./agent-profile.js";
 import type { CommandInvocation } from "./command.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
+import type { ExtensionStatus } from "./extension/presentation.ts";
 import type { HumanRequestEvent } from "./human-request.ts";
 
 export type RuntimeModel = Model<Api>;
@@ -119,6 +120,17 @@ export type OrchestratorEvent =
 			commandId?: string;
 			text: string;
 			createdAt: string;
+	  }
+	| {
+			readonly type: "extension_status_changed";
+			presentationId: string;
+			agentId: AgentId;
+			extensionId: string;
+			commandId?: string;
+			key: string;
+			// Absent means the keyed status was cleared.
+			status?: ExtensionStatus;
+			changedAt: string;
 	  }
 	| HumanRequestEvent
 	| {

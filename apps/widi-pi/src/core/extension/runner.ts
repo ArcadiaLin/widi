@@ -743,6 +743,22 @@ export class ExtensionRunner {
 					await this._actions.emitOutput(agentId, extensionId, text, commandId);
 				});
 			},
+			setStatus: async (key, status) => {
+				await this._runReportedAction(failure("setStatus"), async () => {
+					await this._actions.setStatus(
+						agentId,
+						extensionId,
+						key,
+						status,
+						commandId,
+					);
+				});
+			},
+			clearStatus: async (key) => {
+				await this._runReportedAction(failure("clearStatus"), async () => {
+					await this._actions.clearStatus(agentId, extensionId, key, commandId);
+				});
+			},
 			prompt: async (text, options) => {
 				await this._runReportedAction(failure("prompt"), async () => {
 					await this._actions.promptAgent(agentId, text, options);
@@ -1120,6 +1136,8 @@ function createUnboundActions(): ExtensionCoreActions {
 		setAgentActiveTools: async () => notBound(),
 		requestHuman: async () => notBound(),
 		emitOutput: async () => notBound(),
+		setStatus: async () => notBound(),
+		clearStatus: async () => notBound(),
 		promptAgent: async () => notBound(),
 		steerAgent: async () => notBound(),
 		followUpAgent: async () => notBound(),

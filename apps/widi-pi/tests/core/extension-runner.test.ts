@@ -219,6 +219,112 @@ describe("ExtensionRunner scoped output action", () => {
 	});
 });
 
+describe("ExtensionRunner scoped status actions", () => {
+	it("injects attribution and threads command ids into status mutations", async () => {
+		const runner = await createRunner([["sample", () => {}]]);
+		const calls: Array<
+			| [
+					"set",
+					string,
+					string,
+					string,
+					{ text: string; progress?: { completed: number; total?: number } },
+					string | undefined,
+			  ]
+			| ["clear", string, string, string, string | undefined]
+		> = [];
+		const unboundActions = (
+			runner as unknown as { _actions: ExtensionCoreActions }
+		)._actions;
+		runner.bindCore(
+			{
+				...unboundActions,
+				setStatus: async (
+					agentId: string,
+					extensionId: string,
+					key: string,
+					status: {
+						text: string;
+						progress?: { completed: number; total?: number };
+					},
+					commandId?: string,
+				) => {
+					calls.push(["set", agentId, extensionId, key, status, commandId]);
+				},
+				clearStatus: async (
+					agentId: string,
+					extensionId: string,
+					key: string,
+					commandId?: string,
+				) => {
+					calls.push(["clear", agentId, extensionId, key, commandId]);
+				},
+			},
+			{},
+		);
+
+		await runner
+			.createContext("sample")
+			.actions.setStatus("index", { text: "Scanning" });
+		const commandActions = runner.createCommandContext("sample", {
+			commandId: "command-7",
+		}).actions;
+		await commandActions.setStatus("index", {
+			text: "Building",
+			progress: { completed: 2, total: 5 },
+		});
+		await commandActions.clearStatus("index");
+
+		expect(calls).toEqual([
+			["set", "agent", "sample", "index", { text: "Scanning" }, undefined],
+			[
+				"set",
+				"agent",
+				"sample",
+				"index",
+				{ text: "Building", progress: { completed: 2, total: 5 } },
+				"command-7",
+			],
+			["clear", "agent", "sample", "index", "command-7"],
+		]);
+	});
+
+	it("reports status action failures before rethrowing", async () => {
+		const runner = await createRunner([["sample", () => {}]]);
+		const failure = new Error("status delivery failed");
+		const reported: ExtensionActionFailure[] = [];
+		const unboundActions = (
+			runner as unknown as { _actions: ExtensionCoreActions }
+		)._actions;
+		runner.bindCore(
+			{
+				...unboundActions,
+				setStatus: async () => {
+					throw failure;
+				},
+				clearStatus: async () => {
+					throw failure;
+				},
+			},
+			{
+				reportActionFailure: async (actionFailure) => {
+					reported.push(actionFailure);
+				},
+			},
+		);
+		const actions = runner.createContext("sample").actions;
+
+		await expect(actions.setStatus("index", { text: "Scanning" })).rejects.toBe(
+			failure,
+		);
+		await expect(actions.clearStatus("index")).rejects.toBe(failure);
+		expect(reported.map(({ action }) => action)).toEqual([
+			"setStatus",
+			"clearStatus",
+		]);
+	});
+});
+
 describe("ExtensionRunner inline commands", () => {
 	it("resolves inline commands in the fixed trigger domain with an argument-only expand", async () => {
 		const glossary = new Map([["tdd", "test-driven development"]]);
