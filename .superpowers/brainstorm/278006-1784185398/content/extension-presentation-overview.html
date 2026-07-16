@@ -1,0 +1,463 @@
+<style>
+  .page-grid { display:grid; gap:20px; }
+  .subtitle { color:#9aa2af; }
+  .architecture {
+    display:grid;
+    grid-template-columns:minmax(230px, .9fr) 56px minmax(280px, 1.2fr) 56px minmax(300px, 1.35fr);
+    align-items:stretch;
+    gap:10px;
+    margin-top:18px;
+  }
+  .arch-column {
+    border:1px solid #343b47;
+    border-radius:12px;
+    background:#14171c;
+    padding:16px;
+  }
+  .arch-column h3 { margin:0 0 12px; color:#eef1f5; }
+  .arch-arrow {
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    color:#d8a163;
+    font:28px ui-monospace, monospace;
+  }
+  .arch-item {
+    border:1px solid #303743;
+    border-radius:8px;
+    padding:10px 11px;
+    margin-top:8px;
+    background:#1b1f26;
+    color:#c9ced7;
+    font:12px/1.45 ui-monospace, monospace;
+  }
+  .arch-item strong { color:#f0c487; }
+  .channel-grid {
+    display:grid;
+    grid-template-columns:repeat(auto-fit, minmax(300px, 1fr));
+    gap:14px;
+  }
+  .channel {
+    border:1px solid #343b47;
+    border-radius:10px;
+    background:#171a20;
+    padding:14px;
+  }
+  .channel h3 { margin:0 0 5px; color:#f0f2f5; font-size:15px; }
+  .channel p { margin:0 0 8px; color:#989fab; font-size:12px; line-height:1.55; }
+  .channel .sig {
+    display:block;
+    margin:0 0 9px;
+    padding:7px 9px;
+    border:1px solid #2c333e;
+    border-radius:6px;
+    background:#12151a;
+    color:#a8c7b8;
+    font:11px/1.5 ui-monospace, monospace;
+    white-space:pre-wrap;
+  }
+  .badge {
+    display:inline-block;
+    border:1px solid #454d5a;
+    border-radius:999px;
+    padding:2px 7px;
+    margin:0 4px 4px 0;
+    color:#afb6c2;
+    font:10px ui-monospace, monospace;
+  }
+  .badge.core { color:#e6b779; border-color:#765b37; }
+  .badge.session { color:#83c6ad; border-color:#416658; }
+  .badge.ephemeral { color:#90afd5; border-color:#465b76; }
+  .badge.new { color:#d699b6; border-color:#6d4a5c; }
+  .terminal-shell {
+    overflow:hidden;
+    border:1px solid #3a414c;
+    border-radius:12px;
+    background:#0f1115;
+  }
+  .terminal-title {
+    display:flex;
+    justify-content:space-between;
+    padding:8px 12px;
+    background:#20242b;
+    color:#aeb5c0;
+    font:11px ui-monospace, monospace;
+  }
+  .terminal {
+    min-height:420px;
+    padding:18px 20px;
+    color:#d8dce2;
+    font:12px/1.52 ui-monospace, SFMono-Regular, Consolas, monospace;
+    white-space:pre-wrap;
+  }
+  .dim { color:#747c89; }
+  .muted { color:#9ba3af; }
+  .accent { color:#e4ad6c; }
+  .user { color:#f1f2f4; }
+  .tool { color:#aeb7c5; }
+  .ok { color:#83c092; }
+  .warn { color:#dbbc7f; }
+  .error { color:#e67e80; }
+  .info { color:#7fbbb3; }
+  .rule { color:#454c57; }
+  .tag { color:#5d6675; font-size:10px; }
+  .persistent {
+    display:inline-block;
+    min-width:410px;
+    border:1px solid #48515e;
+    border-radius:7px;
+    padding:9px 12px;
+    margin:5px 0;
+    background:#171b21;
+  }
+  .slot {
+    display:block;
+    border-top:1px dashed #39414d;
+    border-bottom:1px dashed #39414d;
+    padding:6px 2px;
+    margin:6px 0;
+    background:#12161c;
+  }
+  .status-row {
+    display:flex;
+    flex-wrap:wrap;
+    gap:8px;
+    margin-top:8px;
+  }
+  .status-chip {
+    padding:5px 9px;
+    border-radius:7px;
+    border:1px solid #424a57;
+    background:#191d23;
+    color:#c3c9d2;
+    font:11px ui-monospace, monospace;
+  }
+  .progress {
+    display:inline-block;
+    width:88px;
+    color:#454c57;
+  }
+  .progress span { color:#83c092; }
+  .overlay-demo {
+    border:1px solid #3a414c;
+    border-radius:10px;
+    background:#0f1115;
+    padding:16px 20px;
+    color:#d8dce2;
+    font:12px/1.52 ui-monospace, monospace;
+    white-space:pre-wrap;
+  }
+  .rules {
+    display:grid;
+    grid-template-columns:repeat(auto-fit, minmax(250px, 1fr));
+    gap:12px;
+  }
+  .rule-card {
+    border-left:3px solid #d39c5f;
+    background:#171a20;
+    padding:12px 14px;
+    color:#b9c0ca;
+    font-size:12px;
+    line-height:1.5;
+  }
+  .cli-map {
+    border:1px solid #343b47;
+    border-radius:10px;
+    background:#12151a;
+    padding:14px 16px;
+    color:#c3c9d2;
+    font:12px/1.7 ui-monospace, monospace;
+    white-space:pre-wrap;
+    overflow-x:auto;
+  }
+  .rollout { display:grid; gap:10px; }
+  .rollout-item {
+    display:flex;
+    gap:12px;
+    align-items:baseline;
+    border:1px solid #303743;
+    border-radius:8px;
+    background:#171a20;
+    padding:10px 13px;
+    color:#b9c0ca;
+    font-size:12px;
+    line-height:1.5;
+  }
+  .rollout-item .step {
+    flex:none;
+    color:#e4ad6c;
+    font:12px ui-monospace, monospace;
+  }
+  @media (max-width: 1000px) {
+    .architecture { grid-template-columns:1fr; }
+    .arch-arrow { transform:rotate(90deg); min-height:36px; }
+  }
+</style>
+
+<div class="page-grid">
+  <section>
+    <h2>WIDI Extension Presentation Protocol</h2>
+    <p class="subtitle">第一版只支持预定义、transport-neutral 的展示语义。Extension 说明“是什么”，consumer 决定“怎么画”。全部 review 裁决已并入各通道定义与边界规则：Status 快照查询与生命周期、notify/diagnostic 硬边界、persistent 的 entryId 去重、human request 隐私留痕、presentationId 作为 output/notification 的稳定 view key。</p>
+
+    <div class="architecture">
+      <div class="arch-column">
+        <h3>Extension Core</h3>
+        <div class="arch-item"><strong>emitOutput(text)</strong><br>追加执行过程文本；ephemeral</div>
+        <div class="arch-item"><strong>setStatus(key, status) / clearStatus(key)</strong><br>keyed 当前状态；status = { text, progress? }</div>
+        <div class="arch-item"><strong>notify(text)</strong><br>瞬时提醒；仅 info 语义，无 code、无 attention</div>
+        <div class="arch-item"><strong>publishMessage(message)</strong><br>持久化展示消息；text / markdown / code；返回 session entryId</div>
+        <div class="arch-item"><strong>reportDiagnostic(draft)</strong><br>结构化问题事实；severity / disposition / code / message / details</div>
+        <div class="arch-item"><strong>requestHuman(draft)</strong><br>唯一需要 consumer 返回响应的通道</div>
+      </div>
+
+      <div class="arch-arrow">→</div>
+
+      <div class="arch-column">
+        <h3>WIDI Core Ownership</h3>
+        <div class="arch-item">自动绑定 <strong>agentId / extensionId</strong>；extension 不可伪造 attribution</div>
+        <div class="arch-item">自动生成 <strong>presentationId</strong>：output / notification 的稳定 view key，兼作 RPC/日志关联身份（tui-v1 §6.3 的 projector local key 裁决随之废止）</div>
+        <div class="arch-item"><strong>commandId 关联</strong>：line-command execution 将 commandId 传给 runner 的 command context；observer/interceptor/tool context 不携带 commandId，事件中该字段可选缺席</div>
+        <div class="arch-item">status registry：<strong>(agent, extension, key)</strong> → status + updatedAt，提供 <strong>listExtensionStatuses(agentId)</strong> 快照查询</div>
+        <div class="arch-item">persistent message：<strong>先写 session（core:extension_message custom entry），拿到 entryId 后再发布 event</strong>；永不进入 model context</div>
+        <div class="arch-item">diagnostic：复用 <strong>CoreDiagnostic</strong>，domain=extension，source 注入，local code 规范化为 extension.&lt;extensionId&gt;.&lt;code&gt;</div>
+        <div class="arch-item">顺序契约：顺序 await 的 presentation 调用位于 <strong>command_accepted 与 command_completed 之间</strong>，按调用顺序到达</div>
+        <div class="arch-item">validation、size limits、reload/dispose cleanup（含 status registry 清空）</div>
+        <div class="arch-item">主动发布的 presentation 不回灌 extension observers</div>
+      </div>
+
+      <div class="arch-arrow">→</div>
+
+      <div class="arch-column">
+        <h3>Consumer Projection</h3>
+        <div class="arch-item"><strong>TUI</strong>：output/persistent/diagnostic → timeline；notify → transient notice；status → working-status 槽位 + neutral chips（仅 active agent）；human request → capturing overlay + 隐私安全留痕</div>
+        <div class="arch-item"><strong>CLI</strong>：统一的有界纯文本降级；每通道映射为确定性单行格式（见下）</div>
+        <div class="arch-item"><strong>RPC</strong>：转发同一 canonical event；status 由 query 补齐晚接入快照</div>
+        <div class="arch-item"><strong>Headless</strong>：记录或忽略展示事件</div>
+        <div class="arch-item">第一版无 capability negotiation，无 ctx.ui，无 Component 穿越边界</div>
+        <div class="arch-item">未来可选 TUI presentation entry 只做增强，不参与 core 行为</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h3>六类预定义通道（含全部裁决）</h3>
+    <div class="channel-grid">
+      <div class="channel">
+        <h3>1. Output</h3>
+        <span class="sig">emitOutput(text: string): Promise&lt;void&gt;</span>
+        <p>命令或任务执行中的追加式文本。完成痕迹由 extension 自己 emit（如 “✓ Index build completed”），不由 status 折叠产生。</p>
+        <p>identity/correlation 待补：presentationId 是 output item 的稳定 view key，commandId 关联所属命令。</p>
+        <span class="badge ephemeral">ephemeral</span>
+        <span class="badge">append-only</span>
+        <span class="badge">timeline</span>
+        <span class="badge">基础已实现 · identity/correlation 待补</span>
+      </div>
+      <div class="channel">
+        <h3>2. Status</h3>
+        <span class="sig">setStatus(key: string, status: {
+  text: string;
+  progress?: { completed: number; total?: number };
+}): Promise&lt;void&gt;
+clearStatus(key: string): Promise&lt;void&gt;</span>
+        <p>可替换、可清除、可查询的当前状态。progress 只有最小形状——不加 percent、stage 数组，等真实需求再扩；total 缺席表示总量未知，consumer 画 spinner 而非进度条。绝不进入 timeline，也不携带 severity：chip 一律 neutral，warning/error 色彩与 attention 只来自 diagnostic。</p>
+        <p>registry 顺序契约与 agent_status_changed 相同：set 先写 registry 再发 event，clear 先删除再发 event，listener 内查询必须看到新值；晚接入 / hydration 中的 consumer 用 listExtensionStatuses(agentId) 重建 status area，不回放事件。extension reload/dispose、agent dispose 时 core 清空条目并发 clear event；command 结束不自动清除——清除是 extension 的显式责任，consumer 可显示 status 年龄（updatedAt）。</p>
+        <span class="badge core">core registry</span>
+        <span class="badge">replace/clear</span>
+        <span class="badge">snapshot query</span>
+        <span class="badge new">新增</span>
+      </div>
+      <div class="channel">
+        <h3>3. Notification</h3>
+        <span class="sig">notify(text: string): Promise&lt;void&gt;</span>
+        <p>一次性提醒，仅 info 语义：无 severity、无 code、无 dedupe、不产生 attention。任何“有问题”的事实必须走 reportDiagnostic——这条硬边界防止六通道退化为“作者随便挑一个能显示的”。显示时长与清除由 consumer 决定。</p>
+        <span class="badge ephemeral">ephemeral</span>
+        <span class="badge">fire-once</span>
+        <span class="badge">notice</span>
+        <span class="badge new">新增 · 推迟候选</span>
+      </div>
+      <div class="channel">
+        <h3>4. Persistent Message</h3>
+        <span class="sig">publishMessage(message: {
+  kind: "text" | "markdown" | "code";
+  title?: string;
+  content: string;
+}): Promise&lt;{ entryId: string }&gt;</span>
+        <p>可恢复的展示内容。以 core:extension_message custom entry 落 session，hydration 时重建；永不进入 model context。Action 返回值、live event 与 hydration 都携带同一个 entryId：projector 用它消除快照与 buffered event 竞争产生的重复。</p>
+        <span class="badge session">session</span>
+        <span class="badge">append-only</span>
+        <span class="badge">timeline</span>
+        <span class="badge new">新增</span>
+      </div>
+      <div class="channel">
+        <h3>5. Diagnostic</h3>
+        <span class="sig">reportDiagnostic(draft: {
+  severity: "info" | "warning" | "error";
+  disposition?: "reported" | "degraded";
+  code: string;
+  message: string;
+  details?: Record&lt;string, unknown&gt;;
+}): Promise&lt;void&gt;</span>
+        <p>复用 CoreDiagnostic：domain=extension，source/agentId/extensionId 由 core 注入；local code 被规范化为 extension.&lt;extensionId&gt;.&lt;code&gt;。disposition 缺省为 reported，作者不能自称 blocked。该 action 产生的 diagnostic 不回灌 extension observers。</p>
+        <p>每次上报生成新的 core id，是独立事实：dedupe 只合并同一事实的多路径观察（throw / return / event），不合并重复上报。持续性问题由 attention 的持续性表达，作者不应轮询式重报同一 code。</p>
+        <span class="badge core">diagnostic flow</span>
+        <span class="badge">dedupe</span>
+        <span class="badge">attention</span>
+        <span class="badge new">新增入口 · 复用管线</span>
+      </div>
+      <div class="channel">
+        <h3>6. Human Request</h3>
+        <span class="sig">requestHuman(draft: HumanRequestDraft):
+  Promise&lt;HumanResponse&gt;</span>
+        <p>唯一需要 consumer 返回响应的交互通道。HumanRequestEnvelope 必须补 agentId，不能依赖 pending event 补身份。TUI 以 capturing overlay 呈现，按键走 tui.select.* keybinding map。</p>
+        <p>resolved 后追加 ephemeral 折叠留痕：confirm 显示 Yes/No；select 的答案 ∈ options 时显示该项（候选文本本就展示过），free input 回退 “Answered”；input / argumentsCompletion / custom 一律只显示 “Answered”，不回显潜在敏感值。</p>
+        <span class="badge core">request broker</span>
+        <span class="badge">response</span>
+        <span class="badge">overlay</span>
+        <span class="badge">broker 已实现 · envelope.agentId 待补</span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h3>Canonical event 与身份契约</h3>
+    <div class="cli-map"><span class="dim">extension_output</span> {
+  presentationId, agentId, extensionId, commandId?, text, createdAt
+}
+
+<span class="dim">extension_status_changed</span> {
+  presentationId, agentId, extensionId, commandId?,
+  key, status?: { text, progress?: { completed, total? } }, changedAt
+}
+<span class="muted">status 缺席表示 clear；真实当前值以 core registry 为准。</span>
+
+<span class="dim">extension_notification</span> {
+  presentationId, agentId, extensionId, commandId?, text, createdAt
+}
+
+<span class="dim">extension_message_published</span> {
+  presentationId, entryId, agentId, extensionId, commandId?,
+  message: { kind, title?, content }, createdAt
+}
+<span class="muted">entryId 是 live/hydration 稳定身份；presentationId 只标识本次 runtime event。</span>
+
+<span class="dim">diagnostic</span> {
+  diagnostic: {
+    id, domain: "extension", code, severity, disposition,
+    agentId, extensionId, source, message, details?
+  },
+  createdAt
+}
+
+<span class="dim">human_request_pending</span> {
+  agentId, request: HumanRequestEnvelope  <span class="muted">// envelope 增补 agentId 后与外层一致</span>
+}
+<span class="dim">human_request_resolved</span> {
+  agentId, requestId, response, completedAt
+}
+<span class="dim">human_request_timeout / human_request_cancelled</span> {
+  agentId, requestId, reason?, completedAt
+}</div>
+  </section>
+
+  <section>
+    <h3>同一个 agent 中的 TUI 形态</h3>
+    <p class="subtitle">status/progress 只出现在 working-status 槽位与 neutral chips，不进 timeline；“✓ 完成”行来自 extension 自己的 emitOutput；diagnostic 与 notify 分开标注；human request 是 capturing overlay，resolved 后只留一行 ephemeral、隐私安全的折叠记录。</p>
+    <div class="terminal-shell">
+      <div class="terminal-title">
+        <span>WIDI · main · sonnet · ~/projs/widi</span>
+        <span>extension presentation overview</span>
+      </div>
+      <div class="terminal"><span class="user">❯ /index rebuild</span>
+
+<span class="dim">[indexer]</span> Scanning workspace files <span class="tag">· output</span>
+<span class="dim">[indexer]</span> Parsed 418 TypeScript files <span class="tag">· output</span>
+<span class="dim">[indexer]</span> <span class="ok">✓</span> Index build completed <span class="tag">· output（extension 自己 emit 的完成痕迹）</span>
+
+<span class="persistent"><span class="accent">Index Summary</span>  <span class="dim">persistent · indexer</span> <span class="tag">· publishMessage，resume 后按 entryId 恢复</span>
+
+Indexed **672 files** and **14,208 symbols**.
+
+```text
+TypeScript  418
+Markdown    173
+Other        81
+```</span>
+
+<span class="warn">▲ extension.audit.remote_policy_unreachable</span> <span class="dim">warning · degraded · audit</span> <span class="tag">· reportDiagnostic</span>
+Remote policy service is unavailable; local rules remain active.
+
+<span class="info">✱ audit</span> Report generated in 2.1s <span class="tag">· notify（consumer 决定显示时长）</span>
+
+<span class="dim">❯ audit · Upload the generated audit report? →</span> <span class="ok">Yes</span> <span class="tag">· confirm 可安全显示答案</span>
+<span class="dim">❯ deploy · Pick release target →</span> staging <span class="tag">· select 答案 ∈ options 可显示</span>
+<span class="dim">❯ auth · Enter access token →</span> <span class="muted">Answered</span> <span class="tag">· input/custom/free input 不回显内容</span>
+
+<span class="slot"><span class="dim">（运行中时的 working-status 槽位，clearStatus 后收起，不留 timeline 痕迹）</span>
+<span class="info">⠹ indexer</span> Building symbol index <span class="progress"><span>██████</span>░░░░</span> 418 / 672 <span class="tag">· setStatus，replace-in-place</span></span>
+<span class="rule">────────────────────────────────────────────────────────</span>
+❯
+<span class="rule">────────────────────────────────────────────────────────</span>
+<span class="dim">~/p/widi · ctx 36k · ← agents</span>
+
+<span class="status-row"><span class="status-chip">indexer · ready · 14,208 symbols</span> <span class="status-chip">audit · local policy only</span> <span class="status-chip">+1</span></span><span class="tag">status chips：无 severity，保持 neutral；问题色彩来自上方 diagnostic</span>
+<span class="ok">● main</span> <span class="dim">idle</span>     <span class="info">● reviewer</span> <span class="dim">running</span>     <span class="warn">! research</span> <span class="dim">needs input</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h3>Human Request：capturing overlay</h3>
+    <p class="subtitle">同一时刻只显示一个 overlay，FIFO 排队；标题始终包含 requesting agent 与 extension；后台请求不切换 active agent。</p>
+    <div class="overlay-demo">        ┌─ <span class="accent">audit needs confirmation</span> · <span class="dim">agent: main</span> ─────┐
+        │                                                   │
+        │ Upload the generated audit report?                │
+        │                                                   │
+        │ <span class="ok">▸ Yes</span>                                             │
+        │   No                                              │
+        │                                                   │
+        │ <span class="dim">tui.select.up/down 移动 · confirm 确认 · cancel 取消</span> │
+        └───────────────────────────────────────────────────┘
+<span class="dim">resolved 后 overlay 关闭、恢复 editor focus，timeline 留一行 ephemeral 记录：</span>
+<span class="dim">❯ audit · Upload the generated audit report? →</span> <span class="ok">Yes</span>
+<span class="dim">❯ deploy · Pick release target →</span> staging <span class="dim">（select 值 ∈ options）</span>
+<span class="dim">❯ auth · Enter access token →</span> <span class="muted">Answered（值不回显）</span></div>
+  </section>
+
+  <section>
+    <h3>CLI 有界纯文本降级（确定性映射）</h3>
+    <div class="cli-map"><span class="dim">output      </span>[indexer] Scanning workspace files
+<span class="dim">setStatus   </span>[indexer] status build: Building symbol index (418/672)
+<span class="dim">clearStatus </span><span class="muted">（不打印）</span>
+<span class="dim">notify      </span>[audit] notice: Report generated in 2.1s
+<span class="dim">diagnostic  </span>[audit] warning extension.audit.remote_policy_unreachable: Remote policy service is unavailable
+<span class="dim">persistent  </span>[indexer] Index Summary
+            Indexed 672 files and 14,208 symbols. <span class="muted">（有界截断，markdown 按纯文本输出）</span>
+<span class="dim">human req.  </span><span class="muted">沿用现有 CLI prompt 流程</span></div>
+  </section>
+
+  <section>
+    <h3>不可突破的边界</h3>
+    <div class="rules">
+      <div class="rule-card"><strong>无 UI 反向依赖</strong><br>Core extension 不 import pi-tui，不读取当前 consumer 类型。</div>
+      <div class="rule-card"><strong>无隐式 renderer</strong><br>command result 的对象字段不会被解释成按钮、widget 或布局。</div>
+      <div class="rule-card"><strong>展示事件只读</strong><br>交互只通过 requestHuman 或已注册 command 完成。</div>
+      <div class="rule-card"><strong>无 presentation EventBus</strong><br>Extension 主动发布的展示事实不回灌 observers。</div>
+      <div class="rule-card"><strong>Durability 明确</strong><br>只有 persistent message 写 session；status 仅是 runtime current state；两者都永不进入 model context。</div>
+      <div class="rule-card"><strong>Payload bounds ≠ flood control</strong><br>core 对单条 text/message/details 施加 size limit；第一版不做事件速率限制。pi-tui requestRender() 只合并约 16ms 内的绘制请求，不减少 event 数、projector 工作量或 timeline 内存；CLI 与 component formatter 继续做有界截断。</div>
+      <div class="rule-card"><strong>降级确定性</strong><br>没有自定义 presentation module 时，所有 consumer 仍能正确表达语义；CLI 的每通道单行格式是契约，不是实现细节。</div>
+      <div class="rule-card"><strong>Attribution 不可伪造</strong><br>agentId / extensionId / presentationId / entryId 全部由 core 生成注入。</div>
+    </div>
+  </section>
+
+  <section>
+    <h3>实施排序与跨文档任务</h3>
+    <div class="rollout">
+      <div class="rollout-item"><span class="step">前置</span><span><strong>API v1 开发期重塑</strong>：extension API 尚未公开发布，presentation actions 直接补进 v1、更新后重新冻结，不升 v2；首次公开发布后才要求兼容演进。<code>ExtensionActionFailure.action</code> 增加 setStatus / clearStatus / notify / publishMessage / reportDiagnostic 五个成员。</span></div>
+      <div class="rollout-item"><span class="step">已有基础</span><span>Output（extension_output）、Diagnostic 事件流、Human Request broker 已实现。Output 仍需补 presentationId / commandId；HumanRequestEnvelope 仍需补 agentId；Diagnostic 需补 reportDiagnostic 作者入口与 core-generated id。</span></div>
+      <div class="rollout-item"><span class="step">1</span><span><strong>Status</strong>：registry + listExtensionStatuses + canonical event + reload/dispose cleanup。对 TUI 体验增益最大，且牵动 orchestrator query API，与 TUI 阶段 3/4 并行敲定。</span></div>
+      <div class="rollout-item"><span class="step">2</span><span><strong>Persistent Message</strong>：core:extension_message entry + action 返回 entryId + canonical event + hydrator 恢复/entryId 去重。必须赶在 TUI 阶段 2 hydrator 定型前裁决 entry type。</span></div>
+      <div class="rollout-item"><span class="step">3</span><span><strong>reportDiagnostic 作者入口</strong>：复用既有管线，工作量最小，随任一批次落地。</span></div>
+      <div class="rollout-item"><span class="step">4</span><span><strong>notify</strong>：最后实现或推迟——六通道中唯一可被 emitOutput 近似替代的，符合“演进触发条件”原则。</span></div>
+      <div class="rollout-item"><span class="step">同步</span><span><strong>tui-v1-design.md 更新清单</strong>：timeline item 增加 PersistentMessageItem 与 ephemeral HumanRequestTraceItem；§6.3 extension_output 的 projector local view key 裁决改为直接使用 presentationId；§9.2 归约表增加 extension_status_changed / extension_message_published / extension_notification；§10.2 hydrator 恢复 core:extension_message 并按 entryId 去重；§12.2 增加留痕隐私规则（confirm / select ∈ options / 其余 Answered）；组件树增加 status 槽位与 neutral chips；§16 测试补 status 快照查询顺序、chips +N、敏感回答不回显、commandId correlation。</span></div>
+    </div>
+  </section>
+</div>
