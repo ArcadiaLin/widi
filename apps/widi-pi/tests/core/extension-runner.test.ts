@@ -219,6 +219,69 @@ describe("ExtensionRunner scoped output action", () => {
 	});
 });
 
+describe("ExtensionRunner scoped notification action", () => {
+	it("injects attribution and threads command ids into notifications", async () => {
+		const runner = await createRunner([["sample", () => {}]]);
+		const calls: Array<[string, string, string, string | undefined]> = [];
+		const unboundActions = (
+			runner as unknown as { _actions: ExtensionCoreActions }
+		)._actions;
+		runner.bindCore(
+			{
+				...unboundActions,
+				notify: async (agentId, extensionId, text, commandId) => {
+					calls.push([agentId, extensionId, text, commandId]);
+				},
+			},
+			{},
+		);
+
+		await runner.createContext("sample").actions.notify("plain");
+		await runner
+			.createCommandContext("sample", { commandId: "command-7" })
+			.actions.notify("from command");
+
+		expect(calls).toEqual([
+			["agent", "sample", "plain", undefined],
+			["agent", "sample", "from command", "command-7"],
+		]);
+	});
+
+	it("reports notification delivery failures before rethrowing", async () => {
+		const runner = await createRunner([["sample", () => {}]]);
+		const failure = new Error("notification delivery failed");
+		const reported: ExtensionActionFailure[] = [];
+		const unboundActions = (
+			runner as unknown as { _actions: ExtensionCoreActions }
+		)._actions;
+		runner.bindCore(
+			{
+				...unboundActions,
+				notify: async () => {
+					throw failure;
+				},
+			},
+			{
+				reportActionFailure: async (actionFailure) => {
+					reported.push(actionFailure);
+				},
+			},
+		);
+
+		await expect(
+			runner.createContext("sample").actions.notify("ready"),
+		).rejects.toBe(failure);
+		expect(reported).toEqual([
+			{
+				extensionId: "sample",
+				action: "notify",
+				code: "extension.action_failed",
+				error: failure,
+			},
+		]);
+	});
+});
+
 describe("ExtensionRunner scoped status actions", () => {
 	it("injects attribution and threads command ids into status mutations", async () => {
 		const runner = await createRunner([["sample", () => {}]]);

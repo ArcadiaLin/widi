@@ -4,6 +4,7 @@ import type {
 } from "../diagnostics.ts";
 
 export const MAX_EXTENSION_OUTPUT_BYTES = 65_536;
+export const MAX_EXTENSION_NOTIFICATION_BYTES = 4_096;
 export const MAX_EXTENSION_STATUS_KEY_BYTES = 128;
 export const MAX_EXTENSION_STATUS_TEXT_BYTES = 4_096;
 export const MAX_EXTENSION_MESSAGE_TITLE_BYTES = 4_096;
@@ -76,6 +77,14 @@ export function assertExtensionOutputText(text: string): void {
 			`Extension output text exceeds ${MAX_EXTENSION_OUTPUT_BYTES} UTF-8 bytes.`,
 		);
 	}
+}
+
+export function assertExtensionNotificationText(text: string): void {
+	assertBoundedNonBlankText(
+		text,
+		"Extension notification text",
+		MAX_EXTENSION_NOTIFICATION_BYTES,
+	);
 }
 
 export function assertExtensionStatusKey(key: string): void {

@@ -273,7 +273,7 @@ clearStatus(key: string): Promise&lt;void&gt;</span>
         <span class="badge ephemeral">ephemeral</span>
         <span class="badge">fire-once</span>
         <span class="badge">notice</span>
-        <span class="badge new">新增 · 推迟候选</span>
+        <span class="badge">已实现（4 KiB / commandId / CLI）</span>
       </div>
       <div class="channel">
         <h3>4. Persistent Message</h3>
@@ -427,7 +427,7 @@ Remote policy service is unavailable; local rules remain active.
     <div class="cli-map"><span class="dim">output      </span>[extension:indexer] Scanning workspace files
 <span class="dim">setStatus   </span>[extension:indexer] status build: Building symbol index (418/672) <span class="muted">（total 未知时输出 (418/?)）</span>
 <span class="dim">clearStatus </span><span class="muted">（不打印）</span>
-<span class="dim">notify      </span>[audit] notice: Report generated in 2.1s <span class="muted">（planned）</span>
+<span class="dim">notify      </span>[extension:audit] notice: Report generated in 2.1s <span class="muted">（折叠为空格，text 最多显示 240 字符）</span>
 <span class="dim">diagnostic  </span>[diagnostic:warning] extension.audit.remote_policy_unreachable: Remote policy service is unavailable
 <span class="dim">persistent  </span>[extension:indexer] Index Summary
             Indexed 672 files and 14,208 symbols. <span class="muted">（有界截断，markdown 按纯文本输出）</span>
@@ -456,8 +456,8 @@ Remote policy service is unavailable; local rules remain active.
       <div class="rollout-item"><span class="step">1 ✓</span><span><strong>Status（已完成）</strong>：setStatus / clearStatus、registry、listExtensionStatuses、canonical event、mutation-first、commandId correlation、observer no-feedback、validation、成功 reload / dispose cleanup、skipped / failed reload preservation 与 CLI 降级均已落地。</span></div>
       <div class="rollout-item"><span class="step">2 ✓</span><span><strong>Persistent Message（core 已完成）</strong>：core:extension_message entry、action 返回 entryId、canonical event、kind/title/content validation 与 CLI 降级均已落地；entry type 已在 TUI 阶段 2 hydrator 定型前裁决，hydrator 恢复/entryId 去重随 TUI 阶段 2 实现。</span></div>
       <div class="rollout-item"><span class="step">3 ✓</span><span><strong>reportDiagnostic 作者入口（已完成）</strong>：复用标准 diagnostic event，fresh core id、local code namespace、agent/profile/extension attribution、可选 commandId、draft validation 与 observer no-feedback 均已落地。</span></div>
-      <div class="rollout-item"><span class="step">4</span><span><strong>notify</strong>：最后实现或推迟——六通道中唯一可被 emitOutput 近似替代的，符合“演进触发条件”原则。</span></div>
-      <div class="rollout-item"><span class="step">同步 ✓</span><span><strong>tui-v1-design.md 已同步</strong>：PersistentMessageItem、ephemeral HumanRequestTraceItem、status projection、extension_message_published、core:extension_message hydration/entryId 去重、隐私留痕、extension diagnostic fresh-id 语义和相关测试要求均已写入；extension_notification 仍作为 notify 阶段的保留协议。</span></div>
+      <div class="rollout-item"><span class="step">4 ✓</span><span><strong>notify（已完成）</strong>：notify action、extension_notification、4 KiB UTF-8 validation、presentationId / commandId、observer no-feedback、listener/client failure isolation 与 CLI 单行降级均已落地。它保持 info-only transient notice，不退化为 timeline output 或 diagnostic。</span></div>
+      <div class="rollout-item"><span class="step">同步 ✓</span><span><strong>tui-v1-design.md 已同步</strong>：六类通道的 projection、durability、identity、hydration、attention 与测试要求均已写入；TUI 部署可以直接消费完整 presentation protocol。</span></div>
     </div>
   </section>
 </div>

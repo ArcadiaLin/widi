@@ -80,6 +80,7 @@ import {
 	type ExtensionSessionCommandResult,
 } from "./extension/index.ts";
 import {
+	assertExtensionNotificationText,
 	assertExtensionOutputText,
 	assertExtensionStatusKey,
 	type ExtensionMessage,
@@ -2311,6 +2312,22 @@ export class AgentOrchestrator {
 				await this._emit(
 					{
 						type: "extension_output",
+						presentationId: this._createPresentationId(),
+						agentId,
+						extensionId,
+						commandId,
+						text,
+						createdAt: now(),
+					},
+					{ observeExtensions: false },
+				);
+			},
+			notify: async (agentId, extensionId, text, commandId) => {
+				this._requireAgentRecord(agentId);
+				assertExtensionNotificationText(text);
+				await this._emit(
+					{
+						type: "extension_notification",
 						presentationId: this._createPresentationId(),
 						agentId,
 						extensionId,

@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
 	formatExtensionMessageEvent,
+	formatExtensionNotificationEvent,
 	formatExtensionStatusEvent,
 	MAX_CLI_MESSAGE_CHARS,
 	MAX_CLI_MESSAGE_LINES,
+	MAX_CLI_NOTIFICATION_CHARS,
 } from "../src/cli-event-format.ts";
 import type { OrchestratorEvent } from "../src/core/types.ts";
+
+type ExtensionNotificationEvent = Extract<
+	OrchestratorEvent,
+	{ type: "extension_notification" }
+>;
 
 type ExtensionStatusChangedEvent = Extract<
 	OrchestratorEvent,
@@ -48,6 +55,52 @@ function statusEvent(
 		...overrides,
 	};
 }
+
+function notificationEvent(text: string): ExtensionNotificationEvent {
+	return {
+		type: "extension_notification",
+		presentationId: "presentation-1",
+		agentId: "agent-1",
+		extensionId: "audit",
+		text,
+		createdAt: "2026-07-16T00:00:00.000Z",
+	};
+}
+
+describe("formatExtensionNotificationEvent", () => {
+	it("formats an attributed info-only notice", () => {
+		expect(
+			formatExtensionNotificationEvent(
+				notificationEvent("Report generated in 2.1s"),
+			),
+		).toBe("[extension:audit] notice: Report generated in 2.1s");
+	});
+
+	it("folds whitespace into one line", () => {
+		expect(
+			formatExtensionNotificationEvent(
+				notificationEvent("Report\n generated\t in  2.1s"),
+			),
+		).toBe("[extension:audit] notice: Report generated in 2.1s");
+	});
+
+	it("truncates long notices to a bounded single line", () => {
+		expect(
+			formatExtensionNotificationEvent(
+				notificationEvent("x".repeat(MAX_CLI_NOTIFICATION_CHARS + 10)),
+			),
+		).toBe(
+			`[extension:audit] notice: ${"x".repeat(MAX_CLI_NOTIFICATION_CHARS)}…`,
+		);
+	});
+
+	it("counts Unicode code points without splitting surrogate pairs", () => {
+		const text = `${"x".repeat(MAX_CLI_NOTIFICATION_CHARS - 1)}🙂`;
+		expect(formatExtensionNotificationEvent(notificationEvent(text))).toBe(
+			`[extension:audit] notice: ${text}`,
+		);
+	});
+});
 
 describe("formatExtensionStatusEvent", () => {
 	it("formats status with no, determinate, and indeterminate progress", () => {

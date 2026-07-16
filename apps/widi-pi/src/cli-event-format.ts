@@ -5,6 +5,11 @@ type ExtensionStatusChangedEvent = Extract<
 	{ type: "extension_status_changed" }
 >;
 
+type ExtensionNotificationEvent = Extract<
+	OrchestratorEvent,
+	{ type: "extension_notification" }
+>;
+
 type ExtensionMessagePublishedEvent = Extract<
 	OrchestratorEvent,
 	{ type: "extension_message_published" }
@@ -12,6 +17,19 @@ type ExtensionMessagePublishedEvent = Extract<
 
 export const MAX_CLI_MESSAGE_LINES = 12;
 export const MAX_CLI_MESSAGE_CHARS = 2_000;
+export const MAX_CLI_NOTIFICATION_CHARS = 240;
+
+export function formatExtensionNotificationEvent(
+	event: ExtensionNotificationEvent,
+): string {
+	const folded = event.text.trim().replace(/\s+/g, " ");
+	const characters = [...folded];
+	const text =
+		characters.length > MAX_CLI_NOTIFICATION_CHARS
+			? `${characters.slice(0, MAX_CLI_NOTIFICATION_CHARS).join("")}…`
+			: folded;
+	return `[extension:${event.extensionId}] notice: ${text}`;
+}
 
 export function formatExtensionStatusEvent(
 	event: ExtensionStatusChangedEvent,

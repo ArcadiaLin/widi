@@ -187,6 +187,9 @@ export interface ExtensionActions {
 	// prompt/steer, it does not reach the model or the session. Repeated calls
 	// create separate output items; sequentially awaiting calls preserves order.
 	emitOutput(text: string): Promise<void>;
+	// Fire a transient info-only notice. The consumer owns display lifetime;
+	// notices have no severity, code, dedupe, clear, or attention semantics.
+	notify(text: string): Promise<void>;
 	// Keyed runtime current state for client status areas. Reusing a key
 	// replaces the previous value; clearing a missing key is a no-op.
 	setStatus(key: string, status: ExtensionStatus): Promise<void>;
@@ -246,6 +249,12 @@ export interface ExtensionCoreActions {
 	// commandId is present when the call comes from a line-command execution
 	// context; the orchestrator writes it into the extension_output event.
 	emitOutput(
+		agentId: string,
+		extensionId: string,
+		text: string,
+		commandId?: string,
+	): Promise<void>;
+	notify(
 		agentId: string,
 		extensionId: string,
 		text: string,
@@ -412,9 +421,6 @@ export interface ExtensionSessionActions {
 
 export interface ExtensionActionFailure {
 	extensionId: string;
-	// The presentation actions (clearStatus/notify/publishMessage/
-	// reportDiagnostic/setStatus) are declared ahead of their ExtensionActions
-	// methods; the v1 dev-phase reshape lands each with its channel.
 	action:
 		| "abort"
 		| "appendEntry"

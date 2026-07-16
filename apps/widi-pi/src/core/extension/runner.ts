@@ -743,6 +743,11 @@ export class ExtensionRunner {
 					await this._actions.emitOutput(agentId, extensionId, text, commandId);
 				});
 			},
+			notify: async (text) => {
+				await this._runReportedAction(failure("notify"), async () => {
+					await this._actions.notify(agentId, extensionId, text, commandId);
+				});
+			},
 			setStatus: async (key, status) => {
 				await this._runReportedAction(failure("setStatus"), async () => {
 					await this._actions.setStatus(
@@ -1157,6 +1162,7 @@ function createUnboundActions(): ExtensionCoreActions {
 		setAgentActiveTools: async () => notBound(),
 		requestHuman: async () => notBound(),
 		emitOutput: async () => notBound(),
+		notify: async () => notBound(),
 		setStatus: async () => notBound(),
 		clearStatus: async () => notBound(),
 		publishMessage: async () => notBound(),

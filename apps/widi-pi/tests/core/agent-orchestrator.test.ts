@@ -3806,6 +3806,258 @@ describe("AgentOrchestrator", () => {
 		).toHaveLength(2);
 	});
 
+	it("publishes ephemeral info-only extension notifications without observer feedback", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtension("sample", (api) => {
+			api.registerCommand({
+				name: "notify",
+				handler: async (_args, context) => {
+					await context.actions.notify("Report generated in 2.1s");
+					return "done";
+				},
+			});
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const events: OrchestratorEvent[] = [];
+		const clientEvents: OrchestratorEvent[] = [];
+		const extensionObservedEvents: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		orchestrator.registerClient({
+			id: "notification-client",
+			receive: (event) => {
+				clientEvents.push(event);
+			},
+		});
+		Object.assign(orchestrator, {
+			_isExtensionObservedEvent: () => true,
+			_emitToExtensionObservers: async (event: OrchestratorEvent) => {
+				extensionObservedEvents.push(event);
+			},
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "/notify"),
+		).resolves.toMatchObject({
+			kind: "command",
+			commandId: "orchestrator-command-1",
+			value: "done",
+		});
+
+		const commandEvents = events.filter(
+			(event) =>
+				(event.type.startsWith("command_") &&
+					"command" in event &&
+					event.command?.source.kind === "extension") ||
+				event.type === "extension_notification",
+		);
+		expect(commandEvents.map((event) => event.type)).toEqual([
+			"command_detected",
+			"command_accepted",
+			"extension_notification",
+			"command_completed",
+		]);
+		const notification = commandEvents.find(
+			(event) => event.type === "extension_notification",
+		);
+		expect(notification).toEqual({
+			type: "extension_notification",
+			presentationId: "orchestrator-presentation-1",
+			agentId,
+			extensionId: "sample",
+			commandId: "orchestrator-command-1",
+			text: "Report generated in 2.1s",
+			createdAt: expect.any(String),
+		});
+		expect(notification).not.toHaveProperty("severity");
+		expect(notification).not.toHaveProperty("code");
+		expect(extensionObservedEvents).not.toContainEqual(
+			expect.objectContaining({ type: "extension_notification" }),
+		);
+		expect(clientEvents).toContainEqual(notification);
+		expect([...env.files.values()].join("\n")).not.toContain(
+			"Report generated in 2.1s",
+		);
+	});
+
+	it("isolates listener and client failures from extension notification delivery", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtension("sample", (api) => {
+			api.registerCommand({
+				name: "notify",
+				handler: async (_args, context) => {
+					await context.actions.notify("Ready");
+					return "done";
+				},
+			});
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const delivered: OrchestratorEvent[] = [];
+		const clientEvents: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			if (event.type === "extension_notification") {
+				throw new Error("listener exploded");
+			}
+		});
+		orchestrator.subscribe((event) => {
+			delivered.push(event);
+		});
+		orchestrator.registerClient({
+			id: "broken-notification-client",
+			receive: (event) => {
+				if (event.type === "extension_notification") {
+					throw new Error("client exploded");
+				}
+			},
+		});
+		orchestrator.registerClient({
+			id: "notification-observer-client",
+			receive: (event) => {
+				clientEvents.push(event);
+			},
+		});
+
+		await expect(
+			orchestrator.inputAgent(agentId, "/notify"),
+		).resolves.toMatchObject({
+			kind: "command",
+			value: "done",
+		});
+		expect(delivered).toContainEqual(
+			expect.objectContaining({
+				type: "extension_notification",
+				text: "Ready",
+			}),
+		);
+		expect(clientEvents).toContainEqual(
+			expect.objectContaining({
+				type: "extension_notification",
+				text: "Ready",
+			}),
+		);
+		expect(clientEvents).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					code: "orchestrator.listener_failed",
+					message: "listener exploded",
+				}),
+			}),
+		);
+		expect(delivered).toContainEqual(
+			expect.objectContaining({
+				type: "diagnostic",
+				diagnostic: expect.objectContaining({
+					code: "orchestrator.client_failed",
+					message: "client exploded",
+				}),
+			}),
+		);
+	});
+
+	it("accepts the notification byte limit and rejects blank or oversized payloads", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtension("sample", (api) => {
+			api.registerCommand({
+				name: "max-notification",
+				handler: async (_args, context) => {
+					await context.actions.notify("é".repeat(2_048));
+				},
+			});
+			for (const [name, text] of [
+				["empty-notification", ""],
+				["blank-notification", " \n\t "],
+				["large-notification", "é".repeat(2_049)],
+			] as const) {
+				api.registerCommand({
+					name,
+					handler: async (_args, context) => {
+						await context.actions.notify(text);
+					},
+				});
+			}
+		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const agentId = await orchestrator.spawnAgent();
+
+		await expect(
+			orchestrator.inputAgent(agentId, "/max-notification"),
+		).resolves.toMatchObject({ kind: "command" });
+		for (const name of [
+			"empty-notification",
+			"blank-notification",
+			"large-notification",
+		]) {
+			await expect(
+				orchestrator.inputAgent(agentId, `/${name}`),
+			).resolves.toMatchObject({ kind: "failed" });
+		}
+		expect(
+			events.filter((event) => event.type === "extension_notification"),
+		).toEqual([
+			expect.objectContaining({
+				text: "é".repeat(2_048),
+			}),
+		]);
+		expect(
+			events.filter(
+				(event) =>
+					event.type === "diagnostic" &&
+					event.diagnostic.code === "extension.action_failed" &&
+					event.diagnostic.details?.action === "notify",
+			),
+		).toHaveLength(3);
+	});
+
 	it("stores keyed extension status and emits mutation-first canonical events", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = {

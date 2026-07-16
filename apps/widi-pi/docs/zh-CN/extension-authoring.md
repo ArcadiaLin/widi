@@ -136,6 +136,14 @@ api.registerCommand({
 
 每次调用产生一条独立、append-only plain-text event；顺序 `await` 才保证调用顺序。它不合并进度项、不进入 model context、不写 session，重启或 resume 后不会恢复。
 
+只需要短暂告知用户一个成功或信息事实时使用 `notify()`：
+
+```ts
+await context.actions.notify("Report generated in 2.1s");
+```
+
+Notify 是 info-only、fire-once 的 transient notice。Consumer 决定显示位置和时长；它不进入 timeline、model context 或 session，重启或 resume 后不会恢复。Text 必须非空白且不超过 4 KiB（UTF-8 字节）。它没有 severity、code、dedupe、clear 或 attention：需要展示过程痕迹使用 `emitOutput`，需要 warning/error 或降级事实使用 `reportDiagnostic`。
+
 需要可替换的当前状态时使用 `setStatus()`，完成后显式 `clearStatus()`：
 
 ```ts
@@ -254,6 +262,7 @@ Callback context 绑定 extension 自己的 agent。常用 actions：
 - prompt/steer/followUp、abort、compact。
 - requestHuman。
 - emitOutput：向 client 追加 own-agent 的 ephemeral plain-text output，不回灌 observer。
+- notify：发布 own-agent 的 info-only transient notice，不进入 timeline/session，也不产生 attention。
 - setStatus/clearStatus：维护 keyed runtime current state，不进入 timeline/session。
 - publishMessage：写入可恢复的展示消息，返回稳定 entryId。
 - reportDiagnostic：发布带 core attribution 的结构化问题事实。

@@ -124,6 +124,17 @@ export type OrchestratorEvent =
 			text: string;
 			createdAt: string;
 	  }
+	// Transient info-only notice. Consumers choose its display lifetime; it
+	// does not imply severity, attention, persistence, dedupe, or clear.
+	| {
+			readonly type: "extension_notification";
+			presentationId: string;
+			agentId: AgentId;
+			extensionId: string;
+			commandId?: string;
+			text: string;
+			createdAt: string;
+	  }
 	| {
 			readonly type: "extension_status_changed";
 			presentationId: string;
