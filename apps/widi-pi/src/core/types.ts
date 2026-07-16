@@ -29,6 +29,13 @@ export type OrchestratorEvent =
 			event: AgentHarnessEvent;
 	  }
 	| {
+			readonly type: "agent_status_changed";
+			agentId: AgentId;
+			previousStatus?: AgentLifecycleStatus;
+			status: AgentLifecycleStatus;
+			changedAt: string;
+	  }
+	| {
 			readonly type: "command_detected";
 			agentId: AgentId;
 			commandId: string;
@@ -95,6 +102,17 @@ export type OrchestratorEvent =
 			// block, or a crash blocked fail-closed (the extension.handler_failed
 			// diagnostic tells the two apart).
 			blockedBy: string;
+			createdAt: string;
+	  }
+	// Append-only plain text an extension pushes for direct client display
+	// (e.g. a query-style command's output or incremental progress notes).
+	// It is ephemeral: not persisted, not added to model context, and never
+	// fed back to extension observers.
+	| {
+			readonly type: "extension_output";
+			agentId: AgentId;
+			extensionId: string;
+			text: string;
 			createdAt: string;
 	  }
 	| HumanRequestEvent

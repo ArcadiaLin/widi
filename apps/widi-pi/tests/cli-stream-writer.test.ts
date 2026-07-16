@@ -60,4 +60,18 @@ describe("CliStreamWriter", () => {
 			"[thinking]\nreasoning\n[/thinking]\n[diagnostic] warning\n",
 		);
 	});
+
+	it("places append-only output between text deltas on separate lines", () => {
+		const { output, writer } = createWriter();
+
+		writer.writeTextDelta("answer-1");
+		writer.endMessage();
+		writer.writeLine("[extension:sample] working");
+		writer.writeTextDelta("answer-2");
+		writer.endMessage();
+
+		expect(output.join("")).toBe(
+			"answer-1\n[extension:sample] working\nanswer-2",
+		);
+	});
 });

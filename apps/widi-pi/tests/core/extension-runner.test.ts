@@ -2,6 +2,8 @@ import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import type { Command } from "../../src/core/command.ts";
 import {
+	type ExtensionActionFailure,
+	type ExtensionCoreActions,
 	type ExtensionFactory,
 	ExtensionLoader,
 	ExtensionRunner,
@@ -130,6 +132,63 @@ describe("ExtensionRunner inspect", () => {
 			stale: true,
 			message: "stale for test",
 		});
+	});
+});
+
+describe("ExtensionRunner scoped output action", () => {
+	it("injects the runner agent and calling extension ids", async () => {
+		const runner = await createRunner([["sample", () => {}]]);
+		const calls: Array<[string, string, string]> = [];
+		const unboundActions = (
+			runner as unknown as { _actions: ExtensionCoreActions }
+		)._actions;
+		runner.bindCore(
+			{
+				...unboundActions,
+				emitOutput: async (agentId, extensionId, text) => {
+					calls.push([agentId, extensionId, text]);
+				},
+			},
+			{},
+		);
+
+		await runner.createContext("sample").actions.emitOutput("working");
+
+		expect(calls).toEqual([["agent", "sample", "working"]]);
+	});
+
+	it("reports output delivery failures before rethrowing", async () => {
+		const runner = await createRunner([["sample", () => {}]]);
+		const failure = new Error("output delivery failed");
+		const reported: ExtensionActionFailure[] = [];
+		const unboundActions = (
+			runner as unknown as { _actions: ExtensionCoreActions }
+		)._actions;
+		runner.bindCore(
+			{
+				...unboundActions,
+				emitOutput: async () => {
+					throw failure;
+				},
+			},
+			{
+				reportActionFailure: async (actionFailure) => {
+					reported.push(actionFailure);
+				},
+			},
+		);
+
+		await expect(
+			runner.createContext("sample").actions.emitOutput("working"),
+		).rejects.toBe(failure);
+		expect(reported).toEqual([
+			{
+				extensionId: "sample",
+				action: "emitOutput",
+				code: "extension.action_failed",
+				error: failure,
+			},
+		]);
 	});
 });
 

@@ -101,6 +101,10 @@ function renderEvent(event: OrchestratorEvent): void {
 		case "diagnostic":
 			printDiagnostic(event.diagnostic);
 			return;
+		case "extension_output":
+			streamWriter.endMessage();
+			streamWriter.writeLine(`[extension:${event.extensionId}] ${event.text}`);
+			return;
 		case "input_transformed":
 			streamWriter.writeLine(
 				`[input] rewritten by ${event.transformedBy.join(", ")}: ${shortJson(event.text)}`,

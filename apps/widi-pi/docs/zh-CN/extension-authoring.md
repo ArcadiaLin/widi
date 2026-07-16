@@ -114,9 +114,27 @@ api.registerCommand({
   arguments: { required: true },
   async handler(args, context) {
     await context.session.appendEntry("note", { text: args });
+    return { saved: true, text: args };
   },
 });
 ```
+
+Line-command handler 的返回值会同时进入 `InputResult.value` 与 `command_completed.result`，富 client 可以将其显示为最终 command result。纯副作用 command 返回 `undefined`。
+
+执行期间需要追加进度时使用 `emitOutput()`：
+
+```ts
+api.registerCommand({
+  name: "tp-index",
+  async handler(_args, context) {
+    await context.actions.emitOutput("Scanning files");
+    await context.actions.emitOutput("Building index");
+    return { indexed: 42 };
+  },
+});
+```
+
+每次调用产生一条独立、append-only plain-text event；顺序 `await` 才保证调用顺序。它不合并进度项、不进入 model context、不写 session，重启或 resume 后不会恢复。
 
 Inline command 是无副作用的文本展开：
 
@@ -197,6 +215,7 @@ Callback context 绑定 extension 自己的 agent。常用 actions：
 - get/set tools 与 active tools。
 - prompt/steer/followUp、abort、compact。
 - requestHuman。
+- emitOutput：向 client 追加 own-agent 的 ephemeral plain-text output，不回灌 observer。
 - get/set session name、model、thinking level。
 - list commands/model candidates。
 - exec trusted project command。

@@ -730,6 +730,11 @@ export class ExtensionRunner {
 					async () =>
 						await this._actions.requestHuman(agentId, extensionId, request),
 				),
+			emitOutput: async (text) => {
+				await this._runReportedAction(failure("emitOutput"), async () => {
+					await this._actions.emitOutput(agentId, extensionId, text);
+				});
+			},
 			prompt: async (text, options) => {
 				await this._runReportedAction(failure("prompt"), async () => {
 					await this._actions.promptAgent(agentId, text, options);
@@ -1106,6 +1111,7 @@ function createUnboundActions(): ExtensionCoreActions {
 		setAgentTools: async () => notBound(),
 		setAgentActiveTools: async () => notBound(),
 		requestHuman: async () => notBound(),
+		emitOutput: async () => notBound(),
 		promptAgent: async () => notBound(),
 		steerAgent: async () => notBound(),
 		followUpAgent: async () => notBound(),

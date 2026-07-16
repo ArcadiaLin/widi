@@ -1311,7 +1311,7 @@ export class AgentOrchestrator {
 			agentId,
 			reason ?? `Agent disposed: ${agentId}`,
 		);
-		this._forceAgentStatus(agentId, "disposed");
+		await this._transitionAgentStatus(agentId, "disposed", { force: true });
 	}
 
 	async disposeAll(reason?: string): Promise<void> {
@@ -1635,8 +1635,7 @@ export class AgentOrchestrator {
 			agentProfile: profile,
 		});
 		const sessionMetadata = await session.getMetadata();
-		this._agents.set(
-			agentId,
+		await this._registerAgentRecord(
 			createAgentRecord({
 				agentId,
 				status: "creating",
@@ -1654,7 +1653,7 @@ export class AgentOrchestrator {
 				model,
 				thinkingLevel: options.thinkingLevel,
 			});
-			this._setAgentStatus(agentId, "idle");
+			await this._transitionAgentStatus(agentId, "idle");
 			await this._emit({ type: "agent_spawned", agentId, profile, model });
 			return { agentId, harness };
 		} catch (error) {
@@ -1666,7 +1665,7 @@ export class AgentOrchestrator {
 				phase: "create",
 				recoverable: true,
 			});
-			this._markExistingAgentUnavailable(agentId, diagnostic);
+			await this._markExistingAgentUnavailable(agentId, diagnostic);
 			if (!(error instanceof OrchestratorError)) {
 				await this._publishDiagnostic(diagnostic);
 			}
@@ -1703,8 +1702,7 @@ export class AgentOrchestrator {
 				activeToolNames?: string[] | null;
 			};
 			model = this._resolveResumeModel(options, context.model);
-			this._agents.set(
-				agentId,
+			await this._registerAgentRecord(
 				createAgentRecord({
 					agentId,
 					status: "creating",
@@ -1722,7 +1720,7 @@ export class AgentOrchestrator {
 				activeToolNames: context.activeToolNames ?? undefined,
 			});
 
-			this._setAgentStatus(agentId, "idle");
+			await this._transitionAgentStatus(agentId, "idle");
 			await this._emit({ type: "agent_resumed", agentId, profile, model });
 			return { agentId, harness };
 		} catch (error) {
@@ -1732,7 +1730,7 @@ export class AgentOrchestrator {
 				agentId,
 				recoverable: true,
 			});
-			this._markAgentUnavailable({
+			await this._markAgentUnavailable({
 				agentId,
 				resolvedProfile,
 				metadata: options.metadata,
@@ -2288,6 +2286,18 @@ export class AgentOrchestrator {
 					source: { kind: "extension", extensionId },
 				});
 			},
+			emitOutput: async (agentId, extensionId, text) => {
+				await this._emit(
+					{
+						type: "extension_output",
+						agentId,
+						extensionId,
+						text,
+						createdAt: now(),
+					},
+					{ observeExtensions: false },
+				);
+			},
 			promptAgent: async (agentId, text, options) => {
 				await this.promptAgent(agentId, text, options);
 			},
@@ -2339,14 +2349,14 @@ export class AgentOrchestrator {
 		};
 	}
 
-	private _markAgentUnavailable(options: {
+	private async _markAgentUnavailable(options: {
 		agentId: AgentId;
 		resolvedProfile: ResolvedAgentProfile | undefined;
 		metadata: JsonlSessionMetadata;
 		sessionMetadata?: AgentSessionMetadata;
 		model: RuntimeModel;
 		diagnostic: OrchestratorDiagnostic;
-	}): void {
+	}): Promise<void> {
 		const existing = this._agents.get(options.agentId);
 		const record = options.resolvedProfile
 			? createAgentRecord({
@@ -2367,7 +2377,8 @@ export class AgentOrchestrator {
 					sessionMetadata: options.sessionMetadata,
 					model: options.model,
 				});
-		this._agents.set(options.agentId, {
+		this._agentToolSets.delete(options.agentId);
+		await this._registerAgentRecord({
 			...record,
 			resourceDiagnostics: existing?.resourceDiagnostics
 				? [...existing.resourceDiagnostics]
@@ -2377,17 +2388,15 @@ export class AgentOrchestrator {
 				: [],
 			diagnostics: [...(existing?.diagnostics ?? []), options.diagnostic],
 		});
-		this._agentToolSets.delete(options.agentId);
 	}
 
-	private _markExistingAgentUnavailable(
+	private async _markExistingAgentUnavailable(
 		agentId: AgentId,
 		diagnostic: OrchestratorDiagnostic,
-	): void {
+	): Promise<void> {
 		const record = this._agents.get(agentId);
 		if (!record) return;
 		delete record.harness;
-		record.status = "unavailable";
 		if (!record.diagnostics.includes(diagnostic)) {
 			record.diagnostics.push(diagnostic);
 		}
@@ -2398,6 +2407,7 @@ export class AgentOrchestrator {
 			record.extensionDiagnostics.push(diagnostic);
 		}
 		this._agentToolSets.delete(agentId);
+		await this._transitionAgentStatus(agentId, "unavailable", { force: true });
 	}
 
 	private _requireAgentRecord(agentId: AgentId): AgentRecord {
@@ -2688,22 +2698,44 @@ export class AgentOrchestrator {
 		});
 	}
 
-	private _setAgentStatus(
-		agentId: AgentId,
-		status: AgentLifecycleStatus,
-	): void {
-		const record = this._requireAgentRecord(agentId);
-		if (record.status === "disposed" || record.status === "unavailable") {
-			return;
-		}
-		record.status = status;
+	private async _registerAgentRecord(record: AgentRecord): Promise<void> {
+		const previousStatus = this._agents.get(record.agentId)?.status;
+		this._agents.set(record.agentId, record);
+		await this._commitAgentStatus(record, record.status, previousStatus);
 	}
 
-	private _forceAgentStatus(
+	private async _transitionAgentStatus(
 		agentId: AgentId,
 		status: AgentLifecycleStatus,
-	): void {
-		this._requireAgentRecord(agentId).status = status;
+		options: { force?: boolean } = {},
+	): Promise<boolean> {
+		const record = this._requireAgentRecord(agentId);
+		const previousStatus = record.status;
+		if (previousStatus === status) return false;
+		if (
+			!options.force &&
+			(previousStatus === "disposed" || previousStatus === "unavailable")
+		) {
+			return false;
+		}
+		return await this._commitAgentStatus(record, status, previousStatus);
+	}
+
+	private async _commitAgentStatus(
+		record: AgentRecord,
+		status: AgentLifecycleStatus,
+		previousStatus: AgentLifecycleStatus | undefined,
+	): Promise<boolean> {
+		if (previousStatus === status) return false;
+		record.status = status;
+		await this._emit({
+			type: "agent_status_changed",
+			agentId: record.agentId,
+			previousStatus,
+			status,
+			changedAt: now(),
+		});
+		return true;
 	}
 
 	private async _disposeAgentHarness(
@@ -2737,22 +2769,22 @@ export class AgentOrchestrator {
 		operation: (harness: AgentHarness) => Promise<T>,
 	): Promise<T> {
 		const harness = this._requireAgentHarness(agentId);
-		this._setAgentStatus(agentId, "running");
+		await this._transitionAgentStatus(agentId, "running");
 		try {
 			return await operation(harness);
 		} finally {
 			if (this._requireAgentRecord(agentId).status === "running") {
-				this._setAgentStatus(agentId, "idle");
+				await this._transitionAgentStatus(agentId, "idle");
 			}
 		}
 	}
 
-	private _updateAgentStatusFromHarnessEvent(
+	private async _updateAgentStatusFromHarnessEvent(
 		agentId: AgentId,
 		event: AgentHarnessEvent,
-	): void {
+	): Promise<void> {
 		if (event.type === "agent_start" || event.type === "turn_start") {
-			this._setAgentStatus(agentId, "running");
+			await this._transitionAgentStatus(agentId, "running");
 			return;
 		}
 		if (
@@ -2761,7 +2793,7 @@ export class AgentOrchestrator {
 			event.type === "abort" ||
 			event.type === "settled"
 		) {
-			this._setAgentStatus(agentId, "idle");
+			await this._transitionAgentStatus(agentId, "idle");
 		}
 	}
 
@@ -2786,7 +2818,7 @@ export class AgentOrchestrator {
 		agentId: AgentId,
 		event: AgentHarnessEvent,
 	): Promise<void> {
-		this._updateAgentStatusFromHarnessEvent(agentId, event);
+		await this._updateAgentStatusFromHarnessEvent(agentId, event);
 		await this._emit({ type: "agent_harness_event", agentId, event });
 		// Auto-compaction rides the settled fact: the harness is idle and its
 		// pending session writes are flushed, so the branch and the last
@@ -3344,11 +3376,10 @@ export class AgentOrchestrator {
 			execute: async (args) => {
 				const runner = this._requireAgentRecord(agentId).extensionRunner;
 				if (!runner) return undefined;
-				await extensionCommand.handler(
+				return await extensionCommand.handler(
 					args,
 					runner.createCommandContext(extensionCommand.extensionId),
 				);
-				return undefined;
 			},
 		};
 	}

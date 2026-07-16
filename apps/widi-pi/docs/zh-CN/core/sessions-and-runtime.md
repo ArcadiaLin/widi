@@ -12,7 +12,7 @@ WIDI 不重写 Pi session tree，也不增加应用专属 session envelope。每
 - custom/custom message entries。
 - label 与 leaf navigation。
 
-Session body 保存 harness 运行产物，不保存 agent lifecycle、command/client log、pending human request、extension runner instance 或跨 session 产品关系。
+Session body 保存 harness 运行产物，不保存 agent lifecycle、command/client log（包括 `command_completed.result` 与 `extension_output`）、pending human request、extension runner instance 或跨 session 产品关系。
 
 ## JSONL 与 metadata
 

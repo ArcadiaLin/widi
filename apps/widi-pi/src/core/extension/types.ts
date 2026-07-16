@@ -178,6 +178,10 @@ export interface ExtensionActions {
 	// The request source is injected by the runner as
 	// { kind: "extension", extensionId } and cannot be forged.
 	requestHuman(request: HumanRequestDraft): Promise<HumanResponse>;
+	// Push append-only plain text for direct client display. Unlike
+	// prompt/steer, it does not reach the model or the session. Repeated calls
+	// create separate output items; sequentially awaiting calls preserves order.
+	emitOutput(text: string): Promise<void>;
 	prompt(text: string, options?: { images?: ImageContent[] }): Promise<void>;
 	steer(text: string, options?: { images?: ImageContent[] }): Promise<void>;
 	followUp(text: string, options?: { images?: ImageContent[] }): Promise<void>;
@@ -219,6 +223,7 @@ export interface ExtensionCoreActions {
 		extensionId: string,
 		request: HumanRequestDraft,
 	): Promise<HumanResponse>;
+	emitOutput(agentId: string, extensionId: string, text: string): Promise<void>;
 	promptAgent(
 		agentId: string,
 		text: string,
@@ -359,6 +364,7 @@ export interface ExtensionActionFailure {
 		| "abort"
 		| "appendEntry"
 		| "compact"
+		| "emitOutput"
 		| "exec"
 		| "findEntries"
 		| "followUp"
@@ -405,10 +411,14 @@ export interface ExtensionCommandContext extends ExtensionContext {
 	resumeSession(reference: string): Promise<ExtensionSessionCommandResult>;
 }
 
+// The handler's return value is surfaced as `command_completed.result`, the
+// same channel built-in line commands use; clients render it in their
+// transcript. Return `undefined` for a command that only performs side
+// effects. For append-only progress during execution use `actions.emitOutput`.
 export type ExtensionCommandHandler = (
 	args: string,
 	context: ExtensionCommandContext,
-) => Promise<void> | void;
+) => Promise<unknown> | unknown;
 
 // Argument facts on the author-side contract. getArgumentsCompletion
 // returns candidate facts only - whether and how a human request is
