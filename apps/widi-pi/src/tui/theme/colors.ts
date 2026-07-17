@@ -1,9 +1,3 @@
-import type {
-	EditorTheme,
-	MarkdownTheme,
-	SelectListTheme,
-} from "@earendil-works/pi-tui";
-
 const ESC = "\u001b[";
 
 function ansi(open: number, close = 39): (text: string) => string {
@@ -24,6 +18,7 @@ export const colors = {
 	dim: decoration(2, 22),
 	italic: decoration(3, 23),
 	underline: decoration(4, 24),
+	inverse: decoration(7, 27),
 	strikethrough: decoration(9, 29),
 	red: ansi(31),
 	green: ansi(32),
@@ -34,36 +29,6 @@ export const colors = {
 	white: ansi(37),
 	gray: ansi(90),
 	accent: foreground256(214),
-};
-
-export const selectListTheme: SelectListTheme = {
-	selectedPrefix: colors.accent,
-	selectedText: colors.bold,
-	description: colors.gray,
-	scrollInfo: colors.dim,
-	noMatch: colors.dim,
-};
-
-export const editorTheme: EditorTheme = {
-	borderColor: colors.gray,
-	selectList: selectListTheme,
-};
-
-export const markdownTheme: MarkdownTheme = {
-	heading: (text) => colors.bold(colors.accent(text)),
-	link: colors.cyan,
-	linkUrl: colors.dim,
-	code: colors.yellow,
-	codeBlock: colors.green,
-	codeBlockBorder: (text) => colors.dim(colors.gray(text)),
-	quote: colors.italic,
-	quoteBorder: colors.dim,
-	hr: colors.dim,
-	listBullet: colors.accent,
-	bold: colors.bold,
-	italic: colors.italic,
-	strikethrough: colors.strikethrough,
-	underline: colors.underline,
 };
 
 export function severityColor(

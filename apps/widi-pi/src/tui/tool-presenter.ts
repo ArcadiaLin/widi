@@ -1,11 +1,15 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
+import { renderDiffText } from "./diff.ts";
 import { formatUnknown, sanitizeTerminalText, singleLine } from "./format.ts";
 import type { ToolExecutionItem } from "./state.ts";
-import { colors } from "./theme.ts";
+import { colors } from "./theme/colors.ts";
 
 const SUCCESS_PREVIEW_LINES = 4;
 const ERROR_PREVIEW_LINES = 8;
+const COLLAPSED_DIFF_LINES = 8;
+const EXPANDED_PREVIEW_LINES = 400;
 const PREVIEW_MAX_CHARACTERS = 1_600;
+const EXPANDED_MAX_CHARACTERS = 40_000;
 
 /** Built-in tools whose successful results collapse to a count suffix. */
 const COUNT_SUFFIX_TOOLS: Record<string, string> = {
@@ -13,6 +17,11 @@ const COUNT_SUFFIX_TOOLS: Record<string, string> = {
 	read: "lines",
 	find: "matches",
 };
+
+export interface PresentToolOptions {
+	/** Show full output instead of the collapsed preview (ctrl+o toggle). */
+	readonly expanded?: boolean;
+}
 
 /**
  * Render a tool execution as a semantic headline plus a bounded result
@@ -22,7 +31,9 @@ const COUNT_SUFFIX_TOOLS: Record<string, string> = {
 export function presentToolExecution(
 	item: ToolExecutionItem,
 	width: number,
+	options: PresentToolOptions = {},
 ): string[] {
+	const expanded = options.expanded ?? false;
 	const glyph =
 		item.status === "running"
 			? colors.cyan("●")
@@ -35,42 +46,93 @@ export function presentToolExecution(
 		item.status === "running"
 			? toolResultText(item.partialResult)
 			: toolResultText(item.result);
+	const maxCharacters = expanded
+		? EXPANDED_MAX_CHARACTERS
+		: PREVIEW_MAX_CHARACTERS;
 	const resultLines = resultText
 		? sanitizeTerminalText(resultText)
-				.slice(0, PREVIEW_MAX_CHARACTERS)
+				.slice(0, maxCharacters)
 				.split("\n")
 				.filter(
 					(line, index, all) => line.trim() !== "" || index < all.length - 1,
 				)
 		: [];
 
-	const countUnit = COUNT_SUFFIX_TOOLS[item.toolName];
 	const completedOk = item.status === "completed" && !item.isError;
-	const suffix =
-		completedOk && countUnit && resultLines.length > 0
-			? ` · ${countLines(resultLines)} ${countUnit}`
-			: "";
+	const countUnit = COUNT_SUFFIX_TOOLS[item.toolName];
+	const writtenLines =
+		item.toolName === "write" ? writeContentLines(item.args) : undefined;
+	const diffText = completedOk ? editDiffText(item) : undefined;
+
+	let suffix = "";
+	if (completedOk && countUnit && resultLines.length > 0) {
+		suffix = ` · ${countLines(resultLines)} ${countUnit}`;
+	} else if (completedOk && writtenLines) {
+		suffix = ` · ${writtenLines.length} ${writtenLines.length === 1 ? "line" : "lines"}`;
+	}
 
 	const headline = `${glyph} ${colors.bold(singleLine(verb, 80))}${
 		target ? ` ${singleLine(target, 400)}` : ""
 	}${suffix ? colors.dim(suffix) : ""}`;
 	const lines = [truncateToWidth(headline, Math.max(8, width), "…")];
 
-	const previewLimit = item.isError
-		? ERROR_PREVIEW_LINES
-		: completedOk && countUnit
-			? 0
-			: SUCCESS_PREVIEW_LINES;
-	if (previewLimit > 0 && resultLines.length > 0) {
-		const shown = resultLines.slice(0, previewLimit);
+	// Pick the preview body: an already styled diff for edits, the written
+	// content for writes, or the (dimmed) result text otherwise.
+	let preview: string[];
+	let previewLimit: number;
+	let styleLine: (line: string) => string;
+	if (item.isError) {
+		preview = resultLines;
+		previewLimit = expanded ? EXPANDED_PREVIEW_LINES : ERROR_PREVIEW_LINES;
+		styleLine = (line) => line;
+	} else if (diffText !== undefined) {
+		preview = renderDiffText(sanitizeTerminalText(diffText));
+		previewLimit = expanded ? EXPANDED_PREVIEW_LINES : COLLAPSED_DIFF_LINES;
+		styleLine = (line) => line;
+	} else if (completedOk && writtenLines) {
+		preview = writtenLines;
+		previewLimit = expanded ? EXPANDED_PREVIEW_LINES : 0;
+		styleLine = colors.dim;
+	} else if (completedOk && countUnit) {
+		preview = resultLines;
+		previewLimit = expanded ? EXPANDED_PREVIEW_LINES : 0;
+		styleLine = colors.dim;
+	} else {
+		preview = resultLines;
+		previewLimit = expanded ? EXPANDED_PREVIEW_LINES : SUCCESS_PREVIEW_LINES;
+		styleLine = colors.dim;
+	}
+
+	if (previewLimit > 0 && preview.length > 0) {
+		const shown = preview.slice(0, previewLimit);
 		for (const line of shown) {
-			const bounded = truncateToWidth(line, Math.max(8, width), "…");
-			lines.push(item.isError ? bounded : colors.dim(bounded));
+			lines.push(styleLine(truncateToWidth(line, Math.max(8, width), "…")));
 		}
-		const hidden = resultLines.length - shown.length;
+		const hidden = preview.length - shown.length;
 		if (hidden > 0) lines.push(colors.dim(`… +${hidden} lines`));
 	}
 	return lines;
+}
+
+/** The display diff the edit tool attaches to its result, if present. */
+function editDiffText(item: ToolExecutionItem): string | undefined {
+	if (item.toolName !== "edit") return undefined;
+	const result = item.result;
+	if (typeof result !== "object" || result === null || !("details" in result)) {
+		return undefined;
+	}
+	const details = (result as { details?: unknown }).details;
+	if (!isRecord(details)) return undefined;
+	return typeof details.diff === "string" ? details.diff : undefined;
+}
+
+function writeContentLines(args: unknown): string[] | undefined {
+	if (!isRecord(args)) return undefined;
+	const content = args.content;
+	if (typeof content !== "string") return undefined;
+	return sanitizeTerminalText(content)
+		.slice(0, EXPANDED_MAX_CHARACTERS)
+		.split("\n");
 }
 
 function describeToolCall(

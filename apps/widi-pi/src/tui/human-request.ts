@@ -13,7 +13,8 @@ import type {
 	HumanResponse,
 } from "../core/human-request.ts";
 import { boundedText, singleLine } from "./format.ts";
-import { colors, selectListTheme } from "./theme.ts";
+import { colors } from "./theme/colors.ts";
+import { selectListTheme } from "./theme/controls.ts";
 
 interface QueuedHumanRequest {
 	readonly request: HumanRequestEnvelope;

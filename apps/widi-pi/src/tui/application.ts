@@ -6,7 +6,7 @@ import type {
 	OrchestratorEvent,
 } from "../core/agent-orchestrator.ts";
 import type { AgentRecordSnapshot } from "../core/agent-record.ts";
-import type { InputResult } from "../core/command.ts";
+import type { Command, InputResult } from "../core/command.ts";
 import {
 	type OrchestratorDiagnostic,
 	OrchestratorError,
@@ -17,15 +17,14 @@ import {
 } from "../core/runtime-service.ts";
 import { AgentSelectorController } from "./agent-selector.ts";
 import { WidiCommandAutocompleteProvider } from "./autocomplete.ts";
-import {
-	AgentStripView,
-	agentLabel,
-	ChatView,
-	FooterView,
-	HeaderView,
-	NoticeView,
-	StatusView,
-} from "./components/views.ts";
+import { CompletionMenu, matchBareSelectorCommand } from "./completion-menu.ts";
+import { AgentStripView } from "./components/agent-strip.ts";
+import { ChatView } from "./components/chat.ts";
+import { agentLabel } from "./components/common.ts";
+import { FooterView } from "./components/footer.ts";
+import { HeaderView } from "./components/header.ts";
+import { NoticeView } from "./components/notices.ts";
+import { StatusView } from "./components/status.ts";
 import { WidiEditor } from "./editor.ts";
 import { applyAgentSnapshot, EventProjector } from "./event-projector.ts";
 import { HumanRequestController } from "./human-request.ts";
@@ -37,7 +36,7 @@ import {
 	setActiveAgent,
 	type TuiApplicationState,
 } from "./state.ts";
-import { editorTheme } from "./theme.ts";
+import { editorTheme } from "./theme/controls.ts";
 
 const NOTIFICATION_TTL_MS = 5_000;
 
@@ -56,6 +55,7 @@ export class WidiTuiApplication {
 
 	private readonly projector: EventProjector;
 	private readonly editor: WidiEditor;
+	private readonly completionMenu: CompletionMenu;
 	private readonly humanRequests: HumanRequestController;
 	private readonly agentSelector: AgentSelectorController;
 	private unsubscribeEvents?: () => void;
@@ -94,12 +94,15 @@ export class WidiTuiApplication {
 			paddingX: 1,
 			autocompleteMaxVisible: 8,
 		});
+		this.completionMenu = new CompletionMenu(this.tui, this.state, () => {
+			this.tui.setFocus(this.editor);
+		});
 		this.humanRequests = new HumanRequestController({
 			tui: this.tui,
 			resolveAgentLabel: (agentId) => this.resolveAgentLabel(agentId),
 		});
 		this.agentSelector = new AgentSelectorController(
-			this.tui,
+			this.completionMenu,
 			this.state,
 			(agentId) => this.switchAgent(agentId),
 		);
@@ -108,6 +111,7 @@ export class WidiTuiApplication {
 		this.tui.addChild(new NoticeView(this.state));
 		this.tui.addChild(new ChatView(this.state));
 		this.tui.addChild(new StatusView(this.state));
+		this.tui.addChild(this.completionMenu);
 		this.tui.addChild(this.editor);
 		this.tui.addChild(new FooterView(this.state, runtime.services.cwd));
 		this.tui.addChild(new AgentStripView(this.state));
@@ -121,6 +125,10 @@ export class WidiTuiApplication {
 			if (agentId) this.drafts.set(agentId, text);
 		};
 		this.editor.onOpenAgents = () => this.agentSelector.open();
+		this.editor.onToggleToolOutput = () => {
+			this.state.toolOutputExpanded = !this.state.toolOutputExpanded;
+			this.tui.requestRender();
+		};
 		this.editor.onInterrupt = () => this.interrupt();
 		this.editor.onExit = () => {
 			void this.shutdown("user exit").catch(() => {});
@@ -313,6 +321,17 @@ export class WidiTuiApplication {
 			return;
 		}
 
+		const selectorCommand = matchBareSelectorCommand(text, agent.commands);
+		if (selectorCommand) {
+			try {
+				await this.openCommandCompletionMenu(agentId, rawText, selectorCommand);
+			} catch (error) {
+				this.restoreEditor(rawText, agentId);
+				this.addApplicationNotice(errorMessage(error), agentId);
+			}
+			return;
+		}
+
 		agent.pendingInput = {
 			originalText: rawText,
 			submittedAt: new Date().toISOString(),
@@ -358,6 +377,43 @@ export class WidiTuiApplication {
 			if (nextAgentId) await this.activateNavigationAgent(nextAgentId);
 		}
 		this.tui.requestRender();
+	}
+
+	private async openCommandCompletionMenu(
+		agentId: string,
+		originalText: string,
+		command: Command,
+	): Promise<void> {
+		const complete = command.arguments?.complete;
+		if (!complete) return;
+		const candidates = await complete({
+			agentId,
+			command,
+			argumentPrefix: "",
+			orchestrator: this.orchestrator,
+		});
+		const items = candidates.map((candidate) => ({
+			value: candidate.value,
+			label: candidate.label ?? candidate.value,
+			description: candidate.description,
+		}));
+		if (command.name === "fork") {
+			items.unshift({
+				value: "",
+				label: "Fork here (current position)",
+				description: "Use the current session position",
+			});
+		}
+		this.completionMenu.open({
+			title: `${command.trigger}${command.name}`,
+			items,
+			onSelect: (item) => {
+				this.track(
+					this.submit(`${command.trigger}${command.name}:${item.value}`),
+				);
+			},
+			onCancel: () => this.restoreEditor(originalText, agentId),
+		});
 	}
 
 	private async activateNavigationAgent(agentId: string): Promise<void> {
@@ -536,8 +592,8 @@ export class WidiTuiApplication {
 	}
 
 	private interrupt(): void {
-		if (this.agentSelector.isOpen) {
-			this.agentSelector.close();
+		if (this.completionMenu.isOpen) {
+			this.completionMenu.close();
 			return;
 		}
 		const agentId = this.state.activeAgentId;

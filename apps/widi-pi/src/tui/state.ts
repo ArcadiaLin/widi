@@ -221,8 +221,10 @@ export interface TuiApplicationState {
 	agents: Map<AgentId, AgentViewState>;
 	globalNotices: NoticeItem[];
 	humanRequests: PendingHumanRequestView[];
-	mode: "editor" | "agent-selector" | "human-request";
+	mode: "editor" | "completion-menu" | "human-request";
 	shuttingDown: boolean;
+	/** Global toggle: show full tool output instead of collapsed previews. */
+	toolOutputExpanded: boolean;
 }
 
 export function createTuiApplicationState(): TuiApplicationState {
@@ -232,6 +234,7 @@ export function createTuiApplicationState(): TuiApplicationState {
 		humanRequests: [],
 		mode: "editor",
 		shuttingDown: false,
+		toolOutputExpanded: false,
 	};
 }
 

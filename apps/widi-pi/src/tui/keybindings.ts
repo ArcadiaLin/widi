@@ -9,6 +9,7 @@ declare module "@earendil-works/pi-tui" {
 		"app.agents.open": true;
 		"app.interrupt": true;
 		"app.exit": true;
+		"app.tools.expand": true;
 	}
 }
 
@@ -24,6 +25,10 @@ export const WIDI_KEYBINDINGS = {
 	"app.exit": {
 		defaultKeys: "ctrl+d",
 		description: "Exit when the editor is empty",
+	},
+	"app.tools.expand": {
+		defaultKeys: "ctrl+o",
+		description: "Toggle expanded tool output in the transcript",
 	},
 } as const satisfies KeybindingDefinitions;
 

@@ -4,9 +4,14 @@ export class WidiEditor extends Editor {
 	onOpenAgents?: () => void;
 	onInterrupt?: () => void;
 	onExit?: () => void;
+	onToggleToolOutput?: () => void;
 
 	override handleInput(data: string): void {
 		const keybindings = getKeybindings();
+		if (keybindings.matches(data, "app.tools.expand")) {
+			this.onToggleToolOutput?.();
+			return;
+		}
 		if (
 			keybindings.matches(data, "app.agents.open") &&
 			this.getText().length === 0 &&

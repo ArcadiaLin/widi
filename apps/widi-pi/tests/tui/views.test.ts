@@ -1,11 +1,9 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
-import {
-	AgentStripView,
-	ChatView,
-	FooterView,
-	StatusView,
-} from "../../src/tui/components/views.ts";
+import { AgentStripView } from "../../src/tui/components/agent-strip.ts";
+import { ChatView } from "../../src/tui/components/chat.ts";
+import { FooterView } from "../../src/tui/components/footer.ts";
+import { StatusView } from "../../src/tui/components/status.ts";
 import {
 	boundedText,
 	sanitizeTerminalText,
@@ -165,6 +163,35 @@ describe("TUI views", () => {
 
 		expect(output).toContain("✓ List src · 2 entries");
 		expect(output).not.toContain('{ "path": "src" }');
+	});
+
+	it("re-renders cached tool output when the expand toggle flips", () => {
+		const state = createTuiApplicationState();
+		const agent = setActiveAgent(state, "main");
+		agent.timeline.push({
+			type: "tool-execution",
+			id: "tool-1",
+			toolCallId: "tool-1",
+			durability: "durable",
+			createdAt: timestamp(1),
+			toolName: "bash",
+			args: { command: "ls" },
+			result: {
+				content: [{ type: "text", text: "one\ntwo\nthree\nfour\nfive\nsix" }],
+			},
+			isError: false,
+			status: "completed",
+		});
+		const view = new ChatView(state);
+
+		const collapsed = view.render(80).join("\n").replace(ANSI_SEQUENCE, "");
+		expect(collapsed).toContain("… +2 lines");
+		expect(collapsed).not.toContain("six");
+
+		state.toolOutputExpanded = true;
+		const expanded = view.render(80).join("\n").replace(ANSI_SEQUENCE, "");
+		expect(expanded).toContain("six");
+		expect(expanded).not.toContain("… +2 lines");
 	});
 
 	it("removes terminal control sequences from externally supplied text", () => {

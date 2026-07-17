@@ -1,5 +1,9 @@
 import type { Skill } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type {
+	AssistantMessage,
+	TextContent,
+	UserMessage,
+} from "@earendil-works/pi-ai";
 import type { AgentOrchestrator } from "./agent-orchestrator.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
 import type { AgentId, AgentLifecycleStatus } from "./types.ts";
@@ -186,6 +190,13 @@ export const BUILT_IN_COMMANDS: readonly BuiltInCommandBinding[] = [
 			argumentHint: "[entry]",
 			source: { kind: "built-in" },
 			scope: "user-facing",
+			arguments: {
+				complete: async (context) =>
+					await listUserMessageEntryCandidates(
+						context.orchestrator,
+						context.agentId,
+					),
+			},
 		},
 		execute: async (orchestrator, agentId, args) => {
 			const entryId = args.trim() || undefined;
@@ -300,6 +311,15 @@ export const BUILT_IN_COMMANDS: readonly BuiltInCommandBinding[] = [
 			argumentHint: "[session]",
 			source: { kind: "built-in" },
 			scope: "user-facing",
+			arguments: {
+				complete: async (context) =>
+					(await context.orchestrator.listAgentSessions()).sessions.map(
+						(session) => ({
+							value: session.id,
+							description: `${session.cwd} · ${session.createdAt}`,
+						}),
+					),
+			},
 		},
 		checkStatus: (status) =>
 			status === "running"
@@ -359,6 +379,13 @@ export const BUILT_IN_COMMANDS: readonly BuiltInCommandBinding[] = [
 			description: "Inspect or navigate the current session tree.",
 			argumentHint: "[entry]",
 			source: { kind: "built-in" },
+			arguments: {
+				complete: async (context) =>
+					await listUserMessageEntryCandidates(
+						context.orchestrator,
+						context.agentId,
+					),
+			},
 		},
 		execute: async (orchestrator, agentId, args) => {
 			const targetId = args.trim();
@@ -418,6 +445,41 @@ export const BUILT_IN_INLINE_COMMANDS: readonly BuiltInInlineCommandBinding[] =
 				),
 		},
 	];
+
+// Fork/navigation targets are the user's own messages: they are the natural
+// "points in the conversation" a user thinks in, unlike tool or model entries.
+async function listUserMessageEntryCandidates(
+	orchestrator: AgentOrchestrator,
+	agentId: AgentId,
+): Promise<CommandCandidates> {
+	const tree = await orchestrator.getAgentSessionTree(agentId);
+	const candidates: CommandCandidate[] = [];
+	for (const entry of tree.entries) {
+		if (entry.type !== "message" || entry.message.role !== "user") continue;
+		candidates.push({
+			value: entry.id,
+			label: userMessageHeadline(entry.message),
+			description: entry.timestamp,
+		});
+	}
+	return candidates;
+}
+
+function userMessageHeadline(message: UserMessage): string {
+	const text =
+		typeof message.content === "string"
+			? message.content
+			: message.content
+					.filter((part): part is TextContent => part.type === "text")
+					.map((part) => part.text)
+					.join(" ");
+	const line =
+		text
+			.split("\n")
+			.find((candidate) => candidate.trim() !== "")
+			?.trim() ?? "";
+	return line.length > 80 ? `${line.slice(0, 79)}…` : line;
+}
 
 // The expansion carries metadata and guidance only; the skill body stays in
 // the skill file and is loaded on demand by the agent's read tooling.

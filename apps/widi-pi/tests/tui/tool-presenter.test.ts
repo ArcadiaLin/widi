@@ -107,6 +107,82 @@ describe("presentToolExecution", () => {
 		expect(lines[0]).toBe("✓ deploy target: staging, dryRun: true");
 	});
 
+	it("shows full output when expanded", () => {
+		const item = toolItem({
+			toolName: "bash",
+			args: { command: "ls -la" },
+			result: textResult("one\ntwo\nthree\nfour\nfive\nsix"),
+		});
+
+		const lines = plain(presentToolExecution(item, 80, { expanded: true }));
+
+		expect(lines.slice(1)).toEqual([
+			"one",
+			"two",
+			"three",
+			"four",
+			"five",
+			"six",
+		]);
+	});
+
+	it("expands count-suffix tools to their content", () => {
+		const item = toolItem({
+			toolName: "ls",
+			args: { path: "src" },
+			result: textResult("a.ts\nb.ts"),
+		});
+
+		const lines = plain(presentToolExecution(item, 80, { expanded: true }));
+
+		expect(lines[0]).toBe("✓ List src · 2 entries");
+		expect(lines.slice(1)).toEqual(["a.ts", "b.ts"]);
+	});
+
+	it("renders edit results as a bounded diff", () => {
+		const diff = Array.from(
+			{ length: 10 },
+			(_, i) => `+${i + 1} line ${i + 1}`,
+		).join("\n");
+		const item = toolItem({
+			toolName: "edit",
+			args: { path: "src/app.ts", edits: [{ oldText: "a", newText: "b" }] },
+			result: {
+				content: [{ type: "text", text: "Edited src/app.ts" }],
+				details: { diff },
+			},
+		});
+
+		const collapsed = plain(presentToolExecution(item, 80));
+		expect(collapsed[0]).toBe("✓ Edit src/app.ts (1 edit)");
+		expect(collapsed.slice(1, 9)).toEqual(
+			Array.from({ length: 8 }, (_, i) => `+${i + 1} line ${i + 1}`),
+		);
+		expect(collapsed[9]).toBe("… +2 lines");
+
+		const expanded = plain(presentToolExecution(item, 80, { expanded: true }));
+		expect(expanded).toHaveLength(11);
+		expect(expanded[10]).toBe("+10 line 10");
+	});
+
+	it("summarizes write calls and expands to the written content", () => {
+		const item = toolItem({
+			toolName: "write",
+			args: { path: "notes.txt", content: "alpha\nbeta\ngamma" },
+			result: textResult("Successfully wrote 16 bytes to notes.txt"),
+		});
+
+		expect(plain(presentToolExecution(item, 80))).toEqual([
+			"✓ Write notes.txt · 3 lines",
+		]);
+		expect(plain(presentToolExecution(item, 80, { expanded: true }))).toEqual([
+			"✓ Write notes.txt · 3 lines",
+			"alpha",
+			"beta",
+			"gamma",
+		]);
+	});
+
 	it("truncates every line to the available width", () => {
 		const item = toolItem({
 			toolName: "bash",
