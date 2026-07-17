@@ -1,5 +1,5 @@
 import type { AgentHarnessEvent } from "@earendil-works/pi-agent-core";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import type { AgentProfile } from "./agent-profile.js";
 import type { CommandInvocation } from "./command.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
@@ -200,6 +200,16 @@ export interface CandidateItem {
 	readonly label?: string;
 	readonly description?: string;
 }
+
+/** Result of promptAgent: the prompt completed or an interceptor blocked it. */
+export type PromptOutcome =
+	| { readonly kind: "completed"; readonly message: AssistantMessage }
+	| {
+			readonly kind: "blocked";
+			readonly inputId: string;
+			readonly reason?: string;
+			readonly blockedBy: string;
+	  };
 
 /**
  * Pre-expansion record of an interaction-layer inline expansion, persisted

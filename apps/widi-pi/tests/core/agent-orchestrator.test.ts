@@ -1784,88 +1784,61 @@ describe("AgentOrchestrator", () => {
 		expect(prompted).toEqual(["/status", "/status"]);
 	});
 
-	it("re-parses extension-transformed input as a command", async () => {
+	it("promptAgent persists an expansion entry alongside the prompt", async () => {
 		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "rewriter-profile",
-			persist: false,
-			extensions: ["rewriter"],
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: extensionProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
-			),
-		});
-		orchestrator.registerExtension("rewriter", (api) => {
-			api.intercept("input", (event) => {
-				if (event.text === "use reasoning") {
-					return {
-						text: `/model:${reasoningModel.provider}/${reasoningModel.id}`,
-					};
-				}
-				if (event.text === "/status") {
-					return { text: "plain question" };
-				}
-				return undefined;
-			});
-		});
-		const events: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			events.push(event);
-		});
+		const orchestrator = await createOrchestrator(env);
 		const agentId = await orchestrator.spawnAgent();
 		const harness = requireAgentHarness(orchestrator, agentId);
-
-		// Text rewritten into a command goes through the full parse/gateway
-		// pipeline and executes for real.
-		await expect(
-			orchestrator.inputAgent(agentId, "use reasoning"),
-		).resolves.toMatchObject({ kind: "command", name: "model" });
-		expect(harness.getModel()).toMatchObject({ id: reasoningModel.id });
-		await expect(
-			orchestrator.getAgentSessionTree(agentId),
-		).resolves.toMatchObject({
-			entries: expect.not.arrayContaining([
-				expect.objectContaining({
-					type: "custom",
-					customType: "core:input_transform",
-				}),
-			]),
-		});
-		expect(events).toContainEqual(
-			expect.objectContaining({
-				type: "input_transformed",
-				agentId,
-				inputId: expect.any(String),
-				originalText: "use reasoning",
-				text: `/model:${reasoningModel.provider}/${reasoningModel.id}`,
-				transformedBy: ["rewriter"],
-			}),
-		);
-
-		// A command rewritten into plain text stops being a command.
 		const prompted: string[] = [];
-		Object.assign(orchestrator, {
-			promptAgent: async (_agentId: string, text: string) => {
+		Object.assign(harness, {
+			prompt: async (text: string) => {
 				prompted.push(text);
 				return { role: "assistant" } as AssistantMessage;
 			},
 		});
-		await expect(
-			orchestrator.inputAgent(agentId, "/status"),
-		).resolves.toMatchObject({ kind: "prompt" });
-		expect(prompted).toEqual(["plain question"]);
+
+		const outcome = await orchestrator.promptAgent(agentId, "expanded text", {
+			expansion: {
+				originalText: "use <skill:review>",
+				items: [
+					{
+						commandId: "command-1",
+						name: "skill",
+						trigger: "<",
+						argument: "review",
+						start: 4,
+						end: 18,
+					},
+				],
+			},
+		});
+		expect(outcome.kind).toBe("completed");
+		expect(prompted).toEqual(["expanded text"]);
+		const entries = (
+			await orchestrator.getAgentSessionTree(agentId)
+		).entries.filter(
+			(entry) =>
+				entry.type === "custom" &&
+				entry.customType === "core:command_expansion",
+		);
+		expect(entries).toMatchObject([
+			{
+				data: {
+					inputId: expect.any(String),
+					originalText: "use <skill:review>",
+					expansions: [
+						expect.objectContaining({ commandId: "command-1", name: "skill" }),
+					],
+				},
+			},
+		]);
 	});
 
-	it("blocks intercepted input before command parsing and publishes the fact", async () => {
+	it("promptAgent blocks input when an extension interceptor blocks", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = {
 			...defaultProfile,
-			id: "policy-profile",
+			id: "prompt-policy-profile",
 			persist: false,
 			extensions: ["policy"],
 		};
@@ -1889,18 +1862,17 @@ describe("AgentOrchestrator", () => {
 			events.push(event);
 		});
 		const agentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, agentId);
 		const prompted: string[] = [];
-		Object.assign(orchestrator, {
-			promptAgent: async (_agentId: string, text: string) => {
+		Object.assign(harness, {
+			prompt: async (text: string) => {
 				prompted.push(text);
 				return { role: "assistant" } as AssistantMessage;
 			},
 		});
 
-		// The blocked text is a would-be command; interception precedes
-		// parsing, so no command event is ever detected.
 		await expect(
-			orchestrator.inputAgent(agentId, "/status secret"),
+			orchestrator.promptAgent(agentId, "share the secret"),
 		).resolves.toEqual({
 			kind: "blocked",
 			inputId: expect.any(String),
@@ -1912,67 +1884,87 @@ describe("AgentOrchestrator", () => {
 			expect.objectContaining({
 				type: "input_blocked",
 				agentId,
-				originalText: "/status secret",
+				originalText: "share the secret",
 				reason: "Sensitive input.",
 				blockedBy: "policy",
 			}),
 		);
-		expect(events).not.toContainEqual(
-			expect.objectContaining({ type: "command_detected" }),
-		);
 	});
 
-	it("intercepts input even when command parsing is disabled", async () => {
+	it("promptAgent applies extension transforms and persists the transform entry", async () => {
 		const env = new MemoryExecutionEnv();
-		const chatProfile: AgentProfile = {
+		const extensionProfile: AgentProfile = {
 			...defaultProfile,
-			id: "chat-policy",
+			id: "prompt-rewriter-profile",
 			persist: false,
-			commands: { enabled: false },
-			extensions: ["policy"],
-		};
-		const commandProfile: AgentProfile = {
-			...defaultProfile,
-			id: "command-policy",
-			persist: false,
-			extensions: ["policy"],
+			extensions: ["rewriter"],
 		};
 		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: chatProfile.id,
+			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
 				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: chatProfile },
-					{ profile: commandProfile },
+					{ profile: extensionProfile },
 				]),
 			),
 		});
-		orchestrator.registerExtension("policy", (api) => {
-			api.intercept("input", () => ({
-				block: true,
-				reason: "All input is denied.",
-			}));
+		orchestrator.registerExtension("rewriter", (api) => {
+			api.intercept("input", (event) => {
+				if (event.text.includes("secret")) {
+					return { block: true, reason: "Sensitive input." };
+				}
+				return { text: `${event.text}!` };
+			});
 		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, agentId);
 		const prompted: string[] = [];
-		Object.assign(orchestrator, {
-			promptAgent: async (_agentId: string, text: string) => {
+		Object.assign(harness, {
+			prompt: async (text: string) => {
 				prompted.push(text);
 				return { role: "assistant" } as AssistantMessage;
 			},
 		});
 
-		const chatAgentId = await orchestrator.spawnAgent();
 		await expect(
-			orchestrator.inputAgent(chatAgentId, "hello"),
-		).resolves.toMatchObject({ kind: "blocked" });
+			orchestrator.promptAgent(agentId, "hello"),
+		).resolves.toMatchObject({ kind: "completed" });
+		expect(prompted).toEqual(["hello!"]);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "input_transformed",
+				agentId,
+				inputId: expect.any(String),
+				originalText: "hello",
+				text: "hello!",
+				transformedBy: ["rewriter"],
+			}),
+		);
+		const findTransformEntries = async () =>
+			(await orchestrator.getAgentSessionTree(agentId)).entries.filter(
+				(entry) =>
+					entry.type === "custom" &&
+					entry.customType === "core:input_transform",
+			);
+		await expect(findTransformEntries()).resolves.toMatchObject([
+			{
+				data: {
+					inputId: expect.any(String),
+					originalText: "hello",
+					text: "hello!",
+					transformedBy: ["rewriter"],
+				},
+			},
+		]);
 
-		// The per-call switch cannot bypass an input policy either.
-		const commandAgentId = await orchestrator.spawnAgent({
-			profileId: commandProfile.id,
-		});
+		// Blocked input never reaches the session: no entry is written.
 		await expect(
-			orchestrator.inputAgent(commandAgentId, "hello", { commands: false }),
+			orchestrator.promptAgent(agentId, "share the secret"),
 		).resolves.toMatchObject({ kind: "blocked" });
-		expect(prompted).toEqual([]);
+		await expect(findTransformEntries()).resolves.toHaveLength(1);
 	});
 
 	it("rejects input fail-closed when an input interceptor throws", async () => {
@@ -2467,67 +2459,6 @@ describe("AgentOrchestrator", () => {
 		);
 		const after = await orchestrator.listAgentSkillCandidates(agentId);
 		expect(after.skills.map((skill) => skill.value)).toEqual(["code-review"]);
-	});
-
-	it("persists input rewrites as a core input-transform entry", async () => {
-		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "rewriter-entry-profile",
-			persist: false,
-			extensions: ["rewriter"],
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: extensionProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
-			),
-		});
-		orchestrator.registerExtension("rewriter", (api) => {
-			api.intercept("input", (event) => {
-				if (event.text.includes("secret")) {
-					return { block: true, reason: "Sensitive input." };
-				}
-				return { text: `${event.text}!` };
-			});
-		});
-		const agentId = await orchestrator.spawnAgent();
-		const prompted: string[] = [];
-		Object.assign(orchestrator, {
-			promptAgent: async (_agentId: string, text: string) => {
-				prompted.push(text);
-				return { role: "assistant" } as AssistantMessage;
-			},
-		});
-
-		await expect(
-			orchestrator.inputAgent(agentId, "hello"),
-		).resolves.toMatchObject({ kind: "prompt" });
-		expect(prompted).toEqual(["hello!"]);
-		const findTransformEntries = async () =>
-			(await orchestrator.getAgentSessionTree(agentId)).entries.filter(
-				(entry) =>
-					entry.type === "custom" &&
-					entry.customType === "core:input_transform",
-			);
-		await expect(findTransformEntries()).resolves.toMatchObject([
-			{
-				data: {
-					inputId: expect.any(String),
-					originalText: "hello",
-					text: "hello!",
-					transformedBy: ["rewriter"],
-				},
-			},
-		]);
-
-		// Blocked input never reaches the session: no entry is written.
-		await expect(
-			orchestrator.inputAgent(agentId, "share the secret"),
-		).resolves.toMatchObject({ kind: "blocked" });
-		await expect(findTransformEntries()).resolves.toHaveLength(1);
 	});
 
 	it("starts a new empty session from the current agent", async () => {

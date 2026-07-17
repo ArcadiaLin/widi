@@ -460,10 +460,13 @@ describe("audit extension consumer", () => {
 			denyInput: [{ match: "secret", reason: "Sensitive input." }],
 			recordCoreEvents: ["input_blocked"],
 		});
+		Object.assign(requireAgentHarness(orchestrator, agentId), {
+			prompt: async () => ({ role: "assistant" }),
+		});
 
 		await expect(
-			orchestrator.inputAgent(agentId, "/status"),
-		).resolves.toMatchObject({ kind: "command", name: "status" });
+			orchestrator.inputAgent(agentId, "status report"),
+		).resolves.toMatchObject({ kind: "prompt" });
 		await expect(
 			orchestrator.inputAgent(agentId, "share the secret"),
 		).resolves.toEqual({
@@ -481,7 +484,11 @@ describe("audit extension consumer", () => {
 			),
 		).resolves.toMatchObject([
 			{
-				data: { text: "/status", outcome: "allowed", decidedBy: "default" },
+				data: {
+					text: "status report",
+					outcome: "allowed",
+					decidedBy: "default",
+				},
 			},
 			{
 				data: {
@@ -527,7 +534,7 @@ describe("audit extension consumer", () => {
 
 		// First input fails closed on the broken extension before audit runs.
 		await expect(
-			orchestrator.inputAgent(agentId, "/status"),
+			orchestrator.inputAgent(agentId, "status report"),
 		).resolves.toMatchObject({ kind: "blocked", blockedBy: "broken" });
 		// The next input reaches the audit policy, which still enforces.
 		await expect(

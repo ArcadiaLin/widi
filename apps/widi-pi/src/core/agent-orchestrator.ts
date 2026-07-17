@@ -127,6 +127,8 @@ import type {
 	CandidateItem,
 	OrchestratorEvent,
 	OrchestratorEventListener,
+	PromptExpansion,
+	PromptOutcome,
 	RuntimeModel,
 } from "./types.ts";
 
@@ -1021,122 +1023,27 @@ export class AgentOrchestrator {
 	): Promise<InputResult> {
 		const record = this._requireAgentRecord(agentId);
 
-		// Input interception (ME slice 6) runs before any command parsing,
-		// including the commands-disabled short circuit: it is an input hook,
-		// not a command hook, so a caller cannot bypass an input policy with
-		// options.commands. Interception runs exactly once; the rewritten text
-		// re-enters the full parse/gateway pipeline below.
-		let inputText = text;
-		let inputImages = options?.images;
-		let inputId: string | undefined;
-		let pendingInputTransform:
-			| {
-					inputId: string;
-					originalText: string;
-					text: string;
-					transformedBy: readonly string[];
-			  }
-			| undefined;
-		const runner = record.extensionRunner;
-		if (runner && !runner.isStale()) {
-			const run = await runner.interceptInput({
-				type: "input",
-				text: inputText,
-				images: inputImages,
-			});
-			await this._recordAndPublishExtensionDiagnostics(
-				agentId,
-				run.diagnostics,
-			);
-			if (run.kind === "block") {
-				inputId = this._createInputId();
-				await this._emit({
-					type: "input_blocked",
-					agentId,
-					inputId,
-					originalText: text,
-					reason: run.reason,
-					blockedBy: run.blockedBy,
-					createdAt: now(),
-				});
-				return {
-					kind: "blocked",
-					inputId,
-					reason: run.reason,
-					blockedBy: run.blockedBy,
-				};
-			}
-			if (run.kind === "transform") {
-				inputId = this._createInputId();
-				await this._emit({
-					type: "input_transformed",
-					agentId,
-					inputId,
-					originalText: text,
-					text: run.text,
-					transformedBy: run.transformedBy,
-					createdAt: now(),
-				});
-				// Persistence is delayed until the rewritten input is known to
-				// enter the model-facing prompt path. A rewrite that becomes a
-				// line command has no user message to pair with during hydration
-				// and therefore must not leave a dangling transform entry.
-				pendingInputTransform = {
-					inputId,
-					originalText: text,
-					text: run.text,
-					transformedBy: run.transformedBy,
-				};
-				inputText = run.text;
-				inputImages = run.images ? [...run.images] : inputImages;
-			}
-		}
-
-		const persistInputTransform = async (): Promise<void> => {
-			if (!pendingInputTransform) return;
-			await this.sessionManager.appendInputTransformEntry(
-				agentId,
-				pendingInputTransform,
-			);
-			pendingInputTransform = undefined;
-		};
-
 		// Command parsing can be turned off per call or by profile policy;
-		// either way the input goes to the agent as a plain prompt.
+		// either way the input goes to the agent as a plain prompt. Input
+		// interception now lives inside promptAgent.
 		if (
 			options?.commands === false ||
 			record.commandPolicy?.enabled === false
 		) {
-			if (record.status === "idle") await persistInputTransform();
-			return {
-				kind: "prompt",
-				message: await this.promptAgent(agentId, inputText, {
-					images: inputImages ? [...inputImages] : undefined,
-				}),
-			};
+			return await this._promptThroughInput(agentId, text, options?.images);
 		}
 
 		const parsed = parseLineCommand(
-			inputText,
+			text,
 			this._getLineCommandTriggers(agentId),
 		);
 		const command = parsed ? this._findLineCommand(agentId, parsed) : undefined;
 		if (!parsed || !command) {
-			const inlineResult = await this._expandInlineInput(agentId, inputText, {
-				images: inputImages,
-				inputId,
-				beforePrompt: async () => {
-					if (record.status === "idle") await persistInputTransform();
-				},
+			const inlineResult = await this._expandInlineInput(agentId, text, {
+				images: options?.images,
 			});
 			if (inlineResult) return inlineResult;
-			if (record.status === "idle") await persistInputTransform();
-			return {
-				kind: "prompt",
-				message: await this.promptAgent(agentId, inputText, {
-					images: inputImages ? [...inputImages] : undefined,
-				}),
-			};
+			return await this._promptThroughInput(agentId, text, options?.images);
 		}
 
 		const commandId = this._createCommandId();
@@ -1267,14 +1174,126 @@ export class AgentOrchestrator {
 		}
 	}
 
+	// Transitional inputAgent prompt exit: maps a PromptOutcome onto the
+	// InputResult contract.
+	private async _promptThroughInput(
+		agentId: AgentId,
+		text: string,
+		images?: ImageContent[],
+	): Promise<InputResult> {
+		const outcome = await this.promptAgent(agentId, text, {
+			images: images ? [...images] : undefined,
+		});
+		if (outcome.kind === "blocked") {
+			return {
+				kind: "blocked",
+				inputId: outcome.inputId,
+				reason: outcome.reason,
+				blockedBy: outcome.blockedBy,
+			};
+		}
+		return { kind: "prompt", message: outcome.message };
+	}
+
+	// The single text-input entry point. Extension input interception is
+	// applied here so no caller can bypass an input policy; interaction-layer
+	// inline expansions are persisted via options.expansion.
 	async promptAgent(
 		agentId: AgentId,
 		text: string,
-		options?: { images?: ImageContent[] },
-	) {
-		return await this._runHarnessOperation(agentId, async (harness) => {
-			return await harness.prompt(text, options);
-		});
+		options?: { images?: ImageContent[]; expansion?: PromptExpansion },
+	): Promise<PromptOutcome> {
+		const record = this._requireAgentRecord(agentId);
+		let inputText = text;
+		let inputImages = options?.images;
+		let inputId: string | undefined;
+		let pendingInputTransform:
+			| {
+					inputId: string;
+					originalText: string;
+					text: string;
+					transformedBy: readonly string[];
+			  }
+			| undefined;
+		const runner = record.extensionRunner;
+		if (runner && !runner.isStale()) {
+			const run = await runner.interceptInput({
+				type: "input",
+				text: inputText,
+				images: inputImages,
+			});
+			await this._recordAndPublishExtensionDiagnostics(
+				agentId,
+				run.diagnostics,
+			);
+			if (run.kind === "block") {
+				inputId = this._createInputId();
+				await this._emit({
+					type: "input_blocked",
+					agentId,
+					inputId,
+					originalText: text,
+					reason: run.reason,
+					blockedBy: run.blockedBy,
+					createdAt: now(),
+				});
+				return {
+					kind: "blocked",
+					inputId,
+					reason: run.reason,
+					blockedBy: run.blockedBy,
+				};
+			}
+			if (run.kind === "transform") {
+				inputId = this._createInputId();
+				await this._emit({
+					type: "input_transformed",
+					agentId,
+					inputId,
+					originalText: text,
+					text: run.text,
+					transformedBy: run.transformedBy,
+					createdAt: now(),
+				});
+				pendingInputTransform = {
+					inputId,
+					originalText: text,
+					text: run.text,
+					transformedBy: run.transformedBy,
+				};
+				inputText = run.text;
+				inputImages = run.images ? [...run.images] : inputImages;
+			}
+		}
+
+		// Dual record: the user message carries the expanded text the model
+		// actually sees; the custom entry preserves the original input and
+		// expansion positions for UI replay.
+		if (options?.expansion) {
+			await this.sessionManager.appendCommandExpansionEntry(agentId, {
+				inputId: inputId ?? this._createInputId(),
+				originalText: options.expansion.originalText,
+				expansions: options.expansion.items,
+			});
+		}
+		// Persistence waits until the rewritten input is known to enter the
+		// model-facing prompt path of a fresh turn, so a rewrite never leaves
+		// a dangling transform entry without a user message to pair with.
+		if (pendingInputTransform && record.status === "idle") {
+			await this.sessionManager.appendInputTransformEntry(
+				agentId,
+				pendingInputTransform,
+			);
+		}
+		const message = await this._runHarnessOperation(
+			agentId,
+			async (harness) => {
+				return await harness.prompt(inputText, {
+					images: inputImages ? [...inputImages] : undefined,
+				});
+			},
+		);
+		return { kind: "completed", message };
 	}
 
 	async steerAgent(
@@ -3286,12 +3305,8 @@ export class AgentOrchestrator {
 	private async _expandInlineInput(
 		agentId: AgentId,
 		text: string,
-		// A caller that already published input facts (interception) passes its
-		// inputId so one input's transform and expansion facts correlate.
 		options?: {
 			images?: ImageContent[];
-			inputId?: string;
-			beforePrompt?: () => Promise<void>;
 		},
 	): Promise<InputResult | undefined> {
 		const matches = scanInlineCommands(text, [
@@ -3300,7 +3315,7 @@ export class AgentOrchestrator {
 		]);
 		if (matches.length === 0) return undefined;
 
-		const inputId = options?.inputId ?? this._createInputId();
+		const inputId = this._createInputId();
 		const expansions: Array<{
 			match: InlineCommandMatch;
 			commandId: string;
@@ -3426,7 +3441,6 @@ export class AgentOrchestrator {
 		// Dual record: the user message carries the expanded text the model
 		// actually sees; the custom entry preserves the original input and
 		// expansion positions for UI replay.
-		await options?.beforePrompt?.();
 		await this.sessionManager.appendCommandExpansionEntry(agentId, {
 			inputId,
 			originalText: text,
@@ -3440,12 +3454,11 @@ export class AgentOrchestrator {
 			})),
 		});
 
-		return {
-			kind: "prompt",
-			message: await this.promptAgent(agentId, expandedText, {
-				images: options?.images ? [...options.images] : undefined,
-			}),
-		};
+		return await this._promptThroughInput(
+			agentId,
+			expandedText,
+			options?.images,
+		);
 	}
 
 	private _findInlineCommand(
