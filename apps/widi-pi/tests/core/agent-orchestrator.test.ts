@@ -1826,6 +1826,16 @@ describe("AgentOrchestrator", () => {
 			orchestrator.inputAgent(agentId, "use reasoning"),
 		).resolves.toMatchObject({ kind: "command", name: "model" });
 		expect(harness.getModel()).toMatchObject({ id: reasoningModel.id });
+		await expect(
+			orchestrator.getAgentSessionTree(agentId),
+		).resolves.toMatchObject({
+			entries: expect.not.arrayContaining([
+				expect.objectContaining({
+					type: "custom",
+					customType: "core:input_transform",
+				}),
+			]),
+		});
 		expect(events).toContainEqual(
 			expect.objectContaining({
 				type: "input_transformed",
@@ -2118,6 +2128,9 @@ describe("AgentOrchestrator", () => {
 			),
 		});
 		orchestrator.registerExtension("glossary", (api) => {
+			api.intercept("input", (event) => ({
+				text: `${event.text} transformed`,
+			}));
 			api.registerCommand({
 				name: "glossary",
 				placement: "inline",
@@ -2156,6 +2169,16 @@ describe("AgentOrchestrator", () => {
 				}),
 			}),
 		);
+		await expect(
+			orchestrator.getAgentSessionTree(agentId),
+		).resolves.toMatchObject({
+			entries: expect.not.arrayContaining([
+				expect.objectContaining({
+					type: "custom",
+					customType: "core:input_transform",
+				}),
+			]),
+		});
 	});
 
 	it("treats extension inline tokens as plain text when the runner is stale", async () => {

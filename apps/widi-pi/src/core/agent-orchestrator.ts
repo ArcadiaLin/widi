@@ -1029,6 +1029,14 @@ export class AgentOrchestrator {
 		let inputText = text;
 		let inputImages = options?.images;
 		let inputId: string | undefined;
+		let pendingInputTransform:
+			| {
+					inputId: string;
+					originalText: string;
+					text: string;
+					transformedBy: readonly string[];
+			  }
+			| undefined;
 		const runner = record.extensionRunner;
 		if (runner && !runner.isStale()) {
 			const run = await runner.interceptInput({
@@ -1069,20 +1077,29 @@ export class AgentOrchestrator {
 					transformedBy: run.transformedBy,
 					createdAt: now(),
 				});
-				// Dual record (ME slice 7): the session carries the rewritten
-				// text downstream, so the original input must stay recoverable
-				// after resume. Blocked input writes no entry - nothing of it
-				// reaches the session.
-				await this.sessionManager.appendInputTransformEntry(agentId, {
+				// Persistence is delayed until the rewritten input is known to
+				// enter the model-facing prompt path. A rewrite that becomes a
+				// line command has no user message to pair with during hydration
+				// and therefore must not leave a dangling transform entry.
+				pendingInputTransform = {
 					inputId,
 					originalText: text,
 					text: run.text,
 					transformedBy: run.transformedBy,
-				});
+				};
 				inputText = run.text;
 				inputImages = run.images ? [...run.images] : inputImages;
 			}
 		}
+
+		const persistInputTransform = async (): Promise<void> => {
+			if (!pendingInputTransform) return;
+			await this.sessionManager.appendInputTransformEntry(
+				agentId,
+				pendingInputTransform,
+			);
+			pendingInputTransform = undefined;
+		};
 
 		// Command parsing can be turned off per call or by profile policy;
 		// either way the input goes to the agent as a plain prompt.
@@ -1090,6 +1107,7 @@ export class AgentOrchestrator {
 			options?.commands === false ||
 			record.commandPolicy?.enabled === false
 		) {
+			if (record.status === "idle") await persistInputTransform();
 			return {
 				kind: "prompt",
 				message: await this.promptAgent(agentId, inputText, {
@@ -1107,8 +1125,12 @@ export class AgentOrchestrator {
 			const inlineResult = await this._expandInlineInput(agentId, inputText, {
 				images: inputImages,
 				inputId,
+				beforePrompt: async () => {
+					if (record.status === "idle") await persistInputTransform();
+				},
 			});
 			if (inlineResult) return inlineResult;
+			if (record.status === "idle") await persistInputTransform();
 			return {
 				kind: "prompt",
 				message: await this.promptAgent(agentId, inputText, {
@@ -3266,7 +3288,11 @@ export class AgentOrchestrator {
 		text: string,
 		// A caller that already published input facts (interception) passes its
 		// inputId so one input's transform and expansion facts correlate.
-		options?: { images?: ImageContent[]; inputId?: string },
+		options?: {
+			images?: ImageContent[];
+			inputId?: string;
+			beforePrompt?: () => Promise<void>;
+		},
 	): Promise<InputResult | undefined> {
 		const matches = scanInlineCommands(text, [
 			...BUILT_IN_INLINE_COMMANDS.map((binding) => binding.command),
@@ -3400,6 +3426,7 @@ export class AgentOrchestrator {
 		// Dual record: the user message carries the expanded text the model
 		// actually sees; the custom entry preserves the original input and
 		// expansion positions for UI replay.
+		await options?.beforePrompt?.();
 		await this.sessionManager.appendCommandExpansionEntry(agentId, {
 			inputId,
 			originalText: text,
