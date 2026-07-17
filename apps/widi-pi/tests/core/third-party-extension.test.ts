@@ -55,31 +55,29 @@ async function createThirdPartyHarness(module: ExtensionModule): Promise<{
 }
 
 describe("third-party extension consumer", () => {
-	it("combines tool and command registrations through the public contract only", async () => {
-		const { definition } = createThirdPartyExtension({
-			tdd: "test-driven development",
-		});
+	it("combines tool and observer registrations through the public contract only", async () => {
+		const { definition } = createThirdPartyExtension();
 		const { orchestrator, agentId } = await createThirdPartyHarness(definition);
 
 		expect(orchestrator.getAgentTools(agentId).toolNames).toContain("tp_echo");
 		expect(
-			orchestrator.inspectAgent(agentId).extensionSnapshot.commands,
+			orchestrator.inspectAgent(agentId).extensionSnapshot.toolContributions,
 		).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({
-					command: expect.objectContaining({
-						name: "tp-note",
-						placement: "line",
-					}),
-				}),
-				expect.objectContaining({
-					command: expect.objectContaining({
-						name: "tp-term",
-						placement: "inline",
-					}),
+					kind: "define",
+					extensionId: "third-party",
+					toolName: "tp_echo",
 				}),
 			]),
 		);
+		expect(
+			orchestrator.inspectAgent(agentId).extensionSnapshot.hooks,
+		).toContainEqual({
+			kind: "observe",
+			extensionId: "third-party",
+			eventName: "agent_harness_event",
+		});
 	});
 
 	it("refuses to spawn an agent whose profile requires an incompatible extension", async () => {
@@ -127,21 +125,16 @@ describe("third-party extension consumer", () => {
 
 	it("accepts a bare factory as targeting the current api version", async () => {
 		const { orchestrator, agentId } = await createThirdPartyHarness((api) => {
-			api.registerCommand({
-				name: "tp-bare",
-				handler: () => {},
-			});
+			api.intercept("input", () => undefined);
 		});
 
 		expect(
-			orchestrator.inspectAgent(agentId).extensionSnapshot.commands,
-		).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					command: expect.objectContaining({ name: "tp-bare" }),
-				}),
-			]),
-		);
+			orchestrator.inspectAgent(agentId).extensionSnapshot.hooks,
+		).toContainEqual({
+			kind: "intercept",
+			extensionId: "third-party",
+			eventName: "input",
+		});
 		expect(
 			orchestrator.inspectAgent(agentId).extensionDiagnostics,
 		).not.toContainEqual(

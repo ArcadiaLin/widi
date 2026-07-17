@@ -41,6 +41,9 @@ describe("hydrateSessionEntries", () => {
 			message("tool-result", toolResult("call-1", "read", "file contents")),
 			custom("extension-message", EXTENSION_MESSAGE_CUSTOM_TYPE, {
 				extensionId: "reports",
+				// Legacy entries may carry this removed field; structural
+				// hydration ignores it without rewriting the stored entry.
+				commandId: "legacy-command",
 				message: {
 					kind: "markdown",
 					title: "Report",

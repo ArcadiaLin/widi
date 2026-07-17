@@ -62,7 +62,6 @@ import {
 	type ExtensionObservedEvent,
 	type ExtensionResourceContribution,
 	ExtensionRunner,
-	type ExtensionSessionCommandResult,
 } from "./extension/index.ts";
 import {
 	assertExtensionNotificationText,
@@ -1663,7 +1662,7 @@ export class AgentOrchestrator {
 		});
 		this._requireAgentRecord(agentId).harness = harness;
 		this._setAgentToolSet(agentId, agentToolSet);
-		this._bindExtensionRunner(agentId, harness, extensionRunner);
+		this._bindExtensionRunner(agentId, extensionRunner);
 		const unsubscribeInterceptors = this._registerExtensionInterceptors(
 			agentId,
 			harness,
@@ -1798,7 +1797,6 @@ export class AgentOrchestrator {
 
 	private _bindExtensionRunner(
 		agentId: AgentId,
-		harness: AgentHarness,
 		extensionRunner: ExtensionRunner,
 	): void {
 		extensionRunner.bindCore(this._createExtensionActions(), {
@@ -1828,103 +1826,6 @@ export class AgentOrchestrator {
 					),
 			},
 		});
-		// Session control facade (extension-api-followup ruling): only the
-		// human-triggered command context reaches these, spawn-class operations
-		// (new/fork/resume) are gated on profile capability canSpawn, and
-		// operations that read or move the current session (fork/navigateTree)
-		// require an idle agent. Every operation goes through the orchestrator
-		// atomic methods, so diagnostics, activation, profile resolution, and
-		// the event track stay intact.
-		extensionRunner.bindCommandContext({
-			waitForIdle: async () => {
-				await harness.waitForIdle();
-			},
-			newSession: async (extensionId) => {
-				this._requireExtensionCanSpawn(agentId, extensionId, "newSession");
-				const result = await this.newAgentSessionFromAgent(agentId);
-				return toExtensionSessionCommandResult(result);
-			},
-			forkSession: async (extensionId, options) => {
-				this._requireExtensionCanSpawn(agentId, extensionId, "forkSession");
-				this._requireExtensionAgentIdle(agentId, extensionId, "forkSession");
-				const result = await this.forkAgentSessionFromAgent(
-					agentId,
-					options?.entryId === undefined
-						? undefined
-						: { entryId: options.entryId },
-				);
-				return toExtensionSessionCommandResult(result);
-			},
-			navigateTree: async (extensionId, targetId, options) => {
-				this._requireExtensionAgentIdle(agentId, extensionId, "navigateTree");
-				const result = await this.navigateAgentTree(agentId, targetId, options);
-				return { cancelled: result.cancelled };
-			},
-			listSessions: async () => {
-				const result = await this.listAgentSessions();
-				return result.sessions.map((candidate) => ({
-					id: candidate.id,
-					path: candidate.path,
-					createdAt: candidate.createdAt,
-					cwd: candidate.cwd,
-					profileId: candidate.profile?.id,
-				}));
-			},
-			resumeSession: async (extensionId, reference) => {
-				this._requireExtensionCanSpawn(agentId, extensionId, "resumeSession");
-				const result = await this.resumeAgentSessionByReference(reference);
-				return toExtensionSessionCommandResult(result);
-			},
-		});
-	}
-
-	private _requireExtensionCanSpawn(
-		agentId: AgentId,
-		extensionId: string,
-		action: string,
-	): void {
-		const record = this._requireAgentRecord(agentId);
-		if (record.capabilities?.canSpawn === false) {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					code: "extension.session_control_denied",
-					message: `Extension '${extensionId}' session action '${action}' is denied by profile capability canSpawn.`,
-					source: { kind: "extension", id: extensionId },
-					agentId,
-					profileId: record.profile.reference.id,
-					extensionId,
-					phase: "runtime",
-					recoverable: true,
-				}),
-			);
-		}
-	}
-
-	// Aligned with the published isIdle() context fact: "running" is the only
-	// non-idle status this gate rejects; other lifecycle states fail in the
-	// downstream harness lookup with their own errors.
-	private _requireExtensionAgentIdle(
-		agentId: AgentId,
-		extensionId: string,
-		action: string,
-	): void {
-		const record = this._requireAgentRecord(agentId);
-		if (record.status === "running") {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					code: "extension.session_not_idle",
-					message: `Extension '${extensionId}' session action '${action}' requires an idle agent; await waitForIdle() first.`,
-					source: { kind: "extension", id: extensionId },
-					agentId,
-					profileId: record.profile.reference.id,
-					extensionId,
-					phase: "runtime",
-					recoverable: true,
-				}),
-			);
-		}
 	}
 
 	private _registerExtensionInterceptors(
@@ -2106,7 +2007,7 @@ export class AgentOrchestrator {
 					source: { kind: "extension", extensionId },
 				});
 			},
-			emitOutput: async (agentId, extensionId, text, commandId) => {
+			emitOutput: async (agentId, extensionId, text) => {
 				assertExtensionOutputText(text);
 				await this._emit(
 					{
@@ -2114,14 +2015,13 @@ export class AgentOrchestrator {
 						presentationId: this._createPresentationId(),
 						agentId,
 						extensionId,
-						commandId,
 						text,
 						createdAt: now(),
 					},
 					{ observeExtensions: false },
 				);
 			},
-			notify: async (agentId, extensionId, text, commandId) => {
+			notify: async (agentId, extensionId, text) => {
 				this._requireAgentRecord(agentId);
 				assertExtensionNotificationText(text);
 				await this._emit(
@@ -2130,14 +2030,13 @@ export class AgentOrchestrator {
 						presentationId: this._createPresentationId(),
 						agentId,
 						extensionId,
-						commandId,
 						text,
 						createdAt: now(),
 					},
 					{ observeExtensions: false },
 				);
 			},
-			setStatus: async (agentId, extensionId, key, status, commandId) => {
+			setStatus: async (agentId, extensionId, key, status) => {
 				this._requireAgentRecord(agentId);
 				assertExtensionStatusKey(key);
 				const validatedStatus: ExtensionStatus =
@@ -2156,7 +2055,6 @@ export class AgentOrchestrator {
 						presentationId: this._createPresentationId(),
 						agentId,
 						extensionId,
-						commandId,
 						key,
 						status: snapshot.status,
 						changedAt,
@@ -2164,7 +2062,7 @@ export class AgentOrchestrator {
 					{ observeExtensions: false },
 				);
 			},
-			clearStatus: async (agentId, extensionId, key, commandId) => {
+			clearStatus: async (agentId, extensionId, key) => {
 				this._requireAgentRecord(agentId);
 				assertExtensionStatusKey(key);
 				if (!this._extensionStatuses.clear(agentId, extensionId, key)) {
@@ -2176,7 +2074,6 @@ export class AgentOrchestrator {
 						presentationId: this._createPresentationId(),
 						agentId,
 						extensionId,
-						commandId,
 						key,
 						changedAt: now(),
 					},
@@ -2210,7 +2107,7 @@ export class AgentOrchestrator {
 					observeExtensions: false,
 				});
 			},
-			publishMessage: async (agentId, extensionId, message, commandId) => {
+			publishMessage: async (agentId, extensionId, message) => {
 				this._requireAgentRecord(agentId);
 				const validatedMessage: ExtensionMessage =
 					validateExtensionMessage(message);
@@ -2218,7 +2115,7 @@ export class AgentOrchestrator {
 				// the event and the action result both carry.
 				const entryId = await this.sessionManager.appendExtensionMessageEntry(
 					agentId,
-					{ extensionId, message: validatedMessage, commandId },
+					{ extensionId, message: validatedMessage },
 				);
 				await this._emit(
 					{
@@ -2227,7 +2124,6 @@ export class AgentOrchestrator {
 						entryId,
 						agentId,
 						extensionId,
-						commandId,
 						message: validatedMessage,
 						createdAt: now(),
 					},
@@ -2532,7 +2428,7 @@ export class AgentOrchestrator {
 				extensionRunner: nextRunner,
 			});
 
-			this._bindExtensionRunner(agentId, harness, nextRunner);
+			this._bindExtensionRunner(agentId, nextRunner);
 			await harness.setTools?.(nextToolSet.tools, [
 				...nextToolSet.activeToolNames,
 			]);
@@ -3037,15 +2933,6 @@ export class AgentOrchestrator {
 	}
 }
 
-function toExtensionSessionCommandResult(
-	result: AgentSessionCommandResult,
-): ExtensionSessionCommandResult {
-	return {
-		agentId: result.agentId,
-		sessionId: result.snapshot.sessionMetadata?.id,
-	};
-}
-
 function isBlockedExtensionDiagnostic(
 	diagnostic: OrchestratorDiagnostic,
 ): boolean {
@@ -3126,8 +3013,8 @@ export function buildAgentSystemPrompt(
 	return sections.join("\n\n");
 }
 
-// Stale runners keep no contribution rights: like inline commands, resources
-// contributed by a replaced runner drop out of the live loading pipelines.
+// Stale runners keep no contribution rights: resources contributed by a
+// replaced runner drop out of the live loading pipelines.
 function activeExtensionRunner(
 	record: AgentRecord,
 ): ExtensionRunner | undefined {

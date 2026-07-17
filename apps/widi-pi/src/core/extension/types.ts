@@ -12,12 +12,12 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { TSchema } from "typebox";
-import type { CommandCandidates, CommandPlacement } from "../command.ts";
 import type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
 import type { ProviderConfigInput } from "../model-registry.ts";
 import type { ToolDefinition, ToolDefinitionPatch } from "../tools/types.ts";
 import type {
 	AgentToolsSnapshot,
+	CandidateItem,
 	OrchestratorEvent,
 	RuntimeModel,
 } from "../types.ts";
@@ -104,9 +104,7 @@ export interface ExtensionInputEvent {
  * `undefined` passes the input through unchanged. A transform result rewrites
  * the text (and optionally the images; omitted images keep the current ones)
  * and feeds the next handler. A block result rejects the whole input and
- * short-circuits the pipeline; there is no pi-style "handled" escape hatch -
- * consuming input to run custom logic is a block plus scoped actions, and
- * owning command syntax is registerCommand.
+ * short-circuits the pipeline; there is no pi-style "handled" escape hatch.
  */
 export type ExtensionInputResult =
 	| { text: string; images?: readonly ImageContent[] }
@@ -204,7 +202,7 @@ export interface ExtensionActions {
 	setModel(reference: string): Promise<RuntimeModel>;
 	getModel(): RuntimeModel;
 	// Candidate values are model references accepted by setModel.
-	listModelCandidates(): Promise<CommandCandidates>;
+	listModelCandidates(): Promise<readonly CandidateItem[]>;
 	getThinkingLevel(): ThinkingLevel;
 	setThinkingLevel(level: ThinkingLevel): Promise<void>;
 	// Aborts the agent's current run; queued steer/followUp input is cleared.
@@ -234,38 +232,19 @@ export interface ExtensionCoreActions {
 		extensionId: string,
 		request: HumanRequestDraft,
 	): Promise<HumanResponse>;
-	// commandId is present when the call comes from a line-command execution
-	// context; the orchestrator writes it into the extension_output event.
-	emitOutput(
-		agentId: string,
-		extensionId: string,
-		text: string,
-		commandId?: string,
-	): Promise<void>;
-	notify(
-		agentId: string,
-		extensionId: string,
-		text: string,
-		commandId?: string,
-	): Promise<void>;
+	emitOutput(agentId: string, extensionId: string, text: string): Promise<void>;
+	notify(agentId: string, extensionId: string, text: string): Promise<void>;
 	setStatus(
 		agentId: string,
 		extensionId: string,
 		key: string,
 		status: ExtensionStatus,
-		commandId?: string,
 	): Promise<void>;
-	clearStatus(
-		agentId: string,
-		extensionId: string,
-		key: string,
-		commandId?: string,
-	): Promise<void>;
+	clearStatus(agentId: string, extensionId: string, key: string): Promise<void>;
 	publishMessage(
 		agentId: string,
 		extensionId: string,
 		message: ExtensionMessage,
-		commandId?: string,
 	): Promise<{ entryId: string }>;
 	reportDiagnostic(
 		agentId: string,
@@ -298,7 +277,7 @@ export interface ExtensionCoreActions {
 		reference: string,
 	): Promise<RuntimeModel>;
 	getAgentModel(agentId: string): RuntimeModel;
-	listModelCandidates(): Promise<CommandCandidates>;
+	listModelCandidates(): Promise<readonly CandidateItem[]>;
 	getAgentThinkingLevel(agentId: string): ThinkingLevel;
 	setAgentThinkingLevel(agentId: string, level: ThinkingLevel): Promise<void>;
 	abortAgent(agentId: string): Promise<void>;
@@ -315,69 +294,6 @@ export interface ExtensionContextActions {
 	isIdle?(): boolean;
 	session?: ExtensionSessionActions;
 	reportActionFailure?(failure: ExtensionActionFailure): Promise<void>;
-}
-
-/**
- * Session control facade results (extension-api-followup ruling). WIDI does
- * not impersonate pi's in-place session switch: new/fork/resume spawn a new
- * runtime agent and report its id; whether a client switches its active agent
- * is the client adapter's decision, driven by canonical orchestrator events.
- * The shapes are WIDI-owned narrowings - no SessionManager handle, mutable
- * entries, or session paths for writing cross the boundary.
- */
-export interface ExtensionSessionCommandResult {
-	agentId: string;
-	sessionId?: string;
-}
-
-export interface ExtensionForkSessionOptions {
-	entryId?: string;
-}
-
-export interface ExtensionNavigateTreeOptions {
-	summarize?: boolean;
-	customInstructions?: string;
-	replaceInstructions?: boolean;
-	label?: string;
-}
-
-export interface ExtensionNavigateTreeResult {
-	cancelled: boolean;
-}
-
-export interface ExtensionSessionCandidate {
-	id: string;
-	path: string;
-	createdAt: string;
-	cwd: string;
-	profileId?: string;
-}
-
-/**
- * Binding contract for command-context capabilities. Session control enters
- * the extension surface only here - a human-triggered execution context -
- * never the plain observer/interceptor context; the orchestrator additionally
- * gates spawn-class operations (new/fork/resume) on the profile capability
- * `canSpawn` and requires an idle agent for operations that read or move the
- * current session (fork/navigateTree).
- */
-export interface ExtensionCommandContextActions {
-	waitForIdle(): Promise<void>;
-	newSession(extensionId: string): Promise<ExtensionSessionCommandResult>;
-	forkSession(
-		extensionId: string,
-		options?: ExtensionForkSessionOptions,
-	): Promise<ExtensionSessionCommandResult>;
-	navigateTree(
-		extensionId: string,
-		targetId: string,
-		options?: ExtensionNavigateTreeOptions,
-	): Promise<ExtensionNavigateTreeResult>;
-	listSessions(extensionId: string): Promise<ExtensionSessionCandidate[]>;
-	resumeSession(
-		extensionId: string,
-		reference: string,
-	): Promise<ExtensionSessionCommandResult>;
 }
 
 export interface ExtensionCustomEntry<T = unknown> {
@@ -416,18 +332,13 @@ export interface ExtensionActionFailure {
 		| "exec"
 		| "findEntries"
 		| "followUp"
-		| "forkSession"
 		| "getSessionName"
 		| "listModelCandidates"
-		| "listSessions"
-		| "navigateTree"
-		| "newSession"
 		| "notify"
 		| "prompt"
 		| "publishMessage"
 		| "reportDiagnostic"
 		| "requestHuman"
-		| "resumeSession"
 		| "setActiveTools"
 		| "setModel"
 		| "setSessionName"
@@ -448,73 +359,6 @@ export interface ExtensionContext {
 	readonly signal: AbortSignal | undefined;
 	isIdle(): boolean;
 }
-
-export interface ExtensionCommandContext extends ExtensionContext {
-	waitForIdle(): Promise<void>;
-	newSession(): Promise<ExtensionSessionCommandResult>;
-	forkSession(
-		options?: ExtensionForkSessionOptions,
-	): Promise<ExtensionSessionCommandResult>;
-	navigateTree(
-		targetId: string,
-		options?: ExtensionNavigateTreeOptions,
-	): Promise<ExtensionNavigateTreeResult>;
-	listSessions(): Promise<ExtensionSessionCandidate[]>;
-	resumeSession(reference: string): Promise<ExtensionSessionCommandResult>;
-}
-
-// Return `undefined` for a command that only performs side effects. For
-// append-only progress during execution use `actions.emitOutput`.
-export type ExtensionCommandHandler = (
-	args: string,
-	context: ExtensionCommandContext,
-) => Promise<unknown> | unknown;
-
-// Argument facts on the author-side contract. getArgumentsCompletion
-// returns candidate facts only - whether and how a human request is
-// issued is the orchestrator's ruling, and the callback never receives
-// an orchestrator handle (the runner narrows the completion context).
-export interface ExtensionCommandArguments {
-	readonly required?: boolean;
-	getArgumentsCompletion?(
-		argumentPrefix: string,
-	): Promise<CommandCandidates> | CommandCandidates;
-}
-
-export interface ExtensionLineCommandDefinition {
-	readonly name: string;
-	readonly placement?: Extract<CommandPlacement, "line">;
-	readonly trigger?: string;
-	readonly description?: string;
-	readonly argumentHint?: string;
-	readonly arguments?: ExtensionCommandArguments;
-	readonly handler: ExtensionCommandHandler;
-}
-
-/**
- * Inline expansion is side-effect free by shape (ME slice 7): the callback
- * receives the argument string only - no context or actions handle - and
- * returns the replacement text. Data an expansion needs is captured in the
- * factory closure at activation time.
- */
-export type ExtensionInlineCommandExpand = (
-	argument: string,
-) => Promise<string> | string;
-
-// Inline commands share the fixed built-in trigger domain
-// (`<name:argument>`); there is no trigger field to declare.
-export interface ExtensionInlineCommandDefinition {
-	readonly name: string;
-	readonly placement: Extract<CommandPlacement, "inline">;
-	readonly description?: string;
-	readonly argumentHint?: string;
-	readonly arguments?: ExtensionCommandArguments;
-	readonly expand: ExtensionInlineCommandExpand;
-}
-
-export type ExtensionCommandDefinition =
-	| ExtensionLineCommandDefinition
-	| ExtensionInlineCommandDefinition;
 
 /**
  * Activation-time resource path declaration (ME slice 8). The extension only
@@ -566,7 +410,6 @@ export interface ExtensionActivationApi {
 		targetToolName: string,
 		patch: ToolDefinitionPatch<TParamsSchema, TDetails>,
 	): void;
-	registerCommand(command: ExtensionCommandDefinition): void;
 	contributeResources(paths: ExtensionResourcePaths): void;
 	registerProvider(providerName: string, config: ExtensionProviderConfig): void;
 	observe<TName extends ExtensionObservedEventName>(

@@ -92,7 +92,6 @@ export interface ExtensionOutputItem {
 	readonly durability: "ephemeral";
 	readonly createdAt: string;
 	readonly extensionId: string;
-	readonly commandId?: string;
 	readonly text: string;
 }
 

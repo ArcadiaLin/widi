@@ -2,7 +2,6 @@
 // slice 10); this barrel adds the core-internal binding surface on top.
 export * from "./api.ts";
 export {
-	type ExtensionCommandContribution,
 	type ExtensionDiscoveryCandidate,
 	type ExtensionDiscoveryCandidateKind,
 	type ExtensionDiscoveryResult,
@@ -24,7 +23,6 @@ export {
 	JitiExtensionModuleImporter,
 } from "./module-importer.ts";
 export {
-	type ExtensionCommandSnapshot,
 	type ExtensionHookSnapshot,
 	type ExtensionInputInterceptRun,
 	type ExtensionProviderContributionSnapshot,
@@ -32,20 +30,11 @@ export {
 	type ExtensionRunnerOptions,
 	type ExtensionRunnerSnapshot,
 	type ExtensionToolContributionSnapshot,
-	type ResolvedExtensionCommand,
-	type ResolvedExtensionInlineCommand,
-	type ResolvedExtensionLineCommand,
 } from "./runner.ts";
 export type {
 	ExtensionActionFailure,
-	ExtensionCommandContextActions,
 	ExtensionCompactionResult,
 	ExtensionContextActions,
 	ExtensionCoreActions,
-	ExtensionForkSessionOptions,
-	ExtensionNavigateTreeOptions,
-	ExtensionNavigateTreeResult,
 	ExtensionSessionActions,
-	ExtensionSessionCandidate,
-	ExtensionSessionCommandResult,
 } from "./types.ts";

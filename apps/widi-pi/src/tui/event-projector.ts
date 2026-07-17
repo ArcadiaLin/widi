@@ -186,7 +186,6 @@ export class EventProjector {
 					durability: "ephemeral",
 					createdAt: event.createdAt,
 					extensionId: event.extensionId,
-					commandId: event.commandId,
 					text: event.text,
 				});
 				this.markBackgroundActivity(event.agentId);

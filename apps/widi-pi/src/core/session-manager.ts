@@ -78,7 +78,6 @@ export const EXTENSION_MESSAGE_CUSTOM_TYPE = "core:extension_message";
 export interface ExtensionMessageEntryData {
 	readonly extensionId: string;
 	readonly message: ExtensionMessage;
-	readonly commandId?: string;
 }
 
 export interface AgentSessionCandidate {

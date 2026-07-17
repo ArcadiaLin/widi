@@ -4,11 +4,6 @@ import type {
 	FileInfo,
 } from "@earendil-works/pi-agent-core";
 import {
-	INLINE_COMMAND_CLOSE_TRIGGER,
-	INLINE_COMMAND_TRIGGER,
-	isCommandName,
-} from "../command.ts";
-import {
 	type CoreDiagnostic,
 	createDiagnostic,
 	type DiagnosticDisposition,
@@ -25,10 +20,7 @@ import {
 } from "./module-importer.ts";
 import type {
 	ExtensionActivationApi,
-	ExtensionCommandArguments,
-	ExtensionCommandHandler,
 	ExtensionFactory,
-	ExtensionInlineCommandExpand,
 	ExtensionInterceptorFor,
 	ExtensionInterceptorName,
 	ExtensionModule,
@@ -42,29 +34,6 @@ import type {
 
 type ExtensionToolDefinition = ToolDefinition;
 type ExtensionToolDefinitionPatch = ToolDefinitionPatch;
-
-export type ExtensionCommandContribution =
-	| {
-			extensionId: string;
-			placement: "line";
-			name: string;
-			trigger: string;
-			description?: string;
-			argumentHint?: string;
-			arguments?: ExtensionCommandArguments;
-			handler: ExtensionCommandHandler;
-	  }
-	| {
-			extensionId: string;
-			placement: "inline";
-			name: string;
-			trigger: string;
-			closeTrigger: string;
-			description?: string;
-			argumentHint?: string;
-			arguments?: ExtensionCommandArguments;
-			expand: ExtensionInlineCommandExpand;
-	  };
 
 export interface ExtensionResourceContribution {
 	readonly extensionId: string;
@@ -173,7 +142,6 @@ export interface LoadedExtensionScope {
 	extensions: readonly ExtensionIdentity[];
 	diagnostics: readonly CoreDiagnostic[];
 	toolContributions: readonly ExtensionToolContribution[];
-	commandContributions: readonly ExtensionCommandContribution[];
 	resourceContributions: readonly ExtensionResourceContribution[];
 	providerContributions: readonly ExtensionProviderContribution[];
 	observerHandlers: ReadonlyMap<
@@ -451,7 +419,6 @@ export class ExtensionLoader {
 	): Promise<LoadedExtensionScope> {
 		const diagnostics: CoreDiagnostic[] = [];
 		const toolContributions: ExtensionToolContribution[] = [];
-		const commandContributions: ExtensionCommandContribution[] = [];
 		const resourceContributions: ExtensionResourceContribution[] = [];
 		const providerContributions: ExtensionProviderContribution[] = [];
 		const observerHandlers = new Map<
@@ -512,7 +479,6 @@ export class ExtensionLoader {
 						agentId: options.agentId,
 						profileId: options.profileId,
 						toolContributions,
-						commandContributions,
 						resourceContributions,
 						providerContributions,
 						observerHandlers,
@@ -542,7 +508,6 @@ export class ExtensionLoader {
 			extensions,
 			diagnostics,
 			toolContributions,
-			commandContributions,
 			resourceContributions,
 			providerContributions,
 			observerHandlers,
@@ -901,7 +866,6 @@ function createActivationApi(options: {
 	agentId: string;
 	profileId: string;
 	toolContributions: ExtensionToolContribution[];
-	commandContributions: ExtensionCommandContribution[];
 	resourceContributions: ExtensionResourceContribution[];
 	providerContributions: ExtensionProviderContribution[];
 	observerHandlers: Map<
@@ -932,32 +896,6 @@ function createActivationApi(options: {
 				targetToolName,
 				patch: patch as ExtensionToolDefinitionPatch,
 				source: { kind: "extension", id: options.extensionId },
-			});
-		},
-		registerCommand: (command) => {
-			if (command.placement === "inline") {
-				options.commandContributions.push({
-					extensionId: options.extensionId,
-					placement: "inline",
-					name: normalizeCommandName(command.name),
-					trigger: INLINE_COMMAND_TRIGGER,
-					closeTrigger: INLINE_COMMAND_CLOSE_TRIGGER,
-					description: command.description,
-					argumentHint: command.argumentHint,
-					arguments: command.arguments,
-					expand: command.expand,
-				});
-				return;
-			}
-			options.commandContributions.push({
-				extensionId: options.extensionId,
-				placement: "line",
-				name: normalizeCommandName(command.name),
-				trigger: normalizeLineCommandTrigger(command.trigger),
-				description: command.description,
-				argumentHint: command.argumentHint,
-				arguments: command.arguments,
-				handler: command.handler,
 			});
 		},
 		contributeResources: (paths) => {
@@ -1027,29 +965,6 @@ function normalizeExtensionIds(extensionIds: readonly string[]): string[] {
 		if (!extensionId || seen.has(extensionId)) continue;
 		seen.add(extensionId);
 		normalized.push(extensionId);
-	}
-	return normalized;
-}
-
-function normalizeCommandName(name: string): string {
-	const normalized = name.trim();
-	if (!normalized) {
-		throw new Error("Extension command name must not be empty.");
-	}
-	if (!isCommandName(normalized)) {
-		throw new Error(
-			"Extension command name must start with a letter or digit and contain only letters, digits, '.', '_', or '-'.",
-		);
-	}
-	return normalized;
-}
-
-function normalizeLineCommandTrigger(trigger: string | undefined): string {
-	const normalized = trigger?.trim() ?? "/";
-	if (!normalized || /[\s:]/u.test(normalized)) {
-		throw new Error(
-			"Extension command trigger must not be empty or contain ':' or whitespace.",
-		);
 	}
 	return normalized;
 }

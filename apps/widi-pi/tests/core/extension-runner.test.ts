@@ -1,6 +1,5 @@
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
-import type { Command } from "../../src/core/command.ts";
 import {
 	type ExtensionActionFailure,
 	type ExtensionCoreActions,
@@ -31,11 +30,6 @@ describe("ExtensionRunner inspect", () => {
 			api.observe("agent_harness_event", () => {});
 			api.observe("agent_session_info_changed", () => {});
 			api.intercept("tool_call", () => undefined);
-			api.registerCommand({
-				name: "sample",
-				description: "Sample command",
-				handler: () => {},
-			});
 			api.registerTool({
 				name: "sampleTool",
 				label: "Sample Tool",
@@ -80,18 +74,6 @@ describe("ExtensionRunner inspect", () => {
 				eventName: "tool_call",
 			},
 		]);
-		expect(snapshot.commands).toEqual([
-			{
-				extensionId: "sample",
-				command: {
-					name: "sample",
-					description: "Sample command",
-					source: { kind: "extension", extensionId: "sample" },
-					placement: "line",
-					trigger: "/",
-				},
-			},
-		]);
 		expect(snapshot.toolContributions).toEqual([
 			{
 				kind: "define",
@@ -108,7 +90,6 @@ describe("ExtensionRunner inspect", () => {
 			},
 		]);
 		expect(snapshot.hooks[0]).not.toHaveProperty("handler");
-		expect(snapshot.commands[0]).not.toHaveProperty("handler");
 		expect(snapshot.toolContributions[0]).not.toHaveProperty("definition");
 		expect(snapshot.toolContributions[1]).not.toHaveProperty("patch");
 	});
@@ -154,33 +135,6 @@ describe("ExtensionRunner scoped output action", () => {
 		expect(calls).toEqual([["agent", "sample", "working"]]);
 	});
 
-	it("threads the command id from a command context into output", async () => {
-		const runner = await createRunner([["sample", () => {}]]);
-		const calls: Array<[string, string, string, string | undefined]> = [];
-		const unboundActions = (
-			runner as unknown as { _actions: ExtensionCoreActions }
-		)._actions;
-		runner.bindCore(
-			{
-				...unboundActions,
-				emitOutput: async (agentId, extensionId, text, commandId) => {
-					calls.push([agentId, extensionId, text, commandId]);
-				},
-			},
-			{},
-		);
-
-		await runner
-			.createCommandContext("sample", { commandId: "command-7" })
-			.actions.emitOutput("from command");
-		await runner.createContext("sample").actions.emitOutput("plain");
-
-		expect(calls).toEqual([
-			["agent", "sample", "from command", "command-7"],
-			["agent", "sample", "plain", undefined],
-		]);
-	});
-
 	it("reports output delivery failures before rethrowing", async () => {
 		const runner = await createRunner([["sample", () => {}]]);
 		const failure = new Error("output delivery failed");
@@ -217,31 +171,25 @@ describe("ExtensionRunner scoped output action", () => {
 });
 
 describe("ExtensionRunner scoped notification action", () => {
-	it("injects attribution and threads command ids into notifications", async () => {
+	it("injects attribution into notifications", async () => {
 		const runner = await createRunner([["sample", () => {}]]);
-		const calls: Array<[string, string, string, string | undefined]> = [];
+		const calls: Array<[string, string, string]> = [];
 		const unboundActions = (
 			runner as unknown as { _actions: ExtensionCoreActions }
 		)._actions;
 		runner.bindCore(
 			{
 				...unboundActions,
-				notify: async (agentId, extensionId, text, commandId) => {
-					calls.push([agentId, extensionId, text, commandId]);
+				notify: async (agentId, extensionId, text) => {
+					calls.push([agentId, extensionId, text]);
 				},
 			},
 			{},
 		);
 
 		await runner.createContext("sample").actions.notify("plain");
-		await runner
-			.createCommandContext("sample", { commandId: "command-7" })
-			.actions.notify("from command");
 
-		expect(calls).toEqual([
-			["agent", "sample", "plain", undefined],
-			["agent", "sample", "from command", "command-7"],
-		]);
+		expect(calls).toEqual([["agent", "sample", "plain"]]);
 	});
 
 	it("reports notification delivery failures before rethrowing", async () => {
@@ -280,7 +228,7 @@ describe("ExtensionRunner scoped notification action", () => {
 });
 
 describe("ExtensionRunner scoped status actions", () => {
-	it("injects attribution and threads command ids into status mutations", async () => {
+	it("injects attribution into status mutations", async () => {
 		const runner = await createRunner([["sample", () => {}]]);
 		const calls: Array<
 			| [
@@ -289,9 +237,8 @@ describe("ExtensionRunner scoped status actions", () => {
 					string,
 					string,
 					{ text: string; progress?: { completed: number; total?: number } },
-					string | undefined,
 			  ]
-			| ["clear", string, string, string, string | undefined]
+			| ["clear", string, string, string]
 		> = [];
 		const unboundActions = (
 			runner as unknown as { _actions: ExtensionCoreActions }
@@ -307,17 +254,15 @@ describe("ExtensionRunner scoped status actions", () => {
 						text: string;
 						progress?: { completed: number; total?: number };
 					},
-					commandId?: string,
 				) => {
-					calls.push(["set", agentId, extensionId, key, status, commandId]);
+					calls.push(["set", agentId, extensionId, key, status]);
 				},
 				clearStatus: async (
 					agentId: string,
 					extensionId: string,
 					key: string,
-					commandId?: string,
 				) => {
-					calls.push(["clear", agentId, extensionId, key, commandId]);
+					calls.push(["clear", agentId, extensionId, key]);
 				},
 			},
 			{},
@@ -326,26 +271,23 @@ describe("ExtensionRunner scoped status actions", () => {
 		await runner
 			.createContext("sample")
 			.actions.setStatus("index", { text: "Scanning" });
-		const commandActions = runner.createCommandContext("sample", {
-			commandId: "command-7",
-		}).actions;
-		await commandActions.setStatus("index", {
+		const actions = runner.createContext("sample").actions;
+		await actions.setStatus("index", {
 			text: "Building",
 			progress: { completed: 2, total: 5 },
 		});
-		await commandActions.clearStatus("index");
+		await actions.clearStatus("index");
 
 		expect(calls).toEqual([
-			["set", "agent", "sample", "index", { text: "Scanning" }, undefined],
+			["set", "agent", "sample", "index", { text: "Scanning" }],
 			[
 				"set",
 				"agent",
 				"sample",
 				"index",
 				{ text: "Building", progress: { completed: 2, total: 5 } },
-				"command-7",
 			],
-			["clear", "agent", "sample", "index", "command-7"],
+			["clear", "agent", "sample", "index"],
 		]);
 	});
 
@@ -386,15 +328,10 @@ describe("ExtensionRunner scoped status actions", () => {
 });
 
 describe("ExtensionRunner scoped message actions", () => {
-	it("injects attribution, threads command ids, and returns the entry id", async () => {
+	it("injects attribution and returns the entry id", async () => {
 		const runner = await createRunner([["sample", () => {}]]);
 		const calls: Array<
-			[
-				string,
-				string,
-				{ kind: string; title?: string; content: string },
-				string | undefined,
-			]
+			[string, string, { kind: string; title?: string; content: string }]
 		> = [];
 		const unboundActions = (
 			runner as unknown as { _actions: ExtensionCoreActions }
@@ -410,9 +347,8 @@ describe("ExtensionRunner scoped message actions", () => {
 						title?: string;
 						content: string;
 					},
-					commandId?: string,
 				) => {
-					calls.push([agentId, extensionId, message, commandId]);
+					calls.push([agentId, extensionId, message]);
 					return { entryId: `entry-${calls.length}` };
 				},
 			},
@@ -425,22 +361,19 @@ describe("ExtensionRunner scoped message actions", () => {
 				.actions.publishMessage({ kind: "text", content: "plain" }),
 		).resolves.toEqual({ entryId: "entry-1" });
 		await expect(
-			runner
-				.createCommandContext("sample", { commandId: "command-7" })
-				.actions.publishMessage({
-					kind: "markdown",
-					title: "Summary",
-					content: "Done.",
-				}),
+			runner.createContext("sample").actions.publishMessage({
+				kind: "markdown",
+				title: "Summary",
+				content: "Done.",
+			}),
 		).resolves.toEqual({ entryId: "entry-2" });
 
 		expect(calls).toEqual([
-			["agent", "sample", { kind: "text", content: "plain" }, undefined],
+			["agent", "sample", { kind: "text", content: "plain" }],
 			[
 				"agent",
 				"sample",
 				{ kind: "markdown", title: "Summary", content: "Done." },
-				"command-7",
 			],
 		]);
 	});
@@ -507,13 +440,11 @@ describe("ExtensionRunner scoped diagnostic actions", () => {
 			code: "scan.finished",
 			message: "Scan finished",
 		});
-		await runner
-			.createCommandContext("sample", { commandId: "command-7" })
-			.actions.reportDiagnostic({
-				severity: "warning",
-				code: "cache.stale",
-				message: "Cache is stale",
-			});
+		await runner.createContext("sample").actions.reportDiagnostic({
+			severity: "warning",
+			code: "cache.stale",
+			message: "Cache is stale",
+		});
 
 		expect(calls).toEqual([
 			[
@@ -558,79 +489,6 @@ describe("ExtensionRunner scoped diagnostic actions", () => {
 			}),
 		).rejects.toBe(failure);
 		expect(reported.map(({ action }) => action)).toEqual(["reportDiagnostic"]);
-	});
-});
-
-describe("ExtensionRunner inline commands", () => {
-	it("resolves inline commands in the fixed trigger domain with an argument-only expand", async () => {
-		const glossary = new Map([["tdd", "test-driven development"]]);
-		const runner = await createRunner([
-			[
-				"glossary",
-				(api) => {
-					api.registerCommand({
-						name: "glossary",
-						placement: "inline",
-						description: "Expand a glossary term.",
-						expand: (argument) => glossary.get(argument) ?? argument,
-					});
-				},
-			],
-		]);
-
-		const resolved = runner.getCommand({
-			placement: "inline",
-			trigger: "<",
-			name: "glossary",
-		});
-
-		if (resolved?.kind !== "inline") {
-			throw new Error("Expected a resolved inline command.");
-		}
-		expect(resolved.command).toEqual({
-			name: "glossary",
-			placement: "inline",
-			trigger: "<",
-			closeTrigger: ">",
-			description: "Expand a glossary term.",
-			source: { kind: "extension", extensionId: "glossary" },
-		});
-		expect(await resolved.expand("tdd")).toBe("test-driven development");
-		expect(resolved).not.toHaveProperty("handler");
-	});
-
-	it("renames extension inline commands that collide with reserved built-ins", async () => {
-		const runner = await createRunner([
-			[
-				"shadow",
-				(api) => {
-					api.registerCommand({
-						name: "prompt",
-						placement: "inline",
-						expand: () => "shadowed",
-					});
-				},
-			],
-		]);
-		const reserved: Command[] = [
-			{
-				name: "prompt",
-				placement: "inline",
-				trigger: "<",
-				closeTrigger: ">",
-				source: { kind: "built-in" },
-			},
-		];
-
-		const commands = runner.getCommands({ reservedCommands: reserved });
-
-		expect(commands).toMatchObject([
-			{
-				kind: "inline",
-				extensionId: "shadow",
-				command: { name: "prompt-1", placement: "inline", trigger: "<" },
-			},
-		]);
 	});
 });
 

@@ -160,7 +160,6 @@ export function createEmptyExtensionSnapshot(): ExtensionRunnerSnapshot {
 		extensionIds: [],
 		extensions: [],
 		hooks: [],
-		commands: [],
 		toolContributions: [],
 		resourceContributions: [],
 		providerContributions: [],

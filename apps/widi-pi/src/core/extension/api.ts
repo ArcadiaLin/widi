@@ -29,14 +29,13 @@ export function isSupportedExtensionApiVersion(version: number): boolean {
 
 // WIDI core types named in author-facing signatures are re-exported here so
 // a third-party extension never imports core internals directly.
-export type {
-	Command,
-	CommandCandidates,
-	CommandPlacement,
-} from "../command.ts";
 export type { CoreDiagnostic } from "../diagnostics.ts";
 export type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
-export type { AgentToolsSnapshot, RuntimeModel } from "../types.ts";
+export type {
+	AgentToolsSnapshot,
+	CandidateItem,
+	RuntimeModel,
+} from "../types.ts";
 export type {
 	ExtensionDiagnosticDisposition,
 	ExtensionDiagnosticDraft,
@@ -49,24 +48,17 @@ export type {
 export type {
 	ExtensionActions,
 	ExtensionActivationApi,
-	ExtensionCommandArguments,
-	ExtensionCommandContext,
-	ExtensionCommandDefinition,
-	ExtensionCommandHandler,
 	ExtensionContext,
 	ExtensionCustomEntry,
 	ExtensionDefinition,
 	ExtensionExecResult,
 	ExtensionFactory,
-	ExtensionInlineCommandDefinition,
-	ExtensionInlineCommandExpand,
 	ExtensionInputEvent,
 	ExtensionInputResult,
 	ExtensionInterceptorEventFor,
 	ExtensionInterceptorFor,
 	ExtensionInterceptorName,
 	ExtensionInterceptorResultFor,
-	ExtensionLineCommandDefinition,
 	ExtensionModule,
 	ExtensionObservedEvent,
 	ExtensionObservedEventFor,

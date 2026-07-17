@@ -4,8 +4,6 @@ import {
 	type ExtensionDefinition,
 } from "../../src/core/extension/api.ts";
 
-export const THIRD_PARTY_NOTE_ENTRY_TYPE = "note";
-
 export interface ThirdPartyObservedFact {
 	readonly source: "harness";
 	readonly name: string;
@@ -18,15 +16,11 @@ export interface ThirdPartyExtension {
 
 /**
  * Third-party acceptance consumer (ME slice 10): a versioned extension that
- * combines a tool, a line command, an inline command, and observers while
- * importing nothing but the frozen author contract (`extension/api.ts`) and
- * the upstream types enumerated in the public contract. Closure state stands
- * in for extension-owned data; the note ledger goes through the session
- * custom-entry facade.
+ * combines a tool and observers while importing nothing but the frozen author
+ * contract (`extension/api.ts`) and the upstream types enumerated in the
+ * public contract.
  */
-export function createThirdPartyExtension(
-	glossary: Readonly<Record<string, string>> = {},
-): ThirdPartyExtension {
+export function createThirdPartyExtension(): ThirdPartyExtension {
 	const observed: ThirdPartyObservedFact[] = [];
 	const definition: ExtensionDefinition = {
 		apiVersion: EXTENSION_API_VERSION,
@@ -40,21 +34,6 @@ export function createThirdPartyExtension(
 					content: [{ type: "text", text: `echo: ${params.text}` }],
 					details: undefined,
 				}),
-			});
-			api.registerCommand({
-				name: "tp-note",
-				description: "Record a note into the session ledger.",
-				handler: async (args, context) => {
-					await context.session.appendEntry(THIRD_PARTY_NOTE_ENTRY_TYPE, {
-						text: args,
-					});
-				},
-			});
-			api.registerCommand({
-				name: "tp-term",
-				placement: "inline",
-				description: "Expand a glossary term.",
-				expand: (argument) => glossary[argument] ?? argument,
 			});
 			api.observe("agent_harness_event", (event) => {
 				observed.push({ source: "harness", name: event.event.type });
