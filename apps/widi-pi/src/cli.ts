@@ -3,9 +3,9 @@
  *
  * This is the first non-test consumer of the runtime. It deliberately uses
  * only the public composition surface: createWidiRuntime, orchestrator
- * events via subscribe/registerClient, and inputAgent. Anything this file
- * cannot do through that surface is an extension-surface finding, not a
- * reason to import core internals.
+ * events via subscribe/registerClient, CommandEngine, and promptAgent.
+ * Anything this file cannot do through that surface is an extension-surface
+ * finding, not a reason to import core internals.
  */
 
 import { homedir } from "node:os";
@@ -18,11 +18,12 @@ import {
 	formatExtensionStatusEvent,
 } from "./cli-event-format.ts";
 import { CliStreamWriter } from "./cli-stream-writer.ts";
+import { builtInCommands } from "./commands/built-ins.ts";
+import { CommandEngine, switchedAgentId } from "./commands/engine.ts";
 import type {
 	AgentOrchestrator,
 	OrchestratorEvent,
 } from "./core/agent-orchestrator.ts";
-import type { InputResult } from "./core/command.ts";
 import type { OrchestratorDiagnostic } from "./core/diagnostics.ts";
 import type {
 	HumanRequestEnvelope,
@@ -88,20 +89,6 @@ function renderEvent(event: OrchestratorEvent): void {
 	switch (event.type) {
 		case "agent_harness_event":
 			renderHarnessEvent(event.event);
-			return;
-		case "command_detected":
-		case "command_accepted":
-			return;
-		case "command_completed":
-			streamWriter.writeLine(
-				`[command:${event.command.name}] ${shortJson(event.result, 2000)}`,
-			);
-			return;
-		case "command_failed":
-		case "command_rejected":
-			streamWriter.writeLine(
-				`[command:${event.command?.name ?? "?"}:${event.type === "command_failed" ? "failed" : "rejected"}] ${event.diagnostic.message}`,
-			);
 			return;
 		case "diagnostic":
 			printDiagnostic(event.diagnostic);
@@ -285,24 +272,6 @@ function pickOption(
 	return request.allowFreeInput === true ? answer : undefined;
 }
 
-function getNextAgentId(result: InputResult): string | undefined {
-	if (
-		result.kind !== "command" ||
-		(result.name !== "fork" &&
-			result.name !== "new" &&
-			result.name !== "resume")
-	) {
-		return undefined;
-	}
-	if (typeof result.value !== "object" || result.value === null) {
-		return undefined;
-	}
-	const agentId = (result.value as { agentId?: unknown }).agentId;
-	return typeof agentId === "string" && agentId.length > 0
-		? agentId
-		: undefined;
-}
-
 async function main(): Promise<void> {
 	const options = parseArgs(process.argv.slice(2));
 	const runtime = await createWidiRuntime({
@@ -314,6 +283,7 @@ async function main(): Promise<void> {
 		defaultProfileId: options.profileId,
 	});
 	const orchestrator: AgentOrchestrator = runtime.orchestrator;
+	const engine = new CommandEngine(builtInCommands);
 
 	for (const diagnostic of runtime.diagnostics) {
 		printDiagnostic(diagnostic);
@@ -350,14 +320,51 @@ async function main(): Promise<void> {
 		if (input === "") continue;
 		if (input === ".exit" || input === "/exit") break;
 		try {
-			const result = await orchestrator.inputAgent(
-				await ensureAgentId(),
-				input,
-			);
-			const nextAgentId = getNextAgentId(result);
-			if (nextAgentId) {
-				agentId = nextAgentId;
-				streamWriter.writeLine(`[cli] active agent=${agentId}`);
+			const currentAgentId = await ensureAgentId();
+			const outcome = await engine.handleInput(input, {
+				agentId: currentAgentId,
+				orchestrator,
+			});
+			switch (outcome.kind) {
+				case "pass":
+				case "expanded":
+					// blocked 的用户可见输出交给 renderEvent 的 input_blocked 事件
+					// 打印，这里不重复输出。
+					await orchestrator.promptAgent(
+						currentAgentId,
+						outcome.kind === "expanded" ? outcome.text : input,
+						outcome.kind === "expanded"
+							? { expansion: outcome.expansion }
+							: undefined,
+					);
+					break;
+				case "executed": {
+					streamWriter.writeLine(
+						`[command:${outcome.name}] ${shortJson(outcome.value, 2000)}`,
+					);
+					const nextAgentId = switchedAgentId(outcome);
+					if (nextAgentId) {
+						agentId = nextAgentId;
+						streamWriter.writeLine(`[cli] active agent=${agentId}`);
+					}
+					break;
+				}
+				case "failed":
+					streamWriter.writeLine(
+						`[command:${outcome.name}:failed] ${outcome.error.message}`,
+					);
+					break;
+				case "needs-argument": {
+					streamWriter.writeLine(
+						`[command:/${outcome.command.name}] requires an argument${outcome.command.argumentHint ? ` ${outcome.command.argumentHint}` : ""}:`,
+					);
+					for (const candidate of outcome.candidates) {
+						streamWriter.writeLine(
+							`  ${candidate.value}${candidate.description ? ` — ${candidate.description}` : ""}`,
+						);
+					}
+					break;
+				}
 			}
 		} catch (error) {
 			streamWriter.writeLine(
