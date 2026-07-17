@@ -100,7 +100,7 @@ agent strip
 - 由 `CommandEngine.list(status)` 和 command `complete()` 产生的 autocomplete。
 - 多个独立 agent 的后台事件归约。
 - 底部 agent strip 和 agent selector。
-- human request 的 confirm、select、input、arguments completion 与 custom fallback。
+- human request 的 confirm、select、input 与 custom fallback。
 - global 与 per-agent diagnostics。
 - `/new`、`/fork`、`/resume` 产生新 agent 后的自动切换。
 - resume/fork agent 的当前 session branch history hydration。
@@ -120,7 +120,7 @@ agent strip
 - 持久化 TUI unread、selection、draft 和折叠状态。
 - 为兼容其他 terminal app 而建立第二套 UI protocol。
 
-第一版仍允许尚无专用界面的 built-in command 通过普通 command 输入执行，并以交互层 `CommandResultItem` 呈现。提交未带参数的 line command 时，只要命令声明 `requiresArgument` 或 `complete()`，`CommandEngine` 就返回 `needs-argument`，TUI 在 editor 上方打开通用 inline completion menu；选择候选后以 `/name:value` 重新提交。显式空参数（例如 `/fork:`）不打开菜单，而是直接执行。
+第一版仍允许尚无专用界面的 built-in command 通过普通 command 输入执行，并以交互层 `CommandResultItem` 呈现。提交未带参数的 line command 时，只要命令声明 `requiresArgument` 或 `complete()`，`CommandEngine` 就返回 `needs-argument`，TUI 在 editor 上方打开通用 inline completion menu；选择候选后以 `/name:value` 重新提交。该补全完全位于交互层，不创建 human request。显式空参数（例如 `/fork:`）不打开菜单，而是直接执行。
 
 ## 4. 现有基础与必要补充
 
