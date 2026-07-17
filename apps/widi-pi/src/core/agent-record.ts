@@ -1,7 +1,6 @@
 import type { AgentHarness } from "@earendil-works/pi-agent-core";
 import type {
 	AgentProfile,
-	AgentProfileCommandPolicy,
 	AgentProfileReference,
 	AgentProfileSource,
 } from "./agent-profile.js";
@@ -43,9 +42,7 @@ export interface AgentRecord {
 	readonly agentId: AgentId;
 	status: AgentLifecycleStatus;
 	readonly profile: AgentProfileRecordReference;
-	// Command gating facts snapshotted from the resolved profile.
 	readonly capabilities?: AgentProfile["capabilities"];
-	readonly commandPolicy?: AgentProfileCommandPolicy;
 	sessionMetadata?: AgentSessionMetadata;
 	model: RuntimeModel;
 	harness?: AgentHarness;
@@ -94,7 +91,6 @@ export function createAgentRecord(options: {
 			entryId: options.resolvedProfile.entryId,
 		},
 		capabilities: options.resolvedProfile.profile.capabilities,
-		commandPolicy: options.resolvedProfile.profile.commands,
 		sessionMetadata: options.sessionMetadata,
 		model: options.model,
 		resourceDiagnostics: [],
@@ -108,7 +104,6 @@ export function createAgentRecordFromProfileReference(options: {
 	readonly status: AgentLifecycleStatus;
 	readonly profile: AgentProfileRecordReference;
 	readonly capabilities?: AgentProfile["capabilities"];
-	readonly commandPolicy?: AgentProfileCommandPolicy;
 	readonly sessionMetadata?: AgentSessionMetadata;
 	readonly model: RuntimeModel;
 }): AgentRecord {
@@ -117,7 +112,6 @@ export function createAgentRecordFromProfileReference(options: {
 		status: options.status,
 		profile: options.profile,
 		capabilities: options.capabilities,
-		commandPolicy: options.commandPolicy,
 		sessionMetadata: options.sessionMetadata,
 		model: options.model,
 		resourceDiagnostics: [],

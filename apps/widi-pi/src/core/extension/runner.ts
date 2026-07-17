@@ -777,12 +777,7 @@ export class ExtensionRunner {
 				),
 			reportDiagnostic: async (draft) => {
 				await this._runReportedAction(failure("reportDiagnostic"), async () => {
-					await this._actions.reportDiagnostic(
-						agentId,
-						extensionId,
-						draft,
-						commandId,
-					);
+					await this._actions.reportDiagnostic(agentId, extensionId, draft);
 				});
 			},
 			prompt: async (text, options) => {
@@ -816,10 +811,6 @@ export class ExtensionRunner {
 					async () =>
 						await this._actions.compactAgent(agentId, customInstructions),
 				),
-			getCommands: () => {
-				this._assertActive();
-				return this._actions.listCommands(agentId);
-			},
 			setModel: async (reference) =>
 				await this._runReportedAction(
 					failure("setModel"),
@@ -1173,7 +1164,6 @@ function createUnboundActions(): ExtensionCoreActions {
 		setAgentSessionName: async () => notBound(),
 		getAgentSessionName: async () => notBound(),
 		compactAgent: async () => notBound(),
-		listCommands: () => notBound(),
 		setAgentModelByReference: async () => notBound(),
 		getAgentModel: () => notBound(),
 		listModelCandidates: async () => notBound(),

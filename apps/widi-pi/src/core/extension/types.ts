@@ -12,11 +12,7 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { TSchema } from "typebox";
-import type {
-	Command,
-	CommandCandidates,
-	CommandPlacement,
-} from "../command.ts";
+import type { CommandCandidates, CommandPlacement } from "../command.ts";
 import type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
 import type { ProviderConfigInput } from "../model-registry.ts";
 import type { ToolDefinition, ToolDefinitionPatch } from "../tools/types.ts";
@@ -55,11 +51,6 @@ export type ExtensionObservedEvent = Extract<
 			| "agent_session_forked"
 			| "agent_session_info_changed"
 			| "agent_spawned"
-			| "command_accepted"
-			| "command_completed"
-			| "command_detected"
-			| "command_failed"
-			| "command_rejected"
 			| "diagnostic"
 			| "human_request_cancelled"
 			| "human_request_pending"
@@ -100,10 +91,8 @@ export type ExtensionInterceptorName =
 	| "tool_result";
 
 /**
- * WIDI-native input interceptor event (ME slice 6). Fired by inputAgent for
- * every human text ingress before any command parsing, including the
- * commands-disabled short circuit; a rewritten text re-enters the full
- * parse/gateway pipeline. Not a Pi harness hook.
+ * WIDI-native input interceptor event (ME slice 6). Fired by promptAgent for
+ * every human text ingress. Not a Pi harness hook.
  */
 export interface ExtensionInputEvent {
 	readonly type: "input";
@@ -212,7 +201,6 @@ export interface ExtensionActions {
 	getSessionName(): Promise<string | undefined>;
 	// Requires an idle harness; rejects with the harness busy error otherwise.
 	compact(customInstructions?: string): Promise<ExtensionCompactionResult>;
-	getCommands(): Command[];
 	setModel(reference: string): Promise<RuntimeModel>;
 	getModel(): RuntimeModel;
 	// Candidate values are model references accepted by setModel.
@@ -283,7 +271,6 @@ export interface ExtensionCoreActions {
 		agentId: string,
 		extensionId: string,
 		draft: ExtensionDiagnosticDraft,
-		commandId?: string,
 	): Promise<void>;
 	promptAgent(
 		agentId: string,
@@ -306,7 +293,6 @@ export interface ExtensionCoreActions {
 		agentId: string,
 		customInstructions?: string,
 	): Promise<ExtensionCompactionResult>;
-	listCommands(agentId: string): Command[];
 	setAgentModelByReference(
 		agentId: string,
 		reference: string,
@@ -477,10 +463,8 @@ export interface ExtensionCommandContext extends ExtensionContext {
 	resumeSession(reference: string): Promise<ExtensionSessionCommandResult>;
 }
 
-// The handler's return value is surfaced as `command_completed.result`, the
-// same channel built-in line commands use; clients render it in their
-// transcript. Return `undefined` for a command that only performs side
-// effects. For append-only progress during execution use `actions.emitOutput`.
+// Return `undefined` for a command that only performs side effects. For
+// append-only progress during execution use `actions.emitOutput`.
 export type ExtensionCommandHandler = (
 	args: string,
 	context: ExtensionCommandContext,

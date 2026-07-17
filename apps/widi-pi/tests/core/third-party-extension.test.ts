@@ -1,4 +1,3 @@
-import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import {
@@ -56,46 +55,31 @@ async function createThirdPartyHarness(module: ExtensionModule): Promise<{
 }
 
 describe("third-party extension consumer", () => {
-	it("combines tool, commands, and observers through the public contract only", async () => {
-		const { definition, observed } = createThirdPartyExtension({
+	it("combines tool and command registrations through the public contract only", async () => {
+		const { definition } = createThirdPartyExtension({
 			tdd: "test-driven development",
 		});
 		const { orchestrator, agentId } = await createThirdPartyHarness(definition);
 
-		// The contributed tool reached the agent's resolved tool set.
 		expect(orchestrator.getAgentTools(agentId).toolNames).toContain("tp_echo");
-		expect(orchestrator.listCommands(agentId)).toContainEqual(
-			expect.objectContaining({ name: "tp-note", placement: "line" }),
+		expect(
+			orchestrator.inspectAgent(agentId).extensionSnapshot.commands,
+		).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					command: expect.objectContaining({
+						name: "tp-note",
+						placement: "line",
+					}),
+				}),
+				expect.objectContaining({
+					command: expect.objectContaining({
+						name: "tp-term",
+						placement: "inline",
+					}),
+				}),
+			]),
 		);
-		expect(orchestrator.listCommands(agentId)).toContainEqual(
-			expect.objectContaining({ name: "tp-term", placement: "inline" }),
-		);
-
-		// The line command writes through the session custom-entry facade.
-		await orchestrator.inputAgent(agentId, "/tp-note:remember the milk");
-		const tree = await orchestrator.getAgentSessionTree(agentId);
-		expect(tree.entries).toContainEqual(
-			expect.objectContaining({
-				type: "custom",
-				customType: "extension:third-party:note",
-				data: { text: "remember the milk" },
-			}),
-		);
-
-		// The inline command expands through the shared command pipeline.
-		const prompted: string[] = [];
-		Object.assign(orchestrator, {
-			promptAgent: async (_agentId: string, text: string) => {
-				prompted.push(text);
-				return { role: "assistant" } as AssistantMessage;
-			},
-		});
-		await orchestrator.inputAgent(agentId, "define <tp-term:tdd> please");
-		expect(prompted).toEqual(["define test-driven development please"]);
-
-		// Observers saw the canonical command facts for both commands.
-		expect(observed).toContainEqual({ source: "command", name: "tp-note" });
-		expect(observed).toContainEqual({ source: "command", name: "tp-term" });
 	});
 
 	it("refuses to spawn an agent whose profile requires an incompatible extension", async () => {
@@ -149,8 +133,14 @@ describe("third-party extension consumer", () => {
 			});
 		});
 
-		expect(orchestrator.listCommands(agentId)).toContainEqual(
-			expect.objectContaining({ name: "tp-bare" }),
+		expect(
+			orchestrator.inspectAgent(agentId).extensionSnapshot.commands,
+		).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					command: expect.objectContaining({ name: "tp-bare" }),
+				}),
+			]),
 		);
 		expect(
 			orchestrator.inspectAgent(agentId).extensionDiagnostics,

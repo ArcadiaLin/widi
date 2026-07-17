@@ -597,7 +597,7 @@ function diagnosticKey(diagnostic: OrchestratorDiagnostic): string {
 
 function summarizeHumanResponse(
 	request: {
-		kind: "confirm" | "select" | "input" | "custom" | "argumentsCompletion";
+		kind: "confirm" | "select" | "input" | "custom";
 		options?: readonly string[];
 	},
 	response: HumanResponse,

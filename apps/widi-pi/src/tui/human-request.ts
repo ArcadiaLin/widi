@@ -119,7 +119,7 @@ export class HumanRequestController {
 			]);
 			return;
 		}
-		if (request.kind === "select" || request.kind === "argumentsCompletion") {
+		if (request.kind === "select") {
 			const options = (request.options ?? []).map((option) => ({
 				value: option,
 				label: singleLine(option, 400),

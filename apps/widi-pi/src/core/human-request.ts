@@ -10,12 +10,7 @@ import {
 } from "./operation-source.ts";
 import type { AgentId } from "./types.ts";
 
-export type HumanRequestKind =
-	| "confirm"
-	| "select"
-	| "input"
-	| "custom"
-	| "argumentsCompletion";
+export type HumanRequestKind = "confirm" | "select" | "input" | "custom";
 
 export interface HumanRequest {
 	source: OperationSource;
@@ -294,7 +289,7 @@ export class HumanRequestBroker {
 		} catch (error) {
 			this.pendingRequests.delete(requestId);
 			const diagnostic = toDiagnostic(error, {
-				code: "orchestrator.command_failed",
+				code: "orchestrator.human_request_failed",
 				message: error instanceof Error ? error.message : String(error),
 				operationSource: request.source,
 				agentId,

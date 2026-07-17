@@ -1,7 +1,6 @@
 import type { AgentHarnessEvent } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import type { AgentProfile } from "./agent-profile.js";
-import type { CommandInvocation } from "./command.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
 import type {
 	ExtensionMessage,
@@ -39,56 +38,11 @@ export type OrchestratorEvent =
 			status: AgentLifecycleStatus;
 			changedAt: string;
 	  }
-	| {
-			readonly type: "command_detected";
-			agentId: AgentId;
-			commandId: string;
-			command: CommandInvocation;
-			// Correlates the inline expansions of one input; absent on line commands.
-			inputId?: string;
-			createdAt: string;
-	  }
-	| {
-			readonly type: "command_accepted";
-			agentId: AgentId;
-			commandId: string;
-			command: CommandInvocation;
-			inputId?: string;
-			createdAt: string;
-	  }
-	| {
-			readonly type: "command_completed";
-			agentId: AgentId;
-			commandId: string;
-			command: CommandInvocation;
-			result: unknown;
-			inputId?: string;
-			completedAt: string;
-	  }
-	| {
-			readonly type: "command_failed";
-			agentId: AgentId;
-			commandId: string;
-			command: CommandInvocation;
-			diagnostic: OrchestratorDiagnostic;
-			inputId?: string;
-			completedAt: string;
-	  }
-	| {
-			readonly type: "command_rejected";
-			agentId: AgentId;
-			commandId: string;
-			command?: CommandInvocation;
-			diagnostic: OrchestratorDiagnostic;
-			inputId?: string;
-			completedAt: string;
-	  }
 	// Input interception facts (ME slice 6): the model-facing text can differ
 	// from the human original, so both are published with extension attribution.
 	| {
 			readonly type: "input_transformed";
 			agentId: AgentId;
-			// Shared with the command events of the same input (inline expansion).
 			inputId: string;
 			originalText: string;
 			text: string;

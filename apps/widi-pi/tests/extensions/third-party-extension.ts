@@ -7,7 +7,7 @@ import {
 export const THIRD_PARTY_NOTE_ENTRY_TYPE = "note";
 
 export interface ThirdPartyObservedFact {
-	readonly source: "command" | "harness";
+	readonly source: "harness";
 	readonly name: string;
 }
 
@@ -55,9 +55,6 @@ export function createThirdPartyExtension(
 				placement: "inline",
 				description: "Expand a glossary term.",
 				expand: (argument) => glossary[argument] ?? argument,
-			});
-			api.observe("command_completed", (event) => {
-				observed.push({ source: "command", name: event.command.name });
 			});
 			api.observe("agent_harness_event", (event) => {
 				observed.push({ source: "harness", name: event.event.type });

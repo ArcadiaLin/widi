@@ -42,20 +42,6 @@ import {
 } from "./agent-record.ts";
 import type { OrchestratorClient } from "./client.ts";
 import {
-	BUILT_IN_COMMANDS,
-	BUILT_IN_INLINE_COMMANDS,
-	type Command,
-	type CommandArgumentsCompletionPayload,
-	type CommandInvocation,
-	type CommandStatusCheck,
-	getBuiltInCommands,
-	type InlineCommandMatch,
-	type InputResult,
-	type ParsedLineCommand,
-	parseLineCommand,
-	scanInlineCommands,
-} from "./command.ts";
-import {
 	createOrchestratorDiagnostic,
 	dedupeDiagnostics,
 	type OrchestratorDiagnostic,
@@ -271,24 +257,6 @@ interface AgentToolSetHarness {
 	setActiveTools(toolNames: string[]): Promise<void>;
 }
 
-interface LineCommandBinding {
-	readonly command: Command;
-	readonly checkStatus?: CommandStatusCheck;
-	execute(args: string, commandId: string): Promise<unknown>;
-}
-
-// Inline bindings normalize to an argument-only expand: built-ins close over
-// the orchestrator here; extension expands are argument-only by contract
-// (side-effect free by shape, ME slice 7).
-interface InlineCommandBinding {
-	readonly command: Command;
-	expand(args: string): Promise<string>;
-}
-
-type CommandArgumentsCompletionResult =
-	| { readonly ok: true; readonly argument: string }
-	| { readonly ok: false; readonly diagnostic: OrchestratorDiagnostic };
-
 export class AgentOrchestrator {
 	private _defaultModel: RuntimeModel;
 	private _defaultThinkingLevel: ThinkingLevel | undefined;
@@ -316,7 +284,6 @@ export class AgentOrchestrator {
 	private _clients: Map<string, OrchestratorClient<OrchestratorEvent>> =
 		new Map();
 	private readonly _humanRequests: HumanRequestBroker;
-	private _nextCommandId = 1;
 	private _nextInputId = 1;
 	private _nextPresentationId = 1;
 	private _nextReportedDiagnosticId = 1;
@@ -428,33 +395,6 @@ export class AgentOrchestrator {
 	listExtensionStatuses(agentId: AgentId): ExtensionStatusSnapshot[] {
 		this._requireAgentRecord(agentId);
 		return this._extensionStatuses.list(agentId);
-	}
-
-	// Command registry
-	listCommands(agentId: AgentId): Command[] {
-		const record = this._requireAgentRecord(agentId);
-		if (record.commandPolicy?.enabled === false) return [];
-		// Static gating (profile deny, scope) prunes the list; dynamic gating
-		// (agent status) is reported as per-command availability instead.
-		const builtInCommands = BUILT_IN_COMMANDS.filter(
-			(binding) => !this._commandPolicyDenial(record, binding.command),
-		).map((binding) =>
-			this._withCommandAvailability(
-				record,
-				binding.command,
-				binding.checkStatus,
-			),
-		);
-		const extensionCommands =
-			record.extensionRunner
-				?.getCommands({ reservedCommands: getBuiltInCommands() })
-				.filter(
-					(resolved) => !this._commandPolicyDenial(record, resolved.command),
-				)
-				.map((resolved) =>
-					this._withCommandAvailability(record, resolved.command),
-				) ?? [];
-		return [...builtInCommands, ...extensionCommands];
 	}
 
 	async newAgentSessionFromAgent(
@@ -1011,188 +951,6 @@ export class AgentOrchestrator {
 		});
 		await harness.setTools?.(next.tools, [...next.activeToolNames]);
 		this._setAgentToolSet(agentId, next);
-	}
-
-	// Command input is an AgentOrchestrator public runtime surface. It stays
-	// here with command ids, gateway checks, argument completion, inline
-	// expansion, event emission, and session writes.
-	async inputAgent(
-		agentId: AgentId,
-		text: string,
-		options?: { images?: ImageContent[]; commands?: boolean },
-	): Promise<InputResult> {
-		const record = this._requireAgentRecord(agentId);
-
-		// Command parsing can be turned off per call or by profile policy;
-		// either way the input goes to the agent as a plain prompt. Input
-		// interception now lives inside promptAgent.
-		if (
-			options?.commands === false ||
-			record.commandPolicy?.enabled === false
-		) {
-			return await this._promptThroughInput(agentId, text, options?.images);
-		}
-
-		const parsed = parseLineCommand(
-			text,
-			this._getLineCommandTriggers(agentId),
-		);
-		const command = parsed ? this._findLineCommand(agentId, parsed) : undefined;
-		if (!parsed || !command) {
-			const inlineResult = await this._expandInlineInput(agentId, text, {
-				images: options?.images,
-			});
-			if (inlineResult) return inlineResult;
-			return await this._promptThroughInput(agentId, text, options?.images);
-		}
-
-		const commandId = this._createCommandId();
-		const invocation: CommandInvocation = {
-			name: command.command.name,
-			trigger: command.command.trigger,
-			argument: parsed.argument,
-			source: command.command.source,
-			placement: command.command.placement,
-		};
-		await this._emit({
-			type: "command_detected",
-			agentId,
-			commandId,
-			command: invocation,
-			createdAt: now(),
-		});
-
-		// Gateway: rejected before execution, guaranteed side-effect free.
-		const gatewayDiagnostic = this._commandGateway(record, command, commandId);
-		if (gatewayDiagnostic) {
-			await this._emit({
-				type: "command_rejected",
-				agentId,
-				commandId,
-				command: invocation,
-				diagnostic: gatewayDiagnostic,
-				completedAt: now(),
-			});
-			await this._publishDiagnostic(gatewayDiagnostic);
-			return { kind: "rejected", commandId, diagnostic: gatewayDiagnostic };
-		}
-
-		let commandArgument = parsed.argument;
-		let executionInvocation = invocation;
-
-		// Argument check: a declared-required argument that is missing asks a
-		// client for completion before rejecting the command.
-		if (command.command.arguments?.required && !parsed.argument.trim()) {
-			const completion = await this._completeCommandArguments({
-				agentId,
-				commandId,
-				binding: command,
-				invocation,
-				argumentPrefix: parsed.argument,
-			});
-			if (!completion.ok) {
-				await this._emit({
-					type: "command_rejected",
-					agentId,
-					commandId,
-					command: invocation,
-					diagnostic: completion.diagnostic,
-					completedAt: now(),
-				});
-				await this._publishDiagnostic(completion.diagnostic);
-				return {
-					kind: "rejected",
-					commandId,
-					diagnostic: completion.diagnostic,
-				};
-			}
-			commandArgument = completion.argument;
-			executionInvocation = {
-				...invocation,
-				argument: commandArgument,
-			};
-			// The human wait can outlive the gateway's precondition (e.g.
-			// /steer's running turn); recheck so the stale command still
-			// rejects side-effect free instead of failing mid-execution.
-			const staleDiagnostic = this._commandGateway(
-				this._requireAgentRecord(agentId),
-				command,
-				commandId,
-			);
-			if (staleDiagnostic) {
-				await this._emit({
-					type: "command_rejected",
-					agentId,
-					commandId,
-					command: executionInvocation,
-					diagnostic: staleDiagnostic,
-					completedAt: now(),
-				});
-				await this._publishDiagnostic(staleDiagnostic);
-				return { kind: "rejected", commandId, diagnostic: staleDiagnostic };
-			}
-		}
-
-		await this._emit({
-			type: "command_accepted",
-			agentId,
-			commandId,
-			command: executionInvocation,
-			createdAt: now(),
-		});
-
-		try {
-			const value = await command.execute(commandArgument, commandId);
-			await this._emit({
-				type: "command_completed",
-				agentId,
-				commandId,
-				command: executionInvocation,
-				result: value,
-				completedAt: now(),
-			});
-			return { kind: "command", commandId, name: command.command.name, value };
-		} catch (error) {
-			const diagnostic = toDiagnostic(error, {
-				code: "orchestrator.command_failed",
-				message: error instanceof Error ? error.message : String(error),
-				operationSource: { kind: "human" },
-				agentId,
-				commandId,
-				recoverable: true,
-			});
-			await this._emit({
-				type: "command_failed",
-				agentId,
-				commandId,
-				command: executionInvocation,
-				diagnostic,
-				completedAt: now(),
-			});
-			await this._publishDiagnostic(diagnostic);
-			return { kind: "failed", commandId, diagnostic };
-		}
-	}
-
-	// Transitional inputAgent prompt exit: maps a PromptOutcome onto the
-	// InputResult contract.
-	private async _promptThroughInput(
-		agentId: AgentId,
-		text: string,
-		images?: ImageContent[],
-	): Promise<InputResult> {
-		const outcome = await this.promptAgent(agentId, text, {
-			images: images ? [...images] : undefined,
-		});
-		if (outcome.kind === "blocked") {
-			return {
-				kind: "blocked",
-				inputId: outcome.inputId,
-				reason: outcome.reason,
-				blockedBy: outcome.blockedBy,
-			};
-		}
-		return { kind: "prompt", message: outcome.message };
 	}
 
 	// The single text-input entry point. Extension input interception is
@@ -2425,7 +2183,7 @@ export class AgentOrchestrator {
 					{ observeExtensions: false },
 				);
 			},
-			reportDiagnostic: async (agentId, extensionId, draft, commandId) => {
+			reportDiagnostic: async (agentId, extensionId, draft) => {
 				const record = this._requireAgentRecord(agentId);
 				const validatedDraft = validateExtensionDiagnosticDraft(draft);
 				const diagnostic = createOrchestratorDiagnostic({
@@ -2439,7 +2197,6 @@ export class AgentOrchestrator {
 					source: { kind: "extension", id: extensionId },
 					phase: "runtime",
 					agentId,
-					commandId,
 					profileId: record.profile.reference.id,
 					extensionId,
 					details: validatedDraft.details,
@@ -2494,7 +2251,6 @@ export class AgentOrchestrator {
 				await this.getAgentSessionName(agentId),
 			compactAgent: async (agentId, customInstructions) =>
 				await this.compactAgent(agentId, customInstructions),
-			listCommands: (agentId) => this.listCommands(agentId),
 			setAgentModelByReference: async (agentId, reference) =>
 				await this.setAgentModelByReference(agentId, reference),
 			getAgentModel: (agentId) => this.getAgentModel(agentId),
@@ -3086,11 +2842,6 @@ export class AgentOrchestrator {
 			case "agent_session_forked":
 			case "agent_session_info_changed":
 			case "agent_spawned":
-			case "command_accepted":
-			case "command_completed":
-			case "command_detected":
-			case "command_failed":
-			case "command_rejected":
 			case "diagnostic":
 			case "human_request_cancelled":
 			case "human_request_pending":
@@ -3246,18 +2997,6 @@ export class AgentOrchestrator {
 		];
 	}
 
-	// Command input runtime surface.
-	//
-	// This is intentionally not a collaborator yet: command input is the
-	// orchestrator's public ingress for human text. Keep ids, gateway,
-	// argument completion, inline expansion, command events, and session
-	// expansion writes together until a future narrow-host extraction exists.
-	private _createCommandId(): string {
-		const id = `orchestrator-command-${this._nextCommandId}`;
-		this._nextCommandId += 1;
-		return id;
-	}
-
 	private _createInputId(): string {
 		const id = `orchestrator-input-${this._nextInputId}`;
 		this._nextInputId += 1;
@@ -3296,438 +3035,6 @@ export class AgentOrchestrator {
 			);
 		}
 	}
-
-	// Scans a line-command miss for inline commands and expands them in
-	// place. Returns undefined when the input contains none (the caller
-	// falls through to the plain prompt path). All-or-nothing: any gateway,
-	// completion, or expand failure drops the whole input - a half-expanded
-	// prompt must never reach the model.
-	private async _expandInlineInput(
-		agentId: AgentId,
-		text: string,
-		options?: {
-			images?: ImageContent[];
-		},
-	): Promise<InputResult | undefined> {
-		const matches = scanInlineCommands(text, [
-			...BUILT_IN_INLINE_COMMANDS.map((binding) => binding.command),
-			...this._listExtensionInlineCommands(agentId),
-		]);
-		if (matches.length === 0) return undefined;
-
-		const inputId = this._createInputId();
-		const expansions: Array<{
-			match: InlineCommandMatch;
-			commandId: string;
-			invocation: CommandInvocation;
-			replacement: string;
-		}> = [];
-		for (const match of matches) {
-			const binding = this._findInlineCommand(agentId, match);
-			if (!binding) continue;
-			const commandId = this._createCommandId();
-			let invocation: CommandInvocation = {
-				name: match.name,
-				trigger: match.trigger,
-				argument: match.argument,
-				source: binding.command.source,
-				placement: "inline",
-			};
-			await this._emit({
-				type: "command_detected",
-				agentId,
-				commandId,
-				command: invocation,
-				inputId,
-				createdAt: now(),
-			});
-
-			const rejectWith = async (
-				diagnostic: OrchestratorDiagnostic,
-			): Promise<InputResult> => {
-				await this._emit({
-					type: "command_rejected",
-					agentId,
-					commandId,
-					command: invocation,
-					diagnostic,
-					inputId,
-					completedAt: now(),
-				});
-				await this._publishDiagnostic(diagnostic);
-				return { kind: "rejected", commandId, diagnostic };
-			};
-
-			const gatewayDiagnostic = this._commandGateway(
-				this._requireAgentRecord(agentId),
-				{ command: binding.command },
-				commandId,
-			);
-			if (gatewayDiagnostic) return await rejectWith(gatewayDiagnostic);
-
-			let commandArgument = match.argument;
-			if (binding.command.arguments?.required && !commandArgument.trim()) {
-				const completion = await this._completeCommandArguments({
-					agentId,
-					commandId,
-					binding,
-					invocation,
-					argumentPrefix: match.argument,
-				});
-				if (!completion.ok) return await rejectWith(completion.diagnostic);
-				commandArgument = completion.argument;
-				invocation = { ...invocation, argument: commandArgument };
-				const staleDiagnostic = this._commandGateway(
-					this._requireAgentRecord(agentId),
-					{ command: binding.command },
-					commandId,
-				);
-				if (staleDiagnostic) return await rejectWith(staleDiagnostic);
-			}
-
-			await this._emit({
-				type: "command_accepted",
-				agentId,
-				commandId,
-				command: invocation,
-				inputId,
-				createdAt: now(),
-			});
-			try {
-				const replacement = await binding.expand(commandArgument);
-				await this._emit({
-					type: "command_completed",
-					agentId,
-					commandId,
-					command: invocation,
-					result: replacement,
-					inputId,
-					completedAt: now(),
-				});
-				expansions.push({ match, commandId, invocation, replacement });
-			} catch (error) {
-				const diagnostic = toDiagnostic(error, {
-					code: "orchestrator.command_failed",
-					message: error instanceof Error ? error.message : String(error),
-					operationSource: { kind: "human" },
-					agentId,
-					commandId,
-					recoverable: true,
-				});
-				await this._emit({
-					type: "command_failed",
-					agentId,
-					commandId,
-					command: invocation,
-					diagnostic,
-					inputId,
-					completedAt: now(),
-				});
-				await this._publishDiagnostic(diagnostic);
-				return { kind: "failed", commandId, diagnostic };
-			}
-		}
-		if (expansions.length === 0) return undefined;
-
-		let expandedText = "";
-		let cursor = 0;
-		for (const expansion of expansions) {
-			expandedText += text.slice(cursor, expansion.match.start);
-			expandedText += expansion.replacement;
-			cursor = expansion.match.end;
-		}
-		expandedText += text.slice(cursor);
-
-		// Dual record: the user message carries the expanded text the model
-		// actually sees; the custom entry preserves the original input and
-		// expansion positions for UI replay.
-		await this.sessionManager.appendCommandExpansionEntry(agentId, {
-			inputId,
-			originalText: text,
-			expansions: expansions.map((expansion) => ({
-				commandId: expansion.commandId,
-				name: expansion.invocation.name,
-				trigger: expansion.invocation.trigger,
-				argument: expansion.invocation.argument,
-				start: expansion.match.start,
-				end: expansion.match.end,
-			})),
-		});
-
-		return await this._promptThroughInput(
-			agentId,
-			expandedText,
-			options?.images,
-		);
-	}
-
-	private _findInlineCommand(
-		agentId: AgentId,
-		match: InlineCommandMatch,
-	): InlineCommandBinding | undefined {
-		const builtIn = BUILT_IN_INLINE_COMMANDS.find(
-			(binding) =>
-				binding.command.trigger === match.trigger &&
-				binding.command.name === match.name,
-		);
-		if (builtIn) {
-			return {
-				command: builtIn.command,
-				expand: async (args) => await builtIn.expand(this, agentId, args),
-			};
-		}
-		const runner = this._requireAgentRecord(agentId).extensionRunner;
-		if (!runner || runner.isStale()) return undefined;
-		const resolved = runner.getCommand(
-			{ placement: "inline", trigger: match.trigger, name: match.name },
-			{ reservedCommands: getBuiltInCommands() },
-		);
-		if (!resolved || resolved.kind !== "inline") return undefined;
-		return {
-			command: resolved.command,
-			expand: async (args) => await resolved.expand(args),
-		};
-	}
-
-	private _listExtensionInlineCommands(agentId: AgentId): Command[] {
-		const runner = this._requireAgentRecord(agentId).extensionRunner;
-		if (!runner || runner.isStale()) return [];
-		return runner
-			.getCommands({ reservedCommands: getBuiltInCommands() })
-			.filter((resolved) => resolved.kind === "inline")
-			.map((resolved) => resolved.command);
-	}
-
-	private async _completeCommandArguments(options: {
-		agentId: AgentId;
-		commandId: string;
-		binding: Pick<LineCommandBinding, "command">;
-		invocation: CommandInvocation;
-		argumentPrefix: string;
-	}): Promise<CommandArgumentsCompletionResult> {
-		const { agentId, commandId, binding, invocation, argumentPrefix } = options;
-		let response: HumanResponse;
-		try {
-			// A complete() failure short-circuits before any human request.
-			const candidates = [
-				...((await binding.command.arguments?.complete?.({
-					agentId,
-					command: binding.command,
-					argumentPrefix,
-					orchestrator: this,
-				})) ?? []),
-			];
-			const payload: CommandArgumentsCompletionPayload = {
-				commandId,
-				command: invocation,
-				argumentHint: binding.command.argumentHint,
-				argumentPrefix,
-				candidates,
-			};
-			response = await this.requestHuman({
-				source: { kind: "agent", agentId },
-				kind: "argumentsCompletion",
-				title: `Complete ${binding.command.trigger}${binding.command.name} arguments`,
-				message: `Command ${binding.command.trigger}${binding.command.name} requires an argument.`,
-				options:
-					candidates.length > 0
-						? candidates.map((candidate) => candidate.value)
-						: undefined,
-				placeholder: binding.command.argumentHint,
-				allowFreeInput: true,
-				payload,
-			});
-		} catch (error) {
-			const failureDiagnostic = toDiagnostic(error, {
-				code: "command.arguments_completion_failed",
-				message: `Failed to complete arguments for command ${binding.command.trigger}${binding.command.name}: ${formatError(error)}`,
-				operationSource: { kind: "human" },
-				agentId,
-				commandId,
-				recoverable: true,
-			});
-			return {
-				ok: false,
-				diagnostic: this._createCommandArgumentsRequiredDiagnostic({
-					agentId,
-					commandId,
-					command: binding.command,
-					details: commandArgumentsCompletionFailureDetails(failureDiagnostic),
-				}),
-			};
-		}
-
-		if (response.kind !== "input" && response.kind !== "select") {
-			return {
-				ok: false,
-				diagnostic: this._createCommandArgumentsRequiredDiagnostic({
-					agentId,
-					commandId,
-					command: binding.command,
-					details: {
-						completionFailureCode:
-							"command.arguments_completion_invalid_response",
-						responseKind: response.kind,
-					},
-				}),
-			};
-		}
-		const argument = response.value;
-		if (argument === undefined || !argument.trim()) {
-			return {
-				ok: false,
-				diagnostic: this._createCommandArgumentsRequiredDiagnostic({
-					agentId,
-					commandId,
-					command: binding.command,
-					details: {
-						completionFailureCode: "command.arguments_completion_empty",
-						responseKind: response.kind,
-					},
-				}),
-			};
-		}
-		return { ok: true, argument };
-	}
-
-	private _findLineCommand(
-		agentId: AgentId,
-		parsed: ParsedLineCommand,
-	): LineCommandBinding | undefined {
-		const builtIn = BUILT_IN_COMMANDS.find(
-			(binding) =>
-				binding.command.placement === "line" &&
-				binding.command.trigger === parsed.trigger &&
-				binding.command.name === parsed.name,
-		);
-		if (builtIn) {
-			return {
-				command: builtIn.command,
-				checkStatus: builtIn.checkStatus,
-				execute: async (args) => await builtIn.execute(this, agentId, args),
-			};
-		}
-
-		const extensionCommand = this._requireAgentRecord(
-			agentId,
-		).extensionRunner?.getCommand(
-			{ placement: "line", trigger: parsed.trigger, name: parsed.name },
-			{
-				reservedCommands: getBuiltInCommands(),
-			},
-		);
-		if (!extensionCommand || extensionCommand.kind !== "line") {
-			return undefined;
-		}
-		return {
-			command: extensionCommand.command,
-			execute: async (args, commandId) => {
-				const runner = this._requireAgentRecord(agentId).extensionRunner;
-				if (!runner) return undefined;
-				return await extensionCommand.handler(
-					args,
-					runner.createCommandContext(extensionCommand.extensionId, {
-						commandId,
-					}),
-				);
-			},
-		};
-	}
-
-	private _createCommandArgumentsRequiredDiagnostic(options: {
-		agentId: AgentId;
-		commandId: string;
-		command: Command;
-		details?: Record<string, unknown>;
-	}): OrchestratorDiagnostic {
-		return createOrchestratorDiagnostic({
-			severity: "error",
-			code: "command.arguments_required",
-			message: `Command ${options.command.trigger}${options.command.name} requires an argument.`,
-			operationSource: { kind: "human" },
-			agentId: options.agentId,
-			commandId: options.commandId,
-			recoverable: true,
-			details: options.details,
-		});
-	}
-
-	private _withCommandAvailability(
-		record: AgentRecord,
-		command: Command,
-		checkStatus?: CommandStatusCheck,
-	): Command {
-		const unavailableReason = checkStatus?.(record.status);
-		if (!unavailableReason) return { ...command, available: true };
-		return { ...command, available: false, unavailableReason };
-	}
-
-	// Command gateway: the sole execution-time arbiter. Checks, in order,
-	// profile policy (deny), scope, then agent status declared on the binding.
-	private _commandGateway(
-		record: AgentRecord,
-		binding: Pick<LineCommandBinding, "command" | "checkStatus">,
-		commandId: string,
-	): OrchestratorDiagnostic | undefined {
-		const denial = this._commandPolicyDenial(record, binding.command);
-		if (denial) {
-			return createOrchestratorDiagnostic({
-				severity: "error",
-				code: "command.not_permitted",
-				message: denial,
-				operationSource: { kind: "human" },
-				agentId: record.agentId,
-				commandId,
-				recoverable: true,
-			});
-		}
-		const unavailable = binding.checkStatus?.(record.status);
-		if (unavailable) {
-			return createOrchestratorDiagnostic({
-				severity: "error",
-				code: "command.not_available",
-				message: unavailable,
-				operationSource: { kind: "human" },
-				agentId: record.agentId,
-				commandId,
-				recoverable: true,
-			});
-		}
-		return undefined;
-	}
-
-	// Static command gating: profile deny list and scope. Both listCommands
-	// (list pruning) and the gateway (execution rejection) consume this fact.
-	private _commandPolicyDenial(
-		record: AgentRecord,
-		command: Command,
-	): string | undefined {
-		if (record.commandPolicy?.deny?.includes(command.name)) {
-			return `Command ${command.trigger}${command.name} is denied by profile policy.`;
-		}
-		if (
-			command.scope === "user-facing" &&
-			record.capabilities?.acceptsUserInput === false
-		) {
-			return `Command ${command.trigger}${command.name} is only available on agents that accept user input.`;
-		}
-		return undefined;
-	}
-
-	private _getLineCommandTriggers(agentId: AgentId): string[] {
-		const record = this._requireAgentRecord(agentId);
-		const triggers = BUILT_IN_COMMANDS.filter(
-			(binding) => binding.command.placement === "line",
-		).map((binding) => binding.command.trigger);
-		for (const command of record.extensionRunner?.getCommands({
-			reservedCommands: getBuiltInCommands(),
-		}) ?? []) {
-			if (command.command.placement === "line") {
-				triggers.push(command.command.trigger);
-			}
-		}
-		return [...new Set(triggers)];
-	}
 }
 
 function toExtensionSessionCommandResult(
@@ -3745,16 +3052,6 @@ function isBlockedExtensionDiagnostic(
 	return (
 		diagnostic.domain === "extension" && diagnostic.disposition === "blocked"
 	);
-}
-
-function commandArgumentsCompletionFailureDetails(
-	diagnostic: OrchestratorDiagnostic,
-): Record<string, unknown> {
-	return {
-		completionFailureCode: diagnostic.code,
-		completionFailureMessage: diagnostic.message,
-		requestId: diagnostic.requestId,
-	};
 }
 
 /**

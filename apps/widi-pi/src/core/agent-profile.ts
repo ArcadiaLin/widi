@@ -29,16 +29,6 @@ export type AgentProfile = {
 		readonly canSpawn?: boolean;
 		readonly canRequestUser?: boolean;
 	};
-
-	/** Input-triggered command gating; absent means all commands allowed. */
-	readonly commands?: AgentProfileCommandPolicy;
-};
-
-export type AgentProfileCommandPolicy = {
-	/** false disables command parsing for agents on this profile. */
-	readonly enabled?: boolean;
-	/** Command names denied for this profile, built-in and extension alike. */
-	readonly deny?: readonly string[];
 };
 
 export type AgentProfileOverride = Partial<Omit<AgentProfile, "id">>;
@@ -198,7 +188,6 @@ type AgentProfileFrontmatter = {
 	readonly "prompt-templates"?: unknown;
 	readonly extensions?: unknown;
 	readonly capabilities?: unknown;
-	readonly commands?: unknown;
 	readonly missingExtensionSeverity?: unknown;
 	readonly "missing-extension-severity"?: unknown;
 	readonly [key: string]: unknown;
@@ -1043,7 +1032,6 @@ function parseAgentProfile(
 		entry,
 		diagnostics,
 	);
-	const commands = readCommandPolicy(frontmatter.commands, entry, diagnostics);
 	const missingExtensionSeverity = readMissingExtensionSeverity(
 		frontmatter.missingExtensionSeverity ??
 			frontmatter["missing-extension-severity"],
@@ -1068,7 +1056,6 @@ function parseAgentProfile(
 			extensions,
 			missingExtensionSeverity,
 			capabilities,
-			commands,
 		},
 		diagnostics,
 	};
@@ -1372,43 +1359,6 @@ function readCapabilities(
 	return Object.keys(capabilities).length > 0 ? capabilities : undefined;
 }
 
-function readCommandPolicy(
-	value: unknown,
-	entry: ProfileStorageEntry,
-	diagnostics: AgentProfileDiagnostic[],
-): AgentProfileCommandPolicy | undefined {
-	if (value === undefined) return undefined;
-	if (typeof value !== "object" || value === null || Array.isArray(value)) {
-		diagnostics.push(
-			diagnosticForEntry(
-				entry,
-				"error",
-				"profile.invalid_metadata",
-				'Profile field "commands" must be an object.',
-			),
-		);
-		return undefined;
-	}
-
-	const record = value as Record<string, unknown>;
-	const enabled = readBoolean(
-		record.enabled,
-		"commands.enabled",
-		entry,
-		diagnostics,
-	);
-	const deny = readStringArray(
-		record.deny,
-		"commands.deny",
-		entry,
-		diagnostics,
-	);
-	const policy: { enabled?: boolean; deny?: readonly string[] } = {};
-	if (enabled !== undefined) policy.enabled = enabled;
-	if (deny !== undefined) policy.deny = deny;
-	return Object.keys(policy).length > 0 ? policy : undefined;
-}
-
 function validateProfileId(id: string): string | undefined {
 	if (!id.trim()) {
 		return "Profile id must be non-empty.";
@@ -1548,15 +1498,6 @@ function serializeProfile(profile: AgentProfile): string {
 		lines.push("capabilities:");
 		for (const [key, value] of Object.entries(profile.capabilities)) {
 			if (value !== undefined) lines.push(`  ${key}: ${value}`);
-		}
-	}
-	if (profile.commands) {
-		lines.push("commands:");
-		if (profile.commands.enabled !== undefined) {
-			lines.push(`  enabled: ${profile.commands.enabled}`);
-		}
-		if (profile.commands.deny) {
-			lines.push(`  deny: ${serializeStringArray(profile.commands.deny)}`);
 		}
 	}
 	lines.push("---", profile.systemPrompt);

@@ -245,7 +245,7 @@ async function promptHuman(
 		case "select":
 			return { kind: "select", value: pickOption(request, answer) };
 		default:
-			// input / argumentsCompletion / custom all reduce to a free-form
+			// input and custom requests both reduce to a free-form
 			// value in this adapter; empty input means "no value".
 			return { kind: "input", value: answer === "" ? undefined : answer };
 	}

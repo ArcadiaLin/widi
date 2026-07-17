@@ -230,8 +230,6 @@ describe("audit extension consumer", () => {
 		const { orchestrator, agentId, events } = await createAuditHarness(
 			{
 				recordCoreEvents: [
-					"command_detected",
-					"command_completed",
 					"human_request_pending",
 					"human_request_resolved",
 					"diagnostic",
@@ -246,7 +244,6 @@ describe("audit extension consumer", () => {
 			requestHuman: async () => ({ kind: "confirm", confirmed: true }),
 		});
 
-		await orchestrator.inputAgent(agentId, "/status");
 		await orchestrator.requestHuman({
 			source: { kind: "agent", agentId },
 			kind: "confirm",
@@ -275,8 +272,6 @@ describe("audit extension consumer", () => {
 			AUDIT_EVENT_ENTRY_TYPE,
 		);
 		expect(entries.map((entry) => entry.data?.eventType)).toEqual([
-			"command_detected",
-			"command_completed",
 			"human_request_pending",
 			"human_request_resolved",
 			"agent_session_info_changed",
@@ -304,11 +299,11 @@ describe("audit extension consumer", () => {
 
 	it("does not leak orchestrator events across agent runners", async () => {
 		const { orchestrator, agentId } = await createAuditHarness({
-			recordCoreEvents: ["command_completed"],
+			recordCoreEvents: ["agent_session_info_changed"],
 		});
 		const otherAgentId = await orchestrator.spawnAgent();
 
-		await orchestrator.inputAgent(agentId, "/status");
+		await orchestrator.setAgentSessionName(agentId, "Audited");
 
 		await expect(
 			readAuditEntries<AuditEventEntry>(
@@ -317,7 +312,12 @@ describe("audit extension consumer", () => {
 				AUDIT_EVENT_ENTRY_TYPE,
 			),
 		).resolves.toMatchObject([
-			{ data: { source: "orchestrator", eventType: "command_completed" } },
+			{
+				data: {
+					source: "orchestrator",
+					eventType: "agent_session_info_changed",
+				},
+			},
 		]);
 		await expect(
 			readAuditEntries<AuditEventEntry>(
@@ -465,10 +465,10 @@ describe("audit extension consumer", () => {
 		});
 
 		await expect(
-			orchestrator.inputAgent(agentId, "status report"),
-		).resolves.toMatchObject({ kind: "prompt" });
+			orchestrator.promptAgent(agentId, "status report"),
+		).resolves.toMatchObject({ kind: "completed" });
 		await expect(
-			orchestrator.inputAgent(agentId, "share the secret"),
+			orchestrator.promptAgent(agentId, "share the secret"),
 		).resolves.toEqual({
 			kind: "blocked",
 			inputId: expect.any(String),
@@ -534,11 +534,11 @@ describe("audit extension consumer", () => {
 
 		// First input fails closed on the broken extension before audit runs.
 		await expect(
-			orchestrator.inputAgent(agentId, "status report"),
+			orchestrator.promptAgent(agentId, "status report"),
 		).resolves.toMatchObject({ kind: "blocked", blockedBy: "broken" });
 		// The next input reaches the audit policy, which still enforces.
 		await expect(
-			orchestrator.inputAgent(agentId, "share the secret"),
+			orchestrator.promptAgent(agentId, "share the secret"),
 		).resolves.toMatchObject({ kind: "blocked", blockedBy: "audit" });
 
 		await expect(

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { HumanRequestController } from "../../src/tui/human-request.ts";
 
 describe("HumanRequestController", () => {
-	it("presents argument completion candidates with a free-input fallback", async () => {
+	it("presents selection candidates with a free-input fallback", async () => {
 		const overlays: Component[] = [];
 		const tui = {
 			showOverlay(component: Component) {
@@ -19,8 +19,8 @@ describe("HumanRequestController", () => {
 			id: "request-1",
 			agentId: "main",
 			source: { kind: "agent", agentId: "main" },
-			kind: "argumentsCompletion",
-			title: "Complete /model arguments",
+			kind: "select",
+			title: "Select a model",
 			options: ["anthropic/claude"],
 			allowFreeInput: true,
 			createdAt: new Date(0).toISOString(),

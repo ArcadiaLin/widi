@@ -29,10 +29,7 @@ describe("ExtensionRunner inspect", () => {
 		const loader = new ExtensionLoader();
 		loader.registerExtension("sample", (api) => {
 			api.observe("agent_harness_event", () => {});
-			api.observe("command_completed", (event) => {
-				void event.result;
-				void event.agentId;
-			});
+			api.observe("agent_session_info_changed", () => {});
 			api.intercept("tool_call", () => undefined);
 			api.registerCommand({
 				name: "sample",
@@ -75,7 +72,7 @@ describe("ExtensionRunner inspect", () => {
 			{
 				kind: "observe",
 				extensionId: "sample",
-				eventName: "command_completed",
+				eventName: "agent_session_info_changed",
 			},
 			{
 				kind: "intercept",
@@ -479,15 +476,10 @@ describe("ExtensionRunner scoped message actions", () => {
 });
 
 describe("ExtensionRunner scoped diagnostic actions", () => {
-	it("injects attribution and threads command ids into reports", async () => {
+	it("injects attribution into reports", async () => {
 		const runner = await createRunner([["sample", () => {}]]);
 		const calls: Array<
-			[
-				string,
-				string,
-				{ severity: string; code: string; message: string },
-				string | undefined,
-			]
+			[string, string, { severity: string; code: string; message: string }]
 		> = [];
 		const unboundActions = (
 			runner as unknown as { _actions: ExtensionCoreActions }
@@ -503,9 +495,8 @@ describe("ExtensionRunner scoped diagnostic actions", () => {
 						code: string;
 						message: string;
 					},
-					commandId?: string,
 				) => {
-					calls.push([agentId, extensionId, draft, commandId]);
+					calls.push([agentId, extensionId, draft]);
 				},
 			},
 			{},
@@ -529,13 +520,11 @@ describe("ExtensionRunner scoped diagnostic actions", () => {
 				"agent",
 				"sample",
 				{ severity: "info", code: "scan.finished", message: "Scan finished" },
-				undefined,
 			],
 			[
 				"agent",
 				"sample",
 				{ severity: "warning", code: "cache.stale", message: "Cache is stale" },
-				"command-7",
 			],
 		]);
 	});
