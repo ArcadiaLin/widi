@@ -209,6 +209,81 @@ describe("WidiTuiApplication completion menu integration", () => {
 	});
 });
 
+describe("WidiTuiApplication command submission", () => {
+	it("removes inline command items after a successful prompt expansion", async () => {
+		const promptAgent = vi.fn(async () => ({ kind: "accepted" }) as const);
+		const { application } = await createApplication({
+			getAgentSkill: async (_agentId: string, name: string) => ({
+				name,
+				description: "Review the current changes.",
+				filePath: `/skills/${name}/SKILL.md`,
+			}),
+			promptAgent,
+		});
+
+		await submit(application, "Use <skill:review>");
+
+		expect(promptAgent).toHaveBeenCalledOnce();
+		expect(
+			application.state.agents
+				.get("agent-1")
+				?.timeline.filter((item) => item.type === "command-result"),
+		).toEqual([]);
+	});
+
+	it("removes earlier inline command items when a later expansion fails", async () => {
+		const promptAgent = vi.fn(async () => ({ kind: "accepted" }) as const);
+		const { application } = await createApplication({
+			getAgentSkill: async (_agentId: string, name: string) => {
+				if (name === "broken") throw new Error("skill expansion failed");
+				return {
+					name,
+					description: "Review the current changes.",
+					filePath: `/skills/${name}/SKILL.md`,
+				};
+			},
+			promptAgent,
+		});
+
+		await submit(application, "Use <skill:review> then <skill:broken>");
+
+		expect(promptAgent).not.toHaveBeenCalled();
+		expect(
+			application.state.agents
+				.get("agent-1")
+				?.timeline.filter((item) => item.type === "command-result"),
+		).toMatchObject([
+			{
+				name: "skill",
+				argument: "broken",
+				status: "failed",
+				error: { message: "skill expansion failed" },
+			},
+		]);
+	});
+
+	it("preserves a status-gated line command argument in its failed item", async () => {
+		const { application } = await createApplication();
+
+		await submit(application, "/steer:go");
+
+		expect(
+			application.state.agents
+				.get("agent-1")
+				?.timeline.filter((item) => item.type === "command-result"),
+		).toMatchObject([
+			{
+				name: "steer",
+				argument: "go",
+				status: "failed",
+				error: {
+					message: "Command /steer requires a running agent (status: idle).",
+				},
+			},
+		]);
+	});
+});
+
 async function createApplication(overrides: Record<string, unknown> = {}) {
 	const orchestrator = {
 		getAgentStatus: () => "idle",

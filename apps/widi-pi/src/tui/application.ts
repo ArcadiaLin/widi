@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
 import { builtInCommands } from "../commands/built-ins.ts";
 import { CommandEngine, switchedAgentId } from "../commands/engine.ts";
+import { parseLineCommand } from "../commands/parse.ts";
 import type {
 	CommandError,
 	EngineOutcome,
@@ -315,12 +316,17 @@ export class WidiTuiApplication {
 		}
 
 		let outcome: EngineOutcome;
+		const startedCommands: Array<{
+			commandId: string;
+			argument: string;
+		}> = [];
 		try {
 			outcome = await this.engine.handleInput(
 				text,
 				{ agentId, orchestrator: this.orchestrator },
 				{
 					onCommandStart: (commandId, name, argument) => {
+						startedCommands.push({ commandId, argument });
 						this.upsertCommandItem(agentId, commandId, {
 							name,
 							argument,
@@ -331,6 +337,10 @@ export class WidiTuiApplication {
 				},
 			);
 		} catch (error) {
+			this.removeCommandItems(
+				agentId,
+				startedCommands.map((started) => started.commandId),
+			);
 			this.restoreEditor(rawText, agentId);
 			this.addApplicationNotice(errorMessage(error), agentId);
 			return;
@@ -341,6 +351,10 @@ export class WidiTuiApplication {
 				await this.submitPrompt(agentId, rawText, text, undefined);
 				return;
 			case "expanded":
+				this.removeCommandItems(
+					agentId,
+					startedCommands.map((started) => started.commandId),
+				);
 				await this.submitPrompt(
 					agentId,
 					rawText,
@@ -360,15 +374,26 @@ export class WidiTuiApplication {
 				this.tui.requestRender();
 				return;
 			}
-			case "failed":
+			case "failed": {
+				const failedStart = startedCommands.find(
+					(started) => started.commandId === outcome.commandId,
+				);
+				this.removeCommandItems(
+					agentId,
+					startedCommands
+						.filter((started) => started.commandId !== outcome.commandId)
+						.map((started) => started.commandId),
+				);
 				this.editor.addToHistory(rawText);
 				this.upsertCommandItem(agentId, outcome.commandId, {
 					name: outcome.name,
+					argument: failedStart?.argument ?? parseLineCommand(text)?.argument,
 					status: "failed",
 					error: outcome.error,
 				});
 				this.tui.requestRender();
 				return;
+			}
 			case "needs-argument":
 				this.openCommandCompletionMenu(
 					agentId,
@@ -453,6 +478,18 @@ export class WidiTuiApplication {
 			result: update.result,
 			error: update.error,
 		});
+	}
+
+	private removeCommandItems(
+		agentId: string,
+		commandIds: readonly string[],
+	): void {
+		if (commandIds.length === 0) return;
+		const ids = new Set(commandIds);
+		const agent = ensureAgentProjection(this.state, agentId);
+		agent.timeline = agent.timeline.filter(
+			(item) => item.type !== "command-result" || !ids.has(item.commandId),
+		);
 	}
 
 	private openCommandCompletionMenu(
