@@ -115,8 +115,6 @@ export interface Settings {
 	prompts?: string[];
 	/** Local theme file or directory paths. */
 	themes?: string[];
-	/** Default: true. Register skills as command-like resources where supported. */
-	enableSkillCommands?: boolean;
 	terminal?: TerminalSettings;
 	images?: ImageSettings;
 	/** Model patterns used by model cycling/selectors. */
@@ -257,15 +255,8 @@ function migrateSettings(settings: Record<string, unknown>): Settings {
 		!Array.isArray(settings.skills)
 	) {
 		const skillsSettings = settings.skills as {
-			enableSkillCommands?: boolean;
 			customDirectories?: unknown;
 		};
-		if (
-			skillsSettings.enableSkillCommands !== undefined &&
-			settings.enableSkillCommands === undefined
-		) {
-			settings.enableSkillCommands = skillsSettings.enableSkillCommands;
-		}
 		if (
 			Array.isArray(skillsSettings.customDirectories) &&
 			skillsSettings.customDirectories.length > 0
@@ -1071,10 +1062,6 @@ export class SettingManager {
 		this.updateProjectField("themes", (settings) => {
 			settings.themes = [...paths];
 		});
-	}
-
-	getEnableSkillCommands(): boolean {
-		return this.settings.enableSkillCommands ?? true;
 	}
 
 	getEnabledModels(): string[] | undefined {

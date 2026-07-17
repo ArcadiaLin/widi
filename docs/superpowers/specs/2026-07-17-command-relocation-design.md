@@ -164,6 +164,24 @@
   `CommandResultItem` 本地生成与错误渲染、自动补全改问引擎。
 - 全量验证：仓库根 `npm run check` 与 `npm --workspace apps/widi-pi run test`。
 
+## 实现核对备注
+
+整体分层与行为按本设计落地；实现有三处 API 形状调整：
+
+- `promptAgent` 使用 `options.expansion?: PromptExpansion`，一个对象聚合同一次输入
+  的 `originalText` 与全部 expansion items；对应 `EngineOutcome.expanded` 字段也叫
+  `expansion`，而不是设计初稿中的复数数组。
+- `PromptExpansion.items` 精确沿用既有 `core:command_expansion` 磁盘字段
+  （commandId、name、trigger、argument、start、end），不额外保存 replacement
+  text；展开后的 user message 已保存模型实际看到的文本。这样无需迁移 session
+  磁盘格式。
+- `CommandEngine.handleInput` 额外接受可选 `EngineHooks.onCommandStart`。TUI 用它
+  在异步 execute/expand 期间建立本地 running `CommandResultItem`；该 hook 不进入
+  core，也不改变最终 `EngineOutcome`。
+
+兼容性上，旧 `core:extension_message` custom entry 若仍带多余 `commandId`，
+hydrator 会按所需字段读取并忽略它；不需要磁盘迁移。
+
 ## 范围外（明确不做）
 
 - `/extension` 前端入口与扩展主动交互（未来另议）。

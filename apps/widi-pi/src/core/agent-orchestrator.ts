@@ -144,7 +144,7 @@ export interface AgentOrchestratorConfigs {
 	defaultThinkingLevel?: ThinkingLevel;
 }
 
-export interface AgentSessionCommandResult {
+export interface AgentSessionResult {
 	readonly agentId: AgentId;
 	readonly snapshot: AgentRecordSnapshot;
 }
@@ -173,7 +173,7 @@ export interface AgentSkillCandidateListResult {
 	readonly skills: readonly CandidateItem[];
 }
 
-export interface AgentThinkingLevelCommandResult {
+export interface AgentThinkingLevelResult {
 	readonly level: ThinkingLevel;
 }
 
@@ -398,7 +398,7 @@ export class AgentOrchestrator {
 
 	async newAgentSessionFromAgent(
 		agentId: AgentId,
-	): Promise<AgentSessionCommandResult> {
+	): Promise<AgentSessionResult> {
 		const sourceRecord = this._requireAgentRecord(agentId);
 		const spawnedAgentId = await this.spawnAgent({
 			profileId: sourceRecord.profile.reference.id,
@@ -447,7 +447,7 @@ export class AgentOrchestrator {
 	async forkAgentSessionFromAgent(
 		agentId: AgentId,
 		options?: ForkAgentSessionOptions,
-	): Promise<AgentSessionCommandResult> {
+	): Promise<AgentSessionResult> {
 		const sourceRecord = this._requireAgentRecord(agentId);
 		const metadata = await this.sessionManager.forkAgentSession(
 			agentId,
@@ -479,7 +479,7 @@ export class AgentOrchestrator {
 
 	async resumeAgentSessionByReference(
 		reference: string,
-	): Promise<AgentSessionCommandResult> {
+	): Promise<AgentSessionResult> {
 		const metadata =
 			await this.sessionManager.resolveAgentSessionReference(reference);
 		const spawnedAgentId = await this.spawnAgent({
@@ -852,7 +852,7 @@ export class AgentOrchestrator {
 	async setAgentThinkingLevelByName(
 		agentId: AgentId,
 		levelName: string,
-	): Promise<AgentThinkingLevelCommandResult> {
+	): Promise<AgentThinkingLevelResult> {
 		const level = parseThinkingLevel(levelName);
 		if (!level) {
 			throw new OrchestratorError(

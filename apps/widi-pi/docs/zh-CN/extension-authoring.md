@@ -16,12 +16,8 @@ import type { ExtensionDefinition } from "../path/to/widi-pi/src/core/extension/
 const extension: ExtensionDefinition = {
   apiVersion: 1,
   activate(api) {
-    api.registerCommand({
-      name: "hello",
-      description: "Say hello.",
-      async handler(args, context) {
-        await context.actions.followUp(`Say hello to ${args || "the user"}.`);
-      },
+    api.observe("agent_harness_event", (event) => {
+      console.error(`agent event: ${event.event.type}`);
     });
   },
 };
@@ -103,35 +99,13 @@ api.patchTool("write", {
 
 审计、确认和计时优先使用 `aroundExecute`；真正替换 backend 时再设置 `execute`。
 
-## 注册 command
+## 展示、状态与诊断
 
-Line command 获得完整 command context：
-
-```ts
-api.registerCommand({
-  name: "tp-note",
-  argumentHint: "<text>",
-  arguments: { required: true },
-  async handler(args, context) {
-    await context.session.appendEntry("note", { text: args });
-    return { saved: true, text: args };
-  },
-});
-```
-
-Line-command handler 的返回值会同时进入 `InputResult.value` 与 `command_completed.result`，富 client 可以将其显示为最终 command result。纯副作用 command 返回 `undefined`。
-
-执行期间需要追加进度时使用 `emitOutput()`：
+Observer、interceptor 与 tool callback 的 context 都带 own-agent scoped actions。需要追加进度时使用 `emitOutput()`：
 
 ```ts
-api.registerCommand({
-  name: "tp-index",
-  async handler(_args, context) {
-    await context.actions.emitOutput("Scanning files");
-    await context.actions.emitOutput("Building index");
-    return { indexed: 42 };
-  },
-});
+await context.actions.emitOutput("Scanning files");
+await context.actions.emitOutput("Building index");
 ```
 
 每次调用产生一条独立、append-only plain-text event；顺序 `await` 才保证调用顺序。它不合并进度项、不进入 model context、不写 session，重启或 resume 后不会恢复。
@@ -154,7 +128,7 @@ await context.actions.setStatus("index", {
 await context.actions.clearStatus("index");
 ```
 
-Status 按 extension 自己的 key replace，不进入 timeline、session 或 model context。Command 完成不会自动 clear；成功 reload 或 agent dispose 会由 core 清理。
+Status 按 extension 自己的 key replace，不进入 timeline、session 或 model context。Extension 必须显式 clear；成功 reload 或 agent dispose 也会由 core 清理。
 
 需要在 resume 后恢复的展示内容时使用 `publishMessage()`：
 
@@ -182,21 +156,7 @@ await context.actions.reportDiagnostic({
 
 Core 注入 agent/extension attribution，并把 code 规范化为 `extension.<extensionId>.<code>`。Local code 只使用字母、数字、`.`、`_`、`-`，最长 128 UTF-8 bytes；message 最长 4 KiB，JSON details 最长 16 KiB。作者只能声明 `reported` 或 `degraded`，不能自称 `blocked`。每次调用生成独立 diagnostic id；不要轮询式重复上报同一持续问题。
 
-Inline command 是无副作用的文本展开：
-
-```ts
-api.registerCommand({
-  name: "tp-term",
-  placement: "inline",
-  expand(argument) {
-    return glossary[argument] ?? argument;
-  },
-});
-```
-
-Inline 语法固定为 `<name:argument>`。`expand` 拿不到 context/actions；需要副作用时使用 line command。
-
-Arguments definition 可以提供 completion candidates。Runtime 与富 client 消费同一 candidates；缺少必填参数时 orchestrator 可以发起 `argumentsCompletion` human request。
+Extension API 不提供命令注册。Line/inline command 属于 `src/commands/` 的前端共享引擎；extension 保留 tool/resource/provider contribution、observer/interceptor 与 scoped actions 等被动能力。未来需要主动入口时，由前端以 `/extension` 一类命令另行设计。
 
 ## 贡献 resources 与 provider
 
@@ -239,10 +199,6 @@ Credential 归 AuthStorage；`!command` config value 受 project trust gate。Ex
 `observe()` 适合日志、审计、统计和 session ledger。Observer failure 不影响原操作。
 
 ```ts
-api.observe("command_completed", (event) => {
-  console.error(`completed: ${event.command.name}`);
-});
-
 api.observe("agent_harness_event", (event) => {
   // event.event is the raw Pi AgentHarnessEvent.
 });
@@ -267,10 +223,8 @@ Callback context 绑定 extension 自己的 agent。常用 actions：
 - publishMessage：写入可恢复的展示消息，返回稳定 entryId。
 - reportDiagnostic：发布带 core attribution 的结构化问题事实。
 - get/set session name、model、thinking level。
-- list commands/model candidates。
+- list model candidates。
 - exec trusted project command。
-
-Line command context 额外提供 new/fork/resume/list session 与 tree navigation，并受 `canSpawn`/idle policy 门控。
 
 Actions 不接受任意 agentId；跨 agent 协作使用未来的受控 collaboration facade。
 
@@ -308,4 +262,4 @@ Namespace 自动隔离，写入 append-only，读取 current branch path。Entry
 - 修改 built-in tool 使用 patch，不用同名 registration。
 - Provider 只能注册新 name。
 - `registerShortcut`、flag、renderer 和 UI context 归 client adapter。
-- 消费 input 使用 block + scoped actions，或注册 command；不提供独立 `handled` 通道。
+- 消费 input 使用 block/transform + scoped actions；不提供独立 `handled` 通道，也不注册交互命令。

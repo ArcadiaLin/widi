@@ -1178,8 +1178,8 @@ function parseProfileMarkdown(
 			continue;
 		}
 
-		// A key without a value opens a one-level nested mapping (used by
-		// "capabilities" and "commands"); its entries are the indented lines.
+		// A key without a value opens a one-level nested mapping, such as
+		// "capabilities"; its entries are the indented lines.
 		const indent = line.length - line.trimStart().length;
 		const child: Record<string, unknown> = {};
 		index += 1;

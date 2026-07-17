@@ -21,7 +21,7 @@ export interface HumanRequest {
 	placeholder?: string;
 	// Whether the client should offer free-form input alongside options.
 	// Absent means the kind's inherent form (input: always, confirm/select:
-	// never). Free input is a literal value: never parsed as a command.
+	// never). Free input is returned as a literal value without interpretation.
 	allowFreeInput?: boolean;
 	payload?: unknown;
 	timeoutMs?: number;
