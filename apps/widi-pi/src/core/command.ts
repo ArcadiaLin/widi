@@ -6,7 +6,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import type { AgentOrchestrator } from "./agent-orchestrator.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
-import type { AgentId, AgentLifecycleStatus } from "./types.ts";
+import type { AgentId, AgentLifecycleStatus, CandidateItem } from "./types.ts";
 
 export type CommandPlacement = "line" | "inline";
 
@@ -46,11 +46,7 @@ export interface CommandCompletionContext {
 	readonly orchestrator: AgentOrchestrator;
 }
 
-export interface CommandCandidate {
-	readonly value: string;
-	readonly label?: string;
-	readonly description?: string;
-}
+export type CommandCandidate = CandidateItem;
 
 export type CommandCandidates = readonly CommandCandidate[];
 

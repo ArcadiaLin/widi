@@ -193,3 +193,26 @@ export type OrchestratorEvent =
 export type OrchestratorEventListener = (
 	event: OrchestratorEvent,
 ) => Promise<void> | void;
+
+/** A completion candidate returned by orchestrator list methods. */
+export interface CandidateItem {
+	readonly value: string;
+	readonly label?: string;
+	readonly description?: string;
+}
+
+/**
+ * Pre-expansion record of an interaction-layer inline expansion, persisted
+ * by promptAgent as a core:command_expansion session entry (format unchanged).
+ */
+export interface PromptExpansion {
+	readonly originalText: string;
+	readonly items: ReadonlyArray<{
+		readonly commandId: string;
+		readonly name: string;
+		readonly trigger: string;
+		readonly argument: string;
+		readonly start: number;
+		readonly end: number;
+	}>;
+}

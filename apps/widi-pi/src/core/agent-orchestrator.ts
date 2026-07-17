@@ -46,7 +46,6 @@ import {
 	BUILT_IN_INLINE_COMMANDS,
 	type Command,
 	type CommandArgumentsCompletionPayload,
-	type CommandCandidate,
 	type CommandInvocation,
 	type CommandStatusCheck,
 	getBuiltInCommands,
@@ -125,6 +124,7 @@ import type {
 	AgentId,
 	AgentLifecycleStatus,
 	AgentToolsSnapshot,
+	CandidateItem,
 	OrchestratorEvent,
 	OrchestratorEventListener,
 	RuntimeModel,
@@ -171,19 +171,19 @@ export interface AgentListResult {
 }
 
 export interface AgentModelCandidateListResult {
-	readonly models: readonly CommandCandidate[];
+	readonly models: readonly CandidateItem[];
 }
 
 export interface AgentThinkingLevelCandidateListResult {
-	readonly levels: readonly CommandCandidate[];
+	readonly levels: readonly CandidateItem[];
 }
 
 export interface AgentPromptTemplateCandidateListResult {
-	readonly templates: readonly CommandCandidate[];
+	readonly templates: readonly CandidateItem[];
 }
 
 export interface AgentSkillCandidateListResult {
-	readonly skills: readonly CommandCandidate[];
+	readonly skills: readonly CandidateItem[];
 }
 
 export interface AgentThinkingLevelCommandResult {
@@ -933,7 +933,7 @@ export class AgentOrchestrator {
 
 	private _getAgentThinkingLevelCandidates(
 		record: AgentRecord,
-	): CommandCandidate[] {
+	): CandidateItem[] {
 		if (!record.model.reasoning) {
 			throw new OrchestratorError(
 				this._createAgentThinkingNotSupportedDiagnostic(record),
