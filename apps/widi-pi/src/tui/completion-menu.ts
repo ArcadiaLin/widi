@@ -5,7 +5,6 @@ import {
 	SelectList,
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
-import type { Command } from "../core/command.ts";
 import { singleLine } from "./format.ts";
 import type { TuiApplicationState } from "./state.ts";
 import { colors } from "./theme/colors.ts";
@@ -162,25 +161,6 @@ export class CompletionMenu implements Component {
 		};
 		this.list = list;
 	}
-}
-
-/**
- * A submitted line that names a selector command without an argument, e.g.
- * `/model`. Only commands that can produce candidates qualify; submitting
- * one opens the completion menu instead of executing the bare command.
- */
-export function matchBareSelectorCommand(
-	text: string,
-	commands: readonly Command[],
-): Command | undefined {
-	const trimmed = text.trim();
-	return commands.find(
-		(command) =>
-			command.placement === "line" &&
-			command.available !== false &&
-			command.arguments?.complete !== undefined &&
-			`${command.trigger}${command.name}` === trimmed,
-	);
 }
 
 function isPrintable(data: string): boolean {

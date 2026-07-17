@@ -4,12 +4,14 @@ import { AgentStripView } from "../../src/tui/components/agent-strip.ts";
 import { ChatView } from "../../src/tui/components/chat.ts";
 import { FooterView } from "../../src/tui/components/footer.ts";
 import { StatusView } from "../../src/tui/components/status.ts";
+import { renderTimelineItem } from "../../src/tui/components/timeline-item.ts";
 import {
 	boundedText,
 	sanitizeTerminalText,
 	singleLine,
 } from "../../src/tui/format.ts";
 import {
+	type CommandResultItem,
 	createTuiApplicationState,
 	ensureAgentProjection,
 	setActiveAgent,
@@ -192,6 +194,52 @@ describe("TUI views", () => {
 		const expanded = view.render(80).join("\n").replace(ANSI_SEQUENCE, "");
 		expect(expanded).toContain("six");
 		expect(expanded).not.toContain("… +2 lines");
+	});
+
+	it("renders a completed command with its result", () => {
+		const item: CommandResultItem = {
+			type: "command-result",
+			id: "command-1",
+			commandId: "command-1",
+			durability: "ephemeral",
+			createdAt: timestamp(1),
+			name: "status",
+			argument: "",
+			status: "completed",
+			result: { status: "idle" },
+		};
+		const text = renderTimelineItem(item, 80, {
+			liveThinkingIds: new Set(),
+			toolOutputExpanded: false,
+		})
+			.join("\n")
+			.replace(ANSI_SEQUENCE, "");
+
+		expect(text).toContain("/status");
+		expect(text).toContain('"status": "idle"');
+	});
+
+	it("renders a failed command with its error message", () => {
+		const item: CommandResultItem = {
+			type: "command-result",
+			id: "command-1",
+			commandId: "command-1",
+			durability: "ephemeral",
+			createdAt: timestamp(1),
+			name: "steer",
+			argument: "go",
+			status: "failed",
+			error: { message: "requires a running agent" },
+		};
+		const text = renderTimelineItem(item, 80, {
+			liveThinkingIds: new Set(),
+			toolOutputExpanded: false,
+		})
+			.join("\n")
+			.replace(ANSI_SEQUENCE, "");
+
+		expect(text).toContain("/steer");
+		expect(text).toContain("requires a running agent");
 	});
 
 	it("removes terminal control sequences from externally supplied text", () => {

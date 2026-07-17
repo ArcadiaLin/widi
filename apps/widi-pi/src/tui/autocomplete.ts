@@ -5,39 +5,41 @@ import {
 	CombinedAutocompleteProvider,
 	fuzzyFilter,
 } from "@earendil-works/pi-tui";
+import type { CommandEngine } from "../commands/engine.ts";
+import {
+	INLINE_COMMAND_TRIGGER,
+	LINE_COMMAND_TRIGGER,
+} from "../commands/parse.ts";
+import type { CommandView } from "../commands/types.ts";
 import type { AgentOrchestrator } from "../core/agent-orchestrator.ts";
-import type { Command, CommandCandidates } from "../core/command.ts";
+import type { AgentLifecycleStatus, CandidateItem } from "../core/types.ts";
 
 interface CommandCompletionItem {
-	readonly command: Command;
+	readonly view: CommandView;
 	readonly search: string;
 	readonly label: string;
 	readonly description?: string;
 }
 
 export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
-	readonly triggerCharacters: string[];
-	private readonly commands: readonly Command[];
+	readonly triggerCharacters = [LINE_COMMAND_TRIGGER, INLINE_COMMAND_TRIGGER];
+	private readonly engine: CommandEngine;
 	private readonly agentId: string;
 	private readonly orchestrator: AgentOrchestrator;
+	private readonly getStatus: () => AgentLifecycleStatus;
 	private readonly fileProvider?: CombinedAutocompleteProvider;
 
 	constructor(options: {
-		readonly commands: readonly Command[];
+		readonly engine: CommandEngine;
 		readonly agentId: string;
 		readonly orchestrator: AgentOrchestrator;
+		readonly getStatus: () => AgentLifecycleStatus;
 		readonly cwd?: string;
 	}) {
-		this.commands = options.commands;
+		this.engine = options.engine;
 		this.agentId = options.agentId;
 		this.orchestrator = options.orchestrator;
-		this.triggerCharacters = [
-			...new Set(
-				options.commands
-					.map((command) => command.trigger[0])
-					.filter((trigger): trigger is string => trigger !== undefined),
-			),
-		];
+		this.getStatus = options.getStatus;
 		if (options.cwd) {
 			this.fileProvider = new CombinedAutocompleteProvider([], options.cwd);
 		}
@@ -53,26 +55,15 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 		const line = lines[cursorLine] ?? "";
 		const beforeCursor = line.slice(0, cursorCol);
 
-		const lineCommand = this.matchLineCommand(beforeCursor);
-		if (lineCommand) {
-			const { command, argumentPrefix, argumentStart } = lineCommand;
-			if (!command) {
-				const trigger =
-					this.commands
-						.filter((entry) => entry.placement === "line")
-						.map((entry) => entry.trigger)
-						.sort((left, right) => right.length - left.length)
-						.find((entry) => beforeCursor.startsWith(entry)) ?? "/";
-				const prefix = beforeCursor.slice(trigger.length);
-				const items = this.commands
-					.filter(
-						(entry) => entry.placement === "line" && entry.trigger === trigger,
-					)
-					.map(toCommandCompletionItem);
-				const filtered = fuzzyFilter(items, prefix, (item) => item.search).map(
+		if (beforeCursor.startsWith(LINE_COMMAND_TRIGGER)) {
+			const body = beforeCursor.slice(LINE_COMMAND_TRIGGER.length);
+			const separator = body.indexOf(":");
+			if (separator === -1) {
+				const items = this.views("line").map(toCommandCompletionItem);
+				const filtered = fuzzyFilter(items, body, (item) => item.search).map(
 					(item) => ({
-						value: `${item.command.trigger}${item.command.name}${
-							item.command.argumentHint || item.command.arguments ? ":" : ""
+						value: `${LINE_COMMAND_TRIGGER}${item.view.name}${
+							item.view.takesArgument ? ":" : ""
 						}`,
 						label: item.label,
 						description: item.description,
@@ -82,37 +73,30 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 					? { items: filtered, prefix: beforeCursor }
 					: null;
 			}
-
-			if (
-				argumentStart !== undefined &&
-				command.arguments?.complete &&
-				!options.signal.aborted
-			) {
-				let candidates: CommandCandidates;
-				try {
-					candidates = await command.arguments.complete({
-						agentId: this.agentId,
-						command,
-						argumentPrefix,
-						orchestrator: this.orchestrator,
-					});
-				} catch {
-					return null;
-				}
-				if (options.signal.aborted || candidates.length === 0) return null;
-				return {
-					items: candidates.map((candidate) => ({
-						value: candidate.value,
-						label: candidate.label ?? candidate.value,
-						description: candidate.description,
-					})),
-					prefix: beforeCursor.slice(argumentStart),
-				};
+			const command = this.engine.line(body.slice(0, separator));
+			if (!command?.complete) return null;
+			const argumentPrefix = body.slice(separator + 1);
+			let candidates: readonly CandidateItem[];
+			try {
+				candidates = await command.complete(
+					{ agentId: this.agentId, orchestrator: this.orchestrator },
+					argumentPrefix,
+				);
+			} catch {
+				return null;
 			}
-			return null;
+			if (options.signal.aborted || candidates.length === 0) return null;
+			return {
+				items: candidates.map((candidate) => ({
+					value: candidate.value,
+					label: candidate.label ?? candidate.value,
+					description: candidate.description,
+				})),
+				prefix: argumentPrefix,
+			};
 		}
 
-		const inline = this.matchInlineCommand(beforeCursor);
+		const inline = matchInlinePrefix(beforeCursor);
 		if (!inline) {
 			return (
 				(await this.fileProvider?.getSuggestions(
@@ -124,13 +108,11 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 			);
 		}
 		const filtered = fuzzyFilter(
-			inline.commands.map(toCommandCompletionItem),
+			this.views("inline").map(toCommandCompletionItem),
 			inline.prefix,
 			(item) => item.search,
 		).map((item) => ({
-			value: `${item.command.trigger}${item.command.name}:${
-				item.command.closeTrigger ?? ""
-			}`,
+			value: `${INLINE_COMMAND_TRIGGER}${item.view.name}:>`,
 			label: item.label,
 			description: item.description,
 		}));
@@ -147,9 +129,9 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 		prefix: string,
 	): { lines: string[]; cursorLine: number; cursorCol: number } {
 		const currentLine = lines[cursorLine] ?? "";
-		const isCommandCompletion = this.commands.some((command) =>
-			prefix.startsWith(command.trigger),
-		);
+		const isCommandCompletion =
+			prefix.startsWith(LINE_COMMAND_TRIGGER) ||
+			prefix.startsWith(INLINE_COMMAND_TRIGGER);
 		if (!isCommandCompletion && this.fileProvider) {
 			return this.fileProvider.applyCompletion(
 				lines,
@@ -164,12 +146,9 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 		const value = item.value;
 		const nextLines = [...lines];
 		nextLines[cursorLine] = `${before}${value}${after}`;
-		const closeTrigger = this.commands.find(
-			(command) =>
-				command.placement === "inline" &&
-				value.startsWith(`${command.trigger}${command.name}:`),
-		)?.closeTrigger;
-		const closeOffset = closeTrigger ? closeTrigger.length : 0;
+		// Inline completions insert the close trigger; land the cursor inside it.
+		const closeOffset =
+			value.startsWith(INLINE_COMMAND_TRIGGER) && value.endsWith(">") ? 1 : 0;
 		return {
 			lines: nextLines,
 			cursorLine,
@@ -191,78 +170,39 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 		);
 	}
 
-	private matchLineCommand(text: string):
-		| {
-				command?: Command;
-				argumentPrefix: string;
-				argumentStart?: number;
-		  }
-		| undefined {
-		const commands = this.commands.filter(
-			(command) => command.placement === "line",
-		);
-		const trigger = commands
-			.map((command) => command.trigger)
-			.sort((left, right) => right.length - left.length)
-			.find((candidate) => text.startsWith(candidate));
-		if (!trigger) return undefined;
-		const body = text.slice(trigger.length);
-		const separator = body.indexOf(":");
-		if (separator === -1) {
-			const exact = commands.find(
-				(command) => command.trigger === trigger && command.name === body,
-			);
-			return { command: exact, argumentPrefix: "" };
-		}
-		const name = body.slice(0, separator);
-		const command = commands.find(
-			(entry) => entry.trigger === trigger && entry.name === name,
-		);
-		return {
-			command,
-			argumentPrefix: body.slice(separator + 1),
-			argumentStart: trigger.length + separator + 1,
-		};
-	}
-
-	private matchInlineCommand(text: string):
-		| {
-				commands: Command[];
-				prefix: string;
-				rawPrefix: string;
-		  }
-		| undefined {
-		const boundary = Math.max(text.lastIndexOf(" "), text.lastIndexOf("\n"));
-		const rawPrefix = text.slice(boundary + 1);
-		const commands = this.commands.filter(
-			(command) =>
-				command.placement === "inline" && rawPrefix.startsWith(command.trigger),
-		);
-		if (commands.length === 0) return undefined;
-		const trigger = commands[0]?.trigger ?? "";
-		if (rawPrefix.includes(":")) return undefined;
-		return {
-			commands,
-			prefix: rawPrefix.slice(trigger.length),
-			rawPrefix,
-		};
+	private views(kind: "line" | "inline"): CommandView[] {
+		return this.engine
+			.list(this.getStatus())
+			.filter((view) => view.kind === kind);
 	}
 }
 
-function toCommandCompletionItem(command: Command): CommandCompletionItem {
-	const source =
-		command.source.kind === "extension"
-			? `extension:${command.source.extensionId}`
-			: "built-in";
-	const availability =
-		command.available === false
-			? `unavailable: ${command.unavailableReason ?? "not available"}`
-			: source;
+function matchInlinePrefix(
+	text: string,
+): { prefix: string; rawPrefix: string } | undefined {
+	const boundary = Math.max(text.lastIndexOf(" "), text.lastIndexOf("\n"));
+	const rawPrefix = text.slice(boundary + 1);
+	if (!rawPrefix.startsWith(INLINE_COMMAND_TRIGGER)) return undefined;
+	if (rawPrefix.includes(":")) return undefined;
 	return {
-		command,
-		search: command.name,
-		label: `${command.trigger}${command.name}`,
-		description: [command.argumentHint, command.description, availability]
+		prefix: rawPrefix.slice(INLINE_COMMAND_TRIGGER.length),
+		rawPrefix,
+	};
+}
+
+function toCommandCompletionItem(view: CommandView): CommandCompletionItem {
+	const availability =
+		view.available === false
+			? `unavailable: ${view.unavailableReason ?? "not available"}`
+			: undefined;
+	return {
+		view,
+		search: view.name,
+		label:
+			view.kind === "line"
+				? `${LINE_COMMAND_TRIGGER}${view.name}`
+				: `${INLINE_COMMAND_TRIGGER}${view.name}`,
+		description: [view.argumentHint, view.description, availability]
 			.filter(Boolean)
 			.join(" — "),
 	};

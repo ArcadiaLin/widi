@@ -2,13 +2,9 @@ import { type SelectItem, setKeybindings } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import type { AgentRecordSnapshot } from "../../src/core/agent-record.ts";
-import type { Command, InputResult } from "../../src/core/command.ts";
 import type { WidiRuntime } from "../../src/core/runtime-service.ts";
 import { WidiTuiApplication } from "../../src/tui/application.ts";
-import {
-	CompletionMenu,
-	matchBareSelectorCommand,
-} from "../../src/tui/completion-menu.ts";
+import { CompletionMenu } from "../../src/tui/completion-menu.ts";
 import { WidiEditor } from "../../src/tui/editor.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
 import {
@@ -125,76 +121,40 @@ describe("CompletionMenu", () => {
 	});
 });
 
-describe("matchBareSelectorCommand", () => {
-	const commands: Command[] = [
-		{
-			name: "model",
-			placement: "line",
-			trigger: "/",
-			source: { kind: "built-in" },
-			arguments: { complete: async () => [] },
-		},
-		{
-			name: "name",
-			placement: "line",
-			trigger: "/",
-			source: { kind: "built-in" },
-			arguments: { required: true },
-		},
-		{
-			name: "resume",
-			placement: "line",
-			trigger: "/",
-			source: { kind: "built-in" },
-			available: false,
-			arguments: { complete: async () => [] },
-		},
-	];
-
-	it("matches a bare command that offers candidates", () => {
-		expect(matchBareSelectorCommand("/model", commands)?.name).toBe("model");
-		expect(matchBareSelectorCommand(" /model ", commands)?.name).toBe("model");
-	});
-
-	it("ignores arguments, unknown names, and commands without completion", () => {
-		expect(matchBareSelectorCommand("/model:x", commands)).toBeUndefined();
-		expect(matchBareSelectorCommand("/name", commands)).toBeUndefined();
-		expect(matchBareSelectorCommand("/missing", commands)).toBeUndefined();
-		expect(matchBareSelectorCommand("hello", commands)).toBeUndefined();
-	});
-
-	it("skips unavailable commands", () => {
-		expect(matchBareSelectorCommand("/resume", commands)).toBeUndefined();
-	});
-});
-
 describe("WidiTuiApplication completion menu integration", () => {
 	it("opens the inline menu for a bare selector and resubmits its selection", async () => {
-		const command = selectorCommand("model", [
-			{
-				value: "vllm/qwen3.6",
-				label: "Qwen 3.6",
-				description: "local",
-			},
-		]);
-		const { application, inputAgent } = await createApplication(command);
+		const setAgentModelByReference = vi.fn(async () => undefined);
+		const { application } = await createApplication({
+			listAvailableModelCandidates: async () => ({
+				models: [
+					{ value: "vllm/qwen3.6", label: "Qwen 3.6", description: "local" },
+				],
+			}),
+			setAgentModelByReference,
+		});
 
 		await submit(application, "/model");
 
 		const menu = requireMenu(application);
 		expect(application.state.mode).toBe("completion-menu");
 		expect(plainRender(menu)).toContain("Qwen 3.6");
-		expect(inputAgent).not.toHaveBeenCalled();
+		expect(setAgentModelByReference).not.toHaveBeenCalled();
 
 		menu.handleInput(ENTER);
+		await flush();
 
-		expect(inputAgent).toHaveBeenCalledWith("agent-1", "/model:vllm/qwen3.6");
+		expect(setAgentModelByReference).toHaveBeenCalledWith(
+			"agent-1",
+			"vllm/qwen3.6",
+		);
 	});
 
 	it("restores the submitted command when the inline menu is cancelled", async () => {
-		const { application } = await createApplication(
-			selectorCommand("model", [{ value: "vllm/qwen3.6", label: "Qwen 3.6" }]),
-		);
+		const { application } = await createApplication({
+			listAvailableModelCandidates: async () => ({
+				models: [{ value: "vllm/qwen3.6", label: "Qwen 3.6" }],
+			}),
+		});
 		const editor = requireEditor(application);
 		editor.setText("");
 
@@ -206,18 +166,31 @@ describe("WidiTuiApplication completion menu integration", () => {
 	});
 
 	it("offers the current position before explicit fork points", async () => {
-		const { application, inputAgent } = await createApplication(
-			selectorCommand("fork", [
-				{ value: "message-1", label: "Earlier user message" },
-			]),
-		);
+		const forkAgentSessionFromAgent = vi.fn(async () => undefined);
+		const { application } = await createApplication({
+			getAgentSessionTree: async () => ({
+				entries: [
+					{
+						type: "message",
+						id: "message-1",
+						timestamp: "2026-07-17T00:00:00.000Z",
+						message: { role: "user", content: "Earlier user message" },
+					},
+				],
+			}),
+			forkAgentSessionFromAgent,
+		});
 
 		await submit(application, "/fork");
 		const menu = requireMenu(application);
 
 		expect(plainRender(menu)).toContain("Fork here (current position)");
 		menu.handleInput(ENTER);
-		expect(inputAgent).toHaveBeenCalledWith("agent-1", "/fork:");
+		await flush();
+		expect(forkAgentSessionFromAgent).toHaveBeenCalledWith(
+			"agent-1",
+			undefined,
+		);
 	});
 
 	it("renders the agent selector through the shared inline menu", async () => {
@@ -236,31 +209,10 @@ describe("WidiTuiApplication completion menu integration", () => {
 	});
 });
 
-function selectorCommand(
-	name: string,
-	candidates: Awaited<
-		ReturnType<NonNullable<NonNullable<Command["arguments"]>["complete"]>>
-	>,
-): Command {
-	return {
-		name,
-		placement: "line",
-		trigger: "/",
-		source: { kind: "built-in" },
-		arguments: { complete: async () => candidates },
-	};
-}
-
-async function createApplication(command?: Command) {
-	const result: InputResult = {
-		kind: "command",
-		commandId: "command-1",
-		name: command?.name ?? "status",
-		value: undefined,
-	};
-	const inputAgent = vi.fn(async () => result);
+async function createApplication(overrides: Record<string, unknown> = {}) {
 	const orchestrator = {
-		inputAgent,
+		getAgentStatus: () => "idle",
+		...overrides,
 	} as unknown as AgentOrchestrator;
 	const runtime = {
 		orchestrator,
@@ -274,9 +226,12 @@ async function createApplication(command?: Command) {
 	application.tui.requestRender = vi.fn();
 	const agent = ensureAgentProjection(application.state, "agent-1", "idle");
 	agent.snapshot = agentSnapshot("agent-1");
-	agent.commands = command ? [command] : [];
 	application.state.activeAgentId = agent.agentId;
-	return { application, inputAgent };
+	return { application, orchestrator };
+}
+
+async function flush(): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function agentSnapshot(agentId: string): AgentRecordSnapshot {

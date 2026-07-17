@@ -1,12 +1,18 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
+import { builtInCommands } from "../commands/built-ins.ts";
+import { CommandEngine, switchedAgentId } from "../commands/engine.ts";
+import type {
+	CommandError,
+	EngineOutcome,
+	LineCommand,
+} from "../commands/types.ts";
 import type {
 	AgentOrchestrator,
 	OrchestratorEvent,
 } from "../core/agent-orchestrator.ts";
 import type { AgentRecordSnapshot } from "../core/agent-record.ts";
-import type { Command, InputResult } from "../core/command.ts";
 import {
 	type OrchestratorDiagnostic,
 	OrchestratorError,
@@ -15,9 +21,10 @@ import {
 	createWidiRuntime,
 	type WidiRuntime,
 } from "../core/runtime-service.ts";
+import type { CandidateItem, PromptExpansion } from "../core/types.ts";
 import { AgentSelectorController } from "./agent-selector.ts";
 import { WidiCommandAutocompleteProvider } from "./autocomplete.ts";
-import { CompletionMenu, matchBareSelectorCommand } from "./completion-menu.ts";
+import { CompletionMenu } from "./completion-menu.ts";
 import { AgentStripView } from "./components/agent-strip.ts";
 import { ChatView } from "./components/chat.ts";
 import { agentLabel } from "./components/common.ts";
@@ -58,10 +65,10 @@ export class WidiTuiApplication {
 	private readonly completionMenu: CompletionMenu;
 	private readonly humanRequests: HumanRequestController;
 	private readonly agentSelector: AgentSelectorController;
+	private readonly engine = new CommandEngine(builtInCommands);
 	private unsubscribeEvents?: () => void;
 	private unregisterClient?: () => void;
 	private readonly hydrationGeneration = new Map<string, number>();
-	private readonly commandGeneration = new Map<string, number>();
 	private readonly hydratedAgents = new Set<string>();
 	private readonly notificationTimers = new Map<string, NodeJS.Timeout>();
 	private readonly pendingTasks = new Set<Promise<unknown>>();
@@ -189,7 +196,6 @@ export class WidiTuiApplication {
 			if (this.state.shuttingDown) return await this.closed;
 			await this.syncAgent(agentId);
 			this.switchAgent(agentId);
-			this.refreshCommands(agentId);
 		} catch (error) {
 			await this.recoverInitialSpawnFailure(error);
 		}
@@ -238,11 +244,9 @@ export class WidiTuiApplication {
 			case "agent_resumed":
 				this.schedule(() => this.syncAgent(event.agentId));
 				this.schedule(() => this.hydrateAgent(event.agentId));
-				this.refreshCommands(event.agentId);
 				break;
 			case "agent_status_changed":
 				this.schedule(() => this.syncAgent(event.agentId));
-				this.refreshCommands(event.agentId);
 				this.updateEditorAvailability();
 				break;
 			case "agent_session_info_changed":
@@ -261,14 +265,6 @@ export class WidiTuiApplication {
 			case "human_request_cancelled":
 				this.humanRequests.cancelRequest(event.requestId);
 				break;
-			case "command_completed": {
-				const nextAgentId = navigationAgentId(event.result);
-				if (nextAgentId)
-					this.schedule(() => this.activateNavigationAgent(nextAgentId));
-				if (event.command.name === "reload")
-					this.refreshCommands(event.agentId);
-				break;
-			}
 			case "agent_harness_event":
 				if (
 					event.event.type === "session_tree" ||
@@ -308,11 +304,8 @@ export class WidiTuiApplication {
 			return;
 		}
 
-		const lineCommandCandidate = agent.commands.some(
-			(command) =>
-				command.placement === "line" && text.startsWith(command.trigger),
-		);
-		if (agent.status === "running" && !lineCommandCandidate) {
+		const command = this.engine.match(text);
+		if (agent.status === "running" && !command) {
 			this.restoreEditor(rawText, agentId);
 			this.addApplicationNotice(
 				"Agent is running. Use /steer:<text> or /follow-up:<text>.",
@@ -321,28 +314,99 @@ export class WidiTuiApplication {
 			return;
 		}
 
-		const selectorCommand = matchBareSelectorCommand(text, agent.commands);
-		if (selectorCommand) {
-			try {
-				await this.openCommandCompletionMenu(agentId, rawText, selectorCommand);
-			} catch (error) {
-				this.restoreEditor(rawText, agentId);
-				this.addApplicationNotice(errorMessage(error), agentId);
-			}
+		let outcome: EngineOutcome;
+		try {
+			outcome = await this.engine.handleInput(
+				text,
+				{ agentId, orchestrator: this.orchestrator },
+				{
+					onCommandStart: (commandId, name, argument) => {
+						this.upsertCommandItem(agentId, commandId, {
+							name,
+							argument,
+							status: "running",
+						});
+						this.tui.requestRender();
+					},
+				},
+			);
+		} catch (error) {
+			this.restoreEditor(rawText, agentId);
+			this.addApplicationNotice(errorMessage(error), agentId);
 			return;
 		}
 
+		switch (outcome.kind) {
+			case "pass":
+				await this.submitPrompt(agentId, rawText, text, undefined);
+				return;
+			case "expanded":
+				await this.submitPrompt(
+					agentId,
+					rawText,
+					outcome.text,
+					outcome.expansion,
+				);
+				return;
+			case "executed": {
+				this.editor.addToHistory(rawText);
+				this.upsertCommandItem(agentId, outcome.commandId, {
+					name: outcome.name,
+					status: "completed",
+					result: outcome.value,
+				});
+				const nextAgentId = switchedAgentId(outcome);
+				if (nextAgentId) await this.activateNavigationAgent(nextAgentId);
+				this.tui.requestRender();
+				return;
+			}
+			case "failed":
+				this.editor.addToHistory(rawText);
+				this.upsertCommandItem(agentId, outcome.commandId, {
+					name: outcome.name,
+					status: "failed",
+					error: outcome.error,
+				});
+				this.tui.requestRender();
+				return;
+			case "needs-argument":
+				this.openCommandCompletionMenu(
+					agentId,
+					rawText,
+					outcome.command,
+					outcome.candidates,
+				);
+				return;
+		}
+	}
+
+	private async submitPrompt(
+		agentId: string,
+		rawText: string,
+		text: string,
+		expansion: PromptExpansion | undefined,
+	): Promise<void> {
+		const agent = ensureAgentProjection(this.state, agentId);
 		agent.pendingInput = {
 			originalText: rawText,
 			submittedAt: new Date().toISOString(),
-			lineCommandCandidate,
 		};
 		this.editor.addToHistory(rawText);
 		this.tui.requestRender();
-
 		try {
-			const result = await this.orchestrator.inputAgent(agentId, text);
-			await this.handleInputResult(agentId, rawText, result);
+			const outcome = await this.orchestrator.promptAgent(agentId, text, {
+				expansion,
+			});
+			if (outcome.kind === "blocked") {
+				agent.pendingInput = undefined;
+				this.restoreEditor(rawText, agentId);
+				this.addApplicationNotice(
+					outcome.reason
+						? `Input blocked by ${outcome.blockedBy}: ${outcome.reason}`
+						: `Input blocked by ${outcome.blockedBy}.`,
+					agentId,
+				);
+			}
 		} catch (error) {
 			const pending = ensureAgentProjection(this.state, agentId).pendingInput;
 			ensureAgentProjection(this.state, agentId).pendingInput = undefined;
@@ -352,46 +416,51 @@ export class WidiTuiApplication {
 			} else {
 				this.addApplicationNotice(errorMessage(error), agentId);
 			}
-			this.tui.requestRender();
-		}
-	}
-
-	private async handleInputResult(
-		agentId: string,
-		originalText: string,
-		result: InputResult,
-	): Promise<void> {
-		const agent = ensureAgentProjection(this.state, agentId);
-		if (result.kind !== "prompt") agent.pendingInput = undefined;
-		if (result.kind === "blocked") {
-			this.restoreEditor(originalText, agentId);
-			this.addApplicationNotice(
-				result.reason
-					? `Input blocked by ${result.blockedBy}: ${result.reason}`
-					: `Input blocked by ${result.blockedBy}.`,
-				agentId,
-			);
-		}
-		if (result.kind === "command") {
-			const nextAgentId = navigationAgentId(result.value);
-			if (nextAgentId) await this.activateNavigationAgent(nextAgentId);
 		}
 		this.tui.requestRender();
 	}
 
-	private async openCommandCompletionMenu(
+	private upsertCommandItem(
+		agentId: string,
+		commandId: string,
+		update: {
+			name: string;
+			argument?: string;
+			status: "running" | "completed" | "failed";
+			result?: unknown;
+			error?: CommandError;
+		},
+	): void {
+		const agent = ensureAgentProjection(this.state, agentId);
+		const existing = agent.timeline.find(
+			(item) => item.type === "command-result" && item.commandId === commandId,
+		);
+		if (existing?.type === "command-result") {
+			existing.status = update.status;
+			existing.result = update.result;
+			existing.error = update.error;
+			return;
+		}
+		agent.timeline.push({
+			type: "command-result",
+			id: commandId,
+			commandId,
+			durability: "ephemeral",
+			createdAt: new Date().toISOString(),
+			name: update.name,
+			argument: update.argument ?? "",
+			status: update.status,
+			result: update.result,
+			error: update.error,
+		});
+	}
+
+	private openCommandCompletionMenu(
 		agentId: string,
 		originalText: string,
-		command: Command,
-	): Promise<void> {
-		const complete = command.arguments?.complete;
-		if (!complete) return;
-		const candidates = await complete({
-			agentId,
-			command,
-			argumentPrefix: "",
-			orchestrator: this.orchestrator,
-		});
+		command: LineCommand,
+		candidates: readonly CandidateItem[],
+	): void {
 		const items = candidates.map((candidate) => ({
 			value: candidate.value,
 			label: candidate.label ?? candidate.value,
@@ -405,12 +474,10 @@ export class WidiTuiApplication {
 			});
 		}
 		this.completionMenu.open({
-			title: `${command.trigger}${command.name}`,
+			title: `/${command.name}`,
 			items,
 			onSelect: (item) => {
-				this.track(
-					this.submit(`${command.trigger}${command.name}:${item.value}`),
-				);
+				this.track(this.submit(`/${command.name}:${item.value}`));
 			},
 			onCancel: () => this.restoreEditor(originalText, agentId),
 		});
@@ -431,7 +498,15 @@ export class WidiTuiApplication {
 		this.editor.setText(this.drafts.get(agentId) ?? "");
 		this.state.mode = "editor";
 		this.updateEditorAvailability();
-		this.refreshCommands(agentId);
+		this.editor.setAutocompleteProvider(
+			new WidiCommandAutocompleteProvider({
+				engine: this.engine,
+				agentId,
+				orchestrator: this.orchestrator,
+				getStatus: () => this.state.agents.get(agentId)?.status ?? "idle",
+				cwd: this.runtime.services.cwd,
+			}),
+		);
 		this.updateTerminalTitle();
 		this.tui.setFocus(this.editor);
 		this.tui.requestRender();
@@ -482,36 +557,6 @@ export class WidiTuiApplication {
 			);
 		}
 		this.tui.requestRender();
-	}
-
-	private refreshCommands(agentId: string): void {
-		const generation = (this.commandGeneration.get(agentId) ?? 0) + 1;
-		this.commandGeneration.set(agentId, generation);
-		queueMicrotask(() => {
-			if (this.commandGeneration.get(agentId) !== generation) return;
-			try {
-				const commands = this.orchestrator.listCommands(agentId);
-				const agent = ensureAgentProjection(this.state, agentId);
-				agent.commands = commands;
-				agent.commandRevision++;
-				if (this.state.activeAgentId === agentId) {
-					this.editor.setAutocompleteProvider(
-						new WidiCommandAutocompleteProvider({
-							commands,
-							agentId,
-							orchestrator: this.orchestrator,
-							cwd: this.runtime.services.cwd,
-						}),
-					);
-				}
-			} catch (error) {
-				this.addApplicationNotice(
-					`Could not load commands: ${errorMessage(error)}`,
-					agentId,
-				);
-			}
-			this.tui.requestRender();
-		});
 	}
 
 	private async recoverInitialSpawnFailure(error: unknown): Promise<void> {
@@ -702,13 +747,6 @@ export class WidiTuiApplication {
 export async function runWidiTui(options: WidiTuiOptions): Promise<void> {
 	const application = await WidiTuiApplication.create(options);
 	await application.run();
-}
-
-function navigationAgentId(value: unknown): string | undefined {
-	if (typeof value !== "object" || value === null || !("agentId" in value)) {
-		return undefined;
-	}
-	return typeof value.agentId === "string" ? value.agentId : undefined;
 }
 
 function errorMessage(error: unknown): string {

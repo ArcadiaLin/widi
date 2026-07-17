@@ -42,7 +42,7 @@ export function renderDeps(
 		case "thinking-status":
 			return [item.status];
 		case "command-result":
-			return [item.status, item.command, item.result, item.diagnostic];
+			return [item.status, item.result, item.error];
 		default:
 			return [];
 	}
@@ -103,16 +103,21 @@ export function renderTimelineItem(
 			).render(width);
 		}
 		case "command-result":
-			if (item.status === "detected" || item.status === "accepted") return [];
-			// Core publishes the same command failure as a canonical diagnostic
-			// immediately after command_failed/rejected. The diagnostic item is
-			// the single user-visible failure presentation.
-			if (item.diagnostic) return [];
+			if (item.status === "running") {
+				return new Text(colors.dim(`/${item.name} …`), 1, 0).render(width);
+			}
+			if (item.status === "failed") {
+				return new Text(
+					`${colors.dim(`/${item.name}`)} ${severityColor("error")(
+						item.error?.message ?? "command failed",
+					)}`,
+					1,
+					0,
+				).render(width);
+			}
 			if (item.result === undefined) return [];
 			return new Text(
-				`${colors.dim(`/${item.command?.name ?? "command"}`)}\n${formatUnknown(
-					item.result,
-				)}`,
+				`${colors.dim(`/${item.name}`)}\n${formatUnknown(item.result)}`,
 				1,
 				0,
 			).render(width);

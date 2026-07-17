@@ -146,7 +146,6 @@ export class EventProjector {
 				);
 				const wasRunning = agent.status === "running";
 				agent.status = event.status;
-				agent.commandRevision++;
 				if (
 					wasRunning &&
 					event.status === "idle" &&
@@ -161,7 +160,6 @@ export class EventProjector {
 			case "agent_resumed": {
 				const agent = ensureAgentProjection(this.state, event.agentId);
 				agent.display.model = event.model;
-				agent.commandRevision++;
 				agent.hydration = "pending";
 				return;
 			}
@@ -174,53 +172,6 @@ export class EventProjector {
 					this.state,
 					event.agentId,
 				).display.rehydrateRequested = true;
-				return;
-			case "command_detected":
-				this.upsertCommand(event.agentId, event.commandId, {
-					status: "detected",
-					command: event.command,
-					createdAt: event.createdAt,
-				});
-				return;
-			case "command_accepted":
-				this.upsertCommand(event.agentId, event.commandId, {
-					status: "accepted",
-					command: event.command,
-					createdAt: event.createdAt,
-				});
-				return;
-			case "command_completed":
-				if (event.result !== undefined) {
-					this.upsertCommand(event.agentId, event.commandId, {
-						status: "completed",
-						command: event.command,
-						result: event.result,
-						createdAt: event.completedAt,
-					});
-				} else {
-					removeCommandItem(
-						ensureAgentProjection(this.state, event.agentId),
-						event.commandId,
-					);
-				}
-				this.markBackgroundActivity(
-					event.agentId,
-					event.result !== undefined,
-					"completed",
-				);
-				return;
-			case "command_failed":
-			case "command_rejected":
-				this.upsertCommand(event.agentId, event.commandId, {
-					status: event.type === "command_failed" ? "failed" : "rejected",
-					command: event.command,
-					diagnostic: event.diagnostic,
-					createdAt: event.completedAt,
-				});
-				raiseDiagnosticAttention(
-					ensureAgentProjection(this.state, event.agentId),
-					event.diagnostic,
-				);
 				return;
 			case "input_blocked":
 				ensureAgentProjection(this.state, event.agentId).pendingInput =
@@ -540,47 +491,6 @@ export class EventProjector {
 			this.state.humanRequests.length > 0 ? "human-request" : "editor";
 	}
 
-	private upsertCommand(
-		agentId: AgentId,
-		commandId: string,
-		update: {
-			status: "detected" | "accepted" | "completed" | "failed" | "rejected";
-			command?: Extract<
-				OrchestratorEvent,
-				{
-					type:
-						| "command_detected"
-						| "command_accepted"
-						| "command_completed"
-						| "command_failed";
-				}
-			>["command"];
-			result?: unknown;
-			diagnostic?: OrchestratorDiagnostic;
-			createdAt: string;
-		},
-	): void {
-		const agent = ensureAgentProjection(this.state, agentId);
-		const existing = agent.timeline.find(
-			(item) => item.type === "command-result" && item.commandId === commandId,
-		);
-		if (existing?.type === "command-result") {
-			existing.status = update.status;
-			existing.command = update.command ?? existing.command;
-			existing.result = update.result;
-			existing.diagnostic = update.diagnostic;
-			return;
-		}
-		upsertTimeline(agent, {
-			type: "command-result",
-			id: commandId,
-			commandId,
-			durability: "ephemeral",
-			...update,
-		});
-		if (update.status === "completed") this.markBackgroundActivity(agentId);
-	}
-
 	private markBackgroundActivity(
 		agentId: AgentId,
 		incrementUnread = true,
@@ -655,12 +565,6 @@ function findTool(agent: AgentViewState, toolCallId: string) {
 	return item?.type === "tool-execution" ? item : undefined;
 }
 
-function removeCommandItem(agent: AgentViewState, commandId: string): void {
-	agent.timeline = agent.timeline.filter(
-		(item) => item.type !== "command-result" || item.commandId !== commandId,
-	);
-}
-
 function raiseAttention(
 	agent: AgentViewState,
 	attention: AgentAttention,
@@ -685,7 +589,6 @@ function diagnosticKey(diagnostic: OrchestratorDiagnostic): string {
 			code: diagnostic.code,
 			source: diagnostic.source,
 			agentId: diagnostic.agentId,
-			commandId: diagnostic.commandId,
 			requestId: diagnostic.requestId,
 			extensionId: diagnostic.extensionId,
 		})}`

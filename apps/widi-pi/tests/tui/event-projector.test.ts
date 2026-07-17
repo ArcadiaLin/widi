@@ -83,7 +83,6 @@ describe("EventProjector", () => {
 		agent.pendingInput = {
 			originalText: "show <file:README.md>",
 			submittedAt: timestamp(1),
-			lineCommandCandidate: false,
 		};
 
 		projector.apply(

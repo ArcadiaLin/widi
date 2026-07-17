@@ -3,8 +3,8 @@ import type {
 	AssistantMessage,
 	ToolResultMessage,
 } from "@earendil-works/pi-ai";
+import type { CommandError } from "../commands/types.ts";
 import type { AgentRecordSnapshot } from "../core/agent-record.ts";
-import type { Command, CommandInvocation } from "../core/command.ts";
 import type { OrchestratorDiagnostic } from "../core/diagnostics.ts";
 import type {
 	ExtensionMessage,
@@ -78,10 +78,11 @@ export interface CommandResultItem {
 	readonly commandId: string;
 	readonly durability: "ephemeral";
 	readonly createdAt: string;
-	command?: CommandInvocation;
-	status: "detected" | "accepted" | "completed" | "failed" | "rejected";
+	readonly name: string;
+	readonly argument: string;
+	status: "running" | "completed" | "failed";
 	result?: unknown;
-	diagnostic?: OrchestratorDiagnostic;
+	error?: CommandError;
 }
 
 export interface ExtensionOutputItem {
@@ -159,7 +160,6 @@ export type AgentAttention =
 export interface PendingInput {
 	readonly originalText: string;
 	readonly submittedAt: string;
-	readonly lineCommandCandidate: boolean;
 }
 
 export interface QueueState {
@@ -181,8 +181,6 @@ export interface AgentViewState {
 	snapshot?: AgentRecordSnapshot;
 	status: AgentLifecycleStatus;
 	timeline: TimelineItem[];
-	commands: Command[];
-	commandRevision: number;
 	extensionStatuses: Map<string, ExtensionStatusSnapshot>;
 	unreadCount: number;
 	attention: AgentAttention;
@@ -246,8 +244,6 @@ export function createAgentViewState(
 		agentId,
 		status,
 		timeline: [],
-		commands: [],
-		commandRevision: 0,
 		extensionStatuses: new Map(),
 		unreadCount: 0,
 		attention: "none",
@@ -299,11 +295,7 @@ export function retainedAttention(
 	let attention: AgentAttention = "none";
 	const diagnostics = [
 		...agent.timeline.flatMap((item) =>
-			item.type === "diagnostic"
-				? [item.diagnostic]
-				: item.type === "command-result" && item.diagnostic
-					? [item.diagnostic]
-					: [],
+			item.type === "diagnostic" ? [item.diagnostic] : [],
 		),
 		...(agent.snapshot?.diagnostics ?? []),
 	];
@@ -323,11 +315,6 @@ export function isTimelineEvent(event: OrchestratorEvent): boolean {
 		return isTimelineHarnessEvent(event.event);
 	}
 	return (
-		event.type === "command_detected" ||
-		event.type === "command_accepted" ||
-		event.type === "command_completed" ||
-		event.type === "command_failed" ||
-		event.type === "command_rejected" ||
 		event.type === "extension_output" ||
 		event.type === "extension_message_published" ||
 		event.type === "diagnostic" ||
