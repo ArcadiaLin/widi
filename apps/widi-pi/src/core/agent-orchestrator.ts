@@ -25,6 +25,7 @@ import {
 import {
 	getSupportedThinkingLevels,
 	type ImageContent,
+	type OAuthLoginCallbacks,
 } from "@earendil-works/pi-ai";
 import type {
 	AgentProfile,
@@ -41,21 +42,6 @@ import {
 	snapshotAgentRecord,
 } from "./agent-record.ts";
 import type { OrchestratorClient } from "./client.ts";
-import {
-	BUILT_IN_COMMANDS,
-	BUILT_IN_INLINE_COMMANDS,
-	type Command,
-	type CommandArgumentsCompletionPayload,
-	type CommandCandidate,
-	type CommandInvocation,
-	type CommandStatusCheck,
-	getBuiltInCommands,
-	type InlineCommandMatch,
-	type InputResult,
-	type ParsedLineCommand,
-	parseLineCommand,
-	scanInlineCommands,
-} from "./command.ts";
 import {
 	createOrchestratorDiagnostic,
 	dedupeDiagnostics,
@@ -77,7 +63,6 @@ import {
 	type ExtensionObservedEvent,
 	type ExtensionResourceContribution,
 	ExtensionRunner,
-	type ExtensionSessionCommandResult,
 } from "./extension/index.ts";
 import {
 	assertExtensionNotificationText,
@@ -91,7 +76,11 @@ import {
 	validateExtensionStatus,
 } from "./extension/presentation.ts";
 import { ExtensionStatusRegistry } from "./extension/status-registry.ts";
-import type { HumanRequest, HumanResponse } from "./human-request.ts";
+import type {
+	HumanRequest,
+	HumanRequestDraft,
+	HumanResponse,
+} from "./human-request.ts";
 import { HumanRequestBroker } from "./human-request.ts";
 import { stripImagesFromMessages } from "./image-policy.ts";
 import {
@@ -125,8 +114,11 @@ import type {
 	AgentId,
 	AgentLifecycleStatus,
 	AgentToolsSnapshot,
+	CandidateItem,
 	OrchestratorEvent,
 	OrchestratorEventListener,
+	PromptExpansion,
+	PromptOutcome,
 	RuntimeModel,
 } from "./types.ts";
 
@@ -157,7 +149,7 @@ export interface AgentOrchestratorConfigs {
 	defaultThinkingLevel?: ThinkingLevel;
 }
 
-export interface AgentSessionCommandResult {
+export interface AgentSessionResult {
 	readonly agentId: AgentId;
 	readonly snapshot: AgentRecordSnapshot;
 }
@@ -171,23 +163,41 @@ export interface AgentListResult {
 }
 
 export interface AgentModelCandidateListResult {
-	readonly models: readonly CommandCandidate[];
+	readonly models: readonly CandidateItem[];
 }
 
 export interface AgentThinkingLevelCandidateListResult {
-	readonly levels: readonly CommandCandidate[];
+	readonly levels: readonly CandidateItem[];
 }
 
 export interface AgentPromptTemplateCandidateListResult {
-	readonly templates: readonly CommandCandidate[];
+	readonly templates: readonly CandidateItem[];
 }
 
 export interface AgentSkillCandidateListResult {
-	readonly skills: readonly CommandCandidate[];
+	readonly skills: readonly CandidateItem[];
 }
 
-export interface AgentThinkingLevelCommandResult {
+export interface AgentThinkingLevelResult {
 	readonly level: ThinkingLevel;
+}
+
+export interface AuthProviderCandidateListResult {
+	readonly providers: readonly CandidateItem[];
+}
+
+export interface AuthCredentialCandidateListResult {
+	readonly providers: readonly CandidateItem[];
+}
+
+export interface AuthProviderLoginResult {
+	readonly providerId: string;
+	readonly providerName: string;
+}
+
+export interface AuthProviderLogoutResult {
+	readonly providerId: string;
+	readonly removed: boolean;
 }
 
 export type ExtensionReloadAgentStatus = "reloaded" | "skipped" | "failed";
@@ -269,24 +279,6 @@ interface AgentToolSetHarness {
 	setActiveTools(toolNames: string[]): Promise<void>;
 }
 
-interface LineCommandBinding {
-	readonly command: Command;
-	readonly checkStatus?: CommandStatusCheck;
-	execute(args: string, commandId: string): Promise<unknown>;
-}
-
-// Inline bindings normalize to an argument-only expand: built-ins close over
-// the orchestrator here; extension expands are argument-only by contract
-// (side-effect free by shape, ME slice 7).
-interface InlineCommandBinding {
-	readonly command: Command;
-	expand(args: string): Promise<string>;
-}
-
-type CommandArgumentsCompletionResult =
-	| { readonly ok: true; readonly argument: string }
-	| { readonly ok: false; readonly diagnostic: OrchestratorDiagnostic };
-
 export class AgentOrchestrator {
 	private _defaultModel: RuntimeModel;
 	private _defaultThinkingLevel: ThinkingLevel | undefined;
@@ -314,7 +306,6 @@ export class AgentOrchestrator {
 	private _clients: Map<string, OrchestratorClient<OrchestratorEvent>> =
 		new Map();
 	private readonly _humanRequests: HumanRequestBroker;
-	private _nextCommandId = 1;
 	private _nextInputId = 1;
 	private _nextPresentationId = 1;
 	private _nextReportedDiagnosticId = 1;
@@ -428,36 +419,9 @@ export class AgentOrchestrator {
 		return this._extensionStatuses.list(agentId);
 	}
 
-	// Command registry
-	listCommands(agentId: AgentId): Command[] {
-		const record = this._requireAgentRecord(agentId);
-		if (record.commandPolicy?.enabled === false) return [];
-		// Static gating (profile deny, scope) prunes the list; dynamic gating
-		// (agent status) is reported as per-command availability instead.
-		const builtInCommands = BUILT_IN_COMMANDS.filter(
-			(binding) => !this._commandPolicyDenial(record, binding.command),
-		).map((binding) =>
-			this._withCommandAvailability(
-				record,
-				binding.command,
-				binding.checkStatus,
-			),
-		);
-		const extensionCommands =
-			record.extensionRunner
-				?.getCommands({ reservedCommands: getBuiltInCommands() })
-				.filter(
-					(resolved) => !this._commandPolicyDenial(record, resolved.command),
-				)
-				.map((resolved) =>
-					this._withCommandAvailability(record, resolved.command),
-				) ?? [];
-		return [...builtInCommands, ...extensionCommands];
-	}
-
 	async newAgentSessionFromAgent(
 		agentId: AgentId,
-	): Promise<AgentSessionCommandResult> {
+	): Promise<AgentSessionResult> {
 		const sourceRecord = this._requireAgentRecord(agentId);
 		const spawnedAgentId = await this.spawnAgent({
 			profileId: sourceRecord.profile.reference.id,
@@ -506,7 +470,7 @@ export class AgentOrchestrator {
 	async forkAgentSessionFromAgent(
 		agentId: AgentId,
 		options?: ForkAgentSessionOptions,
-	): Promise<AgentSessionCommandResult> {
+	): Promise<AgentSessionResult> {
 		const sourceRecord = this._requireAgentRecord(agentId);
 		const metadata = await this.sessionManager.forkAgentSession(
 			agentId,
@@ -538,7 +502,7 @@ export class AgentOrchestrator {
 
 	async resumeAgentSessionByReference(
 		reference: string,
-	): Promise<AgentSessionCommandResult> {
+	): Promise<AgentSessionResult> {
 		const metadata =
 			await this.sessionManager.resolveAgentSessionReference(reference);
 		const spawnedAgentId = await this.spawnAgent({
@@ -623,6 +587,215 @@ export class AgentOrchestrator {
 		}
 		await this.setAgentModel(agentId, model);
 		return model;
+	}
+
+	listAuthProviderCandidates(): AuthProviderCandidateListResult {
+		const authStorage = this.modelRegistry.authStorage;
+		return {
+			providers: authStorage.getOAuthProviders().map((provider) => ({
+				value: provider.id,
+				label: provider.name,
+				description: authStorage.getAuthStatus(provider.id).configured
+					? "logged in"
+					: undefined,
+			})),
+		};
+	}
+
+	/** Providers with a stored credential (OAuth or API key): logout targets. */
+	async listAuthCredentialCandidates(): Promise<AuthCredentialCandidateListResult> {
+		const authStorage = this.modelRegistry.authStorage;
+		const oauthProviders = authStorage.getOAuthProviders();
+		return {
+			providers: (await authStorage.list()).map((info) => ({
+				value: info.providerId,
+				label:
+					oauthProviders.find((provider) => provider.id === info.providerId)
+						?.name ?? info.providerId,
+			})),
+		};
+	}
+
+	// The product entry for OAuth subscription login. Display-only steps
+	// (authorization URL, device code, progress) broadcast as auth_login_*
+	// events; interactive steps go through the human-request broker, so any
+	// client that answers human requests can drive a login.
+	async loginAuthProvider(
+		providerId: string,
+		options?: { agentId?: AgentId },
+	): Promise<AuthProviderLoginResult> {
+		const authStorage = this.modelRegistry.authStorage;
+		const reference = providerId.trim();
+		const provider = authStorage
+			.getOAuthProviders()
+			.find((candidate) => candidate.id === reference);
+		if (!provider) {
+			throw new OrchestratorError(
+				createOrchestratorDiagnostic({
+					severity: "error",
+					code: "auth.provider_unknown",
+					message: `Unknown auth provider: ${reference || "(none)"}. Available providers: ${authStorage
+						.getOAuthProviders()
+						.map((candidate) => candidate.id)
+						.join(", ")}.`,
+					agentId: options?.agentId,
+					phase: "runtime",
+					recoverable: true,
+				}),
+			);
+		}
+		// Settling the flow withdraws provisional prompts, such as the manual
+		// code input racing a local callback server.
+		const settle = new AbortController();
+		try {
+			await authStorage.login(
+				provider.id,
+				this._createOAuthLoginCallbacks(
+					provider.id,
+					options?.agentId,
+					settle.signal,
+				),
+			);
+		} catch (error) {
+			const diagnostic = toDiagnostic(error, {
+				code: "auth.login_failed",
+				message: `Login to ${provider.name} failed: ${formatError(error)}`,
+				agentId: options?.agentId,
+				phase: "runtime",
+				recoverable: true,
+			});
+			throw new OrchestratorError(diagnostic);
+		} finally {
+			settle.abort();
+			// AuthStorage records persistence failures as diagnostics instead of
+			// throwing; publish them so a login that could not write auth.json is
+			// visibly degraded rather than silently in-memory.
+			await this._publishDiagnostics(authStorage.drainDiagnostics());
+		}
+		// A fresh credential can change provider model composition (e.g. OAuth
+		// providers whose models depend on the credential), so rebuild the
+		// registry to make the models selectable immediately.
+		try {
+			await this.modelRegistry.refresh();
+		} catch (error) {
+			await this._publishDiagnostic(
+				createOrchestratorDiagnostic({
+					severity: "warning",
+					disposition: "reported",
+					code: "model.load_failed",
+					message: `Model registry refresh after login failed: ${formatError(error)}`,
+					provider: provider.id,
+					phase: "runtime",
+					recoverable: true,
+				}),
+			);
+		}
+		return { providerId: provider.id, providerName: provider.name };
+	}
+
+	async logoutAuthProvider(
+		providerId: string,
+	): Promise<AuthProviderLogoutResult> {
+		const authStorage = this.modelRegistry.authStorage;
+		const reference = providerId.trim();
+		if (!reference) {
+			throw new OrchestratorError(
+				createOrchestratorDiagnostic({
+					severity: "error",
+					code: "auth.provider_unknown",
+					message: "Auth provider reference must not be empty.",
+					phase: "runtime",
+					recoverable: true,
+				}),
+			);
+		}
+		const removed = authStorage.has(reference);
+		await authStorage.logout(reference);
+		await this._publishDiagnostics(authStorage.drainDiagnostics());
+		return { providerId: reference, removed };
+	}
+
+	// Maps pi-ai OAuth login callbacks onto orchestrator facts. The manual
+	// code input races a local callback server inside the provider flow, so
+	// its human request is provisional: settling the flow withdraws it
+	// without publishing a fault.
+	private _createOAuthLoginCallbacks(
+		providerId: string,
+		agentId: AgentId | undefined,
+		settleSignal: AbortSignal,
+	): OAuthLoginCallbacks {
+		const requestHuman = async (draft: HumanRequestDraft) =>
+			await this._humanRequests.request(
+				{ ...draft, source: { kind: "human" }, signal: settleSignal },
+				{ agentId },
+			);
+		const inputValue = (response: HumanResponse) =>
+			response.kind === "input" ? response.value : undefined;
+		return {
+			signal: settleSignal,
+			onAuth: (info) => {
+				void this._emit({
+					type: "auth_login_url",
+					providerId,
+					agentId,
+					url: info.url,
+					instructions: info.instructions,
+					createdAt: now(),
+				});
+			},
+			onDeviceCode: (info) => {
+				void this._emit({
+					type: "auth_login_code",
+					providerId,
+					agentId,
+					userCode: info.userCode,
+					verificationUri: info.verificationUri,
+					createdAt: now(),
+				});
+			},
+			onProgress: (message) => {
+				void this._emit({
+					type: "auth_login_progress",
+					providerId,
+					agentId,
+					message,
+					createdAt: now(),
+				});
+			},
+			onPrompt: async (prompt) => {
+				const response = await requestHuman({
+					kind: "input",
+					title: prompt.message,
+					placeholder: prompt.placeholder,
+				});
+				const value = inputValue(response);
+				if (value !== undefined) return value;
+				if (prompt.allowEmpty) return "";
+				throw new Error("Login prompt was dismissed.");
+			},
+			onManualCodeInput: async () => {
+				const response = await requestHuman({
+					kind: "input",
+					title:
+						"Complete login in your browser, or paste the authorization code / redirect URL here:",
+					provisional: true,
+				});
+				const value = inputValue(response);
+				if (value === undefined) {
+					throw new Error("Login input was dismissed.");
+				}
+				return value;
+			},
+			onSelect: async (prompt) => {
+				const response = await requestHuman({
+					kind: "select",
+					title: prompt.message,
+					options: prompt.options.map((option) => option.label),
+				});
+				const label = response.kind === "select" ? response.value : undefined;
+				return prompt.options.find((option) => option.label === label)?.id;
+			},
+		};
 	}
 
 	listAgentThinkingLevelCandidates(
@@ -911,7 +1084,7 @@ export class AgentOrchestrator {
 	async setAgentThinkingLevelByName(
 		agentId: AgentId,
 		levelName: string,
-	): Promise<AgentThinkingLevelCommandResult> {
+	): Promise<AgentThinkingLevelResult> {
 		const level = parseThinkingLevel(levelName);
 		if (!level) {
 			throw new OrchestratorError(
@@ -933,7 +1106,7 @@ export class AgentOrchestrator {
 
 	private _getAgentThinkingLevelCandidates(
 		record: AgentRecord,
-	): CommandCandidate[] {
+	): CandidateItem[] {
 		if (!record.model.reasoning) {
 			throw new OrchestratorError(
 				this._createAgentThinkingNotSupportedDiagnostic(record),
@@ -1011,24 +1184,42 @@ export class AgentOrchestrator {
 		this._setAgentToolSet(agentId, next);
 	}
 
-	// Command input is an AgentOrchestrator public runtime surface. It stays
-	// here with command ids, gateway checks, argument completion, inline
-	// expansion, event emission, and session writes.
-	async inputAgent(
+	// The single text-input entry point. Extension input interception is
+	// applied here so no caller can bypass an input policy; interaction-layer
+	// inline expansions are persisted via options.expansion.
+	async promptAgent(
 		agentId: AgentId,
 		text: string,
-		options?: { images?: ImageContent[]; commands?: boolean },
-	): Promise<InputResult> {
+		options?: { images?: ImageContent[]; expansion?: PromptExpansion },
+	): Promise<PromptOutcome> {
 		const record = this._requireAgentRecord(agentId);
-
-		// Input interception (ME slice 6) runs before any command parsing,
-		// including the commands-disabled short circuit: it is an input hook,
-		// not a command hook, so a caller cannot bypass an input policy with
-		// options.commands. Interception runs exactly once; the rewritten text
-		// re-enters the full parse/gateway pipeline below.
+		this._requireAgentHarness(agentId);
+		// Gate before interception and session writes: a prompt the harness
+		// would reject as busy must not emit input events or strand
+		// expansion/transform entries without a paired user message.
+		if (record.status !== "idle") {
+			throw new OrchestratorError(
+				createOrchestratorDiagnostic({
+					severity: "error",
+					code: "orchestrator.agent_busy",
+					message: `Agent ${agentId} cannot accept a prompt while ${record.status}.`,
+					agentId,
+					phase: "runtime",
+					recoverable: true,
+				}),
+			);
+		}
 		let inputText = text;
 		let inputImages = options?.images;
 		let inputId: string | undefined;
+		let pendingInputTransform:
+			| {
+					inputId: string;
+					originalText: string;
+					text: string;
+					transformedBy: readonly string[];
+			  }
+			| undefined;
 		const runner = record.extensionRunner;
 		if (runner && !runner.isStale()) {
 			const run = await runner.interceptInput({
@@ -1069,190 +1260,83 @@ export class AgentOrchestrator {
 					transformedBy: run.transformedBy,
 					createdAt: now(),
 				});
-				// Dual record (ME slice 7): the session carries the rewritten
-				// text downstream, so the original input must stay recoverable
-				// after resume. Blocked input writes no entry - nothing of it
-				// reaches the session.
-				await this.sessionManager.appendInputTransformEntry(agentId, {
+				pendingInputTransform = {
 					inputId,
 					originalText: text,
 					text: run.text,
 					transformedBy: run.transformedBy,
-				});
+				};
 				inputText = run.text;
 				inputImages = run.images ? [...run.images] : inputImages;
 			}
 		}
 
-		// Command parsing can be turned off per call or by profile policy;
-		// either way the input goes to the agent as a plain prompt.
-		if (
-			options?.commands === false ||
-			record.commandPolicy?.enabled === false
-		) {
-			return {
-				kind: "prompt",
-				message: await this.promptAgent(agentId, inputText, {
-					images: inputImages ? [...inputImages] : undefined,
-				}),
-			};
-		}
-
-		const parsed = parseLineCommand(
-			inputText,
-			this._getLineCommandTriggers(agentId),
-		);
-		const command = parsed ? this._findLineCommand(agentId, parsed) : undefined;
-		if (!parsed || !command) {
-			const inlineResult = await this._expandInlineInput(agentId, inputText, {
-				images: inputImages,
-				inputId,
-			});
-			if (inlineResult) return inlineResult;
-			return {
-				kind: "prompt",
-				message: await this.promptAgent(agentId, inputText, {
-					images: inputImages ? [...inputImages] : undefined,
-				}),
-			};
-		}
-
-		const commandId = this._createCommandId();
-		const invocation: CommandInvocation = {
-			name: command.command.name,
-			trigger: command.command.trigger,
-			argument: parsed.argument,
-			source: command.command.source,
-			placement: command.command.placement,
-		};
-		await this._emit({
-			type: "command_detected",
-			agentId,
-			commandId,
-			command: invocation,
-			createdAt: now(),
-		});
-
-		// Gateway: rejected before execution, guaranteed side-effect free.
-		const gatewayDiagnostic = this._commandGateway(record, command, commandId);
-		if (gatewayDiagnostic) {
-			await this._emit({
-				type: "command_rejected",
-				agentId,
-				commandId,
-				command: invocation,
-				diagnostic: gatewayDiagnostic,
-				completedAt: now(),
-			});
-			await this._publishDiagnostic(gatewayDiagnostic);
-			return { kind: "rejected", commandId, diagnostic: gatewayDiagnostic };
-		}
-
-		let commandArgument = parsed.argument;
-		let executionInvocation = invocation;
-
-		// Argument check: a declared-required argument that is missing asks a
-		// client for completion before rejecting the command.
-		if (command.command.arguments?.required && !parsed.argument.trim()) {
-			const completion = await this._completeCommandArguments({
-				agentId,
-				commandId,
-				binding: command,
-				invocation,
-				argumentPrefix: parsed.argument,
-			});
-			if (!completion.ok) {
-				await this._emit({
-					type: "command_rejected",
+		// Dual record: the user message carries the expanded text the model
+		// actually sees; the custom entry preserves the original input and
+		// expansion positions for UI replay. The entries pair with the user
+		// message the harness persists at run start, so they are provisional
+		// until that write happens: track a retraction point in case the
+		// prompt fails first.
+		let provisional:
+			| { previousLeafId: string | null; lastEntryId: string }
+			| undefined;
+		if (options?.expansion || pendingInputTransform) {
+			const previousLeafId =
+				await this.sessionManager.getAgentSessionLeafId(agentId);
+			let lastEntryId: string | undefined;
+			if (options?.expansion) {
+				lastEntryId = await this.sessionManager.appendCommandExpansionEntry(
 					agentId,
-					commandId,
-					command: invocation,
-					diagnostic: completion.diagnostic,
-					completedAt: now(),
-				});
-				await this._publishDiagnostic(completion.diagnostic);
-				return {
-					kind: "rejected",
-					commandId,
-					diagnostic: completion.diagnostic,
-				};
+					{
+						inputId: inputId ?? this._createInputId(),
+						originalText: options.expansion.originalText,
+						expansions: options.expansion.items,
+					},
+				);
 			}
-			commandArgument = completion.argument;
-			executionInvocation = {
-				...invocation,
-				argument: commandArgument,
-			};
-			// The human wait can outlive the gateway's precondition (e.g.
-			// /steer's running turn); recheck so the stale command still
-			// rejects side-effect free instead of failing mid-execution.
-			const staleDiagnostic = this._commandGateway(
-				this._requireAgentRecord(agentId),
-				command,
-				commandId,
-			);
-			if (staleDiagnostic) {
-				await this._emit({
-					type: "command_rejected",
+			if (pendingInputTransform) {
+				lastEntryId = await this.sessionManager.appendInputTransformEntry(
 					agentId,
-					commandId,
-					command: executionInvocation,
-					diagnostic: staleDiagnostic,
-					completedAt: now(),
-				});
-				await this._publishDiagnostic(staleDiagnostic);
-				return { kind: "rejected", commandId, diagnostic: staleDiagnostic };
+					pendingInputTransform,
+				);
+			}
+			if (lastEntryId !== undefined) {
+				provisional = { previousLeafId, lastEntryId };
 			}
 		}
-
-		await this._emit({
-			type: "command_accepted",
-			agentId,
-			commandId,
-			command: executionInvocation,
-			createdAt: now(),
-		});
-
 		try {
-			const value = await command.execute(commandArgument, commandId);
-			await this._emit({
-				type: "command_completed",
+			const message = await this._runHarnessOperation(
 				agentId,
-				commandId,
-				command: executionInvocation,
-				result: value,
-				completedAt: now(),
-			});
-			return { kind: "command", commandId, name: command.command.name, value };
+				async (harness) => {
+					return await harness.prompt(inputText, {
+						images: inputImages ? [...inputImages] : undefined,
+					});
+				},
+			);
+			return { kind: "completed", message };
 		} catch (error) {
-			const diagnostic = toDiagnostic(error, {
-				code: "orchestrator.command_failed",
-				message: error instanceof Error ? error.message : String(error),
-				operationSource: { kind: "human" },
-				agentId,
-				commandId,
-				recoverable: true,
-			});
-			await this._emit({
-				type: "command_failed",
-				agentId,
-				commandId,
-				command: executionInvocation,
-				diagnostic,
-				completedAt: now(),
-			});
-			await this._publishDiagnostic(diagnostic);
-			return { kind: "failed", commandId, diagnostic };
+			// The prompt failed. If nothing was appended after the provisional
+			// entries, the user message never landed: retract them so hydration
+			// cannot pair them with a later message. If the branch moved on, the
+			// user message (or a concurrent write) is in place and the entries
+			// stay.
+			if (provisional) {
+				try {
+					await this.sessionManager.retractAgentSessionEntries(
+						agentId,
+						provisional,
+					);
+				} catch (retractError) {
+					await this._recordAgentLifecycleFailure(
+						agentId,
+						"orchestrator.prompt_entry_retraction_failed",
+						`Failed to retract provisional prompt entries for agent ${agentId}: ${formatError(retractError)}`,
+						retractError,
+					);
+				}
+			}
+			throw error;
 		}
-	}
-
-	async promptAgent(
-		agentId: AgentId,
-		text: string,
-		options?: { images?: ImageContent[] },
-	) {
-		return await this._runHarnessOperation(agentId, async (harness) => {
-			return await harness.prompt(text, options);
-		});
 	}
 
 	async steerAgent(
@@ -1269,16 +1353,6 @@ export class AgentOrchestrator {
 		options?: { images?: ImageContent[] },
 	): Promise<void> {
 		await this._requireAgentHarness(agentId).followUp(text, options);
-	}
-
-	async nextTurnAgent(
-		agentId: AgentId,
-		text: string,
-		options?: { images?: ImageContent[] },
-	): Promise<void> {
-		await this._runHarnessOperation(agentId, async (harness) => {
-			await harness.nextTurn(text, options);
-		});
 	}
 
 	async abortAgent(agentId: AgentId) {
@@ -1864,7 +1938,7 @@ export class AgentOrchestrator {
 		});
 		this._requireAgentRecord(agentId).harness = harness;
 		this._setAgentToolSet(agentId, agentToolSet);
-		this._bindExtensionRunner(agentId, harness, extensionRunner);
+		this._bindExtensionRunner(agentId, extensionRunner);
 		const unsubscribeInterceptors = this._registerExtensionInterceptors(
 			agentId,
 			harness,
@@ -1999,7 +2073,6 @@ export class AgentOrchestrator {
 
 	private _bindExtensionRunner(
 		agentId: AgentId,
-		harness: AgentHarness,
 		extensionRunner: ExtensionRunner,
 	): void {
 		extensionRunner.bindCore(this._createExtensionActions(), {
@@ -2029,103 +2102,6 @@ export class AgentOrchestrator {
 					),
 			},
 		});
-		// Session control facade (extension-api-followup ruling): only the
-		// human-triggered command context reaches these, spawn-class operations
-		// (new/fork/resume) are gated on profile capability canSpawn, and
-		// operations that read or move the current session (fork/navigateTree)
-		// require an idle agent. Every operation goes through the orchestrator
-		// atomic methods, so diagnostics, activation, profile resolution, and
-		// the event track stay intact.
-		extensionRunner.bindCommandContext({
-			waitForIdle: async () => {
-				await harness.waitForIdle();
-			},
-			newSession: async (extensionId) => {
-				this._requireExtensionCanSpawn(agentId, extensionId, "newSession");
-				const result = await this.newAgentSessionFromAgent(agentId);
-				return toExtensionSessionCommandResult(result);
-			},
-			forkSession: async (extensionId, options) => {
-				this._requireExtensionCanSpawn(agentId, extensionId, "forkSession");
-				this._requireExtensionAgentIdle(agentId, extensionId, "forkSession");
-				const result = await this.forkAgentSessionFromAgent(
-					agentId,
-					options?.entryId === undefined
-						? undefined
-						: { entryId: options.entryId },
-				);
-				return toExtensionSessionCommandResult(result);
-			},
-			navigateTree: async (extensionId, targetId, options) => {
-				this._requireExtensionAgentIdle(agentId, extensionId, "navigateTree");
-				const result = await this.navigateAgentTree(agentId, targetId, options);
-				return { cancelled: result.cancelled };
-			},
-			listSessions: async () => {
-				const result = await this.listAgentSessions();
-				return result.sessions.map((candidate) => ({
-					id: candidate.id,
-					path: candidate.path,
-					createdAt: candidate.createdAt,
-					cwd: candidate.cwd,
-					profileId: candidate.profile?.id,
-				}));
-			},
-			resumeSession: async (extensionId, reference) => {
-				this._requireExtensionCanSpawn(agentId, extensionId, "resumeSession");
-				const result = await this.resumeAgentSessionByReference(reference);
-				return toExtensionSessionCommandResult(result);
-			},
-		});
-	}
-
-	private _requireExtensionCanSpawn(
-		agentId: AgentId,
-		extensionId: string,
-		action: string,
-	): void {
-		const record = this._requireAgentRecord(agentId);
-		if (record.capabilities?.canSpawn === false) {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					code: "extension.session_control_denied",
-					message: `Extension '${extensionId}' session action '${action}' is denied by profile capability canSpawn.`,
-					source: { kind: "extension", id: extensionId },
-					agentId,
-					profileId: record.profile.reference.id,
-					extensionId,
-					phase: "runtime",
-					recoverable: true,
-				}),
-			);
-		}
-	}
-
-	// Aligned with the published isIdle() context fact: "running" is the only
-	// non-idle status this gate rejects; other lifecycle states fail in the
-	// downstream harness lookup with their own errors.
-	private _requireExtensionAgentIdle(
-		agentId: AgentId,
-		extensionId: string,
-		action: string,
-	): void {
-		const record = this._requireAgentRecord(agentId);
-		if (record.status === "running") {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					code: "extension.session_not_idle",
-					message: `Extension '${extensionId}' session action '${action}' requires an idle agent; await waitForIdle() first.`,
-					source: { kind: "extension", id: extensionId },
-					agentId,
-					profileId: record.profile.reference.id,
-					extensionId,
-					phase: "runtime",
-					recoverable: true,
-				}),
-			);
-		}
 	}
 
 	private _registerExtensionInterceptors(
@@ -2222,11 +2198,28 @@ export class AgentOrchestrator {
 		);
 		const agentTools = createAgentToolsFromResolvedTools(resolvedTools.tools, {
 			human: {
-				request: async (request) =>
-					await this.requestHuman({
+				// Same capability ruling as extension human requests: the profile
+				// decides whether this agent may interrupt the human at all.
+				request: async (request) => {
+					const record = this._requireAgentRecord(options.agentId);
+					if (record.capabilities?.canRequestUser === false) {
+						throw new OrchestratorError(
+							createOrchestratorDiagnostic({
+								severity: "error",
+								code: "orchestrator.human_request_denied",
+								message: `Agent ${options.agentId} human request is denied by profile capability canRequestUser.`,
+								agentId: options.agentId,
+								profileId: options.profileId,
+								phase: "runtime",
+								recoverable: true,
+							}),
+						);
+					}
+					return await this.requestHuman({
 						...request,
 						source: { kind: "agent", agentId: options.agentId },
-					}),
+					});
+				},
 			},
 			// Extension-contributed tools get the same runner-scoped actions as
 			// extension handlers; a reload re-resolves tools, so contexts never
@@ -2307,7 +2300,7 @@ export class AgentOrchestrator {
 					source: { kind: "extension", extensionId },
 				});
 			},
-			emitOutput: async (agentId, extensionId, text, commandId) => {
+			emitOutput: async (agentId, extensionId, text) => {
 				assertExtensionOutputText(text);
 				await this._emit(
 					{
@@ -2315,14 +2308,13 @@ export class AgentOrchestrator {
 						presentationId: this._createPresentationId(),
 						agentId,
 						extensionId,
-						commandId,
 						text,
 						createdAt: now(),
 					},
 					{ observeExtensions: false },
 				);
 			},
-			notify: async (agentId, extensionId, text, commandId) => {
+			notify: async (agentId, extensionId, text) => {
 				this._requireAgentRecord(agentId);
 				assertExtensionNotificationText(text);
 				await this._emit(
@@ -2331,14 +2323,13 @@ export class AgentOrchestrator {
 						presentationId: this._createPresentationId(),
 						agentId,
 						extensionId,
-						commandId,
 						text,
 						createdAt: now(),
 					},
 					{ observeExtensions: false },
 				);
 			},
-			setStatus: async (agentId, extensionId, key, status, commandId) => {
+			setStatus: async (agentId, extensionId, key, status) => {
 				this._requireAgentRecord(agentId);
 				assertExtensionStatusKey(key);
 				const validatedStatus: ExtensionStatus =
@@ -2357,7 +2348,6 @@ export class AgentOrchestrator {
 						presentationId: this._createPresentationId(),
 						agentId,
 						extensionId,
-						commandId,
 						key,
 						status: snapshot.status,
 						changedAt,
@@ -2365,7 +2355,7 @@ export class AgentOrchestrator {
 					{ observeExtensions: false },
 				);
 			},
-			clearStatus: async (agentId, extensionId, key, commandId) => {
+			clearStatus: async (agentId, extensionId, key) => {
 				this._requireAgentRecord(agentId);
 				assertExtensionStatusKey(key);
 				if (!this._extensionStatuses.clear(agentId, extensionId, key)) {
@@ -2377,14 +2367,13 @@ export class AgentOrchestrator {
 						presentationId: this._createPresentationId(),
 						agentId,
 						extensionId,
-						commandId,
 						key,
 						changedAt: now(),
 					},
 					{ observeExtensions: false },
 				);
 			},
-			reportDiagnostic: async (agentId, extensionId, draft, commandId) => {
+			reportDiagnostic: async (agentId, extensionId, draft) => {
 				const record = this._requireAgentRecord(agentId);
 				const validatedDraft = validateExtensionDiagnosticDraft(draft);
 				const diagnostic = createOrchestratorDiagnostic({
@@ -2398,7 +2387,6 @@ export class AgentOrchestrator {
 					source: { kind: "extension", id: extensionId },
 					phase: "runtime",
 					agentId,
-					commandId,
 					profileId: record.profile.reference.id,
 					extensionId,
 					details: validatedDraft.details,
@@ -2412,7 +2400,7 @@ export class AgentOrchestrator {
 					observeExtensions: false,
 				});
 			},
-			publishMessage: async (agentId, extensionId, message, commandId) => {
+			publishMessage: async (agentId, extensionId, message) => {
 				this._requireAgentRecord(agentId);
 				const validatedMessage: ExtensionMessage =
 					validateExtensionMessage(message);
@@ -2420,7 +2408,7 @@ export class AgentOrchestrator {
 				// the event and the action result both carry.
 				const entryId = await this.sessionManager.appendExtensionMessageEntry(
 					agentId,
-					{ extensionId, message: validatedMessage, commandId },
+					{ extensionId, message: validatedMessage },
 				);
 				await this._emit(
 					{
@@ -2429,7 +2417,6 @@ export class AgentOrchestrator {
 						entryId,
 						agentId,
 						extensionId,
-						commandId,
 						message: validatedMessage,
 						createdAt: now(),
 					},
@@ -2453,7 +2440,6 @@ export class AgentOrchestrator {
 				await this.getAgentSessionName(agentId),
 			compactAgent: async (agentId, customInstructions) =>
 				await this.compactAgent(agentId, customInstructions),
-			listCommands: (agentId) => this.listCommands(agentId),
 			setAgentModelByReference: async (agentId, reference) =>
 				await this.setAgentModelByReference(agentId, reference),
 			getAgentModel: (agentId) => this.getAgentModel(agentId),
@@ -2735,7 +2721,7 @@ export class AgentOrchestrator {
 				extensionRunner: nextRunner,
 			});
 
-			this._bindExtensionRunner(agentId, harness, nextRunner);
+			this._bindExtensionRunner(agentId, nextRunner);
 			await harness.setTools?.(nextToolSet.tools, [
 				...nextToolSet.activeToolNames,
 			]);
@@ -3045,11 +3031,6 @@ export class AgentOrchestrator {
 			case "agent_session_forked":
 			case "agent_session_info_changed":
 			case "agent_spawned":
-			case "command_accepted":
-			case "command_completed":
-			case "command_detected":
-			case "command_failed":
-			case "command_rejected":
 			case "diagnostic":
 			case "human_request_cancelled":
 			case "human_request_pending":
@@ -3205,18 +3186,6 @@ export class AgentOrchestrator {
 		];
 	}
 
-	// Command input runtime surface.
-	//
-	// This is intentionally not a collaborator yet: command input is the
-	// orchestrator's public ingress for human text. Keep ids, gateway,
-	// argument completion, inline expansion, command events, and session
-	// expansion writes together until a future narrow-host extraction exists.
-	private _createCommandId(): string {
-		const id = `orchestrator-command-${this._nextCommandId}`;
-		this._nextCommandId += 1;
-		return id;
-	}
-
 	private _createInputId(): string {
 		const id = `orchestrator-input-${this._nextInputId}`;
 		this._nextInputId += 1;
@@ -3255,448 +3224,6 @@ export class AgentOrchestrator {
 			);
 		}
 	}
-
-	// Scans a line-command miss for inline commands and expands them in
-	// place. Returns undefined when the input contains none (the caller
-	// falls through to the plain prompt path). All-or-nothing: any gateway,
-	// completion, or expand failure drops the whole input - a half-expanded
-	// prompt must never reach the model.
-	private async _expandInlineInput(
-		agentId: AgentId,
-		text: string,
-		// A caller that already published input facts (interception) passes its
-		// inputId so one input's transform and expansion facts correlate.
-		options?: { images?: ImageContent[]; inputId?: string },
-	): Promise<InputResult | undefined> {
-		const matches = scanInlineCommands(text, [
-			...BUILT_IN_INLINE_COMMANDS.map((binding) => binding.command),
-			...this._listExtensionInlineCommands(agentId),
-		]);
-		if (matches.length === 0) return undefined;
-
-		const inputId = options?.inputId ?? this._createInputId();
-		const expansions: Array<{
-			match: InlineCommandMatch;
-			commandId: string;
-			invocation: CommandInvocation;
-			replacement: string;
-		}> = [];
-		for (const match of matches) {
-			const binding = this._findInlineCommand(agentId, match);
-			if (!binding) continue;
-			const commandId = this._createCommandId();
-			let invocation: CommandInvocation = {
-				name: match.name,
-				trigger: match.trigger,
-				argument: match.argument,
-				source: binding.command.source,
-				placement: "inline",
-			};
-			await this._emit({
-				type: "command_detected",
-				agentId,
-				commandId,
-				command: invocation,
-				inputId,
-				createdAt: now(),
-			});
-
-			const rejectWith = async (
-				diagnostic: OrchestratorDiagnostic,
-			): Promise<InputResult> => {
-				await this._emit({
-					type: "command_rejected",
-					agentId,
-					commandId,
-					command: invocation,
-					diagnostic,
-					inputId,
-					completedAt: now(),
-				});
-				await this._publishDiagnostic(diagnostic);
-				return { kind: "rejected", commandId, diagnostic };
-			};
-
-			const gatewayDiagnostic = this._commandGateway(
-				this._requireAgentRecord(agentId),
-				{ command: binding.command },
-				commandId,
-			);
-			if (gatewayDiagnostic) return await rejectWith(gatewayDiagnostic);
-
-			let commandArgument = match.argument;
-			if (binding.command.arguments?.required && !commandArgument.trim()) {
-				const completion = await this._completeCommandArguments({
-					agentId,
-					commandId,
-					binding,
-					invocation,
-					argumentPrefix: match.argument,
-				});
-				if (!completion.ok) return await rejectWith(completion.diagnostic);
-				commandArgument = completion.argument;
-				invocation = { ...invocation, argument: commandArgument };
-				const staleDiagnostic = this._commandGateway(
-					this._requireAgentRecord(agentId),
-					{ command: binding.command },
-					commandId,
-				);
-				if (staleDiagnostic) return await rejectWith(staleDiagnostic);
-			}
-
-			await this._emit({
-				type: "command_accepted",
-				agentId,
-				commandId,
-				command: invocation,
-				inputId,
-				createdAt: now(),
-			});
-			try {
-				const replacement = await binding.expand(commandArgument);
-				await this._emit({
-					type: "command_completed",
-					agentId,
-					commandId,
-					command: invocation,
-					result: replacement,
-					inputId,
-					completedAt: now(),
-				});
-				expansions.push({ match, commandId, invocation, replacement });
-			} catch (error) {
-				const diagnostic = toDiagnostic(error, {
-					code: "orchestrator.command_failed",
-					message: error instanceof Error ? error.message : String(error),
-					operationSource: { kind: "human" },
-					agentId,
-					commandId,
-					recoverable: true,
-				});
-				await this._emit({
-					type: "command_failed",
-					agentId,
-					commandId,
-					command: invocation,
-					diagnostic,
-					inputId,
-					completedAt: now(),
-				});
-				await this._publishDiagnostic(diagnostic);
-				return { kind: "failed", commandId, diagnostic };
-			}
-		}
-		if (expansions.length === 0) return undefined;
-
-		let expandedText = "";
-		let cursor = 0;
-		for (const expansion of expansions) {
-			expandedText += text.slice(cursor, expansion.match.start);
-			expandedText += expansion.replacement;
-			cursor = expansion.match.end;
-		}
-		expandedText += text.slice(cursor);
-
-		// Dual record: the user message carries the expanded text the model
-		// actually sees; the custom entry preserves the original input and
-		// expansion positions for UI replay.
-		await this.sessionManager.appendCommandExpansionEntry(agentId, {
-			inputId,
-			originalText: text,
-			expansions: expansions.map((expansion) => ({
-				commandId: expansion.commandId,
-				name: expansion.invocation.name,
-				trigger: expansion.invocation.trigger,
-				argument: expansion.invocation.argument,
-				start: expansion.match.start,
-				end: expansion.match.end,
-			})),
-		});
-
-		return {
-			kind: "prompt",
-			message: await this.promptAgent(agentId, expandedText, {
-				images: options?.images ? [...options.images] : undefined,
-			}),
-		};
-	}
-
-	private _findInlineCommand(
-		agentId: AgentId,
-		match: InlineCommandMatch,
-	): InlineCommandBinding | undefined {
-		const builtIn = BUILT_IN_INLINE_COMMANDS.find(
-			(binding) =>
-				binding.command.trigger === match.trigger &&
-				binding.command.name === match.name,
-		);
-		if (builtIn) {
-			return {
-				command: builtIn.command,
-				expand: async (args) => await builtIn.expand(this, agentId, args),
-			};
-		}
-		const runner = this._requireAgentRecord(agentId).extensionRunner;
-		if (!runner || runner.isStale()) return undefined;
-		const resolved = runner.getCommand(
-			{ placement: "inline", trigger: match.trigger, name: match.name },
-			{ reservedCommands: getBuiltInCommands() },
-		);
-		if (!resolved || resolved.kind !== "inline") return undefined;
-		return {
-			command: resolved.command,
-			expand: async (args) => await resolved.expand(args),
-		};
-	}
-
-	private _listExtensionInlineCommands(agentId: AgentId): Command[] {
-		const runner = this._requireAgentRecord(agentId).extensionRunner;
-		if (!runner || runner.isStale()) return [];
-		return runner
-			.getCommands({ reservedCommands: getBuiltInCommands() })
-			.filter((resolved) => resolved.kind === "inline")
-			.map((resolved) => resolved.command);
-	}
-
-	private async _completeCommandArguments(options: {
-		agentId: AgentId;
-		commandId: string;
-		binding: Pick<LineCommandBinding, "command">;
-		invocation: CommandInvocation;
-		argumentPrefix: string;
-	}): Promise<CommandArgumentsCompletionResult> {
-		const { agentId, commandId, binding, invocation, argumentPrefix } = options;
-		let response: HumanResponse;
-		try {
-			// A complete() failure short-circuits before any human request.
-			const candidates = [
-				...((await binding.command.arguments?.complete?.({
-					agentId,
-					command: binding.command,
-					argumentPrefix,
-					orchestrator: this,
-				})) ?? []),
-			];
-			const payload: CommandArgumentsCompletionPayload = {
-				commandId,
-				command: invocation,
-				argumentHint: binding.command.argumentHint,
-				argumentPrefix,
-				candidates,
-			};
-			response = await this.requestHuman({
-				source: { kind: "agent", agentId },
-				kind: "argumentsCompletion",
-				title: `Complete ${binding.command.trigger}${binding.command.name} arguments`,
-				message: `Command ${binding.command.trigger}${binding.command.name} requires an argument.`,
-				options:
-					candidates.length > 0
-						? candidates.map((candidate) => candidate.value)
-						: undefined,
-				placeholder: binding.command.argumentHint,
-				allowFreeInput: true,
-				payload,
-			});
-		} catch (error) {
-			const failureDiagnostic = toDiagnostic(error, {
-				code: "command.arguments_completion_failed",
-				message: `Failed to complete arguments for command ${binding.command.trigger}${binding.command.name}: ${formatError(error)}`,
-				operationSource: { kind: "human" },
-				agentId,
-				commandId,
-				recoverable: true,
-			});
-			return {
-				ok: false,
-				diagnostic: this._createCommandArgumentsRequiredDiagnostic({
-					agentId,
-					commandId,
-					command: binding.command,
-					details: commandArgumentsCompletionFailureDetails(failureDiagnostic),
-				}),
-			};
-		}
-
-		if (response.kind !== "input" && response.kind !== "select") {
-			return {
-				ok: false,
-				diagnostic: this._createCommandArgumentsRequiredDiagnostic({
-					agentId,
-					commandId,
-					command: binding.command,
-					details: {
-						completionFailureCode:
-							"command.arguments_completion_invalid_response",
-						responseKind: response.kind,
-					},
-				}),
-			};
-		}
-		const argument = response.value;
-		if (argument === undefined || !argument.trim()) {
-			return {
-				ok: false,
-				diagnostic: this._createCommandArgumentsRequiredDiagnostic({
-					agentId,
-					commandId,
-					command: binding.command,
-					details: {
-						completionFailureCode: "command.arguments_completion_empty",
-						responseKind: response.kind,
-					},
-				}),
-			};
-		}
-		return { ok: true, argument };
-	}
-
-	private _findLineCommand(
-		agentId: AgentId,
-		parsed: ParsedLineCommand,
-	): LineCommandBinding | undefined {
-		const builtIn = BUILT_IN_COMMANDS.find(
-			(binding) =>
-				binding.command.placement === "line" &&
-				binding.command.trigger === parsed.trigger &&
-				binding.command.name === parsed.name,
-		);
-		if (builtIn) {
-			return {
-				command: builtIn.command,
-				checkStatus: builtIn.checkStatus,
-				execute: async (args) => await builtIn.execute(this, agentId, args),
-			};
-		}
-
-		const extensionCommand = this._requireAgentRecord(
-			agentId,
-		).extensionRunner?.getCommand(
-			{ placement: "line", trigger: parsed.trigger, name: parsed.name },
-			{
-				reservedCommands: getBuiltInCommands(),
-			},
-		);
-		if (!extensionCommand || extensionCommand.kind !== "line") {
-			return undefined;
-		}
-		return {
-			command: extensionCommand.command,
-			execute: async (args, commandId) => {
-				const runner = this._requireAgentRecord(agentId).extensionRunner;
-				if (!runner) return undefined;
-				return await extensionCommand.handler(
-					args,
-					runner.createCommandContext(extensionCommand.extensionId, {
-						commandId,
-					}),
-				);
-			},
-		};
-	}
-
-	private _createCommandArgumentsRequiredDiagnostic(options: {
-		agentId: AgentId;
-		commandId: string;
-		command: Command;
-		details?: Record<string, unknown>;
-	}): OrchestratorDiagnostic {
-		return createOrchestratorDiagnostic({
-			severity: "error",
-			code: "command.arguments_required",
-			message: `Command ${options.command.trigger}${options.command.name} requires an argument.`,
-			operationSource: { kind: "human" },
-			agentId: options.agentId,
-			commandId: options.commandId,
-			recoverable: true,
-			details: options.details,
-		});
-	}
-
-	private _withCommandAvailability(
-		record: AgentRecord,
-		command: Command,
-		checkStatus?: CommandStatusCheck,
-	): Command {
-		const unavailableReason = checkStatus?.(record.status);
-		if (!unavailableReason) return { ...command, available: true };
-		return { ...command, available: false, unavailableReason };
-	}
-
-	// Command gateway: the sole execution-time arbiter. Checks, in order,
-	// profile policy (deny), scope, then agent status declared on the binding.
-	private _commandGateway(
-		record: AgentRecord,
-		binding: Pick<LineCommandBinding, "command" | "checkStatus">,
-		commandId: string,
-	): OrchestratorDiagnostic | undefined {
-		const denial = this._commandPolicyDenial(record, binding.command);
-		if (denial) {
-			return createOrchestratorDiagnostic({
-				severity: "error",
-				code: "command.not_permitted",
-				message: denial,
-				operationSource: { kind: "human" },
-				agentId: record.agentId,
-				commandId,
-				recoverable: true,
-			});
-		}
-		const unavailable = binding.checkStatus?.(record.status);
-		if (unavailable) {
-			return createOrchestratorDiagnostic({
-				severity: "error",
-				code: "command.not_available",
-				message: unavailable,
-				operationSource: { kind: "human" },
-				agentId: record.agentId,
-				commandId,
-				recoverable: true,
-			});
-		}
-		return undefined;
-	}
-
-	// Static command gating: profile deny list and scope. Both listCommands
-	// (list pruning) and the gateway (execution rejection) consume this fact.
-	private _commandPolicyDenial(
-		record: AgentRecord,
-		command: Command,
-	): string | undefined {
-		if (record.commandPolicy?.deny?.includes(command.name)) {
-			return `Command ${command.trigger}${command.name} is denied by profile policy.`;
-		}
-		if (
-			command.scope === "user-facing" &&
-			record.capabilities?.acceptsUserInput === false
-		) {
-			return `Command ${command.trigger}${command.name} is only available on agents that accept user input.`;
-		}
-		return undefined;
-	}
-
-	private _getLineCommandTriggers(agentId: AgentId): string[] {
-		const record = this._requireAgentRecord(agentId);
-		const triggers = BUILT_IN_COMMANDS.filter(
-			(binding) => binding.command.placement === "line",
-		).map((binding) => binding.command.trigger);
-		for (const command of record.extensionRunner?.getCommands({
-			reservedCommands: getBuiltInCommands(),
-		}) ?? []) {
-			if (command.command.placement === "line") {
-				triggers.push(command.command.trigger);
-			}
-		}
-		return [...new Set(triggers)];
-	}
-}
-
-function toExtensionSessionCommandResult(
-	result: AgentSessionCommandResult,
-): ExtensionSessionCommandResult {
-	return {
-		agentId: result.agentId,
-		sessionId: result.snapshot.sessionMetadata?.id,
-	};
 }
 
 function isBlockedExtensionDiagnostic(
@@ -3705,16 +3232,6 @@ function isBlockedExtensionDiagnostic(
 	return (
 		diagnostic.domain === "extension" && diagnostic.disposition === "blocked"
 	);
-}
-
-function commandArgumentsCompletionFailureDetails(
-	diagnostic: OrchestratorDiagnostic,
-): Record<string, unknown> {
-	return {
-		completionFailureCode: diagnostic.code,
-		completionFailureMessage: diagnostic.message,
-		requestId: diagnostic.requestId,
-	};
 }
 
 /**
@@ -3789,8 +3306,8 @@ export function buildAgentSystemPrompt(
 	return sections.join("\n\n");
 }
 
-// Stale runners keep no contribution rights: like inline commands, resources
-// contributed by a replaced runner drop out of the live loading pipelines.
+// Stale runners keep no contribution rights: resources contributed by a
+// replaced runner drop out of the live loading pipelines.
 function activeExtensionRunner(
 	record: AgentRecord,
 ): ExtensionRunner | undefined {

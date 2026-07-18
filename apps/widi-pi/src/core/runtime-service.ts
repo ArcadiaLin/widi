@@ -51,6 +51,7 @@ import { SessionManager } from "./session-manager.js";
 import { SettingManager } from "./setting-manager.js";
 import { ToolRegistry } from "./tool-registry.ts";
 import { registerCoreCodingTools } from "./tools/coding/builtin.ts";
+import { registerCoreInteractionTools } from "./tools/interaction/builtin.ts";
 import type { RuntimeModel } from "./types.ts";
 
 export interface CreateWidiRuntimeOptions {
@@ -681,6 +682,7 @@ export async function createWidiRuntime(
 		autoResizeImages: imageSettings.autoResize,
 		blockImages: imageSettings.blockImages,
 	});
+	registerCoreInteractionTools(toolRegistry);
 	const orchestratorConfig: AgentOrchestratorConfigs = {
 		executionEnv,
 		resourceLoader,

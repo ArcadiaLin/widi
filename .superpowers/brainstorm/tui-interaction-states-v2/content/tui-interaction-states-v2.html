@@ -1,0 +1,445 @@
+<style>
+  .page-grid { display:grid; gap:26px; }
+  .subtitle { color:#9aa2af; }
+  .terminal-shell { overflow:hidden; border:1px solid #3a414c; border-radius:12px; background:#0f1115; }
+  .terminal-title { display:flex; justify-content:space-between; padding:8px 12px; background:#20242b; color:#aeb5c0; font:11px ui-monospace, monospace; }
+  .terminal { padding:16px 18px; color:#d8dce2; font:12px/1.52 ui-monospace, SFMono-Regular, Consolas, monospace; white-space:pre-wrap; }
+  .dim { color:#747c89; } .muted { color:#9ba3af; } .accent { color:#e4ad6c; }
+  .user { color:#f1f2f4; } .tool { color:#aeb7c5; } .ok { color:#83c092; }
+  .warn { color:#dbbc7f; } .error { color:#e67e80; } .info { color:#7fbbb3; }
+  .rule { color:#454c57; } .tag { color:#5d6675; font-size:10px; }
+  .cursor { display:inline-block; width:7px; height:13px; background:#d8dbe0; vertical-align:-2px; }
+  .menu-box { display:inline-block; min-width:430px; border-left:2px solid #d49a58; padding:4px 0 4px 12px; margin:4px 0; background:#14171d; }
+  .overlay-demo { display:inline-block; min-width:430px; border:1px solid #48515e; border-radius:8px; padding:10px 14px; margin:6px 0 6px 40px; background:#171b21; box-shadow:0 4px 18px rgba(0,0,0,.45); }
+  .persistent { display:inline-block; min-width:410px; border:1px solid #48515e; border-radius:7px; padding:9px 12px; margin:5px 0; background:#171b21; }
+  .slot { display:block; border-top:1px dashed #39414d; border-bottom:1px dashed #39414d; padding:6px 2px; margin:6px 0; background:#12161c; }
+  .badge { display:inline-block; border:1px solid #454d5a; border-radius:999px; padding:2px 8px; margin:0 4px 4px 0; color:#afb6c2; font:10px ui-monospace, monospace; }
+  .badge.now { color:#83c6ad; border-color:#416658; }
+  .badge.proposal { color:#e6b779; border-color:#765b37; }
+  .badge.decision { color:#d699b6; border-color:#6d4a5c; }
+  .badge.v1 { color:#90afd5; border-color:#465b76; }
+  .two-col { display:grid; grid-template-columns:repeat(auto-fit, minmax(420px, 1fr)); gap:16px; }
+  .rules { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:12px; }
+  .rule-card { border-left:3px solid #d39c5f; background:#171a20; padding:12px 14px; color:#b9c0ca; font-size:12px; line-height:1.55; }
+  .rule-card.revise { border-left-color:#d699b6; }
+  table.cmd { width:100%; border-collapse:collapse; font-size:12px; color:#c3c9d2; }
+  table.cmd th { text-align:left; color:#8b93a1; font-weight:normal; border-bottom:1px solid #343b47; padding:6px 8px; }
+  table.cmd td { border-bottom:1px solid #232830; padding:6px 8px; vertical-align:top; }
+  table.cmd code { color:#a8c7b8; }
+  h3 { color:#eef1f5; } h4 { color:#dfe3e9; margin-bottom:6px; }
+  .note { color:#989fab; font-size:12px; line-height:1.6; }
+</style>
+
+<div class="page-grid">
+
+  <section>
+    <h2>WIDI TUI 交互设计稿 v2：全状态与命令落实</h2>
+    <p class="subtitle">基于 v1 实现（<code>apps/widi-pi/src/tui</code>）的现状盘点 + 本版新增裁决。标记约定：
+      <span class="badge now">现状</span> 已实现；<span class="badge proposal">提案</span> 本版新增设计；<span class="badge decision">待裁决</span> 需要产品决定；<span class="badge v1">v1 裁决</span> 被本版修订的原裁决。</p>
+    <div class="rules">
+      <div class="rule-card"><strong>悬浮层只留给必须立即响应的交互</strong><br>pi-coding-agent 用悬浮 selector 做命令/会话选择；WIDI 不跟随。凡是“从候选中选一个”的应用内选择，一律使用 editor 上方的 inline completion-menu：它在正常 component flow 中推高 transcript，不遮挡历史，可以边选边对照上下文。</div>
+      <div class="rule-card revise"><strong>已裁决：human request 一律由 completion-menu 承接，不再使用 overlay</strong><br>v1 裁决（§12）让所有 human request 走 capturing overlay；/login 的 onSelect 暴露了遮挡问题。本版修订：confirm/select/input 统一由 editor 上方的 completion-menu 呈现（配色与样式沿用现状），overlay 只保留给导致程序无法运行的致命错误。core broker 契约不变。见「Human Request」节。</div>
+      <div class="rule-card"><strong>两个菜单的位置互不侵占</strong><br>Editor 打字触发的 autocomplete 在 editor <b>下方</b>展开（pi-tui 现状）；承接 needs-argument 与 human request 的 completion-menu 持续展开在 editor <b>上方</b>，两者可同时存在、互不替换。</div>
+      <div class="rule-card"><strong>展示类事实进 timeline / notice，不抢焦点</strong><br>auth_login_url / code / progress、extension notify 都是展示类事实：timeline application-notice 或 transient notice，绝不打开任何选择界面。</div>
+      <div class="rule-card"><strong>命令是唯一交互词汇</strong><br>所有能力（含 skill、prompt template）都经 CommandEngine 的 line/inline 命令触达；任何命令缺少参数时，一律用 completion-menu 展开可用选项（needs-argument 是全命令统一行为，不是个别命令的特例）。</div>
+    </div>
+  </section>
+
+  <section>
+    <h3>1. 布局总览（方案 A，v1 已落地）</h3>
+    <p class="note">单列聊天优先；completion-menu 槽位位于 status 与 editor 之间，是本版所有“选择”交互的唯一宿主。</p>
+    <div class="terminal-shell">
+      <div class="terminal-title"><span>布局分区</span><span>80 col</span></div>
+      <div class="terminal"><span class="accent">WIDI</span> <span class="muted">· main · sonnet</span>                          <span class="tag">header：只放 agent label 与 model</span>
+<span class="dim">✱ startup · main · anthropic/claude-sonnet-4 · thinking high</span>  <span class="tag">startup notice：info 合并一行</span>
+
+<span class="user">❯ 分析一下当前 command 边界</span>
+
+我会先检查 command input 与 extension contribution 的边界。     <span class="tag">chat transcript（active agent timeline）</span>
+
+<span class="tool">● Read src/core/command.ts</span> <span class="dim">· 214 lines</span>
+
+<span class="slot"><span class="info">⠹ indexer</span> Building symbol index ██████░░░░ 418/672   <span class="tag">status 槽位：setStatus 原位更新，clear 后收起</span></span>
+<span class="menu-box"><span class="accent">Select model</span>                                <span class="tag">completion-menu 槽位（按需出现）</span>
+<span class="ok">▸ anthropic/claude-sonnet-4</span>  <span class="dim">current · 200k ctx</span>
+  anthropic/claude-opus-4    <span class="dim">200k ctx</span>
+<span class="dim">↑↓ select · enter confirm · esc cancel · type to filter</span></span>
+<span class="rule">────────────────────────────────────────────────────────</span>
+❯ <span class="cursor"></span>                                              <span class="tag">editor：永远持有默认焦点</span>
+<span class="rule">────────────────────────────────────────────────────────</span>
+<span class="dim">~/p/widi · 2 follow-up · ← agents · thinking high</span>      <span class="tag">footer：cwd/queue/提示/thinking</span>
+<span class="ok">● main</span> <span class="dim">idle</span>   <span class="info">● reviewer</span> <span class="dim">running</span>   <span class="warn">! research</span> <span class="dim">needs input</span>  <span class="tag">agent strip</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h3>2. Editor 与 Autocomplete 状态族</h3>
+    <div class="two-col">
+      <div>
+        <h4>2a. 空闲 editor · 输入 <code>/</code> 触发命令 autocomplete <span class="badge now">现状</span></h4>
+        <div class="terminal-shell"><div class="terminal">
+<span class="rule">──────────────────────────────</span>
+❯ /<span class="cursor"></span>
+<span class="dim">/abort       Abort the current agent run.      <span class="warn">unavailable: agent idle</span></span>  <span class="tag">← 提案：整项置灰</span>
+<span class="dim">/compact     Compact the current agent session.</span>
+<span class="dim">/follow-up   Queue a follow-up … &lt;text&gt;</span>
+<span class="dim">/fork        Fork the current agent session. [entry]</span>
+<span class="dim">/login       Log in to an LLM provider … [provider]</span>
+<span class="dim">/model       Set the current agent model. [provider/model]</span>
+<span class="dim">…</span>
+<span class="rule">──────────────────────────────</span></div></div>
+        <p class="note">不可用命令随 <code>engine.list(status)</code> 实时计算 availability。<span class="badge proposal">提案</span> 不可用项整行置灰且选中时先弹 reason（当前只有 description dim，pi-tui SelectList 需要 disabled 样式支持）。</p>
+      </div>
+      <div>
+        <h4>2b. 输入 <code>&lt;</code> 触发 inline command autocomplete <span class="badge now">现状</span></h4>
+        <div class="terminal-shell"><div class="terminal">
+<span class="rule">──────────────────────────────</span>
+❯ 帮我重构这个模块 &lt;<span class="cursor"></span>
+<span class="dim">&lt;prompt:&lt;template&gt;&gt;  Insert a prompt template inline.</span>
+<span class="dim">&lt;skill:&lt;skill_name&gt;&gt; Apply a skill inline.</span>
+<span class="rule">──────────────────────────────</span></div></div>
+        <p class="note">继续输入到参数位置后，<code>complete()</code> 提供 template / skill 候选。inline command 是 prompt expansion，不是独立操作；running agent 上含 inline command 的文本与普通文本一样留在 editor。</p>
+      </div>
+      <div>
+        <h4>2c. bare 命令 → needs-argument 菜单（/model）<span class="badge now">现状</span></h4>
+        <div class="terminal-shell"><div class="terminal">
+<span class="menu-box"><span class="accent">Select model</span>
+filter: op<span class="cursor"></span>                                   <span class="tag">可打印字符即时 fuzzy filter</span>
+<span class="ok">▸ anthropic/claude-opus-4</span>   <span class="dim">200k ctx</span>
+  openai/gpt-5.2-codex     <span class="dim">272k ctx</span>
+<span class="dim">↑↓ select · enter confirm · esc cancel · type to filter</span></span>
+<span class="rule">──────────────────────────────</span>
+❯ /model
+<span class="rule">──────────────────────────────</span></div></div>
+        <p class="note">选择后以 <code>/model:anthropic/claude-opus-4</code> 重新走正常引擎路径执行；Esc 恢复原始 bare 命令到 editor。/model /thinking /resume /tree /fork /login /logout 共用此形态。</p>
+      </div>
+      <div>
+        <h4>2d. /fork：当前 position 是首位候选 <span class="badge now">现状</span></h4>
+        <div class="terminal-shell"><div class="terminal">
+<span class="menu-box"><span class="accent">Fork from…</span>
+<span class="ok">▸ current position</span>          <span class="dim">提交 /fork: 显式空参数</span>
+  分析一下当前 command 边界   <span class="dim">2026-07-18 11:02</span>
+  给 extension 加 status 通道  <span class="dim">2026-07-18 10:31</span>
+<span class="dim">↑↓ select · enter confirm · esc cancel</span></span>
+<span class="rule">──────────────────────────────</span>
+❯ /fork
+<span class="rule">──────────────────────────────</span></div></div>
+        <p class="note">候选是用户自己的 message（对话中天然的“位置”概念）。/tree 复用同一候选源。</p>
+      </div>
+      <div>
+        <h4>2e. 两个菜单共存：上方 completion-menu 常驻，下方 autocomplete 即打即现 <span class="badge now">已裁决</span></h4>
+        <div class="terminal-shell"><div class="terminal">
+<span class="menu-box"><span class="accent">Select model</span>                          <span class="tag">completion-menu：上方常驻，不随打字消失</span>
+<span class="ok">▸ anthropic/claude-opus-4</span>   <span class="dim">200k ctx</span>
+  openai/gpt-5.2-codex     <span class="dim">272k ctx</span></span>
+<span class="rule">──────────────────────────────</span>
+❯ 帮我看看 @src/tui/sta<span class="cursor"></span>
+<span class="rule">──────────────────────────────</span>
+<span class="dim">▸ src/tui/state.ts</span>                         <span class="tag">editor autocomplete：下方即打即现</span>
+<span class="dim">  src/tui/status.ts</span></div></div>
+        <p class="note">位置规则：承接选择交互的 completion-menu 固定在 editor 上方槽位，持续展开直到确认/取消；editor 自身的 autocomplete（@文件、/命令、&lt;inline&gt;）在 editor 下方临时展开。<span class="badge now">已裁决</span> 两者同开时，<b>后开者持有焦点，Esc 逐层关闭并归还焦点</b>。</p>
+      </div>
+      <div>
+        <h4>2f. Running 时提交：默认 followUp 队列，ctrl+s 直接 steer <span class="badge now">已裁决</span></h4>
+        <div class="terminal-shell"><div class="terminal">
+<span class="dim">queued · follow-up（run 结束后自动发出）</span>
+<span class="muted">❯ 顺便把测试也补上</span>                       <span class="tag">queued 消息留在 editor 上方，可多条</span>
+<span class="rule">──────────────────────────────</span>
+❯ <span class="cursor"></span>
+<span class="rule">──────────────────────────────</span>
+<span class="dim">~/p/widi · 2 follow-up · ← agents · ctrl+s steer</span></div></div>
+        <p class="note"><span class="badge now">已裁决</span>（替代 v1 §11.2 的「文本留在 editor + notice 提示」规则）：agent running 时提交普通文本，<b>默认进入 followUp 队列</b>，queued 消息显示在 editor 上方的队列区（多条按序排列，标注 follow-up 去向），run 结束由 core 自动消费。需要立即打断时按 <b>ctrl+s</b>（新 keybinding <code>app.steer</code>，可配置）<b>把最新一条排队中的 followUp 从队列取出、改作 steer 立即发出</b>；editor 当前内容与排队顺序中的其他消息不受影响。已知 line command 仍走引擎、由 <code>checkStatus</code> 决定可用性（<code>/steer:</code> 显式形式保留）；menu/overlay 打开时 editor 不提交的规则不变。footer 的 <code>N steer · N follow-up</code> 计数与 queue 区数据同源。</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h3>3. Inline Command 落实：prompt 与 skill</h3>
+    <div class="two-col">
+      <div>
+        <h4>3a. <code>&lt;skill:…&gt;</code> 补全 <span class="badge now">现状</span></h4>
+        <div class="terminal-shell"><div class="terminal">
+❯ 按规范提交 &lt;skill:<span class="cursor"></span>
+<span class="dim">▸ commit            Git commit workflow guidance</span>
+<span class="dim">  review            Code review checklist</span>
+<span class="dim">  systematic-debugging  Debug process skill</span></div></div>
+      </div>
+      <div>
+        <h4>3b. 提交后的显示 <span class="badge now">现状</span></h4>
+        <div class="terminal-shell"><div class="terminal">
+<span class="user">❯ 按规范提交 &lt;skill:commit&gt;</span>        <span class="tag">timeline 显示人类原始文本</span>
+
+<span class="dim">（model 收到的是 expansion：&lt;skill name="commit"&gt; 元数据 +
+指引，skill body 由 agent 按需 Read，不进入这条消息）</span>  <span class="tag">← 不显示</span>
+
+我会先阅读 commit skill 的指引文件…
+<span class="tool">● Read ~/.widi/skills/commit/SKILL.md</span></div></div>
+        <p class="note">人类原始文本经 pending input / hydration 的 <code>core:command_expansion</code> entry 双向还原；model-facing expansion 永不冒充用户消息。</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h3>4. 运行态：streaming、tool、thinking</h3>
+    <div class="terminal-shell">
+      <div class="terminal-title"><span>一次完整 run 的时间线</span><span>现状</span></div>
+      <div class="terminal"><span class="user">❯ 给 status registry 加快照查询并补测试</span>
+
+<span class="dim">✻ Thinking…</span>                                    <span class="tag">空文本 streaming 且无 thinking item 时才显示；不重复</span>
+
+我先看 registry 现有结构。
+
+<span class="tool">● Read src/core/extension/status-registry.ts</span> <span class="dim">· 188 lines</span>   <span class="tag">成功折叠为条数摘要</span>
+<span class="tool">● Edit src/core/extension/status-registry.ts</span>
+<span class="dim">  -  async get(agentId, extensionId, key) {</span>      <span class="tag">edit 按彩色 diff 呈现，折叠 8 行</span>
+<span class="dim">  +  async snapshot(agentId) {</span>
+<span class="dim">    … +11 lines</span>
+<span class="tool">● Bash npm run check</span> <span class="dim">· exit 0</span> <span class="dim">… +3 lines</span>         <span class="tag">其余工具 ≤4 行 dim 预览；error 留 8 行</span>
+<span class="tool">✕ Bash npm test</span> <span class="error">· exit 1</span>
+<span class="error">  FAIL tests/tui/event-projector.test.ts › status snapshot race …</span>  <span class="tag">ctrl+o 全局展开到 400 行</span>
+
+快照查询已加到 registry；一个 projector 测试挂了，我先修 race。
+
+<span class="dim">✻ Worked for 42s · 3 tools</span>                       <span class="tag">thinking 完成后的耗时行</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h3>5. Extension 六通道同屏（v1 已落地，此处定稿视觉）</h3>
+    <div class="terminal-shell">
+      <div class="terminal-title"><span>六通道在一个 agent 画面中的位置</span><span>现状</span></div>
+      <div class="terminal"><span class="user">❯ /index rebuild</span>
+
+<span class="dim">[indexer]</span> Scanning workspace files                    <span class="tag">1 output · append-only plain text</span>
+<span class="dim">[indexer]</span> <span class="ok">✓</span> Index build completed
+
+<span class="persistent"><span class="accent">Index Summary</span>  <span class="dim">persistent · indexer · markdown</span>   <span class="tag">4 publishMessage · entryId 去重，resume 恢复</span>
+
+Indexed **672 files** and **14,208 symbols**.</span>
+
+<span class="warn">▲ extension.audit.remote_policy_unreachable</span>         <span class="tag">5 diagnostic · severity 色彩与 attention 只来自这里</span>
+<span class="dim">Remote policy service is unavailable; local rules remain active.</span>
+
+<span class="info">✱ agent:main · extension:audit Report generated in 2.1s</span>  <span class="tag">3 notify · transient notice，5s 后消失</span>
+
+<span class="slot"><span class="info">⠹ indexer</span> Building symbol index <span class="dim">██████░░░░ 418/672</span>   <span class="tag">2 status · 槽位原位更新；<b>提案：追加年龄 `· 12s`</b></span></span>
+<span class="rule">────────────────────────────────────────────────────────</span>
+❯
+<span class="rule">────────────────────────────────────────────────────────</span>
+<span class="dim">~/p/widi · ← agents · thinking high</span>
+<span class="ok">● main</span> <span class="dim">running</span>   <span class="info">● reviewer</span> <span class="dim">idle</span></div>
+    </div>
+    <p class="note"><span class="badge proposal">提案</span> status 槽位追加 <code>updatedAt</code> 年龄显示（<code>· 12s</code> / <code>· 3m</code>）。command 结束不自动 clear 是 v1 契约，年龄是用户判断 status 是否陈旧的唯一手段；core 已在 projection 存 <code>updatedAt</code>，纯展示层改动。</p>
+  </section>
+
+  <section>
+    <h3>6. Human Request：completion-menu 承接（含多请求并存）</h3>
+    <p class="note">呈现层修订，<strong>core 契约（broker、envelope、响应类型、provisional、timeout/cancel）完全不变</strong>。每条请求是一个独立的 completion-menu 实例，完成即带着选项进入 transcript。</p>
+    <div class="two-col">
+      <div>
+        <h4>6a. 单请求：与 needs-argument 同一形态 <span class="badge proposal">提案</span></h4>
+        <div class="terminal-shell"><div class="terminal"><span class="info">✱ agent:main Login: open https://claude.ai/oauth/authorize?…</span>  <span class="tag">上下文保持可见</span>
+
+<span class="menu-box"><span class="accent">anthropic needs response</span> <span class="dim">· agent: main · select</span>
+Select login method:
+<span class="ok">▸ Browser (OAuth)</span>
+  Device code
+<span class="dim">↑↓ select · enter confirm · esc dismiss</span></span>
+<span class="rule">──────────────────────────────────────────</span>
+❯
+<span class="rule">──────────────────────────────────────────</span></div></div>
+        <p class="note">复用 CompletionMenu 组件、配色与按键（tui.select.*）；标题行固定携带 source + agent + kind。confirm 呈现为 Yes/No 两项；input/custom 在 menu 位置内嵌输入行。menu 打开时 editor 不提交（规则同 v1 overlay）。</p>
+      </div>
+      <div>
+        <h4>6b. 多请求并存：←/→ 切换等待中的 menu <span class="badge proposal">提案</span></h4>
+        <div class="terminal-shell"><div class="terminal">
+<span class="menu-box"><span class="dim">◂ </span><span class="accent">● main · select login</span><span class="dim">  ·  ○ reviewer · confirm deploy  ·  ○ audit · input token  </span><span class="dim">▸</span>  <span class="tag">tab 行：所有等待中的请求</span>
+Select login method:
+<span class="ok">▸ Browser (OAuth)</span>
+  Device code
+<span class="dim">↑↓ options · ←→ switch request · enter confirm · esc dismiss</span></span>
+<span class="rule">──────────────────────────────────────────</span>
+❯
+<span class="rule">──────────────────────────────────────────</span></div></div>
+        <p class="note">多个 human request 同时 pending 时，menu 顶部出现 tab 行：方向键聚焦到 menu 后，<b>←/→ 在所有等待中的请求间切换</b>，↑↓ 在当前请求的选项间移动，Enter 只回答当前聚焦的请求。各请求 promise 独立，回答顺序不限（取代 v1 严格 FIFO 的呈现约束）。Esc dismiss 当前请求（按 kind 返回 fallback），焦点移到下一条。</p>
+      </div>
+      <div>
+        <h4>6c. 完成后带选项进 transcript，ctrl+o 展开 <span class="badge proposal">提案</span></h4>
+        <div class="terminal-shell"><div class="terminal"><span class="dim">❯ Select login method: → </span><span class="ok">Browser (OAuth)</span>        <span class="tag">合并态（默认）：一行</span>
+
+<span class="dim">❯ Select login method:</span>                               <span class="tag">展开态（ctrl+o 后）</span>
+<span class="dim">  </span><span class="ok">▸ Browser (OAuth)</span>
+<span class="dim">    Device code</span>
+
+<span class="dim">❯ Enter access token → </span><span class="muted">Answered</span>               <span class="tag">input/custom：永无展开内容</span></div></div>
+        <p class="note">resolved 的 menu 作为可折叠 timeline item 进入 transcript：默认合并为一行（现状 trace 形态）；与 tool output 共享 <code>app.tools.expand</code>（ctrl+o）全局展开/合并——展开后 select 显示全部原始选项并高亮所答项，confirm 显示 Yes/No。隐私规则不变：select 值必须 ∈ options 才显示，input/custom/free input 永远只有 Answered、无展开内容。trace 仍 ephemeral，不进 session。</p>
+      </div>
+      <div>
+        <h4>6d. overlay 的新职责：只承接致命错误 <span class="badge now">已裁决</span></h4>
+        <div class="terminal-shell"><div class="terminal"><span class="overlay-demo">┌─ <span class="error">✕ WIDI cannot continue</span> ─────────────┐
+│ orchestrator.spawn_failed            │
+│ Extension "audit" failed to          │
+│ activate: missing config key…        │
+│ <span class="ok">▸ Quit</span>   View diagnostics            │
+└───────────────────────────────────────┘</span>
+<span class="tag">fatal overlay：模态、必须表态；不再承接任何 human request。</span></div></div>
+        <p class="note"><span class="badge now">已裁决</span> overlay 只保留给「导致程序无法继续运行」的报错事件，筛选后仅两类：<b>(1) 启动失败</b>——runtime 或初始 agent 创建失败、不存在任何可用 agent，程序无法完成任何实际工作；<b>(2) 未捕获的致命 application error</b>——application 边界捕获的 unexpected failure，状态可能损坏，不应继续。两者都以模态 overlay 呈现错误摘要与 code，操作为 Quit / View diagnostics（后者关闭 overlay 只读查看诊断视图）。明确排除：后台 agent spawn 失败（strip 呈现）、hydration 失败（notice）、disposeAll 失败（正在退出）、单个 command 失败（command result 行）。human request 不再有 overlay fallback——menu host 在 spawn 前就绪，任何请求都有承接处。</p>
+        <p class="note">后台请求不全局弹出：升该 agent 的 human-request attention；若 menu 已开则 tab 行出现新项，否则在 status 槽位上方提示待答请求数。<span class="badge now">已裁决</span> 增加 <code>app.request.open</code> 快捷键（可配置），直接跳答最近的后台请求。</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h3>7. 终端会话形态：alternate screen（暂缓）</h3>
+    <div class="two-col">
+      <div>
+        <h4>7a. 目标形态 <span class="badge v1">记录在案</span></h4>
+        <div class="terminal-shell"><div class="terminal"><span class="dim">$ widi</span>
+<span class="dim">（进入 alternate screen：干净的空白界面，不叠加 shell 历史）</span>
+<span class="accent">WIDI</span> <span class="muted">· main · sonnet</span>
+…
+<span class="dim">（退出：交还原 shell 屏幕内容，光标回到原位置，如同 vim/less/htop）</span>
+$ <span class="cursor"></span></div></div>
+        <p class="note">与 vim/less/htop 一致的全屏应用惯例：启动 smcup（<code>\x1b[?1049h</code>），退出 finally 中 rmcup（<code>\x1b[?1049l</code>）。</p>
+      </div>
+      <div>
+        <h4>7b. 裁决：依赖 pi-tui 支持，上游没有就先不做 <span class="badge now">已裁决</span></h4>
+        <p class="note"><code>pi/packages/tui</code> 的 <code>ProcessTerminal</code>/<code>TUI</code> 现在直接写 stdout，没有 smcup/rmcup 生命周期；WIDI 侧自行写控制序列会与 pi-tui 的 cursor/raw-mode 恢复顺序耦合，不在 WIDI 侧绕行。<span class="badge now">已裁决</span> <b>暂缓</b>：等 pi-tui 上游提供 alternate screen 生命周期选项后再启用，本版 v2 不实施、不回写设计文档。届时需验证与 differential rendering 清屏序列不冲突。</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h3>8. 顶部 processing 栏</h3>
+    <div class="terminal-shell">
+      <div class="terminal-title"><span>header 下方常驻一栏</span><span>提案</span></div>
+      <div class="terminal"><span class="accent">WIDI</span> <span class="muted">· main · sonnet</span>
+<span class="info">⠹ 给 status registry 加快照查询并补测试…</span> <span class="dim">· Edit status-registry.ts · 42s</span>  <span class="tag">processing 栏：当前消息 + 当前活动 + 耗时</span>
+
+<span class="user">❯ 给 status registry 加快照查询并补测试</span>
+…</div></div>
+    </div>
+    <p class="note"><span class="badge now">已裁决</span> header 下增加一栏，仅 active agent running 时显示：正在处理的用户消息（单行截断）+ 当前活动（thinking / tool name / steer 注入）+ elapsed。内容全部来自 projection 已有事实（user item、tool_execution_start、thinking status），不需要 core 新事件。固定高度 component，render 开销与 status 槽位同级。<span class="badge now">已裁决</span> 窄终端下降级为只显示 spinner + elapsed。</p>
+  </section>
+
+  <section>
+    <h3>9. /login 全流程（落实“无悬浮 selector”原则）</h3>
+    <div class="terminal-shell">
+      <div class="terminal-title"><span>登录全程不进 overlay</span><span>提案后形态</span></div>
+      <div class="terminal"><span class="user">❯ /login</span>
+<span class="menu-box"><span class="accent">Select provider</span>                          <span class="tag">needs-argument 菜单 · 现状</span>
+<span class="ok">▸ anthropic</span>  <span class="dim">Claude subscription</span>
+  openai     <span class="dim">ChatGPT subscription</span></span>
+<span class="user">❯ /login:anthropic</span>
+
+<span class="info">✱ agent:main Login: open https://claude.ai/oauth/authorize?client…</span>  <span class="tag">auth_login_url · 现状</span>
+
+<span class="menu-box"><span class="accent">anthropic needs response</span> <span class="dim">· agent: main · select</span>   <span class="tag">onSelect · 提案 docked</span>
+Select login method:
+<span class="ok">▸ Browser (OAuth)</span>
+  Device code</span>
+
+<span class="dim">❯ Select login method: → Browser (OAuth)</span>       <span class="tag">隐私安全留痕 · 现状</span>
+
+<span class="info">✱ agent:main Login: waiting for browser callback…</span>      <span class="tag">auth_login_progress · 现状</span>
+<span class="menu-box"><span class="accent">anthropic needs response</span> <span class="dim">· agent: main · input · provisional</span>
+Complete login in your browser, or paste the authorization code:
+<span class="dim">▸ code/redirect URL… █</span>                        <span class="tag">onManualCodeInput · 提案 docked input；callback 先到则自动撤下</span></span>
+
+<span class="dim">/login</span> <span class="ok">✓</span> <span class="dim">Logged in to anthropic (Claude subscription).</span>   <span class="tag">command result · 现状</span></div>
+    </div>
+    <p class="note">provisional human request（与本地 callback server 竞速）在 docked 形态下撤下更自然：menu 关闭、editor 焦点恢复，不留 overlay 闪烁。BACKLOG 已有「login 浏览器自动打开」：需要跨平台 spawn 裁决，本版仍只展示 URL。</p>
+    <div class="rule-card"><strong>关键推论：menu 必须是多步交互宿主，不是一次性选择框</strong><br>登录是「多次交互串联」的典型：select 登录方式 → 展示授权链接 → 等待用户输入 code（或 callback 自动成交）。因此 completion-menu 需要支持<b>原地状态变换</b>：同一条 login 流程的连续请求复用同一槽位，内容随流程推进 replace-in-place（select → 展示 URL/设备码 + 输入行 → waiting/provisional），而不是每步开关一次菜单。waiting 态的 menu 显示 spinner 与说明文字并保持输入行可用；provisional 请求被 core 撤下时 menu 静默关闭、焦点归还 editor。设备码流程同理：menu 内嵌展示 userCode + verificationUri（来自 auth_login_code 的事实），输入行等待确认。多步内容仅存在于 menu 生命周期内，resolved 后只有隐私安全的一行进 transcript（§6c）。</div>
+  </section>
+
+  <section>
+    <h3>10. 命令结果与诊断的呈现定稿</h3>
+    <table class="cmd">
+      <tr><th>命令</th><th>参数/补全</th><th>成功呈现</th><th>失败呈现</th></tr>
+      <tr><td><code>/abort</code> <code>/compact</code> <code>/new</code> <code>/reload</code></td><td>无参数</td><td>无可见 value → 不产生空白行；/new 自动切换到新 agent</td><td rowspan="6"><code>/name</code> + error message 一行（红），不生成 core diagnostic item</td></tr>
+      <tr><td><code>/steer</code> <code>/follow-up</code></td><td>requiresArgument，直接输入文本</td><td>undefined → 无 item；效果经 queue_update / harness event 呈现</td></tr>
+      <tr><td><code>/model</code> <code>/thinking</code> <code>/name</code></td><td>needs-argument 菜单</td><td>undefined → 无 item；footer/header 经 model_update 等事件更新</td></tr>
+      <tr><td><code>/fork</code> <code>/resume</code> <code>/tree:&lt;entry&gt;</code></td><td>entry 候选菜单（/fork 首位 current position）</td><td>自动切换 + hydration；timeline 顶部 session marker</td></tr>
+      <tr><td><code>/inspect</code> <code>/agent</code> <code>/session</code> <code>/status</code> <code>/tree</code></td><td>bare 或菜单</td><td>command result item：<code>/name</code> + 有界 formatUnknown（深度/行数/字符上限）</td></tr>
+      <tr><td><code>/login</code> <code>/logout</code></td><td>provider 候选菜单</td><td>见第 9 节；logout 输出 removed 事实</td></tr>
+      <tr><td><code>/quit</code> <code>/exit</code></td><td>无参数</td><td>application command，fire-and-forget shutdown</td><td>—</td></tr>
+    </table>
+    <p class="note">诊断三来源各有固定位置：runtime startup（notice 区，info 合并一行）、per-agent（timeline DiagnosticItem + strip attention）、交互层失败（command result 行）。<span class="badge proposal">提案</span> 修复 startup 摘要：当前从 <code>runtime.services</code> 合成、丢弃真实 info diagnostics；改为合并真实 info entries，无 info 时回退合成行。</p>
+  </section>
+
+  <section>
+    <h3>11. 多 Agent 与降级状态族</h3>
+    <div class="two-col">
+      <div>
+        <h4>11a. Agent selector（← 打开）<span class="badge now">现状</span> <span class="badge proposal">提案补全</span></h4>
+        <div class="terminal-shell"><div class="terminal">
+<span class="menu-box"><span class="accent">Select agent</span>
+<span class="ok">▸ main</span>       <span class="dim">idle · sonnet · current</span>
+  reviewer   <span class="dim">running 8s · opus · 2 unread</span>          <span class="tag">提案：补 elapsed</span>
+  research   <span class="dim">needs input · sonnet</span>                  <span class="tag">提案：人话 reason 替代裸枚举</span>
+  old-fix    <span class="error">unavailable · spawn failed</span>
+<span class="dim">↑↓ select · enter switch · esc close · type to filter</span></span>
+<span class="rule">──────────────────────────────────────────</span>
+❯
+<span class="rule">──────────────────────────────────────────</span></div></div>
+        <p class="note">切换后清除该 agent unread/completed attention、恢复 editor focus；unavailable 可查看诊断但 editor 禁用提交。selector 永不 dispose/spawn。</p>
+      </div>
+      <div>
+        <h4>11b. 窄终端（&lt;72 col）降级 <span class="badge now">现状</span></h4>
+        <div class="terminal-shell"><div class="terminal">
+<span class="dim">~/p/widi · ← agents</span>
+<span class="ok">● main</span> <span class="dim">idle · 1 running · 1 attention</span>  <span class="tag">strip 只留 active + 聚合</span></div></div>
+        <p class="note">完整列表永远可经 ← selector 到达；strip 不换行挤压 chat。</p>
+      </div>
+      <div>
+        <h4>11c. 后台 agent 事件 <span class="badge now">现状</span></h4>
+        <div class="terminal-shell"><div class="terminal">
+<span class="ok">● main</span> <span class="dim">idle</span>   <span class="info">● reviewer</span> <span class="dim">running</span>   <span class="warn">! research</span> <span class="dim">needs input</span>   <span class="error">! old-fix</span> <span class="dim">unavailable</span></div></div>
+        <p class="note">后台 output 只增 unread；后台 tool failure 升 transient warning（查看后清除）；诊断 warning/error 与人请求保留；完成升 completed。后台事件永不写入 active agent timeline、不抢焦点。</p>
+      </div>
+      <div>
+        <h4>11d. 初始 spawn 失败 <span class="badge now">现状</span></h4>
+        <div class="terminal-shell"><div class="terminal">
+<span class="error">✕ orchestrator.spawn_failed</span>
+<span class="dim">Extension "audit" failed to activate: missing config key…</span>
+
+<span class="rule">──────────────────────────────</span>
+❯ <span class="dim">（editor 禁用提交；可查看诊断、/quit 退出）</span>
+<span class="rule">──────────────────────────────</span>
+<span class="error">! main</span> <span class="dim">unavailable</span></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h3>12. 裁决记录（v2 定稿）</h3>
+    <table class="cmd">
+      <tr><th>#</th><th>问题</th><th>裁决</th></tr>
+      <tr><td>1</td><td>后台 human request 的触达方式</td><td><span class="badge now">已定</span> 增加 <code>app.request.open</code> 快捷键（可配置）直接跳答最近的后台请求；同时升 attention + tab 行可见。</td></tr>
+      <tr><td>2</td><td>两个菜单同开时 ↑↓ 焦点归属</td><td><span class="badge now">已定</span> 后开者持有焦点，Esc 逐层关闭并归还（§2e）。</td></tr>
+      <tr><td>3</td><td>alternate screen</td><td><span class="badge v1">暂缓</span> 依赖 pi-tui 上游提供 smcup/rmcup 生命周期；上游没有就不做，WIDI 侧不绕行（§7b）。</td></tr>
+      <tr><td>4</td><td>顶部 processing 栏的窄终端降级</td><td><span class="badge now">已定</span> 只显示 spinner + elapsed（§8）。</td></tr>
+      <tr><td>5</td><td>idle agent 上未命中引擎的 <code>/typo</code> 现状是当 prompt 发给模型</td><td><span class="badge now">已定</span> 本地 notice「未知命令，再按 enter 确认发送」，二次确认前不发给模型。</td></tr>
+      <tr><td>6</td><td>status 年龄显示格式</td><td><span class="badge now">已定</span> 相对时间 <code>· 12s</code>，60s 后按分钟 <code>· 3m</code>。</td></tr>
+      <tr><td>7</td><td>不可用 autocomplete 项整行置灰</td><td><span class="badge v1">暂缓</span> 依赖 pi-tui SelectList disabled 样式（上游改动）；维持 description 提示现状，上游有能力后再做。</td></tr>
+      <tr><td>8</td><td>running 时的普通输入</td><td><span class="badge now">已定</span> Enter 默认进入 followUp 队列，queued 消息显示在 editor 上方；ctrl+s（<code>app.steer</code>）把最新一条排队 followUp 取出、改作 steer 立即发出（§2f，替代 v1 §11.2）。</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h3>13. 与 v1 设计文档的 diff（实施时需要回写 tui-v1-design.md）</h3>
+    <div class="rules">
+      <div class="rule-card revise"><strong>§12 Human Request</strong><br>呈现从「capturing overlay 唯一形态」改为「completion-menu 承接 + 多请求 tab 切换 + 多步流程原地变换」；resolved menu 带选项进 transcript，与 ctrl+o 共享展开/合并。broker 契约、隐私规则、fallback response、abort/timeout/dispose 语义不变。新增 <code>app.request.open</code> 快捷键。</div>
+      <div class="rule-card revise"><strong>§13 错误呈现（原 overlay 职责）</strong><br>Overlay 不再承接 human request，只保留两类致命错误：无任何可用 agent 的启动失败、未捕获的致命 application error；模态呈现，操作为 Quit / View diagnostics。</div>
+      <div class="rule-card revise"><strong>§11.2 Running 输入规则</strong><br>替代「文本留在 editor + notice」：Enter 默认进入 followUp 队列（queued 消息显示在 editor 上方），ctrl+s（新 keybinding <code>app.steer</code>）把最新排队 followUp 取出改作 steer 发出；§14 keybindings 增加 <code>app.steer</code> 与 <code>app.request.open</code>。</div>
+      <div class="rule-card revise"><strong>§7.1 Root tree</strong><br>新增顶部 processing 栏与 editor 上方 queue 区两个 component；明确两个菜单的位置规则（editor autocomplete 下展开，completion-menu 上展开常驻）。</div>
+      <div class="rule-card revise"><strong>§7.4 Agent Selector</strong><br>description 补 elapsed 与人话 attention reason。</div>
+      <div class="rule-card revise"><strong>§7.2 Status 槽位</strong><br>补 updatedAt 年龄显示（相对时间，60s 后按分钟）。</div>
+      <div class="rule-card revise"><strong>§11.2 idle 输入保护</strong><br>未命中引擎的 <code>/</code> 前缀输入给本地 notice，二次 enter 确认才发给模型。</div>
+      <div class="rule-card revise"><strong>§13.1 Startup 摘要</strong><br>合并真实 info diagnostics，不再只从 services 合成。</div>
+      <div class="rule-card"><strong>暂缓（依赖 pi-tui 上游）</strong><br>alternate screen（smcup/rmcup 生命周期）与 autocomplete 不可用项整行置灰（SelectList disabled 样式）：上游有能力前不做、不回写。</div>
+      <div class="rule-card"><strong>不变</strong><br>六通道 core 契约、命令引擎边界、布局方案 A、attention 优先级、hydration 语义、keybinding 可配置原则全部不变。本版只动呈现层与一个 startup 保真修复。</div>
+    </div>
+  </section>
+
+</div>

@@ -73,7 +73,6 @@ export interface CoreDiagnostic {
 	readonly related?: readonly DiagnosticRelated[];
 	readonly phase?: "load" | "resolve" | "create" | "resume" | "runtime";
 	readonly agentId?: string;
-	readonly commandId?: string;
 	readonly requestId?: string;
 	readonly profileId?: string;
 	readonly resourceId?: string;
@@ -147,7 +146,6 @@ export function dedupeDiagnostics(
 				source: diagnostic.source,
 				targetSource: diagnostic.targetSource,
 				agentId: diagnostic.agentId,
-				commandId: diagnostic.commandId,
 				requestId: diagnostic.requestId,
 				profileId: diagnostic.profileId,
 				resourceId: diagnostic.resourceId,
@@ -304,7 +302,6 @@ export function toDiagnostic(
 		operationSource: fallback.operationSource,
 		agentId: fallback.agentId,
 		requestId: fallback.requestId,
-		commandId: fallback.commandId,
 		recoverable: fallback.recoverable,
 	});
 }

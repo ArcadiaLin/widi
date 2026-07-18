@@ -258,31 +258,6 @@ describe("ExtensionLoader file/module loading", () => {
 		expect(activationCount).toBe(1);
 	});
 
-	it("rejects extension commands whose name embeds the trigger", async () => {
-		const loader = new ExtensionLoader();
-		loader.registerExtension("sample", (api) => {
-			api.registerCommand({
-				name: "/mark",
-				handler: () => {},
-			});
-		});
-
-		const scope = await loader.loadForAgent({
-			agentId: "agent",
-			profileId: "profile",
-			extensionIds: ["sample"],
-		});
-
-		expect(scope.commandContributions).toEqual([]);
-		expect(scope.diagnostics).toContainEqual(
-			expect.objectContaining({
-				code: "extension.activation_failed",
-				extensionId: "sample",
-				message: expect.stringContaining("must start with a letter or digit"),
-			}),
-		);
-	});
-
 	it("collects normalized resource path contributions per extension", async () => {
 		const loader = new ExtensionLoader();
 		loader.registerExtension("contributor", (api) => {

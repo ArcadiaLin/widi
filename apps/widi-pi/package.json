@@ -4,6 +4,9 @@
   "private": true,
   "description": "WIDI Pi is a terminal coding harness based on the pi-agent-core",
   "type": "module",
+  "bin": {
+    "widi-harness": "dist/cli.js"
+  },
   "scripts": {
     "clean": "shx rm -rf dist",
     "build": "npm run build:deps && npm run build:app",
@@ -12,7 +15,7 @@
     "check": "tsgo --noEmit -p tsconfig.json",
     "test": "vitest --run",
     "cli": "tsx --tsconfig tsconfig.json src/cli.ts",
-    "cli:widi-config": "tsx --tsconfig tsconfig.json src/cli.ts --cwd \"$npm_config_local_prefix\" --agent-dir \"$npm_config_local_prefix/.widi\" --profile widi-dev"
+    "tui": "tsx --tsconfig tsconfig.json src/cli.ts --cwd \"$INIT_CWD\" --agent-dir \"$npm_config_local_prefix/.widi\" --profile widi-dev"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.80.3",

@@ -78,7 +78,6 @@ export const EXTENSION_MESSAGE_CUSTOM_TYPE = "core:extension_message";
 export interface ExtensionMessageEntryData {
 	readonly extensionId: string;
 	readonly message: ExtensionMessage;
-	readonly commandId?: string;
 }
 
 export interface AgentSessionCandidate {
@@ -289,6 +288,28 @@ export class SessionManager {
 		return forkedMetadata;
 	}
 
+	async getAgentSessionLeafId(agentId: AgentId): Promise<string | null> {
+		return await this._requireAgentSession(agentId).getLeafId();
+	}
+
+	// Retraction for provisional prompt records (expansion/transform entries
+	// appended before the harness persists the paired user message). Only
+	// rewinds when the branch leaf is still the last provisional entry; if
+	// anything landed after it - the user message, a concurrent write - the
+	// branch is left untouched.
+	async retractAgentSessionEntries(
+		agentId: AgentId,
+		options: {
+			readonly lastEntryId: string;
+			readonly previousLeafId: string | null;
+		},
+	): Promise<boolean> {
+		const session = this._requireAgentSession(agentId);
+		if ((await session.getLeafId()) !== options.lastEntryId) return false;
+		await session.moveTo(options.previousLeafId);
+		return true;
+	}
+
 	async appendCommandExpansionEntry(
 		agentId: AgentId,
 		data: CommandExpansionEntryData,
@@ -363,6 +384,10 @@ export class SessionManager {
 		// boundary. Without an ExecutionEnv lock/transaction primitive, multiple
 		// WIDI processes writing the same sessionsRoot are unsupported.
 		// TODO: Add extension persistence once extension lifecycle and storage boundaries are defined.
+		// The session id deliberately equals the creating agent's id: resume
+		// restores the agent under it (_resumeAgentHarness). It is unique only
+		// within one runtime — across runs it repeats, so consumers resolving a
+		// session must reference it by path, never by bare id.
 		return this.sessionRepo.create({
 			id: options.agentId,
 			cwd: this._cwd,

@@ -8,11 +8,9 @@ import type {
 	ToolResultPatch,
 } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
-import { type Command, type CommandArguments, commandKey } from "../command.ts";
 import { type CoreDiagnostic, createDiagnostic } from "../diagnostics.ts";
 import type { ToolRegistry } from "../tool-registry.ts";
 import type {
-	ExtensionCommandContribution,
 	ExtensionIdentity,
 	ExtensionInterceptorRegistration,
 	ExtensionProviderContribution,
@@ -23,14 +21,9 @@ import type {
 import type {
 	ExtensionActionFailure,
 	ExtensionActions,
-	ExtensionCommandArguments,
-	ExtensionCommandContext,
-	ExtensionCommandContextActions,
-	ExtensionCommandHandler,
 	ExtensionContext,
 	ExtensionContextActions,
 	ExtensionCoreActions,
-	ExtensionInlineCommandExpand,
 	ExtensionInputEvent,
 	ExtensionInputResult,
 	ExtensionInterceptorEventFor,
@@ -125,7 +118,6 @@ export interface ExtensionRunnerSnapshot {
 	extensionIds: readonly string[];
 	extensions: readonly ExtensionIdentity[];
 	hooks: readonly ExtensionHookSnapshot[];
-	commands: readonly ExtensionCommandSnapshot[];
 	toolContributions: readonly ExtensionToolContributionSnapshot[];
 	resourceContributions: readonly ExtensionResourceContribution[];
 	providerContributions: readonly ExtensionProviderContributionSnapshot[];
@@ -134,29 +126,6 @@ export interface ExtensionRunnerSnapshot {
 		readonly message?: string;
 	};
 }
-
-export interface ExtensionCommandSnapshot {
-	readonly extensionId: string;
-	readonly command: Command;
-}
-
-export interface ResolvedExtensionLineCommand {
-	readonly kind: "line";
-	readonly extensionId: string;
-	readonly command: Command;
-	readonly handler: ExtensionCommandHandler;
-}
-
-export interface ResolvedExtensionInlineCommand {
-	readonly kind: "inline";
-	readonly extensionId: string;
-	readonly command: Command;
-	readonly expand: ExtensionInlineCommandExpand;
-}
-
-export type ResolvedExtensionCommand =
-	| ResolvedExtensionLineCommand
-	| ResolvedExtensionInlineCommand;
 
 const patchInspectableFields = [
 	"description",
@@ -176,8 +145,6 @@ export class ExtensionRunner {
 	private readonly _loadedScope: LoadedExtensionScope;
 	private _actions: ExtensionCoreActions = createUnboundActions();
 	private _contextActions: ExtensionContextActions = {};
-	private _commandContextActions: ExtensionCommandContextActions =
-		createUnboundCommandContextActions();
 	private _staleMessage: string | undefined;
 
 	constructor(options: ExtensionRunnerOptions) {
@@ -195,11 +162,6 @@ export class ExtensionRunner {
 	): void {
 		this._actions = actions;
 		this._contextActions = contextActions;
-	}
-
-	bindCommandContext(actions?: ExtensionCommandContextActions): void {
-		this._commandContextActions =
-			actions ?? createUnboundCommandContextActions();
 	}
 
 	createContext(extensionId = this.extensionIds[0]): ExtensionContext {
@@ -224,83 +186,6 @@ export class ExtensionRunner {
 				return this._contextActions.isIdle?.() ?? true;
 			},
 		};
-	}
-
-	createCommandContext(
-		extensionId = this.extensionIds[0],
-		options: { commandId?: string } = {},
-	): ExtensionCommandContext {
-		const failure = (
-			action: ExtensionActionFailure["action"],
-		): Omit<ExtensionActionFailure, "error"> => ({
-			extensionId,
-			action,
-			code: "extension.action_failed",
-		});
-		return {
-			...this.createContext(extensionId),
-			// Command contexts carry the executing command's id so presentation
-			// actions correlate with the command_* events of the same execution.
-			actions: this._createContextActions(extensionId, options.commandId),
-			waitForIdle: async () => {
-				this._assertActive();
-				await this._commandContextActions.waitForIdle();
-			},
-			newSession: async () =>
-				await this._runReportedAction(
-					failure("newSession"),
-					async () => await this._commandContextActions.newSession(extensionId),
-				),
-			forkSession: async (options) =>
-				await this._runReportedAction(
-					failure("forkSession"),
-					async () =>
-						await this._commandContextActions.forkSession(extensionId, options),
-				),
-			navigateTree: async (targetId, options) =>
-				await this._runReportedAction(
-					failure("navigateTree"),
-					async () =>
-						await this._commandContextActions.navigateTree(
-							extensionId,
-							targetId,
-							options,
-						),
-				),
-			listSessions: async () =>
-				await this._runReportedAction(
-					failure("listSessions"),
-					async () =>
-						await this._commandContextActions.listSessions(extensionId),
-				),
-			resumeSession: async (reference) =>
-				await this._runReportedAction(
-					failure("resumeSession"),
-					async () =>
-						await this._commandContextActions.resumeSession(
-							extensionId,
-							reference,
-						),
-				),
-		};
-	}
-
-	getCommands(
-		options: { reservedCommands?: readonly Command[] } = {},
-	): ResolvedExtensionCommand[] {
-		return resolveExtensionCommands(
-			this._loadedScope.commandContributions,
-			options.reservedCommands ?? [],
-		);
-	}
-
-	getCommand(
-		command: Pick<Command, "placement" | "trigger" | "name">,
-		options: { reservedCommands?: readonly Command[] } = {},
-	): ResolvedExtensionCommand | undefined {
-		return this.getCommands(options).find(
-			(resolved) => commandKey(resolved.command) === commandKey(command),
-		);
 	}
 
 	getResourceContributions(): readonly ExtensionResourceContribution[] {
@@ -346,10 +231,6 @@ export class ExtensionRunner {
 			extensionIds: [...this.extensionIds],
 			extensions: [...this.extensions],
 			hooks,
-			commands: this.getCommands().map((command) => ({
-				extensionId: command.extensionId,
-				command: { ...command.command },
-			})),
 			toolContributions: this._loadedScope.toolContributions.map(
 				(contribution) => {
 					if (contribution.kind === "define") {
@@ -699,12 +580,8 @@ export class ExtensionRunner {
 
 	// Narrowing boundary: the scoped author-facing actions inject this
 	// runner's agent id and the calling extension's id; neither ever appears
-	// in an ExtensionActions signature. commandId is set only for command
-	// contexts and flows into presentation actions.
-	private _createContextActions(
-		extensionId: string,
-		commandId?: string,
-	): ExtensionActions {
+	// in an ExtensionActions signature.
+	private _createContextActions(extensionId: string): ExtensionActions {
 		const agentId = this.agentId;
 		const failure = (
 			action: ExtensionActionFailure["action"],
@@ -740,49 +617,33 @@ export class ExtensionRunner {
 				),
 			emitOutput: async (text) => {
 				await this._runReportedAction(failure("emitOutput"), async () => {
-					await this._actions.emitOutput(agentId, extensionId, text, commandId);
+					await this._actions.emitOutput(agentId, extensionId, text);
 				});
 			},
 			notify: async (text) => {
 				await this._runReportedAction(failure("notify"), async () => {
-					await this._actions.notify(agentId, extensionId, text, commandId);
+					await this._actions.notify(agentId, extensionId, text);
 				});
 			},
 			setStatus: async (key, status) => {
 				await this._runReportedAction(failure("setStatus"), async () => {
-					await this._actions.setStatus(
-						agentId,
-						extensionId,
-						key,
-						status,
-						commandId,
-					);
+					await this._actions.setStatus(agentId, extensionId, key, status);
 				});
 			},
 			clearStatus: async (key) => {
 				await this._runReportedAction(failure("clearStatus"), async () => {
-					await this._actions.clearStatus(agentId, extensionId, key, commandId);
+					await this._actions.clearStatus(agentId, extensionId, key);
 				});
 			},
 			publishMessage: async (message) =>
 				await this._runReportedAction(
 					failure("publishMessage"),
 					async () =>
-						await this._actions.publishMessage(
-							agentId,
-							extensionId,
-							message,
-							commandId,
-						),
+						await this._actions.publishMessage(agentId, extensionId, message),
 				),
 			reportDiagnostic: async (draft) => {
 				await this._runReportedAction(failure("reportDiagnostic"), async () => {
-					await this._actions.reportDiagnostic(
-						agentId,
-						extensionId,
-						draft,
-						commandId,
-					);
+					await this._actions.reportDiagnostic(agentId, extensionId, draft);
 				});
 			},
 			prompt: async (text, options) => {
@@ -816,10 +677,6 @@ export class ExtensionRunner {
 					async () =>
 						await this._actions.compactAgent(agentId, customInstructions),
 				),
-			getCommands: () => {
-				this._assertActive();
-				return this._actions.listCommands(agentId);
-			},
 			setModel: async (reference) =>
 				await this._runReportedAction(
 					failure("setModel"),
@@ -1044,114 +901,6 @@ function diffRecord<T>(
 	return Object.keys(patch).length > 0 ? patch : undefined;
 }
 
-function resolveExtensionCommands(
-	contributions: readonly ExtensionCommandContribution[],
-	reservedCommands: readonly Command[],
-): ResolvedExtensionCommand[] {
-	const takenCommandKeys = new Set(reservedCommands.map(commandKey));
-	const counts = new Map<string, number>();
-	for (const contribution of contributions) {
-		const key = commandKey(contribution);
-		counts.set(key, (counts.get(key) ?? 0) + 1);
-	}
-
-	const seen = new Map<string, number>();
-	return contributions.map((contribution) => {
-		const contributionKey = commandKey(contribution);
-		const occurrence = (seen.get(contributionKey) ?? 0) + 1;
-		// Duplicated names start suffixed by occurrence; a unique name starts
-		// plain and falls back to `${name}-1`, `${name}-2`, ... when it
-		// collides with a reserved command.
-		let suffix = (counts.get(contributionKey) ?? 0) > 1 ? occurrence : 0;
-		let invocationName =
-			suffix > 0 ? `${contribution.name}-${suffix}` : contribution.name;
-		let candidateKey = commandKey({
-			placement: contribution.placement,
-			trigger: contribution.trigger,
-			name: invocationName,
-		});
-		while (takenCommandKeys.has(candidateKey)) {
-			suffix += 1;
-			invocationName = `${contribution.name}-${suffix}`;
-			candidateKey = commandKey({
-				placement: contribution.placement,
-				trigger: contribution.trigger,
-				name: invocationName,
-			});
-		}
-		seen.set(contributionKey, Math.max(occurrence, suffix));
-		takenCommandKeys.add(candidateKey);
-		const source = {
-			kind: "extension",
-			extensionId: contribution.extensionId,
-		} as const;
-		if (contribution.placement === "inline") {
-			return {
-				kind: "inline",
-				extensionId: contribution.extensionId,
-				command: {
-					name: invocationName,
-					placement: "inline",
-					trigger: contribution.trigger,
-					closeTrigger: contribution.closeTrigger,
-					description: contribution.description,
-					argumentHint: contribution.argumentHint,
-					arguments: toCommandArguments(contribution.arguments),
-					source,
-				},
-				expand: contribution.expand,
-			};
-		}
-		return {
-			kind: "line",
-			extensionId: contribution.extensionId,
-			command: {
-				name: invocationName,
-				placement: "line",
-				trigger: contribution.trigger,
-				description: contribution.description,
-				argumentHint: contribution.argumentHint,
-				arguments: toCommandArguments(contribution.arguments),
-				source,
-			},
-			handler: contribution.handler,
-		};
-	});
-}
-
-// Narrowing boundary: the extension completion callback receives the
-// argument prefix only - never the orchestrator handle carried by the
-// core CommandCompletionContext.
-function toCommandArguments(
-	args: ExtensionCommandArguments | undefined,
-): CommandArguments | undefined {
-	if (!args) return undefined;
-	const getCompletion = args.getArgumentsCompletion?.bind(args);
-	return {
-		required: args.required,
-		complete: getCompletion
-			? async (context) => await getCompletion(context.argumentPrefix)
-			: undefined,
-	};
-}
-
-// waitForIdle stays a no-op when unbound (an idle fact without a harness is
-// vacuously settled); session control must never silently no-op, so unbound
-// session operations throw.
-function createUnboundCommandContextActions(): ExtensionCommandContextActions {
-	const notBound = () => {
-		throw new Error("Extension runner command context actions are not bound.");
-	};
-	return {
-		waitForIdle: async () => {},
-		newSession: async () => notBound(),
-		forkSession: async () => notBound(),
-		navigateTree: async () => notBound(),
-		listSessions: async () => notBound(),
-		resumeSession: async () => notBound(),
-	};
-}
-
 function createUnboundActions(): ExtensionCoreActions {
 	const notBound = () => {
 		throw new Error("Extension runner core actions are not bound.");
@@ -1173,7 +922,6 @@ function createUnboundActions(): ExtensionCoreActions {
 		setAgentSessionName: async () => notBound(),
 		getAgentSessionName: async () => notBound(),
 		compactAgent: async () => notBound(),
-		listCommands: () => notBound(),
 		setAgentModelByReference: async () => notBound(),
 		getAgentModel: () => notBound(),
 		listModelCandidates: async () => notBound(),

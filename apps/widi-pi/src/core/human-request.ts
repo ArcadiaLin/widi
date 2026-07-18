@@ -10,12 +10,7 @@ import {
 } from "./operation-source.ts";
 import type { AgentId } from "./types.ts";
 
-export type HumanRequestKind =
-	| "confirm"
-	| "select"
-	| "input"
-	| "custom"
-	| "argumentsCompletion";
+export type HumanRequestKind = "confirm" | "select" | "input" | "custom";
 
 export interface HumanRequest {
 	source: OperationSource;
@@ -26,11 +21,16 @@ export interface HumanRequest {
 	placeholder?: string;
 	// Whether the client should offer free-form input alongside options.
 	// Absent means the kind's inherent form (input: always, confirm/select:
-	// never). Free input is a literal value: never parsed as a command.
+	// never). Free input is returned as a literal value without interpretation.
 	allowFreeInput?: boolean;
 	payload?: unknown;
 	timeoutMs?: number;
 	signal?: AbortSignal;
+	// A provisional request is expected to be withdrawn by its caller's
+	// signal as normal control flow (e.g. a manual-input prompt racing a
+	// local OAuth callback server). The caller still gets the aborted
+	// rejection, but no diagnostic is published for the withdrawal.
+	provisional?: boolean;
 }
 
 export type HumanRequestDraft = Omit<HumanRequest, "source">;
@@ -294,14 +294,19 @@ export class HumanRequestBroker {
 		} catch (error) {
 			this.pendingRequests.delete(requestId);
 			const diagnostic = toDiagnostic(error, {
-				code: "orchestrator.command_failed",
+				code: "orchestrator.human_request_failed",
 				message: error instanceof Error ? error.message : String(error),
 				operationSource: request.source,
 				agentId,
 				requestId,
 				recoverable: true,
 			});
-			await this.host.publishDiagnostic(diagnostic);
+			const withdrawnProvisional =
+				request.provisional === true &&
+				diagnostic.code === "orchestrator.human_request_aborted";
+			if (!withdrawnProvisional) {
+				await this.host.publishDiagnostic(diagnostic);
+			}
 			throw new OrchestratorError(diagnostic);
 		}
 	}

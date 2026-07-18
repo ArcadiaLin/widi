@@ -156,8 +156,9 @@ describe("ModelRegistry", () => {
 			"medium",
 			"high",
 			"xhigh",
+			"max",
 		]);
-		expect(parseThinkingLevel("max")).toBeUndefined();
+		expect(parseThinkingLevel("max")).toBe("max");
 	});
 
 	it("loads custom models and resolves provider request auth through shared ExecutionEnv resolver", async () => {

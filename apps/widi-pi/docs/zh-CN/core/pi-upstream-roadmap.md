@@ -35,9 +35,7 @@ WIDI 不建立第二套 queue。若 client 需要取消特定 queued input，Pi 
 
 ## Provider registration scope
 
-Pi provider/OAuth registry 存在 process-global reset/registration side effects。WIDI 的 ModelRegistry 可以记录 extension provider provenance 和 runner lifecycle，但多个 registry/runtime 实例并存时仍需要更明确的 provider registration scope。
-
-优先在 pi-ai runtime 明确 instance/global ownership，避免 WIDI 用全局 reset 协调独立 runtime。
+已关闭。上游重构（`9993c969`，2026-07）移除了 process-global OAuth registry（`registerOAuthProvider`/`resetOAuthProviders`）：auth 作为 `Provider.auth` 挂在 provider 上，由每个 pi-ai `Models` 实例持有，instance ownership 已经明确。WIDI 不再依赖全局 reset 协调独立 runtime，本条目不再是开放缺口。
 
 ## Version fact source
 

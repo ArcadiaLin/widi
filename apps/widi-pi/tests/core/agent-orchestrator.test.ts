@@ -22,10 +22,11 @@ import {
 	type AuthStorageBackend,
 	type LockResult,
 } from "../../src/core/auth-storage.ts";
-import type { Command, CommandInvocation } from "../../src/core/command.ts";
-import type { OrchestratorDiagnostic } from "../../src/core/diagnostics.ts";
 import type { ExtensionContext } from "../../src/core/extension/api.ts";
-import { ModelRegistry } from "../../src/core/model-registry.ts";
+import {
+	ModelRegistry,
+	type OAuthProviderConfig,
+} from "../../src/core/model-registry.ts";
 import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
 import { ResourceLoader } from "../../src/core/resource-loader.ts";
 import {
@@ -39,6 +40,7 @@ import {
 	type SettingsStorage,
 } from "../../src/core/setting-manager.ts";
 import { ToolRegistry } from "../../src/core/tool-registry.ts";
+import { registerCoreInteractionTools } from "../../src/core/tools/interaction/builtin.ts";
 import { createResourceExtension } from "../extensions/resource-extension.ts";
 import {
 	createCoreCodingToolRegistry,
@@ -190,50 +192,37 @@ function agentStatusChangedEvents(
 	);
 }
 
-type CompleteCommandArguments = (options: {
+async function createExtensionActionsHarness(): Promise<{
+	env: MemoryExecutionEnv;
+	orchestrator: AgentOrchestrator;
 	agentId: string;
-	commandId: string;
-	binding: { command: Command; execute(args: string): Promise<unknown> };
-	invocation: CommandInvocation;
-	argumentPrefix: string;
-}) => Promise<
-	| { ok: true; argument: string }
-	| { ok: false; diagnostic: OrchestratorDiagnostic }
->;
-
-// Unit fixture for _completeCommandArguments: no built-in declares both
-// required and complete() yet, so the candidate branches are exercised
-// against a synthetic binding until a real consumer lands.
-function createArgumentsCompletionFixture(
-	orchestrator: AgentOrchestrator,
-	complete?: NonNullable<Command["arguments"]>["complete"],
-): {
-	completeCommandArguments: CompleteCommandArguments;
-	binding: { command: Command; execute(args: string): Promise<unknown> };
-	invocation: CommandInvocation;
-} {
-	const command: Command = {
-		name: "demo",
-		placement: "line",
-		trigger: "/",
-		argumentHint: "<value>",
-		source: { kind: "built-in" },
-		arguments: { required: true, complete },
+	actions: ExtensionContext["actions"];
+}> {
+	const env = new MemoryExecutionEnv();
+	const extensionProfile: AgentProfile = {
+		...defaultProfile,
+		id: "extension-profile",
+		label: "Extension Profile",
+		persist: false,
+		extensions: ["sample"],
 	};
+	const orchestrator = await createOrchestrator(env, {
+		defaultProfileId: extensionProfile.id,
+		profileRegistry: new AgentProfileRegistry(
+			InMemoryProfileStorageBackend.fromProfiles([
+				{ profile: extensionProfile },
+			]),
+		),
+	});
+	orchestrator.registerExtension("sample", () => {});
+	const agentId = await orchestrator.spawnAgent();
+	const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+	if (!runner) throw new Error("Expected extension runner.");
 	return {
-		completeCommandArguments: (
-			orchestrator as unknown as {
-				_completeCommandArguments: CompleteCommandArguments;
-			}
-		)._completeCommandArguments.bind(orchestrator),
-		binding: { command, execute: async () => undefined },
-		invocation: {
-			name: command.name,
-			trigger: command.trigger,
-			argument: "",
-			source: command.source,
-			placement: command.placement,
-		},
+		env,
+		orchestrator,
+		agentId,
+		actions: runner.createContext("sample").actions,
 	};
 }
 
@@ -518,12 +507,12 @@ describe("AgentOrchestrator", () => {
 		});
 		const agentId = await orchestrator.spawnAgent();
 
-		await orchestrator.nextTurnAgent(agentId, "next");
+		await emitSettled(orchestrator, agentId, 1);
 		expect(clientEvents).toContainEqual(
 			expect.objectContaining({
 				type: "agent_harness_event",
 				agentId,
-				event: expect.objectContaining({ type: "queue_update" }),
+				event: expect.objectContaining({ type: "settled" }),
 			}),
 		);
 	});
@@ -556,10 +545,6 @@ describe("AgentOrchestrator", () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env, {
 			toolRegistry: createToolRegistry(createToolDefinition("echo", "echo")),
-		});
-		const commandEvents: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			commandEvents.push(event);
 		});
 		const agentId = await orchestrator.spawnAgent();
 		const harness = requireAgentHarness(orchestrator, agentId);
@@ -594,9 +579,6 @@ describe("AgentOrchestrator", () => {
 		expect(harness.getTools()).toEqual([
 			expect.objectContaining({ name: "echo" }),
 		]);
-		expect(commandEvents).not.toContainEqual(
-			expect.objectContaining({ type: "command_completed" }),
-		);
 	});
 
 	it("rejects agent thinking level changes unsupported by the current model", async () => {
@@ -632,88 +614,61 @@ describe("AgentOrchestrator", () => {
 		expect(orchestrator.getAgentThinkingLevel(agentId)).toBe("off");
 	});
 
-	it("executes model and thinking settings commands through agent input", async () => {
+	it("sets model and thinking settings through atomic methods", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
 		const agentId = await orchestrator.spawnAgent();
 		const harness = requireAgentHarness(orchestrator, agentId);
 
-		await expect(orchestrator.inputAgent(agentId, "/model")).resolves.toEqual(
-			expect.objectContaining({
-				kind: "command",
-				name: "model",
-				value: {
-					models: expect.arrayContaining([
-						{
-							value: `${restoredModel.provider}/${restoredModel.id}`,
-							label: restoredModel.name,
-							description: `${restoredModel.provider}/${restoredModel.id}`,
-						},
-						{
-							value: `${reasoningModel.provider}/${reasoningModel.id}`,
-							label: reasoningModel.name,
-							description: `${reasoningModel.provider}/${reasoningModel.id}`,
-						},
-					]),
+		await expect(
+			orchestrator.setAgentThinkingLevelByName(agentId, "high"),
+		).rejects.toMatchObject({
+			diagnostic: expect.objectContaining({
+				code: "model.thinking_not_supported",
+				modelId: defaultModel.id,
+			}),
+		});
+
+		await expect(orchestrator.listAvailableModelCandidates()).resolves.toEqual({
+			models: expect.arrayContaining([
+				{
+					value: `${restoredModel.provider}/${restoredModel.id}`,
+					label: restoredModel.name,
+					description: `${restoredModel.provider}/${restoredModel.id}`,
 				},
-			}),
-		);
+				{
+					value: `${reasoningModel.provider}/${reasoningModel.id}`,
+					label: reasoningModel.name,
+					description: `${reasoningModel.provider}/${reasoningModel.id}`,
+				},
+			]),
+		});
 
 		await expect(
-			orchestrator.inputAgent(agentId, "/thinking"),
-		).resolves.toEqual(
-			expect.objectContaining({
-				kind: "failed",
-				diagnostic: expect.objectContaining({
-					code: "model.thinking_not_supported",
-					modelId: defaultModel.id,
-				}),
-			}),
-		);
-
-		await expect(
-			orchestrator.inputAgent(
+			orchestrator.setAgentModelByReference(
 				agentId,
-				`/model:${reasoningModel.provider}/${reasoningModel.id}`,
+				`${reasoningModel.provider}/${reasoningModel.id}`,
 			),
-		).resolves.toEqual(
-			expect.objectContaining({
-				kind: "command",
-				name: "model",
-				value: expect.objectContaining({
-					id: reasoningModel.id,
-					provider: reasoningModel.provider,
-				}),
-			}),
-		);
+		).resolves.toMatchObject({
+			id: reasoningModel.id,
+			provider: reasoningModel.provider,
+		});
 		expect(harness.getModel()).toMatchObject({ id: reasoningModel.id });
 
-		await expect(
-			orchestrator.inputAgent(agentId, "/thinking"),
-		).resolves.toEqual(
-			expect.objectContaining({
-				kind: "command",
-				name: "thinking",
-				value: {
-					levels: [
-						{ value: "off", label: "off" },
-						{ value: "low", label: "low" },
-						{ value: "medium", label: "medium" },
-						{ value: "high", label: "high" },
-					],
-				},
-			}),
-		);
+		expect(orchestrator.listAgentThinkingLevelCandidates(agentId)).toEqual({
+			levels: [
+				{ value: "off", label: "off" },
+				{ value: "low", label: "low" },
+				{ value: "medium", label: "medium" },
+				{ value: "high", label: "high" },
+			],
+		});
 
 		await expect(
-			orchestrator.inputAgent(agentId, "/thinking:high"),
-		).resolves.toEqual(
-			expect.objectContaining({
-				kind: "command",
-				name: "thinking",
-				value: { level: "high" },
-			}),
-		);
+			orchestrator.setAgentThinkingLevelByName(agentId, "high"),
+		).resolves.toEqual({
+			level: "high",
+		});
 		expect(orchestrator.getAgentThinkingLevel(agentId)).toBe("high");
 	});
 
@@ -823,7 +778,7 @@ describe("AgentOrchestrator", () => {
 		]);
 	});
 
-	it("executes runtime input aliases for steer, follow-up, and status", async () => {
+	it("dispatches steer and follow-up through atomic methods", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
 		const agentId = await orchestrator.spawnAgent();
@@ -843,15 +798,9 @@ describe("AgentOrchestrator", () => {
 		)._handleAgentHarnessEvent.bind(orchestrator);
 		await handleHarnessEvent(agentId, { type: "turn_start" });
 
-		await expect(
-			orchestrator.inputAgent(agentId, "/steer:keep going"),
-		).resolves.toMatchObject({ kind: "command" });
-		await expect(
-			orchestrator.inputAgent(agentId, "/follow-up:summarize next"),
-		).resolves.toMatchObject({ kind: "command" });
-		await expect(
-			orchestrator.inputAgent(agentId, "/status"),
-		).resolves.toMatchObject({ kind: "command", value: "running" });
+		await orchestrator.steerAgent(agentId, "keep going");
+		await orchestrator.followUpAgent(agentId, "summarize next");
+		expect(orchestrator.getAgentStatus(agentId)).toBe("running");
 
 		expect(events).toContainEqual(
 			expect.objectContaining({
@@ -881,647 +830,6 @@ describe("AgentOrchestrator", () => {
 				}),
 			}),
 		);
-	});
-
-	it("completes missing required command arguments before execution", async () => {
-		const env = new MemoryExecutionEnv();
-		const orchestrator = await createOrchestrator(env);
-		const agentId = await orchestrator.spawnAgent();
-		const harness = requireAgentHarness(orchestrator, agentId);
-		const events: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			events.push(event);
-		});
-		orchestrator.registerClient({
-			id: "human",
-			requestHuman: async (request) => {
-				expect(request).toMatchObject({
-					kind: "argumentsCompletion",
-					title: "Complete /steer arguments",
-					message: "Command /steer requires an argument.",
-					placeholder: "<text>",
-					allowFreeInput: true,
-					payload: {
-						commandId: "orchestrator-command-1",
-						command: {
-							name: "steer",
-							trigger: "/",
-							argument: "",
-							source: { kind: "built-in" },
-							placement: "line",
-						},
-						argumentHint: "<text>",
-						argumentPrefix: "",
-						candidates: [],
-					},
-				});
-				return { kind: "input", value: "keep going" };
-			},
-		});
-		(harness as unknown as { phase: "turn" }).phase = "turn";
-		const handleHarnessEvent = (
-			orchestrator as unknown as {
-				_handleAgentHarnessEvent(
-					agentId: string,
-					event: AgentHarnessEvent,
-				): Promise<void>;
-			}
-		)._handleAgentHarnessEvent.bind(orchestrator);
-		await handleHarnessEvent(agentId, { type: "turn_start" });
-
-		await expect(
-			orchestrator.inputAgent(agentId, "/steer"),
-		).resolves.toMatchObject({ kind: "command", name: "steer" });
-		expect(
-			events
-				.filter(
-					(event) =>
-						event.type === "command_detected" ||
-						event.type === "human_request_pending" ||
-						event.type === "human_request_resolved" ||
-						event.type === "command_accepted" ||
-						event.type === "command_completed",
-				)
-				.map((event) => event.type),
-		).toEqual([
-			"command_detected",
-			"human_request_pending",
-			"human_request_resolved",
-			"command_accepted",
-			"command_completed",
-		]);
-		expect(events).toContainEqual(
-			expect.objectContaining({
-				type: "command_detected",
-				command: expect.objectContaining({ argument: "" }),
-			}),
-		);
-		expect(events).toContainEqual(
-			expect.objectContaining({
-				type: "command_accepted",
-				command: expect.objectContaining({ argument: "keep going" }),
-			}),
-		);
-		expect(events).toContainEqual(
-			expect.objectContaining({
-				type: "command_completed",
-				command: expect.objectContaining({ argument: "keep going" }),
-			}),
-		);
-		expect(events).toContainEqual(
-			expect.objectContaining({
-				type: "agent_harness_event",
-				event: expect.objectContaining({
-					type: "queue_update",
-					steer: [
-						expect.objectContaining({
-							role: "user",
-							content: [{ type: "text", text: "keep going" }],
-						}),
-					],
-				}),
-			}),
-		);
-	});
-
-	it("rejects missing required command arguments when no client can complete them", async () => {
-		const env = new MemoryExecutionEnv();
-		const orchestrator = await createOrchestrator(env);
-		const agentId = await orchestrator.spawnAgent();
-		const events: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			events.push(event);
-		});
-
-		await expect(
-			orchestrator.inputAgent(agentId, "/follow-up"),
-		).resolves.toMatchObject({
-			kind: "rejected",
-			diagnostic: {
-				code: "command.arguments_required",
-				message: "Command /follow-up requires an argument.",
-			},
-		});
-		expect(events).toContainEqual(
-			expect.objectContaining({
-				type: "command_rejected",
-				diagnostic: expect.objectContaining({
-					code: "command.arguments_required",
-					details: expect.objectContaining({
-						completionFailureCode: "orchestrator.human_request_unhandled",
-						requestId: "human-request-1",
-					}),
-				}),
-			}),
-		);
-		expect(events).not.toContainEqual(
-			expect.objectContaining({ type: "command_accepted" }),
-		);
-		expect(events).not.toContainEqual(
-			expect.objectContaining({ type: "command_failed" }),
-		);
-	});
-
-	it("rejects blank completed command arguments before execution", async () => {
-		const env = new MemoryExecutionEnv();
-		const orchestrator = await createOrchestrator(env);
-		const agentId = await orchestrator.spawnAgent();
-		const events: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			events.push(event);
-		});
-		orchestrator.registerClient({
-			id: "human",
-			requestHuman: async () => ({ kind: "input", value: "  " }),
-		});
-
-		await expect(
-			orchestrator.inputAgent(agentId, "/name"),
-		).resolves.toMatchObject({
-			kind: "rejected",
-			diagnostic: {
-				code: "command.arguments_required",
-				message: "Command /name requires an argument.",
-				details: {
-					completionFailureCode: "command.arguments_completion_empty",
-					responseKind: "input",
-				},
-			},
-		});
-		expect(events).toContainEqual(
-			expect.objectContaining({ type: "command_rejected" }),
-		);
-		expect(events).not.toContainEqual(
-			expect.objectContaining({ type: "command_accepted" }),
-		);
-		expect(events).not.toContainEqual(
-			expect.objectContaining({ type: "command_failed" }),
-		);
-	});
-
-	it("rejects cancelled argument completion before execution", async () => {
-		const env = new MemoryExecutionEnv();
-		const orchestrator = await createOrchestrator(env);
-		const agentId = await orchestrator.spawnAgent();
-		const events: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			events.push(event);
-		});
-		const pendingRequest = new Promise<
-			Extract<OrchestratorEvent, { type: "human_request_pending" }>
-		>((resolve) => {
-			orchestrator.subscribe((event) => {
-				if (event.type === "human_request_pending") resolve(event);
-			});
-		});
-		orchestrator.registerClient({
-			id: "human",
-			requestHuman: async () => await new Promise<never>(() => {}),
-		});
-
-		const result = orchestrator.inputAgent(agentId, "/follow-up");
-		const pending = await pendingRequest;
-		expect(pending.request.agentId).toBe(agentId);
-		expect(pending.request.agentId).toBe(pending.agentId);
-		expect(pending.request).not.toHaveProperty("signal");
-
-		await expect(
-			orchestrator.cancelHumanRequest(pending.request.id, "dismissed"),
-		).resolves.toBe(true);
-		await expect(result).resolves.toMatchObject({
-			kind: "rejected",
-			diagnostic: {
-				code: "command.arguments_required",
-				details: expect.objectContaining({
-					completionFailureCode: "orchestrator.human_request_cancelled",
-					requestId: pending.request.id,
-				}),
-			},
-		});
-		expect(events).not.toContainEqual(
-			expect.objectContaining({ type: "command_accepted" }),
-		);
-		expect(events).not.toContainEqual(
-			expect.objectContaining({ type: "command_failed" }),
-		);
-	});
-
-	it("rejects completed command arguments when the gateway went stale", async () => {
-		const env = new MemoryExecutionEnv();
-		const orchestrator = await createOrchestrator(env);
-		const agentId = await orchestrator.spawnAgent();
-		const harness = requireAgentHarness(orchestrator, agentId);
-		const events: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			events.push(event);
-		});
-		const handleHarnessEvent = (
-			orchestrator as unknown as {
-				_handleAgentHarnessEvent(
-					agentId: string,
-					event: AgentHarnessEvent,
-				): Promise<void>;
-			}
-		)._handleAgentHarnessEvent.bind(orchestrator);
-		(harness as unknown as { phase: "turn" }).phase = "turn";
-		await handleHarnessEvent(agentId, { type: "turn_start" });
-		orchestrator.registerClient({
-			id: "human",
-			requestHuman: async () => {
-				// The turn ends while the human is completing the argument.
-				await handleHarnessEvent(agentId, {
-					type: "turn_end",
-					message: createAssistantPartial([{ type: "text", text: "done" }]),
-					toolResults: [],
-				});
-				return { kind: "input", value: "keep going" };
-			},
-		});
-
-		await expect(
-			orchestrator.inputAgent(agentId, "/steer"),
-		).resolves.toMatchObject({
-			kind: "rejected",
-			diagnostic: {
-				code: "command.not_available",
-				message: "Command /steer requires a running agent (status: idle).",
-			},
-		});
-		expect(events).toContainEqual(
-			expect.objectContaining({
-				type: "command_rejected",
-				command: expect.objectContaining({ argument: "keep going" }),
-			}),
-		);
-		expect(events).not.toContainEqual(
-			expect.objectContaining({ type: "command_accepted" }),
-		);
-		expect(events).not.toContainEqual(
-			expect.objectContaining({ type: "command_failed" }),
-		);
-	});
-
-	it("offers completion candidates and accepts a select response", async () => {
-		const env = new MemoryExecutionEnv();
-		const orchestrator = await createOrchestrator(env);
-		const agentId = await orchestrator.spawnAgent();
-		const { completeCommandArguments, binding, invocation } =
-			createArgumentsCompletionFixture(orchestrator, async (context) => {
-				expect(context.agentId).toBe(agentId);
-				expect(context.argumentPrefix).toBe("");
-				expect(context.orchestrator).toBe(orchestrator);
-				return [
-					{ value: "alpha", label: "Alpha", description: "First candidate" },
-					{ value: "beta" },
-				];
-			});
-		orchestrator.registerClient({
-			id: "human",
-			requestHuman: async (request) => {
-				expect(request).toMatchObject({
-					kind: "argumentsCompletion",
-					options: ["alpha", "beta"],
-					placeholder: "<value>",
-					allowFreeInput: true,
-					payload: {
-						command: invocation,
-						argumentHint: "<value>",
-						argumentPrefix: "",
-						candidates: [
-							{
-								value: "alpha",
-								label: "Alpha",
-								description: "First candidate",
-							},
-							{ value: "beta" },
-						],
-					},
-				});
-				return { kind: "select", value: "beta" };
-			},
-		});
-
-		await expect(
-			completeCommandArguments({
-				agentId,
-				commandId: "orchestrator-command-test",
-				binding,
-				invocation,
-				argumentPrefix: "",
-			}),
-		).resolves.toEqual({ ok: true, argument: "beta" });
-	});
-
-	it("treats select responses without a value as missing completion", async () => {
-		const env = new MemoryExecutionEnv();
-		const orchestrator = await createOrchestrator(env);
-		const agentId = await orchestrator.spawnAgent();
-		const { completeCommandArguments, binding, invocation } =
-			createArgumentsCompletionFixture(orchestrator, async () => [
-				{ value: "alpha" },
-			]);
-		orchestrator.registerClient({
-			id: "human",
-			requestHuman: async () => ({ kind: "select", value: undefined }),
-		});
-
-		await expect(
-			completeCommandArguments({
-				agentId,
-				commandId: "orchestrator-command-test",
-				binding,
-				invocation,
-				argumentPrefix: "",
-			}),
-		).resolves.toMatchObject({
-			ok: false,
-			diagnostic: {
-				code: "command.arguments_required",
-				details: {
-					completionFailureCode: "command.arguments_completion_empty",
-					responseKind: "select",
-				},
-			},
-		});
-	});
-
-	it("rejects argument completion responses of unexpected kinds", async () => {
-		const env = new MemoryExecutionEnv();
-		const orchestrator = await createOrchestrator(env);
-		const agentId = await orchestrator.spawnAgent();
-		const { completeCommandArguments, binding, invocation } =
-			createArgumentsCompletionFixture(orchestrator);
-		orchestrator.registerClient({
-			id: "human",
-			requestHuman: async () => ({ kind: "confirm", confirmed: true }),
-		});
-
-		await expect(
-			completeCommandArguments({
-				agentId,
-				commandId: "orchestrator-command-test",
-				binding,
-				invocation,
-				argumentPrefix: "",
-			}),
-		).resolves.toMatchObject({
-			ok: false,
-			diagnostic: {
-				code: "command.arguments_required",
-				details: {
-					completionFailureCode:
-						"command.arguments_completion_invalid_response",
-					responseKind: "confirm",
-				},
-			},
-		});
-	});
-
-	it("short-circuits argument completion when the candidate source fails", async () => {
-		const env = new MemoryExecutionEnv();
-		const orchestrator = await createOrchestrator(env);
-		const agentId = await orchestrator.spawnAgent();
-		const { completeCommandArguments, binding, invocation } =
-			createArgumentsCompletionFixture(orchestrator, async () => {
-				throw new Error("candidate source unavailable");
-			});
-		let humanRequested = false;
-		orchestrator.registerClient({
-			id: "human",
-			requestHuman: async () => {
-				humanRequested = true;
-				return { kind: "input", value: "never" };
-			},
-		});
-
-		await expect(
-			completeCommandArguments({
-				agentId,
-				commandId: "orchestrator-command-test",
-				binding,
-				invocation,
-				argumentPrefix: "",
-			}),
-		).resolves.toMatchObject({
-			ok: false,
-			diagnostic: {
-				code: "command.arguments_required",
-				details: expect.objectContaining({
-					completionFailureCode: "command.arguments_completion_failed",
-				}),
-			},
-		});
-		expect(humanRequested).toBe(false);
-	});
-
-	it("expands inline prompt commands and records the original input", async () => {
-		const env = new MemoryExecutionEnv();
-		await env.writeFile(
-			"/workspace/project/.widi/prompt_templates/focus.md",
-			"Focus on correctness.",
-		);
-		const orchestrator = await createOrchestrator(env);
-		const agentId = await orchestrator.spawnAgent();
-		const events: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			events.push(event);
-		});
-		const prompted: string[] = [];
-		Object.assign(orchestrator, {
-			promptAgent: async (_agentId: string, text: string) => {
-				prompted.push(text);
-				return { role: "assistant" } as AssistantMessage;
-			},
-		});
-
-		await expect(
-			orchestrator.inputAgent(agentId, "review this <prompt:focus> please"),
-		).resolves.toMatchObject({ kind: "prompt" });
-		expect(prompted).toEqual(["review this Focus on correctness. please"]);
-		expect(events).toContainEqual(
-			expect.objectContaining({
-				type: "command_detected",
-				inputId: "orchestrator-input-1",
-				command: expect.objectContaining({
-					name: "prompt",
-					trigger: "<",
-					argument: "focus",
-					placement: "inline",
-				}),
-			}),
-		);
-		expect(events).toContainEqual(
-			expect.objectContaining({
-				type: "command_completed",
-				inputId: "orchestrator-input-1",
-				result: "Focus on correctness.",
-			}),
-		);
-		const sessionFiles = [...env.files.entries()].filter(([path]) =>
-			path.startsWith("/sessions/"),
-		);
-		const expansionRecord = sessionFiles.find(([, content]) =>
-			content.includes("core:command_expansion"),
-		);
-		expect(expansionRecord).toBeDefined();
-		expect(expansionRecord?.[1]).toContain("review this <prompt:focus> please");
-	});
-
-	it("rejects the whole input when an inline expansion fails", async () => {
-		const env = new MemoryExecutionEnv();
-		const orchestrator = await createOrchestrator(env);
-		const agentId = await orchestrator.spawnAgent();
-		const events: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			events.push(event);
-		});
-		const prompted: string[] = [];
-		Object.assign(orchestrator, {
-			promptAgent: async (_agentId: string, text: string) => {
-				prompted.push(text);
-				return { role: "assistant" } as AssistantMessage;
-			},
-		});
-
-		await expect(
-			orchestrator.inputAgent(agentId, "check <prompt:missing> now"),
-		).resolves.toMatchObject({
-			kind: "failed",
-			diagnostic: { code: "prompt_template.not_found" },
-		});
-		expect(prompted).toEqual([]);
-		expect(events).toContainEqual(
-			expect.objectContaining({
-				type: "command_failed",
-				command: expect.objectContaining({
-					name: "prompt",
-					placement: "inline",
-				}),
-			}),
-		);
-	});
-
-	it("completes missing inline command arguments before expansion", async () => {
-		const env = new MemoryExecutionEnv();
-		await env.writeFile(
-			"/workspace/project/.widi/prompt_templates/focus.md",
-			"Focus on correctness.",
-		);
-		await env.writeFile(
-			"/workspace/project/.widi/prompt_templates/deep.md",
-			"Dig deeper.",
-		);
-		const orchestrator = await createOrchestrator(env);
-		const agentId = await orchestrator.spawnAgent();
-		orchestrator.registerClient({
-			id: "human",
-			requestHuman: async (request) => {
-				expect(request).toMatchObject({
-					kind: "argumentsCompletion",
-					placeholder: "<template>",
-					allowFreeInput: true,
-				});
-				expect(request.options).toEqual(
-					expect.arrayContaining(["deep", "focus"]),
-				);
-				return { kind: "select", value: "deep" };
-			},
-		});
-		const prompted: string[] = [];
-		Object.assign(orchestrator, {
-			promptAgent: async (_agentId: string, text: string) => {
-				prompted.push(text);
-				return { role: "assistant" } as AssistantMessage;
-			},
-		});
-
-		await expect(
-			orchestrator.inputAgent(agentId, "start <prompt> now"),
-		).resolves.toMatchObject({ kind: "prompt" });
-		expect(prompted).toEqual(["start Dig deeper. now"]);
-	});
-
-	it("keeps unmatched inline tokens as plain prompt text", async () => {
-		const env = new MemoryExecutionEnv();
-		await env.writeFile(
-			"/workspace/project/.widi/prompt_templates/focus.md",
-			"Focus on correctness.",
-		);
-		const orchestrator = await createOrchestrator(env);
-		const agentId = await orchestrator.spawnAgent();
-		const events: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			events.push(event);
-		});
-		const prompted: string[] = [];
-		Object.assign(orchestrator, {
-			promptAgent: async (_agentId: string, text: string) => {
-				prompted.push(text);
-				return { role: "assistant" } as AssistantMessage;
-			},
-		});
-
-		// Unregistered name and a non-boundary token are both plain text.
-		await orchestrator.inputAgent(agentId, "look <unknown:x> here");
-		await orchestrator.inputAgent(agentId, "tail <prompt:focus>, done");
-		expect(prompted).toEqual([
-			"look <unknown:x> here",
-			"tail <prompt:focus>, done",
-		]);
-		expect(events).not.toContainEqual(
-			expect.objectContaining({ type: "command_detected" }),
-		);
-	});
-
-	it("expands inline skill commands with metadata and guidance only", async () => {
-		const env = new MemoryExecutionEnv();
-		await env.writeFile(
-			"/workspace/project/.widi/skills/code-review/SKILL.md",
-			[
-				"---",
-				"name: code-review",
-				"description: Review code for issues.",
-				"---",
-				"SECRET BODY INSTRUCTIONS",
-			].join("\n"),
-		);
-		// writeFile only registers the immediate parent; the loader walks
-		// from the skills root, which must exist as a directory.
-		env.dirs.add("/workspace/project/.widi/skills");
-		const orchestrator = await createOrchestrator(env);
-		const agentId = await orchestrator.spawnAgent();
-		const prompted: string[] = [];
-		Object.assign(orchestrator, {
-			promptAgent: async (_agentId: string, text: string) => {
-				prompted.push(text);
-				return { role: "assistant" } as AssistantMessage;
-			},
-		});
-
-		await expect(
-			orchestrator.inputAgent(agentId, "please <skill:code-review> now"),
-		).resolves.toMatchObject({ kind: "prompt" });
-		expect(prompted).toHaveLength(1);
-		const expanded = prompted[0] ?? "";
-		expect(expanded).toContain('<skill name="code-review">');
-		expect(expanded).toContain("Review code for issues.");
-		expect(expanded).toContain(
-			"Skill file: /workspace/project/.widi/skills/code-review/SKILL.md",
-		);
-		// The skill body stays in the file; the expansion is metadata-only.
-		expect(expanded).not.toContain("SECRET BODY INSTRUCTIONS");
-
-		await expect(
-			orchestrator.listAgentSkillCandidates(agentId),
-		).resolves.toEqual({
-			skills: [
-				{
-					value: "code-review",
-					label: "code-review",
-					description: "Review code for issues.",
-				},
-			],
-		});
 	});
 
 	it("lists loaded skills in the harness system prompt when the resolved read tool is active", async () => {
@@ -1666,196 +974,61 @@ describe("AgentOrchestrator", () => {
 		).toContain("<available_skills>");
 	});
 
-	it("rejects the whole input when an inline skill is unknown", async () => {
+	it("promptAgent persists an expansion entry alongside the prompt", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
 		const agentId = await orchestrator.spawnAgent();
-		const prompted: string[] = [];
-		Object.assign(orchestrator, {
-			promptAgent: async (_agentId: string, text: string) => {
-				prompted.push(text);
-				return { role: "assistant" } as AssistantMessage;
-			},
-		});
-
-		await expect(
-			orchestrator.inputAgent(agentId, "try <skill:nope> now"),
-		).resolves.toMatchObject({
-			kind: "failed",
-			diagnostic: { code: "skill.not_found" },
-		});
-		expect(prompted).toEqual([]);
-	});
-
-	it("prunes and rejects commands denied by profile policy", async () => {
-		const env = new MemoryExecutionEnv();
-		const policyProfile: AgentProfile = {
-			...defaultProfile,
-			id: "policy",
-			commands: { deny: ["abort"] },
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: policyProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: policyProfile },
-				]),
-			),
-		});
-		const agentId = await orchestrator.spawnAgent();
-
-		const names = orchestrator.listCommands(agentId).map((c) => c.name);
-		expect(names).not.toContain("abort");
-		expect(names).toContain("status");
-		await expect(
-			orchestrator.inputAgent(agentId, "/abort"),
-		).resolves.toMatchObject({
-			kind: "rejected",
-			diagnostic: { code: "command.not_permitted", agentId },
-		});
-	});
-
-	it("hides user-facing commands from agents that do not accept user input", async () => {
-		const env = new MemoryExecutionEnv();
-		const workerProfile: AgentProfile = {
-			...defaultProfile,
-			id: "background-worker",
-			capabilities: { acceptsUserInput: false },
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: workerProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: workerProfile },
-				]),
-			),
-		});
-		const agentId = await orchestrator.spawnAgent();
-
-		const names = orchestrator.listCommands(agentId).map((c) => c.name);
-		expect(names).not.toContain("new");
-		expect(names).not.toContain("fork");
-		expect(names).not.toContain("resume");
-		expect(names).toContain("status");
-		await expect(
-			orchestrator.inputAgent(agentId, "/new"),
-		).resolves.toMatchObject({
-			kind: "rejected",
-			diagnostic: { code: "command.not_permitted", agentId },
-		});
-	});
-
-	it("treats input as plain prompt when command parsing is disabled", async () => {
-		const env = new MemoryExecutionEnv();
-		const chatProfile: AgentProfile = {
-			...defaultProfile,
-			id: "chat-only",
-			commands: { enabled: false },
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: chatProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: chatProfile },
-					{ profile: defaultProfile },
-				]),
-			),
-		});
-		const agentId = await orchestrator.spawnAgent();
-		const prompted: string[] = [];
-		const promptStub = async (_agentId: string, text: string) => {
-			prompted.push(text);
-			return { role: "assistant" } as AssistantMessage;
-		};
-		Object.assign(orchestrator, { promptAgent: promptStub });
-
-		expect(orchestrator.listCommands(agentId)).toEqual([]);
-		await expect(
-			orchestrator.inputAgent(agentId, "/status"),
-		).resolves.toMatchObject({ kind: "prompt" });
-
-		// The per-call switch has the same semantics on a command-enabled agent.
-		const commandAgentId = await orchestrator.spawnAgent({
-			profileId: defaultProfile.id,
-		});
-		await expect(
-			orchestrator.inputAgent(commandAgentId, "/status", { commands: false }),
-		).resolves.toMatchObject({ kind: "prompt" });
-		expect(prompted).toEqual(["/status", "/status"]);
-	});
-
-	it("re-parses extension-transformed input as a command", async () => {
-		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "rewriter-profile",
-			persist: false,
-			extensions: ["rewriter"],
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: extensionProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
-			),
-		});
-		orchestrator.registerExtension("rewriter", (api) => {
-			api.intercept("input", (event) => {
-				if (event.text === "use reasoning") {
-					return {
-						text: `/model:${reasoningModel.provider}/${reasoningModel.id}`,
-					};
-				}
-				if (event.text === "/status") {
-					return { text: "plain question" };
-				}
-				return undefined;
-			});
-		});
-		const events: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			events.push(event);
-		});
-		const agentId = await orchestrator.spawnAgent();
 		const harness = requireAgentHarness(orchestrator, agentId);
-
-		// Text rewritten into a command goes through the full parse/gateway
-		// pipeline and executes for real.
-		await expect(
-			orchestrator.inputAgent(agentId, "use reasoning"),
-		).resolves.toMatchObject({ kind: "command", name: "model" });
-		expect(harness.getModel()).toMatchObject({ id: reasoningModel.id });
-		expect(events).toContainEqual(
-			expect.objectContaining({
-				type: "input_transformed",
-				agentId,
-				inputId: expect.any(String),
-				originalText: "use reasoning",
-				text: `/model:${reasoningModel.provider}/${reasoningModel.id}`,
-				transformedBy: ["rewriter"],
-			}),
-		);
-
-		// A command rewritten into plain text stops being a command.
 		const prompted: string[] = [];
-		Object.assign(orchestrator, {
-			promptAgent: async (_agentId: string, text: string) => {
+		Object.assign(harness, {
+			prompt: async (text: string) => {
 				prompted.push(text);
 				return { role: "assistant" } as AssistantMessage;
 			},
 		});
-		await expect(
-			orchestrator.inputAgent(agentId, "/status"),
-		).resolves.toMatchObject({ kind: "prompt" });
-		expect(prompted).toEqual(["plain question"]);
+
+		const outcome = await orchestrator.promptAgent(agentId, "expanded text", {
+			expansion: {
+				originalText: "use <skill:review>",
+				items: [
+					{
+						commandId: "command-1",
+						name: "skill",
+						trigger: "<",
+						argument: "review",
+						start: 4,
+						end: 18,
+					},
+				],
+			},
+		});
+		expect(outcome.kind).toBe("completed");
+		expect(prompted).toEqual(["expanded text"]);
+		const entries = (
+			await orchestrator.getAgentSessionTree(agentId)
+		).entries.filter(
+			(entry) =>
+				entry.type === "custom" &&
+				entry.customType === "core:command_expansion",
+		);
+		expect(entries).toMatchObject([
+			{
+				data: {
+					inputId: expect.any(String),
+					originalText: "use <skill:review>",
+					expansions: [
+						expect.objectContaining({ commandId: "command-1", name: "skill" }),
+					],
+				},
+			},
+		]);
 	});
 
-	it("blocks intercepted input before command parsing and publishes the fact", async () => {
+	it("promptAgent blocks input when an extension interceptor blocks", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = {
 			...defaultProfile,
-			id: "policy-profile",
+			id: "prompt-policy-profile",
 			persist: false,
 			extensions: ["policy"],
 		};
@@ -1879,18 +1052,17 @@ describe("AgentOrchestrator", () => {
 			events.push(event);
 		});
 		const agentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, agentId);
 		const prompted: string[] = [];
-		Object.assign(orchestrator, {
-			promptAgent: async (_agentId: string, text: string) => {
+		Object.assign(harness, {
+			prompt: async (text: string) => {
 				prompted.push(text);
 				return { role: "assistant" } as AssistantMessage;
 			},
 		});
 
-		// The blocked text is a would-be command; interception precedes
-		// parsing, so no command event is ever detected.
 		await expect(
-			orchestrator.inputAgent(agentId, "/status secret"),
+			orchestrator.promptAgent(agentId, "share the secret"),
 		).resolves.toEqual({
 			kind: "blocked",
 			inputId: expect.any(String),
@@ -1902,67 +1074,234 @@ describe("AgentOrchestrator", () => {
 			expect.objectContaining({
 				type: "input_blocked",
 				agentId,
-				originalText: "/status secret",
+				originalText: "share the secret",
 				reason: "Sensitive input.",
 				blockedBy: "policy",
 			}),
 		);
-		expect(events).not.toContainEqual(
-			expect.objectContaining({ type: "command_detected" }),
-		);
 	});
 
-	it("intercepts input even when command parsing is disabled", async () => {
+	it("promptAgent applies extension transforms and persists the transform entry", async () => {
 		const env = new MemoryExecutionEnv();
-		const chatProfile: AgentProfile = {
+		const extensionProfile: AgentProfile = {
 			...defaultProfile,
-			id: "chat-policy",
+			id: "prompt-rewriter-profile",
 			persist: false,
-			commands: { enabled: false },
-			extensions: ["policy"],
-		};
-		const commandProfile: AgentProfile = {
-			...defaultProfile,
-			id: "command-policy",
-			persist: false,
-			extensions: ["policy"],
+			extensions: ["rewriter"],
 		};
 		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: chatProfile.id,
+			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
 				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: chatProfile },
-					{ profile: commandProfile },
+					{ profile: extensionProfile },
 				]),
 			),
 		});
-		orchestrator.registerExtension("policy", (api) => {
-			api.intercept("input", () => ({
-				block: true,
-				reason: "All input is denied.",
-			}));
+		orchestrator.registerExtension("rewriter", (api) => {
+			api.intercept("input", (event) => {
+				if (event.text.includes("secret")) {
+					return { block: true, reason: "Sensitive input." };
+				}
+				return { text: `${event.text}!` };
+			});
 		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, agentId);
 		const prompted: string[] = [];
-		Object.assign(orchestrator, {
-			promptAgent: async (_agentId: string, text: string) => {
+		Object.assign(harness, {
+			prompt: async (text: string) => {
 				prompted.push(text);
 				return { role: "assistant" } as AssistantMessage;
 			},
 		});
 
-		const chatAgentId = await orchestrator.spawnAgent();
 		await expect(
-			orchestrator.inputAgent(chatAgentId, "hello"),
-		).resolves.toMatchObject({ kind: "blocked" });
+			orchestrator.promptAgent(agentId, "hello"),
+		).resolves.toMatchObject({ kind: "completed" });
+		expect(prompted).toEqual(["hello!"]);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "input_transformed",
+				agentId,
+				inputId: expect.any(String),
+				originalText: "hello",
+				text: "hello!",
+				transformedBy: ["rewriter"],
+			}),
+		);
+		const findTransformEntries = async () =>
+			(await orchestrator.getAgentSessionTree(agentId)).entries.filter(
+				(entry) =>
+					entry.type === "custom" &&
+					entry.customType === "core:input_transform",
+			);
+		await expect(findTransformEntries()).resolves.toMatchObject([
+			{
+				data: {
+					inputId: expect.any(String),
+					originalText: "hello",
+					text: "hello!",
+					transformedBy: ["rewriter"],
+				},
+			},
+		]);
 
-		// The per-call switch cannot bypass an input policy either.
-		const commandAgentId = await orchestrator.spawnAgent({
-			profileId: commandProfile.id,
+		// Blocked input never reaches the session: no entry is written.
+		await expect(
+			orchestrator.promptAgent(agentId, "share the secret"),
+		).resolves.toMatchObject({ kind: "blocked" });
+		await expect(findTransformEntries()).resolves.toHaveLength(1);
+	});
+
+	it("promptAgent retracts provisional entries when the prompt fails before its user message", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const agentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, agentId);
+		Object.assign(harness, {
+			prompt: async () => {
+				throw new Error("before_agent_start hook exploded");
+			},
+		});
+		const expansion = {
+			originalText: "use <skill:review>",
+			items: [
+				{
+					commandId: "command-1",
+					name: "skill",
+					trigger: "<",
+					argument: "review",
+					start: 4,
+					end: 18,
+				},
+			],
+		};
+
+		await expect(
+			orchestrator.promptAgent(agentId, "expanded text", { expansion }),
+		).rejects.toThrow("before_agent_start hook exploded");
+
+		// The failed prompt never persisted a user message; a leftover entry
+		// on the active branch would pair with the next user message during
+		// hydration and show the wrong original text.
+		const branchCustomEntries = async () =>
+			(await orchestrator.getAgentSession(agentId)).pathToRoot.filter(
+				(entry) => entry.type === "custom",
+			);
+		await expect(branchCustomEntries()).resolves.toEqual([]);
+
+		// The branch stays usable: a later successful prompt persists its own
+		// expansion entry as the only one on the branch.
+		Object.assign(harness, {
+			prompt: async () => ({ role: "assistant" }) as AssistantMessage,
 		});
 		await expect(
-			orchestrator.inputAgent(commandAgentId, "hello", { commands: false }),
-		).resolves.toMatchObject({ kind: "blocked" });
-		expect(prompted).toEqual([]);
+			orchestrator.promptAgent(agentId, "expanded again", {
+				expansion: { ...expansion, originalText: "use <skill:audit>" },
+			}),
+		).resolves.toMatchObject({ kind: "completed" });
+		await expect(branchCustomEntries()).resolves.toMatchObject([
+			{ data: { originalText: "use <skill:audit>" } },
+		]);
+	});
+
+	it("promptAgent keeps provisional entries when the user message landed before the failure", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "prompt-run-failure-profile",
+			persist: false,
+			extensions: ["rewriter"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtension("rewriter", (api) => {
+			api.intercept("input", (event) => ({ text: `${event.text}!` }));
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, agentId);
+		Object.assign(harness, {
+			prompt: async (text: string) => {
+				// A run that persisted its user message and then failed at the
+				// provider: the transform entry has its pairing message and must
+				// survive the failure.
+				await harness.appendMessage({
+					role: "user",
+					content: [{ type: "text", text }],
+					timestamp: Date.now(),
+				});
+				throw new Error("provider exploded");
+			},
+		});
+
+		await expect(orchestrator.promptAgent(agentId, "hello")).rejects.toThrow(
+			"provider exploded",
+		);
+
+		const branch = (await orchestrator.getAgentSession(agentId)).pathToRoot;
+		const transformIndex = branch.findIndex(
+			(entry) =>
+				entry.type === "custom" && entry.customType === "core:input_transform",
+		);
+		const userMessageIndex = branch.findIndex(
+			(entry) => entry.type === "message" && entry.message.role === "user",
+		);
+		expect(transformIndex).toBeGreaterThanOrEqual(0);
+		expect(userMessageIndex).toBeGreaterThan(transformIndex);
+	});
+
+	it("promptAgent rejects a busy agent before interception and session writes", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "prompt-busy-profile",
+			persist: false,
+			extensions: ["rewriter"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		let interceptorCalls = 0;
+		orchestrator.registerExtension("rewriter", (api) => {
+			api.intercept("input", (event) => {
+				interceptorCalls += 1;
+				return { text: `${event.text}!` };
+			});
+		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const agentId = await orchestrator.spawnAgent();
+		requireAgentRecord(orchestrator, agentId).status = "running";
+
+		await expect(
+			orchestrator.promptAgent(agentId, "hello", {
+				expansion: { originalText: "hello", items: [] },
+			}),
+		).rejects.toMatchObject({ code: "orchestrator.agent_busy" });
+
+		expect(interceptorCalls).toBe(0);
+		expect(
+			events.filter((event) => event.type === "input_transformed"),
+		).toEqual([]);
+		const branch = (await orchestrator.getAgentSession(agentId)).pathToRoot;
+		expect(branch.filter((entry) => entry.type === "custom")).toEqual([]);
 	});
 
 	it("rejects input fail-closed when an input interceptor throws", async () => {
@@ -2000,7 +1339,7 @@ describe("AgentOrchestrator", () => {
 		const agentId = await orchestrator.spawnAgent();
 
 		await expect(
-			orchestrator.inputAgent(agentId, "hello"),
+			orchestrator.promptAgent(agentId, "hello"),
 		).resolves.toMatchObject({ kind: "blocked", blockedBy: "broken" });
 		expect(healthyCalled).toBe(false);
 		expect(events).toContainEqual(
@@ -2020,189 +1359,6 @@ describe("AgentOrchestrator", () => {
 				originalText: "hello",
 				blockedBy: "broken",
 			}),
-		);
-	});
-
-	it("expands extension inline commands through the full command pipeline", async () => {
-		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "glossary-profile",
-			persist: false,
-			extensions: ["glossary"],
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: extensionProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
-			),
-		});
-		// The expansion data lives in the factory closure; the expand callback
-		// receives the argument only (side-effect free by shape).
-		const glossary = new Map([["tdd", "test-driven development"]]);
-		orchestrator.registerExtension("glossary", (api) => {
-			api.registerCommand({
-				name: "glossary",
-				placement: "inline",
-				description: "Expand a glossary term.",
-				expand: (argument) => glossary.get(argument) ?? argument,
-			});
-		});
-		const events: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			events.push(event);
-		});
-		const agentId = await orchestrator.spawnAgent();
-		const prompted: string[] = [];
-		Object.assign(orchestrator, {
-			promptAgent: async (_agentId: string, text: string) => {
-				prompted.push(text);
-				return { role: "assistant" } as AssistantMessage;
-			},
-		});
-
-		expect(orchestrator.listCommands(agentId)).toContainEqual(
-			expect.objectContaining({
-				name: "glossary",
-				placement: "inline",
-				trigger: "<",
-				closeTrigger: ">",
-			}),
-		);
-		await expect(
-			orchestrator.inputAgent(agentId, "explain <glossary:tdd> briefly"),
-		).resolves.toMatchObject({ kind: "prompt" });
-		expect(prompted).toEqual(["explain test-driven development briefly"]);
-		expect(events).toContainEqual(
-			expect.objectContaining({
-				type: "command_completed",
-				command: expect.objectContaining({
-					name: "glossary",
-					trigger: "<",
-					argument: "tdd",
-					placement: "inline",
-					source: { kind: "extension", extensionId: "glossary" },
-				}),
-				result: "test-driven development",
-			}),
-		);
-		// The dual record covers extension expansions too.
-		const tree = await orchestrator.getAgentSessionTree(agentId);
-		expect(tree.entries).toContainEqual(
-			expect.objectContaining({
-				type: "custom",
-				customType: "core:command_expansion",
-				data: expect.objectContaining({
-					originalText: "explain <glossary:tdd> briefly",
-				}),
-			}),
-		);
-	});
-
-	it("rejects the whole input when an extension inline expansion fails", async () => {
-		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "broken-glossary-profile",
-			persist: false,
-			extensions: ["glossary"],
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: extensionProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
-			),
-		});
-		orchestrator.registerExtension("glossary", (api) => {
-			api.registerCommand({
-				name: "glossary",
-				placement: "inline",
-				expand: () => {
-					throw new Error("glossary unavailable");
-				},
-			});
-		});
-		const events: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			events.push(event);
-		});
-		const agentId = await orchestrator.spawnAgent();
-		const prompted: string[] = [];
-		Object.assign(orchestrator, {
-			promptAgent: async (_agentId: string, text: string) => {
-				prompted.push(text);
-				return { role: "assistant" } as AssistantMessage;
-			},
-		});
-
-		await expect(
-			orchestrator.inputAgent(agentId, "explain <glossary:tdd> briefly"),
-		).resolves.toMatchObject({
-			kind: "failed",
-			diagnostic: { code: "orchestrator.command_failed" },
-		});
-		expect(prompted).toEqual([]);
-		expect(events).toContainEqual(
-			expect.objectContaining({
-				type: "command_failed",
-				command: expect.objectContaining({
-					name: "glossary",
-					placement: "inline",
-					source: { kind: "extension", extensionId: "glossary" },
-				}),
-			}),
-		);
-	});
-
-	it("treats extension inline tokens as plain text when the runner is stale", async () => {
-		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "stale-glossary-profile",
-			persist: false,
-			extensions: ["glossary"],
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: extensionProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
-			),
-		});
-		orchestrator.registerExtension("glossary", (api) => {
-			api.registerCommand({
-				name: "glossary",
-				placement: "inline",
-				expand: () => "expanded",
-			});
-		});
-		const events: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			events.push(event);
-		});
-		const agentId = await orchestrator.spawnAgent();
-		requireAgentRecord(orchestrator, agentId).extensionRunner?.invalidate(
-			"stale for test",
-		);
-		const prompted: string[] = [];
-		Object.assign(orchestrator, {
-			promptAgent: async (_agentId: string, text: string) => {
-				prompted.push(text);
-				return { role: "assistant" } as AssistantMessage;
-			},
-		});
-
-		await expect(
-			orchestrator.inputAgent(agentId, "explain <glossary:tdd> briefly"),
-		).resolves.toMatchObject({ kind: "prompt" });
-		expect(prompted).toEqual(["explain <glossary:tdd> briefly"]);
-		expect(events).not.toContainEqual(
-			expect.objectContaining({ type: "command_detected" }),
 		);
 	});
 
@@ -2245,14 +1401,6 @@ describe("AgentOrchestrator", () => {
 			}),
 		);
 		const agentId = await orchestrator.spawnAgent();
-		const prompted: string[] = [];
-		Object.assign(orchestrator, {
-			promptAgent: async (_agentId: string, text: string) => {
-				prompted.push(text);
-				return { role: "assistant" } as AssistantMessage;
-			},
-		});
-
 		await expect(
 			orchestrator.listAgentSkillCandidates(agentId),
 		).resolves.toEqual({
@@ -2264,14 +1412,6 @@ describe("AgentOrchestrator", () => {
 				},
 			],
 		});
-		await expect(
-			orchestrator.inputAgent(agentId, "run <skill:security-review> here"),
-		).resolves.toMatchObject({ kind: "prompt" });
-		await expect(
-			orchestrator.inputAgent(agentId, "use <prompt:focus> now"),
-		).resolves.toMatchObject({ kind: "prompt" });
-		expect(prompted[0]).toContain('<skill name="security-review">');
-		expect(prompted[1]).toBe("use Focus on correctness. now");
 
 		// Registration and resolved provenance are both inspect facts.
 		const snapshot = orchestrator.inspectAgent(agentId);
@@ -2446,96 +1586,32 @@ describe("AgentOrchestrator", () => {
 		expect(after.skills.map((skill) => skill.value)).toEqual(["code-review"]);
 	});
 
-	it("persists input rewrites as a core input-transform entry", async () => {
-		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "rewriter-entry-profile",
-			persist: false,
-			extensions: ["rewriter"],
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: extensionProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
-			),
-		});
-		orchestrator.registerExtension("rewriter", (api) => {
-			api.intercept("input", (event) => {
-				if (event.text.includes("secret")) {
-					return { block: true, reason: "Sensitive input." };
-				}
-				return { text: `${event.text}!` };
-			});
-		});
-		const agentId = await orchestrator.spawnAgent();
-		const prompted: string[] = [];
-		Object.assign(orchestrator, {
-			promptAgent: async (_agentId: string, text: string) => {
-				prompted.push(text);
-				return { role: "assistant" } as AssistantMessage;
-			},
-		});
-
-		await expect(
-			orchestrator.inputAgent(agentId, "hello"),
-		).resolves.toMatchObject({ kind: "prompt" });
-		expect(prompted).toEqual(["hello!"]);
-		const findTransformEntries = async () =>
-			(await orchestrator.getAgentSessionTree(agentId)).entries.filter(
-				(entry) =>
-					entry.type === "custom" &&
-					entry.customType === "core:input_transform",
-			);
-		await expect(findTransformEntries()).resolves.toMatchObject([
-			{
-				data: {
-					inputId: expect.any(String),
-					originalText: "hello",
-					text: "hello!",
-					transformedBy: ["rewriter"],
-				},
-			},
-		]);
-
-		// Blocked input never reaches the session: no entry is written.
-		await expect(
-			orchestrator.inputAgent(agentId, "share the secret"),
-		).resolves.toMatchObject({ kind: "blocked" });
-		await expect(findTransformEntries()).resolves.toHaveLength(1);
-	});
-
 	it("starts a new empty session from the current agent", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
 		const agentId = await orchestrator.spawnAgent();
 
-		const result = await orchestrator.inputAgent(agentId, "/new");
+		const result = await orchestrator.newAgentSessionFromAgent(agentId);
 
 		expect(result).toMatchObject({
-			kind: "command",
-			value: {
+			agentId: "main-agent-2",
+			snapshot: {
 				agentId: "main-agent-2",
-				snapshot: {
-					agentId: "main-agent-2",
-					status: "idle",
-					hasHarness: true,
-					profile: {
-						reference: {
-							id: defaultProfile.id,
-							label: defaultProfile.label,
-						},
+				status: "idle",
+				hasHarness: true,
+				profile: {
+					reference: {
+						id: defaultProfile.id,
+						label: defaultProfile.label,
 					},
-					model: expect.objectContaining({ id: defaultModel.id }),
 				},
+				model: expect.objectContaining({ id: defaultModel.id }),
 			},
 		});
 		expect(orchestrator.getAgentStatus(agentId)).toBe("idle");
 	});
 
-	it("lists and resumes sessions through runtime commands", async () => {
+	it("lists and resumes sessions through atomic methods", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
 		const agentId = await orchestrator.spawnAgent();
@@ -2557,32 +1633,16 @@ describe("AgentOrchestrator", () => {
 				expect.objectContaining({ id: agentId }),
 			]),
 		});
-		await expect(
-			orchestrator.inputAgent(agentId, "/resume"),
-		).resolves.toMatchObject({
-			kind: "command",
-			value: {
-				sessions: expect.arrayContaining([
-					expect.objectContaining({ id: "worker-agent" }),
-					expect.objectContaining({ id: agentId }),
-				]),
-			},
-		});
-
-		const result = await orchestrator.inputAgent(
-			agentId,
-			`/resume:${metadata.path}`,
+		const result = await orchestrator.resumeAgentSessionByReference(
+			metadata.path,
 		);
 
 		expect(result).toMatchObject({
-			kind: "command",
-			value: {
+			agentId: "worker-agent",
+			snapshot: {
 				agentId: "worker-agent",
-				snapshot: {
-					agentId: "worker-agent",
-					status: "idle",
-					model: expect.objectContaining({ id: restoredModel.id }),
-				},
+				status: "idle",
+				model: expect.objectContaining({ id: restoredModel.id }),
 			},
 		});
 	});
@@ -2608,53 +1668,37 @@ describe("AgentOrchestrator", () => {
 			},
 		);
 		const orchestrator = await createOrchestrator(env);
-		const agentId = await orchestrator.spawnAgent();
 
 		await expect(
-			orchestrator.inputAgent(agentId, "/resume:same"),
-		).resolves.toMatchObject({
-			kind: "failed",
-			diagnostic: {
-				message: "Ambiguous agent session reference: same",
-			},
-		});
+			orchestrator.resumeAgentSessionByReference("same"),
+		).rejects.toThrow("Ambiguous agent session reference: same");
 	});
 
-	it("lists runtime agents and persisted sessions through input aliases", async () => {
+	it("lists runtime agents and persisted sessions through atomic methods", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
 		const agentId = await orchestrator.spawnAgent();
 
-		await expect(
-			orchestrator.inputAgent(agentId, "/agent"),
-		).resolves.toMatchObject({
-			kind: "command",
-			value: {
-				agents: [
-					expect.objectContaining({
-						agentId,
-						status: "idle",
-						hasHarness: true,
-					}),
-				],
-			},
+		expect(orchestrator.listAgents()).toMatchObject({
+			agents: [
+				expect.objectContaining({
+					agentId,
+					status: "idle",
+					hasHarness: true,
+				}),
+			],
 		});
-		await expect(
-			orchestrator.inputAgent(agentId, "/session"),
-		).resolves.toMatchObject({
-			kind: "command",
-			value: {
-				sessions: [
-					expect.objectContaining({
-						id: agentId,
-						profile: { id: defaultProfile.id, label: defaultProfile.label },
-					}),
-				],
-			},
+		await expect(orchestrator.listAgentSessions()).resolves.toMatchObject({
+			sessions: [
+				expect.objectContaining({
+					id: agentId,
+					profile: { id: defaultProfile.id, label: defaultProfile.label },
+				}),
+			],
 		});
 	});
 
-	it("names and inspects the current session tree through input aliases", async () => {
+	it("names and inspects the current session tree through atomic methods", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
 		const agentId = await orchestrator.spawnAgent();
@@ -2669,35 +1713,29 @@ describe("AgentOrchestrator", () => {
 		});
 
 		await expect(
-			orchestrator.inputAgent(agentId, "/name:Planning Session"),
+			orchestrator.setAgentSessionName(agentId, "Planning Session"),
 		).resolves.toMatchObject({
-			kind: "command",
-			value: {
-				name: "Planning Session",
-			},
+			name: "Planning Session",
 		});
 		await expect(
-			orchestrator.inputAgent(agentId, "/tree"),
+			orchestrator.getAgentSessionTree(agentId),
 		).resolves.toMatchObject({
-			kind: "command",
-			value: {
-				name: "Planning Session",
-				entries: [
-					expect.objectContaining({ id: userEntryId, type: "message" }),
-					expect.objectContaining({
-						type: "session_info",
-						name: "Planning Session",
-					}),
-				],
-				pathToRoot: [
-					expect.objectContaining({ id: userEntryId }),
-					expect.objectContaining({ type: "session_info" }),
-				],
-			},
+			name: "Planning Session",
+			entries: [
+				expect.objectContaining({ id: userEntryId, type: "message" }),
+				expect.objectContaining({
+					type: "session_info",
+					name: "Planning Session",
+				}),
+			],
+			pathToRoot: [
+				expect.objectContaining({ id: userEntryId }),
+				expect.objectContaining({ type: "session_info" }),
+			],
 		});
 	});
 
-	it("navigates the session tree when /tree receives an entry id", async () => {
+	it("navigates the session tree through the atomic method", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
 		const agentId = await orchestrator.spawnAgent();
@@ -2717,13 +1755,10 @@ describe("AgentOrchestrator", () => {
 		});
 
 		await expect(
-			orchestrator.inputAgent(agentId, `/tree:${userEntryId}`),
+			orchestrator.navigateAgentTree(agentId, userEntryId),
 		).resolves.toMatchObject({
-			kind: "command",
-			value: {
-				cancelled: false,
-				editorText: "edit this",
-			},
+			cancelled: false,
+			editorText: "edit this",
 		});
 		await expect(orchestrator.getAgentSession(agentId)).resolves.toMatchObject({
 			leafId: null,
@@ -2750,32 +1785,19 @@ describe("AgentOrchestrator", () => {
 			timestamp: 2,
 		});
 
-		const result = await orchestrator.inputAgent(
-			agentId,
-			`/fork:${targetEntryId}`,
-		);
+		const result = await orchestrator.forkAgentSessionFromAgent(agentId, {
+			entryId: targetEntryId,
+		});
 
 		expect(result).toMatchObject({
-			kind: "command",
-			value: {
-				agentId: expect.not.stringMatching(`^${agentId}$`),
-				snapshot: {
-					status: "idle",
-					hasHarness: true,
-					model: expect.objectContaining({ id: defaultModel.id }),
-				},
+			agentId: expect.not.stringMatching(`^${agentId}$`),
+			snapshot: {
+				status: "idle",
+				hasHarness: true,
+				model: expect.objectContaining({ id: defaultModel.id }),
 			},
 		});
-		if (
-			result.kind !== "command" ||
-			!result.value ||
-			typeof result.value !== "object" ||
-			!("agentId" in result.value) ||
-			typeof result.value.agentId !== "string"
-		) {
-			throw new Error("Expected fork command result.");
-		}
-		const forkedAgentId = result.value.agentId;
+		const forkedAgentId = result.agentId;
 		const forkedTree = await orchestrator.getAgentSessionTree(forkedAgentId);
 		expect(forkedTree).toMatchObject({
 			metadata: {
@@ -2900,12 +1922,12 @@ describe("AgentOrchestrator", () => {
 		const agentId = await orchestrator.spawnAgent();
 		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
 		if (!runner) throw new Error("Expected extension runner.");
-		const commandContext = runner.createCommandContext("stateful");
-		await commandContext.actions.setStatus("sync", {
+		const context = runner.createContext("stateful");
+		await context.actions.setStatus("sync", {
 			text: "Synchronizing",
 			progress: { completed: 1, total: 3 },
 		});
-		await commandContext.actions.setStatus("watch", {
+		await context.actions.setStatus("watch", {
 			text: "Watching workspace",
 		});
 		const events: OrchestratorEvent[] = [];
@@ -2952,7 +1974,7 @@ describe("AgentOrchestrator", () => {
 			hasHarness: false,
 			extensionIds: ["stateful"],
 		});
-		await expect(commandContext.waitForIdle()).rejects.toThrow(
+		expect(() => context.actions.getTools()).toThrow(
 			"Agent has been disposed.",
 		);
 	});
@@ -3217,7 +2239,6 @@ describe("AgentOrchestrator", () => {
 				extensionIds: ["sample"],
 				extensions: [{ id: "sample", source: { kind: "factory" } }],
 				hooks: [],
-				commands: [],
 				toolContributions: [
 					{
 						kind: "define",
@@ -3240,7 +2261,6 @@ describe("AgentOrchestrator", () => {
 				extensionIds: [],
 				extensions: [],
 				hooks: [],
-				commands: [],
 				toolContributions: [],
 				stale: { stale: false },
 			},
@@ -3269,11 +2289,6 @@ describe("AgentOrchestrator", () => {
 		orchestrator.registerExtension("sample", (api) => {
 			api.observe("agent_harness_event", () => {});
 			api.intercept("context", (event) => ({ messages: event.messages }));
-			api.registerCommand({
-				name: "sample",
-				description: "Sample command",
-				handler: () => {},
-			});
 			api.registerTool(createToolDefinition("sampleTool", "sample"));
 			api.patchTool("base", {
 				description: "patched base",
@@ -3297,18 +2312,6 @@ describe("AgentOrchestrator", () => {
 					kind: "intercept",
 					extensionId: "sample",
 					eventName: "context",
-				},
-			],
-			commands: [
-				{
-					extensionId: "sample",
-					command: {
-						name: "sample",
-						description: "Sample command",
-						source: { kind: "extension", extensionId: "sample" },
-						placement: "line",
-						trigger: "/",
-					},
 				},
 			],
 			toolContributions: [
@@ -3390,158 +2393,9 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
-	it("executes extension input commands through agent.input", async () => {
-		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "extension-profile",
-			label: "Extension Profile",
-			persist: false,
-			extensions: ["sample"],
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: extensionProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
-			),
-		});
-		orchestrator.registerExtension("sample", (api) => {
-			api.registerCommand({
-				name: "mark",
-				description: "Append a marker entry",
-				argumentHint: "<text>",
-				handler: async (args, context) => {
-					await context.session.appendEntry("marker", { args });
-				},
-			});
-		});
-		const agentId = await orchestrator.spawnAgent();
-
-		const result = await orchestrator.inputAgent(agentId, "/mark:hello world");
-
-		expect(result).toMatchObject({
-			kind: "command",
-			value: undefined,
-		});
-		expect(
-			await orchestrator.sessionManager.findExtensionCustomEntries(
-				agentId,
-				"sample",
-				"marker",
-			),
-		).toMatchObject([
-			{
-				type: "marker",
-				data: { args: "hello world" },
-			},
-		]);
-		expect(orchestrator.listCommands(agentId)).toEqual([
-			expect.objectContaining({
-				name: "abort",
-				source: { kind: "built-in" },
-			}),
-			expect.objectContaining({
-				name: "compact",
-				source: { kind: "built-in" },
-			}),
-			expect.objectContaining({
-				name: "follow-up",
-				source: { kind: "built-in" },
-			}),
-			expect.objectContaining({
-				name: "fork",
-				source: { kind: "built-in" },
-			}),
-			expect.objectContaining({
-				name: "inspect",
-				source: { kind: "built-in" },
-			}),
-			expect.objectContaining({
-				name: "agent",
-				source: { kind: "built-in" },
-			}),
-			expect.objectContaining({
-				name: "model",
-				source: { kind: "built-in" },
-			}),
-			expect.objectContaining({
-				name: "thinking",
-				source: { kind: "built-in" },
-			}),
-			expect.objectContaining({
-				name: "name",
-				source: { kind: "built-in" },
-			}),
-			expect.objectContaining({
-				name: "new",
-				source: { kind: "built-in" },
-			}),
-			expect.objectContaining({
-				name: "reload",
-				source: { kind: "built-in" },
-			}),
-			expect.objectContaining({
-				name: "resume",
-				source: { kind: "built-in" },
-			}),
-			expect.objectContaining({
-				name: "session",
-				source: { kind: "built-in" },
-			}),
-			expect.objectContaining({
-				name: "status",
-				source: { kind: "built-in" },
-			}),
-			expect.objectContaining({
-				name: "steer",
-				source: { kind: "built-in" },
-			}),
-			expect.objectContaining({
-				name: "tree",
-				source: { kind: "built-in" },
-			}),
-			{
-				name: "mark",
-				description: "Append a marker entry",
-				argumentHint: "<text>",
-				source: { kind: "extension", extensionId: "sample" },
-				placement: "line",
-				trigger: "/",
-				available: true,
-			},
-		]);
-	});
-
-	it("forwards extension command results and emits append-only output without observer feedback", async () => {
-		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "extension-profile",
-			label: "Extension Profile",
-			persist: false,
-			extensions: ["sample"],
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: extensionProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
-			),
-		});
-		orchestrator.registerExtension("sample", (api) => {
-			api.registerCommand({
-				name: "report",
-				handler: async (args, context) => {
-					await context.actions.emitOutput("step 1");
-					await context.actions.emitOutput("step 2");
-					return { ok: true, args };
-				},
-			});
-		});
-		const agentId = await orchestrator.spawnAgent();
+	it("delivers extension output and notifications without observer feedback or persistence", async () => {
+		const { env, orchestrator, agentId, actions } =
+			await createExtensionActionsHarness();
 		const events: OrchestratorEvent[] = [];
 		const clientEvents: OrchestratorEvent[] = [];
 		const extensionObservedEvents: OrchestratorEvent[] = [];
@@ -3549,7 +2403,7 @@ describe("AgentOrchestrator", () => {
 			events.push(event);
 		});
 		orchestrator.registerClient({
-			id: "output-client",
+			id: "presentation-client",
 			receive: (event) => {
 				clientEvents.push(event);
 			},
@@ -3561,104 +2415,61 @@ describe("AgentOrchestrator", () => {
 			},
 		});
 
-		await expect(
-			orchestrator.inputAgent(agentId, "/report:details"),
-		).resolves.toEqual({
-			kind: "command",
-			commandId: "orchestrator-command-1",
-			name: "report",
-			value: { ok: true, args: "details" },
-		});
+		await actions.emitOutput("step 1");
+		await actions.emitOutput("step 2");
+		await actions.notify("Report generated in 2.1s");
 
-		const commandEvents = events.filter(
+		const presentationEvents = events.filter(
 			(event) =>
-				(event.type.startsWith("command_") &&
-					"command" in event &&
-					event.command?.source.kind === "extension") ||
-				event.type === "extension_output",
+				event.type === "extension_output" ||
+				event.type === "extension_notification",
 		);
-		expect(commandEvents.map((event) => event.type)).toEqual([
-			"command_detected",
-			"command_accepted",
-			"extension_output",
-			"extension_output",
-			"command_completed",
-		]);
-		expect(commandEvents).toContainEqual(
-			expect.objectContaining({
-				type: "command_completed",
-				result: { ok: true, args: "details" },
-			}),
-		);
-		expect(
-			commandEvents
-				.filter((event) => event.type === "extension_output")
-				.map((event) => ({
-					presentationId: event.presentationId,
-					agentId: event.agentId,
-					extensionId: event.extensionId,
-					commandId: event.commandId,
-					text: event.text,
-				})),
-		).toEqual([
+		expect(presentationEvents).toEqual([
 			{
+				type: "extension_output",
 				presentationId: "orchestrator-presentation-1",
 				agentId,
 				extensionId: "sample",
-				commandId: "orchestrator-command-1",
 				text: "step 1",
+				createdAt: expect.any(String),
 			},
 			{
+				type: "extension_output",
 				presentationId: "orchestrator-presentation-2",
 				agentId,
 				extensionId: "sample",
-				commandId: "orchestrator-command-1",
 				text: "step 2",
+				createdAt: expect.any(String),
+			},
+			{
+				type: "extension_notification",
+				presentationId: "orchestrator-presentation-3",
+				agentId,
+				extensionId: "sample",
+				text: "Report generated in 2.1s",
+				createdAt: expect.any(String),
 			},
 		]);
+		expect(clientEvents).toEqual(expect.arrayContaining(presentationEvents));
 		expect(extensionObservedEvents).not.toContainEqual(
-			expect.objectContaining({ type: "extension_output" }),
+			expect.objectContaining({
+				type: expect.stringMatching("^extension_(output|notification)$"),
+			}),
 		);
-		expect(
-			clientEvents
-				.filter((event) => event.type === "extension_output")
-				.map((event) => event.text),
-		).toEqual(["step 1", "step 2"]);
-		expect([...env.files.values()].join("\n")).not.toContain("step 1");
-		expect([...env.files.values()].join("\n")).not.toContain("step 2");
+		const persisted = [...env.files.values()].join("\n");
+		expect(persisted).not.toContain("step 1");
+		expect(persisted).not.toContain("Report generated in 2.1s");
 	});
 
-	it("isolates event listener failures from extension output delivery", async () => {
-		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "extension-profile",
-			label: "Extension Profile",
-			persist: false,
-			extensions: ["sample"],
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: extensionProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
-			),
-		});
-		orchestrator.registerExtension("sample", (api) => {
-			api.registerCommand({
-				name: "report",
-				handler: async (_args, context) => {
-					await context.actions.emitOutput("working");
-					return "done";
-				},
-			});
-		});
-		const agentId = await orchestrator.spawnAgent();
+	it("isolates listener and client failures from extension presentation delivery", async () => {
+		const { orchestrator, actions } = await createExtensionActionsHarness();
 		const delivered: OrchestratorEvent[] = [];
 		const clientEvents: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
-			if (event.type === "extension_output") {
+			if (
+				event.type === "extension_output" ||
+				event.type === "extension_notification"
+			) {
 				throw new Error("listener exploded");
 			}
 		});
@@ -3666,381 +2477,77 @@ describe("AgentOrchestrator", () => {
 			delivered.push(event);
 		});
 		orchestrator.registerClient({
-			id: "output-client",
+			id: "broken-presentation-client",
 			receive: (event) => {
-				clientEvents.push(event);
-			},
-		});
-
-		await expect(
-			orchestrator.inputAgent(agentId, "/report"),
-		).resolves.toMatchObject({
-			kind: "command",
-			value: "done",
-		});
-		expect(delivered).toContainEqual(
-			expect.objectContaining({
-				type: "extension_output",
-				text: "working",
-			}),
-		);
-		expect(
-			clientEvents.filter(
-				(event) =>
-					event.type === "diagnostic" &&
-					event.diagnostic.code === "orchestrator.listener_failed",
-			),
-		).toHaveLength(1);
-	});
-
-	it("isolates client receive failures from extension output delivery", async () => {
-		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "extension-profile",
-			label: "Extension Profile",
-			persist: false,
-			extensions: ["sample"],
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: extensionProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
-			),
-		});
-		orchestrator.registerExtension("sample", (api) => {
-			api.registerCommand({
-				name: "report",
-				handler: async (_args, context) => {
-					await context.actions.emitOutput("working");
-					return "done";
-				},
-			});
-		});
-		const agentId = await orchestrator.spawnAgent();
-		const events: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			events.push(event);
-		});
-		orchestrator.registerClient({
-			id: "broken-output-client",
-			receive: (event) => {
-				if (event.type === "extension_output") {
-					throw new Error("client exploded");
-				}
-			},
-		});
-
-		await expect(
-			orchestrator.inputAgent(agentId, "/report"),
-		).resolves.toMatchObject({
-			kind: "command",
-			value: "done",
-		});
-		expect(events).toContainEqual(
-			expect.objectContaining({
-				type: "diagnostic",
-				diagnostic: expect.objectContaining({
-					code: "orchestrator.client_failed",
-					message: "client exploded",
-				}),
-			}),
-		);
-	});
-
-	it("rejects empty and oversized extension output payloads", async () => {
-		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "extension-profile",
-			label: "Extension Profile",
-			persist: false,
-			extensions: ["sample"],
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: extensionProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
-			),
-		});
-		orchestrator.registerExtension("sample", (api) => {
-			api.registerCommand({
-				name: "empty-output",
-				handler: async (_args, context) => {
-					await context.actions.emitOutput("");
-				},
-			});
-			api.registerCommand({
-				name: "large-output",
-				handler: async (_args, context) => {
-					await context.actions.emitOutput("x".repeat(65_537));
-				},
-			});
-		});
-		const events: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			events.push(event);
-		});
-		const agentId = await orchestrator.spawnAgent();
-
-		await expect(
-			orchestrator.inputAgent(agentId, "/empty-output"),
-		).resolves.toMatchObject({ kind: "failed" });
-		await expect(
-			orchestrator.inputAgent(agentId, "/large-output"),
-		).resolves.toMatchObject({ kind: "failed" });
-		expect(events).not.toContainEqual(
-			expect.objectContaining({ type: "extension_output" }),
-		);
-		expect(
-			events.filter(
-				(event) =>
-					event.type === "diagnostic" &&
-					event.diagnostic.code === "extension.action_failed" &&
-					event.diagnostic.details?.action === "emitOutput",
-			),
-		).toHaveLength(2);
-	});
-
-	it("publishes ephemeral info-only extension notifications without observer feedback", async () => {
-		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "extension-profile",
-			label: "Extension Profile",
-			persist: false,
-			extensions: ["sample"],
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: extensionProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
-			),
-		});
-		orchestrator.registerExtension("sample", (api) => {
-			api.registerCommand({
-				name: "notify",
-				handler: async (_args, context) => {
-					await context.actions.notify("Report generated in 2.1s");
-					return "done";
-				},
-			});
-		});
-		const agentId = await orchestrator.spawnAgent();
-		const events: OrchestratorEvent[] = [];
-		const clientEvents: OrchestratorEvent[] = [];
-		const extensionObservedEvents: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			events.push(event);
-		});
-		orchestrator.registerClient({
-			id: "notification-client",
-			receive: (event) => {
-				clientEvents.push(event);
-			},
-		});
-		Object.assign(orchestrator, {
-			_isExtensionObservedEvent: () => true,
-			_emitToExtensionObservers: async (event: OrchestratorEvent) => {
-				extensionObservedEvents.push(event);
-			},
-		});
-
-		await expect(
-			orchestrator.inputAgent(agentId, "/notify"),
-		).resolves.toMatchObject({
-			kind: "command",
-			commandId: "orchestrator-command-1",
-			value: "done",
-		});
-
-		const commandEvents = events.filter(
-			(event) =>
-				(event.type.startsWith("command_") &&
-					"command" in event &&
-					event.command?.source.kind === "extension") ||
-				event.type === "extension_notification",
-		);
-		expect(commandEvents.map((event) => event.type)).toEqual([
-			"command_detected",
-			"command_accepted",
-			"extension_notification",
-			"command_completed",
-		]);
-		const notification = commandEvents.find(
-			(event) => event.type === "extension_notification",
-		);
-		expect(notification).toEqual({
-			type: "extension_notification",
-			presentationId: "orchestrator-presentation-1",
-			agentId,
-			extensionId: "sample",
-			commandId: "orchestrator-command-1",
-			text: "Report generated in 2.1s",
-			createdAt: expect.any(String),
-		});
-		expect(notification).not.toHaveProperty("severity");
-		expect(notification).not.toHaveProperty("code");
-		expect(extensionObservedEvents).not.toContainEqual(
-			expect.objectContaining({ type: "extension_notification" }),
-		);
-		expect(clientEvents).toContainEqual(notification);
-		expect([...env.files.values()].join("\n")).not.toContain(
-			"Report generated in 2.1s",
-		);
-	});
-
-	it("isolates listener and client failures from extension notification delivery", async () => {
-		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "extension-profile",
-			label: "Extension Profile",
-			persist: false,
-			extensions: ["sample"],
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: extensionProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
-			),
-		});
-		orchestrator.registerExtension("sample", (api) => {
-			api.registerCommand({
-				name: "notify",
-				handler: async (_args, context) => {
-					await context.actions.notify("Ready");
-					return "done";
-				},
-			});
-		});
-		const agentId = await orchestrator.spawnAgent();
-		const delivered: OrchestratorEvent[] = [];
-		const clientEvents: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			if (event.type === "extension_notification") {
-				throw new Error("listener exploded");
-			}
-		});
-		orchestrator.subscribe((event) => {
-			delivered.push(event);
-		});
-		orchestrator.registerClient({
-			id: "broken-notification-client",
-			receive: (event) => {
-				if (event.type === "extension_notification") {
+				if (
+					event.type === "extension_output" ||
+					event.type === "extension_notification"
+				) {
 					throw new Error("client exploded");
 				}
 			},
 		});
 		orchestrator.registerClient({
-			id: "notification-observer-client",
+			id: "presentation-observer-client",
 			receive: (event) => {
 				clientEvents.push(event);
 			},
 		});
 
-		await expect(
-			orchestrator.inputAgent(agentId, "/notify"),
-		).resolves.toMatchObject({
-			kind: "command",
-			value: "done",
-		});
-		expect(delivered).toContainEqual(
-			expect.objectContaining({
-				type: "extension_notification",
-				text: "Ready",
-			}),
-		);
-		expect(clientEvents).toContainEqual(
-			expect.objectContaining({
-				type: "extension_notification",
-				text: "Ready",
-			}),
-		);
-		expect(clientEvents).toContainEqual(
-			expect.objectContaining({
-				type: "diagnostic",
-				diagnostic: expect.objectContaining({
-					code: "orchestrator.listener_failed",
-					message: "listener exploded",
+		await expect(actions.emitOutput("working")).resolves.toBeUndefined();
+		await expect(actions.notify("Ready")).resolves.toBeUndefined();
+
+		expect(delivered).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ type: "extension_output", text: "working" }),
+				expect.objectContaining({
+					type: "extension_notification",
+					text: "Ready",
 				}),
-			}),
+			]),
+		);
+		expect(clientEvents).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ type: "extension_output", text: "working" }),
+				expect.objectContaining({
+					type: "extension_notification",
+					text: "Ready",
+				}),
+				expect.objectContaining({
+					type: "diagnostic",
+					diagnostic: expect.objectContaining({
+						code: "orchestrator.listener_failed",
+					}),
+				}),
+			]),
 		);
 		expect(delivered).toContainEqual(
 			expect.objectContaining({
 				type: "diagnostic",
 				diagnostic: expect.objectContaining({
 					code: "orchestrator.client_failed",
-					message: "client exploded",
 				}),
 			}),
 		);
 	});
 
-	it("accepts the notification byte limit and rejects blank or oversized payloads", async () => {
-		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "extension-profile",
-			label: "Extension Profile",
-			persist: false,
-			extensions: ["sample"],
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: extensionProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
-			),
-		});
-		orchestrator.registerExtension("sample", (api) => {
-			api.registerCommand({
-				name: "max-notification",
-				handler: async (_args, context) => {
-					await context.actions.notify("é".repeat(2_048));
-				},
-			});
-			for (const [name, text] of [
-				["empty-notification", ""],
-				["blank-notification", " \n\t "],
-				["large-notification", "é".repeat(2_049)],
-			] as const) {
-				api.registerCommand({
-					name,
-					handler: async (_args, context) => {
-						await context.actions.notify(text);
-					},
-				});
-			}
-		});
+	it("validates extension output and notification payloads through ordinary contexts", async () => {
+		const { orchestrator, actions } = await createExtensionActionsHarness();
 		const events: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
 			events.push(event);
 		});
-		const agentId = await orchestrator.spawnAgent();
 
-		await expect(
-			orchestrator.inputAgent(agentId, "/max-notification"),
-		).resolves.toMatchObject({ kind: "command" });
-		for (const name of [
-			"empty-notification",
-			"blank-notification",
-			"large-notification",
+		await expect(actions.notify("é".repeat(2_048))).resolves.toBeUndefined();
+		for (const invalidCall of [
+			() => actions.emitOutput(""),
+			() => actions.emitOutput("x".repeat(65_537)),
+			() => actions.notify(" \n\t "),
+			() => actions.notify("é".repeat(2_049)),
 		]) {
-			await expect(
-				orchestrator.inputAgent(agentId, `/${name}`),
-			).resolves.toMatchObject({ kind: "failed" });
+			await expect(invalidCall()).rejects.toThrow();
 		}
+
 		expect(
 			events.filter((event) => event.type === "extension_notification"),
 		).toEqual([
@@ -4052,47 +2559,14 @@ describe("AgentOrchestrator", () => {
 			events.filter(
 				(event) =>
 					event.type === "diagnostic" &&
-					event.diagnostic.code === "extension.action_failed" &&
-					event.diagnostic.details?.action === "notify",
+					event.diagnostic.code === "extension.action_failed",
 			),
-		).toHaveLength(3);
+		).toHaveLength(4);
 	});
 
-	it("stores keyed extension status and emits mutation-first canonical events", async () => {
-		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "extension-profile",
-			label: "Extension Profile",
-			persist: false,
-			extensions: ["sample"],
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: extensionProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
-			),
-		});
-		orchestrator.registerExtension("sample", (api) => {
-			api.registerCommand({
-				name: "status-flow",
-				handler: async (_args, context) => {
-					const first = { text: "Scanning" };
-					await context.actions.setStatus("index", first);
-					first.text = "mutated after set";
-					await context.actions.setStatus("index", {
-						text: "Building",
-						progress: { completed: 2, total: 5 },
-					});
-					await context.actions.clearStatus("index");
-					await context.actions.clearStatus("missing");
-					await context.actions.setStatus("ready", { text: "Ready" });
-				},
-			});
-		});
-		const agentId = await orchestrator.spawnAgent();
+	it("stores extension status mutation-first and protects snapshots from callers", async () => {
+		const { orchestrator, agentId, actions } =
+			await createExtensionActionsHarness();
 		const events: OrchestratorEvent[] = [];
 		const snapshotsDuringEvents: unknown[] = [];
 		const extensionObservedEvents: OrchestratorEvent[] = [];
@@ -4111,72 +2585,37 @@ describe("AgentOrchestrator", () => {
 			},
 		});
 
-		await expect(
-			orchestrator.inputAgent(agentId, "/status-flow"),
-		).resolves.toMatchObject({ kind: "command" });
+		const first = { text: "Scanning" };
+		await actions.setStatus("index", first);
+		first.text = "mutated after set";
+		await actions.setStatus("index", {
+			text: "Building",
+			progress: { completed: 2, total: 5 },
+		});
+		await actions.clearStatus("index");
+		await actions.clearStatus("missing");
+		await actions.setStatus("ready", { text: "Ready" });
 
 		const statusEvents = events.filter(
 			(event) => event.type === "extension_status_changed",
 		);
-		expect(statusEvents).toEqual([
+		expect(statusEvents).toMatchObject([
+			{ key: "index", status: { text: "Scanning" } },
 			{
-				type: "extension_status_changed",
-				presentationId: "orchestrator-presentation-1",
-				agentId,
-				extensionId: "sample",
-				commandId: "orchestrator-command-1",
-				key: "index",
-				status: { text: "Scanning" },
-				changedAt: expect.any(String),
-			},
-			{
-				type: "extension_status_changed",
-				presentationId: "orchestrator-presentation-2",
-				agentId,
-				extensionId: "sample",
-				commandId: "orchestrator-command-1",
 				key: "index",
 				status: {
 					text: "Building",
 					progress: { completed: 2, total: 5 },
 				},
-				changedAt: expect.any(String),
 			},
-			{
-				type: "extension_status_changed",
-				presentationId: "orchestrator-presentation-3",
-				agentId,
-				extensionId: "sample",
-				commandId: "orchestrator-command-1",
-				key: "index",
-				status: undefined,
-				changedAt: expect.any(String),
-			},
-			{
-				type: "extension_status_changed",
-				presentationId: "orchestrator-presentation-4",
-				agentId,
-				extensionId: "sample",
-				commandId: "orchestrator-command-1",
-				key: "ready",
-				status: { text: "Ready" },
-				changedAt: expect.any(String),
-			},
+			{ key: "index" },
+			{ key: "ready", status: { text: "Ready" } },
 		]);
 		expect(Object.hasOwn(statusEvents[2] ?? {}, "status")).toBe(false);
 		expect(snapshotsDuringEvents).toMatchObject([
+			[{ key: "index", status: { text: "Scanning" } }],
 			[
 				{
-					agentId,
-					extensionId: "sample",
-					key: "index",
-					status: { text: "Scanning" },
-				},
-			],
-			[
-				{
-					agentId,
-					extensionId: "sample",
 					key: "index",
 					status: {
 						text: "Building",
@@ -4185,32 +2624,133 @@ describe("AgentOrchestrator", () => {
 				},
 			],
 			[],
-			[
-				{
-					agentId,
-					extensionId: "sample",
-					key: "ready",
-					status: { text: "Ready" },
-				},
-			],
-		]);
-		expect(orchestrator.listExtensionStatuses(agentId)).toMatchObject([
-			{
-				agentId,
-				extensionId: "sample",
-				key: "ready",
-				status: { text: "Ready" },
-				updatedAt: expect.any(String),
-			},
+			[{ key: "ready", status: { text: "Ready" } }],
 		]);
 		expect(extensionObservedEvents).not.toContainEqual(
 			expect.objectContaining({ type: "extension_status_changed" }),
 		);
-
 		const snapshot = orchestrator.listExtensionStatuses(agentId);
 		(snapshot[0]?.status as { text: string }).text = "consumer mutation";
 		expect(orchestrator.listExtensionStatuses(agentId)[0]?.status.text).toBe(
 			"Ready",
+		);
+	});
+
+	it("persists extension messages with one entry id and records attributed diagnostics", async () => {
+		const { orchestrator, agentId, actions } =
+			await createExtensionActionsHarness();
+		const events: OrchestratorEvent[] = [];
+		const extensionObservedEvents: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		Object.assign(orchestrator, {
+			_isExtensionObservedEvent: () => true,
+			_emitToExtensionObservers: async (event: OrchestratorEvent) => {
+				extensionObservedEvents.push(event);
+			},
+		});
+
+		const draft: {
+			kind: "markdown";
+			title: string;
+			content: string;
+		} = {
+			kind: "markdown",
+			title: "Index Summary",
+			content: "Indexed 672 files.",
+		};
+		const published = await actions.publishMessage(draft);
+		draft.title = "mutated after publish";
+		const details: Record<string, unknown> = {
+			endpoint: "https://policy.internal",
+			attempts: 2,
+		};
+		await actions.reportDiagnostic({
+			severity: "warning",
+			code: "remote_policy_unreachable",
+			message: "Remote policy service is unavailable",
+			details,
+		});
+		details.attempts = 99;
+		await actions.reportDiagnostic({
+			severity: "warning",
+			code: "remote_policy_unreachable",
+			message: "Remote policy service is unavailable",
+		});
+
+		const messageEvent = events.find(
+			(event) => event.type === "extension_message_published",
+		);
+		expect(messageEvent).toMatchObject({
+			type: "extension_message_published",
+			entryId: published.entryId,
+			agentId,
+			extensionId: "sample",
+			message: {
+				kind: "markdown",
+				title: "Index Summary",
+				content: "Indexed 672 files.",
+			},
+		});
+		const tree = await orchestrator.getAgentSessionTree(agentId);
+		expect(tree.entries).toContainEqual(
+			expect.objectContaining({
+				id: published.entryId,
+				type: "custom",
+				customType: EXTENSION_MESSAGE_CUSTOM_TYPE,
+				data: expect.objectContaining({
+					extensionId: "sample",
+					message: {
+						kind: "markdown",
+						title: "Index Summary",
+						content: "Indexed 672 files.",
+					},
+				}),
+			}),
+		);
+
+		const reported = events
+			.filter(
+				(event): event is Extract<OrchestratorEvent, { type: "diagnostic" }> =>
+					event.type === "diagnostic" &&
+					event.diagnostic.code.startsWith("extension.sample."),
+			)
+			.map((event) => event.diagnostic);
+		expect(reported).toEqual([
+			expect.objectContaining({
+				id: "orchestrator-diagnostic-1",
+				domain: "extension",
+				code: "extension.sample.remote_policy_unreachable",
+				severity: "warning",
+				disposition: "reported",
+				source: { kind: "extension", id: "sample" },
+				agentId,
+				profileId: "extension-profile",
+				extensionId: "sample",
+				details: { endpoint: "https://policy.internal", attempts: 2 },
+			}),
+			expect.objectContaining({
+				id: "orchestrator-diagnostic-2",
+				domain: "extension",
+				code: "extension.sample.remote_policy_unreachable",
+				severity: "warning",
+				disposition: "reported",
+				source: { kind: "extension", id: "sample" },
+				agentId,
+				profileId: "extension-profile",
+				extensionId: "sample",
+			}),
+		]);
+		expect(orchestrator.inspectAgent(agentId).extensionDiagnostics).toEqual(
+			expect.arrayContaining(reported),
+		);
+		expect(extensionObservedEvents).not.toContainEqual(
+			expect.objectContaining({
+				type: expect.stringMatching(
+					"^(extension_message_published|diagnostic)$",
+				),
+			}),
 		);
 	});
 
@@ -4283,130 +2823,6 @@ describe("AgentOrchestrator", () => {
 					event.diagnostic.details?.action === "setStatus",
 			),
 		).toHaveLength(invalidCalls.length);
-	});
-
-	it("persists published extension messages and shares one entry id across action, event, and session", async () => {
-		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "extension-profile",
-			label: "Extension Profile",
-			persist: false,
-			extensions: ["sample"],
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: extensionProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
-			),
-		});
-		const published: Array<{ entryId: string }> = [];
-		orchestrator.registerExtension("sample", (api) => {
-			api.registerCommand({
-				name: "publish-report",
-				handler: async (_args, context) => {
-					const draft: { kind: "markdown"; title: string; content: string } = {
-						kind: "markdown",
-						title: "Index Summary",
-						content: "Indexed 672 files.",
-					};
-					published.push(await context.actions.publishMessage(draft));
-					draft.title = "mutated after publish";
-					published.push(
-						await context.actions.publishMessage({
-							kind: "text",
-							content: "plain follow-up",
-						}),
-					);
-				},
-			});
-		});
-		const agentId = await orchestrator.spawnAgent();
-		const events: OrchestratorEvent[] = [];
-		const extensionObservedEvents: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			events.push(event);
-		});
-		Object.assign(orchestrator, {
-			_isExtensionObservedEvent: () => true,
-			_emitToExtensionObservers: async (event: OrchestratorEvent) => {
-				extensionObservedEvents.push(event);
-			},
-		});
-
-		await expect(
-			orchestrator.inputAgent(agentId, "/publish-report"),
-		).resolves.toMatchObject({ kind: "command" });
-
-		const messageEvents = events.filter(
-			(
-				event,
-			): event is Extract<
-				OrchestratorEvent,
-				{ type: "extension_message_published" }
-			> => event.type === "extension_message_published",
-		);
-		expect(messageEvents).toEqual([
-			{
-				type: "extension_message_published",
-				presentationId: "orchestrator-presentation-1",
-				entryId: expect.any(String),
-				agentId,
-				extensionId: "sample",
-				commandId: "orchestrator-command-1",
-				message: {
-					kind: "markdown",
-					title: "Index Summary",
-					content: "Indexed 672 files.",
-				},
-				createdAt: expect.any(String),
-			},
-			{
-				type: "extension_message_published",
-				presentationId: "orchestrator-presentation-2",
-				entryId: expect.any(String),
-				agentId,
-				extensionId: "sample",
-				commandId: "orchestrator-command-1",
-				message: { kind: "text", content: "plain follow-up" },
-				createdAt: expect.any(String),
-			},
-		]);
-		expect(published.map(({ entryId }) => entryId)).toEqual(
-			messageEvents.map(({ entryId }) => entryId),
-		);
-
-		const tree = await orchestrator.getAgentSessionTree(agentId);
-		const messageEntries = tree.entries.filter(
-			(entry) =>
-				entry.type === "custom" &&
-				entry.customType === EXTENSION_MESSAGE_CUSTOM_TYPE,
-		);
-		expect(messageEntries.map((entry) => entry.id)).toEqual(
-			messageEvents.map(({ entryId }) => entryId),
-		);
-		expect(messageEntries[0]).toMatchObject({
-			data: {
-				extensionId: "sample",
-				commandId: "orchestrator-command-1",
-				message: {
-					kind: "markdown",
-					title: "Index Summary",
-					content: "Indexed 672 files.",
-				},
-			},
-		});
-		expect(messageEntries[1]).toMatchObject({
-			data: {
-				extensionId: "sample",
-				message: { kind: "text", content: "plain follow-up" },
-			},
-		});
-		expect(extensionObservedEvents).not.toContainEqual(
-			expect.objectContaining({ type: "extension_message_published" }),
-		);
 	});
 
 	it("rejects invalid extension messages without persisting entries or events", async () => {
@@ -4482,116 +2898,6 @@ describe("AgentOrchestrator", () => {
 					event.diagnostic.details?.action === "publishMessage",
 			),
 		).toHaveLength(invalidCalls.length);
-	});
-
-	it("namespaces extension-reported diagnostics and treats each report as an independent fact", async () => {
-		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "extension-profile",
-			label: "Extension Profile",
-			persist: false,
-			extensions: ["sample"],
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: extensionProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
-			),
-		});
-		orchestrator.registerExtension("sample", (api) => {
-			api.registerCommand({
-				name: "report-issues",
-				handler: async (_args, context) => {
-					const details: Record<string, unknown> = {
-						endpoint: "https://policy.internal",
-						attempts: 2,
-					};
-					await context.actions.reportDiagnostic({
-						severity: "warning",
-						code: "remote_policy_unreachable",
-						message: "Remote policy service is unavailable",
-						details,
-					});
-					details.attempts = 99;
-					await context.actions.reportDiagnostic({
-						severity: "warning",
-						code: "remote_policy_unreachable",
-						message: "Remote policy service is unavailable",
-					});
-					await context.actions.reportDiagnostic({
-						severity: "error",
-						disposition: "degraded",
-						code: "cache.corrupt",
-						message: "Index cache is corrupt",
-					});
-				},
-			});
-		});
-		const agentId = await orchestrator.spawnAgent();
-		const events: OrchestratorEvent[] = [];
-		const extensionObservedEvents: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			events.push(event);
-		});
-		Object.assign(orchestrator, {
-			_isExtensionObservedEvent: () => true,
-			_emitToExtensionObservers: async (event: OrchestratorEvent) => {
-				extensionObservedEvents.push(event);
-			},
-		});
-
-		await expect(
-			orchestrator.inputAgent(agentId, "/report-issues"),
-		).resolves.toMatchObject({ kind: "command" });
-
-		const reportedEvents = events.filter(
-			(event): event is Extract<OrchestratorEvent, { type: "diagnostic" }> =>
-				event.type === "diagnostic" &&
-				event.diagnostic.code.startsWith("extension.sample."),
-		);
-		expect(reportedEvents.map((event) => event.diagnostic)).toEqual([
-			expect.objectContaining({
-				id: "orchestrator-diagnostic-1",
-				domain: "extension",
-				code: "extension.sample.remote_policy_unreachable",
-				severity: "warning",
-				disposition: "reported",
-				recoverable: true,
-				message: "Remote policy service is unavailable",
-				source: { kind: "extension", id: "sample" },
-				agentId,
-				commandId: "orchestrator-command-1",
-				extensionId: "sample",
-				details: { endpoint: "https://policy.internal", attempts: 2 },
-			}),
-			expect.objectContaining({
-				id: "orchestrator-diagnostic-2",
-				code: "extension.sample.remote_policy_unreachable",
-				disposition: "reported",
-			}),
-			expect.objectContaining({
-				id: "orchestrator-diagnostic-3",
-				code: "extension.sample.cache.corrupt",
-				severity: "error",
-				disposition: "degraded",
-			}),
-		]);
-		const record = requireAgentRecord(orchestrator, agentId);
-		expect(record.extensionDiagnostics).toContainEqual(
-			expect.objectContaining({
-				code: "extension.sample.cache.corrupt",
-			}),
-		);
-		expect(
-			extensionObservedEvents.filter(
-				(event) =>
-					event.type === "diagnostic" &&
-					event.diagnostic.code.startsWith("extension.sample."),
-			),
-		).toEqual([]);
 	});
 
 	it("rejects invalid extension diagnostic drafts without publishing", async () => {
@@ -4703,77 +3009,6 @@ describe("AgentOrchestrator", () => {
 		).toHaveLength(invalidCalls.length);
 	});
 
-	it("completes extension command arguments via a narrowed candidate callback", async () => {
-		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "extension-profile",
-			label: "Extension Profile",
-			persist: false,
-			extensions: ["sample"],
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: extensionProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
-			),
-		});
-		const completionCalls: unknown[][] = [];
-		orchestrator.registerExtension("sample", (api) => {
-			api.registerCommand({
-				name: "deploy",
-				description: "Deploy a target",
-				argumentHint: "<target>",
-				arguments: {
-					required: true,
-					getArgumentsCompletion: (...callbackArgs: unknown[]) => {
-						completionCalls.push(callbackArgs);
-						return [
-							{ value: "staging", label: "Staging" },
-							{ value: "production" },
-						];
-					},
-				},
-				handler: async (args, context) => {
-					await context.session.appendEntry("deployed", { args });
-				},
-			});
-		});
-		const agentId = await orchestrator.spawnAgent();
-		orchestrator.registerClient({
-			id: "human",
-			requestHuman: async (request) => {
-				expect(request).toMatchObject({
-					kind: "argumentsCompletion",
-					options: ["staging", "production"],
-					allowFreeInput: true,
-					payload: expect.objectContaining({
-						candidates: [
-							{ value: "staging", label: "Staging" },
-							{ value: "production" },
-						],
-					}),
-				});
-				return { kind: "select", value: "staging" };
-			},
-		});
-
-		await expect(
-			orchestrator.inputAgent(agentId, "/deploy"),
-		).resolves.toMatchObject({ kind: "command", name: "deploy" });
-		// The callback saw the argument prefix only - no orchestrator handle.
-		expect(completionCalls).toEqual([[""]]);
-		expect(
-			await orchestrator.sessionManager.findExtensionCustomEntries(
-				agentId,
-				"sample",
-				"deployed",
-			),
-		).toMatchObject([{ type: "deployed", data: { args: "staging" } }]);
-	});
-
 	it("keeps an unavailable record when extension activation fails", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = {
@@ -4862,7 +3097,7 @@ describe("AgentOrchestrator", () => {
 		const agentId = await orchestrator.spawnAgent();
 		const oldRunner = requireAgentRecord(orchestrator, agentId).extensionRunner;
 		if (!oldRunner) throw new Error("Expected extension runner.");
-		const oldContext = oldRunner.createCommandContext("sample");
+		const oldContext = oldRunner.createContext("sample");
 		await oldContext.actions.setStatus("index", {
 			text: "Indexing",
 			progress: { completed: 2, total: 5 },
@@ -4940,7 +3175,7 @@ describe("AgentOrchestrator", () => {
 			key: "index",
 		});
 		expect(Object.hasOwn(clearEvent ?? {}, "status")).toBe(false);
-		await expect(oldContext.waitForIdle()).rejects.toThrow(
+		expect(() => oldContext.actions.getTools()).toThrow(
 			"Extension runtime has been reloaded.",
 		);
 	});
@@ -5629,7 +3864,7 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
-	it("binds extension runner core and command contexts after harness creation", async () => {
+	it("binds the extension runner core context after harness creation", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = {
 			...defaultProfile,
@@ -5658,8 +3893,7 @@ describe("AgentOrchestrator", () => {
 		const agentId = await orchestrator.spawnAgent();
 		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
 		if (!runner) throw new Error("Expected extension runner.");
-		const commandContext = runner.createCommandContext("observer");
-		await commandContext.waitForIdle();
+		const context = runner.createContext("observer");
 		const handleHarnessEvent = (
 			orchestrator as unknown as {
 				_handleAgentHarnessEvent(
@@ -5671,7 +3905,7 @@ describe("AgentOrchestrator", () => {
 
 		await handleHarnessEvent(agentId, { type: "turn_start" });
 
-		expect(commandContext.extensionId).toBe("observer");
+		expect(context.extensionId).toBe("observer");
 		expect(observed).toEqual([`observer:${extensionProfile.id}:false:0`]);
 	});
 
@@ -5883,7 +4117,7 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
-	it("exposes scoped session, command, model, and thinking extension actions", async () => {
+	it("exposes scoped session, model, and thinking extension actions", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = {
 			...defaultProfile,
@@ -5916,10 +4150,6 @@ describe("AgentOrchestrator", () => {
 		});
 		await expect(context.actions.getSessionName()).resolves.toBe(
 			"audited session",
-		);
-
-		expect(context.actions.getCommands()).toEqual(
-			orchestrator.listCommands(agentId),
 		);
 
 		const model = await context.actions.setModel(
@@ -6059,170 +4289,6 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
-	it("exposes session control on the extension command context", async () => {
-		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "extension-profile",
-			label: "Extension Profile",
-			persist: true,
-			extensions: ["sample"],
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: extensionProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-					{ profile: restoredProfile },
-				]),
-			),
-		});
-		orchestrator.registerExtension("sample", () => {});
-		const agentId = await orchestrator.spawnAgent();
-		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
-		if (!runner) throw new Error("Expected extension runner.");
-		const context = runner.createCommandContext("sample");
-		const session = await orchestrator.sessionManager.createAgentSession({
-			agentId,
-			agentProfile: extensionProfile,
-		});
-		const keptEntryId = await session.appendMessage({
-			role: "user",
-			content: "keep me",
-			timestamp: 1,
-		});
-		const targetEntryId = await session.appendMessage({
-			role: "user",
-			content: "fork before me",
-			timestamp: 2,
-		});
-
-		const created = await context.newSession();
-		expect(created.agentId).not.toBe(agentId);
-		expect(orchestrator.getAgentStatus(created.agentId)).toBe("idle");
-
-		const forked = await context.forkSession({ entryId: targetEntryId });
-		expect(forked.agentId).not.toBe(agentId);
-		const forkedTree = await orchestrator.getAgentSessionTree(forked.agentId);
-		expect(forkedTree.entries).toMatchObject([
-			expect.objectContaining({ id: keptEntryId }),
-		]);
-
-		const sessions = await context.listSessions();
-		expect(sessions).toContainEqual(
-			expect.objectContaining({
-				id: agentId,
-				profileId: extensionProfile.id,
-			}),
-		);
-
-		const worker = await orchestrator.sessionManager.createAgentSession({
-			agentId: "worker-agent",
-			agentProfile: restoredProfile,
-		});
-		const workerMetadata = expectExtendedMetadata(await worker.getMetadata());
-		const resumed = await context.resumeSession(workerMetadata.path);
-		expect(resumed.agentId).toBe("worker-agent");
-
-		// The narrowed result drops editorText: the extension learns the
-		// navigation fact only.
-		await expect(context.navigateTree(keptEntryId)).resolves.toEqual({
-			cancelled: false,
-		});
-	});
-
-	it("denies spawn-class session control when profile capability canSpawn is false", async () => {
-		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "extension-profile",
-			label: "Extension Profile",
-			persist: false,
-			extensions: ["sample"],
-			capabilities: { canSpawn: false },
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: extensionProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
-			),
-		});
-		orchestrator.registerExtension("sample", () => {});
-		const agentId = await orchestrator.spawnAgent();
-		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
-		if (!runner) throw new Error("Expected extension runner.");
-		const context = runner.createCommandContext("sample");
-		const events: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			events.push(event);
-		});
-
-		const denied = expect.objectContaining({
-			code: "extension.session_control_denied",
-		});
-		await expect(context.newSession()).rejects.toMatchObject({
-			diagnostic: denied,
-		});
-		await expect(context.forkSession()).rejects.toMatchObject({
-			diagnostic: denied,
-		});
-		await expect(context.resumeSession("any")).rejects.toMatchObject({
-			diagnostic: denied,
-		});
-		// Read-only listing is not spawn-class and stays available.
-		await expect(context.listSessions()).resolves.toBeDefined();
-		expect(events).toContainEqual(
-			expect.objectContaining({
-				type: "diagnostic",
-				diagnostic: expect.objectContaining({
-					code: "extension.action_failed",
-					extensionId: "sample",
-					agentId,
-					details: expect.objectContaining({ action: "newSession" }),
-				}),
-			}),
-		);
-	});
-
-	it("requires an idle agent for extension fork and tree navigation", async () => {
-		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "extension-profile",
-			label: "Extension Profile",
-			persist: false,
-			extensions: ["sample"],
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: extensionProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
-			),
-		});
-		orchestrator.registerExtension("sample", () => {});
-		const agentId = await orchestrator.spawnAgent();
-		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
-		if (!runner) throw new Error("Expected extension runner.");
-		const context = runner.createCommandContext("sample");
-		Object.assign(requireAgentRecord(orchestrator, agentId), {
-			status: "running",
-		});
-
-		const notIdle = expect.objectContaining({
-			code: "extension.session_not_idle",
-		});
-		await expect(context.forkSession()).rejects.toMatchObject({
-			diagnostic: notIdle,
-		});
-		await expect(context.navigateTree("entry-1")).rejects.toMatchObject({
-			diagnostic: notIdle,
-		});
-	});
-
 	it("injects the extension source into human requests", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = {
@@ -6315,6 +4381,318 @@ describe("AgentOrchestrator", () => {
 				}),
 			}),
 		);
+	});
+
+	it("routes the ask_human tool through the human request broker with agent source", async () => {
+		const env = new MemoryExecutionEnv();
+		const toolRegistry = new ToolRegistry();
+		registerCoreInteractionTools(toolRegistry);
+		const orchestrator = await createOrchestrator(env, { toolRegistry });
+		let captured: unknown;
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async (request) => {
+				captured = request;
+				return { kind: "select", value: "green" };
+			},
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const askHuman = requireAgentHarness(orchestrator, agentId)
+			.getTools()
+			.find((candidate) => candidate.name === "ask_human");
+		if (!askHuman) throw new Error("Expected the ask_human tool.");
+
+		const result = await askHuman.execute(
+			"call-1",
+			{ kind: "select", title: "Pick a color", options: ["red", "green"] },
+			undefined,
+			undefined,
+		);
+		expect(captured).toMatchObject({
+			kind: "select",
+			title: "Pick a color",
+			options: ["red", "green"],
+			source: { kind: "agent", agentId },
+		});
+		expect(result.content).toEqual([
+			{ type: "text", text: "The human selected: green" },
+		]);
+	});
+
+	it("denies agent tool human requests when the profile capability disallows them", async () => {
+		const env = new MemoryExecutionEnv();
+		const toolRegistry = new ToolRegistry();
+		registerCoreInteractionTools(toolRegistry);
+		const restrictedProfile: AgentProfile = {
+			...defaultProfile,
+			id: "restricted-profile",
+			persist: false,
+			capabilities: { canRequestUser: false },
+		};
+		const orchestrator = await createOrchestrator(env, {
+			toolRegistry,
+			defaultProfileId: restrictedProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: restrictedProfile },
+				]),
+			),
+		});
+		let handlerCalls = 0;
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async () => {
+				handlerCalls += 1;
+				return { kind: "confirm", confirmed: true };
+			},
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const askHuman = requireAgentHarness(orchestrator, agentId)
+			.getTools()
+			.find((candidate) => candidate.name === "ask_human");
+		if (!askHuman) throw new Error("Expected the ask_human tool.");
+
+		await expect(
+			askHuman.execute(
+				"call-1",
+				{ kind: "confirm", title: "Approve?" },
+				undefined,
+				undefined,
+			),
+		).rejects.toMatchObject({
+			diagnostic: expect.objectContaining({
+				code: "orchestrator.human_request_denied",
+				agentId,
+			}),
+		});
+		expect(handlerCalls).toBe(0);
+	});
+
+	/**
+	 * Register an OAuth-capable test provider into the orchestrator's model
+	 * registry. Login flows discover providers through the Models runtime, so a
+	 * minimal model is required for the provider to exist.
+	 */
+	function registerOAuthTestProvider(
+		orchestrator: AgentOrchestrator,
+		providerId: string,
+		oauth: OAuthProviderConfig,
+	): void {
+		orchestrator.modelRegistry.registerProvider(providerId, {
+			name: oauth.name,
+			baseUrl: "https://example.test",
+			api: "openai-completions",
+			oauth,
+			models: [
+				{
+					id: "fake-oauth-model",
+					name: "Fake OAuth Model",
+					reasoning: false,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 128000,
+					maxTokens: 8192,
+				},
+			],
+		});
+	}
+
+	it("loginAuthProvider drives the OAuth flow through events and human requests", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async (request) => {
+				if (request.kind === "select") {
+					return { kind: "select", value: request.options?.[1] };
+				}
+				return { kind: "input", value: "auth-code-123" };
+			},
+		});
+		let selectedMethod: string | undefined;
+		registerOAuthTestProvider(orchestrator, "fake-oauth", {
+			name: "Fake OAuth",
+			login: async (callbacks) => {
+				selectedMethod = await callbacks.onSelect({
+					message: "Choose a login method",
+					options: [
+						{ id: "browser", label: "Browser" },
+						{ id: "device", label: "Device code" },
+					],
+				});
+				callbacks.onAuth({
+					url: "https://example.test/authorize",
+					instructions: "Complete login in your browser.",
+				});
+				callbacks.onDeviceCode({
+					userCode: "ABCD-1234",
+					verificationUri: "https://example.test/device",
+				});
+				callbacks.onProgress?.("Exchanging code...");
+				const code = await callbacks.onPrompt({ message: "Paste the code:" });
+				return {
+					refresh: "refresh-token",
+					access: `access:${code}`,
+					expires: Date.now() + 60_000,
+				};
+			},
+			refreshToken: async (credentials) => credentials,
+			getApiKey: (credentials) => credentials.access,
+		});
+
+		const agentId = await orchestrator.spawnAgent();
+		await expect(
+			orchestrator.loginAuthProvider("fake-oauth", { agentId }),
+		).resolves.toEqual({
+			providerId: "fake-oauth",
+			providerName: "Fake OAuth",
+		});
+		expect(selectedMethod).toBe("device");
+		expect(orchestrator.modelRegistry.authStorage.get("fake-oauth")).toEqual({
+			type: "oauth",
+			refresh: "refresh-token",
+			access: "access:auth-code-123",
+			expires: expect.any(Number),
+		});
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "auth_login_url",
+				providerId: "fake-oauth",
+				agentId,
+				url: "https://example.test/authorize",
+				instructions: "Complete login in your browser.",
+			}),
+		);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "auth_login_code",
+				providerId: "fake-oauth",
+				userCode: "ABCD-1234",
+				verificationUri: "https://example.test/device",
+			}),
+		);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "auth_login_progress",
+				providerId: "fake-oauth",
+				message: "Exchanging code...",
+			}),
+		);
+	});
+
+	it("withdraws the provisional manual code input without publishing a fault", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		// The human never answers: the manual input stays pending until the
+		// flow settles, exactly like a local callback server winning the race.
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async () => await new Promise<never>(() => {}),
+		});
+		let manualOutcome: string | undefined;
+		registerOAuthTestProvider(orchestrator, "fake-callback-oauth", {
+			name: "Fake Callback OAuth",
+			usesCallbackServer: true,
+			login: async (callbacks) => {
+				callbacks.onAuth({ url: "https://example.test/authorize" });
+				void callbacks
+					.onManualCodeInput?.()
+					.then(() => {
+						manualOutcome = "resolved";
+					})
+					.catch(() => {
+						manualOutcome = "rejected";
+					});
+				return {
+					refresh: "refresh-token",
+					access: "access-token",
+					expires: Date.now() + 60_000,
+				};
+			},
+			refreshToken: async (credentials) => credentials,
+			getApiKey: (credentials) => credentials.access,
+		});
+
+		await expect(
+			orchestrator.loginAuthProvider("fake-callback-oauth"),
+		).resolves.toMatchObject({ providerId: "fake-callback-oauth" });
+		await new Promise((resolve) => setImmediate(resolve));
+		expect(manualOutcome).toBe("rejected");
+		expect(
+			events.filter(
+				(event) =>
+					event.type === "diagnostic" &&
+					event.diagnostic.code === "orchestrator.human_request_aborted",
+			),
+		).toEqual([]);
+	});
+
+	it("fails the login when the human dismisses a required prompt", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async () => ({ kind: "input", value: undefined }),
+		});
+		registerOAuthTestProvider(orchestrator, "fake-prompt-oauth", {
+			name: "Fake Prompt OAuth",
+			login: async (callbacks) => {
+				const code = await callbacks.onPrompt({ message: "Paste the code:" });
+				return {
+					refresh: "refresh-token",
+					access: `access:${code}`,
+					expires: Date.now() + 60_000,
+				};
+			},
+			refreshToken: async (credentials) => credentials,
+			getApiKey: (credentials) => credentials.access,
+		});
+
+		await expect(
+			orchestrator.loginAuthProvider("fake-prompt-oauth"),
+		).rejects.toMatchObject({ code: "auth.login_failed" });
+		expect(
+			orchestrator.modelRegistry.authStorage.has("fake-prompt-oauth"),
+		).toBe(false);
+	});
+
+	it("rejects unknown auth providers and lists login/logout candidates", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+
+		await expect(
+			orchestrator.loginAuthProvider("no-such-provider"),
+		).rejects.toMatchObject({ code: "auth.provider_unknown" });
+
+		const candidates = orchestrator.listAuthProviderCandidates().providers;
+		expect(candidates).toContainEqual(
+			expect.objectContaining({ value: "anthropic" }),
+		);
+
+		const authStorage = orchestrator.modelRegistry.authStorage;
+		await authStorage.set("custom-provider", { type: "api_key", key: "key" });
+		expect(
+			(await orchestrator.listAuthCredentialCandidates()).providers,
+		).toEqual([{ value: "custom-provider", label: "custom-provider" }]);
+
+		await expect(
+			orchestrator.logoutAuthProvider("custom-provider"),
+		).resolves.toEqual({ providerId: "custom-provider", removed: true });
+		expect(authStorage.has("custom-provider")).toBe(false);
+		await expect(
+			orchestrator.logoutAuthProvider("custom-provider"),
+		).resolves.toEqual({ providerId: "custom-provider", removed: false });
+		await expect(orchestrator.logoutAuthProvider("  ")).rejects.toMatchObject({
+			code: "auth.provider_unknown",
+		});
 	});
 
 	it("gates extension exec on project trust", async () => {
@@ -6580,32 +4958,6 @@ describe("AgentOrchestrator", () => {
 				},
 			},
 		});
-	});
-
-	it("reports invalid commands without wrapping programmatic calls", async () => {
-		const env = new MemoryExecutionEnv();
-		const orchestrator = await createOrchestrator(env);
-		const agentId = await orchestrator.spawnAgent();
-
-		const idleSteer = await orchestrator.inputAgent(agentId, "/steer:steer");
-		expect(idleSteer).toMatchObject({
-			kind: "rejected",
-			diagnostic: {
-				code: "command.not_available",
-				agentId,
-			},
-		});
-		// The same status fact surfaces as availability in listCommands.
-		expect(
-			orchestrator.listCommands(agentId).find((c) => c.name === "steer"),
-		).toMatchObject({
-			available: false,
-			unavailableReason: expect.stringContaining("running"),
-		});
-
-		expect(() => orchestrator.getAgentModel("missing")).toThrow(
-			"Unknown agent: missing",
-		);
 	});
 
 	it("resolves human requests through the first capable client", async () => {

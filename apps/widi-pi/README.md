@@ -12,8 +12,9 @@ external script or subprocess trick.
 ## What the core provides
 
 - **Orchestrator** (`src/core/agent-orchestrator.ts`): cross-agent lifecycle,
-  harness assembly, input-triggered commands, human request routing, client
-  event fanout, and structured diagnostics on one observable main path.
+  harness assembly, text input with extension interception, human request
+  routing, client event fanout, and structured diagnostics on one observable
+  main path.
 - **Agent profiles** (`src/core/agent-profile.ts`): declarative agent
   configuration (system prompt, tools, skills, prompt templates, extensions)
   with a registry that handles source priority, duplicates, and parse or

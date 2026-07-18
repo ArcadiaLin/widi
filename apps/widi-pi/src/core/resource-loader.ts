@@ -149,6 +149,9 @@ export class ResourceLoader {
 	): Promise<Array<{ path: string; source: ResourceSource }>> {
 		const roots = this._getRoots(resourceDirName);
 		const resolved: Array<{ path: string; source: ResourceSource }> = [];
+		// The agent dir may itself be the cwd's .widi directory; without dedupe
+		// every resource loads twice and appears as duplicate candidates.
+		const seenRoots = new Set<string>();
 
 		for (const root of roots) {
 			// For "cwd", we load from a subdirectory (e.g. ".widi/skills") to avoid potential conflicts with user files. For "agent_dir", we load directly from the specified directory to allow flexible project structures.
@@ -161,6 +164,8 @@ export class ResourceLoader {
 								: root.path,
 							resourceDirName,
 						);
+			if (seenRoots.has(resourceRoot)) continue;
+			seenRoots.add(resourceRoot);
 			// Empty names mean "load the whole resource directory". Otherwise each name is resolved as a direct child.
 			// future skill meybe support namespace like "namespace/skill_name", then we need to resolve each part of the path.
 			const paths =
