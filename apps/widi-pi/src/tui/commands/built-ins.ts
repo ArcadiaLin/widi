@@ -131,7 +131,10 @@ export const builtInCommands: readonly CommandDefinition[] = [
 				: undefined,
 		complete: async ({ orchestrator }) =>
 			(await orchestrator.listAgentSessions()).sessions.map((session) => ({
-				value: session.id,
+				// Resolve by path, not id: the session id equals the creating
+				// agent's id and repeats across runs, making bare ids ambiguous.
+				value: session.path,
+				label: session.profile?.label ?? session.profile?.id ?? session.id,
 				description: `${session.cwd} · ${session.createdAt}`,
 			})),
 		execute: async ({ orchestrator }, argument) =>

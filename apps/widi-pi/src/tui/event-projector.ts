@@ -146,6 +146,8 @@ export class EventProjector {
 				);
 				const wasRunning = agent.status === "running";
 				agent.status = event.status;
+				agent.runStartedAt =
+					event.status === "running" ? event.changedAt : undefined;
 				if (
 					wasRunning &&
 					event.status === "idle" &&
@@ -361,8 +363,8 @@ export class EventProjector {
 			}
 			case "queue_update":
 				agent.queue = {
-					steer: event.steer.length,
-					followUp: event.followUp.length,
+					steer: event.steer.map(queuedMessageText).filter(nonEmpty),
+					followUp: event.followUp.map(queuedMessageText).filter(nonEmpty),
 					nextTurn: event.nextTurn.length,
 				};
 				return;
@@ -466,6 +468,8 @@ export class EventProjector {
 			requestId,
 			requestKind: pending.request.kind,
 			title: pending.request.title,
+			options:
+				pending.request.kind === "select" ? pending.request.options : undefined,
 			answer,
 			durability: "ephemeral",
 			createdAt: completedAt,
@@ -616,6 +620,16 @@ function summarizeHumanResponse(
 		return { kind: "selected-option", value: response.value };
 	}
 	return { kind: "answered" };
+}
+
+function queuedMessageText(message: AgentMessage): string {
+	if (message.role === "user") return userText(message);
+	if (message.role === "assistant") return assistantText(message);
+	return "";
+}
+
+function nonEmpty(text: string): boolean {
+	return text.length > 0;
 }
 
 function userText(message: UserMessage): string {

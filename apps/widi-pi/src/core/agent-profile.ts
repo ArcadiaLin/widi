@@ -859,7 +859,14 @@ async function resolveDefaultProfileRoots(options: {
 		});
 	}
 
-	return roots;
+	// The agent dir may itself be the cwd's .widi directory; loading the same
+	// root twice makes every profile report a bogus self-override diagnostic.
+	const seenPaths = new Set<string>();
+	return roots.filter((root) => {
+		if (seenPaths.has(root.path)) return false;
+		seenPaths.add(root.path);
+		return true;
+	});
 }
 
 function groupCandidatesByProfileId(

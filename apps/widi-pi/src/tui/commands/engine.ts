@@ -60,6 +60,10 @@ export class CommandEngine {
 		return this.lineCommands.get(name);
 	}
 
+	inline(name: string): InlineCommand | undefined {
+		return this.inlineCommands.get(name);
+	}
+
 	match(text: string): LineCommand | undefined {
 		const parsed = parseLineCommand(text);
 		return parsed ? this.lineCommands.get(parsed.name) : undefined;

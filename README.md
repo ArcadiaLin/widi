@@ -24,7 +24,7 @@ Three ways to get more than one agent out of the Pi codebase today:
 | Failure surface | app/UI messages | process exit, RPC errors | structured diagnostics (`profile.*`, `model.*`, `extension.*`) with recoverability flags |
 | Extension scope | single-agent app events (shipped, mature) | — | API v1: tool register/patch, resources/providers, scoped actions, observers/interceptors |
 
-Two pipelines that are already landed and tested. Input handling — an interaction-layer command engine owned by the TUI and shared with the CLI, not an orchestrator protocol:
+Two pipelines that are already landed and tested. Input handling — an interaction-layer command engine owned by the TUI (the CLI entry routes straight into it), not an orchestrator protocol:
 
 ```text
 client input ──→ CommandEngine ──→ /command ──→ atomic orchestrator method ──→ event fanout

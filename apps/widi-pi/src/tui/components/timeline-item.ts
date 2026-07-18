@@ -43,6 +43,8 @@ export function renderDeps(
 			return [item.status];
 		case "command-result":
 			return [item.status, item.result, item.error];
+		case "human-request-trace":
+			return [context.toolOutputExpanded];
 		default:
 			return [];
 	}
@@ -155,6 +157,25 @@ export function renderTimelineItem(
 					: item.answer.kind === "selected-option"
 						? item.answer.value
 						: "Answered";
+			// input/custom/free-input answers never expand: only options the
+			// request itself offered may appear in the transcript.
+			const options =
+				item.answer.kind === "confirm"
+					? ["Yes", "No"]
+					: item.answer.kind === "selected-option"
+						? (item.options ?? [])
+						: [];
+			if (context.toolOutputExpanded && options.length > 0) {
+				const lines = [colors.dim(`❯ ${singleLine(item.title, 400)}`)];
+				for (const option of options) {
+					lines.push(
+						option === answer
+							? `  ${colors.accent("▸")} ${singleLine(option, 400)}`
+							: colors.dim(`    ${singleLine(option, 400)}`),
+					);
+				}
+				return new Text(lines.join("\n"), 1, 0).render(width);
+			}
 			return new Text(
 				colors.dim(`❯ ${singleLine(item.title, 400)} → `) +
 					singleLine(answer, 400),

@@ -12,7 +12,7 @@
 		"clean": "npm run clean --workspaces",
 		"build": "npm --workspace pi/packages/ai run build && npm --workspace pi/packages/agent run build && npm --workspace pi/packages/tui run build && npm --workspace apps/widi-pi run build",
 		"check": "biome check --write --error-on-warnings apps/widi-pi/src apps/widi-pi/tests apps/widi-pi/docs && tsgo --noEmit -p apps/widi-pi/tsconfig.json",
-		"cli:widi-config": "npm --workspace apps/widi-pi run cli:widi-config",
+		"cli": "npm --workspace apps/widi-pi run cli",
 		"tui": "npm --workspace apps/widi-pi run tui",
 		"test": "npm run test --workspaces --if-present"
 	},

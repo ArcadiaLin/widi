@@ -4,18 +4,6 @@
   "defaultProfile": "widi-dev",
   "defaultProjectTrust": "ask",
   "sessionDir": ".widi/runs",
-  "profiles": [
-    ".widi/profiles"
-  ],
-  "skills": [
-    ".widi/skills"
-  ],
-  "prompts": [
-    ".widi/prompts"
-  ],
-  "extensions": [
-    ".widi/extensions"
-  ],
   "enabledProfiles": [
     "widi-dev",
     "default"

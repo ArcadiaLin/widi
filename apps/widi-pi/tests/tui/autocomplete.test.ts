@@ -32,7 +32,7 @@ describe("WidiCommandAutocompleteProvider", () => {
 			signal,
 		});
 		expect(commands?.items[0]).toMatchObject({
-			value: "/model:",
+			value: "/model",
 			label: "/model",
 		});
 		if (!commands?.items[0]) throw new Error("Expected command completion.");
@@ -43,7 +43,7 @@ describe("WidiCommandAutocompleteProvider", () => {
 			commands.items[0],
 			commands.prefix,
 		);
-		expect(applied.lines).toEqual(["/model:"]);
+		expect(applied.lines).toEqual(["/model"]);
 
 		const argumentsResult = await commandProvider.getSuggestions(
 			["/model:ant"],
@@ -83,6 +83,59 @@ describe("WidiCommandAutocompleteProvider", () => {
 		);
 		expect(applied.lines).toEqual(["use <skill:>"]);
 		expect(applied.cursorCol).toBe("use <skill:".length);
+	});
+
+	it("completes inline command arguments after the colon", async () => {
+		const commandProvider = provider({
+			listAgentSkillCandidates: async () => ({
+				skills: [
+					{
+						value: "self-check",
+						label: "self-check",
+						description: "Run the harness self-check",
+					},
+				],
+			}),
+		});
+		const signal = new AbortController().signal;
+
+		const result = await commandProvider.getSuggestions(
+			["use <skill:sel"],
+			0,
+			"use <skill:sel".length,
+			{ signal },
+		);
+		expect(result).toMatchObject({
+			prefix: "sel",
+			items: [{ value: "self-check", label: "self-check" }],
+		});
+		if (!result?.items[0]) throw new Error("Expected argument completion.");
+		const applied = commandProvider.applyCompletion(
+			["use <skill:sel>"],
+			0,
+			"use <skill:sel".length,
+			result.items[0],
+			result.prefix,
+		);
+		expect(applied.lines).toEqual(["use <skill:self-check>"]);
+	});
+
+	it("completes inline command arguments on an empty argument prefix", async () => {
+		const commandProvider = provider({
+			listAgentSkillCandidates: async () => ({
+				skills: [{ value: "self-check", label: "self-check" }],
+			}),
+		});
+		const result = await commandProvider.getSuggestions(
+			["use <skill:>"],
+			0,
+			"use <skill:".length,
+			{ signal: new AbortController().signal },
+		);
+		expect(result).toMatchObject({
+			prefix: "",
+			items: [{ value: "self-check" }],
+		});
 	});
 
 	it("contains failures from argument completers", async () => {

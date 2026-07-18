@@ -384,6 +384,10 @@ export class SessionManager {
 		// boundary. Without an ExecutionEnv lock/transaction primitive, multiple
 		// WIDI processes writing the same sessionsRoot are unsupported.
 		// TODO: Add extension persistence once extension lifecycle and storage boundaries are defined.
+		// The session id deliberately equals the creating agent's id: resume
+		// restores the agent under it (_resumeAgentHarness). It is unique only
+		// within one runtime — across runs it repeats, so consumers resolving a
+		// session must reference it by path, never by bare id.
 		return this.sessionRepo.create({
 			id: options.agentId,
 			cwd: this._cwd,

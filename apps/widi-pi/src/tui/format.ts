@@ -15,6 +15,13 @@ export function singleLine(text: string, maxCharacters = 240): string {
 	return truncateCharacters(folded, maxCharacters);
 }
 
+/** Relative age for status/processing displays: seconds under a minute, whole minutes above. */
+export function formatRelativeAge(milliseconds: number): string {
+	const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+	if (seconds < 60) return `${seconds}s`;
+	return `${Math.floor(seconds / 60)}m`;
+}
+
 export function boundedText(
 	text: string,
 	options: { maxLines?: number; maxCharacters?: number } = {},

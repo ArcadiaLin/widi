@@ -111,6 +111,8 @@ export interface HumanRequestTraceItem {
 	readonly requestId: string;
 	readonly requestKind: HumanRequestKind;
 	readonly title: string;
+	/** Original request options, kept only for the expanded trace rendering. */
+	readonly options?: readonly string[];
 	readonly answer:
 		| { readonly kind: "confirm"; readonly confirmed: boolean }
 		| { readonly kind: "selected-option"; readonly value: string }
@@ -162,8 +164,8 @@ export interface PendingInput {
 }
 
 export interface QueueState {
-	steer: number;
-	followUp: number;
+	steer: readonly string[];
+	followUp: readonly string[];
 	nextTurn: number;
 }
 
@@ -186,6 +188,8 @@ export interface AgentViewState {
 	hydration: "pending" | "ready" | "failed";
 	bufferedEvents: OrchestratorEvent[];
 	pendingInput?: PendingInput;
+	/** When the current run started; set while status is "running". */
+	runStartedAt?: string;
 	queue: QueueState;
 	display: AgentDisplayFacts;
 	/** The live assistant item currently receiving message_update events. */
@@ -248,7 +252,7 @@ export function createAgentViewState(
 		attention: "none",
 		hydration: "ready",
 		bufferedEvents: [],
-		queue: { steer: 0, followUp: 0, nextTurn: 0 },
+		queue: { steer: [], followUp: [], nextTurn: 0 },
 		display: { activeToolNames: [], rehydrateRequested: false },
 		nextLiveItemId: 1,
 	};

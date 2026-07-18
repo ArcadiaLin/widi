@@ -30,13 +30,17 @@ import { CompletionMenu } from "./completion-menu.ts";
 import { AgentStripView } from "./components/agent-strip.ts";
 import { ChatView } from "./components/chat.ts";
 import { agentLabel } from "./components/common.ts";
+import { FatalErrorView } from "./components/fatal-error.ts";
 import { FooterView } from "./components/footer.ts";
 import { HeaderView } from "./components/header.ts";
 import { NoticeView } from "./components/notices.ts";
+import { ProcessingBarView } from "./components/processing-bar.ts";
+import { QueuedInputView } from "./components/queued-input.ts";
 import { StatusView } from "./components/status.ts";
 import { WidiEditor } from "./editor.ts";
 import { applyAgentSnapshot, EventProjector } from "./event-projector.ts";
-import { HumanRequestController } from "./human-request.ts";
+import { singleLine } from "./format.ts";
+import { HumanRequestMenu } from "./human-request.ts";
 import { createWidiKeybindings } from "./keybindings.ts";
 import { hydrateSessionEntries } from "./session-hydrator.ts";
 import {
@@ -65,8 +69,10 @@ export class WidiTuiApplication {
 	private readonly projector: EventProjector;
 	private readonly editor: WidiEditor;
 	private readonly completionMenu: CompletionMenu;
-	private readonly humanRequests: HumanRequestController;
+	private readonly humanRequests: HumanRequestMenu;
 	private readonly agentSelector: AgentSelectorController;
+	/** Unknown "/" input awaiting a confirming second enter (v2 §11.2). */
+	private pendingUnknownCommand?: { agentId: string; text: string };
 	private readonly engine = new CommandEngine([
 		...builtInCommands,
 		...applicationCommands({
@@ -96,6 +102,27 @@ export class WidiTuiApplication {
 	private readonly onSigint = () => {
 		void this.shutdown("SIGINT").catch(() => {});
 	};
+	private fatalOverlayShown = false;
+	private readonly onUncaughtError = (error: unknown) => {
+		// The fatal application-error boundary (v2 §13.1): state may be corrupt,
+		// so the modal overlay only offers Quit or read-only diagnostics. If the
+		// overlay itself cannot be shown, fall back to stderr instead of dying
+		// inside the uncaught-error handler.
+		try {
+			this.showFatalOverlay(
+				"application.unexpected_error",
+				errorMessage(error),
+			);
+		} catch {
+			try {
+				process.stderr.write(
+					`Fatal application error: ${errorMessage(error)}\n`,
+				);
+			} catch {
+				// Nothing left to report through.
+			}
+		}
+	};
 
 	private constructor(runtime: WidiRuntime) {
 		this.runtime = runtime;
@@ -110,12 +137,18 @@ export class WidiTuiApplication {
 			paddingX: 1,
 			autocompleteMaxVisible: 8,
 		});
+		// Later-opened menus own the focus; closing one hands focus back to the
+		// still-open human-request menu before falling back to the editor.
 		this.completionMenu = new CompletionMenu(this.tui, this.state, () => {
-			this.tui.setFocus(this.editor);
+			this.tui.setFocus(
+				this.humanRequests.isOpen ? this.humanRequests : this.editor,
+			);
 		});
-		this.humanRequests = new HumanRequestController({
-			tui: this.tui,
+		this.humanRequests = new HumanRequestMenu({
+			host: this.tui,
+			state: this.state,
 			resolveAgentLabel: (agentId) => this.resolveAgentLabel(agentId),
+			restoreFocus: () => this.tui.setFocus(this.editor),
 		});
 		this.agentSelector = new AgentSelectorController(
 			this.completionMenu,
@@ -124,9 +157,12 @@ export class WidiTuiApplication {
 		);
 
 		this.tui.addChild(new HeaderView(this.state));
+		this.tui.addChild(new ProcessingBarView(this.state));
 		this.tui.addChild(new NoticeView(this.state));
 		this.tui.addChild(new ChatView(this.state));
 		this.tui.addChild(new StatusView(this.state));
+		this.tui.addChild(new QueuedInputView(this.state));
+		this.tui.addChild(this.humanRequests);
 		this.tui.addChild(this.completionMenu);
 		this.tui.addChild(this.editor);
 		this.tui.addChild(new FooterView(this.state, runtime.services.cwd));
@@ -146,6 +182,8 @@ export class WidiTuiApplication {
 			this.tui.requestRender();
 		};
 		this.editor.onInterrupt = () => this.interrupt();
+		this.editor.onSteer = () => this.steerFromEditor();
+		this.editor.onOpenRequests = () => this.humanRequests.openLatest();
 		this.editor.onExit = () => {
 			void this.shutdown("user exit").catch(() => {});
 		};
@@ -176,19 +214,23 @@ export class WidiTuiApplication {
 		});
 
 		this.tui.start();
+		let animationTick = 0;
 		this.animationTimer = setInterval(() => {
+			animationTick++;
 			const agentId = this.state.activeAgentId;
 			const agent = agentId ? this.state.agents.get(agentId) : undefined;
-			if (
-				agent &&
+			if (!agent) return;
+			const spinning =
+				agent.status === "running" ||
 				[...agent.extensionStatuses.values()].some(
 					(entry) =>
 						entry.status.progress !== undefined &&
 						entry.status.progress.total === undefined,
-				)
-			) {
-				this.tui.requestRender();
-			}
+				);
+			// Status ages only need a slow tick; spinners animate every frame.
+			const agingStatuses =
+				animationTick % 6 === 0 && agent.extensionStatuses.size > 0;
+			if (spinning || agingStatuses) this.tui.requestRender();
 		}, 160);
 		this.animationTimer.unref();
 		this.tui.terminal.setTitle("WIDI");
@@ -330,15 +372,22 @@ export class WidiTuiApplication {
 			return;
 		}
 
-		const command = this.engine.match(text);
-		if (agent.status === "running" && !command) {
-			this.restoreEditor(rawText, agentId);
-			this.addApplicationNotice(
-				"Agent is running. Use /steer:<text> or /follow-up:<text>.",
-				agentId,
-			);
-			return;
+		// Unknown "/name" input never reaches the model on the first enter: a
+		// local notice asks for a confirming second submit (v2 §11.2).
+		const parsed = parseLineCommand(text);
+		if (parsed && !this.engine.match(text)) {
+			const pending = this.pendingUnknownCommand;
+			if (pending?.agentId !== agentId || pending.text !== text) {
+				this.pendingUnknownCommand = { agentId, text };
+				this.restoreEditor(rawText, agentId);
+				this.addApplicationNotice(
+					`Unknown command /${parsed.name}. Press enter again to send it as a prompt.`,
+					agentId,
+				);
+				return;
+			}
 		}
+		this.pendingUnknownCommand = undefined;
 
 		let outcome: EngineOutcome;
 		const startedCommands: Array<{
@@ -373,6 +422,10 @@ export class WidiTuiApplication {
 
 		switch (outcome.kind) {
 			case "pass":
+				if (agent.status === "running") {
+					await this.submitFollowUp(agentId, rawText, text);
+					return;
+				}
 				await this.submitPrompt(agentId, rawText, text, undefined);
 				return;
 			case "expanded":
@@ -380,6 +433,10 @@ export class WidiTuiApplication {
 					agentId,
 					startedCommands.map((started) => started.commandId),
 				);
+				if (agent.status === "running") {
+					await this.submitFollowUp(agentId, rawText, outcome.text);
+					return;
+				}
 				await this.submitPrompt(
 					agentId,
 					rawText,
@@ -467,6 +524,60 @@ export class WidiTuiApplication {
 				this.addApplicationNotice(errorMessage(error), agentId);
 			}
 		}
+		this.tui.requestRender();
+	}
+
+	/**
+	 * Default running-agent path (v2 §11.2): plain text joins the core followUp
+	 * queue and is consumed automatically when the run ends. The queued texts
+	 * come back through queue_update and feed the QueuedInputView.
+	 */
+	private async submitFollowUp(
+		agentId: string,
+		rawText: string,
+		text: string,
+	): Promise<void> {
+		this.editor.addToHistory(rawText);
+		try {
+			await this.orchestrator.followUpAgent(agentId, text);
+		} catch (error) {
+			this.restoreEditor(rawText, agentId);
+			if (error instanceof OrchestratorError) {
+				this.projectDiagnostic(error.diagnostic);
+			} else {
+				this.addApplicationNotice(errorMessage(error), agentId);
+			}
+		}
+		this.tui.requestRender();
+	}
+
+	/** app.steer: send the editor text as an immediate steer instead of queueing. */
+	private steerFromEditor(): void {
+		if (this.state.shuttingDown) return;
+		const agentId = this.state.activeAgentId;
+		if (!agentId) return;
+		const agent = ensureAgentProjection(this.state, agentId);
+		if (agent.status !== "running") {
+			this.addApplicationNotice("Steer needs a running agent.", agentId);
+			return;
+		}
+		const text = this.editor.getText().trim();
+		if (!text) {
+			this.addApplicationNotice(
+				"Type a message to steer the running agent.",
+				agentId,
+			);
+			return;
+		}
+		this.editor.setText("");
+		this.drafts.set(agentId, "");
+		this.editor.addToHistory(text);
+		this.track(
+			this.orchestrator.steerAgent(agentId, text).catch((error) => {
+				this.restoreEditor(text, agentId);
+				this.addApplicationNotice(errorMessage(error), agentId);
+			}),
+		);
 		this.tui.requestRender();
 	}
 
@@ -638,6 +749,41 @@ export class WidiTuiApplication {
 			this.addApplicationNotice(`Agent startup failed: ${errorMessage(error)}`);
 		}
 		this.updateEditorAvailability();
+		this.showFatalOverlay(
+			error instanceof OrchestratorError
+				? error.diagnostic.code
+				: "application.startup_failed",
+			errorMessage(error),
+		);
+	}
+
+	/**
+	 * Overlay is reserved for failures the application cannot continue from:
+	 * startup without any usable agent, or an uncaught fatal error (v2 §13.1).
+	 */
+	private showFatalOverlay(code: string, message: string): void {
+		if (this.state.shuttingDown || this.fatalOverlayShown) return;
+		this.fatalOverlayShown = true;
+		const view = new FatalErrorView({
+			code,
+			message,
+			onQuit: () => {
+				void this.shutdown("fatal error").catch(() => {});
+			},
+			onViewDiagnostics: () => {
+				this.fatalOverlayShown = false;
+				overlay.hide();
+				this.tui.setFocus(this.editor);
+				this.tui.requestRender();
+			},
+		});
+		const overlay = this.tui.showOverlay(view, {
+			width: "70%",
+			minWidth: 36,
+			maxHeight: "70%",
+			anchor: "center",
+			margin: 1,
+		});
 	}
 
 	private projectDiagnostic(diagnostic: OrchestratorDiagnostic): void {
@@ -649,12 +795,23 @@ export class WidiTuiApplication {
 	}
 
 	private addStartupSummary(): void {
+		// The one-line summary merges the real info-level diagnostics; the
+		// synthetic services line is only a fallback when none were reported.
+		const infoEntries = this.runtime.diagnostics.filter(
+			(diagnostic) => diagnostic.severity === "info",
+		);
 		const services = this.runtime.services;
+		const text =
+			infoEntries.length > 0
+				? infoEntries
+						.map((diagnostic) => singleLine(diagnostic.message, 200))
+						.join(" · ")
+				: `${services.defaultProfile.id} · ${services.defaultModel.provider}/${services.defaultModel.modelId} · thinking ${services.defaultThinkingLevel.level}`;
 		this.state.globalNotices.push({
 			id: "startup:summary",
 			kind: "startup",
 			createdAt: new Date().toISOString(),
-			text: `${services.defaultProfile.id} · ${services.defaultModel.provider}/${services.defaultModel.modelId} · thinking ${services.defaultThinkingLevel.level}`,
+			text,
 		});
 	}
 
@@ -798,11 +955,15 @@ export class WidiTuiApplication {
 	private installLifecycleHandlers(): void {
 		process.once("SIGTERM", this.onSigterm);
 		process.once("SIGINT", this.onSigint);
+		process.on("uncaughtException", this.onUncaughtError);
+		process.on("unhandledRejection", this.onUncaughtError);
 	}
 
 	private removeLifecycleHandlers(): void {
 		process.off("SIGTERM", this.onSigterm);
 		process.off("SIGINT", this.onSigint);
+		process.off("uncaughtException", this.onUncaughtError);
+		process.off("unhandledRejection", this.onUncaughtError);
 	}
 }
 

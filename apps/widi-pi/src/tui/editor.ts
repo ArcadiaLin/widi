@@ -5,11 +5,21 @@ export class WidiEditor extends Editor {
 	onInterrupt?: () => void;
 	onExit?: () => void;
 	onToggleToolOutput?: () => void;
+	onSteer?: () => void;
+	onOpenRequests?: () => void;
 
 	override handleInput(data: string): void {
 		const keybindings = getKeybindings();
 		if (keybindings.matches(data, "app.tools.expand")) {
 			this.onToggleToolOutput?.();
+			return;
+		}
+		if (keybindings.matches(data, "app.steer")) {
+			this.onSteer?.();
+			return;
+		}
+		if (keybindings.matches(data, "app.request.open")) {
+			this.onOpenRequests?.();
 			return;
 		}
 		if (

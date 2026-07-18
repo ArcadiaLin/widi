@@ -62,9 +62,10 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 				const items = this.views("line").map(toCommandCompletionItem);
 				const filtered = fuzzyFilter(items, body, (item) => item.search).map(
 					(item) => ({
-						value: `${LINE_COMMAND_TRIGGER}${item.view.name}${
-							item.view.takesArgument ? ":" : ""
-						}`,
+						// No ":" suffix: pi-tui submits right after applying a "/"
+						// completion, and a trailing colon would become an explicit
+						// empty argument that bypasses the needs-argument menu.
+						value: `${LINE_COMMAND_TRIGGER}${item.view.name}`,
 						label: item.label,
 						description: item.description,
 					}),
@@ -107,9 +108,33 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 				)) ?? null
 			);
 		}
+		if (inline.argumentPrefix !== undefined) {
+			// Argument phase: `<name:arg…` completes the inline command's own
+			// candidates (skills, prompt templates), mirroring line commands.
+			const command = this.engine.inline(inline.name);
+			if (!command?.complete) return null;
+			let candidates: readonly CandidateItem[];
+			try {
+				candidates = await command.complete(
+					{ agentId: this.agentId, orchestrator: this.orchestrator },
+					inline.argumentPrefix,
+				);
+			} catch {
+				return null;
+			}
+			if (options.signal.aborted || candidates.length === 0) return null;
+			return {
+				items: candidates.map((candidate) => ({
+					value: candidate.value,
+					label: candidate.label ?? candidate.value,
+					description: candidate.description,
+				})),
+				prefix: inline.argumentPrefix,
+			};
+		}
 		const filtered = fuzzyFilter(
 			this.views("inline").map(toCommandCompletionItem),
-			inline.prefix,
+			inline.name,
 			(item) => item.search,
 		).map((item) => ({
 			value: `${INLINE_COMMAND_TRIGGER}${item.view.name}:>`,
@@ -179,13 +204,17 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 
 function matchInlinePrefix(
 	text: string,
-): { prefix: string; rawPrefix: string } | undefined {
+): { name: string; argumentPrefix?: string; rawPrefix: string } | undefined {
 	const boundary = Math.max(text.lastIndexOf(" "), text.lastIndexOf("\n"));
 	const rawPrefix = text.slice(boundary + 1);
 	if (!rawPrefix.startsWith(INLINE_COMMAND_TRIGGER)) return undefined;
-	if (rawPrefix.includes(":")) return undefined;
+	if (rawPrefix.includes(">")) return undefined;
+	const body = rawPrefix.slice(INLINE_COMMAND_TRIGGER.length);
+	const separator = body.indexOf(":");
+	if (separator === -1) return { name: body, rawPrefix };
 	return {
-		prefix: rawPrefix.slice(INLINE_COMMAND_TRIGGER.length),
+		name: body.slice(0, separator),
+		argumentPrefix: body.slice(separator + 1),
 		rawPrefix,
 	};
 }

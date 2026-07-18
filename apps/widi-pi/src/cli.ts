@@ -1,59 +1,28 @@
-/**
- * Minimal stdout/CLI adapter.
- *
- * This is the first non-test consumer of the runtime. It deliberately uses
- * only the public composition surface: createWidiRuntime, orchestrator
- * events via subscribe/registerClient, CommandEngine, and promptAgent.
- * Anything this file cannot do through that surface is an extension-surface
- * finding, not a reason to import core internals.
- */
+#!/usr/bin/env node
+import { runWidiTui } from "./tui/application.ts";
 
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { createInterface } from "node:readline";
-import type { AgentHarnessEvent } from "@earendil-works/pi-agent-core";
-import {
-	formatExtensionMessageEvent,
-	formatExtensionNotificationEvent,
-	formatExtensionStatusEvent,
-} from "./cli-event-format.ts";
-import { CliStreamWriter } from "./cli-stream-writer.ts";
-import type {
-	AgentOrchestrator,
-	OrchestratorEvent,
-} from "./core/agent-orchestrator.ts";
-import type { OrchestratorDiagnostic } from "./core/diagnostics.ts";
-import type {
-	HumanRequestEnvelope,
-	HumanResponse,
-} from "./core/human-request.ts";
-import { createWidiRuntime } from "./core/runtime-service.ts";
-import { applicationCommands } from "./tui/commands/app-commands.ts";
-import { builtInCommands } from "./tui/commands/built-ins.ts";
-import { CommandEngine, switchedAgentId } from "./tui/commands/engine.ts";
-
-interface CliOptions {
+interface EntryOptions {
 	cwd: string;
 	agentDir?: string;
 	profileId?: string;
 }
 
-function parseArgs(argv: string[]): CliOptions {
-	const options: CliOptions = { cwd: process.cwd() };
-	for (let i = 0; i < argv.length; i++) {
-		const arg = argv[i];
-		switch (arg) {
+function parseArgs(argv: string[]): EntryOptions {
+	const options: EntryOptions = { cwd: process.cwd() };
+	for (let index = 0; index < argv.length; index++) {
+		const argument = argv[index];
+		switch (argument) {
 			case "--cwd":
-				options.cwd = requireValue(argv, ++i, arg);
+				options.cwd = requireValue(argv, ++index, argument);
 				break;
 			case "--agent-dir":
-				options.agentDir = requireValue(argv, ++i, arg);
+				options.agentDir = requireValue(argv, ++index, argument);
 				break;
 			case "--profile":
-				options.profileId = requireValue(argv, ++i, arg);
+				options.profileId = requireValue(argv, ++index, argument);
 				break;
 			default:
-				throw new Error(`Unknown argument: ${arg}`);
+				throw new Error(`Unknown argument: ${argument}`);
 		}
 	}
 	return options;
@@ -61,352 +30,13 @@ function parseArgs(argv: string[]): CliOptions {
 
 function requireValue(argv: string[], index: number, flag: string): string {
 	const value = argv[index];
-	if (value === undefined) {
-		throw new Error(`Missing value for ${flag}`);
-	}
+	if (value === undefined) throw new Error(`Missing value for ${flag}`);
 	return value;
 }
 
-function printDiagnostic(diagnostic: OrchestratorDiagnostic): void {
-	streamWriter.writeLine(
-		`[diagnostic:${diagnostic.severity}] ${diagnostic.code}: ${diagnostic.message}`,
+runWidiTui(parseArgs(process.argv.slice(2))).catch((error) => {
+	process.stderr.write(
+		`${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
 	);
-}
-
-const streamWriter = new CliStreamWriter((text) => process.stdout.write(text));
-
-function shortJson(value: unknown, maxLength = 200): string {
-	let text: string;
-	try {
-		text = JSON.stringify(value);
-	} catch {
-		text = String(value);
-	}
-	if (text === undefined) return "undefined";
-	return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
-}
-
-function renderEvent(event: OrchestratorEvent): void {
-	switch (event.type) {
-		case "agent_harness_event":
-			renderHarnessEvent(event.event);
-			return;
-		case "diagnostic":
-			printDiagnostic(event.diagnostic);
-			return;
-		case "extension_output":
-			streamWriter.endMessage();
-			streamWriter.writeLine(`[extension:${event.extensionId}] ${event.text}`);
-			return;
-		case "extension_notification":
-			streamWriter.endMessage();
-			streamWriter.writeLine(formatExtensionNotificationEvent(event));
-			return;
-		case "extension_status_changed": {
-			const line = formatExtensionStatusEvent(event);
-			if (line) {
-				streamWriter.endMessage();
-				streamWriter.writeLine(line);
-			}
-			return;
-		}
-		case "extension_message_published":
-			streamWriter.endMessage();
-			streamWriter.writeLine(formatExtensionMessageEvent(event));
-			return;
-		case "auth_login_url":
-			streamWriter.endMessage();
-			streamWriter.writeLine(`[login:${event.providerId}] open ${event.url}`);
-			if (event.instructions) {
-				streamWriter.writeLine(
-					`[login:${event.providerId}] ${event.instructions}`,
-				);
-			}
-			return;
-		case "auth_login_code":
-			streamWriter.endMessage();
-			streamWriter.writeLine(
-				`[login:${event.providerId}] open ${event.verificationUri} and enter code ${event.userCode}`,
-			);
-			return;
-		case "auth_login_progress":
-			streamWriter.writeLine(`[login:${event.providerId}] ${event.message}`);
-			return;
-		case "input_transformed":
-			streamWriter.writeLine(
-				`[input] rewritten by ${event.transformedBy.join(", ")}: ${shortJson(event.text)}`,
-			);
-			return;
-		case "input_blocked":
-			streamWriter.writeLine(
-				`[input] blocked by ${event.blockedBy}${event.reason ? `: ${event.reason}` : ""}`,
-			);
-			return;
-		case "agent_spawned":
-			streamWriter.writeLine(
-				`[agent] spawned ${event.agentId} profile=${event.profile.id} model=${event.model.provider}/${event.model.id}`,
-			);
-			return;
-		case "agent_resumed":
-			streamWriter.writeLine(`[agent] resumed ${event.agentId}`);
-			return;
-		default:
-			return;
-	}
-}
-
-function renderHarnessEvent(event: AgentHarnessEvent): void {
-	switch (event.type) {
-		case "message_update": {
-			const streamEvent = event.assistantMessageEvent;
-			if (streamEvent.type === "text_start") {
-				streamWriter.endThinking();
-			} else if (streamEvent.type === "text_delta" && streamEvent.delta) {
-				streamWriter.writeTextDelta(streamEvent.delta);
-			} else if (streamEvent.type === "thinking_start") {
-				streamWriter.startThinking();
-			} else if (streamEvent.type === "thinking_delta" && streamEvent.delta) {
-				streamWriter.writeThinkingDelta(streamEvent.delta);
-			} else if (streamEvent.type === "thinking_end") {
-				streamWriter.endThinking();
-			}
-			return;
-		}
-		case "message_end":
-			streamWriter.endMessage();
-			return;
-		case "tool_execution_start":
-			streamWriter.endMessage();
-			streamWriter.writeLine(
-				`[tool:${event.toolName}] ${shortJson(event.args)}`,
-			);
-			return;
-		case "tool_execution_end": {
-			const result = event.result as {
-				content?: Array<{ type: string; text?: string }>;
-			};
-			const text =
-				result?.content
-					?.filter((item) => item.type === "text")
-					.map((item) => item.text ?? "")
-					.join("\n") ?? "";
-			streamWriter.endMessage();
-			streamWriter.writeLine(
-				`[tool:${event.toolName}:${event.isError ? "error" : "ok"}] ${shortJson(text)}`,
-			);
-			return;
-		}
-		case "agent_end":
-			streamWriter.endMessage();
-			streamWriter.writeLine("[turn done]");
-			return;
-		default:
-			return;
-	}
-}
-
-/**
- * Buffering line source. Lines are queued from process start so input that
- * arrives while the runtime is still composing (piped stdin) is not lost to
- * a readline interface that has no pending question yet.
- */
-class LineReader {
-	private readonly queue: string[] = [];
-	private readonly waiters: Array<(line: string | undefined) => void> = [];
-	private closed = false;
-
-	constructor(input: NodeJS.ReadableStream) {
-		const rl = createInterface({ input });
-		rl.on("line", (line) => {
-			const waiter = this.waiters.shift();
-			if (waiter) {
-				waiter(line);
-			} else {
-				this.queue.push(line);
-			}
-		});
-		rl.on("close", () => {
-			this.closed = true;
-			for (const waiter of this.waiters.splice(0)) {
-				waiter(undefined);
-			}
-		});
-	}
-
-	/** Returns the next line, or undefined once stdin is closed and drained. */
-	async next(promptText: string): Promise<string | undefined> {
-		const queued = this.queue.shift();
-		if (queued !== undefined) return queued;
-		if (this.closed) return undefined;
-		process.stdout.write(promptText);
-		return new Promise((resolve) => {
-			this.waiters.push(resolve);
-		});
-	}
-}
-
-async function promptHuman(
-	lines: LineReader,
-	request: HumanRequestEnvelope,
-): Promise<HumanResponse> {
-	streamWriter.writeLine(`[human:${request.kind}] ${request.title}`);
-	if (request.message) streamWriter.writeLine(request.message);
-	if (request.options && request.options.length > 0) {
-		for (const [index, option] of request.options.entries()) {
-			streamWriter.writeLine(`  ${index + 1}. ${option}`);
-		}
-	}
-	const answer = ((await lines.next("human> ")) ?? "").trim();
-
-	switch (request.kind) {
-		case "confirm":
-			return { kind: "confirm", confirmed: /^y(es)?$/i.test(answer) };
-		case "select":
-			return { kind: "select", value: pickOption(request, answer) };
-		default:
-			// input and custom requests both reduce to a free-form
-			// value in this adapter; empty input means "no value".
-			return { kind: "input", value: answer === "" ? undefined : answer };
-	}
-}
-
-function pickOption(
-	request: HumanRequestEnvelope,
-	answer: string,
-): string | undefined {
-	if (answer === "") return undefined;
-	const options = request.options ?? [];
-	const byNumber = Number.parseInt(answer, 10);
-	if (
-		Number.isFinite(byNumber) &&
-		byNumber >= 1 &&
-		byNumber <= options.length
-	) {
-		return options[byNumber - 1];
-	}
-	const matched = options.find((option) => option === answer);
-	if (matched !== undefined) return matched;
-	// Select accepts free input only when the request opts in; otherwise an
-	// unmatched answer means "no value".
-	return request.allowFreeInput === true ? answer : undefined;
-}
-
-async function main(): Promise<void> {
-	const options = parseArgs(process.argv.slice(2));
-	const runtime = await createWidiRuntime({
-		cwd: options.cwd,
-		// The core default (".widi") resolves relative to cwd, which is the
-		// project config dir convention. The user-level agent dir default is
-		// this adapter's decision.
-		agentDir: options.agentDir ?? join(homedir(), ".widi"),
-		defaultProfileId: options.profileId,
-	});
-	const orchestrator: AgentOrchestrator = runtime.orchestrator;
-	let shouldExit = false;
-	const engine = new CommandEngine([
-		...builtInCommands,
-		...applicationCommands({
-			quit: () => {
-				shouldExit = true;
-			},
-		}),
-	]);
-
-	for (const diagnostic of runtime.diagnostics) {
-		printDiagnostic(diagnostic);
-	}
-
-	const lines = new LineReader(process.stdin);
-	orchestrator.registerClient({
-		id: "cli",
-		requestHuman: (request) => promptHuman(lines, request),
-	});
-	if (process.env.WIDI_CLI_DEBUG) {
-		orchestrator.subscribe((event) => {
-			process.stderr.write(`[debug] ${shortJson(event, 600)}\n`);
-		});
-	}
-	orchestrator.subscribe(renderEvent);
-
-	let agentId: string | undefined;
-	async function ensureAgentId(): Promise<string> {
-		if (agentId !== undefined) return agentId;
-		agentId = await orchestrator.spawnAgent();
-		return agentId;
-	}
-
-	streamWriter.writeLine(`[cli] cwd=${runtime.services.cwd}`);
-	streamWriter.writeLine(
-		`[cli] type a prompt, or /<command>; first input starts a run; /exit quits`,
-	);
-
-	for (;;) {
-		const line = await lines.next("> ");
-		if (line === undefined) break; // stdin closed
-		const input = line.trim();
-		if (input === "") continue;
-		try {
-			const currentAgentId = await ensureAgentId();
-			const outcome = await engine.handleInput(input, {
-				agentId: currentAgentId,
-				orchestrator,
-			});
-			if (shouldExit) break;
-			switch (outcome.kind) {
-				case "pass":
-				case "expanded":
-					// blocked 的用户可见输出交给 renderEvent 的 input_blocked 事件
-					// 打印，这里不重复输出。
-					await orchestrator.promptAgent(
-						currentAgentId,
-						outcome.kind === "expanded" ? outcome.text : input,
-						outcome.kind === "expanded"
-							? { expansion: outcome.expansion }
-							: undefined,
-					);
-					break;
-				case "executed": {
-					streamWriter.writeLine(
-						`[command:${outcome.name}] ${shortJson(outcome.value, 2000)}`,
-					);
-					const nextAgentId = switchedAgentId(outcome);
-					if (nextAgentId) {
-						agentId = nextAgentId;
-						streamWriter.writeLine(`[cli] active agent=${agentId}`);
-					}
-					break;
-				}
-				case "failed":
-					streamWriter.writeLine(
-						`[command:${outcome.name}:failed] ${outcome.error.message}`,
-					);
-					break;
-				case "needs-argument": {
-					streamWriter.writeLine(
-						`[command:/${outcome.command.name}] requires an argument${outcome.command.argumentHint ? ` ${outcome.command.argumentHint}` : ""}:`,
-					);
-					for (const candidate of outcome.candidates) {
-						streamWriter.writeLine(
-							`  ${candidate.value}${candidate.description ? ` — ${candidate.description}` : ""}`,
-						);
-					}
-					break;
-				}
-			}
-		} catch (error) {
-			streamWriter.writeLine(
-				`[error] ${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
-	}
-
-	await orchestrator.disposeAll("cli exit");
-	process.exit(0);
-}
-
-main().catch((error) => {
-	console.error(
-		error instanceof Error ? (error.stack ?? error.message) : error,
-	);
-	process.exit(1);
+	process.exitCode = 1;
 });

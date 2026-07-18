@@ -82,6 +82,19 @@ describe("presentToolExecution", () => {
 		expect(lines).toEqual(["● Bash sleep 5"]);
 	});
 
+	it("shows no raw JSON for a running call without output yet", () => {
+		const item = toolItem({
+			toolName: "bash",
+			status: "running",
+			args: { command: "npm run test | tail -60" },
+			partialResult: { content: [], details: undefined },
+		});
+
+		const lines = plain(presentToolExecution(item, 80));
+
+		expect(lines).toEqual(["● Bash npm run test | tail -60"]);
+	});
+
 	it("keeps more detail for errors", () => {
 		const item = toolItem({
 			toolName: "ls",

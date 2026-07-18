@@ -10,6 +10,10 @@ declare module "@earendil-works/pi-tui" {
 		"app.interrupt": true;
 		"app.exit": true;
 		"app.tools.expand": true;
+		"app.steer": true;
+		"app.request.open": true;
+		"app.request.previous": true;
+		"app.request.next": true;
 	}
 }
 
@@ -29,6 +33,22 @@ export const WIDI_KEYBINDINGS = {
 	"app.tools.expand": {
 		defaultKeys: "ctrl+o",
 		description: "Toggle expanded tool output in the transcript",
+	},
+	"app.steer": {
+		defaultKeys: "ctrl+s",
+		description: "Send the editor text as a steer to the running agent",
+	},
+	"app.request.open": {
+		defaultKeys: "ctrl+r",
+		description: "Jump to the most recent pending human request",
+	},
+	"app.request.previous": {
+		defaultKeys: "left",
+		description: "Focus the previous pending human request",
+	},
+	"app.request.next": {
+		defaultKeys: "right",
+		description: "Focus the next pending human request",
 	},
 } as const satisfies KeybindingDefinitions;
 

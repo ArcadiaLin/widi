@@ -260,5 +260,7 @@ export function toolResultText(result: unknown): string {
 		)
 		.map((item) => item.text)
 		.join("\n");
-	return text || formatUnknown(result);
+	// A valid content array with no text yet (e.g. a quiet running command) is
+	// "no output", not a malformed result to dump as JSON.
+	return text;
 }
