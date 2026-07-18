@@ -5,6 +5,10 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import { ok } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import {
+	registerOAuthProvider,
+	unregisterOAuthProvider,
+} from "@earendil-works/pi-ai/oauth";
 import { describe, expect, it } from "vitest";
 import {
 	AgentOrchestrator,
@@ -4463,6 +4467,219 @@ describe("AgentOrchestrator", () => {
 			}),
 		});
 		expect(handlerCalls).toBe(0);
+	});
+
+	it("loginAuthProvider drives the OAuth flow through events and human requests", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async (request) => {
+				if (request.kind === "select") {
+					return { kind: "select", value: request.options?.[1] };
+				}
+				return { kind: "input", value: "auth-code-123" };
+			},
+		});
+		let selectedMethod: string | undefined;
+		registerOAuthProvider({
+			id: "fake-oauth",
+			name: "Fake OAuth",
+			login: async (callbacks) => {
+				selectedMethod = await callbacks.onSelect({
+					message: "Choose a login method",
+					options: [
+						{ id: "browser", label: "Browser" },
+						{ id: "device", label: "Device code" },
+					],
+				});
+				callbacks.onAuth({
+					url: "https://example.test/authorize",
+					instructions: "Complete login in your browser.",
+				});
+				callbacks.onDeviceCode({
+					userCode: "ABCD-1234",
+					verificationUri: "https://example.test/device",
+				});
+				callbacks.onProgress?.("Exchanging code...");
+				const code = await callbacks.onPrompt({ message: "Paste the code:" });
+				return {
+					refresh: "refresh-token",
+					access: `access:${code}`,
+					expires: Date.now() + 60_000,
+				};
+			},
+			refreshToken: async (credentials) => credentials,
+			getApiKey: (credentials) => credentials.access,
+		});
+
+		try {
+			const agentId = await orchestrator.spawnAgent();
+			await expect(
+				orchestrator.loginAuthProvider("fake-oauth", { agentId }),
+			).resolves.toEqual({
+				providerId: "fake-oauth",
+				providerName: "Fake OAuth",
+			});
+			expect(selectedMethod).toBe("device");
+			expect(orchestrator.modelRegistry.authStorage.get("fake-oauth")).toEqual({
+				type: "oauth",
+				refresh: "refresh-token",
+				access: "access:auth-code-123",
+				expires: expect.any(Number),
+			});
+			expect(events).toContainEqual(
+				expect.objectContaining({
+					type: "auth_login_url",
+					providerId: "fake-oauth",
+					agentId,
+					url: "https://example.test/authorize",
+					instructions: "Complete login in your browser.",
+				}),
+			);
+			expect(events).toContainEqual(
+				expect.objectContaining({
+					type: "auth_login_code",
+					providerId: "fake-oauth",
+					userCode: "ABCD-1234",
+					verificationUri: "https://example.test/device",
+				}),
+			);
+			expect(events).toContainEqual(
+				expect.objectContaining({
+					type: "auth_login_progress",
+					providerId: "fake-oauth",
+					message: "Exchanging code...",
+				}),
+			);
+		} finally {
+			unregisterOAuthProvider("fake-oauth");
+		}
+	});
+
+	it("withdraws the provisional manual code input without publishing a fault", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		// The human never answers: the manual input stays pending until the
+		// flow settles, exactly like a local callback server winning the race.
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async () => await new Promise<never>(() => {}),
+		});
+		let manualOutcome: string | undefined;
+		registerOAuthProvider({
+			id: "fake-callback-oauth",
+			name: "Fake Callback OAuth",
+			usesCallbackServer: true,
+			login: async (callbacks) => {
+				callbacks.onAuth({ url: "https://example.test/authorize" });
+				void callbacks
+					.onManualCodeInput?.()
+					.then(() => {
+						manualOutcome = "resolved";
+					})
+					.catch(() => {
+						manualOutcome = "rejected";
+					});
+				return {
+					refresh: "refresh-token",
+					access: "access-token",
+					expires: Date.now() + 60_000,
+				};
+			},
+			refreshToken: async (credentials) => credentials,
+			getApiKey: (credentials) => credentials.access,
+		});
+
+		try {
+			await expect(
+				orchestrator.loginAuthProvider("fake-callback-oauth"),
+			).resolves.toMatchObject({ providerId: "fake-callback-oauth" });
+			await new Promise((resolve) => setImmediate(resolve));
+			expect(manualOutcome).toBe("rejected");
+			expect(
+				events.filter(
+					(event) =>
+						event.type === "diagnostic" &&
+						event.diagnostic.code === "orchestrator.human_request_aborted",
+				),
+			).toEqual([]);
+		} finally {
+			unregisterOAuthProvider("fake-callback-oauth");
+		}
+	});
+
+	it("fails the login when the human dismisses a required prompt", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async () => ({ kind: "input", value: undefined }),
+		});
+		registerOAuthProvider({
+			id: "fake-prompt-oauth",
+			name: "Fake Prompt OAuth",
+			login: async (callbacks) => {
+				const code = await callbacks.onPrompt({ message: "Paste the code:" });
+				return {
+					refresh: "refresh-token",
+					access: `access:${code}`,
+					expires: Date.now() + 60_000,
+				};
+			},
+			refreshToken: async (credentials) => credentials,
+			getApiKey: (credentials) => credentials.access,
+		});
+
+		try {
+			await expect(
+				orchestrator.loginAuthProvider("fake-prompt-oauth"),
+			).rejects.toMatchObject({ code: "auth.login_failed" });
+			expect(
+				orchestrator.modelRegistry.authStorage.has("fake-prompt-oauth"),
+			).toBe(false);
+		} finally {
+			unregisterOAuthProvider("fake-prompt-oauth");
+		}
+	});
+
+	it("rejects unknown auth providers and lists login/logout candidates", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+
+		await expect(
+			orchestrator.loginAuthProvider("no-such-provider"),
+		).rejects.toMatchObject({ code: "auth.provider_unknown" });
+
+		const candidates = orchestrator.listAuthProviderCandidates().providers;
+		expect(candidates).toContainEqual(
+			expect.objectContaining({ value: "anthropic" }),
+		);
+
+		const authStorage = orchestrator.modelRegistry.authStorage;
+		await authStorage.set("custom-provider", { type: "api_key", key: "key" });
+		expect(orchestrator.listAuthCredentialCandidates().providers).toEqual([
+			{ value: "custom-provider", label: "custom-provider" },
+		]);
+
+		await expect(
+			orchestrator.logoutAuthProvider("custom-provider"),
+		).resolves.toEqual({ providerId: "custom-provider", removed: true });
+		expect(authStorage.has("custom-provider")).toBe(false);
+		await expect(
+			orchestrator.logoutAuthProvider("custom-provider"),
+		).resolves.toEqual({ providerId: "custom-provider", removed: false });
+		await expect(orchestrator.logoutAuthProvider("  ")).rejects.toMatchObject({
+			code: "auth.provider_unknown",
+		});
 	});
 
 	it("gates extension exec on project trust", async () => {

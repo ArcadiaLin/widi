@@ -59,6 +59,26 @@ export const builtInCommands: readonly CommandDefinition[] = [
 	},
 	{
 		kind: "line",
+		name: "login",
+		description: "Log in to an LLM provider subscription.",
+		argumentHint: "[provider]",
+		complete: async ({ orchestrator }) =>
+			orchestrator.listAuthProviderCandidates().providers,
+		execute: async ({ orchestrator, agentId }, argument) =>
+			await orchestrator.loginAuthProvider(argument.trim(), { agentId }),
+	},
+	{
+		kind: "line",
+		name: "logout",
+		description: "Remove a stored LLM provider credential.",
+		argumentHint: "[provider]",
+		complete: async ({ orchestrator }) =>
+			orchestrator.listAuthCredentialCandidates().providers,
+		execute: async ({ orchestrator }, argument) =>
+			await orchestrator.logoutAuthProvider(argument.trim()),
+	},
+	{
+		kind: "line",
 		name: "model",
 		description: "Set the current agent model.",
 		argumentHint: "[provider/model]",

@@ -113,6 +113,24 @@ function renderEvent(event: OrchestratorEvent): void {
 			streamWriter.endMessage();
 			streamWriter.writeLine(formatExtensionMessageEvent(event));
 			return;
+		case "auth_login_url":
+			streamWriter.endMessage();
+			streamWriter.writeLine(`[login:${event.providerId}] open ${event.url}`);
+			if (event.instructions) {
+				streamWriter.writeLine(
+					`[login:${event.providerId}] ${event.instructions}`,
+				);
+			}
+			return;
+		case "auth_login_code":
+			streamWriter.endMessage();
+			streamWriter.writeLine(
+				`[login:${event.providerId}] open ${event.verificationUri} and enter code ${event.userCode}`,
+			);
+			return;
+		case "auth_login_progress":
+			streamWriter.writeLine(`[login:${event.providerId}] ${event.message}`);
+			return;
 		case "input_transformed":
 			streamWriter.writeLine(
 				`[input] rewritten by ${event.transformedBy.join(", ")}: ${shortJson(event.text)}`,

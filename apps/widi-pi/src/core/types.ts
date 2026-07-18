@@ -107,6 +107,33 @@ export type OrchestratorEvent =
 			createdAt: string;
 	  }
 	| HumanRequestEvent
+	// OAuth login flow facts. The URL and device code must reach the human
+	// even when the flow completes through a local callback server without
+	// further input, so they are broadcast facts, not human requests. agentId
+	// is the agent whose surface initiated the login, for display attribution.
+	| {
+			readonly type: "auth_login_url";
+			providerId: string;
+			agentId?: AgentId;
+			url: string;
+			instructions?: string;
+			createdAt: string;
+	  }
+	| {
+			readonly type: "auth_login_code";
+			providerId: string;
+			agentId?: AgentId;
+			userCode: string;
+			verificationUri: string;
+			createdAt: string;
+	  }
+	| {
+			readonly type: "auth_login_progress";
+			providerId: string;
+			agentId?: AgentId;
+			message: string;
+			createdAt: string;
+	  }
 	| {
 			readonly type: "diagnostic";
 			diagnostic: OrchestratorDiagnostic;

@@ -25,6 +25,7 @@ import {
 import {
 	getSupportedThinkingLevels,
 	type ImageContent,
+	type OAuthLoginCallbacks,
 } from "@earendil-works/pi-ai";
 import type {
 	AgentProfile,
@@ -75,7 +76,11 @@ import {
 	validateExtensionStatus,
 } from "./extension/presentation.ts";
 import { ExtensionStatusRegistry } from "./extension/status-registry.ts";
-import type { HumanRequest, HumanResponse } from "./human-request.ts";
+import type {
+	HumanRequest,
+	HumanRequestDraft,
+	HumanResponse,
+} from "./human-request.ts";
 import { HumanRequestBroker } from "./human-request.ts";
 import { stripImagesFromMessages } from "./image-policy.ts";
 import {
@@ -175,6 +180,24 @@ export interface AgentSkillCandidateListResult {
 
 export interface AgentThinkingLevelResult {
 	readonly level: ThinkingLevel;
+}
+
+export interface AuthProviderCandidateListResult {
+	readonly providers: readonly CandidateItem[];
+}
+
+export interface AuthCredentialCandidateListResult {
+	readonly providers: readonly CandidateItem[];
+}
+
+export interface AuthProviderLoginResult {
+	readonly providerId: string;
+	readonly providerName: string;
+}
+
+export interface AuthProviderLogoutResult {
+	readonly providerId: string;
+	readonly removed: boolean;
 }
 
 export type ExtensionReloadAgentStatus = "reloaded" | "skipped" | "failed";
@@ -564,6 +587,215 @@ export class AgentOrchestrator {
 		}
 		await this.setAgentModel(agentId, model);
 		return model;
+	}
+
+	listAuthProviderCandidates(): AuthProviderCandidateListResult {
+		const authStorage = this.modelRegistry.authStorage;
+		return {
+			providers: authStorage.getOAuthProviders().map((provider) => ({
+				value: provider.id,
+				label: provider.name,
+				description: authStorage.getAuthStatus(provider.id).configured
+					? "logged in"
+					: undefined,
+			})),
+		};
+	}
+
+	/** Providers with a stored credential (OAuth or API key): logout targets. */
+	listAuthCredentialCandidates(): AuthCredentialCandidateListResult {
+		const authStorage = this.modelRegistry.authStorage;
+		const oauthProviders = authStorage.getOAuthProviders();
+		return {
+			providers: authStorage.list().map((providerId) => ({
+				value: providerId,
+				label:
+					oauthProviders.find((provider) => provider.id === providerId)?.name ??
+					providerId,
+			})),
+		};
+	}
+
+	// The product entry for OAuth subscription login. Display-only steps
+	// (authorization URL, device code, progress) broadcast as auth_login_*
+	// events; interactive steps go through the human-request broker, so any
+	// client that answers human requests can drive a login.
+	async loginAuthProvider(
+		providerId: string,
+		options?: { agentId?: AgentId },
+	): Promise<AuthProviderLoginResult> {
+		const authStorage = this.modelRegistry.authStorage;
+		const reference = providerId.trim();
+		const provider = authStorage
+			.getOAuthProviders()
+			.find((candidate) => candidate.id === reference);
+		if (!provider) {
+			throw new OrchestratorError(
+				createOrchestratorDiagnostic({
+					severity: "error",
+					code: "auth.provider_unknown",
+					message: `Unknown auth provider: ${reference || "(none)"}. Available providers: ${authStorage
+						.getOAuthProviders()
+						.map((candidate) => candidate.id)
+						.join(", ")}.`,
+					agentId: options?.agentId,
+					phase: "runtime",
+					recoverable: true,
+				}),
+			);
+		}
+		// Settling the flow withdraws provisional prompts, such as the manual
+		// code input racing a local callback server.
+		const settle = new AbortController();
+		try {
+			await authStorage.login(
+				provider.id,
+				this._createOAuthLoginCallbacks(
+					provider.id,
+					options?.agentId,
+					settle.signal,
+				),
+			);
+		} catch (error) {
+			const diagnostic = toDiagnostic(error, {
+				code: "auth.login_failed",
+				message: `Login to ${provider.name} failed: ${formatError(error)}`,
+				agentId: options?.agentId,
+				phase: "runtime",
+				recoverable: true,
+			});
+			throw new OrchestratorError(diagnostic);
+		} finally {
+			settle.abort();
+			// AuthStorage records persistence failures as diagnostics instead of
+			// throwing; publish them so a login that could not write auth.json is
+			// visibly degraded rather than silently in-memory.
+			await this._publishDiagnostics(authStorage.drainDiagnostics());
+		}
+		// A fresh credential can change provider model composition (e.g. OAuth
+		// providers whose models depend on the credential), so rebuild the
+		// registry to make the models selectable immediately.
+		try {
+			await this.modelRegistry.refresh();
+		} catch (error) {
+			await this._publishDiagnostic(
+				createOrchestratorDiagnostic({
+					severity: "warning",
+					disposition: "reported",
+					code: "model.load_failed",
+					message: `Model registry refresh after login failed: ${formatError(error)}`,
+					provider: provider.id,
+					phase: "runtime",
+					recoverable: true,
+				}),
+			);
+		}
+		return { providerId: provider.id, providerName: provider.name };
+	}
+
+	async logoutAuthProvider(
+		providerId: string,
+	): Promise<AuthProviderLogoutResult> {
+		const authStorage = this.modelRegistry.authStorage;
+		const reference = providerId.trim();
+		if (!reference) {
+			throw new OrchestratorError(
+				createOrchestratorDiagnostic({
+					severity: "error",
+					code: "auth.provider_unknown",
+					message: "Auth provider reference must not be empty.",
+					phase: "runtime",
+					recoverable: true,
+				}),
+			);
+		}
+		const removed = authStorage.has(reference);
+		await authStorage.logout(reference);
+		await this._publishDiagnostics(authStorage.drainDiagnostics());
+		return { providerId: reference, removed };
+	}
+
+	// Maps pi-ai OAuth login callbacks onto orchestrator facts. The manual
+	// code input races a local callback server inside the provider flow, so
+	// its human request is provisional: settling the flow withdraws it
+	// without publishing a fault.
+	private _createOAuthLoginCallbacks(
+		providerId: string,
+		agentId: AgentId | undefined,
+		settleSignal: AbortSignal,
+	): OAuthLoginCallbacks {
+		const requestHuman = async (draft: HumanRequestDraft) =>
+			await this._humanRequests.request(
+				{ ...draft, source: { kind: "human" }, signal: settleSignal },
+				{ agentId },
+			);
+		const inputValue = (response: HumanResponse) =>
+			response.kind === "input" ? response.value : undefined;
+		return {
+			signal: settleSignal,
+			onAuth: (info) => {
+				void this._emit({
+					type: "auth_login_url",
+					providerId,
+					agentId,
+					url: info.url,
+					instructions: info.instructions,
+					createdAt: now(),
+				});
+			},
+			onDeviceCode: (info) => {
+				void this._emit({
+					type: "auth_login_code",
+					providerId,
+					agentId,
+					userCode: info.userCode,
+					verificationUri: info.verificationUri,
+					createdAt: now(),
+				});
+			},
+			onProgress: (message) => {
+				void this._emit({
+					type: "auth_login_progress",
+					providerId,
+					agentId,
+					message,
+					createdAt: now(),
+				});
+			},
+			onPrompt: async (prompt) => {
+				const response = await requestHuman({
+					kind: "input",
+					title: prompt.message,
+					placeholder: prompt.placeholder,
+				});
+				const value = inputValue(response);
+				if (value !== undefined) return value;
+				if (prompt.allowEmpty) return "";
+				throw new Error("Login prompt was dismissed.");
+			},
+			onManualCodeInput: async () => {
+				const response = await requestHuman({
+					kind: "input",
+					title:
+						"Complete login in your browser, or paste the authorization code / redirect URL here:",
+					provisional: true,
+				});
+				const value = inputValue(response);
+				if (value === undefined) {
+					throw new Error("Login input was dismissed.");
+				}
+				return value;
+			},
+			onSelect: async (prompt) => {
+				const response = await requestHuman({
+					kind: "select",
+					title: prompt.message,
+					options: prompt.options.map((option) => option.label),
+				});
+				const label = response.kind === "select" ? response.value : undefined;
+				return prompt.options.find((option) => option.label === label)?.id;
+			},
+		};
 	}
 
 	listAgentThinkingLevelCandidates(

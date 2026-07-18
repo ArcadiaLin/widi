@@ -94,6 +94,17 @@ model
 
 Auth status 查询只判断“是否配置”，不主动执行有副作用的 `!command`。真正的请求路径执行完整解析与 OAuth refresh。
 
+## OAuth login 入口
+
+`AgentOrchestrator.loginAuthProvider(providerId)` 是发起订阅登录的产品入口，交互层以 `/login` `/logout` 命令消费：
+
+- 展示性步骤（authorization URL、device code、progress）作为 `auth_login_url` / `auth_login_code` / `auth_login_progress` 事件广播；TUI 渲染为 application notice，cli 打印 `[login:*]` 行。
+- 交互性步骤（粘贴 code、选择登录方式）通过 human-request broker 走 `input` / `select` 请求，任何能应答 human request 的 client 都能驱动登录。
+- manual code input 与 provider 内部的本地 callback server 竞争，对应的 human request 标记为 `provisional`：flow 结束时以 caller signal 撤回，不发布 diagnostic。
+- 凭证由 `AuthStorage.login` 持久化；登录后执行 `ModelRegistry.refresh()`，使依赖凭证的 provider models（oauth `modifyModels`）立即可选。
+- `listAuthProviderCandidates`（可登录 provider）与 `listAuthCredentialCandidates`（已存凭证，logout 目标）支撑命令补全。
+- 失败统一为 `auth.provider_unknown` / `auth.login_failed`；auth.json 写入失败作为 diagnostics 发布，不静默。
+
 ## 配置值解析
 
 `ConfigValueResolver` 支持：

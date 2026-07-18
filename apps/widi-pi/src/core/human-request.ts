@@ -26,6 +26,11 @@ export interface HumanRequest {
 	payload?: unknown;
 	timeoutMs?: number;
 	signal?: AbortSignal;
+	// A provisional request is expected to be withdrawn by its caller's
+	// signal as normal control flow (e.g. a manual-input prompt racing a
+	// local OAuth callback server). The caller still gets the aborted
+	// rejection, but no diagnostic is published for the withdrawal.
+	provisional?: boolean;
 }
 
 export type HumanRequestDraft = Omit<HumanRequest, "source">;
@@ -296,7 +301,12 @@ export class HumanRequestBroker {
 				requestId,
 				recoverable: true,
 			});
-			await this.host.publishDiagnostic(diagnostic);
+			const withdrawnProvisional =
+				request.provisional === true &&
+				diagnostic.code === "orchestrator.human_request_aborted";
+			if (!withdrawnProvisional) {
+				await this.host.publishDiagnostic(diagnostic);
+			}
 			throw new OrchestratorError(diagnostic);
 		}
 	}

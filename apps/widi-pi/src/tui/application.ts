@@ -262,6 +262,23 @@ export class WidiTuiApplication {
 			case "extension_notification":
 				this.expireNotification(event.presentationId);
 				break;
+			case "auth_login_url":
+				this.addApplicationNotice(
+					event.instructions
+						? `Login: open ${event.url} — ${event.instructions}`
+						: `Login: open ${event.url}`,
+					event.agentId,
+				);
+				break;
+			case "auth_login_code":
+				this.addApplicationNotice(
+					`Login: open ${event.verificationUri} and enter code ${event.userCode}`,
+					event.agentId,
+				);
+				break;
+			case "auth_login_progress":
+				this.addApplicationNotice(`Login: ${event.message}`, event.agentId);
+				break;
 			case "human_request_timeout":
 			case "human_request_cancelled":
 				this.humanRequests.cancelRequest(event.requestId);

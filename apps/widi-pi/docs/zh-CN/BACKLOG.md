@@ -14,8 +14,8 @@
 - Context usage facts：需要 compaction/policy extension consumer，并确定 token usage 的来源与新鲜度。
 - `message_end` mutation：需要替换最终 assistant message 的脱敏等 consumer，并定义 WIDI-owned hook 与失败语义。
 - Tool metadata query：需要 parameters schema、prompt guidance 和 provenance 的 extension consumer；当前 name snapshot 不扩张。
-- OAuth login initiation：需要可发起人类 OAuth 流程的产品入口，并定义 URL、code input 与 cancellation facts。
 - Provider controlled override：需要企业代理类 extension consumer，并定义 provenance、确认和撤销语义。
+- Login 浏览器自动打开：`auth_login_url` 事件已含 URL；TUI 侧 `open`/`xdg-open` 拉起浏览器需要跨平台 spawn 边界裁决。
 
 ## Session、Profile 与 Resources
 
