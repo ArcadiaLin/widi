@@ -625,8 +625,10 @@ export class AuthStorage implements CredentialStore {
 	 * 1. Runtime override
 	 * 2. Stored API key
 	 * 3. Stored OAuth token, refreshing with backend locking when needed
-	 * 4. Environment variable
-	 * 5. Fallback resolver, unless disabled by the caller
+	 * 4. Fallback resolver, unless disabled by the caller
+	 *
+	 * Ambient sources (env vars, cloud profiles) are not consulted here; they
+	 * resolve through the provider-owned auth on the Models runtime.
 	 */
 	async getApiKey(
 		providerId: string,

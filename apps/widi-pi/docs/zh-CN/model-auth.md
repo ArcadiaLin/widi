@@ -90,7 +90,13 @@ model
 
 `AuthStorage` 持久化 API key 与 OAuth credential，支持 runtime override，并通过串行化 `modify()` 保证单进程内 refresh 的 read-modify-write 一致性。
 
+OAuth 能力不再来自全局注册表：pi-ai provider 自带 `Provider.auth.oauth`，`ModelRegistry` 通过 `AuthStorage.setOAuthProvidersSource()` 把 runtime 中带 OAuth 的 provider 以 live closure 接给 `AuthStorage`，login 候选与 token refresh 都经由该来源。models.json / extension 的 legacy OAuth config（`login`/`refreshToken`/`getApiKey`/`modifyModels`）由 `adaptOAuthConfig()` 桥接成 pi-ai `OAuthAuth` 后挂到对应 provider。
+
+内置 provider 的 auth 还覆盖 ambient 来源（env var、AWS profile、ADC file 等）：例如设置 `HF_TOKEN` 会使 huggingface provider 无需登录即可用。availability 判断因此依赖进程环境。
+
 `getApiKeyAndHeaders(model)` 是仍需显式 request auth 的兼容入口。它关闭 AuthStorage fallback 后自行解析 WIDI request config，避免同一配置重复参与。
+
+Provider 级 request auth（provider apiKey/headers/authHeader）在 `Provider.auth` resolve 内解析；model headers 由 `DiagnosticPublishingModels` 在 `getAuth()` 结果与 stream 选项中合并，优先级保持 base < provider < model < caller options。
 
 Auth status 查询只判断“是否配置”，不主动执行有副作用的 `!command`。真正的请求路径执行完整解析与 OAuth refresh。
 

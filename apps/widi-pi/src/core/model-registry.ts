@@ -702,7 +702,9 @@ export class ModelRegistry {
 	/**
 	 * Get models whose provider currently has some usable auth configured.
 	 *
-	 * This is a config presence check; OAuth refresh happens in AuthStorage.getApiKey().
+	 * Stored credentials and declared config values are pure presence checks;
+	 * the ambient-source fallback fully resolves provider auth, which may run
+	 * an expired OAuth token refresh through the credential store.
 	 */
 	async getAvailable(): Promise<Model<Api>[]> {
 		const available: Model<Api>[] = [];
@@ -1203,41 +1205,22 @@ export class ModelRegistry {
 		};
 	}
 
-	private createCustomProvider(
-		providerName: string,
+	/**
+	 * Build the `api` dispatch for createProvider: one ProviderStreams per
+	 * model api, collapsed to a single entry when uniform. A config
+	 * streamSimple overrides the streams for its declared api.
+	 */
+	private createProviderApi(
 		models: readonly Model<Api>[],
-	): Provider {
-		const apiStreams = new Map<Api, ProviderStreams>();
-		for (const model of models) {
-			if (!apiStreams.has(model.api)) {
-				apiStreams.set(model.api, createApiStreams(model.api));
-			}
-		}
-		const api =
-			apiStreams.size === 1
-				? [...apiStreams.values()][0]
-				: Object.fromEntries(apiStreams.entries());
-		return createProvider({
-			id: providerName,
-			name: providerDisplayName(providerName),
-			auth: this.createProviderAuth(providerName),
-			models,
-			api,
-		});
-	}
-
-	private createDynamicProvider(
-		providerName: string,
-		config: ProviderConfigInput,
-		models: readonly Model<Api>[],
-	): Provider {
-		const customStreamSimple = config.streamSimple;
+		config?: ProviderConfigInput,
+	): ProviderStreams | Partial<Record<Api, ProviderStreams>> {
+		const customStreamSimple = config?.streamSimple;
 		const apiStreams = new Map<Api, ProviderStreams>();
 		for (const model of models) {
 			if (apiStreams.has(model.api)) continue;
 			apiStreams.set(
 				model.api,
-				customStreamSimple && model.api === config.api
+				customStreamSimple && model.api === config?.api
 					? {
 							stream: (requestModel, context, options) =>
 								customStreamSimple(
@@ -1250,16 +1233,35 @@ export class ModelRegistry {
 					: createApiStreams(model.api),
 			);
 		}
-		const api =
-			apiStreams.size === 1
-				? [...apiStreams.values()][0]
-				: Object.fromEntries(apiStreams.entries());
+		return apiStreams.size === 1
+			? [...apiStreams.values()][0]
+			: Object.fromEntries(apiStreams.entries());
+	}
+
+	private createCustomProvider(
+		providerName: string,
+		models: readonly Model<Api>[],
+	): Provider {
+		return createProvider({
+			id: providerName,
+			name: providerDisplayName(providerName),
+			auth: this.createProviderAuth(providerName),
+			models,
+			api: this.createProviderApi(models),
+		});
+	}
+
+	private createDynamicProvider(
+		providerName: string,
+		config: ProviderConfigInput,
+		models: readonly Model<Api>[],
+	): Provider {
 		return createProvider({
 			id: providerName,
 			name: config.name ?? providerDisplayName(providerName),
 			auth: this.createProviderAuth(providerName, undefined, config.oauth),
 			models,
-			api,
+			api: this.createProviderApi(models, config),
 		});
 	}
 

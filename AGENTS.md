@@ -29,6 +29,7 @@ The checked-in `pi/` directory is a full upstream repository kept in-tree so WID
 - Root check includes `pi/packages/{ai,agent,tui}` and `apps/widi-pi`.
 - `apps/widi-pi` builds from `src` to `dist` with `tsgo`.
 - `apps/widi-pi` exposes the `widi-harness` binary from `dist/cli.js`.
+- `pi-ai` imports generated, gitignored model data from `pi/packages/ai/src/providers/data/*.json`. After every pi submodule update, re-run `node pi/packages/ai/scripts/generate-models.ts` (root `npm run build` also generates it). If the generator rewrites tracked `*.models.ts` files, restore them with `git -C pi checkout -- <files>` to keep the submodule clean.
 
 ## Dependencies
 

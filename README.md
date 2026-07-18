@@ -57,22 +57,43 @@ Documentation uses a stable [language entry point](apps/widi-pi/docs/README.md);
 
 ## Workspace layout
 
-- `apps/widi-pi`: the WIDI runtime core (active product code).
+- `apps/widi-pi`: the WIDI runtime core (active product code), exposing the `widi-harness` binary from `dist/cli.js`.
 - `pi/packages/ai`: local workspace source for `@earendil-works/pi-ai`.
 - `pi/packages/agent`: local workspace source for `@earendil-works/pi-agent-core`.
 - `pi/packages/tui`: local workspace source for `@earendil-works/pi-tui`.
 
-The checked-in `pi/` directory is the upstream Pi repository as a git submodule, resolved locally as workspace packages. WIDI treats `pi/*` as vendor code and does not modify it.
+The checked-in `pi/` directory is the upstream Pi repository as a git submodule, resolved locally as workspace packages. WIDI treats `pi/*` as vendor code and does not modify it; gaps are fed back upstream or recorded in the [upstream roadmap](apps/widi-pi/docs/zh-CN/core/pi-upstream-roadmap.md).
 
-## Development
+## Development setup
+
+Prerequisites: Node.js >= 22.19 and npm. Then:
 
 ```bash
-git submodule update --init --recursive
-npm install          # install workspace dependencies
+git submodule update --init --recursive   # check out the pi submodule
+npm install                               # install workspace dependencies
+node pi/packages/ai/scripts/generate-models.ts   # generate pi's built-in model data
 npm run build        # build all workspace packages
 npm run check        # Biome formatting/linting and TypeScript checks
 npm run test         # run workspace tests
 ```
+
+Notes on the moving parts:
+
+- **Pi's model data is generated, not checked in.** `pi-ai` imports provider model catalogs from `pi/packages/ai/src/providers/data/*.json`, which are gitignored upstream. Type checks and builds fail until they exist. `npm run build` regenerates them as part of the pi-ai build; the standalone `generate-models.ts` run above is only needed when you type-check without building.
+- **`npm run check` covers `apps/widi-pi`.** To type-check the whole monorepo including the pi packages, run `npx tsgo --noEmit -p tsconfig.json`.
+- The root TypeScript config maps `@earendil-works/pi-*` imports to the pi sources and uses `module: NodeNext`, matching upstream's own config (required for pi's JSON import attributes).
+
+### Updating the pi submodule
+
+Pi tracks upstream `main`. After pulling the submodule to a new commit:
+
+```bash
+git -C pi fetch origin
+git -C pi checkout origin/main
+node pi/packages/ai/scripts/generate-models.ts   # re-run after every pi update
+```
+
+If the generator also rewrites tracked files (it refreshes `*.models.ts` when a provider's live model list has drifted since upstream last committed), restore them with `git -C pi checkout -- <files>` — the generated `data/*.json` stay valid, and a clean submodule keeps future pulls trivial. Then run `npm run check` and the test suite; upstream API breaks surface as type errors in `apps/widi-pi`.
 
 ## Benchmarks
 
