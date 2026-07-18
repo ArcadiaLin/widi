@@ -1,14 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
-import { builtInCommands } from "../commands/built-ins.ts";
-import { CommandEngine, switchedAgentId } from "../commands/engine.ts";
-import { parseLineCommand } from "../commands/parse.ts";
-import type {
-	CommandError,
-	EngineOutcome,
-	LineCommand,
-} from "../commands/types.ts";
 import type {
 	AgentOrchestrator,
 	OrchestratorEvent,
@@ -25,6 +17,15 @@ import {
 import type { CandidateItem, PromptExpansion } from "../core/types.ts";
 import { AgentSelectorController } from "./agent-selector.ts";
 import { WidiCommandAutocompleteProvider } from "./autocomplete.ts";
+import { applicationCommands } from "./commands/app-commands.ts";
+import { builtInCommands } from "./commands/built-ins.ts";
+import { CommandEngine, switchedAgentId } from "./commands/engine.ts";
+import { parseLineCommand } from "./commands/parse.ts";
+import type {
+	CommandError,
+	EngineOutcome,
+	LineCommand,
+} from "./commands/types.ts";
 import { CompletionMenu } from "./completion-menu.ts";
 import { AgentStripView } from "./components/agent-strip.ts";
 import { ChatView } from "./components/chat.ts";
@@ -66,7 +67,14 @@ export class WidiTuiApplication {
 	private readonly completionMenu: CompletionMenu;
 	private readonly humanRequests: HumanRequestController;
 	private readonly agentSelector: AgentSelectorController;
-	private readonly engine = new CommandEngine(builtInCommands);
+	private readonly engine = new CommandEngine([
+		...builtInCommands,
+		...applicationCommands({
+			quit: () => {
+				void this.shutdown("user exit").catch(() => {});
+			},
+		}),
+	]);
 	private unsubscribeEvents?: () => void;
 	private unregisterClient?: () => void;
 	private readonly hydrationGeneration = new Map<string, number>();

@@ -18,8 +18,6 @@ import {
 	formatExtensionStatusEvent,
 } from "./cli-event-format.ts";
 import { CliStreamWriter } from "./cli-stream-writer.ts";
-import { builtInCommands } from "./commands/built-ins.ts";
-import { CommandEngine, switchedAgentId } from "./commands/engine.ts";
 import type {
 	AgentOrchestrator,
 	OrchestratorEvent,
@@ -30,6 +28,9 @@ import type {
 	HumanResponse,
 } from "./core/human-request.ts";
 import { createWidiRuntime } from "./core/runtime-service.ts";
+import { applicationCommands } from "./tui/commands/app-commands.ts";
+import { builtInCommands } from "./tui/commands/built-ins.ts";
+import { CommandEngine, switchedAgentId } from "./tui/commands/engine.ts";
 
 interface CliOptions {
 	cwd: string;
@@ -301,7 +302,15 @@ async function main(): Promise<void> {
 		defaultProfileId: options.profileId,
 	});
 	const orchestrator: AgentOrchestrator = runtime.orchestrator;
-	const engine = new CommandEngine(builtInCommands);
+	let shouldExit = false;
+	const engine = new CommandEngine([
+		...builtInCommands,
+		...applicationCommands({
+			quit: () => {
+				shouldExit = true;
+			},
+		}),
+	]);
 
 	for (const diagnostic of runtime.diagnostics) {
 		printDiagnostic(diagnostic);
@@ -336,13 +345,13 @@ async function main(): Promise<void> {
 		if (line === undefined) break; // stdin closed
 		const input = line.trim();
 		if (input === "") continue;
-		if (input === ".exit" || input === "/exit") break;
 		try {
 			const currentAgentId = await ensureAgentId();
 			const outcome = await engine.handleInput(input, {
 				agentId: currentAgentId,
 				orchestrator,
 			});
+			if (shouldExit) break;
 			switch (outcome.kind) {
 				case "pass":
 				case "expanded":

@@ -3,7 +3,6 @@ import type {
 	AssistantMessage,
 	ToolResultMessage,
 } from "@earendil-works/pi-ai";
-import type { CommandError } from "../commands/types.ts";
 import type { AgentRecordSnapshot } from "../core/agent-record.ts";
 import type { OrchestratorDiagnostic } from "../core/diagnostics.ts";
 import type {
@@ -20,6 +19,7 @@ import type {
 	OrchestratorEvent,
 	RuntimeModel,
 } from "../core/types.ts";
+import type { CommandError } from "./commands/types.ts";
 
 export type TimelineDurability = "durable" | "ephemeral";
 

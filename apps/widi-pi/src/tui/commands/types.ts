@@ -1,9 +1,9 @@
-import type { AgentOrchestrator } from "../core/agent-orchestrator.ts";
+import type { AgentOrchestrator } from "../../core/agent-orchestrator.ts";
 import type {
 	AgentLifecycleStatus,
 	CandidateItem,
 	PromptExpansion,
-} from "../core/types.ts";
+} from "../../core/types.ts";
 
 export interface CommandContext {
 	readonly agentId: string;

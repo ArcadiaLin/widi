@@ -91,7 +91,7 @@ Profile missing、disabled、duplicate、invalid 或 version-incompatible extens
 
 Orchestrator 原子方法是 programmatic capability 的唯一事实。Adapter、extension actions、collaboration tools 和测试直接调用这些方法。
 
-人类输入中的命令属于 application/interaction layer。共享模块 `src/commands/` 的 `CommandEngine` 负责 line/inline command 的定义、解析、状态检查、候选补全、执行和错误；TUI 与 CLI 都消费该引擎。Core 不提供 command parser、gateway、policy、列表或 `command_*` 事件，extension 也不向 core 注册命令。
+人类输入中的命令属于 application/interaction layer。`src/tui/commands/` 的 `CommandEngine` 负责 line/inline command 的定义、解析、状态检查、候选补全、执行和错误；引擎归 TUI 所有，CLI 复用同一引擎。操作应用自身的命令（如 `/quit`、`/exit`）经 `ApplicationCommandHost` 绑定应用动作，与 orchestrator 命令走同一条引擎路径。Core 不提供 command parser、gateway、policy、列表或 `command_*` 事件，extension 也不向 core 注册命令。
 
 ### `promptAgent`
 

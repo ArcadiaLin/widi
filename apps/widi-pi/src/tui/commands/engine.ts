@@ -1,4 +1,4 @@
-import type { AgentLifecycleStatus } from "../core/types.ts";
+import type { AgentLifecycleStatus } from "../../core/types.ts";
 import { parseLineCommand, scanInlineCommands } from "./parse.ts";
 import type {
 	CommandContext,

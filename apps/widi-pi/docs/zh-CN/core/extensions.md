@@ -53,7 +53,7 @@ export default extension;
 
 ### 主动入口边界
 
-Extension API 不提供 `registerCommand()`。Extension 保留 tool/resource/provider contribution、observer/interceptor 与 own-agent scoped actions 等被动能力；交互命令属于 `src/commands/` 的前端共享引擎。未来若需要主动唤醒 extension，由前端以 `/extension` 一类命令另行设计，不把 command ownership 放回 core 或 extension runtime。
+Extension API 不提供 `registerCommand()`。Extension 保留 tool/resource/provider contribution、observer/interceptor 与 own-agent scoped actions 等被动能力；交互命令属于 `src/tui/commands/` 的 TUI 命令引擎（CLI 复用）。未来若需要主动唤醒 extension，由前端以 `/extension` 一类命令另行设计，不把 command ownership 放回 core 或 extension runtime。
 
 ### Resources
 

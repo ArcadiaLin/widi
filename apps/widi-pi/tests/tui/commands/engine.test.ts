@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { builtInCommands } from "../../src/commands/built-ins.ts";
-import { CommandEngine, switchedAgentId } from "../../src/commands/engine.ts";
-import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
+import type { AgentOrchestrator } from "../../../src/core/agent-orchestrator.ts";
+import { builtInCommands } from "../../../src/tui/commands/built-ins.ts";
+import {
+	CommandEngine,
+	switchedAgentId,
+} from "../../../src/tui/commands/engine.ts";
 
 function stubOrchestrator(
 	overrides: Record<string, unknown>,

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { builtInCommands } from "../../src/commands/built-ins.ts";
-import { CommandEngine } from "../../src/commands/engine.ts";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import { WidiCommandAutocompleteProvider } from "../../src/tui/autocomplete.ts";
+import { builtInCommands } from "../../src/tui/commands/built-ins.ts";
+import { CommandEngine } from "../../src/tui/commands/engine.ts";
 
 function provider(overrides: Record<string, unknown> = {}) {
 	return new WidiCommandAutocompleteProvider({

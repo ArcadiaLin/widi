@@ -10,7 +10,7 @@ To be precise about what this repository is today: a runtime core with a documen
 
 **Agents are runtime entities, not processes.** Pi's experimental orchestrator package supervises full coding-agent instances as RPC subprocesses. WIDI takes the other branch of that trade-off: multiple harnesses live in one process and share a tool registry, profile registry, session repo, and diagnostics channel, so agent lifecycle, availability, and recovery are observable inside the runtime rather than across process boundaries. This costs the isolation a process model gives you; the bet is that first-class orchestration semantics are worth it, and it is a bet — the collaboration tools that would prove it are still on the roadmap.
 
-**Decisions are recorded, including the failed ones.** Milestones stay at planning level and only admit work with a concrete runtime goal ([`TODO.md`](apps/widi-pi/docs/zh-CN/TODO.md)). Settled boundaries live in canonical mechanism documents; detailed implementation history stays in Git. For example, command input is documented as an orchestrator-owned protocol in [`runtime.md`](apps/widi-pi/docs/zh-CN/core/runtime.md), and session/auth/config storage explicitly declares a single-process write assumption rather than shipping a half-locked file protocol.
+**Decisions are recorded, including the failed ones.** Milestones stay at planning level and only admit work with a concrete runtime goal ([`TODO.md`](apps/widi-pi/docs/zh-CN/TODO.md)). Settled boundaries live in canonical mechanism documents; detailed implementation history stays in Git. For example, command input is documented as an interaction-layer engine owned by the TUI rather than the orchestrator in [`runtime.md`](apps/widi-pi/docs/zh-CN/core/runtime.md), and session/auth/config storage explicitly declares a single-process write assumption rather than shipping a half-locked file protocol.
 
 ## At a glance
 
@@ -22,18 +22,17 @@ Three ways to get more than one agent out of the Pi codebase today:
 | An "agent" is | the app session | an RPC subprocess | a runtime entity: profile + harness + session + status |
 | Shared across agents | — (single agent) | nothing — per-process state | tool registry, profile registry, session repo, diagnostics channel |
 | Failure surface | app/UI messages | process exit, RPC errors | structured diagnostics (`profile.*`, `model.*`, `extension.*`) with recoverability flags |
-| Extension scope | single-agent app events (shipped, mature) | — | API v1: tool register/patch, commands, resources/providers, scoped actions, observers/interceptors |
+| Extension scope | single-agent app events (shipped, mature) | — | API v1: tool register/patch, resources/providers, scoped actions, observers/interceptors |
 
-Two pipelines that are already landed and tested. Input handling (M1) — commands are an orchestrator input protocol, not a UI feature:
+Two pipelines that are already landed and tested. Input handling — an interaction-layer command engine owned by the TUI and shared with the CLI, not an orchestrator protocol:
 
 ```text
-client input ──→ gateway ──→ /command? ──→ gating ──→ atomic orchestrator method ──→ event fanout
-                    │                        │
-                    │                        └─ missing args ──→ argumentsCompletion
-                    │                                            (human request) ──→ re-check
+client input ──→ CommandEngine ──→ /command ──→ atomic orchestrator method ──→ event fanout
+                    │                │
+                    │                └─ /quit /exit ──→ ApplicationCommandHost ──→ app shutdown
                     │
-                    └──→ inline expansion  <prompt:…> <skill:…> ──→ expanded message ──→ harness turn
-                              └─ original input preserved as a session custom entry
+                    └──→ inline expansion <prompt:…> <skill:…> ──→ promptAgent ──→ harness turn
+                          └─ original input preserved as a session custom entry
 ```
 
 Session resume — the reason WIDI needs [header metadata](https://github.com/ArcadiaLin/pi/tree/jsonl-header-metadata) on line 1 of the JSONL file:

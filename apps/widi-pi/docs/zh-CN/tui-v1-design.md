@@ -96,7 +96,7 @@ agent strip
 - runtime composition、startup diagnostics 和默认 agent 创建。
 - user、assistant、thinking 状态和 tool execution 的终端呈现。
 - assistant text streaming。
-- `src/commands/` `CommandEngine` 执行 line command 与展开 inline command。
+- `src/tui/commands/` `CommandEngine` 执行 line command 与展开 inline command。
 - 由 `CommandEngine.list(status)` 和 command `complete()` 产生的 autocomplete。
 - 多个独立 agent 的后台事件归约。
 - 底部 agent strip 和 agent selector。
@@ -193,7 +193,7 @@ Raw harness events 继续作为消息、tool 和 stream 的事实来源；canoni
 - 在 agent 创建前订阅 orchestrator events。
 - 注册 human request handler。
 - 持有 application state 与 event projector。
-- 通过 `src/commands/` 的 `CommandEngine` 解析、补全和执行交互命令。
+- 通过 `src/tui/commands/` 的 `CommandEngine` 解析、补全和执行交互命令。
 - 将 editor submit、快捷键和 selector selection 转为 orchestrator public method call。
 - 捕获 application-level unexpected failure。
 - 关闭 overlay、取消订阅、停止 TUI 并 dispose runtime。
@@ -603,7 +603,7 @@ Pi `AgentHarness.prompt()` 在 busy 时会失败，而 steer、follow-up 和 nex
 
 ### 11.3 Command autocomplete
 
-`CommandEngine` 由静态 built-in commands 与可选的 TUI extra commands 构造。TUI 根据 `engine.list(status)` 和各命令的 `complete()` 生成 pi-tui autocomplete item：
+`CommandEngine` 由 built-in orchestrator commands 与 application commands 构造。Application commands 操作应用自身而非 orchestrator：`/quit` 与 `/exit` 经 `ApplicationCommandHost` 绑定应用动作，与其他 line command 走同一条引擎路径（match、checkStatus、executed outcome、本地 command result）。`host.quit()` 必须是 fire-and-forget——shutdown 会等待 in-flight submit task，在 execute 内 await shutdown 会让命令自己的 submit 死锁。TUI 根据 `engine.list(status)` 和各命令的 `complete()` 生成 pi-tui autocomplete item：
 
 - line command 显示 trigger、name、description、argument hint 与 availability。
 - `available: false` 的命令可以显示但置灰，并展示 `unavailableReason`。

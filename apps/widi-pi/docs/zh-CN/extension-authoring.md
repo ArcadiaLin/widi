@@ -156,7 +156,7 @@ await context.actions.reportDiagnostic({
 
 Core 注入 agent/extension attribution，并把 code 规范化为 `extension.<extensionId>.<code>`。Local code 只使用字母、数字、`.`、`_`、`-`，最长 128 UTF-8 bytes；message 最长 4 KiB，JSON details 最长 16 KiB。作者只能声明 `reported` 或 `degraded`，不能自称 `blocked`。每次调用生成独立 diagnostic id；不要轮询式重复上报同一持续问题。
 
-Extension API 不提供命令注册。Line/inline command 属于 `src/commands/` 的前端共享引擎；extension 保留 tool/resource/provider contribution、observer/interceptor 与 scoped actions 等被动能力。未来需要主动入口时，由前端以 `/extension` 一类命令另行设计。
+Extension API 不提供命令注册。Line/inline command 属于 `src/tui/commands/` 的 TUI 命令引擎（CLI 复用）；extension 保留 tool/resource/provider contribution、observer/interceptor 与 scoped actions 等被动能力。未来需要主动入口时，由前端以 `/extension` 一类命令另行设计。
 
 ## 贡献 resources 与 provider
 

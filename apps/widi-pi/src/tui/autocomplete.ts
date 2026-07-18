@@ -5,14 +5,14 @@ import {
 	CombinedAutocompleteProvider,
 	fuzzyFilter,
 } from "@earendil-works/pi-tui";
-import type { CommandEngine } from "../commands/engine.ts";
+import type { AgentOrchestrator } from "../core/agent-orchestrator.ts";
+import type { AgentLifecycleStatus, CandidateItem } from "../core/types.ts";
+import type { CommandEngine } from "./commands/engine.ts";
 import {
 	INLINE_COMMAND_TRIGGER,
 	LINE_COMMAND_TRIGGER,
-} from "../commands/parse.ts";
-import type { CommandView } from "../commands/types.ts";
-import type { AgentOrchestrator } from "../core/agent-orchestrator.ts";
-import type { AgentLifecycleStatus, CandidateItem } from "../core/types.ts";
+} from "./commands/parse.ts";
+import type { CommandView } from "./commands/types.ts";
 
 interface CommandCompletionItem {
 	readonly view: CommandView;

@@ -1,6 +1,6 @@
 import type { Skill } from "@earendil-works/pi-agent-core";
 import type { TextContent, UserMessage } from "@earendil-works/pi-ai";
-import type { CandidateItem } from "../core/types.ts";
+import type { CandidateItem } from "../../core/types.ts";
 import type { CommandContext, CommandDefinition } from "./types.ts";
 
 export const builtInCommands: readonly CommandDefinition[] = [

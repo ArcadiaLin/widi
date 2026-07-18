@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	parseLineCommand,
 	scanInlineCommands,
-} from "../../src/commands/parse.ts";
+} from "../../../src/tui/commands/parse.ts";
 
 describe("parseLineCommand", () => {
 	it("parses a bare command without argument", () => {
