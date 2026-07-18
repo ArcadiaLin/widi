@@ -60,7 +60,7 @@ export class FatalErrorView implements Component {
 			Math.max(1, width - 4),
 			"",
 		);
-		const top = `┌─${colors.red(title)}${"─".repeat(
+		const top = `┌─${colors.error(title)}${"─".repeat(
 			Math.max(0, width - visibleWidth(title) - 3),
 		)}┐`;
 		const lines = [top];

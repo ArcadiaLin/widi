@@ -251,7 +251,7 @@ export class HumanRequestMenu implements Component {
 		const hint = `${count} pending request${count > 1 ? "s" : ""}${
 			keys[0] ? ` · ${keys[0]} to answer` : ""
 		}`;
-		return [truncateToWidth(colors.yellow(`! ${hint}`), width, "…")];
+		return [truncateToWidth(colors.warn(`! ${hint}`), width, "…")];
 	}
 
 	private openAt(index: number): void {

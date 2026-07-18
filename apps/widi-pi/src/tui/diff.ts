@@ -46,25 +46,25 @@ export function renderDiffText(diffText: string): string[] {
 						replaceTabs(addedLine.content),
 					);
 					result.push(
-						colors.red(`-${removedLine.lineNum} ${highlighted.removedLine}`),
-						colors.green(`+${addedLine.lineNum} ${highlighted.addedLine}`),
+						colors.error(`-${removedLine.lineNum} ${highlighted.removedLine}`),
+						colors.ok(`+${addedLine.lineNum} ${highlighted.addedLine}`),
 					);
 				}
 			} else {
 				for (const line of removed) {
 					result.push(
-						colors.red(`-${line.lineNum} ${replaceTabs(line.content)}`),
+						colors.error(`-${line.lineNum} ${replaceTabs(line.content)}`),
 					);
 				}
 				for (const line of added) {
 					result.push(
-						colors.green(`+${line.lineNum} ${replaceTabs(line.content)}`),
+						colors.ok(`+${line.lineNum} ${replaceTabs(line.content)}`),
 					);
 				}
 			}
 		} else if (parsed.prefix === "+") {
 			result.push(
-				colors.green(`+${parsed.lineNum} ${replaceTabs(parsed.content)}`),
+				colors.ok(`+${parsed.lineNum} ${replaceTabs(parsed.content)}`),
 			);
 			i++;
 		} else {

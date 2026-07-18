@@ -1,5 +1,6 @@
 import type { Skill } from "@earendil-works/pi-agent-core";
 import type { TextContent, UserMessage } from "@earendil-works/pi-ai";
+import type { AgentSessionCandidate } from "../../core/session-manager.ts";
 import type { CandidateItem } from "../../core/types.ts";
 import type { CommandContext, CommandDefinition } from "./types.ts";
 
@@ -99,8 +100,8 @@ export const builtInCommands: readonly CommandDefinition[] = [
 	},
 	{
 		kind: "line",
-		name: "name",
-		description: "Name the current agent session.",
+		name: "rename",
+		description: "Rename the current agent session.",
 		argumentHint: "<name>",
 		requiresArgument: true,
 		execute: async ({ orchestrator, agentId }, argument) =>
@@ -134,8 +135,8 @@ export const builtInCommands: readonly CommandDefinition[] = [
 				// Resolve by path, not id: the session id equals the creating
 				// agent's id and repeats across runs, making bare ids ambiguous.
 				value: session.path,
-				label: session.profile?.label ?? session.profile?.id ?? session.id,
-				description: `${session.cwd} · ${session.createdAt}`,
+				label: sessionCandidateLabel(session),
+				description: sessionCandidateDescription(session),
 			})),
 		execute: async ({ orchestrator }, argument) =>
 			await orchestrator.resumeAgentSessionByReference(argument.trim()),
@@ -204,6 +205,24 @@ export const builtInCommands: readonly CommandDefinition[] = [
 			),
 	},
 ];
+
+// A session is recognized by what the user called it or first said in it;
+// profile and id are last resorts.
+function sessionCandidateLabel(session: AgentSessionCandidate): string {
+	const label =
+		session.name ??
+		session.firstUserMessage ??
+		session.profile?.label ??
+		session.profile?.id ??
+		session.id;
+	return label.length > 60 ? `${label.slice(0, 59)}…` : label;
+}
+
+function sessionCandidateDescription(session: AgentSessionCandidate): string {
+	const preview =
+		session.name !== undefined ? session.firstUserMessage : undefined;
+	return [preview, session.cwd, session.createdAt].filter(Boolean).join(" · ");
+}
 
 // Fork/navigation targets are the user's own messages: they are the natural
 // "points in the conversation" a user thinks in.

@@ -8,10 +8,19 @@ function decoration(open: number, close: number): (text: string) => string {
 	return (text) => `${ESC}${open}m${text}${ESC}${close}m`;
 }
 
-function foreground256(color: number): (text: string) => string {
-	return (text) => `${ESC}38;5;${color}m${text}${ESC}39m`;
+function foregroundRgb(hex: string): (text: string) => string {
+	const value = Number.parseInt(hex.slice(1), 16);
+	const red = (value >> 16) & 0xff;
+	const green = (value >> 8) & 0xff;
+	const blue = value & 0xff;
+	return (text) => `${ESC}38;2;${red};${green};${blue}m${text}${ESC}39m`;
 }
 
+/**
+ * Design palette from the extension presentation overview: semantic hues for
+ * outcome (ok/warn/error), activity (info), emphasis (accent), and de-emphasis
+ * (muted/faint/rule). Components pick by meaning, not by raw terminal color.
+ */
 export const colors = {
 	reset: (text: string) => `${ESC}0m${text}${ESC}0m`,
 	bold: decoration(1, 22),
@@ -28,7 +37,14 @@ export const colors = {
 	cyan: ansi(36),
 	white: ansi(37),
 	gray: ansi(90),
-	accent: foreground256(214),
+	accent: foregroundRgb("#e4ad6c"),
+	ok: foregroundRgb("#83c092"),
+	warn: foregroundRgb("#dbbc7f"),
+	error: foregroundRgb("#e67e80"),
+	info: foregroundRgb("#7fbbb3"),
+	muted: foregroundRgb("#9ba3af"),
+	faint: foregroundRgb("#747c89"),
+	rule: foregroundRgb("#454c57"),
 };
 
 export function severityColor(
@@ -36,10 +52,10 @@ export function severityColor(
 ): (text: string) => string {
 	switch (severity) {
 		case "error":
-			return colors.red;
+			return colors.error;
 		case "warning":
-			return colors.yellow;
+			return colors.warn;
 		default:
-			return colors.cyan;
+			return colors.info;
 	}
 }

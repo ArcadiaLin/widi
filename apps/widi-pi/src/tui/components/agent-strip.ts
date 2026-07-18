@@ -73,12 +73,12 @@ function orderedVisibleAgents(state: TuiApplicationState): AgentViewState[] {
 function formatAgent(agent: AgentViewState, active: boolean): string {
 	const glyph =
 		agent.status === "unavailable" || agent.attention === "error"
-			? colors.red("!")
+			? colors.error("!")
 			: agent.attention === "human-request" || agent.attention === "warning"
-				? colors.yellow("!")
+				? colors.warn("!")
 				: agent.status === "running"
-					? colors.cyan("●")
-					: colors.green("●");
+					? colors.info("●")
+					: colors.ok("●");
 	const label = active ? colors.bold(agentLabel(agent)) : agentLabel(agent);
 	const detail =
 		agent.attention === "human-request"

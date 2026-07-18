@@ -36,10 +36,10 @@ export function presentToolExecution(
 	const expanded = options.expanded ?? false;
 	const glyph =
 		item.status === "running"
-			? colors.cyan("●")
+			? colors.info("●")
 			: item.isError
-				? colors.red("✕")
-				: colors.green("✓");
+				? colors.error("✕")
+				: colors.ok("✓");
 	const { verb, target } = describeToolCall(item.toolName, item.args);
 
 	const resultText =

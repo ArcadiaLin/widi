@@ -295,6 +295,60 @@ describe("SessionManager", () => {
 		]);
 	});
 
+	it("surfaces session name and first user message as candidate display facts", async () => {
+		const fs = new MemoryFileSystem();
+		const path =
+			"/sessions/--workspace-project--/2026-01-03T00-00-00-000Z_gamma.jsonl";
+		writeSessionFile(fs, path, {
+			id: "gamma",
+			timestamp: "2026-01-03T00:00:00.000Z",
+		});
+		const entries = [
+			{
+				type: "message",
+				id: "entry-1",
+				parentId: null,
+				timestamp: "2026-01-03T00:00:01.000Z",
+				message: { role: "user", content: "\nFix the flaky auth test\nplease" },
+			},
+			{
+				type: "message",
+				id: "entry-2",
+				parentId: "entry-1",
+				timestamp: "2026-01-03T00:00:02.000Z",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "On it." }],
+				},
+			},
+			{
+				type: "session_info",
+				id: "entry-3",
+				parentId: "entry-2",
+				timestamp: "2026-01-03T00:00:03.000Z",
+				name: "auth-fix",
+			},
+		];
+		fs.files.set(
+			path,
+			`${fs.files.get(path)}${entries
+				.map((entry) => JSON.stringify(entry))
+				.join("\n")}\n`,
+		);
+		const manager = new SessionManager({
+			fs,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+		});
+
+		const [candidate] = await manager.listAgentSessionCandidates();
+		expect(candidate).toMatchObject({
+			id: "gamma",
+			name: "auth-fix",
+			firstUserMessage: "Fix the flaky auth test",
+		});
+	});
+
 	it("resolves session references by path before id", async () => {
 		const fs = new MemoryFileSystem();
 		writeSessionFile(

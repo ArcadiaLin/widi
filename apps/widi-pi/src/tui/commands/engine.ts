@@ -102,7 +102,12 @@ export class CommandEngine {
 		if (unavailableReason) {
 			return failed(commandId, command.name, { message: unavailableReason });
 		}
-		if (!hasArgument && (command.requiresArgument || command.complete)) {
+		// A required argument that is missing or blank never executes; explicit
+		// blank arguments still execute optional-argument commands (e.g. /fork:).
+		const missingArgument = command.requiresArgument
+			? argument.trim() === ""
+			: !hasArgument;
+		if (missingArgument && (command.requiresArgument || command.complete)) {
 			try {
 				const candidates = (await command.complete?.(context, "")) ?? [];
 				return { kind: "needs-argument", command, candidates };
