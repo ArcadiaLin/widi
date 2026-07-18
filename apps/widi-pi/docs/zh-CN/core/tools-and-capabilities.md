@@ -61,6 +61,18 @@ Create、resume 和 runtime tool mutation 共用同一 resolve 语义。Orchestr
 
 Active tools 的 `promptSnippet` 与 `promptGuidelines` 进入唯一 system prompt composition，指导模型优先使用精确工具而不是用 bash 模拟全部文件操作。
 
+## Core built-in interaction tools
+
+| Tool | 职责 |
+| --- | --- |
+| `ask_human` | agent 主动向 human 提问（confirm/select/input），阻塞等待回答 |
+
+`ask_human` 是 orchestrator human-request broker 之上的薄 adapter：routing、`human_request_*` events、cancellation 与超时都由 broker 承担。请求以 `source: { kind: "agent", agentId }` 归因；human 关闭请求（dismissal）作为 "no answer" 文本返回给模型，不是 error。`executionMode: "sequential"` 保证提问不与其他 tool call 并行。
+
+Profile capability `canRequestUser: false` 对 agent tool 与 extension 走同一裁决：请求在进入 broker 前被拒绝，产生 `orchestrator.human_request_denied`。
+
+Interaction 组与 coding 组分开注册（`registerCoreInteractionTools`），profile 可以独立授予 filesystem/shell 与 human interaction。
+
 ## Tool events
 
 Orchestrator 只发布 raw `agent_harness_event`。Tool-call streaming 使用 Pi `message_update.assistantMessageEvent.toolcall_*`；执行使用 `tool_execution_start/update/end`。Core 不维护第二套 preview/state 或 lifecycle event。

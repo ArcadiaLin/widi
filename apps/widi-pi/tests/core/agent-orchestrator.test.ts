@@ -37,6 +37,7 @@ import {
 	type SettingsStorage,
 } from "../../src/core/setting-manager.ts";
 import { ToolRegistry } from "../../src/core/tool-registry.ts";
+import { registerCoreInteractionTools } from "../../src/core/tools/interaction/builtin.ts";
 import { createResourceExtension } from "../extensions/resource-extension.ts";
 import {
 	createCoreCodingToolRegistry,
@@ -4377,6 +4378,91 @@ describe("AgentOrchestrator", () => {
 				}),
 			}),
 		);
+	});
+
+	it("routes the ask_human tool through the human request broker with agent source", async () => {
+		const env = new MemoryExecutionEnv();
+		const toolRegistry = new ToolRegistry();
+		registerCoreInteractionTools(toolRegistry);
+		const orchestrator = await createOrchestrator(env, { toolRegistry });
+		let captured: unknown;
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async (request) => {
+				captured = request;
+				return { kind: "select", value: "green" };
+			},
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const askHuman = requireAgentHarness(orchestrator, agentId)
+			.getTools()
+			.find((candidate) => candidate.name === "ask_human");
+		if (!askHuman) throw new Error("Expected the ask_human tool.");
+
+		const result = await askHuman.execute(
+			"call-1",
+			{ kind: "select", title: "Pick a color", options: ["red", "green"] },
+			undefined,
+			undefined,
+		);
+		expect(captured).toMatchObject({
+			kind: "select",
+			title: "Pick a color",
+			options: ["red", "green"],
+			source: { kind: "agent", agentId },
+		});
+		expect(result.content).toEqual([
+			{ type: "text", text: "The human selected: green" },
+		]);
+	});
+
+	it("denies agent tool human requests when the profile capability disallows them", async () => {
+		const env = new MemoryExecutionEnv();
+		const toolRegistry = new ToolRegistry();
+		registerCoreInteractionTools(toolRegistry);
+		const restrictedProfile: AgentProfile = {
+			...defaultProfile,
+			id: "restricted-profile",
+			persist: false,
+			capabilities: { canRequestUser: false },
+		};
+		const orchestrator = await createOrchestrator(env, {
+			toolRegistry,
+			defaultProfileId: restrictedProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: restrictedProfile },
+				]),
+			),
+		});
+		let handlerCalls = 0;
+		orchestrator.registerClient({
+			id: "human",
+			requestHuman: async () => {
+				handlerCalls += 1;
+				return { kind: "confirm", confirmed: true };
+			},
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const askHuman = requireAgentHarness(orchestrator, agentId)
+			.getTools()
+			.find((candidate) => candidate.name === "ask_human");
+		if (!askHuman) throw new Error("Expected the ask_human tool.");
+
+		await expect(
+			askHuman.execute(
+				"call-1",
+				{ kind: "confirm", title: "Approve?" },
+				undefined,
+				undefined,
+			),
+		).rejects.toMatchObject({
+			diagnostic: expect.objectContaining({
+				code: "orchestrator.human_request_denied",
+				agentId,
+			}),
+		});
+		expect(handlerCalls).toBe(0);
 	});
 
 	it("gates extension exec on project trust", async () => {

@@ -388,7 +388,7 @@ describe("createWidiRuntime", () => {
 		);
 	});
 
-	it("registers core built-in coding tools in the tool registry", async () => {
+	it("registers core built-in coding and interaction tools in the tool registry", async () => {
 		const env = new MemoryExecutionEnv();
 		const runtime = await createWidiRuntime({
 			cwd: "/workspace/project",
@@ -406,6 +406,7 @@ describe("createWidiRuntime", () => {
 			"grep",
 			"find",
 			"ls",
+			"ask_human",
 		]);
 		for (const name of [
 			"read",
@@ -415,6 +416,7 @@ describe("createWidiRuntime", () => {
 			"grep",
 			"find",
 			"ls",
+			"ask_human",
 		]) {
 			expect(resolved.getTool(name)?.source).toEqual({
 				kind: "core",

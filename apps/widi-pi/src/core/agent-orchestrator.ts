@@ -1966,11 +1966,28 @@ export class AgentOrchestrator {
 		);
 		const agentTools = createAgentToolsFromResolvedTools(resolvedTools.tools, {
 			human: {
-				request: async (request) =>
-					await this.requestHuman({
+				// Same capability ruling as extension human requests: the profile
+				// decides whether this agent may interrupt the human at all.
+				request: async (request) => {
+					const record = this._requireAgentRecord(options.agentId);
+					if (record.capabilities?.canRequestUser === false) {
+						throw new OrchestratorError(
+							createOrchestratorDiagnostic({
+								severity: "error",
+								code: "orchestrator.human_request_denied",
+								message: `Agent ${options.agentId} human request is denied by profile capability canRequestUser.`,
+								agentId: options.agentId,
+								profileId: options.profileId,
+								phase: "runtime",
+								recoverable: true,
+							}),
+						);
+					}
+					return await this.requestHuman({
 						...request,
 						source: { kind: "agent", agentId: options.agentId },
-					}),
+					});
+				},
 			},
 			// Extension-contributed tools get the same runner-scoped actions as
 			// extension handlers; a reload re-resolves tools, so contexts never
