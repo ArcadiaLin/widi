@@ -961,6 +961,22 @@ export class AgentOrchestrator {
 		options?: { images?: ImageContent[]; expansion?: PromptExpansion },
 	): Promise<PromptOutcome> {
 		const record = this._requireAgentRecord(agentId);
+		this._requireAgentHarness(agentId);
+		// Gate before interception and session writes: a prompt the harness
+		// would reject as busy must not emit input events or strand
+		// expansion/transform entries without a paired user message.
+		if (record.status !== "idle") {
+			throw new OrchestratorError(
+				createOrchestratorDiagnostic({
+					severity: "error",
+					code: "orchestrator.agent_busy",
+					message: `Agent ${agentId} cannot accept a prompt while ${record.status}.`,
+					agentId,
+					phase: "runtime",
+					recoverable: true,
+				}),
+			);
+		}
 		let inputText = text;
 		let inputImages = options?.images;
 		let inputId: string | undefined;
@@ -1025,32 +1041,70 @@ export class AgentOrchestrator {
 
 		// Dual record: the user message carries the expanded text the model
 		// actually sees; the custom entry preserves the original input and
-		// expansion positions for UI replay.
-		if (options?.expansion) {
-			await this.sessionManager.appendCommandExpansionEntry(agentId, {
-				inputId: inputId ?? this._createInputId(),
-				originalText: options.expansion.originalText,
-				expansions: options.expansion.items,
-			});
+		// expansion positions for UI replay. The entries pair with the user
+		// message the harness persists at run start, so they are provisional
+		// until that write happens: track a retraction point in case the
+		// prompt fails first.
+		let provisional:
+			| { previousLeafId: string | null; lastEntryId: string }
+			| undefined;
+		if (options?.expansion || pendingInputTransform) {
+			const previousLeafId =
+				await this.sessionManager.getAgentSessionLeafId(agentId);
+			let lastEntryId: string | undefined;
+			if (options?.expansion) {
+				lastEntryId = await this.sessionManager.appendCommandExpansionEntry(
+					agentId,
+					{
+						inputId: inputId ?? this._createInputId(),
+						originalText: options.expansion.originalText,
+						expansions: options.expansion.items,
+					},
+				);
+			}
+			if (pendingInputTransform) {
+				lastEntryId = await this.sessionManager.appendInputTransformEntry(
+					agentId,
+					pendingInputTransform,
+				);
+			}
+			if (lastEntryId !== undefined) {
+				provisional = { previousLeafId, lastEntryId };
+			}
 		}
-		// Persistence waits until the rewritten input is known to enter the
-		// model-facing prompt path of a fresh turn, so a rewrite never leaves
-		// a dangling transform entry without a user message to pair with.
-		if (pendingInputTransform && record.status === "idle") {
-			await this.sessionManager.appendInputTransformEntry(
+		try {
+			const message = await this._runHarnessOperation(
 				agentId,
-				pendingInputTransform,
+				async (harness) => {
+					return await harness.prompt(inputText, {
+						images: inputImages ? [...inputImages] : undefined,
+					});
+				},
 			);
+			return { kind: "completed", message };
+		} catch (error) {
+			// The prompt failed. If nothing was appended after the provisional
+			// entries, the user message never landed: retract them so hydration
+			// cannot pair them with a later message. If the branch moved on, the
+			// user message (or a concurrent write) is in place and the entries
+			// stay.
+			if (provisional) {
+				try {
+					await this.sessionManager.retractAgentSessionEntries(
+						agentId,
+						provisional,
+					);
+				} catch (retractError) {
+					await this._recordAgentLifecycleFailure(
+						agentId,
+						"orchestrator.prompt_entry_retraction_failed",
+						`Failed to retract provisional prompt entries for agent ${agentId}: ${formatError(retractError)}`,
+						retractError,
+					);
+				}
+			}
+			throw error;
 		}
-		const message = await this._runHarnessOperation(
-			agentId,
-			async (harness) => {
-				return await harness.prompt(inputText, {
-					images: inputImages ? [...inputImages] : undefined,
-				});
-			},
-		);
-		return { kind: "completed", message };
 	}
 
 	async steerAgent(
@@ -1067,16 +1121,6 @@ export class AgentOrchestrator {
 		options?: { images?: ImageContent[] },
 	): Promise<void> {
 		await this._requireAgentHarness(agentId).followUp(text, options);
-	}
-
-	async nextTurnAgent(
-		agentId: AgentId,
-		text: string,
-		options?: { images?: ImageContent[] },
-	): Promise<void> {
-		await this._runHarnessOperation(agentId, async (harness) => {
-			await harness.nextTurn(text, options);
-		});
 	}
 
 	async abortAgent(agentId: AgentId) {

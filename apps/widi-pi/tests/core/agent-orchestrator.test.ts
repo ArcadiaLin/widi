@@ -503,12 +503,12 @@ describe("AgentOrchestrator", () => {
 		});
 		const agentId = await orchestrator.spawnAgent();
 
-		await orchestrator.nextTurnAgent(agentId, "next");
+		await emitSettled(orchestrator, agentId, 1);
 		expect(clientEvents).toContainEqual(
 			expect.objectContaining({
 				type: "agent_harness_event",
 				agentId,
-				event: expect.objectContaining({ type: "queue_update" }),
+				event: expect.objectContaining({ type: "settled" }),
 			}),
 		);
 	});
@@ -1151,6 +1151,153 @@ describe("AgentOrchestrator", () => {
 			orchestrator.promptAgent(agentId, "share the secret"),
 		).resolves.toMatchObject({ kind: "blocked" });
 		await expect(findTransformEntries()).resolves.toHaveLength(1);
+	});
+
+	it("promptAgent retracts provisional entries when the prompt fails before its user message", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const agentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, agentId);
+		Object.assign(harness, {
+			prompt: async () => {
+				throw new Error("before_agent_start hook exploded");
+			},
+		});
+		const expansion = {
+			originalText: "use <skill:review>",
+			items: [
+				{
+					commandId: "command-1",
+					name: "skill",
+					trigger: "<",
+					argument: "review",
+					start: 4,
+					end: 18,
+				},
+			],
+		};
+
+		await expect(
+			orchestrator.promptAgent(agentId, "expanded text", { expansion }),
+		).rejects.toThrow("before_agent_start hook exploded");
+
+		// The failed prompt never persisted a user message; a leftover entry
+		// on the active branch would pair with the next user message during
+		// hydration and show the wrong original text.
+		const branchCustomEntries = async () =>
+			(await orchestrator.getAgentSession(agentId)).pathToRoot.filter(
+				(entry) => entry.type === "custom",
+			);
+		await expect(branchCustomEntries()).resolves.toEqual([]);
+
+		// The branch stays usable: a later successful prompt persists its own
+		// expansion entry as the only one on the branch.
+		Object.assign(harness, {
+			prompt: async () => ({ role: "assistant" }) as AssistantMessage,
+		});
+		await expect(
+			orchestrator.promptAgent(agentId, "expanded again", {
+				expansion: { ...expansion, originalText: "use <skill:audit>" },
+			}),
+		).resolves.toMatchObject({ kind: "completed" });
+		await expect(branchCustomEntries()).resolves.toMatchObject([
+			{ data: { originalText: "use <skill:audit>" } },
+		]);
+	});
+
+	it("promptAgent keeps provisional entries when the user message landed before the failure", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "prompt-run-failure-profile",
+			persist: false,
+			extensions: ["rewriter"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtension("rewriter", (api) => {
+			api.intercept("input", (event) => ({ text: `${event.text}!` }));
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, agentId);
+		Object.assign(harness, {
+			prompt: async (text: string) => {
+				// A run that persisted its user message and then failed at the
+				// provider: the transform entry has its pairing message and must
+				// survive the failure.
+				await harness.appendMessage({
+					role: "user",
+					content: [{ type: "text", text }],
+					timestamp: Date.now(),
+				});
+				throw new Error("provider exploded");
+			},
+		});
+
+		await expect(orchestrator.promptAgent(agentId, "hello")).rejects.toThrow(
+			"provider exploded",
+		);
+
+		const branch = (await orchestrator.getAgentSession(agentId)).pathToRoot;
+		const transformIndex = branch.findIndex(
+			(entry) =>
+				entry.type === "custom" && entry.customType === "core:input_transform",
+		);
+		const userMessageIndex = branch.findIndex(
+			(entry) => entry.type === "message" && entry.message.role === "user",
+		);
+		expect(transformIndex).toBeGreaterThanOrEqual(0);
+		expect(userMessageIndex).toBeGreaterThan(transformIndex);
+	});
+
+	it("promptAgent rejects a busy agent before interception and session writes", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "prompt-busy-profile",
+			persist: false,
+			extensions: ["rewriter"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		let interceptorCalls = 0;
+		orchestrator.registerExtension("rewriter", (api) => {
+			api.intercept("input", (event) => {
+				interceptorCalls += 1;
+				return { text: `${event.text}!` };
+			});
+		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const agentId = await orchestrator.spawnAgent();
+		requireAgentRecord(orchestrator, agentId).status = "running";
+
+		await expect(
+			orchestrator.promptAgent(agentId, "hello", {
+				expansion: { originalText: "hello", items: [] },
+			}),
+		).rejects.toMatchObject({ code: "orchestrator.agent_busy" });
+
+		expect(interceptorCalls).toBe(0);
+		expect(
+			events.filter((event) => event.type === "input_transformed"),
+		).toEqual([]);
+		const branch = (await orchestrator.getAgentSession(agentId)).pathToRoot;
+		expect(branch.filter((entry) => entry.type === "custom")).toEqual([]);
 	});
 
 	it("rejects input fail-closed when an input interceptor throws", async () => {

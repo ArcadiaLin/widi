@@ -288,6 +288,28 @@ export class SessionManager {
 		return forkedMetadata;
 	}
 
+	async getAgentSessionLeafId(agentId: AgentId): Promise<string | null> {
+		return await this._requireAgentSession(agentId).getLeafId();
+	}
+
+	// Retraction for provisional prompt records (expansion/transform entries
+	// appended before the harness persists the paired user message). Only
+	// rewinds when the branch leaf is still the last provisional entry; if
+	// anything landed after it - the user message, a concurrent write - the
+	// branch is left untouched.
+	async retractAgentSessionEntries(
+		agentId: AgentId,
+		options: {
+			readonly lastEntryId: string;
+			readonly previousLeafId: string | null;
+		},
+	): Promise<boolean> {
+		const session = this._requireAgentSession(agentId);
+		if ((await session.getLeafId()) !== options.lastEntryId) return false;
+		await session.moveTo(options.previousLeafId);
+		return true;
+	}
+
 	async appendCommandExpansionEntry(
 		agentId: AgentId,
 		data: CommandExpansionEntryData,
