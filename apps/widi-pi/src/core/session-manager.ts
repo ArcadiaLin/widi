@@ -87,6 +87,10 @@ export interface AgentSessionCandidate {
 	readonly cwd: string;
 	readonly parentSessionPath?: string;
 	readonly profile?: AgentProfileReference;
+	/** Latest session_info name, when the user named the session. */
+	readonly name?: string;
+	/** First non-empty line of the first user message. */
+	readonly firstUserMessage?: string;
 }
 
 export interface AgentSessionSnapshot {
@@ -166,7 +170,54 @@ export class SessionManager {
 
 	async listAgentSessionCandidates(): Promise<AgentSessionCandidate[]> {
 		const sessions = await this.sessionRepo.list({ cwd: this._cwd });
-		return sessions.map(toAgentSessionCandidate);
+		return await Promise.all(
+			sessions.map(async (metadata) => ({
+				...toAgentSessionCandidate(metadata),
+				...(await this._loadSessionDisplayFacts(metadata.path)),
+			})),
+		);
+	}
+
+	// Resume pickers need more than header metadata to make a session
+	// recognizable: the latest session_info name and the first user message.
+	// Unreadable files or lines degrade to header-only facts.
+	private async _loadSessionDisplayFacts(
+		path: string,
+	): Promise<{ name?: string; firstUserMessage?: string }> {
+		const read = await this._fs.readTextFile(path);
+		if (!read.ok) return {};
+		const facts: { name?: string; firstUserMessage?: string } = {};
+		for (const line of read.value.split("\n")) {
+			// Cheap substring gate so only relevant lines pay for JSON.parse.
+			const wantsMessage =
+				facts.firstUserMessage === undefined && line.includes('"message"');
+			const wantsName = line.includes('"session_info"');
+			if (!wantsMessage && !wantsName) continue;
+			let entry: unknown;
+			try {
+				entry = JSON.parse(line);
+			} catch {
+				continue;
+			}
+			if (typeof entry !== "object" || entry === null) continue;
+			const typed = entry as {
+				type?: unknown;
+				name?: unknown;
+				message?: { role?: unknown; content?: unknown };
+			};
+			if (typed.type === "session_info" && typeof typed.name === "string") {
+				facts.name = typed.name.trim() || undefined;
+				continue;
+			}
+			if (
+				wantsMessage &&
+				typed.type === "message" &&
+				typed.message?.role === "user"
+			) {
+				facts.firstUserMessage = userMessageHeadline(typed.message.content);
+			}
+		}
+		return facts;
 	}
 
 	async resolveAgentSessionReference(
@@ -458,6 +509,33 @@ function toAgentSessionCandidate(
 		parentSessionPath: metadata.parentSessionPath,
 		profile: parseAgentProfileReference(metadata.metadata?.profile),
 	};
+}
+
+// The first non-empty line of a user message, bounded for list display.
+function userMessageHeadline(content: unknown): string | undefined {
+	const text =
+		typeof content === "string"
+			? content
+			: Array.isArray(content)
+				? content
+						.filter(
+							(part): part is { type: "text"; text: string } =>
+								typeof part === "object" &&
+								part !== null &&
+								"type" in part &&
+								part.type === "text" &&
+								"text" in part &&
+								typeof part.text === "string",
+						)
+						.map((part) => part.text)
+						.join(" ")
+				: "";
+	const line = text
+		.split("\n")
+		.find((candidate) => candidate.trim() !== "")
+		?.trim();
+	if (!line) return undefined;
+	return line.length > 200 ? `${line.slice(0, 199)}…` : line;
 }
 
 const EXTENSION_CUSTOM_TYPE_PATTERN = /^[a-zA-Z0-9._:-]+$/;

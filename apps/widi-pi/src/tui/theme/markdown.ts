@@ -3,11 +3,11 @@ import { colors } from "./colors.ts";
 
 export const markdownTheme: MarkdownTheme = {
 	heading: (text) => colors.bold(colors.accent(text)),
-	link: colors.cyan,
+	link: colors.info,
 	linkUrl: colors.dim,
-	code: colors.yellow,
-	codeBlock: colors.green,
-	codeBlockBorder: (text) => colors.dim(colors.gray(text)),
+	code: colors.warn,
+	codeBlock: colors.ok,
+	codeBlockBorder: colors.rule,
 	quote: colors.italic,
 	quoteBorder: colors.dim,
 	hr: colors.dim,

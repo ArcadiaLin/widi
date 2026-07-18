@@ -57,6 +57,48 @@ describe("WidiCommandAutocompleteProvider", () => {
 		});
 	});
 
+	it("advances an exact command name to its argument candidates", async () => {
+		const commandProvider = provider({
+			listAgentSessions: async () => ({
+				sessions: [
+					{
+						id: "alpha",
+						path: "/sessions/a.jsonl",
+						createdAt: "2026-01-01T00:00:00.000Z",
+						cwd: "/workspace",
+						name: "auth-fix",
+						firstUserMessage: "Fix the flaky auth test",
+					},
+				],
+			}),
+		});
+		const result = await commandProvider.getSuggestions(["/resume"], 0, 7, {
+			signal: new AbortController().signal,
+		});
+		expect(result).toMatchObject({
+			prefix: "/resume",
+			items: [{ value: "/resume:/sessions/a.jsonl", label: "auth-fix" }],
+		});
+		if (!result?.items[0]) throw new Error("Expected argument completion.");
+		const applied = commandProvider.applyCompletion(
+			["/resume"],
+			0,
+			7,
+			result.items[0],
+			result.prefix,
+		);
+		expect(applied.lines).toEqual(["/resume:/sessions/a.jsonl"]);
+	});
+
+	it("returns no suggestions for an exact command without argument completion", async () => {
+		const commandProvider = provider();
+		await expect(
+			commandProvider.getSuggestions(["/session"], 0, 8, {
+				signal: new AbortController().signal,
+			}),
+		).resolves.toBeNull();
+	});
+
 	it("marks status-gated commands unavailable in suggestions", async () => {
 		const commandProvider = provider();
 		const result = await commandProvider.getSuggestions(["/st"], 0, 3, {

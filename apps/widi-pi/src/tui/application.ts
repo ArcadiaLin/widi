@@ -634,6 +634,17 @@ export class WidiTuiApplication {
 		command: LineCommand,
 		candidates: readonly CandidateItem[],
 	): void {
+		if (candidates.length === 0 && !command.complete) {
+			// Nothing to pick from: an empty menu is a dead end, a usage line is not.
+			this.restoreEditor(originalText, agentId);
+			this.addApplicationNotice(
+				`Command /${command.name} needs an argument: /${command.name}:${
+					command.argumentHint ?? "<argument>"
+				}`,
+				agentId,
+			);
+			return;
+		}
 		const items = candidates.map((candidate) => ({
 			value: candidate.value,
 			label: candidate.label ?? candidate.value,

@@ -59,6 +59,30 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 			const body = beforeCursor.slice(LINE_COMMAND_TRIGGER.length);
 			const separator = body.indexOf(":");
 			if (separator === -1) {
+				// An exact command name advances to the argument phase: re-offering
+				// the same name would make Tab toggle the menu without progress.
+				const exact = this.engine.line(body);
+				if (exact?.complete) {
+					let candidates: readonly CandidateItem[];
+					try {
+						candidates = await exact.complete(
+							{ agentId: this.agentId, orchestrator: this.orchestrator },
+							"",
+						);
+					} catch {
+						return null;
+					}
+					if (options.signal.aborted || candidates.length === 0) return null;
+					return {
+						items: candidates.map((candidate) => ({
+							value: `${beforeCursor}:${candidate.value}`,
+							label: candidate.label ?? candidate.value,
+							description: candidate.description,
+						})),
+						prefix: beforeCursor,
+					};
+				}
+				if (exact) return null;
 				const items = this.views("line").map(toCommandCompletionItem);
 				const filtered = fuzzyFilter(items, body, (item) => item.search).map(
 					(item) => ({

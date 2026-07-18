@@ -3,8 +3,8 @@ import { renderDiffText } from "../../src/tui/diff.ts";
 
 const ESCAPE = String.fromCharCode(27);
 const ANSI_SEQUENCE = new RegExp(`${ESCAPE}\\[[0-9;]*m`, "g");
-const RED = `${ESCAPE}[31m`;
-const GREEN = `${ESCAPE}[32m`;
+const REMOVED = `${ESCAPE}[38;2;230;126;128m`;
+const ADDED = `${ESCAPE}[38;2;131;192;146m`;
 const DIM = `${ESCAPE}[2m`;
 const INVERSE = `${ESCAPE}[7m`;
 
@@ -19,8 +19,8 @@ describe("renderDiffText", () => {
 		const lines = renderDiffText(diff);
 
 		expect(lines[0]).toContain(DIM);
-		expect(lines[1]).toContain(RED);
-		expect(lines[2]).toContain(GREEN);
+		expect(lines[1]).toContain(REMOVED);
+		expect(lines[2]).toContain(ADDED);
 		expect(plain(lines)).toEqual([
 			" 1 unchanged",
 			"-2 old line",

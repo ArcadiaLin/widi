@@ -38,7 +38,7 @@ export class NoticeView implements Component {
 					`${diagnosticGlyph(notice.diagnostic)} ${notice.diagnostic.code}: ${singleLine(notice.text)}`,
 				);
 			}
-			return colors.cyan(
+			return colors.info(
 				`✱${attribution ? ` ${attribution}` : ""} ${singleLine(notice.text)}`,
 			);
 		});

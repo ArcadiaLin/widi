@@ -76,6 +76,15 @@ describe("CommandEngine.handleInput", () => {
 		expect(forkedWith).toBeUndefined();
 	});
 
+	it("re-prompts a required argument given as blank", async () => {
+		const outcome = await engine.handleInput("/rename: ", context());
+		expect(outcome.kind).toBe("needs-argument");
+		if (outcome.kind === "needs-argument") {
+			expect(outcome.command.name).toBe("rename");
+			expect(outcome.candidates).toEqual([]);
+		}
+	});
+
 	it("fails unavailable commands with a CommandError", async () => {
 		const outcome = await engine.handleInput("/steer:go", context());
 		expect(outcome.kind).toBe("failed");
