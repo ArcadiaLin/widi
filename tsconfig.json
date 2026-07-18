@@ -26,5 +26,10 @@
 		"apps/widi-pi/src/**/*",
 		"apps/widi-pi/tests/**/*"
 	],
-	"exclude": ["**/dist/**"]
+	"exclude": [
+		"**/dist/**",
+		// Pulls in pi-coding-agent, whose own dependencies (proper-lockfile,
+		// cross-spawn types) are not installed in this repository.
+		"pi/packages/ai/test/codex-websocket-cached-probe.ts"
+	]
 }

@@ -9,17 +9,28 @@ import type {
 import {
 	type AnthropicMessagesCompat,
 	type Api,
-	type ApiStreamOptions,
 	type AssistantMessage,
 	type AssistantMessageEventStream,
+	type AuthCheck,
+	type AuthInteraction,
+	type AuthResult,
+	type AuthType,
 	type Context,
+	type Credential,
 	createModels,
 	createProvider,
+	lazyStream,
 	type Model,
 	type Models,
+	type ModelsApiStreamOptions,
+	type ModelsRefreshOptions,
+	type ModelsRefreshResult,
+	type ModelsSimpleStreamOptions,
 	type ModelThinkingLevel,
 	type MutableModels,
-	type OAuthProviderInterface,
+	type OAuthAuth,
+	type OAuthCredentials,
+	type OAuthLoginCallbacks,
 	type OpenAICompletionsCompat,
 	type OpenAIResponsesCompat,
 	type Provider,
@@ -37,10 +48,6 @@ import { mistralConversationsApi } from "@earendil-works/pi-ai/api/mistral-conve
 import { openAICodexResponsesApi } from "@earendil-works/pi-ai/api/openai-codex-responses.lazy";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
-import {
-	registerOAuthProvider,
-	resetOAuthProviders,
-} from "@earendil-works/pi-ai/oauth";
 import {
 	builtinProviders,
 	getBuiltinProviders,
@@ -333,6 +340,7 @@ export const THINKING_LEVEL_SET = {
 	medium: true,
 	high: true,
 	xhigh: true,
+	max: true,
 } as const satisfies Record<ThinkingLevel | ModelThinkingLevel, true>;
 
 export const THINKING_LEVELS = Object.keys(
@@ -551,10 +559,31 @@ export class ModelRegistry {
 				},
 			},
 		});
+		this.authStorage.setOAuthProvidersSource(() =>
+			this.runtime.getProviders().flatMap((provider) =>
+				provider.auth.oauth
+					? [
+							{
+								id: provider.id,
+								name: provider.auth.oauth.name,
+								oauth: provider.auth.oauth,
+							},
+						]
+					: [],
+			),
+		);
 		this.runtimeWithDiagnostics = new DiagnosticPublishingModels(
 			this.runtime,
 			async () => {
 				await this.publishRuntimeDiagnostics();
+			},
+			async (model) => {
+				return await this.configValueResolver.resolveHeadersOrThrow(
+					this.modelRequestHeaders.get(
+						this.getModelRequestKey(model.provider, model.id),
+					),
+					`model "${model.provider}/${model.id}"`,
+				);
 			},
 		);
 	}
@@ -606,7 +635,6 @@ export class ModelRegistry {
 		this.loadDiagnostic = undefined;
 
 		this.runtime.clearProviders();
-		resetOAuthProviders();
 
 		await this.loadModels();
 
@@ -718,7 +746,7 @@ export class ModelRegistry {
 				createModelRequestDiagnostic(
 					"model.auth_resolution_failed",
 					error instanceof Error ? error.message : String(error),
-					model,
+					{ provider: model.provider, modelId: model.id },
 					error,
 				),
 			);
@@ -748,28 +776,62 @@ export class ModelRegistry {
 		baseApiKey?: string,
 		baseHeaders?: ProviderHeaders,
 	): Promise<ResolvedRequestAuth> {
+		return await this.resolveRequestAuth(
+			model.provider,
+			model.id,
+			baseApiKey,
+			baseHeaders,
+		);
+	}
+
+	/**
+	 * Provider-scoped variant used by the runtime auth resolution path, which
+	 * no longer sees the model. Model headers are merged separately by the
+	 * DiagnosticPublishingModels wrapper.
+	 */
+	private async resolveProviderRequestAuth(
+		provider: string,
+		baseApiKey?: string,
+		baseHeaders?: ProviderHeaders,
+	): Promise<ResolvedRequestAuth> {
+		return await this.resolveRequestAuth(
+			provider,
+			undefined,
+			baseApiKey,
+			baseHeaders,
+		);
+	}
+
+	private async resolveRequestAuth(
+		provider: string,
+		modelId: string | undefined,
+		baseApiKey?: string,
+		baseHeaders?: ProviderHeaders,
+	): Promise<ResolvedRequestAuth> {
 		try {
-			const providerConfig = this.providerRequestConfigs.get(model.provider);
+			const providerConfig = this.providerRequestConfigs.get(provider);
 			const apiKey =
 				baseApiKey ??
 				(providerConfig?.apiKey
 					? await this.configValueResolver.resolveConfigValueOrThrow(
 							providerConfig.apiKey,
-							`API key for provider "${model.provider}"`,
+							`API key for provider "${provider}"`,
 						)
 					: undefined);
 
 			const providerHeaders =
 				await this.configValueResolver.resolveHeadersOrThrow(
 					providerConfig?.headers,
-					`provider "${model.provider}"`,
+					`provider "${provider}"`,
 				);
-			const modelHeaders = await this.configValueResolver.resolveHeadersOrThrow(
-				this.modelRequestHeaders.get(
-					this.getModelRequestKey(model.provider, model.id),
-				),
-				`model "${model.provider}/${model.id}"`,
-			);
+			const modelHeaders = modelId
+				? await this.configValueResolver.resolveHeadersOrThrow(
+						this.modelRequestHeaders.get(
+							this.getModelRequestKey(provider, modelId),
+						),
+						`model "${provider}/${modelId}"`,
+					)
+				: undefined;
 
 			let headers: ProviderHeaders | undefined =
 				baseHeaders || providerHeaders || modelHeaders
@@ -779,9 +841,12 @@ export class ModelRegistry {
 			// Some providers expect the resolved API key as an Authorization header.
 			if (providerConfig?.authHeader) {
 				if (!apiKey) {
-					const error = `No API key found for "${model.provider}"`;
+					const error = `No API key found for "${provider}"`;
 					this.recordModelDiagnostic(
-						createModelRequestDiagnostic("model.auth_missing", error, model),
+						createModelRequestDiagnostic("model.auth_missing", error, {
+							provider,
+							modelId,
+						}),
 					);
 					return { ok: false, error };
 				}
@@ -800,7 +865,7 @@ export class ModelRegistry {
 				createModelRequestDiagnostic(
 					"model.auth_resolution_failed",
 					message,
-					model,
+					{ provider, modelId },
 					error,
 				),
 			);
@@ -1192,7 +1257,7 @@ export class ModelRegistry {
 		return createProvider({
 			id: providerName,
 			name: config.name ?? providerDisplayName(providerName),
-			auth: this.createProviderAuth(providerName),
+			auth: this.createProviderAuth(providerName, undefined, config.oauth),
 			models,
 			api,
 		});
@@ -1201,10 +1266,12 @@ export class ModelRegistry {
 	private createProviderAuth(
 		providerName: string,
 		baseAuth?: ProviderAuth,
+		oauthConfig?: OAuthProviderConfig,
 	): ProviderAuth {
 		const baseApiKeyAuth = baseAuth?.apiKey;
+		const oauth = oauthConfig ? adaptOAuthConfig(oauthConfig) : baseAuth?.oauth;
 		return {
-			...baseAuth,
+			...(oauth ? { oauth } : {}),
 			apiKey: {
 				name:
 					baseApiKeyAuth?.name ??
@@ -1225,8 +1292,8 @@ export class ModelRegistry {
 						};
 					}
 
-					const configuredAuth = await this.resolveConfiguredRequestAuth(
-						input.model as Model<Api>,
+					const configuredAuth = await this.resolveProviderRequestAuth(
+						providerName,
 						baseResult?.auth.apiKey,
 						baseResult?.auth.headers,
 					);
@@ -1585,11 +1652,6 @@ export class ModelRegistry {
 		providerName: string,
 		config: ProviderConfigInput,
 	): void {
-		// Register OAuth provider if provided, forcing the runtime id to match providerName.
-		if (config.oauth) {
-			registerOAuthProvider({ ...config.oauth, id: providerName });
-		}
-
 		this.storeProviderRequestConfig(providerName, config);
 
 		if (config.models && config.models.length > 0) {
@@ -1666,13 +1728,25 @@ export class ModelRegistry {
 	}
 }
 
+type AuthResolutionOverrides = Parameters<Models["getAuth"]>[1];
+
 class DiagnosticPublishingModels implements Models {
 	private readonly base: Models;
 	private readonly publishDiagnostics: () => Promise<void>;
+	private readonly resolveModelHeaders: (
+		model: Model<Api>,
+	) => Promise<ProviderHeaders | undefined>;
 
-	constructor(base: Models, publishDiagnostics: () => Promise<void>) {
+	constructor(
+		base: Models,
+		publishDiagnostics: () => Promise<void>,
+		resolveModelHeaders: (
+			model: Model<Api>,
+		) => Promise<ProviderHeaders | undefined>,
+	) {
 		this.base = base;
 		this.publishDiagnostics = publishDiagnostics;
+		this.resolveModelHeaders = resolveModelHeaders;
 	}
 
 	getProviders(): readonly Provider[] {
@@ -1691,37 +1765,133 @@ class DiagnosticPublishingModels implements Models {
 		return this.base.getModel(provider, id);
 	}
 
-	async refresh(provider?: string): Promise<void> {
+	async refresh(options?: ModelsRefreshOptions): Promise<ModelsRefreshResult> {
 		try {
-			await this.base.refresh(provider);
+			return await this.base.refresh(options);
 		} finally {
 			await this.publishDiagnostics();
 		}
 	}
 
-	async getAuth(model: Model<Api>) {
+	async checkAuth(providerId: string): Promise<AuthCheck | undefined> {
 		try {
-			return await this.base.getAuth(model);
+			return await this.base.checkAuth(providerId);
 		} finally {
 			await this.publishDiagnostics();
 		}
+	}
+
+	async getAvailable(providerId?: string): Promise<readonly Model<Api>[]> {
+		try {
+			return await this.base.getAvailable(providerId);
+		} finally {
+			await this.publishDiagnostics();
+		}
+	}
+
+	getAuth(
+		providerId: string,
+		overrides?: AuthResolutionOverrides,
+	): Promise<AuthResult | undefined>;
+	getAuth(
+		model: Model<Api>,
+		overrides?: AuthResolutionOverrides,
+	): Promise<AuthResult | undefined>;
+	async getAuth(
+		providerOrModel: string | Model<Api>,
+		overrides?: AuthResolutionOverrides,
+	): Promise<AuthResult | undefined> {
+		try {
+			const result = await this.base.getAuth(
+				providerOrModel as Model<Api>,
+				overrides,
+			);
+			if (result && typeof providerOrModel !== "string") {
+				const modelHeaders = await this.resolveModelHeaders(providerOrModel);
+				if (modelHeaders) {
+					return {
+						...result,
+						auth: {
+							...result.auth,
+							headers: { ...result.auth.headers, ...modelHeaders },
+						},
+					};
+				}
+			}
+			return result;
+		} finally {
+			await this.publishDiagnostics();
+		}
+	}
+
+	async login(
+		providerId: string,
+		type: AuthType,
+		interaction: AuthInteraction,
+	): Promise<Credential> {
+		try {
+			return await this.base.login(providerId, type, interaction);
+		} finally {
+			await this.publishDiagnostics();
+		}
+	}
+
+	async logout(providerId: string): Promise<void> {
+		try {
+			await this.base.logout(providerId);
+		} finally {
+			await this.publishDiagnostics();
+		}
+	}
+
+	/**
+	 * Merge resolved model headers under any caller-provided headers so models.json
+	 * model headers keep their original precedence: below request options, above
+	 * provider-level auth headers.
+	 */
+	private async withModelHeaders<
+		TOptions extends { headers?: ProviderHeaders },
+	>(
+		model: Model<Api>,
+		options: TOptions | undefined,
+	): Promise<TOptions | undefined> {
+		const modelHeaders = await this.resolveModelHeaders(model);
+		if (!modelHeaders) {
+			return options;
+		}
+		return {
+			...options,
+			headers: { ...modelHeaders, ...options?.headers },
+		} as TOptions;
 	}
 
 	stream<TApi extends Api>(
 		model: Model<TApi>,
 		context: Context,
-		options?: ApiStreamOptions<TApi>,
+		options?: ModelsApiStreamOptions<TApi>,
 	): AssistantMessageEventStream {
-		return this.watchStream(this.base.stream(model, context, options));
+		return this.watchStream(
+			lazyStream(model, async () =>
+				this.base.stream(
+					model,
+					context,
+					await this.withModelHeaders(model, options),
+				),
+			),
+		);
 	}
 
 	async complete<TApi extends Api>(
 		model: Model<TApi>,
 		context: Context,
-		options?: ApiStreamOptions<TApi>,
+		options?: ModelsApiStreamOptions<TApi>,
 	): Promise<AssistantMessage> {
 		try {
-			return await this.base.complete(model, context, options);
+			return await this.base.complete(
+				model,
+				context,
+				await this.withModelHeaders(model, options),
+			);
 		} finally {
 			await this.publishDiagnostics();
 		}
@@ -1730,18 +1900,30 @@ class DiagnosticPublishingModels implements Models {
 	streamSimple(
 		model: Model<Api>,
 		context: Context,
-		options?: SimpleStreamOptions,
+		options?: ModelsSimpleStreamOptions,
 	): AssistantMessageEventStream {
-		return this.watchStream(this.base.streamSimple(model, context, options));
+		return this.watchStream(
+			lazyStream(model, async () =>
+				this.base.streamSimple(
+					model,
+					context,
+					await this.withModelHeaders(model, options),
+				),
+			),
+		);
 	}
 
 	async completeSimple(
 		model: Model<Api>,
 		context: Context,
-		options?: SimpleStreamOptions,
+		options?: ModelsSimpleStreamOptions,
 	): Promise<AssistantMessage> {
 		try {
-			return await this.base.completeSimple(model, context, options);
+			return await this.base.completeSimple(
+				model,
+				context,
+				await this.withModelHeaders(model, options),
+			);
 		} finally {
 			await this.publishDiagnostics();
 		}
@@ -1785,7 +1967,7 @@ function createModelLoadDiagnostic(
 function createModelRequestDiagnostic(
 	code: "model.auth_missing" | "model.auth_resolution_failed",
 	message: string,
-	model: Model<Api>,
+	ref: { provider: string; modelId?: string },
 	error?: unknown,
 ): ModelDiagnostic {
 	const normalizedError = error instanceof Error ? error : undefined;
@@ -1799,10 +1981,10 @@ function createModelRequestDiagnostic(
 		source: {
 			kind: "registry",
 			name: "model",
-			key: `${model.provider}:${model.id}`,
+			key: ref.modelId ? `${ref.provider}:${ref.modelId}` : ref.provider,
 		},
-		provider: model.provider,
-		modelId: model.id,
+		provider: ref.provider,
+		modelId: ref.modelId,
 		phase: "runtime",
 		details: {
 			errorName: normalizedError?.name,
@@ -1830,6 +2012,57 @@ function createExtensionProviderDroppedDiagnostic(
 	});
 }
 
+/**
+ * Legacy extension-style OAuth provider config. The provider id is forced to
+ * the registered provider name. Adapted to the pi-ai OAuthAuth surface by
+ * adaptOAuthConfig().
+ */
+export interface OAuthProviderConfig {
+	name: string;
+	/** Whether login uses a local callback server and supports manual code input. */
+	usesCallbackServer?: boolean;
+	login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials>;
+	refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials>;
+	getApiKey(credentials: OAuthCredentials): string;
+	modifyModels?(
+		models: Model<Api>[],
+		credentials: OAuthCredentials,
+	): Model<Api>[];
+}
+
+/**
+ * Bridge a legacy OAuthProviderConfig to the provider-owned OAuthAuth
+ * interface used by the pi-ai Models runtime.
+ */
+function adaptOAuthConfig(config: OAuthProviderConfig): OAuthAuth {
+	return {
+		name: config.name,
+		login: async (interaction) => {
+			const credential = await config.login({
+				onAuth: (info) => interaction.notify({ type: "auth_url", ...info }),
+				onDeviceCode: (info) =>
+					interaction.notify({ type: "device_code", ...info }),
+				onPrompt: (prompt) => interaction.prompt({ type: "text", ...prompt }),
+				onProgress: (message) =>
+					interaction.notify({ type: "progress", message }),
+				onManualCodeInput: () =>
+					interaction.prompt({
+						type: "manual_code",
+						message: "Paste the authorization code",
+					}),
+				onSelect: (prompt) => interaction.prompt({ type: "select", ...prompt }),
+				signal: interaction.signal,
+			});
+			return { ...credential, type: "oauth" };
+		},
+		refresh: async (credential) => ({
+			...(await config.refreshToken(credential)),
+			type: "oauth",
+		}),
+		toAuth: async (credential) => ({ apiKey: config.getApiKey(credential) }),
+	};
+}
+
 export interface ProviderConfigInput {
 	name?: string;
 	baseUrl?: string;
@@ -1842,7 +2075,7 @@ export interface ProviderConfigInput {
 	) => AssistantMessageEventStream;
 	headers?: Record<string, string>;
 	authHeader?: boolean;
-	oauth?: Omit<OAuthProviderInterface, "id">;
+	oauth?: OAuthProviderConfig;
 	models?: Array<{
 		id: string;
 		name: string;

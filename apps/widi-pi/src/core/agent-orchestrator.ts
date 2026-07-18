@@ -603,15 +603,15 @@ export class AgentOrchestrator {
 	}
 
 	/** Providers with a stored credential (OAuth or API key): logout targets. */
-	listAuthCredentialCandidates(): AuthCredentialCandidateListResult {
+	async listAuthCredentialCandidates(): Promise<AuthCredentialCandidateListResult> {
 		const authStorage = this.modelRegistry.authStorage;
 		const oauthProviders = authStorage.getOAuthProviders();
 		return {
-			providers: authStorage.list().map((providerId) => ({
-				value: providerId,
+			providers: (await authStorage.list()).map((info) => ({
+				value: info.providerId,
 				label:
-					oauthProviders.find((provider) => provider.id === providerId)?.name ??
-					providerId,
+					oauthProviders.find((provider) => provider.id === info.providerId)
+						?.name ?? info.providerId,
 			})),
 		};
 	}

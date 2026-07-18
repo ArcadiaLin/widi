@@ -12,10 +12,7 @@ import {
 	ExecutionError as PiExecutionError,
 	FileError as PiFileError,
 } from "@earendil-works/pi-agent-core";
-import {
-	registerOAuthProvider,
-	unregisterOAuthProvider,
-} from "@earendil-works/pi-ai/oauth";
+import type { OAuthAuth } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import {
 	AuthStorage,
@@ -289,7 +286,9 @@ describe("AuthStorage", () => {
 
 		expect(storage.get("openai")).toEqual({ type: "api_key", key: "stored" });
 		expect(storage.has("openai")).toBe(true);
-		expect(storage.list()).toEqual(["openai"]);
+		expect(await storage.list()).toEqual([
+			{ providerId: "openai", type: "api_key" },
+		]);
 	});
 
 	it("persists set and remove operations", async () => {
@@ -423,46 +422,45 @@ describe("AuthStorage", () => {
 
 	it("drains diagnostics for OAuth refresh failures while returning undefined", async () => {
 		const providerId = "test-oauth-refresh-failure";
-		registerOAuthProvider({
-			id: providerId,
+		const oauth: OAuthAuth = {
 			name: "Test OAuth",
 			login: async () => ({
+				type: "oauth",
 				access: "access",
 				refresh: "refresh",
 				expires: Date.now() - 1,
 			}),
-			refreshToken: async () => {
+			refresh: async () => {
 				throw new Error("refresh failed");
 			},
-			getApiKey: () => "oauth-token",
-		});
-		try {
-			const env = new MemoryExecutionEnv();
-			const storage = AuthStorage.inMemory(
-				{ configValueResolver: createConfigValueResolver(env) },
-				{
-					[providerId]: {
-						type: "oauth",
-						access: "access",
-						refresh: "refresh",
-						expires: Date.now() - 1,
-					},
+			toAuth: async () => ({ apiKey: "oauth-token" }),
+		};
+		const env = new MemoryExecutionEnv();
+		const storage = AuthStorage.inMemory(
+			{ configValueResolver: createConfigValueResolver(env) },
+			{
+				[providerId]: {
+					type: "oauth",
+					access: "access",
+					refresh: "refresh",
+					expires: Date.now() - 1,
 				},
-			);
-			await storage.initialize();
+			},
+		);
+		storage.setOAuthProvidersSource(() => [
+			{ id: providerId, name: oauth.name, oauth },
+		]);
+		await storage.initialize();
 
-			await expect(storage.getApiKey(providerId)).resolves.toBeUndefined();
-			expect(storage.drainDiagnostics()).toContainEqual(
-				expect.objectContaining({
-					domain: "auth",
-					code: "auth.oauth_refresh_failed",
-					provider: providerId,
-					source: { kind: "registry", name: "auth", key: providerId },
-				}),
-			);
-		} finally {
-			unregisterOAuthProvider(providerId);
-		}
+		await expect(storage.getApiKey(providerId)).resolves.toBeUndefined();
+		expect(storage.drainDiagnostics()).toContainEqual(
+			expect.objectContaining({
+				domain: "auth",
+				code: "auth.oauth_refresh_failed",
+				provider: providerId,
+				source: { kind: "registry", name: "auth", key: providerId },
+			}),
+		);
 	});
 
 	it("records OAuth refresh diagnostics from CredentialStore modify failures", async () => {

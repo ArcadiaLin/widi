@@ -73,7 +73,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		description: "Remove a stored LLM provider credential.",
 		argumentHint: "[provider]",
 		complete: async ({ orchestrator }) =>
-			orchestrator.listAuthCredentialCandidates().providers,
+			(await orchestrator.listAuthCredentialCandidates()).providers,
 		execute: async ({ orchestrator }, argument) =>
 			await orchestrator.logoutAuthProvider(argument.trim()),
 	},

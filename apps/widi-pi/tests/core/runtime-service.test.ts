@@ -13,7 +13,7 @@ import {
 	FileError as PiFileError,
 } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type {
 	ExtensionFactory,
 	ExtensionModuleImporter,
@@ -916,31 +916,40 @@ You are extension-profile.`,
 	});
 
 	it("falls back to the first available model when settings do not specify one", async () => {
-		const env = new MemoryExecutionEnv();
-		env.addFile(
-			"/home/user/.widi/agent/models.json",
-			modelsJson("available-provider", "available-model"),
-		);
+		// Built-in providers resolve ambient env credentials (e.g. HF_TOKEN), so
+		// scrub the process environment to keep availability deterministic.
+		for (const name of Object.keys(process.env)) {
+			vi.stubEnv(name, "");
+		}
+		try {
+			const env = new MemoryExecutionEnv();
+			env.addFile(
+				"/home/user/.widi/agent/models.json",
+				modelsJson("available-provider", "available-model"),
+			);
 
-		const runtime = await createWidiRuntime({
-			cwd: "/workspace/project",
-			agentDir: "/home/user/.widi",
-			executionEnv: env,
-		});
+			const runtime = await createWidiRuntime({
+				cwd: "/workspace/project",
+				agentDir: "/home/user/.widi",
+				executionEnv: env,
+			});
 
-		expect(runtime.services.defaultModel).toEqual({
-			provider: "available-provider",
-			modelId: "available-model",
-			source: "available_fallback",
-		});
-		expect(runtime.diagnostics).toContainEqual(
-			expect.objectContaining({
-				code: "model.default_resolved",
-				details: expect.objectContaining({
-					defaultSource: "available_fallback",
+			expect(runtime.services.defaultModel).toEqual({
+				provider: "available-provider",
+				modelId: "available-model",
+				source: "available_fallback",
+			});
+			expect(runtime.diagnostics).toContainEqual(
+				expect.objectContaining({
+					code: "model.default_resolved",
+					details: expect.objectContaining({
+						defaultSource: "available_fallback",
+					}),
 				}),
-			}),
-		);
+			);
+		} finally {
+			vi.unstubAllEnvs();
+		}
 	});
 
 	it("fails fast when settings default model is unavailable", async () => {

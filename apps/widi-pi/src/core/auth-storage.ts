@@ -9,17 +9,14 @@
 
 import type { ExecutionEnv } from "@earendil-works/pi-agent-core";
 import type {
+	AuthInteraction,
+	CredentialInfo,
 	CredentialStore,
+	OAuthAuth,
 	OAuthCredentials,
 	OAuthLoginCallbacks,
-	OAuthProviderId,
 	Credential as PiCredential,
 } from "@earendil-works/pi-ai";
-import {
-	getOAuthApiKey,
-	getOAuthProvider,
-	getOAuthProviders,
-} from "@earendil-works/pi-ai/oauth";
 import { DEFAULT_AGENT_DIR } from "./constants.js";
 import { type CoreDiagnostic, createDiagnostic } from "./diagnostics.ts";
 import type { ConfigValueResolver } from "./resolve-config-value.js";
@@ -178,10 +175,22 @@ export interface AuthStorageOptions {
 	configValueResolver: ConfigValueResolver;
 }
 
+/**
+ * OAuth capability of a runtime provider, exposed to AuthStorage by the
+ * ModelRegistry so login and token refresh can reach the provider-owned
+ * OAuthAuth implementation.
+ */
+export interface OAuthProviderSource {
+	id: string;
+	name: string;
+	oauth: OAuthAuth;
+}
+
 export class AuthStorage implements CredentialStore {
 	private data: AuthStorageData = {};
 	private readonly runtimeOverrides: Map<string, string> = new Map();
 	private fallbackResolver?: (provider: string) => string | undefined;
+	private oauthProvidersSource?: () => readonly OAuthProviderSource[];
 	private loadError: Error | null = null;
 	private loadDiagnostic: AuthDiagnostic | undefined;
 	private errors: Error[] = [];
@@ -258,6 +267,24 @@ export class AuthStorage implements CredentialStore {
 		resolver: (provider: string) => string | undefined,
 	): void {
 		this.fallbackResolver = resolver;
+	}
+
+	/**
+	 * Set the live source of OAuth-capable runtime providers.
+	 *
+	 * ModelRegistry wires this to the Models runtime so AuthStorage can drive
+	 * OAuth login and token refresh without owning provider registrations.
+	 */
+	setOAuthProvidersSource(source: () => readonly OAuthProviderSource[]): void {
+		this.oauthProvidersSource = source;
+	}
+
+	private getOAuthProviderSource(
+		providerId: string,
+	): OAuthProviderSource | undefined {
+		return this.oauthProvidersSource?.().find(
+			(source) => source.id === providerId,
+		);
 	}
 
 	private recordError(
@@ -425,10 +452,13 @@ export class AuthStorage implements CredentialStore {
 	}
 
 	/**
-	 * List all providers with stored credentials.
+	 * List stored credential metadata without exposing secrets.
 	 */
-	list(): string[] {
-		return Object.keys(this.data);
+	async list(): Promise<readonly CredentialInfo[]> {
+		return Object.entries(this.data).map(([providerId, credential]) => ({
+			providerId,
+			type: credential.type,
+		}));
 	}
 
 	/**
@@ -512,16 +542,18 @@ export class AuthStorage implements CredentialStore {
 	 * Login to an OAuth provider and persist the returned credentials.
 	 */
 	async login(
-		providerId: OAuthProviderId,
+		providerId: string,
 		callbacks: OAuthLoginCallbacks,
 	): Promise<void> {
-		const provider = getOAuthProvider(providerId);
-		if (!provider) {
+		const source = this.getOAuthProviderSource(providerId);
+		if (!source) {
 			throw new Error(`Unknown OAuth provider: ${providerId}`);
 		}
 
-		const credentials = await provider.login(callbacks);
-		await this.set(providerId, { type: "oauth", ...credentials });
+		const credential = await source.oauth.login(
+			oauthLoginCallbacksToInteraction(callbacks),
+		);
+		await this.set(providerId, credential);
 	}
 
 	/**
@@ -538,10 +570,10 @@ export class AuthStorage implements CredentialStore {
 	 * coordinate multiple WIDI processes without changing this method.
 	 */
 	private async refreshOAuthTokenWithLock(
-		providerId: OAuthProviderId,
+		providerId: string,
 	): Promise<{ apiKey: string; newCredentials: OAuthCredentials } | null> {
-		const provider = getOAuthProvider(providerId);
-		if (!provider) {
+		const source = this.getOAuthProviderSource(providerId);
+		if (!source) {
 			return null;
 		}
 
@@ -557,31 +589,32 @@ export class AuthStorage implements CredentialStore {
 			}
 
 			if (Date.now() < cred.expires) {
+				const apiKey = (await source.oauth.toAuth(cred)).apiKey;
+				if (apiKey === undefined) {
+					return { result: null };
+				}
 				return {
-					result: { apiKey: provider.getApiKey(cred), newCredentials: cred },
+					result: { apiKey, newCredentials: cred },
 				};
 			}
 
-			const oauthCreds: Record<string, OAuthCredentials> = {};
-			for (const [key, value] of Object.entries(currentData)) {
-				if (value.type === "oauth") {
-					oauthCreds[key] = value;
-				}
-			}
-
-			const refreshed = await getOAuthApiKey(providerId, oauthCreds);
-			if (!refreshed) {
+			const newCredentials = await source.oauth.refresh(cred);
+			const apiKey = (await source.oauth.toAuth(newCredentials)).apiKey;
+			if (apiKey === undefined) {
 				return { result: null };
 			}
 
 			const merged: AuthStorageData = {
 				...currentData,
-				[providerId]: { type: "oauth", ...refreshed.newCredentials },
+				[providerId]: newCredentials,
 			};
 			this.data = merged;
 			this.loadError = null;
 			this.loadDiagnostic = undefined;
-			return { result: refreshed, next: JSON.stringify(merged, null, 2) };
+			return {
+				result: { apiKey, newCredentials },
+				next: JSON.stringify(merged, null, 2),
+			};
 		});
 	}
 
@@ -611,8 +644,8 @@ export class AuthStorage implements CredentialStore {
 		}
 
 		if (cred?.type === "oauth") {
-			const provider = getOAuthProvider(providerId);
-			if (!provider) {
+			const source = this.getOAuthProviderSource(providerId);
+			if (!source) {
 				return undefined;
 			}
 
@@ -632,13 +665,13 @@ export class AuthStorage implements CredentialStore {
 						Date.now() < updatedCred.expires
 					) {
 						// Another actor refreshed successfully; use those credentials.
-						return provider.getApiKey(updatedCred);
+						return (await source.oauth.toAuth(updatedCred)).apiKey;
 					}
 					return undefined;
 				}
 			}
 
-			return provider.getApiKey(cred);
+			return (await source.oauth.toAuth(cred)).apiKey;
 		}
 
 		if (options?.includeFallback !== false) {
@@ -649,10 +682,13 @@ export class AuthStorage implements CredentialStore {
 	}
 
 	/**
-	 * Get all registered OAuth providers.
+	 * Get all OAuth-capable runtime providers.
 	 */
-	getOAuthProviders() {
-		return getOAuthProviders();
+	getOAuthProviders(): { id: string; name: string }[] {
+		return (this.oauthProvidersSource?.() ?? []).map(({ id, name }) => ({
+			id,
+			name,
+		}));
 	}
 }
 
@@ -683,4 +719,69 @@ function createAuthDiagnostic(
 			errorMessage: error.message,
 		},
 	});
+}
+
+/**
+ * Adapt the legacy extension-style OAuth login callbacks to the pi-ai
+ * AuthInteraction surface expected by provider-owned OAuthAuth flows.
+ */
+function oauthLoginCallbacksToInteraction(
+	callbacks: OAuthLoginCallbacks,
+): AuthInteraction {
+	return {
+		signal: callbacks.signal,
+		prompt: async (prompt) => {
+			switch (prompt.type) {
+				case "text":
+				case "secret":
+					return await callbacks.onPrompt({
+						message: prompt.message,
+						placeholder: prompt.placeholder,
+					});
+				case "manual_code":
+					if (callbacks.onManualCodeInput) {
+						return await callbacks.onManualCodeInput();
+					}
+					return await callbacks.onPrompt({
+						message: prompt.message,
+						placeholder: prompt.placeholder,
+					});
+				case "select": {
+					const selected = await callbacks.onSelect({
+						message: prompt.message,
+						options: prompt.options.map((option) => ({
+							id: option.id,
+							label: option.label,
+						})),
+					});
+					if (selected === undefined) {
+						throw new Error("Login cancelled");
+					}
+					return selected;
+				}
+			}
+		},
+		notify: (event) => {
+			switch (event.type) {
+				case "auth_url":
+					callbacks.onAuth({
+						url: event.url,
+						instructions: event.instructions,
+					});
+					break;
+				case "device_code":
+					callbacks.onDeviceCode({
+						userCode: event.userCode,
+						verificationUri: event.verificationUri,
+						intervalSeconds: event.intervalSeconds,
+						expiresInSeconds: event.expiresInSeconds,
+					});
+					break;
+				case "info":
+				case "progress":
+					callbacks.onProgress?.(event.message);
+					break;
+			}
+		},
+	};
 }
