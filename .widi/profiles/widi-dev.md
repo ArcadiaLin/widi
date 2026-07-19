@@ -3,7 +3,7 @@ id: widi-dev
 label: WIDI Dev
 description: Local WIDI development profile for comprehensive harness self-checks.
 persist: true
-skills: [self-check]
+skills: [self-check, econ-deep-research]
 promptTemplates: [self-check]
 extensions: [mcp]
 ---
