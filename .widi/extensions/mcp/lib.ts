@@ -5,6 +5,8 @@ import {
 	StdioClientTransport,
 } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { TSchema } from "typebox";
+import type { ToolDefinition } from "../../../apps/widi-pi/src/core/extension/api.ts";
 
 export interface McpStdioServerConfig {
 	readonly command: string;
@@ -288,4 +290,75 @@ function withTimeout<T>(
 			},
 		);
 	});
+}
+
+type McpToolResultContent =
+	| { type: "text"; text: string }
+	| { type: "image"; data: string; mimeType: string };
+
+export function mcpToolName(serverName: string, toolName: string): string {
+	const sanitize = (value: string): string => value.replace(/[^a-zA-Z0-9_-]/g, "_");
+	return `mcp_${sanitize(serverName)}_${sanitize(toolName)}`;
+}
+
+export function createMcpToolDefinitions(
+	connection: McpServerConnection,
+	tools: readonly McpToolInfo[],
+): ToolDefinition[] {
+	return tools.map((tool) => ({
+		name: mcpToolName(connection.serverName, tool.name),
+		label: `${connection.serverName}: ${tool.name}`,
+		description: tool.description ??
+			`MCP tool '${tool.name}' from server '${connection.serverName}'.`,
+		parameters: tool.inputSchema as unknown as TSchema,
+		strict: false,
+		execute: async (_toolCallId, params) => {
+			const result = await connection.callTool(tool.name, toArgsObject(params));
+			const content = flattenMcpContent(result.content ?? []);
+			if (result.isError) {
+				const text = content
+					.map((block) => block.type === "text" ? block.text : `[${block.type} content]`)
+					.join("\n");
+				throw new Error(
+					text.length > 0
+						? text
+						: `MCP tool '${tool.name}' on server '${connection.serverName}' reported an error.`,
+				);
+			}
+			return { content, details: undefined };
+		},
+	}));
+}
+
+function toArgsObject(params: unknown): Record<string, unknown> {
+	return isRecord(params) ? params : {};
+}
+
+function flattenMcpContent(
+	blocks: readonly McpContentBlock[],
+): McpToolResultContent[] {
+	const flattened: McpToolResultContent[] = [];
+	for (const block of blocks) {
+		if (block.type === "text" && block.text !== undefined) {
+			flattened.push({ type: "text", text: block.text });
+		} else if (
+			block.type === "image" &&
+			block.data !== undefined &&
+			block.mimeType !== undefined
+		) {
+			flattened.push({
+				type: "image",
+				data: block.data,
+				mimeType: block.mimeType,
+			});
+		} else if (block.type === "resource") {
+			flattened.push({
+				type: "text",
+				text: block.resource?.text ?? block.resource?.uri ?? "[resource]",
+			});
+		} else {
+			flattened.push({ type: "text", text: `[unsupported ${block.type} content]` });
+		}
+	}
+	return flattened.length > 0 ? flattened : [{ type: "text", text: "(no content)" }];
 }

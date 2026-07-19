@@ -10,11 +10,16 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { describe, expect, it } from "vitest";
 import {
+	createMcpToolDefinitions,
 	loadMcpConfig,
 	type McpCallToolResult,
 	type McpClientFactory,
+	type McpClientHandle,
 	McpServerConnection,
+	type McpToolInfo,
+	mcpToolName,
 } from "../../../../.widi/extensions/mcp/lib.ts";
+import type { ToolExecutionContext } from "../../src/core/extension/api.ts";
 
 async function writeConfig(content: string): Promise<string> {
 	const dir = await mkdtemp(join(tmpdir(), "widi-mcp-test-"));
@@ -272,5 +277,126 @@ describe("McpServerConnection", () => {
 		const result = await connection.callTool("echo", { text: "hi" });
 		expect(result.content).toEqual([{ type: "text", text: "echo: hi" }]);
 		await server.close();
+	});
+});
+
+const idleContext: ToolExecutionContext<unknown> = {
+	signal: undefined,
+	onUpdate: undefined,
+	extension: undefined,
+	human: undefined,
+};
+
+async function connectedFake(
+	callTool: McpClientHandle["callTool"],
+): Promise<McpServerConnection> {
+	const factory: McpClientFactory = async () => ({
+		listTools: async () => [],
+		callTool,
+		close: async () => {},
+	});
+	const connection = new McpServerConnection(
+		"fake",
+		{ command: "true" },
+		factory,
+	);
+	await connection.connect();
+	return connection;
+}
+
+describe("mcpToolName", () => {
+	it("prefixes and sanitizes names", () => {
+		expect(mcpToolName("my server", "do.thing")).toBe("mcp_my_server_do_thing");
+		expect(mcpToolName("plain", "tool")).toBe("mcp_plain_tool");
+	});
+});
+
+describe("createMcpToolDefinitions", () => {
+	const tools: McpToolInfo[] = [
+		{
+			name: "echo",
+			description: "Echo text.",
+			inputSchema: { type: "object", properties: { text: { type: "string" } } },
+		},
+		{ name: "no-desc", inputSchema: { type: "object" } },
+	];
+
+	it("maps MCP tools to prefixed tool definitions", async () => {
+		const definitions = createMcpToolDefinitions(
+			await connectedFake(async () => ({ content: [] })),
+			tools,
+		);
+		expect(definitions.map((definition) => definition.name)).toEqual([
+			"mcp_fake_echo",
+			"mcp_fake_no-desc",
+		]);
+		expect(definitions[0].label).toBe("fake: echo");
+		expect(definitions[0].description).toBe("Echo text.");
+		expect(definitions[1].description).toContain("no-desc");
+		expect(definitions[0].parameters).toEqual(tools[0].inputSchema);
+		expect(definitions[0].strict).toBe(false);
+	});
+
+	it("flattens text, image, and resource blocks into tool result content", async () => {
+		const definitions = createMcpToolDefinitions(
+			await connectedFake(async () => ({
+				content: [
+					{ type: "text", text: "hello" },
+					{ type: "image", data: "aW1n", mimeType: "image/png" },
+					{
+						type: "resource",
+						resource: { uri: "file:///x", text: "file body" },
+					},
+					{ type: "audio" },
+				],
+			})),
+			tools,
+		);
+		const result = await definitions[0].execute(
+			"call-1",
+			{ text: "hi" },
+			idleContext,
+		);
+		expect(result.content).toEqual([
+			{ type: "text", text: "hello" },
+			{ type: "image", data: "aW1n", mimeType: "image/png" },
+			{ type: "text", text: "file body" },
+			{ type: "text", text: "[unsupported audio content]" },
+		]);
+	});
+
+	it("returns a placeholder when the result has no content", async () => {
+		const definitions = createMcpToolDefinitions(
+			await connectedFake(async () => ({})),
+			tools,
+		);
+		const result = await definitions[0].execute("call-1", {}, idleContext);
+		expect(result.content).toEqual([{ type: "text", text: "(no content)" }]);
+	});
+
+	it("throws the flattened text when the MCP result is an error", async () => {
+		const definitions = createMcpToolDefinitions(
+			await connectedFake(async () => ({
+				isError: true,
+				content: [{ type: "text", text: "boom" }],
+			})),
+			tools,
+		);
+		await expect(
+			definitions[0].execute("call-1", {}, idleContext),
+		).rejects.toThrow("boom");
+	});
+
+	it("passes non-object params through as empty arguments", async () => {
+		let received: Record<string, unknown> | null = null;
+		const definitions = createMcpToolDefinitions(
+			await connectedFake(async (_name, args) => {
+				received = args;
+				return { content: [{ type: "text", text: "ok" }] };
+			}),
+			tools,
+		);
+		await definitions[0].execute("call-1", "not-an-object", idleContext);
+		expect(received).toEqual({});
 	});
 });
