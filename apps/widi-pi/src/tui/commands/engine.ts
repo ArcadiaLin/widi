@@ -26,10 +26,15 @@ export class CommandEngine {
 		}
 	}
 
-	list(status: AgentLifecycleStatus): CommandView[] {
+	list(status: AgentLifecycleStatus | undefined): CommandView[] {
 		const views: CommandView[] = [];
 		for (const command of this.lineCommands.values()) {
-			const unavailableReason = command.checkStatus?.(status);
+			const unavailableReason =
+				status === undefined && command.agentPolicy === "active"
+					? `Command /${command.name} requires an active agent.`
+					: status === undefined
+						? undefined
+						: command.checkStatus?.(status);
 			views.push({
 				kind: "line",
 				name: command.name,
@@ -96,9 +101,16 @@ export class CommandEngine {
 		hooks?: EngineHooks,
 	): Promise<EngineOutcome> {
 		const commandId = this.createCommandId();
-		const unavailableReason = command.checkStatus?.(
-			context.orchestrator.getAgentStatus(context.agentId),
-		);
+		if (!context.agentId && command.agentPolicy === "active") {
+			return failed(commandId, command.name, {
+				message: `Command /${command.name} requires an active agent.`,
+			});
+		}
+		const unavailableReason = context.agentId
+			? command.checkStatus?.(
+					context.orchestrator.getAgentStatus(context.agentId),
+				)
+			: undefined;
 		if (unavailableReason) {
 			return failed(commandId, command.name, { message: unavailableReason });
 		}
@@ -114,6 +126,11 @@ export class CommandEngine {
 			} catch (error) {
 				return failed(commandId, command.name, toCommandError(error));
 			}
+		}
+		if (!context.agentId && command.agentPolicy === "materialize") {
+			return failed(commandId, command.name, {
+				message: `Command /${command.name} requires an active agent.`,
+			});
 		}
 		hooks?.onCommandStart?.(commandId, command.name, argument);
 		try {
@@ -186,11 +203,7 @@ export class CommandEngine {
 
 export function switchedAgentId(outcome: EngineOutcome): string | undefined {
 	if (outcome.kind !== "executed") return undefined;
-	if (
-		outcome.name !== "fork" &&
-		outcome.name !== "new" &&
-		outcome.name !== "resume"
-	) {
+	if (outcome.name !== "fork" && outcome.name !== "resume") {
 		return undefined;
 	}
 	const value = outcome.value;

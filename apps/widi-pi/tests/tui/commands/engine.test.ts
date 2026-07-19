@@ -19,6 +19,10 @@ function context(overrides: Record<string, unknown> = {}) {
 	return { agentId: "agent-1", orchestrator: stubOrchestrator(overrides) };
 }
 
+function pendingContext(overrides: Record<string, unknown> = {}) {
+	return { orchestrator: stubOrchestrator(overrides) };
+}
+
 describe("CommandEngine.handleInput", () => {
 	const engine = new CommandEngine(builtInCommands);
 
@@ -106,6 +110,54 @@ describe("CommandEngine.handleInput", () => {
 		if (outcome.kind === "failed") expect(outcome.error.message).toBe("boom");
 	});
 
+	it("executes runtime commands without an active agent", async () => {
+		const outcome = await engine.handleInput(
+			"/session",
+			pendingContext({
+				listAgentSessions: async () => ({ sessions: [] }),
+			}),
+		);
+
+		expect(outcome).toMatchObject({ kind: "executed", name: "session" });
+	});
+
+	it("rejects active-only commands without an active agent", async () => {
+		const outcome = await engine.handleInput("/status", pendingContext());
+
+		expect(outcome).toMatchObject({
+			kind: "failed",
+			error: { message: expect.stringContaining("active agent") },
+		});
+	});
+
+	it("offers model candidates without an active agent", async () => {
+		const outcome = await engine.handleInput(
+			"/model",
+			pendingContext({
+				listAvailableModelCandidates: async () => ({
+					models: [{ value: "openai/gpt-5" }],
+				}),
+			}),
+		);
+
+		expect(outcome).toMatchObject({
+			kind: "needs-argument",
+			candidates: [{ value: "openai/gpt-5" }],
+		});
+	});
+
+	it("requires materialization before executing a setting command", async () => {
+		const outcome = await engine.handleInput(
+			"/model:openai/gpt-5",
+			pendingContext(),
+		);
+
+		expect(outcome).toMatchObject({
+			kind: "failed",
+			error: { message: expect.stringContaining("active agent") },
+		});
+	});
+
 	it("reports command start through hooks", async () => {
 		const started: string[] = [];
 		await engine.handleInput("/status", context(), {
@@ -167,6 +219,17 @@ describe("CommandEngine.list and match", () => {
 		expect(running?.available).toBe(true);
 	});
 
+	it("marks active commands unavailable without an agent", () => {
+		const views = engine.list(undefined);
+
+		expect(views.find((view) => view.name === "status")).toMatchObject({
+			available: false,
+			unavailableReason: expect.stringContaining("active agent"),
+		});
+		expect(views.find((view) => view.name === "model")?.available).toBe(true);
+		expect(views.find((view) => view.name === "session")?.available).toBe(true);
+	});
+
 	it("matches known line commands only", () => {
 		expect(engine.match("/abort")?.name).toBe("abort");
 		expect(engine.match("/nope:x")).toBeUndefined();
@@ -175,7 +238,7 @@ describe("CommandEngine.list and match", () => {
 });
 
 describe("switchedAgentId", () => {
-	it("extracts the agent id from fork/new/resume results only", () => {
+	it("extracts the agent id from fork/resume results only", () => {
 		expect(
 			switchedAgentId({
 				kind: "executed",

@@ -6,8 +6,12 @@ import { CommandEngine } from "../../../src/tui/commands/engine.ts";
 function setup(status: "idle" | "running" = "idle") {
 	const host = {
 		quitCalls: 0,
+		newSessionCalls: [] as Array<string | undefined>,
 		quit() {
 			this.quitCalls += 1;
+		},
+		newSession(sourceAgentId: string | undefined) {
+			this.newSessionCalls.push(sourceAgentId);
 		},
 	};
 	const engine = new CommandEngine(applicationCommands(host));
@@ -43,5 +47,13 @@ describe("applicationCommands", () => {
 		const outcome = await engine.handleInput("/quit", context);
 		expect(outcome.kind).toBe("executed");
 		expect(host.quitCalls).toBe(1);
+	});
+
+	it("hands /new to the application without creating a core agent", async () => {
+		const { engine, host, context } = setup();
+		const outcome = await engine.handleInput("/new", context);
+
+		expect(outcome).toMatchObject({ kind: "executed", name: "new" });
+		expect(host.newSessionCalls).toEqual(["agent-1"]);
 	});
 });

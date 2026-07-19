@@ -285,13 +285,19 @@ describe("WidiTuiApplication command submission", () => {
 });
 
 async function createApplication(overrides: Record<string, unknown> = {}) {
+	const defaultModel = agentSnapshot("default").model;
 	const orchestrator = {
 		getAgentStatus: () => "idle",
+		getDefaultModel: () => defaultModel,
+		getDefaultThinkingLevel: () => "medium",
 		...overrides,
 	} as unknown as AgentOrchestrator;
 	const runtime = {
 		orchestrator,
-		services: { cwd: "/repo" },
+		services: {
+			cwd: "/repo",
+			defaultProfile: { id: "default-agent" },
+		},
 		diagnostics: [],
 	} as unknown as WidiRuntime;
 	const application = await WidiTuiApplication.create({
@@ -302,6 +308,7 @@ async function createApplication(overrides: Record<string, unknown> = {}) {
 	const agent = ensureAgentProjection(application.state, "agent-1", "idle");
 	agent.snapshot = agentSnapshot("agent-1");
 	application.state.activeAgentId = agent.agentId;
+	application.state.pendingAgent = undefined;
 	return { application, orchestrator };
 }
 

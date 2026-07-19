@@ -36,7 +36,9 @@ export class FooterView implements Component {
 			if (steerKey) leftParts.push(`${steerKey} steer`);
 		}
 		const left = colors.dim(leftParts.join(" · "));
-		const thinkingLevel = agent?.display.thinkingLevel;
+		const thinkingLevel =
+			agent?.display.thinkingLevel ??
+			(!agent ? this.state.pendingAgent?.display.thinkingLevel : undefined);
 		const right = thinkingLevel
 			? colors.dim(`thinking ${singleLine(thinkingLevel, 40)}`)
 			: "";

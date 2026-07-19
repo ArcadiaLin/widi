@@ -15,9 +15,15 @@ export class HeaderView implements Component {
 
 	render(width: number): string[] {
 		const agent = activeAgent(this.state);
-		const label = agent ? agentLabel(agent) : "starting";
+		const pending = this.state.pendingAgent;
+		const label = agent
+			? agentLabel(agent)
+			: (pending?.display.profileLabel ?? "starting");
 		const model =
-			agent?.display.model?.id ?? agent?.snapshot?.model.id ?? "model";
+			agent?.display.model?.id ??
+			agent?.snapshot?.model.id ??
+			pending?.display.model.id ??
+			"model";
 		return new Text(
 			`${colors.bold(colors.accent("WIDI"))} ${colors.dim(
 				`· ${label} · ${singleLine(model, 120)}`,

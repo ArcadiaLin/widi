@@ -13,6 +13,14 @@ function provider(overrides: Record<string, unknown> = {}) {
 	});
 }
 
+function pendingProvider(overrides: Record<string, unknown> = {}) {
+	return new WidiCommandAutocompleteProvider({
+		engine: new CommandEngine(builtInCommands),
+		orchestrator: overrides as unknown as AgentOrchestrator,
+		getStatus: () => undefined,
+	});
+}
+
 describe("WidiCommandAutocompleteProvider", () => {
 	it("completes WIDI line commands with colon argument syntax", async () => {
 		const commandProvider = provider({
@@ -108,6 +116,15 @@ describe("WidiCommandAutocompleteProvider", () => {
 		expect(steer?.description).toContain(
 			"unavailable: Command /steer requires a running agent",
 		);
+	});
+
+	it("marks active commands unavailable in pending suggestions", async () => {
+		const result = await pendingProvider().getSuggestions(["/st"], 0, 3, {
+			signal: new AbortController().signal,
+		});
+		const status = result?.items.find((item) => item.label === "/status");
+
+		expect(status?.description).toContain("active agent");
 	});
 
 	it("places the cursor inside a closed inline command", async () => {

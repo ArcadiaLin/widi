@@ -8,6 +8,7 @@ import type { CommandDefinition } from "./types.ts";
  */
 export interface ApplicationCommandHost {
 	quit(): void;
+	newSession(sourceAgentId: string | undefined): void;
 }
 
 /** Commands that operate on the application itself, not the orchestrator. */
@@ -21,15 +22,27 @@ export function applicationCommands(
 	return [
 		{
 			kind: "line",
+			agentPolicy: "runtime",
 			name: "quit",
 			description: "Exit the application.",
 			execute: quit,
 		},
 		{
 			kind: "line",
+			agentPolicy: "runtime",
 			name: "exit",
 			description: "Exit the application.",
 			execute: quit,
+		},
+		{
+			kind: "line",
+			agentPolicy: "runtime",
+			name: "new",
+			description: "Prepare a new session from the current agent.",
+			execute: async (context) => {
+				host.newSession(context.agentId);
+				return undefined;
+			},
 		},
 	];
 }

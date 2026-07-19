@@ -28,25 +28,28 @@ export class ChatView implements Component {
 
 	render(width: number): string[] {
 		const agent = activeAgent(this.state);
-		if (!agent) {
+		const pending = this.state.pendingAgent;
+		if (!agent && !pending) {
 			return new Text(colors.dim("Preparing the first agent…"), 1, 1).render(
 				width,
 			);
 		}
-		if (agent.agentId !== this.cachedAgentId) {
+		const timeline = agent?.timeline ?? pending?.timeline ?? [];
+		const viewId = agent?.agentId ?? "pending";
+		if (viewId !== this.cachedAgentId) {
 			this.itemCache.clear();
-			this.cachedAgentId = agent.agentId;
+			this.cachedAgentId = viewId;
 		}
-		if (agent.timeline.length === 0) {
+		if (timeline.length === 0) {
 			const message =
-				agent.status === "unavailable"
+				agent?.status === "unavailable"
 					? "This agent is unavailable. Review its diagnostics below."
 					: "Ask WIDI to inspect, explain, or change this workspace.";
 			return new Text(colors.dim(message), 1, 1).render(width);
 		}
 
 		const liveThinkingIds = new Set<string>();
-		for (const item of agent.timeline) {
+		for (const item of timeline) {
 			if (item.type === "thinking-status" && item.status === "thinking") {
 				liveThinkingIds.add(item.id);
 			}
@@ -58,7 +61,7 @@ export class ChatView implements Component {
 
 		const lines: string[] = [];
 		const seen = new Set<string>();
-		for (const item of agent.timeline) {
+		for (const item of timeline) {
 			const key = `${item.type}:${item.id}`;
 			seen.add(key);
 			const rendered = this.renderItem(item, width, context, key);

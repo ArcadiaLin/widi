@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { AgentStripView } from "../../src/tui/components/agent-strip.ts";
 import { ChatView } from "../../src/tui/components/chat.ts";
 import { FooterView } from "../../src/tui/components/footer.ts";
+import { HeaderView } from "../../src/tui/components/header.ts";
 import { StatusView } from "../../src/tui/components/status.ts";
 import { renderTimelineItem } from "../../src/tui/components/timeline-item.ts";
 import {
@@ -114,6 +115,55 @@ describe("TUI views", () => {
 		expect(plain).not.toContain("idle");
 		expect(plain).toContain("← agents");
 		expect(plain).toContain("thinking medium");
+	});
+
+	it("renders an empty pending agent without a core projection", () => {
+		const state = createTuiApplicationState();
+		state.pendingAgent = {
+			start: { kind: "default" },
+			timeline: [],
+			draft: "",
+			display: {
+				profileLabel: "Main Agent",
+				model: {
+					id: "pending-model",
+					name: "Pending Model",
+					api: "anthropic-messages",
+					provider: "test",
+					baseUrl: "https://example.test",
+					reasoning: true,
+					input: ["text"],
+					cost: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+					},
+					contextWindow: 1000,
+					maxTokens: 100,
+				},
+				thinkingLevel: "medium",
+			},
+			nextLiveItemId: 1,
+		};
+
+		const chat = new ChatView(state)
+			.render(80)
+			.join("\n")
+			.replace(ANSI_SEQUENCE, "");
+		const header = new HeaderView(state)
+			.render(80)
+			.join("\n")
+			.replace(ANSI_SEQUENCE, "");
+		const footer = new FooterView(state, "/workspace")
+			.render(80)
+			.join("\n")
+			.replace(ANSI_SEQUENCE, "");
+
+		expect(chat).toContain("Ask WIDI");
+		expect(header).toContain("Main Agent");
+		expect(header).toContain("pending-model");
+		expect(footer).toContain("thinking medium");
 	});
 
 	it("shows only one thinking indicator while an assistant message streams", () => {
