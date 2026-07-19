@@ -1,4 +1,10 @@
 import { readFile } from "node:fs/promises";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import {
+	getDefaultEnvironment,
+	StdioClientTransport,
+} from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 export interface McpStdioServerConfig {
 	readonly command: string;
@@ -146,4 +152,140 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+export interface McpToolInfo {
+	readonly name: string;
+	readonly description?: string;
+	readonly inputSchema: Record<string, unknown>;
+}
+
+export interface McpContentBlock {
+	readonly type: string;
+	readonly text?: string;
+	readonly data?: string;
+	readonly mimeType?: string;
+	readonly resource?: { readonly uri?: string; readonly text?: string };
+}
+
+export interface McpCallToolResult {
+	readonly content?: readonly McpContentBlock[];
+	readonly isError?: boolean;
+}
+
+export interface McpClientHandle {
+	listTools(): Promise<readonly McpToolInfo[]>;
+	callTool(
+		name: string,
+		args: Record<string, unknown>,
+	): Promise<McpCallToolResult>;
+	close(): Promise<void>;
+}
+
+export type McpClientFactory = (
+	serverName: string,
+	config: McpServerConfig,
+) => Promise<McpClientHandle>;
+
+export function createSdkClientFactory(
+	connectTimeoutMs: number,
+): McpClientFactory {
+	return async (serverName, config) => {
+		const client = new Client({ name: "widi-mcp", version: "0.1.0" });
+		const transport = "command" in config
+			? new StdioClientTransport({
+					command: config.command,
+					args: [...(config.args ?? [])],
+					env: { ...getDefaultEnvironment(), ...(config.env ?? {}) },
+				})
+			: new StreamableHTTPClientTransport(new URL(config.url), {
+					requestInit: { headers: { ...(config.headers ?? {}) } },
+				});
+		await withTimeout(
+			client.connect(transport),
+			connectTimeoutMs,
+			`Timed out connecting to MCP server '${serverName}' after ${connectTimeoutMs}ms.`,
+		);
+		return {
+			listTools: async () =>
+				(await client.listTools()).tools.map((tool) => ({
+					name: tool.name,
+					description: tool.description,
+					inputSchema: tool.inputSchema as Record<string, unknown>,
+				})),
+			callTool: (name, args) =>
+				client.callTool({ name, arguments: args }) as Promise<McpCallToolResult>,
+			close: () => client.close(),
+		};
+	};
+}
+
+export class McpServerConnection {
+	readonly serverName: string;
+	private readonly _config: McpServerConfig;
+	private readonly _factory: McpClientFactory;
+	private _client: McpClientHandle | null = null;
+
+	constructor(
+		serverName: string,
+		config: McpServerConfig,
+		factory: McpClientFactory,
+	) {
+		this.serverName = serverName;
+		this._config = config;
+		this._factory = factory;
+	}
+
+	async connect(): Promise<readonly McpToolInfo[]> {
+		this._client = await this._factory(this.serverName, this._config);
+		return this._client.listTools();
+	}
+
+	async callTool(
+		name: string,
+		args: Record<string, unknown>,
+	): Promise<McpCallToolResult> {
+		try {
+			return await this._requireClient().callTool(name, args);
+		} catch {
+			await this._reconnect();
+			return this._requireClient().callTool(name, args);
+		}
+	}
+
+	private _requireClient(): McpClientHandle {
+		if (!this._client) {
+			throw new Error(`MCP server '${this.serverName}' is not connected.`);
+		}
+		return this._client;
+	}
+
+	private async _reconnect(): Promise<void> {
+		const stale = this._client;
+		this._client = null;
+		if (stale) {
+			await stale.close().catch(() => undefined);
+		}
+		this._client = await this._factory(this.serverName, this._config);
+	}
+}
+
+function withTimeout<T>(
+	promise: Promise<T>,
+	timeoutMs: number,
+	message: string,
+): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+		promise.then(
+			(value) => {
+				clearTimeout(timer);
+				resolve(value);
+			},
+			(error: unknown) => {
+				clearTimeout(timer);
+				reject(error instanceof Error ? error : new Error(String(error)));
+			},
+		);
+	});
 }
