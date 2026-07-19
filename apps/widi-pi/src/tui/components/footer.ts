@@ -1,6 +1,5 @@
 import {
 	type Component,
-	getKeybindings,
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
@@ -30,13 +29,10 @@ export class FooterView implements Component {
 			leftParts.push(`${agent.queue.followUp.length} follow-up`);
 		}
 		if (agent?.unreadCount) leftParts.push(`${agent.unreadCount} unread`);
-		leftParts.push("← agents");
-		if (agent?.status === "running") {
-			const steerKey = getKeybindings().getKeys("app.steer")[0];
-			if (steerKey) leftParts.push(`${steerKey} steer`);
-		}
 		const left = colors.dim(leftParts.join(" · "));
-		const thinkingLevel = agent?.display.thinkingLevel;
+		const thinkingLevel =
+			agent?.display.thinkingLevel ??
+			(!agent ? this.state.pendingAgent?.display.thinkingLevel : undefined);
 		const right = thinkingLevel
 			? colors.dim(`thinking ${singleLine(thinkingLevel, 40)}`)
 			: "";

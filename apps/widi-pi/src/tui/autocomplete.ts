@@ -6,7 +6,11 @@ import {
 	fuzzyFilter,
 } from "@earendil-works/pi-tui";
 import type { AgentOrchestrator } from "../core/agent-orchestrator.ts";
-import type { AgentLifecycleStatus, CandidateItem } from "../core/types.ts";
+import type {
+	AgentLifecycleStatus,
+	CandidateItem,
+	RuntimeModel,
+} from "../core/types.ts";
 import type { CommandEngine } from "./commands/engine.ts";
 import {
 	INLINE_COMMAND_TRIGGER,
@@ -24,22 +28,25 @@ interface CommandCompletionItem {
 export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 	readonly triggerCharacters = [LINE_COMMAND_TRIGGER, INLINE_COMMAND_TRIGGER];
 	private readonly engine: CommandEngine;
-	private readonly agentId: string;
+	private readonly agentId?: string;
 	private readonly orchestrator: AgentOrchestrator;
-	private readonly getStatus: () => AgentLifecycleStatus;
+	private readonly getStatus: () => AgentLifecycleStatus | undefined;
+	private readonly getPendingModel?: () => RuntimeModel | undefined;
 	private readonly fileProvider?: CombinedAutocompleteProvider;
 
 	constructor(options: {
 		readonly engine: CommandEngine;
-		readonly agentId: string;
+		readonly agentId?: string;
 		readonly orchestrator: AgentOrchestrator;
-		readonly getStatus: () => AgentLifecycleStatus;
+		readonly getStatus: () => AgentLifecycleStatus | undefined;
+		readonly getPendingModel?: () => RuntimeModel | undefined;
 		readonly cwd?: string;
 	}) {
 		this.engine = options.engine;
 		this.agentId = options.agentId;
 		this.orchestrator = options.orchestrator;
 		this.getStatus = options.getStatus;
+		this.getPendingModel = options.getPendingModel;
 		if (options.cwd) {
 			this.fileProvider = new CombinedAutocompleteProvider([], options.cwd);
 		}
@@ -65,10 +72,7 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 				if (exact?.complete) {
 					let candidates: readonly CandidateItem[];
 					try {
-						candidates = await exact.complete(
-							{ agentId: this.agentId, orchestrator: this.orchestrator },
-							"",
-						);
+						candidates = await exact.complete(this.commandContext(), "");
 					} catch {
 						return null;
 					}
@@ -104,7 +108,7 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 			let candidates: readonly CandidateItem[];
 			try {
 				candidates = await command.complete(
-					{ agentId: this.agentId, orchestrator: this.orchestrator },
+					this.commandContext(),
 					argumentPrefix,
 				);
 			} catch {
@@ -140,7 +144,7 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 			let candidates: readonly CandidateItem[];
 			try {
 				candidates = await command.complete(
-					{ agentId: this.agentId, orchestrator: this.orchestrator },
+					this.commandContext(),
 					inline.argumentPrefix,
 				);
 			} catch {
@@ -223,6 +227,14 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 		return this.engine
 			.list(this.getStatus())
 			.filter((view) => view.kind === kind);
+	}
+
+	private commandContext() {
+		return {
+			agentId: this.agentId,
+			orchestrator: this.orchestrator,
+			pendingModel: this.getPendingModel?.(),
+		};
 	}
 }
 

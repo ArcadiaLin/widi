@@ -1,5 +1,5 @@
+import { agentIdentityLabel } from "./agent-identity.ts";
 import type { CompletionMenu } from "./completion-menu.ts";
-import { agentLabel } from "./components/common.ts";
 import { formatRelativeAge, singleLine } from "./format.ts";
 import type { AgentViewState, TuiApplicationState } from "./state.ts";
 
@@ -35,14 +35,17 @@ export class AgentSelectorController {
 			title: "Select agent",
 			items: agents.map((agent) => ({
 				value: agent.agentId,
-				label: agentLabel(agent),
-				description: describeAgent(
-					agent,
-					agent.agentId === this.state.activeAgentId,
-				),
+				label: agentIdentityLabel(this.state, agent),
+				description: [
+					describeAgent(agent, agent.agentId === this.state.activeAgentId),
+					`id ${singleLine(agent.agentId, agent.agentId.length)}`,
+				].join(" · "),
 			})),
 			initialIndex: activeIndex >= 0 ? activeIndex : undefined,
-			hint: "↑↓ select · enter switch · esc close · type to filter",
+			operation: {
+				description: "Switch the active runtime agent.",
+				confirmVerb: "switch",
+			},
 			onSelect: (item) => this.onSelectAgent(item.value),
 		});
 	}

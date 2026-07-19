@@ -1,5 +1,9 @@
 import type { Skill } from "@earendil-works/pi-agent-core";
-import type { TextContent, UserMessage } from "@earendil-works/pi-ai";
+import {
+	getSupportedThinkingLevels,
+	type TextContent,
+	type UserMessage,
+} from "@earendil-works/pi-ai";
 import type { AgentSessionCandidate } from "../../core/session-manager.ts";
 import type { CandidateItem } from "../../core/types.ts";
 import type { CommandContext, CommandDefinition } from "./types.ts";
@@ -7,59 +11,72 @@ import type { CommandContext, CommandDefinition } from "./types.ts";
 export const builtInCommands: readonly CommandDefinition[] = [
 	{
 		kind: "line",
+		agentPolicy: "active",
 		name: "abort",
 		description: "Abort the current agent run.",
-		execute: async ({ orchestrator, agentId }) =>
-			await orchestrator.abortAgent(agentId),
+		execute: async (context) =>
+			await context.orchestrator.abortAgent(requireAgentId(context)),
 	},
 	{
 		kind: "line",
+		agentPolicy: "active",
 		name: "compact",
 		description: "Compact the current agent session.",
 		argumentHint: "[instructions]",
-		execute: async ({ orchestrator, agentId }, argument) =>
-			await orchestrator.compactAgent(agentId, argument.trim() || undefined),
+		execute: async (context, argument) =>
+			await context.orchestrator.compactAgent(
+				requireAgentId(context),
+				argument.trim() || undefined,
+			),
 	},
 	{
 		kind: "line",
+		agentPolicy: "active",
 		name: "follow-up",
 		description: "Queue a follow-up for the current agent.",
 		argumentHint: "<text>",
 		requiresArgument: true,
-		execute: async ({ orchestrator, agentId }, argument) => {
-			await orchestrator.followUpAgent(agentId, argument.trim());
+		execute: async (context, argument) => {
+			await context.orchestrator.followUpAgent(
+				requireAgentId(context),
+				argument.trim(),
+			);
 			return undefined;
 		},
 	},
 	{
 		kind: "line",
+		agentPolicy: "active",
 		name: "fork",
 		description: "Fork the current agent session.",
 		argumentHint: "[entry]",
 		complete: async (context) => await listUserMessageEntryCandidates(context),
-		execute: async ({ orchestrator, agentId }, argument) => {
+		execute: async (context, argument) => {
 			const entryId = argument.trim() || undefined;
-			return await orchestrator.forkAgentSessionFromAgent(
-				agentId,
+			return await context.orchestrator.forkAgentSessionFromAgent(
+				requireAgentId(context),
 				entryId ? { entryId } : undefined,
 			);
 		},
 	},
 	{
 		kind: "line",
+		agentPolicy: "active",
 		name: "inspect",
 		description: "Inspect the current agent runtime facts.",
-		execute: async ({ orchestrator, agentId }) =>
-			orchestrator.inspectAgent(agentId),
+		execute: async (context) =>
+			context.orchestrator.inspectAgent(requireAgentId(context)),
 	},
 	{
 		kind: "line",
+		agentPolicy: "runtime",
 		name: "agent",
 		description: "List runtime agents.",
 		execute: async ({ orchestrator }) => orchestrator.listAgents(),
 	},
 	{
 		kind: "line",
+		agentPolicy: "runtime",
 		name: "login",
 		description: "Log in to an LLM provider subscription.",
 		argumentHint: "[provider]",
@@ -70,6 +87,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 	},
 	{
 		kind: "line",
+		agentPolicy: "runtime",
 		name: "logout",
 		description: "Remove a stored LLM provider credential.",
 		argumentHint: "[provider]",
@@ -80,49 +98,70 @@ export const builtInCommands: readonly CommandDefinition[] = [
 	},
 	{
 		kind: "line",
+		agentPolicy: "materialize",
 		name: "model",
 		description: "Set the current agent model.",
 		argumentHint: "[provider/model]",
+		requiresArgument: true,
 		complete: async ({ orchestrator }) =>
 			(await orchestrator.listAvailableModelCandidates()).models,
-		execute: async ({ orchestrator, agentId }, argument) =>
-			await orchestrator.setAgentModelByReference(agentId, argument.trim()),
+		execute: async (context, argument) =>
+			await context.orchestrator.setAgentModelByReference(
+				requireAgentId(context),
+				argument.trim(),
+			),
 	},
 	{
 		kind: "line",
+		agentPolicy: "materialize",
 		name: "thinking",
 		description: "Set the current agent thinking level.",
 		argumentHint: "[level]",
-		complete: async ({ orchestrator, agentId }) =>
-			orchestrator.listAgentThinkingLevelCandidates(agentId).levels,
-		execute: async ({ orchestrator, agentId }, argument) =>
-			await orchestrator.setAgentThinkingLevelByName(agentId, argument.trim()),
+		requiresArgument: true,
+		complete: async (context) => {
+			if (context.agentId) {
+				return context.orchestrator.listAgentThinkingLevelCandidates(
+					context.agentId,
+				).levels;
+			}
+			if (!context.pendingModel?.reasoning) return [];
+			return getSupportedThinkingLevels(context.pendingModel).map((level) => ({
+				value: level,
+				label: level,
+			}));
+		},
+		execute: async (context, argument) =>
+			await context.orchestrator.setAgentThinkingLevelByName(
+				requireAgentId(context),
+				argument.trim(),
+			),
 	},
 	{
 		kind: "line",
+		agentPolicy: "materialize",
 		name: "rename",
 		description: "Rename the current agent session.",
 		argumentHint: "<name>",
 		requiresArgument: true,
-		execute: async ({ orchestrator, agentId }, argument) =>
-			await orchestrator.setAgentSessionName(agentId, argument.trim()),
+		execute: async (context, argument) =>
+			await context.orchestrator.setAgentSessionName(
+				requireAgentId(context),
+				argument.trim(),
+			),
 	},
 	{
 		kind: "line",
-		name: "new",
-		description: "Start a new session from the current agent.",
-		execute: async ({ orchestrator, agentId }) =>
-			await orchestrator.newAgentSessionFromAgent(agentId),
-	},
-	{
-		kind: "line",
+		agentPolicy: "active",
 		name: "reload",
 		description: "Reload extensions for the current agent.",
-		execute: async ({ orchestrator, agentId }) =>
-			await orchestrator.reloadExtensions({ agentIds: [agentId] }),
+		execute: async (context) =>
+			await context.orchestrator.reloadExtensions({
+				agentIds: [requireAgentId(context)],
+			}),
 	},
 	{
 		kind: "line",
+		agentPolicy: "runtime",
 		name: "resume",
 		description: "Resume an existing agent session.",
 		argumentHint: "[session]",
@@ -143,19 +182,22 @@ export const builtInCommands: readonly CommandDefinition[] = [
 	},
 	{
 		kind: "line",
+		agentPolicy: "runtime",
 		name: "session",
 		description: "List persisted agent sessions.",
 		execute: async ({ orchestrator }) => await orchestrator.listAgentSessions(),
 	},
 	{
 		kind: "line",
+		agentPolicy: "active",
 		name: "status",
 		description: "Get the current agent status.",
-		execute: async ({ orchestrator, agentId }) =>
-			orchestrator.getAgentStatus(agentId),
+		execute: async (context) =>
+			context.orchestrator.getAgentStatus(requireAgentId(context)),
 	},
 	{
 		kind: "line",
+		agentPolicy: "active",
 		name: "steer",
 		description: "Steer the current running agent.",
 		argumentHint: "<text>",
@@ -164,21 +206,28 @@ export const builtInCommands: readonly CommandDefinition[] = [
 			status === "running"
 				? undefined
 				: `Command /steer requires a running agent (status: ${status}).`,
-		execute: async ({ orchestrator, agentId }, argument) => {
-			await orchestrator.steerAgent(agentId, argument.trim());
+		execute: async (context, argument) => {
+			await context.orchestrator.steerAgent(
+				requireAgentId(context),
+				argument.trim(),
+			);
 			return undefined;
 		},
 	},
 	{
 		kind: "line",
+		agentPolicy: "active",
 		name: "tree",
 		description: "Inspect or navigate the current session tree.",
 		argumentHint: "[entry]",
 		complete: async (context) => await listUserMessageEntryCandidates(context),
-		execute: async ({ orchestrator, agentId }, argument) => {
+		execute: async (context, argument) => {
+			const agentId = requireAgentId(context);
 			const targetId = argument.trim();
-			if (!targetId) return await orchestrator.getAgentSessionTree(agentId);
-			return await orchestrator.navigateAgentTree(agentId, targetId);
+			if (!targetId) {
+				return await context.orchestrator.getAgentSessionTree(agentId);
+			}
+			return await context.orchestrator.navigateAgentTree(agentId, targetId);
 		},
 	},
 	{
@@ -186,22 +235,37 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		name: "prompt",
 		description: "Insert a prompt template inline.",
 		argumentHint: "<template>",
-		complete: async ({ orchestrator, agentId }) =>
-			(await orchestrator.listAgentPromptTemplateCandidates(agentId)).templates,
-		expand: async ({ orchestrator, agentId }, argument) =>
-			(await orchestrator.getAgentPromptTemplate(agentId, argument.trim()))
-				.content,
+		complete: async (context) =>
+			(
+				await context.orchestrator.listAgentPromptTemplateCandidates(
+					requireAgentId(context),
+				)
+			).templates,
+		expand: async (context, argument) =>
+			(
+				await context.orchestrator.getAgentPromptTemplate(
+					requireAgentId(context),
+					argument.trim(),
+				)
+			).content,
 	},
 	{
 		kind: "inline",
 		name: "skill",
 		description: "Apply a skill inline.",
 		argumentHint: "<skill_name>",
-		complete: async ({ orchestrator, agentId }) =>
-			(await orchestrator.listAgentSkillCandidates(agentId)).skills,
-		expand: async ({ orchestrator, agentId }, argument) =>
+		complete: async (context) =>
+			(
+				await context.orchestrator.listAgentSkillCandidates(
+					requireAgentId(context),
+				)
+			).skills,
+		expand: async (context, argument) =>
 			formatSkillExpansion(
-				await orchestrator.getAgentSkill(agentId, argument.trim()),
+				await context.orchestrator.getAgentSkill(
+					requireAgentId(context),
+					argument.trim(),
+				),
 			),
 	},
 ];
@@ -229,7 +293,9 @@ function sessionCandidateDescription(session: AgentSessionCandidate): string {
 async function listUserMessageEntryCandidates(
 	context: CommandContext,
 ): Promise<readonly CandidateItem[]> {
-	const tree = await context.orchestrator.getAgentSessionTree(context.agentId);
+	const tree = await context.orchestrator.getAgentSessionTree(
+		requireAgentId(context),
+	);
 	const candidates: CandidateItem[] = [];
 	for (const entry of tree.entries) {
 		if (entry.type !== "message" || entry.message.role !== "user") continue;
@@ -240,6 +306,11 @@ async function listUserMessageEntryCandidates(
 		});
 	}
 	return candidates;
+}
+
+function requireAgentId(context: CommandContext): string {
+	if (!context.agentId) throw new Error("Command requires an active agent.");
+	return context.agentId;
 }
 
 function userMessageHeadline(message: UserMessage): string {

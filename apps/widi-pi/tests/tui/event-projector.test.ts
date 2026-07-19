@@ -1,7 +1,11 @@
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
+import type { AgentRecordSnapshot } from "../../src/core/agent-record.ts";
 import type { OrchestratorEvent, RuntimeModel } from "../../src/core/types.ts";
-import { EventProjector } from "../../src/tui/event-projector.ts";
+import {
+	applyAgentSnapshot,
+	EventProjector,
+} from "../../src/tui/event-projector.ts";
 import { hydrateSessionEntries } from "../../src/tui/session-hydrator.ts";
 import {
 	createTuiApplicationState,
@@ -258,6 +262,74 @@ describe("EventProjector", () => {
 		]);
 	});
 
+	it("records fork lineage on the target projection and retains it on resume", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+
+		projector.apply({
+			type: "agent_session_forked",
+			agentId: "widi-dev",
+			forkedSessionId: "019f784f-4342-781c-8472-93e6547da47e",
+			createdAt: timestamp(1),
+		});
+		projector.apply({
+			type: "agent_resumed",
+			agentId: "019f784f-4342-781c-8472-93e6547da47e",
+			profile: {
+				id: "widi-dev",
+				label: "WIDI Dev",
+				systemPrompt: "test",
+				persist: true,
+			},
+			model: model(),
+		});
+
+		expect(
+			state.agents.get("019f784f-4342-781c-8472-93e6547da47e")?.display
+				.forkedFromAgentId,
+		).toBe("widi-dev");
+	});
+
+	it("retains explicit fork lineage through snapshot application and hydration", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+		const targetId = "019f784f-4342-781c-8472-93e6547da47e";
+
+		projector.apply({
+			type: "agent_session_forked",
+			agentId: "widi-dev",
+			forkedSessionId: targetId,
+			createdAt: timestamp(1),
+		});
+		applyAgentSnapshot(
+			state,
+			snapshot(targetId, "/sessions/fork.jsonl", "/sessions/source.jsonl"),
+		);
+
+		expect(state.agents.get(targetId)?.display.forkedFromAgentId).toBe(
+			"widi-dev",
+		);
+
+		projector.beginHydration(targetId);
+		projector.completeHydration(
+			targetId,
+			hydrateSessionEntries([
+				{
+					type: "session_info",
+					id: "session-info",
+					parentId: null,
+					timestamp: timestamp(2),
+					name: "fork work",
+				},
+			]),
+		);
+
+		expect(state.agents.get(targetId)?.display).toMatchObject({
+			forkedFromAgentId: "widi-dev",
+			sessionName: "fork work",
+		});
+	});
+
 	it("routes diagnostics and records privacy-safe human request traces", () => {
 		const state = createTuiApplicationState();
 		const projector = new EventProjector(state);
@@ -493,6 +565,41 @@ function model(): RuntimeModel {
 		},
 		contextWindow: 1000,
 		maxTokens: 100,
+	};
+}
+
+function snapshot(
+	agentId: string,
+	path: string,
+	parentSessionPath?: string,
+): AgentRecordSnapshot {
+	return {
+		agentId,
+		status: "idle",
+		profile: { reference: { id: "widi-dev", label: "WIDI Dev" } },
+		sessionMetadata: {
+			id: agentId,
+			createdAt: new Date(0).toISOString(),
+			cwd: "/workspace",
+			path,
+			parentSessionPath,
+		},
+		model: model(),
+		hasHarness: true,
+		extensionIds: [],
+		extensions: [],
+		extensionSnapshot: {
+			extensionIds: [],
+			extensions: [],
+			hooks: [],
+			toolContributions: [],
+			resourceContributions: [],
+			providerContributions: [],
+			stale: { stale: false },
+		},
+		resourceDiagnostics: [],
+		extensionDiagnostics: [],
+		diagnostics: [],
 	};
 }
 

@@ -169,12 +169,17 @@ export class EventProjector {
 				ensureAgentProjection(this.state, event.agentId).display.sessionName =
 					event.name;
 				return;
-			case "agent_session_forked":
+			case "agent_session_forked": {
 				ensureAgentProjection(
 					this.state,
 					event.agentId,
 				).display.rehydrateRequested = true;
+				ensureAgentProjection(
+					this.state,
+					event.forkedSessionId,
+				).display.forkedFromAgentId = event.agentId;
 				return;
+			}
 			case "input_blocked":
 				ensureAgentProjection(this.state, event.agentId).pendingInput =
 					undefined;

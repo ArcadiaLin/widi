@@ -82,6 +82,12 @@ Pending human request、timeout、abort 与 cancellation 属于 runtime-local st
 
 `SettingManager` 负责 global/project settings、project trust、runtime override 和 flush。Orchestrator、model/auth、resource loader 与 extension runtime 应消费同一个 settings service，不各自读取配置文件。
 
+## TUI lazy spawn
+
+TUI 启动时只建立 application-owned pending agent intent，不调用 `AgentOrchestrator.spawnAgent()`。首次 prompt，或 `/model`、`/thinking`、`/rename` 的实际变更，才 materialize core agent。`/new` 只替换 pending intent。
+
+Core 与 Pi session repo 仍保持 eager persistence；惰性边界只属于 TUI。
+
 ## Persistence 支持边界
 
 当前 WIDI persistence 明确支持单进程写入。Session JSONL、auth 与 settings 可以在一个进程内串行化；多个 WIDI 进程并发写同一个 agent dir、project config 或 sessions root 的结果未定义。

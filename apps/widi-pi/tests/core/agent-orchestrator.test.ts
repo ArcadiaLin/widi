@@ -1979,6 +1979,27 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
+	it("keeps a persisted session listed after disposing its runtime agent", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const agentId = await orchestrator.spawnAgent();
+		const sessionMetadata = orchestrator.inspectAgent(agentId).sessionMetadata;
+		if (!sessionMetadata) throw new Error("Expected agent session metadata.");
+		const persistedSession = expectExtendedMetadata(sessionMetadata);
+
+		await orchestrator.disposeAgent(agentId, "runtime cleanup");
+
+		expect(orchestrator.getAgentStatus(agentId)).toBe("disposed");
+		await expect(orchestrator.listAgentSessions()).resolves.toMatchObject({
+			sessions: expect.arrayContaining([
+				expect.objectContaining({
+					id: agentId,
+					path: persistedSession.path,
+				}),
+			]),
+		});
+	});
+
 	it("dispose cancels only human requests bound to that agent", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);

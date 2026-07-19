@@ -1,8 +1,15 @@
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
+import type { AgentRecordSnapshot } from "../../src/core/agent-record.ts";
+import { AgentSelectorController } from "../../src/tui/agent-selector.ts";
+import { builtInCommands } from "../../src/tui/commands/built-ins.ts";
+import { CommandEngine } from "../../src/tui/commands/engine.ts";
+import { CompletionMenu } from "../../src/tui/completion-menu.ts";
 import { AgentStripView } from "../../src/tui/components/agent-strip.ts";
 import { ChatView } from "../../src/tui/components/chat.ts";
 import { FooterView } from "../../src/tui/components/footer.ts";
+import { HeaderView } from "../../src/tui/components/header.ts";
+import { OperationHintView } from "../../src/tui/components/operation-hint.ts";
 import { StatusView } from "../../src/tui/components/status.ts";
 import { renderTimelineItem } from "../../src/tui/components/timeline-item.ts";
 import {
@@ -10,6 +17,7 @@ import {
 	sanitizeTerminalText,
 	singleLine,
 } from "../../src/tui/format.ts";
+import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
 import {
 	type CommandResultItem,
 	createTuiApplicationState,
@@ -21,7 +29,7 @@ const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 
 describe("TUI views", () => {
 	it.each([40, 80, 120])(
-		"keeps chat, status, footer and agent strip inside %s columns",
+		"keeps chat, status, footer, operation hint and agent strip inside %s columns",
 		(width) => {
 			const state = createTuiApplicationState();
 			const main = setActiveAgent(state, "main");
@@ -74,6 +82,15 @@ describe("TUI views", () => {
 				new ChatView(state),
 				new StatusView(state),
 				new FooterView(state, "/home/arcadia/projs/widi"),
+				new OperationHintView({
+					state,
+					engine: new CommandEngine(builtInCommands),
+					editor: {
+						getText: () => "",
+						isShowingAutocomplete: () => false,
+					},
+					menu: { hintContext: undefined },
+				}),
 				new AgentStripView(state),
 			];
 			for (const view of views) {
@@ -84,7 +101,78 @@ describe("TUI views", () => {
 		},
 	);
 
-	it("keeps agent status and model out of the footer", () => {
+	it("renders no operation hint for a single idle agent", () => {
+		const state = createTuiApplicationState();
+		setActiveAgent(state, "main").status = "idle";
+		const view = new OperationHintView({
+			state,
+			engine: new CommandEngine(builtInCommands),
+			editor: {
+				getText: () => "",
+				isShowingAutocomplete: () => false,
+			},
+			menu: { hintContext: undefined },
+		});
+
+		expect(view.render(80)).toEqual([]);
+	});
+
+	it("distinguishes source and fork labels in the agent strip", () => {
+		const state = createTuiApplicationState();
+		const source = setActiveAgent(state, "widi-dev");
+		source.status = "idle";
+		source.snapshot = snapshot("widi-dev", "/sessions/source.jsonl");
+		const fork = ensureAgentProjection(
+			state,
+			"019f784f-4342-781c-8472-93e6547da47e",
+			"idle",
+		);
+		fork.snapshot = snapshot(
+			fork.agentId,
+			"/sessions/fork.jsonl",
+			"/sessions/source.jsonl",
+		);
+		fork.display.forkedFromAgentId = source.agentId;
+
+		const output = new AgentStripView(state)
+			.render(160)
+			.join("\n")
+			.replace(ANSI_SEQUENCE, "");
+
+		expect(output).toContain("WIDI Dev [widi-dev]");
+		expect(output).toContain("WIDI Dev [fork from widi-dev · 547da47e]");
+	});
+
+	it("renders the full sanitized agent id while selecting by its raw value", () => {
+		const state = createTuiApplicationState();
+		const sanitizedAgentId = `${"a".repeat(260)}tail-123`;
+		const agentId = `\u001b]0;owned\u0007${sanitizedAgentId}\u001b[2J`;
+		const agent = ensureAgentProjection(state, agentId, "idle");
+		agent.snapshot = snapshot(agentId, "/sessions/agent.jsonl");
+		state.activeAgentId = agentId;
+		const menu = new CompletionMenu(
+			{ setFocus: () => {}, requestRender: () => {} },
+			state,
+			() => {},
+		);
+		let selectedAgentId: string | undefined;
+		const selector = new AgentSelectorController(menu, state, (selected) => {
+			selectedAgentId = selected;
+		});
+
+		selector.open();
+
+		const output = menu.render(500).join("\n").replace(ANSI_SEQUENCE, "");
+		expect(output).toContain(`id ${sanitizedAgentId}`);
+		expect(output).not.toContain("\u001b");
+		expect(output).not.toContain("\u0007");
+
+		menu.handleInput("\r");
+
+		expect(selectedAgentId).toBe(agentId);
+	});
+
+	it("keeps status facts but operation actions out of the footer", () => {
 		const state = createTuiApplicationState();
 		const agent = setActiveAgent(state, "main");
 		agent.status = "idle";
@@ -112,8 +200,103 @@ describe("TUI views", () => {
 		expect(plain).not.toContain("qwen3.6-35b-a3b");
 		expect(plain).not.toContain("Default Agent");
 		expect(plain).not.toContain("idle");
-		expect(plain).toContain("← agents");
+		expect(plain).not.toContain("← agents");
 		expect(plain).toContain("thinking medium");
+	});
+
+	it("renders the running steer action only once across footer and operation hint", () => {
+		setKeybindings(createWidiKeybindings());
+		const state = createTuiApplicationState();
+		setActiveAgent(state, "main").status = "running";
+		const output = [
+			...new FooterView(state, "/workspace").render(120),
+			...new OperationHintView({
+				state,
+				engine: new CommandEngine(builtInCommands),
+				editor: {
+					getText: () => "",
+					isShowingAutocomplete: () => false,
+				},
+				menu: { hintContext: undefined },
+			}).render(120),
+		]
+			.join("\n")
+			.replace(ANSI_SEQUENCE, "");
+
+		expect(output.match(/ctrl\+s steer/giu)).toHaveLength(1);
+	});
+
+	it("renders the agent-switch action only once across footer and operation hint", () => {
+		setKeybindings(createWidiKeybindings());
+		const state = createTuiApplicationState();
+		setActiveAgent(state, "main").status = "idle";
+		ensureAgentProjection(state, "worker", "idle");
+		const output = [
+			...new FooterView(state, "/workspace").render(120),
+			...new OperationHintView({
+				state,
+				engine: new CommandEngine(builtInCommands),
+				editor: {
+					getText: () => "",
+					isShowingAutocomplete: () => false,
+				},
+				menu: { hintContext: undefined },
+			}).render(120),
+		]
+			.join("\n")
+			.replace(ANSI_SEQUENCE, "");
+
+		expect(output).toContain("← switch agent");
+		expect(output.match(/←/gu)).toHaveLength(1);
+	});
+
+	it("renders an empty pending agent without a core projection", () => {
+		const state = createTuiApplicationState();
+		state.pendingAgent = {
+			start: { kind: "default" },
+			timeline: [],
+			draft: "",
+			display: {
+				profileLabel: "Main Agent",
+				model: {
+					id: "pending-model",
+					name: "Pending Model",
+					api: "anthropic-messages",
+					provider: "test",
+					baseUrl: "https://example.test",
+					reasoning: true,
+					input: ["text"],
+					cost: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+					},
+					contextWindow: 1000,
+					maxTokens: 100,
+				},
+				thinkingLevel: "medium",
+			},
+			nextLiveItemId: 1,
+		};
+
+		const chat = new ChatView(state)
+			.render(80)
+			.join("\n")
+			.replace(ANSI_SEQUENCE, "");
+		const header = new HeaderView(state)
+			.render(80)
+			.join("\n")
+			.replace(ANSI_SEQUENCE, "");
+		const footer = new FooterView(state, "/workspace")
+			.render(80)
+			.join("\n")
+			.replace(ANSI_SEQUENCE, "");
+
+		expect(chat).toContain("Ask WIDI");
+		expect(header).toContain("Main Agent");
+		expect(header).toContain("pending-model");
+		expect(footer).toContain("thinking medium");
 	});
 
 	it("shows only one thinking indicator while an assistant message streams", () => {
@@ -253,4 +436,50 @@ describe("TUI views", () => {
 
 function timestamp(offset: number): string {
 	return new Date(Date.UTC(2026, 0, 1, 0, 0, offset)).toISOString();
+}
+
+function snapshot(
+	agentId: string,
+	path: string,
+	parentSessionPath?: string,
+): AgentRecordSnapshot {
+	return {
+		agentId,
+		status: "idle",
+		profile: { reference: { id: "widi-dev", label: "WIDI Dev" } },
+		sessionMetadata: {
+			id: agentId,
+			createdAt: new Date(0).toISOString(),
+			cwd: "/workspace",
+			path,
+			parentSessionPath,
+		},
+		model: {
+			id: "test-model",
+			name: "Test Model",
+			api: "anthropic-messages",
+			provider: "test",
+			baseUrl: "https://example.test",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1000,
+			maxTokens: 100,
+		},
+		hasHarness: true,
+		extensionIds: [],
+		extensions: [],
+		extensionSnapshot: {
+			extensionIds: [],
+			extensions: [],
+			hooks: [],
+			toolContributions: [],
+			resourceContributions: [],
+			providerContributions: [],
+			stale: { stale: false },
+		},
+		resourceDiagnostics: [],
+		extensionDiagnostics: [],
+		diagnostics: [],
+	};
 }

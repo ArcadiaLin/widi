@@ -1,6 +1,7 @@
 import {
 	type Component,
 	fuzzyFilter,
+	getKeybindings,
 	type SelectItem,
 	SelectList,
 	truncateToWidth,
@@ -11,12 +12,23 @@ import { colors } from "./theme/colors.ts";
 import { selectListTheme } from "./theme/controls.ts";
 
 const MAX_VISIBLE_ITEMS = 8;
-const DEFAULT_HINT = "↑↓ select · enter confirm · esc cancel · type to filter";
+
+export interface CompletionMenuOperation {
+	readonly description?: string;
+	readonly confirmVerb: "apply" | "switch";
+}
+
+export interface CompletionMenuHintContext {
+	readonly title: string;
+	readonly description?: string;
+	readonly confirmVerb: "apply" | "switch";
+	readonly itemCount: number;
+}
 
 export interface CompletionMenuRequest {
 	readonly title: string;
 	readonly items: readonly SelectItem[];
-	readonly hint?: string;
+	readonly operation?: CompletionMenuOperation;
 	/** Index selected when the menu opens (before any filtering). */
 	readonly initialIndex?: number;
 	onSelect(item: SelectItem): void;
@@ -43,6 +55,7 @@ export class CompletionMenu implements Component {
 	private request?: CompletionMenuRequest;
 	private list?: SelectList;
 	private filter = "";
+	private filteredItemCount = 0;
 
 	constructor(
 		host: CompletionMenuHost,
@@ -56,6 +69,18 @@ export class CompletionMenu implements Component {
 
 	get isOpen(): boolean {
 		return this.request !== undefined;
+	}
+
+	get hintContext(): CompletionMenuHintContext | undefined {
+		const request = this.request;
+		const operation = request?.operation;
+		if (!request || !operation) return undefined;
+		return {
+			title: request.title,
+			description: operation.description,
+			confirmVerb: operation.confirmVerb,
+			itemCount: this.filteredItemCount,
+		};
 	}
 
 	open(request: CompletionMenuRequest): void {
@@ -75,6 +100,7 @@ export class CompletionMenu implements Component {
 		this.request = undefined;
 		this.list = undefined;
 		this.filter = "";
+		this.filteredItemCount = 0;
 		if (this.state.mode === "completion-menu") this.state.mode = "editor";
 		this.restoreFocus();
 		this.host.requestRender();
@@ -82,6 +108,18 @@ export class CompletionMenu implements Component {
 
 	handleInput(data: string): void {
 		if (!this.request) return;
+		const keybindings = getKeybindings();
+		const selectionActions = [
+			"tui.select.up",
+			"tui.select.down",
+			"tui.select.confirm",
+			"tui.select.cancel",
+		] as const;
+		if (selectionActions.some((action) => keybindings.matches(data, action))) {
+			this.list?.handleInput(data);
+			this.host.requestRender();
+			return;
+		}
 		if (data === "\u007f" || data === "\b") {
 			if (this.filter.length > 0) {
 				this.filter = this.filter.slice(0, -1);
@@ -121,15 +159,6 @@ export class CompletionMenu implements Component {
 			lines.push(colors.dim(`filter: ${singleLine(this.filter, 120)}`));
 		}
 		lines.push(...this.list.render(width));
-		lines.push(
-			colors.dim(
-				truncateToWidth(
-					singleLine(request.hint ?? DEFAULT_HINT, 200),
-					Math.max(1, width - 2),
-					"…",
-				),
-			),
-		);
 		return lines.map((line) => truncateToWidth(line, width, ""));
 	}
 
@@ -143,6 +172,7 @@ export class CompletionMenu implements Component {
 					(item) => `${item.label} ${item.value}`,
 				)
 			: [...request.items];
+		this.filteredItemCount = items.length;
 		const list = new SelectList(
 			items,
 			Math.max(1, Math.min(MAX_VISIBLE_ITEMS, items.length)),

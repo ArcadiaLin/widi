@@ -3,15 +3,20 @@ import type {
 	AgentLifecycleStatus,
 	CandidateItem,
 	PromptExpansion,
+	RuntimeModel,
 } from "../../core/types.ts";
 
+export type CommandAgentPolicy = "runtime" | "materialize" | "active";
+
 export interface CommandContext {
-	readonly agentId: string;
+	readonly agentId?: string;
 	readonly orchestrator: AgentOrchestrator;
+	readonly pendingModel?: RuntimeModel;
 }
 
 export interface LineCommand {
 	readonly kind: "line";
+	readonly agentPolicy: CommandAgentPolicy;
 	readonly name: string;
 	readonly description: string;
 	readonly argumentHint?: string;

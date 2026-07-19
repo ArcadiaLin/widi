@@ -163,6 +163,23 @@ export interface PendingInput {
 	readonly submittedAt: string;
 }
 
+export type PendingAgentStart =
+	| { readonly kind: "default" }
+	| { readonly kind: "new-session"; readonly sourceAgentId: AgentId };
+
+export interface PendingAgentViewState {
+	readonly start: PendingAgentStart;
+	timeline: TimelineItem[];
+	draft: string;
+	display: {
+		readonly profileLabel: string;
+		model: RuntimeModel;
+		thinkingLevel?: string;
+		sessionName?: string;
+	};
+	nextLiveItemId: number;
+}
+
 export interface QueueState {
 	steer: readonly string[];
 	followUp: readonly string[];
@@ -175,6 +192,7 @@ export interface AgentDisplayFacts {
 	activeToolNames: readonly string[];
 	sessionName?: string;
 	rehydrateRequested: boolean;
+	forkedFromAgentId?: AgentId;
 }
 
 export interface AgentViewState {
@@ -219,6 +237,7 @@ export interface PendingHumanRequestView {
 
 export interface TuiApplicationState {
 	activeAgentId?: AgentId;
+	pendingAgent?: PendingAgentViewState;
 	agents: Map<AgentId, AgentViewState>;
 	globalNotices: NoticeItem[];
 	humanRequests: PendingHumanRequestView[];

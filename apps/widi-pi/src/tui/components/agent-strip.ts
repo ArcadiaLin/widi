@@ -3,9 +3,9 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
+import { agentIdentityLabel } from "../agent-identity.ts";
 import type { AgentViewState, TuiApplicationState } from "../state.ts";
 import { colors } from "../theme/colors.ts";
-import { agentLabel } from "./common.ts";
 
 export class AgentStripView implements Component {
 	private readonly state: TuiApplicationState;
@@ -28,7 +28,7 @@ export class AgentStripView implements Component {
 				(agent) => agent.attention !== "none",
 			).length;
 			const summary = [
-				formatAgent(active, true),
+				formatAgent(this.state, active, true),
 				running > 0 && `${running} running`,
 				attention > 0 && `${attention} attention`,
 			]
@@ -40,7 +40,7 @@ export class AgentStripView implements Component {
 		const parts: string[] = [];
 		let hidden = 0;
 		for (const [index, agent] of agents.entries()) {
-			const next = formatAgent(agent, index === 0);
+			const next = formatAgent(this.state, agent, index === 0);
 			const suffix = index === 0 ? "" : "    ";
 			const candidate = `${parts.join("    ")}${parts.length ? "    " : ""}${next}`;
 			const reserve = agents.length - index - 1 > 0 ? 6 : 0;
@@ -70,7 +70,11 @@ function orderedVisibleAgents(state: TuiApplicationState): AgentViewState[] {
 		});
 }
 
-function formatAgent(agent: AgentViewState, active: boolean): string {
+function formatAgent(
+	state: TuiApplicationState,
+	agent: AgentViewState,
+	active: boolean,
+): string {
 	const glyph =
 		agent.status === "unavailable" || agent.attention === "error"
 			? colors.error("!")
@@ -79,14 +83,14 @@ function formatAgent(agent: AgentViewState, active: boolean): string {
 				: agent.status === "running"
 					? colors.info("●")
 					: colors.ok("●");
-	const label = active ? colors.bold(agentLabel(agent)) : agentLabel(agent);
+	const label = agentIdentityLabel(state, agent);
 	const detail =
 		agent.attention === "human-request"
 			? "needs input"
 			: agent.unreadCount > 0
 				? `${agent.status} · ${agent.unreadCount} unread`
 				: agent.status;
-	return `${glyph} ${label} ${colors.dim(detail)}`;
+	return `${glyph} ${active ? colors.bold(label) : label} ${colors.dim(detail)}`;
 }
 
 function attentionRank(attention: AgentViewState["attention"]): number {
