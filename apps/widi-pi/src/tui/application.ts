@@ -48,6 +48,7 @@ import {
 	type PendingAgentDisplay,
 } from "./pending-agent.ts";
 import { hydrateSessionEntries } from "./session-hydrator.ts";
+import { StartupHumanPrompt } from "./startup-human-prompt.ts";
 import {
 	type AgentViewState,
 	createTuiApplicationState,
@@ -100,7 +101,6 @@ export class WidiTuiApplication {
 	private readonly pendingTasks = new Set<Promise<unknown>>();
 	private readonly lifecycleTasks = new Set<Promise<unknown>>();
 	private readonly drafts = new Map<string, string>();
-	private animationTimer?: NodeJS.Timeout;
 	private started = false;
 	private shutdownPromise?: Promise<void>;
 	private resolveClosed?: () => void;
@@ -215,14 +215,19 @@ export class WidiTuiApplication {
 	}
 
 	static async create(options: WidiTuiOptions): Promise<WidiTuiApplication> {
-		const runtime =
-			options.runtime ??
-			(await createWidiRuntime({
+		if (options.runtime) return new WidiTuiApplication(options.runtime);
+		const startupPrompt = new StartupHumanPrompt();
+		try {
+			const runtime = await createWidiRuntime({
 				cwd: options.cwd,
 				agentDir: options.agentDir ?? join(homedir(), ".widi"),
 				defaultProfileId: options.profileId,
-			}));
-		return new WidiTuiApplication(runtime);
+				requestHuman: startupPrompt.requestHuman,
+			});
+			return new WidiTuiApplication(runtime);
+		} finally {
+			startupPrompt.dispose();
+		}
 	}
 
 	async run(): Promise<void> {
@@ -239,25 +244,6 @@ export class WidiTuiApplication {
 		});
 
 		this.tui.start();
-		let animationTick = 0;
-		this.animationTimer = setInterval(() => {
-			animationTick++;
-			const agentId = this.state.activeAgentId;
-			const agent = agentId ? this.state.agents.get(agentId) : undefined;
-			if (!agent) return;
-			const spinning =
-				agent.status === "running" ||
-				[...agent.extensionStatuses.values()].some(
-					(entry) =>
-						entry.status.progress !== undefined &&
-						entry.status.progress.total === undefined,
-				);
-			// Status ages only need a slow tick; spinners animate every frame.
-			const agingStatuses =
-				animationTick % 6 === 0 && agent.extensionStatuses.size > 0;
-			if (spinning || agingStatuses) this.tui.requestRender();
-		}, 160);
-		this.animationTimer.unref();
 		this.tui.terminal.setTitle("WIDI");
 		// Routine resolution facts collapse to one startup line; only actual
 		// problems occupy the persistent notice area.
@@ -288,8 +274,6 @@ export class WidiTuiApplication {
 		this.unsubscribeEvents = undefined;
 		for (const timer of this.notificationTimers.values()) clearTimeout(timer);
 		this.notificationTimers.clear();
-		if (this.animationTimer) clearInterval(this.animationTimer);
-		this.animationTimer = undefined;
 		this.removeLifecycleHandlers();
 		try {
 			await this.orchestrator.disposeAll(reason);
