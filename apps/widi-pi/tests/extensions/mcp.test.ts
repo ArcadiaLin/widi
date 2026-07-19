@@ -412,13 +412,16 @@ interface FakeActivation {
 	tools: ToolDefinition[];
 	observers: ((event: unknown, context: unknown) => void)[];
 	diagnostics: ExtensionDiagnosticDraft[];
+	disposeHandlers: (() => Promise<void> | void)[];
 	fireSpawned(): Promise<void>;
+	fireDispose(): Promise<void>;
 }
 
 function createFakeActivation(): FakeActivation {
 	const tools: ToolDefinition[] = [];
 	const observers: ((event: unknown, context: unknown) => void)[] = [];
 	const diagnostics: ExtensionDiagnosticDraft[] = [];
+	const disposeHandlers: (() => Promise<void> | void)[] = [];
 	const context = {
 		actions: {
 			reportDiagnostic: async (draft: ExtensionDiagnosticDraft) => {
@@ -451,15 +454,24 @@ function createFakeActivation(): FakeActivation {
 		intercept: () => {
 			throw new Error("not used");
 		},
+		onDispose: (handler: () => Promise<void> | void) => {
+			disposeHandlers.push(handler);
+		},
 	} as unknown as ExtensionActivationApi;
 	return {
 		api,
 		tools,
 		observers,
 		diagnostics,
+		disposeHandlers,
 		fireSpawned: async () => {
 			for (const observer of observers) {
 				await observer({ type: "agent_spawned" }, context);
+			}
+		},
+		fireDispose: async () => {
+			for (const handler of disposeHandlers) {
+				await handler();
 			}
 		},
 	};
@@ -526,5 +538,43 @@ describe("activateMcpExtension", () => {
 		await fake.fireSpawned();
 		expect(fake.diagnostics).toHaveLength(1);
 		expect(fake.diagnostics[0].code).toBe("config_invalid");
+	});
+
+	it("closes every server connection when the extension is disposed", async () => {
+		const configPath = await writeConfig(
+			JSON.stringify({
+				mcpServers: {
+					good: { command: "good-cmd" },
+					bad: { command: "bad-cmd" },
+				},
+			}),
+		);
+		const closed: string[] = [];
+		const factory: McpClientFactory = async (serverName) => {
+			if (serverName === "bad") {
+				throw new Error("spawn bad-cmd ENOENT");
+			}
+			return {
+				listTools: async () => [
+					{
+						name: "echo",
+						description: "Echo.",
+						inputSchema: { type: "object" },
+					},
+				],
+				callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
+				close: async () => {
+					closed.push(serverName);
+				},
+			};
+		};
+		const fake = createFakeActivation();
+		await activateMcpExtension(fake.api, {
+			configPath,
+			clientFactory: factory,
+		});
+		expect(fake.disposeHandlers).toHaveLength(1);
+		await fake.fireDispose();
+		expect(closed).toEqual(["good"]);
 	});
 });

@@ -273,6 +273,14 @@ export class McpServerConnection {
 		}
 		this._client = await this._factory(this.serverName, this._config);
 	}
+
+	async close(): Promise<void> {
+		const client = this._client;
+		this._client = null;
+		if (client) {
+			await client.close();
+		}
+	}
 }
 
 function withTimeout<T>(
@@ -397,12 +405,21 @@ export async function activateMcpExtension(
 	const factory = options.clientFactory ??
 		createSdkClientFactory(options.connectTimeoutMs ?? 15000);
 	const failures: McpDeferredDiagnostic[] = [];
+	const connections: McpServerConnection[] = [];
+	api.onDispose(async () => {
+		await Promise.all(
+			connections.map((connection) =>
+				connection.close().catch(() => undefined),
+			),
+		);
+	});
 	await Promise.all(
 		Object.entries(loadResult.config.servers).map(
 			async ([serverName, serverConfig]) => {
 				const connection = new McpServerConnection(serverName, serverConfig, factory);
 				try {
 					const tools = await connection.connect();
+					connections.push(connection);
 					for (const definition of createMcpToolDefinitions(connection, tools)) {
 						api.registerTool(definition);
 					}

@@ -392,6 +392,14 @@ export type ExtensionObserver<
 export type ExtensionObserverFor<TName extends ExtensionObservedEventName> =
 	ExtensionObserver<ExtensionObservedEventFor<TName>>;
 
+/**
+ * Teardown callback registered at activation time. Runs when the owning
+ * extension runtime is disposed (agent disposed or extension reload replaces
+ * the runner); use it to release resources the activation acquired, such as
+ * open server connections.
+ */
+export type ExtensionDisposeHandler = () => Promise<void> | void;
+
 export type ExtensionInterceptorFor<TName extends ExtensionInterceptorName> = (
 	event: ExtensionInterceptorEventFor<TName>,
 	context: ExtensionContext,
@@ -420,6 +428,7 @@ export interface ExtensionActivationApi {
 		eventName: TName,
 		handler: ExtensionInterceptorFor<TName>,
 	): void;
+	onDispose(handler: ExtensionDisposeHandler): void;
 }
 
 export type ExtensionFactory = (
