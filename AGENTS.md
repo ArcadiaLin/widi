@@ -31,6 +31,7 @@ The checked-in `pi/` directory is a full upstream repository kept in-tree so WID
 - `apps/widi-pi` exposes the `widi-harness` binary from `dist/cli.js`; `src/cli.ts` is the single command entry and routes straight into the TUI (the old minimal line CLI was removed).
 - Root `npm run tui` starts the TUI against the repo-local `.widi` config (vllm local model by default; `moonshot`/`anthropic` providers activate via `$MOONSHOT_API_KEY`/`$ANTHROPIC_API_KEY`). Override with `--agent-dir`/`--profile`; the runtime cwd is inherited from the terminal.
 - `pi-ai` imports generated, gitignored model data from `pi/packages/ai/src/providers/data/*.json`. After every pi submodule update, re-run `node pi/packages/ai/scripts/generate-models.ts` (root `npm run build` also generates it). If the generator rewrites tracked `*.models.ts` files, restore them with `git -C pi checkout -- <files>` to keep the submodule clean.
+- `.widi/extensions/mcp/` is the checked-in sample MCP extension (loaded via the repo-local agent dir; config in `.widi/mcp.json`). It is gitignore-excepted from the blanket `.widi/*` ignore rule.
 
 ## Dependencies
 

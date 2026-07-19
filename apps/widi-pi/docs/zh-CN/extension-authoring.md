@@ -263,3 +263,9 @@ Namespace 自动隔离，写入 append-only，读取 current branch path。Entry
 - Provider 只能注册新 name。
 - `registerShortcut`、flag、renderer 和 UI context 归 client adapter。
 - 消费 input 使用 block/transform + scoped actions；不提供独立 `handled` 通道，也不注册交互命令。
+
+## 示例：MCP extension
+
+仓库内 `.widi/extensions/mcp/` 是一个完整的第三方 extension 样例：它读取 `.widi/mcp.json`（Claude Code 风格的 `mcpServers` 配置），在 activation 时并行连接所有配置的 MCP server（stdio 与 StreamableHTTP），把每个 server tool 注册为 `mcp_<server>_<tool>` 形式的 WIDI tool。`env`/`headers` 值支持 `$VAR` 环境变量展开。单 server 连接失败降级为 `agent_spawned` 时的 warning diagnostic，不影响其他 server。工具调用抛错时会重建连接并重试一次。
+
+已知限制：extension API v1 没有 dispose 钩子，reload extensions 后旧 MCP client 与 stdio 子进程会滞留到进程退出。
