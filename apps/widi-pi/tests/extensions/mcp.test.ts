@@ -10,6 +10,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { describe, expect, it } from "vitest";
 import {
+	activateMcpExtension,
 	createMcpToolDefinitions,
 	loadMcpConfig,
 	type McpCallToolResult,
@@ -19,7 +20,12 @@ import {
 	type McpToolInfo,
 	mcpToolName,
 } from "../../../../.widi/extensions/mcp/lib.ts";
-import type { ToolExecutionContext } from "../../src/core/extension/api.ts";
+import type {
+	ExtensionActivationApi,
+	ExtensionDiagnosticDraft,
+	ToolDefinition,
+	ToolExecutionContext,
+} from "../../src/core/extension/api.ts";
 
 async function writeConfig(content: string): Promise<string> {
 	const dir = await mkdtemp(join(tmpdir(), "widi-mcp-test-"));
@@ -398,5 +404,127 @@ describe("createMcpToolDefinitions", () => {
 		);
 		await definitions[0].execute("call-1", "not-an-object", idleContext);
 		expect(received).toEqual({});
+	});
+});
+
+interface FakeActivation {
+	api: ExtensionActivationApi;
+	tools: ToolDefinition[];
+	observers: ((event: unknown, context: unknown) => void)[];
+	diagnostics: ExtensionDiagnosticDraft[];
+	fireSpawned(): Promise<void>;
+}
+
+function createFakeActivation(): FakeActivation {
+	const tools: ToolDefinition[] = [];
+	const observers: ((event: unknown, context: unknown) => void)[] = [];
+	const diagnostics: ExtensionDiagnosticDraft[] = [];
+	const context = {
+		actions: {
+			reportDiagnostic: async (draft: ExtensionDiagnosticDraft) => {
+				diagnostics.push(draft);
+			},
+		},
+	};
+	const api = {
+		extensionId: "mcp",
+		agentId: "agent-1",
+		profileId: "test",
+		registerTool: (tool: ToolDefinition) => {
+			tools.push(tool);
+		},
+		patchTool: () => {
+			throw new Error("not used");
+		},
+		contributeResources: () => {
+			throw new Error("not used");
+		},
+		registerProvider: () => {
+			throw new Error("not used");
+		},
+		observe: (
+			_name: string,
+			handler: (event: unknown, context: unknown) => void,
+		) => {
+			observers.push(handler);
+		},
+		intercept: () => {
+			throw new Error("not used");
+		},
+	} as unknown as ExtensionActivationApi;
+	return {
+		api,
+		tools,
+		observers,
+		diagnostics,
+		fireSpawned: async () => {
+			for (const observer of observers) {
+				await observer({ type: "agent_spawned" }, context);
+			}
+		},
+	};
+}
+
+const echoFactory: McpClientFactory = async () => ({
+	listTools: async () => [
+		{ name: "echo", description: "Echo.", inputSchema: { type: "object" } },
+	],
+	callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
+	close: async () => {},
+});
+
+describe("activateMcpExtension", () => {
+	it("registers nothing and stays silent when the config is missing", async () => {
+		const fake = createFakeActivation();
+		await activateMcpExtension(fake.api, {
+			configPath: join(tmpdir(), "widi-mcp-definitely-absent.json"),
+			clientFactory: echoFactory,
+		});
+		expect(fake.tools).toEqual([]);
+		expect(fake.observers).toEqual([]);
+	});
+
+	it("registers tools from every reachable server and reports failures on agent_spawned", async () => {
+		const configPath = await writeConfig(
+			JSON.stringify({
+				mcpServers: {
+					good: { command: "good-cmd" },
+					bad: { command: "bad-cmd" },
+				},
+			}),
+		);
+		const factory: McpClientFactory = async (serverName) => {
+			if (serverName === "bad") {
+				throw new Error("spawn bad-cmd ENOENT");
+			}
+			return echoFactory(serverName, { command: "good-cmd" });
+		};
+		const fake = createFakeActivation();
+		await activateMcpExtension(fake.api, {
+			configPath,
+			clientFactory: factory,
+		});
+		expect(fake.tools.map((tool) => tool.name)).toEqual(["mcp_good_echo"]);
+		expect(fake.diagnostics).toEqual([]);
+		await fake.fireSpawned();
+		expect(fake.diagnostics).toHaveLength(1);
+		expect(fake.diagnostics[0].severity).toBe("warning");
+		expect(fake.diagnostics[0].disposition).toBe("degraded");
+		expect(fake.diagnostics[0].code).toBe("server_connect_failed");
+		expect(fake.diagnostics[0].message).toContain("bad");
+		expect(fake.diagnostics[0].message).toContain("spawn bad-cmd ENOENT");
+	});
+
+	it("reports an invalid config on agent_spawned and registers no tools", async () => {
+		const configPath = await writeConfig("{ not json");
+		const fake = createFakeActivation();
+		await activateMcpExtension(fake.api, {
+			configPath,
+			clientFactory: echoFactory,
+		});
+		expect(fake.tools).toEqual([]);
+		await fake.fireSpawned();
+		expect(fake.diagnostics).toHaveLength(1);
+		expect(fake.diagnostics[0].code).toBe("config_invalid");
 	});
 });

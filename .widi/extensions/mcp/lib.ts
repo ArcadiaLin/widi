@@ -6,7 +6,10 @@ import {
 } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { TSchema } from "typebox";
-import type { ToolDefinition } from "../../../apps/widi-pi/src/core/extension/api.ts";
+import type {
+	ExtensionActivationApi,
+	ToolDefinition,
+} from "../../../apps/widi-pi/src/core/extension/api.ts";
 
 export interface McpStdioServerConfig {
 	readonly command: string;
@@ -361,4 +364,77 @@ function flattenMcpContent(
 		}
 	}
 	return flattened.length > 0 ? flattened : [{ type: "text", text: "(no content)" }];
+}
+
+export interface McpExtensionOptions {
+	readonly configPath: string;
+	readonly clientFactory?: McpClientFactory;
+	readonly connectTimeoutMs?: number;
+}
+
+interface McpDeferredDiagnostic {
+	readonly code: string;
+	readonly message: string;
+}
+
+export async function activateMcpExtension(
+	api: ExtensionActivationApi,
+	options: McpExtensionOptions,
+): Promise<void> {
+	const loadResult = await loadMcpConfig(options.configPath);
+	if (loadResult.kind === "missing") {
+		return;
+	}
+	if (loadResult.kind === "invalid") {
+		deferDiagnostics(api, [
+			{
+				code: "config_invalid",
+				message: `MCP config is invalid: ${loadResult.message}`,
+			},
+		]);
+		return;
+	}
+	const factory = options.clientFactory ??
+		createSdkClientFactory(options.connectTimeoutMs ?? 15000);
+	const failures: McpDeferredDiagnostic[] = [];
+	await Promise.all(
+		Object.entries(loadResult.config.servers).map(
+			async ([serverName, serverConfig]) => {
+				const connection = new McpServerConnection(serverName, serverConfig, factory);
+				try {
+					const tools = await connection.connect();
+					for (const definition of createMcpToolDefinitions(connection, tools)) {
+						api.registerTool(definition);
+					}
+				} catch (error) {
+					failures.push({
+						code: "server_connect_failed",
+						message: `MCP server '${serverName}' is unavailable: ${errorMessage(error)}`,
+					});
+				}
+			},
+		),
+	);
+	if (failures.length > 0) {
+		deferDiagnostics(api, failures);
+	}
+}
+
+// The activation API has no diagnostic channel, so activation-time failures
+// are reported through the agent_spawned observer, which the orchestrator
+// emits right after activation completes.
+function deferDiagnostics(
+	api: ExtensionActivationApi,
+	drafts: readonly McpDeferredDiagnostic[],
+): void {
+	api.observe("agent_spawned", (_event, context) => {
+		for (const draft of drafts) {
+			void context.actions.reportDiagnostic({
+				severity: "warning",
+				disposition: "degraded",
+				code: draft.code,
+				message: draft.message,
+			});
+		}
+	});
 }
