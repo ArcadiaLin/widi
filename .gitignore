@@ -69,5 +69,7 @@ apps/widi-agent/.widi/agent/models.json
 apps/widi-agent/.widi/agent/Runs/
 
 # test config
-.widi/
+.widi/*
+!.widi/extensions/
+!.widi/mcp.json
 chat_notes/
