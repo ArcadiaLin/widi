@@ -14,6 +14,7 @@ import {
 	type WidiRuntime,
 } from "../core/runtime-service.ts";
 import type { CandidateItem, PromptExpansion } from "../core/types.ts";
+import { forkSourceAgentId } from "./agent-identity.ts";
 import { AgentSelectorController } from "./agent-selector.ts";
 import { WidiCommandAutocompleteProvider } from "./autocomplete.ts";
 import { applicationCommands } from "./commands/app-commands.ts";
@@ -33,6 +34,7 @@ import { FatalErrorView } from "./components/fatal-error.ts";
 import { FooterView } from "./components/footer.ts";
 import { HeaderView } from "./components/header.ts";
 import { NoticeView } from "./components/notices.ts";
+import { OperationHintView } from "./components/operation-hint.ts";
 import { ProcessingBarView } from "./components/processing-bar.ts";
 import { QueuedInputView } from "./components/queued-input.ts";
 import { StatusView } from "./components/status.ts";
@@ -47,6 +49,7 @@ import {
 } from "./pending-agent.ts";
 import { hydrateSessionEntries } from "./session-hydrator.ts";
 import {
+	type AgentViewState,
 	createTuiApplicationState,
 	ensureAgentProjection,
 	setActiveAgent,
@@ -84,6 +87,9 @@ export class WidiTuiApplication {
 				void this.shutdown("user exit").catch(() => {});
 			},
 			newSession: (sourceAgentId) => this.beginNewSession(sourceAgentId),
+			disposeAgent: async (agentId) => {
+				await this.disposeAgent(agentId);
+			},
 		}),
 	]);
 	private unsubscribeEvents?: () => void;
@@ -176,6 +182,14 @@ export class WidiTuiApplication {
 		this.tui.addChild(this.completionMenu);
 		this.tui.addChild(this.editor);
 		this.tui.addChild(new FooterView(this.state, runtime.services.cwd));
+		this.tui.addChild(
+			new OperationHintView({
+				state: this.state,
+				engine: this.engine,
+				editor: this.editor,
+				menu: this.completionMenu,
+			}),
+		);
 		this.tui.addChild(new AgentStripView(this.state));
 		this.tui.setFocus(this.editor);
 
@@ -732,6 +746,10 @@ export class WidiTuiApplication {
 		this.completionMenu.open({
 			title: `/${command.name}`,
 			items,
+			operation: {
+				description: command.description,
+				confirmVerb: "apply",
+			},
 			onSelect: (item) => {
 				this.track(this.submit(`/${command.name}:${item.value}`));
 			},
@@ -750,14 +768,53 @@ export class WidiTuiApplication {
 		if (previousAgentId) {
 			this.drafts.set(previousAgentId, this.editor.getText());
 		}
-		if (sourceAgentId) {
-			this.pendingAgents.beginNewSession(
-				sourceAgentId,
-				this.pendingDisplayForSource(sourceAgentId),
-			);
-		} else {
-			this.pendingAgents.beginDefault(this.defaultPendingDisplay());
+		if (!sourceAgentId) {
+			this.beginDefaultSession();
+			return;
 		}
+		this.pendingAgents.beginNewSession(
+			sourceAgentId,
+			this.pendingDisplayForSource(sourceAgentId),
+		);
+		this.pendingUnknownCommand = undefined;
+		this.editor.setText("");
+		this.configurePendingEditor();
+		this.updateTerminalTitle();
+		this.updateEditorAvailability();
+		this.tui.setFocus(this.editor);
+		this.tui.requestRender();
+	}
+
+	private async disposeAgent(agentId: string): Promise<void> {
+		const disposed = ensureAgentProjection(this.state, agentId);
+		const sourceAgentId = forkSourceAgentId(this.state, disposed);
+		await this.orchestrator.disposeAgent(agentId, "Disposed from the TUI.");
+		disposed.status = "disposed";
+		await this.syncAgent(agentId);
+
+		const isUsableNavigationTarget = (agent: AgentViewState) =>
+			agent.agentId !== agentId &&
+			(agent.status === "idle" || agent.status === "running") &&
+			agent.snapshot?.hasHarness !== false;
+		const source = sourceAgentId
+			? this.state.agents.get(sourceAgentId)
+			: undefined;
+		if (source && isUsableNavigationTarget(source)) {
+			this.switchAgent(source.agentId);
+			return;
+		}
+		const remaining = [...this.state.agents.values()].find(
+			isUsableNavigationTarget,
+		);
+		if (remaining) {
+			this.switchAgent(remaining.agentId);
+			return;
+		}
+		this.beginDefaultSession();
+	}
+
+	private beginDefaultSession(): void {
+		this.pendingAgents.beginDefault(this.defaultPendingDisplay());
 		this.pendingUnknownCommand = undefined;
 		this.editor.setText("");
 		this.configurePendingEditor();

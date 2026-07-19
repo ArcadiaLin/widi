@@ -9,6 +9,7 @@ import type { CommandDefinition } from "./types.ts";
 export interface ApplicationCommandHost {
 	quit(): void;
 	newSession(sourceAgentId: string | undefined): void;
+	disposeAgent(agentId: string): Promise<void>;
 }
 
 /** Commands that operate on the application itself, not the orchestrator. */
@@ -41,6 +42,20 @@ export function applicationCommands(
 			description: "Prepare a new session from the current agent.",
 			execute: async (context) => {
 				host.newSession(context.agentId);
+				return undefined;
+			},
+		},
+		{
+			kind: "line",
+			agentPolicy: "active",
+			name: "dispose",
+			description:
+				"Close the current runtime agent without deleting its session.",
+			execute: async (context) => {
+				if (!context.agentId) {
+					throw new Error("Command /dispose requires an active agent.");
+				}
+				await host.disposeAgent(context.agentId);
 				return undefined;
 			},
 		},

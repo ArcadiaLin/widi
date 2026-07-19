@@ -5,6 +5,9 @@ import type { AgentRecordSnapshot } from "../../src/core/agent-record.ts";
 import type { WidiRuntime } from "../../src/core/runtime-service.ts";
 import { WidiTuiApplication } from "../../src/tui/application.ts";
 import { CompletionMenu } from "../../src/tui/completion-menu.ts";
+import { AgentStripView } from "../../src/tui/components/agent-strip.ts";
+import { FooterView } from "../../src/tui/components/footer.ts";
+import { OperationHintView } from "../../src/tui/components/operation-hint.ts";
 import { WidiEditor } from "../../src/tui/editor.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
 import {
@@ -53,22 +56,42 @@ describe("CompletionMenu", () => {
 		expect(menu.render(80)).toEqual([]);
 	});
 
-	it("renders title, items, and hint while open", () => {
+	it("renders title and items without duplicating operation controls", () => {
 		const { menu, state, focus } = createMenu();
-		menu.open({ title: "/model", items, onSelect: () => {} });
+		menu.open({
+			title: "/model",
+			items,
+			operation: {
+				description: "Set the current agent model.",
+				confirmVerb: "apply",
+			},
+			onSelect: () => {},
+		});
 
 		const rendered = plainRender(menu);
 		expect(rendered).toContain("/model");
 		expect(rendered).toContain("vllm/qwen3.6");
 		expect(rendered).toContain("anthropic/claude");
-		expect(rendered).toContain("esc cancel");
+		expect(rendered).not.toContain("esc cancel");
+		expect(menu.hintContext).toEqual({
+			title: "/model",
+			description: "Set the current agent model.",
+			confirmVerb: "apply",
+			itemCount: 3,
+		});
 		expect(state.mode).toBe("completion-menu");
 		expect(focus).toEqual(["menu"]);
 	});
 
 	it("filters items with typed characters and restores on backspace", () => {
 		const { menu } = createMenu();
-		menu.open({ title: "/model", items, onSelect: () => {} });
+		menu.open({
+			title: "/model",
+			items,
+			operation: { confirmVerb: "apply" },
+			onSelect: () => {},
+		});
+		expect(menu.hintContext?.itemCount).toBe(3);
 
 		menu.handleInput("g");
 		menu.handleInput("l");
@@ -76,12 +99,47 @@ describe("CompletionMenu", () => {
 		let rendered = plainRender(menu);
 		expect(rendered).toContain("vllm/glm-5");
 		expect(rendered).not.toContain("anthropic/claude");
+		expect(menu.hintContext?.itemCount).toBe(1);
 
 		menu.handleInput(BACKSPACE);
 		menu.handleInput(BACKSPACE);
 		menu.handleInput(BACKSPACE);
 		rendered = plainRender(menu);
 		expect(rendered).toContain("anthropic/claude");
+		expect(menu.hintContext?.itemCount).toBe(3);
+	});
+
+	it("routes printable selection keybindings before filter input", () => {
+		const keybindings = createWidiKeybindings();
+		keybindings.setUserBindings({
+			"tui.select.down": "j",
+			"tui.select.confirm": "space",
+		});
+		setKeybindings(keybindings);
+		try {
+			const { menu } = createMenu();
+			const selected: string[] = [];
+			menu.open({
+				title: "/model",
+				items,
+				onSelect: (item) => selected.push(item.value),
+			});
+
+			menu.handleInput("j");
+			menu.handleInput(" ");
+
+			expect(selected).toEqual(["vllm/glm-5"]);
+			expect(menu.isOpen).toBe(false);
+		} finally {
+			setKeybindings(createWidiKeybindings());
+		}
+	});
+
+	it("does not expose hint context without an operation", () => {
+		const { menu } = createMenu();
+		menu.open({ title: "/model", items, onSelect: () => {} });
+
+		expect(menu.hintContext).toBeUndefined();
 	});
 
 	it("selects with enter and closes", () => {
@@ -107,6 +165,7 @@ describe("CompletionMenu", () => {
 		menu.open({
 			title: "/model",
 			items,
+			operation: { confirmVerb: "apply" },
 			onSelect: () => {},
 			onCancel: () => {
 				cancelled = true;
@@ -117,11 +176,38 @@ describe("CompletionMenu", () => {
 
 		expect(cancelled).toBe(true);
 		expect(menu.isOpen).toBe(false);
+		expect(menu.hintContext).toBeUndefined();
 		expect(menu.render(80)).toEqual([]);
 	});
 });
 
 describe("WidiTuiApplication completion menu integration", () => {
+	it("mounts completion and operation hints in normal component flow", async () => {
+		const { application } = await createApplication();
+		const children = application.tui.children;
+		const completionIndex = children.findIndex(
+			(child) => child instanceof CompletionMenu,
+		);
+		const editorIndex = children.findIndex(
+			(child) => child instanceof WidiEditor,
+		);
+		const footerIndex = children.findIndex(
+			(child) => child instanceof FooterView,
+		);
+		const hintIndex = children.findIndex(
+			(child) => child instanceof OperationHintView,
+		);
+		const agentStripIndex = children.findIndex(
+			(child) => child instanceof AgentStripView,
+		);
+
+		expect(completionIndex).toBeGreaterThan(-1);
+		expect(completionIndex).toBeLessThan(editorIndex);
+		expect(editorIndex).toBeLessThan(footerIndex);
+		expect(footerIndex).toBeLessThan(hintIndex);
+		expect(hintIndex).toBeLessThan(agentStripIndex);
+	});
+
 	it("opens the inline menu for a bare selector and resubmits its selection", async () => {
 		const setAgentModelByReference = vi.fn(async () => undefined);
 		const { application } = await createApplication({
@@ -138,6 +224,12 @@ describe("WidiTuiApplication completion menu integration", () => {
 		const menu = requireMenu(application);
 		expect(application.state.mode).toBe("completion-menu");
 		expect(plainRender(menu)).toContain("Qwen 3.6");
+		expect(menu.hintContext).toEqual({
+			title: "/model",
+			description: "Set the current agent model.",
+			confirmVerb: "apply",
+			itemCount: 1,
+		});
 		expect(setAgentModelByReference).not.toHaveBeenCalled();
 
 		menu.handleInput(ENTER);
@@ -206,6 +298,12 @@ describe("WidiTuiApplication completion menu integration", () => {
 		expect(rendered).toContain("Select agent");
 		expect(rendered).toContain("agent-1");
 		expect(rendered).toContain("agent-2");
+		expect(requireMenu(application).hintContext).toEqual({
+			title: "Select agent",
+			description: "Switch the active runtime agent.",
+			confirmVerb: "switch",
+			itemCount: 2,
+		});
 	});
 });
 

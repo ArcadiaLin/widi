@@ -7,6 +7,7 @@ import type {
 } from "../../src/core/runtime-service.ts";
 import type { RuntimeModel } from "../../src/core/types.ts";
 import { WidiTuiApplication } from "../../src/tui/application.ts";
+import { ensureAgentProjection, setActiveAgent } from "../../src/tui/state.ts";
 
 describe("WidiTuiApplication lazy agent spawn", () => {
 	it("does not spawn an agent when the TUI starts", async () => {
@@ -102,6 +103,169 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 			expansion: undefined,
 		});
 	});
+
+	it("disposes a fork and returns to its source agent", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "first");
+		const source = harness.application.state.agents.get("main");
+		if (!source) throw new Error("Expected source agent.");
+		const fork = ensureAgentProjection(
+			harness.application.state,
+			"main-fork",
+			"idle",
+		);
+		fork.snapshot = snapshot("main-fork", model());
+		fork.display.forkedFromAgentId = "main";
+		setActiveAgent(harness.application.state, "main-fork");
+
+		await submit(harness.application, "/dispose");
+
+		expect(harness.disposeAgent).toHaveBeenCalledWith(
+			"main-fork",
+			expect.any(String),
+		);
+		expect(harness.application.state.activeAgentId).toBe("main");
+	});
+
+	it("skips an unavailable fork source and switches to another usable agent", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "first");
+		const source = harness.application.state.agents.get("main");
+		if (!source?.snapshot) throw new Error("Expected source agent.");
+		source.status = "unavailable";
+		source.snapshot = {
+			...source.snapshot,
+			status: "unavailable",
+			hasHarness: false,
+		};
+		const worker = ensureAgentProjection(
+			harness.application.state,
+			"worker",
+			"idle",
+		);
+		worker.snapshot = snapshot("worker", model());
+		const fork = ensureAgentProjection(
+			harness.application.state,
+			"main-fork",
+			"idle",
+		);
+		fork.snapshot = snapshot("main-fork", model());
+		fork.display.forkedFromAgentId = "main";
+		setActiveAgent(harness.application.state, "main-fork");
+
+		await submit(harness.application, "/dispose");
+
+		expect(harness.application.state.activeAgentId).toBe("worker");
+	});
+
+	it("returns to pending when disposed-agent inspection fails", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "first");
+		harness.spawnAgent.mockClear();
+		harness.inspectAgent.mockImplementationOnce(() => {
+			throw new Error("inspect failed");
+		});
+
+		await submit(harness.application, "/dispose");
+
+		expect(harness.application.state.agents.get("main")?.status).toBe(
+			"disposed",
+		);
+		expect(harness.application.state.activeAgentId).toBeUndefined();
+		expect(harness.application.state.pendingAgent?.start).toEqual({
+			kind: "default",
+		});
+		expect(harness.spawnAgent).not.toHaveBeenCalled();
+	});
+
+	it("returns to a fork source matched only by parent session path", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "first");
+		const source = harness.application.state.agents.get("main");
+		if (!source?.snapshot) throw new Error("Expected source agent.");
+		source.snapshot = {
+			...source.snapshot,
+			sessionMetadata: {
+				id: "main",
+				createdAt: new Date(0).toISOString(),
+				cwd: "/workspace",
+				path: "/sessions/main.jsonl",
+			},
+		};
+		const fork = ensureAgentProjection(
+			harness.application.state,
+			"main-fork",
+			"idle",
+		);
+		fork.snapshot = {
+			...snapshot("main-fork", model()),
+			sessionMetadata: {
+				id: "main-fork",
+				createdAt: new Date(0).toISOString(),
+				cwd: "/workspace",
+				path: "/sessions/main-fork.jsonl",
+				parentSessionPath: "/sessions/main.jsonl",
+			},
+		};
+		setActiveAgent(harness.application.state, "main-fork");
+
+		await submit(harness.application, "/dispose");
+
+		expect(fork.display.forkedFromAgentId).toBeUndefined();
+		expect(harness.application.state.activeAgentId).toBe("main");
+	});
+
+	it("returns to pending without spawning after disposing the final agent", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "first");
+		harness.spawnAgent.mockClear();
+
+		await submit(harness.application, "/dispose");
+
+		expect(harness.application.state.activeAgentId).toBeUndefined();
+		expect(harness.application.state.pendingAgent?.start).toEqual({
+			kind: "default",
+		});
+		expect(harness.spawnAgent).not.toHaveBeenCalled();
+	});
+
+	it("switches to another live agent after disposing a non-fork agent", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "first");
+		const worker = ensureAgentProjection(
+			harness.application.state,
+			"worker",
+			"idle",
+		);
+		worker.snapshot = snapshot("worker", model());
+		setActiveAgent(harness.application.state, "main");
+
+		await submit(harness.application, "/dispose");
+
+		expect(harness.application.state.activeAgentId).toBe("worker");
+	});
+
+	it("keeps the current agent selected when disposal fails", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "first");
+		harness.disposeAgent.mockRejectedValueOnce(new Error("dispose failed"));
+
+		await submit(harness.application, "/dispose");
+
+		expect(harness.application.state.activeAgentId).toBe("main");
+		expect(harness.application.state.pendingAgent).toBeUndefined();
+		expect(
+			harness.application.state.agents
+				.get("main")
+				?.timeline.find(
+					(item) => item.type === "command-result" && item.name === "dispose",
+				),
+		).toMatchObject({
+			type: "command-result",
+			status: "failed",
+			error: { message: expect.stringContaining("dispose failed") },
+		});
+	});
 });
 
 async function submit(
@@ -152,10 +316,21 @@ async function createApplicationHarness() {
 	const setAgentModelByReference = vi.fn(async () => runtimeModel);
 	const setAgentThinkingLevelByName = vi.fn(async () => "high");
 	const setAgentSessionName = vi.fn(async () => {});
+	const disposedAgentIds = new Set<string>();
+	const disposeAgent = vi.fn(async (agentId: string) => {
+		disposedAgentIds.add(agentId);
+	});
+	const inspectAgent = vi.fn((agentId: string) => {
+		const inspected = snapshot(agentId, runtimeModel);
+		return disposedAgentIds.has(agentId)
+			? { ...inspected, status: "disposed" as const, hasHarness: false }
+			: inspected;
+	});
 	const orchestrator = {
 		subscribe: () => () => {},
 		registerClient: () => () => {},
 		disposeAll: async () => {},
+		disposeAgent,
 		spawnAgent,
 		newAgentSessionFromAgent,
 		promptAgent,
@@ -165,7 +340,7 @@ async function createApplicationHarness() {
 		getDefaultModel: () => runtimeModel,
 		getDefaultThinkingLevel: () => "medium",
 		getAgentStatus: () => "idle",
-		inspectAgent: (agentId: string) => snapshot(agentId, runtimeModel),
+		inspectAgent,
 		getAgentSession: async () => ({
 			metadata: { id: "main", createdAt: new Date(0).toISOString() },
 			leafId: null,
@@ -213,6 +388,8 @@ async function createApplicationHarness() {
 		spawnAgent,
 		newAgentSessionFromAgent,
 		promptAgent,
+		disposeAgent,
+		inspectAgent,
 		setAgentModelByReference,
 		setAgentThinkingLevelByName,
 		setAgentSessionName,

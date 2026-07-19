@@ -192,6 +192,7 @@ export interface AgentDisplayFacts {
 	activeToolNames: readonly string[];
 	sessionName?: string;
 	rehydrateRequested: boolean;
+	forkedFromAgentId?: AgentId;
 }
 
 export interface AgentViewState {
