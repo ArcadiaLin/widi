@@ -1,3 +1,8 @@
 {
-	"mcpServers": {}
+	"mcpServers": {
+		"ai-economist": {
+			"type": "http",
+			"url": "http://192.168.163.112:8005/mcp"
+		}
+	}
 }
