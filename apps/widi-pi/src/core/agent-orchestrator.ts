@@ -1396,7 +1396,11 @@ export class AgentOrchestrator {
 			this._unsubscribeAgentExtensionInterceptors.delete(agentId);
 		}
 
-		record.extensionRunner?.invalidate("Agent has been disposed.");
+		await this._disposeExtensionRunner(
+			agentId,
+			record.extensionRunner,
+			"Agent has been disposed.",
+		);
 		await this._clearExtensionStatusesForAgent(agentId);
 		await this._withdrawExtensionProviderContributions(agentId);
 		delete record.harness;
@@ -2753,7 +2757,11 @@ export class AgentOrchestrator {
 				resolvedProfile.profile.id,
 				nextRunner,
 			);
-			oldRunner?.invalidate("Extension runtime has been reloaded.");
+			await this._disposeExtensionRunner(
+				agentId,
+				oldRunner,
+				"Extension runtime has been reloaded.",
+			);
 			// Clear before publishing the new runner's diagnostics: diagnostic
 			// events reach the new runner's observers, and statuses they set
 			// must survive the reload cleanup.
@@ -2888,6 +2896,24 @@ export class AgentOrchestrator {
 				agentId,
 				"orchestrator.agent_dispose_failed",
 				`Failed waiting for agent ${agentId} to become idle during dispose: ${formatError(error)}`,
+				error,
+			);
+		}
+	}
+
+	private async _disposeExtensionRunner(
+		agentId: AgentId,
+		extensionRunner: ExtensionRunner | undefined,
+		message: string,
+	): Promise<void> {
+		if (!extensionRunner) return;
+		try {
+			await extensionRunner.dispose(message);
+		} catch (error) {
+			await this._recordAgentLifecycleFailure(
+				agentId,
+				"orchestrator.agent_dispose_failed",
+				`Failed to dispose extension runtime for agent ${agentId}: ${formatError(error)}`,
 				error,
 			);
 		}

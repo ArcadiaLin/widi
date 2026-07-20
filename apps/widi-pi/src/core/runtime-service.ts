@@ -38,6 +38,10 @@ import {
 	type ExtensionModuleImporter,
 	type ExtensionRoot,
 } from "./extension/index.ts";
+import {
+	HumanRequestBroker,
+	type HumanRequestHandler,
+} from "./human-request.ts";
 import { ModelRegistry } from "./model-registry.js";
 import {
 	createProjectExtensionTrustDiagnostics,
@@ -60,6 +64,7 @@ export interface CreateWidiRuntimeOptions {
 	readonly projectConfigDir?: string;
 	readonly executionEnv?: ExecutionEnv;
 	readonly trustOverride?: boolean;
+	readonly requestHuman?: HumanRequestHandler;
 	readonly sessionRoot?: string;
 	readonly defaultProfileId?: string;
 	readonly defaultModel?: RuntimeModel;
@@ -304,6 +309,38 @@ async function createProfileRegistry(options: {
 		),
 		roots: trustedRoots,
 	};
+}
+
+/**
+ * Interactive half of the "ask" trust policy: runs the fixed confirm request
+ * through the human-request machinery so clients see the usual envelope.
+ * Failures (no handler, abort, timeout) leave the project untrusted; the
+ * broker's diagnostic is forwarded to the startup diagnostics.
+ */
+async function confirmProjectTrustViaHumanRequest(options: {
+	readonly cwd: string;
+	readonly requestHuman: HumanRequestHandler;
+	readonly publishDiagnostic: (diagnostic: CoreDiagnostic) => Promise<void>;
+}): Promise<boolean> {
+	const broker = new HumanRequestBroker({
+		findHumanRequestHandler: () => options.requestHuman,
+		// No orchestrator event bus exists this early; request events go nowhere.
+		emit: async () => {},
+		publishDiagnostic: options.publishDiagnostic,
+		recordAgentLifecycleFailure: async () => {},
+	});
+	try {
+		const response = await broker.request({
+			source: { kind: "system" },
+			kind: "confirm",
+			title: "Trust this project?",
+			message: `WIDI found project-local configuration in ${options.cwd} (settings, profiles, skills, prompts, extensions). It stays disabled until the project is trusted.\n\nTrust this project and remember the decision?`,
+		});
+		return response.kind === "confirm" && response.confirmed;
+	} catch {
+		// The broker already published a diagnostic; stay untrusted.
+		return false;
+	}
 }
 
 async function resolveDefaultProfileId(options: {
@@ -561,14 +598,43 @@ export async function createWidiRuntime(
 		projectTrusted: false,
 	});
 	const trustStore = new ProjectTrustStore({ executionEnv, agentDir });
-	const projectTrust = await resolveProjectTrust({
+	const defaultProjectTrust = globalSettingManager.getDefaultProjectTrust();
+	const trustPromptDiagnostics: CoreDiagnostic[] = [];
+	let projectTrust = await resolveProjectTrust({
 		cwd,
 		executionEnv,
 		trustStore,
 		trustOverride: options.trustOverride,
-		defaultProjectTrust: globalSettingManager.getDefaultProjectTrust(),
+		defaultProjectTrust,
 		projectConfigDir,
 	});
+	if (
+		!projectTrust.trusted &&
+		projectTrust.source === "settings_default" &&
+		(defaultProjectTrust ?? "ask") === "ask" &&
+		options.requestHuman !== undefined
+	) {
+		// "ask" genuinely asks: a confirmed prompt persists the decision and
+		// re-resolves so every loader below sees the project as trusted.
+		const confirmed = await confirmProjectTrustViaHumanRequest({
+			cwd,
+			requestHuman: options.requestHuman,
+			publishDiagnostic: async (diagnostic) => {
+				trustPromptDiagnostics.push(diagnostic);
+			},
+		});
+		if (confirmed) {
+			await trustStore.set(cwd, true);
+			projectTrust = await resolveProjectTrust({
+				cwd,
+				executionEnv,
+				trustStore,
+				trustOverride: options.trustOverride,
+				defaultProjectTrust,
+				projectConfigDir,
+			});
+		}
+	}
 	const projectExtensionTrustDiagnostics =
 		await createProjectExtensionTrustDiagnostics({
 			executionEnv,
@@ -725,6 +791,7 @@ export async function createWidiRuntime(
 	const diagnostics = [
 		...globalSettingManager.drainDiagnostics(),
 		...(projectTrust.diagnostic ? [projectTrust.diagnostic] : []),
+		...trustPromptDiagnostics,
 		...settingManager.drainDiagnostics(),
 		...authStorage.drainDiagnostics(),
 		...modelRegistry.drainDiagnostics(),

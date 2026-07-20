@@ -146,6 +146,7 @@ export class ExtensionRunner {
 	private _actions: ExtensionCoreActions = createUnboundActions();
 	private _contextActions: ExtensionContextActions = {};
 	private _staleMessage: string | undefined;
+	private _disposed = false;
 
 	constructor(options: ExtensionRunnerOptions) {
 		this._loadedScope = options.loadedScope;
@@ -200,6 +201,32 @@ export class ExtensionRunner {
 		message = "This extension context is stale after runtime replacement or reload.",
 	): void {
 		this._staleMessage = message;
+	}
+
+	/**
+	 * Invalidate plus extension teardown: runs every onDispose handler
+	 * registered during activation (idempotent). Handler failures are
+	 * aggregated and rethrown after all handlers ran, so one broken
+	 * extension cannot skip the others' cleanup.
+	 */
+	async dispose(
+		message = "This extension context is stale after runtime replacement or reload.",
+	): Promise<void> {
+		if (this._disposed) return;
+		this._disposed = true;
+		this.invalidate(message);
+		const errors: unknown[] = [];
+		for (const registration of this._loadedScope.disposeHandlers) {
+			try {
+				await registration.handler();
+			} catch (error) {
+				errors.push(error);
+			}
+		}
+		if (errors.length === 1) throw errors[0];
+		if (errors.length > 1) {
+			throw new AggregateError(errors, "Extension dispose handlers failed.");
+		}
 	}
 
 	isStale(): boolean {

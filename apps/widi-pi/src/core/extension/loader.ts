@@ -20,6 +20,7 @@ import {
 } from "./module-importer.ts";
 import type {
 	ExtensionActivationApi,
+	ExtensionDisposeHandler,
 	ExtensionFactory,
 	ExtensionInterceptorFor,
 	ExtensionInterceptorName,
@@ -59,6 +60,11 @@ export interface ExtensionInterceptorRegistration<
 	extensionId: string;
 	eventName: TName;
 	handler: ExtensionInterceptorFor<TName>;
+}
+
+export interface ExtensionDisposeRegistration {
+	readonly extensionId: string;
+	readonly handler: ExtensionDisposeHandler;
 }
 
 export interface LoadExtensionScopeOptions {
@@ -152,6 +158,7 @@ export interface LoadedExtensionScope {
 		ExtensionInterceptorName,
 		readonly ExtensionInterceptorRegistration<ExtensionInterceptorName>[]
 	>;
+	disposeHandlers: readonly ExtensionDisposeRegistration[];
 }
 
 interface IncompatibleExtensionRecord {
@@ -429,6 +436,7 @@ export class ExtensionLoader {
 			ExtensionInterceptorName,
 			ExtensionInterceptorRegistration<ExtensionInterceptorName>[]
 		>();
+		const disposeHandlers: ExtensionDisposeRegistration[] = [];
 		const extensionIds = normalizeExtensionIds(options.extensionIds ?? []);
 		const extensions: ExtensionIdentity[] = [];
 
@@ -483,6 +491,7 @@ export class ExtensionLoader {
 						providerContributions,
 						observerHandlers,
 						interceptorHandlers,
+						disposeHandlers,
 					}),
 				);
 			} catch (error) {
@@ -512,6 +521,7 @@ export class ExtensionLoader {
 			providerContributions,
 			observerHandlers,
 			interceptorHandlers,
+			disposeHandlers,
 		};
 	}
 
@@ -876,6 +886,7 @@ function createActivationApi(options: {
 		ExtensionInterceptorName,
 		ExtensionInterceptorRegistration<ExtensionInterceptorName>[]
 	>;
+	disposeHandlers: ExtensionDisposeRegistration[];
 }): ExtensionActivationApi {
 	return {
 		extensionId: options.extensionId,
@@ -939,6 +950,12 @@ function createActivationApi(options: {
 					handler as unknown as ExtensionInterceptorFor<ExtensionInterceptorName>,
 			});
 			options.interceptorHandlers.set(eventName, registrations);
+		},
+		onDispose: (handler) => {
+			options.disposeHandlers.push({
+				extensionId: options.extensionId,
+				handler,
+			});
 		},
 	};
 }

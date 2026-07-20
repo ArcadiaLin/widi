@@ -58,7 +58,8 @@ collect.sh
 temp_references/
 .claude
 .codex
-.superpowers/brainstorm/*/state/
+.superpowers/
+docs/superpowers/
 run_test/
 Runs/
 
@@ -69,5 +70,7 @@ apps/widi-agent/.widi/agent/models.json
 apps/widi-agent/.widi/agent/Runs/
 
 # test config
-.widi/
+.widi/*
+!.widi/extensions/
+!.widi/mcp.json
 chat_notes/

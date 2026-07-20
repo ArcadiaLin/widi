@@ -51,6 +51,7 @@ export type {
 	ExtensionContext,
 	ExtensionCustomEntry,
 	ExtensionDefinition,
+	ExtensionDisposeHandler,
 	ExtensionExecResult,
 	ExtensionFactory,
 	ExtensionInputEvent,

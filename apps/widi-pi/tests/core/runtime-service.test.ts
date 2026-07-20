@@ -18,6 +18,7 @@ import type {
 	ExtensionFactory,
 	ExtensionModuleImporter,
 } from "../../src/core/extension/index.ts";
+import type { HumanRequestEnvelope } from "../../src/core/human-request.ts";
 import { createWidiRuntime } from "../../src/core/runtime-service.ts";
 
 class MemoryExecutionEnv implements ExecutionEnv {
@@ -544,6 +545,87 @@ describe("createWidiRuntime", () => {
 			source: "store",
 		});
 		expect(runtime.orchestrator.getDefaultProfileId()).toBe("project");
+	});
+
+	it("grants project trust through a confirmed human request", async () => {
+		const env = new MemoryExecutionEnv();
+		env.addFile(
+			"/workspace/project/.widi/profiles/project.md",
+			profileMarkdown("project"),
+		);
+		const requests: HumanRequestEnvelope[] = [];
+
+		const runtime = await createWidiRuntime({
+			cwd: "/workspace/project",
+			agentDir: "/home/user/.widi",
+			executionEnv: env,
+			defaultModel,
+			defaultProfileId: "project",
+			requestHuman: async (request) => {
+				requests.push(request);
+				return { kind: "confirm", confirmed: true };
+			},
+		});
+
+		expect(requests).toHaveLength(1);
+		expect(requests[0]).toMatchObject({ kind: "confirm" });
+		expect(runtime.services.projectTrust).toMatchObject({
+			trusted: true,
+			source: "store",
+		});
+		expect(runtime.orchestrator.getDefaultProfileId()).toBe("project");
+		expect(env.files.get("/home/user/.widi/trust.json")).toContain(
+			'"/workspace/project": true',
+		);
+	});
+
+	it("stays untrusted when the trust human request is declined", async () => {
+		const env = new MemoryExecutionEnv();
+		env.addFile(
+			"/workspace/project/.widi/profiles/project.md",
+			profileMarkdown("project"),
+		);
+
+		await expect(
+			createWidiRuntime({
+				cwd: "/workspace/project",
+				agentDir: "/home/user/.widi",
+				executionEnv: env,
+				defaultModel,
+				defaultProfileId: "project",
+				requestHuman: async () => ({ kind: "confirm", confirmed: false }),
+			}),
+		).rejects.toMatchObject({
+			code: "profile.default_resolution_failed",
+		});
+		expect(env.files.has("/home/user/.widi/trust.json")).toBe(false);
+	});
+
+	it("stays untrusted with a diagnostic when the trust human request fails", async () => {
+		const env = new MemoryExecutionEnv();
+		env.addFile(
+			"/workspace/project/.widi/profiles/project.md",
+			profileMarkdown("project"),
+		);
+
+		const runtime = await createWidiRuntime({
+			cwd: "/workspace/project",
+			agentDir: "/home/user/.widi",
+			executionEnv: env,
+			defaultModel,
+			requestHuman: async () => {
+				throw new Error("handler exploded");
+			},
+		});
+
+		expect(runtime.services.projectTrust).toMatchObject({
+			trusted: false,
+			source: "settings_default",
+		});
+		expect(runtime.diagnostics).toContainEqual(
+			expect.objectContaining({ code: "orchestrator.human_request_failed" }),
+		);
+		expect(env.files.has("/home/user/.widi/trust.json")).toBe(false);
 	});
 
 	it("connects settings resource and extension paths to loaders", async () => {

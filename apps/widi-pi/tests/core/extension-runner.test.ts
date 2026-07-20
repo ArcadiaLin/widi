@@ -965,3 +965,54 @@ describe("ExtensionRunner before_provider_request pipeline", () => {
 		expect(run.result).toBe(undefined);
 	});
 });
+
+describe("ExtensionRunner dispose", () => {
+	it("runs registered onDispose handlers once and invalidates the runner", async () => {
+		const calls: string[] = [];
+		const runner = await createRunner([
+			[
+				"sample",
+				(api) => {
+					api.onDispose(() => {
+						calls.push("first");
+					});
+					api.onDispose(async () => {
+						calls.push("second");
+					});
+				},
+			],
+		]);
+
+		await runner.dispose("gone");
+		expect(calls).toEqual(["first", "second"]);
+		expect(runner.isStale()).toBe(true);
+
+		await runner.dispose("gone again");
+		expect(calls).toEqual(["first", "second"]);
+	});
+
+	it("runs every handler even when one fails, then rethrows", async () => {
+		const calls: string[] = [];
+		const runner = await createRunner([
+			[
+				"broken",
+				(api) => {
+					api.onDispose(() => {
+						throw new Error("boom");
+					});
+				},
+			],
+			[
+				"healthy",
+				(api) => {
+					api.onDispose(() => {
+						calls.push("healthy");
+					});
+				},
+			],
+		]);
+
+		await expect(runner.dispose()).rejects.toThrow("boom");
+		expect(calls).toEqual(["healthy"]);
+	});
+});
