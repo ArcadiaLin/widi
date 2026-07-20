@@ -1,5 +1,10 @@
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { TSchema } from "typebox";
+import {
+	type BackgroundJobTable,
+	createBackgroundJobStartedResult,
+	DEFAULT_BACKGROUND_TIMEOUT_MS,
+} from "./background-job.ts";
 import {
 	type CoreDiagnostic,
 	createDiagnostic,
@@ -74,6 +79,13 @@ export interface ToolAgentAdapterContext {
 		source: ToolSource,
 		toolName: string,
 	) => ToolExtensionContext | undefined;
+	/**
+	 * Table that owns pseudo-async background jobs. When provided, a
+	 * `backgroundable` tool races a deadline and may settle its call with a job
+	 * handle (t0) while the real work continues in the background. When omitted,
+	 * every tool runs fully synchronously regardless of `backgroundable`.
+	 */
+	backgroundJobTable?: BackgroundJobTable;
 }
 
 type StoredToolRegistration =
@@ -435,6 +447,10 @@ export interface WidiAgentTool extends AgentTool<TSchema, unknown> {
 	promptSnippet?: string;
 	/** Optional prompt guidance bullets copied from the WIDI tool definition. */
 	promptGuidelines?: readonly string[];
+	/** Pseudo-async opt-in copied from the WIDI tool definition. */
+	backgroundable?: boolean;
+	/** Background timeout deadline copied from the WIDI tool definition. */
+	backgroundTimeoutMs?: number;
 }
 
 export function createAgentToolFromResolvedTool(
@@ -448,16 +464,129 @@ export function createAgentToolFromResolvedTool(
 		description: definition.description,
 		promptSnippet: definition.promptSnippet,
 		promptGuidelines: definition.promptGuidelines,
+		backgroundable: definition.backgroundable,
+		backgroundTimeoutMs: definition.backgroundTimeoutMs,
 		parameters: definition.parameters,
 		prepareArguments: definition.prepareArguments,
 		executionMode: definition.executionMode,
-		execute: (toolCallId, params, signal, onUpdate) =>
-			definition.execute(
+		execute: (toolCallId, params, signal, onUpdate) => {
+			if (definition.backgroundable && context.backgroundJobTable) {
+				return runBackgroundableToolCall({
+					resolvedTool,
+					context,
+					table: context.backgroundJobTable,
+					toolCallId,
+					params,
+					signal,
+					onUpdate,
+				});
+			}
+			return definition.execute(
 				toolCallId,
 				params,
 				createToolExecutionContext(resolvedTool, context, signal, onUpdate),
-			),
+			);
+		},
 	};
+}
+
+interface RunBackgroundableToolCallOptions {
+	resolvedTool: ResolvedTool;
+	context: ToolAgentAdapterContext;
+	table: BackgroundJobTable;
+	toolCallId: string;
+	params: unknown;
+	signal: AbortSignal | undefined;
+	onUpdate: Parameters<AgentTool<TSchema, unknown>["execute"]>[3];
+}
+
+/**
+ * Run a `backgroundable` tool call against a deadline.
+ *
+ * The tool executes with the job's own abort signal so its lifetime is
+ * decoupled from the originating tool_use once backgrounded. If it settles
+ * before the deadline, the real result is returned inline (the common case). If
+ * the deadline wins, the call is moved to the background and settled with a job
+ * handle (t0); the still-running promise records its terminal outcome on the
+ * job, which drives the later t1 message via the table's result listeners.
+ */
+function runBackgroundableToolCall(
+	options: RunBackgroundableToolCallOptions,
+): Promise<AgentToolResult<unknown>> {
+	const definition = options.resolvedTool.definition;
+	const timeoutMs =
+		definition.backgroundTimeoutMs ?? DEFAULT_BACKGROUND_TIMEOUT_MS;
+	const job = options.table.create({
+		toolCallId: options.toolCallId,
+		toolName: definition.name,
+	});
+
+	const forwardAbort = () => options.table.abort(job.id);
+	if (options.signal) {
+		if (options.signal.aborted) forwardAbort();
+		else options.signal.addEventListener("abort", forwardAbort, { once: true });
+	}
+
+	const toolContext = createToolExecutionContext(
+		options.resolvedTool,
+		options.context,
+		job.signal,
+		options.onUpdate,
+	);
+	const executePromise = definition.execute(
+		options.toolCallId,
+		options.params,
+		toolContext,
+	);
+
+	// Record the terminal outcome for the job. When it has already been
+	// backgrounded this fires the table's result listeners (t1); otherwise the
+	// inline return below delivers the result.
+	executePromise.then(
+		(result) => options.table.settle(job.id, { status: "completed", result }),
+		(error) =>
+			options.table.settle(job.id, {
+				status: job.signal.aborted ? "cancelled" : "failed",
+				error,
+			}),
+	);
+	if (options.signal) {
+		const signal = options.signal;
+		const detachAbort = () => signal.removeEventListener("abort", forwardAbort);
+		executePromise.then(detachAbort, detachAbort);
+	}
+
+	return raceSettlement(executePromise, timeoutMs).then((winner) => {
+		if (winner === "timeout" && options.table.background(job.id)) {
+			return createBackgroundJobStartedResult({
+				jobId: job.id,
+				toolCallId: options.toolCallId,
+				toolName: definition.name,
+			});
+		}
+		// Settled before the deadline (or the deadline lost the microtask race):
+		// return or throw the real result inline.
+		return executePromise;
+	});
+}
+
+/**
+ * Resolve `"settled"` when `promise` settles or `"timeout"` when `timeoutMs`
+ * elapses first, whichever comes first. Never rejects: both branches only report
+ * the winner, so the caller decides how to consume the settled promise.
+ */
+function raceSettlement(
+	promise: Promise<unknown>,
+	timeoutMs: number,
+): Promise<"settled" | "timeout"> {
+	return new Promise((resolve) => {
+		const timer = setTimeout(() => resolve("timeout"), timeoutMs);
+		const onSettled = () => {
+			clearTimeout(timer);
+			resolve("settled");
+		};
+		promise.then(onSettled, onSettled);
+	});
 }
 
 export function createAgentToolsFromResolvedTools(

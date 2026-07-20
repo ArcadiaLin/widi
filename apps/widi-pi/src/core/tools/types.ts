@@ -137,6 +137,28 @@ export interface ToolDefinition<
 	/** Pi tool execution scheduling mode. */
 	executionMode?: ToolExecutionMode;
 
+	/**
+	 * Opt in to pseudo-async execution. When true, the runtime may turn a
+	 * still-running call into a background job at a timeout deadline: it
+	 * settles the tool call immediately with a job handle (t0) and delivers
+	 * the eventual result later as a separate background job result message
+	 * (t1). Default (false/omitted) keeps the tool fully synchronous.
+	 *
+	 * Only mark tools whose handle-first return is safe and whose result is
+	 * still meaningful when delivered out of band (long-running bash, spawned
+	 * agents). Never mark tools whose result must be consumed inline in the
+	 * same turn (read before edit, and similar).
+	 */
+	backgroundable?: boolean;
+	/**
+	 * Deadline in milliseconds after which a `backgroundable` call that is
+	 * still running is moved to the background. Falls back to the runtime
+	 * default when omitted. Ignored unless `backgroundable` is true. The
+	 * deadline is a safety fallback, not the primary trigger; prefer an
+	 * explicit background request in the tool arguments where it applies.
+	 */
+	backgroundTimeoutMs?: number;
+
 	/** Execute the tool after arguments have been prepared and validated. */
 	execute: ToolExecute<TParamsSchema, TDetails>;
 }

@@ -60,6 +60,7 @@ temp_references/
 .codex
 .superpowers/
 docs/superpowers/
+docs/pseudo-async-tools.md
 run_test/
 Runs/
 
