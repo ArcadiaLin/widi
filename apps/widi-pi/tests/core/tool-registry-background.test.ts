@@ -223,6 +223,68 @@ describe("backgroundable tool adapter", () => {
 		expect(table.list()).toEqual([]);
 	});
 
+	it("backgrounds immediately when the call requests it, without a configured deadline", async () => {
+		const table = new BackgroundJobTable();
+		const settlement = createDeferred<BackgroundJobSettlement>();
+		table.onResult((value) => settlement.resolve(value));
+		const gate = createDeferred<AgentToolResult<undefined>>();
+		const definition: ToolDefinition<typeof emptyParams, undefined> = {
+			name: "sleeper",
+			label: "sleeper",
+			description: "no wall-clock deadline; explicit request only",
+			parameters: emptyParams,
+			backgroundable: true,
+			execute: () => gate.promise,
+		};
+		const agentTool = resolveTool(definition, table);
+
+		const execPromise = agentTool.execute(
+			"call-1",
+			{ background: true },
+			undefined,
+			undefined,
+		);
+		// A deadline of 0 backgrounds on the next macrotask, not inline.
+		await vi.advanceTimersByTimeAsync(0);
+		const t0 = await execPromise;
+
+		expect(t0.details).toEqual({
+			jobId: "job-1",
+			toolCallId: "call-1",
+			toolName: "sleeper",
+			backgrounded: true,
+		});
+		expect(table.get("job-1")?.phase).toBe("backgrounded");
+
+		gate.resolve(textResult("late result"));
+		const delivered = await settlement.promise;
+		expect(delivered.outcome.status).toBe("completed");
+	});
+
+	it("stays synchronous when no deadline is configured and the call does not request background", async () => {
+		const table = new BackgroundJobTable();
+		const gate = createDeferred<AgentToolResult<undefined>>();
+		const definition: ToolDefinition<typeof emptyParams, undefined> = {
+			name: "sleeper",
+			label: "sleeper",
+			description: "no wall-clock deadline; explicit request only",
+			parameters: emptyParams,
+			backgroundable: true,
+			execute: () => gate.promise,
+		};
+		const agentTool = resolveTool(definition, table);
+
+		const execPromise = agentTool.execute("call-1", {}, undefined, undefined);
+		// No deadline and no request: it must never register a job or background.
+		await vi.advanceTimersByTimeAsync(120_000);
+		expect(table.list()).toEqual([]);
+
+		gate.resolve(textResult("inline"));
+		const result = await execPromise;
+		expect(result.content).toEqual([{ type: "text", text: "inline" }]);
+		expect(table.list()).toEqual([]);
+	});
+
 	it("lets the run signal cancel the call before it is backgrounded", async () => {
 		const table = new BackgroundJobTable();
 		const gate = createDeferred<AgentToolResult<undefined>>();

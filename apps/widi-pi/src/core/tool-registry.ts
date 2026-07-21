@@ -3,7 +3,6 @@ import type { TSchema } from "typebox";
 import {
 	type BackgroundJobTable,
 	createBackgroundJobStartedResult,
-	DEFAULT_BACKGROUND_TIMEOUT_MS,
 } from "./background-job.ts";
 import {
 	type CoreDiagnostic,
@@ -471,15 +470,19 @@ export function createAgentToolFromResolvedTool(
 		executionMode: definition.executionMode,
 		execute: (toolCallId, params, signal, onUpdate) => {
 			if (definition.backgroundable && context.backgroundJobTable) {
-				return runBackgroundableToolCall({
-					resolvedTool,
-					context,
-					table: context.backgroundJobTable,
-					toolCallId,
-					params,
-					signal,
-					onUpdate,
-				});
+				const deadlineMs = resolveBackgroundDeadlineMs(definition, params);
+				if (deadlineMs !== undefined) {
+					return runBackgroundableToolCall({
+						resolvedTool,
+						context,
+						table: context.backgroundJobTable,
+						toolCallId,
+						params,
+						signal,
+						onUpdate,
+						deadlineMs,
+					});
+				}
 			}
 			return definition.execute(
 				toolCallId,
@@ -490,6 +493,41 @@ export function createAgentToolFromResolvedTool(
 	};
 }
 
+/**
+ * Decide when, if ever, a `backgroundable` call should move to the background.
+ *
+ * An explicit `background: true` argument is the primary trigger and backgrounds
+ * as soon as the call has not settled essentially immediately (deadline 0). A
+ * configured `backgroundTimeoutMs` is an opt-in wall-clock safety net. With
+ * neither, the call stays fully synchronous (undefined), so marking a tool
+ * `backgroundable` never changes its behavior until a caller or the tool asks
+ * for it.
+ */
+function resolveBackgroundDeadlineMs(
+	definition: RegistryToolDefinition,
+	params: unknown,
+): number | undefined {
+	if (isBackgroundRequested(params)) return 0;
+	const configured = definition.backgroundTimeoutMs;
+	if (
+		typeof configured === "number" &&
+		Number.isFinite(configured) &&
+		configured >= 0
+	) {
+		return configured;
+	}
+	return undefined;
+}
+
+/** True when tool arguments explicitly opt this call into background execution. */
+function isBackgroundRequested(params: unknown): boolean {
+	return (
+		typeof params === "object" &&
+		params !== null &&
+		(params as { background?: unknown }).background === true
+	);
+}
+
 interface RunBackgroundableToolCallOptions {
 	resolvedTool: ResolvedTool;
 	context: ToolAgentAdapterContext;
@@ -498,6 +536,8 @@ interface RunBackgroundableToolCallOptions {
 	params: unknown;
 	signal: AbortSignal | undefined;
 	onUpdate: Parameters<AgentTool<TSchema, unknown>["execute"]>[3];
+	/** Resolved deadline for this call; 0 backgrounds essentially immediately. */
+	deadlineMs: number;
 }
 
 /**
@@ -514,8 +554,7 @@ function runBackgroundableToolCall(
 	options: RunBackgroundableToolCallOptions,
 ): Promise<AgentToolResult<unknown>> {
 	const definition = options.resolvedTool.definition;
-	const timeoutMs =
-		definition.backgroundTimeoutMs ?? DEFAULT_BACKGROUND_TIMEOUT_MS;
+	const timeoutMs = options.deadlineMs;
 	const job = options.table.create({
 		toolCallId: options.toolCallId,
 		toolName: definition.name,
@@ -668,6 +707,7 @@ function createToolExecutionContext(
 			context.createExtensionContext?.(source, resolvedTool.definition.name) ??
 			context.extension,
 		human: context.human,
+		backgroundJobTable: context.backgroundJobTable,
 		[bindToolExecutionContextSymbol]: bindContext,
 	});
 	return bindContext(resolvedTool.source);
@@ -695,6 +735,7 @@ function restoreInnerToolExecutionContext<TDetails>(
 		onUpdate: context.onUpdate,
 		extension: innerContext.extension,
 		human: context.human,
+		backgroundJobTable: context.backgroundJobTable,
 		...(bindContext
 			? { [bindToolExecutionContextSymbol]: bindContext }
 			: undefined),

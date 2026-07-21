@@ -4,6 +4,7 @@ import type {
 	ToolExecutionMode,
 } from "@earendil-works/pi-agent-core";
 import type { Static, TSchema } from "typebox";
+import type { BackgroundJobTable } from "../background-job.ts";
 import type { ToolHumanHost } from "../human-request.ts";
 
 /**
@@ -23,6 +24,12 @@ export interface ToolExecutionContext<TDetails> {
 	extension: ToolExtensionContext | undefined;
 	/** Host for controlled user interaction from tools. */
 	human: ToolHumanHost | undefined;
+	/**
+	 * Per-agent registry of pseudo-async background jobs, when the runtime wired
+	 * one. Job-control tools such as `wait_for_jobs` read live jobs and observe
+	 * their settlements through it; most tools ignore it.
+	 */
+	backgroundJobTable?: BackgroundJobTable;
 }
 
 /**
@@ -151,11 +158,12 @@ export interface ToolDefinition<
 	 */
 	backgroundable?: boolean;
 	/**
-	 * Deadline in milliseconds after which a `backgroundable` call that is
-	 * still running is moved to the background. Falls back to the runtime
-	 * default when omitted. Ignored unless `backgroundable` is true. The
-	 * deadline is a safety fallback, not the primary trigger; prefer an
-	 * explicit background request in the tool arguments where it applies.
+	 * Wall-clock deadline in milliseconds after which a `backgroundable` call
+	 * that is still running is moved to the background. This is an opt-in safety
+	 * net, not the primary trigger: when omitted, the call is never
+	 * auto-backgrounded on a timer and only moves to the background when the tool
+	 * arguments explicitly request it (a `background: true` argument). Ignored
+	 * unless `backgroundable` is true.
 	 */
 	backgroundTimeoutMs?: number;
 

@@ -179,14 +179,6 @@ function errorToText(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-/**
- * Default deadline after which a still-running `backgroundable` call is moved to
- * the background. This is a safety fallback, not the primary trigger; tools that
- * are known to be long-running should prefer an explicit background request in
- * their arguments and can override with `backgroundTimeoutMs`.
- */
-export const DEFAULT_BACKGROUND_TIMEOUT_MS = 30_000;
-
 /** Lifecycle phase of a live background job before it settles. */
 export type BackgroundJobPhase = "running" | "backgrounded";
 
