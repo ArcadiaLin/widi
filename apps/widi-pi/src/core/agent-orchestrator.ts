@@ -2256,16 +2256,8 @@ export class AgentOrchestrator {
 			})),
 		);
 		const agentRecord = this._agents.get(options.agentId);
-		// Profile gate: withhold the job table when the profile denies background
-		// jobs. Without it, backgroundable calls (bash background, wait_for_jobs)
-		// degrade to synchronous behavior at the tool adapter. Permitted unless the
-		// capability is explicitly false, matching canRequestUser.
-		const backgroundJobTable =
-			agentRecord?.capabilities?.canBackgroundJobs === false
-				? undefined
-				: agentRecord?.backgroundJobTable;
 		const agentTools = createAgentToolsFromResolvedTools(resolvedTools.tools, {
-			backgroundJobTable,
+			backgroundJobTable: agentRecord?.backgroundJobTable,
 			human: {
 				// Same capability ruling as extension human requests: the profile
 				// decides whether this agent may interrupt the human at all.

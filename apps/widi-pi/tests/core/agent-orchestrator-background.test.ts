@@ -12,11 +12,6 @@ import type {
 	AgentOrchestrator,
 	OrchestratorEvent,
 } from "../../src/core/agent-orchestrator.ts";
-import {
-	type AgentProfile,
-	AgentProfileRegistry,
-	InMemoryProfileStorageBackend,
-} from "../../src/core/agent-profile.ts";
 import type { AgentRecord } from "../../src/core/agent-record.ts";
 import type { BackgroundJobOutcome } from "../../src/core/background-job.ts";
 import type { ToolDefinition } from "../../src/core/tools/types.ts";
@@ -295,7 +290,7 @@ describe("AgentOrchestrator background job router", () => {
 	});
 });
 
-describe("AgentOrchestrator background job capability gate", () => {
+describe("AgentOrchestrator background job context", () => {
 	// A plain (non-backgroundable) tool that reports whether the adapter injected
 	// a background job table into its execution context.
 	const probeTool: ToolDefinition = {
@@ -333,7 +328,7 @@ describe("AgentOrchestrator background job capability gate", () => {
 			.map((part) => (part.type === "text" ? part.text : ""))
 			.join("");
 
-	it("injects the job table by default", async () => {
+	it("always injects the agent's job table", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env, {
 			toolRegistry: createToolRegistry(probeTool),
@@ -342,29 +337,6 @@ describe("AgentOrchestrator background job capability gate", () => {
 
 		expect(textOf(await probeTableState(orchestrator, agentId))).toBe(
 			"has-table",
-		);
-	});
-
-	it("withholds the job table when the profile denies background jobs", async () => {
-		const env = new MemoryExecutionEnv();
-		const gatedProfile: AgentProfile = {
-			id: "gated",
-			label: "Gated",
-			systemPrompt: "gated prompt",
-			persist: false,
-			capabilities: { canBackgroundJobs: false },
-		};
-		const orchestrator = await createOrchestrator(env, {
-			toolRegistry: createToolRegistry(probeTool),
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([{ profile: gatedProfile }]),
-			),
-			defaultProfileId: "gated",
-		});
-		const agentId = await orchestrator.spawnAgent();
-
-		expect(textOf(await probeTableState(orchestrator, agentId))).toBe(
-			"no-table",
 		);
 	});
 });

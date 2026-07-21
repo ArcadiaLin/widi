@@ -28,13 +28,6 @@ export type AgentProfile = {
 		readonly acceptsUserInput?: boolean;
 		readonly canSpawn?: boolean;
 		readonly canRequestUser?: boolean;
-		/**
-		 * Whether this agent may move tool calls to the background (bash with
-		 * background, and the wait_for_jobs tool). Permitted unless explicitly
-		 * false; when false the agent's background job table is withheld so
-		 * backgroundable calls run synchronously.
-		 */
-		readonly canBackgroundJobs?: boolean;
 	};
 };
 
@@ -1349,13 +1342,11 @@ function readCapabilities(
 		acceptsUserInput?: boolean;
 		canSpawn?: boolean;
 		canRequestUser?: boolean;
-		canBackgroundJobs?: boolean;
 	} = {};
 	for (const key of [
 		"acceptsUserInput",
 		"canSpawn",
 		"canRequestUser",
-		"canBackgroundJobs",
 	] as const) {
 		const fieldValue = record[key];
 		if (fieldValue === undefined) continue;
