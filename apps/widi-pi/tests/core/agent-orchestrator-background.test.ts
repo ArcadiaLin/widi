@@ -1,18 +1,28 @@
 import type {
 	AgentHarness,
 	AgentHarnessEvent,
+	AgentTool,
+	AgentToolResult,
 } from "@earendil-works/pi-agent-core";
 import { AgentHarnessError } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
 import type {
 	AgentOrchestrator,
 	OrchestratorEvent,
 } from "../../src/core/agent-orchestrator.ts";
+import {
+	type AgentProfile,
+	AgentProfileRegistry,
+	InMemoryProfileStorageBackend,
+} from "../../src/core/agent-profile.ts";
 import type { AgentRecord } from "../../src/core/agent-record.ts";
 import type { BackgroundJobOutcome } from "../../src/core/background-job.ts";
+import type { ToolDefinition } from "../../src/core/tools/types.ts";
 import {
 	createOrchestrator,
+	createToolRegistry,
 	MemoryExecutionEnv,
 	requireAgentRecord,
 } from "../helpers/orchestrator.ts";
@@ -259,6 +269,102 @@ describe("AgentOrchestrator background job router", () => {
 		expect(codes).toContain("orchestrator.background_job_dropped");
 		expect(internals._pendingBackgroundResults.has("missing-agent")).toBe(
 			false,
+		);
+	});
+
+	it("emits the live background job count as jobs background and settle", async () => {
+		const { orchestrator, record } = await spawnAgent();
+		// Keep the agent busy so the settlement stays buffered; we only assert the
+		// count events here, not delivery.
+		record.status = "running";
+		const counts: number[] = [];
+		orchestrator.subscribe((event) => {
+			if (event.type === "agent_background_jobs_changed")
+				counts.push(event.count);
+		});
+
+		const job = record.backgroundJobTable.create({
+			toolCallId: "call-1",
+			toolName: "bash",
+		});
+		record.backgroundJobTable.background(job.id);
+		await vi.waitFor(() => expect(counts).toEqual([1]));
+
+		record.backgroundJobTable.settle(job.id, completedOutcome);
+		await vi.waitFor(() => expect(counts).toEqual([1, 0]));
+	});
+});
+
+describe("AgentOrchestrator background job capability gate", () => {
+	// A plain (non-backgroundable) tool that reports whether the adapter injected
+	// a background job table into its execution context.
+	const probeTool: ToolDefinition = {
+		name: "probe",
+		label: "probe",
+		description: "reports whether the background job table was injected",
+		parameters: Type.Object({}),
+		execute: async (_toolCallId, _params, context) => ({
+			content: [
+				{
+					type: "text",
+					text: context.backgroundJobTable ? "has-table" : "no-table",
+				},
+			],
+			details: undefined,
+		}),
+	};
+
+	function probeTableState(
+		orchestrator: AgentOrchestrator,
+		agentId: string,
+	): Promise<AgentToolResult<unknown>> {
+		const toolSet = (
+			orchestrator as unknown as {
+				_agentToolSets: Map<string, { tools: AgentTool[] }>;
+			}
+		)._agentToolSets.get(agentId);
+		const probe = toolSet?.tools.find((tool) => tool.name === "probe");
+		if (!probe) throw new Error("probe tool not resolved for agent");
+		return probe.execute("call-1", {}, undefined, undefined);
+	}
+
+	const textOf = (result: AgentToolResult<unknown>): string =>
+		result.content
+			.map((part) => (part.type === "text" ? part.text : ""))
+			.join("");
+
+	it("injects the job table by default", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env, {
+			toolRegistry: createToolRegistry(probeTool),
+		});
+		const agentId = await orchestrator.spawnAgent();
+
+		expect(textOf(await probeTableState(orchestrator, agentId))).toBe(
+			"has-table",
+		);
+	});
+
+	it("withholds the job table when the profile denies background jobs", async () => {
+		const env = new MemoryExecutionEnv();
+		const gatedProfile: AgentProfile = {
+			id: "gated",
+			label: "Gated",
+			systemPrompt: "gated prompt",
+			persist: false,
+			capabilities: { canBackgroundJobs: false },
+		};
+		const orchestrator = await createOrchestrator(env, {
+			toolRegistry: createToolRegistry(probeTool),
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: gatedProfile }]),
+			),
+			defaultProfileId: "gated",
+		});
+		const agentId = await orchestrator.spawnAgent();
+
+		expect(textOf(await probeTableState(orchestrator, agentId))).toBe(
+			"no-table",
 		);
 	});
 });

@@ -309,6 +309,11 @@ export class AgentOrchestrator {
 	// run ends before draining it) and never blocks on an in-flight run.
 	private _pendingBackgroundResults: Map<AgentId, string[]> = new Map();
 	private _backgroundFlushInFlight: Set<AgentId> = new Set();
+	// Per-agent tail for background job count events. These carry an absolute
+	// count (a level, not a delta), so they must reach listeners in the order the
+	// table changed; `_emit` is not itself serialized, so emissions are chained
+	// here to keep an async listener from observing a stale count.
+	private _backgroundJobCountEmits: Map<AgentId, Promise<void>> = new Map();
 	private _eventListeners: Set<OrchestratorEventListener> = new Set();
 	private _extensionObserverDispatchDepth: Map<AgentId, number> = new Map();
 	private _agentRunSignals: Map<AgentId, AbortSignal> = new Map();
@@ -1397,6 +1402,7 @@ export class AgentOrchestrator {
 		}
 		this._pendingBackgroundResults.delete(agentId);
 		this._backgroundFlushInFlight.delete(agentId);
+		this._backgroundJobCountEmits.delete(agentId);
 
 		const harness = record.harness;
 		if (harness) {
@@ -1989,12 +1995,18 @@ export class AgentOrchestrator {
 			void this._handleSubscribedAgentHarnessEvent(agentId, event, signal);
 		});
 		this._unsubscribeAgentHarness.set(agentId, unsubscribeHarnessEvents);
-		const unsubscribeJobResults = this._requireAgentRecord(
-			agentId,
-		).backgroundJobTable.onResult((settlement) => {
+		const jobTable = this._requireAgentRecord(agentId).backgroundJobTable;
+		const unsubscribeJobResults = jobTable.onResult((settlement) => {
 			this._bufferBackgroundResult(agentId, settlement);
+			this._emitBackgroundJobCount(agentId);
 		});
-		this._unsubscribeAgentJobResults.set(agentId, unsubscribeJobResults);
+		const unsubscribeJobStarts = jobTable.onBackground(() => {
+			this._emitBackgroundJobCount(agentId);
+		});
+		this._unsubscribeAgentJobResults.set(agentId, () => {
+			unsubscribeJobResults();
+			unsubscribeJobStarts();
+		});
 		this._unsubscribeAgentExtensionInterceptors.set(agentId, () => {
 			for (const unsubscribe of unsubscribeInterceptors) {
 				unsubscribe();
@@ -2243,8 +2255,17 @@ export class AgentOrchestrator {
 				phase: "resolve",
 			})),
 		);
+		const agentRecord = this._agents.get(options.agentId);
+		// Profile gate: withhold the job table when the profile denies background
+		// jobs. Without it, backgroundable calls (bash background, wait_for_jobs)
+		// degrade to synchronous behavior at the tool adapter. Permitted unless the
+		// capability is explicitly false, matching canRequestUser.
+		const backgroundJobTable =
+			agentRecord?.capabilities?.canBackgroundJobs === false
+				? undefined
+				: agentRecord?.backgroundJobTable;
 		const agentTools = createAgentToolsFromResolvedTools(resolvedTools.tools, {
-			backgroundJobTable: this._agents.get(options.agentId)?.backgroundJobTable,
+			backgroundJobTable,
 			human: {
 				// Same capability ruling as extension human requests: the profile
 				// decides whether this agent may interrupt the human at all.
@@ -2980,6 +3001,37 @@ export class AgentOrchestrator {
 	}
 
 	/**
+	 * Emit the agent's current live background job count (jobs that are
+	 * backgrounded but not yet settled) so surfaces can show outstanding
+	 * pseudo-async work. Called when a job is backgrounded or settles; a settled
+	 * job is already removed from the table, so the count reflects the change.
+	 */
+	private _emitBackgroundJobCount(agentId: AgentId): void {
+		const record = this._agents.get(agentId);
+		if (!record) return;
+		// Snapshot the count and timestamp now, at the moment of the change, then
+		// chain the emit onto this agent's tail so events reach listeners in the
+		// order the table changed rather than in async completion order.
+		const count = record.backgroundJobTable
+			.list()
+			.filter((job) => job.phase === "backgrounded").length;
+		const changedAt = now();
+		const prior =
+			this._backgroundJobCountEmits.get(agentId) ?? Promise.resolve();
+		const next = prior
+			.then(() =>
+				this._emit({
+					type: "agent_background_jobs_changed",
+					agentId,
+					count,
+					changedAt,
+				}),
+			)
+			.catch(() => {});
+		this._backgroundJobCountEmits.set(agentId, next);
+	}
+
+	/**
 	 * Deliver buffered background results to an idle agent as one user-message
 	 * prompt (t1). No-op while the agent is running or a flush is already in
 	 * flight; the harness `settled` transition re-triggers it. Total: records its
@@ -3017,24 +3069,30 @@ export class AgentOrchestrator {
 			await record.harness.prompt(texts.join("\n\n"));
 			delivered = true;
 		} catch (error) {
-			// Preserve the results and let the next idle boundary (`settled`) retry.
-			// `busy` is an expected race (a run started between the idle check and
-			// the prompt); any other error is unexpected and also warned. Never
-			// re-flush inline on failure, which could hot-loop against a transiently
-			// busy harness (turn_end marks the record idle before it truly settles).
-			buffer.unshift(...texts);
-			if (!isAgentHarnessErrorCode(error, "busy")) {
-				await this._publishDiagnostic(
-					createOrchestratorDiagnostic({
-						severity: "warning",
-						disposition: "reported",
-						code: "orchestrator.background_job_delivery_failed",
-						message: `Background job result delivery to agent ${agentId} failed, will retry at the next idle boundary: ${formatError(error)}`,
-						agentId,
-						phase: "runtime",
-						recoverable: true,
-					}),
-				);
+			// If the agent was disposed while the prompt was in flight its buffer is
+			// already gone (dispose deletes the entry); the results are dropped with
+			// the agent, so there is nothing to requeue and no retry to promise.
+			if (this._pendingBackgroundResults.has(agentId)) {
+				// Preserve the results and let the next idle boundary (`settled`)
+				// retry. `busy` is an expected race (a run started between the idle
+				// check and the prompt); any other error is unexpected and also
+				// warned. Never re-flush inline on failure, which could hot-loop
+				// against a transiently busy harness (turn_end marks the record idle
+				// before it truly settles).
+				buffer.unshift(...texts);
+				if (!isAgentHarnessErrorCode(error, "busy")) {
+					await this._publishDiagnostic(
+						createOrchestratorDiagnostic({
+							severity: "warning",
+							disposition: "reported",
+							code: "orchestrator.background_job_delivery_failed",
+							message: `Background job result delivery to agent ${agentId} failed, will retry at the next idle boundary: ${formatError(error)}`,
+							agentId,
+							phase: "runtime",
+							recoverable: true,
+						}),
+					);
+				}
 			}
 		} finally {
 			this._backgroundFlushInFlight.delete(agentId);

@@ -216,6 +216,9 @@ export type BackgroundJobResultListener = (
 	settlement: BackgroundJobSettlement,
 ) => void;
 
+/** Listener invoked when a job is moved to the background. */
+export type BackgroundJobStartedListener = (job: BackgroundJob) => void;
+
 /**
  * Result of {@link BackgroundJobTable.settle}.
  * - `backgrounded`: the job had been moved to the background; listeners fired.
@@ -253,6 +256,8 @@ export interface BackgroundJobTableOptions {
 export class BackgroundJobTable {
 	private readonly _jobs = new Map<string, JobRecord>();
 	private readonly _listeners = new Set<BackgroundJobResultListener>();
+	private readonly _backgroundListeners =
+		new Set<BackgroundJobStartedListener>();
 	private readonly _createId: () => string;
 	private _counter = 0;
 
@@ -301,6 +306,13 @@ export class BackgroundJobTable {
 		const record = this._jobs.get(id);
 		if (!record || record.settled) return false;
 		record.phase = "backgrounded";
+		for (const listener of this._backgroundListeners) {
+			try {
+				listener(record.view);
+			} catch {
+				// Isolate observer failures, same as _notify.
+			}
+		}
 		return true;
 	}
 
@@ -328,6 +340,12 @@ export class BackgroundJobTable {
 	onResult(listener: BackgroundJobResultListener): () => void {
 		this._listeners.add(listener);
 		return () => this._listeners.delete(listener);
+	}
+
+	/** Subscribe to jobs being moved to the background. Returns an unsubscribe. */
+	onBackground(listener: BackgroundJobStartedListener): () => void {
+		this._backgroundListeners.add(listener);
+		return () => this._backgroundListeners.delete(listener);
 	}
 
 	private _notify(settlement: BackgroundJobSettlement): void {

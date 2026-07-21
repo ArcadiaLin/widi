@@ -8,6 +8,12 @@ import type { ToolDefinition } from "../types.ts";
 
 /** Default barrier timeout so a wait never hangs the agent indefinitely. */
 const DEFAULT_WAIT_TIMEOUT_MS = 60_000;
+/**
+ * Hard ceiling on the barrier. An explicit `timeout` is clamped to this so a
+ * large value can never hang the agent turn for long on a job that never settles
+ * (for example a bash server started with `background: true`).
+ */
+const MAX_WAIT_TIMEOUT_MS = 600_000;
 
 const waitForJobsSchema = Type.Object({
 	jobIds: Type.Optional(
@@ -19,7 +25,7 @@ const waitForJobsSchema = Type.Object({
 	timeout: Type.Optional(
 		Type.Number({
 			description:
-				"Maximum seconds to block before returning with the current status (default 60). Jobs that are still running keep running; their output still arrives later as separate background job result messages.",
+				"Maximum seconds to block before returning with the current status (default 60, capped at 600; pass 0 to poll the current status without blocking). Jobs that are still running keep running; their output still arrives later as separate background job result messages.",
 		}),
 	),
 });
@@ -190,10 +196,16 @@ function waitForPending(
 }
 
 function resolveWaitTimeoutMs(timeout: number | undefined): number {
-	if (timeout === undefined || !Number.isFinite(timeout) || timeout <= 0) {
+	// Omitted or not a number: fall back to the default barrier.
+	if (timeout === undefined || Number.isNaN(timeout)) {
 		return DEFAULT_WAIT_TIMEOUT_MS;
 	}
-	return timeout * 1000;
+	// Zero (or a nonsensical negative) means "do not block": report the current
+	// status and return on the next tick.
+	if (timeout <= 0) return 0;
+	// Clamp to the ceiling so an explicit timeout can never hang the agent for
+	// long (Infinity clamps here too).
+	return Math.min(timeout * 1000, MAX_WAIT_TIMEOUT_MS);
 }
 
 function formatWaitSummary(
@@ -218,11 +230,19 @@ function formatWaitSummary(
 				return `- ${job.jobId}: not tracked (already finished, not backgrounded, or never started)`;
 		}
 	});
+	const anySettled = jobs.some(
+		(job) =>
+			job.state === "completed" ||
+			job.state === "failed" ||
+			job.state === "cancelled",
+	);
 	const header =
 		outcome === "timed_out"
 			? "Timed out waiting for background jobs; some are still running:"
 			: outcome === "aborted"
 				? "Wait interrupted; background jobs are still running:"
-				: "Background jobs finished:";
+				: anySettled
+					? "Background jobs finished:"
+					: "No matching background jobs to wait for; they may have already finished:";
 	return `${header}\n${lines.join("\n")}\n\nDetailed output for each finished job arrives as a separate background job result message.`;
 }

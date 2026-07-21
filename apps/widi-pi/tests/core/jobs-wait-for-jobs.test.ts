@@ -170,6 +170,73 @@ describe("wait_for_jobs tool", () => {
 		expect(table.get(jobId)?.phase).toBe("backgrounded");
 	});
 
+	it("polls the current status without blocking when timeout is 0", async () => {
+		const table = new BackgroundJobTable();
+		const jobId = backgroundJob(table);
+		const tool = createWaitForJobsToolDefinition();
+
+		// timeout 0 must return promptly with the live status rather than falling
+		// back to the default 60s barrier.
+		const result = await tool.execute(
+			"wait-1",
+			{ jobIds: [jobId], timeout: 0 },
+			makeContext(table),
+		);
+
+		expect(result.details.outcome).toBe("timed_out");
+		expect(result.details.jobs).toEqual([
+			{ jobId, toolName: "bash", state: "running" },
+		]);
+		// The job is untouched and keeps running.
+		expect(table.get(jobId)?.phase).toBe("backgrounded");
+	});
+
+	it("clamps an oversized timeout to the ceiling", async () => {
+		vi.useFakeTimers();
+		try {
+			const table = new BackgroundJobTable();
+			const jobId = backgroundJob(table);
+			const tool = createWaitForJobsToolDefinition();
+
+			// A day-long request must not hang: it is clamped to the 600s ceiling, so
+			// advancing 600s releases the wait.
+			const promise = tool.execute(
+				"wait-1",
+				{ jobIds: [jobId], timeout: 86_400 },
+				makeContext(table),
+			);
+			await vi.advanceTimersByTimeAsync(600_000);
+			const result = await promise;
+
+			expect(result.details.outcome).toBe("timed_out");
+			expect(result.details.jobs).toEqual([
+				{ jobId, toolName: "bash", state: "running" },
+			]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not claim jobs finished when every requested id is unknown", async () => {
+		const table = new BackgroundJobTable();
+		const tool = createWaitForJobsToolDefinition();
+
+		const result = await tool.execute(
+			"wait-1",
+			{ jobIds: ["job-404"] },
+			makeContext(table),
+		);
+
+		expect(result.content[0]).toMatchObject({
+			type: "text",
+			text: expect.stringContaining("may have already finished"),
+		});
+		expect(result.content[0]).toMatchObject({
+			type: "text",
+			text: expect.not.stringContaining("Background jobs finished"),
+		});
+	});
+
 	it("reports no registry when the background job table is absent", async () => {
 		const tool = createWaitForJobsToolDefinition();
 		const result = await tool.execute(

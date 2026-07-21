@@ -271,6 +271,10 @@ export class EventProjector {
 				return;
 			case "input_transformed":
 				return;
+			case "agent_background_jobs_changed":
+				ensureAgentProjection(this.state, event.agentId).backgroundJobCount =
+					event.count;
+				return;
 		}
 	}
 

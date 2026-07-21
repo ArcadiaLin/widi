@@ -163,6 +163,15 @@ export type OrchestratorEvent =
 			forkedSessionId: string;
 			entryId?: string;
 			createdAt: string;
+	  }
+	// Count of the agent's currently live background jobs (backgrounded but not
+	// yet settled). Emitted whenever a job is backgrounded or settles so
+	// surfaces can show an agent's outstanding pseudo-async work.
+	| {
+			readonly type: "agent_background_jobs_changed";
+			agentId: AgentId;
+			count: number;
+			changedAt: string;
 	  };
 
 export type OrchestratorEventListener = (
