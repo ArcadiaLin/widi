@@ -58,8 +58,10 @@ collect.sh
 temp_references/
 .claude
 .codex
+.agents/
 .superpowers/
 docs/superpowers/
+docs/pseudo-async-tools.md
 run_test/
 Runs/
 

@@ -5,6 +5,7 @@ import type {
 	AgentProfileSource,
 } from "./agent-profile.js";
 import { toAgentProfileReference } from "./agent-profile.js";
+import { BackgroundJobTable } from "./background-job.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
 import type {
 	ExtensionIdentity,
@@ -49,6 +50,13 @@ export interface AgentRecord {
 	toolSnapshot?: AgentToolsSnapshot;
 	resources?: AgentResourcesSnapshot;
 	extensionRunner?: ExtensionRunner;
+	/**
+	 * Pseudo-async background jobs owned by this agent. Job ownership is
+	 * structural: every job registered here belongs to this agent, so the
+	 * result router knows whose turn to inject the outcome into and dispose can
+	 * cascade an abort to all of them.
+	 */
+	readonly backgroundJobTable: BackgroundJobTable;
 	resourceDiagnostics: OrchestratorDiagnostic[];
 	extensionDiagnostics: OrchestratorDiagnostic[];
 	diagnostics: OrchestratorDiagnostic[];
@@ -93,6 +101,7 @@ export function createAgentRecord(options: {
 		capabilities: options.resolvedProfile.profile.capabilities,
 		sessionMetadata: options.sessionMetadata,
 		model: options.model,
+		backgroundJobTable: new BackgroundJobTable(),
 		resourceDiagnostics: [],
 		extensionDiagnostics: [],
 		diagnostics: [],
@@ -114,6 +123,7 @@ export function createAgentRecordFromProfileReference(options: {
 		capabilities: options.capabilities,
 		sessionMetadata: options.sessionMetadata,
 		model: options.model,
+		backgroundJobTable: new BackgroundJobTable(),
 		resourceDiagnostics: [],
 		extensionDiagnostics: [],
 		diagnostics: [],

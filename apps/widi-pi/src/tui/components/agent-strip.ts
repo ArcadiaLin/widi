@@ -27,10 +27,15 @@ export class AgentStripView implements Component {
 			const attention = agents.filter(
 				(agent) => agent.attention !== "none",
 			).length;
+			const backgroundJobs = agents.reduce(
+				(sum, agent) => sum + agent.backgroundJobCount,
+				0,
+			);
 			const summary = [
 				formatAgent(this.state, active, true),
 				running > 0 && `${running} running`,
 				attention > 0 && `${attention} attention`,
+				backgroundJobs > 0 && `${backgroundJobs} bg`,
 			]
 				.filter(Boolean)
 				.join(colors.dim(" · "));
@@ -84,12 +89,16 @@ function formatAgent(
 					? colors.info("●")
 					: colors.ok("●");
 	const label = agentIdentityLabel(state, agent);
-	const detail =
+	const base =
 		agent.attention === "human-request"
 			? "needs input"
 			: agent.unreadCount > 0
 				? `${agent.status} · ${agent.unreadCount} unread`
 				: agent.status;
+	const detail =
+		agent.backgroundJobCount > 0
+			? `${base} · ${agent.backgroundJobCount} bg`
+			: base;
 	return `${glyph} ${active ? colors.bold(label) : label} ${colors.dim(detail)}`;
 }
 

@@ -203,6 +203,8 @@ export interface AgentViewState {
 	extensionStatuses: Map<string, ExtensionStatusSnapshot>;
 	unreadCount: number;
 	attention: AgentAttention;
+	/** Live background jobs (backgrounded, not yet settled) owned by this agent. */
+	backgroundJobCount: number;
 	hydration: "pending" | "ready" | "failed";
 	bufferedEvents: OrchestratorEvent[];
 	pendingInput?: PendingInput;
@@ -269,6 +271,7 @@ export function createAgentViewState(
 		extensionStatuses: new Map(),
 		unreadCount: 0,
 		attention: "none",
+		backgroundJobCount: 0,
 		hydration: "ready",
 		bufferedEvents: [],
 		queue: { steer: [], followUp: [], nextTurn: 0 },

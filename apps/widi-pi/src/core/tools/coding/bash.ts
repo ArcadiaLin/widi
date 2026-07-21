@@ -43,6 +43,12 @@ const bashSchema = Type.Object({
 			description: "Timeout in seconds (optional, no default timeout)",
 		}),
 	),
+	background: Type.Optional(
+		Type.Boolean({
+			description:
+				"Run in the background: the call returns immediately with a job handle instead of blocking, and the command's output arrives later as a separate background job result message. Use for long-running commands you do not need to wait on inline (servers, watchers, long builds). Omit for normal commands whose output you need in this turn.",
+		}),
+	),
 });
 
 export type BashToolInput = Static<typeof bashSchema>;
@@ -173,8 +179,10 @@ export function createBashToolDefinition(
 		promptGuidelines: [
 			"Use bash for building, testing, version control, and commands not covered by a dedicated tool.",
 			"Do not use bash to replace read, grep, find, or ls; the dedicated tools are more precise.",
+			"Set background: true only for commands you intend to keep running without blocking; their result comes back later as a separate message.",
 		],
 		parameters: bashSchema,
+		backgroundable: true,
 		execute: async (_toolCallId, { command, timeout }, context) => {
 			const signal = context.signal;
 			const onUpdate = context.onUpdate;

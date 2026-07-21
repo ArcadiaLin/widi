@@ -408,6 +408,7 @@ describe("createWidiRuntime", () => {
 			"find",
 			"ls",
 			"ask_human",
+			"wait_for_jobs",
 		]);
 		for (const name of [
 			"read",
@@ -418,6 +419,7 @@ describe("createWidiRuntime", () => {
 			"find",
 			"ls",
 			"ask_human",
+			"wait_for_jobs",
 		]) {
 			expect(resolved.getTool(name)?.source).toEqual({
 				kind: "core",
