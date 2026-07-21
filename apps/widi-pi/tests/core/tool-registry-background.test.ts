@@ -144,7 +144,7 @@ describe("backgroundable tool adapter", () => {
 		expect(table.list()).toEqual([]);
 	});
 
-	it("runs the tool under the job signal, not the run signal", async () => {
+	it("runs the tool under the job signal, decoupled from the run signal after t0", async () => {
 		const table = new BackgroundJobTable();
 		const gate = createDeferred<AgentToolResult<undefined>>();
 		let toolSignal: AbortSignal | undefined;
@@ -170,11 +170,85 @@ describe("backgroundable tool adapter", () => {
 		expect(toolSignal).not.toBe(runController.signal);
 		expect(toolSignal).toBe(table.get("job-1")?.signal);
 
-		// Aborting the run signal cascades to the live background job.
+		// After t0 the run signal no longer owns the job: aborting it does nothing.
 		runController.abort();
+		expect(toolSignal?.aborted).toBe(false);
+
+		// The job table still owns the lifecycle and can cancel it.
+		table.abort("job-1");
 		expect(toolSignal?.aborted).toBe(true);
 
 		gate.resolve(textResult("ignored"));
 		await Promise.resolve();
+	});
+
+	it("normalizes a synchronous throw from execute and cleans up the job", async () => {
+		const table = new BackgroundJobTable();
+		const definition: ToolDefinition<typeof emptyParams, undefined> = {
+			name: "sleeper",
+			label: "sleeper",
+			description: "throws synchronously",
+			parameters: emptyParams,
+			backgroundable: true,
+			backgroundTimeoutMs: 50,
+			execute: () => {
+				throw new Error("sync boom");
+			},
+		};
+		const agentTool = resolveTool(definition, table);
+
+		await expect(
+			agentTool.execute("call-1", {}, undefined, undefined),
+		).rejects.toThrow("sync boom");
+		// The job is settled and removed rather than orphaned in the table.
+		expect(table.list()).toEqual([]);
+	});
+
+	it("normalizes a plain synchronous result from an untyped execute", async () => {
+		const table = new BackgroundJobTable();
+		const definition = {
+			name: "sleeper",
+			label: "sleeper",
+			description: "returns a plain result",
+			parameters: emptyParams,
+			backgroundable: true,
+			backgroundTimeoutMs: 50,
+			execute: () => textResult("sync result"),
+		} as unknown as ToolDefinition<typeof emptyParams, undefined>;
+		const agentTool = resolveTool(definition, table);
+
+		await expect(
+			agentTool.execute("call-1", {}, undefined, undefined),
+		).resolves.toEqual(textResult("sync result"));
+		expect(table.list()).toEqual([]);
+	});
+
+	it("lets the run signal cancel the call before it is backgrounded", async () => {
+		const table = new BackgroundJobTable();
+		const gate = createDeferred<AgentToolResult<undefined>>();
+		let toolSignal: AbortSignal | undefined;
+		const agentTool = resolveTool(
+			createBackgroundableTool(gate.promise, (signal) => {
+				toolSignal = signal;
+			}),
+			table,
+		);
+
+		const runController = new AbortController();
+		const execPromise = agentTool.execute(
+			"call-1",
+			{},
+			runController.signal,
+			undefined,
+		);
+
+		// Still in the synchronous window (deadline not advanced): a user
+		// interrupt on the run signal must cancel the in-flight call.
+		runController.abort();
+		expect(toolSignal?.aborted).toBe(true);
+
+		gate.reject(new Error("aborted"));
+		await expect(execPromise).rejects.toThrow("aborted");
+		expect(table.list()).toEqual([]);
 	});
 });

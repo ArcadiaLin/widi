@@ -2,6 +2,7 @@ import type {
 	AgentToolResult,
 	CustomMessage,
 } from "@earendil-works/pi-agent-core";
+import type { TextContent } from "@earendil-works/pi-ai";
 
 /**
  * Pseudo-async tool results (see docs/pseudo-async-tools.md).
@@ -138,6 +139,44 @@ function formatBackgroundJobResultText(
 	const header = `Background job ${input.jobId} (started by tool call ${input.toolCallId}, tool ${input.toolName}) ${input.status}:`;
 	const body = input.resultText.trim();
 	return body ? `${header}\n\n${body}` : header;
+}
+
+/**
+ * Model-facing text for a settled background job, ready to inject as a user
+ * message (t1). Reuses the self-describing header and derives the body from the
+ * outcome: the tool's text content when it resolved, otherwise the error or a
+ * short cancellation note.
+ */
+export function formatBackgroundJobResultMessageText(
+	settlement: BackgroundJobSettlement,
+): string {
+	return formatBackgroundJobResultText({
+		jobId: settlement.job.id,
+		toolCallId: settlement.job.toolCallId,
+		toolName: settlement.job.toolName,
+		status: settlement.outcome.status,
+		resultText: extractBackgroundJobOutcomeText(settlement.outcome),
+	});
+}
+
+function extractBackgroundJobOutcomeText(
+	outcome: BackgroundJobOutcome,
+): string {
+	if (outcome.result) {
+		return outcome.result.content
+			.filter((part): part is TextContent => part.type === "text")
+			.map((part) => part.text)
+			.join("");
+	}
+	if (outcome.status === "cancelled" && outcome.error === undefined) {
+		return "The job was cancelled before it produced a result.";
+	}
+	if (outcome.error !== undefined) return errorToText(outcome.error);
+	return "";
+}
+
+function errorToText(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 /**

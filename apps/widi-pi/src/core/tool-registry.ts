@@ -521,10 +521,18 @@ function runBackgroundableToolCall(
 		toolName: definition.name,
 	});
 
+	// Forward the run signal to the job only during the synchronous window
+	// (before t0): while pi still treats this as an in-flight tool call, a user
+	// interrupt must cancel it. The forward is detached the moment the race
+	// resolves (see below), so once the call is backgrounded the run signal no
+	// longer owns the work.
+	const signal = options.signal;
 	const forwardAbort = () => options.table.abort(job.id);
-	if (options.signal) {
-		if (options.signal.aborted) forwardAbort();
-		else options.signal.addEventListener("abort", forwardAbort, { once: true });
+	const detachForwardAbort = () =>
+		signal?.removeEventListener("abort", forwardAbort);
+	if (signal) {
+		if (signal.aborted) forwardAbort();
+		else signal.addEventListener("abort", forwardAbort, { once: true });
 	}
 
 	const toolContext = createToolExecutionContext(
@@ -533,11 +541,19 @@ function runBackgroundableToolCall(
 		job.signal,
 		options.onUpdate,
 	);
-	const executePromise = definition.execute(
-		options.toolCallId,
-		options.params,
-		toolContext,
-	);
+	// An untyped execute may throw synchronously or return a plain result instead
+	// of a promise. Either would otherwise skip settlement, the race, or
+	// abort-listener cleanup and orphan the job in the table. Normalize every
+	// return shape at this adapter boundary so the rest of the pipeline always
+	// operates on a real promise.
+	let executePromise: Promise<AgentToolResult<unknown>>;
+	try {
+		executePromise = Promise.resolve(
+			definition.execute(options.toolCallId, options.params, toolContext),
+		);
+	} catch (error) {
+		executePromise = Promise.reject(error);
+	}
 
 	// Record the terminal outcome for the job. When it has already been
 	// backgrounded this fires the table's result listeners (t1); otherwise the
@@ -550,13 +566,14 @@ function runBackgroundableToolCall(
 				error,
 			}),
 	);
-	if (options.signal) {
-		const signal = options.signal;
-		const detachAbort = () => signal.removeEventListener("abort", forwardAbort);
-		executePromise.then(detachAbort, detachAbort);
-	}
 
 	return raceSettlement(executePromise, timeoutMs).then((winner) => {
+		// The race is resolved: the tool_use is now settled (t0 for the
+		// backgrounded branch, or the real result for the inline branch). Detach
+		// the run-signal forward so a later abortAgent() cannot cancel a
+		// backgrounded job; its lifetime is the job table's from here (dispose
+		// cascade or explicit abort).
+		detachForwardAbort();
 		if (winner === "timeout" && options.table.background(job.id)) {
 			return createBackgroundJobStartedResult({
 				jobId: job.id,

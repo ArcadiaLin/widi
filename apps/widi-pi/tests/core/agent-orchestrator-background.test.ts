@@ -1,0 +1,264 @@
+import type {
+	AgentHarness,
+	AgentHarnessEvent,
+} from "@earendil-works/pi-agent-core";
+import { AgentHarnessError } from "@earendil-works/pi-agent-core";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { describe, expect, it, vi } from "vitest";
+import type {
+	AgentOrchestrator,
+	OrchestratorEvent,
+} from "../../src/core/agent-orchestrator.ts";
+import type { AgentRecord } from "../../src/core/agent-record.ts";
+import type { BackgroundJobOutcome } from "../../src/core/background-job.ts";
+import {
+	createOrchestrator,
+	MemoryExecutionEnv,
+	requireAgentRecord,
+} from "../helpers/orchestrator.ts";
+
+async function spawnAgent(): Promise<{
+	orchestrator: AgentOrchestrator;
+	agentId: string;
+	record: AgentRecord;
+}> {
+	const env = new MemoryExecutionEnv();
+	const orchestrator = await createOrchestrator(env);
+	const agentId = await orchestrator.spawnAgent();
+	return {
+		orchestrator,
+		agentId,
+		record: requireAgentRecord(orchestrator, agentId),
+	};
+}
+
+/** Register, background, and settle a job on the agent's own table. */
+function settleBackgroundedJob(
+	record: AgentRecord,
+	outcome: BackgroundJobOutcome,
+	toolCallId = "call-1",
+): string {
+	const job = record.backgroundJobTable.create({
+		toolCallId,
+		toolName: "sleeper",
+	});
+	record.backgroundJobTable.background(job.id);
+	record.backgroundJobTable.settle(job.id, outcome);
+	return job.id;
+}
+
+/** Drive the harness `settled` event through the orchestrator's subscription. */
+async function driveSettled(
+	orchestrator: AgentOrchestrator,
+	agentId: string,
+): Promise<void> {
+	const event: AgentHarnessEvent = { type: "settled", nextTurnCount: 0 };
+	await (
+		orchestrator as unknown as {
+			_handleSubscribedAgentHarnessEvent: (
+				agentId: string,
+				event: AgentHarnessEvent,
+			) => Promise<void>;
+		}
+	)._handleSubscribedAgentHarnessEvent(agentId, event);
+}
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+const completedOutcome: BackgroundJobOutcome = {
+	status: "completed",
+	result: {
+		content: [{ type: "text", text: "build done" }],
+		details: undefined,
+	},
+};
+
+describe("AgentOrchestrator background job router", () => {
+	it("delivers a settled result to an idle agent as a prompt", async () => {
+		const { record } = await spawnAgent();
+		const prompt = vi.fn(async (_text: string) => ({}) as AssistantMessage);
+		record.harness = { prompt } as unknown as AgentHarness;
+
+		const jobId = settleBackgroundedJob(record, completedOutcome);
+		await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
+
+		const text = prompt.mock.calls[0]?.[0] as string;
+		expect(text).toContain(jobId);
+		expect(text).toContain("completed");
+		expect(text).toContain("build done");
+	});
+
+	it("buffers while running and flushes on the next idle boundary", async () => {
+		const { orchestrator, agentId, record } = await spawnAgent();
+		const prompt = vi.fn(async (_text: string) => ({}) as AssistantMessage);
+		record.harness = { prompt } as unknown as AgentHarness;
+		record.status = "running";
+
+		settleBackgroundedJob(record, completedOutcome);
+		await tick();
+		expect(prompt).not.toHaveBeenCalled();
+
+		await driveSettled(orchestrator, agentId);
+		await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
+		expect(prompt.mock.calls[0]?.[0] as string).toContain("build done");
+	});
+
+	it("joins multiple buffered results into a single prompt", async () => {
+		const { orchestrator, agentId, record } = await spawnAgent();
+		const prompt = vi.fn(async (_text: string) => ({}) as AssistantMessage);
+		record.harness = { prompt } as unknown as AgentHarness;
+		record.status = "running";
+
+		const first = settleBackgroundedJob(record, completedOutcome, "call-1");
+		const second = settleBackgroundedJob(record, completedOutcome, "call-2");
+		await driveSettled(orchestrator, agentId);
+		await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
+
+		const text = prompt.mock.calls[0]?.[0] as string;
+		expect(text).toContain(first);
+		expect(text).toContain(second);
+	});
+
+	it("requeues on busy and retries at the next idle boundary", async () => {
+		const { orchestrator, agentId, record } = await spawnAgent();
+		let calls = 0;
+		const prompt = vi.fn(async (_text: string) => {
+			calls += 1;
+			if (calls === 1) throw new AgentHarnessError("busy", "busy");
+			return {} as AssistantMessage;
+		});
+		record.harness = { prompt } as unknown as AgentHarness;
+		const internals = orchestrator as unknown as {
+			_pendingBackgroundResults: Map<string, string[]>;
+		};
+
+		settleBackgroundedJob(record, completedOutcome);
+		await tick();
+		// One attempt, then it waits for `settled` rather than retrying inline.
+		expect(prompt).toHaveBeenCalledTimes(1);
+		expect(internals._pendingBackgroundResults.get(agentId)).toHaveLength(1);
+
+		await driveSettled(orchestrator, agentId);
+		await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(2));
+		expect(internals._pendingBackgroundResults.get(agentId) ?? []).toEqual([]);
+	});
+
+	it("does not hot-loop while the harness stays busy", async () => {
+		const { orchestrator, agentId, record } = await spawnAgent();
+		const prompt = vi.fn(async (_text: string) => {
+			throw new AgentHarnessError("busy", "busy");
+		});
+		record.harness = { prompt } as unknown as AgentHarness;
+		const internals = orchestrator as unknown as {
+			_pendingBackgroundResults: Map<string, string[]>;
+		};
+
+		settleBackgroundedJob(record, completedOutcome);
+		await tick();
+		await tick();
+		await tick();
+		// A single attempt: no inline recursion spinning against a busy harness.
+		expect(prompt).toHaveBeenCalledTimes(1);
+		// The result is preserved for a later `settled`-driven retry.
+		expect(internals._pendingBackgroundResults.get(agentId)).toHaveLength(1);
+	});
+
+	it("preserves results and retries when delivery fails with a non-busy error", async () => {
+		const { orchestrator, agentId, record } = await spawnAgent();
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		let calls = 0;
+		const prompt = vi.fn(async (_text: string) => {
+			calls += 1;
+			if (calls === 1) throw new Error("session write failed");
+			return {} as AssistantMessage;
+		});
+		record.harness = { prompt } as unknown as AgentHarness;
+		const internals = orchestrator as unknown as {
+			_pendingBackgroundResults: Map<string, string[]>;
+		};
+
+		settleBackgroundedJob(record, completedOutcome);
+		await tick();
+		// The result is preserved (not dropped) and a diagnostic is recorded.
+		expect(prompt).toHaveBeenCalledTimes(1);
+		expect(internals._pendingBackgroundResults.get(agentId)).toHaveLength(1);
+		expect(
+			events
+				.filter((event) => event.type === "diagnostic")
+				.map((event) => event.diagnostic.code),
+		).toContain("orchestrator.background_job_delivery_failed");
+
+		await driveSettled(orchestrator, agentId);
+		await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(2));
+		expect(internals._pendingBackgroundResults.get(agentId) ?? []).toEqual([]);
+	});
+
+	it("records a diagnostic instead of rejecting when a prompt throws unexpectedly", async () => {
+		const { orchestrator, record } = await spawnAgent();
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		record.harness = {
+			prompt: vi.fn(async (_text: string) => {
+				throw new Error("session write failed");
+			}),
+		} as unknown as AgentHarness;
+
+		settleBackgroundedJob(record, completedOutcome);
+		await vi.waitFor(() => {
+			const codes = events
+				.filter((event) => event.type === "diagnostic")
+				.map((event) => event.diagnostic.code);
+			expect(codes).toContain("orchestrator.background_job_delivery_failed");
+		});
+	});
+
+	it("cascades an abort to live jobs and detaches on dispose", async () => {
+		const { orchestrator, agentId, record } = await spawnAgent();
+		const job = record.backgroundJobTable.create({
+			toolCallId: "call-1",
+			toolName: "sleeper",
+		});
+		record.backgroundJobTable.background(job.id);
+		expect(job.signal.aborted).toBe(false);
+
+		await orchestrator.disposeAgent(agentId);
+
+		expect(job.signal.aborted).toBe(true);
+		const internals = orchestrator as unknown as {
+			_unsubscribeAgentJobResults: Map<string, unknown>;
+			_pendingBackgroundResults: Map<string, unknown>;
+			_backgroundFlushInFlight: Set<string>;
+		};
+		expect(internals._unsubscribeAgentJobResults.has(agentId)).toBe(false);
+		expect(internals._pendingBackgroundResults.has(agentId)).toBe(false);
+		expect(internals._backgroundFlushInFlight.has(agentId)).toBe(false);
+	});
+
+	it("drops buffered results whose owning agent is gone, with a diagnostic", async () => {
+		const { orchestrator } = await spawnAgent();
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const internals = orchestrator as unknown as {
+			_pendingBackgroundResults: Map<string, string[]>;
+			_flushBackgroundResults: (agentId: string) => Promise<void>;
+		};
+		internals._pendingBackgroundResults.set("missing-agent", ["stranded"]);
+
+		await internals._flushBackgroundResults("missing-agent");
+
+		const codes = events
+			.filter((event) => event.type === "diagnostic")
+			.map((event) => event.diagnostic.code);
+		expect(codes).toContain("orchestrator.background_job_dropped");
+		expect(internals._pendingBackgroundResults.has("missing-agent")).toBe(
+			false,
+		);
+	});
+});
