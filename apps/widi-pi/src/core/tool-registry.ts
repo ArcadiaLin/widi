@@ -579,6 +579,7 @@ function runBackgroundableToolCall(
 		options.context,
 		job.signal,
 		options.onUpdate,
+		{ id: job.id, output: job.output },
 	);
 	// An untyped execute may throw synchronously or return a plain result instead
 	// of a promise. Either would otherwise skip settlement, the race, or
@@ -699,6 +700,7 @@ function createToolExecutionContext(
 	context: ToolAgentAdapterContext,
 	signal: AbortSignal | undefined,
 	onUpdate: Parameters<AgentTool<TSchema, unknown>["execute"]>[3],
+	job?: ToolExecutionContext<unknown>["job"],
 ): ToolExecutionContext<unknown> {
 	const bindContext = (source: ToolSource) => ({
 		signal,
@@ -708,6 +710,7 @@ function createToolExecutionContext(
 			context.extension,
 		human: context.human,
 		backgroundJobTable: context.backgroundJobTable,
+		job,
 		[bindToolExecutionContextSymbol]: bindContext,
 	});
 	return bindContext(resolvedTool.source);
@@ -736,6 +739,7 @@ function restoreInnerToolExecutionContext<TDetails>(
 		extension: innerContext.extension,
 		human: context.human,
 		backgroundJobTable: context.backgroundJobTable,
+		job: context.job,
 		...(bindContext
 			? { [bindToolExecutionContextSymbol]: bindContext }
 			: undefined),

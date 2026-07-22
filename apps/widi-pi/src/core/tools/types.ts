@@ -4,7 +4,10 @@ import type {
 	ToolExecutionMode,
 } from "@earendil-works/pi-agent-core";
 import type { Static, TSchema } from "typebox";
-import type { BackgroundJobTable } from "../background-job.ts";
+import type {
+	BackgroundJobOutput,
+	BackgroundJobTable,
+} from "../background-job.ts";
 import type { ToolHumanHost } from "../human-request.ts";
 
 /**
@@ -30,6 +33,13 @@ export interface ToolExecutionContext<TDetails> {
 	 * their settlements through it; most tools ignore it.
 	 */
 	backgroundJobTable?: BackgroundJobTable;
+	/**
+	 * Set when this call executes as a pseudo-async job (a `backgroundable`
+	 * call registered in the job table); undefined for plain synchronous calls.
+	 * The tool streams its raw output into `output` so job-control surfaces can
+	 * peek at live progress; the tool's own result production is unaffected.
+	 */
+	job?: { readonly id: string; readonly output: BackgroundJobOutput };
 }
 
 /**

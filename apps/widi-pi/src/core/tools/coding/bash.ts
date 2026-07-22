@@ -241,6 +241,9 @@ export function createBashToolDefinition(
 			const handleData = (data: Buffer) => {
 				if (!acceptingOutput) return;
 				output.append(data);
+				// Mirror raw output into the job's rolling tail when this call runs as
+				// a background job, so job-control surfaces can peek at live progress.
+				context.job?.output.append(data);
 				scheduleOutputUpdate();
 			};
 

@@ -235,11 +235,11 @@ describe("AgentOrchestrator background job router", () => {
 
 		expect(job.signal.aborted).toBe(true);
 		const internals = orchestrator as unknown as {
-			_unsubscribeAgentJobResults: Map<string, unknown>;
+			_unsubscribeAgentJobChanges: Map<string, unknown>;
 			_pendingBackgroundResults: Map<string, unknown>;
 			_backgroundFlushInFlight: Set<string>;
 		};
-		expect(internals._unsubscribeAgentJobResults.has(agentId)).toBe(false);
+		expect(internals._unsubscribeAgentJobChanges.has(agentId)).toBe(false);
 		expect(internals._pendingBackgroundResults.has(agentId)).toBe(false);
 		expect(internals._backgroundFlushInFlight.has(agentId)).toBe(false);
 	});
@@ -267,15 +267,26 @@ describe("AgentOrchestrator background job router", () => {
 		);
 	});
 
-	it("emits the live background job count as jobs background and settle", async () => {
+	it("emits per-job change events as jobs background and settle", async () => {
 		const { orchestrator, record } = await spawnAgent();
 		// Keep the agent busy so the settlement stays buffered; we only assert the
-		// count events here, not delivery.
+		// change events here, not delivery.
 		record.status = "running";
-		const counts: number[] = [];
+		const seen: Array<{
+			transition: string;
+			jobId: string;
+			status?: string;
+			liveCount: number;
+		}> = [];
 		orchestrator.subscribe((event) => {
-			if (event.type === "agent_background_jobs_changed")
-				counts.push(event.count);
+			if (event.type === "agent_background_job_changed") {
+				seen.push({
+					transition: event.transition,
+					jobId: event.job.jobId,
+					status: event.job.status,
+					liveCount: event.liveCount,
+				});
+			}
 		});
 
 		const job = record.backgroundJobTable.create({
@@ -283,10 +294,91 @@ describe("AgentOrchestrator background job router", () => {
 			toolName: "bash",
 		});
 		record.backgroundJobTable.background(job.id);
-		await vi.waitFor(() => expect(counts).toEqual([1]));
+		await vi.waitFor(() =>
+			expect(seen).toEqual([
+				{
+					transition: "backgrounded",
+					jobId: job.id,
+					status: undefined,
+					liveCount: 1,
+				},
+			]),
+		);
 
 		record.backgroundJobTable.settle(job.id, completedOutcome);
-		await vi.waitFor(() => expect(counts).toEqual([1, 0]));
+		await vi.waitFor(() =>
+			expect(seen).toEqual([
+				{
+					transition: "backgrounded",
+					jobId: job.id,
+					status: undefined,
+					liveCount: 1,
+				},
+				{
+					transition: "settled",
+					jobId: job.id,
+					status: "completed",
+					liveCount: 0,
+				},
+			]),
+		);
+	});
+
+	it("emits an aborting change when a live job is aborted", async () => {
+		const { orchestrator, record } = await spawnAgent();
+		record.status = "running";
+		const transitions: string[] = [];
+		orchestrator.subscribe((event) => {
+			if (event.type === "agent_background_job_changed")
+				transitions.push(event.transition);
+		});
+
+		const job = record.backgroundJobTable.create({
+			toolCallId: "call-1",
+			toolName: "bash",
+		});
+		record.backgroundJobTable.background(job.id);
+		record.backgroundJobTable.abort(job.id);
+		record.backgroundJobTable.settle(job.id, { status: "cancelled" });
+
+		await vi.waitFor(() =>
+			expect(transitions).toEqual(["backgrounded", "aborting", "settled"]),
+		);
+	});
+
+	it("exposes live jobs and their output tails through the query API", async () => {
+		const { orchestrator, agentId, record } = await spawnAgent();
+		record.status = "running";
+		const job = record.backgroundJobTable.create({
+			toolCallId: "call-1",
+			toolName: "bash",
+		});
+		// Pre-t0 (running phase) jobs are not observable.
+		expect(orchestrator.listAgentBackgroundJobs(agentId)).toEqual([]);
+		expect(
+			orchestrator.readAgentBackgroundJobOutput(agentId, job.id),
+		).toBeUndefined();
+
+		record.backgroundJobTable.background(job.id);
+		job.output.append("progress\n");
+		expect(orchestrator.listAgentBackgroundJobs(agentId)).toEqual([
+			{
+				jobId: job.id,
+				toolCallId: "call-1",
+				toolName: "bash",
+				phase: "backgrounded",
+				status: undefined,
+			},
+		]);
+		expect(orchestrator.readAgentBackgroundJobOutput(agentId, job.id)).toBe(
+			"progress\n",
+		);
+
+		record.backgroundJobTable.settle(job.id, completedOutcome);
+		expect(orchestrator.listAgentBackgroundJobs(agentId)).toEqual([]);
+		expect(
+			orchestrator.readAgentBackgroundJobOutput(agentId, job.id),
+		).toBeUndefined();
 	});
 });
 

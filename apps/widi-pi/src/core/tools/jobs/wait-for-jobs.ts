@@ -95,11 +95,11 @@ export function createWaitForJobsToolDefinition(): ToolDefinition<
 			}
 
 			// Only jobs already moved to the background are safe to wait on: their
-			// settlement is guaranteed to fire `onResult`. A job still in the
-			// `running` phase has not committed to background delivery and may
-			// settle inline (delivered to its own tool call, with no listener
-			// notification), which would strand the wait until it times out. Ids
-			// the model actually holds came from a t0 handle, so they are already
+			// settlement is guaranteed to emit a `settled` change. A job still in
+			// the `running` phase has not committed to background delivery and may
+			// settle inline (delivered to its own tool call, with no change
+			// emitted), which would strand the wait until it times out. Ids the
+			// model actually holds came from a t0 handle, so they are already
 			// backgrounded; running-phase jobs are excluded on purpose.
 			const live = new Map(
 				table
@@ -177,13 +177,14 @@ function waitForPending(
 			resolve(outcome);
 		};
 		const onAbort = () => finish("aborted");
-		const unsubscribe = table.onResult((settlement) => {
-			if (!pending.has(settlement.job.id)) return;
-			pending.delete(settlement.job.id);
-			statuses.set(settlement.job.id, {
-				jobId: settlement.job.id,
-				toolName: settlement.job.toolName,
-				state: settlement.outcome.status,
+		const unsubscribe = table.onChange((change) => {
+			if (change.transition !== "settled") return;
+			if (!pending.has(change.job.id)) return;
+			pending.delete(change.job.id);
+			statuses.set(change.job.id, {
+				jobId: change.job.id,
+				toolName: change.job.toolName,
+				state: change.outcome.status,
 			});
 			if (pending.size === 0) finish("completed");
 		});

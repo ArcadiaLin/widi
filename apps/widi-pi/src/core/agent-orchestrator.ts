@@ -43,8 +43,11 @@ import {
 	snapshotAgentRecord,
 } from "./agent-record.ts";
 import {
+	type BackgroundJobChange,
 	type BackgroundJobSettlement,
+	type BackgroundJobSnapshot,
 	formatBackgroundJobResultMessageText,
+	snapshotBackgroundJob,
 } from "./background-job.ts";
 import type { OrchestratorClient } from "./client.ts";
 import {
@@ -302,18 +305,19 @@ export class AgentOrchestrator {
 	private _unsubscribeAgentHarness: Map<AgentId, () => void> = new Map();
 	private _unsubscribeAgentExtensionInterceptors: Map<AgentId, () => void> =
 		new Map();
-	private _unsubscribeAgentJobResults: Map<AgentId, () => void> = new Map();
+	private _unsubscribeAgentJobChanges: Map<AgentId, () => void> = new Map();
 	// Background job results (t1) buffered per agent, delivered as a single
 	// user-message prompt at the agent's next idle boundary. Buffering instead of
 	// steering mid-run avoids the steer tail-strand (a steer can succeed yet the
 	// run ends before draining it) and never blocks on an in-flight run.
 	private _pendingBackgroundResults: Map<AgentId, string[]> = new Map();
 	private _backgroundFlushInFlight: Set<AgentId> = new Set();
-	// Per-agent tail for background job count events. These carry an absolute
-	// count (a level, not a delta), so they must reach listeners in the order the
-	// table changed; `_emit` is not itself serialized, so emissions are chained
-	// here to keep an async listener from observing a stale count.
-	private _backgroundJobCountEmits: Map<AgentId, Promise<void>> = new Map();
+	// Per-agent tail for background job change events. These carry state (a
+	// snapshot and an absolute live count, not deltas), so they must reach
+	// listeners in the order the table changed; `_emit` is not itself
+	// serialized, so emissions are chained here to keep an async listener from
+	// observing changes out of order.
+	private _backgroundJobEmits: Map<AgentId, Promise<void>> = new Map();
 	private _eventListeners: Set<OrchestratorEventListener> = new Set();
 	private _extensionObserverDispatchDepth: Map<AgentId, number> = new Map();
 	private _agentRunSignals: Map<AgentId, AbortSignal> = new Map();
@@ -1201,6 +1205,31 @@ export class AgentOrchestrator {
 		this._setAgentToolSet(agentId, next);
 	}
 
+	/**
+	 * Snapshot the agent's live backgrounded jobs: the jobs whose t0 handles the
+	 * model currently holds. Running-phase jobs (still inside the pre-t0
+	 * synchronous window) are not observable and are excluded.
+	 */
+	listAgentBackgroundJobs(agentId: AgentId): BackgroundJobSnapshot[] {
+		return this._requireAgentRecord(agentId)
+			.backgroundJobTable.list()
+			.filter((job) => job.phase === "backgrounded")
+			.map((job) => snapshotBackgroundJob(job));
+	}
+
+	/**
+	 * Current rolling output tail of a live backgrounded job, or undefined when
+	 * no such job is live (settled, unknown, or never backgrounded). Output is
+	 * pull-only: surfaces poll this on demand; change events never carry output.
+	 */
+	readAgentBackgroundJobOutput(
+		agentId: AgentId,
+		jobId: string,
+	): string | undefined {
+		const job = this._requireAgentRecord(agentId).backgroundJobTable.get(jobId);
+		return job?.phase === "backgrounded" ? job.output.read() : undefined;
+	}
+
 	// The single text-input entry point. Extension input interception is
 	// applied here so no caller can bypass an input policy; interaction-layer
 	// inline expansions are persisted via options.expansion.
@@ -1383,10 +1412,10 @@ export class AgentOrchestrator {
 		// the harness is torn down. Otherwise harness.abort() below can drive a
 		// settlement (a not-yet-backgrounded call rejecting) into a t1 delivery
 		// against a dying harness.
-		const unsubscribeJobResults = this._unsubscribeAgentJobResults.get(agentId);
-		if (unsubscribeJobResults) {
+		const unsubscribeJobChanges = this._unsubscribeAgentJobChanges.get(agentId);
+		if (unsubscribeJobChanges) {
 			try {
-				unsubscribeJobResults();
+				unsubscribeJobChanges();
 			} catch (error) {
 				await this._recordAgentLifecycleFailure(
 					agentId,
@@ -1395,14 +1424,14 @@ export class AgentOrchestrator {
 					error,
 				);
 			}
-			this._unsubscribeAgentJobResults.delete(agentId);
+			this._unsubscribeAgentJobChanges.delete(agentId);
 		}
 		for (const job of record.backgroundJobTable.list()) {
 			record.backgroundJobTable.abort(job.id);
 		}
 		this._pendingBackgroundResults.delete(agentId);
 		this._backgroundFlushInFlight.delete(agentId);
-		this._backgroundJobCountEmits.delete(agentId);
+		this._backgroundJobEmits.delete(agentId);
 
 		const harness = record.harness;
 		if (harness) {
@@ -1995,17 +2024,13 @@ export class AgentOrchestrator {
 		});
 		this._unsubscribeAgentHarness.set(agentId, unsubscribeHarnessEvents);
 		const jobTable = this._requireAgentRecord(agentId).backgroundJobTable;
-		const unsubscribeJobResults = jobTable.onResult((settlement) => {
-			this._bufferBackgroundResult(agentId, settlement);
-			this._emitBackgroundJobCount(agentId);
+		const unsubscribeJobChanges = jobTable.onChange((change) => {
+			if (change.transition === "settled") {
+				this._bufferBackgroundResult(agentId, change);
+			}
+			this._emitBackgroundJobChange(agentId, change);
 		});
-		const unsubscribeJobStarts = jobTable.onBackground(() => {
-			this._emitBackgroundJobCount(agentId);
-		});
-		this._unsubscribeAgentJobResults.set(agentId, () => {
-			unsubscribeJobResults();
-			unsubscribeJobStarts();
-		});
+		this._unsubscribeAgentJobChanges.set(agentId, unsubscribeJobChanges);
 		this._unsubscribeAgentExtensionInterceptors.set(agentId, () => {
 			for (const unsubscribe of unsubscribeInterceptors) {
 				unsubscribe();
@@ -2992,34 +3017,42 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Emit the agent's current live background job count (jobs that are
-	 * backgrounded but not yet settled) so surfaces can show outstanding
-	 * pseudo-async work. Called when a job is backgrounded or settles; a settled
-	 * job is already removed from the table, so the count reflects the change.
+	 * Publish a table change as an `agent_background_job_changed` event so
+	 * surfaces can track the agent's outstanding pseudo-async work per job. A
+	 * settled job is already removed from the table, so the live count reflects
+	 * the change.
 	 */
-	private _emitBackgroundJobCount(agentId: AgentId): void {
+	private _emitBackgroundJobChange(
+		agentId: AgentId,
+		change: BackgroundJobChange,
+	): void {
 		const record = this._agents.get(agentId);
 		if (!record) return;
-		// Snapshot the count and timestamp now, at the moment of the change, then
-		// chain the emit onto this agent's tail so events reach listeners in the
-		// order the table changed rather than in async completion order.
-		const count = record.backgroundJobTable
+		// Snapshot the job, count, and timestamp now, at the moment of the change,
+		// then chain the emit onto this agent's tail so events reach listeners in
+		// the order the table changed rather than in async completion order.
+		const job = snapshotBackgroundJob(
+			change.job,
+			change.transition === "settled" ? change.outcome.status : undefined,
+		);
+		const liveCount = record.backgroundJobTable
 			.list()
-			.filter((job) => job.phase === "backgrounded").length;
+			.filter((live) => live.phase === "backgrounded").length;
 		const changedAt = now();
-		const prior =
-			this._backgroundJobCountEmits.get(agentId) ?? Promise.resolve();
+		const prior = this._backgroundJobEmits.get(agentId) ?? Promise.resolve();
 		const next = prior
 			.then(() =>
 				this._emit({
-					type: "agent_background_jobs_changed",
+					type: "agent_background_job_changed",
 					agentId,
-					count,
+					job,
+					transition: change.transition,
+					liveCount,
 					changedAt,
 				}),
 			)
 			.catch(() => {});
-		this._backgroundJobCountEmits.set(agentId, next);
+		this._backgroundJobEmits.set(agentId, next);
 	}
 
 	/**

@@ -47,6 +47,7 @@ export type ExtensionObservedEvent = Extract<
 	OrchestratorEvent,
 	{
 		type:
+			| "agent_background_job_changed"
 			| "agent_harness_event"
 			| "agent_resumed"
 			| "agent_session_forked"
