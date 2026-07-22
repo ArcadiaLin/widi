@@ -3268,6 +3268,7 @@ export class AgentOrchestrator {
 		event: OrchestratorEvent,
 	): event is ExtensionObservedEvent {
 		switch (event.type) {
+			case "agent_background_job_changed":
 			case "agent_harness_event":
 			case "agent_resumed":
 			case "agent_session_forked":

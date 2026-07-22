@@ -115,8 +115,9 @@ export function createBackgroundJobStartedResult(input: {
 		`moved to the background as job ${input.jobId}. It keeps running; its result ` +
 		`will arrive later as a separate background job result message that references ` +
 		`job ${input.jobId}. Do not block waiting on it: continue with other work and ` +
-		`react to that later message when it arrives. If you do need its outcome ` +
-		`before continuing, use wait_for_jobs.`;
+		`react to that later message when it arrives. Use read_job to inspect its ` +
+		`live output, wait_for_jobs to block until it settles, or kill_job to ` +
+		`terminate it.`;
 	return { content: [{ type: "text", text }], details };
 }
 

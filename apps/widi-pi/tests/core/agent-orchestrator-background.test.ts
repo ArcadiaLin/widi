@@ -8,16 +8,27 @@ import { AgentHarnessError } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
+import jobToolsExtension from "../../../../.widi/extensions/job-tools/index.ts";
 import type {
 	AgentOrchestrator,
 	OrchestratorEvent,
 } from "../../src/core/agent-orchestrator.ts";
+import {
+	type AgentProfile,
+	AgentProfileRegistry,
+	InMemoryProfileStorageBackend,
+} from "../../src/core/agent-profile.ts";
 import type { AgentRecord } from "../../src/core/agent-record.ts";
 import type { BackgroundJobOutcome } from "../../src/core/background-job.ts";
+import type { ExtensionModule } from "../../src/core/extension/index.ts";
+import { ToolRegistry } from "../../src/core/tool-registry.ts";
+import { registerCoreJobTools } from "../../src/core/tools/jobs/builtin.ts";
 import type { ToolDefinition } from "../../src/core/tools/types.ts";
 import {
 	createOrchestrator,
+	createToolDefinition,
 	createToolRegistry,
+	defaultProfile,
 	MemoryExecutionEnv,
 	requireAgentRecord,
 } from "../helpers/orchestrator.ts";
@@ -379,6 +390,109 @@ describe("AgentOrchestrator background job router", () => {
 		expect(
 			orchestrator.readAgentBackgroundJobOutput(agentId, job.id),
 		).toBeUndefined();
+	});
+});
+
+describe("AgentOrchestrator background job extension observability", () => {
+	async function spawnWithJobExtension(options: {
+		module: ExtensionModule;
+		toolRegistry?: ToolRegistry;
+	}): Promise<{
+		orchestrator: AgentOrchestrator;
+		agentId: string;
+		record: AgentRecord;
+	}> {
+		const env = new MemoryExecutionEnv();
+		const profile: AgentProfile = {
+			...defaultProfile,
+			id: "gated",
+			label: "Gated",
+			persist: false,
+			extensions: ["job-tools"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: profile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([{ profile }]),
+			),
+			toolRegistry: options.toolRegistry,
+		});
+		orchestrator.registerExtension("job-tools", options.module);
+		const agentId = await orchestrator.spawnAgent();
+		return {
+			orchestrator,
+			agentId,
+			record: requireAgentRecord(orchestrator, agentId),
+		};
+	}
+
+	it("delivers job change events to extension observers", async () => {
+		const seen: Array<{ transition: string; liveCount: number }> = [];
+		const { record } = await spawnWithJobExtension({
+			module: (api) => {
+				api.observe("agent_background_job_changed", (event) => {
+					seen.push({
+						transition: event.transition,
+						liveCount: event.liveCount,
+					});
+				});
+			},
+		});
+		record.status = "running";
+
+		const job = record.backgroundJobTable.create({
+			toolCallId: "call-1",
+			toolName: "bash",
+		});
+		record.backgroundJobTable.background(job.id);
+		record.backgroundJobTable.settle(job.id, completedOutcome);
+
+		await vi.waitFor(() =>
+			expect(seen).toEqual([
+				{ transition: "backgrounded", liveCount: 1 },
+				{ transition: "settled", liveCount: 0 },
+			]),
+		);
+	});
+
+	it("supports gating job tools on live jobs via the job-tools sample extension", async () => {
+		const registry = new ToolRegistry();
+		registry.defineTool(createToolDefinition("probe"), {
+			kind: "core",
+			id: "test",
+		});
+		registerCoreJobTools(registry);
+		const { orchestrator, agentId, record } = await spawnWithJobExtension({
+			module: jobToolsExtension,
+			toolRegistry: registry,
+		});
+
+		// Initial retraction at spawn: the job tools stay registered but inactive.
+		expect(orchestrator.getAgentTools(agentId).toolNames).toContain("read_job");
+		await vi.waitFor(() =>
+			expect(orchestrator.getAgentActiveTools(agentId)).toEqual(["probe"]),
+		);
+
+		// Keep the settlement buffered; delivery is not under test here.
+		record.status = "running";
+		const job = record.backgroundJobTable.create({
+			toolCallId: "call-1",
+			toolName: "bash",
+		});
+		record.backgroundJobTable.background(job.id);
+		await vi.waitFor(() =>
+			expect(orchestrator.getAgentActiveTools(agentId)).toEqual([
+				"probe",
+				"read_job",
+				"wait_for_jobs",
+				"kill_job",
+			]),
+		);
+
+		record.backgroundJobTable.settle(job.id, completedOutcome);
+		await vi.waitFor(() =>
+			expect(orchestrator.getAgentActiveTools(agentId)).toEqual(["probe"]),
+		);
 	});
 });
 

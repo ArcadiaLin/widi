@@ -180,6 +180,7 @@ export function createBashToolDefinition(
 			"Use bash for building, testing, version control, and commands not covered by a dedicated tool.",
 			"Do not use bash to replace read, grep, find, or ls; the dedicated tools are more precise.",
 			"Set background: true only for commands you intend to keep running without blocking; their result comes back later as a separate message.",
+			"For a background job: read_job shows its live output, wait_for_jobs blocks until it finishes, kill_job terminates it.",
 		],
 		parameters: bashSchema,
 		backgroundable: true,

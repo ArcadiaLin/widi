@@ -1,5 +1,7 @@
 import type { ToolRegistry } from "../../tool-registry.ts";
 import type { ToolSource } from "../types.ts";
+import { createKillJobToolDefinition } from "./kill-job.ts";
+import { createReadJobToolDefinition } from "./read-job.ts";
 import { createWaitForJobsToolDefinition } from "./wait-for-jobs.ts";
 
 const coreBuiltinToolSource: ToolSource = {
@@ -15,4 +17,6 @@ const coreBuiltinToolSource: ToolSource = {
  */
 export function registerCoreJobTools(registry: ToolRegistry): void {
 	registry.defineTool(createWaitForJobsToolDefinition(), coreBuiltinToolSource);
+	registry.defineTool(createReadJobToolDefinition(), coreBuiltinToolSource);
+	registry.defineTool(createKillJobToolDefinition(), coreBuiltinToolSource);
 }

@@ -1,0 +1,91 @@
+import { describe, expect, it } from "vitest";
+import { BackgroundJobTable } from "../../src/core/background-job.ts";
+import { createReadJobToolDefinition } from "../../src/core/tools/jobs/read-job.ts";
+
+const readJob = createReadJobToolDefinition();
+
+function contextWith(table?: BackgroundJobTable) {
+	return {
+		signal: undefined,
+		onUpdate: undefined,
+		extension: undefined,
+		human: undefined,
+		backgroundJobTable: table,
+	};
+}
+
+const textOf = (result: { content: Array<{ type: string; text?: string }> }) =>
+	result.content
+		.map((part) => (part.type === "text" ? part.text : ""))
+		.join("");
+
+describe("read_job tool", () => {
+	it("returns the live output tail of backgrounded jobs, defaulting to all", async () => {
+		const table = new BackgroundJobTable();
+		const first = table.create({ toolCallId: "call-1", toolName: "bash" });
+		const second = table.create({ toolCallId: "call-2", toolName: "bash" });
+		table.background(first.id);
+		table.background(second.id);
+		first.output.append("building...\n");
+
+		const result = await readJob.execute("call-3", {}, contextWith(table));
+
+		expect(result.details).toEqual({
+			jobs: [
+				{
+					jobId: first.id,
+					toolName: "bash",
+					state: "running",
+					output: "building...\n",
+				},
+				{ jobId: second.id, toolName: "bash", state: "running", output: "" },
+			],
+		});
+		const text = textOf(result);
+		expect(text).toContain("building...");
+		// An empty tail is labeled rather than rendered as a blank section.
+		expect(text).toContain("(no output yet)");
+	});
+
+	it("reports settled, unknown, and running-phase ids as unknown", async () => {
+		const table = new BackgroundJobTable();
+		const settled = table.create({ toolCallId: "call-1", toolName: "bash" });
+		table.background(settled.id);
+		table.settle(settled.id, { status: "completed" });
+		// Pre-t0 sync window: not observable, so not readable.
+		const running = table.create({ toolCallId: "call-2", toolName: "bash" });
+
+		const result = await readJob.execute(
+			"call-3",
+			{ jobIds: [settled.id, running.id, "job-99"] },
+			contextWith(table),
+		);
+
+		expect(result.details).toEqual({
+			jobs: [
+				{ jobId: settled.id, state: "unknown" },
+				{ jobId: running.id, state: "unknown" },
+				{ jobId: "job-99", state: "unknown" },
+			],
+		});
+		expect(textOf(result)).toContain(
+			"not tracked (already finished, not backgrounded, or never started)",
+		);
+	});
+
+	it("reports nothing to read when no jobs are live", async () => {
+		const table = new BackgroundJobTable();
+
+		const result = await readJob.execute("call-1", {}, contextWith(table));
+
+		expect(result.details).toEqual({ jobs: [] });
+		expect(textOf(result)).toBe("No live background jobs to read.");
+	});
+
+	it("degrades gracefully without a job registry", async () => {
+		const result = await readJob.execute("call-1", {}, contextWith(undefined));
+
+		expect(result.details).toEqual({ jobs: [] });
+		expect(textOf(result)).toContain("No background job registry");
+	});
+});

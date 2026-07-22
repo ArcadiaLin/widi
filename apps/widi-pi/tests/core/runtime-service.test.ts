@@ -409,6 +409,8 @@ describe("createWidiRuntime", () => {
 			"ls",
 			"ask_human",
 			"wait_for_jobs",
+			"read_job",
+			"kill_job",
 		]);
 		for (const name of [
 			"read",
