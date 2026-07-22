@@ -78,3 +78,4 @@ apps/widi-agent/.widi/agent/Runs/
 !.widi/profiles/
 !.widi/profiles/**
 chat_notes/
+plan/
