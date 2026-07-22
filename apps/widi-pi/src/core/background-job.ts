@@ -1,82 +1,84 @@
-import type {
-	AgentToolResult,
-	CustomMessage,
-} from "@earendil-works/pi-agent-core";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { TextContent } from "@earendil-works/pi-ai";
 
 /**
- * Pseudo-async tool results (see docs/pseudo-async-tools.md).
+ * Pseudo-async tool results.
  *
  * A backgroundable tool call settles immediately with a job handle (t0), then
  * the eventual outcome is delivered as a separate message injected later (t1).
- * The LLM protocol forbids a deferred tool_result, so t1 is a normal custom
- * message, not a second tool_result: pi's `convertToLlm` maps `role: "custom"`
- * into a user message, so the model sees the outcome in context.
+ * The LLM protocol forbids a deferred tool_result, so t1 is injected as a
+ * normal user message via `harness.prompt()` at the agent's next idle boundary
+ * (the orchestrator buffers and routes settlements; pi's harness has no entry
+ * point for injecting a custom message and driving a run from it).
  *
  * This module owns the message/result shapes and their identities (t0 handle,
- * t1 message) plus the `BackgroundJobTable` that tracks live jobs. The timeout
- * race lives in the tool adapter; the phase-aware router that consumes settled
- * jobs lands in a later stage.
+ * t1 message text) plus the `BackgroundJobTable` that tracks live jobs and
+ * publishes their lifecycle changes. The timeout race lives in the tool
+ * adapter; the t1 router lives in the orchestrator.
  */
-
-/** Stable customType for background job result messages. */
-export const BACKGROUND_JOB_RESULT_CUSTOM_TYPE = "widi:background_job_result";
 
 /** Terminal outcome of a background job. */
 export type BackgroundJobStatus = "completed" | "failed" | "cancelled";
 
-/**
- * Structured payload carried on a background job result message.
- *
- * `toolCallId` correlates the t1 message back to the tool call that started the
- * job at t0, so the model (and UI) can link the outcome to its origin.
- */
-export interface BackgroundJobResultDetails {
-	/** Runtime-local job handle returned at t0. */
-	readonly jobId: string;
-	/** Id of the tool call that started the job. */
-	readonly toolCallId: string;
-	/** Name of the tool that started the job. */
-	readonly toolName: string;
-	/** Terminal outcome of the job. */
-	readonly status: BackgroundJobStatus;
-}
-
-export interface CreateBackgroundJobResultMessageInput
-	extends BackgroundJobResultDetails {
-	/**
-	 * Model-facing result text. Rendered into the message body under a
-	 * self-describing header so the model can act on it out of band.
-	 */
-	readonly resultText: string;
-	/** Message timestamp in epoch milliseconds. Defaults to now. */
-	readonly timestamp?: number;
-}
+/** Default rolling cap for a background job's output buffer: 256 KiB. */
+export const DEFAULT_BACKGROUND_JOB_OUTPUT_MAX_BYTES = 256 * 1024;
 
 /**
- * Build the t1 message for a finished background job.
+ * Bounded rolling tail of a background job's output.
  *
- * The body is self-describing: by the time it arrives the conversation has
- * moved on, so it restates the job handle, origin tool call, and status before
- * the result text.
+ * A backgrounded tool feeds its output straight in via {@link append}; read_job
+ * pulls the current tail via {@link read}. Bytes accumulate in a chunk queue
+ * capped at a byte budget: once appending exceeds the cap, data is dropped from
+ * the head — whole chunks first, then a partial slice of the boundary chunk —
+ * until the total is back within budget.
+ *
+ * Deliberately simple: no line counting, no truncation metadata, no disk. The
+ * head drop can slice the first UTF-8 character mid-sequence; that is acceptable
+ * for a progress peek, and decoding emits a replacement character rather than
+ * throwing.
  */
-export function createBackgroundJobResultMessage(
-	input: CreateBackgroundJobResultMessageInput,
-): CustomMessage<BackgroundJobResultDetails> {
-	const details: BackgroundJobResultDetails = {
-		jobId: input.jobId,
-		toolCallId: input.toolCallId,
-		toolName: input.toolName,
-		status: input.status,
-	};
-	return {
-		role: "custom",
-		customType: BACKGROUND_JOB_RESULT_CUSTOM_TYPE,
-		content: formatBackgroundJobResultText(input),
-		display: true,
-		details,
-		timestamp: input.timestamp ?? Date.now(),
-	};
+export class BackgroundJobOutput {
+	private readonly _chunks: Buffer[] = [];
+	private _byteLength = 0;
+	private readonly _maxBytes: number;
+
+	constructor(maxBytes: number = DEFAULT_BACKGROUND_JOB_OUTPUT_MAX_BYTES) {
+		this._maxBytes = maxBytes;
+	}
+
+	/** Append a chunk of output, trimming from the head to stay within the cap. */
+	append(chunk: Buffer | string): void {
+		const buffer =
+			typeof chunk === "string" ? Buffer.from(chunk, "utf-8") : chunk;
+		if (buffer.length === 0) return;
+		this._chunks.push(buffer);
+		this._byteLength += buffer.length;
+		this._trim();
+	}
+
+	/** Current tail decoded as UTF-8. */
+	read(): string {
+		return Buffer.concat(this._chunks, this._byteLength).toString("utf-8");
+	}
+
+	private _trim(): void {
+		while (this._byteLength > this._maxBytes) {
+			const head = this._chunks[0];
+			if (this._byteLength - head.length >= this._maxBytes) {
+				this._chunks.shift();
+				this._byteLength -= head.length;
+				continue;
+			}
+			// Dropping the whole head would fall under the cap; keep just its tail so
+			// the buffer holds exactly the last _maxBytes bytes. Copy instead of
+			// subarray: a view would pin the full parent allocation of an oversized
+			// chunk for as long as it stays at the head of a quiet job.
+			const overflow = this._byteLength - this._maxBytes;
+			this._chunks[0] = Buffer.from(head.subarray(overflow));
+			this._byteLength -= overflow;
+			break;
+		}
+	}
 }
 
 /**
@@ -113,29 +115,19 @@ export function createBackgroundJobStartedResult(input: {
 		`moved to the background as job ${input.jobId}. It keeps running; its result ` +
 		`will arrive later as a separate background job result message that references ` +
 		`job ${input.jobId}. Do not block waiting on it: continue with other work and ` +
-		`react to that later message when it arrives.`;
+		`react to that later message when it arrives. Use read_job to inspect its ` +
+		`live output, wait_for_jobs to block until it settles, or kill_job to ` +
+		`terminate it.`;
 	return { content: [{ type: "text", text }], details };
 }
 
-/** Narrow an arbitrary custom message payload to background job result details. */
-export function isBackgroundJobResultDetails(
-	data: unknown,
-): data is BackgroundJobResultDetails {
-	if (typeof data !== "object" || data === null) return false;
-	const record = data as Record<string, unknown>;
-	return (
-		typeof record.jobId === "string" &&
-		typeof record.toolCallId === "string" &&
-		typeof record.toolName === "string" &&
-		(record.status === "completed" ||
-			record.status === "failed" ||
-			record.status === "cancelled")
-	);
-}
-
-function formatBackgroundJobResultText(
-	input: CreateBackgroundJobResultMessageInput,
-): string {
+function formatBackgroundJobResultText(input: {
+	jobId: string;
+	toolCallId: string;
+	toolName: string;
+	status: BackgroundJobStatus;
+	resultText: string;
+}): string {
 	const header = `Background job ${input.jobId} (started by tool call ${input.toolCallId}, tool ${input.toolName}) ${input.status}:`;
 	const body = input.resultText.trim();
 	return body ? `${header}\n\n${body}` : header;
@@ -194,6 +186,12 @@ export interface BackgroundJob {
 	readonly signal: AbortSignal;
 	/** Current lifecycle phase. */
 	readonly phase: BackgroundJobPhase;
+	/**
+	 * Live rolling tail of the job's output. A backgrounded tool appends its
+	 * output stream here; read_job pulls the current tail. Its lifetime is the
+	 * job's: it is garbage-collected with the record when the job settles.
+	 */
+	readonly output: BackgroundJobOutput;
 }
 
 /** Terminal outcome recorded when a job's underlying promise settles. */
@@ -205,25 +203,71 @@ export interface BackgroundJobOutcome {
 	readonly error?: unknown;
 }
 
-/** Settlement event delivered to result listeners for backgrounded jobs. */
+/** Settlement of a backgrounded job: the payload of a `settled` change. */
 export interface BackgroundJobSettlement {
 	readonly job: BackgroundJob;
 	readonly outcome: BackgroundJobOutcome;
 }
 
-/** Listener invoked when a backgrounded job settles. */
-export type BackgroundJobResultListener = (
-	settlement: BackgroundJobSettlement,
-) => void;
+/**
+ * Lifecycle change of a job in its observable world, which starts at t0: a job
+ * that settles inline (before its deadline) never produces a change, because
+ * neither the model nor any surface ever saw its handle.
+ *
+ * - `backgrounded`: the deadline won; the tool call settled with a t0 handle.
+ * - `aborting`: an abort was requested for a backgrounded job (`abort()`);
+ *   emitted once, before the job's signal fires. The confirmation arrives as
+ *   its `settled` change.
+ * - `settled`: the job reached a terminal outcome. Fires the t1 routing.
+ */
+export type BackgroundJobChange =
+	| { readonly transition: "backgrounded"; readonly job: BackgroundJob }
+	| { readonly transition: "aborting"; readonly job: BackgroundJob }
+	| ({ readonly transition: "settled" } & BackgroundJobSettlement);
 
-/** Listener invoked when a job is moved to the background. */
-export type BackgroundJobStartedListener = (job: BackgroundJob) => void;
+/** Phase or abort-request state a change reports. */
+export type BackgroundJobTransition = BackgroundJobChange["transition"];
+
+/** Listener invoked on every observable job lifecycle change. */
+export type BackgroundJobChangeListener = (change: BackgroundJobChange) => void;
+
+/**
+ * Immutable, serializable view of a job at the moment of a change. Carried on
+ * orchestrator events and query results instead of the live `BackgroundJob`
+ * view, which holds a signal and a live output buffer.
+ */
+export interface BackgroundJobSnapshot {
+	/** Runtime-local job handle returned to the model at t0. */
+	readonly jobId: string;
+	/** Id of the tool call that started the job. */
+	readonly toolCallId: string;
+	/** Name of the tool that started the job. */
+	readonly toolName: string;
+	/** Lifecycle phase at snapshot time. */
+	readonly phase: BackgroundJobPhase;
+	/** Terminal outcome, present once the job settled. */
+	readonly status?: BackgroundJobStatus;
+}
+
+export function snapshotBackgroundJob(
+	job: BackgroundJob,
+	status?: BackgroundJobStatus,
+): BackgroundJobSnapshot {
+	return {
+		jobId: job.id,
+		toolCallId: job.toolCallId,
+		toolName: job.toolName,
+		phase: job.phase,
+		status,
+	};
+}
 
 /**
  * Result of {@link BackgroundJobTable.settle}.
- * - `backgrounded`: the job had been moved to the background; listeners fired.
+ * - `backgrounded`: the job had been moved to the background; a `settled`
+ *   change fired.
  * - `inline`: the job settled before the deadline; the adapter returns the
- *   result inline and no listeners fire.
+ *   result inline and no change fires.
  * - `ignored`: the job was already settled or unknown.
  */
 export type BackgroundJobSettleResult = "backgrounded" | "inline" | "ignored";
@@ -252,12 +296,15 @@ export interface BackgroundJobTableOptions {
  * The table owns each job's `AbortController`, so a job's lifetime is decoupled
  * from the tool call that started it: once t0 returns, the original tool_use is
  * closed and its run signal no longer governs the background work.
+ *
+ * The table is the single source of truth for job state: every mutation goes
+ * through `create`/`background`/`settle`/`abort`, and every observable mutation
+ * (from t0 onward) emits exactly one {@link BackgroundJobChange} on the single
+ * `onChange` channel.
  */
 export class BackgroundJobTable {
 	private readonly _jobs = new Map<string, JobRecord>();
-	private readonly _listeners = new Set<BackgroundJobResultListener>();
-	private readonly _backgroundListeners =
-		new Set<BackgroundJobStartedListener>();
+	private readonly _changeListeners = new Set<BackgroundJobChangeListener>();
 	private readonly _createId: () => string;
 	private _counter = 0;
 
@@ -278,6 +325,7 @@ export class BackgroundJobTable {
 				toolCallId: input.toolCallId,
 				toolName: input.toolName,
 				signal: controller.signal,
+				output: new BackgroundJobOutput(),
 				get phase() {
 					return record.phase;
 				},
@@ -306,18 +354,12 @@ export class BackgroundJobTable {
 		const record = this._jobs.get(id);
 		if (!record || record.settled) return false;
 		record.phase = "backgrounded";
-		for (const listener of this._backgroundListeners) {
-			try {
-				listener(record.view);
-			} catch {
-				// Isolate observer failures, same as _notify.
-			}
-		}
+		this._emitChange({ transition: "backgrounded", job: record.view });
 		return true;
 	}
 
 	/**
-	 * Record a job's terminal outcome. Fires result listeners only when the job
+	 * Record a job's terminal outcome. Emits a `settled` change only when the job
 	 * had been backgrounded; a job that settled while still `running` returns
 	 * `inline` and is delivered by the adapter's inline return instead.
 	 */
@@ -327,34 +369,39 @@ export class BackgroundJobTable {
 		record.settled = true;
 		this._jobs.delete(id);
 		if (record.phase !== "backgrounded") return "inline";
-		this._notify({ job: record.view, outcome });
+		this._emitChange({ transition: "settled", job: record.view, outcome });
 		return "backgrounded";
 	}
 
-	/** Abort a live job. The tool's execute observes the abort via its signal. */
+	/**
+	 * Abort a live job. The tool's execute observes the abort via its signal. For
+	 * a backgrounded job the first abort emits an `aborting` change before the
+	 * signal fires, so it always precedes the resulting `settled`; repeated
+	 * aborts are silent. A `running`-phase abort (the pre-t0 sync window) emits
+	 * nothing: the job is not observable yet and settles inline.
+	 */
 	abort(id: string): void {
-		this._jobs.get(id)?.controller.abort();
+		const record = this._jobs.get(id);
+		if (!record) return;
+		if (record.phase === "backgrounded" && !record.controller.signal.aborted) {
+			this._emitChange({ transition: "aborting", job: record.view });
+		}
+		record.controller.abort();
 	}
 
-	/** Subscribe to settlement events for backgrounded jobs. Returns an unsubscribe. */
-	onResult(listener: BackgroundJobResultListener): () => void {
-		this._listeners.add(listener);
-		return () => this._listeners.delete(listener);
+	/** Subscribe to observable job lifecycle changes. Returns an unsubscribe. */
+	onChange(listener: BackgroundJobChangeListener): () => void {
+		this._changeListeners.add(listener);
+		return () => this._changeListeners.delete(listener);
 	}
 
-	/** Subscribe to jobs being moved to the background. Returns an unsubscribe. */
-	onBackground(listener: BackgroundJobStartedListener): () => void {
-		this._backgroundListeners.add(listener);
-		return () => this._backgroundListeners.delete(listener);
-	}
-
-	private _notify(settlement: BackgroundJobSettlement): void {
-		for (const listener of this._listeners) {
+	private _emitChange(change: BackgroundJobChange): void {
+		for (const listener of this._changeListeners) {
 			try {
-				listener(settlement);
+				listener(change);
 			} catch {
-				// Listener failures are the router's responsibility, not the table's;
-				// isolate them so one bad listener cannot drop the others.
+				// Listener failures are the consumer's responsibility, not the
+				// table's; isolate them so one bad listener cannot drop the others.
 			}
 		}
 	}

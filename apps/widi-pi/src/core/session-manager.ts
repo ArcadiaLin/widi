@@ -11,11 +11,13 @@ import type {
 	FileSystem,
 	JsonlSessionMetadata,
 	Session,
+	SessionContext,
 	SessionForkOptions,
 	SessionMetadata,
 	SessionTreeEntry,
 } from "@earendil-works/pi-agent-core";
 import {
+	buildSessionContext,
 	InMemorySessionRepo,
 	JsonlSessionRepo,
 } from "@earendil-works/pi-agent-core";
@@ -311,6 +313,11 @@ export class SessionManager {
 		};
 	}
 
+	async buildAgentSessionContext(agentId: AgentId): Promise<SessionContext> {
+		const session = this._requireAgentSession(agentId);
+		return buildSessionContext(await this._getFullBranch(session));
+	}
+
 	async setAgentSessionName(
 		agentId: AgentId,
 		name: string,
@@ -413,8 +420,7 @@ export class SessionManager {
 		const localType =
 			type === undefined ? undefined : normalizeExtensionCustomType(type);
 		const session = this._requireAgentSession(agentId);
-		const storage = session.getStorage();
-		const entries = await storage.getPathToRoot(await storage.getLeafId());
+		const entries = await this._getFullBranch(session);
 		const prefix = toPersistedExtensionCustomTypePrefix(extensionId);
 		const result: AgentExtensionCustomEntry<T>[] = [];
 
@@ -465,6 +471,30 @@ export class SessionManager {
 		return session;
 	}
 
+	// pi-agent-core's public branch is compaction-aware and may start at a
+	// retained-tail checkpoint. WIDI still needs the complete active path for
+	// timeline hydration, extension state, and durable runtime configuration.
+	private async _getFullBranch(
+		session: Session<AgentSessionMetadata>,
+	): Promise<SessionTreeEntry[]> {
+		const entries: SessionTreeEntry[] = [];
+		const visited = new Set<string>();
+		let entryId = await session.getLeafId();
+		while (entryId !== null) {
+			if (visited.has(entryId)) {
+				throw new Error(`Invalid agent session: cycle at entry ${entryId}.`);
+			}
+			visited.add(entryId);
+			const entry = await session.getEntry(entryId);
+			if (!entry) {
+				throw new Error(`Invalid agent session: entry ${entryId} not found.`);
+			}
+			entries.unshift(entry);
+			entryId = entry.parentId;
+		}
+		return entries;
+	}
+
 	private async _snapshotSession(
 		session: Session<AgentSessionMetadata>,
 	): Promise<AgentSessionSnapshot> {
@@ -472,7 +502,7 @@ export class SessionManager {
 			metadata: await session.getMetadata(),
 			name: await session.getSessionName(),
 			leafId: await session.getLeafId(),
-			pathToRoot: await session.getBranch(),
+			pathToRoot: await this._getFullBranch(session),
 		};
 	}
 }

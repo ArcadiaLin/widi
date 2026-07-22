@@ -1,6 +1,10 @@
 import type { AgentHarnessEvent } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import type { AgentProfile } from "./agent-profile.js";
+import type {
+	BackgroundJobSnapshot,
+	BackgroundJobTransition,
+} from "./background-job.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
 import type {
 	ExtensionMessage,
@@ -164,13 +168,19 @@ export type OrchestratorEvent =
 			entryId?: string;
 			createdAt: string;
 	  }
-	// Count of the agent's currently live background jobs (backgrounded but not
-	// yet settled). Emitted whenever a job is backgrounded or settles so
-	// surfaces can show an agent's outstanding pseudo-async work.
+	// Per-job lifecycle fact for the agent's pseudo-async background jobs,
+	// emitted for every observable transition (backgrounded at t0, an abort
+	// request, settlement). The job is an immutable snapshot, not the live
+	// table view; output content is not carried here - surfaces pull it via
+	// `readAgentBackgroundJobOutput`. `liveCount` is the number of live
+	// backgrounded jobs after this change, so count displays need no job
+	// bookkeeping of their own.
 	| {
-			readonly type: "agent_background_jobs_changed";
+			readonly type: "agent_background_job_changed";
 			agentId: AgentId;
-			count: number;
+			job: BackgroundJobSnapshot;
+			transition: BackgroundJobTransition;
+			liveCount: number;
 			changedAt: string;
 	  };
 

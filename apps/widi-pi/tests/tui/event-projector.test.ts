@@ -510,22 +510,37 @@ describe("EventProjector", () => {
 		expect(state.agents.get("worker")?.attention).toBe("warning");
 	});
 
-	it("tracks the live background job count", () => {
+	it("tracks the live background job count from per-job change events", () => {
 		const state = createTuiApplicationState();
 		const projector = new EventProjector(state);
 
 		projector.apply({
-			type: "agent_background_jobs_changed",
+			type: "agent_background_job_changed",
 			agentId: "worker",
-			count: 3,
+			job: {
+				jobId: "job-1",
+				toolCallId: "call-1",
+				toolName: "bash",
+				phase: "backgrounded",
+			},
+			transition: "backgrounded",
+			liveCount: 3,
 			changedAt: timestamp(1),
 		});
 		expect(projector.ensureAgent("worker").backgroundJobCount).toBe(3);
 
 		projector.apply({
-			type: "agent_background_jobs_changed",
+			type: "agent_background_job_changed",
 			agentId: "worker",
-			count: 0,
+			job: {
+				jobId: "job-1",
+				toolCallId: "call-1",
+				toolName: "bash",
+				phase: "backgrounded",
+				status: "completed",
+			},
+			transition: "settled",
+			liveCount: 0,
 			changedAt: timestamp(2),
 		});
 		expect(projector.ensureAgent("worker").backgroundJobCount).toBe(0);

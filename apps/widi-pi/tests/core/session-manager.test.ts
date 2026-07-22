@@ -530,12 +530,79 @@ describe("SessionManager", () => {
 			manager.findExtensionCustomEntries("main", "writer", "state"),
 		).resolves.toMatchObject([{ data: { value: 1 } }, { data: { value: 2 } }]);
 
-		// Compaction is a context fact, not a storage fact: entries behind the
-		// cut stay visible to findEntries.
-		await session.appendCompaction("compacted", secondUserId, 100);
+		// A retained-tail compaction is a model-context checkpoint, not a storage
+		// boundary: extension facts behind it stay visible on the active branch.
+		await session.appendCompaction(
+			"compacted",
+			secondUserId,
+			100,
+			undefined,
+			false,
+			undefined,
+			[{ role: "user", content: "second", timestamp: 2 }],
+		);
 		await expect(
 			manager.findExtensionCustomEntries("main", "writer", "state"),
 		).resolves.toMatchObject([{ data: { value: 1 } }, { data: { value: 2 } }]);
+	});
+
+	it("restores runtime state through retained-tail compaction checkpoints", async () => {
+		const manager = new SessionManager({
+			fs: new MemoryFileSystem(),
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+		});
+		const session = await manager.createAgentSession({
+			agentId: "main",
+			agentProfile: profile,
+		});
+		await session.appendModelChange("test", "model-2");
+		await session.appendThinkingLevelChange("high");
+		await session.appendActiveToolsChange(["read"]);
+		const retainedMessage = {
+			role: "user" as const,
+			content: "retained request",
+			timestamp: 1,
+		};
+		const retainedId = await session.appendMessage(retainedMessage);
+		await session.appendCompaction(
+			"Earlier work",
+			retainedId,
+			1000,
+			undefined,
+			false,
+			undefined,
+			[retainedMessage],
+		);
+
+		await expect(
+			manager.buildAgentSessionContext("main"),
+		).resolves.toMatchObject({
+			model: { provider: "test", modelId: "model-2" },
+			thinkingLevel: "high",
+			activeToolNames: ["read"],
+			messages: [
+				expect.objectContaining({ role: "compactionSummary" }),
+				expect.objectContaining({
+					role: "user",
+					content: "retained request",
+				}),
+			],
+		});
+		await expect(
+			manager.getAgentSessionSnapshot("main"),
+		).resolves.toMatchObject({
+			pathToRoot: [
+				expect.objectContaining({ type: "model_change" }),
+				expect.objectContaining({ type: "thinking_level_change" }),
+				expect.objectContaining({ type: "active_tools_change" }),
+				expect.objectContaining({ id: retainedId, type: "message" }),
+				expect.objectContaining({
+					type: "compaction",
+					retainedTail: [retainedMessage],
+				}),
+			],
+		});
 	});
 
 	it("snapshots, names, and forks persistent agent sessions", async () => {

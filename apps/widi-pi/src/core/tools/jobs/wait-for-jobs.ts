@@ -2,9 +2,12 @@ import { type Static, Type } from "typebox";
 import type {
 	BackgroundJob,
 	BackgroundJobStatus,
-	BackgroundJobTable,
 } from "../../background-job.ts";
 import type { ToolDefinition } from "../types.ts";
+import {
+	type SettlementWaitOutcome,
+	waitForSettlements,
+} from "./settlement-wait.ts";
 
 /** Default barrier timeout so a wait never hangs the agent indefinitely. */
 const DEFAULT_WAIT_TIMEOUT_MS = 60_000;
@@ -38,7 +41,7 @@ export type WaitForJobsInput = Static<typeof waitForJobsSchema>;
  * - `timed_out`: the timeout elapsed with jobs still running.
  * - `aborted`: the call was interrupted with jobs still running.
  */
-export type WaitForJobsOutcome = "completed" | "timed_out" | "aborted";
+export type WaitForJobsOutcome = SettlementWaitOutcome;
 
 /** Per-job status reported by `wait_for_jobs`. */
 export interface WaitForJobsJobStatus {
@@ -77,7 +80,7 @@ export function createWaitForJobsToolDefinition(): ToolDefinition<
 		name: "wait_for_jobs",
 		label: "wait_for_jobs",
 		description:
-			"Wait for one or more background jobs (started by a backgrounded tool call, such as bash with background: true) to finish, then report each job's status. Blocks up to the timeout, then returns; jobs still running keep running. Detailed output for each finished job arrives separately as a background job result message, so use this to synchronize, not to fetch output.",
+			"Wait for one or more background jobs (started by a backgrounded tool call, such as bash with background: true) to finish, then report each job's status. Blocks up to the timeout, then returns; jobs still running keep running. Detailed output for each finished job arrives separately as a background job result message, so use this to synchronize, not to fetch output. To inspect a running job's live output use read_job; to terminate one use kill_job.",
 		promptSnippet: "Wait for background jobs to finish before continuing",
 		parameters: waitForJobsSchema,
 		execute: async (_toolCallId, { jobIds, timeout }, context) => {
@@ -95,11 +98,11 @@ export function createWaitForJobsToolDefinition(): ToolDefinition<
 			}
 
 			// Only jobs already moved to the background are safe to wait on: their
-			// settlement is guaranteed to fire `onResult`. A job still in the
-			// `running` phase has not committed to background delivery and may
-			// settle inline (delivered to its own tool call, with no listener
-			// notification), which would strand the wait until it times out. Ids
-			// the model actually holds came from a t0 handle, so they are already
+			// settlement is guaranteed to emit a `settled` change. A job still in
+			// the `running` phase has not committed to background delivery and may
+			// settle inline (delivered to its own tool call, with no change
+			// emitted), which would strand the wait until it times out. Ids the
+			// model actually holds came from a t0 handle, so they are already
 			// backgrounded; running-phase jobs are excluded on purpose.
 			const live = new Map(
 				table
@@ -122,13 +125,18 @@ export function createWaitForJobsToolDefinition(): ToolDefinition<
 
 			let outcome: WaitForJobsOutcome = "completed";
 			if (pending.size > 0) {
-				outcome = await waitForPending(
+				outcome = await waitForSettlements({
 					table,
 					pending,
-					statuses,
-					resolveWaitTimeoutMs(timeout),
-					context.signal,
-				);
+					timeoutMs: resolveWaitTimeoutMs(timeout),
+					signal: context.signal,
+					onSettled: (job, jobOutcome) =>
+						statuses.set(job.id, {
+							jobId: job.id,
+							toolName: job.toolName,
+							state: jobOutcome.status,
+						}),
+				});
 			}
 
 			// Anything still pending stopped short of settling (timeout or abort)
@@ -150,49 +158,6 @@ export function createWaitForJobsToolDefinition(): ToolDefinition<
 			};
 		},
 	};
-}
-
-/**
- * Resolve with the reason the wait ended: `completed` once every pending job has
- * settled, `timed_out` when the timeout elapses first, or `aborted` when the
- * call is interrupted. Settled jobs are recorded into `statuses` and removed
- * from `pending`, so whatever remains in `pending` afterwards is still running.
- */
-function waitForPending(
-	table: BackgroundJobTable,
-	pending: Map<string, BackgroundJob>,
-	statuses: Map<string, WaitForJobsJobStatus>,
-	timeoutMs: number,
-	signal: AbortSignal | undefined,
-): Promise<WaitForJobsOutcome> {
-	return new Promise((resolve) => {
-		let finished = false;
-		let timer: NodeJS.Timeout | undefined;
-		const finish = (outcome: WaitForJobsOutcome) => {
-			if (finished) return;
-			finished = true;
-			unsubscribe();
-			if (timer) clearTimeout(timer);
-			signal?.removeEventListener("abort", onAbort);
-			resolve(outcome);
-		};
-		const onAbort = () => finish("aborted");
-		const unsubscribe = table.onResult((settlement) => {
-			if (!pending.has(settlement.job.id)) return;
-			pending.delete(settlement.job.id);
-			statuses.set(settlement.job.id, {
-				jobId: settlement.job.id,
-				toolName: settlement.job.toolName,
-				state: settlement.outcome.status,
-			});
-			if (pending.size === 0) finish("completed");
-		});
-		timer = setTimeout(() => finish("timed_out"), timeoutMs);
-		if (signal) {
-			if (signal.aborted) finish("aborted");
-			else signal.addEventListener("abort", onAbort, { once: true });
-		}
-	});
 }
 
 function resolveWaitTimeoutMs(timeout: number | undefined): number {

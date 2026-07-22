@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	type BackgroundJobSettlement,
 	BackgroundJobTable,
@@ -26,7 +26,9 @@ describe("bash background integration", () => {
 	it("returns a job handle immediately and delivers the real output later", async () => {
 		const table = new BackgroundJobTable();
 		const settled = new Promise<BackgroundJobSettlement>((resolve) => {
-			table.onResult(resolve);
+			table.onChange((change) => {
+				if (change.transition === "settled") resolve(change);
+			});
 		});
 		const bash = resolveBashTool(table);
 
@@ -48,6 +50,33 @@ describe("bash background integration", () => {
 			.join("");
 		expect(text?.trim()).toBe("hi");
 		expect(table.list()).toEqual([]);
+	});
+
+	it("mirrors live output into the job's rolling tail while backgrounded", async () => {
+		const table = new BackgroundJobTable();
+		const settled = new Promise<BackgroundJobSettlement>((resolve) => {
+			table.onChange((change) => {
+				if (change.transition === "settled") resolve(change);
+			});
+		});
+		const bash = resolveBashTool(table);
+
+		const t0 = await bash.execute(
+			"call-1",
+			{ command: "echo progress && sleep 0.3", background: true },
+			undefined,
+			undefined,
+		);
+		const jobId = (t0.details as { jobId: string }).jobId;
+
+		// The tail is readable through the table while the command still runs.
+		await vi.waitFor(() => {
+			expect(table.get(jobId)?.output.read()).toContain("progress");
+		});
+
+		await settled;
+		// Settlement drops the record — and its output — from the table.
+		expect(table.get(jobId)).toBeUndefined();
 	});
 
 	it("runs inline when background is not requested", async () => {
