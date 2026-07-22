@@ -2,6 +2,7 @@ import type {
 	AgentHarnessEventResultMap,
 	BeforeAgentStartEvent,
 	BeforeProviderRequestEvent,
+	CompactResult,
 	ContextEvent,
 	ExecutionError,
 	Result,
@@ -147,15 +148,10 @@ export type ExtensionExecResult = Result<
  * Result of an extension-initiated compaction. The compaction entry is
  * already persisted when this value resolves - it is an observation, not a
  * mutation channel (mutation is the deferred `session_before_compact` hook).
- * WIDI owns this shape; the upstream harness return type is structural and
- * not exported by `pi-agent-core`.
+ * The shape follows pi-agent-core so retained-tail checkpoints and summary
+ * usage remain observable to extensions.
  */
-export interface ExtensionCompactionResult {
-	summary: string;
-	firstKeptEntryId: string;
-	tokensBefore: number;
-	details?: unknown;
-}
+export type ExtensionCompactionResult = CompactResult;
 
 /**
  * Agent-scoped action surface handed to extension authors. Every action is

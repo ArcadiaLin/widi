@@ -1838,11 +1838,8 @@ export class AgentOrchestrator {
 				metadata: options.metadata,
 			});
 			sessionMetadata = await session.getMetadata();
-			const context = (await session.buildContext()) as Awaited<
-				ReturnType<typeof session.buildContext>
-			> & {
-				activeToolNames?: string[] | null;
-			};
+			const context =
+				await this.sessionManager.buildAgentSessionContext(agentId);
 			model = this._resolveResumeModel(options, context.model);
 			await this._registerAgentRecord(
 				createAgentRecord({
@@ -1973,6 +1970,8 @@ export class AgentOrchestrator {
 			env: this.executionEnv,
 			session: session,
 			models: this.modelRegistry.getRuntime(),
+			streamOptions: this.settingManager.getProviderRetrySettings(),
+			retry: this.settingManager.getRetrySettings(),
 			resources: resources,
 			tools: agentToolSet.tools,
 			// Callback instead of a string so the skills listing tracks the
