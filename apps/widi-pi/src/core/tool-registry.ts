@@ -1,4 +1,8 @@
-import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
+import type {
+	AgentHarnessTool,
+	AgentToolResult,
+	AgentToolUpdateCallback,
+} from "@earendil-works/pi-agent-core";
 import type { TSchema } from "typebox";
 import {
 	type BackgroundJobTable,
@@ -71,9 +75,8 @@ export interface ToolRegistryResolveResult {
 	getToolDefinition(name: string): RegistryToolDefinition | undefined;
 }
 
-export interface ToolAgentAdapterContext {
+export interface ToolAdapterContext {
 	human?: ToolHumanHost;
-	extension?: ToolExtensionContext;
 	createExtensionContext?: (
 		source: ToolSource,
 		toolName: string,
@@ -437,11 +440,12 @@ export class ToolRegistry {
 }
 
 /**
- * Pi AgentTool produced by the WIDI adapter. Carries the WIDI definition's
- * prompt guidance so system prompt composition can consume it from the
- * harness's active tool list without reaching back into the registry.
+ * Resolved registry tool projected to the AgentHarness execution boundary.
+ * Prompt guidance remains attached so system prompt composition can consume it
+ * from the harness's active tool list without reaching back into the registry.
  */
-export interface WidiAgentTool extends AgentTool<TSchema, unknown> {
+export interface ResolvedAgentHarnessTool
+	extends AgentHarnessTool<ToolAdapterContext, TSchema, unknown> {
 	/** Optional system-prompt snippet copied from the WIDI tool definition. */
 	promptSnippet?: string;
 	/** Optional prompt guidance bullets copied from the WIDI tool definition. */
@@ -452,10 +456,9 @@ export interface WidiAgentTool extends AgentTool<TSchema, unknown> {
 	backgroundTimeoutMs?: number;
 }
 
-export function createAgentToolFromResolvedTool(
+export function createAgentHarnessToolFromResolvedTool(
 	resolvedTool: ResolvedTool,
-	context: ToolAgentAdapterContext,
-): WidiAgentTool {
+): ResolvedAgentHarnessTool {
 	const definition = resolvedTool.definition;
 	return {
 		name: definition.name,
@@ -468,7 +471,7 @@ export function createAgentToolFromResolvedTool(
 		parameters: definition.parameters,
 		prepareArguments: definition.prepareArguments,
 		executionMode: definition.executionMode,
-		execute: (toolCallId, params, signal, onUpdate) => {
+		execute: (toolCallId, params, signal, onUpdate, context) => {
 			if (definition.backgroundable && context.backgroundJobTable) {
 				const deadlineMs = resolveBackgroundDeadlineMs(definition, params);
 				if (deadlineMs !== undefined) {
@@ -530,12 +533,12 @@ function isBackgroundRequested(params: unknown): boolean {
 
 interface RunBackgroundableToolCallOptions {
 	resolvedTool: ResolvedTool;
-	context: ToolAgentAdapterContext;
+	context: ToolAdapterContext;
 	table: BackgroundJobTable;
 	toolCallId: string;
 	params: unknown;
 	signal: AbortSignal | undefined;
-	onUpdate: Parameters<AgentTool<TSchema, unknown>["execute"]>[3];
+	onUpdate: AgentToolUpdateCallback<unknown> | undefined;
 	/** Resolved deadline for this call; 0 backgrounds essentially immediately. */
 	deadlineMs: number;
 }
@@ -646,12 +649,11 @@ function raceSettlement(
 	});
 }
 
-export function createAgentToolsFromResolvedTools(
+export function createAgentHarnessToolsFromResolvedTools(
 	resolvedTools: readonly ResolvedTool[],
-	context: ToolAgentAdapterContext,
-): WidiAgentTool[] {
+): ResolvedAgentHarnessTool[] {
 	return resolvedTools.map((resolvedTool) =>
-		createAgentToolFromResolvedTool(resolvedTool, context),
+		createAgentHarnessToolFromResolvedTool(resolvedTool),
 	);
 }
 
@@ -697,17 +699,18 @@ function applyPatch(
 
 function createToolExecutionContext(
 	resolvedTool: ResolvedTool,
-	context: ToolAgentAdapterContext,
+	context: ToolAdapterContext,
 	signal: AbortSignal | undefined,
-	onUpdate: Parameters<AgentTool<TSchema, unknown>["execute"]>[3],
+	onUpdate: AgentToolUpdateCallback<unknown> | undefined,
 	job?: ToolExecutionContext<unknown>["job"],
 ): ToolExecutionContext<unknown> {
 	const bindContext = (source: ToolSource) => ({
 		signal,
 		onUpdate,
-		extension:
-			context.createExtensionContext?.(source, resolvedTool.definition.name) ??
-			context.extension,
+		extension: context.createExtensionContext?.(
+			source,
+			resolvedTool.definition.name,
+		),
 		human: context.human,
 		backgroundJobTable: context.backgroundJobTable,
 		job,

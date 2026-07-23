@@ -1,7 +1,5 @@
 import type {
-	AgentHarness,
 	AgentHarnessEvent,
-	AgentTool,
 	AgentToolResult,
 } from "@earendil-works/pi-agent-core";
 import { AgentHarnessError } from "@earendil-works/pi-agent-core";
@@ -21,7 +19,11 @@ import {
 import type { AgentRecord } from "../../src/core/agent-record.ts";
 import type { BackgroundJobOutcome } from "../../src/core/background-job.ts";
 import type { ExtensionModule } from "../../src/core/extension/index.ts";
-import { ToolRegistry } from "../../src/core/tool-registry.ts";
+import {
+	type ResolvedAgentHarnessTool,
+	type ToolAdapterContext,
+	ToolRegistry,
+} from "../../src/core/tool-registry.ts";
 import { registerCoreJobTools } from "../../src/core/tools/jobs/builtin.ts";
 import type { ToolDefinition } from "../../src/core/tools/types.ts";
 import {
@@ -89,11 +91,26 @@ const completedOutcome: BackgroundJobOutcome = {
 	},
 };
 
+async function resolveRecordToolContext(
+	record: AgentRecord,
+): Promise<ToolAdapterContext> {
+	const source = (
+		record.harness as unknown as {
+			toolContext:
+				| ToolAdapterContext
+				| (() => ToolAdapterContext | Promise<ToolAdapterContext>);
+		}
+	).toolContext;
+	return await (typeof source === "function" ? source() : source);
+}
+
 describe("AgentOrchestrator background job router", () => {
 	it("delivers a settled result to an idle agent as a prompt", async () => {
 		const { record } = await spawnAgent();
 		const prompt = vi.fn(async (_text: string) => ({}) as AssistantMessage);
-		record.harness = { prompt } as unknown as AgentHarness;
+		record.harness = {
+			prompt,
+		} as unknown as NonNullable<AgentRecord["harness"]>;
 
 		const jobId = settleBackgroundedJob(record, completedOutcome);
 		await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
@@ -107,7 +124,9 @@ describe("AgentOrchestrator background job router", () => {
 	it("buffers while running and flushes on the next idle boundary", async () => {
 		const { orchestrator, agentId, record } = await spawnAgent();
 		const prompt = vi.fn(async (_text: string) => ({}) as AssistantMessage);
-		record.harness = { prompt } as unknown as AgentHarness;
+		record.harness = {
+			prompt,
+		} as unknown as NonNullable<AgentRecord["harness"]>;
 		record.status = "running";
 
 		settleBackgroundedJob(record, completedOutcome);
@@ -122,7 +141,9 @@ describe("AgentOrchestrator background job router", () => {
 	it("joins multiple buffered results into a single prompt", async () => {
 		const { orchestrator, agentId, record } = await spawnAgent();
 		const prompt = vi.fn(async (_text: string) => ({}) as AssistantMessage);
-		record.harness = { prompt } as unknown as AgentHarness;
+		record.harness = {
+			prompt,
+		} as unknown as NonNullable<AgentRecord["harness"]>;
 		record.status = "running";
 
 		const first = settleBackgroundedJob(record, completedOutcome, "call-1");
@@ -143,7 +164,9 @@ describe("AgentOrchestrator background job router", () => {
 			if (calls === 1) throw new AgentHarnessError("busy", "busy");
 			return {} as AssistantMessage;
 		});
-		record.harness = { prompt } as unknown as AgentHarness;
+		record.harness = {
+			prompt,
+		} as unknown as NonNullable<AgentRecord["harness"]>;
 		const internals = orchestrator as unknown as {
 			_pendingBackgroundResults: Map<string, string[]>;
 		};
@@ -164,7 +187,9 @@ describe("AgentOrchestrator background job router", () => {
 		const prompt = vi.fn(async (_text: string) => {
 			throw new AgentHarnessError("busy", "busy");
 		});
-		record.harness = { prompt } as unknown as AgentHarness;
+		record.harness = {
+			prompt,
+		} as unknown as NonNullable<AgentRecord["harness"]>;
 		const internals = orchestrator as unknown as {
 			_pendingBackgroundResults: Map<string, string[]>;
 		};
@@ -191,7 +216,9 @@ describe("AgentOrchestrator background job router", () => {
 			if (calls === 1) throw new Error("session write failed");
 			return {} as AssistantMessage;
 		});
-		record.harness = { prompt } as unknown as AgentHarness;
+		record.harness = {
+			prompt,
+		} as unknown as NonNullable<AgentRecord["harness"]>;
 		const internals = orchestrator as unknown as {
 			_pendingBackgroundResults: Map<string, string[]>;
 		};
@@ -222,7 +249,7 @@ describe("AgentOrchestrator background job router", () => {
 			prompt: vi.fn(async (_text: string) => {
 				throw new Error("session write failed");
 			}),
-		} as unknown as AgentHarness;
+		} as unknown as NonNullable<AgentRecord["harness"]>;
 
 		settleBackgroundedJob(record, completedOutcome);
 		await vi.waitFor(() => {
@@ -521,12 +548,15 @@ describe("AgentOrchestrator background job context", () => {
 	): Promise<AgentToolResult<unknown>> {
 		const toolSet = (
 			orchestrator as unknown as {
-				_agentToolSets: Map<string, { tools: AgentTool[] }>;
+				_agentToolSets: Map<string, { tools: ResolvedAgentHarnessTool[] }>;
 			}
 		)._agentToolSets.get(agentId);
 		const probe = toolSet?.tools.find((tool) => tool.name === "probe");
 		if (!probe) throw new Error("probe tool not resolved for agent");
-		return probe.execute("call-1", {}, undefined, undefined);
+		const record = requireAgentRecord(orchestrator, agentId);
+		return resolveRecordToolContext(record).then((context) =>
+			probe.execute("call-1", {}, undefined, undefined, context),
+		);
 	}
 
 	const textOf = (result: AgentToolResult<unknown>): string =>
@@ -543,6 +573,35 @@ describe("AgentOrchestrator background job context", () => {
 
 		expect(textOf(await probeTableState(orchestrator, agentId))).toBe(
 			"has-table",
+		);
+	});
+
+	it("provides fresh turn contexts with per-agent job table isolation", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env, {
+			toolRegistry: createToolRegistry(probeTool),
+		});
+		const firstAgentId = await orchestrator.spawnAgent();
+		const secondAgentId = await orchestrator.spawnAgent();
+		const firstRecord = requireAgentRecord(orchestrator, firstAgentId);
+		const secondRecord = requireAgentRecord(orchestrator, secondAgentId);
+
+		const firstContext = await resolveRecordToolContext(firstRecord);
+		const nextFirstContext = await resolveRecordToolContext(firstRecord);
+		const secondContext = await resolveRecordToolContext(secondRecord);
+
+		expect(nextFirstContext).not.toBe(firstContext);
+		expect(firstContext.backgroundJobTable).toBe(
+			firstRecord.backgroundJobTable,
+		);
+		expect(nextFirstContext.backgroundJobTable).toBe(
+			firstRecord.backgroundJobTable,
+		);
+		expect(secondContext.backgroundJobTable).toBe(
+			secondRecord.backgroundJobTable,
+		);
+		expect(secondContext.backgroundJobTable).not.toBe(
+			firstContext.backgroundJobTable,
 		);
 	});
 });

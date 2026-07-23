@@ -1,5 +1,4 @@
 import type {
-	AgentHarness,
 	ExecutionEnv,
 	ExecutionError,
 	FileError,
@@ -423,7 +422,7 @@ export function requireAgentRecord(
 export function requireAgentHarness(
 	orchestrator: AgentOrchestrator,
 	agentId: string,
-): AgentHarness {
+): NonNullable<AgentRecord["harness"]> {
 	const harness = requireAgentRecord(orchestrator, agentId).harness;
 	if (!harness) throw new Error(`Missing agent harness: ${agentId}`);
 	return harness;

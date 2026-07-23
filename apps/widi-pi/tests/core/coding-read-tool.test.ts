@@ -1,7 +1,7 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import {
-	createAgentToolFromResolvedTool,
+	createAgentHarnessToolFromResolvedTool,
 	ToolRegistry,
 } from "../../src/core/tool-registry.ts";
 import type {
@@ -454,9 +454,15 @@ describe("core read tool", () => {
 		);
 		const resolved = registry.resolve().getTool("read");
 		if (!resolved) throw new Error("Expected read tool to resolve.");
-		const agentTool = createAgentToolFromResolvedTool(resolved, {});
+		const agentTool = createAgentHarnessToolFromResolvedTool(resolved);
 
-		const result = await agentTool.execute("call-1", { path: "image.png" });
+		const result = await agentTool.execute(
+			"call-1",
+			{ path: "image.png" },
+			undefined,
+			undefined,
+			{},
+		);
 
 		expect(result.content).toEqual([
 			{ type: "text", text: "Read image file [image/png]" },
@@ -477,9 +483,15 @@ describe("core read tool", () => {
 		);
 		const resolved = registry.resolve().getTool("read");
 		if (!resolved) throw new Error("Expected read tool to resolve.");
-		const agentTool = createAgentToolFromResolvedTool(resolved, {});
+		const agentTool = createAgentHarnessToolFromResolvedTool(resolved);
 
-		const result = await agentTool.execute("call-1", { path: "file.txt" });
+		const result = await agentTool.execute(
+			"call-1",
+			{ path: "file.txt" },
+			undefined,
+			undefined,
+			{},
+		);
 
 		expect(result).toMatchObject({
 			content: [{ type: "text", text: "hello" }],

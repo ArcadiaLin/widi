@@ -14,9 +14,10 @@ import type { ToolHumanHost } from "../human-request.ts";
  * Runtime context passed to a WIDI tool execution function.
  *
  * This is the adapter boundary between resolved WIDI tool definitions and Pi
- * `AgentTool` closures. Tool-specific backends are captured by the tool
- * definition factory, while this context carries per-call facts such as abort,
- * update, extension, and human request handling.
+ * `AgentHarnessTool` projections. Tool-specific backends are captured by the
+ * tool definition factory, while the registry adapter combines turn-scoped
+ * harness context with per-call facts such as abort, update, extension, and
+ * human request handling.
  */
 export interface ToolExecutionContext<TDetails> {
 	/** Abort signal for the current tool call. */
@@ -124,9 +125,9 @@ export interface ToolSource {
  *
  * This is not Pi's runtime closure directly. It is the declarative/runtime
  * boundary owned by WIDI: the registry can diagnose, patch, filter, and finally
- * wrap it into a Pi `AgentTool`. It owns execution metadata and the execute
- * closure only. UI preview/state is derived outside the tool from raw harness
- * events and tool results.
+ * project it into a Pi `AgentHarnessTool`. It owns execution metadata and the
+ * execute closure only. UI preview/state is derived outside the tool from raw
+ * harness events and tool results.
  */
 export interface ToolDefinition<
 	TParamsSchema extends TSchema = TSchema,

@@ -1,11 +1,10 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
-import type { TSchema } from "typebox";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
-	createAgentToolsFromResolvedTools,
+	createAgentHarnessToolsFromResolvedTools,
+	type ResolvedAgentHarnessTool,
 	ToolRegistry,
 } from "../../src/core/tool-registry.ts";
 import { registerCoreCodingTools } from "../../src/core/tools/coding/builtin.ts";
@@ -17,12 +16,22 @@ import { registerCoreCodingTools } from "../../src/core/tools/coding/builtin.ts"
  */
 describe("core coding tools smoke", () => {
 	let cwd: string;
-	let tools: Map<string, AgentTool<TSchema, unknown>>;
+	let tools: Map<string, ResolvedAgentHarnessTool>;
 
-	function tool(name: string): AgentTool<TSchema, unknown> {
+	function tool(name: string): ResolvedAgentHarnessTool {
 		const found = tools.get(name);
 		if (!found) throw new Error(`Expected tool ${name} to resolve.`);
 		return found;
+	}
+
+	async function execute(name: string, toolCallId: string, params: unknown) {
+		return await tool(name).execute(
+			toolCallId,
+			params,
+			undefined,
+			undefined,
+			{},
+		);
 	}
 
 	function textOf(result: {
@@ -42,10 +51,9 @@ describe("core coding tools smoke", () => {
 		const resolved = registry.resolve();
 		expect(resolved.diagnostics).toEqual([]);
 		tools = new Map(
-			createAgentToolsFromResolvedTools(resolved.tools, {}).map((agentTool) => [
-				agentTool.name,
-				agentTool,
-			]),
+			createAgentHarnessToolsFromResolvedTools(resolved.tools).map(
+				(agentTool) => [agentTool.name, agentTool],
+			),
 		);
 	});
 
@@ -83,7 +91,7 @@ describe("core coding tools smoke", () => {
 	});
 
 	it("runs a write-read-edit-bash-grep-find-ls round trip", async () => {
-		await tool("write").execute("call-write", {
+		await execute("write", "call-write", {
 			path: "src/app.txt",
 			content: "alpha needle one\nbeta line two\n",
 		});
@@ -91,12 +99,12 @@ describe("core coding tools smoke", () => {
 			"alpha needle one\nbeta line two\n",
 		);
 
-		const readResult = await tool("read").execute("call-read", {
+		const readResult = await execute("read", "call-read", {
 			path: "src/app.txt",
 		});
 		expect(textOf(readResult)).toBe("alpha needle one\nbeta line two\n");
 
-		await tool("edit").execute("call-edit", {
+		await execute("edit", "call-edit", {
 			path: "src/app.txt",
 			edits: [{ oldText: "beta line two", newText: "gamma line two" }],
 		});
@@ -104,22 +112,22 @@ describe("core coding tools smoke", () => {
 			"alpha needle one\ngamma line two\n",
 		);
 
-		const bashResult = await tool("bash").execute("call-bash", {
+		const bashResult = await execute("bash", "call-bash", {
 			command: "wc -l < src/app.txt",
 		});
 		expect(textOf(bashResult).trim()).toBe("2");
 
-		const grepResult = await tool("grep").execute("call-grep", {
+		const grepResult = await execute("grep", "call-grep", {
 			pattern: "needle",
 		});
 		expect(textOf(grepResult)).toBe("src/app.txt:1: alpha needle one");
 
-		const findResult = await tool("find").execute("call-find", {
+		const findResult = await execute("find", "call-find", {
 			pattern: "*.txt",
 		});
 		expect(textOf(findResult)).toBe("src/app.txt");
 
-		const lsResult = await tool("ls").execute("call-ls", {});
+		const lsResult = await execute("ls", "call-ls", {});
 		expect(textOf(lsResult)).toBe("src/");
 	});
 });

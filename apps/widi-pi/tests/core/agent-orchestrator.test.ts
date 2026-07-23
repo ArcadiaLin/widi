@@ -1,5 +1,4 @@
 import type {
-	AgentHarness,
 	AgentHarnessEvent,
 	JsonlSessionMetadata,
 } from "@earendil-works/pi-agent-core";
@@ -39,7 +38,10 @@ import {
 	type SettingsScope,
 	type SettingsStorage,
 } from "../../src/core/setting-manager.ts";
-import { ToolRegistry } from "../../src/core/tool-registry.ts";
+import {
+	type ToolAdapterContext,
+	ToolRegistry,
+} from "../../src/core/tool-registry.ts";
 import { registerCoreInteractionTools } from "../../src/core/tools/interaction/builtin.ts";
 import { createResourceExtension } from "../extensions/resource-extension.ts";
 import {
@@ -76,6 +78,34 @@ async function emitSettled(
 			): Promise<void>;
 		}
 	)._handleAgentHarnessEvent(agentId, { type: "settled", nextTurnCount });
+}
+
+async function resolveHarnessToolContext(
+	harness: ReturnType<typeof requireAgentHarness>,
+): Promise<ToolAdapterContext> {
+	const source = (
+		harness as unknown as {
+			toolContext:
+				| ToolAdapterContext
+				| (() => ToolAdapterContext | Promise<ToolAdapterContext>);
+		}
+	).toolContext;
+	return await (typeof source === "function" ? source() : source);
+}
+
+function requireExtensionToolActions(
+	context: ToolAdapterContext,
+	extensionId: string,
+): ExtensionContext["actions"] {
+	const extensionContext = context.createExtensionContext?.(
+		{ kind: "extension", id: extensionId },
+		"probe",
+	);
+	const host = extensionContext?.host as
+		| { actions?: ExtensionContext["actions"] }
+		| undefined;
+	if (!host?.actions) throw new Error("Expected extension tool actions.");
+	return host.actions;
 }
 
 function overflowAssistantMessage(): AssistantMessage {
@@ -579,6 +609,48 @@ describe("AgentOrchestrator", () => {
 		expect(harness.getTools()).toEqual([
 			expect.objectContaining({ name: "echo" }),
 		]);
+	});
+
+	it("updates active tools without rebuilding harness tool objects", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env, {
+			toolRegistry: createToolRegistry(
+				createToolDefinition("alpha"),
+				createToolDefinition("beta"),
+			),
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, agentId);
+		const initialTools = harness.getTools();
+		const originalSetActiveTools = harness.setActiveTools.bind(harness);
+		const originalSetTools = harness.setTools.bind(harness);
+		let setActiveToolsCalls = 0;
+		let setToolsCalls = 0;
+		harness.setActiveTools = async (toolNames) => {
+			setActiveToolsCalls += 1;
+			await originalSetActiveTools(toolNames);
+		};
+		harness.setTools = async (tools, activeToolNames) => {
+			setToolsCalls += 1;
+			await originalSetTools(tools, activeToolNames);
+		};
+
+		await orchestrator.setAgentActiveTools(agentId, ["alpha"]);
+
+		expect(setActiveToolsCalls).toBe(1);
+		expect(setToolsCalls).toBe(0);
+		expect(harness.getTools()[0]).toBe(initialTools[0]);
+		expect(harness.getTools()[1]).toBe(initialTools[1]);
+		expect(harness.getActiveTools().map((tool) => tool.name)).toEqual([
+			"alpha",
+		]);
+
+		await orchestrator.setAgentTools(agentId, ["alpha", "beta"], ["beta"]);
+
+		expect(setActiveToolsCalls).toBe(1);
+		expect(setToolsCalls).toBe(1);
+		expect(harness.getTools()[0]).not.toBe(initialTools[0]);
+		expect(harness.getActiveTools().map((tool) => tool.name)).toEqual(["beta"]);
 	});
 
 	it("rejects agent thinking level changes unsupported by the current model", async () => {
@@ -2180,6 +2252,35 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
+	it("persists and restores an explicitly empty active tool selection", async () => {
+		const env = new MemoryExecutionEnv();
+		const firstOrchestrator = await createOrchestrator(env, {
+			toolRegistry: createToolRegistry(createToolDefinition("echo")),
+		});
+		const agentId = await firstOrchestrator.spawnAgent();
+		await firstOrchestrator.setAgentActiveTools(agentId, []);
+		const sessionMetadata =
+			firstOrchestrator.inspectAgent(agentId).sessionMetadata;
+		if (!sessionMetadata) throw new Error("Expected session metadata.");
+
+		const resumedOrchestrator = await createOrchestrator(env, {
+			toolRegistry: createToolRegistry(createToolDefinition("echo")),
+		});
+		const resumedAgentId = await resumedOrchestrator.spawnAgent({
+			resume: true,
+			metadata: expectExtendedMetadata(sessionMetadata),
+		});
+
+		expect(resumedAgentId).toBe(agentId);
+		expect(resumedOrchestrator.getAgentTools(resumedAgentId)).toEqual({
+			toolNames: ["echo"],
+			activeToolNames: [],
+		});
+		expect(
+			requireAgentHarness(resumedOrchestrator, resumedAgentId).getActiveTools(),
+		).toEqual([]);
+	});
+
 	it("reports conflicts between registry tool registrations", async () => {
 		const env = new MemoryExecutionEnv();
 		const toolRegistry = new ToolRegistry();
@@ -3201,6 +3302,47 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
+	it("switches new turn contexts to the reloaded runner without rebinding old snapshots", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["sample"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtension("sample", (api) => {
+			api.registerTool(createToolDefinition("alpha"));
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, agentId);
+		const oldToolContext = await resolveHarnessToolContext(harness);
+		const oldActions = requireExtensionToolActions(oldToolContext, "sample");
+		expect(oldActions.getTools().toolNames).toEqual(["alpha"]);
+
+		orchestrator.registerExtension("sample", (api) => {
+			api.registerTool(createToolDefinition("alpha"));
+			api.registerTool(createToolDefinition("beta"));
+		});
+		await orchestrator.reloadExtensions();
+
+		expect(() => oldActions.getTools()).toThrow(
+			"Extension runtime has been reloaded.",
+		);
+		const newToolContext = await resolveHarnessToolContext(harness);
+		const newActions = requireExtensionToolActions(newToolContext, "sample");
+		expect(newActions).not.toBe(oldActions);
+		expect(newActions.getTools().toolNames).toEqual(["alpha", "beta"]);
+	});
+
 	it("preserves explicit active tool selections across extension reload", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = {
@@ -3324,12 +3466,7 @@ describe("AgentOrchestrator", () => {
 		await runner
 			.createContext("sample")
 			.actions.setStatus("index", { text: "Indexing" });
-		const harness = requireAgentHarness(
-			orchestrator,
-			agentId,
-		) as AgentHarness & {
-			setTools?: () => Promise<void>;
-		};
+		const harness = requireAgentHarness(orchestrator, agentId);
 		harness.setTools = async () => {
 			throw new Error("reload tool binding failed");
 		};
@@ -3337,6 +3474,14 @@ describe("AgentOrchestrator", () => {
 		const result = await orchestrator.reloadExtensions();
 
 		expect(result.agents).toMatchObject([{ agentId, status: "failed" }]);
+		expect(requireAgentRecord(orchestrator, agentId).extensionRunner).toBe(
+			runner,
+		);
+		expect(runner.isStale()).toBe(false);
+		expect(runner.createContext("sample").actions.getTools()).toEqual({
+			toolNames: [],
+			activeToolNames: [],
+		});
 		expect(orchestrator.listExtensionStatuses(agentId)).toMatchObject([
 			{
 				extensionId: "sample",
@@ -3407,11 +3552,27 @@ describe("AgentOrchestrator", () => {
 			throw new Error("Expected test tools to resolve.");
 		}
 
-		await expect(patchedPlain.execute("call-1", {})).resolves.toEqual({
+		await expect(
+			patchedPlain.execute(
+				"call-1",
+				{},
+				undefined,
+				undefined,
+				await resolveHarnessToolContext(extensionHarness),
+			),
+		).resolves.toEqual({
 			content: [{ type: "text", text: "patched" }],
 			details: { source: "patcher" },
 		});
-		await expect(unpatchedPlain.execute("call-2", {})).resolves.toEqual({
+		await expect(
+			unpatchedPlain.execute(
+				"call-2",
+				{},
+				undefined,
+				undefined,
+				await resolveHarnessToolContext(plainHarness),
+			),
+		).resolves.toEqual({
 			content: [{ type: "text", text: "base" }],
 			details: undefined,
 		});
@@ -4428,6 +4589,9 @@ describe("AgentOrchestrator", () => {
 			{ kind: "select", title: "Pick a color", options: ["red", "green"] },
 			undefined,
 			undefined,
+			await resolveHarnessToolContext(
+				requireAgentHarness(orchestrator, agentId),
+			),
 		);
 		expect(captured).toMatchObject({
 			kind: "select",
@@ -4479,6 +4643,9 @@ describe("AgentOrchestrator", () => {
 				{ kind: "confirm", title: "Approve?" },
 				undefined,
 				undefined,
+				await resolveHarnessToolContext(
+					requireAgentHarness(orchestrator, agentId),
+				),
 			),
 		).rejects.toMatchObject({
 			diagnostic: expect.objectContaining({

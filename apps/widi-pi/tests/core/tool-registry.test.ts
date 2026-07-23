@@ -2,7 +2,7 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import {
-	createAgentToolFromResolvedTool,
+	createAgentHarnessToolFromResolvedTool,
 	ToolRegistry,
 } from "../../src/core/tool-registry.ts";
 import type { ToolDefinition, ToolSource } from "../../src/core/tools/types.ts";
@@ -72,8 +72,14 @@ describe("ToolRegistry", () => {
 			"sandbox",
 		]);
 
-		const agentTool = createAgentToolFromResolvedTool(resolvedTool, {});
-		const toolResult = await agentTool.execute("call-1", {});
+		const agentTool = createAgentHarnessToolFromResolvedTool(resolvedTool);
+		const toolResult = await agentTool.execute(
+			"call-1",
+			{},
+			undefined,
+			undefined,
+			{},
+		);
 
 		expect(toolResult.content).toEqual([{ type: "text", text: "base" }]);
 		expect(calls).toEqual([
@@ -210,16 +216,16 @@ describe("ToolRegistry", () => {
 		const resolvedTool = registry.resolve().getTool("write");
 		expect(resolvedTool).toBeDefined();
 		if (!resolvedTool) throw new Error("Expected write tool to resolve.");
-		const agentTool = createAgentToolFromResolvedTool(resolvedTool, {
+		const agentTool = createAgentHarnessToolFromResolvedTool(resolvedTool);
+
+		await agentTool.execute("call-1", {}, undefined, undefined, {
 			createExtensionContext: (source) => ({ extensionId: source.id }),
 		});
-
-		await agentTool.execute("call-1", {});
 
 		expect(events).toEqual(["patch:audit", "execute:builtin"]);
 	});
 
-	it("passes human request capability into tool execution context", async () => {
+	it("uses the invocation's human capability without capturing agent context", async () => {
 		const registry = new ToolRegistry();
 		registry.defineTool(
 			{
@@ -252,17 +258,26 @@ describe("ToolRegistry", () => {
 		const resolvedTool = registry.resolve().getTool("ask");
 		expect(resolvedTool).toBeDefined();
 		if (!resolvedTool) throw new Error("Expected ask tool to resolve.");
-		const agentTool = createAgentToolFromResolvedTool(resolvedTool, {
+		const agentTool = createAgentHarnessToolFromResolvedTool(resolvedTool);
+
+		const first = await agentTool.execute("call-1", {}, undefined, undefined, {
 			human: {
 				request: async () => ({ kind: "confirm", confirmed: true }),
 			},
 		});
+		const second = await agentTool.execute("call-2", {}, undefined, undefined, {
+			human: {
+				request: async () => ({ kind: "confirm", confirmed: false }),
+			},
+		});
 
-		const result = await agentTool.execute("call-1", {});
-
-		expect(result).toEqual({
+		expect(first).toEqual({
 			content: [{ type: "text", text: "yes" }],
 			details: { kind: "confirm", confirmed: true },
+		});
+		expect(second).toEqual({
+			content: [{ type: "text", text: "no" }],
+			details: { kind: "confirm", confirmed: false },
 		});
 	});
 });

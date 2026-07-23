@@ -9,7 +9,6 @@ import {
 	AgentHarnessError,
 	type AgentHarnessEvent,
 	type AgentHarnessResources,
-	type AgentTool,
 	calculateContextTokens,
 	type ExecutionEnv,
 	formatSkillsForSystemPrompt,
@@ -41,6 +40,7 @@ import {
 	createAgentRecord,
 	createAgentRecordFromProfileReference,
 	snapshotAgentRecord,
+	type WidiAgentHarness,
 } from "./agent-record.ts";
 import {
 	type BackgroundJobChange,
@@ -115,7 +115,9 @@ import type {
 } from "./session-manager.ts";
 import type { SettingManager } from "./setting-manager.js";
 import {
-	createAgentToolsFromResolvedTools,
+	createAgentHarnessToolsFromResolvedTools,
+	type ResolvedAgentHarnessTool,
+	type ToolAdapterContext,
 	ToolRegistry,
 } from "./tool-registry.ts";
 import type {
@@ -258,11 +260,11 @@ export type SpawnAgentOptions =
 
 interface SpawnedAgentHarness {
 	agentId: AgentId;
-	harness: AgentHarness;
+	harness: WidiAgentHarness;
 }
 
 interface AgentToolSet {
-	tools: AgentTool[];
+	tools: ResolvedAgentHarnessTool[];
 	toolNames: string[];
 	requestedToolNames: string[] | undefined;
 	activeToolNames: string[];
@@ -278,13 +280,6 @@ interface ResolvedAgentProfile {
 	profile: AgentProfile;
 	source: AgentProfileSource;
 	entryId: string;
-}
-
-interface AgentToolSetHarness {
-	getTools(): AgentTool[];
-	setTools(tools: AgentTool[], activeToolNames?: string[]): Promise<void>;
-	getActiveTools(): AgentTool[];
-	setActiveTools(toolNames: string[]): Promise<void>;
 }
 
 export class AgentOrchestrator {
@@ -1168,8 +1163,7 @@ export class AgentOrchestrator {
 		toolNames: string[],
 		activeToolNames?: string[],
 	): Promise<void> {
-		const harness = this._requireAgentHarness(agentId) as AgentHarness &
-			Partial<AgentToolSetHarness>;
+		const harness = this._requireAgentHarness(agentId);
 		const currentState = this._requireAgentToolSet(agentId);
 		const next = await this._resolveAgentTools({
 			agentId,
@@ -1180,7 +1174,7 @@ export class AgentOrchestrator {
 					? { mode: "default_all" }
 					: { mode: "explicit", toolNames: activeToolNames },
 		});
-		await harness.setTools?.(next.tools, [...next.activeToolNames]);
+		await harness.setTools(next.tools, [...next.activeToolNames]);
 		this._setAgentToolSet(agentId, next);
 	}
 
@@ -1192,17 +1186,37 @@ export class AgentOrchestrator {
 		agentId: AgentId,
 		toolNames: string[],
 	): Promise<void> {
-		const harness = this._requireAgentHarness(agentId) as AgentHarness &
-			Partial<AgentToolSetHarness>;
+		const harness = this._requireAgentHarness(agentId);
 		const currentState = this._requireAgentToolSet(agentId);
-		const next = await this._resolveAgentTools({
-			agentId,
-			profileId: currentState.profileId,
+		// The harness owns the installed tools, so activation validates against
+		// its live tool set with no await between the check and the apply. A
+		// registry re-resolve here would race concurrent setTools/reload calls
+		// and re-publish standing resolve diagnostics on every toggle.
+		const installedNames = new Set(harness.getTools().map((tool) => tool.name));
+		const { activeToolNames, diagnostics } = selectActiveToolNames(
+			toolNames,
+			installedNames,
+			{ agentId, profileId: currentState.profileId },
+		);
+		await harness.setActiveTools(activeToolNames);
+		// Re-read the harness after the await: it is the source of truth, and a
+		// concurrent tool-set change must not be clobbered by our stale copy.
+		const tools = harness.getTools();
+		const nextActiveToolNames = harness
+			.getActiveTools()
+			.map((tool) => tool.name);
+		this._setAgentToolSet(agentId, {
+			tools,
+			toolNames: tools.map((tool) => tool.name),
 			requestedToolNames: currentState.requestedToolNames,
-			activeToolSelection: { mode: "explicit", toolNames },
+			activeToolNames: nextActiveToolNames,
+			activeToolSelection: {
+				mode: "explicit",
+				toolNames: [...nextActiveToolNames],
+			},
+			profileId: currentState.profileId,
 		});
-		await harness.setTools?.(next.tools, [...next.activeToolNames]);
-		this._setAgentToolSet(agentId, next);
+		await this._publishDiagnostics(diagnostics);
 	}
 
 	/**
@@ -1918,7 +1932,7 @@ export class AgentOrchestrator {
 		model: RuntimeModel;
 		thinkingLevel?: ThinkingLevel;
 		activeToolNames?: string[];
-	}): Promise<AgentHarness> {
+	}): Promise<WidiAgentHarness> {
 		const {
 			agentId,
 			resolvedProfile: { profile },
@@ -1995,10 +2009,10 @@ export class AgentOrchestrator {
 					: { mode: "explicit", toolNames: options.activeToolNames },
 		});
 
-		const harness = new AgentHarness({
-			env: this.executionEnv,
+		const harness: WidiAgentHarness = new AgentHarness({
 			session: session,
 			models: this.modelRegistry.getRuntime(),
+			toolContext: () => this._createToolAdapterContext(agentId, profile.id),
 			streamOptions: this.settingManager.getProviderRetrySettings(),
 			retry: this.settingManager.getRetrySettings(),
 			resources: resources,
@@ -2189,7 +2203,7 @@ export class AgentOrchestrator {
 
 	private _registerExtensionInterceptors(
 		agentId: AgentId,
-		harness: AgentHarness,
+		harness: WidiAgentHarness,
 		extensionRunner: ExtensionRunner,
 	): Array<() => void> {
 		return [
@@ -2279,54 +2293,11 @@ export class AgentOrchestrator {
 				phase: "resolve",
 			})),
 		);
-		const agentRecord = this._agents.get(options.agentId);
-		const agentTools = createAgentToolsFromResolvedTools(resolvedTools.tools, {
-			backgroundJobTable: agentRecord?.backgroundJobTable,
-			human: {
-				// Same capability ruling as extension human requests: the profile
-				// decides whether this agent may interrupt the human at all.
-				request: async (request) => {
-					const record = this._requireAgentRecord(options.agentId);
-					if (record.capabilities?.canRequestUser === false) {
-						throw new OrchestratorError(
-							createOrchestratorDiagnostic({
-								severity: "error",
-								code: "orchestrator.human_request_denied",
-								message: `Agent ${options.agentId} human request is denied by profile capability canRequestUser.`,
-								agentId: options.agentId,
-								profileId: options.profileId,
-								phase: "runtime",
-								recoverable: true,
-							}),
-						);
-					}
-					return await this.requestHuman({
-						...request,
-						source: { kind: "agent", agentId: options.agentId },
-					});
-				},
-			},
-			// Extension-contributed tools get the same runner-scoped actions as
-			// extension handlers; a reload re-resolves tools, so contexts never
-			// outlive their runner's stale boundary.
-			createExtensionContext: (source) => {
-				if (source.kind !== "extension") return undefined;
-				const extensionRunner =
-					options.extensionRunner ??
-					this._agents.get(options.agentId)?.extensionRunner;
-				if (!extensionRunner) return undefined;
-				return {
-					extensionId: source.id,
-					host: {
-						agentId: options.agentId,
-						profileId: options.profileId,
-						actions: extensionRunner.createContext(source.id).actions,
-					},
-				};
-			},
-		});
+		const agentTools = createAgentHarnessToolsFromResolvedTools(
+			resolvedTools.tools,
+		);
 		return {
-			tools: [...agentTools],
+			tools: agentTools,
 			toolNames: [...resolvedTools.toolNames],
 			requestedToolNames: options.requestedToolNames
 				? [...options.requestedToolNames]
@@ -2341,6 +2312,78 @@ export class AgentOrchestrator {
 					: { mode: "default_all" },
 			profileId: options.profileId,
 		};
+	}
+
+	private _createToolAdapterContext(
+		agentId: AgentId,
+		profileId: string,
+	): ToolAdapterContext {
+		const record = this._requireAgentRecord(agentId);
+		const extensionRunner = record.extensionRunner;
+		return {
+			backgroundJobTable: record.backgroundJobTable,
+			human: {
+				// Check the authoritative agent record at request time rather than
+				// retaining the capability in the turn snapshot.
+				request: async (request) => {
+					this._assertCanRequestUser(agentId, {
+						code: "orchestrator.human_request_denied",
+						message: `Agent ${agentId} human request is denied by profile capability canRequestUser.`,
+						profileId,
+					});
+					return await this.requestHuman({
+						...request,
+						source: { kind: "agent", agentId },
+					});
+				},
+			},
+			// The runner is captured for this turn snapshot. Calls that continue
+			// in the background keep this runner and observe its stale boundary
+			// after reload instead of silently switching to the replacement.
+			createExtensionContext: (source) => {
+				if (source.kind !== "extension" || !extensionRunner) {
+					return undefined;
+				}
+				return {
+					extensionId: source.id,
+					host: {
+						agentId,
+						profileId,
+						actions: extensionRunner.createContext(source.id).actions,
+					},
+				};
+			},
+		};
+	}
+
+	/**
+	 * Profile capability ruling for human requests, shared by agent tool
+	 * contexts and extension core actions: the profile decides whether this
+	 * agent may interrupt the human at all.
+	 */
+	private _assertCanRequestUser(
+		agentId: AgentId,
+		denial: {
+			code: string;
+			message: string;
+			profileId?: string;
+			source?: OrchestratorDiagnostic["source"];
+			extensionId?: string;
+		},
+	): void {
+		const record = this._requireAgentRecord(agentId);
+		if (record.capabilities?.canRequestUser === false) {
+			throw new OrchestratorError(
+				createOrchestratorDiagnostic({
+					severity: "error",
+					agentId,
+					phase: "runtime",
+					recoverable: true,
+					...denial,
+					profileId: denial.profileId ?? record.profile.reference.id,
+				}),
+			);
+		}
 	}
 
 	private _createScopedToolRegistry(
@@ -2364,22 +2407,12 @@ export class AgentOrchestrator {
 				await this.setAgentActiveTools(agentId, toolNames);
 			},
 			requestHuman: async (agentId, extensionId, request) => {
-				const record = this._requireAgentRecord(agentId);
-				if (record.capabilities?.canRequestUser === false) {
-					throw new OrchestratorError(
-						createOrchestratorDiagnostic({
-							severity: "error",
-							code: "extension.human_request_denied",
-							message: `Extension '${extensionId}' human request is denied by profile capability canRequestUser.`,
-							source: { kind: "extension", id: extensionId },
-							agentId,
-							profileId: record.profile.reference.id,
-							extensionId,
-							phase: "runtime",
-							recoverable: true,
-						}),
-					);
-				}
+				this._assertCanRequestUser(agentId, {
+					code: "extension.human_request_denied",
+					message: `Extension '${extensionId}' human request is denied by profile capability canRequestUser.`,
+					source: { kind: "extension", id: extensionId },
+					extensionId,
+				});
 				return await this._requestHumanForAgent(agentId, {
 					...request,
 					source: { kind: "extension", extensionId },
@@ -2779,9 +2812,10 @@ export class AgentOrchestrator {
 			};
 		}
 
+		let candidateRunner: ExtensionRunner | undefined;
+		let candidateInstalled = false;
 		try {
-			const harness = record.harness as AgentHarness &
-				Partial<AgentToolSetHarness>;
+			const harness = this._requireAgentHarness(agentId);
 			const currentToolSet = this._requireAgentToolSet(agentId);
 			const oldRunner = record.extensionRunner;
 			const resolvedProfile = await this._resolveProfileById(
@@ -2792,6 +2826,7 @@ export class AgentOrchestrator {
 				agentId,
 				resolvedProfile.profile,
 			);
+			candidateRunner = nextRunner;
 			const nextToolSet = await this._resolveAgentTools({
 				agentId,
 				profileId: resolvedProfile.profile.id,
@@ -2807,9 +2842,22 @@ export class AgentOrchestrator {
 			});
 
 			this._bindExtensionRunner(agentId, nextRunner);
-			await harness.setTools?.(nextToolSet.tools, [
-				...nextToolSet.activeToolNames,
-			]);
+			// Install the replacement before the awaited harness write: a turn
+			// starting mid-reload snapshots record.extensionRunner into its tool
+			// context, and must capture the new runner rather than pin the old
+			// one across its own disposal below.
+			record.extensionRunner = nextRunner;
+			this._setAgentToolSet(agentId, nextToolSet);
+			try {
+				await harness.setTools(nextToolSet.tools, [
+					...nextToolSet.activeToolNames,
+				]);
+			} catch (error) {
+				record.extensionRunner = oldRunner;
+				this._setAgentToolSet(agentId, currentToolSet);
+				throw error;
+			}
+			candidateInstalled = true;
 
 			const unsubscribeOldInterceptors =
 				this._unsubscribeAgentExtensionInterceptors.get(agentId);
@@ -2825,10 +2873,8 @@ export class AgentOrchestrator {
 					unsubscribe();
 				}
 			});
-			record.extensionRunner = nextRunner;
 			record.extensionDiagnostics = [...nextRunner.diagnostics];
 			record.diagnostics.push(...nextRunner.diagnostics);
-			this._setAgentToolSet(agentId, nextToolSet);
 			// Provider contributions follow the runner lifecycle: the stale
 			// runner's registrations are withdrawn before the reloaded runner
 			// re-registers its own.
@@ -2863,6 +2909,13 @@ export class AgentOrchestrator {
 				after: snapshotAgentRecord(record),
 			};
 		} catch (error) {
+			if (candidateRunner && !candidateInstalled) {
+				await this._disposeExtensionRunner(
+					agentId,
+					candidateRunner,
+					"Extension reload failed before installation.",
+				);
+			}
 			const diagnostic = this._createExtensionReloadDiagnostic({
 				code: "extension.reload_agent_failed",
 				severity: "error",
@@ -2958,7 +3011,7 @@ export class AgentOrchestrator {
 
 	private async _disposeAgentHarness(
 		agentId: AgentId,
-		harness: AgentHarness,
+		harness: WidiAgentHarness,
 	): Promise<void> {
 		try {
 			await harness.abort();
@@ -3134,7 +3187,7 @@ export class AgentOrchestrator {
 
 	private async _runHarnessOperation<T>(
 		agentId: AgentId,
-		operation: (harness: AgentHarness) => Promise<T>,
+		operation: (harness: WidiAgentHarness) => Promise<T>,
 	): Promise<T> {
 		const harness = this._requireAgentHarness(agentId);
 		await this._transitionAgentStatus(agentId, "running");
@@ -3165,7 +3218,7 @@ export class AgentOrchestrator {
 		}
 	}
 
-	private _requireAgentHarness(agentId: AgentId): AgentHarness {
+	private _requireAgentHarness(agentId: AgentId): WidiAgentHarness {
 		const harness = this._requireAgentRecord(agentId).harness;
 		if (!harness) {
 			throw new Error(`Unknown agent: ${agentId}`);
@@ -3478,8 +3531,75 @@ function isBlockedExtensionDiagnostic(
 }
 
 /**
- * Prompt guidance carried by an active tool. WIDI adapter tools
- * (`WidiAgentTool`) match this shape; plain Pi tools contribute nothing.
+ * Normalize an active-tool selection against the agent's installed tool
+ * names: trims entries, drops empty names, duplicates, and unknown names,
+ * and reports each dropped entry as a diagnostic.
+ */
+function selectActiveToolNames(
+	toolNames: readonly string[],
+	installedNames: ReadonlySet<string>,
+	context: { agentId: AgentId; profileId: string },
+): { activeToolNames: string[]; diagnostics: OrchestratorDiagnostic[] } {
+	const activeToolNames: string[] = [];
+	const seen = new Set<string>();
+	const diagnostics: OrchestratorDiagnostic[] = [];
+	const report = (diagnostic: {
+		severity: "error" | "warning";
+		code: string;
+		disposition: "degraded" | "reported";
+		message: string;
+		toolName?: string;
+	}) => {
+		diagnostics.push(
+			createOrchestratorDiagnostic({
+				...diagnostic,
+				recoverable: true,
+				phase: "runtime",
+				agentId: context.agentId,
+				profileId: context.profileId,
+			}),
+		);
+	};
+	for (const rawName of toolNames) {
+		const name = rawName.trim();
+		if (!name) {
+			report({
+				severity: "error",
+				code: "tool.invalid_name",
+				disposition: "degraded",
+				message: "Tool name list contains an empty name.",
+			});
+			continue;
+		}
+		if (seen.has(name)) {
+			report({
+				severity: "warning",
+				code: "tool.active_duplicate",
+				disposition: "reported",
+				message: `Tool name '${name}' is listed more than once; keeping the first occurrence.`,
+				toolName: name,
+			});
+			continue;
+		}
+		seen.add(name);
+		if (!installedNames.has(name)) {
+			report({
+				severity: "warning",
+				code: "tool.active_missing",
+				disposition: "degraded",
+				message: `Active tool '${name}' is not in the agent's installed tool set.`,
+				toolName: name,
+			});
+			continue;
+		}
+		activeToolNames.push(name);
+	}
+	return { activeToolNames, diagnostics };
+}
+
+/**
+ * Prompt guidance carried by an active tool. Resolved harness tools match this
+ * shape; tools without registry prompt metadata contribute nothing.
  */
 export interface ToolPromptGuidance {
 	name: string;

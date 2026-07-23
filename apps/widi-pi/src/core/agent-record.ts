@@ -1,4 +1,8 @@
-import type { AgentHarness } from "@earendil-works/pi-agent-core";
+import type {
+	AgentHarness,
+	PromptTemplate,
+	Skill,
+} from "@earendil-works/pi-agent-core";
 import type {
 	AgentProfile,
 	AgentProfileReference,
@@ -14,6 +18,10 @@ import type {
 } from "./extension/index.ts";
 import type { ResourceSource } from "./resource-loader.ts";
 import type { AgentSessionMetadata } from "./session-manager.ts";
+import type {
+	ResolvedAgentHarnessTool,
+	ToolAdapterContext,
+} from "./tool-registry.ts";
 import type {
 	AgentId,
 	AgentLifecycleStatus,
@@ -39,6 +47,14 @@ export interface AgentResourcesSnapshot {
 	readonly promptTemplates: readonly AgentResourceFact[];
 }
 
+/** The concrete AgentHarness instantiation used by every WIDI agent. */
+export type WidiAgentHarness = AgentHarness<
+	ToolAdapterContext,
+	Skill,
+	PromptTemplate,
+	ResolvedAgentHarnessTool
+>;
+
 export interface AgentRecord {
 	readonly agentId: AgentId;
 	status: AgentLifecycleStatus;
@@ -46,7 +62,7 @@ export interface AgentRecord {
 	readonly capabilities?: AgentProfile["capabilities"];
 	sessionMetadata?: AgentSessionMetadata;
 	model: RuntimeModel;
-	harness?: AgentHarness;
+	harness?: WidiAgentHarness;
 	toolSnapshot?: AgentToolsSnapshot;
 	resources?: AgentResourcesSnapshot;
 	extensionRunner?: ExtensionRunner;
