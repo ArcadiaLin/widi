@@ -2,21 +2,51 @@ import {
 	type Component,
 	getKeybindings,
 	Input,
-	SelectList,
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import type {
-	HumanRequestEnvelope,
-	HumanResponse,
+import {
+	type HumanQuestionAnswer,
+	type HumanRequestEnvelope,
+	type HumanResponse,
+	type NormalizedHumanRequestOption,
+	normalizeHumanRequestOptions,
 } from "../core/human-request.ts";
 import { boundedText, singleLine } from "./format.ts";
+import { matchRequestOptionIndex } from "./keybindings.ts";
 import type { TuiApplicationState } from "./state.ts";
 import { colors } from "./theme/colors.ts";
-import { selectListTheme } from "./theme/controls.ts";
 
 const FREE_INPUT_VALUE = "\x00free-input";
+const FREE_INPUT_LABEL = "Type another answer…";
 const MAX_VISIBLE_OPTIONS = 8;
+const SUBMIT_ACTIONS = ["Submit", "Cancel"] as const;
+
+/**
+ * One deferred question shown as its own tab. A confirm request becomes a
+ * two-option single question; a select/multi-select request becomes a single
+ * question; a kind="questions" request becomes several. All selections stay
+ * provisional here until the human commits them on the Submit tab.
+ */
+interface QuestionState {
+	readonly kind: "confirm" | "select" | "multi-select";
+	/** Empty for a single-question entry (the entry title already heads it). */
+	readonly title: string;
+	readonly header?: string;
+	readonly message?: string;
+	readonly options: NormalizedHumanRequestOption[];
+	readonly allowFreeInput: boolean;
+	cursor: number;
+	/** Chosen value for confirm/select (includes a free-text literal). */
+	single?: string;
+	/** Chosen values for multi-select. */
+	readonly multi: Set<string>;
+	/** Committed free-text answer, when the free-input option was used. */
+	freeValue?: string;
+	/** Inline free-text editor, live only while editing the free option. */
+	freeInput?: Input;
+	editing: boolean;
+}
 
 interface PendingEntry {
 	readonly request: HumanRequestEnvelope;
@@ -25,11 +55,20 @@ interface PendingEntry {
 	readonly reject: (error: Error) => void;
 	abortListener?: () => void;
 	settled: boolean;
-	/** select requests with allowFreeInput switch from list to input. */
-	view: "list" | "input";
-	list?: SelectList;
+	/** deferred: choice questions committed via Submit. input: immediate row. */
+	readonly mode: "deferred" | "input";
+	readonly questions: QuestionState[];
 	input?: Input;
 }
+
+type Tab =
+	| {
+			readonly kind: "question";
+			readonly entry: number;
+			readonly question: number;
+	  }
+	| { readonly kind: "input"; readonly entry: number }
+	| { readonly kind: "submit" };
 
 /** The slice of TUI the menu needs; kept minimal so tests can fake it. */
 export interface HumanRequestMenuHost {
@@ -38,14 +77,13 @@ export interface HumanRequestMenuHost {
 }
 
 /**
- * Docked human-request host: every pending request is a completion-menu
- * instance above the editor, in the normal component flow. Requests for the
- * active agent open the menu and take focus; background requests only add a
- * pending hint (or a tab entry while the menu is open) and are reachable via
- * app.request.open. Consecutive requests of a multi-step flow reuse the same
- * docked slot; focus briefly returns to the editor when one step resolves
- * before the next arrives. The fatal error overlay is the only remaining
- * overlay user.
+ * Docked human-request host. Pending choice requests (confirm/select/
+ * multi-select and kind="questions" batches) are laid out as a kimi-style
+ * panel: every question is a tab, selections are provisional and revisable,
+ * left/right/tab switch tabs, and a trailing Submit tab commits every deferred
+ * answer at once. Free-form input/custom requests keep an immediate input row
+ * outside the Submit flow. Multiple requests — including ones from different
+ * background agents — share the same tab strip and Submit.
  */
 export class HumanRequestMenu implements Component {
 	focused = false;
@@ -54,7 +92,8 @@ export class HumanRequestMenu implements Component {
 	private readonly resolveAgentLabel: (agentId: string | undefined) => string;
 	private readonly restoreFocus: () => void;
 	private readonly entries: PendingEntry[] = [];
-	private focusedIndex = 0;
+	private focusedTab = 0;
+	private submitActionIndex = 0;
 	private opened = false;
 	private closed = false;
 
@@ -86,17 +125,7 @@ export class HumanRequestMenu implements Component {
 			return Promise.reject(new Error("TUI human request host is closed."));
 		}
 		return new Promise((resolve, reject) => {
-			const entry: PendingEntry = {
-				request,
-				signal,
-				resolve,
-				reject,
-				settled: false,
-				view:
-					request.kind === "input" || request.kind === "custom"
-						? "input"
-						: "list",
-			};
+			const entry = this.buildEntry(request, signal, resolve, reject);
 			if (signal?.aborted) {
 				entry.settled = true;
 				reject(new Error("Human request was aborted."));
@@ -106,7 +135,6 @@ export class HumanRequestMenu implements Component {
 				entry.abortListener = () => this.abort(entry);
 				signal.addEventListener("abort", entry.abortListener, { once: true });
 			}
-			this.buildContent(entry);
 			this.entries.push(entry);
 			const foreground =
 				request.agentId === undefined ||
@@ -114,7 +142,7 @@ export class HumanRequestMenu implements Component {
 			if (this.opened) {
 				this.host.requestRender();
 			} else if (foreground) {
-				this.openAt(this.entries.length - 1);
+				this.openEntry(this.entries.length - 1);
 			} else {
 				// Background request: raise no focus; the pending hint line and the
 				// agent strip attention are the only visible signals.
@@ -123,10 +151,10 @@ export class HumanRequestMenu implements Component {
 		});
 	}
 
-	/** app.request.open: jump to the most recent pending request. */
+	/** app.request.open: open the panel focused on the most recent request. */
 	openLatest(): void {
 		if (this.entries.length === 0) return;
-		this.openAt(this.entries.length - 1);
+		this.openEntry(this.entries.length - 1);
 	}
 
 	cancelRequest(requestId: string): void {
@@ -150,45 +178,481 @@ export class HumanRequestMenu implements Component {
 		}
 	}
 
+	// ── Input ────────────────────────────────────────────────────────────
+
 	handleInput(data: string): void {
-		const entry = this.entries[this.focusedIndex];
-		if (!entry) return;
 		const keybindings = getKeybindings();
-		// Request switching only while the current content is a list; an input
-		// row keeps left/right for cursor movement.
-		if (this.entries.length > 1 && entry.view === "list") {
-			if (keybindings.matches(data, "app.request.previous")) {
-				this.focusedIndex =
-					(this.focusedIndex + this.entries.length - 1) % this.entries.length;
-				this.host.requestRender();
-				return;
-			}
-			if (keybindings.matches(data, "app.request.next")) {
-				this.focusedIndex = (this.focusedIndex + 1) % this.entries.length;
-				this.host.requestRender();
-				return;
-			}
+		if (keybindings.matches(data, "app.interrupt")) {
+			this.dismissAll();
+			return;
 		}
-		const content = entry.view === "input" ? entry.input : entry.list;
-		if (content instanceof Input) content.focused = this.focused;
-		content?.handleInput(data);
+		const tab = this.currentTab();
+		if (!tab) return;
+		if (tab.kind === "submit") {
+			this.handleSubmitInput(data);
+			return;
+		}
+		const entry = this.entries[tab.entry];
+		if (!entry) return;
+		if (tab.kind === "input") {
+			this.handleInputRow(entry, data);
+			return;
+		}
+		const question = entry.questions[tab.question];
+		if (question) this.handleQuestionInput(question, data);
+	}
+
+	private handleQuestionInput(question: QuestionState, data: string): void {
+		const keybindings = getKeybindings();
+		if (question.editing) {
+			this.handleFreeEditInput(question, data);
+			return;
+		}
+		if (keybindings.matches(data, "tui.select.up")) {
+			this.moveCursor(question, -1);
+			this.host.requestRender();
+			return;
+		}
+		if (keybindings.matches(data, "tui.select.down")) {
+			this.moveCursor(question, 1);
+			this.host.requestRender();
+			return;
+		}
+		if (this.switchTab(data)) return;
+		const index = matchRequestOptionIndex(data);
+		if (index !== undefined && index < question.options.length) {
+			this.activateOption(question, index);
+			this.host.requestRender();
+			return;
+		}
+		if (
+			question.kind === "multi-select" &&
+			keybindings.matches(data, "app.request.toggle")
+		) {
+			this.activateOption(question, question.cursor);
+			this.host.requestRender();
+			return;
+		}
+		if (keybindings.matches(data, "tui.select.confirm")) {
+			this.activateOption(question, question.cursor);
+			this.host.requestRender();
+		}
+	}
+
+	private handleFreeEditInput(question: QuestionState, data: string): void {
+		const keybindings = getKeybindings();
+		if (
+			keybindings.matches(data, "tui.select.up") ||
+			keybindings.matches(data, "tui.select.down") ||
+			this.switchTab(data)
+		) {
+			// Leaving the field keeps the draft but does not commit an answer.
+			question.editing = false;
+			this.host.requestRender();
+			return;
+		}
+		const input = question.freeInput;
+		if (input) {
+			input.focused = this.focused;
+			input.handleInput(data);
+		}
 		this.host.requestRender();
 	}
 
+	private handleInputRow(entry: PendingEntry, data: string): void {
+		if (this.switchTab(data)) return;
+		const input = entry.input;
+		if (input) {
+			input.focused = this.focused;
+			input.handleInput(data);
+		}
+		this.host.requestRender();
+	}
+
+	private handleSubmitInput(data: string): void {
+		const keybindings = getKeybindings();
+		if (keybindings.matches(data, "tui.select.up")) {
+			this.submitActionIndex =
+				(this.submitActionIndex + SUBMIT_ACTIONS.length - 1) %
+				SUBMIT_ACTIONS.length;
+			this.host.requestRender();
+			return;
+		}
+		if (keybindings.matches(data, "tui.select.down")) {
+			this.submitActionIndex =
+				(this.submitActionIndex + 1) % SUBMIT_ACTIONS.length;
+			this.host.requestRender();
+			return;
+		}
+		if (this.switchTab(data)) return;
+		const index = matchRequestOptionIndex(data);
+		if (index !== undefined && index < SUBMIT_ACTIONS.length) {
+			this.executeSubmitAction(index);
+			return;
+		}
+		if (keybindings.matches(data, "tui.select.confirm")) {
+			this.executeSubmitAction(this.submitActionIndex);
+		}
+	}
+
+	/** Consume a left/right/tab tab switch; returns true when it did. */
+	private switchTab(data: string): boolean {
+		const keybindings = getKeybindings();
+		const tabs = this.tabs();
+		if (tabs.length <= 1) return false;
+		if (keybindings.matches(data, "app.request.previous")) {
+			this.gotoTab(this.focusedTab - 1);
+			return true;
+		}
+		if (keybindings.matches(data, "app.request.next")) {
+			this.gotoTab(this.focusedTab + 1);
+			return true;
+		}
+		return false;
+	}
+
+	private moveCursor(question: QuestionState, delta: number): void {
+		const total = question.options.length;
+		if (total === 0) return;
+		question.cursor = (question.cursor + delta + total) % total;
+	}
+
+	private activateOption(question: QuestionState, index: number): void {
+		const option = question.options[index];
+		if (!option) return;
+		question.cursor = index;
+		if (option.value === FREE_INPUT_VALUE) {
+			this.enterFreeInput(question);
+			return;
+		}
+		if (question.kind === "multi-select") {
+			if (question.multi.has(option.value)) question.multi.delete(option.value);
+			else question.multi.add(option.value);
+			return;
+		}
+		question.single = option.value;
+		question.freeValue = undefined;
+		this.advanceAfterSingle();
+	}
+
+	private enterFreeInput(question: QuestionState): void {
+		question.editing = true;
+		const input = new Input();
+		input.setValue(question.freeValue ?? "");
+		input.onSubmit = (value) => this.commitFreeInput(question, value);
+		question.freeInput = input;
+	}
+
+	private commitFreeInput(question: QuestionState, rawValue: string): void {
+		const value = rawValue.trim();
+		question.editing = false;
+		if (value.length === 0) {
+			question.freeInput = undefined;
+			this.host.requestRender();
+			return;
+		}
+		question.freeValue = value;
+		question.single = value;
+		question.freeInput = undefined;
+		this.advanceAfterSingle();
+		this.host.requestRender();
+	}
+
+	/** Move to the next unanswered question, or the Submit tab when none. */
+	private advanceAfterSingle(): void {
+		const tabs = this.tabs();
+		for (let i = this.focusedTab + 1; i < tabs.length; i++) {
+			const tab = tabs[i];
+			if (tab?.kind === "question") {
+				const question = this.entries[tab.entry]?.questions[tab.question];
+				if (question && !this.isAnswered(question)) {
+					this.focusedTab = i;
+					return;
+				}
+			}
+		}
+		const submit = tabs.findIndex((tab) => tab.kind === "submit");
+		if (submit >= 0) this.focusedTab = submit;
+	}
+
+	private executeSubmitAction(index: number): void {
+		if (SUBMIT_ACTIONS[index] === "Cancel") {
+			this.dismissAll();
+			return;
+		}
+		this.submitAll();
+	}
+
+	private submitAll(): void {
+		for (const entry of [...this.entries]) {
+			if (entry.mode !== "deferred") continue;
+			this.finish(entry, this.assembleResponse(entry));
+		}
+	}
+
+	private dismissAll(): void {
+		for (const entry of [...this.entries]) {
+			this.finish(entry, fallbackResponse(entry.request));
+		}
+	}
+
+	private assembleResponse(entry: PendingEntry): HumanResponse {
+		if (entry.request.kind === "questions") {
+			return {
+				kind: "questions",
+				answers: entry.questions.map((question) => questionAnswer(question)),
+			};
+		}
+		const question = entry.questions[0];
+		if (!question) return fallbackResponse(entry.request);
+		if (question.kind === "confirm") {
+			return { kind: "confirm", confirmed: question.single === "yes" };
+		}
+		if (question.kind === "multi-select") {
+			return {
+				kind: "multi-select",
+				values:
+					question.multi.size > 0 ? this.selectedValues(question) : undefined,
+			};
+		}
+		return { kind: "select", value: question.single };
+	}
+
+	private selectedValues(question: QuestionState): string[] {
+		return question.options
+			.filter((option) => question.multi.has(option.value))
+			.map((option) => option.value);
+	}
+
+	private isAnswered(question: QuestionState): boolean {
+		return question.kind === "multi-select"
+			? question.multi.size > 0
+			: question.single !== undefined;
+	}
+
+	// ── Rendering ─────────────────────────────────────────────────────────
+
 	invalidate(): void {
 		for (const entry of this.entries) {
-			entry.list?.invalidate();
 			entry.input?.invalidate();
+			for (const question of entry.questions) question.freeInput?.invalidate();
 		}
 	}
 
 	render(width: number): string[] {
 		if (this.entries.length === 0) return [];
 		if (!this.opened) return this.renderPendingHint(width);
-		const entry = this.entries[this.focusedIndex];
-		if (!entry) return [];
-		const lines: string[] = [""];
-		if (this.entries.length > 1) lines.push(this.renderTabRow(width));
+		const tab = this.currentTab();
+		if (!tab) return [];
+		const lines: string[] = ["", this.rule(width)];
+		this.pushTabStrip(lines, width);
+		lines.push("");
+		if (tab.kind === "submit") {
+			this.pushSubmitView(lines, width);
+		} else {
+			const entry = this.entries[tab.entry];
+			if (entry && tab.kind === "input")
+				this.pushInputView(lines, entry, width);
+			else if (entry && tab.kind === "question") {
+				const question = entry.questions[tab.question];
+				if (question) this.pushQuestionView(lines, entry, question, width);
+			}
+		}
+		lines.push(this.rule(width));
+		return lines.map((line) => truncateToWidth(line, width, ""));
+	}
+
+	private pushTabStrip(lines: string[], width: number): void {
+		const chips: string[] = [];
+		this.tabs().forEach((tab, index) => {
+			const active = index === this.focusedTab;
+			if (tab.kind === "submit") {
+				chips.push(active ? colors.accent("● Submit") : colors.dim("○ Submit"));
+				return;
+			}
+			const entry = this.entries[tab.entry];
+			if (!entry) return;
+			if (tab.kind === "input") {
+				const label = `${this.resolveAgentLabel(entry.request.agentId)} · input`;
+				chips.push(
+					active
+						? colors.accent(`● ${singleLine(label, 40)}`)
+						: colors.dim(`○ ${singleLine(label, 40)}`),
+				);
+				return;
+			}
+			const question = entry.questions[tab.question];
+			if (!question) return;
+			const label = singleLine(question.header ?? question.title, 32);
+			if (active) chips.push(colors.accent(`● ${label}`));
+			else if (this.isAnswered(question)) chips.push(colors.ok(`✓ ${label}`));
+			else chips.push(colors.dim(`○ ${label}`));
+		});
+		const row = chips.join(colors.dim("  "));
+		lines.push(
+			visibleWidth(row) > width
+				? truncateToWidth(row, Math.max(1, width - 1), "…")
+				: row,
+		);
+	}
+
+	private pushQuestionView(
+		lines: string[],
+		entry: PendingEntry,
+		question: QuestionState,
+		width: number,
+	): void {
+		this.pushHeading(lines, entry, width);
+		// For a batch, each question carries its own title line; a single-question
+		// entry is already headed by the request title.
+		if (entry.questions.length > 1 && question.title) {
+			lines.push(colors.accent(` ? ${singleLine(question.title, 200)}`));
+		}
+		const message = question.message ?? entry.request.message;
+		if (message) {
+			for (const line of boundedText(message, {
+				maxLines: 12,
+				maxCharacters: 2_000,
+			}).split("\n")) {
+				lines.push(
+					colors.dim(truncateToWidth(line, Math.max(1, width - 2), "…")),
+				);
+			}
+		}
+		lines.push("");
+		const start = windowStart(question.cursor, question.options.length);
+		const end = Math.min(start + MAX_VISIBLE_OPTIONS, question.options.length);
+		for (let i = start; i < end; i++) {
+			const option = question.options[i];
+			if (option) {
+				lines.push(...this.renderOptionRow(question, option, i, width));
+			}
+		}
+		if (start > 0 || end < question.options.length) {
+			lines.push(
+				colors.faint(`   (${question.cursor + 1}/${question.options.length})`),
+			);
+		}
+		lines.push("");
+		const numbers =
+			question.options.length <= 1 ? "1" : `1-${question.options.length}`;
+		const pick =
+			question.kind === "multi-select" ? "space/# toggle" : `${numbers} choose`;
+		lines.push(colors.dim(`↑/↓ move · ${pick} · ←/→ tabs · esc cancel`));
+	}
+
+	private renderOptionRow(
+		question: QuestionState,
+		option: NormalizedHumanRequestOption,
+		index: number,
+		width: number,
+	): string[] {
+		const isCursor = index === question.cursor;
+		const isSelected =
+			question.kind === "multi-select"
+				? question.multi.has(option.value)
+				: question.single === option.value;
+		let prefix: string;
+		if (question.kind === "multi-select") {
+			prefix = `  [${isSelected ? "✓" : " "}] `;
+		} else {
+			prefix = isCursor ? `  → [${index + 1}] ` : `    [${index + 1}] `;
+		}
+		const tone =
+			isSelected && isCursor
+				? (text: string) => colors.bold(colors.ok(text))
+				: isSelected
+					? colors.ok
+					: isCursor
+						? colors.accent
+						: colors.dim;
+		let label = option.label;
+		if (option.value === FREE_INPUT_VALUE && question.editing && isCursor) {
+			const value = question.freeInput?.getValue() ?? "";
+			label = `${option.label}: ${value}█`;
+		} else if (option.value === FREE_INPUT_VALUE && question.freeValue) {
+			label = `${option.label}: ${question.freeValue}`;
+		}
+		const room = Math.max(1, width - visibleWidth(prefix) - 1);
+		const rows = [
+			tone(`${prefix}${truncateToWidth(singleLine(label, 400), room, "…")}`),
+		];
+		if (option.description) {
+			rows.push(
+				colors.muted(
+					`      ${truncateToWidth(singleLine(option.description, 400), Math.max(1, width - 7), "…")}`,
+				),
+			);
+		}
+		return rows;
+	}
+
+	private pushSubmitView(lines: string[], width: number): void {
+		lines.push(colors.bold(" Review your answers before submit"));
+		if (this.hasUnanswered()) {
+			lines.push(colors.warn("  Some questions are still unanswered."));
+		}
+		lines.push("");
+		for (const entry of this.entries) {
+			if (entry.mode !== "deferred") continue;
+			for (const question of entry.questions) {
+				const title = question.title || entry.request.title;
+				lines.push(
+					`  ${colors.dim("Q")} ${truncateToWidth(singleLine(title, 400), Math.max(1, width - 5), "…")}`,
+				);
+				const answer = this.answerSummary(question);
+				lines.push(
+					answer === undefined
+						? `    ${colors.dim("→ Not answered")}`
+						: `    ${colors.accent("→")} ${truncateToWidth(singleLine(answer, 400), Math.max(1, width - 7), "…")}`,
+				);
+			}
+		}
+		lines.push("");
+		SUBMIT_ACTIONS.forEach((label, index) => {
+			const active = index === this.submitActionIndex;
+			lines.push(
+				active
+					? colors.accent(`  → [${index + 1}] ${label}`)
+					: colors.dim(`    [${index + 1}] ${label}`),
+			);
+		});
+		lines.push("");
+		lines.push(colors.dim("↑/↓ select · 1/2 choose · ↵ confirm · ←/→ tabs"));
+	}
+
+	private pushInputView(
+		lines: string[],
+		entry: PendingEntry,
+		width: number,
+	): void {
+		this.pushHeading(lines, entry, width);
+		if (entry.request.message) {
+			for (const line of boundedText(entry.request.message, {
+				maxLines: 12,
+				maxCharacters: 2_000,
+			}).split("\n")) {
+				lines.push(
+					colors.dim(truncateToWidth(line, Math.max(1, width - 2), "…")),
+				);
+			}
+		}
+		if (entry.request.placeholder && !entry.input?.getValue()) {
+			lines.push(colors.dim(singleLine(entry.request.placeholder, 200)));
+		}
+		const input = entry.input;
+		if (input) {
+			input.focused = this.focused;
+			lines.push(...input.render(Math.max(8, width - 2)));
+		}
+		lines.push(colors.dim("enter submit · ←/→ tabs · esc cancel"));
+	}
+
+	private pushHeading(
+		lines: string[],
+		entry: PendingEntry,
+		width: number,
+	): void {
 		const agentLabel = this.resolveAgentLabel(entry.request.agentId);
 		const provisional = entry.request.provisional ? " · provisional" : "";
 		lines.push(
@@ -200,49 +664,10 @@ export class HumanRequestMenu implements Component {
 				"…",
 			),
 		);
-		if (entry.request.message) {
-			for (const line of boundedText(entry.request.message, {
-				maxLines: 12,
-				maxCharacters: 2_000,
-			}).split("\n")) {
-				lines.push(truncateToWidth(line, Math.max(1, width - 2), "…"));
-			}
-		}
-		if (entry.view === "input") {
-			if (entry.request.placeholder && !entry.input?.getValue()) {
-				lines.push(colors.dim(singleLine(entry.request.placeholder, 200)));
-			}
-			const input = entry.input;
-			if (input) {
-				input.focused = this.focused;
-				lines.push(...input.render(Math.max(8, width - 2)));
-			}
-			lines.push(colors.dim(this.hintLine("enter submit · esc dismiss")));
-		} else {
-			const list = entry.list;
-			if (list) lines.push(...list.render(width));
-			lines.push(
-				colors.dim(this.hintLine("↑↓ select · enter confirm · esc dismiss")),
-			);
-		}
-		return lines.map((line) => truncateToWidth(line, width, ""));
 	}
 
-	private hintLine(base: string): string {
-		return this.entries.length > 1 ? `${base} · ←→ switch request` : base;
-	}
-
-	private renderTabRow(width: number): string {
-		const parts = this.entries.map((entry, index) => {
-			const label = `${this.resolveAgentLabel(entry.request.agentId)} · ${entry.request.kind}`;
-			return index === this.focusedIndex
-				? colors.accent(`● ${singleLine(label, 60)}`)
-				: colors.dim(`○ ${singleLine(label, 60)}`);
-		});
-		const row = parts.join(colors.dim("  ·  "));
-		return visibleWidth(row) > width
-			? truncateToWidth(row, Math.max(1, width - 1), "…")
-			: row;
+	private rule(width: number): string {
+		return colors.rule("─".repeat(Math.max(1, width)));
 	}
 
 	private renderPendingHint(width: number): string[] {
@@ -254,9 +679,71 @@ export class HumanRequestMenu implements Component {
 		return [truncateToWidth(colors.warn(`! ${hint}`), width, "…")];
 	}
 
-	private openAt(index: number): void {
+	private answerSummary(question: QuestionState): string | undefined {
+		if (question.kind === "multi-select") {
+			if (question.multi.size === 0) return undefined;
+			return question.options
+				.filter((option) => question.multi.has(option.value))
+				.map((option) => option.label)
+				.join(", ");
+		}
+		if (question.single === undefined) return undefined;
+		if (question.freeValue !== undefined) return question.freeValue;
+		return (
+			question.options.find((option) => option.value === question.single)
+				?.label ?? question.single
+		);
+	}
+
+	private hasUnanswered(): boolean {
+		return this.entries.some(
+			(entry) =>
+				entry.mode === "deferred" &&
+				entry.questions.some((question) => !this.isAnswered(question)),
+		);
+	}
+
+	// ── Tabs / focus ──────────────────────────────────────────────────────
+
+	private tabs(): Tab[] {
+		const tabs: Tab[] = [];
+		let hasDeferred = false;
+		for (const [entryIndex, entry] of this.entries.entries()) {
+			if (entry.mode === "input") {
+				tabs.push({ kind: "input", entry: entryIndex });
+				continue;
+			}
+			hasDeferred = true;
+			for (let question = 0; question < entry.questions.length; question++) {
+				tabs.push({ kind: "question", entry: entryIndex, question });
+			}
+		}
+		if (hasDeferred) tabs.push({ kind: "submit" });
+		return tabs;
+	}
+
+	private currentTab(): Tab | undefined {
+		const tabs = this.tabs();
+		if (tabs.length === 0) return undefined;
+		if (this.focusedTab >= tabs.length) this.focusedTab = tabs.length - 1;
+		return tabs[this.focusedTab];
+	}
+
+	private gotoTab(target: number): void {
+		const total = this.tabs().length;
+		if (total === 0) return;
+		this.focusedTab = ((target % total) + total) % total;
+		if (this.currentTab()?.kind === "submit") this.submitActionIndex = 0;
+		this.host.requestRender();
+	}
+
+	private openEntry(entryIndex: number): void {
 		if (this.closed || this.entries.length === 0) return;
-		this.focusedIndex = Math.max(0, Math.min(index, this.entries.length - 1));
+		const tabs = this.tabs();
+		const index = tabs.findIndex(
+			(tab) => tab.kind !== "submit" && tab.entry === entryIndex,
+		);
+		this.focusedTab = index >= 0 ? index : 0;
 		this.opened = true;
 		this.state.mode = "human-request";
 		this.host.setFocus(this);
@@ -270,79 +757,80 @@ export class HumanRequestMenu implements Component {
 		this.host.requestRender();
 	}
 
-	private buildContent(entry: PendingEntry): void {
-		const { request } = entry;
+	// ── Entry lifecycle ────────────────────────────────────────────────────
+
+	private buildEntry(
+		request: HumanRequestEnvelope,
+		signal: AbortSignal | undefined,
+		resolve: (response: HumanResponse) => void,
+		reject: (error: Error) => void,
+	): PendingEntry {
+		const entry: PendingEntry = {
+			request,
+			signal,
+			resolve,
+			reject,
+			settled: false,
+			mode: "deferred",
+			questions: [],
+		};
+		if (request.kind === "input" || request.kind === "custom") {
+			return { ...entry, mode: "input", input: this.buildInput(entry) };
+		}
 		if (request.kind === "confirm") {
-			const list = new SelectList(
-				[
+			entry.questions.push(
+				makeQuestion("confirm", request.title, [
 					{ value: "yes", label: "Yes" },
 					{ value: "no", label: "No" },
-				],
-				2,
-				selectListTheme,
+				]),
 			);
-			list.onSelect = (item) => {
-				this.finish(entry, {
-					kind: "confirm",
-					confirmed: item.value === "yes",
-				});
-			};
-			list.onCancel = () => this.finish(entry, fallbackResponse(request));
-			entry.list = list;
-			return;
+			return entry;
 		}
-		if (request.kind === "select") {
-			const items = (request.options ?? []).map((option) => ({
-				value: option,
-				label: singleLine(option, 400),
-			}));
-			if (request.allowFreeInput) {
-				items.push({ value: FREE_INPUT_VALUE, label: "Type another answer…" });
+		if (request.kind === "questions") {
+			for (const question of request.questions ?? []) {
+				const options = normalizeHumanRequestOptions(question.options);
+				if (options.length === 0) continue;
+				entry.questions.push(
+					makeQuestion(
+						question.multiSelect ? "multi-select" : "select",
+						question.title,
+						options,
+						{ header: question.header, message: question.message },
+					),
+				);
 			}
-			if (items.length === 0) {
-				// Nothing to choose from: fall back to a plain input row.
-				entry.view = "input";
-				entry.input = this.buildInput(entry);
-				return;
+			if (entry.questions.length === 0) {
+				return { ...entry, mode: "input", input: this.buildInput(entry) };
 			}
-			const list = new SelectList(
-				items,
-				Math.min(MAX_VISIBLE_OPTIONS, items.length),
-				selectListTheme,
-			);
-			list.onSelect = (item) => {
-				if (item.value === FREE_INPUT_VALUE) {
-					entry.view = "input";
-					entry.input = this.buildInput(entry);
-					this.host.requestRender();
-					return;
-				}
-				this.finish(entry, { kind: "select", value: item.value });
-			};
-			list.onCancel = () => this.finish(entry, fallbackResponse(request));
-			entry.list = list;
-			return;
+			return entry;
 		}
-		entry.input = this.buildInput(entry);
+		// select / multi-select
+		const options = normalizeHumanRequestOptions(request.options);
+		if (options.length === 0) {
+			return { ...entry, mode: "input", input: this.buildInput(entry) };
+		}
+		if (request.kind === "select" && request.allowFreeInput) {
+			options.push({ value: FREE_INPUT_VALUE, label: FREE_INPUT_LABEL });
+		}
+		entry.questions.push(
+			makeQuestion(request.kind, request.title, options, {
+				allowFreeInput: request.kind === "select" && request.allowFreeInput,
+			}),
+		);
+		return entry;
 	}
 
 	private buildInput(entry: PendingEntry): Input {
 		const input = new Input();
 		input.onSubmit = (value) => {
 			const answer = value.trim() || undefined;
-			switch (entry.request.kind) {
-				case "select":
-					this.finish(entry, { kind: "select", value: answer });
-					break;
-				case "custom":
-					this.finish(entry, { kind: "custom", value: answer });
-					break;
-				default:
-					this.finish(entry, { kind: "input", value: answer });
-					break;
+			if (entry.request.kind === "custom") {
+				this.finish(entry, { kind: "custom", value: answer });
+			} else {
+				this.finish(entry, { kind: "input", value: answer });
 			}
 		};
-		input.onEscape = () => this.finish(entry, fallbackResponse(entry.request));
+		input.onEscape = () => this.dismissAll();
 		return input;
 	}
 
@@ -370,10 +858,8 @@ export class HumanRequestMenu implements Component {
 			else this.host.requestRender();
 			return;
 		}
-		if (index >= 0 && index < this.focusedIndex) this.focusedIndex--;
-		if (this.focusedIndex >= this.entries.length) {
-			this.focusedIndex = this.entries.length - 1;
-		}
+		const tabs = this.tabs();
+		if (this.focusedTab >= tabs.length) this.focusedTab = tabs.length - 1;
 		this.host.requestRender();
 	}
 
@@ -385,12 +871,72 @@ export class HumanRequestMenu implements Component {
 	}
 }
 
+function makeQuestion(
+	kind: QuestionState["kind"],
+	title: string,
+	options: NormalizedHumanRequestOption[],
+	extra: {
+		header?: string;
+		message?: string;
+		allowFreeInput?: boolean;
+	} = {},
+): QuestionState {
+	return {
+		kind,
+		title,
+		header: extra.header,
+		message: extra.message,
+		options,
+		allowFreeInput: extra.allowFreeInput ?? false,
+		cursor: 0,
+		multi: new Set<string>(),
+		editing: false,
+	};
+}
+
+function questionAnswer(question: QuestionState): HumanQuestionAnswer {
+	if (question.kind === "multi-select") {
+		if (question.multi.size === 0) {
+			return { kind: "multi-select", values: undefined };
+		}
+		return {
+			kind: "multi-select",
+			values: question.options
+				.filter((option) => question.multi.has(option.value))
+				.map((option) => option.value),
+		};
+	}
+	return { kind: "select", value: question.single };
+}
+
+function windowStart(cursor: number, total: number): number {
+	if (total <= MAX_VISIBLE_OPTIONS) return 0;
+	return Math.max(
+		0,
+		Math.min(
+			cursor - Math.floor(MAX_VISIBLE_OPTIONS / 2),
+			total - MAX_VISIBLE_OPTIONS,
+		),
+	);
+}
+
 function fallbackResponse(request: HumanRequestEnvelope): HumanResponse {
 	switch (request.kind) {
 		case "confirm":
 			return { kind: "confirm", confirmed: false };
 		case "select":
 			return { kind: "select", value: undefined };
+		case "multi-select":
+			return { kind: "multi-select", values: undefined };
+		case "questions":
+			return {
+				kind: "questions",
+				answers: (request.questions ?? []).map((question) =>
+					question.multiSelect
+						? { kind: "multi-select", values: undefined }
+						: { kind: "select", value: undefined },
+				),
+			};
 		case "custom":
 			return { kind: "custom", value: undefined };
 		default:

@@ -2,6 +2,7 @@ import type { AgentHarnessEvent } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import type { AgentProfile } from "./agent-profile.js";
 import type {
+	BackgroundJobReportSnapshot,
 	BackgroundJobSnapshot,
 	BackgroundJobTransition,
 } from "./background-job.ts";
@@ -182,6 +183,18 @@ export type OrchestratorEvent =
 			transition: BackgroundJobTransition;
 			liveCount: number;
 			changedAt: string;
+	  }
+	// Latest structured, tool-owned report for a live backgrounded job. This is
+	// a replace-only register rather than a delta stream: consumers keep the
+	// highest revision they have seen and may safely skip intermediate events.
+	| {
+			readonly type: "agent_background_job_report_updated";
+			agentId: AgentId;
+			jobId: string;
+			report: BackgroundJobReportSnapshot;
+			changedAt: string;
+			/** Originating tool call id, for correlating the report to its operation. */
+			operationRef?: string;
 	  }
 	// Incremental output of a live backgrounded job. Best-effort and coalesced:
 	// throttled to ~100ms and merged under backpressure, so consumers must treat

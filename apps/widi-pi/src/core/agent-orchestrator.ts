@@ -43,6 +43,7 @@ import {
 import {
 	type BackgroundJob,
 	type BackgroundJobChange,
+	type BackgroundJobReportSnapshot,
 	type BackgroundJobSettlement,
 	type BackgroundJobSnapshot,
 	formatBackgroundJobResultMessageText,
@@ -296,6 +297,7 @@ export class AgentOrchestrator {
 		new Map();
 	private _unsubscribeAgentJobChanges: Map<AgentId, () => void> = new Map();
 	private _unsubscribeAgentJobProgress: Map<AgentId, () => void> = new Map();
+	private _unsubscribeAgentJobReports: Map<AgentId, () => void> = new Map();
 	// Background job results (t1) buffered per agent. Delivered as a single
 	// user-message: steered into the active run while the agent is running, or
 	// prompted at the next idle boundary otherwise. Buffering keeps the result
@@ -303,13 +305,12 @@ export class AgentOrchestrator {
 	// steer that raced a run's end.
 	private _pendingBackgroundResults: Map<AgentId, string[]> = new Map();
 	private _backgroundFlushInFlight: Set<AgentId> = new Set();
-	// Per-agent serialized tail for background job emissions (progress and
-	// lifecycle changes). These carry state (snapshots, absolute counts, and
-	// ordered output increments, not deltas the consumer can reorder), so they
-	// must reach listeners in the order the table changed; `_emit` is not itself
-	// serialized, so emissions are chained here. Routing both progress and change
-	// events through one tail also makes `settled` a barrier: the job's final
-	// increment is enqueued ahead of its terminal event.
+	// Per-agent serialized tail for background job emissions (output, reports,
+	// and lifecycle changes). These carry state (snapshots, revisions, absolute
+	// counts, and ordered output increments), so they must reach listeners in the
+	// order the table changed; `_emit` is not itself serialized. Routing every
+	// job channel through one tail also makes `settled` a barrier: the final
+	// output and report are enqueued ahead of the terminal event.
 	private _backgroundJobEmits: Map<AgentId, Promise<void>> = new Map();
 	// Job ids with an output increment already queued for emission on the tail,
 	// per agent. Bounds coalescing: while a job's progress emit is queued, further
@@ -319,6 +320,18 @@ export class AgentOrchestrator {
 	// Per-agent, per-job monotonic progress sequence. Keyed by agent because job
 	// ids (`job-N`) are only unique within an agent's table.
 	private _progressSequence: Map<AgentId, Map<string, number>> = new Map();
+	// Latest report waiting on the serialized emission tail. Replacing the value
+	// coalesces intermediate revisions while preserving one queued task per job.
+	private _queuedJobReports: Map<
+		AgentId,
+		Map<
+			string,
+			{
+				report: BackgroundJobReportSnapshot;
+				operationRef: string;
+			}
+		>
+	> = new Map();
 	private _eventListeners: Set<OrchestratorEventListener> = new Set();
 	private _extensionObserverDispatchDepth: Map<AgentId, number> = new Map();
 	private _agentRunSignals: Map<AgentId, AbortSignal> = new Map();
@@ -1357,6 +1370,20 @@ export class AgentOrchestrator {
 			}
 			this._unsubscribeAgentJobProgress.delete(agentId);
 		}
+		const unsubscribeJobReports = this._unsubscribeAgentJobReports.get(agentId);
+		if (unsubscribeJobReports) {
+			try {
+				unsubscribeJobReports();
+			} catch (error) {
+				await this._recordAgentLifecycleFailure(
+					agentId,
+					"orchestrator.agent_dispose_failed",
+					`Failed to unsubscribe agent ${agentId} background job report listener: ${formatError(error)}`,
+					error,
+				);
+			}
+			this._unsubscribeAgentJobReports.delete(agentId);
+		}
 		for (const job of record.backgroundJobTable.list()) {
 			record.backgroundJobTable.abort(job.id, "Agent disposed");
 		}
@@ -1365,6 +1392,7 @@ export class AgentOrchestrator {
 		this._backgroundJobEmits.delete(agentId);
 		this._progressQueued.delete(agentId);
 		this._progressSequence.delete(agentId);
+		this._queuedJobReports.delete(agentId);
 
 		const harness = record.harness;
 		if (harness) {
@@ -1966,6 +1994,10 @@ export class AgentOrchestrator {
 			this._onJobProgress(agentId, job.id);
 		});
 		this._unsubscribeAgentJobProgress.set(agentId, unsubscribeJobProgress);
+		const unsubscribeJobReports = jobTable.onReport((job, report) => {
+			this._onJobReport(agentId, job, report);
+		});
+		this._unsubscribeAgentJobReports.set(agentId, unsubscribeJobReports);
 		this._unsubscribeAgentExtensionInterceptors.set(agentId, () => {
 			for (const unsubscribe of unsubscribeInterceptors) {
 				unsubscribe();
@@ -3042,6 +3074,37 @@ export class AgentOrchestrator {
 	}
 
 	/**
+	 * Coalesce a latest-value structured report while preserving its position on
+	 * the per-agent background emission tail. A later revision replaces the
+	 * pending value instead of growing an unbounded event queue.
+	 */
+	private _onJobReport(
+		agentId: AgentId,
+		job: BackgroundJob,
+		report: BackgroundJobReportSnapshot,
+	): void {
+		const queued = this._queuedJobReports.get(agentId) ?? new Map();
+		const alreadyQueued = queued.has(job.id);
+		queued.set(job.id, { report, operationRef: job.toolCallId });
+		this._queuedJobReports.set(agentId, queued);
+		if (alreadyQueued) return;
+		this._enqueueBackgroundEmit(agentId, async () => {
+			const latest = queued.get(job.id);
+			queued.delete(job.id);
+			if (queued.size === 0) this._queuedJobReports.delete(agentId);
+			if (!latest) return;
+			await this._emit({
+				type: "agent_background_job_report_updated",
+				agentId,
+				jobId: job.id,
+				report: latest.report,
+				changedAt: new Date(latest.report.updatedAt).toISOString(),
+				operationRef: latest.operationRef,
+			});
+		});
+	}
+
+	/**
 	 * React to a throttled output-progress tick: queue a single coalesced emit for
 	 * the job on the agent's tail. While one is queued, further ticks are no-ops —
 	 * their bytes accumulate in the job's increment buffer and are drained
@@ -3319,6 +3382,7 @@ export class AgentOrchestrator {
 		switch (event.type) {
 			case "agent_background_job_changed":
 			case "agent_background_job_progress":
+			case "agent_background_job_report_updated":
 			case "agent_harness_event":
 			case "agent_resumed":
 			case "agent_session_forked":

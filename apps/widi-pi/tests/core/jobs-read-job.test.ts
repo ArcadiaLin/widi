@@ -109,6 +109,37 @@ describe("read_job tool", () => {
 		});
 	});
 
+	it("returns the latest structured report and its generic summary", async () => {
+		const table = new BackgroundJobTable();
+		const job = table.create({ toolCallId: "call-1", toolName: "planner" });
+		table.setReport(job.id, {
+			kind: "test.plan",
+			schemaVersion: 1,
+			summary: "Executing plan",
+			progress: { completed: 2, total: 4 },
+		});
+		table.background(job.id);
+
+		const result = await readJob.execute(
+			"call-2",
+			{ jobIds: [job.id] },
+			contextWith(table),
+		);
+
+		expect(result.details.jobs[0]).toMatchObject({
+			jobId: job.id,
+			report: {
+				revision: 1,
+				value: {
+					kind: "test.plan",
+					summary: "Executing plan",
+					progress: { completed: 2, total: 4 },
+				},
+			},
+		});
+		expect(textOf(result)).toContain("Current report: Executing plan · 2/4");
+	});
+
 	it("reports nothing to read when no jobs are live", async () => {
 		const table = new BackgroundJobTable();
 

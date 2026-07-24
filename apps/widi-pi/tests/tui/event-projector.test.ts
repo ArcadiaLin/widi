@@ -1,6 +1,10 @@
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import type { AgentRecordSnapshot } from "../../src/core/agent-record.ts";
+import type {
+	BackgroundJobReportSnapshot,
+	BackgroundJobSnapshot,
+} from "../../src/core/background-job.ts";
 import type { OrchestratorEvent, RuntimeModel } from "../../src/core/types.ts";
 import {
 	applyAgentSnapshot,
@@ -387,6 +391,100 @@ describe("EventProjector", () => {
 		expect(state.mode).toBe("editor");
 	});
 
+	it("summarizes a multi-select resolution with option labels", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+		setActiveAgent(state, "main");
+
+		projector.apply({
+			type: "human_request_pending",
+			agentId: "worker",
+			request: {
+				id: "request-multi",
+				agentId: "worker",
+				source: { kind: "human" },
+				kind: "multi-select",
+				title: "Pick targets",
+				options: [
+					{ label: "Safe", value: "safe" },
+					{ label: "Fast", value: "fast" },
+					{ label: "Cheap", value: "cheap" },
+				],
+				createdAt: timestamp(1),
+			},
+		});
+		projector.apply({
+			type: "human_request_resolved",
+			agentId: "worker",
+			requestId: "request-multi",
+			response: { kind: "multi-select", values: ["safe", "cheap"] },
+			completedAt: timestamp(2),
+		});
+
+		expect(state.agents.get("worker")?.timeline).toMatchObject([
+			{
+				type: "human-request-trace",
+				options: ["Safe", "Fast", "Cheap"],
+				answer: { kind: "selected-options", values: ["Safe", "Cheap"] },
+			},
+		]);
+	});
+
+	it("summarizes a questions batch resolution with per-question labels", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+		setActiveAgent(state, "main");
+
+		projector.apply({
+			type: "human_request_pending",
+			agentId: "worker",
+			request: {
+				id: "request-q",
+				agentId: "worker",
+				source: { kind: "human" },
+				kind: "questions",
+				title: "Deploy setup",
+				questions: [
+					{
+						title: "Target",
+						options: [
+							{ label: "Staging", value: "staging" },
+							{ label: "Prod", value: "prod" },
+						],
+					},
+					{ title: "Regions", multiSelect: true, options: ["us", "eu"] },
+				],
+				createdAt: timestamp(1),
+			},
+		});
+		projector.apply({
+			type: "human_request_resolved",
+			agentId: "worker",
+			requestId: "request-q",
+			response: {
+				kind: "questions",
+				answers: [
+					{ kind: "select", value: "staging" },
+					{ kind: "multi-select", values: ["us", "eu"] },
+				],
+			},
+			completedAt: timestamp(2),
+		});
+
+		expect(state.agents.get("worker")?.timeline).toMatchObject([
+			{
+				type: "human-request-trace",
+				answer: {
+					kind: "answered-questions",
+					items: [
+						{ title: "Target", values: ["Staging"] },
+						{ title: "Regions", values: ["us", "eu"] },
+					],
+				},
+			},
+		]);
+	});
+
 	it("keeps active tool failures inline and gives background ones a transient warning", () => {
 		const state = createTuiApplicationState();
 		const projector = new EventProjector(state);
@@ -522,6 +620,9 @@ describe("EventProjector", () => {
 				toolCallId: "call-1",
 				toolName: "bash",
 				phase: "backgrounded",
+				startedAt: 1,
+				totalBytesSeen: 0,
+				droppedBytes: 0,
 			},
 			transition: "backgrounded",
 			liveCount: 3,
@@ -538,12 +639,223 @@ describe("EventProjector", () => {
 				toolName: "bash",
 				phase: "backgrounded",
 				status: "completed",
+				startedAt: 1,
+				endedAt: 2,
+				totalBytesSeen: 0,
+				droppedBytes: 0,
 			},
 			transition: "settled",
 			liveCount: 0,
 			changedAt: timestamp(2),
 		});
 		expect(projector.ensureAgent("worker").backgroundJobCount).toBe(0);
+	});
+
+	it("tracks per-job view state through backgrounded, aborting and settled", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+		const agent = setActiveAgent(state, "main");
+
+		projector.apply({
+			type: "agent_background_job_changed",
+			agentId: "main",
+			job: jobSnapshot("job-1"),
+			transition: "backgrounded",
+			liveCount: 1,
+			changedAt: timestamp(1),
+		});
+		expect(agent.backgroundJobs.get("job-1")).toMatchObject({
+			status: "live",
+			toolName: "bash",
+			description: "run job-1",
+			startedAt: 1_000,
+		});
+
+		projector.apply({
+			type: "agent_background_job_changed",
+			agentId: "main",
+			job: jobSnapshot("job-1"),
+			transition: "aborting",
+			liveCount: 1,
+			changedAt: timestamp(2),
+		});
+		expect(agent.backgroundJobs.get("job-1")?.status).toBe("aborting");
+
+		projector.apply({
+			type: "agent_background_job_changed",
+			agentId: "main",
+			job: jobSnapshot("job-1", {
+				status: "failed",
+				endedAt: 2_000,
+				totalBytesSeen: 42,
+			}),
+			transition: "settled",
+			liveCount: 0,
+			changedAt: timestamp(3),
+		});
+		expect(agent.backgroundJobs.get("job-1")).toMatchObject({
+			status: "failed",
+			endedAt: 2_000,
+			totalBytesSeen: 42,
+		});
+		expect(agent.backgroundJobCount).toBe(0);
+	});
+
+	it("keeps only the latest structured job report revision", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+		const agent = setActiveAgent(state, "main");
+		projector.apply({
+			type: "agent_background_job_changed",
+			agentId: "main",
+			job: jobSnapshot("job-1", { report: jobReport(1, "Starting") }),
+			transition: "backgrounded",
+			liveCount: 1,
+			changedAt: timestamp(1),
+		});
+
+		projector.apply({
+			type: "agent_background_job_report_updated",
+			agentId: "main",
+			jobId: "job-1",
+			report: jobReport(3, "Newest"),
+			changedAt: timestamp(3),
+		});
+		projector.apply({
+			type: "agent_background_job_report_updated",
+			agentId: "main",
+			jobId: "job-1",
+			report: jobReport(2, "Stale"),
+			changedAt: timestamp(2),
+		});
+
+		expect(agent.backgroundJobs.get("job-1")?.report).toMatchObject({
+			revision: 3,
+			value: { summary: "Newest" },
+		});
+	});
+
+	it("retains settled jobs until a new user turn starts", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+		const agent = setActiveAgent(state, "main");
+		for (const jobId of ["job-1", "job-2"]) {
+			projector.apply({
+				type: "agent_background_job_changed",
+				agentId: "main",
+				job: jobSnapshot(jobId),
+				transition: "backgrounded",
+				liveCount: 2,
+				changedAt: timestamp(1),
+			});
+		}
+		projector.apply({
+			type: "agent_background_job_changed",
+			agentId: "main",
+			job: jobSnapshot("job-1", { status: "completed", endedAt: 2_000 }),
+			transition: "settled",
+			liveCount: 1,
+			changedAt: timestamp(2),
+		});
+		expect(agent.backgroundJobs.has("job-1")).toBe(true);
+
+		projector.apply(
+			harness("main", { type: "message_start", message: userMessage("next") }),
+		);
+
+		expect(agent.backgroundJobs.has("job-1")).toBe(false);
+		expect(agent.backgroundJobs.get("job-2")?.status).toBe("live");
+	});
+
+	it("decodes progress chunks into the last output line across split UTF-8", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+		const agent = setActiveAgent(state, "main");
+		projector.apply({
+			type: "agent_background_job_changed",
+			agentId: "main",
+			job: jobSnapshot("job-1"),
+			transition: "backgrounded",
+			liveCount: 1,
+			changedAt: timestamp(1),
+		});
+
+		// Split the byte stream inside the multi-byte character.
+		const full = Buffer.from("booting\nhalf 中\n", "utf-8");
+		const splitAt = full.indexOf(Buffer.from("中", "utf-8")) + 1;
+		projector.apply(
+			progressEvent("main", "job-1", 0, full.subarray(0, splitAt), 0),
+		);
+		projector.apply(
+			progressEvent("main", "job-1", 1, full.subarray(splitAt), splitAt),
+		);
+
+		const job = agent.backgroundJobs.get("job-1");
+		expect(job?.lastLine).toBe("half 中");
+		expect(job?.totalBytesSeen).toBe(full.length);
+	});
+
+	it("drops the partial line when progress offsets gap", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+		const agent = setActiveAgent(state, "main");
+		projector.apply({
+			type: "agent_background_job_changed",
+			agentId: "main",
+			job: jobSnapshot("job-1"),
+			transition: "backgrounded",
+			liveCount: 1,
+			changedAt: timestamp(1),
+		});
+
+		projector.apply(progressEvent("main", "job-1", 0, Buffer.from("par"), 0));
+		// A gap: the next increment starts at byte 20 instead of byte 3.
+		projector.apply(
+			progressEvent("main", "job-1", 1, Buffer.from("fresh line\n"), 20),
+		);
+
+		expect(agent.backgroundJobs.get("job-1")?.lastLine).toBe("fresh line");
+	});
+
+	it("seeds live jobs from a pull, retaining settled entries", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+		const agent = setActiveAgent(state, "main");
+		for (const jobId of ["job-live", "job-stale", "job-old"]) {
+			projector.apply({
+				type: "agent_background_job_changed",
+				agentId: "main",
+				job: jobSnapshot(jobId),
+				transition: "backgrounded",
+				liveCount: 3,
+				changedAt: timestamp(1),
+			});
+		}
+		projector.apply({
+			type: "agent_background_job_changed",
+			agentId: "main",
+			job: jobSnapshot("job-old", { status: "completed", endedAt: 2_000 }),
+			transition: "settled",
+			liveCount: 2,
+			changedAt: timestamp(2),
+		});
+
+		projector.seedBackgroundJobs("main", [
+			jobSnapshot("job-live", { totalBytesSeen: 10 }),
+			jobSnapshot("job-new"),
+		]);
+
+		expect([...agent.backgroundJobs.keys()].sort()).toEqual([
+			"job-live",
+			"job-new",
+			"job-old",
+		]);
+		expect(agent.backgroundJobs.get("job-live")).toMatchObject({
+			status: "live",
+			totalBytesSeen: 10,
+		});
+		expect(agent.backgroundJobs.get("job-old")?.status).toBe("completed");
+		expect(agent.backgroundJobCount).toBe(2);
 	});
 });
 
@@ -640,4 +952,57 @@ function snapshot(
 
 function timestamp(offset: number): string {
 	return new Date(Date.UTC(2026, 0, 1, 0, 0, offset)).toISOString();
+}
+
+function jobSnapshot(
+	jobId: string,
+	overrides: Partial<BackgroundJobSnapshot> = {},
+): BackgroundJobSnapshot {
+	return {
+		jobId,
+		toolCallId: `call-${jobId}`,
+		toolName: "bash",
+		description: `run ${jobId}`,
+		phase: "backgrounded",
+		startedAt: 1_000,
+		totalBytesSeen: 0,
+		droppedBytes: 0,
+		...overrides,
+	};
+}
+
+function progressEvent(
+	agentId: string,
+	jobId: string,
+	sequence: number,
+	bytes: Buffer,
+	startByte: number,
+): Extract<OrchestratorEvent, { type: "agent_background_job_progress" }> {
+	return {
+		type: "agent_background_job_progress",
+		agentId,
+		jobId,
+		sequence,
+		chunk: bytes.toString("base64"),
+		startByte,
+		endByte: startByte + bytes.length,
+		totalBytesSeen: startByte + bytes.length,
+		progressDroppedBytes: 0,
+		observedAt: timestamp(1),
+	};
+}
+
+function jobReport(
+	revision: number,
+	summary: string,
+): BackgroundJobReportSnapshot {
+	return {
+		revision,
+		updatedAt: revision * 1_000,
+		value: {
+			kind: "test.status",
+			schemaVersion: 1,
+			summary,
+		},
+	};
 }

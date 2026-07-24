@@ -14,6 +14,7 @@ export class WidiEditor extends Editor {
 	onInterrupt?: () => void;
 	onExit?: () => void;
 	onToggleToolOutput?: () => void;
+	onToggleJobs?: () => void;
 	onSteer?: () => void;
 	onOpenRequests?: () => void;
 
@@ -58,6 +59,10 @@ export class WidiEditor extends Editor {
 		const keybindings = getKeybindings();
 		if (keybindings.matches(data, "app.tools.expand")) {
 			this.onToggleToolOutput?.();
+			return;
+		}
+		if (keybindings.matches(data, "app.jobs.expand")) {
+			this.onToggleJobs?.();
 			return;
 		}
 		if (keybindings.matches(data, "app.steer")) {

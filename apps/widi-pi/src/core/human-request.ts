@@ -10,14 +10,80 @@ import {
 } from "./operation-source.ts";
 import type { AgentId } from "./types.ts";
 
-export type HumanRequestKind = "confirm" | "select" | "input" | "custom";
+export type HumanRequestKind =
+	| "confirm"
+	| "select"
+	| "multi-select"
+	| "questions"
+	| "input"
+	| "custom";
+
+/**
+ * One question inside a kind="questions" batch. Each question is a choice
+ * (single or multi) rendered as its own tab in the panel; the whole batch is
+ * answered together and returned as one ordered array.
+ */
+export interface HumanQuestion {
+	/** single: one option; multi: any number of options. */
+	multiSelect?: boolean;
+	/** The question text shown as the tab body. */
+	title: string;
+	/** Short label for the tab strip; falls back to a "Q<n>" ordinal. */
+	header?: string;
+	message?: string;
+	options: readonly (string | HumanRequestOption)[];
+}
+
+/** One question's answer, positionally matching the request's questions. */
+export type HumanQuestionAnswer =
+	| { kind: "select"; value: string | undefined }
+	| { kind: "multi-select"; values: string[] | undefined };
+
+/**
+ * A selectable option. A bare string is shorthand for a label that doubles as
+ * its value; the object form separates the machine value from the shown label
+ * and carries an optional dim description column.
+ */
+export interface HumanRequestOption {
+	label: string;
+	value?: string;
+	description?: string;
+}
+
+export interface NormalizedHumanRequestOption {
+	value: string;
+	label: string;
+	description?: string;
+}
+
+/**
+ * Collapse the mixed option shape into a uniform {value,label,description}.
+ * A string becomes a value that is its own label; an object without an
+ * explicit value falls back to its label.
+ */
+export function normalizeHumanRequestOptions(
+	options: readonly (string | HumanRequestOption)[] | undefined,
+): NormalizedHumanRequestOption[] {
+	if (!options) return [];
+	return options.map((option) =>
+		typeof option === "string"
+			? { value: option, label: option }
+			: {
+					value: option.value ?? option.label,
+					label: option.label,
+					description: option.description,
+				},
+	);
+}
 
 export interface HumanRequest {
 	source: OperationSource;
 	kind: HumanRequestKind;
 	title: string;
 	message?: string;
-	options?: readonly string[];
+	options?: readonly (string | HumanRequestOption)[];
+	// For kind="questions": the ordered batch of questions posed together.
+	questions?: readonly HumanQuestion[];
 	placeholder?: string;
 	// Whether the client should offer free-form input alongside options.
 	// Absent means the kind's inherent form (input: always, confirm/select:
@@ -47,6 +113,8 @@ export interface HumanRequestEnvelope extends Omit<HumanRequest, "signal"> {
 export type HumanResponse =
 	| { kind: "confirm"; confirmed: boolean }
 	| { kind: "select"; value: string | undefined }
+	| { kind: "multi-select"; values: string[] | undefined }
+	| { kind: "questions"; answers: readonly HumanQuestionAnswer[] }
 	| { kind: "input"; value: string | undefined }
 	| { kind: "custom"; value: unknown };
 

@@ -280,10 +280,12 @@ describe("AgentOrchestrator background job router", () => {
 		expect(job.signal.aborted).toBe(true);
 		const internals = orchestrator as unknown as {
 			_unsubscribeAgentJobChanges: Map<string, unknown>;
+			_unsubscribeAgentJobReports: Map<string, unknown>;
 			_pendingBackgroundResults: Map<string, unknown>;
 			_backgroundFlushInFlight: Set<string>;
 		};
 		expect(internals._unsubscribeAgentJobChanges.has(agentId)).toBe(false);
+		expect(internals._unsubscribeAgentJobReports.has(agentId)).toBe(false);
 		expect(internals._pendingBackgroundResults.has(agentId)).toBe(false);
 		expect(internals._backgroundFlushInFlight.has(agentId)).toBe(false);
 	});
@@ -502,6 +504,7 @@ describe("AgentOrchestrator background job router", () => {
 				toolCallId: "call-1",
 				toolName: "bash",
 				description: undefined,
+				report: undefined,
 				phase: "backgrounded",
 				status: undefined,
 				stopReason: undefined,
@@ -523,6 +526,56 @@ describe("AgentOrchestrator background job router", () => {
 		expect(
 			orchestrator.readAgentBackgroundJobOutput(agentId, job.id),
 		).toBeUndefined();
+	});
+
+	it("emits the latest structured report before the settled lifecycle event", async () => {
+		const { orchestrator, record } = await spawnAgent();
+		record.status = "running";
+		const log: Array<
+			| { kind: "report"; revision: number; summary: string | undefined }
+			| { kind: "changed"; transition: string }
+		> = [];
+		orchestrator.subscribe((event) => {
+			if (event.type === "agent_background_job_report_updated") {
+				log.push({
+					kind: "report",
+					revision: event.report.revision,
+					summary: event.report.value.summary,
+				});
+			} else if (event.type === "agent_background_job_changed") {
+				log.push({ kind: "changed", transition: event.transition });
+			}
+		});
+
+		const job = record.backgroundJobTable.create({
+			toolCallId: "call-1",
+			toolName: "planner",
+		});
+		record.backgroundJobTable.background(job.id);
+		record.backgroundJobTable.setReport(job.id, {
+			kind: "test.plan",
+			schemaVersion: 1,
+			summary: "step 1",
+		});
+		record.backgroundJobTable.setReport(job.id, {
+			kind: "test.plan",
+			schemaVersion: 1,
+			summary: "step 2",
+		});
+		record.backgroundJobTable.settle(job.id, completedOutcome);
+
+		await vi.waitFor(() =>
+			expect(
+				log.some(
+					(entry) => entry.kind === "changed" && entry.transition === "settled",
+				),
+			).toBe(true),
+		);
+		expect(log).toEqual([
+			{ kind: "changed", transition: "backgrounded" },
+			{ kind: "report", revision: 2, summary: "step 2" },
+			{ kind: "changed", transition: "settled" },
+		]);
 	});
 });
 
@@ -616,6 +669,37 @@ describe("AgentOrchestrator background job extension observability", () => {
 
 		await vi.waitFor(() =>
 			expect(seen).toEqual([{ text: "progress\n", startByte: 0, endByte: 9 }]),
+		);
+	});
+
+	it("delivers structured report events to extension observers", async () => {
+		const seen: Array<{ revision: number; summary: string | undefined }> = [];
+		const { record } = await spawnWithJobExtension({
+			module: (api) => {
+				api.observe("agent_background_job_report_updated", (event) => {
+					seen.push({
+						revision: event.report.revision,
+						summary: event.report.value.summary,
+					});
+				});
+			},
+		});
+		record.status = "running";
+
+		const job = record.backgroundJobTable.create({
+			toolCallId: "call-1",
+			toolName: "planner",
+		});
+		record.backgroundJobTable.background(job.id);
+		record.backgroundJobTable.setReport(job.id, {
+			kind: "test.plan",
+			schemaVersion: 1,
+			summary: "Planning",
+		});
+		record.backgroundJobTable.settle(job.id, completedOutcome);
+
+		await vi.waitFor(() =>
+			expect(seen).toEqual([{ revision: 1, summary: "Planning" }]),
 		);
 	});
 

@@ -6,6 +6,7 @@ import type {
 import type { Static, TSchema } from "typebox";
 import type {
 	BackgroundJobOutput,
+	BackgroundJobReport,
 	BackgroundJobTable,
 } from "../background-job.ts";
 import type { ToolHumanHost } from "../human-request.ts";
@@ -42,7 +43,18 @@ export interface ToolExecutionContext<TDetails> {
 	 * bytes appended here, and termination still requires the tool to honor
 	 * `signal`; the tool's eventual result size is independent of this buffer.
 	 */
-	job?: { readonly id: string; readonly output: BackgroundJobOutput };
+	job?: BackgroundJobExecutionContext;
+}
+
+/** Capabilities scoped to the pseudo-async job executing this tool call. */
+export interface BackgroundJobExecutionContext {
+	readonly id: string;
+	readonly output: BackgroundJobOutput;
+	/**
+	 * Replace the job's structured report. Returns false if the job already
+	 * settled before the update was published.
+	 */
+	readonly setReport: (report: BackgroundJobReport) => boolean;
 }
 
 /**
@@ -123,6 +135,23 @@ export interface ToolSource {
 }
 
 /**
+ * Declarative bridge from a tool's existing arguments/partial results into its
+ * structured background job report. This is opt-in: arbitrary `details` are
+ * never treated as job state without a tool-owned mapper.
+ */
+export interface BackgroundJobReportAdapter<
+	TParamsSchema extends TSchema = TSchema,
+	TDetails = unknown,
+> {
+	/** Seed the first report when the adapter creates the job. */
+	initial?: (params: Static<TParamsSchema>) => BackgroundJobReport | undefined;
+	/** Replace the report when the tool publishes a partial result. */
+	fromUpdate?: (
+		partialResult: AgentToolResult<TDetails>,
+	) => BackgroundJobReport | undefined;
+}
+
+/**
  * WIDI-owned tool definition.
  *
  * This is not Pi's runtime closure directly. It is the declarative/runtime
@@ -186,6 +215,13 @@ export interface ToolDefinition<
 	 * Ignored unless `backgroundable` is true.
 	 */
 	backgroundDescription?: (params: Static<TParamsSchema>) => string;
+	/**
+	 * Optional declarative projection of arguments and streaming updates into a
+	 * structured background job report. Tools that need direct control can call
+	 * `context.job.setReport` instead. If both paths are used, accepted writes are
+	 * ordered normally and the latest full replacement wins.
+	 */
+	backgroundReport?: BackgroundJobReportAdapter<TParamsSchema, TDetails>;
 
 	/** Execute the tool after arguments have been prepared and validated. */
 	execute: ToolExecute<TParamsSchema, TDetails>;

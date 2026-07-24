@@ -3,10 +3,10 @@ id: widi-dev
 label: WIDI Dev
 description: Local WIDI development profile for comprehensive harness self-checks.
 persist: true
-tools: [read, bash, edit, write, grep, find, ls, ask_human, wait_for_jobs, read_job, kill_job, mcp_ai-economist_search_fulltext, mcp_ai-economist_get_work, mcp_ai-economist_get_work_structure, mcp_ai-economist_get_work_content, mcp_ai-economist_search_metadata, mcp_ai-economist_get_author, mcp_ai-economist_get_citations, mcp_ai-economist_list_sources, mcp_ai-economist_get_topic_map]
+tools: [read, bash, edit, write, grep, find, ls, ask_human, wait_for_jobs, read_job, kill_job, update_plan, mcp_ai-economist_search_fulltext, mcp_ai-economist_get_work, mcp_ai-economist_get_work_structure, mcp_ai-economist_get_work_content, mcp_ai-economist_search_metadata, mcp_ai-economist_get_author, mcp_ai-economist_get_citations, mcp_ai-economist_list_sources, mcp_ai-economist_get_topic_map]
 skills: [self-check, econ-deep-research]
 promptTemplates: [self-check]
-extensions: [mcp, job-tools]
+extensions: [mcp, job-tools, plan-demo]
 missingExtensionSeverity: warning
 capabilities:
   acceptsUserInput: true

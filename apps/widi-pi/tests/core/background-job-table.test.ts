@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import {
 	type BackgroundJobChange,
+	type BackgroundJobReport,
 	BackgroundJobTable,
 	type BackgroundJobTransition,
 	formatBackgroundJobResultMessageText,
+	MAX_BACKGROUND_JOB_REPORT_BYTES,
+	snapshotBackgroundJob,
 } from "../../src/core/background-job.ts";
 
 describe("BackgroundJobTable", () => {
@@ -147,6 +150,116 @@ describe("BackgroundJobTable", () => {
 			description: "npm run build",
 		});
 		expect(job.description).toBe("npm run build");
+	});
+
+	it("stores an initial structured report as a detached revisioned snapshot", () => {
+		const source = {
+			kind: "test.plan",
+			schemaVersion: 1,
+			summary: "First step",
+			progress: { completed: 0, total: 1 },
+			data: { items: ["first"] },
+		} satisfies BackgroundJobReport;
+		const table = new BackgroundJobTable();
+		const job = table.create({
+			toolCallId: "call-1",
+			toolName: "planner",
+			report: source,
+		});
+
+		source.data.items.push("mutated later");
+		expect(job.report).toMatchObject({
+			revision: 1,
+			updatedAt: expect.any(Number),
+			value: {
+				kind: "test.plan",
+				data: { items: ["first"] },
+			},
+		});
+		expect(Object.isFrozen(job.report)).toBe(true);
+		expect(Object.isFrozen(job.report?.value.data)).toBe(true);
+		expect(snapshotBackgroundJob(job).report).toBe(job.report);
+	});
+
+	it("keeps pre-t0 reports silent and includes the latest one at backgrounding", () => {
+		const table = new BackgroundJobTable({ reportThrottleMs: 0 });
+		const reports = vi.fn();
+		const changes: BackgroundJobChange[] = [];
+		table.onReport(reports);
+		table.onChange((change) => changes.push(change));
+		const job = table.create({ toolCallId: "call-1", toolName: "planner" });
+
+		expect(
+			table.setReport(job.id, {
+				kind: "test.plan",
+				schemaVersion: 1,
+				summary: "Prepared",
+			}),
+		).toBe(true);
+		expect(reports).not.toHaveBeenCalled();
+
+		table.background(job.id);
+		expect(changes[0]?.job.report).toMatchObject({
+			revision: 1,
+			value: { summary: "Prepared" },
+		});
+		expect(reports).not.toHaveBeenCalled();
+	});
+
+	it("coalesces reports and flushes the final revision before settlement", () => {
+		const table = new BackgroundJobTable({ reportThrottleMs: 10_000 });
+		const log: Array<{ kind: "report" | "change"; value: number | string }> =
+			[];
+		table.onReport((_job, report) => {
+			log.push({ kind: "report", value: report.revision });
+		});
+		table.onChange((change) => {
+			log.push({ kind: "change", value: change.transition });
+		});
+		const job = table.create({ toolCallId: "call-1", toolName: "planner" });
+		table.background(job.id);
+
+		for (const completed of [1, 2, 3]) {
+			table.setReport(job.id, {
+				kind: "test.plan",
+				schemaVersion: 1,
+				progress: { completed, total: 3 },
+			});
+		}
+		expect(log).toEqual([{ kind: "change", value: "backgrounded" }]);
+
+		table.settle(job.id, { status: "completed" });
+		expect(log).toEqual([
+			{ kind: "change", value: "backgrounded" },
+			{ kind: "report", value: 3 },
+			{ kind: "change", value: "settled" },
+		]);
+	});
+
+	it("rejects invalid or oversized reports without advancing the revision", () => {
+		const table = new BackgroundJobTable();
+		const job = table.create({ toolCallId: "call-1", toolName: "planner" });
+		table.setReport(job.id, {
+			kind: "test.plan",
+			schemaVersion: 1,
+			summary: "valid",
+		});
+
+		expect(() =>
+			table.setReport(job.id, {
+				kind: "test.plan",
+				schemaVersion: 1,
+				progress: { completed: 2, total: 1 },
+			}),
+		).toThrow(/cannot exceed total/);
+		expect(() =>
+			table.setReport(job.id, {
+				kind: "test.plan",
+				schemaVersion: 1,
+				data: { text: "x".repeat(MAX_BACKGROUND_JOB_REPORT_BYTES) },
+			}),
+		).toThrow(/exceeds/);
+		expect(job.report?.revision).toBe(1);
 	});
 
 	it("notifies progress listeners immediately on the first append", () => {

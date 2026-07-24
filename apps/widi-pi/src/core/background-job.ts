@@ -21,6 +21,42 @@ import type { TextContent } from "@earendil-works/pi-ai";
 /** Terminal outcome of a background job. */
 export type BackgroundJobStatus = "completed" | "failed" | "cancelled";
 
+/** JSON-compatible value accepted inside a structured background job report. */
+export type JsonValue =
+	| string
+	| number
+	| boolean
+	| null
+	| readonly JsonValue[]
+	| { readonly [key: string]: JsonValue };
+
+/** Tool-owned, replace-only structured report describing a job's current work. */
+export interface BackgroundJobReport {
+	/** Renderer/consumer discriminator, for example `widi.plan`. */
+	readonly kind: string;
+	/** Schema version scoped to `kind`. */
+	readonly schemaVersion: number;
+	/** Short dynamic fallback for consumers that do not know `kind`. */
+	readonly summary?: string;
+	/** Optional generic progress that every consumer can render. */
+	readonly progress?: {
+		readonly completed: number;
+		readonly total?: number;
+	};
+	/** Kind-specific JSON data. */
+	readonly data?: JsonValue;
+}
+
+/** Immutable latest-value register stored on a background job. */
+export interface BackgroundJobReportSnapshot {
+	/** Per-job monotonic revision, starting at 1. */
+	readonly revision: number;
+	/** Epoch ms when this revision was accepted. */
+	readonly updatedAt: number;
+	/** Validated, detached, deeply frozen report value. */
+	readonly value: BackgroundJobReport;
+}
+
 /** Default rolling cap for a background job's output tail: 1 MiB. */
 export const DEFAULT_BACKGROUND_JOB_OUTPUT_MAX_BYTES = 1024 * 1024;
 
@@ -46,6 +82,18 @@ export const DEFAULT_BACKGROUND_JOB_OUTPUT_CEILING_BYTES = 16 * 1024 * 1024;
 
 /** Default minimum spacing between a job's progress emissions: 100 ms. */
 export const DEFAULT_BACKGROUND_JOB_PROGRESS_THROTTLE_MS = 100;
+
+/** Default minimum spacing between structured report emissions: 100 ms. */
+export const DEFAULT_BACKGROUND_JOB_REPORT_THROTTLE_MS = 100;
+
+/** Maximum serialized size of one structured report: 64 KiB. */
+export const MAX_BACKGROUND_JOB_REPORT_BYTES = 64 * 1024;
+
+/** Maximum UTF-8 size of a structured report discriminator. */
+export const MAX_BACKGROUND_JOB_REPORT_KIND_BYTES = 128;
+
+/** Maximum UTF-8 size of a structured report summary. */
+export const MAX_BACKGROUND_JOB_REPORT_SUMMARY_BYTES = 4 * 1024;
 
 /**
  * A drained progress increment: the contiguous run of new output bytes since
@@ -343,6 +391,124 @@ function stopReasonFromOutcome(
 		: "The job failed.";
 }
 
+/**
+ * Validate, detach, and deeply freeze a tool-published report. JSON
+ * round-tripping gives snapshots transport-safe value semantics: later
+ * mutation of the tool's input object cannot change the job without a new
+ * revision.
+ */
+export function validateBackgroundJobReport(
+	report: BackgroundJobReport,
+): BackgroundJobReport {
+	if (typeof report !== "object" || report === null) {
+		throw new TypeError("Background job report must be an object.");
+	}
+	assertBoundedReportText(
+		report.kind,
+		"Background job report kind",
+		MAX_BACKGROUND_JOB_REPORT_KIND_BYTES,
+	);
+	if (!Number.isInteger(report.schemaVersion) || report.schemaVersion < 1) {
+		throw new TypeError(
+			"Background job report schemaVersion must be a positive integer.",
+		);
+	}
+	if (report.summary !== undefined) {
+		assertBoundedReportText(
+			report.summary,
+			"Background job report summary",
+			MAX_BACKGROUND_JOB_REPORT_SUMMARY_BYTES,
+		);
+	}
+	const progress = report.progress;
+	if (progress !== undefined) {
+		if (typeof progress !== "object" || progress === null) {
+			throw new TypeError("Background job report progress must be an object.");
+		}
+		assertNonNegativeReportInteger(
+			progress.completed,
+			"Background job report progress completed",
+		);
+		if (progress.total !== undefined) {
+			assertNonNegativeReportInteger(
+				progress.total,
+				"Background job report progress total",
+			);
+			if (progress.completed > progress.total) {
+				throw new RangeError(
+					"Background job report progress completed cannot exceed total.",
+				);
+			}
+		}
+	}
+
+	const normalized: BackgroundJobReport = {
+		kind: report.kind,
+		schemaVersion: report.schemaVersion,
+		...(report.summary === undefined ? undefined : { summary: report.summary }),
+		...(progress === undefined
+			? undefined
+			: {
+					progress: {
+						completed: progress.completed,
+						...(progress.total === undefined
+							? undefined
+							: { total: progress.total }),
+					},
+				}),
+		...(report.data === undefined ? undefined : { data: report.data }),
+	};
+	let serialized: string | undefined;
+	try {
+		serialized = JSON.stringify(normalized);
+	} catch (error) {
+		const message = error instanceof Error ? `: ${error.message}` : "";
+		throw new TypeError(
+			`Background job report must be JSON serializable${message}.`,
+		);
+	}
+	if (serialized === undefined) {
+		throw new TypeError("Background job report must be JSON serializable.");
+	}
+	if (
+		Buffer.byteLength(serialized, "utf-8") > MAX_BACKGROUND_JOB_REPORT_BYTES
+	) {
+		throw new RangeError(
+			`Background job report exceeds ${MAX_BACKGROUND_JOB_REPORT_BYTES} UTF-8 bytes when serialized.`,
+		);
+	}
+	const detached = JSON.parse(serialized) as BackgroundJobReport;
+	deepFreeze(detached);
+	return detached;
+}
+
+function assertBoundedReportText(
+	value: string,
+	label: string,
+	maxBytes: number,
+): void {
+	if (typeof value !== "string" || value.trim().length === 0) {
+		throw new TypeError(`${label} must be a non-empty string.`);
+	}
+	if (Buffer.byteLength(value, "utf-8") > maxBytes) {
+		throw new RangeError(`${label} exceeds ${maxBytes} UTF-8 bytes.`);
+	}
+}
+
+function assertNonNegativeReportInteger(value: number, label: string): void {
+	if (!Number.isInteger(value) || value < 0) {
+		throw new TypeError(`${label} must be a non-negative integer.`);
+	}
+}
+
+function deepFreeze(value: unknown): void {
+	if (typeof value !== "object" || value === null || Object.isFrozen(value)) {
+		return;
+	}
+	for (const child of Object.values(value)) deepFreeze(child);
+	Object.freeze(value);
+}
+
 /** Lifecycle phase of a live background job before it settles. */
 export type BackgroundJobPhase = "running" | "backgrounded";
 
@@ -356,6 +522,8 @@ export interface BackgroundJob {
 	readonly toolName: string;
 	/** Human-readable label for the job (for bash, the command); may be absent. */
 	readonly description?: string;
+	/** Latest structured tool-owned report, when the tool published one. */
+	readonly report?: BackgroundJobReportSnapshot;
 	/** Abort signal handed to the tool's execute; abort via `BackgroundJobTable.abort`. */
 	readonly signal: AbortSignal;
 	/** Current lifecycle phase. */
@@ -423,6 +591,16 @@ export type BackgroundJobChangeListener = (change: BackgroundJobChange) => void;
 export type BackgroundJobProgressListener = (job: BackgroundJob) => void;
 
 /**
+ * Listener invoked when the latest structured report of a backgrounded job
+ * changes. Bursts are coalesced; `report.revision` identifies the exact latest
+ * value observed by this emission.
+ */
+export type BackgroundJobReportListener = (
+	job: BackgroundJob,
+	report: BackgroundJobReportSnapshot,
+) => void;
+
+/**
  * Immutable, serializable view of a job at the moment of a change. Carried on
  * orchestrator events and query results instead of the live `BackgroundJob`
  * view, which holds a signal and a live output buffer.
@@ -436,6 +614,8 @@ export interface BackgroundJobSnapshot {
 	readonly toolName: string;
 	/** Human-readable label for the job; absent when the tool supplied none. */
 	readonly description?: string;
+	/** Latest structured tool-owned report, when one has been published. */
+	readonly report?: BackgroundJobReportSnapshot;
 	/** Lifecycle phase at snapshot time. */
 	readonly phase: BackgroundJobPhase;
 	/** Terminal outcome, present once the job settled. */
@@ -469,6 +649,7 @@ export function snapshotBackgroundJob(
 		toolCallId: job.toolCallId,
 		toolName: job.toolName,
 		description: job.description,
+		report: job.report,
 		phase: job.phase,
 		status: overrides.status,
 		stopReason: job.stopReason,
@@ -506,6 +687,16 @@ interface JobRecord {
 	lastProgressAt: number;
 	/** True once the circuit-breaker ceiling has fired for this job. */
 	ceilingTripped: boolean;
+	/** Last accepted report revision; 0 means the job has no report. */
+	reportRevision: number;
+	/** Latest accepted structured report. */
+	report?: BackgroundJobReportSnapshot;
+	/** True when a report update is waiting for its throttled emission. */
+	reportDirty: boolean;
+	/** Trailing throttle timer for structured report emission. */
+	reportTimer?: ReturnType<typeof setTimeout>;
+	/** Epoch ms of the last structured report emission. */
+	lastReportAt: number;
 	readonly view: BackgroundJob;
 }
 
@@ -514,6 +705,8 @@ export interface BackgroundJobTableOptions {
 	readonly createId?: () => string;
 	/** Minimum spacing between a job's progress emissions. */
 	readonly progressThrottleMs?: number;
+	/** Minimum spacing between a job's structured report emissions. */
+	readonly reportThrottleMs?: number;
 	/**
 	 * Cooperative ceiling on bytes appended through the job output; 0 disables
 	 * it. This does not cap an eventual tool result.
@@ -542,17 +735,20 @@ export interface BackgroundJobTableOptions {
  * its streaming bytes and honor the abort signal for this to terminate its work.
  *
  * The table is the single source of truth for job state: every mutation goes
- * through `create`/`background`/`settle`/`abort`, and every observable mutation
- * (from t0 onward) emits exactly one {@link BackgroundJobChange} on the single
- * `onChange` channel; output growth is signalled separately on `onProgress`.
+ * through `create`/`setReport`/`background`/`settle`/`abort`. Lifecycle
+ * mutations (from t0 onward) emit {@link BackgroundJobChange} on `onChange`;
+ * output growth is signalled separately on `onProgress`, and structured
+ * latest-value reports on `onReport`.
  */
 export class BackgroundJobTable {
 	private readonly _jobs = new Map<string, JobRecord>();
 	private readonly _changeListeners = new Set<BackgroundJobChangeListener>();
 	private readonly _progressListeners =
 		new Set<BackgroundJobProgressListener>();
+	private readonly _reportListeners = new Set<BackgroundJobReportListener>();
 	private readonly _createId: () => string;
 	private readonly _progressThrottleMs: number;
+	private readonly _reportThrottleMs: number;
 	private readonly _outputCeilingBytes: number;
 	private readonly _incrementMaxBytes: number;
 	private _counter = 0;
@@ -561,6 +757,8 @@ export class BackgroundJobTable {
 		this._createId = options.createId ?? (() => `job-${++this._counter}`);
 		this._progressThrottleMs =
 			options.progressThrottleMs ?? DEFAULT_BACKGROUND_JOB_PROGRESS_THROTTLE_MS;
+		this._reportThrottleMs =
+			options.reportThrottleMs ?? DEFAULT_BACKGROUND_JOB_REPORT_THROTTLE_MS;
 		this._outputCeilingBytes =
 			options.outputCeilingBytes ?? DEFAULT_BACKGROUND_JOB_OUTPUT_CEILING_BYTES;
 		this._incrementMaxBytes =
@@ -572,7 +770,17 @@ export class BackgroundJobTable {
 		toolCallId: string;
 		toolName: string;
 		description?: string;
+		report?: BackgroundJobReport;
 	}): BackgroundJob {
+		const startedAt = Date.now();
+		const initialReport =
+			input.report === undefined
+				? undefined
+				: createReportSnapshot(
+						validateBackgroundJobReport(input.report),
+						1,
+						startedAt,
+					);
 		const id = this._createId();
 		const controller = new AbortController();
 		const output = new BackgroundJobOutput(
@@ -586,9 +794,13 @@ export class BackgroundJobTable {
 			controller,
 			phase: "running",
 			settled: false,
-			startedAt: Date.now(),
+			startedAt,
 			lastProgressAt: 0,
 			ceilingTripped: false,
+			reportRevision: initialReport?.revision ?? 0,
+			report: initialReport,
+			reportDirty: false,
+			lastReportAt: 0,
 			view: {
 				id,
 				toolCallId: input.toolCallId,
@@ -596,6 +808,9 @@ export class BackgroundJobTable {
 				description: input.description,
 				signal: controller.signal,
 				output,
+				get report() {
+					return record.report;
+				},
 				get phase() {
 					return record.phase;
 				},
@@ -628,6 +843,28 @@ export class BackgroundJobTable {
 	}
 
 	/**
+	 * Replace a live job's structured report. Returns false when the job has
+	 * already settled or is unknown; invalid reports throw before changing the
+	 * current value.
+	 */
+	setReport(id: string, report: BackgroundJobReport): boolean {
+		const record = this._jobs.get(id);
+		if (!record || record.settled) return false;
+		const value = validateBackgroundJobReport(report);
+		record.reportRevision += 1;
+		record.report = createReportSnapshot(
+			value,
+			record.reportRevision,
+			Date.now(),
+		);
+		if (record.phase === "backgrounded") {
+			record.reportDirty = true;
+			this._scheduleReport(record);
+		}
+		return true;
+	}
+
+	/**
 	 * Move a running job to the background (the deadline won the race).
 	 * Returns false when the job already settled inline, so the adapter knows to
 	 * fall back to returning the inline result.
@@ -637,6 +874,7 @@ export class BackgroundJobTable {
 		if (!record || record.settled || record.phase !== "running") return false;
 		record.phase = "backgrounded";
 		record.backgroundedAt = Date.now();
+		record.lastReportAt = record.backgroundedAt;
 		this._emitChange({ transition: "backgrounded", job: record.view });
 		// Output may have accumulated during the pre-t0 synchronous window. Make
 		// it observable only after the backgrounded lifecycle event, preserving
@@ -658,6 +896,7 @@ export class BackgroundJobTable {
 		record.settled = true;
 		record.endedAt = Date.now();
 		record.stopReason ??= stopReasonFromOutcome(outcome);
+		this._flushReport(record);
 		this._clearProgressTimer(record);
 		this._jobs.delete(id);
 		if (record.phase !== "backgrounded") return "inline";
@@ -696,6 +935,12 @@ export class BackgroundJobTable {
 	onProgress(listener: BackgroundJobProgressListener): () => void {
 		this._progressListeners.add(listener);
 		return () => this._progressListeners.delete(listener);
+	}
+
+	/** Subscribe to throttled latest-value structured report updates. */
+	onReport(listener: BackgroundJobReportListener): () => void {
+		this._reportListeners.add(listener);
+		return () => this._reportListeners.delete(listener);
 	}
 
 	/**
@@ -760,6 +1005,47 @@ export class BackgroundJobTable {
 		}
 	}
 
+	private _scheduleReport(record: JobRecord): void {
+		if (this._reportListeners.size === 0) return;
+		if (record.reportTimer !== undefined) return;
+		const elapsed = Date.now() - record.lastReportAt;
+		if (elapsed >= this._reportThrottleMs) {
+			this._emitReport(record);
+			return;
+		}
+		record.reportTimer = setTimeout(() => {
+			record.reportTimer = undefined;
+			if (record.settled) return;
+			this._emitReport(record);
+		}, this._reportThrottleMs - elapsed);
+		record.reportTimer.unref?.();
+	}
+
+	private _flushReport(record: JobRecord): void {
+		if (record.reportTimer !== undefined) {
+			clearTimeout(record.reportTimer);
+			record.reportTimer = undefined;
+		}
+		if (record.phase === "backgrounded" && record.reportDirty) {
+			this._emitReport(record);
+		}
+	}
+
+	private _emitReport(record: JobRecord): void {
+		const report = record.report;
+		if (!record.reportDirty || report === undefined) return;
+		record.reportDirty = false;
+		record.lastReportAt = Date.now();
+		for (const listener of this._reportListeners) {
+			try {
+				listener(record.view, report);
+			} catch {
+				// A report observer cannot interfere with job execution or other
+				// observers.
+			}
+		}
+	}
+
 	private _emitChange(change: BackgroundJobChange): void {
 		for (const listener of this._changeListeners) {
 			try {
@@ -770,6 +1056,14 @@ export class BackgroundJobTable {
 			}
 		}
 	}
+}
+
+function createReportSnapshot(
+	value: BackgroundJobReport,
+	revision: number,
+	updatedAt: number,
+): BackgroundJobReportSnapshot {
+	return Object.freeze({ revision, updatedAt, value });
 }
 
 /** Terminal `stopReason` recorded when a job trips the output ceiling. */

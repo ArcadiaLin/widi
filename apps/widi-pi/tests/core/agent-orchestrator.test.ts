@@ -4470,7 +4470,12 @@ describe("AgentOrchestrator", () => {
 			id: "human",
 			requestHuman: async (request) => {
 				if (request.kind === "select") {
-					return { kind: "select", value: request.options?.[1] };
+					const option = request.options?.[1];
+					const value =
+						typeof option === "string"
+							? option
+							: (option?.value ?? option?.label);
+					return { kind: "select", value };
 				}
 				return { kind: "input", value: "auth-code-123" };
 			},

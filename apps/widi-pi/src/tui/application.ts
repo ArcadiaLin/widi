@@ -33,6 +33,7 @@ import { agentLabel } from "./components/common.ts";
 import { FatalErrorView } from "./components/fatal-error.ts";
 import { FooterView } from "./components/footer.ts";
 import { HeaderView } from "./components/header.ts";
+import { JobsPanelView } from "./components/jobs-panel.ts";
 import { NoticeView } from "./components/notices.ts";
 import { OperationHintView } from "./components/operation-hint.ts";
 import { ProcessingBarView } from "./components/processing-bar.ts";
@@ -100,6 +101,8 @@ export class WidiTuiApplication {
 	private readonly hydratedAgents = new Set<string>();
 	private readonly notificationTimers = new Map<string, NodeJS.Timeout>();
 	private streamingFlushTimer?: NodeJS.Timeout;
+	private jobsTicker?: NodeJS.Timeout;
+	private readonly jobsPanel: JobsPanelView;
 	private readonly pendingTasks = new Set<Promise<unknown>>();
 	private readonly lifecycleTasks = new Set<Promise<unknown>>();
 	private readonly drafts = new Map<string, string>();
@@ -142,6 +145,7 @@ export class WidiTuiApplication {
 		this.orchestrator = runtime.orchestrator;
 		this.state = createTuiApplicationState();
 		this.projector = new EventProjector(this.state);
+		this.jobsPanel = new JobsPanelView(this.state);
 		this.pendingAgents = new PendingAgentController(
 			this.state,
 			this.orchestrator,
@@ -184,6 +188,7 @@ export class WidiTuiApplication {
 		this.tui.addChild(new ChatView(this.state));
 		this.tui.addChild(new StatusView(this.state));
 		this.tui.addChild(new QueuedInputView(this.state));
+		this.tui.addChild(this.jobsPanel);
 		this.tui.addChild(this.humanRequests);
 		this.tui.addChild(this.completionMenu);
 		this.tui.addChild(this.editor);
@@ -210,6 +215,10 @@ export class WidiTuiApplication {
 		this.editor.onOpenAgents = () => this.agentSelector.open();
 		this.editor.onToggleToolOutput = () => {
 			this.state.toolOutputExpanded = !this.state.toolOutputExpanded;
+			this.tui.requestRender();
+		};
+		this.editor.onToggleJobs = () => {
+			this.jobsPanel.toggleExpanded();
 			this.tui.requestRender();
 		};
 		this.editor.onInterrupt = () => this.interrupt();
@@ -284,6 +293,10 @@ export class WidiTuiApplication {
 			clearTimeout(this.streamingFlushTimer);
 			this.streamingFlushTimer = undefined;
 		}
+		if (this.jobsTicker) {
+			clearInterval(this.jobsTicker);
+			this.jobsTicker = undefined;
+		}
 		for (const agent of this.state.agents.values()) flushStreaming(agent);
 		this.removeLifecycleHandlers();
 		try {
@@ -301,6 +314,7 @@ export class WidiTuiApplication {
 
 	private handleEvent(event: OrchestratorEvent): void {
 		this.projector.apply(event);
+		this.updateJobsTicker();
 
 		switch (event.type) {
 			case "agent_spawned":
@@ -398,6 +412,25 @@ export class WidiTuiApplication {
 			if (activeWrote) this.tui.requestRender();
 		}, STREAM_FLUSH_MS);
 		this.streamingFlushTimer.unref();
+	}
+
+	/**
+	 * Tick the panel's elapsed times while any job is live; stop the interval
+	 * as soon as nothing needs it.
+	 */
+	private updateJobsTicker(): void {
+		const hasLiveJob = [...this.state.agents.values()].some((agent) =>
+			[...agent.backgroundJobs.values()].some(
+				(job) => job.status === "live" || job.status === "aborting",
+			),
+		);
+		if (hasLiveJob && !this.jobsTicker) {
+			this.jobsTicker = setInterval(() => this.tui.requestRender(), 1_000);
+			this.jobsTicker.unref();
+		} else if (!hasLiveJob && this.jobsTicker) {
+			clearInterval(this.jobsTicker);
+			this.jobsTicker = undefined;
+		}
 	}
 
 	private async submit(rawText: string): Promise<void> {
@@ -942,9 +975,14 @@ export class WidiTuiApplication {
 	private async syncAgent(agentId: string): Promise<void> {
 		try {
 			applyAgentSnapshot(this.state, this.orchestrator.inspectAgent(agentId));
+			this.projector.seedBackgroundJobs(
+				agentId,
+				this.orchestrator.listAgentBackgroundJobs(agentId),
+			);
 		} catch {
 			return;
 		}
+		this.updateJobsTicker();
 		this.updateEditorAvailability();
 		this.tui.requestRender();
 	}
@@ -961,6 +999,10 @@ export class WidiTuiApplication {
 			if (this.hydrationGeneration.get(agentId) !== generation) return;
 			result.display.sessionName ??= snapshot.name;
 			this.projector.completeHydration(agentId, result, statuses);
+			this.projector.seedBackgroundJobs(
+				agentId,
+				this.orchestrator.listAgentBackgroundJobs(agentId),
+			);
 			this.hydratedAgents.add(agentId);
 		} catch (error) {
 			if (this.hydrationGeneration.get(agentId) !== generation) return;

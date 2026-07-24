@@ -29,6 +29,11 @@ export function isSupportedExtensionApiVersion(version: number): boolean {
 
 // WIDI core types named in author-facing signatures are re-exported here so
 // a third-party extension never imports core internals directly.
+export type {
+	BackgroundJobReport,
+	BackgroundJobReportSnapshot,
+	JsonValue,
+} from "../background-job.ts";
 export type { CoreDiagnostic } from "../diagnostics.ts";
 export type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
 export type {
@@ -46,6 +51,8 @@ export type {
 	ExtensionStatusSnapshot,
 } from "./presentation.ts";
 export type {
+	BackgroundJobExecutionContext,
+	BackgroundJobReportAdapter,
 	ExtensionActions,
 	ExtensionActivationApi,
 	ExtensionContext,

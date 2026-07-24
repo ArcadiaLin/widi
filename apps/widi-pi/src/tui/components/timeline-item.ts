@@ -151,27 +151,65 @@ export function renderTimelineItem(
 			).render(width);
 		}
 		case "human-request-trace": {
-			const answer =
+			if (item.answer.kind === "answered-questions") {
+				const { items } = item.answer;
+				if (context.toolOutputExpanded) {
+					const lines = [colors.dim(`❯ ${singleLine(item.title, 400)}`)];
+					for (const entry of items) {
+						lines.push(colors.dim(`  ${singleLine(entry.title, 400)}`));
+						if (entry.values.length === 0) {
+							lines.push(colors.dim("    → (no answer)"));
+						} else {
+							for (const value of entry.values) {
+								lines.push(
+									`    ${colors.accent("▸")} ${singleLine(value, 400)}`,
+								);
+							}
+						}
+					}
+					return new Text(lines.join("\n"), 1, 0).render(width);
+				}
+				const summary = items
+					.map(
+						(entry) =>
+							`${singleLine(entry.title, 80)}: ${
+								entry.values.length > 0 ? entry.values.join(", ") : "(none)"
+							}`,
+					)
+					.join(" · ");
+				return new Text(
+					colors.dim(`❯ ${singleLine(item.title, 200)} → `) +
+						singleLine(summary, 400),
+					1,
+					0,
+				).render(width);
+			}
+			// The selected labels drive both the inline summary and the ▸ marks
+			// in the expanded list; multi-select carries several at once.
+			const selected =
 				item.answer.kind === "confirm"
-					? item.answer.confirmed
-						? "Yes"
-						: "No"
+					? [item.answer.confirmed ? "Yes" : "No"]
 					: item.answer.kind === "selected-option"
-						? item.answer.value
-						: "Answered";
+						? [item.answer.value]
+						: item.answer.kind === "selected-options"
+							? item.answer.values
+							: [];
+			const summary = selected.length > 0 ? selected.join(", ") : "Answered";
 			// input/custom/free-input answers never expand: only options the
 			// request itself offered may appear in the transcript.
 			const options =
 				item.answer.kind === "confirm"
 					? ["Yes", "No"]
-					: item.answer.kind === "selected-option"
+					: item.answer.kind === "selected-option" ||
+							item.answer.kind === "selected-options"
 						? (item.options ?? [])
 						: [];
 			if (context.toolOutputExpanded && options.length > 0) {
+				const selectedSet = new Set(selected);
 				const lines = [colors.dim(`❯ ${singleLine(item.title, 400)}`)];
 				for (const option of options) {
 					lines.push(
-						option === answer
+						selectedSet.has(option)
 							? `  ${colors.accent("▸")} ${singleLine(option, 400)}`
 							: colors.dim(`    ${singleLine(option, 400)}`),
 					);
@@ -180,7 +218,7 @@ export function renderTimelineItem(
 			}
 			return new Text(
 				colors.dim(`❯ ${singleLine(item.title, 400)} → `) +
-					singleLine(answer, 400),
+					singleLine(summary, 400),
 				1,
 				0,
 			).render(width);

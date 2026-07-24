@@ -58,8 +58,8 @@ function createBackgroundableTool(
 	};
 }
 
-function resolveTool(
-	definition: ToolDefinition<typeof emptyParams, undefined>,
+function resolveTool<TDetails>(
+	definition: ToolDefinition<typeof emptyParams, TDetails>,
 ) {
 	const registry = new ToolRegistry();
 	registry.defineTool(definition, coreSource);
@@ -325,6 +325,112 @@ describe("backgroundable tool adapter", () => {
 		await vi.advanceTimersByTimeAsync(50);
 		await execPromise;
 		gate.resolve(textResult("done"));
+	});
+
+	it("lets a tool explicitly replace its structured job report", async () => {
+		const table = new BackgroundJobTable();
+		const gate = createDeferred<AgentToolResult<undefined>>();
+		let accepted = false;
+		const definition: ToolDefinition<typeof emptyParams, undefined> = {
+			name: "sleeper",
+			label: "sleeper",
+			description: "publishes structured status",
+			parameters: emptyParams,
+			backgroundable: true,
+			backgroundTimeoutMs: 50,
+			execute: (_toolCallId, _params, context) => {
+				accepted =
+					context.job?.setReport({
+						kind: "test.status",
+						schemaVersion: 1,
+						summary: "Preparing",
+					}) ?? false;
+				return gate.promise;
+			},
+		};
+		const agentTool = resolveTool(definition);
+
+		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, {
+			backgroundJobTable: table,
+		});
+		expect(accepted).toBe(true);
+		expect(table.get("job-1")?.report).toMatchObject({
+			revision: 1,
+			value: { kind: "test.status", summary: "Preparing" },
+		});
+
+		await vi.advanceTimersByTimeAsync(50);
+		await execPromise;
+		gate.resolve(textResult("done"));
+		await Promise.resolve();
+	});
+
+	it("maps opted-in arguments and partial results into reports", async () => {
+		interface StatusDetails {
+			completed: number;
+		}
+		const table = new BackgroundJobTable();
+		const gate = createDeferred<AgentToolResult<StatusDetails>>();
+		let publishUpdate: ((details: StatusDetails) => void) | undefined;
+		const definition: ToolDefinition<typeof emptyParams, StatusDetails> = {
+			name: "sleeper",
+			label: "sleeper",
+			description: "maps updates into structured status",
+			parameters: emptyParams,
+			backgroundable: true,
+			backgroundTimeoutMs: 50,
+			backgroundReport: {
+				initial: () => ({
+					kind: "test.status",
+					schemaVersion: 1,
+					summary: "Starting",
+					progress: { completed: 0, total: 2 },
+				}),
+				fromUpdate: ({ details }) => ({
+					kind: "test.status",
+					schemaVersion: 1,
+					summary: "Working",
+					progress: { completed: details.completed, total: 2 },
+				}),
+			},
+			execute: (_toolCallId, _params, context) => {
+				publishUpdate = (details) =>
+					context.onUpdate?.({ content: [], details });
+				return gate.promise;
+			},
+		};
+		const agentTool = resolveTool(definition);
+		const forwarded = vi.fn();
+
+		const execPromise = agentTool.execute("call-1", {}, undefined, forwarded, {
+			backgroundJobTable: table,
+		});
+		expect(table.get("job-1")?.report).toMatchObject({
+			revision: 1,
+			value: { summary: "Starting" },
+		});
+
+		publishUpdate?.({ completed: 1 });
+		expect(table.get("job-1")?.report).toMatchObject({
+			revision: 2,
+			value: { progress: { completed: 1, total: 2 } },
+		});
+		expect(forwarded).toHaveBeenCalledTimes(1);
+
+		await vi.advanceTimersByTimeAsync(50);
+		await execPromise;
+		publishUpdate?.({ completed: 2 });
+		expect(table.get("job-1")?.report).toMatchObject({
+			revision: 3,
+			value: { progress: { completed: 2, total: 2 } },
+		});
+		expect(forwarded).toHaveBeenCalledTimes(2);
+
+		gate.resolve({
+			content: [{ type: "text", text: "done" }],
+			details: { completed: 2 },
+		});
+		await Promise.resolve();
 	});
 
 	it("does not inject a job context on the plain synchronous path", async () => {

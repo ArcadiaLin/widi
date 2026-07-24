@@ -22,6 +22,7 @@ import {
 	type CommandResultItem,
 	createTuiApplicationState,
 	ensureAgentProjection,
+	type HumanRequestTraceItem,
 	setActiveAgent,
 } from "../../src/tui/state.ts";
 
@@ -438,6 +439,76 @@ describe("TUI views", () => {
 
 		expect(text).toContain("/steer");
 		expect(text).toContain("requires a running agent");
+	});
+
+	it("renders a multi-select trace as a joined summary and an expanded list", () => {
+		const item: HumanRequestTraceItem = {
+			type: "human-request-trace",
+			id: "request-1",
+			requestId: "request-1",
+			requestKind: "multi-select",
+			title: "Pick targets",
+			options: ["Safe", "Fast", "Cheap"],
+			answer: { kind: "selected-options", values: ["Safe", "Cheap"] },
+			durability: "ephemeral",
+			createdAt: timestamp(1),
+		};
+		const collapsed = renderTimelineItem(item, 80, {
+			liveThinkingIds: new Set(),
+			toolOutputExpanded: false,
+		})
+			.join("\n")
+			.replace(ANSI_SEQUENCE, "");
+		expect(collapsed).toContain("Pick targets → Safe, Cheap");
+
+		const expanded = renderTimelineItem(item, 80, {
+			liveThinkingIds: new Set(),
+			toolOutputExpanded: true,
+		})
+			.join("\n")
+			.replace(ANSI_SEQUENCE, "");
+		expect(expanded).toContain("▸ Safe");
+		expect(expanded).toContain("▸ Cheap");
+		expect(expanded).toContain("Fast");
+		expect(expanded).not.toContain("▸ Fast");
+	});
+
+	it("renders a questions-batch trace as a summary and a grouped expansion", () => {
+		const item: HumanRequestTraceItem = {
+			type: "human-request-trace",
+			id: "request-1",
+			requestId: "request-1",
+			requestKind: "questions",
+			title: "Deploy setup",
+			answer: {
+				kind: "answered-questions",
+				items: [
+					{ title: "Target", values: ["Staging"] },
+					{ title: "Regions", values: ["us", "eu"] },
+				],
+			},
+			durability: "ephemeral",
+			createdAt: timestamp(1),
+		};
+		const collapsed = renderTimelineItem(item, 80, {
+			liveThinkingIds: new Set(),
+			toolOutputExpanded: false,
+		})
+			.join("\n")
+			.replace(ANSI_SEQUENCE, "");
+		expect(collapsed).toContain("Target: Staging");
+		expect(collapsed).toContain("Regions: us, eu");
+
+		const expanded = renderTimelineItem(item, 80, {
+			liveThinkingIds: new Set(),
+			toolOutputExpanded: true,
+		})
+			.join("\n")
+			.replace(ANSI_SEQUENCE, "");
+		expect(expanded).toContain("Target");
+		expect(expanded).toContain("▸ Staging");
+		expect(expanded).toContain("▸ us");
+		expect(expanded).toContain("▸ eu");
 	});
 
 	it("removes terminal control sequences from externally supplied text", () => {

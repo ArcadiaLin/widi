@@ -579,10 +579,12 @@ function runBackgroundableToolCall(
 ): Promise<AgentToolResult<unknown>> {
 	const definition = options.resolvedTool.definition;
 	const timeoutMs = options.deadlineMs;
+	const initialReport = definition.backgroundReport?.initial?.(options.params);
 	const job = options.table.create({
 		toolCallId: options.toolCallId,
 		toolName: definition.name,
 		description: resolveBackgroundDescription(definition, options.params),
+		report: initialReport,
 	});
 
 	// Forward the run signal to the job only during the synchronous window
@@ -599,12 +601,27 @@ function runBackgroundableToolCall(
 		else signal.addEventListener("abort", forwardAbort, { once: true });
 	}
 
+	const reportFromUpdate = definition.backgroundReport?.fromUpdate;
+	const onUpdate: AgentToolUpdateCallback<unknown> | undefined =
+		reportFromUpdate === undefined
+			? options.onUpdate
+			: (partialResult) => {
+					const report = reportFromUpdate(partialResult);
+					if (report !== undefined) {
+						options.table.setReport(job.id, report);
+					}
+					options.onUpdate?.(partialResult);
+				};
 	const toolContext = createToolExecutionContext(
 		options.resolvedTool,
 		options.context,
 		job.signal,
-		options.onUpdate,
-		{ id: job.id, output: job.output },
+		onUpdate,
+		{
+			id: job.id,
+			output: job.output,
+			setReport: (report) => options.table.setReport(job.id, report),
+		},
 	);
 	// An untyped execute may throw synchronously or return a plain result instead
 	// of a promise. Either would otherwise skip settlement, the race, or

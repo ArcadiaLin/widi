@@ -32,6 +32,8 @@ import type {
 // inversion); the extension layer consumes and re-exports it for its own
 // consumers.
 export type {
+	BackgroundJobExecutionContext,
+	BackgroundJobReportAdapter,
 	ToolDefinition,
 	ToolDefinitionPatch,
 	ToolExecute,
@@ -49,6 +51,7 @@ export type ExtensionObservedEvent = Extract<
 		type:
 			| "agent_background_job_changed"
 			| "agent_background_job_progress"
+			| "agent_background_job_report_updated"
 			| "agent_harness_event"
 			| "agent_resumed"
 			| "agent_session_forked"

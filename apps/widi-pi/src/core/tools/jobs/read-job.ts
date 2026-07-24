@@ -1,4 +1,5 @@
 import { type Static, Type } from "typebox";
+import type { BackgroundJobReportSnapshot } from "../../background-job.ts";
 import type { ToolDefinition } from "../types.ts";
 
 const readJobSchema = Type.Object({
@@ -28,6 +29,8 @@ export type ReadJobJobStatus =
 			readonly tailDroppedBytes: number;
 			/** Cumulative bytes dropped from the progress-forwarding buffer. */
 			readonly progressDroppedBytes: number;
+			/** Latest structured tool-owned report, when one has been published. */
+			readonly report?: BackgroundJobReportSnapshot;
 			/** Current rolling output tail at read time. */
 			readonly output: string;
 	  }
@@ -106,6 +109,9 @@ export function createReadJobToolDefinition(): ToolDefinition<
 							totalBytesSeen: job.output.totalBytesSeen,
 							tailDroppedBytes: job.output.tailDroppedBytes,
 							progressDroppedBytes: job.output.progressDroppedBytes,
+							...(job.report === undefined
+								? undefined
+								: { report: job.report }),
 							output: job.output.read(),
 						}
 					: { jobId: id, state: "unknown" };
@@ -128,7 +134,27 @@ function formatReadSummary(jobs: readonly ReadJobJobStatus[]): string {
 		}
 		const output = job.output ? job.output : "(no output yet)";
 		const label = job.description ? `: ${job.description}` : "";
-		return `## Job ${job.jobId} (${job.toolName})${label}: running — live output tail\n${output}`;
+		const report = formatReportSummary(job.report);
+		const reportText = report ? `\nCurrent report: ${report}` : "";
+		return `## Job ${job.jobId} (${job.toolName})${label}: running${reportText}\nLive output tail:\n${output}`;
 	});
 	return `${sections.join("\n\n")}\n\nThis is a live tail, not the final result: each finished job's output arrives as a separate background job result message.`;
+}
+
+function formatReportSummary(
+	report: BackgroundJobReportSnapshot | undefined,
+): string | undefined {
+	if (!report) return undefined;
+	const parts: string[] = [];
+	if (report.value.summary) parts.push(report.value.summary);
+	if (report.value.progress) {
+		parts.push(
+			report.value.progress.total === undefined
+				? `${report.value.progress.completed}`
+				: `${report.value.progress.completed}/${report.value.progress.total}`,
+		);
+	}
+	return parts.length > 0
+		? parts.join(" · ")
+		: `${report.value.kind} v${report.value.schemaVersion}`;
 }

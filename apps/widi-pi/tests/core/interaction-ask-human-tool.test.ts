@@ -94,6 +94,184 @@ describe("ask_human tool", () => {
 		]);
 	});
 
+	it("passes multi-select options and reports every selection", async () => {
+		const { host, drafts } = makeHumanHost({
+			kind: "multi-select",
+			values: ["red", "blue"],
+		});
+		const result = await tool.execute(
+			"call-1",
+			{
+				kind: "multi-select",
+				title: "Pick colors",
+				options: ["red", "green", "blue"],
+			},
+			makeContext({ human: host }),
+		);
+		expect(drafts[0]).toMatchObject({
+			kind: "multi-select",
+			options: ["red", "green", "blue"],
+		});
+		expect(result.content).toEqual([
+			{ type: "text", text: "The human selected: red, blue" },
+		]);
+	});
+
+	it("accepts object-form options with labels and descriptions", async () => {
+		const { host, drafts } = makeHumanHost({ kind: "select", value: "r" });
+		await tool.execute(
+			"call-1",
+			{
+				kind: "select",
+				title: "Pick a color",
+				options: [
+					{ label: "Red", value: "r", description: "the warm one" },
+					{ label: "Green", value: "g" },
+				],
+			},
+			makeContext({ human: host }),
+		);
+		expect(drafts[0]?.options).toEqual([
+			{ label: "Red", value: "r", description: "the warm one" },
+			{ label: "Green", value: "g" },
+		]);
+	});
+
+	it("reports a dismissed multi-select as no answer", async () => {
+		const { host } = makeHumanHost({ kind: "multi-select", values: undefined });
+		const result = await tool.execute(
+			"call-1",
+			{ kind: "multi-select", title: "Pick colors", options: ["red"] },
+			makeContext({ human: host }),
+		);
+		expect(result.content).toEqual([
+			{
+				type: "text",
+				text: "The human dismissed the request without selecting any options.",
+			},
+		]);
+	});
+
+	it("rejects a multi-select without options or with free input", async () => {
+		const { host } = makeHumanHost({ kind: "multi-select", values: [] });
+		const context = makeContext({ human: host });
+		await expect(
+			tool.execute("call-1", { kind: "multi-select", title: "Pick" }, context),
+		).rejects.toThrow("kind=multi-select requires a non-empty options list");
+		await expect(
+			tool.execute(
+				"call-1",
+				{
+					kind: "multi-select",
+					title: "Pick",
+					options: ["a"],
+					allowFreeInput: true,
+				},
+				context,
+			),
+		).rejects.toThrow("allowFreeInput is only valid for kind=select");
+		await expect(
+			tool.execute(
+				"call-1",
+				{ kind: "select", title: "Pick", options: [{ label: "   " }] },
+				context,
+			),
+		).rejects.toThrow("options must not contain empty labels");
+	});
+
+	it("poses a questions batch and reports each answer in order", async () => {
+		const { host, drafts } = makeHumanHost({
+			kind: "questions",
+			answers: [
+				{ kind: "select", value: "staging" },
+				{ kind: "multi-select", values: ["us", "eu"] },
+			],
+		});
+		const result = await tool.execute(
+			"call-1",
+			{
+				kind: "questions",
+				title: "Set up the deploy",
+				questions: [
+					{ title: "Target", options: ["staging", "prod"] },
+					{
+						title: "Regions",
+						multiSelect: true,
+						options: ["us", "eu", "asia"],
+					},
+				],
+			},
+			makeContext({ human: host }),
+		);
+		expect(drafts[0]).toMatchObject({
+			kind: "questions",
+			questions: [
+				{ title: "Target", options: ["staging", "prod"] },
+				{ title: "Regions", multiSelect: true, options: ["us", "eu", "asia"] },
+			],
+		});
+		expect(result.content).toEqual([
+			{
+				type: "text",
+				text: "The human answered:\n- Target: staging\n- Regions: us, eu",
+			},
+		]);
+	});
+
+	it("reports unanswered batch questions as (no answer)", async () => {
+		const { host } = makeHumanHost({
+			kind: "questions",
+			answers: [
+				{ kind: "select", value: undefined },
+				{ kind: "multi-select", values: undefined },
+			],
+		});
+		const result = await tool.execute(
+			"call-1",
+			{
+				kind: "questions",
+				title: "Two questions",
+				questions: [
+					{ title: "First", options: ["a", "b"] },
+					{ title: "Second", multiSelect: true, options: ["c", "d"] },
+				],
+			},
+			makeContext({ human: host }),
+		);
+		expect(result.content).toEqual([
+			{
+				type: "text",
+				text: "The human answered:\n- First: (no answer)\n- Second: (no answer)",
+			},
+		]);
+	});
+
+	it("rejects a questions batch that is empty or malformed", async () => {
+		const { host } = makeHumanHost({ kind: "questions", answers: [] });
+		const context = makeContext({ human: host });
+		await expect(
+			tool.execute("call-1", { kind: "questions", title: "Q" }, context),
+		).rejects.toThrow("kind=questions requires a non-empty questions list");
+		await expect(
+			tool.execute(
+				"call-1",
+				{
+					kind: "questions",
+					title: "Q",
+					questions: [{ title: "First", options: [] }],
+				},
+				context,
+			),
+		).rejects.toThrow("questions[0] requires a non-empty options list");
+		await expect(
+			tool.execute(
+				"call-1",
+				{ kind: "select", title: "Q", options: ["a"], questions: [] },
+				context,
+			),
+		).rejects.toThrow("questions is only valid for kind=questions");
+	});
+
 	it("reports a dismissed request as no answer instead of an error", async () => {
 		const { host } = makeHumanHost({ kind: "input", value: undefined });
 		const result = await tool.execute(
