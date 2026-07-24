@@ -43,6 +43,7 @@ import {
 	type WidiAgentHarness,
 } from "./agent-record.ts";
 import {
+	type BackgroundJob,
 	type BackgroundJobChange,
 	type BackgroundJobSettlement,
 	type BackgroundJobSnapshot,
@@ -301,18 +302,30 @@ export class AgentOrchestrator {
 	private _unsubscribeAgentExtensionInterceptors: Map<AgentId, () => void> =
 		new Map();
 	private _unsubscribeAgentJobChanges: Map<AgentId, () => void> = new Map();
-	// Background job results (t1) buffered per agent, delivered as a single
-	// user-message prompt at the agent's next idle boundary. Buffering instead of
-	// steering mid-run avoids the steer tail-strand (a steer can succeed yet the
-	// run ends before draining it) and never blocks on an in-flight run.
+	private _unsubscribeAgentJobProgress: Map<AgentId, () => void> = new Map();
+	// Background job results (t1) buffered per agent. Delivered as a single
+	// user-message: steered into the active run while the agent is running, or
+	// prompted at the next idle boundary otherwise. Buffering keeps the result
+	// from blocking on an in-flight run; the idle re-flush is the safety net for a
+	// steer that raced a run's end.
 	private _pendingBackgroundResults: Map<AgentId, string[]> = new Map();
 	private _backgroundFlushInFlight: Set<AgentId> = new Set();
-	// Per-agent tail for background job change events. These carry state (a
-	// snapshot and an absolute live count, not deltas), so they must reach
-	// listeners in the order the table changed; `_emit` is not itself
-	// serialized, so emissions are chained here to keep an async listener from
-	// observing changes out of order.
+	// Per-agent serialized tail for background job emissions (progress and
+	// lifecycle changes). These carry state (snapshots, absolute counts, and
+	// ordered output increments, not deltas the consumer can reorder), so they
+	// must reach listeners in the order the table changed; `_emit` is not itself
+	// serialized, so emissions are chained here. Routing both progress and change
+	// events through one tail also makes `settled` a barrier: the job's final
+	// increment is enqueued ahead of its terminal event.
 	private _backgroundJobEmits: Map<AgentId, Promise<void>> = new Map();
+	// Job ids with an output increment already queued for emission on the tail,
+	// per agent. Bounds coalescing: while a job's progress emit is queued, further
+	// throttled ticks are no-ops and their bytes are folded into the pending drain
+	// (`_emit` awaits observers, so an unbounded queue would grow without limit).
+	private _progressQueued: Map<AgentId, Set<string>> = new Map();
+	// Per-agent, per-job monotonic progress sequence. Keyed by agent because job
+	// ids (`job-N`) are only unique within an agent's table.
+	private _progressSequence: Map<AgentId, Map<string, number>> = new Map();
 	private _eventListeners: Set<OrchestratorEventListener> = new Set();
 	private _extensionObserverDispatchDepth: Map<AgentId, number> = new Map();
 	private _agentRunSignals: Map<AgentId, AbortSignal> = new Map();
@@ -1440,12 +1453,29 @@ export class AgentOrchestrator {
 			}
 			this._unsubscribeAgentJobChanges.delete(agentId);
 		}
+		const unsubscribeJobProgress =
+			this._unsubscribeAgentJobProgress.get(agentId);
+		if (unsubscribeJobProgress) {
+			try {
+				unsubscribeJobProgress();
+			} catch (error) {
+				await this._recordAgentLifecycleFailure(
+					agentId,
+					"orchestrator.agent_dispose_failed",
+					`Failed to unsubscribe agent ${agentId} background job progress listener: ${formatError(error)}`,
+					error,
+				);
+			}
+			this._unsubscribeAgentJobProgress.delete(agentId);
+		}
 		for (const job of record.backgroundJobTable.list()) {
-			record.backgroundJobTable.abort(job.id);
+			record.backgroundJobTable.abort(job.id, "Agent disposed");
 		}
 		this._pendingBackgroundResults.delete(agentId);
 		this._backgroundFlushInFlight.delete(agentId);
 		this._backgroundJobEmits.delete(agentId);
+		this._progressQueued.delete(agentId);
+		this._progressSequence.delete(agentId);
 
 		const harness = record.harness;
 		if (harness) {
@@ -2040,11 +2070,21 @@ export class AgentOrchestrator {
 		const jobTable = this._requireAgentRecord(agentId).backgroundJobTable;
 		const unsubscribeJobChanges = jobTable.onChange((change) => {
 			if (change.transition === "settled") {
+				// Barrier: flush the job's final output increment ahead of its
+				// terminal event (same tail), then buffer the t1 result.
+				this._enqueueBackgroundEmit(agentId, async () => {
+					await this._emitJobProgress(agentId, change.job);
+					this._progressSequence.get(agentId)?.delete(change.job.id);
+				});
 				this._bufferBackgroundResult(agentId, change);
 			}
 			this._emitBackgroundJobChange(agentId, change);
 		});
 		this._unsubscribeAgentJobChanges.set(agentId, unsubscribeJobChanges);
+		const unsubscribeJobProgress = jobTable.onProgress((job) => {
+			this._onJobProgress(agentId, job.id);
+		});
+		this._unsubscribeAgentJobProgress.set(agentId, unsubscribeJobProgress);
 		this._unsubscribeAgentExtensionInterceptors.set(agentId, () => {
 			for (const unsubscribe of unsubscribeInterceptors) {
 				unsubscribe();
@@ -3055,9 +3095,8 @@ export class AgentOrchestrator {
 
 	/**
 	 * Buffer a settled background job (t1) for its owning agent and try to flush.
-	 * The result is delivered as a user message at the agent's next idle boundary,
-	 * not steered mid-run, so it can never strand in the steer queue and never
-	 * blocks on an in-flight run.
+	 * Delivery routes by harness phase (steer while running, prompt while idle),
+	 * so it never blocks on an in-flight run.
 	 */
 	private _bufferBackgroundResult(
 		agentId: AgentId,
@@ -3067,6 +3106,21 @@ export class AgentOrchestrator {
 		buffer.push(formatBackgroundJobResultMessageText(settlement));
 		this._pendingBackgroundResults.set(agentId, buffer);
 		void this._flushBackgroundResults(agentId);
+	}
+
+	/**
+	 * Chain a background emission (progress or lifecycle change) onto the agent's
+	 * serialized tail so emissions reach listeners in the order the table changed,
+	 * regardless of per-emit `_emit` duration. Failures are swallowed so one bad
+	 * emit cannot break the chain for later ones.
+	 */
+	private _enqueueBackgroundEmit(
+		agentId: AgentId,
+		task: () => Promise<void>,
+	): void {
+		const prior = this._backgroundJobEmits.get(agentId) ?? Promise.resolve();
+		const next = prior.then(task).catch(() => {});
+		this._backgroundJobEmits.set(agentId, next);
 	}
 
 	/**
@@ -3086,33 +3140,84 @@ export class AgentOrchestrator {
 		// the order the table changed rather than in async completion order.
 		const job = snapshotBackgroundJob(
 			change.job,
-			change.transition === "settled" ? change.outcome.status : undefined,
+			change.transition === "settled"
+				? { status: change.outcome.status }
+				: undefined,
 		);
 		const liveCount = record.backgroundJobTable
 			.list()
 			.filter((live) => live.phase === "backgrounded").length;
 		const changedAt = now();
-		const prior = this._backgroundJobEmits.get(agentId) ?? Promise.resolve();
-		const next = prior
-			.then(() =>
-				this._emit({
-					type: "agent_background_job_changed",
-					agentId,
-					job,
-					transition: change.transition,
-					liveCount,
-					changedAt,
-				}),
-			)
-			.catch(() => {});
-		this._backgroundJobEmits.set(agentId, next);
+		this._enqueueBackgroundEmit(agentId, () =>
+			this._emit({
+				type: "agent_background_job_changed",
+				agentId,
+				job,
+				transition: change.transition,
+				liveCount,
+				changedAt,
+			}),
+		);
 	}
 
 	/**
-	 * Deliver buffered background results to an idle agent as one user-message
-	 * prompt (t1). No-op while the agent is running or a flush is already in
-	 * flight; the harness `settled` transition re-triggers it. Total: records its
-	 * own failures as diagnostics rather than rejecting.
+	 * React to a throttled output-progress tick: queue a single coalesced emit for
+	 * the job on the agent's tail. While one is queued, further ticks are no-ops —
+	 * their bytes accumulate in the job's increment buffer and are drained
+	 * together when the queued task runs.
+	 */
+	private _onJobProgress(agentId: AgentId, jobId: string): void {
+		const queued = this._progressQueued.get(agentId) ?? new Set<string>();
+		if (queued.has(jobId)) return;
+		queued.add(jobId);
+		this._progressQueued.set(agentId, queued);
+		this._enqueueBackgroundEmit(agentId, async () => {
+			queued.delete(jobId);
+			const job = this._agents.get(agentId)?.backgroundJobTable.get(jobId);
+			// A settled job is gone from the table; its final increment is flushed by
+			// the `settled` barrier instead.
+			if (job) await this._emitJobProgress(agentId, job);
+		});
+	}
+
+	/**
+	 * Drain the job's pending output increment and, when non-empty, emit it as an
+	 * `agent_background_job_progress` event. No-op when nothing new was appended
+	 * since the previous drain.
+	 */
+	private async _emitJobProgress(
+		agentId: AgentId,
+		job: BackgroundJob,
+	): Promise<void> {
+		const increment = job.output.drainIncrement();
+		if (!increment) return;
+		const sequences =
+			this._progressSequence.get(agentId) ?? new Map<string, number>();
+		const sequence = sequences.get(job.id) ?? 0;
+		sequences.set(job.id, sequence + 1);
+		this._progressSequence.set(agentId, sequences);
+		await this._emit({
+			type: "agent_background_job_progress",
+			agentId,
+			jobId: job.id,
+			sequence,
+			chunk: increment.chunk,
+			startByte: increment.startByte,
+			endByte: increment.endByte,
+			totalBytesSeen: increment.totalBytesSeen,
+			progressDroppedBytes: increment.progressDroppedBytes,
+			observedAt: now(),
+			operationRef: job.toolCallId,
+		});
+	}
+
+	/**
+	 * Deliver buffered background results (t1) as one user-message. Steers into
+	 * the active run while the agent is running, or prompts at the idle boundary
+	 * otherwise. No-op while a flush is already in flight or the agent is not yet
+	 * deliverable (creating/unavailable); the harness `settled` transition
+	 * re-triggers it. Records its own failures as diagnostics rather than
+	 * rejecting.
 	 */
 	private async _flushBackgroundResults(agentId: AgentId): Promise<void> {
 		if (this._backgroundFlushInFlight.has(agentId)) return;
@@ -3135,35 +3240,45 @@ export class AgentOrchestrator {
 			);
 			return;
 		}
-		// Only deliver into a genuinely idle agent. While it runs, results wait in
-		// the buffer and the next `settled` transition flushes them.
-		if (record.status !== "idle") return;
+		// Only running (steer into the live run) and idle (prompt a fresh run) can
+		// take the result now. While creating/unavailable, results wait in the
+		// buffer and the next transition re-triggers the flush.
+		const phase = record.status;
+		if (phase !== "running" && phase !== "idle") return;
 
 		this._backgroundFlushInFlight.add(agentId);
 		const texts = buffer.splice(0);
+		const text = texts.join("\n\n");
 		let delivered = false;
 		try {
-			await record.harness.prompt(texts.join("\n\n"));
+			if (phase === "running") {
+				await record.harness.steer(text);
+			} else {
+				await record.harness.prompt(text);
+			}
 			delivered = true;
 		} catch (error) {
-			// If the agent was disposed while the prompt was in flight its buffer is
+			// If the agent was disposed while delivery was in flight its buffer is
 			// already gone (dispose deletes the entry); the results are dropped with
 			// the agent, so there is nothing to requeue and no retry to promise.
 			if (this._pendingBackgroundResults.has(agentId)) {
-				// Preserve the results and let the next idle boundary (`settled`)
-				// retry. `busy` is an expected race (a run started between the idle
-				// check and the prompt); any other error is unexpected and also
-				// warned. Never re-flush inline on failure, which could hot-loop
-				// against a transiently busy harness (turn_end marks the record idle
-				// before it truly settles).
+				// Preserve the results and let the next transition retry. `busy` (a run
+				// started between the idle check and the prompt) and `invalid_state` (a
+				// run ended between the running check and the steer) are expected
+				// races; anything else is unexpected and warned. Never re-flush inline
+				// on failure, which could hot-loop against a transiently busy harness
+				// (turn_end marks the record idle before it truly settles).
 				buffer.unshift(...texts);
-				if (!isAgentHarnessErrorCode(error, "busy")) {
+				if (
+					!isAgentHarnessErrorCode(error, "busy") &&
+					!isAgentHarnessErrorCode(error, "invalid_state")
+				) {
 					await this._publishDiagnostic(
 						createOrchestratorDiagnostic({
 							severity: "warning",
 							disposition: "reported",
 							code: "orchestrator.background_job_delivery_failed",
-							message: `Background job result delivery to agent ${agentId} failed, will retry at the next idle boundary: ${formatError(error)}`,
+							message: `Background job result delivery to agent ${agentId} failed, will retry at the next transition: ${formatError(error)}`,
 							agentId,
 							phase: "runtime",
 							recoverable: true,
@@ -3174,9 +3289,9 @@ export class AgentOrchestrator {
 		} finally {
 			this._backgroundFlushInFlight.delete(agentId);
 		}
-		// Only chase newly-buffered results after a successful delivery. Each such
-		// re-flush costs a full run, so this is bounded, not a hot loop. On failure
-		// we wait for the next `settled` instead.
+		// Chase newly-buffered results after a successful delivery. A steer is
+		// cheap; a prompt costs a run, so this stays bounded rather than a hot
+		// loop. On failure we wait for the next transition instead.
 		if (
 			delivered &&
 			(this._pendingBackgroundResults.get(agentId)?.length ?? 0) > 0
@@ -3322,6 +3437,7 @@ export class AgentOrchestrator {
 	): event is ExtensionObservedEvent {
 		switch (event.type) {
 			case "agent_background_job_changed":
+			case "agent_background_job_progress":
 			case "agent_harness_event":
 			case "agent_resumed":
 			case "agent_session_forked":

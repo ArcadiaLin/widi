@@ -35,10 +35,25 @@ describe("read_job tool", () => {
 				{
 					jobId: first.id,
 					toolName: "bash",
+					description: undefined,
 					state: "running",
+					startedAt: expect.any(Number),
+					totalBytesSeen: 12,
+					tailDroppedBytes: 0,
+					progressDroppedBytes: 0,
 					output: "building...\n",
 				},
-				{ jobId: second.id, toolName: "bash", state: "running", output: "" },
+				{
+					jobId: second.id,
+					toolName: "bash",
+					description: undefined,
+					state: "running",
+					startedAt: expect.any(Number),
+					totalBytesSeen: 0,
+					tailDroppedBytes: 0,
+					progressDroppedBytes: 0,
+					output: "",
+				},
 			],
 		});
 		const text = textOf(result);
@@ -71,6 +86,27 @@ describe("read_job tool", () => {
 		expect(textOf(result)).toContain(
 			"not tracked (already finished, not backgrounded, or never started)",
 		);
+	});
+
+	it("reports tail and progress-buffer drops separately", async () => {
+		const table = new BackgroundJobTable({ incrementMaxBytes: 4 });
+		const job = table.create({ toolCallId: "call-1", toolName: "bash" });
+		table.background(job.id);
+		job.output.append("abcdef");
+
+		const result = await readJob.execute(
+			"call-2",
+			{ jobIds: [job.id] },
+			contextWith(table),
+		);
+
+		expect(result.details.jobs[0]).toMatchObject({
+			jobId: job.id,
+			totalBytesSeen: 6,
+			tailDroppedBytes: 0,
+			progressDroppedBytes: 2,
+			output: "abcdef",
+		});
 	});
 
 	it("reports nothing to read when no jobs are live", async () => {

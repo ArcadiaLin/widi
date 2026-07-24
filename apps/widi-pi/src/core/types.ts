@@ -182,6 +182,35 @@ export type OrchestratorEvent =
 			transition: BackgroundJobTransition;
 			liveCount: number;
 			changedAt: string;
+	  }
+	// Incremental output of a live backgrounded job. Best-effort and coalesced:
+	// throttled to ~100ms and merged under backpressure, so consumers must treat
+	// it as a lossy stream keyed by absolute byte offsets rather than a guaranteed
+	// per-chunk feed. `chunk` is the new output since the previous event encoded
+	// as Base64; a `startByte` past the previous `endByte` (and a rising
+	// `progressDroppedBytes`) marks a gap where the increment buffer overflowed.
+	// Extensions persist by Base64-decoding `chunk` and writing those exact bytes
+	// at `startByte`; read_job still serves the current rolling tail.
+	| {
+			readonly type: "agent_background_job_progress";
+			agentId: AgentId;
+			jobId: string;
+			/** Per-job monotonic counter of emitted progress events (0-based). */
+			sequence: number;
+			/** New output bytes since the previous event, encoded as Base64. */
+			chunk: string;
+			/** Absolute offset of the first byte in `chunk`. */
+			startByte: number;
+			/** Absolute offset just past the last byte in `chunk`. */
+			endByte: number;
+			/** Total bytes ever appended to the job's output. */
+			totalBytesSeen: number;
+			/** Cumulative bytes dropped from the progress buffer and never forwarded. */
+			progressDroppedBytes: number;
+			/** ISO timestamp when the increment was observed. */
+			observedAt: string;
+			/** Originating tool call id, for correlating the job to its operation. */
+			operationRef?: string;
 	  };
 
 export type OrchestratorEventListener = (

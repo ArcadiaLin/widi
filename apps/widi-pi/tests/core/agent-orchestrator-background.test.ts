@@ -121,33 +121,39 @@ describe("AgentOrchestrator background job router", () => {
 		expect(text).toContain("build done");
 	});
 
-	it("buffers while running and flushes on the next idle boundary", async () => {
-		const { orchestrator, agentId, record } = await spawnAgent();
+	it("steers a settled result into the active run while running", async () => {
+		const { record } = await spawnAgent();
 		const prompt = vi.fn(async (_text: string) => ({}) as AssistantMessage);
+		const steer = vi.fn(async (_text: string) => {});
 		record.harness = {
 			prompt,
+			steer,
 		} as unknown as NonNullable<AgentRecord["harness"]>;
 		record.status = "running";
 
-		settleBackgroundedJob(record, completedOutcome);
-		await tick();
+		const jobId = settleBackgroundedJob(record, completedOutcome);
+		await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(1));
 		expect(prompt).not.toHaveBeenCalled();
-
-		await driveSettled(orchestrator, agentId);
-		await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
-		expect(prompt.mock.calls[0]?.[0] as string).toContain("build done");
+		const text = steer.mock.calls[0]?.[0] as string;
+		expect(text).toContain(jobId);
+		expect(text).toContain("build done");
 	});
 
-	it("joins multiple buffered results into a single prompt", async () => {
+	it("joins results buffered before the agent is deliverable into a single prompt", async () => {
 		const { orchestrator, agentId, record } = await spawnAgent();
 		const prompt = vi.fn(async (_text: string) => ({}) as AssistantMessage);
 		record.harness = {
 			prompt,
 		} as unknown as NonNullable<AgentRecord["harness"]>;
-		record.status = "running";
+		// Not yet deliverable: results accumulate in the buffer until the agent
+		// reaches an idle boundary, then flush together as one prompt.
+		record.status = "creating";
 
 		const first = settleBackgroundedJob(record, completedOutcome, "call-1");
 		const second = settleBackgroundedJob(record, completedOutcome, "call-2");
+		await tick();
+		expect(prompt).not.toHaveBeenCalled();
+
 		await driveSettled(orchestrator, agentId);
 		await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
 
@@ -362,6 +368,97 @@ describe("AgentOrchestrator background job router", () => {
 		);
 	});
 
+	it("streams output increments and flushes the final one before settling", async () => {
+		const { orchestrator, record } = await spawnAgent();
+		// Busy so settlements stay buffered; we only assert the emitted stream here.
+		record.status = "running";
+		const log: Array<
+			| { kind: "progress"; sequence: number; chunk: string; startByte: number }
+			| { kind: "changed"; transition: string }
+		> = [];
+		orchestrator.subscribe((event) => {
+			if (event.type === "agent_background_job_progress") {
+				log.push({
+					kind: "progress",
+					sequence: event.sequence,
+					chunk: Buffer.from(event.chunk, "base64").toString("utf-8"),
+					startByte: event.startByte,
+				});
+			} else if (event.type === "agent_background_job_changed") {
+				log.push({ kind: "changed", transition: event.transition });
+			}
+		});
+
+		const job = record.backgroundJobTable.create({
+			toolCallId: "call-1",
+			toolName: "bash",
+		});
+		record.backgroundJobTable.background(job.id);
+		job.output.append("line1\n");
+		// Wait for the first increment to be emitted before appending the next, so
+		// the two do not coalesce into one drain.
+		await vi.waitFor(() =>
+			expect(
+				log.some((e) => e.kind === "progress" && e.chunk === "line1\n"),
+			).toBe(true),
+		);
+
+		job.output.append("line2\n");
+		record.backgroundJobTable.settle(job.id, completedOutcome);
+		await vi.waitFor(() =>
+			expect(
+				log.some((e) => e.kind === "changed" && e.transition === "settled"),
+			).toBe(true),
+		);
+
+		const progresses = log.filter((e) => e.kind === "progress");
+		expect(progresses).toEqual([
+			{ kind: "progress", sequence: 0, chunk: "line1\n", startByte: 0 },
+			{ kind: "progress", sequence: 1, chunk: "line2\n", startByte: 6 },
+		]);
+		// Barrier: the job's final increment is emitted before its terminal event.
+		const lastProgress = log.lastIndexOf(
+			progresses[progresses.length - 1] as (typeof log)[number],
+		);
+		const settledIndex = log.findIndex(
+			(e) => e.kind === "changed" && e.transition === "settled",
+		);
+		expect(lastProgress).toBeLessThan(settledIndex);
+	});
+
+	it("publishes accumulated output only after the backgrounded lifecycle event", async () => {
+		const { orchestrator, record } = await spawnAgent();
+		record.status = "running";
+		const log: Array<{ kind: "changed" | "progress"; value: string }> = [];
+		orchestrator.subscribe((event) => {
+			if (event.type === "agent_background_job_changed") {
+				log.push({ kind: "changed", value: event.transition });
+			}
+			if (event.type === "agent_background_job_progress") {
+				log.push({
+					kind: "progress",
+					value: Buffer.from(event.chunk, "base64").toString("utf-8"),
+				});
+			}
+		});
+
+		const job = record.backgroundJobTable.create({
+			toolCallId: "call-1",
+			toolName: "bash",
+		});
+		job.output.append("pre-t0\n");
+		await tick();
+		expect(log).toEqual([]);
+
+		record.backgroundJobTable.background(job.id);
+		await vi.waitFor(() =>
+			expect(log).toEqual([
+				{ kind: "changed", value: "backgrounded" },
+				{ kind: "progress", value: "pre-t0\n" },
+			]),
+		);
+	});
+
 	it("emits an aborting change when a live job is aborted", async () => {
 		const { orchestrator, record } = await spawnAgent();
 		record.status = "running";
@@ -404,8 +501,17 @@ describe("AgentOrchestrator background job router", () => {
 				jobId: job.id,
 				toolCallId: "call-1",
 				toolName: "bash",
+				description: undefined,
 				phase: "backgrounded",
 				status: undefined,
+				stopReason: undefined,
+				startedAt: expect.any(Number),
+				backgroundedAt: expect.any(Number),
+				endedAt: undefined,
+				totalBytesSeen: 9,
+				droppedBytes: 0,
+				tailDroppedBytes: 0,
+				progressDroppedBytes: 0,
 			},
 		]);
 		expect(orchestrator.readAgentBackgroundJobOutput(agentId, job.id)).toBe(
@@ -479,6 +585,37 @@ describe("AgentOrchestrator background job extension observability", () => {
 				{ transition: "backgrounded", liveCount: 1 },
 				{ transition: "settled", liveCount: 0 },
 			]),
+		);
+	});
+
+	it("delivers byte-exact progress events to extension observers", async () => {
+		const seen: Array<{
+			text: string;
+			startByte: number;
+			endByte: number;
+		}> = [];
+		const { record } = await spawnWithJobExtension({
+			module: (api) => {
+				api.observe("agent_background_job_progress", (event) => {
+					seen.push({
+						text: Buffer.from(event.chunk, "base64").toString("utf-8"),
+						startByte: event.startByte,
+						endByte: event.endByte,
+					});
+				});
+			},
+		});
+		record.status = "running";
+
+		const job = record.backgroundJobTable.create({
+			toolCallId: "call-1",
+			toolName: "bash",
+		});
+		record.backgroundJobTable.background(job.id);
+		job.output.append("progress\n");
+
+		await vi.waitFor(() =>
+			expect(seen).toEqual([{ text: "progress\n", startByte: 0, endByte: 9 }]),
 		);
 	});
 

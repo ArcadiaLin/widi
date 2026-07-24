@@ -121,7 +121,7 @@ export function createKillJobToolDefinition(): ToolDefinition<
 					: undefined;
 			// The listener drains `pending` as jobs settle; snapshot the ids first.
 			for (const id of Array.from(pending.keys())) {
-				table.abort(id);
+				table.abort(id, "Cancellation requested by kill_job.");
 			}
 			if (settlementWait) await settlementWait;
 

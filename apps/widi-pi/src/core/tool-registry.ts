@@ -522,6 +522,27 @@ function resolveBackgroundDeadlineMs(
 	return undefined;
 }
 
+/** Max length of a stored background job description; longer labels are elided. */
+const MAX_BACKGROUND_DESCRIPTION_LENGTH = 200;
+
+/**
+ * Resolve the human-readable label for a backgrounded call from the tool's
+ * optional describer, collapsing whitespace and eliding an over-long result so
+ * the snapshot carries a compact label rather than a full command dump.
+ */
+function resolveBackgroundDescription(
+	definition: RegistryToolDefinition,
+	params: unknown,
+): string | undefined {
+	const raw = definition.backgroundDescription?.(params);
+	if (raw === undefined) return undefined;
+	const collapsed = raw.replace(/\s+/g, " ").trim();
+	if (collapsed.length === 0) return undefined;
+	return collapsed.length > MAX_BACKGROUND_DESCRIPTION_LENGTH
+		? `${collapsed.slice(0, MAX_BACKGROUND_DESCRIPTION_LENGTH - 1)}…`
+		: collapsed;
+}
+
 /** True when tool arguments explicitly opt this call into background execution. */
 function isBackgroundRequested(params: unknown): boolean {
 	return (
@@ -561,6 +582,7 @@ function runBackgroundableToolCall(
 	const job = options.table.create({
 		toolCallId: options.toolCallId,
 		toolName: definition.name,
+		description: resolveBackgroundDescription(definition, options.params),
 	});
 
 	// Forward the run signal to the job only during the synchronous window

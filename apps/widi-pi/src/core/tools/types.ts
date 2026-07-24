@@ -38,7 +38,9 @@ export interface ToolExecutionContext<TDetails> {
 	 * Set when this call executes as a pseudo-async job (a `backgroundable`
 	 * call registered in the job table); undefined for plain synchronous calls.
 	 * The tool streams its raw output into `output` so job-control surfaces can
-	 * peek at live progress; the tool's own result production is unaffected.
+	 * peek at live progress. The table's cooperative output ceiling only counts
+	 * bytes appended here, and termination still requires the tool to honor
+	 * `signal`; the tool's eventual result size is independent of this buffer.
 	 */
 	job?: { readonly id: string; readonly output: BackgroundJobOutput };
 }
@@ -177,6 +179,13 @@ export interface ToolDefinition<
 	 * unless `backgroundable` is true.
 	 */
 	backgroundTimeoutMs?: number;
+	/**
+	 * Produce a short human-readable label for a backgrounded call from its
+	 * arguments (for bash, the command). Surfaced on the job snapshot and
+	 * progress/lifecycle events; falls back to the tool name when omitted.
+	 * Ignored unless `backgroundable` is true.
+	 */
+	backgroundDescription?: (params: Static<TParamsSchema>) => string;
 
 	/** Execute the tool after arguments have been prepared and validated. */
 	execute: ToolExecute<TParamsSchema, TDetails>;

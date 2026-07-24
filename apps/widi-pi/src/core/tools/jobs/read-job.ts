@@ -17,7 +17,17 @@ export type ReadJobJobStatus =
 	| {
 			readonly jobId: string;
 			readonly toolName: string;
+			/** Human-readable label for the job (for bash, the command); may be absent. */
+			readonly description?: string;
 			readonly state: "running";
+			/** Epoch ms when the job's tool call began. */
+			readonly startedAt: number;
+			/** Total bytes ever appended to the job's output. */
+			readonly totalBytesSeen: number;
+			/** Total bytes dropped from the rolling tail and no longer readable. */
+			readonly tailDroppedBytes: number;
+			/** Cumulative bytes dropped from the progress-forwarding buffer. */
+			readonly progressDroppedBytes: number;
 			/** Current rolling output tail at read time. */
 			readonly output: string;
 	  }
@@ -90,7 +100,12 @@ export function createReadJobToolDefinition(): ToolDefinition<
 					? {
 							jobId: id,
 							toolName: job.toolName,
+							description: job.description,
 							state: "running",
+							startedAt: job.startedAt,
+							totalBytesSeen: job.output.totalBytesSeen,
+							tailDroppedBytes: job.output.tailDroppedBytes,
+							progressDroppedBytes: job.output.progressDroppedBytes,
 							output: job.output.read(),
 						}
 					: { jobId: id, state: "unknown" };
@@ -112,7 +127,8 @@ function formatReadSummary(jobs: readonly ReadJobJobStatus[]): string {
 			return `## Job ${job.jobId}: not tracked (already finished, not backgrounded, or never started)`;
 		}
 		const output = job.output ? job.output : "(no output yet)";
-		return `## Job ${job.jobId} (${job.toolName}): running — live output tail\n${output}`;
+		const label = job.description ? `: ${job.description}` : "";
+		return `## Job ${job.jobId} (${job.toolName})${label}: running — live output tail\n${output}`;
 	});
 	return `${sections.join("\n\n")}\n\nThis is a live tail, not the final result: each finished job's output arrives as a separate background job result message.`;
 }

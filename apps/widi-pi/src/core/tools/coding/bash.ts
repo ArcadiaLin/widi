@@ -184,6 +184,7 @@ export function createBashToolDefinition(
 		],
 		parameters: bashSchema,
 		backgroundable: true,
+		backgroundDescription: ({ command }) => command,
 		execute: async (_toolCallId, { command, timeout }, context) => {
 			const signal = context.signal;
 			const onUpdate = context.onUpdate;

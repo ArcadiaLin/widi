@@ -138,13 +138,32 @@ export function killProcessTree(pid: number): void {
 }
 
 /**
- * Detached child processes are tracked so they can be killed on parent shutdown
- * signals (SIGHUP/SIGTERM), otherwise a killed parent can orphan a process
- * group.
+ * Detached child processes are tracked so they can be killed when the WIDI
+ * process exits, otherwise a killed parent can orphan a process group. Graceful
+ * shutdown aborts jobs (which kills their trees and untracks the pids); this set
+ * plus the `exit` hook below is a last-resort net for normal event-loop exit and
+ * `process.exit()`. Signal termination and fatal native failures can bypass
+ * Node's `exit` event, so every process host must also call
+ * {@link killTrackedDetachedChildren} from its own synchronous shutdown path.
  */
 const trackedDetachedChildPids = new Set<number>();
 
+let exitHookInstalled = false;
+
+/**
+ * Install a one-time synchronous `exit` handler that kills every still-tracked
+ * detached child. Lazily armed on the first tracked pid so a process that never
+ * spawns a detached child pays nothing. This is best-effort only: Node does not
+ * emit `exit` for every signal or fatal termination.
+ */
+function ensureExitHook(): void {
+	if (exitHookInstalled) return;
+	exitHookInstalled = true;
+	process.on("exit", killTrackedDetachedChildren);
+}
+
 export function trackDetachedChildPid(pid: number): void {
+	ensureExitHook();
 	trackedDetachedChildPids.add(pid);
 }
 
