@@ -359,19 +359,6 @@ export interface ExtensionContext {
 }
 
 /**
- * Activation-time resource path declaration (ME slice 8). The extension only
- * hands the core additional skill / prompt template paths to read; the
- * ResourceLoader stays the sole filesystem reader and interpreter, and the
- * contribution is scoped to the declaring runner's agent. A name that
- * collides with an already-registered resource loses first-registration-wins
- * and is dropped with a diagnostic.
- */
-export interface ExtensionResourcePaths {
-	readonly skillPaths?: readonly string[];
-	readonly promptTemplatePaths?: readonly string[];
-}
-
-/**
  * Activation-time provider registration config (ME slice 9). The provider
  * name must be new - built-in, models.json, and other extensions' names are
  * not overridable (first-registration-wins, no proxy/override channel) - and
@@ -416,7 +403,6 @@ export interface ExtensionActivationApi {
 		targetToolName: string,
 		patch: ToolDefinitionPatch<TParamsSchema, TDetails>,
 	): void;
-	contributeResources(paths: ExtensionResourcePaths): void;
 	registerProvider(providerName: string, config: ExtensionProviderConfig): void;
 	observe<TName extends ExtensionObservedEventName>(
 		eventName: TName,

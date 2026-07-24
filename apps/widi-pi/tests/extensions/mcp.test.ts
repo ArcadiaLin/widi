@@ -439,9 +439,6 @@ function createFakeActivation(): FakeActivation {
 		patchTool: () => {
 			throw new Error("not used");
 		},
-		contributeResources: () => {
-			throw new Error("not used");
-		},
 		registerProvider: () => {
 			throw new Error("not used");
 		},

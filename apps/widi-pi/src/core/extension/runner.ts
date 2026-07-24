@@ -14,7 +14,6 @@ import type {
 	ExtensionIdentity,
 	ExtensionInterceptorRegistration,
 	ExtensionProviderContribution,
-	ExtensionResourceContribution,
 	ExtensionToolContribution,
 	LoadedExtensionScope,
 } from "./loader.ts";
@@ -119,7 +118,6 @@ export interface ExtensionRunnerSnapshot {
 	extensions: readonly ExtensionIdentity[];
 	hooks: readonly ExtensionHookSnapshot[];
 	toolContributions: readonly ExtensionToolContributionSnapshot[];
-	resourceContributions: readonly ExtensionResourceContribution[];
 	providerContributions: readonly ExtensionProviderContributionSnapshot[];
 	stale: {
 		readonly stale: boolean;
@@ -190,10 +188,6 @@ export class ExtensionRunner {
 		};
 	}
 
-	getResourceContributions(): readonly ExtensionResourceContribution[] {
-		return this._loadedScope.resourceContributions;
-	}
-
 	getProviderContributions(): readonly ExtensionProviderContribution[] {
 		return this._loadedScope.providerContributions;
 	}
@@ -236,7 +230,6 @@ export class ExtensionRunner {
 			extensions: this.extensions,
 			diagnostics: this.diagnostics,
 			toolContributions: [],
-			resourceContributions: [],
 			providerContributions: [],
 			observerHandlers: new Map(),
 			interceptorHandlers: new Map(),
@@ -298,13 +291,6 @@ export class ExtensionRunner {
 						source: contribution.source,
 					};
 				},
-			),
-			resourceContributions: this._loadedScope.resourceContributions.map(
-				(contribution) => ({
-					extensionId: contribution.extensionId,
-					skillPaths: [...contribution.skillPaths],
-					promptTemplatePaths: [...contribution.promptTemplatePaths],
-				}),
 			),
 			providerContributions: this._loadedScope.providerContributions.map(
 				(contribution) => ({

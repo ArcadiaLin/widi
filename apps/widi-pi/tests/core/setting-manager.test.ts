@@ -178,14 +178,12 @@ describe("SettingManager", () => {
 				defaultModel: "gpt-5",
 				defaultProfile: "main",
 				enabledProfiles: ["main", "reviewer"],
-				profiles: ["~/.widi/profiles"],
 				compaction: { enabled: true, reserveTokens: 1000 },
 			},
 			{
 				defaultModel: "gpt-5-mini",
 				defaultProfile: "project-main",
 				enabledProfiles: ["project-main"],
-				profiles: [".widi/profiles"],
 				compaction: { keepRecentTokens: 2000 },
 			},
 		);
@@ -196,7 +194,6 @@ describe("SettingManager", () => {
 		expect(manager.getDefaultModel()).toBe("gpt-5-mini");
 		expect(manager.getDefaultProfile()).toBe("project-main");
 		expect(manager.getEnabledProfiles()).toEqual(["project-main"]);
-		expect(manager.getProfilePaths()).toEqual([".widi/profiles"]);
 		expect(manager.getCompactionSettings()).toEqual({
 			enabled: true,
 			reserveTokens: 1000,

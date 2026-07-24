@@ -105,8 +105,6 @@ export interface Settings {
 	rgPath?: string;
 	npmCommand?: string[];
 	packages?: PackageSource[];
-	/** Local profile file or directory paths. */
-	profiles?: string[];
 	/** Local extension file or directory paths. */
 	extensions?: string[];
 	/** Local skill file or directory paths. */
@@ -959,22 +957,6 @@ export class SettingManager {
 	setProjectPackages(packages: PackageSource[]): void {
 		this.updateProjectField("packages", (settings) => {
 			settings.packages = structuredClone(packages);
-		});
-	}
-
-	getProfilePaths(): string[] {
-		return [...(this.settings.profiles ?? [])];
-	}
-
-	setProfilePaths(paths: string[]): void {
-		this.globalSettings.profiles = [...paths];
-		this.markModified("profiles");
-		this.save();
-	}
-
-	setProjectProfilePaths(paths: string[]): void {
-		this.updateProjectField("profiles", (settings) => {
-			settings.profiles = [...paths];
 		});
 	}
 

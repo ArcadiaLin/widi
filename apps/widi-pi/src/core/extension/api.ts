@@ -67,7 +67,6 @@ export type {
 	ExtensionObserver,
 	ExtensionObserverFor,
 	ExtensionProviderConfig,
-	ExtensionResourcePaths,
 	ExtensionSessionContext,
 	ToolDefinition,
 	ToolDefinitionPatch,

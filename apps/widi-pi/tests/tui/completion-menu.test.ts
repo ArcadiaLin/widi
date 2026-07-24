@@ -431,7 +431,6 @@ function agentSnapshot(agentId: string): AgentRecordSnapshot {
 			extensions: [],
 			hooks: [],
 			toolContributions: [],
-			resourceContributions: [],
 			providerContributions: [],
 			stale: { stale: false },
 		},

@@ -187,7 +187,6 @@ export function createEmptyExtensionSnapshot(): ExtensionRunnerSnapshot {
 		extensions: [],
 		hooks: [],
 		toolContributions: [],
-		resourceContributions: [],
 		providerContributions: [],
 		stale: { stale: false },
 	};

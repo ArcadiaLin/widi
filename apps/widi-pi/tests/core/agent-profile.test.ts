@@ -243,13 +243,11 @@ describe("AgentProfileRegistry", () => {
 					kind: "agent_dir",
 					path: "/home/user/.widi/profiles",
 					priority: 100,
-					missingBehavior: "silent",
 				},
 				{
 					kind: "cwd",
 					path: "/workspace/project/.widi/profiles",
 					priority: 200,
-					missingBehavior: "silent",
 				},
 			]),
 		);
@@ -309,10 +307,9 @@ describe("AgentProfileRegistry", () => {
 		const registry = new AgentProfileRegistry(
 			new FileProfileStorageBackend(env, [
 				{
-					kind: "settings",
+					kind: "agent_dir",
 					path: "/profiles/special.md",
 					priority: 300,
-					missingBehavior: "diagnostic",
 				},
 			]),
 		);
@@ -349,7 +346,6 @@ describe("AgentProfileRegistry", () => {
 					kind: "cwd",
 					path: "/workspace/project/.widi/profiles",
 					priority: 200,
-					missingBehavior: "silent",
 				},
 			]),
 		);
@@ -358,26 +354,5 @@ describe("AgentProfileRegistry", () => {
 
 		expect(result.profiles.map((profile) => profile.id)).toEqual(["a", "b"]);
 		expect(result.profiles[0]).not.toHaveProperty("systemPrompt");
-	});
-
-	it("diagnoses missing explicit profile sources", async () => {
-		const env = new MemoryExecutionEnv();
-		const registry = new AgentProfileRegistry(
-			new FileProfileStorageBackend(env, [
-				{
-					kind: "settings",
-					path: "/missing.md",
-					priority: 300,
-					missingBehavior: "diagnostic",
-				},
-			]),
-		);
-
-		const result = await registry.listProfiles();
-
-		expect(result.profiles).toEqual([]);
-		expect(result.diagnostics).toContainEqual(
-			expect.objectContaining({ code: "profile.source_missing" }),
-		);
 	});
 });

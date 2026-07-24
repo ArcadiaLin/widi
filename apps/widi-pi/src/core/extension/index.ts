@@ -11,7 +11,6 @@ export {
 	ExtensionLoader,
 	type ExtensionObserverRegistration,
 	type ExtensionProviderContribution,
-	type ExtensionResourceContribution,
 	type ExtensionRoot,
 	type ExtensionSource,
 	type ExtensionToolContribution,
