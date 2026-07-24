@@ -56,6 +56,7 @@ import {
 	setActiveAgent,
 	type TuiApplicationState,
 } from "./state.ts";
+import { flushStreaming, STREAM_FLUSH_MS } from "./streaming-flush.ts";
 import { editorTheme } from "./theme/controls.ts";
 
 const NOTIFICATION_TTL_MS = 5_000;
@@ -98,6 +99,7 @@ export class WidiTuiApplication {
 	private readonly hydrationGeneration = new Map<string, number>();
 	private readonly hydratedAgents = new Set<string>();
 	private readonly notificationTimers = new Map<string, NodeJS.Timeout>();
+	private streamingFlushTimer?: NodeJS.Timeout;
 	private readonly pendingTasks = new Set<Promise<unknown>>();
 	private readonly lifecycleTasks = new Set<Promise<unknown>>();
 	private readonly drafts = new Map<string, string>();
@@ -152,6 +154,10 @@ export class WidiTuiApplication {
 		this.editor = new WidiEditor(this.tui, editorTheme, {
 			paddingX: 1,
 			autocompleteMaxVisible: 8,
+		});
+		this.editor.setArgumentHintProvider((text) => {
+			const name = /^\/(\S+)\s*$/.exec(text)?.[1];
+			return name ? this.engine.line(name)?.argumentHint : undefined;
 		});
 		// Later-opened menus own the focus; closing one hands focus back to the
 		// still-open human-request menu before falling back to the editor.
@@ -274,6 +280,11 @@ export class WidiTuiApplication {
 		this.unsubscribeEvents = undefined;
 		for (const timer of this.notificationTimers.values()) clearTimeout(timer);
 		this.notificationTimers.clear();
+		if (this.streamingFlushTimer) {
+			clearTimeout(this.streamingFlushTimer);
+			this.streamingFlushTimer = undefined;
+		}
+		for (const agent of this.state.agents.values()) flushStreaming(agent);
 		this.removeLifecycleHandlers();
 		try {
 			await this.orchestrator.disposeAll(reason);
@@ -336,6 +347,23 @@ export class WidiTuiApplication {
 				break;
 			case "agent_harness_event":
 				if (
+					event.event.type === "message_update" ||
+					event.event.type === "tool_execution_update"
+				) {
+					// Streaming deltas are buffered by the projector; re-render on the
+					// flush timer instead of per event. Thinking indicators update the
+					// timeline immediately, so they keep their per-event render.
+					this.scheduleStreamingFlush();
+					if (
+						event.event.type === "message_update" &&
+						(event.event.assistantMessageEvent.type === "thinking_start" ||
+							event.event.assistantMessageEvent.type === "thinking_end")
+					) {
+						this.tui.requestRender();
+					}
+					return;
+				}
+				if (
 					event.event.type === "session_tree" ||
 					event.event.type === "session_compact"
 				) {
@@ -348,6 +376,28 @@ export class WidiTuiApplication {
 		}
 
 		this.tui.requestRender();
+	}
+
+	/**
+	 * Coalesce streaming deltas into one timeline write per interval. Only a
+	 * flush that actually changed the visible agent's timeline re-renders.
+	 */
+	private scheduleStreamingFlush(): void {
+		if (this.streamingFlushTimer) return;
+		this.streamingFlushTimer = setTimeout(() => {
+			this.streamingFlushTimer = undefined;
+			let activeWrote = false;
+			for (const agent of this.state.agents.values()) {
+				if (
+					flushStreaming(agent) &&
+					agent.agentId === this.state.activeAgentId
+				) {
+					activeWrote = true;
+				}
+			}
+			if (activeWrote) this.tui.requestRender();
+		}, STREAM_FLUSH_MS);
+		this.streamingFlushTimer.unref();
 	}
 
 	private async submit(rawText: string): Promise<void> {
@@ -735,7 +785,16 @@ export class WidiTuiApplication {
 				confirmVerb: "apply",
 			},
 			onSelect: (item) => {
-				this.track(this.submit(`/${command.name}:${item.value}`));
+				// Space syntax cannot express an explicit empty argument (submit
+				// trims it away); the colon form keeps "use current position"
+				// distinct from a bare command.
+				this.track(
+					this.submit(
+						item.value === ""
+							? `/${command.name}:`
+							: `/${command.name} ${item.value}`,
+					),
+				);
 			},
 			onCancel: () => this.restoreEditor(originalText, agentId),
 		});

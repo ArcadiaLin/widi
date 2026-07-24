@@ -138,6 +138,15 @@ export interface SessionMarkerItem {
 	readonly summary: string;
 }
 
+/** Placeholder left behind when the sliding window trims older turns. */
+export interface WindowMarkerItem {
+	readonly type: "window-marker";
+	readonly id: string;
+	readonly durability: "ephemeral";
+	readonly createdAt: string;
+	hiddenTurns: number;
+}
+
 export type TimelineItem =
 	| UserMessageItem
 	| AssistantMessageItem
@@ -149,7 +158,8 @@ export type TimelineItem =
 	| PersistentMessageItem
 	| HumanRequestTraceItem
 	| ApplicationNoticeItem
-	| SessionMarkerItem;
+	| SessionMarkerItem
+	| WindowMarkerItem;
 
 export type AgentAttention =
 	| "none"
@@ -214,8 +224,23 @@ export interface AgentViewState {
 	display: AgentDisplayFacts;
 	/** The live assistant item currently receiving message_update events. */
 	currentAssistantId?: string;
+	/** Latest assistant text waiting for the throttled streaming flush. */
+	pendingAssistantText?: PendingAssistantText;
+	/** Latest tool args/partial results waiting for the throttled flush. */
+	pendingToolUpdates?: Map<string, PendingToolUpdate>;
 	/** Monotonic projection-local identity source for harness messages. */
 	nextLiveItemId: number;
+}
+
+export interface PendingAssistantText {
+	readonly itemId: string;
+	readonly text: string;
+	readonly message: AssistantMessage;
+}
+
+export interface PendingToolUpdate {
+	readonly args: unknown;
+	readonly partialResult: unknown;
 }
 
 export interface NoticeItem {

@@ -43,6 +43,8 @@ export function renderDeps(
 			return [item.status];
 		case "command-result":
 			return [item.status, item.result, item.error];
+		case "window-marker":
+			return [item.hiddenTurns];
 		case "human-request-trace":
 			return [context.toolOutputExpanded];
 		default:
@@ -201,6 +203,14 @@ export function renderTimelineItem(
 							maxCharacters: 3_000,
 						},
 					)}`,
+				),
+				1,
+				0,
+			).render(width);
+		case "window-marker":
+			return new Text(
+				colors.dim(
+					`— earlier turns hidden (${item.hiddenTurns} turns trimmed) —`,
 				),
 				1,
 				0,

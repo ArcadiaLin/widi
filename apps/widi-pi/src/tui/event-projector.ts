@@ -23,6 +23,8 @@ import {
 	type TimelineItem,
 	type TuiApplicationState,
 } from "./state.ts";
+import { flushStreaming } from "./streaming-flush.ts";
+import { applyTimelineWindow } from "./timeline-window.ts";
 
 const ATTENTION_PRIORITY: Record<AgentAttention, number> = {
 	none: 0,
@@ -61,6 +63,10 @@ export class EventProjector {
 		agent.hydration = "pending";
 		agent.bufferedEvents = [];
 		agent.display.rehydrateRequested = false;
+		// The timeline is about to be rebuilt; stale streaming buffers would
+		// point at items that hydration replaces.
+		agent.pendingAssistantText = undefined;
+		agent.pendingToolUpdates?.clear();
 		return agent;
 	}
 
@@ -70,8 +76,12 @@ export class EventProjector {
 		extensionStatuses: readonly ExtensionStatusSnapshot[] = [],
 	): AgentViewState {
 		const agent = ensureAgentProjection(this.state, agentId);
+		// The hydrated timeline rebuilds from the full session history, so the
+		// old window marker must not survive: its hidden-turn count would be
+		// double-counted when the window re-trims the rebuilt timeline.
 		const liveBeforeHydration = agent.timeline.filter(
-			(item) => item.durability === "ephemeral",
+			(item) =>
+				item.durability === "ephemeral" && item.type !== "window-marker",
 		);
 		agent.timeline = mergeTimeline(result.timeline, liveBeforeHydration);
 		if (result.display.model && agent.display.model) {
@@ -100,6 +110,7 @@ export class EventProjector {
 		agent.bufferedEvents = [];
 		agent.hydration = "ready";
 		for (const event of buffered) this.applyImmediately(event);
+		applyTimelineWindow(agent);
 		return agent;
 	}
 
@@ -148,6 +159,11 @@ export class EventProjector {
 				agent.status = event.status;
 				agent.runStartedAt =
 					event.status === "running" ? event.changedAt : undefined;
+				if (wasRunning && event.status !== "running") {
+					// Abort can end a run without message_end; never lose the tail of
+					// the stream still sitting in the pending buffer.
+					flushStreaming(agent);
+				}
 				if (
 					wasRunning &&
 					event.status === "idle" &&
@@ -242,6 +258,11 @@ export class EventProjector {
 				this.applyDiagnostic(event.diagnostic, event.createdAt);
 				return;
 			case "human_request_pending": {
+				if (event.agentId) {
+					// The user answers against what is on screen; show the latest
+					// streamed state before the request overlay opens.
+					flushStreaming(ensureAgentProjection(this.state, event.agentId));
+				}
 				this.state.humanRequests = [
 					...this.state.humanRequests.filter(
 						(item) => item.request.id !== event.request.id,
@@ -290,8 +311,14 @@ export class EventProjector {
 				if (event.message.role !== "assistant") return;
 				const item = findAssistant(agent, agent.currentAssistantId);
 				if (!item) return;
-				item.text = assistantText(event.message);
-				item.message = event.message;
+				// Deltas accumulate in the pending buffer; the timeline item only
+				// changes on flush, keeping the ChatView render cache valid between
+				// flushes.
+				agent.pendingAssistantText = {
+					itemId: item.id,
+					text: assistantText(event.message),
+					message: event.message,
+				};
 				const streamEvent = event.assistantMessageEvent;
 				if (streamEvent.type === "thinking_start") {
 					upsertTimeline(agent, {
@@ -302,6 +329,7 @@ export class EventProjector {
 						status: "thinking",
 					});
 				} else if (streamEvent.type === "thinking_end") {
+					flushStreaming(agent);
 					const thinking = agent.timeline.find(
 						(entry) =>
 							entry.type === "thinking-status" &&
@@ -315,6 +343,7 @@ export class EventProjector {
 			}
 			case "message_end":
 				if (event.message.role === "assistant") {
+					flushStreaming(agent);
 					const item = findAssistant(agent, agent.currentAssistantId);
 					if (item) {
 						item.text = assistantText(event.message);
@@ -325,6 +354,7 @@ export class EventProjector {
 				}
 				return;
 			case "tool_execution_start":
+				flushStreaming(agent);
 				upsertTimeline(agent, {
 					type: "tool-execution",
 					id: event.toolCallId,
@@ -338,14 +368,16 @@ export class EventProjector {
 				this.markBackgroundActivity(agent.agentId);
 				return;
 			case "tool_execution_update": {
-				const tool = findTool(agent, event.toolCallId);
-				if (tool) {
-					tool.args = event.args;
-					tool.partialResult = event.partialResult;
-				}
+				if (!findTool(agent, event.toolCallId)) return;
+				if (!agent.pendingToolUpdates) agent.pendingToolUpdates = new Map();
+				agent.pendingToolUpdates.set(event.toolCallId, {
+					args: event.args,
+					partialResult: event.partialResult,
+				});
 				return;
 			}
 			case "tool_execution_end": {
+				agent.pendingToolUpdates?.delete(event.toolCallId);
 				let tool = findTool(agent, event.toolCallId);
 				if (!tool) {
 					tool = {
@@ -413,6 +445,9 @@ export class EventProjector {
 				text,
 				modelText: text === modelText ? undefined : modelText,
 			});
+			// A new user message opens a turn; this is the only live-event path
+			// where the turn count can grow.
+			applyTimelineWindow(agent);
 		} else if (message.role === "assistant") {
 			agent.currentAssistantId = id;
 			upsertTimeline(agent, {
