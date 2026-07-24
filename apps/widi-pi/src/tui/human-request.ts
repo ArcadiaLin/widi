@@ -56,7 +56,7 @@ interface PendingEntry {
 	abortListener?: () => void;
 	settled: boolean;
 	/** deferred: choice questions committed via Submit. input: immediate row. */
-	readonly mode: "deferred" | "input";
+	mode: "deferred" | "input";
 	readonly questions: QuestionState[];
 	input?: Input;
 }
@@ -765,6 +765,9 @@ export class HumanRequestMenu implements Component {
 		resolve: (response: HumanResponse) => void,
 		reject: (error: Error) => void,
 	): PendingEntry {
+		// buildInput's onSubmit closes over this exact entry object, so every
+		// path must attach the input to it and return it unchanged — never a
+		// spread copy, or finish() would target an entry that is not in the list.
 		const entry: PendingEntry = {
 			request,
 			signal,
@@ -775,7 +778,9 @@ export class HumanRequestMenu implements Component {
 			questions: [],
 		};
 		if (request.kind === "input" || request.kind === "custom") {
-			return { ...entry, mode: "input", input: this.buildInput(entry) };
+			entry.mode = "input";
+			entry.input = this.buildInput(entry);
+			return entry;
 		}
 		if (request.kind === "confirm") {
 			entry.questions.push(
@@ -800,14 +805,17 @@ export class HumanRequestMenu implements Component {
 				);
 			}
 			if (entry.questions.length === 0) {
-				return { ...entry, mode: "input", input: this.buildInput(entry) };
+				entry.mode = "input";
+				entry.input = this.buildInput(entry);
 			}
 			return entry;
 		}
 		// select / multi-select
 		const options = normalizeHumanRequestOptions(request.options);
 		if (options.length === 0) {
-			return { ...entry, mode: "input", input: this.buildInput(entry) };
+			entry.mode = "input";
+			entry.input = this.buildInput(entry);
+			return entry;
 		}
 		if (request.kind === "select" && request.allowFreeInput) {
 			options.push({ value: FREE_INPUT_VALUE, label: FREE_INPUT_LABEL });

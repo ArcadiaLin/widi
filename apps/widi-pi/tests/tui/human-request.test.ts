@@ -307,6 +307,23 @@ describe("HumanRequestMenu", () => {
 		await expect(second).rejects.toThrow();
 	});
 
+	it("closes the input panel and restores the editor after submit", async () => {
+		const { menu, state, focusLog } = createMenu();
+		const response = menu.request(
+			envelope({ kind: "input", title: "Which ticket id?" }),
+		);
+		expect(menu.isOpen).toBe(true);
+		menu.focused = true;
+		menu.handleInput("W");
+		menu.handleInput("2");
+		menu.handleInput(KEY.enter);
+		await expect(response).resolves.toEqual({ kind: "input", value: "W2" });
+		expect(menu.isOpen).toBe(false);
+		expect(menu.pendingCount).toBe(0);
+		expect(state.mode).toBe("editor");
+		expect(focusLog.at(-1)).toBeNull();
+	});
+
 	it("silently withdraws a cancelled provisional input request", async () => {
 		const { menu, focusLog } = createMenu();
 		const response = menu.request(
