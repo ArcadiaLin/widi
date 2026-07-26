@@ -13,6 +13,7 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { TSchema } from "typebox";
+import type { BackgroundJobSnapshot } from "../background-job.ts";
 import type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
 import type { MessageSource } from "../message.ts";
 import type { ProviderConfigInput } from "../model-registry.ts";
@@ -181,6 +182,20 @@ export type ExtensionCompactionResult = CompactResult;
  */
 export interface ExtensionActions {
 	getTools(): AgentToolsSnapshot;
+	// The agent's live backgrounded jobs: the ones whose t0 handles the model is
+	// currently holding. Pairs with the three job observers, which report
+	// transitions but never carry output.
+	listJobs(): BackgroundJobSnapshot[];
+	// Current rolling output tail of a live job, or undefined once it settles.
+	// Pull-only, and the tail is bounded: an extension that needs the complete
+	// stream must accumulate `agent_background_job_progress` increments instead,
+	// which this cannot reconstruct after the head has been dropped.
+	readJobOutput(jobId: string): string | undefined;
+	// Request that a live job terminate, recording `reason` on its snapshot and
+	// its result message. False when no such job is live - a listed job may have
+	// settled since. This is a request: a job ends only when its tool honors the
+	// signal.
+	killJob(jobId: string, reason?: string): Promise<boolean>;
 	setTools(toolNames: string[], activeToolNames?: string[]): Promise<void>;
 	setActiveTools(toolNames: string[]): Promise<void>;
 	// The request source is injected by the runner as
@@ -237,6 +252,16 @@ export interface ExtensionActions {
  */
 export interface ExtensionCoreActions {
 	getAgentTools(agentId: string): AgentToolsSnapshot;
+	listAgentBackgroundJobs(agentId: string): BackgroundJobSnapshot[];
+	readAgentBackgroundJobOutput(
+		agentId: string,
+		jobId: string,
+	): string | undefined;
+	abortAgentBackgroundJob(
+		agentId: string,
+		jobId: string,
+		reason?: string,
+	): boolean;
 	setAgentTools(
 		agentId: string,
 		toolNames: string[],
@@ -349,6 +374,7 @@ export interface ExtensionActionFailure {
 		| "findEntries"
 		| "followUp"
 		| "getSessionName"
+		| "killJob"
 		| "listModelCandidates"
 		| "notify"
 		| "prompt"

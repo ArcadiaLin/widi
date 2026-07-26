@@ -13,7 +13,10 @@ import {
 	AgentProfileRegistry,
 	InMemoryProfileStorageBackend,
 } from "../../src/core/agent-profile.ts";
-import type { BackgroundJobChange } from "../../src/core/background-job.ts";
+import type {
+	BackgroundJobChange,
+	ExternalJobDependencyIndex,
+} from "../../src/core/background-job.ts";
 import { MessageError } from "../../src/core/message.ts";
 import {
 	createOrchestrator,
@@ -428,7 +431,7 @@ describe("AgentOrchestrator delegated task jobs", () => {
 		const job = table.create({
 			toolCallId: "call-assign",
 			toolName: "assign_agent_task",
-			origin: { kind: "agent_task", workerAgentId },
+			origin: { kind: "external", settlerId: workerAgentId },
 		});
 		table.background(job.id);
 		return job.id;
@@ -511,21 +514,28 @@ describe("AgentOrchestrator delegated task jobs", () => {
 	// Dispose detaches the owner's job listener before aborting its jobs, so the
 	// `settled` changes that normally clear the index never arrive. A resumed
 	// agent reuses the id with a table numbering from job-1 again, and a stale
-	// entry would later cancel an unrelated job that shares the id.
+	// entry would later cancel an unrelated job that shares the id. The second
+	// owner is the control: it proves the sweep is targeted rather than the
+	// index simply having been empty all along.
 	it("forgets a disposed owner's tasks instead of leaving stale index entries", async () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
-		const ownerAgentId = await orchestrator.spawnAgent();
+		const disposedOwnerId = await orchestrator.spawnAgent();
+		const survivingOwnerId = await orchestrator.spawnAgent();
 		const workerAgentId = await orchestrator.spawnAgent();
-		assignTask(orchestrator, ownerAgentId, workerAgentId);
+		assignTask(orchestrator, disposedOwnerId, workerAgentId);
+		const survivingTaskId = assignTask(
+			orchestrator,
+			survivingOwnerId,
+			workerAgentId,
+		);
+
+		await orchestrator.disposeAgent(disposedOwnerId);
+
 		const index = (
-			orchestrator as unknown as {
-				_taskJobsByWorker: Map<string, Set<unknown>>;
-			}
-		)._taskJobsByWorker;
-		expect(index.get(workerAgentId)?.size).toBe(1);
-
-		await orchestrator.disposeAgent(ownerAgentId);
-
-		expect(index.has(workerAgentId)).toBe(false);
+			orchestrator as unknown as { _externalJobs: ExternalJobDependencyIndex }
+		)._externalJobs;
+		expect(index.takeDependentsOf(workerAgentId)).toEqual([
+			{ ownerId: survivingOwnerId, jobId: survivingTaskId },
+		]);
 	});
 });

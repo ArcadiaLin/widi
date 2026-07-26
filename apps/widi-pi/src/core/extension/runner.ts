@@ -628,6 +628,18 @@ export class ExtensionRunner {
 				this._assertActive();
 				return this._actions.getAgentTools(agentId);
 			},
+			listJobs: () => {
+				this._assertActive();
+				return this._actions.listAgentBackgroundJobs(agentId);
+			},
+			readJobOutput: (jobId) => {
+				this._assertActive();
+				return this._actions.readAgentBackgroundJobOutput(agentId, jobId);
+			},
+			killJob: async (jobId, reason) =>
+				await this._runReportedAction(failure("killJob"), async () =>
+					this._actions.abortAgentBackgroundJob(agentId, jobId, reason),
+				),
 			setTools: async (toolNames, activeToolNames) => {
 				await this._runReportedAction(failure("setTools"), async () => {
 					await this._actions.setAgentTools(
@@ -931,6 +943,9 @@ function createUnboundActions(): ExtensionCoreActions {
 	};
 	return {
 		getAgentTools: () => notBound(),
+		listAgentBackgroundJobs: () => notBound(),
+		readAgentBackgroundJobOutput: () => notBound(),
+		abortAgentBackgroundJob: () => notBound(),
 		setAgentTools: async () => notBound(),
 		setAgentActiveTools: async () => notBound(),
 		requestHuman: async () => notBound(),

@@ -512,19 +512,25 @@ function deepFreeze(value: unknown): void {
 export type BackgroundJobPhase = "running" | "backgrounded";
 
 /**
- * Who owns a job's eventual outcome.
+ * Whether a job has a local executor, and if not, who is allowed to settle it.
  *
- * `tool` is the ordinary case: a tool call is still running and will settle the
- * job itself. `agent_task` is work delegated to another agent - there is no
- * local promise to wait on, so the named worker settles it externally and the
- * table completes an abort on its own. The job id is the whole task identity;
- * multi-agent work adds no second lifecycle beside this one.
+ * `local` is the ordinary case: the tool call that created the job holds its
+ * promise, so exactly one place settles it and that same place observes the
+ * abort signal. `external` has no such promise - the outcome is written from
+ * outside by the named settler. Both of the divergences below follow from that
+ * one structural fact rather than from any notion of what the work is:
+ * settlement must be authorized against `settlerId` because it no longer
+ * arrives through a handle the table gave out, and an abort must be completed
+ * by the table because no executor is watching the signal to confirm it.
+ *
+ * Delegated multi-agent work is just an external job whose settler is another
+ * agent. The job id is the whole task identity; nothing here models a task.
  */
 export type BackgroundJobOrigin =
-	| { readonly kind: "tool" }
-	| { readonly kind: "agent_task"; readonly workerAgentId: string };
+	| { readonly kind: "local" }
+	| { readonly kind: "external"; readonly settlerId: string };
 
-const TOOL_ORIGIN: BackgroundJobOrigin = Object.freeze({ kind: "tool" });
+const LOCAL_ORIGIN: BackgroundJobOrigin = Object.freeze({ kind: "local" });
 
 /** Public, read-only view of a background job. */
 export interface BackgroundJob {
@@ -624,7 +630,7 @@ export type BackgroundJobReportListener = (
 export interface BackgroundJobSnapshot {
 	/** Runtime-local job handle returned to the model at t0. */
 	readonly jobId: string;
-	/** Who settles this job: a local tool call, or a delegated worker agent. */
+	/** Who settles this job: the local tool call, or a named external settler. */
 	readonly origin: BackgroundJobOrigin;
 	/** Id of the tool call that started the job. */
 	readonly toolCallId: string;
@@ -689,9 +695,9 @@ export function snapshotBackgroundJob(
  * - `inline`: the job settled before the deadline; the adapter returns the
  *   result inline and no change fires.
  * - `ignored`: the job was already settled or unknown.
- * - `denied`: an `agent_task` job was settled by someone other than its worker;
- *   nothing changed, and the caller must surface the refusal rather than
- *   retrying as a different identity.
+ * - `denied`: an `external` job was settled by someone other than its named
+ *   settler; nothing changed, and the caller must surface the refusal rather
+ *   than retrying as a different identity.
  */
 export type BackgroundJobSettleResult =
 	| "backgrounded"
@@ -797,7 +803,7 @@ export class BackgroundJobTable {
 		toolName: string;
 		description?: string;
 		report?: BackgroundJobReport;
-		/** Defaults to a locally-settled tool call. */
+		/** Defaults to a job settled by the local tool call that created it. */
 		origin?: BackgroundJobOrigin;
 	}): BackgroundJob {
 		const startedAt = Date.now();
@@ -811,12 +817,12 @@ export class BackgroundJobTable {
 					);
 		const id = this._createId();
 		// Detached and frozen: the origin is the settlement authority, and a
-		// caller that kept its object must not be able to hand the job to a
-		// different worker later - or rewrite the origin on snapshots already
-		// published to surfaces.
+		// caller that kept its object must not be able to name a different
+		// settler later - or rewrite the origin on snapshots already published to
+		// surfaces.
 		const origin: BackgroundJobOrigin =
 			input.origin === undefined
-				? TOOL_ORIGIN
+				? LOCAL_ORIGIN
 				: Object.freeze({ ...input.origin });
 		const controller = new AbortController();
 		const output = new BackgroundJobOutput(
@@ -927,10 +933,10 @@ export class BackgroundJobTable {
 	 * had been backgrounded; a job that settled while still `running` returns
 	 * `inline` and is delivered by the adapter's inline return instead.
 	 *
-	 * `settledBy` authorizes an external settlement: an `agent_task` job has no
-	 * local promise, so its outcome is written by the delegated worker and only
-	 * by that worker. Tool-origin jobs ignore it - their settler is the tool call
-	 * the table already handed the job to.
+	 * `settledBy` authorizes an external settlement: an `external` job has no
+	 * local promise, so its outcome is written by the named settler and only by
+	 * that settler. Local jobs ignore it - their settler is the tool call the
+	 * table already handed the job to.
 	 */
 	settle(
 		id: string,
@@ -940,10 +946,7 @@ export class BackgroundJobTable {
 		const record = this._jobs.get(id);
 		if (!record || record.settled) return "ignored";
 		const origin = record.view.origin;
-		if (
-			origin.kind === "agent_task" &&
-			options.settledBy !== origin.workerAgentId
-		) {
+		if (origin.kind === "external" && options.settledBy !== origin.settlerId) {
 			return "denied";
 		}
 		return this._settle(id, record, outcome);
@@ -968,10 +971,10 @@ export class BackgroundJobTable {
 			this._emitChange({ transition: "aborting", job: record.view });
 		}
 		record.controller.abort();
-		// A delegated task has no executor watching the signal, so nothing would
+		// An external job has no executor watching the signal, so nothing would
 		// ever confirm the abort. Complete the transition here instead of leaving
 		// the job stuck in `aborting` forever.
-		if (record.view.origin.kind === "agent_task" && !record.settled) {
+		if (record.view.origin.kind === "external" && !record.settled) {
 			this._settle(id, record, { status: "cancelled" });
 		}
 	}
@@ -1122,6 +1125,78 @@ export class BackgroundJobTable {
 				// table's; isolate them so one bad listener cannot drop the others.
 			}
 		}
+	}
+}
+
+/** One job that a settler outside its owning table still owes an outcome. */
+export interface ExternalJobDependency {
+	/** Identifier of the table the job lives in. */
+	readonly ownerId: string;
+	/** The job's id within that table. */
+	readonly jobId: string;
+}
+
+/**
+ * Reverse index from an external settler to the jobs waiting on it.
+ *
+ * A {@link BackgroundJobTable} only sees its own jobs, but an `external` job
+ * lives in the owner's table while its outcome depends on a settler that is not
+ * the owner. Answering "the settler is gone, which jobs can no longer settle?"
+ * therefore needs a view across tables, which is what this holds - nothing more.
+ * The owner's job stays the only state; every entry here is derived from a live
+ * job and dropped when that job settles.
+ *
+ * Ids are opaque strings so this stays a lookup structure: it does not know what
+ * a settler is, only that jobs are keyed by one.
+ */
+export class ExternalJobDependencyIndex {
+	private readonly _bySettler = new Map<string, Set<ExternalJobDependency>>();
+
+	/** Index a job whose settler is external. Local jobs are ignored. */
+	track(ownerId: string, job: BackgroundJob): void {
+		if (job.origin.kind !== "external") return;
+		const dependents = this._bySettler.get(job.origin.settlerId) ?? new Set();
+		dependents.add({ ownerId, jobId: job.id });
+		this._bySettler.set(job.origin.settlerId, dependents);
+	}
+
+	/** Drop a settled job's entry. */
+	untrack(ownerId: string, job: BackgroundJob): void {
+		if (job.origin.kind !== "external") return;
+		const dependents = this._bySettler.get(job.origin.settlerId);
+		if (!dependents) return;
+		for (const dependency of dependents) {
+			if (dependency.ownerId === ownerId && dependency.jobId === job.id) {
+				dependents.delete(dependency);
+			}
+		}
+		if (dependents.size === 0) this._bySettler.delete(job.origin.settlerId);
+	}
+
+	/**
+	 * Drop every entry owned by `ownerId`, whatever it was waiting on. Used when
+	 * an owner goes away without its jobs reporting their own settlement - a
+	 * stale entry would otherwise match a job id that a later table reuses.
+	 */
+	forgetOwner(ownerId: string): void {
+		for (const [settlerId, dependents] of this._bySettler) {
+			for (const dependency of dependents) {
+				if (dependency.ownerId === ownerId) dependents.delete(dependency);
+			}
+			if (dependents.size === 0) this._bySettler.delete(settlerId);
+		}
+	}
+
+	/**
+	 * Remove and return everything waiting on `settlerId`. Taking rather than
+	 * reading keeps the caller from acting on the same entry twice: settling the
+	 * returned jobs is what retires them.
+	 */
+	takeDependentsOf(settlerId: string): readonly ExternalJobDependency[] {
+		const dependents = this._bySettler.get(settlerId);
+		if (!dependents) return [];
+		this._bySettler.delete(settlerId);
+		return [...dependents];
 	}
 }
 

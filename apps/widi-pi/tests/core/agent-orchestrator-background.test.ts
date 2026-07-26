@@ -18,7 +18,10 @@ import {
 } from "../../src/core/agent-profile.ts";
 import type { AgentRecord } from "../../src/core/agent-record.ts";
 import type { BackgroundJobOutcome } from "../../src/core/background-job.ts";
-import type { ExtensionModule } from "../../src/core/extension/index.ts";
+import type {
+	ExtensionContext,
+	ExtensionModule,
+} from "../../src/core/extension/index.ts";
 import {
 	type ResolvedAgentHarnessTool,
 	type ToolAdapterContext,
@@ -48,6 +51,16 @@ async function spawnAgent(): Promise<{
 		agentId,
 		record: requireAgentRecord(orchestrator, agentId),
 	};
+}
+
+function requireExtensionContext(
+	orchestrator: AgentOrchestrator,
+	agentId: string,
+	extensionId = "job-tools",
+): ExtensionContext {
+	const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+	if (!runner) throw new Error("Expected an extension runner.");
+	return runner.createContext(extensionId);
 }
 
 /** Register, background, and settle a job on the agent's own table. */
@@ -507,7 +520,7 @@ describe("AgentOrchestrator background job router", () => {
 		expect(orchestrator.listAgentBackgroundJobs(agentId)).toEqual([
 			{
 				jobId: job.id,
-				origin: { kind: "tool" },
+				origin: { kind: "local" },
 				toolCallId: "call-1",
 				toolName: "bash",
 				description: undefined,
@@ -748,6 +761,75 @@ describe("AgentOrchestrator background job extension observability", () => {
 		await vi.waitFor(() =>
 			expect(orchestrator.getAgentActiveTools(agentId)).toEqual(["probe"]),
 		);
+	});
+
+	// The job observers report transitions but never carry output, so an
+	// extension that reacts to them needs a pull side to be useful at all.
+	it("lets an extension list live jobs and pull their output tail", async () => {
+		const { orchestrator, agentId, record } = await spawnWithJobExtension({
+			module: () => {},
+		});
+		const actions = requireExtensionContext(orchestrator, agentId).actions;
+		record.status = "running";
+		const job = record.backgroundJobTable.create({
+			toolCallId: "call-1",
+			toolName: "bash",
+			description: "sleep 60",
+		});
+
+		// A running-phase job is still inside the pre-t0 window: the model never
+		// saw its handle, so no external caller may name it.
+		expect(actions.listJobs()).toEqual([]);
+		expect(actions.readJobOutput(job.id)).toBeUndefined();
+
+		record.backgroundJobTable.background(job.id);
+		job.output.append("partial output");
+
+		expect(actions.listJobs()).toEqual([
+			expect.objectContaining({
+				jobId: job.id,
+				toolName: "bash",
+				description: "sleep 60",
+				phase: "backgrounded",
+				origin: { kind: "local" },
+			}),
+		]);
+		expect(actions.readJobOutput(job.id)).toBe("partial output");
+
+		record.backgroundJobTable.settle(job.id, completedOutcome);
+
+		expect(actions.listJobs()).toEqual([]);
+		expect(actions.readJobOutput(job.id)).toBeUndefined();
+	});
+
+	it("lets an extension kill a live job and reports a stale id as missed", async () => {
+		const { orchestrator, agentId, record } = await spawnWithJobExtension({
+			module: () => {},
+		});
+		const actions = requireExtensionContext(orchestrator, agentId).actions;
+		record.status = "running";
+		const transitions: string[] = [];
+		record.backgroundJobTable.onChange((change) =>
+			transitions.push(change.transition),
+		);
+		const job = record.backgroundJobTable.create({
+			toolCallId: "call-1",
+			toolName: "bash",
+		});
+		record.backgroundJobTable.background(job.id);
+
+		expect(await actions.killJob(job.id, "Budget exhausted")).toBe(true);
+		expect(job.signal.aborted).toBe(true);
+		expect(job.stopReason).toBe("Budget exhausted");
+		expect(transitions).toEqual(["backgrounded", "aborting"]);
+
+		// A local job ends only when its tool honors the signal; the extension's
+		// request does not settle it on the tool's behalf.
+		expect(record.backgroundJobTable.get(job.id)).toBeDefined();
+		record.backgroundJobTable.settle(job.id, { status: "cancelled" });
+
+		// A listed job may settle before the extension acts on it.
+		expect(await actions.killJob(job.id)).toBe(false);
 	});
 });
 

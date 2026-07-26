@@ -46,6 +46,7 @@ import {
 	type BackgroundJobReportSnapshot,
 	type BackgroundJobSettlement,
 	type BackgroundJobSnapshot,
+	ExternalJobDependencyIndex,
 	formatBackgroundJobResultMessageText,
 	snapshotBackgroundJob,
 } from "./background-job.ts";
@@ -371,14 +372,10 @@ export class AgentOrchestrator {
 	// own `agent_start`. Accepting a prompt any earlier would report success for
 	// text the harness can still drop while it builds the turn.
 	private _agentRunStartWaiters: Map<AgentId, Set<() => void>> = new Map();
-	// Reverse index for delegated task jobs: worker agent id -> the owner jobs it
-	// owes a result. A `BackgroundJobTable` is per-agent and cannot see another
-	// agent's jobs, so cancelling a disposed worker's tasks has to be resolved
-	// here. Holds no task state - the owner's job remains the only fact.
-	private _taskJobsByWorker: Map<
-		AgentId,
-		Set<{ readonly ownerAgentId: AgentId; readonly jobId: string }>
-	> = new Map();
+	// Jobs waiting on a settler that is not their owner, keyed by that settler.
+	// A `BackgroundJobTable` is per-agent and cannot see another agent's jobs, so
+	// only the agent registry can answer which jobs a disposed agent still owes.
+	private readonly _externalJobs = new ExternalJobDependencyIndex();
 	private readonly _extensionStatuses = new ExtensionStatusRegistry();
 	private _clients: Map<string, OrchestratorClient<OrchestratorEvent>> =
 		new Map();
@@ -1164,6 +1161,29 @@ export class AgentOrchestrator {
 	}
 
 	/**
+	 * Request that a live backgrounded job terminate, recording `reason` on its
+	 * snapshot and its eventual t1. Returns false when no such job is live, which
+	 * a caller holding a snapshot cannot rule out: the job may have settled since
+	 * it was listed. Scoped to backgrounded jobs for the same reason the listing
+	 * is - a running-phase job is still inside the pre-t0 window and was never
+	 * observable, so no external caller can legitimately name it.
+	 *
+	 * The abort is a request, not a kill: a local job terminates only if its tool
+	 * honors the signal, while an external job (nothing watches its signal) is
+	 * settled as cancelled by the table itself.
+	 */
+	abortAgentBackgroundJob(
+		agentId: AgentId,
+		jobId: string,
+		reason?: string,
+	): boolean {
+		const table = this._requireAgentRecord(agentId).backgroundJobTable;
+		if (table.get(jobId)?.phase !== "backgrounded") return false;
+		table.abort(jobId, reason);
+		return true;
+	}
+
+	/**
 	 * The single input arbitration point for every message an agent reads:
 	 * human text, agent-to-agent messages, background job results, and system
 	 * notices. Extension interception, source rendering, per-target ordering,
@@ -1507,19 +1527,23 @@ export class AgentOrchestrator {
 		for (const job of record.backgroundJobTable.list()) {
 			record.backgroundJobTable.abort(job.id, "Agent disposed");
 		}
-		// Tasks this agent owed to other agents cannot be completed now. Aborting
-		// the owner's job settles it as cancelled and reports that through the
-		// owner's normal t1 path; the owner itself stays live.
-		this._cancelTasksOwedByWorker(
-			agentId,
-			reason ?? `Worker agent ${agentId} was disposed.`,
-		);
+		// Work this agent owed to other agents cannot be settled now. Aborting the
+		// owner's job settles it as cancelled and reports that through the owner's
+		// normal t1 path; the owner itself stays live.
+		for (const dependency of this._externalJobs.takeDependentsOf(agentId)) {
+			this._agents
+				.get(dependency.ownerId)
+				?.backgroundJobTable.abort(
+					dependency.jobId,
+					reason ?? `Settler agent ${agentId} was disposed.`,
+				);
+		}
 		// Jobs this agent owned are aborted above, but their `settled` changes no
 		// longer reach the untracking listener - it was detached first, on
 		// purpose. Drop the index entries explicitly: a resumed agent reuses this
 		// id with a fresh table numbering from job-1, and a stale entry would
 		// later cancel an unrelated job that happens to share the id.
-		this._forgetTaskJobsOwnedBy(agentId);
+		this._externalJobs.forgetOwner(agentId);
 		this._maintenanceDepth.delete(agentId);
 		this._resolveAgentRunStartWaiters(agentId);
 		this._backgroundJobEmits.delete(agentId);
@@ -2080,7 +2104,7 @@ export class AgentOrchestrator {
 		const jobTable = this._requireAgentRecord(agentId).backgroundJobTable;
 		const unsubscribeJobChanges = jobTable.onChange((change) => {
 			if (change.transition === "backgrounded") {
-				this._trackTaskJob(agentId, change.job);
+				this._externalJobs.track(agentId, change.job);
 			}
 			if (change.transition === "settled") {
 				// Barrier: flush the job's final output increment ahead of its
@@ -2089,7 +2113,7 @@ export class AgentOrchestrator {
 					await this._emitJobProgress(agentId, change.job);
 					this._progressSequence.get(agentId)?.delete(change.job.id);
 				});
-				this._untrackTaskJob(agentId, change.job);
+				this._externalJobs.untrack(agentId, change.job);
 				// A delegated task settles through this same path: its t1 is the one
 				// and only completion message the owner reads.
 				void this._deliverBackgroundJobResult(agentId, change);
@@ -2421,6 +2445,12 @@ export class AgentOrchestrator {
 	private _createExtensionActions(): ExtensionCoreActions {
 		return {
 			getAgentTools: (agentId) => this.getAgentTools(agentId),
+			listAgentBackgroundJobs: (agentId) =>
+				this.listAgentBackgroundJobs(agentId),
+			readAgentBackgroundJobOutput: (agentId, jobId) =>
+				this.readAgentBackgroundJobOutput(agentId, jobId),
+			abortAgentBackgroundJob: (agentId, jobId, reason) =>
+				this.abortAgentBackgroundJob(agentId, jobId, reason),
 			setAgentTools: async (agentId, toolNames, activeToolNames) => {
 				await this.setAgentTools(agentId, toolNames, activeToolNames);
 			},
@@ -3329,55 +3359,6 @@ export class AgentOrchestrator {
 				await this._transitionAgentStatus(agentId, "idle");
 			}
 			this._messages.wake(agentId);
-		}
-	}
-
-	/**
-	 * Index a delegated task job so a disposed worker's outstanding work can be
-	 * found. The owner's job stays the only state; this is a reverse lookup, not
-	 * a task registry.
-	 */
-	private _trackTaskJob(ownerAgentId: AgentId, job: BackgroundJob): void {
-		if (job.origin.kind !== "agent_task") return;
-		const owed =
-			this._taskJobsByWorker.get(job.origin.workerAgentId) ?? new Set();
-		owed.add({ ownerAgentId, jobId: job.id });
-		this._taskJobsByWorker.set(job.origin.workerAgentId, owed);
-	}
-
-	private _untrackTaskJob(ownerAgentId: AgentId, job: BackgroundJob): void {
-		if (job.origin.kind !== "agent_task") return;
-		const owed = this._taskJobsByWorker.get(job.origin.workerAgentId);
-		if (!owed) return;
-		for (const entry of owed) {
-			if (entry.ownerAgentId === ownerAgentId && entry.jobId === job.id) {
-				owed.delete(entry);
-			}
-		}
-		if (owed.size === 0)
-			this._taskJobsByWorker.delete(job.origin.workerAgentId);
-	}
-
-	private _forgetTaskJobsOwnedBy(ownerAgentId: AgentId): void {
-		for (const [workerAgentId, owed] of this._taskJobsByWorker) {
-			for (const entry of owed) {
-				if (entry.ownerAgentId === ownerAgentId) owed.delete(entry);
-			}
-			if (owed.size === 0) this._taskJobsByWorker.delete(workerAgentId);
-		}
-	}
-
-	private _cancelTasksOwedByWorker(
-		workerAgentId: AgentId,
-		reason: string,
-	): void {
-		const owed = this._taskJobsByWorker.get(workerAgentId);
-		if (!owed) return;
-		this._taskJobsByWorker.delete(workerAgentId);
-		for (const entry of owed) {
-			this._agents
-				.get(entry.ownerAgentId)
-				?.backgroundJobTable.abort(entry.jobId, reason);
 		}
 	}
 
