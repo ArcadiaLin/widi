@@ -481,15 +481,10 @@ describe("createWidiRuntime", () => {
 		env.addFile(
 			"/home/user/.widi/settings.json",
 			JSON.stringify({
-				defaultProfile: "settings-profile",
+				defaultProfile: "project",
 				defaultProvider: "settings-provider",
 				defaultModel: "settings-model",
-				profiles: ["/custom/profiles"],
 			}),
-		);
-		env.addFile(
-			"/custom/profiles/settings-profile.md",
-			profileMarkdown("settings-profile"),
 		);
 		env.addFile(
 			"/workspace/project/.widi/profiles/project.md",
@@ -834,19 +829,8 @@ You are extension-profile.`,
 		]);
 	});
 
-	it("combines settings, project, agent dir, and builtin profile sources", async () => {
+	it("combines project, agent dir, and builtin profile sources", async () => {
 		const env = new MemoryExecutionEnv();
-		env.addFile(
-			"/home/user/.widi/settings.json",
-			JSON.stringify({
-				defaultProfile: "settings-profile",
-				profiles: ["/custom/profiles"],
-			}),
-		);
-		env.addFile(
-			"/custom/profiles/settings-profile.md",
-			profileMarkdown("settings-profile"),
-		);
 		env.addFile(
 			"/workspace/project/.widi/profiles/project.md",
 			profileMarkdown("project"),
@@ -861,32 +845,16 @@ You are extension-profile.`,
 			trustOverride: true,
 		});
 
-		expect(runtime.services.defaultProfile).toMatchObject({
-			id: "settings-profile",
-			source: "settings",
-			profileSource: {
-				kind: "settings",
-				path: "/custom/profiles/settings-profile.md",
-			},
-		});
 		expect(runtime.services.profileRoots).toEqual([
-			expect.objectContaining({
-				kind: "settings",
-				path: "/custom/profiles",
-				priority: 300,
-				missingBehavior: "diagnostic",
-			}),
 			expect.objectContaining({
 				kind: "cwd",
 				path: "/workspace/project/.widi/profiles",
 				priority: 200,
-				missingBehavior: "silent",
 			}),
 			expect.objectContaining({
 				kind: "agent_dir",
 				path: "/home/user/.widi/profiles",
 				priority: 100,
-				missingBehavior: "silent",
 			}),
 		]);
 
@@ -899,25 +867,6 @@ You are extension-profile.`,
 		await expect(
 			runtime.services.profileRegistry.resolveProfile("default"),
 		).resolves.toMatchObject({ ok: true, source: { kind: "builtin" } });
-	});
-
-	it("reports missing settings profile roots through runtime diagnostics", async () => {
-		const env = new MemoryExecutionEnv();
-		env.addFile(
-			"/home/user/.widi/settings.json",
-			JSON.stringify({ profiles: ["/missing/profiles"] }),
-		);
-
-		const runtime = await createWidiRuntime({
-			cwd: "/workspace/project",
-			agentDir: "/home/user/.widi",
-			executionEnv: env,
-			defaultModel,
-		});
-
-		expect(runtime.diagnostics).toContainEqual(
-			expect.objectContaining({ code: "profile.source_missing" }),
-		);
 	});
 
 	it("resolves default model from settings", async () => {

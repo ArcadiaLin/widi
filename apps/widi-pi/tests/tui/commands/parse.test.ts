@@ -29,11 +29,49 @@ describe("parseLineCommand", () => {
 		});
 	});
 
+	it("parses the space argument syntax", () => {
+		expect(parseLineCommand("/model openai/gpt-5")).toEqual({
+			name: "model",
+			argument: "openai/gpt-5",
+			hasArgument: true,
+		});
+	});
+
+	it("skips the separating whitespace run in the space syntax", () => {
+		expect(parseLineCommand("/model   openai/gpt-5")?.argument).toBe(
+			"openai/gpt-5",
+		);
+	});
+
+	it("keeps colon arguments verbatim, including spaces", () => {
+		expect(parseLineCommand("/model:openai/gpt-5 latest")).toEqual({
+			name: "model",
+			argument: "openai/gpt-5 latest",
+			hasArgument: true,
+		});
+	});
+
+	it("uses whichever separator comes first", () => {
+		expect(parseLineCommand("/name arg:withcolon")?.argument).toBe(
+			"arg:withcolon",
+		);
+		expect(parseLineCommand("/name:arg with space")?.argument).toBe(
+			"arg with space",
+		);
+	});
+
+	it("parses unknown space-separated input as a command", () => {
+		expect(parseLineCommand("/random words")).toEqual({
+			name: "random",
+			argument: "words",
+			hasArgument: true,
+		});
+	});
+
 	it("rejects non-command text and invalid names", () => {
 		expect(parseLineCommand("hello")).toBeUndefined();
 		expect(parseLineCommand("/")).toBeUndefined();
 		expect(parseLineCommand("//x")).toBeUndefined();
-		expect(parseLineCommand("/bad name:arg")).toBeUndefined();
 	});
 
 	it("ignores trailing whitespace", () => {

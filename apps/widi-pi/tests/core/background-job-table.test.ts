@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import {
 	type BackgroundJobChange,
+	type BackgroundJobReport,
 	BackgroundJobTable,
 	type BackgroundJobTransition,
+	formatBackgroundJobResultMessageText,
+	MAX_BACKGROUND_JOB_REPORT_BYTES,
+	snapshotBackgroundJob,
 } from "../../src/core/background-job.ts";
 
 describe("BackgroundJobTable", () => {
@@ -136,5 +140,365 @@ describe("BackgroundJobTable", () => {
 		table.background(job.id);
 		table.settle(job.id, { status: "completed" });
 		expect(listener).not.toHaveBeenCalled();
+	});
+
+	it("carries a description onto the job view", () => {
+		const table = new BackgroundJobTable();
+		const job = table.create({
+			toolCallId: "call-1",
+			toolName: "bash",
+			description: "npm run build",
+		});
+		expect(job.description).toBe("npm run build");
+	});
+
+	it("stores an initial structured report as a detached revisioned snapshot", () => {
+		const source = {
+			kind: "test.plan",
+			schemaVersion: 1,
+			summary: "First step",
+			progress: { completed: 0, total: 1 },
+			data: { items: ["first"] },
+		} satisfies BackgroundJobReport;
+		const table = new BackgroundJobTable();
+		const job = table.create({
+			toolCallId: "call-1",
+			toolName: "planner",
+			report: source,
+		});
+
+		source.data.items.push("mutated later");
+		expect(job.report).toMatchObject({
+			revision: 1,
+			updatedAt: expect.any(Number),
+			value: {
+				kind: "test.plan",
+				data: { items: ["first"] },
+			},
+		});
+		expect(Object.isFrozen(job.report)).toBe(true);
+		expect(Object.isFrozen(job.report?.value.data)).toBe(true);
+		expect(snapshotBackgroundJob(job).report).toBe(job.report);
+	});
+
+	it("keeps pre-t0 reports silent and includes the latest one at backgrounding", () => {
+		const table = new BackgroundJobTable({ reportThrottleMs: 0 });
+		const reports = vi.fn();
+		const changes: BackgroundJobChange[] = [];
+		table.onReport(reports);
+		table.onChange((change) => changes.push(change));
+		const job = table.create({ toolCallId: "call-1", toolName: "planner" });
+
+		expect(
+			table.setReport(job.id, {
+				kind: "test.plan",
+				schemaVersion: 1,
+				summary: "Prepared",
+			}),
+		).toBe(true);
+		expect(reports).not.toHaveBeenCalled();
+
+		table.background(job.id);
+		expect(changes[0]?.job.report).toMatchObject({
+			revision: 1,
+			value: { summary: "Prepared" },
+		});
+		expect(reports).not.toHaveBeenCalled();
+	});
+
+	it("coalesces reports and flushes the final revision before settlement", () => {
+		const table = new BackgroundJobTable({ reportThrottleMs: 10_000 });
+		const log: Array<{ kind: "report" | "change"; value: number | string }> =
+			[];
+		table.onReport((_job, report) => {
+			log.push({ kind: "report", value: report.revision });
+		});
+		table.onChange((change) => {
+			log.push({ kind: "change", value: change.transition });
+		});
+		const job = table.create({ toolCallId: "call-1", toolName: "planner" });
+		table.background(job.id);
+
+		for (const completed of [1, 2, 3]) {
+			table.setReport(job.id, {
+				kind: "test.plan",
+				schemaVersion: 1,
+				progress: { completed, total: 3 },
+			});
+		}
+		expect(log).toEqual([{ kind: "change", value: "backgrounded" }]);
+
+		table.settle(job.id, { status: "completed" });
+		expect(log).toEqual([
+			{ kind: "change", value: "backgrounded" },
+			{ kind: "report", value: 3 },
+			{ kind: "change", value: "settled" },
+		]);
+	});
+
+	it("rejects invalid or oversized reports without advancing the revision", () => {
+		const table = new BackgroundJobTable();
+		const job = table.create({ toolCallId: "call-1", toolName: "planner" });
+		table.setReport(job.id, {
+			kind: "test.plan",
+			schemaVersion: 1,
+			summary: "valid",
+		});
+
+		expect(() =>
+			table.setReport(job.id, {
+				kind: "test.plan",
+				schemaVersion: 1,
+				progress: { completed: 2, total: 1 },
+			}),
+		).toThrow(/cannot exceed total/);
+		expect(() =>
+			table.setReport(job.id, {
+				kind: "test.plan",
+				schemaVersion: 1,
+				data: { text: "x".repeat(MAX_BACKGROUND_JOB_REPORT_BYTES) },
+			}),
+		).toThrow(/exceeds/);
+		expect(job.report?.revision).toBe(1);
+	});
+
+	it("notifies progress listeners immediately on the first append", () => {
+		const table = new BackgroundJobTable();
+		const progress = vi.fn();
+		table.onProgress(progress);
+
+		const job = table.create({ toolCallId: "call-1", toolName: "bash" });
+		table.background(job.id);
+		job.output.append("first line\n");
+
+		// The first append after the throttle window elapsed fires synchronously.
+		expect(progress).toHaveBeenCalledTimes(1);
+		expect(progress.mock.calls[0]?.[0]).toBe(job);
+	});
+
+	it("withholds pre-t0 output and publishes it after the job is backgrounded", () => {
+		const table = new BackgroundJobTable();
+		const progress = vi.fn();
+		table.onProgress(progress);
+
+		const job = table.create({ toolCallId: "call-1", toolName: "bash" });
+		job.output.append("early output");
+		expect(progress).not.toHaveBeenCalled();
+
+		table.background(job.id);
+		expect(progress).toHaveBeenCalledTimes(1);
+		expect(progress.mock.calls[0]?.[0]).toBe(job);
+		expect(
+			Buffer.from(job.output.drainIncrement()?.chunk ?? "", "base64").toString(
+				"utf-8",
+			),
+		).toBe("early output");
+	});
+
+	it("never publishes progress for a job that settles inline", () => {
+		const table = new BackgroundJobTable();
+		const progress = vi.fn();
+		table.onProgress(progress);
+
+		const job = table.create({ toolCallId: "call-1", toolName: "bash" });
+		job.output.append("inline output");
+		table.settle(job.id, { status: "completed" });
+
+		expect(progress).not.toHaveBeenCalled();
+	});
+
+	it("coalesces a burst of appends within the throttle window", () => {
+		const table = new BackgroundJobTable({ progressThrottleMs: 10_000 });
+		const progress = vi.fn();
+		table.onProgress(progress);
+
+		const job = table.create({ toolCallId: "call-1", toolName: "bash" });
+		table.background(job.id);
+		job.output.append("a");
+		job.output.append("b");
+		job.output.append("c");
+
+		// One immediate emit; the rest fold into a single trailing timer that the
+		// long throttle keeps pending, so no further synchronous emits fire.
+		expect(progress).toHaveBeenCalledTimes(1);
+	});
+
+	it("trips the circuit breaker and aborts once past the output ceiling", () => {
+		const table = new BackgroundJobTable({ outputCeilingBytes: 8 });
+		const transitions: BackgroundJobTransition[] = [];
+		table.onChange((change) => transitions.push(change.transition));
+
+		const job = table.create({ toolCallId: "call-1", toolName: "bash" });
+		table.background(job.id);
+		job.output.append("0123456789"); // 10 bytes > 8-byte ceiling
+
+		expect(job.signal.aborted).toBe(true);
+		expect(job.stopReason).toContain("Output limit exceeded");
+
+		// The trip is one-shot: further output does not re-abort or re-emit.
+		job.output.append("more");
+		table.settle(job.id, { status: "cancelled" });
+		expect(transitions).toEqual(["backgrounded", "aborting", "settled"]);
+	});
+
+	it("records a terminal reason for failures and otherwise unexplained cancellation", () => {
+		const table = new BackgroundJobTable();
+		const failures: string[] = [];
+		table.onChange((change) => {
+			if (change.transition === "settled") {
+				failures.push(change.job.stopReason ?? "");
+			}
+		});
+
+		const failed = table.create({
+			toolCallId: "call-failed",
+			toolName: "bash",
+		});
+		table.background(failed.id);
+		table.settle(failed.id, {
+			status: "failed",
+			error: new Error("command failed"),
+		});
+
+		const cancelled = table.create({
+			toolCallId: "call-cancelled",
+			toolName: "bash",
+		});
+		table.background(cancelled.id);
+		table.settle(cancelled.id, { status: "cancelled" });
+
+		expect(failures).toEqual(["command failed", "The job was cancelled."]);
+	});
+
+	it("keeps partial tool output alongside an explicit cancellation reason", () => {
+		const table = new BackgroundJobTable();
+		let resultText = "";
+		table.onChange((change) => {
+			if (change.transition === "settled") {
+				resultText = formatBackgroundJobResultMessageText(change);
+			}
+		});
+
+		const job = table.create({ toolCallId: "call-1", toolName: "bash" });
+		table.background(job.id);
+		table.abort(job.id, "Cancellation requested by kill_job.");
+		table.settle(job.id, {
+			status: "cancelled",
+			error: new Error("partial output\n\nCommand aborted"),
+		});
+
+		expect(resultText).toContain("Cancellation requested by kill_job.");
+		expect(resultText).toContain("partial output");
+	});
+
+	it("defaults a job's origin to the tool call that created it", () => {
+		const table = new BackgroundJobTable();
+		const job = table.create({ toolCallId: "call-1", toolName: "bash" });
+
+		expect(job.origin).toEqual({ kind: "tool" });
+		expect(snapshotBackgroundJob(job).origin).toEqual({ kind: "tool" });
+		// A tool-origin job is settled by the call it was handed to, so an
+		// authorization argument is meaningless and ignored.
+		table.background(job.id);
+		expect(
+			table.settle(job.id, { status: "completed" }, { settledBy: "anyone" }),
+		).toBe("backgrounded");
+	});
+
+	it("accepts a delegated task's outcome only from the worker it was assigned to", () => {
+		const table = new BackgroundJobTable();
+		const job = table.create({
+			toolCallId: "call-assign",
+			toolName: "assign_agent_task",
+			origin: { kind: "agent_task", workerAgentId: "agent-worker" },
+		});
+		table.background(job.id);
+
+		expect(table.settle(job.id, { status: "completed" })).toBe("denied");
+		expect(
+			table.settle(
+				job.id,
+				{ status: "completed" },
+				{ settledBy: "agent-intruder" },
+			),
+		).toBe("denied");
+		expect(table.get(job.id)).toBeDefined();
+
+		expect(
+			table.settle(
+				job.id,
+				{ status: "completed" },
+				{ settledBy: "agent-worker" },
+			),
+		).toBe("backgrounded");
+		expect(table.get(job.id)).toBeUndefined();
+	});
+
+	// The origin is the settlement authority, so a caller holding the object it
+	// passed must not be able to reassign the job to a different worker.
+	it("detaches the origin it was given from the caller's object", () => {
+		const table = new BackgroundJobTable();
+		const origin = {
+			kind: "agent_task" as const,
+			workerAgentId: "agent-worker",
+		};
+		const job = table.create({
+			toolCallId: "call-assign",
+			toolName: "assign_agent_task",
+			origin,
+		});
+		const snapshot = snapshotBackgroundJob(job);
+		table.background(job.id);
+
+		Object.assign(origin, { workerAgentId: "agent-intruder" });
+
+		expect(job.origin).toEqual({
+			kind: "agent_task",
+			workerAgentId: "agent-worker",
+		});
+		expect(snapshot.origin).toEqual({
+			kind: "agent_task",
+			workerAgentId: "agent-worker",
+		});
+		expect(
+			table.settle(
+				job.id,
+				{ status: "completed" },
+				{ settledBy: "agent-intruder" },
+			),
+		).toBe("denied");
+		expect(
+			table.settle(
+				job.id,
+				{ status: "completed" },
+				{ settledBy: "agent-worker" },
+			),
+		).toBe("backgrounded");
+	});
+
+	// Nothing watches a delegated job's signal, so an abort that only fired the
+	// signal would leave the job stuck in `aborting` forever.
+	it("completes an aborted delegated task as cancelled by itself", () => {
+		const table = new BackgroundJobTable();
+		const transitions: BackgroundJobTransition[] = [];
+		table.onChange((change) => transitions.push(change.transition));
+		const job = table.create({
+			toolCallId: "call-assign",
+			toolName: "assign_agent_task",
+			origin: { kind: "agent_task", workerAgentId: "agent-worker" },
+		});
+		table.background(job.id);
+
+		table.abort(job.id, "Worker was killed");
+
+		expect(transitions).toEqual(["backgrounded", "aborting", "settled"]);
+		expect(table.get(job.id)).toBeUndefined();
+		expect(
+			table.settle(
+				job.id,
+				{ status: "completed" },
+				{ settledBy: "agent-worker" },
+			),
+		).toBe("ignored");
 	});
 });

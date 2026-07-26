@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-	createAgentToolFromResolvedTool,
+	createAgentHarnessToolFromResolvedTool,
 	ToolRegistry,
 } from "../../src/core/tool-registry.ts";
 import { createWriteToolDefinition } from "../../src/core/tools/coding/write.ts";
@@ -193,12 +193,18 @@ describe("core write tool", () => {
 		);
 		const resolved = registry.resolve().getTool("write");
 		if (!resolved) throw new Error("Expected write tool to resolve.");
-		const agentTool = createAgentToolFromResolvedTool(resolved, {});
+		const agentTool = createAgentHarnessToolFromResolvedTool(resolved);
 
-		const result = await agentTool.execute("call-1", {
-			path: "file.txt",
-			content: "hello",
-		});
+		const result = await agentTool.execute(
+			"call-1",
+			{
+				path: "file.txt",
+				content: "hello",
+			},
+			undefined,
+			undefined,
+			{},
+		);
 
 		expect(result).toMatchObject({
 			content: [

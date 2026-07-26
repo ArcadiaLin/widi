@@ -2,6 +2,7 @@ import type { AgentHarnessEvent } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import type { AgentProfile } from "./agent-profile.js";
 import type {
+	BackgroundJobReportSnapshot,
 	BackgroundJobSnapshot,
 	BackgroundJobTransition,
 } from "./background-job.ts";
@@ -182,6 +183,47 @@ export type OrchestratorEvent =
 			transition: BackgroundJobTransition;
 			liveCount: number;
 			changedAt: string;
+	  }
+	// Latest structured, tool-owned report for a live backgrounded job. This is
+	// a replace-only register rather than a delta stream: consumers keep the
+	// highest revision they have seen and may safely skip intermediate events.
+	| {
+			readonly type: "agent_background_job_report_updated";
+			agentId: AgentId;
+			jobId: string;
+			report: BackgroundJobReportSnapshot;
+			changedAt: string;
+			/** Originating tool call id, for correlating the report to its operation. */
+			operationRef?: string;
+	  }
+	// Incremental output of a live backgrounded job. Best-effort and coalesced:
+	// throttled to ~100ms and merged under backpressure, so consumers must treat
+	// it as a lossy stream keyed by absolute byte offsets rather than a guaranteed
+	// per-chunk feed. `chunk` is the new output since the previous event encoded
+	// as Base64; a `startByte` past the previous `endByte` (and a rising
+	// `progressDroppedBytes`) marks a gap where the increment buffer overflowed.
+	// Extensions persist by Base64-decoding `chunk` and writing those exact bytes
+	// at `startByte`; read_job still serves the current rolling tail.
+	| {
+			readonly type: "agent_background_job_progress";
+			agentId: AgentId;
+			jobId: string;
+			/** Per-job monotonic counter of emitted progress events (0-based). */
+			sequence: number;
+			/** New output bytes since the previous event, encoded as Base64. */
+			chunk: string;
+			/** Absolute offset of the first byte in `chunk`. */
+			startByte: number;
+			/** Absolute offset just past the last byte in `chunk`. */
+			endByte: number;
+			/** Total bytes ever appended to the job's output. */
+			totalBytesSeen: number;
+			/** Cumulative bytes dropped from the progress buffer and never forwarded. */
+			progressDroppedBytes: number;
+			/** ISO timestamp when the increment was observed. */
+			observedAt: string;
+			/** Originating tool call id, for correlating the job to its operation. */
+			operationRef?: string;
 	  };
 
 export type OrchestratorEventListener = (

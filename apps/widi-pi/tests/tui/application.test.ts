@@ -410,7 +410,6 @@ function snapshot(agentId: string, runtimeModel: RuntimeModel) {
 			extensions: [],
 			hooks: [],
 			toolContributions: [],
-			resourceContributions: [],
 			providerContributions: [],
 			stale: { stale: false },
 		},

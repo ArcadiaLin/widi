@@ -9,17 +9,14 @@ import {
 	AgentHarnessError,
 	type AgentHarnessEvent,
 	type AgentHarnessResources,
-	type AgentTool,
 	calculateContextTokens,
 	type ExecutionEnv,
 	formatSkillsForSystemPrompt,
 	getLastAssistantUsage,
 	type JsonlSessionMetadata,
 	type PromptTemplate,
-	type PromptTemplateDiagnostic,
 	type Session,
 	type Skill,
-	type SkillDiagnostic,
 	shouldCompact,
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
@@ -41,9 +38,12 @@ import {
 	createAgentRecord,
 	createAgentRecordFromProfileReference,
 	snapshotAgentRecord,
+	type WidiAgentHarness,
 } from "./agent-record.ts";
 import {
+	type BackgroundJob,
 	type BackgroundJobChange,
+	type BackgroundJobReportSnapshot,
 	type BackgroundJobSettlement,
 	type BackgroundJobSnapshot,
 	formatBackgroundJobResultMessageText,
@@ -69,7 +69,6 @@ import {
 	ExtensionLoader,
 	type ExtensionModule,
 	type ExtensionObservedEvent,
-	type ExtensionResourceContribution,
 	ExtensionRunner,
 } from "./extension/index.ts";
 import {
@@ -92,6 +91,17 @@ import type {
 import { HumanRequestBroker } from "./human-request.ts";
 import { stripImagesFromMessages } from "./image-policy.ts";
 import {
+	assertMessageBody,
+	backgroundResultMergeKey,
+	type MessageDeliveryPhase,
+	MessageDeliveryQueue,
+	type MessageDeliveryReceipt,
+	type MessageDraft,
+	type MessageSendOutcome,
+	renderMessageEnvelope,
+	transformMessage,
+} from "./message.ts";
+import {
 	type ModelRegistry,
 	modelReference,
 	type ProviderConfigInput,
@@ -100,11 +110,7 @@ import {
 	THINKING_LEVELS,
 } from "./model-registry.js";
 import type { ConfigValueResolver } from "./resolve-config-value.js";
-import type {
-	ExtensionResourcePathContribution,
-	ResourceLoader,
-	ResourceSource,
-} from "./resource-loader.js";
+import type { ResourceLoader, ResourceSource } from "./resource-loader.js";
 import type {
 	AgentSessionCandidate,
 	AgentSessionMetadata,
@@ -115,7 +121,9 @@ import type {
 } from "./session-manager.ts";
 import type { SettingManager } from "./setting-manager.js";
 import {
-	createAgentToolsFromResolvedTools,
+	createAgentHarnessToolsFromResolvedTools,
+	type ResolvedAgentHarnessTool,
+	type ToolAdapterContext,
 	ToolRegistry,
 } from "./tool-registry.ts";
 import type {
@@ -258,11 +266,11 @@ export type SpawnAgentOptions =
 
 interface SpawnedAgentHarness {
 	agentId: AgentId;
-	harness: AgentHarness;
+	harness: WidiAgentHarness;
 }
 
 interface AgentToolSet {
-	tools: AgentTool[];
+	tools: ResolvedAgentHarnessTool[];
 	toolNames: string[];
 	requestedToolNames: string[] | undefined;
 	activeToolNames: string[];
@@ -280,12 +288,27 @@ interface ResolvedAgentProfile {
 	entryId: string;
 }
 
-interface AgentToolSetHarness {
-	getTools(): AgentTool[];
-	setTools(tools: AgentTool[], activeToolNames?: string[]): Promise<void>;
-	getActiveTools(): AgentTool[];
-	setActiveTools(toolNames: string[]): Promise<void>;
+/**
+ * Session entries written before the harness persists the paired user message.
+ * They are retracted when delivery never produces that message.
+ */
+interface ProvisionalPromptEntries {
+	readonly previousLeafId: string | null;
+	readonly lastEntryId: string;
 }
+
+type AcceptedMessage =
+	| {
+			readonly kind: "accepted";
+			readonly receipt: MessageDeliveryReceipt;
+			readonly provisional?: ProvisionalPromptEntries;
+	  }
+	| {
+			readonly kind: "blocked";
+			readonly inputId: string;
+			readonly reason?: string;
+			readonly blockedBy: string;
+	  };
 
 export class AgentOrchestrator {
 	private _defaultModel: RuntimeModel;
@@ -306,26 +329,64 @@ export class AgentOrchestrator {
 	private _unsubscribeAgentExtensionInterceptors: Map<AgentId, () => void> =
 		new Map();
 	private _unsubscribeAgentJobChanges: Map<AgentId, () => void> = new Map();
-	// Background job results (t1) buffered per agent, delivered as a single
-	// user-message prompt at the agent's next idle boundary. Buffering instead of
-	// steering mid-run avoids the steer tail-strand (a steer can succeed yet the
-	// run ends before draining it) and never blocks on an in-flight run.
-	private _pendingBackgroundResults: Map<AgentId, string[]> = new Map();
-	private _backgroundFlushInFlight: Set<AgentId> = new Set();
-	// Per-agent tail for background job change events. These carry state (a
-	// snapshot and an absolute live count, not deltas), so they must reach
-	// listeners in the order the table changed; `_emit` is not itself
-	// serialized, so emissions are chained here to keep an async listener from
-	// observing changes out of order.
+	private _unsubscribeAgentJobProgress: Map<AgentId, () => void> = new Map();
+	private _unsubscribeAgentJobReports: Map<AgentId, () => void> = new Map();
+	// Per-agent serialized tail for background job emissions (output, reports,
+	// and lifecycle changes). These carry state (snapshots, revisions, absolute
+	// counts, and ordered output increments), so they must reach listeners in the
+	// order the table changed; `_emit` is not itself serialized. Routing every
+	// job channel through one tail also makes `settled` a barrier: the final
+	// output and report are enqueued ahead of the terminal event.
 	private _backgroundJobEmits: Map<AgentId, Promise<void>> = new Map();
+	// Job ids with an output increment already queued for emission on the tail,
+	// per agent. Bounds coalescing: while a job's progress emit is queued, further
+	// throttled ticks are no-ops and their bytes are folded into the pending drain
+	// (`_emit` awaits observers, so an unbounded queue would grow without limit).
+	private _progressQueued: Map<AgentId, Set<string>> = new Map();
+	// Per-agent, per-job monotonic progress sequence. Keyed by agent because job
+	// ids (`job-N`) are only unique within an agent's table.
+	private _progressSequence: Map<AgentId, Map<string, number>> = new Map();
+	// Latest report waiting on the serialized emission tail. Replacing the value
+	// coalesces intermediate revisions while preserving one queued task per job.
+	private _queuedJobReports: Map<
+		AgentId,
+		Map<
+			string,
+			{
+				report: BackgroundJobReportSnapshot;
+				operationRef: string;
+			}
+		>
+	> = new Map();
 	private _eventListeners: Set<OrchestratorEventListener> = new Set();
 	private _extensionObserverDispatchDepth: Map<AgentId, number> = new Map();
 	private _agentRunSignals: Map<AgentId, AbortSignal> = new Map();
+	private _agentStatusRevisions: Map<AgentId, number> = new Map();
 	private _agentToolSets: Map<AgentId, AgentToolSet> = new Map();
 	private _autoCompactingAgents: Set<AgentId> = new Set();
+	// Live count of harness operations that do not run an agent loop
+	// (compaction, branch summary). `AgentLifecycleStatus.running` cannot tell
+	// these apart from a turn, but a steer or follow-up delivered here would be
+	// accepted into a queue nothing drains. Counted rather than flagged: a
+	// second, concurrent operation rejected as busy must not clear the marker
+	// the first one still depends on.
+	private _maintenanceDepth: Map<AgentId, number> = new Map();
+	// Waiters for a target's next agent-loop start, resolved from the harness's
+	// own `agent_start`. Accepting a prompt any earlier would report success for
+	// text the harness can still drop while it builds the turn.
+	private _agentRunStartWaiters: Map<AgentId, Set<() => void>> = new Map();
+	// Reverse index for delegated task jobs: worker agent id -> the owner jobs it
+	// owes a result. A `BackgroundJobTable` is per-agent and cannot see another
+	// agent's jobs, so cancelling a disposed worker's tasks has to be resolved
+	// here. Holds no task state - the owner's job remains the only fact.
+	private _taskJobsByWorker: Map<
+		AgentId,
+		Set<{ readonly ownerAgentId: AgentId; readonly jobId: string }>
+	> = new Map();
 	private readonly _extensionStatuses = new ExtensionStatusRegistry();
 	private _clients: Map<string, OrchestratorClient<OrchestratorEvent>> =
 		new Map();
+	private readonly _messages: MessageDeliveryQueue;
 	private readonly _humanRequests: HumanRequestBroker;
 	private _nextInputId = 1;
 	private _nextPresentationId = 1;
@@ -349,6 +410,27 @@ export class AgentOrchestrator {
 			: undefined;
 		this._defaultModel = config.defaultModel;
 		this._defaultThinkingLevel = config.defaultThinkingLevel;
+		this._messages = new MessageDeliveryQueue({
+			resolvePhase: (agentId) => this._resolveDeliveryPhase(agentId),
+			deliver: async (request) => {
+				if (request.method === "prompt") {
+					return await this._startAgentPrompt(request.agentId, request.text, {
+						images: request.images,
+						reportFailure: !request.awaited,
+					});
+				}
+				const harness = this._requireAgentHarness(request.agentId);
+				const options = request.images
+					? { images: [...request.images] }
+					: undefined;
+				if (request.method === "follow_up") {
+					await harness.followUp(request.text, options);
+				} else {
+					await harness.steer(request.text, options);
+				}
+				return { method: request.method };
+			},
+		});
 		this._humanRequests = new HumanRequestBroker({
 			findHumanRequestHandler: () =>
 				Array.from(this._clients.values()).find((entry) => entry.requestHuman)
@@ -903,19 +985,17 @@ export class AgentOrchestrator {
 			record.profile.reference.id,
 			agentId,
 		);
-		const loaded = await this._loadMergedAgentPromptTemplates({
+		const loaded = await this._loadProfilePromptTemplates({
 			agentId,
 			profile: resolvedProfile.profile,
-			extensionRunner: activeExtensionRunner(record),
 		});
 		await this._publishDiagnostics(loaded.diagnostics);
 		return loaded.promptTemplates.map(({ promptTemplate }) => promptTemplate);
 	}
 
-	private async _loadMergedAgentPromptTemplates(options: {
+	private async _loadProfilePromptTemplates(options: {
 		agentId: AgentId;
 		profile: AgentProfile;
-		extensionRunner?: ExtensionRunner;
 	}): Promise<{
 		promptTemplates: Array<{
 			promptTemplate: PromptTemplate;
@@ -923,44 +1003,18 @@ export class AgentOrchestrator {
 		}>;
 		diagnostics: OrchestratorDiagnostic[];
 	}> {
-		const { agentId, profile, extensionRunner } = options;
-		const toResourceDiagnostic = (
-			diagnostic: PromptTemplateDiagnostic & { source?: ResourceSource },
-		) =>
+		const { agentId, profile } = options;
+		const loaded = await this.resourceLoader.loadPromptTemplates(
+			profile.promptTemplates,
+		);
+		const diagnostics = loaded.diagnostics.map((diagnostic) =>
 			toCoreDiagnosticFromPromptTemplateDiagnostic(diagnostic, {
 				agentId,
 				profileId: profile.id,
 				phase: "resolve",
-			});
-		const loaded = await this.resourceLoader.loadPromptTemplates(
-			profile.promptTemplates,
+			}),
 		);
-		const diagnostics = loaded.diagnostics.map(toResourceDiagnostic);
-		const contributions = listResourcePathContributions(
-			extensionRunner,
-			(contribution) => contribution.promptTemplatePaths,
-		);
-		if (contributions.length === 0) {
-			return { promptTemplates: loaded.promptTemplates, diagnostics };
-		}
-		const contributed =
-			await this.resourceLoader.loadContributedPromptTemplates(contributions);
-		diagnostics.push(...contributed.diagnostics.map(toResourceDiagnostic));
-		const merged = this._mergeContributedResources({
-			agentId,
-			profileId: profile.id,
-			resourceType: "prompt_template",
-			registered: loaded.promptTemplates.map((entry) => ({
-				name: entry.promptTemplate.name,
-				entry,
-			})),
-			contributed: contributed.promptTemplates.map((entry) => ({
-				name: entry.promptTemplate.name,
-				entry,
-			})),
-		});
-		diagnostics.push(...merged.diagnostics);
-		return { promptTemplates: merged.resources, diagnostics };
+		return { promptTemplates: loaded.promptTemplates, diagnostics };
 	}
 
 	async listAgentSkillCandidates(
@@ -999,107 +1053,31 @@ export class AgentOrchestrator {
 			record.profile.reference.id,
 			agentId,
 		);
-		const loaded = await this._loadMergedAgentSkills({
+		const loaded = await this._loadProfileSkills({
 			agentId,
 			profile: resolvedProfile.profile,
-			extensionRunner: activeExtensionRunner(record),
 		});
 		await this._publishDiagnostics(loaded.diagnostics);
 		return loaded.skills.map(({ skill }) => skill);
 	}
 
-	private async _loadMergedAgentSkills(options: {
+	private async _loadProfileSkills(options: {
 		agentId: AgentId;
 		profile: AgentProfile;
-		extensionRunner?: ExtensionRunner;
 	}): Promise<{
 		skills: Array<{ skill: Skill; source: ResourceSource }>;
 		diagnostics: OrchestratorDiagnostic[];
 	}> {
-		const { agentId, profile, extensionRunner } = options;
-		const toResourceDiagnostic = (
-			diagnostic: SkillDiagnostic & { source?: ResourceSource },
-		) =>
+		const { agentId, profile } = options;
+		const loaded = await this.resourceLoader.loadSkills(profile.skills);
+		const diagnostics = loaded.diagnostics.map((diagnostic) =>
 			toCoreDiagnosticFromSkillDiagnostic(diagnostic, {
 				agentId,
 				profileId: profile.id,
 				phase: "resolve",
-			});
-		const loaded = await this.resourceLoader.loadSkills(profile.skills);
-		const diagnostics = loaded.diagnostics.map(toResourceDiagnostic);
-		const contributions = listResourcePathContributions(
-			extensionRunner,
-			(contribution) => contribution.skillPaths,
+			}),
 		);
-		if (contributions.length === 0) {
-			return { skills: loaded.skills, diagnostics };
-		}
-		const contributed =
-			await this.resourceLoader.loadContributedSkills(contributions);
-		diagnostics.push(...contributed.diagnostics.map(toResourceDiagnostic));
-		const merged = this._mergeContributedResources({
-			agentId,
-			profileId: profile.id,
-			resourceType: "skill",
-			registered: loaded.skills.map((entry) => ({
-				name: entry.skill.name,
-				entry,
-			})),
-			contributed: contributed.skills.map((entry) => ({
-				name: entry.skill.name,
-				entry,
-			})),
-		});
-		diagnostics.push(...merged.diagnostics);
-		return { skills: merged.resources, diagnostics };
-	}
-
-	// First-registration-wins (ME slice 8): core-owned profile/cwd resources
-	// register first and always win; extension contributions then resolve in
-	// activation order. A name collision drops the later contribution with a
-	// diagnostic instead of renaming it - skill and template names must not
-	// change shape between declaration and invocation.
-	private _mergeContributedResources<
-		T extends { source: ResourceSource },
-	>(options: {
-		agentId: AgentId;
-		profileId: string;
-		resourceType: "skill" | "prompt_template";
-		registered: Array<{ name: string; entry: T }>;
-		contributed: Array<{ name: string; entry: T }>;
-	}): { resources: T[]; diagnostics: OrchestratorDiagnostic[] } {
-		const takenNames = new Set(options.registered.map((item) => item.name));
-		const resources = options.registered.map((item) => item.entry);
-		const diagnostics: OrchestratorDiagnostic[] = [];
-		for (const { name, entry } of options.contributed) {
-			if (takenNames.has(name)) {
-				const extensionId =
-					entry.source.kind === "extension"
-						? entry.source.extensionId
-						: undefined;
-				diagnostics.push(
-					createOrchestratorDiagnostic({
-						severity: "warning",
-						disposition: "reported",
-						code: "extension.resource_conflict",
-						message: `Extension '${extensionId}' ${options.resourceType} '${name}' conflicts with an already registered ${options.resourceType} and was skipped.`,
-						agentId: options.agentId,
-						profileId: options.profileId,
-						extensionId,
-						recoverable: true,
-						details: {
-							resourceType: options.resourceType,
-							name,
-							path: entry.source.path,
-						},
-					}),
-				);
-				continue;
-			}
-			takenNames.add(name);
-			resources.push(entry);
-		}
-		return { resources, diagnostics };
+		return { skills: loaded.skills, diagnostics };
 	}
 
 	async setAgentThinkingLevelByName(
@@ -1168,8 +1146,7 @@ export class AgentOrchestrator {
 		toolNames: string[],
 		activeToolNames?: string[],
 	): Promise<void> {
-		const harness = this._requireAgentHarness(agentId) as AgentHarness &
-			Partial<AgentToolSetHarness>;
+		const harness = this._requireAgentHarness(agentId);
 		const currentState = this._requireAgentToolSet(agentId);
 		const next = await this._resolveAgentTools({
 			agentId,
@@ -1180,7 +1157,7 @@ export class AgentOrchestrator {
 					? { mode: "default_all" }
 					: { mode: "explicit", toolNames: activeToolNames },
 		});
-		await harness.setTools?.(next.tools, [...next.activeToolNames]);
+		await harness.setTools(next.tools, [...next.activeToolNames]);
 		this._setAgentToolSet(agentId, next);
 	}
 
@@ -1192,17 +1169,37 @@ export class AgentOrchestrator {
 		agentId: AgentId,
 		toolNames: string[],
 	): Promise<void> {
-		const harness = this._requireAgentHarness(agentId) as AgentHarness &
-			Partial<AgentToolSetHarness>;
+		const harness = this._requireAgentHarness(agentId);
 		const currentState = this._requireAgentToolSet(agentId);
-		const next = await this._resolveAgentTools({
-			agentId,
-			profileId: currentState.profileId,
+		// The harness owns the installed tools, so activation validates against
+		// its live tool set with no await between the check and the apply. A
+		// registry re-resolve here would race concurrent setTools/reload calls
+		// and re-publish standing resolve diagnostics on every toggle.
+		const installedNames = new Set(harness.getTools().map((tool) => tool.name));
+		const { activeToolNames, diagnostics } = selectActiveToolNames(
+			toolNames,
+			installedNames,
+			{ agentId, profileId: currentState.profileId },
+		);
+		await harness.setActiveTools(activeToolNames);
+		// Re-read the harness after the await: it is the source of truth, and a
+		// concurrent tool-set change must not be clobbered by our stale copy.
+		const tools = harness.getTools();
+		const nextActiveToolNames = harness
+			.getActiveTools()
+			.map((tool) => tool.name);
+		this._setAgentToolSet(agentId, {
+			tools,
+			toolNames: tools.map((tool) => tool.name),
 			requestedToolNames: currentState.requestedToolNames,
-			activeToolSelection: { mode: "explicit", toolNames },
+			activeToolNames: nextActiveToolNames,
+			activeToolSelection: {
+				mode: "explicit",
+				toolNames: [...nextActiveToolNames],
+			},
+			profileId: currentState.profileId,
 		});
-		await harness.setTools?.(next.tools, [...next.activeToolNames]);
-		this._setAgentToolSet(agentId, next);
+		await this._publishDiagnostics(diagnostics);
 	}
 
 	/**
@@ -1230,33 +1227,124 @@ export class AgentOrchestrator {
 		return job?.phase === "backgrounded" ? job.output.read() : undefined;
 	}
 
-	// The single text-input entry point. Extension input interception is
-	// applied here so no caller can bypass an input policy; interaction-layer
-	// inline expansions are persisted via options.expansion.
+	/**
+	 * The single input arbitration point for every message an agent reads:
+	 * human text, agent-to-agent messages, background job results, and system
+	 * notices. Extension interception, source rendering, per-target ordering,
+	 * and the choice between prompt, follow-up, and steer all happen here, so no
+	 * caller can bypass an input policy or race another sender for an idle
+	 * target.
+	 *
+	 * Resolves once the target harness owns the text, not when the target
+	 * replies. A message that starts a fresh run leaves that run in the
+	 * background; its failure surfaces as a diagnostic, not as a rejection here.
+	 *
+	 * A blocked message is a returned outcome, not a rejection: the caller knows
+	 * how to report it, and only a delivery that could not happen at all throws.
+	 */
+	async sendMessage(draft: MessageDraft): Promise<MessageSendOutcome> {
+		const accepted = await this._sendMessage(draft, {
+			requiresIdle: false,
+			awaited: false,
+		});
+		return accepted.kind === "blocked" ? accepted : { kind: "accepted" };
+	}
+
+	// The human text-input entry point: the same `sendMessage` pipeline, waiting
+	// for the assistant message the calling surface is going to render.
 	async promptAgent(
 		agentId: AgentId,
 		text: string,
 		options?: { images?: ImageContent[]; expansion?: PromptExpansion },
 	): Promise<PromptOutcome> {
-		const record = this._requireAgentRecord(agentId);
-		this._requireAgentHarness(agentId);
-		// Gate before interception and session writes: a prompt the harness
-		// would reject as busy must not emit input events or strand
-		// expansion/transform entries without a paired user message.
-		if (record.status !== "idle") {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					code: "orchestrator.agent_busy",
-					message: `Agent ${agentId} cannot accept a prompt while ${record.status}.`,
-					agentId,
-					phase: "runtime",
-					recoverable: true,
-				}),
+		const accepted = await this._sendMessage(
+			{
+				source: { kind: "human", expansion: options?.expansion },
+				targetAgentId: agentId,
+				body: text,
+				images: options?.images,
+				mode: "next_turn",
+			},
+			{ requiresIdle: true, awaited: true },
+		);
+		if (accepted.kind === "blocked") return accepted;
+		const completed = accepted.receipt.completed;
+		if (!completed) {
+			throw new Error(
+				`Prompt for agent ${agentId} was delivered as ${accepted.receipt.method} and produced no assistant message.`,
 			);
 		}
-		let inputText = text;
-		let inputImages = options?.images;
+		try {
+			return { kind: "completed", message: await completed };
+		} catch (error) {
+			await this._retractProvisionalEntries(agentId, accepted.provisional);
+			throw error;
+		}
+	}
+
+	/**
+	 * Run one message through interception, session accounting, and the target's
+	 * delivery queue.
+	 *
+	 * `requiresIdle` marks a caller that awaits the resulting run: it can only be
+	 * a fresh prompt, so a busy target is refused up front rather than silently
+	 * becoming a follow-up whose reply nobody is waiting for.
+	 */
+	private async _sendMessage(
+		draft: MessageDraft,
+		options: { requiresIdle: boolean; awaited: boolean },
+	): Promise<AcceptedMessage> {
+		const agentId = draft.targetAgentId;
+		const record = this._requireAgentRecord(agentId);
+		assertMessageBody(draft.body);
+		// Gate before interception and session writes: a prompt the harness would
+		// reject as busy must not emit input events or strand expansion/transform
+		// entries without a paired user message.
+		if (options.requiresIdle) {
+			this._requireAgentHarness(agentId);
+			if (record.status !== "idle") {
+				throw new OrchestratorError(
+					createOrchestratorDiagnostic({
+						severity: "error",
+						code: "orchestrator.agent_busy",
+						message: `Agent ${agentId} cannot accept a prompt while ${record.status}.`,
+						agentId,
+						phase: "runtime",
+						recoverable: true,
+					}),
+				);
+			}
+		}
+
+		const outcome = await transformMessage(draft, {
+			intercept: async (event) => {
+				const runner = this._agents.get(agentId)?.extensionRunner;
+				if (!runner || runner.isStale()) return { kind: "pass" };
+				const run = await runner.interceptInput(event);
+				await this._recordAndPublishExtensionDiagnostics(
+					agentId,
+					run.diagnostics,
+				);
+				// A block this source does not enforce is still a fact worth
+				// recording: the extension asked for something the message contract
+				// cannot grant it.
+				if (run.kind === "block" && draft.source.kind === "background_job") {
+					await this._publishDiagnostic(
+						createOrchestratorDiagnostic({
+							severity: "warning",
+							disposition: "reported",
+							code: "orchestrator.message_block_ignored",
+							message: `Extension '${run.blockedBy}' blocked a background job result for agent ${agentId}; it was delivered anyway because the model is waiting for that result.`,
+							agentId,
+							phase: "runtime",
+							recoverable: true,
+						}),
+					);
+				}
+				return run;
+			},
+		});
+
 		let inputId: string | undefined;
 		let pendingInputTransform:
 			| {
@@ -1266,77 +1354,64 @@ export class AgentOrchestrator {
 					transformedBy: readonly string[];
 			  }
 			| undefined;
-		const runner = record.extensionRunner;
-		if (runner && !runner.isStale()) {
-			const run = await runner.interceptInput({
-				type: "input",
-				text: inputText,
-				images: inputImages,
-			});
-			await this._recordAndPublishExtensionDiagnostics(
+		if (outcome.kind === "block") {
+			inputId = this._createInputId();
+			await this._emit({
+				type: "input_blocked",
 				agentId,
-				run.diagnostics,
-			);
-			if (run.kind === "block") {
-				inputId = this._createInputId();
-				await this._emit({
-					type: "input_blocked",
-					agentId,
-					inputId,
-					originalText: text,
-					reason: run.reason,
-					blockedBy: run.blockedBy,
-					createdAt: now(),
-				});
-				return {
-					kind: "blocked",
-					inputId,
-					reason: run.reason,
-					blockedBy: run.blockedBy,
-				};
-			}
-			if (run.kind === "transform") {
-				inputId = this._createInputId();
-				await this._emit({
-					type: "input_transformed",
-					agentId,
-					inputId,
-					originalText: text,
-					text: run.text,
-					transformedBy: run.transformedBy,
-					createdAt: now(),
-				});
-				pendingInputTransform = {
-					inputId,
-					originalText: text,
-					text: run.text,
-					transformedBy: run.transformedBy,
-				};
-				inputText = run.text;
-				inputImages = run.images ? [...run.images] : inputImages;
-			}
+				inputId,
+				originalText: draft.body,
+				reason: outcome.reason,
+				blockedBy: outcome.blockedBy,
+				createdAt: now(),
+			});
+			return {
+				kind: "blocked",
+				inputId,
+				reason: outcome.reason,
+				blockedBy: outcome.blockedBy,
+			};
+		}
+		if (outcome.kind === "transform") {
+			inputId = this._createInputId();
+			await this._emit({
+				type: "input_transformed",
+				agentId,
+				inputId,
+				originalText: draft.body,
+				text: outcome.text,
+				transformedBy: outcome.transformedBy,
+				createdAt: now(),
+			});
+			pendingInputTransform = {
+				inputId,
+				originalText: draft.body,
+				text: outcome.text,
+				transformedBy: outcome.transformedBy,
+			};
 		}
 
 		// Dual record: the user message carries the expanded text the model
 		// actually sees; the custom entry preserves the original input and
 		// expansion positions for UI replay. The entries pair with the user
 		// message the harness persists at run start, so they are provisional
-		// until that write happens: track a retraction point in case the
-		// prompt fails first.
-		let provisional:
-			| { previousLeafId: string | null; lastEntryId: string }
-			| undefined;
-		if (options?.expansion || pendingInputTransform) {
+		// until that write happens: track a retraction point in case delivery
+		// fails first. Only human input carries them - an agent message is
+		// already traceable through the tool call that sent it.
+		const expansion =
+			draft.source.kind === "human" ? draft.source.expansion : undefined;
+		let provisional: ProvisionalPromptEntries | undefined;
+		if (expansion || pendingInputTransform) {
 			const previousLeafId =
 				await this.sessionManager.getAgentSessionLeafId(agentId);
 			let lastEntryId: string | undefined;
-			if (options?.expansion) {
+			if (expansion) {
 				lastEntryId = await this.sessionManager.appendCommandExpansionEntry(
 					agentId,
 					{
 						inputId: inputId ?? this._createInputId(),
-						originalText: options.expansion.originalText,
-						expansions: options.expansion.items,
+						originalText: expansion.originalText,
+						expansions: expansion.items,
 					},
 				);
 			}
@@ -1350,41 +1425,90 @@ export class AgentOrchestrator {
 				provisional = { previousLeafId, lastEntryId };
 			}
 		}
+
+		// A job result is the one source with no caller left to hear about a
+		// failure: its tool call already returned, and the model is waiting for
+		// exactly one t1 that nobody else will resend. It is also the only source
+		// whose messages merge, since each carries its own job header already.
+		const jobSource =
+			draft.source.kind === "background_job" ? draft.source : undefined;
 		try {
-			const message = await this._runHarnessOperation(
-				agentId,
-				async (harness) => {
-					return await harness.prompt(inputText, {
-						images: inputImages ? [...inputImages] : undefined,
-					});
-				},
-			);
-			return { kind: "completed", message };
+			const receipt = await this._messages.enqueue({
+				targetAgentId: agentId,
+				text: renderMessageEnvelope(draft.source, outcome.text),
+				images: outcome.images,
+				mode: draft.mode,
+				requiresIdle: options.requiresIdle,
+				mergeKey: jobSource ? backgroundResultMergeKey(draft.mode) : undefined,
+				awaited: options.awaited,
+				retryOnFailure: jobSource !== undefined,
+				onDeferredFailure: jobSource
+					? (error) => {
+							void this._reportDeferredDeliveryFailure(
+								agentId,
+								jobSource.jobId,
+								error,
+							);
+						}
+					: undefined,
+			});
+			return { kind: "accepted", receipt, provisional };
 		} catch (error) {
-			// The prompt failed. If nothing was appended after the provisional
-			// entries, the user message never landed: retract them so hydration
-			// cannot pair them with a later message. If the branch moved on, the
-			// user message (or a concurrent write) is in place and the entries
-			// stay.
-			if (provisional) {
-				try {
-					await this.sessionManager.retractAgentSessionEntries(
-						agentId,
-						provisional,
-					);
-				} catch (retractError) {
-					await this._recordAgentLifecycleFailure(
-						agentId,
-						"orchestrator.prompt_entry_retraction_failed",
-						`Failed to retract provisional prompt entries for agent ${agentId}: ${formatError(retractError)}`,
-						retractError,
-					);
-				}
-			}
+			await this._retractProvisionalEntries(agentId, provisional);
 			throw error;
 		}
 	}
 
+	// An unexpected delivery failure that will be retried at the target's next
+	// phase change. Reported per attempt so a target that never accepts is
+	// visible instead of silently accumulating messages.
+	private async _reportDeferredDeliveryFailure(
+		agentId: AgentId,
+		jobId: string,
+		error: unknown,
+	): Promise<void> {
+		await this._publishDiagnostic(
+			createOrchestratorDiagnostic({
+				severity: "warning",
+				disposition: "reported",
+				code: "orchestrator.background_job_delivery_failed",
+				message: `Background job ${jobId} result delivery to agent ${agentId} failed, will retry at the next transition: ${formatError(error)}`,
+				agentId,
+				phase: "runtime",
+				recoverable: true,
+			}),
+		);
+	}
+
+	// If nothing was appended after the provisional entries, the user message
+	// never landed: retract them so hydration cannot pair them with a later
+	// message. If the branch moved on, the user message (or a concurrent write)
+	// is in place and the entries stay.
+	private async _retractProvisionalEntries(
+		agentId: AgentId,
+		provisional: ProvisionalPromptEntries | undefined,
+	): Promise<void> {
+		if (!provisional) return;
+		try {
+			await this.sessionManager.retractAgentSessionEntries(
+				agentId,
+				provisional,
+			);
+		} catch (error) {
+			await this._recordAgentLifecycleFailure(
+				agentId,
+				"orchestrator.prompt_entry_retraction_failed",
+				`Failed to retract provisional prompt entries for agent ${agentId}: ${formatError(error)}`,
+				error,
+			);
+		}
+	}
+
+	/**
+	 * Low-level harness primitive for a surface that has already decided how the
+	 * text must land. It runs no interception and writes no session entries -
+	 * `sendMessage` is the message entry point; this is the escape hatch under it.
+	 */
 	async steerAgent(
 		agentId: AgentId,
 		text: string,
@@ -1392,6 +1516,8 @@ export class AgentOrchestrator {
 	): Promise<void> {
 		await this._requireAgentHarness(agentId).steer(text, options);
 	}
+
+	/** Low-level harness primitive; see the note on {@link steerAgent}. */
 
 	async followUpAgent(
 		agentId: AgentId,
@@ -1426,12 +1552,62 @@ export class AgentOrchestrator {
 			}
 			this._unsubscribeAgentJobChanges.delete(agentId);
 		}
-		for (const job of record.backgroundJobTable.list()) {
-			record.backgroundJobTable.abort(job.id);
+		const unsubscribeJobProgress =
+			this._unsubscribeAgentJobProgress.get(agentId);
+		if (unsubscribeJobProgress) {
+			try {
+				unsubscribeJobProgress();
+			} catch (error) {
+				await this._recordAgentLifecycleFailure(
+					agentId,
+					"orchestrator.agent_dispose_failed",
+					`Failed to unsubscribe agent ${agentId} background job progress listener: ${formatError(error)}`,
+					error,
+				);
+			}
+			this._unsubscribeAgentJobProgress.delete(agentId);
 		}
-		this._pendingBackgroundResults.delete(agentId);
-		this._backgroundFlushInFlight.delete(agentId);
+		const unsubscribeJobReports = this._unsubscribeAgentJobReports.get(agentId);
+		if (unsubscribeJobReports) {
+			try {
+				unsubscribeJobReports();
+			} catch (error) {
+				await this._recordAgentLifecycleFailure(
+					agentId,
+					"orchestrator.agent_dispose_failed",
+					`Failed to unsubscribe agent ${agentId} background job report listener: ${formatError(error)}`,
+					error,
+				);
+			}
+			this._unsubscribeAgentJobReports.delete(agentId);
+		}
+		this._messages.cancel(
+			agentId,
+			reason ??
+				`Agent ${agentId} was disposed before the message was delivered.`,
+		);
+		for (const job of record.backgroundJobTable.list()) {
+			record.backgroundJobTable.abort(job.id, "Agent disposed");
+		}
+		// Tasks this agent owed to other agents cannot be completed now. Aborting
+		// the owner's job settles it as cancelled and reports that through the
+		// owner's normal t1 path; the owner itself stays live.
+		this._cancelTasksOwedByWorker(
+			agentId,
+			reason ?? `Worker agent ${agentId} was disposed.`,
+		);
+		// Jobs this agent owned are aborted above, but their `settled` changes no
+		// longer reach the untracking listener - it was detached first, on
+		// purpose. Drop the index entries explicitly: a resumed agent reuses this
+		// id with a fresh table numbering from job-1, and a stale entry would
+		// later cancel an unrelated job that happens to share the id.
+		this._forgetTaskJobsOwnedBy(agentId);
+		this._maintenanceDepth.delete(agentId);
+		this._resolveAgentRunStartWaiters(agentId);
 		this._backgroundJobEmits.delete(agentId);
+		this._progressQueued.delete(agentId);
+		this._progressSequence.delete(agentId);
+		this._queuedJobReports.delete(agentId);
 
 		const harness = record.harness;
 		if (harness) {
@@ -1532,7 +1708,7 @@ export class AgentOrchestrator {
 	}
 
 	async compactAgent(agentId: AgentId, customInstructions?: string) {
-		return await this._runHarnessOperation(agentId, async (harness) => {
+		return await this._runMaintenanceOperation(agentId, async (harness) => {
 			return await harness.compact(customInstructions);
 		});
 	}
@@ -1547,7 +1723,7 @@ export class AgentOrchestrator {
 			label?: string;
 		},
 	) {
-		return await this._runHarnessOperation(agentId, async (harness) => {
+		return await this._runMaintenanceOperation(agentId, async (harness) => {
 			return await harness.navigateTree(targetId, options);
 		});
 	}
@@ -1918,16 +2094,13 @@ export class AgentOrchestrator {
 		model: RuntimeModel;
 		thinkingLevel?: ThinkingLevel;
 		activeToolNames?: string[];
-	}): Promise<AgentHarness> {
+	}): Promise<WidiAgentHarness> {
 		const {
 			agentId,
 			resolvedProfile: { profile },
 			session,
 			model,
 		} = options;
-		// The extension runner exists before resource loading so contributed
-		// skill/prompt paths (ME slice 8) join the same load-and-merge pass as
-		// profile resources.
 		const extensionRunner = await this._createExtensionRunner(agentId, profile);
 		await this._publishDiagnostics(extensionRunner.diagnostics);
 		this._addAgentDiagnostics(agentId, {
@@ -1949,15 +2122,10 @@ export class AgentOrchestrator {
 			extensionRunner,
 		);
 
-		const loadedSkills = await this._loadMergedAgentSkills({
+		const loadedSkills = await this._loadProfileSkills({ agentId, profile });
+		const loadedPromptTemplates = await this._loadProfilePromptTemplates({
 			agentId,
 			profile,
-			extensionRunner,
-		});
-		const loadedPromptTemplates = await this._loadMergedAgentPromptTemplates({
-			agentId,
-			profile,
-			extensionRunner,
 		});
 		const resourceDiagnostics: OrchestratorDiagnostic[] = [
 			...loadedSkills.diagnostics,
@@ -1995,10 +2163,10 @@ export class AgentOrchestrator {
 					: { mode: "explicit", toolNames: options.activeToolNames },
 		});
 
-		const harness = new AgentHarness({
-			env: this.executionEnv,
+		const harness: WidiAgentHarness = new AgentHarness({
 			session: session,
 			models: this.modelRegistry.getRuntime(),
+			toolContext: () => this._createToolAdapterContext(agentId, profile.id),
 			streamOptions: this.settingManager.getProviderRetrySettings(),
 			retry: this.settingManager.getRetrySettings(),
 			resources: resources,
@@ -2025,12 +2193,32 @@ export class AgentOrchestrator {
 		this._unsubscribeAgentHarness.set(agentId, unsubscribeHarnessEvents);
 		const jobTable = this._requireAgentRecord(agentId).backgroundJobTable;
 		const unsubscribeJobChanges = jobTable.onChange((change) => {
+			if (change.transition === "backgrounded") {
+				this._trackTaskJob(agentId, change.job);
+			}
 			if (change.transition === "settled") {
-				this._bufferBackgroundResult(agentId, change);
+				// Barrier: flush the job's final output increment ahead of its
+				// terminal event (same tail).
+				this._enqueueBackgroundEmit(agentId, async () => {
+					await this._emitJobProgress(agentId, change.job);
+					this._progressSequence.get(agentId)?.delete(change.job.id);
+				});
+				this._untrackTaskJob(agentId, change.job);
+				// A delegated task settles through this same path: its t1 is the one
+				// and only completion message the owner reads.
+				void this._deliverBackgroundJobResult(agentId, change);
 			}
 			this._emitBackgroundJobChange(agentId, change);
 		});
 		this._unsubscribeAgentJobChanges.set(agentId, unsubscribeJobChanges);
+		const unsubscribeJobProgress = jobTable.onProgress((job) => {
+			this._onJobProgress(agentId, job.id);
+		});
+		this._unsubscribeAgentJobProgress.set(agentId, unsubscribeJobProgress);
+		const unsubscribeJobReports = jobTable.onReport((job, report) => {
+			this._onJobReport(agentId, job, report);
+		});
+		this._unsubscribeAgentJobReports.set(agentId, unsubscribeJobReports);
 		this._unsubscribeAgentExtensionInterceptors.set(agentId, () => {
 			for (const unsubscribe of unsubscribeInterceptors) {
 				unsubscribe();
@@ -2189,7 +2377,7 @@ export class AgentOrchestrator {
 
 	private _registerExtensionInterceptors(
 		agentId: AgentId,
-		harness: AgentHarness,
+		harness: WidiAgentHarness,
 		extensionRunner: ExtensionRunner,
 	): Array<() => void> {
 		return [
@@ -2279,54 +2467,11 @@ export class AgentOrchestrator {
 				phase: "resolve",
 			})),
 		);
-		const agentRecord = this._agents.get(options.agentId);
-		const agentTools = createAgentToolsFromResolvedTools(resolvedTools.tools, {
-			backgroundJobTable: agentRecord?.backgroundJobTable,
-			human: {
-				// Same capability ruling as extension human requests: the profile
-				// decides whether this agent may interrupt the human at all.
-				request: async (request) => {
-					const record = this._requireAgentRecord(options.agentId);
-					if (record.capabilities?.canRequestUser === false) {
-						throw new OrchestratorError(
-							createOrchestratorDiagnostic({
-								severity: "error",
-								code: "orchestrator.human_request_denied",
-								message: `Agent ${options.agentId} human request is denied by profile capability canRequestUser.`,
-								agentId: options.agentId,
-								profileId: options.profileId,
-								phase: "runtime",
-								recoverable: true,
-							}),
-						);
-					}
-					return await this.requestHuman({
-						...request,
-						source: { kind: "agent", agentId: options.agentId },
-					});
-				},
-			},
-			// Extension-contributed tools get the same runner-scoped actions as
-			// extension handlers; a reload re-resolves tools, so contexts never
-			// outlive their runner's stale boundary.
-			createExtensionContext: (source) => {
-				if (source.kind !== "extension") return undefined;
-				const extensionRunner =
-					options.extensionRunner ??
-					this._agents.get(options.agentId)?.extensionRunner;
-				if (!extensionRunner) return undefined;
-				return {
-					extensionId: source.id,
-					host: {
-						agentId: options.agentId,
-						profileId: options.profileId,
-						actions: extensionRunner.createContext(source.id).actions,
-					},
-				};
-			},
-		});
+		const agentTools = createAgentHarnessToolsFromResolvedTools(
+			resolvedTools.tools,
+		);
 		return {
-			tools: [...agentTools],
+			tools: agentTools,
 			toolNames: [...resolvedTools.toolNames],
 			requestedToolNames: options.requestedToolNames
 				? [...options.requestedToolNames]
@@ -2341,6 +2486,78 @@ export class AgentOrchestrator {
 					: { mode: "default_all" },
 			profileId: options.profileId,
 		};
+	}
+
+	private _createToolAdapterContext(
+		agentId: AgentId,
+		profileId: string,
+	): ToolAdapterContext {
+		const record = this._requireAgentRecord(agentId);
+		const extensionRunner = record.extensionRunner;
+		return {
+			backgroundJobTable: record.backgroundJobTable,
+			human: {
+				// Check the authoritative agent record at request time rather than
+				// retaining the capability in the turn snapshot.
+				request: async (request) => {
+					this._assertCanRequestUser(agentId, {
+						code: "orchestrator.human_request_denied",
+						message: `Agent ${agentId} human request is denied by profile capability canRequestUser.`,
+						profileId,
+					});
+					return await this.requestHuman({
+						...request,
+						source: { kind: "agent", agentId },
+					});
+				},
+			},
+			// The runner is captured for this turn snapshot. Calls that continue
+			// in the background keep this runner and observe its stale boundary
+			// after reload instead of silently switching to the replacement.
+			createExtensionContext: (source) => {
+				if (source.kind !== "extension" || !extensionRunner) {
+					return undefined;
+				}
+				return {
+					extensionId: source.id,
+					host: {
+						agentId,
+						profileId,
+						actions: extensionRunner.createContext(source.id).actions,
+					},
+				};
+			},
+		};
+	}
+
+	/**
+	 * Profile capability ruling for human requests, shared by agent tool
+	 * contexts and extension core actions: the profile decides whether this
+	 * agent may interrupt the human at all.
+	 */
+	private _assertCanRequestUser(
+		agentId: AgentId,
+		denial: {
+			code: string;
+			message: string;
+			profileId?: string;
+			source?: OrchestratorDiagnostic["source"];
+			extensionId?: string;
+		},
+	): void {
+		const record = this._requireAgentRecord(agentId);
+		if (record.capabilities?.canRequestUser === false) {
+			throw new OrchestratorError(
+				createOrchestratorDiagnostic({
+					severity: "error",
+					agentId,
+					phase: "runtime",
+					recoverable: true,
+					...denial,
+					profileId: denial.profileId ?? record.profile.reference.id,
+				}),
+			);
+		}
 	}
 
 	private _createScopedToolRegistry(
@@ -2364,22 +2581,12 @@ export class AgentOrchestrator {
 				await this.setAgentActiveTools(agentId, toolNames);
 			},
 			requestHuman: async (agentId, extensionId, request) => {
-				const record = this._requireAgentRecord(agentId);
-				if (record.capabilities?.canRequestUser === false) {
-					throw new OrchestratorError(
-						createOrchestratorDiagnostic({
-							severity: "error",
-							code: "extension.human_request_denied",
-							message: `Extension '${extensionId}' human request is denied by profile capability canRequestUser.`,
-							source: { kind: "extension", id: extensionId },
-							agentId,
-							profileId: record.profile.reference.id,
-							extensionId,
-							phase: "runtime",
-							recoverable: true,
-						}),
-					);
-				}
+				this._assertCanRequestUser(agentId, {
+					code: "extension.human_request_denied",
+					message: `Extension '${extensionId}' human request is denied by profile capability canRequestUser.`,
+					source: { kind: "extension", id: extensionId },
+					extensionId,
+				});
 				return await this._requestHumanForAgent(agentId, {
 					...request,
 					source: { kind: "extension", extensionId },
@@ -2779,9 +2986,10 @@ export class AgentOrchestrator {
 			};
 		}
 
+		let candidateRunner: ExtensionRunner | undefined;
+		let candidateInstalled = false;
 		try {
-			const harness = record.harness as AgentHarness &
-				Partial<AgentToolSetHarness>;
+			const harness = this._requireAgentHarness(agentId);
 			const currentToolSet = this._requireAgentToolSet(agentId);
 			const oldRunner = record.extensionRunner;
 			const resolvedProfile = await this._resolveProfileById(
@@ -2792,6 +3000,7 @@ export class AgentOrchestrator {
 				agentId,
 				resolvedProfile.profile,
 			);
+			candidateRunner = nextRunner;
 			const nextToolSet = await this._resolveAgentTools({
 				agentId,
 				profileId: resolvedProfile.profile.id,
@@ -2807,9 +3016,22 @@ export class AgentOrchestrator {
 			});
 
 			this._bindExtensionRunner(agentId, nextRunner);
-			await harness.setTools?.(nextToolSet.tools, [
-				...nextToolSet.activeToolNames,
-			]);
+			// Install the replacement before the awaited harness write: a turn
+			// starting mid-reload snapshots record.extensionRunner into its tool
+			// context, and must capture the new runner rather than pin the old
+			// one across its own disposal below.
+			record.extensionRunner = nextRunner;
+			this._setAgentToolSet(agentId, nextToolSet);
+			try {
+				await harness.setTools(nextToolSet.tools, [
+					...nextToolSet.activeToolNames,
+				]);
+			} catch (error) {
+				record.extensionRunner = oldRunner;
+				this._setAgentToolSet(agentId, currentToolSet);
+				throw error;
+			}
+			candidateInstalled = true;
 
 			const unsubscribeOldInterceptors =
 				this._unsubscribeAgentExtensionInterceptors.get(agentId);
@@ -2825,10 +3047,8 @@ export class AgentOrchestrator {
 					unsubscribe();
 				}
 			});
-			record.extensionRunner = nextRunner;
 			record.extensionDiagnostics = [...nextRunner.diagnostics];
 			record.diagnostics.push(...nextRunner.diagnostics);
-			this._setAgentToolSet(agentId, nextToolSet);
 			// Provider contributions follow the runner lifecycle: the stale
 			// runner's registrations are withdrawn before the reloaded runner
 			// re-registers its own.
@@ -2863,6 +3083,13 @@ export class AgentOrchestrator {
 				after: snapshotAgentRecord(record),
 			};
 		} catch (error) {
+			if (candidateRunner && !candidateInstalled) {
+				await this._disposeExtensionRunner(
+					agentId,
+					candidateRunner,
+					"Extension reload failed before installation.",
+				);
+			}
 			const diagnostic = this._createExtensionReloadDiagnostic({
 				code: "extension.reload_agent_failed",
 				severity: "error",
@@ -2946,6 +3173,10 @@ export class AgentOrchestrator {
 	): Promise<boolean> {
 		if (previousStatus === status) return false;
 		record.status = status;
+		this._agentStatusRevisions.set(
+			record.agentId,
+			(this._agentStatusRevisions.get(record.agentId) ?? 0) + 1,
+		);
 		await this._emit({
 			type: "agent_status_changed",
 			agentId: record.agentId,
@@ -2953,12 +3184,13 @@ export class AgentOrchestrator {
 			status,
 			changedAt: now(),
 		});
+		this._messages.wake(record.agentId);
 		return true;
 	}
 
 	private async _disposeAgentHarness(
 		agentId: AgentId,
-		harness: AgentHarness,
+		harness: WidiAgentHarness,
 	): Promise<void> {
 		try {
 			await harness.abort();
@@ -3001,19 +3233,59 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Buffer a settled background job (t1) for its owning agent and try to flush.
-	 * The result is delivered as a user message at the agent's next idle boundary,
-	 * not steered mid-run, so it can never strand in the steer queue and never
-	 * blocks on an in-flight run.
+	 * Hand a settled background job (t1) to the message pipeline. It is an
+	 * ordinary message from then on: queued behind whatever the target already
+	 * has, merged with adjacent results into one user message, and delivered as
+	 * a follow-up or a fresh prompt depending on the target's phase.
+	 *
+	 * `next_turn`, never `interrupt`: a tool result is not a reason to preempt
+	 * the reasoning of a turn already in flight.
 	 */
-	private _bufferBackgroundResult(
+	private async _deliverBackgroundJobResult(
 		agentId: AgentId,
 		settlement: BackgroundJobSettlement,
+	): Promise<void> {
+		try {
+			await this.sendMessage({
+				source: {
+					kind: "background_job",
+					ownerAgentId: agentId,
+					jobId: settlement.job.id,
+				},
+				targetAgentId: agentId,
+				body: formatBackgroundJobResultMessageText(settlement),
+				mode: "next_turn",
+			});
+		} catch (error) {
+			// Retryable failures keep the result queued, so reaching here means the
+			// owner can never take it: the model will not see this job's outcome.
+			await this._publishDiagnostic(
+				createOrchestratorDiagnostic({
+					severity: "warning",
+					disposition: "reported",
+					code: "orchestrator.background_job_dropped",
+					message: `Dropping the result of background job ${settlement.job.id} for agent ${agentId}: ${formatError(error)}`,
+					agentId,
+					phase: "runtime",
+					recoverable: true,
+				}),
+			);
+		}
+	}
+
+	/**
+	 * Chain a background emission (progress or lifecycle change) onto the agent's
+	 * serialized tail so emissions reach listeners in the order the table changed,
+	 * regardless of per-emit `_emit` duration. Failures are swallowed so one bad
+	 * emit cannot break the chain for later ones.
+	 */
+	private _enqueueBackgroundEmit(
+		agentId: AgentId,
+		task: () => Promise<void>,
 	): void {
-		const buffer = this._pendingBackgroundResults.get(agentId) ?? [];
-		buffer.push(formatBackgroundJobResultMessageText(settlement));
-		this._pendingBackgroundResults.set(agentId, buffer);
-		void this._flushBackgroundResults(agentId);
+		const prior = this._backgroundJobEmits.get(agentId) ?? Promise.resolve();
+		const next = prior.then(task).catch(() => {});
+		this._backgroundJobEmits.set(agentId, next);
 	}
 
 	/**
@@ -3033,117 +3305,345 @@ export class AgentOrchestrator {
 		// the order the table changed rather than in async completion order.
 		const job = snapshotBackgroundJob(
 			change.job,
-			change.transition === "settled" ? change.outcome.status : undefined,
+			change.transition === "settled"
+				? { status: change.outcome.status }
+				: undefined,
 		);
 		const liveCount = record.backgroundJobTable
 			.list()
 			.filter((live) => live.phase === "backgrounded").length;
 		const changedAt = now();
-		const prior = this._backgroundJobEmits.get(agentId) ?? Promise.resolve();
-		const next = prior
-			.then(() =>
-				this._emit({
-					type: "agent_background_job_changed",
-					agentId,
-					job,
-					transition: change.transition,
-					liveCount,
-					changedAt,
-				}),
-			)
-			.catch(() => {});
-		this._backgroundJobEmits.set(agentId, next);
+		this._enqueueBackgroundEmit(agentId, () =>
+			this._emit({
+				type: "agent_background_job_changed",
+				agentId,
+				job,
+				transition: change.transition,
+				liveCount,
+				changedAt,
+			}),
+		);
 	}
 
 	/**
-	 * Deliver buffered background results to an idle agent as one user-message
-	 * prompt (t1). No-op while the agent is running or a flush is already in
-	 * flight; the harness `settled` transition re-triggers it. Total: records its
-	 * own failures as diagnostics rather than rejecting.
+	 * Coalesce a latest-value structured report while preserving its position on
+	 * the per-agent background emission tail. A later revision replaces the
+	 * pending value instead of growing an unbounded event queue.
 	 */
-	private async _flushBackgroundResults(agentId: AgentId): Promise<void> {
-		if (this._backgroundFlushInFlight.has(agentId)) return;
-		const buffer = this._pendingBackgroundResults.get(agentId);
-		if (!buffer || buffer.length === 0) return;
+	private _onJobReport(
+		agentId: AgentId,
+		job: BackgroundJob,
+		report: BackgroundJobReportSnapshot,
+	): void {
+		const queued = this._queuedJobReports.get(agentId) ?? new Map();
+		const alreadyQueued = queued.has(job.id);
+		queued.set(job.id, { report, operationRef: job.toolCallId });
+		this._queuedJobReports.set(agentId, queued);
+		if (alreadyQueued) return;
+		this._enqueueBackgroundEmit(agentId, async () => {
+			const latest = queued.get(job.id);
+			queued.delete(job.id);
+			if (queued.size === 0) this._queuedJobReports.delete(agentId);
+			if (!latest) return;
+			await this._emit({
+				type: "agent_background_job_report_updated",
+				agentId,
+				jobId: job.id,
+				report: latest.report,
+				changedAt: new Date(latest.report.updatedAt).toISOString(),
+				operationRef: latest.operationRef,
+			});
+		});
+	}
 
-		const record = this._agents.get(agentId);
-		if (!record || record.status === "disposed" || !record.harness) {
-			this._pendingBackgroundResults.delete(agentId);
-			await this._publishDiagnostic(
-				createOrchestratorDiagnostic({
-					severity: "warning",
-					disposition: "reported",
-					code: "orchestrator.background_job_dropped",
-					message: `Dropping ${buffer.length} background job result(s) for agent ${agentId}: the agent is gone.`,
-					agentId,
-					phase: "runtime",
-					recoverable: true,
-				}),
+	/**
+	 * React to a throttled output-progress tick: queue a single coalesced emit for
+	 * the job on the agent's tail. While one is queued, further ticks are no-ops —
+	 * their bytes accumulate in the job's increment buffer and are drained
+	 * together when the queued task runs.
+	 */
+	private _onJobProgress(agentId: AgentId, jobId: string): void {
+		const queued = this._progressQueued.get(agentId) ?? new Set<string>();
+		if (queued.has(jobId)) return;
+		queued.add(jobId);
+		this._progressQueued.set(agentId, queued);
+		this._enqueueBackgroundEmit(agentId, async () => {
+			queued.delete(jobId);
+			const job = this._agents.get(agentId)?.backgroundJobTable.get(jobId);
+			// A settled job is gone from the table; its final increment is flushed by
+			// the `settled` barrier instead.
+			if (job) await this._emitJobProgress(agentId, job);
+		});
+	}
+
+	/**
+	 * Drain the job's pending output increment and, when non-empty, emit it as an
+	 * `agent_background_job_progress` event. No-op when nothing new was appended
+	 * since the previous drain.
+	 */
+	private async _emitJobProgress(
+		agentId: AgentId,
+		job: BackgroundJob,
+	): Promise<void> {
+		const increment = job.output.drainIncrement();
+		if (!increment) return;
+		const sequences =
+			this._progressSequence.get(agentId) ?? new Map<string, number>();
+		const sequence = sequences.get(job.id) ?? 0;
+		sequences.set(job.id, sequence + 1);
+		this._progressSequence.set(agentId, sequences);
+		await this._emit({
+			type: "agent_background_job_progress",
+			agentId,
+			jobId: job.id,
+			sequence,
+			chunk: increment.chunk,
+			startByte: increment.startByte,
+			endByte: increment.endByte,
+			totalBytesSeen: increment.totalBytesSeen,
+			progressDroppedBytes: increment.progressDroppedBytes,
+			observedAt: now(),
+			operationRef: job.toolCallId,
+		});
+	}
+
+	/**
+	 * Start a fresh run for a delivered message and return once the harness has
+	 * genuinely taken the text, leaving the model run itself in the background.
+	 *
+	 * Acceptance waits for the harness's own `agent_start`. Everything the
+	 * harness does before that - building the turn context, session metadata,
+	 * the tool context, the `before_agent_start` hook - is asynchronous and can
+	 * fail, and a failure there means the user message was never persisted. If
+	 * acceptance resolved earlier, the queue would have dropped a message the
+	 * target never received, and a background job result would be lost for good.
+	 *
+	 * `reportFailure` belongs to callers that do not await the run themselves:
+	 * their failure has no other way to surface. When the enqueuing caller awaits
+	 * `receipt.completed`, the error reaches it directly and a second diagnostic
+	 * would only duplicate it.
+	 */
+	private async _startAgentPrompt(
+		agentId: AgentId,
+		text: string,
+		options: {
+			images?: readonly ImageContent[];
+			reportFailure: boolean;
+		},
+	): Promise<MessageDeliveryReceipt> {
+		const record = this._requireAgentRecord(agentId);
+		const harness = this._requireAgentHarness(agentId);
+		if (record.status !== "idle") {
+			throw new AgentHarnessError(
+				"busy",
+				`Agent ${agentId} cannot accept a prompt while ${record.status}.`,
 			);
-			return;
 		}
-		// Only deliver into a genuinely idle agent. While it runs, results wait in
-		// the buffer and the next `settled` transition flushes them.
-		if (record.status !== "idle") return;
 
-		this._backgroundFlushInFlight.add(agentId);
-		const texts = buffer.splice(0);
-		let delivered = false;
+		await this._transitionAgentStatus(agentId, "running");
+		const statusRevision = this._agentStatusRevisions.get(agentId) ?? 0;
+		const started = this._awaitAgentRunStart(agentId);
+		const run = harness.prompt(text, {
+			images: options.images ? [...options.images] : undefined,
+		});
+		// A run that settles without ever starting a loop is still resolved here:
+		// the alternative is waiting forever for a signal that is not coming.
+		const start = await Promise.race([
+			started.reached,
+			run.then(
+				() => ({ kind: "started" }) as const,
+				(error: unknown) => ({ kind: "rejected", error }) as const,
+			),
+		]);
+		started.cancel();
+		if (start.kind === "rejected") {
+			// A busy rejection means another harness operation won the race. Keep
+			// the runtime status running so the queue retries as a follow-up.
+			if (
+				!(
+					start.error instanceof AgentHarnessError &&
+					start.error.code === "busy"
+				) &&
+				this._agentStatusRevisions.get(agentId) === statusRevision &&
+				this._agents.get(agentId)?.status === "running"
+			) {
+				await this._transitionAgentStatus(agentId, "idle");
+			}
+			throw start.error;
+		}
+
+		void this._finishAgentPrompt(agentId, run, statusRevision, options).catch(
+			() => {},
+		);
+		return { method: "prompt", completed: run };
+	}
+
+	/**
+	 * A pending observation of the target's next agent-loop start. The waiter is
+	 * registered before the prompt call so a fast `agent_start` cannot be missed.
+	 */
+	private _awaitAgentRunStart(agentId: AgentId): {
+		readonly reached: Promise<{ readonly kind: "started" }>;
+		readonly cancel: () => void;
+	} {
+		const waiters = this._agentRunStartWaiters.get(agentId) ?? new Set();
+		this._agentRunStartWaiters.set(agentId, waiters);
+		let waiter!: () => void;
+		const reached = new Promise<{ readonly kind: "started" }>((resolve) => {
+			waiter = () => resolve({ kind: "started" });
+			waiters.add(waiter);
+		});
+		return {
+			reached,
+			cancel: () => {
+				waiters.delete(waiter);
+				if (waiters.size === 0) this._agentRunStartWaiters.delete(agentId);
+			},
+		};
+	}
+
+	private _resolveAgentRunStartWaiters(agentId: AgentId): void {
+		const waiters = this._agentRunStartWaiters.get(agentId);
+		if (!waiters) return;
+		this._agentRunStartWaiters.delete(agentId);
+		for (const waiter of waiters) waiter();
+	}
+
+	private async _finishAgentPrompt(
+		agentId: AgentId,
+		run: Promise<unknown>,
+		statusRevision: number,
+		options: { reportFailure: boolean },
+	): Promise<void> {
 		try {
-			await record.harness.prompt(texts.join("\n\n"));
-			delivered = true;
+			await run;
 		} catch (error) {
-			// If the agent was disposed while the prompt was in flight its buffer is
-			// already gone (dispose deletes the entry); the results are dropped with
-			// the agent, so there is nothing to requeue and no retry to promise.
-			if (this._pendingBackgroundResults.has(agentId)) {
-				// Preserve the results and let the next idle boundary (`settled`)
-				// retry. `busy` is an expected race (a run started between the idle
-				// check and the prompt); any other error is unexpected and also
-				// warned. Never re-flush inline on failure, which could hot-loop
-				// against a transiently busy harness (turn_end marks the record idle
-				// before it truly settles).
-				buffer.unshift(...texts);
-				if (!isAgentHarnessErrorCode(error, "busy")) {
-					await this._publishDiagnostic(
-						createOrchestratorDiagnostic({
-							severity: "warning",
-							disposition: "reported",
-							code: "orchestrator.background_job_delivery_failed",
-							message: `Background job result delivery to agent ${agentId} failed, will retry at the next idle boundary: ${formatError(error)}`,
-							agentId,
-							phase: "runtime",
-							recoverable: true,
-						}),
-					);
-				}
+			if (options.reportFailure) {
+				await this._recordAgentLifecycleFailure(
+					agentId,
+					"orchestrator.agent_message_prompt_failed",
+					`Prompt for agent ${agentId} failed after delivery: ${formatError(error)}`,
+					error,
+				);
 			}
 		} finally {
-			this._backgroundFlushInFlight.delete(agentId);
-		}
-		// Only chase newly-buffered results after a successful delivery. Each such
-		// re-flush costs a full run, so this is bounded, not a hot loop. On failure
-		// we wait for the next `settled` instead.
-		if (
-			delivered &&
-			(this._pendingBackgroundResults.get(agentId)?.length ?? 0) > 0
-		) {
-			void this._flushBackgroundResults(agentId);
+			const record = this._agents.get(agentId);
+			if (
+				record?.status === "running" &&
+				this._agentStatusRevisions.get(agentId) === statusRevision
+			) {
+				await this._transitionAgentStatus(agentId, "idle");
+			}
+			this._messages.wake(agentId);
 		}
 	}
 
-	private async _runHarnessOperation<T>(
+	/**
+	 * Index a delegated task job so a disposed worker's outstanding work can be
+	 * found. The owner's job stays the only state; this is a reverse lookup, not
+	 * a task registry.
+	 */
+	private _trackTaskJob(ownerAgentId: AgentId, job: BackgroundJob): void {
+		if (job.origin.kind !== "agent_task") return;
+		const owed =
+			this._taskJobsByWorker.get(job.origin.workerAgentId) ?? new Set();
+		owed.add({ ownerAgentId, jobId: job.id });
+		this._taskJobsByWorker.set(job.origin.workerAgentId, owed);
+	}
+
+	private _untrackTaskJob(ownerAgentId: AgentId, job: BackgroundJob): void {
+		if (job.origin.kind !== "agent_task") return;
+		const owed = this._taskJobsByWorker.get(job.origin.workerAgentId);
+		if (!owed) return;
+		for (const entry of owed) {
+			if (entry.ownerAgentId === ownerAgentId && entry.jobId === job.id) {
+				owed.delete(entry);
+			}
+		}
+		if (owed.size === 0)
+			this._taskJobsByWorker.delete(job.origin.workerAgentId);
+	}
+
+	private _forgetTaskJobsOwnedBy(ownerAgentId: AgentId): void {
+		for (const [workerAgentId, owed] of this._taskJobsByWorker) {
+			for (const entry of owed) {
+				if (entry.ownerAgentId === ownerAgentId) owed.delete(entry);
+			}
+			if (owed.size === 0) this._taskJobsByWorker.delete(workerAgentId);
+		}
+	}
+
+	private _cancelTasksOwedByWorker(
+		workerAgentId: AgentId,
+		reason: string,
+	): void {
+		const owed = this._taskJobsByWorker.get(workerAgentId);
+		if (!owed) return;
+		this._taskJobsByWorker.delete(workerAgentId);
+		for (const entry of owed) {
+			this._agents
+				.get(entry.ownerAgentId)
+				?.backgroundJobTable.abort(entry.jobId, reason);
+		}
+	}
+
+	/**
+	 * Run a harness operation that does not drive an agent loop (compaction,
+	 * branch summary). The agent is marked `running` for the duration, but
+	 * messages must not be steered or followed up into it: nothing would consume
+	 * them until a real turn starts, so the delivery queue defers them.
+	 */
+	private async _runMaintenanceOperation<T>(
 		agentId: AgentId,
-		operation: (harness: AgentHarness) => Promise<T>,
+		operation: (harness: WidiAgentHarness) => Promise<T>,
 	): Promise<T> {
 		const harness = this._requireAgentHarness(agentId);
+		this._maintenanceDepth.set(
+			agentId,
+			(this._maintenanceDepth.get(agentId) ?? 0) + 1,
+		);
 		await this._transitionAgentStatus(agentId, "running");
 		try {
 			return await operation(harness);
 		} finally {
-			if (this._requireAgentRecord(agentId).status === "running") {
-				await this._transitionAgentStatus(agentId, "idle");
+			// Only the last operation to leave may clear the marker or hand the
+			// agent back as idle. A concurrent compaction that lost the harness's
+			// busy check would otherwise release a maintenance window its sibling
+			// is still inside.
+			const depth = (this._maintenanceDepth.get(agentId) ?? 1) - 1;
+			if (depth > 0) {
+				this._maintenanceDepth.set(agentId, depth);
+			} else {
+				this._maintenanceDepth.delete(agentId);
+				if (this._requireAgentRecord(agentId).status === "running") {
+					await this._transitionAgentStatus(agentId, "idle");
+				}
+				// Leaving maintenance is a delivery-phase change even when the status
+				// does not move, so wake the queue explicitly.
+				this._messages.wake(agentId);
 			}
+		}
+	}
+
+	/**
+	 * Delivery-relevant phase of a target, re-read immediately before every
+	 * attempt. `AgentLifecycleStatus.running` covers both a live agent loop and
+	 * maintenance work, so the maintenance set is what tells them apart.
+	 */
+	private _resolveDeliveryPhase(agentId: AgentId): MessageDeliveryPhase {
+		const record = this._agents.get(agentId);
+		if (!record) return "gone";
+		switch (record.status) {
+			case "creating":
+				return "creating";
+			case "unavailable":
+			case "disposed":
+				return "gone";
+			case "idle":
+				return record.harness ? "idle" : "gone";
+			case "running":
+				if (!record.harness) return "gone";
+				return this._maintenanceDepth.has(agentId) ? "maintenance" : "turn";
 		}
 	}
 
@@ -3165,7 +3665,7 @@ export class AgentOrchestrator {
 		}
 	}
 
-	private _requireAgentHarness(agentId: AgentId): AgentHarness {
+	private _requireAgentHarness(agentId: AgentId): WidiAgentHarness {
 		const harness = this._requireAgentRecord(agentId).harness;
 		if (!harness) {
 			throw new Error(`Unknown agent: ${agentId}`);
@@ -3186,8 +3686,18 @@ export class AgentOrchestrator {
 		agentId: AgentId,
 		event: AgentHarnessEvent,
 	): Promise<void> {
+		// The agent loop is running, so the prompt's user message is committed to
+		// this run: a pending delivery may now be reported as accepted. Resolved
+		// before the awaits below so acceptance never waits on observers.
+		if (event.type === "agent_start") {
+			this._resolveAgentRunStartWaiters(agentId);
+		}
 		await this._updateAgentStatusFromHarnessEvent(agentId, event);
 		await this._emit({ type: "agent_harness_event", agentId, event });
+		// Every harness event can change the delivery phase, so re-examine the
+		// queue: this is what resumes a message deferred during maintenance or
+		// retried after a busy race.
+		this._messages.wake(agentId);
 		// Auto-compaction rides the settled fact: the harness is idle and its
 		// pending session writes are flushed, so the branch and the last
 		// assistant usage are durable. A settled with queued next turns is
@@ -3195,9 +3705,6 @@ export class AgentOrchestrator {
 		// its busy check.
 		if (event.type === "settled" && event.nextTurnCount === 0) {
 			await this._maybeAutoCompactAgent(agentId);
-			// The agent has reached an idle boundary: deliver any background job
-			// results buffered while it was running.
-			void this._flushBackgroundResults(agentId);
 		}
 	}
 
@@ -3269,6 +3776,8 @@ export class AgentOrchestrator {
 	): event is ExtensionObservedEvent {
 		switch (event.type) {
 			case "agent_background_job_changed":
+			case "agent_background_job_progress":
+			case "agent_background_job_report_updated":
 			case "agent_harness_event":
 			case "agent_resumed":
 			case "agent_session_forked":
@@ -3478,8 +3987,75 @@ function isBlockedExtensionDiagnostic(
 }
 
 /**
- * Prompt guidance carried by an active tool. WIDI adapter tools
- * (`WidiAgentTool`) match this shape; plain Pi tools contribute nothing.
+ * Normalize an active-tool selection against the agent's installed tool
+ * names: trims entries, drops empty names, duplicates, and unknown names,
+ * and reports each dropped entry as a diagnostic.
+ */
+function selectActiveToolNames(
+	toolNames: readonly string[],
+	installedNames: ReadonlySet<string>,
+	context: { agentId: AgentId; profileId: string },
+): { activeToolNames: string[]; diagnostics: OrchestratorDiagnostic[] } {
+	const activeToolNames: string[] = [];
+	const seen = new Set<string>();
+	const diagnostics: OrchestratorDiagnostic[] = [];
+	const report = (diagnostic: {
+		severity: "error" | "warning";
+		code: string;
+		disposition: "degraded" | "reported";
+		message: string;
+		toolName?: string;
+	}) => {
+		diagnostics.push(
+			createOrchestratorDiagnostic({
+				...diagnostic,
+				recoverable: true,
+				phase: "runtime",
+				agentId: context.agentId,
+				profileId: context.profileId,
+			}),
+		);
+	};
+	for (const rawName of toolNames) {
+		const name = rawName.trim();
+		if (!name) {
+			report({
+				severity: "error",
+				code: "tool.invalid_name",
+				disposition: "degraded",
+				message: "Tool name list contains an empty name.",
+			});
+			continue;
+		}
+		if (seen.has(name)) {
+			report({
+				severity: "warning",
+				code: "tool.active_duplicate",
+				disposition: "reported",
+				message: `Tool name '${name}' is listed more than once; keeping the first occurrence.`,
+				toolName: name,
+			});
+			continue;
+		}
+		seen.add(name);
+		if (!installedNames.has(name)) {
+			report({
+				severity: "warning",
+				code: "tool.active_missing",
+				disposition: "degraded",
+				message: `Active tool '${name}' is not in the agent's installed tool set.`,
+				toolName: name,
+			});
+			continue;
+		}
+		activeToolNames.push(name);
+	}
+	return { activeToolNames, diagnostics };
+}
+
+/**
+ * Prompt guidance carried by an active tool. Resolved harness tools match this
+ * shape; tools without registry prompt metadata contribute nothing.
  */
 export interface ToolPromptGuidance {
 	name: string;
@@ -3549,29 +4125,6 @@ export function buildAgentSystemPrompt(
 	return sections.join("\n\n");
 }
 
-// Stale runners keep no contribution rights: resources contributed by a
-// replaced runner drop out of the live loading pipelines.
-function activeExtensionRunner(
-	record: AgentRecord,
-): ExtensionRunner | undefined {
-	const runner = record.extensionRunner;
-	return runner && !runner.isStale() ? runner : undefined;
-}
-
-function listResourcePathContributions(
-	extensionRunner: ExtensionRunner | undefined,
-	pathsOf: (contribution: ExtensionResourceContribution) => readonly string[],
-): ExtensionResourcePathContribution[] {
-	return (extensionRunner?.getResourceContributions() ?? []).flatMap(
-		(contribution) => {
-			const paths = pathsOf(contribution);
-			return paths.length > 0
-				? [{ extensionId: contribution.extensionId, paths }]
-				: [];
-		},
-	);
-}
-
 // Every config-value channel in a provider config: the provider api key and
 // the provider- and model-level request headers.
 function hasCommandConfigValues(
@@ -3606,13 +4159,6 @@ function changesRecoverableProfileFields(
 
 function formatError(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
-}
-
-function isAgentHarnessErrorCode(
-	error: unknown,
-	code: AgentHarnessError["code"],
-): boolean {
-	return error instanceof AgentHarnessError && error.code === code;
 }
 
 function now(): string {

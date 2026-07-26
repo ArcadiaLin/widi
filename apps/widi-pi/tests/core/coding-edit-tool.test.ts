@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-	createAgentToolFromResolvedTool,
+	createAgentHarnessToolFromResolvedTool,
 	ToolRegistry,
 } from "../../src/core/tool-registry.ts";
 import {
@@ -307,7 +307,7 @@ describe("core edit tool", () => {
 		);
 		const resolved = registry.resolve().getTool("edit");
 		if (!resolved) throw new Error("Expected edit tool to resolve.");
-		const agentTool = createAgentToolFromResolvedTool(resolved, {});
+		const agentTool = createAgentHarnessToolFromResolvedTool(resolved);
 		if (!agentTool.prepareArguments) {
 			throw new Error("Expected prepareArguments on the adapted tool.");
 		}
@@ -318,7 +318,13 @@ describe("core edit tool", () => {
 			oldText: "alpha",
 			newText: "beta",
 		});
-		const result = await agentTool.execute("call-1", prepared);
+		const result = await agentTool.execute(
+			"call-1",
+			prepared,
+			undefined,
+			undefined,
+			{},
+		);
 
 		expect(operations.files.get("/workspace/project/file.txt")).toBe("beta\n");
 		expect(result).toMatchObject({

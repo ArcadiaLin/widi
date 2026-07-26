@@ -14,7 +14,6 @@ import type {
 	ExtensionIdentity,
 	ExtensionInterceptorRegistration,
 	ExtensionProviderContribution,
-	ExtensionResourceContribution,
 	ExtensionToolContribution,
 	LoadedExtensionScope,
 } from "./loader.ts";
@@ -119,7 +118,6 @@ export interface ExtensionRunnerSnapshot {
 	extensions: readonly ExtensionIdentity[];
 	hooks: readonly ExtensionHookSnapshot[];
 	toolContributions: readonly ExtensionToolContributionSnapshot[];
-	resourceContributions: readonly ExtensionResourceContribution[];
 	providerContributions: readonly ExtensionProviderContributionSnapshot[];
 	stale: {
 		readonly stale: boolean;
@@ -142,11 +140,12 @@ export class ExtensionRunner {
 	readonly extensions: readonly ExtensionIdentity[];
 	readonly diagnostics: readonly CoreDiagnostic[];
 
-	private readonly _loadedScope: LoadedExtensionScope;
+	private _loadedScope: LoadedExtensionScope;
 	private _actions: ExtensionCoreActions = createUnboundActions();
 	private _contextActions: ExtensionContextActions = {};
 	private _staleMessage: string | undefined;
 	private _disposed = false;
+	private _disposedSnapshot: ExtensionRunnerSnapshot | undefined;
 
 	constructor(options: ExtensionRunnerOptions) {
 		this._loadedScope = options.loadedScope;
@@ -189,10 +188,6 @@ export class ExtensionRunner {
 		};
 	}
 
-	getResourceContributions(): readonly ExtensionResourceContribution[] {
-		return this._loadedScope.resourceContributions;
-	}
-
 	getProviderContributions(): readonly ExtensionProviderContribution[] {
 		return this._loadedScope.providerContributions;
 	}
@@ -223,6 +218,23 @@ export class ExtensionRunner {
 				errors.push(error);
 			}
 		}
+		// Contexts pinned by in-flight background jobs keep this runner alive
+		// past disposal. Keep only the inspectable snapshot and drop the loaded
+		// scope so they do not retain every handler closure and extension
+		// module until the job settles.
+		this._disposedSnapshot = this.inspect();
+		this._loadedScope = {
+			agentId: this.agentId,
+			profileId: this.profileId,
+			extensionIds: this.extensionIds,
+			extensions: this.extensions,
+			diagnostics: this.diagnostics,
+			toolContributions: [],
+			providerContributions: [],
+			observerHandlers: new Map(),
+			interceptorHandlers: new Map(),
+			disposeHandlers: [],
+		};
 		if (errors.length === 1) throw errors[0];
 		if (errors.length > 1) {
 			throw new AggregateError(errors, "Extension dispose handlers failed.");
@@ -234,6 +246,7 @@ export class ExtensionRunner {
 	}
 
 	inspect(): ExtensionRunnerSnapshot {
+		if (this._disposedSnapshot) return this._disposedSnapshot;
 		const hooks: ExtensionHookSnapshot[] = [];
 		for (const handlers of this._loadedScope.observerHandlers.values()) {
 			for (const registration of handlers) {
@@ -278,13 +291,6 @@ export class ExtensionRunner {
 						source: contribution.source,
 					};
 				},
-			),
-			resourceContributions: this._loadedScope.resourceContributions.map(
-				(contribution) => ({
-					extensionId: contribution.extensionId,
-					skillPaths: [...contribution.skillPaths],
-					promptTemplatePaths: [...contribution.promptTemplatePaths],
-				}),
 			),
 			providerContributions: this._loadedScope.providerContributions.map(
 				(contribution) => ({
@@ -547,7 +553,7 @@ export class ExtensionRunner {
 		let images = event.images;
 		for (const registration of registrations) {
 			const run = await this._runInterceptor(registration, {
-				type: "input",
+				...event,
 				text,
 				images,
 			});

@@ -1,4 +1,5 @@
 import { type Static, Type } from "typebox";
+import type { BackgroundJobReportSnapshot } from "../../background-job.ts";
 import type { ToolDefinition } from "../types.ts";
 
 const readJobSchema = Type.Object({
@@ -17,7 +18,19 @@ export type ReadJobJobStatus =
 	| {
 			readonly jobId: string;
 			readonly toolName: string;
+			/** Human-readable label for the job (for bash, the command); may be absent. */
+			readonly description?: string;
 			readonly state: "running";
+			/** Epoch ms when the job's tool call began. */
+			readonly startedAt: number;
+			/** Total bytes ever appended to the job's output. */
+			readonly totalBytesSeen: number;
+			/** Total bytes dropped from the rolling tail and no longer readable. */
+			readonly tailDroppedBytes: number;
+			/** Cumulative bytes dropped from the progress-forwarding buffer. */
+			readonly progressDroppedBytes: number;
+			/** Latest structured tool-owned report, when one has been published. */
+			readonly report?: BackgroundJobReportSnapshot;
 			/** Current rolling output tail at read time. */
 			readonly output: string;
 	  }
@@ -90,7 +103,15 @@ export function createReadJobToolDefinition(): ToolDefinition<
 					? {
 							jobId: id,
 							toolName: job.toolName,
+							description: job.description,
 							state: "running",
+							startedAt: job.startedAt,
+							totalBytesSeen: job.output.totalBytesSeen,
+							tailDroppedBytes: job.output.tailDroppedBytes,
+							progressDroppedBytes: job.output.progressDroppedBytes,
+							...(job.report === undefined
+								? undefined
+								: { report: job.report }),
 							output: job.output.read(),
 						}
 					: { jobId: id, state: "unknown" };
@@ -112,7 +133,28 @@ function formatReadSummary(jobs: readonly ReadJobJobStatus[]): string {
 			return `## Job ${job.jobId}: not tracked (already finished, not backgrounded, or never started)`;
 		}
 		const output = job.output ? job.output : "(no output yet)";
-		return `## Job ${job.jobId} (${job.toolName}): running — live output tail\n${output}`;
+		const label = job.description ? `: ${job.description}` : "";
+		const report = formatReportSummary(job.report);
+		const reportText = report ? `\nCurrent report: ${report}` : "";
+		return `## Job ${job.jobId} (${job.toolName})${label}: running${reportText}\nLive output tail:\n${output}`;
 	});
 	return `${sections.join("\n\n")}\n\nThis is a live tail, not the final result: each finished job's output arrives as a separate background job result message.`;
+}
+
+function formatReportSummary(
+	report: BackgroundJobReportSnapshot | undefined,
+): string | undefined {
+	if (!report) return undefined;
+	const parts: string[] = [];
+	if (report.value.summary) parts.push(report.value.summary);
+	if (report.value.progress) {
+		parts.push(
+			report.value.progress.total === undefined
+				? `${report.value.progress.completed}`
+				: `${report.value.progress.completed}/${report.value.progress.total}`,
+		);
+	}
+	return parts.length > 0
+		? parts.join(" · ")
+		: `${report.value.kind} v${report.value.schemaVersion}`;
 }

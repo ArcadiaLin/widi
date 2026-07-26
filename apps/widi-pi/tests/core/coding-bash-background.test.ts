@@ -4,7 +4,7 @@ import {
 	BackgroundJobTable,
 } from "../../src/core/background-job.ts";
 import {
-	createAgentToolFromResolvedTool,
+	createAgentHarnessToolFromResolvedTool,
 	ToolRegistry,
 } from "../../src/core/tool-registry.ts";
 import { createBashToolDefinition } from "../../src/core/tools/coding/bash.ts";
@@ -12,14 +12,12 @@ import type { ToolSource } from "../../src/core/tools/types.ts";
 
 const coreSource: ToolSource = { kind: "core", id: "builtin" };
 
-function resolveBashTool(table: BackgroundJobTable) {
+function resolveBashTool() {
 	const registry = new ToolRegistry();
 	registry.defineTool(createBashToolDefinition(process.cwd()), coreSource);
 	const resolved = registry.resolve().getTool("bash");
 	if (!resolved) throw new Error("bash tool did not resolve");
-	return createAgentToolFromResolvedTool(resolved, {
-		backgroundJobTable: table,
-	});
+	return createAgentHarnessToolFromResolvedTool(resolved);
 }
 
 describe("bash background integration", () => {
@@ -30,13 +28,14 @@ describe("bash background integration", () => {
 				if (change.transition === "settled") resolve(change);
 			});
 		});
-		const bash = resolveBashTool(table);
+		const bash = resolveBashTool();
 
 		const t0 = await bash.execute(
 			"call-1",
 			{ command: "sleep 0.2 && echo hi", background: true },
 			undefined,
 			undefined,
+			{ backgroundJobTable: table },
 		);
 
 		// t0 is the handle, not the command output: the command is still running.
@@ -59,13 +58,14 @@ describe("bash background integration", () => {
 				if (change.transition === "settled") resolve(change);
 			});
 		});
-		const bash = resolveBashTool(table);
+		const bash = resolveBashTool();
 
 		const t0 = await bash.execute(
 			"call-1",
 			{ command: "echo progress && sleep 0.3", background: true },
 			undefined,
 			undefined,
+			{ backgroundJobTable: table },
 		);
 		const jobId = (t0.details as { jobId: string }).jobId;
 
@@ -81,13 +81,14 @@ describe("bash background integration", () => {
 
 	it("runs inline when background is not requested", async () => {
 		const table = new BackgroundJobTable();
-		const bash = resolveBashTool(table);
+		const bash = resolveBashTool();
 
 		const result = await bash.execute(
 			"call-1",
 			{ command: "echo inline" },
 			undefined,
 			undefined,
+			{ backgroundJobTable: table },
 		);
 
 		const text = result.content

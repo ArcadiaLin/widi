@@ -1,7 +1,5 @@
 import type {
-	AgentHarness,
 	AgentHarnessEvent,
-	AgentTool,
 	AgentToolResult,
 } from "@earendil-works/pi-agent-core";
 import { AgentHarnessError } from "@earendil-works/pi-agent-core";
@@ -21,7 +19,11 @@ import {
 import type { AgentRecord } from "../../src/core/agent-record.ts";
 import type { BackgroundJobOutcome } from "../../src/core/background-job.ts";
 import type { ExtensionModule } from "../../src/core/extension/index.ts";
-import { ToolRegistry } from "../../src/core/tool-registry.ts";
+import {
+	type ResolvedAgentHarnessTool,
+	type ToolAdapterContext,
+	ToolRegistry,
+} from "../../src/core/tool-registry.ts";
 import { registerCoreJobTools } from "../../src/core/tools/jobs/builtin.ts";
 import type { ToolDefinition } from "../../src/core/tools/types.ts";
 import {
@@ -81,6 +83,18 @@ async function driveSettled(
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+/** Whether the agent still has a message waiting on its delivery queue. */
+function pendingMessages(
+	orchestrator: AgentOrchestrator,
+	agentId: string,
+): boolean {
+	return (
+		orchestrator as unknown as {
+			_messages: { hasPending: (agentId: string) => boolean };
+		}
+	)._messages.hasPending(agentId);
+}
+
 const completedOutcome: BackgroundJobOutcome = {
 	status: "completed",
 	result: {
@@ -89,11 +103,26 @@ const completedOutcome: BackgroundJobOutcome = {
 	},
 };
 
+async function resolveRecordToolContext(
+	record: AgentRecord,
+): Promise<ToolAdapterContext> {
+	const source = (
+		record.harness as unknown as {
+			toolContext:
+				| ToolAdapterContext
+				| (() => ToolAdapterContext | Promise<ToolAdapterContext>);
+		}
+	).toolContext;
+	return await (typeof source === "function" ? source() : source);
+}
+
 describe("AgentOrchestrator background job router", () => {
 	it("delivers a settled result to an idle agent as a prompt", async () => {
 		const { record } = await spawnAgent();
 		const prompt = vi.fn(async (_text: string) => ({}) as AssistantMessage);
-		record.harness = { prompt } as unknown as AgentHarness;
+		record.harness = {
+			prompt,
+		} as unknown as NonNullable<AgentRecord["harness"]>;
 
 		const jobId = settleBackgroundedJob(record, completedOutcome);
 		await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
@@ -104,29 +133,44 @@ describe("AgentOrchestrator background job router", () => {
 		expect(text).toContain("build done");
 	});
 
-	it("buffers while running and flushes on the next idle boundary", async () => {
-		const { orchestrator, agentId, record } = await spawnAgent();
+	// A tool result is not a reason to preempt the reasoning of a turn already in
+	// flight, so it is queued for the next turn instead of steered into this one.
+	it("follows up a settled result into the active run while running", async () => {
+		const { record } = await spawnAgent();
 		const prompt = vi.fn(async (_text: string) => ({}) as AssistantMessage);
-		record.harness = { prompt } as unknown as AgentHarness;
+		const steer = vi.fn(async (_text: string) => {});
+		const followUp = vi.fn(async (_text: string) => {});
+		record.harness = {
+			prompt,
+			steer,
+			followUp,
+		} as unknown as NonNullable<AgentRecord["harness"]>;
 		record.status = "running";
 
-		settleBackgroundedJob(record, completedOutcome);
-		await tick();
+		const jobId = settleBackgroundedJob(record, completedOutcome);
+		await vi.waitFor(() => expect(followUp).toHaveBeenCalledTimes(1));
 		expect(prompt).not.toHaveBeenCalled();
-
-		await driveSettled(orchestrator, agentId);
-		await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
-		expect(prompt.mock.calls[0]?.[0] as string).toContain("build done");
+		expect(steer).not.toHaveBeenCalled();
+		const text = followUp.mock.calls[0]?.[0] as string;
+		expect(text).toContain(jobId);
+		expect(text).toContain("build done");
 	});
 
-	it("joins multiple buffered results into a single prompt", async () => {
+	it("joins results buffered before the agent is deliverable into a single prompt", async () => {
 		const { orchestrator, agentId, record } = await spawnAgent();
 		const prompt = vi.fn(async (_text: string) => ({}) as AssistantMessage);
-		record.harness = { prompt } as unknown as AgentHarness;
-		record.status = "running";
+		record.harness = {
+			prompt,
+		} as unknown as NonNullable<AgentRecord["harness"]>;
+		// Not yet deliverable: results accumulate in the buffer until the agent
+		// reaches an idle boundary, then flush together as one prompt.
+		record.status = "creating";
 
 		const first = settleBackgroundedJob(record, completedOutcome, "call-1");
 		const second = settleBackgroundedJob(record, completedOutcome, "call-2");
+		await tick();
+		expect(prompt).not.toHaveBeenCalled();
+
 		await driveSettled(orchestrator, agentId);
 		await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
 
@@ -143,20 +187,19 @@ describe("AgentOrchestrator background job router", () => {
 			if (calls === 1) throw new AgentHarnessError("busy", "busy");
 			return {} as AssistantMessage;
 		});
-		record.harness = { prompt } as unknown as AgentHarness;
-		const internals = orchestrator as unknown as {
-			_pendingBackgroundResults: Map<string, string[]>;
-		};
+		record.harness = {
+			prompt,
+		} as unknown as NonNullable<AgentRecord["harness"]>;
 
 		settleBackgroundedJob(record, completedOutcome);
 		await tick();
 		// One attempt, then it waits for `settled` rather than retrying inline.
 		expect(prompt).toHaveBeenCalledTimes(1);
-		expect(internals._pendingBackgroundResults.get(agentId)).toHaveLength(1);
+		expect(pendingMessages(orchestrator, agentId)).toBe(true);
 
 		await driveSettled(orchestrator, agentId);
 		await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(2));
-		expect(internals._pendingBackgroundResults.get(agentId) ?? []).toEqual([]);
+		expect(pendingMessages(orchestrator, agentId)).toBe(false);
 	});
 
 	it("does not hot-loop while the harness stays busy", async () => {
@@ -164,10 +207,9 @@ describe("AgentOrchestrator background job router", () => {
 		const prompt = vi.fn(async (_text: string) => {
 			throw new AgentHarnessError("busy", "busy");
 		});
-		record.harness = { prompt } as unknown as AgentHarness;
-		const internals = orchestrator as unknown as {
-			_pendingBackgroundResults: Map<string, string[]>;
-		};
+		record.harness = {
+			prompt,
+		} as unknown as NonNullable<AgentRecord["harness"]>;
 
 		settleBackgroundedJob(record, completedOutcome);
 		await tick();
@@ -176,7 +218,7 @@ describe("AgentOrchestrator background job router", () => {
 		// A single attempt: no inline recursion spinning against a busy harness.
 		expect(prompt).toHaveBeenCalledTimes(1);
 		// The result is preserved for a later `settled`-driven retry.
-		expect(internals._pendingBackgroundResults.get(agentId)).toHaveLength(1);
+		expect(pendingMessages(orchestrator, agentId)).toBe(true);
 	});
 
 	it("preserves results and retries when delivery fails with a non-busy error", async () => {
@@ -191,25 +233,25 @@ describe("AgentOrchestrator background job router", () => {
 			if (calls === 1) throw new Error("session write failed");
 			return {} as AssistantMessage;
 		});
-		record.harness = { prompt } as unknown as AgentHarness;
-		const internals = orchestrator as unknown as {
-			_pendingBackgroundResults: Map<string, string[]>;
-		};
+		record.harness = {
+			prompt,
+		} as unknown as NonNullable<AgentRecord["harness"]>;
 
 		settleBackgroundedJob(record, completedOutcome);
-		await tick();
+		await vi.waitFor(() =>
+			expect(
+				events
+					.filter((event) => event.type === "diagnostic")
+					.map((event) => event.diagnostic.code),
+			).toContain("orchestrator.background_job_delivery_failed"),
+		);
 		// The result is preserved (not dropped) and a diagnostic is recorded.
 		expect(prompt).toHaveBeenCalledTimes(1);
-		expect(internals._pendingBackgroundResults.get(agentId)).toHaveLength(1);
-		expect(
-			events
-				.filter((event) => event.type === "diagnostic")
-				.map((event) => event.diagnostic.code),
-		).toContain("orchestrator.background_job_delivery_failed");
+		expect(pendingMessages(orchestrator, agentId)).toBe(true);
 
 		await driveSettled(orchestrator, agentId);
 		await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(2));
-		expect(internals._pendingBackgroundResults.get(agentId) ?? []).toEqual([]);
+		expect(pendingMessages(orchestrator, agentId)).toBe(false);
 	});
 
 	it("records a diagnostic instead of rejecting when a prompt throws unexpectedly", async () => {
@@ -222,7 +264,7 @@ describe("AgentOrchestrator background job router", () => {
 			prompt: vi.fn(async (_text: string) => {
 				throw new Error("session write failed");
 			}),
-		} as unknown as AgentHarness;
+		} as unknown as NonNullable<AgentRecord["harness"]>;
 
 		settleBackgroundedJob(record, completedOutcome);
 		await vi.waitFor(() => {
@@ -247,35 +289,34 @@ describe("AgentOrchestrator background job router", () => {
 		expect(job.signal.aborted).toBe(true);
 		const internals = orchestrator as unknown as {
 			_unsubscribeAgentJobChanges: Map<string, unknown>;
-			_pendingBackgroundResults: Map<string, unknown>;
-			_backgroundFlushInFlight: Set<string>;
+			_unsubscribeAgentJobReports: Map<string, unknown>;
+			_maintenanceDepth: Map<string, number>;
 		};
 		expect(internals._unsubscribeAgentJobChanges.has(agentId)).toBe(false);
-		expect(internals._pendingBackgroundResults.has(agentId)).toBe(false);
-		expect(internals._backgroundFlushInFlight.has(agentId)).toBe(false);
+		expect(internals._unsubscribeAgentJobReports.has(agentId)).toBe(false);
+		expect(internals._maintenanceDepth.has(agentId)).toBe(false);
+		expect(pendingMessages(orchestrator, agentId)).toBe(false);
 	});
 
-	it("drops buffered results whose owning agent is gone, with a diagnostic", async () => {
-		const { orchestrator } = await spawnAgent();
+	it("drops a result whose owning agent is gone, with a diagnostic", async () => {
+		const { orchestrator, agentId, record } = await spawnAgent();
 		const events: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
 			events.push(event);
 		});
-		const internals = orchestrator as unknown as {
-			_pendingBackgroundResults: Map<string, string[]>;
-			_flushBackgroundResults: (agentId: string) => Promise<void>;
-		};
-		internals._pendingBackgroundResults.set("missing-agent", ["stranded"]);
+		// An agent can go unavailable (a failed extension reload, for example)
+		// while its jobs are still live and observed. Nothing will bring a harness
+		// back, so the result cannot be retried and is dropped instead.
+		record.status = "unavailable";
+		settleBackgroundedJob(record, completedOutcome);
 
-		await internals._flushBackgroundResults("missing-agent");
-
-		const codes = events
-			.filter((event) => event.type === "diagnostic")
-			.map((event) => event.diagnostic.code);
-		expect(codes).toContain("orchestrator.background_job_dropped");
-		expect(internals._pendingBackgroundResults.has("missing-agent")).toBe(
-			false,
-		);
+		await vi.waitFor(() => {
+			const codes = events
+				.filter((event) => event.type === "diagnostic")
+				.map((event) => event.diagnostic.code);
+			expect(codes).toContain("orchestrator.background_job_dropped");
+		});
+		expect(pendingMessages(orchestrator, agentId)).toBe(false);
 	});
 
 	it("emits per-job change events as jobs background and settle", async () => {
@@ -335,6 +376,97 @@ describe("AgentOrchestrator background job router", () => {
 		);
 	});
 
+	it("streams output increments and flushes the final one before settling", async () => {
+		const { orchestrator, record } = await spawnAgent();
+		// Busy so settlements stay buffered; we only assert the emitted stream here.
+		record.status = "running";
+		const log: Array<
+			| { kind: "progress"; sequence: number; chunk: string; startByte: number }
+			| { kind: "changed"; transition: string }
+		> = [];
+		orchestrator.subscribe((event) => {
+			if (event.type === "agent_background_job_progress") {
+				log.push({
+					kind: "progress",
+					sequence: event.sequence,
+					chunk: Buffer.from(event.chunk, "base64").toString("utf-8"),
+					startByte: event.startByte,
+				});
+			} else if (event.type === "agent_background_job_changed") {
+				log.push({ kind: "changed", transition: event.transition });
+			}
+		});
+
+		const job = record.backgroundJobTable.create({
+			toolCallId: "call-1",
+			toolName: "bash",
+		});
+		record.backgroundJobTable.background(job.id);
+		job.output.append("line1\n");
+		// Wait for the first increment to be emitted before appending the next, so
+		// the two do not coalesce into one drain.
+		await vi.waitFor(() =>
+			expect(
+				log.some((e) => e.kind === "progress" && e.chunk === "line1\n"),
+			).toBe(true),
+		);
+
+		job.output.append("line2\n");
+		record.backgroundJobTable.settle(job.id, completedOutcome);
+		await vi.waitFor(() =>
+			expect(
+				log.some((e) => e.kind === "changed" && e.transition === "settled"),
+			).toBe(true),
+		);
+
+		const progresses = log.filter((e) => e.kind === "progress");
+		expect(progresses).toEqual([
+			{ kind: "progress", sequence: 0, chunk: "line1\n", startByte: 0 },
+			{ kind: "progress", sequence: 1, chunk: "line2\n", startByte: 6 },
+		]);
+		// Barrier: the job's final increment is emitted before its terminal event.
+		const lastProgress = log.lastIndexOf(
+			progresses[progresses.length - 1] as (typeof log)[number],
+		);
+		const settledIndex = log.findIndex(
+			(e) => e.kind === "changed" && e.transition === "settled",
+		);
+		expect(lastProgress).toBeLessThan(settledIndex);
+	});
+
+	it("publishes accumulated output only after the backgrounded lifecycle event", async () => {
+		const { orchestrator, record } = await spawnAgent();
+		record.status = "running";
+		const log: Array<{ kind: "changed" | "progress"; value: string }> = [];
+		orchestrator.subscribe((event) => {
+			if (event.type === "agent_background_job_changed") {
+				log.push({ kind: "changed", value: event.transition });
+			}
+			if (event.type === "agent_background_job_progress") {
+				log.push({
+					kind: "progress",
+					value: Buffer.from(event.chunk, "base64").toString("utf-8"),
+				});
+			}
+		});
+
+		const job = record.backgroundJobTable.create({
+			toolCallId: "call-1",
+			toolName: "bash",
+		});
+		job.output.append("pre-t0\n");
+		await tick();
+		expect(log).toEqual([]);
+
+		record.backgroundJobTable.background(job.id);
+		await vi.waitFor(() =>
+			expect(log).toEqual([
+				{ kind: "changed", value: "backgrounded" },
+				{ kind: "progress", value: "pre-t0\n" },
+			]),
+		);
+	});
+
 	it("emits an aborting change when a live job is aborted", async () => {
 		const { orchestrator, record } = await spawnAgent();
 		record.status = "running";
@@ -375,10 +507,21 @@ describe("AgentOrchestrator background job router", () => {
 		expect(orchestrator.listAgentBackgroundJobs(agentId)).toEqual([
 			{
 				jobId: job.id,
+				origin: { kind: "tool" },
 				toolCallId: "call-1",
 				toolName: "bash",
+				description: undefined,
+				report: undefined,
 				phase: "backgrounded",
 				status: undefined,
+				stopReason: undefined,
+				startedAt: expect.any(Number),
+				backgroundedAt: expect.any(Number),
+				endedAt: undefined,
+				totalBytesSeen: 9,
+				droppedBytes: 0,
+				tailDroppedBytes: 0,
+				progressDroppedBytes: 0,
 			},
 		]);
 		expect(orchestrator.readAgentBackgroundJobOutput(agentId, job.id)).toBe(
@@ -390,6 +533,56 @@ describe("AgentOrchestrator background job router", () => {
 		expect(
 			orchestrator.readAgentBackgroundJobOutput(agentId, job.id),
 		).toBeUndefined();
+	});
+
+	it("emits the latest structured report before the settled lifecycle event", async () => {
+		const { orchestrator, record } = await spawnAgent();
+		record.status = "running";
+		const log: Array<
+			| { kind: "report"; revision: number; summary: string | undefined }
+			| { kind: "changed"; transition: string }
+		> = [];
+		orchestrator.subscribe((event) => {
+			if (event.type === "agent_background_job_report_updated") {
+				log.push({
+					kind: "report",
+					revision: event.report.revision,
+					summary: event.report.value.summary,
+				});
+			} else if (event.type === "agent_background_job_changed") {
+				log.push({ kind: "changed", transition: event.transition });
+			}
+		});
+
+		const job = record.backgroundJobTable.create({
+			toolCallId: "call-1",
+			toolName: "planner",
+		});
+		record.backgroundJobTable.background(job.id);
+		record.backgroundJobTable.setReport(job.id, {
+			kind: "test.plan",
+			schemaVersion: 1,
+			summary: "step 1",
+		});
+		record.backgroundJobTable.setReport(job.id, {
+			kind: "test.plan",
+			schemaVersion: 1,
+			summary: "step 2",
+		});
+		record.backgroundJobTable.settle(job.id, completedOutcome);
+
+		await vi.waitFor(() =>
+			expect(
+				log.some(
+					(entry) => entry.kind === "changed" && entry.transition === "settled",
+				),
+			).toBe(true),
+		);
+		expect(log).toEqual([
+			{ kind: "changed", transition: "backgrounded" },
+			{ kind: "report", revision: 2, summary: "step 2" },
+			{ kind: "changed", transition: "settled" },
+		]);
 	});
 });
 
@@ -452,6 +645,68 @@ describe("AgentOrchestrator background job extension observability", () => {
 				{ transition: "backgrounded", liveCount: 1 },
 				{ transition: "settled", liveCount: 0 },
 			]),
+		);
+	});
+
+	it("delivers byte-exact progress events to extension observers", async () => {
+		const seen: Array<{
+			text: string;
+			startByte: number;
+			endByte: number;
+		}> = [];
+		const { record } = await spawnWithJobExtension({
+			module: (api) => {
+				api.observe("agent_background_job_progress", (event) => {
+					seen.push({
+						text: Buffer.from(event.chunk, "base64").toString("utf-8"),
+						startByte: event.startByte,
+						endByte: event.endByte,
+					});
+				});
+			},
+		});
+		record.status = "running";
+
+		const job = record.backgroundJobTable.create({
+			toolCallId: "call-1",
+			toolName: "bash",
+		});
+		record.backgroundJobTable.background(job.id);
+		job.output.append("progress\n");
+
+		await vi.waitFor(() =>
+			expect(seen).toEqual([{ text: "progress\n", startByte: 0, endByte: 9 }]),
+		);
+	});
+
+	it("delivers structured report events to extension observers", async () => {
+		const seen: Array<{ revision: number; summary: string | undefined }> = [];
+		const { record } = await spawnWithJobExtension({
+			module: (api) => {
+				api.observe("agent_background_job_report_updated", (event) => {
+					seen.push({
+						revision: event.report.revision,
+						summary: event.report.value.summary,
+					});
+				});
+			},
+		});
+		record.status = "running";
+
+		const job = record.backgroundJobTable.create({
+			toolCallId: "call-1",
+			toolName: "planner",
+		});
+		record.backgroundJobTable.background(job.id);
+		record.backgroundJobTable.setReport(job.id, {
+			kind: "test.plan",
+			schemaVersion: 1,
+			summary: "Planning",
+		});
+		record.backgroundJobTable.settle(job.id, completedOutcome);
+
+		await vi.waitFor(() =>
+			expect(seen).toEqual([{ revision: 1, summary: "Planning" }]),
 		);
 	});
 
@@ -521,12 +776,15 @@ describe("AgentOrchestrator background job context", () => {
 	): Promise<AgentToolResult<unknown>> {
 		const toolSet = (
 			orchestrator as unknown as {
-				_agentToolSets: Map<string, { tools: AgentTool[] }>;
+				_agentToolSets: Map<string, { tools: ResolvedAgentHarnessTool[] }>;
 			}
 		)._agentToolSets.get(agentId);
 		const probe = toolSet?.tools.find((tool) => tool.name === "probe");
 		if (!probe) throw new Error("probe tool not resolved for agent");
-		return probe.execute("call-1", {}, undefined, undefined);
+		const record = requireAgentRecord(orchestrator, agentId);
+		return resolveRecordToolContext(record).then((context) =>
+			probe.execute("call-1", {}, undefined, undefined, context),
+		);
 	}
 
 	const textOf = (result: AgentToolResult<unknown>): string =>
@@ -543,6 +801,35 @@ describe("AgentOrchestrator background job context", () => {
 
 		expect(textOf(await probeTableState(orchestrator, agentId))).toBe(
 			"has-table",
+		);
+	});
+
+	it("provides fresh turn contexts with per-agent job table isolation", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env, {
+			toolRegistry: createToolRegistry(probeTool),
+		});
+		const firstAgentId = await orchestrator.spawnAgent();
+		const secondAgentId = await orchestrator.spawnAgent();
+		const firstRecord = requireAgentRecord(orchestrator, firstAgentId);
+		const secondRecord = requireAgentRecord(orchestrator, secondAgentId);
+
+		const firstContext = await resolveRecordToolContext(firstRecord);
+		const nextFirstContext = await resolveRecordToolContext(firstRecord);
+		const secondContext = await resolveRecordToolContext(secondRecord);
+
+		expect(nextFirstContext).not.toBe(firstContext);
+		expect(firstContext.backgroundJobTable).toBe(
+			firstRecord.backgroundJobTable,
+		);
+		expect(nextFirstContext.backgroundJobTable).toBe(
+			firstRecord.backgroundJobTable,
+		);
+		expect(secondContext.backgroundJobTable).toBe(
+			secondRecord.backgroundJobTable,
+		);
+		expect(secondContext.backgroundJobTable).not.toBe(
+			firstContext.backgroundJobTable,
 		);
 	});
 });

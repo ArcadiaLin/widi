@@ -14,9 +14,11 @@ import type {
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { TSchema } from "typebox";
 import type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
+import type { MessageSource } from "../message.ts";
 import type { ProviderConfigInput } from "../model-registry.ts";
 import type { ToolDefinition, ToolDefinitionPatch } from "../tools/types.ts";
 import type {
+	AgentId,
 	AgentToolsSnapshot,
 	CandidateItem,
 	OrchestratorEvent,
@@ -32,6 +34,8 @@ import type {
 // inversion); the extension layer consumes and re-exports it for its own
 // consumers.
 export type {
+	BackgroundJobExecutionContext,
+	BackgroundJobReportAdapter,
 	ToolDefinition,
 	ToolDefinitionPatch,
 	ToolExecute,
@@ -48,6 +52,8 @@ export type ExtensionObservedEvent = Extract<
 	{
 		type:
 			| "agent_background_job_changed"
+			| "agent_background_job_progress"
+			| "agent_background_job_report_updated"
 			| "agent_harness_event"
 			| "agent_resumed"
 			| "agent_session_forked"
@@ -93,11 +99,20 @@ export type ExtensionInterceptorName =
 	| "tool_result";
 
 /**
- * WIDI-native input interceptor event (ME slice 6). Fired by promptAgent for
- * every human text ingress. Not a Pi harness hook.
+ * WIDI-native input interceptor event (ME slice 6). Fired by `sendMessage` for
+ * every message ingress, not only human text: an agent-to-agent message, a
+ * background job result, and a system notice all run the same pipeline, so no
+ * input path bypasses an input policy. Not a Pi harness hook.
+ *
+ * `source` tells the cases apart. A handler that only means to rewrite human
+ * input must check it, or it will also rewrite tool results the model is
+ * waiting for. `targetAgentId` is the agent that will read the message, which
+ * is not the handler's own agent for cross-agent delivery.
  */
 export interface ExtensionInputEvent {
 	readonly type: "input";
+	readonly source: MessageSource;
+	readonly targetAgentId: AgentId;
 	readonly text: string;
 	readonly images?: readonly ImageContent[];
 }
@@ -107,6 +122,10 @@ export interface ExtensionInputEvent {
  * the text (and optionally the images; omitted images keep the current ones)
  * and feeds the next handler. A block result rejects the whole input and
  * short-circuits the pipeline; there is no pi-style "handled" escape hatch.
+ *
+ * A block is only enforced for sources whose caller can be told: background job
+ * results are delivered anyway, because the model already holds the job handle
+ * and would otherwise wait forever for a result that was silently dropped.
  */
 export type ExtensionInputResult =
 	| { text: string; images?: readonly ImageContent[] }
@@ -358,19 +377,6 @@ export interface ExtensionContext {
 }
 
 /**
- * Activation-time resource path declaration (ME slice 8). The extension only
- * hands the core additional skill / prompt template paths to read; the
- * ResourceLoader stays the sole filesystem reader and interpreter, and the
- * contribution is scoped to the declaring runner's agent. A name that
- * collides with an already-registered resource loses first-registration-wins
- * and is dropped with a diagnostic.
- */
-export interface ExtensionResourcePaths {
-	readonly skillPaths?: readonly string[];
-	readonly promptTemplatePaths?: readonly string[];
-}
-
-/**
  * Activation-time provider registration config (ME slice 9). The provider
  * name must be new - built-in, models.json, and other extensions' names are
  * not overridable (first-registration-wins, no proxy/override channel) - and
@@ -415,7 +421,6 @@ export interface ExtensionActivationApi {
 		targetToolName: string,
 		patch: ToolDefinitionPatch<TParamsSchema, TDetails>,
 	): void;
-	contributeResources(paths: ExtensionResourcePaths): void;
 	registerProvider(providerName: string, config: ExtensionProviderConfig): void;
 	observe<TName extends ExtensionObservedEventName>(
 		eventName: TName,

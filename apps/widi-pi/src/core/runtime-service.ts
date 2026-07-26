@@ -287,7 +287,6 @@ async function createProfileRegistry(options: {
 	readonly cwd: string;
 	readonly agentDir: string;
 	readonly projectTrusted: boolean;
-	readonly settingsProfilePaths: readonly string[];
 }): Promise<{
 	readonly registry: AgentProfileRegistry;
 	readonly roots: readonly FileProfileRoot[];
@@ -296,7 +295,6 @@ async function createProfileRegistry(options: {
 		executionEnv: options.executionEnv,
 		cwd: options.cwd,
 		agentDir: options.agentDir,
-		settingsProfilePaths: options.settingsProfilePaths,
 	});
 	const trustedRoots = options.projectTrusted
 		? roots
@@ -672,7 +670,6 @@ export async function createWidiRuntime(
 		cwd,
 		agentDir,
 		projectTrusted: projectTrust.trusted,
-		settingsProfilePaths: settingManager.getProfilePaths(),
 	});
 	const profileRegistry = profileRegistryResult.registry;
 	const defaultProfile = await resolveDefaultProfileId({

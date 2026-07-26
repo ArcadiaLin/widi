@@ -42,7 +42,13 @@ describe("kill_job tool", () => {
 	it("kills a backgrounded job and reports the confirmed cancellation", async () => {
 		const table = new BackgroundJobTable();
 		const transitions: BackgroundJobTransition[] = [];
-		table.onChange((change) => transitions.push(change.transition));
+		let abortReason: string | undefined;
+		table.onChange((change) => {
+			transitions.push(change.transition);
+			if (change.transition === "aborting") {
+				abortReason = change.job.stopReason;
+			}
+		});
 		const job = createSettlingJob(table);
 
 		const result = await killJob.execute(
@@ -55,6 +61,7 @@ describe("kill_job tool", () => {
 			jobs: [{ jobId: job.id, toolName: "bash", state: "cancelled" }],
 		});
 		expect(textOf(result)).toContain(`${job.id} (bash): cancelled`);
+		expect(abortReason).toBe("Cancellation requested by kill_job.");
 		// The kill does not suppress the settlement: t1 routing still fires.
 		expect(transitions).toEqual(["backgrounded", "aborting", "settled"]);
 	});

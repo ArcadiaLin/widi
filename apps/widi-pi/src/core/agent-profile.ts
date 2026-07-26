@@ -56,17 +56,11 @@ export type AgentProfileDiagnosticCode =
 	| "profile.id_case_conflict"
 	| "profile.missing"
 	| "profile.disabled"
-	| "profile.override_not_persistable"
-	| "profile.source_missing";
+	| "profile.override_not_persistable";
 
 export type AgentProfileDiagnosticSeverity = DiagnosticSeverity;
 
-export type AgentProfileSourceKind =
-	| "settings"
-	| "cwd"
-	| "agent_dir"
-	| "memory"
-	| "builtin";
+export type AgentProfileSourceKind = "cwd" | "agent_dir" | "memory" | "builtin";
 
 export type AgentProfileSource = {
 	readonly kind: AgentProfileSourceKind;
@@ -173,7 +167,6 @@ export type FileProfileRoot = {
 	readonly kind: Exclude<AgentProfileSourceKind, "memory" | "builtin">;
 	readonly path: string;
 	readonly priority: number;
-	readonly missingBehavior: "silent" | "diagnostic";
 	readonly label?: string;
 };
 
@@ -257,7 +250,6 @@ export function createDefaultProfileRoots(options: {
 	readonly executionEnv: ExecutionEnv;
 	readonly cwd: string;
 	readonly agentDir: string;
-	readonly settingsProfilePaths?: readonly string[];
 }): Promise<FileProfileRoot[]> {
 	return resolveDefaultProfileRoots(options);
 }
@@ -350,19 +342,16 @@ export class FileProfileStorageBackend implements ProfileStorageBackend {
 		};
 		const infoResult = await this.executionEnv.fileInfo(root.path);
 		if (!infoResult.ok) {
-			if (
-				infoResult.error.code === "not_found" &&
-				root.missingBehavior === "silent"
-			) {
+			// A missing conventional root (cwd/agent_dir) is silent; other file
+			// info errors surface as diagnostics.
+			if (infoResult.error.code === "not_found") {
 				return { entries: [], diagnostics: [] };
 			}
 			return {
 				entries: [],
 				diagnostics: [
 					fileErrorDiagnostic(
-						infoResult.error.code === "not_found"
-							? "profile.source_missing"
-							: "profile.file_info_failed",
+						"profile.file_info_failed",
 						infoResult.error,
 						source,
 					),
@@ -822,18 +811,8 @@ async function resolveDefaultProfileRoots(options: {
 	readonly executionEnv: ExecutionEnv;
 	readonly cwd: string;
 	readonly agentDir: string;
-	readonly settingsProfilePaths?: readonly string[];
 }): Promise<FileProfileRoot[]> {
-	const roots: FileProfileRoot[] = [
-		...(options.settingsProfilePaths ?? []).map(
-			(path): FileProfileRoot => ({
-				kind: "settings",
-				path,
-				priority: 300,
-				missingBehavior: "diagnostic",
-			}),
-		),
-	];
+	const roots: FileProfileRoot[] = [];
 	const cwdProfilePath = await joinPathOrThrow(options.executionEnv, [
 		options.cwd,
 		".widi",
@@ -843,7 +822,6 @@ async function resolveDefaultProfileRoots(options: {
 		kind: "cwd",
 		path: cwdProfilePath,
 		priority: 200,
-		missingBehavior: "silent",
 	});
 
 	if (options.agentDir) {
@@ -855,7 +833,6 @@ async function resolveDefaultProfileRoots(options: {
 			kind: "agent_dir",
 			path: agentProfilePath,
 			priority: 100,
-			missingBehavior: "silent",
 		});
 	}
 
@@ -1414,7 +1391,7 @@ function fileErrorDiagnostic(
 	entryId?: string,
 ): AgentProfileDiagnostic {
 	return createProfileDiagnostic({
-		severity: code === "profile.source_missing" ? "warning" : "error",
+		severity: "error",
 		code,
 		message: error.message,
 		entryId,

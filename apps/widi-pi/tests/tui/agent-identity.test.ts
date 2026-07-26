@@ -196,7 +196,6 @@ function snapshot(
 			extensions: [],
 			hooks: [],
 			toolContributions: [],
-			resourceContributions: [],
 			providerContributions: [],
 			stale: { stale: false },
 		},

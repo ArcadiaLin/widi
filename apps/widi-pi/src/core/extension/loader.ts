@@ -36,12 +36,6 @@ import type {
 type ExtensionToolDefinition = ToolDefinition;
 type ExtensionToolDefinitionPatch = ToolDefinitionPatch;
 
-export interface ExtensionResourceContribution {
-	readonly extensionId: string;
-	readonly skillPaths: readonly string[];
-	readonly promptTemplatePaths: readonly string[];
-}
-
 export interface ExtensionProviderContribution {
 	readonly extensionId: string;
 	readonly providerName: string;
@@ -148,7 +142,6 @@ export interface LoadedExtensionScope {
 	extensions: readonly ExtensionIdentity[];
 	diagnostics: readonly CoreDiagnostic[];
 	toolContributions: readonly ExtensionToolContribution[];
-	resourceContributions: readonly ExtensionResourceContribution[];
 	providerContributions: readonly ExtensionProviderContribution[];
 	observerHandlers: ReadonlyMap<
 		ExtensionObservedEventName,
@@ -426,7 +419,6 @@ export class ExtensionLoader {
 	): Promise<LoadedExtensionScope> {
 		const diagnostics: CoreDiagnostic[] = [];
 		const toolContributions: ExtensionToolContribution[] = [];
-		const resourceContributions: ExtensionResourceContribution[] = [];
 		const providerContributions: ExtensionProviderContribution[] = [];
 		const observerHandlers = new Map<
 			ExtensionObservedEventName,
@@ -487,7 +479,6 @@ export class ExtensionLoader {
 						agentId: options.agentId,
 						profileId: options.profileId,
 						toolContributions,
-						resourceContributions,
 						providerContributions,
 						observerHandlers,
 						interceptorHandlers,
@@ -517,7 +508,6 @@ export class ExtensionLoader {
 			extensions,
 			diagnostics,
 			toolContributions,
-			resourceContributions,
 			providerContributions,
 			observerHandlers,
 			interceptorHandlers,
@@ -876,7 +866,6 @@ function createActivationApi(options: {
 	agentId: string;
 	profileId: string;
 	toolContributions: ExtensionToolContribution[];
-	resourceContributions: ExtensionResourceContribution[];
 	providerContributions: ExtensionProviderContribution[];
 	observerHandlers: Map<
 		ExtensionObservedEventName,
@@ -907,18 +896,6 @@ function createActivationApi(options: {
 				targetToolName,
 				patch: patch as ExtensionToolDefinitionPatch,
 				source: { kind: "extension", id: options.extensionId },
-			});
-		},
-		contributeResources: (paths) => {
-			const skillPaths = normalizeResourcePaths(paths.skillPaths);
-			const promptTemplatePaths = normalizeResourcePaths(
-				paths.promptTemplatePaths,
-			);
-			if (skillPaths.length === 0 && promptTemplatePaths.length === 0) return;
-			options.resourceContributions.push({
-				extensionId: options.extensionId,
-				skillPaths,
-				promptTemplatePaths,
 			});
 		},
 		registerProvider: (providerName, config) => {
@@ -958,20 +935,6 @@ function createActivationApi(options: {
 			});
 		},
 	};
-}
-
-function normalizeResourcePaths(
-	paths: readonly string[] | undefined,
-): string[] {
-	const seen = new Set<string>();
-	const normalized: string[] = [];
-	for (const rawPath of paths ?? []) {
-		const path = rawPath.trim();
-		if (!path || seen.has(path)) continue;
-		seen.add(path);
-		normalized.push(path);
-	}
-	return normalized;
 }
 
 function normalizeExtensionIds(extensionIds: readonly string[]): string[] {

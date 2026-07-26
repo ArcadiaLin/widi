@@ -19,21 +19,9 @@ import {
 export type ResourceSource =
 	| { readonly kind: "agent_dir"; readonly path: string }
 	| { readonly kind: "cwd"; readonly path: string }
-	| { readonly kind: "settings"; readonly path: string }
-	// Extension-contributed path (ME slice 8). The loader stays the only
-	// filesystem reader; extensions only hand over paths with provenance.
-	| {
-			readonly kind: "extension";
-			readonly path: string;
-			readonly extensionId: string;
-	  };
+	| { readonly kind: "settings"; readonly path: string };
 // Future consider to support loading from third-party directories.
 // | { readonly kind: "third_party"; readonly path: string; readonly root: string; readonly skillDir: string };
-
-export interface ExtensionResourcePathContribution {
-	readonly extensionId: string;
-	readonly paths: readonly string[];
-}
 
 export interface ResourceRoot {
 	readonly kind: "agent_dir" | "cwd" | "settings";
@@ -112,33 +100,6 @@ export class ResourceLoader {
 					fileExtension: DEFAULT_PROMPTtEMPALTE_FILE_EXTENSION,
 				},
 			),
-		);
-	}
-
-	async loadContributedSkills(
-		contributions: readonly ExtensionResourcePathContribution[],
-	): Promise<{
-		skills: Array<{ skill: Skill; source: ResourceSource }>;
-		diagnostics: Array<SkillDiagnostic & { source: ResourceSource }>;
-	}> {
-		return loadSourcedSkills(
-			this._executionEnv,
-			toContributedInputs(contributions),
-		);
-	}
-
-	async loadContributedPromptTemplates(
-		contributions: readonly ExtensionResourcePathContribution[],
-	): Promise<{
-		promptTemplates: Array<{
-			promptTemplate: PromptTemplate;
-			source: ResourceSource;
-		}>;
-		diagnostics: Array<PromptTemplateDiagnostic & { source: ResourceSource }>;
-	}> {
-		return loadSourcedPromptTemplates(
-			this._executionEnv,
-			toContributedInputs(contributions),
 		);
 	}
 
@@ -223,15 +184,4 @@ export class ResourceLoader {
 		}
 		return result.value;
 	}
-}
-
-function toContributedInputs(
-	contributions: readonly ExtensionResourcePathContribution[],
-): Array<{ path: string; source: ResourceSource }> {
-	return contributions.flatMap(({ extensionId, paths }) =>
-		paths.map((path) => ({
-			path,
-			source: { kind: "extension" as const, path, extensionId },
-		})),
-	);
 }

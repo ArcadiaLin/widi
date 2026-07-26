@@ -4,6 +4,7 @@ import type {
 	ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import type { AgentRecordSnapshot } from "../core/agent-record.ts";
+import type { BackgroundJobReportSnapshot } from "../core/background-job.ts";
 import type { OrchestratorDiagnostic } from "../core/diagnostics.ts";
 import type {
 	ExtensionMessage,
@@ -116,6 +117,14 @@ export interface HumanRequestTraceItem {
 	readonly answer:
 		| { readonly kind: "confirm"; readonly confirmed: boolean }
 		| { readonly kind: "selected-option"; readonly value: string }
+		| { readonly kind: "selected-options"; readonly values: readonly string[] }
+		| {
+				readonly kind: "answered-questions";
+				readonly items: readonly {
+					readonly title: string;
+					readonly values: readonly string[];
+				}[];
+		  }
 		| { readonly kind: "answered" };
 	readonly durability: "ephemeral";
 	readonly createdAt: string;
@@ -138,6 +147,15 @@ export interface SessionMarkerItem {
 	readonly summary: string;
 }
 
+/** Placeholder left behind when the sliding window trims older turns. */
+export interface WindowMarkerItem {
+	readonly type: "window-marker";
+	readonly id: string;
+	readonly durability: "ephemeral";
+	readonly createdAt: string;
+	hiddenTurns: number;
+}
+
 export type TimelineItem =
 	| UserMessageItem
 	| AssistantMessageItem
@@ -149,7 +167,8 @@ export type TimelineItem =
 	| PersistentMessageItem
 	| HumanRequestTraceItem
 	| ApplicationNoticeItem
-	| SessionMarkerItem;
+	| SessionMarkerItem
+	| WindowMarkerItem;
 
 export type AgentAttention =
 	| "none"
@@ -205,6 +224,8 @@ export interface AgentViewState {
 	attention: AgentAttention;
 	/** Live background jobs (backgrounded, not yet settled) owned by this agent. */
 	backgroundJobCount: number;
+	/** Per-job view state backing the jobs panel; includes retained settled jobs. */
+	backgroundJobs: Map<string, BackgroundJobViewState>;
 	hydration: "pending" | "ready" | "failed";
 	bufferedEvents: OrchestratorEvent[];
 	pendingInput?: PendingInput;
@@ -214,8 +235,39 @@ export interface AgentViewState {
 	display: AgentDisplayFacts;
 	/** The live assistant item currently receiving message_update events. */
 	currentAssistantId?: string;
+	/** Latest assistant text waiting for the throttled streaming flush. */
+	pendingAssistantText?: PendingAssistantText;
+	/** Latest tool args/partial results waiting for the throttled flush. */
+	pendingToolUpdates?: Map<string, PendingToolUpdate>;
 	/** Monotonic projection-local identity source for harness messages. */
 	nextLiveItemId: number;
+}
+
+export interface PendingAssistantText {
+	readonly itemId: string;
+	readonly text: string;
+	readonly message: AssistantMessage;
+}
+
+export interface PendingToolUpdate {
+	readonly args: unknown;
+	readonly partialResult: unknown;
+}
+
+/** Panel-facing view of one background job; settled jobs are retained until
+ * the next user turn starts. */
+export interface BackgroundJobViewState {
+	readonly jobId: string;
+	readonly toolName: string;
+	readonly description?: string;
+	status: "live" | "aborting" | "completed" | "failed" | "cancelled";
+	readonly startedAt: number;
+	endedAt?: number;
+	totalBytesSeen: number;
+	/** Latest structured report accepted for this job. */
+	report?: BackgroundJobReportSnapshot;
+	/** Last non-empty output line, decoded from progress increments. */
+	lastLine?: string;
 }
 
 export interface NoticeItem {
@@ -272,6 +324,7 @@ export function createAgentViewState(
 		unreadCount: 0,
 		attention: "none",
 		backgroundJobCount: 0,
+		backgroundJobs: new Map(),
 		hydration: "ready",
 		bufferedEvents: [],
 		queue: { steer: [], followUp: [], nextTurn: 0 },

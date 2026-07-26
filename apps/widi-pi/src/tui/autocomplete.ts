@@ -1,3 +1,6 @@
+import { execFileSync } from "node:child_process";
+import { type Dirent, readdirSync, statSync } from "node:fs";
+import { basename, join } from "node:path";
 import {
 	type AutocompleteItem,
 	type AutocompleteProvider,
@@ -25,13 +28,23 @@ interface CommandCompletionItem {
 	readonly description?: string;
 }
 
+/** Node readdir fallback bounds for @ completion when fd is unavailable. */
+const AT_FALLBACK_MAX_SCAN = 2_000;
+const AT_FALLBACK_MAX_SUGGESTIONS = 50;
+
 export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
-	readonly triggerCharacters = [LINE_COMMAND_TRIGGER, INLINE_COMMAND_TRIGGER];
+	readonly triggerCharacters = [
+		LINE_COMMAND_TRIGGER,
+		INLINE_COMMAND_TRIGGER,
+		"@",
+	];
 	private readonly engine: CommandEngine;
 	private readonly agentId?: string;
 	private readonly orchestrator: AgentOrchestrator;
 	private readonly getStatus: () => AgentLifecycleStatus | undefined;
 	private readonly getPendingModel?: () => RuntimeModel | undefined;
+	private readonly cwd?: string;
+	private readonly fdPath?: string;
 	private readonly fileProvider?: CombinedAutocompleteProvider;
 
 	constructor(options: {
@@ -41,6 +54,8 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 		readonly getStatus: () => AgentLifecycleStatus | undefined;
 		readonly getPendingModel?: () => RuntimeModel | undefined;
 		readonly cwd?: string;
+		/** fd binary override; undefined probes the PATH, null forces the fallback. */
+		readonly fdPath?: string | null;
 	}) {
 		this.engine = options.engine;
 		this.agentId = options.agentId;
@@ -48,7 +63,16 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 		this.getStatus = options.getStatus;
 		this.getPendingModel = options.getPendingModel;
 		if (options.cwd) {
-			this.fileProvider = new CombinedAutocompleteProvider([], options.cwd);
+			this.cwd = options.cwd;
+			this.fdPath =
+				options.fdPath === undefined
+					? detectFdPath()
+					: (options.fdPath ?? undefined);
+			this.fileProvider = new CombinedAutocompleteProvider(
+				[],
+				options.cwd,
+				this.fdPath ?? null,
+			);
 		}
 	}
 
@@ -63,48 +87,107 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 		const beforeCursor = line.slice(0, cursorCol);
 
 		if (beforeCursor.startsWith(LINE_COMMAND_TRIGGER)) {
-			const body = beforeCursor.slice(LINE_COMMAND_TRIGGER.length);
-			const separator = body.indexOf(":");
-			if (separator === -1) {
-				// An exact command name advances to the argument phase: re-offering
-				// the same name would make Tab toggle the menu without progress.
-				const exact = this.engine.line(body);
-				if (exact?.complete) {
-					let candidates: readonly CandidateItem[];
-					try {
-						candidates = await exact.complete(this.commandContext(), "");
-					} catch {
-						return null;
-					}
-					if (options.signal.aborted || candidates.length === 0) return null;
-					return {
-						items: candidates.map((candidate) => ({
-							value: `${beforeCursor}:${candidate.value}`,
-							label: candidate.label ?? candidate.value,
-							description: candidate.description,
-						})),
-						prefix: beforeCursor,
-					};
-				}
-				if (exact) return null;
-				const items = this.views("line").map(toCommandCompletionItem);
-				const filtered = fuzzyFilter(items, body, (item) => item.search).map(
-					(item) => ({
-						// No ":" suffix: pi-tui submits right after applying a "/"
-						// completion, and a trailing colon would become an explicit
-						// empty argument that bypasses the needs-argument menu.
-						value: `${LINE_COMMAND_TRIGGER}${item.view.name}`,
-						label: item.label,
-						description: item.description,
-					}),
-				);
-				return filtered.length > 0
-					? { items: filtered, prefix: beforeCursor }
-					: null;
-			}
-			const command = this.engine.line(body.slice(0, separator));
+			return await this.lineCommandSuggestions(beforeCursor, options.signal);
+		}
+
+		const inline = matchInlinePrefix(beforeCursor);
+		if (inline) {
+			return await this.inlineCommandSuggestions(inline, options.signal);
+		}
+
+		// Without fd the combined provider's "@" branch is empty; scan the tree
+		// ourselves. Path completion still delegates (it needs no fd).
+		const atPrefix = extractAtPrefix(beforeCursor);
+		if (atPrefix !== undefined && this.cwd && !this.fdPath) {
+			return this.atFallbackSuggestions(atPrefix, options.signal);
+		}
+		return (
+			(await this.fileProvider?.getSuggestions(
+				lines,
+				cursorLine,
+				cursorCol,
+				options,
+			)) ?? null
+		);
+	}
+
+	applyCompletion(
+		lines: string[],
+		cursorLine: number,
+		cursorCol: number,
+		item: AutocompleteItem,
+		prefix: string,
+	): { lines: string[]; cursorLine: number; cursorCol: number } {
+		const currentLine = lines[cursorLine] ?? "";
+		const before = currentLine.slice(0, cursorCol - prefix.length);
+		const after = currentLine.slice(cursorCol);
+		const nextLines = [...lines];
+		if (prefix.startsWith(LINE_COMMAND_TRIGGER)) {
+			// Command-name phase: land the cursor in argument position. pi-tui
+			// submits right after applying a "/" completion, and the trailing
+			// space is trimmed there.
+			nextLines[cursorLine] = `${before}${item.value} ${after}`;
+			return {
+				lines: nextLines,
+				cursorLine,
+				cursorCol: before.length + item.value.length + 1,
+			};
+		}
+		if (prefix.startsWith(INLINE_COMMAND_TRIGGER)) {
+			nextLines[cursorLine] = `${before}${item.value}${after}`;
+			// Inline completions insert the close trigger; land the cursor inside it.
+			const closeOffset = item.value.endsWith(">") ? 1 : 0;
+			return {
+				lines: nextLines,
+				cursorLine,
+				cursorCol: before.length + item.value.length - closeOffset,
+			};
+		}
+		if (this.fileProvider) {
+			// Argument values, "@" mentions and paths. The combined provider's
+			// apply logic (quoting, no space after directories) is independent of
+			// where the candidates came from.
+			return this.fileProvider.applyCompletion(
+				lines,
+				cursorLine,
+				cursorCol,
+				item,
+				prefix,
+			);
+		}
+		nextLines[cursorLine] = `${before}${item.value}${after}`;
+		return {
+			lines: nextLines,
+			cursorLine,
+			cursorCol: before.length + item.value.length,
+		};
+	}
+
+	shouldTriggerFileCompletion(
+		lines: string[],
+		cursorLine: number,
+		cursorCol: number,
+	): boolean {
+		return (
+			this.fileProvider?.shouldTriggerFileCompletion?.(
+				lines,
+				cursorLine,
+				cursorCol,
+			) ?? false
+		);
+	}
+
+	private async lineCommandSuggestions(
+		beforeCursor: string,
+		signal: AbortSignal,
+	): Promise<AutocompleteSuggestions | null> {
+		// Argument phase: `/name arg…`. The command's own completer lists
+		// candidates; filtering happens here because completers ignore the prefix.
+		const argumentMatch = /^\/(\S+)\s+(\S*)$/.exec(beforeCursor);
+		if (argumentMatch) {
+			const command = this.engine.line(argumentMatch[1] ?? "");
 			if (!command?.complete) return null;
-			const argumentPrefix = body.slice(separator + 1);
+			const argumentPrefix = argumentMatch[2] ?? "";
 			let candidates: readonly CandidateItem[];
 			try {
 				candidates = await command.complete(
@@ -114,28 +197,45 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 			} catch {
 				return null;
 			}
-			if (options.signal.aborted || candidates.length === 0) return null;
+			if (signal.aborted) return null;
+			const filtered = filterArgumentCandidates(candidates, argumentPrefix);
+			// A sole exact match is already typed out; keeping the menu open
+			// would make Enter confirm a no-op instead of submitting.
+			if (
+				filtered.length === 1 &&
+				filtered[0]?.value.toLowerCase() === argumentPrefix.toLowerCase()
+			) {
+				return null;
+			}
+			if (filtered.length === 0) return null;
 			return {
-				items: candidates.map((candidate) => ({
+				items: filtered.map((candidate) => ({
 					value: candidate.value,
 					label: candidate.label ?? candidate.value,
 					description: candidate.description,
 				})),
+				// Not "/" prefixed: Enter inserts the value without submitting.
 				prefix: argumentPrefix,
 			};
 		}
+		const body = beforeCursor.slice(LINE_COMMAND_TRIGGER.length);
+		const items = this.views("line").map(toCommandCompletionItem);
+		const filtered = fuzzyFilter(items, body, (item) => item.search).map(
+			(item) => ({
+				value: `${LINE_COMMAND_TRIGGER}${item.view.name}`,
+				label: item.label,
+				description: item.description,
+			}),
+		);
+		return filtered.length > 0
+			? { items: filtered, prefix: beforeCursor }
+			: null;
+	}
 
-		const inline = matchInlinePrefix(beforeCursor);
-		if (!inline) {
-			return (
-				(await this.fileProvider?.getSuggestions(
-					lines,
-					cursorLine,
-					cursorCol,
-					options,
-				)) ?? null
-			);
-		}
+	private async inlineCommandSuggestions(
+		inline: { name: string; argumentPrefix?: string; rawPrefix: string },
+		signal: AbortSignal,
+	): Promise<AutocompleteSuggestions | null> {
 		if (inline.argumentPrefix !== undefined) {
 			// Argument phase: `<name:arg…` completes the inline command's own
 			// candidates (skills, prompt templates), mirroring line commands.
@@ -150,7 +250,7 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 			} catch {
 				return null;
 			}
-			if (options.signal.aborted || candidates.length === 0) return null;
+			if (signal.aborted || candidates.length === 0) return null;
 			return {
 				items: candidates.map((candidate) => ({
 					value: candidate.value,
@@ -174,53 +274,18 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 			: null;
 	}
 
-	applyCompletion(
-		lines: string[],
-		cursorLine: number,
-		cursorCol: number,
-		item: AutocompleteItem,
-		prefix: string,
-	): { lines: string[]; cursorLine: number; cursorCol: number } {
-		const currentLine = lines[cursorLine] ?? "";
-		const isCommandCompletion =
-			prefix.startsWith(LINE_COMMAND_TRIGGER) ||
-			prefix.startsWith(INLINE_COMMAND_TRIGGER);
-		if (!isCommandCompletion && this.fileProvider) {
-			return this.fileProvider.applyCompletion(
-				lines,
-				cursorLine,
-				cursorCol,
-				item,
-				prefix,
-			);
-		}
-		const before = currentLine.slice(0, cursorCol - prefix.length);
-		const after = currentLine.slice(cursorCol);
-		const value = item.value;
-		const nextLines = [...lines];
-		nextLines[cursorLine] = `${before}${value}${after}`;
-		// Inline completions insert the close trigger; land the cursor inside it.
-		const closeOffset =
-			value.startsWith(INLINE_COMMAND_TRIGGER) && value.endsWith(">") ? 1 : 0;
-		return {
-			lines: nextLines,
-			cursorLine,
-			cursorCol: before.length + value.length - closeOffset,
-		};
-	}
-
-	shouldTriggerFileCompletion(
-		lines: string[],
-		cursorLine: number,
-		cursorCol: number,
-	): boolean {
-		return (
-			this.fileProvider?.shouldTriggerFileCompletion?.(
-				lines,
-				cursorLine,
-				cursorCol,
-			) ?? false
-		);
+	private atFallbackSuggestions(
+		atPrefix: string,
+		signal: AbortSignal,
+	): AutocompleteSuggestions | null {
+		if (!this.cwd) return null;
+		const query = atPrefix.slice(1).replace(/^"/u, "");
+		const ranked = rankAtCandidates(
+			collectAtCandidates(this.cwd, signal),
+			query,
+		).slice(0, AT_FALLBACK_MAX_SUGGESTIONS);
+		if (signal.aborted || ranked.length === 0) return null;
+		return { items: ranked.map(toAtItem), prefix: atPrefix };
 	}
 
 	private views(kind: "line" | "inline"): CommandView[] {
@@ -236,6 +301,25 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 			pendingModel: this.getPendingModel?.(),
 		};
 	}
+}
+
+/** Case-insensitive prefix filter with a fuzzy fallback on zero hits. */
+function filterArgumentCandidates(
+	candidates: readonly CandidateItem[],
+	argumentPrefix: string,
+): readonly CandidateItem[] {
+	const lower = argumentPrefix.toLowerCase();
+	const prefixHits = candidates.filter(
+		(candidate) =>
+			candidate.value.toLowerCase().startsWith(lower) ||
+			(candidate.label ?? candidate.value).toLowerCase().startsWith(lower),
+	);
+	if (prefixHits.length > 0) return prefixHits;
+	return fuzzyFilter(
+		[...candidates],
+		argumentPrefix,
+		(candidate) => candidate.label ?? candidate.value,
+	);
 }
 
 function matchInlinePrefix(
@@ -270,5 +354,118 @@ function toCommandCompletionItem(view: CommandView): CommandCompletionItem {
 		description: [view.argumentHint, view.description, availability]
 			.filter(Boolean)
 			.join(" — "),
+	};
+}
+
+/** The whitespace-delimited token at the cursor when it starts with "@". */
+function extractAtPrefix(beforeCursor: string): string | undefined {
+	const boundary = Math.max(
+		beforeCursor.lastIndexOf(" "),
+		beforeCursor.lastIndexOf("\t"),
+	);
+	const token = beforeCursor.slice(boundary + 1);
+	return token.startsWith("@") ? token : undefined;
+}
+
+/** Synchronously probe for an fd binary; undefined when none is installed. */
+function detectFdPath(): string | undefined {
+	for (const name of ["fd", "fd-find", "fdfind"]) {
+		try {
+			execFileSync("which", [name], { stdio: "ignore" });
+			return name;
+		} catch {
+			// Try the next binary name.
+		}
+	}
+	return undefined;
+}
+
+interface AtCandidate {
+	readonly path: string;
+	readonly isDirectory: boolean;
+}
+
+/** Depth-first readdir scan for @ completion when fd is unavailable. */
+function collectAtCandidates(cwd: string, signal: AbortSignal): AtCandidate[] {
+	const candidates: AtCandidate[] = [];
+	const stack = [""];
+	let scanned = 0;
+	while (stack.length > 0 && scanned < AT_FALLBACK_MAX_SCAN) {
+		if (signal.aborted) break;
+		const relativeDir = stack.pop() ?? "";
+		const absoluteDir = relativeDir ? join(cwd, relativeDir) : cwd;
+		let entries: Dirent[];
+		try {
+			entries = readdirSync(absoluteDir, { withFileTypes: true });
+		} catch {
+			continue;
+		}
+		for (const entry of entries) {
+			if (signal.aborted || scanned >= AT_FALLBACK_MAX_SCAN) break;
+			if (entry.name === ".git") continue;
+			const relativePath = relativeDir
+				? `${relativeDir}/${entry.name}`
+				: entry.name;
+			let isDirectory = entry.isDirectory();
+			if (!isDirectory && entry.isSymbolicLink()) {
+				try {
+					isDirectory = statSync(join(absoluteDir, entry.name)).isDirectory();
+				} catch {
+					// Broken symlink or permission error: keep it as a file candidate.
+				}
+			}
+			scanned += 1;
+			candidates.push({ path: relativePath, isDirectory });
+			// Symlinked directories are listed but never descended into.
+			if (isDirectory && !entry.isSymbolicLink()) stack.push(relativePath);
+		}
+	}
+	return candidates;
+}
+
+function rankAtCandidates(
+	candidates: readonly AtCandidate[],
+	query: string,
+): AtCandidate[] {
+	const lowerQuery = query.toLowerCase();
+	const scored: Array<{ candidate: AtCandidate; score: number }> = [];
+	for (const candidate of candidates) {
+		const score = scoreAtCandidate(candidate, lowerQuery);
+		if (score > 0) scored.push({ candidate, score });
+	}
+	scored.sort((a, b) => {
+		if (a.score !== b.score) return b.score - a.score;
+		if (a.candidate.isDirectory !== b.candidate.isDirectory) {
+			return a.candidate.isDirectory ? -1 : 1;
+		}
+		return a.candidate.path.localeCompare(b.candidate.path);
+	});
+	return scored.map((entry) => entry.candidate);
+}
+
+function scoreAtCandidate(candidate: AtCandidate, lowerQuery: string): number {
+	if (lowerQuery.length === 0) {
+		const depthPenalty = candidate.path.split("/").length - 1;
+		return (candidate.isDirectory ? 120 : 100) - depthPenalty;
+	}
+	const lowerBase = basename(candidate.path).toLowerCase();
+	let score = 0;
+	if (lowerBase === lowerQuery) score = 100;
+	else if (lowerBase.startsWith(lowerQuery)) score = 80;
+	else if (lowerBase.includes(lowerQuery)) score = 50;
+	else if (candidate.path.toLowerCase().includes(lowerQuery)) score = 30;
+	if (candidate.isDirectory && score > 0) score += 10;
+	return score;
+}
+
+function toAtItem(candidate: AtCandidate): AutocompleteItem {
+	const valuePath = candidate.isDirectory
+		? `${candidate.path}/`
+		: candidate.path;
+	const value = valuePath.includes(" ") ? `@"${valuePath}"` : `@${valuePath}`;
+	return {
+		value,
+		label: `${basename(candidate.path)}${candidate.isDirectory ? "/" : ""}`,
+		description: candidate.path,
 	};
 }

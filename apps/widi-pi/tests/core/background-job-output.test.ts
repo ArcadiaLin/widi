@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { BackgroundJobOutput } from "../../src/core/background-job.ts";
 
+const base64 = (value: string | Buffer) =>
+	Buffer.from(value).toString("base64");
+
 describe("BackgroundJobOutput", () => {
 	it("accumulates appended chunks and reads them back as UTF-8", () => {
 		const output = new BackgroundJobOutput();
@@ -57,5 +60,83 @@ describe("BackgroundJobOutput", () => {
 		output.append(bytes.subarray(2));
 
 		expect(output.read()).toBe("héllo");
+	});
+
+	it("tracks total bytes seen independent of the rolling tail cap", () => {
+		const output = new BackgroundJobOutput(4);
+		output.append("aaaa");
+		output.append("bbbb");
+
+		expect(output.totalBytesSeen).toBe(8);
+		expect(output.tailDroppedBytes).toBe(4);
+		expect(output.progressDroppedBytes).toBe(0);
+		// The tail only keeps the last 4 bytes, but the total counts everything.
+		expect(output.read()).toBe("bbbb");
+	});
+
+	it("drains the unforwarded increment with absolute byte offsets", () => {
+		const output = new BackgroundJobOutput();
+		output.append("hello ");
+		output.append("world");
+
+		const first = output.drainIncrement();
+		expect(first).toEqual({
+			chunk: base64("hello world"),
+			startByte: 0,
+			endByte: 11,
+			totalBytesSeen: 11,
+			progressDroppedBytes: 0,
+		});
+
+		// A second drain with nothing new appended returns undefined.
+		expect(output.drainIncrement()).toBeUndefined();
+
+		output.append("!");
+		expect(output.drainIncrement()).toEqual({
+			chunk: base64("!"),
+			startByte: 11,
+			endByte: 12,
+			totalBytesSeen: 12,
+			progressDroppedBytes: 0,
+		});
+	});
+
+	it("keeps byte offsets exact when a UTF-8 character spans drains", () => {
+		const bytes = Buffer.from("é", "utf-8");
+		const output = new BackgroundJobOutput();
+
+		output.append(bytes.subarray(0, 1));
+		const first = output.drainIncrement();
+		output.append(bytes.subarray(1));
+		const second = output.drainIncrement();
+
+		expect(first).toMatchObject({ startByte: 0, endByte: 1 });
+		expect(second).toMatchObject({ startByte: 1, endByte: 2 });
+		const reconstructed = Buffer.concat(
+			[first, second].map((increment) =>
+				Buffer.from(increment?.chunk ?? "", "base64"),
+			),
+		);
+		expect(reconstructed).toEqual(bytes);
+	});
+
+	it("leaves a detectable gap when the increment buffer overflows", () => {
+		// Small increment cap so a burst between drains overflows and drops.
+		const output = new BackgroundJobOutput(1024, { incrementMaxBytes: 4 });
+		output.append("abcdef");
+
+		const increment = output.drainIncrement();
+		// The head two bytes were dropped; startByte jumps past 0 and
+		// progressDroppedBytes records the gap, so a consumer can tell the stream
+		// is not contiguous.
+		expect(increment).toEqual({
+			chunk: base64("cdef"),
+			startByte: 2,
+			endByte: 6,
+			totalBytesSeen: 6,
+			progressDroppedBytes: 2,
+		});
+		expect(output.tailDroppedBytes).toBe(0);
+		expect(output.progressDroppedBytes).toBe(2);
 	});
 });

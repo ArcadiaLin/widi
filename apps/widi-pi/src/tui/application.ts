@@ -33,6 +33,7 @@ import { agentLabel } from "./components/common.ts";
 import { FatalErrorView } from "./components/fatal-error.ts";
 import { FooterView } from "./components/footer.ts";
 import { HeaderView } from "./components/header.ts";
+import { JobsPanelView } from "./components/jobs-panel.ts";
 import { NoticeView } from "./components/notices.ts";
 import { OperationHintView } from "./components/operation-hint.ts";
 import { ProcessingBarView } from "./components/processing-bar.ts";
@@ -56,6 +57,7 @@ import {
 	setActiveAgent,
 	type TuiApplicationState,
 } from "./state.ts";
+import { flushStreaming, STREAM_FLUSH_MS } from "./streaming-flush.ts";
 import { editorTheme } from "./theme/controls.ts";
 
 const NOTIFICATION_TTL_MS = 5_000;
@@ -98,6 +100,9 @@ export class WidiTuiApplication {
 	private readonly hydrationGeneration = new Map<string, number>();
 	private readonly hydratedAgents = new Set<string>();
 	private readonly notificationTimers = new Map<string, NodeJS.Timeout>();
+	private streamingFlushTimer?: NodeJS.Timeout;
+	private jobsTicker?: NodeJS.Timeout;
+	private readonly jobsPanel: JobsPanelView;
 	private readonly pendingTasks = new Set<Promise<unknown>>();
 	private readonly lifecycleTasks = new Set<Promise<unknown>>();
 	private readonly drafts = new Map<string, string>();
@@ -140,6 +145,7 @@ export class WidiTuiApplication {
 		this.orchestrator = runtime.orchestrator;
 		this.state = createTuiApplicationState();
 		this.projector = new EventProjector(this.state);
+		this.jobsPanel = new JobsPanelView(this.state);
 		this.pendingAgents = new PendingAgentController(
 			this.state,
 			this.orchestrator,
@@ -152,6 +158,10 @@ export class WidiTuiApplication {
 		this.editor = new WidiEditor(this.tui, editorTheme, {
 			paddingX: 1,
 			autocompleteMaxVisible: 8,
+		});
+		this.editor.setArgumentHintProvider((text) => {
+			const name = /^\/(\S+)\s*$/.exec(text)?.[1];
+			return name ? this.engine.line(name)?.argumentHint : undefined;
 		});
 		// Later-opened menus own the focus; closing one hands focus back to the
 		// still-open human-request menu before falling back to the editor.
@@ -178,6 +188,7 @@ export class WidiTuiApplication {
 		this.tui.addChild(new ChatView(this.state));
 		this.tui.addChild(new StatusView(this.state));
 		this.tui.addChild(new QueuedInputView(this.state));
+		this.tui.addChild(this.jobsPanel);
 		this.tui.addChild(this.humanRequests);
 		this.tui.addChild(this.completionMenu);
 		this.tui.addChild(this.editor);
@@ -204,6 +215,10 @@ export class WidiTuiApplication {
 		this.editor.onOpenAgents = () => this.agentSelector.open();
 		this.editor.onToggleToolOutput = () => {
 			this.state.toolOutputExpanded = !this.state.toolOutputExpanded;
+			this.tui.requestRender();
+		};
+		this.editor.onToggleJobs = () => {
+			this.jobsPanel.toggleExpanded();
 			this.tui.requestRender();
 		};
 		this.editor.onInterrupt = () => this.interrupt();
@@ -274,6 +289,15 @@ export class WidiTuiApplication {
 		this.unsubscribeEvents = undefined;
 		for (const timer of this.notificationTimers.values()) clearTimeout(timer);
 		this.notificationTimers.clear();
+		if (this.streamingFlushTimer) {
+			clearTimeout(this.streamingFlushTimer);
+			this.streamingFlushTimer = undefined;
+		}
+		if (this.jobsTicker) {
+			clearInterval(this.jobsTicker);
+			this.jobsTicker = undefined;
+		}
+		for (const agent of this.state.agents.values()) flushStreaming(agent);
 		this.removeLifecycleHandlers();
 		try {
 			await this.orchestrator.disposeAll(reason);
@@ -290,6 +314,7 @@ export class WidiTuiApplication {
 
 	private handleEvent(event: OrchestratorEvent): void {
 		this.projector.apply(event);
+		this.updateJobsTicker();
 
 		switch (event.type) {
 			case "agent_spawned":
@@ -336,6 +361,23 @@ export class WidiTuiApplication {
 				break;
 			case "agent_harness_event":
 				if (
+					event.event.type === "message_update" ||
+					event.event.type === "tool_execution_update"
+				) {
+					// Streaming deltas are buffered by the projector; re-render on the
+					// flush timer instead of per event. Thinking indicators update the
+					// timeline immediately, so they keep their per-event render.
+					this.scheduleStreamingFlush();
+					if (
+						event.event.type === "message_update" &&
+						(event.event.assistantMessageEvent.type === "thinking_start" ||
+							event.event.assistantMessageEvent.type === "thinking_end")
+					) {
+						this.tui.requestRender();
+					}
+					return;
+				}
+				if (
 					event.event.type === "session_tree" ||
 					event.event.type === "session_compact"
 				) {
@@ -348,6 +390,47 @@ export class WidiTuiApplication {
 		}
 
 		this.tui.requestRender();
+	}
+
+	/**
+	 * Coalesce streaming deltas into one timeline write per interval. Only a
+	 * flush that actually changed the visible agent's timeline re-renders.
+	 */
+	private scheduleStreamingFlush(): void {
+		if (this.streamingFlushTimer) return;
+		this.streamingFlushTimer = setTimeout(() => {
+			this.streamingFlushTimer = undefined;
+			let activeWrote = false;
+			for (const agent of this.state.agents.values()) {
+				if (
+					flushStreaming(agent) &&
+					agent.agentId === this.state.activeAgentId
+				) {
+					activeWrote = true;
+				}
+			}
+			if (activeWrote) this.tui.requestRender();
+		}, STREAM_FLUSH_MS);
+		this.streamingFlushTimer.unref();
+	}
+
+	/**
+	 * Tick the panel's elapsed times while any job is live; stop the interval
+	 * as soon as nothing needs it.
+	 */
+	private updateJobsTicker(): void {
+		const hasLiveJob = [...this.state.agents.values()].some((agent) =>
+			[...agent.backgroundJobs.values()].some(
+				(job) => job.status === "live" || job.status === "aborting",
+			),
+		);
+		if (hasLiveJob && !this.jobsTicker) {
+			this.jobsTicker = setInterval(() => this.tui.requestRender(), 1_000);
+			this.jobsTicker.unref();
+		} else if (!hasLiveJob && this.jobsTicker) {
+			clearInterval(this.jobsTicker);
+			this.jobsTicker = undefined;
+		}
 	}
 
 	private async submit(rawText: string): Promise<void> {
@@ -567,12 +650,7 @@ export class WidiTuiApplication {
 			if (outcome.kind === "blocked") {
 				agent.pendingInput = undefined;
 				this.restoreEditor(rawText, agentId);
-				this.addApplicationNotice(
-					outcome.reason
-						? `Input blocked by ${outcome.blockedBy}: ${outcome.reason}`
-						: `Input blocked by ${outcome.blockedBy}.`,
-					agentId,
-				);
+				this.addApplicationNotice(blockedInputNotice(outcome), agentId);
 			}
 		} catch (error) {
 			const pending = ensureAgentProjection(this.state, agentId).pendingInput;
@@ -591,6 +669,10 @@ export class WidiTuiApplication {
 	 * Default running-agent path (v2 §11.2): plain text joins the core followUp
 	 * queue and is consumed automatically when the run ends. The queued texts
 	 * come back through queue_update and feed the QueuedInputView.
+	 *
+	 * Routed through sendMessage rather than followUpAgent so this text meets the
+	 * same input policy as a prompt: an extension that blocks or rewrites human
+	 * input must not be bypassed by typing while the agent happens to be running.
 	 */
 	private async submitFollowUp(
 		agentId: string,
@@ -599,7 +681,16 @@ export class WidiTuiApplication {
 	): Promise<void> {
 		this.editor.addToHistory(rawText);
 		try {
-			await this.orchestrator.followUpAgent(agentId, text);
+			const outcome = await this.orchestrator.sendMessage({
+				source: { kind: "human" },
+				targetAgentId: agentId,
+				body: text,
+				mode: "next_turn",
+			});
+			if (outcome.kind === "blocked") {
+				this.restoreEditor(rawText, agentId);
+				this.addApplicationNotice(blockedInputNotice(outcome), agentId);
+			}
 		} catch (error) {
 			this.restoreEditor(rawText, agentId);
 			if (error instanceof OrchestratorError) {
@@ -633,10 +724,23 @@ export class WidiTuiApplication {
 		this.drafts.set(agentId, "");
 		this.editor.addToHistory(text);
 		this.track(
-			this.orchestrator.steerAgent(agentId, text).catch((error) => {
-				this.restoreEditor(text, agentId);
-				this.addApplicationNotice(errorMessage(error), agentId);
-			}),
+			this.orchestrator
+				.sendMessage({
+					source: { kind: "human" },
+					targetAgentId: agentId,
+					body: text,
+					mode: "interrupt",
+				})
+				.then((outcome) => {
+					if (outcome.kind !== "blocked") return;
+					this.restoreEditor(text, agentId);
+					this.addApplicationNotice(blockedInputNotice(outcome), agentId);
+					this.tui.requestRender();
+				})
+				.catch((error) => {
+					this.restoreEditor(text, agentId);
+					this.addApplicationNotice(errorMessage(error), agentId);
+				}),
 		);
 		this.tui.requestRender();
 	}
@@ -735,7 +839,16 @@ export class WidiTuiApplication {
 				confirmVerb: "apply",
 			},
 			onSelect: (item) => {
-				this.track(this.submit(`/${command.name}:${item.value}`));
+				// Space syntax cannot express an explicit empty argument (submit
+				// trims it away); the colon form keeps "use current position"
+				// distinct from a bare command.
+				this.track(
+					this.submit(
+						item.value === ""
+							? `/${command.name}:`
+							: `/${command.name} ${item.value}`,
+					),
+				);
 			},
 			onCancel: () => this.restoreEditor(originalText, agentId),
 		});
@@ -883,9 +996,14 @@ export class WidiTuiApplication {
 	private async syncAgent(agentId: string): Promise<void> {
 		try {
 			applyAgentSnapshot(this.state, this.orchestrator.inspectAgent(agentId));
+			this.projector.seedBackgroundJobs(
+				agentId,
+				this.orchestrator.listAgentBackgroundJobs(agentId),
+			);
 		} catch {
 			return;
 		}
+		this.updateJobsTicker();
 		this.updateEditorAvailability();
 		this.tui.requestRender();
 	}
@@ -902,6 +1020,10 @@ export class WidiTuiApplication {
 			if (this.hydrationGeneration.get(agentId) !== generation) return;
 			result.display.sessionName ??= snapshot.name;
 			this.projector.completeHydration(agentId, result, statuses);
+			this.projector.seedBackgroundJobs(
+				agentId,
+				this.orchestrator.listAgentBackgroundJobs(agentId),
+			);
 			this.hydratedAgents.add(agentId);
 		} catch (error) {
 			if (this.hydrationGeneration.get(agentId) !== generation) return;
@@ -1134,4 +1256,14 @@ export async function runWidiTui(options: WidiTuiOptions): Promise<void> {
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+/** Shared notice for every human-input path an extension policy can block. */
+function blockedInputNotice(blocked: {
+	reason?: string;
+	blockedBy: string;
+}): string {
+	return blocked.reason
+		? `Input blocked by ${blocked.blockedBy}: ${blocked.reason}`
+		: `Input blocked by ${blocked.blockedBy}.`;
 }

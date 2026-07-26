@@ -5,7 +5,7 @@ export const INLINE_COMMAND_CLOSE_TRIGGER = ">";
 export interface ParsedLineCommand {
 	readonly name: string;
 	readonly argument: string;
-	/** false for `/name`, true for `/name:` and `/name:arg`. */
+	/** false for `/name`, true for `/name:`, `/name:arg` and `/name arg`. */
 	readonly hasArgument: boolean;
 }
 
@@ -21,13 +21,30 @@ export function parseLineCommand(text: string): ParsedLineCommand | undefined {
 	if (!input.startsWith(LINE_COMMAND_TRIGGER)) return undefined;
 	const body = input.slice(LINE_COMMAND_TRIGGER.length);
 	if (!body) return undefined;
-	const separatorIndex = body.indexOf(":");
+	// The separator is the first ":" or the first whitespace, whichever comes
+	// first. Colon syntax keeps the argument verbatim; space syntax skips the
+	// separating whitespace itself.
+	const colonIndex = body.indexOf(":");
+	const whitespaceIndex = /\s/u.exec(body)?.index ?? -1;
+	let separatorIndex = -1;
+	let colonSyntax = false;
+	if (
+		colonIndex !== -1 &&
+		(whitespaceIndex === -1 || colonIndex < whitespaceIndex)
+	) {
+		separatorIndex = colonIndex;
+		colonSyntax = true;
+	} else {
+		separatorIndex = whitespaceIndex;
+	}
 	const rawName = separatorIndex === -1 ? body : body.slice(0, separatorIndex);
 	if (!isCommandName(rawName)) return undefined;
+	const rawArgument =
+		separatorIndex === -1 ? "" : body.slice(separatorIndex + 1);
 	return {
 		name: rawName,
 		hasArgument: separatorIndex !== -1,
-		argument: separatorIndex === -1 ? "" : body.slice(separatorIndex + 1),
+		argument: colonSyntax ? rawArgument : rawArgument.replace(/^\s+/u, ""),
 	};
 }
 

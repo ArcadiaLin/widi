@@ -75,4 +75,7 @@ apps/widi-agent/.widi/agent/Runs/
 .widi/*
 !.widi/extensions/
 !.widi/mcp.json
+!.widi/profiles/
+!.widi/profiles/**
 chat_notes/
+plan/
