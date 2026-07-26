@@ -59,7 +59,6 @@ export interface AgentRecord {
 	readonly agentId: AgentId;
 	status: AgentLifecycleStatus;
 	readonly profile: AgentProfileRecordReference;
-	readonly capabilities?: AgentProfile["capabilities"];
 	sessionMetadata?: AgentSessionMetadata;
 	model: RuntimeModel;
 	harness?: WidiAgentHarness;
@@ -114,7 +113,6 @@ export function createAgentRecord(options: {
 			source: options.resolvedProfile.source,
 			entryId: options.resolvedProfile.entryId,
 		},
-		capabilities: options.resolvedProfile.profile.capabilities,
 		sessionMetadata: options.sessionMetadata,
 		model: options.model,
 		backgroundJobTable: new BackgroundJobTable(),
@@ -128,7 +126,6 @@ export function createAgentRecordFromProfileReference(options: {
 	readonly agentId: AgentId;
 	readonly status: AgentLifecycleStatus;
 	readonly profile: AgentProfileRecordReference;
-	readonly capabilities?: AgentProfile["capabilities"];
 	readonly sessionMetadata?: AgentSessionMetadata;
 	readonly model: RuntimeModel;
 }): AgentRecord {
@@ -136,7 +133,6 @@ export function createAgentRecordFromProfileReference(options: {
 		agentId: options.agentId,
 		status: options.status,
 		profile: options.profile,
-		capabilities: options.capabilities,
 		sessionMetadata: options.sessionMetadata,
 		model: options.model,
 		backgroundJobTable: new BackgroundJobTable(),

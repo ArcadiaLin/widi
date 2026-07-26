@@ -53,7 +53,6 @@ Profile 的主要职责是声明 agent build 输入：
 - `extensions`：per-agent extension dependencies。
 - `missingExtensionSeverity`：只调节 missing declaration，不覆盖 activation/version failure。
 - `commands`：command input 的 enable/deny policy。
-- `capabilities`：连接 profile 与 runtime policy；当前由 user-facing command、extension human request、session control 和后续 collaboration 使用。
 
 解析但没有 runtime consumer 的 policy 字段不应长期保留。
 
@@ -62,8 +61,7 @@ Profile 的主要职责是声明 agent build 输入：
 `profileOverride` 是 create-time assembly 输入，不是新的 profile identity。
 
 - Override 不能修改 `id`。
-- Nested capabilities 做浅层 merge。
-- 修改 system prompt、tools、resources、extensions、capabilities 或 persist 等恢复关键字段时，不能创建 persistent session。
+- 修改 system prompt、tools、resources、extensions 或 persist 等恢复关键字段时，不能创建 persistent session。
 - Override 不写入 session metadata。
 
 需要 resume 的差异应进入正式 profile，而不是依赖一次性 override。

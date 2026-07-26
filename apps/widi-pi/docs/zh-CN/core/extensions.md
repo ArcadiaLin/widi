@@ -119,7 +119,7 @@ Callback context 绑定 extension 自己的 agent；作者 API 中不出现可�
 - `listJobs()`：own-agent 当前 live 的 backgrounded job 快照，也就是模型手里握着 t0 handle 的那些。仅限 `backgrounded` 阶段：`running` 阶段的 job 还在 t0 之前的同步窗口内，从未对外可观测。
 - `readJobOutput(jobId)`：live job 的当前 rolling tail；job 结算后返回 `undefined`。它是 pull-only 且有界的（tail 超出上限时从头部丢弃），与 job change event 刻意不携带 output 配套。需要完整输出的 extension 应累积 progress 增量，而不是轮询这里。
 - `killJob(jobId, reason?)`：请求终止一个 live job，`reason` 会记到该 job 的 snapshot 与它最终的 result message 上。返回 `false` 表示没有这样的 live job——列出来的 job 可能在 extension 动手之前就已结算。这是请求而非强杀：local job 只有在其 tool 响应 abort signal 时才真正结束；external job 没有执行者在看 signal，由 table 自身结算为 cancelled。
-- `requestHuman`；source 由 runner 注入，受 `canRequestUser` 门控。
+- `requestHuman`；source 由 runner 注入。
 - `emitOutput(text)`：向 listeners/clients 追加一条 own-agent、带 extension attribution 的 plain-text output。顺序 `await` 的调用保持顺序；每次调用都是独立 event，不合并、不 replace。事件携带 core 生成的 `presentationId` 作为 consumer 的稳定 view key。
 - `notify(text)`：发布一次 own-agent、带 extension attribution 的 info-only transient notice。事件携带 core 生成的 `presentationId`；consumer 决定显示位置和寿命。它没有 severity、code、dedupe、clear 或 attention 语义，问题事实必须使用 `reportDiagnostic`。Text 必须非空白且不超过 4 KiB（UTF-8 字节）。
 - `setStatus(key, status)` / `clearStatus(key)`：维护 own-agent、own-extension 的 keyed runtime current state。`status` 至少含非空 `text`，可选 `progress: { completed, total? }`；进度值必须是非负整数，且存在 `total` 时 `completed <= total`。

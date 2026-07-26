@@ -1840,9 +1840,6 @@ export class AgentOrchestrator {
 		const merged: AgentProfile = {
 			...profile,
 			...override,
-			capabilities: override.capabilities
-				? { ...profile.capabilities, ...override.capabilities }
-				: profile.capabilities,
 		};
 		if (merged.persist && changesRecoverableProfileFields(override)) {
 			const diagnostic: OrchestratorDiagnostic = {
@@ -2376,18 +2373,11 @@ export class AgentOrchestrator {
 		return {
 			backgroundJobTable: record.backgroundJobTable,
 			human: {
-				// Check the authoritative agent record at request time rather than
-				// retaining the capability in the turn snapshot.
-				request: async (request) => {
-					this._assertCanRequestUser(agentId, {
-						code: "orchestrator.human_request_denied",
-						message: `Agent ${agentId} human request is denied by profile capability canRequestUser.`,
-					});
-					return await this.requestHuman({
+				request: async (request) =>
+					await this.requestHuman({
 						...request,
 						source: { kind: "agent", agentId },
-					});
-				},
+					}),
 			},
 			// The runner is captured for this turn snapshot. Calls that continue
 			// in the background keep this runner and observe its stale boundary
@@ -2406,29 +2396,6 @@ export class AgentOrchestrator {
 				};
 			},
 		};
-	}
-
-	/**
-	 * Profile capability ruling for human requests, shared by agent tool
-	 * contexts and extension core actions: the profile decides whether this
-	 * agent may interrupt the human at all.
-	 */
-	private _assertCanRequestUser(
-		agentId: AgentId,
-		denial: {
-			code: string;
-			message: string;
-			extensionId?: string;
-		},
-	): void {
-		const record = this._requireAgentRecord(agentId);
-		if (record.capabilities?.canRequestUser === false) {
-			throw new OrchestratorError({
-				severity: "error",
-				agentId,
-				...denial,
-			});
-		}
 	}
 
 	private _createScopedToolRegistry(
@@ -2458,11 +2425,6 @@ export class AgentOrchestrator {
 				await this.setAgentActiveTools(agentId, toolNames);
 			},
 			requestHuman: async (agentId, extensionId, request) => {
-				this._assertCanRequestUser(agentId, {
-					code: "extension.human_request_denied",
-					message: `Extension '${extensionId}' human request is denied by profile capability canRequestUser.`,
-					extensionId,
-				});
 				return await this._requestHumanForAgent(agentId, {
 					...request,
 					source: { kind: "extension", extensionId },
@@ -3888,7 +3850,6 @@ function changesRecoverableProfileFields(
 		override.skills !== undefined ||
 		override.promptTemplates !== undefined ||
 		override.extensions !== undefined ||
-		override.capabilities !== undefined ||
 		override.persist !== undefined
 	);
 }

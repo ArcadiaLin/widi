@@ -4241,59 +4241,6 @@ describe("AgentOrchestrator", () => {
 		});
 	});
 
-	it("denies extension human requests when the profile capability disallows them", async () => {
-		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "extension-profile",
-			label: "Extension Profile",
-			persist: false,
-			extensions: ["sample"],
-			capabilities: { canRequestUser: false },
-		};
-		const orchestrator = await createOrchestrator(env, {
-			defaultProfileId: extensionProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
-			),
-		});
-		orchestrator.registerExtension("sample", () => {});
-		const agentId = await orchestrator.spawnAgent();
-		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
-		if (!runner) throw new Error("Expected extension runner.");
-		const context = runner.createContext("sample");
-		const events: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			events.push(event);
-		});
-		orchestrator.registerClient({
-			id: "human",
-			requestHuman: async () => ({ kind: "confirm", confirmed: true }),
-		});
-
-		await expect(
-			context.actions.requestHuman({ kind: "confirm", title: "Approve?" }),
-		).rejects.toMatchObject({
-			diagnostic: expect.objectContaining({
-				code: "extension.human_request_denied",
-				extensionId: "sample",
-				agentId,
-			}),
-		});
-		expect(events).toContainEqual(
-			expect.objectContaining({
-				type: "diagnostic",
-				diagnostic: expect.objectContaining({
-					code: "extension.action_failed",
-					extensionId: "sample",
-					message: expect.stringContaining("action 'requestHuman' failed"),
-				}),
-			}),
-		);
-	});
-
 	it("routes the ask_human tool through the human request broker with agent source", async () => {
 		const env = new MemoryExecutionEnv();
 		const toolRegistry = new ToolRegistry();
@@ -4331,58 +4278,6 @@ describe("AgentOrchestrator", () => {
 		expect(result.content).toEqual([
 			{ type: "text", text: "The human selected: green" },
 		]);
-	});
-
-	it("denies agent tool human requests when the profile capability disallows them", async () => {
-		const env = new MemoryExecutionEnv();
-		const toolRegistry = new ToolRegistry();
-		registerCoreInteractionTools(toolRegistry);
-		const restrictedProfile: AgentProfile = {
-			...defaultProfile,
-			id: "restricted-profile",
-			persist: false,
-			capabilities: { canRequestUser: false },
-		};
-		const orchestrator = await createOrchestrator(env, {
-			toolRegistry,
-			defaultProfileId: restrictedProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: restrictedProfile },
-				]),
-			),
-		});
-		let handlerCalls = 0;
-		orchestrator.registerClient({
-			id: "human",
-			requestHuman: async () => {
-				handlerCalls += 1;
-				return { kind: "confirm", confirmed: true };
-			},
-		});
-		const agentId = await orchestrator.spawnAgent();
-		const askHuman = requireAgentHarness(orchestrator, agentId)
-			.getTools()
-			.find((candidate) => candidate.name === "ask_human");
-		if (!askHuman) throw new Error("Expected the ask_human tool.");
-
-		await expect(
-			askHuman.execute(
-				"call-1",
-				{ kind: "confirm", title: "Approve?" },
-				undefined,
-				undefined,
-				await resolveHarnessToolContext(
-					requireAgentHarness(orchestrator, agentId),
-				),
-			),
-		).rejects.toMatchObject({
-			diagnostic: expect.objectContaining({
-				code: "orchestrator.human_request_denied",
-				agentId,
-			}),
-		});
-		expect(handlerCalls).toBe(0);
 	});
 
 	/**

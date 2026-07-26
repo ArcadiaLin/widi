@@ -40,7 +40,6 @@ function createAuditTestDiagnostic(agentId: string): OrchestratorDiagnostic {
 }
 
 interface AuditHarnessOptions {
-	readonly capabilities?: AgentProfile["capabilities"];
 	readonly persist?: boolean;
 	readonly beforeAudit?: readonly {
 		readonly id: string;
@@ -62,7 +61,6 @@ async function createAuditHarness(
 		systemPrompt: "Audit test prompt",
 		persist: options.persist ?? false,
 		extensions: [...(options.beforeAudit ?? []).map(({ id }) => id), "audit"],
-		capabilities: options.capabilities,
 	};
 	const env = new MemoryExecutionEnv();
 	const orchestrator = await createOrchestrator(env, {
@@ -413,11 +411,12 @@ describe("audit extension consumer", () => {
 		]);
 	});
 
-	it("fails closed when the profile denies human requests", async () => {
-		const { orchestrator, agentId, events } = await createAuditHarness(
-			{ ask: [{ tool: "write", prompt: "Allow this write?" }] },
-			{ capabilities: { canRequestUser: false } },
-		);
+	it("fails closed when the human request cannot be served", async () => {
+		// No human client is registered, so the broker rejects the request and
+		// the extension must block rather than fall through to an allow.
+		const { orchestrator, agentId, events } = await createAuditHarness({
+			ask: [{ tool: "write", prompt: "Allow this write?" }],
+		});
 
 		await expect(
 			runToolCall(orchestrator, agentId, "call-5", "write"),

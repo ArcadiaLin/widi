@@ -18,12 +18,6 @@ export type AgentProfile = {
 	readonly promptTemplates?: readonly string[];
 	readonly extensions?: readonly string[];
 	readonly missingExtensionSeverity?: AgentProfileMissingExtensionSeverity;
-
-	readonly capabilities?: {
-		readonly acceptsUserInput?: boolean;
-		readonly canSpawn?: boolean;
-		readonly canRequestUser?: boolean;
-	};
 };
 
 export type AgentProfileOverride = Partial<Omit<AgentProfile, "id">>;
@@ -174,7 +168,6 @@ type AgentProfileFrontmatter = {
 	readonly promptTemplates?: unknown;
 	readonly "prompt-templates"?: unknown;
 	readonly extensions?: unknown;
-	readonly capabilities?: unknown;
 	readonly missingExtensionSeverity?: unknown;
 	readonly "missing-extension-severity"?: unknown;
 	readonly [key: string]: unknown;
@@ -970,11 +963,6 @@ function parseAgentProfile(
 		entry,
 		diagnostics,
 	);
-	const capabilities = readCapabilities(
-		frontmatter.capabilities,
-		entry,
-		diagnostics,
-	);
 	const missingExtensionSeverity = readMissingExtensionSeverity(
 		frontmatter.missingExtensionSeverity ??
 			frontmatter["missing-extension-severity"],
@@ -998,7 +986,6 @@ function parseAgentProfile(
 			promptTemplates,
 			extensions,
 			missingExtensionSeverity,
-			capabilities,
 		},
 		diagnostics,
 	};
@@ -1119,8 +1106,8 @@ function parseProfileMarkdown(
 			continue;
 		}
 
-		// A key without a value opens a one-level nested mapping, such as
-		// "capabilities"; its entries are the indented lines.
+		// A key without a value opens a one-level nested mapping; its entries
+		// are the indented lines.
 		const indent = line.length - line.trimStart().length;
 		const child: Record<string, unknown> = {};
 		index += 1;
@@ -1253,53 +1240,6 @@ function readMissingExtensionSeverity(
 	return undefined;
 }
 
-function readCapabilities(
-	value: unknown,
-	entry: ProfileStorageEntry,
-	diagnostics: AgentProfileDiagnostic[],
-): AgentProfile["capabilities"] | undefined {
-	if (value === undefined) return undefined;
-	if (typeof value !== "object" || value === null || Array.isArray(value)) {
-		diagnostics.push(
-			diagnosticForEntry(
-				entry,
-				"error",
-				"profile.invalid_metadata",
-				'Profile field "capabilities" must be an object.',
-			),
-		);
-		return undefined;
-	}
-
-	const record = value as Record<string, unknown>;
-	const capabilities: {
-		acceptsUserInput?: boolean;
-		canSpawn?: boolean;
-		canRequestUser?: boolean;
-	} = {};
-	for (const key of [
-		"acceptsUserInput",
-		"canSpawn",
-		"canRequestUser",
-	] as const) {
-		const fieldValue = record[key];
-		if (fieldValue === undefined) continue;
-		if (typeof fieldValue !== "boolean") {
-			diagnostics.push(
-				diagnosticForEntry(
-					entry,
-					"error",
-					"profile.invalid_metadata",
-					`Profile capability "${key}" must be a boolean.`,
-				),
-			);
-			continue;
-		}
-		capabilities[key] = fieldValue;
-	}
-	return Object.keys(capabilities).length > 0 ? capabilities : undefined;
-}
-
 function validateProfileId(id: string): string | undefined {
 	if (!id.trim()) {
 		return "Profile id must be non-empty.";
@@ -1389,12 +1329,6 @@ function serializeProfile(profile: AgentProfile): string {
 		lines.push(
 			`missing-extension-severity: ${profile.missingExtensionSeverity}`,
 		);
-	}
-	if (profile.capabilities) {
-		lines.push("capabilities:");
-		for (const [key, value] of Object.entries(profile.capabilities)) {
-			if (value !== undefined) lines.push(`  ${key}: ${value}`);
-		}
 	}
 	lines.push("---", profile.systemPrompt);
 	return lines.join("\n");

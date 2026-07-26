@@ -69,8 +69,6 @@ Active tools 的 `promptSnippet` 与 `promptGuidelines` 进入唯一 system prom
 
 `ask_human` 是 orchestrator human-request broker 之上的薄 adapter：routing、`human_request_*` events、cancellation 与超时都由 broker 承担。请求以 `source: { kind: "agent", agentId }` 归因；human 关闭请求（dismissal）作为 "no answer" 文本返回给模型，不是 error。`executionMode: "sequential"` 保证提问不与其他 tool call 并行。
 
-Profile capability `canRequestUser: false` 对 agent tool 与 extension 走同一裁决：请求在进入 broker 前被拒绝，产生 `orchestrator.human_request_denied`。
-
 Interaction 组与 coding 组分开注册（`registerCoreInteractionTools`），profile 可以独立授予 filesystem/shell 与 human interaction。
 
 ## Tool events
