@@ -51,12 +51,8 @@ import {
 } from "./background-job.ts";
 import type { OrchestratorClient } from "./client.ts";
 import {
-	createOrchestratorDiagnostic,
-	dedupeDiagnostics,
 	type OrchestratorDiagnostic,
 	OrchestratorError,
-	toCoreDiagnosticFromPromptTemplateDiagnostic,
-	toCoreDiagnosticFromSkillDiagnostic,
 	toDiagnostic,
 } from "./diagnostics.ts";
 import {
@@ -390,7 +386,6 @@ export class AgentOrchestrator {
 	private readonly _humanRequests: HumanRequestBroker;
 	private _nextInputId = 1;
 	private _nextPresentationId = 1;
-	private _nextReportedDiagnosticId = 1;
 
 	constructor(config: AgentOrchestratorConfigs) {
 		this.executionEnv = config.executionEnv;
@@ -441,8 +436,8 @@ export class AgentOrchestrator {
 			publishDiagnostic: async (diagnostic) => {
 				await this._publishDiagnostic(diagnostic);
 			},
-			recordAgentLifecycleFailure: async (agentId, code, message, error) => {
-				await this._recordAgentLifecycleFailure(agentId, code, message, error);
+			recordAgentLifecycleFailure: async (agentId, code, message) => {
+				await this._recordAgentLifecycleFailure(agentId, code, message);
 			},
 		});
 	}
@@ -651,17 +646,12 @@ export class AgentOrchestrator {
 	): Promise<RuntimeModel> {
 		const parsed = parseModelReference(reference);
 		if (!parsed) {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					code: "model.reference_invalid",
-					message: `Model reference must use provider/model syntax: ${reference}`,
-					source: { kind: "registry", name: "model", key: reference },
-					agentId,
-					phase: "runtime",
-					recoverable: true,
-				}),
-			);
+			throw new OrchestratorError({
+				severity: "error",
+				code: "model.reference_invalid",
+				message: `Model reference must use provider/model syntax: ${reference}`,
+				agentId,
+			});
 		}
 		const models = await this.modelRegistry.getAvailable();
 		const model = models.find(
@@ -670,23 +660,12 @@ export class AgentOrchestrator {
 				candidate.id === parsed.modelId,
 		);
 		if (!model) {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					code: "model.not_available",
-					message: `Model is not available: ${parsed.provider}/${parsed.modelId}`,
-					source: {
-						kind: "registry",
-						name: "model",
-						key: `${parsed.provider}/${parsed.modelId}`,
-					},
-					agentId,
-					provider: parsed.provider,
-					modelId: parsed.modelId,
-					phase: "runtime",
-					recoverable: true,
-				}),
-			);
+			throw new OrchestratorError({
+				severity: "error",
+				code: "model.not_available",
+				message: `Model is not available: ${parsed.provider}/${parsed.modelId}`,
+				agentId,
+			});
 		}
 		await this.setAgentModel(agentId, model);
 		return model;
@@ -733,19 +712,15 @@ export class AgentOrchestrator {
 			.getOAuthProviders()
 			.find((candidate) => candidate.id === reference);
 		if (!provider) {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					code: "auth.provider_unknown",
-					message: `Unknown auth provider: ${reference || "(none)"}. Available providers: ${authStorage
-						.getOAuthProviders()
-						.map((candidate) => candidate.id)
-						.join(", ")}.`,
-					agentId: options?.agentId,
-					phase: "runtime",
-					recoverable: true,
-				}),
-			);
+			throw new OrchestratorError({
+				severity: "error",
+				code: "auth.provider_unknown",
+				message: `Unknown auth provider: ${reference || "(none)"}. Available providers: ${authStorage
+					.getOAuthProviders()
+					.map((candidate) => candidate.id)
+					.join(", ")}.`,
+				agentId: options?.agentId,
+			});
 		}
 		// Settling the flow withdraws provisional prompts, such as the manual
 		// code input racing a local callback server.
@@ -764,8 +739,6 @@ export class AgentOrchestrator {
 				code: "auth.login_failed",
 				message: `Login to ${provider.name} failed: ${formatError(error)}`,
 				agentId: options?.agentId,
-				phase: "runtime",
-				recoverable: true,
 			});
 			throw new OrchestratorError(diagnostic);
 		} finally {
@@ -781,17 +754,11 @@ export class AgentOrchestrator {
 		try {
 			await this.modelRegistry.refresh();
 		} catch (error) {
-			await this._publishDiagnostic(
-				createOrchestratorDiagnostic({
-					severity: "warning",
-					disposition: "reported",
-					code: "model.load_failed",
-					message: `Model registry refresh after login failed: ${formatError(error)}`,
-					provider: provider.id,
-					phase: "runtime",
-					recoverable: true,
-				}),
-			);
+			await this._publishDiagnostic({
+				severity: "warning",
+				code: "model.load_failed",
+				message: `Model registry refresh after login failed: ${formatError(error)}`,
+			});
 		}
 		return { providerId: provider.id, providerName: provider.name };
 	}
@@ -802,15 +769,11 @@ export class AgentOrchestrator {
 		const authStorage = this.modelRegistry.authStorage;
 		const reference = providerId.trim();
 		if (!reference) {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					code: "auth.provider_unknown",
-					message: "Auth provider reference must not be empty.",
-					phase: "runtime",
-					recoverable: true,
-				}),
-			);
+			throw new OrchestratorError({
+				severity: "error",
+				code: "auth.provider_unknown",
+				message: "Auth provider reference must not be empty.",
+			});
 		}
 		const removed = authStorage.has(reference);
 		await authStorage.logout(reference);
@@ -926,20 +889,12 @@ export class AgentOrchestrator {
 		}
 		const supportedLevels = getSupportedThinkingLevels(record.model);
 		if (!supportedLevels.includes(level)) {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					code: "model.thinking_level_not_supported",
-					message: `Thinking level ${level} is not supported by model ${record.model.provider}/${record.model.id}.`,
-					source: { kind: "registry", name: "model", key: "thinkingLevel" },
-					agentId,
-					provider: record.model.provider,
-					modelId: record.model.id,
-					phase: "runtime",
-					recoverable: true,
-					details: { level, supportedLevels },
-				}),
-			);
+			throw new OrchestratorError({
+				severity: "error",
+				code: "model.thinking_level_not_supported",
+				message: `Thinking level ${level} is not supported by model ${record.model.provider}/${record.model.id}.`,
+				agentId,
+			});
 		}
 		await this._requireAgentHarness(agentId).setThinkingLevel(level);
 	}
@@ -964,15 +919,12 @@ export class AgentOrchestrator {
 		const templates = await this._loadAgentPromptTemplates(agentId);
 		const template = templates.find((candidate) => candidate.name === name);
 		if (!template) {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					code: "prompt_template.not_found",
-					message: `Prompt template not found: ${name}`,
-					agentId,
-					recoverable: true,
-				}),
-			);
+			throw new OrchestratorError({
+				severity: "error",
+				code: "prompt_template.not_found",
+				message: `Prompt template not found: ${name}`,
+				agentId,
+			});
 		}
 		return template;
 	}
@@ -1007,13 +959,12 @@ export class AgentOrchestrator {
 		const loaded = await this.resourceLoader.loadPromptTemplates(
 			profile.promptTemplates,
 		);
-		const diagnostics = loaded.diagnostics.map((diagnostic) =>
-			toCoreDiagnosticFromPromptTemplateDiagnostic(diagnostic, {
-				agentId,
-				profileId: profile.id,
-				phase: "resolve",
-			}),
-		);
+		const diagnostics = loaded.diagnostics.map((diagnostic) => ({
+			severity: "warning" as const,
+			code: `resource.prompt_template.${diagnostic.code}`,
+			message: `${diagnostic.message} (${diagnostic.path})`,
+			agentId,
+		}));
 		return { promptTemplates: loaded.promptTemplates, diagnostics };
 	}
 
@@ -1034,15 +985,12 @@ export class AgentOrchestrator {
 		const skills = await this._loadAgentSkills(agentId);
 		const skill = skills.find((candidate) => candidate.name === name);
 		if (!skill) {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					code: "skill.not_found",
-					message: `Skill not found: ${name}`,
-					agentId,
-					recoverable: true,
-				}),
-			);
+			throw new OrchestratorError({
+				severity: "error",
+				code: "skill.not_found",
+				message: `Skill not found: ${name}`,
+				agentId,
+			});
 		}
 		return skill;
 	}
@@ -1070,13 +1018,12 @@ export class AgentOrchestrator {
 	}> {
 		const { agentId, profile } = options;
 		const loaded = await this.resourceLoader.loadSkills(profile.skills);
-		const diagnostics = loaded.diagnostics.map((diagnostic) =>
-			toCoreDiagnosticFromSkillDiagnostic(diagnostic, {
-				agentId,
-				profileId: profile.id,
-				phase: "resolve",
-			}),
-		);
+		const diagnostics = loaded.diagnostics.map((diagnostic) => ({
+			severity: "warning" as const,
+			code: `resource.skill.${diagnostic.code}`,
+			message: `${diagnostic.message} (${diagnostic.path})`,
+			agentId,
+		}));
 		return { skills: loaded.skills, diagnostics };
 	}
 
@@ -1086,18 +1033,12 @@ export class AgentOrchestrator {
 	): Promise<AgentThinkingLevelResult> {
 		const level = parseThinkingLevel(levelName);
 		if (!level) {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					code: "model.thinking_level_invalid",
-					message: `Invalid thinking level: ${levelName}`,
-					source: { kind: "registry", name: "model", key: "thinkingLevel" },
-					agentId,
-					phase: "runtime",
-					recoverable: true,
-					details: { level: levelName, supportedLevels: THINKING_LEVELS },
-				}),
-			);
+			throw new OrchestratorError({
+				severity: "error",
+				code: "model.thinking_level_invalid",
+				message: `Invalid thinking level: ${levelName}. Supported levels: ${THINKING_LEVELS.join(", ")}.`,
+				agentId,
+			});
 		}
 		await this.setAgentThinkingLevel(agentId, level);
 		return { level };
@@ -1120,17 +1061,12 @@ export class AgentOrchestrator {
 	private _createAgentThinkingNotSupportedDiagnostic(
 		record: AgentRecord,
 	): OrchestratorDiagnostic {
-		return createOrchestratorDiagnostic({
+		return {
 			severity: "error",
 			code: "model.thinking_not_supported",
 			message: `Model ${record.model.provider}/${record.model.id} does not support thinking levels.`,
-			source: { kind: "registry", name: "model", key: "thinkingLevel" },
 			agentId: record.agentId,
-			provider: record.model.provider,
-			modelId: record.model.id,
-			phase: "runtime",
-			recoverable: true,
-		});
+		};
 	}
 
 	getAgentTools(agentId: AgentId): AgentToolsSnapshot {
@@ -1179,7 +1115,7 @@ export class AgentOrchestrator {
 		const { activeToolNames, diagnostics } = selectActiveToolNames(
 			toolNames,
 			installedNames,
-			{ agentId, profileId: currentState.profileId },
+			{ agentId },
 		);
 		await harness.setActiveTools(activeToolNames);
 		// Re-read the harness after the await: it is the source of truth, and a
@@ -1303,16 +1239,12 @@ export class AgentOrchestrator {
 		if (options.requiresIdle) {
 			this._requireAgentHarness(agentId);
 			if (record.status !== "idle") {
-				throw new OrchestratorError(
-					createOrchestratorDiagnostic({
-						severity: "error",
-						code: "orchestrator.agent_busy",
-						message: `Agent ${agentId} cannot accept a prompt while ${record.status}.`,
-						agentId,
-						phase: "runtime",
-						recoverable: true,
-					}),
-				);
+				throw new OrchestratorError({
+					severity: "error",
+					code: "orchestrator.agent_busy",
+					message: `Agent ${agentId} cannot accept a prompt while ${record.status}.`,
+					agentId,
+				});
 			}
 		}
 
@@ -1329,17 +1261,12 @@ export class AgentOrchestrator {
 				// recording: the extension asked for something the message contract
 				// cannot grant it.
 				if (run.kind === "block" && draft.source.kind === "background_job") {
-					await this._publishDiagnostic(
-						createOrchestratorDiagnostic({
-							severity: "warning",
-							disposition: "reported",
-							code: "orchestrator.message_block_ignored",
-							message: `Extension '${run.blockedBy}' blocked a background job result for agent ${agentId}; it was delivered anyway because the model is waiting for that result.`,
-							agentId,
-							phase: "runtime",
-							recoverable: true,
-						}),
-					);
+					await this._publishDiagnostic({
+						severity: "warning",
+						code: "orchestrator.message_block_ignored",
+						message: `Extension '${run.blockedBy}' blocked a background job result for agent ${agentId}; it was delivered anyway because the model is waiting for that result.`,
+						agentId,
+					});
 				}
 				return run;
 			},
@@ -1467,17 +1394,12 @@ export class AgentOrchestrator {
 		jobId: string,
 		error: unknown,
 	): Promise<void> {
-		await this._publishDiagnostic(
-			createOrchestratorDiagnostic({
-				severity: "warning",
-				disposition: "reported",
-				code: "orchestrator.background_job_delivery_failed",
-				message: `Background job ${jobId} result delivery to agent ${agentId} failed, will retry at the next transition: ${formatError(error)}`,
-				agentId,
-				phase: "runtime",
-				recoverable: true,
-			}),
-		);
+		await this._publishDiagnostic({
+			severity: "warning",
+			code: "orchestrator.background_job_delivery_failed",
+			message: `Background job ${jobId} result delivery to agent ${agentId} failed, will retry at the next transition: ${formatError(error)}`,
+			agentId,
+		});
 	}
 
 	// If nothing was appended after the provisional entries, the user message
@@ -1499,7 +1421,6 @@ export class AgentOrchestrator {
 				agentId,
 				"orchestrator.prompt_entry_retraction_failed",
 				`Failed to retract provisional prompt entries for agent ${agentId}: ${formatError(error)}`,
-				error,
 			);
 		}
 	}
@@ -1547,7 +1468,6 @@ export class AgentOrchestrator {
 					agentId,
 					"orchestrator.agent_dispose_failed",
 					`Failed to unsubscribe agent ${agentId} background job listener: ${formatError(error)}`,
-					error,
 				);
 			}
 			this._unsubscribeAgentJobChanges.delete(agentId);
@@ -1562,7 +1482,6 @@ export class AgentOrchestrator {
 					agentId,
 					"orchestrator.agent_dispose_failed",
 					`Failed to unsubscribe agent ${agentId} background job progress listener: ${formatError(error)}`,
-					error,
 				);
 			}
 			this._unsubscribeAgentJobProgress.delete(agentId);
@@ -1576,7 +1495,6 @@ export class AgentOrchestrator {
 					agentId,
 					"orchestrator.agent_dispose_failed",
 					`Failed to unsubscribe agent ${agentId} background job report listener: ${formatError(error)}`,
-					error,
 				);
 			}
 			this._unsubscribeAgentJobReports.delete(agentId);
@@ -1623,7 +1541,6 @@ export class AgentOrchestrator {
 					agentId,
 					"orchestrator.agent_dispose_failed",
 					`Failed to unsubscribe agent ${agentId} harness handlers: ${formatError(error)}`,
-					error,
 				);
 			}
 			this._unsubscribeAgentHarness.delete(agentId);
@@ -1638,7 +1555,6 @@ export class AgentOrchestrator {
 					agentId,
 					"orchestrator.agent_dispose_failed",
 					`Failed to unsubscribe agent ${agentId} extension interceptors: ${formatError(error)}`,
-					error,
 				);
 			}
 			this._unsubscribeAgentExtensionInterceptors.delete(agentId);
@@ -1669,16 +1585,11 @@ export class AgentOrchestrator {
 		try {
 			await this.executionEnv.cleanup();
 		} catch (error) {
-			await this._publishDiagnostic(
-				createOrchestratorDiagnostic({
-					severity: "warning",
-					disposition: "reported",
-					code: "orchestrator.dispose_all_failed",
-					message: `Failed to cleanup execution environment: ${formatError(error)}`,
-					phase: "runtime",
-					recoverable: true,
-				}),
-			);
+			await this._publishDiagnostic({
+				severity: "warning",
+				code: "orchestrator.dispose_all_failed",
+				message: `Failed to cleanup execution environment: ${formatError(error)}`,
+			});
 		}
 	}
 
@@ -1832,16 +1743,12 @@ export class AgentOrchestrator {
 			metadata.metadata?.profile,
 		);
 		if (!profileReference) {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					code: "profile.resolution_failed",
-					message: `Cannot resume agent ${agentId}: session metadata does not contain a profile reference.`,
-					agentId,
-					phase: "resume",
-					recoverable: true,
-				}),
-			);
+			throw new OrchestratorError({
+				severity: "error",
+				code: "profile.resolution_failed",
+				message: `Cannot resume agent ${agentId}: session metadata does not contain a profile reference.`,
+				agentId,
+			});
 		}
 		return await this._resolveProfileById(profileReference.id, agentId);
 	}
@@ -1853,29 +1760,23 @@ export class AgentOrchestrator {
 		const result = await this.profileRegistry.resolveProfile(profileId);
 		await this._publishDiagnostics(result.diagnostics);
 		if (!result.ok) {
-			const diagnostic = createOrchestratorDiagnostic({
+			const diagnostic: OrchestratorDiagnostic = {
 				severity: "error",
 				code: "profile.resolution_failed",
 				message: `Cannot resolve profile ${profileId}: ${result.reason}.`,
 				agentId,
-				profileId,
-				phase: "resolve",
-				recoverable: true,
-			});
+			};
 			await this._publishDiagnostic(diagnostic);
 			throw new OrchestratorError(diagnostic);
 		}
 
 		if (!this._isProfileEnabled(result.profile.id)) {
-			const diagnostic = createOrchestratorDiagnostic({
+			const diagnostic: OrchestratorDiagnostic = {
 				severity: "error",
 				code: "profile.disabled",
 				message: `Profile is disabled by runtime policy: ${result.profile.id}`,
 				agentId,
-				profileId: result.profile.id,
-				phase: "resolve",
-				recoverable: true,
-			});
+			};
 			await this._publishDiagnostic(diagnostic);
 			throw new OrchestratorError(diagnostic);
 		}
@@ -1903,14 +1804,11 @@ export class AgentOrchestrator {
 		}
 
 		if ("id" in override) {
-			const diagnostic = createOrchestratorDiagnostic({
+			const diagnostic: OrchestratorDiagnostic = {
 				severity: "error",
 				code: "profile.override_invalid",
-				message: "Profile override cannot change profile id.",
-				profileId: profile.id,
-				phase: "create",
-				recoverable: true,
-			});
+				message: `Profile override cannot change profile id: ${profile.id}.`,
+			};
 			await this._publishDiagnostic(diagnostic);
 			throw new OrchestratorError(diagnostic);
 		}
@@ -1923,15 +1821,11 @@ export class AgentOrchestrator {
 				: profile.capabilities,
 		};
 		if (merged.persist && changesRecoverableProfileFields(override)) {
-			const diagnostic = createOrchestratorDiagnostic({
+			const diagnostic: OrchestratorDiagnostic = {
 				severity: "error",
 				code: "profile.override_not_persistable",
-				message:
-					"Profile override changes recoverable profile fields and cannot create a persistent session.",
-				profileId: profile.id,
-				phase: "create",
-				recoverable: true,
-			});
+				message: `Profile '${profile.id}' override changes recoverable profile fields and cannot create a persistent session.`,
+			};
 			await this._publishDiagnostic(diagnostic);
 			throw new OrchestratorError(diagnostic);
 		}
@@ -2008,9 +1902,6 @@ export class AgentOrchestrator {
 				code: "orchestrator.agent_unavailable",
 				message: `Cannot create agent ${agentId}: ${formatError(error)}`,
 				agentId,
-				profileId: profile.id,
-				phase: "create",
-				recoverable: true,
 			});
 			await this._markExistingAgentUnavailable(agentId, diagnostic);
 			if (!(error instanceof OrchestratorError)) {
@@ -2072,7 +1963,6 @@ export class AgentOrchestrator {
 				code: "orchestrator.agent_unavailable",
 				message: `Cannot resume agent ${agentId}: ${formatError(error)}`,
 				agentId,
-				recoverable: true,
 			});
 			await this._markAgentUnavailable({
 				agentId,
@@ -2116,11 +2006,7 @@ export class AgentOrchestrator {
 		// Contributed providers register before the harness exists so their
 		// models are selectable from the first turn. Spawn/resume model
 		// resolution happens earlier still and cannot reference them.
-		await this._applyExtensionProviderContributions(
-			agentId,
-			profile.id,
-			extensionRunner,
-		);
+		await this._applyExtensionProviderContributions(agentId, extensionRunner);
 
 		const loadedSkills = await this._loadProfileSkills({ agentId, profile });
 		const loadedPromptTemplates = await this._loadProfilePromptTemplates({
@@ -2244,7 +2130,6 @@ export class AgentOrchestrator {
 
 	private async _applyExtensionProviderContributions(
 		agentId: AgentId,
-		profileId: string,
 		extensionRunner: ExtensionRunner,
 	): Promise<void> {
 		const contributions = extensionRunner.getProviderContributions();
@@ -2253,15 +2138,8 @@ export class AgentOrchestrator {
 		const projectTrusted = this.settingManager.isProjectTrusted();
 		for (const contribution of contributions) {
 			const diagnosticBase = {
-				source: {
-					kind: "extension",
-					id: contribution.extensionId,
-				},
 				agentId,
-				profileId,
 				extensionId: contribution.extensionId,
-				phase: "create",
-				recoverable: true,
 			} as const;
 			// Trust ruling: `!command` config values resolve through
 			// ExecutionEnv.exec at request time, so an untrusted project rejects
@@ -2273,16 +2151,12 @@ export class AgentOrchestrator {
 					this.modelRegistry.configValueResolver,
 				)
 			) {
-				diagnostics.push(
-					createOrchestratorDiagnostic({
-						...diagnosticBase,
-						severity: "error",
-						disposition: "degraded",
-						code: "extension.provider_trust_denied",
-						message: `Extension '${contribution.extensionId}' provider '${contribution.providerName}' uses command config values and was denied because the project is not trusted.`,
-						details: { providerName: contribution.providerName },
-					}),
-				);
+				diagnostics.push({
+					...diagnosticBase,
+					severity: "error",
+					code: "extension.provider_trust_denied",
+					message: `Extension '${contribution.extensionId}' provider '${contribution.providerName}' uses command config values and was denied because the project is not trusted.`,
+				});
 				continue;
 			}
 			const result = this.modelRegistry.registerExtensionProvider(
@@ -2292,35 +2166,20 @@ export class AgentOrchestrator {
 			);
 			if (result.ok) continue;
 			if (result.reason === "conflict") {
-				diagnostics.push(
-					createOrchestratorDiagnostic({
-						...diagnosticBase,
-						severity: "warning",
-						disposition: "reported",
-						code: "extension.provider_conflict",
-						message: `Extension '${contribution.extensionId}' provider '${contribution.providerName}' conflicts with a ${result.conflictWith} provider and was skipped.`,
-						details: {
-							providerName: contribution.providerName,
-							conflictWith: result.conflictWith,
-							ownerExtensionId: result.ownerExtensionId,
-						},
-					}),
-				);
+				diagnostics.push({
+					...diagnosticBase,
+					severity: "warning",
+					code: "extension.provider_conflict",
+					message: `Extension '${contribution.extensionId}' provider '${contribution.providerName}' conflicts with a ${result.conflictWith} provider and was skipped.`,
+				});
 				continue;
 			}
-			diagnostics.push(
-				createOrchestratorDiagnostic({
-					...diagnosticBase,
-					severity: "error",
-					disposition: "degraded",
-					code: "extension.provider_invalid",
-					message: `Extension '${contribution.extensionId}' provider '${contribution.providerName}' was rejected: ${result.message}`,
-					details: {
-						providerName: contribution.providerName,
-						errorMessage: result.message,
-					},
-				}),
-			);
+			diagnostics.push({
+				...diagnosticBase,
+				severity: "error",
+				code: "extension.provider_invalid",
+				message: `Extension '${contribution.extensionId}' provider '${contribution.providerName}' was rejected: ${result.message}`,
+			});
 		}
 		if (diagnostics.length === 0) return;
 		this._addAgentDiagnostics(agentId, { extensionDiagnostics: diagnostics });
@@ -2337,7 +2196,6 @@ export class AgentOrchestrator {
 				agentId,
 				"extension.provider_unregister_failed",
 				`Failed to withdraw extension providers for agent ${agentId}: ${formatError(error)}`,
-				error,
 			);
 		}
 	}
@@ -2352,7 +2210,6 @@ export class AgentOrchestrator {
 			reportActionFailure: async (failure) => {
 				const diagnostic = this._createExtensionActionFailureDiagnostic({
 					agentId,
-					profileId: extensionRunner.profileId,
 					failure,
 				});
 				await this._recordAndPublishExtensionDiagnostics(agentId, [diagnostic]);
@@ -2463,8 +2320,6 @@ export class AgentOrchestrator {
 			resolvedTools.diagnostics.map((diagnostic) => ({
 				...diagnostic,
 				agentId: options.agentId,
-				profileId: options.profileId,
-				phase: "resolve",
 			})),
 		);
 		const agentTools = createAgentHarnessToolsFromResolvedTools(
@@ -2503,7 +2358,6 @@ export class AgentOrchestrator {
 					this._assertCanRequestUser(agentId, {
 						code: "orchestrator.human_request_denied",
 						message: `Agent ${agentId} human request is denied by profile capability canRequestUser.`,
-						profileId,
 					});
 					return await this.requestHuman({
 						...request,
@@ -2540,23 +2394,16 @@ export class AgentOrchestrator {
 		denial: {
 			code: string;
 			message: string;
-			profileId?: string;
-			source?: OrchestratorDiagnostic["source"];
 			extensionId?: string;
 		},
 	): void {
 		const record = this._requireAgentRecord(agentId);
 		if (record.capabilities?.canRequestUser === false) {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					agentId,
-					phase: "runtime",
-					recoverable: true,
-					...denial,
-					profileId: denial.profileId ?? record.profile.reference.id,
-				}),
-			);
+			throw new OrchestratorError({
+				severity: "error",
+				agentId,
+				...denial,
+			});
 		}
 	}
 
@@ -2584,7 +2431,6 @@ export class AgentOrchestrator {
 				this._assertCanRequestUser(agentId, {
 					code: "extension.human_request_denied",
 					message: `Extension '${extensionId}' human request is denied by profile capability canRequestUser.`,
-					source: { kind: "extension", id: extensionId },
 					extensionId,
 				});
 				return await this._requestHumanForAgent(agentId, {
@@ -2666,23 +2512,15 @@ export class AgentOrchestrator {
 				);
 			},
 			reportDiagnostic: async (agentId, extensionId, draft) => {
-				const record = this._requireAgentRecord(agentId);
+				this._requireAgentRecord(agentId);
 				const validatedDraft = validateExtensionDiagnosticDraft(draft);
-				const diagnostic = createOrchestratorDiagnostic({
-					id: this._createReportedDiagnosticId(),
-					domain: "extension",
+				const diagnostic: OrchestratorDiagnostic = {
 					code: `extension.${extensionId}.${validatedDraft.code}`,
 					severity: validatedDraft.severity,
-					disposition: validatedDraft.disposition ?? "reported",
-					recoverable: true,
 					message: validatedDraft.message,
-					source: { kind: "extension", id: extensionId },
-					phase: "runtime",
 					agentId,
-					profileId: record.profile.reference.id,
 					extensionId,
-					details: validatedDraft.details,
-				});
+				};
 				this._addAgentDiagnostics(agentId, {
 					extensionDiagnostics: [diagnostic],
 				});
@@ -2748,18 +2586,13 @@ export class AgentOrchestrator {
 			// it is denied until the project trust gate has passed.
 			exec: async (agentId, extensionId, command, options) => {
 				if (!this.settingManager.isProjectTrusted()) {
-					throw new OrchestratorError(
-						createOrchestratorDiagnostic({
-							severity: "error",
-							code: "extension.exec_denied",
-							message: `Extension '${extensionId}' exec is denied because the project is not trusted.`,
-							source: { kind: "extension", id: extensionId },
-							agentId,
-							extensionId,
-							phase: "runtime",
-							recoverable: true,
-						}),
-					);
+					throw new OrchestratorError({
+						severity: "error",
+						code: "extension.exec_denied",
+						message: `Extension '${extensionId}' exec is denied because the project is not trusted.`,
+						agentId,
+						extensionId,
+					});
 				}
 				return await this.executionEnv.exec(command, options);
 			},
@@ -2818,7 +2651,7 @@ export class AgentOrchestrator {
 			record.diagnostics.push(diagnostic);
 		}
 		if (
-			diagnostic.domain === "extension" &&
+			diagnostic.extensionId !== undefined &&
 			!record.extensionDiagnostics.includes(diagnostic)
 		) {
 			record.extensionDiagnostics.push(diagnostic);
@@ -2870,20 +2703,13 @@ export class AgentOrchestrator {
 		agentId: AgentId,
 		code: string,
 		message: string,
-		error: unknown,
 	): Promise<void> {
-		const diagnostic = createOrchestratorDiagnostic({
+		const diagnostic: OrchestratorDiagnostic = {
 			severity: "warning",
-			disposition: "reported",
 			code,
 			message,
 			agentId,
-			phase: "runtime",
-			recoverable: true,
-			details: {
-				error: formatError(error),
-			},
-		});
+		};
 		this._addAgentDiagnostics(agentId, {
 			diagnostics: [diagnostic],
 		});
@@ -2920,27 +2746,16 @@ export class AgentOrchestrator {
 
 	private _createExtensionActionFailureDiagnostic(options: {
 		agentId: AgentId;
-		profileId: string;
 		failure: ExtensionActionFailure;
 	}): OrchestratorDiagnostic {
 		const { failure } = options;
-		return createOrchestratorDiagnostic({
-			domain: "extension",
+		return {
 			code: failure.code,
 			severity: "warning",
-			disposition: "degraded",
-			recoverable: true,
 			message: `Extension '${failure.extensionId}' action '${failure.action}' failed: ${formatError(failure.error)}`,
-			source: { kind: "extension", id: failure.extensionId },
-			phase: "runtime",
 			agentId: options.agentId,
-			profileId: options.profileId,
 			extensionId: failure.extensionId,
-			details: {
-				action: failure.action,
-				error: formatError(failure.error),
-			},
-		});
+		};
 	}
 
 	private async _reloadAgentExtensions(
@@ -3053,11 +2868,7 @@ export class AgentOrchestrator {
 			// runner's registrations are withdrawn before the reloaded runner
 			// re-registers its own.
 			await this._withdrawExtensionProviderContributions(agentId);
-			await this._applyExtensionProviderContributions(
-				agentId,
-				resolvedProfile.profile.id,
-				nextRunner,
-			);
+			await this._applyExtensionProviderContributions(agentId, nextRunner);
 			await this._disposeExtensionRunner(
 				agentId,
 				oldRunner,
@@ -3095,7 +2906,6 @@ export class AgentOrchestrator {
 				severity: "error",
 				message: `Failed to reload extensions for agent ${agentId}: ${formatError(error)}`,
 				agentId,
-				details: { error: formatError(error) },
 			});
 			this._addAgentDiagnostics(agentId, {
 				extensionDiagnostics: [diagnostic],
@@ -3127,20 +2937,13 @@ export class AgentOrchestrator {
 		severity: OrchestratorDiagnostic["severity"];
 		message: string;
 		agentId: AgentId;
-		details?: Record<string, unknown>;
 	}): OrchestratorDiagnostic {
-		return createOrchestratorDiagnostic({
-			domain: "extension",
+		return {
 			severity: options.severity,
-			disposition: options.severity === "error" ? "degraded" : "reported",
 			code: options.code,
 			message: options.message,
 			agentId: options.agentId,
-			phase: "runtime",
-			recoverable: true,
-			source: { kind: "extension", id: "reload" },
-			details: options.details,
-		});
+		};
 	}
 
 	private async _registerAgentRecord(record: AgentRecord): Promise<void> {
@@ -3199,7 +3002,6 @@ export class AgentOrchestrator {
 				agentId,
 				"orchestrator.agent_dispose_failed",
 				`Failed to abort agent ${agentId} during dispose: ${formatError(error)}`,
-				error,
 			);
 		}
 		try {
@@ -3209,7 +3011,6 @@ export class AgentOrchestrator {
 				agentId,
 				"orchestrator.agent_dispose_failed",
 				`Failed waiting for agent ${agentId} to become idle during dispose: ${formatError(error)}`,
-				error,
 			);
 		}
 	}
@@ -3227,7 +3028,6 @@ export class AgentOrchestrator {
 				agentId,
 				"orchestrator.agent_dispose_failed",
 				`Failed to dispose extension runtime for agent ${agentId}: ${formatError(error)}`,
-				error,
 			);
 		}
 	}
@@ -3259,17 +3059,12 @@ export class AgentOrchestrator {
 		} catch (error) {
 			// Retryable failures keep the result queued, so reaching here means the
 			// owner can never take it: the model will not see this job's outcome.
-			await this._publishDiagnostic(
-				createOrchestratorDiagnostic({
-					severity: "warning",
-					disposition: "reported",
-					code: "orchestrator.background_job_dropped",
-					message: `Dropping the result of background job ${settlement.job.id} for agent ${agentId}: ${formatError(error)}`,
-					agentId,
-					phase: "runtime",
-					recoverable: true,
-				}),
-			);
+			await this._publishDiagnostic({
+				severity: "warning",
+				code: "orchestrator.background_job_dropped",
+				message: `Dropping the result of background job ${settlement.job.id} for agent ${agentId}: ${formatError(error)}`,
+				agentId,
+			});
 		}
 	}
 
@@ -3523,7 +3318,6 @@ export class AgentOrchestrator {
 					agentId,
 					"orchestrator.agent_message_prompt_failed",
 					`Prompt for agent ${agentId} failed after delivery: ${formatError(error)}`,
-					error,
 				);
 			}
 		} finally {
@@ -3732,17 +3526,12 @@ export class AgentOrchestrator {
 			}
 			await this.compactAgent(agentId);
 		} catch (error) {
-			await this._publishDiagnostic(
-				createOrchestratorDiagnostic({
-					severity: "warning",
-					code: "compaction.auto_failed",
-					message: `Automatic compaction failed for agent ${agentId}: ${formatError(error)}`,
-					operationSource: { kind: "system" },
-					agentId,
-					phase: "runtime",
-					recoverable: true,
-				}),
-			);
+			await this._publishDiagnostic({
+				severity: "warning",
+				code: "compaction.auto_failed",
+				message: `Automatic compaction failed for agent ${agentId}: ${formatError(error)}`,
+				agentId,
+			});
 		} finally {
 			this._autoCompactingAgents.delete(agentId);
 		}
@@ -3846,17 +3635,12 @@ export class AgentOrchestrator {
 				try {
 					await listener(event);
 				} catch (error) {
-					listenerFailures.push(
-						createOrchestratorDiagnostic({
-							severity: "warning",
-							code: "orchestrator.listener_failed",
-							message: formatError(error),
-							disposition: "reported",
-							recoverable: true,
-							agentId: "agentId" in event ? event.agentId : undefined,
-							details: { eventType: event.type },
-						}),
-					);
+					listenerFailures.push({
+						severity: "warning",
+						code: "orchestrator.listener_failed",
+						message: `Listener failed for event ${event.type}: ${formatError(error)}`,
+						agentId: "agentId" in event ? event.agentId : undefined,
+					});
 				}
 			}
 		}
@@ -3867,15 +3651,12 @@ export class AgentOrchestrator {
 					await client.receive(event);
 				} catch (error) {
 					await this._publishDiagnostic(
-						createOrchestratorDiagnostic({
+						{
 							severity: "warning",
 							code: "orchestrator.client_failed",
-							message: error instanceof Error ? error.message : String(error),
-							disposition: "reported",
-							recoverable: true,
+							message: `Client failed for event ${event.type}: ${formatError(error)}`,
 							agentId: "agentId" in event ? event.agentId : undefined,
-							details: { eventType: event.type },
-						}),
+						},
 						{
 							sendToListeners: options.sendToListeners,
 							sendToClients: false,
@@ -3925,7 +3706,7 @@ export class AgentOrchestrator {
 			observeExtensions?: boolean;
 		} = {},
 	): Promise<void> {
-		for (const diagnostic of dedupeDiagnostics(diagnostics)) {
+		for (const diagnostic of diagnostics) {
 			await this._publishDiagnostic(diagnostic, options);
 		}
 	}
@@ -3947,14 +3728,6 @@ export class AgentOrchestrator {
 	private _createPresentationId(): string {
 		const id = `orchestrator-presentation-${this._nextPresentationId}`;
 		this._nextPresentationId += 1;
-		return id;
-	}
-
-	// Every extension-reported diagnostic is an independent fact: the fresh
-	// core id keeps dedupeDiagnostics from ever merging repeated reports.
-	private _createReportedDiagnosticId(): string {
-		const id = `orchestrator-diagnostic-${this._nextReportedDiagnosticId}`;
-		this._nextReportedDiagnosticId += 1;
 		return id;
 	}
 
@@ -3981,9 +3754,7 @@ export class AgentOrchestrator {
 function isBlockedExtensionDiagnostic(
 	diagnostic: OrchestratorDiagnostic,
 ): boolean {
-	return (
-		diagnostic.domain === "extension" && diagnostic.disposition === "blocked"
-	);
+	return diagnostic.severity === "error";
 }
 
 /**
@@ -3994,27 +3765,13 @@ function isBlockedExtensionDiagnostic(
 function selectActiveToolNames(
 	toolNames: readonly string[],
 	installedNames: ReadonlySet<string>,
-	context: { agentId: AgentId; profileId: string },
+	context: { agentId: AgentId },
 ): { activeToolNames: string[]; diagnostics: OrchestratorDiagnostic[] } {
 	const activeToolNames: string[] = [];
 	const seen = new Set<string>();
 	const diagnostics: OrchestratorDiagnostic[] = [];
-	const report = (diagnostic: {
-		severity: "error" | "warning";
-		code: string;
-		disposition: "degraded" | "reported";
-		message: string;
-		toolName?: string;
-	}) => {
-		diagnostics.push(
-			createOrchestratorDiagnostic({
-				...diagnostic,
-				recoverable: true,
-				phase: "runtime",
-				agentId: context.agentId,
-				profileId: context.profileId,
-			}),
-		);
+	const report = (diagnostic: OrchestratorDiagnostic) => {
+		diagnostics.push(diagnostic);
 	};
 	for (const rawName of toolNames) {
 		const name = rawName.trim();
@@ -4022,8 +3779,8 @@ function selectActiveToolNames(
 			report({
 				severity: "error",
 				code: "tool.invalid_name",
-				disposition: "degraded",
 				message: "Tool name list contains an empty name.",
+				agentId: context.agentId,
 			});
 			continue;
 		}
@@ -4031,9 +3788,8 @@ function selectActiveToolNames(
 			report({
 				severity: "warning",
 				code: "tool.active_duplicate",
-				disposition: "reported",
 				message: `Tool name '${name}' is listed more than once; keeping the first occurrence.`,
-				toolName: name,
+				agentId: context.agentId,
 			});
 			continue;
 		}
@@ -4042,9 +3798,8 @@ function selectActiveToolNames(
 			report({
 				severity: "warning",
 				code: "tool.active_missing",
-				disposition: "degraded",
 				message: `Active tool '${name}' is not in the agent's installed tool set.`,
-				toolName: name,
+				agentId: context.agentId,
 			});
 			continue;
 		}

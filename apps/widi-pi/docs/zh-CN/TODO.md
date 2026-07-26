@@ -21,10 +21,10 @@
 范围边界：
 
 - Registry、loader、runtime collaborator 和其他 domain owner 负责自己的 diagnostic decision 与 source facts。
-- 共享的 construction、format、dedupe 和 error conversion 进入明确的 diagnostics 边界。
+- 共享的 construction、format 和 error conversion 进入明确的 diagnostics 边界。
 - Orchestrator 主要补充 operation context、汇总并统一发布。
 
-总体完成标准：diagnostic code、severity、disposition 和发布语义保持稳定，同时 orchestrator 中不再集中承载可由具体 runtime 独立解释的复杂诊断逻辑。
+总体完成标准：diagnostic code、severity 和发布语义保持稳定，同时 orchestrator 中不再集中承载可由具体 runtime 独立解释的复杂诊断逻辑。
 
 ## 3. 代码细节与可读性优化
 

@@ -234,7 +234,7 @@ export class ConfigValueResolver {
 	 * Resolve a config value or throw an error that identifies the missing source.
 	 *
 	 * Error messages distinguish shell command failures from one or more missing environment
-	 * variables, which lets callers surface actionable auth/config diagnostics.
+	 * variables, which lets callers surface actionable auth/config warnings.
 	 */
 	async resolveConfigValueOrThrow(
 		config: string,

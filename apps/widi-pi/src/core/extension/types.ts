@@ -202,11 +202,11 @@ export interface ExtensionActions {
 	// context. The returned entryId matches the persisted entry and the
 	// canonical event, so consumers dedupe hydration against live events.
 	publishMessage(message: ExtensionMessage): Promise<{ entryId: string }>;
-	// Reported facts join the core diagnostic pipeline: domain, source,
-	// agentId, and extensionId are injected, the local code is namespaced to
-	// extension.<extensionId>.<code>, and every report gets a fresh core id -
-	// no cross-report dedupe. Reported diagnostics never feed back into
-	// extension observers.
+	// Reported facts join the core diagnostic pipeline: the draft is
+	// { severity: "warning" | "error", code, message }; core injects agentId
+	// and extensionId and namespaces the local code to
+	// extension.<extensionId>.<code>. Reported diagnostics never feed back
+	// into extension observers.
 	reportDiagnostic(draft: ExtensionDiagnosticDraft): Promise<void>;
 	prompt(text: string, options?: { images?: ImageContent[] }): Promise<void>;
 	steer(text: string, options?: { images?: ImageContent[] }): Promise<void>;

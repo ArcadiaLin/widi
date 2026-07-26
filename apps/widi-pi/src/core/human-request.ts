@@ -1,5 +1,4 @@
 import {
-	createOrchestratorDiagnostic,
 	type OrchestratorDiagnostic,
 	OrchestratorError,
 	toDiagnostic,
@@ -200,15 +199,12 @@ export class HumanRequestBroker {
 		};
 
 		if (!requestHuman) {
-			const diagnostic = createOrchestratorDiagnostic({
+			const diagnostic: OrchestratorDiagnostic = {
 				severity: "error",
 				code: "orchestrator.human_request_unhandled",
 				message: "No orchestrator client can handle human requests.",
-				operationSource: request.source,
 				agentId,
-				requestId,
-				recoverable: true,
-			});
+			};
 			await this.host.publishDiagnostic(diagnostic);
 			throw new OrchestratorError(diagnostic);
 		}
@@ -220,17 +216,12 @@ export class HumanRequestBroker {
 		let cancelPending: (reason?: string) => Promise<void> = async () => {};
 		try {
 			if (request.signal?.aborted) {
-				throw new OrchestratorError(
-					createOrchestratorDiagnostic({
-						severity: "error",
-						code: "orchestrator.human_request_aborted",
-						message: "Human request was aborted.",
-						operationSource: request.source,
-						agentId,
-						requestId,
-						recoverable: true,
-					}),
-				);
+				throw new OrchestratorError({
+					severity: "error",
+					code: "orchestrator.human_request_aborted",
+					message: "Human request was aborted.",
+					agentId,
+				});
 			}
 			const responsePromise = new Promise<HumanResponse>((resolve, reject) => {
 				let settled = false;
@@ -256,17 +247,12 @@ export class HumanRequestBroker {
 					reject(new OrchestratorError(diagnostic));
 				};
 				abortHandler = () => {
-					rejectWithDiagnostic(
-						createOrchestratorDiagnostic({
-							severity: "error",
-							code: "orchestrator.human_request_aborted",
-							message: "Human request was aborted.",
-							operationSource: request.source,
-							agentId,
-							requestId,
-							recoverable: true,
-						}),
-					);
+					rejectWithDiagnostic({
+						severity: "error",
+						code: "orchestrator.human_request_aborted",
+						message: "Human request was aborted.",
+						agentId,
+					});
 				};
 				controller.signal.addEventListener("abort", abortHandler, {
 					once: true,
@@ -289,17 +275,14 @@ export class HumanRequestBroker {
 						completedAt: now(),
 					});
 					rejectWithDiagnostic(
-						createOrchestratorDiagnostic({
+						{
 							severity: "error",
 							code: "orchestrator.human_request_cancelled",
 							message: reason
 								? `Human request was cancelled: ${reason}`
 								: "Human request was cancelled.",
-							operationSource: request.source,
 							agentId,
-							requestId,
-							recoverable: true,
-						}),
+						},
 						() => controller.abort(),
 					);
 				};
@@ -312,15 +295,12 @@ export class HumanRequestBroker {
 							completedAt: now(),
 						});
 						rejectWithDiagnostic(
-							createOrchestratorDiagnostic({
+							{
 								severity: "error",
 								code: "orchestrator.human_request_timeout",
 								message: "Human request timed out.",
-								operationSource: request.source,
 								agentId,
-								requestId,
-								recoverable: true,
-							}),
+							},
 							() => controller.abort(),
 						);
 					}, request.timeoutMs);
@@ -363,11 +343,8 @@ export class HumanRequestBroker {
 			this.pendingRequests.delete(requestId);
 			const diagnostic = toDiagnostic(error, {
 				code: "orchestrator.human_request_failed",
-				message: error instanceof Error ? error.message : String(error),
-				operationSource: request.source,
+				message: formatError(error),
 				agentId,
-				requestId,
-				recoverable: true,
 			});
 			const withdrawnProvisional =
 				request.provisional === true &&
@@ -408,17 +385,11 @@ export class HumanRequestBroker {
 			try {
 				await pending.cancel(reason);
 			} catch (error) {
-				await this.host.publishDiagnostic(
-					createOrchestratorDiagnostic({
-						severity: "warning",
-						disposition: "reported",
-						code: "orchestrator.dispose_all_failed",
-						message: `Failed to cancel human request ${requestId}: ${formatError(error)}`,
-						requestId,
-						phase: "runtime",
-						recoverable: true,
-					}),
-				);
+				await this.host.publishDiagnostic({
+					severity: "warning",
+					code: "orchestrator.dispose_all_failed",
+					message: `Failed to cancel human request ${requestId}: ${formatError(error)}`,
+				});
 			}
 			this.pendingRequests.delete(requestId);
 		}

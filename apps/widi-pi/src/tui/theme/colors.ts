@@ -48,14 +48,7 @@ export const colors = {
 };
 
 export function severityColor(
-	severity: "info" | "warning" | "error",
+	severity: "warning" | "error",
 ): (text: string) => string {
-	switch (severity) {
-		case "error":
-			return colors.error;
-		case "warning":
-			return colors.warn;
-		default:
-			return colors.info;
-	}
+	return severity === "error" ? colors.error : colors.warn;
 }

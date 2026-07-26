@@ -18,7 +18,7 @@ import type {
 	Credential as PiCredential,
 } from "@earendil-works/pi-ai";
 import { DEFAULT_AGENT_DIR } from "./constants.js";
-import { type CoreDiagnostic, createDiagnostic } from "./diagnostics.ts";
+import type { CoreDiagnostic } from "./diagnostics.ts";
 import type { ConfigValueResolver } from "./resolve-config-value.js";
 
 export type ApiKeyCredential = {
@@ -702,25 +702,11 @@ function createAuthDiagnostic(
 	error: Error,
 	provider: string | undefined,
 ): AuthDiagnostic {
-	return createDiagnostic({
-		domain: "auth",
-		code,
+	return {
 		severity: "error",
-		disposition: "degraded",
-		recoverable: true,
-		message: error.message,
-		source: {
-			kind: "registry",
-			name: "auth",
-			key: provider,
-		},
-		provider,
-		phase: code === "auth.load_failed" ? "load" : "runtime",
-		details: {
-			errorName: error.name,
-			errorMessage: error.message,
-		},
-	});
+		code,
+		message: provider ? `${provider}: ${error.message}` : error.message,
+	};
 }
 
 /**

@@ -8,13 +8,7 @@ import {
 	type BackgroundJobTable,
 	createBackgroundJobStartedResult,
 } from "./background-job.ts";
-import {
-	type CoreDiagnostic,
-	createDiagnostic,
-	type DiagnosticDisposition,
-	type DiagnosticSeverity,
-	type DiagnosticSource,
-} from "./diagnostics.ts";
+import type { CoreDiagnostic, DiagnosticSeverity } from "./diagnostics.ts";
 import type { ToolHumanHost } from "./human-request.ts";
 import type {
 	ToolDefinition,
@@ -206,10 +200,7 @@ export class ToolRegistry {
 					createToolDiagnostic({
 						severity: "warning",
 						code: "tool.patch_target_missing",
-						disposition: "degraded",
 						message: `Tool patch from ${formatSource(patch.source)} targets missing tool '${targetToolName}'.`,
-						toolName: targetToolName,
-						source: patch.source,
 					}),
 				);
 			}
@@ -255,9 +246,7 @@ export class ToolRegistry {
 				createToolDiagnostic({
 					severity: "error",
 					code: "tool.invalid_name",
-					disposition: "degraded",
 					message: `Tool definition from ${formatSource(stored.source)} has an empty name.`,
-					source: stored.source,
 				}),
 			);
 			return;
@@ -278,9 +267,6 @@ export class ToolRegistry {
 				severity: "warning",
 				code: "tool.define_conflict",
 				message: `Tool '${toolName}' is defined by both ${formatSource(previousEntry.source)} and ${formatSource(nextEntry.source)}; keeping ${formatSource(previousEntry.source)}.`,
-				toolName,
-				source: nextEntry.source,
-				targetSource: previousEntry.source,
 			}),
 		);
 	}
@@ -296,9 +282,7 @@ export class ToolRegistry {
 				createToolDiagnostic({
 					severity: "error",
 					code: "tool.invalid_name",
-					disposition: "degraded",
 					message: `Tool patch from ${formatSource(stored.source)} has an empty target tool name.`,
-					source: stored.source,
 				}),
 			);
 			return;
@@ -338,9 +322,6 @@ export class ToolRegistry {
 						severity: "warning",
 						code: "tool.patch_contract_risk",
 						message: `Tool '${entry.definition.name}' parameters are patched by ${formatSource(patchEntry.source)} without an execute or aroundExecute patch; the existing execute implementation may not match the new schema.`,
-						toolName: entry.definition.name,
-						source: patchEntry.source,
-						details: { field: "parameters" },
 					}),
 				);
 			}
@@ -353,10 +334,6 @@ export class ToolRegistry {
 							severity: "warning",
 							code: "tool.patch_field_conflict",
 							message: `Tool '${entry.definition.name}' field '${field}' is patched by both ${formatSource(previousOwner.source)} and ${formatSource(patchEntry.source)}; registration order decides the final value.`,
-							toolName: entry.definition.name,
-							source: patchEntry.source,
-							targetSource: previousOwner.source,
-							details: { field },
 						}),
 					);
 				}
@@ -397,9 +374,7 @@ export class ToolRegistry {
 				createToolDiagnostic({
 					severity: "warning",
 					code: "tool.requested_missing",
-					disposition: "degraded",
 					message: `Requested tool '${name}' is not registered.`,
-					toolName: name,
 				}),
 			);
 		}
@@ -429,9 +404,7 @@ export class ToolRegistry {
 				createToolDiagnostic({
 					severity: "warning",
 					code: "tool.active_missing",
-					disposition: "degraded",
 					message: `Active tool '${name}' is not visible in the resolved tool set.`,
-					toolName: name,
 				}),
 			);
 		}
@@ -802,7 +775,6 @@ function normalizeToolNames(
 				createToolDiagnostic({
 					severity: "error",
 					code: "tool.invalid_name",
-					disposition: "degraded",
 					message: "Tool name list contains an empty name.",
 				}),
 			);
@@ -814,7 +786,6 @@ function normalizeToolNames(
 					severity: "warning",
 					code: duplicateCode,
 					message: `Tool name '${name}' is listed more than once; keeping the first occurrence.`,
-					toolName: name,
 				}),
 			);
 			continue;
@@ -829,53 +800,11 @@ function createToolDiagnostic(options: {
 	readonly severity: ToolRegistryDiagnosticSeverity;
 	readonly code: ToolRegistryDiagnosticCode;
 	readonly message: string;
-	readonly disposition?: DiagnosticDisposition;
-	readonly toolName?: string;
-	readonly source?: ToolSource;
-	readonly targetSource?: ToolSource;
-	readonly details?: Record<string, unknown>;
 }): ToolRegistryDiagnostic {
-	return createDiagnostic({
-		domain: "tool",
-		code: options.code,
-		severity: options.severity,
-		disposition:
-			options.disposition ??
-			(options.severity === "error" ? "degraded" : "reported"),
-		recoverable: true,
-		message: options.message,
-		source: options.source
-			? diagnosticSourceFromToolSource(options.source, options.toolName)
-			: options.toolName
-				? { kind: "tool", name: options.toolName }
-				: undefined,
-		targetSource: options.targetSource
-			? diagnosticSourceFromToolSource(options.targetSource, options.toolName)
-			: undefined,
-		toolName: options.toolName,
-		phase: "resolve",
-		details: {
-			toolSource: options.source,
-			targetToolSource: options.targetSource,
-			...options.details,
-		},
-	});
-}
-
-function diagnosticSourceFromToolSource(
-	source: ToolSource,
-	toolName: string | undefined,
-): DiagnosticSource {
-	if (source.kind === "extension") {
-		return {
-			kind: "extension",
-			id: source.id,
-		};
-	}
 	return {
-		kind: "registry",
-		name: toolName ? `tool:${toolName}` : "tool",
-		key: `${source.kind}:${source.id}`,
+		severity: options.severity,
+		code: options.code,
+		message: options.message,
 	};
 }
 

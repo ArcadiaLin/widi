@@ -101,19 +101,10 @@ describe("ToolRegistry", () => {
 		expect(result.getTool("read")?.source).toEqual(coreSource);
 		expect(result.diagnostics).toContainEqual(
 			expect.objectContaining({
+				severity: "warning",
 				code: "tool.define_conflict",
-				domain: "tool",
-				toolName: "read",
-				source: { kind: "extension", id: "ext" },
-				targetSource: {
-					kind: "registry",
-					name: "tool:read",
-					key: "core:builtin",
-				},
-				details: expect.objectContaining({
-					toolSource: extensionSource,
-					targetToolSource: coreSource,
-				}),
+				message:
+					"Tool 'read' is defined by both core:builtin and extension:ext; keeping core:builtin.",
 			}),
 		);
 	});
@@ -152,12 +143,9 @@ describe("ToolRegistry", () => {
 		expect(result.tools).toEqual([]);
 		expect(result.diagnostics).toContainEqual(
 			expect.objectContaining({
+				severity: "warning",
 				code: "tool.patch_target_missing",
-				toolName: "write",
-				source: { kind: "extension", id: "ext" },
-				details: expect.objectContaining({
-					toolSource: extensionSource,
-				}),
+				message: "Tool patch from extension:ext targets missing tool 'write'.",
 			}),
 		);
 	});
@@ -177,12 +165,10 @@ describe("ToolRegistry", () => {
 
 		expect(result.diagnostics).toContainEqual(
 			expect.objectContaining({
+				severity: "warning",
 				code: "tool.patch_contract_risk",
-				toolName: "write",
-				source: { kind: "extension", id: "ext" },
-				details: expect.objectContaining({
-					field: "parameters",
-				}),
+				message:
+					"Tool 'write' parameters are patched by extension:ext without an execute or aroundExecute patch; the existing execute implementation may not match the new schema.",
 			}),
 		);
 	});

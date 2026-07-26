@@ -142,7 +142,7 @@ Extension status 是 runtime current state。Registry 按 `(agentId, extensionId
 
 Extension persistent message 是唯一写 session 的 presentation 通道：core 先以 `core:extension_message` custom entry 落 session 拿到 entryId，再发布携带同一 entryId 的 `extension_message_published`，action 返回值也携带它。Consumer 用 entryId 在 live event 与 hydration 之间去重；entry 永不进入 model context。
 
-Extension 作者通过 `reportDiagnostic` 发布已知问题事实。Core 校验 draft，注入 fresh diagnostic id、`domain: "extension"`、source 与 agent/profile/extension attribution，并把 local code 规范化为 `extension.<extensionId>.<code>`。每次调用都是独立事实；相同 code 的重复调用不会跨上报去重。无效 draft 在发布前失败，只产生统一的 `extension.action_failed`。
+Extension 作者通过 `reportDiagnostic` 发布已知问题事实。Core 校验 draft（`severity` 限 `warning | error`），注入 agent/extension attribution，并把 local code 规范化为 `extension.<extensionId>.<code>`。Core 不再注入 fresh per-report id：code、message 与 attribution 完全相同的重复上报在 consumer 侧塌缩为同一 view item。无效 draft 在发布前失败，只产生统一的 `extension.action_failed`。
 
 Harness status 更新遵循事实事件：run/turn 开始进入 `running`；结束、abort 或 settled 回到 `idle`；dispose 解绑 harness/extension、取消 pending request 并进入 `disposed`。
 

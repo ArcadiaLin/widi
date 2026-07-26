@@ -6,7 +6,7 @@ import {
 	AgentProfileRegistry,
 	InMemoryProfileStorageBackend,
 } from "../../src/core/agent-profile.ts";
-import { createOrchestratorDiagnostic } from "../../src/core/diagnostics.ts";
+import type { OrchestratorDiagnostic } from "../../src/core/diagnostics.ts";
 import type {
 	ExtensionCustomEntry,
 	ExtensionFactory,
@@ -28,6 +28,16 @@ import {
 	requireAgentHarness,
 	requireAgentRecord,
 } from "../helpers/orchestrator.ts";
+
+function createAuditTestDiagnostic(agentId: string): OrchestratorDiagnostic {
+	return {
+		severity: "warning",
+		code: "extension.audit_test",
+		message: "Audit diagnostic",
+		agentId,
+		extensionId: "audit-test",
+	};
+}
 
 interface AuditHarnessOptions {
 	readonly capabilities?: AgentProfile["capabilities"];
@@ -251,18 +261,7 @@ describe("audit extension consumer", () => {
 		});
 		await orchestrator.setAgentSessionName(agentId, "Audited session");
 		await orchestrator.recordExtensionDiagnostics(agentId, [
-			createOrchestratorDiagnostic({
-				domain: "extension",
-				severity: "warning",
-				disposition: "reported",
-				code: "extension.audit_test",
-				message: "Audit diagnostic",
-				source: { kind: "extension", id: "audit-test" },
-				agentId,
-				extensionId: "audit-test",
-				phase: "runtime",
-				recoverable: true,
-			}),
+			createAuditTestDiagnostic(agentId),
 		]);
 		await orchestrator.forkAgentSessionFromAgent(agentId);
 
@@ -448,7 +447,7 @@ describe("audit extension consumer", () => {
 					diagnostic: expect.objectContaining({
 						code: "extension.action_failed",
 						extensionId: "audit",
-						details: expect.objectContaining({ action: "requestHuman" }),
+						message: expect.stringContaining("action 'requestHuman' failed"),
 					}),
 				}),
 			]),
@@ -556,7 +555,7 @@ describe("audit extension consumer", () => {
 				diagnostic: expect.objectContaining({
 					code: "extension.handler_failed",
 					extensionId: "broken",
-					details: { eventName: "input" },
+					message: expect.stringContaining("handler 'input' failed"),
 				}),
 			}),
 		);
@@ -590,7 +589,9 @@ describe("audit extension consumer", () => {
 				diagnostic: expect.objectContaining({
 					code: "extension.handler_failed",
 					extensionId: "broken",
-					details: { eventName: "agent_harness_event" },
+					message: expect.stringContaining(
+						"handler 'agent_harness_event' failed",
+					),
 				}),
 			}),
 		);
@@ -608,18 +609,7 @@ describe("audit extension consumer", () => {
 		);
 
 		await orchestrator.recordExtensionDiagnostics(agentId, [
-			createOrchestratorDiagnostic({
-				domain: "extension",
-				severity: "warning",
-				disposition: "reported",
-				code: "extension.audit_test",
-				message: "Audit diagnostic",
-				source: { kind: "extension", id: "audit-test" },
-				agentId,
-				extensionId: "audit-test",
-				phase: "runtime",
-				recoverable: true,
-			}),
+			createAuditTestDiagnostic(agentId),
 		]);
 
 		await expect(
@@ -667,18 +657,7 @@ describe("audit extension consumer", () => {
 		await Promise.all([first, second]);
 
 		await orchestrator.recordExtensionDiagnostics(agentId, [
-			createOrchestratorDiagnostic({
-				domain: "extension",
-				severity: "warning",
-				disposition: "reported",
-				code: "extension.audit_test",
-				message: "Audit diagnostic",
-				source: { kind: "extension", id: "audit-test" },
-				agentId,
-				extensionId: "audit-test",
-				phase: "runtime",
-				recoverable: true,
-			}),
+			createAuditTestDiagnostic(agentId),
 		]);
 
 		await expect(
@@ -707,18 +686,7 @@ describe("audit extension consumer", () => {
 		await orchestrator.disposeAgent(agentId);
 		observed.length = 0;
 		await orchestrator.recordExtensionDiagnostics(agentId, [
-			createOrchestratorDiagnostic({
-				domain: "extension",
-				severity: "warning",
-				disposition: "reported",
-				code: "extension.audit_test",
-				message: "Audit diagnostic",
-				source: { kind: "extension", id: "audit-test" },
-				agentId,
-				extensionId: "audit-test",
-				phase: "runtime",
-				recoverable: true,
-			}),
+			createAuditTestDiagnostic(agentId),
 		]);
 
 		expect(observed).toEqual([]);
@@ -766,7 +734,7 @@ describe("audit extension consumer", () => {
 				diagnostic: expect.objectContaining({
 					code: "extension.handler_failed",
 					extensionId: "broken",
-					details: { eventName: "tool_call" },
+					message: expect.stringContaining("handler 'tool_call' failed"),
 				}),
 			}),
 		);

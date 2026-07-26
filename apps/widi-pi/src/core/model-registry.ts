@@ -57,7 +57,7 @@ import { Compile } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
 import { type AuthStatus, AuthStorage } from "./auth-storage.js";
 import { DEFAULT_MODELSJSON_PATH } from "./constants.js";
-import { type CoreDiagnostic, createDiagnostic } from "./diagnostics.ts";
+import type { CoreDiagnostic } from "./diagnostics.ts";
 import { ConfigValueResolver } from "./resolve-config-value.js";
 
 const PercentileCutoffsSchema = Type.Object({
@@ -749,7 +749,6 @@ export class ModelRegistry {
 					"model.auth_resolution_failed",
 					error instanceof Error ? error.message : String(error),
 					{ provider: model.provider, modelId: model.id },
-					error,
 				),
 			);
 			return false;
@@ -864,12 +863,10 @@ export class ModelRegistry {
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			this.recordModelDiagnostic(
-				createModelRequestDiagnostic(
-					"model.auth_resolution_failed",
-					message,
-					{ provider, modelId },
-					error,
-				),
+				createModelRequestDiagnostic("model.auth_resolution_failed", message, {
+					provider,
+					modelId,
+				}),
 			);
 			return { ok: false, error: message };
 		}
@@ -1948,51 +1945,24 @@ function createModelLoadDiagnostic(
 	message: string,
 	modelsJsonPath: string | undefined,
 ): ModelDiagnostic {
-	return createDiagnostic({
-		domain: "model",
-		code: "model.load_failed",
+	return {
 		severity: "error",
-		disposition: "degraded",
-		recoverable: true,
-		message,
-		source: modelsJsonPath
-			? { kind: "path", path: modelsJsonPath, label: "models.json" }
-			: { kind: "registry", name: "model" },
-		phase: "load",
-		details: {
-			errorMessage: message,
-			modelsJsonPath,
-		},
-	});
+		code: "model.load_failed",
+		message: modelsJsonPath ? `${message} (${modelsJsonPath})` : message,
+	};
 }
 
 function createModelRequestDiagnostic(
 	code: "model.auth_missing" | "model.auth_resolution_failed",
 	message: string,
 	ref: { provider: string; modelId?: string },
-	error?: unknown,
 ): ModelDiagnostic {
-	const normalizedError = error instanceof Error ? error : undefined;
-	return createDiagnostic({
-		domain: "model",
-		code,
+	const target = ref.modelId ? `${ref.provider}/${ref.modelId}` : ref.provider;
+	return {
 		severity: "error",
-		disposition: "blocked",
-		recoverable: true,
-		message,
-		source: {
-			kind: "registry",
-			name: "model",
-			key: ref.modelId ? `${ref.provider}:${ref.modelId}` : ref.provider,
-		},
-		provider: ref.provider,
-		modelId: ref.modelId,
-		phase: "runtime",
-		details: {
-			errorName: normalizedError?.name,
-			errorMessage: normalizedError?.message ?? message,
-		},
-	});
+		code,
+		message: `${target}: ${message}`,
+	};
 }
 
 function createExtensionProviderDroppedDiagnostic(
@@ -2000,18 +1970,12 @@ function createExtensionProviderDroppedDiagnostic(
 	extensionId: string,
 	conflictWith: ExtensionProviderConflict,
 ): ModelDiagnostic {
-	return createDiagnostic({
-		domain: "extension",
-		code: "extension.provider_conflict",
+	return {
 		severity: "warning",
-		disposition: "reported",
-		recoverable: true,
+		code: "extension.provider_conflict",
 		message: `Extension '${extensionId}' provider '${providerName}' conflicts with a ${conflictWith} provider and was dropped on refresh.`,
-		source: { kind: "extension", id: extensionId },
-		phase: "load",
 		extensionId,
-		details: { providerName, conflictWith },
-	});
+	};
 }
 
 /**

@@ -262,12 +262,8 @@ describe("AgentProfileRegistry", () => {
 			systemPrompt: "Project prompt",
 			persist: false,
 		});
-		expect(result.diagnostics).toContainEqual(
-			expect.objectContaining({
-				code: "profile.source_overridden",
-				profileId: "worker",
-			}),
-		);
+		// Whole-profile override no longer emits a diagnostic.
+		expect(result.diagnostics).toEqual([]);
 	});
 
 	it("hard fails duplicate profile ids at the same priority", async () => {

@@ -41,7 +41,6 @@ import { QueuedInputView } from "./components/queued-input.ts";
 import { StatusView } from "./components/status.ts";
 import { WidiEditor } from "./editor.ts";
 import { applyAgentSnapshot, EventProjector } from "./event-projector.ts";
-import { singleLine } from "./format.ts";
 import { HumanRequestMenu } from "./human-request.ts";
 import { createWidiKeybindings } from "./keybindings.ts";
 import {
@@ -260,10 +259,10 @@ export class WidiTuiApplication {
 
 		this.tui.start();
 		this.tui.terminal.setTitle("WIDI");
-		// Routine resolution facts collapse to one startup line; only actual
-		// problems occupy the persistent notice area.
+		// Every startup diagnostic is a warning or error and gets projected;
+		// the routine resolution facts collapse to one synthesized summary line.
 		for (const diagnostic of this.runtime.diagnostics) {
-			if (diagnostic.severity !== "info") this.projectDiagnostic(diagnostic);
+			this.projectDiagnostic(diagnostic);
 		}
 		this.addStartupSummary();
 		this.configurePendingEditor();
@@ -1073,18 +1072,9 @@ export class WidiTuiApplication {
 	}
 
 	private addStartupSummary(): void {
-		// The one-line summary merges the real info-level diagnostics; the
-		// synthetic services line is only a fallback when none were reported.
-		const infoEntries = this.runtime.diagnostics.filter(
-			(diagnostic) => diagnostic.severity === "info",
-		);
+		// The one-line summary is always synthesized from the resolved services.
 		const services = this.runtime.services;
-		const text =
-			infoEntries.length > 0
-				? infoEntries
-						.map((diagnostic) => singleLine(diagnostic.message, 200))
-						.join(" · ")
-				: `${services.defaultProfile.id} · ${services.defaultModel.provider}/${services.defaultModel.modelId} · thinking ${services.defaultThinkingLevel.level}`;
+		const text = `${services.defaultProfile.id} · ${services.defaultModel.provider}/${services.defaultModel.modelId} · thinking ${services.defaultThinkingLevel.level}`;
 		this.state.globalNotices.push({
 			id: "startup:summary",
 			kind: "startup",

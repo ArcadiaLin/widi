@@ -1,14 +1,5 @@
-import type {
-	ExecutionEnv,
-	FileError,
-	FileInfo,
-} from "@earendil-works/pi-agent-core";
-import {
-	type CoreDiagnostic,
-	createDiagnostic,
-	type DiagnosticDisposition,
-	type DiagnosticSeverity,
-} from "../diagnostics.ts";
+import type { ExecutionEnv, FileInfo } from "@earendil-works/pi-agent-core";
+import type { CoreDiagnostic, DiagnosticSeverity } from "../diagnostics.ts";
 import {
 	EXTENSION_API_VERSION,
 	isSupportedExtensionApiVersion,
@@ -206,7 +197,6 @@ export class ExtensionLoader {
 								? `Extension source not found: ${root.path}`
 								: `Failed to inspect extension source ${root.path}: ${infoResult.error.message}`,
 						root,
-						error: infoResult.error,
 					}),
 				);
 				continue;
@@ -322,8 +312,6 @@ export class ExtensionLoader {
 						severity: "warning",
 						message: `Extension '${candidate.id}' from ${entry.entry.entryPath} conflicts with an already registered factory and was skipped.`,
 						extensionId: candidate.id,
-						source: entry.entry.source,
-						details: { candidate },
 					}),
 				);
 				continue;
@@ -341,8 +329,6 @@ export class ExtensionLoader {
 						severity: "error",
 						message: `Failed to load extension '${candidate.id}' from ${entry.entry.entryPath}: ${formatError(error)}`,
 						extensionId: candidate.id,
-						source: entry.entry.source,
-						details: { candidate, errorMessage: formatError(error) },
 					}),
 				);
 				continue;
@@ -356,8 +342,6 @@ export class ExtensionLoader {
 						severity: "error",
 						message: `Extension '${candidate.id}' from ${entry.entry.entryPath} does not default-export a factory function or an { apiVersion, activate } definition.`,
 						extensionId: candidate.id,
-						source: entry.entry.source,
-						details: { candidate },
 					}),
 				);
 				continue;
@@ -383,12 +367,6 @@ export class ExtensionLoader {
 						severity: "error",
 						message: `Extension '${candidate.id}' from ${entry.entry.entryPath} targets extension API version ${resolved.declaredApiVersion}; this runtime supports ${formatSupportedApiVersions()}.`,
 						extensionId: candidate.id,
-						source: entry.entry.source,
-						details: {
-							candidate,
-							declaredApiVersion: resolved.declaredApiVersion,
-							supportedApiVersions: supportedApiVersionsDetail(),
-						},
 					}),
 				);
 				continue;
@@ -439,16 +417,9 @@ export class ExtensionLoader {
 					createExtensionDiagnostic({
 						code: "extension.version_incompatible",
 						severity: "error",
-						disposition: "blocked",
-						phase: "resolve",
 						message: `Extension '${extensionId}' targets extension API version ${incompatible.declaredApiVersion}; this runtime supports ${formatSupportedApiVersions()}.`,
 						extensionId,
 						agentId: options.agentId,
-						profileId: options.profileId,
-						details: {
-							declaredApiVersion: incompatible.declaredApiVersion,
-							supportedApiVersions: supportedApiVersionsDetail(),
-						},
 					}),
 				);
 				continue;
@@ -490,12 +461,9 @@ export class ExtensionLoader {
 					createExtensionDiagnostic({
 						code: "extension.activation_failed",
 						severity: "error",
-						disposition: "blocked",
-						phase: "create",
 						message: `Extension '${extensionId}' activation failed: ${formatError(error)}`,
 						extensionId,
 						agentId: options.agentId,
-						profileId: options.profileId,
 					}),
 				);
 			}
@@ -561,13 +529,6 @@ function formatSupportedApiVersions(): string {
 		: `versions ${MIN_SUPPORTED_EXTENSION_API_VERSION} through ${EXTENSION_API_VERSION}`;
 }
 
-function supportedApiVersionsDetail(): { min: number; max: number } {
-	return {
-		min: MIN_SUPPORTED_EXTENSION_API_VERSION,
-		max: EXTENSION_API_VERSION,
-	};
-}
-
 interface ResolvedExtensionEntry {
 	readonly entryPath: string;
 	readonly source: ExtensionSource;
@@ -620,15 +581,8 @@ async function resolveCandidateEntry(
 			createExtensionLoadDiagnostic({
 				code: "extension.entry_missing",
 				severity: "warning",
-				message: `Extension '${candidate.id}' has no package entry or index file.`,
+				message: `Extension '${candidate.id}' at ${candidate.path} has no package entry or index file.`,
 				extensionId: candidate.id,
-				source: {
-					kind: "file",
-					path: candidate.path,
-					resolvedPath: candidate.path,
-					root: candidate.root,
-				},
-				details: { candidate },
 			}),
 		],
 	};
@@ -658,14 +612,6 @@ async function resolvePackageEntry(
 					severity: "error",
 					message: `Failed to read extension manifest ${packageJsonPath}: ${contentResult.error.message}`,
 					extensionId: candidate.id,
-					source: {
-						kind: "package",
-						path: candidate.path,
-						resolvedPath: packageJsonPath,
-						entryPath: packageJsonPath,
-						root: candidate.root,
-					},
-					details: { candidate, errorMessage: contentResult.error.message },
 				}),
 			],
 		};
@@ -681,14 +627,6 @@ async function resolvePackageEntry(
 					severity: "error",
 					message: `Invalid extension manifest ${packageJsonPath}: ${manifest.reason}`,
 					extensionId: candidate.id,
-					source: {
-						kind: "package",
-						path: candidate.path,
-						resolvedPath: packageJsonPath,
-						entryPath: packageJsonPath,
-						root: candidate.root,
-					},
-					details: { candidate, reason: manifest.reason },
 				}),
 			],
 		};
@@ -710,14 +648,6 @@ async function resolvePackageEntry(
 				severity: "warning",
 				message: `Extension '${candidate.id}' declares multiple entries; only ${firstEntry} will be used.`,
 				extensionId: candidate.id,
-				source: {
-					kind: "package",
-					path: candidate.path,
-					resolvedPath: packageJsonPath,
-					entryPath: resolvePath(candidate.path, firstEntry),
-					root: candidate.root,
-				},
-				details: { candidate, ignoredEntries: extraEntries },
 			}),
 		);
 	}
@@ -731,14 +661,6 @@ async function resolvePackageEntry(
 				severity: "warning",
 				message: `Extension '${candidate.id}' entry does not exist: ${entryPath}`,
 				extensionId: candidate.id,
-				source: {
-					kind: "package",
-					path: candidate.path,
-					resolvedPath: packageJsonPath,
-					entryPath,
-					root: candidate.root,
-				},
-				details: { candidate, entry: firstEntry },
 			}),
 		);
 		return { hasManifest: true, diagnostics };
@@ -966,7 +888,6 @@ async function discoverDirectory(
 					severity: "error",
 					message: `Failed to list extension source ${root.path}: ${listResult.error.message}`,
 					root,
-					error: listResult.error,
 				}),
 			],
 		};
@@ -1058,27 +979,12 @@ function createExtensionDiscoveryDiagnostic(options: {
 	severity: DiagnosticSeverity;
 	message: string;
 	root: ExtensionRoot;
-	error?: FileError;
 }): CoreDiagnostic {
-	return createDiagnostic({
-		domain: "extension",
+	return {
 		code: options.code,
 		severity: options.severity,
-		disposition: options.severity === "error" ? "degraded" : "reported",
-		recoverable: true,
 		message: options.message,
-		source: {
-			kind: "extension",
-			id: basename(options.root.path),
-			path: options.root.path,
-		},
-		phase: "load",
-		details: {
-			root: options.root,
-			errorCode: options.error?.code,
-			errorMessage: options.error?.message,
-		},
-	});
+	};
 }
 
 function createExtensionLoadDiagnostic(options: {
@@ -1093,34 +999,13 @@ function createExtensionLoadDiagnostic(options: {
 	severity: DiagnosticSeverity;
 	message: string;
 	extensionId: string;
-	source: ExtensionSource;
-	details?: Record<string, unknown>;
 }): CoreDiagnostic {
-	const sourcePath =
-		options.source.kind === "file"
-			? options.source.resolvedPath
-			: options.source.kind === "package"
-				? options.source.entryPath
-				: undefined;
-	return createDiagnostic({
-		domain: "extension",
+	return {
 		code: options.code,
 		severity: options.severity,
-		disposition: options.severity === "error" ? "degraded" : "reported",
-		recoverable: true,
 		message: options.message,
-		source: {
-			kind: "extension",
-			id: options.extensionId,
-			path: sourcePath,
-		},
-		phase: "load",
 		extensionId: options.extensionId,
-		details: {
-			...options.details,
-			extensionSource: options.source,
-		},
-	});
+	};
 }
 
 function createMissingFactoryDiagnostic(options: {
@@ -1133,42 +1018,26 @@ function createMissingFactoryDiagnostic(options: {
 	return createExtensionDiagnostic({
 		code: "extension.factory_missing",
 		severity: options.severity,
-		disposition: options.severity === "error" ? "blocked" : "degraded",
-		phase: "resolve",
 		message: `Extension '${options.extensionId}' is requested by profile '${options.profileId}' but no factory is registered.`,
 		extensionId: options.extensionId,
 		agentId: options.agentId,
-		profileId: options.profileId,
 	});
 }
 
 function createExtensionDiagnostic(options: {
 	code: string;
 	severity: DiagnosticSeverity;
-	disposition?: DiagnosticDisposition;
-	phase?: CoreDiagnostic["phase"];
 	message: string;
 	extensionId: string;
 	agentId: string;
-	profileId: string;
-	details?: Record<string, unknown>;
 }): CoreDiagnostic {
-	return createDiagnostic({
-		domain: "extension",
+	return {
 		code: options.code,
 		severity: options.severity,
-		disposition:
-			options.disposition ??
-			(options.severity === "error" ? "degraded" : "reported"),
-		recoverable: true,
 		message: options.message,
-		source: { kind: "extension", id: options.extensionId },
-		phase: options.phase ?? "resolve",
 		agentId: options.agentId,
-		profileId: options.profileId,
 		extensionId: options.extensionId,
-		details: options.details,
-	});
+	};
 }
 
 function formatError(error: unknown): string {

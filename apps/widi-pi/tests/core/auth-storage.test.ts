@@ -385,16 +385,16 @@ describe("AuthStorage", () => {
 		]);
 		expect(storage.getLoadDiagnostic()).toEqual(
 			expect.objectContaining({
-				domain: "auth",
+				severity: "error",
 				code: "auth.load_failed",
-				source: { kind: "registry", name: "auth", key: undefined },
-				phase: "load",
+				message: "auth read failed",
 			}),
 		);
 		expect(storage.drainDiagnostics()).toEqual([
 			expect.objectContaining({
+				severity: "error",
 				code: "auth.load_failed",
-				disposition: "degraded",
+				message: "auth read failed",
 			}),
 		]);
 	});
@@ -412,10 +412,9 @@ describe("AuthStorage", () => {
 
 		expect(storage.drainDiagnostics()).toContainEqual(
 			expect.objectContaining({
-				domain: "auth",
+				severity: "error",
 				code: "auth.persist_failed",
-				provider: "openai",
-				source: { kind: "registry", name: "auth", key: "openai" },
+				message: "openai: auth write failed",
 			}),
 		);
 	});
@@ -455,10 +454,9 @@ describe("AuthStorage", () => {
 		await expect(storage.getApiKey(providerId)).resolves.toBeUndefined();
 		expect(storage.drainDiagnostics()).toContainEqual(
 			expect.objectContaining({
-				domain: "auth",
+				severity: "error",
 				code: "auth.oauth_refresh_failed",
-				provider: providerId,
-				source: { kind: "registry", name: "auth", key: providerId },
+				message: `${providerId}: refresh failed`,
 			}),
 		);
 	});
@@ -485,9 +483,9 @@ describe("AuthStorage", () => {
 		).rejects.toThrow("refresh failed");
 		expect(storage.drainDiagnostics()).toContainEqual(
 			expect.objectContaining({
-				domain: "auth",
+				severity: "error",
 				code: "auth.oauth_refresh_failed",
-				provider: "test",
+				message: "test: refresh failed",
 			}),
 		);
 	});

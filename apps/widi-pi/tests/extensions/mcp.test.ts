@@ -518,7 +518,6 @@ describe("activateMcpExtension", () => {
 		await fake.fireSpawned();
 		expect(fake.diagnostics).toHaveLength(1);
 		expect(fake.diagnostics[0].severity).toBe("warning");
-		expect(fake.diagnostics[0].disposition).toBe("degraded");
 		expect(fake.diagnostics[0].code).toBe("server_connect_failed");
 		expect(fake.diagnostics[0].message).toContain("bad");
 		expect(fake.diagnostics[0].message).toContain("spawn bad-cmd ENOENT");

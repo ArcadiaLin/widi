@@ -448,7 +448,6 @@ function deferDiagnostics(
 		for (const draft of drafts) {
 			void context.actions.reportDiagnostic({
 				severity: "warning",
-				disposition: "degraded",
 				code: draft.code,
 				message: draft.message,
 			});

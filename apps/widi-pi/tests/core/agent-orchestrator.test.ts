@@ -349,7 +349,10 @@ describe("AgentOrchestrator", () => {
 				type: "diagnostic",
 				diagnostic: expect.objectContaining({
 					code: "profile.id_filename_mismatch",
-					profileId: "main",
+					severity: "warning",
+					message: expect.stringContaining(
+						'Profile id "main" does not match filename-derived id "filename-main".',
+					),
 				}),
 			}),
 		);
@@ -662,8 +665,9 @@ describe("AgentOrchestrator", () => {
 		).rejects.toMatchObject({
 			code: "model.thinking_not_supported",
 			diagnostic: expect.objectContaining({
-				provider: defaultModel.provider,
-				modelId: defaultModel.id,
+				severity: "error",
+				message: `Model ${defaultModel.provider}/${defaultModel.id} does not support thinking levels.`,
+				agentId,
 			}),
 		});
 		expect(orchestrator.getAgentThinkingLevel(agentId)).toBe("off");
@@ -674,12 +678,9 @@ describe("AgentOrchestrator", () => {
 		).rejects.toMatchObject({
 			code: "model.thinking_level_not_supported",
 			diagnostic: expect.objectContaining({
-				provider: reasoningModel.provider,
-				modelId: reasoningModel.id,
-				details: {
-					level: "minimal",
-					supportedLevels: ["off", "low", "medium", "high"],
-				},
+				severity: "error",
+				message: `Thinking level minimal is not supported by model ${reasoningModel.provider}/${reasoningModel.id}.`,
+				agentId,
 			}),
 		});
 		expect(orchestrator.getAgentThinkingLevel(agentId)).toBe("off");
@@ -696,7 +697,7 @@ describe("AgentOrchestrator", () => {
 		).rejects.toMatchObject({
 			diagnostic: expect.objectContaining({
 				code: "model.thinking_not_supported",
-				modelId: defaultModel.id,
+				message: `Model ${defaultModel.provider}/${defaultModel.id} does not support thinking levels.`,
 			}),
 		});
 
@@ -1418,8 +1419,10 @@ describe("AgentOrchestrator", () => {
 				type: "diagnostic",
 				diagnostic: expect.objectContaining({
 					code: "extension.handler_failed",
+					severity: "warning",
 					extensionId: "broken",
-					details: { eventName: "input" },
+					agentId,
+					message: expect.stringContaining("handler 'input' failed"),
 				}),
 			}),
 		);
@@ -2019,9 +2022,9 @@ describe("AgentOrchestrator", () => {
 				type: "diagnostic",
 				diagnostic: expect.objectContaining({
 					code: "tool.active_missing",
-					toolName: "ghost",
+					severity: "warning",
 					agentId,
-					profileId: restoredProfile.id,
+					message: expect.stringContaining("'ghost'"),
 				}),
 			}),
 		);
@@ -2084,9 +2087,9 @@ describe("AgentOrchestrator", () => {
 				type: "diagnostic",
 				diagnostic: expect.objectContaining({
 					code: "tool.define_conflict",
-					toolName: "echo",
+					severity: "warning",
 					agentId,
-					profileId: defaultProfile.id,
+					message: expect.stringContaining("Tool 'echo' is defined by both"),
 				}),
 			}),
 		);
@@ -2278,12 +2281,10 @@ describe("AgentOrchestrator", () => {
 				type: "diagnostic",
 				diagnostic: expect.objectContaining({
 					code: "extension.factory_missing",
-					disposition: "degraded",
-					phase: "resolve",
+					severity: "warning",
 					extensionId: "missing",
 					agentId,
-					profileId: extensionProfile.id,
-					source: { kind: "extension", id: "missing" },
+					message: `Extension 'missing' is requested by profile '${extensionProfile.id}' but no factory is registered.`,
 				}),
 			}),
 		);
@@ -2558,17 +2559,11 @@ describe("AgentOrchestrator", () => {
 		};
 		const published = await actions.publishMessage(draft);
 		draft.title = "mutated after publish";
-		const details: Record<string, unknown> = {
-			endpoint: "https://policy.internal",
-			attempts: 2,
-		};
 		await actions.reportDiagnostic({
 			severity: "warning",
 			code: "remote_policy_unreachable",
 			message: "Remote policy service is unavailable",
-			details,
 		});
-		details.attempts = 99;
 		await actions.reportDiagnostic({
 			severity: "warning",
 			code: "remote_policy_unreachable",
@@ -2615,26 +2610,17 @@ describe("AgentOrchestrator", () => {
 			.map((event) => event.diagnostic);
 		expect(reported).toEqual([
 			expect.objectContaining({
-				id: "orchestrator-diagnostic-1",
-				domain: "extension",
 				code: "extension.sample.remote_policy_unreachable",
 				severity: "warning",
-				disposition: "reported",
-				source: { kind: "extension", id: "sample" },
+				message: "Remote policy service is unavailable",
 				agentId,
-				profileId: "extension-profile",
 				extensionId: "sample",
-				details: { endpoint: "https://policy.internal", attempts: 2 },
 			}),
 			expect.objectContaining({
-				id: "orchestrator-diagnostic-2",
-				domain: "extension",
 				code: "extension.sample.remote_policy_unreachable",
 				severity: "warning",
-				disposition: "reported",
-				source: { kind: "extension", id: "sample" },
+				message: "Remote policy service is unavailable",
 				agentId,
-				profileId: "extension-profile",
 				extensionId: "sample",
 			}),
 		]);
@@ -2716,7 +2702,7 @@ describe("AgentOrchestrator", () => {
 				(event) =>
 					event.type === "diagnostic" &&
 					event.diagnostic.code === "extension.action_failed" &&
-					event.diagnostic.details?.action === "setStatus",
+					event.diagnostic.message.includes("action 'setStatus'"),
 			),
 		).toHaveLength(invalidCalls.length);
 	});
@@ -2791,7 +2777,7 @@ describe("AgentOrchestrator", () => {
 				(event) =>
 					event.type === "diagnostic" &&
 					event.diagnostic.code === "extension.action_failed" &&
-					event.diagnostic.details?.action === "publishMessage",
+					event.diagnostic.message.includes("action 'publishMessage'"),
 			),
 		).toHaveLength(invalidCalls.length);
 	});
@@ -2822,20 +2808,11 @@ describe("AgentOrchestrator", () => {
 		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
 		if (!runner) throw new Error("Expected extension runner.");
 		const actions = runner.createContext("sample").actions;
-		const circular: Record<string, unknown> = {};
-		circular.self = circular;
 
 		const invalidCalls = [
 			() =>
 				actions.reportDiagnostic({
 					severity: "fatal" as "error",
-					code: "bad",
-					message: "Report",
-				}),
-			() =>
-				actions.reportDiagnostic({
-					severity: "warning",
-					disposition: "blocked" as "reported",
 					code: "bad",
 					message: "Report",
 				}),
@@ -2869,20 +2846,6 @@ describe("AgentOrchestrator", () => {
 					code: "bad",
 					message: "é".repeat(2_049),
 				}),
-			() =>
-				actions.reportDiagnostic({
-					severity: "warning",
-					code: "bad",
-					message: "Report",
-					details: circular,
-				}),
-			() =>
-				actions.reportDiagnostic({
-					severity: "warning",
-					code: "bad",
-					message: "Report",
-					details: { blob: "a".repeat(16_400) },
-				}),
 		];
 		for (const invalidCall of invalidCalls) {
 			await expect(invalidCall()).rejects.toThrow();
@@ -2900,7 +2863,7 @@ describe("AgentOrchestrator", () => {
 				(event) =>
 					event.type === "diagnostic" &&
 					event.diagnostic.code === "extension.action_failed" &&
-					event.diagnostic.details?.action === "reportDiagnostic",
+					event.diagnostic.message.includes("action 'reportDiagnostic'"),
 			),
 		).toHaveLength(invalidCalls.length);
 	});
@@ -2949,11 +2912,9 @@ describe("AgentOrchestrator", () => {
 			extensionDiagnostics: [
 				expect.objectContaining({
 					code: "extension.activation_failed",
-					disposition: "blocked",
-					phase: "create",
+					severity: "error",
 					extensionId: "broken",
 					agentId,
-					profileId: extensionProfile.id,
 				}),
 			],
 		});
@@ -2962,9 +2923,11 @@ describe("AgentOrchestrator", () => {
 				type: "diagnostic",
 				diagnostic: expect.objectContaining({
 					code: "extension.activation_failed",
-					disposition: "blocked",
-					phase: "create",
-					source: { kind: "extension", id: "broken" },
+					severity: "error",
+					extensionId: "broken",
+					message: expect.stringContaining(
+						"Extension 'broken' activation failed",
+					),
 				}),
 			}),
 		);
@@ -3398,14 +3361,11 @@ describe("AgentOrchestrator", () => {
 			expect.objectContaining({
 				type: "diagnostic",
 				diagnostic: expect.objectContaining({
-					domain: "extension",
 					code: "extension.factory_missing",
-					disposition: "degraded",
-					phase: "resolve",
+					severity: "warning",
 					extensionId: "missing",
 					agentId,
-					profileId: extensionProfile.id,
-					source: { kind: "extension", id: "missing" },
+					message: `Extension 'missing' is requested by profile '${extensionProfile.id}' but no factory is registered.`,
 				}),
 			}),
 		);
@@ -3569,13 +3529,12 @@ describe("AgentOrchestrator", () => {
 				type: "diagnostic",
 				diagnostic: expect.objectContaining({
 					code: "extension.handler_failed",
-					disposition: "degraded",
-					phase: "runtime",
+					severity: "warning",
 					extensionId: "broken",
 					agentId,
-					profileId: extensionProfile.id,
-					source: { kind: "extension", id: "broken" },
-					details: { eventName: "agent_harness_event" },
+					message: expect.stringContaining(
+						"handler 'agent_harness_event' failed",
+					),
 				}),
 			}),
 		);
@@ -3798,13 +3757,10 @@ describe("AgentOrchestrator", () => {
 				type: "diagnostic",
 				diagnostic: expect.objectContaining({
 					code: "extension.handler_failed",
-					disposition: "degraded",
-					phase: "runtime",
+					severity: "warning",
 					extensionId: "broken",
 					agentId,
-					profileId: extensionProfile.id,
-					source: { kind: "extension", id: "broken" },
-					details: { eventName: "context" },
+					message: expect.stringContaining("handler 'context' failed"),
 				}),
 			}),
 		);
@@ -3814,7 +3770,7 @@ describe("AgentOrchestrator", () => {
 				diagnostic: expect.objectContaining({
 					code: "extension.handler_failed",
 					extensionId: "broken",
-					details: { eventName: "tool_call" },
+					message: expect.stringContaining("handler 'tool_call' failed"),
 				}),
 			}),
 		);
@@ -3970,13 +3926,10 @@ describe("AgentOrchestrator", () => {
 				type: "diagnostic",
 				diagnostic: expect.objectContaining({
 					code: "extension.custom_entry_append_failed",
-					disposition: "degraded",
-					phase: "runtime",
+					severity: "warning",
 					extensionId: "stateful",
 					agentId,
-					profileId: extensionProfile.id,
-					source: { kind: "extension", id: "stateful" },
-					details: expect.objectContaining({ action: "appendEntry" }),
+					message: expect.stringContaining("action 'appendEntry' failed"),
 				}),
 			}),
 		);
@@ -3986,7 +3939,9 @@ describe("AgentOrchestrator", () => {
 				diagnostic: expect.objectContaining({
 					code: "extension.handler_failed",
 					extensionId: "stateful",
-					details: { eventName: "agent_harness_event" },
+					message: expect.stringContaining(
+						"handler 'agent_harness_event' failed",
+					),
 				}),
 			}),
 		);
@@ -4150,7 +4105,7 @@ describe("AgentOrchestrator", () => {
 					code: "extension.action_failed",
 					extensionId: "sample",
 					agentId,
-					details: expect.objectContaining({ action: "setModel" }),
+					message: expect.stringContaining("action 'setModel' failed"),
 				}),
 			}),
 		);
@@ -4239,7 +4194,7 @@ describe("AgentOrchestrator", () => {
 					code: "extension.action_failed",
 					extensionId: "sample",
 					agentId,
-					details: expect.objectContaining({ action: "compact" }),
+					message: expect.stringContaining("action 'compact' failed"),
 				}),
 			}),
 		);
@@ -4333,7 +4288,7 @@ describe("AgentOrchestrator", () => {
 				diagnostic: expect.objectContaining({
 					code: "extension.action_failed",
 					extensionId: "sample",
-					details: expect.objectContaining({ action: "requestHuman" }),
+					message: expect.stringContaining("action 'requestHuman' failed"),
 				}),
 			}),
 		);
@@ -4715,7 +4670,7 @@ describe("AgentOrchestrator", () => {
 				diagnostic: expect.objectContaining({
 					code: "extension.action_failed",
 					extensionId: "sample",
-					details: expect.objectContaining({ action: "exec" }),
+					message: expect.stringContaining("action 'exec' failed"),
 				}),
 			}),
 		);

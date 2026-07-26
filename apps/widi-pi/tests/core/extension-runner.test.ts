@@ -424,7 +424,7 @@ describe("ExtensionRunner scoped diagnostic actions", () => {
 					agentId: string,
 					extensionId: string,
 					draft: {
-						severity: "info" | "warning" | "error";
+						severity: "warning" | "error";
 						code: string;
 						message: string;
 					},
@@ -436,9 +436,9 @@ describe("ExtensionRunner scoped diagnostic actions", () => {
 		);
 
 		await runner.createContext("sample").actions.reportDiagnostic({
-			severity: "info",
-			code: "scan.finished",
-			message: "Scan finished",
+			severity: "error",
+			code: "scan.failed",
+			message: "Scan failed",
 		});
 		await runner.createContext("sample").actions.reportDiagnostic({
 			severity: "warning",
@@ -450,7 +450,7 @@ describe("ExtensionRunner scoped diagnostic actions", () => {
 			[
 				"agent",
 				"sample",
-				{ severity: "info", code: "scan.finished", message: "Scan finished" },
+				{ severity: "error", code: "scan.failed", message: "Scan failed" },
 			],
 			[
 				"agent",
@@ -539,9 +539,10 @@ describe("ExtensionRunner interceptors", () => {
 		});
 		expect(run.diagnostics).toEqual([
 			expect.objectContaining({
+				severity: "warning",
 				code: "extension.handler_failed",
 				extensionId: "broken",
-				details: { eventName: "before_agent_start" },
+				message: expect.stringContaining("handler 'before_agent_start' failed"),
 			}),
 		]);
 	});
@@ -666,7 +667,7 @@ describe("ExtensionRunner interceptors", () => {
 		expect(run.diagnostics).toEqual([
 			expect.objectContaining({
 				extensionId: "broken",
-				details: { eventName: "tool_result" },
+				message: expect.stringContaining("handler 'tool_result' failed"),
 			}),
 		]);
 	});
@@ -806,7 +807,7 @@ describe("ExtensionRunner interceptors", () => {
 				expect.objectContaining({
 					code: "extension.handler_failed",
 					extensionId: "broken",
-					details: { eventName: "input" },
+					message: expect.stringContaining("handler 'input' failed"),
 				}),
 			],
 		});
@@ -874,7 +875,7 @@ describe("ExtensionRunner interceptors", () => {
 			expect.objectContaining({
 				code: "extension.handler_failed",
 				extensionId: "broken",
-				details: { eventName: "tool_call" },
+				message: expect.stringContaining("handler 'tool_call' failed"),
 			}),
 		]);
 	});
@@ -959,7 +960,9 @@ describe("ExtensionRunner before_provider_request pipeline", () => {
 			expect.objectContaining({
 				code: "extension.handler_failed",
 				extensionId: "broken",
-				details: { eventName: "before_provider_request" },
+				message: expect.stringContaining(
+					"handler 'before_provider_request' failed",
+				),
 			}),
 		]);
 	});

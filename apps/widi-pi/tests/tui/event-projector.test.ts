@@ -362,12 +362,8 @@ describe("EventProjector", () => {
 		projector.apply({
 			type: "diagnostic",
 			diagnostic: {
-				id: "diag-1",
-				domain: "extension",
-				code: "extension.failed",
 				severity: "error",
-				disposition: "degraded",
-				recoverable: true,
+				code: "extension.failed",
 				message: "Worker failed",
 				agentId: "worker",
 			},
@@ -384,7 +380,7 @@ describe("EventProjector", () => {
 			},
 			{
 				type: "diagnostic",
-				id: "diag-1",
+				id: "diagnostic:extension.failed:worker::Worker failed",
 			},
 		]);
 		expect(state.humanRequests).toEqual([]);
@@ -531,12 +527,8 @@ describe("EventProjector", () => {
 		projector.apply({
 			type: "diagnostic",
 			diagnostic: {
-				id: "warn-1",
-				domain: "extension",
-				code: "extension.degraded",
 				severity: "warning",
-				disposition: "degraded",
-				recoverable: true,
+				code: "extension.degraded",
 				message: "Still degraded",
 				agentId: "worker",
 			},
@@ -573,12 +565,8 @@ describe("EventProjector", () => {
 		projector.apply({
 			type: "diagnostic",
 			diagnostic: {
-				id: "warning-1",
-				domain: "extension",
-				code: "extension.warning",
 				severity: "warning",
-				disposition: "degraded",
-				recoverable: true,
+				code: "extension.warning",
 				message: "Still degraded",
 				agentId: "worker",
 			},

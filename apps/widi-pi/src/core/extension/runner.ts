@@ -8,7 +8,7 @@ import type {
 	ToolResultPatch,
 } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
-import { type CoreDiagnostic, createDiagnostic } from "../diagnostics.ts";
+import type { CoreDiagnostic } from "../diagnostics.ts";
 import type { ToolRegistry } from "../tool-registry.ts";
 import type {
 	ExtensionIdentity,
@@ -811,22 +811,13 @@ export class ExtensionRunner {
 		},
 		error: unknown,
 	): CoreDiagnostic {
-		return createDiagnostic({
-			domain: "extension",
+		return {
 			code: "extension.handler_failed",
 			severity: "warning",
-			disposition: "degraded",
-			recoverable: true,
 			message: `Extension '${registration.extensionId}' handler '${registration.eventName}' failed: ${formatError(error)}`,
-			source: { kind: "extension", id: registration.extensionId },
-			phase: "runtime",
 			agentId: this.agentId,
-			profileId: this.profileId,
 			extensionId: registration.extensionId,
-			details: {
-				eventName: registration.eventName,
-			},
-		});
+		};
 	}
 }
 

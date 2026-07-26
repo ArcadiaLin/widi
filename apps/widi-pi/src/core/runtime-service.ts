@@ -26,11 +26,7 @@ import {
 	DEFAULT_AGENT_PERSISTENCE_DIR,
 	DEFAULT_MODELSJSON_PATH,
 } from "./constants.js";
-import {
-	type CoreDiagnostic,
-	createDiagnostic,
-	OrchestratorError,
-} from "./diagnostics.ts";
+import { type CoreDiagnostic, OrchestratorError } from "./diagnostics.ts";
 import {
 	type ExtensionDiscoveryResult,
 	type ExtensionLoadAvailableResult,
@@ -175,15 +171,11 @@ class CompositeProfileStorageBackend implements ProfileStorageBackend {
 		if (!backend) {
 			return {
 				ok: false,
-				diagnostic: createDiagnostic({
-					domain: "profile",
-					code: "profile.read_failed",
+				diagnostic: {
 					severity: "error",
-					disposition: "degraded",
-					recoverable: true,
+					code: "profile.read_failed",
 					message: `Unknown profile storage entry: ${entryId}`,
-					phase: "load",
-				}),
+				},
 			};
 		}
 		return await backend.readEntry(entryId);
@@ -362,20 +354,11 @@ async function resolveDefaultProfileId(options: {
 				: "builtin_fallback";
 	const result = await options.profileRegistry.resolveProfile(profileId);
 	if (!result.ok) {
-		throw new OrchestratorError(
-			createDiagnostic({
-				domain: "profile",
-				code: "profile.default_resolution_failed",
-				severity: "error",
-				disposition: "blocked",
-				recoverable: true,
-				message: `Cannot resolve default profile ${profileId}: ${result.reason}.`,
-				source: { kind: "profile", id: profileId },
-				phase: "resolve",
-				profileId,
-				details: { defaultSource: source },
-			}),
-		);
+		throw new OrchestratorError({
+			severity: "error",
+			code: "profile.default_resolution_failed",
+			message: `Cannot resolve default profile ${profileId}: ${result.reason}.`,
+		});
 	}
 	const resolution: RuntimeDefaultProfileResolution = {
 		id: result.profile.id,
@@ -384,31 +367,8 @@ async function resolveDefaultProfileId(options: {
 	};
 	return {
 		resolution,
-		diagnostics: [
-			...result.diagnostics,
-			createDefaultProfileResolvedDiagnostic(resolution),
-		],
+		diagnostics: result.diagnostics,
 	};
-}
-
-function createDefaultProfileResolvedDiagnostic(
-	resolution: RuntimeDefaultProfileResolution,
-): CoreDiagnostic {
-	return createDiagnostic({
-		domain: "profile",
-		code: "profile.default_resolved",
-		severity: "info",
-		disposition: "reported",
-		recoverable: true,
-		message: `Default profile resolved to ${resolution.id} from ${resolution.source}.`,
-		source: { kind: "profile", id: resolution.id },
-		phase: "resolve",
-		profileId: resolution.id,
-		details: {
-			defaultSource: resolution.source,
-			profileSource: resolution.profileSource,
-		},
-	});
 }
 
 async function resolveDefaultModel(options: {
@@ -418,7 +378,6 @@ async function resolveDefaultModel(options: {
 }): Promise<{
 	readonly model: RuntimeModel;
 	readonly resolution: RuntimeDefaultModelResolution;
-	readonly diagnostic: CoreDiagnostic;
 }> {
 	if (options.explicitDefaultModel) {
 		const resolution: RuntimeDefaultModelResolution = {
@@ -429,7 +388,6 @@ async function resolveDefaultModel(options: {
 		return {
 			model: options.explicitDefaultModel,
 			resolution,
-			diagnostic: createDefaultModelResolvedDiagnostic(resolution),
 		};
 	}
 
@@ -446,28 +404,13 @@ async function resolveDefaultModel(options: {
 			return {
 				model,
 				resolution,
-				diagnostic: createDefaultModelResolvedDiagnostic(resolution),
 			};
 		}
-		throw new OrchestratorError(
-			createDiagnostic({
-				domain: "model",
-				code: "model.default_unavailable",
-				severity: "error",
-				disposition: "blocked",
-				recoverable: true,
-				message: `Default model is unavailable: ${defaultProvider}/${defaultModelId}.`,
-				source: {
-					kind: "registry",
-					name: "model",
-					key: `${defaultProvider}/${defaultModelId}`,
-				},
-				phase: "resolve",
-				provider: defaultProvider,
-				modelId: defaultModelId,
-				details: { defaultSource: "settings" },
-			}),
-		);
+		throw new OrchestratorError({
+			severity: "error",
+			code: "model.default_unavailable",
+			message: `Default model is unavailable: ${defaultProvider}/${defaultModelId}.`,
+		});
 	}
 
 	const [availableModel] = await options.modelRegistry.getAvailable();
@@ -480,44 +423,14 @@ async function resolveDefaultModel(options: {
 		return {
 			model: availableModel,
 			resolution,
-			diagnostic: createDefaultModelResolvedDiagnostic(resolution),
 		};
 	}
 
-	throw new OrchestratorError(
-		createDiagnostic({
-			domain: "model",
-			code: "model.default_missing",
-			severity: "error",
-			disposition: "blocked",
-			recoverable: true,
-			message:
-				"No configured model is available. Configure auth or pass an explicit default model.",
-			source: { kind: "registry", name: "model" },
-			phase: "resolve",
-		}),
-	);
-}
-
-function createDefaultModelResolvedDiagnostic(
-	resolution: RuntimeDefaultModelResolution,
-): CoreDiagnostic {
-	return createDiagnostic({
-		domain: "model",
-		code: "model.default_resolved",
-		severity: "info",
-		disposition: "reported",
-		recoverable: true,
-		message: `Default model resolved to ${resolution.provider}/${resolution.modelId} from ${resolution.source}.`,
-		source: {
-			kind: "registry",
-			name: "model",
-			key: `${resolution.provider}/${resolution.modelId}`,
-		},
-		phase: "resolve",
-		provider: resolution.provider,
-		modelId: resolution.modelId,
-		details: { defaultSource: resolution.source },
+	throw new OrchestratorError({
+		severity: "error",
+		code: "model.default_missing",
+		message:
+			"No configured model is available. Configure auth or pass an explicit default model.",
 	});
 }
 
@@ -529,7 +442,6 @@ function resolveDefaultThinkingLevel(options: {
 	readonly settingsDefaultThinkingLevel?: ThinkingLevel;
 }): {
 	readonly resolution: RuntimeDefaultThinkingLevelResolution;
-	readonly diagnostic: CoreDiagnostic;
 } {
 	const requestedLevel =
 		options.explicitDefaultThinkingLevel ??
@@ -553,29 +465,7 @@ function resolveDefaultThinkingLevel(options: {
 	};
 	return {
 		resolution,
-		diagnostic: createDefaultThinkingLevelResolvedDiagnostic(resolution),
 	};
-}
-
-function createDefaultThinkingLevelResolvedDiagnostic(
-	resolution: RuntimeDefaultThinkingLevelResolution,
-): CoreDiagnostic {
-	return createDiagnostic({
-		domain: "model",
-		code: "model.default_thinking_level_resolved",
-		severity: "info",
-		disposition: "reported",
-		recoverable: true,
-		message: `Default thinking level resolved to ${resolution.level} from ${resolution.source}.`,
-		source: { kind: "registry", name: "model", key: "thinkingLevel" },
-		phase: "resolve",
-		details: {
-			defaultSource: resolution.source,
-			level: resolution.level,
-			requestedLevel: resolution.requestedLevel,
-			clamped: resolution.clamped,
-		},
-	});
 }
 
 export async function createWidiRuntime(
@@ -795,8 +685,6 @@ export async function createWidiRuntime(
 		...authStorage.drainDiagnostics(),
 		...modelRegistry.drainDiagnostics(),
 		...defaultProfile.diagnostics,
-		defaultModel.diagnostic,
-		defaultThinkingLevel.diagnostic,
 		...projectExtensionTrustDiagnostics,
 		...extensionLoad.diagnostics,
 	];

@@ -23,7 +23,7 @@ Project `.widi/extensions` discovery 受 project trust gate；settings/agent-dir
 - callback context、scoped actions、session custom entry。
 - `ExtensionStatus`、`ExtensionStatusProgress`、`ExtensionStatusSnapshot`。
 - `ExtensionMessage`、`ExtensionMessageKind`。
-- `ExtensionDiagnosticDraft`、`ExtensionDiagnosticDisposition`。
+- `ExtensionDiagnosticDraft`。
 - 由作者签名使用的 diagnostic、human request、tool snapshot 与 runtime model facts。
 
 Pi typed hook events/results、raw `AgentHarnessEvent`、`ImageContent`、`ThinkingLevel`、`ShellExecOptions`、`Result`/`ExecutionError` 和 TypeBox schema 按引用属于契约面。它们发生破坏性变更时，WIDI extension API 同样需要 bump。
@@ -41,7 +41,7 @@ const extension: ExtensionDefinition = {
 export default extension;
 ```
 
-裸 factory 视为面向当前版本，适合与 runtime 同仓演进。不兼容版本在 load/registration 阶段被拒绝；引用它的 agent 收到 `extension.version_incompatible`（error、blocked），不受 missing severity 调节。
+裸 factory 视为面向当前版本，适合与 runtime 同仓演进。不兼容版本在 load/registration 阶段被拒绝；引用它的 agent 收到 `extension.version_incompatible`（severity `error`，构成阻断性 load diagnostic），不受 missing severity 调节。
 
 ## Activation API
 
@@ -114,7 +114,7 @@ Callback context 绑定 extension 自己的 agent；作者 API 中不出现可�
 - `notify(text)`：发布一次 own-agent、带 extension attribution 的 info-only transient notice。事件携带 core 生成的 `presentationId`；consumer 决定显示位置和寿命。它没有 severity、code、dedupe、clear 或 attention 语义，问题事实必须使用 `reportDiagnostic`。Text 必须非空白且不超过 4 KiB（UTF-8 字节）。
 - `setStatus(key, status)` / `clearStatus(key)`：维护 own-agent、own-extension 的 keyed runtime current state。`status` 至少含非空 `text`，可选 `progress: { completed, total? }`；进度值必须是非负整数，且存在 `total` 时 `completed <= total`。
 - `publishMessage(message)`：发布可恢复的展示内容。core 先把 core-owned `core:extension_message` custom entry 写入 session，再发布 `extension_message_published`；entry id 同时出现在 action 返回值 `{ entryId }`、canonical event 与持久 entry 上，consumer 用它在 hydration 与 live event 之间去重。`kind` 限于 `text | markdown | code`；`title` 可选、非空白且不超过 4 KiB，`content` 非空且不超过 64 KiB（UTF-8 字节）。Message 永不进入 model context。
-- `reportDiagnostic(draft)`：把作者事实交给既有 diagnostic 管线。domain、source、`agentId`、`extensionId` 由 core 注入，local `code` 规范化为 `extension.<extensionId>.<code>`；`disposition` 限于 `reported | degraded`（缺省 `reported`），作者不能自称 `blocked`。每次上报生成新的 core id，是独立事实，不做跨上报 dedupe；持续性问题应由 attention 表达，而不是轮询式重报。Local code 只能包含字母、数字、`.`、`_`、`-`，不超过 128 UTF-8 bytes；`message` 非空白且不超过 4 KiB，`details` JSON 序列化后不超过 16 KiB。上报产生的 diagnostic 不回灌任何 extension observer。
+- `reportDiagnostic(draft)`：把作者事实交给既有 diagnostic 管线。draft 只有 `severity`（`warning | error`）、`code` 与 `message`；`agentId`、`extensionId` 由 core 注入，local `code` 规范化为 `extension.<extensionId>.<code>`。Core 不再注入 fresh per-report id：code、message 与 attribution 完全相同的重复上报在 consumer 侧塌缩为同一 view item，而不是保持为独立条目；持续性问题应由 attention 表达，而不是轮询式重报。Local code 只能包含字母、数字、`.`、`_`、`-`，不超过 128 UTF-8 bytes；`message` 非空白且不超过 4 KiB。上报产生的 diagnostic 不回灌任何 extension observer。
 - session name、model candidates、model/thinking getters/setters。
 - `exec`；受 project trust 门控。
 

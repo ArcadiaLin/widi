@@ -304,16 +304,13 @@ describe("ModelRegistry", () => {
 		expect(registry.getError()).toContain("Failed to parse models.json");
 		expect(registry.getLoadDiagnostic()).toEqual(
 			expect.objectContaining({
-				domain: "model",
+				severity: "error",
 				code: "model.load_failed",
-				disposition: "degraded",
-				source: {
-					kind: "path",
-					path: ".widi/models.json",
-					label: "models.json",
-				},
-				phase: "load",
+				message: expect.stringContaining("Failed to parse models.json"),
 			}),
+		);
+		expect(registry.getLoadDiagnostic()?.message).toContain(
+			"(.widi/models.json)",
 		);
 		expect(registry.drainDiagnostics()).toContainEqual(
 			expect.objectContaining({ code: "model.load_failed" }),
@@ -330,15 +327,11 @@ describe("ModelRegistry", () => {
 			ok: false,
 			error: 'No API key found for "missing-auth"',
 		});
-		expect(registry.drainDiagnostics()).toContainEqual(
-			expect.objectContaining({
-				domain: "model",
-				code: "model.auth_missing",
-				disposition: "blocked",
-				provider: "missing-auth",
-				modelId: "test-model",
-			}),
-		);
+		expect(registry.drainDiagnostics()).toContainEqual({
+			severity: "error",
+			code: "model.auth_missing",
+			message: 'missing-auth/test-model: No API key found for "missing-auth"',
+		});
 	});
 
 	it("records diagnostics for request auth resolution failures", async () => {
@@ -356,15 +349,12 @@ describe("ModelRegistry", () => {
 			error:
 				'Failed to resolve API key for provider "missing-env" from environment variable: MISSING_MODEL_API_KEY',
 		});
-		expect(registry.drainDiagnostics()).toContainEqual(
-			expect.objectContaining({
-				domain: "model",
-				code: "model.auth_resolution_failed",
-				disposition: "blocked",
-				provider: "missing-env",
-				modelId: "test-model",
-			}),
-		);
+		expect(registry.drainDiagnostics()).toContainEqual({
+			severity: "error",
+			code: "model.auth_resolution_failed",
+			message:
+				'missing-env/test-model: Failed to resolve API key for provider "missing-env" from environment variable: MISSING_MODEL_API_KEY',
+		});
 	});
 });
 
@@ -561,12 +551,12 @@ describe("ModelRegistry extension providers", () => {
 		expect(registry.getExtensionProviderRegistrations()).toEqual([]);
 		expect(registry.find("gateway", "gateway-model")).toBe(undefined);
 		expect(registry.find("gateway", "user-model")).toBeDefined();
-		expect(registry.drainDiagnostics()).toContainEqual(
-			expect.objectContaining({
-				code: "extension.provider_conflict",
-				extensionId: "alpha",
-				details: { providerName: "gateway", conflictWith: "models_json" },
-			}),
-		);
+		expect(registry.drainDiagnostics()).toContainEqual({
+			severity: "warning",
+			code: "extension.provider_conflict",
+			message:
+				"Extension 'alpha' provider 'gateway' conflicts with a models_json provider and was dropped on refresh.",
+			extensionId: "alpha",
+		});
 	});
 });
