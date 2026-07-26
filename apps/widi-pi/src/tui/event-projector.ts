@@ -541,6 +541,11 @@ export class EventProjector {
 						item.message = event.message;
 						item.streaming = false;
 					}
+					const usage = event.message.usage;
+					if (usage) {
+						agent.display.contextTokens =
+							usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+					}
 					agent.currentAssistantId = undefined;
 				}
 				return;

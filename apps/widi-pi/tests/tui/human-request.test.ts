@@ -324,7 +324,7 @@ describe("HumanRequestMenu", () => {
 		expect(focusLog.at(-1)).toBeNull();
 	});
 
-	it("silently withdraws a cancelled provisional input request", async () => {
+	it("keeps a provisional input request in the background and silently withdraws it on cancel", async () => {
 		const { menu, focusLog } = createMenu();
 		const response = menu.request(
 			envelope({
@@ -334,11 +334,15 @@ describe("HumanRequestMenu", () => {
 			}),
 		);
 
-		expect(menu.isOpen).toBe(true);
+		// Provisional requests race another completion path (e.g. the OAuth
+		// callback server), so they must not steal focus: a reflexive Esc would
+		// abort the whole flow.
+		expect(menu.isOpen).toBe(false);
+		expect(menu.pendingCount).toBe(1);
 		menu.cancelRequest("request-1");
 		expect(menu.isOpen).toBe(false);
 		expect(menu.pendingCount).toBe(0);
-		expect(focusLog.at(-1)).toBeNull();
+		expect(focusLog).toHaveLength(0);
 		await expect(response).rejects.toThrow("Human request was aborted.");
 	});
 });

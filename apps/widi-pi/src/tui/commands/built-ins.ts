@@ -82,8 +82,12 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		argumentHint: "[provider]",
 		complete: async ({ orchestrator }) =>
 			orchestrator.listAuthProviderCandidates().providers,
-		execute: async ({ orchestrator, agentId }, argument) =>
-			await orchestrator.loginAuthProvider(argument.trim(), { agentId }),
+		execute: async ({ orchestrator, agentId }, argument) => {
+			const result = await orchestrator.loginAuthProvider(argument.trim(), {
+				agentId,
+			});
+			return `Logged in to ${result.providerName}`;
+		},
 	},
 	{
 		kind: "line",
@@ -93,8 +97,12 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		argumentHint: "[provider]",
 		complete: async ({ orchestrator }) =>
 			(await orchestrator.listAuthCredentialCandidates()).providers,
-		execute: async ({ orchestrator }, argument) =>
-			await orchestrator.logoutAuthProvider(argument.trim()),
+		execute: async ({ orchestrator }, argument) => {
+			const result = await orchestrator.logoutAuthProvider(argument.trim());
+			return result.removed
+				? `Removed the stored credential for ${result.providerId}`
+				: `No stored credential for ${result.providerId}`;
+		},
 	},
 	{
 		kind: "line",
@@ -105,11 +113,13 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		requiresArgument: true,
 		complete: async ({ orchestrator }) =>
 			(await orchestrator.listAvailableModelCandidates()).models,
-		execute: async (context, argument) =>
-			await context.orchestrator.setAgentModelByReference(
+		execute: async (context, argument) => {
+			const model = await context.orchestrator.setAgentModelByReference(
 				requireAgentId(context),
 				argument.trim(),
-			),
+			);
+			return `Switched to ${model.provider}/${model.id}`;
+		},
 	},
 	{
 		kind: "line",

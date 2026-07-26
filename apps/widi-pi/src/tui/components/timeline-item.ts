@@ -66,7 +66,23 @@ export function renderTimelineItem(
 			).render(width);
 		case "assistant-message": {
 			const text = item.text.trim();
+			// A failed run (stopReason "error", e.g. provider timeout after a
+			// model switch) often carries no text at all; without this the
+			// failure is completely invisible in the transcript.
+			const errorMessage =
+				item.message?.stopReason === "error"
+					? item.message.errorMessage
+					: undefined;
 			if (!text) {
+				if (errorMessage) {
+					return new Text(
+						`${colors.error("✕")} ${colors.error(
+							singleLine(errorMessage, 400),
+						)}`,
+						1,
+						0,
+					).render(width);
+				}
 				// A live thinking-status item already shows the indicator; render
 				// nothing here so "Thinking…" never appears twice.
 				if (
@@ -77,12 +93,24 @@ export function renderTimelineItem(
 				}
 				return [];
 			}
-			return new Markdown(
+			const lines = new Markdown(
 				boundedText(text, { maxLines: 200, maxCharacters: 30_000 }),
 				1,
 				0,
 				markdownTheme,
 			).render(width);
+			if (errorMessage) {
+				lines.push(
+					...new Text(
+						`${colors.error("✕")} ${colors.error(
+							singleLine(errorMessage, 400),
+						)}`,
+						1,
+						0,
+					).render(width),
+				);
+			}
+			return lines;
 		}
 		case "thinking-status":
 			return item.status === "thinking"

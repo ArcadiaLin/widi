@@ -208,6 +208,8 @@ export interface QueueState {
 export interface AgentDisplayFacts {
 	model?: RuntimeModel;
 	thinkingLevel?: string;
+	/** Total tokens of the latest assistant turn (input+output+cache), for the footer context readout. */
+	contextTokens?: number;
 	activeToolNames: readonly string[];
 	sessionName?: string;
 	rehydrateRequested: boolean;

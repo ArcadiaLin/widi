@@ -155,7 +155,10 @@ export class WidiTuiApplication {
 		setKeybindings(keybindings);
 		this.tui = new TUI(new ProcessTerminal());
 		this.editor = new WidiEditor(this.tui, editorTheme, {
-			paddingX: 1,
+			// paddingX 4 reserves column 0 for the left vertical border (│),
+			// column 1 as a gap, column 2 for the `>` prompt token, and column 3
+			// as the gap between prompt and content (see WidiEditor.render).
+			paddingX: 4,
 			autocompleteMaxVisible: 8,
 		});
 		this.editor.setArgumentHintProvider((text) => {
@@ -191,7 +194,11 @@ export class WidiTuiApplication {
 		this.tui.addChild(this.humanRequests);
 		this.tui.addChild(this.completionMenu);
 		this.tui.addChild(this.editor);
-		this.tui.addChild(new FooterView(this.state, runtime.services.cwd));
+		this.tui.addChild(
+			new FooterView(this.state, runtime.services.cwd, () => {
+				this.tui.requestRender();
+			}),
+		);
 		this.tui.addChild(
 			new OperationHintView({
 				state: this.state,
@@ -343,16 +350,20 @@ export class WidiTuiApplication {
 						? `Login: open ${event.url} — ${event.instructions}`
 						: `Login: open ${event.url}`,
 					event.agentId,
+					{ pin: true },
 				);
 				break;
 			case "auth_login_code":
 				this.addApplicationNotice(
 					`Login: open ${event.verificationUri} and enter code ${event.userCode}`,
 					event.agentId,
+					{ pin: true },
 				);
 				break;
 			case "auth_login_progress":
-				this.addApplicationNotice(`Login: ${event.message}`, event.agentId);
+				this.addApplicationNotice(`Login: ${event.message}`, event.agentId, {
+					pin: true,
+				});
 				break;
 			case "human_request_timeout":
 			case "human_request_cancelled":
@@ -1083,7 +1094,11 @@ export class WidiTuiApplication {
 		});
 	}
 
-	private addApplicationNotice(text: string, agentId?: string): void {
+	private addApplicationNotice(
+		text: string,
+		agentId?: string,
+		options: { pin?: boolean } = {},
+	): void {
 		const createdAt = new Date().toISOString();
 		if (agentId) {
 			// Agent-scoped operation feedback belongs in that agent's transcript at
@@ -1104,7 +1119,9 @@ export class WidiTuiApplication {
 				createdAt,
 				text,
 			});
-			this.expireNotification(id);
+			// Pinned notices (e.g. OAuth login links) must not vanish while the
+			// user is still completing the flow in a browser.
+			if (!options.pin) this.expireNotification(id);
 		}
 		this.tui.requestRender();
 	}

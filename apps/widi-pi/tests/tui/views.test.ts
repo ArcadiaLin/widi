@@ -19,6 +19,7 @@ import {
 } from "../../src/tui/format.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
 import {
+	type AssistantMessageItem,
 	type CommandResultItem,
 	createTuiApplicationState,
 	ensureAgentProjection,
@@ -416,6 +417,44 @@ describe("TUI views", () => {
 
 		expect(text).toContain("/status");
 		expect(text).toContain('"status": "idle"');
+	});
+
+	it("renders a failed assistant turn with its error message", () => {
+		const item: AssistantMessageItem = {
+			type: "assistant-message",
+			id: "assistant-1",
+			durability: "durable",
+			createdAt: timestamp(1),
+			text: "",
+			streaming: false,
+			message: {
+				role: "assistant",
+				content: [],
+				api: "openai-completions",
+				provider: "huggingface",
+				model: "moonshotai/Kimi-K2.7-Code",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "error",
+				errorMessage: "Request timed out.",
+				timestamp: Date.parse(timestamp(1)),
+			},
+		};
+		const text = renderTimelineItem(item, 80, {
+			liveThinkingIds: new Set(),
+			toolOutputExpanded: false,
+		})
+			.join("\n")
+			.replace(ANSI_SEQUENCE, "");
+
+		expect(text).toContain("✕");
+		expect(text).toContain("Request timed out.");
 	});
 
 	it("renders a failed command with its error message", () => {
