@@ -305,6 +305,39 @@ describe("AgentOrchestrator.sendMessage", () => {
 			}),
 		).rejects.toBeInstanceOf(MessageError);
 	});
+
+	// `disposeAgent` cancels the target's queue and sweeps its outstanding work
+	// up front, but only commits the `disposed` status after a teardown full of
+	// awaits. Anything accepted in between would be work nobody sweeps again.
+	it("stops accepting messages as soon as dispose starts, before the status commits", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const targetAgentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, targetAgentId);
+		const teardown =
+			createDeferred<Awaited<ReturnType<typeof harness.abort>>>();
+		vi.spyOn(harness, "abort").mockReturnValue(teardown.promise);
+		const prompt = vi
+			.spyOn(harness, "prompt")
+			.mockResolvedValue({} as AssistantMessage);
+
+		const disposing = orchestrator.disposeAgent(targetAgentId);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(orchestrator.getAgentStatus(targetAgentId)).toBe("idle");
+
+		await expect(
+			orchestrator.sendMessage({
+				source: { kind: "agent", agentId: "agent-peer" },
+				targetAgentId,
+				body: "landed mid-teardown",
+				mode: "next_turn",
+			}),
+		).rejects.toBeInstanceOf(MessageError);
+		expect(prompt).not.toHaveBeenCalled();
+
+		teardown.resolve({ clearedSteer: [], clearedFollowUp: [] });
+		await disposing;
+		expect(orchestrator.getAgentStatus(targetAgentId)).toBe("disposed");
+	});
 });
 
 describe("AgentOrchestrator message interception", () => {

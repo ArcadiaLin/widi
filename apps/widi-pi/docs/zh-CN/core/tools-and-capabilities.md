@@ -71,6 +71,30 @@ Active tools 的 `promptSnippet` 与 `promptGuidelines` 进入唯一 system prom
 
 Interaction 组与 coding 组分开注册（`registerCoreInteractionTools`），profile 可以独立授予 filesystem/shell 与 human interaction。
 
+## Core built-in agent collaboration tools
+
+| Tool | 职责 |
+| --- | --- |
+| `list_agent_profiles` | 列出可用于 `spawn_agent` 的 enabled profile |
+| `list_agents` | 列出存活 agent 及其 profile、status 与是否可寻址 |
+| `spawn_agent` | 从 profile 创建 agent，可选同时分派第一个任务 |
+| `send_message` | 给某个 agent 送一段文字，可标注为分派任务或完成任务 |
+| `dispose_agent` | 销毁显式列出的 agent |
+
+工具通过 `ToolExecutionContext.agents`（`ToolAgentHost`，定义在 `core/agent-host.ts`）访问协作能力，拿不到 orchestrator。Host 是 per-agent 闭包，caller 身份由闭包捕获，模型参数无法伪造发送方或结算者——与 `human` 的注入形状一致。
+
+`send_message` 用一个工具覆盖三种模式，因为从模型视角它们是同一个动作：把一段文字交给某个 agent。
+
+- 普通消息：`sendMessage` 按目标当前阶段仲裁投递（idle → prompt、turn → follow_up、maintenance → 暂存），agent 消息永不 steer。工具在目标接收文本后立即返回，不等待回复。
+- `assignTask: true`：在**调用方自己**的 job table 里建一个 `origin.kind === "external"`、`settlerId` 为 worker 的 job，返回的 taskId 就是那个 jobId。校验、建 job 与 `background()` 在同一个同步块内完成，`disposeAgent` 才一定能扫到它。
+- `completeTask: <taskId>`：结算 owner 表里的那个 job。授权在 table 内完成（`settledBy` 必须等于 `origin.settlerId`），第三方得到 `denied`。报告正文就是 job 的 t1，不再额外投递一条普通消息。
+
+因此 task 不是新状态机：taskId 就是 owner 的 jobId，`wait_for_jobs` / `read_job` / `kill_job` 直接可用。`read_job` 对这类 job 只报状态——没有本地执行者往 output 写字节。分派消息投递失败时，owner 会 abort 自己那个 job（它无权 settle 一个 settler 是别人的 job），job 以 cancelled 收尾，工具同时失败。
+
+能力边界只有工具可见性一条，core 不设 agent 数量上限。协作组与其他 core 组一样无条件注册（`registerCoreAgentTools`）。
+
+至少一个协作工具处于 active 时，system prompt 追加一行 `You are agent <id>.`：这是 per-agent 动态值，静态 snippet 表达不了，判定方式沿用 skills 段落的 active-tool 先例。
+
 ## Tool events
 
 Orchestrator 只发布 raw `agent_harness_event`。Tool-call streaming 使用 Pi `message_update.assistantMessageEvent.toolcall_*`；执行使用 `tool_execution_start/update/end`。Core 不维护第二套 preview/state 或 lifecycle event。

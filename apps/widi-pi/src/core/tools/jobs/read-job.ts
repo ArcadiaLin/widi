@@ -21,6 +21,11 @@ export type ReadJobJobStatus =
 			/** Human-readable label for the job (for bash, the command); may be absent. */
 			readonly description?: string;
 			readonly state: "running";
+			/**
+			 * Set when the job is waiting on another agent (a delegated task)
+			 * rather than on a local executor. Such a job never streams output.
+			 */
+			readonly settlerAgentId?: string;
 			/** Epoch ms when the job's tool call began. */
 			readonly startedAt: number;
 			/** Total bytes ever appended to the job's output. */
@@ -105,6 +110,9 @@ export function createReadJobToolDefinition(): ToolDefinition<
 							toolName: job.toolName,
 							description: job.description,
 							state: "running",
+							...(job.origin.kind === "external"
+								? { settlerAgentId: job.origin.settlerId }
+								: undefined),
 							startedAt: job.startedAt,
 							totalBytesSeen: job.output.totalBytesSeen,
 							tailDroppedBytes: job.output.tailDroppedBytes,
@@ -132,8 +140,14 @@ function formatReadSummary(jobs: readonly ReadJobJobStatus[]): string {
 		if (job.state === "unknown") {
 			return `## Job ${job.jobId}: not tracked (already finished, not backgrounded, or never started)`;
 		}
-		const output = job.output ? job.output : "(no output yet)";
 		const label = job.description ? `: ${job.description}` : "";
+		// A job settled by another agent has no local executor writing bytes, so
+		// its tail is empty by construction. Saying so stops the model from
+		// polling a buffer that will never fill.
+		if (job.settlerAgentId !== undefined) {
+			return `## Job ${job.jobId} (${job.toolName})${label}: waiting on agent ${job.settlerAgentId}\nA delegated task produces no live output; its report arrives as this job's result message when that agent finishes.`;
+		}
+		const output = job.output ? job.output : "(no output yet)";
 		const report = formatReportSummary(job.report);
 		const reportText = report ? `\nCurrent report: ${report}` : "";
 		return `## Job ${job.jobId} (${job.toolName})${label}: running${reportText}\nLive output tail:\n${output}`;

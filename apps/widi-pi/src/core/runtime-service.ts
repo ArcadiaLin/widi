@@ -50,6 +50,7 @@ import { ResourceLoader, type ResourceRoot } from "./resource-loader.js";
 import { SessionManager } from "./session-manager.js";
 import { SettingManager } from "./setting-manager.js";
 import { ToolRegistry } from "./tool-registry.ts";
+import { registerCoreAgentTools } from "./tools/agents/builtin.ts";
 import { registerCoreCodingTools } from "./tools/coding/builtin.ts";
 import { registerCoreInteractionTools } from "./tools/interaction/builtin.ts";
 import { registerCoreJobTools } from "./tools/jobs/builtin.ts";
@@ -638,6 +639,7 @@ export async function createWidiRuntime(
 	});
 	registerCoreInteractionTools(toolRegistry);
 	registerCoreJobTools(toolRegistry);
+	registerCoreAgentTools(toolRegistry);
 	const orchestratorConfig: AgentOrchestratorConfigs = {
 		executionEnv,
 		resourceLoader,

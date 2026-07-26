@@ -48,13 +48,23 @@ Profile 的主要职责是声明 agent build 输入：
 
 - `systemPrompt`：进入 harness system prompt composition。
 - `persist`：选择 persistent JSONL 或 in-memory session。
-- `tools`：ToolRegistry 的 requested visibility。
+- `tools`：ToolRegistry 的 requested visibility，也是 agent 协作能力的唯一边界（见下）。
 - `skills` / `promptTemplates`：ResourceLoader 的 roots 与选择范围。
 - `extensions`：per-agent extension dependencies。
 - `missingExtensionSeverity`：只调节 missing declaration，不覆盖 activation/version failure。
 - `commands`：command input 的 enable/deny policy。
 
 解析但没有 runtime consumer 的 policy 字段不应长期保留。
+
+### `tools` 决定协作能力
+
+Profile 没有单独的 collaboration capability 字段。谁能 spawn、分派任务、给别的 agent 发消息、销毁 agent，完全由 `tools` 是否列出对应工具决定：
+
+- `spawn_agent` 是真正的闸门。没有它的 agent 只能与已知 agent 交互。
+- `list_agents` 是发现能力的开关。给了它，agent 可以枚举并寻址全部存活 agent（适合编排者）；不给，它只知道自己 spawn 的结果、任务信封里的 owner 与 taskId、以及别人在消息里告诉它的 agentId（适合 worker）。
+- `send_message` 同时承担普通消息、任务分派与任务完成三种模式，配不出"能聊天但不能分派"的粒度。
+
+因为未写 `tools` 的 profile 会拿到全部已注册工具，**被 spawn 出来的 worker profile 应当显式列出 `tools`**，否则它同样具备完整协作能力。Core 不设 agent 数量上限，也没有第二道兜底：`tools` 就是唯一的闸门。
 
 ## Profile override
 

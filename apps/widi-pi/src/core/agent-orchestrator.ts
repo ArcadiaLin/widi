@@ -26,6 +26,13 @@ import {
 	type OAuthLoginCallbacks,
 } from "@earendil-works/pi-ai";
 import type {
+	AgentBrief,
+	AgentProfileBrief,
+	AgentTaskOutcome,
+	ToolAgentHost,
+} from "./agent-host.ts";
+import { CORE_AGENT_TOOL_NAMES } from "./agent-host.ts";
+import type {
 	AgentProfile,
 	AgentProfileOverride,
 	AgentProfileRegistry,
@@ -43,8 +50,10 @@ import {
 import {
 	type BackgroundJob,
 	type BackgroundJobChange,
+	type BackgroundJobOutcome,
 	type BackgroundJobReportSnapshot,
 	type BackgroundJobSettlement,
+	type BackgroundJobSettleResult,
 	type BackgroundJobSnapshot,
 	ExternalJobDependencyIndex,
 	formatBackgroundJobResultMessageText,
@@ -376,6 +385,13 @@ export class AgentOrchestrator {
 	// A `BackgroundJobTable` is per-agent and cannot see another agent's jobs, so
 	// only the agent registry can answer which jobs a disposed agent still owes.
 	private readonly _externalJobs = new ExternalJobDependencyIndex();
+	// Agents inside `disposeAgent`, which runs a long teardown before it can
+	// commit the `disposed` status. Without this marker the agent still looks
+	// live for that whole window, and work registered against it there - a
+	// message, or a job naming it as settler - would be accepted after the
+	// teardown already swept for exactly that work. Cleared when a record is
+	// registered, because a resumed session reuses its agent id.
+	private readonly _disposingAgents = new Set<AgentId>();
 	private readonly _extensionStatuses = new ExtensionStatusRegistry();
 	private _clients: Map<string, OrchestratorClient<OrchestratorEvent>> =
 		new Map();
@@ -1184,6 +1200,30 @@ export class AgentOrchestrator {
 	}
 
 	/**
+	 * Write the terminal outcome of a job whose settler is not its owner - the
+	 * shape delegated work takes: the job lives in the assigning agent's table
+	 * and the agent doing the work reports the result. Symmetric with
+	 * {@link abortAgentBackgroundJob}: it too only acts on backgrounded jobs and
+	 * returns a result the caller has to handle rather than throwing.
+	 *
+	 * Authorization belongs to the table, not here: `settledBy` must match the
+	 * settler recorded on the job, so anyone else gets `denied` and nothing
+	 * changes.
+	 */
+	settleAgentBackgroundJob(
+		agentId: AgentId,
+		jobId: string,
+		outcome: BackgroundJobOutcome,
+		options: { settledBy: string },
+	): BackgroundJobSettleResult {
+		return this._requireAgentRecord(agentId).backgroundJobTable.settle(
+			jobId,
+			outcome,
+			options,
+		);
+	}
+
+	/**
 	 * The single input arbitration point for every message an agent reads:
 	 * human text, agent-to-agent messages, background job results, and system
 	 * notices. Extension interception, source rendering, per-target ordering,
@@ -1474,6 +1514,11 @@ export class AgentOrchestrator {
 
 	async disposeAgent(agentId: AgentId, reason?: string): Promise<void> {
 		const record = this._requireAgentRecord(agentId);
+		// Stop accepting work for this agent before the sweeps below run. The
+		// `disposed` status is only committed at the end of a teardown full of
+		// awaits, so status alone would keep reporting a live agent long after
+		// its outstanding work was already cancelled.
+		this._disposingAgents.add(agentId);
 
 		// Detach the result router and cancel live background work first, before
 		// the harness is torn down. Otherwise harness.abort() below can drive a
@@ -2081,7 +2126,12 @@ export class AgentOrchestrator {
 			// Callback instead of a string so the skills listing tracks the
 			// harness's current resources and active tools at each turn start.
 			systemPrompt: ({ resources: current, activeTools }) =>
-				buildAgentSystemPrompt(profile.systemPrompt, current, activeTools),
+				buildAgentSystemPrompt(
+					profile.systemPrompt,
+					current,
+					activeTools,
+					agentId,
+				),
 			model: model,
 			thinkingLevel: options.thinkingLevel,
 			activeToolNames: [...agentToolSet.activeToolNames],
@@ -2379,6 +2429,7 @@ export class AgentOrchestrator {
 						source: { kind: "agent", agentId },
 					}),
 			},
+			agents: this._createToolAgentHost(agentId),
 			// The runner is captured for this turn snapshot. Calls that continue
 			// in the background keep this runner and observe its stale boundary
 			// after reload instead of silently switching to the replacement.
@@ -2395,6 +2446,78 @@ export class AgentOrchestrator {
 					},
 				};
 			},
+		};
+	}
+
+	/**
+	 * The collaboration port for one agent's tools. The caller's identity is
+	 * captured here, never taken from tool arguments, so an agent cannot forge
+	 * the sender of a message or the settler of a task. Everything else is read
+	 * straight off private state, which is why the whole feature needs exactly
+	 * one new public method ({@link settleAgentBackgroundJob}).
+	 */
+	private _createToolAgentHost(agentId: AgentId): ToolAgentHost {
+		return {
+			agentId,
+			listProfiles: async () => {
+				const result = await this.profileRegistry.listProfiles();
+				await this._publishDiagnostics(result.diagnostics);
+				return result.profiles
+					.filter((profile) => this._isProfileEnabled(profile.id))
+					.map(
+						(profile): AgentProfileBrief => ({
+							id: profile.id,
+							label: profile.label,
+							description: profile.description,
+							persist: profile.persist,
+						}),
+					);
+			},
+			// A disposed agent is not listed at all, but an unavailable one is:
+			// hiding it reads as "it never existed" and invites the model to keep
+			// looking for it, where the unaddressable marker ends the search.
+			listAgents: () =>
+				Array.from(this._agents.values())
+					.filter((record) => record.status !== "disposed")
+					.map((record) => this._describeAgentForTools(record)),
+			describe: (targetAgentId) => {
+				const record = this._agents.get(targetAgentId);
+				return record ? this._describeAgentForTools(record) : undefined;
+			},
+			spawn: async (profileId) => await this.spawnAgent({ profileId }),
+			send: async (targetAgentId, body) =>
+				await this.sendMessage({
+					source: { kind: "agent", agentId },
+					targetAgentId,
+					body,
+					// Agent messages never preempt a turn already in flight: the
+					// target decides when to read them.
+					mode: "next_turn",
+				}),
+			dispose: async (targetAgentId, reason) => {
+				await this.disposeAgent(targetAgentId, reason);
+			},
+			settleTask: (ownerAgentId, taskId, outcome) => {
+				if (!this._agents.has(ownerAgentId)) return "ignored";
+				return this.settleAgentBackgroundJob(
+					ownerAgentId,
+					taskId,
+					toBackgroundJobOutcome(outcome),
+					{ settledBy: agentId },
+				);
+			},
+		};
+	}
+
+	private _describeAgentForTools(record: AgentRecord): AgentBrief {
+		return {
+			agentId: record.agentId,
+			profileId: record.profile.reference.id,
+			label: record.profile.reference.label,
+			status: record.status,
+			// The same predicate the delivery queue uses, so "addressable" and
+			// "will still be swept by dispose" flip at one instant rather than two.
+			addressable: this._resolveDeliveryPhase(record.agentId) !== "gone",
 		};
 	}
 
@@ -2940,6 +3063,7 @@ export class AgentOrchestrator {
 
 	private async _registerAgentRecord(record: AgentRecord): Promise<void> {
 		const previousStatus = this._agents.get(record.agentId)?.status;
+		this._disposingAgents.delete(record.agentId);
 		this._agents.set(record.agentId, record);
 		await this._commitAgentStatus(record, record.status, previousStatus);
 	}
@@ -3370,6 +3494,9 @@ export class AgentOrchestrator {
 	private _resolveDeliveryPhase(agentId: AgentId): MessageDeliveryPhase {
 		const record = this._agents.get(agentId);
 		if (!record) return "gone";
+		// A message enqueued during teardown must fail now rather than wait for
+		// the status commit: the queue it would sit in has already been cancelled.
+		if (this._disposingAgents.has(agentId)) return "gone";
 		switch (record.status) {
 			case "creating":
 				return "creating";
@@ -3701,6 +3828,25 @@ function isBlockedExtensionDiagnostic(
 }
 
 /**
+ * Project a task report onto a job outcome. The report text always travels in
+ * `result`, including for a failure: the result message formatter reads
+ * `result` first, while the `error` channel would render the worker's
+ * explanation as an exception string. `status` only decides the header and the
+ * snapshot field.
+ */
+function toBackgroundJobOutcome(
+	outcome: AgentTaskOutcome,
+): BackgroundJobOutcome {
+	return {
+		status: outcome.status,
+		result: {
+			content: [{ type: "text", text: outcome.text }],
+			details: undefined,
+		},
+	};
+}
+
+/**
  * Normalize an active-tool selection against the agent's installed tool
  * names: trims entries, drops empty names, duplicates, and unknown names,
  * and reports each dropped entry as a diagnostic.
@@ -3802,13 +3948,26 @@ export function formatToolGuidanceForSystemPrompt(
  * block via pi-agent-core). The skills listing tells the model to read the
  * skill file, so it is only appended when a read tool is active; skills stay
  * reachable through the `<skill:...>` inline command either way.
+ *
+ * The agent's own id is appended on the same principle: it is a per-agent value
+ * a static prompt snippet cannot carry, and it only means anything to an agent
+ * that can address other agents, so it follows the active collaboration tools.
  */
 export function buildAgentSystemPrompt(
 	basePrompt: string,
 	resources: AgentHarnessResources,
 	activeTools: readonly ToolPromptGuidance[],
+	agentId?: AgentId,
 ): string {
 	const sections = [basePrompt];
+	if (
+		agentId !== undefined &&
+		activeTools.some((tool) => CORE_AGENT_TOOL_NAMES.includes(tool.name))
+	) {
+		sections.push(
+			`You are agent ${agentId}. Other agents address you by that id.`,
+		);
+	}
 	const toolGuidance = formatToolGuidanceForSystemPrompt(activeTools);
 	if (toolGuidance !== "") {
 		sections.push(toolGuidance);

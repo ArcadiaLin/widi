@@ -4,6 +4,7 @@ import type {
 	AgentToolUpdateCallback,
 } from "@earendil-works/pi-agent-core";
 import type { TSchema } from "typebox";
+import type { ToolAgentHost } from "./agent-host.ts";
 import {
 	type BackgroundJobTable,
 	createBackgroundJobStartedResult,
@@ -71,6 +72,8 @@ export interface ToolRegistryResolveResult {
 
 export interface ToolAdapterContext {
 	human?: ToolHumanHost;
+	/** Collaboration port bound to the agent this context belongs to. */
+	agents?: ToolAgentHost;
 	createExtensionContext?: (
 		source: ToolSource,
 		toolName: string,
@@ -724,6 +727,7 @@ function createToolExecutionContext(
 			resolvedTool.definition.name,
 		),
 		human: context.human,
+		agents: context.agents,
 		backgroundJobTable: context.backgroundJobTable,
 		job,
 		[bindToolExecutionContextSymbol]: bindContext,
@@ -753,6 +757,7 @@ function restoreInnerToolExecutionContext<TDetails>(
 		onUpdate: context.onUpdate,
 		extension: innerContext.extension,
 		human: context.human,
+		agents: context.agents,
 		backgroundJobTable: context.backgroundJobTable,
 		job: context.job,
 		...(bindContext

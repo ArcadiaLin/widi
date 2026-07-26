@@ -1022,6 +1022,25 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
+	it("names the agent only when it can address other agents", () => {
+		expect(
+			buildAgentSystemPrompt("base prompt", {}, [{ name: "read" }], "worker-2"),
+		).toBe("base prompt");
+		expect(
+			buildAgentSystemPrompt(
+				"base prompt",
+				{},
+				[{ name: "send_message" }],
+				"worker-2",
+			),
+		).toBe(
+			"base prompt\n\nYou are agent worker-2. Other agents address you by that id.",
+		);
+		expect(
+			buildAgentSystemPrompt("base prompt", {}, [{ name: "send_message" }]),
+		).toBe("base prompt");
+	});
+
 	it("keeps the base system prompt when skills are absent or model-hidden", () => {
 		const skill = {
 			name: "code-review",
