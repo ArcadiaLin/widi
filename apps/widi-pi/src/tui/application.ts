@@ -41,7 +41,6 @@ import { QueuedInputView } from "./components/queued-input.ts";
 import { StatusView } from "./components/status.ts";
 import { WidiEditor } from "./editor.ts";
 import { applyAgentSnapshot, EventProjector } from "./event-projector.ts";
-import { singleLine } from "./format.ts";
 import { HumanRequestMenu } from "./human-request.ts";
 import { createWidiKeybindings } from "./keybindings.ts";
 import {
@@ -156,7 +155,10 @@ export class WidiTuiApplication {
 		setKeybindings(keybindings);
 		this.tui = new TUI(new ProcessTerminal());
 		this.editor = new WidiEditor(this.tui, editorTheme, {
-			paddingX: 1,
+			// paddingX 4 reserves column 0 for the left vertical border (│),
+			// column 1 as a gap, column 2 for the `>` prompt token, and column 3
+			// as the gap between prompt and content (see WidiEditor.render).
+			paddingX: 4,
 			autocompleteMaxVisible: 8,
 		});
 		this.editor.setArgumentHintProvider((text) => {
@@ -192,7 +194,11 @@ export class WidiTuiApplication {
 		this.tui.addChild(this.humanRequests);
 		this.tui.addChild(this.completionMenu);
 		this.tui.addChild(this.editor);
-		this.tui.addChild(new FooterView(this.state, runtime.services.cwd));
+		this.tui.addChild(
+			new FooterView(this.state, runtime.services.cwd, () => {
+				this.tui.requestRender();
+			}),
+		);
 		this.tui.addChild(
 			new OperationHintView({
 				state: this.state,
@@ -260,10 +266,10 @@ export class WidiTuiApplication {
 
 		this.tui.start();
 		this.tui.terminal.setTitle("WIDI");
-		// Routine resolution facts collapse to one startup line; only actual
-		// problems occupy the persistent notice area.
+		// Every startup diagnostic is a warning or error and gets projected;
+		// the routine resolution facts collapse to one synthesized summary line.
 		for (const diagnostic of this.runtime.diagnostics) {
-			if (diagnostic.severity !== "info") this.projectDiagnostic(diagnostic);
+			this.projectDiagnostic(diagnostic);
 		}
 		this.addStartupSummary();
 		this.configurePendingEditor();
@@ -344,16 +350,20 @@ export class WidiTuiApplication {
 						? `Login: open ${event.url} — ${event.instructions}`
 						: `Login: open ${event.url}`,
 					event.agentId,
+					{ pin: true },
 				);
 				break;
 			case "auth_login_code":
 				this.addApplicationNotice(
 					`Login: open ${event.verificationUri} and enter code ${event.userCode}`,
 					event.agentId,
+					{ pin: true },
 				);
 				break;
 			case "auth_login_progress":
-				this.addApplicationNotice(`Login: ${event.message}`, event.agentId);
+				this.addApplicationNotice(`Login: ${event.message}`, event.agentId, {
+					pin: true,
+				});
 				break;
 			case "human_request_timeout":
 			case "human_request_cancelled":
@@ -1073,18 +1083,9 @@ export class WidiTuiApplication {
 	}
 
 	private addStartupSummary(): void {
-		// The one-line summary merges the real info-level diagnostics; the
-		// synthetic services line is only a fallback when none were reported.
-		const infoEntries = this.runtime.diagnostics.filter(
-			(diagnostic) => diagnostic.severity === "info",
-		);
+		// The one-line summary is always synthesized from the resolved services.
 		const services = this.runtime.services;
-		const text =
-			infoEntries.length > 0
-				? infoEntries
-						.map((diagnostic) => singleLine(diagnostic.message, 200))
-						.join(" · ")
-				: `${services.defaultProfile.id} · ${services.defaultModel.provider}/${services.defaultModel.modelId} · thinking ${services.defaultThinkingLevel.level}`;
+		const text = `${services.defaultProfile.id} · ${services.defaultModel.provider}/${services.defaultModel.modelId} · thinking ${services.defaultThinkingLevel.level}`;
 		this.state.globalNotices.push({
 			id: "startup:summary",
 			kind: "startup",
@@ -1093,7 +1094,11 @@ export class WidiTuiApplication {
 		});
 	}
 
-	private addApplicationNotice(text: string, agentId?: string): void {
+	private addApplicationNotice(
+		text: string,
+		agentId?: string,
+		options: { pin?: boolean } = {},
+	): void {
 		const createdAt = new Date().toISOString();
 		if (agentId) {
 			// Agent-scoped operation feedback belongs in that agent's transcript at
@@ -1114,7 +1119,9 @@ export class WidiTuiApplication {
 				createdAt,
 				text,
 			});
-			this.expireNotification(id);
+			// Pinned notices (e.g. OAuth login links) must not vanish while the
+			// user is still completing the flow in a browser.
+			if (!options.pin) this.expireNotification(id);
 		}
 		this.tui.requestRender();
 	}

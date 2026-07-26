@@ -4,27 +4,20 @@ Diagnostic 是 core 的一等结构化输出。它记录 profile、dependency、
 
 ## Contract
 
-`CoreDiagnostic` 的关键维度：
+`CoreDiagnostic` 的契约面：
 
-- `domain` / `code`：稳定分类和机器可读原因，例如 `profile.missing`、`tool.requested_missing`。
-- `severity`：`info | warning | error`，描述问题本身。
-- `disposition`：`reported | degraded | blocked`，描述当前 caller/policy 的处理结果。
-- `recoverable`：是否可以修复、重试或继续。
-- `message`：可直接记录/展示的 fallback。
-- `messageTemplate` / `messageParams`：稳定测试或本地化事实。
-- `source` / `targetSource` / `requestedBy` / `related`：path、profile、resource、tool、extension、settings、operation 或 registry provenance。
-- operation context：phase、agent/profile/command/request/resource/tool/extension/provider/model ids。
-- `details`：domain-specific JSON facts。
+- `severity`：`warning | error`，描述问题本身；不存在 info 级 diagnostic。
+- `code`：稳定分类和机器可读原因，例如 `profile.missing`、`tool.requested_missing`。
+- `message`：可直接记录/展示的人类可读文本。
+- `agentId` / `extensionId`（可选）：归属 attribution。
 
-Severity 与 disposition 分离。Error 可以在 optional dependency 场景降级继续；warning 也可以因明确 policy 阻断当前 operation。产生者记录事实，caller policy 决定 disposition。
+severity 加 code 就是整个模型：没有 domain/disposition/recoverable/phase/details 元数据层，也不注入 fresh per-report id。是否阻断由 caller policy 直接判断 severity——例如 extension load diagnostics 中存在 `severity === "error"` 即构成阻断。
 
-## Code 与 source
+## Code 与 message
 
-Code 使用 `domain.problem` namespace，不维护不断膨胀的全局 union。Domain code 应稳定，UI 可以据此分组、过滤、本地化或链接帮助。
+Code 使用 `domain.problem` 风格 namespace，不维护不断膨胀的全局 union。Code 应稳定，是 diagnostic 的机器可读身份；UI 可以据此分组、过滤、本地化或链接帮助。
 
-进入 orchestrator event 或 public result 前，module-local source 必须转换为统一 source shape。不要只在 message 中拼接 path、profile id 或 extension name。
-
-`messageTemplate` 第一版只使用简单 `{name}` placeholder，params 只包含 JSON scalar；复杂复数、条件和格式化归 presentation layer。
+具体 path、profile id 或 extension name 等上下文直接进入 message。不要只在 message 中拼接 attribution：agent/extension 归属使用 `agentId` / `extensionId` 字段。
 
 ## 产生位置
 
@@ -37,9 +30,9 @@ Diagnostic 应由最接近失败事实的 owner 产生：
 - ModelRegistry/AuthStorage/SettingManager：config、credential、request auth 与 persistence。
 - Runtime collaborator：自己拥有的 lifecycle failure，例如 human request timeout/cancel。
 
-Orchestrator 主要承担两件事：补充 agent/profile/operation context，以及通过统一 event boundary 发布。它不应重新实现各 domain 的 diagnostic decision tree，也不应成为所有 message/source construction 的唯一地点。
+Orchestrator 主要承担两件事：补充 agent/extension attribution，以及通过统一 event boundary 发布。它不应重新实现各 domain 的 diagnostic decision tree，也不应成为所有 message construction 的唯一地点。
 
-跨模块重复的 construction、format、dedupe 或 error conversion 可以进入 `core/diagnostics.ts`；只服务单一 domain 的 wrapper 留在 owner module。是否继续拆分由 [Milestones](../TODO.md) 的 diagnostics 收敛目标驱动，不在本机制文档预设文件方案。
+跨模块重复的 construction、format 或 error conversion 可以进入 `core/diagnostics.ts`（当前只有契约、`OrchestratorError` 与 `toDiagnostic`）；只服务单一 domain 的 wrapper 留在 owner module。是否继续拆分由 [Milestones](../TODO.md) 的 diagnostics 收敛目标驱动，不在本机制文档预设文件方案。
 
 ## 主要 domain facts
 
@@ -65,9 +58,8 @@ Pi resource loaders 已有 `SkillDiagnostic` 与 `PromptTemplateDiagnostic`。WI
 
 - Code 加 `resource.skill.*` 或 `resource.prompt_template.*` namespace。
 - Upstream warning 映射为 WIDI warning。
-- Path 转为 resource source。
-- 当前 profile 进入 requestedBy。
-- Orchestrator 在发布前补 agent/profile context。
+- Path 拼入 message。
+- 归属 agent 时附 `agentId`。
 
 ## Orchestrator event boundary
 
@@ -84,9 +76,9 @@ UI/RPC/CLI 不轮询各 registry 的 error queue。统一事件为：
 - Model request：发布 auth resolution diagnostics。
 - Command/human request/runtime action：发布带 operation source 的 failure diagnostic。
 
-Drain 型 source 发布后清空队列；operation result 型 diagnostic 只在当前 operation 发布一次。Orchestrator 在 fanout 前去重。
+Drain 型 source 发布后清空队列；operation result 型 diagnostic 只在当前 operation 发布一次。Core 不做跨发布去重；consumer 按 code、attribution 与 message 生成 view key 去重。
 
-Blocking capability 可以同时 throw `DiagnosticError`/`OrchestratorError` 并发布 diagnostic；throw 是控制流，不替代结构化事实。
+Blocking capability 可以同时 throw `OrchestratorError` 并发布 diagnostic；throw 是控制流，不替代结构化事实。
 
 ## Extension observation
 

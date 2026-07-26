@@ -4,6 +4,7 @@ import {
 	type BackgroundJobReport,
 	BackgroundJobTable,
 	type BackgroundJobTransition,
+	ExternalJobDependencyIndex,
 	formatBackgroundJobResultMessageText,
 	MAX_BACKGROUND_JOB_REPORT_BYTES,
 	snapshotBackgroundJob,
@@ -395,9 +396,9 @@ describe("BackgroundJobTable", () => {
 		const table = new BackgroundJobTable();
 		const job = table.create({ toolCallId: "call-1", toolName: "bash" });
 
-		expect(job.origin).toEqual({ kind: "tool" });
-		expect(snapshotBackgroundJob(job).origin).toEqual({ kind: "tool" });
-		// A tool-origin job is settled by the call it was handed to, so an
+		expect(job.origin).toEqual({ kind: "local" });
+		expect(snapshotBackgroundJob(job).origin).toEqual({ kind: "local" });
+		// A local job is settled by the call it was handed to, so an
 		// authorization argument is meaningless and ignored.
 		table.background(job.id);
 		expect(
@@ -405,12 +406,12 @@ describe("BackgroundJobTable", () => {
 		).toBe("backgrounded");
 	});
 
-	it("accepts a delegated task's outcome only from the worker it was assigned to", () => {
+	it("accepts an external job's outcome only from its named settler", () => {
 		const table = new BackgroundJobTable();
 		const job = table.create({
 			toolCallId: "call-assign",
 			toolName: "assign_agent_task",
-			origin: { kind: "agent_task", workerAgentId: "agent-worker" },
+			origin: { kind: "external", settlerId: "agent-worker" },
 		});
 		table.background(job.id);
 
@@ -435,12 +436,12 @@ describe("BackgroundJobTable", () => {
 	});
 
 	// The origin is the settlement authority, so a caller holding the object it
-	// passed must not be able to reassign the job to a different worker.
+	// passed must not be able to name a different settler afterwards.
 	it("detaches the origin it was given from the caller's object", () => {
 		const table = new BackgroundJobTable();
 		const origin = {
-			kind: "agent_task" as const,
-			workerAgentId: "agent-worker",
+			kind: "external" as const,
+			settlerId: "agent-worker",
 		};
 		const job = table.create({
 			toolCallId: "call-assign",
@@ -450,15 +451,15 @@ describe("BackgroundJobTable", () => {
 		const snapshot = snapshotBackgroundJob(job);
 		table.background(job.id);
 
-		Object.assign(origin, { workerAgentId: "agent-intruder" });
+		Object.assign(origin, { settlerId: "agent-intruder" });
 
 		expect(job.origin).toEqual({
-			kind: "agent_task",
-			workerAgentId: "agent-worker",
+			kind: "external",
+			settlerId: "agent-worker",
 		});
 		expect(snapshot.origin).toEqual({
-			kind: "agent_task",
-			workerAgentId: "agent-worker",
+			kind: "external",
+			settlerId: "agent-worker",
 		});
 		expect(
 			table.settle(
@@ -476,16 +477,16 @@ describe("BackgroundJobTable", () => {
 		).toBe("backgrounded");
 	});
 
-	// Nothing watches a delegated job's signal, so an abort that only fired the
+	// Nothing watches an external job's signal, so an abort that only fired the
 	// signal would leave the job stuck in `aborting` forever.
-	it("completes an aborted delegated task as cancelled by itself", () => {
+	it("completes an aborted external job as cancelled by itself", () => {
 		const table = new BackgroundJobTable();
 		const transitions: BackgroundJobTransition[] = [];
 		table.onChange((change) => transitions.push(change.transition));
 		const job = table.create({
 			toolCallId: "call-assign",
 			toolName: "assign_agent_task",
-			origin: { kind: "agent_task", workerAgentId: "agent-worker" },
+			origin: { kind: "external", settlerId: "agent-worker" },
 		});
 		table.background(job.id);
 
@@ -500,5 +501,81 @@ describe("BackgroundJobTable", () => {
 				{ settledBy: "agent-worker" },
 			),
 		).toBe("ignored");
+	});
+});
+
+describe("ExternalJobDependencyIndex", () => {
+	function externalJob(table: BackgroundJobTable, settlerId: string) {
+		return table.create({
+			toolCallId: `call-${settlerId}`,
+			toolName: "assign_agent_task",
+			origin: { kind: "external", settlerId },
+		});
+	}
+
+	it("ignores jobs that settle locally", () => {
+		const index = new ExternalJobDependencyIndex();
+		const table = new BackgroundJobTable();
+		const job = table.create({ toolCallId: "call-1", toolName: "bash" });
+
+		index.track("owner", job);
+
+		expect(index.takeDependentsOf("owner")).toEqual([]);
+	});
+
+	it("takes every job waiting on a settler exactly once", () => {
+		const index = new ExternalJobDependencyIndex();
+		const owner = new BackgroundJobTable();
+		const other = new BackgroundJobTable();
+		const first = externalJob(owner, "agent-worker");
+		const second = externalJob(other, "agent-worker");
+		const unrelated = externalJob(owner, "agent-other");
+
+		index.track("agent-owner", first);
+		index.track("agent-second-owner", second);
+		index.track("agent-owner", unrelated);
+
+		expect(index.takeDependentsOf("agent-worker")).toEqual([
+			{ ownerId: "agent-owner", jobId: first.id },
+			{ ownerId: "agent-second-owner", jobId: second.id },
+		]);
+		// Taking retires the entries, so a second sweep cannot abort them again.
+		expect(index.takeDependentsOf("agent-worker")).toEqual([]);
+		expect(index.takeDependentsOf("agent-other")).toEqual([
+			{ ownerId: "agent-owner", jobId: unrelated.id },
+		]);
+	});
+
+	it("drops one owner's entry without disturbing another owner's", () => {
+		const index = new ExternalJobDependencyIndex();
+		const table = new BackgroundJobTable();
+		const settled = externalJob(table, "agent-worker");
+		const live = externalJob(table, "agent-worker");
+
+		index.track("agent-owner", settled);
+		index.track("agent-second-owner", live);
+		index.untrack("agent-owner", settled);
+
+		expect(index.takeDependentsOf("agent-worker")).toEqual([
+			{ ownerId: "agent-second-owner", jobId: live.id },
+		]);
+	});
+
+	it("forgets every entry an owner held, whatever it was waiting on", () => {
+		const index = new ExternalJobDependencyIndex();
+		const table = new BackgroundJobTable();
+		const first = externalJob(table, "agent-worker");
+		const second = externalJob(table, "agent-other");
+		const survivor = externalJob(table, "agent-worker");
+
+		index.track("agent-owner", first);
+		index.track("agent-owner", second);
+		index.track("agent-second-owner", survivor);
+		index.forgetOwner("agent-owner");
+
+		expect(index.takeDependentsOf("agent-other")).toEqual([]);
+		expect(index.takeDependentsOf("agent-worker")).toEqual([
+			{ ownerId: "agent-second-owner", jobId: survivor.id },
+		]);
 	});
 });

@@ -23,7 +23,7 @@ Project `.widi/extensions` discovery 受 project trust gate；settings/agent-dir
 - callback context、scoped actions、session custom entry。
 - `ExtensionStatus`、`ExtensionStatusProgress`、`ExtensionStatusSnapshot`。
 - `ExtensionMessage`、`ExtensionMessageKind`。
-- `ExtensionDiagnosticDraft`、`ExtensionDiagnosticDisposition`。
+- `ExtensionDiagnosticDraft`。
 - 由作者签名使用的 diagnostic、human request、tool snapshot 与 runtime model facts。
 
 Pi typed hook events/results、raw `AgentHarnessEvent`、`ImageContent`、`ThinkingLevel`、`ShellExecOptions`、`Result`/`ExecutionError` 和 TypeBox schema 按引用属于契约面。它们发生破坏性变更时，WIDI extension API 同样需要 bump。
@@ -41,7 +41,7 @@ const extension: ExtensionDefinition = {
 export default extension;
 ```
 
-裸 factory 视为面向当前版本，适合与 runtime 同仓演进。不兼容版本在 load/registration 阶段被拒绝；引用它的 agent 收到 `extension.version_incompatible`（error、blocked），不受 missing severity 调节。
+裸 factory 视为面向当前版本，适合与 runtime 同仓演进。不兼容版本在 load/registration 阶段被拒绝；引用它的 agent 收到 `extension.version_incompatible`（severity `error`，构成阻断性 load diagnostic），不受 missing severity 调节。
 
 ## Activation API
 
@@ -83,6 +83,9 @@ Own-agent observers 可以读取：
 - agent-scoped `diagnostic`。
 - `agent_spawned/resumed` 与 session info/fork facts。
 - `input_transformed/blocked`。
+- background job 的三条通道：`agent_background_job_changed`（每个可观测 transition：t0 `backgrounded`、`aborting`、`settled`，携带不可变 snapshot 与 `liveCount`）、`agent_background_job_progress`（增量输出，Base64，按绝对字节偏移）、`agent_background_job_report_updated`（tool 自有的 latest-value 结构化 report）。
+
+三条 job 通道共用同一条 per-agent 串行发射尾，因此顺序有保证，且 `settled` 是 barrier：该 job 最后一份 output 增量与 report 一定排在终态事件之前。Progress 是有损的——增量缓冲溢出时从头部丢弃，`startByte` 会跳过上一次的 `endByte`，`progressDroppedBytes` 随之上升；需要完整字节流的 extension 必须自己按偏移累积，事后无法从 rolling tail 补回。
 
 Observer 按注册顺序串行执行。Handler failure 产生 `extension.handler_failed`，不改变原操作，后续 observer 继续。Global diagnostic/request 不广播给每个 runner；diagnostic observer failure 不递归回灌。
 
@@ -99,7 +102,11 @@ Observer 按注册顺序串行执行。Handler failure 产生 `extension.handler
 | `tool_call` | 第一个 block 短路 | fail-closed，阻断本次调用 |
 | `input` | transform pipeline；第一个 block 短路 | fail-closed，拒绝整条输入 |
 
-`input` 只在 core `promptAgent` 内运行一次。交互层会先解析 line command 或完成 inline expansion；只有 pass/expanded prompt 进入该 hook，line command 执行不进入它。Transform 结果直接继续 model-facing prompt path，不重新解析为命令。Extension 通过 scoped `prompt` 发起的文本也进入 `promptAgent` 和该 hook；`steer` / `followUp` 不走 prompt path。Transform/block 会发布带 extension attribution 的 canonical facts。
+`input` 在 core `sendMessage` 内对**每一条**入站消息运行一次，不只是人类文本：agent 之间的消息、background job 的结果（t1）与 system notice 走同一条管线，因此没有输入路径能绕过 input policy。Event 携带 `source` 与 `targetAgentId`：只想改写人类输入的 handler 必须检查 `source`，否则也会改写模型正在等待的工具结果；`targetAgentId` 是将要读到这条消息的 agent，跨 agent 投递时它不是 handler 自己的 agent。
+
+Block 按来源分级。`human` / `agent` / `system` 的 block 会被执行，调用方收到拒绝结果；`background_job` 的 block 只降级为 `orchestrator.message_block_ignored` 诊断，消息照常投递——模型已经握着该 job 的 t0 handle，静默丢弃会让它永远等下去。
+
+交互层会先解析 line command 或完成 inline expansion；只有 pass/expanded prompt 进入该 hook，line command 执行不进入它。Transform 结果直接继续 model-facing path，不重新解析为命令。Extension 通过 scoped `prompt` 发起的文本进入该 hook；scoped `steer` / `followUp` 是直达 harness 的低层原语，不经过 `sendMessage`，因此也不经过该 hook。Transform/block 会发布带 extension attribution 的 canonical facts。
 
 需要策略门禁时使用 `tool_call` 或 `input`；`before_provider_request` 是 request shaping hook，不承担 fail-closed policy。
 
@@ -109,12 +116,15 @@ Callback context 绑定 extension 自己的 agent；作者 API 中不出现可�
 
 - 查询/修改 visible 与 active tools。
 - `prompt`、`steer`、`followUp`、`abort`、`compact`。
-- `requestHuman`；source 由 runner 注入，受 `canRequestUser` 门控。
+- `listJobs()`：own-agent 当前 live 的 backgrounded job 快照，也就是模型手里握着 t0 handle 的那些。仅限 `backgrounded` 阶段：`running` 阶段的 job 还在 t0 之前的同步窗口内，从未对外可观测。
+- `readJobOutput(jobId)`：live job 的当前 rolling tail；job 结算后返回 `undefined`。它是 pull-only 且有界的（tail 超出上限时从头部丢弃），与 job change event 刻意不携带 output 配套。需要完整输出的 extension 应累积 progress 增量，而不是轮询这里。
+- `killJob(jobId, reason?)`：请求终止一个 live job，`reason` 会记到该 job 的 snapshot 与它最终的 result message 上。返回 `false` 表示没有这样的 live job——列出来的 job 可能在 extension 动手之前就已结算。这是请求而非强杀：local job 只有在其 tool 响应 abort signal 时才真正结束；external job 没有执行者在看 signal，由 table 自身结算为 cancelled。
+- `requestHuman`；source 由 runner 注入。
 - `emitOutput(text)`：向 listeners/clients 追加一条 own-agent、带 extension attribution 的 plain-text output。顺序 `await` 的调用保持顺序；每次调用都是独立 event，不合并、不 replace。事件携带 core 生成的 `presentationId` 作为 consumer 的稳定 view key。
 - `notify(text)`：发布一次 own-agent、带 extension attribution 的 info-only transient notice。事件携带 core 生成的 `presentationId`；consumer 决定显示位置和寿命。它没有 severity、code、dedupe、clear 或 attention 语义，问题事实必须使用 `reportDiagnostic`。Text 必须非空白且不超过 4 KiB（UTF-8 字节）。
 - `setStatus(key, status)` / `clearStatus(key)`：维护 own-agent、own-extension 的 keyed runtime current state。`status` 至少含非空 `text`，可选 `progress: { completed, total? }`；进度值必须是非负整数，且存在 `total` 时 `completed <= total`。
 - `publishMessage(message)`：发布可恢复的展示内容。core 先把 core-owned `core:extension_message` custom entry 写入 session，再发布 `extension_message_published`；entry id 同时出现在 action 返回值 `{ entryId }`、canonical event 与持久 entry 上，consumer 用它在 hydration 与 live event 之间去重。`kind` 限于 `text | markdown | code`；`title` 可选、非空白且不超过 4 KiB，`content` 非空且不超过 64 KiB（UTF-8 字节）。Message 永不进入 model context。
-- `reportDiagnostic(draft)`：把作者事实交给既有 diagnostic 管线。domain、source、`agentId`、`extensionId` 由 core 注入，local `code` 规范化为 `extension.<extensionId>.<code>`；`disposition` 限于 `reported | degraded`（缺省 `reported`），作者不能自称 `blocked`。每次上报生成新的 core id，是独立事实，不做跨上报 dedupe；持续性问题应由 attention 表达，而不是轮询式重报。Local code 只能包含字母、数字、`.`、`_`、`-`，不超过 128 UTF-8 bytes；`message` 非空白且不超过 4 KiB，`details` JSON 序列化后不超过 16 KiB。上报产生的 diagnostic 不回灌任何 extension observer。
+- `reportDiagnostic(draft)`：把作者事实交给既有 diagnostic 管线。draft 只有 `severity`（`warning | error`）、`code` 与 `message`；`agentId`、`extensionId` 由 core 注入，local `code` 规范化为 `extension.<extensionId>.<code>`。Core 不再注入 fresh per-report id：code、message 与 attribution 完全相同的重复上报在 consumer 侧塌缩为同一 view item，而不是保持为独立条目；持续性问题应由 attention 表达，而不是轮询式重报。Local code 只能包含字母、数字、`.`、`_`、`-`，不超过 128 UTF-8 bytes；`message` 非空白且不超过 4 KiB。上报产生的 diagnostic 不回灌任何 extension observer。
 - session name、model candidates、model/thinking getters/setters。
 - `exec`；受 project trust 门控。
 

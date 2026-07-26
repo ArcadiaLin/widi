@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import {
 	type Component,
 	truncateToWidth,
@@ -11,10 +12,12 @@ import { activeAgent } from "./common.ts";
 export class FooterView implements Component {
 	private readonly state: TuiApplicationState;
 	private readonly cwd: string;
+	private readonly git: GitBranchCache;
 
-	constructor(state: TuiApplicationState, cwd: string) {
+	constructor(state: TuiApplicationState, cwd: string, onRefresh?: () => void) {
 		this.state = state;
 		this.cwd = cwd;
+		this.git = new GitBranchCache(cwd, onRefresh ?? (() => {}));
 	}
 
 	invalidate(): void {}
@@ -22,6 +25,8 @@ export class FooterView implements Component {
 	render(width: number): string[] {
 		const agent = activeAgent(this.state);
 		const leftParts = [shortCwd(this.cwd)];
+		const branch = this.git.current();
+		if (branch) leftParts.push(`⎇ ${branch}`);
 		if (agent?.queue.steer.length) {
 			leftParts.push(`${agent.queue.steer.length} steer`);
 		}
@@ -33,11 +38,35 @@ export class FooterView implements Component {
 		const thinkingLevel =
 			agent?.display.thinkingLevel ??
 			(!agent ? this.state.pendingAgent?.display.thinkingLevel : undefined);
-		const right = thinkingLevel
-			? colors.dim(`thinking ${singleLine(thinkingLevel, 40)}`)
-			: "";
+		const rightParts: string[] = [];
+		if (thinkingLevel) {
+			rightParts.push(`thinking ${singleLine(thinkingLevel, 40)}`);
+		}
+		const context = contextReadout(this.state);
+		if (context) rightParts.push(context);
+		const right = colors.dim(rightParts.join(" · "));
 		return [alignSides(left, right, width)];
 	}
+}
+
+/** `context: N% (12.3k/200k)` from the latest assistant-turn usage. */
+function contextReadout(state: TuiApplicationState): string | undefined {
+	const agent = activeAgent(state);
+	if (!agent) return undefined;
+	const tokens = agent.display.contextTokens;
+	const contextWindow =
+		agent.display.model?.contextWindow ?? agent.snapshot?.model.contextWindow;
+	if (tokens === undefined || !contextWindow || contextWindow <= 0) {
+		return undefined;
+	}
+	const percent = Math.round((tokens / contextWindow) * 100);
+	return `context: ${percent}% (${formatTokenCount(tokens)}/${formatTokenCount(contextWindow)})`;
+}
+
+function formatTokenCount(count: number): string {
+	if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
+	if (count >= 1_000) return `${(count / 1_000).toFixed(1)}k`;
+	return String(count);
 }
 
 function alignSides(left: string, right: string, width: number): string {
@@ -62,4 +91,69 @@ function shortCwd(cwd: string): string {
 		return segment.startsWith(".") ? segment.slice(0, 2) : segment.slice(0, 1);
 	});
 	return `${relative.startsWith("/") ? "/" : ""}${abbreviated.join("/")}`;
+}
+
+const GIT_REFRESH_MS = 5_000;
+
+/**
+ * Throttled, non-blocking git branch lookup. `current()` returns the cached
+ * value and kicks off a refresh at most every GIT_REFRESH_MS; when a refresh
+ * resolves to a different branch, onChange fires so the host can re-render.
+ */
+class GitBranchCache {
+	private readonly cwd: string;
+	private readonly onChange: () => void;
+	private branch?: string;
+	private lastRefreshAt = 0;
+	private inFlight = false;
+
+	constructor(cwd: string, onChange: () => void) {
+		this.cwd = cwd;
+		this.onChange = onChange;
+	}
+
+	current(): string | undefined {
+		const now = Date.now();
+		if (!this.inFlight && now - this.lastRefreshAt >= GIT_REFRESH_MS) {
+			this.inFlight = true;
+			this.lastRefreshAt = now;
+			void this.refresh();
+		}
+		return this.branch;
+	}
+
+	private async refresh(): Promise<void> {
+		try {
+			const branch = await queryGitBranch(this.cwd);
+			if (branch !== this.branch) {
+				this.branch = branch;
+				this.onChange();
+			}
+		} finally {
+			this.inFlight = false;
+		}
+	}
+}
+
+function queryGitBranch(cwd: string): Promise<string | undefined> {
+	return new Promise((resolve) => {
+		execFile(
+			"git",
+			["-C", cwd, "branch", "--show-current"],
+			(error, stdout) => {
+				if (!error && stdout.trim()) {
+					resolve(stdout.trim());
+					return;
+				}
+				// Detached HEAD or an unborn branch: fall back to the short commit.
+				execFile(
+					"git",
+					["-C", cwd, "rev-parse", "--short", "HEAD"],
+					(revError, revStdout) => {
+						resolve(revError ? undefined : revStdout.trim() || undefined);
+					},
+				);
+			},
+		);
+	});
 }

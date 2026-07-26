@@ -1,6 +1,6 @@
 import type { ExecutionEnv, FileError } from "@earendil-works/pi-agent-core";
 import { DEFAULT_AGENT_DIR } from "./constants.js";
-import { type CoreDiagnostic, createDiagnostic } from "./diagnostics.ts";
+import type { CoreDiagnostic } from "./diagnostics.ts";
 import type { DefaultProjectTrust } from "./setting-manager.js";
 
 export type ProjectTrustDecision = boolean | null;
@@ -266,19 +266,11 @@ export async function createProjectExtensionTrustDiagnostics(options: {
 	}
 
 	return [
-		createDiagnostic({
-			domain: "extension",
-			code: "extension.project_untrusted",
+		{
 			severity: "warning",
-			disposition: "reported",
-			recoverable: true,
+			code: "extension.project_untrusted",
 			message: `Project extensions were skipped because the project is not trusted: ${path}`,
-			source: { kind: "extension", id: "project", path },
-			phase: "load",
-			details: {
-				root: { kind: "cwd", path },
-			},
-		}),
+		},
 	];
 }
 
@@ -313,17 +305,11 @@ export async function resolveProjectTrust(
 			return {
 				trusted: false,
 				source: "settings_default",
-				diagnostic: createDiagnostic({
-					domain: "settings",
-					code: "project_trust.required",
+				diagnostic: {
 					severity: "warning",
-					disposition: "degraded",
-					recoverable: true,
-					message:
-						"Project-local WIDI resources were not loaded because project trust has not been granted.",
-					source: { kind: "path", path: options.cwd },
-					phase: "load",
-				}),
+					code: "project_trust.required",
+					message: `Project-local WIDI resources were not loaded because project trust has not been granted: ${options.cwd}`,
+				},
 			};
 	}
 }

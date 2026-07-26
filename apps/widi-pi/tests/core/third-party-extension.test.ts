@@ -8,7 +8,6 @@ import {
 import {
 	EXTENSION_API_VERSION,
 	type ExtensionModule,
-	MIN_SUPPORTED_EXTENSION_API_VERSION,
 } from "../../src/core/extension/index.ts";
 import type { OrchestratorEvent } from "../../src/core/types.ts";
 import { createThirdPartyExtension } from "../extensions/third-party-extension.ts";
@@ -102,13 +101,9 @@ describe("third-party extension consumer", () => {
 					code: "extension.version_incompatible",
 					extensionId: "third-party",
 					severity: "error",
-					details: expect.objectContaining({
-						declaredApiVersion: EXTENSION_API_VERSION + 1,
-						supportedApiVersions: {
-							min: MIN_SUPPORTED_EXTENSION_API_VERSION,
-							max: EXTENSION_API_VERSION,
-						},
-					}),
+					message: expect.stringContaining(
+						`targets extension API version ${EXTENSION_API_VERSION + 1}`,
+					),
 				}),
 			}),
 		);

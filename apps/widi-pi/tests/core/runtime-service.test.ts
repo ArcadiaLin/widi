@@ -300,8 +300,9 @@ describe("createWidiRuntime", () => {
 
 		expect(runtime.diagnostics).toContainEqual(
 			expect.objectContaining({
+				severity: "error",
 				code: "settings.load_failed",
-				source: { kind: "settings", scope: "global" },
+				message: expect.stringContaining("global settings:"),
 			}),
 		);
 		expect(runtime.orchestrator.getDefaultProfileId()).toBe("default");
@@ -321,8 +322,9 @@ describe("createWidiRuntime", () => {
 
 		expect(runtime.diagnostics).toContainEqual(
 			expect.objectContaining({
+				severity: "error",
 				code: "settings.load_failed",
-				source: { kind: "settings", scope: "project" },
+				message: expect.stringContaining("project settings:"),
 			}),
 		);
 		expect(runtime.orchestrator.getDefaultProfileId()).toBe("default");
@@ -360,33 +362,6 @@ describe("createWidiRuntime", () => {
 			clamped: true,
 		});
 		expect(runtime.orchestrator.getDefaultThinkingLevel()).toBe("off");
-		expect(runtime.diagnostics).toContainEqual(
-			expect.objectContaining({
-				code: "profile.default_resolved",
-				details: expect.objectContaining({
-					defaultSource: "builtin_fallback",
-				}),
-			}),
-		);
-		expect(runtime.diagnostics).toContainEqual(
-			expect.objectContaining({
-				code: "model.default_resolved",
-				details: expect.objectContaining({
-					defaultSource: "runtime_override",
-				}),
-			}),
-		);
-		expect(runtime.diagnostics).toContainEqual(
-			expect.objectContaining({
-				code: "model.default_thinking_level_resolved",
-				details: expect.objectContaining({
-					defaultSource: "builtin_fallback",
-					level: "off",
-					requestedLevel: "medium",
-					clamped: true,
-				}),
-			}),
-		);
 	});
 
 	it("registers core built-in coding and interaction tools in the tool registry", async () => {
@@ -411,6 +386,11 @@ describe("createWidiRuntime", () => {
 			"wait_for_jobs",
 			"read_job",
 			"kill_job",
+			"list_agent_profiles",
+			"list_agents",
+			"spawn_agent",
+			"send_message",
+			"dispose_agent",
 		]);
 		for (const name of [
 			"read",
@@ -791,12 +771,9 @@ You are extension-profile.`,
 		expect(untrustedRuntime.services.extensionDiscovery.candidates).toEqual([]);
 		expect(untrustedRuntime.diagnostics).toContainEqual(
 			expect.objectContaining({
+				severity: "warning",
 				code: "extension.project_untrusted",
-				source: {
-					kind: "extension",
-					id: "project",
-					path: "/workspace/project/.widi/extensions",
-				},
+				message: `Project extensions were skipped because the project is not trusted: /workspace/project/.widi/extensions`,
 			}),
 		);
 
@@ -898,12 +875,6 @@ You are extension-profile.`,
 			provider: "settings-provider",
 			id: "settings-model",
 		});
-		expect(runtime.diagnostics).toContainEqual(
-			expect.objectContaining({
-				code: "model.default_resolved",
-				details: expect.objectContaining({ defaultSource: "settings" }),
-			}),
-		);
 	});
 
 	it("resolves default thinking level from settings", async () => {
@@ -927,12 +898,6 @@ You are extension-profile.`,
 			clamped: false,
 		});
 		expect(runtime.orchestrator.getDefaultThinkingLevel()).toBe("high");
-		expect(runtime.diagnostics).toContainEqual(
-			expect.objectContaining({
-				code: "model.default_thinking_level_resolved",
-				details: expect.objectContaining({ defaultSource: "settings" }),
-			}),
-		);
 	});
 
 	it("passes default thinking level to newly spawned harnesses", async () => {
@@ -974,14 +939,6 @@ You are extension-profile.`,
 				modelId: "available-model",
 				source: "available_fallback",
 			});
-			expect(runtime.diagnostics).toContainEqual(
-				expect.objectContaining({
-					code: "model.default_resolved",
-					details: expect.objectContaining({
-						defaultSource: "available_fallback",
-					}),
-				}),
-			);
 		} finally {
 			vi.unstubAllEnvs();
 		}
@@ -1010,7 +967,10 @@ You are extension-profile.`,
 		).rejects.toMatchObject({
 			code: "model.default_unavailable",
 			diagnostic: expect.objectContaining({
-				details: expect.objectContaining({ defaultSource: "settings" }),
+				severity: "error",
+				code: "model.default_unavailable",
+				message:
+					"Default model is unavailable: settings-provider/missing-model.",
 			}),
 		});
 	});

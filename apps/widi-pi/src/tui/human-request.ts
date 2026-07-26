@@ -136,9 +136,16 @@ export class HumanRequestMenu implements Component {
 				signal.addEventListener("abort", entry.abortListener, { once: true });
 			}
 			this.entries.push(entry);
+			// Provisional requests (e.g. the OAuth manual-code fallback) race
+			// another completion path. Auto-opening them as a focus-stealing
+			// modal invites a reflexive Esc, which resolves the prompt with
+			// undefined and aborts the whole flow — leaving the user with a
+			// dead authorization link. They stay in the background; the caller
+			// withdraws them when the flow settles.
 			const foreground =
-				request.agentId === undefined ||
-				request.agentId === this.state.activeAgentId;
+				(request.agentId === undefined ||
+					request.agentId === this.state.activeAgentId) &&
+				request.provisional !== true;
 			if (this.opened) {
 				this.host.requestRender();
 			} else if (foreground) {

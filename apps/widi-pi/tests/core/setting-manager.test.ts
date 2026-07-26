@@ -275,14 +275,11 @@ describe("SettingManager", () => {
 			}),
 		]);
 		expect(manager.drainDiagnostics()).toEqual([
-			expect.objectContaining({
-				domain: "settings",
-				code: "settings.load_failed",
+			{
 				severity: "error",
-				disposition: "degraded",
-				source: { kind: "settings", scope: "global" },
-				phase: "load",
-			}),
+				code: "settings.load_failed",
+				message: "global settings: global read failed",
+			},
 		]);
 	});
 
@@ -296,13 +293,9 @@ describe("SettingManager", () => {
 
 		expect(manager.drainDiagnostics()).toContainEqual(
 			expect.objectContaining({
-				domain: "settings",
+				severity: "error",
 				code: "settings.write_failed",
-				source: { kind: "settings", scope: "global" },
-				phase: "runtime",
-				details: expect.objectContaining({
-					errorMessage: "global write failed",
-				}),
+				message: "global settings: global write failed",
 			}),
 		);
 	});

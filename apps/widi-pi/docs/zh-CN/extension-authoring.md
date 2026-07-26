@@ -59,7 +59,7 @@ missing-extension-severity: warning
 每个 `(extension, agent)` 独立 activate。Factory closure 是 per-agent state，module top-level state 跨 agent 共享。
 
 - Missing id 按 profile missing severity 处理。
-- Activation failure 和 version incompatibility 是 blocked dependency failure。
+- Activation failure 和 version incompatibility 是 severity `error` 的 dependency failure，阻断 agent 创建。
 - Reload 替换 runner；旧 context/actions 变成 stale。
 - 不要把 context 或 action handle 缓存到 activation lifecycle 之外。
 
@@ -116,7 +116,7 @@ await context.actions.emitOutput("Building index");
 await context.actions.notify("Report generated in 2.1s");
 ```
 
-Notify 是 info-only、fire-once 的 transient notice。Consumer 决定显示位置和时长；它不进入 timeline、model context 或 session，重启或 resume 后不会恢复。Text 必须非空白且不超过 4 KiB（UTF-8 字节）。它没有 severity、code、dedupe、clear 或 attention：需要展示过程痕迹使用 `emitOutput`，需要 warning/error 或降级事实使用 `reportDiagnostic`。
+Notify 是 info-only、fire-once 的 transient notice。Consumer 决定显示位置和时长；它不进入 timeline、model context 或 session，重启或 resume 后不会恢复。Text 必须非空白且不超过 4 KiB（UTF-8 字节）。它没有 severity、code、dedupe、clear 或 attention：需要展示过程痕迹使用 `emitOutput`，需要 warning/error 问题事实使用 `reportDiagnostic`。
 
 需要可替换的当前状态时使用 `setStatus()`，完成后显式 `clearStatus()`：
 
@@ -147,14 +147,12 @@ Core 先写 `core:extension_message` session entry，再发布 live event；返�
 ```ts
 await context.actions.reportDiagnostic({
   severity: "warning",
-  disposition: "degraded",
   code: "remote_policy_unreachable",
   message: "Remote policy service is unavailable",
-  details: { attempts: 2 },
 });
 ```
 
-Core 注入 agent/extension attribution，并把 code 规范化为 `extension.<extensionId>.<code>`。Local code 只使用字母、数字、`.`、`_`、`-`，最长 128 UTF-8 bytes；message 最长 4 KiB，JSON details 最长 16 KiB。作者只能声明 `reported` 或 `degraded`，不能自称 `blocked`。每次调用生成独立 diagnostic id；不要轮询式重复上报同一持续问题。
+Core 注入 agent/extension attribution，并把 code 规范化为 `extension.<extensionId>.<code>`。Local code 只使用字母、数字、`.`、`_`、`-`，最长 128 UTF-8 bytes；message 非空白、最长 4 KiB。Core 不再为每次上报生成独立 id：code、message 与 attribution 相同的重复上报会塌缩为同一 consumer view item，不要轮询式重复上报同一持续问题。
 
 Extension API 不提供命令注册。Line/inline command 属于 `src/tui/commands/` 的 TUI 命令引擎（CLI 复用）；extension 保留 tool/resource/provider contribution、observer/interceptor 与 scoped actions 等被动能力。未来需要主动入口时，由前端以 `/extension` 一类命令另行设计。
 

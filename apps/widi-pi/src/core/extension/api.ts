@@ -42,7 +42,6 @@ export type {
 	RuntimeModel,
 } from "../types.ts";
 export type {
-	ExtensionDiagnosticDisposition,
 	ExtensionDiagnosticDraft,
 	ExtensionMessage,
 	ExtensionMessageKind,

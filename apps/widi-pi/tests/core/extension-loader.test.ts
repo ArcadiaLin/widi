@@ -17,7 +17,6 @@ import {
 	EXTENSION_API_VERSION,
 	ExtensionLoader,
 	type ExtensionModuleImporter,
-	MIN_SUPPORTED_EXTENSION_API_VERSION,
 } from "../../src/core/extension/index.ts";
 import type { ExtensionFactory } from "../../src/core/extension/types.ts";
 
@@ -413,13 +412,7 @@ describe("ExtensionLoader api version gate", () => {
 				code: "extension.version_incompatible",
 				extensionId: "sample",
 				severity: "error",
-				details: expect.objectContaining({
-					declaredApiVersion: EXTENSION_API_VERSION + 1,
-					supportedApiVersions: {
-						min: MIN_SUPPORTED_EXTENSION_API_VERSION,
-						max: EXTENSION_API_VERSION,
-					},
-				}),
+				message: `Extension 'sample' from /extensions/sample.ts targets extension API version ${EXTENSION_API_VERSION + 1}; this runtime supports version ${EXTENSION_API_VERSION}.`,
 			}),
 		);
 		expect(activated).toBe(false);
@@ -429,7 +422,7 @@ describe("ExtensionLoader api version gate", () => {
 			expect.objectContaining({
 				code: "extension.version_incompatible",
 				extensionId: "sample",
-				disposition: "blocked",
+				severity: "error",
 			}),
 		);
 		expect(scope.diagnostics).not.toContainEqual(

@@ -347,7 +347,7 @@ Timeline item 同时标记其 durability：session message、tool、persistent e
 - `extension_notification` 不进入 timeline；进入 `globalNotices` 时使用 core 生成的 `presentationId` 作为 transient notice key，并保留 agent/extension attribution。
 - persistent extension message 使用 session `entryId`；live event 的 `presentationId` 只标识本次 runtime 发布，不参与 hydration 去重。
 - human-request trace 使用 `requestId`。
-- diagnostic 优先使用 `diagnostic.id`，否则使用现有 diagnostic dedupe facts 生成 view key。
+- diagnostic 使用 code、agent/extension attribution 与 message 生成 view key。
 
 ## 7. Component Tree 与布局
 
@@ -519,7 +519,7 @@ Projector 的输入始终是顶层 `OrchestratorEvent`。遇到 `{ type: "agent_
 | `extension_notification` | 以 `presentationId` 向 `globalNotices` 追加带 agent/extension attribution 的 transient notice | `NoticeView` 显示 neutral/info 单行提示；不进 timeline、不增加 unread/attention |
 | `extension_status_changed` | 按 `(extensionId, key)` replace 或 clear `extensionStatuses`；event 到达时 registry 已是新值 | active status slot / neutral chips 更新；不进 timeline、不增加 unread/attention |
 | `extension_message_published` | 按 `agentId` 追加 durable `PersistentMessageItem`，以 `entryId` 为 view key 与 hydration 去重 | active chat 显示带 extension id 的 message；background agent 只增加 unread |
-| `diagnostic` | 路由到 agent 或 global notices；有 id 时按 id 去重 | severity 对应 attention；extension-reported diagnostic 与其他 diagnostic 使用相同组件 |
+| `diagnostic` | 路由到 agent 或 global notices；按 view key 去重 | severity 对应 attention；extension-reported diagnostic 与其他 diagnostic 使用相同组件 |
 | `human_request_pending` | 建立/更新 request queue 与 attention | completion menu tab 项或待答提示 |
 | `human_request_resolved` | 移除 pending request，按隐私规则追加 ephemeral `HumanRequestTraceItem` | request menu 关闭；timeline 显示 Yes/No、允许显示的 option 或 `Answered` |
 | `human_request_timeout` / `human_request_cancelled` | 移除 pending request，不创建回答留痕 | 关闭对应 menu/attention |
@@ -690,7 +690,7 @@ Trace 使用 `requestId` 去重，只存在于当前 TUI application 生命周�
 
 ### 13.1 展示来源
 
-- `runtime.diagnostics`：startup notice 区。info 级 resolution facts 合并为一行启动摘要（`<profile> · <provider>/<model> · thinking <level>`），只有 warning/error 才逐条常驻顶部。v2 已裁决：摘要必须合并真实的 info 级 diagnostics entries（当前实现从 `runtime.services` 合成并丢弃原始 info entries，属保真修复）；没有 info entries 时才回退合成行。
+- `runtime.diagnostics`：startup notice 区。启动摘要行（`<profile> · <provider>/<model> · thinking <level>`）始终从 `runtime.services` 合成；契约简化后已不存在 info 级 diagnostics，没有需要合并的 info entries。只有 warning/error 逐条常驻顶部。
 - `diagnostic` event with agentId：对应 agent timeline 与 attention。
 - `diagnostic` event without agentId：global notices。
 - `EngineOutcome.failed`：交互层 `CommandError`，更新本地 command result，不生成 core diagnostic item。
@@ -705,9 +705,9 @@ TUI active 期间禁止使用普通 `console.log()` / `console.error()` 输出�
 
 ### 13.2 Dedupe
 
-Diagnostic 优先用 `id` 去重；没有 id 时使用 core 已定义的 code/source/agent/operation correlation facts生成 view key。相同 diagnostic 被 throw、return 和 event 同时观察时只展示一次。
+Diagnostic 以 code、agent/extension attribution 与 message 生成 view key；相同 key 的 diagnostic 被 throw、return 和 event 同时观察时只展示一次。
 
-`reportDiagnostic` 产生的每次上报都有 fresh core id，因此即使 code 相同也表示多个独立事实，TUI 不按 code 合并。它与 load/runtime diagnostic 走同一 `DiagnosticItem` 与 attention 规则。
+`reportDiagnostic` 不再携带 fresh core id；code、message 与 attribution 完全相同的重复上报塌缩为同一 view item，不保持为独立条目。它与 load/runtime diagnostic 走同一 `DiagnosticItem` 与 attention 规则。
 
 ### 13.3 Attention 优先级
 
@@ -788,13 +788,13 @@ Agent selector 内部使用 `tui.select.*`，不重新声明上下键与 Enter�
 
 ### 阶段 1C：Extension Diagnostic 作者入口（core 已完成）
 
-1. 增加 `reportDiagnostic()` scoped action 与作者公开 draft/disposition 类型。
-2. 校验 severity、disposition、local code、message 与 JSON details bounds。
-3. Core 注入 fresh id、extension/agent/profile attribution 与规范化 code。
+1. 增加 `reportDiagnostic()` scoped action 与作者公开 draft 类型。
+2. 校验 severity（`warning | error`）、local code 与 message bounds。
+3. Core 注入 agent/extension attribution 与规范化 code，不再注入 fresh per-report id。
 4. 复用标准 diagnostic event 和 agent extension diagnostics，不建立平行 presentation event。
-5. 锁定每次上报是独立事实、observer no-feedback 与 invalid draft 的 `extension.action_failed` 路径。
+5. 锁定相同 code/message/attribution 的重复上报塌缩为同一 view item、observer no-feedback 与 invalid draft 的 `extension.action_failed` 路径。
 
-完成标准：TUI/CLI/RPC 继续只消费标准 diagnostic；extension 无法伪造 attribution 或 blocked disposition。
+完成标准：TUI/CLI/RPC 继续只消费标准 diagnostic；extension 无法伪造 attribution。
 
 ### 阶段 1D：Extension Notification（core 已完成）
 
@@ -869,7 +869,7 @@ Agent selector 内部使用 `tui.select.*`，不重新声明上下键与 Enter�
 - `extension_status_changed` replace/clear 同一 key，不创建 timeline/unread/attention；active agent status slot 与 neutral chips 更新。
 - 初次接入和 hydration 后使用 `listExtensionStatuses()` 补齐快照，并正确处理 snapshot/live event 竞争。
 - hydration 重建的 `PersistentMessageItem` 与 buffered `extension_message_published` 以 entryId 去重，不产生重复条目。
-- extension-reported diagnostic 使用 fresh id 展示为独立事实，不按相同 code 合并，也不回灌 observer。
+- extension-reported diagnostic 按 view key 去重：code、message 与 attribution 相同的重复上报塌缩为同一 item，也不回灌 observer。
 - resolved human request 按 requestId 生成隐私安全 trace；敏感或 free-input response 只显示 `Answered`。
 - status transition。
 - status/diagnostic/human request 先于 spawn/resume success event 时懒建 provisional projection，后续正确补全。
@@ -946,8 +946,8 @@ Agent selector 内部使用 `tui.select.*`，不重新声明上下键与 Enter�
 - 成功 reload/dispose 清空 status，skipped/failed reload 保留；其他操作不隐式清空。
 - `publishMessage` 先写 `core:extension_message` entry 再 emit；action 返回值、event 与持久 entry 共享同一 entryId。
 - message kind/title/content validation 与 UTF-8 size limits；失败不落 entry、不发 event。
-- `reportDiagnostic` 注入 fresh id、规范化 code 与 agent/profile/extension attribution；重复 code 的多次调用保持为独立事实。
-- diagnostic severity/disposition/code/message/details validation；无效 draft 不发布作者 diagnostic，并走 `extension.action_failed`。
+- `reportDiagnostic` 注入 agent/extension attribution 与规范化 code；code、message 与 attribution 相同的多次调用塌缩为同一 view item。
+- diagnostic severity/code/message validation；无效 draft 不发布作者 diagnostic，并走 `extension.action_failed`。
 - extension-reported diagnostic 发送给 listeners/clients、写入 agent extension diagnostics，但不进入 extension observers。
 - client/event listener failure 仍产生结构化 diagnostic，且不阻断其他 listener/client。
 

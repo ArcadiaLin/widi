@@ -26,6 +26,13 @@ import {
 	type OAuthLoginCallbacks,
 } from "@earendil-works/pi-ai";
 import type {
+	AgentBrief,
+	AgentProfileBrief,
+	AgentTaskOutcome,
+	ToolAgentHost,
+} from "./agent-host.ts";
+import { CORE_AGENT_TOOL_NAMES } from "./agent-host.ts";
+import type {
 	AgentProfile,
 	AgentProfileOverride,
 	AgentProfileRegistry,
@@ -43,20 +50,19 @@ import {
 import {
 	type BackgroundJob,
 	type BackgroundJobChange,
+	type BackgroundJobOutcome,
 	type BackgroundJobReportSnapshot,
 	type BackgroundJobSettlement,
+	type BackgroundJobSettleResult,
 	type BackgroundJobSnapshot,
+	ExternalJobDependencyIndex,
 	formatBackgroundJobResultMessageText,
 	snapshotBackgroundJob,
 } from "./background-job.ts";
 import type { OrchestratorClient } from "./client.ts";
 import {
-	createOrchestratorDiagnostic,
-	dedupeDiagnostics,
 	type OrchestratorDiagnostic,
 	OrchestratorError,
-	toCoreDiagnosticFromPromptTemplateDiagnostic,
-	toCoreDiagnosticFromSkillDiagnostic,
 	toDiagnostic,
 } from "./diagnostics.ts";
 import {
@@ -375,14 +381,17 @@ export class AgentOrchestrator {
 	// own `agent_start`. Accepting a prompt any earlier would report success for
 	// text the harness can still drop while it builds the turn.
 	private _agentRunStartWaiters: Map<AgentId, Set<() => void>> = new Map();
-	// Reverse index for delegated task jobs: worker agent id -> the owner jobs it
-	// owes a result. A `BackgroundJobTable` is per-agent and cannot see another
-	// agent's jobs, so cancelling a disposed worker's tasks has to be resolved
-	// here. Holds no task state - the owner's job remains the only fact.
-	private _taskJobsByWorker: Map<
-		AgentId,
-		Set<{ readonly ownerAgentId: AgentId; readonly jobId: string }>
-	> = new Map();
+	// Jobs waiting on a settler that is not their owner, keyed by that settler.
+	// A `BackgroundJobTable` is per-agent and cannot see another agent's jobs, so
+	// only the agent registry can answer which jobs a disposed agent still owes.
+	private readonly _externalJobs = new ExternalJobDependencyIndex();
+	// Agents inside `disposeAgent`, which runs a long teardown before it can
+	// commit the `disposed` status. Without this marker the agent still looks
+	// live for that whole window, and work registered against it there - a
+	// message, or a job naming it as settler - would be accepted after the
+	// teardown already swept for exactly that work. Cleared when a record is
+	// registered, because a resumed session reuses its agent id.
+	private readonly _disposingAgents = new Set<AgentId>();
 	private readonly _extensionStatuses = new ExtensionStatusRegistry();
 	private _clients: Map<string, OrchestratorClient<OrchestratorEvent>> =
 		new Map();
@@ -390,7 +399,6 @@ export class AgentOrchestrator {
 	private readonly _humanRequests: HumanRequestBroker;
 	private _nextInputId = 1;
 	private _nextPresentationId = 1;
-	private _nextReportedDiagnosticId = 1;
 
 	constructor(config: AgentOrchestratorConfigs) {
 		this.executionEnv = config.executionEnv;
@@ -441,8 +449,8 @@ export class AgentOrchestrator {
 			publishDiagnostic: async (diagnostic) => {
 				await this._publishDiagnostic(diagnostic);
 			},
-			recordAgentLifecycleFailure: async (agentId, code, message, error) => {
-				await this._recordAgentLifecycleFailure(agentId, code, message, error);
+			recordAgentLifecycleFailure: async (agentId, code, message) => {
+				await this._recordAgentLifecycleFailure(agentId, code, message);
 			},
 		});
 	}
@@ -651,17 +659,12 @@ export class AgentOrchestrator {
 	): Promise<RuntimeModel> {
 		const parsed = parseModelReference(reference);
 		if (!parsed) {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					code: "model.reference_invalid",
-					message: `Model reference must use provider/model syntax: ${reference}`,
-					source: { kind: "registry", name: "model", key: reference },
-					agentId,
-					phase: "runtime",
-					recoverable: true,
-				}),
-			);
+			throw new OrchestratorError({
+				severity: "error",
+				code: "model.reference_invalid",
+				message: `Model reference must use provider/model syntax: ${reference}`,
+				agentId,
+			});
 		}
 		const models = await this.modelRegistry.getAvailable();
 		const model = models.find(
@@ -670,23 +673,12 @@ export class AgentOrchestrator {
 				candidate.id === parsed.modelId,
 		);
 		if (!model) {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					code: "model.not_available",
-					message: `Model is not available: ${parsed.provider}/${parsed.modelId}`,
-					source: {
-						kind: "registry",
-						name: "model",
-						key: `${parsed.provider}/${parsed.modelId}`,
-					},
-					agentId,
-					provider: parsed.provider,
-					modelId: parsed.modelId,
-					phase: "runtime",
-					recoverable: true,
-				}),
-			);
+			throw new OrchestratorError({
+				severity: "error",
+				code: "model.not_available",
+				message: `Model is not available: ${parsed.provider}/${parsed.modelId}`,
+				agentId,
+			});
 		}
 		await this.setAgentModel(agentId, model);
 		return model;
@@ -733,19 +725,15 @@ export class AgentOrchestrator {
 			.getOAuthProviders()
 			.find((candidate) => candidate.id === reference);
 		if (!provider) {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					code: "auth.provider_unknown",
-					message: `Unknown auth provider: ${reference || "(none)"}. Available providers: ${authStorage
-						.getOAuthProviders()
-						.map((candidate) => candidate.id)
-						.join(", ")}.`,
-					agentId: options?.agentId,
-					phase: "runtime",
-					recoverable: true,
-				}),
-			);
+			throw new OrchestratorError({
+				severity: "error",
+				code: "auth.provider_unknown",
+				message: `Unknown auth provider: ${reference || "(none)"}. Available providers: ${authStorage
+					.getOAuthProviders()
+					.map((candidate) => candidate.id)
+					.join(", ")}.`,
+				agentId: options?.agentId,
+			});
 		}
 		// Settling the flow withdraws provisional prompts, such as the manual
 		// code input racing a local callback server.
@@ -764,8 +752,6 @@ export class AgentOrchestrator {
 				code: "auth.login_failed",
 				message: `Login to ${provider.name} failed: ${formatError(error)}`,
 				agentId: options?.agentId,
-				phase: "runtime",
-				recoverable: true,
 			});
 			throw new OrchestratorError(diagnostic);
 		} finally {
@@ -781,17 +767,11 @@ export class AgentOrchestrator {
 		try {
 			await this.modelRegistry.refresh();
 		} catch (error) {
-			await this._publishDiagnostic(
-				createOrchestratorDiagnostic({
-					severity: "warning",
-					disposition: "reported",
-					code: "model.load_failed",
-					message: `Model registry refresh after login failed: ${formatError(error)}`,
-					provider: provider.id,
-					phase: "runtime",
-					recoverable: true,
-				}),
-			);
+			await this._publishDiagnostic({
+				severity: "warning",
+				code: "model.load_failed",
+				message: `Model registry refresh after login failed: ${formatError(error)}`,
+			});
 		}
 		return { providerId: provider.id, providerName: provider.name };
 	}
@@ -802,15 +782,11 @@ export class AgentOrchestrator {
 		const authStorage = this.modelRegistry.authStorage;
 		const reference = providerId.trim();
 		if (!reference) {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					code: "auth.provider_unknown",
-					message: "Auth provider reference must not be empty.",
-					phase: "runtime",
-					recoverable: true,
-				}),
-			);
+			throw new OrchestratorError({
+				severity: "error",
+				code: "auth.provider_unknown",
+				message: "Auth provider reference must not be empty.",
+			});
 		}
 		const removed = authStorage.has(reference);
 		await authStorage.logout(reference);
@@ -926,20 +902,12 @@ export class AgentOrchestrator {
 		}
 		const supportedLevels = getSupportedThinkingLevels(record.model);
 		if (!supportedLevels.includes(level)) {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					code: "model.thinking_level_not_supported",
-					message: `Thinking level ${level} is not supported by model ${record.model.provider}/${record.model.id}.`,
-					source: { kind: "registry", name: "model", key: "thinkingLevel" },
-					agentId,
-					provider: record.model.provider,
-					modelId: record.model.id,
-					phase: "runtime",
-					recoverable: true,
-					details: { level, supportedLevels },
-				}),
-			);
+			throw new OrchestratorError({
+				severity: "error",
+				code: "model.thinking_level_not_supported",
+				message: `Thinking level ${level} is not supported by model ${record.model.provider}/${record.model.id}.`,
+				agentId,
+			});
 		}
 		await this._requireAgentHarness(agentId).setThinkingLevel(level);
 	}
@@ -964,15 +932,12 @@ export class AgentOrchestrator {
 		const templates = await this._loadAgentPromptTemplates(agentId);
 		const template = templates.find((candidate) => candidate.name === name);
 		if (!template) {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					code: "prompt_template.not_found",
-					message: `Prompt template not found: ${name}`,
-					agentId,
-					recoverable: true,
-				}),
-			);
+			throw new OrchestratorError({
+				severity: "error",
+				code: "prompt_template.not_found",
+				message: `Prompt template not found: ${name}`,
+				agentId,
+			});
 		}
 		return template;
 	}
@@ -1007,13 +972,12 @@ export class AgentOrchestrator {
 		const loaded = await this.resourceLoader.loadPromptTemplates(
 			profile.promptTemplates,
 		);
-		const diagnostics = loaded.diagnostics.map((diagnostic) =>
-			toCoreDiagnosticFromPromptTemplateDiagnostic(diagnostic, {
-				agentId,
-				profileId: profile.id,
-				phase: "resolve",
-			}),
-		);
+		const diagnostics = loaded.diagnostics.map((diagnostic) => ({
+			severity: "warning" as const,
+			code: `resource.prompt_template.${diagnostic.code}`,
+			message: `${diagnostic.message} (${diagnostic.path})`,
+			agentId,
+		}));
 		return { promptTemplates: loaded.promptTemplates, diagnostics };
 	}
 
@@ -1034,15 +998,12 @@ export class AgentOrchestrator {
 		const skills = await this._loadAgentSkills(agentId);
 		const skill = skills.find((candidate) => candidate.name === name);
 		if (!skill) {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					code: "skill.not_found",
-					message: `Skill not found: ${name}`,
-					agentId,
-					recoverable: true,
-				}),
-			);
+			throw new OrchestratorError({
+				severity: "error",
+				code: "skill.not_found",
+				message: `Skill not found: ${name}`,
+				agentId,
+			});
 		}
 		return skill;
 	}
@@ -1070,13 +1031,12 @@ export class AgentOrchestrator {
 	}> {
 		const { agentId, profile } = options;
 		const loaded = await this.resourceLoader.loadSkills(profile.skills);
-		const diagnostics = loaded.diagnostics.map((diagnostic) =>
-			toCoreDiagnosticFromSkillDiagnostic(diagnostic, {
-				agentId,
-				profileId: profile.id,
-				phase: "resolve",
-			}),
-		);
+		const diagnostics = loaded.diagnostics.map((diagnostic) => ({
+			severity: "warning" as const,
+			code: `resource.skill.${diagnostic.code}`,
+			message: `${diagnostic.message} (${diagnostic.path})`,
+			agentId,
+		}));
 		return { skills: loaded.skills, diagnostics };
 	}
 
@@ -1086,18 +1046,12 @@ export class AgentOrchestrator {
 	): Promise<AgentThinkingLevelResult> {
 		const level = parseThinkingLevel(levelName);
 		if (!level) {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					code: "model.thinking_level_invalid",
-					message: `Invalid thinking level: ${levelName}`,
-					source: { kind: "registry", name: "model", key: "thinkingLevel" },
-					agentId,
-					phase: "runtime",
-					recoverable: true,
-					details: { level: levelName, supportedLevels: THINKING_LEVELS },
-				}),
-			);
+			throw new OrchestratorError({
+				severity: "error",
+				code: "model.thinking_level_invalid",
+				message: `Invalid thinking level: ${levelName}. Supported levels: ${THINKING_LEVELS.join(", ")}.`,
+				agentId,
+			});
 		}
 		await this.setAgentThinkingLevel(agentId, level);
 		return { level };
@@ -1120,17 +1074,12 @@ export class AgentOrchestrator {
 	private _createAgentThinkingNotSupportedDiagnostic(
 		record: AgentRecord,
 	): OrchestratorDiagnostic {
-		return createOrchestratorDiagnostic({
+		return {
 			severity: "error",
 			code: "model.thinking_not_supported",
 			message: `Model ${record.model.provider}/${record.model.id} does not support thinking levels.`,
-			source: { kind: "registry", name: "model", key: "thinkingLevel" },
 			agentId: record.agentId,
-			provider: record.model.provider,
-			modelId: record.model.id,
-			phase: "runtime",
-			recoverable: true,
-		});
+		};
 	}
 
 	getAgentTools(agentId: AgentId): AgentToolsSnapshot {
@@ -1179,7 +1128,7 @@ export class AgentOrchestrator {
 		const { activeToolNames, diagnostics } = selectActiveToolNames(
 			toolNames,
 			installedNames,
-			{ agentId, profileId: currentState.profileId },
+			{ agentId },
 		);
 		await harness.setActiveTools(activeToolNames);
 		// Re-read the harness after the await: it is the source of truth, and a
@@ -1225,6 +1174,53 @@ export class AgentOrchestrator {
 	): string | undefined {
 		const job = this._requireAgentRecord(agentId).backgroundJobTable.get(jobId);
 		return job?.phase === "backgrounded" ? job.output.read() : undefined;
+	}
+
+	/**
+	 * Request that a live backgrounded job terminate, recording `reason` on its
+	 * snapshot and its eventual t1. Returns false when no such job is live, which
+	 * a caller holding a snapshot cannot rule out: the job may have settled since
+	 * it was listed. Scoped to backgrounded jobs for the same reason the listing
+	 * is - a running-phase job is still inside the pre-t0 window and was never
+	 * observable, so no external caller can legitimately name it.
+	 *
+	 * The abort is a request, not a kill: a local job terminates only if its tool
+	 * honors the signal, while an external job (nothing watches its signal) is
+	 * settled as cancelled by the table itself.
+	 */
+	abortAgentBackgroundJob(
+		agentId: AgentId,
+		jobId: string,
+		reason?: string,
+	): boolean {
+		const table = this._requireAgentRecord(agentId).backgroundJobTable;
+		if (table.get(jobId)?.phase !== "backgrounded") return false;
+		table.abort(jobId, reason);
+		return true;
+	}
+
+	/**
+	 * Write the terminal outcome of a job whose settler is not its owner - the
+	 * shape delegated work takes: the job lives in the assigning agent's table
+	 * and the agent doing the work reports the result. Symmetric with
+	 * {@link abortAgentBackgroundJob}: it too only acts on backgrounded jobs and
+	 * returns a result the caller has to handle rather than throwing.
+	 *
+	 * Authorization belongs to the table, not here: `settledBy` must match the
+	 * settler recorded on the job, so anyone else gets `denied` and nothing
+	 * changes.
+	 */
+	settleAgentBackgroundJob(
+		agentId: AgentId,
+		jobId: string,
+		outcome: BackgroundJobOutcome,
+		options: { settledBy: string },
+	): BackgroundJobSettleResult {
+		return this._requireAgentRecord(agentId).backgroundJobTable.settle(
+			jobId,
+			outcome,
+			options,
+		);
 	}
 
 	/**
@@ -1303,16 +1299,12 @@ export class AgentOrchestrator {
 		if (options.requiresIdle) {
 			this._requireAgentHarness(agentId);
 			if (record.status !== "idle") {
-				throw new OrchestratorError(
-					createOrchestratorDiagnostic({
-						severity: "error",
-						code: "orchestrator.agent_busy",
-						message: `Agent ${agentId} cannot accept a prompt while ${record.status}.`,
-						agentId,
-						phase: "runtime",
-						recoverable: true,
-					}),
-				);
+				throw new OrchestratorError({
+					severity: "error",
+					code: "orchestrator.agent_busy",
+					message: `Agent ${agentId} cannot accept a prompt while ${record.status}.`,
+					agentId,
+				});
 			}
 		}
 
@@ -1329,17 +1321,12 @@ export class AgentOrchestrator {
 				// recording: the extension asked for something the message contract
 				// cannot grant it.
 				if (run.kind === "block" && draft.source.kind === "background_job") {
-					await this._publishDiagnostic(
-						createOrchestratorDiagnostic({
-							severity: "warning",
-							disposition: "reported",
-							code: "orchestrator.message_block_ignored",
-							message: `Extension '${run.blockedBy}' blocked a background job result for agent ${agentId}; it was delivered anyway because the model is waiting for that result.`,
-							agentId,
-							phase: "runtime",
-							recoverable: true,
-						}),
-					);
+					await this._publishDiagnostic({
+						severity: "warning",
+						code: "orchestrator.message_block_ignored",
+						message: `Extension '${run.blockedBy}' blocked a background job result for agent ${agentId}; it was delivered anyway because the model is waiting for that result.`,
+						agentId,
+					});
 				}
 				return run;
 			},
@@ -1467,17 +1454,12 @@ export class AgentOrchestrator {
 		jobId: string,
 		error: unknown,
 	): Promise<void> {
-		await this._publishDiagnostic(
-			createOrchestratorDiagnostic({
-				severity: "warning",
-				disposition: "reported",
-				code: "orchestrator.background_job_delivery_failed",
-				message: `Background job ${jobId} result delivery to agent ${agentId} failed, will retry at the next transition: ${formatError(error)}`,
-				agentId,
-				phase: "runtime",
-				recoverable: true,
-			}),
-		);
+		await this._publishDiagnostic({
+			severity: "warning",
+			code: "orchestrator.background_job_delivery_failed",
+			message: `Background job ${jobId} result delivery to agent ${agentId} failed, will retry at the next transition: ${formatError(error)}`,
+			agentId,
+		});
 	}
 
 	// If nothing was appended after the provisional entries, the user message
@@ -1499,7 +1481,6 @@ export class AgentOrchestrator {
 				agentId,
 				"orchestrator.prompt_entry_retraction_failed",
 				`Failed to retract provisional prompt entries for agent ${agentId}: ${formatError(error)}`,
-				error,
 			);
 		}
 	}
@@ -1533,6 +1514,11 @@ export class AgentOrchestrator {
 
 	async disposeAgent(agentId: AgentId, reason?: string): Promise<void> {
 		const record = this._requireAgentRecord(agentId);
+		// Stop accepting work for this agent before the sweeps below run. The
+		// `disposed` status is only committed at the end of a teardown full of
+		// awaits, so status alone would keep reporting a live agent long after
+		// its outstanding work was already cancelled.
+		this._disposingAgents.add(agentId);
 
 		// Detach the result router and cancel live background work first, before
 		// the harness is torn down. Otherwise harness.abort() below can drive a
@@ -1547,7 +1533,6 @@ export class AgentOrchestrator {
 					agentId,
 					"orchestrator.agent_dispose_failed",
 					`Failed to unsubscribe agent ${agentId} background job listener: ${formatError(error)}`,
-					error,
 				);
 			}
 			this._unsubscribeAgentJobChanges.delete(agentId);
@@ -1562,7 +1547,6 @@ export class AgentOrchestrator {
 					agentId,
 					"orchestrator.agent_dispose_failed",
 					`Failed to unsubscribe agent ${agentId} background job progress listener: ${formatError(error)}`,
-					error,
 				);
 			}
 			this._unsubscribeAgentJobProgress.delete(agentId);
@@ -1576,7 +1560,6 @@ export class AgentOrchestrator {
 					agentId,
 					"orchestrator.agent_dispose_failed",
 					`Failed to unsubscribe agent ${agentId} background job report listener: ${formatError(error)}`,
-					error,
 				);
 			}
 			this._unsubscribeAgentJobReports.delete(agentId);
@@ -1589,19 +1572,23 @@ export class AgentOrchestrator {
 		for (const job of record.backgroundJobTable.list()) {
 			record.backgroundJobTable.abort(job.id, "Agent disposed");
 		}
-		// Tasks this agent owed to other agents cannot be completed now. Aborting
-		// the owner's job settles it as cancelled and reports that through the
-		// owner's normal t1 path; the owner itself stays live.
-		this._cancelTasksOwedByWorker(
-			agentId,
-			reason ?? `Worker agent ${agentId} was disposed.`,
-		);
+		// Work this agent owed to other agents cannot be settled now. Aborting the
+		// owner's job settles it as cancelled and reports that through the owner's
+		// normal t1 path; the owner itself stays live.
+		for (const dependency of this._externalJobs.takeDependentsOf(agentId)) {
+			this._agents
+				.get(dependency.ownerId)
+				?.backgroundJobTable.abort(
+					dependency.jobId,
+					reason ?? `Settler agent ${agentId} was disposed.`,
+				);
+		}
 		// Jobs this agent owned are aborted above, but their `settled` changes no
 		// longer reach the untracking listener - it was detached first, on
 		// purpose. Drop the index entries explicitly: a resumed agent reuses this
 		// id with a fresh table numbering from job-1, and a stale entry would
 		// later cancel an unrelated job that happens to share the id.
-		this._forgetTaskJobsOwnedBy(agentId);
+		this._externalJobs.forgetOwner(agentId);
 		this._maintenanceDepth.delete(agentId);
 		this._resolveAgentRunStartWaiters(agentId);
 		this._backgroundJobEmits.delete(agentId);
@@ -1623,7 +1610,6 @@ export class AgentOrchestrator {
 					agentId,
 					"orchestrator.agent_dispose_failed",
 					`Failed to unsubscribe agent ${agentId} harness handlers: ${formatError(error)}`,
-					error,
 				);
 			}
 			this._unsubscribeAgentHarness.delete(agentId);
@@ -1638,7 +1624,6 @@ export class AgentOrchestrator {
 					agentId,
 					"orchestrator.agent_dispose_failed",
 					`Failed to unsubscribe agent ${agentId} extension interceptors: ${formatError(error)}`,
-					error,
 				);
 			}
 			this._unsubscribeAgentExtensionInterceptors.delete(agentId);
@@ -1669,16 +1654,11 @@ export class AgentOrchestrator {
 		try {
 			await this.executionEnv.cleanup();
 		} catch (error) {
-			await this._publishDiagnostic(
-				createOrchestratorDiagnostic({
-					severity: "warning",
-					disposition: "reported",
-					code: "orchestrator.dispose_all_failed",
-					message: `Failed to cleanup execution environment: ${formatError(error)}`,
-					phase: "runtime",
-					recoverable: true,
-				}),
-			);
+			await this._publishDiagnostic({
+				severity: "warning",
+				code: "orchestrator.dispose_all_failed",
+				message: `Failed to cleanup execution environment: ${formatError(error)}`,
+			});
 		}
 	}
 
@@ -1832,16 +1812,12 @@ export class AgentOrchestrator {
 			metadata.metadata?.profile,
 		);
 		if (!profileReference) {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					code: "profile.resolution_failed",
-					message: `Cannot resume agent ${agentId}: session metadata does not contain a profile reference.`,
-					agentId,
-					phase: "resume",
-					recoverable: true,
-				}),
-			);
+			throw new OrchestratorError({
+				severity: "error",
+				code: "profile.resolution_failed",
+				message: `Cannot resume agent ${agentId}: session metadata does not contain a profile reference.`,
+				agentId,
+			});
 		}
 		return await this._resolveProfileById(profileReference.id, agentId);
 	}
@@ -1853,29 +1829,23 @@ export class AgentOrchestrator {
 		const result = await this.profileRegistry.resolveProfile(profileId);
 		await this._publishDiagnostics(result.diagnostics);
 		if (!result.ok) {
-			const diagnostic = createOrchestratorDiagnostic({
+			const diagnostic: OrchestratorDiagnostic = {
 				severity: "error",
 				code: "profile.resolution_failed",
 				message: `Cannot resolve profile ${profileId}: ${result.reason}.`,
 				agentId,
-				profileId,
-				phase: "resolve",
-				recoverable: true,
-			});
+			};
 			await this._publishDiagnostic(diagnostic);
 			throw new OrchestratorError(diagnostic);
 		}
 
 		if (!this._isProfileEnabled(result.profile.id)) {
-			const diagnostic = createOrchestratorDiagnostic({
+			const diagnostic: OrchestratorDiagnostic = {
 				severity: "error",
 				code: "profile.disabled",
 				message: `Profile is disabled by runtime policy: ${result.profile.id}`,
 				agentId,
-				profileId: result.profile.id,
-				phase: "resolve",
-				recoverable: true,
-			});
+			};
 			await this._publishDiagnostic(diagnostic);
 			throw new OrchestratorError(diagnostic);
 		}
@@ -1903,14 +1873,11 @@ export class AgentOrchestrator {
 		}
 
 		if ("id" in override) {
-			const diagnostic = createOrchestratorDiagnostic({
+			const diagnostic: OrchestratorDiagnostic = {
 				severity: "error",
 				code: "profile.override_invalid",
-				message: "Profile override cannot change profile id.",
-				profileId: profile.id,
-				phase: "create",
-				recoverable: true,
-			});
+				message: `Profile override cannot change profile id: ${profile.id}.`,
+			};
 			await this._publishDiagnostic(diagnostic);
 			throw new OrchestratorError(diagnostic);
 		}
@@ -1918,20 +1885,13 @@ export class AgentOrchestrator {
 		const merged: AgentProfile = {
 			...profile,
 			...override,
-			capabilities: override.capabilities
-				? { ...profile.capabilities, ...override.capabilities }
-				: profile.capabilities,
 		};
 		if (merged.persist && changesRecoverableProfileFields(override)) {
-			const diagnostic = createOrchestratorDiagnostic({
+			const diagnostic: OrchestratorDiagnostic = {
 				severity: "error",
 				code: "profile.override_not_persistable",
-				message:
-					"Profile override changes recoverable profile fields and cannot create a persistent session.",
-				profileId: profile.id,
-				phase: "create",
-				recoverable: true,
-			});
+				message: `Profile '${profile.id}' override changes recoverable profile fields and cannot create a persistent session.`,
+			};
 			await this._publishDiagnostic(diagnostic);
 			throw new OrchestratorError(diagnostic);
 		}
@@ -2008,9 +1968,6 @@ export class AgentOrchestrator {
 				code: "orchestrator.agent_unavailable",
 				message: `Cannot create agent ${agentId}: ${formatError(error)}`,
 				agentId,
-				profileId: profile.id,
-				phase: "create",
-				recoverable: true,
 			});
 			await this._markExistingAgentUnavailable(agentId, diagnostic);
 			if (!(error instanceof OrchestratorError)) {
@@ -2072,7 +2029,6 @@ export class AgentOrchestrator {
 				code: "orchestrator.agent_unavailable",
 				message: `Cannot resume agent ${agentId}: ${formatError(error)}`,
 				agentId,
-				recoverable: true,
 			});
 			await this._markAgentUnavailable({
 				agentId,
@@ -2116,11 +2072,7 @@ export class AgentOrchestrator {
 		// Contributed providers register before the harness exists so their
 		// models are selectable from the first turn. Spawn/resume model
 		// resolution happens earlier still and cannot reference them.
-		await this._applyExtensionProviderContributions(
-			agentId,
-			profile.id,
-			extensionRunner,
-		);
+		await this._applyExtensionProviderContributions(agentId, extensionRunner);
 
 		const loadedSkills = await this._loadProfileSkills({ agentId, profile });
 		const loadedPromptTemplates = await this._loadProfilePromptTemplates({
@@ -2174,7 +2126,12 @@ export class AgentOrchestrator {
 			// Callback instead of a string so the skills listing tracks the
 			// harness's current resources and active tools at each turn start.
 			systemPrompt: ({ resources: current, activeTools }) =>
-				buildAgentSystemPrompt(profile.systemPrompt, current, activeTools),
+				buildAgentSystemPrompt(
+					profile.systemPrompt,
+					current,
+					activeTools,
+					agentId,
+				),
 			model: model,
 			thinkingLevel: options.thinkingLevel,
 			activeToolNames: [...agentToolSet.activeToolNames],
@@ -2194,7 +2151,7 @@ export class AgentOrchestrator {
 		const jobTable = this._requireAgentRecord(agentId).backgroundJobTable;
 		const unsubscribeJobChanges = jobTable.onChange((change) => {
 			if (change.transition === "backgrounded") {
-				this._trackTaskJob(agentId, change.job);
+				this._externalJobs.track(agentId, change.job);
 			}
 			if (change.transition === "settled") {
 				// Barrier: flush the job's final output increment ahead of its
@@ -2203,7 +2160,7 @@ export class AgentOrchestrator {
 					await this._emitJobProgress(agentId, change.job);
 					this._progressSequence.get(agentId)?.delete(change.job.id);
 				});
-				this._untrackTaskJob(agentId, change.job);
+				this._externalJobs.untrack(agentId, change.job);
 				// A delegated task settles through this same path: its t1 is the one
 				// and only completion message the owner reads.
 				void this._deliverBackgroundJobResult(agentId, change);
@@ -2244,7 +2201,6 @@ export class AgentOrchestrator {
 
 	private async _applyExtensionProviderContributions(
 		agentId: AgentId,
-		profileId: string,
 		extensionRunner: ExtensionRunner,
 	): Promise<void> {
 		const contributions = extensionRunner.getProviderContributions();
@@ -2253,15 +2209,8 @@ export class AgentOrchestrator {
 		const projectTrusted = this.settingManager.isProjectTrusted();
 		for (const contribution of contributions) {
 			const diagnosticBase = {
-				source: {
-					kind: "extension",
-					id: contribution.extensionId,
-				},
 				agentId,
-				profileId,
 				extensionId: contribution.extensionId,
-				phase: "create",
-				recoverable: true,
 			} as const;
 			// Trust ruling: `!command` config values resolve through
 			// ExecutionEnv.exec at request time, so an untrusted project rejects
@@ -2273,16 +2222,12 @@ export class AgentOrchestrator {
 					this.modelRegistry.configValueResolver,
 				)
 			) {
-				diagnostics.push(
-					createOrchestratorDiagnostic({
-						...diagnosticBase,
-						severity: "error",
-						disposition: "degraded",
-						code: "extension.provider_trust_denied",
-						message: `Extension '${contribution.extensionId}' provider '${contribution.providerName}' uses command config values and was denied because the project is not trusted.`,
-						details: { providerName: contribution.providerName },
-					}),
-				);
+				diagnostics.push({
+					...diagnosticBase,
+					severity: "error",
+					code: "extension.provider_trust_denied",
+					message: `Extension '${contribution.extensionId}' provider '${contribution.providerName}' uses command config values and was denied because the project is not trusted.`,
+				});
 				continue;
 			}
 			const result = this.modelRegistry.registerExtensionProvider(
@@ -2292,35 +2237,20 @@ export class AgentOrchestrator {
 			);
 			if (result.ok) continue;
 			if (result.reason === "conflict") {
-				diagnostics.push(
-					createOrchestratorDiagnostic({
-						...diagnosticBase,
-						severity: "warning",
-						disposition: "reported",
-						code: "extension.provider_conflict",
-						message: `Extension '${contribution.extensionId}' provider '${contribution.providerName}' conflicts with a ${result.conflictWith} provider and was skipped.`,
-						details: {
-							providerName: contribution.providerName,
-							conflictWith: result.conflictWith,
-							ownerExtensionId: result.ownerExtensionId,
-						},
-					}),
-				);
+				diagnostics.push({
+					...diagnosticBase,
+					severity: "warning",
+					code: "extension.provider_conflict",
+					message: `Extension '${contribution.extensionId}' provider '${contribution.providerName}' conflicts with a ${result.conflictWith} provider and was skipped.`,
+				});
 				continue;
 			}
-			diagnostics.push(
-				createOrchestratorDiagnostic({
-					...diagnosticBase,
-					severity: "error",
-					disposition: "degraded",
-					code: "extension.provider_invalid",
-					message: `Extension '${contribution.extensionId}' provider '${contribution.providerName}' was rejected: ${result.message}`,
-					details: {
-						providerName: contribution.providerName,
-						errorMessage: result.message,
-					},
-				}),
-			);
+			diagnostics.push({
+				...diagnosticBase,
+				severity: "error",
+				code: "extension.provider_invalid",
+				message: `Extension '${contribution.extensionId}' provider '${contribution.providerName}' was rejected: ${result.message}`,
+			});
 		}
 		if (diagnostics.length === 0) return;
 		this._addAgentDiagnostics(agentId, { extensionDiagnostics: diagnostics });
@@ -2337,7 +2267,6 @@ export class AgentOrchestrator {
 				agentId,
 				"extension.provider_unregister_failed",
 				`Failed to withdraw extension providers for agent ${agentId}: ${formatError(error)}`,
-				error,
 			);
 		}
 	}
@@ -2352,7 +2281,6 @@ export class AgentOrchestrator {
 			reportActionFailure: async (failure) => {
 				const diagnostic = this._createExtensionActionFailureDiagnostic({
 					agentId,
-					profileId: extensionRunner.profileId,
 					failure,
 				});
 				await this._recordAndPublishExtensionDiagnostics(agentId, [diagnostic]);
@@ -2463,8 +2391,6 @@ export class AgentOrchestrator {
 			resolvedTools.diagnostics.map((diagnostic) => ({
 				...diagnostic,
 				agentId: options.agentId,
-				profileId: options.profileId,
-				phase: "resolve",
 			})),
 		);
 		const agentTools = createAgentHarnessToolsFromResolvedTools(
@@ -2497,20 +2423,13 @@ export class AgentOrchestrator {
 		return {
 			backgroundJobTable: record.backgroundJobTable,
 			human: {
-				// Check the authoritative agent record at request time rather than
-				// retaining the capability in the turn snapshot.
-				request: async (request) => {
-					this._assertCanRequestUser(agentId, {
-						code: "orchestrator.human_request_denied",
-						message: `Agent ${agentId} human request is denied by profile capability canRequestUser.`,
-						profileId,
-					});
-					return await this.requestHuman({
+				request: async (request) =>
+					await this.requestHuman({
 						...request,
 						source: { kind: "agent", agentId },
-					});
-				},
+					}),
 			},
+			agents: this._createToolAgentHost(agentId),
 			// The runner is captured for this turn snapshot. Calls that continue
 			// in the background keep this runner and observe its stale boundary
 			// after reload instead of silently switching to the replacement.
@@ -2531,33 +2450,75 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Profile capability ruling for human requests, shared by agent tool
-	 * contexts and extension core actions: the profile decides whether this
-	 * agent may interrupt the human at all.
+	 * The collaboration port for one agent's tools. The caller's identity is
+	 * captured here, never taken from tool arguments, so an agent cannot forge
+	 * the sender of a message or the settler of a task. Everything else is read
+	 * straight off private state, which is why the whole feature needs exactly
+	 * one new public method ({@link settleAgentBackgroundJob}).
 	 */
-	private _assertCanRequestUser(
-		agentId: AgentId,
-		denial: {
-			code: string;
-			message: string;
-			profileId?: string;
-			source?: OrchestratorDiagnostic["source"];
-			extensionId?: string;
-		},
-	): void {
-		const record = this._requireAgentRecord(agentId);
-		if (record.capabilities?.canRequestUser === false) {
-			throw new OrchestratorError(
-				createOrchestratorDiagnostic({
-					severity: "error",
-					agentId,
-					phase: "runtime",
-					recoverable: true,
-					...denial,
-					profileId: denial.profileId ?? record.profile.reference.id,
+	private _createToolAgentHost(agentId: AgentId): ToolAgentHost {
+		return {
+			agentId,
+			listProfiles: async () => {
+				const result = await this.profileRegistry.listProfiles();
+				await this._publishDiagnostics(result.diagnostics);
+				return result.profiles
+					.filter((profile) => this._isProfileEnabled(profile.id))
+					.map(
+						(profile): AgentProfileBrief => ({
+							id: profile.id,
+							label: profile.label,
+							description: profile.description,
+							persist: profile.persist,
+						}),
+					);
+			},
+			// A disposed agent is not listed at all, but an unavailable one is:
+			// hiding it reads as "it never existed" and invites the model to keep
+			// looking for it, where the unaddressable marker ends the search.
+			listAgents: () =>
+				Array.from(this._agents.values())
+					.filter((record) => record.status !== "disposed")
+					.map((record) => this._describeAgentForTools(record)),
+			describe: (targetAgentId) => {
+				const record = this._agents.get(targetAgentId);
+				return record ? this._describeAgentForTools(record) : undefined;
+			},
+			spawn: async (profileId) => await this.spawnAgent({ profileId }),
+			send: async (targetAgentId, body) =>
+				await this.sendMessage({
+					source: { kind: "agent", agentId },
+					targetAgentId,
+					body,
+					// Agent messages never preempt a turn already in flight: the
+					// target decides when to read them.
+					mode: "next_turn",
 				}),
-			);
-		}
+			dispose: async (targetAgentId, reason) => {
+				await this.disposeAgent(targetAgentId, reason);
+			},
+			settleTask: (ownerAgentId, taskId, outcome) => {
+				if (!this._agents.has(ownerAgentId)) return "ignored";
+				return this.settleAgentBackgroundJob(
+					ownerAgentId,
+					taskId,
+					toBackgroundJobOutcome(outcome),
+					{ settledBy: agentId },
+				);
+			},
+		};
+	}
+
+	private _describeAgentForTools(record: AgentRecord): AgentBrief {
+		return {
+			agentId: record.agentId,
+			profileId: record.profile.reference.id,
+			label: record.profile.reference.label,
+			status: record.status,
+			// The same predicate the delivery queue uses, so "addressable" and
+			// "will still be swept by dispose" flip at one instant rather than two.
+			addressable: this._resolveDeliveryPhase(record.agentId) !== "gone",
+		};
 	}
 
 	private _createScopedToolRegistry(
@@ -2574,6 +2535,12 @@ export class AgentOrchestrator {
 	private _createExtensionActions(): ExtensionCoreActions {
 		return {
 			getAgentTools: (agentId) => this.getAgentTools(agentId),
+			listAgentBackgroundJobs: (agentId) =>
+				this.listAgentBackgroundJobs(agentId),
+			readAgentBackgroundJobOutput: (agentId, jobId) =>
+				this.readAgentBackgroundJobOutput(agentId, jobId),
+			abortAgentBackgroundJob: (agentId, jobId, reason) =>
+				this.abortAgentBackgroundJob(agentId, jobId, reason),
 			setAgentTools: async (agentId, toolNames, activeToolNames) => {
 				await this.setAgentTools(agentId, toolNames, activeToolNames);
 			},
@@ -2581,12 +2548,6 @@ export class AgentOrchestrator {
 				await this.setAgentActiveTools(agentId, toolNames);
 			},
 			requestHuman: async (agentId, extensionId, request) => {
-				this._assertCanRequestUser(agentId, {
-					code: "extension.human_request_denied",
-					message: `Extension '${extensionId}' human request is denied by profile capability canRequestUser.`,
-					source: { kind: "extension", id: extensionId },
-					extensionId,
-				});
 				return await this._requestHumanForAgent(agentId, {
 					...request,
 					source: { kind: "extension", extensionId },
@@ -2666,23 +2627,15 @@ export class AgentOrchestrator {
 				);
 			},
 			reportDiagnostic: async (agentId, extensionId, draft) => {
-				const record = this._requireAgentRecord(agentId);
+				this._requireAgentRecord(agentId);
 				const validatedDraft = validateExtensionDiagnosticDraft(draft);
-				const diagnostic = createOrchestratorDiagnostic({
-					id: this._createReportedDiagnosticId(),
-					domain: "extension",
+				const diagnostic: OrchestratorDiagnostic = {
 					code: `extension.${extensionId}.${validatedDraft.code}`,
 					severity: validatedDraft.severity,
-					disposition: validatedDraft.disposition ?? "reported",
-					recoverable: true,
 					message: validatedDraft.message,
-					source: { kind: "extension", id: extensionId },
-					phase: "runtime",
 					agentId,
-					profileId: record.profile.reference.id,
 					extensionId,
-					details: validatedDraft.details,
-				});
+				};
 				this._addAgentDiagnostics(agentId, {
 					extensionDiagnostics: [diagnostic],
 				});
@@ -2748,18 +2701,13 @@ export class AgentOrchestrator {
 			// it is denied until the project trust gate has passed.
 			exec: async (agentId, extensionId, command, options) => {
 				if (!this.settingManager.isProjectTrusted()) {
-					throw new OrchestratorError(
-						createOrchestratorDiagnostic({
-							severity: "error",
-							code: "extension.exec_denied",
-							message: `Extension '${extensionId}' exec is denied because the project is not trusted.`,
-							source: { kind: "extension", id: extensionId },
-							agentId,
-							extensionId,
-							phase: "runtime",
-							recoverable: true,
-						}),
-					);
+					throw new OrchestratorError({
+						severity: "error",
+						code: "extension.exec_denied",
+						message: `Extension '${extensionId}' exec is denied because the project is not trusted.`,
+						agentId,
+						extensionId,
+					});
 				}
 				return await this.executionEnv.exec(command, options);
 			},
@@ -2818,7 +2766,7 @@ export class AgentOrchestrator {
 			record.diagnostics.push(diagnostic);
 		}
 		if (
-			diagnostic.domain === "extension" &&
+			diagnostic.extensionId !== undefined &&
 			!record.extensionDiagnostics.includes(diagnostic)
 		) {
 			record.extensionDiagnostics.push(diagnostic);
@@ -2870,20 +2818,13 @@ export class AgentOrchestrator {
 		agentId: AgentId,
 		code: string,
 		message: string,
-		error: unknown,
 	): Promise<void> {
-		const diagnostic = createOrchestratorDiagnostic({
+		const diagnostic: OrchestratorDiagnostic = {
 			severity: "warning",
-			disposition: "reported",
 			code,
 			message,
 			agentId,
-			phase: "runtime",
-			recoverable: true,
-			details: {
-				error: formatError(error),
-			},
-		});
+		};
 		this._addAgentDiagnostics(agentId, {
 			diagnostics: [diagnostic],
 		});
@@ -2920,27 +2861,16 @@ export class AgentOrchestrator {
 
 	private _createExtensionActionFailureDiagnostic(options: {
 		agentId: AgentId;
-		profileId: string;
 		failure: ExtensionActionFailure;
 	}): OrchestratorDiagnostic {
 		const { failure } = options;
-		return createOrchestratorDiagnostic({
-			domain: "extension",
+		return {
 			code: failure.code,
 			severity: "warning",
-			disposition: "degraded",
-			recoverable: true,
 			message: `Extension '${failure.extensionId}' action '${failure.action}' failed: ${formatError(failure.error)}`,
-			source: { kind: "extension", id: failure.extensionId },
-			phase: "runtime",
 			agentId: options.agentId,
-			profileId: options.profileId,
 			extensionId: failure.extensionId,
-			details: {
-				action: failure.action,
-				error: formatError(failure.error),
-			},
-		});
+		};
 	}
 
 	private async _reloadAgentExtensions(
@@ -3053,11 +2983,7 @@ export class AgentOrchestrator {
 			// runner's registrations are withdrawn before the reloaded runner
 			// re-registers its own.
 			await this._withdrawExtensionProviderContributions(agentId);
-			await this._applyExtensionProviderContributions(
-				agentId,
-				resolvedProfile.profile.id,
-				nextRunner,
-			);
+			await this._applyExtensionProviderContributions(agentId, nextRunner);
 			await this._disposeExtensionRunner(
 				agentId,
 				oldRunner,
@@ -3095,7 +3021,6 @@ export class AgentOrchestrator {
 				severity: "error",
 				message: `Failed to reload extensions for agent ${agentId}: ${formatError(error)}`,
 				agentId,
-				details: { error: formatError(error) },
 			});
 			this._addAgentDiagnostics(agentId, {
 				extensionDiagnostics: [diagnostic],
@@ -3127,24 +3052,18 @@ export class AgentOrchestrator {
 		severity: OrchestratorDiagnostic["severity"];
 		message: string;
 		agentId: AgentId;
-		details?: Record<string, unknown>;
 	}): OrchestratorDiagnostic {
-		return createOrchestratorDiagnostic({
-			domain: "extension",
+		return {
 			severity: options.severity,
-			disposition: options.severity === "error" ? "degraded" : "reported",
 			code: options.code,
 			message: options.message,
 			agentId: options.agentId,
-			phase: "runtime",
-			recoverable: true,
-			source: { kind: "extension", id: "reload" },
-			details: options.details,
-		});
+		};
 	}
 
 	private async _registerAgentRecord(record: AgentRecord): Promise<void> {
 		const previousStatus = this._agents.get(record.agentId)?.status;
+		this._disposingAgents.delete(record.agentId);
 		this._agents.set(record.agentId, record);
 		await this._commitAgentStatus(record, record.status, previousStatus);
 	}
@@ -3199,7 +3118,6 @@ export class AgentOrchestrator {
 				agentId,
 				"orchestrator.agent_dispose_failed",
 				`Failed to abort agent ${agentId} during dispose: ${formatError(error)}`,
-				error,
 			);
 		}
 		try {
@@ -3209,7 +3127,6 @@ export class AgentOrchestrator {
 				agentId,
 				"orchestrator.agent_dispose_failed",
 				`Failed waiting for agent ${agentId} to become idle during dispose: ${formatError(error)}`,
-				error,
 			);
 		}
 	}
@@ -3227,7 +3144,6 @@ export class AgentOrchestrator {
 				agentId,
 				"orchestrator.agent_dispose_failed",
 				`Failed to dispose extension runtime for agent ${agentId}: ${formatError(error)}`,
-				error,
 			);
 		}
 	}
@@ -3259,17 +3175,12 @@ export class AgentOrchestrator {
 		} catch (error) {
 			// Retryable failures keep the result queued, so reaching here means the
 			// owner can never take it: the model will not see this job's outcome.
-			await this._publishDiagnostic(
-				createOrchestratorDiagnostic({
-					severity: "warning",
-					disposition: "reported",
-					code: "orchestrator.background_job_dropped",
-					message: `Dropping the result of background job ${settlement.job.id} for agent ${agentId}: ${formatError(error)}`,
-					agentId,
-					phase: "runtime",
-					recoverable: true,
-				}),
-			);
+			await this._publishDiagnostic({
+				severity: "warning",
+				code: "orchestrator.background_job_dropped",
+				message: `Dropping the result of background job ${settlement.job.id} for agent ${agentId}: ${formatError(error)}`,
+				agentId,
+			});
 		}
 	}
 
@@ -3523,7 +3434,6 @@ export class AgentOrchestrator {
 					agentId,
 					"orchestrator.agent_message_prompt_failed",
 					`Prompt for agent ${agentId} failed after delivery: ${formatError(error)}`,
-					error,
 				);
 			}
 		} finally {
@@ -3535,55 +3445,6 @@ export class AgentOrchestrator {
 				await this._transitionAgentStatus(agentId, "idle");
 			}
 			this._messages.wake(agentId);
-		}
-	}
-
-	/**
-	 * Index a delegated task job so a disposed worker's outstanding work can be
-	 * found. The owner's job stays the only state; this is a reverse lookup, not
-	 * a task registry.
-	 */
-	private _trackTaskJob(ownerAgentId: AgentId, job: BackgroundJob): void {
-		if (job.origin.kind !== "agent_task") return;
-		const owed =
-			this._taskJobsByWorker.get(job.origin.workerAgentId) ?? new Set();
-		owed.add({ ownerAgentId, jobId: job.id });
-		this._taskJobsByWorker.set(job.origin.workerAgentId, owed);
-	}
-
-	private _untrackTaskJob(ownerAgentId: AgentId, job: BackgroundJob): void {
-		if (job.origin.kind !== "agent_task") return;
-		const owed = this._taskJobsByWorker.get(job.origin.workerAgentId);
-		if (!owed) return;
-		for (const entry of owed) {
-			if (entry.ownerAgentId === ownerAgentId && entry.jobId === job.id) {
-				owed.delete(entry);
-			}
-		}
-		if (owed.size === 0)
-			this._taskJobsByWorker.delete(job.origin.workerAgentId);
-	}
-
-	private _forgetTaskJobsOwnedBy(ownerAgentId: AgentId): void {
-		for (const [workerAgentId, owed] of this._taskJobsByWorker) {
-			for (const entry of owed) {
-				if (entry.ownerAgentId === ownerAgentId) owed.delete(entry);
-			}
-			if (owed.size === 0) this._taskJobsByWorker.delete(workerAgentId);
-		}
-	}
-
-	private _cancelTasksOwedByWorker(
-		workerAgentId: AgentId,
-		reason: string,
-	): void {
-		const owed = this._taskJobsByWorker.get(workerAgentId);
-		if (!owed) return;
-		this._taskJobsByWorker.delete(workerAgentId);
-		for (const entry of owed) {
-			this._agents
-				.get(entry.ownerAgentId)
-				?.backgroundJobTable.abort(entry.jobId, reason);
 		}
 	}
 
@@ -3633,6 +3494,9 @@ export class AgentOrchestrator {
 	private _resolveDeliveryPhase(agentId: AgentId): MessageDeliveryPhase {
 		const record = this._agents.get(agentId);
 		if (!record) return "gone";
+		// A message enqueued during teardown must fail now rather than wait for
+		// the status commit: the queue it would sit in has already been cancelled.
+		if (this._disposingAgents.has(agentId)) return "gone";
 		switch (record.status) {
 			case "creating":
 				return "creating";
@@ -3732,17 +3596,12 @@ export class AgentOrchestrator {
 			}
 			await this.compactAgent(agentId);
 		} catch (error) {
-			await this._publishDiagnostic(
-				createOrchestratorDiagnostic({
-					severity: "warning",
-					code: "compaction.auto_failed",
-					message: `Automatic compaction failed for agent ${agentId}: ${formatError(error)}`,
-					operationSource: { kind: "system" },
-					agentId,
-					phase: "runtime",
-					recoverable: true,
-				}),
-			);
+			await this._publishDiagnostic({
+				severity: "warning",
+				code: "compaction.auto_failed",
+				message: `Automatic compaction failed for agent ${agentId}: ${formatError(error)}`,
+				agentId,
+			});
 		} finally {
 			this._autoCompactingAgents.delete(agentId);
 		}
@@ -3846,17 +3705,12 @@ export class AgentOrchestrator {
 				try {
 					await listener(event);
 				} catch (error) {
-					listenerFailures.push(
-						createOrchestratorDiagnostic({
-							severity: "warning",
-							code: "orchestrator.listener_failed",
-							message: formatError(error),
-							disposition: "reported",
-							recoverable: true,
-							agentId: "agentId" in event ? event.agentId : undefined,
-							details: { eventType: event.type },
-						}),
-					);
+					listenerFailures.push({
+						severity: "warning",
+						code: "orchestrator.listener_failed",
+						message: `Listener failed for event ${event.type}: ${formatError(error)}`,
+						agentId: "agentId" in event ? event.agentId : undefined,
+					});
 				}
 			}
 		}
@@ -3867,15 +3721,12 @@ export class AgentOrchestrator {
 					await client.receive(event);
 				} catch (error) {
 					await this._publishDiagnostic(
-						createOrchestratorDiagnostic({
+						{
 							severity: "warning",
 							code: "orchestrator.client_failed",
-							message: error instanceof Error ? error.message : String(error),
-							disposition: "reported",
-							recoverable: true,
+							message: `Client failed for event ${event.type}: ${formatError(error)}`,
 							agentId: "agentId" in event ? event.agentId : undefined,
-							details: { eventType: event.type },
-						}),
+						},
 						{
 							sendToListeners: options.sendToListeners,
 							sendToClients: false,
@@ -3925,7 +3776,7 @@ export class AgentOrchestrator {
 			observeExtensions?: boolean;
 		} = {},
 	): Promise<void> {
-		for (const diagnostic of dedupeDiagnostics(diagnostics)) {
+		for (const diagnostic of diagnostics) {
 			await this._publishDiagnostic(diagnostic, options);
 		}
 	}
@@ -3947,14 +3798,6 @@ export class AgentOrchestrator {
 	private _createPresentationId(): string {
 		const id = `orchestrator-presentation-${this._nextPresentationId}`;
 		this._nextPresentationId += 1;
-		return id;
-	}
-
-	// Every extension-reported diagnostic is an independent fact: the fresh
-	// core id keeps dedupeDiagnostics from ever merging repeated reports.
-	private _createReportedDiagnosticId(): string {
-		const id = `orchestrator-diagnostic-${this._nextReportedDiagnosticId}`;
-		this._nextReportedDiagnosticId += 1;
 		return id;
 	}
 
@@ -3981,9 +3824,26 @@ export class AgentOrchestrator {
 function isBlockedExtensionDiagnostic(
 	diagnostic: OrchestratorDiagnostic,
 ): boolean {
-	return (
-		diagnostic.domain === "extension" && diagnostic.disposition === "blocked"
-	);
+	return diagnostic.severity === "error";
+}
+
+/**
+ * Project a task report onto a job outcome. The report text always travels in
+ * `result`, including for a failure: the result message formatter reads
+ * `result` first, while the `error` channel would render the worker's
+ * explanation as an exception string. `status` only decides the header and the
+ * snapshot field.
+ */
+function toBackgroundJobOutcome(
+	outcome: AgentTaskOutcome,
+): BackgroundJobOutcome {
+	return {
+		status: outcome.status,
+		result: {
+			content: [{ type: "text", text: outcome.text }],
+			details: undefined,
+		},
+	};
 }
 
 /**
@@ -3994,27 +3854,13 @@ function isBlockedExtensionDiagnostic(
 function selectActiveToolNames(
 	toolNames: readonly string[],
 	installedNames: ReadonlySet<string>,
-	context: { agentId: AgentId; profileId: string },
+	context: { agentId: AgentId },
 ): { activeToolNames: string[]; diagnostics: OrchestratorDiagnostic[] } {
 	const activeToolNames: string[] = [];
 	const seen = new Set<string>();
 	const diagnostics: OrchestratorDiagnostic[] = [];
-	const report = (diagnostic: {
-		severity: "error" | "warning";
-		code: string;
-		disposition: "degraded" | "reported";
-		message: string;
-		toolName?: string;
-	}) => {
-		diagnostics.push(
-			createOrchestratorDiagnostic({
-				...diagnostic,
-				recoverable: true,
-				phase: "runtime",
-				agentId: context.agentId,
-				profileId: context.profileId,
-			}),
-		);
+	const report = (diagnostic: OrchestratorDiagnostic) => {
+		diagnostics.push(diagnostic);
 	};
 	for (const rawName of toolNames) {
 		const name = rawName.trim();
@@ -4022,8 +3868,8 @@ function selectActiveToolNames(
 			report({
 				severity: "error",
 				code: "tool.invalid_name",
-				disposition: "degraded",
 				message: "Tool name list contains an empty name.",
+				agentId: context.agentId,
 			});
 			continue;
 		}
@@ -4031,9 +3877,8 @@ function selectActiveToolNames(
 			report({
 				severity: "warning",
 				code: "tool.active_duplicate",
-				disposition: "reported",
 				message: `Tool name '${name}' is listed more than once; keeping the first occurrence.`,
-				toolName: name,
+				agentId: context.agentId,
 			});
 			continue;
 		}
@@ -4042,9 +3887,8 @@ function selectActiveToolNames(
 			report({
 				severity: "warning",
 				code: "tool.active_missing",
-				disposition: "degraded",
 				message: `Active tool '${name}' is not in the agent's installed tool set.`,
-				toolName: name,
+				agentId: context.agentId,
 			});
 			continue;
 		}
@@ -4104,13 +3948,26 @@ export function formatToolGuidanceForSystemPrompt(
  * block via pi-agent-core). The skills listing tells the model to read the
  * skill file, so it is only appended when a read tool is active; skills stay
  * reachable through the `<skill:...>` inline command either way.
+ *
+ * The agent's own id is appended on the same principle: it is a per-agent value
+ * a static prompt snippet cannot carry, and it only means anything to an agent
+ * that can address other agents, so it follows the active collaboration tools.
  */
 export function buildAgentSystemPrompt(
 	basePrompt: string,
 	resources: AgentHarnessResources,
 	activeTools: readonly ToolPromptGuidance[],
+	agentId?: AgentId,
 ): string {
 	const sections = [basePrompt];
+	if (
+		agentId !== undefined &&
+		activeTools.some((tool) => CORE_AGENT_TOOL_NAMES.includes(tool.name))
+	) {
+		sections.push(
+			`You are agent ${agentId}. Other agents address you by that id.`,
+		);
+	}
 	const toolGuidance = formatToolGuidanceForSystemPrompt(activeTools);
 	if (toolGuidance !== "") {
 		sections.push(toolGuidance);
@@ -4152,7 +4009,6 @@ function changesRecoverableProfileFields(
 		override.skills !== undefined ||
 		override.promptTemplates !== undefined ||
 		override.extensions !== undefined ||
-		override.capabilities !== undefined ||
 		override.persist !== undefined
 	);
 }

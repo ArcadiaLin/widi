@@ -155,12 +155,11 @@ describe("provider extension consumer", () => {
 			expect.objectContaining({
 				type: "diagnostic",
 				diagnostic: expect.objectContaining({
+					severity: "warning",
 					code: "extension.provider_conflict",
 					extensionId: "gateway",
-					details: expect.objectContaining({
-						providerName: "anthropic",
-						conflictWith: "builtin",
-					}),
+					message:
+						"Extension 'gateway' provider 'anthropic' conflicts with a builtin provider and was skipped.",
 				}),
 			}),
 		);
@@ -205,13 +204,12 @@ describe("provider extension consumer", () => {
 			expect.objectContaining({
 				type: "diagnostic",
 				diagnostic: expect.objectContaining({
+					severity: "warning",
 					code: "extension.provider_conflict",
 					extensionId: "beta",
-					details: expect.objectContaining({
-						providerName: "gateway",
-						conflictWith: "extension",
-						ownerExtensionId: "alpha",
-					}),
+					message: expect.stringContaining(
+						"Extension 'beta' provider 'gateway' conflicts with a extension provider",
+					),
 				}),
 			}),
 		);
@@ -233,9 +231,11 @@ describe("provider extension consumer", () => {
 			expect.objectContaining({
 				type: "diagnostic",
 				diagnostic: expect.objectContaining({
+					severity: "error",
 					code: "extension.provider_invalid",
 					extensionId: "gateway",
-					details: expect.objectContaining({ providerName: "gateway" }),
+					message:
+						"Extension 'gateway' provider 'gateway' was rejected: Provider gateway: extension providers must define \"models\".",
 				}),
 			}),
 		);
@@ -272,11 +272,11 @@ describe("provider extension consumer", () => {
 			expect.objectContaining({
 				type: "diagnostic",
 				diagnostic: expect.objectContaining({
+					severity: "error",
 					code: "extension.provider_trust_denied",
 					extensionId: "commanded",
-					details: expect.objectContaining({
-						providerName: "commanded-gateway",
-					}),
+					message:
+						"Extension 'commanded' provider 'commanded-gateway' uses command config values and was denied because the project is not trusted.",
 				}),
 			}),
 		);
@@ -400,11 +400,11 @@ describe("provider extension consumer", () => {
 			expect.objectContaining({
 				type: "diagnostic",
 				diagnostic: expect.objectContaining({
+					severity: "warning",
 					code: "extension.handler_failed",
 					extensionId: "boom",
-					details: expect.objectContaining({
-						eventName: "before_provider_request",
-					}),
+					message:
+						"Extension 'boom' handler 'before_provider_request' failed: boom",
 				}),
 			}),
 		);

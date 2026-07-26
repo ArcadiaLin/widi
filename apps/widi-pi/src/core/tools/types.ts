@@ -4,6 +4,7 @@ import type {
 	ToolExecutionMode,
 } from "@earendil-works/pi-agent-core";
 import type { Static, TSchema } from "typebox";
+import type { ToolAgentHost } from "../agent-host.ts";
 import type {
 	BackgroundJobOutput,
 	BackgroundJobReport,
@@ -29,6 +30,12 @@ export interface ToolExecutionContext<TDetails> {
 	extension: ToolExtensionContext | undefined;
 	/** Host for controlled user interaction from tools. */
 	human: ToolHumanHost | undefined;
+	/**
+	 * Host for controlled agent-to-agent collaboration, bound to the agent whose
+	 * turn is executing. Only the collaboration tools read it; everything else
+	 * ignores it, and it is absent in runtimes that wire no orchestrator.
+	 */
+	agents?: ToolAgentHost;
 	/**
 	 * Per-agent registry of pseudo-async background jobs, when the runtime wired
 	 * one. Job-control tools such as `wait_for_jobs` read live jobs and observe

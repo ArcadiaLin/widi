@@ -20,9 +20,8 @@
 ## Session、Profile 与 Resources
 
 - Session header metadata schema version/migration：出现第二个独立写入者或需要长期兼容时再建立。
-- Core resource duplicate identity：定义 agent-dir、project 与 explicit roots 之间 skill/template 重名的 severity 和 disposition。
+- Core resource duplicate identity：定义 agent-dir、project 与 explicit roots 之间 skill/template 重名的 severity。
 - Resource provenance persistence：当前 inspect facts 已提供 resolved source；进入 session metadata 或 recovery reference 需要恢复场景举证。
-- `capabilities` 命名：评估是否改为 permissions/policy，避免与 core capability 混淆。
 - Profile frontmatter reference：补充稳定 schema 与示例，包括 command policy；在公开分发 profile 前完成。
 
 ## Model、Auth 与 Settings

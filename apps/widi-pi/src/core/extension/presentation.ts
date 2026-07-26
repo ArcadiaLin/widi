@@ -1,7 +1,4 @@
-import type {
-	DiagnosticDisposition,
-	DiagnosticSeverity,
-} from "../diagnostics.ts";
+import type { DiagnosticSeverity } from "../diagnostics.ts";
 
 export const MAX_EXTENSION_OUTPUT_BYTES = 65_536;
 export const MAX_EXTENSION_NOTIFICATION_BYTES = 4_096;
@@ -11,7 +8,6 @@ export const MAX_EXTENSION_MESSAGE_TITLE_BYTES = 4_096;
 export const MAX_EXTENSION_MESSAGE_CONTENT_BYTES = 65_536;
 export const MAX_EXTENSION_DIAGNOSTIC_CODE_BYTES = 128;
 export const MAX_EXTENSION_DIAGNOSTIC_MESSAGE_BYTES = 4_096;
-export const MAX_EXTENSION_DIAGNOSTIC_DETAILS_BYTES = 16_384;
 
 export const EXTENSION_MESSAGE_KINDS = ["text", "markdown", "code"] as const;
 
@@ -24,27 +20,14 @@ export interface ExtensionMessage {
 }
 
 export const EXTENSION_DIAGNOSTIC_SEVERITIES = [
-	"info",
 	"warning",
 	"error",
 ] as const satisfies readonly DiagnosticSeverity[];
 
-// Authors cannot claim "blocked": that disposition is reserved for core
-// decisions that actually blocked an operation.
-export const EXTENSION_DIAGNOSTIC_DISPOSITIONS = [
-	"reported",
-	"degraded",
-] as const satisfies readonly DiagnosticDisposition[];
-
-export type ExtensionDiagnosticDisposition =
-	(typeof EXTENSION_DIAGNOSTIC_DISPOSITIONS)[number];
-
 export interface ExtensionDiagnosticDraft {
 	readonly severity: DiagnosticSeverity;
-	readonly disposition?: ExtensionDiagnosticDisposition;
 	readonly code: string;
 	readonly message: string;
-	readonly details?: Record<string, unknown>;
 }
 
 export interface ExtensionStatusProgress {
@@ -177,8 +160,6 @@ export function validateExtensionMessage(
 
 const EXTENSION_DIAGNOSTIC_CODE_PATTERN = /^[a-zA-Z0-9_.-]+$/;
 
-// Returns a normalized deep clone; `details` is round-tripped through JSON so
-// the caller keeps no live reference into the published diagnostic.
 export function validateExtensionDiagnosticDraft(
 	draft: ExtensionDiagnosticDraft,
 ): ExtensionDiagnosticDraft {
@@ -192,16 +173,6 @@ export function validateExtensionDiagnosticDraft(
 	) {
 		throw new TypeError(
 			`Extension diagnostic severity must be one of: ${EXTENSION_DIAGNOSTIC_SEVERITIES.join(", ")}.`,
-		);
-	}
-	if (
-		draft.disposition !== undefined &&
-		!(EXTENSION_DIAGNOSTIC_DISPOSITIONS as readonly string[]).includes(
-			draft.disposition,
-		)
-	) {
-		throw new TypeError(
-			`Extension diagnostic disposition must be one of: ${EXTENSION_DIAGNOSTIC_DISPOSITIONS.join(", ")}.`,
 		);
 	}
 	if (
@@ -225,36 +196,11 @@ export function validateExtensionDiagnosticDraft(
 		"Extension diagnostic message",
 		MAX_EXTENSION_DIAGNOSTIC_MESSAGE_BYTES,
 	);
-	const base: {
-		severity: DiagnosticSeverity;
-		disposition?: ExtensionDiagnosticDisposition;
-		code: string;
-		message: string;
-	} = { severity: draft.severity, code: draft.code, message: draft.message };
-	if (draft.disposition !== undefined) {
-		base.disposition = draft.disposition;
-	}
-	if (draft.details === undefined) {
-		return base;
-	}
-	if (typeof draft.details !== "object" || draft.details === null) {
-		throw new TypeError("Extension diagnostic details must be an object.");
-	}
-	const serialized = JSON.stringify(draft.details);
-	if (serialized === undefined) {
-		throw new TypeError(
-			"Extension diagnostic details must be JSON serializable.",
-		);
-	}
-	if (
-		utf8Encoder.encode(serialized).byteLength >
-		MAX_EXTENSION_DIAGNOSTIC_DETAILS_BYTES
-	) {
-		throw new RangeError(
-			`Extension diagnostic details exceed ${MAX_EXTENSION_DIAGNOSTIC_DETAILS_BYTES} UTF-8 bytes when serialized.`,
-		);
-	}
-	return { ...base, details: JSON.parse(serialized) };
+	return {
+		severity: draft.severity,
+		code: draft.code,
+		message: draft.message,
+	};
 }
 
 export function cloneExtensionStatus(status: ExtensionStatus): ExtensionStatus {

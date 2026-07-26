@@ -26,7 +26,5 @@ export function diagnosticGlyph(diagnostic: OrchestratorDiagnostic): string {
 			return "✕";
 		case "warning":
 			return "▲";
-		default:
-			return "●";
 	}
 }

@@ -8,7 +8,7 @@ import type {
 	ToolResultPatch,
 } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
-import { type CoreDiagnostic, createDiagnostic } from "../diagnostics.ts";
+import type { CoreDiagnostic } from "../diagnostics.ts";
 import type { ToolRegistry } from "../tool-registry.ts";
 import type {
 	ExtensionIdentity,
@@ -628,6 +628,18 @@ export class ExtensionRunner {
 				this._assertActive();
 				return this._actions.getAgentTools(agentId);
 			},
+			listJobs: () => {
+				this._assertActive();
+				return this._actions.listAgentBackgroundJobs(agentId);
+			},
+			readJobOutput: (jobId) => {
+				this._assertActive();
+				return this._actions.readAgentBackgroundJobOutput(agentId, jobId);
+			},
+			killJob: async (jobId, reason) =>
+				await this._runReportedAction(failure("killJob"), async () =>
+					this._actions.abortAgentBackgroundJob(agentId, jobId, reason),
+				),
 			setTools: async (toolNames, activeToolNames) => {
 				await this._runReportedAction(failure("setTools"), async () => {
 					await this._actions.setAgentTools(
@@ -811,22 +823,13 @@ export class ExtensionRunner {
 		},
 		error: unknown,
 	): CoreDiagnostic {
-		return createDiagnostic({
-			domain: "extension",
+		return {
 			code: "extension.handler_failed",
 			severity: "warning",
-			disposition: "degraded",
-			recoverable: true,
 			message: `Extension '${registration.extensionId}' handler '${registration.eventName}' failed: ${formatError(error)}`,
-			source: { kind: "extension", id: registration.extensionId },
-			phase: "runtime",
 			agentId: this.agentId,
-			profileId: this.profileId,
 			extensionId: registration.extensionId,
-			details: {
-				eventName: registration.eventName,
-			},
-		});
+		};
 	}
 }
 
@@ -940,6 +943,9 @@ function createUnboundActions(): ExtensionCoreActions {
 	};
 	return {
 		getAgentTools: () => notBound(),
+		listAgentBackgroundJobs: () => notBound(),
+		readAgentBackgroundJobOutput: () => notBound(),
+		abortAgentBackgroundJob: () => notBound(),
 		setAgentTools: async () => notBound(),
 		setAgentActiveTools: async () => notBound(),
 		requestHuman: async () => notBound(),

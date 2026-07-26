@@ -362,12 +362,8 @@ describe("EventProjector", () => {
 		projector.apply({
 			type: "diagnostic",
 			diagnostic: {
-				id: "diag-1",
-				domain: "extension",
-				code: "extension.failed",
 				severity: "error",
-				disposition: "degraded",
-				recoverable: true,
+				code: "extension.failed",
 				message: "Worker failed",
 				agentId: "worker",
 			},
@@ -384,7 +380,7 @@ describe("EventProjector", () => {
 			},
 			{
 				type: "diagnostic",
-				id: "diag-1",
+				id: "diagnostic:extension.failed:worker::Worker failed",
 			},
 		]);
 		expect(state.humanRequests).toEqual([]);
@@ -531,12 +527,8 @@ describe("EventProjector", () => {
 		projector.apply({
 			type: "diagnostic",
 			diagnostic: {
-				id: "warn-1",
-				domain: "extension",
-				code: "extension.degraded",
 				severity: "warning",
-				disposition: "degraded",
-				recoverable: true,
+				code: "extension.degraded",
 				message: "Still degraded",
 				agentId: "worker",
 			},
@@ -573,12 +565,8 @@ describe("EventProjector", () => {
 		projector.apply({
 			type: "diagnostic",
 			diagnostic: {
-				id: "warning-1",
-				domain: "extension",
-				code: "extension.warning",
 				severity: "warning",
-				disposition: "degraded",
-				recoverable: true,
+				code: "extension.warning",
 				message: "Still degraded",
 				agentId: "worker",
 			},
@@ -617,7 +605,7 @@ describe("EventProjector", () => {
 			agentId: "worker",
 			job: {
 				jobId: "job-1",
-				origin: { kind: "tool" },
+				origin: { kind: "local" },
 				toolCallId: "call-1",
 				toolName: "bash",
 				phase: "backgrounded",
@@ -636,7 +624,7 @@ describe("EventProjector", () => {
 			agentId: "worker",
 			job: {
 				jobId: "job-1",
-				origin: { kind: "tool" },
+				origin: { kind: "local" },
 				toolCallId: "call-1",
 				toolName: "bash",
 				phase: "backgrounded",
@@ -962,7 +950,7 @@ function jobSnapshot(
 ): BackgroundJobSnapshot {
 	return {
 		jobId,
-		origin: { kind: "tool" },
+		origin: { kind: "local" },
 		toolCallId: `call-${jobId}`,
 		toolName: "bash",
 		description: `run ${jobId}`,
