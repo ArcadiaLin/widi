@@ -390,4 +390,115 @@ describe("BackgroundJobTable", () => {
 		expect(resultText).toContain("Cancellation requested by kill_job.");
 		expect(resultText).toContain("partial output");
 	});
+
+	it("defaults a job's origin to the tool call that created it", () => {
+		const table = new BackgroundJobTable();
+		const job = table.create({ toolCallId: "call-1", toolName: "bash" });
+
+		expect(job.origin).toEqual({ kind: "tool" });
+		expect(snapshotBackgroundJob(job).origin).toEqual({ kind: "tool" });
+		// A tool-origin job is settled by the call it was handed to, so an
+		// authorization argument is meaningless and ignored.
+		table.background(job.id);
+		expect(
+			table.settle(job.id, { status: "completed" }, { settledBy: "anyone" }),
+		).toBe("backgrounded");
+	});
+
+	it("accepts a delegated task's outcome only from the worker it was assigned to", () => {
+		const table = new BackgroundJobTable();
+		const job = table.create({
+			toolCallId: "call-assign",
+			toolName: "assign_agent_task",
+			origin: { kind: "agent_task", workerAgentId: "agent-worker" },
+		});
+		table.background(job.id);
+
+		expect(table.settle(job.id, { status: "completed" })).toBe("denied");
+		expect(
+			table.settle(
+				job.id,
+				{ status: "completed" },
+				{ settledBy: "agent-intruder" },
+			),
+		).toBe("denied");
+		expect(table.get(job.id)).toBeDefined();
+
+		expect(
+			table.settle(
+				job.id,
+				{ status: "completed" },
+				{ settledBy: "agent-worker" },
+			),
+		).toBe("backgrounded");
+		expect(table.get(job.id)).toBeUndefined();
+	});
+
+	// The origin is the settlement authority, so a caller holding the object it
+	// passed must not be able to reassign the job to a different worker.
+	it("detaches the origin it was given from the caller's object", () => {
+		const table = new BackgroundJobTable();
+		const origin = {
+			kind: "agent_task" as const,
+			workerAgentId: "agent-worker",
+		};
+		const job = table.create({
+			toolCallId: "call-assign",
+			toolName: "assign_agent_task",
+			origin,
+		});
+		const snapshot = snapshotBackgroundJob(job);
+		table.background(job.id);
+
+		Object.assign(origin, { workerAgentId: "agent-intruder" });
+
+		expect(job.origin).toEqual({
+			kind: "agent_task",
+			workerAgentId: "agent-worker",
+		});
+		expect(snapshot.origin).toEqual({
+			kind: "agent_task",
+			workerAgentId: "agent-worker",
+		});
+		expect(
+			table.settle(
+				job.id,
+				{ status: "completed" },
+				{ settledBy: "agent-intruder" },
+			),
+		).toBe("denied");
+		expect(
+			table.settle(
+				job.id,
+				{ status: "completed" },
+				{ settledBy: "agent-worker" },
+			),
+		).toBe("backgrounded");
+	});
+
+	// Nothing watches a delegated job's signal, so an abort that only fired the
+	// signal would leave the job stuck in `aborting` forever.
+	it("completes an aborted delegated task as cancelled by itself", () => {
+		const table = new BackgroundJobTable();
+		const transitions: BackgroundJobTransition[] = [];
+		table.onChange((change) => transitions.push(change.transition));
+		const job = table.create({
+			toolCallId: "call-assign",
+			toolName: "assign_agent_task",
+			origin: { kind: "agent_task", workerAgentId: "agent-worker" },
+		});
+		table.background(job.id);
+
+		table.abort(job.id, "Worker was killed");
+
+		expect(transitions).toEqual(["backgrounded", "aborting", "settled"]);
+		expect(table.get(job.id)).toBeUndefined();
+		expect(
+			table.settle(
+				job.id,
+				{ status: "completed" },
+				{ settledBy: "agent-worker" },
+			),
+		).toBe("ignored");
+	});
 });

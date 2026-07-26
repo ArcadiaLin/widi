@@ -14,9 +14,11 @@ import type {
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { TSchema } from "typebox";
 import type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
+import type { MessageSource } from "../message.ts";
 import type { ProviderConfigInput } from "../model-registry.ts";
 import type { ToolDefinition, ToolDefinitionPatch } from "../tools/types.ts";
 import type {
+	AgentId,
 	AgentToolsSnapshot,
 	CandidateItem,
 	OrchestratorEvent,
@@ -97,11 +99,20 @@ export type ExtensionInterceptorName =
 	| "tool_result";
 
 /**
- * WIDI-native input interceptor event (ME slice 6). Fired by promptAgent for
- * every human text ingress. Not a Pi harness hook.
+ * WIDI-native input interceptor event (ME slice 6). Fired by `sendMessage` for
+ * every message ingress, not only human text: an agent-to-agent message, a
+ * background job result, and a system notice all run the same pipeline, so no
+ * input path bypasses an input policy. Not a Pi harness hook.
+ *
+ * `source` tells the cases apart. A handler that only means to rewrite human
+ * input must check it, or it will also rewrite tool results the model is
+ * waiting for. `targetAgentId` is the agent that will read the message, which
+ * is not the handler's own agent for cross-agent delivery.
  */
 export interface ExtensionInputEvent {
 	readonly type: "input";
+	readonly source: MessageSource;
+	readonly targetAgentId: AgentId;
 	readonly text: string;
 	readonly images?: readonly ImageContent[];
 }
@@ -111,6 +122,10 @@ export interface ExtensionInputEvent {
  * the text (and optionally the images; omitted images keep the current ones)
  * and feeds the next handler. A block result rejects the whole input and
  * short-circuits the pipeline; there is no pi-style "handled" escape hatch.
+ *
+ * A block is only enforced for sources whose caller can be told: background job
+ * results are delivered anyway, because the model already holds the job handle
+ * and would otherwise wait forever for a result that was silently dropped.
  */
 export type ExtensionInputResult =
 	| { text: string; images?: readonly ImageContent[] }

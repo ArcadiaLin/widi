@@ -650,12 +650,7 @@ export class WidiTuiApplication {
 			if (outcome.kind === "blocked") {
 				agent.pendingInput = undefined;
 				this.restoreEditor(rawText, agentId);
-				this.addApplicationNotice(
-					outcome.reason
-						? `Input blocked by ${outcome.blockedBy}: ${outcome.reason}`
-						: `Input blocked by ${outcome.blockedBy}.`,
-					agentId,
-				);
+				this.addApplicationNotice(blockedInputNotice(outcome), agentId);
 			}
 		} catch (error) {
 			const pending = ensureAgentProjection(this.state, agentId).pendingInput;
@@ -674,6 +669,10 @@ export class WidiTuiApplication {
 	 * Default running-agent path (v2 §11.2): plain text joins the core followUp
 	 * queue and is consumed automatically when the run ends. The queued texts
 	 * come back through queue_update and feed the QueuedInputView.
+	 *
+	 * Routed through sendMessage rather than followUpAgent so this text meets the
+	 * same input policy as a prompt: an extension that blocks or rewrites human
+	 * input must not be bypassed by typing while the agent happens to be running.
 	 */
 	private async submitFollowUp(
 		agentId: string,
@@ -682,7 +681,16 @@ export class WidiTuiApplication {
 	): Promise<void> {
 		this.editor.addToHistory(rawText);
 		try {
-			await this.orchestrator.followUpAgent(agentId, text);
+			const outcome = await this.orchestrator.sendMessage({
+				source: { kind: "human" },
+				targetAgentId: agentId,
+				body: text,
+				mode: "next_turn",
+			});
+			if (outcome.kind === "blocked") {
+				this.restoreEditor(rawText, agentId);
+				this.addApplicationNotice(blockedInputNotice(outcome), agentId);
+			}
 		} catch (error) {
 			this.restoreEditor(rawText, agentId);
 			if (error instanceof OrchestratorError) {
@@ -716,10 +724,23 @@ export class WidiTuiApplication {
 		this.drafts.set(agentId, "");
 		this.editor.addToHistory(text);
 		this.track(
-			this.orchestrator.steerAgent(agentId, text).catch((error) => {
-				this.restoreEditor(text, agentId);
-				this.addApplicationNotice(errorMessage(error), agentId);
-			}),
+			this.orchestrator
+				.sendMessage({
+					source: { kind: "human" },
+					targetAgentId: agentId,
+					body: text,
+					mode: "interrupt",
+				})
+				.then((outcome) => {
+					if (outcome.kind !== "blocked") return;
+					this.restoreEditor(text, agentId);
+					this.addApplicationNotice(blockedInputNotice(outcome), agentId);
+					this.tui.requestRender();
+				})
+				.catch((error) => {
+					this.restoreEditor(text, agentId);
+					this.addApplicationNotice(errorMessage(error), agentId);
+				}),
 		);
 		this.tui.requestRender();
 	}
@@ -1235,4 +1256,14 @@ export async function runWidiTui(options: WidiTuiOptions): Promise<void> {
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+/** Shared notice for every human-input path an extension policy can block. */
+function blockedInputNotice(blocked: {
+	reason?: string;
+	blockedBy: string;
+}): string {
+	return blocked.reason
+		? `Input blocked by ${blocked.blockedBy}: ${blocked.reason}`
+		: `Input blocked by ${blocked.blockedBy}.`;
 }

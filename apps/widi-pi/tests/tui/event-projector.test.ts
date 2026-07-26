@@ -617,6 +617,7 @@ describe("EventProjector", () => {
 			agentId: "worker",
 			job: {
 				jobId: "job-1",
+				origin: { kind: "tool" },
 				toolCallId: "call-1",
 				toolName: "bash",
 				phase: "backgrounded",
@@ -635,6 +636,7 @@ describe("EventProjector", () => {
 			agentId: "worker",
 			job: {
 				jobId: "job-1",
+				origin: { kind: "tool" },
 				toolCallId: "call-1",
 				toolName: "bash",
 				phase: "backgrounded",
@@ -960,6 +962,7 @@ function jobSnapshot(
 ): BackgroundJobSnapshot {
 	return {
 		jobId,
+		origin: { kind: "tool" },
 		toolCallId: `call-${jobId}`,
 		toolName: "bash",
 		description: `run ${jobId}`,

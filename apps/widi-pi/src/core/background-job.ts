@@ -7,9 +7,8 @@ import type { TextContent } from "@earendil-works/pi-ai";
  * A backgroundable tool call settles immediately with a job handle (t0), then
  * the eventual outcome is delivered as a separate message injected later (t1).
  * The LLM protocol forbids a deferred tool_result, so t1 is injected as a
- * normal user message via `harness.steer()` into the agent's active run when it
- * is still running, or `harness.prompt()` at the next idle boundary otherwise
- * (the orchestrator buffers and routes settlements).
+ * normal user message: the orchestrator hands each settlement to `sendMessage`,
+ * which arbitrates the harness method from the target's live delivery phase.
  *
  * This module owns the message/result shapes and their identities (t0 handle,
  * t1 message text) plus the `BackgroundJobTable` that tracks live jobs, streams
@@ -512,10 +511,27 @@ function deepFreeze(value: unknown): void {
 /** Lifecycle phase of a live background job before it settles. */
 export type BackgroundJobPhase = "running" | "backgrounded";
 
+/**
+ * Who owns a job's eventual outcome.
+ *
+ * `tool` is the ordinary case: a tool call is still running and will settle the
+ * job itself. `agent_task` is work delegated to another agent - there is no
+ * local promise to wait on, so the named worker settles it externally and the
+ * table completes an abort on its own. The job id is the whole task identity;
+ * multi-agent work adds no second lifecycle beside this one.
+ */
+export type BackgroundJobOrigin =
+	| { readonly kind: "tool" }
+	| { readonly kind: "agent_task"; readonly workerAgentId: string };
+
+const TOOL_ORIGIN: BackgroundJobOrigin = Object.freeze({ kind: "tool" });
+
 /** Public, read-only view of a background job. */
 export interface BackgroundJob {
 	/** Runtime-local job handle returned to the model at t0. */
 	readonly id: string;
+	/** Who settles this job. */
+	readonly origin: BackgroundJobOrigin;
 	/** Id of the tool call that started the job. */
 	readonly toolCallId: string;
 	/** Name of the tool that started the job. */
@@ -608,6 +624,8 @@ export type BackgroundJobReportListener = (
 export interface BackgroundJobSnapshot {
 	/** Runtime-local job handle returned to the model at t0. */
 	readonly jobId: string;
+	/** Who settles this job: a local tool call, or a delegated worker agent. */
+	readonly origin: BackgroundJobOrigin;
 	/** Id of the tool call that started the job. */
 	readonly toolCallId: string;
 	/** Name of the tool that started the job. */
@@ -646,6 +664,7 @@ export function snapshotBackgroundJob(
 ): BackgroundJobSnapshot {
 	return {
 		jobId: job.id,
+		origin: job.origin,
 		toolCallId: job.toolCallId,
 		toolName: job.toolName,
 		description: job.description,
@@ -670,8 +689,15 @@ export function snapshotBackgroundJob(
  * - `inline`: the job settled before the deadline; the adapter returns the
  *   result inline and no change fires.
  * - `ignored`: the job was already settled or unknown.
+ * - `denied`: an `agent_task` job was settled by someone other than its worker;
+ *   nothing changed, and the caller must surface the refusal rather than
+ *   retrying as a different identity.
  */
-export type BackgroundJobSettleResult = "backgrounded" | "inline" | "ignored";
+export type BackgroundJobSettleResult =
+	| "backgrounded"
+	| "inline"
+	| "ignored"
+	| "denied";
 
 interface JobRecord {
 	readonly controller: AbortController;
@@ -771,6 +797,8 @@ export class BackgroundJobTable {
 		toolName: string;
 		description?: string;
 		report?: BackgroundJobReport;
+		/** Defaults to a locally-settled tool call. */
+		origin?: BackgroundJobOrigin;
 	}): BackgroundJob {
 		const startedAt = Date.now();
 		const initialReport =
@@ -782,6 +810,14 @@ export class BackgroundJobTable {
 						startedAt,
 					);
 		const id = this._createId();
+		// Detached and frozen: the origin is the settlement authority, and a
+		// caller that kept its object must not be able to hand the job to a
+		// different worker later - or rewrite the origin on snapshots already
+		// published to surfaces.
+		const origin: BackgroundJobOrigin =
+			input.origin === undefined
+				? TOOL_ORIGIN
+				: Object.freeze({ ...input.origin });
 		const controller = new AbortController();
 		const output = new BackgroundJobOutput(
 			DEFAULT_BACKGROUND_JOB_OUTPUT_MAX_BYTES,
@@ -803,6 +839,7 @@ export class BackgroundJobTable {
 			lastReportAt: 0,
 			view: {
 				id,
+				origin,
 				toolCallId: input.toolCallId,
 				toolName: input.toolName,
 				description: input.description,
@@ -889,19 +926,27 @@ export class BackgroundJobTable {
 	 * Record a job's terminal outcome. Emits a `settled` change only when the job
 	 * had been backgrounded; a job that settled while still `running` returns
 	 * `inline` and is delivered by the adapter's inline return instead.
+	 *
+	 * `settledBy` authorizes an external settlement: an `agent_task` job has no
+	 * local promise, so its outcome is written by the delegated worker and only
+	 * by that worker. Tool-origin jobs ignore it - their settler is the tool call
+	 * the table already handed the job to.
 	 */
-	settle(id: string, outcome: BackgroundJobOutcome): BackgroundJobSettleResult {
+	settle(
+		id: string,
+		outcome: BackgroundJobOutcome,
+		options: { settledBy?: string } = {},
+	): BackgroundJobSettleResult {
 		const record = this._jobs.get(id);
 		if (!record || record.settled) return "ignored";
-		record.settled = true;
-		record.endedAt = Date.now();
-		record.stopReason ??= stopReasonFromOutcome(outcome);
-		this._flushReport(record);
-		this._clearProgressTimer(record);
-		this._jobs.delete(id);
-		if (record.phase !== "backgrounded") return "inline";
-		this._emitChange({ transition: "settled", job: record.view, outcome });
-		return "backgrounded";
+		const origin = record.view.origin;
+		if (
+			origin.kind === "agent_task" &&
+			options.settledBy !== origin.workerAgentId
+		) {
+			return "denied";
+		}
+		return this._settle(id, record, outcome);
 	}
 
 	/**
@@ -923,6 +968,12 @@ export class BackgroundJobTable {
 			this._emitChange({ transition: "aborting", job: record.view });
 		}
 		record.controller.abort();
+		// A delegated task has no executor watching the signal, so nothing would
+		// ever confirm the abort. Complete the transition here instead of leaving
+		// the job stuck in `aborting` forever.
+		if (record.view.origin.kind === "agent_task" && !record.settled) {
+			this._settle(id, record, { status: "cancelled" });
+		}
 	}
 
 	/** Subscribe to observable job lifecycle changes. Returns an unsubscribe. */
@@ -941,6 +992,22 @@ export class BackgroundJobTable {
 	onReport(listener: BackgroundJobReportListener): () => void {
 		this._reportListeners.add(listener);
 		return () => this._reportListeners.delete(listener);
+	}
+
+	private _settle(
+		id: string,
+		record: JobRecord,
+		outcome: BackgroundJobOutcome,
+	): BackgroundJobSettleResult {
+		record.settled = true;
+		record.endedAt = Date.now();
+		record.stopReason ??= stopReasonFromOutcome(outcome);
+		this._flushReport(record);
+		this._clearProgressTimer(record);
+		this._jobs.delete(id);
+		if (record.phase !== "backgrounded") return "inline";
+		this._emitChange({ transition: "settled", job: record.view, outcome });
+		return "backgrounded";
 	}
 
 	/**

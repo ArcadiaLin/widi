@@ -1,0 +1,531 @@
+import {
+	AgentHarnessError,
+	type AgentHarnessEvent,
+} from "@earendil-works/pi-agent-core";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { describe, expect, it, vi } from "vitest";
+import type {
+	AgentOrchestrator,
+	OrchestratorEvent,
+} from "../../src/core/agent-orchestrator.ts";
+import {
+	type AgentProfile,
+	AgentProfileRegistry,
+	InMemoryProfileStorageBackend,
+} from "../../src/core/agent-profile.ts";
+import type { BackgroundJobChange } from "../../src/core/background-job.ts";
+import { MessageError } from "../../src/core/message.ts";
+import {
+	createOrchestrator,
+	defaultProfile,
+	MemoryExecutionEnv,
+	requireAgentHarness,
+	requireAgentRecord,
+} from "../helpers/orchestrator.ts";
+
+function createDeferred<T>(): {
+	readonly promise: Promise<T>;
+	readonly resolve: (value: T) => void;
+} {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((done) => {
+		resolve = done;
+	});
+	return { promise, resolve };
+}
+
+/**
+ * Drive the harness `agent_start` the orchestrator subscribes to. A delivery is
+ * only accepted once the agent loop is actually running, so a test that mocks
+ * `prompt` has to produce that fact itself.
+ */
+async function driveAgentStart(
+	orchestrator: AgentOrchestrator,
+	agentId: string,
+): Promise<void> {
+	await (
+		orchestrator as unknown as {
+			_handleSubscribedAgentHarnessEvent: (
+				agentId: string,
+				event: AgentHarnessEvent,
+			) => Promise<void>;
+		}
+	)._handleSubscribedAgentHarnessEvent(agentId, { type: "agent_start" });
+}
+
+/** An orchestrator whose default profile loads the named extension. */
+async function createExtensionOrchestrator(
+	extensionId: string,
+): Promise<AgentOrchestrator> {
+	const profile: AgentProfile = {
+		...defaultProfile,
+		id: `${extensionId}-profile`,
+		persist: false,
+		extensions: [extensionId],
+	};
+	return await createOrchestrator(new MemoryExecutionEnv(), {
+		defaultProfileId: profile.id,
+		profileRegistry: new AgentProfileRegistry(
+			InMemoryProfileStorageBackend.fromProfiles([{ profile }]),
+		),
+	});
+}
+
+describe("AgentOrchestrator.sendMessage", () => {
+	it("attributes the sender and returns before the target replies", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const sourceAgentId = await orchestrator.spawnAgent();
+		const targetAgentId = await orchestrator.spawnAgent();
+		const target = requireAgentRecord(orchestrator, targetAgentId);
+		const run = createDeferred<AssistantMessage>();
+		const prompt = vi
+			.spyOn(requireAgentHarness(orchestrator, targetAgentId), "prompt")
+			.mockReturnValue(run.promise);
+
+		const accepted = orchestrator.sendMessage({
+			source: { kind: "agent", agentId: sourceAgentId },
+			targetAgentId,
+			body: "Please review this.",
+			mode: "next_turn",
+		});
+		await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
+		await driveAgentStart(orchestrator, targetAgentId);
+		await accepted;
+
+		// Acceptance, not completion: the run is still in flight.
+		expect(prompt).toHaveBeenCalledTimes(1);
+		expect(prompt.mock.calls[0]?.[0]).toBe(
+			`[Message from ${sourceAgentId}]\n\nPlease review this.`,
+		);
+		expect(target.status).toBe("running");
+
+		run.resolve({} as AssistantMessage);
+		await vi.waitFor(() => expect(target.status).toBe("idle"));
+	});
+
+	it("lets only one of two concurrent senders claim the idle target", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const targetAgentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, targetAgentId);
+		const run = createDeferred<AssistantMessage>();
+		const prompt = vi.spyOn(harness, "prompt").mockReturnValue(run.promise);
+		const followUp = vi.spyOn(harness, "followUp").mockResolvedValue();
+
+		const accepted = Promise.all([
+			orchestrator.sendMessage({
+				source: { kind: "system", name: "first" },
+				targetAgentId,
+				body: "first",
+				mode: "next_turn",
+			}),
+			orchestrator.sendMessage({
+				source: { kind: "system", name: "second" },
+				targetAgentId,
+				body: "second",
+				mode: "next_turn",
+			}),
+		]);
+		await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
+		await driveAgentStart(orchestrator, targetAgentId);
+		await accepted;
+
+		expect(prompt).toHaveBeenCalledTimes(1);
+		expect(prompt.mock.calls[0]?.[0]).toBe("[Message from first]\n\nfirst");
+		expect(followUp).toHaveBeenCalledTimes(1);
+		expect(followUp.mock.calls[0]?.[0]).toBe("[Message from second]\n\nsecond");
+		run.resolve({} as AssistantMessage);
+	});
+
+	it("steers only when the sender asks to interrupt", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const targetAgentId = await orchestrator.spawnAgent();
+		const record = requireAgentRecord(orchestrator, targetAgentId);
+		const harness = requireAgentHarness(orchestrator, targetAgentId);
+		const steer = vi.spyOn(harness, "steer").mockResolvedValue();
+		const followUp = vi.spyOn(harness, "followUp").mockResolvedValue();
+		record.status = "running";
+
+		await orchestrator.sendMessage({
+			source: { kind: "agent", agentId: "agent-peer" },
+			targetAgentId,
+			body: "ordinary",
+			mode: "next_turn",
+		});
+		await orchestrator.sendMessage({
+			source: { kind: "human" },
+			targetAgentId,
+			body: "stop that",
+			mode: "interrupt",
+		});
+
+		expect(followUp).toHaveBeenCalledTimes(1);
+		expect(steer).toHaveBeenCalledTimes(1);
+		expect(steer.mock.calls[0]?.[0]).toBe("stop that");
+	});
+
+	// `AgentLifecycleStatus.running` covers compaction too, but a compacting
+	// harness runs no agent loop: a follow-up accepted here would never be read.
+	it("holds a message through compaction and delivers it afterwards", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const targetAgentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, targetAgentId);
+		const compaction =
+			createDeferred<Awaited<ReturnType<typeof harness.compact>>>();
+		vi.spyOn(harness, "compact").mockReturnValue(compaction.promise);
+		const prompt = vi
+			.spyOn(harness, "prompt")
+			.mockResolvedValue({} as AssistantMessage);
+		const followUp = vi.spyOn(harness, "followUp").mockResolvedValue();
+		const steer = vi.spyOn(harness, "steer").mockResolvedValue();
+
+		const compacting = orchestrator.compactAgent(targetAgentId);
+		const accepted = orchestrator.sendMessage({
+			source: { kind: "agent", agentId: "agent-peer" },
+			targetAgentId,
+			body: "while compacting",
+			mode: "next_turn",
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(followUp).not.toHaveBeenCalled();
+		expect(steer).not.toHaveBeenCalled();
+		expect(prompt).not.toHaveBeenCalled();
+
+		compaction.resolve({ summary: "compacted", tokensBefore: 0 });
+		await compacting;
+		await accepted;
+		expect(prompt).toHaveBeenCalledTimes(1);
+		expect(prompt.mock.calls[0]?.[0]).toContain("while compacting");
+	});
+
+	// The harness builds the turn context, session metadata, and tool context
+	// asynchronously before its agent loop starts, and the user message is not
+	// persisted until then. Reporting acceptance earlier would drop a message the
+	// target never received - fatal for a job result nobody is left to resend.
+	it("waits for the agent loop before reporting a message accepted", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const targetAgentId = await orchestrator.spawnAgent();
+		const record = requireAgentRecord(orchestrator, targetAgentId);
+		vi.spyOn(
+			requireAgentHarness(orchestrator, targetAgentId),
+			"prompt",
+		).mockImplementation(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			throw new Error("failed while building the turn");
+		});
+
+		await expect(
+			orchestrator.sendMessage({
+				source: { kind: "system", name: "watchdog" },
+				targetAgentId,
+				body: "never landed",
+				mode: "next_turn",
+			}),
+		).rejects.toThrow("failed while building the turn");
+		expect(record.status).toBe("idle");
+	});
+
+	// A second maintenance operation that loses the harness's busy check must not
+	// release the window its sibling is still inside.
+	it("keeps the maintenance window while a concurrent compaction fails", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const targetAgentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, targetAgentId);
+		const compaction =
+			createDeferred<Awaited<ReturnType<typeof harness.compact>>>();
+		let compactions = 0;
+		vi.spyOn(harness, "compact").mockImplementation(() => {
+			compactions += 1;
+			// Only the first caller into the harness gets the window; the other
+			// loses the busy check, whichever order they arrive in.
+			return compactions === 1
+				? compaction.promise
+				: Promise.reject(
+						new AgentHarnessError("busy", "compact() requires idle harness"),
+					);
+		});
+		const prompt = vi
+			.spyOn(harness, "prompt")
+			.mockResolvedValue({} as AssistantMessage);
+		const followUp = vi.spyOn(harness, "followUp").mockResolvedValue();
+
+		const outcomes: unknown[] = [];
+		const compacting = [
+			orchestrator.compactAgent(targetAgentId),
+			orchestrator.compactAgent(targetAgentId),
+		];
+		for (const attempt of compacting) {
+			void attempt.then(
+				(result) => outcomes.push(result),
+				(error: unknown) => outcomes.push(error),
+			);
+		}
+		await vi.waitFor(() => expect(outcomes).toHaveLength(1));
+		expect(outcomes[0]).toBeInstanceOf(AgentHarnessError);
+
+		const accepted = orchestrator.sendMessage({
+			source: { kind: "agent", agentId: "agent-peer" },
+			targetAgentId,
+			body: "while compacting",
+			mode: "next_turn",
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		// Still compacting: the message must not be queued into a run that is not
+		// reading input, and the agent must not have been handed back as idle.
+		expect(followUp).not.toHaveBeenCalled();
+		expect(orchestrator.getAgentStatus(targetAgentId)).toBe("running");
+
+		compaction.resolve({ summary: "compacted", tokensBefore: 0 });
+		await Promise.allSettled(compacting);
+		await accepted;
+		expect(prompt).toHaveBeenCalledTimes(1);
+	});
+
+	it("refuses an unknown target and an empty body", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const targetAgentId = await orchestrator.spawnAgent();
+
+		await expect(
+			orchestrator.sendMessage({
+				source: { kind: "system", name: "test" },
+				targetAgentId: "agent-missing",
+				body: "hello",
+				mode: "next_turn",
+			}),
+		).rejects.toThrow("Unknown agent");
+		await expect(
+			orchestrator.sendMessage({
+				source: { kind: "system", name: "test" },
+				targetAgentId,
+				body: "   ",
+				mode: "next_turn",
+			}),
+		).rejects.toBeInstanceOf(MessageError);
+	});
+});
+
+describe("AgentOrchestrator message interception", () => {
+	it("shows the interceptor who sent the message and who reads it", async () => {
+		const orchestrator = await createExtensionOrchestrator("observer");
+		const seen: Array<{ source: string; targetAgentId: string }> = [];
+		orchestrator.registerExtension("observer", (api) => {
+			api.intercept("input", (event) => {
+				seen.push({
+					source: event.source.kind,
+					targetAgentId: event.targetAgentId,
+				});
+				return undefined;
+			});
+		});
+		const targetAgentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, targetAgentId);
+		vi.spyOn(harness, "prompt").mockResolvedValue({} as AssistantMessage);
+
+		await orchestrator.sendMessage({
+			source: { kind: "agent", agentId: "agent-peer" },
+			targetAgentId,
+			body: "from a peer",
+			mode: "next_turn",
+		});
+		await orchestrator.promptAgent(targetAgentId, "from a human");
+
+		expect(seen).toEqual([
+			{ source: "agent", targetAgentId },
+			{ source: "human", targetAgentId },
+		]);
+	});
+
+	it("reports a blocked agent message instead of delivering it", async () => {
+		const orchestrator = await createExtensionOrchestrator("policy");
+		orchestrator.registerExtension("policy", (api) => {
+			api.intercept("input", (event) =>
+				event.source.kind === "agent"
+					? { block: true, reason: "No peer messages." }
+					: undefined,
+			);
+		});
+		const targetAgentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, targetAgentId);
+		const prompt = vi
+			.spyOn(harness, "prompt")
+			.mockResolvedValue({} as AssistantMessage);
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+
+		await expect(
+			orchestrator.sendMessage({
+				source: { kind: "agent", agentId: "agent-peer" },
+				targetAgentId,
+				body: "from a peer",
+				mode: "next_turn",
+			}),
+		).resolves.toEqual({
+			kind: "blocked",
+			inputId: expect.any(String),
+			reason: "No peer messages.",
+			blockedBy: "policy",
+		});
+		expect(prompt).not.toHaveBeenCalled();
+		expect(events).toContainEqual(
+			expect.objectContaining({ type: "input_blocked", blockedBy: "policy" }),
+		);
+	});
+
+	// The model holds this job's t0 handle and is waiting for exactly one result.
+	it("delivers a blocked background job result anyway, with a diagnostic", async () => {
+		const orchestrator = await createExtensionOrchestrator("policy");
+		orchestrator.registerExtension("policy", (api) => {
+			api.intercept("input", () => ({
+				block: true,
+				reason: "Nothing gets in.",
+			}));
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const record = requireAgentRecord(orchestrator, agentId);
+		const prompt = vi
+			.spyOn(requireAgentHarness(orchestrator, agentId), "prompt")
+			.mockResolvedValue({} as AssistantMessage);
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+
+		const job = record.backgroundJobTable.create({
+			toolCallId: "call-1",
+			toolName: "sleeper",
+		});
+		record.backgroundJobTable.background(job.id);
+		record.backgroundJobTable.settle(job.id, {
+			status: "completed",
+			result: {
+				content: [{ type: "text", text: "build done" }],
+				details: undefined,
+			},
+		});
+
+		await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
+		expect(prompt.mock.calls[0]?.[0]).toContain("build done");
+		expect(
+			events
+				.filter((event) => event.type === "diagnostic")
+				.map((event) => event.diagnostic.code),
+		).toContain("orchestrator.message_block_ignored");
+	});
+});
+
+describe("AgentOrchestrator delegated task jobs", () => {
+	function assignTask(
+		orchestrator: AgentOrchestrator,
+		ownerAgentId: string,
+		workerAgentId: string,
+	): string {
+		const table = requireAgentRecord(
+			orchestrator,
+			ownerAgentId,
+		).backgroundJobTable;
+		const job = table.create({
+			toolCallId: "call-assign",
+			toolName: "assign_agent_task",
+			origin: { kind: "agent_task", workerAgentId },
+		});
+		table.background(job.id);
+		return job.id;
+	}
+
+	it("routes a worker's completion to the owner through the job's own result", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const ownerAgentId = await orchestrator.spawnAgent();
+		const workerAgentId = await orchestrator.spawnAgent();
+		const owner = requireAgentRecord(orchestrator, ownerAgentId);
+		const ownerPrompt = vi
+			.spyOn(requireAgentHarness(orchestrator, ownerAgentId), "prompt")
+			.mockResolvedValue({} as AssistantMessage);
+		const taskId = assignTask(orchestrator, ownerAgentId, workerAgentId);
+
+		// Only the assigned worker may settle it.
+		expect(
+			owner.backgroundJobTable.settle(
+				taskId,
+				{ status: "completed" },
+				{ settledBy: "agent-intruder" },
+			),
+		).toBe("denied");
+		expect(owner.backgroundJobTable.get(taskId)).toBeDefined();
+		expect(ownerPrompt).not.toHaveBeenCalled();
+
+		expect(
+			owner.backgroundJobTable.settle(
+				taskId,
+				{
+					status: "completed",
+					result: {
+						content: [{ type: "text", text: "The router is sound." }],
+						details: undefined,
+					},
+				},
+				{ settledBy: workerAgentId },
+			),
+		).toBe("backgrounded");
+
+		await vi.waitFor(() => expect(ownerPrompt).toHaveBeenCalledTimes(1));
+		expect(ownerPrompt.mock.calls[0]?.[0]).toContain(taskId);
+		expect(ownerPrompt.mock.calls[0]?.[0]).toContain("The router is sound.");
+		// Exactly one completion message: the job's t1 is the whole protocol.
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(ownerPrompt).toHaveBeenCalledTimes(1);
+	});
+
+	it("cancels the tasks a disposed worker still owes, keeping its owner alive", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const ownerAgentId = await orchestrator.spawnAgent();
+		const workerAgentId = await orchestrator.spawnAgent();
+		const owner = requireAgentRecord(orchestrator, ownerAgentId);
+		const ownerPrompt = vi
+			.spyOn(requireAgentHarness(orchestrator, ownerAgentId), "prompt")
+			.mockResolvedValue({} as AssistantMessage);
+		const changes: BackgroundJobChange[] = [];
+		owner.backgroundJobTable.onChange((change) => changes.push(change));
+		const taskId = assignTask(orchestrator, ownerAgentId, workerAgentId);
+
+		await orchestrator.disposeAgent(workerAgentId, "Worker was killed");
+
+		// No executor watches a delegated job's signal, so the table itself has to
+		// finish the transition rather than leave it stuck in `aborting`.
+		expect(owner.backgroundJobTable.get(taskId)).toBeUndefined();
+		expect(changes.map((change) => change.transition)).toEqual([
+			"backgrounded",
+			"aborting",
+			"settled",
+		]);
+		expect(changes.at(-1)).toMatchObject({
+			transition: "settled",
+			outcome: { status: "cancelled" },
+		});
+		expect(orchestrator.getAgentStatus(ownerAgentId)).toBe("idle");
+		await vi.waitFor(() => expect(ownerPrompt).toHaveBeenCalledTimes(1));
+		expect(ownerPrompt.mock.calls[0]?.[0]).toContain("Worker was killed");
+	});
+
+	// Dispose detaches the owner's job listener before aborting its jobs, so the
+	// `settled` changes that normally clear the index never arrive. A resumed
+	// agent reuses the id with a table numbering from job-1 again, and a stale
+	// entry would later cancel an unrelated job that shares the id.
+	it("forgets a disposed owner's tasks instead of leaving stale index entries", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const ownerAgentId = await orchestrator.spawnAgent();
+		const workerAgentId = await orchestrator.spawnAgent();
+		assignTask(orchestrator, ownerAgentId, workerAgentId);
+		const index = (
+			orchestrator as unknown as {
+				_taskJobsByWorker: Map<string, Set<unknown>>;
+			}
+		)._taskJobsByWorker;
+		expect(index.get(workerAgentId)?.size).toBe(1);
+
+		await orchestrator.disposeAgent(ownerAgentId);
+
+		expect(index.has(workerAgentId)).toBe(false);
+	});
+});

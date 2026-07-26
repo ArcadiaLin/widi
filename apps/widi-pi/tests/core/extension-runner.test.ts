@@ -708,6 +708,8 @@ describe("ExtensionRunner interceptors", () => {
 
 		const run = await runner.interceptInput({
 			type: "input",
+			source: { kind: "human" },
+			targetAgentId: "agent-1",
 			text: "base",
 			images,
 		});
@@ -752,7 +754,12 @@ describe("ExtensionRunner interceptors", () => {
 			],
 		]);
 
-		const run = await runner.interceptInput({ type: "input", text: "base" });
+		const run = await runner.interceptInput({
+			type: "input",
+			source: { kind: "human" },
+			targetAgentId: "agent-1",
+			text: "base",
+		});
 
 		expect(run).toEqual({
 			kind: "block",
@@ -785,7 +792,12 @@ describe("ExtensionRunner interceptors", () => {
 			],
 		]);
 
-		const run = await runner.interceptInput({ type: "input", text: "base" });
+		const run = await runner.interceptInput({
+			type: "input",
+			source: { kind: "human" },
+			targetAgentId: "agent-1",
+			text: "base",
+		});
 
 		expect(run).toMatchObject({
 			kind: "block",
@@ -812,7 +824,12 @@ describe("ExtensionRunner interceptors", () => {
 		]);
 
 		await expect(
-			runner.interceptInput({ type: "input", text: "base" }),
+			runner.interceptInput({
+				type: "input",
+				source: { kind: "human" },
+				targetAgentId: "agent-1",
+				text: "base",
+			}),
 		).resolves.toEqual({ kind: "pass", diagnostics: [] });
 	});
 

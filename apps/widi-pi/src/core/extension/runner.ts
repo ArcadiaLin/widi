@@ -553,7 +553,7 @@ export class ExtensionRunner {
 		let images = event.images;
 		for (const registration of registrations) {
 			const run = await this._runInterceptor(registration, {
-				type: "input",
+				...event,
 				text,
 				images,
 			});
