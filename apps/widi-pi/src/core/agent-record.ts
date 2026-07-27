@@ -19,6 +19,7 @@ import type {
 } from "./extension/index.ts";
 import type { ResourceSource } from "./resource-loader.ts";
 import type { AgentSessionMetadata } from "./session-manager.ts";
+import type { ProjectContextFile } from "./system-prompt.ts";
 import type {
 	ResolvedAgentHarnessTool,
 	ToolAdapterContext,
@@ -46,6 +47,15 @@ export interface AgentResourceFact {
 export interface AgentResourcesSnapshot {
 	readonly skills: readonly AgentResourceFact[];
 	readonly promptTemplates: readonly AgentResourceFact[];
+}
+
+/** Everything the system prompt callback needs beyond the live harness state. */
+export interface AgentSystemPromptFacts {
+	/** Appended sections owned by the profile and the settings, in that order. */
+	readonly appendSections: readonly string[];
+	readonly contextFiles: readonly ProjectContextFile[];
+	/** The working directory to state, or undefined to leave it out. */
+	readonly cwd?: string;
 }
 
 /** The concrete AgentHarness instantiation used by every WIDI agent. */
@@ -77,6 +87,13 @@ export interface AgentRecord {
 	harness?: WidiAgentHarness;
 	toolSnapshot?: AgentToolsSnapshot;
 	resources?: AgentResourcesSnapshot;
+	/**
+	 * System prompt composition resolved from the profile and the settings, plus
+	 * the project instruction files loaded for it. Held here because the harness
+	 * rebuilds its system prompt every turn through a synchronous callback that
+	 * cannot go back to disk.
+	 */
+	systemPrompt?: AgentSystemPromptFacts;
 	extensionRunner?: ExtensionRunner;
 	/**
 	 * Pseudo-async background jobs owned by this agent. Job ownership is
@@ -208,6 +225,7 @@ export function createEmptyExtensionSnapshot(): ExtensionRunnerSnapshot {
 		hooks: [],
 		toolContributions: [],
 		providerContributions: [],
+		systemPromptContributions: [],
 		divisions: [],
 		stale: { stale: false },
 	};

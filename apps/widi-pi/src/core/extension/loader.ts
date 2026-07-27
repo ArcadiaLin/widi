@@ -43,6 +43,13 @@ export interface ExtensionProviderContribution {
 	readonly divisionId?: string;
 }
 
+/** A section an extension adds to the system prompt, in registration order. */
+export interface ExtensionSystemPromptContribution {
+	readonly extensionId: string;
+	readonly text: string;
+	readonly divisionId?: string;
+}
+
 export interface ExtensionObserverRegistration {
 	extensionId: string;
 	eventName: ExtensionObservedEventName;
@@ -158,6 +165,7 @@ export interface LoadedExtensionScope {
 	diagnostics: readonly CoreDiagnostic[];
 	toolContributions: readonly ExtensionToolContribution[];
 	providerContributions: readonly ExtensionProviderContribution[];
+	systemPromptContributions: readonly ExtensionSystemPromptContribution[];
 	observerHandlers: ReadonlyMap<
 		ExtensionObservedEventName,
 		readonly ExtensionObserverRegistration[]
@@ -449,6 +457,7 @@ export class ExtensionLoader {
 		const diagnostics: CoreDiagnostic[] = [];
 		const toolContributions: ExtensionToolContribution[] = [];
 		const providerContributions: ExtensionProviderContribution[] = [];
+		const systemPromptContributions: ExtensionSystemPromptContribution[] = [];
 		const observerHandlers = new Map<
 			ExtensionObservedEventName,
 			ExtensionObserverRegistration[]
@@ -523,6 +532,7 @@ export class ExtensionLoader {
 				divisionDiagnostics: [],
 				toolContributions,
 				providerContributions,
+				systemPromptContributions,
 				observerHandlers,
 				interceptorHandlers,
 				disposeHandlers,
@@ -615,6 +625,7 @@ export class ExtensionLoader {
 			diagnostics,
 			toolContributions,
 			providerContributions,
+			systemPromptContributions,
 			observerHandlers,
 			interceptorHandlers,
 			disposeHandlers,
@@ -958,6 +969,7 @@ interface ExtensionActivationScope {
 	readonly divisionDiagnostics: CoreDiagnostic[];
 	readonly toolContributions: ExtensionToolContribution[];
 	readonly providerContributions: ExtensionProviderContribution[];
+	readonly systemPromptContributions: ExtensionSystemPromptContribution[];
 	readonly observerHandlers: Map<
 		ExtensionObservedEventName,
 		ExtensionObserverRegistration[]
@@ -1061,6 +1073,17 @@ function createActivationApi(
 				extensionId,
 				providerName: normalized,
 				config,
+				divisionId,
+			});
+		},
+		appendSystemPrompt: (text) => {
+			const normalized = text.trim();
+			if (!normalized) {
+				throw new Error("Appended system prompt text must not be empty.");
+			}
+			scope.systemPromptContributions.push({
+				extensionId,
+				text: normalized,
 				divisionId,
 			});
 		},

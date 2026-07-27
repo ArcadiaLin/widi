@@ -119,12 +119,20 @@ export interface ExtensionProviderContributionSnapshot {
 	readonly divisionId?: string;
 }
 
+// System prompt contribution facts carry no text: the appended section is
+// prompt content, not an inspectable fact about the extension.
+export interface ExtensionSystemPromptContributionSnapshot {
+	readonly extensionId: string;
+	readonly divisionId?: string;
+}
+
 export interface ExtensionRunnerSnapshot {
 	extensionIds: readonly string[];
 	extensions: readonly ExtensionIdentity[];
 	hooks: readonly ExtensionHookSnapshot[];
 	toolContributions: readonly ExtensionToolContributionSnapshot[];
 	providerContributions: readonly ExtensionProviderContributionSnapshot[];
+	systemPromptContributions: readonly ExtensionSystemPromptContributionSnapshot[];
 	// Declared and used divisions with their resolved state; empty for an agent
 	// whose extensions declare none.
 	divisions: readonly ExtensionDivisionSnapshot[];
@@ -201,6 +209,13 @@ export class ExtensionRunner {
 		return this._loadedScope.providerContributions;
 	}
 
+	/** The appended system prompt sections, in registration order. */
+	getSystemPromptAppends(): readonly string[] {
+		return this._loadedScope.systemPromptContributions.map(
+			(contribution) => contribution.text,
+		);
+	}
+
 	invalidate(
 		message = "This extension context is stale after runtime replacement or reload.",
 	): void {
@@ -240,6 +255,7 @@ export class ExtensionRunner {
 			diagnostics: this.diagnostics,
 			toolContributions: [],
 			providerContributions: [],
+			systemPromptContributions: [],
 			observerHandlers: new Map(),
 			interceptorHandlers: new Map(),
 			disposeHandlers: [],
@@ -317,6 +333,11 @@ export class ExtensionRunner {
 					divisionId: contribution.divisionId,
 				}),
 			),
+			systemPromptContributions:
+				this._loadedScope.systemPromptContributions.map((contribution) => ({
+					extensionId: contribution.extensionId,
+					divisionId: contribution.divisionId,
+				})),
 			divisions: [...this._loadedScope.divisions],
 			stale: this._staleMessage
 				? { stale: true, message: this._staleMessage }

@@ -105,6 +105,30 @@ describe("extension divisions", () => {
 		]);
 	});
 
+	it("drops an appended system prompt section from a disabled division", async () => {
+		const scope = await loadScope(
+			{
+				apiVersion: 1,
+				divisions: [{ id: "guidance", label: "Guidance" }],
+				activate: async (api) => {
+					api.appendSystemPrompt("root section");
+					await api.division("guidance", (division) => {
+						division.appendSystemPrompt("division section");
+					});
+				},
+			},
+			{ settings: { integration: { disable: ["guidance"] } } },
+		);
+
+		expect(scope.systemPromptContributions).toEqual([
+			{
+				extensionId: "integration",
+				text: "root section",
+				divisionId: undefined,
+			},
+		]);
+	});
+
 	it("never runs a disabled division's register callback", async () => {
 		let registerRuns = 0;
 		const scope = await loadScope(

@@ -31,6 +31,16 @@ export type AgentProfile = {
 	readonly persist: boolean;
 	readonly tools?: readonly string[];
 	readonly skills?: readonly string[];
+	/**
+	 * Whether the project's own instruction files (AGENTS.md and friends) are
+	 * inlined into this role's system prompt. Unset defers to settings, which
+	 * default to including them.
+	 */
+	readonly projectContext?: boolean;
+	/** Whether the system prompt states the working directory. Unset defers to settings. */
+	readonly includeCwd?: boolean;
+	/** Extra text appended to this role's system prompt, ahead of the settings' own. */
+	readonly appendSystemPrompt?: string;
 };
 
 export type AgentProfileOverride = Partial<Omit<AgentProfile, "id">>;
@@ -175,6 +185,9 @@ type AgentProfileFrontmatter = {
 	readonly persist?: unknown;
 	readonly tools?: unknown;
 	readonly skills?: unknown;
+	readonly projectContext?: unknown;
+	readonly includeCwd?: unknown;
+	readonly appendSystemPrompt?: unknown;
 	readonly [key: string]: unknown;
 };
 
@@ -969,6 +982,19 @@ function parseAgentProfile(
 		entry,
 		diagnostics,
 	);
+	const projectContext = readBoolean(
+		frontmatter.projectContext,
+		"projectContext",
+		entry,
+		diagnostics,
+	);
+	const includeCwd = readBoolean(
+		frontmatter.includeCwd,
+		"includeCwd",
+		entry,
+		diagnostics,
+	);
+	const appendSystemPrompt = readString(frontmatter.appendSystemPrompt);
 
 	if (diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
 		return { profile: undefined, diagnostics };
@@ -984,6 +1010,9 @@ function parseAgentProfile(
 			persist: metadataResult.metadata.persist,
 			tools,
 			skills,
+			projectContext,
+			includeCwd,
+			appendSystemPrompt,
 		},
 		diagnostics: diagnostics.slice(metadataDiagnosticCount),
 	};
@@ -1344,6 +1373,20 @@ function serializeProfile(profile: AgentProfile): string {
 	}
 	if (profile.skills) {
 		lines.push(`skills: ${serializeStringArray(profile.skills)}`);
+	}
+	if (profile.projectContext !== undefined) {
+		lines.push(`projectContext: ${profile.projectContext ? "true" : "false"}`);
+	}
+	if (profile.includeCwd !== undefined) {
+		lines.push(`includeCwd: ${profile.includeCwd ? "true" : "false"}`);
+	}
+	if (profile.appendSystemPrompt) {
+		lines.push(
+			...serializeFrontmatterText(
+				"appendSystemPrompt",
+				profile.appendSystemPrompt,
+			),
+		);
 	}
 	lines.push("---", profile.systemPrompt);
 	return lines.join("\n");

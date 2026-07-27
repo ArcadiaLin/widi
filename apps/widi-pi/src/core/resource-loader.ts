@@ -17,6 +17,7 @@ import {
 	DEFAULT_SKILL_DIR,
 } from "./constants.js";
 import type { CoreDiagnostic } from "./diagnostics.ts";
+import type { ProjectContextFile } from "./system-prompt.ts";
 
 export type ResourceSource =
 	| { readonly kind: "agent_dir"; readonly path: string }
@@ -29,6 +30,21 @@ export interface ResourceRoot {
 	readonly kind: "agent_dir" | "cwd" | "settings";
 	readonly path: string;
 }
+
+/**
+ * The project's own instruction files, in the order they are inlined into the
+ * system prompt: the agent dir's copy first, then the ancestor chain from the
+ * outermost directory down to the cwd, so the most specific file is read last.
+ */
+const CONTEXT_FILE_NAMES = [
+	"AGENTS.md",
+	"AGENTS.MD",
+	"CLAUDE.md",
+	"CLAUDE.MD",
+] as const;
+
+/** Guards against a path shape whose parent never reaches a root. */
+const MAX_CONTEXT_FILE_ANCESTORS = 128;
 
 /**
  * A resource a profile named explicitly that no root produced. Loading skips
@@ -56,6 +72,8 @@ export interface LoadedAgentResources {
 		promptTemplate: PromptTemplate;
 		source: ResourceSource;
 	}[];
+	/** Empty when the agent's role or the settings turned project context off. */
+	readonly contextFiles: readonly ProjectContextFile[];
 	/** Already carries a `resource.*` code and the offending path. */
 	readonly diagnostics: readonly CoreDiagnostic[];
 }
@@ -66,6 +84,12 @@ export interface ResourceLoaderOptions {
 	agentDir?: string;
 	skillRoots?: readonly ResourceRoot[];
 	promptTemplateRoots?: readonly ResourceRoot[];
+	/**
+	 * Where to look for project instruction files. Defaults to the agent dir
+	 * plus the cwd; the caller drops the cwd root for an untrusted project, the
+	 * same way it narrows the other roots.
+	 */
+	contextFileRoots?: readonly ResourceRoot[];
 }
 
 export class ResourceLoader {
@@ -74,6 +98,7 @@ export class ResourceLoader {
 	private readonly _agentDir!: string;
 	private readonly _skillRoots: readonly ResourceRoot[] | undefined;
 	private readonly _promptTemplateRoots: readonly ResourceRoot[] | undefined;
+	private readonly _contextFileRoots: readonly ResourceRoot[];
 
 	constructor(options: ResourceLoaderOptions) {
 		this._executionEnv = options.executionEnv;
@@ -83,6 +108,17 @@ export class ResourceLoader {
 		this._promptTemplateRoots = options.promptTemplateRoots
 			? [...options.promptTemplateRoots]
 			: undefined;
+		this._contextFileRoots = options.contextFileRoots
+			? [...options.contextFileRoots]
+			: [
+					{ kind: "agent_dir", path: this._agentDir },
+					{ kind: "cwd", path: this._cwd },
+				];
+	}
+
+	/** The project directory every root and relative path is resolved against. */
+	getCwd(): string {
+		return this._cwd;
 	}
 
 	getSkillRoots(): readonly ResourceRoot[] {
@@ -91,6 +127,10 @@ export class ResourceLoader {
 
 	getPromptTemplateRoots(): readonly ResourceRoot[] {
 		return [...(this._promptTemplateRoots ?? [])];
+	}
+
+	getContextFileRoots(): readonly ResourceRoot[] {
+		return [...this._contextFileRoots];
 	}
 
 	/**
@@ -103,22 +143,96 @@ export class ResourceLoader {
 	 */
 	async loadAgentResources(
 		profile: AgentProfile,
+		options: { includeProjectContext?: boolean } = {},
 	): Promise<LoadedAgentResources> {
-		const [skills, promptTemplates] = await Promise.all([
+		const includeProjectContext = options.includeProjectContext ?? true;
+		const [skills, promptTemplates, contextFiles] = await Promise.all([
 			this.loadSkills(profile.skills),
 			this.loadPromptTemplates(),
+			includeProjectContext
+				? this.loadContextFiles()
+				: Promise.resolve({ contextFiles: [], diagnostics: [] }),
 		]);
 		return {
 			skills: skills.skills,
 			promptTemplates: promptTemplates.promptTemplates,
+			contextFiles: contextFiles.contextFiles,
 			diagnostics: [
 				...toResourceDiagnostics("skill", skills.diagnostics),
 				...toResourceDiagnostics(
 					"prompt_template",
 					promptTemplates.diagnostics,
 				),
+				...contextFiles.diagnostics,
 			],
 		};
+	}
+
+	/**
+	 * Load the project's own instruction files. Each root contributes at most
+	 * one file - the first candidate name that exists there - and a `cwd` root
+	 * also walks its ancestors up to the filesystem root, so a repository's
+	 * AGENTS.md still applies when the agent starts in a subdirectory.
+	 *
+	 * A missing file is the ordinary case and stays silent; a file that exists
+	 * but cannot be read is reported, because that is a project instruction the
+	 * agent is running without.
+	 */
+	async loadContextFiles(): Promise<{
+		contextFiles: ProjectContextFile[];
+		diagnostics: CoreDiagnostic[];
+	}> {
+		const contextFiles: ProjectContextFile[] = [];
+		const diagnostics: CoreDiagnostic[] = [];
+		const seenPaths = new Set<string>();
+
+		for (const root of this._contextFileRoots) {
+			const rootPath = await this._absolutePath(root.path);
+			const directories =
+				root.kind === "cwd" ? ancestorPaths(rootPath) : [rootPath];
+			// Ancestors come back nearest-first; the outermost instructions are
+			// the most general, so they go in first.
+			for (const directory of [...directories].reverse()) {
+				const file = await this._loadContextFileFromDir(directory, diagnostics);
+				if (!file || seenPaths.has(file.path)) continue;
+				seenPaths.add(file.path);
+				contextFiles.push(file);
+			}
+		}
+
+		return { contextFiles, diagnostics };
+	}
+
+	/** Candidate names are tried in order; an unreadable one falls through to the next. */
+	private async _loadContextFileFromDir(
+		directory: string,
+		diagnostics: CoreDiagnostic[],
+	): Promise<ProjectContextFile | undefined> {
+		for (const name of CONTEXT_FILE_NAMES) {
+			const path = await this._joinPath(directory, name);
+			const info = await this._executionEnv.fileInfo(path);
+			if (!info.ok) {
+				if (info.error.code !== "not_found") {
+					diagnostics.push({
+						severity: "warning",
+						code: "resource.context_file.file_info_failed",
+						message: `${info.error.message} (${path})`,
+					});
+				}
+				continue;
+			}
+			const content = await this._executionEnv.readTextFile(path);
+			if (!content.ok) {
+				diagnostics.push({
+					severity: "warning",
+					code: "resource.context_file.read_failed",
+					message: `${content.error.message} (${path})`,
+				});
+				continue;
+			}
+			return { path, content: content.value };
+		}
+		return undefined;
 	}
 
 	/**
@@ -274,6 +388,48 @@ export class ResourceLoader {
 		}
 		return result.value;
 	}
+
+	private async _absolutePath(path: string): Promise<string> {
+		const result = await this._executionEnv.absolutePath(path);
+		if (!result.ok) {
+			throw result.error;
+		}
+		return result.value;
+	}
+}
+
+/**
+ * The directory itself followed by each ancestor, nearest first.
+ *
+ * Done by string rather than through the execution env: `ExecutionEnv` has no
+ * dirname, and joining `".."` is not resolved by every implementation. Both
+ * separators are handled because addressed paths keep their platform's shape
+ * (`basenameEnvPath` in agent-profile.ts makes the same trade).
+ */
+function ancestorPaths(path: string): string[] {
+	const paths: string[] = [];
+	let current = path.replace(/[/\\]+$/, "");
+	if (current === "") {
+		return path === "" ? [] : [path.slice(0, 1)];
+	}
+	while (current && paths.length < MAX_CONTEXT_FILE_ANCESTORS) {
+		paths.push(current);
+		const separatorIndex = Math.max(
+			current.lastIndexOf("/"),
+			current.lastIndexOf("\\"),
+		);
+		if (separatorIndex < 0) break;
+		const parent = current.slice(0, separatorIndex);
+		// A path directly under a posix root slices down to "": that root is the
+		// last directory to visit, and it has no parent of its own.
+		if (parent === "") {
+			paths.push(current.slice(0, separatorIndex + 1));
+			break;
+		}
+		if (parent === current) break;
+		current = parent;
+	}
+	return paths;
 }
 
 function toResourceDiagnostics(

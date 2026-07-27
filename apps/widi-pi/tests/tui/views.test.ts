@@ -637,6 +637,7 @@ function snapshot(
 			hooks: [],
 			toolContributions: [],
 			providerContributions: [],
+			systemPromptContributions: [],
 			divisions: [],
 			stale: { stale: false },
 		},

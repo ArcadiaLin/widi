@@ -11,7 +11,6 @@ import {
 	type AgentHarnessResources,
 	calculateContextTokens,
 	type ExecutionEnv,
-	formatSkillsForSystemPrompt,
 	getLastAssistantUsage,
 	type JsonlSessionMetadata,
 	type PromptTemplate,
@@ -32,7 +31,6 @@ import type {
 	AgentTaskOutcome,
 	ToolAgentHost,
 } from "./agent-host.ts";
-import { CORE_AGENT_TOOL_NAMES } from "./agent-host.ts";
 import type {
 	AgentProfile,
 	AgentProfileOverride,
@@ -131,6 +129,7 @@ import type {
 	SessionManager,
 } from "./session-manager.ts";
 import type { SettingManager } from "./setting-manager.js";
+import { buildAgentSystemPrompt } from "./system-prompt.ts";
 import {
 	createAgentHarnessToolsFromResolvedTools,
 	type ResolvedAgentHarnessTool,
@@ -2068,7 +2067,12 @@ export class AgentOrchestrator {
 		// resolution happens earlier still and cannot reference them.
 		await this._applyExtensionProviderContributions(agentId, extensionRunner);
 
-		const loaded = await this.resourceLoader.loadAgentResources(profile);
+		const promptSettings = this.settingManager.getSystemPromptSettings();
+		const includeProjectContext =
+			profile.projectContext ?? promptSettings.projectContext;
+		const loaded = await this.resourceLoader.loadAgentResources(profile, {
+			includeProjectContext,
+		});
 		const resourceDiagnostics: OrchestratorDiagnostic[] =
 			loaded.diagnostics.map((diagnostic) => ({ ...diagnostic, agentId }));
 		await this._publishDiagnostics(resourceDiagnostics);
@@ -2092,6 +2096,23 @@ export class AgentOrchestrator {
 				}),
 			),
 		};
+		// The role's own append text comes first: it is the most specific
+		// statement about this agent, and the settings speak for the whole
+		// installation. Extension sections follow, read per turn from the runner.
+		this._requireAgentRecord(agentId).systemPrompt = {
+			appendSections: [
+				...(profile.appendSystemPrompt ? [profile.appendSystemPrompt] : []),
+				...promptSettings.append,
+			],
+			contextFiles: loaded.contextFiles,
+			// The resource loader's cwd, not the execution env's: it is the project
+			// directory the file tools resolve their relative paths against, and
+			// the prompt has to name the same one.
+			cwd:
+				(profile.includeCwd ?? promptSettings.includeCwd)
+					? this.resourceLoader.getCwd()
+					: undefined,
+		};
 
 		const agentToolSet = await this._resolveAgentTools({
 			agentId,
@@ -2113,13 +2134,23 @@ export class AgentOrchestrator {
 			tools: agentToolSet.tools,
 			// Callback instead of a string so the skills listing tracks the
 			// harness's current resources and active tools at each turn start.
-			systemPrompt: ({ resources: current, activeTools }) =>
-				buildAgentSystemPrompt(
-					profile.systemPrompt,
-					current,
+			// The record is read here rather than captured: an extension reload
+			// replaces the runner, and its appended sections must follow.
+			systemPrompt: ({ resources: current, activeTools }) => {
+				const record = this._agents.get(agentId);
+				return buildAgentSystemPrompt({
+					basePrompt: profile.systemPrompt,
+					resources: current,
 					activeTools,
 					agentId,
-				),
+					appendSections: [
+						...(record?.systemPrompt?.appendSections ?? []),
+						...(record?.extensionRunner?.getSystemPromptAppends() ?? []),
+					],
+					contextFiles: record?.systemPrompt?.contextFiles,
+					cwd: record?.systemPrompt?.cwd,
+				});
+			},
 			model: model,
 			thinkingLevel: options.thinkingLevel,
 			activeToolNames: [...agentToolSet.activeToolNames],
@@ -4056,92 +4087,6 @@ function selectActiveToolNames(
 	return { activeToolNames, diagnostics };
 }
 
-/**
- * Prompt guidance carried by an active tool. Resolved harness tools match this
- * shape; tools without registry prompt metadata contribute nothing.
- */
-export interface ToolPromptGuidance {
-	name: string;
-	promptSnippet?: string;
-	promptGuidelines?: readonly string[];
-}
-
-/**
- * Compose the tool guidance section from the active tools' promptSnippet and
- * promptGuidelines. Snippets keep the active tool order; guidelines are
- * deduplicated by exact text so shared guidance appears once. Returns an
- * empty string when no active tool contributes guidance.
- */
-export function formatToolGuidanceForSystemPrompt(
-	activeTools: readonly ToolPromptGuidance[],
-): string {
-	const snippetLines: string[] = [];
-	const guidelineLines: string[] = [];
-	const seenGuidelines = new Set<string>();
-	for (const tool of activeTools) {
-		const snippet = tool.promptSnippet?.trim();
-		if (snippet) {
-			snippetLines.push(`- ${tool.name}: ${snippet}`);
-		}
-		for (const guideline of tool.promptGuidelines ?? []) {
-			const normalized = guideline.trim();
-			if (!normalized || seenGuidelines.has(normalized)) continue;
-			seenGuidelines.add(normalized);
-			guidelineLines.push(`- ${normalized}`);
-		}
-	}
-
-	const parts: string[] = [];
-	if (snippetLines.length > 0) {
-		parts.push(`Available tools:\n${snippetLines.join("\n")}`);
-	}
-	if (guidelineLines.length > 0) {
-		parts.push(`Tool guidelines:\n${guidelineLines.join("\n")}`);
-	}
-	return parts.join("\n\n");
-}
-
-/**
- * Compose the harness system prompt from the profile prompt plus the active
- * tools' prompt guidance and a model-visible skills listing (agentskills.io
- * block via pi-agent-core). The listing is how the model discovers skills on
- * its own; it tells the model to read the skill file, so it is only appended
- * when a read tool is active. Explicit invocation stays available either way
- * through `/skill`, which inlines the body instead of pointing at it.
- *
- * The agent's own id is appended on the same principle: it is a per-agent value
- * a static prompt snippet cannot carry, and it only means anything to an agent
- * that can address other agents, so it follows the active collaboration tools.
- */
-export function buildAgentSystemPrompt(
-	basePrompt: string,
-	resources: AgentHarnessResources,
-	activeTools: readonly ToolPromptGuidance[],
-	agentId?: AgentId,
-): string {
-	const sections = [basePrompt];
-	if (
-		agentId !== undefined &&
-		activeTools.some((tool) => CORE_AGENT_TOOL_NAMES.includes(tool.name))
-	) {
-		sections.push(
-			`You are agent ${agentId}. Other agents address you by that id.`,
-		);
-	}
-	const toolGuidance = formatToolGuidanceForSystemPrompt(activeTools);
-	if (toolGuidance !== "") {
-		sections.push(toolGuidance);
-	}
-	const hasReadTool = activeTools.some((tool) => tool.name === "read");
-	if (hasReadTool) {
-		const skillsSection = formatSkillsForSystemPrompt(resources.skills ?? []);
-		if (skillsSection !== "") {
-			sections.push(skillsSection);
-		}
-	}
-	return sections.join("\n\n");
-}
-
 // Every config-value channel in a provider config: the provider api key and
 // the provider- and model-level request headers.
 function hasCommandConfigValues(
@@ -4167,6 +4112,9 @@ function changesRecoverableProfileFields(
 		override.systemPrompt !== undefined ||
 		override.tools !== undefined ||
 		override.skills !== undefined ||
+		override.projectContext !== undefined ||
+		override.includeCwd !== undefined ||
+		override.appendSystemPrompt !== undefined ||
 		override.persist !== undefined
 	);
 }

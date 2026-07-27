@@ -390,6 +390,53 @@ describe("AgentProfileRegistry", () => {
 		});
 	});
 
+	it("reads the system prompt composition fields and round-trips them", async () => {
+		const registry = new AgentProfileRegistry(
+			new InMemoryProfileStorageBackend([
+				{
+					entryId: "memory:explore",
+					filenameId: "explore",
+					source: { kind: "memory", priority: 100 },
+					content: [
+						"---",
+						"id: explore",
+						"projectContext: false",
+						"includeCwd: false",
+						"appendSystemPrompt: |",
+						"  Report paths only.",
+						"",
+						"  Never edit.",
+						"---",
+						"Explore prompt",
+					].join("\n"),
+				},
+			]),
+		);
+
+		const result = await registry.resolveProfile("explore");
+
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error("Expected profile to resolve.");
+		expect(result.profile).toMatchObject({
+			projectContext: false,
+			includeCwd: false,
+			appendSystemPrompt: "Report paths only.\n\nNever edit.",
+		});
+
+		// The same values have to survive a serialization round trip, or an
+		// in-memory profile silently loses its prompt composition.
+		const roundTripped = await new AgentProfileRegistry(
+			InMemoryProfileStorageBackend.fromProfiles([{ profile: result.profile }]),
+		).resolveProfile("explore");
+		expect(roundTripped.ok).toBe(true);
+		if (!roundTripped.ok) throw new Error("Expected profile to resolve.");
+		expect(roundTripped.profile).toMatchObject({
+			projectContext: false,
+			includeCwd: false,
+			appendSystemPrompt: "Report paths only.\n\nNever edit.",
+		});
+	});
+
 	it("indexes declared ids and does not treat filename as an alias", async () => {
 		const env = new MemoryExecutionEnv();
 		await env.writeFile(

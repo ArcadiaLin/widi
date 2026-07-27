@@ -250,6 +250,16 @@ api.registerProvider("my-gateway", {
 
 Credential 归 AuthStorage；`!command` config value 受 project trust gate。Extension provider 不能 override built-in/models.json provider。
 
+## 追加 system prompt
+
+```ts
+api.appendSystemPrompt("Prefer the repository's own lint script over ad-hoc commands.");
+```
+
+段落排在角色正文、tool guidance、profile/settings 的 append 段之后，`<project_context>` 之前，多次调用按注册顺序保留。放在 division 里，它就随那个 division 一起开关。
+
+想整段替换 system prompt 而不是追加，用 `intercept("before_agent_start", ...)` 返回 `systemPrompt`。
+
 ## Observe 与 intercept
 
 `observe()` 适合日志、审计、统计和 session ledger。Observer failure 不影响原操作。

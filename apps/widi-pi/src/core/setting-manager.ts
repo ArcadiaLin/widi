@@ -70,6 +70,18 @@ export interface WarningSettings {
 	anthropicExtraUsage?: boolean;
 }
 
+export interface SystemPromptSettings {
+	/**
+	 * Default: true. Inline the project's own instruction files (AGENTS.md and
+	 * friends) into every agent's system prompt.
+	 */
+	projectContext?: boolean;
+	/** Default: true. State the working directory in the system prompt. */
+	includeCwd?: boolean;
+	/** Extra sections appended to every agent's system prompt. */
+	append?: string[];
+}
+
 export type DefaultProjectTrust = "ask" | "always" | "never";
 export type ThinkingLevelSetting = ThinkingLevel;
 
@@ -128,6 +140,8 @@ export interface Settings {
 	themes?: string[];
 	terminal?: TerminalSettings;
 	images?: ImageSettings;
+	/** Installation-wide system prompt composition. Profiles may override each item. */
+	systemPrompt?: SystemPromptSettings;
 	/** Model patterns used by model cycling/selectors. */
 	enabledModels?: string[];
 	/** Profile ids allowed by runtime policy. Undefined means no restriction. */
@@ -868,6 +882,18 @@ export class SettingManager {
 			timeoutMs: this.settings.retry?.provider?.timeoutMs,
 			maxRetries: this.settings.retry?.provider?.maxRetries,
 			maxRetryDelayMs: this.settings.retry?.provider?.maxRetryDelayMs ?? 60000,
+		};
+	}
+
+	getSystemPromptSettings(): {
+		projectContext: boolean;
+		includeCwd: boolean;
+		append: string[];
+	} {
+		return {
+			projectContext: this.settings.systemPrompt?.projectContext ?? true,
+			includeCwd: this.settings.systemPrompt?.includeCwd ?? true,
+			append: [...(this.settings.systemPrompt?.append ?? [])],
 		};
 	}
 

@@ -52,8 +52,31 @@ Profile 的主要职责是声明 agent build 输入：
 - `skills`：ResourceLoader 的选择范围；未写则加载 roots 下全部 skill。
 - `commands`：command input 的 enable/deny policy。
 - `description` / `whenToUse`：只面向调用方。前者说这个角色是什么，后者说什么时候该选它而不是隔壁那个，是 `list_agent_profiles` 真正依赖的字段。两者都不进 system prompt。
+- `projectContext` / `includeCwd` / `appendSystemPrompt`：system prompt composition 的角色级开关，见下。
 
 解析但没有 runtime consumer 的 policy 字段不应长期保留。
+
+### System prompt composition
+
+Harness system prompt 由 `core/system-prompt.ts` 组装，段序固定：
+
+1. profile 正文（角色自己的那段话）。
+2. `You are agent <id>.`——只在激活了协作工具时出现。
+3. `Available tools:` / `Tool guidelines:`——来自激活工具的 `promptSnippet` 与 `promptGuidelines`。
+4. append 段：profile 的 `appendSystemPrompt`、settings 的 `systemPrompt.append`、extension 的 `appendSystemPrompt()` 贡献，按此顺序。
+5. `<project_context>`：项目自己的指令文件全文。
+6. `<available_skills>`——只在激活了 `read` 工具且有 skill 时出现。
+7. `Current working directory:`——文件工具解析相对路径所依据的那个目录。
+
+第 4、5、7 段各有一个开关，profile 优先于 settings，settings 优先于内置默认：
+
+| 段 | profile frontmatter | settings 键 | 默认 |
+| --- | --- | --- | --- |
+| 项目上下文 | `projectContext: false` | `systemPrompt.projectContext` | 开 |
+| cwd 行 | `includeCwd: false` | `systemPrompt.includeCwd` | 开 |
+| append 文本 | `appendSystemPrompt: \|` | `systemPrompt.append: []` | 空 |
+
+项目上下文文件由 `ResourceLoader.loadContextFiles()` 收集：每个目录按 `AGENTS.md` → `AGENTS.MD` → `CLAUDE.md` → `CLAUDE.MD` 取第一个命中，先取 agent dir 那份，再从 cwd 逐级向上到文件系统根，最一般的祖先排在前、cwd 自己排在最后。未信任的项目不贡献 cwd 侧文件——项目指令和 skill、extension 一样是项目内容。文件在 agent build 时读入并缓存进 `AgentRecord`：system prompt 回调每回合执行，不回盘。
 
 ### Frontmatter 形态
 
@@ -117,7 +140,7 @@ Profile diagnostics 覆盖 source read、frontmatter parse、metadata validation
 
 ResourceLoader 把 Pi 的 `SkillDiagnostic` / `PromptTemplateDiagnostic` 归一化为 `CoreDiagnostic`，code 加上 `resource.skill.` / `resource.prompt_template.` 前缀并拼上出错路径；orchestrator 只补 agent context 再发布。Resource failure 以报告为主，不由 loader 私自决定 agent lifecycle。
 
-`loadAgentResources(profile)` 是 agent build 的单一入口：按 profile 收窄 skills、整体加载 prompt templates，并一次返回归一化 diagnostics。Orchestrator 不再自行组合这两类资源。
+`loadAgentResources(profile)` 是 agent build 的单一入口：按 profile 收窄 skills、整体加载 prompt templates、按 `includeProjectContext` 决定是否读项目指令文件，并一次返回归一化 diagnostics。Orchestrator 不再自行组合这几类资源。项目指令文件无法检查或读取时分别报 `resource.context_file.file_info_failed`、`resource.context_file.read_failed`；文件不存在是常态，静默。
 
 ## 非职责
 

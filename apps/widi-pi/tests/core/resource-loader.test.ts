@@ -1,10 +1,22 @@
+import {
+	err,
+	type FileInfo,
+	FileError as PiFileError,
+	type Result,
+} from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
-import { ResourceLoader } from "../../src/core/resource-loader.ts";
+import {
+	ResourceLoader,
+	type ResourceLoaderOptions,
+} from "../../src/core/resource-loader.ts";
 import { MemoryExecutionEnv } from "../helpers/orchestrator.ts";
 
 const CWD = "/workspace";
 
-function loader(files: Record<string, string>) {
+function loader(
+	files: Record<string, string>,
+	overrides: Partial<ResourceLoaderOptions> = {},
+) {
 	const env = new MemoryExecutionEnv();
 	for (const [path, content] of Object.entries(files)) {
 		env.files.set(path, content);
@@ -19,6 +31,7 @@ function loader(files: Record<string, string>) {
 		executionEnv: env,
 		cwd: CWD,
 		agentDir: `${CWD}/.widi`,
+		...overrides,
 	});
 }
 
@@ -63,6 +76,119 @@ describe("ResourceLoader prompt templates", () => {
 
 		expect(result.promptTemplates).toEqual([]);
 		expect(result.diagnostics).toEqual([]);
+	});
+});
+
+describe("ResourceLoader context files", () => {
+	it("collects the agent dir file, then the ancestor chain ending at the cwd", async () => {
+		const result = await loader(
+			{
+				"/AGENTS.md": "ROOT",
+				"/workspace/AGENTS.md": "WORKSPACE",
+				"/workspace/app/AGENTS.md": "APP",
+				"/workspace/.widi/AGENTS.md": "AGENT DIR",
+			},
+			{ cwd: "/workspace/app" },
+		).loadContextFiles();
+
+		expect(result.contextFiles).toEqual([
+			{ path: "/workspace/.widi/AGENTS.md", content: "AGENT DIR" },
+			{ path: "/AGENTS.md", content: "ROOT" },
+			{ path: "/workspace/AGENTS.md", content: "WORKSPACE" },
+			{ path: "/workspace/app/AGENTS.md", content: "APP" },
+		]);
+		expect(result.diagnostics).toEqual([]);
+	});
+
+	it("loads a context file when the cwd is the filesystem root", async () => {
+		const result = await loader(
+			{ "/AGENTS.md": "ROOT" },
+			{ cwd: "/", agentDir: "/.widi" },
+		).loadContextFiles();
+
+		expect(result.contextFiles).toEqual([
+			{ path: "/AGENTS.md", content: "ROOT" },
+		]);
+		expect(result.diagnostics).toEqual([]);
+	});
+
+	it("takes one file per directory, in candidate order", async () => {
+		const result = await loader({
+			"/workspace/AGENTS.md": "AGENTS",
+			"/workspace/CLAUDE.md": "CLAUDE",
+		}).loadContextFiles();
+
+		expect(result.contextFiles).toEqual([
+			{ path: "/workspace/AGENTS.md", content: "AGENTS" },
+		]);
+	});
+
+	it("reads a file once when the agent dir sits on the cwd chain", async () => {
+		const result = await loader(
+			{ "/workspace/AGENTS.md": "SHARED" },
+			{ agentDir: CWD },
+		).loadContextFiles();
+
+		expect(result.contextFiles).toEqual([
+			{ path: "/workspace/AGENTS.md", content: "SHARED" },
+		]);
+	});
+
+	it("leaves out project files when no cwd root is configured", async () => {
+		const result = await loader(
+			{
+				"/workspace/AGENTS.md": "PROJECT",
+				"/workspace/.widi/AGENTS.md": "AGENT DIR",
+			},
+			{
+				contextFileRoots: [{ kind: "agent_dir", path: `${CWD}/.widi` }],
+			},
+		).loadContextFiles();
+
+		expect(result.contextFiles).toEqual([
+			{ path: "/workspace/.widi/AGENTS.md", content: "AGENT DIR" },
+		]);
+	});
+
+	it("stays silent when no project file exists", async () => {
+		const result = await loader({}).loadContextFiles();
+
+		expect(result.contextFiles).toEqual([]);
+		expect(result.diagnostics).toEqual([]);
+	});
+
+	it("reports file inspection failures other than a missing candidate", async () => {
+		class FailingFileInfoEnv extends MemoryExecutionEnv {
+			override async fileInfo(
+				path: string,
+			): Promise<Result<FileInfo, PiFileError>> {
+				if (path === "/workspace/AGENTS.md") {
+					return err(
+						new PiFileError(
+							"permission_denied",
+							"Cannot inspect project instructions",
+							path,
+						),
+					);
+				}
+				return await super.fileInfo(path);
+			}
+		}
+		const result = await new ResourceLoader({
+			executionEnv: new FailingFileInfoEnv(),
+			cwd: CWD,
+			agentDir: `${CWD}/.widi`,
+			contextFileRoots: [{ kind: "cwd", path: CWD }],
+		}).loadContextFiles();
+
+		expect(result.contextFiles).toEqual([]);
+		expect(result.diagnostics).toEqual([
+			{
+				severity: "warning",
+				code: "resource.context_file.file_info_failed",
+				message: "Cannot inspect project instructions (/workspace/AGENTS.md)",
+			},
+		]);
 	});
 });
 

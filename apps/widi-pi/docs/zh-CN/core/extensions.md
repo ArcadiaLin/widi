@@ -110,6 +110,12 @@ Contribution 是 own-agent overlay。Core/profile resources 先注册并优先�
 
 Extension provider 不能 override built-in、models.json、runtime dynamic 或其他 extension 已注册的 name。Config value 由 core 在请求期解析；包含 `!command` 时必须通过 project trust gate。Credential 与 OAuth refresh 仍归 AuthStorage/pi-ai runtime。
 
+### System prompt
+
+`appendSystemPrompt(text)` 在激活期追加一段 system prompt。段落按注册顺序排在 profile 正文、agent id 行、tool guidance 之后，profile 与 settings 的 append 段之后，`<project_context>` 之前。空文本是编程错误，直接抛错。
+
+这是**追加**通道；整段改写属于 `before_agent_start` interceptor。禁用 division 的 `register` 根本不会执行，其中的追加自然不存在。每回合重建 system prompt 时都从当前 runner 读取，因此 extension reload 后新的段落立即生效。Inspect fact 只报 `extensionId` 与 `divisionId`：正文是 prompt 内容，不是关于 extension 的事实。
+
 ## Hook model
 
 Hook 只有两条注册通道：

@@ -513,6 +513,15 @@ export interface ExtensionActivationApi {
 		patch: ToolDefinitionPatch<TParamsSchema, TDetails>,
 	): void;
 	registerProvider(providerName: string, config: ExtensionProviderConfig): void;
+	/**
+	 * Append a section to the agent's system prompt, after the role's own text
+	 * and the tool guidance. Sections keep registration order, and one from a
+	 * disabled division is never registered at all.
+	 *
+	 * This is the additive channel: rewriting the whole prompt is what the
+	 * `before_agent_start` interceptor is for.
+	 */
+	appendSystemPrompt(text: string): void;
 	observe<TName extends ExtensionObservedEventName>(
 		eventName: TName,
 		handler: ExtensionObserverFor<TName>,

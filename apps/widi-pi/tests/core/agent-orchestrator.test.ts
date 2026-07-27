@@ -7,8 +7,6 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import {
 	AgentOrchestrator,
-	buildAgentSystemPrompt,
-	formatToolGuidanceForSystemPrompt,
 	type OrchestratorEvent,
 } from "../../src/core/agent-orchestrator.ts";
 import {
@@ -258,6 +256,26 @@ async function createExtensionActionsHarness(): Promise<{
 		agentId,
 		actions: runner.createContext("sample").actions,
 	};
+}
+
+/** Run the harness's own system prompt callback against its current state. */
+async function readSystemPrompt(
+	orchestrator: AgentOrchestrator,
+	agentId: string,
+): Promise<string> {
+	const harness = requireAgentHarness(orchestrator, agentId);
+	const systemPrompt = (
+		harness as unknown as {
+			systemPrompt: (context: {
+				resources: unknown;
+				activeTools: { name: string }[];
+			}) => string | Promise<string>;
+		}
+	).systemPrompt;
+	return await systemPrompt({
+		resources: harness.getResources(),
+		activeTools: harness.getActiveTools(),
+	});
 }
 
 describe("AgentOrchestrator", () => {
@@ -596,6 +614,18 @@ describe("AgentOrchestrator", () => {
 		).rejects.toMatchObject({
 			code: "profile.override_not_persistable",
 		});
+
+		for (const profileOverride of [
+			{ projectContext: false },
+			{ includeCwd: false },
+			{ appendSystemPrompt: "temporary suffix" },
+		]) {
+			await expect(
+				orchestrator.spawnAgent({ profileOverride }),
+			).rejects.toMatchObject({
+				code: "profile.override_not_persistable",
+			});
+		}
 	});
 
 	it("dispatches agent query and mutation operations", async () => {
@@ -1031,63 +1061,61 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
-	it("deduplicates guidance and omits the section without contributions", () => {
+	it("inlines project instruction files and states the working directory", async () => {
+		const env = new MemoryExecutionEnv();
+		await env.writeFile("/workspace/project/AGENTS.md", "PROJECT RULES");
+		const orchestrator = await createOrchestrator(env, {
+			settingManager: new SettingManager({
+				systemPrompt: { append: ["FROM SETTINGS"] },
+			}),
+		});
+		orchestrator.registerExtension("sample", (api) => {
+			api.appendSystemPrompt("FROM EXTENSION");
+		});
+		const agentId = await orchestrator.spawnAgent();
+
+		const prompt = await readSystemPrompt(orchestrator, agentId);
+
+		expect(prompt).toContain(
+			'<project_instructions path="/workspace/project/AGENTS.md">\nPROJECT RULES',
+		);
+		expect(prompt).toContain("FROM SETTINGS");
+		expect(prompt).toContain("FROM EXTENSION");
+		// Settings speak for the installation, so an extension's section follows.
+		expect(prompt.indexOf("FROM SETTINGS")).toBeLessThan(
+			prompt.indexOf("FROM EXTENSION"),
+		);
+		// The project directory the file tools resolve against, not the process's.
 		expect(
-			formatToolGuidanceForSystemPrompt([
-				{ name: "a", promptSnippet: "First", promptGuidelines: ["Shared."] },
-				{ name: "b", promptGuidelines: ["Shared.", "  ", "Extra."] },
-				{ name: "c" },
-			]),
-		).toBe(
-			"Available tools:\n- a: First\n\nTool guidelines:\n- Shared.\n- Extra.",
-		);
-		expect(formatToolGuidanceForSystemPrompt([{ name: "plain" }])).toBe("");
-		expect(buildAgentSystemPrompt("base prompt", {}, [{ name: "plain" }])).toBe(
-			"base prompt",
-		);
+			prompt.endsWith("Current working directory: /workspace/project"),
+		).toBe(true);
 	});
 
-	it("names the agent only when it can address other agents", () => {
-		expect(
-			buildAgentSystemPrompt("base prompt", {}, [{ name: "read" }], "worker-2"),
-		).toBe("base prompt");
-		expect(
-			buildAgentSystemPrompt(
-				"base prompt",
-				{},
-				[{ name: "send_message" }],
-				"worker-2",
-			),
-		).toBe(
-			"base prompt\n\nYou are agent worker-2. Other agents address you by that id.",
-		);
-		expect(
-			buildAgentSystemPrompt("base prompt", {}, [{ name: "send_message" }]),
-		).toBe("base prompt");
-	});
-
-	it("keeps the base system prompt when skills are absent or model-hidden", () => {
-		const skill = {
-			name: "code-review",
-			description: "Review code for issues.",
-			content: "BODY",
-			filePath: "/skills/code-review/SKILL.md",
+	it("lets a role turn off its project context, cwd, and add its own section", async () => {
+		const env = new MemoryExecutionEnv();
+		await env.writeFile("/workspace/project/AGENTS.md", "PROJECT RULES");
+		const quietProfile: AgentProfile = {
+			...defaultProfile,
+			projectContext: false,
+			includeCwd: false,
+			appendSystemPrompt: "FROM PROFILE",
 		};
-		expect(buildAgentSystemPrompt("base prompt", {}, [{ name: "read" }])).toBe(
-			"base prompt",
-		);
-		expect(
-			buildAgentSystemPrompt(
-				"base prompt",
-				{ skills: [{ ...skill, disableModelInvocation: true }] },
-				[{ name: "read" }],
+		const orchestrator = await createOrchestrator(env, {
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: quietProfile }]),
 			),
-		).toBe("base prompt");
-		expect(
-			buildAgentSystemPrompt("base prompt", { skills: [skill] }, [
-				{ name: "read" },
-			]),
-		).toContain("<available_skills>");
+			settingManager: new SettingManager({
+				systemPrompt: { append: ["FROM SETTINGS"] },
+			}),
+		});
+		const agentId = await orchestrator.spawnAgent();
+
+		const prompt = await readSystemPrompt(orchestrator, agentId);
+
+		expect(prompt).not.toContain("<project_context>");
+		expect(prompt).not.toContain("Current working directory");
+		// The role's own text comes ahead of the installation-wide one.
+		expect(prompt).toContain("FROM PROFILE\n\nFROM SETTINGS");
 	});
 
 	it("promptAgent persists an expansion entry alongside the prompt", async () => {
@@ -2262,6 +2290,7 @@ describe("AgentOrchestrator", () => {
 				},
 			],
 			providerContributions: [],
+			systemPromptContributions: [],
 			stale: { stale: false },
 		});
 	});

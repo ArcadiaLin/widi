@@ -607,6 +607,12 @@ export async function createWidiRuntime(
 		agentDir,
 		skillRoots,
 		promptTemplateRoots,
+		// Project instruction files are project-local content like any other:
+		// an untrusted project contributes none, leaving only the agent dir's.
+		contextFileRoots: [
+			{ kind: "agent_dir" as const, path: agentDir },
+			...(projectTrust.trusted ? [{ kind: "cwd" as const, path: cwd }] : []),
+		],
 	});
 	const sessionManager = new SessionManager({
 		fs: executionEnv,
