@@ -66,7 +66,7 @@ export interface ExtensionDivisionDeclaration {
 /**
  * User-side division rules for a single extension. Each id applies to that
  * division and its whole subtree; the most specific matching rule wins, and
- * `disable` wins over `enable` within the same layer.
+ * `disable` wins over `enable`.
  */
 export interface ExtensionDivisionSelection {
 	readonly enable?: readonly string[];
@@ -74,19 +74,14 @@ export interface ExtensionDivisionSelection {
 }
 
 /**
- * Layered division rules, keyed by extension id. Layers stay separate rather
- * than pre-merged so the resolved state can name the layer it came from.
+ * Division rules keyed by extension id. Wrapped in a named layer rather than
+ * passed bare so a resolved state can say where its rule came from.
  */
 export interface ExtensionDivisionSelections {
 	readonly settings?: Readonly<Record<string, ExtensionDivisionSelection>>;
-	readonly profile?: Readonly<Record<string, ExtensionDivisionSelection>>;
 }
 
-export type ExtensionDivisionSource =
-	| "default"
-	| "settings"
-	| "profile"
-	| "ancestor";
+export type ExtensionDivisionSource = "default" | "settings" | "ancestor";
 
 /** Resolved per-agent division state, for inspect facts. */
 export interface ExtensionDivisionSnapshot {

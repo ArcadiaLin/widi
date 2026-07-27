@@ -68,7 +68,13 @@ export interface ExtensionDisposeRegistration {
 export interface LoadExtensionScopeOptions {
 	agentId: string;
 	profileId: string;
+	/** Extensions to activate for this agent. Nothing loads when it is empty. */
 	extensionIds?: readonly string[];
+	/**
+	 * How to report an id with no registered factory. Only meaningful when the
+	 * ids were named by hand: a list derived from what is actually available
+	 * cannot name a missing extension.
+	 */
 	missingExtensionSeverity?: "ignore" | "warning" | "error";
 	divisionSelections?: ExtensionDivisionSelections;
 }
@@ -192,6 +198,20 @@ export class ExtensionLoader {
 		return [...this._roots];
 	}
 
+	/**
+	 * Every extension this runtime can activate: discovered from a root or
+	 * registered programmatically. This is the whole set an agent loads when
+	 * settings name no narrower list, so an incompatible or unreadable extension
+	 * is deliberately absent - it never became a factory, and its own load
+	 * diagnostic already said so.
+	 *
+	 * Registration order, not sorted: activation order decides interceptor order,
+	 * and the order roots were searched in is a deliberate fact.
+	 */
+	listAvailableExtensionIds(): readonly string[] {
+		return [...this._factories.keys()];
+	}
+
 	async discover(
 		executionEnv: ExecutionEnv,
 	): Promise<ExtensionDiscoveryResult> {
@@ -248,11 +268,14 @@ export class ExtensionLoader {
 			}
 		}
 
+		// Root order is preserved and only the entries within one directory are
+		// sorted. Roots are searched in a deliberate order - settings paths, then
+		// the project, then the agent dir - and that order becomes activation
+		// order once every available extension loads, which decides the order
+		// interceptors, providers, and tool patches apply in.
 		return {
 			roots: this.getRoots(),
-			candidates: candidates.sort((left, right) =>
-				left.path.localeCompare(right.path),
-			),
+			candidates,
 			diagnostics,
 		};
 	}
@@ -459,7 +482,6 @@ export class ExtensionLoader {
 				const diagnostic = createMissingFactoryDiagnostic({
 					extensionId,
 					agentId: options.agentId,
-					profileId: options.profileId,
 					severity: options.missingExtensionSeverity ?? "warning",
 				});
 				if (diagnostic) diagnostics.push(diagnostic);
@@ -563,6 +585,26 @@ export class ExtensionLoader {
 				);
 			}
 			divisions.push(...scope.resolver.snapshots());
+		}
+
+		// An incompatible extension nobody asked for by name is simply absent, but
+		// it still has to be visible somewhere. A file-sourced one already said so
+		// while it was being read; a programmatically registered one has no such
+		// moment, so this is its only report. Warning, not error: no configuration
+		// named it, so nothing the user asked for went unmet.
+		for (const [extensionId, incompatible] of this._incompatible) {
+			if (incompatible.fromModule || extensionIds.includes(extensionId)) {
+				continue;
+			}
+			diagnostics.push(
+				createExtensionDiagnostic({
+					code: "extension.version_incompatible",
+					severity: "warning",
+					message: `Extension '${extensionId}' was not loaded: it targets extension API version ${incompatible.declaredApiVersion}, and this runtime supports ${formatSupportedApiVersions()}.`,
+					extensionId,
+					agentId: options.agentId,
+				}),
+			);
 		}
 
 		return {
@@ -1087,11 +1129,15 @@ async function discoverDirectory(
 		};
 	}
 
+	// Sorted within the directory so one root's contents load in a stable order;
+	// the caller keeps roots in their own order rather than sorting across them.
 	return {
-		candidates: listResult.value.flatMap((entry) => {
-			const candidate = candidateFromFileInfo(root, entry);
-			return candidate ? [candidate] : [];
-		}),
+		candidates: listResult.value
+			.flatMap((entry) => {
+				const candidate = candidateFromFileInfo(root, entry);
+				return candidate ? [candidate] : [];
+			})
+			.sort((left, right) => left.path.localeCompare(right.path)),
 		diagnostics: [],
 	};
 }
@@ -1205,14 +1251,13 @@ function createExtensionLoadDiagnostic(options: {
 function createMissingFactoryDiagnostic(options: {
 	extensionId: string;
 	agentId: string;
-	profileId: string;
 	severity: "ignore" | "warning" | "error";
 }): CoreDiagnostic | undefined {
 	if (options.severity === "ignore") return undefined;
 	return createExtensionDiagnostic({
 		code: "extension.factory_missing",
 		severity: options.severity,
-		message: `Extension '${options.extensionId}' is requested by profile '${options.profileId}' but no factory is registered.`,
+		message: `Extension '${options.extensionId}' is enabled but no factory is registered.`,
 		extensionId: options.extensionId,
 		agentId: options.agentId,
 	});

@@ -121,10 +121,9 @@ interface DivisionState {
  * Resolves one extension's division states for one agent.
  *
  * Rules apply to the named division and its whole subtree, so the nearest
- * matching rule wins; within one layer `disable` beats `enable`, and profile
- * rules beat settings rules. A resolved-disabled ancestor is then a hard gate:
- * a descendant cannot re-enable itself past it, which keeps "turn this part
- * off" meaning the whole part.
+ * matching rule wins, and `disable` beats `enable` on the same id. A
+ * resolved-disabled ancestor is then a hard gate: a descendant cannot re-enable
+ * itself past it, which keeps "turn this part off" meaning the whole part.
  *
  * Division ids used at activation but never declared resolve enabled by
  * default (fail-open): silently dropping contributions an author registered
@@ -135,7 +134,6 @@ export class ExtensionDivisionResolver {
 
 	private readonly _declared = new Map<string, ExtensionDivisionDeclaration>();
 	private readonly _settings: ExtensionDivisionSelection | undefined;
-	private readonly _profile: ExtensionDivisionSelection | undefined;
 	private readonly _used = new Set<string>();
 	private readonly _states = new Map<string, DivisionState>();
 
@@ -149,7 +147,6 @@ export class ExtensionDivisionResolver {
 			this._declared.set(declaration.id, declaration);
 		}
 		this._settings = options.selections?.settings?.[options.extensionId];
-		this._profile = options.selections?.profile?.[options.extensionId];
 	}
 
 	/** Records the id as used, so it appears in inspect facts either way. */
@@ -168,13 +165,11 @@ export class ExtensionDivisionResolver {
 	listUnknownSelectionIds(): string[] {
 		const known = new Set([...this._declared.keys(), ...this._used]);
 		const unknown = new Set<string>();
-		for (const selection of [this._profile, this._settings]) {
-			for (const id of [
-				...(selection?.enable ?? []),
-				...(selection?.disable ?? []),
-			]) {
-				if (!known.has(id)) unknown.add(id);
-			}
+		for (const id of [
+			...(this._settings?.enable ?? []),
+			...(this._settings?.disable ?? []),
+		]) {
+			if (!known.has(id)) unknown.add(id);
 		}
 		return [...unknown].sort((left, right) => left.localeCompare(right));
 	}
@@ -217,10 +212,6 @@ export class ExtensionDivisionResolver {
 
 	private _resolveOwn(id: string): DivisionState {
 		for (const candidateId of [id, ...ancestorIds(id).reverse()]) {
-			const profile = ruleFor(this._profile, candidateId);
-			if (profile !== undefined) {
-				return { enabled: profile, source: "profile" };
-			}
 			const settings = ruleFor(this._settings, candidateId);
 			if (settings !== undefined) {
 				return { enabled: settings, source: "settings" };

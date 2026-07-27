@@ -64,7 +64,6 @@ async function createExtensionOrchestrator(
 		...defaultProfile,
 		id: `${extensionId}-profile`,
 		persist: false,
-		extensions: [extensionId],
 	};
 	return await createOrchestrator(new MemoryExecutionEnv(), {
 		defaultProfileId: profile.id,

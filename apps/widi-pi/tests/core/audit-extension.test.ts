@@ -60,7 +60,6 @@ async function createAuditHarness(
 		label: "Audit Profile",
 		systemPrompt: "Audit test prompt",
 		persist: options.persist ?? false,
-		extensions: [...(options.beforeAudit ?? []).map(({ id }) => id), "audit"],
 	};
 	const env = new MemoryExecutionEnv();
 	const orchestrator = await createOrchestrator(env, {

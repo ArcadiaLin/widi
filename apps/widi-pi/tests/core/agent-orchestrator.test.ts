@@ -239,7 +239,6 @@ async function createExtensionActionsHarness(): Promise<{
 		id: "extension-profile",
 		label: "Extension Profile",
 		persist: false,
-		extensions: ["sample"],
 	};
 	const orchestrator = await createOrchestrator(env, {
 		defaultProfileId: extensionProfile.id,
@@ -488,6 +487,16 @@ describe("AgentOrchestrator", () => {
 				expect.objectContaining({ code: "profile.resolution_failed" }),
 			],
 		});
+
+		// The record exists but its profile never loaded, so there is no skill
+		// selection to honour. Refusing is the only answer that cannot hand the
+		// agent resources its role was never read to grant.
+		await expect(
+			orchestrator.listAgentSkillCandidates("worker-agent"),
+		).rejects.toMatchObject({ code: "profile.unresolved" });
+		await expect(
+			orchestrator.getAgentSkill("worker-agent", "review"),
+		).rejects.toMatchObject({ code: "profile.unresolved" });
 	});
 
 	it("keeps an unavailable record when resume model restoration fails", async () => {
@@ -578,14 +587,11 @@ describe("AgentOrchestrator", () => {
 			code: "profile.override_not_persistable",
 		});
 
-		// Division rules pick which parts of an extension load, so a persistent
-		// agent cannot carry them either: recovery re-resolves by profile id and
-		// would silently come back with a different tool/hook set.
+		// Skills are recoverable in the same way: recovery re-resolves by profile
+		// id and would silently come back with a different resource set.
 		await expect(
 			orchestrator.spawnAgent({
-				profileOverride: {
-					extensionDivisions: { mcp: { disable: ["tools"] } },
-				},
+				profileOverride: { skills: ["review"] },
 			}),
 		).rejects.toMatchObject({
 			code: "profile.override_not_persistable",
@@ -1140,7 +1146,6 @@ describe("AgentOrchestrator", () => {
 			...defaultProfile,
 			id: "prompt-policy-profile",
 			persist: false,
-			extensions: ["policy"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -1197,7 +1202,6 @@ describe("AgentOrchestrator", () => {
 			...defaultProfile,
 			id: "prompt-rewriter-profile",
 			persist: false,
-			extensions: ["rewriter"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -1325,7 +1329,6 @@ describe("AgentOrchestrator", () => {
 			...defaultProfile,
 			id: "prompt-run-failure-profile",
 			persist: false,
-			extensions: ["rewriter"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -1376,7 +1379,6 @@ describe("AgentOrchestrator", () => {
 			...defaultProfile,
 			id: "prompt-busy-profile",
 			persist: false,
-			extensions: ["rewriter"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -1420,7 +1422,6 @@ describe("AgentOrchestrator", () => {
 			...defaultProfile,
 			id: "broken-input-profile",
 			persist: false,
-			extensions: ["broken", "healthy"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -1788,7 +1789,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["stateful"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -2125,19 +2125,12 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
-	it("activates extension tools per profile without mutating the global registry", async () => {
+	it("activates extension tools per agent without mutating the global registry", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = {
 			...defaultProfile,
 			id: "extension-profile",
 			label: "Extension Profile",
-			persist: false,
-			extensions: ["sample"],
-		};
-		const plainProfile: AgentProfile = {
-			...defaultProfile,
-			id: "plain-profile",
-			label: "Plain Profile",
 			persist: false,
 		};
 		const orchestrator = await createOrchestrator(env, {
@@ -2145,7 +2138,6 @@ describe("AgentOrchestrator", () => {
 			profileRegistry: new AgentProfileRegistry(
 				InMemoryProfileStorageBackend.fromProfiles([
 					{ profile: extensionProfile },
-					{ profile: plainProfile },
 				]),
 			),
 		});
@@ -2154,9 +2146,6 @@ describe("AgentOrchestrator", () => {
 		});
 
 		const extensionAgentId = await orchestrator.spawnAgent();
-		const plainAgentId = await orchestrator.spawnAgent({
-			profileId: plainProfile.id,
-		});
 
 		expect(orchestrator.getAgentTools(extensionAgentId)).toEqual({
 			toolNames: ["sampleTool"],
@@ -2164,10 +2153,8 @@ describe("AgentOrchestrator", () => {
 		});
 		expect(orchestrator.inspectAgent(extensionAgentId)).toMatchObject({
 			extensionIds: ["sample"],
-			extensions: [{ id: "sample", source: { kind: "factory" } }],
 			extensionSnapshot: {
 				extensionIds: ["sample"],
-				extensions: [{ id: "sample", source: { kind: "factory" } }],
 				hooks: [],
 				toolContributions: [
 					{
@@ -2180,22 +2167,35 @@ describe("AgentOrchestrator", () => {
 				stale: { stale: false },
 			},
 		});
-		expect(orchestrator.getAgentTools(plainAgentId)).toEqual({
+		expect(orchestrator.toolRegistry.resolve().toolNames).toEqual([]);
+	});
+
+	// Which extensions load is a settings decision, not a profile one: an agent
+	// is not a place to express "this role runs without the integrations".
+	it("loads only the extensions settings enable", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env, {
+			settingManager: new SettingManager({ enabledExtensions: [] }),
+		});
+		orchestrator.registerExtension("sample", (api) => {
+			api.registerTool(createToolDefinition("sampleTool", "sample"));
+		});
+
+		const agentId = await orchestrator.spawnAgent();
+
+		expect(orchestrator.getAgentTools(agentId)).toEqual({
 			toolNames: [],
 			activeToolNames: [],
 		});
-		expect(orchestrator.inspectAgent(plainAgentId)).toMatchObject({
+		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
 			extensionIds: [],
-			extensions: [],
 			extensionSnapshot: {
 				extensionIds: [],
-				extensions: [],
 				hooks: [],
 				toolContributions: [],
 				stale: { stale: false },
 			},
 		});
-		expect(orchestrator.toolRegistry.resolve().toolNames).toEqual([]);
 	});
 
 	it("exposes extension hooks, tool contributions, and patch facts through inspect", async () => {
@@ -2205,7 +2205,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["sample"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -2267,15 +2266,13 @@ describe("AgentOrchestrator", () => {
 		});
 	});
 
-	it("applies profile division rules to an integration extension", async () => {
+	it("applies settings division rules to an integration extension", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = {
 			...defaultProfile,
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["integration"],
-			extensionDivisions: { integration: { disable: ["heavy"] } },
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -2284,6 +2281,9 @@ describe("AgentOrchestrator", () => {
 					{ profile: extensionProfile },
 				]),
 			),
+			settingManager: new SettingManager({
+				extensionDivisions: { integration: { disable: ["heavy"] } },
+			}),
 		});
 		let heavyActivations = 0;
 		orchestrator.registerExtension("integration", {
@@ -2324,7 +2324,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["integration"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -2366,14 +2365,13 @@ describe("AgentOrchestrator", () => {
 		]);
 	});
 
-	it("normalizes extension ids and records loaded source facts", async () => {
+	it("normalizes enabled extension ids and records loaded source facts", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = {
 			...defaultProfile,
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: [" sample ", "", "sample", "missing"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -2382,6 +2380,9 @@ describe("AgentOrchestrator", () => {
 					{ profile: extensionProfile },
 				]),
 			),
+			settingManager: new SettingManager({
+				enabledExtensions: [" sample ", "", "sample", "missing"],
+			}),
 		});
 		const events: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
@@ -2395,10 +2396,8 @@ describe("AgentOrchestrator", () => {
 
 		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
 			extensionIds: ["sample", "missing"],
-			extensions: [{ id: "sample", source: { kind: "factory" } }],
 			extensionSnapshot: {
 				extensionIds: ["sample", "missing"],
-				extensions: [{ id: "sample", source: { kind: "factory" } }],
 				stale: { stale: false },
 			},
 			extensionDiagnostics: [
@@ -2416,7 +2415,8 @@ describe("AgentOrchestrator", () => {
 					severity: "warning",
 					extensionId: "missing",
 					agentId,
-					message: `Extension 'missing' is requested by profile '${extensionProfile.id}' but no factory is registered.`,
+					message:
+						"Extension 'missing' is enabled but no factory is registered.",
 				}),
 			}),
 		);
@@ -2775,7 +2775,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["sample"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -2846,7 +2845,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["sample"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -2921,7 +2919,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["sample"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -3007,7 +3004,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["broken"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -3072,7 +3068,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["sample"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -3178,7 +3173,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["sample"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -3219,7 +3213,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["sample"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -3255,7 +3248,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["sample"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -3318,7 +3310,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["sample"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -3367,20 +3358,12 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["patcher"],
-		};
-		const plainProfile: AgentProfile = {
-			...defaultProfile,
-			id: "plain-profile",
-			label: "Plain Profile",
-			persist: false,
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
 				InMemoryProfileStorageBackend.fromProfiles([
 					{ profile: extensionProfile },
-					{ profile: plainProfile },
 				]),
 			),
 			toolRegistry: createToolRegistry(createToolDefinition("plain", "base")),
@@ -3404,20 +3387,13 @@ describe("AgentOrchestrator", () => {
 			orchestrator,
 			extensionAgentId,
 		);
-		const plainAgentId = await orchestrator.spawnAgent({
-			profileId: plainProfile.id,
-		});
-		const plainHarness = requireAgentHarness(orchestrator, plainAgentId);
 		const patchedPlain = extensionHarness
 			.getTools()
 			.find((tool) => tool.name === "plain");
 		const lateTool = extensionHarness
 			.getTools()
 			.find((tool) => tool.name === "late");
-		const unpatchedPlain = plainHarness
-			.getTools()
-			.find((tool) => tool.name === "plain");
-		if (!patchedPlain || !lateTool || !unpatchedPlain) {
+		if (!patchedPlain || !lateTool) {
 			throw new Error("Expected test tools to resolve.");
 		}
 
@@ -3433,27 +3409,13 @@ describe("AgentOrchestrator", () => {
 			content: [{ type: "text", text: "patched" }],
 			details: { source: "patcher" },
 		});
-		await expect(
-			unpatchedPlain.execute(
-				"call-2",
-				{},
-				undefined,
-				undefined,
-				await resolveHarnessToolContext(plainHarness),
-			),
-		).resolves.toEqual({
-			content: [{ type: "text", text: "base" }],
-			details: undefined,
-		});
+		// A patch registered before its target still lands on it.
 		expect(lateTool.description).toBe("patched late tool");
 		expect(orchestrator.getAgentTools(extensionAgentId)).toEqual({
 			toolNames: ["plain", "late"],
 			activeToolNames: ["plain", "late"],
 		});
-		expect(orchestrator.getAgentTools(plainAgentId)).toEqual({
-			toolNames: ["plain"],
-			activeToolNames: ["plain"],
-		});
+		// The patch is the agent's, not the runtime's.
 		expect(
 			orchestrator.toolRegistry.resolve().getToolDefinition("plain"),
 		).toMatchObject({
@@ -3468,7 +3430,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["missing"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -3477,6 +3438,7 @@ describe("AgentOrchestrator", () => {
 					{ profile: extensionProfile },
 				]),
 			),
+			settingManager: new SettingManager({ enabledExtensions: ["missing"] }),
 		});
 		const events: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
@@ -3487,7 +3449,6 @@ describe("AgentOrchestrator", () => {
 
 		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
 			extensionIds: ["missing"],
-			extensions: [],
 		});
 		expect(events).toContainEqual(
 			expect.objectContaining({
@@ -3497,7 +3458,8 @@ describe("AgentOrchestrator", () => {
 					severity: "warning",
 					extensionId: "missing",
 					agentId,
-					message: `Extension 'missing' is requested by profile '${extensionProfile.id}' but no factory is registered.`,
+					message:
+						"Extension 'missing' is enabled but no factory is registered.",
 				}),
 			}),
 		);
@@ -3510,7 +3472,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["observer"],
 		};
 		const observed: string[] = [];
 		let observedEvent: AgentHarnessEvent | undefined;
@@ -3563,7 +3524,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["observer"],
 		};
 		const observedSignals: Array<AbortSignal | undefined> = [];
 		let capturedContext: ExtensionContext | undefined;
@@ -3617,7 +3577,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["broken", "healthy"],
 		};
 		const observed: string[] = [];
 		const orchestrator = await createOrchestrator(env, {
@@ -3679,7 +3638,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["first", "second"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -3817,7 +3775,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["broken", "healthy"],
 		};
 		let healthyCalled = false;
 		let healthyToolCallCalled = false;
@@ -3915,7 +3872,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["observer"],
 		};
 		const observed: string[] = [];
 		const orchestrator = await createOrchestrator(env, {
@@ -3960,7 +3916,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: true,
-			extensions: ["stateful"],
 		};
 		const observed: string[] = [];
 		const orchestrator = await createOrchestrator(env, {
@@ -4021,7 +3976,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: true,
-			extensions: ["stateful"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -4094,7 +4048,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["sample"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -4167,7 +4120,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: true,
-			extensions: ["sample"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -4250,7 +4202,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["sample"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -4297,7 +4248,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["sample"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -4339,7 +4289,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["sample"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
@@ -4656,7 +4605,6 @@ describe("AgentOrchestrator", () => {
 			id: "extension-profile",
 			label: "Extension Profile",
 			persist: false,
-			extensions: ["sample"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,

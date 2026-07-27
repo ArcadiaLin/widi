@@ -109,6 +109,12 @@ export interface Settings {
 	/** Local extension file or directory paths. */
 	extensions?: string[];
 	/**
+	 * Extension ids agents may load. Undefined means every extension the runtime
+	 * discovered or registered, which is the default: an installed extension is
+	 * an installed extension. An empty array loads none.
+	 */
+	enabledExtensions?: string[];
+	/**
 	 * Division rules per extension id, for extensions that split themselves
 	 * into switchable parts. Project settings replace a global entry for the
 	 * same extension id rather than merging into it.
@@ -987,6 +993,29 @@ export class SettingManager {
 	setProjectExtensionPaths(paths: string[]): void {
 		this.updateProjectField("extensions", (settings) => {
 			settings.extensions = [...paths];
+		});
+	}
+
+	/** Undefined means no restriction: every available extension is enabled. */
+	getEnabledExtensions(): string[] | undefined {
+		return this.settings.enabledExtensions
+			? [...this.settings.enabledExtensions]
+			: undefined;
+	}
+
+	setEnabledExtensions(extensionIds: string[] | undefined): void {
+		this.globalSettings.enabledExtensions = extensionIds
+			? [...new Set(extensionIds)]
+			: undefined;
+		this.markModified("enabledExtensions");
+		this.save();
+	}
+
+	setProjectEnabledExtensions(extensionIds: string[] | undefined): void {
+		this.updateProjectField("enabledExtensions", (settings) => {
+			settings.enabledExtensions = extensionIds
+				? [...new Set(extensionIds)]
+				: undefined;
 		});
 	}
 

@@ -49,12 +49,17 @@ Profile 的主要职责是声明 agent build 输入：
 - `systemPrompt`：进入 harness system prompt composition。
 - `persist`：选择 persistent JSONL 或 in-memory session。
 - `tools`：ToolRegistry 的 requested visibility，也是 agent 协作能力的唯一边界（见下）。
-- `skills` / `promptTemplates`：ResourceLoader 的 roots 与选择范围。
-- `extensions`：per-agent extension dependencies。
-- `missingExtensionSeverity`：只调节 missing declaration，不覆盖 activation/version failure。
+- `skills`：ResourceLoader 的选择范围；未写则加载 roots 下全部 skill。
 - `commands`：command input 的 enable/deny policy。
 
 解析但没有 runtime consumer 的 policy 字段不应长期保留。
+
+### Profile 不管的两件事
+
+- **哪些 extension 加载**：由 settings 的 `enabledExtensions` 决定，未配置即"运行时发现到的全部启用"；`extensionDivisions` 负责扩展内部裁剪。extension 是一次安装范围的事实，不是角色的属性，因此 profile 不再有 `extensions` / `extensionDivisions` / `missingExtensionSeverity` 字段。
+- **有哪些 prompt template**：prompt template 是用户自己的 slash 命令，始终整体加载，与 agent 扮演什么角色无关，因此 profile 不再有 `promptTemplates` 字段。
+
+旧 profile 文件里残留这些键不会报错，但会被忽略。
 
 ### `tools` 决定协作能力
 
@@ -71,7 +76,7 @@ Profile 没有单独的 collaboration capability 字段。谁能 spawn、分派�
 `profileOverride` 是 create-time assembly 输入，不是新的 profile identity。
 
 - Override 不能修改 `id`。
-- 修改 system prompt、tools、resources、extensions 或 persist 等恢复关键字段时，不能创建 persistent session。
+- 修改 `systemPrompt`、`tools`、`skills` 或 `persist` 等恢复关键字段时，不能创建 persistent session：resume 会按 profile id 重新解析，恢复出来的将是另一套输入。
 - Override 不写入 session metadata。
 
 需要 resume 的差异应进入正式 profile，而不是依赖一次性 override。
@@ -94,7 +99,9 @@ Core roots 之间的 duplicate identity 和 severity 细则仍按 [Backlog](../B
 
 Profile diagnostics 覆盖 source read、frontmatter parse、metadata validation、id mismatch、case conflict、duplicate、override、missing 与 disabled。
 
-ResourceLoader 可以保留 Pi 的 `SkillDiagnostic` / `PromptTemplateDiagnostic`；进入 orchestrator event 时转换为 `CoreDiagnostic` 并补充 profile/agent context。第一版 resource failure 以报告为主，不由 loader 私自决定 agent lifecycle。
+ResourceLoader 把 Pi 的 `SkillDiagnostic` / `PromptTemplateDiagnostic` 归一化为 `CoreDiagnostic`，code 加上 `resource.skill.` / `resource.prompt_template.` 前缀并拼上出错路径；orchestrator 只补 agent context 再发布。Resource failure 以报告为主，不由 loader 私自决定 agent lifecycle。
+
+`loadAgentResources(profile)` 是 agent build 的单一入口：按 profile 收窄 skills、整体加载 prompt templates，并一次返回归一化 diagnostics。Orchestrator 不再自行组合这两类资源。
 
 ## 非职责
 

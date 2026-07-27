@@ -41,11 +41,11 @@ const extension: ExtensionDefinition = {
 export default extension;
 ```
 
-裸 factory 视为面向当前版本，适合与 runtime 同仓演进。不兼容版本在 load/registration 阶段被拒绝；引用它的 agent 收到 `extension.version_incompatible`（severity `error`，构成阻断性 load diagnostic），不受 missing severity 调节。
+裸 factory 视为面向当前版本，适合与 runtime 同仓演进。不兼容版本在 load/registration 阶段被拒绝，且不会进入可用集。被 `enabledExtensions` 点名时，agent 收到 severity `error` 的 `extension.version_incompatible` 并阻断创建（配置要求的东西没满足）；默认形态下只收到同 code 的 warning 并跳过。
 
 ## Divisions 与 integration
 
-Extension 的开关粒度默认只到 id 一层：profile 声明 id，loader 激活 factory，它注册的全部 contribution 无差别进入 scope。Division 在 extension 内部加一层可命名、可寻址的分区，使"只启用其中一部分"成为配置而不是重新打包。声明了 division 的 extension 称为 **integration**；runtime 不引入独立的 integration 类型，运行单元仍是 extension。
+Extension 的开关粒度默认只到 id 一层：settings 圈定 id，loader 激活 factory，它注册的全部 contribution 无差别进入 scope。Division 在 extension 内部加一层可命名、可寻址的分区，使"只启用其中一部分"成为配置而不是重新打包。声明了 division 的 extension 称为 **integration**；runtime 不引入独立的 integration 类型，运行单元仍是 extension。
 
 Division 声明在 default export 的 `divisions` 上，而不是 package manifest：loader 先 import module 再激活，因此清单在**任何 extension 代码运行之前**就可列举，且单文件 extension 没有 manifest 可用。`ExtensionIdentity.divisions` 因此是激活前的 catalog。
 
@@ -63,23 +63,24 @@ Id 是点分层级路径（`servers.github`），段只能包含字母、数字�
 
 ### 选择与解析
 
-用户侧规则复用 `extensions` 列表的前缀 token：
+用户侧规则写在 `settings.json` 的 `extensionDivisions`（按 extension id 键控），走既有 global/project 合并：project 条目整体替换同一 extension id 的 global 条目。
 
-```yaml
-extensions: ["mcp", "-mcp/tools", "+mcp/experimental"]
+```json
+{
+  "extensionDivisions": {
+    "mcp": { "disable": ["tools"], "enable": ["experimental"] }
+  }
+}
 ```
 
-- `mcp` — 按声明默认启用。
-- `-mcp/tools` — 关闭该 division 及其整个子树。
-- `+mcp/experimental` — 打开默认关闭的 division。
+- `disable: ["tools"]` — 关闭该 division 及其整个子树。
+- `enable: ["experimental"]` — 打开默认关闭的 division。
 
-裸 `mcp/tools`（无 `+`/`-`）被拒绝并产生 error：它读起来像 allowlist，实际语义相反。为未列入 `extensions` 的 extension 写规则只产生 `profile.division_without_extension`（warning）并忽略——规则不会隐式启用 extension。
+规则不会隐式启用 extension：为未启用的 extension 写规则不会让它加载。是否加载只由 `enabledExtensions` 与可用集决定。
 
-`settings.json` 的 `extensionDivisions`（按 extension id 键控）承载安装时的默认形态，走既有 global/project 合并：project 条目整体替换同一 extension id 的 global 条目。
+解析顺序：声明的 `enabledByDefault`（默认 `true`）→ settings。规则作用于命名 division 及其子树，**最近的规则胜出**；`disable` 压过同一 id 上的 `enable`。随后是硬闸：任一祖先解析为关闭时，后代强制关闭，更具体的 `enable` 也无法翻越——"关掉这一部分"必须意味着整块。解析结果以 `source: default | settings | ancestor` 出现在 inspect facts 中。
 
-Division 规则与 `extensions` 一样是 recoverable profile field：persistent agent 不能带临时 division override 创建（`profile.override_not_persistable`）——恢复时只按 profile id 重解析，否则 tool/hook/provider 集合会静默变化。
-
-解析顺序：声明的 `enabledByDefault`（默认 `true`）→ settings → profile。规则作用于命名 division 及其子树，**最近的规则胜出**；同一层内 `disable` 压过 `enable`，profile 压过 settings。随后是硬闸：任一祖先解析为关闭时，后代强制关闭，`+` 也无法翻越——"关掉这一部分"必须意味着整块。解析结果以 `source: default | settings | profile | ancestor` 出现在 inspect facts 中。
+Division 规则不再是 profile 字段，因此不涉及 `profile.override_not_persistable`：它是安装范围的配置，persistent agent 恢复时读到的是同一份 settings。
 
 引用了既未声明也未使用的 division id 的规则产生 `extension.division_unknown`（warning）并忽略。
 

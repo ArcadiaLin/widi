@@ -121,7 +121,7 @@ import {
 	THINKING_LEVELS,
 } from "./model-registry.js";
 import type { ConfigValueResolver } from "./resolve-config-value.js";
-import type { ResourceLoader, ResourceSource } from "./resource-loader.js";
+import type { ResourceLoader } from "./resource-loader.js";
 import type {
 	AgentSessionCandidate,
 	AgentSessionMetadata,
@@ -955,43 +955,25 @@ export class AgentOrchestrator {
 		return template;
 	}
 
+	/**
+	 * Reloaded from disk on every listing rather than read back off the harness:
+	 * a prompt template the user just edited should be usable without restarting
+	 * the agent.
+	 */
 	private async _loadAgentPromptTemplates(
 		agentId: AgentId,
 	): Promise<PromptTemplate[]> {
-		const record = this._requireAgentRecord(agentId);
-		const resolvedProfile = await this._resolveProfileById(
-			record.profile.reference.id,
-			agentId,
+		this._requireAgentRecord(agentId);
+		const loaded = await this.resourceLoader.loadPromptTemplates();
+		await this._publishDiagnostics(
+			loaded.diagnostics.map((diagnostic) => ({
+				severity: "warning" as const,
+				code: `resource.prompt_template.${diagnostic.code}`,
+				message: `${diagnostic.message} (${diagnostic.path})`,
+				agentId,
+			})),
 		);
-		const loaded = await this._loadProfilePromptTemplates({
-			agentId,
-			profile: resolvedProfile.profile,
-		});
-		await this._publishDiagnostics(loaded.diagnostics);
 		return loaded.promptTemplates.map(({ promptTemplate }) => promptTemplate);
-	}
-
-	private async _loadProfilePromptTemplates(options: {
-		agentId: AgentId;
-		profile: AgentProfile;
-	}): Promise<{
-		promptTemplates: Array<{
-			promptTemplate: PromptTemplate;
-			source: ResourceSource;
-		}>;
-		diagnostics: OrchestratorDiagnostic[];
-	}> {
-		const { agentId, profile } = options;
-		const loaded = await this.resourceLoader.loadPromptTemplates(
-			profile.promptTemplates,
-		);
-		const diagnostics = loaded.diagnostics.map((diagnostic) => ({
-			severity: "warning" as const,
-			code: `resource.prompt_template.${diagnostic.code}`,
-			message: `${diagnostic.message} (${diagnostic.path})`,
-			agentId,
-		}));
-		return { promptTemplates: loaded.promptTemplates, diagnostics };
 	}
 
 	async listAgentSkillCandidates(
@@ -1021,36 +1003,19 @@ export class AgentOrchestrator {
 		return skill;
 	}
 
+	/** Same freshness rule as prompt templates, narrowed by the agent's profile. */
 	private async _loadAgentSkills(agentId: AgentId): Promise<Skill[]> {
-		const record = this._requireAgentRecord(agentId);
-		const resolvedProfile = await this._resolveProfileById(
-			record.profile.reference.id,
-			agentId,
-		);
-		const loaded = await this._loadProfileSkills({
-			agentId,
-			profile: resolvedProfile.profile,
-		});
-		await this._publishDiagnostics(loaded.diagnostics);
-		return loaded.skills.map(({ skill }) => skill);
-	}
-
-	private async _loadProfileSkills(options: {
-		agentId: AgentId;
-		profile: AgentProfile;
-	}): Promise<{
-		skills: Array<{ skill: Skill; source: ResourceSource }>;
-		diagnostics: OrchestratorDiagnostic[];
-	}> {
-		const { agentId, profile } = options;
+		const profile = this._requireAgentResolvedProfile(agentId);
 		const loaded = await this.resourceLoader.loadSkills(profile.skills);
-		const diagnostics = loaded.diagnostics.map((diagnostic) => ({
-			severity: "warning" as const,
-			code: `resource.skill.${diagnostic.code}`,
-			message: `${diagnostic.message} (${diagnostic.path})`,
-			agentId,
-		}));
-		return { skills: loaded.skills, diagnostics };
+		await this._publishDiagnostics(
+			loaded.diagnostics.map((diagnostic) => ({
+				severity: "warning" as const,
+				code: `resource.skill.${diagnostic.code}`,
+				message: `${diagnostic.message} (${diagnostic.path})`,
+				agentId,
+			})),
+		);
+		return loaded.skills.map(({ skill }) => skill);
 	}
 
 	async setAgentThinkingLevelByName(
@@ -2083,7 +2048,10 @@ export class AgentOrchestrator {
 			session,
 			model,
 		} = options;
-		const extensionRunner = await this._createExtensionRunner(agentId, profile);
+		const extensionRunner = await this._createExtensionRunner(
+			agentId,
+			profile.id,
+		);
 		await this._publishDiagnostics(extensionRunner.diagnostics);
 		this._addAgentDiagnostics(agentId, {
 			extensionDiagnostics: [...extensionRunner.diagnostics],
@@ -2100,30 +2068,24 @@ export class AgentOrchestrator {
 		// resolution happens earlier still and cannot reference them.
 		await this._applyExtensionProviderContributions(agentId, extensionRunner);
 
-		const loadedSkills = await this._loadProfileSkills({ agentId, profile });
-		const loadedPromptTemplates = await this._loadProfilePromptTemplates({
-			agentId,
-			profile,
-		});
-		const resourceDiagnostics: OrchestratorDiagnostic[] = [
-			...loadedSkills.diagnostics,
-			...loadedPromptTemplates.diagnostics,
-		];
+		const loaded = await this.resourceLoader.loadAgentResources(profile);
+		const resourceDiagnostics: OrchestratorDiagnostic[] =
+			loaded.diagnostics.map((diagnostic) => ({ ...diagnostic, agentId }));
 		await this._publishDiagnostics(resourceDiagnostics);
 		this._addAgentDiagnostics(agentId, { resourceDiagnostics });
 
 		const resources: AgentHarnessResources = {
-			skills: loadedSkills.skills.map(({ skill }) => skill),
-			promptTemplates: loadedPromptTemplates.promptTemplates.map(
+			skills: loaded.skills.map(({ skill }) => skill),
+			promptTemplates: loaded.promptTemplates.map(
 				({ promptTemplate }) => promptTemplate,
 			),
 		};
 		this._requireAgentRecord(agentId).resources = {
-			skills: loadedSkills.skills.map(({ skill, source }) => ({
+			skills: loaded.skills.map(({ skill, source }) => ({
 				name: skill.name,
 				source,
 			})),
-			promptTemplates: loadedPromptTemplates.promptTemplates.map(
+			promptTemplates: loaded.promptTemplates.map(
 				({ promptTemplate, source }) => ({
 					name: promptTemplate.name,
 					source,
@@ -2217,18 +2179,25 @@ export class AgentOrchestrator {
 		return harness;
 	}
 
+	/**
+	 * Which extensions an agent gets is an installation-wide decision, not a
+	 * property of its role: settings name them, or - naming none - every
+	 * extension this runtime found is enabled. A named list can misspell an
+	 * extension, so that case is worth a warning; a derived list cannot.
+	 */
 	private async _createExtensionRunner(
 		agentId: AgentId,
-		profile: AgentProfile,
+		profileId: string,
 	): Promise<ExtensionRunner> {
+		const enabledExtensionIds = this.settingManager.getEnabledExtensions();
 		const loadedExtensionScope = await this.extensionLoader.loadForAgent({
 			agentId,
-			profileId: profile.id,
-			extensionIds: profile.extensions,
-			missingExtensionSeverity: profile.missingExtensionSeverity,
+			profileId,
+			extensionIds:
+				enabledExtensionIds ?? this.extensionLoader.listAvailableExtensionIds(),
+			missingExtensionSeverity: enabledExtensionIds ? "warning" : "ignore",
 			divisionSelections: {
 				settings: this.settingManager.getExtensionDivisionSelections(),
-				profile: profile.extensionDivisions,
 			},
 		});
 		return new ExtensionRunner({
@@ -2824,6 +2793,25 @@ export class AgentOrchestrator {
 		return record;
 	}
 
+	/**
+	 * The profile an agent was built from. Refuses rather than falling back for a
+	 * record that never got one - a session registered as unavailable has only a
+	 * stored profile reference, and answering its resource questions from an
+	 * unnarrowed default would hand it resources its role never granted.
+	 */
+	private _requireAgentResolvedProfile(agentId: AgentId): AgentProfile {
+		const record = this._requireAgentRecord(agentId);
+		if (!record.resolvedProfile) {
+			throw new OrchestratorError({
+				severity: "error",
+				code: "profile.unresolved",
+				message: `Agent ${agentId} has no resolved profile: its profile '${record.profile.reference.id}' never loaded.`,
+				agentId,
+			});
+		}
+		return record.resolvedProfile;
+	}
+
 	private _setAgentToolSet(agentId: AgentId, toolSet: AgentToolSet): void {
 		const record = this._requireAgentRecord(agentId);
 		this._agentToolSets.set(agentId, toolSet);
@@ -2963,18 +2951,12 @@ export class AgentOrchestrator {
 			const harness = this._requireAgentHarness(agentId);
 			const currentToolSet = this._requireAgentToolSet(agentId);
 			const oldRunner = record.extensionRunner;
-			const resolvedProfile = await this._resolveProfileById(
-				record.profile.reference.id,
-				agentId,
-			);
-			const nextRunner = await this._createExtensionRunner(
-				agentId,
-				resolvedProfile.profile,
-			);
+			const profileId = record.profile.reference.id;
+			const nextRunner = await this._createExtensionRunner(agentId, profileId);
 			candidateRunner = nextRunner;
 			const nextToolSet = await this._resolveAgentTools({
 				agentId,
-				profileId: resolvedProfile.profile.id,
+				profileId,
 				requestedToolNames: currentToolSet.requestedToolNames,
 				activeToolSelection:
 					currentToolSet.activeToolSelection.mode === "explicit"
@@ -4184,11 +4166,6 @@ function changesRecoverableProfileFields(
 		override.systemPrompt !== undefined ||
 		override.tools !== undefined ||
 		override.skills !== undefined ||
-		override.promptTemplates !== undefined ||
-		override.extensions !== undefined ||
-		// Division rules select which parts of an extension load, so an override
-		// here changes the tool/hook/provider set exactly like `extensions` does.
-		override.extensionDivisions !== undefined ||
 		override.persist !== undefined
 	);
 }

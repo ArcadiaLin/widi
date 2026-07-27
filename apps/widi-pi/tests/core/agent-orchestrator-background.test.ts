@@ -6,7 +6,6 @@ import { AgentHarnessError } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
-import jobToolsExtension from "../../../../.widi/extensions/job-tools/index.ts";
 import type {
 	AgentOrchestrator,
 	OrchestratorEvent,
@@ -29,6 +28,7 @@ import {
 } from "../../src/core/tool-registry.ts";
 import { registerCoreJobTools } from "../../src/core/tools/jobs/builtin.ts";
 import type { ToolDefinition } from "../../src/core/tools/types.ts";
+import jobToolsExtension from "../extensions/job-tools-extension.ts";
 import {
 	createOrchestrator,
 	createToolDefinition,
@@ -617,7 +617,6 @@ describe("AgentOrchestrator background job extension observability", () => {
 			id: "gated",
 			label: "Gated",
 			persist: false,
-			extensions: ["job-tools"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: profile.id,

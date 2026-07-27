@@ -119,7 +119,7 @@ describe("extension divisions", () => {
 					});
 				},
 			},
-			{ profile: { integration: { disable: ["tools"] } } },
+			{ settings: { integration: { disable: ["tools"] } } },
 		);
 
 		expect(registerRuns).toBe(0);
@@ -127,7 +127,7 @@ describe("extension divisions", () => {
 		expect(scope.divisions[0]).toMatchObject({
 			id: "tools",
 			enabled: false,
-			source: "profile",
+			source: "settings",
 		});
 	});
 
@@ -152,12 +152,12 @@ describe("extension divisions", () => {
 		});
 
 		const on = await loadScope(definition, {
-			profile: { integration: { enable: ["experimental"] } },
+			settings: { integration: { enable: ["experimental"] } },
 		});
 		expect(toolNames(on)).toEqual(["experimentalTool"]);
 		expect(on.divisions[0]).toMatchObject({
 			enabled: true,
-			source: "profile",
+			source: "settings",
 		});
 	});
 
@@ -183,29 +183,29 @@ describe("extension divisions", () => {
 		};
 
 		const subtreeOff = await loadScope(definition, {
-			profile: { integration: { disable: ["servers"] } },
+			settings: { integration: { disable: ["servers"] } },
 		});
 		expect(toolNames(subtreeOff)).toEqual([]);
 
 		// The child rule is more specific, but a disabled ancestor is a hard gate:
 		// the child never gets a chance to re-enable itself.
 		const childForcedOff = await loadScope(definition, {
-			profile: {
+			settings: {
 				integration: { disable: ["servers"], enable: ["servers.github"] },
 			},
 		});
 		expect(toolNames(childForcedOff)).toEqual([]);
 
 		const oneChildOff = await loadScope(definition, {
-			profile: { integration: { disable: ["servers.gitlab"] } },
+			settings: { integration: { disable: ["servers.gitlab"] } },
 		});
 		expect(toolNames(oneChildOff)).toEqual(["serversTool", "githubTool"]);
 		expect(
 			oneChildOff.divisions.find((entry) => entry.id === "servers.gitlab"),
-		).toMatchObject({ enabled: false, source: "profile" });
+		).toMatchObject({ enabled: false, source: "settings" });
 	});
 
-	it("resolves profile rules over settings rules, and nearest rule first", async () => {
+	it("lets the nearest rule win over an inherited one", async () => {
 		const definition: ExtensionDefinition = {
 			apiVersion: 1,
 			divisions: [
@@ -214,6 +214,7 @@ describe("extension divisions", () => {
 			],
 			activate: async (api) => {
 				await api.division("servers", async (servers) => {
+					registerSampleTool(servers, "serversTool");
 					await servers.division("github", (github) => {
 						registerSampleTool(github, "githubTool");
 					});
@@ -221,22 +222,19 @@ describe("extension divisions", () => {
 			},
 		};
 
-		const profileWins = await loadScope(definition, {
-			settings: { integration: { disable: ["servers.github"] } },
-			profile: { integration: { enable: ["servers.github"] } },
+		// The parent's `enable` does not reach the child, which carries a nearer
+		// rule of its own. Only an inherited *disable* is absolute, and that is
+		// the ancestor gate rather than this rule.
+		const scope = await loadScope(definition, {
+			settings: {
+				integration: { enable: ["servers"], disable: ["servers.github"] },
+			},
 		});
-		expect(toolNames(profileWins)).toEqual(["githubTool"]);
-		expect(
-			profileWins.divisions.find((entry) => entry.id === "servers.github"),
-		).toMatchObject({ enabled: true, source: "profile" });
 
-		// The inherited settings rule on the parent loses to the nearer profile
-		// rule on the child itself.
-		const nearestWins = await loadScope(definition, {
-			settings: { integration: { disable: ["servers"] } },
-			profile: { integration: { enable: ["servers"] } },
-		});
-		expect(toolNames(nearestWins)).toEqual(["githubTool"]);
+		expect(toolNames(scope)).toEqual(["serversTool"]);
+		expect(
+			scope.divisions.find((entry) => entry.id === "servers.github"),
+		).toMatchObject({ enabled: false, source: "settings" });
 	});
 
 	it("keeps an undeclared division enabled and reports it", async () => {
@@ -271,7 +269,7 @@ describe("extension divisions", () => {
 				divisions: [{ id: "tools", label: "Tools" }],
 				activate: () => {},
 			},
-			{ profile: { integration: { disable: ["typo"] } } },
+			{ settings: { integration: { disable: ["typo"] } } },
 		);
 
 		expect(scope.diagnostics).toContainEqual(
@@ -465,7 +463,7 @@ describe("extension divisions", () => {
 					seen.push(api.isDivisionEnabled("servers"));
 				},
 			},
-			{ profile: { integration: { disable: ["servers"] } } },
+			{ settings: { integration: { disable: ["servers"] } } },
 		);
 
 		expect(seen).toEqual([true, false]);

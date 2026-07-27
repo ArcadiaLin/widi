@@ -202,7 +202,6 @@ const profile: AgentProfile = {
 	systemPrompt: "You are WIDI.",
 	persist: true,
 	skills: ["code"],
-	promptTemplates: ["review"],
 };
 
 // Writes a session in the on-disk layout: one directory per session, holding

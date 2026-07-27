@@ -345,6 +345,7 @@ export async function createOrchestrator(
 		defaultProfileId?: string;
 		modelRegistry?: ModelRegistry;
 		toolRegistry?: ToolRegistry;
+		settingManager?: SettingManager;
 	} = {},
 ): Promise<AgentOrchestrator> {
 	return new AgentOrchestrator({
@@ -358,7 +359,7 @@ export async function createOrchestrator(
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
 		}),
-		settingManager: new SettingManager(),
+		settingManager: options.settingManager ?? new SettingManager(),
 		modelRegistry: options.modelRegistry ?? (await createModelRegistry(env)),
 		profileRegistry: options.profileRegistry ?? createProfileRegistry(),
 		toolRegistry: options.toolRegistry,

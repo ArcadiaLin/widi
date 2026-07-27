@@ -49,17 +49,19 @@ Module 经 jiti 加载，TypeScript source 不需要预编译。同 id first-reg
 
 ## Agent lifecycle
 
-Profile frontmatter 通过 id 声明 extension dependencies：
+加载哪些 extension 由 `settings.json` 决定，不由 profile 决定：
 
-```yaml
-extensions: [hello, audit]
-missing-extension-severity: warning
+```json
+{ "enabledExtensions": ["hello", "audit"] }
 ```
+
+不写 `enabledExtensions` 就是默认形态：运行时发现到或程序化注册的**全部** extension 都启用。加载顺序即 root 搜索顺序（settings paths → 项目 → agent dir），单个目录内按路径排序——这个顺序就是 activation 顺序，决定 interceptor、provider、tool patch 的生效先后。
 
 每个 `(extension, agent)` 独立 activate。Factory closure 是 per-agent state，module top-level state 跨 agent 共享。
 
-- Missing id 按 profile missing severity 处理。
-- Activation failure 和 version incompatibility 是 severity `error` 的 dependency failure，阻断 agent 创建。
+- `enabledExtensions` 点名了但没有对应 factory 的 id，产生 `extension.factory_missing` warning——点名就可能拼错。默认形态下不存在这个诊断，因为列表是从可用集派生的。
+- Activation failure 是 severity `error` 的 dependency failure，阻断 agent 创建。
+- Version incompatibility 分两种：被 `enabledExtensions` 点名的报 `error` 并阻断 agent 创建（配置要求的东西没满足）；默认形态下只报 warning 并跳过（没有配置要求它）。file 来源的不兼容在 discovery 阶段已有一条 `error`。
 - Reload 替换 runner；旧 context/actions 变成 stale。
 - 不要把 context 或 action handle 缓存到 activation lifecycle 之外。
 
@@ -107,13 +109,17 @@ const extension: ExtensionDefinition = {
 - `await` 是推荐写法；漏了 `await` 时 loader 仍会在收敛 scope 前排空未决注册，root factory 抛错时也一样。
 - `onDispose` 在 division 内注册即可，随 runner dispose 一起执行。
 
-用户侧在 profile frontmatter 的 `extensions` 里用前缀 token 开关：
+用户侧在 `settings.json` 的 `extensionDivisions` 里开关：
 
-```yaml
-extensions: ["mcp", "-mcp/tools", "+mcp/experimental"]
+```json
+{
+  "extensionDivisions": {
+    "mcp": { "disable": ["tools"], "enable": ["experimental"] }
+  }
+}
 ```
 
-`settings.json` 的 `extensionDivisions` 承载安装时的默认形态。完整解析顺序与硬闸规则见 [Extensions](core/extensions.md)。
+完整解析顺序与硬闸规则见 [Extensions](core/extensions.md)。
 
 ## 注册 tool
 

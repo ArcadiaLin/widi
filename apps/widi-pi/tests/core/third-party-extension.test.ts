@@ -9,6 +9,7 @@ import {
 	EXTENSION_API_VERSION,
 	type ExtensionModule,
 } from "../../src/core/extension/index.ts";
+import { SettingManager } from "../../src/core/setting-manager.ts";
 import type { OrchestratorEvent } from "../../src/core/types.ts";
 import { createThirdPartyExtension } from "../extensions/third-party-extension.ts";
 import {
@@ -26,7 +27,6 @@ async function createThirdPartyOrchestrator(module: ExtensionModule): Promise<{
 		id: "third-party-profile",
 		label: "Third Party Profile",
 		persist: false,
-		extensions: ["third-party"],
 	};
 	const env = new MemoryExecutionEnv();
 	const orchestrator = await createOrchestrator(env, {
@@ -34,6 +34,11 @@ async function createThirdPartyOrchestrator(module: ExtensionModule): Promise<{
 		profileRegistry: new AgentProfileRegistry(
 			InMemoryProfileStorageBackend.fromProfiles([{ profile }]),
 		),
+		// Named rather than left to the default "everything available": these
+		// tests are about an extension the user asked for by name.
+		settingManager: new SettingManager({
+			enabledExtensions: ["third-party"],
+		}),
 	});
 	orchestrator.registerExtension("third-party", module);
 	const events: OrchestratorEvent[] = [];
@@ -79,7 +84,7 @@ describe("third-party extension consumer", () => {
 		});
 	});
 
-	it("refuses to spawn an agent whose profile requires an incompatible extension", async () => {
+	it("refuses to spawn an agent when an enabled extension is incompatible", async () => {
 		let activated = false;
 		const { orchestrator, events } = await createThirdPartyOrchestrator({
 			apiVersion: EXTENSION_API_VERSION + 1,
@@ -89,7 +94,8 @@ describe("third-party extension consumer", () => {
 		});
 
 		// A blocked extension diagnostic fails the spawn, the same family as
-		// activation_failed: the profile's extension dependency cannot be met.
+		// activation_failed: settings named this extension, so silently running
+		// without it would not be honouring the configuration.
 		await expect(orchestrator.spawnAgent()).rejects.toThrow(
 			/targets extension API version/,
 		);

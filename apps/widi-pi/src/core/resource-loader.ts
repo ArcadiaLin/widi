@@ -9,12 +9,14 @@ import {
 	loadSourcedPromptTemplates,
 	loadSourcedSkills,
 } from "@earendil-works/pi-agent-core";
+import type { AgentProfile } from "./agent-profile.js";
 import {
 	DEFAULT_AGENT_DIR,
 	DEFAULT_PROMPT_TEMPLATE_DIR,
 	DEFAULT_PROMPT_TEMPLATE_FILE_EXTENSION,
 	DEFAULT_SKILL_DIR,
 } from "./constants.js";
+import type { CoreDiagnostic } from "./diagnostics.ts";
 
 export type ResourceSource =
 	| { readonly kind: "agent_dir"; readonly path: string }
@@ -45,6 +47,17 @@ interface ResourceInput {
 	readonly source: ResourceSource;
 	/** The profile-supplied name, absent when loading a whole root. */
 	readonly name?: string;
+}
+
+/** Everything an agent harness is built with, plus what went wrong loading it. */
+export interface LoadedAgentResources {
+	readonly skills: readonly { skill: Skill; source: ResourceSource }[];
+	readonly promptTemplates: readonly {
+		promptTemplate: PromptTemplate;
+		source: ResourceSource;
+	}[];
+	/** Already carries a `resource.*` code and the offending path. */
+	readonly diagnostics: readonly CoreDiagnostic[];
 }
 
 export interface ResourceLoaderOptions {
@@ -81,6 +94,34 @@ export class ResourceLoader {
 	}
 
 	/**
+	 * Load everything an agent's harness needs, in the resource layer's own
+	 * vocabulary: the profile narrows skills to the ones it names, while prompt
+	 * templates are the user's and always load whole.
+	 *
+	 * Diagnostics come back namespaced and path-annotated so the caller only has
+	 * to attach the agent id and publish them.
+	 */
+	async loadAgentResources(
+		profile: AgentProfile,
+	): Promise<LoadedAgentResources> {
+		const [skills, promptTemplates] = await Promise.all([
+			this.loadSkills(profile.skills),
+			this.loadPromptTemplates(),
+		]);
+		return {
+			skills: skills.skills,
+			promptTemplates: promptTemplates.promptTemplates,
+			diagnostics: [
+				...toResourceDiagnostics("skill", skills.diagnostics),
+				...toResourceDiagnostics(
+					"prompt_template",
+					promptTemplates.diagnostics,
+				),
+			],
+		};
+	}
+
+	/**
 	 * Expected usage: `loadSkills(profile.skills)`.
 	 * Empty or missing names load every skill under each `.widi/skills` root.
 	 */
@@ -111,8 +152,9 @@ export class ResourceLoader {
 	}
 
 	/**
-	 * Expected usage: `loadPromptTemplates(profile.promptTemplates)`.
-	 * Empty or missing names load every prompt template under each `.widi/prompts` root.
+	 * Empty or missing names load every prompt template under each
+	 * `.widi/prompts` root, which is the ordinary case: prompt templates are the
+	 * user's own slash commands, not a per-role resource.
 	 */
 	async loadPromptTemplates(
 		promptTemplateNames: readonly string[] = [],
@@ -232,6 +274,22 @@ export class ResourceLoader {
 		}
 		return result.value;
 	}
+}
+
+function toResourceDiagnostics(
+	kind: "skill" | "prompt_template",
+	diagnostics: readonly {
+		type: "warning";
+		code: string;
+		message: string;
+		path: string;
+	}[],
+): CoreDiagnostic[] {
+	return diagnostics.map((diagnostic) => ({
+		severity: diagnostic.type,
+		code: `resource.${kind}.${diagnostic.code}`,
+		message: `${diagnostic.message} (${diagnostic.path})`,
+	}));
 }
 
 /**

@@ -60,6 +60,16 @@ export interface AgentRecord {
 	readonly agentId: AgentId;
 	status: AgentLifecycleStatus;
 	readonly profile: AgentProfileRecordReference;
+	/**
+	 * The profile the harness was actually built from, including any override.
+	 * Absent only for an agent that never got that far - an unavailable session
+	 * is registered from its stored profile reference alone.
+	 *
+	 * Keeping it means a later question about this agent's role is answered from
+	 * what it was built with, instead of re-reading a profile file that may since
+	 * have changed underneath it.
+	 */
+	readonly resolvedProfile?: AgentProfile;
 	/** The agent whose tool spawned this one; unset for user-side spawns. */
 	readonly spawnedBy?: AgentId;
 	sessionMetadata?: AgentSessionMetadata;
@@ -124,6 +134,7 @@ export function createAgentRecord(options: {
 			source: options.resolvedProfile.source,
 			entryId: options.resolvedProfile.entryId,
 		},
+		resolvedProfile: options.resolvedProfile.profile,
 		spawnedBy: options.spawnedBy,
 		sessionMetadata: options.sessionMetadata,
 		model: options.model,
