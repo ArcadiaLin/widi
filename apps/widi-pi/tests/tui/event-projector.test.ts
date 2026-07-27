@@ -4,7 +4,7 @@ import type { AgentRecordSnapshot } from "../../src/core/agent-record.ts";
 import type {
 	BackgroundJobReportSnapshot,
 	BackgroundJobSnapshot,
-} from "../../src/core/background-job.ts";
+} from "../../src/core/background/index.ts";
 import type { OrchestratorEvent, RuntimeModel } from "../../src/core/types.ts";
 import {
 	applyAgentSnapshot,

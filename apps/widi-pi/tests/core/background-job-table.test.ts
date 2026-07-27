@@ -8,7 +8,7 @@ import {
 	formatBackgroundJobResultMessageText,
 	MAX_BACKGROUND_JOB_REPORT_BYTES,
 	snapshotBackgroundJob,
-} from "../../src/core/background-job.ts";
+} from "../../src/core/background/index.ts";
 
 describe("BackgroundJobTable", () => {
 	it("creates jobs in the running phase with a live signal", () => {

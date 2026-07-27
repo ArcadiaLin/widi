@@ -11,7 +11,7 @@
  * orchestrator back.
  */
 
-import type { BackgroundJobSettleResult } from "./background-job.ts";
+import type { BackgroundJobSettleResult } from "./background/index.ts";
 import type { MessageSendOutcome } from "./message.ts";
 import type { AgentId, AgentLifecycleStatus } from "./types.ts";
 

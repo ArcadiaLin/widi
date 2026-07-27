@@ -9,7 +9,7 @@ import type {
 	BackgroundJobOutput,
 	BackgroundJobReport,
 	BackgroundJobTable,
-} from "../background-job.ts";
+} from "../background/index.ts";
 import type { ToolHumanHost } from "../human-request.ts";
 
 /**

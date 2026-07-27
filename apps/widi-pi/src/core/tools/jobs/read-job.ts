@@ -1,5 +1,5 @@
 import { type Static, Type } from "typebox";
-import type { BackgroundJobReportSnapshot } from "../../background-job.ts";
+import type { BackgroundJobReportSnapshot } from "../../background/index.ts";
 import type { ToolDefinition } from "../types.ts";
 
 const readJobSchema = Type.Object({

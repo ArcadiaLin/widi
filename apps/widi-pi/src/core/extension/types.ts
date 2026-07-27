@@ -13,7 +13,7 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { TSchema } from "typebox";
-import type { BackgroundJobSnapshot } from "../background-job.ts";
+import type { BackgroundJobSnapshot } from "../background/index.ts";
 import type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
 import type { MessageSource } from "../message.ts";
 import type { ProviderConfigInput } from "../model-registry.ts";

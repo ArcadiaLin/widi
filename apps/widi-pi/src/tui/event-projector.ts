@@ -13,7 +13,7 @@ import type { AgentRecordSnapshot } from "../core/agent-record.ts";
 import type {
 	BackgroundJobReportSnapshot,
 	BackgroundJobSnapshot,
-} from "../core/background-job.ts";
+} from "../core/background/index.ts";
 import type { OrchestratorDiagnostic } from "../core/diagnostics.ts";
 import type { ExtensionStatusSnapshot } from "../core/extension/presentation.ts";
 import {

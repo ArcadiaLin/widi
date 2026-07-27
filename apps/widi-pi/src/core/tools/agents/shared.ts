@@ -1,5 +1,5 @@
 import type { AgentBrief, ToolAgentHost } from "../../agent-host.ts";
-import type { BackgroundJobTable } from "../../background-job.ts";
+import type { BackgroundJobTable } from "../../background/index.ts";
 import { formatAgentTaskMessageBody } from "../../message.ts";
 import type { ToolExecutionContext } from "../types.ts";
 

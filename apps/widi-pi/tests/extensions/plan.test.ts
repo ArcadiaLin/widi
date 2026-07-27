@@ -3,7 +3,7 @@ import { createUpdatePlanToolDefinition } from "../../../../.widi/extensions/pla
 import {
 	BackgroundJobOutput,
 	type BackgroundJobReport,
-} from "../../src/core/background-job.ts";
+} from "../../src/core/background/index.ts";
 import type { ToolExecutionContext } from "../../src/core/tools/types.ts";
 
 function makeContext(

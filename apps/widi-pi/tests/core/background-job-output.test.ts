@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BackgroundJobOutput } from "../../src/core/background-job.ts";
+import { BackgroundJobOutput } from "../../src/core/background/index.ts";
 
 const base64 = (value: string | Buffer) =>
 	Buffer.from(value).toString("base64");

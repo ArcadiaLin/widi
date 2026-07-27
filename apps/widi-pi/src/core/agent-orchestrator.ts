@@ -16,6 +16,7 @@ import {
 	type JsonlSessionMetadata,
 	type PromptTemplate,
 	type Session,
+	type SessionTreeEntry,
 	type Skill,
 	shouldCompact,
 	type ThinkingLevel,
@@ -55,10 +56,14 @@ import {
 	type BackgroundJobSettlement,
 	type BackgroundJobSettleResult,
 	type BackgroundJobSnapshot,
+	BackgroundJobStore,
+	backgroundJobResultHeaderPrefix,
 	ExternalJobDependencyIndex,
 	formatBackgroundJobResultMessageText,
+	formatInterruptedBackgroundJobResultText,
+	type PersistedBackgroundJob,
 	snapshotBackgroundJob,
-} from "./background-job.ts";
+} from "./background/index.ts";
 import type { OrchestratorClient } from "./client.ts";
 import {
 	type OrchestratorDiagnostic,
@@ -2038,6 +2043,9 @@ export class AgentOrchestrator {
 				thinkingLevel: this._resolveThinkingLevel(context.thinkingLevel),
 				activeToolNames: context.activeToolNames ?? undefined,
 			});
+			// Before the agent is reachable: an unanswered t0 handle is part of the
+			// context the model resumes with, not a message that arrives after it.
+			await this._reconcileBackgroundJobs(agentId);
 
 			await this._transitionAgentStatus(agentId, "idle");
 			await this._emit({ type: "agent_resumed", agentId, profile, model });
@@ -2154,7 +2162,8 @@ export class AgentOrchestrator {
 			thinkingLevel: options.thinkingLevel,
 			activeToolNames: [...agentToolSet.activeToolNames],
 		});
-		this._requireAgentRecord(agentId).harness = harness;
+		const record = this._requireAgentRecord(agentId);
+		record.harness = harness;
 		this._setAgentToolSet(agentId, agentToolSet);
 		this._bindExtensionRunner(agentId, extensionRunner);
 		const unsubscribeInterceptors = this._registerExtensionInterceptors(
@@ -2166,10 +2175,16 @@ export class AgentOrchestrator {
 			void this._handleSubscribedAgentHarnessEvent(agentId, event, signal);
 		});
 		this._unsubscribeAgentHarness.set(agentId, unsubscribeHarnessEvents);
-		const jobTable = this._requireAgentRecord(agentId).backgroundJobTable;
+		record.backgroundJobStore = await this._openBackgroundJobStore(agentId);
+		const jobTable = record.backgroundJobTable;
 		const unsubscribeJobChanges = jobTable.onChange((change) => {
+			const store = this._agents.get(agentId)?.backgroundJobStore;
 			if (change.transition === "backgrounded") {
 				this._externalJobs.track(agentId, change.job);
+				void store?.recordBackgrounded(snapshotBackgroundJob(change.job));
+			}
+			if (change.transition === "aborting") {
+				void store?.recordAborting(snapshotBackgroundJob(change.job));
 			}
 			if (change.transition === "settled") {
 				// Barrier: flush the job's final output increment ahead of its
@@ -2181,7 +2196,7 @@ export class AgentOrchestrator {
 				this._externalJobs.untrack(agentId, change.job);
 				// A delegated task settles through this same path: its t1 is the one
 				// and only completion message the owner reads.
-				void this._deliverBackgroundJobResult(agentId, change);
+				void this._recordAndDeliverBackgroundJobResult(agentId, change);
 			}
 			this._emitBackgroundJobChange(agentId, change);
 		});
@@ -3178,25 +3193,52 @@ export class AgentOrchestrator {
 	 * Hand a settled background job (t1) to the message pipeline. It is an
 	 * ordinary message from then on: queued behind whatever the target already
 	 * has, merged with adjacent results into one user message, and delivered as
-	 * a follow-up or a fresh prompt depending on the target's phase.
+	 * a steer or a fresh prompt depending on the target's phase.
 	 *
-	 * `next_turn`, never `interrupt`: a tool result is not a reason to preempt
-	 * the reasoning of a turn already in flight.
+	 * Persist first, deliver second. The two must not race: a crash between them
+	 * has to leave a recorded job whose result the next resume can still deliver,
+	 * never a delivered result whose job left no trace.
 	 */
-	private async _deliverBackgroundJobResult(
+	private async _recordAndDeliverBackgroundJobResult(
 		agentId: AgentId,
 		settlement: BackgroundJobSettlement,
 	): Promise<void> {
+		const messageText = formatBackgroundJobResultMessageText(settlement);
+		await this._agents.get(agentId)?.backgroundJobStore?.recordSettled(
+			snapshotBackgroundJob(settlement.job, {
+				status: settlement.outcome.status,
+			}),
+			{ messageText, outputTail: settlement.job.output.read() },
+		);
+		await this._deliverBackgroundJobResult(
+			agentId,
+			settlement.job.id,
+			messageText,
+		);
+	}
+
+	/**
+	 * Hand a settled job's text to its owner.
+	 *
+	 * `interrupt`, so a running owner reads it at the next turn boundary instead
+	 * of only when its run would have ended. Neither mode preempts a turn already
+	 * in flight - `steer` is a turn-boundary injection, not a stream abort - but
+	 * `next_turn` degrades to a follow-up, which the agent loop drains only where
+	 * it would otherwise stop: a job that settles early in a long tool chain
+	 * would sit unread for the rest of the run. A result the model was told to
+	 * expect should reach it at the first point it can act on it.
+	 */
+	private async _deliverBackgroundJobResult(
+		agentId: AgentId,
+		jobId: string,
+		body: string,
+	): Promise<void> {
 		try {
 			await this.sendMessage({
-				source: {
-					kind: "background_job",
-					ownerAgentId: agentId,
-					jobId: settlement.job.id,
-				},
+				source: { kind: "background_job", ownerAgentId: agentId, jobId },
 				targetAgentId: agentId,
-				body: formatBackgroundJobResultMessageText(settlement),
-				mode: "next_turn",
+				body,
+				mode: "interrupt",
 			});
 		} catch (error) {
 			// Retryable failures keep the result queued, so reaching here means the
@@ -3204,10 +3246,112 @@ export class AgentOrchestrator {
 			await this._publishDiagnostic({
 				severity: "warning",
 				code: "orchestrator.background_job_dropped",
-				message: `Dropping the result of background job ${settlement.job.id} for agent ${agentId}: ${formatError(error)}`,
+				message: `Dropping the result of background job ${jobId} for agent ${agentId}: ${formatError(error)}`,
 				agentId,
 			});
 		}
+	}
+
+	/**
+	 * Open the agent's durable job log. An ephemeral session owns no directory,
+	 * and a store that cannot be opened is a degraded surface rather than a
+	 * reason to fail the agent: jobs keep running, they just stop being
+	 * recoverable across a restart.
+	 */
+	private async _openBackgroundJobStore(
+		agentId: AgentId,
+	): Promise<BackgroundJobStore | undefined> {
+		let sessionDir: string | undefined;
+		try {
+			sessionDir = await this.sessionManager.getAgentSessionDir(agentId);
+		} catch {
+			sessionDir = undefined;
+		}
+		if (sessionDir === undefined) return undefined;
+		try {
+			return await BackgroundJobStore.open({
+				fs: this.executionEnv,
+				sessionDir,
+				onWriteFailure: (error) => {
+					void this._publishDiagnostic({
+						severity: "warning",
+						code: "orchestrator.background_job_store_write_failed",
+						message: `Background jobs for agent ${agentId} are no longer being recorded; results of jobs still running will not survive a restart: ${formatError(error)}`,
+						agentId,
+					});
+				},
+			});
+		} catch (error) {
+			await this._publishDiagnostic({
+				severity: "warning",
+				code: "orchestrator.background_job_store_unavailable",
+				message: `Cannot record background jobs for agent ${agentId}: ${formatError(error)}`,
+				agentId,
+			});
+			return undefined;
+		}
+	}
+
+	/**
+	 * Answer every t0 handle a previous runtime left open on this session.
+	 *
+	 * The jobs themselves are gone - a local job is a promise in a process that
+	 * exited - so this recovers the conversation, not the work: each unanswered
+	 * handle gets exactly one closing message, either the outcome that was
+	 * recorded before the exit or a cancellation explaining the restart.
+	 *
+	 * The session history, not the job log, decides what is unanswered: a
+	 * message queued into a harness is not persisted, so acceptance is not
+	 * evidence the model ever read it. Appending straight into the branch rather
+	 * than delivering through the message pipeline keeps that decision honest -
+	 * the text is in the session the moment this returns, so a second interrupted
+	 * resume finds it and stays idempotent - and keeps a resume from starting a
+	 * model run nobody asked for over results that are already stale.
+	 */
+	private async _reconcileBackgroundJobs(agentId: AgentId): Promise<void> {
+		const store = this._agents.get(agentId)?.backgroundJobStore;
+		const carriedOver = store?.carriedOverJobs() ?? [];
+		if (carriedOver.length === 0) return;
+		const harness = this._agents.get(agentId)?.harness;
+		if (!harness) return;
+		const snapshot = await this.sessionManager.getAgentSessionSnapshot(agentId);
+		const branchText = collectUserMessageText(snapshot.pathToRoot);
+		const unanswered = carriedOver.filter(
+			(job) =>
+				!branchText.some((text) =>
+					text.includes(
+						backgroundJobResultHeaderPrefix(job.jobId, job.toolCallId),
+					),
+				),
+		);
+		if (unanswered.length === 0) return;
+		await harness.appendMessage({
+			role: "user",
+			content: [
+				{
+					type: "text",
+					text: unanswered.map(toCarriedOverJobResultText).join("\n\n"),
+				},
+			],
+			timestamp: Date.now(),
+		});
+		await this._publishDiagnostic({
+			severity: "warning",
+			code: "orchestrator.background_jobs_interrupted",
+			message: `Agent ${agentId} resumed with ${unanswered.length} background job result(s) left unanswered by a previous run; they were closed in the session.`,
+			agentId,
+		});
+	}
+
+	/**
+	 * Every background job recorded in this agent's session, across runs. Unlike
+	 * {@link listAgentBackgroundJobs}, which sees only the live table, this is
+	 * the history: settled jobs, and jobs a previous runtime never settled.
+	 */
+	backgroundJobHistory(agentId: AgentId): PersistedBackgroundJob[] {
+		return (
+			this._requireAgentRecord(agentId).backgroundJobStore?.history() ?? []
+		);
 	}
 
 	/**
@@ -3282,6 +3426,12 @@ export class AgentOrchestrator {
 			queued.delete(job.id);
 			if (queued.size === 0) this._queuedJobReports.delete(agentId);
 			if (!latest) return;
+			// Persist the coalesced value, not every revision: the store keeps a
+			// latest-value register, so intermediate revisions would only cost
+			// writes.
+			void this._agents
+				.get(agentId)
+				?.backgroundJobStore?.recordReport(job.id, latest.report);
 			await this._emit({
 				type: "agent_background_job_report_updated",
 				agentId,
@@ -4045,6 +4195,41 @@ function changesRecoverableProfileFields(
 
 function formatError(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+/** Text of every user message on a branch, for "was the model ever told X?". */
+function collectUserMessageText(
+	entries: readonly SessionTreeEntry[],
+): string[] {
+	const texts: string[] = [];
+	for (const entry of entries) {
+		if (entry.type !== "message" || entry.message.role !== "user") continue;
+		const content = entry.message.content;
+		if (typeof content === "string") {
+			texts.push(content);
+			continue;
+		}
+		for (const part of content) {
+			if (part.type === "text") texts.push(part.text);
+		}
+	}
+	return texts;
+}
+
+/**
+ * Closing text for a job a previous run left unanswered: the outcome it settled
+ * into when one was recorded, otherwise a cancellation for work the exit ended.
+ */
+function toCarriedOverJobResultText(job: PersistedBackgroundJob): string {
+	return (
+		job.messageText ??
+		formatInterruptedBackgroundJobResultText({
+			jobId: job.jobId,
+			toolCallId: job.toolCallId,
+			toolName: job.toolName,
+			stopReason: job.stopReason,
+		})
+	);
 }
 
 function now(): string {

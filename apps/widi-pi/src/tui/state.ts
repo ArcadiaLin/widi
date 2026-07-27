@@ -4,7 +4,7 @@ import type {
 	ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import type { AgentRecordSnapshot } from "../core/agent-record.ts";
-import type { BackgroundJobReportSnapshot } from "../core/background-job.ts";
+import type { BackgroundJobReportSnapshot } from "../core/background/index.ts";
 import type { OrchestratorDiagnostic } from "../core/diagnostics.ts";
 import type {
 	ExtensionMessage,

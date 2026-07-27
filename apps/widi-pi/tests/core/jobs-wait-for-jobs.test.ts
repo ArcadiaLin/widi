@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	type BackgroundJobOutcome,
 	BackgroundJobTable,
-} from "../../src/core/background-job.ts";
+} from "../../src/core/background/index.ts";
 import {
 	createWaitForJobsToolDefinition,
 	type WaitForJobsDetails,

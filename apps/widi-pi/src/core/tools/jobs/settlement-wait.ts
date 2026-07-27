@@ -2,7 +2,7 @@ import type {
 	BackgroundJob,
 	BackgroundJobOutcome,
 	BackgroundJobTable,
-} from "../../background-job.ts";
+} from "../../background/index.ts";
 
 /**
  * Why a settlement wait returned:

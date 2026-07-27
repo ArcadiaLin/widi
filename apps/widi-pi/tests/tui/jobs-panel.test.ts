@@ -2,7 +2,7 @@
 // after the original test was accidentally deleted; its assertions may differ
 // from the lost version. Extend freely.
 import { describe, expect, it } from "vitest";
-import type { BackgroundJobReport } from "../../src/core/background-job.ts";
+import type { BackgroundJobReport } from "../../src/core/background/index.ts";
 import { JobsPanelView } from "../../src/tui/components/jobs-panel.ts";
 import {
 	type BackgroundJobViewState,

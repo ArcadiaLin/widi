@@ -9,7 +9,8 @@ import type {
 	AgentProfileSource,
 } from "./agent-profile.js";
 import { toAgentProfileReference } from "./agent-profile.js";
-import { BackgroundJobTable } from "./background-job.ts";
+import type { BackgroundJobStore } from "./background/index.ts";
+import { BackgroundJobTable } from "./background/index.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
 import type {
 	ExtensionIdentity,
@@ -74,6 +75,12 @@ export interface AgentRecord {
 	 * cascade an abort to all of them.
 	 */
 	readonly backgroundJobTable: BackgroundJobTable;
+	/**
+	 * Durable projection of {@link backgroundJobTable} into the agent's session
+	 * directory. Absent for an ephemeral session, which owns no directory and
+	 * therefore cannot outlive the runtime it would be recovered into.
+	 */
+	backgroundJobStore?: BackgroundJobStore;
 	resourceDiagnostics: OrchestratorDiagnostic[];
 	extensionDiagnostics: OrchestratorDiagnostic[];
 	diagnostics: OrchestratorDiagnostic[];

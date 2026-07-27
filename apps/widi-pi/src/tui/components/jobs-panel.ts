@@ -1,5 +1,5 @@
 import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
-import type { BackgroundJobReport } from "../../core/background-job.ts";
+import type { BackgroundJobReport } from "../../core/background/index.ts";
 import { singleLine } from "../format.ts";
 import type { BackgroundJobViewState, TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";

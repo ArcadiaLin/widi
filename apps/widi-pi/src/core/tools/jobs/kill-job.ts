@@ -2,7 +2,7 @@ import { type Static, Type } from "typebox";
 import type {
 	BackgroundJob,
 	BackgroundJobStatus,
-} from "../../background-job.ts";
+} from "../../background/index.ts";
 import type { ToolDefinition } from "../types.ts";
 import { waitForSettlements } from "./settlement-wait.ts";
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BackgroundJobTable } from "../../src/core/background-job.ts";
+import { BackgroundJobTable } from "../../src/core/background/index.ts";
 import { createReadJobToolDefinition } from "../../src/core/tools/jobs/read-job.ts";
 
 const readJob = createReadJobToolDefinition();
