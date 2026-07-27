@@ -8,8 +8,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { singleLine } from "./format.ts";
 import type { TuiApplicationState } from "./state.ts";
-import { colors } from "./theme/colors.ts";
-import { selectListTheme } from "./theme/controls.ts";
+import { theme } from "./theme/theme.ts";
 
 const MAX_VISIBLE_ITEMS = 8;
 
@@ -150,13 +149,13 @@ export class CompletionMenu implements Component {
 		const lines = [
 			"",
 			truncateToWidth(
-				colors.accent(singleLine(request.title, 200)),
+				theme.title(singleLine(request.title, 200)),
 				Math.max(1, width - 2),
 				"…",
 			),
 		];
 		if (this.filter) {
-			lines.push(colors.dim(`filter: ${singleLine(this.filter, 120)}`));
+			lines.push(theme.dim(`filter: ${singleLine(this.filter, 120)}`));
 		}
 		lines.push(...this.list.render(width));
 		return lines.map((line) => truncateToWidth(line, width, ""));
@@ -176,7 +175,7 @@ export class CompletionMenu implements Component {
 		const list = new SelectList(
 			items,
 			Math.max(1, Math.min(MAX_VISIBLE_ITEMS, items.length)),
-			selectListTheme,
+			theme.selectListTheme,
 			{ minPrimaryColumnWidth: 16, maxPrimaryColumnWidth: 40 },
 		);
 		list.onSelect = (item) => {

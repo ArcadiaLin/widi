@@ -1,5 +1,5 @@
 import { diffWords } from "diff";
-import { colors } from "./theme/colors.ts";
+import { theme } from "./theme/theme.ts";
 
 /**
  * Render a display-oriented diff string (the `+123 content` format produced
@@ -15,7 +15,7 @@ export function renderDiffText(diffText: string): string[] {
 	while (i < lines.length) {
 		const parsed = parseDiffLine(lines[i] ?? "");
 		if (!parsed) {
-			result.push(colors.dim(lines[i] ?? ""));
+			result.push(theme.dim(lines[i] ?? ""));
 			i++;
 			continue;
 		}
@@ -46,30 +46,30 @@ export function renderDiffText(diffText: string): string[] {
 						replaceTabs(addedLine.content),
 					);
 					result.push(
-						colors.error(`-${removedLine.lineNum} ${highlighted.removedLine}`),
-						colors.ok(`+${addedLine.lineNum} ${highlighted.addedLine}`),
+						theme.error(`-${removedLine.lineNum} ${highlighted.removedLine}`),
+						theme.ok(`+${addedLine.lineNum} ${highlighted.addedLine}`),
 					);
 				}
 			} else {
 				for (const line of removed) {
 					result.push(
-						colors.error(`-${line.lineNum} ${replaceTabs(line.content)}`),
+						theme.error(`-${line.lineNum} ${replaceTabs(line.content)}`),
 					);
 				}
 				for (const line of added) {
 					result.push(
-						colors.ok(`+${line.lineNum} ${replaceTabs(line.content)}`),
+						theme.ok(`+${line.lineNum} ${replaceTabs(line.content)}`),
 					);
 				}
 			}
 		} else if (parsed.prefix === "+") {
 			result.push(
-				colors.ok(`+${parsed.lineNum} ${replaceTabs(parsed.content)}`),
+				theme.ok(`+${parsed.lineNum} ${replaceTabs(parsed.content)}`),
 			);
 			i++;
 		} else {
 			result.push(
-				colors.dim(` ${parsed.lineNum} ${replaceTabs(parsed.content)}`),
+				theme.dim(` ${parsed.lineNum} ${replaceTabs(parsed.content)}`),
 			);
 			i++;
 		}
@@ -122,7 +122,7 @@ function renderIntraLineDiff(
 				removedLine += leading;
 				isFirstRemoved = false;
 			}
-			if (value) removedLine += colors.inverse(value);
+			if (value) removedLine += theme.inverse(value);
 		} else if (part.added) {
 			let value = part.value;
 			if (isFirstAdded) {
@@ -131,7 +131,7 @@ function renderIntraLineDiff(
 				addedLine += leading;
 				isFirstAdded = false;
 			}
-			if (value) addedLine += colors.inverse(value);
+			if (value) addedLine += theme.inverse(value);
 		} else {
 			removedLine += part.value;
 			addedLine += part.value;

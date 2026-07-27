@@ -5,7 +5,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { agentIdentityLabel } from "../agent-identity.ts";
 import type { AgentViewState, TuiApplicationState } from "../state.ts";
-import { colors } from "../theme/colors.ts";
+import { theme } from "../theme/theme.ts";
 
 export class AgentStripView implements Component {
 	private readonly state: TuiApplicationState;
@@ -38,7 +38,7 @@ export class AgentStripView implements Component {
 				backgroundJobs > 0 && `${backgroundJobs} bg`,
 			]
 				.filter(Boolean)
-				.join(colors.dim(" · "));
+				.join(theme.dim(" · "));
 			return [truncateToWidth(summary, width, "…")];
 		}
 
@@ -57,7 +57,7 @@ export class AgentStripView implements Component {
 		}
 		let line = parts.join("    ");
 		if (hidden > 0) {
-			line = `${truncateToWidth(line, Math.max(1, width - 5), "")} ${colors.dim(
+			line = `${truncateToWidth(line, Math.max(1, width - 5), "")} ${theme.dim(
 				`+${hidden}`,
 			)}`;
 		}
@@ -82,12 +82,12 @@ function formatAgent(
 ): string {
 	const glyph =
 		agent.status === "unavailable" || agent.attention === "error"
-			? colors.error("!")
+			? theme.error("!")
 			: agent.attention === "human-request" || agent.attention === "warning"
-				? colors.warn("!")
+				? theme.warn("!")
 				: agent.status === "running"
-					? colors.info("●")
-					: colors.ok("●");
+					? theme.info("●")
+					: theme.ok("●");
 	const label = agentIdentityLabel(state, agent);
 	const base =
 		agent.attention === "human-request"
@@ -99,7 +99,7 @@ function formatAgent(
 		agent.backgroundJobCount > 0
 			? `${base} · ${agent.backgroundJobCount} bg`
 			: base;
-	return `${glyph} ${active ? colors.bold(label) : label} ${colors.dim(detail)}`;
+	return `${glyph} ${active ? theme.bold(label) : label} ${theme.dim(detail)}`;
 }
 
 function attentionRank(attention: AgentViewState["attention"]): number {

@@ -1,7 +1,7 @@
 import { type Component, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { formatRelativeAge, singleLine } from "../format.ts";
 import type { AgentViewState, TuiApplicationState } from "../state.ts";
-import { colors } from "../theme/colors.ts";
+import { theme } from "../theme/theme.ts";
 import { activeAgent } from "./common.ts";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
@@ -31,15 +31,15 @@ export class ProcessingBarView implements Component {
 			? elapsedSince(agent.runStartedAt)
 			: undefined;
 		if (width < NARROW_WIDTH) {
-			const line = [colors.info(`${spinner}`), elapsed && colors.dim(elapsed)]
+			const line = [theme.info(`${spinner}`), elapsed && theme.dim(elapsed)]
 				.filter(Boolean)
 				.join(" ");
 			return new Text(line, 1, 0).render(width);
 		}
-		const parts = [colors.info(`${spinner} ${currentMessage(agent)}`)];
+		const parts = [theme.info(`${spinner} ${currentMessage(agent)}`)];
 		const activity = currentActivity(agent);
-		if (activity) parts.push(colors.dim(`· ${activity}`));
-		if (elapsed) parts.push(colors.dim(`· ${elapsed}`));
+		if (activity) parts.push(theme.dim(`· ${activity}`));
+		if (elapsed) parts.push(theme.dim(`· ${elapsed}`));
 		return new Text(
 			truncateToWidth(parts.join(" "), width - 2, "…"),
 			1,

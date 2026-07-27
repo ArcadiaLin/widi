@@ -4,7 +4,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import { colors } from "./theme/colors.ts";
+import { theme } from "./theme/theme.ts";
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI SGR matching requires ESC.
 const ANSI_SGR = /\u001B\[[0-9;]*m/g;
@@ -32,13 +32,13 @@ export class WidiEditor extends Editor {
 
 	override render(width: number): string[] {
 		const text = this.getText();
-		// Slash-command context gets the accent border; everything else stays
-		// on the subdued rule color. pi-tui paints its horizontal borders with
+		// Slash-command context gets the active border; everything else stays
+		// on the subdued border color. pi-tui paints its horizontal borders with
 		// this.borderColor during super.render, and wrapWithSideBorders routes
 		// corners and side bars through the same hook below.
 		this.borderColor = text.trimStart().startsWith("/")
-			? colors.accent
-			: colors.rule;
+			? theme.borderActive
+			: theme.border;
 		const rendered = super.render(width);
 		if (rendered.length < 3) {
 			return wrapWithSideBorders(rendered, (value) => this.borderColor(value));
@@ -69,7 +69,7 @@ export class WidiEditor extends Editor {
 		const padding = " ".repeat(
 			Math.max(0, width - visibleWidth(line) - 1 - visibleWidth(hintText)),
 		);
-		rendered[index] = `${line} ${colors.dim(hintText)}${padding}`;
+		rendered[index] = `${line} ${theme.dim(hintText)}${padding}`;
 	}
 
 	override handleInput(data: string): void {

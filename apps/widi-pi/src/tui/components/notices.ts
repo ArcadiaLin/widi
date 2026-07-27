@@ -1,7 +1,7 @@
 import { type Component, Text } from "@earendil-works/pi-tui";
 import { singleLine } from "../format.ts";
 import type { TuiApplicationState } from "../state.ts";
-import { colors, severityColor } from "../theme/colors.ts";
+import { theme } from "../theme/theme.ts";
 import { diagnosticGlyph } from "./common.ts";
 
 export class NoticeView implements Component {
@@ -24,7 +24,7 @@ export class NoticeView implements Component {
 		if (notices.length === 0) return [];
 		const lines = notices.map((notice) => {
 			if (notice.kind === "startup") {
-				return colors.dim(singleLine(notice.text, 400));
+				return theme.dim(singleLine(notice.text, 400));
 			}
 			const attribution = [
 				notice.agentId && `agent:${notice.agentId}`,
@@ -33,12 +33,12 @@ export class NoticeView implements Component {
 				.filter(Boolean)
 				.join(" · ");
 			if (notice.diagnostic) {
-				const color = severityColor(notice.diagnostic.severity);
+				const color = theme.severityPaint(notice.diagnostic.severity);
 				return color(
 					`${diagnosticGlyph(notice.diagnostic)} ${notice.diagnostic.code}: ${singleLine(notice.text)}`,
 				);
 			}
-			return colors.info(
+			return theme.info(
 				`✱${attribution ? ` ${attribution}` : ""} ${singleLine(notice.text)}`,
 			);
 		});

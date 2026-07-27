@@ -57,7 +57,7 @@ import {
 	type TuiApplicationState,
 } from "./state.ts";
 import { flushStreaming, STREAM_FLUSH_MS } from "./streaming-flush.ts";
-import { editorTheme } from "./theme/controls.ts";
+import { theme } from "./theme/theme.ts";
 
 const NOTIFICATION_TTL_MS = 5_000;
 
@@ -154,7 +154,7 @@ export class WidiTuiApplication {
 		const keybindings = createWidiKeybindings();
 		setKeybindings(keybindings);
 		this.tui = new TUI(new ProcessTerminal());
-		this.editor = new WidiEditor(this.tui, editorTheme, {
+		this.editor = new WidiEditor(this.tui, theme.editorTheme, {
 			// paddingX 4 reserves column 0 for the left vertical border (│),
 			// column 1 as a gap, column 2 for the `>` prompt token, and column 3
 			// as the gap between prompt and content (see WidiEditor.render).

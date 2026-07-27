@@ -2,7 +2,7 @@ import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
 import type { BackgroundJobReport } from "../../core/background-job.ts";
 import { singleLine } from "../format.ts";
 import type { BackgroundJobViewState, TuiApplicationState } from "../state.ts";
-import { colors } from "../theme/colors.ts";
+import { theme } from "../theme/theme.ts";
 import { activeAgent } from "./common.ts";
 
 const MAX_COLLAPSED_JOBS = 3;
@@ -37,7 +37,7 @@ export class JobsPanelView implements Component {
 		const agent = activeAgent(this.state);
 		if (!agent || agent.backgroundJobs.size === 0) return [];
 		const jobs = orderedJobs(agent.backgroundJobs);
-		const lines = [colors.rule("─".repeat(width)), colors.accent("  Jobs")];
+		const lines = [theme.border("─".repeat(width)), theme.title("  Jobs")];
 		const visible = this.expanded ? jobs : jobs.slice(0, MAX_COLLAPSED_JOBS);
 		for (const job of visible) {
 			lines.push(renderJob(job));
@@ -45,18 +45,18 @@ export class JobsPanelView implements Component {
 			if (reportLines.length > 0) {
 				lines.push(...reportLines);
 			} else if (isLive(job) && job.lastLine) {
-				lines.push(colors.dim(`    ${singleLine(job.lastLine, 200)}`));
+				lines.push(theme.dim(`    ${singleLine(job.lastLine, 200)}`));
 			}
 		}
 		if (jobs.length > visible.length) {
 			lines.push(
-				colors.dim(
+				theme.dim(
 					`  … +${jobs.length - visible.length} more · ctrl+t to expand`,
 				),
 			);
 		}
 		if (this.expanded && jobs.length > MAX_COLLAPSED_JOBS) {
-			lines.push(colors.dim(`  all ${jobs.length} jobs · ctrl+t to collapse`));
+			lines.push(theme.dim(`  all ${jobs.length} jobs · ctrl+t to collapse`));
 		}
 		return lines.map((line) => truncateToWidth(line, width, ""));
 	}
@@ -80,7 +80,7 @@ function orderedJobs(
 
 function renderJob(job: BackgroundJobViewState): string {
 	const description = singleLine(job.description ?? job.toolName, 120);
-	return `  ${jobGlyph(job)} ${description} ${colors.dim(`· ${elapsedText(job)} · ${bytesText(job.totalBytesSeen)}`)}`;
+	return `  ${jobGlyph(job)} ${description} ${theme.dim(`· ${elapsedText(job)} · ${bytesText(job.totalBytesSeen)}`)}`;
 }
 
 function renderJobReport(job: BackgroundJobViewState): string[] {
@@ -93,7 +93,7 @@ function renderJobReport(job: BackgroundJobViewState): string[] {
 	if (rendered && rendered.length > 0) return rendered;
 	const headline = reportHeadline(report);
 	return [
-		colors.dim(
+		theme.dim(
 			`    ${singleLine(headline || `${report.kind} v${report.schemaVersion}`, 200)}`,
 		),
 	];
@@ -104,11 +104,9 @@ function renderPlanReport(report: BackgroundJobReport): string[] {
 	const headline =
 		reportHeadline(report) ?? (data ? `Plan: ${data.title}` : undefined);
 	if (!data) {
-		return headline ? [colors.dim(`    ${singleLine(headline, 200)}`)] : [];
+		return headline ? [theme.dim(`    ${singleLine(headline, 200)}`)] : [];
 	}
-	const lines = headline
-		? [colors.dim(`    ${singleLine(headline, 200)}`)]
-		: [];
+	const lines = headline ? [theme.dim(`    ${singleLine(headline, 200)}`)] : [];
 	for (const item of data.items) {
 		lines.push(
 			`    ${planItemGlyph(item.status)} ${singleLine(item.title, 180)}`,
@@ -165,26 +163,26 @@ function isPlanItemStatus(value: unknown): value is PlanItemStatus {
 function planItemGlyph(status: PlanItemStatus): string {
 	switch (status) {
 		case "pending":
-			return colors.muted("○");
+			return theme.muted("○");
 		case "in_progress":
-			return colors.info("●");
+			return theme.info("●");
 		case "done":
-			return colors.ok("✓");
+			return theme.ok("✓");
 	}
 }
 
 function jobGlyph(job: BackgroundJobViewState): string {
 	switch (job.status) {
 		case "live":
-			return colors.info("●");
+			return theme.info("●");
 		case "aborting":
-			return colors.warn("◌");
+			return theme.warn("◌");
 		case "completed":
-			return colors.ok("✓");
+			return theme.ok("✓");
 		case "failed":
-			return colors.error("✕");
+			return theme.error("✕");
 		case "cancelled":
-			return colors.muted("⊘");
+			return theme.muted("⊘");
 	}
 }
 

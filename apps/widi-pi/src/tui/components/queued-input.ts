@@ -1,7 +1,7 @@
 import { type Component, Text } from "@earendil-works/pi-tui";
 import { singleLine } from "../format.ts";
 import type { TuiApplicationState } from "../state.ts";
-import { colors } from "../theme/colors.ts";
+import { theme } from "../theme/theme.ts";
 import { activeAgent } from "./common.ts";
 
 const MAX_VISIBLE_MESSAGES = 4;
@@ -27,13 +27,13 @@ export class QueuedInputView implements Component {
 		const queued = agent.queue.followUp;
 		if (queued.length === 0) return [];
 		const lines = [
-			colors.dim("queued · follow-up (sent when the current run ends)"),
+			theme.dim("queued · follow-up (sent when the current run ends)"),
 		];
 		for (const text of queued.slice(-MAX_VISIBLE_MESSAGES)) {
-			lines.push(`${colors.dim("❯")} ${colors.dim(singleLine(text, 400))}`);
+			lines.push(`${theme.dim("❯")} ${theme.dim(singleLine(text, 400))}`);
 		}
 		if (queued.length > MAX_VISIBLE_MESSAGES) {
-			lines.push(colors.dim(`… +${queued.length - MAX_VISIBLE_MESSAGES} more`));
+			lines.push(theme.dim(`… +${queued.length - MAX_VISIBLE_MESSAGES} more`));
 		}
 		return new Text(lines.join("\n"), 1, 0).render(width);
 	}

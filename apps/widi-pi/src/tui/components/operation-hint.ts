@@ -13,7 +13,7 @@ import type {
 import type { WidiEditor } from "../editor.ts";
 import { singleLine } from "../format.ts";
 import type { TuiApplicationState } from "../state.ts";
-import { colors } from "../theme/colors.ts";
+import { theme } from "../theme/theme.ts";
 import { activeAgent } from "./common.ts";
 
 export interface OperationHintKeys {
@@ -235,6 +235,6 @@ export class OperationHintView implements Component {
 				inputSubmit: key("tui.input.submit"),
 			},
 		});
-		return hint ? [colors.dim(truncateToWidth(hint, width, "…"))] : [];
+		return hint ? [theme.dim(truncateToWidth(hint, width, "…"))] : [];
 	}
 }

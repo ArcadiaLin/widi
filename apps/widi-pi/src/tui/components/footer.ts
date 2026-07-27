@@ -6,7 +6,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { singleLine } from "../format.ts";
 import type { TuiApplicationState } from "../state.ts";
-import { colors } from "../theme/colors.ts";
+import { theme } from "../theme/theme.ts";
 import { activeAgent } from "./common.ts";
 
 export class FooterView implements Component {
@@ -34,7 +34,7 @@ export class FooterView implements Component {
 			leftParts.push(`${agent.queue.followUp.length} follow-up`);
 		}
 		if (agent?.unreadCount) leftParts.push(`${agent.unreadCount} unread`);
-		const left = colors.dim(leftParts.join(" · "));
+		const left = theme.dim(leftParts.join(" · "));
 		const thinkingLevel =
 			agent?.display.thinkingLevel ??
 			(!agent ? this.state.pendingAgent?.display.thinkingLevel : undefined);
@@ -44,7 +44,7 @@ export class FooterView implements Component {
 		}
 		const context = contextReadout(this.state);
 		if (context) rightParts.push(context);
-		const right = colors.dim(rightParts.join(" · "));
+		const right = theme.dim(rightParts.join(" · "));
 		return [alignSides(left, right, width)];
 	}
 }

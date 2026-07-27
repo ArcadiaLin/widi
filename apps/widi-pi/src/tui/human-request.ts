@@ -15,7 +15,7 @@ import {
 import { boundedText, singleLine } from "./format.ts";
 import { matchRequestOptionIndex } from "./keybindings.ts";
 import type { TuiApplicationState } from "./state.ts";
-import { colors } from "./theme/colors.ts";
+import { theme } from "./theme/theme.ts";
 
 const FREE_INPUT_VALUE = "\x00free-input";
 const FREE_INPUT_LABEL = "Type another answer…";
@@ -474,7 +474,9 @@ export class HumanRequestMenu implements Component {
 		this.tabs().forEach((tab, index) => {
 			const active = index === this.focusedTab;
 			if (tab.kind === "submit") {
-				chips.push(active ? colors.accent("● Submit") : colors.dim("○ Submit"));
+				chips.push(
+					active ? theme.selection("● Submit") : theme.dim("○ Submit"),
+				);
 				return;
 			}
 			const entry = this.entries[tab.entry];
@@ -483,19 +485,19 @@ export class HumanRequestMenu implements Component {
 				const label = `${this.resolveAgentLabel(entry.request.agentId)} · input`;
 				chips.push(
 					active
-						? colors.accent(`● ${singleLine(label, 40)}`)
-						: colors.dim(`○ ${singleLine(label, 40)}`),
+						? theme.selection(`● ${singleLine(label, 40)}`)
+						: theme.dim(`○ ${singleLine(label, 40)}`),
 				);
 				return;
 			}
 			const question = entry.questions[tab.question];
 			if (!question) return;
 			const label = singleLine(question.header ?? question.title, 32);
-			if (active) chips.push(colors.accent(`● ${label}`));
-			else if (this.isAnswered(question)) chips.push(colors.ok(`✓ ${label}`));
-			else chips.push(colors.dim(`○ ${label}`));
+			if (active) chips.push(theme.selection(`● ${label}`));
+			else if (this.isAnswered(question)) chips.push(theme.ok(`✓ ${label}`));
+			else chips.push(theme.dim(`○ ${label}`));
 		});
-		const row = chips.join(colors.dim("  "));
+		const row = chips.join(theme.dim("  "));
 		lines.push(
 			visibleWidth(row) > width
 				? truncateToWidth(row, Math.max(1, width - 1), "…")
@@ -513,7 +515,7 @@ export class HumanRequestMenu implements Component {
 		// For a batch, each question carries its own title line; a single-question
 		// entry is already headed by the request title.
 		if (entry.questions.length > 1 && question.title) {
-			lines.push(colors.accent(` ? ${singleLine(question.title, 200)}`));
+			lines.push(theme.title(` ? ${singleLine(question.title, 200)}`));
 		}
 		const message = question.message ?? entry.request.message;
 		if (message) {
@@ -522,7 +524,7 @@ export class HumanRequestMenu implements Component {
 				maxCharacters: 2_000,
 			}).split("\n")) {
 				lines.push(
-					colors.dim(truncateToWidth(line, Math.max(1, width - 2), "…")),
+					theme.dim(truncateToWidth(line, Math.max(1, width - 2), "…")),
 				);
 			}
 		}
@@ -537,7 +539,7 @@ export class HumanRequestMenu implements Component {
 		}
 		if (start > 0 || end < question.options.length) {
 			lines.push(
-				colors.faint(`   (${question.cursor + 1}/${question.options.length})`),
+				theme.faint(`   (${question.cursor + 1}/${question.options.length})`),
 			);
 		}
 		lines.push("");
@@ -545,7 +547,7 @@ export class HumanRequestMenu implements Component {
 			question.options.length <= 1 ? "1" : `1-${question.options.length}`;
 		const pick =
 			question.kind === "multi-select" ? "space/# toggle" : `${numbers} choose`;
-		lines.push(colors.dim(`↑/↓ move · ${pick} · ←/→ tabs · esc cancel`));
+		lines.push(theme.dim(`↑/↓ move · ${pick} · ←/→ tabs · esc cancel`));
 	}
 
 	private renderOptionRow(
@@ -567,12 +569,12 @@ export class HumanRequestMenu implements Component {
 		}
 		const tone =
 			isSelected && isCursor
-				? (text: string) => colors.bold(colors.ok(text))
+				? (text: string) => theme.bold(theme.ok(text))
 				: isSelected
-					? colors.ok
+					? theme.ok
 					: isCursor
-						? colors.accent
-						: colors.dim;
+						? theme.selection
+						: theme.dim;
 		let label = option.label;
 		if (option.value === FREE_INPUT_VALUE && question.editing && isCursor) {
 			const value = question.freeInput?.getValue() ?? "";
@@ -586,7 +588,7 @@ export class HumanRequestMenu implements Component {
 		];
 		if (option.description) {
 			rows.push(
-				colors.muted(
+				theme.muted(
 					`      ${truncateToWidth(singleLine(option.description, 400), Math.max(1, width - 7), "…")}`,
 				),
 			);
@@ -595,9 +597,9 @@ export class HumanRequestMenu implements Component {
 	}
 
 	private pushSubmitView(lines: string[], width: number): void {
-		lines.push(colors.bold(" Review your answers before submit"));
+		lines.push(theme.bold(" Review your answers before submit"));
 		if (this.hasUnanswered()) {
-			lines.push(colors.warn("  Some questions are still unanswered."));
+			lines.push(theme.warn("  Some questions are still unanswered."));
 		}
 		lines.push("");
 		for (const entry of this.entries) {
@@ -605,13 +607,13 @@ export class HumanRequestMenu implements Component {
 			for (const question of entry.questions) {
 				const title = question.title || entry.request.title;
 				lines.push(
-					`  ${colors.dim("Q")} ${truncateToWidth(singleLine(title, 400), Math.max(1, width - 5), "…")}`,
+					`  ${theme.dim("Q")} ${truncateToWidth(singleLine(title, 400), Math.max(1, width - 5), "…")}`,
 				);
 				const answer = this.answerSummary(question);
 				lines.push(
 					answer === undefined
-						? `    ${colors.dim("→ Not answered")}`
-						: `    ${colors.accent("→")} ${truncateToWidth(singleLine(answer, 400), Math.max(1, width - 7), "…")}`,
+						? `    ${theme.dim("→ Not answered")}`
+						: `    ${theme.selection("→")} ${truncateToWidth(singleLine(answer, 400), Math.max(1, width - 7), "…")}`,
 				);
 			}
 		}
@@ -620,12 +622,12 @@ export class HumanRequestMenu implements Component {
 			const active = index === this.submitActionIndex;
 			lines.push(
 				active
-					? colors.accent(`  → [${index + 1}] ${label}`)
-					: colors.dim(`    [${index + 1}] ${label}`),
+					? theme.selection(`  → [${index + 1}] ${label}`)
+					: theme.dim(`    [${index + 1}] ${label}`),
 			);
 		});
 		lines.push("");
-		lines.push(colors.dim("↑/↓ select · 1/2 choose · ↵ confirm · ←/→ tabs"));
+		lines.push(theme.dim("↑/↓ select · 1/2 choose · ↵ confirm · ←/→ tabs"));
 	}
 
 	private pushInputView(
@@ -640,19 +642,19 @@ export class HumanRequestMenu implements Component {
 				maxCharacters: 2_000,
 			}).split("\n")) {
 				lines.push(
-					colors.dim(truncateToWidth(line, Math.max(1, width - 2), "…")),
+					theme.dim(truncateToWidth(line, Math.max(1, width - 2), "…")),
 				);
 			}
 		}
 		if (entry.request.placeholder && !entry.input?.getValue()) {
-			lines.push(colors.dim(singleLine(entry.request.placeholder, 200)));
+			lines.push(theme.dim(singleLine(entry.request.placeholder, 200)));
 		}
 		const input = entry.input;
 		if (input) {
 			input.focused = this.focused;
 			lines.push(...input.render(Math.max(8, width - 2)));
 		}
-		lines.push(colors.dim("enter submit · ←/→ tabs · esc cancel"));
+		lines.push(theme.dim("enter submit · ←/→ tabs · esc cancel"));
 	}
 
 	private pushHeading(
@@ -664,7 +666,7 @@ export class HumanRequestMenu implements Component {
 		const provisional = entry.request.provisional ? " · provisional" : "";
 		lines.push(
 			truncateToWidth(
-				`${colors.accent(singleLine(entry.request.title, 200))}${colors.dim(
+				`${theme.title(singleLine(entry.request.title, 200))}${theme.dim(
 					` · agent: ${agentLabel} · ${entry.request.kind}${provisional}`,
 				)}`,
 				Math.max(1, width - 2),
@@ -674,7 +676,7 @@ export class HumanRequestMenu implements Component {
 	}
 
 	private rule(width: number): string {
-		return colors.rule("─".repeat(Math.max(1, width)));
+		return theme.border("─".repeat(Math.max(1, width)));
 	}
 
 	private renderPendingHint(width: number): string[] {
@@ -683,7 +685,7 @@ export class HumanRequestMenu implements Component {
 		const hint = `${count} pending request${count > 1 ? "s" : ""}${
 			keys[0] ? ` · ${keys[0]} to answer` : ""
 		}`;
-		return [truncateToWidth(colors.warn(`! ${hint}`), width, "…")];
+		return [truncateToWidth(theme.warn(`! ${hint}`), width, "…")];
 	}
 
 	private answerSummary(question: QuestionState): string | undefined {

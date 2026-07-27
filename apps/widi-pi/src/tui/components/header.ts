@@ -1,7 +1,7 @@
 import { type Component, Text } from "@earendil-works/pi-tui";
 import { singleLine } from "../format.ts";
 import type { TuiApplicationState } from "../state.ts";
-import { colors } from "../theme/colors.ts";
+import { theme } from "../theme/theme.ts";
 import { activeAgent, agentLabel } from "./common.ts";
 
 export class HeaderView implements Component {
@@ -25,7 +25,7 @@ export class HeaderView implements Component {
 			pending?.display.model.id ??
 			"model";
 		return new Text(
-			`${colors.bold(colors.accent("WIDI"))} ${colors.dim(
+			`${theme.bold(theme.title("WIDI"))} ${theme.dim(
 				`· ${label} · ${singleLine(model, 120)}`,
 			)}`,
 			1,

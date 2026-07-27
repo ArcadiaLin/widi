@@ -2,7 +2,7 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 import { renderDiffText } from "./diff.ts";
 import { formatUnknown, sanitizeTerminalText, singleLine } from "./format.ts";
 import type { ToolExecutionItem } from "./state.ts";
-import { colors } from "./theme/colors.ts";
+import { theme } from "./theme/theme.ts";
 
 const SUCCESS_PREVIEW_LINES = 4;
 const ERROR_PREVIEW_LINES = 8;
@@ -36,10 +36,10 @@ export function presentToolExecution(
 	const expanded = options.expanded ?? false;
 	const glyph =
 		item.status === "running"
-			? colors.info("●")
+			? theme.info("●")
 			: item.isError
-				? colors.error("✕")
-				: colors.ok("✓");
+				? theme.error("✕")
+				: theme.ok("✓");
 	const { verb, target } = describeToolCall(item.toolName, item.args);
 
 	const resultText =
@@ -71,9 +71,9 @@ export function presentToolExecution(
 		suffix = ` · ${writtenLines.length} ${writtenLines.length === 1 ? "line" : "lines"}`;
 	}
 
-	const headline = `${glyph} ${colors.bold(singleLine(verb, 80))}${
+	const headline = `${glyph} ${theme.bold(singleLine(verb, 80))}${
 		target ? ` ${singleLine(target, 400)}` : ""
-	}${suffix ? colors.dim(suffix) : ""}`;
+	}${suffix ? theme.dim(suffix) : ""}`;
 	const lines = [truncateToWidth(headline, Math.max(8, width), "…")];
 
 	// Pick the preview body: an already styled diff for edits, the written
@@ -92,15 +92,15 @@ export function presentToolExecution(
 	} else if (completedOk && writtenLines) {
 		preview = writtenLines;
 		previewLimit = expanded ? EXPANDED_PREVIEW_LINES : 0;
-		styleLine = colors.dim;
+		styleLine = theme.dim;
 	} else if (completedOk && countUnit) {
 		preview = resultLines;
 		previewLimit = expanded ? EXPANDED_PREVIEW_LINES : 0;
-		styleLine = colors.dim;
+		styleLine = theme.dim;
 	} else {
 		preview = resultLines;
 		previewLimit = expanded ? EXPANDED_PREVIEW_LINES : SUCCESS_PREVIEW_LINES;
-		styleLine = colors.dim;
+		styleLine = theme.dim;
 	}
 
 	if (previewLimit > 0 && preview.length > 0) {
@@ -109,7 +109,7 @@ export function presentToolExecution(
 			lines.push(styleLine(truncateToWidth(line, Math.max(8, width), "…")));
 		}
 		const hidden = preview.length - shown.length;
-		if (hidden > 0) lines.push(colors.dim(`… +${hidden} lines`));
+		if (hidden > 0) lines.push(theme.dim(`… +${hidden} lines`));
 	}
 	return lines;
 }
