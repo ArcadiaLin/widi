@@ -53,6 +53,7 @@ import {
 	type AgentViewState,
 	createTuiApplicationState,
 	ensureAgentProjection,
+	type NoticeTextMode,
 	setActiveAgent,
 	type TuiApplicationState,
 } from "./state.ts";
@@ -354,14 +355,14 @@ export class WidiTuiApplication {
 						? `Login: open ${event.url} — ${event.instructions}`
 						: `Login: open ${event.url}`,
 					event.agentId,
-					{ pin: true },
+					{ pin: true, textMode: "full" },
 				);
 				break;
 			case "auth_login_code":
 				this.addApplicationNotice(
 					`Login: open ${event.verificationUri} and enter code ${event.userCode}`,
 					event.agentId,
-					{ pin: true },
+					{ pin: true, textMode: "full" },
 				);
 				break;
 			case "auth_login_progress":
@@ -1125,7 +1126,7 @@ export class WidiTuiApplication {
 	private addApplicationNotice(
 		text: string,
 		agentId?: string,
-		options: { pin?: boolean } = {},
+		options: { pin?: boolean; textMode?: NoticeTextMode } = {},
 	): void {
 		const createdAt = new Date().toISOString();
 		if (agentId) {
@@ -1138,6 +1139,7 @@ export class WidiTuiApplication {
 				durability: "ephemeral",
 				createdAt,
 				text,
+				textMode: options.textMode,
 			});
 		} else {
 			const id = `application:${createdAt}:${this.state.globalNotices.length}`;
@@ -1146,6 +1148,7 @@ export class WidiTuiApplication {
 				kind: "application",
 				createdAt,
 				text,
+				textMode: options.textMode,
 			});
 			// Pinned notices (e.g. OAuth login links) must not vanish while the
 			// user is still completing the flow in a browser.

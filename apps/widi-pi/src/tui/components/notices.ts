@@ -1,5 +1,5 @@
 import { type Component, Text } from "@earendil-works/pi-tui";
-import { singleLine } from "../format.ts";
+import { sanitizeTerminalText, singleLine } from "../format.ts";
 import type { TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
 import { diagnosticGlyph } from "./common.ts";
@@ -38,9 +38,11 @@ export class NoticeView implements Component {
 					`${diagnosticGlyph(notice.diagnostic)} ${notice.diagnostic.code}: ${singleLine(notice.text)}`,
 				);
 			}
-			return theme.info(
-				`✱${attribution ? ` ${attribution}` : ""} ${singleLine(notice.text)}`,
-			);
+			const text =
+				notice.textMode === "full"
+					? sanitizeTerminalText(notice.text)
+					: singleLine(notice.text);
+			return theme.info(`✱${attribution ? ` ${attribution}` : ""} ${text}`);
 		});
 		return new Text(lines.join("\n"), 1, 0).render(width);
 	}

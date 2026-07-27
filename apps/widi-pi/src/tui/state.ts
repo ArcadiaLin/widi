@@ -23,6 +23,7 @@ import type {
 import type { CommandError } from "./commands/types.ts";
 
 export type TimelineDurability = "durable" | "ephemeral";
+export type NoticeTextMode = "compact" | "full";
 
 export interface UserMessageItem {
 	readonly type: "user-message";
@@ -147,6 +148,8 @@ export interface ApplicationNoticeItem {
 	readonly durability: "ephemeral";
 	readonly createdAt: string;
 	readonly text: string;
+	/** Full mode wraps sanitized text without abbreviating copy-sensitive values. */
+	readonly textMode?: NoticeTextMode;
 }
 
 export interface SessionMarkerItem {
@@ -294,6 +297,8 @@ export interface NoticeItem {
 		| "startup";
 	readonly createdAt: string;
 	readonly text: string;
+	/** Full mode wraps sanitized text without abbreviating copy-sensitive values. */
+	readonly textMode?: NoticeTextMode;
 	readonly agentId?: AgentId;
 	readonly extensionId?: string;
 	readonly diagnostic?: OrchestratorDiagnostic;

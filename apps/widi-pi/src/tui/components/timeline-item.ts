@@ -83,6 +83,8 @@ export function renderDeps(
 			return [item.hiddenTurns];
 		case "human-request-trace":
 			return [context.toolOutputExpanded];
+		case "application-notice":
+			return [item.text, item.textMode];
 		default:
 			return [];
 	}
@@ -334,7 +336,14 @@ export function renderTimelineItem(
 		case "application-notice":
 			return new Text(
 				theme.dim(
-					`✱ ${boundedText(item.text, { maxLines: 4, maxCharacters: 600 })}`,
+					`✱ ${
+						item.textMode === "full"
+							? sanitizeTerminalText(item.text)
+							: boundedText(item.text, {
+									maxLines: 4,
+									maxCharacters: 600,
+								})
+					}`,
 				),
 				1,
 				0,

@@ -7,6 +7,7 @@ import {
 } from "../../src/tui/components/timeline-item.ts";
 import { SPINNER_FRAMES } from "../../src/tui/format.ts";
 import type {
+	ApplicationNoticeItem,
 	AssistantMessageItem,
 	CommandResultItem,
 	ThinkingStatusItem,
@@ -170,6 +171,23 @@ describe("renderTimelineItem", () => {
 		const lines = plain(renderTimelineItem(item, 80, context));
 
 		expect(lines).toEqual(["/status", "idle"]);
+	});
+
+	it("wraps full application notices without abbreviating login URLs", () => {
+		const url = `https://auth.example.test/oauth/authorize?${"state=a".repeat(120)}&complete=yes`;
+		const item: ApplicationNoticeItem = {
+			type: "application-notice",
+			id: "login-url",
+			durability: "ephemeral",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			text: `Login: open ${url}`,
+			textMode: "full",
+		};
+
+		const output = plain(renderTimelineItem(item, 40, context)).join("");
+
+		expect(output).toContain(url);
+		expect(output).not.toContain("…");
 	});
 
 	it("renders a live thinking status with a spinner and a two-line preview", () => {
