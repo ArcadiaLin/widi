@@ -11,8 +11,8 @@ import {
 } from "@earendil-works/pi-agent-core";
 import {
 	DEFAULT_AGENT_DIR,
-	DEFAULT_PROMPTTEMPLATE_DIR,
-	DEFAULT_PROMPTtEMPALTE_FILE_EXTENSION,
+	DEFAULT_PROMPT_TEMPLATE_DIR,
+	DEFAULT_PROMPT_TEMPLATE_FILE_EXTENSION,
 	DEFAULT_SKILL_DIR,
 } from "./constants.js";
 
@@ -26,6 +26,25 @@ export type ResourceSource =
 export interface ResourceRoot {
 	readonly kind: "agent_dir" | "cwd" | "settings";
 	readonly path: string;
+}
+
+/**
+ * A resource a profile named explicitly that no root produced. Loading skips
+ * missing paths silently, which is right for an absent resource directory but
+ * hides a typo or a stale entry in a profile's own list.
+ */
+export interface MissingResourceDiagnostic {
+	readonly type: "warning";
+	readonly code: "not_found";
+	readonly message: string;
+	readonly path: string;
+}
+
+interface ResourceInput {
+	readonly path: string;
+	readonly source: ResourceSource;
+	/** The profile-supplied name, absent when loading a whole root. */
+	readonly name?: string;
 }
 
 export interface ResourceLoaderOptions {
@@ -62,25 +81,38 @@ export class ResourceLoader {
 	}
 
 	/**
-	 * Expected usage: `loadPromptTemplates(profile.promptTemplates)`.
-	 * Empty or missing names load every prompt template under each `.widi/prompt-templates` root.
+	 * Expected usage: `loadSkills(profile.skills)`.
+	 * Empty or missing names load every skill under each `.widi/skills` root.
 	 */
 	async loadSkills(
-		skillName: readonly string[] = [],
+		skillNames: readonly string[] = [],
 		skillDir: string = DEFAULT_SKILL_DIR,
 	): Promise<{
 		skills: Array<{ skill: Skill; source: ResourceSource }>;
-		diagnostics: Array<SkillDiagnostic & { source: ResourceSource }>;
+		diagnostics: Array<
+			(SkillDiagnostic | MissingResourceDiagnostic) & {
+				source: ResourceSource;
+			}
+		>;
 	}> {
-		return loadSourcedSkills(
-			this._executionEnv,
-			await this._resolveResourceNames(skillDir, skillName),
-		);
+		const inputs = await this._resolveResourceNames(skillDir, skillNames);
+		const loaded = await loadSourcedSkills(this._executionEnv, inputs);
+		return {
+			skills: loaded.skills,
+			diagnostics: [
+				...loaded.diagnostics,
+				...missingNameDiagnostics(
+					skillNames,
+					inputs,
+					loaded.skills.map(({ source }) => source),
+				),
+			],
+		};
 	}
 
 	/**
 	 * Expected usage: `loadPromptTemplates(profile.promptTemplates)`.
-	 * Empty or missing names load every prompt template under each `.widi/prompt-templates` root.
+	 * Empty or missing names load every prompt template under each `.widi/prompts` root.
 	 */
 	async loadPromptTemplates(
 		promptTemplateNames: readonly string[] = [],
@@ -89,27 +121,38 @@ export class ResourceLoader {
 			promptTemplate: PromptTemplate;
 			source: ResourceSource;
 		}>;
-		diagnostics: Array<PromptTemplateDiagnostic & { source: ResourceSource }>;
+		diagnostics: Array<
+			(PromptTemplateDiagnostic | MissingResourceDiagnostic) & {
+				source: ResourceSource;
+			}
+		>;
 	}> {
-		return loadSourcedPromptTemplates(
-			this._executionEnv,
-			await this._resolveResourceNames(
-				DEFAULT_PROMPTTEMPLATE_DIR,
-				promptTemplateNames,
-				{
-					fileExtension: DEFAULT_PROMPTtEMPALTE_FILE_EXTENSION,
-				},
-			),
+		const inputs = await this._resolveResourceNames(
+			DEFAULT_PROMPT_TEMPLATE_DIR,
+			promptTemplateNames,
+			{ fileExtension: DEFAULT_PROMPT_TEMPLATE_FILE_EXTENSION },
 		);
+		const loaded = await loadSourcedPromptTemplates(this._executionEnv, inputs);
+		return {
+			promptTemplates: loaded.promptTemplates,
+			diagnostics: [
+				...loaded.diagnostics,
+				...missingNameDiagnostics(
+					promptTemplateNames,
+					inputs,
+					loaded.promptTemplates.map(({ source }) => source),
+				),
+			],
+		};
 	}
 
 	private async _resolveResourceNames(
 		resourceDirName: string,
 		names: readonly string[],
 		options?: { fileExtension: string },
-	): Promise<Array<{ path: string; source: ResourceSource }>> {
+	): Promise<ResourceInput[]> {
 		const roots = this._getRoots(resourceDirName);
-		const resolved: Array<{ path: string; source: ResourceSource }> = [];
+		const resolved: ResourceInput[] = [];
 		// The agent dir may itself be the cwd's .widi directory; without dedupe
 		// every resource loads twice and appears as duplicate candidates.
 		const seenRoots = new Set<string>();
@@ -129,20 +172,25 @@ export class ResourceLoader {
 			seenRoots.add(resourceRoot);
 			// Empty names mean "load the whole resource directory". Otherwise each name is resolved as a direct child.
 			// future skill meybe support namespace like "namespace/skill_name", then we need to resolve each part of the path.
-			const paths =
+			const entries =
 				names.length === 0
-					? [resourceRoot]
+					? [{ path: resourceRoot, name: undefined }]
 					: await Promise.all(
-							names.map((name) =>
-								this._joinPath(
+							names.map(async (name) => ({
+								path: await this._joinPath(
 									resourceRoot,
 									this._withFileExtension(name, options?.fileExtension),
 								),
-							),
+								name,
+							})),
 						);
 
-			for (const path of paths) {
-				resolved.push({ path, source: { kind: root.kind, path: path } });
+			for (const entry of entries) {
+				resolved.push({
+					path: entry.path,
+					name: entry.name,
+					source: { kind: root.kind, path: entry.path },
+				});
 			}
 		}
 
@@ -154,7 +202,7 @@ export class ResourceLoader {
 			return this._skillRoots;
 		}
 		if (
-			resourceDirName === DEFAULT_PROMPTTEMPLATE_DIR &&
+			resourceDirName === DEFAULT_PROMPT_TEMPLATE_DIR &&
 			this._promptTemplateRoots
 		) {
 			return this._promptTemplateRoots;
@@ -184,4 +232,37 @@ export class ResourceLoader {
 		}
 		return result.value;
 	}
+}
+
+/**
+ * Report every explicitly named resource that no root produced. A name is
+ * tried once per root, so it only counts as missing when all of its candidate
+ * paths came back empty. Loading a whole root (no names) reports nothing.
+ */
+function missingNameDiagnostics(
+	names: readonly string[],
+	inputs: readonly ResourceInput[],
+	loadedSources: readonly ResourceSource[],
+): Array<MissingResourceDiagnostic & { source: ResourceSource }> {
+	if (names.length === 0) return [];
+	const loadedPaths = new Set(loadedSources.map((source) => source.path));
+	const diagnostics: Array<
+		MissingResourceDiagnostic & { source: ResourceSource }
+	> = [];
+	for (const name of names) {
+		const candidates = inputs.filter((input) => input.name === name);
+		if (candidates.length === 0) continue;
+		if (candidates.some((candidate) => loadedPaths.has(candidate.path))) {
+			continue;
+		}
+		const tried = candidates.map((candidate) => candidate.path).join(", ");
+		diagnostics.push({
+			type: "warning",
+			code: "not_found",
+			message: `"${name}" was not found in any resource root (tried ${tried})`,
+			path: candidates[0]?.path ?? name,
+			source: candidates[0]?.source ?? { kind: "cwd", path: name },
+		});
+	}
+	return diagnostics;
 }
