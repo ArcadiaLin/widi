@@ -1,13 +1,11 @@
 import type { AgentLifecycleStatus } from "../../core/types.ts";
-import { parseLineCommand, scanInlineCommands } from "./parse.ts";
+import { LINE_COMMAND_TRIGGER, parseLineCommand } from "./parse.ts";
 import type {
 	CommandContext,
 	CommandDefinition,
 	CommandError,
 	CommandView,
 	EngineOutcome,
-	InlineCommand,
-	LineCommand,
 } from "./types.ts";
 
 export interface EngineHooks {
@@ -15,20 +13,16 @@ export interface EngineHooks {
 }
 
 export class CommandEngine {
-	private readonly lineCommands = new Map<string, LineCommand>();
-	private readonly inlineCommands = new Map<string, InlineCommand>();
+	private readonly commands = new Map<string, CommandDefinition>();
 	private nextCommandId = 1;
 
 	constructor(commands: readonly CommandDefinition[]) {
-		for (const command of commands) {
-			if (command.kind === "line") this.lineCommands.set(command.name, command);
-			else this.inlineCommands.set(command.name, command);
-		}
+		for (const command of commands) this.commands.set(command.name, command);
 	}
 
 	list(status: AgentLifecycleStatus | undefined): CommandView[] {
 		const views: CommandView[] = [];
-		for (const command of this.lineCommands.values()) {
+		for (const command of this.commands.values()) {
 			const unavailableReason =
 				status === undefined && command.agentPolicy === "active"
 					? `Command /${command.name} requires an active agent.`
@@ -36,7 +30,6 @@ export class CommandEngine {
 						? undefined
 						: command.checkStatus?.(status);
 			views.push({
-				kind: "line",
 				name: command.name,
 				description: command.description,
 				argumentHint: command.argumentHint,
@@ -48,30 +41,16 @@ export class CommandEngine {
 				unavailableReason,
 			});
 		}
-		for (const command of this.inlineCommands.values()) {
-			views.push({
-				kind: "inline",
-				name: command.name,
-				description: command.description,
-				argumentHint: command.argumentHint,
-				takesArgument: true,
-				available: true,
-			});
-		}
 		return views;
 	}
 
-	line(name: string): LineCommand | undefined {
-		return this.lineCommands.get(name);
+	get(name: string): CommandDefinition | undefined {
+		return this.commands.get(name);
 	}
 
-	inline(name: string): InlineCommand | undefined {
-		return this.inlineCommands.get(name);
-	}
-
-	match(text: string): LineCommand | undefined {
+	match(text: string): CommandDefinition | undefined {
 		const parsed = parseLineCommand(text);
-		return parsed ? this.lineCommands.get(parsed.name) : undefined;
+		return parsed ? this.commands.get(parsed.name) : undefined;
 	}
 
 	async handleInput(
@@ -80,23 +59,23 @@ export class CommandEngine {
 		hooks?: EngineHooks,
 	): Promise<EngineOutcome> {
 		const parsed = parseLineCommand(text);
-		const command = parsed ? this.lineCommands.get(parsed.name) : undefined;
-		if (parsed && command) {
-			return await this.runLineCommand(
-				command,
-				parsed.argument,
-				parsed.hasArgument,
-				context,
-				hooks,
-			);
-		}
-		return await this.expandInline(text, context, hooks);
+		const command = parsed ? this.commands.get(parsed.name) : undefined;
+		if (!parsed || !command) return { kind: "pass" };
+		return await this.runCommand(
+			command,
+			parsed.argument,
+			parsed.hasArgument,
+			text,
+			context,
+			hooks,
+		);
 	}
 
-	private async runLineCommand(
-		command: LineCommand,
+	private async runCommand(
+		command: CommandDefinition,
 		argument: string,
 		hasArgument: boolean,
+		text: string,
 		context: CommandContext,
 		hooks?: EngineHooks,
 	): Promise<EngineOutcome> {
@@ -114,15 +93,20 @@ export class CommandEngine {
 		if (unavailableReason) {
 			return failed(commandId, command.name, { message: unavailableReason });
 		}
-		// A required argument that is missing or blank never executes; explicit
-		// blank arguments still execute optional-argument commands (e.g. /fork:).
+		// A required argument that is missing or blank never runs; explicit blank
+		// arguments still run optional-argument commands (e.g. /fork:).
 		const missingArgument = command.requiresArgument
 			? argument.trim() === ""
 			: !hasArgument;
 		if (missingArgument && (command.requiresArgument || command.complete)) {
 			try {
 				const candidates = (await command.complete?.(context, "")) ?? [];
-				return { kind: "needs-argument", command, candidates };
+				// An optional-argument command with nothing to offer runs its bare
+				// form instead: /tree lists the whole tree, and demanding an
+				// argument would put that behind the colon syntax for no reason.
+				if (candidates.length > 0 || command.requiresArgument) {
+					return { kind: "needs-argument", command, candidates };
+				}
 			} catch (error) {
 				return failed(commandId, command.name, toCommandError(error));
 			}
@@ -134,64 +118,32 @@ export class CommandEngine {
 		}
 		hooks?.onCommandStart?.(commandId, command.name, argument);
 		try {
-			const value = await command.execute(context, argument);
-			return { kind: "executed", commandId, name: command.name, value };
+			if (command.kind === "action") {
+				const value = await command.execute(context, argument);
+				return { kind: "executed", commandId, name: command.name, value };
+			}
+			return {
+				kind: "expanded",
+				text: await command.expand(context, argument),
+				// The whole input is the command, so the expansion replaces all of
+				// it. The record lets the UI replay what the user actually typed.
+				expansion: {
+					originalText: text,
+					items: [
+						{
+							commandId,
+							name: command.name,
+							trigger: LINE_COMMAND_TRIGGER,
+							argument,
+							start: 0,
+							end: text.length,
+						},
+					],
+				},
+			};
 		} catch (error) {
 			return failed(commandId, command.name, toCommandError(error));
 		}
-	}
-
-	// All-or-nothing: any expand failure drops the whole input - a
-	// half-expanded prompt must never reach the model.
-	private async expandInline(
-		text: string,
-		context: CommandContext,
-		hooks?: EngineHooks,
-	): Promise<EngineOutcome> {
-		const matches = scanInlineCommands(text, [...this.inlineCommands.keys()]);
-		if (matches.length === 0) return { kind: "pass" };
-		const items: Array<{
-			commandId: string;
-			name: string;
-			trigger: string;
-			argument: string;
-			start: number;
-			end: number;
-		}> = [];
-		const replacements: string[] = [];
-		for (const match of matches) {
-			const command = this.inlineCommands.get(match.name);
-			if (!command) continue;
-			const commandId = this.createCommandId();
-			hooks?.onCommandStart?.(commandId, command.name, match.argument);
-			try {
-				replacements.push(await command.expand(context, match.argument));
-			} catch (error) {
-				return failed(commandId, command.name, toCommandError(error));
-			}
-			items.push({
-				commandId,
-				name: match.name,
-				trigger: "<",
-				argument: match.argument,
-				start: match.start,
-				end: match.end,
-			});
-		}
-		if (items.length === 0) return { kind: "pass" };
-		let expandedText = "";
-		let cursor = 0;
-		for (const [index, item] of items.entries()) {
-			expandedText += text.slice(cursor, item.start);
-			expandedText += replacements[index];
-			cursor = item.end;
-		}
-		expandedText += text.slice(cursor);
-		return {
-			kind: "expanded",
-			text: expandedText,
-			expansion: { originalText: text, items },
-		};
 	}
 
 	private createCommandId(): string {

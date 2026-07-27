@@ -22,9 +22,9 @@ import { builtInCommands } from "./commands/built-ins.ts";
 import { CommandEngine, switchedAgentId } from "./commands/engine.ts";
 import { parseLineCommand } from "./commands/parse.ts";
 import type {
+	CommandDefinition,
 	CommandError,
 	EngineOutcome,
-	LineCommand,
 } from "./commands/types.ts";
 import { CompletionMenu } from "./completion-menu.ts";
 import { AgentStripView } from "./components/agent-strip.ts";
@@ -163,7 +163,7 @@ export class WidiTuiApplication {
 		});
 		this.editor.setArgumentHintProvider((text) => {
 			const name = /^\/(\S+)\s*$/.exec(text)?.[1];
-			return name ? this.engine.line(name)?.argumentHint : undefined;
+			return name ? this.engine.get(name)?.argumentHint : undefined;
 		});
 		// Later-opened menus own the focus; closing one hands focus back to the
 		// still-open human-request menu before falling back to the editor.
@@ -815,14 +815,16 @@ export class WidiTuiApplication {
 	private openCommandCompletionMenu(
 		agentId: string | undefined,
 		originalText: string,
-		command: LineCommand,
+		command: CommandDefinition,
 		candidates: readonly CandidateItem[],
 	): void {
-		if (candidates.length === 0 && !command.complete) {
-			// Nothing to pick from: an empty menu is a dead end, a usage line is not.
+		if (candidates.length === 0) {
+			// Nothing to pick from: an empty menu is a dead end, a usage line is
+			// not. A completer that returned nothing counts too — that is what a
+			// misconfigured resource directory looks like from here.
 			this.restoreEditor(originalText, agentId);
 			this.addApplicationNotice(
-				`Command /${command.name} needs an argument: /${command.name}:${
+				`Command /${command.name} needs an argument: /${command.name} ${
 					command.argumentHint ?? "<argument>"
 				}`,
 				agentId,

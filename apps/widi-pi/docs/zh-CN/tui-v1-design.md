@@ -103,7 +103,7 @@ v2 已裁决：TUI 不使用悬浮 selector。一切「从候选中选一个」�
 - runtime composition、startup diagnostics 和默认 agent 创建。
 - user、assistant、thinking 状态和 tool execution 的终端呈现。
 - assistant text streaming。
-- `src/tui/commands/` `CommandEngine` 执行 line command 与展开 inline command。
+- `src/tui/commands/` `CommandEngine` 执行 action command 与展开 prompt command。
 - 由 `CommandEngine.list(status)` 和 command `complete()` 产生的 autocomplete。
 - 多个独立 agent 的后台事件归约。
 - 底部 agent strip 和 agent selector。
@@ -612,8 +612,8 @@ Pi `AgentHarness.prompt()` 在 busy 时会失败，而 steer、follow-up 和 nex
 - Agent `idle`：所有输入先经过 `CommandEngine`；pass/expanded 再调用 `promptAgent()`。
 - Agent `running`：普通文本经引擎 pass/expanded 后<b>默认进入 followUp 队列</b>（`followUpAgent()`）；queued 消息显示在 editor 上方的 `QueuedInputContainer`，多条按序排列并标注去向，run 结束由 core 自动消费。
 - `app.steer`（默认 ctrl+s，见 §14）：把最新一条排队中的 followUp 从队列取出、改作 steer 立即发出（`steerAgent()`）；editor 当前内容与其余排队消息不受影响。实现注：pi harness 尚无「移除单条已排队 followUp」的公共 API（上游依赖），当前实现把 editor 当前文本作为 steer 立即发出、不改动已排队消息；上游具备该 API 后再切换为取出排队 followUp 的语义。
-- Agent `running` 且 `CommandEngine.match()` 命中已知 line command：仍交给引擎，由 command 自己的 `checkStatus` 决定是否可执行（`/steer:`、`/follow-up:` 显式形式保留）。
-- Inline command 是 prompt expansion，不是独立运行操作；包含 inline command 的普通文本在 Agent `running` 时与其他普通文本一样进入 followUp 队列。
+- Agent `running` 且 `CommandEngine.match()` 命中已知 command：仍交给引擎，由 command 自己的 `checkStatus` 决定是否可执行（`/steer:`、`/follow-up:` 显式形式保留）。
+- Prompt command（`/prompt`、`/skill`）产出 prompt text 而非运行操作；其展开结果在 Agent `running` 时与其他普通文本一样进入 followUp 队列。
 - Human request menu 或致命错误 overlay 打开时：editor 不提交到任何 agent。
 
 v2 已裁决 idle 输入保护：未命中引擎的 `/` 前缀输入（如 `/typo`）在 idle agent 上不再直接发给模型；先显示本地 notice「未知命令，再按 enter 确认发送」，二次 enter 才按普通 prompt 提交。Application 必须捕获 command completion、execution 与 prompt 的异常，恢复尚未产生 user message 的原始 editor text，并提供可见反馈。
@@ -622,10 +622,10 @@ v2 已裁决 idle 输入保护：未命中引擎的 `/` 前缀输入（如 `/typ
 
 `CommandEngine` 由 built-in orchestrator commands 与 application commands 构造。Application commands 操作应用自身而非 orchestrator：`/quit` 与 `/exit` 经 `ApplicationCommandHost` 绑定应用动作，与其他 line command 走同一条引擎路径（match、checkStatus、executed outcome、本地 command result）。`host.quit()` 必须是 fire-and-forget——shutdown 会等待 in-flight submit task，在 execute 内 await shutdown 会让命令自己的 submit 死锁。TUI 根据 `engine.list(status)` 和各命令的 `complete()` 生成 pi-tui autocomplete item：
 
-- line command 显示 trigger、name、description、argument hint 与 availability。
+- command 显示 trigger、name、description、argument hint 与 availability。
 - `available: false` 的命令可以显示但置灰，并展示 `unavailableReason`。
-- `LineCommand.complete()` 在用户进入参数位置后提供 autocomplete。
-- 提交未提供参数的 bare line command 时，只要命令声明 `requiresArgument` 或
+- `complete()` 在用户进入第一个参数位置后提供 autocomplete；其后的自由文本（模板参数、skill 附加指令）不再补全。
+- 提交未提供参数的 bare command 时，只要命令声明 `requiresArgument` 或
   `complete()`，引擎就返回 `needs-argument`；TUI 使用返回的 `CandidateItem[]`
   在 editor 上方打开 completion menu。
 - `/model`、`/thinking`、`/resume`、`/tree` 与 `/fork` 的 bare form
@@ -634,7 +634,6 @@ v2 已裁决 idle 输入保护：未命中引擎的 `/` 前缀输入（如 `/typ
 - `/fork` 在候选首位额外提供当前 session position；取消 menu 时恢复原始
   bare command 到 editor；选择该项会提交 `/fork:`，显式空参数绕过
   `needs-argument` 并在当前位置执行。
-- inline command 由 WIDI command provider 使用固定的 `<` / `>` trigger 产生候选。
 - file completion 委托 `CombinedAutocompleteProvider`；WIDI provider 不重写路径扫描。
 
 命令定义不随 agent 或 extension 动态变化；切换 active agent 时重建 provider 以绑定新的 agent context，availability 每次按当前 status 计算。Completion 的异步结果受取消 signal 约束，command execution 不依赖 autocomplete 缓存。
@@ -830,7 +829,7 @@ Agent selector 内部使用 `tui.select.*`，不重新声明上下键与 Enter�
 ### 阶段 4：Commands 与 Human Request
 
 1. 将交互层 `CommandEngine.list()` 适配到 autocomplete。
-2. 实现 `needs-argument` completion menu 与 inline command provider。
+2. 实现 `needs-argument` completion menu。
 3. 实现 human request FIFO overlay。
 4. 处理本地 command result、`extension_output`、blocked/transformed input 和运行状态规则。
 

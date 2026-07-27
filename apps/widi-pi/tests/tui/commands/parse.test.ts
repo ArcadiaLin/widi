@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	parseLineCommand,
-	scanInlineCommands,
+	splitLeadingToken,
 } from "../../../src/tui/commands/parse.ts";
 
 describe("parseLineCommand", () => {
@@ -79,32 +79,22 @@ describe("parseLineCommand", () => {
 	});
 });
 
-describe("scanInlineCommands", () => {
-	const names = ["prompt", "skill"];
-
-	it("matches a closed inline command with argument", () => {
-		expect(scanInlineCommands("use <skill:review> now", names)).toEqual([
-			{ name: "skill", argument: "review", start: 4, end: 18 },
-		]);
+describe("splitLeadingToken", () => {
+	it("splits the name token from the remaining text", () => {
+		expect(splitLeadingToken("review focus on locking")).toEqual({
+			token: "review",
+			rest: "focus on locking",
+		});
 	});
 
-	it("matches an empty inline command", () => {
-		expect(scanInlineCommands("<prompt>", names)).toEqual([
-			{ name: "prompt", argument: "", start: 0, end: 8 },
-		]);
+	it("returns an empty remainder for a bare token", () => {
+		expect(splitLeadingToken("review")).toEqual({ token: "review", rest: "" });
 	});
 
-	it("requires token boundaries and a close trigger", () => {
-		expect(scanInlineCommands("x<skill:review>", names)).toEqual([]);
-		expect(scanInlineCommands("<skill:review", names)).toEqual([]);
-		expect(scanInlineCommands("<other:x>", names)).toEqual([]);
-	});
-
-	it("matches multiple commands left to right", () => {
-		const text = "<prompt:a> and <skill:b>";
-		expect(scanInlineCommands(text, names).map((match) => match.name)).toEqual([
-			"prompt",
-			"skill",
-		]);
+	it("keeps the remainder verbatim apart from surrounding whitespace", () => {
+		expect(splitLeadingToken('review  "quoted"  text ')).toEqual({
+			token: "review",
+			rest: '"quoted"  text',
+		});
 	});
 });

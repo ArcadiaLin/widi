@@ -221,24 +221,7 @@ describe("WidiCommandAutocompleteProvider", () => {
 		expect(status?.description).toContain("active agent");
 	});
 
-	it("places the cursor inside a closed inline command", async () => {
-		const commandProvider = provider();
-		const result = await commandProvider.getSuggestions(["use <sk"], 0, 7, {
-			signal: signal(),
-		});
-		if (!result?.items[0]) throw new Error("Expected inline completion.");
-		const applied = commandProvider.applyCompletion(
-			["use <sk"],
-			0,
-			7,
-			result.items[0],
-			result.prefix,
-		);
-		expect(applied.lines).toEqual(["use <skill:>"]);
-		expect(applied.cursorCol).toBe("use <skill:".length);
-	});
-
-	it("completes inline command arguments after the colon", async () => {
+	it("completes skill and prompt names like any other command argument", async () => {
 		const commandProvider = provider({
 			listAgentSkillCandidates: async () => ({
 				skills: [
@@ -251,9 +234,9 @@ describe("WidiCommandAutocompleteProvider", () => {
 			}),
 		});
 		const result = await commandProvider.getSuggestions(
-			["use <skill:sel"],
+			["/skill sel"],
 			0,
-			"use <skill:sel".length,
+			"/skill sel".length,
 			{ signal: signal() },
 		);
 		expect(result).toMatchObject({
@@ -262,31 +245,37 @@ describe("WidiCommandAutocompleteProvider", () => {
 		});
 		if (!result?.items[0]) throw new Error("Expected argument completion.");
 		const applied = commandProvider.applyCompletion(
-			["use <skill:sel>"],
+			["/skill sel"],
 			0,
-			"use <skill:sel".length,
+			"/skill sel".length,
 			result.items[0],
 			result.prefix,
 		);
-		expect(applied.lines).toEqual(["use <skill:self-check>"]);
+		expect(applied.lines).toEqual(["/skill self-check"]);
 	});
 
-	it("completes inline command arguments on an empty argument prefix", async () => {
+	it("stops completing past the first argument", async () => {
 		const commandProvider = provider({
 			listAgentSkillCandidates: async () => ({
 				skills: [{ value: "self-check", label: "self-check" }],
 			}),
 		});
-		const result = await commandProvider.getSuggestions(
-			["use <skill:>"],
-			0,
-			"use <skill:".length,
-			{ signal: signal() },
-		);
-		expect(result).toMatchObject({
-			prefix: "",
-			items: [{ value: "self-check" }],
-		});
+		await expect(
+			commandProvider.getSuggestions(
+				["/skill self-check foc"],
+				0,
+				"/skill self-check foc".length,
+				{ signal: signal() },
+			),
+		).resolves.toBeNull();
+	});
+
+	it('no longer treats "<" as a completion trigger', async () => {
+		const commandProvider = provider();
+		expect(commandProvider.triggerCharacters).toEqual(["/", "@"]);
+		await expect(
+			commandProvider.getSuggestions(["use <sk"], 0, 7, { signal: signal() }),
+		).resolves.toBeNull();
 	});
 });
 

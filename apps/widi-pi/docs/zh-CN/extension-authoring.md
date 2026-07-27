@@ -206,7 +206,7 @@ await context.actions.reportDiagnostic({
 
 Core 注入 agent/extension attribution，并把 code 规范化为 `extension.<extensionId>.<code>`。Local code 只使用字母、数字、`.`、`_`、`-`，最长 128 UTF-8 bytes；message 非空白、最长 4 KiB。Core 不再为每次上报生成独立 id：code、message 与 attribution 相同的重复上报会塌缩为同一 consumer view item，不要轮询式重复上报同一持续问题。
 
-Extension API 不提供命令注册。Line/inline command 属于 `src/tui/commands/` 的 TUI 命令引擎（CLI 复用）；extension 保留 tool/resource/provider contribution、observer/interceptor 与 scoped actions 等被动能力。未来需要主动入口时，由前端以 `/extension` 一类命令另行设计。
+Extension API 不提供命令注册。`/` command 属于 `src/tui/commands/` 的 TUI 命令引擎（CLI 复用）；extension 保留 tool/resource/provider contribution、observer/interceptor 与 scoped actions 等被动能力。未来需要主动入口时，由前端以 `/extension` 一类命令另行设计。
 
 ## 贡献 resources 与 provider
 

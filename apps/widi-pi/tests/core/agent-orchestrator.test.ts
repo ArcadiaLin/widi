@@ -1093,15 +1093,15 @@ describe("AgentOrchestrator", () => {
 
 		const outcome = await orchestrator.promptAgent(agentId, "expanded text", {
 			expansion: {
-				originalText: "use <skill:review>",
+				originalText: "/skill review",
 				items: [
 					{
 						commandId: "command-1",
 						name: "skill",
-						trigger: "<",
+						trigger: "/",
 						argument: "review",
-						start: 4,
-						end: 18,
+						start: 0,
+						end: "/skill review".length,
 					},
 				],
 			},
@@ -1119,7 +1119,7 @@ describe("AgentOrchestrator", () => {
 			{
 				data: {
 					inputId: expect.any(String),
-					originalText: "use <skill:review>",
+					originalText: "/skill review",
 					expansions: [
 						expect.objectContaining({ commandId: "command-1", name: "skill" }),
 					],
@@ -1272,15 +1272,15 @@ describe("AgentOrchestrator", () => {
 			},
 		});
 		const expansion = {
-			originalText: "use <skill:review>",
+			originalText: "/skill review",
 			items: [
 				{
 					commandId: "command-1",
 					name: "skill",
-					trigger: "<",
+					trigger: "/",
 					argument: "review",
-					start: 4,
-					end: 18,
+					start: 0,
+					end: "/skill review".length,
 				},
 			],
 		};
@@ -1305,11 +1305,11 @@ describe("AgentOrchestrator", () => {
 		});
 		await expect(
 			orchestrator.promptAgent(agentId, "expanded again", {
-				expansion: { ...expansion, originalText: "use <skill:audit>" },
+				expansion: { ...expansion, originalText: "/skill audit" },
 			}),
 		).resolves.toMatchObject({ kind: "completed" });
 		await expect(branchCustomEntries()).resolves.toMatchObject([
-			{ data: { originalText: "use <skill:audit>" } },
+			{ data: { originalText: "/skill audit" } },
 		]);
 	});
 

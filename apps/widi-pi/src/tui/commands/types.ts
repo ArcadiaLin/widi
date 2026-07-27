@@ -14,8 +14,11 @@ export interface CommandContext {
 	readonly pendingModel?: RuntimeModel;
 }
 
-export interface LineCommand {
-	readonly kind: "line";
+/**
+ * Everything a `/name argument` command shares. Commands differ only in what
+ * they produce: an action result or prompt text.
+ */
+interface CommandBase {
 	readonly agentPolicy: CommandAgentPolicy;
 	readonly name: string;
 	readonly description: string;
@@ -27,23 +30,21 @@ export interface LineCommand {
 		context: CommandContext,
 		argumentPrefix: string,
 	): Promise<readonly CandidateItem[]>;
+}
+
+/** Performs an action; the returned value is rendered as the command result. */
+export interface ActionCommand extends CommandBase {
+	readonly kind: "action";
 	execute(context: CommandContext, argument: string): Promise<unknown>;
 }
 
-export interface InlineCommand {
-	readonly kind: "inline";
-	readonly name: string;
-	readonly description: string;
-	readonly argumentHint?: string;
-	complete?(
-		context: CommandContext,
-		argumentPrefix: string,
-	): Promise<readonly CandidateItem[]>;
-	/** Pure expansion: the returned text replaces the command token. */
+/** Pure expansion: the returned text is submitted as the user prompt. */
+export interface PromptCommand extends CommandBase {
+	readonly kind: "prompt";
 	expand(context: CommandContext, argument: string): Promise<string>;
 }
 
-export type CommandDefinition = LineCommand | InlineCommand;
+export type CommandDefinition = ActionCommand | PromptCommand;
 
 export interface CommandError {
 	readonly message: string;
@@ -52,7 +53,6 @@ export interface CommandError {
 
 /** List entry with availability computed against the current agent status. */
 export interface CommandView {
-	readonly kind: "line" | "inline";
 	readonly name: string;
 	readonly description: string;
 	readonly argumentHint?: string;
@@ -82,6 +82,6 @@ export type EngineOutcome =
 	  }
 	| {
 			readonly kind: "needs-argument";
-			readonly command: LineCommand;
+			readonly command: CommandDefinition;
 			readonly candidates: readonly CandidateItem[];
 	  };

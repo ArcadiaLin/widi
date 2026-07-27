@@ -83,7 +83,7 @@ Profile 没有单独的 collaboration capability 字段。谁能 spawn、分派�
 Extension 通过 `contributeResources()` 在激活期声明 paths，不注册内存 resource object。贡献是 own-agent overlay，只影响当前 agent 的：
 
 - harness resources 与 system prompt skills 列表。
-- `<skill:...>` / `<prompt:...>` candidates 与 expansion。
+- `/skill` / `/prompt` candidates 与 expansion。
 - inspect 中的 resolved provenance。
 
 冲突采用 first-registration-wins：profile/cwd 等 core sources 先解析并优先；extension 同名贡献被丢弃并产生 `extension.resource_conflict`。Stale runner 的贡献退出后续加载与展开管线，不追溯修改已创建 harness 的 resources。

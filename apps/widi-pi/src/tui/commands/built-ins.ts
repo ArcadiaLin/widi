@@ -1,4 +1,8 @@
-import type { Skill } from "@earendil-works/pi-agent-core";
+import {
+	formatPromptTemplateInvocation,
+	formatSkillInvocation,
+	parseCommandArgs,
+} from "@earendil-works/pi-agent-core";
 import {
 	getSupportedThinkingLevels,
 	type TextContent,
@@ -6,11 +10,12 @@ import {
 } from "@earendil-works/pi-ai";
 import type { AgentSessionCandidate } from "../../core/session-manager.ts";
 import type { CandidateItem } from "../../core/types.ts";
+import { splitLeadingToken } from "./parse.ts";
 import type { CommandContext, CommandDefinition } from "./types.ts";
 
 export const builtInCommands: readonly CommandDefinition[] = [
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "active",
 		name: "abort",
 		description: "Abort the current agent run.",
@@ -18,7 +23,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 			await context.orchestrator.abortAgent(requireAgentId(context)),
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "active",
 		name: "compact",
 		description: "Compact the current agent session.",
@@ -30,7 +35,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 			),
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "active",
 		name: "follow-up",
 		description: "Queue a follow-up for the current agent.",
@@ -45,7 +50,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		},
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "active",
 		name: "fork",
 		description: "Fork the current agent session.",
@@ -60,7 +65,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		},
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "active",
 		name: "inspect",
 		description: "Inspect the current agent runtime facts.",
@@ -68,14 +73,14 @@ export const builtInCommands: readonly CommandDefinition[] = [
 			context.orchestrator.inspectAgent(requireAgentId(context)),
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "runtime",
 		name: "agent",
 		description: "List runtime agents.",
 		execute: async ({ orchestrator }) => orchestrator.listAgents(),
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "runtime",
 		name: "login",
 		description: "Log in to an LLM provider subscription.",
@@ -90,7 +95,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		},
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "runtime",
 		name: "logout",
 		description: "Remove a stored LLM provider credential.",
@@ -105,7 +110,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		},
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "materialize",
 		name: "model",
 		description: "Set the current agent model.",
@@ -122,7 +127,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		},
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "materialize",
 		name: "thinking",
 		description: "Set the current agent thinking level.",
@@ -147,7 +152,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 			),
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "materialize",
 		name: "rename",
 		description: "Rename the current agent session.",
@@ -160,7 +165,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 			),
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "active",
 		name: "reload",
 		description: "Reload extensions for the current agent.",
@@ -170,7 +175,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 			}),
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "runtime",
 		name: "resume",
 		description: "Resume an existing agent session.",
@@ -191,14 +196,14 @@ export const builtInCommands: readonly CommandDefinition[] = [
 			await orchestrator.resumeAgentSessionByReference(argument.trim()),
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "runtime",
 		name: "session",
 		description: "List persisted agent sessions.",
 		execute: async ({ orchestrator }) => await orchestrator.listAgentSessions(),
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "active",
 		name: "status",
 		description: "Get the current agent status.",
@@ -206,7 +211,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 			context.orchestrator.getAgentStatus(requireAgentId(context)),
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "active",
 		name: "steer",
 		description: "Steer the current running agent.",
@@ -225,7 +230,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		},
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "active",
 		name: "tree",
 		description: "Inspect or navigate the current session tree.",
@@ -241,42 +246,55 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		},
 	},
 	{
-		kind: "inline",
+		kind: "prompt",
+		agentPolicy: "materialize",
 		name: "prompt",
-		description: "Insert a prompt template inline.",
-		argumentHint: "<template>",
+		description: "Send a prompt template as the prompt.",
+		argumentHint: "<template> [args…]",
+		requiresArgument: true,
 		complete: async (context) =>
 			(
 				await context.orchestrator.listAgentPromptTemplateCandidates(
 					requireAgentId(context),
 				)
 			).templates,
-		expand: async (context, argument) =>
-			(
-				await context.orchestrator.getAgentPromptTemplate(
-					requireAgentId(context),
-					argument.trim(),
-				)
-			).content,
+		expand: async (context, argument) => {
+			// The template name is the first token; the rest are positional
+			// arguments for the template's own "$1"/"$@" placeholders.
+			const [name, ...args] = parseCommandArgs(argument);
+			if (!name) throw new Error("Command /prompt requires a template name.");
+			const template = await context.orchestrator.getAgentPromptTemplate(
+				requireAgentId(context),
+				name,
+			);
+			return formatPromptTemplateInvocation(template, args);
+		},
 	},
 	{
-		kind: "inline",
+		kind: "prompt",
+		agentPolicy: "materialize",
 		name: "skill",
-		description: "Apply a skill inline.",
-		argumentHint: "<skill_name>",
+		description: "Apply a skill as the prompt.",
+		argumentHint: "<skill_name> [instructions]",
+		requiresArgument: true,
 		complete: async (context) =>
 			(
 				await context.orchestrator.listAgentSkillCandidates(
 					requireAgentId(context),
 				)
 			).skills,
-		expand: async (context, argument) =>
-			formatSkillExpansion(
-				await context.orchestrator.getAgentSkill(
-					requireAgentId(context),
-					argument.trim(),
-				),
-			),
+		// Naming a skill is an explicit request to apply it, so the body is
+		// inlined rather than pointed at: it saves a read round-trip and keeps
+		// skills usable on agents that have no read tool. Automatic discovery
+		// stays the system prompt's job (see buildAgentSystemPrompt).
+		expand: async (context, argument) => {
+			const { token: name, rest: instructions } = splitLeadingToken(argument);
+			const skill = await context.orchestrator.getAgentSkill(
+				requireAgentId(context),
+				name,
+			);
+			return formatSkillInvocation(skill, instructions || undefined);
+		},
 	},
 ];
 
@@ -337,16 +355,4 @@ function userMessageHeadline(message: UserMessage): string {
 			.find((candidate) => candidate.trim() !== "")
 			?.trim() ?? "";
 	return line.length > 80 ? `${line.slice(0, 79)}…` : line;
-}
-
-// The expansion carries metadata and guidance only; the skill body stays in
-// the skill file and is loaded on demand by the agent's read tooling.
-function formatSkillExpansion(skill: Skill): string {
-	return [
-		`<skill name="${skill.name}">`,
-		skill.description,
-		`Skill file: ${skill.filePath}`,
-		"Read the skill file for the full instructions before applying it.",
-		"</skill>",
-	].join("\n");
 }

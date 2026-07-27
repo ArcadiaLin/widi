@@ -53,7 +53,7 @@ Core state 由对应 owner 管理：
 
 ### 交互命令与文本输入
 
-Programmatic consumer 直接调用 orchestrator 原子方法。人类输入中的 line/inline command 由 `src/tui/commands/` 的 `CommandEngine` 解析、补全和执行；引擎归 TUI 所有，CLI 复用同一引擎。操作应用自身的命令（`/quit`、`/exit`）经 `ApplicationCommandHost` 绑定应用动作，与 orchestrator 命令走同一条引擎路径。Core 不感知 command，也不维护 command parser、policy、事件或扩展注册。
+Programmatic consumer 直接调用 orchestrator 原子方法。人类输入中的 `/` command 由 `src/tui/commands/` 的 `CommandEngine` 解析、补全和执行；引擎归 TUI 所有，CLI 复用同一引擎。操作应用自身的命令（`/quit`、`/exit`）经 `ApplicationCommandHost` 绑定应用动作，与 orchestrator 命令走同一条引擎路径。Core 不感知 command，也不维护 command parser、policy、事件或扩展注册。
 
 `promptAgent` 是 core 唯一文本输入入口。它始终执行 extension `input` interception；交互层完成 inline expansion 后把 expansion 记录随 prompt 交给 core，由 core 以既有 session custom entry 格式持久化，再把模型可见文本交给 Pi harness。
 

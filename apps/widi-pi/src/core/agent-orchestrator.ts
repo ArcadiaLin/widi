@@ -3971,9 +3971,10 @@ export function formatToolGuidanceForSystemPrompt(
 /**
  * Compose the harness system prompt from the profile prompt plus the active
  * tools' prompt guidance and a model-visible skills listing (agentskills.io
- * block via pi-agent-core). The skills listing tells the model to read the
- * skill file, so it is only appended when a read tool is active; skills stay
- * reachable through the `<skill:...>` inline command either way.
+ * block via pi-agent-core). The listing is how the model discovers skills on
+ * its own; it tells the model to read the skill file, so it is only appended
+ * when a read tool is active. Explicit invocation stays available either way
+ * through `/skill`, which inlines the body instead of pointing at it.
  *
  * The agent's own id is appended on the same principle: it is a per-agent value
  * a static prompt snippet cannot carry, and it only means anything to an agent
