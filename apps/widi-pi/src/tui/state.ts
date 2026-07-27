@@ -219,6 +219,8 @@ export interface AgentDisplayFacts {
 export interface AgentViewState {
 	readonly agentId: AgentId;
 	snapshot?: AgentRecordSnapshot;
+	/** The agent whose tool spawned this one; unset for user-side spawns. */
+	spawnedBy?: AgentId;
 	status: AgentLifecycleStatus;
 	timeline: TimelineItem[];
 	extensionStatuses: Map<string, ExtensionStatusSnapshot>;

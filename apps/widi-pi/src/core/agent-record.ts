@@ -59,6 +59,8 @@ export interface AgentRecord {
 	readonly agentId: AgentId;
 	status: AgentLifecycleStatus;
 	readonly profile: AgentProfileRecordReference;
+	/** The agent whose tool spawned this one; unset for user-side spawns. */
+	readonly spawnedBy?: AgentId;
 	sessionMetadata?: AgentSessionMetadata;
 	model: RuntimeModel;
 	harness?: WidiAgentHarness;
@@ -81,6 +83,7 @@ export interface AgentRecordSnapshot {
 	readonly agentId: AgentId;
 	readonly status: AgentLifecycleStatus;
 	readonly profile: AgentProfileRecordReference;
+	readonly spawnedBy?: AgentId;
 	readonly sessionMetadata?: AgentSessionMetadata;
 	readonly model: RuntimeModel;
 	readonly hasHarness: boolean;
@@ -104,6 +107,7 @@ export function createAgentRecord(options: {
 	};
 	readonly sessionMetadata?: AgentSessionMetadata;
 	readonly model: RuntimeModel;
+	readonly spawnedBy?: AgentId;
 }): AgentRecord {
 	return {
 		agentId: options.agentId,
@@ -113,6 +117,7 @@ export function createAgentRecord(options: {
 			source: options.resolvedProfile.source,
 			entryId: options.resolvedProfile.entryId,
 		},
+		spawnedBy: options.spawnedBy,
 		sessionMetadata: options.sessionMetadata,
 		model: options.model,
 		backgroundJobTable: new BackgroundJobTable(),
@@ -147,6 +152,7 @@ export function snapshotAgentRecord(record: AgentRecord): AgentRecordSnapshot {
 		agentId: record.agentId,
 		status: record.status,
 		profile: { ...record.profile },
+		spawnedBy: record.spawnedBy,
 		sessionMetadata: record.sessionMetadata,
 		model: record.model,
 		hasHarness: record.harness !== undefined,

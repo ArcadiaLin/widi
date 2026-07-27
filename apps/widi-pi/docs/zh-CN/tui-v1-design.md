@@ -407,7 +407,9 @@ Tool arguments/result 与 command result 必须通过 typed formatter 处理，�
 宽度充足时：
 
 ```text
-● main  idle    ● reviewer  running 8s    ! researcher  needs input
+● main  idle    ○ reviewer  running 8s    ! researcher  needs input
+├── ○ worker-a  running
+└── ○ worker-b  idle
 ```
 
 宽度不足时：
@@ -418,11 +420,12 @@ Tool arguments/result 与 command result 必须通过 typed formatter 处理，�
 
 Agent strip 规则：
 
-- active agent 排第一并使用强调色。
-- attention 高于普通 running/idle；error 高于 warning，human request 高于 completed。
+- 顶层 agent 按插入序并排展示；active agent 用 `●` 加粗标识，其余顶层 agent 用 `○`，不再强排第一。
+- 由 agent 工具 spawn 的子 agent 用 `├──`/`└──` 树线挂在父 agent 下方，树线对齐父 agent 在顶行的列；spawner 不存在或已 disposed 的子 agent 按顶层处理。
+- attention 覆盖 `●`/`○` glyph：error/unavailable 用红色 `!`，human request/warning 用黄色 `!`。
 - 构建失败或 resume 失败的 `unavailable` agent 显示在 strip 和 selector 中，使用 error attention；它不可接收输入，但用户仍可查看 diagnostics。
 - disposed agent 不显示在主 strip，但仍可由 debug/inspect command 查询。
-- 超出可用宽度的 agent 归入 `+N` 聚合，不换成多行。
+- 顶层超出可用宽度的 agent 归入 `+N` 聚合；子 agent 行按宽度截断。
 - 所有输出使用 `visibleWidth()` / `truncateToWidth()`，任何 component 行不得超过 render width。
 
 ### 7.4 Agent Selector

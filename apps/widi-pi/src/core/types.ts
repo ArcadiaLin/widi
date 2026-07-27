@@ -149,6 +149,8 @@ export type OrchestratorEvent =
 			agentId: AgentId;
 			profile: AgentProfile;
 			model: RuntimeModel;
+			/** Set when another agent's tool initiated the spawn. */
+			spawnedBy?: AgentId;
 	  }
 	| {
 			readonly type: "agent_resumed";

@@ -253,6 +253,13 @@ interface SpawnAgentCommonOptions {
 	model?: RuntimeModel;
 	inheritModelFromAgentId?: AgentId;
 	thinkingLevel?: ThinkingLevel;
+	/**
+	 * The agent whose tool initiated this spawn. Set only by the orchestrator
+	 * itself when a spawn comes through an agent's collaboration toolset;
+	 * user-side spawns (command, fork, new session, resume) leave it unset so
+	 * the agent renders as a top-level entry.
+	 */
+	spawnedBy?: AgentId;
 }
 
 export interface SpawnAgentCreateOptions extends SpawnAgentCommonOptions {
@@ -465,6 +472,7 @@ export class AgentOrchestrator {
 		const model = this._resolveSpawnModel(options);
 		const spawned = await this._createAgentHarness(agentProfile, model, {
 			thinkingLevel: options.thinkingLevel ?? this._defaultThinkingLevel,
+			spawnedBy: options.spawnedBy,
 		});
 		return spawned.agentId;
 	}
@@ -1933,7 +1941,7 @@ export class AgentOrchestrator {
 	private async _createAgentHarness(
 		resolvedProfile: ResolvedAgentProfile,
 		model: RuntimeModel,
-		options: { thinkingLevel?: ThinkingLevel } = {},
+		options: { thinkingLevel?: ThinkingLevel; spawnedBy?: AgentId } = {},
 	): Promise<SpawnedAgentHarness> {
 		const { profile } = resolvedProfile;
 		const agentId = this._allocateAgentId(profile);
@@ -1949,6 +1957,7 @@ export class AgentOrchestrator {
 				resolvedProfile,
 				sessionMetadata,
 				model,
+				spawnedBy: options.spawnedBy,
 			}),
 		);
 
@@ -1961,7 +1970,13 @@ export class AgentOrchestrator {
 				thinkingLevel: options.thinkingLevel,
 			});
 			await this._transitionAgentStatus(agentId, "idle");
-			await this._emit({ type: "agent_spawned", agentId, profile, model });
+			await this._emit({
+				type: "agent_spawned",
+				agentId,
+				profile,
+				model,
+				spawnedBy: options.spawnedBy,
+			});
 			return { agentId, harness };
 		} catch (error) {
 			const diagnostic = toDiagnostic(error, {
@@ -2003,6 +2018,9 @@ export class AgentOrchestrator {
 			const context =
 				await this.sessionManager.buildAgentSessionContext(agentId);
 			model = this._resolveResumeModel(options, context.model);
+			// Resume deliberately drops `spawnedBy`: parent-child spawn
+			// relationships are runtime facts and do not survive a restart, so a
+			// resumed agent renders as top-level again.
 			await this._registerAgentRecord(
 				createAgentRecord({
 					agentId,
@@ -2488,7 +2506,11 @@ export class AgentOrchestrator {
 				const record = this._agents.get(targetAgentId);
 				return record ? this._describeAgentForTools(record) : undefined;
 			},
-			spawn: async (profileId) => await this.spawnAgent({ profileId }),
+			// Agent-initiated spawns carry the caller as `spawnedBy` so surfaces
+			// can render the child under its parent; user-side spawns stay
+			// top-level.
+			spawn: async (profileId) =>
+				await this.spawnAgent({ profileId, spawnedBy: agentId }),
 			send: async (targetAgentId, body) =>
 				await this.sendMessage({
 					source: { kind: "agent", agentId },

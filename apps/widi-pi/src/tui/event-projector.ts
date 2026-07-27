@@ -208,7 +208,13 @@ export class EventProjector {
 				if (event.status === "unavailable") raiseAttention(agent, "error");
 				return;
 			}
-			case "agent_spawned":
+			case "agent_spawned": {
+				const agent = ensureAgentProjection(this.state, event.agentId);
+				agent.display.model = event.model;
+				agent.hydration = "pending";
+				agent.spawnedBy = event.spawnedBy;
+				return;
+			}
 			case "agent_resumed": {
 				const agent = ensureAgentProjection(this.state, event.agentId);
 				agent.display.model = event.model;
@@ -760,6 +766,7 @@ export function applyAgentSnapshot(
 	agent.snapshot = snapshot;
 	agent.status = snapshot.status;
 	agent.display.model = snapshot.model;
+	if (snapshot.spawnedBy !== undefined) agent.spawnedBy = snapshot.spawnedBy;
 	agent.display.activeToolNames = snapshot.toolSnapshot?.activeToolNames ?? [];
 	for (const diagnostic of snapshot.diagnostics) {
 		raiseDiagnosticAttention(agent, diagnostic);
