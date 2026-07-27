@@ -5,6 +5,7 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import { DEFAULT_AGENT_DIR } from "./constants.js";
 import type { CoreDiagnostic } from "./diagnostics.ts";
+import type { ExtensionDivisionSelection } from "./extension/types.ts";
 
 export interface CompactionSettings {
 	/** Default: true. */
@@ -107,6 +108,12 @@ export interface Settings {
 	packages?: PackageSource[];
 	/** Local extension file or directory paths. */
 	extensions?: string[];
+	/**
+	 * Division rules per extension id, for extensions that split themselves
+	 * into switchable parts. Project settings replace a global entry for the
+	 * same extension id rather than merging into it.
+	 */
+	extensionDivisions?: Record<string, ExtensionDivisionSelection>;
 	/** Local skill file or directory paths. */
 	skills?: string[];
 	/** Local prompt template file or directory paths. */
@@ -980,6 +987,26 @@ export class SettingManager {
 	setProjectExtensionPaths(paths: string[]): void {
 		this.updateProjectField("extensions", (settings) => {
 			settings.extensions = [...paths];
+		});
+	}
+
+	getExtensionDivisionSelections(): Record<string, ExtensionDivisionSelection> {
+		return structuredClone(this.settings.extensionDivisions ?? {});
+	}
+
+	setExtensionDivisionSelections(
+		selections: Record<string, ExtensionDivisionSelection>,
+	): void {
+		this.globalSettings.extensionDivisions = structuredClone(selections);
+		this.markModified("extensionDivisions");
+		this.save();
+	}
+
+	setProjectExtensionDivisionSelections(
+		selections: Record<string, ExtensionDivisionSelection>,
+	): void {
+		this.updateProjectField("extensionDivisions", (settings) => {
+			settings.extensionDivisions = structuredClone(selections);
 		});
 	}
 

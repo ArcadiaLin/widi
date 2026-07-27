@@ -294,6 +294,63 @@ describe("AgentProfileRegistry", () => {
 		);
 	});
 
+	it("splits extension division tokens out of the extensions list", async () => {
+		const registry = new AgentProfileRegistry(
+			new InMemoryProfileStorageBackend([
+				{
+					entryId: "memory:a",
+					filenameId: "a",
+					source: { kind: "memory", priority: 100 },
+					content:
+						'---\nid: a\nextensions: ["mcp", "-mcp/tools", "+mcp/experimental", "plan"]\n---\nA',
+				},
+			]),
+		);
+
+		const result = await registry.resolveProfile("a");
+
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error("Expected profile to resolve.");
+		expect(result.profile.extensions).toEqual(["mcp", "plan"]);
+		expect(result.profile.extensionDivisions).toEqual({
+			mcp: { enable: ["experimental"], disable: ["tools"] },
+		});
+	});
+
+	it("rejects ambiguous division tokens and ignores rules for unlisted extensions", async () => {
+		const registry = new AgentProfileRegistry(
+			new InMemoryProfileStorageBackend([
+				{
+					entryId: "memory:bare",
+					filenameId: "bare",
+					source: { kind: "memory", priority: 100 },
+					content: '---\nid: bare\nextensions: ["mcp/tools"]\n---\nA',
+				},
+				{
+					entryId: "memory:orphan",
+					filenameId: "orphan",
+					source: { kind: "memory", priority: 100 },
+					content:
+						'---\nid: orphan\nextensions: ["plan", "-mcp/tools"]\n---\nA',
+				},
+			]),
+		);
+
+		const bare = await registry.resolveProfile("bare");
+		expect(bare.ok).toBe(false);
+		expect(bare.diagnostics).toContainEqual(
+			expect.objectContaining({ code: "profile.invalid_metadata" }),
+		);
+
+		const orphan = await registry.resolveProfile("orphan");
+		expect(orphan.ok).toBe(true);
+		if (!orphan.ok) throw new Error("Expected profile to resolve.");
+		expect(orphan.profile.extensionDivisions).toBeUndefined();
+		expect(orphan.diagnostics).toContainEqual(
+			expect.objectContaining({ code: "profile.division_without_extension" }),
+		);
+	});
+
 	it("indexes declared ids and does not treat filename as an alias", async () => {
 		const env = new MemoryExecutionEnv();
 		await env.writeFile(

@@ -201,6 +201,31 @@ describe("SettingManager", () => {
 		});
 	});
 
+	it("merges extension division rules per extension id", async () => {
+		const storage = new InMemorySettingsStorage(
+			{
+				extensionDivisions: {
+					mcp: { disable: ["tools"] },
+					plan: { enable: ["experimental"] },
+				},
+			},
+			{
+				extensionDivisions: {
+					mcp: { enable: ["experimental"] },
+				},
+			},
+		);
+
+		const manager = await SettingManager.fromStorage(storage);
+
+		// One level of merge: the project entry replaces the global entry for the
+		// same extension id, and leaves other extensions alone.
+		expect(manager.getExtensionDivisionSelections()).toEqual({
+			mcp: { enable: ["experimental"] },
+			plan: { enable: ["experimental"] },
+		});
+	});
+
 	it("ignores and protects project settings when project is not trusted", async () => {
 		const storage = new InMemorySettingsStorage(
 			{ defaultModel: "global-model" },

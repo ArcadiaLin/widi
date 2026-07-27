@@ -6,12 +6,21 @@ import {
 	MIN_SUPPORTED_EXTENSION_API_VERSION,
 } from "./api.ts";
 import {
+	ExtensionDivisionResolver,
+	joinDivisionId,
+	validateDivisionDeclarations,
+	validateDivisionId,
+} from "./division.ts";
+import {
 	type ExtensionModuleImporter,
 	JitiExtensionModuleImporter,
 } from "./module-importer.ts";
 import type {
 	ExtensionActivationApi,
 	ExtensionDisposeHandler,
+	ExtensionDivisionDeclaration,
+	ExtensionDivisionSelections,
+	ExtensionDivisionSnapshot,
 	ExtensionFactory,
 	ExtensionInterceptorFor,
 	ExtensionInterceptorName,
@@ -31,12 +40,14 @@ export interface ExtensionProviderContribution {
 	readonly extensionId: string;
 	readonly providerName: string;
 	readonly config: ExtensionProviderConfig;
+	readonly divisionId?: string;
 }
 
 export interface ExtensionObserverRegistration {
 	extensionId: string;
 	eventName: ExtensionObservedEventName;
 	handler: ExtensionObserver;
+	divisionId?: string;
 }
 
 export interface ExtensionInterceptorRegistration<
@@ -45,11 +56,13 @@ export interface ExtensionInterceptorRegistration<
 	extensionId: string;
 	eventName: TName;
 	handler: ExtensionInterceptorFor<TName>;
+	divisionId?: string;
 }
 
 export interface ExtensionDisposeRegistration {
 	readonly extensionId: string;
 	readonly handler: ExtensionDisposeHandler;
+	readonly divisionId?: string;
 }
 
 export interface LoadExtensionScopeOptions {
@@ -57,6 +70,7 @@ export interface LoadExtensionScopeOptions {
 	profileId: string;
 	extensionIds?: readonly string[];
 	missingExtensionSeverity?: "ignore" | "warning" | "error";
+	divisionSelections?: ExtensionDivisionSelections;
 }
 
 export type ExtensionSource =
@@ -78,6 +92,8 @@ export type ExtensionSource =
 export interface ExtensionIdentity {
 	readonly id: string;
 	readonly source: ExtensionSource;
+	/** Validated division declarations; empty for a plain extension. */
+	readonly divisions: readonly ExtensionDivisionDeclaration[];
 }
 
 export type ExtensionToolContribution =
@@ -86,6 +102,7 @@ export type ExtensionToolContribution =
 			extensionId: string;
 			definition: ExtensionToolDefinition;
 			source: ToolSource;
+			divisionId?: string;
 	  }
 	| {
 			kind: "patch";
@@ -93,6 +110,7 @@ export type ExtensionToolContribution =
 			targetToolName: string;
 			patch: ExtensionToolDefinitionPatch;
 			source: ToolSource;
+			divisionId?: string;
 	  };
 
 export interface ExtensionRoot {
@@ -143,6 +161,7 @@ export interface LoadedExtensionScope {
 		readonly ExtensionInterceptorRegistration<ExtensionInterceptorName>[]
 	>;
 	disposeHandlers: readonly ExtensionDisposeRegistration[];
+	divisions: readonly ExtensionDivisionSnapshot[];
 }
 
 interface IncompatibleExtensionRecord {
@@ -159,6 +178,7 @@ export class ExtensionLoader {
 		IncompatibleExtensionRecord
 	>();
 	private readonly _moduleFactories = new Map<string, ExtensionFactory>();
+	private readonly _divisionIssues = new Map<string, readonly string[]>();
 	private readonly _moduleImporter: ExtensionModuleImporter;
 	private readonly _roots: readonly ExtensionRoot[];
 
@@ -252,9 +272,11 @@ export class ExtensionLoader {
 				"Extension module must be a factory function or an { apiVersion, activate } definition.",
 			);
 		}
+		const divisions = validateDivisionDeclarations(resolved.divisions);
 		const identity: ExtensionIdentity = {
 			id: normalizedId,
 			source: { kind: "factory" },
+			divisions: divisions.divisions,
 		};
 
 		if (
@@ -263,6 +285,7 @@ export class ExtensionLoader {
 		) {
 			this._factories.delete(normalizedId);
 			this._factoryIdentities.delete(normalizedId);
+			this._divisionIssues.delete(normalizedId);
 			const record: IncompatibleExtensionRecord = {
 				identity,
 				declaredApiVersion: resolved.declaredApiVersion,
@@ -280,10 +303,12 @@ export class ExtensionLoader {
 		const factory = resolved.factory;
 		this._factories.set(normalizedId, factory);
 		this._factoryIdentities.set(normalizedId, identity);
+		this._setDivisionIssues(normalizedId, divisions.issues);
 		return () => {
 			if (this._factories.get(normalizedId) === factory) {
 				this._factories.delete(normalizedId);
 				this._factoryIdentities.delete(normalizedId);
+				this._divisionIssues.delete(normalizedId);
 			}
 		};
 	}
@@ -347,9 +372,11 @@ export class ExtensionLoader {
 				continue;
 			}
 
-			const identity = {
+			const divisions = validateDivisionDeclarations(resolved.divisions);
+			const identity: ExtensionIdentity = {
 				id: candidate.id,
 				source: entry.entry.source,
+				divisions: divisions.divisions,
 			};
 
 			if (
@@ -375,6 +402,7 @@ export class ExtensionLoader {
 			this._factories.set(candidate.id, resolved.factory);
 			this._moduleFactories.set(candidate.id, resolved.factory);
 			this._factoryIdentities.set(candidate.id, identity);
+			this._setDivisionIssues(candidate.id, divisions.issues);
 			loaded.push(identity);
 		}
 
@@ -407,6 +435,7 @@ export class ExtensionLoader {
 			ExtensionInterceptorRegistration<ExtensionInterceptorName>[]
 		>();
 		const disposeHandlers: ExtensionDisposeRegistration[] = [];
+		const divisions: ExtensionDivisionSnapshot[] = [];
 		const extensionIds = normalizeExtensionIds(options.extensionIds ?? []);
 		const extensions: ExtensionIdentity[] = [];
 
@@ -437,25 +466,48 @@ export class ExtensionLoader {
 				continue;
 			}
 
-			try {
-				extensions.push(
-					this._factoryIdentities.get(extensionId) ?? {
-						id: extensionId,
-						source: { kind: "factory" },
-					},
-				);
-				await factory(
-					createActivationApi({
+			const identity = this._factoryIdentities.get(extensionId) ?? {
+				id: extensionId,
+				source: { kind: "factory" as const },
+				divisions: [],
+			};
+			extensions.push(identity);
+
+			// Recoverable: the malformed declaration is dropped and the rest of the
+			// extension still loads, so this must not be an agent-blocking error.
+			for (const issue of this._divisionIssues.get(extensionId) ?? []) {
+				diagnostics.push(
+					createExtensionDiagnostic({
+						code: "extension.division_invalid",
+						severity: "warning",
+						message: `Extension '${extensionId}' declared an invalid division and it was dropped: ${issue}`,
 						extensionId,
 						agentId: options.agentId,
-						profileId: options.profileId,
-						toolContributions,
-						providerContributions,
-						observerHandlers,
-						interceptorHandlers,
-						disposeHandlers,
 					}),
 				);
+			}
+
+			const scope: ExtensionActivationScope = {
+				extensionId,
+				agentId: options.agentId,
+				profileId: options.profileId,
+				resolver: new ExtensionDivisionResolver({
+					extensionId,
+					declarations: identity.divisions,
+					selections: options.divisionSelections,
+				}),
+				pending: [],
+				divisionFailures: [],
+				divisionDiagnostics: [],
+				toolContributions,
+				providerContributions,
+				observerHandlers,
+				interceptorHandlers,
+				disposeHandlers,
+			};
+
+			try {
+				await factory(createActivationApi(scope));
 			} catch (error) {
 				diagnostics.push(
 					createExtensionDiagnostic({
@@ -466,7 +518,51 @@ export class ExtensionLoader {
 						agentId: options.agentId,
 					}),
 				);
+			} finally {
+				// Drain even when the root factory threw: an unawaited division is
+				// still running and would otherwise keep mutating the contribution
+				// arrays after this scope was handed out.
+				await settlePendingDivisions(scope);
 			}
+
+			diagnostics.push(...scope.divisionDiagnostics);
+			// A failed division costs that part only; the extension keeps the
+			// contributions it already registered, so this stays non-blocking and
+			// carries its own code to tell it apart from a whole-extension failure.
+			for (const failure of scope.divisionFailures) {
+				diagnostics.push(
+					createExtensionDiagnostic({
+						code: "extension.division_activation_failed",
+						severity: "warning",
+						message: `Extension '${extensionId}' division '${failure.divisionId}' activation failed: ${formatError(failure.error)}`,
+						extensionId,
+						agentId: options.agentId,
+					}),
+				);
+			}
+			for (const divisionId of scope.resolver.listUndeclaredIds()) {
+				diagnostics.push(
+					createExtensionDiagnostic({
+						code: "extension.division_undeclared",
+						severity: "warning",
+						message: `Extension '${extensionId}' used undeclared division '${divisionId}'; it stays enabled unless a rule disables it.`,
+						extensionId,
+						agentId: options.agentId,
+					}),
+				);
+			}
+			for (const divisionId of scope.resolver.listUnknownSelectionIds()) {
+				diagnostics.push(
+					createExtensionDiagnostic({
+						code: "extension.division_unknown",
+						severity: "warning",
+						message: `Division rule '${extensionId}/${divisionId}' does not match any division of extension '${extensionId}' and was ignored.`,
+						extensionId,
+						agentId: options.agentId,
+					}),
+				);
+			}
+			divisions.push(...scope.resolver.snapshots());
 		}
 
 		return {
@@ -480,7 +576,19 @@ export class ExtensionLoader {
 			observerHandlers,
 			interceptorHandlers,
 			disposeHandlers,
+			divisions,
 		};
+	}
+
+	private _setDivisionIssues(
+		extensionId: string,
+		issues: readonly string[],
+	): void {
+		if (issues.length === 0) {
+			this._divisionIssues.delete(extensionId);
+			return;
+		}
+		this._divisionIssues.set(extensionId, [...issues]);
 	}
 
 	private _removeModuleFactories(): void {
@@ -488,6 +596,7 @@ export class ExtensionLoader {
 			if (this._factories.get(extensionId) === factory) {
 				this._factories.delete(extensionId);
 				this._factoryIdentities.delete(extensionId);
+				this._divisionIssues.delete(extensionId);
 			}
 		}
 		this._moduleFactories.clear();
@@ -502,6 +611,8 @@ export class ExtensionLoader {
 interface ResolvedExtensionModule {
 	readonly factory: ExtensionFactory;
 	readonly declaredApiVersion?: number;
+	/** Unvalidated module data; `validateDivisionDeclarations` narrows it. */
+	readonly divisions?: unknown;
 }
 
 function resolveExtensionModule(
@@ -518,6 +629,7 @@ function resolveExtensionModule(
 		return {
 			factory: module.activate as ExtensionFactory,
 			declaredApiVersion: module.apiVersion,
+			divisions: module.divisions,
 		};
 	}
 	return undefined;
@@ -783,41 +895,119 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function createActivationApi(options: {
-	extensionId: string;
-	agentId: string;
-	profileId: string;
-	toolContributions: ExtensionToolContribution[];
-	providerContributions: ExtensionProviderContribution[];
-	observerHandlers: Map<
+interface ExtensionDivisionFailure {
+	readonly divisionId: string;
+	readonly error: unknown;
+}
+
+/**
+ * Mutable per-extension activation state. Every division scope of one
+ * extension shares it, so contributions stay in registration order across
+ * nested divisions and the loader keeps a single place to settle pending
+ * registrations from.
+ */
+interface ExtensionActivationScope {
+	readonly extensionId: string;
+	readonly agentId: string;
+	readonly profileId: string;
+	readonly resolver: ExtensionDivisionResolver;
+	readonly pending: Promise<void>[];
+	readonly divisionFailures: ExtensionDivisionFailure[];
+	readonly divisionDiagnostics: CoreDiagnostic[];
+	readonly toolContributions: ExtensionToolContribution[];
+	readonly providerContributions: ExtensionProviderContribution[];
+	readonly observerHandlers: Map<
 		ExtensionObservedEventName,
 		ExtensionObserverRegistration[]
 	>;
-	interceptorHandlers: Map<
+	readonly interceptorHandlers: Map<
 		ExtensionInterceptorName,
 		ExtensionInterceptorRegistration<ExtensionInterceptorName>[]
 	>;
-	disposeHandlers: ExtensionDisposeRegistration[];
-}): ExtensionActivationApi {
+	readonly disposeHandlers: ExtensionDisposeRegistration[];
+}
+
+/**
+ * A division's `register` callback can open further divisions, so drain the
+ * queue until it stays empty instead of awaiting one generation.
+ */
+async function settlePendingDivisions(
+	scope: ExtensionActivationScope,
+): Promise<void> {
+	while (scope.pending.length > 0) {
+		await Promise.all(scope.pending.splice(0));
+	}
+}
+
+/**
+ * Shared gate for `division()` and `isDivisionEnabled()`: an invalid id is
+ * never enabled, so an imperative branch cannot run side effects the scoped
+ * form would have refused.
+ */
+function resolveDivisionId(
+	scope: ExtensionActivationScope,
+	divisionId: string,
+): boolean {
+	const invalid = validateDivisionId(divisionId);
+	if (invalid) {
+		scope.divisionDiagnostics.push(
+			createExtensionDiagnostic({
+				code: "extension.division_invalid",
+				severity: "warning",
+				message: `Extension '${scope.extensionId}' used an invalid division id and it was skipped: ${invalid}`,
+				extensionId: scope.extensionId,
+				agentId: scope.agentId,
+			}),
+		);
+		return false;
+	}
+	return scope.resolver.isEnabled(divisionId);
+}
+
+function createActivationApi(
+	scope: ExtensionActivationScope,
+	divisionId?: string,
+): ExtensionActivationApi {
+	const extensionId = scope.extensionId;
 	return {
-		extensionId: options.extensionId,
-		agentId: options.agentId,
-		profileId: options.profileId,
+		extensionId,
+		agentId: scope.agentId,
+		profileId: scope.profileId,
+		division: async (id, register) => {
+			const childId = joinDivisionId(divisionId, id);
+			if (!resolveDivisionId(scope, childId)) return;
+			// A failing division is recorded rather than rethrown: one broken part
+			// of an integration must not abort the parts registered after it, and
+			// the loader reports the failure exactly once either way.
+			const pending = (async () => {
+				try {
+					await register(createActivationApi(scope, childId));
+				} catch (error) {
+					scope.divisionFailures.push({ divisionId: childId, error });
+				}
+			})();
+			scope.pending.push(pending);
+			await pending;
+		},
+		isDivisionEnabled: (id) =>
+			resolveDivisionId(scope, joinDivisionId(divisionId, id)),
 		registerTool: (tool) => {
-			options.toolContributions.push({
+			scope.toolContributions.push({
 				kind: "define",
-				extensionId: options.extensionId,
+				extensionId,
 				definition: tool as ExtensionToolDefinition,
-				source: { kind: "extension", id: options.extensionId },
+				source: { kind: "extension", id: extensionId },
+				divisionId,
 			});
 		},
 		patchTool: (targetToolName, patch) => {
-			options.toolContributions.push({
+			scope.toolContributions.push({
 				kind: "patch",
-				extensionId: options.extensionId,
+				extensionId,
 				targetToolName,
 				patch: patch as ExtensionToolDefinitionPatch,
-				source: { kind: "extension", id: options.extensionId },
+				source: { kind: "extension", id: extensionId },
+				divisionId,
 			});
 		},
 		registerProvider: (providerName, config) => {
@@ -825,35 +1015,39 @@ function createActivationApi(options: {
 			if (!normalized) {
 				throw new Error("Extension provider name must not be empty.");
 			}
-			options.providerContributions.push({
-				extensionId: options.extensionId,
+			scope.providerContributions.push({
+				extensionId,
 				providerName: normalized,
 				config,
+				divisionId,
 			});
 		},
 		observe: (eventName, handler) => {
-			const registrations = options.observerHandlers.get(eventName) ?? [];
+			const registrations = scope.observerHandlers.get(eventName) ?? [];
 			registrations.push({
-				extensionId: options.extensionId,
+				extensionId,
 				eventName,
 				handler: handler as unknown as ExtensionObserver,
+				divisionId,
 			});
-			options.observerHandlers.set(eventName, registrations);
+			scope.observerHandlers.set(eventName, registrations);
 		},
 		intercept: (eventName, handler) => {
-			const registrations = options.interceptorHandlers.get(eventName) ?? [];
+			const registrations = scope.interceptorHandlers.get(eventName) ?? [];
 			registrations.push({
-				extensionId: options.extensionId,
+				extensionId,
 				eventName,
 				handler:
 					handler as unknown as ExtensionInterceptorFor<ExtensionInterceptorName>,
+				divisionId,
 			});
-			options.interceptorHandlers.set(eventName, registrations);
+			scope.interceptorHandlers.set(eventName, registrations);
 		},
 		onDispose: (handler) => {
-			options.disposeHandlers.push({
-				extensionId: options.extensionId,
+			scope.disposeHandlers.push({
+				extensionId,
 				handler,
+				divisionId,
 			});
 		},
 	};

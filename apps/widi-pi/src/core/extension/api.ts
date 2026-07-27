@@ -58,6 +58,7 @@ export type {
 	ExtensionCustomEntry,
 	ExtensionDefinition,
 	ExtensionDisposeHandler,
+	ExtensionDivisionDeclaration,
 	ExtensionExecResult,
 	ExtensionFactory,
 	ExtensionInputEvent,

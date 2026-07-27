@@ -411,6 +411,7 @@ function snapshot(agentId: string, runtimeModel: RuntimeModel) {
 			hooks: [],
 			toolContributions: [],
 			providerContributions: [],
+			divisions: [],
 			stale: { stale: false },
 		},
 		resourceDiagnostics: [],

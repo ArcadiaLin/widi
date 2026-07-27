@@ -2193,6 +2193,10 @@ export class AgentOrchestrator {
 			profileId: profile.id,
 			extensionIds: profile.extensions,
 			missingExtensionSeverity: profile.missingExtensionSeverity,
+			divisionSelections: {
+				settings: this.settingManager.getExtensionDivisionSelections(),
+				profile: profile.extensionDivisions,
+			},
 		});
 		return new ExtensionRunner({
 			loadedScope: loadedExtensionScope,
@@ -4009,6 +4013,9 @@ function changesRecoverableProfileFields(
 		override.skills !== undefined ||
 		override.promptTemplates !== undefined ||
 		override.extensions !== undefined ||
+		// Division rules select which parts of an extension load, so an override
+		// here changes the tool/hook/provider set exactly like `extensions` does.
+		override.extensionDivisions !== undefined ||
 		override.persist !== undefined
 	);
 }

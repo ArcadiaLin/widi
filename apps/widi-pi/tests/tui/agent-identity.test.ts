@@ -197,6 +197,7 @@ function snapshot(
 			hooks: [],
 			toolContributions: [],
 			providerContributions: [],
+			divisions: [],
 			stale: { stale: false },
 		},
 		resourceDiagnostics: [],

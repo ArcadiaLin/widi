@@ -35,5 +35,9 @@ export type {
 	ExtensionCompactionResult,
 	ExtensionContextActions,
 	ExtensionCoreActions,
+	ExtensionDivisionSelection,
+	ExtensionDivisionSelections,
+	ExtensionDivisionSnapshot,
+	ExtensionDivisionSource,
 	ExtensionSessionActions,
 } from "./types.ts";

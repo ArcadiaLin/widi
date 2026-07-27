@@ -17,7 +17,7 @@ Project `.widi/extensions` discovery 受 project trust gate；settings/agent-dir
 公开面包括：
 
 - 版本常量与 compatibility check。
-- `ExtensionDefinition` / `ExtensionFactory` / `ExtensionActivationApi`。
+- `ExtensionDefinition` / `ExtensionFactory` / `ExtensionActivationApi` / `ExtensionDivisionDeclaration`。
 - tool、resource、provider definitions。
 - observer/interceptor events 与 results。
 - callback context、scoped actions、session custom entry。
@@ -42,6 +42,48 @@ export default extension;
 ```
 
 裸 factory 视为面向当前版本，适合与 runtime 同仓演进。不兼容版本在 load/registration 阶段被拒绝；引用它的 agent 收到 `extension.version_incompatible`（severity `error`，构成阻断性 load diagnostic），不受 missing severity 调节。
+
+## Divisions 与 integration
+
+Extension 的开关粒度默认只到 id 一层：profile 声明 id，loader 激活 factory，它注册的全部 contribution 无差别进入 scope。Division 在 extension 内部加一层可命名、可寻址的分区，使"只启用其中一部分"成为配置而不是重新打包。声明了 division 的 extension 称为 **integration**；runtime 不引入独立的 integration 类型，运行单元仍是 extension。
+
+Division 声明在 default export 的 `divisions` 上，而不是 package manifest：loader 先 import module 再激活，因此清单在**任何 extension 代码运行之前**就可列举，且单文件 extension 没有 manifest 可用。`ExtensionIdentity.divisions` 因此是激活前的 catalog。
+
+Id 是点分层级路径（`servers.github`），段只能包含字母、数字、`_`、`-`，整体不超过 128 UTF-8 bytes。`divisions` 是未经校验的 module 数据，因此非数组、非对象条目、字段类型错误、id 非法或重复都只丢弃该条声明并产生 `extension.division_invalid`，绝不抛出。它是 `warning` 而非 `error`：agent 创建会被任何 error 级 extension diagnostic 阻断，而"丢掉一条声明"是可恢复的，其余部分照常加载。
+
+### 注册与执行
+
+`api.division(id, register)` 划定归属。关键语义：**division 关闭时 `register` 回调不执行**，而不是执行后过滤 contribution——否则被关掉的部分仍会打开连接、注册 watcher。嵌套 scope 内的 id 相对父级解析。`api.isDivisionEnabled(id)` 是同语义的命令式查询，共用同一道 id 校验：非法 id 一律返回 `false`，命令式分支不会执行 scoped 形式会拒绝的副作用。不在任何 division 内的注册属于隐式 root，永远启用。
+
+一个 division 的回调抛错只记为一条 `extension.division_activation_failed`（warning，带 division 归属），不阻断该 extension 后续注册、也不阻断 agent 创建：integration 的一个部件坏掉不应连坐其余部件。它与整体 `extension.activation_failed`（error，阻断）是不同的 code。
+
+未 `await` 的 `division()` 由 loader 在收敛 scope 前排空——**包括 root factory 自身抛错的情况**，否则一个仍在运行的异步 division 会在 scope 交出去之后继续改写 contribution 数组。
+
+未声明就使用的 id 按启用处理（fail-open），并产生 `extension.division_undeclared`（warning）；它以 `declared: false` 出现在 inspect facts 中。静默丢弃作者已注册的 contribution 比一个未列出的开关更有害。
+
+### 选择与解析
+
+用户侧规则复用 `extensions` 列表的前缀 token：
+
+```yaml
+extensions: ["mcp", "-mcp/tools", "+mcp/experimental"]
+```
+
+- `mcp` — 按声明默认启用。
+- `-mcp/tools` — 关闭该 division 及其整个子树。
+- `+mcp/experimental` — 打开默认关闭的 division。
+
+裸 `mcp/tools`（无 `+`/`-`）被拒绝并产生 error：它读起来像 allowlist，实际语义相反。为未列入 `extensions` 的 extension 写规则只产生 `profile.division_without_extension`（warning）并忽略——规则不会隐式启用 extension。
+
+`settings.json` 的 `extensionDivisions`（按 extension id 键控）承载安装时的默认形态，走既有 global/project 合并：project 条目整体替换同一 extension id 的 global 条目。
+
+Division 规则与 `extensions` 一样是 recoverable profile field：persistent agent 不能带临时 division override 创建（`profile.override_not_persistable`）——恢复时只按 profile id 重解析，否则 tool/hook/provider 集合会静默变化。
+
+解析顺序：声明的 `enabledByDefault`（默认 `true`）→ settings → profile。规则作用于命名 division 及其子树，**最近的规则胜出**；同一层内 `disable` 压过 `enable`，profile 压过 settings。随后是硬闸：任一祖先解析为关闭时，后代强制关闭，`+` 也无法翻越——"关掉这一部分"必须意味着整块。解析结果以 `source: default | settings | profile | ancestor` 出现在 inspect facts 中。
+
+引用了既未声明也未使用的 division id 的规则产生 `extension.division_unknown`（warning）并忽略。
+
+切换 division 改变 contribution 集合，因此需要重建 runner：走既有 `reloadExtensions` 路径，没有额外机制。
 
 ## Activation API
 
@@ -152,7 +194,7 @@ Core 不提供 per-extension KV 或目录 API。Custom entry 的 namespace、for
 
 ## Inspect 与 diagnostics
 
-`agent.inspect` 暴露 loaded extensions、hooks、tool/resource/provider contributions、patches、diagnostics 与 stale state，不包含 secrets。
+`agent.inspect` 暴露 loaded extensions、hooks、tool/resource/provider contributions、patches、divisions（声明与已使用的 id 及其解析状态）、diagnostics 与 stale state，不包含 secrets。每条 hook 与 contribution 携带 `divisionId`，root 注册为 `undefined`。
 
 Missing、load failure、invalid factory/manifest、version mismatch、activation failure、handler/action failure 和 contribution conflict 使用不同 `extension.*` codes。Missing policy 只处理 declaration 无法解析；activation/version failure 属于已找到但不可运行的 dependency failure。
 

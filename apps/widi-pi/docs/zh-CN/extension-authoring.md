@@ -63,6 +63,58 @@ missing-extension-severity: warning
 - Reload 替换 runner；旧 context/actions 变成 stale。
 - 不要把 context 或 action handle 缓存到 activation lifecycle 之外。
 
+## Divisions：把大 extension 拆成可开关的部分
+
+声明了 division 的 extension 就是一个 **integration**：一个安装单元，内部各部分可以单独开关，用户不必为了"只要其中一块"去安装一堆零散 extension。运行时没有独立的 integration 类型，运行单元仍然是 extension。
+
+在 default export 上声明，注册时用 `api.division()` 划分归属：
+
+```ts
+const extension: ExtensionDefinition = {
+  apiVersion: 1,
+  divisions: [
+    { id: "servers", label: "MCP Servers" },
+    { id: "servers.github", label: "GitHub Server" },
+    { id: "tools", label: "Extra Tools", description: "非必需的辅助 tool" },
+    { id: "experimental", label: "Experimental", enabledByDefault: false },
+  ],
+  async activate(api) {
+    // 不在任何 division 内的注册属于隐式 root，永远启用。
+    api.observe("agent_spawned", () => {});
+
+    await api.division("servers", async (servers) => {
+      const client = await connect();          // 关闭时这行不会执行
+      servers.onDispose(() => client.close());
+      // 嵌套 id 相对父级解析，这里是 "servers.github"。
+      await servers.division("github", (github) => {
+        github.registerTool(githubTool(client));
+      });
+    });
+
+    if (api.isDivisionEnabled("tools")) {
+      // 需要命令式分支时用它；语义与 division() 一致。
+    }
+  },
+};
+```
+
+要点：
+
+- **关闭的 division 其 `register` 回调根本不会执行**，因此副作用（连接、watcher、订阅）也不会发生。这是它与"注册后再过滤"的本质区别。
+- Id 为点分层级，段只能包含字母、数字、`_`、`-`，整体不超过 128 UTF-8 bytes。非法或重复声明被丢弃并产生 `extension.division_invalid`（warning，不阻断 agent 创建）。`isDivisionEnabled` 对非法 id 返回 `false`。
+- 未声明就使用的 id 按启用处理（fail-open），并产生 `extension.division_undeclared` warning——静默吞掉作者已注册的功能比一个没列出来的开关更糟。
+- 某个 division 的回调抛错只影响它自己：其余部分照常注册，失败以一条 `extension.division_activation_failed`（warning）上报，agent 照常创建。
+- `await` 是推荐写法；漏了 `await` 时 loader 仍会在收敛 scope 前排空未决注册，root factory 抛错时也一样。
+- `onDispose` 在 division 内注册即可，随 runner dispose 一起执行。
+
+用户侧在 profile frontmatter 的 `extensions` 里用前缀 token 开关：
+
+```yaml
+extensions: ["mcp", "-mcp/tools", "+mcp/experimental"]
+```
+
+`settings.json` 的 `extensionDivisions` 承载安装时的默认形态。完整解析顺序与硬闸规则见 [Extensions](core/extensions.md)。
+
 ## 注册 tool
 
 ```ts

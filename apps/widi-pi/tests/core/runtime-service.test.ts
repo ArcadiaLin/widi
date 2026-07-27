@@ -691,6 +691,7 @@ You are extension-profile.`,
 					resolvedPath: "/custom/extensions/runtime-smoke.ts",
 					root: { kind: "settings", path: "/custom/extensions" },
 				},
+				divisions: [],
 			},
 		]);
 		expect(runtime.orchestrator.inspectAgent(agentId)).toMatchObject({
@@ -802,6 +803,7 @@ You are extension-profile.`,
 						path: "/workspace/project/.widi/extensions",
 					},
 				},
+				divisions: [],
 			},
 		]);
 	});

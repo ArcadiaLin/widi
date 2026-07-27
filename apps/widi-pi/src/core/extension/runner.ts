@@ -23,6 +23,7 @@ import type {
 	ExtensionContext,
 	ExtensionContextActions,
 	ExtensionCoreActions,
+	ExtensionDivisionSnapshot,
 	ExtensionInputEvent,
 	ExtensionInputResult,
 	ExtensionInterceptorEventFor,
@@ -82,11 +83,13 @@ export type ExtensionHookSnapshot =
 			kind: "observe";
 			extensionId: string;
 			eventName: ExtensionObservedEvent["type"];
+			divisionId?: string;
 	  }
 	| {
 			kind: "intercept";
 			extensionId: string;
 			eventName: ExtensionInterceptorName;
+			divisionId?: string;
 	  };
 
 export type ExtensionToolContributionSnapshot =
@@ -95,6 +98,7 @@ export type ExtensionToolContributionSnapshot =
 			extensionId: string;
 			toolName: string;
 			source: ExtensionToolContribution["source"];
+			divisionId?: string;
 	  }
 	| {
 			kind: "patch";
@@ -102,6 +106,7 @@ export type ExtensionToolContributionSnapshot =
 			targetToolName: string;
 			patchedFields: readonly string[];
 			source: ExtensionToolContribution["source"];
+			divisionId?: string;
 	  };
 
 // Provider contribution facts stay secret-free: model ids and an OAuth flag
@@ -111,6 +116,7 @@ export interface ExtensionProviderContributionSnapshot {
 	readonly providerName: string;
 	readonly modelIds: readonly string[];
 	readonly oauth: boolean;
+	readonly divisionId?: string;
 }
 
 export interface ExtensionRunnerSnapshot {
@@ -119,6 +125,9 @@ export interface ExtensionRunnerSnapshot {
 	hooks: readonly ExtensionHookSnapshot[];
 	toolContributions: readonly ExtensionToolContributionSnapshot[];
 	providerContributions: readonly ExtensionProviderContributionSnapshot[];
+	// Declared and used divisions with their resolved state; empty for an agent
+	// whose extensions declare none.
+	divisions: readonly ExtensionDivisionSnapshot[];
 	stale: {
 		readonly stale: boolean;
 		readonly message?: string;
@@ -234,6 +243,9 @@ export class ExtensionRunner {
 			observerHandlers: new Map(),
 			interceptorHandlers: new Map(),
 			disposeHandlers: [],
+			// Plain data, no closures retained: keep it so the resolved division
+			// state stays inspectable after disposal.
+			divisions: this._loadedScope.divisions,
 		};
 		if (errors.length === 1) throw errors[0];
 		if (errors.length > 1) {
@@ -254,6 +266,7 @@ export class ExtensionRunner {
 					kind: "observe",
 					extensionId: registration.extensionId,
 					eventName: registration.eventName,
+					divisionId: registration.divisionId,
 				});
 			}
 		}
@@ -263,6 +276,7 @@ export class ExtensionRunner {
 					kind: "intercept",
 					extensionId: registration.extensionId,
 					eventName: registration.eventName,
+					divisionId: registration.divisionId,
 				});
 			}
 		}
@@ -279,6 +293,7 @@ export class ExtensionRunner {
 							extensionId: contribution.extensionId,
 							toolName: contribution.definition.name,
 							source: contribution.source,
+							divisionId: contribution.divisionId,
 						};
 					}
 					return {
@@ -289,6 +304,7 @@ export class ExtensionRunner {
 							Object.hasOwn(contribution.patch, field),
 						),
 						source: contribution.source,
+						divisionId: contribution.divisionId,
 					};
 				},
 			),
@@ -298,8 +314,10 @@ export class ExtensionRunner {
 					providerName: contribution.providerName,
 					modelIds: (contribution.config.models ?? []).map((model) => model.id),
 					oauth: contribution.config.oauth !== undefined,
+					divisionId: contribution.divisionId,
 				}),
 			),
+			divisions: [...this._loadedScope.divisions],
 			stale: this._staleMessage
 				? { stale: true, message: this._staleMessage }
 				: { stale: false },
@@ -820,13 +838,17 @@ export class ExtensionRunner {
 		registration: {
 			readonly extensionId: string;
 			readonly eventName: string;
+			readonly divisionId?: string;
 		},
 		error: unknown,
 	): CoreDiagnostic {
+		const origin = registration.divisionId
+			? `Extension '${registration.extensionId}' division '${registration.divisionId}'`
+			: `Extension '${registration.extensionId}'`;
 		return {
 			code: "extension.handler_failed",
 			severity: "warning",
-			message: `Extension '${registration.extensionId}' handler '${registration.eventName}' failed: ${formatError(error)}`,
+			message: `${origin} handler '${registration.eventName}' failed: ${formatError(error)}`,
 			agentId: this.agentId,
 			extensionId: registration.extensionId,
 		};

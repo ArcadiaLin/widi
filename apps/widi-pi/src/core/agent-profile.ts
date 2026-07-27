@@ -5,6 +5,8 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import { DEFAULT_PROFILE_DIR } from "./constants.js";
 import type { CoreDiagnostic, DiagnosticSeverity } from "./diagnostics.ts";
+import { validateDivisionId } from "./extension/division.ts";
+import type { ExtensionDivisionSelection } from "./extension/types.ts";
 
 export type AgentProfile = {
 	readonly id: string;
@@ -17,6 +19,13 @@ export type AgentProfile = {
 	readonly skills?: readonly string[];
 	readonly promptTemplates?: readonly string[];
 	readonly extensions?: readonly string[];
+	/**
+	 * Division rules keyed by extension id, parsed out of the `+id/division`
+	 * and `-id/division` tokens in `extensions`.
+	 */
+	readonly extensionDivisions?: Readonly<
+		Record<string, ExtensionDivisionSelection>
+	>;
 	readonly missingExtensionSeverity?: AgentProfileMissingExtensionSeverity;
 };
 
@@ -44,6 +53,7 @@ export type AgentProfileDiagnosticCode =
 	| "profile.id_case_conflict"
 	| "profile.missing"
 	| "profile.disabled"
+	| "profile.division_without_extension"
 	| "profile.override_not_persistable";
 
 export type AgentProfileDiagnosticSeverity = DiagnosticSeverity;
@@ -672,7 +682,7 @@ export class AgentProfileRegistry {
 			profile: profileResult.profile,
 			source: selected.entry.source,
 			entryId: selected.entry.entryId,
-			diagnostics,
+			diagnostics: [...diagnostics, ...profileResult.diagnostics],
 		};
 	}
 
@@ -943,6 +953,10 @@ function parseAgentProfile(
 		return { profile: undefined, diagnostics: metadataResult.diagnostics };
 	}
 	const frontmatter = parsed.frontmatter;
+	// Metadata diagnostics already reach the caller through the candidate index;
+	// they stay in this array only so an error still blocks the profile, and are
+	// sliced back off before a resolved profile reports its own field facts.
+	const metadataDiagnosticCount = metadataResult.diagnostics.length;
 	const diagnostics = [...metadataResult.diagnostics];
 	const tools = readStringArray(frontmatter.tools, "tools", entry, diagnostics);
 	const skills = readStringArray(
@@ -957,9 +971,8 @@ function parseAgentProfile(
 		entry,
 		diagnostics,
 	);
-	const extensions = readStringArray(
+	const extensionSelection = readExtensionSelection(
 		frontmatter.extensions,
-		"extensions",
 		entry,
 		diagnostics,
 	);
@@ -984,10 +997,132 @@ function parseAgentProfile(
 			tools,
 			skills,
 			promptTemplates,
-			extensions,
+			extensions: extensionSelection.extensions,
+			extensionDivisions: extensionSelection.extensionDivisions,
 			missingExtensionSeverity,
 		},
-		diagnostics,
+		diagnostics: diagnostics.slice(metadataDiagnosticCount),
+	};
+}
+
+/**
+ * Parses the `extensions` frontmatter list, which carries both extension ids
+ * and division rules:
+ *
+ * ```yaml
+ * extensions: ["mcp", "-mcp/tools", "+mcp/experimental"]
+ * ```
+ *
+ * A bare `id/division` token is rejected rather than guessed at: read as an
+ * allowlist it would mean the opposite of what it does, so the author has to
+ * say `+` or `-`.
+ */
+function readExtensionSelection(
+	value: unknown,
+	entry: ProfileStorageEntry,
+	diagnostics: AgentProfileDiagnostic[],
+): {
+	extensions?: string[];
+	extensionDivisions?: Record<string, ExtensionDivisionSelection>;
+} {
+	const tokens = readStringArray(value, "extensions", entry, diagnostics);
+	if (!tokens) return {};
+
+	const extensions: string[] = [];
+	const rules = new Map<string, { enable: string[]; disable: string[] }>();
+
+	for (const token of tokens) {
+		const prefix = token.startsWith("+") || token.startsWith("-");
+		const body = (prefix ? token.slice(1) : token).trim();
+		const separatorIndex = body.indexOf("/");
+
+		if (!prefix) {
+			if (separatorIndex !== -1) {
+				diagnostics.push(
+					diagnosticForEntry(
+						entry,
+						"error",
+						"profile.invalid_metadata",
+						`Extension division token "${token}" must start with "+" or "-".`,
+					),
+				);
+				continue;
+			}
+			if (!extensions.includes(body)) extensions.push(body);
+			continue;
+		}
+
+		if (separatorIndex === -1) {
+			diagnostics.push(
+				diagnosticForEntry(
+					entry,
+					"error",
+					"profile.invalid_metadata",
+					`Extension token "${token}" uses a "+"/"-" prefix but names no division; write "${token.slice(1)}" to enable the extension, or "${token[0]}${body}/<division>".`,
+				),
+			);
+			continue;
+		}
+
+		const extensionId = body.slice(0, separatorIndex).trim();
+		const divisionId = body.slice(separatorIndex + 1).trim();
+		if (!extensionId) {
+			diagnostics.push(
+				diagnosticForEntry(
+					entry,
+					"error",
+					"profile.invalid_metadata",
+					`Extension division token "${token}" names no extension.`,
+				),
+			);
+			continue;
+		}
+		const invalidDivisionId = validateDivisionId(divisionId);
+		if (invalidDivisionId) {
+			diagnostics.push(
+				diagnosticForEntry(
+					entry,
+					"error",
+					"profile.invalid_metadata",
+					`Extension division token "${token}" is invalid: ${invalidDivisionId}`,
+				),
+			);
+			continue;
+		}
+
+		const rule = rules.get(extensionId) ?? { enable: [], disable: [] };
+		const target = token.startsWith("+") ? rule.enable : rule.disable;
+		if (!target.includes(divisionId)) target.push(divisionId);
+		rules.set(extensionId, rule);
+	}
+
+	const extensionDivisions: Record<string, ExtensionDivisionSelection> = {};
+	for (const [extensionId, rule] of rules) {
+		// Rules never enable an extension implicitly: an unlisted extension stays
+		// unloaded, and a rule for it would silently do nothing.
+		if (!extensions.includes(extensionId)) {
+			diagnostics.push(
+				diagnosticForEntry(
+					entry,
+					"warning",
+					"profile.division_without_extension",
+					`Division rules for extension "${extensionId}" were ignored because it is not listed in "extensions".`,
+				),
+			);
+			continue;
+		}
+		extensionDivisions[extensionId] = {
+			enable: rule.enable.length > 0 ? rule.enable : undefined,
+			disable: rule.disable.length > 0 ? rule.disable : undefined,
+		};
+	}
+
+	return {
+		extensions: extensions.length > 0 ? extensions : undefined,
+		extensionDivisions:
+			Object.keys(extensionDivisions).length > 0
+				? extensionDivisions
+				: undefined,
 	};
 }
 
@@ -1323,7 +1458,9 @@ function serializeProfile(profile: AgentProfile): string {
 		);
 	}
 	if (profile.extensions) {
-		lines.push(`extensions: ${serializeStringArray(profile.extensions)}`);
+		lines.push(
+			`extensions: ${serializeStringArray(serializeExtensionTokens(profile))}`,
+		);
 	}
 	if (profile.missingExtensionSeverity) {
 		lines.push(
@@ -1332,6 +1469,20 @@ function serializeProfile(profile: AgentProfile): string {
 	}
 	lines.push("---", profile.systemPrompt);
 	return lines.join("\n");
+}
+
+function serializeExtensionTokens(profile: AgentProfile): string[] {
+	const tokens = [...(profile.extensions ?? [])];
+	for (const extensionId of profile.extensions ?? []) {
+		const selection = profile.extensionDivisions?.[extensionId];
+		for (const divisionId of selection?.enable ?? []) {
+			tokens.push(`+${extensionId}/${divisionId}`);
+		}
+		for (const divisionId of selection?.disable ?? []) {
+			tokens.push(`-${extensionId}/${divisionId}`);
+		}
+	}
+	return tokens;
 }
 
 function serializeStringArray(values: readonly string[]): string {

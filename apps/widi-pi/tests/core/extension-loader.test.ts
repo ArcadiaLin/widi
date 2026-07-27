@@ -251,6 +251,7 @@ describe("ExtensionLoader file/module loading", () => {
 					resolvedPath: "/extensions/sample.ts",
 					root: { kind: "settings", path: "/extensions" },
 				},
+				divisions: [],
 			},
 		]);
 		expect(scope.extensions).toEqual(result.loaded);
@@ -288,6 +289,7 @@ describe("ExtensionLoader file/module loading", () => {
 					entryPath: "/extensions/package-extension/main.ts",
 					root: { kind: "settings", path: "/extensions" },
 				},
+				divisions: [],
 			},
 		]);
 		expect(result.diagnostics).toContainEqual(

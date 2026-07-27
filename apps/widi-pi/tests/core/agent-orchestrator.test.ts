@@ -571,6 +571,19 @@ describe("AgentOrchestrator", () => {
 		).rejects.toMatchObject({
 			code: "profile.override_not_persistable",
 		});
+
+		// Division rules pick which parts of an extension load, so a persistent
+		// agent cannot carry them either: recovery re-resolves by profile id and
+		// would silently come back with a different tool/hook set.
+		await expect(
+			orchestrator.spawnAgent({
+				profileOverride: {
+					extensionDivisions: { mcp: { disable: ["tools"] } },
+				},
+			}),
+		).rejects.toMatchObject({
+			code: "profile.override_not_persistable",
+		});
 	});
 
 	it("dispatches agent query and mutation operations", async () => {
@@ -2220,7 +2233,10 @@ describe("AgentOrchestrator", () => {
 
 		expect(orchestrator.inspectAgent(agentId).extensionSnapshot).toEqual({
 			extensionIds: ["sample"],
-			extensions: [{ id: "sample", source: { kind: "factory" } }],
+			extensions: [
+				{ id: "sample", source: { kind: "factory" }, divisions: [] },
+			],
+			divisions: [],
 			hooks: [
 				{
 					kind: "observe",
@@ -2251,6 +2267,105 @@ describe("AgentOrchestrator", () => {
 			providerContributions: [],
 			stale: { stale: false },
 		});
+	});
+
+	it("applies profile division rules to an integration extension", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["integration"],
+			extensionDivisions: { integration: { disable: ["heavy"] } },
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		let heavyActivations = 0;
+		orchestrator.registerExtension("integration", {
+			apiVersion: 1,
+			divisions: [
+				{ id: "light", label: "Light" },
+				{ id: "heavy", label: "Heavy" },
+			],
+			activate: async (api) => {
+				await api.division("light", (division) => {
+					division.registerTool(createToolDefinition("lightTool", "light"));
+				});
+				await api.division("heavy", (division) => {
+					heavyActivations += 1;
+					division.registerTool(createToolDefinition("heavyTool", "heavy"));
+				});
+			},
+		});
+
+		const agentId = await orchestrator.spawnAgent();
+
+		expect(heavyActivations).toBe(0);
+		expect(orchestrator.getAgentTools(agentId).toolNames).toEqual([
+			"lightTool",
+		]);
+		expect(
+			orchestrator.inspectAgent(agentId).extensionSnapshot.divisions,
+		).toEqual([
+			expect.objectContaining({ id: "heavy", enabled: false }),
+			expect.objectContaining({ id: "light", enabled: true }),
+		]);
+	});
+
+	it("still creates the agent when a division is broken or malformed", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+			extensions: ["integration"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: extensionProfile },
+				]),
+			),
+		});
+		orchestrator.registerExtension("integration", {
+			apiVersion: 1,
+			divisions: [
+				{ id: "bad id", label: "Malformed" },
+				{ id: "broken", label: "Broken" },
+				{ id: "healthy", label: "Healthy" },
+			],
+			activate: async (api) => {
+				await api.division("broken", () => {
+					throw new Error("boom");
+				});
+				await api.division("healthy", (division) => {
+					division.registerTool(createToolDefinition("healthyTool", "healthy"));
+				});
+			},
+		});
+
+		const agentId = await orchestrator.spawnAgent();
+
+		expect(orchestrator.getAgentTools(agentId).toolNames).toEqual([
+			"healthyTool",
+		]);
+		expect(
+			orchestrator
+				.inspectAgent(agentId)
+				.extensionDiagnostics.map((diagnostic) => diagnostic.code),
+		).toEqual([
+			"extension.division_invalid",
+			"extension.division_activation_failed",
+		]);
 	});
 
 	it("normalizes extension ids and records loaded source facts", async () => {
