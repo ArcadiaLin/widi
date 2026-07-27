@@ -137,16 +137,18 @@ function expectExtendedMetadata(metadata: {
 	return metadata as JsonlSessionMetadata;
 }
 
+// Writes a session in the on-disk layout: one directory per session, holding
+// the conversation history file. Returns the history file path.
 function writeSessionFile(
 	env: MemoryExecutionEnv,
-	path: string,
+	dirName: string,
 	options: {
 		id: string;
 		timestamp: string;
 		cwd?: string;
 		profileId?: string;
 	},
-): void {
+): string {
 	const header = {
 		type: "session",
 		version: 3,
@@ -157,9 +159,13 @@ function writeSessionFile(
 			? { profile: { id: options.profileId } }
 			: undefined,
 	};
+	const sessionDir = `/sessions/--workspace-project--/${dirName}`;
 	env.dirs.add("/sessions");
 	env.dirs.add("/sessions/--workspace-project--");
+	env.dirs.add(sessionDir);
+	const path = `${sessionDir}/session.jsonl`;
 	env.files.set(path, `${JSON.stringify(header)}\n`);
+	return path;
 }
 
 class FailingSettingsStorage implements SettingsStorage {
@@ -1531,24 +1537,16 @@ describe("AgentOrchestrator", () => {
 
 	it("does not implicitly resume ambiguous session ids", async () => {
 		const env = new MemoryExecutionEnv();
-		writeSessionFile(
-			env,
-			"/sessions/--workspace-project--/2026-01-02T00-00-00-000Z_same.jsonl",
-			{
-				id: "same",
-				timestamp: "2026-01-02T00:00:00.000Z",
-				profileId: defaultProfile.id,
-			},
-		);
-		writeSessionFile(
-			env,
-			"/sessions/--workspace-project--/2026-01-01T00-00-00-000Z_same.jsonl",
-			{
-				id: "same",
-				timestamp: "2026-01-01T00:00:00.000Z",
-				profileId: defaultProfile.id,
-			},
-		);
+		writeSessionFile(env, "2026-01-02T00-00-00-000Z_same", {
+			id: "same",
+			timestamp: "2026-01-02T00:00:00.000Z",
+			profileId: defaultProfile.id,
+		});
+		writeSessionFile(env, "2026-01-01T00-00-00-000Z_same", {
+			id: "same",
+			timestamp: "2026-01-01T00:00:00.000Z",
+			profileId: defaultProfile.id,
+		});
 		const orchestrator = await createOrchestrator(env);
 
 		await expect(
