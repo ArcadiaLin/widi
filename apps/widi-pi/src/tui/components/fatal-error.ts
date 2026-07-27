@@ -5,8 +5,7 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { boundedText, singleLine } from "../format.ts";
-import { colors } from "../theme/colors.ts";
-import { selectListTheme } from "../theme/controls.ts";
+import { theme } from "../theme/theme.ts";
 
 /**
  * Modal view for the only two overlay-worthy failures: startup without any
@@ -36,7 +35,7 @@ export class FatalErrorView implements Component {
 				{ value: "diagnostics", label: "View diagnostics" },
 			],
 			2,
-			selectListTheme,
+			theme.selectListTheme,
 		);
 		this.list.onSelect = (item) => {
 			if (item.value === "quit") options.onQuit();
@@ -60,7 +59,7 @@ export class FatalErrorView implements Component {
 			Math.max(1, width - 4),
 			"",
 		);
-		const top = `┌─${colors.error(title)}${"─".repeat(
+		const top = `┌─${theme.error(title)}${"─".repeat(
 			Math.max(0, width - visibleWidth(title) - 3),
 		)}┐`;
 		const lines = [top];
@@ -72,7 +71,7 @@ export class FatalErrorView implements Component {
 				)} │`,
 			);
 		};
-		add(colors.dim(this.code));
+		add(theme.dim(this.code));
 		for (const line of this.message.split("\n")) add(line);
 		add();
 		for (const line of this.list.render(innerWidth)) add(line);

@@ -1,7 +1,7 @@
 import { type Component, Text } from "@earendil-works/pi-tui";
 import { formatRelativeAge, singleLine } from "../format.ts";
 import type { TuiApplicationState } from "../state.ts";
-import { colors } from "../theme/colors.ts";
+import { theme } from "../theme/theme.ts";
 import { activeAgent } from "./common.ts";
 
 export class StatusView implements Component {
@@ -30,14 +30,14 @@ export class StatusView implements Component {
 			// A status is never cleared automatically when a command ends, so its
 			// age is the only staleness signal the user gets.
 			const age = statusAge(entry.updatedAt);
-			return `${colors.info("✻")} ${colors.dim(
+			return `${theme.info("✻")} ${theme.dim(
 				entry.extensionId,
 			)} ${singleLine(entry.status.text, 400)}${progressText}${
-				age ? colors.dim(` · ${age}`) : ""
+				age ? theme.dim(` · ${age}`) : ""
 			}`;
 		});
 		if (statuses.length > 4) {
-			lines.push(colors.dim(`+${statuses.length - 4} more extension statuses`));
+			lines.push(theme.dim(`+${statuses.length - 4} more extension statuses`));
 		}
 		return new Text(lines.join("\n"), 1, 0).render(width);
 	}
@@ -55,7 +55,7 @@ function progressBar(completed: number, total: number, width: number): string {
 		0,
 		Math.min(width, Math.round((completed / total) * width)),
 	);
-	return `${colors.ok("█".repeat(filled))}${colors.dim(
+	return `${theme.ok("█".repeat(filled))}${theme.dim(
 		"░".repeat(width - filled),
 	)}`;
 }

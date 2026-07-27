@@ -1,8 +1,7 @@
 import { Markdown, Text } from "@earendil-works/pi-tui";
 import { boundedText, formatUnknown, singleLine } from "../format.ts";
 import type { TimelineItem } from "../state.ts";
-import { colors, severityColor } from "../theme/colors.ts";
-import { markdownTheme } from "../theme/markdown.ts";
+import { theme } from "../theme/theme.ts";
 import { presentToolExecution } from "../tool-presenter.ts";
 import { diagnosticGlyph } from "./common.ts";
 
@@ -60,7 +59,7 @@ export function renderTimelineItem(
 	switch (item.type) {
 		case "user-message":
 			return new Text(
-				`${colors.bold("❯")} ${boundedText(item.text)}`,
+				`${theme.bold("❯")} ${boundedText(item.text)}`,
 				1,
 				0,
 			).render(width);
@@ -76,9 +75,7 @@ export function renderTimelineItem(
 			if (!text) {
 				if (errorMessage) {
 					return new Text(
-						`${colors.error("✕")} ${colors.error(
-							singleLine(errorMessage, 400),
-						)}`,
+						`${theme.error("✕")} ${theme.error(singleLine(errorMessage, 400))}`,
 						1,
 						0,
 					).render(width);
@@ -89,7 +86,7 @@ export function renderTimelineItem(
 					item.streaming &&
 					!context.liveThinkingIds.has(`${item.id}:thinking`)
 				) {
-					return new Text(colors.dim("✻ Thinking…"), 1, 0).render(width);
+					return new Text(theme.dim("✻ Thinking…"), 1, 0).render(width);
 				}
 				return [];
 			}
@@ -97,14 +94,12 @@ export function renderTimelineItem(
 				boundedText(text, { maxLines: 200, maxCharacters: 30_000 }),
 				1,
 				0,
-				markdownTheme,
+				theme.markdownTheme,
 			).render(width);
 			if (errorMessage) {
 				lines.push(
 					...new Text(
-						`${colors.error("✕")} ${colors.error(
-							singleLine(errorMessage, 400),
-						)}`,
+						`${theme.error("✕")} ${theme.error(singleLine(errorMessage, 400))}`,
 						1,
 						0,
 					).render(width),
@@ -114,7 +109,7 @@ export function renderTimelineItem(
 		}
 		case "thinking-status":
 			return item.status === "thinking"
-				? new Text(colors.dim("✻ Thinking…"), 1, 0).render(width)
+				? new Text(theme.dim("✻ Thinking…"), 1, 0).render(width)
 				: [];
 		case "tool-execution":
 			return new Text(
@@ -125,7 +120,7 @@ export function renderTimelineItem(
 				0,
 			).render(width);
 		case "diagnostic": {
-			const color = severityColor(item.diagnostic.severity);
+			const color = theme.severityPaint(item.diagnostic.severity);
 			return new Text(
 				`${color(
 					`${diagnosticGlyph(item.diagnostic)} ${item.diagnostic.code}`,
@@ -136,11 +131,11 @@ export function renderTimelineItem(
 		}
 		case "command-result":
 			if (item.status === "running") {
-				return new Text(colors.dim(`/${item.name} …`), 1, 0).render(width);
+				return new Text(theme.dim(`/${item.name} …`), 1, 0).render(width);
 			}
 			if (item.status === "failed") {
 				return new Text(
-					`${colors.dim(`/${item.name}`)} ${severityColor("error")(
+					`${theme.dim(`/${item.name}`)} ${theme.severityPaint("error")(
 						item.error?.message ?? "command failed",
 					)}`,
 					1,
@@ -149,13 +144,13 @@ export function renderTimelineItem(
 			}
 			if (item.result === undefined) return [];
 			return new Text(
-				`${colors.dim(`/${item.name}`)}\n${formatUnknown(item.result)}`,
+				`${theme.dim(`/${item.name}`)}\n${formatUnknown(item.result)}`,
 				1,
 				0,
 			).render(width);
 		case "extension-output":
 			return new Text(
-				`${colors.dim(`[${item.extensionId}]`)} ${boundedText(item.text, {
+				`${theme.dim(`[${item.extensionId}]`)} ${boundedText(item.text, {
 					maxLines: 16,
 					maxCharacters: 4_000,
 				})}`,
@@ -164,9 +159,9 @@ export function renderTimelineItem(
 			).render(width);
 		case "extension-message": {
 			const title = item.message.title
-				? colors.accent(singleLine(item.message.title, 400))
-				: colors.dim(`[${item.extensionId}]`);
-			const meta = colors.dim(
+				? theme.title(singleLine(item.message.title, 400))
+				: theme.dim(`[${item.extensionId}]`);
+			const meta = theme.dim(
 				`persistent · ${item.extensionId} · ${item.message.kind}`,
 			);
 			return new Text(
@@ -182,15 +177,15 @@ export function renderTimelineItem(
 			if (item.answer.kind === "answered-questions") {
 				const { items } = item.answer;
 				if (context.toolOutputExpanded) {
-					const lines = [colors.dim(`❯ ${singleLine(item.title, 400)}`)];
+					const lines = [theme.dim(`❯ ${singleLine(item.title, 400)}`)];
 					for (const entry of items) {
-						lines.push(colors.dim(`  ${singleLine(entry.title, 400)}`));
+						lines.push(theme.dim(`  ${singleLine(entry.title, 400)}`));
 						if (entry.values.length === 0) {
-							lines.push(colors.dim("    → (no answer)"));
+							lines.push(theme.dim("    → (no answer)"));
 						} else {
 							for (const value of entry.values) {
 								lines.push(
-									`    ${colors.accent("▸")} ${singleLine(value, 400)}`,
+									`    ${theme.selection("▸")} ${singleLine(value, 400)}`,
 								);
 							}
 						}
@@ -206,7 +201,7 @@ export function renderTimelineItem(
 					)
 					.join(" · ");
 				return new Text(
-					colors.dim(`❯ ${singleLine(item.title, 200)} → `) +
+					theme.dim(`❯ ${singleLine(item.title, 200)} → `) +
 						singleLine(summary, 400),
 					1,
 					0,
@@ -234,18 +229,18 @@ export function renderTimelineItem(
 						: [];
 			if (context.toolOutputExpanded && options.length > 0) {
 				const selectedSet = new Set(selected);
-				const lines = [colors.dim(`❯ ${singleLine(item.title, 400)}`)];
+				const lines = [theme.dim(`❯ ${singleLine(item.title, 400)}`)];
 				for (const option of options) {
 					lines.push(
 						selectedSet.has(option)
-							? `  ${colors.accent("▸")} ${singleLine(option, 400)}`
-							: colors.dim(`    ${singleLine(option, 400)}`),
+							? `  ${theme.selection("▸")} ${singleLine(option, 400)}`
+							: theme.dim(`    ${singleLine(option, 400)}`),
 					);
 				}
 				return new Text(lines.join("\n"), 1, 0).render(width);
 			}
 			return new Text(
-				colors.dim(`❯ ${singleLine(item.title, 400)} → `) +
+				theme.dim(`❯ ${singleLine(item.title, 400)} → `) +
 					singleLine(summary, 400),
 				1,
 				0,
@@ -253,7 +248,7 @@ export function renderTimelineItem(
 		}
 		case "application-notice":
 			return new Text(
-				colors.dim(
+				theme.dim(
 					`✱ ${boundedText(item.text, { maxLines: 4, maxCharacters: 600 })}`,
 				),
 				1,
@@ -261,7 +256,7 @@ export function renderTimelineItem(
 			).render(width);
 		case "session-marker":
 			return new Text(
-				colors.dim(
+				theme.dim(
 					`── ${item.marker === "compaction" ? "Compacted session" : "Branch summary"} ──\n${boundedText(
 						item.summary,
 						{
@@ -275,7 +270,7 @@ export function renderTimelineItem(
 			).render(width);
 		case "window-marker":
 			return new Text(
-				colors.dim(
+				theme.dim(
 					`— earlier turns hidden (${item.hiddenTurns} turns trimmed) —`,
 				),
 				1,

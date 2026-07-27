@@ -1,7 +1,7 @@
 import { type Component, Text } from "@earendil-works/pi-tui";
 import { fixCjkLineStarts } from "../cjk-wrap.ts";
 import type { TimelineItem, TuiApplicationState } from "../state.ts";
-import { colors } from "../theme/colors.ts";
+import { theme } from "../theme/theme.ts";
 import { activeAgent } from "./common.ts";
 import {
 	renderDeps,
@@ -30,7 +30,7 @@ export class ChatView implements Component {
 		const agent = activeAgent(this.state);
 		const pending = this.state.pendingAgent;
 		if (!agent && !pending) {
-			return new Text(colors.dim("Preparing the first agent…"), 1, 1).render(
+			return new Text(theme.dim("Preparing the first agent…"), 1, 1).render(
 				width,
 			);
 		}
@@ -45,7 +45,7 @@ export class ChatView implements Component {
 				agent?.status === "unavailable"
 					? "This agent is unavailable. Review its diagnostics below."
 					: "Ask WIDI to inspect, explain, or change this workspace.";
-			return new Text(colors.dim(message), 1, 1).render(width);
+			return new Text(theme.dim(message), 1, 1).render(width);
 		}
 
 		const liveThinkingIds = new Set<string>();
