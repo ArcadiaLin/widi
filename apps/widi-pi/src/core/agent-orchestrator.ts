@@ -2475,6 +2475,7 @@ export class AgentOrchestrator {
 							id: profile.id,
 							label: profile.label,
 							description: profile.description,
+							whenToUse: profile.whenToUse,
 							persist: profile.persist,
 						}),
 					);

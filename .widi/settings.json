@@ -6,7 +6,10 @@
   "sessionDir": ".widi/runs",
   "enabledProfiles": [
     "widi-dev",
-    "default"
+    "main",
+    "coder",
+    "explore",
+    "plan"
   ],
   "enableSkillCommands": true
 }

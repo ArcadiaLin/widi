@@ -12,6 +12,7 @@ import {
 import {
 	AgentProfileRegistry,
 	type AgentProfileSource,
+	BUILTIN_DEFAULT_PROFILE_ID,
 	createBuiltinProfileStorageBackend,
 	createDefaultProfileRoots,
 	type FileProfileRoot,
@@ -346,7 +347,7 @@ async function resolveDefaultProfileId(options: {
 	const profileId =
 		options.explicitDefaultProfileId ??
 		options.settingsDefaultProfileId ??
-		"default";
+		BUILTIN_DEFAULT_PROFILE_ID;
 	const source: RuntimeDefaultProfileSource =
 		options.explicitDefaultProfileId !== undefined
 			? "runtime_override"

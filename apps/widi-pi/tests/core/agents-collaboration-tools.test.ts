@@ -3,6 +3,10 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ToolAgentHost } from "../../src/core/agent-host.ts";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
+import {
+	AgentProfileRegistry,
+	InMemoryProfileStorageBackend,
+} from "../../src/core/agent-profile.ts";
 import { createDisposeAgentToolDefinition } from "../../src/core/tools/agents/dispose-agent.ts";
 import { createListAgentProfilesToolDefinition } from "../../src/core/tools/agents/list-agent-profiles.ts";
 import { createListAgentsToolDefinition } from "../../src/core/tools/agents/list-agents.ts";
@@ -11,6 +15,7 @@ import { createSpawnAgentToolDefinition } from "../../src/core/tools/agents/spaw
 import type { ToolExecutionContext } from "../../src/core/tools/types.ts";
 import {
 	createOrchestrator,
+	defaultProfile,
 	MemoryExecutionEnv,
 	requireAgentHarness,
 	requireAgentRecord,
@@ -104,6 +109,47 @@ describe("list_agent_profiles", () => {
 		expect(result.content[0]).toMatchObject({
 			type: "text",
 			text: expect.stringContaining("main (Main Agent)"),
+		});
+	});
+
+	// The menu exists so the model can choose, and `whenToUse` is the only field
+	// that tells it how. Indented under its own entry, because the advice runs to
+	// a paragraph and flush-left it would read as the next profile.
+	it("renders whenToUse indented under its profile", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv(), {
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: defaultProfile },
+					{
+						profile: {
+							id: "explore",
+							label: "Explore Agent",
+							whenToUse: "Use for a wide search.\n\nIt cannot edit anything.",
+							systemPrompt: "explore prompt",
+							persist: false,
+						},
+					},
+				]),
+			),
+		});
+		const agentId = await orchestrator.spawnAgent();
+
+		const result = await listAgentProfiles.execute(
+			"call-1",
+			{},
+			toolContext(orchestrator, agentId),
+		);
+
+		expect(result.content[0]).toMatchObject({
+			type: "text",
+			text: [
+				"Agent profiles available to spawn_agent:",
+				"- explore (Explore Agent) [ephemeral session]",
+				"  Use for a wide search.",
+				"",
+				"  It cannot edit anything.",
+				"- main (Main Agent) [persistent session]",
+			].join("\n"),
 		});
 	});
 });

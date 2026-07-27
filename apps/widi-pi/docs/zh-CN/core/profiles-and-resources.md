@@ -28,7 +28,7 @@ Runtime composition 向 file backend 注入显式 roots，通常从高到低为�
 
 不同 priority 的同 id profile 由高优先级整份覆盖，不做字段级 merge，并产生 source override diagnostic。同 priority duplicate 是 hard conflict。高优先级 candidate 无效时不静默 fallback 到低优先级同 id candidate。
 
-Builtin default 是普通低优先级 source，不是错误恢复 fallback。
+Builtin default 是普通低优先级 source，不是错误恢复 fallback。它的 id 是 `main`，与发行版 `.widi/profiles/main.md` 同名：发行版那份以更高 priority 整份覆盖它，而不是并排多出一个角色。没有任何地方指定 default profile 时，orchestrator 回落到的也是 `main`。
 
 ## Orchestrator policy
 
@@ -51,8 +51,24 @@ Profile 的主要职责是声明 agent build 输入：
 - `tools`：ToolRegistry 的 requested visibility，也是 agent 协作能力的唯一边界（见下）。
 - `skills`：ResourceLoader 的选择范围；未写则加载 roots 下全部 skill。
 - `commands`：command input 的 enable/deny policy。
+- `description` / `whenToUse`：只面向调用方。前者说这个角色是什么，后者说什么时候该选它而不是隔壁那个，是 `list_agent_profiles` 真正依赖的字段。两者都不进 system prompt。
 
 解析但没有 runtime consumer 的 policy 字段不应长期保留。
+
+### Frontmatter 形态
+
+Frontmatter 是自带的极简 YAML 子集，不是完整 YAML：单行标量、`[a, b]` 数组、一层嵌套 mapping，以及 block scalar。
+
+`whenToUse` 这类选择建议通常是一整段，只能写成 block scalar：
+
+```markdown
+whenToUse: |
+  Use for a self-contained change.
+
+  It cannot see your conversation.
+```
+
+首个内容行的缩进即被剥离的缩进，空行保留，块在第一个缩进不深于 key 的非空行处结束。`|-` 会被接受但与 `|` 等价：末尾空行一律丢弃，且所有消费方都会 trim，clip 与 strip 在下游无法区分。序列化走同一条路——含换行的文本写成 block scalar，读回来完全一致。
 
 ### Profile 不管的两件事
 

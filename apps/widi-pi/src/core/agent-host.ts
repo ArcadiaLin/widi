@@ -24,6 +24,8 @@ export interface AgentProfileBrief {
 	readonly id: string;
 	readonly label: string;
 	readonly description?: string;
+	/** When to pick this role over its neighbours. The menu's selection advice. */
+	readonly whenToUse?: string;
 	/** Whether agents created from this profile get a persistent session. */
 	readonly persist: boolean;
 }
