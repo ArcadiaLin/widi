@@ -44,7 +44,7 @@ export const WIDI_KEYBINDINGS = {
 	},
 	"app.tools.expand": {
 		defaultKeys: "ctrl+o",
-		description: "Toggle expanded tool output in the transcript",
+		description: "Toggle expanded transcript details",
 	},
 	"app.jobs.expand": {
 		defaultKeys: "ctrl+t",

@@ -49,13 +49,21 @@ export class ChatView implements Component {
 		}
 
 		const liveThinkingIds = new Set<string>();
+		const livePreparingAssistantIds = new Set<string>();
 		for (const item of timeline) {
 			if (item.type === "thinking-status" && item.status === "thinking") {
 				liveThinkingIds.add(item.id);
+			} else if (
+				item.type === "tool-execution" &&
+				item.status === "preparing" &&
+				item.sourceAssistantId
+			) {
+				livePreparingAssistantIds.add(item.sourceAssistantId);
 			}
 		}
 		const context: TimelineRenderContext = {
 			liveThinkingIds,
+			livePreparingAssistantIds,
 			toolOutputExpanded: this.state.toolOutputExpanded,
 		};
 

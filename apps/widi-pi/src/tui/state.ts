@@ -49,12 +49,19 @@ export interface ToolExecutionItem {
 	readonly toolCallId: string;
 	readonly durability: TimelineDurability;
 	readonly createdAt: string;
+	/** Assistant stream that emitted this provisional tool call, when known. */
+	readonly sourceAssistantId?: string;
 	toolName: string;
 	args?: unknown;
 	partialResult?: unknown;
 	result?: unknown;
 	isError?: boolean;
-	status: "running" | "completed";
+	/**
+	 * "preparing" covers the window between the streamed toolcall_start and
+	 * tool_execution_start; a run that ends in that window leaves the item
+	 * "cancelled".
+	 */
+	status: "preparing" | "running" | "completed" | "cancelled";
 }
 
 export interface ThinkingStatusItem {
@@ -63,6 +70,8 @@ export interface ThinkingStatusItem {
 	readonly durability: "ephemeral";
 	readonly createdAt: string;
 	status: "thinking" | "completed";
+	/** Display-only tail of the streamed thinking text (last lines). */
+	preview?: string;
 }
 
 export interface DiagnosticItem {
@@ -83,6 +92,8 @@ export interface CommandResultItem {
 	readonly argument: string;
 	status: "running" | "completed" | "failed";
 	result?: unknown;
+	/** Human-readable summary from the command's formatResult, when defined. */
+	display?: string;
 	error?: CommandError;
 }
 
@@ -301,7 +312,7 @@ export interface TuiApplicationState {
 	humanRequests: PendingHumanRequestView[];
 	mode: "editor" | "completion-menu" | "human-request";
 	shuttingDown: boolean;
-	/** Global toggle: show full tool output instead of collapsed previews. */
+	/** Global toggle: show full transcript details instead of collapsed previews. */
 	toolOutputExpanded: boolean;
 }
 

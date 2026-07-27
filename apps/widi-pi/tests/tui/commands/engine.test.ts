@@ -160,6 +160,27 @@ describe("CommandEngine.handleInput", () => {
 		expect(outcome).toMatchObject({ kind: "executed", name: "session" });
 	});
 
+	it("carries the command's formatResult as display text", async () => {
+		const outcome = await engine.handleInput(
+			"/resume session-1",
+			context({
+				resumeAgentSessionByReference: async () => ({
+					agentId: "agent-2",
+					snapshot: {
+						profile: { reference: { id: "default", label: "Default" } },
+						model: { id: "test-model" },
+					},
+				}),
+			}),
+		);
+
+		expect(outcome).toMatchObject({
+			kind: "executed",
+			name: "resume",
+			display: "resumed agent-2 · Default · test-model",
+		});
+	});
+
 	it("rejects active-only commands without an active agent", async () => {
 		const outcome = await engine.handleInput("/status", pendingContext());
 

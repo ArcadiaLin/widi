@@ -1,6 +1,8 @@
 import {
+	type CompactResult,
 	formatPromptTemplateInvocation,
 	formatSkillInvocation,
+	type NavigateTreeResult,
 	parseCommandArgs,
 } from "@earendil-works/pi-agent-core";
 import {
@@ -8,7 +10,18 @@ import {
 	type TextContent,
 	type UserMessage,
 } from "@earendil-works/pi-ai";
-import type { AgentSessionCandidate } from "../../core/session-manager.ts";
+import type {
+	AgentListResult,
+	AgentSessionListResult,
+	AgentSessionResult,
+	ExtensionReloadResult,
+} from "../../core/agent-orchestrator.ts";
+import type { AgentRecordSnapshot } from "../../core/agent-record.ts";
+import type {
+	AgentSessionCandidate,
+	AgentSessionSnapshot,
+	AgentSessionTreeSnapshot,
+} from "../../core/session-manager.ts";
 import type { CandidateItem } from "../../core/types.ts";
 import { splitLeadingToken } from "./parse.ts";
 import type { CommandContext, CommandDefinition } from "./types.ts";
@@ -33,6 +46,17 @@ export const builtInCommands: readonly CommandDefinition[] = [
 				requireAgentId(context),
 				argument.trim() || undefined,
 			),
+		formatResult: (result) => {
+			const compact = result as CompactResult;
+			const summaryLine =
+				compact.summary
+					.split("\n")
+					.find((line) => line.trim() !== "")
+					?.trim() ?? "";
+			return [`compacted ${compact.tokensBefore} tokens`, summaryLine]
+				.filter((line) => line !== "")
+				.join("\n");
+		},
 	},
 	{
 		kind: "action",
@@ -63,6 +87,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 				entryId ? { entryId } : undefined,
 			);
 		},
+		formatResult: (result) => agentSessionResultText("forked", result),
 	},
 	{
 		kind: "action",
@@ -71,6 +96,14 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		description: "Inspect the current agent runtime facts.",
 		execute: async (context) =>
 			context.orchestrator.inspectAgent(requireAgentId(context)),
+		formatResult: (result) => {
+			const snapshot = result as AgentRecordSnapshot;
+			const toolCount = snapshot.toolSnapshot?.toolNames.length ?? 0;
+			return [
+				`${snapshot.agentId} · ${snapshot.status} · ${profileLabel(snapshot)} · ${snapshot.model.provider}/${snapshot.model.id}`,
+				`${toolCount} tools · ${snapshot.extensionIds.length} extensions`,
+			].join("\n");
+		},
 	},
 	{
 		kind: "action",
@@ -78,6 +111,16 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		name: "agent",
 		description: "List runtime agents.",
 		execute: async ({ orchestrator }) => orchestrator.listAgents(),
+		formatResult: (result) => {
+			const { agents } = result as AgentListResult;
+			if (agents.length === 0) return "No runtime agents.";
+			return agents
+				.map(
+					(agent) =>
+						`${agent.agentId} · ${agent.status} · ${profileLabel(agent)}`,
+				)
+				.join("\n");
+		},
 	},
 	{
 		kind: "action",
@@ -163,6 +206,10 @@ export const builtInCommands: readonly CommandDefinition[] = [
 				requireAgentId(context),
 				argument.trim(),
 			),
+		formatResult: (result) => {
+			const snapshot = result as AgentSessionSnapshot;
+			return `renamed to ${snapshot.name ?? "(unnamed)"}`;
+		},
 	},
 	{
 		kind: "action",
@@ -173,6 +220,16 @@ export const builtInCommands: readonly CommandDefinition[] = [
 			await context.orchestrator.reloadExtensions({
 				agentIds: [requireAgentId(context)],
 			}),
+		formatResult: (result) => {
+			const reload = result as ExtensionReloadResult;
+			return [
+				`${reload.catalog.loaded.length} extensions loaded`,
+				...reload.agents.map(
+					(agent) =>
+						`${agent.agentId}: ${agent.status}${agent.reason ? ` (${agent.reason})` : ""}`,
+				),
+			].join("\n");
+		},
 	},
 	{
 		kind: "action",
@@ -194,6 +251,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 			})),
 		execute: async ({ orchestrator }, argument) =>
 			await orchestrator.resumeAgentSessionByReference(argument.trim()),
+		formatResult: (result) => agentSessionResultText("resumed", result),
 	},
 	{
 		kind: "action",
@@ -201,6 +259,13 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		name: "session",
 		description: "List persisted agent sessions.",
 		execute: async ({ orchestrator }) => await orchestrator.listAgentSessions(),
+		formatResult: (result) => {
+			const { sessions } = result as AgentSessionListResult;
+			if (sessions.length === 0) return "No persisted sessions.";
+			return sessions
+				.map((session) => `${sessionCandidateLabel(session)} · ${session.id}`)
+				.join("\n");
+		},
 	},
 	{
 		kind: "action",
@@ -243,6 +308,22 @@ export const builtInCommands: readonly CommandDefinition[] = [
 				return await context.orchestrator.getAgentSessionTree(agentId);
 			}
 			return await context.orchestrator.navigateAgentTree(agentId, targetId);
+		},
+		formatResult: (result) => {
+			// Bare /tree returns the tree snapshot; /tree <entry> navigates.
+			if (
+				typeof result === "object" &&
+				result !== null &&
+				"entries" in result
+			) {
+				const tree = result as AgentSessionTreeSnapshot;
+				return `${tree.entries.length} entries · leaf ${tree.leafId ?? "none"}`;
+			}
+			const navigation = result as NavigateTreeResult;
+			if (navigation.cancelled) return "Navigation cancelled.";
+			return navigation.summaryEntry
+				? "Navigated (branch summarized)."
+				: "Navigated.";
 		},
 	},
 	{
@@ -297,6 +378,16 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		},
 	},
 ];
+
+function profileLabel(snapshot: AgentRecordSnapshot): string {
+	return snapshot.profile.reference.label ?? snapshot.profile.reference.id;
+}
+
+// Resume and fork both answer "which agent did I land on".
+function agentSessionResultText(verb: string, result: unknown): string {
+	const { agentId, snapshot } = result as AgentSessionResult;
+	return `${verb} ${agentId} · ${profileLabel(snapshot)} · ${snapshot.model.id}`;
+}
 
 // A session is recognized by what the user called it or first said in it;
 // profile and id are last resorts.

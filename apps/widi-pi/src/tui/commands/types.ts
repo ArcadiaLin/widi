@@ -36,6 +36,11 @@ interface CommandBase {
 export interface ActionCommand extends CommandBase {
 	readonly kind: "action";
 	execute(context: CommandContext, argument: string): Promise<unknown>;
+	/**
+	 * Optional short human-readable summary of the result. When defined, the
+	 * transcript shows it instead of dumping the raw result value.
+	 */
+	formatResult?(result: unknown): string;
 }
 
 /** Pure expansion: the returned text is submitted as the user prompt. */
@@ -73,6 +78,7 @@ export type EngineOutcome =
 			readonly commandId: string;
 			readonly name: string;
 			readonly value: unknown;
+			readonly display?: string;
 	  }
 	| {
 			readonly kind: "failed";

@@ -120,7 +120,21 @@ export class CommandEngine {
 		try {
 			if (command.kind === "action") {
 				const value = await command.execute(context, argument);
-				return { kind: "executed", commandId, name: command.name, value };
+				// A formatter that throws must not turn a successful command into
+				// a failure; fall back to rendering the raw value.
+				let display: string | undefined;
+				try {
+					display = command.formatResult?.(value);
+				} catch {
+					display = undefined;
+				}
+				return {
+					kind: "executed",
+					commandId,
+					name: command.name,
+					value,
+					display,
+				};
 			}
 			return {
 				kind: "expanded",

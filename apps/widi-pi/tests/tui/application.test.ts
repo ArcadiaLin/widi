@@ -268,6 +268,31 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 	});
 });
 
+describe("WidiTuiApplication animation ticker", () => {
+	it("uses spinner cadence only for the visible running agent", async () => {
+		const harness = await createApplicationHarness();
+		setActiveAgent(harness.application.state, "main").status = "idle";
+		ensureAgentProjection(harness.application.state, "background", "running");
+		const ticker = harness.application as unknown as {
+			updateJobsTicker(): void;
+			switchAgent(agentId: string): void;
+			jobsTickerInterval?: number;
+			hydratedAgents: Set<string>;
+		};
+		ticker.hydratedAgents.add("main");
+		ticker.hydratedAgents.add("background");
+
+		ticker.updateJobsTicker();
+		expect(ticker.jobsTickerInterval).toBeUndefined();
+
+		ticker.switchAgent("background");
+		expect(ticker.jobsTickerInterval).toBe(160);
+
+		ticker.switchAgent("main");
+		expect(ticker.jobsTickerInterval).toBeUndefined();
+	});
+});
+
 async function submit(
 	application: WidiTuiApplication,
 	text: string,

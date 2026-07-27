@@ -60,6 +60,8 @@ import { flushStreaming, STREAM_FLUSH_MS } from "./streaming-flush.ts";
 import { theme } from "./theme/theme.ts";
 
 const NOTIFICATION_TTL_MS = 5_000;
+/** Spinner frame cadence while the visible agent is running. */
+const SPINNER_TICK_MS = 160;
 
 export interface WidiTuiOptions {
 	readonly cwd: string;
@@ -101,6 +103,7 @@ export class WidiTuiApplication {
 	private readonly notificationTimers = new Map<string, NodeJS.Timeout>();
 	private streamingFlushTimer?: NodeJS.Timeout;
 	private jobsTicker?: NodeJS.Timeout;
+	private jobsTickerInterval?: number;
 	private readonly jobsPanel: JobsPanelView;
 	private readonly pendingTasks = new Set<Promise<unknown>>();
 	private readonly lifecycleTasks = new Set<Promise<unknown>>();
@@ -302,6 +305,7 @@ export class WidiTuiApplication {
 		if (this.jobsTicker) {
 			clearInterval(this.jobsTicker);
 			this.jobsTicker = undefined;
+			this.jobsTickerInterval = undefined;
 		}
 		for (const agent of this.state.agents.values()) flushStreaming(agent);
 		this.removeLifecycleHandlers();
@@ -425,8 +429,11 @@ export class WidiTuiApplication {
 	}
 
 	/**
-	 * Tick the panel's elapsed times while any job is live; stop the interval
-	 * as soon as nothing needs it.
+	 * Tick re-renders while anything animated is on screen. The visible running
+	 * agent has spinner frames advancing every 160ms; with only live background
+	 * jobs, one tick per second keeps the panel's elapsed times fresh. The
+	 * interval is rebuilt when the cadence changes and stopped when nothing
+	 * needs it.
 	 */
 	private updateJobsTicker(): void {
 		const hasLiveJob = [...this.state.agents.values()].some((agent) =>
@@ -434,12 +441,24 @@ export class WidiTuiApplication {
 				(job) => job.status === "live" || job.status === "aborting",
 			),
 		);
-		if (hasLiveJob && !this.jobsTicker) {
-			this.jobsTicker = setInterval(() => this.tui.requestRender(), 1_000);
-			this.jobsTicker.unref();
-		} else if (!hasLiveJob && this.jobsTicker) {
+		const activeAgent = this.state.activeAgentId
+			? this.state.agents.get(this.state.activeAgentId)
+			: undefined;
+		const hasVisibleRunningAgent = activeAgent?.status === "running";
+		const interval = hasVisibleRunningAgent
+			? SPINNER_TICK_MS
+			: hasLiveJob
+				? 1_000
+				: undefined;
+		if (interval === this.jobsTickerInterval) return;
+		if (this.jobsTicker) {
 			clearInterval(this.jobsTicker);
 			this.jobsTicker = undefined;
+		}
+		this.jobsTickerInterval = interval;
+		if (interval !== undefined) {
+			this.jobsTicker = setInterval(() => this.tui.requestRender(), interval);
+			this.jobsTicker.unref();
 		}
 	}
 
@@ -571,6 +590,7 @@ export class WidiTuiApplication {
 					name: outcome.name,
 					status: "completed",
 					result: outcome.value,
+					display: outcome.display,
 				});
 				const nextAgentId = switchedAgentId(outcome);
 				if (nextAgentId) await this.activateNavigationAgent(nextAgentId);
@@ -763,6 +783,7 @@ export class WidiTuiApplication {
 			argument?: string;
 			status: "running" | "completed" | "failed";
 			result?: unknown;
+			display?: string;
 			error?: CommandError;
 		},
 	): void {
@@ -776,6 +797,7 @@ export class WidiTuiApplication {
 		if (existing?.type === "command-result") {
 			existing.status = update.status;
 			existing.result = update.result;
+			existing.display = update.display;
 			existing.error = update.error;
 			return;
 		}
@@ -789,6 +811,7 @@ export class WidiTuiApplication {
 			argument: update.argument ?? "",
 			status: update.status,
 			result: update.result,
+			display: update.display,
 			error: update.error,
 		});
 	}
@@ -885,6 +908,7 @@ export class WidiTuiApplication {
 			sourceAgentId,
 			this.pendingDisplayForSource(sourceAgentId),
 		);
+		this.updateJobsTicker();
 		this.pendingUnknownCommand = undefined;
 		this.editor.setText("");
 		this.configurePendingEditor();
@@ -924,6 +948,7 @@ export class WidiTuiApplication {
 
 	private beginDefaultSession(): void {
 		this.pendingAgents.beginDefault(this.defaultPendingDisplay());
+		this.updateJobsTicker();
 		this.pendingUnknownCommand = undefined;
 		this.editor.setText("");
 		this.configurePendingEditor();
@@ -980,6 +1005,7 @@ export class WidiTuiApplication {
 		}
 		this.pendingAgents.cancel();
 		const agent = setActiveAgent(this.state, agentId);
+		this.updateJobsTicker();
 		this.editor.setText(this.drafts.get(agentId) ?? "");
 		this.state.mode = "editor";
 		this.updateEditorAvailability();

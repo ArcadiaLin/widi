@@ -25,6 +25,14 @@ function foregroundRgb(hex: string): Paint {
 	return (text) => `${ESC}38;2;${red};${green};${blue}m${text}${ESC}39m`;
 }
 
+function backgroundRgb(hex: string): Paint {
+	const value = Number.parseInt(hex.slice(1), 16);
+	const red = (value >> 16) & 0xff;
+	const green = (value >> 8) & 0xff;
+	const blue = value & 0xff;
+	return (text) => `${ESC}48;2;${red};${green};${blue}m${text}${ESC}49m`;
+}
+
 /**
  * Semantic hues of a color scheme, as hex values. Components never pick raw
  * terminal colors; the Theme turns these into paint functions.
@@ -46,6 +54,8 @@ export interface ThemePalette {
 	faint: string;
 	/** Frames, divider lines, box borders. */
 	rule: string;
+	/** Row background that lifts a line off the terminal's black. */
+	surface: string;
 }
 
 /**
@@ -65,6 +75,7 @@ export const defaultPalette: ThemePalette = {
 	muted: "#8fa9c0",
 	faint: "#5b7186",
 	rule: "#2f4d6b",
+	surface: "#1e2833",
 };
 
 /**
@@ -112,6 +123,8 @@ export class Theme {
 	readonly borderActive: Paint;
 	readonly title: Paint;
 	readonly selection: Paint;
+	/** Background of user message rows in the transcript. */
+	readonly surface: Paint;
 
 	readonly selectListTheme: SelectListTheme;
 	readonly editorTheme: EditorTheme;
@@ -149,6 +162,7 @@ export class Theme {
 		this.borderActive = this.accent;
 		this.title = this.accent;
 		this.selection = this.accent;
+		this.surface = backgroundRgb(palette.surface);
 
 		this.selectListTheme = {
 			selectedPrefix: this.selection,
@@ -165,7 +179,7 @@ export class Theme {
 			heading: (text) => this.bold(this.title(text)),
 			link: this.info,
 			linkUrl: this.dim,
-			code: this.warn,
+			code: this.info,
 			codeBlock: this.ok,
 			codeBlockBorder: this.border,
 			quote: this.italic,

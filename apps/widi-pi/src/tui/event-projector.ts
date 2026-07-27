@@ -6,6 +6,7 @@ import type {
 import type {
 	AssistantMessage,
 	TextContent,
+	ToolCall,
 	UserMessage,
 } from "@earendil-works/pi-ai";
 import type { AgentRecordSnapshot } from "../core/agent-record.ts";
@@ -33,6 +34,7 @@ import {
 	isTimelineEvent,
 	retainedAttention,
 	type TimelineItem,
+	type ToolExecutionItem,
 	type TuiApplicationState,
 } from "./state.ts";
 import { flushStreaming } from "./streaming-flush.ts";
@@ -52,8 +54,20 @@ interface JobProgressState {
 	lineBuffer: string;
 }
 
+interface ThinkingPreviewState {
+	readonly agentId: AgentId;
+	completedLines: string[];
+	currentLine: string;
+}
+
+const THINKING_PREVIEW_LINE_CHARACTERS = 2_000;
+
 function jobProgressKey(agentId: AgentId, jobId: string): string {
 	return `${agentId}\0${jobId}`;
+}
+
+function thinkingPreviewKey(agentId: AgentId, assistantId: string): string {
+	return `${agentId}\0${assistantId}`;
 }
 
 function latestJobReport(
@@ -70,6 +84,8 @@ export class EventProjector {
 	readonly state: TuiApplicationState;
 	/** Per-job decode state for lossy Base64 progress increments. */
 	private readonly jobProgress = new Map<string, JobProgressState>();
+	/** Bounded, incremental tails for live thinking streams. */
+	private readonly thinkingPreviews = new Map<string, ThinkingPreviewState>();
 
 	constructor(state: TuiApplicationState) {
 		this.state = state;
@@ -101,6 +117,7 @@ export class EventProjector {
 		// point at items that hydration replaces.
 		agent.pendingAssistantText = undefined;
 		agent.pendingToolUpdates?.clear();
+		this.clearThinkingPreviews(agentId);
 		return agent;
 	}
 
@@ -193,10 +210,28 @@ export class EventProjector {
 				agent.status = event.status;
 				agent.runStartedAt =
 					event.status === "running" ? event.changedAt : undefined;
+				// Experience indicator: covers the model's first-token latency
+				// after submit; completes (renders empty) once the run leaves
+				// "running".
+				if (event.status === "running") upsertAwaitingThinking(agent);
+				else {
+					completeAwaitingThinking(agent);
+					this.clearThinkingPreviews(event.agentId);
+				}
 				if (wasRunning && event.status !== "running") {
 					// Abort can end a run without message_end; never lose the tail of
 					// the stream still sitting in the pending buffer.
 					flushStreaming(agent);
+					// A run can end while a streamed tool call never reached
+					// tool_execution_start; don't leave its placeholder preparing.
+					for (const entry of agent.timeline) {
+						if (
+							entry.type === "tool-execution" &&
+							entry.status === "preparing"
+						) {
+							entry.status = "cancelled";
+						}
+					}
 				}
 				if (
 					wasRunning &&
@@ -496,6 +531,12 @@ export class EventProjector {
 		}
 	}
 
+	private clearThinkingPreviews(agentId: AgentId): void {
+		for (const [key, preview] of this.thinkingPreviews) {
+			if (preview.agentId === agentId) this.thinkingPreviews.delete(key);
+		}
+	}
+
 	private applyHarnessEvent(
 		agent: AgentViewState,
 		event: AgentHarnessEvent,
@@ -518,13 +559,47 @@ export class EventProjector {
 				};
 				const streamEvent = event.assistantMessageEvent;
 				if (streamEvent.type === "thinking_start") {
+					const previewState: ThinkingPreviewState = {
+						agentId: agent.agentId,
+						completedLines: [],
+						currentLine: "",
+					};
+					const content = event.message.content[streamEvent.contentIndex];
+					if (content?.type === "thinking") {
+						appendThinkingPreview(previewState, content.thinking);
+					}
+					this.thinkingPreviews.set(
+						thinkingPreviewKey(agent.agentId, item.id),
+						previewState,
+					);
 					upsertTimeline(agent, {
 						type: "thinking-status",
 						id: `${item.id}:thinking`,
 						durability: "ephemeral",
 						createdAt: now(),
 						status: "thinking",
+						preview: thinkingPreviewText(previewState),
 					});
+				} else if (streamEvent.type === "thinking_delta") {
+					const thinking = agent.timeline.find(
+						(entry) =>
+							entry.type === "thinking-status" &&
+							entry.id === `${item.id}:thinking`,
+					);
+					if (thinking?.type === "thinking-status") {
+						const key = thinkingPreviewKey(agent.agentId, item.id);
+						const previewState = this.thinkingPreviews.get(key) ?? {
+							agentId: agent.agentId,
+							completedLines: [],
+							currentLine: "",
+						};
+						appendThinkingPreview(previewState, streamEvent.delta);
+						this.thinkingPreviews.set(key, previewState);
+						const preview = thinkingPreviewText(previewState);
+						// Skip the write when the visible tail is unchanged so the
+						// ChatView render cache stays valid between flushes.
+						if (thinking.preview !== preview) thinking.preview = preview;
+					}
 				} else if (streamEvent.type === "thinking_end") {
 					flushStreaming(agent);
 					const thinking = agent.timeline.find(
@@ -534,6 +609,26 @@ export class EventProjector {
 					);
 					if (thinking?.type === "thinking-status") {
 						thinking.status = "completed";
+					}
+					this.thinkingPreviews.delete(
+						thinkingPreviewKey(agent.agentId, item.id),
+					);
+				} else if (
+					streamEvent.type === "toolcall_start" ||
+					streamEvent.type === "toolcall_delta" ||
+					streamEvent.type === "toolcall_end"
+				) {
+					// The provider-facing tool id and name may arrive after
+					// toolcall_start. Keep a stream-position identity until the
+					// execution event supplies the stable call id.
+					const content = event.message.content[streamEvent.contentIndex];
+					if (content?.type === "toolCall") {
+						upsertPreparingTool(
+							agent,
+							item.id,
+							streamEvent.contentIndex,
+							content,
+						);
 					}
 				}
 				return;
@@ -546,6 +641,9 @@ export class EventProjector {
 						item.text = assistantText(event.message);
 						item.message = event.message;
 						item.streaming = false;
+						this.thinkingPreviews.delete(
+							thinkingPreviewKey(agent.agentId, item.id),
+						);
 					}
 					const usage = event.message.usage;
 					if (usage) {
@@ -557,16 +655,7 @@ export class EventProjector {
 				return;
 			case "tool_execution_start":
 				flushStreaming(agent);
-				upsertTimeline(agent, {
-					type: "tool-execution",
-					id: event.toolCallId,
-					toolCallId: event.toolCallId,
-					durability: "durable",
-					createdAt: now(),
-					toolName: event.toolName,
-					args: event.args,
-					status: "running",
-				});
+				startToolExecution(agent, event.toolCallId, event.toolName, event.args);
 				this.markBackgroundActivity(agent.agentId);
 				return;
 			case "tool_execution_update": {
@@ -597,6 +686,9 @@ export class EventProjector {
 				tool.isError = event.isError;
 				tool.status = "completed";
 				upsertTimeline(agent, tool);
+				// Experience indicator: the agent is still running and now waits
+				// for the next assistant message; show thinking through that gap.
+				if (agent.status === "running") upsertAwaitingThinking(agent);
 				// An active agent's tool failure stays an inline tool error; only
 				// background agents get a transient warning in the strip.
 				if (event.isError) {
@@ -647,11 +739,16 @@ export class EventProjector {
 				text,
 				modelText: text === modelText ? undefined : modelText,
 			});
+			// The running status precedes the harness's user message. Reappend
+			// the gap indicator here so it follows the prompt in transcript order.
+			if (agent.status === "running") upsertAwaitingThinking(agent);
 			// A new user message opens a turn; this is the only live-event path
 			// where the turn count can grow.
 			applyTimelineWindow(agent);
 			this.clearSettledBackgroundJobs(agent);
 		} else if (message.role === "assistant") {
+			// The real stream is starting; the gap-filling indicator yields.
+			completeAwaitingThinking(agent);
 			agent.currentAssistantId = id;
 			upsertTimeline(agent, {
 				type: "assistant-message",
@@ -788,6 +885,152 @@ function upsertTimeline(agent: AgentViewState, item: TimelineItem): void {
 	);
 	if (index === -1) agent.timeline.push(item);
 	else agent.timeline[index] = item;
+}
+
+/**
+ * Experience indicator covering gaps with no streamed content: the model's
+ * first-token latency after submit and the wait between tool executions.
+ * Distinct from the streaming `${item.id}:thinking` entry, it carries no
+ * preview. Each gap is appended at the current timeline position and removed
+ * when real streamed content takes over.
+ */
+function upsertAwaitingThinking(agent: AgentViewState): void {
+	completeAwaitingThinking(agent);
+	agent.timeline.push({
+		type: "thinking-status",
+		id: `${awaitingThinkingPrefix(agent.agentId)}${agent.nextLiveItemId++}`,
+		durability: "ephemeral",
+		createdAt: now(),
+		status: "thinking",
+	});
+}
+
+function completeAwaitingThinking(agent: AgentViewState): void {
+	const prefix = awaitingThinkingPrefix(agent.agentId);
+	for (let index = agent.timeline.length - 1; index >= 0; index--) {
+		const item = agent.timeline[index];
+		if (item?.type === "thinking-status" && item.id.startsWith(prefix)) {
+			agent.timeline.splice(index, 1);
+		}
+	}
+}
+
+function awaitingThinkingPrefix(agentId: AgentId): string {
+	return `awaiting:${agentId}:`;
+}
+
+function upsertPreparingTool(
+	agent: AgentViewState,
+	sourceAssistantId: string,
+	contentIndex: number,
+	content: ToolCall,
+): void {
+	const id = preparingToolId(sourceAssistantId, contentIndex);
+	const index = agent.timeline.findIndex(
+		(item) => item.type === "tool-execution" && item.id === id,
+	);
+	const existing = index === -1 ? undefined : agent.timeline[index];
+	const previous = existing?.type === "tool-execution" ? existing : undefined;
+	const item = {
+		type: "tool-execution",
+		id,
+		toolCallId: content.id || previous?.toolCallId || id,
+		durability: "durable",
+		createdAt: previous?.createdAt ?? now(),
+		sourceAssistantId,
+		toolName: content.name || previous?.toolName || "tool",
+		args: content.arguments,
+		status: "preparing",
+	} satisfies ToolExecutionItem;
+	if (index === -1) agent.timeline.push(item);
+	else agent.timeline[index] = item;
+}
+
+function preparingToolId(
+	sourceAssistantId: string,
+	contentIndex: number,
+): string {
+	return `preparing-tool:${sourceAssistantId}:${contentIndex}`;
+}
+
+function startToolExecution(
+	agent: AgentViewState,
+	toolCallId: string,
+	toolName: string,
+	args: unknown,
+): void {
+	const preparing =
+		findPreparingTool(agent, (item) => item.toolCallId === toolCallId) ??
+		findPreparingTool(agent, (item) => item.toolName === toolName) ??
+		findPreparingTool(agent);
+	const existing = preparing ?? findTool(agent, toolCallId);
+	if (existing) {
+		const index = agent.timeline.indexOf(existing);
+		agent.timeline[index] = {
+			...existing,
+			toolCallId,
+			toolName,
+			args,
+			status: "running",
+		} satisfies ToolExecutionItem;
+		return;
+	}
+	upsertTimeline(agent, {
+		type: "tool-execution",
+		id: toolCallId,
+		toolCallId,
+		durability: "durable",
+		createdAt: now(),
+		toolName,
+		args,
+		status: "running",
+	});
+}
+
+function findPreparingTool(
+	agent: AgentViewState,
+	matches: (item: ToolExecutionItem) => boolean = () => true,
+): ToolExecutionItem | undefined {
+	return agent.timeline.find(
+		(item): item is ToolExecutionItem =>
+			item.type === "tool-execution" &&
+			item.status === "preparing" &&
+			matches(item),
+	);
+}
+
+function appendThinkingPreview(
+	state: ThinkingPreviewState,
+	delta: string,
+): void {
+	const segments = delta.replace(/\r\n?/g, "\n").split("\n");
+	state.currentLine = appendThinkingLineTail(
+		state.currentLine,
+		segments[0] ?? "",
+	);
+	for (let index = 1; index < segments.length; index++) {
+		commitThinkingLine(state);
+		state.currentLine = appendThinkingLineTail("", segments[index] ?? "");
+	}
+}
+
+function commitThinkingLine(state: ThinkingPreviewState): void {
+	if (state.currentLine.trim() === "") return;
+	state.completedLines.push(state.currentLine);
+	if (state.completedLines.length > 2) state.completedLines.shift();
+}
+
+function appendThinkingLineTail(current: string, delta: string): string {
+	const characters = [...current, ...delta];
+	return characters.length <= THINKING_PREVIEW_LINE_CHARACTERS
+		? characters.join("")
+		: characters.slice(-THINKING_PREVIEW_LINE_CHARACTERS).join("");
+}
+
+function thinkingPreviewText(state: ThinkingPreviewState): string | undefined {
+	const lines = [...state.completedLines];
+	if (state.currentLine.trim() !== "") lines.push(state.currentLine);
+	return lines.length === 0 ? undefined : lines.slice(-2).join("\n");
 }
 
 function mergeTimeline(
