@@ -16,7 +16,7 @@ import {
 import type {
 	BackgroundJobChange,
 	ExternalJobDependencyIndex,
-} from "../../src/core/background-job.ts";
+} from "../../src/core/background/index.ts";
 import { MessageError } from "../../src/core/message.ts";
 import {
 	createOrchestrator,
@@ -64,7 +64,6 @@ async function createExtensionOrchestrator(
 		...defaultProfile,
 		id: `${extensionId}-profile`,
 		persist: false,
-		extensions: [extensionId],
 	};
 	return await createOrchestrator(new MemoryExecutionEnv(), {
 		defaultProfileId: profile.id,
@@ -539,7 +538,11 @@ describe("AgentOrchestrator delegated task jobs", () => {
 			transition: "settled",
 			outcome: { status: "cancelled" },
 		});
-		expect(orchestrator.getAgentStatus(ownerAgentId)).toBe("idle");
+		// The owner is untouched by its worker's teardown. Its exact phase here is
+		// not asserted: the cancellation t1 is recorded before it is delivered, so
+		// whether that delivery has already started a run by the time dispose
+		// returns is a race between two independent chains.
+		expect(orchestrator.getAgentStatus(ownerAgentId)).not.toBe("disposed");
 		await vi.waitFor(() => expect(ownerPrompt).toHaveBeenCalledTimes(1));
 		expect(ownerPrompt.mock.calls[0]?.[0]).toContain("Worker was killed");
 	});

@@ -4,7 +4,7 @@ import type { AgentRecordSnapshot } from "../../src/core/agent-record.ts";
 import type {
 	BackgroundJobReportSnapshot,
 	BackgroundJobSnapshot,
-} from "../../src/core/background-job.ts";
+} from "../../src/core/background/index.ts";
 import type { OrchestratorEvent, RuntimeModel } from "../../src/core/types.ts";
 import {
 	applyAgentSnapshot,
@@ -61,6 +61,11 @@ describe("EventProjector", () => {
 			attention: "none",
 		});
 		expect(worker?.timeline).toMatchObject([
+			{
+				type: "thinking-status",
+				id: expect.stringMatching(/^awaiting:worker:/),
+				status: "thinking",
+			},
 			{
 				type: "extension-output",
 				id: "output-1",
@@ -847,6 +852,303 @@ describe("EventProjector", () => {
 		expect(agent.backgroundJobs.get("job-old")?.status).toBe("completed");
 		expect(agent.backgroundJobCount).toBe(2);
 	});
+
+	it("shows a preparing tool item from toolcall_start and upgrades it on execution start", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+		const agent = setActiveAgent(state, "main");
+
+		projector.apply(
+			harness("main", {
+				type: "message_start",
+				message: assistantMessage(""),
+			}),
+		);
+		const partial = assistantToolCallMessage("tool-1", "read");
+		projector.apply(
+			harness("main", {
+				type: "message_update",
+				message: partial,
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial,
+				},
+			}),
+		);
+
+		expect(agent.timeline).toMatchObject([
+			{ type: "assistant-message" },
+			{
+				type: "tool-execution",
+				toolCallId: "tool-1",
+				toolName: "read",
+				status: "preparing",
+			},
+		]);
+
+		projector.apply(
+			harness("main", {
+				type: "tool_execution_start",
+				toolCallId: "tool-1",
+				toolName: "read",
+				args: { path: "README.md" },
+			}),
+		);
+
+		const tools = agent.timeline.filter(
+			(item) => item.type === "tool-execution",
+		);
+		expect(tools).toHaveLength(1);
+		expect(tools[0]).toMatchObject({
+			status: "running",
+			args: { path: "README.md" },
+		});
+	});
+
+	it("reconciles a preparing tool whose provider id arrives in a later delta", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+		const agent = setActiveAgent(state, "main");
+
+		projector.apply(
+			harness("main", {
+				type: "message_start",
+				message: assistantMessage(""),
+			}),
+		);
+		const started = assistantToolCallMessage("", "");
+		projector.apply(
+			harness("main", {
+				type: "message_update",
+				message: started,
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial: started,
+				},
+			}),
+		);
+		const updated = assistantToolCallMessage("tool-1", "read", {
+			path: "README.md",
+		});
+		projector.apply(
+			harness("main", {
+				type: "message_update",
+				message: updated,
+				assistantMessageEvent: {
+					type: "toolcall_delta",
+					contentIndex: 0,
+					delta: '{"path":"README.md"}',
+					partial: updated,
+				},
+			}),
+		);
+		projector.apply(
+			harness("main", {
+				type: "tool_execution_start",
+				toolCallId: "tool-1",
+				toolName: "read",
+				args: { path: "README.md" },
+			}),
+		);
+
+		const tools = agent.timeline.filter(
+			(item) => item.type === "tool-execution",
+		);
+		expect(tools).toHaveLength(1);
+		expect(tools[0]).toMatchObject({
+			toolCallId: "tool-1",
+			toolName: "read",
+			args: { path: "README.md" },
+			status: "running",
+		});
+	});
+
+	it("cancels a preparing tool item when the run ends before execution starts", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+		const agent = setActiveAgent(state, "main");
+
+		projector.apply({
+			type: "agent_status_changed",
+			agentId: "main",
+			status: "running",
+			changedAt: timestamp(1),
+		});
+		projector.apply(
+			harness("main", {
+				type: "message_start",
+				message: assistantMessage(""),
+			}),
+		);
+		const partial = assistantToolCallMessage("tool-1", "read");
+		projector.apply(
+			harness("main", {
+				type: "message_update",
+				message: partial,
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					partial,
+				},
+			}),
+		);
+		projector.apply({
+			type: "agent_status_changed",
+			agentId: "main",
+			status: "idle",
+			changedAt: timestamp(2),
+		});
+
+		expect(agent.timeline).toMatchObject([
+			{ type: "assistant-message" },
+			{ type: "tool-execution", toolCallId: "tool-1", status: "cancelled" },
+		]);
+	});
+
+	it("covers run gaps with an ephemeral awaiting-thinking indicator", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+		const agent = setActiveAgent(state, "main");
+		const awaiting = () =>
+			agent.timeline.find(
+				(item) =>
+					item.type === "thinking-status" &&
+					item.id.startsWith("awaiting:main:"),
+			);
+
+		// User submit to first token: the status change alone shows thinking.
+		projector.apply({
+			type: "agent_status_changed",
+			agentId: "main",
+			status: "running",
+			changedAt: timestamp(1),
+		});
+		expect(awaiting()).toMatchObject({ status: "thinking" });
+		expect(awaiting()).not.toHaveProperty("preview");
+
+		// The harness user message follows the status event, so the indicator is
+		// moved behind it instead of staying above the current turn.
+		projector.apply(
+			harness("main", {
+				type: "message_start",
+				message: userMessage("inspect the workspace"),
+			}),
+		);
+		expect(agent.timeline.map((item) => item.type)).toEqual([
+			"user-message",
+			"thinking-status",
+		]);
+
+		// The first assistant message starts the real stream; the gap closes.
+		projector.apply(
+			harness("main", {
+				type: "message_start",
+				message: assistantMessage(""),
+			}),
+		);
+		expect(awaiting()).toBeUndefined();
+
+		// Between tool executions the gap indicator comes back.
+		projector.apply(
+			harness("main", {
+				type: "tool_execution_end",
+				toolCallId: "tool-1",
+				toolName: "read",
+				result: { content: [{ type: "text", text: "contents" }] },
+				isError: false,
+			}),
+		);
+		expect(awaiting()).toMatchObject({ status: "thinking" });
+		expect(agent.timeline.at(-1)?.type).toBe("thinking-status");
+
+		// Leaving "running" removes the transient indicator.
+		projector.apply({
+			type: "agent_status_changed",
+			agentId: "main",
+			status: "idle",
+			changedAt: timestamp(2),
+		});
+		expect(awaiting()).toBeUndefined();
+
+		projector.apply({
+			type: "agent_status_changed",
+			agentId: "main",
+			status: "running",
+			changedAt: timestamp(3),
+		});
+		projector.apply(
+			harness("main", {
+				type: "message_start",
+				message: userMessage("next turn"),
+			}),
+		);
+		expect(agent.timeline.at(-1)).toMatchObject({
+			type: "thinking-status",
+			status: "thinking",
+		});
+	});
+
+	it("tracks a rolling two-line preview of streamed thinking", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+		const agent = setActiveAgent(state, "main");
+
+		projector.apply(
+			harness("main", {
+				type: "message_start",
+				message: assistantMessage(""),
+			}),
+		);
+		const start = thinkingPartial("");
+		projector.apply(
+			harness("main", {
+				type: "message_update",
+				message: start,
+				assistantMessageEvent: {
+					type: "thinking_start",
+					contentIndex: 0,
+					partial: start,
+				},
+			}),
+		);
+		const thinking = agent.timeline.find(
+			(item) => item.type === "thinking-status",
+		);
+		expect(thinking).toMatchObject({ status: "thinking", preview: undefined });
+
+		const firstDelta = thinkingPartial("first line\nsec");
+		projector.apply(
+			harness("main", {
+				type: "message_update",
+				message: firstDelta,
+				assistantMessageEvent: {
+					type: "thinking_delta",
+					contentIndex: 0,
+					delta: "first line\nsec",
+					partial: firstDelta,
+				},
+			}),
+		);
+		const secondDelta = thinkingPartial("first line\nsecond line\nthird line");
+		projector.apply(
+			harness("main", {
+				type: "message_update",
+				message: secondDelta,
+				assistantMessageEvent: {
+					type: "thinking_delta",
+					contentIndex: 0,
+					delta: "ond line\nthird line",
+					partial: secondDelta,
+				},
+			}),
+		);
+		expect(thinking).toMatchObject({
+			status: "thinking",
+			preview: "second line\nthird line",
+		});
+	});
 });
 
 function harness(
@@ -858,6 +1160,24 @@ function harness(
 
 function userMessage(content: string): UserMessage {
 	return { role: "user", content, timestamp: Date.parse(timestamp(1)) };
+}
+
+function assistantToolCallMessage(
+	id: string,
+	name: string,
+	args: Record<string, unknown> = {},
+): AssistantMessage {
+	return {
+		...assistantMessage(""),
+		content: [{ type: "toolCall", id, name, arguments: args }],
+	};
+}
+
+function thinkingPartial(thinking: string): AssistantMessage {
+	return {
+		...assistantMessage(""),
+		content: [{ type: "thinking", thinking }],
+	};
 }
 
 function assistantMessage(text: string): AssistantMessage {
@@ -932,6 +1252,8 @@ function snapshot(
 			hooks: [],
 			toolContributions: [],
 			providerContributions: [],
+			systemPromptContributions: [],
+			divisions: [],
 			stale: { stale: false },
 		},
 		resourceDiagnostics: [],

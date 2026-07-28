@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { SPINNER_FRAMES } from "../../src/tui/format.ts";
 import type { ToolExecutionItem } from "../../src/tui/state.ts";
 import { presentToolExecution } from "../../src/tui/tool-presenter.ts";
 
@@ -206,5 +207,35 @@ describe("presentToolExecution", () => {
 		for (const line of presentToolExecution(item, 40)) {
 			expect(line.replace(ANSI_SEQUENCE, "").length).toBeLessThanOrEqual(40);
 		}
+	});
+
+	it("renders a streamed call as preparing, with the verb in accent blue", () => {
+		const item = toolItem({
+			toolName: "read",
+			status: "preparing",
+			args: { path: "notes.txt" },
+		});
+
+		const lines = presentToolExecution(item, 80);
+
+		// The preparing glyph is the animated braille spinner.
+		const rendered = plain(lines);
+		expect(rendered).toHaveLength(1);
+		expect(SPINNER_FRAMES).toContain(rendered[0]?.[0]);
+		expect(rendered[0]?.slice(1)).toBe(" Read notes.txt preparing…");
+		// #4899c3 accent on the verb, no preview lines.
+		expect(lines[0]).toContain("38;2;72;153;195");
+	});
+
+	it("renders a cancelled call dimmed without a preview", () => {
+		const item = toolItem({
+			toolName: "read",
+			status: "cancelled",
+			args: { path: "notes.txt" },
+		});
+
+		const lines = plain(presentToolExecution(item, 80));
+
+		expect(lines).toEqual(["⊘ Read notes.txt"]);
 	});
 });

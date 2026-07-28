@@ -12,6 +12,7 @@ import {
 import {
 	AgentProfileRegistry,
 	type AgentProfileSource,
+	BUILTIN_DEFAULT_PROFILE_ID,
 	createBuiltinProfileStorageBackend,
 	createDefaultProfileRoots,
 	type FileProfileRoot,
@@ -346,7 +347,7 @@ async function resolveDefaultProfileId(options: {
 	const profileId =
 		options.explicitDefaultProfileId ??
 		options.settingsDefaultProfileId ??
-		"default";
+		BUILTIN_DEFAULT_PROFILE_ID;
 	const source: RuntimeDefaultProfileSource =
 		options.explicitDefaultProfileId !== undefined
 			? "runtime_override"
@@ -606,6 +607,12 @@ export async function createWidiRuntime(
 		agentDir,
 		skillRoots,
 		promptTemplateRoots,
+		// Project instruction files are project-local content like any other:
+		// an untrusted project contributes none, leaving only the agent dir's.
+		contextFileRoots: [
+			{ kind: "agent_dir" as const, path: agentDir },
+			...(projectTrust.trusted ? [{ kind: "cwd" as const, path: cwd }] : []),
+		],
 	});
 	const sessionManager = new SessionManager({
 		fs: executionEnv,

@@ -22,9 +22,9 @@ import { builtInCommands } from "./commands/built-ins.ts";
 import { CommandEngine, switchedAgentId } from "./commands/engine.ts";
 import { parseLineCommand } from "./commands/parse.ts";
 import type {
+	CommandDefinition,
 	CommandError,
 	EngineOutcome,
-	LineCommand,
 } from "./commands/types.ts";
 import { CompletionMenu } from "./completion-menu.ts";
 import { AgentStripView } from "./components/agent-strip.ts";
@@ -53,6 +53,7 @@ import {
 	type AgentViewState,
 	createTuiApplicationState,
 	ensureAgentProjection,
+	type NoticeTextMode,
 	setActiveAgent,
 	type TuiApplicationState,
 } from "./state.ts";
@@ -60,6 +61,8 @@ import { flushStreaming, STREAM_FLUSH_MS } from "./streaming-flush.ts";
 import { theme } from "./theme/theme.ts";
 
 const NOTIFICATION_TTL_MS = 5_000;
+/** Spinner frame cadence while the visible agent is running. */
+const SPINNER_TICK_MS = 160;
 
 export interface WidiTuiOptions {
 	readonly cwd: string;
@@ -101,6 +104,7 @@ export class WidiTuiApplication {
 	private readonly notificationTimers = new Map<string, NodeJS.Timeout>();
 	private streamingFlushTimer?: NodeJS.Timeout;
 	private jobsTicker?: NodeJS.Timeout;
+	private jobsTickerInterval?: number;
 	private readonly jobsPanel: JobsPanelView;
 	private readonly pendingTasks = new Set<Promise<unknown>>();
 	private readonly lifecycleTasks = new Set<Promise<unknown>>();
@@ -163,7 +167,7 @@ export class WidiTuiApplication {
 		});
 		this.editor.setArgumentHintProvider((text) => {
 			const name = /^\/(\S+)\s*$/.exec(text)?.[1];
-			return name ? this.engine.line(name)?.argumentHint : undefined;
+			return name ? this.engine.get(name)?.argumentHint : undefined;
 		});
 		// Later-opened menus own the focus; closing one hands focus back to the
 		// still-open human-request menu before falling back to the editor.
@@ -302,6 +306,7 @@ export class WidiTuiApplication {
 		if (this.jobsTicker) {
 			clearInterval(this.jobsTicker);
 			this.jobsTicker = undefined;
+			this.jobsTickerInterval = undefined;
 		}
 		for (const agent of this.state.agents.values()) flushStreaming(agent);
 		this.removeLifecycleHandlers();
@@ -350,14 +355,14 @@ export class WidiTuiApplication {
 						? `Login: open ${event.url} — ${event.instructions}`
 						: `Login: open ${event.url}`,
 					event.agentId,
-					{ pin: true },
+					{ pin: true, textMode: "full" },
 				);
 				break;
 			case "auth_login_code":
 				this.addApplicationNotice(
 					`Login: open ${event.verificationUri} and enter code ${event.userCode}`,
 					event.agentId,
-					{ pin: true },
+					{ pin: true, textMode: "full" },
 				);
 				break;
 			case "auth_login_progress":
@@ -425,8 +430,11 @@ export class WidiTuiApplication {
 	}
 
 	/**
-	 * Tick the panel's elapsed times while any job is live; stop the interval
-	 * as soon as nothing needs it.
+	 * Tick re-renders while anything animated is on screen. The visible running
+	 * agent has spinner frames advancing every 160ms; with only live background
+	 * jobs, one tick per second keeps the panel's elapsed times fresh. The
+	 * interval is rebuilt when the cadence changes and stopped when nothing
+	 * needs it.
 	 */
 	private updateJobsTicker(): void {
 		const hasLiveJob = [...this.state.agents.values()].some((agent) =>
@@ -434,12 +442,24 @@ export class WidiTuiApplication {
 				(job) => job.status === "live" || job.status === "aborting",
 			),
 		);
-		if (hasLiveJob && !this.jobsTicker) {
-			this.jobsTicker = setInterval(() => this.tui.requestRender(), 1_000);
-			this.jobsTicker.unref();
-		} else if (!hasLiveJob && this.jobsTicker) {
+		const activeAgent = this.state.activeAgentId
+			? this.state.agents.get(this.state.activeAgentId)
+			: undefined;
+		const hasVisibleRunningAgent = activeAgent?.status === "running";
+		const interval = hasVisibleRunningAgent
+			? SPINNER_TICK_MS
+			: hasLiveJob
+				? 1_000
+				: undefined;
+		if (interval === this.jobsTickerInterval) return;
+		if (this.jobsTicker) {
 			clearInterval(this.jobsTicker);
 			this.jobsTicker = undefined;
+		}
+		this.jobsTickerInterval = interval;
+		if (interval !== undefined) {
+			this.jobsTicker = setInterval(() => this.tui.requestRender(), interval);
+			this.jobsTicker.unref();
 		}
 	}
 
@@ -571,6 +591,7 @@ export class WidiTuiApplication {
 					name: outcome.name,
 					status: "completed",
 					result: outcome.value,
+					display: outcome.display,
 				});
 				const nextAgentId = switchedAgentId(outcome);
 				if (nextAgentId) await this.activateNavigationAgent(nextAgentId);
@@ -763,6 +784,7 @@ export class WidiTuiApplication {
 			argument?: string;
 			status: "running" | "completed" | "failed";
 			result?: unknown;
+			display?: string;
 			error?: CommandError;
 		},
 	): void {
@@ -776,6 +798,7 @@ export class WidiTuiApplication {
 		if (existing?.type === "command-result") {
 			existing.status = update.status;
 			existing.result = update.result;
+			existing.display = update.display;
 			existing.error = update.error;
 			return;
 		}
@@ -789,6 +812,7 @@ export class WidiTuiApplication {
 			argument: update.argument ?? "",
 			status: update.status,
 			result: update.result,
+			display: update.display,
 			error: update.error,
 		});
 	}
@@ -815,14 +839,16 @@ export class WidiTuiApplication {
 	private openCommandCompletionMenu(
 		agentId: string | undefined,
 		originalText: string,
-		command: LineCommand,
+		command: CommandDefinition,
 		candidates: readonly CandidateItem[],
 	): void {
-		if (candidates.length === 0 && !command.complete) {
-			// Nothing to pick from: an empty menu is a dead end, a usage line is not.
+		if (candidates.length === 0) {
+			// Nothing to pick from: an empty menu is a dead end, a usage line is
+			// not. A completer that returned nothing counts too — that is what a
+			// misconfigured resource directory looks like from here.
 			this.restoreEditor(originalText, agentId);
 			this.addApplicationNotice(
-				`Command /${command.name} needs an argument: /${command.name}:${
+				`Command /${command.name} needs an argument: /${command.name} ${
 					command.argumentHint ?? "<argument>"
 				}`,
 				agentId,
@@ -883,6 +909,7 @@ export class WidiTuiApplication {
 			sourceAgentId,
 			this.pendingDisplayForSource(sourceAgentId),
 		);
+		this.updateJobsTicker();
 		this.pendingUnknownCommand = undefined;
 		this.editor.setText("");
 		this.configurePendingEditor();
@@ -922,6 +949,7 @@ export class WidiTuiApplication {
 
 	private beginDefaultSession(): void {
 		this.pendingAgents.beginDefault(this.defaultPendingDisplay());
+		this.updateJobsTicker();
 		this.pendingUnknownCommand = undefined;
 		this.editor.setText("");
 		this.configurePendingEditor();
@@ -978,6 +1006,7 @@ export class WidiTuiApplication {
 		}
 		this.pendingAgents.cancel();
 		const agent = setActiveAgent(this.state, agentId);
+		this.updateJobsTicker();
 		this.editor.setText(this.drafts.get(agentId) ?? "");
 		this.state.mode = "editor";
 		this.updateEditorAvailability();
@@ -1097,7 +1126,7 @@ export class WidiTuiApplication {
 	private addApplicationNotice(
 		text: string,
 		agentId?: string,
-		options: { pin?: boolean } = {},
+		options: { pin?: boolean; textMode?: NoticeTextMode } = {},
 	): void {
 		const createdAt = new Date().toISOString();
 		if (agentId) {
@@ -1110,6 +1139,7 @@ export class WidiTuiApplication {
 				durability: "ephemeral",
 				createdAt,
 				text,
+				textMode: options.textMode,
 			});
 		} else {
 			const id = `application:${createdAt}:${this.state.globalNotices.length}`;
@@ -1118,6 +1148,7 @@ export class WidiTuiApplication {
 				kind: "application",
 				createdAt,
 				text,
+				textMode: options.textMode,
 			});
 			// Pinned notices (e.g. OAuth login links) must not vanish while the
 			// user is still completing the flow in a browser.

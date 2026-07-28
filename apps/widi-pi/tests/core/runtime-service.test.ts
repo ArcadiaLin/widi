@@ -305,7 +305,7 @@ describe("createWidiRuntime", () => {
 				message: expect.stringContaining("global settings:"),
 			}),
 		);
-		expect(runtime.orchestrator.getDefaultProfileId()).toBe("default");
+		expect(runtime.orchestrator.getDefaultProfileId()).toBe("main");
 	});
 
 	it("reports damaged trusted project settings through runtime diagnostics", async () => {
@@ -327,7 +327,7 @@ describe("createWidiRuntime", () => {
 				message: expect.stringContaining("project settings:"),
 			}),
 		);
-		expect(runtime.orchestrator.getDefaultProfileId()).toBe("default");
+		expect(runtime.orchestrator.getDefaultProfileId()).toBe("main");
 	});
 
 	it("creates services and an orchestrator without spawning an agent", async () => {
@@ -342,11 +342,11 @@ describe("createWidiRuntime", () => {
 		expect(runtime.services.cwd).toBe("/workspace/project");
 		expect(runtime.services.agentDir).toBe("/home/user/.widi");
 		expect(runtime.services.sessionRoot).toBe("/home/user/.widi/runs");
-		expect(runtime.orchestrator.getDefaultProfileId()).toBe("default");
+		expect(runtime.orchestrator.getDefaultProfileId()).toBe("main");
 		expect(runtime.orchestrator.getDefaultModel()).toBe(defaultModel);
 		expect(runtime.orchestrator.listAgents().agents).toHaveLength(0);
 		expect(runtime.services.defaultProfile).toMatchObject({
-			id: "default",
+			id: "main",
 			source: "builtin_fallback",
 			profileSource: { kind: "builtin" },
 		});
@@ -691,6 +691,7 @@ You are extension-profile.`,
 					resolvedPath: "/custom/extensions/runtime-smoke.ts",
 					root: { kind: "settings", path: "/custom/extensions" },
 				},
+				divisions: [],
 			},
 		]);
 		expect(runtime.orchestrator.inspectAgent(agentId)).toMatchObject({
@@ -802,6 +803,7 @@ You are extension-profile.`,
 						path: "/workspace/project/.widi/extensions",
 					},
 				},
+				divisions: [],
 			},
 		]);
 	});
@@ -842,7 +844,7 @@ You are extension-profile.`,
 			runtime.services.profileRegistry.resolveProfile("agent"),
 		).resolves.toMatchObject({ ok: true, source: { kind: "agent_dir" } });
 		await expect(
-			runtime.services.profileRegistry.resolveProfile("default"),
+			runtime.services.profileRegistry.resolveProfile("main"),
 		).resolves.toMatchObject({ ok: true, source: { kind: "builtin" } });
 	});
 

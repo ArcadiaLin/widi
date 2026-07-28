@@ -1,6 +1,11 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { renderDiffText } from "./diff.ts";
-import { formatUnknown, sanitizeTerminalText, singleLine } from "./format.ts";
+import {
+	formatUnknown,
+	sanitizeTerminalText,
+	singleLine,
+	spinnerFrame,
+} from "./format.ts";
 import type { ToolExecutionItem } from "./state.ts";
 import { theme } from "./theme/theme.ts";
 
@@ -34,13 +39,26 @@ export function presentToolExecution(
 	options: PresentToolOptions = {},
 ): string[] {
 	const expanded = options.expanded ?? false;
+	const { verb, target } = describeToolCall(item.toolName, item.args);
+
+	// Streamed tool calls appear before execution starts; a call whose run
+	// ended first is cancelled. Neither has a result to preview.
+	if (item.status === "preparing" || item.status === "cancelled") {
+		const verbText = singleLine(verb, 80);
+		const targetText = target ? ` ${singleLine(target, 400)}` : "";
+		const headline =
+			item.status === "preparing"
+				? `${theme.info(spinnerFrame())} ${theme.bold(theme.accent(verbText))}${targetText} ${theme.dim("preparing…")}`
+				: `${theme.muted("⊘")} ${theme.dim(`${verbText}${targetText}`)}`;
+		return [truncateToWidth(headline, Math.max(8, width), "…")];
+	}
+
 	const glyph =
 		item.status === "running"
 			? theme.info("●")
 			: item.isError
 				? theme.error("✕")
 				: theme.ok("✓");
-	const { verb, target } = describeToolCall(item.toolName, item.args);
 
 	const resultText =
 		item.status === "running"
@@ -71,7 +89,7 @@ export function presentToolExecution(
 		suffix = ` · ${writtenLines.length} ${writtenLines.length === 1 ? "line" : "lines"}`;
 	}
 
-	const headline = `${glyph} ${theme.bold(singleLine(verb, 80))}${
+	const headline = `${glyph} ${theme.bold(theme.accent(singleLine(verb, 80)))}${
 		target ? ` ${singleLine(target, 400)}` : ""
 	}${suffix ? theme.dim(suffix) : ""}`;
 	const lines = [truncateToWidth(headline, Math.max(8, width), "…")];

@@ -251,6 +251,7 @@ describe("ExtensionLoader file/module loading", () => {
 					resolvedPath: "/extensions/sample.ts",
 					root: { kind: "settings", path: "/extensions" },
 				},
+				divisions: [],
 			},
 		]);
 		expect(scope.extensions).toEqual(result.loaded);
@@ -288,6 +289,7 @@ describe("ExtensionLoader file/module loading", () => {
 					entryPath: "/extensions/package-extension/main.ts",
 					root: { kind: "settings", path: "/extensions" },
 				},
+				divisions: [],
 			},
 		]);
 		expect(result.diagnostics).toContainEqual(
@@ -465,6 +467,56 @@ describe("ExtensionLoader api version gate", () => {
 		expect(after.diagnostics).toContainEqual(
 			expect.objectContaining({ code: "extension.factory_missing" }),
 		);
+	});
+
+	// It is absent from the available ids, so nothing names it and no id can carry
+	// the report. Without this it would vanish in complete silence, because unlike
+	// a file it was never read and so never had a load-time diagnostic.
+	it("still reports an incompatible registration that no id named", async () => {
+		const loader = new ExtensionLoader();
+		loader.registerExtension("sample", {
+			apiVersion: EXTENSION_API_VERSION + 1,
+			activate: () => {},
+		});
+
+		expect(loader.listAvailableExtensionIds()).toEqual([]);
+
+		const scope = await loader.loadForAgent({
+			agentId: "agent",
+			profileId: "profile",
+			extensionIds: loader.listAvailableExtensionIds(),
+		});
+
+		expect(scope.extensions).toEqual([]);
+		expect(scope.diagnostics).toContainEqual(
+			expect.objectContaining({
+				code: "extension.version_incompatible",
+				severity: "warning",
+				extensionId: "sample",
+			}),
+		);
+	});
+
+	// Root order is activation order once every available extension loads, and
+	// activation order decides which interceptor or tool patch applies first.
+	it("keeps roots in their own order instead of sorting across them", async () => {
+		const env = new MemoryExecutionEnv();
+		env.addFile("/z-root/second.ts");
+		env.addFile("/a-root/first.ts");
+		const importer = new FakeModuleImporter();
+		importer.setFactory("/z-root/second.ts", () => {});
+		importer.setFactory("/a-root/first.ts", () => {});
+		const loader = new ExtensionLoader({
+			roots: [
+				{ kind: "settings", path: "/z-root" },
+				{ kind: "agent_dir", path: "/a-root" },
+			],
+			moduleImporter: importer,
+		});
+
+		await loader.loadAvailableExtensions(env);
+
+		expect(loader.listAvailableExtensionIds()).toEqual(["second", "first"]);
 	});
 
 	it("rejects a module whose default export is neither factory nor definition", async () => {

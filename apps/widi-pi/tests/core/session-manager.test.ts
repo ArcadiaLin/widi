@@ -166,10 +166,22 @@ class MemoryFileSystem implements FileSystem {
 		return ok(undefined);
 	}
 
-	async remove(path: string): Promise<Result<void, FileError>> {
+	async remove(
+		path: string,
+		options?: { recursive?: boolean },
+	): Promise<Result<void, FileError>> {
 		const normalized = this.normalize(path);
 		this.files.delete(normalized);
 		this.dirs.delete(normalized);
+		if (options?.recursive) {
+			const prefix = `${normalized}/`;
+			for (const file of this.files.keys()) {
+				if (file.startsWith(prefix)) this.files.delete(file);
+			}
+			for (const dir of this.dirs) {
+				if (dir.startsWith(prefix)) this.dirs.delete(dir);
+			}
+		}
 		return ok(undefined);
 	}
 
@@ -190,12 +202,13 @@ const profile: AgentProfile = {
 	systemPrompt: "You are WIDI.",
 	persist: true,
 	skills: ["code"],
-	promptTemplates: ["review"],
 };
 
+// Writes a session in the on-disk layout: one directory per session, holding
+// the conversation history file. Returns the history file path.
 function writeSessionFile(
 	fs: MemoryFileSystem,
-	path: string,
+	dirName: string,
 	options: {
 		id: string;
 		timestamp: string;
@@ -203,7 +216,7 @@ function writeSessionFile(
 		parentSession?: string;
 		profileId?: string;
 	},
-): void {
+): string {
 	const cwd = options.cwd ?? "/workspace/project";
 	const header = {
 		type: "session",
@@ -216,9 +229,13 @@ function writeSessionFile(
 			? { profile: { id: options.profileId } }
 			: undefined,
 	};
+	const sessionDir = `/sessions/--workspace-project--/${dirName}`;
 	fs.dirs.add("/sessions");
 	fs.dirs.add("/sessions/--workspace-project--");
+	fs.dirs.add(sessionDir);
+	const path = `${sessionDir}/session.jsonl`;
 	fs.files.set(path, `${JSON.stringify(header)}\n`);
+	return path;
 }
 
 describe("SessionManager", () => {
@@ -251,26 +268,84 @@ describe("SessionManager", () => {
 		});
 	});
 
+	it("gives each persistent session a directory of its own", async () => {
+		const fs = new MemoryFileSystem();
+		const manager = new SessionManager({
+			fs,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+		});
+		const session = await manager.createAgentSession({
+			agentId: "main",
+			agentProfile: profile,
+		});
+		const metadata = await session.getMetadata();
+		if (!("path" in metadata)) throw new Error("Expected persisted metadata.");
+
+		const sessionDir = await manager.getAgentSessionDir("main");
+		expect(sessionDir).toMatch(
+			/^\/sessions\/--workspace-project--\/[\d-]+T[\d-]+Z_main$/,
+		);
+		expect(metadata.path).toBe(`${sessionDir}/session.jsonl`);
+
+		// Artifacts a session owns beyond its history live next to it and must
+		// not be mistaken for sessions themselves.
+		await fs.writeFile(`${sessionDir}/overrides.json`, "{}");
+		await expect(manager.listAgentSessionCandidates()).resolves.toMatchObject([
+			{ id: "main", path: metadata.path },
+		]);
+	});
+
+	it("reports no session directory for ephemeral sessions", async () => {
+		const manager = new SessionManager({
+			fs: new MemoryFileSystem(),
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+		});
+		await manager.createAgentSession({
+			agentId: "scratch",
+			agentProfile: { ...profile, persist: false },
+		});
+
+		await expect(
+			manager.getAgentSessionDir("scratch"),
+		).resolves.toBeUndefined();
+	});
+
+	it("deletes a session directory with every artifact it owns", async () => {
+		const fs = new MemoryFileSystem();
+		const manager = new SessionManager({
+			fs,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+		});
+		const session = await manager.createAgentSession({
+			agentId: "main",
+			agentProfile: profile,
+		});
+		const metadata = await session.getMetadata();
+		if (!("path" in metadata)) throw new Error("Expected persisted metadata.");
+		const sessionDir = await manager.getAgentSessionDir("main");
+		await fs.writeFile(`${sessionDir}/overrides.json`, "{}");
+
+		await manager.sessionRepo.delete(metadata);
+
+		await expect(manager.listAgentSessionCandidates()).resolves.toEqual([]);
+		expect(fs.files.has(`${sessionDir}/overrides.json`)).toBe(false);
+	});
+
 	it("lists current cwd agent session candidates", async () => {
 		const fs = new MemoryFileSystem();
-		writeSessionFile(
-			fs,
-			"/sessions/--workspace-project--/2026-01-02T00-00-00-000Z_alpha.jsonl",
-			{
-				id: "alpha",
-				timestamp: "2026-01-02T00:00:00.000Z",
-				profileId: "main",
-			},
-		);
-		writeSessionFile(
-			fs,
-			"/sessions/--workspace-project--/2026-01-01T00-00-00-000Z_beta.jsonl",
-			{
-				id: "beta",
-				timestamp: "2026-01-01T00:00:00.000Z",
-				parentSession: "/sessions/source.jsonl",
-			},
-		);
+		const alphaPath = writeSessionFile(fs, "2026-01-02T00-00-00-000Z_alpha", {
+			id: "alpha",
+			timestamp: "2026-01-02T00:00:00.000Z",
+			profileId: "main",
+		});
+		const betaPath = writeSessionFile(fs, "2026-01-01T00-00-00-000Z_beta", {
+			id: "beta",
+			timestamp: "2026-01-01T00:00:00.000Z",
+			parentSession: "/sessions/source.jsonl",
+		});
 		const manager = new SessionManager({
 			fs,
 			cwd: "/workspace/project",
@@ -280,14 +355,14 @@ describe("SessionManager", () => {
 		await expect(manager.listAgentSessionCandidates()).resolves.toEqual([
 			{
 				id: "alpha",
-				path: "/sessions/--workspace-project--/2026-01-02T00-00-00-000Z_alpha.jsonl",
+				path: alphaPath,
 				createdAt: "2026-01-02T00:00:00.000Z",
 				cwd: "/workspace/project",
 				profile: { id: "main" },
 			},
 			{
 				id: "beta",
-				path: "/sessions/--workspace-project--/2026-01-01T00-00-00-000Z_beta.jsonl",
+				path: betaPath,
 				createdAt: "2026-01-01T00:00:00.000Z",
 				cwd: "/workspace/project",
 				parentSessionPath: "/sessions/source.jsonl",
@@ -297,9 +372,7 @@ describe("SessionManager", () => {
 
 	it("surfaces session name and first user message as candidate display facts", async () => {
 		const fs = new MemoryFileSystem();
-		const path =
-			"/sessions/--workspace-project--/2026-01-03T00-00-00-000Z_gamma.jsonl";
-		writeSessionFile(fs, path, {
+		const path = writeSessionFile(fs, "2026-01-03T00-00-00-000Z_gamma", {
 			id: "gamma",
 			timestamp: "2026-01-03T00:00:00.000Z",
 		});
@@ -351,15 +424,11 @@ describe("SessionManager", () => {
 
 	it("resolves session references by path before id", async () => {
 		const fs = new MemoryFileSystem();
-		writeSessionFile(
-			fs,
-			"/sessions/--workspace-project--/2026-01-02T00-00-00-000Z_alpha.jsonl",
-			{
-				id: "same",
-				timestamp: "2026-01-02T00:00:00.000Z",
-			},
-		);
-		writeSessionFile(fs, "/sessions/--workspace-project--/same.jsonl", {
+		writeSessionFile(fs, "2026-01-02T00-00-00-000Z_alpha", {
+			id: "same",
+			timestamp: "2026-01-02T00:00:00.000Z",
+		});
+		const pathTarget = writeSessionFile(fs, "same", {
 			id: "path-target",
 			timestamp: "2026-01-03T00:00:00.000Z",
 		});
@@ -370,9 +439,7 @@ describe("SessionManager", () => {
 		});
 
 		await expect(
-			manager.resolveAgentSessionReference(
-				"/sessions/--workspace-project--/same.jsonl",
-			),
+			manager.resolveAgentSessionReference(pathTarget),
 		).resolves.toMatchObject({ id: "path-target" });
 		await expect(
 			manager.resolveAgentSessionReference("same"),
@@ -381,22 +448,14 @@ describe("SessionManager", () => {
 
 	it("rejects ambiguous session ids with candidate facts", async () => {
 		const fs = new MemoryFileSystem();
-		writeSessionFile(
-			fs,
-			"/sessions/--workspace-project--/2026-01-02T00-00-00-000Z_same.jsonl",
-			{
-				id: "same",
-				timestamp: "2026-01-02T00:00:00.000Z",
-			},
-		);
-		writeSessionFile(
-			fs,
-			"/sessions/--workspace-project--/2026-01-01T00-00-00-000Z_same.jsonl",
-			{
-				id: "same",
-				timestamp: "2026-01-01T00:00:00.000Z",
-			},
-		);
+		writeSessionFile(fs, "2026-01-02T00-00-00-000Z_same", {
+			id: "same",
+			timestamp: "2026-01-02T00:00:00.000Z",
+		});
+		writeSessionFile(fs, "2026-01-01T00-00-00-000Z_same", {
+			id: "same",
+			timestamp: "2026-01-01T00:00:00.000Z",
+		});
 		const manager = new SessionManager({
 			fs,
 			cwd: "/workspace/project",

@@ -22,21 +22,21 @@ export function applicationCommands(
 	};
 	return [
 		{
-			kind: "line",
+			kind: "action",
 			agentPolicy: "runtime",
 			name: "quit",
 			description: "Exit the application.",
 			execute: quit,
 		},
 		{
-			kind: "line",
+			kind: "action",
 			agentPolicy: "runtime",
 			name: "exit",
 			description: "Exit the application.",
 			execute: quit,
 		},
 		{
-			kind: "line",
+			kind: "action",
 			agentPolicy: "runtime",
 			name: "new",
 			description: "Prepare a new session from the current agent.",
@@ -46,7 +46,7 @@ export function applicationCommands(
 			},
 		},
 		{
-			kind: "line",
+			kind: "action",
 			agentPolicy: "active",
 			name: "dispose",
 			description:

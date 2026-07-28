@@ -33,7 +33,7 @@ export type {
 	BackgroundJobReport,
 	BackgroundJobReportSnapshot,
 	JsonValue,
-} from "../background-job.ts";
+} from "../background/index.ts";
 export type { CoreDiagnostic } from "../diagnostics.ts";
 export type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
 export type {
@@ -58,6 +58,7 @@ export type {
 	ExtensionCustomEntry,
 	ExtensionDefinition,
 	ExtensionDisposeHandler,
+	ExtensionDivisionDeclaration,
 	ExtensionExecResult,
 	ExtensionFactory,
 	ExtensionInputEvent,

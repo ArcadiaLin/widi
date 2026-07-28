@@ -9,7 +9,8 @@ import type {
 	AgentProfileSource,
 } from "./agent-profile.js";
 import { toAgentProfileReference } from "./agent-profile.js";
-import { BackgroundJobTable } from "./background-job.ts";
+import type { BackgroundJobStore } from "./background/index.ts";
+import { BackgroundJobTable } from "./background/index.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
 import type {
 	ExtensionIdentity,
@@ -18,6 +19,7 @@ import type {
 } from "./extension/index.ts";
 import type { ResourceSource } from "./resource-loader.ts";
 import type { AgentSessionMetadata } from "./session-manager.ts";
+import type { ProjectContextFile } from "./system-prompt.ts";
 import type {
 	ResolvedAgentHarnessTool,
 	ToolAdapterContext,
@@ -47,6 +49,15 @@ export interface AgentResourcesSnapshot {
 	readonly promptTemplates: readonly AgentResourceFact[];
 }
 
+/** Everything the system prompt callback needs beyond the live harness state. */
+export interface AgentSystemPromptFacts {
+	/** Appended sections owned by the profile and the settings, in that order. */
+	readonly appendSections: readonly string[];
+	readonly contextFiles: readonly ProjectContextFile[];
+	/** The working directory to state, or undefined to leave it out. */
+	readonly cwd?: string;
+}
+
 /** The concrete AgentHarness instantiation used by every WIDI agent. */
 export type WidiAgentHarness = AgentHarness<
 	ToolAdapterContext,
@@ -59,11 +70,30 @@ export interface AgentRecord {
 	readonly agentId: AgentId;
 	status: AgentLifecycleStatus;
 	readonly profile: AgentProfileRecordReference;
+	/**
+	 * The profile the harness was actually built from, including any override.
+	 * Absent only for an agent that never got that far - an unavailable session
+	 * is registered from its stored profile reference alone.
+	 *
+	 * Keeping it means a later question about this agent's role is answered from
+	 * what it was built with, instead of re-reading a profile file that may since
+	 * have changed underneath it.
+	 */
+	readonly resolvedProfile?: AgentProfile;
+	/** The agent whose tool spawned this one; unset for user-side spawns. */
+	readonly spawnedBy?: AgentId;
 	sessionMetadata?: AgentSessionMetadata;
 	model: RuntimeModel;
 	harness?: WidiAgentHarness;
 	toolSnapshot?: AgentToolsSnapshot;
 	resources?: AgentResourcesSnapshot;
+	/**
+	 * System prompt composition resolved from the profile and the settings, plus
+	 * the project instruction files loaded for it. Held here because the harness
+	 * rebuilds its system prompt every turn through a synchronous callback that
+	 * cannot go back to disk.
+	 */
+	systemPrompt?: AgentSystemPromptFacts;
 	extensionRunner?: ExtensionRunner;
 	/**
 	 * Pseudo-async background jobs owned by this agent. Job ownership is
@@ -72,6 +102,12 @@ export interface AgentRecord {
 	 * cascade an abort to all of them.
 	 */
 	readonly backgroundJobTable: BackgroundJobTable;
+	/**
+	 * Durable projection of {@link backgroundJobTable} into the agent's session
+	 * directory. Absent for an ephemeral session, which owns no directory and
+	 * therefore cannot outlive the runtime it would be recovered into.
+	 */
+	backgroundJobStore?: BackgroundJobStore;
 	resourceDiagnostics: OrchestratorDiagnostic[];
 	extensionDiagnostics: OrchestratorDiagnostic[];
 	diagnostics: OrchestratorDiagnostic[];
@@ -81,6 +117,7 @@ export interface AgentRecordSnapshot {
 	readonly agentId: AgentId;
 	readonly status: AgentLifecycleStatus;
 	readonly profile: AgentProfileRecordReference;
+	readonly spawnedBy?: AgentId;
 	readonly sessionMetadata?: AgentSessionMetadata;
 	readonly model: RuntimeModel;
 	readonly hasHarness: boolean;
@@ -104,6 +141,7 @@ export function createAgentRecord(options: {
 	};
 	readonly sessionMetadata?: AgentSessionMetadata;
 	readonly model: RuntimeModel;
+	readonly spawnedBy?: AgentId;
 }): AgentRecord {
 	return {
 		agentId: options.agentId,
@@ -113,6 +151,8 @@ export function createAgentRecord(options: {
 			source: options.resolvedProfile.source,
 			entryId: options.resolvedProfile.entryId,
 		},
+		resolvedProfile: options.resolvedProfile.profile,
+		spawnedBy: options.spawnedBy,
 		sessionMetadata: options.sessionMetadata,
 		model: options.model,
 		backgroundJobTable: new BackgroundJobTable(),
@@ -147,6 +187,7 @@ export function snapshotAgentRecord(record: AgentRecord): AgentRecordSnapshot {
 		agentId: record.agentId,
 		status: record.status,
 		profile: { ...record.profile },
+		spawnedBy: record.spawnedBy,
 		sessionMetadata: record.sessionMetadata,
 		model: record.model,
 		hasHarness: record.harness !== undefined,
@@ -184,6 +225,8 @@ export function createEmptyExtensionSnapshot(): ExtensionRunnerSnapshot {
 		hooks: [],
 		toolContributions: [],
 		providerContributions: [],
+		systemPromptContributions: [],
+		divisions: [],
 		stale: { stale: false },
 	};
 }

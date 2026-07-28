@@ -308,20 +308,27 @@ describe("WidiTuiApplication completion menu integration", () => {
 });
 
 describe("WidiTuiApplication command submission", () => {
-	it("removes inline command items after a successful prompt expansion", async () => {
-		const promptAgent = vi.fn(async () => ({ kind: "accepted" }) as const);
+	it("submits an expanded prompt command without leaving a command item", async () => {
+		const promptAgent = vi.fn(
+			async (_agentId: string, _text: string) =>
+				({ kind: "accepted" }) as const,
+		);
 		const { application } = await createApplication({
 			getAgentSkill: async (_agentId: string, name: string) => ({
 				name,
 				description: "Review the current changes.",
+				content: "Review the diff carefully.",
 				filePath: `/skills/${name}/SKILL.md`,
 			}),
 			promptAgent,
 		});
 
-		await submit(application, "Use <skill:review>");
+		await submit(application, "/skill review");
 
 		expect(promptAgent).toHaveBeenCalledOnce();
+		expect(promptAgent.mock.calls[0]?.[1]).toContain(
+			"Review the diff carefully.",
+		);
 		expect(
 			application.state.agents
 				.get("agent-1")
@@ -329,21 +336,16 @@ describe("WidiTuiApplication command submission", () => {
 		).toEqual([]);
 	});
 
-	it("removes earlier inline command items when a later expansion fails", async () => {
+	it("keeps a failed expansion out of the prompt and records the failure", async () => {
 		const promptAgent = vi.fn(async () => ({ kind: "accepted" }) as const);
 		const { application } = await createApplication({
-			getAgentSkill: async (_agentId: string, name: string) => {
-				if (name === "broken") throw new Error("skill expansion failed");
-				return {
-					name,
-					description: "Review the current changes.",
-					filePath: `/skills/${name}/SKILL.md`,
-				};
+			getAgentSkill: async () => {
+				throw new Error("skill expansion failed");
 			},
 			promptAgent,
 		});
 
-		await submit(application, "Use <skill:review> then <skill:broken>");
+		await submit(application, "/skill broken");
 
 		expect(promptAgent).not.toHaveBeenCalled();
 		expect(
@@ -432,6 +434,8 @@ function agentSnapshot(agentId: string): AgentRecordSnapshot {
 			hooks: [],
 			toolContributions: [],
 			providerContributions: [],
+			systemPromptContributions: [],
+			divisions: [],
 			stale: { stale: false },
 		},
 		resourceDiagnostics: [],

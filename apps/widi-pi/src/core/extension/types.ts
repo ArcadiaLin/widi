@@ -13,7 +13,7 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { TSchema } from "typebox";
-import type { BackgroundJobSnapshot } from "../background-job.ts";
+import type { BackgroundJobSnapshot } from "../background/index.ts";
 import type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
 import type { MessageSource } from "../message.ts";
 import type { ProviderConfigInput } from "../model-registry.ts";
@@ -45,6 +45,55 @@ export type {
 	ToolExtensionContext,
 	ToolSource,
 } from "../tools/types.ts";
+
+/**
+ * A named, addressable partition inside one extension. An extension that
+ * declares divisions is what the docs call an integration: one installable
+ * unit whose parts can be switched on and off individually, instead of a
+ * scattering of single-purpose extensions.
+ *
+ * Ids are dot-separated paths (`servers.github`); a division is only reachable
+ * when every ancestor is enabled too.
+ */
+export interface ExtensionDivisionDeclaration {
+	readonly id: string;
+	readonly label: string;
+	readonly description?: string;
+	/** Default: true. */
+	readonly enabledByDefault?: boolean;
+}
+
+/**
+ * User-side division rules for a single extension. Each id applies to that
+ * division and its whole subtree; the most specific matching rule wins, and
+ * `disable` wins over `enable`.
+ */
+export interface ExtensionDivisionSelection {
+	readonly enable?: readonly string[];
+	readonly disable?: readonly string[];
+}
+
+/**
+ * Division rules keyed by extension id. Wrapped in a named layer rather than
+ * passed bare so a resolved state can say where its rule came from.
+ */
+export interface ExtensionDivisionSelections {
+	readonly settings?: Readonly<Record<string, ExtensionDivisionSelection>>;
+}
+
+export type ExtensionDivisionSource = "default" | "settings" | "ancestor";
+
+/** Resolved per-agent division state, for inspect facts. */
+export interface ExtensionDivisionSnapshot {
+	readonly extensionId: string;
+	readonly id: string;
+	readonly label: string;
+	readonly description?: string;
+	readonly enabled: boolean;
+	/** False for a division id used at activation but never declared. */
+	readonly declared: boolean;
+	readonly source: ExtensionDivisionSource;
+}
 
 export type ExtensionObservedEventName = ExtensionObservedEvent["type"];
 
@@ -440,6 +489,22 @@ export interface ExtensionActivationApi {
 	readonly extensionId: string;
 	readonly agentId: string;
 	readonly profileId: string;
+	/**
+	 * Register contributions that belong to one division. `register` is not
+	 * called at all when the division is disabled, so a disabled part performs
+	 * no side effects either - it never opens its connections or watchers.
+	 *
+	 * Ids nest: inside a `division("servers")` scope, `division("github")`
+	 * declares `servers.github`. Await the call; the loader also awaits any
+	 * pending registration before it settles the scope, so a forgotten `await`
+	 * still lands its contributions.
+	 */
+	division(
+		id: string,
+		register: (api: ExtensionActivationApi) => void | Promise<void>,
+	): Promise<void>;
+	/** Relative to the current division scope, like `division`. */
+	isDivisionEnabled(id: string): boolean;
 	registerTool<TParamsSchema extends TSchema, TDetails>(
 		tool: ToolDefinition<TParamsSchema, TDetails>,
 	): void;
@@ -448,6 +513,15 @@ export interface ExtensionActivationApi {
 		patch: ToolDefinitionPatch<TParamsSchema, TDetails>,
 	): void;
 	registerProvider(providerName: string, config: ExtensionProviderConfig): void;
+	/**
+	 * Append a section to the agent's system prompt, after the role's own text
+	 * and the tool guidance. Sections keep registration order, and one from a
+	 * disabled division is never registered at all.
+	 *
+	 * This is the additive channel: rewriting the whole prompt is what the
+	 * `before_agent_start` interceptor is for.
+	 */
+	appendSystemPrompt(text: string): void;
 	observe<TName extends ExtensionObservedEventName>(
 		eventName: TName,
 		handler: ExtensionObserverFor<TName>,
@@ -469,9 +543,16 @@ export type ExtensionFactory = (
  * an extension declaring an unsupported version and reports
  * `extension.version_incompatible` instead. A bare factory omits the
  * declaration and is treated as targeting the current version.
+ *
+ * `divisions` names the switchable parts of an integration. It lives on the
+ * default export rather than in a package manifest because the loader imports
+ * the module before it activates anything, so the declared list is listable
+ * (and togglable) without running any extension code - and because a
+ * single-file extension has no manifest to put it in.
  */
 export interface ExtensionDefinition {
 	readonly apiVersion: number;
+	readonly divisions?: readonly ExtensionDivisionDeclaration[];
 	readonly activate: ExtensionFactory;
 }
 

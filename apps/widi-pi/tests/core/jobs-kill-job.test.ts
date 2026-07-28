@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	BackgroundJobTable,
 	type BackgroundJobTransition,
-} from "../../src/core/background-job.ts";
+} from "../../src/core/background/index.ts";
 import { createKillJobToolDefinition } from "../../src/core/tools/jobs/kill-job.ts";
 
 const killJob = createKillJobToolDefinition();

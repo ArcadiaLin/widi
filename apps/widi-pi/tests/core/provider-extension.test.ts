@@ -41,7 +41,6 @@ async function createProviderHarness(
 		id: "provider-profile",
 		label: "Provider Profile",
 		persist: false,
-		extensions: extensions.map(({ id }) => id),
 	};
 	const env = new MemoryExecutionEnv();
 	const modelRegistry = await createModelRegistry(env);

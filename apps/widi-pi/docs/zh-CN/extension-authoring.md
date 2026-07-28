@@ -49,19 +49,77 @@ Module 经 jiti 加载，TypeScript source 不需要预编译。同 id first-reg
 
 ## Agent lifecycle
 
-Profile frontmatter 通过 id 声明 extension dependencies：
+加载哪些 extension 由 `settings.json` 决定，不由 profile 决定：
 
-```yaml
-extensions: [hello, audit]
-missing-extension-severity: warning
+```json
+{ "enabledExtensions": ["hello", "audit"] }
 ```
+
+不写 `enabledExtensions` 就是默认形态：运行时发现到或程序化注册的**全部** extension 都启用。加载顺序即 root 搜索顺序（settings paths → 项目 → agent dir），单个目录内按路径排序——这个顺序就是 activation 顺序，决定 interceptor、provider、tool patch 的生效先后。
 
 每个 `(extension, agent)` 独立 activate。Factory closure 是 per-agent state，module top-level state 跨 agent 共享。
 
-- Missing id 按 profile missing severity 处理。
-- Activation failure 和 version incompatibility 是 severity `error` 的 dependency failure，阻断 agent 创建。
+- `enabledExtensions` 点名了但没有对应 factory 的 id，产生 `extension.factory_missing` warning——点名就可能拼错。默认形态下不存在这个诊断，因为列表是从可用集派生的。
+- Activation failure 是 severity `error` 的 dependency failure，阻断 agent 创建。
+- Version incompatibility 分两种：被 `enabledExtensions` 点名的报 `error` 并阻断 agent 创建（配置要求的东西没满足）；默认形态下只报 warning 并跳过（没有配置要求它）。file 来源的不兼容在 discovery 阶段已有一条 `error`。
 - Reload 替换 runner；旧 context/actions 变成 stale。
 - 不要把 context 或 action handle 缓存到 activation lifecycle 之外。
+
+## Divisions：把大 extension 拆成可开关的部分
+
+声明了 division 的 extension 就是一个 **integration**：一个安装单元，内部各部分可以单独开关，用户不必为了"只要其中一块"去安装一堆零散 extension。运行时没有独立的 integration 类型，运行单元仍然是 extension。
+
+在 default export 上声明，注册时用 `api.division()` 划分归属：
+
+```ts
+const extension: ExtensionDefinition = {
+  apiVersion: 1,
+  divisions: [
+    { id: "servers", label: "MCP Servers" },
+    { id: "servers.github", label: "GitHub Server" },
+    { id: "tools", label: "Extra Tools", description: "非必需的辅助 tool" },
+    { id: "experimental", label: "Experimental", enabledByDefault: false },
+  ],
+  async activate(api) {
+    // 不在任何 division 内的注册属于隐式 root，永远启用。
+    api.observe("agent_spawned", () => {});
+
+    await api.division("servers", async (servers) => {
+      const client = await connect();          // 关闭时这行不会执行
+      servers.onDispose(() => client.close());
+      // 嵌套 id 相对父级解析，这里是 "servers.github"。
+      await servers.division("github", (github) => {
+        github.registerTool(githubTool(client));
+      });
+    });
+
+    if (api.isDivisionEnabled("tools")) {
+      // 需要命令式分支时用它；语义与 division() 一致。
+    }
+  },
+};
+```
+
+要点：
+
+- **关闭的 division 其 `register` 回调根本不会执行**，因此副作用（连接、watcher、订阅）也不会发生。这是它与"注册后再过滤"的本质区别。
+- Id 为点分层级，段只能包含字母、数字、`_`、`-`，整体不超过 128 UTF-8 bytes。非法或重复声明被丢弃并产生 `extension.division_invalid`（warning，不阻断 agent 创建）。`isDivisionEnabled` 对非法 id 返回 `false`。
+- 未声明就使用的 id 按启用处理（fail-open），并产生 `extension.division_undeclared` warning——静默吞掉作者已注册的功能比一个没列出来的开关更糟。
+- 某个 division 的回调抛错只影响它自己：其余部分照常注册，失败以一条 `extension.division_activation_failed`（warning）上报，agent 照常创建。
+- `await` 是推荐写法；漏了 `await` 时 loader 仍会在收敛 scope 前排空未决注册，root factory 抛错时也一样。
+- `onDispose` 在 division 内注册即可，随 runner dispose 一起执行。
+
+用户侧在 `settings.json` 的 `extensionDivisions` 里开关：
+
+```json
+{
+  "extensionDivisions": {
+    "mcp": { "disable": ["tools"], "enable": ["experimental"] }
+  }
+}
+```
+
+完整解析顺序与硬闸规则见 [Extensions](core/extensions.md)。
 
 ## 注册 tool
 
@@ -154,7 +212,7 @@ await context.actions.reportDiagnostic({
 
 Core 注入 agent/extension attribution，并把 code 规范化为 `extension.<extensionId>.<code>`。Local code 只使用字母、数字、`.`、`_`、`-`，最长 128 UTF-8 bytes；message 非空白、最长 4 KiB。Core 不再为每次上报生成独立 id：code、message 与 attribution 相同的重复上报会塌缩为同一 consumer view item，不要轮询式重复上报同一持续问题。
 
-Extension API 不提供命令注册。Line/inline command 属于 `src/tui/commands/` 的 TUI 命令引擎（CLI 复用）；extension 保留 tool/resource/provider contribution、observer/interceptor 与 scoped actions 等被动能力。未来需要主动入口时，由前端以 `/extension` 一类命令另行设计。
+Extension API 不提供命令注册。`/` command 属于 `src/tui/commands/` 的 TUI 命令引擎（CLI 复用）；extension 保留 tool/resource/provider contribution、observer/interceptor 与 scoped actions 等被动能力。未来需要主动入口时，由前端以 `/extension` 一类命令另行设计。
 
 ## 贡献 resources 与 provider
 
@@ -191,6 +249,16 @@ api.registerProvider("my-gateway", {
 ```
 
 Credential 归 AuthStorage；`!command` config value 受 project trust gate。Extension provider 不能 override built-in/models.json provider。
+
+## 追加 system prompt
+
+```ts
+api.appendSystemPrompt("Prefer the repository's own lint script over ad-hoc commands.");
+```
+
+段落排在角色正文、tool guidance、profile/settings 的 append 段之后，`<project_context>` 之前，多次调用按注册顺序保留。放在 division 里，它就随那个 division 一起开关。
+
+想整段替换 system prompt 而不是追加，用 `intercept("before_agent_start", ...)` 返回 `systemPrompt`。
 
 ## Observe 与 intercept
 

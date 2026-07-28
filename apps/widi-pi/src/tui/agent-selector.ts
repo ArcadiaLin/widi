@@ -1,4 +1,9 @@
 import { agentIdentityLabel } from "./agent-identity.ts";
+import {
+	agentTreePrefix,
+	buildAgentTree,
+	flattenAgentTree,
+} from "./agent-tree.ts";
 import type { CompletionMenu } from "./completion-menu.ts";
 import { formatRelativeAge, singleLine } from "./format.ts";
 import type { AgentViewState, TuiApplicationState } from "./state.ts";
@@ -24,21 +29,22 @@ export class AgentSelectorController {
 
 	open(): void {
 		if (this.menu.isOpen) return;
-		const agents = [...this.state.agents.values()].filter(
-			(agent) => agent.status !== "disposed",
-		);
-		if (agents.length === 0) return;
-		const activeIndex = agents.findIndex(
-			(agent) => agent.agentId === this.state.activeAgentId,
+		const entries = flattenAgentTree(buildAgentTree(this.state));
+		if (entries.length === 0) return;
+		const activeIndex = entries.findIndex(
+			(entry) => entry.agent.agentId === this.state.activeAgentId,
 		);
 		this.menu.open({
 			title: "Select agent",
-			items: agents.map((agent) => ({
-				value: agent.agentId,
-				label: agentIdentityLabel(this.state, agent),
+			items: entries.map((entry) => ({
+				value: entry.agent.agentId,
+				label: `${agentTreePrefix(entry)}${agentIdentityLabel(this.state, entry.agent)}`,
 				description: [
-					describeAgent(agent, agent.agentId === this.state.activeAgentId),
-					`id ${singleLine(agent.agentId, agent.agentId.length)}`,
+					describeAgent(
+						entry.agent,
+						entry.agent.agentId === this.state.activeAgentId,
+					),
+					`id ${singleLine(entry.agent.agentId, entry.agent.agentId.length)}`,
 				].join(" · "),
 			})),
 			initialIndex: activeIndex >= 0 ? activeIndex : undefined,

@@ -1,10 +1,9 @@
 import { type Component, Text, truncateToWidth } from "@earendil-works/pi-tui";
-import { formatRelativeAge, singleLine } from "../format.ts";
+import { formatRelativeAge, singleLine, spinnerFrame } from "../format.ts";
 import type { AgentViewState, TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
 import { activeAgent } from "./common.ts";
 
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
 const NARROW_WIDTH = 60;
 
 /**
@@ -25,8 +24,7 @@ export class ProcessingBarView implements Component {
 	render(width: number): string[] {
 		const agent = activeAgent(this.state);
 		if (!agent || agent.status !== "running") return [];
-		const spinner =
-			SPINNER_FRAMES[Math.floor(Date.now() / 160) % SPINNER_FRAMES.length];
+		const spinner = spinnerFrame();
 		const elapsed = agent.runStartedAt
 			? elapsedSince(agent.runStartedAt)
 			: undefined;

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	type BackgroundJobSettlement,
 	BackgroundJobTable,
-} from "../../src/core/background-job.ts";
+} from "../../src/core/background/index.ts";
 import {
 	createAgentHarnessToolFromResolvedTool,
 	ToolRegistry,

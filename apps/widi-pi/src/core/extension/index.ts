@@ -13,6 +13,7 @@ export {
 	type ExtensionProviderContribution,
 	type ExtensionRoot,
 	type ExtensionSource,
+	type ExtensionSystemPromptContribution,
 	type ExtensionToolContribution,
 	type LoadExtensionScopeOptions,
 	type LoadedExtensionScope,
@@ -28,6 +29,7 @@ export {
 	ExtensionRunner,
 	type ExtensionRunnerOptions,
 	type ExtensionRunnerSnapshot,
+	type ExtensionSystemPromptContributionSnapshot,
 	type ExtensionToolContributionSnapshot,
 } from "./runner.ts";
 export type {
@@ -35,5 +37,9 @@ export type {
 	ExtensionCompactionResult,
 	ExtensionContextActions,
 	ExtensionCoreActions,
+	ExtensionDivisionSelection,
+	ExtensionDivisionSelections,
+	ExtensionDivisionSnapshot,
+	ExtensionDivisionSource,
 	ExtensionSessionActions,
 } from "./types.ts";

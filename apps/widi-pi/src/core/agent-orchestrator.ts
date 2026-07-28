@@ -11,11 +11,11 @@ import {
 	type AgentHarnessResources,
 	calculateContextTokens,
 	type ExecutionEnv,
-	formatSkillsForSystemPrompt,
 	getLastAssistantUsage,
 	type JsonlSessionMetadata,
 	type PromptTemplate,
 	type Session,
+	type SessionTreeEntry,
 	type Skill,
 	shouldCompact,
 	type ThinkingLevel,
@@ -31,7 +31,6 @@ import type {
 	AgentTaskOutcome,
 	ToolAgentHost,
 } from "./agent-host.ts";
-import { CORE_AGENT_TOOL_NAMES } from "./agent-host.ts";
 import type {
 	AgentProfile,
 	AgentProfileOverride,
@@ -55,10 +54,14 @@ import {
 	type BackgroundJobSettlement,
 	type BackgroundJobSettleResult,
 	type BackgroundJobSnapshot,
+	BackgroundJobStore,
+	backgroundJobResultHeaderPrefix,
 	ExternalJobDependencyIndex,
 	formatBackgroundJobResultMessageText,
+	formatInterruptedBackgroundJobResultText,
+	type PersistedBackgroundJob,
 	snapshotBackgroundJob,
-} from "./background-job.ts";
+} from "./background/index.ts";
 import type { OrchestratorClient } from "./client.ts";
 import {
 	type OrchestratorDiagnostic,
@@ -116,7 +119,7 @@ import {
 	THINKING_LEVELS,
 } from "./model-registry.js";
 import type { ConfigValueResolver } from "./resolve-config-value.js";
-import type { ResourceLoader, ResourceSource } from "./resource-loader.js";
+import type { ResourceLoader } from "./resource-loader.js";
 import type {
 	AgentSessionCandidate,
 	AgentSessionMetadata,
@@ -126,6 +129,7 @@ import type {
 	SessionManager,
 } from "./session-manager.ts";
 import type { SettingManager } from "./setting-manager.js";
+import { buildAgentSystemPrompt } from "./system-prompt.ts";
 import {
 	createAgentHarnessToolsFromResolvedTools,
 	type ResolvedAgentHarnessTool,
@@ -253,6 +257,13 @@ interface SpawnAgentCommonOptions {
 	model?: RuntimeModel;
 	inheritModelFromAgentId?: AgentId;
 	thinkingLevel?: ThinkingLevel;
+	/**
+	 * The agent whose tool initiated this spawn. Set only by the orchestrator
+	 * itself when a spawn comes through an agent's collaboration toolset;
+	 * user-side spawns (command, fork, new session, resume) leave it unset so
+	 * the agent renders as a top-level entry.
+	 */
+	spawnedBy?: AgentId;
 }
 
 export interface SpawnAgentCreateOptions extends SpawnAgentCommonOptions {
@@ -465,6 +476,7 @@ export class AgentOrchestrator {
 		const model = this._resolveSpawnModel(options);
 		const spawned = await this._createAgentHarness(agentProfile, model, {
 			thinkingLevel: options.thinkingLevel ?? this._defaultThinkingLevel,
+			spawnedBy: options.spawnedBy,
 		});
 		return spawned.agentId;
 	}
@@ -942,43 +954,25 @@ export class AgentOrchestrator {
 		return template;
 	}
 
+	/**
+	 * Reloaded from disk on every listing rather than read back off the harness:
+	 * a prompt template the user just edited should be usable without restarting
+	 * the agent.
+	 */
 	private async _loadAgentPromptTemplates(
 		agentId: AgentId,
 	): Promise<PromptTemplate[]> {
-		const record = this._requireAgentRecord(agentId);
-		const resolvedProfile = await this._resolveProfileById(
-			record.profile.reference.id,
-			agentId,
+		this._requireAgentRecord(agentId);
+		const loaded = await this.resourceLoader.loadPromptTemplates();
+		await this._publishDiagnostics(
+			loaded.diagnostics.map((diagnostic) => ({
+				severity: "warning" as const,
+				code: `resource.prompt_template.${diagnostic.code}`,
+				message: `${diagnostic.message} (${diagnostic.path})`,
+				agentId,
+			})),
 		);
-		const loaded = await this._loadProfilePromptTemplates({
-			agentId,
-			profile: resolvedProfile.profile,
-		});
-		await this._publishDiagnostics(loaded.diagnostics);
 		return loaded.promptTemplates.map(({ promptTemplate }) => promptTemplate);
-	}
-
-	private async _loadProfilePromptTemplates(options: {
-		agentId: AgentId;
-		profile: AgentProfile;
-	}): Promise<{
-		promptTemplates: Array<{
-			promptTemplate: PromptTemplate;
-			source: ResourceSource;
-		}>;
-		diagnostics: OrchestratorDiagnostic[];
-	}> {
-		const { agentId, profile } = options;
-		const loaded = await this.resourceLoader.loadPromptTemplates(
-			profile.promptTemplates,
-		);
-		const diagnostics = loaded.diagnostics.map((diagnostic) => ({
-			severity: "warning" as const,
-			code: `resource.prompt_template.${diagnostic.code}`,
-			message: `${diagnostic.message} (${diagnostic.path})`,
-			agentId,
-		}));
-		return { promptTemplates: loaded.promptTemplates, diagnostics };
 	}
 
 	async listAgentSkillCandidates(
@@ -1008,36 +1002,19 @@ export class AgentOrchestrator {
 		return skill;
 	}
 
+	/** Same freshness rule as prompt templates, narrowed by the agent's profile. */
 	private async _loadAgentSkills(agentId: AgentId): Promise<Skill[]> {
-		const record = this._requireAgentRecord(agentId);
-		const resolvedProfile = await this._resolveProfileById(
-			record.profile.reference.id,
-			agentId,
-		);
-		const loaded = await this._loadProfileSkills({
-			agentId,
-			profile: resolvedProfile.profile,
-		});
-		await this._publishDiagnostics(loaded.diagnostics);
-		return loaded.skills.map(({ skill }) => skill);
-	}
-
-	private async _loadProfileSkills(options: {
-		agentId: AgentId;
-		profile: AgentProfile;
-	}): Promise<{
-		skills: Array<{ skill: Skill; source: ResourceSource }>;
-		diagnostics: OrchestratorDiagnostic[];
-	}> {
-		const { agentId, profile } = options;
+		const profile = this._requireAgentResolvedProfile(agentId);
 		const loaded = await this.resourceLoader.loadSkills(profile.skills);
-		const diagnostics = loaded.diagnostics.map((diagnostic) => ({
-			severity: "warning" as const,
-			code: `resource.skill.${diagnostic.code}`,
-			message: `${diagnostic.message} (${diagnostic.path})`,
-			agentId,
-		}));
-		return { skills: loaded.skills, diagnostics };
+		await this._publishDiagnostics(
+			loaded.diagnostics.map((diagnostic) => ({
+				severity: "warning" as const,
+				code: `resource.skill.${diagnostic.code}`,
+				message: `${diagnostic.message} (${diagnostic.path})`,
+				agentId,
+			})),
+		);
+		return loaded.skills.map(({ skill }) => skill);
 	}
 
 	async setAgentThinkingLevelByName(
@@ -1933,7 +1910,7 @@ export class AgentOrchestrator {
 	private async _createAgentHarness(
 		resolvedProfile: ResolvedAgentProfile,
 		model: RuntimeModel,
-		options: { thinkingLevel?: ThinkingLevel } = {},
+		options: { thinkingLevel?: ThinkingLevel; spawnedBy?: AgentId } = {},
 	): Promise<SpawnedAgentHarness> {
 		const { profile } = resolvedProfile;
 		const agentId = this._allocateAgentId(profile);
@@ -1949,6 +1926,7 @@ export class AgentOrchestrator {
 				resolvedProfile,
 				sessionMetadata,
 				model,
+				spawnedBy: options.spawnedBy,
 			}),
 		);
 
@@ -1961,7 +1939,13 @@ export class AgentOrchestrator {
 				thinkingLevel: options.thinkingLevel,
 			});
 			await this._transitionAgentStatus(agentId, "idle");
-			await this._emit({ type: "agent_spawned", agentId, profile, model });
+			await this._emit({
+				type: "agent_spawned",
+				agentId,
+				profile,
+				model,
+				spawnedBy: options.spawnedBy,
+			});
 			return { agentId, harness };
 		} catch (error) {
 			const diagnostic = toDiagnostic(error, {
@@ -2003,6 +1987,9 @@ export class AgentOrchestrator {
 			const context =
 				await this.sessionManager.buildAgentSessionContext(agentId);
 			model = this._resolveResumeModel(options, context.model);
+			// Resume deliberately drops `spawnedBy`: parent-child spawn
+			// relationships are runtime facts and do not survive a restart, so a
+			// resumed agent renders as top-level again.
 			await this._registerAgentRecord(
 				createAgentRecord({
 					agentId,
@@ -2020,6 +2007,9 @@ export class AgentOrchestrator {
 				thinkingLevel: this._resolveThinkingLevel(context.thinkingLevel),
 				activeToolNames: context.activeToolNames ?? undefined,
 			});
+			// Before the agent is reachable: an unanswered t0 handle is part of the
+			// context the model resumes with, not a message that arrives after it.
+			await this._reconcileBackgroundJobs(agentId);
 
 			await this._transitionAgentStatus(agentId, "idle");
 			await this._emit({ type: "agent_resumed", agentId, profile, model });
@@ -2057,7 +2047,10 @@ export class AgentOrchestrator {
 			session,
 			model,
 		} = options;
-		const extensionRunner = await this._createExtensionRunner(agentId, profile);
+		const extensionRunner = await this._createExtensionRunner(
+			agentId,
+			profile.id,
+		);
 		await this._publishDiagnostics(extensionRunner.diagnostics);
 		this._addAgentDiagnostics(agentId, {
 			extensionDiagnostics: [...extensionRunner.diagnostics],
@@ -2074,35 +2067,51 @@ export class AgentOrchestrator {
 		// resolution happens earlier still and cannot reference them.
 		await this._applyExtensionProviderContributions(agentId, extensionRunner);
 
-		const loadedSkills = await this._loadProfileSkills({ agentId, profile });
-		const loadedPromptTemplates = await this._loadProfilePromptTemplates({
-			agentId,
-			profile,
+		const promptSettings = this.settingManager.getSystemPromptSettings();
+		const includeProjectContext =
+			profile.projectContext ?? promptSettings.projectContext;
+		const loaded = await this.resourceLoader.loadAgentResources(profile, {
+			includeProjectContext,
 		});
-		const resourceDiagnostics: OrchestratorDiagnostic[] = [
-			...loadedSkills.diagnostics,
-			...loadedPromptTemplates.diagnostics,
-		];
+		const resourceDiagnostics: OrchestratorDiagnostic[] =
+			loaded.diagnostics.map((diagnostic) => ({ ...diagnostic, agentId }));
 		await this._publishDiagnostics(resourceDiagnostics);
 		this._addAgentDiagnostics(agentId, { resourceDiagnostics });
 
 		const resources: AgentHarnessResources = {
-			skills: loadedSkills.skills.map(({ skill }) => skill),
-			promptTemplates: loadedPromptTemplates.promptTemplates.map(
+			skills: loaded.skills.map(({ skill }) => skill),
+			promptTemplates: loaded.promptTemplates.map(
 				({ promptTemplate }) => promptTemplate,
 			),
 		};
 		this._requireAgentRecord(agentId).resources = {
-			skills: loadedSkills.skills.map(({ skill, source }) => ({
+			skills: loaded.skills.map(({ skill, source }) => ({
 				name: skill.name,
 				source,
 			})),
-			promptTemplates: loadedPromptTemplates.promptTemplates.map(
+			promptTemplates: loaded.promptTemplates.map(
 				({ promptTemplate, source }) => ({
 					name: promptTemplate.name,
 					source,
 				}),
 			),
+		};
+		// The role's own append text comes first: it is the most specific
+		// statement about this agent, and the settings speak for the whole
+		// installation. Extension sections follow, read per turn from the runner.
+		this._requireAgentRecord(agentId).systemPrompt = {
+			appendSections: [
+				...(profile.appendSystemPrompt ? [profile.appendSystemPrompt] : []),
+				...promptSettings.append,
+			],
+			contextFiles: loaded.contextFiles,
+			// The resource loader's cwd, not the execution env's: it is the project
+			// directory the file tools resolve their relative paths against, and
+			// the prompt has to name the same one.
+			cwd:
+				(profile.includeCwd ?? promptSettings.includeCwd)
+					? this.resourceLoader.getCwd()
+					: undefined,
 		};
 
 		const agentToolSet = await this._resolveAgentTools({
@@ -2125,18 +2134,29 @@ export class AgentOrchestrator {
 			tools: agentToolSet.tools,
 			// Callback instead of a string so the skills listing tracks the
 			// harness's current resources and active tools at each turn start.
-			systemPrompt: ({ resources: current, activeTools }) =>
-				buildAgentSystemPrompt(
-					profile.systemPrompt,
-					current,
+			// The record is read here rather than captured: an extension reload
+			// replaces the runner, and its appended sections must follow.
+			systemPrompt: ({ resources: current, activeTools }) => {
+				const record = this._agents.get(agentId);
+				return buildAgentSystemPrompt({
+					basePrompt: profile.systemPrompt,
+					resources: current,
 					activeTools,
 					agentId,
-				),
+					appendSections: [
+						...(record?.systemPrompt?.appendSections ?? []),
+						...(record?.extensionRunner?.getSystemPromptAppends() ?? []),
+					],
+					contextFiles: record?.systemPrompt?.contextFiles,
+					cwd: record?.systemPrompt?.cwd,
+				});
+			},
 			model: model,
 			thinkingLevel: options.thinkingLevel,
 			activeToolNames: [...agentToolSet.activeToolNames],
 		});
-		this._requireAgentRecord(agentId).harness = harness;
+		const record = this._requireAgentRecord(agentId);
+		record.harness = harness;
 		this._setAgentToolSet(agentId, agentToolSet);
 		this._bindExtensionRunner(agentId, extensionRunner);
 		const unsubscribeInterceptors = this._registerExtensionInterceptors(
@@ -2148,10 +2168,16 @@ export class AgentOrchestrator {
 			void this._handleSubscribedAgentHarnessEvent(agentId, event, signal);
 		});
 		this._unsubscribeAgentHarness.set(agentId, unsubscribeHarnessEvents);
-		const jobTable = this._requireAgentRecord(agentId).backgroundJobTable;
+		record.backgroundJobStore = await this._openBackgroundJobStore(agentId);
+		const jobTable = record.backgroundJobTable;
 		const unsubscribeJobChanges = jobTable.onChange((change) => {
+			const store = this._agents.get(agentId)?.backgroundJobStore;
 			if (change.transition === "backgrounded") {
 				this._externalJobs.track(agentId, change.job);
+				void store?.recordBackgrounded(snapshotBackgroundJob(change.job));
+			}
+			if (change.transition === "aborting") {
+				void store?.recordAborting(snapshotBackgroundJob(change.job));
 			}
 			if (change.transition === "settled") {
 				// Barrier: flush the job's final output increment ahead of its
@@ -2163,7 +2189,7 @@ export class AgentOrchestrator {
 				this._externalJobs.untrack(agentId, change.job);
 				// A delegated task settles through this same path: its t1 is the one
 				// and only completion message the owner reads.
-				void this._deliverBackgroundJobResult(agentId, change);
+				void this._recordAndDeliverBackgroundJobResult(agentId, change);
 			}
 			this._emitBackgroundJobChange(agentId, change);
 		});
@@ -2184,15 +2210,26 @@ export class AgentOrchestrator {
 		return harness;
 	}
 
+	/**
+	 * Which extensions an agent gets is an installation-wide decision, not a
+	 * property of its role: settings name them, or - naming none - every
+	 * extension this runtime found is enabled. A named list can misspell an
+	 * extension, so that case is worth a warning; a derived list cannot.
+	 */
 	private async _createExtensionRunner(
 		agentId: AgentId,
-		profile: AgentProfile,
+		profileId: string,
 	): Promise<ExtensionRunner> {
+		const enabledExtensionIds = this.settingManager.getEnabledExtensions();
 		const loadedExtensionScope = await this.extensionLoader.loadForAgent({
 			agentId,
-			profileId: profile.id,
-			extensionIds: profile.extensions,
-			missingExtensionSeverity: profile.missingExtensionSeverity,
+			profileId,
+			extensionIds:
+				enabledExtensionIds ?? this.extensionLoader.listAvailableExtensionIds(),
+			missingExtensionSeverity: enabledExtensionIds ? "warning" : "ignore",
+			divisionSelections: {
+				settings: this.settingManager.getExtensionDivisionSelections(),
+			},
 		});
 		return new ExtensionRunner({
 			loadedScope: loadedExtensionScope,
@@ -2469,6 +2506,7 @@ export class AgentOrchestrator {
 							id: profile.id,
 							label: profile.label,
 							description: profile.description,
+							whenToUse: profile.whenToUse,
 							persist: profile.persist,
 						}),
 					);
@@ -2484,7 +2522,11 @@ export class AgentOrchestrator {
 				const record = this._agents.get(targetAgentId);
 				return record ? this._describeAgentForTools(record) : undefined;
 			},
-			spawn: async (profileId) => await this.spawnAgent({ profileId }),
+			// Agent-initiated spawns carry the caller as `spawnedBy` so surfaces
+			// can render the child under its parent; user-side spawns stay
+			// top-level.
+			spawn: async (profileId) =>
+				await this.spawnAgent({ profileId, spawnedBy: agentId }),
 			send: async (targetAgentId, body) =>
 				await this.sendMessage({
 					source: { kind: "agent", agentId },
@@ -2783,6 +2825,25 @@ export class AgentOrchestrator {
 		return record;
 	}
 
+	/**
+	 * The profile an agent was built from. Refuses rather than falling back for a
+	 * record that never got one - a session registered as unavailable has only a
+	 * stored profile reference, and answering its resource questions from an
+	 * unnarrowed default would hand it resources its role never granted.
+	 */
+	private _requireAgentResolvedProfile(agentId: AgentId): AgentProfile {
+		const record = this._requireAgentRecord(agentId);
+		if (!record.resolvedProfile) {
+			throw new OrchestratorError({
+				severity: "error",
+				code: "profile.unresolved",
+				message: `Agent ${agentId} has no resolved profile: its profile '${record.profile.reference.id}' never loaded.`,
+				agentId,
+			});
+		}
+		return record.resolvedProfile;
+	}
+
 	private _setAgentToolSet(agentId: AgentId, toolSet: AgentToolSet): void {
 		const record = this._requireAgentRecord(agentId);
 		this._agentToolSets.set(agentId, toolSet);
@@ -2922,18 +2983,12 @@ export class AgentOrchestrator {
 			const harness = this._requireAgentHarness(agentId);
 			const currentToolSet = this._requireAgentToolSet(agentId);
 			const oldRunner = record.extensionRunner;
-			const resolvedProfile = await this._resolveProfileById(
-				record.profile.reference.id,
-				agentId,
-			);
-			const nextRunner = await this._createExtensionRunner(
-				agentId,
-				resolvedProfile.profile,
-			);
+			const profileId = record.profile.reference.id;
+			const nextRunner = await this._createExtensionRunner(agentId, profileId);
 			candidateRunner = nextRunner;
 			const nextToolSet = await this._resolveAgentTools({
 				agentId,
-				profileId: resolvedProfile.profile.id,
+				profileId,
 				requestedToolNames: currentToolSet.requestedToolNames,
 				activeToolSelection:
 					currentToolSet.activeToolSelection.mode === "explicit"
@@ -3152,25 +3207,52 @@ export class AgentOrchestrator {
 	 * Hand a settled background job (t1) to the message pipeline. It is an
 	 * ordinary message from then on: queued behind whatever the target already
 	 * has, merged with adjacent results into one user message, and delivered as
-	 * a follow-up or a fresh prompt depending on the target's phase.
+	 * a steer or a fresh prompt depending on the target's phase.
 	 *
-	 * `next_turn`, never `interrupt`: a tool result is not a reason to preempt
-	 * the reasoning of a turn already in flight.
+	 * Persist first, deliver second. The two must not race: a crash between them
+	 * has to leave a recorded job whose result the next resume can still deliver,
+	 * never a delivered result whose job left no trace.
 	 */
-	private async _deliverBackgroundJobResult(
+	private async _recordAndDeliverBackgroundJobResult(
 		agentId: AgentId,
 		settlement: BackgroundJobSettlement,
 	): Promise<void> {
+		const messageText = formatBackgroundJobResultMessageText(settlement);
+		await this._agents.get(agentId)?.backgroundJobStore?.recordSettled(
+			snapshotBackgroundJob(settlement.job, {
+				status: settlement.outcome.status,
+			}),
+			{ messageText, outputTail: settlement.job.output.read() },
+		);
+		await this._deliverBackgroundJobResult(
+			agentId,
+			settlement.job.id,
+			messageText,
+		);
+	}
+
+	/**
+	 * Hand a settled job's text to its owner.
+	 *
+	 * `interrupt`, so a running owner reads it at the next turn boundary instead
+	 * of only when its run would have ended. Neither mode preempts a turn already
+	 * in flight - `steer` is a turn-boundary injection, not a stream abort - but
+	 * `next_turn` degrades to a follow-up, which the agent loop drains only where
+	 * it would otherwise stop: a job that settles early in a long tool chain
+	 * would sit unread for the rest of the run. A result the model was told to
+	 * expect should reach it at the first point it can act on it.
+	 */
+	private async _deliverBackgroundJobResult(
+		agentId: AgentId,
+		jobId: string,
+		body: string,
+	): Promise<void> {
 		try {
 			await this.sendMessage({
-				source: {
-					kind: "background_job",
-					ownerAgentId: agentId,
-					jobId: settlement.job.id,
-				},
+				source: { kind: "background_job", ownerAgentId: agentId, jobId },
 				targetAgentId: agentId,
-				body: formatBackgroundJobResultMessageText(settlement),
-				mode: "next_turn",
+				body,
+				mode: "interrupt",
 			});
 		} catch (error) {
 			// Retryable failures keep the result queued, so reaching here means the
@@ -3178,10 +3260,112 @@ export class AgentOrchestrator {
 			await this._publishDiagnostic({
 				severity: "warning",
 				code: "orchestrator.background_job_dropped",
-				message: `Dropping the result of background job ${settlement.job.id} for agent ${agentId}: ${formatError(error)}`,
+				message: `Dropping the result of background job ${jobId} for agent ${agentId}: ${formatError(error)}`,
 				agentId,
 			});
 		}
+	}
+
+	/**
+	 * Open the agent's durable job log. An ephemeral session owns no directory,
+	 * and a store that cannot be opened is a degraded surface rather than a
+	 * reason to fail the agent: jobs keep running, they just stop being
+	 * recoverable across a restart.
+	 */
+	private async _openBackgroundJobStore(
+		agentId: AgentId,
+	): Promise<BackgroundJobStore | undefined> {
+		let sessionDir: string | undefined;
+		try {
+			sessionDir = await this.sessionManager.getAgentSessionDir(agentId);
+		} catch {
+			sessionDir = undefined;
+		}
+		if (sessionDir === undefined) return undefined;
+		try {
+			return await BackgroundJobStore.open({
+				fs: this.executionEnv,
+				sessionDir,
+				onWriteFailure: (error) => {
+					void this._publishDiagnostic({
+						severity: "warning",
+						code: "orchestrator.background_job_store_write_failed",
+						message: `Background jobs for agent ${agentId} are no longer being recorded; results of jobs still running will not survive a restart: ${formatError(error)}`,
+						agentId,
+					});
+				},
+			});
+		} catch (error) {
+			await this._publishDiagnostic({
+				severity: "warning",
+				code: "orchestrator.background_job_store_unavailable",
+				message: `Cannot record background jobs for agent ${agentId}: ${formatError(error)}`,
+				agentId,
+			});
+			return undefined;
+		}
+	}
+
+	/**
+	 * Answer every t0 handle a previous runtime left open on this session.
+	 *
+	 * The jobs themselves are gone - a local job is a promise in a process that
+	 * exited - so this recovers the conversation, not the work: each unanswered
+	 * handle gets exactly one closing message, either the outcome that was
+	 * recorded before the exit or a cancellation explaining the restart.
+	 *
+	 * The session history, not the job log, decides what is unanswered: a
+	 * message queued into a harness is not persisted, so acceptance is not
+	 * evidence the model ever read it. Appending straight into the branch rather
+	 * than delivering through the message pipeline keeps that decision honest -
+	 * the text is in the session the moment this returns, so a second interrupted
+	 * resume finds it and stays idempotent - and keeps a resume from starting a
+	 * model run nobody asked for over results that are already stale.
+	 */
+	private async _reconcileBackgroundJobs(agentId: AgentId): Promise<void> {
+		const store = this._agents.get(agentId)?.backgroundJobStore;
+		const carriedOver = store?.carriedOverJobs() ?? [];
+		if (carriedOver.length === 0) return;
+		const harness = this._agents.get(agentId)?.harness;
+		if (!harness) return;
+		const snapshot = await this.sessionManager.getAgentSessionSnapshot(agentId);
+		const branchText = collectUserMessageText(snapshot.pathToRoot);
+		const unanswered = carriedOver.filter(
+			(job) =>
+				!branchText.some((text) =>
+					text.includes(
+						backgroundJobResultHeaderPrefix(job.jobId, job.toolCallId),
+					),
+				),
+		);
+		if (unanswered.length === 0) return;
+		await harness.appendMessage({
+			role: "user",
+			content: [
+				{
+					type: "text",
+					text: unanswered.map(toCarriedOverJobResultText).join("\n\n"),
+				},
+			],
+			timestamp: Date.now(),
+		});
+		await this._publishDiagnostic({
+			severity: "warning",
+			code: "orchestrator.background_jobs_interrupted",
+			message: `Agent ${agentId} resumed with ${unanswered.length} background job result(s) left unanswered by a previous run; they were closed in the session.`,
+			agentId,
+		});
+	}
+
+	/**
+	 * Every background job recorded in this agent's session, across runs. Unlike
+	 * {@link listAgentBackgroundJobs}, which sees only the live table, this is
+	 * the history: settled jobs, and jobs a previous runtime never settled.
+	 */
+	backgroundJobHistory(agentId: AgentId): PersistedBackgroundJob[] {
+		return (
+			this._requireAgentRecord(agentId).backgroundJobStore?.history() ?? []
+		);
 	}
 
 	/**
@@ -3256,6 +3440,12 @@ export class AgentOrchestrator {
 			queued.delete(job.id);
 			if (queued.size === 0) this._queuedJobReports.delete(agentId);
 			if (!latest) return;
+			// Persist the coalesced value, not every revision: the store keeps a
+			// latest-value register, so intermediate revisions would only cost
+			// writes.
+			void this._agents
+				.get(agentId)
+				?.backgroundJobStore?.recordReport(job.id, latest.report);
 			await this._emit({
 				type: "agent_background_job_report_updated",
 				agentId,
@@ -3897,91 +4087,6 @@ function selectActiveToolNames(
 	return { activeToolNames, diagnostics };
 }
 
-/**
- * Prompt guidance carried by an active tool. Resolved harness tools match this
- * shape; tools without registry prompt metadata contribute nothing.
- */
-export interface ToolPromptGuidance {
-	name: string;
-	promptSnippet?: string;
-	promptGuidelines?: readonly string[];
-}
-
-/**
- * Compose the tool guidance section from the active tools' promptSnippet and
- * promptGuidelines. Snippets keep the active tool order; guidelines are
- * deduplicated by exact text so shared guidance appears once. Returns an
- * empty string when no active tool contributes guidance.
- */
-export function formatToolGuidanceForSystemPrompt(
-	activeTools: readonly ToolPromptGuidance[],
-): string {
-	const snippetLines: string[] = [];
-	const guidelineLines: string[] = [];
-	const seenGuidelines = new Set<string>();
-	for (const tool of activeTools) {
-		const snippet = tool.promptSnippet?.trim();
-		if (snippet) {
-			snippetLines.push(`- ${tool.name}: ${snippet}`);
-		}
-		for (const guideline of tool.promptGuidelines ?? []) {
-			const normalized = guideline.trim();
-			if (!normalized || seenGuidelines.has(normalized)) continue;
-			seenGuidelines.add(normalized);
-			guidelineLines.push(`- ${normalized}`);
-		}
-	}
-
-	const parts: string[] = [];
-	if (snippetLines.length > 0) {
-		parts.push(`Available tools:\n${snippetLines.join("\n")}`);
-	}
-	if (guidelineLines.length > 0) {
-		parts.push(`Tool guidelines:\n${guidelineLines.join("\n")}`);
-	}
-	return parts.join("\n\n");
-}
-
-/**
- * Compose the harness system prompt from the profile prompt plus the active
- * tools' prompt guidance and a model-visible skills listing (agentskills.io
- * block via pi-agent-core). The skills listing tells the model to read the
- * skill file, so it is only appended when a read tool is active; skills stay
- * reachable through the `<skill:...>` inline command either way.
- *
- * The agent's own id is appended on the same principle: it is a per-agent value
- * a static prompt snippet cannot carry, and it only means anything to an agent
- * that can address other agents, so it follows the active collaboration tools.
- */
-export function buildAgentSystemPrompt(
-	basePrompt: string,
-	resources: AgentHarnessResources,
-	activeTools: readonly ToolPromptGuidance[],
-	agentId?: AgentId,
-): string {
-	const sections = [basePrompt];
-	if (
-		agentId !== undefined &&
-		activeTools.some((tool) => CORE_AGENT_TOOL_NAMES.includes(tool.name))
-	) {
-		sections.push(
-			`You are agent ${agentId}. Other agents address you by that id.`,
-		);
-	}
-	const toolGuidance = formatToolGuidanceForSystemPrompt(activeTools);
-	if (toolGuidance !== "") {
-		sections.push(toolGuidance);
-	}
-	const hasReadTool = activeTools.some((tool) => tool.name === "read");
-	if (hasReadTool) {
-		const skillsSection = formatSkillsForSystemPrompt(resources.skills ?? []);
-		if (skillsSection !== "") {
-			sections.push(skillsSection);
-		}
-	}
-	return sections.join("\n\n");
-}
-
 // Every config-value channel in a provider config: the provider api key and
 // the provider- and model-level request headers.
 function hasCommandConfigValues(
@@ -4007,14 +4112,50 @@ function changesRecoverableProfileFields(
 		override.systemPrompt !== undefined ||
 		override.tools !== undefined ||
 		override.skills !== undefined ||
-		override.promptTemplates !== undefined ||
-		override.extensions !== undefined ||
+		override.projectContext !== undefined ||
+		override.includeCwd !== undefined ||
+		override.appendSystemPrompt !== undefined ||
 		override.persist !== undefined
 	);
 }
 
 function formatError(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+/** Text of every user message on a branch, for "was the model ever told X?". */
+function collectUserMessageText(
+	entries: readonly SessionTreeEntry[],
+): string[] {
+	const texts: string[] = [];
+	for (const entry of entries) {
+		if (entry.type !== "message" || entry.message.role !== "user") continue;
+		const content = entry.message.content;
+		if (typeof content === "string") {
+			texts.push(content);
+			continue;
+		}
+		for (const part of content) {
+			if (part.type === "text") texts.push(part.text);
+		}
+	}
+	return texts;
+}
+
+/**
+ * Closing text for a job a previous run left unanswered: the outcome it settled
+ * into when one was recorded, otherwise a cancellation for work the exit ended.
+ */
+function toCarriedOverJobResultText(job: PersistedBackgroundJob): string {
+	return (
+		job.messageText ??
+		formatInterruptedBackgroundJobResultText({
+			jobId: job.jobId,
+			toolCallId: job.toolCallId,
+			toolName: job.toolName,
+			stopReason: job.stopReason,
+		})
+	);
 }
 
 function now(): string {

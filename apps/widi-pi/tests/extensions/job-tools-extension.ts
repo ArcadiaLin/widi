@@ -1,13 +1,17 @@
 import type {
 	ExtensionContext,
 	ExtensionDefinition,
-} from "../../../apps/widi-pi/src/core/extension/api.ts";
+} from "../../src/core/extension/api.ts";
 
 /**
- * Job-tools gating sample: keep the job-control tools (read_job /
+ * Job-tools gating fixture: keep the job-control tools (read_job /
  * wait_for_jobs / kill_job) out of the model's active tool set until the agent
  * actually has live background jobs, and retract them once the last job
  * settles.
+ *
+ * It lives with the tests rather than under `.widi/extensions` because the
+ * suite that exercises it is the only consumer: a test must not break because a
+ * sample someone is free to delete from their own agent dir went away.
  *
  * Wiring:
  * - agent_spawned / agent_resumed: initial retraction. The active set defaults

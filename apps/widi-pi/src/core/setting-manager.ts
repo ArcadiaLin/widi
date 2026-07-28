@@ -5,6 +5,7 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import { DEFAULT_AGENT_DIR } from "./constants.js";
 import type { CoreDiagnostic } from "./diagnostics.ts";
+import type { ExtensionDivisionSelection } from "./extension/types.ts";
 
 export interface CompactionSettings {
 	/** Default: true. */
@@ -69,6 +70,18 @@ export interface WarningSettings {
 	anthropicExtraUsage?: boolean;
 }
 
+export interface SystemPromptSettings {
+	/**
+	 * Default: true. Inline the project's own instruction files (AGENTS.md and
+	 * friends) into every agent's system prompt.
+	 */
+	projectContext?: boolean;
+	/** Default: true. State the working directory in the system prompt. */
+	includeCwd?: boolean;
+	/** Extra sections appended to every agent's system prompt. */
+	append?: string[];
+}
+
 export type DefaultProjectTrust = "ask" | "always" | "never";
 export type ThinkingLevelSetting = ThinkingLevel;
 
@@ -107,6 +120,18 @@ export interface Settings {
 	packages?: PackageSource[];
 	/** Local extension file or directory paths. */
 	extensions?: string[];
+	/**
+	 * Extension ids agents may load. Undefined means every extension the runtime
+	 * discovered or registered, which is the default: an installed extension is
+	 * an installed extension. An empty array loads none.
+	 */
+	enabledExtensions?: string[];
+	/**
+	 * Division rules per extension id, for extensions that split themselves
+	 * into switchable parts. Project settings replace a global entry for the
+	 * same extension id rather than merging into it.
+	 */
+	extensionDivisions?: Record<string, ExtensionDivisionSelection>;
 	/** Local skill file or directory paths. */
 	skills?: string[];
 	/** Local prompt template file or directory paths. */
@@ -115,6 +140,8 @@ export interface Settings {
 	themes?: string[];
 	terminal?: TerminalSettings;
 	images?: ImageSettings;
+	/** Installation-wide system prompt composition. Profiles may override each item. */
+	systemPrompt?: SystemPromptSettings;
 	/** Model patterns used by model cycling/selectors. */
 	enabledModels?: string[];
 	/** Profile ids allowed by runtime policy. Undefined means no restriction. */
@@ -858,6 +885,18 @@ export class SettingManager {
 		};
 	}
 
+	getSystemPromptSettings(): {
+		projectContext: boolean;
+		includeCwd: boolean;
+		append: string[];
+	} {
+		return {
+			projectContext: this.settings.systemPrompt?.projectContext ?? true,
+			includeCwd: this.settings.systemPrompt?.includeCwd ?? true,
+			append: [...(this.settings.systemPrompt?.append ?? [])],
+		};
+	}
+
 	getHideThinkingBlock(): boolean {
 		return this.settings.hideThinkingBlock ?? false;
 	}
@@ -980,6 +1019,49 @@ export class SettingManager {
 	setProjectExtensionPaths(paths: string[]): void {
 		this.updateProjectField("extensions", (settings) => {
 			settings.extensions = [...paths];
+		});
+	}
+
+	/** Undefined means no restriction: every available extension is enabled. */
+	getEnabledExtensions(): string[] | undefined {
+		return this.settings.enabledExtensions
+			? [...this.settings.enabledExtensions]
+			: undefined;
+	}
+
+	setEnabledExtensions(extensionIds: string[] | undefined): void {
+		this.globalSettings.enabledExtensions = extensionIds
+			? [...new Set(extensionIds)]
+			: undefined;
+		this.markModified("enabledExtensions");
+		this.save();
+	}
+
+	setProjectEnabledExtensions(extensionIds: string[] | undefined): void {
+		this.updateProjectField("enabledExtensions", (settings) => {
+			settings.enabledExtensions = extensionIds
+				? [...new Set(extensionIds)]
+				: undefined;
+		});
+	}
+
+	getExtensionDivisionSelections(): Record<string, ExtensionDivisionSelection> {
+		return structuredClone(this.settings.extensionDivisions ?? {});
+	}
+
+	setExtensionDivisionSelections(
+		selections: Record<string, ExtensionDivisionSelection>,
+	): void {
+		this.globalSettings.extensionDivisions = structuredClone(selections);
+		this.markModified("extensionDivisions");
+		this.save();
+	}
+
+	setProjectExtensionDivisionSelections(
+		selections: Record<string, ExtensionDivisionSelection>,
+	): void {
+		this.updateProjectField("extensionDivisions", (settings) => {
+			settings.extensionDivisions = structuredClone(selections);
 		});
 	}
 

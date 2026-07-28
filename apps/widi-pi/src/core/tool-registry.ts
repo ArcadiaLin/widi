@@ -8,7 +8,7 @@ import type { ToolAgentHost } from "./agent-host.ts";
 import {
 	type BackgroundJobTable,
 	createBackgroundJobStartedResult,
-} from "./background-job.ts";
+} from "./background/index.ts";
 import type { CoreDiagnostic, DiagnosticSeverity } from "./diagnostics.ts";
 import type { ToolHumanHost } from "./human-request.ts";
 import type {

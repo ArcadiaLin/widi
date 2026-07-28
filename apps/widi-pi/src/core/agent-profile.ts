@@ -6,26 +6,44 @@ import type {
 import { DEFAULT_PROFILE_DIR } from "./constants.js";
 import type { CoreDiagnostic, DiagnosticSeverity } from "./diagnostics.ts";
 
+/**
+ * A role: what the agent is told it is, what it may reach for, and whether its
+ * session outlives the runtime.
+ *
+ * Deliberately not here: which extensions load, and which prompt templates
+ * exist. Extensions are an installation-wide fact settings owns, and prompt
+ * templates are the user's own slash commands - neither is a property of the
+ * role the model plays.
+ */
 export type AgentProfile = {
 	readonly id: string;
 	readonly label: string;
 	readonly description?: string;
+	/**
+	 * When a caller should reach for this role, written for the model picking a
+	 * spawn target. `description` says what the role is; this says why you would
+	 * choose it over its neighbours, so it is usually a sentence or two and is
+	 * the part `list_agent_profiles` leans on.
+	 */
+	readonly whenToUse?: string;
 	readonly systemPrompt: string;
 	/** Whether newly-created agents should use persistent session storage. */
 	readonly persist: boolean;
 	readonly tools?: readonly string[];
 	readonly skills?: readonly string[];
-	readonly promptTemplates?: readonly string[];
-	readonly extensions?: readonly string[];
-	readonly missingExtensionSeverity?: AgentProfileMissingExtensionSeverity;
+	/**
+	 * Whether the project's own instruction files (AGENTS.md and friends) are
+	 * inlined into this role's system prompt. Unset defers to settings, which
+	 * default to including them.
+	 */
+	readonly projectContext?: boolean;
+	/** Whether the system prompt states the working directory. Unset defers to settings. */
+	readonly includeCwd?: boolean;
+	/** Extra text appended to this role's system prompt, ahead of the settings' own. */
+	readonly appendSystemPrompt?: string;
 };
 
 export type AgentProfileOverride = Partial<Omit<AgentProfile, "id">>;
-
-export type AgentProfileMissingExtensionSeverity =
-	| "ignore"
-	| "warning"
-	| "error";
 
 export type AgentProfileReference = {
 	readonly id: string;
@@ -69,6 +87,7 @@ export type AgentProfileSummary = {
 	readonly id: string;
 	readonly label: string;
 	readonly description?: string;
+	readonly whenToUse?: string;
 	readonly persist: boolean;
 	readonly source: AgentProfileSource;
 	readonly entryId: string;
@@ -162,14 +181,13 @@ type AgentProfileFrontmatter = {
 	readonly id?: unknown;
 	readonly label?: unknown;
 	readonly description?: unknown;
+	readonly whenToUse?: unknown;
 	readonly persist?: unknown;
 	readonly tools?: unknown;
 	readonly skills?: unknown;
-	readonly promptTemplates?: unknown;
-	readonly "prompt-templates"?: unknown;
-	readonly extensions?: unknown;
-	readonly missingExtensionSeverity?: unknown;
-	readonly "missing-extension-severity"?: unknown;
+	readonly projectContext?: unknown;
+	readonly includeCwd?: unknown;
+	readonly appendSystemPrompt?: unknown;
 	readonly [key: string]: unknown;
 };
 
@@ -182,6 +200,7 @@ type ProfileMetadata = {
 	readonly id: string;
 	readonly label: string;
 	readonly description?: string;
+	readonly whenToUse?: string;
 	readonly persist: boolean;
 	readonly filenameId?: string;
 };
@@ -201,9 +220,16 @@ type ProfileIndex = {
 	readonly diagnostics: AgentProfileDiagnostic[];
 };
 
+/**
+ * The role an agent runs as when nothing named one. It is also the id the
+ * shipped `.widi/profiles/main.md` claims, so a distribution's own main profile
+ * shadows this one at a higher priority instead of sitting beside it.
+ */
+export const BUILTIN_DEFAULT_PROFILE_ID = "main";
+
 const BUILTIN_DEFAULT_PROFILE: AgentProfile = {
-	id: "default",
-	label: "Default Agent",
+	id: BUILTIN_DEFAULT_PROFILE_ID,
+	label: "Main Agent",
 	systemPrompt: "You are WIDI.",
 	persist: true,
 };
@@ -672,7 +698,7 @@ export class AgentProfileRegistry {
 			profile: profileResult.profile,
 			source: selected.entry.source,
 			entryId: selected.entry.entryId,
-			diagnostics,
+			diagnostics: [...diagnostics, ...profileResult.diagnostics],
 		};
 	}
 
@@ -693,6 +719,7 @@ export class AgentProfileRegistry {
 				id: selected.metadata.id,
 				label: selected.metadata.label,
 				description: selected.metadata.description,
+				whenToUse: selected.metadata.whenToUse,
 				persist: selected.metadata.persist,
 				source: selected.entry.source,
 				entryId: selected.entry.entryId,
@@ -943,6 +970,10 @@ function parseAgentProfile(
 		return { profile: undefined, diagnostics: metadataResult.diagnostics };
 	}
 	const frontmatter = parsed.frontmatter;
+	// Metadata diagnostics already reach the caller through the candidate index;
+	// they stay in this array only so an error still blocks the profile, and are
+	// sliced back off before a resolved profile reports its own field facts.
+	const metadataDiagnosticCount = metadataResult.diagnostics.length;
 	const diagnostics = [...metadataResult.diagnostics];
 	const tools = readStringArray(frontmatter.tools, "tools", entry, diagnostics);
 	const skills = readStringArray(
@@ -951,24 +982,19 @@ function parseAgentProfile(
 		entry,
 		diagnostics,
 	);
-	const promptTemplates = readStringArray(
-		frontmatter.promptTemplates ?? frontmatter["prompt-templates"],
-		"promptTemplates",
+	const projectContext = readBoolean(
+		frontmatter.projectContext,
+		"projectContext",
 		entry,
 		diagnostics,
 	);
-	const extensions = readStringArray(
-		frontmatter.extensions,
-		"extensions",
+	const includeCwd = readBoolean(
+		frontmatter.includeCwd,
+		"includeCwd",
 		entry,
 		diagnostics,
 	);
-	const missingExtensionSeverity = readMissingExtensionSeverity(
-		frontmatter.missingExtensionSeverity ??
-			frontmatter["missing-extension-severity"],
-		entry,
-		diagnostics,
-	);
+	const appendSystemPrompt = readString(frontmatter.appendSystemPrompt);
 
 	if (diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
 		return { profile: undefined, diagnostics };
@@ -979,15 +1005,16 @@ function parseAgentProfile(
 			id: metadataResult.metadata.id,
 			label: metadataResult.metadata.label,
 			description: metadataResult.metadata.description,
+			whenToUse: metadataResult.metadata.whenToUse,
 			systemPrompt: parsed.body,
 			persist: metadataResult.metadata.persist,
 			tools,
 			skills,
-			promptTemplates,
-			extensions,
-			missingExtensionSeverity,
+			projectContext,
+			includeCwd,
+			appendSystemPrompt,
 		},
-		diagnostics,
+		diagnostics: diagnostics.slice(metadataDiagnosticCount),
 	};
 }
 
@@ -1006,6 +1033,7 @@ function parseAgentProfileMetadata(
 	const id = rawId ?? filenameId;
 	const label = readString(frontmatter.label) ?? id;
 	const description = readString(frontmatter.description);
+	const whenToUse = readString(frontmatter.whenToUse);
 	const persist =
 		readBoolean(frontmatter.persist, "persist", entry, diagnostics) ?? false;
 
@@ -1060,6 +1088,7 @@ function parseAgentProfileMetadata(
 			id,
 			label: label ?? id,
 			description,
+			whenToUse,
 			persist,
 			filenameId,
 		},
@@ -1100,6 +1129,13 @@ function parseProfileMarkdown(
 
 		const key = trimmed.slice(0, separatorIndex).trim();
 		const rawValue = trimmed.slice(separatorIndex + 1).trim();
+		const indent = line.length - line.trimStart().length;
+		if (rawValue === "|" || rawValue === "|-") {
+			const block = readBlockScalar(lines, index + 1, indent);
+			frontmatter[key] = block.value;
+			index = block.nextIndex;
+			continue;
+		}
 		if (rawValue !== "") {
 			frontmatter[key] = parseSimpleFrontmatterValue(rawValue);
 			index += 1;
@@ -1108,7 +1144,6 @@ function parseProfileMarkdown(
 
 		// A key without a value opens a one-level nested mapping; its entries
 		// are the indented lines.
-		const indent = line.length - line.trimStart().length;
 		const child: Record<string, unknown> = {};
 		index += 1;
 		while (index < lines.length) {
@@ -1144,6 +1179,45 @@ function parseProfileMarkdown(
 			body: normalized.slice(endIndex + 4).trim(),
 		},
 	};
+}
+
+/**
+ * A block scalar (`key: |`) is the only way this format can hold a paragraph:
+ * every line indented past the key belongs to the value, blank lines included,
+ * and the first content line sets the indentation that gets stripped.
+ *
+ * The `-` chomping indicator is accepted and then ignored. Trailing blank lines
+ * are dropped either way, and every consumer trims the result, so clip and
+ * strip cannot be told apart downstream.
+ */
+function readBlockScalar(
+	lines: readonly string[],
+	startIndex: number,
+	keyIndent: number,
+): { value: string; nextIndex: number } {
+	const collected: string[] = [];
+	let blockIndent: number | undefined;
+	let index = startIndex;
+	while (index < lines.length) {
+		const line = lines[index];
+		if (!line.trim()) {
+			collected.push("");
+			index += 1;
+			continue;
+		}
+		const indent = line.length - line.trimStart().length;
+		if (indent <= keyIndent) break;
+		blockIndent ??= indent;
+		collected.push(line.slice(Math.min(blockIndent, indent)));
+		index += 1;
+	}
+
+	// Blank lines run up to the next key, and they are separators rather than
+	// part of the value.
+	while (collected.length > 0 && !collected[collected.length - 1]) {
+		collected.pop();
+	}
+	return { value: collected.join("\n"), nextIndex: index };
 }
 
 function parseSimpleFrontmatterValue(value: string): unknown {
@@ -1220,26 +1294,6 @@ function readStringArray(
 	return items.length > 0 ? items : undefined;
 }
 
-function readMissingExtensionSeverity(
-	value: unknown,
-	entry: ProfileStorageEntry,
-	diagnostics: AgentProfileDiagnostic[],
-): AgentProfileMissingExtensionSeverity | undefined {
-	if (value === undefined) return undefined;
-	if (value === "ignore" || value === "warning" || value === "error") {
-		return value;
-	}
-	diagnostics.push(
-		diagnosticForEntry(
-			entry,
-			"error",
-			"profile.invalid_metadata",
-			'Profile field "missingExtensionSeverity" must be "ignore", "warning", or "error".',
-		),
-	);
-	return undefined;
-}
-
 function validateProfileId(id: string): string | undefined {
 	if (!id.trim()) {
 		return "Profile id must be non-empty.";
@@ -1309,7 +1363,10 @@ function serializeProfile(profile: AgentProfile): string {
 		`persist: ${profile.persist ? "true" : "false"}`,
 	];
 	if (profile.description) {
-		lines.push(`description: ${quoteFrontmatterString(profile.description)}`);
+		lines.push(...serializeFrontmatterText("description", profile.description));
+	}
+	if (profile.whenToUse) {
+		lines.push(...serializeFrontmatterText("whenToUse", profile.whenToUse));
 	}
 	if (profile.tools) {
 		lines.push(`tools: ${serializeStringArray(profile.tools)}`);
@@ -1317,21 +1374,37 @@ function serializeProfile(profile: AgentProfile): string {
 	if (profile.skills) {
 		lines.push(`skills: ${serializeStringArray(profile.skills)}`);
 	}
-	if (profile.promptTemplates) {
-		lines.push(
-			`prompt-templates: ${serializeStringArray(profile.promptTemplates)}`,
-		);
+	if (profile.projectContext !== undefined) {
+		lines.push(`projectContext: ${profile.projectContext ? "true" : "false"}`);
 	}
-	if (profile.extensions) {
-		lines.push(`extensions: ${serializeStringArray(profile.extensions)}`);
+	if (profile.includeCwd !== undefined) {
+		lines.push(`includeCwd: ${profile.includeCwd ? "true" : "false"}`);
 	}
-	if (profile.missingExtensionSeverity) {
+	if (profile.appendSystemPrompt) {
 		lines.push(
-			`missing-extension-severity: ${profile.missingExtensionSeverity}`,
+			...serializeFrontmatterText(
+				"appendSystemPrompt",
+				profile.appendSystemPrompt,
+			),
 		);
 	}
 	lines.push("---", profile.systemPrompt);
 	return lines.join("\n");
+}
+
+/**
+ * Free text round-trips through a block scalar once it has a newline: a quoted
+ * single-line value cannot carry one, and the parser reads back exactly what
+ * this writes.
+ */
+function serializeFrontmatterText(key: string, value: string): string[] {
+	if (!value.includes("\n")) {
+		return [`${key}: ${quoteFrontmatterString(value)}`];
+	}
+	return [
+		`${key}: |`,
+		...value.split("\n").map((line) => (line ? `  ${line}` : "")),
+	];
 }
 
 function serializeStringArray(values: readonly string[]): string {

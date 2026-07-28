@@ -1,16 +1,34 @@
-import type { Skill } from "@earendil-works/pi-agent-core";
+import {
+	type CompactResult,
+	formatPromptTemplateInvocation,
+	formatSkillInvocation,
+	type NavigateTreeResult,
+	parseCommandArgs,
+} from "@earendil-works/pi-agent-core";
 import {
 	getSupportedThinkingLevels,
 	type TextContent,
 	type UserMessage,
 } from "@earendil-works/pi-ai";
-import type { AgentSessionCandidate } from "../../core/session-manager.ts";
+import type {
+	AgentListResult,
+	AgentSessionListResult,
+	AgentSessionResult,
+	ExtensionReloadResult,
+} from "../../core/agent-orchestrator.ts";
+import type { AgentRecordSnapshot } from "../../core/agent-record.ts";
+import type {
+	AgentSessionCandidate,
+	AgentSessionSnapshot,
+	AgentSessionTreeSnapshot,
+} from "../../core/session-manager.ts";
 import type { CandidateItem } from "../../core/types.ts";
+import { splitLeadingToken } from "./parse.ts";
 import type { CommandContext, CommandDefinition } from "./types.ts";
 
 export const builtInCommands: readonly CommandDefinition[] = [
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "active",
 		name: "abort",
 		description: "Abort the current agent run.",
@@ -18,7 +36,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 			await context.orchestrator.abortAgent(requireAgentId(context)),
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "active",
 		name: "compact",
 		description: "Compact the current agent session.",
@@ -28,9 +46,20 @@ export const builtInCommands: readonly CommandDefinition[] = [
 				requireAgentId(context),
 				argument.trim() || undefined,
 			),
+		formatResult: (result) => {
+			const compact = result as CompactResult;
+			const summaryLine =
+				compact.summary
+					.split("\n")
+					.find((line) => line.trim() !== "")
+					?.trim() ?? "";
+			return [`compacted ${compact.tokensBefore} tokens`, summaryLine]
+				.filter((line) => line !== "")
+				.join("\n");
+		},
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "active",
 		name: "follow-up",
 		description: "Queue a follow-up for the current agent.",
@@ -45,7 +74,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		},
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "active",
 		name: "fork",
 		description: "Fork the current agent session.",
@@ -58,24 +87,43 @@ export const builtInCommands: readonly CommandDefinition[] = [
 				entryId ? { entryId } : undefined,
 			);
 		},
+		formatResult: (result) => agentSessionResultText("forked", result),
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "active",
 		name: "inspect",
 		description: "Inspect the current agent runtime facts.",
 		execute: async (context) =>
 			context.orchestrator.inspectAgent(requireAgentId(context)),
+		formatResult: (result) => {
+			const snapshot = result as AgentRecordSnapshot;
+			const toolCount = snapshot.toolSnapshot?.toolNames.length ?? 0;
+			return [
+				`${snapshot.agentId} · ${snapshot.status} · ${profileLabel(snapshot)} · ${snapshot.model.provider}/${snapshot.model.id}`,
+				`${toolCount} tools · ${snapshot.extensionIds.length} extensions`,
+			].join("\n");
+		},
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "runtime",
 		name: "agent",
 		description: "List runtime agents.",
 		execute: async ({ orchestrator }) => orchestrator.listAgents(),
+		formatResult: (result) => {
+			const { agents } = result as AgentListResult;
+			if (agents.length === 0) return "No runtime agents.";
+			return agents
+				.map(
+					(agent) =>
+						`${agent.agentId} · ${agent.status} · ${profileLabel(agent)}`,
+				)
+				.join("\n");
+		},
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "runtime",
 		name: "login",
 		description: "Log in to an LLM provider subscription.",
@@ -90,7 +138,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		},
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "runtime",
 		name: "logout",
 		description: "Remove a stored LLM provider credential.",
@@ -105,7 +153,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		},
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "materialize",
 		name: "model",
 		description: "Set the current agent model.",
@@ -122,7 +170,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		},
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "materialize",
 		name: "thinking",
 		description: "Set the current agent thinking level.",
@@ -147,7 +195,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 			),
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "materialize",
 		name: "rename",
 		description: "Rename the current agent session.",
@@ -158,9 +206,13 @@ export const builtInCommands: readonly CommandDefinition[] = [
 				requireAgentId(context),
 				argument.trim(),
 			),
+		formatResult: (result) => {
+			const snapshot = result as AgentSessionSnapshot;
+			return `renamed to ${snapshot.name ?? "(unnamed)"}`;
+		},
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "active",
 		name: "reload",
 		description: "Reload extensions for the current agent.",
@@ -168,9 +220,19 @@ export const builtInCommands: readonly CommandDefinition[] = [
 			await context.orchestrator.reloadExtensions({
 				agentIds: [requireAgentId(context)],
 			}),
+		formatResult: (result) => {
+			const reload = result as ExtensionReloadResult;
+			return [
+				`${reload.catalog.loaded.length} extensions loaded`,
+				...reload.agents.map(
+					(agent) =>
+						`${agent.agentId}: ${agent.status}${agent.reason ? ` (${agent.reason})` : ""}`,
+				),
+			].join("\n");
+		},
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "runtime",
 		name: "resume",
 		description: "Resume an existing agent session.",
@@ -189,16 +251,24 @@ export const builtInCommands: readonly CommandDefinition[] = [
 			})),
 		execute: async ({ orchestrator }, argument) =>
 			await orchestrator.resumeAgentSessionByReference(argument.trim()),
+		formatResult: (result) => agentSessionResultText("resumed", result),
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "runtime",
 		name: "session",
 		description: "List persisted agent sessions.",
 		execute: async ({ orchestrator }) => await orchestrator.listAgentSessions(),
+		formatResult: (result) => {
+			const { sessions } = result as AgentSessionListResult;
+			if (sessions.length === 0) return "No persisted sessions.";
+			return sessions
+				.map((session) => `${sessionCandidateLabel(session)} · ${session.id}`)
+				.join("\n");
+		},
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "active",
 		name: "status",
 		description: "Get the current agent status.",
@@ -206,7 +276,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 			context.orchestrator.getAgentStatus(requireAgentId(context)),
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "active",
 		name: "steer",
 		description: "Steer the current running agent.",
@@ -225,7 +295,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		},
 	},
 	{
-		kind: "line",
+		kind: "action",
 		agentPolicy: "active",
 		name: "tree",
 		description: "Inspect or navigate the current session tree.",
@@ -239,46 +309,85 @@ export const builtInCommands: readonly CommandDefinition[] = [
 			}
 			return await context.orchestrator.navigateAgentTree(agentId, targetId);
 		},
+		formatResult: (result) => {
+			// Bare /tree returns the tree snapshot; /tree <entry> navigates.
+			if (
+				typeof result === "object" &&
+				result !== null &&
+				"entries" in result
+			) {
+				const tree = result as AgentSessionTreeSnapshot;
+				return `${tree.entries.length} entries · leaf ${tree.leafId ?? "none"}`;
+			}
+			const navigation = result as NavigateTreeResult;
+			if (navigation.cancelled) return "Navigation cancelled.";
+			return navigation.summaryEntry
+				? "Navigated (branch summarized)."
+				: "Navigated.";
+		},
 	},
 	{
-		kind: "inline",
+		kind: "prompt",
+		agentPolicy: "materialize",
 		name: "prompt",
-		description: "Insert a prompt template inline.",
-		argumentHint: "<template>",
+		description: "Send a prompt template as the prompt.",
+		argumentHint: "<template> [args…]",
+		requiresArgument: true,
 		complete: async (context) =>
 			(
 				await context.orchestrator.listAgentPromptTemplateCandidates(
 					requireAgentId(context),
 				)
 			).templates,
-		expand: async (context, argument) =>
-			(
-				await context.orchestrator.getAgentPromptTemplate(
-					requireAgentId(context),
-					argument.trim(),
-				)
-			).content,
+		expand: async (context, argument) => {
+			// The template name is the first token; the rest are positional
+			// arguments for the template's own "$1"/"$@" placeholders.
+			const [name, ...args] = parseCommandArgs(argument);
+			if (!name) throw new Error("Command /prompt requires a template name.");
+			const template = await context.orchestrator.getAgentPromptTemplate(
+				requireAgentId(context),
+				name,
+			);
+			return formatPromptTemplateInvocation(template, args);
+		},
 	},
 	{
-		kind: "inline",
+		kind: "prompt",
+		agentPolicy: "materialize",
 		name: "skill",
-		description: "Apply a skill inline.",
-		argumentHint: "<skill_name>",
+		description: "Apply a skill as the prompt.",
+		argumentHint: "<skill_name> [instructions]",
+		requiresArgument: true,
 		complete: async (context) =>
 			(
 				await context.orchestrator.listAgentSkillCandidates(
 					requireAgentId(context),
 				)
 			).skills,
-		expand: async (context, argument) =>
-			formatSkillExpansion(
-				await context.orchestrator.getAgentSkill(
-					requireAgentId(context),
-					argument.trim(),
-				),
-			),
+		// Naming a skill is an explicit request to apply it, so the body is
+		// inlined rather than pointed at: it saves a read round-trip and keeps
+		// skills usable on agents that have no read tool. Automatic discovery
+		// stays the system prompt's job (see buildAgentSystemPrompt).
+		expand: async (context, argument) => {
+			const { token: name, rest: instructions } = splitLeadingToken(argument);
+			const skill = await context.orchestrator.getAgentSkill(
+				requireAgentId(context),
+				name,
+			);
+			return formatSkillInvocation(skill, instructions || undefined);
+		},
 	},
 ];
+
+function profileLabel(snapshot: AgentRecordSnapshot): string {
+	return snapshot.profile.reference.label ?? snapshot.profile.reference.id;
+}
+
+// Resume and fork both answer "which agent did I land on".
+function agentSessionResultText(verb: string, result: unknown): string {
+	const { agentId, snapshot } = result as AgentSessionResult;
+	return `${verb} ${agentId} · ${profileLabel(snapshot)} · ${snapshot.model.id}`;
+}
 
 // A session is recognized by what the user called it or first said in it;
 // profile and id are last resorts.
@@ -337,16 +446,4 @@ function userMessageHeadline(message: UserMessage): string {
 			.find((candidate) => candidate.trim() !== "")
 			?.trim() ?? "";
 	return line.length > 80 ? `${line.slice(0, 79)}…` : line;
-}
-
-// The expansion carries metadata and guidance only; the skill body stays in
-// the skill file and is loaded on demand by the agent's read tooling.
-function formatSkillExpansion(skill: Skill): string {
-	return [
-		`<skill name="${skill.name}">`,
-		skill.description,
-		`Skill file: ${skill.filePath}`,
-		"Read the skill file for the full instructions before applying it.",
-		"</skill>",
-	].join("\n");
 }

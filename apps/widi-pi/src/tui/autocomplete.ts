@@ -15,10 +15,7 @@ import type {
 	RuntimeModel,
 } from "../core/types.ts";
 import type { CommandEngine } from "./commands/engine.ts";
-import {
-	INLINE_COMMAND_TRIGGER,
-	LINE_COMMAND_TRIGGER,
-} from "./commands/parse.ts";
+import { LINE_COMMAND_TRIGGER } from "./commands/parse.ts";
 import type { CommandView } from "./commands/types.ts";
 
 interface CommandCompletionItem {
@@ -33,11 +30,7 @@ const AT_FALLBACK_MAX_SCAN = 2_000;
 const AT_FALLBACK_MAX_SUGGESTIONS = 50;
 
 export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
-	readonly triggerCharacters = [
-		LINE_COMMAND_TRIGGER,
-		INLINE_COMMAND_TRIGGER,
-		"@",
-	];
+	readonly triggerCharacters = [LINE_COMMAND_TRIGGER, "@"];
 	private readonly engine: CommandEngine;
 	private readonly agentId?: string;
 	private readonly orchestrator: AgentOrchestrator;
@@ -87,12 +80,7 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 		const beforeCursor = line.slice(0, cursorCol);
 
 		if (beforeCursor.startsWith(LINE_COMMAND_TRIGGER)) {
-			return await this.lineCommandSuggestions(beforeCursor, options.signal);
-		}
-
-		const inline = matchInlinePrefix(beforeCursor);
-		if (inline) {
-			return await this.inlineCommandSuggestions(inline, options.signal);
+			return await this.commandSuggestions(beforeCursor, options.signal);
 		}
 
 		// Without fd the combined provider's "@" branch is empty; scan the tree
@@ -133,16 +121,6 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 				cursorCol: before.length + item.value.length + 1,
 			};
 		}
-		if (prefix.startsWith(INLINE_COMMAND_TRIGGER)) {
-			nextLines[cursorLine] = `${before}${item.value}${after}`;
-			// Inline completions insert the close trigger; land the cursor inside it.
-			const closeOffset = item.value.endsWith(">") ? 1 : 0;
-			return {
-				lines: nextLines,
-				cursorLine,
-				cursorCol: before.length + item.value.length - closeOffset,
-			};
-		}
 		if (this.fileProvider) {
 			// Argument values, "@" mentions and paths. The combined provider's
 			// apply logic (quoting, no space after directories) is independent of
@@ -177,15 +155,17 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 		);
 	}
 
-	private async lineCommandSuggestions(
+	private async commandSuggestions(
 		beforeCursor: string,
 		signal: AbortSignal,
 	): Promise<AutocompleteSuggestions | null> {
 		// Argument phase: `/name arg…`. The command's own completer lists
 		// candidates; filtering happens here because completers ignore the prefix.
+		// Only the first argument completes: anything past it is free-form input
+		// (template arguments, skill instructions) the command cannot predict.
 		const argumentMatch = /^\/(\S+)\s+(\S*)$/.exec(beforeCursor);
 		if (argumentMatch) {
-			const command = this.engine.line(argumentMatch[1] ?? "");
+			const command = this.engine.get(argumentMatch[1] ?? "");
 			if (!command?.complete) return null;
 			const argumentPrefix = argumentMatch[2] ?? "";
 			let candidates: readonly CandidateItem[];
@@ -219,7 +199,9 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 			};
 		}
 		const body = beforeCursor.slice(LINE_COMMAND_TRIGGER.length);
-		const items = this.views("line").map(toCommandCompletionItem);
+		const items = this.engine
+			.list(this.getStatus())
+			.map(toCommandCompletionItem);
 		const filtered = fuzzyFilter(items, body, (item) => item.search).map(
 			(item) => ({
 				value: `${LINE_COMMAND_TRIGGER}${item.view.name}`,
@@ -229,48 +211,6 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 		);
 		return filtered.length > 0
 			? { items: filtered, prefix: beforeCursor }
-			: null;
-	}
-
-	private async inlineCommandSuggestions(
-		inline: { name: string; argumentPrefix?: string; rawPrefix: string },
-		signal: AbortSignal,
-	): Promise<AutocompleteSuggestions | null> {
-		if (inline.argumentPrefix !== undefined) {
-			// Argument phase: `<name:arg…` completes the inline command's own
-			// candidates (skills, prompt templates), mirroring line commands.
-			const command = this.engine.inline(inline.name);
-			if (!command?.complete) return null;
-			let candidates: readonly CandidateItem[];
-			try {
-				candidates = await command.complete(
-					this.commandContext(),
-					inline.argumentPrefix,
-				);
-			} catch {
-				return null;
-			}
-			if (signal.aborted || candidates.length === 0) return null;
-			return {
-				items: candidates.map((candidate) => ({
-					value: candidate.value,
-					label: candidate.label ?? candidate.value,
-					description: candidate.description,
-				})),
-				prefix: inline.argumentPrefix,
-			};
-		}
-		const filtered = fuzzyFilter(
-			this.views("inline").map(toCommandCompletionItem),
-			inline.name,
-			(item) => item.search,
-		).map((item) => ({
-			value: `${INLINE_COMMAND_TRIGGER}${item.view.name}:>`,
-			label: item.label,
-			description: item.description,
-		}));
-		return filtered.length > 0
-			? { items: filtered, prefix: inline.rawPrefix }
 			: null;
 	}
 
@@ -286,12 +226,6 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 		).slice(0, AT_FALLBACK_MAX_SUGGESTIONS);
 		if (signal.aborted || ranked.length === 0) return null;
 		return { items: ranked.map(toAtItem), prefix: atPrefix };
-	}
-
-	private views(kind: "line" | "inline"): CommandView[] {
-		return this.engine
-			.list(this.getStatus())
-			.filter((view) => view.kind === kind);
 	}
 
 	private commandContext() {
@@ -322,23 +256,6 @@ function filterArgumentCandidates(
 	);
 }
 
-function matchInlinePrefix(
-	text: string,
-): { name: string; argumentPrefix?: string; rawPrefix: string } | undefined {
-	const boundary = Math.max(text.lastIndexOf(" "), text.lastIndexOf("\n"));
-	const rawPrefix = text.slice(boundary + 1);
-	if (!rawPrefix.startsWith(INLINE_COMMAND_TRIGGER)) return undefined;
-	if (rawPrefix.includes(">")) return undefined;
-	const body = rawPrefix.slice(INLINE_COMMAND_TRIGGER.length);
-	const separator = body.indexOf(":");
-	if (separator === -1) return { name: body, rawPrefix };
-	return {
-		name: body.slice(0, separator),
-		argumentPrefix: body.slice(separator + 1),
-		rawPrefix,
-	};
-}
-
 function toCommandCompletionItem(view: CommandView): CommandCompletionItem {
 	const availability =
 		view.available === false
@@ -347,10 +264,7 @@ function toCommandCompletionItem(view: CommandView): CommandCompletionItem {
 	return {
 		view,
 		search: view.name,
-		label:
-			view.kind === "line"
-				? `${LINE_COMMAND_TRIGGER}${view.name}`
-				: `${INLINE_COMMAND_TRIGGER}${view.name}`,
+		label: `${LINE_COMMAND_TRIGGER}${view.name}`,
 		description: [view.argumentHint, view.description, availability]
 			.filter(Boolean)
 			.join(" — "),

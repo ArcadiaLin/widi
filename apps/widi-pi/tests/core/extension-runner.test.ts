@@ -94,6 +94,67 @@ describe("ExtensionRunner inspect", () => {
 		expect(snapshot.toolContributions[1]).not.toHaveProperty("patch");
 	});
 
+	it("keeps appended system prompt sections in registration order", async () => {
+		const runner = await createRunner([
+			[
+				"first",
+				(api) => {
+					api.appendSystemPrompt("  from first  ");
+				},
+			],
+			[
+				"second",
+				(api) => {
+					api.appendSystemPrompt("from second");
+				},
+			],
+		]);
+
+		expect(runner.getSystemPromptAppends()).toEqual([
+			"from first",
+			"from second",
+		]);
+		// The text is prompt content, not an inspectable fact about the extension.
+		expect(runner.inspect().systemPromptContributions).toEqual([
+			{ extensionId: "first", divisionId: undefined },
+			{ extensionId: "second", divisionId: undefined },
+		]);
+	});
+
+	it("drops appended sections once the runner is disposed", async () => {
+		const runner = await createRunner([
+			[
+				"sample",
+				(api) => {
+					api.appendSystemPrompt("from sample");
+				},
+			],
+		]);
+
+		await runner.dispose();
+
+		expect(runner.getSystemPromptAppends()).toEqual([]);
+		// The pre-disposal snapshot still answers what the extension contributed.
+		expect(runner.inspect().systemPromptContributions).toEqual([
+			{ extensionId: "sample", divisionId: undefined },
+		]);
+	});
+
+	it("rejects an empty appended section", async () => {
+		await expect(
+			createRunner([
+				[
+					"sample",
+					(api) => {
+						api.appendSystemPrompt("   ");
+					},
+				],
+			]),
+		).resolves.toMatchObject({
+			diagnostics: [{ code: "extension.activation_failed" }],
+		});
+	});
+
 	it("reports stale state after invalidation", async () => {
 		const loader = new ExtensionLoader();
 		loader.registerExtension("sample", () => {});

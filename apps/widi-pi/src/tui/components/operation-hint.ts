@@ -58,7 +58,7 @@ export function resolveOperationHint(
 
 	if (options.editorAutocompleteVisible) {
 		const parsed = parseLineCommand(options.editorText);
-		const command = parsed ? options.engine.line(parsed.name) : undefined;
+		const command = parsed ? options.engine.get(parsed.name) : undefined;
 		const tab = safePart(options.keys.inputTab);
 		const confirm = safePart(options.keys.selectConfirm);
 		const submit = safePart(options.keys.inputSubmit);
@@ -75,7 +75,7 @@ export function resolveOperationHint(
 		];
 		if (command) {
 			const usage = command.argumentHint
-				? `/${command.name}:${command.argumentHint}`
+				? `/${command.name} ${command.argumentHint}`
 				: `/${command.name}`;
 			return hintParts(usage, command.description, ...controls);
 		}

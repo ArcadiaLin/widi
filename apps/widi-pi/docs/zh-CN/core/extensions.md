@@ -17,7 +17,7 @@ Project `.widi/extensions` discovery 受 project trust gate；settings/agent-dir
 公开面包括：
 
 - 版本常量与 compatibility check。
-- `ExtensionDefinition` / `ExtensionFactory` / `ExtensionActivationApi`。
+- `ExtensionDefinition` / `ExtensionFactory` / `ExtensionActivationApi` / `ExtensionDivisionDeclaration`。
 - tool、resource、provider definitions。
 - observer/interceptor events 与 results。
 - callback context、scoped actions、session custom entry。
@@ -41,7 +41,50 @@ const extension: ExtensionDefinition = {
 export default extension;
 ```
 
-裸 factory 视为面向当前版本，适合与 runtime 同仓演进。不兼容版本在 load/registration 阶段被拒绝；引用它的 agent 收到 `extension.version_incompatible`（severity `error`，构成阻断性 load diagnostic），不受 missing severity 调节。
+裸 factory 视为面向当前版本，适合与 runtime 同仓演进。不兼容版本在 load/registration 阶段被拒绝，且不会进入可用集。被 `enabledExtensions` 点名时，agent 收到 severity `error` 的 `extension.version_incompatible` 并阻断创建（配置要求的东西没满足）；默认形态下只收到同 code 的 warning 并跳过。
+
+## Divisions 与 integration
+
+Extension 的开关粒度默认只到 id 一层：settings 圈定 id，loader 激活 factory，它注册的全部 contribution 无差别进入 scope。Division 在 extension 内部加一层可命名、可寻址的分区，使"只启用其中一部分"成为配置而不是重新打包。声明了 division 的 extension 称为 **integration**；runtime 不引入独立的 integration 类型，运行单元仍是 extension。
+
+Division 声明在 default export 的 `divisions` 上，而不是 package manifest：loader 先 import module 再激活，因此清单在**任何 extension 代码运行之前**就可列举，且单文件 extension 没有 manifest 可用。`ExtensionIdentity.divisions` 因此是激活前的 catalog。
+
+Id 是点分层级路径（`servers.github`），段只能包含字母、数字、`_`、`-`，整体不超过 128 UTF-8 bytes。`divisions` 是未经校验的 module 数据，因此非数组、非对象条目、字段类型错误、id 非法或重复都只丢弃该条声明并产生 `extension.division_invalid`，绝不抛出。它是 `warning` 而非 `error`：agent 创建会被任何 error 级 extension diagnostic 阻断，而"丢掉一条声明"是可恢复的，其余部分照常加载。
+
+### 注册与执行
+
+`api.division(id, register)` 划定归属。关键语义：**division 关闭时 `register` 回调不执行**，而不是执行后过滤 contribution——否则被关掉的部分仍会打开连接、注册 watcher。嵌套 scope 内的 id 相对父级解析。`api.isDivisionEnabled(id)` 是同语义的命令式查询，共用同一道 id 校验：非法 id 一律返回 `false`，命令式分支不会执行 scoped 形式会拒绝的副作用。不在任何 division 内的注册属于隐式 root，永远启用。
+
+一个 division 的回调抛错只记为一条 `extension.division_activation_failed`（warning，带 division 归属），不阻断该 extension 后续注册、也不阻断 agent 创建：integration 的一个部件坏掉不应连坐其余部件。它与整体 `extension.activation_failed`（error，阻断）是不同的 code。
+
+未 `await` 的 `division()` 由 loader 在收敛 scope 前排空——**包括 root factory 自身抛错的情况**，否则一个仍在运行的异步 division 会在 scope 交出去之后继续改写 contribution 数组。
+
+未声明就使用的 id 按启用处理（fail-open），并产生 `extension.division_undeclared`（warning）；它以 `declared: false` 出现在 inspect facts 中。静默丢弃作者已注册的 contribution 比一个未列出的开关更有害。
+
+### 选择与解析
+
+用户侧规则写在 `settings.json` 的 `extensionDivisions`（按 extension id 键控），走既有 global/project 合并：project 条目整体替换同一 extension id 的 global 条目。
+
+```json
+{
+  "extensionDivisions": {
+    "mcp": { "disable": ["tools"], "enable": ["experimental"] }
+  }
+}
+```
+
+- `disable: ["tools"]` — 关闭该 division 及其整个子树。
+- `enable: ["experimental"]` — 打开默认关闭的 division。
+
+规则不会隐式启用 extension：为未启用的 extension 写规则不会让它加载。是否加载只由 `enabledExtensions` 与可用集决定。
+
+解析顺序：声明的 `enabledByDefault`（默认 `true`）→ settings。规则作用于命名 division 及其子树，**最近的规则胜出**；`disable` 压过同一 id 上的 `enable`。随后是硬闸：任一祖先解析为关闭时，后代强制关闭，更具体的 `enable` 也无法翻越——"关掉这一部分"必须意味着整块。解析结果以 `source: default | settings | ancestor` 出现在 inspect facts 中。
+
+Division 规则不再是 profile 字段，因此不涉及 `profile.override_not_persistable`：它是安装范围的配置，persistent agent 恢复时读到的是同一份 settings。
+
+引用了既未声明也未使用的 division id 的规则产生 `extension.division_unknown`（warning）并忽略。
+
+切换 division 改变 contribution 集合，因此需要重建 runner：走既有 `reloadExtensions` 路径，没有额外机制。
 
 ## Activation API
 
@@ -66,6 +109,12 @@ Contribution 是 own-agent overlay。Core/profile resources 先注册并优先�
 `registerProvider(name, config)` 声明完整的新 provider。Provider fact 是 process-global，但 registration 按 `(extension, agent)` 记账并随 runner reload/dispose 撤销；多个 agent 共享相同 contribution 时使用 reference count。
 
 Extension provider 不能 override built-in、models.json、runtime dynamic 或其他 extension 已注册的 name。Config value 由 core 在请求期解析；包含 `!command` 时必须通过 project trust gate。Credential 与 OAuth refresh 仍归 AuthStorage/pi-ai runtime。
+
+### System prompt
+
+`appendSystemPrompt(text)` 在激活期追加一段 system prompt。段落按注册顺序排在 profile 正文、agent id 行、tool guidance 之后，profile 与 settings 的 append 段之后，`<project_context>` 之前。空文本是编程错误，直接抛错。
+
+这是**追加**通道；整段改写属于 `before_agent_start` interceptor。禁用 division 的 `register` 根本不会执行，其中的追加自然不存在。每回合重建 system prompt 时都从当前 runner 读取，因此 extension reload 后新的段落立即生效。Inspect fact 只报 `extensionId` 与 `divisionId`：正文是 prompt 内容，不是关于 extension 的事实。
 
 ## Hook model
 
@@ -152,7 +201,7 @@ Core 不提供 per-extension KV 或目录 API。Custom entry 的 namespace、for
 
 ## Inspect 与 diagnostics
 
-`agent.inspect` 暴露 loaded extensions、hooks、tool/resource/provider contributions、patches、diagnostics 与 stale state，不包含 secrets。
+`agent.inspect` 暴露 loaded extensions、hooks、tool/resource/provider contributions、patches、divisions（声明与已使用的 id 及其解析状态）、diagnostics 与 stale state，不包含 secrets。每条 hook 与 contribution 携带 `divisionId`，root 注册为 `undefined`。
 
 Missing、load failure、invalid factory/manifest、version mismatch、activation failure、handler/action failure 和 contribution conflict 使用不同 `extension.*` codes。Missing policy 只处理 declaration 无法解析；activation/version failure 属于已找到但不可运行的 dependency failure。
 

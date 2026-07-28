@@ -1,6 +1,14 @@
 const SENSITIVE_KEY =
 	/(authorization|api[-_]?key|access[-_]?token|refresh[-_]?token|password|passwd|secret|cookie)/i;
 
+/** Braille spinner frames shared by every animated indicator in the TUI. */
+export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
+
+/** Spinner frame for a point in time; advances every 160ms. */
+export function spinnerFrame(now: number = Date.now()): string {
+	return SPINNER_FRAMES[Math.floor(now / 160) % SPINNER_FRAMES.length] ?? "⠋";
+}
+
 export interface FormatUnknownOptions {
 	readonly maxDepth?: number;
 	readonly maxLines?: number;

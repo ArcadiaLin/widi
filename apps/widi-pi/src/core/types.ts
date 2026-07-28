@@ -5,7 +5,7 @@ import type {
 	BackgroundJobReportSnapshot,
 	BackgroundJobSnapshot,
 	BackgroundJobTransition,
-} from "./background-job.ts";
+} from "./background/index.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
 import type {
 	ExtensionMessage,
@@ -149,6 +149,8 @@ export type OrchestratorEvent =
 			agentId: AgentId;
 			profile: AgentProfile;
 			model: RuntimeModel;
+			/** Set when another agent's tool initiated the spawn. */
+			spawnedBy?: AgentId;
 	  }
 	| {
 			readonly type: "agent_resumed";

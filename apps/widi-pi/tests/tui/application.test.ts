@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
+import type {
+	AgentOrchestrator,
+	OrchestratorEvent,
+} from "../../src/core/agent-orchestrator.ts";
 import type { AgentRecordSnapshot } from "../../src/core/agent-record.ts";
 import type {
 	WidiRuntime,
@@ -268,6 +271,65 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 	});
 });
 
+describe("WidiTuiApplication animation ticker", () => {
+	it("uses spinner cadence only for the visible running agent", async () => {
+		const harness = await createApplicationHarness();
+		setActiveAgent(harness.application.state, "main").status = "idle";
+		ensureAgentProjection(harness.application.state, "background", "running");
+		const ticker = harness.application as unknown as {
+			updateJobsTicker(): void;
+			switchAgent(agentId: string): void;
+			jobsTickerInterval?: number;
+			hydratedAgents: Set<string>;
+		};
+		ticker.hydratedAgents.add("main");
+		ticker.hydratedAgents.add("background");
+
+		ticker.updateJobsTicker();
+		expect(ticker.jobsTickerInterval).toBeUndefined();
+
+		ticker.switchAgent("background");
+		expect(ticker.jobsTickerInterval).toBe(160);
+
+		ticker.switchAgent("main");
+		expect(ticker.jobsTickerInterval).toBeUndefined();
+	});
+});
+
+describe("WidiTuiApplication OAuth notices", () => {
+	it("preserves complete login URLs with and without an active agent", async () => {
+		const harness = await createApplicationHarness();
+		const url = `https://auth.example.test/oauth/authorize?${"state=a".repeat(120)}&complete=yes`;
+
+		deliverEvent(harness.application, {
+			type: "auth_login_url",
+			providerId: "test-oauth",
+			url,
+			createdAt: new Date().toISOString(),
+		});
+		expect(harness.application.state.globalNotices.at(-1)).toMatchObject({
+			text: expect.stringContaining(url),
+			textMode: "full",
+		});
+
+		setActiveAgent(harness.application.state, "main");
+		deliverEvent(harness.application, {
+			type: "auth_login_url",
+			providerId: "test-oauth",
+			agentId: "main",
+			url,
+			createdAt: new Date().toISOString(),
+		});
+		expect(
+			harness.application.state.agents.get("main")?.timeline.at(-1),
+		).toMatchObject({
+			type: "application-notice",
+			text: expect.stringContaining(url),
+			textMode: "full",
+		});
+	});
+});
+
 async function submit(
 	application: WidiTuiApplication,
 	text: string,
@@ -278,6 +340,17 @@ async function submit(
 		}
 	).submit(text);
 	await new Promise<void>((resolve) => queueMicrotask(resolve));
+}
+
+function deliverEvent(
+	application: WidiTuiApplication,
+	event: OrchestratorEvent,
+): void {
+	(
+		application as unknown as {
+			handleEvent(event: OrchestratorEvent): void;
+		}
+	).handleEvent(event);
 }
 
 async function createApplicationHarness() {
@@ -411,6 +484,8 @@ function snapshot(agentId: string, runtimeModel: RuntimeModel) {
 			hooks: [],
 			toolContributions: [],
 			providerContributions: [],
+			systemPromptContributions: [],
+			divisions: [],
 			stale: { stale: false },
 		},
 		resourceDiagnostics: [],

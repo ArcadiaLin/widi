@@ -11,7 +11,7 @@
  * orchestrator back.
  */
 
-import type { BackgroundJobSettleResult } from "./background-job.ts";
+import type { BackgroundJobSettleResult } from "./background/index.ts";
 import type { MessageSendOutcome } from "./message.ts";
 import type { AgentId, AgentLifecycleStatus } from "./types.ts";
 
@@ -24,6 +24,8 @@ export interface AgentProfileBrief {
 	readonly id: string;
 	readonly label: string;
 	readonly description?: string;
+	/** When to pick this role over its neighbours. The menu's selection advice. */
+	readonly whenToUse?: string;
 	/** Whether agents created from this profile get a persistent session. */
 	readonly persist: boolean;
 }

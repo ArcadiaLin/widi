@@ -6,7 +6,6 @@ import { AgentHarnessError } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
-import jobToolsExtension from "../../../../.widi/extensions/job-tools/index.ts";
 import type {
 	AgentOrchestrator,
 	OrchestratorEvent,
@@ -17,7 +16,7 @@ import {
 	InMemoryProfileStorageBackend,
 } from "../../src/core/agent-profile.ts";
 import type { AgentRecord } from "../../src/core/agent-record.ts";
-import type { BackgroundJobOutcome } from "../../src/core/background-job.ts";
+import type { BackgroundJobOutcome } from "../../src/core/background/index.ts";
 import type {
 	ExtensionContext,
 	ExtensionModule,
@@ -29,6 +28,7 @@ import {
 } from "../../src/core/tool-registry.ts";
 import { registerCoreJobTools } from "../../src/core/tools/jobs/builtin.ts";
 import type { ToolDefinition } from "../../src/core/tools/types.ts";
+import jobToolsExtension from "../extensions/job-tools-extension.ts";
 import {
 	createOrchestrator,
 	createToolDefinition,
@@ -146,9 +146,12 @@ describe("AgentOrchestrator background job router", () => {
 		expect(text).toContain("build done");
 	});
 
-	// A tool result is not a reason to preempt the reasoning of a turn already in
-	// flight, so it is queued for the next turn instead of steered into this one.
-	it("follows up a settled result into the active run while running", async () => {
+	// A follow-up is only drained where the agent loop would otherwise stop, so a
+	// job settling early in a long tool chain would go unread for the rest of the
+	// run. A steer reaches the model at the next turn boundary instead, which is
+	// the first point it can act on a result it was told to expect. Neither
+	// preempts the turn in flight.
+	it("steers a settled result into the active run while running", async () => {
 		const { record } = await spawnAgent();
 		const prompt = vi.fn(async (_text: string) => ({}) as AssistantMessage);
 		const steer = vi.fn(async (_text: string) => {});
@@ -161,10 +164,10 @@ describe("AgentOrchestrator background job router", () => {
 		record.status = "running";
 
 		const jobId = settleBackgroundedJob(record, completedOutcome);
-		await vi.waitFor(() => expect(followUp).toHaveBeenCalledTimes(1));
+		await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(1));
 		expect(prompt).not.toHaveBeenCalled();
-		expect(steer).not.toHaveBeenCalled();
-		const text = followUp.mock.calls[0]?.[0] as string;
+		expect(followUp).not.toHaveBeenCalled();
+		const text = steer.mock.calls[0]?.[0] as string;
 		expect(text).toContain(jobId);
 		expect(text).toContain("build done");
 	});
@@ -614,7 +617,6 @@ describe("AgentOrchestrator background job extension observability", () => {
 			id: "gated",
 			label: "Gated",
 			persist: false,
-			extensions: ["job-tools"],
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: profile.id,

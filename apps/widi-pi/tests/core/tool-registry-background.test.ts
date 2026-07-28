@@ -5,7 +5,7 @@ import {
 	type BackgroundJobChange,
 	type BackgroundJobSettlement,
 	BackgroundJobTable,
-} from "../../src/core/background-job.ts";
+} from "../../src/core/background/index.ts";
 import {
 	createAgentHarnessToolFromResolvedTool,
 	ToolRegistry,

@@ -294,6 +294,149 @@ describe("AgentProfileRegistry", () => {
 		);
 	});
 
+	// Extensions and prompt templates left the profile schema. An older profile
+	// file still naming them has to keep working: the runtime reads those
+	// decisions elsewhere now, and failing the role over a stale line would take
+	// the agent down with it.
+	it("ignores frontmatter fields it no longer owns", async () => {
+		const registry = new AgentProfileRegistry(
+			new InMemoryProfileStorageBackend([
+				{
+					entryId: "memory:a",
+					filenameId: "a",
+					source: { kind: "memory", priority: 100 },
+					content:
+						'---\nid: a\nskills: ["review"]\nextensions: ["mcp", "-mcp/tools"]\nprompt-templates: ["plan"]\nmissing-extension-severity: error\n---\nA',
+				},
+			]),
+		);
+
+		const result = await registry.resolveProfile("a");
+
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error("Expected profile to resolve.");
+		expect(result.profile.skills).toEqual(["review"]);
+		expect(result.diagnostics).toEqual([]);
+	});
+
+	// `whenToUse` is selection advice for the model, so it runs to a paragraph.
+	// A block scalar is the only shape in this format that can hold one, and the
+	// key after it still has to parse.
+	it("reads a multi-line whenToUse from a block scalar", async () => {
+		const registry = new AgentProfileRegistry(
+			new InMemoryProfileStorageBackend([
+				{
+					entryId: "memory:coder",
+					filenameId: "coder",
+					source: { kind: "memory", priority: 100 },
+					content: [
+						"---",
+						"id: coder",
+						"label: Coder",
+						"whenToUse: |",
+						"  Use for a self-contained change.",
+						"",
+						"  It cannot see your conversation.",
+						"persist: true",
+						"---",
+						"Coder prompt",
+					].join("\n"),
+				},
+			]),
+		);
+
+		const result = await registry.resolveProfile("coder");
+		const listed = await registry.listProfiles();
+
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error("Expected profile to resolve.");
+		expect(result.profile).toMatchObject({
+			whenToUse:
+				"Use for a self-contained change.\n\nIt cannot see your conversation.",
+			persist: true,
+			systemPrompt: "Coder prompt",
+		});
+		// The listing is what `list_agent_profiles` reads, so the advice has to
+		// survive summarization too.
+		expect(listed.profiles[0]?.whenToUse).toBe(result.profile.whenToUse);
+	});
+
+	// `fromProfiles` serializes to the same markdown the parser reads back, so a
+	// field that cannot round-trip silently loses its newlines.
+	it("round-trips multi-line text through serialization", async () => {
+		const registry = new AgentProfileRegistry(
+			InMemoryProfileStorageBackend.fromProfiles([
+				{
+					profile: {
+						id: "plan",
+						label: "Plan",
+						description: "Read-only planning.",
+						whenToUse: "First line.\n\nSecond line.",
+						systemPrompt: "Plan prompt",
+						persist: false,
+					},
+				},
+			]),
+		);
+
+		const result = await registry.resolveProfile("plan");
+
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error("Expected profile to resolve.");
+		expect(result.profile).toMatchObject({
+			description: "Read-only planning.",
+			whenToUse: "First line.\n\nSecond line.",
+			systemPrompt: "Plan prompt",
+		});
+	});
+
+	it("reads the system prompt composition fields and round-trips them", async () => {
+		const registry = new AgentProfileRegistry(
+			new InMemoryProfileStorageBackend([
+				{
+					entryId: "memory:explore",
+					filenameId: "explore",
+					source: { kind: "memory", priority: 100 },
+					content: [
+						"---",
+						"id: explore",
+						"projectContext: false",
+						"includeCwd: false",
+						"appendSystemPrompt: |",
+						"  Report paths only.",
+						"",
+						"  Never edit.",
+						"---",
+						"Explore prompt",
+					].join("\n"),
+				},
+			]),
+		);
+
+		const result = await registry.resolveProfile("explore");
+
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error("Expected profile to resolve.");
+		expect(result.profile).toMatchObject({
+			projectContext: false,
+			includeCwd: false,
+			appendSystemPrompt: "Report paths only.\n\nNever edit.",
+		});
+
+		// The same values have to survive a serialization round trip, or an
+		// in-memory profile silently loses its prompt composition.
+		const roundTripped = await new AgentProfileRegistry(
+			InMemoryProfileStorageBackend.fromProfiles([{ profile: result.profile }]),
+		).resolveProfile("explore");
+		expect(roundTripped.ok).toBe(true);
+		if (!roundTripped.ok) throw new Error("Expected profile to resolve.");
+		expect(roundTripped.profile).toMatchObject({
+			projectContext: false,
+			includeCwd: false,
+			appendSystemPrompt: "Report paths only.\n\nNever edit.",
+		});
+	});
+
 	it("indexes declared ids and does not treat filename as an alias", async () => {
 		const env = new MemoryExecutionEnv();
 		await env.writeFile(

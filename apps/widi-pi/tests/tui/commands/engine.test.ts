@@ -80,6 +80,45 @@ describe("CommandEngine.handleInput", () => {
 		expect(forkedWith).toBeUndefined();
 	});
 
+	it("runs the bare form when an optional argument has no candidates", async () => {
+		let treeCalls = 0;
+		const outcome = await engine.handleInput(
+			"/tree",
+			context({
+				getAgentSessionTree: async () => {
+					treeCalls += 1;
+					return { entries: [] };
+				},
+			}),
+		);
+		// A fresh session has no user messages to navigate to; demanding an
+		// argument would hide /tree's own listing behind "/tree:".
+		expect(outcome).toMatchObject({ kind: "executed", name: "tree" });
+		expect(treeCalls).toBe(2);
+	});
+
+	it("still offers a menu for an optional argument that has candidates", async () => {
+		const outcome = await engine.handleInput(
+			"/tree",
+			context({
+				getAgentSessionTree: async () => ({
+					entries: [
+						{
+							id: "entry-1",
+							type: "message",
+							timestamp: "2026-01-01T00:00:00.000Z",
+							message: { role: "user", content: "Fix the flaky test" },
+						},
+					],
+				}),
+			}),
+		);
+		expect(outcome).toMatchObject({
+			kind: "needs-argument",
+			candidates: [{ value: "entry-1", label: "Fix the flaky test" }],
+		});
+	});
+
 	it("re-prompts a required argument given as blank", async () => {
 		const outcome = await engine.handleInput("/rename: ", context());
 		expect(outcome.kind).toBe("needs-argument");
@@ -119,6 +158,27 @@ describe("CommandEngine.handleInput", () => {
 		);
 
 		expect(outcome).toMatchObject({ kind: "executed", name: "session" });
+	});
+
+	it("carries the command's formatResult as display text", async () => {
+		const outcome = await engine.handleInput(
+			"/resume session-1",
+			context({
+				resumeAgentSessionByReference: async () => ({
+					agentId: "agent-2",
+					snapshot: {
+						profile: { reference: { id: "default", label: "Default" } },
+						model: { id: "test-model" },
+					},
+				}),
+			}),
+		);
+
+		expect(outcome).toMatchObject({
+			kind: "executed",
+			name: "resume",
+			display: "resumed agent-2 · Default · test-model",
+		});
 	});
 
 	it("rejects active-only commands without an active agent", async () => {
@@ -168,35 +228,62 @@ describe("CommandEngine.handleInput", () => {
 		expect(started).toEqual(["status"]);
 	});
 
-	it("expands inline commands and records positions", async () => {
+	it("expands a prompt command into the submitted text", async () => {
 		const outcome = await engine.handleInput(
-			"use <skill:review> now",
+			"/skill review focus on locking",
 			context({
 				getAgentSkill: async () => ({
 					name: "review",
 					description: "Review code.",
-					filePath: "/skills/review.md",
+					content: "Review the diff carefully.",
+					filePath: "/skills/review/SKILL.md",
 				}),
 			}),
 		);
 		expect(outcome.kind).toBe("expanded");
 		if (outcome.kind === "expanded") {
-			expect(outcome.text).toContain('<skill name="review">');
-			expect(outcome.expansion.originalText).toBe("use <skill:review> now");
-			expect(outcome.expansion.items).toHaveLength(1);
-			expect(outcome.expansion.items[0]).toMatchObject({
-				name: "skill",
-				trigger: "<",
-				argument: "review",
-				start: 4,
-				end: 18,
-			});
+			expect(outcome.text).toContain(
+				'<skill name="review" location="/skills/review/SKILL.md">',
+			);
+			// The body is inlined, not pointed at.
+			expect(outcome.text).toContain("Review the diff carefully.");
+			expect(outcome.text).toContain("focus on locking");
+			expect(outcome.expansion.originalText).toBe(
+				"/skill review focus on locking",
+			);
+			expect(outcome.expansion.items).toEqual([
+				{
+					commandId: expect.any(String),
+					name: "skill",
+					trigger: "/",
+					argument: "review focus on locking",
+					start: 0,
+					end: "/skill review focus on locking".length,
+				},
+			]);
 		}
 	});
 
-	it("fails the whole input when an inline expansion throws", async () => {
+	it("substitutes positional arguments into a prompt template", async () => {
 		const outcome = await engine.handleInput(
-			"<prompt:missing>",
+			'/prompt review src/a.ts "src/b c.ts"',
+			context({
+				getAgentPromptTemplate: async () => ({
+					name: "review",
+					description: "Review files.",
+					content: "Review $1 and $2. All: $ARGUMENTS",
+				}),
+			}),
+		);
+		expect(outcome).toMatchObject({
+			kind: "expanded",
+			text: "Review src/a.ts and src/b c.ts. All: src/a.ts src/b c.ts",
+		});
+	});
+
+	it("fails the input when a prompt expansion throws", async () => {
+		const outcome = await engine.handleInput(
+			"/prompt missing",
 			context({
 				getAgentPromptTemplate: async () => {
 					throw new Error("not found");
@@ -204,6 +291,21 @@ describe("CommandEngine.handleInput", () => {
 			}),
 		);
 		expect(outcome.kind).toBe("failed");
+	});
+
+	it("offers candidates for a prompt command given no argument", async () => {
+		const outcome = await engine.handleInput(
+			"/skill",
+			context({
+				listAgentSkillCandidates: async () => ({
+					skills: [{ value: "review" }],
+				}),
+			}),
+		);
+		expect(outcome).toMatchObject({
+			kind: "needs-argument",
+			candidates: [{ value: "review" }],
+		});
 	});
 });
 

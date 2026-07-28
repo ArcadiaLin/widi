@@ -342,6 +342,36 @@ describe("TUI views", () => {
 		expect(output.match(/Thinking…/g)).toHaveLength(1);
 	});
 
+	it("replaces the generic thinking indicator with a preparing tool", () => {
+		const state = createTuiApplicationState();
+		const agent = setActiveAgent(state, "main");
+		agent.timeline.push(
+			{
+				type: "assistant-message",
+				id: "live-1",
+				durability: "durable",
+				createdAt: timestamp(1),
+				text: "",
+				streaming: true,
+			},
+			{
+				type: "tool-execution",
+				id: "preparing-tool:live-1:0",
+				toolCallId: "tool-1",
+				durability: "durable",
+				createdAt: timestamp(2),
+				sourceAssistantId: "live-1",
+				toolName: "read",
+				status: "preparing",
+			},
+		);
+
+		const output = new ChatView(state).render(80).join("\n");
+
+		expect(output).not.toContain("Thinking…");
+		expect(output.match(/preparing…/g)).toHaveLength(1);
+	});
+
 	it("renders tool executions through the presentation registry", () => {
 		const state = createTuiApplicationState();
 		const agent = setActiveAgent(state, "main");
@@ -410,6 +440,7 @@ describe("TUI views", () => {
 		};
 		const text = renderTimelineItem(item, 80, {
 			liveThinkingIds: new Set(),
+			livePreparingAssistantIds: new Set(),
 			toolOutputExpanded: false,
 		})
 			.join("\n")
@@ -448,6 +479,7 @@ describe("TUI views", () => {
 		};
 		const text = renderTimelineItem(item, 80, {
 			liveThinkingIds: new Set(),
+			livePreparingAssistantIds: new Set(),
 			toolOutputExpanded: false,
 		})
 			.join("\n")
@@ -471,6 +503,7 @@ describe("TUI views", () => {
 		};
 		const text = renderTimelineItem(item, 80, {
 			liveThinkingIds: new Set(),
+			livePreparingAssistantIds: new Set(),
 			toolOutputExpanded: false,
 		})
 			.join("\n")
@@ -494,6 +527,7 @@ describe("TUI views", () => {
 		};
 		const collapsed = renderTimelineItem(item, 80, {
 			liveThinkingIds: new Set(),
+			livePreparingAssistantIds: new Set(),
 			toolOutputExpanded: false,
 		})
 			.join("\n")
@@ -502,6 +536,7 @@ describe("TUI views", () => {
 
 		const expanded = renderTimelineItem(item, 80, {
 			liveThinkingIds: new Set(),
+			livePreparingAssistantIds: new Set(),
 			toolOutputExpanded: true,
 		})
 			.join("\n")
@@ -531,6 +566,7 @@ describe("TUI views", () => {
 		};
 		const collapsed = renderTimelineItem(item, 80, {
 			liveThinkingIds: new Set(),
+			livePreparingAssistantIds: new Set(),
 			toolOutputExpanded: false,
 		})
 			.join("\n")
@@ -540,6 +576,7 @@ describe("TUI views", () => {
 
 		const expanded = renderTimelineItem(item, 80, {
 			liveThinkingIds: new Set(),
+			livePreparingAssistantIds: new Set(),
 			toolOutputExpanded: true,
 		})
 			.join("\n")
@@ -600,6 +637,8 @@ function snapshot(
 			hooks: [],
 			toolContributions: [],
 			providerContributions: [],
+			systemPromptContributions: [],
+			divisions: [],
 			stale: { stale: false },
 		},
 		resourceDiagnostics: [],

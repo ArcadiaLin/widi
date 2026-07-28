@@ -83,7 +83,7 @@ describe("resolveOperationHint", () => {
 				editorAutocompleteVisible: true,
 				keys,
 			}),
-		).toContain("/thinking:[level] · Set the current agent thinking level.");
+		).toContain("/thinking [level] · Set the current agent thinking level.");
 	});
 
 	it("uses application-owned command metadata for autocomplete help", () => {
@@ -154,7 +154,7 @@ describe("resolveOperationHint", () => {
 				editorAutocompleteVisible: true,
 				keys,
 			}),
-		).toContain("/thinking:[level] · Set the current agent thinking level.");
+		).toContain("/thinking [level] · Set the current agent thinking level.");
 	});
 
 	it("omits apply when a completion menu has no candidates", () => {
@@ -223,7 +223,7 @@ describe("resolveOperationHint", () => {
 				},
 			}),
 		).toBe(
-			"/thinking:[level] · Set the current agent thinking level. · Ctrl+K/Ctrl+J navigate · Alt+Tab complete · Space complete · Enter submit · Ctrl+G close",
+			"/thinking [level] · Set the current agent thinking level. · Ctrl+K/Ctrl+J navigate · Alt+Tab complete · Space complete · Enter submit · Ctrl+G close",
 		);
 	});
 
@@ -349,7 +349,7 @@ describe("resolveOperationHint", () => {
 		const rendered = view.render(180).join("\n").replace(ANSI_SEQUENCE, "");
 
 		expect(rendered).toBe(
-			"/thinking:[level] · Set the current agent thinking level. · Ctrl+K/Ctrl+J navigate · Alt+Tab complete · Space complete · Enter submit",
+			"/thinking [level] · Set the current agent thinking level. · Ctrl+K/Ctrl+J navigate · Alt+Tab complete · Space complete · Enter submit",
 		);
 	});
 

@@ -28,7 +28,7 @@ Runtime composition 向 file backend 注入显式 roots，通常从高到低为�
 
 不同 priority 的同 id profile 由高优先级整份覆盖，不做字段级 merge，并产生 source override diagnostic。同 priority duplicate 是 hard conflict。高优先级 candidate 无效时不静默 fallback 到低优先级同 id candidate。
 
-Builtin default 是普通低优先级 source，不是错误恢复 fallback。
+Builtin default 是普通低优先级 source，不是错误恢复 fallback。它的 id 是 `main`，与发行版 `.widi/profiles/main.md` 同名：发行版那份以更高 priority 整份覆盖它，而不是并排多出一个角色。没有任何地方指定 default profile 时，orchestrator 回落到的也是 `main`。
 
 ## Orchestrator policy
 
@@ -49,12 +49,56 @@ Profile 的主要职责是声明 agent build 输入：
 - `systemPrompt`：进入 harness system prompt composition。
 - `persist`：选择 persistent JSONL 或 in-memory session。
 - `tools`：ToolRegistry 的 requested visibility，也是 agent 协作能力的唯一边界（见下）。
-- `skills` / `promptTemplates`：ResourceLoader 的 roots 与选择范围。
-- `extensions`：per-agent extension dependencies。
-- `missingExtensionSeverity`：只调节 missing declaration，不覆盖 activation/version failure。
+- `skills`：ResourceLoader 的选择范围；未写则加载 roots 下全部 skill。
 - `commands`：command input 的 enable/deny policy。
+- `description` / `whenToUse`：只面向调用方。前者说这个角色是什么，后者说什么时候该选它而不是隔壁那个，是 `list_agent_profiles` 真正依赖的字段。两者都不进 system prompt。
+- `projectContext` / `includeCwd` / `appendSystemPrompt`：system prompt composition 的角色级开关，见下。
 
 解析但没有 runtime consumer 的 policy 字段不应长期保留。
+
+### System prompt composition
+
+Harness system prompt 由 `core/system-prompt.ts` 组装，段序固定：
+
+1. profile 正文（角色自己的那段话）。
+2. `You are agent <id>.`——只在激活了协作工具时出现。
+3. `Available tools:` / `Tool guidelines:`——来自激活工具的 `promptSnippet` 与 `promptGuidelines`。
+4. append 段：profile 的 `appendSystemPrompt`、settings 的 `systemPrompt.append`、extension 的 `appendSystemPrompt()` 贡献，按此顺序。
+5. `<project_context>`：项目自己的指令文件全文。
+6. `<available_skills>`——只在激活了 `read` 工具且有 skill 时出现。
+7. `Current working directory:`——文件工具解析相对路径所依据的那个目录。
+
+第 4、5、7 段各有一个开关，profile 优先于 settings，settings 优先于内置默认：
+
+| 段 | profile frontmatter | settings 键 | 默认 |
+| --- | --- | --- | --- |
+| 项目上下文 | `projectContext: false` | `systemPrompt.projectContext` | 开 |
+| cwd 行 | `includeCwd: false` | `systemPrompt.includeCwd` | 开 |
+| append 文本 | `appendSystemPrompt: \|` | `systemPrompt.append: []` | 空 |
+
+项目上下文文件由 `ResourceLoader.loadContextFiles()` 收集：每个目录按 `AGENTS.md` → `AGENTS.MD` → `CLAUDE.md` → `CLAUDE.MD` 取第一个命中，先取 agent dir 那份，再从 cwd 逐级向上到文件系统根，最一般的祖先排在前、cwd 自己排在最后。未信任的项目不贡献 cwd 侧文件——项目指令和 skill、extension 一样是项目内容。文件在 agent build 时读入并缓存进 `AgentRecord`：system prompt 回调每回合执行，不回盘。
+
+### Frontmatter 形态
+
+Frontmatter 是自带的极简 YAML 子集，不是完整 YAML：单行标量、`[a, b]` 数组、一层嵌套 mapping，以及 block scalar。
+
+`whenToUse` 这类选择建议通常是一整段，只能写成 block scalar：
+
+```markdown
+whenToUse: |
+  Use for a self-contained change.
+
+  It cannot see your conversation.
+```
+
+首个内容行的缩进即被剥离的缩进，空行保留，块在第一个缩进不深于 key 的非空行处结束。`|-` 会被接受但与 `|` 等价：末尾空行一律丢弃，且所有消费方都会 trim，clip 与 strip 在下游无法区分。序列化走同一条路——含换行的文本写成 block scalar，读回来完全一致。
+
+### Profile 不管的两件事
+
+- **哪些 extension 加载**：由 settings 的 `enabledExtensions` 决定，未配置即"运行时发现到的全部启用"；`extensionDivisions` 负责扩展内部裁剪。extension 是一次安装范围的事实，不是角色的属性，因此 profile 不再有 `extensions` / `extensionDivisions` / `missingExtensionSeverity` 字段。
+- **有哪些 prompt template**：prompt template 是用户自己的 slash 命令，始终整体加载，与 agent 扮演什么角色无关，因此 profile 不再有 `promptTemplates` 字段。
+
+旧 profile 文件里残留这些键不会报错，但会被忽略。
 
 ### `tools` 决定协作能力
 
@@ -71,7 +115,7 @@ Profile 没有单独的 collaboration capability 字段。谁能 spawn、分派�
 `profileOverride` 是 create-time assembly 输入，不是新的 profile identity。
 
 - Override 不能修改 `id`。
-- 修改 system prompt、tools、resources、extensions 或 persist 等恢复关键字段时，不能创建 persistent session。
+- 修改 `systemPrompt`、`tools`、`skills` 或 `persist` 等恢复关键字段时，不能创建 persistent session：resume 会按 profile id 重新解析，恢复出来的将是另一套输入。
 - Override 不写入 session metadata。
 
 需要 resume 的差异应进入正式 profile，而不是依赖一次性 override。
@@ -83,7 +127,7 @@ Profile 没有单独的 collaboration capability 字段。谁能 spawn、分派�
 Extension 通过 `contributeResources()` 在激活期声明 paths，不注册内存 resource object。贡献是 own-agent overlay，只影响当前 agent 的：
 
 - harness resources 与 system prompt skills 列表。
-- `<skill:...>` / `<prompt:...>` candidates 与 expansion。
+- `/skill` / `/prompt` candidates 与 expansion。
 - inspect 中的 resolved provenance。
 
 冲突采用 first-registration-wins：profile/cwd 等 core sources 先解析并优先；extension 同名贡献被丢弃并产生 `extension.resource_conflict`。Stale runner 的贡献退出后续加载与展开管线，不追溯修改已创建 harness 的 resources。
@@ -94,7 +138,9 @@ Core roots 之间的 duplicate identity 和 severity 细则仍按 [Backlog](../B
 
 Profile diagnostics 覆盖 source read、frontmatter parse、metadata validation、id mismatch、case conflict、duplicate、override、missing 与 disabled。
 
-ResourceLoader 可以保留 Pi 的 `SkillDiagnostic` / `PromptTemplateDiagnostic`；进入 orchestrator event 时转换为 `CoreDiagnostic` 并补充 profile/agent context。第一版 resource failure 以报告为主，不由 loader 私自决定 agent lifecycle。
+ResourceLoader 把 Pi 的 `SkillDiagnostic` / `PromptTemplateDiagnostic` 归一化为 `CoreDiagnostic`，code 加上 `resource.skill.` / `resource.prompt_template.` 前缀并拼上出错路径；orchestrator 只补 agent context 再发布。Resource failure 以报告为主，不由 loader 私自决定 agent lifecycle。
+
+`loadAgentResources(profile)` 是 agent build 的单一入口：按 profile 收窄 skills、整体加载 prompt templates、按 `includeProjectContext` 决定是否读项目指令文件，并一次返回归一化 diagnostics。Orchestrator 不再自行组合这几类资源。项目指令文件无法检查或读取时分别报 `resource.context_file.file_info_failed`、`resource.context_file.read_failed`；文件不存在是常态，静默。
 
 ## 非职责
 

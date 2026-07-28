@@ -1,9 +1,10 @@
 /**
  * SessionManager owns session repositories used by AgentOrchestrator.
  *
- * Persistent sessions use pi-agent-core JSONL storage. WIDI stores profile
- * references in the JSONL session header metadata so resume can rebuild harness
- * context.
+ * Persistent sessions use pi-agent-core JSONL storage, laid out one directory
+ * per session by SessionDirectoryRepo so a session can own artifacts beyond its
+ * conversation history. WIDI stores profile references in the JSONL session
+ * header metadata so resume can rebuild harness context.
  */
 
 import type {
@@ -19,7 +20,6 @@ import type {
 import {
 	buildSessionContext,
 	InMemorySessionRepo,
-	JsonlSessionRepo,
 } from "@earendil-works/pi-agent-core";
 import type { AgentProfile, AgentProfileReference } from "./agent-profile.js";
 import {
@@ -27,6 +27,7 @@ import {
 	toAgentProfileReference,
 } from "./agent-profile.js";
 import type { ExtensionMessage } from "./extension/presentation.ts";
+import { SessionDirectoryRepo, sessionDirPath } from "./session-repo.ts";
 import type { AgentId } from "./types.ts";
 
 export type AgentSessionMetadata = SessionMetadata | JsonlSessionMetadata;
@@ -153,7 +154,7 @@ type ResumeAgentSessionOptions = {
 };
 
 export class SessionManager {
-	readonly sessionRepo: JsonlSessionRepo;
+	readonly sessionRepo: SessionDirectoryRepo;
 	private readonly _fs: FileSystem;
 	private readonly _cwd: string;
 	private readonly _agentSessions: Map<AgentId, Session<AgentSessionMetadata>> =
@@ -164,7 +165,7 @@ export class SessionManager {
 	constructor(config: SessionManagerConfigs) {
 		this._fs = config.fs;
 		this._cwd = config.cwd;
-		this.sessionRepo = new JsonlSessionRepo({
+		this.sessionRepo = new SessionDirectoryRepo({
 			fs: config.fs,
 			sessionsRoot: config.sessionsRoot,
 		});
@@ -348,6 +349,16 @@ export class SessionManager {
 
 	async getAgentSessionLeafId(agentId: AgentId): Promise<string | null> {
 		return await this._requireAgentSession(agentId).getLeafId();
+	}
+
+	// Directory owning every persisted artifact of an agent's session, for
+	// consumers that store more than conversation history. Ephemeral sessions
+	// live in memory and have none.
+	async getAgentSessionDir(agentId: AgentId): Promise<string | undefined> {
+		const metadata = await this._requireAgentSession(agentId).getMetadata();
+		return isJsonlSessionMetadata(metadata)
+			? sessionDirPath(metadata.path)
+			: undefined;
 	}
 
 	// Retraction for provisional prompt records (expansion/transform entries

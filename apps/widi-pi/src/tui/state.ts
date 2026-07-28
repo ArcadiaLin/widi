@@ -4,7 +4,7 @@ import type {
 	ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import type { AgentRecordSnapshot } from "../core/agent-record.ts";
-import type { BackgroundJobReportSnapshot } from "../core/background-job.ts";
+import type { BackgroundJobReportSnapshot } from "../core/background/index.ts";
 import type { OrchestratorDiagnostic } from "../core/diagnostics.ts";
 import type {
 	ExtensionMessage,
@@ -23,6 +23,7 @@ import type {
 import type { CommandError } from "./commands/types.ts";
 
 export type TimelineDurability = "durable" | "ephemeral";
+export type NoticeTextMode = "compact" | "full";
 
 export interface UserMessageItem {
 	readonly type: "user-message";
@@ -49,12 +50,19 @@ export interface ToolExecutionItem {
 	readonly toolCallId: string;
 	readonly durability: TimelineDurability;
 	readonly createdAt: string;
+	/** Assistant stream that emitted this provisional tool call, when known. */
+	readonly sourceAssistantId?: string;
 	toolName: string;
 	args?: unknown;
 	partialResult?: unknown;
 	result?: unknown;
 	isError?: boolean;
-	status: "running" | "completed";
+	/**
+	 * "preparing" covers the window between the streamed toolcall_start and
+	 * tool_execution_start; a run that ends in that window leaves the item
+	 * "cancelled".
+	 */
+	status: "preparing" | "running" | "completed" | "cancelled";
 }
 
 export interface ThinkingStatusItem {
@@ -63,6 +71,8 @@ export interface ThinkingStatusItem {
 	readonly durability: "ephemeral";
 	readonly createdAt: string;
 	status: "thinking" | "completed";
+	/** Display-only tail of the streamed thinking text (last lines). */
+	preview?: string;
 }
 
 export interface DiagnosticItem {
@@ -83,6 +93,8 @@ export interface CommandResultItem {
 	readonly argument: string;
 	status: "running" | "completed" | "failed";
 	result?: unknown;
+	/** Human-readable summary from the command's formatResult, when defined. */
+	display?: string;
 	error?: CommandError;
 }
 
@@ -136,6 +148,8 @@ export interface ApplicationNoticeItem {
 	readonly durability: "ephemeral";
 	readonly createdAt: string;
 	readonly text: string;
+	/** Full mode wraps sanitized text without abbreviating copy-sensitive values. */
+	readonly textMode?: NoticeTextMode;
 }
 
 export interface SessionMarkerItem {
@@ -219,6 +233,8 @@ export interface AgentDisplayFacts {
 export interface AgentViewState {
 	readonly agentId: AgentId;
 	snapshot?: AgentRecordSnapshot;
+	/** The agent whose tool spawned this one; unset for user-side spawns. */
+	spawnedBy?: AgentId;
 	status: AgentLifecycleStatus;
 	timeline: TimelineItem[];
 	extensionStatuses: Map<string, ExtensionStatusSnapshot>;
@@ -281,6 +297,8 @@ export interface NoticeItem {
 		| "startup";
 	readonly createdAt: string;
 	readonly text: string;
+	/** Full mode wraps sanitized text without abbreviating copy-sensitive values. */
+	readonly textMode?: NoticeTextMode;
 	readonly agentId?: AgentId;
 	readonly extensionId?: string;
 	readonly diagnostic?: OrchestratorDiagnostic;
@@ -299,7 +317,7 @@ export interface TuiApplicationState {
 	humanRequests: PendingHumanRequestView[];
 	mode: "editor" | "completion-menu" | "human-request";
 	shuttingDown: boolean;
-	/** Global toggle: show full tool output instead of collapsed previews. */
+	/** Global toggle: show full transcript details instead of collapsed previews. */
 	toolOutputExpanded: boolean;
 }
 
