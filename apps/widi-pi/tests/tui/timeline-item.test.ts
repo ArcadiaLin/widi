@@ -1,4 +1,4 @@
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import {
 	renderDeps,
@@ -6,10 +6,12 @@ import {
 	type TimelineRenderContext,
 } from "../../src/tui/components/timeline-item.ts";
 import { SPINNER_FRAMES } from "../../src/tui/format.ts";
+import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
 import type {
 	ApplicationNoticeItem,
 	AssistantMessageItem,
 	CommandResultItem,
+	SessionMarkerItem,
 	ThinkingStatusItem,
 	UserMessageItem,
 } from "../../src/tui/state.ts";
@@ -237,5 +239,43 @@ describe("renderTimelineItem", () => {
 		};
 
 		expect(renderTimelineItem(item, 80, context)).toEqual([]);
+	});
+
+	it("collapses a compaction marker into a full-width separator by default", () => {
+		setKeybindings(createWidiKeybindings());
+		const item: SessionMarkerItem = {
+			type: "session-marker",
+			id: "compaction-1",
+			durability: "durable",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			marker: "compaction",
+			summary: "## Goal\nhidden summary body",
+		};
+
+		const lines = plain(renderTimelineItem(item, 60, context));
+
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toContain("── Compacted session · Ctrl+O expand ─");
+		expect(lines[0]?.endsWith("──")).toBe(true);
+		expect(lines[0]).not.toContain("hidden summary body");
+	});
+
+	it("expands a compaction marker with the transcript toggle", () => {
+		setKeybindings(createWidiKeybindings());
+		const item: SessionMarkerItem = {
+			type: "session-marker",
+			id: "compaction-1",
+			durability: "durable",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			marker: "compaction",
+			summary: "## Goal\nhidden summary body",
+		};
+
+		const lines = plain(
+			renderTimelineItem(item, 60, { ...context, toolOutputExpanded: true }),
+		);
+
+		expect(lines[0]).toContain("── Compacted session · Ctrl+O collapse ─");
+		expect(lines).toContain("hidden summary body");
 	});
 });

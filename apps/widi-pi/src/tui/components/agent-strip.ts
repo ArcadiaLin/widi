@@ -14,6 +14,7 @@ import {
 } from "../agent-tree.ts";
 import type { AgentViewState, TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
+import { maintenanceLabel } from "./common.ts";
 
 const TREE_INDENT = 4;
 /** Visible width of `├── ` / `└── `. */
@@ -389,12 +390,16 @@ function formatAgent(
 	selected = false,
 ): string {
 	const label = agentIdentityLabel(state, agent);
+	const statusText =
+		agent.status === "running" && agent.maintenance
+			? maintenanceLabel(agent.maintenance).toLowerCase()
+			: agent.status;
 	const base =
 		agent.attention === "human-request"
 			? "needs input"
 			: agent.unreadCount > 0
-				? `${agent.status} · ${agent.unreadCount} unread`
-				: agent.status;
+				? `${statusText} · ${agent.unreadCount} unread`
+				: statusText;
 	const detail =
 		agent.backgroundJobCount > 0
 			? `${base} · ${agent.backgroundJobCount} bg`

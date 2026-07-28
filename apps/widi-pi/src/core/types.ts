@@ -25,6 +25,13 @@ export type AgentLifecycleStatus =
 	| "unavailable"
 	| "disposed";
 
+/**
+ * Maintenance work that marks an agent "running" without driving an agent
+ * loop (see AgentOrchestrator._runMaintenanceOperation). Steering and aborting
+ * do not apply while it is set.
+ */
+export type AgentMaintenanceKind = "compaction" | "tree-navigation";
+
 export interface AgentToolsSnapshot {
 	readonly toolNames: string[];
 	readonly activeToolNames: string[];
@@ -41,6 +48,8 @@ export type OrchestratorEvent =
 			agentId: AgentId;
 			previousStatus?: AgentLifecycleStatus;
 			status: AgentLifecycleStatus;
+			/** Set when this "running" transition is maintenance work, not a turn. */
+			maintenance?: AgentMaintenanceKind;
 			changedAt: string;
 	  }
 	// Input interception facts (ME slice 6): the model-facing text can differ

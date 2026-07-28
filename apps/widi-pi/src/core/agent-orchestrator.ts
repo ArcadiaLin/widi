@@ -140,6 +140,7 @@ import {
 import type {
 	AgentId,
 	AgentLifecycleStatus,
+	AgentMaintenanceKind,
 	AgentToolsSnapshot,
 	CandidateItem,
 	OrchestratorEvent,
@@ -157,6 +158,7 @@ export type {
 export type {
 	AgentId,
 	AgentLifecycleStatus,
+	AgentMaintenanceKind,
 	OrchestratorEvent,
 	OrchestratorEventListener,
 } from "./types.ts";
@@ -382,13 +384,15 @@ export class AgentOrchestrator {
 	private _agentStatusRevisions: Map<AgentId, number> = new Map();
 	private _agentToolSets: Map<AgentId, AgentToolSet> = new Map();
 	private _autoCompactingAgents: Set<AgentId> = new Set();
-	// Live count of harness operations that do not run an agent loop
-	// (compaction, branch summary). `AgentLifecycleStatus.running` cannot tell
-	// these apart from a turn, but a steer or follow-up delivered here would be
-	// accepted into a queue nothing drains. Counted rather than flagged: a
-	// second, concurrent operation rejected as busy must not clear the marker
-	// the first one still depends on.
-	private _maintenanceDepth: Map<AgentId, number> = new Map();
+	// Harness operations that do not run an agent loop (compaction, branch
+	// summary). `AgentLifecycleStatus.running` cannot tell these apart from a
+	// turn, but a steer, follow-up, or abort here would target the wrong phase.
+	// Inserting before the first await also serves as the per-agent maintenance
+	// lock, so a competing operation cannot overwrite the published kind.
+	private _maintenanceOperations: Map<
+		AgentId,
+		{ readonly kind: AgentMaintenanceKind }
+	> = new Map();
 	// Waiters for a target's next agent-loop start, resolved from the harness's
 	// own `agent_start`. Accepting a prompt any earlier would report success for
 	// text the harness can still drop while it builds the turn.
@@ -537,6 +541,11 @@ export class AgentOrchestrator {
 
 	getAgentStatus(agentId: AgentId): AgentLifecycleStatus {
 		return this._requireAgentRecord(agentId).status;
+	}
+
+	getAgentMaintenance(agentId: AgentId): AgentMaintenanceKind | undefined {
+		this._requireAgentRecord(agentId);
+		return this._maintenanceOperations.get(agentId)?.kind;
 	}
 
 	inspectAgent(agentId: AgentId): AgentRecordSnapshot {
@@ -1487,7 +1496,9 @@ export class AgentOrchestrator {
 		text: string,
 		options?: { images?: ImageContent[] },
 	): Promise<void> {
-		await this._requireAgentHarness(agentId).steer(text, options);
+		const harness = this._requireAgentHarness(agentId);
+		this._requireAgentOutsideMaintenance(agentId, "steer");
+		await harness.steer(text, options);
 	}
 
 	/**
@@ -1502,9 +1513,10 @@ export class AgentOrchestrator {
 	 * `sendMessage`. Returns how many messages moved.
 	 */
 	async steerQueuedFollowUps(agentId: AgentId): Promise<number> {
+		const harness = this._requireAgentHarness(agentId);
+		this._requireAgentOutsideMaintenance(agentId, "steer queued follow-ups");
 		const clearRevision = this._humanInterrupts.captureClearRevision(agentId);
-		const promoted =
-			await this._requireAgentHarness(agentId).promoteFollowUpsToSteer();
+		const promoted = await harness.promoteFollowUpsToSteer();
 		if (promoted.length > 0) {
 			this._humanInterrupts.notifyIfUncleared(agentId, clearRevision);
 		}
@@ -1518,11 +1530,15 @@ export class AgentOrchestrator {
 		text: string,
 		options?: { images?: ImageContent[] },
 	): Promise<void> {
-		await this._requireAgentHarness(agentId).followUp(text, options);
+		const harness = this._requireAgentHarness(agentId);
+		this._requireAgentOutsideMaintenance(agentId, "queue a follow-up");
+		await harness.followUp(text, options);
 	}
 
 	async abortAgent(agentId: AgentId) {
-		return await this._requireAgentHarness(agentId).abort();
+		const harness = this._requireAgentHarness(agentId);
+		this._requireAgentOutsideMaintenance(agentId, "abort");
+		return await harness.abort();
 	}
 
 	async disposeAgent(agentId: AgentId, reason?: string): Promise<void> {
@@ -1603,7 +1619,7 @@ export class AgentOrchestrator {
 		// later cancel an unrelated job that happens to share the id.
 		this._externalJobs.forgetOwner(agentId);
 		this._humanInterrupts.forget(agentId);
-		this._maintenanceDepth.delete(agentId);
+		this._maintenanceOperations.delete(agentId);
 		this._resolveAgentRunStartWaiters(agentId);
 		this._backgroundJobEmits.delete(agentId);
 		this._progressQueued.delete(agentId);
@@ -1702,9 +1718,13 @@ export class AgentOrchestrator {
 	}
 
 	async compactAgent(agentId: AgentId, customInstructions?: string) {
-		return await this._runMaintenanceOperation(agentId, async (harness) => {
-			return await harness.compact(customInstructions);
-		});
+		return await this._runMaintenanceOperation(
+			agentId,
+			"compaction",
+			async (harness) => {
+				return await harness.compact(customInstructions);
+			},
+		);
 	}
 
 	async navigateAgentTree(
@@ -1717,9 +1737,13 @@ export class AgentOrchestrator {
 			label?: string;
 		},
 	) {
-		return await this._runMaintenanceOperation(agentId, async (harness) => {
-			return await harness.navigateTree(targetId, options);
-		});
+		return await this._runMaintenanceOperation(
+			agentId,
+			"tree-navigation",
+			async (harness) => {
+				return await harness.navigateTree(targetId, options);
+			},
+		);
 	}
 
 	registerClient(client: OrchestratorClient<OrchestratorEvent>): () => void {
@@ -3164,7 +3188,7 @@ export class AgentOrchestrator {
 	private async _transitionAgentStatus(
 		agentId: AgentId,
 		status: AgentLifecycleStatus,
-		options: { force?: boolean } = {},
+		options: { force?: boolean; maintenance?: AgentMaintenanceKind } = {},
 	): Promise<boolean> {
 		const record = this._requireAgentRecord(agentId);
 		const previousStatus = record.status;
@@ -3175,13 +3199,19 @@ export class AgentOrchestrator {
 		) {
 			return false;
 		}
-		return await this._commitAgentStatus(record, status, previousStatus);
+		return await this._commitAgentStatus(
+			record,
+			status,
+			previousStatus,
+			options.maintenance,
+		);
 	}
 
 	private async _commitAgentStatus(
 		record: AgentRecord,
 		status: AgentLifecycleStatus,
 		previousStatus: AgentLifecycleStatus | undefined,
+		maintenance?: AgentMaintenanceKind,
 	): Promise<boolean> {
 		if (previousStatus === status) return false;
 		record.status = status;
@@ -3194,6 +3224,7 @@ export class AgentOrchestrator {
 			agentId: record.agentId,
 			previousStatus,
 			status,
+			maintenance,
 			changedAt: now(),
 		});
 		this._messages.wake(record.agentId);
@@ -3684,34 +3715,57 @@ export class AgentOrchestrator {
 	 */
 	private async _runMaintenanceOperation<T>(
 		agentId: AgentId,
+		kind: AgentMaintenanceKind,
 		operation: (harness: WidiAgentHarness) => Promise<T>,
 	): Promise<T> {
+		const record = this._requireAgentRecord(agentId);
 		const harness = this._requireAgentHarness(agentId);
-		this._maintenanceDepth.set(
-			agentId,
-			(this._maintenanceDepth.get(agentId) ?? 0) + 1,
-		);
-		await this._transitionAgentStatus(agentId, "running");
+		const activeMaintenance = this._maintenanceOperations.get(agentId)?.kind;
+		if (record.status !== "idle" || activeMaintenance) {
+			throw new AgentHarnessError(
+				"busy",
+				`Agent ${agentId} cannot start ${maintenanceDescription(kind)} while ${
+					activeMaintenance
+						? maintenanceDescription(activeMaintenance)
+						: record.status
+				}.`,
+			);
+		}
+
+		// Reserve synchronously, before status emission yields to observers. This
+		// makes the status event and the operation kind one atomic decision.
+		const reservation = { kind };
+		this._maintenanceOperations.set(agentId, reservation);
 		try {
+			await this._transitionAgentStatus(agentId, "running", {
+				maintenance: kind,
+			});
 			return await operation(harness);
 		} finally {
-			// Only the last operation to leave may clear the marker or hand the
-			// agent back as idle. A concurrent compaction that lost the harness's
-			// busy check would otherwise release a maintenance window its sibling
-			// is still inside.
-			const depth = (this._maintenanceDepth.get(agentId) ?? 1) - 1;
-			if (depth > 0) {
-				this._maintenanceDepth.set(agentId, depth);
-			} else {
-				this._maintenanceDepth.delete(agentId);
-				if (this._requireAgentRecord(agentId).status === "running") {
+			// Disposal can clear this reservation, and a resumed session may reuse
+			// the agent id. A stale operation must never release its successor.
+			if (this._maintenanceOperations.get(agentId) === reservation) {
+				this._maintenanceOperations.delete(agentId);
+				if (this._agents.get(agentId)?.status === "running") {
 					await this._transitionAgentStatus(agentId, "idle");
 				}
-				// Leaving maintenance is a delivery-phase change even when the status
-				// does not move, so wake the queue explicitly.
+				// Leaving maintenance is a delivery-phase change even when another
+				// lifecycle transition prevented the idle commit.
 				this._messages.wake(agentId);
 			}
 		}
+	}
+
+	private _requireAgentOutsideMaintenance(
+		agentId: AgentId,
+		action: string,
+	): void {
+		const maintenance = this._maintenanceOperations.get(agentId)?.kind;
+		if (!maintenance) return;
+		throw new AgentHarnessError(
+			"busy",
+			`Agent ${agentId} cannot ${action} during ${maintenanceDescription(maintenance)}.`,
+		);
 	}
 
 	/**
@@ -3735,7 +3789,9 @@ export class AgentOrchestrator {
 				return record.harness ? "idle" : "gone";
 			case "running":
 				if (!record.harness) return "gone";
-				return this._maintenanceDepth.has(agentId) ? "maintenance" : "turn";
+				return this._maintenanceOperations.has(agentId)
+					? "maintenance"
+					: "turn";
 		}
 	}
 
@@ -4161,6 +4217,10 @@ function changesRecoverableProfileFields(
 		override.appendSystemPrompt !== undefined ||
 		override.persist !== undefined
 	);
+}
+
+function maintenanceDescription(kind: AgentMaintenanceKind): string {
+	return kind === "compaction" ? "compaction" : "tree navigation";
 }
 
 function formatError(error: unknown): string {

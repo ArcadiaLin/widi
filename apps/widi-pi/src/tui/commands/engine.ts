@@ -1,4 +1,7 @@
-import type { AgentLifecycleStatus } from "../../core/types.ts";
+import type {
+	AgentLifecycleStatus,
+	AgentMaintenanceKind,
+} from "../../core/types.ts";
 import { LINE_COMMAND_TRIGGER, parseLineCommand } from "./parse.ts";
 import type {
 	CommandContext,
@@ -20,7 +23,10 @@ export class CommandEngine {
 		for (const command of commands) this.commands.set(command.name, command);
 	}
 
-	list(status: AgentLifecycleStatus | undefined): CommandView[] {
+	list(
+		status: AgentLifecycleStatus | undefined,
+		maintenance?: AgentMaintenanceKind,
+	): CommandView[] {
 		const views: CommandView[] = [];
 		for (const command of this.commands.values()) {
 			const unavailableReason =
@@ -28,7 +34,7 @@ export class CommandEngine {
 					? `Command /${command.name} requires an active agent.`
 					: status === undefined
 						? undefined
-						: command.checkStatus?.(status);
+						: command.checkStatus?.(status, maintenance);
 			views.push({
 				name: command.name,
 				description: command.description,
@@ -88,6 +94,7 @@ export class CommandEngine {
 		const unavailableReason = context.agentId
 			? command.checkStatus?.(
 					context.orchestrator.getAgentStatus(context.agentId),
+					context.orchestrator.getAgentMaintenance?.(context.agentId),
 				)
 			: undefined;
 		if (unavailableReason) {

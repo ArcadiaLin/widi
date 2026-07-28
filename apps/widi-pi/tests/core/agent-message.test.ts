@@ -1,7 +1,4 @@
-import {
-	AgentHarnessError,
-	type AgentHarnessEvent,
-} from "@earendil-works/pi-agent-core";
+import type { AgentHarnessEvent } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import type {
@@ -226,61 +223,105 @@ describe("AgentOrchestrator.sendMessage", () => {
 		expect(record.status).toBe("idle");
 	});
 
-	// A second maintenance operation that loses the harness's busy check must not
-	// release the window its sibling is still inside.
-	it("keeps the maintenance window while a concurrent compaction fails", async () => {
+	it("rejects competing maintenance before it can overwrite the active kind", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const targetAgentId = await orchestrator.spawnAgent();
+		const harness = requireAgentHarness(orchestrator, targetAgentId);
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const compaction =
+			createDeferred<Awaited<ReturnType<typeof harness.compact>>>();
+		const compact = vi
+			.spyOn(harness, "compact")
+			.mockReturnValue(compaction.promise);
+		const navigateTree = vi.spyOn(harness, "navigateTree");
+
+		const compacting = orchestrator.compactAgent(targetAgentId);
+		await vi.waitFor(() => expect(compact).toHaveBeenCalledOnce());
+
+		await expect(
+			orchestrator.navigateAgentTree(targetAgentId, "entry-1"),
+		).rejects.toMatchObject({ code: "busy" });
+		expect(navigateTree).not.toHaveBeenCalled();
+		expect(orchestrator.getAgentMaintenance(targetAgentId)).toBe("compaction");
+		expect(orchestrator.getAgentStatus(targetAgentId)).toBe("running");
+		expect(
+			events.filter(
+				(event) =>
+					event.type === "agent_status_changed" && event.status === "running",
+			),
+		).toEqual([
+			expect.objectContaining({
+				type: "agent_status_changed",
+				maintenance: "compaction",
+			}),
+		]);
+
+		compaction.resolve({ summary: "compacted", tokensBefore: 0 });
+		await compacting;
+		expect(orchestrator.getAgentMaintenance(targetAgentId)).toBeUndefined();
+		expect(orchestrator.getAgentStatus(targetAgentId)).toBe("idle");
+	});
+
+	it("does not let maintenance take over an active agent turn", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const targetAgentId = await orchestrator.spawnAgent();
+		const record = requireAgentRecord(orchestrator, targetAgentId);
+		const compact = vi.spyOn(
+			requireAgentHarness(orchestrator, targetAgentId),
+			"compact",
+		);
+		record.status = "running";
+
+		await expect(
+			orchestrator.compactAgent(targetAgentId),
+		).rejects.toMatchObject({ code: "busy" });
+		expect(compact).not.toHaveBeenCalled();
+		expect(orchestrator.getAgentMaintenance(targetAgentId)).toBeUndefined();
+		expect(record.status).toBe("running");
+	});
+
+	it("rejects low-level turn controls during maintenance", async () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		const targetAgentId = await orchestrator.spawnAgent();
 		const harness = requireAgentHarness(orchestrator, targetAgentId);
 		const compaction =
 			createDeferred<Awaited<ReturnType<typeof harness.compact>>>();
-		let compactions = 0;
-		vi.spyOn(harness, "compact").mockImplementation(() => {
-			compactions += 1;
-			// Only the first caller into the harness gets the window; the other
-			// loses the busy check, whichever order they arrive in.
-			return compactions === 1
-				? compaction.promise
-				: Promise.reject(
-						new AgentHarnessError("busy", "compact() requires idle harness"),
-					);
+		vi.spyOn(harness, "compact").mockReturnValue(compaction.promise);
+		const abort = vi.spyOn(harness, "abort");
+		const followUp = vi.spyOn(harness, "followUp");
+		const steer = vi.spyOn(harness, "steer");
+		const promote = vi.spyOn(harness, "promoteFollowUpsToSteer");
+
+		const compacting = orchestrator.compactAgent(targetAgentId);
+		await vi.waitFor(() =>
+			expect(orchestrator.getAgentMaintenance(targetAgentId)).toBe(
+				"compaction",
+			),
+		);
+
+		await expect(orchestrator.abortAgent(targetAgentId)).rejects.toMatchObject({
+			code: "busy",
 		});
-		const prompt = vi
-			.spyOn(harness, "prompt")
-			.mockResolvedValue({} as AssistantMessage);
-		const followUp = vi.spyOn(harness, "followUp").mockResolvedValue();
+		await expect(
+			orchestrator.followUpAgent(targetAgentId, "later"),
+		).rejects.toMatchObject({ code: "busy" });
+		await expect(
+			orchestrator.steerAgent(targetAgentId, "now"),
+		).rejects.toMatchObject({ code: "busy" });
+		await expect(
+			orchestrator.steerQueuedFollowUps(targetAgentId),
+		).rejects.toMatchObject({ code: "busy" });
 
-		const outcomes: unknown[] = [];
-		const compacting = [
-			orchestrator.compactAgent(targetAgentId),
-			orchestrator.compactAgent(targetAgentId),
-		];
-		for (const attempt of compacting) {
-			void attempt.then(
-				(result) => outcomes.push(result),
-				(error: unknown) => outcomes.push(error),
-			);
-		}
-		await vi.waitFor(() => expect(outcomes).toHaveLength(1));
-		expect(outcomes[0]).toBeInstanceOf(AgentHarnessError);
-
-		const accepted = orchestrator.sendMessage({
-			source: { kind: "agent", agentId: "agent-peer" },
-			targetAgentId,
-			body: "while compacting",
-			mode: "next_turn",
-		});
-		await new Promise((resolve) => setTimeout(resolve, 0));
-
-		// Still compacting: the message must not be queued into a run that is not
-		// reading input, and the agent must not have been handed back as idle.
+		expect(abort).not.toHaveBeenCalled();
 		expect(followUp).not.toHaveBeenCalled();
-		expect(orchestrator.getAgentStatus(targetAgentId)).toBe("running");
+		expect(steer).not.toHaveBeenCalled();
+		expect(promote).not.toHaveBeenCalled();
 
 		compaction.resolve({ summary: "compacted", tokensBefore: 0 });
-		await Promise.allSettled(compacting);
-		await accepted;
-		expect(prompt).toHaveBeenCalledTimes(1);
+		await compacting;
 	});
 
 	it("refuses an unknown target and an empty body", async () => {

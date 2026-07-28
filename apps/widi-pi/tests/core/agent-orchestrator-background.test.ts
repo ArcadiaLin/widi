@@ -306,11 +306,11 @@ describe("AgentOrchestrator background job router", () => {
 		const internals = orchestrator as unknown as {
 			_unsubscribeAgentJobChanges: Map<string, unknown>;
 			_unsubscribeAgentJobReports: Map<string, unknown>;
-			_maintenanceDepth: Map<string, number>;
+			_maintenanceOperations: Map<string, unknown>;
 		};
 		expect(internals._unsubscribeAgentJobChanges.has(agentId)).toBe(false);
 		expect(internals._unsubscribeAgentJobReports.has(agentId)).toBe(false);
-		expect(internals._maintenanceDepth.has(agentId)).toBe(false);
+		expect(internals._maintenanceOperations.has(agentId)).toBe(false);
 		expect(pendingMessages(orchestrator, agentId)).toBe(false);
 	});
 

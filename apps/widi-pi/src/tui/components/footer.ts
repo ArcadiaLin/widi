@@ -35,8 +35,11 @@ export class FooterView implements Component {
 		if (agent?.queue.steer.length) {
 			queueParts.push(`${agent.queue.steer.length} steer`);
 		}
-		if (agent?.queue.followUp.length) {
-			queueParts.push(`${agent.queue.followUp.length} follow-up`);
+		const followUpCount =
+			(agent?.queue.followUp.length ?? 0) +
+			(agent?.pendingFollowUps.length ?? 0);
+		if (followUpCount > 0) {
+			queueParts.push(`${followUpCount} follow-up`);
 		}
 		if (agent?.unreadCount) queueParts.push(`${agent.unreadCount} unread`);
 

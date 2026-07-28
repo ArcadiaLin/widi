@@ -28,7 +28,7 @@ import type {
 import { CompletionMenu } from "./completion-menu.ts";
 import { AgentStripView } from "./components/agent-strip.ts";
 import { ChatView } from "./components/chat.ts";
-import { agentLabel } from "./components/common.ts";
+import { agentLabel, maintenanceLabel } from "./components/common.ts";
 import { FatalErrorView } from "./components/fatal-error.ts";
 import { FooterView } from "./components/footer.ts";
 import { HeaderView } from "./components/header.ts";
@@ -109,6 +109,7 @@ export class WidiTuiApplication {
 	private readonly pendingTasks = new Set<Promise<unknown>>();
 	private readonly lifecycleTasks = new Set<Promise<unknown>>();
 	private readonly drafts = new Map<string, string>();
+	private nextPendingFollowUpId = 1;
 	private started = false;
 	private shutdownPromise?: Promise<void>;
 	private resolveClosed?: () => void;
@@ -714,6 +715,13 @@ export class WidiTuiApplication {
 		text: string,
 	): Promise<void> {
 		this.editor.addToHistory(rawText);
+		const pending = {
+			id: this.nextPendingFollowUpId,
+			text: rawText,
+		};
+		this.nextPendingFollowUpId += 1;
+		ensureAgentProjection(this.state, agentId).pendingFollowUps.push(pending);
+		this.tui.requestRender();
 		try {
 			const outcome = await this.orchestrator.sendMessage({
 				source: { kind: "human" },
@@ -731,6 +739,13 @@ export class WidiTuiApplication {
 				this.projectDiagnostic(error.diagnostic);
 			} else {
 				this.addApplicationNotice(errorMessage(error), agentId);
+			}
+		} finally {
+			const agent = this.state.agents.get(agentId);
+			if (agent) {
+				agent.pendingFollowUps = agent.pendingFollowUps.filter(
+					(item) => item.id !== pending.id,
+				);
 			}
 		}
 		this.tui.requestRender();
@@ -751,6 +766,22 @@ export class WidiTuiApplication {
 			return;
 		}
 		const text = this.editor.getText().trim();
+		// Maintenance work (compaction, tree navigation) has no agent loop to
+		// steer into; the steer key degrades to the follow-up queue Enter uses.
+		if (agent.maintenance) {
+			if (!text) {
+				this.addApplicationNotice(
+					`${maintenanceLabel(agent.maintenance)} in progress; steer is unavailable.`,
+					agentId,
+				);
+				return;
+			}
+			this.editor.setText("");
+			this.drafts.set(agentId, "");
+			this.track(this.submitFollowUp(agentId, text, text));
+			this.tui.requestRender();
+			return;
+		}
 		if (!text) {
 			if (agent.queue.followUp.length > 0) {
 				this.steerQueuedFollowUps(agentId);
@@ -1091,6 +1122,7 @@ export class WidiTuiApplication {
 				agentId,
 				orchestrator: this.orchestrator,
 				getStatus: () => this.state.agents.get(agentId)?.status ?? "idle",
+				getMaintenance: () => this.state.agents.get(agentId)?.maintenance,
 				cwd: this.runtime.services.cwd,
 			}),
 		);
@@ -1255,6 +1287,16 @@ export class WidiTuiApplication {
 		if (!agentId) return;
 		const agent = ensureAgentProjection(this.state, agentId);
 		if (agent.status === "running") {
+			// Aborting maintenance does not cancel it (the summarization request
+			// carries no abort signal) but does clear the queued follow-ups, so
+			// refuse it instead of silently eating the queue.
+			if (agent.maintenance) {
+				this.addApplicationNotice(
+					`${maintenanceLabel(agent.maintenance)} in progress; abort is unavailable.`,
+					agentId,
+				);
+				return;
+			}
 			this.track(
 				this.orchestrator.abortAgent(agentId).catch((error) => {
 					this.addApplicationNotice(errorMessage(error), agentId);

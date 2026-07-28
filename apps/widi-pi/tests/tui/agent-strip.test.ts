@@ -70,6 +70,18 @@ describe("AgentStripView tree rendering", () => {
 		expect(top).toContain("● main");
 	});
 
+	it("names maintenance work instead of a plain running status", () => {
+		const state = createTuiApplicationState();
+		const main = setActiveAgent(state, "main");
+		main.status = "running";
+		main.maintenance = "compaction";
+
+		const [top] = renderPlain(state);
+
+		expect(top).toContain("compacting");
+		expect(top).not.toContain("running");
+	});
+
 	it("hangs children under their parent with aligned tree lines", () => {
 		const state = createTuiApplicationState();
 		setActiveAgent(state, "main").status = "idle";

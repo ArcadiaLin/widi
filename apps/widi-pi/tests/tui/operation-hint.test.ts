@@ -597,4 +597,32 @@ describe("resolveOperationHint", () => {
 			"Enter starts session · /model or /thinking configures before first prompt",
 		);
 	});
+
+	it("offers only the follow-up queue while maintenance work runs", () => {
+		const state = createTuiApplicationState();
+		const main = setActiveAgent(state, "main");
+		main.status = "running";
+		main.maintenance = "compaction";
+
+		expect(
+			resolveOperationHint({
+				state,
+				engine,
+				editorText: "",
+				editorAutocompleteVisible: false,
+				keys,
+			}),
+		).toBe("Compacting… · Enter queue follow-up");
+
+		main.maintenance = "tree-navigation";
+		expect(
+			resolveOperationHint({
+				state,
+				engine,
+				editorText: "typing",
+				editorAutocompleteVisible: false,
+				keys,
+			}),
+		).toBe("Navigating… · Enter queue follow-up");
+	});
 });

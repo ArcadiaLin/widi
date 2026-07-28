@@ -11,6 +11,7 @@ import {
 import type { AgentOrchestrator } from "../core/agent-orchestrator.ts";
 import type {
 	AgentLifecycleStatus,
+	AgentMaintenanceKind,
 	CandidateItem,
 	RuntimeModel,
 } from "../core/types.ts";
@@ -35,6 +36,7 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 	private readonly agentId?: string;
 	private readonly orchestrator: AgentOrchestrator;
 	private readonly getStatus: () => AgentLifecycleStatus | undefined;
+	private readonly getMaintenance?: () => AgentMaintenanceKind | undefined;
 	private readonly getPendingModel?: () => RuntimeModel | undefined;
 	private readonly cwd?: string;
 	private readonly fdPath?: string;
@@ -45,6 +47,7 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 		readonly agentId?: string;
 		readonly orchestrator: AgentOrchestrator;
 		readonly getStatus: () => AgentLifecycleStatus | undefined;
+		readonly getMaintenance?: () => AgentMaintenanceKind | undefined;
 		readonly getPendingModel?: () => RuntimeModel | undefined;
 		readonly cwd?: string;
 		/** fd binary override; undefined probes the PATH, null forces the fallback. */
@@ -54,6 +57,7 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 		this.agentId = options.agentId;
 		this.orchestrator = options.orchestrator;
 		this.getStatus = options.getStatus;
+		this.getMaintenance = options.getMaintenance;
 		this.getPendingModel = options.getPendingModel;
 		if (options.cwd) {
 			this.cwd = options.cwd;
@@ -200,7 +204,7 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 		}
 		const body = beforeCursor.slice(LINE_COMMAND_TRIGGER.length);
 		const items = this.engine
-			.list(this.getStatus())
+			.list(this.getStatus(), this.getMaintenance?.())
 			.map(toCommandCompletionItem);
 		const filtered = fuzzyFilter(items, body, (item) => item.search).map(
 			(item) => ({

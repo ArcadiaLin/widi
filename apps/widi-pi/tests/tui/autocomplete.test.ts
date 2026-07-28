@@ -212,6 +212,23 @@ describe("WidiCommandAutocompleteProvider", () => {
 		);
 	});
 
+	it("marks turn controls unavailable during maintenance", async () => {
+		const commandProvider = new WidiCommandAutocompleteProvider({
+			engine: new CommandEngine(builtInCommands),
+			agentId: "main",
+			orchestrator: {} as unknown as AgentOrchestrator,
+			getStatus: () => "running",
+			getMaintenance: () => "compaction",
+		});
+		const result = await commandProvider.getSuggestions(["/ab"], 0, 3, {
+			signal: signal(),
+		});
+		const abort = result?.items.find((item) => item.label === "/abort");
+		expect(abort?.description).toContain(
+			"unavailable: Command /abort is not available during compaction",
+		);
+	});
+
 	it("marks active commands unavailable in pending suggestions", async () => {
 		const result = await pendingProvider().getSuggestions(["/st"], 0, 3, {
 			signal: signal(),

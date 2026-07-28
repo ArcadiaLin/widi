@@ -24,6 +24,7 @@ import {
 	normalizeHumanRequestOptions,
 } from "../core/human-request.ts";
 import type { AgentId, OrchestratorEvent } from "../core/types.ts";
+import { maintenanceLabel } from "./components/common.ts";
 import type { HydrationResult } from "./session-hydrator.ts";
 import {
 	type AgentAttention,
@@ -208,6 +209,8 @@ export class EventProjector {
 				);
 				const wasRunning = agent.status === "running";
 				agent.status = event.status;
+				agent.maintenance =
+					event.status === "running" ? event.maintenance : undefined;
 				agent.runStartedAt =
 					event.status === "running" ? event.changedAt : undefined;
 				// Experience indicator: covers the model's first-token latency
@@ -904,6 +907,9 @@ function upsertAwaitingThinking(agent: AgentViewState): void {
 		durability: "ephemeral",
 		createdAt: now(),
 		status: "thinking",
+		label: agent.maintenance
+			? `${maintenanceLabel(agent.maintenance)}…`
+			: undefined,
 	});
 }
 

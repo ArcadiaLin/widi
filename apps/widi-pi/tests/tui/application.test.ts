@@ -355,6 +355,33 @@ describe("WidiTuiApplication animation ticker", () => {
 	});
 });
 
+describe("WidiTuiApplication follow-up projection", () => {
+	it("keeps a deferred follow-up visible until core acknowledges it", async () => {
+		const harness = await createApplicationHarness();
+		const agent = setActiveAgent(harness.application.state, "main");
+		agent.status = "running";
+		agent.maintenance = "compaction";
+		agent.snapshot = snapshot("main", model());
+		const delivery = createDeferred<{ kind: "accepted" }>();
+		harness.sendMessage.mockReturnValueOnce(delivery.promise);
+
+		const submitting = (
+			harness.application as unknown as {
+				submit(text: string): Promise<void>;
+			}
+		).submit("queue this");
+		await vi.waitFor(() =>
+			expect(agent.pendingFollowUps).toEqual([
+				expect.objectContaining({ text: "queue this" }),
+			]),
+		);
+
+		delivery.resolve({ kind: "accepted" });
+		await submitting;
+		expect(agent.pendingFollowUps).toEqual([]);
+	});
+});
+
 describe("WidiTuiApplication OAuth notices", () => {
 	it("preserves complete login URLs with and without an active agent", async () => {
 		const harness = await createApplicationHarness();
@@ -450,6 +477,7 @@ async function createApplicationHarness() {
 	const setAgentModelByReference = vi.fn(async () => runtimeModel);
 	const setAgentThinkingLevelByName = vi.fn(async () => "high");
 	const setAgentSessionName = vi.fn(async () => {});
+	const sendMessage = vi.fn(async () => ({ kind: "accepted" as const }));
 	const disposedAgentIds = new Set<string>();
 	const disposeAgent = vi.fn(async (agentId: string) => {
 		disposedAgentIds.add(agentId);
@@ -467,6 +495,7 @@ async function createApplicationHarness() {
 		disposeAgent,
 		spawnAgent,
 		promptAgent,
+		sendMessage,
 		setAgentModelByReference,
 		setAgentThinkingLevelByName,
 		setAgentSessionName,
@@ -520,12 +549,24 @@ async function createApplicationHarness() {
 		tuiStart,
 		spawnAgent,
 		promptAgent,
+		sendMessage,
 		disposeAgent,
 		inspectAgent,
 		setAgentModelByReference,
 		setAgentThinkingLevelByName,
 		setAgentSessionName,
 	};
+}
+
+function createDeferred<T>(): {
+	readonly promise: Promise<T>;
+	readonly resolve: (value: T) => void;
+} {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((done) => {
+		resolve = done;
+	});
+	return { promise, resolve };
 }
 
 function snapshot(agentId: string, runtimeModel: RuntimeModel) {

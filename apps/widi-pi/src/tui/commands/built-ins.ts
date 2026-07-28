@@ -22,7 +22,7 @@ import type {
 	AgentSessionSnapshot,
 	AgentSessionTreeSnapshot,
 } from "../../core/session-manager.ts";
-import type { CandidateItem } from "../../core/types.ts";
+import type { AgentMaintenanceKind, CandidateItem } from "../../core/types.ts";
 import { splitLeadingToken } from "./parse.ts";
 import type { CommandContext, CommandDefinition } from "./types.ts";
 
@@ -32,6 +32,8 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		agentPolicy: "active",
 		name: "abort",
 		description: "Abort the current agent run.",
+		checkStatus: (_status, maintenance) =>
+			unavailableDuringMaintenance("abort", maintenance),
 		execute: async (context) =>
 			await context.orchestrator.abortAgent(requireAgentId(context)),
 	},
@@ -48,14 +50,10 @@ export const builtInCommands: readonly CommandDefinition[] = [
 			),
 		formatResult: (result) => {
 			const compact = result as CompactResult;
-			const summaryLine =
-				compact.summary
-					.split("\n")
-					.find((line) => line.trim() !== "")
-					?.trim() ?? "";
-			return [`compacted ${compact.tokensBefore} tokens`, summaryLine]
-				.filter((line) => line !== "")
-				.join("\n");
+			// The summary itself stays in the session (shown as a collapsed
+			// "Compacted session" marker); its first line was always the "## Goal"
+			// heading, which meant nothing here.
+			return `compacted ${compact.tokensBefore} tokens`;
 		},
 	},
 	{
@@ -65,6 +63,8 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		description: "Queue a follow-up for the current agent.",
 		argumentHint: "<text>",
 		requiresArgument: true,
+		checkStatus: (_status, maintenance) =>
+			unavailableDuringMaintenance("follow-up", maintenance),
 		execute: async (context, argument) => {
 			await context.orchestrator.followUpAgent(
 				requireAgentId(context),
@@ -282,10 +282,11 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		description: "Steer the current running agent.",
 		argumentHint: "<text>",
 		requiresArgument: true,
-		checkStatus: (status) =>
-			status === "running"
+		checkStatus: (status, maintenance) =>
+			unavailableDuringMaintenance("steer", maintenance) ??
+			(status === "running"
 				? undefined
-				: `Command /steer requires a running agent (status: ${status}).`,
+				: `Command /steer requires a running agent (status: ${status}).`),
 		execute: async (context, argument) => {
 			const outcome = await context.orchestrator.sendMessage({
 				source: { kind: "human" },
@@ -439,6 +440,16 @@ async function listUserMessageEntryCandidates(
 function requireAgentId(context: CommandContext): string {
 	if (!context.agentId) throw new Error("Command requires an active agent.");
 	return context.agentId;
+}
+
+function unavailableDuringMaintenance(
+	commandName: string,
+	maintenance: AgentMaintenanceKind | undefined,
+): string | undefined {
+	if (!maintenance) return undefined;
+	const operation =
+		maintenance === "compaction" ? "compaction" : "tree navigation";
+	return `Command /${commandName} is not available during ${operation}.`;
 }
 
 function userMessageHeadline(message: UserMessage): string {

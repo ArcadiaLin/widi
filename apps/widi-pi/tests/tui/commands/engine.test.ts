@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../../src/core/agent-orchestrator.ts";
 import { builtInCommands } from "../../../src/tui/commands/built-ins.ts";
 import {
@@ -134,6 +134,30 @@ describe("CommandEngine.handleInput", () => {
 		if (outcome.kind === "failed") {
 			expect(outcome.error.message).toContain("running");
 		}
+	});
+
+	it("blocks turn-control commands during maintenance", async () => {
+		const abortAgent = vi.fn(async () => {});
+		const followUpAgent = vi.fn(async () => {});
+		const sendMessage = vi.fn(async () => ({ kind: "accepted" as const }));
+		const commandContext = context({
+			getAgentStatus: () => "running",
+			getAgentMaintenance: () => "compaction",
+			abortAgent,
+			followUpAgent,
+			sendMessage,
+		});
+
+		for (const input of ["/abort", "/follow-up later", "/steer now"]) {
+			const outcome = await engine.handleInput(input, commandContext);
+			expect(outcome).toMatchObject({
+				kind: "failed",
+				error: { message: expect.stringContaining("compaction") },
+			});
+		}
+		expect(abortAgent).not.toHaveBeenCalled();
+		expect(followUpAgent).not.toHaveBeenCalled();
+		expect(sendMessage).not.toHaveBeenCalled();
 	});
 
 	it("routes /steer through the human interrupt message path", async () => {
@@ -341,6 +365,16 @@ describe("CommandEngine.list and match", () => {
 			.list("running")
 			.find((view) => view.name === "steer");
 		expect(running?.available).toBe(true);
+	});
+
+	it("marks turn controls unavailable during maintenance", () => {
+		const views = engine.list("running", "tree-navigation");
+		for (const name of ["abort", "follow-up", "steer"]) {
+			expect(views.find((view) => view.name === name)).toMatchObject({
+				available: false,
+				unavailableReason: expect.stringContaining("tree navigation"),
+			});
+		}
 	});
 
 	it("marks active commands unavailable without an agent", () => {

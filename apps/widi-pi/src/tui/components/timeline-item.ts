@@ -1,4 +1,5 @@
 import {
+	getKeybindings,
 	Markdown,
 	Text,
 	truncateToWidth,
@@ -15,6 +16,7 @@ import type { TimelineItem } from "../state.ts";
 import { theme } from "../theme/theme.ts";
 import { presentToolExecution } from "../tool-presenter.ts";
 import { diagnosticGlyph } from "./common.ts";
+import { formatOperationHintKey } from "./operation-hint.ts";
 
 export interface TimelineRenderContext {
 	readonly liveThinkingIds: ReadonlySet<string>;
@@ -81,6 +83,8 @@ export function renderDeps(
 			];
 		case "window-marker":
 			return [item.hiddenTurns];
+		case "session-marker":
+			return [item.summary, context.toolOutputExpanded, expandKeyLabel()];
 		case "human-request-trace":
 			return [context.toolOutputExpanded];
 		case "application-notice":
@@ -93,6 +97,20 @@ export function renderDeps(
 /** Current spinner frame index; advances every 160ms (see spinnerFrame). */
 function spinnerTick(): number {
 	return Math.floor(Date.now() / 160);
+}
+
+/** Key label for the transcript-expand toggle, for collapsed-marker hints. */
+function expandKeyLabel(): string | undefined {
+	const key = getKeybindings().getKeys("app.tools.expand")[0];
+	return key ? formatOperationHintKey(key) : undefined;
+}
+
+/** `── title ─────…` filled to the render width: a visible section break. */
+function markerSeparator(title: string, width: number): string {
+	const head = `── ${title} `;
+	// Text adds one column of left padding; keep one column right margin.
+	const fill = Math.max(2, width - visibleWidth(head) - 2);
+	return `${head}${"─".repeat(fill)}`;
 }
 
 export function renderTimelineItem(
@@ -172,7 +190,9 @@ export function renderTimelineItem(
 		case "thinking-status": {
 			if (item.status !== "thinking") return [];
 			// The spinner line plus a rolling tail of the streamed thinking text.
-			const lines = [theme.dim(`${spinnerFrame()} Thinking…`)];
+			const lines = [
+				theme.dim(`${spinnerFrame()} ${item.label ?? "Thinking…"}`),
+			];
 			if (item.preview) {
 				for (const line of item.preview.split("\n")) {
 					lines.push(
@@ -348,20 +368,27 @@ export function renderTimelineItem(
 				1,
 				0,
 			).render(width);
-		case "session-marker":
+		case "session-marker": {
+			const title =
+				item.marker === "compaction" ? "Compacted session" : "Branch summary";
+			const keyLabel = expandKeyLabel();
+			if (!context.toolOutputExpanded) {
+				const hint = keyLabel ? ` · ${keyLabel} expand` : "";
+				return new Text(
+					theme.dim(markerSeparator(`${title}${hint}`, width)),
+					1,
+					0,
+				).render(width);
+			}
+			const hint = keyLabel ? ` · ${keyLabel} collapse` : "";
 			return new Text(
 				theme.dim(
-					`── ${item.marker === "compaction" ? "Compacted session" : "Branch summary"} ──\n${boundedText(
-						item.summary,
-						{
-							maxLines: 12,
-							maxCharacters: 3_000,
-						},
-					)}`,
+					`${markerSeparator(`${title}${hint}`, width)}\n${sanitizeTerminalText(item.summary)}`,
 				),
 				1,
 				0,
 			).render(width);
+		}
 		case "window-marker":
 			return new Text(
 				theme.dim(

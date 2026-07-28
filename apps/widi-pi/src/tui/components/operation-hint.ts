@@ -14,7 +14,7 @@ import type { WidiEditor } from "../editor.ts";
 import { singleLine } from "../format.ts";
 import type { TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
-import { activeAgent } from "./common.ts";
+import { activeAgent, maintenanceLabel } from "./common.ts";
 
 export interface OperationHintKeys {
 	readonly agents?: string;
@@ -100,6 +100,14 @@ export function resolveOperationHint(
 
 	const agent = activeAgent(options.state);
 	if (agent?.status === "running") {
+		// Maintenance work (compaction, tree navigation) has no agent loop to
+		// steer or abort; the only input that applies is the follow-up queue.
+		if (agent.maintenance) {
+			return hintParts(
+				`${maintenanceLabel(agent.maintenance)}…`,
+				keyAction(options.keys.inputSubmit, "queue follow-up"),
+			);
+		}
 		// With an empty editor the steer key promotes what enter already queued,
 		// so the hint has to say which of the two it would do.
 		const steersQueue =

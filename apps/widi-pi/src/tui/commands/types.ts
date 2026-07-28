@@ -1,6 +1,7 @@
 import type { AgentOrchestrator } from "../../core/agent-orchestrator.ts";
 import type {
 	AgentLifecycleStatus,
+	AgentMaintenanceKind,
 	CandidateItem,
 	PromptExpansion,
 	RuntimeModel,
@@ -24,8 +25,11 @@ interface CommandBase {
 	readonly description: string;
 	readonly argumentHint?: string;
 	readonly requiresArgument?: boolean;
-	/** Returns the reason the agent status blocks this command, or undefined. */
-	checkStatus?(status: AgentLifecycleStatus): string | undefined;
+	/** Returns why the current agent phase blocks this command, or undefined. */
+	checkStatus?(
+		status: AgentLifecycleStatus,
+		maintenance?: AgentMaintenanceKind,
+	): string | undefined;
 	complete?(
 		context: CommandContext,
 		argumentPrefix: string,

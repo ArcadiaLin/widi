@@ -1,4 +1,5 @@
 import type { OrchestratorDiagnostic } from "../../core/diagnostics.ts";
+import type { AgentMaintenanceKind } from "../../core/types.ts";
 import { singleLine } from "../format.ts";
 import type { AgentViewState, TuiApplicationState } from "../state.ts";
 
@@ -8,6 +9,11 @@ export function activeAgent(
 	return state.activeAgentId
 		? state.agents.get(state.activeAgentId)
 		: undefined;
+}
+
+/** Display word for maintenance work, e.g. "Compacting" in "Compacting…". */
+export function maintenanceLabel(kind: AgentMaintenanceKind): string {
+	return kind === "compaction" ? "Compacting" : "Navigating";
 }
 
 export function agentLabel(agent: AgentViewState): string {

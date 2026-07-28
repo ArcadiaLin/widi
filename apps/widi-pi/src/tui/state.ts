@@ -17,6 +17,7 @@ import type {
 import type {
 	AgentId,
 	AgentLifecycleStatus,
+	AgentMaintenanceKind,
 	OrchestratorEvent,
 	RuntimeModel,
 } from "../core/types.ts";
@@ -71,6 +72,8 @@ export interface ThinkingStatusItem {
 	readonly durability: "ephemeral";
 	readonly createdAt: string;
 	status: "thinking" | "completed";
+	/** Spinner line text; defaults to "Thinking…" when unset. */
+	label?: string;
 	/** Display-only tail of the streamed thinking text (last lines). */
 	preview?: string;
 }
@@ -240,12 +243,21 @@ export interface AgentDisplayFacts {
 	forkedFromAgentId?: AgentId;
 }
 
+/** Human follow-up accepted by the TUI but not yet acknowledged by core. */
+export interface PendingFollowUp {
+	readonly id: number;
+	readonly text: string;
+}
+
 export interface AgentViewState {
 	readonly agentId: AgentId;
 	snapshot?: AgentRecordSnapshot;
 	/** The agent whose tool spawned this one; unset for user-side spawns. */
 	spawnedBy?: AgentId;
 	status: AgentLifecycleStatus;
+	/** Set while status "running" is maintenance work (compaction, tree
+	 * navigation) rather than an agent turn: no steering or aborting applies. */
+	maintenance?: AgentMaintenanceKind;
 	timeline: TimelineItem[];
 	extensionStatuses: Map<string, ExtensionStatusSnapshot>;
 	unreadCount: number;
@@ -260,6 +272,8 @@ export interface AgentViewState {
 	/** When the current run started; set while status is "running". */
 	runStartedAt?: string;
 	queue: QueueState;
+	/** Optimistic projection while sendMessage is waiting for a deliverable phase. */
+	pendingFollowUps: PendingFollowUp[];
 	display: AgentDisplayFacts;
 	/** The live assistant item currently receiving message_update events. */
 	currentAssistantId?: string;
@@ -360,6 +374,7 @@ export function createAgentViewState(
 		hydration: "ready",
 		bufferedEvents: [],
 		queue: { steer: [], followUp: [], nextTurn: 0 },
+		pendingFollowUps: [],
 		display: { activeToolNames: [], rehydrateRequested: false },
 		nextLiveItemId: 1,
 	};

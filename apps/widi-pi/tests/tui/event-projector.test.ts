@@ -1090,6 +1090,50 @@ describe("EventProjector", () => {
 		});
 	});
 
+	it("labels the gap indicator for maintenance work and clears it on idle", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+		const agent = setActiveAgent(state, "main");
+		const awaiting = () =>
+			agent.timeline.find(
+				(item) =>
+					item.type === "thinking-status" &&
+					item.id.startsWith("awaiting:main:"),
+			);
+
+		projector.apply({
+			type: "agent_status_changed",
+			agentId: "main",
+			status: "running",
+			maintenance: "compaction",
+			changedAt: timestamp(1),
+		});
+		expect(agent.maintenance).toBe("compaction");
+		expect(awaiting()).toMatchObject({
+			status: "thinking",
+			label: "Compacting…",
+		});
+
+		projector.apply({
+			type: "agent_status_changed",
+			agentId: "main",
+			status: "idle",
+			changedAt: timestamp(2),
+		});
+		expect(agent.maintenance).toBeUndefined();
+		expect(awaiting()).toBeUndefined();
+
+		// A plain run keeps the default Thinking… label.
+		projector.apply({
+			type: "agent_status_changed",
+			agentId: "main",
+			status: "running",
+			changedAt: timestamp(3),
+		});
+		expect(agent.maintenance).toBeUndefined();
+		expect(awaiting()).toMatchObject({ status: "thinking", label: undefined });
+	});
+
 	it("tracks a rolling two-line preview of streamed thinking", () => {
 		const state = createTuiApplicationState();
 		const projector = new EventProjector(state);

@@ -25,17 +25,22 @@ export class QueuedInputView implements Component {
 	render(width: number): string[] {
 		const agent = activeAgent(this.state);
 		if (!agent) return [];
-		const queued = agent.queue.followUp;
+		const queued = [
+			...agent.queue.followUp,
+			...agent.pendingFollowUps.map((pending) => pending.text),
+		];
 		if (queued.length === 0) return [];
 		// The queue is read only where the run would otherwise stop, so the way
-		// out of that wait belongs next to the queue itself.
+		// out of that wait belongs next to the queue itself. During maintenance
+		// (compaction, tree navigation) there is no run to steer into.
 		const steerKey = getKeybindings().getKeys("app.steer")[0];
-		const steerHint = steerKey
-			? ` · ${formatOperationHintKey(steerKey)} steer now`
-			: "";
+		const steerHint =
+			steerKey && agent.status === "running" && !agent.maintenance
+				? ` · ${formatOperationHintKey(steerKey)} steer now`
+				: "";
 		const lines = [
 			theme.dim(
-				`queued · follow-up (sent when the current run ends)${steerHint}`,
+				`queued · follow-up (sent when the agent is ready)${steerHint}`,
 			),
 		];
 		for (const text of queued.slice(-MAX_VISIBLE_MESSAGES)) {
