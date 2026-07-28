@@ -3,6 +3,7 @@ import {
 	type BackgroundJobOutcome,
 	BackgroundJobTable,
 } from "../../src/core/background/index.ts";
+import { HumanInterruptRegistry } from "../../src/core/human-interrupt.ts";
 import {
 	createWaitForJobsToolDefinition,
 	type WaitForJobsDetails,
@@ -20,6 +21,7 @@ const completedOutcome: BackgroundJobOutcome = {
 function makeContext(
 	table: BackgroundJobTable | undefined,
 	signal?: AbortSignal,
+	humanInterrupts?: ToolExecutionContext<WaitForJobsDetails>["humanInterrupts"],
 ): ToolExecutionContext<WaitForJobsDetails> {
 	return {
 		signal,
@@ -27,6 +29,7 @@ function makeContext(
 		extension: undefined,
 		human: undefined,
 		backgroundJobTable: table,
+		humanInterrupts,
 	};
 }
 
@@ -167,6 +170,50 @@ describe("wait_for_jobs tool", () => {
 			type: "text",
 			text: expect.stringContaining("interrupted"),
 		});
+		expect(table.get(jobId)?.phase).toBe("backgrounded");
+	});
+
+	it("gives the turn back when the human steers mid-wait, leaving the job running", async () => {
+		const table = new BackgroundJobTable();
+		const jobId = backgroundJob(table);
+		const interrupts = new HumanInterruptRegistry();
+		const tool = createWaitForJobsToolDefinition();
+
+		const promise = tool.execute(
+			"wait-1",
+			{ jobIds: [jobId] },
+			makeContext(table, undefined, interrupts.watch("agent-1")),
+		);
+		interrupts.notify("agent-1");
+		const result = await promise;
+
+		expect(result.details.outcome).toBe("steered");
+		expect(result.details.jobs).toEqual([
+			{ jobId, toolName: "bash", state: "running" },
+		]);
+		expect(result.content[0]).toMatchObject({
+			type: "text",
+			text: expect.stringContaining("the user sent a message"),
+		});
+		expect(table.get(jobId)?.phase).toBe("backgrounded");
+	});
+
+	it("returns immediately when a steer is already waiting to be read", async () => {
+		const table = new BackgroundJobTable();
+		const jobId = backgroundJob(table);
+		const interrupts = new HumanInterruptRegistry();
+		// The steer arrived while an earlier tool call ran: it is just as unread,
+		// so the barrier must not start blocking at all.
+		interrupts.notify("agent-1");
+		const tool = createWaitForJobsToolDefinition();
+
+		const result = await tool.execute(
+			"wait-1",
+			{ jobIds: [jobId] },
+			makeContext(table, undefined, interrupts.watch("agent-1")),
+		);
+
+		expect(result.details.outcome).toBe("steered");
 		expect(table.get(jobId)?.phase).toBe("backgrounded");
 	});
 

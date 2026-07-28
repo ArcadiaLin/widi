@@ -10,6 +10,7 @@ import type {
 	BackgroundJobReport,
 	BackgroundJobTable,
 } from "../background/index.ts";
+import type { HumanInterruptWatch } from "../human-interrupt.ts";
 import type { ToolHumanHost } from "../human-request.ts";
 
 /**
@@ -42,6 +43,12 @@ export interface ToolExecutionContext<TDetails> {
 	 * their settlements through it; most tools ignore it.
 	 */
 	backgroundJobTable?: BackgroundJobTable;
+	/**
+	 * Pending human steers for the agent whose turn is executing. Only tools that
+	 * deliberately block read it, so the user does not have to wait out a barrier
+	 * to be heard; everything else ignores it.
+	 */
+	humanInterrupts?: HumanInterruptWatch;
 	/**
 	 * Set when this call executes as a pseudo-async job (a `backgroundable`
 	 * call registered in the job table); undefined for plain synchronous calls.
@@ -222,6 +229,14 @@ export interface ToolDefinition<
 	 * Ignored unless `backgroundable` is true.
 	 */
 	backgroundDescription?: (params: Static<TParamsSchema>) => string;
+	/**
+	 * Read the name the caller gave this call out of its own arguments, for tools
+	 * that take one. It is what surfaces show first: `backgroundDescription` is
+	 * derived from the call and describes it, a name is chosen and identifies it
+	 * ("run the e2e suite" rather than the command that happens to do it).
+	 * Ignored unless `backgroundable` is true.
+	 */
+	backgroundName?: (params: Static<TParamsSchema>) => string | undefined;
 	/**
 	 * Optional declarative projection of arguments and streaming updates into a
 	 * structured background job report. Tools that need direct control can call

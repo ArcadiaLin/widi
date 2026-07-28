@@ -10,6 +10,7 @@ import {
 	createBackgroundJobStartedResult,
 } from "./background/index.ts";
 import type { CoreDiagnostic, DiagnosticSeverity } from "./diagnostics.ts";
+import type { HumanInterruptWatch } from "./human-interrupt.ts";
 import type { ToolHumanHost } from "./human-request.ts";
 import type {
 	ToolDefinition,
@@ -85,6 +86,8 @@ export interface ToolAdapterContext {
 	 * every tool runs fully synchronously regardless of `backgroundable`.
 	 */
 	backgroundJobTable?: BackgroundJobTable;
+	/** Pending human steers for the agent this context belongs to. */
+	humanInterrupts?: HumanInterruptWatch;
 }
 
 type StoredToolRegistration =
@@ -500,6 +503,12 @@ function resolveBackgroundDeadlineMs(
 
 /** Max length of a stored background job description; longer labels are elided. */
 const MAX_BACKGROUND_DESCRIPTION_LENGTH = 200;
+/**
+ * Max length of a job name. Far shorter than the description: a name shares one
+ * line with the job's status and elapsed time, and a caller that writes a
+ * paragraph there has written a description instead.
+ */
+const MAX_BACKGROUND_NAME_LENGTH = 60;
 
 /**
  * Resolve the human-readable label for a backgrounded call from the tool's
@@ -510,12 +519,32 @@ function resolveBackgroundDescription(
 	definition: RegistryToolDefinition,
 	params: unknown,
 ): string | undefined {
-	const raw = definition.backgroundDescription?.(params);
+	return compactBackgroundLabel(
+		definition.backgroundDescription?.(params),
+		MAX_BACKGROUND_DESCRIPTION_LENGTH,
+	);
+}
+
+/** Resolve the caller-chosen name for a backgrounded call, when the tool takes one. */
+function resolveBackgroundName(
+	definition: RegistryToolDefinition,
+	params: unknown,
+): string | undefined {
+	return compactBackgroundLabel(
+		definition.backgroundName?.(params),
+		MAX_BACKGROUND_NAME_LENGTH,
+	);
+}
+
+function compactBackgroundLabel(
+	raw: string | undefined,
+	maxLength: number,
+): string | undefined {
 	if (raw === undefined) return undefined;
 	const collapsed = raw.replace(/\s+/g, " ").trim();
 	if (collapsed.length === 0) return undefined;
-	return collapsed.length > MAX_BACKGROUND_DESCRIPTION_LENGTH
-		? `${collapsed.slice(0, MAX_BACKGROUND_DESCRIPTION_LENGTH - 1)}…`
+	return collapsed.length > maxLength
+		? `${collapsed.slice(0, maxLength - 1)}…`
 		: collapsed;
 }
 
@@ -559,6 +588,7 @@ function runBackgroundableToolCall(
 	const job = options.table.create({
 		toolCallId: options.toolCallId,
 		toolName: definition.name,
+		name: resolveBackgroundName(definition, options.params),
 		description: resolveBackgroundDescription(definition, options.params),
 		report: initialReport,
 	});
@@ -637,6 +667,7 @@ function runBackgroundableToolCall(
 				jobId: job.id,
 				toolCallId: options.toolCallId,
 				toolName: definition.name,
+				name: job.name,
 			});
 		}
 		// Settled before the deadline (or the deadline lost the microtask race):
@@ -729,6 +760,7 @@ function createToolExecutionContext(
 		human: context.human,
 		agents: context.agents,
 		backgroundJobTable: context.backgroundJobTable,
+		humanInterrupts: context.humanInterrupts,
 		job,
 		[bindToolExecutionContextSymbol]: bindContext,
 	});
@@ -759,6 +791,7 @@ function restoreInnerToolExecutionContext<TDetails>(
 		human: context.human,
 		agents: context.agents,
 		backgroundJobTable: context.backgroundJobTable,
+		humanInterrupts: context.humanInterrupts,
 		job: context.job,
 		...(bindContext
 			? { [bindToolExecutionContextSymbol]: bindContext }

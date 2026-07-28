@@ -90,7 +90,9 @@ export class WidiTuiApplication {
 			quit: () => {
 				void this.shutdown("user exit").catch(() => {});
 			},
-			newSession: (sourceAgentId) => this.beginNewSession(sourceAgentId),
+			newSession: async (sourceAgentId) => {
+				await this.beginNewSession(sourceAgentId);
+			},
 			disposeAgent: async (agentId) => {
 				await this.disposeAgent(agentId);
 			},
@@ -731,7 +733,11 @@ export class WidiTuiApplication {
 		this.tui.requestRender();
 	}
 
-	/** app.steer: send the editor text as an immediate steer instead of queueing. */
+	/**
+	 * app.steer: send the editor text as an immediate steer instead of queueing.
+	 * With an empty editor it promotes what the user already queued with enter,
+	 * which is the same intent one keystroke later.
+	 */
 	private steerFromEditor(): void {
 		if (this.state.shuttingDown) return;
 		const agentId = this.state.activeAgentId;
@@ -743,6 +749,10 @@ export class WidiTuiApplication {
 		}
 		const text = this.editor.getText().trim();
 		if (!text) {
+			if (agent.queue.followUp.length > 0) {
+				this.steerQueuedFollowUps(agentId);
+				return;
+			}
 			this.addApplicationNotice(
 				"Type a message to steer the running agent.",
 				agentId,
@@ -774,6 +784,27 @@ export class WidiTuiApplication {
 		this.tui.requestRender();
 	}
 
+	/** Hand the already-queued follow-ups to the running agent as steering. */
+	private steerQueuedFollowUps(agentId: string): void {
+		this.track(
+			this.orchestrator
+				.steerQueuedFollowUps(agentId)
+				.then((count) => {
+					if (count === 0) return;
+					this.addApplicationNotice(
+						count === 1
+							? "Queued message promoted to steering."
+							: `${count} queued messages promoted to steering.`,
+						agentId,
+					);
+				})
+				.catch((error) => {
+					this.addApplicationNotice(errorMessage(error), agentId);
+				}),
+		);
+		this.tui.requestRender();
+	}
+
 	private upsertCommandItem(
 		agentId: string | undefined,
 		commandId: string,
@@ -786,9 +817,17 @@ export class WidiTuiApplication {
 			error?: CommandError;
 		},
 	): void {
-		const timeline = agentId
-			? ensureAgentProjection(this.state, agentId).timeline
+		// A command can retire the agent it ran in (/new, /clear): its result
+		// belongs to whatever the user is looking at now, not to a projection
+		// resurrected for a conversation that is over.
+		const originalTimeline = agentId
+			? this.state.agents.get(agentId)?.timeline
 			: this.state.pendingAgent?.timeline;
+		const activeTimeline = this.state.activeAgentId
+			? this.state.agents.get(this.state.activeAgentId)?.timeline
+			: undefined;
+		const timeline =
+			originalTimeline ?? activeTimeline ?? this.state.pendingAgent?.timeline;
 		if (!timeline) return;
 		const existing = timeline.find(
 			(item) => item.type === "command-result" && item.commandId === commandId,
@@ -821,8 +860,8 @@ export class WidiTuiApplication {
 	): void {
 		if (commandIds.length === 0) return;
 		const ids = new Set(commandIds);
-		if (agentId) {
-			const agent = ensureAgentProjection(this.state, agentId);
+		const agent = agentId ? this.state.agents.get(agentId) : undefined;
+		if (agent) {
 			agent.timeline = agent.timeline.filter(
 				(item) => item.type !== "command-result" || !ids.has(item.commandId),
 			);
@@ -894,18 +933,26 @@ export class WidiTuiApplication {
 		this.switchAgent(agentId);
 	}
 
-	private beginNewSession(sourceAgentId: string | undefined): void {
-		const previousAgentId = this.state.activeAgentId;
-		if (previousAgentId) {
-			this.drafts.set(previousAgentId, this.editor.getText());
-		}
-		if (!sourceAgentId) {
+	/**
+	 * /new and /clear: close the current conversation and open an empty one on
+	 * the same role. The agent and its context are gone from the runtime - only
+	 * its session file remains, resumable through /resume - so the source facts
+	 * are captured before the dispose, not read back from it afterwards.
+	 */
+	private async beginNewSession(
+		sourceAgentId: string | undefined,
+	): Promise<void> {
+		const source = sourceAgentId
+			? this.newSessionSource(sourceAgentId)
+			: undefined;
+		if (!sourceAgentId || !source) {
 			this.beginDefaultSession();
 			return;
 		}
+		await this.closeAgentForNewSession(sourceAgentId);
 		this.pendingAgents.beginNewSession(
-			sourceAgentId,
-			this.pendingDisplayForSource(sourceAgentId),
+			{ profileId: source.profileId, model: source.display.model },
+			source.display,
 		);
 		this.updateJobsTicker();
 		this.pendingUnknownCommand = undefined;
@@ -965,24 +1012,51 @@ export class WidiTuiApplication {
 		};
 	}
 
-	private pendingDisplayForSource(sourceAgentId: string): PendingAgentDisplay {
+	/**
+	 * The role and model a new session should reopen with, read off the agent it
+	 * replaces. Undefined when that agent can no longer be inspected, which
+	 * leaves the caller with the runtime default.
+	 */
+	private newSessionSource(sourceAgentId: string):
+		| {
+				readonly profileId: string;
+				readonly display: PendingAgentDisplay;
+		  }
+		| undefined {
 		const projection = this.state.agents.get(sourceAgentId);
 		let snapshot = projection?.snapshot;
 		if (!snapshot) {
 			try {
 				snapshot = this.orchestrator.inspectAgent(sourceAgentId);
 			} catch {
-				return this.defaultPendingDisplay();
+				return undefined;
 			}
 		}
+		const reference = snapshot.profile.reference;
 		return {
-			profileLabel:
-				snapshot.profile.reference.label ??
-				snapshot.profile.reference.id ??
-				sourceAgentId,
-			model: projection?.display.model ?? snapshot.model,
-			thinkingLevel: this.orchestrator.getDefaultThinkingLevel(),
+			profileId: reference.id,
+			display: {
+				profileLabel: reference.label ?? reference.id,
+				model: projection?.display.model ?? snapshot.model,
+				thinkingLevel: this.orchestrator.getDefaultThinkingLevel(),
+			},
 		};
+	}
+
+	/**
+	 * Retire an agent the user replaced rather than closed: unlike /dispose it
+	 * leaves no projection behind, so the agent strip shows the new conversation
+	 * alone instead of a tombstone nobody can return to.
+	 */
+	private async closeAgentForNewSession(agentId: string): Promise<void> {
+		await this.orchestrator.disposeAgent(agentId, "Closed for a new session.");
+		this.state.agents.delete(agentId);
+		this.drafts.delete(agentId);
+		this.hydratedAgents.delete(agentId);
+		this.hydrationGeneration.delete(agentId);
+		if (this.state.activeAgentId === agentId) {
+			this.state.activeAgentId = undefined;
+		}
 	}
 
 	private configurePendingEditor(): void {

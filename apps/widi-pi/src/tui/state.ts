@@ -196,9 +196,19 @@ export interface PendingInput {
 	readonly submittedAt: string;
 }
 
+/**
+ * What a pending agent will become once the user submits. A new session carries
+ * the identity to reopen with rather than the agent it came from: the source is
+ * disposed before the pending session is staged, so it is no longer there to
+ * answer questions about itself.
+ */
 export type PendingAgentStart =
 	| { readonly kind: "default" }
-	| { readonly kind: "new-session"; readonly sourceAgentId: AgentId };
+	| {
+			readonly kind: "new-session";
+			readonly profileId: string;
+			readonly model: RuntimeModel;
+	  };
 
 export interface PendingAgentViewState {
 	readonly start: PendingAgentStart;
@@ -277,6 +287,8 @@ export interface PendingToolUpdate {
 export interface BackgroundJobViewState {
 	readonly jobId: string;
 	readonly toolName: string;
+	/** Short label the caller named this job with; absent when unnamed. */
+	readonly name?: string;
 	readonly description?: string;
 	status: "live" | "aborting" | "completed" | "failed" | "cancelled";
 	readonly startedAt: number;

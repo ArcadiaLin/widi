@@ -12,10 +12,10 @@ export interface PendingAgentDisplay {
 }
 
 export interface PendingAgentRuntime {
-	spawnAgent(): Promise<string>;
-	newAgentSessionFromAgent(
-		agentId: string,
-	): Promise<{ readonly agentId: string }>;
+	spawnAgent(options?: {
+		profileId?: string;
+		model?: RuntimeModel;
+	}): Promise<string>;
 }
 
 export class PendingAgentController {
@@ -41,10 +41,13 @@ export class PendingAgentController {
 		this.state.pendingAgent = createPendingAgent({ kind: "default" }, display);
 	}
 
-	beginNewSession(sourceAgentId: string, display: PendingAgentDisplay): void {
+	beginNewSession(
+		source: { readonly profileId: string; readonly model: RuntimeModel },
+		display: PendingAgentDisplay,
+	): void {
 		this.state.activeAgentId = undefined;
 		this.state.pendingAgent = createPendingAgent(
-			{ kind: "new-session", sourceAgentId },
+			{ kind: "new-session", profileId: source.profileId, model: source.model },
 			display,
 		);
 	}
@@ -75,8 +78,10 @@ export class PendingAgentController {
 
 	private async start(start: PendingAgentStart): Promise<string> {
 		if (start.kind === "default") return await this.runtime.spawnAgent();
-		return (await this.runtime.newAgentSessionFromAgent(start.sourceAgentId))
-			.agentId;
+		return await this.runtime.spawnAgent({
+			profileId: start.profileId,
+			model: start.model,
+		});
 	}
 }
 

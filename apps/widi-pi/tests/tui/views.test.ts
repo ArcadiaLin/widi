@@ -214,11 +214,36 @@ describe("TUI views", () => {
 		).render(120);
 
 		const plain = (line ?? "").replace(ANSI_SEQUENCE, "");
-		expect(plain).not.toContain("qwen3.6-35b-a3b");
+		// The model the next prompt runs on sits directly under the editor.
+		expect(plain).toContain("vllm · qwen3.6-35b-a3b · thinking medium");
 		expect(plain).not.toContain("Default Agent");
 		expect(plain).not.toContain("idle");
 		expect(plain).not.toContain("← agents");
-		expect(plain).toContain("thinking medium");
+	});
+
+	it("drops footer qualifiers before the model id and cwd when width runs out", () => {
+		const state = createTuiApplicationState();
+		const agent = setActiveAgent(state, "main");
+		agent.display.thinkingLevel = "medium";
+		agent.display.model = {
+			id: "qwen3.6-35b-a3b",
+			name: "Qwen",
+			api: "anthropic-messages",
+			provider: "vllm",
+			baseUrl: "https://example.test",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1000,
+			maxTokens: 100,
+		};
+		const footer = new FooterView(state, "/home/arcadia/projs/widi");
+
+		const narrow = (footer.render(40)[0] ?? "").replace(ANSI_SEQUENCE, "");
+		expect(narrow).toContain("qwen3.6-35b-a3b");
+		expect(narrow).not.toContain("vllm");
+		expect(narrow).not.toContain("thinking");
+		expect(visibleWidth(narrow)).toBeLessThanOrEqual(40);
 	});
 
 	it("renders the running steer action only once across footer and operation hint", () => {

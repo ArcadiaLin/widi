@@ -91,7 +91,7 @@ describe("resolveOperationHint", () => {
 			...builtInCommands,
 			...applicationCommands({
 				quit: () => {},
-				newSession: () => {},
+				newSession: async () => {},
 				disposeAgent: async () => {},
 			}),
 		]);
@@ -105,7 +105,9 @@ describe("resolveOperationHint", () => {
 				editorAutocompleteVisible: true,
 				keys,
 			}),
-		).toContain("/new · Prepare a new session from the current agent.");
+		).toContain(
+			"/new · Close the current agent and start a new session on the same profile.",
+		);
 	});
 
 	it("prioritizes completion over autocomplete", () => {
@@ -513,6 +515,29 @@ describe("resolveOperationHint", () => {
 			keys,
 		});
 		expect(running).toBe("Esc abort · Ctrl+S steer · Enter queue follow-up");
+
+		// With an empty editor and something already queued, the steer key
+		// promotes the queue instead of the (empty) editor text.
+		main.queue = { ...main.queue, followUp: ["already queued"] };
+		expect(
+			resolveOperationHint({
+				state,
+				engine,
+				editorText: "",
+				editorAutocompleteVisible: false,
+				keys,
+			}),
+		).toBe("Esc abort · Ctrl+S steer queued · Enter queue follow-up");
+		expect(
+			resolveOperationHint({
+				state,
+				engine,
+				editorText: "typing",
+				editorAutocompleteVisible: false,
+				keys,
+			}),
+		).toBe("Esc abort · Ctrl+S steer · Enter queue follow-up");
+		main.queue = { ...main.queue, followUp: [] };
 
 		main.status = "idle";
 		const multiple = resolveOperationHint({

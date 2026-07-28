@@ -1,7 +1,8 @@
 import { type Static, Type } from "typebox";
-import type {
-	BackgroundJob,
-	BackgroundJobStatus,
+import {
+	type BackgroundJob,
+	type BackgroundJobStatus,
+	backgroundJobToolLabel,
 } from "../../background/index.ts";
 import type { ToolDefinition } from "../types.ts";
 import { waitForSettlements } from "./settlement-wait.ts";
@@ -41,6 +42,8 @@ export type KillJobJobState = BackgroundJobStatus | "aborting" | "unknown";
 export interface KillJobJobStatus {
 	readonly jobId: string;
 	readonly toolName?: string;
+	/** The name the job was started with, when it was named. */
+	readonly name?: string;
 	readonly state: KillJobJobState;
 }
 
@@ -115,6 +118,7 @@ export function createKillJobToolDefinition(): ToolDefinition<
 								statuses.set(job.id, {
 									jobId: job.id,
 									toolName: job.toolName,
+									name: job.name,
 									state: outcome.status,
 								}),
 						})
@@ -130,6 +134,7 @@ export function createKillJobToolDefinition(): ToolDefinition<
 				statuses.set(id, {
 					jobId: id,
 					toolName: job.toolName,
+					name: job.name,
 					state: "aborting",
 				});
 			}
@@ -160,16 +165,18 @@ function formatKillSummary(jobs: readonly KillJobJobStatus[]): string {
 		return "No matching background jobs to kill.";
 	}
 	const lines = jobs.map((job) => {
-		const name = job.toolName ? ` (${job.toolName})` : "";
+		const label = job.toolName
+			? ` (${backgroundJobToolLabel({ toolName: job.toolName, name: job.name })})`
+			: "";
 		switch (job.state) {
 			case "cancelled":
-				return `- ${job.jobId}${name}: cancelled`;
+				return `- ${job.jobId}${label}: cancelled`;
 			case "completed":
-				return `- ${job.jobId}${name}: completed (finished on its own before the kill took effect)`;
+				return `- ${job.jobId}${label}: completed (finished on its own before the kill took effect)`;
 			case "failed":
-				return `- ${job.jobId}${name}: failed (failed on its own before the kill took effect)`;
+				return `- ${job.jobId}${label}: failed (failed on its own before the kill took effect)`;
 			case "aborting":
-				return `- ${job.jobId}${name}: aborting (abort sent; the confirmation arrives as its background job result message)`;
+				return `- ${job.jobId}${label}: aborting (abort sent; the confirmation arrives as its background job result message)`;
 			default:
 				return `- ${job.jobId}: not tracked (already finished, not backgrounded, or never started)`;
 		}

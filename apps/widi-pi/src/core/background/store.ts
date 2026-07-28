@@ -62,6 +62,8 @@ interface PersistedJobIdentity {
 	readonly jobId: string;
 	readonly toolCallId: string;
 	readonly toolName: string;
+	/** Short label the caller named the job with, when it named one. */
+	readonly name?: string;
 	readonly description?: string;
 	readonly origin: BackgroundJobOrigin;
 	readonly startedAt: number;
@@ -222,6 +224,7 @@ export class BackgroundJobStore {
 			jobId: snapshot.jobId,
 			toolCallId: snapshot.toolCallId,
 			toolName: snapshot.toolName,
+			...(snapshot.name === undefined ? undefined : { name: snapshot.name }),
 			...(snapshot.description === undefined
 				? undefined
 				: { description: snapshot.description }),
@@ -317,6 +320,7 @@ export class BackgroundJobStore {
 				jobId: record.jobId,
 				toolCallId: record.toolCallId,
 				toolName: record.toolName,
+				name: record.name,
 				description: record.description,
 				origin: record.origin,
 				startedAt: record.startedAt,

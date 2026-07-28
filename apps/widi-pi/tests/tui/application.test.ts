@@ -77,18 +77,34 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		expect(harness.promptAgent).not.toHaveBeenCalled();
 	});
 
-	it("keeps /new pending until the next materializing input", async () => {
+	it("closes the current agent on /new and keeps the session pending", async () => {
 		const harness = await createApplicationHarness();
 		await submit(harness.application, "first");
 		harness.promptAgent.mockClear();
+		harness.spawnAgent.mockClear();
 
 		await submit(harness.application, "/new");
 
-		expect(harness.newAgentSessionFromAgent).not.toHaveBeenCalled();
+		expect(harness.disposeAgent).toHaveBeenCalledWith(
+			"main",
+			expect.stringContaining("new session"),
+		);
+		// The replaced agent leaves no projection behind: nothing to switch back to.
+		expect(harness.application.state.agents.has("main")).toBe(false);
 		expect(harness.application.state.activeAgentId).toBeUndefined();
+		expect(harness.spawnAgent).not.toHaveBeenCalled();
 		expect(harness.application.state.pendingAgent?.start).toEqual({
 			kind: "new-session",
-			sourceAgentId: "main",
+			profileId: "main",
+			model: model(),
+		});
+		expect(
+			harness.application.state.pendingAgent?.timeline.find(
+				(item) => item.type === "command-result" && item.name === "new",
+			),
+		).toMatchObject({
+			type: "command-result",
+			status: "completed",
 		});
 	});
 
@@ -96,14 +112,34 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		const harness = await createApplicationHarness();
 		await submit(harness.application, "first");
 		harness.promptAgent.mockClear();
+		harness.spawnAgent.mockClear();
 
 		await submit(harness.application, "/new");
 		await submit(harness.application, "second");
 
-		expect(harness.newAgentSessionFromAgent).toHaveBeenCalledOnce();
-		expect(harness.newAgentSessionFromAgent).toHaveBeenCalledWith("main");
+		expect(harness.spawnAgent).toHaveBeenCalledOnce();
+		expect(harness.spawnAgent).toHaveBeenCalledWith({
+			profileId: "main",
+			model: model(),
+		});
 		expect(harness.promptAgent).toHaveBeenCalledWith("main-2", "second", {
 			expansion: undefined,
+		});
+	});
+
+	it("closes the current agent on /clear too", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "first");
+
+		await submit(harness.application, "/clear");
+
+		expect(harness.disposeAgent).toHaveBeenCalledWith(
+			"main",
+			expect.stringContaining("new session"),
+		);
+		expect(harness.application.state.pendingAgent?.start).toMatchObject({
+			kind: "new-session",
+			profileId: "main",
 		});
 	});
 
@@ -269,6 +305,29 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 			error: { message: expect.stringContaining("dispose failed") },
 		});
 	});
+
+	it("keeps the current agent selected when /new disposal fails", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "first");
+		harness.disposeAgent.mockRejectedValueOnce(new Error("dispose failed"));
+
+		await submit(harness.application, "/new");
+
+		expect(harness.application.state.activeAgentId).toBe("main");
+		expect(harness.application.state.agents.has("main")).toBe(true);
+		expect(harness.application.state.pendingAgent).toBeUndefined();
+		expect(
+			harness.application.state.agents
+				.get("main")
+				?.timeline.find(
+					(item) => item.type === "command-result" && item.name === "new",
+				),
+		).toMatchObject({
+			type: "command-result",
+			status: "failed",
+			error: { message: expect.stringContaining("dispose failed") },
+		});
+	});
 });
 
 describe("WidiTuiApplication animation ticker", () => {
@@ -355,11 +414,13 @@ function deliverEvent(
 
 async function createApplicationHarness() {
 	const runtimeModel = model();
-	const spawnAgent = vi.fn(async () => "main");
-	const newAgentSessionFromAgent = vi.fn(async () => ({
-		agentId: "main-2",
-		snapshot: snapshot("main-2", runtimeModel),
-	}));
+	// The first spawn is the startup agent; later ones are the sessions /new
+	// opens after closing it.
+	let spawnCount = 0;
+	const spawnAgent = vi.fn(async (_options?: unknown) => {
+		spawnCount += 1;
+		return spawnCount === 1 ? "main" : `main-${spawnCount}`;
+	});
 	const promptAgent = vi.fn(async () => ({
 		kind: "completed" as const,
 		message: {
@@ -405,7 +466,6 @@ async function createApplicationHarness() {
 		disposeAll: async () => {},
 		disposeAgent,
 		spawnAgent,
-		newAgentSessionFromAgent,
 		promptAgent,
 		setAgentModelByReference,
 		setAgentThinkingLevelByName,
@@ -459,7 +519,6 @@ async function createApplicationHarness() {
 		application,
 		tuiStart,
 		spawnAgent,
-		newAgentSessionFromAgent,
 		promptAgent,
 		disposeAgent,
 		inspectAgent,

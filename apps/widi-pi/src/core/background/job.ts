@@ -47,6 +47,12 @@ export interface BackgroundJob {
 	readonly toolCallId: string;
 	/** Name of the tool that started the job. */
 	readonly toolName: string;
+	/**
+	 * Short label the caller named this job with, when the tool takes one (bash's
+	 * `name`). It is what a person recognizes the job by; `description` is the
+	 * fallback the runtime derives when nobody named it.
+	 */
+	readonly name?: string;
 	/** Human-readable label for the job (for bash, the command); may be absent. */
 	readonly description?: string;
 	/** Latest structured tool-owned report, when the tool published one. */
@@ -141,6 +147,8 @@ export interface BackgroundJobSnapshot {
 	readonly toolCallId: string;
 	/** Name of the tool that started the job. */
 	readonly toolName: string;
+	/** Short label the caller named this job with; absent when unnamed. */
+	readonly name?: string;
 	/** Human-readable label for the job; absent when the tool supplied none. */
 	readonly description?: string;
 	/** Latest structured tool-owned report, when one has been published. */
@@ -169,6 +177,18 @@ export interface BackgroundJobSnapshot {
 	readonly progressDroppedBytes?: number;
 }
 
+/**
+ * How a job is named when it appears next to other jobs: the tool it runs plus
+ * the label its caller chose, `bash "git pull"`. Unnamed jobs stay bare, which
+ * is what every job looked like before naming existed.
+ */
+export function backgroundJobToolLabel(job: {
+	readonly toolName: string;
+	readonly name?: string;
+}): string {
+	return job.name ? `${job.toolName} "${job.name}"` : job.toolName;
+}
+
 export function snapshotBackgroundJob(
 	job: BackgroundJob,
 	overrides: { status?: BackgroundJobStatus } = {},
@@ -178,6 +198,7 @@ export function snapshotBackgroundJob(
 		origin: job.origin,
 		toolCallId: job.toolCallId,
 		toolName: job.toolName,
+		name: job.name,
 		description: job.description,
 		report: job.report,
 		phase: job.phase,

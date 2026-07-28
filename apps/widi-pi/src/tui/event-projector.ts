@@ -413,6 +413,7 @@ export class EventProjector {
 			seeded.set(snapshot.jobId, {
 				jobId: snapshot.jobId,
 				toolName: snapshot.toolName,
+				name: snapshot.name,
 				description: snapshot.description,
 				status: existing?.status === "aborting" ? "aborting" : "live",
 				startedAt: snapshot.startedAt,
@@ -441,6 +442,7 @@ export class EventProjector {
 			agent.backgroundJobs.set(snapshot.jobId, {
 				jobId: snapshot.jobId,
 				toolName: snapshot.toolName,
+				name: snapshot.name,
 				description: snapshot.description,
 				status: "live",
 				startedAt: snapshot.startedAt,

@@ -11,10 +11,11 @@
 
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { TextContent } from "@earendil-works/pi-ai";
-import type {
-	BackgroundJobOutcome,
-	BackgroundJobSettlement,
-	BackgroundJobStatus,
+import {
+	type BackgroundJobOutcome,
+	type BackgroundJobSettlement,
+	type BackgroundJobStatus,
+	backgroundJobToolLabel,
 } from "./job.ts";
 
 /**
@@ -26,6 +27,8 @@ export interface BackgroundJobStartedDetails {
 	readonly jobId: string;
 	readonly toolCallId: string;
 	readonly toolName: string;
+	/** The name the call gave this job, when it named one. */
+	readonly name?: string;
 	readonly backgrounded: true;
 }
 
@@ -39,15 +42,17 @@ export function createBackgroundJobStartedResult(input: {
 	jobId: string;
 	toolCallId: string;
 	toolName: string;
+	name?: string;
 }): AgentToolResult<BackgroundJobStartedDetails> {
 	const details: BackgroundJobStartedDetails = {
 		jobId: input.jobId,
 		toolCallId: input.toolCallId,
 		toolName: input.toolName,
+		...(input.name === undefined ? undefined : { name: input.name }),
 		backgrounded: true,
 	};
 	const text =
-		`Tool call ${input.toolCallId} (${input.toolName}) is still running and has ` +
+		`Tool call ${input.toolCallId} (${backgroundJobToolLabel(input)}) is still running and has ` +
 		`moved to the background as job ${input.jobId}. It keeps running; its result ` +
 		`will arrive later as a separate background job result message that references ` +
 		`job ${input.jobId}. Do not block waiting on it: continue with other work and ` +

@@ -92,6 +92,7 @@ import {
 	validateExtensionStatus,
 } from "./extension/presentation.ts";
 import { ExtensionStatusRegistry } from "./extension/status-registry.ts";
+import { HumanInterruptRegistry } from "./human-interrupt.ts";
 import type {
 	HumanRequest,
 	HumanRequestDraft,
@@ -396,6 +397,10 @@ export class AgentOrchestrator {
 	// A `BackgroundJobTable` is per-agent and cannot see another agent's jobs, so
 	// only the agent registry can answer which jobs a disposed agent still owes.
 	private readonly _externalJobs = new ExternalJobDependencyIndex();
+	// Human steers the agent loop has accepted but not read yet. A blocking tool
+	// watches this so a barrier does not hold the turn open past the moment the
+	// user tried to break in.
+	private readonly _humanInterrupts = new HumanInterruptRegistry();
 	// Agents inside `disposeAgent`, which runs a long teardown before it can
 	// commit the `disposed` status. Without this marker the agent still looks
 	// live for that whole window, and work registered against it there - a
@@ -445,7 +450,16 @@ export class AgentOrchestrator {
 				if (request.method === "follow_up") {
 					await harness.followUp(request.text, options);
 				} else {
+					const clearRevision = request.humanInterrupt
+						? this._humanInterrupts.captureClearRevision(request.agentId)
+						: undefined;
 					await harness.steer(request.text, options);
+					if (clearRevision !== undefined) {
+						this._humanInterrupts.notifyIfUncleared(
+							request.agentId,
+							clearRevision,
+						);
+					}
 				}
 				return { method: request.method };
 			},
@@ -1403,6 +1417,7 @@ export class AgentOrchestrator {
 				images: outcome.images,
 				mode: draft.mode,
 				requiresIdle: options.requiresIdle,
+				humanInterrupt: draft.source.kind === "human",
 				mergeKey: jobSource ? backgroundResultMergeKey(draft.mode) : undefined,
 				awaited: options.awaited,
 				retryOnFailure: jobSource !== undefined,
@@ -1473,6 +1488,27 @@ export class AgentOrchestrator {
 		options?: { images?: ImageContent[] },
 	): Promise<void> {
 		await this._requireAgentHarness(agentId).steer(text, options);
+	}
+
+	/**
+	 * Promote everything queued as a follow-up into steering, so it is read at
+	 * the next turn boundary instead of only where the run would have stopped.
+	 *
+	 * This is the "I cannot wait for this" path of a message the surface already
+	 * accepted: the text is in the harness, so re-sending it would deliver it
+	 * twice and only the harness can take it back. Interception and session
+	 * accounting already ran when the messages were sent - promotion changes when
+	 * they are read, not what they are - so it deliberately bypasses
+	 * `sendMessage`. Returns how many messages moved.
+	 */
+	async steerQueuedFollowUps(agentId: AgentId): Promise<number> {
+		const clearRevision = this._humanInterrupts.captureClearRevision(agentId);
+		const promoted =
+			await this._requireAgentHarness(agentId).promoteFollowUpsToSteer();
+		if (promoted.length > 0) {
+			this._humanInterrupts.notifyIfUncleared(agentId, clearRevision);
+		}
+		return promoted.length;
 	}
 
 	/** Low-level harness primitive; see the note on {@link steerAgent}. */
@@ -1566,6 +1602,7 @@ export class AgentOrchestrator {
 		// id with a fresh table numbering from job-1, and a stale entry would
 		// later cancel an unrelated job that happens to share the id.
 		this._externalJobs.forgetOwner(agentId);
+		this._humanInterrupts.forget(agentId);
 		this._maintenanceDepth.delete(agentId);
 		this._resolveAgentRunStartWaiters(agentId);
 		this._backgroundJobEmits.delete(agentId);
@@ -2467,6 +2504,7 @@ export class AgentOrchestrator {
 					}),
 			},
 			agents: this._createToolAgentHost(agentId),
+			humanInterrupts: this._humanInterrupts.watch(agentId),
 			// The runner is captured for this turn snapshot. Calls that continue
 			// in the background keep this runner and observe its stale boundary
 			// after reload instead of silently switching to the replacement.
@@ -3745,6 +3783,12 @@ export class AgentOrchestrator {
 		// before the awaits below so acceptance never waits on observers.
 		if (event.type === "agent_start") {
 			this._resolveAgentRunStartWaiters(agentId);
+		}
+		// The loop reports its queues after every drain, so an empty steering queue
+		// is the only honest evidence that the human's interrupt was read (an abort
+		// clears the queue through the same event).
+		if (event.type === "queue_update" && event.steer.length === 0) {
+			this._humanInterrupts.clear(agentId);
 		}
 		await this._updateAgentStatusFromHarnessEvent(agentId, event);
 		await this._emit({ type: "agent_harness_event", agentId, event });

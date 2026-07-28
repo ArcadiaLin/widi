@@ -41,6 +41,7 @@ export {
 	type BackgroundJobSnapshot,
 	type BackgroundJobStatus,
 	type BackgroundJobTransition,
+	backgroundJobToolLabel,
 	snapshotBackgroundJob,
 } from "./job.ts";
 export {

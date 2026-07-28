@@ -1,7 +1,8 @@
 import { type Static, Type } from "typebox";
-import type {
-	BackgroundJob,
-	BackgroundJobStatus,
+import {
+	type BackgroundJob,
+	type BackgroundJobStatus,
+	backgroundJobToolLabel,
 } from "../../background/index.ts";
 import type { ToolDefinition } from "../types.ts";
 import {
@@ -40,6 +41,7 @@ export type WaitForJobsInput = Static<typeof waitForJobsSchema>;
  * - `completed`: every waited-on job settled.
  * - `timed_out`: the timeout elapsed with jobs still running.
  * - `aborted`: the call was interrupted with jobs still running.
+ * - `steered`: the user sent a message, so the barrier gave the turn back.
  */
 export type WaitForJobsOutcome = SettlementWaitOutcome;
 
@@ -47,6 +49,8 @@ export type WaitForJobsOutcome = SettlementWaitOutcome;
 export interface WaitForJobsJobStatus {
 	readonly jobId: string;
 	readonly toolName?: string;
+	/** The name the job was started with, when it was named. */
+	readonly name?: string;
 	/**
 	 * `running` means the job had not settled when the wait returned (timed out
 	 * or interrupted). `unknown` means no live backgrounded job matched the id:
@@ -71,6 +75,11 @@ export interface WaitForJobsDetails {
  * normal background job result message (t1), so this tool never duplicates large
  * command output inline. A timeout returns the current status rather than
  * hanging, and jobs left running keep running.
+ *
+ * A human steer also ends the wait. Steering is only read at a turn boundary,
+ * so a barrier that keeps holding the turn is precisely what makes the user's
+ * message look ignored - up to ten minutes of it. Ending early gives the turn
+ * back so the loop can deliver what the user typed.
  */
 export function createWaitForJobsToolDefinition(): ToolDefinition<
 	typeof waitForJobsSchema,
@@ -80,7 +89,7 @@ export function createWaitForJobsToolDefinition(): ToolDefinition<
 		name: "wait_for_jobs",
 		label: "wait_for_jobs",
 		description:
-			"Wait for one or more background jobs (started by a backgrounded tool call, such as bash with background: true) to finish, then report each job's status. Blocks up to the timeout, then returns; jobs still running keep running. Detailed output for each finished job arrives separately as a background job result message, so use this to synchronize, not to fetch output. To inspect a running job's live output use read_job; to terminate one use kill_job.",
+			"Wait for one or more background jobs (started by a backgrounded tool call, such as bash with background: true) to finish, then report each job's status. Blocks up to the timeout, then returns; jobs still running keep running. The wait also returns early when the user sends a message, so their input is never held up by the barrier. Detailed output for each finished job arrives separately as a background job result message, so use this to synchronize, not to fetch output. To inspect a running job's live output use read_job; to terminate one use kill_job.",
 		promptSnippet: "Wait for background jobs to finish before continuing",
 		parameters: waitForJobsSchema,
 		execute: async (_toolCallId, { jobIds, timeout }, context) => {
@@ -130,10 +139,12 @@ export function createWaitForJobsToolDefinition(): ToolDefinition<
 					pending,
 					timeoutMs: resolveWaitTimeoutMs(timeout),
 					signal: context.signal,
+					humanInterrupts: context.humanInterrupts,
 					onSettled: (job, jobOutcome) =>
 						statuses.set(job.id, {
 							jobId: job.id,
 							toolName: job.toolName,
+							name: job.name,
 							state: jobOutcome.status,
 						}),
 				});
@@ -145,6 +156,7 @@ export function createWaitForJobsToolDefinition(): ToolDefinition<
 				statuses.set(id, {
 					jobId: id,
 					toolName: job.toolName,
+					name: job.name,
 					state: "running",
 				});
 			}
@@ -181,16 +193,18 @@ function formatWaitSummary(
 		return "No matching background jobs to wait for.";
 	}
 	const lines = jobs.map((job) => {
-		const name = job.toolName ? ` (${job.toolName})` : "";
+		const label = job.toolName
+			? ` (${backgroundJobToolLabel({ toolName: job.toolName, name: job.name })})`
+			: "";
 		switch (job.state) {
 			case "completed":
-				return `- ${job.jobId}${name}: completed`;
+				return `- ${job.jobId}${label}: completed`;
 			case "failed":
-				return `- ${job.jobId}${name}: failed`;
+				return `- ${job.jobId}${label}: failed`;
 			case "cancelled":
-				return `- ${job.jobId}${name}: cancelled`;
+				return `- ${job.jobId}${label}: cancelled`;
 			case "running":
-				return `- ${job.jobId}${name}: still running`;
+				return `- ${job.jobId}${label}: still running`;
 			default:
 				return `- ${job.jobId}: not tracked (already finished, not backgrounded, or never started)`;
 		}
@@ -206,8 +220,10 @@ function formatWaitSummary(
 			? "Timed out waiting for background jobs; some are still running:"
 			: outcome === "aborted"
 				? "Wait interrupted; background jobs are still running:"
-				: anySettled
-					? "Background jobs finished:"
-					: "No matching background jobs to wait for; they may have already finished:";
+				: outcome === "steered"
+					? "Stopped waiting because the user sent a message; read it before deciding what to do next. Background jobs are still running:"
+					: anySettled
+						? "Background jobs finished:"
+						: "No matching background jobs to wait for; they may have already finished:";
 	return `${header}\n${lines.join("\n")}\n\nDetailed output for each finished job arrives as a separate background job result message.`;
 }

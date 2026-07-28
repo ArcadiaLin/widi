@@ -24,27 +24,56 @@ export class FooterView implements Component {
 
 	render(width: number): string[] {
 		const agent = activeAgent(this.state);
-		const leftParts = [shortCwd(this.cwd)];
-		const branch = this.git.current();
-		if (branch) leftParts.push(`⎇ ${branch}`);
-		if (agent?.queue.steer.length) {
-			leftParts.push(`${agent.queue.steer.length} steer`);
-		}
-		if (agent?.queue.followUp.length) {
-			leftParts.push(`${agent.queue.followUp.length} follow-up`);
-		}
-		if (agent?.unreadCount) leftParts.push(`${agent.unreadCount} unread`);
-		const left = theme.dim(leftParts.join(" · "));
+		const pending = this.state.pendingAgent;
+		const model =
+			agent?.display.model ?? agent?.snapshot?.model ?? pending?.display.model;
 		const thinkingLevel =
 			agent?.display.thinkingLevel ??
-			(!agent ? this.state.pendingAgent?.display.thinkingLevel : undefined);
-		const rightParts: string[] = [];
-		if (thinkingLevel) {
-			rightParts.push(`thinking ${singleLine(thinkingLevel, 40)}`);
+			(!agent ? pending?.display.thinkingLevel : undefined);
+		const branch = this.git.current();
+		const queueParts: string[] = [];
+		if (agent?.queue.steer.length) {
+			queueParts.push(`${agent.queue.steer.length} steer`);
 		}
+		if (agent?.queue.followUp.length) {
+			queueParts.push(`${agent.queue.followUp.length} follow-up`);
+		}
+		if (agent?.unreadCount) queueParts.push(`${agent.unreadCount} unread`);
+
 		const context = contextReadout(this.state);
-		if (context) rightParts.push(context);
-		const right = theme.dim(rightParts.join(" · "));
+		const right = context ? theme.dim(context) : "";
+		// Model identity sits directly under the editor, ahead of where the run
+		// happens. What survives a narrow terminal is ordered by how much it
+		// changes: the model id and cwd stay, their qualifiers go.
+		const optionalParts = [
+			model ? singleLine(model.provider, 40) : undefined,
+			thinkingLevel ? `thinking ${singleLine(thinkingLevel, 40)}` : undefined,
+			branch ? `⎇ ${branch}` : undefined,
+		];
+		const buildLeft = (dropped: number) =>
+			theme.dim(
+				[
+					dropped < 1 ? optionalParts[0] : undefined,
+					model ? singleLine(model.id, 60) : undefined,
+					dropped < 2 ? optionalParts[1] : undefined,
+					shortCwd(this.cwd),
+					dropped < 3 ? optionalParts[2] : undefined,
+					...queueParts,
+				]
+					.filter((part): part is string => part !== undefined)
+					.join(" · "),
+			);
+
+		const rightWidth = visibleWidth(right);
+		let left = buildLeft(0);
+		for (
+			let dropped = 1;
+			dropped <= optionalParts.length &&
+			visibleWidth(left) + rightWidth + 2 > width;
+			dropped++
+		) {
+			left = buildLeft(dropped);
+		}
 		return [alignSides(left, right, width)];
 	}
 }

@@ -51,7 +51,8 @@ describe("BackgroundJobStore", () => {
 	it("replays a job's lifecycle into its latest state", async () => {
 		const fs = new MemoryExecutionEnv();
 		const store = await openStore(fs, "epoch-1");
-		await store.recordBackgrounded(snapshot());
+		await store.recordBackgrounded(snapshot({ name: "run tests" }));
+		expect(store.history()[0]?.name).toBe("run tests");
 		await store.recordReport("job-1", {
 			revision: 2,
 			updatedAt: 1200,
@@ -77,6 +78,7 @@ describe("BackgroundJobStore", () => {
 				jobId: "job-1",
 				toolCallId: "call-1",
 				toolName: "bash",
+				name: "run tests",
 				description: "npm test",
 				origin: { kind: "local" },
 				startedAt: 1000,

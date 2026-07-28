@@ -51,6 +51,35 @@ describe("bash background integration", () => {
 		expect(table.list()).toEqual([]);
 	});
 
+	it("carries the caller's name onto the job and its handle", async () => {
+		const table = new BackgroundJobTable();
+		const bash = resolveBashTool();
+
+		const t0 = await bash.execute(
+			"call-1",
+			{
+				command: "sleep 0.2 && echo hi",
+				background: true,
+				name: "  run   the e2e suite  ",
+			},
+			undefined,
+			undefined,
+			{ backgroundJobTable: table },
+		);
+
+		// Whitespace is collapsed; the command stays as the derived description.
+		expect(table.list()[0]).toMatchObject({
+			name: "run the e2e suite",
+			description: "sleep 0.2 && echo hi",
+		});
+		expect(t0.details).toMatchObject({ name: "run the e2e suite" });
+		const handleText = t0.content
+			.map((part) => (part.type === "text" ? part.text : ""))
+			.join("");
+		expect(handleText).toContain('bash "run the e2e suite"');
+		table.abort(table.list()[0]?.id ?? "", "test cleanup");
+	});
+
 	it("mirrors live output into the job's rolling tail while backgrounded", async () => {
 		const table = new BackgroundJobTable();
 		const settled = new Promise<BackgroundJobSettlement>((resolve) => {

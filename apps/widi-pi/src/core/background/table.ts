@@ -140,6 +140,7 @@ export class BackgroundJobTable {
 	create(input: {
 		toolCallId: string;
 		toolName: string;
+		name?: string;
 		description?: string;
 		report?: BackgroundJobReport;
 		/** Defaults to a job settled by the local tool call that created it. */
@@ -187,6 +188,7 @@ export class BackgroundJobTable {
 				origin,
 				toolCallId: input.toolCallId,
 				toolName: input.toolName,
+				name: input.name,
 				description: input.description,
 				signal: controller.signal,
 				output,

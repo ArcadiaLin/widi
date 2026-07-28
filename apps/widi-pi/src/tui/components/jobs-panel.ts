@@ -78,9 +78,17 @@ function orderedJobs(
 	});
 }
 
+/**
+ * `● bash · run the e2e suite · 12s · 3 KB`. The tool stays in front of the
+ * label so two jobs with similar names are still told apart by what they run;
+ * an unnamed job falls back to the summary derived from its own arguments.
+ */
 function renderJob(job: BackgroundJobViewState): string {
-	const description = singleLine(job.description ?? job.toolName, 120);
-	return `  ${jobGlyph(job)} ${description} ${theme.dim(`· ${elapsedText(job)} · ${bytesText(job.totalBytesSeen)}`)}`;
+	const label = job.name ?? job.description;
+	const title = label
+		? `${job.toolName} ${theme.dim("·")} ${singleLine(label, 120)}`
+		: job.toolName;
+	return `  ${jobGlyph(job)} ${title} ${theme.dim(`· ${elapsedText(job)} · ${bytesText(job.totalBytesSeen)}`)}`;
 }
 
 function renderJobReport(job: BackgroundJobViewState): string[] {

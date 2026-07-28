@@ -10,19 +10,15 @@ import { createTuiApplicationState } from "../../src/tui/state.ts";
 describe("PendingAgentController", () => {
 	it("does not spawn while creating default and new-session intents", () => {
 		const spawnAgent = vi.fn(async () => "main");
-		const newAgentSessionFromAgent = vi.fn(async () => ({
-			agentId: "worker",
-		}));
-		const controller = createController({
-			spawnAgent,
-			newAgentSessionFromAgent,
-		});
+		const controller = createController({ spawnAgent });
 
 		controller.beginDefault(display());
-		controller.beginNewSession("main", display());
+		controller.beginNewSession(
+			{ profileId: "main-agent", model: model() },
+			display(),
+		);
 
 		expect(spawnAgent).not.toHaveBeenCalled();
-		expect(newAgentSessionFromAgent).not.toHaveBeenCalled();
 	});
 
 	it("materializes one default agent for concurrent callers", async () => {
@@ -47,15 +43,20 @@ describe("PendingAgentController", () => {
 		expect(state.pendingAgent).toBeUndefined();
 	});
 
-	it("uses the source agent for a pending new session", async () => {
-		const newAgentSessionFromAgent = vi.fn(async () => ({
-			agentId: "main-2",
-		}));
-		const controller = createController({ newAgentSessionFromAgent });
-		controller.beginNewSession("main", display());
+	it("reopens a pending new session on the captured profile and model", async () => {
+		const spawnAgent = vi.fn(async () => "main-2");
+		const controller = createController({ spawnAgent });
+		const sourceModel = model();
+		controller.beginNewSession(
+			{ profileId: "main-agent", model: sourceModel },
+			display(),
+		);
 
 		await expect(controller.materialize()).resolves.toBe("main-2");
-		expect(newAgentSessionFromAgent).toHaveBeenCalledWith("main");
+		expect(spawnAgent).toHaveBeenCalledWith({
+			profileId: "main-agent",
+			model: sourceModel,
+		});
 	});
 
 	it("keeps the pending intent after materialization fails", async () => {
@@ -77,7 +78,6 @@ function createController(
 ): PendingAgentController {
 	const runtime: PendingAgentRuntime = {
 		spawnAgent: async () => "main",
-		newAgentSessionFromAgent: async () => ({ agentId: "main-2" }),
 		...overrides,
 	};
 	return new PendingAgentController(state, runtime, display());

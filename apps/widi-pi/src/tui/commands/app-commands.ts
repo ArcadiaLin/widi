@@ -8,7 +8,8 @@ import type { CommandDefinition } from "./types.ts";
  */
 export interface ApplicationCommandHost {
 	quit(): void;
-	newSession(sourceAgentId: string | undefined): void;
+	/** Close the current agent and stage an empty session on the same profile. */
+	newSession(sourceAgentId: string | undefined): Promise<void>;
 	disposeAgent(agentId: string): Promise<void>;
 }
 
@@ -18,6 +19,12 @@ export function applicationCommands(
 ): readonly CommandDefinition[] {
 	const quit = async () => {
 		host.quit();
+		return undefined;
+	};
+	// One conversation ends and an empty one begins on the same role: the two
+	// names users reach for mean the same thing, so they are the same command.
+	const newSession = async (context: { agentId?: string }) => {
+		await host.newSession(context.agentId);
 		return undefined;
 	};
 	return [
@@ -39,11 +46,17 @@ export function applicationCommands(
 			kind: "action",
 			agentPolicy: "runtime",
 			name: "new",
-			description: "Prepare a new session from the current agent.",
-			execute: async (context) => {
-				host.newSession(context.agentId);
-				return undefined;
-			},
+			description:
+				"Close the current agent and start a new session on the same profile.",
+			execute: newSession,
+		},
+		{
+			kind: "action",
+			agentPolicy: "runtime",
+			name: "clear",
+			description:
+				"Close the current agent and start a new session on the same profile.",
+			execute: newSession,
 		},
 		{
 			kind: "action",

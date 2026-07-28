@@ -1,5 +1,8 @@
 import { type Static, Type } from "typebox";
-import type { BackgroundJobReportSnapshot } from "../../background/index.ts";
+import {
+	type BackgroundJobReportSnapshot,
+	backgroundJobToolLabel,
+} from "../../background/index.ts";
 import type { ToolDefinition } from "../types.ts";
 
 const readJobSchema = Type.Object({
@@ -18,6 +21,8 @@ export type ReadJobJobStatus =
 	| {
 			readonly jobId: string;
 			readonly toolName: string;
+			/** The name the job was started with, when it was named. */
+			readonly name?: string;
 			/** Human-readable label for the job (for bash, the command); may be absent. */
 			readonly description?: string;
 			readonly state: "running";
@@ -108,6 +113,7 @@ export function createReadJobToolDefinition(): ToolDefinition<
 					? {
 							jobId: id,
 							toolName: job.toolName,
+							name: job.name,
 							description: job.description,
 							state: "running",
 							...(job.origin.kind === "external"
@@ -140,17 +146,18 @@ function formatReadSummary(jobs: readonly ReadJobJobStatus[]): string {
 		if (job.state === "unknown") {
 			return `## Job ${job.jobId}: not tracked (already finished, not backgrounded, or never started)`;
 		}
+		const tool = backgroundJobToolLabel(job);
 		const label = job.description ? `: ${job.description}` : "";
 		// A job settled by another agent has no local executor writing bytes, so
 		// its tail is empty by construction. Saying so stops the model from
 		// polling a buffer that will never fill.
 		if (job.settlerAgentId !== undefined) {
-			return `## Job ${job.jobId} (${job.toolName})${label}: waiting on agent ${job.settlerAgentId}\nA delegated task produces no live output; its report arrives as this job's result message when that agent finishes.`;
+			return `## Job ${job.jobId} (${tool})${label}: waiting on agent ${job.settlerAgentId}\nA delegated task produces no live output; its report arrives as this job's result message when that agent finishes.`;
 		}
 		const output = job.output ? job.output : "(no output yet)";
 		const report = formatReportSummary(job.report);
 		const reportText = report ? `\nCurrent report: ${report}` : "";
-		return `## Job ${job.jobId} (${job.toolName})${label}: running${reportText}\nLive output tail:\n${output}`;
+		return `## Job ${job.jobId} (${tool})${label}: running${reportText}\nLive output tail:\n${output}`;
 	});
 	return `${sections.join("\n\n")}\n\nThis is a live tail, not the final result: each finished job's output arrives as a separate background job result message.`;
 }

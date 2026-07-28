@@ -88,6 +88,7 @@ function enqueue(
 		text: input.text,
 		mode: input.mode ?? "next_turn",
 		requiresIdle: input.requiresIdle ?? false,
+		humanInterrupt: false,
 		mergeKey: input.mergeKey,
 		awaited: false,
 		retryOnFailure: input.retryOnFailure ?? false,

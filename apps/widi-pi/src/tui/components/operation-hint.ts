@@ -88,9 +88,13 @@ export function resolveOperationHint(
 
 	const agent = activeAgent(options.state);
 	if (agent?.status === "running") {
+		// With an empty editor the steer key promotes what enter already queued,
+		// so the hint has to say which of the two it would do.
+		const steersQueue =
+			options.editorText.trim().length === 0 && agent.queue.followUp.length > 0;
 		return hintParts(
 			keyAction(options.keys.interrupt, "abort"),
-			keyAction(options.keys.steer, "steer"),
+			keyAction(options.keys.steer, steersQueue ? "steer queued" : "steer"),
 			keyAction(options.keys.inputSubmit, "queue follow-up"),
 		);
 	}

@@ -56,8 +56,21 @@ describe("JobsPanelView", () => {
 		]);
 		const rendered = plain(panel);
 		expect(rendered).toContain("Jobs");
-		expect(rendered).toContain("run the suite");
+		expect(rendered).toContain("bash · run the suite");
 		expect(rendered).toContain("1.5 KB");
+	});
+
+	it("prefers the caller's name over the derived description", () => {
+		const { panel } = setup([
+			job({
+				jobId: "job-1",
+				name: "run the e2e suite",
+				description: "npm run test:e2e -- --headed",
+			}),
+		]);
+		const rendered = plain(panel);
+		expect(rendered).toContain("bash · run the e2e suite");
+		expect(rendered).not.toContain("npm run test:e2e");
 	});
 
 	it("shows the last output line for a live job without a report", () => {

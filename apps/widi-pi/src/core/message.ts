@@ -304,6 +304,8 @@ export interface MessageDeliveryRequest {
 	readonly method: MessageDeliveryMethod;
 	readonly text: string;
 	readonly images: readonly ImageContent[] | undefined;
+	/** The batch contains input submitted directly by the human surface. */
+	readonly humanInterrupt: boolean;
 	/** True when the enqueuing caller awaits `receipt.completed` itself. */
 	readonly awaited: boolean;
 }
@@ -323,6 +325,8 @@ export interface MessageEnqueueInput {
 	readonly images?: readonly ImageContent[];
 	readonly mode: MessageDeliveryMode;
 	readonly requiresIdle: boolean;
+	/** True only for input submitted directly by the human surface. */
+	readonly humanInterrupt: boolean;
 	/**
 	 * Messages sharing a key are merged into one user message when they are
 	 * adjacent in the queue. Undefined never merges.
@@ -346,6 +350,7 @@ interface QueuedMessage {
 	readonly images: readonly ImageContent[] | undefined;
 	readonly mode: MessageDeliveryMode;
 	readonly requiresIdle: boolean;
+	readonly humanInterrupt: boolean;
 	readonly mergeKey: string | undefined;
 	readonly awaited: boolean;
 	readonly retryOnFailure: boolean;
@@ -400,6 +405,7 @@ export class MessageDeliveryQueue {
 				images: input.images,
 				mode: input.mode,
 				requiresIdle: input.requiresIdle,
+				humanInterrupt: input.humanInterrupt,
 				mergeKey: input.mergeKey,
 				awaited: input.awaited,
 				retryOnFailure: input.retryOnFailure,
@@ -498,6 +504,7 @@ export class MessageDeliveryQueue {
 						method: decision.method,
 						text,
 						images: head.images,
+						humanInterrupt: batch.some((message) => message.humanInterrupt),
 						awaited: batch.some((message) => message.awaited),
 					});
 					for (const message of batch) this._resolve(message, receipt);

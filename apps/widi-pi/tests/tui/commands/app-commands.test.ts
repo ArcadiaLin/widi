@@ -11,7 +11,7 @@ function setup(status: "idle" | "running" = "idle") {
 		quit() {
 			this.quitCalls += 1;
 		},
-		newSession(sourceAgentId: string | undefined) {
+		async newSession(sourceAgentId: string | undefined) {
 			this.newSessionCalls.push(sourceAgentId);
 		},
 		async disposeAgent(agentId: string) {
@@ -64,6 +64,14 @@ describe("applicationCommands", () => {
 		const outcome = await engine.handleInput("/new", context);
 
 		expect(outcome).toMatchObject({ kind: "executed", name: "new" });
+		expect(host.newSessionCalls).toEqual(["agent-1"]);
+	});
+
+	it("executes /clear as an alias of /new", async () => {
+		const { engine, host, context } = setup();
+		const outcome = await engine.handleInput("/clear", context);
+
+		expect(outcome).toMatchObject({ kind: "executed", name: "clear" });
 		expect(host.newSessionCalls).toEqual(["agent-1"]);
 	});
 
