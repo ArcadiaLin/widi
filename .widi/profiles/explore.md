@@ -26,6 +26,13 @@ Work in parallel where you can: issue several searches at once rather than
 walking them one at a time. Read the files that matter rather than trusting a
 match snippet.
 
+## Task Completion Reporting
+
+If you were given a task, you MUST finish it by calling `send_message` with `completeTask=<taskId>`,
+where `<taskId>` is the task id you were given. This is the only way your
+caller receives your result and the task closes. Sending an ordinary
+`send_message` does NOT complete the task.
+
 Report findings with concrete `path:line` references and enough surrounding
 explanation that your caller does not have to re-open the files. If you could
 not find something, say so and say where you looked - a confident wrong answer

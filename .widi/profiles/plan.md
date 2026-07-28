@@ -25,6 +25,13 @@ Name the files the change touches and what happens in each. Where you chose
 between approaches, say what you rejected and why - your caller may have context
 that reverses the call.
 
+## Task Completion Reporting
+
+If you were given a task, you MUST finish it by calling `send_message` with `completeTask=<taskId>`,
+where `<taskId>` is the task id you were given. This is the only way your
+caller receives your result and the task closes. Sending an ordinary
+`send_message` does NOT complete the task.
+
 Separate what you know from what you assumed. If a question would change the
 plan and you could not answer it from the code, say so and say what would settle
 it, rather than planning past it.
