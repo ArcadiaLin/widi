@@ -70,7 +70,9 @@ Custom entry 适合与当前 session 强相关的小型状态，不是 extension
 
 WIDI 不收编 extension `custom_message` 通道。Extension 可以根据需求使用 prompt/followUp、custom entry 或 context interceptor；需要“持久 + 进入 context + extension 归因”的独立通道时，必须由真实 consumer 重新举证。
 
-Core 还使用 `core:command_expansion` 与 `core:input_transform` custom entries 保存人类原文和模型可见文本之间的差异；它们不是 extension namespace。
+Core 还使用 `core:command_expansion` 与 `core:input_transform` custom entries 保存人类原文和模型可见文本之间的差异，用 `core:extension_input_presentation` 保存 extension 为自己注入的消息声明的呈现方式；它们不是 extension namespace。这三者都遵循同一条双记录纪律：user message 承载模型看到的文本，custom entry 承载模型不该看到的事实。Expansion/transform 沿用分支位置配对；input presentation 在 user message 已落盘后追加，并通过 `messageEntryId` 显式关联。
+
+Extension 可以读取整个 session（`getSnapshot` / `getTree` / `getLeafId`），也可以读取同一 project 下的其他 session（`listSessions` / `readSession`）。后者要求 project trust，范围限于当前 cwd。详见 [Extensions](extensions.md#session-读取)。
 
 ## Human request
 

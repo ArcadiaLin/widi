@@ -136,11 +136,15 @@ AgentHarnessEvent
 
 Core 不维护第二套 tool lifecycle facts。Assistant tool-call streaming 和 `tool_execution_*` 的 arguments、partial result、result 与 provider-specific 数据均由 raw event 保留。
 
-Canonical orchestrator facts（human request、diagnostic、agent/session、input、extension output/notification/status/message）经同一 `_emit()` 路径发送。`extension_output`、`extension_notification`、`extension_status_changed` 与 `extension_message_published` 只发送给 listeners/clients，并在调用点显式关闭 extension observer 回灌。`extension_notification` 只表达一次性 info notice：无 severity、code、dedupe、clear 或 attention，consumer 决定显示寿命。`reportDiagnostic` 复用标准 `diagnostic` event，但同样显式禁止回灌 extension observers。单个 listener/client delivery failure 会产生结构化 diagnostic，但不会中断其余订阅者或让 presentation action 失败。其他 observer failure 不改变原操作结果；它产生 `extension.handler_failed` diagnostic。Diagnostic observer 处理中产生的新 diagnostic 不回灌 extension observer，避免递归。
+Canonical orchestrator facts（human request、diagnostic、agent/session、input、extension output/notification/status/message/presentation）经同一 `_emit()` 路径发送。`extension_output`、`extension_notification`、`extension_status_changed`、`extension_message_published` 与 `extension_input_presented` 只发送给 listeners/clients，并在调用点显式关闭 extension observer 回灌。`extension_notification` 只表达一次性 info notice：无 severity、code、dedupe、clear 或 attention，consumer 决定显示寿命。`reportDiagnostic` 复用标准 `diagnostic` event，但同样显式禁止回灌 extension observers。单个 listener/client delivery failure 会产生结构化 diagnostic，但不会中断其余订阅者或让 presentation action 失败。其他 observer failure 不改变原操作结果；它产生 `extension.handler_failed` diagnostic。Diagnostic observer 处理中产生的新 diagnostic 不回灌 extension observer，避免递归。
 
 Extension status 是 runtime current state。Registry 按 `(agentId, extensionId, key)` 保存 `{ status, updatedAt }`，`listExtensionStatuses(agentId)` 返回防御性快照。Mutation 遵循“先改 registry、后 emit”顺序；clear event 的 `status` 缺席。成功 extension reload 与 agent dispose 清空该 agent 的条目并发 clear events，skipped/failed reload 不清空。Status 只由 extension 显式更新或清除。
 
-Extension persistent message 是唯一写 session 的 presentation 通道：core 先以 `core:extension_message` custom entry 落 session 拿到 entryId，再发布携带同一 entryId 的 `extension_message_published`，action 返回值也携带它。Consumer 用 entryId 在 live event 与 hydration 之间去重；entry 永不进入 model context。
+Extension persistent message 是 presentation 自身作为内容写 session 的通道：core 先以 `core:extension_message` custom entry 落 session 拿到 entryId，再发布携带同一 entryId 的 `extension_message_published`，action 返回值也携带它。Consumer 用 entryId 在 live event 与 hydration 之间去重；entry 永不进入 model context。
+
+Extension input presentation 是另一条写 session 的通道，但它描述的是**别的东西**的呈现方式，而不是自身的内容：extension 通过 `prompt`/`steer`/`followUp` 注入消息时可以附带 `presentation`。User message 落盘后，core 写入显式携带其 `messageEntryId` 的 `core:extension_input_presentation` custom entry，再发布 `extension_input_presented`。`extensionId` 由 core 注入，consumer 按 `(extensionId, customType)` 选择渲染方式。文本本身照常进入 model context；presentation entry 不进入。Block、直接投递失败或 queue abort 都发生在 presentation 写入之前，不会留下孤儿记录。
+
+Agent 上下文占用是 settle 时重新测量的 runtime fact：core 走一遍活动分支，取最后一条 assistant usage 与模型 context window 相比，缓存在 agent record 上并发布 `agent_context_usage_changed`。自动压缩判据消费同一次测量的结果，因此一次 settle 只读一次分支，显示的仪表与 runtime 的压缩决定不会互相矛盾。Compaction 之后发布一条不带 `usage` 的事件：保留的 tail 携带的是压缩前的 usage，重新测量会把旧数字当成当前值。
 
 Extension 作者通过 `reportDiagnostic` 发布已知问题事实。Core 校验 draft（`severity` 限 `warning | error`），注入 agent/extension attribution，并把 local code 规范化为 `extension.<extensionId>.<code>`。Core 不再注入 fresh per-report id：code、message 与 attribution 完全相同的重复上报在 consumer 侧塌缩为同一 view item。无效 draft 在发布前失败，只产生统一的 `extension.action_failed`。
 

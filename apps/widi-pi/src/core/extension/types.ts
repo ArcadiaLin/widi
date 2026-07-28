@@ -6,6 +6,7 @@ import type {
 	ContextEvent,
 	ExecutionError,
 	Result,
+	SessionTreeEntry,
 	ShellExecOptions,
 	ThinkingLevel,
 	ToolCallEvent,
@@ -13,12 +14,14 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { TSchema } from "typebox";
+import type { AgentProfileReference } from "../agent-profile.js";
 import type { BackgroundJobSnapshot } from "../background/index.ts";
 import type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
 import type { MessageSource } from "../message.ts";
 import type { ProviderConfigInput } from "../model-registry.ts";
 import type { ToolDefinition, ToolDefinitionPatch } from "../tools/types.ts";
 import type {
+	AgentContextUsage,
 	AgentId,
 	AgentToolsSnapshot,
 	CandidateItem,
@@ -27,6 +30,7 @@ import type {
 } from "../types.ts";
 import type {
 	ExtensionDiagnosticDraft,
+	ExtensionInputPresentation,
 	ExtensionMessage,
 	ExtensionStatus,
 } from "./presentation.ts";
@@ -104,6 +108,7 @@ export type ExtensionObservedEvent = Extract<
 			| "agent_background_job_changed"
 			| "agent_background_job_progress"
 			| "agent_background_job_report_updated"
+			| "agent_context_usage_changed"
 			| "agent_harness_event"
 			| "agent_resumed"
 			| "agent_session_forked"
@@ -122,6 +127,33 @@ export type ExtensionObservedEvent = Extract<
 export type ExtensionObservedEventFor<
 	TName extends ExtensionObservedEventName,
 > = Extract<ExtensionObservedEvent, { type: TName }>;
+
+/**
+ * Runtime membership test for the observed set, keyed so it cannot drift from
+ * the type above: adding a name to `ExtensionObservedEvent` without adding it
+ * here is a type error, and vice versa. A hand-written switch let an event be
+ * declared observable while the dispatcher silently dropped it.
+ */
+export const EXTENSION_OBSERVED_EVENT_NAMES: Readonly<
+	Record<ExtensionObservedEventName, true>
+> = {
+	agent_background_job_changed: true,
+	agent_background_job_progress: true,
+	agent_background_job_report_updated: true,
+	agent_context_usage_changed: true,
+	agent_harness_event: true,
+	agent_resumed: true,
+	agent_session_forked: true,
+	agent_session_info_changed: true,
+	agent_spawned: true,
+	diagnostic: true,
+	human_request_cancelled: true,
+	human_request_pending: true,
+	human_request_resolved: true,
+	human_request_timeout: true,
+	input_blocked: true,
+	input_transformed: true,
+};
 
 /**
  * WIDI intentionally exposes only interceptors with settled semantics.
@@ -223,6 +255,11 @@ export type ExtensionExecResult = Result<
  */
 export type ExtensionCompactionResult = CompactResult;
 
+export interface ExtensionSendOptions {
+	images?: ImageContent[];
+	presentation?: ExtensionInputPresentation;
+}
+
 /**
  * Agent-scoped action surface handed to extension authors. Every action is
  * bound to the extension's own agent; the agent id is injected by the runner
@@ -272,9 +309,29 @@ export interface ExtensionActions {
 	// extension.<extensionId>.<code>. Reported diagnostics never feed back
 	// into extension observers.
 	reportDiagnostic(draft: ExtensionDiagnosticDraft): Promise<void>;
-	prompt(text: string, options?: { images?: ImageContent[] }): Promise<void>;
-	steer(text: string, options?: { images?: ImageContent[] }): Promise<void>;
-	followUp(text: string, options?: { images?: ImageContent[] }): Promise<void>;
+	// The three message-injection paths. `presentation` is optional on all of
+	// them: the text still reaches the model verbatim, and the presentation is
+	// persisted as a core:extension_input_presentation entry that explicitly
+	// references the user-message entry. Core never interprets
+	// `presentation.details`.
+	prompt(text: string, options?: ExtensionSendOptions): Promise<void>;
+	steer(text: string, options?: ExtensionSendOptions): Promise<void>;
+	followUp(text: string, options?: ExtensionSendOptions): Promise<void>;
+	// Context occupancy of the agent's current branch, or undefined before the
+	// branch carries an assistant usage to measure. Recomputed when the agent
+	// settles and after compaction; observe `agent_context_usage_changed` to be
+	// told rather than to poll.
+	getContextUsage(): AgentContextUsage | undefined;
+	// Whether project-local trust is active. Actions that need it - `exec`, and
+	// the cross-session reads on `session` - fail with a structured diagnostic
+	// when it is not, so check this to degrade deliberately instead.
+	isProjectTrusted(): boolean;
+	// The effective baseline system prompt, including every appended section.
+	// A `before_agent_start` interceptor may still replace it for one turn.
+	getSystemPrompt(): Promise<string>;
+	// Whether any message is waiting in either the core delivery queue or the
+	// harness's own steer/follow-up/next-turn queues.
+	hasPendingMessages(): boolean;
 	setSessionName(name: string): Promise<void>;
 	getSessionName(): Promise<string | undefined>;
 	// Requires an idle harness; rejects with the harness busy error otherwise.
@@ -343,19 +400,26 @@ export interface ExtensionCoreActions {
 	): Promise<void>;
 	promptAgent(
 		agentId: string,
+		extensionId: string,
 		text: string,
-		options?: { images?: ImageContent[] },
+		options?: ExtensionSendOptions,
 	): Promise<void>;
 	steerAgent(
 		agentId: string,
+		extensionId: string,
 		text: string,
-		options?: { images?: ImageContent[] },
+		options?: ExtensionSendOptions,
 	): Promise<void>;
 	followUpAgent(
 		agentId: string,
+		extensionId: string,
 		text: string,
-		options?: { images?: ImageContent[] },
+		options?: ExtensionSendOptions,
 	): Promise<void>;
+	getAgentContextUsage(agentId: string): AgentContextUsage | undefined;
+	isProjectTrusted(): boolean;
+	getAgentSystemPrompt(agentId: string): Promise<string>;
+	agentHasPendingMessages(agentId: string): boolean;
 	setAgentSessionName(agentId: string, name: string): Promise<void>;
 	getAgentSessionName(agentId: string): Promise<string | undefined>;
 	compactAgent(
@@ -394,9 +458,74 @@ export interface ExtensionCustomEntry<T = unknown> {
 	data?: T;
 }
 
+/**
+ * A session as an extension sees it: addressed by an opaque `ref`, never by
+ * path.
+ *
+ * Storage layout is core's business - sessions live behind a repo whose
+ * backend can change - and a path would also invite an extension to parse the
+ * JSONL itself, which is the habit this API exists to replace. Refs are minted
+ * when sessions are listed and are only valid within the running process, so
+ * one cannot be constructed to reach a session the extension was never shown.
+ */
+export interface ExtensionSessionCandidate {
+	readonly ref: string;
+	/** Not unique across runtimes; use `ref` to address a session. */
+	readonly id: string;
+	readonly createdAt: string;
+	readonly profile?: AgentProfileReference;
+	/** Latest session_info name, when the user named the session. */
+	readonly name?: string;
+	/** First non-empty line of the first user message. */
+	readonly firstUserMessage?: string;
+	/** Ref of the session this one was forked from, when it was. */
+	readonly parentRef?: string;
+}
+
+export interface ExtensionSessionSnapshot {
+	/** Absent for an ephemeral session, which owns no persisted file. */
+	readonly ref?: string;
+	readonly id: string;
+	readonly name?: string;
+	readonly leafId: string | null;
+	/** Entries from the root to the current leaf, in order. */
+	readonly pathToRoot: readonly SessionTreeEntry[];
+}
+
+export interface ExtensionSessionTree extends ExtensionSessionSnapshot {
+	/** Every entry in the session, including branches off the current path. */
+	readonly entries: readonly SessionTreeEntry[];
+}
+
+/**
+ * Session reads available to an extension.
+ *
+ * Two channels with deliberately different scopes. `appendEntry`/`findEntries`
+ * are the extension's own namespaced state: another extension's entries are
+ * invisible, and always have been. The readers below are the session as a
+ * whole - every message on the branch, including other extensions' entries and
+ * the human's own words.
+ *
+ * The cross-session readers reach every session of the current project, not
+ * just this agent's. That is a real information surface, so they require
+ * project trust, the same bar as `exec` and as loading extensions from a `cwd`
+ * root. `listSessions` is scoped by cwd; there is no channel to another
+ * project's sessions.
+ *
+ * Sessions are addressed by the opaque `ref` returned by these readers. An
+ * unknown ref fails loudly.
+ */
 export interface ExtensionSessionContext {
 	appendEntry<T = unknown>(type: string, data?: T): Promise<string>;
 	findEntries<T = unknown>(type?: string): Promise<ExtensionCustomEntry<T>[]>;
+	/** This agent's session: identity, name, leaf, and the path back to the root. */
+	getSnapshot(): Promise<ExtensionSessionSnapshot>;
+	/** As `getSnapshot`, plus every entry in the session's tree. */
+	getTree(): Promise<ExtensionSessionTree>;
+	getLeafId(): Promise<string | null>;
+	/** Every session recorded for the current project, newest first. */
+	listSessions(): Promise<ExtensionSessionCandidate[]>;
+	readSession(ref: string): Promise<ExtensionSessionTree>;
 }
 
 export interface ExtensionSessionActions {
@@ -409,6 +538,11 @@ export interface ExtensionSessionActions {
 		extensionId: string,
 		type?: string,
 	): Promise<ExtensionCustomEntry<T>[]>;
+	getSnapshot(): Promise<ExtensionSessionSnapshot>;
+	getTree(): Promise<ExtensionSessionTree>;
+	getLeafId(): Promise<string | null>;
+	listSessions(extensionId: string): Promise<ExtensionSessionCandidate[]>;
+	readSession(extensionId: string, ref: string): Promise<ExtensionSessionTree>;
 }
 
 export interface ExtensionActionFailure {
@@ -422,12 +556,18 @@ export interface ExtensionActionFailure {
 		| "exec"
 		| "findEntries"
 		| "followUp"
+		| "getLeafId"
 		| "getSessionName"
+		| "getSnapshot"
+		| "getSystemPrompt"
+		| "getTree"
 		| "killJob"
 		| "listModelCandidates"
+		| "listSessions"
 		| "notify"
 		| "prompt"
 		| "publishMessage"
+		| "readSession"
 		| "reportDiagnostic"
 		| "requestHuman"
 		| "setActiveTools"

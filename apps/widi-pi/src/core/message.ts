@@ -343,6 +343,13 @@ export interface MessageEnqueueInput {
 	readonly retryOnFailure: boolean;
 	/** Notified each time such a failure defers the message. */
 	readonly onDeferredFailure?: (error: unknown) => void;
+	/**
+	 * Internal delivery lifecycle hooks. They run around the actual harness
+	 * call, not when the message merely enters this queue, so metadata that must
+	 * follow a concrete user message can bind to the correct attempt.
+	 */
+	readonly onDeliveryStart?: (method: MessageDeliveryMethod) => void;
+	readonly onDeliveryFailure?: (error: unknown) => void;
 }
 
 interface QueuedMessage {
@@ -355,6 +362,10 @@ interface QueuedMessage {
 	readonly awaited: boolean;
 	readonly retryOnFailure: boolean;
 	readonly onDeferredFailure: ((error: unknown) => void) | undefined;
+	readonly onDeliveryStart:
+		| ((method: MessageDeliveryMethod) => void)
+		| undefined;
+	readonly onDeliveryFailure: ((error: unknown) => void) | undefined;
 	readonly resolve: (receipt: MessageDeliveryReceipt) => void;
 	readonly reject: (error: unknown) => void;
 	settled: boolean;
@@ -410,6 +421,8 @@ export class MessageDeliveryQueue {
 				awaited: input.awaited,
 				retryOnFailure: input.retryOnFailure,
 				onDeferredFailure: input.onDeferredFailure,
+				onDeliveryStart: input.onDeliveryStart,
+				onDeliveryFailure: input.onDeliveryFailure,
 				resolve,
 				reject,
 				settled: false,
@@ -499,6 +512,9 @@ export class MessageDeliveryQueue {
 				this._inFlight.set(agentId, batch);
 				let failure: { readonly error: unknown } | undefined;
 				try {
+					for (const message of batch) {
+						message.onDeliveryStart?.(decision.method);
+					}
 					const receipt = await this._ports.deliver({
 						agentId,
 						method: decision.method,
@@ -516,6 +532,9 @@ export class MessageDeliveryQueue {
 					}
 				}
 				if (!failure) continue;
+				for (const message of batch) {
+					message.onDeliveryFailure?.(failure.error);
+				}
 
 				// `busy` and `invalid_state` are expected races against a run that
 				// started or ended between resolving the phase and the call, and are

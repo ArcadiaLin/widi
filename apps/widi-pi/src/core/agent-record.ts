@@ -25,6 +25,7 @@ import type {
 	ToolAdapterContext,
 } from "./tool-registry.ts";
 import type {
+	AgentContextUsage,
 	AgentId,
 	AgentLifecycleStatus,
 	AgentToolsSnapshot,
@@ -94,6 +95,22 @@ export interface AgentRecord {
 	 * cannot go back to disk.
 	 */
 	systemPrompt?: AgentSystemPromptFacts;
+	/**
+	 * Last measured context occupancy of the active branch. Cached rather than
+	 * derived on read: measuring walks the whole branch, and every consumer -
+	 * the compaction trigger, the client gauge, extensions - wants the same
+	 * number from the same moment. Absent until the branch carries an assistant
+	 * usage to measure.
+	 */
+	contextUsage?: AgentContextUsage;
+	/**
+	 * Messages the harness has accepted but not yet read, as last reported by
+	 * its `queue_update`. Mirrored here because the harness keeps its steer,
+	 * follow-up, and next-turn queues private, and text delivered through the
+	 * low-level `steerAgent`/`followUpAgent` primitives never passes through
+	 * the orchestrator's own delivery queue.
+	 */
+	harnessQueuedMessageCount?: number;
 	extensionRunner?: ExtensionRunner;
 	/**
 	 * Pseudo-async background jobs owned by this agent. Job ownership is
@@ -123,6 +140,7 @@ export interface AgentRecordSnapshot {
 	readonly hasHarness: boolean;
 	readonly toolSnapshot?: AgentToolsSnapshot;
 	readonly resources?: AgentResourcesSnapshot;
+	readonly contextUsage?: AgentContextUsage;
 	readonly extensionIds: readonly string[];
 	readonly extensions: readonly ExtensionIdentity[];
 	readonly extensionSnapshot: ExtensionRunnerSnapshot;
@@ -203,6 +221,7 @@ export function snapshotAgentRecord(record: AgentRecord): AgentRecordSnapshot {
 					promptTemplates: [...record.resources.promptTemplates],
 				}
 			: undefined,
+		contextUsage: record.contextUsage ? { ...record.contextUsage } : undefined,
 		extensionIds: record.extensionRunner
 			? [...record.extensionRunner.extensionIds]
 			: [],

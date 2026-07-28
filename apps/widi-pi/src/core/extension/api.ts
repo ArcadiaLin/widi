@@ -27,6 +27,7 @@ export function isSupportedExtensionApiVersion(version: number): boolean {
 	);
 }
 
+export type { AgentProfileReference } from "../agent-profile.js";
 // WIDI core types named in author-facing signatures are re-exported here so
 // a third-party extension never imports core internals directly.
 export type {
@@ -37,12 +38,14 @@ export type {
 export type { CoreDiagnostic } from "../diagnostics.ts";
 export type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
 export type {
+	AgentContextUsage,
 	AgentToolsSnapshot,
 	CandidateItem,
 	RuntimeModel,
 } from "../types.ts";
 export type {
 	ExtensionDiagnosticDraft,
+	ExtensionInputPresentation,
 	ExtensionMessage,
 	ExtensionMessageKind,
 	ExtensionStatus,
@@ -74,7 +77,11 @@ export type {
 	ExtensionObserver,
 	ExtensionObserverFor,
 	ExtensionProviderConfig,
+	ExtensionSendOptions,
+	ExtensionSessionCandidate,
 	ExtensionSessionContext,
+	ExtensionSessionSnapshot,
+	ExtensionSessionTree,
 	ToolDefinition,
 	ToolDefinitionPatch,
 	ToolExecute,

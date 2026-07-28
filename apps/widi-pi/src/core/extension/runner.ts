@@ -732,18 +732,40 @@ export class ExtensionRunner {
 			},
 			prompt: async (text, options) => {
 				await this._runReportedAction(failure("prompt"), async () => {
-					await this._actions.promptAgent(agentId, text, options);
+					await this._actions.promptAgent(agentId, extensionId, text, options);
 				});
 			},
 			steer: async (text, options) => {
 				await this._runReportedAction(failure("steer"), async () => {
-					await this._actions.steerAgent(agentId, text, options);
+					await this._actions.steerAgent(agentId, extensionId, text, options);
 				});
 			},
 			followUp: async (text, options) => {
 				await this._runReportedAction(failure("followUp"), async () => {
-					await this._actions.followUpAgent(agentId, text, options);
+					await this._actions.followUpAgent(
+						agentId,
+						extensionId,
+						text,
+						options,
+					);
 				});
+			},
+			getContextUsage: () => {
+				this._assertActive();
+				return this._actions.getAgentContextUsage(agentId);
+			},
+			isProjectTrusted: () => {
+				this._assertActive();
+				return this._actions.isProjectTrusted();
+			},
+			getSystemPrompt: async () =>
+				await this._runReportedAction(
+					failure("getSystemPrompt"),
+					async () => await this._actions.getAgentSystemPrompt(agentId),
+				),
+			hasPendingMessages: () => {
+				this._assertActive();
+				return this._actions.agentHasPendingMessages(agentId);
 			},
 			setSessionName: async (name) => {
 				await this._runReportedAction(failure("setSessionName"), async () => {
@@ -813,6 +835,13 @@ export class ExtensionRunner {
 	}
 
 	private _createSessionContext(extensionId: string): ExtensionSessionContext {
+		const sessionFailure = (
+			action: ExtensionActionFailure["action"],
+		): Omit<ExtensionActionFailure, "error"> => ({
+			extensionId,
+			action,
+			code: "extension.session_read_failed",
+		});
 		return {
 			appendEntry: async (type, data) =>
 				await this._runReportedAction(
@@ -837,6 +866,36 @@ export class ExtensionRunner {
 					},
 					async () =>
 						await this._requireSessionActions().findEntries(extensionId, type),
+				),
+			getSnapshot: async () =>
+				await this._runReportedAction(
+					sessionFailure("getSnapshot"),
+					async () => await this._requireSessionActions().getSnapshot(),
+				),
+			getTree: async () =>
+				await this._runReportedAction(
+					sessionFailure("getTree"),
+					async () => await this._requireSessionActions().getTree(),
+				),
+			getLeafId: async () =>
+				await this._runReportedAction(
+					sessionFailure("getLeafId"),
+					async () => await this._requireSessionActions().getLeafId(),
+				),
+			listSessions: async () =>
+				await this._runReportedAction(
+					sessionFailure("listSessions"),
+					async () =>
+						await this._requireSessionActions().listSessions(extensionId),
+				),
+			readSession: async (reference) =>
+				await this._runReportedAction(
+					sessionFailure("readSession"),
+					async () =>
+						await this._requireSessionActions().readSession(
+							extensionId,
+							reference,
+						),
 				),
 		};
 	}
@@ -1001,6 +1060,10 @@ function createUnboundActions(): ExtensionCoreActions {
 		promptAgent: async () => notBound(),
 		steerAgent: async () => notBound(),
 		followUpAgent: async () => notBound(),
+		getAgentContextUsage: () => notBound(),
+		isProjectTrusted: () => notBound(),
+		getAgentSystemPrompt: async () => notBound(),
+		agentHasPendingMessages: () => notBound(),
 		setAgentSessionName: async () => notBound(),
 		getAgentSessionName: async () => notBound(),
 		compactAgent: async () => notBound(),

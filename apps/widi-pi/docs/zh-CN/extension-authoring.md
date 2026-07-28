@@ -281,7 +281,9 @@ api.observe("agent_harness_event", (event) => {
 Callback context 绑定 extension 自己的 agent。常用 actions：
 
 - get/set tools 与 active tools。
-- prompt/steer/followUp、abort、compact。
+- prompt/steer/followUp、abort、compact。三者都可附带 `presentation`，见下节。
+- getContextUsage：own-agent 分支占了模型上下文窗口的多少；还没有 assistant usage 可测量时为 `undefined`。
+- isProjectTrusted、getSystemPrompt、hasPendingMessages：只读运行时事实。
 - requestHuman。
 - emitOutput：向 client 追加 own-agent 的 ephemeral plain-text output，不回灌 observer。
 - notify：发布 own-agent 的 info-only transient notice，不进入 timeline/session，也不产生 attention。
@@ -293,6 +295,24 @@ Callback context 绑定 extension 自己的 agent。常用 actions：
 - exec trusted project command。
 
 Actions 不接受任意 agentId；跨 agent 协作使用未来的受控 collaboration facade。
+
+## 给注入的消息声明呈现方式
+
+```ts
+await context.actions.followUp("Task 7 finished: 12 files changed.", {
+  presentation: {
+    customType: "subagent-result",
+    title: "Task 7",
+    details: { taskId: 7, files: 12 },
+  },
+});
+```
+
+文本照常进入 model context；user message 落盘后，`presentation` 以带 `messageEntryId` 的 session entry 写入并发布事件，供 client 自己决定怎么画。Core 不解释 `details`，只校验可 JSON 序列化且有界。Block、直接投递失败或 queue abort 都不会写 presentation。
+
+`extensionId` 由 core 注入，client 按 `(extensionId, customType)` 匹配。因此 `customType` 只需在自己的 extension 内唯一，也没法冒用别人的类型名。
+
+不带 `presentation` 时行为与之前完全一致，不写任何 entry。
 
 ## Session-local state
 
@@ -306,6 +326,24 @@ const entries = await context.session.findEntries("verdict");
 ```
 
 Namespace 自动隔离，写入 append-only，读取 current branch path。Entry 不进入 model context，compaction 不影响它，fork 按 path-to-root 复制。
+
+## 读取 session
+
+```ts
+// own-agent：整个 session，无额外门控
+const tree = await context.session.getTree();
+
+// 跨会话：当前 project 范围，要求 project trust
+if (context.actions.isProjectTrusted()) {
+  for (const candidate of await context.session.listSessions()) {
+    const past = await context.session.readSession(candidate.ref);
+  }
+}
+```
+
+`findEntries` 只看得到自己写的 entry；上面这组读的是 session 本身，包括别人的 entry 和人类的原话。跨会话读取只覆盖当前 cwd，没有通往其他 project 的通道，未信任时抛错——需要优雅降级就先查 `isProjectTrusted()`。
+
+Session 用 DTO 的 `ref` 寻址，那是一个不透明句柄，不是文件路径：存储布局归 core，`ref` 只在本进程内有效，由 own-session 读取或 `listSessions()` 返回——构造不出一个指向 core 从未展示过的 session 的 ref。`candidate.id` 只用于显示，它跨 runtime 会重复。
 
 状态选择：
 
@@ -327,8 +365,10 @@ Namespace 自动隔离，写入 append-only，读取 current branch path。Entry
 - `pi.on()` 对应 WIDI 的 observe/intercept 两条通道。
 - 修改 built-in tool 使用 patch，不用同名 registration。
 - Provider 只能注册新 name。
-- `registerShortcut`、flag、renderer 和 UI context 归 client adapter。
+- `registerShortcut`、flag、renderer 和 UI context 归 client adapter。`registerMessageRenderer` 的位置由 `presentation` 承担：extension 发结构化事实，client 决定怎么画。
 - 消费 input 使用 block/transform + scoped actions；不提供独立 `handled` 通道，也不注册交互命令。
+- 没有 `ctx.sessionManager.getSessionFile()`：读 session 用结构化 API，不给文件路径。
+- 没有 `ctx.modelRegistry.getApiKeyAndHeaders()`：凭据不出 core，侧信道模型查询留待 collaboration facade。
 
 ## 示例：MCP extension
 

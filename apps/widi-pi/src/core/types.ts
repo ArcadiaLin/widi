@@ -8,6 +8,7 @@ import type {
 } from "./background/index.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
 import type {
+	ExtensionInputPresentation,
 	ExtensionMessage,
 	ExtensionStatus,
 } from "./extension/presentation.ts";
@@ -35,6 +36,31 @@ export type AgentMaintenanceKind = "compaction" | "tree-navigation";
 export interface AgentToolsSnapshot {
 	readonly toolNames: string[];
 	readonly activeToolNames: string[];
+}
+
+/**
+ * How much of the model's context window the agent's current branch occupies.
+ *
+ * Derived from exactly the facts the automatic compaction trigger consumes -
+ * the last assistant usage on the active branch versus the model context
+ * window - so a consumer showing this gauge and the runtime deciding to compact
+ * never disagree. Absent until the branch carries an assistant usage: a fresh
+ * agent, and the window right after compaction, have no measurement rather than
+ * a zero.
+ */
+export interface AgentContextUsage {
+	readonly tokens: number;
+	readonly contextWindow: number;
+	/**
+	 * `tokens / contextWindow * 100`, so a quarter-full window reads 25, not
+	 * 0.25. The scale matches Pi's `ContextUsage.percent` on purpose: ported
+	 * extensions compare it against thresholds like `>= 95`, and a 0..1 scale
+	 * would make those conditions silently unreachable. Can exceed 100 before
+	 * compaction runs.
+	 */
+	readonly percent: number;
+	/** Model reference (`provider/id`) whose window this measures. */
+	readonly model: string;
 }
 
 export type OrchestratorEvent =
@@ -109,6 +135,23 @@ export type OrchestratorEvent =
 			status?: ExtensionStatus;
 			changedAt: string;
 	  }
+	// How a client should render a message an extension just sent into the
+	// agent. The message itself still arrives through the harness as ordinary
+	// user input; this record explicitly names that message's session entry.
+	// `extensionId` is injected by core, so a renderer keyed on
+	// (extensionId, customType) cannot be claimed by another extension.
+	| {
+			readonly type: "extension_input_presented";
+			presentationId: string;
+			/** Session custom entry id, for deduping against hydration. */
+			entryId: string;
+			/** User-message session entry this presentation renders. */
+			messageEntryId: string;
+			agentId: AgentId;
+			extensionId: string;
+			presentation: ExtensionInputPresentation;
+			createdAt: string;
+	  }
 	| {
 			readonly type: "extension_message_published";
 			presentationId: string;
@@ -171,6 +214,17 @@ export type OrchestratorEvent =
 			readonly type: "agent_session_info_changed";
 			agentId: AgentId;
 			name?: string;
+			changedAt: string;
+	  }
+	// Context gauge fact, recomputed when the agent settles. Push rather than
+	// poll: a footer or a budget-watching extension would otherwise have to
+	// re-read the whole branch on a timer. An absent `usage` means the previous
+	// measurement no longer describes the branch and no new one exists yet -
+	// what compaction leaves behind until the next assistant message.
+	| {
+			readonly type: "agent_context_usage_changed";
+			agentId: AgentId;
+			usage?: AgentContextUsage;
 			changedAt: string;
 	  }
 	| {

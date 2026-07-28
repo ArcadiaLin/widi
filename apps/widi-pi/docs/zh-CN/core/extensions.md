@@ -132,13 +132,14 @@ Own-agent observers 可以读取：
 - agent-scoped `diagnostic`。
 - `agent_spawned/resumed` 与 session info/fork facts。
 - `input_transformed/blocked`。
+- `agent_context_usage_changed`：agent settle 时重新测量的上下文占用；compaction、实际改变分支的 tree navigation、换模型以及活动分支不再有可测量 usage 时，发布一条不带 `usage` 的事件表示旧测量已作废。它是 push 通道，用来省掉轮询 `getContextUsage()`。
 - background job 的三条通道：`agent_background_job_changed`（每个可观测 transition：t0 `backgrounded`、`aborting`、`settled`，携带不可变 snapshot 与 `liveCount`）、`agent_background_job_progress`（增量输出，Base64，按绝对字节偏移）、`agent_background_job_report_updated`（tool 自有的 latest-value 结构化 report）。
 
 三条 job 通道共用同一条 per-agent 串行发射尾，因此顺序有保证，且 `settled` 是 barrier：该 job 最后一份 output 增量与 report 一定排在终态事件之前。Progress 是有损的——增量缓冲溢出时从头部丢弃，`startByte` 会跳过上一次的 `endByte`，`progressDroppedBytes` 随之上升；需要完整字节流的 extension 必须自己按偏移累积，事后无法从 rolling tail 补回。
 
 Observer 按注册顺序串行执行。Handler failure 产生 `extension.handler_failed`，不改变原操作，后续 observer 继续。Global diagnostic/request 不广播给每个 runner；diagnostic observer failure 不递归回灌。
 
-`extension_output`、`extension_notification`、`extension_status_changed` 与 `extension_message_published` 有意不属于 observed event：extension 主动发布的 presentation facts 不会再次进入任何 extension observer，避免反馈与递归。同理，`reportDiagnostic` 产生的 diagnostic 只发送给 listeners/clients，不回灌 extension diagnostic observers。
+`extension_output`、`extension_notification`、`extension_status_changed`、`extension_message_published` 与 `extension_input_presented` 有意不属于 observed event：extension 主动发布的 presentation facts 不会再次进入任何 extension observer，避免反馈与递归。同理，`reportDiagnostic` 产生的 diagnostic 只发送给 listeners/clients，不回灌 extension diagnostic observers。
 
 ### Intercept
 
@@ -164,7 +165,11 @@ Block 按来源分级。`human` / `agent` / `system` 的 block 会被执行，�
 Callback context 绑定 extension 自己的 agent；作者 API 中不出现可任意指定的 `agentId`。Actions 包括：
 
 - 查询/修改 visible 与 active tools。
-- `prompt`、`steer`、`followUp`、`abort`、`compact`。
+- `prompt`、`steer`、`followUp`、`abort`、`compact`。三条投递方法都接受可选的 `presentation`，见下方「Input presentation」。
+- `getContextUsage()`：own-agent 当前分支占用了模型上下文窗口的多少，`{ tokens, contextWindow, percent, model }`。`percent` 是 **0–100**（四分之一满读作 `25`），与 Pi 的 `ContextUsage.percent` 同刻度——移植过来的扩展会用 `>= 95` 一类阈值判断，0–1 刻度会让这些条件永远不成立。分支上还没有 assistant usage 可测量时返回 `undefined`——那是「没有测量」，不是零。测量在 agent settle 时进行并缓存，并在四种情况下作废：compaction（保留的 tail 携带的是压缩前的 usage，重测会把旧数字当成当前值）、tree navigation（换了分支）、换模型（换了窗口，且 `model` 字段会失真）、以及新分支上根本没有可测量的 usage。它与自动压缩判据消费同一份事实，因此显示的仪表和 runtime 决定压缩的时机不会互相矛盾。
+- `isProjectTrusted()`：project-local trust 是否生效。受它门控的 action——`exec` 与 session 的跨会话读取——在未信任时抛出带归属的结构化诊断，因此需要主动降级的 extension 应先查这里。
+- `getSystemPrompt()`：agent 的完整 baseline system prompt，含全部追加段落。只读；`before_agent_start` interceptor 仍可为单个回合替换它。
+- `hasPendingMessages()`：core delivery queue 或 harness 自己的 steer/follow-up/next-turn queue 中是否还有消息未被 agent 读取。
 - `listJobs()`：own-agent 当前 live 的 backgrounded job 快照，也就是模型手里握着 t0 handle 的那些。仅限 `backgrounded` 阶段：`running` 阶段的 job 还在 t0 之前的同步窗口内，从未对外可观测。
 - `readJobOutput(jobId)`：live job 的当前 rolling tail；job 结算后返回 `undefined`。它是 pull-only 且有界的（tail 超出上限时从头部丢弃），与 job change event 刻意不携带 output 配套。需要完整输出的 extension 应累积 progress 增量，而不是轮询这里。
 - `killJob(jobId, reason?)`：请求终止一个 live job，`reason` 会记到该 job 的 snapshot 与它最终的 result message 上。返回 `false` 表示没有这样的 live job——列出来的 job 可能在 extension 动手之前就已结算。这是请求而非强杀：local job 只有在其 tool 响应 abort signal 时才真正结束；external job 没有执行者在看 signal，由 table 自身结算为 cancelled。
@@ -189,6 +194,41 @@ Status 同样是 ephemeral：不进入 timeline、model context 或 session。Co
 
 `reportDiagnostic` 不建立另一套 presentation event；它发布标准 `diagnostic` event，并把同一事实加入 agent 的 extension diagnostics。Draft validation 或发布前 action failure 走统一 `extension.action_failed` 并 rethrow；无效 draft 不产生作者 diagnostic。
 
+## Input presentation
+
+`prompt` / `steer` / `followUp` 都接受可选的 `presentation: { customType, title?, details? }`。文本仍然原样进入模型上下文；presentation 另存为一条 core-owned `core:extension_input_presentation` custom entry，并发布 `extension_input_presented`。这是与 command expansion、input transform 相同的**双记录**纪律：user message 承载模型看到的文本，custom entry 承载呈现事实；不同的是 presentation entry 通过 `messageEntryId` 显式引用 user message，不依赖分支相邻性。
+
+`extensionId` 由 core 注入，不取自调用方。因此渲染方按 `(extensionId, customType)` 匹配：两个 extension 可以各自使用同名的 local `customType` 而不冲突，也无法冒用他人的 customType 去劫持其渲染器。这与 `requestHuman` 的 `source` 由 runner 注入是同一条原则。
+
+Core 不解释 `details`，只校验它可 JSON 序列化且有界。`customType` 只能包含字母、数字、`.`、`_`、`:`、`-`，不超过 128 UTF-8 bytes；`title` 非空白且不超过 4 KiB；`details` 序列化后不超过 64 KiB。
+
+Core 不保留调用方传入的 `details` 引用：值经 JSON round-trip 规范化后再存储与发布，所以 live event 与 JSONL 恢复出来的内容一定一致（`undefined` 成员已经消失，而不是在两侧表现不同），调用后再改动原对象也影响不到已记录的事实。
+
+提交顺序是 user message → presentation entry → live event。Harness 的 `message_end` 发生在 user message 写入 session 之后；core 用同一个 live message 对象反查它的稳定 entry id，写入带 `messageEntryId` 的 presentation entry，最后才发布不可撤回的 event。连续消息、分叉和后续追加都不会改变这条显式关联。
+
+- `prompt` 的 presentation 走 `sendMessage` 管线：被 `input` 拦截器 block 时在任何 session 写入之前就返回，因此不会留下 presentation。
+- `steer` / `followUp` 直连 harness：core 按 harness queue 中的具体 message 对象跟踪；直接投递失败或 abort 清掉尚未读取的队列消息时，丢弃待提交的 presentation。
+
+因此系统不会留下“有 presentation、没有 user message”的孤儿记录。反方向仍是两次 session append：进程若恰好在 user message 已写入而 presentation 尚未写入时终止，消息会保留但退化为普通呈现；presentation append 失败会记录 lifecycle diagnostic，不伪造成功 event。
+
+不带 `presentation` 的投递不写任何 entry，行为与之前完全一致。注意 `steer` / `followUp` 仍是直达 harness 的低层原语，不经过 `input` hook——加不加 presentation 都不改变这一点。
+
+## Session 读取
+
+Extension 的 session 读取有两条 scope 不同的通道。
+
+`appendEntry` / `findEntries` 是 extension 自己的 namespaced state：别的 extension 的 entry 不可见，一直如此。
+
+`getSnapshot()` / `getTree()` / `getLeafId()` 读的是 own-agent 的整个 session：分支上的每条消息，包括其他 extension 的 entry 与人类自己的话。它们不加额外门控——extension 本来就运行在这个 session 内，并且通过 interceptor 也能看到这些消息。
+
+`listSessions()` / `readSession(reference)` 是跨会话读取，范围是**当前 project（cwd）下**记录的全部 session，没有通往其他 project 的通道。这确实扩大了 extension 能看到的信息面——包括它从未参与过的对话——因此与 `exec`、与从 `cwd` root 加载 extension 同级，**要求 project trust**；未信任时抛出 `extension.session_read_denied` 并按 `extension.session_read_failed` 上报 action failure。
+
+Session 由 DTO 上的 `ref` 寻址，那是一个**不透明句柄，不是文件路径**。扩展面的 DTO（`ExtensionSessionCandidate` / `ExtensionSessionSnapshot` / `ExtensionSessionTree`）只带身份与对话，不带 `path`、`cwd`、`parentSessionPath`：存储布局是 core 的实现细节（session 走 repo，后端可换），而且给出路径等于邀请扩展自己去解析 JSONL——那正是这套 API 要取代的习惯。Fork 谱系用 `parentRef` 表达。
+
+`ref` 只在本进程内有效，在 own-session 读取或 session listing 返回 DTO 时由 core 铸造，因此构造不出一个指向调用方从未被展示过的 session 的 ref；未知 ref 直接失败。`id` 只用于显示——它在跨 runtime 时会重复。
+
+引用指向本 runtime 已打开的 session 时，读取走那个 live handle——重新打开同一个文件会绕过它尚未 flush 的写入。
+
 ## State 与 storage
 
 Extension state 分为三类：
@@ -210,9 +250,11 @@ Missing、load failure、invalid factory/manifest、version mismatch、activatio
 - WIDI 将 Pi 的单一 `on()` 分为 observe 与 intercept，并为每个 hook 固定合成/失败语义。
 - Tool definition 不能覆盖 built-in，修改行为使用 patch。
 - Provider 只能注册新 name，override 入口归 models.json。
-- Core 不提供 shortcut、flag、renderer 或 `ctx.ui`；呈现由 client adapter 消费 events、custom entries 与 human request facts。
+- Core 不提供 shortcut、flag、renderer 或 `ctx.ui`；呈现由 client adapter 消费 events、custom entries 与 human request facts。Pi 的 `registerMessageRenderer` 对应到 WIDI 的 input presentation：core 只发结构化事实与不可伪造的署名，渲染器归客户端。
 - WIDI actions 默认 own-agent scoped；跨 agent 行为进入 collaboration facade。
-- `custom_message`、extension EventBus、provider payload mutation 等未收编能力由 [Backlog](../BACKLOG.md) 的真实 consumer 重新举证。
+- Pi 用 `ctx.sessionManager.getSessionFile()` 把 session 文件路径交给 extension 自行解析。WIDI 给结构化读取（`getSnapshot` / `getTree` / `listSessions` / `readSession`）而不是路径：存储走 adapter，路径是实现细节，且多 agent 下「the session file」本身有歧义。
+- Pi 用 `ctx.modelRegistry.getApiKeyAndHeaders(model)` 把凭据交给 extension 自建客户端。WIDI 不提供该通道——credential ownership 不转移。侧信道模型查询留待 collaboration facade 的一次性子 agent 解决。
+- extension EventBus、provider payload mutation、session 生命周期控制（`newSession` / `switchSession` / `fork`）等未收编能力由 [Backlog](../BACKLOG.md) 的真实 consumer 重新举证。
 
 ## 非职责
 
