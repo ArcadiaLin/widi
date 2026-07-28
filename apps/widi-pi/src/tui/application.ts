@@ -36,7 +36,6 @@ import { HeaderView } from "./components/header.ts";
 import { JobsPanelView } from "./components/jobs-panel.ts";
 import { NoticeView } from "./components/notices.ts";
 import { OperationHintView } from "./components/operation-hint.ts";
-import { ProcessingBarView } from "./components/processing-bar.ts";
 import { QueuedInputView } from "./components/queued-input.ts";
 import { StatusView } from "./components/status.ts";
 import { WidiEditor } from "./editor.ts";
@@ -189,7 +188,6 @@ export class WidiTuiApplication {
 		);
 
 		this.tui.addChild(new HeaderView(this.state));
-		this.tui.addChild(new ProcessingBarView(this.state));
 		this.tui.addChild(new NoticeView(this.state));
 		this.tui.addChild(new ChatView(this.state));
 		this.tui.addChild(new StatusView(this.state));
