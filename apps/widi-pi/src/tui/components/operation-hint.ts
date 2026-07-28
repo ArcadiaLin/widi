@@ -18,6 +18,8 @@ import { activeAgent } from "./common.ts";
 
 export interface OperationHintKeys {
 	readonly agents?: string;
+	readonly agentsPrevious?: string;
+	readonly agentsNext?: string;
 	readonly interrupt?: string;
 	readonly steer?: string;
 	readonly requests?: string;
@@ -42,6 +44,16 @@ export function resolveOperationHint(
 	options: ResolveOperationHintOptions,
 ): string | undefined {
 	if (options.state.mode === "human-request") return undefined;
+
+	if (options.state.mode === "agent-panel") {
+		return hintParts(
+			keyAction(options.keys.selectUp, "back"),
+			keyPair(options.keys.agentsPrevious, options.keys.agentsNext, "agent"),
+			keyAction(options.keys.selectDown, "tree"),
+			keyAction(options.keys.selectConfirm, "switch"),
+			keyAction(options.keys.selectCancel, "back"),
+		);
+	}
 
 	const completion = options.completion;
 	if (completion) {
@@ -228,6 +240,8 @@ export class OperationHintView implements Component {
 			completion: this.menu.hintContext,
 			keys: {
 				agents: key("app.agents.open"),
+				agentsPrevious: key("app.agents.previous"),
+				agentsNext: key("app.agents.next"),
 				interrupt: key("app.interrupt"),
 				steer: key("app.steer"),
 				requests: key("app.request.open"),

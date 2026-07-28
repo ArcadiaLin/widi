@@ -92,8 +92,8 @@ export class WidiEditor extends Editor {
 		}
 		if (
 			keybindings.matches(data, "app.agents.open") &&
-			this.getText().length === 0 &&
-			!this.isShowingAutocomplete()
+			!this.isShowingAutocomplete() &&
+			this.isAtDraftEnd()
 		) {
 			this.onOpenAgents?.();
 			return;
@@ -118,6 +118,24 @@ export class WidiEditor extends Editor {
 		}
 		this.noteCompletionKey(data);
 		this.passToSuper(data);
+	}
+
+	/**
+	 * Down at the very end of the current draft is a pi-tui no-op (it would
+	 * only jump to the line end the cursor is already at), so that position is
+	 * the way out to the agent panel below. While browsing prompt history the
+	 * same key still recalls the newer entry; the history index is a pi-tui
+	 * private, read through a typed view to keep the vendor package untouched.
+	 */
+	private isAtDraftEnd(): boolean {
+		const internals = this as unknown as { historyIndex: number };
+		if (internals.historyIndex !== -1) return false;
+		const lines = this.getLines();
+		const cursor = this.getCursor();
+		return (
+			cursor.line === lines.length - 1 &&
+			cursor.col === (lines[cursor.line] ?? "").length
+		);
 	}
 
 	/** Timestamp printable keystrokes inside a completion context. */

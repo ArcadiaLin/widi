@@ -8,6 +8,8 @@ import {
 declare module "@earendil-works/pi-tui" {
 	interface Keybindings {
 		"app.agents.open": true;
+		"app.agents.previous": true;
+		"app.agents.next": true;
 		"app.interrupt": true;
 		"app.exit": true;
 		"app.tools.expand": true;
@@ -31,8 +33,17 @@ declare module "@earendil-works/pi-tui" {
 
 export const WIDI_KEYBINDINGS = {
 	"app.agents.open": {
+		defaultKeys: "down",
+		description:
+			"Focus the agent panel below when the draft cursor is at the end",
+	},
+	"app.agents.previous": {
 		defaultKeys: "left",
-		description: "Open the agent selector when the editor is empty",
+		description: "Move to the previous agent in the agent panel",
+	},
+	"app.agents.next": {
+		defaultKeys: "right",
+		description: "Move to the next agent in the agent panel",
 	},
 	"app.interrupt": {
 		defaultKeys: "escape",

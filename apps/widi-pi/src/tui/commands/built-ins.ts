@@ -287,10 +287,19 @@ export const builtInCommands: readonly CommandDefinition[] = [
 				? undefined
 				: `Command /steer requires a running agent (status: ${status}).`,
 		execute: async (context, argument) => {
-			await context.orchestrator.steerAgent(
-				requireAgentId(context),
-				argument.trim(),
-			);
+			const outcome = await context.orchestrator.sendMessage({
+				source: { kind: "human" },
+				targetAgentId: requireAgentId(context),
+				body: argument.trim(),
+				mode: "interrupt",
+			});
+			if (outcome.kind === "blocked") {
+				throw new Error(
+					outcome.reason
+						? `Input blocked by ${outcome.blockedBy}: ${outcome.reason}`
+						: `Input blocked by ${outcome.blockedBy}.`,
+				);
+			}
 			return undefined;
 		},
 	},

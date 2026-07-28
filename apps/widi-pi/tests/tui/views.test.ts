@@ -1,10 +1,8 @@
 import { setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import type { AgentRecordSnapshot } from "../../src/core/agent-record.ts";
-import { AgentSelectorController } from "../../src/tui/agent-selector.ts";
 import { builtInCommands } from "../../src/tui/commands/built-ins.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
-import { CompletionMenu } from "../../src/tui/completion-menu.ts";
 import { AgentStripView } from "../../src/tui/components/agent-strip.ts";
 import { ChatView } from "../../src/tui/components/chat.ts";
 import { FooterView } from "../../src/tui/components/footer.ts";
@@ -160,31 +158,33 @@ describe("TUI views", () => {
 		expect(output).toContain("2 bg");
 	});
 
-	it("renders the full sanitized agent id while selecting by its raw value", () => {
+	it("keeps terminal control sequences out of the panel and selects by raw value", () => {
 		const state = createTuiApplicationState();
 		const sanitizedAgentId = `${"a".repeat(260)}tail-123`;
 		const agentId = `\u001b]0;owned\u0007${sanitizedAgentId}\u001b[2J`;
 		const agent = ensureAgentProjection(state, agentId, "idle");
 		agent.snapshot = snapshot(agentId, "/sessions/agent.jsonl");
 		state.activeAgentId = agentId;
-		const menu = new CompletionMenu(
-			{ setFocus: () => {}, requestRender: () => {} },
-			state,
-			() => {},
-		);
 		let selectedAgentId: string | undefined;
-		const selector = new AgentSelectorController(menu, state, (selected) => {
-			selectedAgentId = selected;
-		});
+		const panel = new AgentStripView(
+			state,
+			{
+				setFocus: (component) => {
+					panel.focused = component === panel;
+				},
+				requestRender: () => {},
+			},
+			(selected) => {
+				selectedAgentId = selected;
+			},
+		);
 
-		selector.open();
-
-		const output = menu.render(500).join("\n").replace(ANSI_SEQUENCE, "");
-		expect(output).toContain(`id ${sanitizedAgentId}`);
+		panel.open();
+		const output = panel.render(500).join("\n").replace(ANSI_SEQUENCE, "");
 		expect(output).not.toContain("\u001b");
 		expect(output).not.toContain("\u0007");
 
-		menu.handleInput("\r");
+		panel.handleInput("\r");
 
 		expect(selectedAgentId).toBe(agentId);
 	});
@@ -288,8 +288,8 @@ describe("TUI views", () => {
 			.join("\n")
 			.replace(ANSI_SEQUENCE, "");
 
-		expect(output).toContain("← switch agent");
-		expect(output.match(/←/gu)).toHaveLength(1);
+		expect(output).toContain("↓ switch agent");
+		expect(output.match(/↓/gu)).toHaveLength(1);
 	});
 
 	it("renders an empty pending agent without a core projection", () => {

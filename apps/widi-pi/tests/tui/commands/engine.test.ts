@@ -136,6 +136,28 @@ describe("CommandEngine.handleInput", () => {
 		}
 	});
 
+	it("routes /steer through the human interrupt message path", async () => {
+		let message: unknown;
+		const outcome = await engine.handleInput(
+			"/steer go now",
+			context({
+				getAgentStatus: () => "running",
+				sendMessage: async (draft: unknown) => {
+					message = draft;
+					return { kind: "accepted" as const };
+				},
+			}),
+		);
+
+		expect(outcome).toMatchObject({ kind: "executed", name: "steer" });
+		expect(message).toEqual({
+			source: { kind: "human" },
+			targetAgentId: "agent-1",
+			body: "go now",
+			mode: "interrupt",
+		});
+	});
+
 	it("wraps execute exceptions as failed outcomes", async () => {
 		const outcome = await engine.handleInput(
 			"/abort",

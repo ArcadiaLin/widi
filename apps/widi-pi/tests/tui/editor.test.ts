@@ -63,3 +63,52 @@ describe("WidiEditor chrome", () => {
 		expect(top).toContain(paletteSgr(theme.palette.rule));
 	});
 });
+
+describe("WidiEditor agent panel key", () => {
+	const DOWN = "\x1b[B";
+	const UP = "\x1b[A";
+
+	it("opens the agent panel with down at the end of a non-empty draft", () => {
+		const editor = createEditor();
+		let opened = 0;
+		editor.onOpenAgents = () => opened++;
+		editor.setText("hello");
+
+		editor.handleInput(DOWN);
+
+		expect(opened).toBe(1);
+	});
+
+	it("moves the cursor instead when it is not at the draft end", () => {
+		const editor = createEditor();
+		let opened = 0;
+		editor.onOpenAgents = () => opened++;
+		editor.setText("ab\ncd");
+		editor.handleInput(UP);
+		expect(editor.getCursor().line).toBe(0);
+
+		editor.handleInput(DOWN);
+
+		expect(opened).toBe(0);
+		expect(editor.getCursor().line).toBe(1);
+	});
+
+	it("keeps down on history navigation while browsing, then opens the panel", () => {
+		const editor = createEditor();
+		let opened = 0;
+		editor.onOpenAgents = () => opened++;
+		editor.addToHistory("previous prompt");
+		editor.setText("");
+		editor.handleInput(UP);
+		expect(editor.getText()).toBe("previous prompt");
+
+		editor.handleInput(DOWN);
+
+		// Down recalled the newer position (the empty draft), not the panel.
+		expect(opened).toBe(0);
+		expect(editor.getText()).toBe("");
+
+		editor.handleInput(DOWN);
+		expect(opened).toBe(1);
+	});
+});

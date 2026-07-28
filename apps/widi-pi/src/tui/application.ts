@@ -15,7 +15,6 @@ import {
 } from "../core/runtime-service.ts";
 import type { CandidateItem, PromptExpansion } from "../core/types.ts";
 import { forkSourceAgentId } from "./agent-identity.ts";
-import { AgentSelectorController } from "./agent-selector.ts";
 import { WidiCommandAutocompleteProvider } from "./autocomplete.ts";
 import { applicationCommands } from "./commands/app-commands.ts";
 import { builtInCommands } from "./commands/built-ins.ts";
@@ -80,7 +79,7 @@ export class WidiTuiApplication {
 	private readonly editor: WidiEditor;
 	private readonly completionMenu: CompletionMenu;
 	private readonly humanRequests: HumanRequestMenu;
-	private readonly agentSelector: AgentSelectorController;
+	private readonly agentPanel: AgentStripView;
 	private readonly pendingAgents: PendingAgentController;
 	/** Unknown "/" input awaiting a confirming second enter (v2 §11.2). */
 	private pendingUnknownCommand?: { scopeId: string; text: string };
@@ -183,10 +182,14 @@ export class WidiTuiApplication {
 			resolveAgentLabel: (agentId) => this.resolveAgentLabel(agentId),
 			restoreFocus: () => this.tui.setFocus(this.editor),
 		});
-		this.agentSelector = new AgentSelectorController(
-			this.completionMenu,
+		this.agentPanel = new AgentStripView(
 			this.state,
+			this.tui,
 			(agentId) => this.switchAgent(agentId),
+			() => {
+				this.tui.setFocus(this.editor);
+				this.tui.requestRender();
+			},
 		);
 
 		this.tui.addChild(new HeaderView(this.state));
@@ -211,7 +214,7 @@ export class WidiTuiApplication {
 				menu: this.completionMenu,
 			}),
 		);
-		this.tui.addChild(new AgentStripView(this.state));
+		this.tui.addChild(this.agentPanel);
 		this.tui.setFocus(this.editor);
 
 		this.editor.onSubmit = (text) => {
@@ -222,7 +225,7 @@ export class WidiTuiApplication {
 			if (agentId) this.drafts.set(agentId, text);
 			else if (this.state.pendingAgent) this.state.pendingAgent.draft = text;
 		};
-		this.editor.onOpenAgents = () => this.agentSelector.open();
+		this.editor.onOpenAgents = () => this.agentPanel.open();
 		this.editor.onToggleToolOutput = () => {
 			this.state.toolOutputExpanded = !this.state.toolOutputExpanded;
 			this.tui.requestRender();
@@ -291,7 +294,7 @@ export class WidiTuiApplication {
 	private async performShutdown(reason: string): Promise<void> {
 		this.state.shuttingDown = true;
 		this.editor.disableSubmit = true;
-		this.agentSelector.close();
+		this.agentPanel.close();
 		this.humanRequests.close();
 		this.unregisterClient?.();
 		this.unregisterClient = undefined;

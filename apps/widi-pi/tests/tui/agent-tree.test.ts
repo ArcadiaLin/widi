@@ -1,11 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { AgentSelectorController } from "../../src/tui/agent-selector.ts";
 import {
 	agentTreePrefix,
 	buildAgentTree,
 	flattenAgentTree,
 } from "../../src/tui/agent-tree.ts";
-import { CompletionMenu } from "../../src/tui/completion-menu.ts";
+import { AgentStripView } from "../../src/tui/components/agent-strip.ts";
 import {
 	createTuiApplicationState,
 	ensureAgentProjection,
@@ -136,7 +135,7 @@ describe("agentTreePrefix", () => {
 	});
 });
 
-describe("agent selector ordering", () => {
+describe("agent panel ordering", () => {
 	it("lists children right after their parent with tree prefixes", () => {
 		const state = createTuiApplicationState();
 		ensureAgentProjection(state, "other", "idle");
@@ -145,17 +144,13 @@ describe("agent selector ordering", () => {
 		childA.spawnedBy = "parent";
 		const childB = ensureAgentProjection(state, "child-b", "idle");
 		childB.spawnedBy = "parent";
-		const menu = new CompletionMenu(
-			{ setFocus: () => {}, requestRender: () => {} },
-			state,
-			() => {},
-		);
-		const selector = new AgentSelectorController(menu, state, () => {});
 
-		selector.open();
+		const output = new AgentStripView(state)
+			.render(500)
+			.join("\n")
+			.replace(ANSI_SEQUENCE, "");
 
-		const output = menu.render(500).join("\n").replace(ANSI_SEQUENCE, "");
-		const order = ["other", "parent", "├── child-a", "└── child-b"].map(
+		const order = ["other", "parent", "├── ○ child-a", "└── ○ child-b"].map(
 			(label) => output.indexOf(label),
 		);
 		expect(order.every((index) => index >= 0)).toBe(true);

@@ -285,25 +285,28 @@ describe("WidiTuiApplication completion menu integration", () => {
 		);
 	});
 
-	it("renders the agent selector through the shared inline menu", async () => {
+	it("focuses the agent panel from the empty editor with the down key", async () => {
 		const { application } = await createApplication();
-		const second = ensureAgentProjection(application.state, "agent-2", "idle");
-		second.snapshot = agentSnapshot("agent-2");
+		ensureAgentProjection(application.state, "agent-2", "idle");
 		const editor = requireEditor(application);
 
-		editor.handleInput("\x1b[D");
+		editor.handleInput("\x1b[B");
 
-		expect(application.state.mode).toBe("completion-menu");
-		const rendered = plainRender(requireMenu(application));
-		expect(rendered).toContain("Select agent");
-		expect(rendered).toContain("agent-1");
-		expect(rendered).toContain("agent-2");
-		expect(requireMenu(application).hintContext).toEqual({
-			title: "Select agent",
-			description: "Switch the active runtime agent.",
-			confirmVerb: "switch",
-			itemCount: 2,
-		});
+		expect(application.state.mode).toBe("agent-panel");
+		const panel = application.tui.children.find(
+			(child) => child instanceof AgentStripView,
+		);
+		if (!panel) throw new Error("Expected the agent panel to be mounted.");
+		expect(panel.focused).toBe(true);
+		expect(panel.cursor).toBe("agent-1");
+
+		panel.handleInput("\x1b[C");
+		expect(panel.cursor).toBe("agent-2");
+
+		panel.handleInput("\r");
+		expect(application.state.activeAgentId).toBe("agent-2");
+		expect(application.state.mode).toBe("editor");
+		expect(panel.focused).toBe(false);
 	});
 });
 
