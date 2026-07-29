@@ -15,7 +15,7 @@ import type {
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { TSchema } from "typebox";
 import type { AgentProfileReference } from "../agent-profile.js";
-import type { BackgroundJobSnapshot } from "../background/index.ts";
+import type { BackgroundJobSnapshot, JsonValue } from "../background/index.ts";
 import type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
 import type { MessageSource } from "../message.ts";
 import type { ProviderConfigInput } from "../model-registry.ts";
@@ -28,6 +28,7 @@ import type {
 	OrchestratorEvent,
 	RuntimeModel,
 } from "../types.ts";
+import type { ExtensionEventEnvelope } from "./events.ts";
 import type {
 	ExtensionDiagnosticDraft,
 	ExtensionInputPresentation,
@@ -120,7 +121,8 @@ export type ExtensionObservedEvent = Extract<
 			| "human_request_resolved"
 			| "human_request_timeout"
 			| "input_blocked"
-			| "input_transformed";
+			| "input_transformed"
+			| "runtime_shutdown_requested";
 	}
 >;
 
@@ -153,6 +155,7 @@ export const EXTENSION_OBSERVED_EVENT_NAMES: Readonly<
 	human_request_timeout: true,
 	input_blocked: true,
 	input_transformed: true,
+	runtime_shutdown_requested: true,
 };
 
 /**
@@ -332,6 +335,32 @@ export interface ExtensionActions {
 	// Whether any message is waiting in either the core delivery queue or the
 	// harness's own steer/follow-up/next-turn queues.
 	hasPendingMessages(): boolean;
+	// Resolve once this agent is idle and both of those queues are empty - the
+	// same judgement `hasPendingMessages` reports, so there is only one notion
+	// of idle. Rejects when the agent is disposed or already gone while waiting.
+	//
+	// Awaiting this from a `tool_call` or `context` interceptor deadlocks by
+	// construction: the agent is running at that moment precisely because the
+	// handler has not returned.
+	waitForIdle(options?: { signal?: AbortSignal }): Promise<void>;
+	// Broadcast to every live extension runtime, this agent's included. Names
+	// are free-form (`owner:event` by convention) and core never interprets the
+	// payload; it only bounds it and hands each subscriber the same detached
+	// copy. Subscribe with `onExtensionEvent` at activation time.
+	emitExtensionEvent(name: string, payload?: JsonValue): Promise<void>;
+	// Ask the host to shut the runtime down. Core publishes the request and
+	// stops there - the process and the terminal belong to the host, which owns
+	// the ordered teardown - so nothing happens when no host is listening.
+	requestShutdown(reason?: string): Promise<void>;
+	// Dispose every agent directly, without a host: the escape hatch for
+	// embedders that have no shutdown path of their own. Prefer
+	// `requestShutdown` whenever a client is attached, or the client is left
+	// running with no agents behind it.
+	//
+	// This disposes the caller's own extension runtime too: the extension's
+	// onDispose handlers run before the returned promise settles, and the
+	// context is stale afterwards. Treat it as the last statement.
+	disposeRuntime(reason?: string): Promise<void>;
 	setSessionName(name: string): Promise<void>;
 	getSessionName(): Promise<string | undefined>;
 	// Requires an idle harness; rejects with the harness busy error otherwise.
@@ -420,6 +449,26 @@ export interface ExtensionCoreActions {
 	isProjectTrusted(): boolean;
 	getAgentSystemPrompt(agentId: string): Promise<string>;
 	agentHasPendingMessages(agentId: string): boolean;
+	waitForAgentIdle(
+		agentId: string,
+		options?: { signal?: AbortSignal },
+	): Promise<void>;
+	emitExtensionEvent(
+		agentId: string,
+		extensionId: string,
+		name: string,
+		payload?: JsonValue,
+	): Promise<void>;
+	requestRuntimeShutdown(
+		agentId: string,
+		extensionId: string,
+		reason?: string,
+	): Promise<void>;
+	disposeRuntime(
+		agentId: string,
+		extensionId: string,
+		reason?: string,
+	): Promise<void>;
 	setAgentSessionName(agentId: string, name: string): Promise<void>;
 	getAgentSessionName(agentId: string): Promise<string | undefined>;
 	compactAgent(
@@ -552,6 +601,8 @@ export interface ExtensionActionFailure {
 		| "appendEntry"
 		| "clearStatus"
 		| "compact"
+		| "disposeRuntime"
+		| "emitExtensionEvent"
 		| "emitOutput"
 		| "exec"
 		| "findEntries"
@@ -570,13 +621,15 @@ export interface ExtensionActionFailure {
 		| "readSession"
 		| "reportDiagnostic"
 		| "requestHuman"
+		| "requestShutdown"
 		| "setActiveTools"
 		| "setModel"
 		| "setSessionName"
 		| "setStatus"
 		| "setThinkingLevel"
 		| "setTools"
-		| "steer";
+		| "steer"
+		| "waitForIdle";
 	code: string;
 	error: unknown;
 }
@@ -606,6 +659,16 @@ export type ExtensionProviderConfig = ProviderConfigInput;
 export type ExtensionObserver<
 	TEvent extends ExtensionObservedEvent = ExtensionObservedEvent,
 > = (event: TEvent, context: ExtensionContext) => Promise<void> | void;
+
+/**
+ * Subscriber to the runtime-level extension event bus. The context is the
+ * receiving runtime's own - agent-scoped, as everywhere else - while the
+ * envelope names who sent the event and from which agent.
+ */
+export type ExtensionEventHandler = (
+	event: ExtensionEventEnvelope,
+	context: ExtensionContext,
+) => Promise<void> | void;
 
 export type ExtensionObserverFor<TName extends ExtensionObservedEventName> =
 	ExtensionObserver<ExtensionObservedEventFor<TName>>;
@@ -670,6 +733,15 @@ export interface ExtensionActivationApi {
 		eventName: TName,
 		handler: ExtensionInterceptorFor<TName>,
 	): void;
+	/**
+	 * Subscribe to the runtime-level extension event bus (`emitExtensionEvent`).
+	 * This is how two extensions agree on a protocol - `herdr:blocked` and the
+	 * like - without either one knowing whether the other is installed.
+	 *
+	 * The subscription lives as long as this extension runtime does: an
+	 * extension reload replaces it, and disposal drops it.
+	 */
+	onExtensionEvent(name: string, handler: ExtensionEventHandler): void;
 	onDispose(handler: ExtensionDisposeHandler): void;
 }
 

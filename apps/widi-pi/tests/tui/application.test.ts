@@ -416,6 +416,33 @@ describe("WidiTuiApplication OAuth notices", () => {
 	});
 });
 
+describe("WidiTuiApplication runtime shutdown requests", () => {
+	// Core only publishes the request: the terminal restoration and the ordered
+	// teardown are the application's, so this is where the request is honored.
+	it("shuts down and names the extension that asked", async () => {
+		const harness = await createApplicationHarness();
+
+		deliverEvent(harness.application, {
+			type: "runtime_shutdown_requested",
+			requestedBy: "quit-and-delete",
+			requestedByAgentId: "main",
+			reason: "session archived",
+			createdAt: new Date().toISOString(),
+		});
+
+		expect(harness.application.state.globalNotices.at(-1)).toMatchObject({
+			text: expect.stringContaining("quit-and-delete"),
+		});
+		expect(harness.application.state.globalNotices.at(-1)?.text).toContain(
+			"session archived",
+		);
+		await vi.waitFor(() => {
+			expect(harness.disposeAll).toHaveBeenCalled();
+		});
+		expect(harness.application.state.shuttingDown).toBe(true);
+	});
+});
+
 async function submit(
 	application: WidiTuiApplication,
 	text: string,
@@ -488,10 +515,11 @@ async function createApplicationHarness() {
 			? { ...inspected, status: "disposed" as const, hasHarness: false }
 			: inspected;
 	});
+	const disposeAll = vi.fn(async () => {});
 	const orchestrator = {
 		subscribe: () => () => {},
 		registerClient: () => () => {},
-		disposeAll: async () => {},
+		disposeAll,
 		disposeAgent,
 		spawnAgent,
 		promptAgent,
@@ -547,6 +575,7 @@ async function createApplicationHarness() {
 	return {
 		application,
 		tuiStart,
+		disposeAll,
 		spawnAgent,
 		promptAgent,
 		sendMessage,

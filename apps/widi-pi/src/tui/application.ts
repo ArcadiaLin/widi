@@ -378,6 +378,20 @@ export class WidiTuiApplication {
 			case "human_request_cancelled":
 				this.humanRequests.cancelRequest(event.requestId);
 				break;
+			case "runtime_shutdown_requested":
+				// Core only publishes the request; the terminal and the process are
+				// ours to wind down. Say who asked before the screen goes away.
+				this.addApplicationNotice(
+					event.reason
+						? `Shutting down at the request of extension ${event.requestedBy}: ${event.reason}`
+						: `Shutting down at the request of extension ${event.requestedBy}`,
+					undefined,
+					{ pin: true, textMode: "full" },
+				);
+				void this.shutdown(
+					`extension ${event.requestedBy} requested shutdown`,
+				).catch(() => {});
+				break;
 			case "agent_harness_event":
 				if (
 					event.event.type === "message_update" ||

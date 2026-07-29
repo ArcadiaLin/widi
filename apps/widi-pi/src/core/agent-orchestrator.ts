@@ -73,6 +73,7 @@ import {
 	EXTENSION_OBSERVED_EVENT_NAMES,
 	type ExtensionActionFailure,
 	type ExtensionCoreActions,
+	type ExtensionEventEnvelope,
 	type ExtensionIdentity,
 	type ExtensionInterceptorEventFor,
 	type ExtensionInterceptorName,
@@ -83,6 +84,9 @@ import {
 	ExtensionRunner,
 	type ExtensionSessionSnapshot,
 	type ExtensionSessionTree,
+	MAX_EXTENSION_EVENT_DISPATCH_DEPTH,
+	validateExtensionEventName,
+	validateExtensionEventPayload,
 } from "./extension/index.ts";
 import {
 	assertExtensionNotificationText,
@@ -341,6 +345,16 @@ interface PendingExtensionInputPresentation
 	message?: AgentMessage;
 }
 
+interface AgentIdleWaiter {
+	readonly resolve: () => void;
+	readonly reject: (error: unknown) => void;
+}
+
+type AgentIdleState =
+	| { readonly kind: "idle" }
+	| { readonly kind: "busy" }
+	| { readonly kind: "gone"; readonly message: string };
+
 type AcceptedMessage =
 	| {
 			readonly kind: "accepted";
@@ -421,6 +435,17 @@ export class AgentOrchestrator {
 	// own `agent_start`. Accepting a prompt any earlier would report success for
 	// text the harness can still drop while it builds the turn.
 	private _agentRunStartWaiters: Map<AgentId, Set<() => void>> = new Map();
+	// Waiters for a target to go idle with both queues drained (the extension
+	// `waitForIdle`). Settled from the same two facts the idle judgement reads:
+	// a status commit, and the harness's own queue report.
+	private _agentIdleWaiters: Map<AgentId, Set<AgentIdleWaiter>> = new Map();
+	// Runtime-level depth guard for the extension event bus. Two handlers
+	// answering each other would otherwise never unwind the emit that started
+	// them; the counter is not per agent because the bus is not.
+	private _extensionEventDispatchDepth = 0;
+	// A shutdown request is a fact about the runtime, not about the extension
+	// that asked, so the second request adds nothing for the host to act on.
+	private _shutdownRequested = false;
 	// Jobs waiting on a settler that is not their owner, keyed by that settler.
 	// A `BackgroundJobTable` is per-agent and cannot see another agent's jobs, so
 	// only the agent registry can answer which jobs a disposed agent still owes.
@@ -1775,6 +1800,69 @@ export class AgentOrchestrator {
 		return await harness.abort();
 	}
 
+	/**
+	 * Resolve once the agent is idle and nothing is waiting in either delivery
+	 * queue - the same judgement `agentHasPendingMessages` reports, so callers
+	 * and the agent cannot disagree about what idle means.
+	 *
+	 * Rejects instead of hanging when the agent can never reach that state: it
+	 * is gone, being torn down, or already disposed.
+	 */
+	async waitForAgentIdle(
+		agentId: AgentId,
+		options: { signal?: AbortSignal } = {},
+	): Promise<void> {
+		const settled = this._resolveAgentIdleState(agentId);
+		if (settled.kind === "idle") return;
+		if (settled.kind === "gone") throw new Error(settled.message);
+		options.signal?.throwIfAborted();
+
+		const waiters = this._agentIdleWaiters.get(agentId) ?? new Set();
+		this._agentIdleWaiters.set(agentId, waiters);
+		let waiter!: AgentIdleWaiter;
+		let onAbort: (() => void) | undefined;
+		try {
+			return await new Promise<void>((resolve, reject) => {
+				waiter = { resolve, reject };
+				waiters.add(waiter);
+				const signal = options.signal;
+				if (!signal) return;
+				// Detached in the finally below: the caller's signal usually outlives
+				// one wait (a run signal covers a whole turn), so a listener left
+				// behind would pin this promise's closure for the signal's lifetime.
+				onAbort = () => reject(signal.reason);
+				signal.addEventListener("abort", onAbort, { once: true });
+			});
+		} finally {
+			if (onAbort) options.signal?.removeEventListener("abort", onAbort);
+			waiters.delete(waiter);
+			if (waiters.size === 0) this._agentIdleWaiters.delete(agentId);
+		}
+	}
+
+	/**
+	 * Publish an extension's request to shut the runtime down. Core does not act
+	 * on it: the process and the terminal belong to the host, whose own teardown
+	 * (terminal restoration included) would be skipped if the orchestrator tore
+	 * the agents down from underneath it. An embedder without a host calls
+	 * `disposeAll` instead.
+	 */
+	async requestShutdown(request: {
+		requestedBy: string;
+		requestedByAgentId: AgentId;
+		reason?: string;
+	}): Promise<void> {
+		if (this._shutdownRequested) return;
+		this._shutdownRequested = true;
+		await this._emit({
+			type: "runtime_shutdown_requested",
+			requestedBy: request.requestedBy,
+			requestedByAgentId: request.requestedByAgentId,
+			reason: request.reason,
+			createdAt: now(),
+		});
+	}
+
 	async disposeAgent(agentId: AgentId, reason?: string): Promise<void> {
 		const record = this._requireAgentRecord(agentId);
 		// Stop accepting work for this agent before the sweeps below run. The
@@ -1855,6 +1943,10 @@ export class AgentOrchestrator {
 		this._humanInterrupts.forget(agentId);
 		this._maintenanceOperations.delete(agentId);
 		this._resolveAgentRunStartWaiters(agentId);
+		this._rejectAgentIdleWaiters(
+			agentId,
+			reason ?? `Agent ${agentId} was disposed while waiting for it to idle.`,
+		);
 		this._backgroundJobEmits.delete(agentId);
 		this._progressQueued.delete(agentId);
 		this._progressSequence.delete(agentId);
@@ -3174,6 +3266,34 @@ export class AgentOrchestrator {
 					(record.harnessQueuedMessageCount ?? 0) > 0
 				);
 			},
+			waitForAgentIdle: async (agentId, options) => {
+				await this.waitForAgentIdle(agentId, options);
+			},
+			emitExtensionEvent: async (agentId, extensionId, name, payload) => {
+				this._requireAgentRecord(agentId);
+				await this._emitExtensionEvent({
+					name: validateExtensionEventName(name),
+					payload: validateExtensionEventPayload(payload),
+					sourceExtensionId: extensionId,
+					sourceAgentId: agentId,
+					emittedAt: now(),
+				});
+			},
+			requestRuntimeShutdown: async (agentId, extensionId, reason) => {
+				this._requireAgentRecord(agentId);
+				await this.requestShutdown({
+					requestedBy: extensionId,
+					requestedByAgentId: agentId,
+					reason,
+				});
+			},
+			disposeRuntime: async (agentId, extensionId, reason) => {
+				this._requireAgentRecord(agentId);
+				await this.disposeAll(
+					reason ??
+						`Extension '${extensionId}' disposed the runtime from agent ${agentId}.`,
+				);
+			},
 			setAgentSessionName: async (agentId, name) => {
 				await this.setAgentSessionName(agentId, name);
 			},
@@ -3667,6 +3787,7 @@ export class AgentOrchestrator {
 			changedAt: now(),
 		});
 		this._messages.wake(record.agentId);
+		this._settleAgentIdleWaiters(record.agentId);
 		return true;
 	}
 
@@ -4118,6 +4239,87 @@ export class AgentOrchestrator {
 		for (const waiter of waiters) waiter();
 	}
 
+	/**
+	 * Whether the agent is idle now, will never be, or is simply still busy.
+	 * `creating` counts as busy: the agent is on its way to a first idle.
+	 */
+	private _resolveAgentIdleState(agentId: AgentId): AgentIdleState {
+		const record = this._agents.get(agentId);
+		if (!record || this._disposingAgents.has(agentId)) {
+			return { kind: "gone", message: `Agent ${agentId} is gone.` };
+		}
+		if (record.status === "disposed" || record.status === "unavailable") {
+			return {
+				kind: "gone",
+				message: `Agent ${agentId} is ${record.status}.`,
+			};
+		}
+		if (record.status !== "idle") return { kind: "busy" };
+		const pending =
+			this._messages.hasPending(agentId) ||
+			(record.harnessQueuedMessageCount ?? 0) > 0;
+		return pending ? { kind: "busy" } : { kind: "idle" };
+	}
+
+	private _settleAgentIdleWaiters(agentId: AgentId): void {
+		const waiters = this._agentIdleWaiters.get(agentId);
+		if (!waiters || waiters.size === 0) return;
+		const state = this._resolveAgentIdleState(agentId);
+		if (state.kind === "busy") return;
+		// The waiter's own finally removes it from the set; snapshot first so
+		// settling one cannot skip the next.
+		for (const waiter of [...waiters]) {
+			if (state.kind === "idle") waiter.resolve();
+			else waiter.reject(new Error(state.message));
+		}
+	}
+
+	private _rejectAgentIdleWaiters(agentId: AgentId, message: string): void {
+		const waiters = this._agentIdleWaiters.get(agentId);
+		if (!waiters) return;
+		for (const waiter of [...waiters]) waiter.reject(new Error(message));
+		this._agentIdleWaiters.delete(agentId);
+	}
+
+	/**
+	 * Relay one extension event to every live extension runtime.
+	 *
+	 * Runtime-level by construction: the runners are the subscriber set, so a
+	 * reload swaps subscriptions with the runner it replaced and disposal drops
+	 * them, with no second lifecycle to keep in step. A stale runner is skipped
+	 * for the same reason observers skip it - its context actions can only fail.
+	 */
+	private async _emitExtensionEvent(
+		envelope: ExtensionEventEnvelope,
+	): Promise<void> {
+		if (
+			this._extensionEventDispatchDepth >= MAX_EXTENSION_EVENT_DISPATCH_DEPTH
+		) {
+			await this._publishDiagnostic(
+				{
+					severity: "warning",
+					code: "extension.event_recursion_dropped",
+					message: `Extension event '${envelope.name}' from '${envelope.sourceExtensionId}' was dropped after ${MAX_EXTENSION_EVENT_DISPATCH_DEPTH} nested dispatches.`,
+					agentId: envelope.sourceAgentId,
+					extensionId: envelope.sourceExtensionId,
+				},
+				{ observeExtensions: false },
+			);
+			return;
+		}
+		this._extensionEventDispatchDepth += 1;
+		try {
+			for (const [agentId, record] of [...this._agents]) {
+				const extensionRunner = record.extensionRunner;
+				if (!extensionRunner || extensionRunner.isStale()) continue;
+				const diagnostics = await extensionRunner.emitExtensionEvent(envelope);
+				await this._recordAndPublishExtensionDiagnostics(agentId, diagnostics);
+			}
+		} finally {
+			this._extensionEventDispatchDepth -= 1;
+		}
+	}
+
 	private async _finishAgentPrompt(
 		agentId: AgentId,
 		run: Promise<unknown>,
@@ -4143,6 +4345,9 @@ export class AgentOrchestrator {
 				await this._transitionAgentStatus(agentId, "idle");
 			}
 			this._messages.wake(agentId);
+			// A prompt that failed before the run started changes no status, so
+			// there is no transition for the waiters to settle from.
+			this._settleAgentIdleWaiters(agentId);
 		}
 	}
 
@@ -4307,6 +4512,9 @@ export class AgentOrchestrator {
 			if (record) {
 				record.harnessQueuedMessageCount =
 					event.steer.length + event.followUp.length + event.nextTurn.length;
+				// The queue draining is the other half of the idle judgement; a
+				// status commit alone would report idle with text still unread.
+				this._settleAgentIdleWaiters(agentId);
 			}
 			this._captureQueuedExtensionInputPresentation(
 				agentId,
@@ -4487,19 +4695,40 @@ export class AgentOrchestrator {
 		return Object.hasOwn(EXTENSION_OBSERVED_EVENT_NAMES, event.type);
 	}
 
+	/**
+	 * The agent an observed event belongs to, or undefined when it is about the
+	 * runtime rather than one agent. A runtime-scoped fact is broadcast; a
+	 * diagnostic without an agent has no observer to reach.
+	 */
 	private _extensionObservedAgentId(
 		event: ExtensionObservedEvent,
 	): AgentId | undefined {
-		return event.type === "diagnostic"
-			? event.diagnostic.agentId
-			: event.agentId;
+		if (event.type === "diagnostic") return event.diagnostic.agentId;
+		if (event.type === "runtime_shutdown_requested") return undefined;
+		return event.agentId;
 	}
 
 	private async _emitToExtensionObservers(
 		event: ExtensionObservedEvent,
 	): Promise<void> {
 		const agentId = this._extensionObservedAgentId(event);
-		if (!agentId) return;
+		if (!agentId) {
+			// Runtime-scoped: every live runtime is a subject, so a shutdown
+			// request reaches the agents that need to wind their work down, not
+			// only the one whose extension asked.
+			if (event.type !== "runtime_shutdown_requested") return;
+			for (const observedAgentId of [...this._agents.keys()]) {
+				await this._emitToExtensionObserversForAgent(observedAgentId, event);
+			}
+			return;
+		}
+		await this._emitToExtensionObserversForAgent(agentId, event);
+	}
+
+	private async _emitToExtensionObserversForAgent(
+		agentId: AgentId,
+		event: ExtensionObservedEvent,
+	): Promise<void> {
 		const extensionRunner = this._agents.get(agentId)?.extensionRunner;
 		// A stale runner (agent disposed) keeps its record but must not
 		// receive further events: its context actions can only fail.

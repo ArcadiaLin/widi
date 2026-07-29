@@ -11,6 +11,7 @@ import {
 	validateDivisionDeclarations,
 	validateDivisionId,
 } from "./division.ts";
+import { validateExtensionEventName } from "./events.ts";
 import {
 	type ExtensionModuleImporter,
 	JitiExtensionModuleImporter,
@@ -21,6 +22,7 @@ import type {
 	ExtensionDivisionDeclaration,
 	ExtensionDivisionSelections,
 	ExtensionDivisionSnapshot,
+	ExtensionEventHandler,
 	ExtensionFactory,
 	ExtensionInterceptorFor,
 	ExtensionInterceptorName,
@@ -63,6 +65,14 @@ export interface ExtensionInterceptorRegistration<
 	extensionId: string;
 	eventName: TName;
 	handler: ExtensionInterceptorFor<TName>;
+	divisionId?: string;
+}
+
+export interface ExtensionEventRegistration {
+	extensionId: string;
+	/** Bus event name, as validated at registration time. */
+	eventName: string;
+	handler: ExtensionEventHandler;
 	divisionId?: string;
 }
 
@@ -173,6 +183,11 @@ export interface LoadedExtensionScope {
 	interceptorHandlers: ReadonlyMap<
 		ExtensionInterceptorName,
 		readonly ExtensionInterceptorRegistration<ExtensionInterceptorName>[]
+	>;
+	/** Extension event bus subscriptions, keyed by event name. */
+	extensionEventHandlers: ReadonlyMap<
+		string,
+		readonly ExtensionEventRegistration[]
 	>;
 	disposeHandlers: readonly ExtensionDisposeRegistration[];
 	divisions: readonly ExtensionDivisionSnapshot[];
@@ -466,6 +481,10 @@ export class ExtensionLoader {
 			ExtensionInterceptorName,
 			ExtensionInterceptorRegistration<ExtensionInterceptorName>[]
 		>();
+		const extensionEventHandlers = new Map<
+			string,
+			ExtensionEventRegistration[]
+		>();
 		const disposeHandlers: ExtensionDisposeRegistration[] = [];
 		const divisions: ExtensionDivisionSnapshot[] = [];
 		const extensionIds = normalizeExtensionIds(options.extensionIds ?? []);
@@ -535,6 +554,7 @@ export class ExtensionLoader {
 				systemPromptContributions,
 				observerHandlers,
 				interceptorHandlers,
+				extensionEventHandlers,
 				disposeHandlers,
 			};
 
@@ -628,6 +648,7 @@ export class ExtensionLoader {
 			systemPromptContributions,
 			observerHandlers,
 			interceptorHandlers,
+			extensionEventHandlers,
 			disposeHandlers,
 			divisions,
 		};
@@ -978,6 +999,7 @@ interface ExtensionActivationScope {
 		ExtensionInterceptorName,
 		ExtensionInterceptorRegistration<ExtensionInterceptorName>[]
 	>;
+	readonly extensionEventHandlers: Map<string, ExtensionEventRegistration[]>;
 	readonly disposeHandlers: ExtensionDisposeRegistration[];
 }
 
@@ -1107,6 +1129,20 @@ function createActivationApi(
 				divisionId,
 			});
 			scope.interceptorHandlers.set(eventName, registrations);
+		},
+		onExtensionEvent: (name, handler) => {
+			// Validate at registration rather than at delivery: a typo in a
+			// subscription is otherwise silent forever, since a name nobody emits
+			// looks exactly like one nobody sent yet.
+			const eventName = validateExtensionEventName(name);
+			const registrations = scope.extensionEventHandlers.get(eventName) ?? [];
+			registrations.push({
+				extensionId,
+				eventName,
+				handler,
+				divisionId,
+			});
+			scope.extensionEventHandlers.set(eventName, registrations);
 		},
 		onDispose: (handler) => {
 			scope.disposeHandlers.push({

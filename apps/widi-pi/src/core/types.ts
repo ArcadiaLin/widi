@@ -163,6 +163,20 @@ export type OrchestratorEvent =
 			message: ExtensionMessage;
 			createdAt: string;
 	  }
+	// An extension asked the runtime to shut down. Core publishes the request
+	// and does nothing else: the process and the terminal belong to the host,
+	// and a host that tore them down from underneath itself would skip its own
+	// restoration path. The host performs the ordered shutdown; an embedder with
+	// no host of its own can call disposeAll instead.
+	| {
+			readonly type: "runtime_shutdown_requested";
+			/** Extension that asked, injected by core. */
+			requestedBy: string;
+			/** Agent whose extension runtime made the request, for attribution. */
+			requestedByAgentId: AgentId;
+			reason?: string;
+			createdAt: string;
+	  }
 	| HumanRequestEvent
 	// OAuth login flow facts. The URL and device code must reach the human
 	// even when the flow completes through a local callback server without

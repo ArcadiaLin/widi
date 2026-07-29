@@ -10,6 +10,7 @@ import type {
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { CoreDiagnostic } from "../diagnostics.ts";
 import type { ToolRegistry } from "../tool-registry.ts";
+import type { ExtensionEventEnvelope } from "./events.ts";
 import type {
 	ExtensionIdentity,
 	ExtensionInterceptorRegistration,
@@ -89,6 +90,13 @@ export type ExtensionHookSnapshot =
 			kind: "intercept";
 			extensionId: string;
 			eventName: ExtensionInterceptorName;
+			divisionId?: string;
+	  }
+	| {
+			kind: "event";
+			extensionId: string;
+			/** Extension event bus name this runtime subscribed to. */
+			eventName: string;
 			divisionId?: string;
 	  };
 
@@ -258,6 +266,7 @@ export class ExtensionRunner {
 			systemPromptContributions: [],
 			observerHandlers: new Map(),
 			interceptorHandlers: new Map(),
+			extensionEventHandlers: new Map(),
 			disposeHandlers: [],
 			// Plain data, no closures retained: keep it so the resolved division
 			// state stays inspectable after disposal.
@@ -290,6 +299,16 @@ export class ExtensionRunner {
 			for (const registration of handlers) {
 				hooks.push({
 					kind: "intercept",
+					extensionId: registration.extensionId,
+					eventName: registration.eventName,
+					divisionId: registration.divisionId,
+				});
+			}
+		}
+		for (const handlers of this._loadedScope.extensionEventHandlers.values()) {
+			for (const registration of handlers) {
+				hooks.push({
+					kind: "event",
 					extensionId: registration.extensionId,
 					eventName: registration.eventName,
 					divisionId: registration.divisionId,
@@ -366,6 +385,31 @@ export class ExtensionRunner {
 			try {
 				await (registration.handler as ExtensionObserver)(
 					event,
+					this.createContext(registration.extensionId),
+				);
+			} catch (error) {
+				diagnostics.push(this._createHandlerDiagnostic(registration, error));
+			}
+		}
+		return diagnostics;
+	}
+
+	/**
+	 * Deliver one bus event to this runtime's subscribers. The runtime that
+	 * emitted it is not excluded: subscription is per extension runtime, and two
+	 * instances of the same extension in different agents are exactly the case
+	 * the bus exists for.
+	 */
+	async emitExtensionEvent(
+		envelope: ExtensionEventEnvelope,
+	): Promise<CoreDiagnostic[]> {
+		const diagnostics: CoreDiagnostic[] = [];
+		const handlers =
+			this._loadedScope.extensionEventHandlers.get(envelope.name) ?? [];
+		for (const registration of handlers) {
+			try {
+				await registration.handler(
+					envelope,
 					this.createContext(registration.extensionId),
 				);
 			} catch (error) {
@@ -767,6 +811,41 @@ export class ExtensionRunner {
 				this._assertActive();
 				return this._actions.agentHasPendingMessages(agentId);
 			},
+			waitForIdle: async (options) => {
+				await this._runReportedAction(failure("waitForIdle"), async () => {
+					await this._actions.waitForAgentIdle(agentId, options);
+				});
+			},
+			emitExtensionEvent: async (name, payload) => {
+				await this._runReportedAction(
+					failure("emitExtensionEvent"),
+					async () => {
+						await this._actions.emitExtensionEvent(
+							agentId,
+							extensionId,
+							name,
+							payload,
+						);
+					},
+				);
+			},
+			requestShutdown: async (reason) => {
+				await this._runReportedAction(failure("requestShutdown"), async () => {
+					await this._actions.requestRuntimeShutdown(
+						agentId,
+						extensionId,
+						reason,
+					);
+				});
+			},
+			disposeRuntime: async (reason) => {
+				// The stale guard inside runs before the teardown, so a live runtime
+				// can always start one; a call made from an onDispose handler, after
+				// this same runtime was invalidated, is refused.
+				await this._runReportedAction(failure("disposeRuntime"), async () => {
+					await this._actions.disposeRuntime(agentId, extensionId, reason);
+				});
+			},
 			setSessionName: async (name) => {
 				await this._runReportedAction(failure("setSessionName"), async () => {
 					await this._actions.setAgentSessionName(agentId, name);
@@ -1064,6 +1143,10 @@ function createUnboundActions(): ExtensionCoreActions {
 		isProjectTrusted: () => notBound(),
 		getAgentSystemPrompt: async () => notBound(),
 		agentHasPendingMessages: () => notBound(),
+		waitForAgentIdle: async () => notBound(),
+		emitExtensionEvent: async () => notBound(),
+		requestRuntimeShutdown: async () => notBound(),
+		disposeRuntime: async () => notBound(),
 		setAgentSessionName: async () => notBound(),
 		getAgentSessionName: async () => notBound(),
 		compactAgent: async () => notBound(),

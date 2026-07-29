@@ -1,5 +1,6 @@
 import type { JsonValue } from "../background/index.ts";
 import type { DiagnosticSeverity } from "../diagnostics.ts";
+import { normalizeExtensionJsonValue } from "./json-payload.ts";
 
 export const MAX_EXTENSION_OUTPUT_BYTES = 65_536;
 export const MAX_EXTENSION_NOTIFICATION_BYTES = 4_096;
@@ -221,37 +222,11 @@ export function validateExtensionInputPresentation(
 	if (presentation.details !== undefined) {
 		// Core stores and republishes details without reading them, so the only
 		// contract it can enforce is that the value survives the session file.
-		//
-		// The round-trip is the validation *and* the result: keeping the caller's
-		// object would let a function, `undefined`, or `NaN` reach a live
-		// consumer as one value and come back from JSONL as another - and would
-		// leave core holding a reference the extension can still mutate after
-		// the entry is written.
-		// Not narrowed to string: extensions load as untyped modules, so a
-		// function can still arrive here, and JSON.stringify answers `undefined`
-		// for one.
-		let serialized: string | undefined;
-		try {
-			serialized = JSON.stringify(presentation.details);
-		} catch (error) {
-			throw new TypeError(
-				`Extension input presentation details must be JSON serializable: ${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
-		if (serialized === undefined) {
-			throw new TypeError(
-				"Extension input presentation details must be JSON serializable.",
-			);
-		}
-		if (
-			utf8Encoder.encode(serialized).byteLength >
-			MAX_EXTENSION_PRESENTATION_DETAILS_BYTES
-		) {
-			throw new RangeError(
-				`Extension input presentation details exceed ${MAX_EXTENSION_PRESENTATION_DETAILS_BYTES} UTF-8 bytes.`,
-			);
-		}
-		result.details = JSON.parse(serialized) as JsonValue;
+		result.details = normalizeExtensionJsonValue(
+			presentation.details,
+			"Extension input presentation details",
+			MAX_EXTENSION_PRESENTATION_DETAILS_BYTES,
+		);
 	}
 	return result;
 }

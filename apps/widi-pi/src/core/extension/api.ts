@@ -43,6 +43,11 @@ export type {
 	CandidateItem,
 	RuntimeModel,
 } from "../types.ts";
+export type { ExtensionEventEnvelope } from "./events.ts";
+export {
+	MAX_EXTENSION_EVENT_NAME_BYTES,
+	MAX_EXTENSION_EVENT_PAYLOAD_BYTES,
+} from "./events.ts";
 export type {
 	ExtensionDiagnosticDraft,
 	ExtensionInputPresentation,
@@ -62,6 +67,7 @@ export type {
 	ExtensionDefinition,
 	ExtensionDisposeHandler,
 	ExtensionDivisionDeclaration,
+	ExtensionEventHandler,
 	ExtensionExecResult,
 	ExtensionFactory,
 	ExtensionInputEvent,
