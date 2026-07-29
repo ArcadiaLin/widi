@@ -571,8 +571,8 @@ interface ExtensionEventEnvelope {
 2. **runtime 级由此自动成立**：持有者是 orchestrator，per-agent runner 只是投递目标，4.4 的基数问题不复现。
 3. **自投递开着**：源 runner 也收自己发的事件。生态里 herdr 模式是"任意谁发、任意谁收"，排除自己会让"同一扩展在两个 agent 实例间协调"变得无法解释。
 4. **不作为 `OrchestratorEvent` 发布。** payload 是扩展间的私有约定，客户端解释不了；发出去等于把任意 JSON 灌进 TUI 投影。诊断仍然可见。
-5. **payload 走 C4 的同一套纪律**：类型收紧为 `JsonValue`，round-trip 规范化后存 detached clone（把 `presentation.ts` 里 details 那段抽成共享 `normalizeJsonPayload`），上限 64 KB。name 复用 `EXTENSION_PRESENTATION_TYPE_PATTERN`（允许 `herdr:blocked` 这类冒号形式），上限 128 字节。
-6. **递归熔断**：仿 `_extensionObserverDispatchDepth` 新增 `_extensionEventDispatchDepth`，超过 8 层丢弃并报 `extension.event_recursion_dropped`。handler 抛错走既有 `_createHandlerDiagnostic`，不影响其余订阅者。
+5. **payload 走 C4 的同一套纪律**：类型收紧为 `JsonValue`，经 `utils/json.ts` 的 `normalizeJsonValue` round-trip 规范化为 detached clone，上限 64 KB；分发前递归冻结 payload 并冻结 envelope，所有订阅者共享同一个运行时不可变副本。name 复用 `EXTENSION_PRESENTATION_TYPE_PATTERN` 的字符约束（允许 `herdr:blocked` 这类冒号形式），上限 128 字节。
+6. **递归熔断**：用 `AsyncLocalStorage` 记录当前异步因果链的分发深度；handler 内嵌套 emit 会继承深度，彼此独立的并发 emit 各自从 0 开始。超过 8 层丢弃并报 `extension.event_recursion_dropped`。handler 抛错走既有 `_createHandlerDiagnostic`，不影响其余订阅者。
 
 落点：`core/extension/types.ts`（新类型 + `ExtensionActionFailure["action"]` 增 `emitExtensionEvent`）、`loader.ts`（scope 增 `extensionEventHandlers`、`createActivationApi` 增注册、dispose 清空）、`runner.ts`（分发方法 + `inspect()` 的 hooks 增 `kind: "event"` + `createUnboundActions` 补桩）、`agent-orchestrator.ts`（`_createExtensionActions` 实现）、`extension/api.ts` 与 `extension/index.ts` barrel。
 
@@ -593,7 +593,7 @@ interface ExtensionEventEnvelope {
 - orchestrator 侧记幂等标志，重复请求只发一次事件。
 - TUI 侧：`tui/application.ts` 的 `handleEvent` 增一个 case——先推一条 notice（谁请求的、原因），再 `void this.shutdown(...)`，走既有 `performShutdown`（`disposeAll` + 终端恢复）。
 - 无人处理时不做超时兜底。headless 嵌入者自行订阅该事件。
-- 把 `runtime_shutdown_requested` 加进 `EXTENSION_OBSERVED_EVENT_NAMES`：成本近零，且"要关了赶紧落盘"是真实需求（事件发出时尚未 dispose，顺序安全）。
+- 把 `runtime_shutdown_requested` 加进 `EXTENSION_OBSERVED_EVENT_NAMES`：成本近零，且"要关了赶紧落盘"是真实需求。该事件先广播并 await 全部活着的 extension runner，再发布给宿主；因此 TUI 即刻开始 `disposeAll` 也不会抢先使尚未收到通知的 runner stale。
 
 `disposeRuntime(reason?: string): Promise<void>`
 
@@ -604,16 +604,19 @@ interface ExtensionEventEnvelope {
 
 #### 批次 A、B 实施记录（2026-07-29 完成）
 
-已落地，`npm run check` 通过，全套 984 个用例通过（新增 20 个：`tests/core/extension-events.test.ts` 10 个、`tests/core/extension-runtime-control.test.ts` 10 个，另在 `tests/tui/application.test.ts` 补 1 个关机请求用例）。
+已落地并经复审修订，`npm run check` 通过，全套 990 个用例通过。批次 A、B 的回归覆盖现为 `tests/core/extension-events.test.ts` 12 个、`tests/core/extension-runtime-control.test.ts` 11 个，另在 `tests/tui/application.test.ts` 补了 1 个关机请求用例；随后 shared utilities 重构为共享 JSON 规范化补了 3 个用例。
 
-实际改动：新增 `core/extension/{events,json-payload}.ts`；改 `core/extension/{types,presentation,loader,runner,api,index}.ts`、`core/types.ts`、`core/agent-orchestrator.ts`、`tui/application.ts`。
+实际改动（含随后 shared utilities 重构）：新增 `core/extension/events.ts` 与 `utils/json.ts`；改 `core/extension/{types,presentation,loader,runner,api,index}.ts`、`core/types.ts`、`core/agent-orchestrator.ts`、`tui/application.ts`。
 
-与批次说明有出入或需要记下的四点：
+与批次说明有出入或需要记下的七点：
 
-1. **JSON 规范化抽成了独立模块**而不是留在 `presentation.ts`：`normalizeExtensionJsonValue` 现在住在 `core/extension/json-payload.ts`，presentation details 与事件 payload 共用同一份 round-trip + detached clone 纪律。
+1. **JSON 规范化抽成了共享 utility**而不是留在 `presentation.ts`：`normalizeJsonValue` 现在住在 `utils/json.ts`，presentation details 与事件 payload 共用同一份 round-trip + detached clone 纪律。
 2. **事件名在注册期校验，非法名字会让整个扩展激活失败**（进而阻断该 agent 的 spawn），与 `registerProvider` 的空名字、`appendSystemPrompt` 的空文本同级。理由：没人 emit 的名字和还没人发过的名字在运行期无法区分，拼错会永远沉默。
 3. **`runtime_shutdown_requested` 是 runtime 级事实，字段用 `requestedBy` + `requestedByAgentId`，刻意不叫 `agentId`**。为此 `_emitToExtensionObservers` 增加了一条广播路径：没有 agent 主语的被观察事件发给全部活着的 runner，否则"要关了赶紧收尾"只会通知发起请求的那一个 agent。
 4. **`waitForIdle` 的 abort 监听在 finally 里显式摘除**。调用方的 signal 通常比一次等待活得久（run signal 覆盖整个 turn），留着监听会把这次 promise 的闭包钉在 signal 的生命周期上。
+5. **事件的 readonly 契约现在也在运行时成立**。规范化只解决了发送方事后 mutate；若把同一个可变 envelope 依次交给订阅者，前一个仍能伪造 attribution 或改写后一个看到的 payload。分发入口现在递归冻结 detached payload，并冻结 envelope 本身。
+6. **事件递归深度是因果链局部状态，不是全局并发计数**。原标量计数器会把 9 个互不嵌套、但同时在途的 emit 误判成超过 8 层。现在用 `AsyncLocalStorage<number>` 让嵌套 emit 继承深度，同时隔离独立并发。
+7. **shutdown 的扩展观察者必须先于宿主监听者完成**。TUI 收到请求会立即异步执行 `disposeAll`；若沿用普通事件的"宿主先、扩展后"顺序，runner 可在广播途中变 stale。`requestShutdown` 现在先 await 扩展广播，再以 `observeExtensions: false` 发布同一请求给宿主，避免重复投递。
 
 #### 批次 C：阶段 1 core 协议扩展
 

@@ -2,6 +2,7 @@
 // slice 10); this barrel adds the core-internal binding surface on top.
 export * from "./api.ts";
 export {
+	freezeExtensionEventEnvelope,
 	MAX_EXTENSION_EVENT_DISPATCH_DEPTH,
 	validateExtensionEventName,
 	validateExtensionEventPayload,

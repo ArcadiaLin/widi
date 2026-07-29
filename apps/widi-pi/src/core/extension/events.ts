@@ -51,8 +51,8 @@ export function validateExtensionEventName(name: string): string {
 }
 
 /**
- * Bound the payload and detach it from the emitter. Every subscriber shares
- * this one copy, so it must not stay reachable from the code that sent it.
+ * Bound the payload and detach it from the emitter. The envelope is frozen
+ * separately immediately before dispatch.
  */
 export function validateExtensionEventPayload(
 	payload: JsonValue | undefined,
@@ -63,4 +63,24 @@ export function validateExtensionEventPayload(
 		"Extension event payload",
 		MAX_EXTENSION_EVENT_PAYLOAD_BYTES,
 	);
+}
+
+/**
+ * Subscribers share one detached envelope, so make its runtime behavior match
+ * the readonly API contract. Freezing recursively also prevents one subscriber
+ * from changing what a later subscriber observes.
+ */
+export function freezeExtensionEventEnvelope(
+	envelope: ExtensionEventEnvelope,
+): ExtensionEventEnvelope {
+	if (envelope.payload !== undefined) freezeJsonValue(envelope.payload);
+	return Object.freeze(envelope);
+}
+
+function freezeJsonValue(value: JsonValue): void {
+	if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
+		return;
+	}
+	for (const child of Object.values(value)) freezeJsonValue(child);
+	Object.freeze(value);
 }

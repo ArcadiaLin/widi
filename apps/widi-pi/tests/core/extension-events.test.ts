@@ -4,7 +4,7 @@
  * without either one knowing whether the other is installed.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type {
 	AgentOrchestrator,
 	OrchestratorEvent,
@@ -106,6 +106,56 @@ describe("extension event bus", () => {
 		expect(payloads).toEqual([{ counts: [1, 2] }]);
 	});
 
+	it("hands subscribers a deeply immutable shared envelope", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		let sourceMutationSucceeded = false;
+		let payloadMutationSucceeded = false;
+		let received: ExtensionEventEnvelope | undefined;
+		const frozen: boolean[] = [];
+		orchestrator.registerExtension("sender", (api: ExtensionActivationApi) => {
+			api.onExtensionEvent("state", (envelope) => {
+				const payload = envelope.payload as { nested: { count: number } };
+				frozen.push(
+					Object.isFrozen(envelope),
+					Object.isFrozen(payload),
+					Object.isFrozen(payload.nested),
+				);
+				try {
+					(envelope as { sourceExtensionId: string }).sourceExtensionId =
+						"forged";
+					sourceMutationSucceeded = true;
+				} catch {
+					// Runtime immutability is the behavior under test.
+				}
+				try {
+					payload.nested.count = 99;
+					payloadMutationSucceeded = true;
+				} catch {
+					// Runtime immutability is the behavior under test.
+				}
+			});
+		});
+		orchestrator.registerExtension(
+			"receiver",
+			(api: ExtensionActivationApi) => {
+				api.onExtensionEvent("state", (envelope) => {
+					received = envelope;
+				});
+			},
+		);
+		const agentId = await orchestrator.spawnAgent();
+
+		await requireActions(orchestrator, agentId).emitExtensionEvent("state", {
+			nested: { count: 1 },
+		});
+
+		expect(frozen).toEqual([true, true, true]);
+		expect(sourceMutationSucceeded).toBe(false);
+		expect(payloadMutationSucceeded).toBe(false);
+		expect(received?.sourceExtensionId).toBe("sender");
+		expect(received?.payload).toEqual({ nested: { count: 1 } });
+	});
+
 	it("rejects an unusable name or payload before anything is delivered", async () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		let delivered = 0;
@@ -188,6 +238,45 @@ describe("extension event bus", () => {
 					diagnostic.extensionId === "sender",
 			),
 		).toBe(true);
+	});
+
+	it("does not count independent concurrent dispatches as recursion", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const diagnostics = collectDiagnostics(orchestrator);
+		let releaseHandlers!: () => void;
+		const handlersReleased = new Promise<void>((resolve) => {
+			releaseHandlers = resolve;
+		});
+		let received = 0;
+		orchestrator.registerExtension("sender", (api: ExtensionActivationApi) => {
+			api.onExtensionEvent("parallel", async () => {
+				received += 1;
+				await handlersReleased;
+			});
+		});
+		const agentId = await orchestrator.spawnAgent();
+		const actions = requireActions(orchestrator, agentId);
+
+		const dispatches = Promise.all(
+			Array.from(
+				{ length: MAX_EXTENSION_EVENT_DISPATCH_DEPTH + 1 },
+				async () => await actions.emitExtensionEvent("parallel"),
+			),
+		);
+		try {
+			await vi.waitFor(() => {
+				expect(received).toBe(MAX_EXTENSION_EVENT_DISPATCH_DEPTH + 1);
+			});
+		} finally {
+			releaseHandlers();
+			await dispatches;
+		}
+
+		expect(
+			diagnostics.some(
+				(diagnostic) => diagnostic.code === "extension.event_recursion_dropped",
+			),
+		).toBe(false);
 	});
 
 	it("drops the subscriptions of a disposed agent", async () => {

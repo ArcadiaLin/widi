@@ -5,7 +5,7 @@
  */
 
 import type { AgentHarnessEvent } from "@earendil-works/pi-agent-core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type {
 	AgentOrchestrator,
 	OrchestratorEvent,
@@ -168,6 +168,56 @@ describe("extension shutdown requests", () => {
 		await requireActions(orchestrator, firstAgentId).requestShutdown();
 
 		expect(notified.sort()).toEqual([firstAgentId, secondAgentId].sort());
+	});
+
+	it("finishes extension observers before a host can start teardown", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const notified: string[] = [];
+		let pauseFirstObserver = true;
+		let releaseFirstObserver!: () => void;
+		const firstObserverReleased = new Promise<void>((resolve) => {
+			releaseFirstObserver = resolve;
+		});
+		let firstObserverStarted = false;
+		orchestrator.registerExtension("control", (api) => {
+			api.observe("runtime_shutdown_requested", async (_event, context) => {
+				if (pauseFirstObserver) {
+					pauseFirstObserver = false;
+					firstObserverStarted = true;
+					await firstObserverReleased;
+				}
+				notified.push(context.agentId);
+			});
+		});
+		const firstAgentId = await orchestrator.spawnAgent();
+		const secondAgentId = await orchestrator.spawnAgent();
+		let hostSawRequest = false;
+		let hostDisposal: Promise<void> | undefined;
+		orchestrator.subscribe((event) => {
+			if (event.type !== "runtime_shutdown_requested") return;
+			hostSawRequest = true;
+			hostDisposal = orchestrator.disposeAll("host shutdown");
+		});
+
+		const request = requireActions(
+			orchestrator,
+			firstAgentId,
+		).requestShutdown();
+		try {
+			await vi.waitFor(() => {
+				expect(firstObserverStarted || hostSawRequest).toBe(true);
+			});
+			expect(hostSawRequest).toBe(false);
+		} finally {
+			releaseFirstObserver();
+			await request;
+			if (hostDisposal) await hostDisposal;
+		}
+
+		expect(hostSawRequest).toBe(true);
+		expect(notified.sort()).toEqual([firstAgentId, secondAgentId].sort());
+		expect(orchestrator.getAgentStatus(firstAgentId)).toBe("disposed");
+		expect(orchestrator.getAgentStatus(secondAgentId)).toBe("disposed");
 	});
 });
 

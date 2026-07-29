@@ -4,6 +4,7 @@
  * This Class is shared between all run modes (interactive, print, rpc).
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
 	AgentHarness,
 	AgentHarnessError,
@@ -85,6 +86,7 @@ import {
 	ExtensionRunner,
 	type ExtensionSessionSnapshot,
 	type ExtensionSessionTree,
+	freezeExtensionEventEnvelope,
 	MAX_EXTENSION_EVENT_DISPATCH_DEPTH,
 	validateExtensionEventName,
 	validateExtensionEventPayload,
@@ -440,10 +442,11 @@ export class AgentOrchestrator {
 	// `waitForIdle`). Settled from the same two facts the idle judgement reads:
 	// a status commit, and the harness's own queue report.
 	private _agentIdleWaiters: Map<AgentId, Set<AgentIdleWaiter>> = new Map();
-	// Runtime-level depth guard for the extension event bus. Two handlers
-	// answering each other would otherwise never unwind the emit that started
-	// them; the counter is not per agent because the bus is not.
-	private _extensionEventDispatchDepth = 0;
+	// Depth belongs to the causal async chain, not to the runtime as a whole:
+	// independent concurrent emits must not consume one another's recursion
+	// budget, while a handler's nested emit must inherit its parent's depth.
+	private readonly _extensionEventDispatchContext =
+		new AsyncLocalStorage<number>();
 	// A shutdown request is a fact about the runtime, not about the extension
 	// that asked, so the second request adds nothing for the host to act on.
 	private _shutdownRequested = false;
@@ -1855,13 +1858,21 @@ export class AgentOrchestrator {
 	}): Promise<void> {
 		if (this._shutdownRequested) return;
 		this._shutdownRequested = true;
-		await this._emit({
+		const event: Extract<
+			OrchestratorEvent,
+			{ type: "runtime_shutdown_requested" }
+		> = Object.freeze({
 			type: "runtime_shutdown_requested",
 			requestedBy: request.requestedBy,
 			requestedByAgentId: request.requestedByAgentId,
 			reason: request.reason,
 			createdAt: now(),
 		});
+		// This event is the one ordering exception: a host listener may start
+		// disposeAll immediately, so extension observers must finish their final
+		// persistence work before the host is allowed to see the request.
+		await this._emitToExtensionObservers(event);
+		await this._emit(event, { observeExtensions: false });
 	}
 
 	async disposeAgent(agentId: AgentId, reason?: string): Promise<void> {
@@ -4293,32 +4304,36 @@ export class AgentOrchestrator {
 	private async _emitExtensionEvent(
 		envelope: ExtensionEventEnvelope,
 	): Promise<void> {
-		if (
-			this._extensionEventDispatchDepth >= MAX_EXTENSION_EVENT_DISPATCH_DEPTH
-		) {
+		const immutableEnvelope = freezeExtensionEventEnvelope(envelope);
+		const dispatchDepth = this._extensionEventDispatchContext.getStore() ?? 0;
+		if (dispatchDepth >= MAX_EXTENSION_EVENT_DISPATCH_DEPTH) {
 			await this._publishDiagnostic(
 				{
 					severity: "warning",
 					code: "extension.event_recursion_dropped",
-					message: `Extension event '${envelope.name}' from '${envelope.sourceExtensionId}' was dropped after ${MAX_EXTENSION_EVENT_DISPATCH_DEPTH} nested dispatches.`,
-					agentId: envelope.sourceAgentId,
-					extensionId: envelope.sourceExtensionId,
+					message: `Extension event '${immutableEnvelope.name}' from '${immutableEnvelope.sourceExtensionId}' was dropped after ${MAX_EXTENSION_EVENT_DISPATCH_DEPTH} nested dispatches.`,
+					agentId: immutableEnvelope.sourceAgentId,
+					extensionId: immutableEnvelope.sourceExtensionId,
 				},
 				{ observeExtensions: false },
 			);
 			return;
 		}
-		this._extensionEventDispatchDepth += 1;
-		try {
-			for (const [agentId, record] of [...this._agents]) {
-				const extensionRunner = record.extensionRunner;
-				if (!extensionRunner || extensionRunner.isStale()) continue;
-				const diagnostics = await extensionRunner.emitExtensionEvent(envelope);
-				await this._recordAndPublishExtensionDiagnostics(agentId, diagnostics);
-			}
-		} finally {
-			this._extensionEventDispatchDepth -= 1;
-		}
+		await this._extensionEventDispatchContext.run(
+			dispatchDepth + 1,
+			async () => {
+				for (const [agentId, record] of [...this._agents]) {
+					const extensionRunner = record.extensionRunner;
+					if (!extensionRunner || extensionRunner.isStale()) continue;
+					const diagnostics =
+						await extensionRunner.emitExtensionEvent(immutableEnvelope);
+					await this._recordAndPublishExtensionDiagnostics(
+						agentId,
+						diagnostics,
+					);
+				}
+			},
+		);
 	}
 
 	private async _finishAgentPrompt(
