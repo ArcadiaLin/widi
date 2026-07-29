@@ -5,6 +5,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
+import type { ExtensionMessage } from "../../core/extension/api.ts";
 import {
 	boundedText,
 	formatUnknown,
@@ -91,6 +92,33 @@ export function renderDeps(
 			return [item.text, item.textMode];
 		default:
 			return [];
+	}
+}
+
+/**
+ * Flatten a published extension message to plain text.
+ *
+ * Every kind stays readable without kind-aware layout; the structured kinds
+ * get their own rendering (column widths, diff paint, banner tone) when the
+ * built-in renderers land.
+ */
+function extensionMessageText(message: ExtensionMessage): string {
+	switch (message.kind) {
+		case "text":
+		case "markdown":
+		case "code":
+		case "banner":
+			return message.content;
+		case "diff":
+			return message.path ? `${message.path}\n${message.patch}` : message.patch;
+		case "table":
+			return [message.columns.map((column) => column.label), ...message.rows]
+				.map((row) => row.join("  "))
+				.join("\n");
+		case "fields":
+			return message.fields
+				.map((field) => `${field.label}: ${field.value}`)
+				.join("\n");
 	}
 }
 
@@ -272,10 +300,13 @@ export function renderTimelineItem(
 				`persistent · ${item.extensionId} · ${item.message.kind}`,
 			);
 			return new Text(
-				`${title}  ${meta}\n\n${boundedText(item.message.content, {
-					maxLines: 24,
-					maxCharacters: 8_000,
-				})}`,
+				`${title}  ${meta}\n\n${boundedText(
+					extensionMessageText(item.message),
+					{
+						maxLines: 24,
+						maxCharacters: 8_000,
+					},
+				)}`,
 				1,
 				0,
 			).render(width);

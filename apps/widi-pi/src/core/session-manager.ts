@@ -7,7 +7,9 @@
  * header metadata so resume can rebuild harness context.
  */
 
+import { randomUUID } from "node:crypto";
 import type {
+	AgentMessage,
 	FileError,
 	FileSystem,
 	JsonlSessionMetadata,
@@ -21,12 +23,16 @@ import {
 	buildSessionContext,
 	InMemorySessionRepo,
 } from "@earendil-works/pi-agent-core";
+import { formatError } from "../utils/errors.ts";
 import type { AgentProfile, AgentProfileReference } from "./agent-profile.js";
 import {
 	parseAgentProfileReference,
 	toAgentProfileReference,
 } from "./agent-profile.js";
-import type { ExtensionMessage } from "./extension/presentation.ts";
+import type {
+	ExtensionInputPresentation,
+	ExtensionMessage,
+} from "./extension/presentation.ts";
 import { SessionDirectoryRepo, sessionDirPath } from "./session-repo.ts";
 import type { AgentId } from "./types.ts";
 
@@ -81,6 +87,19 @@ export const EXTENSION_MESSAGE_CUSTOM_TYPE = "core:extension_message";
 export interface ExtensionMessageEntryData {
 	readonly extensionId: string;
 	readonly message: ExtensionMessage;
+}
+
+// Core-owned custom entry recording how a client should render a message an
+// extension sent into the agent. The user message carries the model-facing
+// text; this entry is appended after that message and names its stable entry
+// id, so hydration never depends on adjacency.
+export const EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE =
+	"core:extension_input_presentation";
+
+export interface ExtensionInputPresentationEntryData {
+	readonly messageEntryId: string;
+	readonly extensionId: string;
+	readonly presentation: ExtensionInputPresentation;
 }
 
 export interface AgentSessionCandidate {
@@ -161,6 +180,9 @@ export class SessionManager {
 		new Map();
 	private readonly _memorySessionRepo: InMemorySessionRepo =
 		new InMemorySessionRepo();
+	// Opaque session handles for consumers that must not see filesystem paths.
+	private readonly _sessionHandlesByPath: Map<string, string> = new Map();
+	private readonly _sessionPathsByHandle: Map<string, string> = new Map();
 
 	constructor(config: SessionManagerConfigs) {
 		this._fs = config.fs;
@@ -351,6 +373,27 @@ export class SessionManager {
 		return await this._requireAgentSession(agentId).getLeafId();
 	}
 
+	/**
+	 * Resolve the entry written by the harness for a live message event.
+	 *
+	 * Session append keeps the message object on the in-process entry. Matching
+	 * that identity is stable even when the event bridge handles multiple
+	 * message_end events concurrently; reading the current leaf is not.
+	 */
+	async findAgentMessageEntryId(
+		agentId: AgentId,
+		message: AgentMessage,
+	): Promise<string | null> {
+		const entries = await this._requireAgentSession(agentId).getEntries();
+		for (let index = entries.length - 1; index >= 0; index -= 1) {
+			const entry = entries[index];
+			if (entry?.type === "message" && entry.message === message) {
+				return entry.id;
+			}
+		}
+		return null;
+	}
+
 	// Directory owning every persisted artifact of an agent's session, for
 	// consumers that store more than conversation history. Ephemeral sessions
 	// live in memory and have none.
@@ -407,6 +450,76 @@ export class SessionManager {
 			EXTENSION_MESSAGE_CUSTOM_TYPE,
 			data,
 		);
+	}
+
+	async appendExtensionInputPresentationEntry(
+		agentId: AgentId,
+		data: ExtensionInputPresentationEntryData,
+	): Promise<string> {
+		return await this._requireAgentSession(agentId).appendCustomEntry(
+			EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE,
+			data,
+		);
+	}
+
+	/**
+	 * Snapshot any session of the current project, live or historical.
+	 *
+	 * A reference is a session path or id, resolved by
+	 * {@link resolveAgentSessionReference} so an ambiguous id fails loudly
+	 * instead of silently picking one. When the reference names a session this
+	 * runtime already has open, that live handle answers - opening a second
+	 * handle to the same file would read around its unflushed writes.
+	 */
+	async readSessionSnapshot(
+		reference: string,
+	): Promise<AgentSessionTreeSnapshot> {
+		const metadata = await this.resolveAgentSessionReference(reference);
+		const live = await this._findOpenSession(metadata.path);
+		const session = live ?? (await this.sessionRepo.open(metadata));
+		return {
+			...(await this._snapshotSession(session)),
+			entries: await session.getEntries(),
+		};
+	}
+
+	/**
+	 * Mint an opaque handle for a session path, or resolve one back.
+	 *
+	 * Consumers that must not learn filesystem layout - extensions - address
+	 * sessions through these instead of paths. The mapping is runtime-local and
+	 * grows only as sessions are listed, so a handle cannot be guessed or
+	 * constructed to reach a session the caller was never shown.
+	 */
+	toSessionHandle(path: string): string {
+		const existing = this._sessionHandlesByPath.get(path);
+		if (existing) return existing;
+		const handle = `session-${randomUUID()}`;
+		this._sessionHandlesByPath.set(path, handle);
+		this._sessionPathsByHandle.set(handle, path);
+		return handle;
+	}
+
+	resolveSessionHandle(handle: string): string {
+		const path = this._sessionPathsByHandle.get(handle);
+		if (!path) {
+			throw new Error(
+				`Unknown session handle: ${handle}. Handles come from listing sessions.`,
+			);
+		}
+		return path;
+	}
+
+	private async _findOpenSession(
+		path: string,
+	): Promise<Session<AgentSessionMetadata> | undefined> {
+		for (const session of this._agentSessions.values()) {
+			const metadata = await session.getMetadata();
+			if (isJsonlSessionMetadata(metadata) && metadata.path === path) {
+				return session;
+			}
+		}
+		return undefined;
 	}
 
 	async appendExtensionCustomEntry<T = unknown>(
@@ -636,8 +749,4 @@ function toExtensionCustomEntry<T>(
 		customEntry.data = entry.data as T;
 	}
 	return customEntry;
-}
-
-function formatError(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }

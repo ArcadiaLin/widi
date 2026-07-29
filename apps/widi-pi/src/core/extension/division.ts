@@ -1,3 +1,4 @@
+import { utf8ByteLength } from "../../utils/text.ts";
 import type {
 	ExtensionDivisionDeclaration,
 	ExtensionDivisionSelection,
@@ -242,8 +243,4 @@ function ancestorIds(id: string): string[] {
 		ancestors.push(segments.slice(0, index).join("."));
 	}
 	return ancestors;
-}
-
-function utf8ByteLength(value: string): number {
-	return new TextEncoder().encode(value).length;
 }

@@ -565,7 +565,9 @@ describe("AgentOrchestrator delegated task jobs", () => {
 		owner.backgroundJobTable.onChange((change) => changes.push(change));
 		const taskId = assignTask(orchestrator, ownerAgentId, workerAgentId);
 
-		await orchestrator.disposeAgent(workerAgentId, "Worker was killed");
+		await orchestrator.disposeAgent(workerAgentId, {
+			reason: "Worker was killed",
+		});
 
 		// No executor watches a delegated job's signal, so the table itself has to
 		// finish the transition rather than leave it stuck in `aborting`.

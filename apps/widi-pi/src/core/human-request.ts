@@ -1,3 +1,4 @@
+import { formatError } from "../utils/errors.ts";
 import {
 	type OrchestratorDiagnostic,
 	OrchestratorError,
@@ -400,10 +401,6 @@ export class HumanRequestBroker {
 		this.nextRequestId += 1;
 		return id;
 	}
-}
-
-function formatError(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }
 
 function now(): string {

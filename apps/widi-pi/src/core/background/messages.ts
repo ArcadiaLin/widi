@@ -11,6 +11,7 @@
 
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { TextContent } from "@earendil-works/pi-ai";
+import { formatError } from "../../utils/errors.ts";
 import {
 	type BackgroundJobOutcome,
 	type BackgroundJobSettlement,
@@ -142,7 +143,7 @@ function extractBackgroundJobOutcomeText(
 			.join("");
 	}
 	const errorText =
-		outcome.error === undefined ? undefined : errorToText(outcome.error);
+		outcome.error === undefined ? undefined : formatError(outcome.error);
 	// An explicit stop reason explains why cancellation was requested, while the
 	// tool error can still contain useful partial output. Preserve both unless
 	// settlement derived the reason directly from that same error.
@@ -158,16 +159,12 @@ function extractBackgroundJobOutcomeText(
 	return "";
 }
 
-function errorToText(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
-
 /** Fill the terminal reason when no earlier abort supplied a more specific one. */
 export function stopReasonFromOutcome(
 	outcome: BackgroundJobOutcome,
 ): string | undefined {
 	if (outcome.status === "completed") return undefined;
-	if (outcome.error !== undefined) return errorToText(outcome.error);
+	if (outcome.error !== undefined) return formatError(outcome.error);
 	return outcome.status === "cancelled"
 		? "The job was cancelled."
 		: "The job failed.";

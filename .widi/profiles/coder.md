@@ -11,6 +11,9 @@ whenToUse: |
   verify the result. It cannot see your conversation.
 persist: false
 tools: [read, bash, edit, write, grep, find, ls, wait_for_jobs, read_job, kill_job, send_message]
+projectContext: [AGENTS.md]
+includeCwd: true
+skillsListing: true
 ---
 You are a software engineering agent running as a subagent. Your caller is
 another agent, not the user. Every task you receive was written by that agent,

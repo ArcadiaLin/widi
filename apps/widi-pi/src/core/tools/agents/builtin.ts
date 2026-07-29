@@ -15,12 +15,12 @@ const coreBuiltinToolSource: ToolSource = {
  * Register the core built-in agent collaboration tools: discovery, creation,
  * messaging (including task delegation and completion), and disposal.
  *
- * They are registered unconditionally, like every other core group. Who may
- * collaborate is decided by profile tool visibility alone - there is no second
- * capability policy - so a profile that lists no tools grants all of these,
- * including to spawned workers. Worker profiles should list their tools
- * explicitly; the runtime's live-agent limit is only the backstop against
- * runaway recursion.
+ * They are registered unconditionally, like every other core group. Profile
+ * tool visibility decides which collaboration verbs an agent may invoke.
+ * Discovery and lifecycle management are additionally scoped to its spawn
+ * tree, while exact-id messaging is the deliberate soft cross-tree bridge.
+ * A profile that lists no tools grants the full group, including to spawned
+ * workers, so worker profiles should still list their tools explicitly.
  *
  * Task observation and cancellation reuse the job tools: a task is a background
  * job in the assigning agent's table, so `wait_for_jobs`, `read_job`, and

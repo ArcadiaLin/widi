@@ -23,6 +23,7 @@
  * progress pump live in the orchestrator.
  */
 
+export type { JsonValue } from "../../utils/json.ts";
 export {
 	type ExternalJobDependency,
 	ExternalJobDependencyIndex,
@@ -62,7 +63,6 @@ export {
 export {
 	type BackgroundJobReport,
 	type BackgroundJobReportSnapshot,
-	type JsonValue,
 	MAX_BACKGROUND_JOB_REPORT_BYTES,
 	MAX_BACKGROUND_JOB_REPORT_KIND_BYTES,
 	MAX_BACKGROUND_JOB_REPORT_SUMMARY_BYTES,

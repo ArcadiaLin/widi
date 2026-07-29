@@ -2,9 +2,16 @@
 // slice 10); this barrel adds the core-internal binding surface on top.
 export * from "./api.ts";
 export {
+	freezeExtensionEventEnvelope,
+	MAX_EXTENSION_EVENT_DISPATCH_DEPTH,
+	validateExtensionEventName,
+	validateExtensionEventPayload,
+} from "./events.ts";
+export {
 	type ExtensionDiscoveryCandidate,
 	type ExtensionDiscoveryCandidateKind,
 	type ExtensionDiscoveryResult,
+	type ExtensionEventRegistration,
 	type ExtensionIdentity,
 	type ExtensionInterceptorRegistration,
 	type ExtensionLoadAvailableResult,
@@ -43,3 +50,4 @@ export type {
 	ExtensionDivisionSource,
 	ExtensionSessionActions,
 } from "./types.ts";
+export { EXTENSION_OBSERVED_EVENT_NAMES } from "./types.ts";

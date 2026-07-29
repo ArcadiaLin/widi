@@ -5,6 +5,7 @@ import type {
 	AgentOrchestrator,
 	OrchestratorEvent,
 } from "../core/agent-orchestrator.ts";
+import { DEFAULT_AGENT_DIR } from "../core/constants.js";
 import {
 	type OrchestratorDiagnostic,
 	OrchestratorError,
@@ -249,7 +250,7 @@ export class WidiTuiApplication {
 		try {
 			const runtime = await createWidiRuntime({
 				cwd: options.cwd,
-				agentDir: options.agentDir ?? join(homedir(), ".widi"),
+				agentDir: options.agentDir ?? join(homedir(), DEFAULT_AGENT_DIR),
 				defaultProfileId: options.profileId,
 				requestHuman: startupPrompt.requestHuman,
 			});
@@ -377,6 +378,20 @@ export class WidiTuiApplication {
 			case "human_request_timeout":
 			case "human_request_cancelled":
 				this.humanRequests.cancelRequest(event.requestId);
+				break;
+			case "runtime_shutdown_requested":
+				// Core only publishes the request; the terminal and the process are
+				// ours to wind down. Say who asked before the screen goes away.
+				this.addApplicationNotice(
+					event.reason
+						? `Shutting down at the request of extension ${event.requestedBy}: ${event.reason}`
+						: `Shutting down at the request of extension ${event.requestedBy}`,
+					undefined,
+					{ pin: true, textMode: "full" },
+				);
+				void this.shutdown(
+					`extension ${event.requestedBy} requested shutdown`,
+				).catch(() => {});
 				break;
 			case "agent_harness_event":
 				if (
@@ -1001,7 +1016,9 @@ export class WidiTuiApplication {
 	private async disposeAgent(agentId: string): Promise<void> {
 		const disposed = ensureAgentProjection(this.state, agentId);
 		const sourceAgentId = forkSourceAgentId(this.state, disposed);
-		await this.orchestrator.disposeAgent(agentId, "Disposed from the TUI.");
+		await this.orchestrator.disposeAgent(agentId, {
+			reason: "Disposed from the TUI.",
+		});
 		disposed.status = "disposed";
 		await this.syncAgent(agentId);
 
@@ -1083,7 +1100,9 @@ export class WidiTuiApplication {
 	 * alone instead of a tombstone nobody can return to.
 	 */
 	private async closeAgentForNewSession(agentId: string): Promise<void> {
-		await this.orchestrator.disposeAgent(agentId, "Closed for a new session.");
+		await this.orchestrator.disposeAgent(agentId, {
+			reason: "Closed for a new session.",
+		});
 		this.state.agents.delete(agentId);
 		this.drafts.delete(agentId);
 		this.hydratedAgents.delete(agentId);

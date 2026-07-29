@@ -1,6 +1,8 @@
 import { applyExifOrientation } from "./exif-orientation.ts";
 import { loadPhoton, type PhotonImage, type PhotonModule } from "./photon.ts";
 
+/** CPU-bound image conversion and resizing implementation. */
+
 export interface ImageResizeOptions {
 	/** Default: 2000. */
 	maxWidth?: number;

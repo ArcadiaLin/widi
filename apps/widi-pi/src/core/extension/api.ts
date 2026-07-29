@@ -27,27 +27,46 @@ export function isSupportedExtensionApiVersion(version: number): boolean {
 	);
 }
 
+export type { JsonValue } from "../../utils/json.ts";
+export type { AgentProfileReference } from "../agent-profile.js";
 // WIDI core types named in author-facing signatures are re-exported here so
 // a third-party extension never imports core internals directly.
 export type {
 	BackgroundJobReport,
 	BackgroundJobReportSnapshot,
-	JsonValue,
 } from "../background/index.ts";
 export type { CoreDiagnostic } from "../diagnostics.ts";
 export type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
 export type {
+	AgentContextUsage,
 	AgentToolsSnapshot,
 	CandidateItem,
 	RuntimeModel,
 } from "../types.ts";
+export type { ExtensionEventEnvelope } from "./events.ts";
+export {
+	MAX_EXTENSION_EVENT_NAME_BYTES,
+	MAX_EXTENSION_EVENT_PAYLOAD_BYTES,
+} from "./events.ts";
 export type {
+	ExtensionBannerMessage,
+	ExtensionCodeMessage,
 	ExtensionDiagnosticDraft,
+	ExtensionDiffMessage,
+	ExtensionFieldsMessage,
+	ExtensionInputPresentation,
 	ExtensionMessage,
+	ExtensionMessageField,
 	ExtensionMessageKind,
 	ExtensionStatus,
 	ExtensionStatusProgress,
+	ExtensionStatusRegion,
 	ExtensionStatusSnapshot,
+	ExtensionTableAlignment,
+	ExtensionTableColumn,
+	ExtensionTableMessage,
+	ExtensionTextMessage,
+	ExtensionTone,
 } from "./presentation.ts";
 export type {
 	BackgroundJobExecutionContext,
@@ -59,6 +78,7 @@ export type {
 	ExtensionDefinition,
 	ExtensionDisposeHandler,
 	ExtensionDivisionDeclaration,
+	ExtensionEventHandler,
 	ExtensionExecResult,
 	ExtensionFactory,
 	ExtensionInputEvent,
@@ -74,7 +94,11 @@ export type {
 	ExtensionObserver,
 	ExtensionObserverFor,
 	ExtensionProviderConfig,
+	ExtensionSendOptions,
+	ExtensionSessionCandidate,
 	ExtensionSessionContext,
+	ExtensionSessionSnapshot,
+	ExtensionSessionTree,
 	ToolDefinition,
 	ToolDefinitionPatch,
 	ToolExecute,

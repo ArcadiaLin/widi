@@ -3,7 +3,13 @@ import type {
 	FileError,
 	FileInfo,
 } from "@earendil-works/pi-agent-core";
-import { DEFAULT_PROFILE_DIR } from "./constants.js";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { formatError } from "../utils/errors.ts";
+import {
+	DEFAULT_AGENT_DIR,
+	DEFAULT_PROFILE_DIR,
+	DEFAULT_PROFILE_FILE_EXTENSION,
+} from "./constants.js";
 import type { CoreDiagnostic, DiagnosticSeverity } from "./diagnostics.ts";
 
 /**
@@ -32,14 +38,24 @@ export type AgentProfile = {
 	readonly tools?: readonly string[];
 	readonly skills?: readonly string[];
 	/**
-	 * Whether the project's own instruction files (AGENTS.md and friends) are
-	 * inlined into this role's system prompt. Unset defers to settings, which
-	 * default to including them.
+	 * Which of the project's own instruction files are inlined into this role's
+	 * system prompt. `true` - the default - takes the first conventional name
+	 * that exists in each root, AGENTS.md ahead of CLAUDE.md; `false` inlines
+	 * none. A list names the files itself, and every named file that exists is
+	 * inlined, so a role can ask for AGENTS.md and CLAUDE.md together.
 	 */
-	readonly projectContext?: boolean;
-	/** Whether the system prompt states the working directory. Unset defers to settings. */
+	readonly projectContext?: boolean | readonly string[];
+	/** Whether the system prompt states the working directory. Default: true. */
 	readonly includeCwd?: boolean;
-	/** Extra text appended to this role's system prompt, ahead of the settings' own. */
+	/**
+	 * Whether the system prompt lists this role's skills. Unset lets the active
+	 * tools decide: the listing tells the model to go read a skill file, so it
+	 * appears only when a `read` tool is active. Set it to keep the listing out
+	 * of a prompt that would otherwise get one, or to force it in for a role
+	 * that reads files through some other tool.
+	 */
+	readonly skillsListing?: boolean;
+	/** Extra text appended to this role's system prompt, ahead of the extensions' own. */
 	readonly appendSystemPrompt?: string;
 };
 
@@ -187,6 +203,7 @@ type AgentProfileFrontmatter = {
 	readonly skills?: unknown;
 	readonly projectContext?: unknown;
 	readonly includeCwd?: unknown;
+	readonly skillsListing?: unknown;
 	readonly appendSystemPrompt?: unknown;
 	readonly [key: string]: unknown;
 };
@@ -373,7 +390,7 @@ export class FileProfileStorageBackend implements ProfileStorageBackend {
 		if (kind === "directory") {
 			return await this.listDirectory(infoResult.value.path, source, rootIndex);
 		}
-		if (kind === "file" && infoResult.value.name.endsWith(".md")) {
+		if (kind === "file" && isProfileFileName(infoResult.value.name)) {
 			const entry = this.createFileEntry(infoResult.value, source, rootIndex);
 			return { entries: [entry], diagnostics: [] };
 		}
@@ -405,7 +422,7 @@ export class FileProfileStorageBackend implements ProfileStorageBackend {
 			a.name.localeCompare(b.name),
 		)) {
 			const kind = await this.resolveKind(entry);
-			if (kind !== "file" || !entry.name.endsWith(".md")) continue;
+			if (kind !== "file" || !isProfileFileName(entry.name)) continue;
 			entries.push(
 				this.createFileEntry(entry, { ...source, path: entry.path }, rootIndex),
 			);
@@ -422,7 +439,7 @@ export class FileProfileStorageBackend implements ProfileStorageBackend {
 			entryId: `file:${rootIndex}:${info.path}`,
 			source: { ...source, path: info.path },
 			displayName: info.name,
-			filenameId: basenameEnvPath(info.path).replace(/\.md$/i, ""),
+			filenameId: profileIdFromFileName(basenameEnvPath(info.path)),
 		};
 		this.entries.set(entry.entryId, entry);
 		return entry;
@@ -817,7 +834,7 @@ async function resolveDefaultProfileRoots(options: {
 	const roots: FileProfileRoot[] = [];
 	const cwdProfilePath = await joinPathOrThrow(options.executionEnv, [
 		options.cwd,
-		".widi",
+		DEFAULT_AGENT_DIR,
 		DEFAULT_PROFILE_DIR,
 	]);
 	roots.push({
@@ -982,15 +999,20 @@ function parseAgentProfile(
 		entry,
 		diagnostics,
 	);
-	const projectContext = readBoolean(
+	const projectContext = readProjectContext(
 		frontmatter.projectContext,
-		"projectContext",
 		entry,
 		diagnostics,
 	);
 	const includeCwd = readBoolean(
 		frontmatter.includeCwd,
 		"includeCwd",
+		entry,
+		diagnostics,
+	);
+	const skillsListing = readBoolean(
+		frontmatter.skillsListing,
+		"skillsListing",
 		entry,
 		diagnostics,
 	);
@@ -1012,6 +1034,7 @@ function parseAgentProfile(
 			skills,
 			projectContext,
 			includeCwd,
+			skillsListing,
 			appendSystemPrompt,
 		},
 		diagnostics: diagnostics.slice(metadataDiagnosticCount),
@@ -1112,126 +1135,38 @@ function parseProfileMarkdown(
 		};
 	}
 
-	const frontmatter: Record<string, unknown> = {};
-	const lines = normalized.slice(4, endIndex).split("\n");
-	let index = 0;
-	while (index < lines.length) {
-		const line = lines[index];
-		const trimmed = line.trim();
-		if (!trimmed || trimmed.startsWith("#")) {
-			index += 1;
-			continue;
-		}
-		const separatorIndex = trimmed.indexOf(":");
-		if (separatorIndex === -1) {
-			return { ok: false, error: `Cannot parse frontmatter line: ${trimmed}` };
-		}
+	let parsed: unknown;
+	try {
+		parsed = parseYaml(normalized.slice(4, endIndex));
+	} catch (error) {
+		return {
+			ok: false,
+			error: `Cannot parse profile frontmatter: ${formatError(error)}`,
+		};
+	}
 
-		const key = trimmed.slice(0, separatorIndex).trim();
-		const rawValue = trimmed.slice(separatorIndex + 1).trim();
-		const indent = line.length - line.trimStart().length;
-		if (rawValue === "|" || rawValue === "|-") {
-			const block = readBlockScalar(lines, index + 1, indent);
-			frontmatter[key] = block.value;
-			index = block.nextIndex;
-			continue;
-		}
-		if (rawValue !== "") {
-			frontmatter[key] = parseSimpleFrontmatterValue(rawValue);
-			index += 1;
-			continue;
-		}
-
-		// A key without a value opens a one-level nested mapping; its entries
-		// are the indented lines.
-		const child: Record<string, unknown> = {};
-		index += 1;
-		while (index < lines.length) {
-			const childLine = lines[index];
-			const childTrimmed = childLine.trim();
-			if (!childTrimmed || childTrimmed.startsWith("#")) {
-				index += 1;
-				continue;
-			}
-			if (childLine.length - childLine.trimStart().length <= indent) break;
-			const childSeparatorIndex = childTrimmed.indexOf(":");
-			const childRawValue =
-				childSeparatorIndex === -1
-					? ""
-					: childTrimmed.slice(childSeparatorIndex + 1).trim();
-			if (childSeparatorIndex === -1 || childRawValue === "") {
-				return {
-					ok: false,
-					error: `Cannot parse nested frontmatter line: ${childTrimmed}`,
-				};
-			}
-			child[childTrimmed.slice(0, childSeparatorIndex).trim()] =
-				parseSimpleFrontmatterValue(childRawValue);
-			index += 1;
-		}
-		frontmatter[key] = child;
+	// An empty frontmatter block parses to null, which is a profile with no
+	// declared fields rather than a malformed one.
+	if (parsed === null || parsed === undefined) {
+		return {
+			ok: true,
+			value: { frontmatter: {}, body: normalized.slice(endIndex + 4).trim() },
+		};
+	}
+	if (typeof parsed !== "object" || Array.isArray(parsed)) {
+		return {
+			ok: false,
+			error: "Profile frontmatter must be a mapping of fields.",
+		};
 	}
 
 	return {
 		ok: true,
 		value: {
-			frontmatter,
+			frontmatter: parsed as AgentProfileFrontmatter,
 			body: normalized.slice(endIndex + 4).trim(),
 		},
 	};
-}
-
-/**
- * A block scalar (`key: |`) is the only way this format can hold a paragraph:
- * every line indented past the key belongs to the value, blank lines included,
- * and the first content line sets the indentation that gets stripped.
- *
- * The `-` chomping indicator is accepted and then ignored. Trailing blank lines
- * are dropped either way, and every consumer trims the result, so clip and
- * strip cannot be told apart downstream.
- */
-function readBlockScalar(
-	lines: readonly string[],
-	startIndex: number,
-	keyIndent: number,
-): { value: string; nextIndex: number } {
-	const collected: string[] = [];
-	let blockIndent: number | undefined;
-	let index = startIndex;
-	while (index < lines.length) {
-		const line = lines[index];
-		if (!line.trim()) {
-			collected.push("");
-			index += 1;
-			continue;
-		}
-		const indent = line.length - line.trimStart().length;
-		if (indent <= keyIndent) break;
-		blockIndent ??= indent;
-		collected.push(line.slice(Math.min(blockIndent, indent)));
-		index += 1;
-	}
-
-	// Blank lines run up to the next key, and they are separators rather than
-	// part of the value.
-	while (collected.length > 0 && !collected[collected.length - 1]) {
-		collected.pop();
-	}
-	return { value: collected.join("\n"), nextIndex: index };
-}
-
-function parseSimpleFrontmatterValue(value: string): unknown {
-	if (value === "true") return true;
-	if (value === "false") return false;
-	if (value.startsWith("[") && value.endsWith("]")) {
-		const inner = value.slice(1, -1).trim();
-		if (!inner) return [];
-		return inner
-			.split(",")
-			.map((item) => unquote(item.trim()))
-			.filter(Boolean);
-	}
-	return unquote(value);
 }
 
 function readString(value: unknown): string | undefined {
@@ -1252,6 +1187,48 @@ function readBoolean(
 			"error",
 			"profile.invalid_metadata",
 			`Profile field "${fieldName}" must be a boolean.`,
+		),
+	);
+	return undefined;
+}
+
+/**
+ * `projectContext` is a switch and a file list at once: a boolean answers
+ * whether the conventional names apply, a list replaces them with names of the
+ * author's own. An empty list names no file, which is what `false` says, so it
+ * normalizes to `false` rather than surviving as a list nothing can match.
+ */
+function readProjectContext(
+	value: unknown,
+	entry: ProfileStorageEntry,
+	diagnostics: AgentProfileDiagnostic[],
+): boolean | string[] | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value === "boolean") return value;
+	if (Array.isArray(value)) {
+		const fileNames: string[] = [];
+		for (const item of value) {
+			if (typeof item !== "string" || !item.trim()) {
+				diagnostics.push(
+					diagnosticForEntry(
+						entry,
+						"error",
+						"profile.invalid_metadata",
+						'Profile field "projectContext" must list non-empty file names.',
+					),
+				);
+				return undefined;
+			}
+			fileNames.push(item.trim());
+		}
+		return fileNames.length > 0 ? fileNames : false;
+	}
+	diagnostics.push(
+		diagnosticForEntry(
+			entry,
+			"error",
+			"profile.invalid_metadata",
+			'Profile field "projectContext" must be a boolean or an array of file names.',
 		),
 	);
 	return undefined;
@@ -1355,74 +1332,51 @@ function createProfileDiagnostic(options: {
 	};
 }
 
+/**
+ * Only the fields a profile actually declared are written back: an absent
+ * optional field and one explicitly set to its default mean different things to
+ * the reader, and a round trip has to preserve which one this was.
+ */
 function serializeProfile(profile: AgentProfile): string {
-	const lines = [
-		"---",
-		`id: ${quoteFrontmatterString(profile.id)}`,
-		`label: ${quoteFrontmatterString(profile.label)}`,
-		`persist: ${profile.persist ? "true" : "false"}`,
-	];
-	if (profile.description) {
-		lines.push(...serializeFrontmatterText("description", profile.description));
-	}
-	if (profile.whenToUse) {
-		lines.push(...serializeFrontmatterText("whenToUse", profile.whenToUse));
-	}
-	if (profile.tools) {
-		lines.push(`tools: ${serializeStringArray(profile.tools)}`);
-	}
-	if (profile.skills) {
-		lines.push(`skills: ${serializeStringArray(profile.skills)}`);
-	}
+	const frontmatter: Record<string, unknown> = {
+		id: profile.id,
+		label: profile.label,
+		persist: profile.persist,
+	};
+	if (profile.description) frontmatter.description = profile.description;
+	if (profile.whenToUse) frontmatter.whenToUse = profile.whenToUse;
+	if (profile.tools) frontmatter.tools = [...profile.tools];
+	if (profile.skills) frontmatter.skills = [...profile.skills];
 	if (profile.projectContext !== undefined) {
-		lines.push(`projectContext: ${profile.projectContext ? "true" : "false"}`);
+		frontmatter.projectContext =
+			typeof profile.projectContext === "boolean"
+				? profile.projectContext
+				: [...profile.projectContext];
 	}
 	if (profile.includeCwd !== undefined) {
-		lines.push(`includeCwd: ${profile.includeCwd ? "true" : "false"}`);
+		frontmatter.includeCwd = profile.includeCwd;
+	}
+	if (profile.skillsListing !== undefined) {
+		frontmatter.skillsListing = profile.skillsListing;
 	}
 	if (profile.appendSystemPrompt) {
-		lines.push(
-			...serializeFrontmatterText(
-				"appendSystemPrompt",
-				profile.appendSystemPrompt,
-			),
-		);
+		frontmatter.appendSystemPrompt = profile.appendSystemPrompt;
 	}
-	lines.push("---", profile.systemPrompt);
-	return lines.join("\n");
+	return `---\n${stringifyYaml(frontmatter)}---\n${profile.systemPrompt}`;
 }
 
 /**
- * Free text round-trips through a block scalar once it has a newline: a quoted
- * single-line value cannot carry one, and the parser reads back exactly what
- * this writes.
+ * Profile files are recognized by an exact extension match. The listing and the
+ * id it derives have to agree on that: a name this rejects never reaches
+ * `profileIdFromFileName`, so accepting other spellings there would only
+ * describe a case that cannot occur.
  */
-function serializeFrontmatterText(key: string, value: string): string[] {
-	if (!value.includes("\n")) {
-		return [`${key}: ${quoteFrontmatterString(value)}`];
-	}
-	return [
-		`${key}: |`,
-		...value.split("\n").map((line) => (line ? `  ${line}` : "")),
-	];
+function isProfileFileName(name: string): boolean {
+	return name.endsWith(DEFAULT_PROFILE_FILE_EXTENSION);
 }
 
-function serializeStringArray(values: readonly string[]): string {
-	return `[${values.map(quoteFrontmatterString).join(", ")}]`;
-}
-
-function quoteFrontmatterString(value: string): string {
-	return JSON.stringify(value);
-}
-
-function unquote(value: string): string {
-	if (
-		(value.startsWith('"') && value.endsWith('"')) ||
-		(value.startsWith("'") && value.endsWith("'"))
-	) {
-		return value.slice(1, -1);
-	}
-	return value;
+function profileIdFromFileName(name: string): string {
+	return name.slice(0, -DEFAULT_PROFILE_FILE_EXTENSION.length);
 }
 
 function basenameEnvPath(path: string): string {

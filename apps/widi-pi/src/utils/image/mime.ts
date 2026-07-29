@@ -1,11 +1,10 @@
 /**
- * Content-based image MIME detection for the read tool.
+ * Content-based image MIME detection for WIDI image consumers.
  *
  * Detection inspects only a small header slice and never trusts file
  * extensions. Files that merely resemble an image but fail structural checks
  * (truncated PNG headers, animated PNG, JPEG-LS, malformed BMP headers) are
- * rejected so they fall through to the text/binary handling instead of being
- * fed to the image decoder.
+ * rejected instead of being fed to the image decoder.
  */
 
 /** Number of leading bytes that is always sufficient for detection. */

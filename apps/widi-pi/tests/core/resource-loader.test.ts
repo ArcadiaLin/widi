@@ -123,6 +123,20 @@ describe("ResourceLoader context files", () => {
 		]);
 	});
 
+	it("takes every named file that exists, in the order named", async () => {
+		const result = await loader({
+			"/workspace/AGENTS.md": "AGENTS",
+			"/workspace/CLAUDE.md": "CLAUDE",
+			"/workspace/NOTES.md": "NOTES",
+		}).loadContextFiles(["CLAUDE.md", "AGENTS.md", "MISSING.md"]);
+
+		expect(result.contextFiles).toEqual([
+			{ path: "/workspace/CLAUDE.md", content: "CLAUDE" },
+			{ path: "/workspace/AGENTS.md", content: "AGENTS" },
+		]);
+		expect(result.diagnostics).toEqual([]);
+	});
+
 	it("reads a file once when the agent dir sits on the cwd chain", async () => {
 		const result = await loader(
 			{ "/workspace/AGENTS.md": "SHARED" },

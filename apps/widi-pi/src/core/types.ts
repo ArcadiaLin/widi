@@ -8,6 +8,7 @@ import type {
 } from "./background/index.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
 import type {
+	ExtensionInputPresentation,
 	ExtensionMessage,
 	ExtensionStatus,
 } from "./extension/presentation.ts";
@@ -32,9 +33,46 @@ export type AgentLifecycleStatus =
  */
 export type AgentMaintenanceKind = "compaction" | "tree-navigation";
 
+/**
+ * How an agent arrived at the idle reported by `agent_idle`.
+ *
+ * `settled` and `aborted` are the two ways a turn can end and are the pair a
+ * delegating consumer actually has to tell apart: the first means the agent
+ * stopped because it was done talking, the second means something cut it off,
+ * so its last message may be a fragment. `ready` is the first idle after the
+ * harness is built, before any turn has run. `maintenance` follows compaction
+ * or tree navigation, which occupy the agent without being a turn at all.
+ */
+export type AgentIdleReason = "ready" | "settled" | "aborted" | "maintenance";
+
 export interface AgentToolsSnapshot {
 	readonly toolNames: string[];
 	readonly activeToolNames: string[];
+}
+
+/**
+ * How much of the model's context window the agent's current branch occupies.
+ *
+ * Derived from exactly the facts the automatic compaction trigger consumes -
+ * the last assistant usage on the active branch versus the model context
+ * window - so a consumer showing this gauge and the runtime deciding to compact
+ * never disagree. Absent until the branch carries an assistant usage: a fresh
+ * agent, and the window right after compaction, have no measurement rather than
+ * a zero.
+ */
+export interface AgentContextUsage {
+	readonly tokens: number;
+	readonly contextWindow: number;
+	/**
+	 * `tokens / contextWindow * 100`, so a quarter-full window reads 25, not
+	 * 0.25. The scale matches Pi's `ContextUsage.percent` on purpose: ported
+	 * extensions compare it against thresholds like `>= 95`, and a 0..1 scale
+	 * would make those conditions silently unreachable. Can exceed 100 before
+	 * compaction runs.
+	 */
+	readonly percent: number;
+	/** Model reference (`provider/id`) whose window this measures. */
+	readonly model: string;
 }
 
 export type OrchestratorEvent =
@@ -51,6 +89,29 @@ export type OrchestratorEvent =
 			/** Set when this "running" transition is maintenance work, not a turn. */
 			maintenance?: AgentMaintenanceKind;
 			changedAt: string;
+	  }
+	// The agent has stopped and nothing is waiting to be read: the same
+	// judgement `waitForAgentIdle` settles on, published as an event so a
+	// consumer can be told rather than poll. Edge-triggered - one event per
+	// arrival at idle, not one per fact that re-confirms it.
+	//
+	// Deliberately not the same question as "the work is finished". An agent
+	// that stopped mid-task, was interrupted, or is waiting on jobs it started
+	// is idle here too; `reason` and `liveJobCount` are what a consumer judges
+	// that from.
+	| {
+			readonly type: "agent_idle";
+			agentId: AgentId;
+			reason: AgentIdleReason;
+			/**
+			 * Backgrounded jobs the agent still owns at this moment, including
+			 * tasks delegated to other agents. An idle with live jobs is an agent
+			 * waiting, not an agent done - it will be woken by their results.
+			 * Carried here because idleness itself does not consider them: an
+			 * agent whose jobs never settle would otherwise look permanently done.
+			 */
+			liveJobCount: number;
+			idleAt: string;
 	  }
 	// Input interception facts (ME slice 6): the model-facing text can differ
 	// from the human original, so both are published with extension attribution.
@@ -109,6 +170,23 @@ export type OrchestratorEvent =
 			status?: ExtensionStatus;
 			changedAt: string;
 	  }
+	// How a client should render a message an extension just sent into the
+	// agent. The message itself still arrives through the harness as ordinary
+	// user input; this record explicitly names that message's session entry.
+	// `extensionId` is injected by core, so a renderer keyed on
+	// (extensionId, customType) cannot be claimed by another extension.
+	| {
+			readonly type: "extension_input_presented";
+			presentationId: string;
+			/** Session custom entry id, for deduping against hydration. */
+			entryId: string;
+			/** User-message session entry this presentation renders. */
+			messageEntryId: string;
+			agentId: AgentId;
+			extensionId: string;
+			presentation: ExtensionInputPresentation;
+			createdAt: string;
+	  }
 	| {
 			readonly type: "extension_message_published";
 			presentationId: string;
@@ -118,6 +196,20 @@ export type OrchestratorEvent =
 			agentId: AgentId;
 			extensionId: string;
 			message: ExtensionMessage;
+			createdAt: string;
+	  }
+	// An extension asked the runtime to shut down. Core publishes the request
+	// and does nothing else: the process and the terminal belong to the host,
+	// and a host that tore them down from underneath itself would skip its own
+	// restoration path. The host performs the ordered shutdown; an embedder with
+	// no host of its own can call disposeAll instead.
+	| {
+			readonly type: "runtime_shutdown_requested";
+			/** Extension that asked, injected by core. */
+			requestedBy: string;
+			/** Agent whose extension runtime made the request, for attribution. */
+			requestedByAgentId: AgentId;
+			reason?: string;
 			createdAt: string;
 	  }
 	| HumanRequestEvent
@@ -171,6 +263,17 @@ export type OrchestratorEvent =
 			readonly type: "agent_session_info_changed";
 			agentId: AgentId;
 			name?: string;
+			changedAt: string;
+	  }
+	// Context gauge fact, recomputed when the agent settles. Push rather than
+	// poll: a footer or a budget-watching extension would otherwise have to
+	// re-read the whole branch on a timer. An absent `usage` means the previous
+	// measurement no longer describes the branch and no new one exists yet -
+	// what compaction leaves behind until the next assistant message.
+	| {
+			readonly type: "agent_context_usage_changed";
+			agentId: AgentId;
+			usage?: AgentContextUsage;
 			changedAt: string;
 	  }
 	| {

@@ -400,8 +400,9 @@ describe("AgentProfileRegistry", () => {
 					content: [
 						"---",
 						"id: explore",
-						"projectContext: false",
+						"projectContext: [CLAUDE.md, AGENTS.md]",
 						"includeCwd: false",
+						"skillsListing: false",
 						"appendSystemPrompt: |",
 						"  Report paths only.",
 						"",
@@ -418,8 +419,9 @@ describe("AgentProfileRegistry", () => {
 		expect(result.ok).toBe(true);
 		if (!result.ok) throw new Error("Expected profile to resolve.");
 		expect(result.profile).toMatchObject({
-			projectContext: false,
+			projectContext: ["CLAUDE.md", "AGENTS.md"],
 			includeCwd: false,
+			skillsListing: false,
 			appendSystemPrompt: "Report paths only.\n\nNever edit.",
 		});
 
@@ -431,10 +433,108 @@ describe("AgentProfileRegistry", () => {
 		expect(roundTripped.ok).toBe(true);
 		if (!roundTripped.ok) throw new Error("Expected profile to resolve.");
 		expect(roundTripped.profile).toMatchObject({
-			projectContext: false,
+			projectContext: ["CLAUDE.md", "AGENTS.md"],
 			includeCwd: false,
+			skillsListing: false,
 			appendSystemPrompt: "Report paths only.\n\nNever edit.",
 		});
+	});
+
+	it("accepts full YAML frontmatter and rejects what does not parse", async () => {
+		const registry = new AgentProfileRegistry(
+			new InMemoryProfileStorageBackend([
+				{
+					entryId: "memory:yaml",
+					filenameId: "yaml",
+					content: [
+						"---",
+						"id: yaml",
+						"label: YAML Profile # trailing comments are part of the syntax",
+						"tools:",
+						"  - read",
+						"  - grep",
+						"projectContext:",
+						"  - AGENTS.md",
+						"appendSystemPrompt: >-",
+						"  folded scalars",
+						"  join their lines",
+						"---",
+						"Body",
+					].join("\n"),
+				},
+				{
+					entryId: "memory:broken",
+					filenameId: "broken",
+					content: ["---", "tools: [read", "---", "Body"].join("\n"),
+				},
+			]),
+		);
+
+		const result = await registry.resolveProfile("yaml");
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error("Expected profile to resolve.");
+		expect(result.profile).toMatchObject({
+			label: "YAML Profile",
+			tools: ["read", "grep"],
+			projectContext: ["AGENTS.md"],
+			appendSystemPrompt: "folded scalars join their lines",
+		});
+
+		// Malformed YAML is a profile the user cannot run, not one to guess at.
+		const broken = await registry.resolveProfile("broken");
+		expect(broken.ok).toBe(false);
+		if (broken.ok) throw new Error("Expected the profile to be rejected.");
+		expect(broken.reason).toBe("parse_failed");
+	});
+
+	it("reads projectContext as a switch and as a file list", async () => {
+		const registry = new AgentProfileRegistry(
+			new InMemoryProfileStorageBackend([
+				{
+					entryId: "memory:on",
+					filenameId: "on",
+					content: ["---", "id: on", "projectContext: true", "---", "P"].join(
+						"\n",
+					),
+				},
+				{
+					entryId: "memory:empty",
+					filenameId: "empty",
+					content: ["---", "id: empty", "projectContext: []", "---", "P"].join(
+						"\n",
+					),
+				},
+				{
+					entryId: "memory:bad",
+					filenameId: "bad",
+					content: ["---", "id: bad", "projectContext: maybe", "---", "P"].join(
+						"\n",
+					),
+				},
+			]),
+		);
+
+		const on = await registry.resolveProfile("on");
+		expect(on.ok).toBe(true);
+		if (!on.ok) throw new Error("Expected profile to resolve.");
+		expect(on.profile.projectContext).toBe(true);
+
+		// An empty list names no file, which is the same as turning it off.
+		const empty = await registry.resolveProfile("empty");
+		expect(empty.ok).toBe(true);
+		if (!empty.ok) throw new Error("Expected profile to resolve.");
+		expect(empty.profile.projectContext).toBe(false);
+
+		const bad = await registry.resolveProfile("bad");
+		expect(bad.ok).toBe(false);
+		if (bad.ok) throw new Error("Expected the profile to be rejected.");
+		expect(bad.diagnostics).toContainEqual(
+			expect.objectContaining({
+				severity: "error",
+				code: "profile.invalid_metadata",
+				message: expect.stringContaining('"projectContext" must be a boolean'),
+			}),
+		);
 	});
 
 	it("indexes declared ids and does not treat filename as an alias", async () => {

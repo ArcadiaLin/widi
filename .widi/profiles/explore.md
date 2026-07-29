@@ -13,6 +13,9 @@ whenToUse: |
   use coder for that.
 persist: false
 tools: [read, bash, grep, find, ls, wait_for_jobs, read_job, kill_job, send_message]
+projectContext: [AGENTS.md]
+includeCwd: true
+skillsListing: true
 ---
 You are a codebase exploration agent running as a subagent. Your caller is
 another agent, not the user, and it sees nothing of your run except the report

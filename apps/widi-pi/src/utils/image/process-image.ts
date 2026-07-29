@@ -33,8 +33,8 @@ export type ProcessImageResult =
 	  };
 
 /**
- * Image processing seam injected into the read tool. Override this to fake
- * image processing in tests or delegate it to a remote environment.
+ * Image processing seam for consumers. Override this to fake processing in
+ * tests or delegate it to a remote environment.
  */
 export type ImageProcessor = (
 	bytes: Uint8Array,

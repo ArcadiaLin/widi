@@ -87,15 +87,34 @@ describe("buildAgentSystemPrompt", () => {
 		).toContain("<available_skills>");
 	});
 
+	it("lets includeSkills decide the listing over the active tools", () => {
+		expect(
+			buildAgentSystemPrompt({
+				basePrompt: "base prompt",
+				resources: { skills: [skill] },
+				activeTools: [{ name: "read" }],
+				includeSkills: false,
+			}),
+		).toBe("base prompt");
+		expect(
+			buildAgentSystemPrompt({
+				basePrompt: "base prompt",
+				resources: { skills: [skill] },
+				activeTools: [{ name: "write" }],
+				includeSkills: true,
+			}),
+		).toContain("<available_skills>");
+	});
+
 	it("appends sections in the order given and drops blank ones", () => {
 		expect(
 			buildAgentSystemPrompt({
 				basePrompt: "base prompt",
 				resources: {},
 				activeTools: [],
-				appendSections: ["  from profile  ", "   ", "from settings", ""],
+				appendSections: ["  from profile  ", "   ", "from extension", ""],
 			}),
-		).toBe("base prompt\n\nfrom profile\n\nfrom settings");
+		).toBe("base prompt\n\nfrom profile\n\nfrom extension");
 	});
 
 	it("places appended sections between the tool guidance and the skills listing", () => {

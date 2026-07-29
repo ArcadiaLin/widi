@@ -8,14 +8,8 @@
  * history, and a runaway producer cannot turn it into a stream.
  */
 
-/** JSON-compatible value accepted inside a structured background job report. */
-export type JsonValue =
-	| string
-	| number
-	| boolean
-	| null
-	| readonly JsonValue[]
-	| { readonly [key: string]: JsonValue };
+import type { JsonValue } from "../../utils/json.ts";
+import { utf8ByteLength } from "../../utils/text.ts";
 
 /** Tool-owned, replace-only structured report describing a job's current work. */
 export interface BackgroundJobReport {
@@ -132,9 +126,7 @@ export function validateBackgroundJobReport(
 	if (serialized === undefined) {
 		throw new TypeError("Background job report must be JSON serializable.");
 	}
-	if (
-		Buffer.byteLength(serialized, "utf-8") > MAX_BACKGROUND_JOB_REPORT_BYTES
-	) {
+	if (utf8ByteLength(serialized) > MAX_BACKGROUND_JOB_REPORT_BYTES) {
 		throw new RangeError(
 			`Background job report exceeds ${MAX_BACKGROUND_JOB_REPORT_BYTES} UTF-8 bytes when serialized.`,
 		);
@@ -152,7 +144,7 @@ function assertBoundedReportText(
 	if (typeof value !== "string" || value.trim().length === 0) {
 		throw new TypeError(`${label} must be a non-empty string.`);
 	}
-	if (Buffer.byteLength(value, "utf-8") > maxBytes) {
+	if (utf8ByteLength(value) > maxBytes) {
 		throw new RangeError(`${label} exceeds ${maxBytes} UTF-8 bytes.`);
 	}
 }

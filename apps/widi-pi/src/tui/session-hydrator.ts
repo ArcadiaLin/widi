@@ -6,6 +6,8 @@ import type {
 	ToolResultMessage,
 	UserMessage,
 } from "@earendil-works/pi-ai";
+import type { ExtensionMessage } from "../core/extension/api.ts";
+import { validateExtensionMessage } from "../core/extension/presentation.ts";
 import {
 	COMMAND_EXPANSION_CUSTOM_TYPE,
 	type CommandExpansionEntryData,
@@ -66,11 +68,9 @@ export function hydrateSessionEntries(
 					isCommandExpansionData(entry.data)
 				) {
 					pendingOriginalText ??= entry.data.originalText;
-				} else if (
-					entry.customType === EXTENSION_MESSAGE_CUSTOM_TYPE &&
-					isExtensionMessageData(entry.data)
-				) {
-					upsertTimeline(timeline, toExtensionMessage(entry, entry.data));
+				} else if (entry.customType === EXTENSION_MESSAGE_CUSTOM_TYPE) {
+					const data = parseExtensionMessageData(entry.data);
+					if (data) upsertTimeline(timeline, toExtensionMessage(entry, data));
 				}
 				break;
 			}
@@ -255,18 +255,24 @@ function isCommandExpansionData(
 	);
 }
 
-function isExtensionMessageData(
+/**
+ * Read a persisted extension message back through the same validator that
+ * admitted it. A hand-written shape check here would have to enumerate the
+ * message kinds a second time, and a kind it failed to learn about would be
+ * dropped silently: fine live, gone after a restart.
+ */
+function parseExtensionMessageData(
 	data: unknown,
-): data is ExtensionMessageEntryData {
-	return (
-		isRecord(data) &&
-		typeof data.extensionId === "string" &&
-		isRecord(data.message) &&
-		(data.message.kind === "text" ||
-			data.message.kind === "markdown" ||
-			data.message.kind === "code") &&
-		typeof data.message.content === "string"
-	);
+): ExtensionMessageEntryData | undefined {
+	if (!isRecord(data) || typeof data.extensionId !== "string") return undefined;
+	try {
+		return {
+			extensionId: data.extensionId,
+			message: validateExtensionMessage(data.message as ExtensionMessage),
+		};
+	} catch {
+		return undefined;
+	}
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

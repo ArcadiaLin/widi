@@ -4,11 +4,13 @@
  * This Class is shared between all run modes (interactive, print, rpc).
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
 	AgentHarness,
 	AgentHarnessError,
 	type AgentHarnessEvent,
 	type AgentHarnessResources,
+	type AgentMessage,
 	calculateContextTokens,
 	type ExecutionEnv,
 	getLastAssistantUsage,
@@ -21,12 +23,15 @@ import {
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import {
+	type AssistantMessage,
 	getSupportedThinkingLevels,
 	type ImageContent,
 	type OAuthLoginCallbacks,
 } from "@earendil-works/pi-ai";
+import { formatError } from "../utils/errors.ts";
 import type {
 	AgentBrief,
+	AgentDisposeScope,
 	AgentProfileBrief,
 	AgentTaskOutcome,
 	ToolAgentHost,
@@ -69,8 +74,10 @@ import {
 	toDiagnostic,
 } from "./diagnostics.ts";
 import {
+	EXTENSION_OBSERVED_EVENT_NAMES,
 	type ExtensionActionFailure,
 	type ExtensionCoreActions,
+	type ExtensionEventEnvelope,
 	type ExtensionIdentity,
 	type ExtensionInterceptorEventFor,
 	type ExtensionInterceptorName,
@@ -79,15 +86,24 @@ import {
 	type ExtensionModule,
 	type ExtensionObservedEvent,
 	ExtensionRunner,
+	type ExtensionSessionSnapshot,
+	type ExtensionSessionTree,
+	freezeExtensionEventEnvelope,
+	MAX_EXTENSION_EVENT_DISPATCH_DEPTH,
+	validateExtensionEventName,
+	validateExtensionEventPayload,
 } from "./extension/index.ts";
 import {
 	assertExtensionNotificationText,
 	assertExtensionOutputText,
 	assertExtensionStatusKey,
+	cloneExtensionInputPresentation,
+	type ExtensionInputPresentation,
 	type ExtensionMessage,
 	type ExtensionStatus,
 	type ExtensionStatusSnapshot,
 	validateExtensionDiagnosticDraft,
+	validateExtensionInputPresentation,
 	validateExtensionMessage,
 	validateExtensionStatus,
 } from "./extension/presentation.ts";
@@ -103,6 +119,7 @@ import { stripImagesFromMessages } from "./image-policy.ts";
 import {
 	assertMessageBody,
 	backgroundResultMergeKey,
+	type MessageDeliveryMethod,
 	type MessageDeliveryPhase,
 	MessageDeliveryQueue,
 	type MessageDeliveryReceipt,
@@ -130,7 +147,10 @@ import type {
 	SessionManager,
 } from "./session-manager.ts";
 import type { SettingManager } from "./setting-manager.js";
-import { buildAgentSystemPrompt } from "./system-prompt.ts";
+import {
+	buildAgentSystemPrompt,
+	type ToolPromptGuidance,
+} from "./system-prompt.ts";
 import {
 	createAgentHarnessToolsFromResolvedTools,
 	type ResolvedAgentHarnessTool,
@@ -138,7 +158,9 @@ import {
 	ToolRegistry,
 } from "./tool-registry.ts";
 import type {
+	AgentContextUsage,
 	AgentId,
+	AgentIdleReason,
 	AgentLifecycleStatus,
 	AgentMaintenanceKind,
 	AgentToolsSnapshot,
@@ -157,6 +179,7 @@ export type {
 
 export type {
 	AgentId,
+	AgentIdleReason,
 	AgentLifecycleStatus,
 	AgentMaintenanceKind,
 	OrchestratorEvent,
@@ -260,13 +283,6 @@ interface SpawnAgentCommonOptions {
 	model?: RuntimeModel;
 	inheritModelFromAgentId?: AgentId;
 	thinkingLevel?: ThinkingLevel;
-	/**
-	 * The agent whose tool initiated this spawn. Set only by the orchestrator
-	 * itself when a spawn comes through an agent's collaboration toolset;
-	 * user-side spawns (command, fork, new session, resume) leave it unset so
-	 * the agent renders as a top-level entry.
-	 */
-	spawnedBy?: AgentId;
 }
 
 export interface SpawnAgentCreateOptions extends SpawnAgentCommonOptions {
@@ -284,9 +300,46 @@ export type SpawnAgentOptions =
 	| SpawnAgentCreateOptions
 	| SpawnAgentResumeOptions;
 
+export interface DisposeAgentOptions {
+	readonly reason?: string;
+	/** Default: dispose only the named agent. */
+	readonly scope?: AgentDisposeScope;
+}
+
 interface SpawnedAgentHarness {
 	agentId: AgentId;
 	harness: WidiAgentHarness;
+}
+
+interface AgentCreationBarrier {
+	readonly completion: Promise<void>;
+	readonly complete: () => void;
+}
+
+type AgentDisposalResult =
+	| { readonly kind: "disposed" }
+	| { readonly kind: "failed"; readonly error: unknown };
+
+interface AgentDisposalBarrier {
+	readonly completion: Promise<AgentDisposalResult>;
+	readonly complete: (result: AgentDisposalResult) => void;
+}
+
+type AgentDisposalOperation =
+	| { readonly kind: "already_disposed"; readonly agentId: AgentId }
+	| {
+			readonly kind: "existing";
+			readonly agentId: AgentId;
+			readonly barrier: AgentDisposalBarrier;
+	  }
+	| {
+			readonly kind: "owned";
+			readonly agentId: AgentId;
+			readonly barrier: AgentDisposalBarrier;
+	  };
+
+interface AgentPromptRun {
+	idleReason?: AgentIdleReason;
 }
 
 interface AgentToolSet {
@@ -316,6 +369,28 @@ interface ProvisionalPromptEntries {
 	readonly previousLeafId: string | null;
 	readonly lastEntryId: string;
 }
+
+interface ExtensionInputPresentationRecord {
+	readonly extensionId: string;
+	readonly presentation: ExtensionInputPresentation;
+}
+
+interface PendingExtensionInputPresentation
+	extends ExtensionInputPresentationRecord {
+	readonly expectedText?: string;
+	method?: MessageDeliveryMethod;
+	message?: AgentMessage;
+}
+
+interface AgentIdleWaiter {
+	readonly resolve: () => void;
+	readonly reject: (error: unknown) => void;
+}
+
+type AgentIdleState =
+	| { readonly kind: "idle" }
+	| { readonly kind: "busy" }
+	| { readonly kind: "gone"; readonly message: string };
 
 type AcceptedMessage =
 	| {
@@ -381,8 +456,20 @@ export class AgentOrchestrator {
 	private _eventListeners: Set<OrchestratorEventListener> = new Set();
 	private _extensionObserverDispatchDepth: Map<AgentId, number> = new Map();
 	private _agentRunSignals: Map<AgentId, AbortSignal> = new Map();
+	// A prompt remains active until its harness promise settles. Harness
+	// `turn_end` is only the end of one model turn and may be followed by tools
+	// and another turn, so lifecycle status alone cannot certify agent idleness.
+	private _agentPromptRuns: Map<AgentId, AgentPromptRun> = new Map();
 	private _agentStatusRevisions: Map<AgentId, number> = new Map();
 	private _agentToolSets: Map<AgentId, AgentToolSet> = new Map();
+	// A dispose can discover an agent after its record is registered but before
+	// its harness is ready. It reserves the id immediately, then waits on this
+	// barrier so creation cannot install resources behind the teardown sweep.
+	private _agentCreations: Map<AgentId, AgentCreationBarrier> = new Map();
+	// In-progress teardowns, retained so a recursive dispose can wait for a
+	// descendant another caller is already tearing down before it removes the
+	// ancestor. Direct duplicate requests still return immediately.
+	private _agentDisposals: Map<AgentId, AgentDisposalBarrier> = new Map();
 	private _autoCompactingAgents: Set<AgentId> = new Set();
 	// Harness operations that do not run an agent loop (compaction, branch
 	// summary). `AgentLifecycleStatus.running` cannot tell these apart from a
@@ -397,6 +484,29 @@ export class AgentOrchestrator {
 	// own `agent_start`. Accepting a prompt any earlier would report success for
 	// text the harness can still drop while it builds the turn.
 	private _agentRunStartWaiters: Map<AgentId, Set<() => void>> = new Map();
+	// Waiters for a target to go idle with both queues drained (the extension
+	// `waitForIdle`). Settled from the same two facts the idle judgement reads:
+	// a status commit, and the harness's own queue report.
+	private _agentIdleWaiters: Map<AgentId, Set<AgentIdleWaiter>> = new Map();
+	// Why each agent last entered the `idle` status, recorded at the transition
+	// and read when the idle event is finally published. The two moments are not
+	// the same one: an agent whose status commits to idle while the harness still
+	// reports queued text is not idle yet, and the fact that later completes it -
+	// a `queue_update` draining to zero - does not itself know what ended the run.
+	private readonly _agentIdleReasons: Map<AgentId, AgentIdleReason> = new Map();
+	// Agents whose current idle has already been published. Membership is the
+	// edge: entered when the event fires, dropped the moment the agent is busy or
+	// gone again, so re-confirming an idle the consumer was already told about
+	// stays silent.
+	private readonly _publishedAgentIdles = new Set<AgentId>();
+	// Depth belongs to the causal async chain, not to the runtime as a whole:
+	// independent concurrent emits must not consume one another's recursion
+	// budget, while a handler's nested emit must inherit its parent's depth.
+	private readonly _extensionEventDispatchContext =
+		new AsyncLocalStorage<number>();
+	// A shutdown request is a fact about the runtime, not about the extension
+	// that asked, so the second request adds nothing for the host to act on.
+	private _shutdownRequested = false;
 	// Jobs waiting on a settler that is not their owner, keyed by that settler.
 	// A `BackgroundJobTable` is per-agent and cannot see another agent's jobs, so
 	// only the agent registry can answer which jobs a disposed agent still owes.
@@ -419,6 +529,10 @@ export class AgentOrchestrator {
 	private readonly _humanRequests: HumanRequestBroker;
 	private _nextInputId = 1;
 	private _nextPresentationId = 1;
+	private readonly _pendingExtensionInputPresentations = new Map<
+		AgentId,
+		PendingExtensionInputPresentation[]
+	>();
 
 	constructor(config: AgentOrchestratorConfigs) {
 		this.executionEnv = config.executionEnv;
@@ -490,11 +604,19 @@ export class AgentOrchestrator {
 			return (await this._resumeAgentHarness(options)).agentId;
 		}
 
+		return await this._spawnNewAgent(options);
+	}
+
+	private async _spawnNewAgent(
+		options: SpawnAgentCreateOptions,
+		spawnedBy?: AgentRecord,
+	): Promise<AgentId> {
+		if (spawnedBy) this._assertAgentCanSpawn(spawnedBy);
 		const agentProfile = await this._resolveCreateProfile(options);
 		const model = this._resolveSpawnModel(options);
 		const spawned = await this._createAgentHarness(agentProfile, model, {
 			thinkingLevel: options.thinkingLevel ?? this._defaultThinkingLevel,
-			spawnedBy: options.spawnedBy,
+			spawnedBy,
 		});
 		return spawned.agentId;
 	}
@@ -675,6 +797,9 @@ export class AgentOrchestrator {
 	async setAgentModel(agentId: AgentId, model: RuntimeModel): Promise<void> {
 		await this._requireAgentHarness(agentId).setModel(model);
 		this._requireAgentRecord(agentId).model = model;
+		// The cached measurement names the previous model and its window, so it
+		// stops describing anything the moment the model changes.
+		await this._setAgentContextUsage(agentId, undefined);
 	}
 
 	async listAvailableModelCandidates(): Promise<AgentModelCandidateListResult> {
@@ -1251,7 +1376,11 @@ export class AgentOrchestrator {
 	async promptAgent(
 		agentId: AgentId,
 		text: string,
-		options?: { images?: ImageContent[]; expansion?: PromptExpansion },
+		options?: {
+			images?: ImageContent[];
+			expansion?: PromptExpansion;
+			presentation?: ExtensionInputPresentationRecord;
+		},
 	): Promise<PromptOutcome> {
 		const accepted = await this._sendMessage(
 			{
@@ -1261,7 +1390,11 @@ export class AgentOrchestrator {
 				images: options?.images,
 				mode: "next_turn",
 			},
-			{ requiresIdle: true, awaited: true },
+			{
+				requiresIdle: true,
+				awaited: true,
+				presentation: options?.presentation,
+			},
 		);
 		if (accepted.kind === "blocked") return accepted;
 		const completed = accepted.receipt.completed;
@@ -1288,7 +1421,11 @@ export class AgentOrchestrator {
 	 */
 	private async _sendMessage(
 		draft: MessageDraft,
-		options: { requiresIdle: boolean; awaited: boolean },
+		options: {
+			requiresIdle: boolean;
+			awaited: boolean;
+			presentation?: ExtensionInputPresentationRecord;
+		},
 	): Promise<AcceptedMessage> {
 		const agentId = draft.targetAgentId;
 		const record = this._requireAgentRecord(agentId);
@@ -1298,7 +1435,7 @@ export class AgentOrchestrator {
 		// entries without a paired user message.
 		if (options.requiresIdle) {
 			this._requireAgentHarness(agentId);
-			if (record.status !== "idle") {
+			if (record.status !== "idle" || this._agentPromptRuns.has(agentId)) {
 				throw new OrchestratorError({
 					severity: "error",
 					code: "orchestrator.agent_busy",
@@ -1387,6 +1524,14 @@ export class AgentOrchestrator {
 		// already traceable through the tool call that sent it.
 		const expansion =
 			draft.source.kind === "human" ? draft.source.expansion : undefined;
+		const presentation = options.presentation
+			? {
+					...options.presentation,
+					presentation: validateExtensionInputPresentation(
+						options.presentation.presentation,
+					),
+				}
+			: undefined;
 		let provisional: ProvisionalPromptEntries | undefined;
 		if (expansion || pendingInputTransform) {
 			const previousLeafId =
@@ -1419,10 +1564,17 @@ export class AgentOrchestrator {
 		// whose messages merge, since each carries its own job header already.
 		const jobSource =
 			draft.source.kind === "background_job" ? draft.source : undefined;
+		const renderedText = renderMessageEnvelope(draft.source, outcome.text);
+		const pendingPresentation = presentation
+			? {
+					...presentation,
+					expectedText: renderedText,
+				}
+			: undefined;
 		try {
 			const receipt = await this._messages.enqueue({
 				targetAgentId: agentId,
-				text: renderMessageEnvelope(draft.source, outcome.text),
+				text: renderedText,
 				images: outcome.images,
 				mode: draft.mode,
 				requiresIdle: options.requiresIdle,
@@ -1439,11 +1591,187 @@ export class AgentOrchestrator {
 							);
 						}
 					: undefined,
+				onDeliveryStart: pendingPresentation
+					? (method) => {
+							this._beginExtensionInputPresentationDelivery(
+								agentId,
+								pendingPresentation,
+								method,
+							);
+						}
+					: undefined,
+				onDeliveryFailure: pendingPresentation
+					? () => {
+							this._discardPendingExtensionInputPresentation(
+								agentId,
+								pendingPresentation,
+							);
+						}
+					: undefined,
 			});
 			return { kind: "accepted", receipt, provisional };
 		} catch (error) {
 			await this._retractProvisionalEntries(agentId, provisional);
 			throw error;
+		}
+	}
+
+	private async _withExtensionInputPresentation(
+		agentId: AgentId,
+		extensionId: string,
+		method: "steer" | "follow_up",
+		presentation: ExtensionInputPresentation | undefined,
+		deliver: () => Promise<void>,
+	): Promise<void> {
+		if (!presentation) {
+			await deliver();
+			return;
+		}
+		const pending: PendingExtensionInputPresentation = {
+			extensionId,
+			presentation: validateExtensionInputPresentation(presentation),
+		};
+		this._beginExtensionInputPresentationDelivery(agentId, pending, method);
+		try {
+			await deliver();
+		} catch (error) {
+			this._discardPendingExtensionInputPresentation(agentId, pending);
+			throw error;
+		}
+	}
+
+	private _beginExtensionInputPresentationDelivery(
+		agentId: AgentId,
+		pending: PendingExtensionInputPresentation,
+		method: MessageDeliveryMethod,
+	): void {
+		this._discardPendingExtensionInputPresentation(agentId, pending);
+		pending.method = method;
+		delete pending.message;
+		const presentations =
+			this._pendingExtensionInputPresentations.get(agentId) ?? [];
+		presentations.push(pending);
+		this._pendingExtensionInputPresentations.set(agentId, presentations);
+	}
+
+	private _captureQueuedExtensionInputPresentation(
+		agentId: AgentId,
+		method: "steer" | "follow_up",
+		messages: readonly AgentMessage[],
+	): void {
+		const message = messages.at(-1);
+		if (!message) return;
+		const pending = this._pendingExtensionInputPresentations
+			.get(agentId)
+			?.find(
+				(candidate) =>
+					candidate.method === method && candidate.message === undefined,
+			);
+		if (pending) pending.message = message;
+	}
+
+	private _takePendingExtensionInputPresentation(
+		agentId: AgentId,
+		message: AgentMessage,
+	): PendingExtensionInputPresentation | undefined {
+		if (message.role !== "user") return undefined;
+		const presentations = this._pendingExtensionInputPresentations.get(agentId);
+		if (!presentations) return undefined;
+		let index = presentations.findIndex(
+			(presentation) => presentation.message === message,
+		);
+		if (index < 0) {
+			const text = userMessageText(message);
+			index = presentations.findIndex(
+				(presentation) =>
+					presentation.method === "prompt" &&
+					presentation.message === undefined &&
+					presentation.expectedText === text,
+			);
+		}
+		if (index < 0) return undefined;
+		const [pending] = presentations.splice(index, 1);
+		if (presentations.length === 0) {
+			this._pendingExtensionInputPresentations.delete(agentId);
+		}
+		return pending;
+	}
+
+	private _discardPendingExtensionInputPresentation(
+		agentId: AgentId,
+		pending: PendingExtensionInputPresentation,
+	): void {
+		const presentations = this._pendingExtensionInputPresentations.get(agentId);
+		if (!presentations) return;
+		const index = presentations.indexOf(pending);
+		if (index >= 0) presentations.splice(index, 1);
+		if (presentations.length === 0) {
+			this._pendingExtensionInputPresentations.delete(agentId);
+		}
+	}
+
+	private _discardClearedExtensionInputPresentations(
+		agentId: AgentId,
+		messages: readonly AgentMessage[],
+	): void {
+		if (messages.length === 0) return;
+		const cleared = new Set(messages);
+		const presentations = this._pendingExtensionInputPresentations.get(agentId);
+		if (!presentations) return;
+		const remaining = presentations.filter(
+			(presentation) =>
+				presentation.message === undefined ||
+				!cleared.has(presentation.message),
+		);
+		if (remaining.length === 0) {
+			this._pendingExtensionInputPresentations.delete(agentId);
+		} else if (remaining.length !== presentations.length) {
+			this._pendingExtensionInputPresentations.set(agentId, remaining);
+		}
+	}
+
+	private async _commitExtensionInputPresentation(
+		agentId: AgentId,
+		messageEntryId: string | null,
+		pending: PendingExtensionInputPresentation,
+	): Promise<void> {
+		if (!messageEntryId) {
+			await this._recordAgentLifecycleFailure(
+				agentId,
+				"orchestrator.extension_input_presentation_failed",
+				`Failed to persist extension input presentation for agent ${agentId}: the committed user message has no session entry.`,
+			);
+			return;
+		}
+		try {
+			const entryId =
+				await this.sessionManager.appendExtensionInputPresentationEntry(
+					agentId,
+					{
+						messageEntryId,
+						extensionId: pending.extensionId,
+						presentation: pending.presentation,
+					},
+				);
+			await this._emit(
+				{
+					type: "extension_input_presented",
+					presentationId: this._createPresentationId(),
+					entryId,
+					messageEntryId,
+					agentId,
+					extensionId: pending.extensionId,
+					presentation: cloneExtensionInputPresentation(pending.presentation),
+					createdAt: now(),
+				},
+				{ observeExtensions: false },
+			);
+		} catch (error) {
+			await this._recordAgentLifecycleFailure(
+				agentId,
+				"orchestrator.extension_input_presentation_failed",
+				`Failed to persist extension input presentation for agent ${agentId}: ${formatError(error)}`,
+			);
 		}
 	}
 
@@ -1538,16 +1866,202 @@ export class AgentOrchestrator {
 	async abortAgent(agentId: AgentId) {
 		const harness = this._requireAgentHarness(agentId);
 		this._requireAgentOutsideMaintenance(agentId, "abort");
+		const activeRun = this._agentPromptRuns.get(agentId);
+		if (activeRun) activeRun.idleReason = "aborted";
 		return await harness.abort();
 	}
 
-	async disposeAgent(agentId: AgentId, reason?: string): Promise<void> {
+	/**
+	 * Resolve once the agent is idle and nothing is waiting in either delivery
+	 * queue - the same judgement `agentHasPendingMessages` reports, so callers
+	 * and the agent cannot disagree about what idle means.
+	 *
+	 * Rejects instead of hanging when the agent can never reach that state: it
+	 * is gone, being torn down, or already disposed.
+	 */
+	async waitForAgentIdle(
+		agentId: AgentId,
+		options: { signal?: AbortSignal } = {},
+	): Promise<void> {
+		const settled = this._resolveAgentIdleState(agentId);
+		if (settled.kind === "idle") return;
+		if (settled.kind === "gone") throw new Error(settled.message);
+		options.signal?.throwIfAborted();
+
+		const waiters = this._agentIdleWaiters.get(agentId) ?? new Set();
+		this._agentIdleWaiters.set(agentId, waiters);
+		let waiter!: AgentIdleWaiter;
+		let onAbort: (() => void) | undefined;
+		try {
+			return await new Promise<void>((resolve, reject) => {
+				waiter = { resolve, reject };
+				waiters.add(waiter);
+				const signal = options.signal;
+				if (!signal) return;
+				// Detached in the finally below: the caller's signal usually outlives
+				// one wait (a run signal covers a whole turn), so a listener left
+				// behind would pin this promise's closure for the signal's lifetime.
+				onAbort = () => reject(signal.reason);
+				signal.addEventListener("abort", onAbort, { once: true });
+			});
+		} finally {
+			if (onAbort) options.signal?.removeEventListener("abort", onAbort);
+			waiters.delete(waiter);
+			if (waiters.size === 0) this._agentIdleWaiters.delete(agentId);
+		}
+	}
+
+	/**
+	 * Publish an extension's request to shut the runtime down. Core does not act
+	 * on it: the process and the terminal belong to the host, whose own teardown
+	 * (terminal restoration included) would be skipped if the orchestrator tore
+	 * the agents down from underneath it. An embedder without a host calls
+	 * `disposeAll` instead.
+	 */
+	async requestShutdown(request: {
+		requestedBy: string;
+		requestedByAgentId: AgentId;
+		reason?: string;
+	}): Promise<void> {
+		if (this._shutdownRequested) return;
+		this._shutdownRequested = true;
+		const event: Extract<
+			OrchestratorEvent,
+			{ type: "runtime_shutdown_requested" }
+		> = Object.freeze({
+			type: "runtime_shutdown_requested",
+			requestedBy: request.requestedBy,
+			requestedByAgentId: request.requestedByAgentId,
+			reason: request.reason,
+			createdAt: now(),
+		});
+		// This event is the one ordering exception: a host listener may start
+		// disposeAll immediately, so extension observers must finish their final
+		// persistence work before the host is allowed to see the request.
+		await this._emitToExtensionObservers(event);
+		await this._emit(event, { observeExtensions: false });
+	}
+
+	/**
+	 * Dispose one agent or one whole spawn subtree.
+	 *
+	 * Subtree membership is snapshotted and every live member is marked gone
+	 * before the first await. No message or delegated task can land in a child
+	 * behind an ancestor's disposal sweep. Teardown then runs leaf-to-root so a
+	 * child never observes its parent disappear while its own harness is live.
+	 *
+	 * `spawnedBy` is retained on disposed records. It is both creation
+	 * provenance and the runtime-local tree edge used by surviving descendants.
+	 */
+	async disposeAgent(
+		agentId: AgentId,
+		options: DisposeAgentOptions = {},
+	): Promise<AgentId[]> {
+		const orderedAgentIds =
+			options.scope === "subtree"
+				? this._collectAgentSubtreePostOrder(agentId)
+				: [this._requireAgentRecord(agentId).agentId];
+		const selectedAgentIds = new Set(orderedAgentIds);
+		const operations: AgentDisposalOperation[] = orderedAgentIds.map(
+			(candidateAgentId) => {
+				const record = this._requireAgentRecord(candidateAgentId);
+				if (record.status === "disposed") {
+					return { kind: "already_disposed", agentId: candidateAgentId };
+				}
+				const existing = this._agentDisposals.get(candidateAgentId);
+				if (existing) {
+					return {
+						kind: "existing",
+						agentId: candidateAgentId,
+						barrier: existing,
+					};
+				}
+				const barrier = this._beginAgentDisposal(candidateAgentId);
+				return {
+					kind: "owned",
+					agentId: candidateAgentId,
+					barrier,
+				};
+			},
+		);
+
+		const disposedAgentIds: AgentId[] = [];
+		const failures: unknown[] = [];
+		const blockedAgentErrors = new Map<AgentId, unknown>();
+		const blockSelectedAncestors = (
+			failedAgentId: AgentId,
+			error: unknown,
+		): void => {
+			let parentAgentId = this._agents.get(failedAgentId)?.spawnedBy;
+			while (
+				parentAgentId !== undefined &&
+				selectedAgentIds.has(parentAgentId)
+			) {
+				blockedAgentErrors.set(parentAgentId, error);
+				parentAgentId = this._agents.get(parentAgentId)?.spawnedBy;
+			}
+		};
+
+		for (const operation of operations) {
+			if (operation.kind === "already_disposed") continue;
+			const candidateAgentId = operation.agentId;
+			if (blockedAgentErrors.has(candidateAgentId)) {
+				if (operation.kind === "owned") {
+					operation.barrier.complete({
+						kind: "failed",
+						error: blockedAgentErrors.get(candidateAgentId),
+					});
+					if (
+						this._agentDisposals.get(candidateAgentId) === operation.barrier
+					) {
+						this._agentDisposals.delete(candidateAgentId);
+						this._disposingAgents.delete(candidateAgentId);
+					}
+				}
+				continue;
+			}
+			if (operation.kind === "existing") {
+				// A duplicate request for the named target keeps the existing
+				// non-blocking "already being disposed" behavior. A recursive
+				// request must still wait for in-progress descendants before it can
+				// tear down their ancestors.
+				if (candidateAgentId === agentId) continue;
+				const result = await operation.barrier.completion;
+				if (result.kind === "failed") {
+					failures.push(result.error);
+					blockSelectedAncestors(candidateAgentId, result.error);
+				}
+				continue;
+			}
+			try {
+				await this._disposeSingleAgent(candidateAgentId, options.reason);
+				disposedAgentIds.push(candidateAgentId);
+				operation.barrier.complete({ kind: "disposed" });
+				if (this._agentDisposals.get(candidateAgentId) === operation.barrier) {
+					this._agentDisposals.delete(candidateAgentId);
+				}
+			} catch (error) {
+				operation.barrier.complete({ kind: "failed", error });
+				failures.push(error);
+				blockSelectedAncestors(candidateAgentId, error);
+			}
+		}
+		if (failures.length === 1) throw failures[0];
+		if (failures.length > 1) {
+			throw new AggregateError(
+				failures,
+				`Failed to dispose ${failures.length} agents in subtree ${agentId}.`,
+			);
+		}
+		return disposedAgentIds;
+	}
+
+	private async _disposeSingleAgent(
+		agentId: AgentId,
+		reason?: string,
+	): Promise<void> {
+		await this._agentCreations.get(agentId)?.completion;
 		const record = this._requireAgentRecord(agentId);
-		// Stop accepting work for this agent before the sweeps below run. The
-		// `disposed` status is only committed at the end of a teardown full of
-		// awaits, so status alone would keep reporting a live agent long after
-		// its outstanding work was already cancelled.
-		this._disposingAgents.add(agentId);
 
 		// Detach the result router and cancel live background work first, before
 		// the harness is torn down. Otherwise harness.abort() below can drive a
@@ -1621,10 +2135,20 @@ export class AgentOrchestrator {
 		this._humanInterrupts.forget(agentId);
 		this._maintenanceOperations.delete(agentId);
 		this._resolveAgentRunStartWaiters(agentId);
+		this._rejectAgentIdleWaiters(
+			agentId,
+			reason ?? `Agent ${agentId} was disposed while waiting for it to idle.`,
+		);
+		// A resumed session reuses this agent id, and both of these describe an
+		// idle that belonged to the previous occupant.
+		this._agentIdleReasons.delete(agentId);
+		this._publishedAgentIdles.delete(agentId);
+		this._agentPromptRuns.delete(agentId);
 		this._backgroundJobEmits.delete(agentId);
 		this._progressQueued.delete(agentId);
 		this._progressSequence.delete(agentId);
 		this._queuedJobReports.delete(agentId);
+		this._pendingExtensionInputPresentations.delete(agentId);
 
 		const harness = record.harness;
 		if (harness) {
@@ -1678,7 +2202,7 @@ export class AgentOrchestrator {
 
 	async disposeAll(reason?: string): Promise<void> {
 		for (const agentId of [...this._agents.keys()]) {
-			await this.disposeAgent(agentId, reason);
+			await this.disposeAgent(agentId, { reason });
 		}
 		await this._humanRequests.cancelAll(reason ?? "Orchestrator disposed.");
 		try {
@@ -1717,14 +2241,75 @@ export class AgentOrchestrator {
 		};
 	}
 
+	/**
+	 * Compose the agent's system prompt from the record and the runner.
+	 *
+	 * Read through rather than captured: an extension reload replaces the
+	 * runner, and its appended sections must follow. The role's own append text
+	 * comes first, then the extension sections.
+	 */
+	private _buildAgentSystemPrompt(
+		agentId: AgentId,
+		basePrompt: string,
+		resources: AgentHarnessResources,
+		activeTools: readonly ToolPromptGuidance[],
+	): string {
+		const record = this._agents.get(agentId);
+		return buildAgentSystemPrompt({
+			basePrompt,
+			resources,
+			activeTools,
+			agentId,
+			appendSections: [
+				...(record?.systemPrompt?.appendSections ?? []),
+				...(record?.extensionRunner?.getSystemPromptAppends() ?? []),
+			],
+			contextFiles: record?.systemPrompt?.contextFiles,
+			includeSkills: record?.systemPrompt?.includeSkills,
+			cwd: record?.systemPrompt?.cwd,
+		});
+	}
+
+	/**
+	 * The system prompt the agent's next turn would be built with, composed
+	 * from the harness's live resources and active tools. Read-only: the write
+	 * paths stay `appendSystemPrompt` at activation and the `before_agent_start`
+	 * interceptor, which can still replace this text for one turn.
+	 */
+	async getAgentSystemPrompt(agentId: AgentId): Promise<string> {
+		const record = this._requireAgentRecord(agentId);
+		const harness = this._requireAgentHarness(agentId);
+		const basePrompt = record.resolvedProfile?.systemPrompt;
+		if (basePrompt === undefined) {
+			throw new OrchestratorError({
+				severity: "error",
+				code: "orchestrator.system_prompt_unavailable",
+				message: `Agent ${agentId} has no resolved profile to build a system prompt from.`,
+				agentId,
+			});
+		}
+		return this._buildAgentSystemPrompt(
+			agentId,
+			basePrompt,
+			harness.getResources(),
+			harness.getActiveTools(),
+		);
+	}
+
 	async compactAgent(agentId: AgentId, customInstructions?: string) {
-		return await this._runMaintenanceOperation(
+		const result = await this._runMaintenanceOperation(
 			agentId,
 			"compaction",
 			async (harness) => {
 				return await harness.compact(customInstructions);
 			},
 		);
+		// Compaction replaces the branch the cached measurement described, and
+		// the retained tail carries the pre-compaction assistant usage, so
+		// re-measuring here would report the old number as if it were current.
+		// Drop it instead: the next settled measures the new branch.
+		await this._setAgentContextUsage(agentId, undefined);
+		return result;
 	}
 
 	async navigateAgentTree(
@@ -1737,13 +2322,27 @@ export class AgentOrchestrator {
 			label?: string;
 		},
 	) {
-		return await this._runMaintenanceOperation(
-			agentId,
-			"tree-navigation",
-			async (harness) => {
-				return await harness.navigateTree(targetId, options);
-			},
-		);
+		const previousLeafId =
+			await this.sessionManager.getAgentSessionLeafId(agentId);
+		try {
+			return await this._runMaintenanceOperation(
+				agentId,
+				"tree-navigation",
+				async (harness) => {
+					return await harness.navigateTree(targetId, options);
+				},
+			);
+		} finally {
+			// A post-move observer can fail after the harness changed the leaf.
+			// Compare in `finally` so that path still invalidates the old gauge,
+			// while cancellation and no-op navigation leave it intact.
+			if (
+				(await this.sessionManager.getAgentSessionLeafId(agentId)) !==
+				previousLeafId
+			) {
+				await this._setAgentContextUsage(agentId, undefined);
+			}
+		}
 	}
 
 	registerClient(client: OrchestratorClient<OrchestratorEvent>): () => void {
@@ -1805,6 +2404,131 @@ export class AgentOrchestrator {
 		}
 
 		return agentId;
+	}
+
+	/**
+	 * Resolve the top-level agent of one runtime-local spawn tree.
+	 *
+	 * Disposed records remain in `_agents`, so the walk deliberately follows
+	 * tombstone parents. A single-agent disposal must not split its surviving
+	 * descendants away from their original main agent.
+	 */
+	private _resolveAgentTreeRoot(agentId: AgentId): AgentId {
+		let record = this._requireAgentRecord(agentId);
+		const visited = new Set<AgentId>();
+		while (record.spawnedBy !== undefined) {
+			if (visited.has(record.agentId)) {
+				throw new Error(
+					`Agent spawn tree contains a cycle at ${record.agentId}.`,
+				);
+			}
+			visited.add(record.agentId);
+			const parent = this._agents.get(record.spawnedBy);
+			if (!parent) {
+				throw new Error(
+					`Agent ${record.agentId} references missing spawner ${record.spawnedBy}.`,
+				);
+			}
+			record = parent;
+		}
+		return record.agentId;
+	}
+
+	private _agentsShareTree(
+		firstAgentId: AgentId,
+		secondAgentId: AgentId,
+	): boolean {
+		return (
+			this._resolveAgentTreeRoot(firstAgentId) ===
+			this._resolveAgentTreeRoot(secondAgentId)
+		);
+	}
+
+	private _assertAgentCanSpawn(record: AgentRecord): void {
+		if (
+			this._agents.get(record.agentId) !== record ||
+			this._resolveDeliveryPhase(record.agentId) === "gone"
+		) {
+			throw new Error(
+				`Agent ${record.agentId} can no longer spawn child agents.`,
+			);
+		}
+	}
+
+	private _beginAgentCreation(agentId: AgentId): AgentCreationBarrier {
+		let complete!: () => void;
+		const completion = new Promise<void>((resolve) => {
+			complete = resolve;
+		});
+		const barrier = { completion, complete };
+		this._agentCreations.set(agentId, barrier);
+		return barrier;
+	}
+
+	private _finishAgentCreation(
+		agentId: AgentId,
+		barrier: AgentCreationBarrier,
+	): void {
+		if (this._agentCreations.get(agentId) === barrier) {
+			this._agentCreations.delete(agentId);
+		}
+		barrier.complete();
+	}
+
+	private _beginAgentDisposal(agentId: AgentId): AgentDisposalBarrier {
+		let complete!: (result: AgentDisposalResult) => void;
+		const completion = new Promise<AgentDisposalResult>((resolve) => {
+			complete = resolve;
+		});
+		const barrier = { completion, complete };
+		this._disposingAgents.add(agentId);
+		this._agentDisposals.set(agentId, barrier);
+		return barrier;
+	}
+
+	/** Snapshot one subtree in deterministic leaf-to-root disposal order. */
+	private _collectAgentSubtreePostOrder(agentId: AgentId): AgentId[] {
+		this._requireAgentRecord(agentId);
+		const childrenByParent = new Map<AgentId, AgentId[]>();
+		for (const record of this._agents.values()) {
+			if (record.spawnedBy === undefined) continue;
+			const children = childrenByParent.get(record.spawnedBy) ?? [];
+			children.push(record.agentId);
+			childrenByParent.set(record.spawnedBy, children);
+		}
+
+		const states = new Map<AgentId, "visiting" | "visited">();
+		const orderedAgentIds: AgentId[] = [];
+		const stack: Array<{
+			readonly agentId: AgentId;
+			readonly expanded: boolean;
+		}> = [{ agentId, expanded: false }];
+		while (stack.length > 0) {
+			const entry = stack.pop();
+			if (!entry) break;
+			if (entry.expanded) {
+				states.set(entry.agentId, "visited");
+				orderedAgentIds.push(entry.agentId);
+				continue;
+			}
+			const state = states.get(entry.agentId);
+			if (state === "visiting") {
+				throw new Error(
+					`Agent spawn tree contains a cycle at ${entry.agentId}.`,
+				);
+			}
+			if (state === "visited") continue;
+			states.set(entry.agentId, "visiting");
+			stack.push({ agentId: entry.agentId, expanded: true });
+			const children = childrenByParent.get(entry.agentId) ?? [];
+			for (let index = children.length - 1; index >= 0; index--) {
+				const childAgentId = children[index];
+				if (childAgentId !== undefined) {
+					stack.push({ agentId: childAgentId, expanded: false });
+				}
+			}
+		}
+		return orderedAgentIds;
 	}
 
 	private _resolveSpawnModel(options: SpawnAgentOptions): RuntimeModel {
@@ -1971,25 +2695,40 @@ export class AgentOrchestrator {
 	private async _createAgentHarness(
 		resolvedProfile: ResolvedAgentProfile,
 		model: RuntimeModel,
-		options: { thinkingLevel?: ThinkingLevel; spawnedBy?: AgentId } = {},
+		options: { thinkingLevel?: ThinkingLevel; spawnedBy?: AgentRecord } = {},
 	): Promise<SpawnedAgentHarness> {
 		const { profile } = resolvedProfile;
+		if (options.spawnedBy) this._assertAgentCanSpawn(options.spawnedBy);
 		const agentId = this._allocateAgentId(profile);
 		const session = await this.sessionManager.createAgentSession({
 			agentId: agentId,
 			agentProfile: profile,
 		});
 		const sessionMetadata = await session.getMetadata();
-		await this._registerAgentRecord(
-			createAgentRecord({
-				agentId,
-				status: "creating",
-				resolvedProfile,
-				sessionMetadata,
-				model,
-				spawnedBy: options.spawnedBy,
-			}),
-		);
+		if (options.spawnedBy) this._assertAgentCanSpawn(options.spawnedBy);
+		const spawnedByAgentId = options.spawnedBy?.agentId;
+		const creation = this._beginAgentCreation(agentId);
+		let creationPending = true;
+		const finishCreation = (): void => {
+			if (!creationPending) return;
+			creationPending = false;
+			this._finishAgentCreation(agentId, creation);
+		};
+		try {
+			await this._registerAgentRecord(
+				createAgentRecord({
+					agentId,
+					status: "creating",
+					resolvedProfile,
+					sessionMetadata,
+					model,
+					spawnedBy: spawnedByAgentId,
+				}),
+			);
+		} catch (error) {
+			finishCreation();
+			throw error;
+		}
 
 		try {
 			const harness = await this._buildAgentHarness({
@@ -1999,16 +2738,27 @@ export class AgentOrchestrator {
 				model,
 				thinkingLevel: options.thinkingLevel,
 			});
-			await this._transitionAgentStatus(agentId, "idle");
+			// The harness and every resource teardown needs are now installed.
+			// Release disposal before publishing lifecycle events so a listener can
+			// synchronously dispose the new agent without waiting on the event it is
+			// currently handling.
+			finishCreation();
+			await this._transitionAgentStatus(agentId, "idle", {
+				idleReason: "ready",
+			});
+			if (this._resolveDeliveryPhase(agentId) === "gone") {
+				return { agentId, harness };
+			}
 			await this._emit({
 				type: "agent_spawned",
 				agentId,
 				profile,
 				model,
-				spawnedBy: options.spawnedBy,
+				spawnedBy: spawnedByAgentId,
 			});
 			return { agentId, harness };
 		} catch (error) {
+			finishCreation();
 			const diagnostic = toDiagnostic(error, {
 				code: "orchestrator.agent_unavailable",
 				message: `Cannot create agent ${agentId}: ${formatError(error)}`,
@@ -2019,6 +2769,8 @@ export class AgentOrchestrator {
 				await this._publishDiagnostic(diagnostic);
 			}
 			throw error;
+		} finally {
+			finishCreation();
 		}
 	}
 
@@ -2034,6 +2786,13 @@ export class AgentOrchestrator {
 		let resolvedProfile: ResolvedAgentProfile | undefined;
 		let sessionMetadata: AgentSessionMetadata | undefined = options.metadata;
 		let model = this._defaultModel;
+		let creation: AgentCreationBarrier | undefined;
+		const finishCreation = (): void => {
+			if (!creation) return;
+			const pending = creation;
+			creation = undefined;
+			this._finishAgentCreation(agentId, pending);
+		};
 		try {
 			resolvedProfile = await this._resolveResumeProfile(
 				agentId,
@@ -2048,9 +2807,10 @@ export class AgentOrchestrator {
 			const context =
 				await this.sessionManager.buildAgentSessionContext(agentId);
 			model = this._resolveResumeModel(options, context.model);
-			// Resume deliberately drops `spawnedBy`: parent-child spawn
-			// relationships are runtime facts and do not survive a restart, so a
-			// resumed agent renders as top-level again.
+			// A relationship from this runtime remains valid when a disposed
+			// session is resumed in place. After a process restart there is no
+			// cached record, so the same session correctly resumes as top-level.
+			creation = this._beginAgentCreation(agentId);
 			await this._registerAgentRecord(
 				createAgentRecord({
 					agentId,
@@ -2058,6 +2818,7 @@ export class AgentOrchestrator {
 					resolvedProfile,
 					sessionMetadata,
 					model,
+					spawnedBy: cachedRecord?.spawnedBy,
 				}),
 			);
 			const harness = await this._buildAgentHarness({
@@ -2072,10 +2833,17 @@ export class AgentOrchestrator {
 			// context the model resumes with, not a message that arrives after it.
 			await this._reconcileBackgroundJobs(agentId);
 
-			await this._transitionAgentStatus(agentId, "idle");
+			finishCreation();
+			await this._transitionAgentStatus(agentId, "idle", {
+				idleReason: "ready",
+			});
+			if (this._resolveDeliveryPhase(agentId) === "gone") {
+				return { agentId, harness };
+			}
 			await this._emit({ type: "agent_resumed", agentId, profile, model });
 			return { agentId, harness };
 		} catch (error) {
+			finishCreation();
 			const diagnostic = toDiagnostic(error, {
 				code: "orchestrator.agent_unavailable",
 				message: `Cannot resume agent ${agentId}: ${formatError(error)}`,
@@ -2091,6 +2859,8 @@ export class AgentOrchestrator {
 			});
 			await this._publishDiagnostic(diagnostic);
 			throw error;
+		} finally {
+			finishCreation();
 		}
 	}
 
@@ -2128,12 +2898,7 @@ export class AgentOrchestrator {
 		// resolution happens earlier still and cannot reference them.
 		await this._applyExtensionProviderContributions(agentId, extensionRunner);
 
-		const promptSettings = this.settingManager.getSystemPromptSettings();
-		const includeProjectContext =
-			profile.projectContext ?? promptSettings.projectContext;
-		const loaded = await this.resourceLoader.loadAgentResources(profile, {
-			includeProjectContext,
-		});
+		const loaded = await this.resourceLoader.loadAgentResources(profile);
 		const resourceDiagnostics: OrchestratorDiagnostic[] =
 			loaded.diagnostics.map((diagnostic) => ({ ...diagnostic, agentId }));
 		await this._publishDiagnostics(resourceDiagnostics);
@@ -2158,21 +2923,19 @@ export class AgentOrchestrator {
 			),
 		};
 		// The role's own append text comes first: it is the most specific
-		// statement about this agent, and the settings speak for the whole
-		// installation. Extension sections follow, read per turn from the runner.
+		// statement about this agent. Extension sections follow, read per turn
+		// from the runner.
 		this._requireAgentRecord(agentId).systemPrompt = {
-			appendSections: [
-				...(profile.appendSystemPrompt ? [profile.appendSystemPrompt] : []),
-				...promptSettings.append,
-			],
+			appendSections: profile.appendSystemPrompt
+				? [profile.appendSystemPrompt]
+				: [],
 			contextFiles: loaded.contextFiles,
+			includeSkills: profile.skillsListing,
 			// The resource loader's cwd, not the execution env's: it is the project
 			// directory the file tools resolve their relative paths against, and
 			// the prompt has to name the same one.
 			cwd:
-				(profile.includeCwd ?? promptSettings.includeCwd)
-					? this.resourceLoader.getCwd()
-					: undefined,
+				(profile.includeCwd ?? true) ? this.resourceLoader.getCwd() : undefined,
 		};
 
 		const agentToolSet = await this._resolveAgentTools({
@@ -2197,21 +2960,13 @@ export class AgentOrchestrator {
 			// harness's current resources and active tools at each turn start.
 			// The record is read here rather than captured: an extension reload
 			// replaces the runner, and its appended sections must follow.
-			systemPrompt: ({ resources: current, activeTools }) => {
-				const record = this._agents.get(agentId);
-				return buildAgentSystemPrompt({
-					basePrompt: profile.systemPrompt,
-					resources: current,
-					activeTools,
+			systemPrompt: ({ resources: current, activeTools }) =>
+				this._buildAgentSystemPrompt(
 					agentId,
-					appendSections: [
-						...(record?.systemPrompt?.appendSections ?? []),
-						...(record?.extensionRunner?.getSystemPromptAppends() ?? []),
-					],
-					contextFiles: record?.systemPrompt?.contextFiles,
-					cwd: record?.systemPrompt?.cwd,
-				});
-			},
+					profile.systemPrompt,
+					current,
+					activeTools,
+				),
 			model: model,
 			thinkingLevel: options.thinkingLevel,
 			activeToolNames: [...agentToolSet.activeToolNames],
@@ -2375,7 +3130,7 @@ export class AgentOrchestrator {
 	): void {
 		extensionRunner.bindCore(this._createExtensionActions(), {
 			getSignal: () => this._agentRunSignals.get(agentId),
-			isIdle: () => this._requireAgentRecord(agentId).status !== "running",
+			isIdle: () => this._resolveAgentIdleState(agentId).kind === "idle",
 			reportActionFailure: async (failure) => {
 				const diagnostic = this._createExtensionActionFailureDiagnostic({
 					agentId,
@@ -2397,6 +3152,53 @@ export class AgentOrchestrator {
 						extensionId,
 						type,
 					),
+				// This agent's own session needs no extra gate: the extension is
+				// already running inside it and sees its messages through the
+				// interceptors regardless.
+				getSnapshot: async () =>
+					this._toExtensionSessionSnapshot(
+						await this.sessionManager.getAgentSessionSnapshot(agentId),
+					),
+				getTree: async () =>
+					this._toExtensionSessionTree(
+						await this.sessionManager.getAgentSessionTree(agentId),
+					),
+				getLeafId: async () =>
+					await this.sessionManager.getAgentSessionLeafId(agentId),
+				// The cross-session readers do widen what an extension can see -
+				// every conversation recorded for this project, including ones it
+				// never took part in - so they carry the same trust bar as exec.
+				listSessions: async (extensionId) => {
+					this._requireProjectTrustForExtension(
+						agentId,
+						extensionId,
+						"list the project's sessions",
+					);
+					const candidates =
+						await this.sessionManager.listAgentSessionCandidates();
+					return candidates.map((candidate) => ({
+						ref: this.sessionManager.toSessionHandle(candidate.path),
+						id: candidate.id,
+						createdAt: candidate.createdAt,
+						profile: candidate.profile ? { ...candidate.profile } : undefined,
+						name: candidate.name,
+						firstUserMessage: candidate.firstUserMessage,
+						parentRef: candidate.parentSessionPath
+							? this.sessionManager.toSessionHandle(candidate.parentSessionPath)
+							: undefined,
+					}));
+				},
+				readSession: async (extensionId, ref) => {
+					this._requireProjectTrustForExtension(
+						agentId,
+						extensionId,
+						"read another session",
+					);
+					const tree = await this.sessionManager.readSessionSnapshot(
+						this.sessionManager.resolveSessionHandle(ref),
+					);
+					return this._toExtensionSessionTree(tree);
+				},
 			},
 		});
 	}
@@ -2551,9 +3353,9 @@ export class AgentOrchestrator {
 	/**
 	 * The collaboration port for one agent's tools. The caller's identity is
 	 * captured here, never taken from tool arguments, so an agent cannot forge
-	 * the sender of a message or the settler of a task. Everything else is read
-	 * straight off private state, which is why the whole feature needs exactly
-	 * one new public method ({@link settleAgentBackgroundJob}).
+	 * the sender of a message or the settler of a task. Discovery, exact-address
+	 * messaging, and lifecycle scope are resolved here over private runtime
+	 * state, so tools cannot bypass their caller-bound tree policy.
 	 */
 	private _createToolAgentHost(agentId: AgentId): ToolAgentHost {
 		return {
@@ -2573,13 +3375,19 @@ export class AgentOrchestrator {
 						}),
 					);
 			},
-			// A disposed agent is not listed at all, but an unavailable one is:
-			// hiding it reads as "it never existed" and invites the model to keep
-			// looking for it, where the unaddressable marker ends the search.
-			listAgents: () =>
-				Array.from(this._agents.values())
-					.filter((record) => record.status !== "disposed")
-					.map((record) => this._describeAgentForTools(record)),
+			// Discovery is tree-scoped. Exact ids remain runtime-wide addresses
+			// through `describe`/`send`, which is the deliberate soft bridge
+			// between otherwise isolated trees.
+			listAgents: () => {
+				const rootAgentId = this._resolveAgentTreeRoot(agentId);
+				return Array.from(this._agents.values())
+					.filter(
+						(record) =>
+							record.status !== "disposed" &&
+							this._resolveAgentTreeRoot(record.agentId) === rootAgentId,
+					)
+					.map((record) => this._describeAgentForTools(record));
+			},
 			describe: (targetAgentId) => {
 				const record = this._agents.get(targetAgentId);
 				return record ? this._describeAgentForTools(record) : undefined;
@@ -2587,8 +3395,12 @@ export class AgentOrchestrator {
 			// Agent-initiated spawns carry the caller as `spawnedBy` so surfaces
 			// can render the child under its parent; user-side spawns stay
 			// top-level.
-			spawn: async (profileId) =>
-				await this.spawnAgent({ profileId, spawnedBy: agentId }),
+			spawn: async (profileId) => {
+				const spawningAgent = this._requireAgentRecord(agentId);
+				this._assertAgentCanSpawn(spawningAgent);
+				await this.emitStartupDiagnostics();
+				return await this._spawnNewAgent({ profileId }, spawningAgent);
+			},
 			send: async (targetAgentId, body) =>
 				await this.sendMessage({
 					source: { kind: "agent", agentId },
@@ -2598,8 +3410,26 @@ export class AgentOrchestrator {
 					// target decides when to read them.
 					mode: "next_turn",
 				}),
-			dispose: async (targetAgentId, reason) => {
-				await this.disposeAgent(targetAgentId, reason);
+			dispose: async (targetAgentId, options) => {
+				const target = this._agents.get(targetAgentId);
+				if (!target) return { kind: "unknown" };
+				if (!this._agentsShareTree(agentId, targetAgentId)) {
+					return { kind: "outside_tree" };
+				}
+				const selectedAgentIds =
+					options.scope === "subtree"
+						? this._collectAgentSubtreePostOrder(targetAgentId)
+						: [targetAgentId];
+				if (selectedAgentIds.includes(agentId)) {
+					return { kind: "self" };
+				}
+				const disposedAgentIds = await this.disposeAgent(
+					targetAgentId,
+					options,
+				);
+				return disposedAgentIds.length > 0
+					? { kind: "disposed", agentIds: disposedAgentIds }
+					: { kind: "already_disposed" };
 			},
 			settleTask: (ownerAgentId, taskId, outcome) => {
 				if (!this._agents.has(ownerAgentId)) return "ignored";
@@ -2753,34 +3583,111 @@ export class AgentOrchestrator {
 				this._requireAgentRecord(agentId);
 				const validatedMessage: ExtensionMessage =
 					validateExtensionMessage(message);
+				const entryData = Object.freeze({
+					extensionId,
+					message: validatedMessage,
+				});
 				// Session write comes first: the entry id is the stable identity
 				// the event and the action result both carry.
 				const entryId = await this.sessionManager.appendExtensionMessageEntry(
 					agentId,
-					{ extensionId, message: validatedMessage },
+					entryData,
 				);
-				await this._emit(
-					{
-						type: "extension_message_published",
-						presentationId: this._createPresentationId(),
-						entryId,
-						agentId,
-						extensionId,
-						message: validatedMessage,
-						createdAt: now(),
-					},
-					{ observeExtensions: false },
-				);
+				const event: Extract<
+					OrchestratorEvent,
+					{ type: "extension_message_published" }
+				> = Object.freeze({
+					type: "extension_message_published",
+					presentationId: this._createPresentationId(),
+					entryId,
+					agentId,
+					extensionId,
+					message: validatedMessage,
+					createdAt: now(),
+				});
+				await this._emit(event, { observeExtensions: false });
 				return { entryId };
 			},
-			promptAgent: async (agentId, text, options) => {
-				await this.promptAgent(agentId, text, options);
+			// Prompt carries its presentation through the message pipeline, where a
+			// block returns before any session write: a presentation is never
+			// recorded for a message an interceptor refused.
+			promptAgent: async (agentId, extensionId, text, options) => {
+				await this.promptAgent(agentId, text, {
+					images: options?.images,
+					presentation: options?.presentation
+						? { extensionId, presentation: options.presentation }
+						: undefined,
+				});
 			},
-			steerAgent: async (agentId, text, options) => {
-				await this.steerAgent(agentId, text, options);
+			steerAgent: async (agentId, extensionId, text, options) => {
+				await this._withExtensionInputPresentation(
+					agentId,
+					extensionId,
+					"steer",
+					options?.presentation,
+					async () => {
+						await this.steerAgent(agentId, text, { images: options?.images });
+					},
+				);
 			},
-			followUpAgent: async (agentId, text, options) => {
-				await this.followUpAgent(agentId, text, options);
+			followUpAgent: async (agentId, extensionId, text, options) => {
+				await this._withExtensionInputPresentation(
+					agentId,
+					extensionId,
+					"follow_up",
+					options?.presentation,
+					async () => {
+						await this.followUpAgent(agentId, text, {
+							images: options?.images,
+						});
+					},
+				);
+			},
+			getAgentContextUsage: (agentId) => {
+				const usage = this._requireAgentRecord(agentId).contextUsage;
+				return usage ? { ...usage } : undefined;
+			},
+			isProjectTrusted: () => this.settingManager.isProjectTrusted(),
+			getAgentSystemPrompt: async (agentId) =>
+				await this.getAgentSystemPrompt(agentId),
+			// Both queues count: the orchestrator's, holding messages not yet
+			// handed over, and the harness's, holding messages handed over but not
+			// yet read. Checking only the first reported "nothing pending" for text
+			// an extension had just queued through steer/followUp.
+			agentHasPendingMessages: (agentId) => {
+				const record = this._requireAgentRecord(agentId);
+				return (
+					this._messages.hasPending(agentId) ||
+					(record.harnessQueuedMessageCount ?? 0) > 0
+				);
+			},
+			waitForAgentIdle: async (agentId, options) => {
+				await this.waitForAgentIdle(agentId, options);
+			},
+			emitExtensionEvent: async (agentId, extensionId, name, payload) => {
+				this._requireAgentRecord(agentId);
+				await this._emitExtensionEvent({
+					name: validateExtensionEventName(name),
+					payload: validateExtensionEventPayload(payload),
+					sourceExtensionId: extensionId,
+					sourceAgentId: agentId,
+					emittedAt: now(),
+				});
+			},
+			requestRuntimeShutdown: async (agentId, extensionId, reason) => {
+				this._requireAgentRecord(agentId);
+				await this.requestShutdown({
+					requestedBy: extensionId,
+					requestedByAgentId: agentId,
+					reason,
+				});
+			},
+			disposeRuntime: async (agentId, extensionId, reason) => {
+				this._requireAgentRecord(agentId);
+				await this.disposeAll(
+					reason ??
+						`Extension '${extensionId}' disposed the runtime from agent ${agentId}.`,
+				);
 			},
 			setAgentSessionName: async (agentId, name) => {
 				await this.setAgentSessionName(agentId, name);
@@ -2818,6 +3725,53 @@ export class AgentOrchestrator {
 		};
 	}
 
+	// Project the internal snapshot onto the extension-facing shape: identity
+	// and conversation, no filesystem layout. An ephemeral session has no
+	// persisted file and therefore no ref.
+	private _toExtensionSessionSnapshot(
+		snapshot: AgentSessionSnapshot,
+	): ExtensionSessionSnapshot {
+		const metadata = snapshot.metadata;
+		const path =
+			"path" in metadata && typeof metadata.path === "string"
+				? metadata.path
+				: undefined;
+		return {
+			ref: path ? this.sessionManager.toSessionHandle(path) : undefined,
+			id: metadata.id,
+			name: snapshot.name,
+			leafId: snapshot.leafId,
+			pathToRoot: cloneSessionEntries(snapshot.pathToRoot),
+		};
+	}
+
+	private _toExtensionSessionTree(
+		snapshot: AgentSessionTreeSnapshot,
+	): ExtensionSessionTree {
+		return {
+			...this._toExtensionSessionSnapshot(snapshot),
+			entries: cloneSessionEntries(snapshot.entries),
+		};
+	}
+
+	// Trust gate for extension actions that reach beyond the agent's own
+	// session. `action` completes "... is denied because the project is not
+	// trusted", so phrase it as the thing being attempted.
+	private _requireProjectTrustForExtension(
+		agentId: AgentId,
+		extensionId: string,
+		action: string,
+	): void {
+		if (this.settingManager.isProjectTrusted()) return;
+		throw new OrchestratorError({
+			severity: "error",
+			code: "extension.session_read_denied",
+			message: `Extension '${extensionId}' may not ${action} because the project is not trusted.`,
+			agentId,
+			extensionId,
+		});
+	}
+
 	private async _markAgentUnavailable(options: {
 		agentId: AgentId;
 		resolvedProfile: ResolvedAgentProfile | undefined;
@@ -2834,6 +3788,7 @@ export class AgentOrchestrator {
 					resolvedProfile: options.resolvedProfile,
 					sessionMetadata: options.sessionMetadata,
 					model: options.model,
+					spawnedBy: existing?.spawnedBy,
 				})
 			: createAgentRecordFromProfileReference({
 					agentId: options.agentId,
@@ -2845,6 +3800,7 @@ export class AgentOrchestrator {
 					},
 					sessionMetadata: options.sessionMetadata,
 					model: options.model,
+					spawnedBy: existing?.spawnedBy,
 				});
 		this._agentToolSets.delete(options.agentId);
 		await this._registerAgentRecord({
@@ -3181,6 +4137,8 @@ export class AgentOrchestrator {
 	private async _registerAgentRecord(record: AgentRecord): Promise<void> {
 		const previousStatus = this._agents.get(record.agentId)?.status;
 		this._disposingAgents.delete(record.agentId);
+		this._agentDisposals.delete(record.agentId);
+		this._agentPromptRuns.delete(record.agentId);
 		this._agents.set(record.agentId, record);
 		await this._commitAgentStatus(record, record.status, previousStatus);
 	}
@@ -3188,7 +4146,11 @@ export class AgentOrchestrator {
 	private async _transitionAgentStatus(
 		agentId: AgentId,
 		status: AgentLifecycleStatus,
-		options: { force?: boolean; maintenance?: AgentMaintenanceKind } = {},
+		options: {
+			force?: boolean;
+			maintenance?: AgentMaintenanceKind;
+			idleReason?: AgentIdleReason;
+		} = {},
 	): Promise<boolean> {
 		const record = this._requireAgentRecord(agentId);
 		const previousStatus = record.status;
@@ -3204,6 +4166,7 @@ export class AgentOrchestrator {
 			status,
 			previousStatus,
 			options.maintenance,
+			options.idleReason,
 		);
 	}
 
@@ -3212,6 +4175,7 @@ export class AgentOrchestrator {
 		status: AgentLifecycleStatus,
 		previousStatus: AgentLifecycleStatus | undefined,
 		maintenance?: AgentMaintenanceKind,
+		idleReason?: AgentIdleReason,
 	): Promise<boolean> {
 		if (previousStatus === status) return false;
 		record.status = status;
@@ -3219,6 +4183,11 @@ export class AgentOrchestrator {
 			record.agentId,
 			(this._agentStatusRevisions.get(record.agentId) ?? 0) + 1,
 		);
+		// Recorded before the emit, because the settle at the end of this method
+		// may already publish the idle this reason describes.
+		if (status === "idle") {
+			this._agentIdleReasons.set(record.agentId, idleReason ?? "settled");
+		}
 		await this._emit({
 			type: "agent_status_changed",
 			agentId: record.agentId,
@@ -3228,6 +4197,7 @@ export class AgentOrchestrator {
 			changedAt: now(),
 		});
 		this._messages.wake(record.agentId);
+		await this._settleAgentIdle(record.agentId);
 		return true;
 	}
 
@@ -3603,7 +4573,7 @@ export class AgentOrchestrator {
 	): Promise<MessageDeliveryReceipt> {
 		const record = this._requireAgentRecord(agentId);
 		const harness = this._requireAgentHarness(agentId);
-		if (record.status !== "idle") {
+		if (record.status !== "idle" || this._agentPromptRuns.has(agentId)) {
 			throw new AgentHarnessError(
 				"busy",
 				`Agent ${agentId} cannot accept a prompt while ${record.status}.`,
@@ -3613,6 +4583,8 @@ export class AgentOrchestrator {
 		await this._transitionAgentStatus(agentId, "running");
 		const statusRevision = this._agentStatusRevisions.get(agentId) ?? 0;
 		const started = this._awaitAgentRunStart(agentId);
+		const runReservation: AgentPromptRun = {};
+		this._agentPromptRuns.set(agentId, runReservation);
 		const run = harness.prompt(text, {
 			images: options.images ? [...options.images] : undefined,
 		});
@@ -3627,6 +4599,9 @@ export class AgentOrchestrator {
 		]);
 		started.cancel();
 		if (start.kind === "rejected") {
+			if (this._agentPromptRuns.get(agentId) === runReservation) {
+				this._agentPromptRuns.delete(agentId);
+			}
 			// A busy rejection means another harness operation won the race. Keep
 			// the runtime status running so the queue retries as a follow-up.
 			if (
@@ -3637,14 +4612,20 @@ export class AgentOrchestrator {
 				this._agentStatusRevisions.get(agentId) === statusRevision &&
 				this._agents.get(agentId)?.status === "running"
 			) {
-				await this._transitionAgentStatus(agentId, "idle");
+				await this._transitionAgentStatus(agentId, "idle", {
+					idleReason: runReservation.idleReason ?? "settled",
+				});
 			}
 			throw start.error;
 		}
 
-		void this._finishAgentPrompt(agentId, run, statusRevision, options).catch(
-			() => {},
-		);
+		void this._finishAgentPrompt(
+			agentId,
+			run,
+			runReservation,
+			statusRevision,
+			options,
+		).catch(() => {});
 		return { method: "prompt", completed: run };
 	}
 
@@ -3679,14 +4660,143 @@ export class AgentOrchestrator {
 		for (const waiter of waiters) waiter();
 	}
 
+	/**
+	 * Whether the agent is idle now, will never be, or is simply still busy.
+	 * `creating` counts as busy: the agent is on its way to a first idle.
+	 */
+	private _resolveAgentIdleState(agentId: AgentId): AgentIdleState {
+		const record = this._agents.get(agentId);
+		if (!record || this._disposingAgents.has(agentId)) {
+			return { kind: "gone", message: `Agent ${agentId} is gone.` };
+		}
+		if (record.status === "disposed" || record.status === "unavailable") {
+			return {
+				kind: "gone",
+				message: `Agent ${agentId} is ${record.status}.`,
+			};
+		}
+		if (this._agentPromptRuns.has(agentId)) return { kind: "busy" };
+		if (record.status !== "idle") return { kind: "busy" };
+		const pending =
+			this._messages.hasPending(agentId) ||
+			(record.harnessQueuedMessageCount ?? 0) > 0;
+		return pending ? { kind: "busy" } : { kind: "idle" };
+	}
+
+	/**
+	 * Settle everything that was waiting on this agent's idle: the promise-based
+	 * waiters, and then the event.
+	 *
+	 * Both read the one judgement in `_resolveAgentIdleState`, so a consumer that
+	 * awaited `waitForAgentIdle` and one that subscribed to `agent_idle` can never
+	 * disagree about whether the agent stopped. Waiters first: they are resolved
+	 * synchronously, and a listener for the event is allowed to take as long as it
+	 * likes without holding them open.
+	 *
+	 * Called from all three places the judgement can change - a status commit, a
+	 * prompt finishing, and the harness reporting its queues - because no single
+	 * one of them is sufficient on its own.
+	 */
+	private async _settleAgentIdle(agentId: AgentId): Promise<void> {
+		this._settleAgentIdleWaiters(agentId);
+		const state = this._resolveAgentIdleState(agentId);
+		if (state.kind !== "idle") {
+			// Busy or gone re-arms the edge. A gone agent never publishes: its
+			// disposal is already a fact of its own, and an agent that stopped
+			// because it was torn down did not become idle in any useful sense.
+			this._publishedAgentIdles.delete(agentId);
+			return;
+		}
+		if (this._publishedAgentIdles.has(agentId)) return;
+		const record = this._agents.get(agentId);
+		if (!record) return;
+		this._publishedAgentIdles.add(agentId);
+		await this._emit({
+			type: "agent_idle",
+			agentId,
+			reason: this._agentIdleReasons.get(agentId) ?? "settled",
+			liveJobCount: record.backgroundJobTable
+				.list()
+				.filter((job) => job.phase === "backgrounded").length,
+			idleAt: now(),
+		});
+	}
+
+	private _settleAgentIdleWaiters(agentId: AgentId): void {
+		const waiters = this._agentIdleWaiters.get(agentId);
+		if (!waiters || waiters.size === 0) return;
+		const state = this._resolveAgentIdleState(agentId);
+		if (state.kind === "busy") return;
+		// The waiter's own finally removes it from the set; snapshot first so
+		// settling one cannot skip the next.
+		for (const waiter of [...waiters]) {
+			if (state.kind === "idle") waiter.resolve();
+			else waiter.reject(new Error(state.message));
+		}
+	}
+
+	private _rejectAgentIdleWaiters(agentId: AgentId, message: string): void {
+		const waiters = this._agentIdleWaiters.get(agentId);
+		if (!waiters) return;
+		for (const waiter of [...waiters]) waiter.reject(new Error(message));
+		this._agentIdleWaiters.delete(agentId);
+	}
+
+	/**
+	 * Relay one extension event to every live extension runtime.
+	 *
+	 * Runtime-level by construction: the runners are the subscriber set, so a
+	 * reload swaps subscriptions with the runner it replaced and disposal drops
+	 * them, with no second lifecycle to keep in step. A stale runner is skipped
+	 * for the same reason observers skip it - its context actions can only fail.
+	 */
+	private async _emitExtensionEvent(
+		envelope: ExtensionEventEnvelope,
+	): Promise<void> {
+		const immutableEnvelope = freezeExtensionEventEnvelope(envelope);
+		const dispatchDepth = this._extensionEventDispatchContext.getStore() ?? 0;
+		if (dispatchDepth >= MAX_EXTENSION_EVENT_DISPATCH_DEPTH) {
+			await this._publishDiagnostic(
+				{
+					severity: "warning",
+					code: "extension.event_recursion_dropped",
+					message: `Extension event '${immutableEnvelope.name}' from '${immutableEnvelope.sourceExtensionId}' was dropped after ${MAX_EXTENSION_EVENT_DISPATCH_DEPTH} nested dispatches.`,
+					agentId: immutableEnvelope.sourceAgentId,
+					extensionId: immutableEnvelope.sourceExtensionId,
+				},
+				{ observeExtensions: false },
+			);
+			return;
+		}
+		await this._extensionEventDispatchContext.run(
+			dispatchDepth + 1,
+			async () => {
+				for (const [agentId, record] of [...this._agents]) {
+					const extensionRunner = record.extensionRunner;
+					if (!extensionRunner || extensionRunner.isStale()) continue;
+					const diagnostics =
+						await extensionRunner.emitExtensionEvent(immutableEnvelope);
+					await this._recordAndPublishExtensionDiagnostics(
+						agentId,
+						diagnostics,
+					);
+				}
+			},
+		);
+	}
+
 	private async _finishAgentPrompt(
 		agentId: AgentId,
-		run: Promise<unknown>,
+		run: Promise<AssistantMessage>,
+		runReservation: AgentPromptRun,
 		statusRevision: number,
 		options: { reportFailure: boolean },
 	): Promise<void> {
 		try {
-			await run;
+			const message = await run;
+			if (message.stopReason === "aborted") {
+				runReservation.idleReason = "aborted";
+			}
 		} catch (error) {
 			if (options.reportFailure) {
 				await this._recordAgentLifecycleFailure(
@@ -3696,14 +4806,26 @@ export class AgentOrchestrator {
 				);
 			}
 		} finally {
-			const record = this._agents.get(agentId);
-			if (
-				record?.status === "running" &&
-				this._agentStatusRevisions.get(agentId) === statusRevision
-			) {
-				await this._transitionAgentStatus(agentId, "idle");
+			// Disposal or a resumed session may have replaced this run while its
+			// promise was settling. A stale completion must not clear or publish the
+			// successor's idle edge.
+			if (this._agentPromptRuns.get(agentId) === runReservation) {
+				this._agentPromptRuns.delete(agentId);
+				const idleReason = runReservation.idleReason ?? "settled";
+				this._agentIdleReasons.set(agentId, idleReason);
+				const record = this._agents.get(agentId);
+				if (
+					record?.status === "running" &&
+					this._agentStatusRevisions.get(agentId) === statusRevision
+				) {
+					await this._transitionAgentStatus(agentId, "idle", { idleReason });
+				}
+				this._messages.wake(agentId);
+				// Terminal harness events may have committed the idle status before
+				// the prompt promise itself settled. Clearing the run reservation is
+				// the final fact needed by waiters and the observable idle edge.
+				await this._settleAgentIdle(agentId);
 			}
-			this._messages.wake(agentId);
 		}
 	}
 
@@ -3747,7 +4869,9 @@ export class AgentOrchestrator {
 			if (this._maintenanceOperations.get(agentId) === reservation) {
 				this._maintenanceOperations.delete(agentId);
 				if (this._agents.get(agentId)?.status === "running") {
-					await this._transitionAgentStatus(agentId, "idle");
+					await this._transitionAgentStatus(agentId, "idle", {
+						idleReason: "maintenance",
+					});
 				}
 				// Leaving maintenance is a delivery-phase change even when another
 				// lifecycle transition prevented the idle commit.
@@ -3786,7 +4910,8 @@ export class AgentOrchestrator {
 			case "disposed":
 				return "gone";
 			case "idle":
-				return record.harness ? "idle" : "gone";
+				if (!record.harness) return "gone";
+				return this._agentPromptRuns.has(agentId) ? "turn" : "idle";
 			case "running":
 				if (!record.harness) return "gone";
 				return this._maintenanceOperations.has(agentId)
@@ -3803,13 +4928,31 @@ export class AgentOrchestrator {
 			await this._transitionAgentStatus(agentId, "running");
 			return;
 		}
+		if (event.type === "turn_end") {
+			// A turn may be followed by tool execution and another turn, so it is
+			// not an idle boundary. It can still tell us that the eventual terminal
+			// idle was caused by an abort.
+			if (
+				event.message.role === "assistant" &&
+				event.message.stopReason === "aborted"
+			) {
+				const activeRun = this._agentPromptRuns.get(agentId);
+				if (activeRun) activeRun.idleReason = "aborted";
+			}
+			return;
+		}
 		if (
 			event.type === "agent_end" ||
-			event.type === "turn_end" ||
 			event.type === "abort" ||
 			event.type === "settled"
 		) {
-			await this._transitionAgentStatus(agentId, "idle");
+			const activeRun = this._agentPromptRuns.get(agentId);
+			await this._transitionAgentStatus(agentId, "idle", {
+				idleReason:
+					event.type === "abort" || activeRun?.idleReason === "aborted"
+						? "aborted"
+						: "settled",
+			});
 		}
 	}
 
@@ -3834,6 +4977,18 @@ export class AgentOrchestrator {
 		agentId: AgentId,
 		event: AgentHarnessEvent,
 	): Promise<void> {
+		const presentedMessage =
+			event.type === "message_end" ? event.message : undefined;
+		const pendingPresentation = presentedMessage
+			? this._takePendingExtensionInputPresentation(agentId, presentedMessage)
+			: undefined;
+		const presentationMessageEntryId =
+			pendingPresentation && presentedMessage
+				? await this.sessionManager.findAgentMessageEntryId(
+						agentId,
+						presentedMessage,
+					)
+				: null;
 		// The agent loop is running, so the prompt's user message is committed to
 		// this run: a pending delivery may now be reported as accepted. Resolved
 		// before the awaits below so acceptance never waits on observers.
@@ -3843,11 +4998,49 @@ export class AgentOrchestrator {
 		// The loop reports its queues after every drain, so an empty steering queue
 		// is the only honest evidence that the human's interrupt was read (an abort
 		// clears the queue through the same event).
-		if (event.type === "queue_update" && event.steer.length === 0) {
-			this._humanInterrupts.clear(agentId);
+		if (event.type === "queue_update") {
+			if (event.steer.length === 0) {
+				this._humanInterrupts.clear(agentId);
+			}
+			// The harness keeps its queues private and reports them only here, so
+			// this is the one place the orchestrator can learn that text it already
+			// handed over has not been read yet. `hasPendingMessages` needs it:
+			// scoped steer/followUp go straight to the harness and never touch the
+			// orchestrator's own delivery queue.
+			const record = this._agents.get(agentId);
+			if (record) {
+				record.harnessQueuedMessageCount =
+					event.steer.length + event.followUp.length + event.nextTurn.length;
+				// The queue draining is the other half of the idle judgement; a
+				// status commit alone would report idle with text still unread.
+				await this._settleAgentIdle(agentId);
+			}
+			this._captureQueuedExtensionInputPresentation(
+				agentId,
+				"steer",
+				event.steer,
+			);
+			this._captureQueuedExtensionInputPresentation(
+				agentId,
+				"follow_up",
+				event.followUp,
+			);
+		}
+		if (event.type === "abort") {
+			this._discardClearedExtensionInputPresentations(agentId, [
+				...event.clearedSteer,
+				...event.clearedFollowUp,
+			]);
 		}
 		await this._updateAgentStatusFromHarnessEvent(agentId, event);
 		await this._emit({ type: "agent_harness_event", agentId, event });
+		if (pendingPresentation) {
+			await this._commitExtensionInputPresentation(
+				agentId,
+				presentationMessageEntryId,
+				pendingPresentation,
+			);
+		}
 		// Every harness event can change the delivery phase, so re-examine the
 		// queue: this is what resumes a message deferred during maintenance or
 		// retried after a busy race.
@@ -3858,32 +5051,107 @@ export class AgentOrchestrator {
 		// skipped - the next run starts immediately and compaction would race
 		// its busy check.
 		if (event.type === "settled" && event.nextTurnCount === 0) {
-			await this._maybeAutoCompactAgent(agentId);
+			const contextTokens = await this._refreshAgentContextUsage(agentId);
+			await this._maybeAutoCompactAgent(agentId, contextTokens);
 		}
 	}
 
+	/**
+	 * Measure how much of the model's context window the agent's active branch
+	 * occupies, cache it, and publish the change.
+	 *
+	 * The measurement walks the branch, so it runs once per settled and its
+	 * result is handed to the compaction trigger rather than read twice. The
+	 * facts are the ones the upstream harness compacts on: last assistant usage
+	 * versus the model context window. A branch with no assistant usage yet has
+	 * no measurement - not a zero.
+	 */
+	private async _refreshAgentContextUsage(
+		agentId: AgentId,
+	): Promise<number | undefined> {
+		const record = this._agents.get(agentId);
+		if (!record) return undefined;
+		let usage: AgentContextUsage;
+		try {
+			const snapshot =
+				await this.sessionManager.getAgentSessionSnapshot(agentId);
+			const lastUsage = getLastAssistantUsage([...snapshot.pathToRoot]);
+			if (!lastUsage) {
+				// A branch with nothing to measure must clear any earlier
+				// measurement, not silently keep describing a branch this agent
+				// has since moved off.
+				await this._setAgentContextUsage(agentId, undefined);
+				return undefined;
+			}
+			const tokens = calculateContextTokens(lastUsage);
+			const contextWindow = record.model.contextWindow;
+			usage = {
+				tokens,
+				contextWindow,
+				percent: contextWindow > 0 ? (tokens / contextWindow) * 100 : 0,
+				model: modelReference(record.model),
+			};
+		} catch (error) {
+			// A failed refresh cannot certify that the previous branch measurement
+			// is still current. Clear it, report the failure, and let the next
+			// settled try again.
+			await this._setAgentContextUsage(agentId, undefined);
+			await this._publishDiagnostic({
+				severity: "warning",
+				code: "orchestrator.context_usage_failed",
+				message: `Failed to measure context usage for agent ${agentId}: ${formatError(error)}`,
+				agentId,
+			});
+			return undefined;
+		}
+		await this._setAgentContextUsage(agentId, usage);
+		return usage.tokens;
+	}
+
+	// Publish only on change: a settled that measures the same branch as the
+	// last one is not news for a gauge.
+	private async _setAgentContextUsage(
+		agentId: AgentId,
+		usage: AgentContextUsage | undefined,
+	): Promise<void> {
+		const record = this._agents.get(agentId);
+		if (!record) return;
+		const previous = record.contextUsage;
+		if (
+			previous?.tokens === usage?.tokens &&
+			previous?.contextWindow === usage?.contextWindow &&
+			previous?.model === usage?.model
+		) {
+			return;
+		}
+		record.contextUsage = usage ? { ...usage } : undefined;
+		await this._emit({
+			type: "agent_context_usage_changed",
+			agentId,
+			usage: usage ? { ...usage } : undefined,
+			changedAt: now(),
+		});
+	}
+
 	// Threshold trigger for automatic compaction (settings compaction.enabled /
-	// reserveTokens). The check consumes the same facts as the upstream
-	// harness: last assistant usage on the current branch versus the model
-	// context window. Failure is a warning diagnostic, never a thrown error -
+	// reserveTokens). Failure is a warning diagnostic, never a thrown error -
 	// an uncompactable over-threshold session keeps running until the provider
 	// rejects it, which is the same behavior as before this trigger existed.
-	private async _maybeAutoCompactAgent(agentId: AgentId): Promise<void> {
+	private async _maybeAutoCompactAgent(
+		agentId: AgentId,
+		contextTokens: number | undefined,
+	): Promise<void> {
+		if (contextTokens === undefined) return;
 		const settings = this.settingManager.getCompactionSettings();
 		if (!settings.enabled) return;
 		if (this._autoCompactingAgents.has(agentId)) return;
 		const record = this._agents.get(agentId);
 		if (!record || record.status !== "idle" || !record.harness) return;
+		if (!shouldCompact(contextTokens, record.model.contextWindow, settings)) {
+			return;
+		}
 		this._autoCompactingAgents.add(agentId);
 		try {
-			const snapshot =
-				await this.sessionManager.getAgentSessionSnapshot(agentId);
-			const usage = getLastAssistantUsage([...snapshot.pathToRoot]);
-			if (!usage) return;
-			const contextTokens = calculateContextTokens(usage);
-			if (!shouldCompact(contextTokens, record.model.contextWindow, settings)) {
-				return;
-			}
 			await this.compactAgent(agentId);
 		} catch (error) {
 			await this._publishDiagnostic({
@@ -3923,40 +5191,43 @@ export class AgentOrchestrator {
 	private _isExtensionObservedEvent(
 		event: OrchestratorEvent,
 	): event is ExtensionObservedEvent {
-		switch (event.type) {
-			case "agent_background_job_changed":
-			case "agent_background_job_progress":
-			case "agent_background_job_report_updated":
-			case "agent_harness_event":
-			case "agent_resumed":
-			case "agent_session_forked":
-			case "agent_session_info_changed":
-			case "agent_spawned":
-			case "diagnostic":
-			case "human_request_cancelled":
-			case "human_request_pending":
-			case "human_request_resolved":
-			case "human_request_timeout":
-			case "input_blocked":
-			case "input_transformed":
-				return true;
-		}
-		return false;
+		return Object.hasOwn(EXTENSION_OBSERVED_EVENT_NAMES, event.type);
 	}
 
+	/**
+	 * The agent an observed event belongs to, or undefined when it is about the
+	 * runtime rather than one agent. A runtime-scoped fact is broadcast; a
+	 * diagnostic without an agent has no observer to reach.
+	 */
 	private _extensionObservedAgentId(
 		event: ExtensionObservedEvent,
 	): AgentId | undefined {
-		return event.type === "diagnostic"
-			? event.diagnostic.agentId
-			: event.agentId;
+		if (event.type === "diagnostic") return event.diagnostic.agentId;
+		if (event.type === "runtime_shutdown_requested") return undefined;
+		return event.agentId;
 	}
 
 	private async _emitToExtensionObservers(
 		event: ExtensionObservedEvent,
 	): Promise<void> {
 		const agentId = this._extensionObservedAgentId(event);
-		if (!agentId) return;
+		if (!agentId) {
+			// Runtime-scoped: every live runtime is a subject, so a shutdown
+			// request reaches the agents that need to wind their work down, not
+			// only the one whose extension asked.
+			if (event.type !== "runtime_shutdown_requested") return;
+			for (const observedAgentId of [...this._agents.keys()]) {
+				await this._emitToExtensionObserversForAgent(observedAgentId, event);
+			}
+			return;
+		}
+		await this._emitToExtensionObserversForAgent(agentId, event);
+	}
+
+	private async _emitToExtensionObserversForAgent(
+		agentId: AgentId,
+		event: ExtensionObservedEvent,
+	): Promise<void> {
 		const extensionRunner = this._agents.get(agentId)?.extensionRunner;
 		// A stale runner (agent disposed) keeps its record but must not
 		// receive further events: its context actions can only fail.
@@ -4214,6 +5485,7 @@ function changesRecoverableProfileFields(
 		override.skills !== undefined ||
 		override.projectContext !== undefined ||
 		override.includeCwd !== undefined ||
+		override.skillsListing !== undefined ||
 		override.appendSystemPrompt !== undefined ||
 		override.persist !== undefined
 	);
@@ -4223,8 +5495,19 @@ function maintenanceDescription(kind: AgentMaintenanceKind): string {
 	return kind === "compaction" ? "compaction" : "tree navigation";
 }
 
-function formatError(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
+function userMessageText(message: AgentMessage): string | undefined {
+	if (message.role !== "user") return undefined;
+	if (typeof message.content === "string") return message.content;
+	return message.content
+		.filter((part) => part.type === "text")
+		.map((part) => part.text)
+		.join("");
+}
+
+function cloneSessionEntries(
+	entries: readonly SessionTreeEntry[],
+): readonly SessionTreeEntry[] {
+	return structuredClone(entries);
 }
 
 /** Text of every user message on a branch, for "was the model ever told X?". */

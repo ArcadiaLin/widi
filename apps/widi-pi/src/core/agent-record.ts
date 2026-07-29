@@ -25,6 +25,7 @@ import type {
 	ToolAdapterContext,
 } from "./tool-registry.ts";
 import type {
+	AgentContextUsage,
 	AgentId,
 	AgentLifecycleStatus,
 	AgentToolsSnapshot,
@@ -51,9 +52,11 @@ export interface AgentResourcesSnapshot {
 
 /** Everything the system prompt callback needs beyond the live harness state. */
 export interface AgentSystemPromptFacts {
-	/** Appended sections owned by the profile and the settings, in that order. */
+	/** Appended sections owned by the profile; the extensions' own follow them. */
 	readonly appendSections: readonly string[];
 	readonly contextFiles: readonly ProjectContextFile[];
+	/** Whether to list skills, or undefined to let the active tools decide. */
+	readonly includeSkills?: boolean;
 	/** The working directory to state, or undefined to leave it out. */
 	readonly cwd?: string;
 }
@@ -80,7 +83,11 @@ export interface AgentRecord {
 	 * have changed underneath it.
 	 */
 	readonly resolvedProfile?: AgentProfile;
-	/** The agent whose tool spawned this one; unset for user-side spawns. */
+	/**
+	 * The agent whose tool spawned this one; unset for user-side spawns.
+	 * Runtime-local creation provenance and a stable tree edge: disposal keeps it
+	 * so surviving descendants remain connected through parent tombstones.
+	 */
 	readonly spawnedBy?: AgentId;
 	sessionMetadata?: AgentSessionMetadata;
 	model: RuntimeModel;
@@ -88,12 +95,28 @@ export interface AgentRecord {
 	toolSnapshot?: AgentToolsSnapshot;
 	resources?: AgentResourcesSnapshot;
 	/**
-	 * System prompt composition resolved from the profile and the settings, plus
-	 * the project instruction files loaded for it. Held here because the harness
+	 * System prompt composition resolved from the profile, plus the project
+	 * instruction files loaded for it. Held here because the harness
 	 * rebuilds its system prompt every turn through a synchronous callback that
 	 * cannot go back to disk.
 	 */
 	systemPrompt?: AgentSystemPromptFacts;
+	/**
+	 * Last measured context occupancy of the active branch. Cached rather than
+	 * derived on read: measuring walks the whole branch, and every consumer -
+	 * the compaction trigger, the client gauge, extensions - wants the same
+	 * number from the same moment. Absent until the branch carries an assistant
+	 * usage to measure.
+	 */
+	contextUsage?: AgentContextUsage;
+	/**
+	 * Messages the harness has accepted but not yet read, as last reported by
+	 * its `queue_update`. Mirrored here because the harness keeps its steer,
+	 * follow-up, and next-turn queues private, and text delivered through the
+	 * low-level `steerAgent`/`followUpAgent` primitives never passes through
+	 * the orchestrator's own delivery queue.
+	 */
+	harnessQueuedMessageCount?: number;
 	extensionRunner?: ExtensionRunner;
 	/**
 	 * Pseudo-async background jobs owned by this agent. Job ownership is
@@ -123,6 +146,7 @@ export interface AgentRecordSnapshot {
 	readonly hasHarness: boolean;
 	readonly toolSnapshot?: AgentToolsSnapshot;
 	readonly resources?: AgentResourcesSnapshot;
+	readonly contextUsage?: AgentContextUsage;
 	readonly extensionIds: readonly string[];
 	readonly extensions: readonly ExtensionIdentity[];
 	readonly extensionSnapshot: ExtensionRunnerSnapshot;
@@ -168,11 +192,13 @@ export function createAgentRecordFromProfileReference(options: {
 	readonly profile: AgentProfileRecordReference;
 	readonly sessionMetadata?: AgentSessionMetadata;
 	readonly model: RuntimeModel;
+	readonly spawnedBy?: AgentId;
 }): AgentRecord {
 	return {
 		agentId: options.agentId,
 		status: options.status,
 		profile: options.profile,
+		spawnedBy: options.spawnedBy,
 		sessionMetadata: options.sessionMetadata,
 		model: options.model,
 		backgroundJobTable: new BackgroundJobTable(),
@@ -203,6 +229,7 @@ export function snapshotAgentRecord(record: AgentRecord): AgentRecordSnapshot {
 					promptTemplates: [...record.resources.promptTemplates],
 				}
 			: undefined,
+		contextUsage: record.contextUsage ? { ...record.contextUsage } : undefined,
 		extensionIds: record.extensionRunner
 			? [...record.extensionRunner.extensionIds]
 			: [],
