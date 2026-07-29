@@ -81,7 +81,11 @@ export interface AgentRecord {
 	 * have changed underneath it.
 	 */
 	readonly resolvedProfile?: AgentProfile;
-	/** The agent whose tool spawned this one; unset for user-side spawns. */
+	/**
+	 * The agent whose tool spawned this one; unset for user-side spawns.
+	 * Runtime-local creation provenance and a stable tree edge: disposal keeps it
+	 * so surviving descendants remain connected through parent tombstones.
+	 */
 	readonly spawnedBy?: AgentId;
 	sessionMetadata?: AgentSessionMetadata;
 	model: RuntimeModel;
@@ -186,11 +190,13 @@ export function createAgentRecordFromProfileReference(options: {
 	readonly profile: AgentProfileRecordReference;
 	readonly sessionMetadata?: AgentSessionMetadata;
 	readonly model: RuntimeModel;
+	readonly spawnedBy?: AgentId;
 }): AgentRecord {
 	return {
 		agentId: options.agentId,
 		status: options.status,
 		profile: options.profile,
+		spawnedBy: options.spawnedBy,
 		sessionMetadata: options.sessionMetadata,
 		model: options.model,
 		backgroundJobTable: new BackgroundJobTable(),

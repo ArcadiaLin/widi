@@ -1015,7 +1015,9 @@ export class WidiTuiApplication {
 	private async disposeAgent(agentId: string): Promise<void> {
 		const disposed = ensureAgentProjection(this.state, agentId);
 		const sourceAgentId = forkSourceAgentId(this.state, disposed);
-		await this.orchestrator.disposeAgent(agentId, "Disposed from the TUI.");
+		await this.orchestrator.disposeAgent(agentId, {
+			reason: "Disposed from the TUI.",
+		});
 		disposed.status = "disposed";
 		await this.syncAgent(agentId);
 
@@ -1097,7 +1099,9 @@ export class WidiTuiApplication {
 	 * alone instead of a tombstone nobody can return to.
 	 */
 	private async closeAgentForNewSession(agentId: string): Promise<void> {
-		await this.orchestrator.disposeAgent(agentId, "Closed for a new session.");
+		await this.orchestrator.disposeAgent(agentId, {
+			reason: "Closed for a new session.",
+		});
 		this.state.agents.delete(agentId);
 		this.drafts.delete(agentId);
 		this.hydratedAgents.delete(agentId);

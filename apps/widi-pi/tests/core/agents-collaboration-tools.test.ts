@@ -76,11 +76,24 @@ function createDeferred<T>(): {
 	return { promise, resolve };
 }
 
+async function spawnChild(
+	orchestrator: AgentOrchestrator,
+	parentAgentId: string,
+	profile = "worker",
+): Promise<string> {
+	const result = await spawnAgent.execute(
+		`spawn-${parentAgentId}`,
+		{ profile },
+		toolContext(orchestrator, parentAgentId),
+	);
+	return result.details.agentId;
+}
+
 /** An owner and a worker, both able to accept messages. */
 async function createPair() {
 	const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 	const owner = await orchestrator.spawnAgent();
-	const worker = await orchestrator.spawnAgent();
+	const worker = await spawnChild(orchestrator, owner);
 	return {
 		orchestrator,
 		owner,
@@ -155,11 +168,13 @@ describe("list_agent_profiles", () => {
 });
 
 describe("list_agents", () => {
-	it("marks the caller, omits disposed agents, and reports unavailable ones", async () => {
+	it("lists only the caller's tree, omits disposed agents, and reports unavailable ones", async () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		const caller = await orchestrator.spawnAgent();
-		const broken = await orchestrator.spawnAgent();
-		const gone = await orchestrator.spawnAgent();
+		const broken = await spawnChild(orchestrator, caller);
+		const gone = await spawnChild(orchestrator, caller);
+		const otherRoot = await orchestrator.spawnAgent();
+		const otherChild = await spawnChild(orchestrator, otherRoot);
 		requireAgentRecord(orchestrator, broken).status = "unavailable";
 		await orchestrator.disposeAgent(gone);
 
@@ -182,6 +197,41 @@ describe("list_agents", () => {
 			result.details.agents.find((agent) => agent.agentId === caller)
 				?.addressable,
 		).toBe(true);
+		expect(result.details.agents).not.toContainEqual(
+			expect.objectContaining({ agentId: otherRoot }),
+		);
+		expect(result.details.agents).not.toContainEqual(
+			expect.objectContaining({ agentId: otherChild }),
+		);
+		expect(
+			orchestrator.listAgents().agents.map((agent) => agent.agentId),
+		).toEqual([caller, broken, gone, otherRoot, otherChild]);
+	});
+
+	it("gives roots, children, and grandchildren the same tree view", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const root = await orchestrator.spawnAgent();
+		const child = await spawnChild(orchestrator, root);
+		const grandchild = await spawnChild(orchestrator, child);
+		const sibling = await spawnChild(orchestrator, root);
+		const otherRoot = await orchestrator.spawnAgent();
+
+		for (const caller of [root, child, grandchild, sibling]) {
+			const result = await listAgents.execute(
+				`list-${caller}`,
+				{},
+				toolContext(orchestrator, caller),
+			);
+			expect(result.details.agents.map((agent) => agent.agentId)).toEqual([
+				root,
+				child,
+				grandchild,
+				sibling,
+			]);
+			expect(result.details.agents).not.toContainEqual(
+				expect.objectContaining({ agentId: otherRoot }),
+			);
+		}
 	});
 });
 
@@ -293,6 +343,32 @@ describe("send_message plain delivery", () => {
 		);
 	});
 
+	it("delivers across trees when the caller knows the exact agent id", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const firstRoot = await orchestrator.spawnAgent();
+		const secondRoot = await orchestrator.spawnAgent();
+		const secondPrompt = stubPrompt(orchestrator, secondRoot);
+
+		const listed = await listAgents.execute(
+			"list-first-tree",
+			{},
+			toolContext(orchestrator, firstRoot),
+		);
+		expect(listed.details.agents.map((agent) => agent.agentId)).toEqual([
+			firstRoot,
+		]);
+
+		await sendMessage.execute(
+			"cross-tree-message",
+			{ agentId: secondRoot, message: "shared id bridge" },
+			toolContext(orchestrator, firstRoot),
+		);
+
+		expect(secondPrompt.mock.calls[0]?.[0]).toBe(
+			`[Message from ${firstRoot}]\n\nshared id bridge`,
+		);
+	});
+
 	it("fails against an agent that is already disposed", async () => {
 		const { orchestrator, owner, worker } = await createPair();
 		await orchestrator.disposeAgent(worker);
@@ -308,6 +384,34 @@ describe("send_message plain delivery", () => {
 });
 
 describe("send_message task delegation", () => {
+	it("assigns and completes a task across trees by exact ids", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const owner = await orchestrator.spawnAgent();
+		const worker = await orchestrator.spawnAgent();
+		const ownerPrompt = stubPrompt(orchestrator, owner);
+		stubPrompt(orchestrator, worker);
+
+		const assigned = await sendMessage.execute(
+			"cross-tree-task",
+			{ agentId: worker, message: "inspect the boundary", assignTask: true },
+			toolContext(orchestrator, owner),
+		);
+		const taskId = assigned.details.taskId;
+		if (!taskId) throw new Error("Expected a delegated task id.");
+		await sendMessage.execute(
+			"cross-tree-completion",
+			{
+				agentId: owner,
+				message: "boundary inspected",
+				completeTask: taskId,
+			},
+			toolContext(orchestrator, worker),
+		);
+
+		await vi.waitFor(() => expect(ownerPrompt).toHaveBeenCalledTimes(1));
+		expect(ownerPrompt.mock.calls[0]?.[0]).toContain("boundary inspected");
+	});
+
 	it("tracks the task as a job the worker settles", async () => {
 		const { orchestrator, owner, worker, ownerPrompt, workerPrompt } =
 			await createPair();
@@ -517,23 +621,163 @@ describe("send_message task delegation", () => {
 });
 
 describe("dispose_agent", () => {
-	it("handles each target on its own and refuses self-disposal", async () => {
+	it("handles each target on its own and enforces the tree boundary", async () => {
 		const { orchestrator, owner, worker } = await createPair();
-		const alreadyGone = await orchestrator.spawnAgent();
+		const alreadyGone = await spawnChild(orchestrator, owner);
+		const outsideTree = await orchestrator.spawnAgent();
 		await orchestrator.disposeAgent(alreadyGone);
 
 		const result = await disposeAgent.execute(
 			"call-1",
-			{ agentIds: [worker, alreadyGone, "nobody", owner], reason: "cleanup" },
+			{
+				agentIds: [worker, alreadyGone, outsideTree, "nobody", owner],
+				reason: "cleanup",
+			},
 			toolContext(orchestrator, owner),
 		);
 
+		expect(result.details.scope).toBe("agent");
 		expect(result.details.agents).toEqual([
 			{ agentId: worker, state: "disposed" },
 			{ agentId: alreadyGone, state: "already_disposed" },
+			{ agentId: outsideTree, state: "outside_tree" },
 			{ agentId: "nobody", state: "unknown" },
 			{ agentId: owner, state: "self" },
 		]);
 		expect(orchestrator.getAgentStatus(owner)).toBe("idle");
+		expect(orchestrator.getAgentStatus(outsideTree)).toBe("idle");
+	});
+
+	it("keeps surviving descendants in the original tree after single-agent disposal", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const root = await orchestrator.spawnAgent();
+		const parent = await spawnChild(orchestrator, root);
+		const grandchild = await spawnChild(orchestrator, parent);
+		const sibling = await spawnChild(orchestrator, root);
+		const parentMetadata = orchestrator.inspectAgent(parent).sessionMetadata;
+		if (!parentMetadata || !("path" in parentMetadata))
+			throw new Error("Expected a persistent child session.");
+
+		await disposeAgent.execute(
+			"dispose-parent-only",
+			{ agentIds: [parent], scope: "agent" },
+			toolContext(orchestrator, root),
+		);
+
+		expect(orchestrator.getAgentStatus(parent)).toBe("disposed");
+		expect(orchestrator.getAgentStatus(grandchild)).toBe("idle");
+		expect(requireAgentRecord(orchestrator, parent).spawnedBy).toBe(root);
+		expect(requireAgentRecord(orchestrator, grandchild).spawnedBy).toBe(parent);
+		const listed = await listAgents.execute(
+			"list-from-grandchild",
+			{},
+			toolContext(orchestrator, grandchild),
+		);
+		expect(listed.details.agents.map((agent) => agent.agentId)).toEqual([
+			root,
+			grandchild,
+			sibling,
+		]);
+
+		await orchestrator.spawnAgent({ resume: true, metadata: parentMetadata });
+		expect(requireAgentRecord(orchestrator, parent).spawnedBy).toBe(root);
+		const relisted = await listAgents.execute(
+			"list-after-parent-resume",
+			{},
+			toolContext(orchestrator, grandchild),
+		);
+		expect(relisted.details.agents.map((agent) => agent.agentId)).toEqual([
+			root,
+			parent,
+			grandchild,
+			sibling,
+		]);
+	});
+
+	it("recursively disposes a subtree in leaf-to-root order", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const root = await orchestrator.spawnAgent();
+		const parent = await spawnChild(orchestrator, root);
+		const firstChild = await spawnChild(orchestrator, parent);
+		const grandchild = await spawnChild(orchestrator, firstChild);
+		const secondChild = await spawnChild(orchestrator, parent);
+		const sibling = await spawnChild(orchestrator, root);
+
+		const result = await disposeAgent.execute(
+			"dispose-subtree",
+			{ agentIds: [parent], scope: "subtree", reason: "branch complete" },
+			toolContext(orchestrator, root),
+		);
+
+		expect(result.details).toEqual({
+			scope: "subtree",
+			agents: [
+				{
+					agentId: parent,
+					state: "disposed",
+					disposedAgentIds: [grandchild, firstChild, secondChild, parent],
+				},
+			],
+		});
+		for (const agentId of [parent, firstChild, grandchild, secondChild]) {
+			expect(orchestrator.getAgentStatus(agentId)).toBe("disposed");
+		}
+		expect(orchestrator.getAgentStatus(root)).toBe("idle");
+		expect(orchestrator.getAgentStatus(sibling)).toBe("idle");
+		expect(requireAgentRecord(orchestrator, parent).spawnedBy).toBe(root);
+	});
+
+	it("marks the whole subtree unaddressable before recursive teardown awaits", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const root = await orchestrator.spawnAgent();
+		const parent = await spawnChild(orchestrator, root);
+		const leaf = await spawnChild(orchestrator, parent);
+		const leafHarness = requireAgentHarness(orchestrator, leaf);
+		const teardown =
+			createDeferred<Awaited<ReturnType<typeof leafHarness.abort>>>();
+		vi.spyOn(leafHarness, "abort").mockReturnValue(teardown.promise);
+
+		const escapingSpawn = spawnAgent.execute(
+			"late-subtree-spawn",
+			{ profile: "worker" },
+			toolContext(orchestrator, leaf),
+		);
+		const escapingSpawnFailure = expect(escapingSpawn).rejects.toThrow(
+			/can no longer spawn child agents/,
+		);
+		const disposing = disposeAgent.execute(
+			"dispose-blocked-subtree",
+			{ agentIds: [parent], scope: "subtree" },
+			toolContext(orchestrator, root),
+		);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		await escapingSpawnFailure;
+		await expect(
+			sendMessage.execute(
+				"late-subtree-task",
+				{ agentId: parent, message: "late task", assignTask: true },
+				toolContext(orchestrator, root),
+			),
+		).rejects.toThrow(/can no longer be given work/);
+
+		teardown.resolve({ clearedSteer: [], clearedFollowUp: [] });
+		await disposing;
+	});
+
+	it("refuses a recursive selection that contains the caller", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const root = await orchestrator.spawnAgent();
+		const child = await spawnChild(orchestrator, root);
+
+		const result = await disposeAgent.execute(
+			"dispose-own-tree",
+			{ agentIds: [root], scope: "subtree" },
+			toolContext(orchestrator, child),
+		);
+
+		expect(result.details.agents).toEqual([{ agentId: root, state: "self" }]);
+		expect(orchestrator.getAgentStatus(root)).toBe("idle");
+		expect(orchestrator.getAgentStatus(child)).toBe("idle");
 	});
 });

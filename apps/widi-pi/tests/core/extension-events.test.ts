@@ -289,7 +289,7 @@ describe("extension event bus", () => {
 		});
 		const survivorId = await orchestrator.spawnAgent();
 		const disposedId = await orchestrator.spawnAgent();
-		await orchestrator.disposeAgent(disposedId, "test");
+		await orchestrator.disposeAgent(disposedId, { reason: "test" });
 
 		await requireActions(orchestrator, survivorId).emitExtensionEvent("ping");
 

@@ -87,7 +87,9 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 
 		expect(harness.disposeAgent).toHaveBeenCalledWith(
 			"main",
-			expect.stringContaining("new session"),
+			expect.objectContaining({
+				reason: expect.stringContaining("new session"),
+			}),
 		);
 		// The replaced agent leaves no projection behind: nothing to switch back to.
 		expect(harness.application.state.agents.has("main")).toBe(false);
@@ -135,7 +137,9 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 
 		expect(harness.disposeAgent).toHaveBeenCalledWith(
 			"main",
-			expect.stringContaining("new session"),
+			expect.objectContaining({
+				reason: expect.stringContaining("new session"),
+			}),
 		);
 		expect(harness.application.state.pendingAgent?.start).toMatchObject({
 			kind: "new-session",
@@ -161,7 +165,7 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 
 		expect(harness.disposeAgent).toHaveBeenCalledWith(
 			"main-fork",
-			expect.any(String),
+			expect.objectContaining({ reason: expect.any(String) }),
 		);
 		expect(harness.application.state.activeAgentId).toBe("main");
 	});

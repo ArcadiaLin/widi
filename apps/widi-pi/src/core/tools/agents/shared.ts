@@ -32,7 +32,7 @@ export function requireAddressableAgent(
 	const brief = host.describe(agentId);
 	if (!brief) {
 		throw new Error(
-			`Unknown agent: ${agentId}. Use list_agents to see which agents exist.`,
+			`Unknown agent: ${agentId}. list_agents discovers your own tree; a cross-tree target requires an exact id shared with you.`,
 		);
 	}
 	if (!brief.addressable) {

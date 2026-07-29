@@ -30,6 +30,7 @@ import {
 import { formatError } from "../utils/errors.ts";
 import type {
 	AgentBrief,
+	AgentDisposeScope,
 	AgentProfileBrief,
 	AgentTaskOutcome,
 	ToolAgentHost,
@@ -279,13 +280,6 @@ interface SpawnAgentCommonOptions {
 	model?: RuntimeModel;
 	inheritModelFromAgentId?: AgentId;
 	thinkingLevel?: ThinkingLevel;
-	/**
-	 * The agent whose tool initiated this spawn. Set only by the orchestrator
-	 * itself when a spawn comes through an agent's collaboration toolset;
-	 * user-side spawns (command, fork, new session, resume) leave it unset so
-	 * the agent renders as a top-level entry.
-	 */
-	spawnedBy?: AgentId;
 }
 
 export interface SpawnAgentCreateOptions extends SpawnAgentCommonOptions {
@@ -303,9 +297,20 @@ export type SpawnAgentOptions =
 	| SpawnAgentCreateOptions
 	| SpawnAgentResumeOptions;
 
+export interface DisposeAgentOptions {
+	readonly reason?: string;
+	/** Default: dispose only the named agent. */
+	readonly scope?: AgentDisposeScope;
+}
+
 interface SpawnedAgentHarness {
 	agentId: AgentId;
 	harness: WidiAgentHarness;
+}
+
+interface AgentCreationBarrier {
+	readonly completion: Promise<void>;
+	readonly complete: () => void;
 }
 
 interface AgentToolSet {
@@ -424,6 +429,10 @@ export class AgentOrchestrator {
 	private _agentRunSignals: Map<AgentId, AbortSignal> = new Map();
 	private _agentStatusRevisions: Map<AgentId, number> = new Map();
 	private _agentToolSets: Map<AgentId, AgentToolSet> = new Map();
+	// A dispose can discover an agent after its record is registered but before
+	// its harness is ready. It reserves the id immediately, then waits on this
+	// barrier so creation cannot install resources behind the teardown sweep.
+	private _agentCreations: Map<AgentId, AgentCreationBarrier> = new Map();
 	private _autoCompactingAgents: Set<AgentId> = new Set();
 	// Harness operations that do not run an agent loop (compaction, branch
 	// summary). `AgentLifecycleStatus.running` cannot tell these apart from a
@@ -547,11 +556,19 @@ export class AgentOrchestrator {
 			return (await this._resumeAgentHarness(options)).agentId;
 		}
 
+		return await this._spawnNewAgent(options);
+	}
+
+	private async _spawnNewAgent(
+		options: SpawnAgentCreateOptions,
+		spawnedBy?: AgentRecord,
+	): Promise<AgentId> {
+		if (spawnedBy) this._assertAgentCanSpawn(spawnedBy);
 		const agentProfile = await this._resolveCreateProfile(options);
 		const model = this._resolveSpawnModel(options);
 		const spawned = await this._createAgentHarness(agentProfile, model, {
 			thinkingLevel: options.thinkingLevel ?? this._defaultThinkingLevel,
-			spawnedBy: options.spawnedBy,
+			spawnedBy,
 		});
 		return spawned.agentId;
 	}
@@ -1875,13 +1892,62 @@ export class AgentOrchestrator {
 		await this._emit(event, { observeExtensions: false });
 	}
 
-	async disposeAgent(agentId: AgentId, reason?: string): Promise<void> {
+	/**
+	 * Dispose one agent or one whole spawn subtree.
+	 *
+	 * Subtree membership is snapshotted and every live member is marked gone
+	 * before the first await. No message or delegated task can land in a child
+	 * behind an ancestor's disposal sweep. Teardown then runs leaf-to-root so a
+	 * child never observes its parent disappear while its own harness is live.
+	 *
+	 * `spawnedBy` is retained on disposed records. It is both creation
+	 * provenance and the runtime-local tree edge used by surviving descendants.
+	 */
+	async disposeAgent(
+		agentId: AgentId,
+		options: DisposeAgentOptions = {},
+	): Promise<AgentId[]> {
+		const orderedAgentIds =
+			options.scope === "subtree"
+				? this._collectAgentSubtreePostOrder(agentId)
+				: [this._requireAgentRecord(agentId).agentId];
+		const reservedAgentIds = orderedAgentIds.filter((candidateAgentId) => {
+			const record = this._requireAgentRecord(candidateAgentId);
+			return (
+				record.status !== "disposed" &&
+				!this._disposingAgents.has(candidateAgentId)
+			);
+		});
+		for (const candidateAgentId of reservedAgentIds) {
+			this._disposingAgents.add(candidateAgentId);
+		}
+
+		const disposedAgentIds: AgentId[] = [];
+		const failures: unknown[] = [];
+		for (const candidateAgentId of reservedAgentIds) {
+			try {
+				await this._disposeSingleAgent(candidateAgentId, options.reason);
+				disposedAgentIds.push(candidateAgentId);
+			} catch (error) {
+				failures.push(error);
+			}
+		}
+		if (failures.length === 1) throw failures[0];
+		if (failures.length > 1) {
+			throw new AggregateError(
+				failures,
+				`Failed to dispose ${failures.length} agents in subtree ${agentId}.`,
+			);
+		}
+		return disposedAgentIds;
+	}
+
+	private async _disposeSingleAgent(
+		agentId: AgentId,
+		reason?: string,
+	): Promise<void> {
+		await this._agentCreations.get(agentId)?.completion;
 		const record = this._requireAgentRecord(agentId);
-		// Stop accepting work for this agent before the sweeps below run. The
-		// `disposed` status is only committed at the end of a teardown full of
-		// awaits, so status alone would keep reporting a live agent long after
-		// its outstanding work was already cancelled.
-		this._disposingAgents.add(agentId);
 
 		// Detach the result router and cancel live background work first, before
 		// the harness is torn down. Otherwise harness.abort() below can drive a
@@ -2017,7 +2083,7 @@ export class AgentOrchestrator {
 
 	async disposeAll(reason?: string): Promise<void> {
 		for (const agentId of [...this._agents.keys()]) {
-			await this.disposeAgent(agentId, reason);
+			await this.disposeAgent(agentId, { reason });
 		}
 		await this._humanRequests.cancelAll(reason ?? "Orchestrator disposed.");
 		try {
@@ -2220,6 +2286,120 @@ export class AgentOrchestrator {
 		return agentId;
 	}
 
+	/**
+	 * Resolve the top-level agent of one runtime-local spawn tree.
+	 *
+	 * Disposed records remain in `_agents`, so the walk deliberately follows
+	 * tombstone parents. A single-agent disposal must not split its surviving
+	 * descendants away from their original main agent.
+	 */
+	private _resolveAgentTreeRoot(agentId: AgentId): AgentId {
+		let record = this._requireAgentRecord(agentId);
+		const visited = new Set<AgentId>();
+		while (record.spawnedBy !== undefined) {
+			if (visited.has(record.agentId)) {
+				throw new Error(
+					`Agent spawn tree contains a cycle at ${record.agentId}.`,
+				);
+			}
+			visited.add(record.agentId);
+			const parent = this._agents.get(record.spawnedBy);
+			if (!parent) {
+				throw new Error(
+					`Agent ${record.agentId} references missing spawner ${record.spawnedBy}.`,
+				);
+			}
+			record = parent;
+		}
+		return record.agentId;
+	}
+
+	private _agentsShareTree(
+		firstAgentId: AgentId,
+		secondAgentId: AgentId,
+	): boolean {
+		return (
+			this._resolveAgentTreeRoot(firstAgentId) ===
+			this._resolveAgentTreeRoot(secondAgentId)
+		);
+	}
+
+	private _assertAgentCanSpawn(record: AgentRecord): void {
+		if (
+			this._agents.get(record.agentId) !== record ||
+			this._resolveDeliveryPhase(record.agentId) === "gone"
+		) {
+			throw new Error(
+				`Agent ${record.agentId} can no longer spawn child agents.`,
+			);
+		}
+	}
+
+	private _beginAgentCreation(agentId: AgentId): AgentCreationBarrier {
+		let complete!: () => void;
+		const completion = new Promise<void>((resolve) => {
+			complete = resolve;
+		});
+		const barrier = { completion, complete };
+		this._agentCreations.set(agentId, barrier);
+		return barrier;
+	}
+
+	private _finishAgentCreation(
+		agentId: AgentId,
+		barrier: AgentCreationBarrier,
+	): void {
+		if (this._agentCreations.get(agentId) === barrier) {
+			this._agentCreations.delete(agentId);
+		}
+		barrier.complete();
+	}
+
+	/** Snapshot one subtree in deterministic leaf-to-root disposal order. */
+	private _collectAgentSubtreePostOrder(agentId: AgentId): AgentId[] {
+		this._requireAgentRecord(agentId);
+		const childrenByParent = new Map<AgentId, AgentId[]>();
+		for (const record of this._agents.values()) {
+			if (record.spawnedBy === undefined) continue;
+			const children = childrenByParent.get(record.spawnedBy) ?? [];
+			children.push(record.agentId);
+			childrenByParent.set(record.spawnedBy, children);
+		}
+
+		const states = new Map<AgentId, "visiting" | "visited">();
+		const orderedAgentIds: AgentId[] = [];
+		const stack: Array<{
+			readonly agentId: AgentId;
+			readonly expanded: boolean;
+		}> = [{ agentId, expanded: false }];
+		while (stack.length > 0) {
+			const entry = stack.pop();
+			if (!entry) break;
+			if (entry.expanded) {
+				states.set(entry.agentId, "visited");
+				orderedAgentIds.push(entry.agentId);
+				continue;
+			}
+			const state = states.get(entry.agentId);
+			if (state === "visiting") {
+				throw new Error(
+					`Agent spawn tree contains a cycle at ${entry.agentId}.`,
+				);
+			}
+			if (state === "visited") continue;
+			states.set(entry.agentId, "visiting");
+			stack.push({ agentId: entry.agentId, expanded: true });
+			const children = childrenByParent.get(entry.agentId) ?? [];
+			for (let index = children.length - 1; index >= 0; index--) {
+				const childAgentId = children[index];
+				if (childAgentId !== undefined) {
+					stack.push({ agentId: childAgentId, expanded: false });
+				}
+			}
+		}
+		return orderedAgentIds;
+	}
+
 	private _resolveSpawnModel(options: SpawnAgentOptions): RuntimeModel {
 		if (options.model) {
 			return options.model;
@@ -2384,25 +2564,34 @@ export class AgentOrchestrator {
 	private async _createAgentHarness(
 		resolvedProfile: ResolvedAgentProfile,
 		model: RuntimeModel,
-		options: { thinkingLevel?: ThinkingLevel; spawnedBy?: AgentId } = {},
+		options: { thinkingLevel?: ThinkingLevel; spawnedBy?: AgentRecord } = {},
 	): Promise<SpawnedAgentHarness> {
 		const { profile } = resolvedProfile;
+		if (options.spawnedBy) this._assertAgentCanSpawn(options.spawnedBy);
 		const agentId = this._allocateAgentId(profile);
 		const session = await this.sessionManager.createAgentSession({
 			agentId: agentId,
 			agentProfile: profile,
 		});
 		const sessionMetadata = await session.getMetadata();
-		await this._registerAgentRecord(
-			createAgentRecord({
-				agentId,
-				status: "creating",
-				resolvedProfile,
-				sessionMetadata,
-				model,
-				spawnedBy: options.spawnedBy,
-			}),
-		);
+		if (options.spawnedBy) this._assertAgentCanSpawn(options.spawnedBy);
+		const spawnedByAgentId = options.spawnedBy?.agentId;
+		const creation = this._beginAgentCreation(agentId);
+		try {
+			await this._registerAgentRecord(
+				createAgentRecord({
+					agentId,
+					status: "creating",
+					resolvedProfile,
+					sessionMetadata,
+					model,
+					spawnedBy: spawnedByAgentId,
+				}),
+			);
+		} catch (error) {
+			this._finishAgentCreation(agentId, creation);
+			throw error;
+		}
 
 		try {
 			const harness = await this._buildAgentHarness({
@@ -2418,7 +2607,7 @@ export class AgentOrchestrator {
 				agentId,
 				profile,
 				model,
-				spawnedBy: options.spawnedBy,
+				spawnedBy: spawnedByAgentId,
 			});
 			return { agentId, harness };
 		} catch (error) {
@@ -2432,6 +2621,8 @@ export class AgentOrchestrator {
 				await this._publishDiagnostic(diagnostic);
 			}
 			throw error;
+		} finally {
+			this._finishAgentCreation(agentId, creation);
 		}
 	}
 
@@ -2447,6 +2638,7 @@ export class AgentOrchestrator {
 		let resolvedProfile: ResolvedAgentProfile | undefined;
 		let sessionMetadata: AgentSessionMetadata | undefined = options.metadata;
 		let model = this._defaultModel;
+		let creation: AgentCreationBarrier | undefined;
 		try {
 			resolvedProfile = await this._resolveResumeProfile(
 				agentId,
@@ -2461,9 +2653,10 @@ export class AgentOrchestrator {
 			const context =
 				await this.sessionManager.buildAgentSessionContext(agentId);
 			model = this._resolveResumeModel(options, context.model);
-			// Resume deliberately drops `spawnedBy`: parent-child spawn
-			// relationships are runtime facts and do not survive a restart, so a
-			// resumed agent renders as top-level again.
+			// A relationship from this runtime remains valid when a disposed
+			// session is resumed in place. After a process restart there is no
+			// cached record, so the same session correctly resumes as top-level.
+			creation = this._beginAgentCreation(agentId);
 			await this._registerAgentRecord(
 				createAgentRecord({
 					agentId,
@@ -2471,6 +2664,7 @@ export class AgentOrchestrator {
 					resolvedProfile,
 					sessionMetadata,
 					model,
+					spawnedBy: cachedRecord?.spawnedBy,
 				}),
 			);
 			const harness = await this._buildAgentHarness({
@@ -2504,6 +2698,8 @@ export class AgentOrchestrator {
 			});
 			await this._publishDiagnostic(diagnostic);
 			throw error;
+		} finally {
+			if (creation) this._finishAgentCreation(agentId, creation);
 		}
 	}
 
@@ -3003,9 +3199,9 @@ export class AgentOrchestrator {
 	/**
 	 * The collaboration port for one agent's tools. The caller's identity is
 	 * captured here, never taken from tool arguments, so an agent cannot forge
-	 * the sender of a message or the settler of a task. Everything else is read
-	 * straight off private state, which is why the whole feature needs exactly
-	 * one new public method ({@link settleAgentBackgroundJob}).
+	 * the sender of a message or the settler of a task. Discovery, exact-address
+	 * messaging, and lifecycle scope are resolved here over private runtime
+	 * state, so tools cannot bypass their caller-bound tree policy.
 	 */
 	private _createToolAgentHost(agentId: AgentId): ToolAgentHost {
 		return {
@@ -3025,13 +3221,19 @@ export class AgentOrchestrator {
 						}),
 					);
 			},
-			// A disposed agent is not listed at all, but an unavailable one is:
-			// hiding it reads as "it never existed" and invites the model to keep
-			// looking for it, where the unaddressable marker ends the search.
-			listAgents: () =>
-				Array.from(this._agents.values())
-					.filter((record) => record.status !== "disposed")
-					.map((record) => this._describeAgentForTools(record)),
+			// Discovery is tree-scoped. Exact ids remain runtime-wide addresses
+			// through `describe`/`send`, which is the deliberate soft bridge
+			// between otherwise isolated trees.
+			listAgents: () => {
+				const rootAgentId = this._resolveAgentTreeRoot(agentId);
+				return Array.from(this._agents.values())
+					.filter(
+						(record) =>
+							record.status !== "disposed" &&
+							this._resolveAgentTreeRoot(record.agentId) === rootAgentId,
+					)
+					.map((record) => this._describeAgentForTools(record));
+			},
 			describe: (targetAgentId) => {
 				const record = this._agents.get(targetAgentId);
 				return record ? this._describeAgentForTools(record) : undefined;
@@ -3039,8 +3241,12 @@ export class AgentOrchestrator {
 			// Agent-initiated spawns carry the caller as `spawnedBy` so surfaces
 			// can render the child under its parent; user-side spawns stay
 			// top-level.
-			spawn: async (profileId) =>
-				await this.spawnAgent({ profileId, spawnedBy: agentId }),
+			spawn: async (profileId) => {
+				const spawningAgent = this._requireAgentRecord(agentId);
+				this._assertAgentCanSpawn(spawningAgent);
+				await this.emitStartupDiagnostics();
+				return await this._spawnNewAgent({ profileId }, spawningAgent);
+			},
 			send: async (targetAgentId, body) =>
 				await this.sendMessage({
 					source: { kind: "agent", agentId },
@@ -3050,8 +3256,26 @@ export class AgentOrchestrator {
 					// target decides when to read them.
 					mode: "next_turn",
 				}),
-			dispose: async (targetAgentId, reason) => {
-				await this.disposeAgent(targetAgentId, reason);
+			dispose: async (targetAgentId, options) => {
+				const target = this._agents.get(targetAgentId);
+				if (!target) return { kind: "unknown" };
+				if (!this._agentsShareTree(agentId, targetAgentId)) {
+					return { kind: "outside_tree" };
+				}
+				const selectedAgentIds =
+					options.scope === "subtree"
+						? this._collectAgentSubtreePostOrder(targetAgentId)
+						: [targetAgentId];
+				if (selectedAgentIds.includes(agentId)) {
+					return { kind: "self" };
+				}
+				const disposedAgentIds = await this.disposeAgent(
+					targetAgentId,
+					options,
+				);
+				return disposedAgentIds.length > 0
+					? { kind: "disposed", agentIds: disposedAgentIds }
+					: { kind: "already_disposed" };
 			},
 			settleTask: (ownerAgentId, taskId, outcome) => {
 				if (!this._agents.has(ownerAgentId)) return "ignored";
@@ -3410,6 +3634,7 @@ export class AgentOrchestrator {
 					resolvedProfile: options.resolvedProfile,
 					sessionMetadata: options.sessionMetadata,
 					model: options.model,
+					spawnedBy: existing?.spawnedBy,
 				})
 			: createAgentRecordFromProfileReference({
 					agentId: options.agentId,
@@ -3421,6 +3646,7 @@ export class AgentOrchestrator {
 					},
 					sessionMetadata: options.sessionMetadata,
 					model: options.model,
+					spawnedBy: existing?.spawnedBy,
 				});
 		this._agentToolSets.delete(options.agentId);
 		await this._registerAgentRecord({

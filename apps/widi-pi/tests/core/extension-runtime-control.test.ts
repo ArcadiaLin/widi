@@ -100,14 +100,14 @@ describe("extension waitForIdle", () => {
 		await emitQueueUpdate(orchestrator, agentId, 1);
 
 		const waiting = actions.waitForIdle();
-		await orchestrator.disposeAgent(agentId, "test teardown");
+		await orchestrator.disposeAgent(agentId, { reason: "test teardown" });
 
 		await expect(waiting).rejects.toThrow("test teardown");
 	});
 
 	it("rejects for an agent that can never idle again", async () => {
 		const { orchestrator, agentId, actions } = await createHarness();
-		await orchestrator.disposeAgent(agentId, "test teardown");
+		await orchestrator.disposeAgent(agentId, { reason: "test teardown" });
 
 		await expect(actions.waitForIdle()).rejects.toThrow("disposed");
 	});

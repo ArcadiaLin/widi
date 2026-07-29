@@ -1849,8 +1849,8 @@ describe("AgentOrchestrator", () => {
 			}
 		});
 
-		await orchestrator.disposeAgent(agentId, "test cleanup");
-		await orchestrator.disposeAgent(agentId, "already disposed");
+		await orchestrator.disposeAgent(agentId, { reason: "test cleanup" });
+		await orchestrator.disposeAgent(agentId, { reason: "already disposed" });
 		expect(orchestrator.getAgentStatus(agentId)).toBe("disposed");
 		expect(orchestrator.listExtensionStatuses(agentId)).toEqual([]);
 		expect(statusSnapshotsDuringClear).toEqual([[], []]);
@@ -1895,7 +1895,7 @@ describe("AgentOrchestrator", () => {
 		if (!sessionMetadata) throw new Error("Expected agent session metadata.");
 		const persistedSession = expectExtendedMetadata(sessionMetadata);
 
-		await orchestrator.disposeAgent(agentId, "runtime cleanup");
+		await orchestrator.disposeAgent(agentId, { reason: "runtime cleanup" });
 
 		expect(orchestrator.getAgentStatus(agentId)).toBe("disposed");
 		await expect(orchestrator.listAgentSessions()).resolves.toMatchObject({
@@ -1944,7 +1944,9 @@ describe("AgentOrchestrator", () => {
 		});
 		await Promise.resolve();
 
-		await orchestrator.disposeAgent(firstAgentId, "agent disposed");
+		await orchestrator.disposeAgent(firstAgentId, {
+			reason: "agent disposed",
+		});
 
 		await expect(firstRequest).rejects.toMatchObject({
 			code: "orchestrator.human_request_cancelled",
