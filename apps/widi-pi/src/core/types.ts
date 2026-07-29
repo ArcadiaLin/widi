@@ -33,6 +33,18 @@ export type AgentLifecycleStatus =
  */
 export type AgentMaintenanceKind = "compaction" | "tree-navigation";
 
+/**
+ * How an agent arrived at the idle reported by `agent_idle`.
+ *
+ * `settled` and `aborted` are the two ways a turn can end and are the pair a
+ * delegating consumer actually has to tell apart: the first means the agent
+ * stopped because it was done talking, the second means something cut it off,
+ * so its last message may be a fragment. `ready` is the first idle after the
+ * harness is built, before any turn has run. `maintenance` follows compaction
+ * or tree navigation, which occupy the agent without being a turn at all.
+ */
+export type AgentIdleReason = "ready" | "settled" | "aborted" | "maintenance";
+
 export interface AgentToolsSnapshot {
 	readonly toolNames: string[];
 	readonly activeToolNames: string[];
@@ -77,6 +89,29 @@ export type OrchestratorEvent =
 			/** Set when this "running" transition is maintenance work, not a turn. */
 			maintenance?: AgentMaintenanceKind;
 			changedAt: string;
+	  }
+	// The agent has stopped and nothing is waiting to be read: the same
+	// judgement `waitForAgentIdle` settles on, published as an event so a
+	// consumer can be told rather than poll. Edge-triggered - one event per
+	// arrival at idle, not one per fact that re-confirms it.
+	//
+	// Deliberately not the same question as "the work is finished". An agent
+	// that stopped mid-task, was interrupted, or is waiting on jobs it started
+	// is idle here too; `reason` and `liveJobCount` are what a consumer judges
+	// that from.
+	| {
+			readonly type: "agent_idle";
+			agentId: AgentId;
+			reason: AgentIdleReason;
+			/**
+			 * Backgrounded jobs the agent still owns at this moment, including
+			 * tasks delegated to other agents. An idle with live jobs is an agent
+			 * waiting, not an agent done - it will be woken by their results.
+			 * Carried here because idleness itself does not consider them: an
+			 * agent whose jobs never settle would otherwise look permanently done.
+			 */
+			liveJobCount: number;
+			idleAt: string;
 	  }
 	// Input interception facts (ME slice 6): the model-facing text can differ
 	// from the human original, so both are published with extension attribution.

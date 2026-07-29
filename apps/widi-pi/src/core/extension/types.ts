@@ -112,6 +112,7 @@ export type ExtensionObservedEvent = Extract<
 			| "agent_background_job_report_updated"
 			| "agent_context_usage_changed"
 			| "agent_harness_event"
+			| "agent_idle"
 			| "agent_resumed"
 			| "agent_session_forked"
 			| "agent_session_info_changed"
@@ -145,6 +146,7 @@ export const EXTENSION_OBSERVED_EVENT_NAMES: Readonly<
 	agent_background_job_report_updated: true,
 	agent_context_usage_changed: true,
 	agent_harness_event: true,
+	agent_idle: true,
 	agent_resumed: true,
 	agent_session_forked: true,
 	agent_session_info_changed: true,

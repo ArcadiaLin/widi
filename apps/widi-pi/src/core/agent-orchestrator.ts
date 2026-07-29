@@ -159,6 +159,7 @@ import {
 import type {
 	AgentContextUsage,
 	AgentId,
+	AgentIdleReason,
 	AgentLifecycleStatus,
 	AgentMaintenanceKind,
 	AgentToolsSnapshot,
@@ -177,6 +178,7 @@ export type {
 
 export type {
 	AgentId,
+	AgentIdleReason,
 	AgentLifecycleStatus,
 	AgentMaintenanceKind,
 	OrchestratorEvent,
@@ -451,6 +453,17 @@ export class AgentOrchestrator {
 	// `waitForIdle`). Settled from the same two facts the idle judgement reads:
 	// a status commit, and the harness's own queue report.
 	private _agentIdleWaiters: Map<AgentId, Set<AgentIdleWaiter>> = new Map();
+	// Why each agent last entered the `idle` status, recorded at the transition
+	// and read when the idle event is finally published. The two moments are not
+	// the same one: an agent whose status commits to idle while the harness still
+	// reports queued text is not idle yet, and the fact that later completes it -
+	// a `queue_update` draining to zero - does not itself know what ended the run.
+	private readonly _agentIdleReasons: Map<AgentId, AgentIdleReason> = new Map();
+	// Agents whose current idle has already been published. Membership is the
+	// edge: entered when the event fires, dropped the moment the agent is busy or
+	// gone again, so re-confirming an idle the consumer was already told about
+	// stays silent.
+	private readonly _publishedAgentIdles = new Set<AgentId>();
 	// Depth belongs to the causal async chain, not to the runtime as a whole:
 	// independent concurrent emits must not consume one another's recursion
 	// budget, while a handler's nested emit must inherit its parent's depth.
@@ -2025,6 +2038,10 @@ export class AgentOrchestrator {
 			agentId,
 			reason ?? `Agent ${agentId} was disposed while waiting for it to idle.`,
 		);
+		// A resumed session reuses this agent id, and both of these describe an
+		// idle that belonged to the previous occupant.
+		this._agentIdleReasons.delete(agentId);
+		this._publishedAgentIdles.delete(agentId);
 		this._backgroundJobEmits.delete(agentId);
 		this._progressQueued.delete(agentId);
 		this._progressSequence.delete(agentId);
@@ -2601,7 +2618,9 @@ export class AgentOrchestrator {
 				model,
 				thinkingLevel: options.thinkingLevel,
 			});
-			await this._transitionAgentStatus(agentId, "idle");
+			await this._transitionAgentStatus(agentId, "idle", {
+				idleReason: "ready",
+			});
 			await this._emit({
 				type: "agent_spawned",
 				agentId,
@@ -2679,7 +2698,9 @@ export class AgentOrchestrator {
 			// context the model resumes with, not a message that arrives after it.
 			await this._reconcileBackgroundJobs(agentId);
 
-			await this._transitionAgentStatus(agentId, "idle");
+			await this._transitionAgentStatus(agentId, "idle", {
+				idleReason: "ready",
+			});
 			await this._emit({ type: "agent_resumed", agentId, profile, model });
 			return { agentId, harness };
 		} catch (error) {
@@ -3990,7 +4011,11 @@ export class AgentOrchestrator {
 	private async _transitionAgentStatus(
 		agentId: AgentId,
 		status: AgentLifecycleStatus,
-		options: { force?: boolean; maintenance?: AgentMaintenanceKind } = {},
+		options: {
+			force?: boolean;
+			maintenance?: AgentMaintenanceKind;
+			idleReason?: AgentIdleReason;
+		} = {},
 	): Promise<boolean> {
 		const record = this._requireAgentRecord(agentId);
 		const previousStatus = record.status;
@@ -4006,6 +4031,7 @@ export class AgentOrchestrator {
 			status,
 			previousStatus,
 			options.maintenance,
+			options.idleReason,
 		);
 	}
 
@@ -4014,6 +4040,7 @@ export class AgentOrchestrator {
 		status: AgentLifecycleStatus,
 		previousStatus: AgentLifecycleStatus | undefined,
 		maintenance?: AgentMaintenanceKind,
+		idleReason?: AgentIdleReason,
 	): Promise<boolean> {
 		if (previousStatus === status) return false;
 		record.status = status;
@@ -4021,6 +4048,11 @@ export class AgentOrchestrator {
 			record.agentId,
 			(this._agentStatusRevisions.get(record.agentId) ?? 0) + 1,
 		);
+		// Recorded before the emit, because the settle at the end of this method
+		// may already publish the idle this reason describes.
+		if (status === "idle") {
+			this._agentIdleReasons.set(record.agentId, idleReason ?? "settled");
+		}
 		await this._emit({
 			type: "agent_status_changed",
 			agentId: record.agentId,
@@ -4030,7 +4062,7 @@ export class AgentOrchestrator {
 			changedAt: now(),
 		});
 		this._messages.wake(record.agentId);
-		this._settleAgentIdleWaiters(record.agentId);
+		await this._settleAgentIdle(record.agentId);
 		return true;
 	}
 
@@ -4504,6 +4536,45 @@ export class AgentOrchestrator {
 		return pending ? { kind: "busy" } : { kind: "idle" };
 	}
 
+	/**
+	 * Settle everything that was waiting on this agent's idle: the promise-based
+	 * waiters, and then the event.
+	 *
+	 * Both read the one judgement in `_resolveAgentIdleState`, so a consumer that
+	 * awaited `waitForAgentIdle` and one that subscribed to `agent_idle` can never
+	 * disagree about whether the agent stopped. Waiters first: they are resolved
+	 * synchronously, and a listener for the event is allowed to take as long as it
+	 * likes without holding them open.
+	 *
+	 * Called from all three places the judgement can change - a status commit, a
+	 * prompt finishing, and the harness reporting its queues - because no single
+	 * one of them is sufficient on its own.
+	 */
+	private async _settleAgentIdle(agentId: AgentId): Promise<void> {
+		this._settleAgentIdleWaiters(agentId);
+		const state = this._resolveAgentIdleState(agentId);
+		if (state.kind !== "idle") {
+			// Busy or gone re-arms the edge. A gone agent never publishes: its
+			// disposal is already a fact of its own, and an agent that stopped
+			// because it was torn down did not become idle in any useful sense.
+			this._publishedAgentIdles.delete(agentId);
+			return;
+		}
+		if (this._publishedAgentIdles.has(agentId)) return;
+		const record = this._agents.get(agentId);
+		if (!record) return;
+		this._publishedAgentIdles.add(agentId);
+		await this._emit({
+			type: "agent_idle",
+			agentId,
+			reason: this._agentIdleReasons.get(agentId) ?? "settled",
+			liveJobCount: record.backgroundJobTable
+				.list()
+				.filter((job) => job.phase === "backgrounded").length,
+			idleAt: now(),
+		});
+	}
+
 	private _settleAgentIdleWaiters(agentId: AgentId): void {
 		const waiters = this._agentIdleWaiters.get(agentId);
 		if (!waiters || waiters.size === 0) return;
@@ -4594,7 +4665,7 @@ export class AgentOrchestrator {
 			this._messages.wake(agentId);
 			// A prompt that failed before the run started changes no status, so
 			// there is no transition for the waiters to settle from.
-			this._settleAgentIdleWaiters(agentId);
+			await this._settleAgentIdle(agentId);
 		}
 	}
 
@@ -4638,7 +4709,9 @@ export class AgentOrchestrator {
 			if (this._maintenanceOperations.get(agentId) === reservation) {
 				this._maintenanceOperations.delete(agentId);
 				if (this._agents.get(agentId)?.status === "running") {
-					await this._transitionAgentStatus(agentId, "idle");
+					await this._transitionAgentStatus(agentId, "idle", {
+						idleReason: "maintenance",
+					});
 				}
 				// Leaving maintenance is a delivery-phase change even when another
 				// lifecycle transition prevented the idle commit.
@@ -4700,7 +4773,9 @@ export class AgentOrchestrator {
 			event.type === "abort" ||
 			event.type === "settled"
 		) {
-			await this._transitionAgentStatus(agentId, "idle");
+			await this._transitionAgentStatus(agentId, "idle", {
+				idleReason: event.type === "abort" ? "aborted" : "settled",
+			});
 		}
 	}
 
@@ -4761,7 +4836,7 @@ export class AgentOrchestrator {
 					event.steer.length + event.followUp.length + event.nextTurn.length;
 				// The queue draining is the other half of the idle judgement; a
 				// status commit alone would report idle with text still unread.
-				this._settleAgentIdleWaiters(agentId);
+				await this._settleAgentIdle(agentId);
 			}
 			this._captureQueuedExtensionInputPresentation(
 				agentId,
