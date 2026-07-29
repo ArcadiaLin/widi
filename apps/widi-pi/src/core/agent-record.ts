@@ -52,9 +52,11 @@ export interface AgentResourcesSnapshot {
 
 /** Everything the system prompt callback needs beyond the live harness state. */
 export interface AgentSystemPromptFacts {
-	/** Appended sections owned by the profile and the settings, in that order. */
+	/** Appended sections owned by the profile; the extensions' own follow them. */
 	readonly appendSections: readonly string[];
 	readonly contextFiles: readonly ProjectContextFile[];
+	/** Whether to list skills, or undefined to let the active tools decide. */
+	readonly includeSkills?: boolean;
 	/** The working directory to state, or undefined to leave it out. */
 	readonly cwd?: string;
 }
@@ -93,8 +95,8 @@ export interface AgentRecord {
 	toolSnapshot?: AgentToolsSnapshot;
 	resources?: AgentResourcesSnapshot;
 	/**
-	 * System prompt composition resolved from the profile and the settings, plus
-	 * the project instruction files loaded for it. Held here because the harness
+	 * System prompt composition resolved from the profile, plus the project
+	 * instruction files loaded for it. Held here because the harness
 	 * rebuilds its system prompt every turn through a synchronous callback that
 	 * cannot go back to disk.
 	 */

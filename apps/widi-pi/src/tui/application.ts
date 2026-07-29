@@ -5,6 +5,7 @@ import type {
 	AgentOrchestrator,
 	OrchestratorEvent,
 } from "../core/agent-orchestrator.ts";
+import { DEFAULT_AGENT_DIR } from "../core/constants.js";
 import {
 	type OrchestratorDiagnostic,
 	OrchestratorError,
@@ -249,7 +250,7 @@ export class WidiTuiApplication {
 		try {
 			const runtime = await createWidiRuntime({
 				cwd: options.cwd,
-				agentDir: options.agentDir ?? join(homedir(), ".widi"),
+				agentDir: options.agentDir ?? join(homedir(), DEFAULT_AGENT_DIR),
 				defaultProfileId: options.profileId,
 				requestHuman: startupPrompt.requestHuman,
 			});

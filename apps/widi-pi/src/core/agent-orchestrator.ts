@@ -23,6 +23,7 @@ import {
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import {
+	type AssistantMessage,
 	getSupportedThinkingLevels,
 	type ImageContent,
 	type OAuthLoginCallbacks,
@@ -315,6 +316,32 @@ interface AgentCreationBarrier {
 	readonly complete: () => void;
 }
 
+type AgentDisposalResult =
+	| { readonly kind: "disposed" }
+	| { readonly kind: "failed"; readonly error: unknown };
+
+interface AgentDisposalBarrier {
+	readonly completion: Promise<AgentDisposalResult>;
+	readonly complete: (result: AgentDisposalResult) => void;
+}
+
+type AgentDisposalOperation =
+	| { readonly kind: "already_disposed"; readonly agentId: AgentId }
+	| {
+			readonly kind: "existing";
+			readonly agentId: AgentId;
+			readonly barrier: AgentDisposalBarrier;
+	  }
+	| {
+			readonly kind: "owned";
+			readonly agentId: AgentId;
+			readonly barrier: AgentDisposalBarrier;
+	  };
+
+interface AgentPromptRun {
+	idleReason?: AgentIdleReason;
+}
+
 interface AgentToolSet {
 	tools: ResolvedAgentHarnessTool[];
 	toolNames: string[];
@@ -429,12 +456,20 @@ export class AgentOrchestrator {
 	private _eventListeners: Set<OrchestratorEventListener> = new Set();
 	private _extensionObserverDispatchDepth: Map<AgentId, number> = new Map();
 	private _agentRunSignals: Map<AgentId, AbortSignal> = new Map();
+	// A prompt remains active until its harness promise settles. Harness
+	// `turn_end` is only the end of one model turn and may be followed by tools
+	// and another turn, so lifecycle status alone cannot certify agent idleness.
+	private _agentPromptRuns: Map<AgentId, AgentPromptRun> = new Map();
 	private _agentStatusRevisions: Map<AgentId, number> = new Map();
 	private _agentToolSets: Map<AgentId, AgentToolSet> = new Map();
 	// A dispose can discover an agent after its record is registered but before
 	// its harness is ready. It reserves the id immediately, then waits on this
 	// barrier so creation cannot install resources behind the teardown sweep.
 	private _agentCreations: Map<AgentId, AgentCreationBarrier> = new Map();
+	// In-progress teardowns, retained so a recursive dispose can wait for a
+	// descendant another caller is already tearing down before it removes the
+	// ancestor. Direct duplicate requests still return immediately.
+	private _agentDisposals: Map<AgentId, AgentDisposalBarrier> = new Map();
 	private _autoCompactingAgents: Set<AgentId> = new Set();
 	// Harness operations that do not run an agent loop (compaction, branch
 	// summary). `AgentLifecycleStatus.running` cannot tell these apart from a
@@ -1400,7 +1435,7 @@ export class AgentOrchestrator {
 		// entries without a paired user message.
 		if (options.requiresIdle) {
 			this._requireAgentHarness(agentId);
-			if (record.status !== "idle") {
+			if (record.status !== "idle" || this._agentPromptRuns.has(agentId)) {
 				throw new OrchestratorError({
 					severity: "error",
 					code: "orchestrator.agent_busy",
@@ -1831,6 +1866,8 @@ export class AgentOrchestrator {
 	async abortAgent(agentId: AgentId) {
 		const harness = this._requireAgentHarness(agentId);
 		this._requireAgentOutsideMaintenance(agentId, "abort");
+		const activeRun = this._agentPromptRuns.get(agentId);
+		if (activeRun) activeRun.idleReason = "aborted";
 		return await harness.abort();
 	}
 
@@ -1924,25 +1961,89 @@ export class AgentOrchestrator {
 			options.scope === "subtree"
 				? this._collectAgentSubtreePostOrder(agentId)
 				: [this._requireAgentRecord(agentId).agentId];
-		const reservedAgentIds = orderedAgentIds.filter((candidateAgentId) => {
-			const record = this._requireAgentRecord(candidateAgentId);
-			return (
-				record.status !== "disposed" &&
-				!this._disposingAgents.has(candidateAgentId)
-			);
-		});
-		for (const candidateAgentId of reservedAgentIds) {
-			this._disposingAgents.add(candidateAgentId);
-		}
+		const selectedAgentIds = new Set(orderedAgentIds);
+		const operations: AgentDisposalOperation[] = orderedAgentIds.map(
+			(candidateAgentId) => {
+				const record = this._requireAgentRecord(candidateAgentId);
+				if (record.status === "disposed") {
+					return { kind: "already_disposed", agentId: candidateAgentId };
+				}
+				const existing = this._agentDisposals.get(candidateAgentId);
+				if (existing) {
+					return {
+						kind: "existing",
+						agentId: candidateAgentId,
+						barrier: existing,
+					};
+				}
+				const barrier = this._beginAgentDisposal(candidateAgentId);
+				return {
+					kind: "owned",
+					agentId: candidateAgentId,
+					barrier,
+				};
+			},
+		);
 
 		const disposedAgentIds: AgentId[] = [];
 		const failures: unknown[] = [];
-		for (const candidateAgentId of reservedAgentIds) {
+		const blockedAgentErrors = new Map<AgentId, unknown>();
+		const blockSelectedAncestors = (
+			failedAgentId: AgentId,
+			error: unknown,
+		): void => {
+			let parentAgentId = this._agents.get(failedAgentId)?.spawnedBy;
+			while (
+				parentAgentId !== undefined &&
+				selectedAgentIds.has(parentAgentId)
+			) {
+				blockedAgentErrors.set(parentAgentId, error);
+				parentAgentId = this._agents.get(parentAgentId)?.spawnedBy;
+			}
+		};
+
+		for (const operation of operations) {
+			if (operation.kind === "already_disposed") continue;
+			const candidateAgentId = operation.agentId;
+			if (blockedAgentErrors.has(candidateAgentId)) {
+				if (operation.kind === "owned") {
+					operation.barrier.complete({
+						kind: "failed",
+						error: blockedAgentErrors.get(candidateAgentId),
+					});
+					if (
+						this._agentDisposals.get(candidateAgentId) === operation.barrier
+					) {
+						this._agentDisposals.delete(candidateAgentId);
+						this._disposingAgents.delete(candidateAgentId);
+					}
+				}
+				continue;
+			}
+			if (operation.kind === "existing") {
+				// A duplicate request for the named target keeps the existing
+				// non-blocking "already being disposed" behavior. A recursive
+				// request must still wait for in-progress descendants before it can
+				// tear down their ancestors.
+				if (candidateAgentId === agentId) continue;
+				const result = await operation.barrier.completion;
+				if (result.kind === "failed") {
+					failures.push(result.error);
+					blockSelectedAncestors(candidateAgentId, result.error);
+				}
+				continue;
+			}
 			try {
 				await this._disposeSingleAgent(candidateAgentId, options.reason);
 				disposedAgentIds.push(candidateAgentId);
+				operation.barrier.complete({ kind: "disposed" });
+				if (this._agentDisposals.get(candidateAgentId) === operation.barrier) {
+					this._agentDisposals.delete(candidateAgentId);
+				}
 			} catch (error) {
+				operation.barrier.complete({ kind: "failed", error });
 				failures.push(error);
+				blockSelectedAncestors(candidateAgentId, error);
 			}
 		}
 		if (failures.length === 1) throw failures[0];
@@ -2042,6 +2143,7 @@ export class AgentOrchestrator {
 		// idle that belonged to the previous occupant.
 		this._agentIdleReasons.delete(agentId);
 		this._publishedAgentIdles.delete(agentId);
+		this._agentPromptRuns.delete(agentId);
 		this._backgroundJobEmits.delete(agentId);
 		this._progressQueued.delete(agentId);
 		this._progressSequence.delete(agentId);
@@ -2144,7 +2246,7 @@ export class AgentOrchestrator {
 	 *
 	 * Read through rather than captured: an extension reload replaces the
 	 * runner, and its appended sections must follow. The role's own append text
-	 * comes first, then the settings, then extension sections.
+	 * comes first, then the extension sections.
 	 */
 	private _buildAgentSystemPrompt(
 		agentId: AgentId,
@@ -2163,6 +2265,7 @@ export class AgentOrchestrator {
 				...(record?.extensionRunner?.getSystemPromptAppends() ?? []),
 			],
 			contextFiles: record?.systemPrompt?.contextFiles,
+			includeSkills: record?.systemPrompt?.includeSkills,
 			cwd: record?.systemPrompt?.cwd,
 		});
 	}
@@ -2370,6 +2473,17 @@ export class AgentOrchestrator {
 			this._agentCreations.delete(agentId);
 		}
 		barrier.complete();
+	}
+
+	private _beginAgentDisposal(agentId: AgentId): AgentDisposalBarrier {
+		let complete!: (result: AgentDisposalResult) => void;
+		const completion = new Promise<AgentDisposalResult>((resolve) => {
+			complete = resolve;
+		});
+		const barrier = { completion, complete };
+		this._disposingAgents.add(agentId);
+		this._agentDisposals.set(agentId, barrier);
+		return barrier;
 	}
 
 	/** Snapshot one subtree in deterministic leaf-to-root disposal order. */
@@ -2594,6 +2708,12 @@ export class AgentOrchestrator {
 		if (options.spawnedBy) this._assertAgentCanSpawn(options.spawnedBy);
 		const spawnedByAgentId = options.spawnedBy?.agentId;
 		const creation = this._beginAgentCreation(agentId);
+		let creationPending = true;
+		const finishCreation = (): void => {
+			if (!creationPending) return;
+			creationPending = false;
+			this._finishAgentCreation(agentId, creation);
+		};
 		try {
 			await this._registerAgentRecord(
 				createAgentRecord({
@@ -2606,7 +2726,7 @@ export class AgentOrchestrator {
 				}),
 			);
 		} catch (error) {
-			this._finishAgentCreation(agentId, creation);
+			finishCreation();
 			throw error;
 		}
 
@@ -2618,9 +2738,17 @@ export class AgentOrchestrator {
 				model,
 				thinkingLevel: options.thinkingLevel,
 			});
+			// The harness and every resource teardown needs are now installed.
+			// Release disposal before publishing lifecycle events so a listener can
+			// synchronously dispose the new agent without waiting on the event it is
+			// currently handling.
+			finishCreation();
 			await this._transitionAgentStatus(agentId, "idle", {
 				idleReason: "ready",
 			});
+			if (this._resolveDeliveryPhase(agentId) === "gone") {
+				return { agentId, harness };
+			}
 			await this._emit({
 				type: "agent_spawned",
 				agentId,
@@ -2630,6 +2758,7 @@ export class AgentOrchestrator {
 			});
 			return { agentId, harness };
 		} catch (error) {
+			finishCreation();
 			const diagnostic = toDiagnostic(error, {
 				code: "orchestrator.agent_unavailable",
 				message: `Cannot create agent ${agentId}: ${formatError(error)}`,
@@ -2641,7 +2770,7 @@ export class AgentOrchestrator {
 			}
 			throw error;
 		} finally {
-			this._finishAgentCreation(agentId, creation);
+			finishCreation();
 		}
 	}
 
@@ -2658,6 +2787,12 @@ export class AgentOrchestrator {
 		let sessionMetadata: AgentSessionMetadata | undefined = options.metadata;
 		let model = this._defaultModel;
 		let creation: AgentCreationBarrier | undefined;
+		const finishCreation = (): void => {
+			if (!creation) return;
+			const pending = creation;
+			creation = undefined;
+			this._finishAgentCreation(agentId, pending);
+		};
 		try {
 			resolvedProfile = await this._resolveResumeProfile(
 				agentId,
@@ -2698,12 +2833,17 @@ export class AgentOrchestrator {
 			// context the model resumes with, not a message that arrives after it.
 			await this._reconcileBackgroundJobs(agentId);
 
+			finishCreation();
 			await this._transitionAgentStatus(agentId, "idle", {
 				idleReason: "ready",
 			});
+			if (this._resolveDeliveryPhase(agentId) === "gone") {
+				return { agentId, harness };
+			}
 			await this._emit({ type: "agent_resumed", agentId, profile, model });
 			return { agentId, harness };
 		} catch (error) {
+			finishCreation();
 			const diagnostic = toDiagnostic(error, {
 				code: "orchestrator.agent_unavailable",
 				message: `Cannot resume agent ${agentId}: ${formatError(error)}`,
@@ -2720,7 +2860,7 @@ export class AgentOrchestrator {
 			await this._publishDiagnostic(diagnostic);
 			throw error;
 		} finally {
-			if (creation) this._finishAgentCreation(agentId, creation);
+			finishCreation();
 		}
 	}
 
@@ -2758,12 +2898,7 @@ export class AgentOrchestrator {
 		// resolution happens earlier still and cannot reference them.
 		await this._applyExtensionProviderContributions(agentId, extensionRunner);
 
-		const promptSettings = this.settingManager.getSystemPromptSettings();
-		const includeProjectContext =
-			profile.projectContext ?? promptSettings.projectContext;
-		const loaded = await this.resourceLoader.loadAgentResources(profile, {
-			includeProjectContext,
-		});
+		const loaded = await this.resourceLoader.loadAgentResources(profile);
 		const resourceDiagnostics: OrchestratorDiagnostic[] =
 			loaded.diagnostics.map((diagnostic) => ({ ...diagnostic, agentId }));
 		await this._publishDiagnostics(resourceDiagnostics);
@@ -2788,21 +2923,19 @@ export class AgentOrchestrator {
 			),
 		};
 		// The role's own append text comes first: it is the most specific
-		// statement about this agent, and the settings speak for the whole
-		// installation. Extension sections follow, read per turn from the runner.
+		// statement about this agent. Extension sections follow, read per turn
+		// from the runner.
 		this._requireAgentRecord(agentId).systemPrompt = {
-			appendSections: [
-				...(profile.appendSystemPrompt ? [profile.appendSystemPrompt] : []),
-				...promptSettings.append,
-			],
+			appendSections: profile.appendSystemPrompt
+				? [profile.appendSystemPrompt]
+				: [],
 			contextFiles: loaded.contextFiles,
+			includeSkills: profile.skillsListing,
 			// The resource loader's cwd, not the execution env's: it is the project
 			// directory the file tools resolve their relative paths against, and
 			// the prompt has to name the same one.
 			cwd:
-				(profile.includeCwd ?? promptSettings.includeCwd)
-					? this.resourceLoader.getCwd()
-					: undefined,
+				(profile.includeCwd ?? true) ? this.resourceLoader.getCwd() : undefined,
 		};
 
 		const agentToolSet = await this._resolveAgentTools({
@@ -2997,7 +3130,7 @@ export class AgentOrchestrator {
 	): void {
 		extensionRunner.bindCore(this._createExtensionActions(), {
 			getSignal: () => this._agentRunSignals.get(agentId),
-			isIdle: () => this._requireAgentRecord(agentId).status !== "running",
+			isIdle: () => this._resolveAgentIdleState(agentId).kind === "idle",
 			reportActionFailure: async (failure) => {
 				const diagnostic = this._createExtensionActionFailureDiagnostic({
 					agentId,
@@ -4004,6 +4137,8 @@ export class AgentOrchestrator {
 	private async _registerAgentRecord(record: AgentRecord): Promise<void> {
 		const previousStatus = this._agents.get(record.agentId)?.status;
 		this._disposingAgents.delete(record.agentId);
+		this._agentDisposals.delete(record.agentId);
+		this._agentPromptRuns.delete(record.agentId);
 		this._agents.set(record.agentId, record);
 		await this._commitAgentStatus(record, record.status, previousStatus);
 	}
@@ -4438,7 +4573,7 @@ export class AgentOrchestrator {
 	): Promise<MessageDeliveryReceipt> {
 		const record = this._requireAgentRecord(agentId);
 		const harness = this._requireAgentHarness(agentId);
-		if (record.status !== "idle") {
+		if (record.status !== "idle" || this._agentPromptRuns.has(agentId)) {
 			throw new AgentHarnessError(
 				"busy",
 				`Agent ${agentId} cannot accept a prompt while ${record.status}.`,
@@ -4448,6 +4583,8 @@ export class AgentOrchestrator {
 		await this._transitionAgentStatus(agentId, "running");
 		const statusRevision = this._agentStatusRevisions.get(agentId) ?? 0;
 		const started = this._awaitAgentRunStart(agentId);
+		const runReservation: AgentPromptRun = {};
+		this._agentPromptRuns.set(agentId, runReservation);
 		const run = harness.prompt(text, {
 			images: options.images ? [...options.images] : undefined,
 		});
@@ -4462,6 +4599,9 @@ export class AgentOrchestrator {
 		]);
 		started.cancel();
 		if (start.kind === "rejected") {
+			if (this._agentPromptRuns.get(agentId) === runReservation) {
+				this._agentPromptRuns.delete(agentId);
+			}
 			// A busy rejection means another harness operation won the race. Keep
 			// the runtime status running so the queue retries as a follow-up.
 			if (
@@ -4472,14 +4612,20 @@ export class AgentOrchestrator {
 				this._agentStatusRevisions.get(agentId) === statusRevision &&
 				this._agents.get(agentId)?.status === "running"
 			) {
-				await this._transitionAgentStatus(agentId, "idle");
+				await this._transitionAgentStatus(agentId, "idle", {
+					idleReason: runReservation.idleReason ?? "settled",
+				});
 			}
 			throw start.error;
 		}
 
-		void this._finishAgentPrompt(agentId, run, statusRevision, options).catch(
-			() => {},
-		);
+		void this._finishAgentPrompt(
+			agentId,
+			run,
+			runReservation,
+			statusRevision,
+			options,
+		).catch(() => {});
 		return { method: "prompt", completed: run };
 	}
 
@@ -4529,6 +4675,7 @@ export class AgentOrchestrator {
 				message: `Agent ${agentId} is ${record.status}.`,
 			};
 		}
+		if (this._agentPromptRuns.has(agentId)) return { kind: "busy" };
 		if (record.status !== "idle") return { kind: "busy" };
 		const pending =
 			this._messages.hasPending(agentId) ||
@@ -4640,12 +4787,16 @@ export class AgentOrchestrator {
 
 	private async _finishAgentPrompt(
 		agentId: AgentId,
-		run: Promise<unknown>,
+		run: Promise<AssistantMessage>,
+		runReservation: AgentPromptRun,
 		statusRevision: number,
 		options: { reportFailure: boolean },
 	): Promise<void> {
 		try {
-			await run;
+			const message = await run;
+			if (message.stopReason === "aborted") {
+				runReservation.idleReason = "aborted";
+			}
 		} catch (error) {
 			if (options.reportFailure) {
 				await this._recordAgentLifecycleFailure(
@@ -4655,17 +4806,26 @@ export class AgentOrchestrator {
 				);
 			}
 		} finally {
-			const record = this._agents.get(agentId);
-			if (
-				record?.status === "running" &&
-				this._agentStatusRevisions.get(agentId) === statusRevision
-			) {
-				await this._transitionAgentStatus(agentId, "idle");
+			// Disposal or a resumed session may have replaced this run while its
+			// promise was settling. A stale completion must not clear or publish the
+			// successor's idle edge.
+			if (this._agentPromptRuns.get(agentId) === runReservation) {
+				this._agentPromptRuns.delete(agentId);
+				const idleReason = runReservation.idleReason ?? "settled";
+				this._agentIdleReasons.set(agentId, idleReason);
+				const record = this._agents.get(agentId);
+				if (
+					record?.status === "running" &&
+					this._agentStatusRevisions.get(agentId) === statusRevision
+				) {
+					await this._transitionAgentStatus(agentId, "idle", { idleReason });
+				}
+				this._messages.wake(agentId);
+				// Terminal harness events may have committed the idle status before
+				// the prompt promise itself settled. Clearing the run reservation is
+				// the final fact needed by waiters and the observable idle edge.
+				await this._settleAgentIdle(agentId);
 			}
-			this._messages.wake(agentId);
-			// A prompt that failed before the run started changes no status, so
-			// there is no transition for the waiters to settle from.
-			await this._settleAgentIdle(agentId);
 		}
 	}
 
@@ -4750,7 +4910,8 @@ export class AgentOrchestrator {
 			case "disposed":
 				return "gone";
 			case "idle":
-				return record.harness ? "idle" : "gone";
+				if (!record.harness) return "gone";
+				return this._agentPromptRuns.has(agentId) ? "turn" : "idle";
 			case "running":
 				if (!record.harness) return "gone";
 				return this._maintenanceOperations.has(agentId)
@@ -4767,14 +4928,30 @@ export class AgentOrchestrator {
 			await this._transitionAgentStatus(agentId, "running");
 			return;
 		}
+		if (event.type === "turn_end") {
+			// A turn may be followed by tool execution and another turn, so it is
+			// not an idle boundary. It can still tell us that the eventual terminal
+			// idle was caused by an abort.
+			if (
+				event.message.role === "assistant" &&
+				event.message.stopReason === "aborted"
+			) {
+				const activeRun = this._agentPromptRuns.get(agentId);
+				if (activeRun) activeRun.idleReason = "aborted";
+			}
+			return;
+		}
 		if (
 			event.type === "agent_end" ||
-			event.type === "turn_end" ||
 			event.type === "abort" ||
 			event.type === "settled"
 		) {
+			const activeRun = this._agentPromptRuns.get(agentId);
 			await this._transitionAgentStatus(agentId, "idle", {
-				idleReason: event.type === "abort" ? "aborted" : "settled",
+				idleReason:
+					event.type === "abort" || activeRun?.idleReason === "aborted"
+						? "aborted"
+						: "settled",
 			});
 		}
 	}
@@ -5308,6 +5485,7 @@ function changesRecoverableProfileFields(
 		override.skills !== undefined ||
 		override.projectContext !== undefined ||
 		override.includeCwd !== undefined ||
+		override.skillsListing !== undefined ||
 		override.appendSystemPrompt !== undefined ||
 		override.persist !== undefined
 	);

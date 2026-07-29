@@ -32,16 +32,18 @@ export interface ResourceRoot {
 }
 
 /**
- * The project's own instruction files, in the order they are inlined into the
- * system prompt: the agent dir's copy first, then the ancestor chain from the
- * outermost directory down to the cwd, so the most specific file is read last.
+ * The conventional names of a project's own instruction file, tried in this
+ * order when a role does not name its own. Files are inlined into the system
+ * prompt agent dir first, then the ancestor chain from the outermost directory
+ * down to the cwd, so the most specific file is read last.
+ *
+ * Names are matched exactly. Enumerating case variants here would only ever
+ * cover a few of them - `AGENTS.MD` but not `agents.md` - while doubling the
+ * lookups on the case-insensitive filesystems where the variant can never win
+ * anyway. A project that spells its file some other way names it in the role's
+ * own `projectContext` list.
  */
-const CONTEXT_FILE_NAMES = [
-	"AGENTS.md",
-	"AGENTS.MD",
-	"CLAUDE.md",
-	"CLAUDE.MD",
-] as const;
+const CONTEXT_FILE_NAMES = ["AGENTS.md", "CLAUDE.md"] as const;
 
 /** Guards against a path shape whose parent never reaches a root. */
 const MAX_CONTEXT_FILE_ANCESTORS = 128;
@@ -72,7 +74,7 @@ export interface LoadedAgentResources {
 		promptTemplate: PromptTemplate;
 		source: ResourceSource;
 	}[];
-	/** Empty when the agent's role or the settings turned project context off. */
+	/** Empty when the agent's role turned project context off. */
 	readonly contextFiles: readonly ProjectContextFile[];
 	/** Already carries a `resource.*` code and the offending path. */
 	readonly diagnostics: readonly CoreDiagnostic[];
@@ -143,15 +145,18 @@ export class ResourceLoader {
 	 */
 	async loadAgentResources(
 		profile: AgentProfile,
-		options: { includeProjectContext?: boolean } = {},
 	): Promise<LoadedAgentResources> {
-		const includeProjectContext = options.includeProjectContext ?? true;
+		// The role is the only authority on its project context: an unset field
+		// means the conventional file names, a list means those names instead.
+		const projectContext = profile.projectContext ?? true;
 		const [skills, promptTemplates, contextFiles] = await Promise.all([
 			this.loadSkills(profile.skills),
 			this.loadPromptTemplates(),
-			includeProjectContext
-				? this.loadContextFiles()
-				: Promise.resolve({ contextFiles: [], diagnostics: [] }),
+			projectContext === false
+				? Promise.resolve({ contextFiles: [], diagnostics: [] })
+				: this.loadContextFiles(
+						projectContext === true ? undefined : projectContext,
+					),
 		]);
 		return {
 			skills: skills.skills,
@@ -169,16 +174,20 @@ export class ResourceLoader {
 	}
 
 	/**
-	 * Load the project's own instruction files. Each root contributes at most
-	 * one file - the first candidate name that exists there - and a `cwd` root
-	 * also walks its ancestors up to the filesystem root, so a repository's
-	 * AGENTS.md still applies when the agent starts in a subdirectory.
+	 * Load the project's own instruction files. A `cwd` root walks its ancestors
+	 * up to the filesystem root, so a repository's AGENTS.md still applies when
+	 * the agent starts in a subdirectory.
+	 *
+	 * Without names, each directory contributes at most one file - the first
+	 * conventional name that exists there - because AGENTS.md and CLAUDE.md are
+	 * the same instructions under two conventions. Names given by a role are the
+	 * role's own choice, so every one of them that exists is loaded.
 	 *
 	 * A missing file is the ordinary case and stays silent; a file that exists
 	 * but cannot be read is reported, because that is a project instruction the
 	 * agent is running without.
 	 */
-	async loadContextFiles(): Promise<{
+	async loadContextFiles(fileNames?: readonly string[]): Promise<{
 		contextFiles: ProjectContextFile[];
 		diagnostics: CoreDiagnostic[];
 	}> {
@@ -193,22 +202,33 @@ export class ResourceLoader {
 			// Ancestors come back nearest-first; the outermost instructions are
 			// the most general, so they go in first.
 			for (const directory of [...directories].reverse()) {
-				const file = await this._loadContextFileFromDir(directory, diagnostics);
-				if (!file || seenPaths.has(file.path)) continue;
-				seenPaths.add(file.path);
-				contextFiles.push(file);
+				const files = await this._loadContextFilesFromDir(
+					directory,
+					fileNames,
+					diagnostics,
+				);
+				for (const file of files) {
+					if (seenPaths.has(file.path)) continue;
+					seenPaths.add(file.path);
+					contextFiles.push(file);
+				}
 			}
 		}
 
 		return { contextFiles, diagnostics };
 	}
 
-	/** Candidate names are tried in order; an unreadable one falls through to the next. */
-	private async _loadContextFileFromDir(
+	/**
+	 * Names are tried in order and an unreadable one falls through to the next.
+	 * Conventional names stop at the first hit; named files do not.
+	 */
+	private async _loadContextFilesFromDir(
 		directory: string,
+		fileNames: readonly string[] | undefined,
 		diagnostics: CoreDiagnostic[],
-	): Promise<ProjectContextFile | undefined> {
-		for (const name of CONTEXT_FILE_NAMES) {
+	): Promise<ProjectContextFile[]> {
+		const files: ProjectContextFile[] = [];
+		for (const name of fileNames ?? CONTEXT_FILE_NAMES) {
 			const path = await this._joinPath(directory, name);
 			const info = await this._executionEnv.fileInfo(path);
 			if (!info.ok) {
@@ -230,9 +250,10 @@ export class ResourceLoader {
 				});
 				continue;
 			}
-			return { path, content: content.value };
+			files.push({ path, content: content.value });
+			if (fileNames === undefined) break;
 		}
-		return undefined;
+		return files;
 	}
 
 	/**

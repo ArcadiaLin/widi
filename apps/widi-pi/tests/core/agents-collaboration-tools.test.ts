@@ -727,6 +727,39 @@ describe("dispose_agent", () => {
 		expect(requireAgentRecord(orchestrator, parent).spawnedBy).toBe(root);
 	});
 
+	it("waits for an overlapping descendant disposal before removing its parent", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const root = await orchestrator.spawnAgent();
+		const parent = await spawnChild(orchestrator, root);
+		const leaf = await spawnChild(orchestrator, parent);
+		const leafHarness = requireAgentHarness(orchestrator, leaf);
+		const teardown =
+			createDeferred<Awaited<ReturnType<typeof leafHarness.abort>>>();
+		const abort = vi
+			.spyOn(leafHarness, "abort")
+			.mockReturnValue(teardown.promise);
+
+		const leafDisposal = orchestrator.disposeAgent(leaf);
+		await vi.waitFor(() => expect(abort).toHaveBeenCalledTimes(1));
+		let parentFinished = false;
+		const parentDisposal = orchestrator
+			.disposeAgent(parent, { scope: "subtree" })
+			.then((agentIds) => {
+				parentFinished = true;
+				return agentIds;
+			});
+		await Promise.resolve();
+
+		expect(parentFinished).toBe(false);
+		expect(orchestrator.getAgentStatus(parent)).toBe("idle");
+
+		teardown.resolve({ clearedSteer: [], clearedFollowUp: [] });
+		await expect(leafDisposal).resolves.toEqual([leaf]);
+		await expect(parentDisposal).resolves.toEqual([parent]);
+		expect(orchestrator.getAgentStatus(leaf)).toBe("disposed");
+		expect(orchestrator.getAgentStatus(parent)).toBe("disposed");
+	});
+
 	it("marks the whole subtree unaddressable before recursive teardown awaits", async () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		const root = await orchestrator.spawnAgent();

@@ -37,6 +37,11 @@ export interface BuildAgentSystemPromptOptions {
 	/** Extra sections, already ordered by their source. */
 	readonly appendSections?: readonly string[];
 	readonly contextFiles?: readonly ProjectContextFile[];
+	/**
+	 * Whether to list the agent's skills. Omit to let the active tools decide,
+	 * which is the default the roles that say nothing get.
+	 */
+	readonly includeSkills?: boolean;
 	/** Omit to leave the working directory out of the prompt. */
 	readonly cwd?: string;
 }
@@ -108,9 +113,12 @@ export function formatProjectContextForSystemPrompt(
  * block via pi-agent-core), and the working directory.
  *
  * The skills listing is how the model discovers skills on its own; it tells
- * the model to read the skill file, so it is only appended when a read tool is
- * active. Explicit invocation stays available either way through `/skill`,
- * which inlines the body instead of pointing at it.
+ * the model to read the skill file, so by default it is only appended when a
+ * read tool is active. A role that states `includeSkills` decides for itself -
+ * it may read files through a tool this module does not know by name, or want
+ * the listing out of a prompt that would otherwise get one. Explicit invocation
+ * stays available either way through `/skill`, which inlines the body instead
+ * of pointing at it.
  *
  * The agent's own id is appended on the same principle: it is a per-agent
  * value a static prompt snippet cannot carry, and it only means anything to an
@@ -127,6 +135,7 @@ export function buildAgentSystemPrompt(
 		agentId,
 		appendSections,
 		contextFiles,
+		includeSkills,
 		cwd,
 	} = options;
 
@@ -155,8 +164,9 @@ export function buildAgentSystemPrompt(
 	if (projectContext !== "") {
 		sections.push(projectContext);
 	}
-	const hasReadTool = activeTools.some((tool) => tool.name === "read");
-	if (hasReadTool) {
+	const listSkills =
+		includeSkills ?? activeTools.some((tool) => tool.name === "read");
+	if (listSkills) {
 		const skillsSection = formatSkillsForSystemPrompt(resources.skills ?? []);
 		if (skillsSection !== "") {
 			sections.push(skillsSection);

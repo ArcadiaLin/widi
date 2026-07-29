@@ -7,7 +7,7 @@
 
 import type { AgentHarnessEvent } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type {
 	AgentOrchestrator,
 	OrchestratorEvent,
@@ -16,6 +16,7 @@ import {
 	createOrchestrator,
 	defaultModel,
 	MemoryExecutionEnv,
+	requireAgentHarness,
 	requireAgentRecord,
 } from "../helpers/orchestrator.ts";
 
@@ -46,8 +47,10 @@ async function emitHarnessEvent(
 	)._handleAgentHarnessEvent(agentId, event);
 }
 
-function turnEnd(): AgentHarnessEvent {
-	const message: AssistantMessage = {
+function assistantMessage(
+	stopReason: AssistantMessage["stopReason"] = "stop",
+): AssistantMessage {
+	return {
 		role: "assistant",
 		content: [{ type: "text", text: "turn" }],
 		api: defaultModel.api,
@@ -61,9 +64,14 @@ function turnEnd(): AgentHarnessEvent {
 			totalTokens: 2,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
-		stopReason: "stop",
+		stopReason,
 		timestamp: 2,
 	};
+}
+
+function turnEnd(
+	message: AssistantMessage = assistantMessage(),
+): AgentHarnessEvent {
 	return { type: "turn_end", message, toolResults: [] };
 }
 
@@ -78,6 +86,39 @@ function queueUpdate(steerCount: number): AgentHarnessEvent {
 		followUp: [],
 		nextTurn: [],
 	};
+}
+
+interface Deferred<T> {
+	readonly promise: Promise<T>;
+	readonly resolve: (value: T) => void;
+}
+
+function createDeferred<T>(): Deferred<T> {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((done) => {
+		resolve = done;
+	});
+	return { promise, resolve };
+}
+
+async function startPromptRun(
+	orchestrator: AgentOrchestrator,
+	agentId: string,
+): Promise<Deferred<AssistantMessage>> {
+	const run = createDeferred<AssistantMessage>();
+	const prompt = vi
+		.spyOn(requireAgentHarness(orchestrator, agentId), "prompt")
+		.mockReturnValue(run.promise);
+	const accepted = orchestrator.sendMessage({
+		source: { kind: "system", name: "idle-event-test" },
+		targetAgentId: agentId,
+		body: "run",
+		mode: "next_turn",
+	});
+	await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
+	await emitHarnessEvent(orchestrator, agentId, { type: "agent_start" });
+	await accepted;
+	return run;
 }
 
 describe("agent_idle", () => {
@@ -106,10 +147,13 @@ describe("agent_idle", () => {
 		await emitHarnessEvent(orchestrator, agentId, queueUpdate(0));
 		expect(events).toHaveLength(1);
 
-		// A turn re-arms the edge, so the next stop is published again.
-		await emitHarnessEvent(orchestrator, agentId, { type: "turn_start" });
+		// A model turn ending is not enough: the harness may still run tools and
+		// start another turn. The prompt promise is the terminal run boundary.
+		const run = await startPromptRun(orchestrator, agentId);
 		await emitHarnessEvent(orchestrator, agentId, turnEnd());
-		expect(events).toHaveLength(2);
+		expect(events).toHaveLength(1);
+		run.resolve(assistantMessage());
+		await vi.waitFor(() => expect(events).toHaveLength(2));
 		expect(events[1]?.reason).toBe("settled");
 	});
 
@@ -118,7 +162,21 @@ describe("agent_idle", () => {
 		const events = collectIdleEvents(orchestrator);
 		const agentId = await orchestrator.spawnAgent();
 
-		await emitHarnessEvent(orchestrator, agentId, { type: "turn_start" });
+		const run = await startPromptRun(orchestrator, agentId);
+		const message = assistantMessage("aborted");
+		await emitHarnessEvent(orchestrator, agentId, turnEnd(message));
+		await emitHarnessEvent(orchestrator, agentId, {
+			type: "agent_end",
+			messages: [message],
+		});
+		await emitHarnessEvent(orchestrator, agentId, {
+			type: "settled",
+			nextTurnCount: 0,
+		});
+		expect(events).toHaveLength(1);
+		run.resolve(message);
+		await vi.waitFor(() => expect(events).toHaveLength(2));
+		// AgentHarness emits abort only after the run promise has settled.
 		await emitHarnessEvent(orchestrator, agentId, {
 			type: "abort",
 			clearedSteer: [],
@@ -136,9 +194,13 @@ describe("agent_idle", () => {
 
 		// Status commits to idle, but the harness reports queued steer text: the
 		// agent stopped without having read what it was already given.
-		await emitHarnessEvent(orchestrator, agentId, { type: "turn_start" });
+		const run = await startPromptRun(orchestrator, agentId);
 		await emitHarnessEvent(orchestrator, agentId, queueUpdate(1));
 		await emitHarnessEvent(orchestrator, agentId, turnEnd());
+		run.resolve(assistantMessage());
+		await vi.waitFor(() =>
+			expect(orchestrator.getAgentStatus(agentId)).toBe("idle"),
+		);
 		expect(events).toHaveLength(1);
 
 		// Draining the queue is the fact that completes the judgement.
@@ -161,11 +223,24 @@ describe("agent_idle", () => {
 		});
 		table.background(job.id);
 
-		await emitHarnessEvent(orchestrator, agentId, { type: "turn_start" });
-		await emitHarnessEvent(orchestrator, agentId, turnEnd());
+		const run = await startPromptRun(orchestrator, agentId);
+		run.resolve(assistantMessage());
 
-		expect(events).toHaveLength(2);
+		await vi.waitFor(() => expect(events).toHaveLength(2));
 		expect(events[1]?.liveJobCount).toBe(1);
+	});
+
+	it("allows a ready-idle listener to dispose the agent it observes", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		orchestrator.subscribe(async (event) => {
+			if (event.type === "agent_idle" && event.reason === "ready") {
+				await orchestrator.disposeAgent(event.agentId);
+			}
+		});
+
+		const agentId = await orchestrator.spawnAgent();
+
+		expect(orchestrator.getAgentStatus(agentId)).toBe("disposed");
 	});
 
 	it("does not publish an idle for an agent that stopped because it was disposed", async () => {

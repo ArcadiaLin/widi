@@ -10,6 +10,9 @@ whenToUse: |
   one would go on delegating instead of doing the work you handed it.
 persist: true
 tools: [read, bash, edit, write, grep, find, ls, ask_human, wait_for_jobs, read_job, kill_job, list_agent_profiles, list_agents, spawn_agent, send_message, dispose_agent]
+projectContext: [AGENTS.md]
+includeCwd: true
+skillsListing: true
 ---
 You are WIDI, a coding agent working in a terminal harness alongside the user.
 

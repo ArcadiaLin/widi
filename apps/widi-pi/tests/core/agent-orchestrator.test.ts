@@ -898,6 +898,19 @@ describe("AgentOrchestrator", () => {
 			message: createAssistantPartial([{ type: "text", text: "done again" }]),
 			toolResults: [],
 		});
+		expect(orchestrator.getAgentStatus(agentId)).toBe("running");
+		await handleHarnessEvent(agentId, {
+			type: "agent_end",
+			messages: [
+				createAssistantPartial([{ type: "text", text: "done again" }]),
+			],
+		});
+		await handleHarnessEvent(agentId, {
+			type: "agent_end",
+			messages: [
+				createAssistantPartial([{ type: "text", text: "done again" }]),
+			],
+		});
 		expect(orchestrator.getAgentStatus(agentId)).toBe("idle");
 		expect(agentStatusChangedEvents(runtimeEvents)).toMatchObject([
 			{ agentId, previousStatus: "idle", status: "running" },
@@ -1065,9 +1078,13 @@ describe("AgentOrchestrator", () => {
 		const env = new MemoryExecutionEnv();
 		await env.writeFile("/workspace/project/AGENTS.md", "PROJECT RULES");
 		const orchestrator = await createOrchestrator(env, {
-			settingManager: new SettingManager({
-				systemPrompt: { append: ["FROM SETTINGS"] },
-			}),
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{
+						profile: { ...defaultProfile, appendSystemPrompt: "FROM PROFILE" },
+					},
+				]),
+			),
 		});
 		orchestrator.registerExtension("sample", (api) => {
 			api.appendSystemPrompt("FROM EXTENSION");
@@ -1079,19 +1096,15 @@ describe("AgentOrchestrator", () => {
 		expect(prompt).toContain(
 			'<project_instructions path="/workspace/project/AGENTS.md">\nPROJECT RULES',
 		);
-		expect(prompt).toContain("FROM SETTINGS");
-		expect(prompt).toContain("FROM EXTENSION");
-		// Settings speak for the installation, so an extension's section follows.
-		expect(prompt.indexOf("FROM SETTINGS")).toBeLessThan(
-			prompt.indexOf("FROM EXTENSION"),
-		);
+		// The role states what it is; an extension's section follows it.
+		expect(prompt).toContain("FROM PROFILE\n\nFROM EXTENSION");
 		// The project directory the file tools resolve against, not the process's.
 		expect(
 			prompt.endsWith("Current working directory: /workspace/project"),
 		).toBe(true);
 	});
 
-	it("lets a role turn off its project context, cwd, and add its own section", async () => {
+	it("lets a role turn off its project context and cwd", async () => {
 		const env = new MemoryExecutionEnv();
 		await env.writeFile("/workspace/project/AGENTS.md", "PROJECT RULES");
 		const quietProfile: AgentProfile = {
@@ -1104,9 +1117,6 @@ describe("AgentOrchestrator", () => {
 			profileRegistry: new AgentProfileRegistry(
 				InMemoryProfileStorageBackend.fromProfiles([{ profile: quietProfile }]),
 			),
-			settingManager: new SettingManager({
-				systemPrompt: { append: ["FROM SETTINGS"] },
-			}),
 		});
 		const agentId = await orchestrator.spawnAgent();
 
@@ -1114,8 +1124,88 @@ describe("AgentOrchestrator", () => {
 
 		expect(prompt).not.toContain("<project_context>");
 		expect(prompt).not.toContain("Current working directory");
-		// The role's own text comes ahead of the installation-wide one.
-		expect(prompt).toContain("FROM PROFILE\n\nFROM SETTINGS");
+		expect(prompt).toContain("FROM PROFILE");
+	});
+
+	it("inlines every project instruction file a role names", async () => {
+		const env = new MemoryExecutionEnv();
+		await env.writeFile("/workspace/project/AGENTS.md", "AGENTS RULES");
+		await env.writeFile("/workspace/project/CLAUDE.md", "CLAUDE RULES");
+		const namedProfile: AgentProfile = {
+			...defaultProfile,
+			// The conventional order would stop at AGENTS.md; naming both asks for
+			// both, in the order the role listed them.
+			projectContext: ["CLAUDE.md", "AGENTS.md"],
+		};
+		const orchestrator = await createOrchestrator(env, {
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: namedProfile }]),
+			),
+		});
+		const agentId = await orchestrator.spawnAgent();
+
+		const prompt = await readSystemPrompt(orchestrator, agentId);
+
+		expect(prompt).toContain("CLAUDE RULES");
+		expect(prompt).toContain("AGENTS RULES");
+		expect(prompt.indexOf("CLAUDE RULES")).toBeLessThan(
+			prompt.indexOf("AGENTS RULES"),
+		);
+	});
+
+	it("lets a role decide the skills listing regardless of its read tool", async () => {
+		const env = new MemoryExecutionEnv();
+		await env.writeFile(
+			"/workspace/project/.widi/skills/code-review/SKILL.md",
+			[
+				"---",
+				"name: code-review",
+				"description: Review code for issues.",
+				"---",
+				"BODY",
+			].join("\n"),
+		);
+		env.dirs.add("/workspace/project/.widi/skills");
+		const orchestrator = await createOrchestrator(env, {
+			toolRegistry: createCoreCodingToolRegistry(),
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{
+						profile: {
+							...defaultProfile,
+							id: "quiet",
+							skillsListing: false,
+						},
+					},
+					{
+						profile: {
+							...defaultProfile,
+							id: "loud",
+							tools: ["write"],
+							skillsListing: true,
+						},
+					},
+				]),
+			),
+		});
+
+		const quietId = await orchestrator.spawnAgent({ profileId: "quiet" });
+		expect(orchestrator.getAgentTools(quietId).activeToolNames).toContain(
+			"read",
+		);
+		expect(await readSystemPrompt(orchestrator, quietId)).not.toContain(
+			"<available_skills>",
+		);
+
+		// No read tool, and the listing points at a file: the role still gets it
+		// when it asks, because it may read through a tool this layer cannot name.
+		const loudId = await orchestrator.spawnAgent({ profileId: "loud" });
+		expect(orchestrator.getAgentTools(loudId).activeToolNames).not.toContain(
+			"read",
+		);
+		expect(await readSystemPrompt(orchestrator, loudId)).toContain(
+			"<name>code-review</name>",
+		);
 	});
 
 	it("promptAgent persists an expansion entry alongside the prompt", async () => {
