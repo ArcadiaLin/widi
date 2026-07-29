@@ -5,7 +5,7 @@ import type * as photonNode from "@silvia-odwyer/photon-node";
  * Lazy loader for @silvia-odwyer/photon-node.
  *
  * Requiring photon synchronously compiles a multi-megabyte WASM asset, so the
- * module must not load at import time of the tool registry. The package is
+ * module must not load at import time of the runtime. The package is
  * CJS, which lets a deferred createRequire call stay synchronous while keeping
  * the load lazy; a missing or broken WASM asset then degrades image reads
  * instead of crashing the CLI at startup.

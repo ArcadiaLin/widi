@@ -1,11 +1,14 @@
 import { TextDecoder } from "node:util";
 import { type Static, Type } from "typebox";
-import type { ToolDefinition } from "../types.ts";
 import {
 	detectSupportedImageMimeType,
 	IMAGE_MIME_SNIFF_BYTES,
-} from "./image/mime.ts";
-import { type ImageProcessor, processImage } from "./image/process-image.ts";
+} from "../../../utils/image/mime.ts";
+import {
+	type ImageProcessor,
+	processImage,
+} from "../../../utils/image/process-image.ts";
+import type { ToolDefinition } from "../types.ts";
 import {
 	type CodingToolFileOperations,
 	createLocalCodingToolFileOperations,

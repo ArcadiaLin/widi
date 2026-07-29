@@ -8,6 +8,7 @@ import type {
 	ToolResultPatch,
 } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
+import { formatError } from "../../utils/errors.ts";
 import type { CoreDiagnostic } from "../diagnostics.ts";
 import type { ToolRegistry } from "../tool-registry.ts";
 import type { ExtensionEventEnvelope } from "./events.ts";
@@ -1012,10 +1013,6 @@ export class ExtensionRunner {
 			extensionId: registration.extensionId,
 		};
 	}
-}
-
-function formatError(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }
 
 function cloneStreamOptions(

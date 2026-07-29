@@ -5,6 +5,8 @@ import {
 	resizeImageInProcess,
 } from "./resize-core.ts";
 
+/** Worker-backed facade for the shared image resize implementation. */
+
 export type { ImageResizeOptions, ResizedImage } from "./resize-core.ts";
 
 interface ResizeImageWorkerResponse {

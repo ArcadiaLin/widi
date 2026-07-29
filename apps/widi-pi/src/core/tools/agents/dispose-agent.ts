@@ -1,7 +1,8 @@
 import { type Static, Type } from "typebox";
+import { formatError } from "../../../utils/errors.ts";
 import type { ToolAgentHost } from "../../agent-host.ts";
 import type { ToolDefinition } from "../types.ts";
-import { formatError, requireAgentHost } from "./shared.ts";
+import { requireAgentHost } from "./shared.ts";
 
 const disposeAgentSchema = Type.Object({
 	agentIds: Type.Array(Type.String(), {

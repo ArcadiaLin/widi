@@ -1,10 +1,10 @@
 import type {
 	ExecutionEnv,
-	FileError,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
+import { unwrapResult } from "../utils/result.ts";
 import {
 	AgentOrchestrator,
 	type AgentOrchestratorConfigs,
@@ -136,13 +136,6 @@ export interface WidiRuntime {
 	readonly diagnostics: readonly CoreDiagnostic[];
 }
 
-function fileSystemValueOrThrow<TValue>(
-	result: { ok: true; value: TValue } | { ok: false; error: FileError },
-): TValue {
-	if (!result.ok) throw result.error;
-	return result.value;
-}
-
 class CompositeProfileStorageBackend implements ProfileStorageBackend {
 	private readonly backends: readonly ProfileStorageBackend[];
 	private readonly entries = new Map<string, ProfileStorageBackend>();
@@ -188,14 +181,14 @@ async function joinPath(
 	executionEnv: ExecutionEnv,
 	parts: readonly string[],
 ): Promise<string> {
-	return fileSystemValueOrThrow(await executionEnv.joinPath([...parts]));
+	return unwrapResult(await executionEnv.joinPath([...parts]));
 }
 
 async function absolutePath(
 	executionEnv: ExecutionEnv,
 	path: string,
 ): Promise<string> {
-	return fileSystemValueOrThrow(await executionEnv.absolutePath(path));
+	return unwrapResult(await executionEnv.absolutePath(path));
 }
 
 async function resolveSettingsPaths(

@@ -17,6 +17,7 @@ import type {
 	OAuthLoginCallbacks,
 	Credential as PiCredential,
 } from "@earendil-works/pi-ai";
+import { AsyncLock } from "../utils/async-lock.ts";
 import { DEFAULT_AGENT_DIR } from "./constants.js";
 import type { CoreDiagnostic } from "./diagnostics.ts";
 import type { ConfigValueResolver } from "./resolve-config-value.js";
@@ -54,28 +55,6 @@ export type LockResult<T> = {
 export type AuthDiagnostic = CoreDiagnostic;
 
 const DEFAULT_AUTH_PATH = `${DEFAULT_AGENT_DIR}/auth.json`;
-
-// Process-local FIFO lock. This serializes async callers inside the current
-// WIDI process only; it is not a filesystem lock and does not coordinate other
-// WIDI processes sharing the same auth.json.
-class AsyncLock {
-	private tail: Promise<void> = Promise.resolve();
-
-	async run<T>(fn: () => Promise<T>): Promise<T> {
-		let release: (() => void) | undefined;
-		const previous = this.tail;
-		this.tail = new Promise<void>((resolve) => {
-			release = resolve;
-		});
-
-		await previous;
-		try {
-			return await fn();
-		} finally {
-			release?.();
-		}
-	}
-}
 
 export interface AuthStorageBackend {
 	withLockAsync<T>(

@@ -1,8 +1,9 @@
 import type {
 	ExecutionEnv,
-	FileError,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
+import { AsyncLock } from "../utils/async-lock.ts";
+import { unwrapResult } from "../utils/result.ts";
 import { DEFAULT_AGENT_DIR } from "./constants.js";
 import type { CoreDiagnostic } from "./diagnostics.ts";
 import type { ExtensionDivisionSelection } from "./extension/types.ts";
@@ -206,35 +207,6 @@ type SettingFileSystem = Pick<
 	"joinPath" | "readTextFile" | "writeFile" | "exists"
 >;
 
-// Process-local FIFO lock. This serializes async callers inside the current
-// WIDI process only; it is not a filesystem lock and does not coordinate other
-// WIDI processes sharing the same settings files.
-class AsyncLock {
-	private tail: Promise<void> = Promise.resolve();
-
-	async run<T>(fn: () => Promise<T>): Promise<T> {
-		let release: (() => void) | undefined;
-		const previous = this.tail;
-		this.tail = new Promise<void>((resolve) => {
-			release = resolve;
-		});
-
-		await previous;
-		try {
-			return await fn();
-		} finally {
-			release?.();
-		}
-	}
-}
-
-function fileSystemValueOrThrow<TValue>(
-	result: { ok: true; value: TValue } | { ok: false; error: FileError },
-): TValue {
-	if (!result.ok) throw result.error;
-	return result.value;
-}
-
 function deepMergeSettings(base: Settings, overrides: Settings): Settings {
 	const result: Settings = { ...base };
 
@@ -356,13 +328,13 @@ export class FileSettingsStorage implements SettingsStorage {
 	): Promise<T> {
 		return await this.locks[scope].run(async () => {
 			const path = await this.getSettingsPath(scope);
-			const exists = fileSystemValueOrThrow(await this.fs.exists(path));
+			const exists = unwrapResult(await this.fs.exists(path));
 			const current = exists
-				? fileSystemValueOrThrow(await this.fs.readTextFile(path))
+				? unwrapResult(await this.fs.readTextFile(path))
 				: undefined;
 			const { result, next } = await fn(current);
 			if (next !== undefined) {
-				fileSystemValueOrThrow(await this.fs.writeFile(path, next));
+				unwrapResult(await this.fs.writeFile(path, next));
 			}
 			return result;
 		});
@@ -371,7 +343,7 @@ export class FileSettingsStorage implements SettingsStorage {
 	private async getSettingsPath(scope: SettingsScope): Promise<string> {
 		if (scope === "global") {
 			if (!this.globalSettingsPath) {
-				this.globalSettingsPath = fileSystemValueOrThrow(
+				this.globalSettingsPath = unwrapResult(
 					await this.fs.joinPath([this.agentDir, "settings.json"]),
 				);
 			}
@@ -379,7 +351,7 @@ export class FileSettingsStorage implements SettingsStorage {
 		}
 
 		if (!this.projectSettingsPath) {
-			this.projectSettingsPath = fileSystemValueOrThrow(
+			this.projectSettingsPath = unwrapResult(
 				await this.fs.joinPath([
 					this.cwd,
 					this.projectConfigDir,

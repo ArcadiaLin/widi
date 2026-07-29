@@ -1,4 +1,6 @@
-import type { ExecutionEnv, FileError } from "@earendil-works/pi-agent-core";
+import type { ExecutionEnv } from "@earendil-works/pi-agent-core";
+import { AsyncLock } from "../utils/async-lock.ts";
+import { unwrapResult } from "../utils/result.ts";
 import { DEFAULT_AGENT_DIR } from "./constants.js";
 import type { CoreDiagnostic } from "./diagnostics.ts";
 import type { DefaultProjectTrust } from "./setting-manager.js";
@@ -46,32 +48,6 @@ const TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES = [
 	"prompts",
 	"themes",
 ] as const;
-
-class AsyncLock {
-	private tail: Promise<void> = Promise.resolve();
-
-	async run<T>(fn: () => Promise<T>): Promise<T> {
-		let release: (() => void) | undefined;
-		const previous = this.tail;
-		this.tail = new Promise<void>((resolve) => {
-			release = resolve;
-		});
-
-		await previous;
-		try {
-			return await fn();
-		} finally {
-			release?.();
-		}
-	}
-}
-
-function fileSystemValueOrThrow<TValue>(
-	result: { ok: true; value: TValue } | { ok: false; error: FileError },
-): TValue {
-	if (!result.ok) throw result.error;
-	return result.value;
-}
 
 function normalizePath(path: string): string {
 	return (
@@ -187,18 +163,16 @@ export class ProjectTrustStore {
 	): Promise<T> {
 		return await this.lock.run(async () => {
 			const path = await this.getTrustPath();
-			const exists = fileSystemValueOrThrow(
-				await this.executionEnv.exists(path),
-			);
+			const exists = unwrapResult(await this.executionEnv.exists(path));
 			const current = exists
-				? fileSystemValueOrThrow(await this.executionEnv.readTextFile(path))
+				? unwrapResult(await this.executionEnv.readTextFile(path))
 				: undefined;
 			const data = parseTrustFile(current);
 			const before = serializeTrustFile(data);
 			const result = await fn(data);
 			const after = serializeTrustFile(data);
 			if (after !== before) {
-				fileSystemValueOrThrow(await this.executionEnv.writeFile(path, after));
+				unwrapResult(await this.executionEnv.writeFile(path, after));
 			}
 			return result;
 		});
@@ -206,7 +180,7 @@ export class ProjectTrustStore {
 
 	private async getTrustPath(): Promise<string> {
 		if (!this.trustPath) {
-			this.trustPath = fileSystemValueOrThrow(
+			this.trustPath = unwrapResult(
 				await this.executionEnv.joinPath([this.agentDir, "trust.json"]),
 			);
 		}
@@ -215,7 +189,7 @@ export class ProjectTrustStore {
 
 	private async absolutePath(path: string): Promise<string> {
 		return normalizePath(
-			fileSystemValueOrThrow(await this.executionEnv.absolutePath(path)),
+			unwrapResult(await this.executionEnv.absolutePath(path)),
 		);
 	}
 }
@@ -225,16 +199,16 @@ export async function hasTrustRequiringProjectResources(options: {
 	readonly cwd: string;
 	readonly projectConfigDir?: string;
 }): Promise<boolean> {
-	const cwd = fileSystemValueOrThrow(
+	const cwd = unwrapResult(
 		await options.executionEnv.absolutePath(options.cwd),
 	);
 	const projectConfigDir = options.projectConfigDir ?? DEFAULT_AGENT_DIR;
-	const configDir = fileSystemValueOrThrow(
+	const configDir = unwrapResult(
 		await options.executionEnv.joinPath([cwd, projectConfigDir]),
 	);
 
 	for (const entry of TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES) {
-		const path = fileSystemValueOrThrow(
+		const path = unwrapResult(
 			await options.executionEnv.joinPath([configDir, entry]),
 		);
 		const exists = await options.executionEnv.exists(path);
@@ -253,11 +227,11 @@ export async function createProjectExtensionTrustDiagnostics(options: {
 }): Promise<CoreDiagnostic[]> {
 	if (options.projectTrusted) return [];
 
-	const cwd = fileSystemValueOrThrow(
+	const cwd = unwrapResult(
 		await options.executionEnv.absolutePath(options.cwd),
 	);
 	const projectConfigDir = options.projectConfigDir ?? DEFAULT_AGENT_DIR;
-	const path = fileSystemValueOrThrow(
+	const path = unwrapResult(
 		await options.executionEnv.joinPath([cwd, projectConfigDir, "extensions"]),
 	);
 	const infoResult = await options.executionEnv.fileInfo(path);

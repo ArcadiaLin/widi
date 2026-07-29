@@ -23,6 +23,7 @@ import {
 	buildSessionContext,
 	InMemorySessionRepo,
 } from "@earendil-works/pi-agent-core";
+import { formatError } from "../utils/errors.ts";
 import type { AgentProfile, AgentProfileReference } from "./agent-profile.js";
 import {
 	parseAgentProfileReference,
@@ -748,8 +749,4 @@ function toExtensionCustomEntry<T>(
 		customEntry.data = entry.data as T;
 	}
 	return customEntry;
-}
-
-function formatError(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }

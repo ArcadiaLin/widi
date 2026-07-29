@@ -1,3 +1,4 @@
+import { formatError } from "../../../utils/errors.ts";
 import type { AgentBrief, ToolAgentHost } from "../../agent-host.ts";
 import type { BackgroundJobTable } from "../../background/index.ts";
 import { formatAgentTaskMessageBody } from "../../message.ts";
@@ -138,8 +139,4 @@ function summarizeTask(message: string): string | undefined {
 	return line.length > MAX_TASK_DESCRIPTION_LENGTH
 		? `${line.slice(0, MAX_TASK_DESCRIPTION_LENGTH - 1)}…`
 		: line;
-}
-
-export function formatError(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }

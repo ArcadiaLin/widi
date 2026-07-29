@@ -26,6 +26,7 @@ import {
 	type ImageContent,
 	type OAuthLoginCallbacks,
 } from "@earendil-works/pi-ai";
+import { formatError } from "../utils/errors.ts";
 import type {
 	AgentBrief,
 	AgentProfileBrief,
@@ -4993,10 +4994,6 @@ function changesRecoverableProfileFields(
 
 function maintenanceDescription(kind: AgentMaintenanceKind): string {
 	return kind === "compaction" ? "compaction" : "tree navigation";
-}
-
-function formatError(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }
 
 function userMessageText(message: AgentMessage): string | undefined {

@@ -7,7 +7,7 @@ import {
 
 /**
  * Worker entry for image resizing. WASM decode/resize/encode is CPU bound, so
- * the default resize path runs it here instead of the main thread.
+ * the shared resize path runs it here instead of the main thread.
  */
 
 interface ResizeImageWorkerRequest {

@@ -1,16 +1,17 @@
+/** Shared image utility behavior, independent of the read tool adapter. */
 import { describe, expect, it } from "vitest";
 import {
 	applyExifOrientation,
 	getExifOrientation,
-} from "../../src/core/tools/coding/image/exif-orientation.ts";
-import { detectSupportedImageMimeType } from "../../src/core/tools/coding/image/mime.ts";
-import { loadPhoton } from "../../src/core/tools/coding/image/photon.ts";
-import { processImage } from "../../src/core/tools/coding/image/process-image.ts";
-import { resizeImage } from "../../src/core/tools/coding/image/resize.ts";
+} from "../../src/utils/image/exif-orientation.ts";
+import { detectSupportedImageMimeType } from "../../src/utils/image/mime.ts";
+import { loadPhoton } from "../../src/utils/image/photon.ts";
+import { processImage } from "../../src/utils/image/process-image.ts";
+import { resizeImage } from "../../src/utils/image/resize.ts";
 import {
 	convertImageBytesToPng,
 	resizeImageInProcess,
-} from "../../src/core/tools/coding/image/resize-core.ts";
+} from "../../src/utils/image/resize-core.ts";
 
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 

@@ -1,6 +1,6 @@
-import type { JsonValue } from "../background/index.ts";
+import { type JsonValue, normalizeJsonValue } from "../../utils/json.ts";
+import { utf8ByteLength } from "../../utils/text.ts";
 import type { AgentId } from "../types.ts";
-import { normalizeExtensionJsonValue } from "./json-payload.ts";
 
 export const MAX_EXTENSION_EVENT_NAME_BYTES = 128;
 export const MAX_EXTENSION_EVENT_PAYLOAD_BYTES = 65_536;
@@ -36,15 +36,13 @@ export interface ExtensionEventEnvelope {
 // of the contract rather than a namespace core imposes.
 const EXTENSION_EVENT_NAME_PATTERN = /^[a-zA-Z0-9._:-]+$/;
 
-const utf8Encoder = new TextEncoder();
-
 export function validateExtensionEventName(name: string): string {
 	if (typeof name !== "string" || !EXTENSION_EVENT_NAME_PATTERN.test(name)) {
 		throw new TypeError(
 			"Extension event name must contain only letters, numbers, '.', '_', ':', and '-'.",
 		);
 	}
-	if (utf8Encoder.encode(name).byteLength > MAX_EXTENSION_EVENT_NAME_BYTES) {
+	if (utf8ByteLength(name) > MAX_EXTENSION_EVENT_NAME_BYTES) {
 		throw new RangeError(
 			`Extension event name exceeds ${MAX_EXTENSION_EVENT_NAME_BYTES} UTF-8 bytes.`,
 		);
@@ -60,7 +58,7 @@ export function validateExtensionEventPayload(
 	payload: JsonValue | undefined,
 ): JsonValue | undefined {
 	if (payload === undefined) return undefined;
-	return normalizeExtensionJsonValue(
+	return normalizeJsonValue(
 		payload,
 		"Extension event payload",
 		MAX_EXTENSION_EVENT_PAYLOAD_BYTES,

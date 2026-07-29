@@ -4,16 +4,16 @@ import {
 	createAgentHarnessToolFromResolvedTool,
 	ToolRegistry,
 } from "../../src/core/tool-registry.ts";
-import type {
-	ImageProcessor,
-	ProcessImageResult,
-} from "../../src/core/tools/coding/image/process-image.ts";
 import {
 	createLocalReadImageOperations,
 	createReadToolDefinition,
 	type ReadImageOperations,
 	type ReadToolDetails,
 } from "../../src/core/tools/coding/read.ts";
+import type {
+	ImageProcessor,
+	ProcessImageResult,
+} from "../../src/utils/image/process-image.ts";
 
 class MemoryReadOperations {
 	readonly files = new Map<string, Buffer>();

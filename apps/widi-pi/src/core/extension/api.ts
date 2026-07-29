@@ -27,13 +27,13 @@ export function isSupportedExtensionApiVersion(version: number): boolean {
 	);
 }
 
+export type { JsonValue } from "../../utils/json.ts";
 export type { AgentProfileReference } from "../agent-profile.js";
 // WIDI core types named in author-facing signatures are re-exported here so
 // a third-party extension never imports core internals directly.
 export type {
 	BackgroundJobReport,
 	BackgroundJobReportSnapshot,
-	JsonValue,
 } from "../background/index.ts";
 export type { CoreDiagnostic } from "../diagnostics.ts";
 export type { HumanRequestDraft, HumanResponse } from "../human-request.ts";

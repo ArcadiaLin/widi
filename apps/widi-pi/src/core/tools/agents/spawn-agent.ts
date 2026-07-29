@@ -1,9 +1,9 @@
 import { type Static, Type } from "typebox";
+import { formatError } from "../../../utils/errors.ts";
 import type { ToolDefinition } from "../types.ts";
 import {
 	assignAgentTask,
 	describeAssignedTask,
-	formatError,
 	requireAgentHost,
 } from "./shared.ts";
 

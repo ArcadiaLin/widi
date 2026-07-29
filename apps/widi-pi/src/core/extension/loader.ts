@@ -1,4 +1,5 @@
 import type { ExecutionEnv, FileInfo } from "@earendil-works/pi-agent-core";
+import { formatError } from "../../utils/errors.ts";
 import type { CoreDiagnostic, DiagnosticSeverity } from "../diagnostics.ts";
 import {
 	EXTENSION_API_VERSION,
@@ -1336,8 +1337,4 @@ function createExtensionDiagnostic(options: {
 		agentId: options.agentId,
 		extensionId: options.extensionId,
 	};
-}
-
-function formatError(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }

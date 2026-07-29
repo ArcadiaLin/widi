@@ -1,6 +1,6 @@
-import type { JsonValue } from "../background/index.ts";
+import { type JsonValue, normalizeJsonValue } from "../../utils/json.ts";
+import { utf8ByteLength } from "../../utils/text.ts";
 import type { DiagnosticSeverity } from "../diagnostics.ts";
-import { normalizeExtensionJsonValue } from "./json-payload.ts";
 
 export const MAX_EXTENSION_OUTPUT_BYTES = 65_536;
 export const MAX_EXTENSION_NOTIFICATION_BYTES = 4_096;
@@ -71,13 +71,11 @@ export interface ExtensionStatusSnapshot {
 	readonly updatedAt: string;
 }
 
-const utf8Encoder = new TextEncoder();
-
 export function assertExtensionOutputText(text: string): void {
 	if (typeof text !== "string" || text.length === 0) {
 		throw new TypeError("Extension output text must be a non-empty string.");
 	}
-	const size = utf8Encoder.encode(text).byteLength;
+	const size = utf8ByteLength(text);
 	if (size > MAX_EXTENSION_OUTPUT_BYTES) {
 		throw new RangeError(
 			`Extension output text exceeds ${MAX_EXTENSION_OUTPUT_BYTES} UTF-8 bytes.`,
@@ -160,7 +158,7 @@ export function validateExtensionMessage(
 			"Extension message content must be a non-empty string.",
 		);
 	}
-	const contentSize = utf8Encoder.encode(message.content).byteLength;
+	const contentSize = utf8ByteLength(message.content);
 	if (contentSize > MAX_EXTENSION_MESSAGE_CONTENT_BYTES) {
 		throw new RangeError(
 			`Extension message content exceeds ${MAX_EXTENSION_MESSAGE_CONTENT_BYTES} UTF-8 bytes.`,
@@ -198,10 +196,7 @@ export function validateExtensionInputPresentation(
 			"Extension input presentation customType must contain only letters, numbers, '.', '_', ':', and '-'.",
 		);
 	}
-	if (
-		utf8Encoder.encode(customType).byteLength >
-		MAX_EXTENSION_PRESENTATION_TYPE_BYTES
-	) {
+	if (utf8ByteLength(customType) > MAX_EXTENSION_PRESENTATION_TYPE_BYTES) {
 		throw new RangeError(
 			`Extension input presentation customType exceeds ${MAX_EXTENSION_PRESENTATION_TYPE_BYTES} UTF-8 bytes.`,
 		);
@@ -222,7 +217,7 @@ export function validateExtensionInputPresentation(
 	if (presentation.details !== undefined) {
 		// Core stores and republishes details without reading them, so the only
 		// contract it can enforce is that the value survives the session file.
-		result.details = normalizeExtensionJsonValue(
+		result.details = normalizeJsonValue(
 			presentation.details,
 			"Extension input presentation details",
 			MAX_EXTENSION_PRESENTATION_DETAILS_BYTES,
@@ -262,10 +257,7 @@ export function validateExtensionDiagnosticDraft(
 			"Extension diagnostic code must contain only letters, numbers, '.', '_', and '-'.",
 		);
 	}
-	if (
-		utf8Encoder.encode(draft.code).byteLength >
-		MAX_EXTENSION_DIAGNOSTIC_CODE_BYTES
-	) {
+	if (utf8ByteLength(draft.code) > MAX_EXTENSION_DIAGNOSTIC_CODE_BYTES) {
 		throw new RangeError(
 			`Extension diagnostic code exceeds ${MAX_EXTENSION_DIAGNOSTIC_CODE_BYTES} UTF-8 bytes.`,
 		);
@@ -302,7 +294,7 @@ function assertBoundedNonBlankText(
 	if (typeof value !== "string" || value.trim().length === 0) {
 		throw new TypeError(`${label} must be a non-blank string.`);
 	}
-	const size = utf8Encoder.encode(value).byteLength;
+	const size = utf8ByteLength(value);
 	if (size > maxBytes) {
 		throw new RangeError(`${label} exceeds ${maxBytes} UTF-8 bytes.`);
 	}

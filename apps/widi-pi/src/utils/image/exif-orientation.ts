@@ -1,7 +1,7 @@
 import type { PhotonImage, PhotonModule } from "./photon.ts";
 
 /**
- * EXIF orientation handling for JPEG and WEBP images.
+ * Shared EXIF orientation handling for JPEG and WEBP images.
  *
  * Photon decodes pixel data without applying the EXIF orientation tag, so
  * camera photos would otherwise arrive rotated or mirrored. The parser here
