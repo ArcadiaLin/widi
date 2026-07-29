@@ -127,6 +127,43 @@ describe("hydrateSessionEntries", () => {
 		expect(JSON.stringify(result.timeline)).not.toContain("secret");
 	});
 
+	// Live events carry the message shape straight through; hydration is the
+	// path that used to enumerate the kinds a second time, so a structured
+	// message that survives a restart is the thing worth asserting.
+	it("restores structured extension messages and drops malformed ones", () => {
+		const result = hydrateSessionEntries([
+			custom("table", EXTENSION_MESSAGE_CUSTOM_TYPE, {
+				extensionId: "reports",
+				message: {
+					kind: "table",
+					title: "Files",
+					columns: [{ label: "Path" }, { label: "Lines", align: "right" }],
+					rows: [["src/a.ts", "12"]],
+				},
+			}),
+			custom("ragged", EXTENSION_MESSAGE_CUSTOM_TYPE, {
+				extensionId: "reports",
+				message: {
+					kind: "table",
+					columns: [{ label: "Path" }],
+					rows: [["src/a.ts", "12"]],
+				},
+			}),
+		]);
+
+		expect(result.timeline).toMatchObject([
+			{
+				type: "extension-message",
+				entryId: "table",
+				message: {
+					kind: "table",
+					columns: [{ label: "Path" }, { label: "Lines", align: "right" }],
+					rows: [["src/a.ts", "12"]],
+				},
+			},
+		]);
+	});
+
 	it("creates a completed fallback tool item for orphan tool results", () => {
 		const result = hydrateSessionEntries([
 			message("orphan", toolResult("missing-call", "shell", "done", true)),

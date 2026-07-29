@@ -49,13 +49,24 @@ export {
 	MAX_EXTENSION_EVENT_PAYLOAD_BYTES,
 } from "./events.ts";
 export type {
+	ExtensionBannerMessage,
+	ExtensionCodeMessage,
 	ExtensionDiagnosticDraft,
+	ExtensionDiffMessage,
+	ExtensionFieldsMessage,
 	ExtensionInputPresentation,
 	ExtensionMessage,
+	ExtensionMessageField,
 	ExtensionMessageKind,
 	ExtensionStatus,
 	ExtensionStatusProgress,
+	ExtensionStatusRegion,
 	ExtensionStatusSnapshot,
+	ExtensionTableAlignment,
+	ExtensionTableColumn,
+	ExtensionTableMessage,
+	ExtensionTextMessage,
+	ExtensionTone,
 } from "./presentation.ts";
 export type {
 	BackgroundJobExecutionContext,

@@ -635,7 +635,7 @@ type ExtensionMessage =
 ```
 
 - 上限：列 ≤ 12、行 ≤ 200、单元格 ≤ 1 KB、fields ≤ 64 项，整体仍受 64 KB 约束。
-- `validateExtensionMessage` 目前靠"重建对象"实现 detach，联合形态带数组，**必须改成深拷贝**，否则复现阶段 0 复审第 8 条那个"core 握着扩展还能改的引用"。
+- `validateExtensionMessage` 目前靠"重建对象"实现 detach，联合形态带数组，**必须改成深拷贝并递归冻结规范副本**，否则复现阶段 0 复审第 8 条那个"core 握着扩展还能改的引用"，或让事件消费者改写 session 持有的同一个对象。
 
 `ExtensionStatus` 增三个字段：
 
@@ -647,12 +647,26 @@ tone?: ExtensionTone;                          // 语义 token，不给颜色
 
 `header` 这一轮不开：现在的 `HeaderView` 只有一行 `WIDI · agent · model`，塞扩展状态会立刻挤爆；等阶段 2 宿主的 `setHeader` 一并处理。
 
+#### 批次 C 实施记录（2026-07-29 完成）
+
+已落地并经复审修订，`npm run check` 通过，全套 1005 个用例通过（新增 `tests/core/extension-presentation.test.ts` 14 个、`tests/tui/session-hydrator.test.ts` 补 1 个）。改动：`core/extension/{presentation,api,types}.ts`、`core/agent-orchestrator.ts`、`tui/{session-hydrator,components/timeline-item}.ts`。
+
+与批次说明有出入或需要记下的七点：
+
+1. **判别联合按具名 interface 拆开**（`ExtensionTextMessage` / `ExtensionCodeMessage` / …），并从 `extension/api.ts` 一并导出。扩展作者要为某一支写函数签名时，没有具名类型只能自己 `Extract<...>`。
+2. **`tone` 的取值定为 `neutral | info | success | warning | danger`**，与诊断的 `warning | error` 是两套：诊断说的是"出没出事"，tone 说的是"客户端给多少强调"，core 不给颜色。
+3. **表格拒绝参差行**：行的单元格数必须等于列数。少一格时渲染器只能猜这格属于哪一列，而消除这种猜测正是 table 这一支存在的理由。
+4. **图标按字素簇校验，core 不量显示宽度**。"显示宽度 ≤ 2"需要 wcwidth 表，那张表在 `pi-tui` 里，core 不依赖 TUI。改判据为 `Intl.Segmenter` 下恰好一个字素簇（旗帜、带肤色的 emoji 都算一个）+ 32 字节上限 + 拒绝控制字符，显示预算由客户端自己截断。
+5. **hydrator 的易漏点提前在本批解决，并且是结构上解决的**（原属批次 D 第 4 条）：`session-hydrator.ts` 不再手写 kind 列表，而是直接调 `validateExtensionMessage` 解析持久条目，非法条目丢弃。协议再改也不可能漏掉这里。`timeline-item.ts` 本批只做了保证可读的降级扁平化（`extensionMessageText`），分 kind 的真渲染仍在批次 D。
+6. **结构化数组必须是稠密数组**。`Array.prototype.map` 会跳过空洞，原实现会接受 sparse columns / rows / cells / fields，写进 JSON 后空洞变成 `null`，hydrator 重校验时又将其丢弃。validator 现在显式遍历每个索引并拒绝空洞，保证"接受即可持久化往返"。
+7. **规范 message 与发布事件都在运行时不可变**。validator 对深拷贝结果递归 `Object.freeze`，session entry data 与 `extension_message_published` envelope 也冻结；宿主 listener 不能改写后续消费者或内存 session 看到的内容。
+
 #### 批次 D：阶段 1 TUI 内置渲染
 
 1. `tui/components/timeline-item.ts` 的 `extension-message` 分支按 kind 分派：table 算列宽加截断、fields 对齐、diff 走既有 `tui/diff.ts` 的 `renderDiffText`、banner 走 `theme.severityPaint`。
 2. `tui/components/status.ts` 按 region 过滤，渲染 icon 与 tone。
 3. `tui/components/footer.ts` 与 `agent-strip.ts` 接线（footer 单行压缩，strip 在 agent 项上挂标记）。这两处现在完全没有扩展状态代码，是本批的主要新增。
-4. **易漏点**：`tui/session-hydrator.ts` 的 `isExtensionMessageData` 硬编码了三种 kind。不跟着扩展，新 kind 的持久条目会在会话恢复时被静默丢弃——live 事件正常、重启后消失，是最难查的一类 bug。
+4. ~~**易漏点**：`tui/session-hydrator.ts` 的 `isExtensionMessageData` 硬编码了三种 kind。~~ —— 已在批次 C 解决：hydrator 改调 `validateExtensionMessage`，不再自己枚举 kind。
 5. 测试：`tests/tui/` 补每种 kind 的渲染断言，外加一条"持久化 → hydrate → 渲染"的往返用例。
 
 覆盖场景：状态栏、进度、结构化报告、审计输出。它同时是阶段 2 的降级路径，不会白做。

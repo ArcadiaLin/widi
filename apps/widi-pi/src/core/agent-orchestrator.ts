@@ -3205,24 +3205,29 @@ export class AgentOrchestrator {
 				this._requireAgentRecord(agentId);
 				const validatedMessage: ExtensionMessage =
 					validateExtensionMessage(message);
+				const entryData = Object.freeze({
+					extensionId,
+					message: validatedMessage,
+				});
 				// Session write comes first: the entry id is the stable identity
 				// the event and the action result both carry.
 				const entryId = await this.sessionManager.appendExtensionMessageEntry(
 					agentId,
-					{ extensionId, message: validatedMessage },
+					entryData,
 				);
-				await this._emit(
-					{
-						type: "extension_message_published",
-						presentationId: this._createPresentationId(),
-						entryId,
-						agentId,
-						extensionId,
-						message: validatedMessage,
-						createdAt: now(),
-					},
-					{ observeExtensions: false },
-				);
+				const event: Extract<
+					OrchestratorEvent,
+					{ type: "extension_message_published" }
+				> = Object.freeze({
+					type: "extension_message_published",
+					presentationId: this._createPresentationId(),
+					entryId,
+					agentId,
+					extensionId,
+					message: validatedMessage,
+					createdAt: now(),
+				});
+				await this._emit(event, { observeExtensions: false });
 				return { entryId };
 			},
 			// Prompt carries its presentation through the message pipeline, where a

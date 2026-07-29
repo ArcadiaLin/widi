@@ -299,13 +299,17 @@ export interface ExtensionActions {
 	// notices have no severity, code, dedupe, clear, or attention semantics.
 	notify(text: string): Promise<void>;
 	// Keyed runtime current state for client status areas. Reusing a key
-	// replaces the previous value; clearing a missing key is a no-op.
+	// replaces the previous value; clearing a missing key is a no-op. `region`
+	// asks for a placement (panel by default), `icon` and `tone` are hints a
+	// client with no such surface may ignore.
 	setStatus(key: string, status: ExtensionStatus): Promise<void>;
 	clearStatus(key: string): Promise<void>;
 	// Durable presentation content: persisted as a core:extension_message
 	// session custom entry before the event is published, never model
 	// context. The returned entryId matches the persisted entry and the
 	// canonical event, so consumers dedupe hydration against live events.
+	// The kind chooses the shape - text/markdown/code, or the structured
+	// table/fields/diff/banner - and core keeps a deep copy of it.
 	publishMessage(message: ExtensionMessage): Promise<{ entryId: string }>;
 	// Reported facts join the core diagnostic pipeline: the draft is
 	// { severity: "warning" | "error", code, message }; core injects agentId
