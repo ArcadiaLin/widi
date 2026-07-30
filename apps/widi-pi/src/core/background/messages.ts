@@ -12,12 +12,23 @@
 import type { TextContent } from "@earendil-works/pi-ai";
 import type { AgentToolResult } from "@widi/agent-core";
 import { formatError } from "../../utils/errors.ts";
-import {
-	type BackgroundJobOutcome,
-	type BackgroundJobSettlement,
-	type BackgroundJobStatus,
-	backgroundJobToolLabel,
-} from "./job.ts";
+import type {
+	BackgroundJobOutcome,
+	BackgroundJobSettlement,
+	BackgroundJobStatus,
+} from "./types.ts";
+
+/**
+ * How a job is named when it appears next to other jobs: the tool it runs plus
+ * the label its caller chose, `bash "git pull"`. Unnamed jobs stay bare, which
+ * is what every job looked like before naming existed.
+ */
+export function backgroundJobToolLabel(job: {
+	readonly toolName: string;
+	readonly name?: string;
+}): string {
+	return job.name ? `${job.toolName} "${job.name}"` : job.toolName;
+}
 
 /**
  * Structured details attached to the immediate t0 tool result of a backgrounded
@@ -124,7 +135,7 @@ export function formatBackgroundJobResultMessageText(
 	settlement: BackgroundJobSettlement,
 ): string {
 	return formatBackgroundJobResultText({
-		jobId: settlement.job.id,
+		jobId: settlement.job.jobId,
 		toolCallId: settlement.job.toolCallId,
 		toolName: settlement.job.toolName,
 		status: settlement.outcome.status,
