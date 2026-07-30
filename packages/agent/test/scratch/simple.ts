@@ -11,6 +11,7 @@ import {
 	createEditTool,
 	createReadTool,
 	createWriteTool,
+	formatPromptTemplateInvocation,
 	formatSkillsForSystemPrompt,
 	loadSourcedPromptTemplates,
 	loadSourcedSkills,
@@ -59,21 +60,22 @@ const agent = new AgentHarness({
 	thinkingLevel: "low",
 	tools: [createReadTool(), createWriteTool(), createEditTool(), createBashTool()],
 	toolContext: { env },
-	systemPrompt: ({ resources }) =>
+	// Resources are the application's: the harness only ever sees the composed
+	// system prompt and, below, an already expanded prompt.
+	systemPrompt: () =>
 		[
 			"You are a helpful assistant.",
-			formatSkillsForSystemPrompt(resources.skills ?? []),
+			formatSkillsForSystemPrompt(sourcedSkills.map(({ skill }) => skill)),
 			`Current working directory: ${env.cwd}`,
 		]
 			.filter((part) => part.length > 0)
 			.join("\n\n"),
-	resources: {
-		promptTemplates: sourcedPromptTemplates.map(({ promptTemplate }) => promptTemplate),
-		skills: sourcedSkills.map(({ skill }) => skill),
-	},
 });
 
+const template = sourcedPromptTemplates.find(({ promptTemplate }) => promptTemplate.name === "review");
 const response = await agent.prompt(
-	"What skills do you have? Any duplicates? Also use bash to get the current date and time, then read README.md and tell me what this project is about.",
+	template
+		? formatPromptTemplateInvocation(template.promptTemplate, ["README.md"])
+		: "What skills do you have? Any duplicates? Also use bash to get the current date and time, then read README.md and tell me what this project is about.",
 );
 console.log(response);

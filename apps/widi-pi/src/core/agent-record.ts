@@ -1,4 +1,4 @@
-import type { AgentHarness, PromptTemplate, Skill } from "@widi/agent-core";
+import type { AgentHarness, Skill } from "@widi/agent-core";
 import type {
 	AgentProfile,
 	AgentProfileReference,
@@ -68,8 +68,6 @@ export interface AgentSystemPromptFacts {
 /** The concrete AgentHarness instantiation used by every WIDI agent. */
 export type WidiAgentHarness = AgentHarness<
 	ToolAdapterContext,
-	Skill,
-	PromptTemplate,
 	ResolvedAgentHarnessTool
 >;
 

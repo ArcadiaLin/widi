@@ -13,18 +13,10 @@ import { AgentHarness } from "../../src/harness/agent-harness.ts";
 import { NodeExecutionEnv } from "../../src/harness/env/nodejs.ts";
 import { InMemorySessionStorage } from "../../src/harness/session/memory-storage.ts";
 import { Session } from "../../src/harness/session/session.ts";
-import type { AgentHarnessTool, PromptTemplate, Skill } from "../../src/harness/types.ts";
+import type { AgentHarnessTool } from "../../src/harness/types.ts";
 import type { AgentMessage, AgentTool } from "../../src/types.ts";
 import { calculateTool, createCalculateToolWithUsage } from "../utils/calculate.ts";
 import { getCurrentTimeTool } from "../utils/get-current-time.ts";
-
-interface AppSkill extends Skill {
-	source: "project" | "user";
-}
-
-interface AppPromptTemplate extends PromptTemplate {
-	source: "project" | "user";
-}
 
 /** Shared collection; each faux provider gets a unique id so coexisting fakes route correctly. */
 const models = createModels();
@@ -417,7 +409,7 @@ describe("AgentHarness", () => {
 		expect(events).toContain("settled");
 	});
 
-	it("refreshes model, thinking level, resources, system prompt, and active tools at save points", async () => {
+	it("refreshes model, thinking level, system prompt, and active tools at save points", async () => {
 		const registration = newFaux({
 			models: [
 				{ id: "first", reasoning: true },
@@ -449,26 +441,22 @@ describe("AgentHarness", () => {
 				return fauxAssistantMessage("done");
 			},
 		]);
-		const harness = new AgentHarness<undefined, Skill, PromptTemplate, AgentTool>({
+		// The callback reads app state the harness knows nothing about, so a
+		// change between save points has to reach the next request.
+		let appSystemPrompt = "first prompt";
+		const harness = new AgentHarness<undefined, AgentTool>({
 			models,
 			session: new Session(new InMemorySessionStorage()),
 			model: registration.getModel(),
 			thinkingLevel: "off",
-			resources: {
-				skills: [{ name: "prompt", description: "prompt", content: "first prompt", filePath: "/skills/prompt" }],
-			},
-			systemPrompt: ({ resources }) => resources.skills?.[0]?.content ?? "missing prompt",
+			systemPrompt: () => appSystemPrompt,
 			tools: [calculateTool],
 		});
 		harness.subscribe((event) => {
 			if (event.type === "tool_execution_start") {
 				void harness.setModel(secondModel);
 				void harness.setThinkingLevel("high");
-				void harness.setResources({
-					skills: [
-						{ name: "prompt", description: "prompt", content: "second prompt", filePath: "/skills/prompt" },
-					],
-				});
+				appSystemPrompt = "second prompt";
 				void harness.setTools([calculateTool, getCurrentTimeTool], [getCurrentTimeTool.name]);
 			}
 		});
@@ -928,7 +916,7 @@ describe("AgentHarness", () => {
 		type AppTool = AgentTool<typeof calculateTool.parameters, undefined> & { source: "builtin" | "extension" };
 		const inspectTool: AppTool = { ...calculateTool, name: "inspect", source: "builtin" };
 		const searchTool: AppTool = { ...calculateTool, name: "search", source: "extension" };
-		const harness = new AgentHarness<undefined, AppSkill, AppPromptTemplate, AppTool>({
+		const harness = new AgentHarness<undefined, AppTool>({
 			models,
 			session,
 			model,
@@ -1018,46 +1006,5 @@ describe("AgentHarness", () => {
 					activeToolNames: [calculateTool.name, calculateTool.name],
 				}),
 		).toThrow(/Duplicate active tool/);
-	});
-
-	it("preserves app resource types for getters and update events", async () => {
-		const session = new Session(new InMemorySessionStorage());
-		const model = getModel("anthropic", "claude-sonnet-4-5");
-		const harness = new AgentHarness<undefined, AppSkill, AppPromptTemplate, AgentTool>({
-			session,
-			models,
-			model,
-		});
-		const skill: AppSkill = {
-			name: "inspect",
-			description: "Inspect things",
-			content: "Use inspection tools.",
-			filePath: "/skills/inspect/SKILL.md",
-			source: "project",
-		};
-		const promptTemplate: AppPromptTemplate = { name: "review", content: "Review $1", source: "user" };
-		const resources = { skills: [skill], promptTemplates: [promptTemplate] };
-		const updates: Array<{ resourcesSource?: string; previousSource?: string }> = [];
-		harness.subscribe((event) => {
-			if (event.type === "resources_update") {
-				updates.push({
-					resourcesSource: event.resources.skills?.[0]?.source,
-					previousSource: event.previousResources.skills?.[0]?.source,
-				});
-			}
-		});
-
-		await harness.setResources(resources);
-		await harness.setResources(resources);
-		const resolved = harness.getResources();
-
-		expect(updates).toEqual([
-			{ resourcesSource: "project", previousSource: undefined },
-			{ resourcesSource: "project", previousSource: "project" },
-		]);
-		expect(resolved.skills?.[0]?.source).toBe("project");
-		expect(resolved.promptTemplates?.[0]?.source).toBe("user");
-		expect(resolved.skills).not.toBe(resources.skills);
-		expect(resolved.promptTemplates).not.toBe(resources.promptTemplates);
 	});
 });

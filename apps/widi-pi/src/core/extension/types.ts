@@ -172,7 +172,7 @@ export const EXTENSION_OBSERVED_EVENT_NAMES: Readonly<
  * - session_before_compact, session_before_tree
  * - observer-like own events with no return value: after_provider_response,
  *   session_compact, session_tree, model_update, thinking_level_update,
- *   resources_update, tools_update, queue_update, save_point, abort, settled
+ *   tools_update, queue_update, save_point, abort, settled
  *   (all reachable through the raw `agent_harness_event` observer)
  *
  * Session hooks are deferred until permission, diagnostics, and

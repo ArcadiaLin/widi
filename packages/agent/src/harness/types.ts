@@ -84,17 +84,6 @@ export interface PromptTemplate {
 	content: string;
 }
 
-/** Resources made available to explicit invocation methods and system-prompt callbacks. */
-export interface AgentHarnessResources<
-	TSkill extends Skill = Skill,
-	TPromptTemplate extends PromptTemplate = PromptTemplate,
-> {
-	/** Prompt templates available for explicit invocation. */
-	promptTemplates?: TPromptTemplate[];
-	/** Skills available to the model and explicit skill invocation. */
-	skills?: TSkill[];
-}
-
 /** Tool definition executed by an {@link AgentHarness} with an application-defined context. */
 export type AgentHarnessTool<
 	TContext extends object | undefined,
@@ -581,15 +570,11 @@ export interface SettledEvent {
 	nextTurnCount: number;
 }
 
-export interface BeforeAgentStartEvent<
-	TSkill extends Skill = Skill,
-	TPromptTemplate extends PromptTemplate = PromptTemplate,
-> {
+export interface BeforeAgentStartEvent {
 	type: "before_agent_start";
 	prompt: string;
 	images?: ImageContent[];
 	systemPrompt: string;
-	resources: AgentHarnessResources<TSkill, TPromptTemplate>;
 }
 
 export interface ContextEvent {
@@ -703,24 +688,12 @@ export interface ToolsUpdateEvent {
 	source: "set" | "restore";
 }
 
-export interface ResourcesUpdateEvent<
-	TSkill extends Skill = Skill,
-	TPromptTemplate extends PromptTemplate = PromptTemplate,
-> {
-	type: "resources_update";
-	resources: AgentHarnessResources<TSkill, TPromptTemplate>;
-	previousResources: AgentHarnessResources<TSkill, TPromptTemplate>;
-}
-
-export type AgentHarnessOwnEvent<
-	TSkill extends Skill = Skill,
-	TPromptTemplate extends PromptTemplate = PromptTemplate,
-> =
+export type AgentHarnessOwnEvent =
 	| QueueUpdateEvent
 	| SavePointEvent
 	| AbortEvent
 	| SettledEvent
-	| BeforeAgentStartEvent<TSkill, TPromptTemplate>
+	| BeforeAgentStartEvent
 	| ContextEvent
 	| BeforeProviderRequestEvent
 	| BeforeProviderPayloadEvent
@@ -736,12 +709,9 @@ export type AgentHarnessOwnEvent<
 	| RetryFinishedEvent
 	| ModelUpdateEvent
 	| ThinkingLevelUpdateEvent
-	| ResourcesUpdateEvent<TSkill, TPromptTemplate>
 	| ToolsUpdateEvent;
 
-export type AgentHarnessEvent<TSkill extends Skill = Skill, TPromptTemplate extends PromptTemplate = PromptTemplate> =
-	| AgentEvent
-	| AgentHarnessOwnEvent<TSkill, TPromptTemplate>;
+export type AgentHarnessEvent = AgentEvent | AgentHarnessOwnEvent;
 
 export interface BeforeAgentStartResult {
 	messages?: AgentMessage[];
@@ -808,7 +778,6 @@ export type AgentHarnessEventResultMap = {
 	retry_finished: undefined;
 	model_update: undefined;
 	thinking_level_update: undefined;
-	resources_update: undefined;
 	tools_update: undefined;
 	queue_update: undefined;
 	save_point: undefined;
@@ -895,8 +864,6 @@ export interface BranchSummaryResult {
 
 export type AgentHarnessSystemPrompt<
 	TContext extends object | undefined = undefined,
-	TSkill extends Skill = Skill,
-	TPromptTemplate extends PromptTemplate = PromptTemplate,
 	TTool extends AgentHarnessTool<TContext> = AgentHarnessTool<TContext>,
 > =
 	| string
@@ -905,15 +872,9 @@ export type AgentHarnessSystemPrompt<
 			model: Model<any>;
 			thinkingLevel: ThinkingLevel;
 			activeTools: TTool[];
-			resources: AgentHarnessResources<TSkill, TPromptTemplate>;
 	  }) => string | Promise<string>);
 
-interface AgentHarnessOptionsBase<
-	TContext extends object | undefined,
-	TSkill extends Skill,
-	TPromptTemplate extends PromptTemplate,
-	TTool extends AgentHarnessTool<TContext>,
-> {
+interface AgentHarnessOptionsBase<TContext extends object | undefined, TTool extends AgentHarnessTool<TContext>> {
 	session: Session;
 	/**
 	 * Provider collection used for all model requests (turn streaming,
@@ -922,12 +883,7 @@ interface AgentHarnessOptionsBase<
 	 */
 	models: Models;
 	tools?: TTool[];
-	/**
-	 * Concrete resources available to explicit invocation methods and system-prompt callbacks.
-	 * Applications own loading/reloading resources and should call `setResources()` with new values.
-	 */
-	resources?: AgentHarnessResources<TSkill, TPromptTemplate>;
-	systemPrompt?: AgentHarnessSystemPrompt<TContext, TSkill, TPromptTemplate, TTool>;
+	systemPrompt?: AgentHarnessSystemPrompt<TContext, TTool>;
 	/** Curated stream/provider request options. Snapshotted at turn start. */
 	streamOptions?: AgentHarnessStreamOptions;
 	/** Optional retry policy for generated compaction and branch-summary requests. */
@@ -941,10 +897,8 @@ interface AgentHarnessOptionsBase<
 
 export type AgentHarnessOptions<
 	TContext extends object | undefined = undefined,
-	TSkill extends Skill = Skill,
-	TPromptTemplate extends PromptTemplate = PromptTemplate,
 	TTool extends AgentHarnessTool<TContext> = AgentHarnessTool<TContext>,
-> = AgentHarnessOptionsBase<TContext, TSkill, TPromptTemplate, TTool> &
+> = AgentHarnessOptionsBase<TContext, TTool> &
 	([TContext] extends [undefined]
 		? {
 				/** Context-free harnesses do not need a tool context. */

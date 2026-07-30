@@ -588,7 +588,6 @@ describe("ExtensionRunner interceptors", () => {
 			type: "before_agent_start",
 			prompt: "go",
 			systemPrompt: "base prompt",
-			resources: {},
 		});
 
 		expect(run.result).toEqual({
