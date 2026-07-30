@@ -29,6 +29,7 @@ import type {
 	AgentHarnessOptions,
 	AgentHarnessOwnEvent,
 	AgentHarnessPhase,
+	AgentHarnessQueuedMessageCounts,
 	AgentHarnessStreamOptions,
 	AgentHarnessStreamOptionsPatch,
 	AgentHarnessSystemPrompt,
@@ -982,6 +983,29 @@ export class AgentHarness<
 
 	async setStreamOptions(streamOptions: AgentHarnessStreamOptions): Promise<void> {
 		this.streamOptions = cloneStreamOptions(streamOptions);
+	}
+
+	/**
+	 * Which operation currently owns the harness. Every phase transition happens
+	 * synchronously, before the operation's first await, so a caller that reads this
+	 * and then calls a method races only against other callers - never against the
+	 * operation it just observed.
+	 */
+	getPhase(): AgentHarnessPhase {
+		return this.phase;
+	}
+
+	/**
+	 * How much handed-over text is still unread. The queues are private and otherwise
+	 * reported only by `queue_update`, which forces observers to mirror the counts to
+	 * answer "is anything pending" at an arbitrary moment.
+	 */
+	getQueuedMessageCounts(): AgentHarnessQueuedMessageCounts {
+		return {
+			steer: this.steerQueue.length,
+			followUp: this.followUpQueue.length,
+			nextTurn: this.nextTurnQueue.length,
+		};
 	}
 
 	async abort(): Promise<AbortResult> {

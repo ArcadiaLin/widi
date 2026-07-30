@@ -541,6 +541,12 @@ export interface JsonlSessionRepoApi
 
 export type AgentHarnessPhase = "idle" | "turn" | "compaction" | "branch_summary" | "retry";
 
+export interface AgentHarnessQueuedMessageCounts {
+	steer: number;
+	followUp: number;
+	nextTurn: number;
+}
+
 export type PendingSessionWrite = SessionTreeEntry extends infer TEntry
 	? TEntry extends SessionTreeEntry
 		? Omit<TEntry, "id" | "parentId" | "timestamp">

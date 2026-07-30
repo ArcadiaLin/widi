@@ -379,6 +379,65 @@ describe("AgentHarness", () => {
 		expect(followUpQueueLengths).toEqual([1, 2, 1, 0]);
 	});
 
+	it("exposes the phase of the operation that owns the harness", async () => {
+		const registration = newFaux();
+		const session = new Session(new InMemorySessionStorage());
+		const harness = new AgentHarness({ models, session, model: registration.getModel() });
+		registration.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("## Goal\nTest summary")]);
+
+		expect(harness.getPhase()).toBe("idle");
+
+		// Both transitions are synchronous, before the operation's first await, so
+		// the phase a caller reads is never a stale answer for the call it just made.
+		const run = harness.prompt("hello");
+		expect(harness.getPhase()).toBe("turn");
+		await run;
+		expect(harness.getPhase()).toBe("idle");
+
+		const compaction = harness.compact();
+		expect(harness.getPhase()).toBe("compaction");
+		await compaction;
+		expect(harness.getPhase()).toBe("idle");
+	});
+
+	it("reports queued message counts per lane without a queue_update subscription", async () => {
+		const registration = newFaux();
+		const firstResponseStarted = deferred();
+		const releaseFirstResponse = deferred();
+		const harness = new AgentHarness({
+			models,
+			session: new Session(new InMemorySessionStorage()),
+			model: registration.getModel(),
+		});
+		registration.setResponses([
+			async () => {
+				firstResponseStarted.resolve();
+				await releaseFirstResponse.promise;
+				return fauxAssistantMessage("first");
+			},
+			fauxAssistantMessage("second"),
+			fauxAssistantMessage("third"),
+		]);
+
+		expect(harness.getQueuedMessageCounts()).toEqual({ steer: 0, followUp: 0, nextTurn: 0 });
+
+		// The first turn must be under way: a next-turn message queued before it
+		// starts is folded into that turn instead of waiting for the following one.
+		const run = harness.prompt("hello");
+		await firstResponseStarted.promise;
+		await harness.steer("urgent");
+		await harness.followUp("later");
+		await harness.nextTurn("afterwards");
+		expect(harness.getQueuedMessageCounts()).toEqual({ steer: 1, followUp: 1, nextTurn: 1 });
+
+		releaseFirstResponse.resolve();
+		await run;
+
+		// The run drains its own two lanes; a next-turn message is read by the next
+		// prompt, so it is still queued once the harness is idle again.
+		expect(harness.getQueuedMessageCounts()).toEqual({ steer: 0, followUp: 0, nextTurn: 1 });
+	});
+
 	it("settles thrown hook failures with persisted assistant error messages", async () => {
 		const registration = newFaux();
 		registration.setResponses([() => fauxAssistantMessage("should not be used")]);
