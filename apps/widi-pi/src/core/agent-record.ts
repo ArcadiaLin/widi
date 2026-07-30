@@ -48,6 +48,14 @@ export interface AgentResourcesSnapshot {
 
 /** Everything the system prompt callback needs beyond the live harness state. */
 export interface AgentSystemPromptFacts {
+	/**
+	 * The skills the agent was built with, narrowed by its profile. Held here
+	 * rather than on the harness: the model-visible listing is composed from
+	 * them every turn, and the harness has no business knowing what a skill is.
+	 * Explicit `/skill` invocation does not read these - it reloads from disk so
+	 * an edited skill applies without restarting the agent.
+	 */
+	readonly skills: readonly Skill[];
 	/** Appended sections owned by the profile; the extensions' own follow them. */
 	readonly appendSections: readonly string[];
 	readonly contextFiles: readonly ProjectContextFile[];

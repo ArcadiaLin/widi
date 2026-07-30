@@ -7,7 +7,7 @@
  * directory. This module is where those facts get their wording.
  */
 
-import type { AgentHarnessResources } from "@widi/agent-core";
+import type { Skill } from "@widi/agent-core";
 import { formatSkillsForSystemPrompt } from "@widi/agent-core";
 import { CORE_AGENT_TOOL_NAMES } from "./agent-host.ts";
 import type { AgentId } from "./types.ts";
@@ -31,7 +31,11 @@ export interface ProjectContextFile {
 export interface BuildAgentSystemPromptOptions {
 	/** The profile body: what the agent is told it is. */
 	readonly basePrompt: string;
-	readonly resources: AgentHarnessResources;
+	/**
+	 * The agent's skills, already narrowed by its profile. Only the listing
+	 * fields are read; the bodies are what `/skill` inlines, not this.
+	 */
+	readonly skills: readonly Skill[];
 	readonly activeTools: readonly ToolPromptGuidance[];
 	readonly agentId?: AgentId;
 	/** Extra sections, already ordered by their source. */
@@ -130,7 +134,7 @@ export function buildAgentSystemPrompt(
 ): string {
 	const {
 		basePrompt,
-		resources,
+		skills,
 		activeTools,
 		agentId,
 		appendSections,
@@ -167,7 +171,7 @@ export function buildAgentSystemPrompt(
 	const listSkills =
 		includeSkills ?? activeTools.some((tool) => tool.name === "read");
 	if (listSkills) {
-		const skillsSection = formatSkillsForSystemPrompt(resources.skills ?? []);
+		const skillsSection = formatSkillsForSystemPrompt([...skills]);
 		if (skillsSection !== "") {
 			sections.push(skillsSection);
 		}

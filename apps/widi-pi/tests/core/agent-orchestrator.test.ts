@@ -264,13 +264,11 @@ async function readSystemPrompt(
 	const systemPrompt = (
 		harness as unknown as {
 			systemPrompt: (context: {
-				resources: unknown;
 				activeTools: { name: string }[];
 			}) => string | Promise<string>;
 		}
 	).systemPrompt;
 	return await systemPrompt({
-		resources: harness.getResources(),
 		activeTools: harness.getActiveTools(),
 	});
 }
@@ -991,7 +989,6 @@ describe("AgentOrchestrator", () => {
 		const systemPrompt = (
 			harness as unknown as {
 				systemPrompt: (context: {
-					resources: unknown;
 					activeTools: { name: string }[];
 				}) => string | Promise<string>;
 			}
@@ -1002,7 +999,6 @@ describe("AgentOrchestrator", () => {
 		);
 
 		const withRead = await systemPrompt({
-			resources: harness.getResources(),
 			activeTools: harness.getActiveTools(),
 		});
 		expect(withRead.startsWith("default prompt")).toBe(true);
@@ -1016,7 +1012,6 @@ describe("AgentOrchestrator", () => {
 
 		await orchestrator.setAgentActiveTools(agentId, ["write"]);
 		const withoutRead = await systemPrompt({
-			resources: harness.getResources(),
 			activeTools: harness.getActiveTools(),
 		});
 		expect(withoutRead).not.toContain("<available_skills>");
@@ -1035,14 +1030,12 @@ describe("AgentOrchestrator", () => {
 		const systemPrompt = (
 			harness as unknown as {
 				systemPrompt: (context: {
-					resources: unknown;
 					activeTools: { name: string }[];
 				}) => string | Promise<string>;
 			}
 		).systemPrompt;
 
 		const prompt = await systemPrompt({
-			resources: harness.getResources(),
 			activeTools: harness.getActiveTools(),
 		});
 

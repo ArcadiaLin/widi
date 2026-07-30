@@ -15,7 +15,6 @@ import {
 	AgentHarness,
 	AgentHarnessError,
 	type AgentHarnessEvent,
-	type AgentHarnessResources,
 	type AgentMessage,
 	calculateContextTokens,
 	type ExecutionEnv,
@@ -2251,13 +2250,12 @@ export class AgentOrchestrator {
 	private _buildAgentSystemPrompt(
 		agentId: AgentId,
 		basePrompt: string,
-		resources: AgentHarnessResources,
 		activeTools: readonly ToolPromptGuidance[],
 	): string {
 		const record = this._agents.get(agentId);
 		return buildAgentSystemPrompt({
 			basePrompt,
-			resources,
+			skills: record?.systemPrompt?.skills ?? [],
 			activeTools,
 			agentId,
 			appendSections: [
@@ -2272,9 +2270,10 @@ export class AgentOrchestrator {
 
 	/**
 	 * The system prompt the agent's next turn would be built with, composed
-	 * from the harness's live resources and active tools. Read-only: the write
-	 * paths stay `appendSystemPrompt` at activation and the `before_agent_start`
-	 * interceptor, which can still replace this text for one turn.
+	 * from the record's own resources and the harness's active tools. Read-only:
+	 * the write paths stay `appendSystemPrompt` at activation and the
+	 * `before_agent_start` interceptor, which can still replace this text for
+	 * one turn.
 	 */
 	async getAgentSystemPrompt(agentId: AgentId): Promise<string> {
 		const record = this._requireAgentRecord(agentId);
@@ -2291,7 +2290,6 @@ export class AgentOrchestrator {
 		return this._buildAgentSystemPrompt(
 			agentId,
 			basePrompt,
-			harness.getResources(),
 			harness.getActiveTools(),
 		);
 	}
@@ -2904,12 +2902,6 @@ export class AgentOrchestrator {
 		await this._publishDiagnostics(resourceDiagnostics);
 		this._addAgentDiagnostics(agentId, { resourceDiagnostics });
 
-		const resources: AgentHarnessResources = {
-			skills: loaded.skills.map(({ skill }) => skill),
-			promptTemplates: loaded.promptTemplates.map(
-				({ promptTemplate }) => promptTemplate,
-			),
-		};
 		this._requireAgentRecord(agentId).resources = {
 			skills: loaded.skills.map(({ skill, source }) => ({
 				name: skill.name,
@@ -2926,6 +2918,7 @@ export class AgentOrchestrator {
 		// statement about this agent. Extension sections follow, read per turn
 		// from the runner.
 		this._requireAgentRecord(agentId).systemPrompt = {
+			skills: loaded.skills.map(({ skill }) => skill),
 			appendSections: profile.appendSystemPrompt
 				? [profile.appendSystemPrompt]
 				: [],
@@ -2954,17 +2947,15 @@ export class AgentOrchestrator {
 			toolContext: () => this._createToolAdapterContext(agentId, profile.id),
 			streamOptions: this.settingManager.getProviderRetrySettings(),
 			retry: this.settingManager.getRetrySettings(),
-			resources: resources,
 			tools: agentToolSet.tools,
 			// Callback instead of a string so the skills listing tracks the
-			// harness's current resources and active tools at each turn start.
-			// The record is read here rather than captured: an extension reload
-			// replaces the runner, and its appended sections must follow.
-			systemPrompt: ({ resources: current, activeTools }) =>
+			// harness's active tools at each turn start. The record is read here
+			// rather than captured: an extension reload replaces the runner, and
+			// its appended sections must follow.
+			systemPrompt: ({ activeTools }) =>
 				this._buildAgentSystemPrompt(
 					agentId,
 					profile.systemPrompt,
-					current,
 					activeTools,
 				),
 			model: model,
