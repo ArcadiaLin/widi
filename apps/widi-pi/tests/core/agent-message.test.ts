@@ -1,5 +1,5 @@
-import type { AgentHarnessEvent } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AgentHarnessEvent } from "@widi/agent-core";
 import { describe, expect, it, vi } from "vitest";
 import type {
 	AgentOrchestrator,

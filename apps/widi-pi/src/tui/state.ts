@@ -1,8 +1,8 @@
-import type { AgentHarnessEvent } from "@earendil-works/pi-agent-core";
 import type {
 	AssistantMessage,
 	ToolResultMessage,
 } from "@earendil-works/pi-ai";
+import type { AgentHarnessEvent } from "@widi/agent-core";
 import type { AgentRecordSnapshot } from "../core/agent-record.ts";
 import type { BackgroundJobReportSnapshot } from "../core/background/index.ts";
 import type { OrchestratorDiagnostic } from "../core/diagnostics.ts";

@@ -1,15 +1,15 @@
 import {
+	getSupportedThinkingLevels,
+	type TextContent,
+	type UserMessage,
+} from "@earendil-works/pi-ai";
+import {
 	type CompactResult,
 	formatPromptTemplateInvocation,
 	formatSkillInvocation,
 	type NavigateTreeResult,
 	parseCommandArgs,
-} from "@earendil-works/pi-agent-core";
-import {
-	getSupportedThinkingLevels,
-	type TextContent,
-	type UserMessage,
-} from "@earendil-works/pi-ai";
+} from "@widi/agent-core";
 import type {
 	AgentListResult,
 	AgentSessionListResult,

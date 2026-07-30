@@ -24,8 +24,8 @@
  * anything whose epoch is not the current one ({@link carriedOverJobs}).
  */
 
-import type { FileSystem } from "@earendil-works/pi-agent-core";
-import { getFileSystemResultOrThrow } from "@earendil-works/pi-agent-core";
+import type { FileSystem } from "@widi/agent-core";
+import { getFileSystemResultOrThrow } from "@widi/agent-core";
 import type {
 	BackgroundJobOrigin,
 	BackgroundJobSnapshot,

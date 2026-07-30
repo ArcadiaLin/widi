@@ -70,21 +70,12 @@ and diagnostics are English throughout.
 
 ## Bootstrap
 
-Set up the upstream Pi submodule before installing and testing WIDI:
-
 ```bash
-git submodule update --init --recursive
 npm install
-```
-
-Build the local Pi workspace packages before running WIDI tests:
-
-```bash
-npm --workspace pi/packages/ai run build
-npm --workspace pi/packages/agent run build
-npm --workspace pi/packages/tui run build
 npm --workspace apps/widi-pi run test
 ```
+
+Tests run the vendored agent core from source, so no build step is needed first. `@earendil-works/pi-ai` and `@earendil-works/pi-tui` come from the registry as prebuilt packages; see [`../../docs/pi-fork.md`](../../docs/pi-fork.md) for why only the harness is vendored.
 
 Run the monorepo check before committing code changes:
 

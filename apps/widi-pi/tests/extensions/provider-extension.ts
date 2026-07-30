@@ -1,4 +1,4 @@
-import type { AgentHarnessStreamOptionsPatch } from "@earendil-works/pi-agent-core";
+import type { AgentHarnessStreamOptionsPatch } from "@widi/agent-core";
 import type {
 	ExtensionFactory,
 	ExtensionProviderConfig,

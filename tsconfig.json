@@ -3,33 +3,16 @@
 	"compilerOptions": {
 		"noEmit": true,
 		"paths": {
-			"*": ["./*"],
-			"@earendil-works/pi-ai": ["./pi/packages/ai/src/index.ts"],
-			"@earendil-works/pi-ai/oauth": ["./pi/packages/ai/src/oauth.ts"],
-			"@earendil-works/pi-ai/*": ["./pi/packages/ai/src/*.ts", "./pi/packages/ai/src/providers/*.ts"],
-			"@earendil-works/pi-ai/dist/*": ["./pi/packages/ai/src/*"],
-			"@earendil-works/pi-agent-core": ["./pi/packages/agent/src/index.ts"],
-            "@earendil-works/pi-agent-core/node": ["./pi/packages/agent/src/node.ts"],
-            "@earendil-works/pi-agent-core/*": ["./pi/packages/agent/src/*.ts"],
-			"@earendil-works/pi-tui": ["./pi/packages/tui/src/index.ts"],
-			"@earendil-works/pi-tui/*": ["./pi/packages/tui/src/*"],
-			"typebox": ["./node_modules/typebox"]
+			"@widi/agent-core": ["./packages/agent/src/index.ts"],
+			"@widi/agent-core/node": ["./packages/agent/src/node.ts"],
+			"@widi/agent-core/*": ["./packages/agent/src/*.ts"]
 		}
 	},
 	"include": [
-		"pi/packages/ai/src/**/*",
-		"pi/packages/ai/test/**/*",
-		"pi/packages/agent/src/**/*",
-		"pi/packages/agent/test/**/*",
-		"pi/packages/tui/src/**/*",
-		"pi/packages/tui/test/**/*",
+		"packages/agent/src/**/*",
+		"packages/agent/test/**/*",
 		"apps/widi-pi/src/**/*",
 		"apps/widi-pi/tests/**/*"
 	],
-	"exclude": [
-		"**/dist/**",
-		// Pulls in pi-coding-agent, whose own dependencies (proper-lockfile,
-		// cross-spawn types) are not installed in this repository.
-		"pi/packages/ai/test/codex-websocket-cached-probe.ts"
-	]
+	"exclude": ["**/dist/**"]
 }

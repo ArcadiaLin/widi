@@ -1,81 +1,50 @@
+# Build output and caches
 node_modules/
 dist/
-*.log
-.DS_Store
-*.tsbuildinfo
-# packages/*/node_modules/
 packages/*/dist/
-packages/*/dist-chrome/
-packages/*/dist-firefox/
 apps/*/dist/
+coverage/
+*.tsbuildinfo
 *.cpuprofile
+*.log
+.npm/
 
-# Python caches
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.pytype/
-.tox/
-.nox/
-.coverage
-htmlcov/
+# Upstream repositories cloned for reading only. `reference/pi` is the pi
+# checkout: pull it freely, check out any tag, it is never built or resolved
+# from. See docs/pi-fork.md.
+reference/
+# Left over from the era when pi was a submodule at this path.
+/pi/
+
+# Scratch space. Working notes, drafts, and throwaway analysis go in notes/;
+# anything worth keeping is promoted into docs/ or apps/widi-pi/docs/.
+notes/
+chat_notes/
 
 # Environment
 .env
 
-# Editor files
+# Editor and OS
 .vscode/
 .zed/
 .idea/
+.DS_Store
 *.swp
 *.swo
 *~
 
-# Package specific
-.npm/
-coverage/
-.nyc_output/
-.pi_config/
-tui-debug.log
-compaction-results/
-.opencode/
-syntax.jsonl
-out.jsonl
-pi-*.html
-out.html
-packages/coding-agent/binaries/
-todo.md
-plans/
-.pi/hf-sessions/
-.pi/hf-sessions-backup/
-collect.sh
-
-# temp_references
-temp_references/
+# Agent tooling
 .claude
 .codex
 .agents/
 .superpowers/
 docs/superpowers/
-docs/pseudo-async-tools.md
-run_test/
-Runs/
+.pi-subagents
 
-# runtime_test
-apps/widi-agent/.widi/agent/Sessions
-apps/widi-agent/.widi/agent/auth.json
-apps/widi-agent/.widi/agent/models.json
-apps/widi-agent/.widi/agent/Runs/
-
-# test config
+# Repo-local runtime config: the sample extension, MCP config, and profiles are
+# tracked; everything the runtime writes there is not.
 .widi/*
 !.widi/extensions/
 !.widi/mcp.json
 !.widi/profiles/
 !.widi/profiles/**
-chat_notes/
-plan/

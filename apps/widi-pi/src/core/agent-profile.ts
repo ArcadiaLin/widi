@@ -1,8 +1,4 @@
-import type {
-	ExecutionEnv,
-	FileError,
-	FileInfo,
-} from "@earendil-works/pi-agent-core";
+import type { ExecutionEnv, FileError, FileInfo } from "@widi/agent-core";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { formatError } from "../utils/errors.ts";
 import {

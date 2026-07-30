@@ -1,4 +1,4 @@
-import { AgentHarnessError } from "@earendil-works/pi-agent-core";
+import { AgentHarnessError } from "@widi/agent-core";
 import { describe, expect, it, vi } from "vitest";
 import {
 	backgroundResultMergeKey,

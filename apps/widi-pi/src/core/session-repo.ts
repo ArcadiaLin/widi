@@ -20,7 +20,7 @@ import type {
 	JsonlSessionMetadata,
 	JsonlSessionRepoApi,
 	Session,
-} from "@earendil-works/pi-agent-core";
+} from "@widi/agent-core";
 import {
 	createSessionId,
 	createTimestamp,
@@ -31,7 +31,7 @@ import {
 	SessionError,
 	toError,
 	toSession,
-} from "@earendil-works/pi-agent-core";
+} from "@widi/agent-core";
 
 /** History file name inside a session directory. */
 export const SESSION_FILE_NAME = "session.jsonl";

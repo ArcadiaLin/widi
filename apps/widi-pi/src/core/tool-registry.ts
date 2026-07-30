@@ -2,7 +2,7 @@ import type {
 	AgentHarnessTool,
 	AgentToolResult,
 	AgentToolUpdateCallback,
-} from "@earendil-works/pi-agent-core";
+} from "@widi/agent-core";
 import type { TSchema } from "typebox";
 import type { ToolAgentHost } from "./agent-host.ts";
 import {

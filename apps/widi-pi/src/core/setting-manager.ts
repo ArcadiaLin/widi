@@ -1,7 +1,4 @@
-import type {
-	ExecutionEnv,
-	ThinkingLevel,
-} from "@earendil-works/pi-agent-core";
+import type { ExecutionEnv, ThinkingLevel } from "@widi/agent-core";
 import { AsyncLock } from "../utils/async-lock.ts";
 import { unwrapResult } from "../utils/result.ts";
 import { DEFAULT_AGENT_DIR } from "./constants.js";

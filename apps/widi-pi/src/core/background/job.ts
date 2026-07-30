@@ -8,7 +8,7 @@
  * table just to speak about a job.
  */
 
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentToolResult } from "@widi/agent-core";
 import type { BackgroundJobOutput } from "./output.ts";
 import type { BackgroundJobReportSnapshot } from "./report.ts";
 

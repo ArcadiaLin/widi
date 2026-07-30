@@ -1,4 +1,4 @@
-import type { ExecutionEnv } from "@earendil-works/pi-agent-core";
+import type { ExecutionEnv } from "@widi/agent-core";
 
 export type MaybePromise<T> = T | Promise<T>;
 export type GetEnv = (name: string) => MaybePromise<string | undefined>;

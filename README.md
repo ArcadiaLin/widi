@@ -6,7 +6,7 @@ WIDI is a multi-agent runtime built on the `AgentHarness` module of [Pi](https:/
 
 To be precise about what this repository is today: a runtime core with a documented architecture and a test suite, not yet a usable coding-agent product. What might still make it worth reading:
 
-**It is a real consumer of Pi's harness module.** `pi-coding-agent` runs on its own `AgentSession` runtime and does not use `AgentHarness`; the harness is a clean module without a first-party product consumer so far. WIDI builds its entire runtime on it — session tree, resume, compaction, queue semantics — and feeds the gaps it hits back upstream instead of patching the submodule. Missing primitives are recorded in the [`Pi upstream roadmap`](apps/widi-pi/docs/zh-CN/core/pi-upstream-roadmap.md); WIDI now consumes Pi's JSONL session repository directly, including opaque header metadata used for recovery references.
+**It is a real consumer of Pi's harness module.** `pi-coding-agent` runs on its own `AgentSession` runtime and does not use `AgentHarness`; the harness is a clean module without a first-party product consumer so far. WIDI builds its entire runtime on it — session tree, resume, compaction, queue semantics — and sends the gaps it hits upstream as pull requests. Missing primitives are recorded in the [`Pi upstream roadmap`](apps/widi-pi/docs/zh-CN/core/pi-upstream-roadmap.md); WIDI consumes Pi's JSONL session repository directly, including opaque header metadata used for recovery references. Since upstream began rewriting the harness, WIDI owns a frozen fork of it ([`docs/pi-fork.md`](docs/pi-fork.md)) rather than tracking a moving target.
 
 **Agents are runtime entities, not processes.** Pi's experimental orchestrator package supervises full coding-agent instances as RPC subprocesses. WIDI takes the other branch of that trade-off: multiple harnesses live in one process and share a tool registry, profile registry, session repo, and diagnostics channel, so agent lifecycle, availability, and recovery are observable inside the runtime rather than across process boundaries. This costs the isolation a process model gives you; the bet is that first-class orchestration semantics are worth it, and it is a bet — the collaboration tools that would prove it are still on the roadmap.
 
@@ -57,42 +57,36 @@ Documentation uses a stable [language entry point](apps/widi-pi/docs/README.md);
 ## Workspace layout
 
 - `apps/widi-pi`: the WIDI runtime core (active product code), exposing the `widi-harness` binary from `dist/cli.js`.
-- `pi/packages/ai`: local workspace source for `@earendil-works/pi-ai`.
-- `pi/packages/agent`: local workspace source for `@earendil-works/pi-agent-core`.
-- `pi/packages/tui`: local workspace source for `@earendil-works/pi-tui`.
+- `packages/agent`: `@widi/agent-core`, a fork of `@earendil-works/pi-agent-core` vendored at pi `v0.83.0`.
 
-The checked-in `pi/` directory is the upstream Pi repository as a git submodule, resolved locally as workspace packages. WIDI treats `pi/*` as vendor code and does not modify it; gaps are fed back upstream or recorded in the [upstream roadmap](apps/widi-pi/docs/zh-CN/core/pi-upstream-roadmap.md).
+`@earendil-works/pi-ai` and `@earendil-works/pi-tui` are installed from the registry at exact versions; only the harness package is vendored. The upstream pi repository is not part of this repository — clone it into `reference/pi` (gitignored, never built) when you want to read upstream source.
+
+The harness is forked because upstream is replacing it: [`harness-v2.md`](packages/agent/docs/harness-v2.md) specifies a full rewrite of `packages/agent/src/harness` under a compatibility policy that preserves nothing but v3 JSONL session loading. [`docs/pi-fork.md`](docs/pi-fork.md) records why the fork exists, its complete divergence from upstream, the invariants that keep it working, and the conditions for re-syncing. Gaps WIDI still needs from upstream are recorded in the [upstream roadmap](apps/widi-pi/docs/zh-CN/core/pi-upstream-roadmap.md).
 
 ## Development setup
 
 Prerequisites: Node.js >= 22.19 and npm. Then:
 
 ```bash
-git submodule update --init --recursive   # check out the pi submodule
-npm install                               # install workspace dependencies
-node pi/packages/ai/scripts/generate-models.ts   # generate pi's built-in model data
-npm run build        # build all workspace packages
+npm install          # install workspace dependencies
+npm run build        # build @widi/agent-core, then the app
 npm run check        # Biome formatting/linting and TypeScript checks
 npm run test         # run workspace tests
 ```
 
-Notes on the moving parts:
+No network access and no code generation are needed to build: `pi-ai` ships its provider model catalogs inside the published tarball.
 
-- **Pi's model data is generated, not checked in.** `pi-ai` imports provider model catalogs from `pi/packages/ai/src/providers/data/*.json`, which are gitignored upstream. Type checks and builds fail until they exist. `npm run build` regenerates them as part of the pi-ai build; the standalone `generate-models.ts` run above is only needed when you type-check without building.
-- **`npm run check` covers `apps/widi-pi`.** To type-check the whole monorepo including the pi packages, run `npx tsgo --noEmit -p tsconfig.json`.
-- The root TypeScript config maps `@earendil-works/pi-*` imports to the pi sources and uses `module: NodeNext`, matching upstream's own config (required for pi's JSON import attributes).
-
-### Updating the pi submodule
-
-Pi tracks upstream `main`. After pulling the submodule to a new commit:
+Upstream pi is optional and only useful for reading. Clone it when you want its source or history:
 
 ```bash
-git -C pi fetch origin
-git -C pi checkout origin/main
-node pi/packages/ai/scripts/generate-models.ts   # re-run after every pi update
+git clone https://github.com/earendil-works/pi.git reference/pi
 ```
 
-If the generator also rewrites tracked files (it refreshes `*.models.ts` when a provider's live model list has drifted since upstream last committed), restore them with `git -C pi checkout -- <files>` — the generated `data/*.json` stay valid, and a clean submodule keeps future pulls trivial. Then run `npm run check` and the test suite; upstream API breaks surface as type errors in `apps/widi-pi`.
+Notes on the moving parts:
+
+- **`npm run check` covers both workspaces.** It type-checks `packages/agent/{src,test}` and `apps/widi-pi/{src,tests}` through the root `tsconfig.json`. The app's own `check` script only sees the app.
+- **Biome formatting is partitioned.** `apps/**` uses WIDI's defaults; `packages/agent/**` keeps upstream's settings so the vendored files stay byte-identical to upstream and cherry-picks stay cheap.
+- **The pi dependencies are pinned exactly, not by range**, and `typebox` must match the version published `pi-ai` pins. Both constraints and their failure modes are in [`docs/pi-fork.md`](docs/pi-fork.md).
 
 ## Benchmarks
 

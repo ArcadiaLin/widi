@@ -1,8 +1,4 @@
-import type {
-	AgentHarness,
-	PromptTemplate,
-	Skill,
-} from "@earendil-works/pi-agent-core";
+import type { AgentHarness, PromptTemplate, Skill } from "@widi/agent-core";
 import type {
 	AgentProfile,
 	AgentProfileReference,

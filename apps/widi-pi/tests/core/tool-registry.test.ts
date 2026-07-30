@@ -1,4 +1,4 @@
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentToolResult } from "@widi/agent-core";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import {

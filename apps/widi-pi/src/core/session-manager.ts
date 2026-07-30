@@ -18,11 +18,8 @@ import type {
 	SessionForkOptions,
 	SessionMetadata,
 	SessionTreeEntry,
-} from "@earendil-works/pi-agent-core";
-import {
-	buildSessionContext,
-	InMemorySessionRepo,
-} from "@earendil-works/pi-agent-core";
+} from "@widi/agent-core";
+import { buildSessionContext, InMemorySessionRepo } from "@widi/agent-core";
 import { formatError } from "../utils/errors.ts";
 import type { AgentProfile, AgentProfileReference } from "./agent-profile.js";
 import {

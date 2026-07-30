@@ -1,5 +1,5 @@
-import { AgentHarness } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { AgentHarness } from "@widi/agent-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ToolAgentHost } from "../../src/core/agent-host.ts";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";

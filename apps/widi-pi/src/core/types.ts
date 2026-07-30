@@ -1,5 +1,5 @@
-import type { AgentHarnessEvent } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
+import type { AgentHarnessEvent } from "@widi/agent-core";
 import type { AgentProfile } from "./agent-profile.js";
 import type {
 	BackgroundJobReportSnapshot,

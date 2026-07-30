@@ -5,13 +5,13 @@ import type {
 	FileInfo,
 	Result,
 	ShellExecOptions,
-} from "@earendil-works/pi-agent-core";
+} from "@widi/agent-core";
 import {
 	err,
 	ok,
 	ExecutionError as PiExecutionError,
 	FileError as PiFileError,
-} from "@earendil-works/pi-agent-core";
+} from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import {
 	EXTENSION_API_VERSION,

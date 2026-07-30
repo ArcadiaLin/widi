@@ -1,9 +1,6 @@
-import type {
-	AgentHarnessEvent,
-	JsonlSessionMetadata,
-} from "@earendil-works/pi-agent-core";
-import { ok } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AgentHarnessEvent, JsonlSessionMetadata } from "@widi/agent-core";
+import { ok } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import {
 	AgentOrchestrator,

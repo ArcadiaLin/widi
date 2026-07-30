@@ -13,8 +13,8 @@
  * dependency edge runs one way: orchestrator -> message.
  */
 
-import { AgentHarnessError } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
+import { AgentHarnessError } from "@widi/agent-core";
 import type { AgentId, PromptExpansion } from "./types.ts";
 
 /**

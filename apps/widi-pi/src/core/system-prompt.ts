@@ -7,8 +7,8 @@
  * directory. This module is where those facts get their wording.
  */
 
-import type { AgentHarnessResources } from "@earendil-works/pi-agent-core";
-import { formatSkillsForSystemPrompt } from "@earendil-works/pi-agent-core";
+import type { AgentHarnessResources } from "@widi/agent-core";
+import { formatSkillsForSystemPrompt } from "@widi/agent-core";
 import { CORE_AGENT_TOOL_NAMES } from "./agent-host.ts";
 import type { AgentId } from "./types.ts";
 

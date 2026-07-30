@@ -1,3 +1,4 @@
+import type { ImageContent } from "@earendil-works/pi-ai";
 import type {
 	AgentHarnessEventResultMap,
 	BeforeAgentStartEvent,
@@ -11,8 +12,7 @@ import type {
 	ThinkingLevel,
 	ToolCallEvent,
 	ToolResultEvent,
-} from "@earendil-works/pi-agent-core";
-import type { ImageContent } from "@earendil-works/pi-ai";
+} from "@widi/agent-core";
 import type { TSchema } from "typebox";
 import type { JsonValue } from "../../utils/json.ts";
 import type { AgentProfileReference } from "../agent-profile.js";

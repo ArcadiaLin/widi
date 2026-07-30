@@ -5,11 +5,8 @@
  * section 4) is what picked these four.
  */
 
-import type {
-	AgentHarnessEvent,
-	AgentMessage,
-} from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
+import type { AgentHarnessEvent, AgentMessage } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import type {
 	AgentOrchestrator,

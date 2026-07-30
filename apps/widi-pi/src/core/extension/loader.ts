@@ -1,4 +1,4 @@
-import type { ExecutionEnv, FileInfo } from "@earendil-works/pi-agent-core";
+import type { ExecutionEnv, FileInfo } from "@widi/agent-core";
 import { formatError } from "../../utils/errors.ts";
 import type { CoreDiagnostic, DiagnosticSeverity } from "../diagnostics.ts";
 import {

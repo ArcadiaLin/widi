@@ -4,11 +4,11 @@ import type {
 	PromptTemplateDiagnostic,
 	Skill,
 	SkillDiagnostic,
-} from "@earendil-works/pi-agent-core";
+} from "@widi/agent-core";
 import {
 	loadSourcedPromptTemplates,
 	loadSourcedSkills,
-} from "@earendil-works/pi-agent-core";
+} from "@widi/agent-core";
 import type { AgentProfile } from "./agent-profile.js";
 import {
 	DEFAULT_AGENT_DIR,

@@ -1,4 +1,4 @@
-import type { JsonlSessionMetadata } from "@earendil-works/pi-agent-core";
+import type { JsonlSessionMetadata } from "@widi/agent-core";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import { BACKGROUND_JOBS_FILE_NAME } from "../../src/core/background/index.ts";

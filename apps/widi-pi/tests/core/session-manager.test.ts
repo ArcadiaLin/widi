@@ -1,14 +1,5 @@
-import type {
-	FileError,
-	FileInfo,
-	FileSystem,
-	Result,
-} from "@earendil-works/pi-agent-core";
-import {
-	err,
-	ok,
-	FileError as PiFileError,
-} from "@earendil-works/pi-agent-core";
+import type { FileError, FileInfo, FileSystem, Result } from "@widi/agent-core";
+import { err, ok, FileError as PiFileError } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import type { AgentProfile } from "../../src/core/agent-profile.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";

@@ -9,8 +9,8 @@
  * one place.
  */
 
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { TextContent } from "@earendil-works/pi-ai";
+import type { AgentToolResult } from "@widi/agent-core";
 import { formatError } from "../../utils/errors.ts";
 import {
 	type BackgroundJobOutcome,

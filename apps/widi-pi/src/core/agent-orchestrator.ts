@@ -6,6 +6,12 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
+	type AssistantMessage,
+	getSupportedThinkingLevels,
+	type ImageContent,
+	type OAuthLoginCallbacks,
+} from "@earendil-works/pi-ai";
+import {
 	AgentHarness,
 	AgentHarnessError,
 	type AgentHarnessEvent,
@@ -21,13 +27,7 @@ import {
 	type Skill,
 	shouldCompact,
 	type ThinkingLevel,
-} from "@earendil-works/pi-agent-core";
-import {
-	type AssistantMessage,
-	getSupportedThinkingLevels,
-	type ImageContent,
-	type OAuthLoginCallbacks,
-} from "@earendil-works/pi-ai";
+} from "@widi/agent-core";
 import { formatError } from "../utils/errors.ts";
 import type {
 	AgentBrief,

@@ -3,7 +3,7 @@ import {
 	type FileInfo,
 	FileError as PiFileError,
 	type Result,
-} from "@earendil-works/pi-agent-core";
+} from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import {
 	ResourceLoader,
