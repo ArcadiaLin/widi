@@ -4,7 +4,7 @@
 
 WIDI's runtime is built on `AgentHarness`. Upstream plans to replace it: `packages/agent/docs/harness-v2.md` specifies a full rewrite of `packages/agent/src/harness` and a greenfield SQLite schema, under a compatibility policy that keeps exactly one guarantee - old coding-agent v3 JSONL sessions must open and restore idle. Everything else in the harness and storage surface may break.
 
-WIDI cannot ride that rewrite while it lands. The orchestrator consumes the harness deeply: sixteen harness methods, five hooks, and the whole event vocabulary. So the harness is frozen at a known-good upstream release and owned locally, while the two packages that keep improving without breaking us stay on the registry.
+WIDI cannot ride that rewrite while it lands. The orchestrator consumes the harness deeply: eighteen harness methods, five hooks, and the whole event vocabulary. So the harness is frozen at a known-good upstream release and owned locally, while the two packages that keep improving without breaking us stay on the registry.
 
 This is a freeze, not a divorce. Re-sync is expected; the conditions are at the end of this document.
 
@@ -25,19 +25,31 @@ Upstream `packages/storage/sqlite-node` is deliberately not vendored: WIDI persi
 
 Vendored from upstream commit `845d6ff1f6643aba440341cce877ce1c43ebbc39` (`v0.83.0`). The `version` field in `packages/agent/package.json` tracks that release and is bumped only on re-sync.
 
-`packages/agent/src` is byte-identical to upstream except for one addition:
+`packages/agent/src` diverges from upstream in two places, one addition and one removal:
 
-- `src/harness/agent-harness.ts`: `AgentHarness.promoteFollowUpsToSteer()`. A follow-up is only read where the agent would otherwise stop, so a user who queued one and then cannot wait has no way to promote it; re-sending the text as a steer would deliver it twice, and only the harness can take the message back out. Used by `agent-orchestrator.ts` via `steerQueuedFollowUps`.
+- **Added** to `src/harness/agent-harness.ts`: `AgentHarness.promoteFollowUpsToSteer()`. A follow-up is only read where the agent would otherwise stop, so a user who queued one and then cannot wait has no way to promote it; re-sending the text as a steer would deliver it twice, and only the harness can take the message back out. Used by `agent-orchestrator.ts` via `steerQueuedFollowUps`.
+- **Removed** from `src/harness/agent-harness.ts` and `src/harness/types.ts`: the harness's entire resource surface. `skill()`, `promptFromTemplate()`, `getResources()`, `setResources()`, the `resources` option, the `resources_update` event, `BeforeAgentStartEvent.resources`, the `resources` field of the system-prompt callback context, the `AgentHarnessResources` type, and the `TSkill`/`TPromptTemplate` type parameters. `AgentHarness` is now `AgentHarness<TContext, TTool>`. See "The resource removal" below.
 
-`packages/agent/test` diverges in three places:
+`packages/agent/test` diverges in four places:
 
-- `test/harness/agent-harness.test.ts`: two tests for the promotion path, plus `textFromUserMessages` widened to `content?: unknown` so an `AgentMessage[]` - a union whose bash-execution member carries no `content` - can be passed directly. Without the widening the promotion test does not type-check against v0.83.0.
+- `test/harness/agent-harness.test.ts`: two tests for the promotion path, plus `textFromUserMessages` widened to `content?: unknown` so an `AgentMessage[]` - a union whose bash-execution member carries no `content` - can be passed directly. Without the widening the promotion test does not type-check against v0.83.0. The resource-getter test is deleted and the save-point refresh test drives its system-prompt change through a closure instead of `setResources()`.
+- `test/scratch/simple.ts`: composes the skills listing and expands the prompt template itself, then passes the harness a plain string.
 - `test/harness/session-test-utils.ts`: the package self-reference now names `@widi/agent-core`.
 - `test/harness/sqlite-migrations.test.ts` and `test/harness/sqlite-node.test.ts`: removed. They import `packages/storage/sqlite-node`, which is not vendored.
 
 Nothing in `packages/agent/src` references SQLite, so removing those tests costs no source coverage.
 
-Upstream's own `docs/` is kept inside the package because it documents the code the package now owns. `LICENSE` is upstream's MIT notice and stays with the code.
+Upstream's own `docs/` is kept inside the package because it documents the code the package now owns, and is left at upstream's version even where the removal made it wrong: `docs/agent-harness.md` still describes `skill()`, `getResources()`, and `AgentHarness<TContext, TSkill, TPromptTemplate, TTool>`. That file carries upstream's roadmap and changelog and changes on every release, so editing it would trade a real conflict for a self-consistent vendored document. `LICENSE` is upstream's MIT notice and stays with the code.
+
+### The resource removal
+
+The harness held skills and prompt templates only to hand them back to the application that loaded them: `skill()` formatted a resource the app had already resolved, and the system-prompt callback returned the same set the app passed in. WIDI had stopped calling all of it - `/skill` and `/prompt` expand through `built-ins.ts` before the text ever reaches the harness - so the surface was dead weight carrying two type parameters.
+
+The skills now live on `AgentRecord.systemPrompt.skills`, read per turn by the system-prompt callback in `agent-orchestrator.ts`. The harness holds a system prompt source and nothing else.
+
+**What did not move.** `src/harness/skills.ts`, `src/harness/prompt-templates.ts`, and `src/harness/system-prompt.ts` are untouched and still exported: the loaders are filesystem mechanism upstream keeps improving, and `formatSkillInvocation`, `formatPromptTemplateInvocation`, and `formatSkillsForSystemPrompt` are pure functions whose output WIDI matches byte for byte. WIDI's divergence is where they are called, not what they emit. The invariant that replaces the deleted code: **`AgentHarness` imports none of those three modules; only the application calls them.**
+
+On re-sync, harness-v2 rewrites `src/harness` wholesale. Those three files should be **moved out of `harness/`, not deleted with it**, and none of the removed API should come back.
 
 ## Carrying upstream work across
 
@@ -120,6 +132,6 @@ Revisit this arrangement when all of the following hold:
    - **Follow-up promotion.** harness-v2's lane queues are `steer`/`followUp`/`nextRun` with no promotion. Our patch does not port as written: its rollback works by splicing in-memory arrays, and harness-v2's queues are append-only durable records, so promotion has to become a record-level operation.
    - **Human-in-the-loop suspension.** `SuspendedOperation.reason` is `crash | deferred`. WIDI's `ask_human` awaits a person inside a tool call, which harness-v2 recovery treats as an interrupted tool and closes with a synthetic result. A third reason is needed.
    - **Background jobs.** harness-v2 has no t0/t1 split. Our backgroundable tools resolve a handle at t0 and deliver the outcome later as a message; that composes with harness-v2's step model, and `queue_enqueued` would make t1 delivery durable, but job execution stays as mortal as it is today. `BackgroundJobStore` does not go away.
-3. The migration is priced. The method surface maps almost one to one, including all five hooks (`before_agent_start` to `before_run`, `before_provider_request` to `before_request`/`before_payload`, `context` to `transform_context`, `tool_call` to `before_tool`, `tool_result` to `after_tool`). The real work is the storage adapter, the session snapshot and tree queries behind `SessionHydrator`, and the loss of the harness's type parameters - `WidiAgentHarness` currently instantiates four, harness-v2 keeps only the tool context, so `ResolvedAgentHarnessTool`'s extra fields need a new home.
+3. The migration is priced. The method surface maps almost one to one, including all five hooks (`before_agent_start` to `before_run`, `before_provider_request` to `before_request`/`before_payload`, `context` to `transform_context`, `tool_call` to `before_tool`, `tool_result` to `after_tool`). The real work is the storage adapter, the session snapshot and tree queries behind `SessionHydrator`, and the loss of the harness's type parameters - `WidiAgentHarness` instantiates two and harness-v2 keeps only the tool context, so `ResolvedAgentHarnessTool`'s extra fields need a new home. The resource removal above already paid the other half of that bill: the two resource parameters harness-v2 also drops are gone.
 
 Until then, harness-v2 is a design to mine rather than a dependency to track. Part II of that document - the record model, provisioned ids, and recovery - is backend-neutral and does not require lanes, which is the part worth adopting into our own layer first. Lanes themselves model shared history across parallel positions; WIDI isolates agents by spawn tree and passes messages, so lanes are the one piece to leave alone.
