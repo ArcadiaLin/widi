@@ -2190,6 +2190,7 @@ export class AgentOrchestrator {
 		await this._clearExtensionStatusesForAgent(agentId);
 		await this._withdrawExtensionProviderContributions(agentId);
 		delete record.harness;
+		delete record.systemPrompt;
 		this._agentRunSignals.delete(agentId);
 		this._agentToolSets.delete(agentId);
 		await this._humanRequests.cancelForAgent(
@@ -3813,6 +3814,7 @@ export class AgentOrchestrator {
 		const record = this._agents.get(agentId);
 		if (!record) return;
 		delete record.harness;
+		delete record.systemPrompt;
 		if (!record.diagnostics.includes(diagnostic)) {
 			record.diagnostics.push(diagnostic);
 		}

@@ -1,5 +1,9 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { AgentHarnessEvent, JsonlSessionMetadata } from "@widi/agent-core";
+import type {
+	AgentHarnessEvent,
+	BeforeAgentStartEvent,
+	JsonlSessionMetadata,
+} from "@widi/agent-core";
 import { ok } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import {
@@ -1908,8 +1912,10 @@ describe("AgentOrchestrator", () => {
 		});
 		orchestrator.registerExtension("stateful", () => {});
 		const agentId = await orchestrator.spawnAgent();
-		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+		const record = requireAgentRecord(orchestrator, agentId);
+		const runner = record.extensionRunner;
 		if (!runner) throw new Error("Expected extension runner.");
+		expect(record.systemPrompt).toBeDefined();
 		const context = runner.createContext("stateful");
 		await context.actions.setStatus("sync", {
 			text: "Synchronizing",
@@ -1932,6 +1938,7 @@ describe("AgentOrchestrator", () => {
 		await orchestrator.disposeAgent(agentId, { reason: "test cleanup" });
 		await orchestrator.disposeAgent(agentId, { reason: "already disposed" });
 		expect(orchestrator.getAgentStatus(agentId)).toBe("disposed");
+		expect(record.systemPrompt).toBeUndefined();
 		expect(orchestrator.listExtensionStatuses(agentId)).toEqual([]);
 		expect(statusSnapshotsDuringClear).toEqual([[], []]);
 		expect(
@@ -3172,6 +3179,40 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
+	it("releases system prompt resources when late harness construction fails", async () => {
+		const env = new MemoryExecutionEnv();
+		await env.writeFile(
+			"/workspace/project/.widi/skills/review/SKILL.md",
+			[
+				"---",
+				"name: review",
+				"description: Review code.",
+				"---",
+				"SECRET SKILL BODY",
+			].join("\n"),
+		);
+		env.dirs.add("/workspace/project/.widi/skills");
+		const orchestrator = await createOrchestrator(env);
+		let loadedSkillBody: string | undefined;
+		Object.assign(orchestrator, {
+			_openBackgroundJobStore: async (agentId: string) => {
+				loadedSkillBody = requireAgentRecord(orchestrator, agentId).systemPrompt
+					?.skills[0]?.content;
+				throw new Error("background store exploded");
+			},
+		});
+
+		await expect(orchestrator.spawnAgent()).rejects.toThrow(
+			"background store exploded",
+		);
+
+		const record = requireAgentRecord(orchestrator, "main-agent");
+		expect(loadedSkillBody).toBe("SECRET SKILL BODY");
+		expect(record.status).toBe("unavailable");
+		expect(record.harness).toBeUndefined();
+		expect(record.systemPrompt).toBeUndefined();
+	});
+
 	it("reloads idle agent extension runners and activates new tools in default-all mode", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = {
@@ -3829,8 +3870,7 @@ describe("AgentOrchestrator", () => {
 				type: "before_agent_start",
 				prompt: "go",
 				systemPrompt: "base prompt",
-				resources: {},
-			}),
+			} satisfies BeforeAgentStartEvent),
 		).resolves.toEqual({
 			messages: [
 				{ role: "user", content: "first", timestamp: 1 },
