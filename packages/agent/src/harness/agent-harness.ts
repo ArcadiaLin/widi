@@ -585,7 +585,7 @@ export class AgentHarness<
 		} else if (write.type === "session_info") {
 			return await this.session.appendSessionName(write.name ?? "");
 		} else if (write.type === "leaf") {
-			await this.session.getStorage().setLeafId(write.targetId);
+			await this.session.moveTo(write.targetId);
 			return undefined;
 		}
 		return undefined;
