@@ -61,16 +61,45 @@ import {
 	type OrchestratorDiagnostic,
 	OrchestratorError,
 } from "../diagnostics.ts";
-import type { ExtensionCoreActions } from "../extension/index.ts";
-import { ExtensionLoader, type ExtensionRunner } from "../extension/index.ts";
+import type { ExtensionEventEnvelope } from "../extension/events.ts";
+import type {
+	ExtensionContextActions,
+	ExtensionCoreActions,
+	ExtensionIdentity,
+} from "../extension/index.ts";
 import {
+	ExtensionLoader,
+	ExtensionRunner,
+	freezeExtensionEventEnvelope,
+	MAX_EXTENSION_EVENT_DISPATCH_DEPTH,
+	validateExtensionEventName,
+	validateExtensionEventPayload,
+} from "../extension/index.ts";
+import {
+	assertExtensionNotificationText,
+	assertExtensionOutputText,
+	assertExtensionStatusKey,
 	cloneExtensionInputPresentation,
 	type ExtensionInputPresentation,
+	type ExtensionStatusSnapshot,
+	validateExtensionDiagnosticDraft,
 	validateExtensionInputPresentation,
+	validateExtensionMessage,
+	validateExtensionStatus,
 } from "../extension/presentation.ts";
 import { ExtensionStatusRegistry } from "../extension/status-registry.ts";
+import type {
+	ExtensionInterceptorEventFor,
+	ExtensionInterceptorName,
+	ExtensionInterceptorResultFor,
+	ExtensionModule,
+	ExtensionObservedEvent,
+	ExtensionSessionSnapshot,
+	ExtensionSessionTree,
+} from "../extension/types.ts";
 import { HumanInterruptRegistry } from "../human-interrupt.ts";
 import { HumanRequestBroker } from "../human-request.ts";
+import { stripImagesFromMessages } from "../image-policy.ts";
 import {
 	assertMessageBody,
 	backgroundResultMergeKey,
@@ -80,26 +109,39 @@ import {
 	type MessageDeliveryReceipt,
 	type MessageDeliveryRequest,
 	type MessageDraft,
+	type MessageInterceptEvent,
+	type MessageInterceptRun,
 	type MessageSendOutcome,
+	type MessageSource,
 	renderMessageEnvelope,
 	transformMessage,
 } from "../message.ts";
 import { type ModelRegistry, parseThinkingLevel } from "../model-registry.js";
+import type { ProviderConfigInput } from "../model-registry.ts";
+import type { ConfigValueResolver } from "../resolve-config-value.js";
 import type { ResourceLoader } from "../resource-loader.js";
 import type {
 	AgentSessionCandidate,
 	AgentSessionMetadata,
+	AgentSessionSnapshot,
+	AgentSessionTreeSnapshot,
 	SessionManager,
 } from "../session-manager.ts";
 import {
-	COMMAND_EXPANSION_CUSTOM_TYPE,
-	type CommandExpansionEntryData,
 	EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE,
+	EXTENSION_MESSAGE_CUSTOM_TYPE,
 	type ExtensionInputPresentationEntryData,
+	type ExtensionMessageEntryData,
 	INPUT_TRANSFORM_CUSTOM_TYPE,
 	type InputTransformEntryData,
+	sessionDirNameFromPath,
+	toExtensionCustomType,
 } from "../session-manager.ts";
-import type { AgentTreeSpawnRecord } from "../session-tree.ts";
+import type {
+	AgentParentPointer,
+	AgentTreeRecord,
+	AgentTreeSpawnRecord,
+} from "../session-tree.ts";
 import type { SettingManager } from "../setting-manager.js";
 import { ToolRegistry } from "../tool-registry.ts";
 import type {
@@ -108,7 +150,6 @@ import type {
 	AgentIdleReason,
 	AgentMaintenanceKind,
 	CandidateItem,
-	PromptExpansion,
 	PromptOutcome,
 	RuntimeModel,
 } from "../types.ts";
@@ -177,6 +218,40 @@ export interface AgentPromptTemplateCandidateListResult {
 
 export interface AgentSkillCandidateListResult {
 	readonly skills: readonly CandidateItem[];
+}
+
+export type ExtensionReloadAgentStatus = "reloaded" | "skipped" | "failed";
+
+/**
+ * Why a reload passed an agent over. `running` covers every non-idle phase: a
+ * replacement would swap the interceptors an operation is midway through.
+ */
+export type ExtensionReloadAgentSkipReason = "creating" | "running" | "gone";
+
+export interface ExtensionReloadAgentResult {
+	readonly agentId: AgentId;
+	readonly status: ExtensionReloadAgentStatus;
+	readonly reason?: ExtensionReloadAgentSkipReason;
+	readonly diagnostics: readonly OrchestratorDiagnostic[];
+}
+
+export interface ExtensionReloadResult {
+	readonly catalog: {
+		readonly loaded: readonly ExtensionIdentity[];
+		readonly diagnostics: readonly OrchestratorDiagnostic[];
+	};
+	readonly agents: readonly ExtensionReloadAgentResult[];
+}
+
+/** What one tree restoration produced, for the root's reconciliation message. */
+interface AgentTreeResumeOutcome {
+	readonly rootAgentId: AgentId;
+	readonly resumed: readonly AgentId[];
+	readonly failed: readonly AgentId[];
+	readonly remapped: ReadonlyArray<{
+		readonly from: AgentId;
+		readonly to: AgentId;
+	}>;
 }
 
 /**
@@ -961,6 +1036,16 @@ export class AgentOrchestrator {
 		}
 		if (options.parent !== undefined)
 			this._assertAgentCanParent(options.parent);
+		// A child resumed by hand is redirected to its root, so the tree comes back
+		// whole instead of as an orphan whose root would later open the same
+		// session a second time. Only a top-level resume can be redirected: a
+		// member being restored under `_resumeAgentTree` is already inside one.
+		if (options.origin.kind === "resume" && options.parent === undefined) {
+			const redirected = await this._redirectChildResumeToRoot(
+				options.origin.reference,
+			);
+			if (redirected !== undefined) return redirected;
+		}
 
 		const request = await this._resolveAgentBuild(options);
 		// A resume that names a session another caller is already resuming waits
@@ -1006,6 +1091,12 @@ export class AgentOrchestrator {
 						? undefined
 						: { spawnedBy: request.parent }),
 				});
+			}
+			// After the root is routable and announced: its children are spawned
+			// under it, and a child whose parent is not yet live has nowhere to
+			// attach. A member resume is skipped - it is already inside a restore.
+			if (request.origin === "resume" && request.parent === undefined) {
+				await this._restoreSpawnTree(agentId);
 			}
 			return agentId;
 		} catch (error) {
@@ -1183,9 +1274,7 @@ export class AgentOrchestrator {
 			);
 			partial.extensionRunner = extensionRunner;
 			await this._publishDiagnostics(extensionRunner.diagnostics);
-			this._addAgentDiagnostics(agentId, {
-				extensionDiagnostics: [...extensionRunner.diagnostics],
-			});
+			this._addAgentDiagnostics(agentId, extensionRunner.diagnostics);
 			const blocked = extensionRunner.diagnostics.find(
 				isBlockedExtensionDiagnostic,
 			);
@@ -1202,7 +1291,7 @@ export class AgentOrchestrator {
 				agentId,
 			}));
 			await this._publishDiagnostics(resourceDiagnostics);
-			this._addAgentDiagnostics(agentId, { resourceDiagnostics });
+			this._addAgentDiagnostics(agentId, resourceDiagnostics);
 			this._assertBuildNotCancelled(agentId, reservation);
 
 			const resources: AgentResourcesSnapshot = {
@@ -1845,18 +1934,12 @@ export class AgentOrchestrator {
 		text: string,
 		options?: {
 			readonly images?: readonly ImageContent[];
-			readonly expansion?: PromptExpansion;
 			readonly presentation?: ExtensionInputPresentationRecord;
 		},
 	): Promise<PromptOutcome> {
 		const accepted = await this._routeMessage(
 			{
-				source: {
-					kind: "human",
-					...(options?.expansion === undefined
-						? undefined
-						: { expansion: options.expansion }),
-				},
+				source: { kind: "human" },
 				targetAgentId: agentId,
 				body: text,
 				...(options?.images === undefined
@@ -1945,9 +2028,8 @@ export class AgentOrchestrator {
 			};
 		}
 
-		let inputId: string | undefined;
 		if (outcome.kind === "transform") {
-			inputId = this._createInputId();
+			const inputId = this._createInputId();
 			await this._emit({
 				type: "input_transformed",
 				agentId,
@@ -1957,23 +2039,13 @@ export class AgentOrchestrator {
 				transformedBy: outcome.transformedBy,
 				createdAt: now(),
 			});
+			await this._writeInputTransformEntry(target, {
+				inputId,
+				originalText: draft.body,
+				text: outcome.text,
+				transformedBy: outcome.transformedBy,
+			});
 		}
-
-		await this._writeMessageAccounting(target, {
-			inputId,
-			originalText: draft.body,
-			...(draft.source.kind === "human" && draft.source.expansion !== undefined
-				? { expansion: draft.source.expansion }
-				: undefined),
-			...(outcome.kind === "transform"
-				? {
-						transform: {
-							text: outcome.text,
-							transformedBy: outcome.transformedBy,
-						},
-					}
-				: undefined),
-		});
 
 		// A job result is the one source with no caller left to hear about a
 		// failure: its tool call already returned, and the model is waiting for
@@ -2032,56 +2104,44 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Write the entries that record what the human typed before the model saw it:
-	 * the pre-expansion input of an inline command, and an extension's rewrite.
+	 * Record that an extension rewrote this message before the model saw it.
 	 *
-	 * **Session write.** Both go through `harness.appendCustomEntry`, which is the
-	 * only supported way onto a live branch. They belong there because they are
-	 * the durable half of a dual record: the user message carries the text the
-	 * model actually read, and only these entries can still answer what was typed
-	 * after a resume, when the surface that expanded it is long gone. Blocked
-	 * input writes nothing - it never reached the model and left no state to
-	 * explain.
+	 * **Session write.** It goes onto the branch through
+	 * `harness.appendCustomEntry`, the only supported way in, because it is the
+	 * durable half of a dual record: the user message carries the text the model
+	 * actually read, and only this entry can still answer what was submitted after
+	 * a resume. Blocked input writes nothing - it never reached the model and left
+	 * no state to explain.
 	 *
-	 * The harness's own write tail orders them ahead of the user message when the
+	 * The harness's own write tail orders it ahead of the user message when the
 	 * target is idle, which is the ordinary prompt case. When the target is in a
 	 * turn the write buffers to the next save point and therefore lands after the
-	 * steered message it describes; the entries name their `inputId` rather than
+	 * steered message it describes; the entry names its `inputId` rather than
 	 * relying on adjacency, so that is a display-order wrinkle, not a lost pair.
 	 * There is no retraction path: a delivery that fails afterwards leaves the
 	 * entry, and reaching back into a branch to remove it is exactly what the
 	 * harness write surface exists to prevent.
+	 *
+	 * Inline command expansion used to be written here too. It is gone: the
+	 * expansion happens in the interaction layer and is only ever read back by it,
+	 * so routing it through the orchestrator gave core a vocabulary - commands -
+	 * that no core decision depends on.
 	 */
-	private async _writeMessageAccounting(
+	private async _writeInputTransformEntry(
 		target: DeliveryTarget,
-		accounting: {
-			readonly inputId: string | undefined;
+		transform: {
+			readonly inputId: string;
 			readonly originalText: string;
-			readonly expansion?: PromptExpansion;
-			readonly transform?: {
-				readonly text: string;
-				readonly transformedBy: readonly string[];
-			};
+			readonly text: string;
+			readonly transformedBy: readonly string[];
 		},
 	): Promise<void> {
-		const { expansion, transform } = accounting;
-		if (!expansion && !transform) return;
-		const inputId = accounting.inputId ?? this._createInputId();
-		if (expansion) {
-			await target.harness.appendCustomEntry(COMMAND_EXPANSION_CUSTOM_TYPE, {
-				inputId,
-				originalText: expansion.originalText,
-				expansions: expansion.items,
-			} satisfies CommandExpansionEntryData);
-		}
-		if (transform) {
-			await target.harness.appendCustomEntry(INPUT_TRANSFORM_CUSTOM_TYPE, {
-				inputId,
-				originalText: accounting.originalText,
-				text: transform.text,
-				transformedBy: transform.transformedBy,
-			} satisfies InputTransformEntryData);
-		}
+		await target.harness.appendCustomEntry(INPUT_TRANSFORM_CUSTOM_TYPE, {
+			inputId: transform.inputId,
+			originalText: transform.originalText,
+			text: transform.text,
+			transformedBy: transform.transformedBy,
+		} satisfies InputTransformEntryData);
 	}
 
 	/**
@@ -2992,6 +3052,1337 @@ export class AgentOrchestrator {
 		this._nextPresentationId += 1;
 		return id;
 	}
+
+	// -----------------------------------------------------------------------
+	// Extension runner lifecycle
+	// -----------------------------------------------------------------------
+
+	/** Register an in-process extension module with the loader. */
+	registerExtension(extensionId: string, module: ExtensionModule): () => void {
+		return this.extensionLoader.registerExtension(extensionId, module);
+	}
+
+	/**
+	 * Per-extension load and failure state for this agent's current runner.
+	 *
+	 * Kept per agent because one extension can succeed for one agent and fail for
+	 * another - the profile decides the enabled set. A reload resets the whole
+	 * group rather than carrying the previous generation's failures forward.
+	 */
+	listExtensionStatuses(agentId: AgentId): readonly ExtensionStatusSnapshot[] {
+		return this._extensionStatuses.list(agentId);
+	}
+
+	/**
+	 * Refresh the extension catalog, then transactionally replace the runner of
+	 * every selected live agent.
+	 */
+	async reloadExtensions(
+		options: { readonly agentIds?: readonly AgentId[] } = {},
+	): Promise<ExtensionReloadResult> {
+		const catalog = await this.extensionLoader.reloadAvailableExtensions(
+			this.executionEnv,
+		);
+		await this._publishDiagnostics(catalog.diagnostics);
+		const agentIds = options.agentIds
+			? [...new Set(options.agentIds)]
+			: [...this._live.keys()];
+		const agents: ExtensionReloadAgentResult[] = [];
+		for (const agentId of agentIds) {
+			agents.push(await this._reloadLiveAgentExtensions(agentId));
+		}
+		return {
+			catalog: {
+				loaded: [...catalog.loaded],
+				diagnostics: [...catalog.diagnostics],
+			},
+			agents,
+		};
+	}
+
+	/**
+	 * Build a candidate runner, re-resolve tools under the agent's current policy,
+	 * install the new actions, interceptors and providers, then swap the
+	 * `LiveAgent`'s runner, bindings and policy in one step.
+	 *
+	 * A failure before installation releases the candidate and leaves the original
+	 * runner untouched; a failure of the harness write rolls the three fields back
+	 * together. There is no state in which the harness holds the new tools while
+	 * the agent still points at the old runner.
+	 *
+	 * The skip test reads `harness.getPhase()` directly. A turn - or either
+	 * maintenance phase - is skipped, because replacing the runner underneath a
+	 * running operation would swap the interceptors it is midway through.
+	 */
+	private async _reloadLiveAgentExtensions(
+		agentId: AgentId,
+	): Promise<ExtensionReloadAgentResult> {
+		const lookup = this._resolveAgent(agentId);
+		if (lookup.kind !== "live") {
+			const reason = lookup.kind === "creating" ? "creating" : "gone";
+			const diagnostic: OrchestratorDiagnostic = {
+				severity: "warning",
+				code: "extension.reload_agent_skipped",
+				message: `Skipped extension reload for agent ${agentId}: it is ${reason}.`,
+				agentId,
+			};
+			await this._publishDiagnostic(diagnostic);
+			return {
+				agentId,
+				status: "skipped",
+				reason,
+				diagnostics: [diagnostic],
+			};
+		}
+
+		const { liveAgent } = lookup;
+		const phase = liveAgent.harness.getPhase();
+		if (phase !== "idle") {
+			const diagnostic: OrchestratorDiagnostic = {
+				severity: "warning",
+				code: "extension.reload_agent_skipped",
+				message: `Skipped extension reload for agent ${agentId}: it is in ${phase}.`,
+				agentId,
+			};
+			this._addAgentDiagnostics(agentId, [diagnostic]);
+			await this._publishDiagnostic(diagnostic);
+			return {
+				agentId,
+				status: "skipped",
+				reason: "running",
+				diagnostics: [diagnostic],
+			};
+		}
+
+		const previousRunner = liveAgent.extensionRunner;
+		const previousBindings = liveAgent.extensionBindings;
+		const previousPolicy = liveAgent.toolPolicy;
+		let candidate: ExtensionRunner | undefined;
+		let candidateBindings: ExtensionRunnerBindings | undefined;
+		let installed = false;
+		try {
+			const profileId = liveAgent.profile.reference.id;
+			candidate = await this._createExtensionRunner(agentId, profileId);
+			const resolvedTools = await this._resolveAgentToolsForBuild(
+				agentId,
+				profileId,
+				previousPolicy,
+				candidate,
+			);
+			candidateBindings = await this._bindExtensionRunner(
+				agentId,
+				liveAgent.generation,
+				liveAgent.harness,
+				candidate,
+			);
+			// Publish the replacement before the awaited harness write: a turn
+			// starting mid-reload reads `extensionRunner` for its tool context and
+			// must capture the new runner rather than pin the one about to be
+			// disposed below.
+			liveAgent.extensionRunner = candidate;
+			liveAgent.extensionBindings = candidateBindings;
+			liveAgent.toolPolicy = resolvedTools.policy;
+			installed = true;
+			try {
+				await liveAgent.harness.setTools(resolvedTools.tools, [
+					...resolvedTools.activeToolNames,
+				]);
+			} catch (error) {
+				liveAgent.extensionRunner = previousRunner;
+				liveAgent.extensionBindings = previousBindings;
+				liveAgent.toolPolicy = previousPolicy;
+				installed = false;
+				throw error;
+			}
+
+			// Provider registrations follow the runner: the stale runner's leases are
+			// withdrawn before the replacement re-registers its own.
+			await this._withdrawExtensionProviderContributions(agentId);
+			await this._applyExtensionProviderContributions(agentId, candidate);
+			await this._disposeExtensionRunner(
+				agentId,
+				previousRunner,
+				previousBindings,
+				"Extension runtime has been reloaded.",
+			);
+			// Cleared before the new runner's diagnostics are published: those events
+			// reach its observers, and a status one of them sets must survive this
+			// generation's cleanup rather than be wiped by it.
+			await this._clearExtensionStatusesForAgent(agentId);
+			this._addAgentDiagnostics(agentId, candidate.diagnostics);
+			await this._publishDiagnostics(candidate.diagnostics);
+			return {
+				agentId,
+				status: "reloaded",
+				diagnostics: [...candidate.diagnostics],
+			};
+		} catch (error) {
+			if (candidate && !installed) {
+				await this._disposeExtensionRunner(
+					agentId,
+					candidate,
+					candidateBindings,
+					"Extension reload failed before installation.",
+				);
+			}
+			const diagnostic: OrchestratorDiagnostic = {
+				severity: "error",
+				code: "extension.reload_agent_failed",
+				message: `Failed to reload extensions for agent ${agentId}: ${formatError(error)}`,
+				agentId,
+			};
+			this._addAgentDiagnostics(agentId, [diagnostic]);
+			await this._publishDiagnostic(diagnostic);
+			return { agentId, status: "failed", diagnostics: [diagnostic] };
+		}
+	}
+
+	/**
+	 * Activate the extension factories this agent's profile and settings select,
+	 * producing a candidate runner. Nothing is bound yet, so it is invisible to
+	 * the live registry until `_bindExtensionRunner` and installation.
+	 */
+	private async _createExtensionRunner(
+		agentId: AgentId,
+		profileId: string,
+	): Promise<ExtensionRunner> {
+		const enabledExtensionIds = this.settingManager.getEnabledExtensions();
+		const loadedScope = await this.extensionLoader.loadForAgent({
+			agentId,
+			profileId,
+			extensionIds:
+				enabledExtensionIds ?? this.extensionLoader.listAvailableExtensionIds(),
+			missingExtensionSeverity: enabledExtensionIds ? "warning" : "ignore",
+			divisionSelections: {
+				settings: this.settingManager.getExtensionDivisionSelections(),
+			},
+		});
+		return new ExtensionRunner({ loadedScope });
+	}
+
+	/**
+	 * Bind a runner to core and return a generation-scoped release handle.
+	 *
+	 * Two port groups go in: the shared `ExtensionCoreActions` table, and the
+	 * per-generation `ExtensionContextActions` (run signal, idle, namespaced
+	 * session access). The harness interceptors are registered here too, because
+	 * they are the part of a binding that has to be revoked by hand: `shutdown()`
+	 * clears the subscriber table on its own, but an extension reload replaces the
+	 * generation without one, and the release handle is that path's only exit.
+	 */
+	private async _bindExtensionRunner(
+		agentId: AgentId,
+		generation: number,
+		harness: WidiAgentHarness,
+		runner: ExtensionRunner,
+	): Promise<ExtensionRunnerBindings> {
+		runner.bindCore(
+			this._extensionCoreActions,
+			this._createExtensionContextActions(agentId, generation),
+		);
+		const releaseInterceptors = this._registerExtensionHarnessInterceptors(
+			agentId,
+			harness,
+			runner,
+		);
+		return {
+			release: async () => {
+				releaseInterceptors();
+			},
+		};
+	}
+
+	/**
+	 * The signal, idle, session and failure-reporting ports of one runner
+	 * generation.
+	 *
+	 * Generation-scoped rather than shared: the run signal and the idle judgement
+	 * are only meaningful for the agent generation that installed them, and a
+	 * stale runner reaching a successor's session would be a cross-generation
+	 * write.
+	 */
+	private _createExtensionContextActions(
+		agentId: AgentId,
+		generation: number,
+	): ExtensionContextActions {
+		const requireGeneration = (): LiveAgent => {
+			const liveAgent = this._requireLiveAgent(agentId);
+			if (liveAgent.generation !== generation) {
+				throw new OrchestratorError({
+					severity: "error",
+					code: "extension.stale_generation",
+					message: `Agent ${agentId} has been replaced since this extension runtime was bound.`,
+					agentId,
+				});
+			}
+			return liveAgent;
+		};
+		return {
+			getSignal: () => this._agentRunSignals.get(agentId),
+			isIdle: () => this._resolveAgentIdleState(agentId).kind === "idle",
+			reportActionFailure: async (failure) => {
+				await this._recordAndPublishExtensionDiagnostics(agentId, [
+					{
+						code: failure.code,
+						severity: "warning",
+						message: `Extension '${failure.extensionId}' action '${failure.action}' failed: ${formatError(failure.error)}`,
+						agentId,
+						extensionId: failure.extensionId,
+					},
+				]);
+			},
+			session: {
+				// **Session write.** An extension's own namespaced entries go onto the
+				// branch through the harness, like every other write: they are this
+				// extension's durable state for this conversation, and `findEntries`
+				// reads them back after a resume. The persisted type is namespaced by
+				// extension id, so one extension cannot read or overwrite another's.
+				appendEntry: async (extensionId, type, data) =>
+					await requireGeneration().harness.appendCustomEntry(
+						toExtensionCustomType(extensionId, type),
+						data,
+					),
+				findEntries: async (extensionId, type) =>
+					await this.sessionManager.findExtensionCustomEntries(
+						agentId,
+						extensionId,
+						type,
+					),
+				// This agent's own session needs no extra gate: the extension already
+				// runs inside it and sees its messages through the interceptors.
+				getSnapshot: async () =>
+					toExtensionSessionSnapshot(
+						await this.sessionManager.getAgentSessionSnapshot(agentId),
+						this.sessionManager,
+					),
+				getTree: async () =>
+					toExtensionSessionTree(
+						await this.sessionManager.getAgentSessionTree(agentId),
+						this.sessionManager,
+					),
+				getLeafId: async () =>
+					await this.sessionManager.getAgentSessionLeafId(agentId),
+				// The cross-session readers widen what an extension can see to every
+				// conversation recorded for this project, including ones it never took
+				// part in, so they carry the same trust bar as exec.
+				listSessions: async (extensionId) => {
+					this._requireProjectTrustForExtension(
+						agentId,
+						extensionId,
+						"list the project's sessions",
+					);
+					const candidates =
+						await this.sessionManager.listAgentSessionCandidates();
+					return candidates.map((candidate) => ({
+						ref: this.sessionManager.toSessionHandle(candidate.path),
+						id: candidate.id,
+						createdAt: candidate.createdAt,
+						...(candidate.profile === undefined
+							? undefined
+							: { profile: { ...candidate.profile } }),
+						...(candidate.name === undefined
+							? undefined
+							: { name: candidate.name }),
+						...(candidate.firstUserMessage === undefined
+							? undefined
+							: { firstUserMessage: candidate.firstUserMessage }),
+						...(candidate.parentSessionPath === undefined
+							? undefined
+							: {
+									parentRef: this.sessionManager.toSessionHandle(
+										candidate.parentSessionPath,
+									),
+								}),
+					}));
+				},
+				readSession: async (extensionId, ref) => {
+					this._requireProjectTrustForExtension(
+						agentId,
+						extensionId,
+						"read another session",
+					);
+					return toExtensionSessionTree(
+						await this.sessionManager.readSessionSnapshot(
+							this.sessionManager.resolveSessionHandle(ref),
+						),
+						this.sessionManager,
+					);
+				},
+			},
+		};
+	}
+
+	/**
+	 * Register the five transformable harness hooks for this runner generation.
+	 *
+	 * The returned handle revokes exactly this generation's handlers, which is
+	 * what makes a reload a replacement rather than an accumulation.
+	 */
+	private _registerExtensionHarnessInterceptors(
+		agentId: AgentId,
+		harness: WidiAgentHarness,
+		runner: ExtensionRunner,
+	): () => void {
+		const unsubscribes = [
+			harness.on(
+				"before_agent_start",
+				async (event) =>
+					await this._runExtensionInterceptor<"before_agent_start">(
+						agentId,
+						runner,
+						event,
+					),
+			),
+			harness.on(
+				"before_provider_request",
+				async (event) =>
+					await this._runExtensionInterceptor<"before_provider_request">(
+						agentId,
+						runner,
+						event,
+					),
+			),
+			// The blockImages policy applies after the extension results inside this
+			// one handler: the harness keeps only the last non-undefined hook result,
+			// so a separately registered filter could be overridden by an extension
+			// transform.
+			harness.on("context", async (event) => {
+				const result = await this._runExtensionInterceptor<"context">(
+					agentId,
+					runner,
+					event,
+				);
+				const blockImages =
+					this._live.get(agentId)?.settings.blockImages ??
+					this.settingManager.getImageSettings().blockImages;
+				if (!blockImages) return result;
+				return {
+					messages: stripImagesFromMessages(result?.messages ?? event.messages),
+				};
+			}),
+			harness.on(
+				"tool_call",
+				async (event) =>
+					await this._runExtensionInterceptor<"tool_call">(
+						agentId,
+						runner,
+						event,
+					),
+			),
+			harness.on(
+				"tool_result",
+				async (event) =>
+					await this._runExtensionInterceptor<"tool_result">(
+						agentId,
+						runner,
+						event,
+					),
+			),
+		];
+		return () => {
+			for (const unsubscribe of unsubscribes) unsubscribe();
+		};
+	}
+
+	/** Run one runner interceptor, recording its handler diagnostics. */
+	private async _runExtensionInterceptor<
+		TName extends ExtensionInterceptorName,
+	>(
+		agentId: AgentId,
+		runner: ExtensionRunner,
+		event: ExtensionInterceptorEventFor<TName>,
+	): Promise<ExtensionInterceptorResultFor<TName>> {
+		const run = await runner.interceptWithDiagnostics(event);
+		await this._recordAndPublishExtensionDiagnostics(agentId, run.diagnostics);
+		return run.result;
+	}
+
+	/**
+	 * Run the input pipeline for one message ingress.
+	 *
+	 * Input is not a harness hook: it sits in front of the harness, at
+	 * `sendMessage`, so no delivery path can bypass an input policy. An agent with
+	 * no live runtime passes everything through.
+	 */
+	private async _interceptExtensionInput(
+		agentId: AgentId,
+		source: MessageSource,
+		event: MessageInterceptEvent,
+	): Promise<MessageInterceptRun> {
+		const runner = this._live.get(agentId)?.extensionRunner;
+		if (!runner || runner.isStale()) return { kind: "pass" };
+		const run = await runner.interceptInput(event);
+		await this._recordAndPublishExtensionDiagnostics(agentId, run.diagnostics);
+		// A block this source does not enforce is still a fact worth recording: the
+		// extension asked for something the message contract cannot grant it.
+		if (run.kind === "block" && source.kind === "background_job") {
+			await this._publishDiagnostic({
+				severity: "warning",
+				code: "orchestrator.message_block_ignored",
+				message: `Extension '${run.blockedBy}' blocked a background job result for agent ${agentId}; it was delivered anyway because the model is waiting for that result.`,
+				agentId,
+			});
+		}
+		return run;
+	}
+
+	/**
+	 * Install this runner's provider contributions.
+	 *
+	 * Trust ruling: a `!command` config value resolves through `ExecutionEnv.exec`
+	 * at request time, so an untrusted project rejects the whole registration -
+	 * the same family as the scoped exec gate.
+	 */
+	private async _applyExtensionProviderContributions(
+		agentId: AgentId,
+		runner: ExtensionRunner,
+	): Promise<void> {
+		const contributions = runner.getProviderContributions();
+		if (contributions.length === 0) return;
+		const diagnostics: OrchestratorDiagnostic[] = [];
+		const projectTrusted = this.settingManager.isProjectTrusted();
+		for (const contribution of contributions) {
+			const attribution = {
+				agentId,
+				extensionId: contribution.extensionId,
+			} as const;
+			if (
+				!projectTrusted &&
+				hasCommandConfigValues(
+					contribution.config,
+					this.modelRegistry.configValueResolver,
+				)
+			) {
+				diagnostics.push({
+					...attribution,
+					severity: "error",
+					code: "extension.provider_trust_denied",
+					message: `Extension '${contribution.extensionId}' provider '${contribution.providerName}' uses command config values and was denied because the project is not trusted.`,
+				});
+				continue;
+			}
+			const result = this.modelRegistry.registerExtensionProvider(
+				contribution.providerName,
+				contribution.config,
+				{ extensionId: contribution.extensionId, agentId },
+			);
+			if (result.ok) continue;
+			diagnostics.push(
+				result.reason === "conflict"
+					? {
+							...attribution,
+							severity: "warning",
+							code: "extension.provider_conflict",
+							message: `Extension '${contribution.extensionId}' provider '${contribution.providerName}' conflicts with a ${result.conflictWith} provider and was skipped.`,
+						}
+					: {
+							...attribution,
+							severity: "error",
+							code: "extension.provider_invalid",
+							message: `Extension '${contribution.extensionId}' provider '${contribution.providerName}' was rejected: ${result.message}`,
+						},
+			);
+		}
+		if (diagnostics.length === 0) return;
+		this._addAgentDiagnostics(agentId, diagnostics);
+		await this._publishDiagnostics(diagnostics);
+	}
+
+	/** Withdraw this agent's provider leases, leaving every other agent's alone. */
+	private async _withdrawExtensionProviderContributions(
+		agentId: AgentId,
+	): Promise<void> {
+		try {
+			await this.modelRegistry.unregisterExtensionProviders(agentId);
+		} catch (error) {
+			await this._recordAgentLifecycleFailure(
+				agentId,
+				"extension.provider_unregister_failed",
+				`Failed to withdraw extension providers for agent ${agentId}: ${formatError(error)}`,
+			);
+		}
+	}
+
+	/**
+	 * Make the runner's contexts stale, revoke its bindings, and run every
+	 * `onDispose` handler, releasing the handler and module closures it held.
+	 */
+	private async _disposeExtensionRunner(
+		agentId: AgentId,
+		runner: ExtensionRunner | undefined,
+		bindings: ExtensionRunnerBindings | undefined,
+		reason: string,
+	): Promise<void> {
+		// Bindings go first: a released interceptor cannot fire into an onDispose
+		// handler that has already run.
+		try {
+			await bindings?.release();
+		} catch (error) {
+			await this._recordAgentLifecycleFailure(
+				agentId,
+				"orchestrator.agent_dispose_failed",
+				`Failed to release extension bindings for agent ${agentId}: ${formatError(error)}`,
+			);
+		}
+		if (!runner) return;
+		try {
+			await runner.dispose(reason);
+		} catch (error) {
+			await this._recordAgentLifecycleFailure(
+				agentId,
+				"orchestrator.agent_dispose_failed",
+				`Failed to dispose extension runtime for agent ${agentId}: ${formatError(error)}`,
+			);
+		}
+	}
+
+	/** Drop every status this agent's runner published, announcing each removal. */
+	private async _clearExtensionStatusesForAgent(
+		agentId: AgentId,
+	): Promise<void> {
+		for (const snapshot of this._extensionStatuses.clearAgent(agentId)) {
+			await this._emit(
+				{
+					type: "extension_status_changed",
+					presentationId: this._createPresentationId(),
+					agentId,
+					extensionId: snapshot.extensionId,
+					key: snapshot.key,
+					changedAt: now(),
+				},
+				{ observeExtensions: false },
+			);
+		}
+	}
+
+	private async _recordAndPublishExtensionDiagnostics(
+		agentId: AgentId,
+		diagnostics: readonly OrchestratorDiagnostic[],
+	): Promise<void> {
+		if (diagnostics.length === 0) return;
+		this._addAgentDiagnostics(agentId, diagnostics);
+		await this._publishDiagnostics(diagnostics, {
+			// A diagnostic produced while an observer is handling another event is
+			// still recorded and published to core consumers, but must not feed back
+			// into diagnostic observers and recurse indefinitely.
+			observeExtensions:
+				(this._extensionObserverDispatchDepth.get(agentId) ?? 0) === 0,
+		});
+	}
+
+	/**
+	 * Trust gate for extension actions that reach beyond the agent's own session.
+	 * `action` completes "... is denied because the project is not trusted".
+	 */
+	private _requireProjectTrustForExtension(
+		agentId: AgentId,
+		extensionId: string,
+		action: string,
+	): void {
+		if (this.settingManager.isProjectTrusted()) return;
+		throw new OrchestratorError({
+			severity: "error",
+			code: "extension.session_read_denied",
+			message: `Extension '${extensionId}' may not ${action} because the project is not trusted.`,
+			agentId,
+			extensionId,
+		});
+	}
+
+	// -----------------------------------------------------------------------
+	// Extension event fan-out
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Relay one named extension event to every live runner's subscribers.
+	 *
+	 * Runtime-level by construction: the runners are the subscriber set, so a
+	 * reload swaps subscriptions with the runner it replaced and disposal drops
+	 * them, with no second lifecycle to keep in step. A stale runner is skipped
+	 * for the same reason observers skip it - its context actions can only fail.
+	 *
+	 * The recursion budget lives in the async dispatch context rather than in a
+	 * field: two independent emits must not consume one another's depth, while a
+	 * handler's nested emit inherits its parent's.
+	 */
+	private async _emitExtensionEvent(
+		envelope: ExtensionEventEnvelope,
+	): Promise<void> {
+		const immutable = freezeExtensionEventEnvelope(envelope);
+		const depth = this._extensionEventDispatchContext.getStore() ?? 0;
+		if (depth >= MAX_EXTENSION_EVENT_DISPATCH_DEPTH) {
+			await this._publishDiagnostic(
+				{
+					severity: "warning",
+					code: "extension.event_recursion_dropped",
+					message: `Extension event '${immutable.name}' from '${immutable.sourceExtensionId}' was dropped after ${MAX_EXTENSION_EVENT_DISPATCH_DEPTH} nested dispatches.`,
+					agentId: immutable.sourceAgentId,
+					extensionId: immutable.sourceExtensionId,
+				},
+				{ observeExtensions: false },
+			);
+			return;
+		}
+		await this._extensionEventDispatchContext.run(depth + 1, async () => {
+			for (const [agentId, liveAgent] of [...this._live]) {
+				const runner = liveAgent.extensionRunner;
+				if (runner.isStale()) continue;
+				await this._recordAndPublishExtensionDiagnostics(
+					agentId,
+					await runner.emitExtensionEvent(immutable),
+				);
+			}
+		});
+	}
+
+	/**
+	 * Deliver a published orchestrator event to the runners that observe it.
+	 *
+	 * A runtime-scoped fact - today only `runtime_shutdown_requested` - is
+	 * broadcast to every live runner, because the agents that need to wind their
+	 * work down are not only the one whose extension asked.
+	 */
+	private async _dispatchExtensionObservedEvent(
+		event: ExtensionObservedEvent,
+	): Promise<void> {
+		const agentId =
+			event.type === "diagnostic"
+				? event.diagnostic.agentId
+				: event.type === "runtime_shutdown_requested"
+					? undefined
+					: event.agentId;
+		if (agentId !== undefined) {
+			await this._dispatchExtensionObservedEventForAgent(agentId, event);
+			return;
+		}
+		if (event.type !== "runtime_shutdown_requested") return;
+		for (const observedAgentId of [...this._live.keys()]) {
+			await this._dispatchExtensionObservedEventForAgent(
+				observedAgentId,
+				event,
+			);
+		}
+	}
+
+	private async _dispatchExtensionObservedEventForAgent(
+		agentId: AgentId,
+		event: ExtensionObservedEvent,
+	): Promise<void> {
+		const runner = this._live.get(agentId)?.extensionRunner;
+		if (!runner || runner.isStale()) return;
+		this._extensionObserverDispatchDepth.set(
+			agentId,
+			(this._extensionObserverDispatchDepth.get(agentId) ?? 0) + 1,
+		);
+		try {
+			await this._recordAndPublishExtensionDiagnostics(
+				agentId,
+				await runner.emitObserved(event),
+			);
+		} finally {
+			// Dispatches for one agent can interleave, so decrement the live counter
+			// instead of restoring a pre-increment snapshot.
+			const depth = this._extensionObserverDispatchDepth.get(agentId) ?? 1;
+			if (depth <= 1) this._extensionObserverDispatchDepth.delete(agentId);
+			else this._extensionObserverDispatchDepth.set(agentId, depth - 1);
+		}
+	}
+
+	/**
+	 * Map the runner authors' actions onto host and runtime services.
+	 *
+	 * One shared table: the runner injects its own agentId and extensionId, so no
+	 * closure set is rebuilt per agent or per tool.
+	 */
+	private _createExtensionCoreActions(): ExtensionCoreActions {
+		return {
+			getAgentTools: (agentId) => this.getAgentTools(agentId),
+			setAgentTools: async (agentId, toolNames, activeToolNames) => {
+				await this.setAgentTools(agentId, toolNames, activeToolNames);
+			},
+			setAgentActiveTools: async (agentId, toolNames) => {
+				await this.setAgentActiveTools(agentId, toolNames);
+			},
+			listAgentBackgroundJobs: (agentId) =>
+				this.listAgentBackgroundJobs(agentId),
+			readAgentBackgroundJobOutput: (agentId, jobId) =>
+				this.readAgentBackgroundJobOutput(agentId, jobId),
+			abortAgentBackgroundJob: (agentId, jobId, reason) =>
+				this.abortAgentBackgroundJob(agentId, jobId, reason),
+			requestHuman: async (agentId, extensionId, request) =>
+				await this._requestHumanForAgent(agentId, {
+					...request,
+					source: { kind: "extension", extensionId },
+				}),
+			emitOutput: async (agentId, extensionId, text) => {
+				this._requireLiveAgent(agentId);
+				assertExtensionOutputText(text);
+				await this._emit(
+					{
+						type: "extension_output",
+						presentationId: this._createPresentationId(),
+						agentId,
+						extensionId,
+						text,
+						createdAt: now(),
+					},
+					{ observeExtensions: false },
+				);
+			},
+			notify: async (agentId, extensionId, text) => {
+				this._requireLiveAgent(agentId);
+				assertExtensionNotificationText(text);
+				await this._emit(
+					{
+						type: "extension_notification",
+						presentationId: this._createPresentationId(),
+						agentId,
+						extensionId,
+						text,
+						createdAt: now(),
+					},
+					{ observeExtensions: false },
+				);
+			},
+			setStatus: async (agentId, extensionId, key, status) => {
+				this._requireLiveAgent(agentId);
+				assertExtensionStatusKey(key);
+				const changedAt = now();
+				const snapshot = this._extensionStatuses.set(
+					agentId,
+					extensionId,
+					key,
+					validateExtensionStatus(status),
+					changedAt,
+				);
+				await this._emit(
+					{
+						type: "extension_status_changed",
+						presentationId: this._createPresentationId(),
+						agentId,
+						extensionId,
+						key,
+						status: snapshot.status,
+						changedAt,
+					},
+					{ observeExtensions: false },
+				);
+			},
+			clearStatus: async (agentId, extensionId, key) => {
+				this._requireLiveAgent(agentId);
+				assertExtensionStatusKey(key);
+				if (!this._extensionStatuses.clear(agentId, extensionId, key)) return;
+				await this._emit(
+					{
+						type: "extension_status_changed",
+						presentationId: this._createPresentationId(),
+						agentId,
+						extensionId,
+						key,
+						changedAt: now(),
+					},
+					{ observeExtensions: false },
+				);
+			},
+			reportDiagnostic: async (agentId, extensionId, draft) => {
+				this._requireLiveAgent(agentId);
+				const validated = validateExtensionDiagnosticDraft(draft);
+				const diagnostic: OrchestratorDiagnostic = {
+					code: `extension.${extensionId}.${validated.code}`,
+					severity: validated.severity,
+					message: validated.message,
+					agentId,
+					extensionId,
+				};
+				this._addAgentDiagnostics(agentId, [diagnostic]);
+				// Extension-published facts never feed back into extension observers,
+				// regardless of observer dispatch depth.
+				await this._publishDiagnostic(diagnostic, { observeExtensions: false });
+			},
+			/**
+			 * **Session write.** A published message is durable presentation content
+			 * that belongs to the conversation it was published into, so it goes onto
+			 * the branch through `harness.appendCustomEntry`. It never becomes model
+			 * context. Its `extension_message_published` event is emitted from the
+			 * resulting `session_write`, where the entry id is real; the id returned
+			 * here is only the fast path for a write that landed immediately.
+			 */
+			publishMessage: async (agentId, extensionId, message) => {
+				const liveAgent = this._requireLiveAgent(agentId);
+				const entryId = await liveAgent.harness.appendCustomEntry(
+					EXTENSION_MESSAGE_CUSTOM_TYPE,
+					Object.freeze({
+						extensionId,
+						message: validateExtensionMessage(message),
+					}) satisfies ExtensionMessageEntryData,
+				);
+				return entryId === undefined ? {} : { entryId };
+			},
+			// Prompt carries its presentation through the message pipeline, where a
+			// block returns before any session write: a presentation is never recorded
+			// for a message an interceptor refused.
+			promptAgent: async (agentId, extensionId, text, options) => {
+				await this.promptAgent(agentId, text, {
+					...(options?.images === undefined
+						? undefined
+						: { images: options.images }),
+					...(options?.presentation === undefined
+						? undefined
+						: {
+								presentation: {
+									extensionId,
+									presentation: options.presentation,
+								},
+							}),
+				});
+			},
+			steerAgent: async (agentId, extensionId, text, options) => {
+				await this._withExtensionInputPresentation(
+					agentId,
+					extensionId,
+					"steer",
+					options?.presentation,
+					async () => {
+						await this.steerAgent(agentId, text, {
+							...(options?.images === undefined
+								? undefined
+								: { images: options.images }),
+						});
+					},
+				);
+			},
+			followUpAgent: async (agentId, extensionId, text, options) => {
+				await this._withExtensionInputPresentation(
+					agentId,
+					extensionId,
+					"follow_up",
+					options?.presentation,
+					async () => {
+						await this.followUpAgent(agentId, text, {
+							...(options?.images === undefined
+								? undefined
+								: { images: options.images }),
+						});
+					},
+				);
+			},
+			getAgentContextUsage: (agentId) => this._context.get(agentId),
+			isProjectTrusted: () => this.settingManager.isProjectTrusted(),
+			getAgentSystemPrompt: async (agentId) =>
+				await this.getAgentSystemPrompt(agentId),
+			agentHasPendingMessages: (agentId) =>
+				this.agentHasPendingMessages(agentId),
+			waitForAgentIdle: async (agentId, options) => {
+				await this.waitForAgentIdle(agentId, options);
+			},
+			emitExtensionEvent: async (agentId, extensionId, name, payload) => {
+				this._requireLiveAgent(agentId);
+				await this._emitExtensionEvent({
+					name: validateExtensionEventName(name),
+					payload: validateExtensionEventPayload(payload),
+					sourceExtensionId: extensionId,
+					sourceAgentId: agentId,
+					emittedAt: now(),
+				});
+			},
+			requestRuntimeShutdown: async (agentId, extensionId, reason) => {
+				this._requireLiveAgent(agentId);
+				await this.requestShutdown({
+					requestedBy: extensionId,
+					requestedByAgentId: agentId,
+					...(reason === undefined ? undefined : { reason }),
+				});
+			},
+			disposeRuntime: async (agentId, extensionId, reason) => {
+				this._requireLiveAgent(agentId);
+				await this.disposeAll(
+					reason ??
+						`Extension '${extensionId}' disposed the runtime from agent ${agentId}.`,
+				);
+			},
+			setAgentSessionName: async (agentId, name) => {
+				await this.setAgentSessionName(agentId, name);
+			},
+			getAgentSessionName: async (agentId) =>
+				await this.getAgentSessionName(agentId),
+			compactAgent: async (agentId, customInstructions) =>
+				await this.compactAgent(agentId, customInstructions),
+			setAgentModelByReference: async (agentId, reference) =>
+				await this.setAgentModelByReference(agentId, reference),
+			getAgentModel: (agentId) => this.getAgentModel(agentId),
+			listModelCandidates: async () =>
+				(await this.listAvailableModelCandidates()).models,
+			getAgentThinkingLevel: (agentId) => this.getAgentThinkingLevel(agentId),
+			setAgentThinkingLevel: async (agentId, level) => {
+				await this.setAgentThinkingLevel(agentId, level);
+			},
+			abortAgent: async (agentId) => {
+				await this.abortAgent(agentId);
+			},
+			// Trust ruling: exec runs arbitrary commands in the project cwd, so it is
+			// denied until the project trust gate has passed.
+			exec: async (agentId, extensionId, command, options) => {
+				if (!this.settingManager.isProjectTrusted()) {
+					throw new OrchestratorError({
+						severity: "error",
+						code: "extension.exec_denied",
+						message: `Extension '${extensionId}' exec is denied because the project is not trusted.`,
+						agentId,
+						extensionId,
+					});
+				}
+				return await this.executionEnv.exec(command, options);
+			},
+		};
+	}
+
+	// -----------------------------------------------------------------------
+	// Spawn tree persistence
+	//
+	// The runtime holds the tree in `_spawnParent`; these methods are its durable
+	// mirror. `SessionManager` owns only the IO primitives - append, replay, read
+	// a session by directory - while reduction, ordering and id remapping are
+	// multi-agent judgements and stay here.
+	// -----------------------------------------------------------------------
+
+	/**
+	 * The `spawned` record for a build, or nothing when this agent is not a child
+	 * of a persistable tree.
+	 *
+	 * Both halves must be persistable: a child with no session directory has
+	 * nothing to record, and a root with none has nowhere to record it. Resolved
+	 * during the build so an unpersistable tree is known before install.
+	 */
+	private async _createTreeSpawnRecord(
+		request: AgentBuildRequest,
+	): Promise<AgentTreeSpawnRecord | undefined> {
+		const { parent } = request;
+		if (parent === undefined) return undefined;
+		const sessionDir = await this.sessionManager.getAgentSessionDirName(
+			request.agentId,
+		);
+		if (!sessionDir) return undefined;
+		return {
+			v: 1,
+			type: "spawned",
+			agentId: request.agentId,
+			sessionDir,
+			profileId: request.resolvedProfile.profile.id,
+			spawnedBy: parent,
+			at: now(),
+		};
+	}
+
+	/**
+	 * Append `spawned` to the root's `agents/tree.jsonl` and write the child's
+	 * `agents/parent.json`.
+	 *
+	 * The back-pointer is not optional. The tree index is one-way, but the session
+	 * picker lists child sessions too: without it, opening a child directly yields
+	 * an orphan top-level agent, and resuming its root afterwards opens the same
+	 * session a second time.
+	 *
+	 * A write failure is a diagnostic and never rolls the install back - an agent
+	 * that works but cannot be restored beats an agent that does not exist. When
+	 * the root itself has no session directory the whole tree goes unpersisted,
+	 * with one diagnostic saying so.
+	 */
+	private async _recordAgentSpawnedInTree(
+		build: LiveAgentBuild,
+	): Promise<void> {
+		const record = build.treeRecord;
+		if (!record) return;
+		const rootAgentId = this._resolveAgentTreeRoot(record.agentId);
+		const rootSessionDir =
+			await this.sessionManager.getAgentSessionDirName(rootAgentId);
+		if (!rootSessionDir) {
+			await this._publishDiagnostic({
+				severity: "warning",
+				code: "orchestrator.agent_tree_not_persistable",
+				message: `Agent ${record.agentId} was spawned under ephemeral root ${rootAgentId}; this spawn tree will not be restored.`,
+				agentId: record.agentId,
+			});
+			return;
+		}
+		await this._enqueueTreeWrite(rootAgentId, async () => {
+			await this.sessionManager.appendAgentTreeRecord(rootAgentId, record);
+			await this.sessionManager.writeAgentParentPointer(record.agentId, {
+				v: 1,
+				rootSessionDir,
+				parentAgentId: record.spawnedBy,
+				agentId: record.agentId,
+			});
+		});
+	}
+
+	/**
+	 * Append `removed` when the agent is meant not to come back.
+	 *
+	 * `runtime_shutdown` writes nothing, and that distinction is the whole reason
+	 * the intent exists: without it a normal exit would mark every agent removed
+	 * and tree restoration would never restore anything.
+	 */
+	private async _recordAgentRemovedFromTree(
+		agentId: AgentId,
+		intent: AgentDisposeIntent,
+	): Promise<void> {
+		if (intent !== "removed") return;
+		if (this._spawnParent.get(agentId) === undefined) return;
+		const rootAgentId = this._resolveAgentTreeRoot(agentId);
+		if (rootAgentId === agentId) return;
+		await this._enqueueTreeWrite(rootAgentId, async () => {
+			await this.sessionManager.appendAgentTreeRecord(rootAgentId, {
+				v: 1,
+				type: "removed",
+				agentId,
+				at: now(),
+			});
+		});
+	}
+
+	/**
+	 * Serialize writes per root file so appended `spawned` and `removed` records
+	 * keep the order the events happened in, and report a failure without letting
+	 * it reach the lifecycle operation that triggered it.
+	 */
+	private async _enqueueTreeWrite(
+		rootAgentId: AgentId,
+		write: () => Promise<void>,
+	): Promise<void> {
+		const tail = (this._treeWrites.get(rootAgentId) ?? Promise.resolve()).then(
+			async () => {
+				try {
+					await write();
+				} catch (error) {
+					await this._publishDiagnostic({
+						severity: "warning",
+						code: "orchestrator.agent_tree_write_failed",
+						message: `Failed to record a spawn-tree change under root ${rootAgentId}: ${formatError(error)}`,
+						agentId: rootAgentId,
+					});
+				}
+			},
+		);
+		this._treeWrites.set(rootAgentId, tail);
+		await tail;
+		if (this._treeWrites.get(rootAgentId) === tail) {
+			this._treeWrites.delete(rootAgentId);
+		}
+	}
+
+	/**
+	 * Read a root session directory's tree log and reduce it to the members that
+	 * were still live when the log was last written.
+	 */
+	private async _planAgentTreeResume(
+		rootSessionDir: string,
+	): Promise<readonly AgentTreeSpawnRecord[]> {
+		return reduceAgentTreeRecords(
+			await this.sessionManager.readAgentTreeRecords(rootSessionDir),
+		);
+	}
+
+	/**
+	 * Bring a resumed root's recorded children back, then tell the root what it
+	 * actually got.
+	 *
+	 * A root with no directory or no log restores nothing, which is the ordinary
+	 * case: most agents never spawn anyone. A failure to read the log is a
+	 * diagnostic, never a failure of the resume that triggered it - the root is
+	 * already live and usable.
+	 */
+	private async _restoreSpawnTree(rootAgentId: AgentId): Promise<void> {
+		let members: readonly AgentTreeSpawnRecord[];
+		try {
+			const rootSessionDir =
+				await this.sessionManager.getAgentSessionDirName(rootAgentId);
+			if (!rootSessionDir) return;
+			members = await this._planAgentTreeResume(rootSessionDir);
+		} catch (error) {
+			await this._publishDiagnostic({
+				severity: "warning",
+				code: "orchestrator.agent_tree_read_failed",
+				message: `Failed to read the spawn tree of agent ${rootAgentId}; it was resumed alone: ${formatError(error)}`,
+				agentId: rootAgentId,
+			});
+			return;
+		}
+		if (members.length === 0) return;
+		await this._publishTreeResumeReconciliation(
+			await this._resumeAgentTree(rootAgentId, members),
+		);
+	}
+
+	/**
+	 * Resume the root of a session the caller named directly, when that session
+	 * turns out to be somebody's child.
+	 *
+	 * Returns the AgentId now holding the named session - which is not necessarily
+	 * the id it was recorded under, because restoring the tree remaps a colliding
+	 * id. Returns undefined when the session is not a child, or when its root can
+	 * no longer be opened, in which case the caller resumes it as a top-level
+	 * agent exactly as before.
+	 */
+	private async _redirectChildResumeToRoot(
+		reference: string | JsonlSessionMetadata,
+	): Promise<AgentId | undefined> {
+		const metadata =
+			typeof reference === "string"
+				? await this.sessionManager.resolveAgentSessionReference(reference)
+				: reference;
+		const sessionDir = sessionDirNameFromPath(metadata.path);
+		const pointer = await this._resolveResumeRoot(sessionDir);
+		if (!pointer || pointer.rootSessionDir === sessionDir) return undefined;
+		try {
+			const rootMetadata = await this.sessionManager.resolveAgentSessionByDir(
+				pointer.rootSessionDir,
+			);
+			await this.spawnAgent({
+				origin: { kind: "resume", reference: rootMetadata },
+			});
+		} catch (error) {
+			await this._publishDiagnostic({
+				severity: "warning",
+				code: "orchestrator.agent_tree_root_unresolved",
+				message: `Session ${sessionDir} records a spawn-tree root that could not be opened; resuming it as a top-level agent: ${formatError(error)}`,
+			});
+			return undefined;
+		}
+		// The restore opened this session under whatever id was free. If it did
+		// not - a member the log no longer lists, or one that failed - fall back to
+		// the ordinary top-level resume.
+		return this.sessionManager.findAgentIdBySessionDir(sessionDir);
+	}
+
+	/**
+	 * Restore a whole tree eagerly: the root first, then each member in the order
+	 * the log recorded it, so a parent always exists before its child.
+	 *
+	 * A recorded AgentId can collide across processes. When it does the member is
+	 * resumed under a freshly allocated id and the substitution is recorded: not
+	 * remapping would leave the parent's history naming `coder-2` while
+	 * `send_message("coder-2")` reaches somebody else entirely.
+	 *
+	 * One member failing is a diagnostic and a `failed` entry; it never takes the
+	 * root or its siblings down with it.
+	 */
+	private async _resumeAgentTree(
+		rootAgentId: AgentId,
+		members: readonly AgentTreeSpawnRecord[],
+	): Promise<AgentTreeResumeOutcome> {
+		const resumed: AgentId[] = [];
+		const failed: AgentId[] = [];
+		const remapped: Array<{ readonly from: AgentId; readonly to: AgentId }> =
+			[];
+		// Records name the parent by its recorded id, which may itself have been
+		// remapped a moment ago.
+		const substitutions = new Map<AgentId, AgentId>();
+		for (const member of members) {
+			const parent =
+				substitutions.get(member.spawnedBy) ??
+				(this._live.has(member.spawnedBy) ? member.spawnedBy : rootAgentId);
+			try {
+				const metadata = await this.sessionManager.resolveAgentSessionByDir(
+					member.sessionDir,
+				);
+				const agentId = await this.spawnAgent({
+					origin: { kind: "resume", reference: metadata },
+					parent,
+				});
+				if (agentId !== member.agentId) {
+					substitutions.set(member.agentId, agentId);
+					remapped.push({ from: member.agentId, to: agentId });
+				}
+				resumed.push(agentId);
+			} catch (error) {
+				failed.push(member.agentId);
+				await this._publishDiagnostic({
+					severity: "warning",
+					code: "orchestrator.agent_tree_member_failed",
+					message: `Failed to restore agent ${member.agentId} under root ${rootAgentId}: ${formatError(error)}`,
+					agentId: rootAgentId,
+				});
+			}
+		}
+		return { rootAgentId, resumed, failed, remapped };
+	}
+
+	/**
+	 * Tell the root what its tree looks like now.
+	 *
+	 * **Session write.** The reconciliation goes onto the root's branch through
+	 * `harness.appendMessage`, because it is context the model must resume with
+	 * rather than a message arriving afterwards: a partial restore is the normal
+	 * case, and a model that is not told will keep addressing agents that no
+	 * longer exist or whose ids moved. Nothing is written when the tree came back
+	 * whole and unchanged, which is also the common case.
+	 */
+	private async _publishTreeResumeReconciliation(
+		outcome: AgentTreeResumeOutcome,
+	): Promise<void> {
+		if (outcome.failed.length === 0 && outcome.remapped.length === 0) return;
+		const liveAgent = this._live.get(outcome.rootAgentId);
+		if (!liveAgent) return;
+		const lines = ["[Spawn tree restored]"];
+		if (outcome.resumed.length > 0) {
+			lines.push(`Restored: ${outcome.resumed.join(", ")}.`);
+		}
+		if (outcome.failed.length > 0) {
+			lines.push(
+				`Not restored: ${outcome.failed.join(", ")}. Messages to them will fail.`,
+			);
+		}
+		for (const { from, to } of outcome.remapped) {
+			lines.push(`Agent ${from} is now addressed as ${to}.`);
+		}
+		try {
+			await liveAgent.harness.appendMessage({
+				role: "user",
+				content: [{ type: "text", text: lines.join("\n") }],
+				timestamp: Date.now(),
+			});
+		} catch (error) {
+			await this._recordAgentLifecycleFailure(
+				outcome.rootAgentId,
+				"orchestrator.agent_tree_reconciliation_failed",
+				`Failed to record the spawn-tree reconciliation for agent ${outcome.rootAgentId}: ${formatError(error)}`,
+			);
+		}
+	}
+
+	/**
+	 * Find the root a directly resumed child belongs to, by reading its
+	 * `parent.json`.
+	 *
+	 * Found means the whole tree is restored instead and the view moves to that
+	 * child. Not found - old data, or a root that has since been deleted - means
+	 * it comes back as a top-level agent, with a diagnostic saying so.
+	 */
+	private async _resolveResumeRoot(
+		sessionDir: string,
+	): Promise<AgentParentPointer | undefined> {
+		try {
+			return await this.sessionManager.readAgentParentPointer(sessionDir);
+		} catch (error) {
+			await this._publishDiagnostic({
+				severity: "warning",
+				code: "orchestrator.agent_tree_root_unresolved",
+				message: `Failed to read the spawn-tree parent pointer of session ${sessionDir}; resuming it as a top-level agent: ${formatError(error)}`,
+			});
+			return undefined;
+		}
+	}
+
+	/** Append to this agent's diagnostics history, which the snapshot reads. */
+	private _addAgentDiagnostics(
+		agentId: AgentId,
+		diagnostics: readonly OrchestratorDiagnostic[],
+	): void {
+		if (diagnostics.length === 0) return;
+		const history = this._agentDiagnostics.get(agentId) ?? [];
+		history.push(...diagnostics);
+		this._agentDiagnostics.set(agentId, history);
+	}
 }
 
 /**
@@ -3050,6 +4441,84 @@ function toHarnessMessageOptions(
 	options: { readonly images?: readonly ImageContent[] } | undefined,
 ): { images: ImageContent[] } | undefined {
 	return options?.images ? { images: [...options.images] } : undefined;
+}
+
+/**
+ * Reduce the append-only tree log to the members still live when it was last
+ * written: `spawned` establishes a member, `removed` drops it, and a repeated
+ * record wins over the earlier one. The log is appended in event order, so
+ * order is the truth.
+ */
+function reduceAgentTreeRecords(
+	records: readonly AgentTreeRecord[],
+): readonly AgentTreeSpawnRecord[] {
+	const members = new Map<AgentId, AgentTreeSpawnRecord>();
+	for (const record of records) {
+		if (record.type === "removed") members.delete(record.agentId);
+		else members.set(record.agentId, record);
+	}
+	return [...members.values()];
+}
+
+/**
+ * Project an internal snapshot onto the extension-facing shape: identity and
+ * conversation, no filesystem layout. An ephemeral session owns no persisted
+ * file and therefore has no ref.
+ */
+function toExtensionSessionSnapshot(
+	snapshot: AgentSessionSnapshot,
+	sessions: SessionManager,
+): ExtensionSessionSnapshot {
+	const { metadata } = snapshot;
+	const path =
+		"path" in metadata && typeof metadata.path === "string"
+			? metadata.path
+			: undefined;
+	return {
+		...(path === undefined
+			? undefined
+			: { ref: sessions.toSessionHandle(path) }),
+		id: metadata.id,
+		...(snapshot.name === undefined ? undefined : { name: snapshot.name }),
+		leafId: snapshot.leafId,
+		pathToRoot: cloneSessionEntries(snapshot.pathToRoot),
+	};
+}
+
+function toExtensionSessionTree(
+	snapshot: AgentSessionTreeSnapshot,
+	sessions: SessionManager,
+): ExtensionSessionTree {
+	return {
+		...toExtensionSessionSnapshot(snapshot, sessions),
+		entries: cloneSessionEntries(snapshot.entries),
+	};
+}
+
+function cloneSessionEntries(
+	entries: readonly SessionTreeEntry[],
+): readonly SessionTreeEntry[] {
+	return structuredClone(entries);
+}
+
+/**
+ * Every config-value channel in a provider config: the provider api key, and
+ * the provider- and model-level request headers.
+ */
+function hasCommandConfigValues(
+	config: ProviderConfigInput,
+	resolver: ConfigValueResolver,
+): boolean {
+	const values = [
+		config.apiKey,
+		...Object.values(config.headers ?? {}),
+		...(config.models ?? []).flatMap((model) =>
+			Object.values(model.headers ?? {}),
+		),
+	];
+	return values.some(
+		(value) => value !== undefined && resolver.isCommandConfigValue(value),
+	);
 }
 
 /**

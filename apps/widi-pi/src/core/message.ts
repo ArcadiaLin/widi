@@ -15,7 +15,7 @@
 
 import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
 import { AgentHarnessError, type AgentHarnessPhase } from "@widi/agent-core";
-import type { AgentId, PromptExpansion } from "./types.ts";
+import type { AgentId } from "./types.ts";
 
 /**
  * Trusted origin of a message. Never derived from model-supplied arguments:
@@ -23,11 +23,7 @@ import type { AgentId, PromptExpansion } from "./types.ts";
  * injected from the tool adapter context so an agent cannot forge a sender.
  */
 export type MessageSource =
-	| {
-			readonly kind: "human";
-			/** Interaction-layer inline expansion recorded alongside the prompt. */
-			readonly expansion?: PromptExpansion;
-	  }
+	| { readonly kind: "human" }
 	| { readonly kind: "agent"; readonly agentId: AgentId }
 	| {
 			readonly kind: "background_job";

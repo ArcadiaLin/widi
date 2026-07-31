@@ -731,6 +731,25 @@ function normalizeExtensionCustomType(type: string): string {
 	return normalized;
 }
 
+/**
+ * The persisted custom type for one extension's namespaced entry.
+ *
+ * Exported because the write itself belongs to the harness - it owns the live
+ * branch - while the naming rule has to stay here, next to the reader that
+ * matches on it.
+ */
+export function toExtensionCustomType(
+	extensionId: string,
+	type: string,
+	data?: unknown,
+): string {
+	assertJsonSerializable(data);
+	return toPersistedExtensionCustomType(
+		extensionId,
+		normalizeExtensionCustomType(type),
+	);
+}
+
 function toPersistedExtensionCustomType(
 	extensionId: string,
 	localType: string,
