@@ -543,11 +543,17 @@ export class MessageDeliveryQueue {
 				// queued, report once, and wait for the next phase change. Never
 				// retry inline - that could spin against a broken harness.
 				const retryable = isRetryableDeliveryError(failure.error);
+				// `retryOnFailure` outranks that judgement, because a background
+				// job result has nobody left to report to. It does not outrank a
+				// terminal one: waiting for a phase change on a harness that has
+				// been shut down would leave the sender queued behind an agent that
+				// can never take it, until an unrelated cancel notices.
+				const terminal = isTerminalDeliveryError(failure.error);
 				const retried: QueuedMessage[] = [];
 				for (const message of batch) {
 					// A cancel during the harness call already settled this one.
 					if (message.settled) continue;
-					if (retryable || message.retryOnFailure) {
+					if (retryable || (message.retryOnFailure && !terminal)) {
 						retried.push(message);
 					} else {
 						this._fail(message, failure.error);
@@ -634,4 +640,13 @@ export function isRetryableDeliveryError(error: unknown): boolean {
 		error instanceof AgentHarnessError &&
 		(error.code === "busy" || error.code === "invalid_state")
 	);
+}
+
+/**
+ * The target can never accept anything again. `busy` and `invalid_state`
+ * describe a phase the caller can wait out; this one describes a harness that
+ * has been shut down, so no amount of waiting or requeueing changes the answer.
+ */
+export function isTerminalDeliveryError(error: unknown): boolean {
+	return error instanceof AgentHarnessError && error.code === "shutdown";
 }
