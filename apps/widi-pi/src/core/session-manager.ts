@@ -19,7 +19,11 @@ import type {
 	SessionMetadata,
 	SessionTreeEntry,
 } from "@widi/agent-core";
-import { buildSessionContext, InMemorySessionRepo } from "@widi/agent-core";
+import {
+	buildSessionContext,
+	InMemorySessionStore,
+	toSession,
+} from "@widi/agent-core";
 import { formatError } from "../utils/errors.ts";
 import type { AgentProfile, AgentProfileReference } from "./agent-profile.js";
 import {
@@ -175,8 +179,12 @@ export class SessionManager {
 	private readonly _cwd: string;
 	private readonly _agentSessions: Map<AgentId, Session<AgentSessionMetadata>> =
 		new Map();
-	private readonly _memorySessionRepo: InMemorySessionRepo =
-		new InMemorySessionRepo();
+	// Held as a store rather than through pi's SessionRepo: the repo now hands
+	// back a snapshot-backed Session that reloads the whole session on every
+	// read. Sessions here are long-lived handles, so they stay bound to the
+	// stateful storage the store already keeps.
+	private readonly _memorySessionStore: InMemorySessionStore =
+		new InMemorySessionStore();
 	// Opaque session handles for consumers that must not see filesystem paths.
 	private readonly _sessionHandlesByPath: Map<string, string> = new Map();
 	private readonly _sessionPathsByHandle: Map<string, string> = new Map();
@@ -579,7 +587,8 @@ export class SessionManager {
 	private async _createEphemeralAgentSession(
 		agentId: AgentId,
 	): Promise<Session<SessionMetadata>> {
-		return this._memorySessionRepo.create({ id: agentId });
+		const metadata = await this._memorySessionStore.create({ id: agentId });
+		return toSession(await this._memorySessionStore.open(metadata));
 	}
 
 	private _requireAgentSession(

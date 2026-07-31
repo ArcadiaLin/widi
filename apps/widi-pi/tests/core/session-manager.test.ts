@@ -524,17 +524,17 @@ describe("SessionManager", () => {
 			manager.findExtensionCustomEntries("main", "writer", "missing"),
 		).resolves.toEqual([]);
 
-		const storageCustomEntries = await session
-			.getStorage()
-			.findEntries("custom");
-		expect(storageCustomEntries.map((entry) => entry.customType)).toEqual([
+		const storedCustomEntries = (await session.getEntries()).filter(
+			(entry) => entry.type === "custom",
+		);
+		expect(storedCustomEntries.map((entry) => entry.customType)).toEqual([
 			"extension:writer:state",
 			"extension:writer:note",
 			"extension:other:state",
 			"extension:writer:state",
 		]);
 
-		await session.getStorage().setLeafId(firstId);
+		await session.moveTo(firstId);
 		await expect(
 			manager.findExtensionCustomEntries("main", "writer", "state"),
 		).resolves.toMatchObject([{ id: firstId, type: "state" }]);
