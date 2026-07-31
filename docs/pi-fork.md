@@ -25,7 +25,11 @@ Upstream `packages/storage/sqlite-node` is deliberately not vendored: WIDI persi
 
 Vendored from upstream commit `845d6ff1f6643aba440341cce877ce1c43ebbc39` (`v0.83.0`). The `version` field in `packages/agent/package.json` tracks that release and is bumped only on re-sync.
 
-One set of post-release commits is cherry-picked on top of that baseline: the harness shutdown lifecycle, `82c485983`, `bc031ae45`, `871a99047` and `9cde1725d`, all landed on upstream `main` after v0.83.0 and not yet published. They are taken early because the orchestrator refactor removes the maintenance registry that today is the only orchestrator-side handle on a running compaction, leaving `AgentHarness` as the only place that can abort and await one. See "The shutdown lifecycle" below. The four commits also touch `skill()`, `promptFromTemplate()` and the resource generics, none of which exist here; only the task-tracking half was applied.
+Two sets of post-release commits are cherry-picked on top of that baseline, both landed on upstream `main` after v0.83.0 and not yet published.
+
+The second set is the session store split, `9b50b046d` (PR #7163). Its subject is a SQLite search index we do not vendor; what we took is the storage restructuring underneath it. `packages/agent/src/harness/session/*` and `src/index.ts` are byte-identical to that commit, so the whole of it is carried except the sqlite backend and its two tests. See "The session store split" below.
+
+The first set is the harness shutdown lifecycle, `82c485983`, `bc031ae45`, `871a99047` and `9cde1725d`. They are taken early because the orchestrator refactor removes the maintenance registry that today is the only orchestrator-side handle on a running compaction, leaving `AgentHarness` as the only place that can abort and await one. See "The shutdown lifecycle" below. The four commits also touch `skill()`, `promptFromTemplate()` and the resource generics, none of which exist here; only the task-tracking half was applied.
 
 `packages/agent/src` diverges from upstream in four places, three additions and one removal:
 
@@ -36,7 +40,7 @@ One set of post-release commits is cherry-picked on top of that baseline: the ha
 - **Changed** in `src/harness/agent-harness.ts`: `abort()` on a shut-down harness awaits the shutdown and returns an empty `AbortResult` instead of throwing, `shutdown()` publishes its promise before aborting the active operation so that a listener reentering through `abort()` has something to await, and it releases the subscriber table once everything has settled. Teardown calls `abort()` then `shutdown()`, and duplicate teardown is normal; upstream's asymmetry - `shutdown()` idempotent, `abort()` fatal afterwards - would push that guard into every caller. See "The shutdown lifecycle" below.
 - **Removed** from `src/harness/agent-harness.ts` and `src/harness/types.ts`: the harness's entire resource surface. `skill()`, `promptFromTemplate()`, `getResources()`, `setResources()`, the `resources` option, the `resources_update` event, `BeforeAgentStartEvent.resources`, the `resources` field of the system-prompt callback context, the `AgentHarnessResources` type, and the `TSkill`/`TPromptTemplate` type parameters. `AgentHarness` is now `AgentHarness<TContext, TTool>`. See "The resource removal" below.
 
-`packages/agent/test` diverges in five places:
+`packages/agent/test` diverges in six places:
 
 - `test/harness/agent-harness.test.ts`: two tests for the promotion path, two for the observation getters, five for the session write surface, one for the subscriber tail delivered during shutdown, plus `textFromUserMessages` widened to `content?: unknown` so an `AgentMessage[]` - a union whose bash-execution member carries no `content` - can be passed directly. Without the widening the promotion test does not type-check against v0.83.0. The resource-getter test is deleted and the save-point refresh test drives its system-prompt change through a closure instead of `setResources()`.
 - `test/harness/agent-harness.test.ts`, upstream's own "awaits concurrent idle session mutations before shutdown resolves": its `BlockingSessionStorage(3)` waits for three writes to reach storage at once, which serialization makes impossible. It expects one now. The guarantee under test - shutdown does not resolve until every idle mutation has landed - is unchanged.
@@ -94,6 +98,26 @@ Four rules hold the surface together, three of them fixing races the upstream co
 `compact()` and `navigateTree()` flush what was buffered during them, before reopening the phase. Upstream only resets the phase, so an entry written inside a compaction hook stayed buffered until some later turn, was overtaken by any idle write in between, and was discarded outright by `shutdown()`.
 
 On re-sync, harness-v2's record model has to answer the same requirement - an application writing its own records into the branch the harness owns, and getting their identity back - so this is a case of adopting its equivalent rather than porting these methods.
+
+**Downstream rule.** These five methods are the only supported way into a live session, and using one is a design decision, not a convenience. Reach for them only when the entry genuinely belongs on the branch the harness owns; anything the runtime can keep beside the session should live beside it. Any new call site is reported to the developer when it is added, with what it writes and why the branch is the right place for it. The cost of an unnecessary entry is permanent: it is replayed into context on every resume and forked into every child session.
+
+### The session store split
+
+Cherry-picked from `9b50b046d`, so all of it is upstream's. Five changes matter here:
+
+- `SessionRepo` stopped being an interface that hands back `Session` objects. `SessionStore` replaces it: metadata-addressed, returning `TMetadata` and `SessionSnapshot`, with `getEntries`/`createEntryId`/`appendEntry`/`setLeafId` as primitives. `SessionRepo` is now a concrete class in `repo-utils.ts` composed of a store plus an optional search backend.
+- **`Session.getStorage()` is gone.** `Session` holds a five-method `SessionDependencies` port instead of a `SessionStorage`.
+- Every derived read - `getPathToRootOrCompaction`, `getLabel`, `getSessionName`, `getSessionStats` - moved out of the storage implementations into pure functions over a loaded snapshot. A storage implementation now only has to store and return entries.
+- `setLeafId` returns the `LeafEntry` it wrote instead of `void`, making a leaf move addressable.
+- Search split into `SessionSearchIndex` (write-side maintenance) and `SessionSearch` (query only), composed at the store boundary, with `ScanningSessionSearch` as the index-free fallback.
+
+The reason to take it early is the second point. The session write surface above rests on a claim - nothing writes to a live branch except the harness - that until now was a convention, because any holder of a `Session` could call `getStorage().appendEntry()` and land outside `pendingSessionWrites`. Removing the accessor makes the claim checkable. The rest is cheap to carry now and expensive later: these files are byte-identical to upstream, so the next cherry-pick still diffs against a known point.
+
+`agent-harness.ts` changed by one line as a consequence: `session.getStorage().setLeafId(...)` became `session.moveTo(...)`.
+
+**What WIDI does not use.** `SessionRepo`, `createJsonlSessionRepo`, `createInMemorySessionRepo`, and `toStoreSession` are all present and all unused. The store contract is metadata-addressed, so each operation reopens the session - for JSONL, a full reparse - and the `Session` that `toStoreSession` builds reloads the whole session on every read, including the `getLeafId` that every append performs. WIDI holds one long-lived handle per open session and appends through it continuously, so `SessionDirectoryRepo` and `SessionManager`'s in-memory sessions keep binding `Session` to a stateful storage through `toSession()`. Upstream's own coding-agent does not exercise the store path either - it still runs the pre-harness `SessionManager` - so this is not a path to converge onto until it has a consumer that proves the cost.
+
+`SessionSearch` has no consumer here at all. `ScanningSessionSearch` reads every session in the root per query.
 
 ### The shutdown lifecycle
 

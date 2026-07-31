@@ -72,6 +72,7 @@ Before using an external API, check installed package types or source in `node_m
 - Ask before removing functionality or code that appears intentional.
 - Do not preserve backward compatibility unless the user asks for it.
 - Never hardcode key checks such as `matchesKey(keyData, "ctrl+x")`; add defaults to configurable keybinding maps instead.
+- The harness session write API (`AgentHarness.appendMessage`, `appendCustomEntry`, `appendCustomMessageEntry`, `appendLabel`, `setSessionName`) is the only supported way into a live session branch, and writing to a branch is not free: the entry is replayed into context on every resume, forked into every child session, and cannot be removed. Use it only for facts that must live on the branch; keep everything else in memory or beside the session. Report every new call site to the user, with what it writes and why the branch is the right place. Background: `docs/pi-fork.md`, "The session write surface".
 
 ## Commands
 
