@@ -25,14 +25,19 @@ Upstream `packages/storage/sqlite-node` is deliberately not vendored: WIDI persi
 
 Vendored from upstream commit `845d6ff1f6643aba440341cce877ce1c43ebbc39` (`v0.83.0`). The `version` field in `packages/agent/package.json` tracks that release and is bumped only on re-sync.
 
-`packages/agent/src` diverges from upstream in two places, one addition and one removal:
+One set of post-release commits is cherry-picked on top of that baseline: the harness shutdown lifecycle, `82c485983`, `bc031ae45`, `871a99047` and `9cde1725d`, all landed on upstream `main` after v0.83.0 and not yet published. They are taken early because the orchestrator refactor removes the maintenance registry that today is the only orchestrator-side handle on a running compaction, leaving `AgentHarness` as the only place that can abort and await one. See "The shutdown lifecycle" below. The four commits also touch `skill()`, `promptFromTemplate()` and the resource generics, none of which exist here; only the task-tracking half was applied.
+
+`packages/agent/src` diverges from upstream in four places, three additions and one removal:
 
 - **Added** to `src/harness/agent-harness.ts`: `AgentHarness.promoteFollowUpsToSteer()`. A follow-up is only read where the agent would otherwise stop, so a user who queued one and then cannot wait has no way to promote it; re-sending the text as a steer would deliver it twice, and only the harness can take the message back out. Used by `agent-orchestrator.ts` via `steerQueuedFollowUps`.
+- **Added** to `src/harness/agent-harness.ts` and `src/harness/types.ts`: `AgentHarness.getPhase()`, `AgentHarness.getQueuedMessageCounts()`, and the `AgentHarnessQueuedMessageCounts` type. Two facts the harness already owns but exposed only as events, forcing every consumer to mirror them. See "The observation getters" below.
+- **Added** to `src/harness/agent-harness.ts` and `src/harness/types.ts`: the session write surface. `appendCustomEntry()`, `appendCustomMessageEntry()`, `appendLabel()`, `setSessionName()`, entry ids returned from `appendMessage()` and the four new methods, and the `session_write` event with its `SessionWriteEvent` type. See "The session write surface" below.
 - **Removed** from `src/harness/agent-harness.ts` and `src/harness/types.ts`: the harness's entire resource surface. `skill()`, `promptFromTemplate()`, `getResources()`, `setResources()`, the `resources` option, the `resources_update` event, `BeforeAgentStartEvent.resources`, the `resources` field of the system-prompt callback context, the `AgentHarnessResources` type, and the `TSkill`/`TPromptTemplate` type parameters. `AgentHarness` is now `AgentHarness<TContext, TTool>`. See "The resource removal" below.
 
-`packages/agent/test` diverges in four places:
+`packages/agent/test` diverges in five places:
 
-- `test/harness/agent-harness.test.ts`: two tests for the promotion path, plus `textFromUserMessages` widened to `content?: unknown` so an `AgentMessage[]` - a union whose bash-execution member carries no `content` - can be passed directly. Without the widening the promotion test does not type-check against v0.83.0. The resource-getter test is deleted and the save-point refresh test drives its system-prompt change through a closure instead of `setResources()`.
+- `test/harness/agent-harness.test.ts`: two tests for the promotion path, two for the observation getters, five for the session write surface, plus `textFromUserMessages` widened to `content?: unknown` so an `AgentMessage[]` - a union whose bash-execution member carries no `content` - can be passed directly. Without the widening the promotion test does not type-check against v0.83.0. The resource-getter test is deleted and the save-point refresh test drives its system-prompt change through a closure instead of `setResources()`.
+- `test/harness/agent-harness.test.ts`, upstream's own "awaits concurrent idle session mutations before shutdown resolves": its `BlockingSessionStorage(3)` waits for three writes to reach storage at once, which serialization makes impossible. It expects one now. The guarantee under test - shutdown does not resolve until every idle mutation has landed - is unchanged.
 - `test/scratch/simple.ts`: composes the skills listing and expands the prompt template itself, then passes the harness a plain string.
 - `test/harness/session-test-utils.ts`: the package self-reference now names `@widi/agent-core`.
 - `test/harness/sqlite-migrations.test.ts` and `test/harness/sqlite-node.test.ts`: removed. They import `packages/storage/sqlite-node`, which is not vendored.
@@ -50,6 +55,52 @@ The skills now live on `AgentRecord.systemPrompt.skills`, read per turn by the s
 **What did not move.** `src/harness/skills.ts`, `src/harness/prompt-templates.ts`, and `src/harness/system-prompt.ts` are untouched and still exported: the loaders are filesystem mechanism upstream keeps improving, and `formatSkillInvocation`, `formatPromptTemplateInvocation`, and `formatSkillsForSystemPrompt` are pure functions whose output WIDI matches byte for byte. WIDI's divergence is where they are called, not what they emit. The invariant that replaces the deleted code: **`AgentHarness` imports none of those three modules; only the application calls them.**
 
 On re-sync, harness-v2 rewrites `src/harness` wholesale. Those three files should be **moved out of `harness/`, not deleted with it**, and none of the removed API should come back.
+
+### The observation getters
+
+Both facts already exist inside the harness; upstream only publishes them as events. `phase` is private, and the three message queues are reported solely by `queue_update`. A consumer that needs either answer at an arbitrary moment - not at the moment an event happened to fire - has no choice but to keep a mirror and hope every event was observed in order.
+
+WIDI's orchestrator kept both mirrors, and they were the two least defensible pieces of state in it. `_maintenanceOperations` re-implemented `phase` in a parallel map, down to reserving synchronously before the first await because the harness does the same at `compact()`'s second line, and it needed an object-identity check on release so a resumed agent reusing an id could not have its reservation cleared by its predecessor. `AgentRecord.harnessQueuedMessageCount` cached the queue lengths so that `agentHasPendingMessages` and the idle judgement could answer without an event.
+
+The getters are pure reads. They add no state, emit nothing, and cannot fail:
+
+- `getPhase(): AgentHarnessPhase`. Every phase transition in the harness is synchronous, ahead of the operation's first await (`prompt` sets `turn` on its second line, `compact` sets `compaction`, `navigateTree` sets `branch_summary`, each clearing back to `idle` in a `finally`). So a caller that reads the phase and then calls a method races only against other callers, never against the operation it just observed. It is still not a total guard - `AgentHarnessError` with code `busy` remains the authority - but it makes the common path honest and the errors rare.
+- `getQueuedMessageCounts(): AgentHarnessQueuedMessageCounts`. Per-lane lengths of `steerQueue`, `followUpQueue`, and `nextTurnQueue`.
+
+One upstream wart survives: `AgentHarnessPhase` includes `"retry"`, which nothing in v0.83.0 ever assigns. Consumers must still handle it, because the type says it can happen.
+
+On re-sync, check first whether harness-v2 already exposes the equivalent of both. Its step model makes the current operation explicit and its lane queues are durable records, so the natural expectation is that the mirrors are unnecessary there for structural reasons rather than because this patch ported.
+
+### The session write surface
+
+The harness is the session's writer while an operation runs: it buffers its own writes in `pendingSessionWrites` so a turn's messages stay contiguous, and flushes them at the next save point. But upstream exposes only `appendMessage()`, so an application that needs its own entries has no way in - even though `PendingSessionWrite` is derived from the entry union and `flushPendingSessionWrites` already implements all nine variants. Five of them, `custom`, `custom_message`, `label`, `session_info` and `leaf`, were unreachable: nothing could push them.
+
+WIDI needs four of those five. Command expansions, input transforms and extension messages are session entries, and today `SessionManager` writes them straight to the session behind the harness's back. That makes two writers on one branch: the entry lands wherever the leaf happens to be, mid-turn if the target is running, and undoing it on a failed delivery means rewinding the leaf with `moveTo` while the harness may be moving it too.
+
+- `appendCustomEntry()`, `appendCustomMessageEntry()`, `appendLabel()`, `setSessionName()`. Each mirrors `appendMessage()` exactly: shutdown guard, tracked as a `mutation`, written immediately when idle and buffered otherwise.
+- `appendMessage()` and the four new methods resolve to the entry id, or to `undefined` when the write was buffered - the id does not exist until the flush.
+- `session_write` reports every entry the harness persists that an embedder addresses by id: the loop's messages and everything written through this API, whether written immediately or flushed later. It is what makes a buffered write's id knowable, and it removes the reverse scan WIDI used to recover a message's entry id by object identity. Model, thinking level and active tool changes are excluded because each already has a dedicated update event, and compaction and branch summaries because `session_compact` and `session_tree` carry the entry itself.
+
+Four rules hold the surface together, three of them fixing races the upstream code has too:
+
+- **Writes are serialized.** Appending reads the leaf and then writes a child of it, so two writes that interleave across that await both parent themselves to the same entry and one falls off the branch. Every write - the four new methods, `appendMessage`, and the model, thinking level and active tool changes - goes through one promise tail. A failed write does not poison it.
+- **Operations take the session from concurrent writers.** `prompt()`, `compact()` and `navigateTree()` set the phase synchronously, which makes later writes buffer, and then wait for the writes already in flight before reading the session. This is the consumer of `waitForTasks("mutation")`, which upstream added without one.
+- **Reported ids survive failure.** An entry id exists only inside the harness until it is emitted, so an entry that lands and then fails to be announced - because a later write in the same flush threw, or because an observer did - would take its id with it. Notifications go to a queue that outlives the call, drained oldest first and retried by the next write or flush. Announcement still happens only after the whole buffer is durable, so a failing observer cannot leave the rest unflushed.
+- **`session_write` precedes `message_end`** for a message the loop produced, so a subscriber can correlate the entry before the message itself is announced. A write that fails stays at the head of the buffer, unchanged from upstream.
+
+`compact()` and `navigateTree()` flush what was buffered during them, before reopening the phase. Upstream only resets the phase, so an entry written inside a compaction hook stayed buffered until some later turn, was overtaken by any idle write in between, and was discarded outright by `shutdown()`.
+
+On re-sync, harness-v2's record model has to answer the same requirement - an application writing its own records into the branch the harness owns, and getting their identity back - so this is a case of adopting its equivalent rather than porting these methods.
+
+### The shutdown lifecycle
+
+Cherry-picked, not ours, so it is not a divergence - but it changes three harness guarantees the runtime depends on, and it arrived after the release we vendored:
+
+- **`shutdown()` is a terminal state.** Every mutating entry point, plus `subscribe()`/`on()`/`abort()`, throws `invalid_state` afterwards. Disposal keeps its own ordering: `abort()` first, so the interrupted turn flushes its pending session writes through `executeTurn`'s `finally`, then `shutdown()` to seal. `shutdown()` **discards** `pendingSessionWrites`, so it can never replace `abort()`.
+- **Operations own an abort signal.** `compact()` and `navigateTree()` previously passed a controller that nothing ever aborted, so `abort()` could not cancel them and `waitForIdle()` returned immediately while they ran. Both are now tracked operations wired to the same signal, which is what makes "dispose an agent that is compacting" expressible at all.
+- **Idle session mutations are tracked.** `appendMessage`, `setModel`, `setThinkingLevel`, `setTools` and `setActiveTools` write to the session when the harness is idle; they are tracked as `mutation` tasks so `shutdown()` awaits them. `waitForIdle()` deliberately waits only on `operation` tasks - a concurrent `appendMessage` must not make an idle harness look busy.
+
+`isShutdown` stays private on purpose. In WIDI the question "can this agent still be addressed" is answered by the orchestrator's live registry, which answers it *earlier*: the registry cutover is synchronous while `shutdown()` completes several steps later, so a public getter would disagree with the registry for the whole teardown window.
 
 ## Carrying upstream work across
 
@@ -89,6 +140,8 @@ The rule that fell out of the fork: **a patch to code harness-v2 deletes is not 
 What is worth sending upstream is the requirement behind it. harness-v2's lane queues are `steer`/`followUp`/`nextRun` with no promotion path, and its open questions are still collecting input, so the queue semantics are not frozen. An issue against the design costs nothing and targets live code.
 
 The same test separates this from the JSONL header metadata work on the `jsonl-header-metadata` branch: harness-v2 defines a new v4 header and is actively designing it, so that conversation still has a live target.
+
+The observation getters fail the test in both directions and are filed nowhere. They patch `agent-harness.ts`, so no pull request; and the requirement behind them - "an embedder must be able to read the harness's current operation and queue depths synchronously, without mirroring events" - is only interesting if harness-v2 fails to meet it, which its step model suggests it does not. Re-evaluate when harness-v2's observation surface is settled, not before.
 
 ## What we gave up
 
