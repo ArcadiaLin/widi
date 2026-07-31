@@ -343,6 +343,67 @@ describe("AgentHarness", () => {
 		await expect(harness.compact()).rejects.toMatchObject({ code: "invalid_state" });
 	});
 
+	it("returns entry ids for idle session writes and reports each one", async () => {
+		const session = new Session(new InMemorySessionStorage());
+		const harness = new AgentHarness({
+			models,
+			session,
+			model: getModel("anthropic", "claude-sonnet-4-5"),
+		});
+		const reported: Array<{ entryId: string; type: string }> = [];
+		harness.subscribe((event) => {
+			if (event.type === "session_write") reported.push({ entryId: event.entryId, type: event.write.type });
+		});
+
+		const messageId = await harness.appendMessage(createUserMessage("hello"));
+		const customId = await harness.appendCustomEntry("widi.expansion", { originalText: "/foo" });
+		const labelId = await harness.appendLabel(messageId!, "start");
+		const nameId = await harness.setSessionName("named session");
+
+		expect((await session.getEntry(messageId!))?.type).toBe("message");
+		expect((await session.getEntry(customId!))?.type).toBe("custom");
+		expect(reported).toEqual([
+			{ entryId: messageId, type: "message" },
+			{ entryId: customId, type: "custom" },
+			{ entryId: labelId, type: "label" },
+			{ entryId: nameId, type: "session_info" },
+		]);
+	});
+
+	it("buffers an application entry written during a turn until the save point", async () => {
+		const registration = newFaux();
+		const entered = deferred();
+		const release = deferred();
+		registration.setResponses([
+			async () => {
+				entered.resolve();
+				await release.promise;
+				return fauxAssistantMessage("done");
+			},
+		]);
+		const session = new Session(new InMemorySessionStorage());
+		const harness = new AgentHarness({ models, session, model: registration.getModel() });
+		const reported: Array<{ entryId: string; type: string }> = [];
+		harness.subscribe((event) => {
+			if (event.type === "session_write") reported.push({ entryId: event.entryId, type: event.write.type });
+		});
+
+		const prompt = harness.prompt("hello");
+		await entered.promise;
+		const bufferedId = await harness.appendCustomEntry("widi.expansion", { originalText: "/foo" });
+		expect(bufferedId).toBeUndefined();
+		// Nothing may land between the turn's own messages.
+		expect((await session.getEntries()).map((entry) => entry.type)).toEqual(["message"]);
+
+		release.resolve();
+		await prompt;
+
+		expect((await session.getEntries()).map((entry) => entry.type)).toEqual(["message", "message", "custom"]);
+		expect(reported.map((entry) => entry.type)).toEqual(["message", "message", "custom"]);
+		const entryIds = (await session.getEntries()).map((entry) => entry.id);
+		expect(reported.map((entry) => entry.entryId)).toEqual(entryIds);
+	});
+
 	it("drains one queued steering message at a time and emits queue updates", async () => {
 		const registration = newFaux();
 		const userCounts: number[] = [];

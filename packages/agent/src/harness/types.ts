@@ -565,6 +565,22 @@ export interface SavePointEvent {
 	hadPendingMutations: boolean;
 }
 
+/**
+ * One session entry the harness persisted, with the id the storage assigned.
+ *
+ * Emitted for the entries an embedder addresses by id afterwards - the loop's
+ * messages and everything written through the append/label/name API - whether
+ * the write happened immediately or was buffered until the next save point.
+ * State changes (model, thinking level, active tools) and compaction/branch
+ * summaries are not reported here: each already has a dedicated event carrying
+ * the same fact, and a second announcement would be a second source for it.
+ */
+export interface SessionWriteEvent {
+	type: "session_write";
+	entryId: string;
+	write: PendingSessionWrite;
+}
+
 export interface AbortEvent {
 	type: "abort";
 	clearedSteer: AgentMessage[];
@@ -697,6 +713,7 @@ export interface ToolsUpdateEvent {
 export type AgentHarnessOwnEvent =
 	| QueueUpdateEvent
 	| SavePointEvent
+	| SessionWriteEvent
 	| AbortEvent
 	| SettledEvent
 	| BeforeAgentStartEvent
@@ -787,6 +804,7 @@ export type AgentHarnessEventResultMap = {
 	tools_update: undefined;
 	queue_update: undefined;
 	save_point: undefined;
+	session_write: undefined;
 	abort: undefined;
 	settled: undefined;
 };

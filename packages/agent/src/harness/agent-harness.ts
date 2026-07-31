@@ -6,6 +6,7 @@ import {
 	type Models,
 	type RetryCallbacks,
 	type RetryPolicy,
+	type TextContent,
 	type UserMessage,
 } from "@earendil-works/pi-ai";
 import { runAgentLoop } from "../agent-loop.ts";
@@ -130,6 +131,19 @@ function applyStreamOptionsPatch(
 }
 
 const SUBSCRIBER_EVENT_TYPE = "*";
+
+/**
+ * Write kinds an embedder addresses by entry id afterwards, and therefore the
+ * ones `session_write` reports. Model, thinking level and active tool changes
+ * are excluded on purpose: each already has a dedicated update event.
+ */
+const ADDRESSABLE_SESSION_WRITE_TYPES: ReadonlySet<PendingSessionWrite["type"]> = new Set([
+	"message",
+	"custom",
+	"custom_message",
+	"label",
+	"session_info",
+]);
 
 type AgentHarnessHandler = (event: any, signal?: AbortSignal) => Promise<any> | any;
 
@@ -532,35 +546,75 @@ export class AgentHarness<
 		if (missing.length > 0) throw new AgentHarnessError("invalid_argument", `Unknown tool(s): ${missing.join(", ")}`);
 	}
 
+	/** Perform one session write. Returns the entry id, or undefined for a leaf move. */
+	private async applySessionWrite(write: PendingSessionWrite): Promise<string | undefined> {
+		if (write.type === "message") {
+			return await this.session.appendMessage(write.message);
+		} else if (write.type === "model_change") {
+			return await this.session.appendModelChange(write.provider, write.modelId);
+		} else if (write.type === "thinking_level_change") {
+			return await this.session.appendThinkingLevelChange(write.thinkingLevel);
+		} else if (write.type === "active_tools_change") {
+			return await this.session.appendActiveToolsChange(write.activeToolNames);
+		} else if (write.type === "custom") {
+			return await this.session.appendCustomEntry(write.customType, write.data);
+		} else if (write.type === "custom_message") {
+			return await this.session.appendCustomMessageEntry(
+				write.customType,
+				write.content,
+				write.display,
+				write.details,
+			);
+		} else if (write.type === "label") {
+			return await this.session.appendLabel(write.targetId, write.label);
+		} else if (write.type === "session_info") {
+			return await this.session.appendSessionName(write.name ?? "");
+		} else if (write.type === "leaf") {
+			await this.session.getStorage().setLeafId(write.targetId);
+			return undefined;
+		}
+		return undefined;
+	}
+
+	/**
+	 * Write now if nothing owns the session, otherwise buffer until the next save
+	 * point. The id is only knowable in the first case; a buffered write reports
+	 * its id through `session_write` when it is flushed.
+	 */
+	private async writeOrBufferSessionEntry(write: PendingSessionWrite): Promise<string | undefined> {
+		if (this.phase !== "idle") {
+			this.pendingSessionWrites.push(write);
+			return undefined;
+		}
+		const entryId = await this.applySessionWrite(write);
+		if (entryId !== undefined) await this.emitSessionWrite(entryId, write);
+		return entryId;
+	}
+
+	private async emitSessionWrite(entryId: string, write: PendingSessionWrite): Promise<void> {
+		if (!ADDRESSABLE_SESSION_WRITE_TYPES.has(write.type)) return;
+		await this.emitOwn({ type: "session_write", entryId, write });
+	}
+
 	private async flushPendingSessionWrites(): Promise<void> {
+		const written: Array<{ entryId: string; write: PendingSessionWrite }> = [];
 		while (this.pendingSessionWrites.length > 0) {
 			const write = this.pendingSessionWrites[0]!;
-			if (write.type === "message") {
-				await this.session.appendMessage(write.message);
-			} else if (write.type === "model_change") {
-				await this.session.appendModelChange(write.provider, write.modelId);
-			} else if (write.type === "thinking_level_change") {
-				await this.session.appendThinkingLevelChange(write.thinkingLevel);
-			} else if (write.type === "active_tools_change") {
-				await this.session.appendActiveToolsChange(write.activeToolNames);
-			} else if (write.type === "custom") {
-				await this.session.appendCustomEntry(write.customType, write.data);
-			} else if (write.type === "custom_message") {
-				await this.session.appendCustomMessageEntry(write.customType, write.content, write.display, write.details);
-			} else if (write.type === "label") {
-				await this.session.appendLabel(write.targetId, write.label);
-			} else if (write.type === "session_info") {
-				await this.session.appendSessionName(write.name ?? "");
-			} else if (write.type === "leaf") {
-				await this.session.getStorage().setLeafId(write.targetId);
-			}
+			const entryId = await this.applySessionWrite(write);
 			this.pendingSessionWrites.shift();
+			if (entryId !== undefined) written.push({ entryId, write });
+		}
+		// Reported only once every buffered write is durable: a failing observer
+		// must not leave the rest of the buffer unflushed.
+		for (const entry of written) {
+			await this.emitSessionWrite(entry.entryId, entry.write);
 		}
 	}
 
 	private async handleAgentEvent(event: AgentEvent, signal?: AbortSignal): Promise<void> {
 		if (event.type === "message_end") {
-			await this.session.appendMessage(event.message);
+			const entryId = await this.session.appendMessage(event.message);
+			await this.emitSessionWrite(entryId, { type: "message", message: event.message });
 			await this.emitAny(event, signal);
 			return;
 		}
@@ -739,15 +793,53 @@ export class AgentHarness<
 		await this.emitQueueUpdate();
 	}
 
-	async appendMessage(message: AgentMessage): Promise<void> {
+	/**
+	 * Append a message to the session branch.
+	 *
+	 * Resolves to the entry id when the harness was idle and the write went
+	 * straight through, and to undefined when it was buffered behind a running
+	 * operation - the id does not exist until the next save point, and arrives
+	 * then as a `session_write` event.
+	 */
+	async appendMessage(message: AgentMessage): Promise<string | undefined> {
+		return await this.writeSessionEntry({ type: "message", message });
+	}
+
+	/**
+	 * Append an application-defined entry to the session branch.
+	 *
+	 * The four methods below exist because the harness owns the branch while an
+	 * operation is running: it buffers its own writes so a turn's messages stay
+	 * contiguous, and an application writing to the same session directly would
+	 * land between them and take the leaf with it. Routing through the harness
+	 * makes it the single writer, at the cost of not knowing the id up front.
+	 */
+	async appendCustomEntry(customType: string, data?: unknown): Promise<string | undefined> {
+		return await this.writeSessionEntry({ type: "custom", customType, data });
+	}
+
+	async appendCustomMessageEntry(
+		customType: string,
+		content: string | (TextContent | ImageContent)[],
+		display: boolean,
+		details?: unknown,
+	): Promise<string | undefined> {
+		return await this.writeSessionEntry({ type: "custom_message", customType, content, display, details });
+	}
+
+	async appendLabel(targetId: string, label: string | undefined): Promise<string | undefined> {
+		return await this.writeSessionEntry({ type: "label", targetId, label });
+	}
+
+	async setSessionName(name: string): Promise<string | undefined> {
+		return await this.writeSessionEntry({ type: "session_info", name });
+	}
+
+	private async writeSessionEntry(write: PendingSessionWrite): Promise<string | undefined> {
 		this.assertNotShutDown();
 		return this.track("mutation", async () => {
 			try {
-				if (this.phase === "idle") {
-					await this.session.appendMessage(message);
-				} else {
-					this.pendingSessionWrites.push({ type: "message", message });
-				}
+				return await this.writeOrBufferSessionEntry(write);
 			} catch (error) {
 				throw normalizeHarnessError(error, "session");
 			}
