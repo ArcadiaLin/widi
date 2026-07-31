@@ -46,6 +46,7 @@ interface QueueFixture {
 
 function createQueue(
 	options: {
+		/** Passing it explicitly as undefined models a target that is gone. */
 		phase?: MessageDeliveryPhase;
 		/** Mirror the harness: an accepted prompt puts the target into a turn. */
 		promptStartsTurn?: boolean;
@@ -53,7 +54,7 @@ function createQueue(
 	} = {},
 ): QueueFixture {
 	const phases = new Map<string, MessageDeliveryPhase>([
-		["agent-target", options.phase ?? "idle"],
+		["agent-target", "phase" in options ? options.phase : "idle"],
 	]);
 	const delivered: Array<{ method: string; text: string }> = [];
 	const handler: MessageDeliveryPorts["deliver"] = async (request) => {
@@ -66,7 +67,7 @@ function createQueue(
 	};
 	const deliver = vi.fn(handler);
 	const queue = new MessageDeliveryQueue({
-		resolvePhase: (agentId) => phases.get(agentId) ?? "gone",
+		resolvePhase: (agentId) => phases.get(agentId),
 		deliver,
 	});
 	return { queue, phases, delivered, deliver };
@@ -231,15 +232,17 @@ describe("delivery decisions", () => {
 	});
 
 	// Compaction and branch summary hold the harness without running an agent
-	// loop: a steer accepted here would sit in a queue nothing drains.
+	// loop: a steer accepted here would sit in a queue nothing drains. A retry is
+	// inside a turn, so the loop that resumes reads both queues.
 	it("defers while the target cannot consume input yet", () => {
-		expect(decide("maintenance")).toEqual({ kind: "defer" });
-		expect(decide("maintenance", "interrupt")).toEqual({ kind: "defer" });
-		expect(decide("creating")).toEqual({ kind: "defer" });
+		expect(decide("compaction")).toEqual({ kind: "defer" });
+		expect(decide("compaction", "interrupt")).toEqual({ kind: "defer" });
+		expect(decide("branch_summary")).toEqual({ kind: "defer" });
+		expect(decide("retry")).toEqual({ kind: "deliver", method: "follow_up" });
 	});
 
 	it("rejects a gone target and a busy target the caller is waiting on", () => {
-		expect(decide("gone").kind).toBe("reject");
+		expect(decide(undefined).kind).toBe("reject");
 		expect(decide("turn", "next_turn", true).kind).toBe("reject");
 		expect(decide("idle", "next_turn", true)).toEqual({
 			kind: "deliver",
@@ -279,7 +282,7 @@ describe("MessageDeliveryQueue", () => {
 	});
 
 	it("holds a message through maintenance and delivers it on the next wake", async () => {
-		const fixture = createQueue({ phase: "maintenance" });
+		const fixture = createQueue({ phase: "compaction" });
 
 		const accepted = enqueue(fixture, { text: "queued" });
 		await Promise.resolve();
@@ -405,12 +408,12 @@ describe("MessageDeliveryQueue", () => {
 	});
 
 	it("rejects a gone target and fails everything still queued on cancel", async () => {
-		const gone = createQueue({ phase: "gone" });
+		const gone = createQueue({ phase: undefined });
 		await expect(enqueue(gone, { text: "lost" })).rejects.toBeInstanceOf(
 			MessageError,
 		);
 
-		const held = createQueue({ phase: "maintenance" });
+		const held = createQueue({ phase: "compaction" });
 		const pending = enqueue(held, { text: "pending" });
 		await Promise.resolve();
 		held.queue.cancel("agent-target", "agent disposed");

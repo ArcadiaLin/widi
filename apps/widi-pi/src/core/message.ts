@@ -14,7 +14,7 @@
  */
 
 import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
-import { AgentHarnessError } from "@widi/agent-core";
+import { AgentHarnessError, type AgentHarnessPhase } from "@widi/agent-core";
 import type { AgentId, PromptExpansion } from "./types.ts";
 
 /**
@@ -53,18 +53,16 @@ export interface MessageDraft {
 }
 
 /**
- * Delivery-relevant state of a target, which `AgentLifecycleStatus` alone
- * cannot express: its `running` covers both an agent loop that consumes queued
- * input and maintenance work (compaction, branch summary) that does not. The
- * harness tracks this precisely in its private `phase`, but exposes no getter,
- * so the orchestrator derives it from the operations it starts.
+ * Delivery-relevant state of a target: the live harness phase, or `undefined`
+ * when the target has no routable harness at all.
+ *
+ * There is no second phase vocabulary parallel to `AgentHarnessPhase`. An agent
+ * that is still being created, or already gone, is refused before anything of
+ * its reaches this queue; the only way a queued target loses its harness
+ * afterwards is disposal, which cancels its queue on the same tick. `undefined`
+ * covers the window between those two facts.
  */
-export type MessageDeliveryPhase =
-	| "idle"
-	| "turn"
-	| "maintenance"
-	| "creating"
-	| "gone";
+export type MessageDeliveryPhase = AgentHarnessPhase | undefined;
 
 export type MessageDeliveryMethod = "prompt" | "follow_up" | "steer";
 
@@ -265,7 +263,7 @@ export function decideMessageDelivery(input: {
 	readonly targetAgentId: AgentId;
 }): MessageDeliveryDecision {
 	const { phase, targetAgentId } = input;
-	if (phase === "gone") {
+	if (phase === undefined) {
 		return {
 			kind: "reject",
 			reason: `Agent ${targetAgentId} can no longer receive messages.`,
@@ -277,10 +275,13 @@ export function decideMessageDelivery(input: {
 			reason: `Agent ${targetAgentId} cannot accept a prompt while ${phase}.`,
 		};
 	}
-	// A spawning agent has no harness yet, and maintenance work does not run an
-	// agent loop: a steer or follow-up would be accepted into a queue nothing
-	// drains. Both wait for the next phase change instead.
-	if (phase === "creating" || phase === "maintenance") return { kind: "defer" };
+	// Maintenance work does not run an agent loop, so a steer or follow-up would
+	// be accepted into a queue nothing drains. It waits for the next phase change
+	// instead. A retry is inside a turn, and the loop that resumes will read both
+	// queues, so it is delivered exactly like one.
+	if (phase === "compaction" || phase === "branch_summary") {
+		return { kind: "defer" };
+	}
 	if (phase === "idle") return { kind: "deliver", method: "prompt" };
 	return {
 		kind: "deliver",

@@ -24,14 +24,21 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
 import {
+	type AbortResult,
 	AgentHarness,
 	AgentHarnessError,
+	type AgentHarnessEvent,
 	type AgentHarnessPhase,
+	type CompactResult,
 	type ExecutionEnv,
 	type JsonlSessionMetadata,
+	type NavigateTreeResult,
+	type PendingSessionWrite,
 	type Session,
 	type SessionTreeEntry,
+	shouldCompact,
 	type ThinkingLevel,
 } from "@widi/agent-core";
 import { formatError } from "../../utils/errors.ts";
@@ -42,6 +49,8 @@ import type {
 	AgentProfileSource,
 } from "../agent-profile.js";
 import {
+	type BackgroundJobDelivery,
+	type BackgroundJobDeliveryReceipt,
 	BackgroundJobRuntime,
 	backgroundJobResultHeaderPrefix,
 	formatInterruptedBackgroundJobResultText,
@@ -54,14 +63,26 @@ import {
 } from "../diagnostics.ts";
 import type { ExtensionCoreActions } from "../extension/index.ts";
 import { ExtensionLoader, type ExtensionRunner } from "../extension/index.ts";
-import type { ExtensionInputPresentation } from "../extension/presentation.ts";
+import {
+	cloneExtensionInputPresentation,
+	type ExtensionInputPresentation,
+	validateExtensionInputPresentation,
+} from "../extension/presentation.ts";
 import { ExtensionStatusRegistry } from "../extension/status-registry.ts";
 import { HumanInterruptRegistry } from "../human-interrupt.ts";
 import { HumanRequestBroker } from "../human-request.ts";
 import {
+	assertMessageBody,
+	backgroundResultMergeKey,
 	type MessageDeliveryMethod,
+	type MessageDeliveryPhase,
 	MessageDeliveryQueue,
 	type MessageDeliveryReceipt,
+	type MessageDeliveryRequest,
+	type MessageDraft,
+	type MessageSendOutcome,
+	renderMessageEnvelope,
+	transformMessage,
 } from "../message.ts";
 import { type ModelRegistry, parseThinkingLevel } from "../model-registry.js";
 import type { ResourceLoader } from "../resource-loader.js";
@@ -69,6 +90,14 @@ import type {
 	AgentSessionCandidate,
 	AgentSessionMetadata,
 	SessionManager,
+} from "../session-manager.ts";
+import {
+	COMMAND_EXPANSION_CUSTOM_TYPE,
+	type CommandExpansionEntryData,
+	EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE,
+	type ExtensionInputPresentationEntryData,
+	INPUT_TRANSFORM_CUSTOM_TYPE,
+	type InputTransformEntryData,
 } from "../session-manager.ts";
 import type { AgentTreeSpawnRecord } from "../session-tree.ts";
 import type { SettingManager } from "../setting-manager.js";
@@ -79,6 +108,8 @@ import type {
 	AgentIdleReason,
 	AgentMaintenanceKind,
 	CandidateItem,
+	PromptExpansion,
+	PromptOutcome,
 	RuntimeModel,
 } from "../types.ts";
 import { AuthRuntimeController } from "./auth-controller.ts";
@@ -267,11 +298,39 @@ interface ExtensionInputPresentationRecord {
  * An input presentation waiting to be paired with the user message it belongs
  * to. Pairing happens on the harness `session_write` event, which carries both
  * the persisted entry and its id.
+ *
+ * `method` is recorded because an abort clears the steer and follow-up queues
+ * wholesale: everything delivered that way is now never going to be written,
+ * while a `prompt` delivery has already committed its user message.
  */
 interface PendingExtensionInputPresentation
 	extends ExtensionInputPresentationRecord {
 	method?: MessageDeliveryMethod;
-	entryId?: string;
+}
+
+/**
+ * A message accepted into the target's delivery queue, or one an extension
+ * ended before it got there.
+ *
+ * There is no third case for "written but undelivered": the provisional entry
+ * pair and its retraction point are gone, because the accounting entries are
+ * now written through the harness and ordered on its own write tail.
+ */
+type AcceptedMessage =
+	| { readonly kind: "accepted"; readonly receipt: MessageDeliveryReceipt }
+	| {
+			readonly kind: "blocked";
+			readonly inputId: string;
+			readonly reason?: string;
+			readonly blockedBy: string;
+	  };
+
+interface RouteMessageOptions {
+	/** The caller awaits this run's assistant message, so it must be a prompt. */
+	readonly requiresIdle: boolean;
+	/** The enqueuing caller awaits `receipt.completed` itself. */
+	readonly awaited: boolean;
+	readonly presentation?: ExtensionInputPresentationRecord;
 }
 
 interface ResolvedAgentProfile {
@@ -401,7 +460,21 @@ export class AgentOrchestrator {
 	private readonly _agentIdleReasons = new Map<AgentId, AgentIdleReason>();
 	private readonly _publishedAgentIdles = new Set<AgentId>();
 
+	/**
+	 * The activity last published for each agent.
+	 *
+	 * Not a mirror of the harness - every reader takes `getPhase()` - but
+	 * `agent_status_changed` is edge-triggered, and an edge cannot be detected
+	 * from a value alone. This is the previous value that makes the comparison
+	 * possible, and the source of the event's `previousActivity`.
+	 */
+	private readonly _publishedAgentActivities = new Map<
+		AgentId,
+		AgentActivitySnapshot
+	>();
+
 	private _nextInputId = 1;
+	private _nextPresentationId = 1;
 
 	// -- Extension data plane ------------------------------------------------
 
@@ -1253,6 +1326,10 @@ export class AgentOrchestrator {
 		// A resumed session legitimately reuses an id this runtime buried earlier.
 		this._tombstones.delete(agentId);
 		this._live.set(agentId, liveAgent);
+		// The first idle this agent reaches has no turn behind it. Every later one
+		// is stamped by whoever ended the work: a prompt run, an abort, or the
+		// release of a maintenance operation.
+		this._agentIdleReasons.set(agentId, "ready");
 		if (build.treeRecord) {
 			this._spawnParent.set(agentId, build.treeRecord.spawnedBy);
 		}
@@ -1626,6 +1703,7 @@ export class AgentOrchestrator {
 		this._agentPromptRuns.delete(agentId);
 		this._agentRunSignals.delete(agentId);
 		this._autoCompactingAgents.delete(agentId);
+		this._publishedAgentActivities.delete(agentId);
 		this._pendingExtensionInputPresentations.delete(agentId);
 		this._extensionObserverDispatchDepth.delete(agentId);
 
@@ -1738,6 +1816,1182 @@ export class AgentOrchestrator {
 			);
 		}
 	}
+
+	// -----------------------------------------------------------------------
+	// Input and message dispatch
+	// -----------------------------------------------------------------------
+
+	/**
+	 * The unified entry point for human, agent, background and system input.
+	 *
+	 * This overload is for the trusted shell (TUI, RPC), which may construct a
+	 * `human` or `system` source. Agent identity goes through
+	 * `sendMessageFromAgent`, which synthesizes the source itself.
+	 */
+	async sendMessage(draft: MessageDraft): Promise<MessageSendOutcome> {
+		const accepted = await this._routeMessage(draft, {
+			requiresIdle: false,
+			awaited: false,
+		});
+		return accepted.kind === "blocked" ? accepted : { kind: "accepted" };
+	}
+
+	/**
+	 * The human text-input entry point: the same pipeline, waiting for the
+	 * assistant message the calling surface is going to render.
+	 */
+	async promptAgent(
+		agentId: AgentId,
+		text: string,
+		options?: {
+			readonly images?: readonly ImageContent[];
+			readonly expansion?: PromptExpansion;
+			readonly presentation?: ExtensionInputPresentationRecord;
+		},
+	): Promise<PromptOutcome> {
+		const accepted = await this._routeMessage(
+			{
+				source: {
+					kind: "human",
+					...(options?.expansion === undefined
+						? undefined
+						: { expansion: options.expansion }),
+				},
+				targetAgentId: agentId,
+				body: text,
+				...(options?.images === undefined
+					? undefined
+					: { images: options.images }),
+				mode: "next_turn",
+			},
+			{
+				requiresIdle: true,
+				awaited: true,
+				...(options?.presentation === undefined
+					? undefined
+					: { presentation: options.presentation }),
+			},
+		);
+		if (accepted.kind === "blocked") return accepted;
+		const completed = accepted.receipt.completed;
+		if (!completed) {
+			throw new Error(
+				`Prompt for agent ${agentId} was delivered as ${accepted.receipt.method} and produced no assistant message.`,
+			);
+		}
+		return { kind: "completed", message: await completed };
+	}
+
+	/**
+	 * Run one message through interception, session accounting, and the target's
+	 * delivery queue.
+	 *
+	 * All of it stays in this class because every step's dependency is here:
+	 * interception needs the target's runner, accounting needs its harness, and
+	 * the input events need the event bus. Cutting a message domain out of it
+	 * would make each message cross the boundary four times.
+	 *
+	 * `requiresIdle` expresses only that the caller must receive this run's
+	 * assistant result, so a busy target is refused up front rather than
+	 * silently becoming a follow-up whose reply nobody is waiting for.
+	 */
+	private async _routeMessage(
+		draft: MessageDraft,
+		options: RouteMessageOptions,
+	): Promise<AcceptedMessage> {
+		const agentId = draft.targetAgentId;
+		assertMessageBody(draft.body);
+		// Gate before interception and any session write: a prompt the harness
+		// would reject must not emit input events or leave accounting entries with
+		// no user message to pair with.
+		const target = this._resolveDeliveryTarget(agentId);
+		if (
+			options.requiresIdle &&
+			(target.phase !== "idle" || this._agentPromptRuns.has(agentId))
+		) {
+			throw new OrchestratorError({
+				severity: "error",
+				code: "orchestrator.agent_busy",
+				message: `Agent ${agentId} cannot accept a prompt while ${target.phase}.`,
+				agentId,
+			});
+		}
+
+		const outcome = await transformMessage(draft, {
+			intercept: async (event) =>
+				await this._interceptExtensionInput(agentId, draft.source, event),
+		});
+
+		if (outcome.kind === "block") {
+			const inputId = this._createInputId();
+			await this._emit({
+				type: "input_blocked",
+				agentId,
+				inputId,
+				originalText: draft.body,
+				...(outcome.reason === undefined
+					? undefined
+					: { reason: outcome.reason }),
+				blockedBy: outcome.blockedBy,
+				createdAt: now(),
+			});
+			return {
+				kind: "blocked",
+				inputId,
+				...(outcome.reason === undefined
+					? undefined
+					: { reason: outcome.reason }),
+				blockedBy: outcome.blockedBy,
+			};
+		}
+
+		let inputId: string | undefined;
+		if (outcome.kind === "transform") {
+			inputId = this._createInputId();
+			await this._emit({
+				type: "input_transformed",
+				agentId,
+				inputId,
+				originalText: draft.body,
+				text: outcome.text,
+				transformedBy: outcome.transformedBy,
+				createdAt: now(),
+			});
+		}
+
+		await this._writeMessageAccounting(target, {
+			inputId,
+			originalText: draft.body,
+			...(draft.source.kind === "human" && draft.source.expansion !== undefined
+				? { expansion: draft.source.expansion }
+				: undefined),
+			...(outcome.kind === "transform"
+				? {
+						transform: {
+							text: outcome.text,
+							transformedBy: outcome.transformedBy,
+						},
+					}
+				: undefined),
+		});
+
+		// A job result is the one source with no caller left to hear about a
+		// failure: its tool call already returned, and the model is waiting for
+		// exactly one t1 that nobody else will resend. It is also the only source
+		// whose messages merge, since each carries its own job header already.
+		const jobSource =
+			draft.source.kind === "background_job" ? draft.source : undefined;
+		const pending: PendingExtensionInputPresentation | undefined =
+			options.presentation
+				? {
+						extensionId: options.presentation.extensionId,
+						presentation: validateExtensionInputPresentation(
+							options.presentation.presentation,
+						),
+					}
+				: undefined;
+		const receipt = await this._messages.enqueue({
+			targetAgentId: agentId,
+			text: renderMessageEnvelope(draft.source, outcome.text),
+			...(outcome.images === undefined
+				? undefined
+				: { images: outcome.images }),
+			mode: draft.mode,
+			requiresIdle: options.requiresIdle,
+			humanInterrupt: draft.source.kind === "human",
+			...(jobSource === undefined
+				? undefined
+				: {
+						mergeKey: backgroundResultMergeKey(draft.mode),
+						onDeferredFailure: (error: unknown) => {
+							void this._reportDeferredDeliveryFailure(
+								agentId,
+								jobSource.jobId,
+								error,
+							);
+						},
+					}),
+			awaited: options.awaited,
+			retryOnFailure: jobSource !== undefined,
+			...(pending === undefined
+				? undefined
+				: {
+						onDeliveryStart: (method: MessageDeliveryMethod) => {
+							this._beginExtensionInputPresentationDelivery(
+								agentId,
+								pending,
+								method,
+							);
+						},
+						onDeliveryFailure: () => {
+							this._discardPendingExtensionInputPresentation(agentId, pending);
+						},
+					}),
+		});
+		return { kind: "accepted", receipt };
+	}
+
+	/**
+	 * Write the entries that record what the human typed before the model saw it:
+	 * the pre-expansion input of an inline command, and an extension's rewrite.
+	 *
+	 * **Session write.** Both go through `harness.appendCustomEntry`, which is the
+	 * only supported way onto a live branch. They belong there because they are
+	 * the durable half of a dual record: the user message carries the text the
+	 * model actually read, and only these entries can still answer what was typed
+	 * after a resume, when the surface that expanded it is long gone. Blocked
+	 * input writes nothing - it never reached the model and left no state to
+	 * explain.
+	 *
+	 * The harness's own write tail orders them ahead of the user message when the
+	 * target is idle, which is the ordinary prompt case. When the target is in a
+	 * turn the write buffers to the next save point and therefore lands after the
+	 * steered message it describes; the entries name their `inputId` rather than
+	 * relying on adjacency, so that is a display-order wrinkle, not a lost pair.
+	 * There is no retraction path: a delivery that fails afterwards leaves the
+	 * entry, and reaching back into a branch to remove it is exactly what the
+	 * harness write surface exists to prevent.
+	 */
+	private async _writeMessageAccounting(
+		target: DeliveryTarget,
+		accounting: {
+			readonly inputId: string | undefined;
+			readonly originalText: string;
+			readonly expansion?: PromptExpansion;
+			readonly transform?: {
+				readonly text: string;
+				readonly transformedBy: readonly string[];
+			};
+		},
+	): Promise<void> {
+		const { expansion, transform } = accounting;
+		if (!expansion && !transform) return;
+		const inputId = accounting.inputId ?? this._createInputId();
+		if (expansion) {
+			await target.harness.appendCustomEntry(COMMAND_EXPANSION_CUSTOM_TYPE, {
+				inputId,
+				originalText: expansion.originalText,
+				expansions: expansion.items,
+			} satisfies CommandExpansionEntryData);
+		}
+		if (transform) {
+			await target.harness.appendCustomEntry(INPUT_TRANSFORM_CUSTOM_TYPE, {
+				inputId,
+				originalText: accounting.originalText,
+				text: transform.text,
+				transformedBy: transform.transformedBy,
+			} satisfies InputTransformEntryData);
+		}
+	}
+
+	/**
+	 * The first availability gate: the harness, its generation, and the phase read
+	 * on the spot.
+	 *
+	 * The phase is read rather than projected because the delivery method is
+	 * chosen from it and harness errors do not cover every phase - calling
+	 * `followUp` on an idle target yields only a retryable `invalid_state`, which
+	 * would defer the message forever.
+	 */
+	private _resolveDeliveryTarget(agentId: AgentId): DeliveryTarget {
+		const liveAgent = this._requireLiveAgent(agentId);
+		return {
+			agentId,
+			generation: liveAgent.generation,
+			harness: liveAgent.harness,
+			phase: liveAgent.harness.getPhase(),
+		};
+	}
+
+	/**
+	 * The delivery queue's `resolvePhase` port, re-read immediately before every
+	 * attempt. `undefined` means the agent is no longer routable.
+	 */
+	private _resolveDeliveryPhase(agentId: AgentId): MessageDeliveryPhase {
+		return this._live.get(agentId)?.harness.getPhase();
+	}
+
+	/**
+	 * The delivery queue's `deliver` port: called back when this target's turn to
+	 * receive a batch comes up.
+	 *
+	 * The method was already chosen from the phase the queue re-read; the race
+	 * between reading it and calling is what the typed harness errors arbitrate,
+	 * and the queue retries `busy` and `invalid_state` on the next phase change.
+	 */
+	private async _deliverQueuedMessage(
+		request: MessageDeliveryRequest,
+	): Promise<MessageDeliveryReceipt> {
+		const { agentId } = request;
+		const liveAgent = this._live.get(agentId);
+		if (!liveAgent) {
+			// Terminal for the queue, which is the point: no phase change brings a
+			// routing entry back, so a message with `retryOnFailure` must not sit
+			// here waiting for one. Practically unreachable - the dispose cutover
+			// cancels this queue on the same tick - but a silent requeue loop is a
+			// worse failure than an explicit one.
+			throw new AgentHarnessError(
+				"shutdown",
+				`Agent ${agentId} is no longer routable.`,
+			);
+		}
+		const { harness } = liveAgent;
+		const options = request.images
+			? { images: [...request.images] }
+			: undefined;
+		if (request.method === "prompt") {
+			return await this._startPrompt(
+				{
+					agentId,
+					generation: liveAgent.generation,
+					harness,
+					phase: harness.getPhase(),
+				},
+				request,
+			);
+		}
+		if (request.method === "follow_up") {
+			await harness.followUp(request.text, options);
+			return { method: "follow_up" };
+		}
+		// A human steer is only "read" once the harness reports an empty steering
+		// queue, so the interrupt is registered around the call that hands it over.
+		const clearRevision = request.humanInterrupt
+			? this._humanInterrupts.captureClearRevision(agentId)
+			: undefined;
+		await harness.steer(request.text, options);
+		if (clearRevision !== undefined) {
+			this._humanInterrupts.notifyIfUncleared(agentId, clearRevision);
+		}
+		return { method: "steer" };
+	}
+
+	/**
+	 * Start a fresh prompt, which is the only delivery that must produce an
+	 * assistant result.
+	 *
+	 * Acceptance waits for the harness's own `agent_start`, racing the run
+	 * promise's rejection: everything the harness does before that event is
+	 * asynchronous and can fail, and a failure there means the user message was
+	 * never persisted. Resolving early would let the queue drop a background job
+	 * t1 the model is waiting for. The phase cannot stand in for the event - it
+	 * flips to `turn` on the first line of `prompt()`.
+	 */
+	private async _startPrompt(
+		target: DeliveryTarget,
+		request: MessageDeliveryRequest,
+	): Promise<MessageDeliveryReceipt> {
+		const { agentId, harness } = target;
+		if (target.phase !== "idle" || this._agentPromptRuns.has(agentId)) {
+			throw new AgentHarnessError(
+				"busy",
+				`Agent ${agentId} cannot accept a prompt while ${target.phase}.`,
+			);
+		}
+
+		// Registered before the call, so a fast `agent_start` cannot be missed.
+		const started = this._awaitAgentRunStart(agentId);
+		const promptRun: AgentPromptRun = {};
+		this._agentPromptRuns.set(agentId, promptRun);
+		const run = harness.prompt(request.text, {
+			...(request.images === undefined
+				? undefined
+				: { images: [...request.images] }),
+		});
+		// A run that settles without ever starting a loop still resolves here; the
+		// alternative is waiting forever for a signal that is not coming.
+		const start = await Promise.race([
+			started.reached,
+			run.then(
+				() => ({ kind: "started" }) as const,
+				(error: unknown) => ({ kind: "rejected", error }) as const,
+			),
+		]);
+		started.cancel();
+		if (start.kind === "rejected") {
+			if (this._agentPromptRuns.get(agentId) === promptRun) {
+				this._agentPromptRuns.delete(agentId);
+				// Nothing else will publish this edge: the run that would have has
+				// already failed. `_settleAgentIdle` re-reads the live phase, so a
+				// `busy` rejection - another operation won the race - simply finds the
+				// agent still working and re-arms.
+				await this._settleAgentIdle(agentId);
+			}
+			throw start.error;
+		}
+
+		void this._finishPrompt(agentId, run, promptRun, {
+			reportFailure: !request.awaited,
+		}).catch(() => {});
+		return { method: "prompt", completed: run };
+	}
+
+	/**
+	 * Close out a prompt run and publish the idle edge it produced.
+	 *
+	 * Staleness is decided by object identity: disposal or a resumed session may
+	 * have replaced this run while its promise was settling, and a stale
+	 * completion must not stamp the successor's idle reason or publish its edge.
+	 */
+	private async _finishPrompt(
+		agentId: AgentId,
+		run: Promise<AssistantMessage>,
+		promptRun: AgentPromptRun,
+		options: { readonly reportFailure: boolean },
+	): Promise<void> {
+		try {
+			const message = await run;
+			if (message.stopReason === "aborted") promptRun.idleReason = "aborted";
+		} catch (error) {
+			if (options.reportFailure) {
+				await this._recordAgentLifecycleFailure(
+					agentId,
+					"orchestrator.agent_message_prompt_failed",
+					`Prompt for agent ${agentId} failed after delivery: ${formatError(error)}`,
+				);
+			}
+		} finally {
+			if (this._agentPromptRuns.get(agentId) === promptRun) {
+				this._agentPromptRuns.delete(agentId);
+				this._agentIdleReasons.set(agentId, promptRun.idleReason ?? "settled");
+				this._messages.wake(agentId);
+				// Terminal harness events have already flipped the phase to idle;
+				// clearing this run is the last fact the waiters and the observable
+				// edge were missing.
+				await this._settleAgentIdle(agentId);
+			}
+		}
+	}
+
+	/**
+	 * A pending observation of the target's next agent-loop start.
+	 */
+	private _awaitAgentRunStart(agentId: AgentId): {
+		readonly reached: Promise<{ readonly kind: "started" }>;
+		readonly cancel: () => void;
+	} {
+		const waiters = this._agentRunStartWaiters.get(agentId) ?? new Set();
+		this._agentRunStartWaiters.set(agentId, waiters);
+		let waiter!: () => void;
+		const reached = new Promise<{ readonly kind: "started" }>((resolve) => {
+			waiter = () => resolve({ kind: "started" });
+			waiters.add(waiter);
+		});
+		return {
+			reached,
+			cancel: () => {
+				waiters.delete(waiter);
+				if (waiters.size === 0) this._agentRunStartWaiters.delete(agentId);
+			},
+		};
+	}
+
+	private _resolveAgentRunStartWaiters(agentId: AgentId): void {
+		const waiters = this._agentRunStartWaiters.get(agentId);
+		if (!waiters) return;
+		this._agentRunStartWaiters.delete(agentId);
+		for (const waiter of waiters) waiter();
+	}
+
+	/**
+	 * An unexpected delivery failure that will be retried at the target's next
+	 * phase change. Reported per attempt, so a target that never accepts is
+	 * visible instead of silently accumulating messages.
+	 */
+	private async _reportDeferredDeliveryFailure(
+		agentId: AgentId,
+		jobId: string,
+		error: unknown,
+	): Promise<void> {
+		await this._publishDiagnostic({
+			severity: "warning",
+			code: "orchestrator.background_job_delivery_failed",
+			message: `Background job ${jobId} result delivery to agent ${agentId} failed, will retry at the next transition: ${formatError(error)}`,
+			agentId,
+		});
+	}
+
+	/**
+	 * The background runtime's t1 delivery port. It hands the text to the ordinary
+	 * message entry point and neither reads the job record nor decides its
+	 * lifecycle.
+	 */
+	private async _deliverBackgroundResult(
+		delivery: BackgroundJobDelivery,
+	): Promise<BackgroundJobDeliveryReceipt> {
+		const agentId = delivery.ownerAgentId;
+		try {
+			await this.sendMessage({
+				source: {
+					kind: "background_job",
+					ownerAgentId: agentId,
+					jobId: delivery.jobId,
+				},
+				targetAgentId: agentId,
+				body: delivery.body,
+				mode: "interrupt",
+			});
+		} catch (error) {
+			// Retryable failures keep the result queued, so reaching here means the
+			// owner can never take it: the model will not see this job's outcome.
+			await this._publishDiagnostic({
+				severity: "warning",
+				code: "orchestrator.background_job_dropped",
+				message: `Dropping the result of background job ${delivery.jobId} for agent ${agentId}: ${formatError(error)}`,
+				agentId,
+			});
+		}
+		return {};
+	}
+
+	// -----------------------------------------------------------------------
+	// Low-level harness input
+	//
+	// Entry points for a caller that has already decided how the text must land.
+	// They run the AgentId gate, the phase gate and the human-interrupt
+	// coordination, but not `sendMessage`'s interception or session accounting.
+	// -----------------------------------------------------------------------
+
+	async steerAgent(
+		agentId: AgentId,
+		text: string,
+		options?: { readonly images?: readonly ImageContent[] },
+	): Promise<void> {
+		const harness = this._requireHarnessOutsideMaintenance(agentId, "steer");
+		await harness.steer(text, toHarnessMessageOptions(options));
+	}
+
+	async followUpAgent(
+		agentId: AgentId,
+		text: string,
+		options?: { readonly images?: readonly ImageContent[] },
+	): Promise<void> {
+		const harness = this._requireHarnessOutsideMaintenance(
+			agentId,
+			"queue a follow-up",
+		);
+		await harness.followUp(text, toHarnessMessageOptions(options));
+	}
+
+	/**
+	 * Promote everything queued as a follow-up into steering, so it is read at the
+	 * next turn boundary instead of only where the run would have stopped.
+	 *
+	 * This is the "I cannot wait for this" path of a message the surface already
+	 * accepted: the text is in the harness, so re-sending it would deliver it
+	 * twice and only the harness can take it back. It is kept rather than exposed
+	 * as a bare `promoteFollowUpsToSteer` because it adds the human-interrupt
+	 * coordination. Returns how many messages moved.
+	 */
+	async steerQueuedFollowUps(agentId: AgentId): Promise<number> {
+		const harness = this._requireHarnessOutsideMaintenance(
+			agentId,
+			"steer queued follow-ups",
+		);
+		const clearRevision = this._humanInterrupts.captureClearRevision(agentId);
+		const promoted = await harness.promoteFollowUpsToSteer();
+		if (promoted.length > 0) {
+			this._humanInterrupts.notifyIfUncleared(agentId, clearRevision);
+		}
+		return promoted.length;
+	}
+
+	/**
+	 * End the current harness operation and settle what its cleared queues leave
+	 * behind.
+	 *
+	 * The result comes straight from the harness; there is no aborted/running
+	 * mirror to update. It can now also cancel compaction and branch summary and
+	 * waits for them to land - but those two phases are refused by
+	 * `_requireHarnessOutsideMaintenance`, so a user-initiated abort never reaches
+	 * that capability. Disposal is what uses it.
+	 */
+	async abortAgent(agentId: AgentId): Promise<AbortResult> {
+		const harness = this._requireHarnessOutsideMaintenance(agentId, "abort");
+		const promptRun = this._agentPromptRuns.get(agentId);
+		if (promptRun) promptRun.idleReason = "aborted";
+		return await harness.abort();
+	}
+
+	// -----------------------------------------------------------------------
+	// Activity and the idle edge
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Whether the core delivery queue or either harness queue still holds text
+	 * nobody has read.
+	 */
+	agentHasPendingMessages(agentId: AgentId): boolean {
+		if (this._messages.hasPending(agentId)) return true;
+		const liveAgent = this._live.get(agentId);
+		return liveAgent ? queuedMessageCount(liveAgent.harness) > 0 : false;
+	}
+
+	/**
+	 * Whether the agent can currently be treated as idle.
+	 *
+	 * The judgement is a join across four sources: the phase is idle, both harness
+	 * queues are empty, `_messages` has nothing pending, and no prompt run started
+	 * by this class is still in flight. The last one cannot be dropped - the
+	 * harness sets the phase to idle inside `agent_end` and only then emits
+	 * `settled`, while the `prompt()` promise still has to complete a second flush
+	 * in its `finally`, leaving a short window where the phase says idle and the
+	 * run has not been accounted for.
+	 *
+	 * It is still not a synonym for `harness.waitForIdle()`, for one remaining
+	 * reason: that call now covers compaction and tree navigation, but looks at no
+	 * queue at all, so a harness with a steer waiting in it reads as idle.
+	 *
+	 * This join spans `_live`, the harness and `_messages`, which is the direct
+	 * reason the message domain cannot be a class of its own.
+	 */
+	isAgentIdle(agentId: AgentId): boolean {
+		return this._resolveAgentIdleState(agentId).kind === "idle";
+	}
+
+	/**
+	 * Wait for that combined condition to hold.
+	 *
+	 * It rejects rather than hanging when the agent can never reach it: disposal
+	 * and a generation change both fail the wait.
+	 */
+	async waitForAgentIdle(
+		agentId: AgentId,
+		options: { readonly signal?: AbortSignal } = {},
+	): Promise<void> {
+		const settled = this._resolveAgentIdleState(agentId);
+		if (settled.kind === "idle") return;
+		if (settled.kind === "gone") throw new Error(settled.message);
+		options.signal?.throwIfAborted();
+
+		const waiters = this._agentIdleWaiters.get(agentId) ?? new Set();
+		this._agentIdleWaiters.set(agentId, waiters);
+		let waiter!: AgentIdleWaiter;
+		let onAbort: (() => void) | undefined;
+		try {
+			return await new Promise<void>((resolve, reject) => {
+				waiter = { resolve, reject };
+				waiters.add(waiter);
+				const signal = options.signal;
+				if (!signal) return;
+				// Detached in the finally below: the caller's signal usually outlives
+				// one wait (a run signal covers a whole turn), so a listener left
+				// behind would pin this promise's closure for the signal's lifetime.
+				onAbort = () => reject(signal.reason);
+				signal.addEventListener("abort", onAbort, { once: true });
+			});
+		} finally {
+			if (onAbort) options.signal?.removeEventListener("abort", onAbort);
+			waiters.delete(waiter);
+			if (waiters.size === 0) this._agentIdleWaiters.delete(agentId);
+		}
+	}
+
+	/**
+	 * Idle now, never going to be, or simply still busy. A creating agent counts
+	 * as busy: it is on its way to a first idle.
+	 */
+	private _resolveAgentIdleState(agentId: AgentId): AgentIdleState {
+		const lookup = this._resolveAgent(agentId);
+		if (lookup.kind === "creating") return { kind: "busy" };
+		if (lookup.kind !== "live") {
+			return { kind: "gone", message: `Agent ${agentId} is gone.` };
+		}
+		const { harness } = lookup.liveAgent;
+		if (harness.getPhase() !== "idle") return { kind: "busy" };
+		if (this._agentPromptRuns.has(agentId)) return { kind: "busy" };
+		if (queuedMessageCount(harness) > 0) return { kind: "busy" };
+		return this._messages.hasPending(agentId)
+			? { kind: "busy" }
+			: { kind: "idle" };
+	}
+
+	/**
+	 * Settle everything waiting on this agent's idle: the promise waiters first,
+	 * then the event.
+	 *
+	 * Both read the one judgement in `_resolveAgentIdleState`, so a consumer that
+	 * awaited `waitForAgentIdle` and one subscribed to `agent_idle` can never
+	 * disagree about whether the agent stopped. Waiters go first because they are
+	 * resolved synchronously and a listener may take as long as it likes.
+	 *
+	 * `liveJobCount` is a narrow query into the background runtime, not a term in
+	 * the judgement: an unsettled job never makes its owner busy, it only tells a
+	 * consumer that this idle is an agent waiting rather than an agent done.
+	 */
+	private async _settleAgentIdle(agentId: AgentId): Promise<void> {
+		this._settleAgentIdleWaiters(agentId);
+		const state = this._resolveAgentIdleState(agentId);
+		if (state.kind !== "idle") {
+			// Busy or gone re-arms the edge. A gone agent never publishes: its
+			// disposal is a fact of its own, and an agent that stopped because it was
+			// torn down did not become idle in any useful sense.
+			this._publishedAgentIdles.delete(agentId);
+			return;
+		}
+		if (this._publishedAgentIdles.has(agentId)) return;
+		this._publishedAgentIdles.add(agentId);
+		await this._emit({
+			type: "agent_idle",
+			agentId,
+			reason: this._agentIdleReasons.get(agentId) ?? "settled",
+			liveJobCount: this._backgroundJobs.liveJobCount(agentId),
+			idleAt: now(),
+		});
+	}
+
+	private _settleAgentIdleWaiters(agentId: AgentId): void {
+		const waiters = this._agentIdleWaiters.get(agentId);
+		if (!waiters || waiters.size === 0) return;
+		const state = this._resolveAgentIdleState(agentId);
+		if (state.kind === "busy") return;
+		// The waiter's own finally removes it from the set; snapshot first so
+		// settling one cannot skip the next.
+		for (const waiter of [...waiters]) {
+			if (state.kind === "idle") waiter.resolve();
+			else waiter.reject(new Error(state.message));
+		}
+	}
+
+	private _rejectAgentIdleWaiters(agentId: AgentId, message: string): void {
+		const waiters = this._agentIdleWaiters.get(agentId);
+		if (!waiters) return;
+		for (const waiter of [...waiters]) waiter.reject(new Error(message));
+		this._agentIdleWaiters.delete(agentId);
+	}
+
+	/**
+	 * Harness-event-driven activity edge detection: publish
+	 * `agent_status_changed` and `agent_idle` when they have actually moved, and
+	 * wake the delivery queue.
+	 *
+	 * The activity value itself comes from the harness (phase plus queue counts).
+	 * The event only supplies the timing - that an edge just happened - and the
+	 * causality an `AgentIdleReason` needs, which no phase carries: an abort, a
+	 * `turn_end` stop reason, a maintenance release.
+	 */
+	private async _observeHarnessActivity(
+		agentId: AgentId,
+		generation: number,
+		event: AgentHarnessEvent,
+	): Promise<void> {
+		const liveAgent = this._live.get(agentId);
+		if (!liveAgent || liveAgent.generation !== generation) return;
+
+		if (event.type === "agent_start") {
+			// The loop is running, so the prompt's user message is committed to this
+			// run and a pending delivery may be reported as accepted. Resolved before
+			// anything is awaited, so acceptance never waits on observers.
+			this._resolveAgentRunStartWaiters(agentId);
+		}
+		// A turn may be followed by tool execution and another turn, so it is not
+		// an idle boundary. It can still say that the eventual idle was an abort.
+		if (
+			event.type === "turn_end" &&
+			event.message.role === "assistant" &&
+			event.message.stopReason === "aborted"
+		) {
+			const promptRun = this._agentPromptRuns.get(agentId);
+			if (promptRun) promptRun.idleReason = "aborted";
+		}
+		if (event.type === "abort") {
+			const promptRun = this._agentPromptRuns.get(agentId);
+			if (promptRun) promptRun.idleReason = "aborted";
+			else this._agentIdleReasons.set(agentId, "aborted");
+			// Everything the abort cleared is text the harness will never write.
+			this._discardQueuedExtensionInputPresentations(agentId);
+		}
+		// The loop reports its queues after every drain, so an empty steering queue
+		// is the only honest evidence that the human's interrupt was read - an
+		// abort clears the queue through the same event.
+		if (event.type === "queue_update" && event.steer.length === 0) {
+			this._humanInterrupts.clear(agentId);
+		}
+
+		await this._publishAgentActivityEdge(agentId, liveAgent.harness.getPhase());
+		// Every harness event can change the delivery phase, so re-examine the
+		// queue: this is what resumes a message deferred during maintenance or
+		// retried after a busy race.
+		this._messages.wake(agentId);
+		await this._settleAgentIdle(agentId);
+
+		// Auto-compaction rides the settled fact: the harness is idle and its
+		// pending session writes are flushed, so the branch and the last assistant
+		// usage are durable. A settled with queued next turns is skipped - the next
+		// run starts immediately and compaction would race its own idle check.
+		if (event.type === "settled" && event.nextTurnCount === 0) {
+			// The measurement walks the branch, so it runs once here and its result
+			// is handed to the trigger rather than read a second time.
+			const contextTokens = await this._context.refresh(agentId);
+			await this._maybeAutoCompact(agentId, contextTokens);
+		}
+	}
+
+	/**
+	 * Publish `agent_status_changed` when the phase-derived activity differs from
+	 * the last one published for this agent.
+	 */
+	private async _publishAgentActivityEdge(
+		agentId: AgentId,
+		phase: AgentHarnessPhase,
+	): Promise<void> {
+		const activity = toActivitySnapshot(phase);
+		const previous = this._publishedAgentActivities.get(agentId);
+		if (
+			previous?.activity === activity.activity &&
+			previous.maintenance === activity.maintenance
+		) {
+			return;
+		}
+		this._publishedAgentActivities.set(agentId, activity);
+		await this._emit({
+			type: "agent_status_changed",
+			agentId,
+			...(previous === undefined
+				? undefined
+				: { previousActivity: previous.activity }),
+			activity: activity.activity,
+			...(activity.maintenance === undefined
+				? undefined
+				: { maintenance: activity.maintenance }),
+			changedAt: now(),
+		});
+	}
+
+	// -----------------------------------------------------------------------
+	// Extension input presentations
+	//
+	// A presentation is delivered before the message it describes exists as a
+	// session entry, so it waits in a short per-target queue and is paired on the
+	// harness `session_write` event, which carries the persisted entry and its id
+	// together.
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Wrap a direct steer or follow-up that carries a presentation, so a failed
+	 * hand-off does not leave one waiting for a message that never lands.
+	 */
+	private async _withExtensionInputPresentation(
+		agentId: AgentId,
+		extensionId: string,
+		method: "steer" | "follow_up",
+		presentation: ExtensionInputPresentation | undefined,
+		deliver: () => Promise<void>,
+	): Promise<void> {
+		if (!presentation) {
+			await deliver();
+			return;
+		}
+		const pending: PendingExtensionInputPresentation = {
+			extensionId,
+			presentation: validateExtensionInputPresentation(presentation),
+		};
+		this._beginExtensionInputPresentationDelivery(agentId, pending, method);
+		try {
+			await deliver();
+		} catch (error) {
+			this._discardPendingExtensionInputPresentation(agentId, pending);
+			throw error;
+		}
+	}
+
+	private _beginExtensionInputPresentationDelivery(
+		agentId: AgentId,
+		pending: PendingExtensionInputPresentation,
+		method: MessageDeliveryMethod,
+	): void {
+		// A requeued delivery re-enters here; move it to the tail rather than
+		// leaving a duplicate that would pair with someone else's message.
+		this._discardPendingExtensionInputPresentation(agentId, pending);
+		pending.method = method;
+		const presentations =
+			this._pendingExtensionInputPresentations.get(agentId) ?? [];
+		presentations.push(pending);
+		this._pendingExtensionInputPresentations.set(agentId, presentations);
+	}
+
+	/**
+	 * Pop the presentation belonging to the user message that was just persisted.
+	 *
+	 * Delivery order is the pairing rule, which is what makes this exact: the
+	 * queue serializes per target, so the head of this list is the presentation of
+	 * the oldest delivery still awaiting a write. The old fallbacks - guessing by
+	 * expected text, and scanning the session backwards by object identity - are
+	 * both gone.
+	 */
+	private _takePendingExtensionInputPresentation(
+		agentId: AgentId,
+	): PendingExtensionInputPresentation | undefined {
+		const presentations = this._pendingExtensionInputPresentations.get(agentId);
+		if (!presentations || presentations.length === 0) return undefined;
+		const pending = presentations.shift();
+		if (presentations.length === 0) {
+			this._pendingExtensionInputPresentations.delete(agentId);
+		}
+		return pending;
+	}
+
+	private _discardPendingExtensionInputPresentation(
+		agentId: AgentId,
+		pending: PendingExtensionInputPresentation,
+	): void {
+		const presentations = this._pendingExtensionInputPresentations.get(agentId);
+		if (!presentations) return;
+		const index = presentations.indexOf(pending);
+		if (index >= 0) presentations.splice(index, 1);
+		if (presentations.length === 0) {
+			this._pendingExtensionInputPresentations.delete(agentId);
+		}
+	}
+
+	/**
+	 * Drop the presentations of everything an abort cleared.
+	 *
+	 * The steer and follow-up queues are emptied wholesale, so nothing delivered
+	 * that way will ever be written. A `prompt` delivery is left alone: its user
+	 * message was persisted at run start, and an abort does not take it back.
+	 */
+	private _discardQueuedExtensionInputPresentations(agentId: AgentId): void {
+		const presentations = this._pendingExtensionInputPresentations.get(agentId);
+		if (!presentations) return;
+		const remaining = presentations.filter(
+			(pending) => pending.method === "prompt",
+		);
+		if (remaining.length === 0) {
+			this._pendingExtensionInputPresentations.delete(agentId);
+		} else {
+			this._pendingExtensionInputPresentations.set(agentId, remaining);
+		}
+	}
+
+	/**
+	 * The messaging half of the harness `session_write` observer.
+	 *
+	 * Two facts arrive through this one event. A persisted user message pairs with
+	 * the presentation waiting for it, and the presentation entry written in
+	 * response comes back through here with the id its own event needs - which is
+	 * why nothing depends on `appendCustomEntry`'s return value: it is undefined
+	 * whenever the write was buffered behind a running turn, and that is the
+	 * common case.
+	 */
+	private async _observeSessionWrite(
+		agentId: AgentId,
+		entryId: string,
+		write: PendingSessionWrite,
+	): Promise<void> {
+		if (write.type === "message" && write.message.role === "user") {
+			const pending = this._takePendingExtensionInputPresentation(agentId);
+			if (pending) {
+				await this._commitExtensionInputPresentation(agentId, entryId, pending);
+			}
+			return;
+		}
+		if (
+			write.type !== "custom" ||
+			write.customType !== EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE
+		) {
+			return;
+		}
+		const data = write.data as ExtensionInputPresentationEntryData;
+		await this._emit(
+			{
+				type: "extension_input_presented",
+				presentationId: this._createPresentationId(),
+				entryId,
+				messageEntryId: data.messageEntryId,
+				agentId,
+				extensionId: data.extensionId,
+				presentation: cloneExtensionInputPresentation(data.presentation),
+				createdAt: now(),
+			},
+			{ observeExtensions: false },
+		);
+	}
+
+	/**
+	 * Persist the presentation that explains how to render a message an extension
+	 * just sent in.
+	 *
+	 * **Session write.** `harness.appendCustomEntry` is the only supported way
+	 * onto the branch, and the branch is where this belongs: it names its user
+	 * message by entry id, so a client hydrating the session later renders that
+	 * message exactly as the live client did. It never becomes model context.
+	 * The `extension_input_presented` event is published from the write's own
+	 * `session_write`, not from here.
+	 */
+	private async _commitExtensionInputPresentation(
+		agentId: AgentId,
+		messageEntryId: string,
+		pending: PendingExtensionInputPresentation,
+	): Promise<void> {
+		const liveAgent = this._live.get(agentId);
+		if (!liveAgent) return;
+		try {
+			await liveAgent.harness.appendCustomEntry(
+				EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE,
+				{
+					messageEntryId,
+					extensionId: pending.extensionId,
+					presentation: pending.presentation,
+				} satisfies ExtensionInputPresentationEntryData,
+			);
+		} catch (error) {
+			await this._recordAgentLifecycleFailure(
+				agentId,
+				"orchestrator.extension_input_presentation_failed",
+				`Failed to persist extension input presentation for agent ${agentId}: ${formatError(error)}`,
+			);
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// Maintenance
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Run compaction and invalidate the context-usage projection it obsoletes.
+	 *
+	 * Compaction replaces the branch the cached measurement described, and the
+	 * retained tail carries the pre-compaction assistant usage, so re-measuring
+	 * here would report the old number as if it were current. Drop it instead;
+	 * the next settled measures the new branch.
+	 */
+	async compactAgent(
+		agentId: AgentId,
+		customInstructions?: string,
+	): Promise<CompactResult> {
+		const result = await this._runMaintenanceOperation(
+			agentId,
+			async (harness) => await harness.compact(customInstructions),
+		);
+		await this._context.invalidate(agentId);
+		return result;
+	}
+
+	/** Run session tree navigation, invalidating the projection if the leaf moved. */
+	async navigateAgentTree(
+		agentId: AgentId,
+		targetId: string,
+		options?: {
+			readonly summarize?: boolean;
+			readonly customInstructions?: string;
+			readonly replaceInstructions?: boolean;
+			readonly label?: string;
+		},
+	): Promise<NavigateTreeResult> {
+		const previousLeafId =
+			await this.sessionManager.getAgentSessionLeafId(agentId);
+		try {
+			return await this._runMaintenanceOperation(
+				agentId,
+				async (harness) => await harness.navigateTree(targetId, options),
+			);
+		} finally {
+			// A post-move observer can fail after the harness changed the leaf.
+			// Comparing in `finally` keeps that path invalidating the old gauge,
+			// while cancellation and no-op navigation leave it intact.
+			if (
+				(await this.sessionManager.getAgentSessionLeafId(agentId)) !==
+				previousLeafId
+			) {
+				await this._context.invalidate(agentId);
+			}
+		}
+	}
+
+	/**
+	 * Run a harness operation that occupies the agent without driving an agent
+	 * loop (compaction, tree navigation).
+	 *
+	 * Concurrency is refused by the harness itself - both operations require an
+	 * idle phase - so there is no orchestrator-side maintenance table. What is
+	 * left here is publishing the activity edges, invalidating nothing, and
+	 * stamping the released idle as `maintenance`.
+	 *
+	 * The order is part of correctness: **start the harness operation first, then
+	 * await the edge publication**. `compact()` and `navigateTree()` flip the
+	 * phase on their first synchronous line, so publishing first would leave a
+	 * window where the event says maintenance and the phase still says idle - and
+	 * a steer landing in that window would pass the phase guard. When the
+	 * publication in between throws, the already-started promise must be caught
+	 * explicitly before rethrowing, or it becomes an unhandled rejection.
+	 */
+	private async _runMaintenanceOperation<T>(
+		agentId: AgentId,
+		operation: (harness: WidiAgentHarness) => Promise<T>,
+	): Promise<T> {
+		const harness = this._requireLiveAgent(agentId).harness;
+		const running = operation(harness);
+		// Read after the call, for the same reason the call comes first: this is
+		// what tells an operation that started from one the harness refused because
+		// it was already busy.
+		const started = toMaintenanceKind(harness.getPhase()) !== undefined;
+		try {
+			await this._publishAgentActivityEdge(agentId, harness.getPhase());
+		} catch (error) {
+			running.catch(() => {});
+			throw error;
+		}
+		try {
+			return await running;
+		} finally {
+			if (started) {
+				// No agent loop ran, so there is no new assistant message - but the
+				// busy-to-idle edge really happened and has to be published, or a
+				// `waitForAgentIdle` caller misses it entirely.
+				this._agentIdleReasons.set(agentId, "maintenance");
+				await this._publishAgentActivityEdge(agentId, harness.getPhase());
+				this._messages.wake(agentId);
+				await this._settleAgentIdle(agentId);
+			}
+		}
+	}
+
+	/**
+	 * Threshold trigger for automatic compaction.
+	 *
+	 * Failure is a warning diagnostic, never a thrown error: an uncompactable
+	 * over-threshold session keeps running until the provider rejects it, which is
+	 * what happened before this trigger existed.
+	 */
+	private async _maybeAutoCompact(
+		agentId: AgentId,
+		contextTokens: number | undefined,
+	): Promise<void> {
+		if (contextTokens === undefined) return;
+		const settings = this.settingManager.getCompactionSettings();
+		if (!settings.enabled) return;
+		if (this._autoCompactingAgents.has(agentId)) return;
+		const liveAgent = this._live.get(agentId);
+		if (!liveAgent || liveAgent.harness.getPhase() !== "idle") return;
+		const { contextWindow } = liveAgent.harness.getModel();
+		if (!shouldCompact(contextTokens, contextWindow, settings)) return;
+		this._autoCompactingAgents.add(agentId);
+		try {
+			await this.compactAgent(agentId);
+		} catch (error) {
+			await this._publishDiagnostic({
+				severity: "warning",
+				code: "compaction.auto_failed",
+				message: `Automatic compaction failed for agent ${agentId}: ${formatError(error)}`,
+				agentId,
+			});
+		} finally {
+			this._autoCompactingAgents.delete(agentId);
+		}
+	}
+
+	private _createInputId(): string {
+		const id = `orchestrator-input-${this._nextInputId}`;
+		this._nextInputId += 1;
+		return id;
+	}
+
+	private _createPresentationId(): string {
+		const id = `orchestrator-presentation-${this._nextPresentationId}`;
+		this._nextPresentationId += 1;
+		return id;
+	}
 }
 
 /**
@@ -1783,6 +3037,19 @@ function toActivitySnapshot(phase: AgentHarnessPhase): AgentActivitySnapshot {
 
 function maintenanceDescription(kind: AgentMaintenanceKind): string {
 	return kind === "tree-navigation" ? "tree navigation" : "compaction";
+}
+
+/** Everything handed to a harness that it has not read yet. */
+function queuedMessageCount(harness: WidiAgentHarness): number {
+	const counts = harness.getQueuedMessageCounts();
+	return counts.steer + counts.followUp + counts.nextTurn;
+}
+
+/** The harness takes a mutable image array; the orchestrator passes readonly ones. */
+function toHarnessMessageOptions(
+	options: { readonly images?: readonly ImageContent[] } | undefined,
+): { images: ImageContent[] } | undefined {
+	return options?.images ? { images: [...options.images] } : undefined;
 }
 
 /**
