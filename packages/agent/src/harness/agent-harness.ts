@@ -189,6 +189,8 @@ export class AgentHarness<
 	private shutdownPromise?: Promise<void>;
 	private isShutdown = false;
 	private pendingSessionWrites: PendingSessionWrite[] = [];
+	private sessionWriteTail: Promise<void> = Promise.resolve();
+	private sessionWriteNotifications: Array<{ entryId: string; write: PendingSessionWrite }> = [];
 	private model: Model<any>;
 	private thinkingLevel: ThinkingLevel;
 	private systemPrompt: AgentHarnessSystemPrompt<TContext, TTool> | undefined;
@@ -369,6 +371,19 @@ export class AgentHarness<
 			this.activeTasks.delete(settled);
 			settle();
 		}
+	}
+
+	/**
+	 * Take the session away from concurrent writers.
+	 *
+	 * The phase is already set by the caller, so every write arriving from here on
+	 * buffers instead of touching the branch. What remains is the writes that read
+	 * `idle` before that and are still in flight: this waits for them, so the
+	 * operation's first read of the session sees a settled branch and its own
+	 * appends cannot be parented to an entry a mutation is about to replace.
+	 */
+	private async settleSessionOwnership(): Promise<void> {
+		await this.waitForTasks("mutation");
 	}
 
 	private async waitForTasks(kind?: TrackedTaskKind): Promise<void> {
@@ -577,6 +592,24 @@ export class AgentHarness<
 	}
 
 	/**
+	 * Serialize one session write behind every write already queued.
+	 *
+	 * Appending reads the current leaf and then writes a child of it, so two
+	 * writes that interleave across that await both parent themselves to the same
+	 * entry and one of them falls off the branch. The tail is what makes the
+	 * harness a single writer in fact and not just by convention; a failed write
+	 * does not poison it, because the next write is a new decision.
+	 */
+	private enqueueSessionWrite(write: PendingSessionWrite): Promise<string | undefined> {
+		const result = this.sessionWriteTail.then(() => this.writeOrBufferSessionEntry(write));
+		this.sessionWriteTail = result.then(
+			() => {},
+			() => {},
+		);
+		return result;
+	}
+
+	/**
 	 * Write now if nothing owns the session, otherwise buffer until the next save
 	 * point. The id is only knowable in the first case; a buffered write reports
 	 * its id through `session_write` when it is flushed.
@@ -587,34 +620,60 @@ export class AgentHarness<
 			return undefined;
 		}
 		const entryId = await this.applySessionWrite(write);
-		if (entryId !== undefined) await this.emitSessionWrite(entryId, write);
+		if (entryId !== undefined) this.recordSessionWrite(entryId, write);
+		await this.drainSessionWriteNotifications();
 		return entryId;
 	}
 
-	private async emitSessionWrite(entryId: string, write: PendingSessionWrite): Promise<void> {
+	private recordSessionWrite(entryId: string, write: PendingSessionWrite): void {
 		if (!ADDRESSABLE_SESSION_WRITE_TYPES.has(write.type)) return;
-		await this.emitOwn({ type: "session_write", entryId, write });
+		this.sessionWriteNotifications.push({ entryId, write });
+	}
+
+	/**
+	 * Announce durable entries, oldest first, keeping anything not yet announced.
+	 *
+	 * An entry id exists only inside the harness until it is emitted, so a write
+	 * that lands and then fails to be reported - because a later write in the same
+	 * flush threw, or because an observer did - would take its id with it. The
+	 * queue outlives the call that filled it, so the next write or flush retries.
+	 */
+	private async drainSessionWriteNotifications(): Promise<void> {
+		while (this.sessionWriteNotifications.length > 0) {
+			const notification = this.sessionWriteNotifications[0]!;
+			await this.emitOwn({ type: "session_write", entryId: notification.entryId, write: notification.write });
+			this.sessionWriteNotifications.shift();
+		}
 	}
 
 	private async flushPendingSessionWrites(): Promise<void> {
-		const written: Array<{ entryId: string; write: PendingSessionWrite }> = [];
-		while (this.pendingSessionWrites.length > 0) {
-			const write = this.pendingSessionWrites[0]!;
-			const entryId = await this.applySessionWrite(write);
-			this.pendingSessionWrites.shift();
-			if (entryId !== undefined) written.push({ entryId, write });
+		let writeError: unknown;
+		try {
+			while (this.pendingSessionWrites.length > 0) {
+				const write = this.pendingSessionWrites[0]!;
+				const entryId = await this.applySessionWrite(write);
+				this.pendingSessionWrites.shift();
+				if (entryId !== undefined) this.recordSessionWrite(entryId, write);
+			}
+		} catch (error) {
+			writeError = error;
 		}
 		// Reported only once every buffered write is durable: a failing observer
-		// must not leave the rest of the buffer unflushed.
-		for (const entry of written) {
-			await this.emitSessionWrite(entry.entryId, entry.write);
+		// must not leave the rest of the buffer unflushed. A failed write still
+		// reports what landed before it, and keeps the rest queued for retry.
+		try {
+			await this.drainSessionWriteNotifications();
+		} catch (error) {
+			if (writeError === undefined) throw error;
 		}
+		if (writeError !== undefined) throw writeError;
 	}
 
 	private async handleAgentEvent(event: AgentEvent, signal?: AbortSignal): Promise<void> {
 		if (event.type === "message_end") {
 			const entryId = await this.session.appendMessage(event.message);
-			await this.emitSessionWrite(entryId, { type: "message", message: event.message });
+			this.recordSessionWrite(entryId, { type: "message", message: event.message });
+			await this.drainSessionWriteNotifications();
 			await this.emitAny(event, signal);
 			return;
 		}
@@ -729,6 +788,7 @@ export class AgentHarness<
 		this.phase = "turn";
 		const operation = this.startOperation();
 		try {
+			await this.settleSessionOwnership();
 			const turnState = await this.createTurnState();
 			return await this.executeTurn(turnState, text, operation.signal, options);
 		} catch (error) {
@@ -839,7 +899,7 @@ export class AgentHarness<
 		this.assertNotShutDown();
 		return this.track("mutation", async () => {
 			try {
-				return await this.writeOrBufferSessionEntry(write);
+				return await this.enqueueSessionWrite(write);
 			} catch (error) {
 				throw normalizeHarnessError(error, "session");
 			}
@@ -852,6 +912,7 @@ export class AgentHarness<
 		this.phase = "compaction";
 		const operation = this.startOperation();
 		try {
+			await this.settleSessionOwnership();
 			const model = this.model;
 			if (!model) throw new AgentHarnessError("invalid_state", "No model set for compaction");
 			const branchEntries = await this.session.getBranch();
@@ -900,8 +961,14 @@ export class AgentHarness<
 		} catch (error) {
 			throw normalizeHarnessError(error, "compaction");
 		} finally {
-			this.phase = "idle";
-			operation.finish();
+			// Before the phase reopens, so a write that arrives during the flush
+			// still buffers behind it rather than jumping the queue it is in.
+			try {
+				await this.flushPendingSessionWrites();
+			} finally {
+				this.phase = "idle";
+				operation.finish();
+			}
 		}
 	}
 
@@ -914,6 +981,7 @@ export class AgentHarness<
 		this.phase = "branch_summary";
 		const operation = this.startOperation();
 		try {
+			await this.settleSessionOwnership();
 			const oldLeafId = await this.session.getLeafId();
 			if (oldLeafId === targetId) return { cancelled: false };
 			const targetEntry = await this.session.getEntry(targetId);
@@ -1000,8 +1068,12 @@ export class AgentHarness<
 		} catch (error) {
 			throw normalizeHarnessError(error, "branch_summary");
 		} finally {
-			this.phase = "idle";
-			operation.finish();
+			try {
+				await this.flushPendingSessionWrites();
+			} finally {
+				this.phase = "idle";
+				operation.finish();
+			}
 		}
 	}
 
@@ -1014,11 +1086,7 @@ export class AgentHarness<
 		return this.track("mutation", async () => {
 			try {
 				const previousModel = this.model;
-				if (this.phase === "idle") {
-					await this.session.appendModelChange(model.provider, model.id);
-				} else {
-					this.pendingSessionWrites.push({ type: "model_change", provider: model.provider, modelId: model.id });
-				}
+				await this.enqueueSessionWrite({ type: "model_change", provider: model.provider, modelId: model.id });
 				this.model = model;
 				await this.emitOwn({ type: "model_update", model, previousModel, source: "set" });
 			} catch (error) {
@@ -1036,11 +1104,7 @@ export class AgentHarness<
 		return this.track("mutation", async () => {
 			try {
 				const previousLevel = this.thinkingLevel;
-				if (this.phase === "idle") {
-					await this.session.appendThinkingLevelChange(level);
-				} else {
-					this.pendingSessionWrites.push({ type: "thinking_level_change", thinkingLevel: level });
-				}
+				await this.enqueueSessionWrite({ type: "thinking_level_change", thinkingLevel: level });
 				this.thinkingLevel = level;
 				await this.emitOwn({ type: "thinking_level_update", level, previousLevel });
 			} catch (error) {
@@ -1069,11 +1133,7 @@ export class AgentHarness<
 			this.validateToolNames(nextActiveToolNames, nextTools);
 			const previousToolNames = [...this.tools.keys()];
 			const previousActiveToolNames = [...this.activeToolNames];
-			if (this.phase === "idle") {
-				await this.session.appendActiveToolsChange(nextActiveToolNames);
-			} else {
-				this.pendingSessionWrites.push({ type: "active_tools_change", activeToolNames: [...nextActiveToolNames] });
-			}
+			await this.enqueueSessionWrite({ type: "active_tools_change", activeToolNames: [...nextActiveToolNames] });
 			this.tools = nextTools;
 			this.activeToolNames = [...nextActiveToolNames];
 			await this.emitOwn({
@@ -1103,11 +1163,7 @@ export class AgentHarness<
 			this.validateToolNames(toolNames);
 			const previousToolNames = [...this.tools.keys()];
 			const previousActiveToolNames = [...this.activeToolNames];
-			if (this.phase === "idle") {
-				await this.session.appendActiveToolsChange(toolNames);
-			} else {
-				this.pendingSessionWrites.push({ type: "active_tools_change", activeToolNames: [...toolNames] });
-			}
+			await this.enqueueSessionWrite({ type: "active_tools_change", activeToolNames: [...toolNames] });
 			this.activeToolNames = [...toolNames];
 			await this.emitOwn({
 				type: "tools_update",

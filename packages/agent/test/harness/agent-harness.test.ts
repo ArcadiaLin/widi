@@ -299,7 +299,9 @@ describe("AgentHarness", () => {
 	});
 
 	it("awaits concurrent idle session mutations before shutdown resolves", async () => {
-		const storage = new BlockingSessionStorage(3);
+		// One expected write, not three: idle writes are serialized, so only the
+		// first one reaches storage while the rest wait their turn.
+		const storage = new BlockingSessionStorage(1);
 		const harness = new AgentHarness({
 			models,
 			session: new Session(storage),
@@ -402,6 +404,91 @@ describe("AgentHarness", () => {
 		expect(reported.map((entry) => entry.type)).toEqual(["message", "message", "custom"]);
 		const entryIds = (await session.getEntries()).map((entry) => entry.id);
 		expect(reported.map((entry) => entry.entryId)).toEqual(entryIds);
+	});
+
+	it("keeps concurrent idle writes on one branch", async () => {
+		const storage = new InMemorySessionStorage();
+		const session = new Session(storage);
+		const harness = new AgentHarness({
+			models,
+			session,
+			model: getModel("anthropic", "claude-sonnet-4-5"),
+		});
+
+		const [firstId, secondId] = await Promise.all([
+			harness.appendCustomEntry("first", 1),
+			harness.appendCustomEntry("second", 2),
+		]);
+
+		// Unserialized, both would read the same leaf and one would fall off the branch.
+		expect((await storage.getEntries()).map((entry) => entry.parentId)).toEqual([null, firstId]);
+		expect((await session.getBranch()).map((entry) => entry.id)).toEqual([firstId, secondId]);
+	});
+
+	it("reports entries that landed before a failing flush write", async () => {
+		const registration = newFaux();
+		const entered = deferred();
+		const release = deferred();
+		registration.setResponses([
+			async () => {
+				entered.resolve();
+				await release.promise;
+				return fauxAssistantMessage("done");
+			},
+		]);
+		let failSecondCustomWrite = false;
+		class FailingSessionStorage extends InMemorySessionStorage {
+			override async appendEntry(entry: Parameters<InMemorySessionStorage["appendEntry"]>[0]): Promise<void> {
+				if (failSecondCustomWrite && entry.type === "custom" && entry.customType === "second") {
+					throw new Error("storage down");
+				}
+				await super.appendEntry(entry);
+			}
+		}
+		const storage = new FailingSessionStorage();
+		const harness = new AgentHarness({ models, session: new Session(storage), model: registration.getModel() });
+		const reported: string[] = [];
+		harness.subscribe((event) => {
+			if (event.type === "session_write") reported.push(event.entryId);
+		});
+
+		const prompt = harness.prompt("hello");
+		await entered.promise;
+		await harness.appendCustomEntry("first", 1);
+		await harness.appendCustomEntry("second", 2);
+		failSecondCustomWrite = true;
+		release.resolve();
+		await expect(prompt).rejects.toThrow("storage down");
+
+		// The first buffered write is durable, so its id must not be lost with the
+		// failure of the one behind it.
+		expect(reported).toEqual((await storage.getEntries()).map((entry) => entry.id));
+		expect((await storage.getEntries()).some((entry) => entry.type === "custom")).toBe(true);
+	});
+
+	it("flushes writes buffered during compaction when it ends", async () => {
+		const registration = newFaux();
+		registration.setResponses([() => fauxAssistantMessage("summary")]);
+		const session = new Session(new InMemorySessionStorage());
+		await session.appendMessage(createUserMessage("one"));
+		await session.appendMessage(createAssistantMessage("two"));
+		const harness = new AgentHarness({ models, session, model: registration.getModel() });
+		const reported: string[] = [];
+		harness.subscribe((event) => {
+			if (event.type === "session_write") reported.push(event.entryId);
+		});
+		let buffered: string | undefined;
+		harness.on("session_before_compact", async () => {
+			buffered = await harness.appendCustomEntry("during-compaction", 1);
+			return undefined;
+		});
+
+		await harness.compact();
+
+		expect(buffered).toBeUndefined();
+		const entries = await session.getEntries();
+		expect(entries.map((entry) => entry.type)).toEqual(["message", "message", "compaction", "custom"]);
+		expect(reported).toEqual([entries.at(-1)?.id]);
 	});
 
 	it("drains one queued steering message at a time and emits queue updates", async () => {
