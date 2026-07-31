@@ -1,7 +1,7 @@
 import { formatError } from "../../../utils/errors.ts";
-import type { AgentBrief, ToolAgentHost } from "../../agent-host.ts";
 import type { BackgroundJobTable } from "../../background/index.ts";
 import { formatAgentTaskMessageBody } from "../../message.ts";
+import type { AgentBrief, ToolAgentHost } from "../../orchestrator/host.ts";
 import type { ToolExecutionContext } from "../types.ts";
 
 /** Longest job description kept for a delegated task. */

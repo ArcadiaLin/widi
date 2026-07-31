@@ -1,6 +1,6 @@
 import type { AgentToolResult } from "@widi/agent-core";
 import { type Static, Type } from "typebox";
-import type { ToolAgentHost } from "../../agent-host.ts";
+import type { ToolAgentHost } from "../../orchestrator/host.ts";
 import type { ToolDefinition } from "../types.ts";
 import {
 	assignAgentTask,

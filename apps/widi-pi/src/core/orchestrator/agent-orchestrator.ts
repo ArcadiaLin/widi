@@ -24,7 +24,11 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
+import {
+	type AssistantMessage,
+	getSupportedThinkingLevels,
+	type ImageContent,
+} from "@earendil-works/pi-ai";
 import {
 	type AbortResult,
 	AgentHarness,
@@ -36,8 +40,10 @@ import {
 	type JsonlSessionMetadata,
 	type NavigateTreeResult,
 	type PendingSessionWrite,
+	type PromptTemplate,
 	type Session,
 	type SessionTreeEntry,
+	type Skill,
 	shouldCompact,
 	type ThinkingLevel,
 } from "@widi/agent-core";
@@ -48,15 +54,19 @@ import type {
 	AgentProfileRegistry,
 	AgentProfileSource,
 } from "../agent-profile.js";
+import { parseAgentProfileReference } from "../agent-profile.js";
 import {
 	type BackgroundJobDelivery,
 	type BackgroundJobDeliveryReceipt,
+	type BackgroundJobEvent,
 	BackgroundJobRuntime,
+	type BackgroundJobSnapshot,
 	backgroundJobResultHeaderPrefix,
 	formatInterruptedBackgroundJobResultText,
 	type OwnerAttachment,
 	type PersistedBackgroundJob,
 } from "../background/index.ts";
+import type { OrchestratorClient } from "../client.ts";
 import {
 	type OrchestratorDiagnostic,
 	OrchestratorError,
@@ -68,6 +78,7 @@ import type {
 	ExtensionIdentity,
 } from "../extension/index.ts";
 import {
+	EXTENSION_OBSERVED_EVENT_NAMES,
 	ExtensionLoader,
 	ExtensionRunner,
 	freezeExtensionEventEnvelope,
@@ -98,6 +109,7 @@ import type {
 	ExtensionSessionTree,
 } from "../extension/types.ts";
 import { HumanInterruptRegistry } from "../human-interrupt.ts";
+import type { HumanRequest, HumanResponse } from "../human-request.ts";
 import { HumanRequestBroker } from "../human-request.ts";
 import { stripImagesFromMessages } from "../image-policy.ts";
 import {
@@ -116,7 +128,13 @@ import {
 	renderMessageEnvelope,
 	transformMessage,
 } from "../message.ts";
-import { type ModelRegistry, parseThinkingLevel } from "../model-registry.js";
+import {
+	type ModelRegistry,
+	modelReference,
+	parseModelReference,
+	parseThinkingLevel,
+	THINKING_LEVELS,
+} from "../model-registry.js";
 import type { ProviderConfigInput } from "../model-registry.ts";
 import type { ConfigValueResolver } from "../resolve-config-value.js";
 import type { ResourceLoader } from "../resource-loader.js";
@@ -143,20 +161,45 @@ import type {
 	AgentTreeSpawnRecord,
 } from "../session-tree.ts";
 import type { SettingManager } from "../setting-manager.js";
-import { ToolRegistry } from "../tool-registry.ts";
+import {
+	buildAgentSystemPrompt,
+	type ToolPromptGuidance,
+} from "../system-prompt.ts";
+import {
+	createAgentHarnessToolsFromResolvedTools,
+	type ResolvedAgentHarnessTool,
+	type ToolAdapterContext,
+	ToolRegistry,
+} from "../tool-registry.ts";
 import type {
 	AgentActivitySnapshot,
 	AgentId,
 	AgentIdleReason,
 	AgentMaintenanceKind,
+	AgentToolsSnapshot,
 	CandidateItem,
+	OrchestratorEvent,
+	OrchestratorEventListener,
 	PromptOutcome,
 	RuntimeModel,
+	RuntimeShutdownRequest,
 } from "../types.ts";
+import type {
+	AuthCredentialCandidateListResult,
+	AuthProviderCandidateListResult,
+	AuthProviderLoginResult,
+	AuthProviderLogoutResult,
+} from "./auth-controller.ts";
 import { AuthRuntimeController } from "./auth-controller.ts";
 import { AgentContextMonitor } from "./context-monitor.ts";
+import type { EventPublishOptions } from "./event-bus.ts";
 import { OrchestratorEventBus } from "./event-bus.ts";
-import type { AgentDisposeScope } from "./host.ts";
+import type {
+	AgentBrief,
+	AgentDisposeScope,
+	AgentProfileBrief,
+	ToolAgentHost,
+} from "./host.ts";
 import type {
 	AgentResourcesSnapshot,
 	AgentSettings,
@@ -735,7 +778,11 @@ export class AgentOrchestrator {
 				await this.sessionManager.openBackgroundJobJournal(owner),
 			deliverResult: async (delivery) =>
 				await this._deliverBackgroundResult(delivery),
-			publish: async (event) => await this._emit(event),
+			// The runtime names its events for its own domain; the orchestrator's
+			// event union names them for the agent they belong to. Translating here
+			// keeps that vocabulary out of the runtime, which has no agents.
+			publish: async (event) =>
+				await this._emit(toOrchestratorBackgroundEvent(event)),
 			diagnose: async (diagnostic) => await this._publishDiagnostic(diagnostic),
 		});
 		this._messages = new MessageDeliveryQueue({
@@ -1119,7 +1166,7 @@ export class AgentOrchestrator {
 	private async _resolveAgentBuild(
 		options: SpawnAgentOptions,
 	): Promise<AgentBuildRequest> {
-		const settings = this._captureAgentSettings(options.parent);
+		const settings = this._captureAgentSettings();
 		if (options.origin.kind === "resume") {
 			const metadata =
 				typeof options.origin.reference === "string"
@@ -1329,7 +1376,6 @@ export class AgentOrchestrator {
 
 			const resolvedTools = await this._resolveAgentToolsForBuild(
 				agentId,
-				profile.id,
 				request.toolPolicy,
 				extensionRunner,
 			);
@@ -3165,7 +3211,6 @@ export class AgentOrchestrator {
 			candidate = await this._createExtensionRunner(agentId, profileId);
 			const resolvedTools = await this._resolveAgentToolsForBuild(
 				agentId,
-				profileId,
 				previousPolicy,
 				candidate,
 			);
@@ -4373,6 +4418,1051 @@ export class AgentOrchestrator {
 		}
 	}
 
+	// -----------------------------------------------------------------------
+	// Tool policy and system prompt
+	//
+	// The harness owns the installed and active tools, and every read below asks
+	// it. What stays here is the declarative intent behind them - which tool names
+	// were requested, and whether the active set was chosen or defaulted - because
+	// an extension reload has to resolve that intent again against a replacement
+	// runner, and the resolved result cannot answer that question.
+	// -----------------------------------------------------------------------
+
+	/** The harness's own answer, projected. There is no second copy to drift. */
+	private _snapshotAgentTools(liveAgent: LiveAgent): AgentToolsSnapshot {
+		const { harness } = liveAgent;
+		return {
+			toolNames: harness.getTools().map((tool) => tool.name),
+			activeToolNames: harness.getActiveTools().map((tool) => tool.name),
+		};
+	}
+
+	getAgentTools(agentId: AgentId): AgentToolsSnapshot {
+		return this._snapshotAgentTools(this._requireLiveAgent(agentId));
+	}
+
+	/**
+	 * Replace the requested tool set and re-derive the active selection under it.
+	 *
+	 * The policy is updated only after the harness accepts the new tools, so a
+	 * rejected write leaves the recorded intent describing what is actually
+	 * installed.
+	 */
+	async setAgentTools(
+		agentId: AgentId,
+		toolNames: readonly string[],
+		activeToolNames?: readonly string[],
+	): Promise<void> {
+		const liveAgent = this._requireLiveAgent(agentId);
+		const resolved = await this._resolveAgentToolsForBuild(
+			agentId,
+			{
+				requestedToolNames: [...toolNames],
+				activeToolSelection:
+					activeToolNames === undefined
+						? { mode: "default_all" }
+						: { mode: "explicit", toolNames: [...activeToolNames] },
+			},
+			liveAgent.extensionRunner,
+		);
+		await liveAgent.harness.setTools(resolved.tools, [
+			...resolved.activeToolNames,
+		]);
+		liveAgent.toolPolicy = resolved.policy;
+	}
+
+	/**
+	 * Toggle which of the installed tools are active.
+	 *
+	 * Validation runs against the harness's live tool list with no await between
+	 * the check and the apply. Re-resolving the registry here would race a
+	 * concurrent `setTools` or extension reload, and would re-publish the standing
+	 * resolve diagnostics on every toggle.
+	 */
+	async setAgentActiveTools(
+		agentId: AgentId,
+		toolNames: readonly string[],
+	): Promise<void> {
+		const liveAgent = this._requireLiveAgent(agentId);
+		const { harness } = liveAgent;
+		const { activeToolNames, diagnostics } = selectActiveToolNames(
+			toolNames,
+			new Set(harness.getTools().map((tool) => tool.name)),
+			agentId,
+		);
+		await harness.setActiveTools(activeToolNames);
+		// Re-read after the await rather than reusing the list above: the harness
+		// is the source of truth, and a concurrent tool-set change must not be
+		// overwritten by a stale copy of the intent.
+		liveAgent.toolPolicy = {
+			...liveAgent.toolPolicy,
+			activeToolSelection: {
+				mode: "explicit",
+				toolNames: harness.getActiveTools().map((tool) => tool.name),
+			},
+		};
+		await this._publishDiagnostics(diagnostics);
+	}
+
+	/**
+	 * Resolve a tool policy into an installable tool set, against a registry this
+	 * runner has contributed to.
+	 *
+	 * The returned policy is the intent as the registry understood it, which is
+	 * what makes a later reload idempotent: an explicit active selection narrows
+	 * to what actually resolved, while `default_all` stays open and picks up tools
+	 * a replacement runner contributes.
+	 */
+	private async _resolveAgentToolsForBuild(
+		agentId: AgentId,
+		policy: AgentToolPolicy,
+		extensionRunner: ExtensionRunner,
+	): Promise<{
+		readonly tools: ResolvedAgentHarnessTool[];
+		readonly activeToolNames: readonly string[];
+		readonly policy: AgentToolPolicy;
+	}> {
+		const registry = this.toolRegistry.clone();
+		extensionRunner.contributeToolsTo(registry);
+		const resolved = registry.resolve({
+			...(policy.requestedToolNames === undefined
+				? undefined
+				: { requestedToolNames: policy.requestedToolNames }),
+			...(policy.activeToolSelection.mode === "explicit"
+				? { activeToolNames: policy.activeToolSelection.toolNames }
+				: undefined),
+		});
+		await this._publishDiagnostics(
+			resolved.diagnostics.map((diagnostic) => ({ ...diagnostic, agentId })),
+		);
+		return {
+			tools: createAgentHarnessToolsFromResolvedTools(resolved.tools),
+			activeToolNames: resolved.activeToolNames,
+			policy: {
+				...(policy.requestedToolNames === undefined
+					? undefined
+					: { requestedToolNames: [...policy.requestedToolNames] }),
+				activeToolSelection:
+					policy.activeToolSelection.mode === "explicit"
+						? { mode: "explicit", toolNames: [...resolved.activeToolNames] }
+						: { mode: "default_all" },
+			},
+		};
+	}
+
+	/**
+	 * Compose the system prompt for one turn from the agent's static facts plus
+	 * the harness's active tools for that turn.
+	 *
+	 * The runner is read here rather than captured at construction, which is the
+	 * whole reason this is a callback: an extension reload replaces the runner,
+	 * and the sections it appends have to follow.
+	 */
+	private _composeAgentSystemPrompt(
+		agentId: AgentId,
+		activeTools: readonly ToolPromptGuidance[],
+	): string {
+		const liveAgent = this._requireLiveAgent(agentId);
+		const facts = liveAgent.systemPrompt;
+		return buildAgentSystemPrompt({
+			basePrompt: facts.basePrompt,
+			skills: facts.skills,
+			activeTools,
+			agentId,
+			appendSections: [
+				...facts.appendSections,
+				...liveAgent.extensionRunner.getSystemPromptAppends(),
+			],
+			contextFiles: facts.contextFiles,
+			...(facts.includeSkills === undefined
+				? undefined
+				: { includeSkills: facts.includeSkills }),
+			...(facts.cwd === undefined ? undefined : { cwd: facts.cwd }),
+		});
+	}
+
+	/**
+	 * The system prompt the agent's next turn would be built with. Read-only: the
+	 * write paths remain the profile's `appendSystemPrompt` and the
+	 * `before_agent_start` interceptor, which can still replace this text for one
+	 * turn without changing what this returns.
+	 */
+	async getAgentSystemPrompt(agentId: AgentId): Promise<string> {
+		const { harness } = this._requireLiveAgent(agentId);
+		return this._composeAgentSystemPrompt(agentId, harness.getActiveTools());
+	}
+
+	/**
+	 * The per-turn tool context: human requests, collaboration, background jobs,
+	 * and the extension context factory.
+	 *
+	 * The runner is captured into this snapshot, so a call that continues in the
+	 * background after a reload keeps the runner it started under and observes
+	 * that runner's stale boundary, instead of silently switching to the
+	 * replacement mid-call.
+	 */
+	private _createToolAdapterContext(
+		agentId: AgentId,
+		profileId: string,
+	): ToolAdapterContext {
+		const liveAgent = this._requireLiveAgent(agentId);
+		const extensionRunner = liveAgent.extensionRunner;
+		return {
+			human: {
+				request: async (request) =>
+					await this._requestHumanForAgent(agentId, {
+						...request,
+						source: { kind: "agent", agentId },
+					}),
+			},
+			agents: this._createToolAgentHost(
+				agentId,
+				liveAgent.backgroundAttachment,
+			),
+			humanInterrupts: this._humanInterrupts.watch(agentId),
+			createExtensionContext: (source) => {
+				if (source.kind !== "extension") return undefined;
+				return {
+					extensionId: source.id,
+					host: {
+						agentId,
+						profileId,
+						actions: extensionRunner.createContext(source.id).actions,
+					},
+				};
+			},
+		};
+	}
+
+	/**
+	 * The collaboration port for one agent's tools.
+	 *
+	 * The caller's identity is captured here and never read from tool arguments,
+	 * so no model-controlled value can forge the sender of a message, the owner of
+	 * a job, or the settler of someone else's. Discovery, exact-address messaging,
+	 * and dispose scope are resolved over private runtime state for the same
+	 * reason: a tool cannot argue its way past its caller-bound tree policy.
+	 */
+	private _createToolAgentHost(
+		agentId: AgentId,
+		attachment: OwnerAttachment,
+	): ToolAgentHost {
+		return {
+			agentId,
+			listProfiles: async () => {
+				const result = await this.profileRegistry.listProfiles();
+				await this._publishDiagnostics(result.diagnostics);
+				return result.profiles
+					.filter((profile) => this._isProfileEnabled(profile.id))
+					.map(
+						(profile): AgentProfileBrief => ({
+							id: profile.id,
+							label: profile.label,
+							...(profile.description === undefined
+								? undefined
+								: { description: profile.description }),
+							...(profile.whenToUse === undefined
+								? undefined
+								: { whenToUse: profile.whenToUse }),
+							persist: profile.persist,
+						}),
+					);
+			},
+			// Discovery is tree-scoped. Exact ids stay runtime-wide addresses
+			// through `describe` and `sendMessage`, which is the deliberate soft
+			// bridge between otherwise isolated trees.
+			listAgents: () => {
+				const rootAgentId = this._resolveAgentTreeRoot(agentId);
+				return [...this._live.values()]
+					.filter(
+						(liveAgent) =>
+							this._resolveAgentTreeRoot(liveAgent.agentId) === rootAgentId,
+					)
+					.map((liveAgent) => describeAgentForTools(liveAgent));
+			},
+			describe: (targetAgentId) => {
+				const liveAgent = this._live.get(targetAgentId);
+				return liveAgent ? describeAgentForTools(liveAgent) : undefined;
+			},
+			// An agent-initiated spawn records the caller as the parent, so the child
+			// is both rendered under it and swept by its subtree dispose.
+			spawn: async (profileId) =>
+				await this.spawnAgent({
+					origin: { kind: "new", profileId },
+					parent: agentId,
+				}),
+			sendMessage: async (targetAgentId, body) =>
+				await this.sendMessage({
+					source: { kind: "agent", agentId },
+					targetAgentId,
+					body,
+					// An agent message never preempts a turn already in flight: the
+					// target decides when to read it.
+					mode: "next_turn",
+				}),
+			dispose: async (targetAgentId, options) => {
+				if (!this._live.has(targetAgentId)) {
+					return {
+						kind: this._tombstones.has(targetAgentId)
+							? "already_disposed"
+							: "unknown",
+					};
+				}
+				if (!this._agentsShareTree(agentId, targetAgentId)) {
+					return { kind: "outside_tree" };
+				}
+				const selected =
+					options.scope === "subtree"
+						? this._collectAgentSubtreePostOrder(targetAgentId)
+						: [targetAgentId];
+				// An agent cannot dispose itself, directly or as a member of the
+				// subtree it named: the reply to this very tool call would have
+				// nowhere to land.
+				if (selected.includes(agentId)) return { kind: "self" };
+				const agentIds = await this.disposeAgent(targetAgentId, {
+					intent: "removed",
+					reason: options.reason,
+					scope: options.scope,
+				});
+				return agentIds.length > 0
+					? { kind: "disposed", agentIds }
+					: { kind: "already_disposed" };
+			},
+			// The attachment's own capabilities, not an id-taking forwarder: they
+			// carry the owner and generation the job table authorizes against.
+			jobs: attachment.host,
+			settler: attachment.settler,
+			requestHuman: async (request) =>
+				await this._requestHumanForAgent(agentId, {
+					...request,
+					source: { kind: "agent", agentId },
+				}),
+		};
+	}
+
+	// -----------------------------------------------------------------------
+	// Profiles, models, thinking levels, and resources
+	//
+	// All forwarding. A single agent's current model and thinking level live in
+	// its harness; what the orchestrator adds is the runtime policy around them -
+	// which profiles are enabled, which models are available, and the refusal to
+	// resume a session under a model that is no longer registered.
+	// -----------------------------------------------------------------------
+
+	private _isProfileEnabled(profileId: string): boolean {
+		return (
+			this._enabledProfileIds === undefined ||
+			this._enabledProfileIds.includes(profileId)
+		);
+	}
+
+	private async _resolveCreateProfile(
+		origin: Extract<SpawnAgentOrigin, { kind: "new" }>,
+	): Promise<ResolvedAgentProfile> {
+		const resolved = await this._resolveProfileById(
+			origin.profileId ?? this._defaultProfileId,
+			undefined,
+		);
+		return {
+			...resolved,
+			profile: await this._applyProfileOverride(
+				resolved.profile,
+				origin.profileOverride,
+			),
+		};
+	}
+
+	/**
+	 * The profile a session was written under, resolved again from the registry.
+	 *
+	 * A session with no profile reference cannot be resumed at all: nothing else
+	 * on it records what the agent was, and guessing would resume the branch as
+	 * something it never ran as.
+	 */
+	private async _resolveResumeProfile(
+		agentId: AgentId,
+		metadata: JsonlSessionMetadata,
+	): Promise<ResolvedAgentProfile> {
+		const reference = parseAgentProfileReference(metadata.metadata?.profile);
+		if (!reference) {
+			throw new OrchestratorError({
+				severity: "error",
+				code: "profile.resolution_failed",
+				message: `Cannot resume agent ${agentId}: session metadata does not contain a profile reference.`,
+				agentId,
+			});
+		}
+		return await this._resolveProfileById(reference.id, agentId);
+	}
+
+	private async _resolveProfileById(
+		profileId: string,
+		agentId: AgentId | undefined,
+	): Promise<ResolvedAgentProfile> {
+		const result = await this.profileRegistry.resolveProfile(profileId);
+		await this._publishDiagnostics(result.diagnostics);
+		if (!result.ok) {
+			throw new OrchestratorError(
+				await this._publishAndReturn({
+					severity: "error",
+					code: "profile.resolution_failed",
+					message: `Cannot resolve profile ${profileId}: ${result.reason}.`,
+					agentId,
+				}),
+			);
+		}
+		if (!this._isProfileEnabled(result.profile.id)) {
+			throw new OrchestratorError(
+				await this._publishAndReturn({
+					severity: "error",
+					code: "profile.disabled",
+					message: `Profile is disabled by runtime policy: ${result.profile.id}`,
+					agentId,
+				}),
+			);
+		}
+		return {
+			profile: result.profile,
+			source: result.source,
+			entryId: result.entryId,
+		};
+	}
+
+	/**
+	 * Merge a caller's profile override.
+	 *
+	 * An override may not change the id, and a persistent profile may not have its
+	 * recoverable fields overridden: those fields are what a resume re-resolves
+	 * from the registry, so a session written under them could never be reopened
+	 * as the agent that wrote it.
+	 */
+	private async _applyProfileOverride(
+		profile: AgentProfile,
+		override: AgentProfileOverride | undefined,
+	): Promise<AgentProfile> {
+		if (!override) return profile;
+		if ("id" in override) {
+			throw new OrchestratorError(
+				await this._publishAndReturn({
+					severity: "error",
+					code: "profile.override_invalid",
+					message: `Profile override cannot change profile id: ${profile.id}.`,
+				}),
+			);
+		}
+		const merged: AgentProfile = { ...profile, ...override };
+		if (merged.persist && changesRecoverableProfileFields(override)) {
+			throw new OrchestratorError(
+				await this._publishAndReturn({
+					severity: "error",
+					code: "profile.override_not_persistable",
+					message: `Profile '${profile.id}' override changes recoverable profile fields and cannot create a persistent session.`,
+				}),
+			);
+		}
+		return merged;
+	}
+
+	/**
+	 * The model a session last recorded, or the runtime default when it recorded
+	 * none.
+	 *
+	 * A recorded model that is no longer registered is an error rather than a
+	 * silent fallback: the branch was produced by that model, and reopening it
+	 * under a different one changes what the conversation is without saying so.
+	 */
+	private _resolveResumeModel(
+		contextModel: {
+			readonly provider: string;
+			readonly modelId: string;
+		} | null,
+	): RuntimeModel {
+		if (!contextModel) return this._defaultModel;
+		const model = this.modelRegistry.find(
+			contextModel.provider,
+			contextModel.modelId,
+		);
+		if (!model) {
+			throw new OrchestratorError({
+				severity: "error",
+				code: "model.not_available",
+				message: `Cannot resume model ${contextModel.provider}/${contextModel.modelId}: it is not registered.`,
+			});
+		}
+		return model;
+	}
+
+	/**
+	 * Snapshot the settings the harness cannot answer after construction.
+	 *
+	 * Read fresh per spawn rather than inherited from a parent: these are runtime
+	 * policy, and an agent created after the user changed a setting should run
+	 * under the setting that is now in force.
+	 */
+	private _captureAgentSettings(): AgentSettings {
+		return {
+			retry: this.settingManager.getRetrySettings(),
+			providerRetry: this.settingManager.getProviderRetrySettings(),
+			compaction: this.settingManager.getCompactionSettings(),
+			blockImages: this.settingManager.getImageSettings().blockImages,
+		};
+	}
+
+	getAgentModel(agentId: AgentId): RuntimeModel {
+		return this._requireLiveAgent(agentId).harness.getModel();
+	}
+
+	async setAgentModel(agentId: AgentId, model: RuntimeModel): Promise<void> {
+		await this._requireLiveAgent(agentId).harness.setModel(model);
+		// The cached measurement names the previous model and its window, so it
+		// stops describing anything the moment the model changes.
+		await this._context.invalidate(agentId);
+	}
+
+	async listAvailableModelCandidates(): Promise<AgentModelCandidateListResult> {
+		const models = await this.modelRegistry.getAvailable();
+		return {
+			models: models.map((model) => ({
+				value: modelReference(model),
+				label: model.name,
+				description: modelReference(model),
+			})),
+		};
+	}
+
+	async setAgentModelByReference(
+		agentId: AgentId,
+		reference: string,
+	): Promise<RuntimeModel> {
+		const parsed = parseModelReference(reference);
+		if (!parsed) {
+			throw new OrchestratorError({
+				severity: "error",
+				code: "model.reference_invalid",
+				message: `Model reference must use provider/model syntax: ${reference}`,
+				agentId,
+			});
+		}
+		const models = await this.modelRegistry.getAvailable();
+		const model = models.find(
+			(candidate) =>
+				candidate.provider === parsed.provider &&
+				candidate.id === parsed.modelId,
+		);
+		if (!model) {
+			throw new OrchestratorError({
+				severity: "error",
+				code: "model.not_available",
+				message: `Model is not available: ${parsed.provider}/${parsed.modelId}`,
+				agentId,
+			});
+		}
+		await this.setAgentModel(agentId, model);
+		return model;
+	}
+
+	listAuthProviderCandidates(): AuthProviderCandidateListResult {
+		return this._auth.listProviders();
+	}
+
+	async listAuthCredentialCandidates(): Promise<AuthCredentialCandidateListResult> {
+		return await this._auth.listCredentials();
+	}
+
+	async loginAuthProvider(
+		providerId: string,
+		options?: { readonly agentId?: AgentId },
+	): Promise<AuthProviderLoginResult> {
+		return await this._auth.login(providerId, options);
+	}
+
+	async logoutAuthProvider(
+		providerId: string,
+	): Promise<AuthProviderLogoutResult> {
+		return await this._auth.logout(providerId);
+	}
+
+	listAgentThinkingLevelCandidates(
+		agentId: AgentId,
+	): AgentThinkingLevelCandidateListResult {
+		const { harness } = this._requireLiveAgent(agentId);
+		return {
+			levels: this._thinkingLevelCandidates(agentId, harness.getModel()),
+		};
+	}
+
+	getAgentThinkingLevel(agentId: AgentId): ThinkingLevel {
+		return this._requireLiveAgent(agentId).harness.getThinkingLevel();
+	}
+
+	async setAgentThinkingLevel(
+		agentId: AgentId,
+		level: ThinkingLevel,
+	): Promise<void> {
+		const { harness } = this._requireLiveAgent(agentId);
+		const model = harness.getModel();
+		const supported = this._thinkingLevelCandidates(agentId, model);
+		if (!supported.some((candidate) => candidate.value === level)) {
+			throw new OrchestratorError({
+				severity: "error",
+				code: "model.thinking_level_not_supported",
+				message: `Thinking level ${level} is not supported by model ${model.provider}/${model.id}.`,
+				agentId,
+			});
+		}
+		await harness.setThinkingLevel(level);
+	}
+
+	async setAgentThinkingLevelByName(
+		agentId: AgentId,
+		levelName: string,
+	): Promise<AgentThinkingLevelResult> {
+		const level = parseThinkingLevel(levelName);
+		if (!level) {
+			throw new OrchestratorError({
+				severity: "error",
+				code: "model.thinking_level_invalid",
+				message: `Invalid thinking level: ${levelName}. Supported levels: ${THINKING_LEVELS.join(", ")}.`,
+				agentId,
+			});
+		}
+		await this.setAgentThinkingLevel(agentId, level);
+		return { level };
+	}
+
+	/**
+	 * A model with no reasoning at all throws rather than returning an empty list:
+	 * "none available" and "not a thinking model" are different answers, and a
+	 * surface that shows an empty picker has conflated them.
+	 */
+	private _thinkingLevelCandidates(
+		agentId: AgentId,
+		model: RuntimeModel,
+	): readonly CandidateItem[] {
+		if (!model.reasoning) {
+			throw new OrchestratorError({
+				severity: "error",
+				code: "model.thinking_not_supported",
+				message: `Model ${model.provider}/${model.id} does not support thinking levels.`,
+				agentId,
+			});
+		}
+		return getSupportedThinkingLevels(model).map((level) => ({
+			value: level,
+			label: level,
+		}));
+	}
+
+	async listAgentPromptTemplateCandidates(
+		agentId: AgentId,
+	): Promise<AgentPromptTemplateCandidateListResult> {
+		return {
+			templates: (await this._loadAgentPromptTemplates(agentId)).map(
+				(template) => ({
+					value: template.name,
+					label: template.name,
+					...(template.description === undefined
+						? undefined
+						: { description: template.description }),
+				}),
+			),
+		};
+	}
+
+	async getAgentPromptTemplate(
+		agentId: AgentId,
+		name: string,
+	): Promise<PromptTemplate> {
+		const templates = await this._loadAgentPromptTemplates(agentId);
+		const template = templates.find((candidate) => candidate.name === name);
+		if (!template) {
+			throw new OrchestratorError({
+				severity: "error",
+				code: "prompt_template.not_found",
+				message: `Prompt template not found: ${name}`,
+				agentId,
+			});
+		}
+		return template;
+	}
+
+	/**
+	 * Reloaded from disk on every listing rather than read back off the agent: a
+	 * template the user just edited should be usable without restarting anything.
+	 */
+	private async _loadAgentPromptTemplates(
+		agentId: AgentId,
+	): Promise<readonly PromptTemplate[]> {
+		this._requireLiveAgent(agentId);
+		const loaded = await this.resourceLoader.loadPromptTemplates();
+		await this._publishDiagnostics(
+			loaded.diagnostics.map((diagnostic) => ({
+				severity: "warning" as const,
+				code: `resource.prompt_template.${diagnostic.code}`,
+				message: `${diagnostic.message} (${diagnostic.path})`,
+				agentId,
+			})),
+		);
+		return loaded.promptTemplates.map(({ promptTemplate }) => promptTemplate);
+	}
+
+	async listAgentSkillCandidates(
+		agentId: AgentId,
+	): Promise<AgentSkillCandidateListResult> {
+		return {
+			skills: (await this._loadAgentSkills(agentId)).map((skill) => ({
+				value: skill.name,
+				label: skill.name,
+				...(skill.description === undefined
+					? undefined
+					: { description: skill.description }),
+			})),
+		};
+	}
+
+	async getAgentSkill(agentId: AgentId, name: string): Promise<Skill> {
+		const skills = await this._loadAgentSkills(agentId);
+		const skill = skills.find((candidate) => candidate.name === name);
+		if (!skill) {
+			throw new OrchestratorError({
+				severity: "error",
+				code: "skill.not_found",
+				message: `Skill not found: ${name}`,
+				agentId,
+			});
+		}
+		return skill;
+	}
+
+	/** Same freshness rule as prompt templates, narrowed by the agent's profile. */
+	private async _loadAgentSkills(agentId: AgentId): Promise<readonly Skill[]> {
+		const { resolvedProfile } = this._requireLiveAgent(agentId);
+		const loaded = await this.resourceLoader.loadSkills(resolvedProfile.skills);
+		await this._publishDiagnostics(
+			loaded.diagnostics.map((diagnostic) => ({
+				severity: "warning" as const,
+				code: `resource.skill.${diagnostic.code}`,
+				message: `${diagnostic.message} (${diagnostic.path})`,
+				agentId,
+			})),
+		);
+		return loaded.skills.map(({ skill }) => skill);
+	}
+
+	// -----------------------------------------------------------------------
+	// Sessions
+	//
+	// Reads go straight to the SessionManager. The one write here goes through the
+	// harness, because the harness owns the session file while an operation is
+	// running and a direct write would race the entries it has buffered.
+	// -----------------------------------------------------------------------
+
+	async listAgentSessions(): Promise<AgentSessionListResult> {
+		return { sessions: await this.sessionManager.listAgentSessionCandidates() };
+	}
+
+	async getAgentSession(agentId: AgentId): Promise<AgentSessionSnapshot> {
+		this._requireLiveAgent(agentId);
+		return await this.sessionManager.getAgentSessionSnapshot(agentId);
+	}
+
+	async getAgentSessionTree(
+		agentId: AgentId,
+	): Promise<AgentSessionTreeSnapshot> {
+		this._requireLiveAgent(agentId);
+		return await this.sessionManager.getAgentSessionTree(agentId);
+	}
+
+	async getAgentSessionName(agentId: AgentId): Promise<string | undefined> {
+		return (await this.getAgentSession(agentId)).name;
+	}
+
+	/**
+	 * **Session write.** The name is session metadata rather than branch content,
+	 * but it takes the same route as everything else: `harness.setSessionName` is
+	 * the supported entry point, and it serializes behind whatever the harness has
+	 * already buffered instead of racing it.
+	 */
+	async setAgentSessionName(agentId: AgentId, name: string): Promise<void> {
+		await this._requireLiveAgent(agentId).harness.setSessionName(name);
+		await this._emit({
+			type: "agent_session_info_changed",
+			agentId,
+			name,
+			changedAt: now(),
+		});
+	}
+
+	// -----------------------------------------------------------------------
+	// Background jobs
+	//
+	// Forwarding to `BackgroundJobRuntime`, with the liveness gate this class
+	// owns. The runtime answers by owner id and knows nothing about `_live`, so
+	// without the gate a tombstoned agent's jobs would still be listable.
+	// -----------------------------------------------------------------------
+
+	/** Live backgrounded jobs: the t0 handles the model is currently holding. */
+	listAgentBackgroundJobs(agentId: AgentId): BackgroundJobSnapshot[] {
+		this._requireLiveAgent(agentId);
+		return [...this._backgroundJobs.listJobs(agentId)];
+	}
+
+	/**
+	 * Current rolling output tail of a live job, or undefined when there is no
+	 * such job. Output is pull-only: change events never carry it.
+	 */
+	readAgentBackgroundJobOutput(
+		agentId: AgentId,
+		jobId: string,
+	): string | undefined {
+		this._requireLiveAgent(agentId);
+		const result = this._backgroundJobs.readJobOutput(agentId, jobId);
+		return result.ok ? result.read.output : undefined;
+	}
+
+	/**
+	 * Request that a live job terminate. False means there was no such live job,
+	 * which a caller holding a snapshot cannot rule out - it may have settled
+	 * since it was listed.
+	 *
+	 * The abort is a request, not a kill: a local job stops only if its tool
+	 * honours the signal, while an external job has nothing watching and is
+	 * cancelled by the runtime itself.
+	 */
+	abortAgentBackgroundJob(
+		agentId: AgentId,
+		jobId: string,
+		reason?: string,
+	): boolean {
+		this._requireLiveAgent(agentId);
+		return this._backgroundJobs.abortJob(agentId, jobId, reason).ok;
+	}
+
+	/** Every job this session has on record, including runs before this process. */
+	agentBackgroundJobHistory(
+		agentId: AgentId,
+	): readonly PersistedBackgroundJob[] {
+		this._requireLiveAgent(agentId);
+		return this._backgroundJobs.history(agentId);
+	}
+
+	// -----------------------------------------------------------------------
+	// Human requests, clients, and events
+	// -----------------------------------------------------------------------
+
+	async requestHuman(request: HumanRequest): Promise<HumanResponse> {
+		return await this._humanRequests.request(request);
+	}
+
+	/**
+	 * The agent-scoped form. The agentId is a separate argument rather than part
+	 * of the request because it decides cancellation scope - disposing an agent
+	 * cancels what it was waiting on - and that must not be forgeable through the
+	 * request's own `source`.
+	 */
+	private async _requestHumanForAgent(
+		agentId: AgentId,
+		request: HumanRequest,
+	): Promise<HumanResponse> {
+		return await this._humanRequests.request(request, { agentId });
+	}
+
+	async cancelHumanRequest(
+		requestId: string,
+		reason?: string,
+	): Promise<boolean> {
+		return await this._humanRequests.cancel(requestId, reason);
+	}
+
+	registerClient(client: OrchestratorClient<OrchestratorEvent>): () => void {
+		return this._events.registerClient(client);
+	}
+
+	subscribe(listener: OrchestratorEventListener): () => void {
+		return this._events.subscribe(listener);
+	}
+
+	subscribeAgent(
+		agentId: AgentId,
+		listener: OrchestratorEventListener,
+	): () => void {
+		return this._events.subscribeAgent(agentId, listener);
+	}
+
+	/**
+	 * Broadcast a request that the runtime wind down, once.
+	 *
+	 * This is not `disposeAll`: nothing is torn down here. It tells extensions and
+	 * the host that an exit is intended, and the host decides what to do about it.
+	 *
+	 * The dispatch order is this method's one deliberate exception to `_emit`: a
+	 * host listener may start `disposeAll` the instant it sees the request, so
+	 * extension observers get their final persistence work in first.
+	 */
+	async requestShutdown(request: RuntimeShutdownRequest): Promise<void> {
+		if (this._shutdownRequested) return;
+		this._shutdownRequested = true;
+		const event: Extract<
+			OrchestratorEvent,
+			{ type: "runtime_shutdown_requested" }
+		> = Object.freeze({
+			type: "runtime_shutdown_requested",
+			requestedBy: request.requestedBy,
+			requestedByAgentId: request.requestedByAgentId,
+			...(request.reason === undefined
+				? undefined
+				: { reason: request.reason }),
+			createdAt: now(),
+		});
+		await this._dispatchExtensionObservedEvent(event);
+		await this._emit(event, { observeExtensions: false });
+	}
+
+	/**
+	 * Publish one event to listeners, clients, and extension observers.
+	 *
+	 * The bus owns the first two and their failure isolation; the third is a
+	 * runner lifecycle concern and is composed here rather than inside the bus,
+	 * which knows nothing about extensions. `observeExtensions: false` is how a
+	 * fact an extension itself produced avoids feeding straight back into it.
+	 */
+	private async _emit(
+		event: OrchestratorEvent,
+		options: EventPublishOptions & {
+			readonly observeExtensions?: boolean;
+		} = {},
+	): Promise<void> {
+		await this._events.publish(event, options);
+		if (options.observeExtensions === false) return;
+		if (!isExtensionObservedEvent(event)) return;
+		await this._dispatchExtensionObservedEvent(event);
+	}
+
+	private async _publishDiagnostic(
+		diagnostic: OrchestratorDiagnostic,
+		options: EventPublishOptions & {
+			readonly observeExtensions?: boolean;
+		} = {},
+	): Promise<void> {
+		await this._emit(
+			{ type: "diagnostic", diagnostic, createdAt: now() },
+			options,
+		);
+	}
+
+	private async _publishDiagnostics(
+		diagnostics: readonly OrchestratorDiagnostic[],
+		options: EventPublishOptions & {
+			readonly observeExtensions?: boolean;
+		} = {},
+	): Promise<void> {
+		for (const diagnostic of diagnostics) {
+			await this._publishDiagnostic(diagnostic, options);
+		}
+	}
+
+	/** Publish a diagnostic and hand it back, for the throw-after-publish paths. */
+	private async _publishAndReturn(
+		diagnostic: OrchestratorDiagnostic,
+	): Promise<OrchestratorDiagnostic> {
+		await this._publishDiagnostic(diagnostic);
+		return diagnostic;
+	}
+
+	/**
+	 * Everything the services accumulated before any client could hear it. Drained
+	 * rather than read, so a second call does not republish the same startup
+	 * warnings.
+	 */
+	private _drainCoreDiagnostics(): readonly OrchestratorDiagnostic[] {
+		return [
+			...this.settingManager.drainDiagnostics(),
+			...this.modelRegistry.authStorage.drainDiagnostics(),
+			...this.modelRegistry.drainDiagnostics(),
+		];
+	}
+
+	/**
+	 * A failure in an agent's lifecycle plumbing: recorded on the agent so its
+	 * snapshot carries it, and published as a warning.
+	 *
+	 * Always a warning, never an error, and never re-thrown: these are reported
+	 * from teardown and observer paths where there is no caller left to handle a
+	 * rejection.
+	 */
+	private async _recordAgentLifecycleFailure(
+		agentId: AgentId,
+		code: string,
+		message: string,
+	): Promise<void> {
+		const diagnostic: OrchestratorDiagnostic = {
+			severity: "warning",
+			code,
+			message,
+			agentId,
+		};
+		this._addAgentDiagnostics(agentId, [diagnostic]);
+		await this._publishDiagnostic(diagnostic);
+	}
+
+	/**
+	 * Subscribe to one agent generation's harness and return the release handle
+	 * disposal calls.
+	 *
+	 * One subscription, not two: the activity observer and the session-write
+	 * observer both need the same event and the same run signal, and splitting
+	 * them would double every dispatch and let the two views drift apart on
+	 * ordering.
+	 */
+	private async _bindHarness(
+		agentId: AgentId,
+		generation: number,
+		harness: WidiAgentHarness,
+	): Promise<() => Promise<void>> {
+		const unsubscribe = harness.subscribe((event, signal) => {
+			void this._handleHarnessEvent(agentId, generation, event, signal);
+		});
+		return async () => {
+			unsubscribe();
+		};
+	}
+
+	/**
+	 * The single harness-event entry point.
+	 *
+	 * The run signal is installed before the observers run, so an extension asking
+	 * for the current run's signal during the turn gets one, and cleared after
+	 * `settled` - but only if it is still this run's signal, because a queued next
+	 * turn may already have installed its own while dispatch was pending.
+	 *
+	 * `agent_harness_event` is published before the session-write observer so a
+	 * client sees the persisted user message before the presentation entry that
+	 * names it; the reverse order would have surfaces rendering a presentation for
+	 * a message they have not been told about.
+	 */
+	private async _handleHarnessEvent(
+		agentId: AgentId,
+		generation: number,
+		event: AgentHarnessEvent,
+		signal: AbortSignal | undefined,
+	): Promise<void> {
+		if (signal) this._agentRunSignals.set(agentId, signal);
+		try {
+			await this._observeHarnessActivity(agentId, generation, event);
+			await this._emit({ type: "agent_harness_event", agentId, event });
+			if (event.type === "session_write") {
+				await this._observeSessionWrite(agentId, event.entryId, event.write);
+			}
+		} finally {
+			if (
+				event.type === "settled" &&
+				this._agentRunSignals.get(agentId) === signal
+			) {
+				this._agentRunSignals.delete(agentId);
+			}
+		}
+	}
+
 	/** Append to this agent's diagnostics history, which the snapshot reads. */
 	private _addAgentDiagnostics(
 		agentId: AgentId,
@@ -4434,6 +5524,137 @@ function maintenanceDescription(kind: AgentMaintenanceKind): string {
 function queuedMessageCount(harness: WidiAgentHarness): number {
 	const counts = harness.getQueuedMessageCounts();
 	return counts.steer + counts.followUp + counts.nextTurn;
+}
+
+/** One background-runtime event, renamed into the orchestrator's vocabulary. */
+function toOrchestratorBackgroundEvent(
+	event: BackgroundJobEvent,
+): OrchestratorEvent {
+	if (event.type === "job_changed") {
+		return {
+			type: "agent_background_job_changed",
+			agentId: event.agentId,
+			job: event.job,
+			transition: event.transition,
+			liveCount: event.liveCount,
+			changedAt: event.changedAt,
+		};
+	}
+	if (event.type === "job_report") {
+		return {
+			type: "agent_background_job_report_updated",
+			agentId: event.agentId,
+			jobId: event.jobId,
+			report: event.report,
+			changedAt: event.changedAt,
+			operationRef: event.operationRef,
+		};
+	}
+	return {
+		type: "agent_background_job_progress",
+		agentId: event.agentId,
+		jobId: event.jobId,
+		sequence: event.sequence,
+		chunk: event.chunk,
+		startByte: event.startByte,
+		endByte: event.endByte,
+		totalBytesSeen: event.totalBytesSeen,
+		progressDroppedBytes: event.progressDroppedBytes,
+		observedAt: event.observedAt,
+		operationRef: event.operationRef,
+	};
+}
+
+/** Model-visible summary of one live agent, for the collaboration tools. */
+function describeAgentForTools(liveAgent: LiveAgent): AgentBrief {
+	const { reference } = liveAgent.profile;
+	return {
+		agentId: liveAgent.agentId,
+		profileId: reference.id,
+		...(reference.label === undefined ? undefined : { label: reference.label }),
+		activity: toActivitySnapshot(liveAgent.harness.getPhase()).activity,
+	};
+}
+
+/**
+ * Narrow a caller's requested active tools to the ones actually installed,
+ * reporting each rejection rather than failing the whole call.
+ *
+ * Deliberately not the registry's own active-name resolution: this validates
+ * against the harness's live tool set, which is the only set that can be
+ * activated, and it never re-derives the installed tools as a side effect.
+ */
+function selectActiveToolNames(
+	toolNames: readonly string[],
+	installedNames: ReadonlySet<string>,
+	agentId: AgentId,
+): {
+	readonly activeToolNames: string[];
+	readonly diagnostics: readonly OrchestratorDiagnostic[];
+} {
+	const activeToolNames: string[] = [];
+	const diagnostics: OrchestratorDiagnostic[] = [];
+	const seen = new Set<string>();
+	for (const rawName of toolNames) {
+		const name = rawName.trim();
+		if (!name) {
+			diagnostics.push({
+				severity: "error",
+				code: "tool.invalid_name",
+				message: "Tool name list contains an empty name.",
+				agentId,
+			});
+			continue;
+		}
+		if (seen.has(name)) {
+			diagnostics.push({
+				severity: "warning",
+				code: "tool.active_duplicate",
+				message: `Tool name '${name}' is listed more than once; keeping the first occurrence.`,
+				agentId,
+			});
+			continue;
+		}
+		seen.add(name);
+		if (!installedNames.has(name)) {
+			diagnostics.push({
+				severity: "warning",
+				code: "tool.active_missing",
+				message: `Active tool '${name}' is not in the agent's installed tool set.`,
+				agentId,
+			});
+			continue;
+		}
+		activeToolNames.push(name);
+	}
+	return { activeToolNames, diagnostics };
+}
+
+/**
+ * Profile fields a resume re-resolves from the registry. Overriding one of them
+ * on a persistent profile would produce a session that could never be reopened
+ * as the agent that wrote it.
+ */
+function changesRecoverableProfileFields(
+	override: AgentProfileOverride,
+): boolean {
+	return (
+		override.systemPrompt !== undefined ||
+		override.tools !== undefined ||
+		override.skills !== undefined ||
+		override.projectContext !== undefined ||
+		override.includeCwd !== undefined ||
+		override.skillsListing !== undefined ||
+		override.appendSystemPrompt !== undefined ||
+		override.persist !== undefined
+	);
+}
+
+/** Which orchestrator events extension runners are allowed to observe. */
+function isExtensionObservedEvent(
+	event: OrchestratorEvent,
+): event is ExtensionObservedEvent {
+	return Object.hasOwn(EXTENSION_OBSERVED_EVENT_NAMES, event.type);
 }
 
 /** The harness takes a mutable image array; the orchestrator passes readonly ones. */
