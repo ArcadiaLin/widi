@@ -162,13 +162,14 @@ describe("AgentHarness", () => {
 		await expect(prompt).resolves.toMatchObject({ role: "assistant" });
 		await expect(Promise.all([firstShutdown, secondShutdown])).resolves.toEqual([undefined, undefined]);
 		await expect(harness.prompt("again")).rejects.toMatchObject({
-			code: "invalid_state",
+			code: "shutdown",
 			message: "AgentHarness has been shut down",
 		});
-		await expect(harness.nextTurn("again")).rejects.toMatchObject({ code: "invalid_state" });
+		await expect(harness.nextTurn("again")).rejects.toMatchObject({ code: "shutdown" });
 		await expect(harness.appendMessage(createUserMessage("again"))).rejects.toMatchObject({
-			code: "invalid_state",
+			code: "shutdown",
 		});
+		await expect(harness.abort()).resolves.toEqual({ clearedSteer: [], clearedFollowUp: [] });
 	});
 
 	it("does not start a provider request when shutdown occurs during before_agent_start", async () => {
@@ -203,7 +204,7 @@ describe("AgentHarness", () => {
 
 		expect(shutdownSettled).toBe(false);
 		release.resolve();
-		await expect(prompt).rejects.toMatchObject({ code: "invalid_state" });
+		await expect(prompt).rejects.toMatchObject({ code: "shutdown" });
 		await shutdown;
 		expect(providerCalls).toBe(0);
 	});
@@ -342,7 +343,85 @@ describe("AgentHarness", () => {
 			entry.type === "message" ? [entry.message] : [],
 		);
 		expect(messages).toEqual([expect.objectContaining({ role: "user" })]);
-		await expect(harness.compact()).rejects.toMatchObject({ code: "invalid_state" });
+		await expect(harness.compact()).rejects.toMatchObject({ code: "shutdown" });
+	});
+
+	it("holds a reentrant abort until the shutdown it observed has finished", async () => {
+		const registration = newFaux();
+		const entered = deferred();
+		const release = deferred();
+		let signal: AbortSignal | undefined;
+		registration.setResponses([
+			async (_context, options) => {
+				signal = options?.signal;
+				entered.resolve();
+				await release.promise;
+				return fauxAssistantMessage("interrupted");
+			},
+		]);
+		const harness = new AgentHarness({
+			models,
+			session: new Session(new InMemorySessionStorage()),
+			model: registration.getModel(),
+		});
+		const prompt = harness.prompt("hello");
+		await entered.promise;
+
+		// Aborting the operation runs this synchronously, from inside shutdown(),
+		// before shutdown has assigned anything an observer could wait on.
+		let abortSettled = false;
+		let reentrantAbort: Promise<unknown> | undefined;
+		signal?.addEventListener("abort", () => {
+			reentrantAbort = harness.abort().then(() => {
+				abortSettled = true;
+			});
+		});
+
+		const shutdown = harness.shutdown();
+		await new Promise((resolve) => setImmediate(resolve));
+
+		expect(abortSettled).toBe(false);
+		release.resolve();
+		await prompt.catch(() => {});
+		await Promise.all([shutdown, reentrantAbort]);
+		expect(abortSettled).toBe(true);
+	});
+
+	it("delivers the aborted turn's tail before releasing subscribers", async () => {
+		const registration = newFaux();
+		const entered = deferred();
+		const release = deferred();
+		registration.setResponses([
+			async () => {
+				entered.resolve();
+				await release.promise;
+				return fauxAssistantMessage("interrupted");
+			},
+		]);
+		const harness = new AgentHarness({
+			models,
+			session: new Session(new InMemorySessionStorage()),
+			model: registration.getModel(),
+		});
+		const observed: string[] = [];
+		harness.subscribe((event) => {
+			observed.push(event.type);
+		});
+
+		const prompt = harness.prompt("hello");
+		await entered.promise;
+		const shutdown = harness.shutdown();
+		const observedAtShutdown = observed.length;
+		release.resolve();
+		await prompt.catch(() => {});
+		await shutdown;
+
+		// The turn keeps reporting itself while shutdown waits for it, so an
+		// observer is never left believing the agent is still running.
+		expect(observed.slice(observedAtShutdown)).toContain("agent_end");
+		// Releasing the handlers is what makes the stop permanent; re-subscribing
+		// to a shut-down harness is refused rather than silently ignored.
+		expect(() => harness.subscribe(() => {})).toThrow("AgentHarness has been shut down");
 	});
 
 	it("returns entry ids for idle session writes and reports each one", async () => {

@@ -235,6 +235,12 @@ export class SessionError extends Error {
 export type AgentHarnessErrorCode =
 	| "busy"
 	| "invalid_state"
+	/**
+	 * The harness has been shut down. Terminal: unlike `busy` and
+	 * `invalid_state`, which describe a phase the caller can wait out, nothing
+	 * this harness rejects with `shutdown` will ever succeed on a retry.
+	 */
+	| "shutdown"
 	| "invalid_argument"
 	| "session"
 	| "hook"

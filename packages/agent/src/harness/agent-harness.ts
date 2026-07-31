@@ -232,7 +232,7 @@ export class AgentHarness<
 	}
 
 	private assertNotShutDown(): void {
-		if (this.isShutdown) throw new AgentHarnessError("invalid_state", "AgentHarness has been shut down");
+		if (this.isShutdown) throw new AgentHarnessError("shutdown", "AgentHarness has been shut down");
 	}
 
 	private getHandlers(type: string): Set<AgentHarnessHandler> | undefined {
@@ -1231,21 +1231,46 @@ export class AgentHarness<
 	/**
 	 * Permanently stop this harness instance without deleting its durable session.
 	 * Clears queued work, aborts the active operation, and waits for it to settle.
+	 *
+	 * Subscribers are released only once everything has settled: the aborted
+	 * operation still emits its tail - the failed message, `agent_end`, the final
+	 * `queue_update` - and an observer that stopped receiving events at the first
+	 * line of shutdown would be left believing the agent is still running.
 	 */
 	async shutdown(): Promise<void> {
 		if (this.shutdownPromise) return this.shutdownPromise;
 		this.isShutdown = true;
+		// Publish the promise before the state it describes becomes observable.
+		// Aborting the active operation dispatches its signal listeners
+		// synchronously, and anything those listeners call reads a harness that
+		// already reports itself shut down; a reentrant abort() would await an
+		// unassigned promise and settle before the shutdown it is meant to follow.
+		let finished = () => {};
+		this.shutdownPromise = new Promise<void>((resolve) => {
+			finished = resolve;
+		});
 		this.pendingSessionWrites = [];
 		this.steerQueue = [];
 		this.followUpQueue = [];
 		this.nextTurnQueue = [];
 		this.activeAbortController?.abort();
-		this.shutdownPromise = this.waitForTasks();
+		const release = () => {
+			this.handlers.clear();
+			finished();
+		};
+		void this.waitForTasks().then(release, release);
 		return this.shutdownPromise;
 	}
 
 	async abort(): Promise<AbortResult> {
-		this.assertNotShutDown();
+		// A shut-down harness has already cleared both queues and aborted its
+		// operation, so there is nothing left to abort and nothing to report as
+		// cleared. Teardown paths call both, and duplicate teardown is normal;
+		// failing here would only force every caller to guard the second call.
+		if (this.isShutdown) {
+			await this.shutdownPromise;
+			return { clearedSteer: [], clearedFollowUp: [] };
+		}
 		const clearedSteer = [...this.steerQueue];
 		const clearedFollowUp = [...this.followUpQueue];
 		this.steerQueue = [];
