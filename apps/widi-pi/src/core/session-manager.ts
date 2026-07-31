@@ -30,6 +30,7 @@ import {
 	parseAgentProfileReference,
 	toAgentProfileReference,
 } from "./agent-profile.js";
+import { SessionJobJournal } from "./background/index.ts";
 import type {
 	ExtensionInputPresentation,
 	ExtensionMessage,
@@ -407,6 +408,23 @@ export class SessionManager {
 		return isJsonlSessionMetadata(metadata)
 			? sessionDirPath(metadata.path)
 			: undefined;
+	}
+
+	/**
+	 * Open the background job journal living in this agent's session directory.
+	 *
+	 * The journal is a session-owned artifact like `agents/tree.jsonl`, so its
+	 * placement belongs here rather than to the background runtime, which knows
+	 * only that some owner has a journal. An ephemeral agent has no directory and
+	 * therefore keeps no job history.
+	 */
+	async openBackgroundJobJournal(owner: {
+		readonly agentId: string;
+		readonly sessionId: string;
+	}): Promise<SessionJobJournal | undefined> {
+		const sessionDir = await this.getAgentSessionDir(owner.agentId);
+		if (!sessionDir) return undefined;
+		return await SessionJobJournal.open({ fs: this._fs, sessionDir });
 	}
 
 	// Retraction for provisional prompt records (expansion/transform entries
