@@ -55,6 +55,7 @@ import type {
 
 export type PersistenceFileSystem = Pick<
 	FileSystem,
+	| "absolutePath"
 	| "joinPath"
 	| "readTextFile"
 	| "readTextLines"
@@ -100,6 +101,13 @@ export interface CustomStorage {
 
 	/** State roots this root needs, within this same namespace and session. */
 	listDependencies(stateRoot: string): Promise<readonly string[]>;
+
+	/**
+	 * The format version the state on disk was written with, when this storage
+	 * tracks one. Below the definition's version it triggers
+	 * {@link PersistenceNamespaceDefinition.migrate}; omitted means never.
+	 */
+	readonly storedFormatVersion?: number;
 
 	/**
 	 * Other sessions this root needs, when the state names them.

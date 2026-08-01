@@ -326,6 +326,29 @@ export function getEntriesToFork(
 	return getFullBranch(entries, target.parentId);
 }
 
+/**
+ * The leaf the forked session ends on, for the same options.
+ *
+ * Separate from {@link getEntriesToFork} because without a target that returns
+ * every branch in file order, and the last line of a file is not the branch a
+ * projection may be taken over.
+ */
+export function getForkLeafId(
+	entries: readonly SessionTreeEntry[],
+	currentLeafId: string | null,
+	options: { readonly entryId?: string; readonly position?: "before" | "at" },
+): string | null {
+	if (!options.entryId) return currentLeafId;
+	const target = entries.find((entry) => entry.id === options.entryId);
+	if (!target) {
+		throw new SessionError(
+			"invalid_fork_target",
+			`Entry ${options.entryId} not found`,
+		);
+	}
+	return (options.position ?? "before") === "at" ? target.id : target.parentId;
+}
+
 export async function loadJsonlSessionMetadata(
 	fs: PersistenceFileSystem,
 	filePath: string,

@@ -222,8 +222,8 @@ sessionsRoot 的多进程并发写入继续不受支持。
    **让两份实现读同一份字节并逐项比对**，而不是断言 fixture——后者只能证明移植符合测试的
    预期，前者才证明「pi 写的 WIDI 能读，WIDI 写的 pi 能读」，且 upstream 变动时仍然有效。
    **已完成**
-4. **仓储实现**：create/open/list/listChildren/delete/fork，含子会话递归复制。验收是
-   「fork 后删除源目录，新会话仍可独立恢复」。
+4. ~~仓储实现~~：create/open/list/listChildren/delete/fork，含子会话递归复制。验收
+   「fork 后删除源目录，新会话仍可独立恢复」已通过。**已完成**
 5. **迁移 `core:subagent`**（需等新 orchestrator 接线，否则要在两个 orchestrator 里各写
    一遍）：state root = 成员快照；`parent.json` 改为 session header metadata；
    `agents/tree.jsonl` 保留只读兼容。

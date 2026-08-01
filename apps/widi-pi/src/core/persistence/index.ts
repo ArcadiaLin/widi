@@ -28,6 +28,7 @@ export type {
 export { PersistenceRegistry } from "./custom-storage.ts";
 export type {
 	CreateSessionOptions,
+	ForkResult,
 	ForkSessionOptions,
 	PersistedSession,
 	PersistedSessionInfo,
@@ -35,10 +36,13 @@ export type {
 	ResolvedPersistence,
 } from "./jsonl-persistence.ts";
 export { JsonlPersistenceRepo } from "./jsonl-persistence.ts";
+export type { SessionHeader } from "./jsonl-session.ts";
 export {
 	getEntriesToFork,
+	getForkLeafId,
 	getFullBranch,
 	JsonlSession,
+	loadJsonlSessionMetadata,
 	SESSION_FORMAT_VERSION,
 } from "./jsonl-session.ts";
 export { JsonlObjectStore } from "./object-store.ts";

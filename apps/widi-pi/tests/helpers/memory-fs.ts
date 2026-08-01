@@ -28,6 +28,10 @@ export class MemoryFileSystem implements PersistenceFileSystem {
 		return index <= 0 ? "/" : normalized.slice(0, index);
 	}
 
+	async absolutePath(path: string): Promise<Result<string, FileError>> {
+		return ok(this._normalize(path.startsWith("/") ? path : `/${path}`));
+	}
+
 	async joinPath(parts: string[]): Promise<Result<string, FileError>> {
 		return ok(this._normalize(parts.join("/")));
 	}
