@@ -218,8 +218,10 @@ sessionsRoot 的多进程并发写入继续不受支持。
 1. ~~模型骨架~~：`core/persistence/`，纯逻辑在 `utils/`。**已完成**
 2. ~~模型测试~~：`test:counter` namespace 锁住 projection、object store、fork closure、
    provenance 与 owner。**已完成**
-3. **`JsonlSession` 移植**：从 pi 的 `jsonl-storage.ts` 逐字段搬，保持 v3 兼容；用真实
-   fixture 验证 create/open/load/list/fork。
+3. ~~`JsonlSession` 移植~~：从 pi 的 `jsonl-storage.ts` 逐字段搬，保持 v3 兼容。验证方式是
+   **让两份实现读同一份字节并逐项比对**，而不是断言 fixture——后者只能证明移植符合测试的
+   预期，前者才证明「pi 写的 WIDI 能读，WIDI 写的 pi 能读」，且 upstream 变动时仍然有效。
+   **已完成**
 4. **仓储实现**：create/open/list/listChildren/delete/fork，含子会话递归复制。验收是
    「fork 后删除源目录，新会话仍可独立恢复」。
 5. **迁移 `core:subagent`**（需等新 orchestrator 接线，否则要在两个 orchestrator 里各写
