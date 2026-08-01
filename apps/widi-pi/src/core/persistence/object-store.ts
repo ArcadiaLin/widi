@@ -14,11 +14,20 @@
  * Layout: `<session>/persistence/<namespace>/objects.jsonl`, a header line and
  * then one object per line. Created lazily, so a session that never uses a
  * namespace never grows its directory.
+ *
+ * The header also names the owner, and a log whose owner does not match the
+ * code opening it is sealed rather than read. Namespace names are unique but
+ * not reserved, so an extension can be uninstalled and its name claimed by
+ * something else, which would otherwise inherit a directory of objects and
+ * interpret them against a schema they were never written for.
  */
 
 import type { CustomStorage, PersistenceFileSystem } from "./custom-storage.ts";
 import { contentHash } from "./utils/content-hash.ts";
-import type { PersistenceDiagnostics } from "./utils/diagnostics.ts";
+import type {
+	PersistenceDiagnosticCode,
+	PersistenceDiagnostics,
+} from "./utils/diagnostics.ts";
 import type { SessionKey } from "./utils/layout.ts";
 
 export const OBJECT_LOG_HEADER_TYPE = "persistence-objects";
@@ -32,6 +41,8 @@ interface ObjectLogHeader {
 	readonly namespace: string;
 	/** The owning namespace's format version, for its own migrations. */
 	readonly formatVersion: number;
+	/** {@link PersistenceNamespaceDefinition.owner} at the time of the write. */
+	readonly owner?: string;
 }
 
 interface PersistedObject {
@@ -49,6 +60,12 @@ export interface JsonlObjectStoreOptions {
 	readonly formatVersion: number;
 	readonly sessionKey: SessionKey;
 	readonly diagnostics?: PersistenceDiagnostics;
+	/**
+	 * Who this log belongs to. Checked against the header on open, so a
+	 * namespace name reclaimed by different code cannot inherit the objects the
+	 * previous owner wrote.
+	 */
+	readonly owner?: string;
 }
 
 export class JsonlObjectStore implements CustomStorage {
@@ -59,6 +76,7 @@ export class JsonlObjectStore implements CustomStorage {
 	private readonly _formatVersion: number;
 	private readonly _sessionKey: SessionKey;
 	private readonly _diagnostics: PersistenceDiagnostics | undefined;
+	private readonly _owner: string | undefined;
 	private readonly _objects = new Map<string, PersistedObject>();
 	// Appends are serialized so two writes in the same tick cannot interleave
 	// their lines, and so a caller awaiting one object knows every earlier one
@@ -67,6 +85,10 @@ export class JsonlObjectStore implements CustomStorage {
 	private _fileReady = false;
 	/** Format version actually found on disk, once the log exists. */
 	private _storedFormatVersion: number | undefined;
+	// Set when the log on disk exists but this build must not touch it. Reads
+	// degrade to empty; writes have to fail loudly, because a caller told an
+	// object was stored will go on to put a ref on the branch naming it.
+	private _sealed: string | undefined;
 
 	private constructor(options: JsonlObjectStoreOptions) {
 		this._fs = options.fs;
@@ -76,6 +98,7 @@ export class JsonlObjectStore implements CustomStorage {
 		this._formatVersion = options.formatVersion;
 		this._sessionKey = options.sessionKey;
 		this._diagnostics = options.diagnostics;
+		this._owner = options.owner;
 	}
 
 	static async open(
@@ -122,6 +145,9 @@ export class JsonlObjectStore implements CustomStorage {
 		readonly data: unknown;
 		readonly dependencies?: readonly string[];
 	}): Promise<string> {
+		if (this._sealed !== undefined) {
+			throw new Error(`Refusing to write ${this._filePath}: ${this._sealed}`);
+		}
 		const deps = [...new Set(options.dependencies ?? [])].sort();
 		const body = { deps, data: options.data };
 		const id = contentHash(body);
@@ -203,10 +229,18 @@ export class JsonlObjectStore implements CustomStorage {
 				}
 				this._storedFormatVersion = header.formatVersion;
 				if (header.version > OBJECT_LOG_VERSION) {
-					this._report(
+					this._seal(
 						"warning",
 						"persistence.unsupported_version",
 						`${this._filePath} was written by a newer build (envelope v${header.version}).`,
+					);
+					return;
+				}
+				if (header.owner !== this._owner) {
+					this._seal(
+						"error",
+						"persistence.owner_mismatch",
+						`${this._filePath} belongs to ${header.owner ?? "no owner"}, but ${this._owner ?? "no owner"} opened it.`,
 					);
 					return;
 				}
@@ -231,6 +265,7 @@ export class JsonlObjectStore implements CustomStorage {
 				version: OBJECT_LOG_VERSION,
 				namespace: this._namespace,
 				formatVersion: this._formatVersion,
+				...(this._owner === undefined ? undefined : { owner: this._owner }),
 			};
 			const wrote = await this._fs.writeFile(
 				this._filePath,
@@ -247,9 +282,18 @@ export class JsonlObjectStore implements CustomStorage {
 		if (!appended.ok) throw new Error(appended.error.message);
 	}
 
+	private _seal(
+		severity: "warning" | "error",
+		code: PersistenceDiagnosticCode,
+		message: string,
+	): void {
+		this._sealed = message;
+		this._report(severity, code, message);
+	}
+
 	private _report(
 		severity: "warning" | "error",
-		code: "persistence.corrupt_log" | "persistence.unsupported_version",
+		code: PersistenceDiagnosticCode,
 		message: string,
 	): void {
 		this._diagnostics?.report({
@@ -276,6 +320,7 @@ function toObjectLogHeader(value: unknown): ObjectLogHeader | undefined {
 		version: header.version,
 		namespace: header.namespace,
 		formatVersion: header.formatVersion,
+		owner: typeof header.owner === "string" ? header.owner : undefined,
 	};
 }
 

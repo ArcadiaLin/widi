@@ -24,6 +24,48 @@ fork：复制对话 entries → 从**源会话的完整分支**投影出各 name
 「随对话树回退」和「fork 后可独立恢复」因此成为所有 persistence kind 共享的机制，
 每个 kind 只声明自己的数据格式、依赖和 fork 策略。
 
+## 职权范围
+
+恢复一个会话分三步，persistence 只管前两步。
+
+| 步骤 | 含义 | 归属 |
+| --- | --- | --- |
+| **投影 projection** | 分支点上哪个 state root 生效 | 框架，不允许 namespace 覆写 |
+| **解析 resolution** | 该 root 对应什么数据 | namespace |
+| **激活 activation** | 拿到数据之后做什么 | 下游，本层不提供钩子 |
+
+投影必须归框架：否则 rewind 的语义会因 namespace 而异，用户无法推理「我退回去了到底退掉了什么」。
+
+激活必须归下游，因为正确行为依赖本层看不见的东西——进程是否还活着、当前配置是否还允许该 extension、这次是 `/resume` 还是 fork 后首次运行。在这里放 `onResume` 钩子，等于强迫每个 namespace 去猜这些，猜错了框架也发现不了。
+
+注意这与 fork 有 policy 并不矛盾：fork 时 persistence 是动作的发起者，它在搬字节，必须知道搬不搬；resume 时它只被读取。
+
+本层欠下游的，是**只有它知道的事实**：
+
+- `StateProvenance`（`current` / `forked` / `degraded` / `migrated`）——这份状态是本分支自己写的，还是从别处继承来的；
+- 每一条降级的诊断（`PersistenceDiagnostic`），可定位到 namespace 与 state root。
+
+下游负责的：
+
+- 激活策略（要不要重新拉起 agent、要不要重连进程、怎么向用户呈现）；
+- `/resume` 的 UI 层级（固定在顶层会话，与持久化树深度无关）；
+- 磁盘回收，见下节。
+
+## 未注册 namespace 与 GC 禁令
+
+**未注册 namespace 不是错误，是常态。** 空注册表也必须能打开、列举、读取会话，只是它携带的状态不解析。这不是为容错加的，是必需的：extension 未安装、extension 加载失败、用户临时禁用、旧 build 读新会话——本层看到的全都是「注册表里没有这一格」，四种情况在这里**无法区分**。
+
+处置固定为一种：
+
+- ref 留在分支上不动。分支是 append-only；且删掉一条 ref 会让一个已存在的 leaf 解析出不同结果；
+- namespace 目录留在盘上不动。卸载通常是临时的（升级、禁用、换 profile），重装即原样恢复；
+- 报 `persistence.unknown_namespace`，**severity 为 warning 而非 error**，这样 `hasErrors` 不会因为「用户没装某个 extension」而为真，下游拿它报警不会误报；
+- fork 时跳过该 namespace，其余照常。
+
+**GC 禁令：磁盘回收绝不能由注册表状态驱动。** 「注册表里没有就删」会让一次 extension 加载失败永久销毁用户数据。回收只能由显式用户动作触发（删除会话、显式清理某个 extension 的数据），且必须能看见它在删什么。本层不实现 GC，也不提供任何以「未注册」为条件的删除入口。
+
+**namespace 目录带 owner。** namespace 名全局唯一但不被保留：extension A 卸载后，extension B 可以注册同名 namespace，从而读到 A 的对象并按自己的 schema 解释。所以 objects.jsonl 的 header 记录 owner（extension id），open 时不匹配就封存该 storage——读降级为空，写直接抛错。owner 必须是**稳定身份，不含版本号**：extension 升级只 bump `formatVersion`，若 owner 随版本变，升级后的 build 会被锁在自己的数据外面。
+
 ## 边界
 
 不修改 vendored 的 `packages/agent`：
@@ -72,7 +114,7 @@ fork：复制对话 entries → 从**源会话的完整分支**投影出各 name
 普通 custom entry，`customType: "widi:persistence-ref"`：
 
 ```text
-data: { version, namespace, stateRoot, anchorEntryId? }
+data: { version, namespace, stateRoot, anchorEntryId?, origin? }
 ```
 
 - ref 是对话树的普通节点，天然有 `id`、`parentId` 和时间，天然只在其后代分支可见；
@@ -82,7 +124,14 @@ data: { version, namespace, stateRoot, anchorEntryId? }
 - `anchorEntryId` 仅供诊断。turn 内的 session 写入被 harness 缓冲到 `turn_end` 统一
   落盘，ref 落在 flush 时刻的 leaf 之下，不与触发它的 entry 相邻，任何逻辑都不得依赖
   相邻性；
-- ref 是指针不是载荷，上限 2 KB，超了直接抛错而不是截断。
+- ref 是指针不是载荷，上限 2 KB，超了直接抛错而不是截断；
+- `origin` 只由 fork 写入（`fork` / `fork_degraded`），会话自己写状态时缺省。它记录
+  **发生过什么**，不记录**该怎么办**——后者是下游的事。写侧封闭（只接受已知取值），
+  读侧开放（新 build 造的取值原样保留），未知取值一律归类为「非本分支自有」：把继承来的
+  状态误判为自有，会让调用方去操作别人的句柄；反过来只是多做一次重建。
+
+provenance 是**每 namespace 每 ref** 的，不是会话的属性：fork 之后会话继续写自己的 ref，
+被覆盖的 namespace 就重新变回 `current`。
 
 同一 namespace 在路径上出现多条 ref 时，**最后一条生效**。想要"归约整个序列"的
 namespace 把归约结果写进 state root，框架只保留一条规则，这样解析结果不依赖当前
@@ -98,7 +147,10 @@ build 注册了哪些 namespace。
 必须解析回当初被命名的东西。
 
 默认实现 `JsonlObjectStore` 是内容寻址的 append-only 日志（header 行 + 每行一个
-对象），大多数 namespace 用它就够；需要别的形状的自己实现 `CustomStorage`。
+对象），大多数 namespace 用它就够；需要别的形状的自己实现 `CustomStorage`。header 行
+记录 envelope 版本、namespace、`formatVersion` 和 owner；envelope 版本高于本 build，
+或 owner 不匹配，该 storage 被封存：读降级为空，写抛错——不能让调用方以为对象写成功了，
+然后往分支上写一条指向不存在对象的 ref。
 
 依赖有两种：
 
@@ -164,7 +216,8 @@ sessionsRoot 的多进程并发写入继续不受支持。
 ## 实施阶段
 
 1. ~~模型骨架~~：`core/persistence/`，纯逻辑在 `utils/`。**已完成**
-2. **模型测试**：`test:counter` namespace 锁住 projection、object store、fork closure。
+2. ~~模型测试~~：`test:counter` namespace 锁住 projection、object store、fork closure、
+   provenance 与 owner。**已完成**
 3. **`JsonlSession` 移植**：从 pi 的 `jsonl-storage.ts` 逐字段搬，保持 v3 兼容；用真实
    fixture 验证 create/open/load/list/fork。
 4. **仓储实现**：create/open/list/listChildren/delete/fork，含子会话递归复制。验收是
@@ -183,6 +236,9 @@ sessionsRoot 的多进程并发写入继续不受支持。
 - 多条 ref 引用同一 root 时，fork 不重复复制对象；
 - 循环依赖、未知 namespace、无效 ref、对象缺失、JSONL 尾行损坏均有确定诊断与降级，
   不破坏对话历史读取；
+- fork 得到的 state 带 `forked`/`degraded` provenance，会话覆写后变回 `current`；
+- namespace 未注册时会话仍可打开、列举、读取、fork，ref 与目录均不被改动；
+- owner 不匹配的 namespace 目录被封存，不被误读也不被追加；
 - `delete` 删除会话、其 custom storage、其全部子会话；
 - runtime 不绕过 `AgentHarness` 写 live session branch；
 - 不修改 `packages/agent`，既有 pi v3 session 保持可打开。

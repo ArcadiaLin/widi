@@ -22,6 +22,8 @@ export type PersistenceDiagnosticCode =
 	| "persistence.unknown_namespace"
 	/** An object log was written by a newer format than this build reads. */
 	| "persistence.unsupported_version"
+	/** A namespace directory belongs to code other than what opened it. */
+	| "persistence.owner_mismatch"
 	/** A JSONL log was damaged somewhere other than its last line. */
 	| "persistence.corrupt_log"
 	/** Dependencies formed a cycle; the walk stopped and reported it. */

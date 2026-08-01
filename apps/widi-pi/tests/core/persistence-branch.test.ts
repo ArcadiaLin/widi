@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import {
 	contentHash,
 	createPersistenceRefData,
+	isNativeOrigin,
 	MAX_PERSISTENCE_REF_BYTES,
 	PERSISTENCE_REF_CUSTOM_TYPE,
 	parsePersistenceRef,
@@ -28,6 +29,7 @@ function refEntry(
 	namespace: string,
 	stateRoot: string | null,
 	parentId: string | null = null,
+	origin?: string,
 ): SessionTreeEntry {
 	nextId += 1;
 	return {
@@ -36,7 +38,7 @@ function refEntry(
 		parentId,
 		timestamp: `2026-08-01T00:00:${String(nextId).padStart(2, "0")}.000Z`,
 		customType: PERSISTENCE_REF_CUSTOM_TYPE,
-		data: { version: 1, namespace, stateRoot },
+		data: { version: 1, namespace, stateRoot, origin },
 	};
 }
 
@@ -88,6 +90,10 @@ describe("persistence ref parsing", () => {
 				{ version: 1, namespace: "n", stateRoot: "x" },
 			],
 			["data is not an object", "nope"],
+			[
+				"origin is not a string",
+				{ version: 1, namespace: "n", stateRoot: ROOT_A, origin: 7 },
+			],
 		];
 		for (const [, data] of cases) {
 			const parsed = parsePersistenceRef(
@@ -95,6 +101,21 @@ describe("persistence ref parsing", () => {
 			);
 			expect(parsed?.ok).toBe(false);
 		}
+	});
+
+	// Absent, not "current": a ref a session wrote for itself says nothing about
+	// origin, which keeps the ordinary case the smallest thing on the branch.
+	it("omits an origin unless a fork put one there", () => {
+		expect(
+			createPersistenceRefData({ namespace: "n", stateRoot: ROOT_A }),
+		).not.toHaveProperty("origin");
+		expect(
+			createPersistenceRefData({
+				namespace: "n",
+				stateRoot: ROOT_A,
+				origin: "fork_degraded",
+			}).origin,
+		).toBe("fork_degraded");
 	});
 
 	it("refuses to build a ref that is not a pointer", () => {
@@ -155,6 +176,46 @@ describe("branch projection", () => {
 		expect(projection.rejected).toHaveLength(1);
 		expect(projection.namespaces.get("test:counter")?.stateRoot).toBe(ROOT_A);
 		expect(projection.namespaces.get("test:other")?.stateRoot).toBe(ROOT_C);
+	});
+
+	// Provenance is the one thing the caller needs and cannot derive: after a
+	// fork the session goes on writing its own refs, so this is per namespace
+	// and per ref, never a property of the session.
+	it("tells inherited state from state the branch wrote itself", () => {
+		const projection = projectBranch([
+			refEntry("test:copied", ROOT_A, null, "fork"),
+			refEntry("test:degraded", ROOT_B, null, "fork_degraded"),
+			refEntry("test:own", ROOT_C),
+		]);
+		expect(projection.namespaces.get("test:copied")?.provenance).toBe("forked");
+		expect(projection.namespaces.get("test:degraded")?.provenance).toBe(
+			"degraded",
+		);
+		expect(projection.namespaces.get("test:own")?.provenance).toBe("current");
+	});
+
+	it("lets a session take ownership by writing over an inherited ref", () => {
+		const inherited = refEntry("test:counter", ROOT_A, null, "fork");
+		const own = refEntry("test:counter", ROOT_B, inherited.id);
+		expect(
+			projectBranch([inherited, own]).namespaces.get("test:counter")
+				?.provenance,
+		).toBe("current");
+	});
+
+	// An origin a newer build invented must not read as native, or a caller
+	// would trust handles inside state that was never its own.
+	it("treats an origin it does not know as not native", () => {
+		expect(isNativeOrigin(undefined)).toBe(true);
+		expect(isNativeOrigin("fork")).toBe(false);
+		expect(isNativeOrigin("imported-from-somewhere-2027")).toBe(false);
+		const projection = projectBranch([
+			refEntry("test:counter", ROOT_A, null, "imported-from-somewhere-2027"),
+		]);
+		expect(projection.namespaces.get("test:counter")?.provenance).toBe(
+			"forked",
+		);
+		expect(projection.rejected).toHaveLength(0);
 	});
 
 	it("carries only the namespaces a fork has to copy", () => {

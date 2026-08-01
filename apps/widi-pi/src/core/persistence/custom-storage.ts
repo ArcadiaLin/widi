@@ -17,12 +17,41 @@
  * The repository drives every walk. A namespace declares its dependencies and
  * never recurses into another namespace itself, so cycle detection and
  * deduplication have exactly one implementation.
+ *
+ * ## What persistence does not decide
+ *
+ * Restoring a session has three parts, and only the first two are here.
+ * *Projection* - which state root is in force at a branch point - belongs to
+ * the framework and admits no per-namespace override, or rewinding would mean
+ * something different depending on what a session happens to persist.
+ * *Resolution* - what that root's bytes are - belongs to the namespace.
+ * *Activation* - what to do with the result, whether to relaunch an agent, to
+ * reattach to a process, to warn - belongs to the caller, and there is
+ * deliberately no hook for it.
+ *
+ * The reason is that activation depends on things this layer cannot see: is the
+ * process still alive, does the current config still permit this extension, is
+ * the user resuming or continuing or running a fork for the first time. A hook
+ * here would force every namespace to guess at them, and guess wrong invisibly.
+ * What the layer owes the caller instead is the facts it alone has, which is
+ * why a resolved state carries its `StateProvenance`.
+ *
+ * The same line separates a namespace nothing is registered for. This layer
+ * cannot tell an uninstalled extension from one that failed to load, one the
+ * user disabled, or one this build never implemented - it sees only an empty
+ * slot in the registry. So it does the single safe thing for all four: it
+ * leaves the ref and the directory alone and reports. Reclaiming that disk is a
+ * caller's decision, and it must never be driven by registry state; a load
+ * failure would then destroy the state of a working extension.
  */
 
 import type { FileSystem } from "@widi/agent-core";
 import type { PersistenceDiagnostics } from "./utils/diagnostics.ts";
 import type { SessionKey } from "./utils/layout.ts";
-import type { PersistenceRefData } from "./utils/persistence-ref.ts";
+import type {
+	PersistenceRefData,
+	PersistenceRefOrigin,
+} from "./utils/persistence-ref.ts";
 
 export type PersistenceFileSystem = Pick<
 	FileSystem,
@@ -55,6 +84,8 @@ export interface NamespaceStorageContext {
 	readonly sessionKey: SessionKey;
 	/** Where a damaged or unreadable log is reported, when the caller cares. */
 	readonly diagnostics?: PersistenceDiagnostics;
+	/** {@link PersistenceNamespaceDefinition.owner}, passed through. */
+	readonly owner?: string;
 }
 
 /** One namespace's storage, opened against one session directory. */
@@ -117,6 +148,13 @@ export interface NamespaceForkResult {
 	 * means the new branch carries no ref for this namespace at all.
 	 */
 	readonly stateRoot: string | null;
+
+	/**
+	 * What the new session's ref records about where this came from. Defaults to
+	 * the fork policy, so only a namespace that degraded under a `copy` policy
+	 * has to say so.
+	 */
+	readonly origin?: PersistenceRefOrigin;
 }
 
 export interface PersistenceNamespaceDefinition {
@@ -125,6 +163,22 @@ export interface PersistenceNamespaceDefinition {
 
 	/** Format version of this namespace's objects, written into its log. */
 	readonly version: number;
+
+	/**
+	 * Who is entitled to this namespace's directory, e.g. an extension id.
+	 * Omitted by namespaces this build ships itself.
+	 *
+	 * A namespace name is globally unique but not reserved: an extension can be
+	 * uninstalled and a different one claim the same name, and it would then
+	 * read the first one's objects and interpret them against its own schema.
+	 * The owner is written into the log header and checked on open, which turns
+	 * that into a refusal instead of a silent misreading.
+	 *
+	 * It must be a *stable* identity with no version in it. An extension upgrade
+	 * bumps {@link version} and keeps its own state; changing the owner would
+	 * lock the upgraded build out of everything the old one wrote.
+	 */
+	readonly owner?: string;
 
 	readonly forkPolicy: PersistenceForkPolicy;
 

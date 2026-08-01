@@ -31,6 +31,7 @@ export type {
 	ForkSessionOptions,
 	PersistedSession,
 	PersistedSessionInfo,
+	ResolvedNamespaceState,
 	ResolvedPersistence,
 } from "./jsonl-persistence.ts";
 export { JsonlPersistenceRepo } from "./jsonl-persistence.ts";
@@ -84,10 +85,12 @@ export {
 export type {
 	PersistenceRef,
 	PersistenceRefData,
+	PersistenceRefOrigin,
 	PersistenceRefRejection,
 } from "./utils/persistence-ref.ts";
 export {
 	createPersistenceRefData,
+	isNativeOrigin,
 	MAX_PERSISTENCE_REF_BYTES,
 	PERSISTENCE_REF_CUSTOM_TYPE,
 	PERSISTENCE_REF_VERSION,
@@ -96,6 +99,7 @@ export {
 export type {
 	BranchProjection,
 	NamespaceProjection,
+	StateProvenance,
 } from "./utils/state-projection.ts";
 export {
 	projectBranch,

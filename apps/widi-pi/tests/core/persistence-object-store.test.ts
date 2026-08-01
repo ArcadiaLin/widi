@@ -25,6 +25,7 @@ async function openStore(
 		formatVersion?: number;
 		diagnostics?: PersistenceDiagnostics;
 		dir?: string;
+		owner?: string;
 	} = {},
 ): Promise<JsonlObjectStore> {
 	const dirPath = options.dir ?? DIR;
@@ -36,6 +37,7 @@ async function openStore(
 		formatVersion: options.formatVersion ?? 1,
 		sessionKey: ["root"],
 		diagnostics: options.diagnostics,
+		owner: options.owner,
 	});
 }
 
@@ -153,6 +155,98 @@ describe("JsonlObjectStore", () => {
 		expect(diagnostics.entries.map((entry) => entry.code)).toEqual([
 			"persistence.unsupported_version",
 		]);
+	});
+
+	// Reading a log this build must not touch is survivable; appending to it is
+	// not, because the caller would then put a ref on the branch naming an
+	// object nobody can find.
+	it("refuses to write a log it declined to read", async () => {
+		const fs = new MemoryFileSystem();
+		await fs.writeFile(
+			LOG,
+			`${JSON.stringify({
+				type: "persistence-objects",
+				version: 99,
+				namespace: "test:counter",
+				formatVersion: 1,
+			})}\n`,
+		);
+		const store = await openStore(fs);
+		await expect(store.putObject({ data: { count: 1 } })).rejects.toThrow();
+	});
+});
+
+describe("JsonlObjectStore ownership", () => {
+	it("stamps the owner into the header and reopens under it", async () => {
+		const fs = new MemoryFileSystem();
+		const store = await openStore(fs, { owner: "ext:notes" });
+		const root = await store.putObject({ data: { count: 1 } });
+		expect(JSON.parse(logLines(fs)[0] ?? "{}")).toMatchObject({
+			owner: "ext:notes",
+		});
+
+		const reopened = await openStore(fs, { owner: "ext:notes" });
+		expect(await reopened.resolveState(root)).toEqual({ count: 1 });
+	});
+
+	// A namespace name is unique but not reserved: uninstall an extension and
+	// another one can claim the name, then read objects written against a schema
+	// it has never seen.
+	it("seals a directory claimed by different code", async () => {
+		const fs = new MemoryFileSystem();
+		const first = await openStore(fs, { owner: "ext:notes" });
+		const root = await first.putObject({ data: { count: 1 } });
+
+		const diagnostics = new PersistenceDiagnostics();
+		const impostor = await openStore(fs, { owner: "ext:other", diagnostics });
+		expect(await impostor.resolveState(root)).toBeUndefined();
+		await expect(impostor.putObject({ data: {} })).rejects.toThrow();
+		expect(diagnostics.entries.map((entry) => entry.code)).toEqual([
+			"persistence.owner_mismatch",
+		]);
+		expect(diagnostics.hasErrors).toBe(true);
+	});
+
+	it("treats owned and unowned as different owners in both directions", async () => {
+		const fs = new MemoryFileSystem();
+		const owned = await openStore(fs, { owner: "ext:notes" });
+		await owned.putObject({ data: { count: 1 } });
+		const unowned = new PersistenceDiagnostics();
+		await openStore(fs, { diagnostics: unowned });
+		expect(unowned.entries.map((entry) => entry.code)).toEqual([
+			"persistence.owner_mismatch",
+		]);
+
+		const otherFs = new MemoryFileSystem();
+		const core = await openStore(otherFs);
+		await core.putObject({ data: { count: 1 } });
+		const claimed = new PersistenceDiagnostics();
+		await openStore(otherFs, { owner: "ext:notes", diagnostics: claimed });
+		expect(claimed.entries.map((entry) => entry.code)).toEqual([
+			"persistence.owner_mismatch",
+		]);
+	});
+
+	// The owner is an identity, not a build stamp: an extension upgrade bumps
+	// formatVersion, and locking it out of its own state would be worse than
+	// anything the check prevents.
+	it("keeps the owner stable across a format version bump", async () => {
+		const fs = new MemoryFileSystem();
+		const before = await openStore(fs, {
+			owner: "ext:notes",
+			formatVersion: 1,
+		});
+		const root = await before.putObject({ data: { count: 1 } });
+
+		const diagnostics = new PersistenceDiagnostics();
+		const after = await openStore(fs, {
+			owner: "ext:notes",
+			formatVersion: 2,
+			diagnostics,
+		});
+		expect(await after.resolveState(root)).toEqual({ count: 1 });
+		expect(after.storedFormatVersion).toBe(1);
+		expect(diagnostics.entries).toHaveLength(0);
 	});
 
 	it("reports the format version the objects were written with", async () => {

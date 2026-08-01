@@ -20,7 +20,20 @@ import type {
 	PersistenceRef,
 	PersistenceRefRejection,
 } from "./persistence-ref.ts";
-import { parsePersistenceRef } from "./persistence-ref.ts";
+import { isNativeOrigin, parsePersistenceRef } from "./persistence-ref.ts";
+
+/**
+ * Where the state in force came from, for a caller deciding what to do with it.
+ *
+ * The framework produces this fact and stops there. Whether a `forked` job
+ * history should be replayed, dropped or shown greyed out is not something this
+ * layer can know, because the answer depends on things it cannot see - see
+ * "What persistence does not decide" in `custom-storage.ts`.
+ *
+ * `migrated` is computed at resolve time rather than read off the branch, since
+ * a migration is redone on every open and never recorded in a ref.
+ */
+export type StateProvenance = "current" | "forked" | "degraded" | "migrated";
 
 export interface NamespaceProjection {
 	readonly namespace: string;
@@ -28,6 +41,8 @@ export interface NamespaceProjection {
 	readonly stateRoot: string | null;
 	/** Every ref that applied, oldest first. Diagnostics and audit only. */
 	readonly refs: readonly PersistenceRef[];
+	/** Of the ref in force. Never `migrated`; only a resolve can know that. */
+	readonly provenance: StateProvenance;
 }
 
 export interface BranchProjection {
@@ -61,9 +76,17 @@ export function projectBranch(
 			namespace: ref.namespace,
 			stateRoot: ref.stateRoot,
 			refs: previous ? [...previous.refs, ref] : [ref],
+			// Only the last ref counts: a session that forked and then wrote its
+			// own state for a namespace owns that state outright.
+			provenance: refProvenance(ref),
 		});
 	}
 	return { namespaces, rejected };
+}
+
+function refProvenance(ref: PersistenceRef): StateProvenance {
+	if (isNativeOrigin(ref.origin)) return "current";
+	return ref.origin === "fork_degraded" ? "degraded" : "forked";
 }
 
 /**

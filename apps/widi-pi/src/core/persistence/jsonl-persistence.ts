@@ -46,7 +46,10 @@ import {
 } from "./utils/layout.ts";
 import type { PersistenceRefData } from "./utils/persistence-ref.ts";
 import { createPersistenceRefData } from "./utils/persistence-ref.ts";
-import type { BranchProjection } from "./utils/state-projection.ts";
+import type {
+	BranchProjection,
+	StateProvenance,
+} from "./utils/state-projection.ts";
 
 /** An open session and the address that identifies its directory. */
 export interface PersistedSession {
@@ -83,10 +86,24 @@ export interface ForkSessionOptions {
 	readonly parent?: SessionKey;
 }
 
+export interface ResolvedNamespaceState {
+	readonly namespace: string;
+	readonly stateRoot: string;
+	readonly state: unknown;
+	/**
+	 * Where this came from, which the caller needs and cannot work out.
+	 *
+	 * Persistence reports it and stops; deciding what a `forked` or `degraded`
+	 * state means for a relaunch is the caller's, per "What persistence does not
+	 * decide" in `custom-storage.ts`.
+	 */
+	readonly provenance: StateProvenance;
+}
+
 export interface ResolvedPersistence {
 	readonly projection: BranchProjection;
 	/** Resolved state per namespace; a namespace missing here did not resolve. */
-	readonly states: ReadonlyMap<string, unknown>;
+	readonly states: ReadonlyMap<string, ResolvedNamespaceState>;
 	readonly diagnostics: readonly PersistenceDiagnostic[];
 }
 
@@ -233,8 +250,13 @@ export class JsonlPersistenceRepo {
 	/**
 	 * Open one namespace's storage for a session.
 	 *
-	 * Returns undefined when nothing is registered for the namespace, which is
-	 * how an older build reads a session written by a newer one without failing.
+	 * Returns undefined when nothing is registered for the namespace. That is
+	 * how an older build reads a session written by a newer one, and equally how
+	 * a session survives an extension being uninstalled: the ref stays on the
+	 * branch and the directory stays on disk, both untouched, so reinstalling
+	 * restores the state. Nothing here ever deletes on the strength of an empty
+	 * registry - a failed extension load looks exactly the same from in here.
+	 *
 	 * A namespace that brings its own storage gets its directory and decides the
 	 * rest; {@link JsonlObjectStore} is only the default.
 	 */
@@ -254,6 +276,7 @@ export class JsonlPersistenceRepo {
 			dirPath,
 			sessionKey: address.key,
 			diagnostics,
+			owner: definition.owner,
 		});
 	}
 
@@ -263,6 +286,7 @@ export class JsonlPersistenceRepo {
 		readonly namespace: string;
 		readonly formatVersion: number;
 		readonly diagnostics?: PersistenceDiagnostics;
+		readonly owner?: string;
 	}): Promise<JsonlObjectStore> {
 		const cwdDir = await this._cwdDirPath(options.address.cwd);
 		return await JsonlObjectStore.open({
@@ -279,6 +303,7 @@ export class JsonlPersistenceRepo {
 			formatVersion: options.formatVersion,
 			sessionKey: options.address.key,
 			diagnostics: options.diagnostics,
+			owner: options.owner,
 		});
 	}
 
@@ -300,7 +325,9 @@ export class JsonlPersistenceRepo {
 	 * 4. copy objects, recursively fork the child sessions the plan named, and
 	 *    apply each namespace's policy;
 	 * 5. append one fresh ref per surviving namespace to the new session, since
-	 *    the source's ref entries may not be among the copied ones.
+	 *    the source's ref entries may not be among the copied ones. Each carries
+	 *    an `origin`, so the new session can tell state it inherited from state
+	 *    it later wrote itself.
 	 *
 	 * Afterwards the new session reads nothing from the source directory, which
 	 * is the property the whole design is checked against.

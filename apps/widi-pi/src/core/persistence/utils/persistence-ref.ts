@@ -31,6 +31,20 @@ export const PERSISTENCE_REF_VERSION = 1;
  */
 export const MAX_PERSISTENCE_REF_BYTES = 2048;
 
+/**
+ * How a ref came to be on this branch, when it was not written by the session
+ * living its own life.
+ *
+ * A fork is the only operation that puts somebody else's state on a branch, so
+ * it is the only thing that sets this. Downstream reads it to decide whether
+ * the state's contents can still be trusted: a job history copied out of
+ * another session names processes that were never this session's.
+ *
+ * This records what happened, not what to do about it. The decision belongs to
+ * whoever activates the state - see the module doc of `custom-storage.ts`.
+ */
+export type PersistenceRefOrigin = "fork" | "fork_degraded";
+
 export interface PersistenceRefData {
 	readonly version: number;
 	readonly namespace: string;
@@ -48,6 +62,16 @@ export interface PersistenceRefData {
 	 * nothing may depend on adjacency.
 	 */
 	readonly anchorEntryId?: string;
+	/**
+	 * Absent means the branch wrote this itself.
+	 *
+	 * Typed as a bare string on purpose. Writers are closed - only
+	 * {@link PersistenceRefOrigin} can be produced - but readers are open, so a
+	 * value a newer build invented survives the round trip instead of making an
+	 * otherwise valid pointer unreadable. Readers classify it with
+	 * {@link isNativeOrigin}, which answers no to anything it does not know.
+	 */
+	readonly origin?: string;
 }
 
 /** A validated ref, paired with the entry it was read from. */
@@ -126,6 +150,9 @@ export function parsePersistenceRef(
 	) {
 		return reject("malformed", "ref anchorEntryId must be a string");
 	}
+	if (candidate.origin !== undefined && typeof candidate.origin !== "string") {
+		return reject("malformed", "ref origin must be a string");
+	}
 	return {
 		ok: true,
 		ref: {
@@ -133,10 +160,23 @@ export function parsePersistenceRef(
 			namespace: candidate.namespace,
 			stateRoot: candidate.stateRoot,
 			anchorEntryId: candidate.anchorEntryId,
+			origin: candidate.origin,
 			entryId: entry.id,
 			timestamp: entry.timestamp,
 		},
 	};
+}
+
+/**
+ * Whether a branch wrote this state itself, as opposed to inheriting it.
+ *
+ * Unknown to this build counts as not native. The two answers are not
+ * symmetric: mistaking inherited state for native lets a caller act on a handle
+ * that belongs to another session, while the reverse only costs it a
+ * reconstruction it could have skipped.
+ */
+export function isNativeOrigin(origin: string | undefined): boolean {
+	return origin === undefined;
 }
 
 /**
@@ -149,6 +189,8 @@ export function createPersistenceRefData(options: {
 	readonly namespace: string;
 	readonly stateRoot: string | null;
 	readonly anchorEntryId?: string;
+	/** Set by a fork. A session writing its own state leaves it out. */
+	readonly origin?: PersistenceRefOrigin;
 }): PersistenceRefData {
 	if (options.stateRoot !== null && !isContentHash(options.stateRoot)) {
 		throw new Error(
@@ -162,6 +204,7 @@ export function createPersistenceRefData(options: {
 		...(options.anchorEntryId === undefined
 			? undefined
 			: { anchorEntryId: options.anchorEntryId }),
+		...(options.origin === undefined ? undefined : { origin: options.origin }),
 	};
 	const size = Buffer.byteLength(JSON.stringify(data), "utf-8");
 	if (size > MAX_PERSISTENCE_REF_BYTES) {
