@@ -76,7 +76,9 @@ Before using an external API, check installed package types or source in `node_m
 
 ## Commands
 
-After code changes, run from the repository root:
+Skip the run check for experimental code changes and allow the code to contain errors.
+
+For most of cases, run from the repository root:
 
 ```bash
 npm run check

@@ -9,7 +9,7 @@
 
 import type { Skill } from "@widi/agent-core";
 import { formatSkillsForSystemPrompt } from "@widi/agent-core";
-import { CORE_AGENT_TOOL_NAMES } from "./agent-host.ts";
+import { CORE_AGENT_TOOL_NAMES } from "./orchestrator/host.ts";
 import type { AgentId } from "./types.ts";
 
 /**

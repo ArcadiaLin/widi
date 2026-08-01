@@ -29,13 +29,6 @@ import {
 } from "@widi/agent-core";
 import { formatError } from "../utils/errors.ts";
 import type {
-	AgentBrief,
-	AgentDisposeScope,
-	AgentProfileBrief,
-	AgentTaskOutcome,
-	ToolAgentHost,
-} from "./agent-host.ts";
-import type {
 	AgentProfile,
 	AgentProfileOverride,
 	AgentProfileRegistry,
@@ -135,6 +128,13 @@ import {
 	parseThinkingLevel,
 	THINKING_LEVELS,
 } from "./model-registry.js";
+import type {
+	AgentBrief,
+	AgentDisposeScope,
+	AgentProfileBrief,
+	AgentTaskOutcome,
+	ToolAgentHost,
+} from "./orchestrator/host.ts";
 import type { ConfigValueResolver } from "./resolve-config-value.js";
 import type { ResourceLoader } from "./resource-loader.js";
 import type {

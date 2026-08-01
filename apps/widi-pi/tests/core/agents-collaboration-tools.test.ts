@@ -1,12 +1,12 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { AgentHarness } from "@widi/agent-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ToolAgentHost } from "../../src/core/agent-host.ts";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import {
 	AgentProfileRegistry,
 	InMemoryProfileStorageBackend,
 } from "../../src/core/agent-profile.ts";
+import type { ToolAgentHost } from "../../src/core/orchestrator/host.ts";
 import { createDisposeAgentToolDefinition } from "../../src/core/tools/agents/dispose-agent.ts";
 import { createListAgentProfilesToolDefinition } from "../../src/core/tools/agents/list-agent-profiles.ts";
 import { createListAgentsToolDefinition } from "../../src/core/tools/agents/list-agents.ts";

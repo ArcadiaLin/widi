@@ -4,7 +4,6 @@ import type {
 	AgentToolUpdateCallback,
 } from "@widi/agent-core";
 import type { TSchema } from "typebox";
-import type { ToolAgentHost } from "./agent-host.ts";
 import {
 	type BackgroundJobTable,
 	createBackgroundJobStartedResult,
@@ -12,6 +11,7 @@ import {
 import type { CoreDiagnostic, DiagnosticSeverity } from "./diagnostics.ts";
 import type { HumanInterruptWatch } from "./human-interrupt.ts";
 import type { ToolHumanHost } from "./human-request.ts";
+import type { ToolAgentHost } from "./orchestrator/host.ts";
 import type {
 	ToolDefinition,
 	ToolDefinitionPatch,

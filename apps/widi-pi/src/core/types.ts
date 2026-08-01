@@ -19,12 +19,8 @@ export type RuntimeModel = Model<Api>;
 /** Runtime-local agent identity allocated by the orchestrator. */
 export type AgentId = string;
 
-export type AgentLifecycleStatus =
-	| "creating"
-	| "running"
-	| "idle"
-	| "unavailable"
-	| "disposed";
+/** Current activity derived directly from the live harness phase. */
+export type AgentActivity = "idle" | "running";
 
 /**
  * Maintenance work that marks an agent "running" without driving an agent
@@ -32,6 +28,11 @@ export type AgentLifecycleStatus =
  * do not apply while it is set.
  */
 export type AgentMaintenanceKind = "compaction" | "tree-navigation";
+
+export interface AgentActivitySnapshot {
+	readonly activity: AgentActivity;
+	readonly maintenance?: AgentMaintenanceKind;
+}
 
 /**
  * How an agent arrived at the idle reported by `agent_idle`.
@@ -46,8 +47,14 @@ export type AgentMaintenanceKind = "compaction" | "tree-navigation";
 export type AgentIdleReason = "ready" | "settled" | "aborted" | "maintenance";
 
 export interface AgentToolsSnapshot {
-	readonly toolNames: string[];
-	readonly activeToolNames: string[];
+	readonly toolNames: readonly string[];
+	readonly activeToolNames: readonly string[];
+}
+
+export interface RuntimeShutdownRequest {
+	readonly requestedBy: string;
+	readonly requestedByAgentId: AgentId;
+	readonly reason?: string;
 }
 
 /**
@@ -84,8 +91,8 @@ export type OrchestratorEvent =
 	| {
 			readonly type: "agent_status_changed";
 			agentId: AgentId;
-			previousStatus?: AgentLifecycleStatus;
-			status: AgentLifecycleStatus;
+			previousActivity?: AgentActivity;
+			activity: AgentActivity;
 			/** Set when this "running" transition is maintenance work, not a turn. */
 			maintenance?: AgentMaintenanceKind;
 			changedAt: string;
@@ -258,6 +265,14 @@ export type OrchestratorEvent =
 			agentId: AgentId;
 			profile: AgentProfile;
 			model: RuntimeModel;
+			spawnedBy?: AgentId;
+	  }
+	| {
+			readonly type: "agent_disposed";
+			agentId: AgentId;
+			intent: "removed" | "runtime_shutdown";
+			reason?: string;
+			disposedAt: string;
 	  }
 	| {
 			readonly type: "agent_session_info_changed";

@@ -36,6 +36,15 @@ import type {
 	ExtensionMessage,
 } from "./extension/presentation.ts";
 import { SessionDirectoryRepo, sessionDirPath } from "./session-repo.ts";
+import {
+	AGENT_PARENT_FILE_NAME,
+	AGENT_TREE_FILE_NAME,
+	AGENTS_DIR_NAME,
+	type AgentParentPointer,
+	type AgentTreeRecord,
+	parseAgentParentPointer,
+	parseAgentTreeRecord,
+} from "./session-tree.ts";
 import type { AgentId } from "./types.ts";
 
 export type AgentSessionMetadata = SessionMetadata | JsonlSessionMetadata;
@@ -110,6 +119,8 @@ export interface AgentSessionCandidate {
 	readonly createdAt: string;
 	readonly cwd: string;
 	readonly parentSessionPath?: string;
+	/** Spawn-tree child sessions are restored through their root by default. */
+	readonly isChild: boolean;
 	readonly profile?: AgentProfileReference;
 	/** Latest session_info name, when the user named the session. */
 	readonly name?: string;
@@ -180,6 +191,8 @@ export class SessionManager {
 	private readonly _cwd: string;
 	private readonly _agentSessions: Map<AgentId, Session<AgentSessionMetadata>> =
 		new Map();
+	/** Runtime AgentId to persisted session directory name. */
+	private readonly _agentSessionDirs = new Map<AgentId, string>();
 	// Held as a store rather than through pi's SessionRepo: the repo now hands
 	// back a snapshot-backed Session that reloads the whole session on every
 	// read. Sessions here are long-lived handles, so they stay bound to the
@@ -202,10 +215,16 @@ export class SessionManager {
 	async listAgentSessionCandidates(): Promise<AgentSessionCandidate[]> {
 		const sessions = await this.sessionRepo.list({ cwd: this._cwd });
 		return await Promise.all(
-			sessions.map(async (metadata) => ({
-				...toAgentSessionCandidate(metadata),
-				...(await this._loadSessionDisplayFacts(metadata.path)),
-			})),
+			sessions.map(async (metadata) => {
+				const sessionDir = sessionDirPath(metadata.path);
+				return {
+					...toAgentSessionCandidate(metadata),
+					isChild:
+						(await this._readAgentParentPointerAtPath(sessionDir)) !==
+						undefined,
+					...(await this._loadSessionDisplayFacts(metadata.path)),
+				};
+			}),
 		);
 	}
 
@@ -310,6 +329,7 @@ export class SessionManager {
 			? await this._createPersistentAgentSession(options)
 			: await this._createEphemeralAgentSession(options.agentId);
 		this._agentSessions.set(options.agentId, session);
+		await this._rememberAgentSessionDir(options.agentId, session);
 		return session;
 	}
 
@@ -322,6 +342,10 @@ export class SessionManager {
 		}
 		const session = await this.sessionRepo.open(options.metadata);
 		this._agentSessions.set(options.agentId, session);
+		this._agentSessionDirs.set(
+			options.agentId,
+			sessionDirNameFromPath(sessionDirPath(options.metadata.path)),
+		);
 		return session;
 	}
 
@@ -372,6 +396,10 @@ export class SessionManager {
 		});
 		const forkedMetadata = await forkedSession.getMetadata();
 		this._agentSessions.set(forkedMetadata.id, forkedSession);
+		this._agentSessionDirs.set(
+			forkedMetadata.id,
+			sessionDirNameFromPath(sessionDirPath(forkedMetadata.path)),
+		);
 		return forkedMetadata;
 	}
 
@@ -425,6 +453,136 @@ export class SessionManager {
 		const sessionDir = await this.getAgentSessionDir(owner.agentId);
 		if (!sessionDir) return undefined;
 		return await SessionJobJournal.open({ fs: this._fs, sessionDir });
+	}
+
+	/** Persisted directory name used by the spawn-tree records. */
+	async getAgentSessionDirName(agentId: AgentId): Promise<string | undefined> {
+		const remembered = this._agentSessionDirs.get(agentId);
+		if (remembered) return remembered;
+		const dir = await this.getAgentSessionDir(agentId);
+		if (!dir) return undefined;
+		const name = sessionDirNameFromPath(dir);
+		this._agentSessionDirs.set(agentId, name);
+		return name;
+	}
+
+	/** Current runtime agent already holding this persisted session, if any. */
+	findAgentIdBySessionDir(sessionDir: string): AgentId | undefined {
+		for (const [agentId, candidate] of this._agentSessionDirs) {
+			if (candidate === sessionDir) return agentId;
+		}
+		return undefined;
+	}
+
+	/** Resolve one persisted session by its directory name, not its reusable id. */
+	async resolveAgentSessionByDir(
+		sessionDir: string,
+	): Promise<JsonlSessionMetadata> {
+		const sessions = await this.sessionRepo.list({ cwd: this._cwd });
+		const matches = sessions.filter(
+			(metadata) =>
+				sessionDirNameFromPath(sessionDirPath(metadata.path)) === sessionDir,
+		);
+		if (matches.length !== 1) {
+			throw new AgentSessionResolutionError({
+				reason: matches.length > 1 ? "ambiguous" : "not_found",
+				reference: sessionDir,
+				candidates: matches.map(toAgentSessionCandidate),
+			});
+		}
+		return matches[0];
+	}
+
+	/** Open a session addressed by directory under a runtime-local AgentId. */
+	async openSessionByDir(
+		sessionDir: string,
+		agentId: AgentId,
+	): Promise<{
+		readonly metadata: JsonlSessionMetadata;
+		readonly session: Session<AgentSessionMetadata>;
+	}> {
+		const metadata = await this.resolveAgentSessionByDir(sessionDir);
+		const session = await this.resumeAgentSession({ agentId, metadata });
+		return { metadata, session };
+	}
+
+	async appendAgentTreeRecord(
+		rootAgentId: AgentId,
+		record: AgentTreeRecord,
+	): Promise<void> {
+		const sessionDir = await this.getAgentSessionDir(rootAgentId);
+		if (!sessionDir) {
+			throw new Error(
+				`Cannot persist an agent tree under ephemeral root ${rootAgentId}.`,
+			);
+		}
+		const paths = await this._agentTreePaths(sessionDir);
+		fileSystemValueOrThrow(
+			await this._fs.createDir(paths.dir, { recursive: true }),
+			`Failed to create agent tree directory ${paths.dir}`,
+		);
+		fileSystemValueOrThrow(
+			await this._fs.appendFile(paths.tree, `${JSON.stringify(record)}\n`),
+			`Failed to append agent tree record for ${rootAgentId}`,
+		);
+	}
+
+	async readAgentTreeRecords(
+		sessionDir: string,
+	): Promise<readonly AgentTreeRecord[]> {
+		const absoluteDir = await this._resolveSessionDirPath(sessionDir);
+		const paths = await this._agentTreePaths(absoluteDir);
+		const exists = fileSystemValueOrThrow(
+			await this._fs.exists(paths.tree),
+			`Failed to check agent tree ${paths.tree}`,
+		);
+		if (!exists) return [];
+		const text = fileSystemValueOrThrow(
+			await this._fs.readTextFile(paths.tree),
+			`Failed to read agent tree ${paths.tree}`,
+		);
+		const records: AgentTreeRecord[] = [];
+		for (const line of text.split("\n")) {
+			if (!line.trim()) continue;
+			let value: unknown;
+			try {
+				value = JSON.parse(line);
+			} catch {
+				continue;
+			}
+			const record = parseAgentTreeRecord(value);
+			if (record) records.push(record);
+		}
+		return records;
+	}
+
+	async writeAgentParentPointer(
+		agentId: AgentId,
+		pointer: AgentParentPointer,
+	): Promise<void> {
+		const sessionDir = await this.getAgentSessionDir(agentId);
+		if (!sessionDir) {
+			throw new Error(
+				`Cannot persist an agent parent pointer for ephemeral agent ${agentId}.`,
+			);
+		}
+		const paths = await this._agentTreePaths(sessionDir);
+		fileSystemValueOrThrow(
+			await this._fs.createDir(paths.dir, { recursive: true }),
+			`Failed to create agent tree directory ${paths.dir}`,
+		);
+		fileSystemValueOrThrow(
+			await this._fs.writeFile(paths.parent, `${JSON.stringify(pointer)}\n`),
+			`Failed to write agent parent pointer for ${agentId}`,
+		);
+	}
+
+	async readAgentParentPointer(
+		sessionDir: string,
+	): Promise<AgentParentPointer | undefined> {
+		return await this._readAgentParentPointerAtPath(
+			await this._resolveSessionDirPath(sessionDir),
+		);
 	}
 
 	// Retraction for provisional prompt records (expansion/transform entries
@@ -581,6 +739,71 @@ export class SessionManager {
 		return result;
 	}
 
+	private async _rememberAgentSessionDir(
+		agentId: AgentId,
+		session: Session<AgentSessionMetadata>,
+	): Promise<void> {
+		const metadata = await session.getMetadata();
+		if (!isJsonlSessionMetadata(metadata)) return;
+		this._agentSessionDirs.set(
+			agentId,
+			sessionDirNameFromPath(sessionDirPath(metadata.path)),
+		);
+	}
+
+	private async _resolveSessionDirPath(sessionDir: string): Promise<string> {
+		const metadata = await this.resolveAgentSessionByDir(sessionDir);
+		return sessionDirPath(metadata.path);
+	}
+
+	private async _agentTreePaths(sessionDir: string): Promise<{
+		readonly dir: string;
+		readonly tree: string;
+		readonly parent: string;
+	}> {
+		const dir = fileSystemValueOrThrow(
+			await this._fs.joinPath([sessionDir, AGENTS_DIR_NAME]),
+			`Failed to resolve agent tree directory in ${sessionDir}`,
+		);
+		return {
+			dir,
+			tree: fileSystemValueOrThrow(
+				await this._fs.joinPath([dir, AGENT_TREE_FILE_NAME]),
+				`Failed to resolve agent tree file in ${dir}`,
+			),
+			parent: fileSystemValueOrThrow(
+				await this._fs.joinPath([dir, AGENT_PARENT_FILE_NAME]),
+				`Failed to resolve agent parent file in ${dir}`,
+			),
+		};
+	}
+
+	private async _readAgentParentPointerAtPath(
+		sessionDir: string,
+	): Promise<AgentParentPointer | undefined> {
+		const paths = await this._agentTreePaths(sessionDir);
+		const exists = fileSystemValueOrThrow(
+			await this._fs.exists(paths.parent),
+			`Failed to check agent parent pointer ${paths.parent}`,
+		);
+		if (!exists) return undefined;
+		const text = fileSystemValueOrThrow(
+			await this._fs.readTextFile(paths.parent),
+			`Failed to read agent parent pointer ${paths.parent}`,
+		);
+		let value: unknown;
+		try {
+			value = JSON.parse(text);
+		} catch {
+			throw new Error(`Invalid agent parent pointer: ${paths.parent}`);
+		}
+		const pointer = parseAgentParentPointer(value);
+		if (!pointer) {
+			throw new Error(`Invalid agent parent pointer: ${paths.parent}`);
+		}
+		return pointer;
+	}
+
 	private async _createPersistentAgentSession(
 		options: CreateAgentSessionOptions,
 	): Promise<Session<JsonlSessionMetadata>> {
@@ -685,8 +908,15 @@ function toAgentSessionCandidate(
 		createdAt: metadata.createdAt,
 		cwd: metadata.cwd,
 		parentSessionPath: metadata.parentSessionPath,
+		isChild: false,
 		profile: parseAgentProfileReference(metadata.metadata?.profile),
 	};
+}
+
+/** The persisted directory name of a session, as the tree records address it. */
+export function sessionDirNameFromPath(path: string): string {
+	const separator = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+	return separator < 0 ? path : path.slice(separator + 1);
 }
 
 // The first non-empty line of a user message, bounded for list display.
