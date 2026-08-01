@@ -23,6 +23,7 @@ import type {
 	PersistenceForkPolicy,
 	PersistenceRegistry,
 } from "../custom-storage.ts";
+import { closeStorage } from "../custom-storage.ts";
 import type { PersistenceDiagnostics } from "./diagnostics.ts";
 import { formatSessionKey, type SessionKey } from "./layout.ts";
 
@@ -46,7 +47,12 @@ export interface ForkClosureRequest {
 	/** State roots visible on the forked branch, from `projectBranch`. */
 	readonly roots: ReadonlyMap<string, string>;
 	readonly registry: PersistenceRegistry;
-	/** Opens the source session's storage for a namespace. */
+	/**
+	 * Opens the source session's storage for a namespace.
+	 *
+	 * The plan holds no handle once it is built, so each storage opened here is
+	 * closed here too - the caller injects the opening policy, not the lifetime.
+	 */
 	openStorage(namespace: string): Promise<CustomStorage | undefined>;
 	readonly sourceKey: SessionKey;
 	readonly diagnostics: PersistenceDiagnostics;
@@ -101,13 +107,18 @@ export async function planForkClosure(
 			});
 			continue;
 		}
-		const walked = await walkNamespace({
-			namespace,
-			stateRoot,
-			storage,
-			sourceKey: request.sourceKey,
-			diagnostics: request.diagnostics,
-		});
+		let walked: { objects: string[]; sessions: SessionKey[] };
+		try {
+			walked = await walkNamespace({
+				namespace,
+				stateRoot,
+				storage,
+				sourceKey: request.sourceKey,
+				diagnostics: request.diagnostics,
+			});
+		} finally {
+			await closeStorage(storage);
+		}
 		namespaces.push({
 			namespace,
 			policy: definition.forkPolicy,

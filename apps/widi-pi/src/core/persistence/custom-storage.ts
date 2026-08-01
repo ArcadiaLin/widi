@@ -48,10 +48,7 @@
 import type { FileSystem } from "@widi/agent-core";
 import type { PersistenceDiagnostics } from "./utils/diagnostics.ts";
 import type { SessionKey } from "./utils/layout.ts";
-import type {
-	PersistenceRefData,
-	PersistenceRefOrigin,
-} from "./utils/persistence-ref.ts";
+import type { PersistenceRefOrigin } from "./utils/persistence-ref.ts";
 
 export type PersistenceFileSystem = Pick<
 	FileSystem,
@@ -135,8 +132,37 @@ export interface CustomStorage {
 		readonly dependencies?: readonly string[];
 	}): Promise<string>;
 
-	/** Release handles. Never throws; the session may be going away regardless. */
+	/**
+	 * Release handles.
+	 *
+	 * Whoever opened a storage closes it, and nothing here caches or reference
+	 * counts: {@link PersistenceNamespaceDefinition.openStorage} is called afresh
+	 * every time, so a handle has exactly one owner and no shared lifetime to
+	 * manage. The repository closes the ones it opens for its own work and leaves
+	 * the ones it hands back to a caller alone.
+	 *
+	 * Never throws. A close runs after the work it is closing after has already
+	 * finished, so a failure has nothing left to fail; the repository ignores one
+	 * rather than turning it into a failure of the operation that succeeded.
+	 */
 	close?(): Promise<void>;
+}
+
+/**
+ * Close a storage handle, ignoring a failure to do so.
+ *
+ * {@link CustomStorage.close} is documented as never throwing, and this is what
+ * lets the rest of the layer rely on that: an implementation that breaks the
+ * contract must not be able to fail an operation that has already succeeded.
+ */
+export async function closeStorage(
+	storage: CustomStorage | undefined,
+): Promise<void> {
+	try {
+		await storage?.close?.();
+	} catch {
+		// Deliberately swallowed; see above.
+	}
 }
 
 export interface NamespaceForkRequest {
@@ -189,12 +215,6 @@ export interface PersistenceNamespaceDefinition {
 	readonly owner?: string;
 
 	readonly forkPolicy: PersistenceForkPolicy;
-
-	/**
-	 * Whether a ref is well-formed *for this namespace*, past the generic checks
-	 * `parsePersistenceRef` already made.
-	 */
-	validateRef?(data: PersistenceRefData): string | undefined;
 
 	openStorage(context: NamespaceStorageContext): Promise<CustomStorage>;
 

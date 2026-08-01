@@ -20,6 +20,7 @@ import type {
 	SessionKey,
 } from "../../src/core/persistence/index.ts";
 import {
+	closeStorage,
 	JsonlObjectStore,
 	JsonlPersistenceRepo,
 	PERSISTENCE_REF_CUSTOM_TYPE,
@@ -35,8 +36,54 @@ interface CounterState {
 	readonly sessions?: readonly SessionKey[];
 }
 
-class CounterStorage implements CustomStorage {
+/**
+ * The state names its child sessions, and the object log reads them out through
+ * the one hook it takes. A namespace like this brings no storage of its own -
+ * that is the whole point of the callback.
+ */
+function counterSessions(data: unknown): readonly SessionKey[] {
+	return (data as CounterState | undefined)?.sessions ?? [];
+}
+
+function counterNamespace(
+	options: {
+		readonly namespace?: string;
+		readonly forkPolicy?: PersistenceForkPolicy;
+		readonly version?: number;
+		readonly migrate?: PersistenceNamespaceDefinition["migrate"];
+		readonly fork?: PersistenceNamespaceDefinition["fork"];
+		/** Wraps the object log, for the cases that need to watch the handle. */
+		readonly wrap?: (storage: JsonlObjectStore) => CustomStorage;
+	} = {},
+): PersistenceNamespaceDefinition {
+	const namespace = options.namespace ?? "test:counter";
+	const version = options.version ?? 1;
+	return {
+		namespace,
+		version,
+		forkPolicy: options.forkPolicy ?? "copy",
+		migrate: options.migrate,
+		fork: options.fork,
+		async openStorage(context: NamespaceStorageContext) {
+			const objects = await JsonlObjectStore.open({
+				fs: context.fs,
+				dirPath: context.dirPath,
+				filePath: `${context.dirPath}/objects.jsonl`,
+				namespace,
+				formatVersion: version,
+				sessionKey: context.sessionKey,
+				diagnostics: context.diagnostics,
+				sessionDependenciesOf: counterSessions,
+			});
+			return options.wrap ? options.wrap(objects) : objects;
+		},
+	};
+}
+
+/** A namespace's own storage, wrapping the log only to watch its lifetime. */
+class CountingStorage implements CustomStorage {
 	private readonly _objects: JsonlObjectStore;
+	closes = 0;
 
 	constructor(objects: JsonlObjectStore) {
 		this._objects = objects;
@@ -57,10 +104,7 @@ class CounterStorage implements CustomStorage {
 	async listSessionDependencies(
 		stateRoot: string,
 	): Promise<readonly SessionKey[]> {
-		const state = (await this._objects.resolveState(stateRoot)) as
-			| CounterState
-			| undefined;
-		return state?.sessions ?? [];
+		return await this._objects.listSessionDependencies(stateRoot);
 	}
 
 	async copyReachable(
@@ -76,39 +120,10 @@ class CounterStorage implements CustomStorage {
 	}): Promise<string> {
 		return await this._objects.putObject(options);
 	}
-}
 
-function counterNamespace(
-	options: {
-		readonly namespace?: string;
-		readonly forkPolicy?: PersistenceForkPolicy;
-		readonly version?: number;
-		readonly migrate?: PersistenceNamespaceDefinition["migrate"];
-		readonly fork?: PersistenceNamespaceDefinition["fork"];
-	} = {},
-): PersistenceNamespaceDefinition {
-	const namespace = options.namespace ?? "test:counter";
-	const version = options.version ?? 1;
-	return {
-		namespace,
-		version,
-		forkPolicy: options.forkPolicy ?? "copy",
-		migrate: options.migrate,
-		fork: options.fork,
-		async openStorage(context: NamespaceStorageContext) {
-			return new CounterStorage(
-				await JsonlObjectStore.open({
-					fs: context.fs,
-					dirPath: context.dirPath,
-					filePath: `${context.dirPath}/objects.jsonl`,
-					namespace,
-					formatVersion: version,
-					sessionKey: context.sessionKey,
-					diagnostics: context.diagnostics,
-				}),
-			);
-		},
-	};
+	async close(): Promise<void> {
+		this.closes += 1;
+	}
 }
 
 function repoOver(
@@ -244,6 +259,40 @@ describe("sessions on disk", () => {
 			[],
 		);
 		expect([...fs.dirs].filter((p) => p.startsWith(rootDir))).toEqual([]);
+	});
+});
+
+describe("storage handles", () => {
+	// Nothing caches a handle, so ownership is the whole lifetime rule: the
+	// repository closes what it opened for itself and never what it handed out.
+	it("closes what it opens and leaves the caller's handle alone", async () => {
+		const opened: CountingStorage[] = [];
+		const { repo } = makeRepo([
+			counterNamespace({
+				wrap: (objects) => {
+					const storage = new CountingStorage(objects);
+					opened.push(storage);
+					return storage;
+				},
+			}),
+		]);
+		const root = await repo.create({ cwd: CWD, sessionId: "root" });
+		await commitState(repo, root, "test:counter", { count: 1 });
+		await repo.resolveState(root.address);
+		await repo.fork(root.address, { sessionId: "forked" });
+
+		expect(opened.length).toBeGreaterThan(0);
+		expect(opened.map((storage) => storage.closes)).toEqual(
+			opened.map(() => 1),
+		);
+
+		const mine = (await repo.openStorage(
+			root.address,
+			"test:counter",
+		)) as CountingStorage;
+		expect(mine.closes).toBe(0);
+		await closeStorage(mine);
+		expect(mine.closes).toBe(1);
 	});
 });
 

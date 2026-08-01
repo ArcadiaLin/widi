@@ -39,6 +39,7 @@ import type {
 	PersistenceNamespaceDefinition,
 	PersistenceRegistry,
 } from "./custom-storage.ts";
+import { closeStorage } from "./custom-storage.ts";
 import {
 	getEntriesToFork,
 	getForkLeafId,
@@ -308,7 +309,29 @@ export class JsonlPersistenceRepo {
 		}
 		const storage = await this.openStorage(address, namespace, diagnostics);
 		if (!storage) return undefined;
+		try {
+			return await this._readState(
+				address,
+				definition,
+				storage,
+				stateRoot,
+				provenance,
+				diagnostics,
+			);
+		} finally {
+			await closeStorage(storage);
+		}
+	}
 
+	private async _readState(
+		address: SessionAddress,
+		definition: PersistenceNamespaceDefinition,
+		storage: CustomStorage,
+		stateRoot: string,
+		provenance: StateProvenance,
+		diagnostics: PersistenceDiagnostics,
+	): Promise<ResolvedNamespaceState | undefined> {
+		const namespace = definition.namespace;
 		const state = await storage.resolveState(stateRoot);
 		if (state === undefined) {
 			diagnostics.report({
@@ -399,15 +422,19 @@ export class JsonlPersistenceRepo {
 				`Persistence namespace ${options.namespace} is not registered.`,
 			);
 		}
-		const stateRoot = await storage.putObject({
-			data: options.data,
-			dependencies: options.dependencies,
-		});
-		return createPersistenceRefData({
-			namespace: options.namespace,
-			stateRoot,
-			anchorEntryId: options.anchorEntryId,
-		});
+		try {
+			const stateRoot = await storage.putObject({
+				data: options.data,
+				dependencies: options.dependencies,
+			});
+			return createPersistenceRefData({
+				namespace: options.namespace,
+				stateRoot,
+				anchorEntryId: options.anchorEntryId,
+			});
+		} finally {
+			await closeStorage(storage);
+		}
 	}
 
 	/** Ref data that clears a namespace from here down the branch. */
@@ -431,6 +458,11 @@ export class JsonlPersistenceRepo {
 	 *
 	 * A namespace that brings its own storage gets its directory and decides the
 	 * rest; {@link JsonlObjectStore} is only the default.
+	 *
+	 * Each call opens a fresh handle and the caller owns it, closing it with
+	 * {@link closeStorage} when done. Nothing is cached: a handle replays a log
+	 * on open, so sharing one would mean deciding when it goes stale, and the
+	 * repository has no way to know.
 	 */
 	async openStorage(
 		address: SessionAddress,
@@ -452,13 +484,20 @@ export class JsonlPersistenceRepo {
 		});
 	}
 
-	/** The default storage a namespace gets when it does not bring its own. */
+	/**
+	 * The default storage a namespace gets when it does not bring its own.
+	 *
+	 * `sessionDependenciesOf` is the one hook a namespace whose state names child
+	 * sessions needs; with it, `core:subagent` and anything like it can use the
+	 * object log unchanged instead of wrapping it.
+	 */
 	async openDefaultStorage(options: {
 		readonly address: SessionAddress;
 		readonly namespace: string;
 		readonly formatVersion: number;
 		readonly diagnostics?: PersistenceDiagnostics;
 		readonly owner?: string;
+		readonly sessionDependenciesOf?: (data: unknown) => readonly SessionKey[];
 	}): Promise<JsonlObjectStore> {
 		const cwdDir = await this._cwdDirPath(options.address.cwd);
 		return await JsonlObjectStore.open({
@@ -476,6 +515,7 @@ export class JsonlPersistenceRepo {
 			sessionKey: options.address.key,
 			diagnostics: options.diagnostics,
 			owner: options.owner,
+			sessionDependenciesOf: options.sessionDependenciesOf,
 		});
 	}
 
@@ -599,9 +639,8 @@ export class JsonlPersistenceRepo {
 			plan.namespace,
 			diagnostics,
 		);
-		if (!sourceStorage || !targetStorage) return undefined;
-
 		try {
+			if (!sourceStorage || !targetStorage) return undefined;
 			await sourceStorage.copyReachable(targetStorage, plan.objects);
 			const result = definition.fork
 				? await definition.fork({
@@ -627,6 +666,9 @@ export class JsonlPersistenceRepo {
 				stateRoot: plan.stateRoot,
 			});
 			return undefined;
+		} finally {
+			await closeStorage(sourceStorage);
+			await closeStorage(targetStorage);
 		}
 	}
 

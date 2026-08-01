@@ -25,7 +25,7 @@ export type {
 	PersistenceForkPolicy,
 	PersistenceNamespaceDefinition,
 } from "./custom-storage.ts";
-export { PersistenceRegistry } from "./custom-storage.ts";
+export { closeStorage, PersistenceRegistry } from "./custom-storage.ts";
 export type {
 	CreateSessionOptions,
 	ForkResult,
