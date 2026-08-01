@@ -139,13 +139,25 @@ export interface PersistenceNamespaceDefinition {
 	/**
 	 * Perform the copy for this namespace once the repository has determined the
 	 * object set. Omitted means the default: copy the closure and keep the root.
+	 *
+	 * A fork never writes to the source. A `degrade` policy has to invent an
+	 * object - a job history with its running job marked interrupted - and that
+	 * object belongs to the new session, not to the one being read: writing it
+	 * into the source would leave it holding state only somebody else needs.
 	 */
 	fork?(request: NamespaceForkRequest): Promise<NamespaceForkResult>;
 
 	/**
-	 * Upgrade an object or a ref written by an older version of this namespace.
-	 * Absent means older versions are not readable, which is reported rather
-	 * than thrown.
+	 * Read an object written by an older version of this namespace, returning
+	 * the state root of its current-version equivalent.
+	 *
+	 * The new object goes into the same log and the old-to-new mapping is
+	 * recomputed on every open. The branch is never rewritten: a ref names the
+	 * old root forever, and appending a corrected ref would make one leaf
+	 * resolve differently depending on which build opened it.
+	 *
+	 * Absent means older versions are not readable, which is reported and
+	 * degraded rather than thrown.
 	 */
 	migrate?(options: {
 		readonly fromVersion: number;
