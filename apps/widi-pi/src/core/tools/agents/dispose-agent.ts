@@ -4,7 +4,7 @@ import type {
 	AgentDisposeScope,
 	ToolAgentDisposeOutcome,
 	ToolAgentHost,
-} from "../../agent-host.ts";
+} from "../../orchestrator/host.ts";
 import type { ToolDefinition } from "../types.ts";
 import { requireAgentHost } from "./shared.ts";
 

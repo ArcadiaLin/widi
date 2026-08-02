@@ -13,9 +13,9 @@
  * dependency edge runs one way: orchestrator -> message.
  */
 
-import { AgentHarnessError } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
-import type { AgentId, PromptExpansion } from "./types.ts";
+import { AgentHarnessError, type AgentHarnessPhase } from "@widi/agent-core";
+import type { AgentId } from "./types.ts";
 
 /**
  * Trusted origin of a message. Never derived from model-supplied arguments:
@@ -23,11 +23,7 @@ import type { AgentId, PromptExpansion } from "./types.ts";
  * injected from the tool adapter context so an agent cannot forge a sender.
  */
 export type MessageSource =
-	| {
-			readonly kind: "human";
-			/** Interaction-layer inline expansion recorded alongside the prompt. */
-			readonly expansion?: PromptExpansion;
-	  }
+	| { readonly kind: "human" }
 	| { readonly kind: "agent"; readonly agentId: AgentId }
 	| {
 			readonly kind: "background_job";
@@ -53,18 +49,16 @@ export interface MessageDraft {
 }
 
 /**
- * Delivery-relevant state of a target, which `AgentLifecycleStatus` alone
- * cannot express: its `running` covers both an agent loop that consumes queued
- * input and maintenance work (compaction, branch summary) that does not. The
- * harness tracks this precisely in its private `phase`, but exposes no getter,
- * so the orchestrator derives it from the operations it starts.
+ * Delivery-relevant state of a target: the live harness phase, or `undefined`
+ * when the target has no routable harness at all.
+ *
+ * There is no second phase vocabulary parallel to `AgentHarnessPhase`. An agent
+ * that is still being created, or already gone, is refused before anything of
+ * its reaches this queue; the only way a queued target loses its harness
+ * afterwards is disposal, which cancels its queue on the same tick. `undefined`
+ * covers the window between those two facts.
  */
-export type MessageDeliveryPhase =
-	| "idle"
-	| "turn"
-	| "maintenance"
-	| "creating"
-	| "gone";
+export type MessageDeliveryPhase = AgentHarnessPhase | undefined;
 
 export type MessageDeliveryMethod = "prompt" | "follow_up" | "steer";
 
@@ -265,7 +259,7 @@ export function decideMessageDelivery(input: {
 	readonly targetAgentId: AgentId;
 }): MessageDeliveryDecision {
 	const { phase, targetAgentId } = input;
-	if (phase === "gone") {
+	if (phase === undefined) {
 		return {
 			kind: "reject",
 			reason: `Agent ${targetAgentId} can no longer receive messages.`,
@@ -277,10 +271,13 @@ export function decideMessageDelivery(input: {
 			reason: `Agent ${targetAgentId} cannot accept a prompt while ${phase}.`,
 		};
 	}
-	// A spawning agent has no harness yet, and maintenance work does not run an
-	// agent loop: a steer or follow-up would be accepted into a queue nothing
-	// drains. Both wait for the next phase change instead.
-	if (phase === "creating" || phase === "maintenance") return { kind: "defer" };
+	// Maintenance work does not run an agent loop, so a steer or follow-up would
+	// be accepted into a queue nothing drains. It waits for the next phase change
+	// instead. A retry is inside a turn, and the loop that resumes will read both
+	// queues, so it is delivered exactly like one.
+	if (phase === "compaction" || phase === "branch_summary") {
+		return { kind: "defer" };
+	}
 	if (phase === "idle") return { kind: "deliver", method: "prompt" };
 	return {
 		kind: "deliver",
@@ -543,11 +540,17 @@ export class MessageDeliveryQueue {
 				// queued, report once, and wait for the next phase change. Never
 				// retry inline - that could spin against a broken harness.
 				const retryable = isRetryableDeliveryError(failure.error);
+				// `retryOnFailure` outranks that judgement, because a background
+				// job result has nobody left to report to. It does not outrank a
+				// terminal one: waiting for a phase change on a harness that has
+				// been shut down would leave the sender queued behind an agent that
+				// can never take it, until an unrelated cancel notices.
+				const terminal = isTerminalDeliveryError(failure.error);
 				const retried: QueuedMessage[] = [];
 				for (const message of batch) {
 					// A cancel during the harness call already settled this one.
 					if (message.settled) continue;
-					if (retryable || message.retryOnFailure) {
+					if (retryable || (message.retryOnFailure && !terminal)) {
 						retried.push(message);
 					} else {
 						this._fail(message, failure.error);
@@ -634,4 +637,13 @@ export function isRetryableDeliveryError(error: unknown): boolean {
 		error instanceof AgentHarnessError &&
 		(error.code === "busy" || error.code === "invalid_state")
 	);
+}
+
+/**
+ * The target can never accept anything again. `busy` and `invalid_state`
+ * describe a phase the caller can wait out; this one describes a harness that
+ * has been shut down, so no amount of waiting or requeueing changes the answer.
+ */
+export function isTerminalDeliveryError(error: unknown): boolean {
+	return error instanceof AgentHarnessError && error.code === "shutdown";
 }

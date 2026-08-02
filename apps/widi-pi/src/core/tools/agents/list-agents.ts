@@ -1,5 +1,5 @@
 import { Type } from "typebox";
-import type { AgentBrief } from "../../agent-host.ts";
+import type { AgentBrief } from "../../orchestrator/host.ts";
 import type { ToolDefinition } from "../types.ts";
 import { requireAgentHost } from "./shared.ts";
 

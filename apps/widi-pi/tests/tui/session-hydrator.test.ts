@@ -1,9 +1,9 @@
-import type { SessionTreeEntry } from "@earendil-works/pi-agent-core";
 import type {
 	AssistantMessage,
 	ToolResultMessage,
 	UserMessage,
 } from "@earendil-works/pi-ai";
+import type { SessionTreeEntry } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import {
 	COMMAND_EXPANSION_CUSTOM_TYPE,

@@ -1,3 +1,4 @@
+import type { ImageContent } from "@earendil-works/pi-ai";
 import type {
 	AgentHarnessEventResultMap,
 	BeforeAgentStartEvent,
@@ -11,8 +12,7 @@ import type {
 	ThinkingLevel,
 	ToolCallEvent,
 	ToolResultEvent,
-} from "@earendil-works/pi-agent-core";
-import type { ImageContent } from "@earendil-works/pi-ai";
+} from "@widi/agent-core";
 import type { TSchema } from "typebox";
 import type { JsonValue } from "../../utils/json.ts";
 import type { AgentProfileReference } from "../agent-profile.js";
@@ -172,7 +172,7 @@ export const EXTENSION_OBSERVED_EVENT_NAMES: Readonly<
  * - session_before_compact, session_before_tree
  * - observer-like own events with no return value: after_provider_response,
  *   session_compact, session_tree, model_update, thinking_level_update,
- *   resources_update, tools_update, queue_update, save_point, abort, settled
+ *   tools_update, queue_update, save_point, abort, settled
  *   (all reachable through the raw `agent_harness_event` observer)
  *
  * Session hooks are deferred until permission, diagnostics, and
@@ -307,12 +307,17 @@ export interface ExtensionActions {
 	setStatus(key: string, status: ExtensionStatus): Promise<void>;
 	clearStatus(key: string): Promise<void>;
 	// Durable presentation content: persisted as a core:extension_message
-	// session custom entry before the event is published, never model
-	// context. The returned entryId matches the persisted entry and the
-	// canonical event, so consumers dedupe hydration against live events.
-	// The kind chooses the shape - text/markdown/code, or the structured
-	// table/fields/diff/banner - and core keeps a deep copy of it.
-	publishMessage(message: ExtensionMessage): Promise<{ entryId: string }>;
+	// session custom entry, never model context. The kind chooses the shape -
+	// text/markdown/code, or the structured table/fields/diff/banner - and core
+	// keeps a deep copy of it.
+	//
+	// `entryId` is absent when the write was buffered behind a running turn: the
+	// harness owns the branch for the duration of an operation, and an entry it
+	// has not written yet has no id. The canonical event is published from the
+	// write itself, so a consumer deduping hydration against live events always
+	// sees the real id there; this return value is the fast path, not the
+	// contract.
+	publishMessage(message: ExtensionMessage): Promise<{ entryId?: string }>;
 	// Reported facts join the core diagnostic pipeline: the draft is
 	// { severity: "warning" | "error", code, message }; core injects agentId
 	// and extensionId and namespaces the local code to
@@ -428,7 +433,7 @@ export interface ExtensionCoreActions {
 		agentId: string,
 		extensionId: string,
 		message: ExtensionMessage,
-	): Promise<{ entryId: string }>;
+	): Promise<{ entryId?: string }>;
 	reportDiagnostic(
 		agentId: string,
 		extensionId: string,
@@ -572,7 +577,15 @@ export interface ExtensionSessionTree extends ExtensionSessionSnapshot {
  * unknown ref fails loudly.
  */
 export interface ExtensionSessionContext {
-	appendEntry<T = unknown>(type: string, data?: T): Promise<string>;
+	/**
+	 * Append one namespaced entry to this agent's session branch.
+	 *
+	 * Resolves to the entry id, or to undefined when the write was buffered
+	 * behind a running turn - the harness owns the branch while it works, and an
+	 * entry it has not written yet has no id. `findEntries` reads them back
+	 * either way.
+	 */
+	appendEntry<T = unknown>(type: string, data?: T): Promise<string | undefined>;
 	findEntries<T = unknown>(type?: string): Promise<ExtensionCustomEntry<T>[]>;
 	/** This agent's session: identity, name, leaf, and the path back to the root. */
 	getSnapshot(): Promise<ExtensionSessionSnapshot>;
@@ -589,7 +602,7 @@ export interface ExtensionSessionActions {
 		extensionId: string,
 		type: string,
 		data?: T,
-	): Promise<string>;
+	): Promise<string | undefined>;
 	findEntries<T = unknown>(
 		extensionId: string,
 		type?: string,

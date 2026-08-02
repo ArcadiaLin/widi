@@ -18,9 +18,9 @@ jobs:
     name: Run benchmarks
     runs-on: ubuntu-latest
     steps:
+      # Upstream pi is not part of this repository; nothing is needed beyond
+      # this checkout to build or benchmark. See docs/pi-fork.md.
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - uses: actions/setup-node@v4
         with:

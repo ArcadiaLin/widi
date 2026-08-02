@@ -3,15 +3,13 @@
 	"private": true,
 	"type": "module",
 	"workspaces": [
-		"pi/packages/ai",
-		"pi/packages/agent",
-		"pi/packages/tui",
+		"packages/agent",
 		"apps/widi-pi"
 	],
 	"scripts": {
 		"clean": "npm run clean --workspaces",
-		"build": "npm --workspace pi/packages/ai run build && npm --workspace pi/packages/agent run build && npm --workspace pi/packages/tui run build && npm --workspace apps/widi-pi run build",
-		"check": "biome check --write --error-on-warnings apps/widi-pi/src apps/widi-pi/tests apps/widi-pi/docs && tsgo --noEmit -p apps/widi-pi/tsconfig.json",
+		"build": "npm --workspace @widi/agent-core run build && npm --workspace apps/widi-pi run build",
+		"check": "biome check --write --error-on-warnings apps/widi-pi/src apps/widi-pi/tests apps/widi-pi/docs packages/agent/src packages/agent/test && tsgo --noEmit -p tsconfig.json",
 		"cli": "npm --workspace apps/widi-pi run cli",
 		"tui": "npm --workspace apps/widi-pi run tui",
 		"test": "npm run test --workspaces --if-present"

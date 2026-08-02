@@ -1,3 +1,4 @@
+import type { OAuthAuth } from "@earendil-works/pi-ai";
 import type {
 	ExecutionEnv,
 	ExecutionError,
@@ -5,14 +6,13 @@ import type {
 	FileInfo,
 	Result,
 	ShellExecOptions,
-} from "@earendil-works/pi-agent-core";
+} from "@widi/agent-core";
 import {
 	err,
 	ok,
 	ExecutionError as PiExecutionError,
 	FileError as PiFileError,
-} from "@earendil-works/pi-agent-core";
-import type { OAuthAuth } from "@earendil-works/pi-ai";
+} from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import {
 	AuthStorage,

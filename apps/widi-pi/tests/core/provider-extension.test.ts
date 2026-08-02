@@ -1,7 +1,7 @@
 import type {
 	AgentHarnessStreamOptions,
 	BeforeProviderRequestResult,
-} from "@earendil-works/pi-agent-core";
+} from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import {

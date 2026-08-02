@@ -2,9 +2,8 @@ import type {
 	AgentToolResult,
 	AgentToolUpdateCallback,
 	ToolExecutionMode,
-} from "@earendil-works/pi-agent-core";
+} from "@widi/agent-core";
 import type { Static, TSchema } from "typebox";
-import type { ToolAgentHost } from "../agent-host.ts";
 import type {
 	BackgroundJobOutput,
 	BackgroundJobReport,
@@ -12,6 +11,7 @@ import type {
 } from "../background/index.ts";
 import type { HumanInterruptWatch } from "../human-interrupt.ts";
 import type { ToolHumanHost } from "../human-request.ts";
+import type { ToolAgentHost } from "../orchestrator/host.ts";
 
 /**
  * Runtime context passed to a WIDI tool execution function.

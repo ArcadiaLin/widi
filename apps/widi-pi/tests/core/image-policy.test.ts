@@ -4,8 +4,8 @@ import type {
 	ToolResultMessage,
 	UserMessage,
 } from "@earendil-works/pi-ai";
+import { transformMessages } from "@earendil-works/pi-ai/api/transform-messages";
 import { describe, expect, it } from "vitest";
-import { transformMessages } from "../../../../pi/packages/ai/src/api/transform-messages.ts";
 import {
 	BLOCKED_IMAGE_PLACEHOLDER,
 	stripImagesFromMessages,

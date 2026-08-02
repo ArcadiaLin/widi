@@ -1,14 +1,5 @@
-import type {
-	FileError,
-	FileInfo,
-	FileSystem,
-	Result,
-} from "@earendil-works/pi-agent-core";
-import {
-	err,
-	ok,
-	FileError as PiFileError,
-} from "@earendil-works/pi-agent-core";
+import type { FileError, FileInfo, FileSystem, Result } from "@widi/agent-core";
+import { err, ok, FileError as PiFileError } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import type { AgentProfile } from "../../src/core/agent-profile.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
@@ -533,17 +524,17 @@ describe("SessionManager", () => {
 			manager.findExtensionCustomEntries("main", "writer", "missing"),
 		).resolves.toEqual([]);
 
-		const storageCustomEntries = await session
-			.getStorage()
-			.findEntries("custom");
-		expect(storageCustomEntries.map((entry) => entry.customType)).toEqual([
+		const storedCustomEntries = (await session.getEntries()).filter(
+			(entry) => entry.type === "custom",
+		);
+		expect(storedCustomEntries.map((entry) => entry.customType)).toEqual([
 			"extension:writer:state",
 			"extension:writer:note",
 			"extension:other:state",
 			"extension:writer:state",
 		]);
 
-		await session.getStorage().setLeafId(firstId);
+		await session.moveTo(firstId);
 		await expect(
 			manager.findExtensionCustomEntries("main", "writer", "state"),
 		).resolves.toMatchObject([{ id: firstId, type: "state" }]);

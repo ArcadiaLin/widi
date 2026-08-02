@@ -1,7 +1,7 @@
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentToolResult } from "@widi/agent-core";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	type BashOperations,

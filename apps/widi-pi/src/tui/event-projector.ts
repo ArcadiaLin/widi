@@ -1,14 +1,11 @@
 import { TextDecoder } from "node:util";
 import type {
-	AgentHarnessEvent,
-	AgentMessage,
-} from "@earendil-works/pi-agent-core";
-import type {
 	AssistantMessage,
 	TextContent,
 	ToolCall,
 	UserMessage,
 } from "@earendil-works/pi-ai";
+import type { AgentHarnessEvent, AgentMessage } from "@widi/agent-core";
 import type { AgentRecordSnapshot } from "../core/agent-record.ts";
 import type {
 	BackgroundJobReportSnapshot,

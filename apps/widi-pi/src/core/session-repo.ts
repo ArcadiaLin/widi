@@ -8,9 +8,15 @@
  *
  * The history file itself is unchanged. pi's JsonlSessionStorage is
  * file-addressed and blind to the surrounding layout, so only path
- * construction, listing, and deletion differ from pi's JsonlSessionRepo.
+ * construction, listing, and deletion differ from pi's JsonlSessionStore.
  * `JsonlSessionMetadata.path` keeps pointing at the JSONL file; the session
  * directory is its parent, via {@link sessionDirPath}.
+ *
+ * This is deliberately not a `JsonlSessionStoreApi`. That interface is
+ * metadata-addressed: every operation reopens the session, which for JSONL
+ * means reparsing the whole file, and the `Session` pi builds over it reloads
+ * on every read. WIDI keeps one long-lived handle per open session, so the repo
+ * hands back a `Session` bound to a stateful `JsonlSessionStorage` instead.
  */
 
 import type {
@@ -18,9 +24,8 @@ import type {
 	JsonlSessionCreateOptions,
 	JsonlSessionListOptions,
 	JsonlSessionMetadata,
-	JsonlSessionRepoApi,
 	Session,
-} from "@earendil-works/pi-agent-core";
+} from "@widi/agent-core";
 import {
 	createSessionId,
 	createTimestamp,
@@ -31,7 +36,7 @@ import {
 	SessionError,
 	toError,
 	toSession,
-} from "@earendil-works/pi-agent-core";
+} from "@widi/agent-core";
 
 /** History file name inside a session directory. */
 export const SESSION_FILE_NAME = "session.jsonl";
@@ -73,7 +78,7 @@ function sessionDirName(sessionId: string, timestamp: string): string {
 	return `${timestamp.replace(/[:.]/g, "-")}_${sessionId}`;
 }
 
-export class SessionDirectoryRepo implements JsonlSessionRepoApi {
+export class SessionDirectoryRepo {
 	private readonly fs: SessionDirectoryRepoFileSystem;
 	private readonly sessionsRootInput: string;
 	private sessionsRoot: string | undefined;
@@ -106,6 +111,12 @@ export class SessionDirectoryRepo implements JsonlSessionRepoApi {
 	async open(
 		metadata: JsonlSessionMetadata,
 	): Promise<Session<JsonlSessionMetadata>> {
+		return toSession(await this._openStorage(metadata));
+	}
+
+	private async _openStorage(
+		metadata: JsonlSessionMetadata,
+	): Promise<JsonlSessionStorage> {
 		const exists = getFileSystemResultOrThrow(
 			await this.fs.exists(metadata.path),
 			`Failed to check session ${metadata.path}`,
@@ -116,7 +127,7 @@ export class SessionDirectoryRepo implements JsonlSessionRepoApi {
 				`Session not found: ${metadata.path}`,
 			);
 		}
-		return toSession(await JsonlSessionStorage.open(this.fs, metadata.path));
+		return await JsonlSessionStorage.open(this.fs, metadata.path);
 	}
 
 	async list(
@@ -179,8 +190,8 @@ export class SessionDirectoryRepo implements JsonlSessionRepoApi {
 			id?: string;
 		},
 	): Promise<Session<JsonlSessionMetadata>> {
-		const source = await this.open(sourceMetadata);
-		const forkedEntries = await getEntriesToFork(source.getStorage(), options);
+		const source = await this._openStorage(sourceMetadata);
+		const forkedEntries = await getEntriesToFork(source, options);
 		const id = options.id ?? createSessionId();
 		const storage = await JsonlSessionStorage.create(
 			this.fs,

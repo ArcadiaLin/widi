@@ -27,7 +27,7 @@ describe("buildAgentSystemPrompt", () => {
 		expect(
 			buildAgentSystemPrompt({
 				basePrompt: "base prompt",
-				resources: {},
+				skills: [],
 				activeTools: [{ name: "plain" }],
 			}),
 		).toBe("base prompt");
@@ -37,7 +37,7 @@ describe("buildAgentSystemPrompt", () => {
 		expect(
 			buildAgentSystemPrompt({
 				basePrompt: "base prompt",
-				resources: {},
+				skills: [],
 				activeTools: [{ name: "read" }],
 				agentId: "worker-2",
 			}),
@@ -45,7 +45,7 @@ describe("buildAgentSystemPrompt", () => {
 		expect(
 			buildAgentSystemPrompt({
 				basePrompt: "base prompt",
-				resources: {},
+				skills: [],
 				activeTools: [{ name: "send_message" }],
 				agentId: "worker-2",
 			}),
@@ -55,7 +55,7 @@ describe("buildAgentSystemPrompt", () => {
 		expect(
 			buildAgentSystemPrompt({
 				basePrompt: "base prompt",
-				resources: {},
+				skills: [],
 				activeTools: [{ name: "send_message" }],
 			}),
 		).toBe("base prompt");
@@ -65,23 +65,21 @@ describe("buildAgentSystemPrompt", () => {
 		expect(
 			buildAgentSystemPrompt({
 				basePrompt: "base prompt",
-				resources: {},
+				skills: [],
 				activeTools: [{ name: "read" }],
 			}),
 		).toBe("base prompt");
 		expect(
 			buildAgentSystemPrompt({
 				basePrompt: "base prompt",
-				resources: {
-					skills: [{ ...skill, disableModelInvocation: true }],
-				},
+				skills: [{ ...skill, disableModelInvocation: true }],
 				activeTools: [{ name: "read" }],
 			}),
 		).toBe("base prompt");
 		expect(
 			buildAgentSystemPrompt({
 				basePrompt: "base prompt",
-				resources: { skills: [skill] },
+				skills: [skill],
 				activeTools: [{ name: "read" }],
 			}),
 		).toContain("<available_skills>");
@@ -91,7 +89,7 @@ describe("buildAgentSystemPrompt", () => {
 		expect(
 			buildAgentSystemPrompt({
 				basePrompt: "base prompt",
-				resources: { skills: [skill] },
+				skills: [skill],
 				activeTools: [{ name: "read" }],
 				includeSkills: false,
 			}),
@@ -99,7 +97,7 @@ describe("buildAgentSystemPrompt", () => {
 		expect(
 			buildAgentSystemPrompt({
 				basePrompt: "base prompt",
-				resources: { skills: [skill] },
+				skills: [skill],
 				activeTools: [{ name: "write" }],
 				includeSkills: true,
 			}),
@@ -110,7 +108,7 @@ describe("buildAgentSystemPrompt", () => {
 		expect(
 			buildAgentSystemPrompt({
 				basePrompt: "base prompt",
-				resources: {},
+				skills: [],
 				activeTools: [],
 				appendSections: ["  from profile  ", "   ", "from extension", ""],
 			}),
@@ -120,7 +118,7 @@ describe("buildAgentSystemPrompt", () => {
 	it("places appended sections between the tool guidance and the skills listing", () => {
 		const prompt = buildAgentSystemPrompt({
 			basePrompt: "base prompt",
-			resources: { skills: [skill] },
+			skills: [skill],
 			activeTools: [{ name: "read", promptSnippet: "Read file contents" }],
 			appendSections: ["APPENDED"],
 			contextFiles: [{ path: "/repo/AGENTS.md", content: "RULES" }],
@@ -165,7 +163,7 @@ describe("buildAgentSystemPrompt", () => {
 		expect(
 			buildAgentSystemPrompt({
 				basePrompt: "base prompt",
-				resources: {},
+				skills: [],
 				activeTools: [],
 				contextFiles: [],
 			}),
@@ -176,17 +174,197 @@ describe("buildAgentSystemPrompt", () => {
 		expect(
 			buildAgentSystemPrompt({
 				basePrompt: "base prompt",
-				resources: {},
+				skills: [],
 				activeTools: [],
 			}),
 		).toBe("base prompt");
 		expect(
 			buildAgentSystemPrompt({
 				basePrompt: "base prompt",
-				resources: {},
+				skills: [],
 				activeTools: [],
 				cwd: "C:\\repo\\app",
 			}),
 		).toBe("base prompt\n\nCurrent working directory: C:/repo/app");
+	});
+});
+
+/**
+ * The composed prompt verbatim, not section by section: the tests above pin
+ * which sections appear and in what order, which is what the composition rules
+ * are about, but they would not notice a changed separator or a reworded
+ * listing. These lock the text the model actually receives, so a refactor that
+ * only means to move where the skills come from has to leave it byte-identical.
+ */
+describe("buildAgentSystemPrompt composed text", () => {
+	const everySection = {
+		basePrompt: "You are a reviewer.",
+		activeTools: [
+			{
+				name: "read",
+				promptSnippet: "Read file contents",
+				promptGuidelines: ["Read before editing."],
+			},
+			{ name: "send_message" },
+		],
+		agentId: "worker-2" as const,
+		appendSections: ["FROM PROFILE", "FROM EXTENSION"],
+		contextFiles: [{ path: "/repo/AGENTS.md", content: "ROOT RULES" }],
+		cwd: "/repo",
+	};
+
+	it("composes every section", () => {
+		expect(
+			buildAgentSystemPrompt({
+				...everySection,
+				skills: [skill],
+			}),
+		).toMatchInlineSnapshot(`
+			"You are a reviewer.
+
+			You are agent worker-2. Other agents address you by that id.
+
+			Available tools:
+			- read: Read file contents
+
+			Tool guidelines:
+			- Read before editing.
+
+			FROM PROFILE
+
+			FROM EXTENSION
+
+			<project_context>
+
+			Project-specific instructions and guidelines:
+
+			<project_instructions path="/repo/AGENTS.md">
+			ROOT RULES
+			</project_instructions>
+
+			</project_context>
+
+			The following skills provide specialized instructions for specific tasks.
+			Read the full skill file when the task matches its description.
+			When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.
+
+			<available_skills>
+			  <skill>
+			    <name>code-review</name>
+			    <description>Review code for issues.</description>
+			    <location>/skills/code-review/SKILL.md</location>
+			  </skill>
+			</available_skills>
+
+			Current working directory: /repo"
+		`);
+	});
+
+	it("drops only the listing when no skill is model-visible", () => {
+		expect(
+			buildAgentSystemPrompt({
+				...everySection,
+				skills: [{ ...skill, disableModelInvocation: true }],
+			}),
+		).toMatchInlineSnapshot(`
+			"You are a reviewer.
+
+			You are agent worker-2. Other agents address you by that id.
+
+			Available tools:
+			- read: Read file contents
+
+			Tool guidelines:
+			- Read before editing.
+
+			FROM PROFILE
+
+			FROM EXTENSION
+
+			<project_context>
+
+			Project-specific instructions and guidelines:
+
+			<project_instructions path="/repo/AGENTS.md">
+			ROOT RULES
+			</project_instructions>
+
+			</project_context>
+
+			Current working directory: /repo"
+		`);
+	});
+
+	it("drops only the listing when no read tool is active", () => {
+		expect(
+			buildAgentSystemPrompt({
+				...everySection,
+				activeTools: [{ name: "send_message" }],
+				skills: [skill],
+			}),
+		).toMatchInlineSnapshot(`
+			"You are a reviewer.
+
+			You are agent worker-2. Other agents address you by that id.
+
+			FROM PROFILE
+
+			FROM EXTENSION
+
+			<project_context>
+
+			Project-specific instructions and guidelines:
+
+			<project_instructions path="/repo/AGENTS.md">
+			ROOT RULES
+			</project_instructions>
+
+			</project_context>
+
+			Current working directory: /repo"
+		`);
+	});
+
+	it("keeps the listing when includeSkills overrides the active tools", () => {
+		expect(
+			buildAgentSystemPrompt({
+				...everySection,
+				activeTools: [{ name: "send_message" }],
+				includeSkills: true,
+				skills: [skill],
+			}),
+		).toMatchInlineSnapshot(`
+			"You are a reviewer.
+
+			You are agent worker-2. Other agents address you by that id.
+
+			FROM PROFILE
+
+			FROM EXTENSION
+
+			<project_context>
+
+			Project-specific instructions and guidelines:
+
+			<project_instructions path="/repo/AGENTS.md">
+			ROOT RULES
+			</project_instructions>
+
+			</project_context>
+
+			The following skills provide specialized instructions for specific tasks.
+			Read the full skill file when the task matches its description.
+			When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.
+
+			<available_skills>
+			  <skill>
+			    <name>code-review</name>
+			    <description>Review code for issues.</description>
+			    <location>/skills/code-review/SKILL.md</location>
+			  </skill>
+			</available_skills>
+
+			Current working directory: /repo"
+		`);
 	});
 });

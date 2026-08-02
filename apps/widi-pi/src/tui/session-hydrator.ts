@@ -1,4 +1,3 @@
-import type { SessionTreeEntry } from "@earendil-works/pi-agent-core";
 import type {
 	AssistantMessage,
 	TextContent,
@@ -6,6 +5,7 @@ import type {
 	ToolResultMessage,
 	UserMessage,
 } from "@earendil-works/pi-ai";
+import type { SessionTreeEntry } from "@widi/agent-core";
 import type { ExtensionMessage } from "../core/extension/api.ts";
 import { validateExtensionMessage } from "../core/extension/presentation.ts";
 import {

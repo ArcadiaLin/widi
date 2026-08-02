@@ -1,29 +1,28 @@
 /**
- * Every text a background job puts in front of the model.
- *
- * A job speaks to the model exactly twice: the t0 handle that replaces its real
- * tool result, and the t1 message that delivers the outcome after that tool
- * call is long closed. Both have to be self-describing, because by the time
- * either is read the conversation has moved on. Keeping them together keeps the
- * two halves of that protocol - and the header a resume matches against - in
- * one place.
+ * Every text a background job puts in front of the model: the t0 handle that
+ * replaces its real tool result, and the t1 message that delivers the outcome
+ * after that call is long closed. Both must be self-describing, because by the
+ * time either is read the conversation has moved on.
  */
 
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { TextContent } from "@earendil-works/pi-ai";
+import type { AgentToolResult } from "@widi/agent-core";
 import { formatError } from "../../utils/errors.ts";
-import {
-	type BackgroundJobOutcome,
-	type BackgroundJobSettlement,
-	type BackgroundJobStatus,
-	backgroundJobToolLabel,
-} from "./job.ts";
+import type {
+	BackgroundJobOutcome,
+	BackgroundJobSettlement,
+	BackgroundJobStatus,
+} from "./types.ts";
 
-/**
- * Structured details attached to the immediate t0 tool result of a backgrounded
- * call. `backgrounded: true` marks the result as a job handle rather than the
- * tool's real output.
- */
+/** How a job is named next to other jobs: `bash "git pull"`, or just `bash`. */
+export function backgroundJobToolLabel(job: {
+	readonly toolName: string;
+	readonly name?: string;
+}): string {
+	return job.name ? `${job.toolName} "${job.name}"` : job.toolName;
+}
+
+/** t0 details. `backgrounded: true` marks a job handle, not the real output. */
 export interface BackgroundJobStartedDetails {
 	readonly jobId: string;
 	readonly toolCallId: string;
@@ -34,10 +33,8 @@ export interface BackgroundJobStartedDetails {
 }
 
 /**
- * Build the immediate t0 tool result for a call that was moved to the
- * background. The text tells the model the handle-first result is not the real
- * output and that the outcome will arrive later as a separate message, so it
- * must not block on it.
+ * The t0 tool result. Its text has to say that this is not the real output and
+ * that the outcome arrives later, so the model does not block on it.
  */
 export function createBackgroundJobStartedResult(input: {
 	jobId: string;
@@ -64,12 +61,9 @@ export function createBackgroundJobStartedResult(input: {
 }
 
 /**
- * Leading, self-describing part of a settled job's message text. It is the
- * durable identity of "this job's outcome was told to the model": a resume
- * looks for it in the session history to decide whether a t0 handle recorded by
- * a previous run still owes the model a result. The tool call id is what makes
- * it unambiguous - job ids restart from 1 in every runtime, tool call ids do
- * not repeat within a session.
+ * The durable identity of "this job's outcome was told to the model": a resume
+ * matches it against the session history. The tool call id is what makes it
+ * unambiguous, since job ids restart from 1 in every runtime.
  */
 export function backgroundJobResultHeaderPrefix(
 	jobId: string,
@@ -92,10 +86,9 @@ export function formatBackgroundJobResultText(input: {
 }
 
 /**
- * Closing message for a job that a previous runtime left unsettled. The work
- * itself could not survive the exit - a local job is a promise in a process
- * that is gone - so the only honest outcome is a cancellation, and the model
- * needs it because it is still holding that job's t0 handle.
+ * Closing message for a job a previous runtime left unsettled. A local job is a
+ * promise in a process that is gone, so cancellation is the only honest outcome
+ * - and the model needs it, because it still holds that job's t0 handle.
  */
 export function formatInterruptedBackgroundJobResultText(input: {
 	jobId: string;
@@ -114,17 +107,12 @@ export function formatInterruptedBackgroundJobResultText(input: {
 	});
 }
 
-/**
- * Model-facing text for a settled background job, ready to inject as a user
- * message (t1). Reuses the self-describing header and derives the body from the
- * outcome: the tool's text content when it resolved, otherwise the error, the
- * stop reason, or a short cancellation note.
- */
+/** The t1 message: the same header, plus a body derived from the outcome. */
 export function formatBackgroundJobResultMessageText(
 	settlement: BackgroundJobSettlement,
 ): string {
 	return formatBackgroundJobResultText({
-		jobId: settlement.job.id,
+		jobId: settlement.job.jobId,
 		toolCallId: settlement.job.toolCallId,
 		toolName: settlement.job.toolName,
 		status: settlement.outcome.status,
@@ -144,9 +132,8 @@ function extractBackgroundJobOutcomeText(
 	}
 	const errorText =
 		outcome.error === undefined ? undefined : formatError(outcome.error);
-	// An explicit stop reason explains why cancellation was requested, while the
-	// tool error can still contain useful partial output. Preserve both unless
-	// settlement derived the reason directly from that same error.
+	// A stop reason explains why cancellation was requested; the error can still
+	// carry partial output. Keep both unless one was derived from the other.
 	if (job.stopReason !== undefined && job.stopReason.length > 0) {
 		return errorText && errorText !== job.stopReason
 			? `${job.stopReason}\n\n${errorText}`

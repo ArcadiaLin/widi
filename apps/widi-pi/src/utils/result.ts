@@ -1,4 +1,4 @@
-import type { Result } from "@earendil-works/pi-agent-core";
+import type { Result } from "@widi/agent-core";
 
 /** Return a successful result value or throw its original error. */
 export function unwrapResult<TValue, TError>(

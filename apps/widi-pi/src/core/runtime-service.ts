@@ -1,9 +1,6 @@
-import type {
-	ExecutionEnv,
-	ThinkingLevel,
-} from "@earendil-works/pi-agent-core";
-import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
+import type { ExecutionEnv, ThinkingLevel } from "@widi/agent-core";
+import { NodeExecutionEnv } from "@widi/agent-core/node";
 import { unwrapResult } from "../utils/result.ts";
 import {
 	AgentOrchestrator,

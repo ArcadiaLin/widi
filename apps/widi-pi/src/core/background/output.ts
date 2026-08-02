@@ -1,50 +1,33 @@
 /**
  * The output stream of a background job: one append-only byte stream with two
- * bounded windows over it.
- *
- * A backgrounded tool has nowhere to put its output - its tool call is already
- * closed - so it feeds the bytes here instead. Two consumers want different
- * things from that one stream, and neither may grow without bound, which is why
- * the windows are separate rather than one shared buffer.
+ * bounded windows over it. A backgrounded tool has nowhere else to put its
+ * output - its tool call is already closed - and the two consumers of that
+ * stream want different things from it, neither of them unbounded.
  */
 
 /** Default rolling cap for a background job's output tail: 1 MiB. */
 export const DEFAULT_BACKGROUND_JOB_OUTPUT_MAX_BYTES = 1024 * 1024;
 
 /**
- * Default cap on the unforwarded progress-increment buffer: 1 MiB. Bounds the
- * bytes held between two progress drains so a producer that outpaces the emit
- * pump cannot grow memory without limit; overflow drops from the head and is
- * counted as `progressDroppedBytes`, leaving a detectable gap in the byte
- * stream.
+ * Default cap on the unforwarded progress-increment buffer: 1 MiB. Overflow
+ * drops from the head and is counted, leaving a detectable gap.
  */
 export const DEFAULT_BACKGROUND_JOB_INCREMENT_MAX_BYTES = 1024 * 1024;
 
 /**
- * Default cooperative circuit-breaker ceiling on the total output a single
- * background job streams through `context.job.output`: 16 MiB. Since the
- * rolling tail and increment buffer are both bounded, memory is already safe;
- * this ceiling instead requests termination of a runaway producer (for example
- * a command stuck streaming forever) that would otherwise burn CPU
- * indefinitely. It cannot limit output a tool does not append here, nor the
- * size of the tool's eventual result.
+ * Default cooperative circuit-breaker ceiling on one job's total output: 16 MiB.
+ * Both windows are already bounded, so this is about a runaway producer burning
+ * CPU, not about memory. It cannot limit output a tool never appends here.
  */
 export const DEFAULT_BACKGROUND_JOB_OUTPUT_CEILING_BYTES = 16 * 1024 * 1024;
 
 /**
- * A drained progress increment: the contiguous run of new output bytes since
- * the previous drain, addressed by absolute byte offsets into the job's total
- * output stream. When the increment buffer overflowed and dropped from the head
- * between drains, `startByte` jumps past the previous `endByte`; the gap size is
- * reflected in the monotonically growing `progressDroppedBytes`.
+ * A drained progress increment: the run of new output bytes since the previous
+ * drain, at absolute offsets into the job's stream. After a head drop
+ * `startByte` jumps past the previous `endByte`.
  */
 export interface BackgroundJobOutputIncrement {
-	/**
-	 * Retained output bytes for this increment, encoded as Base64. Decoding this
-	 * value yields exactly `endByte - startByte` bytes; consumers must not treat
-	 * each increment as an independently decodable UTF-8 string because a
-	 * character may span two increments.
-	 */
+	/** Base64; a UTF-8 character may span two increments, so decode in order. */
 	readonly chunk: string;
 	/** Absolute offset of the first byte in `chunk`. */
 	readonly startByte: number;
@@ -57,23 +40,13 @@ export interface BackgroundJobOutputIncrement {
 }
 
 /**
- * Bounded rolling tail plus a bounded forward increment of a background job's
- * output.
+ * Two independent windows over one appended stream: the rolling tail
+ * ({@link read}) is the last `maxBytes` bytes, a point-in-time peek; the
+ * increment buffer ({@link drainIncrement}) is the run not yet forwarded to
+ * progress listeners, cleared on each emit and capped separately.
  *
- * A backgrounded tool feeds its output straight in via {@link append}. Two
- * independent windows are maintained over that one stream:
- *
- * - the rolling tail ({@link read}) is the last `maxBytes` bytes, a point-in-time
- *   peek for read_job; older bytes are dropped from the head to stay in budget.
- * - the increment buffer ({@link drainIncrement}) is the run of bytes not yet
- *   forwarded to progress listeners; it is drained (and cleared) on each emit,
- *   and capped separately so a fast producer between drains cannot grow memory
- *   without bound.
- *
- * The rolling tail can slice a UTF-8 character mid-sequence at a head drop; that
- * is acceptable for a progress peek, and decoding emits a replacement character
- * rather than throwing. Progress increments remain byte-exact because they are
- * returned as Base64 rather than decoded independently.
+ * A head drop can slice the tail mid-character, which is acceptable for a peek.
+ * Increments stay byte-exact because they are returned as Base64.
  */
 export class BackgroundJobOutput {
 	private readonly _chunks: Buffer[] = [];
@@ -186,11 +159,7 @@ export class BackgroundJobOutput {
 	}
 }
 
-/**
- * Trim `chunks` from the head until the running byte total is back within
- * `maxBytes`, slicing the boundary chunk rather than pinning an oversized parent
- * allocation. Returns the new total.
- */
+/** Trim from the head back within `maxBytes`, returning the new total. */
 function trimHead(
 	chunks: Buffer[],
 	byteLength: number,
@@ -203,10 +172,8 @@ function trimHead(
 			byteLength -= head.length;
 			continue;
 		}
-		// Dropping the whole head would fall under the cap; keep just its tail so
-		// the buffer holds exactly the last maxBytes bytes. Copy instead of
-		// subarray: a view would pin the full parent allocation of an oversized
-		// chunk for as long as it stays at the head of a quiet job.
+		// Keep just the head chunk's tail, copied rather than sliced: a view would
+		// pin the whole parent allocation for as long as it sits at the head.
 		const overflow = byteLength - maxBytes;
 		chunks[0] = Buffer.from(head.subarray(overflow));
 		byteLength -= overflow;

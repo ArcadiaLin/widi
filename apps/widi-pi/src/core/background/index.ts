@@ -3,51 +3,48 @@
  *
  * A backgroundable tool call settles immediately with a job handle (t0), then
  * the eventual outcome is delivered as a separate message injected later (t1).
- * The LLM protocol forbids a deferred tool_result, so t1 is injected as a
- * normal user message: the orchestrator hands each settlement to `sendMessage`,
- * which arbitrates the harness method from the target's live delivery phase.
+ * The LLM protocol forbids a deferred tool_result, so t1 is injected as a normal
+ * user message: the runtime hands each settlement to its host, which arbitrates
+ * the harness method from the target's live delivery phase.
  *
- * The modules behind this barrel split that domain by ownership rather than by
- * lifecycle stage:
+ * The modules behind this barrel are one runtime and the things it cannot hold
+ * without mixing unrelated invariants:
  *
- * - `job.ts` - what a job is, and the vocabulary every observer shares.
- * - `output.ts` - the job's byte stream and its two bounded windows.
- * - `report.ts` - the tool-owned structured latest-value register.
- * - `table.ts` - the live registry, the only place job state mutates.
+ * - `background.ts` - the runtime: the only place job state changes, the only
+ *   authority on who may change it, and the owner of every ordering rule.
+ * - `types.ts` - the whole vocabulary: lifecycle, capabilities, ports, records.
+ * - `output.ts` - one job's byte stream and its two bounded windows.
+ * - `job-persistence.ts` - the records, the `core:jobs` namespace that holds
+ *   them, and one agent's history bound to its branch.
  * - `messages.ts` - the two texts a job puts in front of the model (t0, t1).
- * - `external-jobs.ts` - the cross-table index of jobs owed by another settler.
- * - `store.ts` - the durable projection into the session directory.
  *
  * What is deliberately elsewhere: the deadline race that decides whether a call
- * is backgrounded at all lives in the tool adapter, and the t1 router and
- * progress pump live in the orchestrator.
+ * is backgrounded at all lives in the tool adapter, and the delivery policy for
+ * a settled job's t1 - interception, merging, prompt versus steer - belongs to
+ * whoever implements `deliverResult`.
  */
 
 export type { JsonValue } from "../../utils/json.ts";
+export { BackgroundJobRuntime } from "./background.ts";
 export {
-	type ExternalJobDependency,
-	ExternalJobDependencyIndex,
-} from "./external-jobs.ts";
-export {
-	type BackgroundJob,
-	type BackgroundJobChange,
-	type BackgroundJobChangeListener,
-	type BackgroundJobOrigin,
-	type BackgroundJobOutcome,
-	type BackgroundJobPhase,
-	type BackgroundJobProgressListener,
-	type BackgroundJobReportListener,
-	type BackgroundJobSettlement,
-	type BackgroundJobSettleResult,
-	type BackgroundJobSnapshot,
-	type BackgroundJobStatus,
-	type BackgroundJobTransition,
-	backgroundJobToolLabel,
-	snapshotBackgroundJob,
-} from "./job.ts";
+	applyJobRecord,
+	boundJobRecord,
+	createJobsNamespace,
+	JOB_OUTPUT_DIR_NAME,
+	JOBS_FORMAT_VERSION,
+	JOBS_NAMESPACE,
+	JobHistoryStorage,
+	jobOutputFileName,
+	MAX_JOB_CHAIN_LENGTH,
+	planJobClosures,
+	reduceJobRecords,
+	SessionJobStore,
+	toJobRecord,
+} from "./job-persistence.ts";
 export {
 	type BackgroundJobStartedDetails,
 	backgroundJobResultHeaderPrefix,
+	backgroundJobToolLabel,
 	createBackgroundJobStartedResult,
 	formatBackgroundJobResultMessageText,
 	formatBackgroundJobResultText,
@@ -61,25 +58,50 @@ export {
 	DEFAULT_BACKGROUND_JOB_OUTPUT_MAX_BYTES,
 } from "./output.ts";
 export {
+	type BackgroundJobChange,
+	type BackgroundJobDelivery,
+	type BackgroundJobDeliveryReceipt,
+	type BackgroundJobEvent,
+	type BackgroundJobExecution,
+	type BackgroundJobHost,
+	type BackgroundJobLifecycleState,
+	type BackgroundJobOrigin,
+	type BackgroundJobOutcome,
+	type BackgroundJobOutputWriter,
+	type BackgroundJobPersistenceHealth,
+	type BackgroundJobReadResult,
 	type BackgroundJobReport,
 	type BackgroundJobReportSnapshot,
+	type BackgroundJobRuntimeOptions,
+	type BackgroundJobRuntimePorts,
+	type BackgroundJobSettlement,
+	type BackgroundJobSettler,
+	type BackgroundJobSnapshot,
+	type BackgroundJobStatus,
+	type BackgroundJobTransition,
+	type BackgroundJobWatch,
+	type CreateExternalJobInput,
+	DEFAULT_BACKGROUND_JOB_PROGRESS_THROTTLE_MS,
+	DEFAULT_BACKGROUND_JOB_REPORT_THROTTLE_MS,
+	type JobBranchPort,
+	type JobCloseCause,
+	type JobClosedRecord,
+	type JobHistory,
+	type JobHistoryEntry,
+	type JobHistoryState,
+	type JobRecord,
+	type JobRejection,
+	type JobResult,
+	type JobSealRequest,
+	type JobSettledRecord,
+	type JobStartedRecord,
 	MAX_BACKGROUND_JOB_REPORT_BYTES,
 	MAX_BACKGROUND_JOB_REPORT_KIND_BYTES,
 	MAX_BACKGROUND_JOB_REPORT_SUMMARY_BYTES,
-	validateBackgroundJobReport,
-} from "./report.ts";
-export {
-	BACKGROUND_JOBS_DIR_NAME,
-	BACKGROUND_JOBS_FILE_NAME,
-	BackgroundJobStore,
-	type BackgroundJobStoreOptions,
 	MAX_PERSISTED_JOB_MESSAGE_BYTES,
 	MAX_PERSISTED_JOB_OUTPUT_BYTES,
-	type PersistedBackgroundJob,
-} from "./store.ts";
-export {
-	BackgroundJobTable,
-	type BackgroundJobTableOptions,
-	DEFAULT_BACKGROUND_JOB_PROGRESS_THROTTLE_MS,
-	DEFAULT_BACKGROUND_JOB_REPORT_THROTTLE_MS,
-} from "./table.ts";
+	type ObservableBackgroundJobState,
+	type OwnerAttachment,
+	type SessionJobStoreOptions,
+	type StartLocalJobInput,
+} from "./types.ts";

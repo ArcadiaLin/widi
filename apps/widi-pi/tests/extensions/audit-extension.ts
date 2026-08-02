@@ -1,4 +1,4 @@
-import type { AgentHarnessEvent } from "@earendil-works/pi-agent-core";
+import type { AgentHarnessEvent } from "@widi/agent-core";
 import type {
 	ExtensionFactory,
 	ExtensionObservedEventName,

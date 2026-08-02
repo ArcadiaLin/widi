@@ -1,3 +1,4 @@
+import type { Api, Model } from "@earendil-works/pi-ai";
 import type {
 	ExecutionEnv,
 	ExecutionError,
@@ -5,14 +6,13 @@ import type {
 	FileInfo,
 	Result,
 	ShellExecOptions,
-} from "@earendil-works/pi-agent-core";
+} from "@widi/agent-core";
 import {
 	err,
 	ok,
 	ExecutionError as PiExecutionError,
 	FileError as PiFileError,
-} from "@earendil-works/pi-agent-core";
-import type { Api, Model } from "@earendil-works/pi-ai";
+} from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import {
@@ -269,7 +269,9 @@ describe("ModelRegistry", () => {
 					type: "oauth",
 					access: "proxy-ep=proxy.enterprise.example;",
 					refresh: "refresh",
-					expires: Date.now() + 60_000,
+					// Pi refreshes any token that expires within five minutes, so stay
+					// clear of that window to exercise the stored credential path.
+					expires: Date.now() + 60 * 60_000,
 				},
 			},
 		);

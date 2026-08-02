@@ -1,9 +1,6 @@
-import type {
-	AgentHarnessEvent,
-	AgentToolResult,
-} from "@earendil-works/pi-agent-core";
-import { AgentHarnessError } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AgentHarnessEvent, AgentToolResult } from "@widi/agent-core";
+import { AgentHarnessError } from "@widi/agent-core";
 import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
 import type {
