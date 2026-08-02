@@ -14,7 +14,8 @@
  *   authority on who may change it, and the owner of every ordering rule.
  * - `types.ts` - the whole vocabulary: lifecycle, capabilities, ports, records.
  * - `output.ts` - one job's byte stream and its two bounded windows.
- * - `journal.ts` - the durable lifecycle history, and the only IO here.
+ * - `job-persistence.ts` - the records, the `core:jobs` namespace that holds
+ *   them, and one agent's history bound to its branch.
  * - `messages.ts` - the two texts a job puts in front of the model (t0, t1).
  *
  * What is deliberately elsewhere: the deadline race that decides whether a call
@@ -26,11 +27,20 @@
 export type { JsonValue } from "../../utils/json.ts";
 export { BackgroundJobRuntime } from "./background.ts";
 export {
-	BACKGROUND_JOBS_DIR_NAME,
-	BACKGROUND_JOBS_FILE_NAME,
-	SessionJobJournal,
-	type SessionJobJournalOptions,
-} from "./journal.ts";
+	applyJobRecord,
+	boundJobRecord,
+	createJobsNamespace,
+	JOB_OUTPUT_DIR_NAME,
+	JOBS_FORMAT_VERSION,
+	JOBS_NAMESPACE,
+	JobHistoryStorage,
+	jobOutputFileName,
+	MAX_JOB_CHAIN_LENGTH,
+	planJobClosures,
+	reduceJobRecords,
+	SessionJobStore,
+	toJobRecord,
+} from "./job-persistence.ts";
 export {
 	type BackgroundJobStartedDetails,
 	backgroundJobResultHeaderPrefix,
@@ -48,15 +58,12 @@ export {
 	DEFAULT_BACKGROUND_JOB_OUTPUT_MAX_BYTES,
 } from "./output.ts";
 export {
-	BACKGROUND_JOB_JOURNAL_SCHEMA_VERSION,
 	type BackgroundJobChange,
 	type BackgroundJobDelivery,
 	type BackgroundJobDeliveryReceipt,
 	type BackgroundJobEvent,
 	type BackgroundJobExecution,
 	type BackgroundJobHost,
-	type BackgroundJobJournal,
-	type BackgroundJobJournalRecord,
 	type BackgroundJobLifecycleState,
 	type BackgroundJobOrigin,
 	type BackgroundJobOutcome,
@@ -76,8 +83,18 @@ export {
 	type CreateExternalJobInput,
 	DEFAULT_BACKGROUND_JOB_PROGRESS_THROTTLE_MS,
 	DEFAULT_BACKGROUND_JOB_REPORT_THROTTLE_MS,
+	type JobBranchPort,
+	type JobCloseCause,
+	type JobClosedRecord,
+	type JobHistory,
+	type JobHistoryEntry,
+	type JobHistoryState,
+	type JobRecord,
 	type JobRejection,
 	type JobResult,
+	type JobSealRequest,
+	type JobSettledRecord,
+	type JobStartedRecord,
 	MAX_BACKGROUND_JOB_REPORT_BYTES,
 	MAX_BACKGROUND_JOB_REPORT_KIND_BYTES,
 	MAX_BACKGROUND_JOB_REPORT_SUMMARY_BYTES,
@@ -85,7 +102,6 @@ export {
 	MAX_PERSISTED_JOB_OUTPUT_BYTES,
 	type ObservableBackgroundJobState,
 	type OwnerAttachment,
-	type PersistedBackgroundJob,
-	type PersistedJobIdentity,
+	type SessionJobStoreOptions,
 	type StartLocalJobInput,
 } from "./types.ts";

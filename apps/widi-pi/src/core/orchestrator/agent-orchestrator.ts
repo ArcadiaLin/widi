@@ -63,8 +63,8 @@ import {
 	type BackgroundJobSnapshot,
 	backgroundJobResultHeaderPrefix,
 	formatInterruptedBackgroundJobResultText,
+	type JobHistoryEntry,
 	type OwnerAttachment,
-	type PersistedBackgroundJob,
 } from "../background/index.ts";
 import type { OrchestratorClient } from "../client.ts";
 import {
@@ -774,8 +774,11 @@ export class AgentOrchestrator {
 				await this._publishDiagnostics(diagnostics),
 		});
 		this._backgroundJobs = new BackgroundJobRuntime({
-			openOwnerJournal: async (owner) =>
-				await this.sessionManager.openBackgroundJobJournal(owner),
+			// Recording a job means putting a persistence ref on the branch, and the
+			// capability that does that is the orchestrator extension point described
+			// in `docs/ZH/orchestrator-refactor.md`. Until it exists every owner is
+			// ephemeral: jobs run, they just leave no history.
+			openOwnerStore: async () => undefined,
 			deliverResult: async (delivery) =>
 				await this._deliverBackgroundResult(delivery),
 			// The runtime names its events for its own domain; the orchestrator's
@@ -5239,9 +5242,7 @@ export class AgentOrchestrator {
 	}
 
 	/** Every job this session has on record, including runs before this process. */
-	agentBackgroundJobHistory(
-		agentId: AgentId,
-	): readonly PersistedBackgroundJob[] {
+	agentBackgroundJobHistory(agentId: AgentId): readonly JobHistoryEntry[] {
 		this._requireLiveAgent(agentId);
 		return this._backgroundJobs.history(agentId);
 	}
@@ -5781,7 +5782,7 @@ function collectUserMessageText(
  * Closing text for a job a previous run left unanswered: the outcome it settled
  * into when one was recorded, otherwise a cancellation for work the exit ended.
  */
-function toCarriedOverJobResultText(job: PersistedBackgroundJob): string {
+function toCarriedOverJobResultText(job: JobHistoryEntry): string {
 	return (
 		job.messageText ??
 		formatInterruptedBackgroundJobResultText({

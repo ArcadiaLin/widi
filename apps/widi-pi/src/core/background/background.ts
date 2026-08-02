@@ -3,42 +3,24 @@
  * lifecycle.
  *
  * A backgroundable tool call races a deadline. If the deadline wins, the call
- * settles immediately with a job handle (t0) and the still-running work keeps
- * going; its eventual outcome is injected later as a separate message (t1),
- * because the protocol has no deferred tool_result. Everything between those
- * two points - acceptance, abort, settlement, the durable history, the per-owner
- * ordering of what observers see - is this class.
+ * settles with a job handle (t0) and the still-running work keeps going; its
+ * outcome is injected later as a separate message (t1), because the protocol
+ * has no deferred tool_result. Everything in between is this class.
  *
- * It is deliberately not a lane. A background job is one operation with a single
- * attempt that writes no conversation tree: its only footprint on the session is
- * one t1 delivered through the owner's ordinary input path. So there is no leaf,
- * no navigation, no per-job model config, no attempt counter, and no step/tool
- * event nesting. Where a rule here matches `packages/agent/docs/harness-v2.md`,
- * it is the same rule for the same reason; where one is absent, that equation is
- * the reason.
+ * It is deliberately not a lane: one operation, one attempt, no conversation
+ * tree, so no leaf, no navigation, no per-job model config, no attempt counter.
  *
- * Boundaries this class holds and must keep holding:
- *
- * - It never reads an agent record, an agent status, or any host map. Agent
- *   lifecycle reaches it only as `attachAgent`/`detachAgent`. An attachment is
- *   not a source of truth about whether an agent is alive; it answers exactly
- *   one question, "is this capability handle the current generation?".
- * - It never decides whether an owner can receive a message. Delivery is a
- *   request through `deliverResult`, and the host's delivery phase decides the
- *   rest.
- * - Live jobs are not agent business. A job outstanding does not make its owner
- *   busy, so nothing here feeds an idle judgement; the live count is
- *   information for consumers, never a criterion.
- *
- * State is the reduction of the records, not something the records shadow: the
- * live path feeds this reducer in-memory transitions and the same records go to
- * the journal, so `listJobs` and `history` cannot disagree about a job.
+ * Three boundaries it must keep. It never reads an agent record or any host map
+ * - lifecycle reaches it only as attach/detach, and an attachment answers "is
+ * this handle current?", never "is the agent alive". It never decides whether
+ * an owner can receive a message. And a live job never makes its owner busy.
  *
  * Plan: `notes/plan/background-runtime.md`.
  */
 
 import { formatError } from "../../utils/errors.ts";
 import { utf8ByteLength } from "../../utils/text.ts";
+import { jobOutputFileName, type SessionJobStore } from "./job-persistence.ts";
 import {
 	formatBackgroundJobResultMessageText,
 	stopReasonFromOutcome,
@@ -50,13 +32,10 @@ import {
 	DEFAULT_BACKGROUND_JOB_OUTPUT_MAX_BYTES,
 } from "./output.ts";
 import {
-	BACKGROUND_JOB_JOURNAL_SCHEMA_VERSION,
 	type BackgroundJobChange,
 	type BackgroundJobEvent,
 	type BackgroundJobExecution,
 	type BackgroundJobHost,
-	type BackgroundJobJournal,
-	type BackgroundJobJournalRecord,
 	type BackgroundJobLifecycleState,
 	type BackgroundJobOrigin,
 	type BackgroundJobOutcome,
@@ -72,33 +51,32 @@ import {
 	type CreateExternalJobInput,
 	DEFAULT_BACKGROUND_JOB_PROGRESS_THROTTLE_MS,
 	DEFAULT_BACKGROUND_JOB_REPORT_THROTTLE_MS,
+	type JobHistoryEntry,
+	type JobRecord,
 	type JobResult,
 	MAX_BACKGROUND_JOB_REPORT_BYTES,
 	MAX_BACKGROUND_JOB_REPORT_KIND_BYTES,
 	MAX_BACKGROUND_JOB_REPORT_SUMMARY_BYTES,
 	type ObservableBackgroundJobState,
 	type OwnerAttachment,
-	type PersistedBackgroundJob,
 	type StartLocalJobInput,
 } from "./types.ts";
 
 const LOCAL_ORIGIN: BackgroundJobOrigin = Object.freeze({ kind: "local" });
 
 /**
- * Everything the runtime holds for one attached agent.
- *
- * It outlives `detachAgent` by exactly as long as its tail takes to drain: the
- * journal is here, and a job cancelled by the detach still has history to write.
- * `detached` is what makes that window safe - from the moment it is set, no
- * capability resolves against this scope and nothing is published or delivered.
+ * Everything the runtime holds for one attached agent. It outlives
+ * `detachAgent` by as long as its tail takes to drain, because a job the detach
+ * cancelled still has history to write; `detached` is what makes that window
+ * safe, since nothing resolves, publishes, or delivers once it is set.
  */
 interface AttachmentState {
 	readonly agentId: string;
 	readonly sessionId: string;
 	/** Bumped on every re-attach of the same agent id; guards stale handles. */
 	readonly generation: number;
-	/** Absent for an ephemeral owner, and until `openOwnerJournal` resolves. */
-	journal?: BackgroundJobJournal;
+	/** Absent for an ephemeral owner, and until `openOwnerStore` resolves. */
+	store?: SessionJobStore;
 	/** Downgraded to `degraded` by the first failed write, never restored. */
 	health: BackgroundJobPersistenceHealth;
 	/** True once the degradation was reported, so it is said once. */
@@ -112,11 +90,9 @@ interface AttachmentState {
 	/** Live local subscribers, fed in the same order as published events. */
 	readonly watchers: Set<(change: BackgroundJobChange) => void>;
 	/**
-	 * Serialized side-effect tail: journal append, report flush, progress flush,
-	 * lifecycle event, t1 request. One chain per owner is what makes
-	 * `abort_requested` observably precede `settled` even when the abort signal
-	 * settles the job synchronously, and what keeps a slow owner from holding up
-	 * another.
+	 * Serialized side effects: append, flush, event, t1 request. One chain per
+	 * owner is what makes `abort_requested` observably precede `settled` even
+	 * when the abort signal settles the job synchronously.
 	 */
 	tail: Promise<void>;
 	/** The capability bundle handed out for this attachment. */
@@ -128,7 +104,7 @@ interface AttachmentState {
  * live in the same table as backgrounded jobs so there is one place to look up
  * an id; only the observable ones are ever handed out.
  */
-interface JobRecord {
+interface LiveJob {
 	readonly id: string;
 	readonly ownerId: string;
 	readonly ownerGeneration: number;
@@ -168,19 +144,13 @@ export class BackgroundJobRuntime {
 	/** Attached agents by id; the only lifecycle fact this class holds. */
 	private readonly _attachments = new Map<string, AttachmentState>();
 	/** Every job, candidates included, keyed by the runtime-wide id. */
-	private readonly _jobs = new Map<string, JobRecord>();
-	/** Distinguishes `job-N` of this process from the same id in a journal. */
-	private readonly _epoch: string;
+	private readonly _jobs = new Map<string, LiveJob>();
 	private readonly _createJobId: () => string;
 	private readonly _progressThrottleMs: number;
 	private readonly _reportThrottleMs: number;
 	private readonly _outputCeilingBytes: number;
 	private readonly _incrementMaxBytes: number;
-	/**
-	 * Runtime-wide, not per-agent. Ids never restart while the process lives, so
-	 * a disposed owner's `job-3` cannot collide with a new attachment's, and the
-	 * cross-agent settler index can key on the id alone.
-	 */
+	/** Runtime-wide: ids never restart, so the settler index can key on one. */
 	private _nextJobId = 0;
 	private _nextGeneration = 0;
 
@@ -189,7 +159,6 @@ export class BackgroundJobRuntime {
 		options: BackgroundJobRuntimeOptions = {},
 	) {
 		this._ports = ports;
-		this._epoch = options.epoch ?? createEpochId();
 		this._createJobId =
 			options.createJobId ?? (() => `job-${++this._nextJobId}`);
 		this._progressThrottleMs =
@@ -202,20 +171,11 @@ export class BackgroundJobRuntime {
 			options.incrementMaxBytes ?? DEFAULT_BACKGROUND_JOB_INCREMENT_MAX_BYTES;
 	}
 
-	/** Id stamped on every journal record written by this process. */
-	get epoch(): string {
-		return this._epoch;
-	}
-
 	/**
-	 * Bring an agent into scope and hand back the two capabilities bound to this
-	 * attachment: what it may do to its own jobs, and what it may settle for
-	 * others. Opening the owner journal is the only IO here; an owner with no
-	 * session directory attaches as `ephemeral` and simply keeps no history.
-	 *
-	 * Called before the agent can run. A second attach of the same agent id is a
-	 * new generation: it inherits nothing, and in particular does not become the
-	 * settler of jobs the previous generation owed.
+	 * Bring an agent into scope and hand back its two capabilities. An owner with
+	 * no session directory attaches as `ephemeral` and keeps no history. A second
+	 * attach of the same id is a new generation: it inherits nothing, and does
+	 * not become the settler of jobs the previous generation owed.
 	 */
 	async attachAgent(input: {
 		agentId: string;
@@ -223,42 +183,40 @@ export class BackgroundJobRuntime {
 	}): Promise<OwnerAttachment> {
 		this.detachAgent(input.agentId);
 		const state = this._createAttachment(input.agentId, input.sessionId);
-		// Registered before the await: a tool that starts a job in the same tick
-		// must find its scope, and a detach arriving during the open must be able
-		// to invalidate it.
+		// Registered before the await: a tool starting a job in the same tick must
+		// find its scope, and a detach during the open must invalidate it.
 		this._attachments.set(input.agentId, state);
 		try {
-			const journal = await this._ports.openOwnerJournal({
+			const store = await this._ports.openOwnerStore({
 				agentId: input.agentId,
 				sessionId: input.sessionId,
 			});
-			// The attachment may have been detached, or replaced by a newer
-			// generation, while the journal was opening. Either way this journal
-			// belongs to nobody.
+			// Detached or superseded while the store was opening: it belongs to
+			// nobody.
 			if (this._attachments.get(input.agentId) !== state) {
 				return state.attachment;
 			}
-			if (journal) {
-				state.journal = journal;
-				state.health = journal.corrupted ? "degraded" : "durable";
-				state.degradedReported = journal.corrupted;
-				if (journal.corrupted) {
+			if (store) {
+				state.store = store;
+				state.health = store.truncated ? "degraded" : "durable";
+				state.degradedReported = store.truncated;
+				if (store.truncated) {
 					await this._diagnose({
 						severity: "warning",
-						code: "background.journal_corrupted",
-						message: `The background job journal for agent ${input.agentId} has a malformed record, so its job history is incomplete.`,
+						code: "background.history_incomplete",
+						message: `The background job history for agent ${input.agentId} could not be read back in full, so earlier jobs are missing from it.`,
 						agentId: input.agentId,
 					});
 				}
 			}
 		} catch (error) {
-			// A journal that cannot be opened degrades the history, not the agent:
+			// A store that cannot be opened degrades the history, not the agent:
 			// jobs keep running, they just stop being recoverable across a restart.
 			state.health = "degraded";
 			state.degradedReported = true;
 			await this._diagnose({
 				severity: "warning",
-				code: "background.journal_unavailable",
+				code: "background.history_unavailable",
 				message: `Cannot record background jobs for agent ${input.agentId}: ${formatError(error)}`,
 				agentId: input.agentId,
 			});
@@ -267,21 +225,14 @@ export class BackgroundJobRuntime {
 	}
 
 	/**
-	 * Take an agent out of scope and reconcile everything that depended on it.
-	 * Invalidates the attachment synchronously, then forced-cancels the jobs it
-	 * owned (firing their abort signals) and the external jobs it owed, so no job
-	 * is left waiting on a settler that will never write it.
+	 * Take an agent out of scope: invalidate the attachment synchronously, then
+	 * force-cancel the jobs it owned and the external jobs it owed, so nothing is
+	 * left waiting on a settler that will never write it. A detached owner gets
+	 * no events and no t1, but history is still written, which is why the scope
+	 * is dropped only once its tail has drained.
 	 *
-	 * A detached owner gets no events and no t1: a result cannot be read by an
-	 * agent that is going away, and its observers are already released. History
-	 * is still written, which is why the scope is dropped only once its tail has
-	 * drained. Owners of jobs this agent merely owed are live, so those settle
-	 * and deliver normally.
-	 *
-	 * Ordering is part of the contract: the host must call this after it has
-	 * marked the agent as disposing and before any other teardown, so the whole
-	 * "release the observers before aborting" sensitivity lives at this one call
-	 * site instead of spread through a dispose sequence.
+	 * Ordering is contract: the host calls this after marking the agent disposing
+	 * and before any other teardown.
 	 */
 	detachAgent(agentId: string): void {
 		const state = this._attachments.get(agentId);
@@ -313,27 +264,17 @@ export class BackgroundJobRuntime {
 		});
 	}
 
-	/**
-	 * Owner-scoped capability for `agentId`: start/create jobs, list, read,
-	 * watch, abort. Identity is closed over, never taken from a model-controlled
-	 * payload. Absent when the agent is not attached.
-	 */
+	/** Owner-scoped capability. Identity is closed over, never taken from input. */
 	hostFor(agentId: string): BackgroundJobHost | undefined {
 		return this._current(agentId)?.attachment.host;
 	}
 
-	/**
-	 * Settler-scoped capability for `agentId`: write the outcome of an external
-	 * job owned by someone else. Absent when the agent is not attached.
-	 */
+	/** Settler-scoped capability: write the outcome of someone else's job. */
 	settlerFor(agentId: string): BackgroundJobSettler | undefined {
 		return this._current(agentId)?.attachment.settler;
 	}
 
-	/**
-	 * Observable jobs owned by `agentId`, oldest first. Candidates that were
-	 * never accepted into the background are not jobs and never appear here.
-	 */
+	/** Observable jobs owned by `agentId`, oldest first. Candidates never appear. */
 	listJobs(agentId: string): readonly BackgroundJobSnapshot[] {
 		const state = this._current(agentId);
 		if (!state) return [];
@@ -348,9 +289,8 @@ export class BackgroundJobRuntime {
 	}
 
 	/**
-	 * Current rolling output tail of one job, without blocking or disturbing it.
-	 * Rejects rather than returning an empty read when the id is unknown or still
-	 * a candidate, so a caller can tell "nothing yet" from "not a job".
+	 * Current rolling output tail of one job. Rejects rather than reading empty
+	 * for an unknown id, so a caller can tell "nothing yet" from "not a job".
 	 */
 	readJobOutput(
 		agentId: string,
@@ -370,10 +310,8 @@ export class BackgroundJobRuntime {
 	}
 
 	/**
-	 * Request an abort. Synchronous and idempotent: it commits the
-	 * `abort_requested` state and fires the signal, and the confirmation arrives
-	 * later as the job's settlement. An external job has no executor watching the
-	 * signal, so its abort forms the terminal `cancelled` directly.
+	 * Request an abort. Synchronous and idempotent; the confirmation arrives later
+	 * as the job's settlement.
 	 */
 	abortJob(agentId: string, jobId: string, reason?: string): JobResult {
 		const record = this._jobs.get(jobId);
@@ -387,40 +325,29 @@ export class BackgroundJobRuntime {
 		return { ok: true };
 	}
 
-	/**
-	 * Number of live jobs an agent owns. Reported alongside agent state for
-	 * consumers; it is not, and must not become, part of any judgement about
-	 * whether the agent itself is busy.
-	 */
+	/** Information for consumers, never a criterion for whether an agent is busy. */
 	liveJobCount(agentId: string): number {
 		return this.listJobs(agentId).length;
 	}
 
-	/**
-	 * Every job this session has on record, including runs before this process.
-	 * Replay is history and diagnostics only: it materializes no live job and
-	 * resumes no work.
-	 */
-	history(agentId: string): readonly PersistedBackgroundJob[] {
-		return this._current(agentId)?.journal?.history() ?? [];
+	/** Every job on record, earlier runs included. It materializes no live job. */
+	history(agentId: string): readonly JobHistoryEntry[] {
+		return this._current(agentId)?.store?.history() ?? [];
 	}
 
 	/**
-	 * Jobs this session recorded under an earlier epoch: exactly the t0 handles
-	 * whose owning runtime no longer exists. Whether each still owes the model a
-	 * message is not decided here - the session history is the authority on what
-	 * the model was actually told - so this is the input to the host's resume
-	 * reconciliation and nothing more. It materializes no live job.
+	 * Jobs the branch had open when this runtime attached: the t0 handles whose
+	 * executor no longer exists. Whether each still owes the model a message is
+	 * the session history's answer, so this is only the input to the host's
+	 * resume reconciliation.
 	 */
-	carriedOverJobs(agentId: string): readonly PersistedBackgroundJob[] {
-		return this._current(agentId)?.journal?.carriedOverJobs() ?? [];
+	carriedOverJobs(agentId: string): readonly JobHistoryEntry[] {
+		return this._current(agentId)?.store?.carriedOverJobs() ?? [];
 	}
 
 	/**
-	 * Settle a job from outside its owner, naming the settler explicitly. The
-	 * authorization is the one {@link settlerFor} enforces, so this is a
-	 * forwarding seam for hosts that hold an id rather than a capability, not a
-	 * second policy.
+	 * Settle a job from outside its owner. A forwarding seam for hosts that hold
+	 * an id rather than a capability, under the same authorization.
 	 */
 	settleJob(
 		agentId: string,
@@ -447,11 +374,7 @@ export class BackgroundJobRuntime {
 		return state && !state.detached ? state : undefined;
 	}
 
-	/**
-	 * Resolve a capability's scope. Both facts have to match: the agent is still
-	 * attached, and this handle belongs to the attachment that is current rather
-	 * than to a previous generation of the same id.
-	 */
+	/** Both must hold: the agent is attached, and this handle is its current one. */
 	private _resolve(
 		agentId: string,
 		generation: number,
@@ -465,10 +388,8 @@ export class BackgroundJobRuntime {
 		sessionId: string,
 	): AttachmentState {
 		const generation = ++this._nextGeneration;
-		// The capabilities resolve their scope by (agentId, generation) on every
-		// call rather than closing over the state object. That is what makes the
-		// generation guard a single expression instead of a check repeated in each
-		// method - and it keeps this construction free of a placeholder cycle.
+		// Capabilities resolve by (agentId, generation) on every call rather than
+		// closing over the state, which keeps the guard a single expression.
 		const health = () => this._attachments.get(agentId)?.health ?? "ephemeral";
 		return {
 			agentId,
@@ -535,9 +456,8 @@ export class BackgroundJobRuntime {
 	}
 
 	/**
-	 * Capture a snapshot and start buffering in one step, so a caller can list
-	 * and subscribe without a gap. Changes between here and `start` are held and
-	 * replayed in order; nothing is dropped and nothing arrives twice.
+	 * Snapshot and start buffering in one step, so a caller can list and subscribe
+	 * without a gap. Nothing is dropped and nothing arrives twice.
 	 */
 	private _watch(agentId: string, generation: number): BackgroundJobWatch {
 		const state = this._resolve(agentId, generation);
@@ -585,12 +505,10 @@ export class BackgroundJobRuntime {
 	}
 
 	/**
-	 * Create a job another agent will settle, and return only once it has a
-	 * durable head. The assignment must not go out before the record exists: an
-	 * assignment whose job left no trace is how a task ends up owed by nobody.
-	 *
-	 * The settler attachment is validated twice - before the append and after -
-	 * because the await in between is exactly where a settler can be disposed.
+	 * Create a job another agent will settle, returning only once it has a durable
+	 * head: an assignment whose job left no trace is how a task ends up owed by
+	 * nobody. The settler is validated on both sides of the append, because that
+	 * await is exactly where it can be disposed.
 	 */
 	private async _createExternal(
 		agentId: string,
@@ -626,7 +544,7 @@ export class BackgroundJobRuntime {
 		input: StartLocalJobInput,
 		origin: BackgroundJobOrigin,
 		settlerGeneration?: number,
-	): JobRecord {
+	): LiveJob {
 		const id = this._createJobId();
 		const startedAt = Date.now();
 		const controller = new AbortController();
@@ -645,13 +563,12 @@ export class BackgroundJobRuntime {
 						1,
 						startedAt,
 					);
-		const record: JobRecord = {
+		const record: LiveJob = {
 			id,
 			ownerId: state.agentId,
 			ownerGeneration: state.generation,
-			// Detached and frozen: the origin is the settlement authority, and a
-			// caller that kept its input object must not be able to name a
-			// different settler afterwards.
+			// Detached and frozen: the origin is the settlement authority, and the
+			// caller's input object must not be able to rename the settler.
 			origin,
 			settlerGeneration,
 			toolCallId: input.toolCallId,
@@ -680,17 +597,13 @@ export class BackgroundJobRuntime {
 	// -- acceptance ---------------------------------------------------------
 
 	/**
-	 * Take a local candidate into the background: the deadline won and the caller
-	 * is about to return a t0 handle.
-	 *
-	 * Synchronous, so registration completes before the caller's first await. The
-	 * head record is enqueued rather than awaited, which is the one place this
-	 * runtime does not yet meet its own persistence contract: putting a durable
-	 * head ahead of t0 is a deliberate later change, and it changes this
-	 * signature.
+	 * Take a local candidate into the background. Synchronous, so registration
+	 * completes before the caller's first await. The head record is enqueued
+	 * rather than awaited, which is the one place this runtime does not yet meet
+	 * its own persistence contract.
 	 */
 	private _acceptBackground(
-		record: JobRecord,
+		record: LiveJob,
 	): JobResult<{ job: BackgroundJobSnapshot }> {
 		const state = this._resolve(record.ownerId, record.ownerGeneration);
 		if (!state) return { ok: false, reason: "stale_attachment" };
@@ -703,30 +616,28 @@ export class BackgroundJobRuntime {
 		record.lastReportAt = record.backgroundedAt;
 		const job = this._snapshot(record);
 		void this._enqueue(state, async () => {
-			await this._write(state, this._headRecord(state, record));
+			await this._write(state, this._startedRecord(state, record));
 			await this._publishChange(state, { transition: "backgrounded", job });
 		});
-		// Output may have accumulated during the pre-t0 synchronous window. Make it
-		// observable only after the backgrounded event, preserving the rule that
-		// nobody sees a job before its handle exists.
+		// Output from the pre-t0 window becomes observable only after the
+		// backgrounded event: nobody sees a job before its handle exists.
 		if (record.output.totalBytesSeen > 0) this._scheduleProgress(record);
 		return { ok: true, job };
 	}
 
 	/**
-	 * Commit an external job's background state behind a durable head. Unlike the
-	 * local path this awaits the append, because nothing has been returned to a
-	 * model yet: a failure here means the job never existed.
+	 * Unlike the local path this awaits the append: nothing has been returned to a
+	 * model yet, so a failure here means the job never existed.
 	 */
 	private async _commitBackgrounded(
 		state: AttachmentState,
-		record: JobRecord,
+		record: LiveJob,
 	): Promise<JobResult<{ job: BackgroundJobSnapshot }>> {
 		record.state = "backgrounded";
 		record.backgroundedAt = Date.now();
 		record.lastReportAt = record.backgroundedAt;
 		const job = this._snapshot(record);
-		const head = this._headRecord(state, record);
+		const head = this._startedRecord(state, record);
 		try {
 			await this._enqueue(state, () => this._append(state, head));
 		} catch (error) {
@@ -744,12 +655,12 @@ export class BackgroundJobRuntime {
 	// -- abort and settlement ----------------------------------------------
 
 	/**
-	 * Accept an abort request. The state commits synchronously and the signal
-	 * fires immediately, so a tool watching it can stop; the journal record and
-	 * the event go on the owner's tail, which is what keeps `abort_requested`
-	 * ahead of the `settled` a synchronous signal handler can produce.
+	 * Accept an abort request. State and signal commit synchronously while the
+	 * event goes on the owner's tail, which keeps `abort_requested` ahead of the
+	 * `settled` a synchronous signal handler can produce. Nothing is recorded: a
+	 * request does not change whether the job is owed.
 	 */
-	private _requestAbort(record: JobRecord, reason?: string): void {
+	private _requestAbort(record: LiveJob, reason?: string): void {
 		if (isTerminal(record.state)) return;
 		record.stopReason ??= reason;
 		const state = this._attachments.get(record.ownerId);
@@ -759,17 +670,7 @@ export class BackgroundJobRuntime {
 			record.state = "abort_requested";
 			if (state) {
 				const job = this._snapshot(record);
-				const at = Date.now();
-				const stopReason = record.stopReason;
 				void this._enqueue(state, async () => {
-					await this._write(state, {
-						type: "job_abort_requested",
-						schemaVersion: BACKGROUND_JOB_JOURNAL_SCHEMA_VERSION,
-						epoch: this._epoch,
-						jobId: record.id,
-						at,
-						...(stopReason === undefined ? undefined : { stopReason }),
-					});
 					await this._publishChange(state, {
 						transition: "abort_requested",
 						job,
@@ -778,16 +679,15 @@ export class BackgroundJobRuntime {
 			}
 		}
 		record.controller.abort();
-		// An external job has no executor watching the signal, so nothing would
-		// ever confirm the abort. Complete the transition here rather than leaving
-		// the job stuck in `abort_requested` forever.
+		// An external job has no executor watching the signal, so nothing would ever
+		// confirm the abort. Complete it here rather than leave it stuck.
 		if (record.origin.kind === "external" && !isTerminal(record.state)) {
 			this._settle(record, { status: "cancelled" });
 		}
 	}
 
 	/** Abort and settle in one step, for a scope that is going away. */
-	private _forceCancel(record: JobRecord, reason: string): void {
+	private _forceCancel(record: LiveJob, reason: string): void {
 		if (isTerminal(record.state)) return;
 		record.stopReason ??= reason;
 		record.controller.abort();
@@ -795,17 +695,13 @@ export class BackgroundJobRuntime {
 	}
 
 	/**
-	 * Commit a job's terminal outcome, at most once, then run the settlement tail:
-	 * final report, final progress, terminal record, terminal event, t1 request -
-	 * in that order, which is why `settled` is a barrier rather than just another
-	 * event.
-	 *
-	 * `inline` means the job never became observable: it settled inside the
-	 * pre-t0 window, so there is nothing to record, nothing to emit, and no t1 -
-	 * the caller returns the outcome as an ordinary tool result.
+	 * Commit a terminal outcome, at most once, then run the settlement tail: final
+	 * report, final progress, terminal record, terminal event, t1 request - in
+	 * that order, which is why `settled` is a barrier. `inline` means the job
+	 * settled inside the pre-t0 window and was never observable at all.
 	 */
 	private _settle(
-		record: JobRecord,
+		record: LiveJob,
 		outcome: BackgroundJobOutcome,
 	): "inline" | "backgrounded" | "ignored" {
 		if (isTerminal(record.state)) return "ignored";
@@ -816,8 +712,8 @@ export class BackgroundJobRuntime {
 		this._clearTimers(record);
 		this._discard(record);
 		if (!observable) return "inline";
-		// The scope is looked up including a detached one: it holds the journal, so
-		// history still lands even though nothing will be published or delivered.
+		// A detached scope still counts: it holds the store, so history lands even
+		// though nothing will be published or delivered.
 		const state = this._attachments.get(record.ownerId);
 		if (!state) return "backgrounded";
 		const job = this._snapshot(record);
@@ -829,10 +725,8 @@ export class BackgroundJobRuntime {
 			await this._flushReport(state, record);
 			await this._flushProgress(state, record);
 			await this._write(state, {
-				type: "job_settled",
-				schemaVersion: BACKGROUND_JOB_JOURNAL_SCHEMA_VERSION,
-				epoch: this._epoch,
-				jobId: record.id,
+				kind: "settled",
+				toolCallId: record.toolCallId,
 				status: outcome.status,
 				...(stopReason === undefined ? undefined : { stopReason }),
 				endedAt,
@@ -852,9 +746,8 @@ export class BackgroundJobRuntime {
 					body: messageText,
 				});
 			} catch (error) {
-				// The port owns delivery policy, including its retries. Reaching here
-				// means the owner can never take this result, and the tail has to
-				// survive saying so.
+				// The port owns delivery policy, retries included. Reaching here means
+				// the owner can never take this result.
 				await this._diagnose({
 					severity: "warning",
 					code: "background.result_delivery_failed",
@@ -886,8 +779,8 @@ export class BackgroundJobRuntime {
 		) {
 			return { ok: false, reason: "not_settler" };
 		}
-		// Matching the id is not enough: a re-attached agent carries the same id as
-		// the one this job was assigned to, and must not inherit its authority.
+		// Matching the id is not enough: a re-attached agent must not inherit the
+		// authority its predecessor was assigned.
 		if (record.settlerGeneration !== settlerGeneration) {
 			return { ok: false, reason: "stale_attachment" };
 		}
@@ -900,7 +793,7 @@ export class BackgroundJobRuntime {
 	}
 
 	/** Drop a job from the live indexes. Its record stays readable to the tail. */
-	private _discard(record: JobRecord): void {
+	private _discard(record: LiveJob): void {
 		this._jobs.delete(record.id);
 		this._attachments.get(record.ownerId)?.owned.delete(record.id);
 		if (record.origin.kind === "external") {
@@ -910,16 +803,12 @@ export class BackgroundJobRuntime {
 
 	// -- report -------------------------------------------------------------
 
-	private _setReport(
-		record: JobRecord,
-		report: BackgroundJobReport,
-	): JobResult {
+	private _setReport(record: LiveJob, report: BackgroundJobReport): JobResult {
 		if (isTerminal(record.state)) {
 			return { ok: false, reason: "unknown_job" };
 		}
 		// An invalid report is a bug in the calling tool, not a lifecycle outcome,
-		// so it throws where that tool can see it instead of degrading into a
-		// refusal the tool would have to interpret.
+		// so it throws where that tool can see it.
 		const value = validateBackgroundJobReport(report);
 		record.reportRevision += 1;
 		record.report = freezeReportSnapshot(
@@ -935,12 +824,10 @@ export class BackgroundJobRuntime {
 	}
 
 	/**
-	 * Emit the latest report value, at most once per throttle window. A burst
-	 * collapses into one emission carrying the newest revision: the report is a
-	 * latest-value register, so intermediate revisions cost writes and tell
-	 * nobody anything new.
+	 * Emit at most once per throttle window. A burst collapses into one emission
+	 * carrying the newest revision: the report is a latest-value register.
 	 */
-	private _scheduleReport(record: JobRecord): void {
+	private _scheduleReport(record: LiveJob): void {
 		if (record.reportTimer !== undefined) return;
 		const elapsed = Date.now() - record.lastReportAt;
 		if (elapsed >= this._reportThrottleMs) {
@@ -955,7 +842,7 @@ export class BackgroundJobRuntime {
 		record.reportTimer.unref?.();
 	}
 
-	private _queueReport(record: JobRecord): void {
+	private _queueReport(record: LiveJob): void {
 		const state = this._attachments.get(record.ownerId);
 		if (!state || record.reportQueued) return;
 		record.reportQueued = true;
@@ -967,19 +854,14 @@ export class BackgroundJobRuntime {
 
 	private async _flushReport(
 		state: AttachmentState,
-		record: JobRecord,
+		record: LiveJob,
 	): Promise<void> {
 		const report = record.report;
 		if (!record.reportDirty || report === undefined) return;
 		record.reportDirty = false;
 		record.lastReportAt = Date.now();
-		await this._write(state, {
-			type: "job_reported",
-			schemaVersion: BACKGROUND_JOB_JOURNAL_SCHEMA_VERSION,
-			epoch: this._epoch,
-			jobId: record.id,
-			report,
-		});
+		// Reports are not recorded: high frequency, droppable, and only meaningful
+		// to a process that is still running.
 		if (state.detached) return;
 		await this._publish({
 			type: "job_report",
@@ -994,9 +876,8 @@ export class BackgroundJobRuntime {
 	// -- output and progress ------------------------------------------------
 
 	/**
-	 * Handle an output append: trip the cooperative streaming circuit breaker when
-	 * the total crosses the ceiling, then schedule a throttled progress emission -
-	 * but only once t0 has made the job observable.
+	 * Trip the cooperative circuit breaker when the total crosses the ceiling,
+	 * then schedule a progress emission - only once t0 made the job observable.
 	 */
 	private _onOutputAppend(jobId: string): void {
 		const record = this._jobs.get(jobId);
@@ -1013,7 +894,7 @@ export class BackgroundJobRuntime {
 		if (isObservable(record.state)) this._scheduleProgress(record);
 	}
 
-	private _scheduleProgress(record: JobRecord): void {
+	private _scheduleProgress(record: LiveJob): void {
 		if (record.progressTimer !== undefined) return;
 		const elapsed = Date.now() - record.lastProgressAt;
 		if (elapsed >= this._progressThrottleMs) {
@@ -1029,11 +910,10 @@ export class BackgroundJobRuntime {
 	}
 
 	/**
-	 * Queue one coalesced drain per job. While it is queued further ticks are
-	 * no-ops: their bytes accumulate in the increment buffer and go out together,
-	 * so a producer faster than the emit pump cannot grow the queue.
+	 * One coalesced drain per job: while it is queued further ticks are no-ops, so
+	 * a producer faster than the emit pump cannot grow the queue.
 	 */
-	private _queueProgress(record: JobRecord): void {
+	private _queueProgress(record: LiveJob): void {
 		const state = this._attachments.get(record.ownerId);
 		if (!state || record.progressQueued) return;
 		record.progressQueued = true;
@@ -1045,7 +925,7 @@ export class BackgroundJobRuntime {
 
 	private async _flushProgress(
 		state: AttachmentState,
-		record: JobRecord,
+		record: LiveJob,
 	): Promise<void> {
 		const increment = record.output.drainIncrement();
 		if (!increment) return;
@@ -1067,7 +947,7 @@ export class BackgroundJobRuntime {
 		});
 	}
 
-	private _clearTimers(record: JobRecord): void {
+	private _clearTimers(record: LiveJob): void {
 		if (record.progressTimer !== undefined) {
 			clearTimeout(record.progressTimer);
 			record.progressTimer = undefined;
@@ -1081,10 +961,8 @@ export class BackgroundJobRuntime {
 	// -- side-effect tail ---------------------------------------------------
 
 	/**
-	 * Chain a side effect onto the owner's tail. The returned promise reflects
-	 * this task, so a caller that must know the outcome can await it; the chain
-	 * itself absorbs the failure, because one failed effect must not stall every
-	 * later one.
+	 * Chain a side effect onto the owner's tail. The returned promise reflects this
+	 * task; the chain itself absorbs failures so one cannot stall the rest.
 	 */
 	private _enqueue(
 		state: AttachmentState,
@@ -1095,18 +973,13 @@ export class BackgroundJobRuntime {
 		return result;
 	}
 
-	private _headRecord(
-		state: AttachmentState,
-		record: JobRecord,
-	): BackgroundJobJournalRecord {
+	private _startedRecord(state: AttachmentState, record: LiveJob): JobRecord {
 		return {
-			type: "job_backgrounded",
-			schemaVersion: BACKGROUND_JOB_JOURNAL_SCHEMA_VERSION,
-			epoch: this._epoch,
+			kind: "started",
+			toolCallId: record.toolCallId,
 			jobId: record.id,
 			ownerAgentId: record.ownerId,
 			sessionId: state.sessionId,
-			toolCallId: record.toolCallId,
 			toolName: record.toolName,
 			...(record.name === undefined ? undefined : { name: record.name }),
 			...(record.description === undefined
@@ -1115,26 +988,26 @@ export class BackgroundJobRuntime {
 			origin: record.origin,
 			startedAt: record.startedAt,
 			backgroundedAt: record.backgroundedAt ?? record.startedAt,
+			outputFile: jobOutputFileName(record.toolCallId),
 		};
 	}
 
 	/** Append, or throw. Used where a failure must change what the caller does. */
 	private async _append(
 		state: AttachmentState,
-		record: BackgroundJobJournalRecord,
+		record: JobRecord,
 	): Promise<void> {
-		if (!state.journal) return;
-		await state.journal.append(record);
+		if (!state.store) return;
+		await state.store.append(record);
 	}
 
 	/**
-	 * Append after t0, where liveness outweighs the journal: a job the model was
-	 * already told about cannot be un-backgrounded because a write failed, so the
-	 * owner degrades and the lifecycle continues.
+	 * Append after t0, where liveness outweighs the history: a job the model was
+	 * told about cannot be un-backgrounded because a write failed.
 	 */
 	private async _write(
 		state: AttachmentState,
-		record: BackgroundJobJournalRecord,
+		record: JobRecord,
 	): Promise<void> {
 		try {
 			await this._append(state, record);
@@ -1152,7 +1025,7 @@ export class BackgroundJobRuntime {
 		state.degradedReported = true;
 		await this._diagnose({
 			severity: "warning",
-			code: "background.journal_write_failed",
+			code: "background.history_write_failed",
 			message: `Background jobs for agent ${state.agentId} are no longer being recorded; results of jobs still running will not survive a restart: ${formatError(error)}`,
 			agentId: state.agentId,
 		});
@@ -1163,14 +1036,13 @@ export class BackgroundJobRuntime {
 		change: BackgroundJobChange,
 	): Promise<void> {
 		if (state.detached) return;
-		// Local watchers first, and synchronously: a waiting tool is part of this
-		// process and must not learn of a settlement later than a surface does.
+		// Local watchers first and synchronously: a waiting tool must not learn of a
+		// settlement later than a surface does.
 		for (const watcher of state.watchers) {
 			try {
 				watcher(change);
 			} catch {
-				// One watcher's failure is its own; it cannot drop the others or the
-				// event that follows.
+				// One watcher's failure cannot drop the others or the event after it.
 			}
 		}
 		await this._publish({
@@ -1187,8 +1059,7 @@ export class BackgroundJobRuntime {
 		try {
 			await this._ports.publish(event);
 		} catch {
-			// Publishing is the host's problem once it has the event; a consumer that
-			// throws cannot be allowed to break this owner's ordering.
+			// A consumer that throws cannot break this owner's ordering.
 		}
 	}
 
@@ -1204,7 +1075,7 @@ export class BackgroundJobRuntime {
 
 	// -- snapshots ----------------------------------------------------------
 
-	private _snapshot(record: JobRecord): BackgroundJobSnapshot {
+	private _snapshot(record: LiveJob): BackgroundJobSnapshot {
 		return {
 			jobId: record.id,
 			ownerAgentId: record.ownerId,
@@ -1240,11 +1111,6 @@ function isObservable(state: BackgroundJobLifecycleState): boolean {
 	return state === "backgrounded" || state === "abort_requested";
 }
 
-function createEpochId(): string {
-	const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-	return `${timestamp}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
 function ceilingReason(ceilingBytes: number): string {
 	const mib = Math.floor(ceilingBytes / (1024 * 1024));
 	return (
@@ -1255,9 +1121,8 @@ function ceilingReason(ceilingBytes: number): string {
 }
 
 /**
- * Validate, detach, and deeply freeze a tool-published report. JSON
- * round-tripping gives snapshots transport-safe value semantics: later mutation
- * of the tool's input object cannot change the job without a new revision.
+ * Validate, detach, and deeply freeze a tool-published report: later mutation of
+ * the tool's input object cannot change the job without a new revision.
  */
 function validateBackgroundJobReport(
 	report: BackgroundJobReport,

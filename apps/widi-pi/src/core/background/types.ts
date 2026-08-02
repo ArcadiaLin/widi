@@ -2,22 +2,21 @@
  * The vocabulary of the background job domain: what a job is, who may act on
  * one, what gets written down, and what the runtime needs from its host.
  *
- * Everything here is a type. Collecting them in one file is not tidiness - it
- * is what makes the two distinctions the domain rests on visible at a glance:
+ * Two distinctions carry the domain and are why these types sit together: a job
+ * candidate is not a job (a call that settles before its deadline was never
+ * observable and leaves no trace anywhere), and execution state is not
+ * persistence health (a `degraded` history does not stop a job from aborting,
+ * settling, or delivering its result).
  *
- * - a job candidate is not a job (a call that settles before its deadline was
- *   never observable and leaves no trace anywhere);
- * - execution state is not persistence health (a `degraded` journal does not
- *   stop a job from aborting, settling, or delivering its result).
- *
- * Ids stay opaque strings. The runtime is agent-aware, but `core/types.ts`
- * already depends on this domain, so naming `AgentId` here would close a cycle
- * for no gain: nothing in this file needs to know what an agent is.
+ * Ids stay opaque strings: `core/types.ts` already depends on this domain, so
+ * naming `AgentId` here would close a cycle for no gain.
  */
 
 import type { AgentToolResult } from "@widi/agent-core";
 import type { JsonValue } from "../../utils/json.ts";
 import type { CoreDiagnostic } from "../diagnostics.ts";
+import type { NamespaceProjection } from "../persistence/index.ts";
+import type { JobHistoryStorage, SessionJobStore } from "./job-persistence.ts";
 
 // ---------------------------------------------------------------------------
 // Lifecycle
@@ -27,13 +26,11 @@ import type { CoreDiagnostic } from "../diagnostics.ts";
  * Every state a job passes through, including the two that are private.
  *
  * `foreground` and `accepting` belong to a candidate, not a job: the model has
- * no handle, no record exists, and an inline settlement ends the story. Only
- * from `backgrounded` on is the job something anyone else can name, which is
- * also the point from which it owes exactly one terminal outcome and one live
- * t1 delivery attempt.
- *
- * `abort_requested` says the runtime accepted the request and fired the signal,
- * not that the executor stopped; the confirmation is the settlement.
+ * no handle and an inline settlement ends the story. Only from `backgrounded`
+ * on is the job something anyone else can name, which is also the point from
+ * which it owes exactly one terminal outcome and one live t1 delivery attempt.
+ * `abort_requested` says the runtime fired the signal, not that the executor
+ * stopped; the confirmation is the settlement.
  */
 export type BackgroundJobLifecycleState =
 	| "foreground"
@@ -51,26 +48,18 @@ export type ObservableBackgroundJobState = Exclude<
 	"foreground" | "accepting"
 >;
 
-/**
- * Lifecycle events, which are not states: `settled` names the transition into
- * any of the three terminal states, and carries the outcome with it.
- */
+/** Not states: `settled` names the transition into any terminal state. */
 export type BackgroundJobTransition =
 	| "backgrounded"
 	| "abort_requested"
 	| "settled";
 
 /**
- * Whether a job has a local executor, and if not, who may settle it.
- *
- * `local` is the ordinary case: the tool call that started the job holds its
- * promise, so one place settles it and that same place watches the abort
- * signal. `external` has no such promise - the outcome is written from outside
- * by the named settler - which is why settlement needs authorization and why an
- * abort has to be completed by the runtime itself.
- *
- * Delegated multi-agent work is just an external job whose settler is another
- * agent. The job id is the whole task identity; nothing here models a task.
+ * Whether a job has a local executor, and if not, who may settle it. `local`
+ * holds its own promise, so one place settles it and watches the abort signal.
+ * `external` has no such promise - the outcome is written from outside by the
+ * named settler - which is why settlement needs authorization and why an abort
+ * has to be completed by the runtime itself.
  */
 export type BackgroundJobOrigin =
 	| { readonly kind: "local" }
@@ -95,17 +84,10 @@ export interface BackgroundJobSnapshot {
 	readonly jobId: string;
 	/** Agent that owns the job and will read its t1. */
 	readonly ownerAgentId: string;
-	/** Who settles this job: the local tool call, or a named external settler. */
 	readonly origin: BackgroundJobOrigin;
-	/** Id of the tool call that started the job. */
 	readonly toolCallId: string;
-	/** Name of the tool that started the job. */
 	readonly toolName: string;
-	/**
-	 * Short label the caller named this job with, when the tool takes one (bash's
-	 * `name`). It is what a person recognizes the job by; `description` is the
-	 * fallback derived when nobody named it.
-	 */
+	/** Short label the caller named this job with, when the tool takes one. */
 	readonly name?: string;
 	/** Human-readable label for the job; absent when the tool supplied none. */
 	readonly description?: string;
@@ -224,9 +206,9 @@ export type JobRejection =
  * How much of a job's history this owner can promise.
  *
  * - `ephemeral`: no session directory; the job lives and dies with the process.
- * - `durable`: the journal is open and the required records are landing.
- * - `degraded`: a write failed. Live behavior is unchanged - this is a claim
- *   about the history, not about the job.
+ * - `durable`: the history is open and the required records are landing.
+ * - `degraded`: a write failed, or the history could not be read back in full.
+ *   Live behavior is unchanged - this is a claim about the record, not the job.
  */
 export type BackgroundJobPersistenceHealth =
 	| "ephemeral"
@@ -280,12 +262,9 @@ export interface BackgroundJobReadResult {
 /**
  * An atomic subscription: `jobs` is the snapshot taken when `watch()` returned,
  * and changes from that instant are buffered until `start` installs a listener,
- * which then receives them in order before going live.
- *
- * This is what makes a wait correct without depending on there being no `await`
- * between listing and subscribing - the accident the current job tools rely on.
- * The waiting policy itself (timeouts, human steers, tool interrupts) stays in
- * the tool layer; the runtime only guarantees nothing is missed in between.
+ * which then receives them in order before going live. That is what makes a
+ * wait correct without depending on there being no `await` between listing and
+ * subscribing. The waiting policy itself stays in the tool layer.
  */
 export interface BackgroundJobWatch {
 	readonly jobs: readonly BackgroundJobSnapshot[];
@@ -332,8 +311,7 @@ export interface BackgroundJobExecution {
 	/**
 	 * Take the job into the background: the deadline won, and the caller is about
 	 * to return a t0 handle. Synchronous, so registration completes before the
-	 * caller's first await - the acceptance ordering that B3 turns into a durable
-	 * head write is a later change to this signature, made deliberately.
+	 * caller's first await.
 	 */
 	acceptBackground(): JobResult<{ job: BackgroundJobSnapshot }>;
 	/**
@@ -413,6 +391,137 @@ export type BackgroundJobEvent =
 	  };
 
 // ---------------------------------------------------------------------------
+// Durable records
+// ---------------------------------------------------------------------------
+
+/** Why a runtime closed a job the executor never answered for. */
+export type JobCloseCause =
+	| "resume"
+	| "navigate"
+	| "dispose"
+	| "fork"
+	| "abort";
+
+export interface JobStartedRecord {
+	readonly kind: "started";
+	/** The key. Unique within a session, unlike the process-local `jobId`. */
+	readonly toolCallId: string;
+	readonly jobId: string;
+	readonly ownerAgentId: string;
+	readonly sessionId: string;
+	readonly toolName: string;
+	readonly name?: string;
+	readonly description?: string;
+	readonly origin: BackgroundJobOrigin;
+	readonly startedAt: number;
+	readonly backgroundedAt: number;
+	/** File name inside the namespace's output directory, never a path. */
+	readonly outputFile: string;
+}
+
+export interface JobSettledRecord {
+	readonly kind: "settled";
+	readonly toolCallId: string;
+	readonly status: BackgroundJobStatus;
+	readonly stopReason?: string;
+	readonly endedAt: number;
+	/** The exact t1 text, bounded before it is stored. */
+	readonly messageText: string;
+	readonly outputTail?: string;
+}
+
+export interface JobClosedRecord {
+	readonly kind: "closed";
+	readonly toolCallId: string;
+	readonly cause: JobCloseCause;
+	readonly closedAt: number;
+	readonly stopReason?: string;
+}
+
+/**
+ * The two terminal kinds are deliberately not one: `settled` is the executor's
+ * answer, `closed` is a runtime declaring the answer will never come.
+ */
+export type JobRecord = JobStartedRecord | JobSettledRecord | JobClosedRecord;
+
+export type JobHistoryState = "open" | "settled" | "closed";
+
+/** One job, reduced from every record on the chain that named it. */
+export interface JobHistoryEntry {
+	readonly toolCallId: string;
+	readonly jobId: string;
+	readonly ownerAgentId: string;
+	readonly sessionId: string;
+	readonly toolName: string;
+	readonly name?: string;
+	readonly description?: string;
+	readonly origin: BackgroundJobOrigin;
+	readonly startedAt: number;
+	readonly backgroundedAt: number;
+	readonly outputFile: string;
+	readonly state: JobHistoryState;
+	/** Present only for `settled`: the executor's own outcome. */
+	readonly status?: BackgroundJobStatus;
+	/** Present only for `closed`: who declared it over and why. */
+	readonly cause?: JobCloseCause;
+	readonly stopReason?: string;
+	readonly endedAt?: number;
+	readonly messageText?: string;
+	readonly outputTail?: string;
+}
+
+/** What one state root resolves to. */
+export interface JobHistory {
+	/** Oldest job first, by when it entered the background. */
+	readonly jobs: readonly JobHistoryEntry[];
+	/** The walk stopped before the chain's first record. */
+	readonly truncated: boolean;
+}
+
+export interface JobClosurePlanRequest {
+	readonly jobs: readonly JobHistoryEntry[];
+	/** Tool call ids this runtime still holds an executor for. */
+	readonly recognized: ReadonlySet<string>;
+	readonly cause: JobCloseCause;
+	readonly closedAt: number;
+	readonly stopReason?: string;
+}
+
+/**
+ * The branch, as this namespace is allowed to see it. Already scoped to one
+ * agent and to `core:jobs`, so neither appears in a signature.
+ */
+export interface JobBranchPort {
+	/** This namespace's state on the branch; undefined when it names none. */
+	projection(): Promise<NamespaceProjection | undefined>;
+	/** Ask the branch's owner to record this root. The object must be durable. */
+	commit(stateRoot: string | null): Promise<void>;
+}
+
+export interface SessionJobStoreOptions {
+	readonly storage: JobHistoryStorage;
+	readonly branch: JobBranchPort;
+}
+
+export interface JobSealRequest {
+	readonly cause: JobCloseCause;
+	/** Tool call ids this runtime still holds an executor for. */
+	readonly recognized: ReadonlySet<string>;
+	readonly stopReason?: string;
+	readonly closedAt?: number;
+}
+
+/**
+ * Cap on the stored t1 text of a settled job: 64 KiB. The text may be replayed
+ * into a session, so it is bounded by what is reasonable to re-inject rather
+ * than by what the tool produced.
+ */
+export const MAX_PERSISTED_JOB_MESSAGE_BYTES = 64 * 1024;
+
+/** Cap on the stored final output tail of a settled job: 32 KiB. */
+export const MAX_PERSISTED_JOB_OUTPUT_BYTES = 32 * 1024;
+
+// ---------------------------------------------------------------------------
 // Ports
 // ---------------------------------------------------------------------------
 
@@ -437,19 +546,17 @@ export interface BackgroundJobDeliveryReceipt {
 /**
  * Everything the runtime needs from outside itself - and nothing more. There is
  * no port for "is this agent reachable" on purpose: the runtime asks for a
- * delivery and the host decides, so the day the host's own liveness facts are
- * unified, nothing in this domain has to change.
+ * delivery and the host decides.
  */
 export interface BackgroundJobRuntimePorts {
 	/**
-	 * Open the owner's lifecycle journal, or resolve undefined for an agent with
-	 * no session directory. Creates nothing eagerly: an agent that never
-	 * backgrounds a job leaves no jobs directory behind.
+	 * Open the owner's job history, or resolve undefined for an agent with no
+	 * session directory. Creates nothing eagerly.
 	 */
-	openOwnerJournal(owner: {
+	openOwnerStore(owner: {
 		readonly agentId: string;
 		readonly sessionId: string;
-	}): Promise<BackgroundJobJournal | undefined>;
+	}): Promise<SessionJobStore | undefined>;
 	/**
 	 * Hand a settled job's text to its owner. Delivery policy - interception,
 	 * merging, prompt versus steer - belongs to the host; the runtime only says
@@ -470,8 +577,6 @@ export const DEFAULT_BACKGROUND_JOB_PROGRESS_THROTTLE_MS = 100;
 export const DEFAULT_BACKGROUND_JOB_REPORT_THROTTLE_MS = 100;
 
 export interface BackgroundJobRuntimeOptions {
-	/** Stamped on every record written by this process; defaults to a new one. */
-	readonly epoch?: string;
 	/** Injectable id factory. Defaults to a runtime-wide `job-N` counter. */
 	readonly createJobId?: () => string;
 	readonly progressThrottleMs?: number;
@@ -484,120 +589,4 @@ export interface BackgroundJobRuntimeOptions {
 	readonly outputCeilingBytes?: number;
 	/** Cap on a job's unforwarded progress-increment buffer. */
 	readonly incrementMaxBytes?: number;
-}
-
-// ---------------------------------------------------------------------------
-// Journal
-// ---------------------------------------------------------------------------
-
-/** Version stamped on every record written by this build. */
-export const BACKGROUND_JOB_JOURNAL_SCHEMA_VERSION = 1;
-
-/**
- * Cap on the stored t1 text of a settled job: 64 KiB. The text may be replayed
- * into a session, so it is bounded by what is reasonable to re-inject rather
- * than by what the tool produced.
- */
-export const MAX_PERSISTED_JOB_MESSAGE_BYTES = 64 * 1024;
-
-/** Cap on the stored final output tail of a settled job: 32 KiB. */
-export const MAX_PERSISTED_JOB_OUTPUT_BYTES = 32 * 1024;
-
-/** Facts fixed at the moment a job became observable. */
-export interface PersistedJobIdentity {
-	readonly schemaVersion: number;
-	/** Process epoch; jobs are keyed by `(epoch, jobId)` across runs. */
-	readonly epoch: string;
-	readonly jobId: string;
-	readonly ownerAgentId: string;
-	readonly sessionId: string;
-	readonly toolCallId: string;
-	readonly toolName: string;
-	readonly name?: string;
-	readonly description?: string;
-	readonly origin: BackgroundJobOrigin;
-	readonly startedAt: number;
-	readonly backgroundedAt: number;
-}
-
-/**
- * One line of the journal. Only observable jobs are written: a candidate that
- * settled inline has nothing to record, and progress bytes are a stream, not
- * history.
- */
-export type BackgroundJobJournalRecord =
-	| ({ readonly type: "job_backgrounded" } & PersistedJobIdentity)
-	| {
-			readonly type: "job_reported";
-			readonly schemaVersion: number;
-			readonly epoch: string;
-			readonly jobId: string;
-			/** The coalesced latest value, not every revision. */
-			readonly report: BackgroundJobReportSnapshot;
-	  }
-	| {
-			readonly type: "job_abort_requested";
-			readonly schemaVersion: number;
-			readonly epoch: string;
-			readonly jobId: string;
-			readonly at: number;
-			readonly stopReason?: string;
-	  }
-	| {
-			readonly type: "job_settled";
-			readonly schemaVersion: number;
-			readonly epoch: string;
-			readonly jobId: string;
-			readonly status: BackgroundJobStatus;
-			readonly stopReason?: string;
-			readonly endedAt: number;
-			/** The exact t1 text, bounded. Storing the rendered message keeps
-			 * replay free of tool-specific detail shapes. */
-			readonly messageText: string;
-			readonly outputTail?: string;
-			/**
-			 * Reserved for the provisioned delivery entry id. Never written today;
-			 * declared so adding it later costs no schema version.
-			 */
-			readonly deliveryEntryId?: string;
-	  };
-
-/** Replayed state of one job on record: the reduction of its records. */
-export interface PersistedBackgroundJob extends PersistedJobIdentity {
-	readonly report?: BackgroundJobReportSnapshot;
-	/** True once an abort was requested, whether or not it was confirmed. */
-	readonly abortRequested: boolean;
-	/** Terminal status; absent when the job never settled on record. */
-	readonly status?: BackgroundJobStatus;
-	readonly stopReason?: string;
-	readonly endedAt?: number;
-	/** Rendered t1 text, present once the job settled. */
-	readonly messageText?: string;
-	/** Bounded final output tail, present once the job settled. */
-	readonly outputTail?: string;
-}
-
-/**
- * The owner's append-only lifecycle log. Implemented by `journal.ts`; declared
- * here so the runtime can be tested against a fake without touching a disk.
- *
- * `append` rejects when a write fails, and that is the whole reason it exists
- * in this shape: the runtime owns the degraded policy, so the journal must not
- * decide on its own to swallow a failure and keep looking healthy.
- */
-export interface BackgroundJobJournal {
-	/** Id stamped on records written by this open. */
-	readonly epoch: string;
-	/**
-	 * True when replay hit a malformed record that was not the last line. The
-	 * history is then incomplete in a way nobody can bound, so the runtime says
-	 * so once instead of quietly serving a partial answer. A torn trailing line -
-	 * the shape a killed process leaves - is not corruption.
-	 */
-	readonly corrupted: boolean;
-	append(record: BackgroundJobJournalRecord): Promise<void>;
-	/** Every job on record, oldest first, across all epochs. */
-	history(): readonly PersistedBackgroundJob[];
-	/** Jobs recorded under an earlier epoch: t0 handles this run never saw. */
-	carriedOverJobs(): readonly PersistedBackgroundJob[];
 }
