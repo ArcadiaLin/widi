@@ -29,7 +29,7 @@
 
 三条布局规则：
 
-- **会话目录拥有自己的一切**：历史、custom storage、以及它 spawn 出的子会话目录。所有权、生命周期、可复制性都跟着目录走。删除根会话就删掉整棵子树；fork 根会话就复制一棵子树。
+- **会话目录拥有自己的一切**：历史、custom storage、以及它 spawn 出的子会话目录。所有权、生命周期、可复制性都跟着目录走。删除根会话就删掉整棵子树；fork 根会话就复制一棵子树。（namespace 可以用 `locate` 把自己的目录挪到任何地方，那样它就退出了这条规则的保护范围——见 6.2。）
 - **子会话在 `agents/` 下，不与 `session.jsonl` 平级**。这样列目录时永远不用判断某个子目录是子会话还是保留目录。保留名：`agents`、`persistence`、`jobs`（遗留 sidecar）。
 - **嵌套深度上限 8 层**（`MAX_SESSION_DEPTH`）。路径每层长两段，Windows 仍有 260 字符限制。超深的 spawn 会降级成顶层会话并报一条 `persistence.nesting_limit`，而不是生成一个谁都打不开的路径。
 
@@ -66,6 +66,18 @@ registry.register(myJobsNamespace);
 
 const repo = new JsonlPersistenceRepo({ fs, root: ".widi/runs", registry });
 ```
+
+namespace 名必须是 `owner:name` 这个形状——两段或更多，小写字母数字加连字符，冒号分隔。`register()` 当场校验，不合规直接抛。这是命名规则，**不是路径防线**：带 `locate` 的 namespace 自己挑路径，那条路上这个正则什么都挡不住。
+
+注册表**不封闭**：任何时候、任何地方都可以再注册。代价是分操作的——
+
+| 操作 | 此刻没注册 |
+|---|---|
+| `stageState` | 直接抛，调用方立刻知道 |
+| `resolveState` | 该 namespace 缺席 + 一条 `unknown_namespace`，盘上一个字节不动，注册回来再读就有了 |
+| `fork` | **状态不进闭包，新会话永远没有这条 ref。fork 不可逆，事后注册补不回来** |
+
+所以「什么时候注册完」是接线方的责任，这一层不替它决定。
 
 ### 会话生命周期
 
@@ -164,7 +176,7 @@ const { session, plan, diagnostics } = await repo.fork(sourceAddress, {
 4. 复制对象、递归 fork 计划里列出的子会话、应用每个 namespace 的策略。
 5. 给每个存活的 namespace 追加一条**全新的 ref**，带上 `origin`。
 
-之后新会话不从源目录读任何东西。这是整个设计被检验的那条性质——测试里的做法是 fork 完直接把源目录删掉，再验证新会话仍能解析出自己和子会话的状态。
+之后新会话不从源目录读任何东西。这是整个设计被检验的那条性质——测试里的做法是 fork 完直接把源目录删掉，再验证新会话仍能解析出自己和子会话的状态。**这条性质只对住在会话目录里的 namespace 成立**，`locate` 出去的那些自己负责（6.2）。
 
 **子会话是递归 fork，不是 `cp -r`。** fork 点之后才 spawn 的子会话在盘上存在，但不属于新树。
 
@@ -209,7 +221,31 @@ export const jobsNamespace: PersistenceNamespaceDefinition = {
 
 唯一硬性要求：**state root 必须不可变**。分支命名了它，一条不再是当前的分支仍然必须能解析出它当初命名的东西。
 
-### 6.2 状态里引用了子会话
+### 6.2 换一个存放位置：`locate`
+
+默认目录是 `<session>/persistence/<namespace>/`。不想要这个位置，给定义加一个 `locate`：
+
+```ts
+locate: ({ address, defaultDirPath, persistenceRoot }) =>
+  `${persistenceRoot}/shared/${address.key[0]}`,
+```
+
+仓储拿它的返回值当作这个 namespace 的目录，原样读写，`context.dirPath` 收到的就是它。`repo.openDefaultStorage()` 也走同一条路，所以在自己的 `openStorage` 里调它不会绕回默认布局。
+
+两条规则，**这一层一条都不强制**：
+
+1. **必须是请求的纯函数，而且跨 build 保持不变。** 下一个进程里的 resolve 要算出同一个路径，fork 要算出一个**还不存在的会话**的路径。做不到这点，状态就是找不回来。
+2. **返回什么就用什么。** `encodeCwd`、`sessionDirSegments`、`namespaceDirSegments` 全是导出的，所以你能寻址仓储能寻址的一切，包括别的会话的目录。路径逃逸不逃逸，这一层不看。
+
+离开会话子树之后，下面这些**变成定义方自己的问题**：
+
+- **回收**。`repo.delete()` 只 `rm -rf` 会话目录，它绝不删自己没放的东西。你的目录会留在盘上。
+- **隔离**。默认布局保证一个会话一份日志。共享路径就没有这个保证了，并发写、owner 封存、损坏日志的影响面都归你管。
+- **自足性**。「删掉源目录，fork 出来的会话仍能解析」这条性质你不再免费拥有。
+
+fork **仍然正常工作**：它走的是 `copyReachable(source → target)` 两个 handle，从来就不是 `cp -r` 目录。共享路径下 source 和 target 是同一份存储，这次拷贝退化成自拷贝——因为对象内容寻址、`putObject` 按内容幂等，它是个无害的 no-op，新会话的 ref 照样解析得出。
+
+### 6.3 状态里引用了子会话
 
 这是 `core:subagent` 那类 namespace 唯一需要的额外钩子。给一个纯函数，从对象数据里读出它命名的会话：
 
@@ -224,7 +260,7 @@ fork 时仓储会把这些子会话的整棵目录递归 fork 过去。**namespa
 
 同 namespace 内的对象依赖走另一条路：`putObject({ data, dependencies })`，或自定义 storage 的 `listDependencies`。
 
-### 6.3 fork 策略
+### 6.4 fork 策略
 
 ```ts
 readonly forkPolicy: "copy" | "omit" | "degrade";
@@ -252,7 +288,7 @@ async fork({ source, target, roots, diagnostics }) {
 
 返回 `stateRoot: null` 表示新分支不为这个 namespace 带任何 ref。`origin` 可以显式覆盖，默认由 `forkPolicy` 推出——只有「`copy` 策略下实际发生了降级」才需要自己写。
 
-### 6.4 版本与迁移
+### 6.5 版本与迁移
 
 `definition.version` 是这个 namespace 自己数据的格式版本，会写进对象日志的 header。`CustomStorage.storedFormatVersion` 报告磁盘上实际是哪个版本。
 
@@ -271,7 +307,7 @@ async migrate({ fromVersion, stateRoot, storage }) {
 
 迁移成功的状态 `provenance` 是 `"migrated"`。
 
-### 6.5 `owner`：namespace 名字可以被回收
+### 6.6 `owner`：namespace 名字可以被回收
 
 namespace 名全局唯一，但**不是保留的**。一个 extension 被卸载后，另一个可以声明同样的名字，然后读到前一个写的对象，按自己的 schema 解释它们。
 
@@ -281,7 +317,7 @@ namespace 名全局唯一，但**不是保留的**。一个 extension 被卸载�
 
 本 build 自带的 namespace 省略 `owner`。
 
-### 6.6 完全自己实现 storage
+### 6.7 完全自己实现 storage
 
 `CustomStorage` 接口：
 
@@ -297,7 +333,7 @@ close?(): Promise<void>
 
 `copyReachable` 收到的是仓储已经闭包过的集合，**不要再走一遍**。同一个 root 被多条 ref 命名是常态而非错误，所以复制已存在的对象必须是 no-op。
 
-### 6.7 handle 的生命周期
+### 6.8 handle 的生命周期
 
 **谁 open 谁 close。不缓存、不引用计数。**
 

@@ -47,7 +47,7 @@
 
 import type { FileSystem } from "@widi/agent-core";
 import type { PersistenceDiagnostics } from "./utils/diagnostics.ts";
-import type { SessionKey } from "./utils/layout.ts";
+import type { SessionAddress, SessionKey } from "./utils/layout.ts";
 import type { PersistenceRefOrigin } from "./utils/persistence-ref.ts";
 
 export type PersistenceFileSystem = Pick<
@@ -76,7 +76,11 @@ export type PersistenceForkPolicy = "copy" | "omit" | "degrade";
 
 export interface NamespaceStorageContext {
 	readonly fs: PersistenceFileSystem;
-	/** Absolute directory this namespace owns, created on first write. */
+	/**
+	 * Absolute directory this namespace owns, created on first write. Inside the
+	 * session directory unless the definition supplied a
+	 * {@link PersistenceNamespaceDefinition.locate}.
+	 */
 	readonly dirPath: string;
 	/** The session owning that directory, for diagnostics and session deps. */
 	readonly sessionKey: SessionKey;
@@ -191,6 +195,14 @@ export interface NamespaceForkResult {
 	readonly origin?: PersistenceRefOrigin;
 }
 
+export interface NamespaceLocateRequest {
+	readonly address: SessionAddress;
+	/** The in-session directory being overridden, already absolute. */
+	readonly defaultDirPath: string;
+	/** The resolved persistence root, e.g. the absolute form of `.widi/runs`. */
+	readonly persistenceRoot: string;
+}
+
 export interface PersistenceNamespaceDefinition {
 	/** Stable and globally unique, e.g. `core:subagent`. */
 	readonly namespace: string;
@@ -215,6 +227,37 @@ export interface PersistenceNamespaceDefinition {
 	readonly owner?: string;
 
 	readonly forkPolicy: PersistenceForkPolicy;
+
+	/**
+	 * Where this namespace's directory lives, when the session directory is the
+	 * wrong place for it.
+	 *
+	 * Omitted means `<session>/persistence/<namespace>`, and that is the only
+	 * form the session subtree owns: it is deleted with the session and it is
+	 * inside the tree a fork copies. A namespace that answers with a path
+	 * elsewhere takes both of those over. The repository still forks it, because
+	 * a fork copies through `copyReachable` between two opened storages and never
+	 * by copying a directory - but it will not delete what it did not place, and
+	 * a path several sessions share turns that copy into a self-copy, which is a
+	 * no-op only because objects are content addressed.
+	 *
+	 * Two rules, and the layer enforces neither:
+	 *
+	 * 1. It must be a pure function of the request, and stay one across builds. A
+	 *    resolve in a later process has to arrive at the same path, and a fork
+	 *    has to arrive at the path of a session that does not exist yet.
+	 * 2. What it returns is a path this layer will read and write as given.
+	 *    Everything the default layout is built from - `encodeCwd`,
+	 *    `sessionDirSegments`, `namespaceDirSegments` - is exported, so an
+	 *    implementation can address anything the repository can, including the
+	 *    directory of another session.
+	 *
+	 * Whatever follows from leaving the session subtree is the definition's to
+	 * deal with: reclaiming the disk, keeping concurrent sessions off each
+	 * other's log, and knowing that "delete the source and the fork still
+	 * resolves" is a property it no longer gets for free.
+	 */
+	locate?(request: NamespaceLocateRequest): string | Promise<string>;
 
 	openStorage(context: NamespaceStorageContext): Promise<CustomStorage>;
 
@@ -249,6 +292,17 @@ export interface PersistenceNamespaceDefinition {
 }
 
 /**
+ * Two or more lowercase segments joined by colons, as in `core:subagent`.
+ *
+ * Checked at registration, where the name is still a programming decision and
+ * the error can name the definition that made it. It is a naming rule and not a
+ * path guard: a namespace is free to
+ * {@link PersistenceNamespaceDefinition.locate} itself anywhere, and the
+ * default layout is the only thing that still derives a directory name from it.
+ */
+const NAMESPACE_PATTERN = /^[a-z0-9][a-z0-9-]*(?::[a-z0-9][a-z0-9-]*)+$/;
+
+/**
  * The set of namespaces this build understands.
  *
  * A session can always be opened, listed and read with an empty registry; only
@@ -262,6 +316,11 @@ export class PersistenceRegistry {
 	>();
 
 	register(definition: PersistenceNamespaceDefinition): void {
+		if (!NAMESPACE_PATTERN.test(definition.namespace)) {
+			throw new Error(
+				`Persistence namespace ${definition.namespace} is not of the form owner:name.`,
+			);
+		}
 		if (this._definitions.has(definition.namespace)) {
 			throw new Error(
 				`Persistence namespace ${definition.namespace} is already registered.`,

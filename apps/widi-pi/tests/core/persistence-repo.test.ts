@@ -52,6 +52,7 @@ function counterNamespace(
 		readonly version?: number;
 		readonly migrate?: PersistenceNamespaceDefinition["migrate"];
 		readonly fork?: PersistenceNamespaceDefinition["fork"];
+		readonly locate?: PersistenceNamespaceDefinition["locate"];
 		/** Wraps the object log, for the cases that need to watch the handle. */
 		readonly wrap?: (storage: JsonlObjectStore) => CustomStorage;
 	} = {},
@@ -64,6 +65,7 @@ function counterNamespace(
 		forkPolicy: options.forkPolicy ?? "copy",
 		migrate: options.migrate,
 		fork: options.fork,
+		locate: options.locate,
 		async openStorage(context: NamespaceStorageContext) {
 			const objects = await JsonlObjectStore.open({
 				fs: context.fs,
@@ -293,6 +295,62 @@ describe("storage handles", () => {
 		expect(mine.closes).toBe(0);
 		await closeStorage(mine);
 		expect(mine.closes).toBe(1);
+	});
+});
+
+describe("where a namespace lives", () => {
+	it("rejects a name that is not of the form owner:name", async () => {
+		const registry = new PersistenceRegistry();
+		for (const namespace of ["counter", "test:", "Test:Counter", "../escape"]) {
+			expect(() => registry.register(counterNamespace({ namespace }))).toThrow(
+				/owner:name/,
+			);
+		}
+		expect(() => registry.register(counterNamespace())).not.toThrow();
+	});
+
+	// A namespace may put its directory anywhere; the repository reads and writes
+	// where it is told and keeps forking through copyReachable, which never had
+	// anything to do with copying a directory.
+	it("puts a located namespace outside the session and still forks it", async () => {
+		const { fs, repo } = makeRepo([
+			counterNamespace({
+				locate: ({ address, persistenceRoot }) =>
+					`${persistenceRoot}/elsewhere/${address.key.join("-")}`,
+			}),
+		]);
+		const root = await repo.create({ cwd: CWD, sessionId: "root" });
+		await commitState(repo, root, "test:counter", { count: 4 });
+
+		const sessionDir = `/runs/--root-projs-widi--/${root.address.key[0]}`;
+		expect(
+			[...fs.files.keys()].filter((path) => path.startsWith(sessionDir)),
+		).toEqual([`${sessionDir}/session.jsonl`]);
+		expect(
+			fs.files.has(`/runs/elsewhere/${root.address.key[0]}/objects.jsonl`),
+		).toBe(true);
+		expect(counted((await repo.resolveState(root.address)).states)).toBe(4);
+
+		const forked = await repo.fork(root.address, { sessionId: "forked" });
+		expect(forked.diagnostics.entries).toEqual([]);
+		expect(
+			counted((await repo.resolveState(forked.session.address)).states),
+		).toBe(4);
+	});
+
+	// Deleting a session deletes its directory, and that is all it ever did.
+	// Reclaiming a directory the namespace placed is the namespace's problem.
+	it("leaves a located directory behind when the session is deleted", async () => {
+		const { fs, repo } = makeRepo([
+			counterNamespace({
+				locate: ({ persistenceRoot }) => `${persistenceRoot}/elsewhere`,
+			}),
+		]);
+		const root = await repo.create({ cwd: CWD, sessionId: "root" });
+		await commitState(repo, root, "test:counter", { count: 4 });
+
+		await repo.delete(root.address);
+		expect(fs.files.has("/runs/elsewhere/objects.jsonl")).toBe(true);
 	});
 });
 

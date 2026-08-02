@@ -20,6 +20,7 @@ export type {
 	CustomStorage,
 	NamespaceForkRequest,
 	NamespaceForkResult,
+	NamespaceLocateRequest,
 	NamespaceStorageContext,
 	PersistenceFileSystem,
 	PersistenceForkPolicy,

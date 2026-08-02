@@ -60,7 +60,7 @@ import {
 	encodeCwd,
 	formatSessionKey,
 	namespaceDirSegments,
-	namespaceObjectsSegments,
+	OBJECTS_FILE_NAME,
 	type SessionAddress,
 	type SessionKey,
 	sessionDirSegments,
@@ -457,7 +457,10 @@ export class JsonlPersistenceRepo {
 	 * registry - a failed extension load looks exactly the same from in here.
 	 *
 	 * A namespace that brings its own storage gets its directory and decides the
-	 * rest; {@link JsonlObjectStore} is only the default.
+	 * rest; {@link JsonlObjectStore} is only the default. Which directory that is
+	 * comes from {@link PersistenceNamespaceDefinition.locate} when the namespace
+	 * supplies one, so a namespace can also step outside the session subtree - on
+	 * its own terms, documented there.
 	 *
 	 * Each call opens a fresh handle and the caller owns it, closing it with
 	 * {@link closeStorage} when done. Nothing is cached: a handle replays a log
@@ -471,10 +474,7 @@ export class JsonlPersistenceRepo {
 	): Promise<CustomStorage | undefined> {
 		const definition = this._registry.get(namespace);
 		if (!definition) return undefined;
-		const dirPath = await this._join(
-			await this._cwdDirPath(address.cwd),
-			namespaceDirSegments(address.key, namespace),
-		);
+		const dirPath = await this._namespaceDirPath(address, definition);
 		return await definition.openStorage({
 			fs: this._fs,
 			dirPath,
@@ -490,6 +490,11 @@ export class JsonlPersistenceRepo {
 	 * `sessionDependenciesOf` is the one hook a namespace whose state names child
 	 * sessions needs; with it, `core:subagent` and anything like it can use the
 	 * object log unchanged instead of wrapping it.
+	 *
+	 * The directory comes from the registered definition's `locate`, so a
+	 * namespace calling this from inside its own `openStorage` lands where it
+	 * asked to. A namespace that is not registered gets the default layout, which
+	 * is the only answer available without a definition to ask.
 	 */
 	async openDefaultStorage(options: {
 		readonly address: SessionAddress;
@@ -499,17 +504,17 @@ export class JsonlPersistenceRepo {
 		readonly owner?: string;
 		readonly sessionDependenciesOf?: (data: unknown) => readonly SessionKey[];
 	}): Promise<JsonlObjectStore> {
-		const cwdDir = await this._cwdDirPath(options.address.cwd);
+		const definition = this._registry.get(options.namespace);
+		const dirPath = definition
+			? await this._namespaceDirPath(options.address, definition)
+			: await this._join(
+					await this._cwdDirPath(options.address.cwd),
+					namespaceDirSegments(options.address.key, options.namespace),
+				);
 		return await JsonlObjectStore.open({
 			fs: this._fs,
-			dirPath: await this._join(
-				cwdDir,
-				namespaceDirSegments(options.address.key, options.namespace),
-			),
-			filePath: await this._join(
-				cwdDir,
-				namespaceObjectsSegments(options.address.key, options.namespace),
-			),
+			dirPath,
+			filePath: await this._join(dirPath, [OBJECTS_FILE_NAME]),
 			namespace: options.namespace,
 			formatVersion: options.formatVersion,
 			sessionKey: options.address.key,
@@ -892,6 +897,28 @@ export class JsonlPersistenceRepo {
 			customType: PERSISTENCE_REF_CUSTOM_TYPE,
 			data,
 		};
+	}
+
+	/**
+	 * Where one namespace's directory is for one session.
+	 *
+	 * The default is computed either way, so a `locate` is handed the path it is
+	 * overriding rather than the pieces to rebuild it.
+	 */
+	private async _namespaceDirPath(
+		address: SessionAddress,
+		definition: PersistenceNamespaceDefinition,
+	): Promise<string> {
+		const defaultDirPath = await this._join(
+			await this._cwdDirPath(address.cwd),
+			namespaceDirSegments(address.key, definition.namespace),
+		);
+		if (!definition.locate) return defaultDirPath;
+		return await definition.locate({
+			address,
+			defaultDirPath,
+			persistenceRoot: await this._rootPath(),
+		});
 	}
 
 	private async _sessionDirPath(address: SessionAddress): Promise<string> {
