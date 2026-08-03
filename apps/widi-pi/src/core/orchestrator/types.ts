@@ -4,11 +4,13 @@ import { toAgentProfileReference } from "../agent-profile.js";
 import type { OwnerAttachment } from "../background/index.ts";
 import type { OrchestratorDiagnostic } from "../diagnostics.ts";
 import type { ExtensionRunner, ExtensionRunnerSnapshot } from "../extension/index.ts";
+import type { NamespaceProjection } from "../persistence/index.ts";
 import type { ResourceSource } from "../resource-loader.js";
 import type { AgentSessionMetadata } from "../session-manager.ts";
 import type { ProjectContextFile } from "../system-prompt.ts";
 import type { ResolvedAgentHarnessTool, ToolAdapterContext } from "../tool-registry.ts";
 import type { AgentActivitySnapshot, AgentContextUsage, AgentId, AgentToolsSnapshot, RuntimeModel } from "../types.ts";
+import type { SubagentTreeStorage } from "./agent-tree.ts";
 
 /**
  * The serializable identity of a live agent's profile, for display and for the
@@ -122,4 +124,97 @@ export function createAgentProfileRecordReference(resolved: {
 	readonly entryId: string;
 }): AgentProfileRecordReference {
 	return { reference: toAgentProfileReference(resolved.profile), source: resolved.source, entryId: resolved.entryId };
+}
+
+// ---------------------------------------------------------------------------
+// Spawn tree persistence
+//
+// The vocabulary of `core:subagent`: what a parent writes down about the agents
+// it spawned. See `agent-tree.ts` for what the records mean and why the tree is
+// a chain rather than a snapshot.
+// ---------------------------------------------------------------------------
+
+/**
+ * A child session joined this session's tree.
+ *
+ * The key is {@link sessionDirName}, not the AgentId. An AgentId is unique only
+ * within one runtime - a resumed root that spawns `coder-1` again reuses it -
+ * while a directory name carries a timestamp and is unique inside one parent.
+ * Keying on the directory is also what keeps a record meaningful after a fork,
+ * since a fork copies a child under the name it already had.
+ */
+export interface SubagentSpawnedRecord {
+	readonly kind: "spawned";
+	/** Directory name of the child inside this session's `agents/`. Never a path. */
+	readonly sessionDirName: string;
+	/** The id this member was routable under when it was recorded. */
+	readonly agentId: AgentId;
+	readonly profileId: string;
+	readonly spawnedAt: number;
+}
+
+/**
+ * A member left the tree and is not meant to come back.
+ *
+ * It carries no cause, and the contrast with a job's `closed` record is the
+ * reason: five different runtime situations declare a job over, so a reader
+ * needs to be told which one, whereas a member is removed by exactly one act -
+ * a dispose whose intent was removal. A runtime shutdown writes nothing at all,
+ * which is what makes restoring a tree possible in the first place.
+ */
+export interface SubagentRemovedRecord {
+	readonly kind: "removed";
+	readonly sessionDirName: string;
+	readonly removedAt: number;
+}
+
+export type SubagentRecord = SubagentSpawnedRecord | SubagentRemovedRecord;
+
+export type SubagentMemberState = "live" | "removed";
+
+/** One member, reduced from every record on the chain that named it. */
+export interface SubagentMember {
+	readonly sessionDirName: string;
+	readonly agentId: AgentId;
+	readonly profileId: string;
+	readonly spawnedAt: number;
+	readonly state: SubagentMemberState;
+	/** Present only for `removed`. */
+	readonly removedAt?: number;
+}
+
+/** What one state root resolves to. */
+export interface SubagentMembership {
+	/** Oldest member first, in the order the branch recorded them. */
+	readonly members: readonly SubagentMember[];
+	/** The walk stopped before the chain's first record. */
+	readonly truncated: boolean;
+}
+
+export interface SubagentSpawnRequest {
+	readonly sessionDirName: string;
+	readonly agentId: AgentId;
+	readonly profileId: string;
+	readonly spawnedAt?: number;
+}
+
+/**
+ * The branch, as this namespace is allowed to see it. Already scoped to one
+ * agent and to `core:subagent`, so neither appears in a signature.
+ *
+ * The same two methods as `JobBranchPort`, and deliberately a separate type:
+ * both are narrowings of the one capability the orchestrator will hand out, and
+ * the shape to share is the one taken from two working implementations rather
+ * than from the first.
+ */
+export interface SubagentBranchPort {
+	/** This namespace's state on the branch; undefined when it names none. */
+	projection(): Promise<NamespaceProjection | undefined>;
+	/** Ask the branch's owner to record this root. The object must be durable. */
+	commit(stateRoot: string | null): Promise<void>;
+}
+
+export interface SessionSubagentStoreOptions {
+	readonly storage: SubagentTreeStorage;
+	readonly branch: SubagentBranchPort;
 }
