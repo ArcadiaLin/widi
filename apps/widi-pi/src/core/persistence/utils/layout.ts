@@ -55,10 +55,9 @@ const RESERVED_SESSION_DIR_NAMES: ReadonlySet<string> = new Set([
  * A session's logical address inside one cwd group: the root directory name,
  * then one directory name per descendant.
  *
- * This is what a persisted record stores when it needs to name another session
- * - never a filesystem path. The `agents/` segments between levels are a layout
- * detail of this module, so the on-disk shape can change without rewriting
- * every record that points at a session.
+ * Addresses are built and passed around, never persisted: no record anywhere
+ * names another session, so the `agents/` segments between levels stay a layout
+ * detail of this module and the on-disk shape can change without a migration.
  */
 export type SessionKey = readonly string[];
 
@@ -118,9 +117,9 @@ export function namespaceObjectsSegments(key: SessionKey, namespace: string): st
 /**
  * Directory name for a namespace.
  *
- * Namespaces read as `core:subagent`, and `:` is not a legal Windows path
+ * Namespaces read as `core:jobs`, and `:` is not a legal Windows path
  * character. The separator is doubled rather than replaced by `-` so
- * `core:subagent` and a hypothetical `core-subagent` cannot collide.
+ * `core:jobs` and a hypothetical `core-jobs` cannot collide.
  */
 export function encodeNamespaceDirName(namespace: string): string {
 	return namespace.replace(/:/g, "__");

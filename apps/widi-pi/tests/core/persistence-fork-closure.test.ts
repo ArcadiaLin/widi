@@ -24,16 +24,7 @@ import { MemoryFileSystem } from "../helpers/memory-fs.ts";
 
 const SOURCE_KEY: SessionKey = ["root"];
 
-interface CounterState {
-	readonly count: number;
-	/** Child sessions this state claims, the way a spawn tree would. */
-	readonly sessions?: readonly SessionKey[];
-}
-
-/**
- * A namespace whose objects may name child sessions, so the session half of the
- * closure has something to find without pulling the real spawn tree in.
- */
+/** A minimal namespace storage, so the closure has objects to walk. */
 class CounterStorage implements CustomStorage {
 	private readonly _objects: JsonlObjectStore;
 
@@ -47,11 +38,6 @@ class CounterStorage implements CustomStorage {
 
 	async listDependencies(stateRoot: string): Promise<readonly string[]> {
 		return await this._objects.listDependencies(stateRoot);
-	}
-
-	async listSessionDependencies(stateRoot: string): Promise<readonly SessionKey[]> {
-		const state = (await this._objects.resolveState(stateRoot)) as CounterState | undefined;
-		return state?.sessions ?? [];
 	}
 
 	async copyReachable(target: CustomStorage, roots: readonly string[]): Promise<void> {
@@ -214,38 +200,5 @@ describe("fork closure", () => {
 
 		expect(plan.namespaces).toHaveLength(0);
 		expect(diagnostics.entries.map((entry) => entry.code)).toEqual(["persistence.unknown_namespace"]);
-	});
-
-	it("collects the child sessions a state names, without duplicates", async () => {
-		const fs = new MemoryFileSystem();
-		const storage = await openCounterStorage(fs);
-		const first = await storage.putObject({ data: { count: 1, sessions: [["root", "child-a"]] } });
-		const second = await storage.putObject({
-			data: {
-				count: 2,
-				sessions: [
-					["root", "child-a"],
-					["root", "child-b"],
-				],
-			},
-			dependencies: [first],
-		});
-
-		const registry = new PersistenceRegistry();
-		registry.register(counterNamespace());
-		const diagnostics = new PersistenceDiagnostics();
-		const plan = await planForkClosure({
-			roots: new Map([["test:counter", second]]),
-			registry,
-			openStorage: async () => storage,
-			sourceKey: SOURCE_KEY,
-			diagnostics,
-		});
-
-		expect(plan.sessions).toEqual([
-			["root", "child-a"],
-			["root", "child-b"],
-		]);
-		expect(diagnostics.entries).toHaveLength(0);
 	});
 });

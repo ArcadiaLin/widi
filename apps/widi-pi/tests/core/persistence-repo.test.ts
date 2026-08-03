@@ -2,10 +2,9 @@
  * The repository, checked against the one property that decides the design:
  * a forked session stands on its own once the source is gone.
  *
- * The namespace used here owns objects and may name child sessions, which is
- * enough to exercise both halves of a closure without pulling the spawn tree
- * in. Everything the repository does with it, it does by executing what the
- * definition declares - it never learns what a counter is.
+ * The namespace used here is a plain object log, which is enough to exercise
+ * the closure. Everything the repository does with it, it does by executing
+ * what the definition declares - it never learns what a counter is.
  */
 
 import type { SessionTreeEntry } from "@widi/agent-core";
@@ -17,7 +16,6 @@ import type {
 	PersistenceForkPolicy,
 	PersistenceNamespaceDefinition,
 	SessionAddress,
-	SessionKey,
 } from "../../src/core/persistence/index.ts";
 import {
 	closeStorage,
@@ -33,16 +31,6 @@ const ROOT = "/runs";
 
 interface CounterState {
 	readonly count: number;
-	readonly sessions?: readonly SessionKey[];
-}
-
-/**
- * The state names its child sessions, and the object log reads them out through
- * the one hook it takes. A namespace like this brings no storage of its own -
- * that is the whole point of the callback.
- */
-function counterSessions(data: unknown): readonly SessionKey[] {
-	return (data as CounterState | undefined)?.sessions ?? [];
 }
 
 function counterNamespace(
@@ -75,7 +63,6 @@ function counterNamespace(
 				formatVersion: version,
 				sessionKey: context.sessionKey,
 				diagnostics: context.diagnostics,
-				sessionDependenciesOf: counterSessions,
 			});
 			return options.wrap ? options.wrap(objects) : objects;
 		},
@@ -101,10 +88,6 @@ class CountingStorage implements CustomStorage {
 
 	async listDependencies(stateRoot: string): Promise<readonly string[]> {
 		return await this._objects.listDependencies(stateRoot);
-	}
-
-	async listSessionDependencies(stateRoot: string): Promise<readonly SessionKey[]> {
-		return await this._objects.listSessionDependencies(stateRoot);
 	}
 
 	async copyReachable(target: CustomStorage, roots: readonly string[]): Promise<void> {
@@ -404,7 +387,7 @@ describe("fork", () => {
 		await say(child, "child work");
 		await commitState(repo, child, "test:counter", { count: 99 });
 		await say(root, "root work");
-		await commitState(repo, root, "test:counter", { count: 5, sessions: [child.address.key] });
+		await commitState(repo, root, "test:counter", { count: 5 });
 
 		const forked = await repo.fork(root.address, { sessionId: "forked" });
 		expect(forked.diagnostics.entries).toEqual([]);
@@ -507,18 +490,23 @@ describe("fork", () => {
 		expect(counted((await repo.resolveState(root.address)).states, "test:jobs")).toBe(3);
 	});
 
-	it("does not carry a child spawned after the fork point", async () => {
+	// Rewinding decides what the conversation and the namespace states say, and
+	// nothing else: no record anywhere names a child session, so the directory
+	// listing is the only account of which children exist. A child spawned after
+	// the fork point comes along, disposed like every other one.
+	it("carries every child on disk, fork point or not", async () => {
 		const { repo } = makeRepo();
 		const root = await repo.create({ cwd: CWD, sessionId: "root" });
-		const early = await repo.create({ cwd: CWD, sessionId: "early", parent: root.address.key });
-		await commitState(repo, root, "test:counter", { count: 1, sessions: [early.address.key] });
+		await repo.create({ cwd: CWD, sessionId: "early", parent: root.address.key });
+		await commitState(repo, root, "test:counter", { count: 1 });
 		const midpoint = await say(root, "fork here");
-		const late = await repo.create({ cwd: CWD, sessionId: "late", parent: root.address.key });
-		await commitState(repo, root, "test:counter", { count: 2, sessions: [early.address.key, late.address.key] });
+		await repo.create({ cwd: CWD, sessionId: "late", parent: root.address.key });
+		await commitState(repo, root, "test:counter", { count: 2 });
 
 		const forked = await repo.fork(root.address, { sessionId: "forked", entryId: midpoint });
 		const children = await repo.listChildren(forked.session.address);
-		expect(children.map((info) => info.metadata.id)).toEqual(["early"]);
+		expect(children.map((info) => info.metadata.id).sort()).toEqual(["early", "late"]);
+		expect(counted((await repo.resolveState(forked.session.address)).states)).toBe(1);
 	});
 
 	it("writes nothing into the source", async () => {

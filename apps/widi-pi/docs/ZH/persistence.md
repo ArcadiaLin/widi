@@ -18,8 +18,7 @@
     20260801T120345Z_root/               # 一个顶层会话目录
       session.jsonl                      # 对话历史，唯一的权威
       persistence/
-        core__subagent/objects.jsonl     # 一个 namespace 的对象日志
-        core__jobs/objects.jsonl
+        core__jobs/objects.jsonl         # 一个 namespace 的对象日志
       agents/                            # 这个会话 spawn 出来的子会话
         20260801T120400Z_coder-1/
           session.jsonl
@@ -61,7 +60,6 @@ pi 有 `getPathToRootOrCompaction()`，从 leaf 往根走但**在 compaction 检
 
 ```ts
 const registry = new PersistenceRegistry();
-registry.register(mySubagentNamespace);
 registry.register(myJobsNamespace);
 
 const repo = new JsonlPersistenceRepo({ fs, root: ".widi/runs", registry });
@@ -100,11 +98,11 @@ await repo.delete(address);            // → 递归删整棵子树，含 custom
 ```ts
 const { projection, states, diagnostics } = await repo.resolveState(address);
 
-const subagents = states.get("core:subagent");
-if (subagents) {
-  subagents.state;       // namespace 自己 resolveState 出来的值
-  subagents.stateRoot;   // 内容哈希
-  subagents.provenance;  // "current" | "forked" | "degraded" | "migrated"
+const jobs = states.get("core:jobs");
+if (jobs) {
+  jobs.state;       // namespace 自己 resolveState 出来的值
+  jobs.stateRoot;   // 内容哈希
+  jobs.provenance;  // "current" | "forked" | "degraded" | "migrated"
 }
 ```
 
@@ -172,13 +170,15 @@ const { session, plan, diagnostics } = await repo.fork(sourceAddress, {
 
 1. 复制对话 entries。
 2. 投影**源会话的完整分支**得出每个 namespace 的 state root。注意不是投影「复制出来的 entries」——不带 fork 点时那些 entries 是**文件顺序的所有分支**，文件最后一行可能属于一条被放弃的分支。
-3. 计算闭包（`planForkClosure`），对象依赖和会话依赖一起算。
-4. 复制对象、递归 fork 计划里列出的子会话、应用每个 namespace 的策略。
+3. 计算每个 namespace 的对象闭包（`planForkClosure`）。
+4. 复制对象、应用每个 namespace 的策略、递归 fork 源会话 `agents/` 下的每一个子会话。
 5. 给每个存活的 namespace 追加一条**全新的 ref**，带上 `origin`。
 
 之后新会话不从源目录读任何东西。这是整个设计被检验的那条性质——测试里的做法是 fork 完直接把源目录删掉，再验证新会话仍能解析出自己和子会话的状态。**这条性质只对住在会话目录里的 namespace 成立**，`locate` 出去的那些自己负责（6.2）。
 
-**子会话是递归 fork，不是 `cp -r`。** fork 点之后才 spawn 的子会话在盘上存在，但不属于新树。
+**子会话全部复制，不做分支筛选。** 没有任何记录点名过子会话，目录列举是唯一的答案，所以 fork 点之后才 spawn 的那些也一起带走。每个子会话停在它自己的当前 leaf——同样因为没有任何 ref 把子会话钉在父的某个时刻上。见 `docs/ZH/agent-tree-persistence.md`。
+
+子会话仍然是**递归 fork 而不是 `cp -r`**：每一层各自投影自己的分支、算自己的闭包、应用自己的 namespace 策略。
 
 **fork 绝不写源会话。** `degrade` 策略要造一个新对象（比如把运行中的 job 标成 interrupted），那个对象属于新会话，写进源会话会让它持有一份只有别人需要的状态。
 
@@ -245,20 +245,13 @@ locate: ({ address, defaultDirPath, persistenceRoot }) =>
 
 fork **仍然正常工作**：它走的是 `copyReachable(source → target)` 两个 handle，从来就不是 `cp -r` 目录。共享路径下 source 和 target 是同一份存储，这次拷贝退化成自拷贝——因为对象内容寻址、`putObject` 按内容幂等，它是个无害的 no-op，新会话的 ref 照样解析得出。
 
-### 6.3 状态里引用了子会话
+### 6.3 状态不能引用子会话
 
-这是 `core:subagent` 那类 namespace 唯一需要的额外钩子。给一个纯函数，从对象数据里读出它命名的会话：
+一个 namespace 的状态**不能点名另一个会话**。曾经有过这个能力（`CustomStorage.listSessionDependencies` 与对象日志的 `sessionDependenciesOf` 钩子），唯一的使用者是已经取消的 `core:subagent`，随它一起删掉了。
 
-```ts
-await JsonlObjectStore.open({
-  ...,
-  sessionDependenciesOf: (data) => (data as MembershipState).members,
-});
-```
+子会话的复制不再由任何 namespace 驱动：fork 复制源会话 `agents/` 下的全部子会话，与分支上有什么无关。见第 5 节与 `docs/ZH/agent-tree-persistence.md`。
 
-fork 时仓储会把这些子会话的整棵目录递归 fork 过去。**namespace 自己永远不递归**——依赖只做声明，遍历、去重、环检测在 `fork-closure.ts` 里只有一份实现。
-
-同 namespace 内的对象依赖走另一条路：`putObject({ data, dependencies })`，或自定义 storage 的 `listDependencies`。
+同 namespace 内的对象依赖不受影响：`putObject({ data, dependencies })`，或自定义 storage 的 `listDependencies`。**namespace 自己永远不递归**——依赖只做声明，遍历、去重、环检测在 `fork-closure.ts` 里只有一份实现。
 
 ### 6.4 fork 策略
 
@@ -324,7 +317,6 @@ namespace 名全局唯一，但**不是保留的**。一个 extension 被卸载�
 ```ts
 resolveState(stateRoot): Promise<unknown | undefined>   // 不存在返回 undefined，不抛
 listDependencies(stateRoot): Promise<readonly string[]> // 同 namespace 内的对象依赖
-listSessionDependencies?(stateRoot): Promise<readonly SessionKey[]>
 copyReachable(target, roots): Promise<void>             // 闭包已算好，照抄即可；重复复制必须是 no-op
 putObject({ data, dependencies? }): Promise<string>     // 按内容幂等
 storedFormatVersion?: number

@@ -63,18 +63,6 @@ export interface JsonlObjectStoreOptions {
 	 * previous owner wrote.
 	 */
 	readonly owner?: string;
-	/**
-	 * Which other sessions an object names, read out of the object's own data.
-	 *
-	 * This is the one thing a namespace whose state refers to child sessions -
-	 * `core:subagent` above all - cannot express in a plain object log, and the
-	 * only reason such a namespace would otherwise have to write a storage of its
-	 * own. Given here it stays a pure function of the data, which keeps the walk
-	 * in `fork-closure.ts` the single implementation of the recursion.
-	 *
-	 * Omitted means this namespace's objects never name a session.
-	 */
-	readonly sessionDependenciesOf?: (data: unknown) => readonly SessionKey[];
 }
 
 export class JsonlObjectStore implements CustomStorage {
@@ -86,7 +74,6 @@ export class JsonlObjectStore implements CustomStorage {
 	private readonly _sessionKey: SessionKey;
 	private readonly _diagnostics: PersistenceDiagnostics | undefined;
 	private readonly _owner: string | undefined;
-	private readonly _sessionDependenciesOf: ((data: unknown) => readonly SessionKey[]) | undefined;
 	private readonly _objects = new Map<string, PersistedObject>();
 	// Appends are serialized so two writes in the same tick cannot interleave
 	// their lines, and so a caller awaiting one object knows every earlier one
@@ -109,7 +96,6 @@ export class JsonlObjectStore implements CustomStorage {
 		this._sessionKey = options.sessionKey;
 		this._diagnostics = options.diagnostics;
 		this._owner = options.owner;
-		this._sessionDependenciesOf = options.sessionDependenciesOf;
 	}
 
 	static async open(options: JsonlObjectStoreOptions): Promise<JsonlObjectStore> {
@@ -137,20 +123,6 @@ export class JsonlObjectStore implements CustomStorage {
 
 	async listDependencies(stateRoot: string): Promise<readonly string[]> {
 		return this._objects.get(stateRoot)?.deps ?? [];
-	}
-
-	/**
-	 * The sessions this object names, per
-	 * {@link JsonlObjectStoreOptions.sessionDependenciesOf}.
-	 *
-	 * A root that is not here answers empty rather than throwing: the closure
-	 * walk only asks about roots it is already carrying, and a missing one is
-	 * reported as a dangling ref where the branch names it, not here.
-	 */
-	async listSessionDependencies(stateRoot: string): Promise<readonly SessionKey[]> {
-		const object = this._objects.get(stateRoot);
-		if (!object || !this._sessionDependenciesOf) return [];
-		return this._sessionDependenciesOf(object.data);
 	}
 
 	has(stateRoot: string): boolean {

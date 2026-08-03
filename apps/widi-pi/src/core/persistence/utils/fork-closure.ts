@@ -11,11 +11,10 @@
  * never recurses itself, which is what keeps deduplication and cycle detection
  * to one implementation instead of one per kind of state.
  *
- * Two kinds of dependency exist. Objects are inside the namespace and are
- * copied into the new session's storage. Sessions are whole directories - the
- * spawn tree's children - and are forked recursively by the repository. The
- * second is why a fork of a root is not a `cp -r` of its directory: only the
- * children the forked branch could actually see belong in the copy.
+ * The closure is over objects, all of them inside one namespace's storage. The
+ * child sessions nested under the source are not part of it: they are copied
+ * wholesale by the repository, because nothing on a branch decides which of them
+ * belong to it. See `docs/ZH/agent-tree-persistence.md`.
  */
 
 import type { CustomStorage, PersistenceForkPolicy, PersistenceRegistry } from "../custom-storage.ts";
@@ -29,14 +28,10 @@ export interface NamespaceForkPlan {
 	readonly stateRoot: string;
 	/** Every object to copy, deduplicated, dependencies included. */
 	readonly objects: readonly string[];
-	/** Child sessions this state names, to be forked recursively. */
-	readonly sessions: readonly SessionKey[];
 }
 
 export interface ForkPlan {
 	readonly namespaces: readonly NamespaceForkPlan[];
-	/** Union of every namespace's session dependencies, deduplicated. */
-	readonly sessions: readonly SessionKey[];
 }
 
 export interface ForkClosureRequest {
@@ -64,7 +59,6 @@ export interface ForkClosureRequest {
  */
 export async function planForkClosure(request: ForkClosureRequest): Promise<ForkPlan> {
 	const namespaces: NamespaceForkPlan[] = [];
-	const allSessions: SessionKey[] = [];
 
 	for (const [namespace, stateRoot] of request.roots) {
 		const definition = request.registry.get(namespace);
@@ -101,9 +95,9 @@ export async function planForkClosure(request: ForkClosureRequest): Promise<Fork
 			});
 			continue;
 		}
-		let walked: { objects: string[]; sessions: SessionKey[] };
+		let objects: string[];
 		try {
-			walked = await walkNamespace({
+			objects = await walkNamespace({
 				namespace,
 				stateRoot,
 				storage,
@@ -113,17 +107,10 @@ export async function planForkClosure(request: ForkClosureRequest): Promise<Fork
 		} finally {
 			await closeStorage(storage);
 		}
-		namespaces.push({
-			namespace,
-			policy: definition.forkPolicy,
-			stateRoot,
-			objects: walked.objects,
-			sessions: walked.sessions,
-		});
-		allSessions.push(...walked.sessions);
+		namespaces.push({ namespace, policy: definition.forkPolicy, stateRoot, objects });
 	}
 
-	return { namespaces, sessions: dedupeSessionKeys(allSessions) };
+	return { namespaces };
 }
 
 async function walkNamespace(options: {
@@ -132,9 +119,8 @@ async function walkNamespace(options: {
 	readonly storage: CustomStorage;
 	readonly sourceKey: SessionKey;
 	readonly diagnostics: PersistenceDiagnostics;
-}): Promise<{ readonly objects: string[]; readonly sessions: SessionKey[] }> {
+}): Promise<string[]> {
 	const objects: string[] = [];
-	const sessions: SessionKey[] = [];
 	// Visited is keyed by state root within one namespace's storage. Two refs
 	// naming one root is the ordinary case, and it must cost one copy.
 	const visited = new Set<string>();
@@ -169,9 +155,6 @@ async function walkNamespace(options: {
 		visited.add(root);
 		onPath.add(root);
 		objects.push(root);
-		for (const key of (await options.storage.listSessionDependencies?.(root)) ?? []) {
-			sessions.push(key);
-		}
 		for (const dependency of await options.storage.listDependencies(root)) {
 			await visit(dependency);
 		}
@@ -179,14 +162,5 @@ async function walkNamespace(options: {
 	};
 
 	await visit(options.stateRoot);
-	return { objects, sessions };
-}
-
-function dedupeSessionKeys(keys: readonly SessionKey[]): SessionKey[] {
-	const seen = new Map<string, SessionKey>();
-	for (const key of keys) {
-		const text = formatSessionKey(key);
-		if (!seen.has(text)) seen.set(text, key);
-	}
-	return [...seen.values()];
+	return objects;
 }

@@ -111,16 +111,6 @@ export interface CustomStorage {
 	readonly storedFormatVersion?: number;
 
 	/**
-	 * Other sessions this root needs, when the state names them.
-	 *
-	 * This is how the spawn tree gets forked without the repository knowing what
-	 * a spawn tree is: `core:subagent` answers with the child sessions its
-	 * membership set contains, and the repository copies those subtrees. A
-	 * namespace with no such state omits the method.
-	 */
-	listSessionDependencies?(stateRoot: string): Promise<readonly SessionKey[]>;
-
-	/**
 	 * Copy the closure of `roots` into another storage of the same namespace.
 	 *
 	 * Called after the repository has resolved the closure, so an implementation
@@ -199,7 +189,7 @@ export interface NamespaceLocateRequest {
 }
 
 export interface PersistenceNamespaceDefinition {
-	/** Stable and globally unique, e.g. `core:subagent`. */
+	/** Stable and globally unique, e.g. `core:jobs`. */
 	readonly namespace: string;
 
 	/** Format version of this namespace's objects, written into its log. */
@@ -287,7 +277,7 @@ export interface PersistenceNamespaceDefinition {
 }
 
 /**
- * Two or more lowercase segments joined by colons, as in `core:subagent`.
+ * Two or more lowercase segments joined by colons, as in `core:jobs`.
  *
  * Checked at registration, where the name is still a programming decision and
  * the error can name the definition that made it. It is a naming rule and not a

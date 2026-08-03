@@ -82,12 +82,10 @@ describe("session layout", () => {
 	});
 
 	// ':' is not a legal Windows path character, and collapsing it to '-' would
-	// let core:subagent and a hypothetical core-subagent share a directory.
+	// let core:jobs and a hypothetical core-jobs share a directory.
 	it("encodes a namespace into a portable directory name", () => {
-		expect(namespaceDirSegments(["root"], "core:subagent")).toEqual(["root", "persistence", "core__subagent"]);
-		expect(namespaceDirSegments(["root"], "core-subagent")).not.toEqual(
-			namespaceDirSegments(["root"], "core:subagent"),
-		);
+		expect(namespaceDirSegments(["root"], "core:jobs")).toEqual(["root", "persistence", "core__jobs"]);
+		expect(namespaceDirSegments(["root"], "core-jobs")).not.toEqual(namespaceDirSegments(["root"], "core:jobs"));
 		expect(namespaceObjectsSegments(["root"], "core:jobs")).toEqual([
 			"root",
 			"persistence",

@@ -6,8 +6,8 @@
  * things that job was missing - the custom storages registered against a
  * session, and the child sessions nested inside it. Nothing here interprets a
  * namespace: the repository executes what a registered namespace declares, and
- * the only thing it knows about `core:subagent` is that a state root can name
- * other sessions.
+ * a child session is a directory it copies or deletes without asking what the
+ * agent inside it was.
  *
  * One asymmetry runs through this file. The repository *reads* the session tree
  * and *writes* custom storage, but it never writes to a live session branch:
@@ -419,10 +419,6 @@ export class JsonlPersistenceRepo {
 	/**
 	 * The default storage a namespace gets when it does not bring its own.
 	 *
-	 * `sessionDependenciesOf` is the one hook a namespace whose state names child
-	 * sessions needs; with it, `core:subagent` and anything like it can use the
-	 * object log unchanged instead of wrapping it.
-	 *
 	 * The directory comes from the registered definition's `locate`, so a
 	 * namespace calling this from inside its own `openStorage` lands where it
 	 * asked to. A namespace that is not registered gets the default layout, which
@@ -434,7 +430,6 @@ export class JsonlPersistenceRepo {
 		readonly formatVersion: number;
 		readonly diagnostics?: PersistenceDiagnostics;
 		readonly owner?: string;
-		readonly sessionDependenciesOf?: (data: unknown) => readonly SessionKey[];
 	}): Promise<JsonlObjectStore> {
 		const definition = this._registry.get(options.namespace);
 		const dirPath = definition
@@ -452,7 +447,6 @@ export class JsonlPersistenceRepo {
 			sessionKey: options.address.key,
 			diagnostics: options.diagnostics,
 			owner: options.owner,
-			sessionDependenciesOf: options.sessionDependenciesOf,
 		});
 	}
 
@@ -470,9 +464,9 @@ export class JsonlPersistenceRepo {
 	 * 2. project the *source's* full branch to per-namespace state roots - not
 	 *    the copied entries, which without a target are every branch in file
 	 *    order rather than a path;
-	 * 3. plan the closure, objects and child sessions alike;
-	 * 4. copy objects, recursively fork the child sessions the plan named, and
-	 *    apply each namespace's policy;
+	 * 3. plan the object closure per namespace;
+	 * 4. copy objects, apply each namespace's policy, and recursively fork every
+	 *    child session nested under the source;
 	 * 5. append one fresh ref per surviving namespace to the new session, since
 	 *    the source's ref entries may not be among the copied ones. Each carries
 	 *    an `origin`, so the new session can tell state it inherited from state
@@ -532,7 +526,7 @@ export class JsonlPersistenceRepo {
 			const ref = await this._forkNamespace(request.source, request.target, namespace, request.diagnostics);
 			if (ref) await target.session.appendEntry(await this._refEntry(target, ref));
 		}
-		await this._forkChildren(request, plan);
+		await this._forkChildren(request);
 		return { session: target, plan };
 	}
 
@@ -575,25 +569,25 @@ export class JsonlPersistenceRepo {
 	}
 
 	/**
-	 * Fork the child sessions the plan named, keeping their directory names.
+	 * Fork every child session nested under the source, keeping their directory
+	 * names.
 	 *
-	 * Each child is copied whole, at its own current leaf. Rewinding a root does
-	 * decide whether a child belongs to the tree, but not how far back the child
-	 * itself goes: tracking that would mean updating the parent's ref after
-	 * every turn of every child.
+	 * All of them, not a subset the branch selected: nothing on a branch records
+	 * which children belong to it, so the directory listing is the only answer
+	 * available. Each child is copied whole, at its own current leaf, for the
+	 * same reason - no ref ever pinned a child to a point in the parent's
+	 * history. See `docs/ZH/agent-tree-persistence.md`.
 	 */
-	private async _forkChildren(
-		request: {
-			readonly source: SessionAddress;
-			readonly target: SessionAddress;
-			readonly diagnostics: PersistenceDiagnostics;
-			readonly forking: Set<string>;
-		},
-		plan: ForkPlan,
-	): Promise<void> {
+	private async _forkChildren(request: {
+		readonly source: SessionAddress;
+		readonly target: SessionAddress;
+		readonly diagnostics: PersistenceDiagnostics;
+		readonly forking: Set<string>;
+	}): Promise<void> {
 		const sourcePath = formatSessionKey(request.source.key);
 		request.forking.add(sourcePath);
-		for (const childKey of plan.sessions) {
+		for (const child of await this.listChildren(request.source)) {
+			const childKey = child.address.key;
 			const name = childKey[childKey.length - 1];
 			if (name === undefined) continue;
 			if (request.forking.has(formatSessionKey(childKey))) {
