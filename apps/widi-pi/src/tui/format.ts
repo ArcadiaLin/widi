@@ -1,5 +1,4 @@
-const SENSITIVE_KEY =
-	/(authorization|api[-_]?key|access[-_]?token|refresh[-_]?token|password|passwd|secret|cookie)/i;
+const SENSITIVE_KEY = /(authorization|api[-_]?key|access[-_]?token|refresh[-_]?token|password|passwd|secret|cookie)/i;
 
 /** Braille spinner frames shared by every animated indicator in the TUI. */
 export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
@@ -30,16 +29,10 @@ export function formatRelativeAge(milliseconds: number): string {
 	return `${Math.floor(seconds / 60)}m`;
 }
 
-export function boundedText(
-	text: string,
-	options: { maxLines?: number; maxCharacters?: number } = {},
-): string {
+export function boundedText(text: string, options: { maxLines?: number; maxCharacters?: number } = {}): string {
 	const maxLines = options.maxLines ?? 16;
 	const maxCharacters = options.maxCharacters ?? 4_000;
-	const boundedCharacters = truncateCharacters(
-		sanitizeTerminalText(text),
-		maxCharacters,
-	);
+	const boundedCharacters = truncateCharacters(sanitizeTerminalText(text), maxCharacters);
 	const lines = boundedCharacters.split("\n");
 	if (lines.length <= maxLines) return boundedCharacters;
 	return `${lines.slice(0, maxLines).join("\n")}\n… [truncated]`;
@@ -48,29 +41,18 @@ export function boundedText(
 export function sanitizeTerminalText(text: string): string {
 	const escapeCharacter = String.fromCharCode(27);
 	const bell = String.fromCharCode(7);
-	const oscSequence = new RegExp(
-		`${escapeCharacter}\\][\\s\\S]*?(?:${bell}|${escapeCharacter}\\\\)`,
-		"g",
-	);
+	const oscSequence = new RegExp(`${escapeCharacter}\\][\\s\\S]*?(?:${bell}|${escapeCharacter}\\\\)`, "g");
 	const csiSequence = new RegExp(`${escapeCharacter}\\[[0-?]*[ -/]*[@-~]`, "g");
-	const stripped = text
-		.replace(oscSequence, "")
-		.replace(csiSequence, "")
-		.replace(/\r\n?/g, "\n");
+	const stripped = text.replace(oscSequence, "").replace(csiSequence, "").replace(/\r\n?/g, "\n");
 	return [...stripped]
 		.filter((character) => {
 			const code = character.charCodeAt(0);
-			return (
-				code === 9 || code === 10 || code > 159 || (code >= 32 && code < 127)
-			);
+			return code === 9 || code === 10 || code > 159 || (code >= 32 && code < 127);
 		})
 		.join("");
 }
 
-export function formatUnknown(
-	value: unknown,
-	options: FormatUnknownOptions = {},
-): string {
+export function formatUnknown(value: unknown, options: FormatUnknownOptions = {}): string {
 	const maxDepth = options.maxDepth ?? 4;
 	const maxLines = options.maxLines ?? 16;
 	const maxCharacters = options.maxCharacters ?? 4_000;
@@ -78,12 +60,7 @@ export function formatUnknown(
 
 	const normalize = (input: unknown, depth: number, key?: string): unknown => {
 		if (key && SENSITIVE_KEY.test(key)) return "[redacted]";
-		if (
-			input === null ||
-			typeof input === "string" ||
-			typeof input === "number" ||
-			typeof input === "boolean"
-		) {
+		if (input === null || typeof input === "string" || typeof input === "number" || typeof input === "boolean") {
 			return input;
 		}
 		if (typeof input === "undefined") return "[undefined]";

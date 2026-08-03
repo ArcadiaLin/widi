@@ -1,19 +1,13 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentHarnessEvent } from "@widi/agent-core";
 import { describe, expect, it, vi } from "vitest";
-import type {
-	AgentOrchestrator,
-	OrchestratorEvent,
-} from "../../src/core/agent-orchestrator.ts";
+import type { AgentOrchestrator, OrchestratorEvent } from "../../src/core/agent-orchestrator.ts";
 import {
 	type AgentProfile,
 	AgentProfileRegistry,
 	InMemoryProfileStorageBackend,
 } from "../../src/core/agent-profile.ts";
-import type {
-	BackgroundJobChange,
-	ExternalJobDependencyIndex,
-} from "../../src/core/background/index.ts";
+import type { BackgroundJobChange, ExternalJobDependencyIndex } from "../../src/core/background/index.ts";
 import { MessageError } from "../../src/core/message.ts";
 import {
 	createOrchestrator,
@@ -23,10 +17,7 @@ import {
 	requireAgentRecord,
 } from "../helpers/orchestrator.ts";
 
-function createDeferred<T>(): {
-	readonly promise: Promise<T>;
-	readonly resolve: (value: T) => void;
-} {
+function createDeferred<T>(): { readonly promise: Promise<T>; readonly resolve: (value: T) => void } {
 	let resolve!: (value: T) => void;
 	const promise = new Promise<T>((done) => {
 		resolve = done;
@@ -39,34 +30,20 @@ function createDeferred<T>(): {
  * only accepted once the agent loop is actually running, so a test that mocks
  * `prompt` has to produce that fact itself.
  */
-async function driveAgentStart(
-	orchestrator: AgentOrchestrator,
-	agentId: string,
-): Promise<void> {
+async function driveAgentStart(orchestrator: AgentOrchestrator, agentId: string): Promise<void> {
 	await (
 		orchestrator as unknown as {
-			_handleSubscribedAgentHarnessEvent: (
-				agentId: string,
-				event: AgentHarnessEvent,
-			) => Promise<void>;
+			_handleSubscribedAgentHarnessEvent: (agentId: string, event: AgentHarnessEvent) => Promise<void>;
 		}
 	)._handleSubscribedAgentHarnessEvent(agentId, { type: "agent_start" });
 }
 
 /** An orchestrator whose default profile loads the named extension. */
-async function createExtensionOrchestrator(
-	extensionId: string,
-): Promise<AgentOrchestrator> {
-	const profile: AgentProfile = {
-		...defaultProfile,
-		id: `${extensionId}-profile`,
-		persist: false,
-	};
+async function createExtensionOrchestrator(extensionId: string): Promise<AgentOrchestrator> {
+	const profile: AgentProfile = { ...defaultProfile, id: `${extensionId}-profile`, persist: false };
 	return await createOrchestrator(new MemoryExecutionEnv(), {
 		defaultProfileId: profile.id,
-		profileRegistry: new AgentProfileRegistry(
-			InMemoryProfileStorageBackend.fromProfiles([{ profile }]),
-		),
+		profileRegistry: new AgentProfileRegistry(InMemoryProfileStorageBackend.fromProfiles([{ profile }])),
 	});
 }
 
@@ -77,9 +54,7 @@ describe("AgentOrchestrator.sendMessage", () => {
 		const targetAgentId = await orchestrator.spawnAgent();
 		const target = requireAgentRecord(orchestrator, targetAgentId);
 		const run = createDeferred<AssistantMessage>();
-		const prompt = vi
-			.spyOn(requireAgentHarness(orchestrator, targetAgentId), "prompt")
-			.mockReturnValue(run.promise);
+		const prompt = vi.spyOn(requireAgentHarness(orchestrator, targetAgentId), "prompt").mockReturnValue(run.promise);
 
 		const accepted = orchestrator.sendMessage({
 			source: { kind: "agent", agentId: sourceAgentId },
@@ -93,9 +68,7 @@ describe("AgentOrchestrator.sendMessage", () => {
 
 		// Acceptance, not completion: the run is still in flight.
 		expect(prompt).toHaveBeenCalledTimes(1);
-		expect(prompt.mock.calls[0]?.[0]).toBe(
-			`[Message from ${sourceAgentId}]\n\nPlease review this.`,
-		);
+		expect(prompt.mock.calls[0]?.[0]).toBe(`[Message from ${sourceAgentId}]\n\nPlease review this.`);
 		expect(target.status).toBe("running");
 
 		run.resolve({} as AssistantMessage);
@@ -150,12 +123,7 @@ describe("AgentOrchestrator.sendMessage", () => {
 			body: "ordinary",
 			mode: "next_turn",
 		});
-		await orchestrator.sendMessage({
-			source: { kind: "human" },
-			targetAgentId,
-			body: "stop that",
-			mode: "interrupt",
-		});
+		await orchestrator.sendMessage({ source: { kind: "human" }, targetAgentId, body: "stop that", mode: "interrupt" });
 
 		expect(followUp).toHaveBeenCalledTimes(1);
 		expect(steer).toHaveBeenCalledTimes(1);
@@ -168,12 +136,9 @@ describe("AgentOrchestrator.sendMessage", () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		const targetAgentId = await orchestrator.spawnAgent();
 		const harness = requireAgentHarness(orchestrator, targetAgentId);
-		const compaction =
-			createDeferred<Awaited<ReturnType<typeof harness.compact>>>();
+		const compaction = createDeferred<Awaited<ReturnType<typeof harness.compact>>>();
 		vi.spyOn(harness, "compact").mockReturnValue(compaction.promise);
-		const prompt = vi
-			.spyOn(harness, "prompt")
-			.mockResolvedValue({} as AssistantMessage);
+		const prompt = vi.spyOn(harness, "prompt").mockResolvedValue({} as AssistantMessage);
 		const followUp = vi.spyOn(harness, "followUp").mockResolvedValue();
 		const steer = vi.spyOn(harness, "steer").mockResolvedValue();
 
@@ -204,10 +169,7 @@ describe("AgentOrchestrator.sendMessage", () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		const targetAgentId = await orchestrator.spawnAgent();
 		const record = requireAgentRecord(orchestrator, targetAgentId);
-		vi.spyOn(
-			requireAgentHarness(orchestrator, targetAgentId),
-			"prompt",
-		).mockImplementation(async () => {
+		vi.spyOn(requireAgentHarness(orchestrator, targetAgentId), "prompt").mockImplementation(async () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 			throw new Error("failed while building the turn");
 		});
@@ -231,32 +193,19 @@ describe("AgentOrchestrator.sendMessage", () => {
 		orchestrator.subscribe((event) => {
 			events.push(event);
 		});
-		const compaction =
-			createDeferred<Awaited<ReturnType<typeof harness.compact>>>();
-		const compact = vi
-			.spyOn(harness, "compact")
-			.mockReturnValue(compaction.promise);
+		const compaction = createDeferred<Awaited<ReturnType<typeof harness.compact>>>();
+		const compact = vi.spyOn(harness, "compact").mockReturnValue(compaction.promise);
 		const navigateTree = vi.spyOn(harness, "navigateTree");
 
 		const compacting = orchestrator.compactAgent(targetAgentId);
 		await vi.waitFor(() => expect(compact).toHaveBeenCalledOnce());
 
-		await expect(
-			orchestrator.navigateAgentTree(targetAgentId, "entry-1"),
-		).rejects.toMatchObject({ code: "busy" });
+		await expect(orchestrator.navigateAgentTree(targetAgentId, "entry-1")).rejects.toMatchObject({ code: "busy" });
 		expect(navigateTree).not.toHaveBeenCalled();
 		expect(orchestrator.getAgentMaintenance(targetAgentId)).toBe("compaction");
 		expect(orchestrator.getAgentStatus(targetAgentId)).toBe("running");
-		expect(
-			events.filter(
-				(event) =>
-					event.type === "agent_status_changed" && event.status === "running",
-			),
-		).toEqual([
-			expect.objectContaining({
-				type: "agent_status_changed",
-				maintenance: "compaction",
-			}),
+		expect(events.filter((event) => event.type === "agent_status_changed" && event.status === "running")).toEqual([
+			expect.objectContaining({ type: "agent_status_changed", maintenance: "compaction" }),
 		]);
 
 		compaction.resolve({ summary: "compacted", tokensBefore: 0 });
@@ -269,15 +218,10 @@ describe("AgentOrchestrator.sendMessage", () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		const targetAgentId = await orchestrator.spawnAgent();
 		const record = requireAgentRecord(orchestrator, targetAgentId);
-		const compact = vi.spyOn(
-			requireAgentHarness(orchestrator, targetAgentId),
-			"compact",
-		);
+		const compact = vi.spyOn(requireAgentHarness(orchestrator, targetAgentId), "compact");
 		record.status = "running";
 
-		await expect(
-			orchestrator.compactAgent(targetAgentId),
-		).rejects.toMatchObject({ code: "busy" });
+		await expect(orchestrator.compactAgent(targetAgentId)).rejects.toMatchObject({ code: "busy" });
 		expect(compact).not.toHaveBeenCalled();
 		expect(orchestrator.getAgentMaintenance(targetAgentId)).toBeUndefined();
 		expect(record.status).toBe("running");
@@ -287,8 +231,7 @@ describe("AgentOrchestrator.sendMessage", () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		const targetAgentId = await orchestrator.spawnAgent();
 		const harness = requireAgentHarness(orchestrator, targetAgentId);
-		const compaction =
-			createDeferred<Awaited<ReturnType<typeof harness.compact>>>();
+		const compaction = createDeferred<Awaited<ReturnType<typeof harness.compact>>>();
 		vi.spyOn(harness, "compact").mockReturnValue(compaction.promise);
 		const abort = vi.spyOn(harness, "abort");
 		const followUp = vi.spyOn(harness, "followUp");
@@ -296,24 +239,12 @@ describe("AgentOrchestrator.sendMessage", () => {
 		const promote = vi.spyOn(harness, "promoteFollowUpsToSteer");
 
 		const compacting = orchestrator.compactAgent(targetAgentId);
-		await vi.waitFor(() =>
-			expect(orchestrator.getAgentMaintenance(targetAgentId)).toBe(
-				"compaction",
-			),
-		);
+		await vi.waitFor(() => expect(orchestrator.getAgentMaintenance(targetAgentId)).toBe("compaction"));
 
-		await expect(orchestrator.abortAgent(targetAgentId)).rejects.toMatchObject({
-			code: "busy",
-		});
-		await expect(
-			orchestrator.followUpAgent(targetAgentId, "later"),
-		).rejects.toMatchObject({ code: "busy" });
-		await expect(
-			orchestrator.steerAgent(targetAgentId, "now"),
-		).rejects.toMatchObject({ code: "busy" });
-		await expect(
-			orchestrator.steerQueuedFollowUps(targetAgentId),
-		).rejects.toMatchObject({ code: "busy" });
+		await expect(orchestrator.abortAgent(targetAgentId)).rejects.toMatchObject({ code: "busy" });
+		await expect(orchestrator.followUpAgent(targetAgentId, "later")).rejects.toMatchObject({ code: "busy" });
+		await expect(orchestrator.steerAgent(targetAgentId, "now")).rejects.toMatchObject({ code: "busy" });
+		await expect(orchestrator.steerQueuedFollowUps(targetAgentId)).rejects.toMatchObject({ code: "busy" });
 
 		expect(abort).not.toHaveBeenCalled();
 		expect(followUp).not.toHaveBeenCalled();
@@ -353,12 +284,9 @@ describe("AgentOrchestrator.sendMessage", () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		const targetAgentId = await orchestrator.spawnAgent();
 		const harness = requireAgentHarness(orchestrator, targetAgentId);
-		const teardown =
-			createDeferred<Awaited<ReturnType<typeof harness.abort>>>();
+		const teardown = createDeferred<Awaited<ReturnType<typeof harness.abort>>>();
 		vi.spyOn(harness, "abort").mockReturnValue(teardown.promise);
-		const prompt = vi
-			.spyOn(harness, "prompt")
-			.mockResolvedValue({} as AssistantMessage);
+		const prompt = vi.spyOn(harness, "prompt").mockResolvedValue({} as AssistantMessage);
 
 		const disposing = orchestrator.disposeAgent(targetAgentId);
 		await new Promise((resolve) => setTimeout(resolve, 0));
@@ -386,10 +314,7 @@ describe("AgentOrchestrator message interception", () => {
 		const seen: Array<{ source: string; targetAgentId: string }> = [];
 		orchestrator.registerExtension("observer", (api) => {
 			api.intercept("input", (event) => {
-				seen.push({
-					source: event.source.kind,
-					targetAgentId: event.targetAgentId,
-				});
+				seen.push({ source: event.source.kind, targetAgentId: event.targetAgentId });
 				return undefined;
 			});
 		});
@@ -415,16 +340,12 @@ describe("AgentOrchestrator message interception", () => {
 		const orchestrator = await createExtensionOrchestrator("policy");
 		orchestrator.registerExtension("policy", (api) => {
 			api.intercept("input", (event) =>
-				event.source.kind === "agent"
-					? { block: true, reason: "No peer messages." }
-					: undefined,
+				event.source.kind === "agent" ? { block: true, reason: "No peer messages." } : undefined,
 			);
 		});
 		const targetAgentId = await orchestrator.spawnAgent();
 		const harness = requireAgentHarness(orchestrator, targetAgentId);
-		const prompt = vi
-			.spyOn(harness, "prompt")
-			.mockResolvedValue({} as AssistantMessage);
+		const prompt = vi.spyOn(harness, "prompt").mockResolvedValue({} as AssistantMessage);
 		const events: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
 			events.push(event);
@@ -444,19 +365,14 @@ describe("AgentOrchestrator message interception", () => {
 			blockedBy: "policy",
 		});
 		expect(prompt).not.toHaveBeenCalled();
-		expect(events).toContainEqual(
-			expect.objectContaining({ type: "input_blocked", blockedBy: "policy" }),
-		);
+		expect(events).toContainEqual(expect.objectContaining({ type: "input_blocked", blockedBy: "policy" }));
 	});
 
 	// The model holds this job's t0 handle and is waiting for exactly one result.
 	it("delivers a blocked background job result anyway, with a diagnostic", async () => {
 		const orchestrator = await createExtensionOrchestrator("policy");
 		orchestrator.registerExtension("policy", (api) => {
-			api.intercept("input", () => ({
-				block: true,
-				reason: "Nothing gets in.",
-			}));
+			api.intercept("input", () => ({ block: true, reason: "Nothing gets in." }));
 		});
 		const agentId = await orchestrator.spawnAgent();
 		const record = requireAgentRecord(orchestrator, agentId);
@@ -468,39 +384,24 @@ describe("AgentOrchestrator message interception", () => {
 			events.push(event);
 		});
 
-		const job = record.backgroundJobTable.create({
-			toolCallId: "call-1",
-			toolName: "sleeper",
-		});
+		const job = record.backgroundJobTable.create({ toolCallId: "call-1", toolName: "sleeper" });
 		record.backgroundJobTable.background(job.id);
 		record.backgroundJobTable.settle(job.id, {
 			status: "completed",
-			result: {
-				content: [{ type: "text", text: "build done" }],
-				details: undefined,
-			},
+			result: { content: [{ type: "text", text: "build done" }], details: undefined },
 		});
 
 		await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
 		expect(prompt.mock.calls[0]?.[0]).toContain("build done");
-		expect(
-			events
-				.filter((event) => event.type === "diagnostic")
-				.map((event) => event.diagnostic.code),
-		).toContain("orchestrator.message_block_ignored");
+		expect(events.filter((event) => event.type === "diagnostic").map((event) => event.diagnostic.code)).toContain(
+			"orchestrator.message_block_ignored",
+		);
 	});
 });
 
 describe("AgentOrchestrator delegated task jobs", () => {
-	function assignTask(
-		orchestrator: AgentOrchestrator,
-		ownerAgentId: string,
-		workerAgentId: string,
-	): string {
-		const table = requireAgentRecord(
-			orchestrator,
-			ownerAgentId,
-		).backgroundJobTable;
+	function assignTask(orchestrator: AgentOrchestrator, ownerAgentId: string, workerAgentId: string): string {
+		const table = requireAgentRecord(orchestrator, ownerAgentId).backgroundJobTable;
 		const job = table.create({
 			toolCallId: "call-assign",
 			toolName: "assign_agent_task",
@@ -521,13 +422,9 @@ describe("AgentOrchestrator delegated task jobs", () => {
 		const taskId = assignTask(orchestrator, ownerAgentId, workerAgentId);
 
 		// Only the assigned worker may settle it.
-		expect(
-			owner.backgroundJobTable.settle(
-				taskId,
-				{ status: "completed" },
-				{ settledBy: "agent-intruder" },
-			),
-		).toBe("denied");
+		expect(owner.backgroundJobTable.settle(taskId, { status: "completed" }, { settledBy: "agent-intruder" })).toBe(
+			"denied",
+		);
 		expect(owner.backgroundJobTable.get(taskId)).toBeDefined();
 		expect(ownerPrompt).not.toHaveBeenCalled();
 
@@ -536,10 +433,7 @@ describe("AgentOrchestrator delegated task jobs", () => {
 				taskId,
 				{
 					status: "completed",
-					result: {
-						content: [{ type: "text", text: "The router is sound." }],
-						details: undefined,
-					},
+					result: { content: [{ type: "text", text: "The router is sound." }], details: undefined },
 				},
 				{ settledBy: workerAgentId },
 			),
@@ -565,22 +459,13 @@ describe("AgentOrchestrator delegated task jobs", () => {
 		owner.backgroundJobTable.onChange((change) => changes.push(change));
 		const taskId = assignTask(orchestrator, ownerAgentId, workerAgentId);
 
-		await orchestrator.disposeAgent(workerAgentId, {
-			reason: "Worker was killed",
-		});
+		await orchestrator.disposeAgent(workerAgentId, { reason: "Worker was killed" });
 
 		// No executor watches a delegated job's signal, so the table itself has to
 		// finish the transition rather than leave it stuck in `aborting`.
 		expect(owner.backgroundJobTable.get(taskId)).toBeUndefined();
-		expect(changes.map((change) => change.transition)).toEqual([
-			"backgrounded",
-			"aborting",
-			"settled",
-		]);
-		expect(changes.at(-1)).toMatchObject({
-			transition: "settled",
-			outcome: { status: "cancelled" },
-		});
+		expect(changes.map((change) => change.transition)).toEqual(["backgrounded", "aborting", "settled"]);
+		expect(changes.at(-1)).toMatchObject({ transition: "settled", outcome: { status: "cancelled" } });
 		// The owner is untouched by its worker's teardown. Its exact phase here is
 		// not asserted: the cancellation t1 is recorded before it is delivered, so
 		// whether that delivery has already started a run by the time dispose
@@ -602,19 +487,11 @@ describe("AgentOrchestrator delegated task jobs", () => {
 		const survivingOwnerId = await orchestrator.spawnAgent();
 		const workerAgentId = await orchestrator.spawnAgent();
 		assignTask(orchestrator, disposedOwnerId, workerAgentId);
-		const survivingTaskId = assignTask(
-			orchestrator,
-			survivingOwnerId,
-			workerAgentId,
-		);
+		const survivingTaskId = assignTask(orchestrator, survivingOwnerId, workerAgentId);
 
 		await orchestrator.disposeAgent(disposedOwnerId);
 
-		const index = (
-			orchestrator as unknown as { _externalJobs: ExternalJobDependencyIndex }
-		)._externalJobs;
-		expect(index.takeDependentsOf(workerAgentId)).toEqual([
-			{ ownerId: survivingOwnerId, jobId: survivingTaskId },
-		]);
+		const index = (orchestrator as unknown as { _externalJobs: ExternalJobDependencyIndex })._externalJobs;
+		expect(index.takeDependentsOf(workerAgentId)).toEqual([{ ownerId: survivingOwnerId, jobId: survivingTaskId }]);
 	});
 });

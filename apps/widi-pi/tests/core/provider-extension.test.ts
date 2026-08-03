@@ -1,7 +1,4 @@
-import type {
-	AgentHarnessStreamOptions,
-	BeforeProviderRequestResult,
-} from "@widi/agent-core";
+import type { AgentHarnessStreamOptions, BeforeProviderRequestResult } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import {
@@ -12,10 +9,7 @@ import {
 import type { ExtensionFactory } from "../../src/core/extension/index.ts";
 import type { ModelRegistry } from "../../src/core/model-registry.ts";
 import type { OrchestratorEvent } from "../../src/core/types.ts";
-import {
-	createProviderExtension,
-	gatewayProviderConfig,
-} from "../extensions/provider-extension.ts";
+import { createProviderExtension, gatewayProviderConfig } from "../extensions/provider-extension.ts";
 import {
 	createModelRegistry,
 	createOrchestrator,
@@ -25,10 +19,7 @@ import {
 } from "../helpers/orchestrator.ts";
 
 async function createProviderHarness(
-	extensions: readonly {
-		readonly id: string;
-		readonly factory: ExtensionFactory;
-	}[],
+	extensions: readonly { readonly id: string; readonly factory: ExtensionFactory }[],
 	options: { readonly projectTrusted?: boolean } = {},
 ): Promise<{
 	orchestrator: AgentOrchestrator;
@@ -48,9 +39,7 @@ async function createProviderHarness(
 		defaultProfileId: extensionProfile.id,
 		modelRegistry,
 		profileRegistry: new AgentProfileRegistry(
-			InMemoryProfileStorageBackend.fromProfiles([
-				{ profile: extensionProfile },
-			]),
+			InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 		),
 	});
 	if (options.projectTrusted === false) {
@@ -73,14 +62,10 @@ async function runBeforeProviderRequest(
 	streamOptions: AgentHarnessStreamOptions = {},
 ): Promise<BeforeProviderRequestResult | undefined> {
 	const harness = requireAgentHarness(orchestrator, agentId);
-	const handlers = (
-		harness as unknown as {
-			handlers: Map<string, Set<(event: unknown) => Promise<unknown>>>;
-		}
-	).handlers;
+	const handlers = (harness as unknown as { handlers: Map<string, Set<(event: unknown) => Promise<unknown>>> })
+		.handlers;
 	const handler = Array.from(handlers.get("before_provider_request") ?? [])[0];
-	if (!handler)
-		throw new Error("Missing before_provider_request harness hook.");
+	if (!handler) throw new Error("Missing before_provider_request harness hook.");
 	return (await handler({
 		type: "before_provider_request",
 		model: { provider: "gateway", id: "gateway-model" },
@@ -91,63 +76,37 @@ async function runBeforeProviderRequest(
 
 describe("provider extension consumer", () => {
 	it("registers an extension provider and exposes its models to the agent", async () => {
-		const { orchestrator, modelRegistry, agentId } =
-			await createProviderHarness([
-				{
-					id: "gateway",
-					factory: createProviderExtension({
-						providerName: "gateway",
-						config: gatewayProviderConfig(),
-					}),
-				},
-			]);
+		const { orchestrator, modelRegistry, agentId } = await createProviderHarness([
+			{ id: "gateway", factory: createProviderExtension({ providerName: "gateway", config: gatewayProviderConfig() }) },
+		]);
 
 		const model = modelRegistry.find("gateway", "gateway-model");
-		expect(model).toMatchObject({
-			provider: "gateway",
-			id: "gateway-model",
-			baseUrl: "https://gateway.test/v1",
-		});
+		expect(model).toMatchObject({ provider: "gateway", id: "gateway-model", baseUrl: "https://gateway.test/v1" });
 		if (!model) throw new Error("Expected the gateway model to resolve.");
 		await expect(modelRegistry.getAvailable()).resolves.toContainEqual(
 			expect.objectContaining({ provider: "gateway", id: "gateway-model" }),
 		);
-		await expect(
-			orchestrator.setAgentModelByReference(agentId, "gateway/gateway-model"),
-		).resolves.toMatchObject({ provider: "gateway", id: "gateway-model" });
+		await expect(orchestrator.setAgentModelByReference(agentId, "gateway/gateway-model")).resolves.toMatchObject({
+			provider: "gateway",
+			id: "gateway-model",
+		});
 
 		// Registration provenance is an inspect fact on both sides.
-		expect(
-			orchestrator.inspectAgent(agentId).extensionSnapshot
-				.providerContributions,
-		).toEqual([
-			{
-				extensionId: "gateway",
-				providerName: "gateway",
-				modelIds: ["gateway-model"],
-				oauth: false,
-			},
+		expect(orchestrator.inspectAgent(agentId).extensionSnapshot.providerContributions).toEqual([
+			{ extensionId: "gateway", providerName: "gateway", modelIds: ["gateway-model"], oauth: false },
 		]);
 		expect(modelRegistry.getExtensionProviderRegistrations()).toEqual([
-			{
-				providerName: "gateway",
-				extensionId: "gateway",
-				agentIds: [agentId],
-			},
+			{ providerName: "gateway", extensionId: "gateway", agentIds: [agentId] },
 		]);
 	});
 
 	it("drops a built-in provider name with a conflict diagnostic", async () => {
-		const { orchestrator, modelRegistry, agentId, events } =
-			await createProviderHarness([
-				{
-					id: "gateway",
-					factory: createProviderExtension({
-						providerName: "anthropic",
-						config: gatewayProviderConfig(),
-					}),
-				},
-			]);
+		const { orchestrator, modelRegistry, agentId, events } = await createProviderHarness([
+			{
+				id: "gateway",
+				factory: createProviderExtension({ providerName: "anthropic", config: gatewayProviderConfig() }),
+			},
+		]);
 
 		expect(modelRegistry.getExtensionProviderRegistrations()).toEqual([]);
 		expect(events).toContainEqual(
@@ -157,47 +116,30 @@ describe("provider extension consumer", () => {
 					severity: "warning",
 					code: "extension.provider_conflict",
 					extensionId: "gateway",
-					message:
-						"Extension 'gateway' provider 'anthropic' conflicts with a builtin provider and was skipped.",
+					message: "Extension 'gateway' provider 'anthropic' conflicts with a builtin provider and was skipped.",
 				}),
 			}),
 		);
-		expect(
-			orchestrator.inspectAgent(agentId).extensionDiagnostics,
-		).toContainEqual(
+		expect(orchestrator.inspectAgent(agentId).extensionDiagnostics).toContainEqual(
 			expect.objectContaining({ code: "extension.provider_conflict" }),
 		);
 	});
 
 	it("keeps the first extension's provider and drops a same-name late registration", async () => {
 		const { modelRegistry, agentId, events } = await createProviderHarness([
-			{
-				id: "alpha",
-				factory: createProviderExtension({
-					providerName: "gateway",
-					config: gatewayProviderConfig(),
-				}),
-			},
+			{ id: "alpha", factory: createProviderExtension({ providerName: "gateway", config: gatewayProviderConfig() }) },
 			{
 				id: "beta",
 				factory: createProviderExtension({
 					providerName: "gateway",
-					config: gatewayProviderConfig({
-						baseUrl: "https://impostor.test/v1",
-					}),
+					config: gatewayProviderConfig({ baseUrl: "https://impostor.test/v1" }),
 				}),
 			},
 		]);
 
-		expect(modelRegistry.find("gateway", "gateway-model")).toMatchObject({
-			baseUrl: "https://gateway.test/v1",
-		});
+		expect(modelRegistry.find("gateway", "gateway-model")).toMatchObject({ baseUrl: "https://gateway.test/v1" });
 		expect(modelRegistry.getExtensionProviderRegistrations()).toEqual([
-			{
-				providerName: "gateway",
-				extensionId: "alpha",
-				agentIds: [agentId],
-			},
+			{ providerName: "gateway", extensionId: "alpha", agentIds: [agentId] },
 		]);
 		expect(events).toContainEqual(
 			expect.objectContaining({
@@ -206,9 +148,7 @@ describe("provider extension consumer", () => {
 					severity: "warning",
 					code: "extension.provider_conflict",
 					extensionId: "beta",
-					message: expect.stringContaining(
-						"Extension 'beta' provider 'gateway' conflicts with a extension provider",
-					),
+					message: expect.stringContaining("Extension 'beta' provider 'gateway' conflicts with a extension provider"),
 				}),
 			}),
 		);
@@ -252,21 +192,14 @@ describe("provider extension consumer", () => {
 				},
 				{
 					id: "literal",
-					factory: createProviderExtension({
-						providerName: "literal-gateway",
-						config: gatewayProviderConfig(),
-					}),
+					factory: createProviderExtension({ providerName: "literal-gateway", config: gatewayProviderConfig() }),
 				},
 			],
 			{ projectTrusted: false },
 		);
 
-		expect(modelRegistry.find("commanded-gateway", "gateway-model")).toBe(
-			undefined,
-		);
-		expect(
-			modelRegistry.find("literal-gateway", "gateway-model"),
-		).toBeDefined();
+		expect(modelRegistry.find("commanded-gateway", "gateway-model")).toBe(undefined);
+		expect(modelRegistry.find("literal-gateway", "gateway-model")).toBeDefined();
 		expect(events).toContainEqual(
 			expect.objectContaining({
 				type: "diagnostic",
@@ -279,42 +212,25 @@ describe("provider extension consumer", () => {
 				}),
 			}),
 		);
-		expect(
-			modelRegistry
-				.getExtensionProviderRegistrations()
-				.map(({ providerName }) => providerName),
-		).toEqual(["literal-gateway"]);
+		expect(modelRegistry.getExtensionProviderRegistrations().map(({ providerName }) => providerName)).toEqual([
+			"literal-gateway",
+		]);
 	});
 
 	it("withdraws provider registrations per agent lifecycle", async () => {
-		const { orchestrator, modelRegistry, agentId } =
-			await createProviderHarness([
-				{
-					id: "gateway",
-					factory: createProviderExtension({
-						providerName: "gateway",
-						config: gatewayProviderConfig(),
-					}),
-				},
-			]);
+		const { orchestrator, modelRegistry, agentId } = await createProviderHarness([
+			{ id: "gateway", factory: createProviderExtension({ providerName: "gateway", config: gatewayProviderConfig() }) },
+		]);
 		const secondAgentId = await orchestrator.spawnAgent();
 
 		expect(modelRegistry.getExtensionProviderRegistrations()).toEqual([
-			{
-				providerName: "gateway",
-				extensionId: "gateway",
-				agentIds: [agentId, secondAgentId],
-			},
+			{ providerName: "gateway", extensionId: "gateway", agentIds: [agentId, secondAgentId] },
 		]);
 
 		// The provider survives while another registrant agent is alive.
 		await orchestrator.disposeAgent(agentId);
 		expect(modelRegistry.getExtensionProviderRegistrations()).toEqual([
-			{
-				providerName: "gateway",
-				extensionId: "gateway",
-				agentIds: [secondAgentId],
-			},
+			{ providerName: "gateway", extensionId: "gateway", agentIds: [secondAgentId] },
 		]);
 		expect(modelRegistry.find("gateway", "gateway-model")).toBeDefined();
 
@@ -324,26 +240,15 @@ describe("provider extension consumer", () => {
 	});
 
 	it("drops the stale runner's provider on reload when the factory no longer registers it", async () => {
-		const { orchestrator, modelRegistry, agentId } =
-			await createProviderHarness([
-				{
-					id: "gateway",
-					factory: createProviderExtension({
-						providerName: "gateway",
-						config: gatewayProviderConfig(),
-					}),
-				},
-			]);
+		const { orchestrator, modelRegistry, agentId } = await createProviderHarness([
+			{ id: "gateway", factory: createProviderExtension({ providerName: "gateway", config: gatewayProviderConfig() }) },
+		]);
 		expect(modelRegistry.find("gateway", "gateway-model")).toBeDefined();
 
 		// Reload with the same factory re-registers the provider.
 		await orchestrator.reloadExtensions({ agentIds: [agentId] });
 		expect(modelRegistry.getExtensionProviderRegistrations()).toEqual([
-			{
-				providerName: "gateway",
-				extensionId: "gateway",
-				agentIds: [agentId],
-			},
+			{ providerName: "gateway", extensionId: "gateway", agentIds: [agentId] },
 		]);
 
 		// A reloaded runner that stops contributing withdraws the provider.
@@ -375,25 +280,17 @@ describe("provider extension consumer", () => {
 				id: "stamp-b",
 				factory: (api) => {
 					api.intercept("before_provider_request", (event) => ({
-						streamOptions: {
-							headers: { "X-Session": event.sessionId },
-							metadata: { audited: true },
-						},
+						streamOptions: { headers: { "X-Session": event.sessionId }, metadata: { audited: true } },
 					}));
 				},
 			},
 		]);
 
-		const result = await runBeforeProviderRequest(orchestrator, agentId, {
-			headers: { legacy: "keep" },
-		});
+		const result = await runBeforeProviderRequest(orchestrator, agentId, { headers: { legacy: "keep" } });
 
 		// The failing handler is skipped; both stamps land in one merged patch.
 		expect(result).toEqual({
-			streamOptions: {
-				headers: { "X-Gateway": "a", "X-Session": "session-1" },
-				metadata: { audited: true },
-			},
+			streamOptions: { headers: { "X-Gateway": "a", "X-Session": "session-1" }, metadata: { audited: true } },
 		});
 		expect(events).toContainEqual(
 			expect.objectContaining({
@@ -402,8 +299,7 @@ describe("provider extension consumer", () => {
 					severity: "warning",
 					code: "extension.handler_failed",
 					extensionId: "boom",
-					message:
-						"Extension 'boom' handler 'before_provider_request' failed: boom",
+					message: "Extension 'boom' handler 'before_provider_request' failed: boom",
 				}),
 			}),
 		);

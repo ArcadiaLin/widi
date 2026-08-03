@@ -40,22 +40,12 @@ interface EncodedCandidate {
 	mimeType: string;
 }
 
-function encodeCandidate(
-	buffer: Uint8Array,
-	mimeType: string,
-): EncodedCandidate {
+function encodeCandidate(buffer: Uint8Array, mimeType: string): EncodedCandidate {
 	const data = Buffer.from(buffer).toString("base64");
-	return {
-		data,
-		encodedSize: Buffer.byteLength(data, "utf-8"),
-		mimeType,
-	};
+	return { data, encodedSize: Buffer.byteLength(data, "utf-8"), mimeType };
 }
 
-function decodeWithOrientation(
-	photon: PhotonModule,
-	bytes: Uint8Array,
-): PhotonImage {
+function decodeWithOrientation(photon: PhotonModule, bytes: Uint8Array): PhotonImage {
 	const rawImage = photon.PhotonImage.new_from_byteslice(bytes);
 	const image = applyExifOrientation(photon, rawImage, bytes);
 	if (image !== rawImage) rawImage.free();
@@ -116,11 +106,7 @@ export function resizeImageInProcess(
 		const originalHeight = decodedImage.get_height();
 
 		// Already within the dimension and encoded-size limits.
-		if (
-			originalWidth <= opts.maxWidth &&
-			originalHeight <= opts.maxHeight &&
-			inputBase64Size < opts.maxBytes
-		) {
+		if (originalWidth <= opts.maxWidth && originalHeight <= opts.maxHeight && inputBase64Size < opts.maxBytes) {
 			return {
 				data: Buffer.from(inputBytes).toString("base64"),
 				mimeType,
@@ -144,25 +130,12 @@ export function resizeImageInProcess(
 			targetHeight = opts.maxHeight;
 		}
 
-		const tryEncodings = (
-			width: number,
-			height: number,
-			jpegQualities: number[],
-		): EncodedCandidate[] => {
-			const resized = photon.resize(
-				decodedImage,
-				width,
-				height,
-				photon.SamplingFilter.Lanczos3,
-			);
+		const tryEncodings = (width: number, height: number, jpegQualities: number[]): EncodedCandidate[] => {
+			const resized = photon.resize(decodedImage, width, height, photon.SamplingFilter.Lanczos3);
 			try {
-				const candidates: EncodedCandidate[] = [
-					encodeCandidate(resized.get_bytes(), "image/png"),
-				];
+				const candidates: EncodedCandidate[] = [encodeCandidate(resized.get_bytes(), "image/png")];
 				for (const quality of jpegQualities) {
-					candidates.push(
-						encodeCandidate(resized.get_bytes_jpeg(quality), "image/jpeg"),
-					);
+					candidates.push(encodeCandidate(resized.get_bytes_jpeg(quality), "image/jpeg"));
 				}
 				return candidates;
 			} finally {
@@ -170,18 +143,12 @@ export function resizeImageInProcess(
 			}
 		};
 
-		const qualitySteps = Array.from(
-			new Set([opts.jpegQuality, 85, 70, 55, 40]),
-		);
+		const qualitySteps = Array.from(new Set([opts.jpegQuality, 85, 70, 55, 40]));
 		let currentWidth = targetWidth;
 		let currentHeight = targetHeight;
 
 		while (true) {
-			const candidates = tryEncodings(
-				currentWidth,
-				currentHeight,
-				qualitySteps,
-			);
+			const candidates = tryEncodings(currentWidth, currentHeight, qualitySteps);
 			for (const candidate of candidates) {
 				if (candidate.encodedSize < opts.maxBytes) {
 					return {
@@ -200,10 +167,8 @@ export function resizeImageInProcess(
 				break;
 			}
 
-			const nextWidth =
-				currentWidth === 1 ? 1 : Math.max(1, Math.floor(currentWidth * 0.75));
-			const nextHeight =
-				currentHeight === 1 ? 1 : Math.max(1, Math.floor(currentHeight * 0.75));
+			const nextWidth = currentWidth === 1 ? 1 : Math.max(1, Math.floor(currentWidth * 0.75));
+			const nextHeight = currentHeight === 1 ? 1 : Math.max(1, Math.floor(currentHeight * 0.75));
 			if (nextWidth === currentWidth && nextHeight === currentHeight) {
 				break;
 			}

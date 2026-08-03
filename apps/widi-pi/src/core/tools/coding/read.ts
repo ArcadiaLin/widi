@@ -1,42 +1,16 @@
 import { TextDecoder } from "node:util";
 import { type Static, Type } from "typebox";
-import {
-	detectSupportedImageMimeType,
-	IMAGE_MIME_SNIFF_BYTES,
-} from "../../../utils/image/mime.ts";
-import {
-	type ImageProcessor,
-	processImage,
-} from "../../../utils/image/process-image.ts";
+import { detectSupportedImageMimeType, IMAGE_MIME_SNIFF_BYTES } from "../../../utils/image/mime.ts";
+import { type ImageProcessor, processImage } from "../../../utils/image/process-image.ts";
 import type { ToolDefinition } from "../types.ts";
-import {
-	type CodingToolFileOperations,
-	createLocalCodingToolFileOperations,
-} from "./operations.ts";
+import { type CodingToolFileOperations, createLocalCodingToolFileOperations } from "./operations.ts";
 import { resolveToCwd } from "./path-utils.ts";
-import {
-	DEFAULT_MAX_BYTES,
-	DEFAULT_MAX_LINES,
-	formatSize,
-	type TruncationResult,
-	truncateHead,
-} from "./truncate.ts";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
 
 const readSchema = Type.Object({
-	path: Type.String({
-		description: "Path to the file to read, relative to cwd or absolute.",
-	}),
-	offset: Type.Optional(
-		Type.Number({
-			description:
-				"1-indexed line number to start reading from. Text files only.",
-		}),
-	),
-	limit: Type.Optional(
-		Type.Number({
-			description: "Maximum number of lines to read. Text files only.",
-		}),
-	),
+	path: Type.String({ description: "Path to the file to read, relative to cwd or absolute." }),
+	offset: Type.Optional(Type.Number({ description: "1-indexed line number to start reading from. Text files only." })),
+	limit: Type.Optional(Type.Number({ description: "Maximum number of lines to read. Text files only." })),
 });
 
 export type ReadToolInput = Static<typeof readSchema>;
@@ -64,14 +38,9 @@ export interface ReadToolDetails {
 	mediaKind: "text" | "image" | "binary";
 	bytes: number;
 	totalLines?: number;
-	returnedLineRange?: {
-		start: number;
-		end: number;
-	};
+	returnedLineRange?: { start: number; end: number };
 	truncation?: TruncationResult;
-	unsupported?: {
-		reason: string;
-	};
+	unsupported?: { reason: string };
 	image?: ReadImageDetails;
 }
 
@@ -85,10 +54,7 @@ export interface ReadImageOperations {
 	 * sniffs the leading bytes of the already-read buffer and never trusts
 	 * file extensions.
 	 */
-	detectImageMimeType: (
-		absolutePath: string,
-		buffer: Buffer,
-	) => Promise<string | null> | string | null;
+	detectImageMimeType: (absolutePath: string, buffer: Buffer) => Promise<string | null> | string | null;
 	/** Convert and resize image bytes for inline provider delivery. */
 	processImage: ImageProcessor;
 }
@@ -112,19 +78,14 @@ export interface ReadToolOptions {
 	blockImages?: boolean;
 }
 
-const utf8Decoder = new TextDecoder("utf-8", {
-	fatal: true,
-	ignoreBOM: true,
-});
+const utf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 export function createReadToolDefinition(
 	cwd: string,
 	options: ReadToolOptions = {},
 ): ToolDefinition<typeof readSchema, ReadToolDetails> {
-	const operations =
-		options.operations ?? createLocalCodingToolFileOperations();
-	const imageOperations =
-		options.imageOperations ?? createLocalReadImageOperations();
+	const operations = options.operations ?? createLocalCodingToolFileOperations();
+	const imageOperations = options.imageOperations ?? createLocalReadImageOperations();
 	const maxLines = options.maxLines ?? DEFAULT_MAX_LINES;
 	const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
 	const autoResizeImages = options.autoResizeImages ?? true;
@@ -149,16 +110,11 @@ export function createReadToolDefinition(
 			const buffer = await operations.readFile(absolutePath);
 			throwIfAborted(context.signal);
 
-			const imageMimeType = await imageOperations.detectImageMimeType(
-				absolutePath,
-				buffer,
-			);
+			const imageMimeType = await imageOperations.detectImageMimeType(absolutePath, buffer);
 			throwIfAborted(context.signal);
 			if (imageMimeType) {
 				if (input.offset !== undefined || input.limit !== undefined) {
-					throw new Error(
-						"Read tool input is invalid. offset and limit are not supported for image files.",
-					);
+					throw new Error("Read tool input is invalid. offset and limit are not supported for image files.");
 				}
 				return await createImageReadResult({
 					path: input.path,
@@ -176,8 +132,7 @@ export function createReadToolDefinition(
 					path: input.path,
 					absolutePath,
 					bytes: buffer.byteLength,
-					reason:
-						"Binary or non-UTF-8 files are not supported by the core read tool.",
+					reason: "Binary or non-UTF-8 files are not supported by the core read tool.",
 				});
 			}
 
@@ -195,21 +150,11 @@ export function createReadToolDefinition(
 }
 
 function validateReadInput(input: ReadToolInput): void {
-	if (
-		input.offset !== undefined &&
-		(!Number.isFinite(input.offset) || input.offset < 1)
-	) {
-		throw new Error(
-			"Read tool input is invalid. offset must be a positive 1-indexed line number.",
-		);
+	if (input.offset !== undefined && (!Number.isFinite(input.offset) || input.offset < 1)) {
+		throw new Error("Read tool input is invalid. offset must be a positive 1-indexed line number.");
 	}
-	if (
-		input.limit !== undefined &&
-		(!Number.isFinite(input.limit) || input.limit < 1)
-	) {
-		throw new Error(
-			"Read tool input is invalid. limit must be a positive line count.",
-		);
+	if (input.limit !== undefined && (!Number.isFinite(input.limit) || input.limit < 1)) {
+		throw new Error("Read tool input is invalid. limit must be a positive line count.");
 	}
 }
 
@@ -241,21 +186,14 @@ async function createImageReadResult(options: {
 			],
 			details: {
 				...baseDetails,
-				image: {
-					originalMimeType: options.imageMimeType,
-					converted: false,
-					resized: false,
-					blocked: true,
-				},
+				image: { originalMimeType: options.imageMimeType, converted: false, resized: false, blocked: true },
 			},
 		};
 	}
 
-	const processed = await options.imageOperations.processImage(
-		options.buffer,
-		options.imageMimeType,
-		{ autoResize: options.autoResizeImages },
-	);
+	const processed = await options.imageOperations.processImage(options.buffer, options.imageMimeType, {
+		autoResize: options.autoResizeImages,
+	});
 
 	if (!processed.ok) {
 		return {
@@ -279,9 +217,7 @@ async function createImageReadResult(options: {
 
 	const noteLines = [`Read image file [${processed.mimeType}]`];
 	if (processed.convertedFrom) {
-		noteLines.push(
-			`[Image converted from ${processed.convertedFrom} to ${processed.mimeType}.]`,
-		);
+		noteLines.push(`[Image converted from ${processed.convertedFrom} to ${processed.mimeType}.]`);
 	}
 	const dimensions = processed.dimensions;
 	if (dimensions?.wasResized) {
@@ -294,11 +230,7 @@ async function createImageReadResult(options: {
 	return {
 		content: [
 			{ type: "text" as const, text: noteLines.join("\n") },
-			{
-				type: "image" as const,
-				data: processed.data,
-				mimeType: processed.mimeType,
-			},
+			{ type: "image" as const, data: processed.data, mimeType: processed.mimeType },
 		],
 		details: {
 			...baseDetails,
@@ -316,19 +248,9 @@ async function createImageReadResult(options: {
 	};
 }
 
-function createUnsupportedResult(options: {
-	path: string;
-	absolutePath: string;
-	bytes: number;
-	reason: string;
-}) {
+function createUnsupportedResult(options: { path: string; absolutePath: string; bytes: number; reason: string }) {
 	return {
-		content: [
-			{
-				type: "text" as const,
-				text: `Cannot read ${options.path}: ${options.reason}`,
-			},
-		],
+		content: [{ type: "text" as const, text: `Cannot read ${options.path}: ${options.reason}` }],
 		details: {
 			path: options.path,
 			absolutePath: options.absolutePath,
@@ -353,28 +275,20 @@ function createTextReadResult(options: {
 	const startLineIndex = options.offset === undefined ? 0 : options.offset - 1;
 	const startLineDisplay = startLineIndex + 1;
 	if (startLineIndex >= totalFileLines) {
-		throw new Error(
-			`Offset ${options.offset} is beyond end of file (${totalFileLines} lines total).`,
-		);
+		throw new Error(`Offset ${options.offset} is beyond end of file (${totalFileLines} lines total).`);
 	}
 
 	let selectedContent: string;
 	let userLimitedLines: number | undefined;
 	if (options.limit !== undefined) {
-		const endLineIndex = Math.min(
-			startLineIndex + options.limit,
-			totalFileLines,
-		);
+		const endLineIndex = Math.min(startLineIndex + options.limit, totalFileLines);
 		selectedContent = allLines.slice(startLineIndex, endLineIndex).join("\n");
 		userLimitedLines = endLineIndex - startLineIndex;
 	} else {
 		selectedContent = allLines.slice(startLineIndex).join("\n");
 	}
 
-	const truncation = truncateHead(selectedContent, {
-		maxLines: options.maxLines,
-		maxBytes: options.maxBytes,
-	});
+	const truncation = truncateHead(selectedContent, { maxLines: options.maxLines, maxBytes: options.maxBytes });
 	const content = formatReadContent({
 		path: options.path,
 		allLines,
@@ -383,10 +297,7 @@ function createTextReadResult(options: {
 		userLimitedLines,
 		truncation,
 	});
-	const endLine =
-		truncation.outputLines > 0
-			? startLineDisplay + truncation.outputLines - 1
-			: startLineDisplay;
+	const endLine = truncation.outputLines > 0 ? startLineDisplay + truncation.outputLines - 1 : startLineDisplay;
 
 	return {
 		content: [{ type: "text" as const, text: content }],
@@ -396,10 +307,7 @@ function createTextReadResult(options: {
 			mediaKind: "text" as const,
 			bytes: Buffer.byteLength(options.textContent, "utf-8"),
 			totalLines: totalFileLines,
-			returnedLineRange: {
-				start: startLineDisplay,
-				end: endLine,
-			},
+			returnedLineRange: { start: startLineDisplay, end: endLine },
 			truncation: truncation.truncated ? truncation : undefined,
 		},
 	};
@@ -414,16 +322,13 @@ function formatReadContent(options: {
 	truncation: TruncationResult;
 }): string {
 	if (options.truncation.firstLineExceedsLimit) {
-		const firstLineSize = formatSize(
-			Buffer.byteLength(options.allLines[options.startLineIndex], "utf-8"),
-		);
+		const firstLineSize = formatSize(Buffer.byteLength(options.allLines[options.startLineIndex], "utf-8"));
 		return `[Line ${options.startLineDisplay} in ${options.path} is ${firstLineSize}, exceeding the ${formatSize(options.truncation.maxBytes)} read limit. The core read tool does not return partial lines.]`;
 	}
 
 	let outputText = options.truncation.content;
 	if (options.truncation.truncated) {
-		const endLineDisplay =
-			options.startLineDisplay + options.truncation.outputLines - 1;
+		const endLineDisplay = options.startLineDisplay + options.truncation.outputLines - 1;
 		const nextOffset = endLineDisplay + 1;
 		if (options.truncation.truncatedBy === "lines") {
 			return `${outputText}\n\n[Showing lines ${options.startLineDisplay}-${endLineDisplay} of ${options.allLines.length}. Use offset=${nextOffset} to continue.]`;
@@ -435,9 +340,7 @@ function formatReadContent(options: {
 		options.userLimitedLines !== undefined &&
 		options.startLineIndex + options.userLimitedLines < options.allLines.length
 	) {
-		const remaining =
-			options.allLines.length -
-			(options.startLineIndex + options.userLimitedLines);
+		const remaining = options.allLines.length - (options.startLineIndex + options.userLimitedLines);
 		const nextOffset = options.startLineIndex + options.userLimitedLines + 1;
 		outputText += `\n\n[${remaining} more lines in file. Use offset=${nextOffset} to continue.]`;
 	}

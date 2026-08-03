@@ -64,14 +64,10 @@ export class BackgroundJobOutput {
 
 	constructor(
 		maxBytes: number = DEFAULT_BACKGROUND_JOB_OUTPUT_MAX_BYTES,
-		options: {
-			onAppend?: () => void;
-			incrementMaxBytes?: number;
-		} = {},
+		options: { onAppend?: () => void; incrementMaxBytes?: number } = {},
 	) {
 		this._maxBytes = maxBytes;
-		this._incMaxBytes =
-			options.incrementMaxBytes ?? DEFAULT_BACKGROUND_JOB_INCREMENT_MAX_BYTES;
+		this._incMaxBytes = options.incrementMaxBytes ?? DEFAULT_BACKGROUND_JOB_INCREMENT_MAX_BYTES;
 		this._onAppend = options.onAppend;
 	}
 
@@ -100,8 +96,7 @@ export class BackgroundJobOutput {
 
 	/** Append a chunk of output, feeding both the rolling tail and the increment. */
 	append(chunk: Buffer | string): void {
-		const buffer =
-			typeof chunk === "string" ? Buffer.from(chunk, "utf-8") : chunk;
+		const buffer = typeof chunk === "string" ? Buffer.from(chunk, "utf-8") : chunk;
 		if (buffer.length === 0) return;
 		this._totalBytesSeen += buffer.length;
 
@@ -115,11 +110,7 @@ export class BackgroundJobOutput {
 		this._incChunks.push(buffer);
 		this._incByteLength += buffer.length;
 		const beforeTrim = this._incByteLength;
-		this._incByteLength = trimHead(
-			this._incChunks,
-			this._incByteLength,
-			this._incMaxBytes,
-		);
+		this._incByteLength = trimHead(this._incChunks, this._incByteLength, this._incMaxBytes);
 		const dropped = beforeTrim - this._incByteLength;
 		if (dropped > 0) {
 			this._incStartOffset += dropped;
@@ -142,9 +133,7 @@ export class BackgroundJobOutput {
 	drainIncrement(): BackgroundJobOutputIncrement | undefined {
 		if (this._incByteLength === 0) return undefined;
 		const startByte = this._incStartOffset;
-		const chunk = Buffer.concat(this._incChunks, this._incByteLength).toString(
-			"base64",
-		);
+		const chunk = Buffer.concat(this._incChunks, this._incByteLength).toString("base64");
 		const endByte = startByte + this._incByteLength;
 		this._incChunks.length = 0;
 		this._incByteLength = 0;
@@ -160,11 +149,7 @@ export class BackgroundJobOutput {
 }
 
 /** Trim from the head back within `maxBytes`, returning the new total. */
-function trimHead(
-	chunks: Buffer[],
-	byteLength: number,
-	maxBytes: number,
-): number {
+function trimHead(chunks: Buffer[], byteLength: number, maxBytes: number): number {
 	while (byteLength > maxBytes) {
 		const head = chunks[0];
 		if (byteLength - head.length >= maxBytes) {

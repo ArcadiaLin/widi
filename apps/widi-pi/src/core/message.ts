@@ -25,11 +25,7 @@ import type { AgentId } from "./types.ts";
 export type MessageSource =
 	| { readonly kind: "human" }
 	| { readonly kind: "agent"; readonly agentId: AgentId }
-	| {
-			readonly kind: "background_job";
-			readonly ownerAgentId: AgentId;
-			readonly jobId: string;
-	  }
+	| { readonly kind: "background_job"; readonly ownerAgentId: AgentId; readonly jobId: string }
 	| { readonly kind: "system"; readonly name: string };
 
 /**
@@ -80,11 +76,7 @@ export type MessageInterceptRun =
 			readonly images?: readonly ImageContent[];
 			readonly transformedBy: readonly string[];
 	  }
-	| {
-			readonly kind: "block";
-			readonly reason?: string;
-			readonly blockedBy: string;
-	  };
+	| { readonly kind: "block"; readonly reason?: string; readonly blockedBy: string };
 
 export interface MessageInterceptEvent {
 	readonly type: "input";
@@ -95,22 +87,14 @@ export interface MessageInterceptEvent {
 }
 
 export type MessageTransformOutcome =
-	| {
-			readonly kind: "pass";
-			readonly text: string;
-			readonly images?: readonly ImageContent[];
-	  }
+	| { readonly kind: "pass"; readonly text: string; readonly images?: readonly ImageContent[] }
 	| {
 			readonly kind: "transform";
 			readonly text: string;
 			readonly images?: readonly ImageContent[];
 			readonly transformedBy: readonly string[];
 	  }
-	| {
-			readonly kind: "block";
-			readonly reason?: string;
-			readonly blockedBy: string;
-	  };
+	| { readonly kind: "block"; readonly reason?: string; readonly blockedBy: string };
 
 /**
  * What a `block` from the input pipeline means for this source.
@@ -134,17 +118,9 @@ export function messageBlockPolicy(source: MessageSource): MessageBlockPolicy {
  */
 export type MessageSendOutcome =
 	| { readonly kind: "accepted" }
-	| {
-			readonly kind: "blocked";
-			readonly inputId: string;
-			readonly reason?: string;
-			readonly blockedBy: string;
-	  };
+	| { readonly kind: "blocked"; readonly inputId: string; readonly reason?: string; readonly blockedBy: string };
 
-export type MessageErrorCode =
-	| "message_invalid"
-	| "target_unavailable"
-	| "delivery_rejected";
+export type MessageErrorCode = "message_invalid" | "target_unavailable" | "delivery_rejected";
 
 export class MessageError extends Error {
 	readonly code: MessageErrorCode;
@@ -158,10 +134,7 @@ export class MessageError extends Error {
 
 export function assertMessageBody(body: string): void {
 	if (typeof body !== "string" || body.trim().length === 0) {
-		throw new MessageError(
-			"message_invalid",
-			"Message body must be a non-empty string.",
-		);
+		throw new MessageError("message_invalid", "Message body must be a non-empty string.");
 	}
 }
 
@@ -169,10 +142,7 @@ export function assertMessageBody(body: string): void {
  * Render the model-facing text for a message. Applied after interception, so
  * extensions see the semantic body and cannot forge an attribution prefix.
  */
-export function renderMessageEnvelope(
-	source: MessageSource,
-	text: string,
-): string {
+export function renderMessageEnvelope(source: MessageSource, text: string): string {
 	switch (source.kind) {
 		case "human":
 			// Human input is the model's baseline user message: no prefix, so
@@ -209,9 +179,7 @@ export interface MessageTransformPorts {
 	 * Run the target's extension input pipeline. Returns `pass` when the target
 	 * has no live extension runtime.
 	 */
-	readonly intercept: (
-		event: MessageInterceptEvent,
-	) => Promise<MessageInterceptRun>;
+	readonly intercept: (event: MessageInterceptEvent) => Promise<MessageInterceptRun>;
 }
 
 /**
@@ -232,12 +200,7 @@ export async function transformMessage(
 		images: draft.images,
 	});
 	if (run.kind === "transform") {
-		return {
-			kind: "transform",
-			text: run.text,
-			images: run.images ?? draft.images,
-			transformedBy: run.transformedBy,
-		};
+		return { kind: "transform", text: run.text, images: run.images ?? draft.images, transformedBy: run.transformedBy };
 	}
 	if (run.kind === "block" && messageBlockPolicy(draft.source) === "enforce") {
 		return { kind: "block", reason: run.reason, blockedBy: run.blockedBy };
@@ -260,16 +223,10 @@ export function decideMessageDelivery(input: {
 }): MessageDeliveryDecision {
 	const { phase, targetAgentId } = input;
 	if (phase === undefined) {
-		return {
-			kind: "reject",
-			reason: `Agent ${targetAgentId} can no longer receive messages.`,
-		};
+		return { kind: "reject", reason: `Agent ${targetAgentId} can no longer receive messages.` };
 	}
 	if (input.requiresIdle && phase !== "idle") {
-		return {
-			kind: "reject",
-			reason: `Agent ${targetAgentId} cannot accept a prompt while ${phase}.`,
-		};
+		return { kind: "reject", reason: `Agent ${targetAgentId} cannot accept a prompt while ${phase}.` };
 	}
 	// Maintenance work does not run an agent loop, so a steer or follow-up would
 	// be accepted into a queue nothing drains. It waits for the next phase change
@@ -279,10 +236,7 @@ export function decideMessageDelivery(input: {
 		return { kind: "defer" };
 	}
 	if (phase === "idle") return { kind: "deliver", method: "prompt" };
-	return {
-		kind: "deliver",
-		method: input.mode === "interrupt" ? "steer" : "follow_up",
-	};
+	return { kind: "deliver", method: input.mode === "interrupt" ? "steer" : "follow_up" };
 }
 
 /** Outcome of one accepted delivery. */
@@ -310,9 +264,7 @@ export interface MessageDeliveryRequest {
 export interface MessageDeliveryPorts {
 	/** Re-read immediately before every delivery attempt, never cached. */
 	readonly resolvePhase: (agentId: AgentId) => MessageDeliveryPhase;
-	readonly deliver: (
-		request: MessageDeliveryRequest,
-	) => Promise<MessageDeliveryReceipt>;
+	readonly deliver: (request: MessageDeliveryRequest) => Promise<MessageDeliveryReceipt>;
 }
 
 export interface MessageEnqueueInput {
@@ -359,9 +311,7 @@ interface QueuedMessage {
 	readonly awaited: boolean;
 	readonly retryOnFailure: boolean;
 	readonly onDeferredFailure: ((error: unknown) => void) | undefined;
-	readonly onDeliveryStart:
-		| ((method: MessageDeliveryMethod) => void)
-		| undefined;
+	readonly onDeliveryStart: ((method: MessageDeliveryMethod) => void) | undefined;
 	readonly onDeliveryFailure: ((error: unknown) => void) | undefined;
 	readonly resolve: (receipt: MessageDeliveryReceipt) => void;
 	readonly reject: (error: unknown) => void;
@@ -450,10 +400,7 @@ export class MessageDeliveryQueue {
 
 	/** Whether any message is still waiting for or being handed to this target. */
 	hasPending(agentId: AgentId): boolean {
-		return (
-			(this._queues.get(agentId)?.length ?? 0) > 0 ||
-			(this._inFlight.get(agentId)?.length ?? 0) > 0
-		);
+		return (this._queues.get(agentId)?.length ?? 0) > 0 || (this._inFlight.get(agentId)?.length ?? 0) > 0;
 	}
 
 	/**
@@ -462,10 +409,7 @@ export class MessageDeliveryQueue {
 	 * settle, and its senders must not be left waiting forever.
 	 */
 	cancel(agentId: AgentId, reason: string): void {
-		const outstanding = [
-			...(this._queues.get(agentId) ?? []),
-			...(this._inFlight.get(agentId) ?? []),
-		];
+		const outstanding = [...(this._queues.get(agentId) ?? []), ...(this._inFlight.get(agentId) ?? [])];
 		this._queues.delete(agentId);
 		this._inFlight.delete(agentId);
 		for (const message of outstanding) {
@@ -495,10 +439,7 @@ export class MessageDeliveryQueue {
 				if (decision.kind === "defer") break;
 				if (decision.kind === "reject") {
 					queue.shift();
-					this._fail(
-						head,
-						new MessageError("delivery_rejected", decision.reason),
-					);
+					this._fail(head, new MessageError("delivery_rejected", decision.reason));
 					continue;
 				}
 
@@ -602,12 +543,7 @@ export class MessageDeliveryQueue {
 		if (head.mergeKey === undefined || head.images !== undefined) return batch;
 		while (queue.length > 0) {
 			const next = queue[0];
-			if (
-				next.settled ||
-				next.mergeKey !== head.mergeKey ||
-				next.images !== undefined ||
-				next.requiresIdle
-			) {
+			if (next.settled || next.mergeKey !== head.mergeKey || next.images !== undefined || next.requiresIdle) {
 				break;
 			}
 			queue.shift();
@@ -616,10 +552,7 @@ export class MessageDeliveryQueue {
 		return batch;
 	}
 
-	private _resolve(
-		message: QueuedMessage,
-		receipt: MessageDeliveryReceipt,
-	): void {
+	private _resolve(message: QueuedMessage, receipt: MessageDeliveryReceipt): void {
 		if (message.settled) return;
 		message.settled = true;
 		message.resolve(receipt);
@@ -633,10 +566,7 @@ export class MessageDeliveryQueue {
 }
 
 export function isRetryableDeliveryError(error: unknown): boolean {
-	return (
-		error instanceof AgentHarnessError &&
-		(error.code === "busy" || error.code === "invalid_state")
-	);
+	return error instanceof AgentHarnessError && (error.code === "busy" || error.code === "invalid_state");
 }
 
 /**

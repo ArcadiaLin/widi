@@ -1,17 +1,5 @@
-import type {
-	ExecutionEnv,
-	ExecutionError,
-	FileError,
-	FileInfo,
-	Result,
-	ShellExecOptions,
-} from "@widi/agent-core";
-import {
-	err,
-	ok,
-	ExecutionError as PiExecutionError,
-	FileError as PiFileError,
-} from "@widi/agent-core";
+import type { ExecutionEnv, ExecutionError, FileError, FileInfo, Result, ShellExecOptions } from "@widi/agent-core";
+import { err, ok, ExecutionError as PiExecutionError, FileError as PiFileError } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import {
 	AgentProfileRegistry,
@@ -47,56 +35,33 @@ class MemoryExecutionEnv implements ExecutionEnv {
 		const normalized = this.normalize(path);
 		const content = this.files.get(normalized);
 		if (content === undefined) {
-			return err(
-				new PiFileError(
-					"not_found",
-					`File not found: ${normalized}`,
-					normalized,
-				),
-			);
+			return err(new PiFileError("not_found", `File not found: ${normalized}`, normalized));
 		}
 		return ok(content);
 	}
 
-	async readTextLines(
-		path: string,
-		options?: { maxLines?: number },
-	): Promise<Result<string[], FileError>> {
+	async readTextLines(path: string, options?: { maxLines?: number }): Promise<Result<string[], FileError>> {
 		const result = await this.readTextFile(path);
 		if (!result.ok) return result;
 		const lines = result.value.split("\n");
-		return ok(
-			options?.maxLines === undefined
-				? lines
-				: lines.slice(0, options.maxLines),
-		);
+		return ok(options?.maxLines === undefined ? lines : lines.slice(0, options.maxLines));
 	}
 
 	async readBinaryFile(): Promise<Result<Uint8Array, FileError>> {
 		return err(new PiFileError("not_supported", "not supported"));
 	}
 
-	async writeFile(
-		path: string,
-		content: string | Uint8Array,
-	): Promise<Result<void, FileError>> {
+	async writeFile(path: string, content: string | Uint8Array): Promise<Result<void, FileError>> {
 		const normalized = this.normalize(path);
 		this.dirs.add(this.dirname(normalized));
-		this.files.set(
-			normalized,
-			typeof content === "string" ? content : new TextDecoder().decode(content),
-		);
+		this.files.set(normalized, typeof content === "string" ? content : new TextDecoder().decode(content));
 		return ok(undefined);
 	}
 
-	async appendFile(
-		path: string,
-		content: string | Uint8Array,
-	): Promise<Result<void, FileError>> {
+	async appendFile(path: string, content: string | Uint8Array): Promise<Result<void, FileError>> {
 		const normalized = this.normalize(path);
 		const current = this.files.get(normalized) ?? "";
-		const next =
-			typeof content === "string" ? content : new TextDecoder().decode(content);
+		const next = typeof content === "string" ? content : new TextDecoder().decode(content);
 		this.files.set(normalized, current + next);
 		return ok(undefined);
 	}
@@ -122,17 +87,13 @@ class MemoryExecutionEnv implements ExecutionEnv {
 				mtimeMs: 0,
 			});
 		}
-		return err(
-			new PiFileError("not_found", `Path not found: ${normalized}`, normalized),
-		);
+		return err(new PiFileError("not_found", `Path not found: ${normalized}`, normalized));
 	}
 
 	async listDir(path: string): Promise<Result<FileInfo[], FileError>> {
 		const dir = this.normalize(path);
 		if (!this.dirs.has(dir)) {
-			return err(
-				new PiFileError("not_found", `Directory not found: ${dir}`, dir),
-			);
+			return err(new PiFileError("not_found", `Directory not found: ${dir}`, dir));
 		}
 
 		const entries: FileInfo[] = [];
@@ -168,22 +129,10 @@ class MemoryExecutionEnv implements ExecutionEnv {
 		return ok(this.files.has(normalized) || this.dirs.has(normalized));
 	}
 
-	async createDir(
-		path: string,
-		options?: { recursive?: boolean },
-	): Promise<Result<void, FileError>> {
+	async createDir(path: string, options?: { recursive?: boolean }): Promise<Result<void, FileError>> {
 		const normalized = this.normalize(path);
-		if (
-			options?.recursive === false &&
-			!this.dirs.has(this.dirname(normalized))
-		) {
-			return err(
-				new PiFileError(
-					"not_found",
-					`Parent not found: ${this.dirname(normalized)}`,
-					normalized,
-				),
-			);
+		if (options?.recursive === false && !this.dirs.has(this.dirname(normalized))) {
+			return err(new PiFileError("not_found", `Parent not found: ${this.dirname(normalized)}`, normalized));
 		}
 
 		let current = "";
@@ -212,9 +161,7 @@ class MemoryExecutionEnv implements ExecutionEnv {
 	async exec(
 		_command: string,
 		_options?: ShellExecOptions,
-	): Promise<
-		Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>
-	> {
+	): Promise<Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>> {
 		return err(new PiExecutionError("shell_unavailable", "not supported"));
 	}
 
@@ -225,9 +172,7 @@ describe("AgentProfileRegistry", () => {
 	it("resolves project profiles over user profiles as whole-profile override", async () => {
 		const env = new MemoryExecutionEnv();
 		await env.createDir("/home/user/.widi/profiles", { recursive: true });
-		await env.createDir("/workspace/project/.widi/profiles", {
-			recursive: true,
-		});
+		await env.createDir("/workspace/project/.widi/profiles", { recursive: true });
 		await env.writeFile(
 			"/home/user/.widi/profiles/worker.md",
 			"---\nid: worker\nlabel: User Worker\npersist: true\nskills: [code]\n---\nUser prompt",
@@ -239,16 +184,8 @@ describe("AgentProfileRegistry", () => {
 
 		const registry = new AgentProfileRegistry(
 			new FileProfileStorageBackend(env, [
-				{
-					kind: "agent_dir",
-					path: "/home/user/.widi/profiles",
-					priority: 100,
-				},
-				{
-					kind: "cwd",
-					path: "/workspace/project/.widi/profiles",
-					priority: 200,
-				},
+				{ kind: "agent_dir", path: "/home/user/.widi/profiles", priority: 100 },
+				{ kind: "cwd", path: "/workspace/project/.widi/profiles", priority: 200 },
 			]),
 		);
 
@@ -289,9 +226,7 @@ describe("AgentProfileRegistry", () => {
 		expect(result.ok).toBe(false);
 		if (result.ok) throw new Error("Expected duplicate profile failure.");
 		expect(result.reason).toBe("duplicate_profile_id");
-		expect(result.diagnostics).toContainEqual(
-			expect.objectContaining({ code: "profile.duplicate_id" }),
-		);
+		expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: "profile.duplicate_id" }));
 	});
 
 	// Extensions and prompt templates left the profile schema. An older profile
@@ -351,8 +286,7 @@ describe("AgentProfileRegistry", () => {
 		expect(result.ok).toBe(true);
 		if (!result.ok) throw new Error("Expected profile to resolve.");
 		expect(result.profile).toMatchObject({
-			whenToUse:
-				"Use for a self-contained change.\n\nIt cannot see your conversation.",
+			whenToUse: "Use for a self-contained change.\n\nIt cannot see your conversation.",
 			persist: true,
 			systemPrompt: "Coder prompt",
 		});
@@ -462,11 +396,7 @@ describe("AgentProfileRegistry", () => {
 						"Body",
 					].join("\n"),
 				},
-				{
-					entryId: "memory:broken",
-					filenameId: "broken",
-					content: ["---", "tools: [read", "---", "Body"].join("\n"),
-				},
+				{ entryId: "memory:broken", filenameId: "broken", content: ["---", "tools: [read", "---", "Body"].join("\n") },
 			]),
 		);
 
@@ -493,23 +423,17 @@ describe("AgentProfileRegistry", () => {
 				{
 					entryId: "memory:on",
 					filenameId: "on",
-					content: ["---", "id: on", "projectContext: true", "---", "P"].join(
-						"\n",
-					),
+					content: ["---", "id: on", "projectContext: true", "---", "P"].join("\n"),
 				},
 				{
 					entryId: "memory:empty",
 					filenameId: "empty",
-					content: ["---", "id: empty", "projectContext: []", "---", "P"].join(
-						"\n",
-					),
+					content: ["---", "id: empty", "projectContext: []", "---", "P"].join("\n"),
 				},
 				{
 					entryId: "memory:bad",
 					filenameId: "bad",
-					content: ["---", "id: bad", "projectContext: maybe", "---", "P"].join(
-						"\n",
-					),
+					content: ["---", "id: bad", "projectContext: maybe", "---", "P"].join("\n"),
 				},
 			]),
 		);
@@ -539,18 +463,9 @@ describe("AgentProfileRegistry", () => {
 
 	it("indexes declared ids and does not treat filename as an alias", async () => {
 		const env = new MemoryExecutionEnv();
-		await env.writeFile(
-			"/profiles/special.md",
-			"---\nid: reviewer\nlabel: Reviewer\n---\nReview prompt",
-		);
+		await env.writeFile("/profiles/special.md", "---\nid: reviewer\nlabel: Reviewer\n---\nReview prompt");
 		const registry = new AgentProfileRegistry(
-			new FileProfileStorageBackend(env, [
-				{
-					kind: "agent_dir",
-					path: "/profiles/special.md",
-					priority: 300,
-				},
-			]),
+			new FileProfileStorageBackend(env, [{ kind: "agent_dir", path: "/profiles/special.md", priority: 300 }]),
 		);
 
 		const declared = await registry.resolveProfile("reviewer");
@@ -559,9 +474,7 @@ describe("AgentProfileRegistry", () => {
 		expect(declared.ok).toBe(true);
 		expect(filename.ok).toBe(false);
 		if (declared.ok) {
-			expect(declared.diagnostics).toContainEqual(
-				expect.objectContaining({ code: "profile.id_filename_mismatch" }),
-			);
+			expect(declared.diagnostics).toContainEqual(expect.objectContaining({ code: "profile.id_filename_mismatch" }));
 		}
 		if (!filename.ok) {
 			expect(filename.reason).toBe("profile_missing");
@@ -570,23 +483,12 @@ describe("AgentProfileRegistry", () => {
 
 	it("lists only summaries for resolvable direct markdown children", async () => {
 		const env = new MemoryExecutionEnv();
-		await env.createDir("/workspace/project/.widi/profiles/nested", {
-			recursive: true,
-		});
+		await env.createDir("/workspace/project/.widi/profiles/nested", { recursive: true });
 		await env.writeFile("/workspace/project/.widi/profiles/b.md", "B prompt");
 		await env.writeFile("/workspace/project/.widi/profiles/a.md", "A prompt");
-		await env.writeFile(
-			"/workspace/project/.widi/profiles/nested/ignored.md",
-			"ignored",
-		);
+		await env.writeFile("/workspace/project/.widi/profiles/nested/ignored.md", "ignored");
 		const registry = new AgentProfileRegistry(
-			new FileProfileStorageBackend(env, [
-				{
-					kind: "cwd",
-					path: "/workspace/project/.widi/profiles",
-					priority: 200,
-				},
-			]),
+			new FileProfileStorageBackend(env, [{ kind: "cwd", path: "/workspace/project/.widi/profiles", priority: 200 }]),
 		);
 
 		const result = await registry.listProfiles();

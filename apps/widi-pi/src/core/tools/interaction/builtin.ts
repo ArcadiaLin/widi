@@ -2,10 +2,7 @@ import type { ToolRegistry } from "../../tool-registry.ts";
 import type { ToolSource } from "../types.ts";
 import { createAskHumanToolDefinition } from "./ask-human.ts";
 
-const coreBuiltinToolSource: ToolSource = {
-	kind: "core",
-	id: "builtin",
-};
+const coreBuiltinToolSource: ToolSource = { kind: "core", id: "builtin" };
 
 /**
  * Register the core built-in interaction tools: controlled agent-to-human

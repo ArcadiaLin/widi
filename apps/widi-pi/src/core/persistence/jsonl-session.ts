@@ -28,12 +28,7 @@ import type {
 	SessionStorage,
 	SessionTreeEntry,
 } from "@widi/agent-core";
-import {
-	getFileSystemResultOrThrow,
-	SessionError,
-	toError,
-	uuidv7,
-} from "@widi/agent-core";
+import { getFileSystemResultOrThrow, SessionError, toError, uuidv7 } from "@widi/agent-core";
 import type { PersistenceFileSystem } from "./custom-storage.ts";
 
 export const SESSION_FORMAT_VERSION = 3;
@@ -48,10 +43,7 @@ export interface SessionHeader {
 	readonly metadata?: Record<string, unknown>;
 }
 
-function updateLabelCache(
-	labelsById: Map<string, string>,
-	entry: SessionTreeEntry,
-): void {
+function updateLabelCache(labelsById: Map<string, string>, entry: SessionTreeEntry): void {
 	if (entry.type !== "label") return;
 	const label = entry.label?.trim();
 	if (label) {
@@ -77,24 +69,11 @@ function generateEntryId(byId: { has(id: string): boolean }): string {
 	return uuidv7();
 }
 
-function invalidSession(
-	filePath: string,
-	message: string,
-	cause?: Error,
-): SessionError {
-	return new SessionError(
-		"invalid_session",
-		`Invalid JSONL session file ${filePath}: ${message}`,
-		cause,
-	);
+function invalidSession(filePath: string, message: string, cause?: Error): SessionError {
+	return new SessionError("invalid_session", `Invalid JSONL session file ${filePath}: ${message}`, cause);
 }
 
-function invalidEntry(
-	filePath: string,
-	lineNumber: number,
-	message: string,
-	cause?: Error,
-): SessionError {
+function invalidEntry(filePath: string, lineNumber: number, message: string, cause?: Error): SessionError {
 	return new SessionError(
 		"invalid_entry",
 		`Invalid JSONL session file ${filePath}: line ${lineNumber} ${message}`,
@@ -107,11 +86,7 @@ function parseHeaderLine(line: string, filePath: string): SessionHeader {
 	try {
 		parsed = JSON.parse(line);
 	} catch (error) {
-		throw invalidSession(
-			filePath,
-			"first line is not a valid session header",
-			toError(error),
-		);
+		throw invalidSession(filePath, "first line is not a valid session header", toError(error));
 	}
 	if (typeof parsed !== "object" || parsed === null) {
 		throw invalidSession(filePath, "first line is not a valid session header");
@@ -132,20 +107,12 @@ function parseHeaderLine(line: string, filePath: string): SessionHeader {
 	if (typeof header.cwd !== "string" || !header.cwd) {
 		throw invalidSession(filePath, "session header is missing cwd");
 	}
-	if (
-		header.parentSession !== undefined &&
-		typeof header.parentSession !== "string"
-	) {
-		throw invalidSession(
-			filePath,
-			"session header parentSession must be a string",
-		);
+	if (header.parentSession !== undefined && typeof header.parentSession !== "string") {
+		throw invalidSession(filePath, "session header parentSession must be a string");
 	}
 	if (
 		header.metadata !== undefined &&
-		(typeof header.metadata !== "object" ||
-			header.metadata === null ||
-			Array.isArray(header.metadata))
+		(typeof header.metadata !== "object" || header.metadata === null || Array.isArray(header.metadata))
 	) {
 		throw invalidSession(filePath, "session header metadata must be an object");
 	}
@@ -160,32 +127,17 @@ function parseHeaderLine(line: string, filePath: string): SessionHeader {
 	};
 }
 
-function parseEntryLine(
-	line: string,
-	filePath: string,
-	lineNumber: number,
-): SessionTreeEntry {
+function parseEntryLine(line: string, filePath: string, lineNumber: number): SessionTreeEntry {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(line);
 	} catch (error) {
-		throw invalidEntry(
-			filePath,
-			lineNumber,
-			"is not valid JSON",
-			toError(error),
-		);
+		throw invalidEntry(filePath, lineNumber, "is not valid JSON", toError(error));
 	}
 	if (typeof parsed !== "object" || parsed === null) {
 		throw invalidEntry(filePath, lineNumber, "is not a valid session entry");
 	}
-	const entry = parsed as {
-		type?: unknown;
-		id?: unknown;
-		parentId?: unknown;
-		timestamp?: unknown;
-		targetId?: unknown;
-	};
+	const entry = parsed as { type?: unknown; id?: unknown; parentId?: unknown; timestamp?: unknown; targetId?: unknown };
 	if (typeof entry.type !== "string") {
 		throw invalidEntry(filePath, lineNumber, "is missing entry type");
 	}
@@ -198,11 +150,7 @@ function parseEntryLine(
 	if (typeof entry.timestamp !== "string" || !entry.timestamp) {
 		throw invalidEntry(filePath, lineNumber, "is missing timestamp");
 	}
-	if (
-		entry.type === "leaf" &&
-		entry.targetId !== null &&
-		typeof entry.targetId !== "string"
-	) {
+	if (entry.type === "leaf" && entry.targetId !== null && typeof entry.targetId !== "string") {
 		throw invalidEntry(filePath, lineNumber, "has invalid targetId");
 	}
 	return entry as SessionTreeEntry;
@@ -212,10 +160,7 @@ function leafIdAfterEntry(entry: SessionTreeEntry): string | null {
 	return entry.type === "leaf" ? entry.targetId : entry.id;
 }
 
-function headerToSessionMetadata(
-	header: SessionHeader,
-	path: string,
-): JsonlSessionMetadata {
+function headerToSessionMetadata(header: SessionHeader, path: string): JsonlSessionMetadata {
 	return {
 		id: header.id,
 		createdAt: header.timestamp,
@@ -229,15 +174,8 @@ function headerToSessionMetadata(
 async function loadJsonlStorage(
 	fs: PersistenceFileSystem,
 	filePath: string,
-): Promise<{
-	header: SessionHeader;
-	entries: SessionTreeEntry[];
-	leafId: string | null;
-}> {
-	const content = getFileSystemResultOrThrow(
-		await fs.readTextFile(filePath),
-		`Failed to read session ${filePath}`,
-	);
+): Promise<{ header: SessionHeader; entries: SessionTreeEntry[]; leafId: string | null }> {
+	const content = getFileSystemResultOrThrow(await fs.readTextFile(filePath), `Failed to read session ${filePath}`);
 	const lines = content.split("\n").filter((line) => line.trim());
 	if (lines.length === 0) {
 		throw invalidSession(filePath, "missing session header");
@@ -260,10 +198,7 @@ async function loadJsonlStorage(
  * Unlike pi's `getPathToRootOrCompaction` this never stops early. Cycles are a
  * corrupt file rather than a recoverable condition, so they throw.
  */
-export function getFullBranch(
-	entries: readonly SessionTreeEntry[],
-	leafId: string | null,
-): SessionTreeEntry[] {
+export function getFullBranch(entries: readonly SessionTreeEntry[], leafId: string | null): SessionTreeEntry[] {
 	if (leafId === null) return [];
 	const byId = new Map(entries.map((entry) => [entry.id, entry]));
 	const branch: SessionTreeEntry[] = [];
@@ -274,20 +209,14 @@ export function getFullBranch(
 	}
 	while (current) {
 		if (visited.has(current.id)) {
-			throw new SessionError(
-				"invalid_session",
-				`Session has a cycle at entry ${current.id}`,
-			);
+			throw new SessionError("invalid_session", `Session has a cycle at entry ${current.id}`);
 		}
 		visited.add(current.id);
 		branch.unshift(current);
 		if (!current.parentId) break;
 		const parent = byId.get(current.parentId);
 		if (!parent) {
-			throw new SessionError(
-				"invalid_session",
-				`Entry ${current.parentId} not found`,
-			);
+			throw new SessionError("invalid_session", `Entry ${current.parentId} not found`);
 		}
 		current = parent;
 	}
@@ -309,19 +238,13 @@ export function getEntriesToFork(
 	if (!options.entryId) return [...entries];
 	const target = entries.find((entry) => entry.id === options.entryId);
 	if (!target) {
-		throw new SessionError(
-			"invalid_fork_target",
-			`Entry ${options.entryId} not found`,
-		);
+		throw new SessionError("invalid_fork_target", `Entry ${options.entryId} not found`);
 	}
 	if ((options.position ?? "before") === "at") {
 		return getFullBranch(entries, target.id);
 	}
 	if (target.type !== "message" || target.message.role !== "user") {
-		throw new SessionError(
-			"invalid_fork_target",
-			`Entry ${options.entryId} is not a user message`,
-		);
+		throw new SessionError("invalid_fork_target", `Entry ${options.entryId} is not a user message`);
 	}
 	return getFullBranch(entries, target.parentId);
 }
@@ -341,10 +264,7 @@ export function getForkLeafId(
 	if (!options.entryId) return currentLeafId;
 	const target = entries.find((entry) => entry.id === options.entryId);
 	if (!target) {
-		throw new SessionError(
-			"invalid_fork_target",
-			`Entry ${options.entryId} not found`,
-		);
+		throw new SessionError("invalid_fork_target", `Entry ${options.entryId} not found`);
 	}
 	return (options.position ?? "before") === "at" ? target.id : target.parentId;
 }
@@ -389,18 +309,9 @@ export class JsonlSession implements SessionStorage<JsonlSessionMetadata> {
 		this._currentLeafId = leafId;
 	}
 
-	static async open(
-		fs: PersistenceFileSystem,
-		filePath: string,
-	): Promise<JsonlSession> {
+	static async open(fs: PersistenceFileSystem, filePath: string): Promise<JsonlSession> {
 		const loaded = await loadJsonlStorage(fs, filePath);
-		return new JsonlSession(
-			fs,
-			filePath,
-			loaded.header,
-			loaded.entries,
-			loaded.leafId,
-		);
+		return new JsonlSession(fs, filePath, loaded.header, loaded.entries, loaded.leafId);
 	}
 
 	static async create(
@@ -430,10 +341,7 @@ export class JsonlSession implements SessionStorage<JsonlSessionMetadata> {
 	}
 
 	/** Header-only read, for listing without parsing whole files. */
-	static async loadMetadata(
-		fs: PersistenceFileSystem,
-		filePath: string,
-	): Promise<JsonlSessionMetadata> {
+	static async loadMetadata(fs: PersistenceFileSystem, filePath: string): Promise<JsonlSessionMetadata> {
 		return await loadJsonlSessionMetadata(fs, filePath);
 	}
 
@@ -447,10 +355,7 @@ export class JsonlSession implements SessionStorage<JsonlSessionMetadata> {
 
 	async getLeafId(): Promise<string | null> {
 		if (this._currentLeafId !== null && !this._byId.has(this._currentLeafId)) {
-			throw new SessionError(
-				"invalid_session",
-				`Entry ${this._currentLeafId} not found`,
-			);
+			throw new SessionError("invalid_session", `Entry ${this._currentLeafId} not found`);
 		}
 		return this._currentLeafId;
 	}
@@ -498,10 +403,7 @@ export class JsonlSession implements SessionStorage<JsonlSessionMetadata> {
 	async findEntries<TType extends SessionTreeEntry["type"]>(
 		type: TType,
 	): Promise<Array<Extract<SessionTreeEntry, { type: TType }>>> {
-		return this._entries.filter(
-			(entry): entry is Extract<SessionTreeEntry, { type: TType }> =>
-				entry.type === type,
-		);
+		return this._entries.filter((entry): entry is Extract<SessionTreeEntry, { type: TType }> => entry.type === type);
 	}
 
 	async getLabel(id: string): Promise<string | undefined> {
@@ -543,22 +445,13 @@ export class JsonlSession implements SessionStorage<JsonlSessionMetadata> {
 			}
 			cachedTokens += usage.cacheRead;
 			uncachedTokens += usage.input + usage.cacheWrite;
-			totalTokens +=
-				usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+			totalTokens += usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
 			costTotal += usage.cost.total;
 		}
-		return {
-			messageCount,
-			cachedTokens,
-			uncachedTokens,
-			totalTokens,
-			costTotal,
-		};
+		return { messageCount, cachedTokens, uncachedTokens, totalTokens, costTotal };
 	}
 
-	async getPathToRootOrCompaction(
-		leafId: string | null,
-	): Promise<SessionTreeEntry[]> {
+	async getPathToRootOrCompaction(leafId: string | null): Promise<SessionTreeEntry[]> {
 		if (leafId === null) return [];
 		const path: SessionTreeEntry[] = [];
 		let stopAtEntryId: string | null = null;
@@ -576,22 +469,16 @@ export class JsonlSession implements SessionStorage<JsonlSessionMetadata> {
 			if (!current.parentId) break;
 			const parent = this._byId.get(current.parentId);
 			if (!parent) {
-				throw new SessionError(
-					"invalid_session",
-					`Entry ${current.parentId} not found`,
-				);
+				throw new SessionError("invalid_session", `Entry ${current.parentId} not found`);
 			}
 			current = parent;
 		}
 		return path;
 	}
 
-	async getEntries(
-		options?: SessionEntryCursorOptions,
-	): Promise<SessionTreeEntry[]> {
+	async getEntries(options?: SessionEntryCursorOptions): Promise<SessionTreeEntry[]> {
 		const start = options?.afterEntrySeq ?? 0;
-		const end =
-			options?.limit === undefined ? undefined : start + options.limit;
+		const end = options?.limit === undefined ? undefined : start + options.limit;
 		return this._entries.slice(start, end);
 	}
 

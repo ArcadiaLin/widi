@@ -4,25 +4,14 @@
 import { describe, expect, it } from "vitest";
 import type { BackgroundJobReport } from "../../src/core/background/index.ts";
 import { JobsPanelView } from "../../src/tui/components/jobs-panel.ts";
-import {
-	type BackgroundJobViewState,
-	createTuiApplicationState,
-	setActiveAgent,
-} from "../../src/tui/state.ts";
+import { type BackgroundJobViewState, createTuiApplicationState, setActiveAgent } from "../../src/tui/state.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 
 function job(
-	overrides: Partial<BackgroundJobViewState> &
-		Pick<BackgroundJobViewState, "jobId">,
+	overrides: Partial<BackgroundJobViewState> & Pick<BackgroundJobViewState, "jobId">,
 ): BackgroundJobViewState {
-	return {
-		toolName: "bash",
-		status: "live",
-		startedAt: 0,
-		totalBytesSeen: 0,
-		...overrides,
-	};
+	return { toolName: "bash", status: "live", startedAt: 0, totalBytesSeen: 0, ...overrides };
 }
 
 function report(value: BackgroundJobReport): BackgroundJobViewState["report"] {
@@ -47,13 +36,7 @@ describe("JobsPanelView", () => {
 	});
 
 	it("renders a live job with its description and byte count", () => {
-		const { panel } = setup([
-			job({
-				jobId: "job-1",
-				description: "run the suite",
-				totalBytesSeen: 1_536,
-			}),
-		]);
+		const { panel } = setup([job({ jobId: "job-1", description: "run the suite", totalBytesSeen: 1_536 })]);
 		const rendered = plain(panel);
 		expect(rendered).toContain("Jobs");
 		expect(rendered).toContain("bash · run the suite");
@@ -62,11 +45,7 @@ describe("JobsPanelView", () => {
 
 	it("prefers the caller's name over the derived description", () => {
 		const { panel } = setup([
-			job({
-				jobId: "job-1",
-				name: "run the e2e suite",
-				description: "npm run test:e2e -- --headed",
-			}),
+			job({ jobId: "job-1", name: "run the e2e suite", description: "npm run test:e2e -- --headed" }),
 		]);
 		const rendered = plain(panel);
 		expect(rendered).toContain("bash · run the e2e suite");
@@ -74,9 +53,7 @@ describe("JobsPanelView", () => {
 	});
 
 	it("shows the last output line for a live job without a report", () => {
-		const { panel } = setup([
-			job({ jobId: "job-1", lastLine: "compiling module 3" }),
-		]);
+		const { panel } = setup([job({ jobId: "job-1", lastLine: "compiling module 3" })]);
 		expect(plain(panel)).toContain("compiling module 3");
 	});
 

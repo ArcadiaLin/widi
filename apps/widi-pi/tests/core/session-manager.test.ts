@@ -32,56 +32,33 @@ class MemoryFileSystem implements FileSystem {
 		const normalized = this.normalize(path);
 		const content = this.files.get(normalized);
 		if (content === undefined) {
-			return err(
-				new PiFileError(
-					"not_found",
-					`File not found: ${normalized}`,
-					normalized,
-				),
-			);
+			return err(new PiFileError("not_found", `File not found: ${normalized}`, normalized));
 		}
 		return ok(content);
 	}
 
-	async readTextLines(
-		path: string,
-		options?: { maxLines?: number },
-	): Promise<Result<string[], FileError>> {
+	async readTextLines(path: string, options?: { maxLines?: number }): Promise<Result<string[], FileError>> {
 		const result = await this.readTextFile(path);
 		if (!result.ok) return result;
 		const lines = result.value.split("\n");
-		return ok(
-			options?.maxLines === undefined
-				? lines
-				: lines.slice(0, options.maxLines),
-		);
+		return ok(options?.maxLines === undefined ? lines : lines.slice(0, options.maxLines));
 	}
 
 	async readBinaryFile(): Promise<Result<Uint8Array, FileError>> {
 		return err(new PiFileError("not_supported", "not supported"));
 	}
 
-	async writeFile(
-		path: string,
-		content: string | Uint8Array,
-	): Promise<Result<void, FileError>> {
+	async writeFile(path: string, content: string | Uint8Array): Promise<Result<void, FileError>> {
 		const normalized = this.normalize(path);
 		this.dirs.add(this.dirname(normalized));
-		this.files.set(
-			normalized,
-			typeof content === "string" ? content : new TextDecoder().decode(content),
-		);
+		this.files.set(normalized, typeof content === "string" ? content : new TextDecoder().decode(content));
 		return ok(undefined);
 	}
 
-	async appendFile(
-		path: string,
-		content: string | Uint8Array,
-	): Promise<Result<void, FileError>> {
+	async appendFile(path: string, content: string | Uint8Array): Promise<Result<void, FileError>> {
 		const normalized = this.normalize(path);
 		const current = this.files.get(normalized) ?? "";
-		const next =
-			typeof content === "string" ? content : new TextDecoder().decode(content);
+		const next = typeof content === "string" ? content : new TextDecoder().decode(content);
 		this.files.set(normalized, current + next);
 		return ok(undefined);
 	}
@@ -93,9 +70,7 @@ class MemoryFileSystem implements FileSystem {
 	async listDir(path: string): Promise<Result<FileInfo[], FileError>> {
 		const dir = this.normalize(path);
 		if (!this.dirs.has(dir)) {
-			return err(
-				new PiFileError("not_found", `Directory not found: ${dir}`, dir),
-			);
+			return err(new PiFileError("not_found", `Directory not found: ${dir}`, dir));
 		}
 
 		const entries: FileInfo[] = [];
@@ -131,22 +106,10 @@ class MemoryFileSystem implements FileSystem {
 		return ok(this.files.has(normalized) || this.dirs.has(normalized));
 	}
 
-	async createDir(
-		path: string,
-		options?: { recursive?: boolean },
-	): Promise<Result<void, FileError>> {
+	async createDir(path: string, options?: { recursive?: boolean }): Promise<Result<void, FileError>> {
 		const normalized = this.normalize(path);
-		if (
-			options?.recursive === false &&
-			!this.dirs.has(this.dirname(normalized))
-		) {
-			return err(
-				new PiFileError(
-					"not_found",
-					`Parent not found: ${this.dirname(normalized)}`,
-					normalized,
-				),
-			);
+		if (options?.recursive === false && !this.dirs.has(this.dirname(normalized))) {
+			return err(new PiFileError("not_found", `Parent not found: ${this.dirname(normalized)}`, normalized));
 		}
 
 		let current = "";
@@ -157,10 +120,7 @@ class MemoryFileSystem implements FileSystem {
 		return ok(undefined);
 	}
 
-	async remove(
-		path: string,
-		options?: { recursive?: boolean },
-	): Promise<Result<void, FileError>> {
+	async remove(path: string, options?: { recursive?: boolean }): Promise<Result<void, FileError>> {
 		const normalized = this.normalize(path);
 		this.files.delete(normalized);
 		this.dirs.delete(normalized);
@@ -200,13 +160,7 @@ const profile: AgentProfile = {
 function writeSessionFile(
 	fs: MemoryFileSystem,
 	dirName: string,
-	options: {
-		id: string;
-		timestamp: string;
-		cwd?: string;
-		parentSession?: string;
-		profileId?: string;
-	},
+	options: { id: string; timestamp: string; cwd?: string; parentSession?: string; profileId?: string },
 ): string {
 	const cwd = options.cwd ?? "/workspace/project";
 	const header = {
@@ -216,9 +170,7 @@ function writeSessionFile(
 		timestamp: options.timestamp,
 		cwd,
 		parentSession: options.parentSession,
-		metadata: options.profileId
-			? { profile: { id: options.profileId } }
-			: undefined,
+		metadata: options.profileId ? { profile: { id: options.profileId } } : undefined,
 	};
 	const sessionDir = `/sessions/--workspace-project--/${dirName}`;
 	fs.dirs.add("/sessions");
@@ -232,19 +184,10 @@ function writeSessionFile(
 describe("SessionManager", () => {
 	it("stores agent profile references in extended jsonl session headers", async () => {
 		const fs = new MemoryFileSystem();
-		const manager = new SessionManager({
-			fs,
-			cwd: "/workspace/project",
-			sessionsRoot: "/sessions",
-		});
+		const manager = new SessionManager({ fs, cwd: "/workspace/project", sessionsRoot: "/sessions" });
 
-		await manager.createAgentSession({
-			agentId: "main",
-			agentProfile: profile,
-		});
-		const [metadata] = await manager.sessionRepo.list({
-			cwd: "/workspace/project",
-		});
+		await manager.createAgentSession({ agentId: "main", agentProfile: profile });
+		const [metadata] = await manager.sessionRepo.list({ cwd: "/workspace/project" });
 		const profileReference = { id: profile.id, label: profile.label };
 
 		expect(metadata?.metadata?.profile).toEqual(profileReference);
@@ -261,30 +204,19 @@ describe("SessionManager", () => {
 
 	it("gives each persistent session a directory of its own", async () => {
 		const fs = new MemoryFileSystem();
-		const manager = new SessionManager({
-			fs,
-			cwd: "/workspace/project",
-			sessionsRoot: "/sessions",
-		});
-		const session = await manager.createAgentSession({
-			agentId: "main",
-			agentProfile: profile,
-		});
+		const manager = new SessionManager({ fs, cwd: "/workspace/project", sessionsRoot: "/sessions" });
+		const session = await manager.createAgentSession({ agentId: "main", agentProfile: profile });
 		const metadata = await session.getMetadata();
 		if (!("path" in metadata)) throw new Error("Expected persisted metadata.");
 
 		const sessionDir = await manager.getAgentSessionDir("main");
-		expect(sessionDir).toMatch(
-			/^\/sessions\/--workspace-project--\/[\d-]+T[\d-]+Z_main$/,
-		);
+		expect(sessionDir).toMatch(/^\/sessions\/--workspace-project--\/[\d-]+T[\d-]+Z_main$/);
 		expect(metadata.path).toBe(`${sessionDir}/session.jsonl`);
 
 		// Artifacts a session owns beyond its history live next to it and must
 		// not be mistaken for sessions themselves.
 		await fs.writeFile(`${sessionDir}/overrides.json`, "{}");
-		await expect(manager.listAgentSessionCandidates()).resolves.toMatchObject([
-			{ id: "main", path: metadata.path },
-		]);
+		await expect(manager.listAgentSessionCandidates()).resolves.toMatchObject([{ id: "main", path: metadata.path }]);
 	});
 
 	it("reports no session directory for ephemeral sessions", async () => {
@@ -293,27 +225,15 @@ describe("SessionManager", () => {
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
 		});
-		await manager.createAgentSession({
-			agentId: "scratch",
-			agentProfile: { ...profile, persist: false },
-		});
+		await manager.createAgentSession({ agentId: "scratch", agentProfile: { ...profile, persist: false } });
 
-		await expect(
-			manager.getAgentSessionDir("scratch"),
-		).resolves.toBeUndefined();
+		await expect(manager.getAgentSessionDir("scratch")).resolves.toBeUndefined();
 	});
 
 	it("deletes a session directory with every artifact it owns", async () => {
 		const fs = new MemoryFileSystem();
-		const manager = new SessionManager({
-			fs,
-			cwd: "/workspace/project",
-			sessionsRoot: "/sessions",
-		});
-		const session = await manager.createAgentSession({
-			agentId: "main",
-			agentProfile: profile,
-		});
+		const manager = new SessionManager({ fs, cwd: "/workspace/project", sessionsRoot: "/sessions" });
+		const session = await manager.createAgentSession({ agentId: "main", agentProfile: profile });
 		const metadata = await session.getMetadata();
 		if (!("path" in metadata)) throw new Error("Expected persisted metadata.");
 		const sessionDir = await manager.getAgentSessionDir("main");
@@ -337,11 +257,7 @@ describe("SessionManager", () => {
 			timestamp: "2026-01-01T00:00:00.000Z",
 			parentSession: "/sessions/source.jsonl",
 		});
-		const manager = new SessionManager({
-			fs,
-			cwd: "/workspace/project",
-			sessionsRoot: "/sessions",
-		});
+		const manager = new SessionManager({ fs, cwd: "/workspace/project", sessionsRoot: "/sessions" });
 
 		await expect(manager.listAgentSessionCandidates()).resolves.toEqual([
 			{
@@ -380,10 +296,7 @@ describe("SessionManager", () => {
 				id: "entry-2",
 				parentId: "entry-1",
 				timestamp: "2026-01-03T00:00:02.000Z",
-				message: {
-					role: "assistant",
-					content: [{ type: "text", text: "On it." }],
-				},
+				message: { role: "assistant", content: [{ type: "text", text: "On it." }] },
 			},
 			{
 				type: "session_info",
@@ -393,140 +306,57 @@ describe("SessionManager", () => {
 				name: "auth-fix",
 			},
 		];
-		fs.files.set(
-			path,
-			`${fs.files.get(path)}${entries
-				.map((entry) => JSON.stringify(entry))
-				.join("\n")}\n`,
-		);
-		const manager = new SessionManager({
-			fs,
-			cwd: "/workspace/project",
-			sessionsRoot: "/sessions",
-		});
+		fs.files.set(path, `${fs.files.get(path)}${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+		const manager = new SessionManager({ fs, cwd: "/workspace/project", sessionsRoot: "/sessions" });
 
 		const [candidate] = await manager.listAgentSessionCandidates();
-		expect(candidate).toMatchObject({
-			id: "gamma",
-			name: "auth-fix",
-			firstUserMessage: "Fix the flaky auth test",
-		});
+		expect(candidate).toMatchObject({ id: "gamma", name: "auth-fix", firstUserMessage: "Fix the flaky auth test" });
 	});
 
 	it("resolves session references by path before id", async () => {
 		const fs = new MemoryFileSystem();
-		writeSessionFile(fs, "2026-01-02T00-00-00-000Z_alpha", {
-			id: "same",
-			timestamp: "2026-01-02T00:00:00.000Z",
-		});
-		const pathTarget = writeSessionFile(fs, "same", {
-			id: "path-target",
-			timestamp: "2026-01-03T00:00:00.000Z",
-		});
-		const manager = new SessionManager({
-			fs,
-			cwd: "/workspace/project",
-			sessionsRoot: "/sessions",
-		});
+		writeSessionFile(fs, "2026-01-02T00-00-00-000Z_alpha", { id: "same", timestamp: "2026-01-02T00:00:00.000Z" });
+		const pathTarget = writeSessionFile(fs, "same", { id: "path-target", timestamp: "2026-01-03T00:00:00.000Z" });
+		const manager = new SessionManager({ fs, cwd: "/workspace/project", sessionsRoot: "/sessions" });
 
-		await expect(
-			manager.resolveAgentSessionReference(pathTarget),
-		).resolves.toMatchObject({ id: "path-target" });
-		await expect(
-			manager.resolveAgentSessionReference("same"),
-		).resolves.toMatchObject({ id: "same" });
+		await expect(manager.resolveAgentSessionReference(pathTarget)).resolves.toMatchObject({ id: "path-target" });
+		await expect(manager.resolveAgentSessionReference("same")).resolves.toMatchObject({ id: "same" });
 	});
 
 	it("rejects ambiguous session ids with candidate facts", async () => {
 		const fs = new MemoryFileSystem();
-		writeSessionFile(fs, "2026-01-02T00-00-00-000Z_same", {
-			id: "same",
-			timestamp: "2026-01-02T00:00:00.000Z",
-		});
-		writeSessionFile(fs, "2026-01-01T00-00-00-000Z_same", {
-			id: "same",
-			timestamp: "2026-01-01T00:00:00.000Z",
-		});
-		const manager = new SessionManager({
-			fs,
-			cwd: "/workspace/project",
-			sessionsRoot: "/sessions",
-		});
+		writeSessionFile(fs, "2026-01-02T00-00-00-000Z_same", { id: "same", timestamp: "2026-01-02T00:00:00.000Z" });
+		writeSessionFile(fs, "2026-01-01T00-00-00-000Z_same", { id: "same", timestamp: "2026-01-01T00:00:00.000Z" });
+		const manager = new SessionManager({ fs, cwd: "/workspace/project", sessionsRoot: "/sessions" });
 
-		await expect(
-			manager.resolveAgentSessionReference("same"),
-		).rejects.toMatchObject({
+		await expect(manager.resolveAgentSessionReference("same")).rejects.toMatchObject({
 			reason: "ambiguous",
-			candidates: [
-				expect.objectContaining({ id: "same" }),
-				expect.objectContaining({ id: "same" }),
-			],
+			candidates: [expect.objectContaining({ id: "same" }), expect.objectContaining({ id: "same" })],
 		});
 	});
 
 	it("stores namespaced extension custom entries on the current branch path", async () => {
 		const fs = new MemoryFileSystem();
-		const manager = new SessionManager({
-			fs,
-			cwd: "/workspace/project",
-			sessionsRoot: "/sessions",
-		});
-		const session = await manager.createAgentSession({
-			agentId: "main",
-			agentProfile: profile,
-		});
+		const manager = new SessionManager({ fs, cwd: "/workspace/project", sessionsRoot: "/sessions" });
+		const session = await manager.createAgentSession({ agentId: "main", agentProfile: profile });
 
-		const firstId = await manager.appendExtensionCustomEntry(
-			"main",
-			"writer",
-			"state",
-			{ value: 1 },
-		);
-		await manager.appendExtensionCustomEntry("main", "writer", "note", {
-			value: 2,
-		});
-		await manager.appendExtensionCustomEntry("main", "other", "state", {
-			value: "other",
-		});
-		const secondId = await manager.appendExtensionCustomEntry(
-			"main",
-			"writer",
-			"state",
-			{ value: 3 },
-		);
+		const firstId = await manager.appendExtensionCustomEntry("main", "writer", "state", { value: 1 });
+		await manager.appendExtensionCustomEntry("main", "writer", "note", { value: 2 });
+		await manager.appendExtensionCustomEntry("main", "other", "state", { value: "other" });
+		const secondId = await manager.appendExtensionCustomEntry("main", "writer", "state", { value: 3 });
 
-		await expect(
-			manager.findExtensionCustomEntries<{ value: number }>(
-				"main",
-				"writer",
-				"state",
-			),
-		).resolves.toEqual([
-			expect.objectContaining({
-				id: firstId,
-				type: "state",
-				data: { value: 1 },
-			}),
-			expect.objectContaining({
-				id: secondId,
-				type: "state",
-				data: { value: 3 },
-			}),
+		await expect(manager.findExtensionCustomEntries<{ value: number }>("main", "writer", "state")).resolves.toEqual([
+			expect.objectContaining({ id: firstId, type: "state", data: { value: 1 } }),
+			expect.objectContaining({ id: secondId, type: "state", data: { value: 3 } }),
 		]);
-		await expect(
-			manager.findExtensionCustomEntries("main", "writer"),
-		).resolves.toMatchObject([
+		await expect(manager.findExtensionCustomEntries("main", "writer")).resolves.toMatchObject([
 			{ type: "state", data: { value: 1 } },
 			{ type: "note", data: { value: 2 } },
 			{ type: "state", data: { value: 3 } },
 		]);
-		await expect(
-			manager.findExtensionCustomEntries("main", "writer", "missing"),
-		).resolves.toEqual([]);
+		await expect(manager.findExtensionCustomEntries("main", "writer", "missing")).resolves.toEqual([]);
 
-		const storedCustomEntries = (await session.getEntries()).filter(
-			(entry) => entry.type === "custom",
-		);
+		const storedCustomEntries = (await session.getEntries()).filter((entry) => entry.type === "custom");
 		expect(storedCustomEntries.map((entry) => entry.customType)).toEqual([
 			"extension:writer:state",
 			"extension:writer:note",
@@ -535,65 +365,40 @@ describe("SessionManager", () => {
 		]);
 
 		await session.moveTo(firstId);
-		await expect(
-			manager.findExtensionCustomEntries("main", "writer", "state"),
-		).resolves.toMatchObject([{ id: firstId, type: "state" }]);
+		await expect(manager.findExtensionCustomEntries("main", "writer", "state")).resolves.toMatchObject([
+			{ id: firstId, type: "state" },
+		]);
 	});
 
 	it("keeps extension custom entries as branch facts across fork and compaction", async () => {
 		const fs = new MemoryFileSystem();
-		const manager = new SessionManager({
-			fs,
-			cwd: "/workspace/project",
-			sessionsRoot: "/sessions",
-		});
-		const session = await manager.createAgentSession({
-			agentId: "main",
-			agentProfile: profile,
-		});
-		await session.appendMessage({
-			role: "user",
-			content: "first",
-			timestamp: 1,
-		});
-		await manager.appendExtensionCustomEntry("main", "writer", "state", {
-			value: 1,
-		});
-		const secondUserId = await session.appendMessage({
-			role: "user",
-			content: "second",
-			timestamp: 2,
-		});
-		await manager.appendExtensionCustomEntry("main", "writer", "state", {
-			value: 2,
-		});
+		const manager = new SessionManager({ fs, cwd: "/workspace/project", sessionsRoot: "/sessions" });
+		const session = await manager.createAgentSession({ agentId: "main", agentProfile: profile });
+		await session.appendMessage({ role: "user", content: "first", timestamp: 1 });
+		await manager.appendExtensionCustomEntry("main", "writer", "state", { value: 1 });
+		const secondUserId = await session.appendMessage({ role: "user", content: "second", timestamp: 2 });
+		await manager.appendExtensionCustomEntry("main", "writer", "state", { value: 2 });
 
 		// Fork before the second user message: the copied path carries the
 		// first entry; the later entry stays on the source branch only.
-		const forkedMetadata = await manager.forkAgentSession("main", {
-			entryId: secondUserId,
-		});
-		await expect(
-			manager.findExtensionCustomEntries(forkedMetadata.id, "writer", "state"),
-		).resolves.toMatchObject([{ data: { value: 1 } }]);
-		await expect(
-			manager.findExtensionCustomEntries("main", "writer", "state"),
-		).resolves.toMatchObject([{ data: { value: 1 } }, { data: { value: 2 } }]);
+		const forkedMetadata = await manager.forkAgentSession("main", { entryId: secondUserId });
+		await expect(manager.findExtensionCustomEntries(forkedMetadata.id, "writer", "state")).resolves.toMatchObject([
+			{ data: { value: 1 } },
+		]);
+		await expect(manager.findExtensionCustomEntries("main", "writer", "state")).resolves.toMatchObject([
+			{ data: { value: 1 } },
+			{ data: { value: 2 } },
+		]);
 
 		// A retained-tail compaction is a model-context checkpoint, not a storage
 		// boundary: extension facts behind it stay visible on the active branch.
-		await session.appendCompaction(
-			"compacted",
-			secondUserId,
-			100,
-			undefined,
-			false,
-			undefined,
-			[{ role: "user", content: "second", timestamp: 2 }],
-		);
-		await expect(
-			manager.findExtensionCustomEntries("main", "writer", "state"),
-		).resolves.toMatchObject([{ data: { value: 1 } }, { data: { value: 2 } }]);
+		await session.appendCompaction("compacted", secondUserId, 100, undefined, false, undefined, [
+			{ role: "user", content: "second", timestamp: 2 },
+		]);
+		await expect(manager.findExtensionCustomEntries("main", "writer", "state")).resolves.toMatchObject([
+			{ data: { value: 1 } },
+			{ data: { value: 2 } },
+		]);
 	});
 
 	it("restores runtime state through retained-tail compaction checkpoints", async () => {
@@ -602,98 +407,51 @@ describe("SessionManager", () => {
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
 		});
-		const session = await manager.createAgentSession({
-			agentId: "main",
-			agentProfile: profile,
-		});
+		const session = await manager.createAgentSession({ agentId: "main", agentProfile: profile });
 		await session.appendModelChange("test", "model-2");
 		await session.appendThinkingLevelChange("high");
 		await session.appendActiveToolsChange(["read"]);
-		const retainedMessage = {
-			role: "user" as const,
-			content: "retained request",
-			timestamp: 1,
-		};
+		const retainedMessage = { role: "user" as const, content: "retained request", timestamp: 1 };
 		const retainedId = await session.appendMessage(retainedMessage);
-		await session.appendCompaction(
-			"Earlier work",
-			retainedId,
-			1000,
-			undefined,
-			false,
-			undefined,
-			[retainedMessage],
-		);
+		await session.appendCompaction("Earlier work", retainedId, 1000, undefined, false, undefined, [retainedMessage]);
 
-		await expect(
-			manager.buildAgentSessionContext("main"),
-		).resolves.toMatchObject({
+		await expect(manager.buildAgentSessionContext("main")).resolves.toMatchObject({
 			model: { provider: "test", modelId: "model-2" },
 			thinkingLevel: "high",
 			activeToolNames: ["read"],
 			messages: [
 				expect.objectContaining({ role: "compactionSummary" }),
-				expect.objectContaining({
-					role: "user",
-					content: "retained request",
-				}),
+				expect.objectContaining({ role: "user", content: "retained request" }),
 			],
 		});
-		await expect(
-			manager.getAgentSessionSnapshot("main"),
-		).resolves.toMatchObject({
+		await expect(manager.getAgentSessionSnapshot("main")).resolves.toMatchObject({
 			pathToRoot: [
 				expect.objectContaining({ type: "model_change" }),
 				expect.objectContaining({ type: "thinking_level_change" }),
 				expect.objectContaining({ type: "active_tools_change" }),
 				expect.objectContaining({ id: retainedId, type: "message" }),
-				expect.objectContaining({
-					type: "compaction",
-					retainedTail: [retainedMessage],
-				}),
+				expect.objectContaining({ type: "compaction", retainedTail: [retainedMessage] }),
 			],
 		});
 	});
 
 	it("snapshots, names, and forks persistent agent sessions", async () => {
 		const fs = new MemoryFileSystem();
-		const manager = new SessionManager({
-			fs,
-			cwd: "/workspace/project",
-			sessionsRoot: "/sessions",
-		});
-		const session = await manager.createAgentSession({
-			agentId: "main",
-			agentProfile: profile,
-		});
-		const userEntryId = await session.appendMessage({
-			role: "user",
-			content: "hello",
-			timestamp: 1,
-		});
+		const manager = new SessionManager({ fs, cwd: "/workspace/project", sessionsRoot: "/sessions" });
+		const session = await manager.createAgentSession({ agentId: "main", agentProfile: profile });
+		const userEntryId = await session.appendMessage({ role: "user", content: "hello", timestamp: 1 });
 		await manager.setAgentSessionName("main", "Design Thread");
 
-		await expect(
-			manager.getAgentSessionSnapshot("main"),
-		).resolves.toMatchObject({
+		await expect(manager.getAgentSessionSnapshot("main")).resolves.toMatchObject({
 			name: "Design Thread",
 			leafId: expect.any(String),
 			pathToRoot: [
-				expect.objectContaining({
-					id: userEntryId,
-					type: "message",
-				}),
-				expect.objectContaining({
-					type: "session_info",
-					name: "Design Thread",
-				}),
+				expect.objectContaining({ id: userEntryId, type: "message" }),
+				expect.objectContaining({ type: "session_info", name: "Design Thread" }),
 			],
 		});
 		await expect(manager.getAgentSessionTree("main")).resolves.toMatchObject({
-			entries: [
-				expect.objectContaining({ id: userEntryId }),
-				expect.objectContaining({ type: "session_info" }),
-			],
+			entries: [expect.objectContaining({ id: userEntryId }), expect.objectContaining({ type: "session_info" })],
 		});
 
 		const sourceMetadata = await session.getMetadata();
@@ -704,18 +462,10 @@ describe("SessionManager", () => {
 
 		expect(forkedMetadata.id).not.toBe("main");
 		expect(forkedMetadata.parentSessionPath).toBe(sourceMetadata.path);
-		expect(forkedMetadata.metadata?.profile).toEqual({
-			id: profile.id,
-			label: profile.label,
-		});
-		await expect(
-			manager.getAgentSessionTree(forkedMetadata.id),
-		).resolves.toMatchObject({
+		expect(forkedMetadata.metadata?.profile).toEqual({ id: profile.id, label: profile.label });
+		await expect(manager.getAgentSessionTree(forkedMetadata.id)).resolves.toMatchObject({
 			name: "Design Thread",
-			entries: [
-				expect.objectContaining({ id: userEntryId }),
-				expect.objectContaining({ type: "session_info" }),
-			],
+			entries: [expect.objectContaining({ id: userEntryId }), expect.objectContaining({ type: "session_info" })],
 		});
 	});
 
@@ -725,24 +475,19 @@ describe("SessionManager", () => {
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
 		});
-		await manager.createAgentSession({
-			agentId: "main",
-			agentProfile: profile,
-		});
+		await manager.createAgentSession({ agentId: "main", agentProfile: profile });
 		const circular: { self?: unknown } = {};
 		circular.self = circular;
 
-		await expect(
-			manager.appendExtensionCustomEntry("main", "writer", " ", {}),
-		).rejects.toThrow("must not be empty");
-		await expect(
-			manager.appendExtensionCustomEntry("main", "writer", "bad/type", {}),
-		).rejects.toThrow("must contain only");
-		await expect(
-			manager.appendExtensionCustomEntry("main", "writer", "state", () => {}),
-		).rejects.toThrow("JSON serializable");
-		await expect(
-			manager.appendExtensionCustomEntry("main", "writer", "state", circular),
-		).rejects.toThrow("JSON serializable");
+		await expect(manager.appendExtensionCustomEntry("main", "writer", " ", {})).rejects.toThrow("must not be empty");
+		await expect(manager.appendExtensionCustomEntry("main", "writer", "bad/type", {})).rejects.toThrow(
+			"must contain only",
+		);
+		await expect(manager.appendExtensionCustomEntry("main", "writer", "state", () => {})).rejects.toThrow(
+			"JSON serializable",
+		);
+		await expect(manager.appendExtensionCustomEntry("main", "writer", "state", circular)).rejects.toThrow(
+			"JSON serializable",
+		);
 	});
 });

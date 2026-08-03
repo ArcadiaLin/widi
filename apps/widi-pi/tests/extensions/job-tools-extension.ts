@@ -1,7 +1,4 @@
-import type {
-	ExtensionContext,
-	ExtensionDefinition,
-} from "../../src/core/extension/api.ts";
+import type { ExtensionContext, ExtensionDefinition } from "../../src/core/extension/api.ts";
 
 /**
  * Job-tools gating fixture: keep the job-control tools (read_job /
@@ -30,10 +27,7 @@ import type {
 
 const JOB_TOOLS = ["read_job", "wait_for_jobs", "kill_job"];
 
-async function syncJobTools(
-	context: ExtensionContext,
-	liveCount: number,
-): Promise<void> {
+async function syncJobTools(context: ExtensionContext, liveCount: number): Promise<void> {
 	const { toolNames, activeToolNames } = context.actions.getTools();
 	const available = JOB_TOOLS.filter((name) => toolNames.includes(name));
 	if (available.length === 0) return;
@@ -45,9 +39,7 @@ async function syncJobTools(
 		return;
 	}
 	if (!available.some((name) => active.has(name))) return;
-	await context.actions.setActiveTools(
-		activeToolNames.filter((name) => !JOB_TOOLS.includes(name)),
-	);
+	await context.actions.setActiveTools(activeToolNames.filter((name) => !JOB_TOOLS.includes(name)));
 }
 
 const extension: ExtensionDefinition = {

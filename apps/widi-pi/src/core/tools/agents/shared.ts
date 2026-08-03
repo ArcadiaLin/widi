@@ -7,14 +7,10 @@ import type { ToolExecutionContext } from "../types.ts";
 /** Longest job description kept for a delegated task. */
 const MAX_TASK_DESCRIPTION_LENGTH = 80;
 
-export function requireAgentHost<TDetails>(
-	context: ToolExecutionContext<TDetails>,
-): ToolAgentHost {
+export function requireAgentHost<TDetails>(context: ToolExecutionContext<TDetails>): ToolAgentHost {
 	const host = context.agents;
 	if (!host) {
-		throw new Error(
-			"Agent collaboration is not available in this runtime, so there are no other agents to work with.",
-		);
+		throw new Error("Agent collaboration is not available in this runtime, so there are no other agents to work with.");
 	}
 	return host;
 }
@@ -25,10 +21,7 @@ export function requireAgentHost<TDetails>(
  * dispose still reports `idle` for the whole teardown, and work handed to it
  * there would be accepted after the sweep that was supposed to cancel it.
  */
-export function requireAddressableAgent(
-	host: ToolAgentHost,
-	agentId: string,
-): AgentBrief {
+export function requireAddressableAgent(host: ToolAgentHost, agentId: string): AgentBrief {
 	const brief = host.describe(agentId);
 	if (!brief) {
 		throw new Error(
@@ -36,9 +29,7 @@ export function requireAddressableAgent(
 		);
 	}
 	if (!brief.addressable) {
-		throw new Error(
-			`Agent ${agentId} can no longer be given work (status: ${brief.status}).`,
-		);
+		throw new Error(`Agent ${agentId} can no longer be given work (status: ${brief.status}).`);
 	}
 	return brief;
 }
@@ -68,9 +59,7 @@ export async function assignAgentTask(input: {
 }): Promise<AssignedAgentTask> {
 	const { host, table, targetAgentId, message } = input;
 	if (!table) {
-		throw new Error(
-			"No background job registry is available, so a task cannot be tracked.",
-		);
+		throw new Error("No background job registry is available, so a task cannot be tracked.");
 	}
 	requireAddressableAgent(host, targetAgentId);
 	const job = table.create({
@@ -90,36 +79,22 @@ export async function assignAgentTask(input: {
 	try {
 		outcome = await host.send(
 			targetAgentId,
-			formatAgentTaskMessageBody({
-				ownerAgentId: host.agentId,
-				taskId: job.id,
-				task: message,
-			}),
+			formatAgentTaskMessageBody({ ownerAgentId: host.agentId, taskId: job.id, task: message }),
 		);
 	} catch (error) {
-		table.abort(
-			job.id,
-			`Task ${job.id} was never assigned: ${formatError(error)}`,
-		);
+		table.abort(job.id, `Task ${job.id} was never assigned: ${formatError(error)}`);
 		throw error;
 	}
 	if (outcome.kind === "blocked") {
-		const reason = outcome.reason
-			? `${outcome.blockedBy}: ${outcome.reason}`
-			: `blocked by ${outcome.blockedBy}`;
+		const reason = outcome.reason ? `${outcome.blockedBy}: ${outcome.reason}` : `blocked by ${outcome.blockedBy}`;
 		table.abort(job.id, `Task ${job.id} was never assigned: ${reason}`);
-		throw new Error(
-			`The task message to agent ${targetAgentId} was blocked (${reason}), so no task was assigned.`,
-		);
+		throw new Error(`The task message to agent ${targetAgentId} was blocked (${reason}), so no task was assigned.`);
 	}
 	return { taskId: job.id };
 }
 
 /** Model-facing note describing what the caller now holds for a new task. */
-export function describeAssignedTask(
-	taskId: string,
-	targetAgentId: string,
-): string {
+export function describeAssignedTask(taskId: string, targetAgentId: string): string {
 	return (
 		`Task ${taskId} was assigned to agent ${targetAgentId}. It is tracked as a ` +
 		`background job: its outcome arrives later as a background job result ` +
@@ -136,7 +111,5 @@ function summarizeTask(message: string): string | undefined {
 		.map((candidate) => candidate.replace(/\s+/g, " ").trim())
 		.find((candidate) => candidate.length > 0);
 	if (line === undefined) return undefined;
-	return line.length > MAX_TASK_DESCRIPTION_LENGTH
-		? `${line.slice(0, MAX_TASK_DESCRIPTION_LENGTH - 1)}…`
-		: line;
+	return line.length > MAX_TASK_DESCRIPTION_LENGTH ? `${line.slice(0, MAX_TASK_DESCRIPTION_LENGTH - 1)}…` : line;
 }

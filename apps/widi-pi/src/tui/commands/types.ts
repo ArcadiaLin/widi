@@ -26,14 +26,8 @@ interface CommandBase {
 	readonly argumentHint?: string;
 	readonly requiresArgument?: boolean;
 	/** Returns why the current agent phase blocks this command, or undefined. */
-	checkStatus?(
-		status: AgentLifecycleStatus,
-		maintenance?: AgentMaintenanceKind,
-	): string | undefined;
-	complete?(
-		context: CommandContext,
-		argumentPrefix: string,
-	): Promise<readonly CandidateItem[]>;
+	checkStatus?(status: AgentLifecycleStatus, maintenance?: AgentMaintenanceKind): string | undefined;
+	complete?(context: CommandContext, argumentPrefix: string): Promise<readonly CandidateItem[]>;
 }
 
 /** Performs an action; the returned value is rendered as the command result. */
@@ -72,11 +66,7 @@ export interface CommandView {
 
 export type EngineOutcome =
 	| { readonly kind: "pass" }
-	| {
-			readonly kind: "expanded";
-			readonly text: string;
-			readonly expansion: PromptExpansion;
-	  }
+	| { readonly kind: "expanded"; readonly text: string; readonly expansion: PromptExpansion }
 	| {
 			readonly kind: "executed";
 			readonly commandId: string;
@@ -84,12 +74,7 @@ export type EngineOutcome =
 			readonly value: unknown;
 			readonly display?: string;
 	  }
-	| {
-			readonly kind: "failed";
-			readonly commandId: string;
-			readonly name: string;
-			readonly error: CommandError;
-	  }
+	| { readonly kind: "failed"; readonly commandId: string; readonly name: string; readonly error: CommandError }
 	| {
 			readonly kind: "needs-argument";
 			readonly command: CommandDefinition;

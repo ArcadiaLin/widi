@@ -2,10 +2,7 @@ import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExecutionEnv, ThinkingLevel } from "@widi/agent-core";
 import { NodeExecutionEnv } from "@widi/agent-core/node";
 import { unwrapResult } from "../utils/result.ts";
-import {
-	AgentOrchestrator,
-	type AgentOrchestratorConfigs,
-} from "./agent-orchestrator.js";
+import { AgentOrchestrator, type AgentOrchestratorConfigs } from "./agent-orchestrator.js";
 import {
 	AgentProfileRegistry,
 	type AgentProfileSource,
@@ -19,11 +16,7 @@ import {
 	type ProfileStorageReadResult,
 } from "./agent-profile.js";
 import { AuthStorage } from "./auth-storage.js";
-import {
-	DEFAULT_AGENT_DIR,
-	DEFAULT_AGENT_PERSISTENCE_DIR,
-	DEFAULT_MODELSJSON_PATH,
-} from "./constants.js";
+import { DEFAULT_AGENT_DIR, DEFAULT_AGENT_PERSISTENCE_DIR, DEFAULT_MODELSJSON_PATH } from "./constants.js";
 import { type CoreDiagnostic, OrchestratorError } from "./diagnostics.ts";
 import {
 	type ExtensionDiscoveryResult,
@@ -32,10 +25,7 @@ import {
 	type ExtensionModuleImporter,
 	type ExtensionRoot,
 } from "./extension/index.ts";
-import {
-	HumanRequestBroker,
-	type HumanRequestHandler,
-} from "./human-request.ts";
+import { HumanRequestBroker, type HumanRequestHandler } from "./human-request.ts";
 import { ModelRegistry } from "./model-registry.js";
 import {
 	createProjectExtensionTrustDiagnostics,
@@ -71,18 +61,9 @@ export interface CreateWidiRuntimeOptions {
 	readonly extensionModuleImporter?: ExtensionModuleImporter;
 }
 
-export type RuntimeDefaultProfileSource =
-	| "runtime_override"
-	| "settings"
-	| "builtin_fallback";
-export type RuntimeDefaultModelSource =
-	| "runtime_override"
-	| "settings"
-	| "available_fallback";
-export type RuntimeDefaultThinkingLevelSource =
-	| "runtime_override"
-	| "settings"
-	| "builtin_fallback";
+export type RuntimeDefaultProfileSource = "runtime_override" | "settings" | "builtin_fallback";
+export type RuntimeDefaultModelSource = "runtime_override" | "settings" | "available_fallback";
+export type RuntimeDefaultThinkingLevelSource = "runtime_override" | "settings" | "builtin_fallback";
 
 export interface RuntimeDefaultProfileResolution {
 	readonly id: string;
@@ -174,29 +155,17 @@ class CompositeProfileStorageBackend implements ProfileStorageBackend {
 	}
 }
 
-async function joinPath(
-	executionEnv: ExecutionEnv,
-	parts: readonly string[],
-): Promise<string> {
+async function joinPath(executionEnv: ExecutionEnv, parts: readonly string[]): Promise<string> {
 	return unwrapResult(await executionEnv.joinPath([...parts]));
 }
 
-async function absolutePath(
-	executionEnv: ExecutionEnv,
-	path: string,
-): Promise<string> {
+async function absolutePath(executionEnv: ExecutionEnv, path: string): Promise<string> {
 	return unwrapResult(await executionEnv.absolutePath(path));
 }
 
-async function resolveSettingsPaths(
-	executionEnv: ExecutionEnv,
-	paths: readonly string[],
-): Promise<ResourceRoot[]> {
+async function resolveSettingsPaths(executionEnv: ExecutionEnv, paths: readonly string[]): Promise<ResourceRoot[]> {
 	return await Promise.all(
-		paths.map(async (path) => ({
-			kind: "settings" as const,
-			path: await absolutePath(executionEnv, path),
-		})),
+		paths.map(async (path) => ({ kind: "settings" as const, path: await absolutePath(executionEnv, path) })),
 	);
 }
 
@@ -209,22 +178,9 @@ async function createResourceRoots(options: {
 	readonly settingsPaths: readonly string[];
 }): Promise<ResourceRoot[]> {
 	return [
-		...(await resolveSettingsPaths(
-			options.executionEnv,
-			options.settingsPaths,
-		)),
-		...(options.projectTrusted
-			? [
-					{
-						kind: "cwd" as const,
-						path: options.cwd,
-					},
-				]
-			: []),
-		{
-			kind: "agent_dir" as const,
-			path: options.agentDir,
-		},
+		...(await resolveSettingsPaths(options.executionEnv, options.settingsPaths)),
+		...(options.projectTrusted ? [{ kind: "cwd" as const, path: options.cwd }] : []),
+		{ kind: "agent_dir" as const, path: options.agentDir },
 	];
 }
 
@@ -248,21 +204,11 @@ async function createExtensionRoots(options: {
 			? [
 					{
 						kind: "cwd" as const,
-						path: await joinPath(options.executionEnv, [
-							options.cwd,
-							options.projectConfigDir,
-							"extensions",
-						]),
+						path: await joinPath(options.executionEnv, [options.cwd, options.projectConfigDir, "extensions"]),
 					},
 				]
 			: []),
-		{
-			kind: "agent_dir" as const,
-			path: await joinPath(options.executionEnv, [
-				options.agentDir,
-				"extensions",
-			]),
-		},
+		{ kind: "agent_dir" as const, path: await joinPath(options.executionEnv, [options.agentDir, "extensions"]) },
 	];
 }
 
@@ -271,18 +217,13 @@ async function createProfileRegistry(options: {
 	readonly cwd: string;
 	readonly agentDir: string;
 	readonly projectTrusted: boolean;
-}): Promise<{
-	readonly registry: AgentProfileRegistry;
-	readonly roots: readonly FileProfileRoot[];
-}> {
+}): Promise<{ readonly registry: AgentProfileRegistry; readonly roots: readonly FileProfileRoot[] }> {
 	const roots = await createDefaultProfileRoots({
 		executionEnv: options.executionEnv,
 		cwd: options.cwd,
 		agentDir: options.agentDir,
 	});
-	const trustedRoots = options.projectTrusted
-		? roots
-		: roots.filter((root) => root.kind !== "cwd");
+	const trustedRoots = options.projectTrusted ? roots : roots.filter((root) => root.kind !== "cwd");
 	return {
 		registry: new AgentProfileRegistry(
 			new CompositeProfileStorageBackend([
@@ -330,14 +271,8 @@ async function resolveDefaultProfileId(options: {
 	readonly profileRegistry: AgentProfileRegistry;
 	readonly explicitDefaultProfileId?: string;
 	readonly settingsDefaultProfileId?: string;
-}): Promise<{
-	readonly resolution: RuntimeDefaultProfileResolution;
-	readonly diagnostics: readonly CoreDiagnostic[];
-}> {
-	const profileId =
-		options.explicitDefaultProfileId ??
-		options.settingsDefaultProfileId ??
-		BUILTIN_DEFAULT_PROFILE_ID;
+}): Promise<{ readonly resolution: RuntimeDefaultProfileResolution; readonly diagnostics: readonly CoreDiagnostic[] }> {
+	const profileId = options.explicitDefaultProfileId ?? options.settingsDefaultProfileId ?? BUILTIN_DEFAULT_PROFILE_ID;
 	const source: RuntimeDefaultProfileSource =
 		options.explicitDefaultProfileId !== undefined
 			? "runtime_override"
@@ -352,35 +287,22 @@ async function resolveDefaultProfileId(options: {
 			message: `Cannot resolve default profile ${profileId}: ${result.reason}.`,
 		});
 	}
-	const resolution: RuntimeDefaultProfileResolution = {
-		id: result.profile.id,
-		source,
-		profileSource: result.source,
-	};
-	return {
-		resolution,
-		diagnostics: result.diagnostics,
-	};
+	const resolution: RuntimeDefaultProfileResolution = { id: result.profile.id, source, profileSource: result.source };
+	return { resolution, diagnostics: result.diagnostics };
 }
 
 async function resolveDefaultModel(options: {
 	readonly modelRegistry: ModelRegistry;
 	readonly settingManager: SettingManager;
 	readonly explicitDefaultModel?: RuntimeModel;
-}): Promise<{
-	readonly model: RuntimeModel;
-	readonly resolution: RuntimeDefaultModelResolution;
-}> {
+}): Promise<{ readonly model: RuntimeModel; readonly resolution: RuntimeDefaultModelResolution }> {
 	if (options.explicitDefaultModel) {
 		const resolution: RuntimeDefaultModelResolution = {
 			provider: options.explicitDefaultModel.provider,
 			modelId: options.explicitDefaultModel.id,
 			source: "runtime_override",
 		};
-		return {
-			model: options.explicitDefaultModel,
-			resolution,
-		};
+		return { model: options.explicitDefaultModel, resolution };
 	}
 
 	const defaultProvider = options.settingManager.getDefaultProvider();
@@ -393,10 +315,7 @@ async function resolveDefaultModel(options: {
 				modelId: model.id,
 				source: "settings",
 			};
-			return {
-				model,
-				resolution,
-			};
+			return { model, resolution };
 		}
 		throw new OrchestratorError({
 			severity: "error",
@@ -412,17 +331,13 @@ async function resolveDefaultModel(options: {
 			modelId: availableModel.id,
 			source: "available_fallback",
 		};
-		return {
-			model: availableModel,
-			resolution,
-		};
+		return { model: availableModel, resolution };
 	}
 
 	throw new OrchestratorError({
 		severity: "error",
 		code: "model.default_missing",
-		message:
-			"No configured model is available. Configure auth or pass an explicit default model.",
+		message: "No configured model is available. Configure auth or pass an explicit default model.",
 	});
 }
 
@@ -432,44 +347,29 @@ function resolveDefaultThinkingLevel(options: {
 	readonly model: RuntimeModel;
 	readonly explicitDefaultThinkingLevel?: ThinkingLevel;
 	readonly settingsDefaultThinkingLevel?: ThinkingLevel;
-}): {
-	readonly resolution: RuntimeDefaultThinkingLevelResolution;
-} {
+}): { readonly resolution: RuntimeDefaultThinkingLevelResolution } {
 	const requestedLevel =
-		options.explicitDefaultThinkingLevel ??
-		options.settingsDefaultThinkingLevel ??
-		DEFAULT_THINKING_LEVEL;
+		options.explicitDefaultThinkingLevel ?? options.settingsDefaultThinkingLevel ?? DEFAULT_THINKING_LEVEL;
 	const source: RuntimeDefaultThinkingLevelSource =
 		options.explicitDefaultThinkingLevel !== undefined
 			? "runtime_override"
 			: options.settingsDefaultThinkingLevel !== undefined
 				? "settings"
 				: "builtin_fallback";
-	const level = clampThinkingLevel(
-		options.model,
-		requestedLevel,
-	) as ThinkingLevel;
+	const level = clampThinkingLevel(options.model, requestedLevel) as ThinkingLevel;
 	const resolution: RuntimeDefaultThinkingLevelResolution = {
 		level,
 		requestedLevel,
 		source,
 		clamped: level !== requestedLevel,
 	};
-	return {
-		resolution,
-	};
+	return { resolution };
 }
 
-export async function createWidiRuntime(
-	options: CreateWidiRuntimeOptions,
-): Promise<WidiRuntime> {
-	const executionEnv =
-		options.executionEnv ?? new NodeExecutionEnv({ cwd: options.cwd });
+export async function createWidiRuntime(options: CreateWidiRuntimeOptions): Promise<WidiRuntime> {
+	const executionEnv = options.executionEnv ?? new NodeExecutionEnv({ cwd: options.cwd });
 	const cwd = await absolutePath(executionEnv, options.cwd);
-	const agentDir = await absolutePath(
-		executionEnv,
-		options.agentDir ?? DEFAULT_AGENT_DIR,
-	);
+	const agentDir = await absolutePath(executionEnv, options.agentDir ?? DEFAULT_AGENT_DIR);
 	const projectConfigDir = options.projectConfigDir ?? DEFAULT_AGENT_DIR;
 
 	const globalSettingManager = await SettingManager.create(executionEnv, {
@@ -516,13 +416,12 @@ export async function createWidiRuntime(
 			});
 		}
 	}
-	const projectExtensionTrustDiagnostics =
-		await createProjectExtensionTrustDiagnostics({
-			executionEnv,
-			cwd,
-			projectConfigDir,
-			projectTrusted: projectTrust.trusted,
-		});
+	const projectExtensionTrustDiagnostics = await createProjectExtensionTrustDiagnostics({
+		executionEnv,
+		cwd,
+		projectConfigDir,
+		projectTrusted: projectTrust.trusted,
+	});
 
 	const settingManager = await SettingManager.create(executionEnv, {
 		cwd,
@@ -533,19 +432,14 @@ export async function createWidiRuntime(
 	const configValueResolver = new ConfigValueResolver(executionEnv);
 	const authStorage = AuthStorage.create(
 		executionEnv,
-		{
-			configValueResolver,
-		},
+		{ configValueResolver },
 		await joinPath(executionEnv, [agentDir, "auth.json"]),
 	);
 	const modelRegistry = await ModelRegistry.create({
 		executionEnv,
 		authStorage,
 		configValueResolver,
-		modelsJsonPath: await joinPath(executionEnv, [
-			agentDir,
-			DEFAULT_MODELSJSON_PATH,
-		]),
+		modelsJsonPath: await joinPath(executionEnv, [agentDir, DEFAULT_MODELSJSON_PATH]),
 	});
 	const profileRegistryResult = await createProfileRegistry({
 		executionEnv,
@@ -604,11 +498,7 @@ export async function createWidiRuntime(
 			...(projectTrust.trusted ? [{ kind: "cwd" as const, path: cwd }] : []),
 		],
 	});
-	const sessionManager = new SessionManager({
-		fs: executionEnv,
-		cwd,
-		sessionsRoot: sessionRoot,
-	});
+	const sessionManager = new SessionManager({ fs: executionEnv, cwd, sessionsRoot: sessionRoot });
 	const extensionLoader =
 		options.extensionLoader ??
 		new ExtensionLoader({
@@ -622,8 +512,7 @@ export async function createWidiRuntime(
 				settingsPaths: settingManager.getExtensionPaths(),
 			}),
 		});
-	const extensionLoad =
-		await extensionLoader.loadAvailableExtensions(executionEnv);
+	const extensionLoad = await extensionLoader.loadAvailableExtensions(executionEnv);
 	const extensionDiscovery = extensionLoad.discovery;
 	const toolRegistry = options.toolRegistry ?? new ToolRegistry();
 	const imageSettings = settingManager.getImageSettings();
@@ -647,8 +536,7 @@ export async function createWidiRuntime(
 		toolRegistry,
 		extensionLoader,
 		defaultProfileId: defaultProfile.resolution.id,
-		enabledProfileIds:
-			options.enabledProfileIds ?? settingManager.getEnabledProfiles(),
+		enabledProfileIds: options.enabledProfileIds ?? settingManager.getEnabledProfiles(),
 		defaultModel: defaultModel.model,
 		defaultThinkingLevel: defaultThinkingLevel.resolution.level,
 	};
@@ -688,9 +576,5 @@ export async function createWidiRuntime(
 		...extensionLoad.diagnostics,
 	];
 
-	return {
-		services,
-		orchestrator,
-		diagnostics,
-	};
+	return { services, orchestrator, diagnostics };
 }

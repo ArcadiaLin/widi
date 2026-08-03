@@ -1,8 +1,4 @@
-import type {
-	AssistantMessage,
-	ToolResultMessage,
-	UserMessage,
-} from "@earendil-works/pi-ai";
+import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { SessionTreeEntry } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import {
@@ -30,12 +26,7 @@ describe("hydrateSessionEntries", () => {
 			message(
 				"assistant",
 				assistantMessage("I will inspect.", [
-					{
-						type: "toolCall",
-						id: "call-1",
-						name: "read",
-						arguments: { path: "README.md" },
-					},
+					{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "README.md" } },
 				]),
 			),
 			message("tool-result", toolResult("call-1", "read", "file contents")),
@@ -44,11 +35,7 @@ describe("hydrateSessionEntries", () => {
 				// Legacy entries may carry this removed field; structural
 				// hydration ignores it without rewriting the stored entry.
 				commandId: "legacy-command",
-				message: {
-					kind: "markdown",
-					title: "Report",
-					content: "durable result",
-				},
+				message: { kind: "markdown", title: "Report", content: "durable result" },
 			}),
 			custom("private", "extension:reports:private", { secret: true }),
 			{
@@ -59,27 +46,9 @@ describe("hydrateSessionEntries", () => {
 				provider: "test",
 				modelId: "model-2",
 			},
-			{
-				type: "thinking_level_change",
-				id: "thinking",
-				parentId: null,
-				timestamp: timestamp(8),
-				thinkingLevel: "high",
-			},
-			{
-				type: "active_tools_change",
-				id: "tools",
-				parentId: null,
-				timestamp: timestamp(9),
-				activeToolNames: ["read"],
-			},
-			{
-				type: "session_info",
-				id: "session-info",
-				parentId: null,
-				timestamp: timestamp(10),
-				name: "research",
-			},
+			{ type: "thinking_level_change", id: "thinking", parentId: null, timestamp: timestamp(8), thinkingLevel: "high" },
+			{ type: "active_tools_change", id: "tools", parentId: null, timestamp: timestamp(9), activeToolNames: ["read"] },
+			{ type: "session_info", id: "session-info", parentId: null, timestamp: timestamp(10), name: "research" },
 			{
 				type: "compaction",
 				id: "compact",
@@ -143,11 +112,7 @@ describe("hydrateSessionEntries", () => {
 			}),
 			custom("ragged", EXTENSION_MESSAGE_CUSTOM_TYPE, {
 				extensionId: "reports",
-				message: {
-					kind: "table",
-					columns: [{ label: "Path" }],
-					rows: [["src/a.ts", "12"]],
-				},
+				message: { kind: "table", columns: [{ label: "Path" }], rows: [["src/a.ts", "12"]] },
 			}),
 		]);
 
@@ -178,16 +143,8 @@ describe("hydrateSessionEntries", () => {
 		]);
 
 		expect(result.timeline).toMatchObject([
-			{
-				type: "tool-execution",
-				toolCallId: "missing-call",
-				status: "completed",
-				isError: true,
-			},
-			{
-				type: "session-marker",
-				marker: "branch-summary",
-			},
+			{ type: "tool-execution", toolCallId: "missing-call", status: "completed", isError: true },
+			{ type: "session-marker", marker: "branch-summary" },
 		]);
 	});
 });
@@ -196,38 +153,18 @@ function message(
 	id: string,
 	value: UserMessage | AssistantMessage | ToolResultMessage,
 ): Extract<SessionTreeEntry, { type: "message" }> {
-	return {
-		type: "message",
-		id,
-		parentId: null,
-		timestamp: timestamp(1),
-		message: value,
-	};
+	return { type: "message", id, parentId: null, timestamp: timestamp(1), message: value };
 }
 
-function custom(
-	id: string,
-	customType: string,
-	data: unknown,
-): Extract<SessionTreeEntry, { type: "custom" }> {
-	return {
-		type: "custom",
-		id,
-		parentId: null,
-		timestamp: timestamp(1),
-		customType,
-		data,
-	};
+function custom(id: string, customType: string, data: unknown): Extract<SessionTreeEntry, { type: "custom" }> {
+	return { type: "custom", id, parentId: null, timestamp: timestamp(1), customType, data };
 }
 
 function userMessage(content: string): UserMessage {
 	return { role: "user", content, timestamp: Date.parse(timestamp(1)) };
 }
 
-function assistantMessage(
-	text: string,
-	extra: AssistantMessage["content"] = [],
-): AssistantMessage {
+function assistantMessage(text: string, extra: AssistantMessage["content"] = []): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [{ type: "text", text }, ...extra],
@@ -240,25 +177,14 @@ function assistantMessage(
 			cacheRead: 0,
 			cacheWrite: 0,
 			totalTokens: 0,
-			cost: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				total: 0,
-			},
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		stopReason: "stop",
 		timestamp: Date.parse(timestamp(2)),
 	};
 }
 
-function toolResult(
-	toolCallId: string,
-	toolName: string,
-	text: string,
-	isError = false,
-): ToolResultMessage {
+function toolResult(toolCallId: string, toolName: string, text: string, isError = false): ToolResultMessage {
 	return {
 		role: "toolResult",
 		toolCallId,

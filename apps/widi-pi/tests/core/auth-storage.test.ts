@@ -1,18 +1,6 @@
 import type { OAuthAuth } from "@earendil-works/pi-ai";
-import type {
-	ExecutionEnv,
-	ExecutionError,
-	FileError,
-	FileInfo,
-	Result,
-	ShellExecOptions,
-} from "@widi/agent-core";
-import {
-	err,
-	ok,
-	ExecutionError as PiExecutionError,
-	FileError as PiFileError,
-} from "@widi/agent-core";
+import type { ExecutionEnv, ExecutionError, FileError, FileInfo, Result, ShellExecOptions } from "@widi/agent-core";
+import { err, ok, ExecutionError as PiExecutionError, FileError as PiFileError } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import {
 	AuthStorage,
@@ -40,24 +28,16 @@ class MemoryExecutionEnv implements ExecutionEnv {
 		return ok(content);
 	}
 
-	async writeFile(
-		path: string,
-		content: string | Uint8Array,
-	): Promise<Result<void, FileError>> {
+	async writeFile(path: string, content: string | Uint8Array): Promise<Result<void, FileError>> {
 		this.writes.push({ path, content });
-		this.files.set(
-			path,
-			typeof content === "string" ? content : new TextDecoder().decode(content),
-		);
+		this.files.set(path, typeof content === "string" ? content : new TextDecoder().decode(content));
 		return ok(undefined);
 	}
 
 	async exec(
 		_command: string,
 		_options?: ShellExecOptions,
-	): Promise<
-		Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>
-	> {
+	): Promise<Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>> {
 		return err(new PiExecutionError("shell_unavailable", "not supported"));
 	}
 
@@ -122,9 +102,7 @@ class TestAuthStorageBackend implements AuthStorageBackend {
 		this.value = value;
 	}
 
-	async withLockAsync<T>(
-		fn: (current: string | undefined) => Promise<LockResult<T>>,
-	): Promise<T> {
+	async withLockAsync<T>(fn: (current: string | undefined) => Promise<LockResult<T>>): Promise<T> {
 		if (this.failRead) {
 			throw new Error("auth read failed");
 		}
@@ -139,9 +117,7 @@ class TestAuthStorageBackend implements AuthStorageBackend {
 	}
 }
 
-function createConfigValueResolver(
-	env: MemoryExecutionEnv,
-): ConfigValueResolver {
+function createConfigValueResolver(env: MemoryExecutionEnv): ConfigValueResolver {
 	return new ConfigValueResolver(env, {
 		getEnv: (name) => {
 			if (name === "TEST_API_KEY") return "from-env";
@@ -155,11 +131,9 @@ describe("FileAuthStorageBackend", () => {
 		const env = new MemoryExecutionEnv();
 		const storage = new FileAuthStorageBackend(env, ".widi/auth.json");
 
-		const result = await storage.withLockAsync(
-			async (current): Promise<LockResult<string>> => {
-				return { result: current ?? "missing" };
-			},
-		);
+		const result = await storage.withLockAsync(async (current): Promise<LockResult<string>> => {
+			return { result: current ?? "missing" };
+		});
 
 		expect(result).toBe("{}");
 		expect(env.files.get(".widi/auth.json")).toBe("{}");
@@ -168,26 +142,16 @@ describe("FileAuthStorageBackend", () => {
 
 	it("writes next content when the callback returns it", async () => {
 		const env = new MemoryExecutionEnv();
-		env.files.set(
-			".widi/auth.json",
-			'{"openai":{"type":"api_key","key":"old"}}',
-		);
+		env.files.set(".widi/auth.json", '{"openai":{"type":"api_key","key":"old"}}');
 		const storage = new FileAuthStorageBackend(env, ".widi/auth.json");
 
-		const result = await storage.withLockAsync(
-			async (current): Promise<LockResult<number>> => {
-				expect(current).toBe('{"openai":{"type":"api_key","key":"old"}}');
-				return {
-					result: 42,
-					next: '{"openai":{"type":"api_key","key":"new"}}',
-				};
-			},
-		);
+		const result = await storage.withLockAsync(async (current): Promise<LockResult<number>> => {
+			expect(current).toBe('{"openai":{"type":"api_key","key":"old"}}');
+			return { result: 42, next: '{"openai":{"type":"api_key","key":"new"}}' };
+		});
 
 		expect(result).toBe(42);
-		expect(env.files.get(".widi/auth.json")).toBe(
-			'{"openai":{"type":"api_key","key":"new"}}',
-		);
+		expect(env.files.get(".widi/auth.json")).toBe('{"openai":{"type":"api_key","key":"new"}}');
 	});
 
 	it("serializes overlapping operations within one backend instance", async () => {
@@ -201,23 +165,19 @@ describe("FileAuthStorageBackend", () => {
 			markFirstStarted = resolve;
 		});
 
-		const first = storage.withLockAsync(
-			async (current): Promise<LockResult<string>> => {
-				order.push(`first:${current}`);
-				markFirstStarted?.();
-				await new Promise<void>((resolve) => {
-					releaseFirst = resolve;
-				});
-				return { result: "first", next: "1" };
-			},
-		);
+		const first = storage.withLockAsync(async (current): Promise<LockResult<string>> => {
+			order.push(`first:${current}`);
+			markFirstStarted?.();
+			await new Promise<void>((resolve) => {
+				releaseFirst = resolve;
+			});
+			return { result: "first", next: "1" };
+		});
 
-		const second = storage.withLockAsync(
-			async (current): Promise<LockResult<string>> => {
-				order.push(`second:${current}`);
-				return { result: "second", next: "2" };
-			},
-		);
+		const second = storage.withLockAsync(async (current): Promise<LockResult<string>> => {
+			order.push(`second:${current}`);
+			return { result: "second", next: "2" };
+		});
 
 		await firstStarted;
 		expect(order).toEqual(["first:0"]);
@@ -235,76 +195,53 @@ describe("InMemoryAuthStorageBackend", () => {
 		const storage = new InMemoryAuthStorageBackend();
 
 		await expect(
-			storage.withLockAsync(
-				async (current): Promise<LockResult<string | undefined>> => {
-					return { result: current, next: "saved" };
-				},
-			),
+			storage.withLockAsync(async (current): Promise<LockResult<string | undefined>> => {
+				return { result: current, next: "saved" };
+			}),
 		).resolves.toBeUndefined();
 
 		await expect(
-			storage.withLockAsync(
-				async (current): Promise<LockResult<string | undefined>> => {
-					return { result: current };
-				},
-			),
+			storage.withLockAsync(async (current): Promise<LockResult<string | undefined>> => {
+				return { result: current };
+			}),
 		).resolves.toBe("saved");
 	});
 
 	it("can start from auth storage data", async () => {
-		const storage = new InMemoryAuthStorageBackend({
-			openai: { type: "api_key", key: "secret" },
-		});
+		const storage = new InMemoryAuthStorageBackend({ openai: { type: "api_key", key: "secret" } });
 
 		await expect(
-			storage.withLockAsync(
-				async (current): Promise<LockResult<string | undefined>> => {
-					return { result: current };
-				},
-			),
-		).resolves.toBe(
-			JSON.stringify({ openai: { type: "api_key", key: "secret" } }, null, 2),
-		);
+			storage.withLockAsync(async (current): Promise<LockResult<string | undefined>> => {
+				return { result: current };
+			}),
+		).resolves.toBe(JSON.stringify({ openai: { type: "api_key", key: "secret" } }, null, 2));
 	});
 });
 
 describe("AuthStorage", () => {
 	it("loads credentials from storage during initialize", async () => {
 		const env = new MemoryExecutionEnv();
-		env.files.set(
-			".widi/auth.json",
-			JSON.stringify({ openai: { type: "api_key", key: "stored" } }),
-		);
-		const storage = AuthStorage.fromStorage(
-			new FileAuthStorageBackend(env, ".widi/auth.json"),
-			{
-				configValueResolver: createConfigValueResolver(env),
-			},
-		);
+		env.files.set(".widi/auth.json", JSON.stringify({ openai: { type: "api_key", key: "stored" } }));
+		const storage = AuthStorage.fromStorage(new FileAuthStorageBackend(env, ".widi/auth.json"), {
+			configValueResolver: createConfigValueResolver(env),
+		});
 
 		await storage.initialize();
 
 		expect(storage.get("openai")).toEqual({ type: "api_key", key: "stored" });
 		expect(storage.has("openai")).toBe(true);
-		expect(await storage.list()).toEqual([
-			{ providerId: "openai", type: "api_key" },
-		]);
+		expect(await storage.list()).toEqual([{ providerId: "openai", type: "api_key" }]);
 	});
 
 	it("persists set and remove operations", async () => {
 		const env = new MemoryExecutionEnv();
-		const storage = AuthStorage.fromStorage(
-			new FileAuthStorageBackend(env, ".widi/auth.json"),
-			{
-				configValueResolver: createConfigValueResolver(env),
-			},
-		);
+		const storage = AuthStorage.fromStorage(new FileAuthStorageBackend(env, ".widi/auth.json"), {
+			configValueResolver: createConfigValueResolver(env),
+		});
 		await storage.initialize();
 
 		await storage.set("openai", { type: "api_key", key: "saved" });
-		expect(JSON.parse(env.files.get(".widi/auth.json") ?? "{}")).toEqual({
-			openai: { type: "api_key", key: "saved" },
-		});
+		expect(JSON.parse(env.files.get(".widi/auth.json") ?? "{}")).toEqual({ openai: { type: "api_key", key: "saved" } });
 
 		await storage.remove("openai");
 		expect(JSON.parse(env.files.get(".widi/auth.json") ?? "{}")).toEqual({});
@@ -319,39 +256,23 @@ describe("AuthStorage", () => {
 		await storage.initialize();
 
 		await expect(storage.getApiKey("openai")).resolves.toBe("from-env");
-		await expect(storage.read("openai")).resolves.toEqual({
-			type: "api_key",
-			key: "from-env",
-		});
+		await expect(storage.read("openai")).resolves.toEqual({ type: "api_key", key: "from-env" });
 	});
 
 	it("persists CredentialStore modify updates", async () => {
 		const env = new MemoryExecutionEnv();
 		const storage = AuthStorage.inMemory(
 			{ configValueResolver: createConfigValueResolver(env) },
-			{
-				test: {
-					type: "oauth",
-					access: "old",
-					refresh: "refresh",
-					expires: Date.now() - 1,
-				},
-			},
+			{ test: { type: "oauth", access: "old", refresh: "refresh", expires: Date.now() - 1 } },
 		);
 		await storage.initialize();
 
 		await expect(
 			storage.modify("test", async (current) =>
-				current?.type === "oauth"
-					? { ...current, access: "new", expires: Date.now() + 1000 }
-					: undefined,
+				current?.type === "oauth" ? { ...current, access: "new", expires: Date.now() + 1000 } : undefined,
 			),
-		).resolves.toEqual(
-			expect.objectContaining({ type: "oauth", access: "new" }),
-		);
-		expect(storage.get("test")).toEqual(
-			expect.objectContaining({ type: "oauth", access: "new" }),
-		);
+		).resolves.toEqual(expect.objectContaining({ type: "oauth", access: "new" }));
+		expect(storage.get("test")).toEqual(expect.objectContaining({ type: "oauth", access: "new" }));
 	});
 
 	it("uses runtime API key overrides before stored credentials", async () => {
@@ -364,58 +285,37 @@ describe("AuthStorage", () => {
 		storage.setRuntimeApiKey("openai", "runtime");
 
 		await expect(storage.getApiKey("openai")).resolves.toBe("runtime");
-		expect(storage.getAuthStatus("openai")).toEqual({
-			configured: true,
-			source: "stored",
-		});
+		expect(storage.getAuthStatus("openai")).toEqual({ configured: true, source: "stored" });
 	});
 
 	it("drains diagnostics for auth load failures while preserving drainErrors", async () => {
 		const env = new MemoryExecutionEnv();
 		const backend = new TestAuthStorageBackend();
 		backend.failRead = true;
-		const storage = AuthStorage.fromStorage(backend, {
-			configValueResolver: createConfigValueResolver(env),
-		});
+		const storage = AuthStorage.fromStorage(backend, { configValueResolver: createConfigValueResolver(env) });
 
 		await storage.initialize();
 
-		expect(storage.drainErrors()).toEqual([
-			expect.objectContaining({ message: "auth read failed" }),
-		]);
+		expect(storage.drainErrors()).toEqual([expect.objectContaining({ message: "auth read failed" })]);
 		expect(storage.getLoadDiagnostic()).toEqual(
-			expect.objectContaining({
-				severity: "error",
-				code: "auth.load_failed",
-				message: "auth read failed",
-			}),
+			expect.objectContaining({ severity: "error", code: "auth.load_failed", message: "auth read failed" }),
 		);
 		expect(storage.drainDiagnostics()).toEqual([
-			expect.objectContaining({
-				severity: "error",
-				code: "auth.load_failed",
-				message: "auth read failed",
-			}),
+			expect.objectContaining({ severity: "error", code: "auth.load_failed", message: "auth read failed" }),
 		]);
 	});
 
 	it("drains diagnostics for auth persist failures", async () => {
 		const env = new MemoryExecutionEnv();
 		const backend = new TestAuthStorageBackend("{}");
-		const storage = AuthStorage.fromStorage(backend, {
-			configValueResolver: createConfigValueResolver(env),
-		});
+		const storage = AuthStorage.fromStorage(backend, { configValueResolver: createConfigValueResolver(env) });
 		await storage.initialize();
 		backend.failWrite = true;
 
 		await storage.set("openai", { type: "api_key", key: "saved" });
 
 		expect(storage.drainDiagnostics()).toContainEqual(
-			expect.objectContaining({
-				severity: "error",
-				code: "auth.persist_failed",
-				message: "openai: auth write failed",
-			}),
+			expect.objectContaining({ severity: "error", code: "auth.persist_failed", message: "openai: auth write failed" }),
 		);
 	});
 
@@ -423,12 +323,7 @@ describe("AuthStorage", () => {
 		const providerId = "test-oauth-refresh-failure";
 		const oauth: OAuthAuth = {
 			name: "Test OAuth",
-			login: async () => ({
-				type: "oauth",
-				access: "access",
-				refresh: "refresh",
-				expires: Date.now() - 1,
-			}),
+			login: async () => ({ type: "oauth", access: "access", refresh: "refresh", expires: Date.now() - 1 }),
 			refresh: async () => {
 				throw new Error("refresh failed");
 			},
@@ -437,18 +332,9 @@ describe("AuthStorage", () => {
 		const env = new MemoryExecutionEnv();
 		const storage = AuthStorage.inMemory(
 			{ configValueResolver: createConfigValueResolver(env) },
-			{
-				[providerId]: {
-					type: "oauth",
-					access: "access",
-					refresh: "refresh",
-					expires: Date.now() - 1,
-				},
-			},
+			{ [providerId]: { type: "oauth", access: "access", refresh: "refresh", expires: Date.now() - 1 } },
 		);
-		storage.setOAuthProvidersSource(() => [
-			{ id: providerId, name: oauth.name, oauth },
-		]);
+		storage.setOAuthProvidersSource(() => [{ id: providerId, name: oauth.name, oauth }]);
 		await storage.initialize();
 
 		await expect(storage.getApiKey(providerId)).resolves.toBeUndefined();
@@ -465,14 +351,7 @@ describe("AuthStorage", () => {
 		const env = new MemoryExecutionEnv();
 		const storage = AuthStorage.inMemory(
 			{ configValueResolver: createConfigValueResolver(env) },
-			{
-				test: {
-					type: "oauth",
-					access: "access",
-					refresh: "refresh",
-					expires: Date.now() - 1,
-				},
-			},
+			{ test: { type: "oauth", access: "access", refresh: "refresh", expires: Date.now() - 1 } },
 		);
 		await storage.initialize();
 

@@ -1,14 +1,6 @@
-import type {
-	AgentToolResult,
-	AgentToolUpdateCallback,
-	ToolExecutionMode,
-} from "@widi/agent-core";
+import type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode } from "@widi/agent-core";
 import type { Static, TSchema } from "typebox";
-import type {
-	BackgroundJobOutput,
-	BackgroundJobReport,
-	BackgroundJobTable,
-} from "../background/index.ts";
+import type { BackgroundJobOutput, BackgroundJobReport, BackgroundJobTable } from "../background/index.ts";
 import type { HumanInterruptWatch } from "../human-interrupt.ts";
 import type { ToolHumanHost } from "../human-request.ts";
 import type { ToolAgentHost } from "../orchestrator/host.ts";
@@ -86,10 +78,7 @@ export interface ToolExtensionContext {
 }
 
 /** Execute function implemented by a WIDI tool definition. */
-export type ToolExecute<
-	TParamsSchema extends TSchema = TSchema,
-	TDetails = unknown,
-> = (
+export type ToolExecute<TParamsSchema extends TSchema = TSchema, TDetails = unknown> = (
 	toolCallId: string,
 	params: Static<TParamsSchema>,
 	context: ToolExecutionContext<TDetails>,
@@ -102,10 +91,7 @@ export type ToolExecute<
  * sandboxing, argument rewriting, and backend delegation when the original tool
  * behavior should remain mostly intact.
  */
-export type ToolExecuteMiddleware<
-	TParamsSchema extends TSchema = TSchema,
-	TDetails = unknown,
-> = (
+export type ToolExecuteMiddleware<TParamsSchema extends TSchema = TSchema, TDetails = unknown> = (
 	next: ToolExecute<TParamsSchema, TDetails>,
 	toolCallId: string,
 	params: Static<TParamsSchema>,
@@ -119,10 +105,7 @@ export type ToolExecuteMiddleware<
  * description, parameters, strict metadata, or execute function.
  * `aroundExecute` wraps the current execute function instead of replacing it.
  */
-export interface ToolDefinitionPatch<
-	TParamsSchema extends TSchema = TSchema,
-	TDetails = unknown,
-> {
+export interface ToolDefinitionPatch<TParamsSchema extends TSchema = TSchema, TDetails = unknown> {
 	/** Model-visible description passed to Pi AgentTool. */
 	description?: string;
 	/** TypeBox schema for model arguments. */
@@ -153,16 +136,11 @@ export interface ToolSource {
  * structured background job report. This is opt-in: arbitrary `details` are
  * never treated as job state without a tool-owned mapper.
  */
-export interface BackgroundJobReportAdapter<
-	TParamsSchema extends TSchema = TSchema,
-	TDetails = unknown,
-> {
+export interface BackgroundJobReportAdapter<TParamsSchema extends TSchema = TSchema, TDetails = unknown> {
 	/** Seed the first report when the adapter creates the job. */
 	initial?: (params: Static<TParamsSchema>) => BackgroundJobReport | undefined;
 	/** Replace the report when the tool publishes a partial result. */
-	fromUpdate?: (
-		partialResult: AgentToolResult<TDetails>,
-	) => BackgroundJobReport | undefined;
+	fromUpdate?: (partialResult: AgentToolResult<TDetails>) => BackgroundJobReport | undefined;
 }
 
 /**
@@ -174,10 +152,7 @@ export interface BackgroundJobReportAdapter<
  * execute closure only. UI preview/state is derived outside the tool from raw
  * harness events and tool results.
  */
-export interface ToolDefinition<
-	TParamsSchema extends TSchema = TSchema,
-	TDetails = unknown,
-> {
+export interface ToolDefinition<TParamsSchema extends TSchema = TSchema, TDetails = unknown> {
 	/** Stable model-visible and session-visible tool name. */
 	name: string;
 	/** Short label for debug/UI surfaces. */

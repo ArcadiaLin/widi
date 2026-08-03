@@ -1,25 +1,9 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
-import type {
-	ExecutionEnv,
-	ExecutionError,
-	FileError,
-	FileInfo,
-	Result,
-	ShellExecOptions,
-} from "@widi/agent-core";
-import {
-	err,
-	ok,
-	ExecutionError as PiExecutionError,
-	FileError as PiFileError,
-} from "@widi/agent-core";
+import type { ExecutionEnv, ExecutionError, FileError, FileInfo, Result, ShellExecOptions } from "@widi/agent-core";
+import { err, ok, ExecutionError as PiExecutionError, FileError as PiFileError } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
-import {
-	ModelRegistry,
-	parseThinkingLevel,
-	THINKING_LEVELS,
-} from "../../src/core/model-registry.ts";
+import { ModelRegistry, parseThinkingLevel, THINKING_LEVELS } from "../../src/core/model-registry.ts";
 import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
 
 class MemoryExecutionEnv implements ExecutionEnv {
@@ -39,23 +23,15 @@ class MemoryExecutionEnv implements ExecutionEnv {
 		return ok(content);
 	}
 
-	async writeFile(
-		path: string,
-		content: string | Uint8Array,
-	): Promise<Result<void, FileError>> {
-		this.files.set(
-			path,
-			typeof content === "string" ? content : new TextDecoder().decode(content),
-		);
+	async writeFile(path: string, content: string | Uint8Array): Promise<Result<void, FileError>> {
+		this.files.set(path, typeof content === "string" ? content : new TextDecoder().decode(content));
 		return ok(undefined);
 	}
 
 	async exec(
 		command: string,
 		_options?: ShellExecOptions,
-	): Promise<
-		Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>
-	> {
+	): Promise<Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>> {
 		this.executedCommands.push(command);
 		if (command === "token-command") {
 			return ok({ stdout: "command-token\n", stderr: "", exitCode: 0 });
@@ -125,18 +101,10 @@ function createResolver(env: MemoryExecutionEnv): ConfigValueResolver {
 	});
 }
 
-async function createRegistry(
-	env: MemoryExecutionEnv,
-	modelsJsonPath?: string,
-): Promise<ModelRegistry> {
+async function createRegistry(env: MemoryExecutionEnv, modelsJsonPath?: string): Promise<ModelRegistry> {
 	const configValueResolver = createResolver(env);
 	const authStorage = AuthStorage.inMemory({ configValueResolver });
-	return await ModelRegistry.create({
-		executionEnv: env,
-		authStorage,
-		configValueResolver,
-		modelsJsonPath,
-	});
+	return await ModelRegistry.create({ executionEnv: env, authStorage, configValueResolver, modelsJsonPath });
 }
 
 describe("ModelRegistry", () => {
@@ -149,15 +117,7 @@ describe("ModelRegistry", () => {
 	});
 
 	it("uses Pi canonical thinking levels", () => {
-		expect(THINKING_LEVELS).toEqual([
-			"off",
-			"minimal",
-			"low",
-			"medium",
-			"high",
-			"xhigh",
-			"max",
-		]);
+		expect(THINKING_LEVELS).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 		expect(parseThinkingLevel("max")).toBe("max");
 	});
 
@@ -172,9 +132,7 @@ describe("ModelRegistry", () => {
 						baseUrl: "https://example.test/v1",
 						apiKey: "$CUSTOM_API_KEY",
 						api: "openai-completions",
-						headers: {
-							"X-Custom": "$CUSTOM_HEADER",
-						},
+						headers: { "X-Custom": "$CUSTOM_HEADER" },
 						authHeader: true,
 						models: [
 							{
@@ -207,10 +165,7 @@ describe("ModelRegistry", () => {
 		await expect(registry.getApiKeyAndHeaders(model)).resolves.toEqual({
 			ok: true,
 			apiKey: "env-token",
-			headers: {
-				"X-Custom": "env-header",
-				Authorization: "Bearer env-token",
-			},
+			headers: { "X-Custom": "env-header", Authorization: "Bearer env-token" },
 		});
 	});
 
@@ -275,14 +230,8 @@ describe("ModelRegistry", () => {
 				},
 			},
 		);
-		const registry = await ModelRegistry.create({
-			executionEnv: env,
-			authStorage,
-			configValueResolver,
-		});
-		const model = registry
-			.getAll()
-			.find((candidate) => candidate.provider === "github-copilot");
+		const registry = await ModelRegistry.create({ executionEnv: env, authStorage, configValueResolver });
+		const model = registry.getAll().find((candidate) => candidate.provider === "github-copilot");
 		if (!model) throw new Error("Expected GitHub Copilot model to resolve.");
 
 		await expect(registry.getRuntime().getAuth(model)).resolves.toEqual(
@@ -311,12 +260,8 @@ describe("ModelRegistry", () => {
 				message: expect.stringContaining("Failed to parse models.json"),
 			}),
 		);
-		expect(registry.getLoadDiagnostic()?.message).toContain(
-			"(.widi/models.json)",
-		);
-		expect(registry.drainDiagnostics()).toContainEqual(
-			expect.objectContaining({ code: "model.load_failed" }),
-		);
+		expect(registry.getLoadDiagnostic()?.message).toContain("(.widi/models.json)");
+		expect(registry.drainDiagnostics()).toContainEqual(expect.objectContaining({ code: "model.load_failed" }));
 	});
 
 	it("records diagnostics for authHeader models without API keys", async () => {
@@ -340,16 +285,13 @@ describe("ModelRegistry", () => {
 		const env = new MemoryExecutionEnv();
 		const registry = await createRegistry(env);
 		const model = createTestModel("missing-env");
-		registry.registerProvider("missing-env", {
-			apiKey: "$MISSING_MODEL_API_KEY",
-		});
+		registry.registerProvider("missing-env", { apiKey: "$MISSING_MODEL_API_KEY" });
 
 		const result = await registry.getApiKeyAndHeaders(model);
 
 		expect(result).toEqual({
 			ok: false,
-			error:
-				'Failed to resolve API key for provider "missing-env" from environment variable: MISSING_MODEL_API_KEY',
+			error: 'Failed to resolve API key for provider "missing-env" from environment variable: MISSING_MODEL_API_KEY',
 		});
 		expect(registry.drainDiagnostics()).toContainEqual({
 			severity: "error",
@@ -405,12 +347,7 @@ describe("ModelRegistry extension providers", () => {
 						baseUrl: "https://example.test/v1",
 						apiKey: "user-key",
 						api: "openai-completions",
-						models: [
-							{
-								id: "custom-model",
-								name: "Custom Model",
-							},
-						],
+						models: [{ id: "custom-model", name: "Custom Model" }],
 					},
 				},
 			}),
@@ -426,19 +363,14 @@ describe("ModelRegistry extension providers", () => {
 		).toEqual({ ok: true });
 		expect(registry.find("gateway", "gateway-model")).toBeDefined();
 		expect(registry.getExtensionProviderRegistrations()).toEqual([
-			{
-				providerName: "gateway",
-				extensionId: "alpha",
-				agentIds: ["agent-1"],
-			},
+			{ providerName: "gateway", extensionId: "alpha", agentIds: ["agent-1"] },
 		]);
 
 		expect(
-			registry.registerExtensionProvider(
-				"anthropic",
-				extensionProviderConfig(),
-				{ extensionId: "alpha", agentId: "agent-1" },
-			),
+			registry.registerExtensionProvider("anthropic", extensionProviderConfig(), {
+				extensionId: "alpha",
+				agentId: "agent-1",
+			}),
 		).toEqual({ ok: false, reason: "conflict", conflictWith: "builtin" });
 		expect(
 			registry.registerExtensionProvider("custom", extensionProviderConfig(), {
@@ -457,12 +389,7 @@ describe("ModelRegistry extension providers", () => {
 				extensionId: "beta",
 				agentId: "agent-2",
 			}),
-		).toEqual({
-			ok: false,
-			reason: "conflict",
-			conflictWith: "extension",
-			ownerExtensionId: "alpha",
-		});
+		).toEqual({ ok: false, reason: "conflict", conflictWith: "extension", ownerExtensionId: "alpha" });
 		expect(
 			registry.registerExtensionProvider(
 				"no-models",
@@ -487,30 +414,19 @@ describe("ModelRegistry extension providers", () => {
 			}),
 		).toEqual({ ok: true });
 		expect(
-			registry.registerExtensionProvider(
-				"gateway",
-				extensionProviderConfig("https://gateway-v2.test/v1"),
-				{ extensionId: "alpha", agentId: "agent-2" },
-			),
+			registry.registerExtensionProvider("gateway", extensionProviderConfig("https://gateway-v2.test/v1"), {
+				extensionId: "alpha",
+				agentId: "agent-2",
+			}),
 		).toEqual({ ok: true });
 		expect(registry.getExtensionProviderRegistrations()).toEqual([
-			{
-				providerName: "gateway",
-				extensionId: "alpha",
-				agentIds: ["agent-1", "agent-2"],
-			},
+			{ providerName: "gateway", extensionId: "alpha", agentIds: ["agent-1", "agent-2"] },
 		]);
-		expect(registry.find("gateway", "gateway-model")).toMatchObject({
-			baseUrl: "https://gateway-v2.test/v1",
-		});
+		expect(registry.find("gateway", "gateway-model")).toMatchObject({ baseUrl: "https://gateway-v2.test/v1" });
 
-		await expect(
-			registry.unregisterExtensionProviders("agent-1"),
-		).resolves.toEqual([]);
+		await expect(registry.unregisterExtensionProviders("agent-1")).resolves.toEqual([]);
 		expect(registry.find("gateway", "gateway-model")).toBeDefined();
-		await expect(
-			registry.unregisterExtensionProviders("agent-2"),
-		).resolves.toEqual(["gateway"]);
+		await expect(registry.unregisterExtensionProviders("agent-2")).resolves.toEqual(["gateway"]);
 		expect(registry.find("gateway", "gateway-model")).toBe(undefined);
 		expect(registry.getExtensionProviderRegistrations()).toEqual([]);
 	});
@@ -538,12 +454,7 @@ describe("ModelRegistry extension providers", () => {
 						baseUrl: "https://user-owned.test/v1",
 						apiKey: "user-key",
 						api: "openai-completions",
-						models: [
-							{
-								id: "user-model",
-								name: "User Model",
-							},
-						],
+						models: [{ id: "user-model", name: "User Model" }],
 					},
 				},
 			}),
@@ -556,8 +467,7 @@ describe("ModelRegistry extension providers", () => {
 		expect(registry.drainDiagnostics()).toContainEqual({
 			severity: "warning",
 			code: "extension.provider_conflict",
-			message:
-				"Extension 'alpha' provider 'gateway' conflicts with a models_json provider and was dropped on refresh.",
+			message: "Extension 'alpha' provider 'gateway' conflicts with a models_json provider and was dropped on refresh.",
 			extensionId: "alpha",
 		});
 	});

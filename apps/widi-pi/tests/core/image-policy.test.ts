@@ -1,31 +1,14 @@
-import type {
-	Message,
-	Model,
-	ToolResultMessage,
-	UserMessage,
-} from "@earendil-works/pi-ai";
+import type { Message, Model, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import { transformMessages } from "@earendil-works/pi-ai/api/transform-messages";
 import { describe, expect, it } from "vitest";
-import {
-	BLOCKED_IMAGE_PLACEHOLDER,
-	stripImagesFromMessages,
-} from "../../src/core/image-policy.ts";
+import { BLOCKED_IMAGE_PLACEHOLDER, stripImagesFromMessages } from "../../src/core/image-policy.ts";
 
 function makeUserMessage(content: UserMessage["content"]): UserMessage {
 	return { role: "user", content, timestamp: 1 };
 }
 
-function makeToolResultMessage(
-	content: ToolResultMessage["content"],
-): ToolResultMessage {
-	return {
-		role: "toolResult",
-		toolCallId: "call-1",
-		toolName: "read",
-		content,
-		isError: false,
-		timestamp: 1,
-	};
+function makeToolResultMessage(content: ToolResultMessage["content"]): ToolResultMessage {
+	return { role: "toolResult", toolCallId: "call-1", toolName: "read", content, isError: false, timestamp: 1 };
 }
 
 const image = { type: "image" as const, data: "aGk=", mimeType: "image/png" };
@@ -35,16 +18,11 @@ describe("blockImages policy filter", () => {
 	it("replaces images in user messages with the placeholder", () => {
 		const [message] = stripImagesFromMessages([makeUserMessage([text, image])]);
 		if (message?.role !== "user") throw new Error("Expected a user message.");
-		expect(message.content).toEqual([
-			text,
-			{ type: "text", text: BLOCKED_IMAGE_PLACEHOLDER },
-		]);
+		expect(message.content).toEqual([text, { type: "text", text: BLOCKED_IMAGE_PLACEHOLDER }]);
 	});
 
 	it("replaces images in tool result messages with the placeholder", () => {
-		const [message] = stripImagesFromMessages([
-			makeToolResultMessage([text, image, image]),
-		]);
+		const [message] = stripImagesFromMessages([makeToolResultMessage([text, image, image])]);
 		if (message?.role !== "toolResult") {
 			throw new Error("Expected a tool result message.");
 		}
@@ -59,11 +37,7 @@ describe("blockImages policy filter", () => {
 		const userWithString = makeUserMessage("plain prompt");
 		const userWithText = makeUserMessage([text]);
 		const toolResult = makeToolResultMessage([text]);
-		const stripped = stripImagesFromMessages([
-			userWithString,
-			userWithText,
-			toolResult,
-		]);
+		const stripped = stripImagesFromMessages([userWithString, userWithText, toolResult]);
 		expect(stripped[0]).toBe(userWithString);
 		expect(stripped[1]).toBe(userWithText);
 		expect(stripped[2]).toBe(toolResult);
@@ -88,28 +62,16 @@ describe("pi-ai transformMessages image downgrade", () => {
 	} as unknown as Model<"anthropic-messages">;
 
 	it("replaces user and tool result images for non-vision models", () => {
-		const messages: Message[] = [
-			makeUserMessage([text, image]),
-			makeToolResultMessage([text, image]),
-		];
+		const messages: Message[] = [makeUserMessage([text, image]), makeToolResultMessage([text, image])];
 		const transformed = transformMessages(messages, textOnlyModel);
 		const [user, toolResult] = transformed;
 		if (user?.role !== "user" || toolResult?.role !== "toolResult") {
 			throw new Error("Expected user and tool result messages.");
 		}
-		expect(user.content).toEqual([
-			text,
-			{
-				type: "text",
-				text: "(image omitted: model does not support images)",
-			},
-		]);
+		expect(user.content).toEqual([text, { type: "text", text: "(image omitted: model does not support images)" }]);
 		expect(toolResult.content).toEqual([
 			text,
-			{
-				type: "text",
-				text: "(tool image omitted: model does not support images)",
-			},
+			{ type: "text", text: "(tool image omitted: model does not support images)" },
 		]);
 	});
 

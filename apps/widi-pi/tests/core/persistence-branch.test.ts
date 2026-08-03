@@ -44,14 +44,7 @@ function refEntry(
 
 function customEntry(customType: string, data: unknown): SessionTreeEntry {
 	nextId += 1;
-	return {
-		type: "custom",
-		id: `e${nextId}`,
-		parentId: null,
-		timestamp: "2026-08-01T00:00:00.000Z",
-		customType,
-		data,
-	};
+	return { type: "custom", id: `e${nextId}`, parentId: null, timestamp: "2026-08-01T00:00:00.000Z", customType, data };
 }
 
 describe("persistence ref parsing", () => {
@@ -65,9 +58,7 @@ describe("persistence ref parsing", () => {
 				name: "demo",
 			}),
 		).toBeUndefined();
-		expect(
-			parsePersistenceRef(customEntry("core:extension_message", {})),
-		).toBeUndefined();
+		expect(parsePersistenceRef(customEntry("core:extension_message", {}))).toBeUndefined();
 	});
 
 	it("accepts a well-formed ref, including a clearing one", () => {
@@ -85,20 +76,12 @@ describe("persistence ref parsing", () => {
 		const cases: Array<[string, unknown]> = [
 			["wrong version", { version: 99, namespace: "n", stateRoot: ROOT_A }],
 			["missing namespace", { version: 1, stateRoot: ROOT_A }],
-			[
-				"state root is not a hash",
-				{ version: 1, namespace: "n", stateRoot: "x" },
-			],
+			["state root is not a hash", { version: 1, namespace: "n", stateRoot: "x" }],
 			["data is not an object", "nope"],
-			[
-				"origin is not a string",
-				{ version: 1, namespace: "n", stateRoot: ROOT_A, origin: 7 },
-			],
+			["origin is not a string", { version: 1, namespace: "n", stateRoot: ROOT_A, origin: 7 }],
 		];
 		for (const [, data] of cases) {
-			const parsed = parsePersistenceRef(
-				customEntry(PERSISTENCE_REF_CUSTOM_TYPE, data),
-			);
+			const parsed = parsePersistenceRef(customEntry(PERSISTENCE_REF_CUSTOM_TYPE, data));
 			expect(parsed?.ok).toBe(false);
 		}
 	});
@@ -106,22 +89,14 @@ describe("persistence ref parsing", () => {
 	// Absent, not "current": a ref a session wrote for itself says nothing about
 	// origin, which keeps the ordinary case the smallest thing on the branch.
 	it("omits an origin unless a fork put one there", () => {
-		expect(
-			createPersistenceRefData({ namespace: "n", stateRoot: ROOT_A }),
-		).not.toHaveProperty("origin");
-		expect(
-			createPersistenceRefData({
-				namespace: "n",
-				stateRoot: ROOT_A,
-				origin: "fork_degraded",
-			}).origin,
-		).toBe("fork_degraded");
+		expect(createPersistenceRefData({ namespace: "n", stateRoot: ROOT_A })).not.toHaveProperty("origin");
+		expect(createPersistenceRefData({ namespace: "n", stateRoot: ROOT_A, origin: "fork_degraded" }).origin).toBe(
+			"fork_degraded",
+		);
 	});
 
 	it("refuses to build a ref that is not a pointer", () => {
-		expect(() =>
-			createPersistenceRefData({ namespace: "n", stateRoot: "not-a-hash" }),
-		).toThrow();
+		expect(() => createPersistenceRefData({ namespace: "n", stateRoot: "not-a-hash" })).toThrow();
 		expect(() =>
 			createPersistenceRefData({
 				namespace: "n",
@@ -134,11 +109,7 @@ describe("persistence ref parsing", () => {
 
 describe("branch projection", () => {
 	it("takes the last ref of each namespace on the path", () => {
-		const branch = [
-			refEntry("test:counter", ROOT_A),
-			refEntry("test:other", ROOT_C),
-			refEntry("test:counter", ROOT_B),
-		];
+		const branch = [refEntry("test:counter", ROOT_A), refEntry("test:other", ROOT_C), refEntry("test:counter", ROOT_B)];
 		const projection = projectBranch(branch);
 		expect(projection.namespaces.get("test:counter")?.stateRoot).toBe(ROOT_B);
 		expect(projection.namespaces.get("test:other")?.stateRoot).toBe(ROOT_C);
@@ -150,19 +121,12 @@ describe("branch projection", () => {
 	it("resolves an older branch to what that branch could see", () => {
 		const early = refEntry("test:counter", ROOT_A);
 		const late = refEntry("test:counter", ROOT_B, early.id);
-		expect(
-			projectBranch([early]).namespaces.get("test:counter")?.stateRoot,
-		).toBe(ROOT_A);
-		expect(
-			projectBranch([early, late]).namespaces.get("test:counter")?.stateRoot,
-		).toBe(ROOT_B);
+		expect(projectBranch([early]).namespaces.get("test:counter")?.stateRoot).toBe(ROOT_A);
+		expect(projectBranch([early, late]).namespaces.get("test:counter")?.stateRoot).toBe(ROOT_B);
 	});
 
 	it("lets a ref clear its namespace", () => {
-		const projection = projectBranch([
-			refEntry("test:counter", ROOT_A),
-			refEntry("test:counter", null),
-		]);
+		const projection = projectBranch([refEntry("test:counter", ROOT_A), refEntry("test:counter", null)]);
 		expect(projection.namespaces.get("test:counter")?.stateRoot).toBeNull();
 		expect(projectionToForkRoots(projection).has("test:counter")).toBe(false);
 	});
@@ -188,19 +152,14 @@ describe("branch projection", () => {
 			refEntry("test:own", ROOT_C),
 		]);
 		expect(projection.namespaces.get("test:copied")?.provenance).toBe("forked");
-		expect(projection.namespaces.get("test:degraded")?.provenance).toBe(
-			"degraded",
-		);
+		expect(projection.namespaces.get("test:degraded")?.provenance).toBe("degraded");
 		expect(projection.namespaces.get("test:own")?.provenance).toBe("current");
 	});
 
 	it("lets a session take ownership by writing over an inherited ref", () => {
 		const inherited = refEntry("test:counter", ROOT_A, null, "fork");
 		const own = refEntry("test:counter", ROOT_B, inherited.id);
-		expect(
-			projectBranch([inherited, own]).namespaces.get("test:counter")
-				?.provenance,
-		).toBe("current");
+		expect(projectBranch([inherited, own]).namespaces.get("test:counter")?.provenance).toBe("current");
 	});
 
 	// An origin a newer build invented must not read as native, or a caller
@@ -209,21 +168,14 @@ describe("branch projection", () => {
 		expect(isNativeOrigin(undefined)).toBe(true);
 		expect(isNativeOrigin("fork")).toBe(false);
 		expect(isNativeOrigin("imported-from-somewhere-2027")).toBe(false);
-		const projection = projectBranch([
-			refEntry("test:counter", ROOT_A, null, "imported-from-somewhere-2027"),
-		]);
-		expect(projection.namespaces.get("test:counter")?.provenance).toBe(
-			"forked",
-		);
+		const projection = projectBranch([refEntry("test:counter", ROOT_A, null, "imported-from-somewhere-2027")]);
+		expect(projection.namespaces.get("test:counter")?.provenance).toBe("forked");
 		expect(projection.rejected).toHaveLength(0);
 	});
 
 	it("carries only the namespaces a fork has to copy", () => {
 		const roots = projectionToForkRoots(
-			projectBranch([
-				refEntry("test:counter", ROOT_A),
-				refEntry("test:other", null),
-			]),
+			projectBranch([refEntry("test:counter", ROOT_A), refEntry("test:other", null)]),
 		);
 		expect([...roots]).toEqual([["test:counter", ROOT_A]]);
 	});

@@ -15,13 +15,7 @@ type BashResult = AgentToolResult<BashToolDetails | undefined>;
 function makeContext(
 	overrides: Partial<ToolExecutionContext<BashToolDetails | undefined>> = {},
 ): ToolExecutionContext<BashToolDetails | undefined> {
-	return {
-		signal: undefined,
-		onUpdate: undefined,
-		extension: undefined,
-		human: undefined,
-		...overrides,
-	};
+	return { signal: undefined, onUpdate: undefined, extension: undefined, human: undefined, ...overrides };
 }
 
 function textOf(result: BashResult): string {
@@ -36,9 +30,7 @@ describe("bash tool", () => {
 	const tempRoots: string[] = [];
 
 	afterEach(async () => {
-		await Promise.all(
-			tempRoots.map((root) => rm(root, { force: true, recursive: true })),
-		);
+		await Promise.all(tempRoots.map((root) => rm(root, { force: true, recursive: true })));
 		tempRoots.length = 0;
 	});
 
@@ -51,118 +43,82 @@ describe("bash tool", () => {
 	it("runs a simple command and returns its output", async () => {
 		const cwd = await tempCwd();
 		const tool = createBashToolDefinition(cwd);
-		const result = await tool.execute(
-			"call-1",
-			{ command: "echo hi" },
-			makeContext(),
-		);
+		const result = await tool.execute("call-1", { command: "echo hi" }, makeContext());
 		expect(textOf(result)).toBe("hi\n");
 	});
 
 	it("returns (no output) for a command that prints nothing", async () => {
 		const cwd = await tempCwd();
 		const tool = createBashToolDefinition(cwd);
-		const result = await tool.execute(
-			"call-1",
-			{ command: "true" },
-			makeContext(),
-		);
+		const result = await tool.execute("call-1", { command: "true" }, makeContext());
 		expect(textOf(result)).toBe("(no output)");
 	});
 
 	it("merges stdout and stderr in arrival order", async () => {
 		const cwd = await tempCwd();
 		const tool = createBashToolDefinition(cwd);
-		const result = await tool.execute(
-			"call-1",
-			{ command: "echo out; echo err 1>&2" },
-			makeContext(),
-		);
+		const result = await tool.execute("call-1", { command: "echo out; echo err 1>&2" }, makeContext());
 		expect(textOf(result)).toBe("out\nerr\n");
 	});
 
 	it("applies a command prefix before the user command", async () => {
 		const cwd = await tempCwd();
-		const tool = createBashToolDefinition(cwd, {
-			commandPrefix: "echo prefixed",
-		});
-		const result = await tool.execute(
-			"call-1",
-			{ command: "echo actual" },
-			makeContext(),
-		);
+		const tool = createBashToolDefinition(cwd, { commandPrefix: "echo prefixed" });
+		const result = await tool.execute("call-1", { command: "echo actual" }, makeContext());
 		expect(textOf(result)).toBe("prefixed\nactual\n");
 	});
 
 	it("runs with an explicit shell path", async () => {
 		const cwd = await tempCwd();
 		const tool = createBashToolDefinition(cwd, { shellPath: "/bin/bash" });
-		const result = await tool.execute(
-			"call-1",
-			{ command: "echo shelled" },
-			makeContext(),
-		);
+		const result = await tool.execute("call-1", { command: "echo shelled" }, makeContext());
 		expect(textOf(result)).toBe("shelled\n");
 	});
 
 	it("throws on a non-zero exit code and preserves output", async () => {
 		const cwd = await tempCwd();
 		const tool = createBashToolDefinition(cwd);
-		await expect(
-			tool.execute("call-1", { command: "echo before; exit 3" }, makeContext()),
-		).rejects.toThrow(/before[\s\S]*Command exited with code 3/);
+		await expect(tool.execute("call-1", { command: "echo before; exit 3" }, makeContext())).rejects.toThrow(
+			/before[\s\S]*Command exited with code 3/,
+		);
 	});
 
 	it("throws when the working directory does not exist", async () => {
 		const tool = createBashToolDefinition("/no/such/widi/dir");
-		await expect(
-			tool.execute("call-1", { command: "echo hi" }, makeContext()),
-		).rejects.toThrow(/Working directory does not exist/);
+		await expect(tool.execute("call-1", { command: "echo hi" }, makeContext())).rejects.toThrow(
+			/Working directory does not exist/,
+		);
 	});
 
 	it("throws when the configured shell path is missing", async () => {
 		const cwd = await tempCwd();
-		const tool = createBashToolDefinition(cwd, {
-			shellPath: "/no/such/shell",
-		});
-		await expect(
-			tool.execute("call-1", { command: "echo hi" }, makeContext()),
-		).rejects.toThrow(/Custom shell path not found/);
+		const tool = createBashToolDefinition(cwd, { shellPath: "/no/such/shell" });
+		await expect(tool.execute("call-1", { command: "echo hi" }, makeContext())).rejects.toThrow(
+			/Custom shell path not found/,
+		);
 	});
 
 	it("rejects an invalid timeout", async () => {
 		const cwd = await tempCwd();
 		const tool = createBashToolDefinition(cwd);
-		await expect(
-			tool.execute(
-				"call-1",
-				{ command: "echo hi", timeout: -1 },
-				makeContext(),
-			),
-		).rejects.toThrow(/Invalid timeout/);
+		await expect(tool.execute("call-1", { command: "echo hi", timeout: -1 }, makeContext())).rejects.toThrow(
+			/Invalid timeout/,
+		);
 	});
 
 	it("kills the process and reports a timeout", async () => {
 		const cwd = await tempCwd();
 		const tool = createBashToolDefinition(cwd);
-		await expect(
-			tool.execute(
-				"call-1",
-				{ command: "sleep 5", timeout: 0.2 },
-				makeContext(),
-			),
-		).rejects.toThrow(/Command timed out after 0.2 seconds/);
+		await expect(tool.execute("call-1", { command: "sleep 5", timeout: 0.2 }, makeContext())).rejects.toThrow(
+			/Command timed out after 0.2 seconds/,
+		);
 	}, 10000);
 
 	it("aborts a running command via the signal", async () => {
 		const cwd = await tempCwd();
 		const tool = createBashToolDefinition(cwd);
 		const controller = new AbortController();
-		const pending = tool.execute(
-			"call-1",
-			{ command: "sleep 5" },
-			makeContext({ signal: controller.signal }),
-		);
+		const pending = tool.execute("call-1", { command: "sleep 5" }, makeContext({ signal: controller.signal }));
 		setTimeout(() => controller.abort(), 50);
 		await expect(pending).rejects.toThrow(/Command aborted/);
 	}, 10000);
@@ -201,9 +157,7 @@ describe("bash tool", () => {
 		// than the six chunks.
 		expect(updates.length).toBeLessThan(6);
 		expect(updates[0]?.content).toEqual([]);
-		expect(textOf(result)).toBe(
-			"chunk-0\nchunk-1\nchunk-2\nchunk-3\nchunk-4\nchunk-5\n",
-		);
+		expect(textOf(result)).toBe("chunk-0\nchunk-1\nchunk-2\nchunk-3\nchunk-4\nchunk-5\n");
 	});
 
 	it("decodes UTF-8 characters split across data chunks", async () => {
@@ -216,11 +170,7 @@ describe("bash tool", () => {
 			},
 		};
 		const tool = createBashToolDefinition("/workspace", { operations: ops });
-		const result = await tool.execute(
-			"call-1",
-			{ command: "noop" },
-			makeContext(),
-		);
+		const result = await tool.execute("call-1", { command: "noop" }, makeContext());
 		expect(textOf(result)).toBe("price €5\n");
 	});
 
@@ -234,11 +184,7 @@ describe("bash tool", () => {
 			},
 		};
 		const tool = createBashToolDefinition("/workspace", { operations: ops });
-		const result = await tool.execute(
-			"call-1",
-			{ command: "noop" },
-			makeContext(),
-		);
+		const result = await tool.execute("call-1", { command: "noop" }, makeContext());
 		expect(result.details?.truncation?.truncated).toBe(true);
 		expect(result.details?.truncation?.truncatedBy).toBe("lines");
 		const fullOutputPath = result.details?.fullOutputPath;
@@ -258,9 +204,9 @@ describe("bash tool", () => {
 			},
 		};
 		const tool = createBashToolDefinition("/workspace", { operations: ops });
-		await expect(
-			tool.execute("call-1", { command: "noop" }, makeContext()),
-		).rejects.toThrow(/partial work[\s\S]*Command exited with code 2/);
+		await expect(tool.execute("call-1", { command: "noop" }, makeContext())).rejects.toThrow(
+			/partial work[\s\S]*Command exited with code 2/,
+		);
 	});
 
 	it("ignores a late output callback after the tool settles", async () => {
@@ -273,11 +219,7 @@ describe("bash tool", () => {
 			},
 		};
 		const tool = createBashToolDefinition("/workspace", { operations: ops });
-		const result = await tool.execute(
-			"call-1",
-			{ command: "noop" },
-			makeContext(),
-		);
+		const result = await tool.execute("call-1", { command: "noop" }, makeContext());
 		expect(textOf(result)).toBe("done\n");
 		// A callback arriving after settle must neither throw nor mutate the result.
 		expect(() => capturedOnData?.(Buffer.from("late output"))).not.toThrow();

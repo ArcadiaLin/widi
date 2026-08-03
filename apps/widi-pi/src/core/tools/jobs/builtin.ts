@@ -4,10 +4,7 @@ import { createKillJobToolDefinition } from "./kill-job.ts";
 import { createReadJobToolDefinition } from "./read-job.ts";
 import { createWaitForJobsToolDefinition } from "./wait-for-jobs.ts";
 
-const coreBuiltinToolSource: ToolSource = {
-	kind: "core",
-	id: "builtin",
-};
+const coreBuiltinToolSource: ToolSource = { kind: "core", id: "builtin" };
 
 /**
  * Register the core built-in job-control tools: primitives that operate on the

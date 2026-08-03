@@ -16,10 +16,7 @@
  */
 
 import type { SessionTreeEntry } from "@widi/agent-core";
-import type {
-	PersistenceRef,
-	PersistenceRefRejection,
-} from "./persistence-ref.ts";
+import type { PersistenceRef, PersistenceRefRejection } from "./persistence-ref.ts";
 import { isNativeOrigin, parsePersistenceRef } from "./persistence-ref.ts";
 
 /**
@@ -58,9 +55,7 @@ export interface BranchProjection {
  * keeps one rule so that resolution never depends on which namespaces happen to
  * be registered in this build.
  */
-export function projectBranch(
-	branch: readonly SessionTreeEntry[],
-): BranchProjection {
+export function projectBranch(branch: readonly SessionTreeEntry[]): BranchProjection {
 	const namespaces = new Map<string, NamespaceProjection>();
 	const rejected: PersistenceRefRejection[] = [];
 	for (const entry of branch) {
@@ -94,9 +89,7 @@ function refProvenance(ref: PersistenceRef): StateProvenance {
  *
  * Cleared namespaces drop out here rather than being copied and then ignored.
  */
-export function projectionToForkRoots(
-	projection: BranchProjection,
-): ReadonlyMap<string, string> {
+export function projectionToForkRoots(projection: BranchProjection): ReadonlyMap<string, string> {
 	const roots = new Map<string, string>();
 	for (const [namespace, entry] of projection.namespaces) {
 		if (entry.stateRoot !== null) roots.set(namespace, entry.stateRoot);

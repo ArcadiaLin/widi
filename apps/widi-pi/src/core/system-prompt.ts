@@ -56,9 +56,7 @@ export interface BuildAgentSystemPromptOptions {
  * deduplicated by exact text so shared guidance appears once. Returns an
  * empty string when no active tool contributes guidance.
  */
-export function formatToolGuidanceForSystemPrompt(
-	activeTools: readonly ToolPromptGuidance[],
-): string {
+export function formatToolGuidanceForSystemPrompt(activeTools: readonly ToolPromptGuidance[]): string {
 	const snippetLines: string[] = [];
 	const guidelineLines: string[] = [];
 	const seenGuidelines = new Set<string>();
@@ -90,16 +88,9 @@ export function formatToolGuidanceForSystemPrompt(
  * tags follow pi so a prompt built here reads the same to a model that has
  * seen the other harness. Returns an empty string when there are no files.
  */
-export function formatProjectContextForSystemPrompt(
-	contextFiles: readonly ProjectContextFile[],
-): string {
+export function formatProjectContextForSystemPrompt(contextFiles: readonly ProjectContextFile[]): string {
 	if (contextFiles.length === 0) return "";
-	const lines = [
-		"<project_context>",
-		"",
-		"Project-specific instructions and guidelines:",
-		"",
-	];
+	const lines = ["<project_context>", "", "Project-specific instructions and guidelines:", ""];
 	for (const { path, content } of contextFiles) {
 		lines.push(`<project_instructions path="${path}">`);
 		lines.push(content);
@@ -129,28 +120,12 @@ export function formatProjectContextForSystemPrompt(
  * agent that can address other agents, so it follows the active collaboration
  * tools.
  */
-export function buildAgentSystemPrompt(
-	options: BuildAgentSystemPromptOptions,
-): string {
-	const {
-		basePrompt,
-		skills,
-		activeTools,
-		agentId,
-		appendSections,
-		contextFiles,
-		includeSkills,
-		cwd,
-	} = options;
+export function buildAgentSystemPrompt(options: BuildAgentSystemPromptOptions): string {
+	const { basePrompt, skills, activeTools, agentId, appendSections, contextFiles, includeSkills, cwd } = options;
 
 	const sections = [basePrompt];
-	if (
-		agentId !== undefined &&
-		activeTools.some((tool) => CORE_AGENT_TOOL_NAMES.includes(tool.name))
-	) {
-		sections.push(
-			`You are agent ${agentId}. Other agents address you by that id.`,
-		);
+	if (agentId !== undefined && activeTools.some((tool) => CORE_AGENT_TOOL_NAMES.includes(tool.name))) {
+		sections.push(`You are agent ${agentId}. Other agents address you by that id.`);
 	}
 	const toolGuidance = formatToolGuidanceForSystemPrompt(activeTools);
 	if (toolGuidance !== "") {
@@ -162,14 +137,11 @@ export function buildAgentSystemPrompt(
 			sections.push(normalized);
 		}
 	}
-	const projectContext = formatProjectContextForSystemPrompt(
-		contextFiles ?? [],
-	);
+	const projectContext = formatProjectContextForSystemPrompt(contextFiles ?? []);
 	if (projectContext !== "") {
 		sections.push(projectContext);
 	}
-	const listSkills =
-		includeSkills ?? activeTools.some((tool) => tool.name === "read");
+	const listSkills = includeSkills ?? activeTools.some((tool) => tool.name === "read");
 	if (listSkills) {
 		const skillsSection = formatSkillsForSystemPrompt([...skills]);
 		if (skillsSection !== "") {

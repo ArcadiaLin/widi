@@ -21,9 +21,7 @@ function setup(status: "idle" | "running" = "idle") {
 	const engine = new CommandEngine(applicationCommands(host));
 	const context = {
 		agentId: "agent-1",
-		orchestrator: {
-			getAgentStatus: () => status,
-		} as unknown as AgentOrchestrator,
+		orchestrator: { getAgentStatus: () => status } as unknown as AgentOrchestrator,
 	};
 	return { engine, host, context };
 }
@@ -52,10 +50,7 @@ describe("applicationCommands", () => {
 		expect(outcome.kind).toBe("executed");
 		expect(host.quitCalls).toBe(1);
 		const disposeOutcome = await engine.handleInput("/dispose", context);
-		expect(disposeOutcome).toMatchObject({
-			kind: "executed",
-			name: "dispose",
-		});
+		expect(disposeOutcome).toMatchObject({ kind: "executed", name: "dispose" });
 		expect(host.disposeAgentCalls).toEqual(["agent-1"]);
 	});
 
@@ -85,14 +80,9 @@ describe("applicationCommands", () => {
 
 	it("rejects /dispose without an active agent", async () => {
 		const { engine, host, context } = setup();
-		const outcome = await engine.handleInput("/dispose", {
-			orchestrator: context.orchestrator,
-		});
+		const outcome = await engine.handleInput("/dispose", { orchestrator: context.orchestrator });
 
-		expect(outcome).toMatchObject({
-			kind: "failed",
-			error: { message: expect.stringContaining("active agent") },
-		});
+		expect(outcome).toMatchObject({ kind: "failed", error: { message: expect.stringContaining("active agent") } });
 		expect(host.disposeAgentCalls).toEqual([]);
 	});
 });

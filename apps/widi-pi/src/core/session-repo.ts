@@ -61,10 +61,7 @@ type SessionDirectoryRepoFileSystem = Pick<
  * such a directory.
  */
 export function sessionDirPath(sessionFilePath: string): string {
-	const separator = Math.max(
-		sessionFilePath.lastIndexOf("/"),
-		sessionFilePath.lastIndexOf("\\"),
-	);
+	const separator = Math.max(sessionFilePath.lastIndexOf("/"), sessionFilePath.lastIndexOf("\\"));
 	return separator <= 0 ? "/" : sessionFilePath.slice(0, separator);
 }
 
@@ -83,59 +80,38 @@ export class SessionDirectoryRepo {
 	private readonly sessionsRootInput: string;
 	private sessionsRoot: string | undefined;
 
-	constructor(options: {
-		fs: SessionDirectoryRepoFileSystem;
-		sessionsRoot: string;
-	}) {
+	constructor(options: { fs: SessionDirectoryRepoFileSystem; sessionsRoot: string }) {
 		this.fs = options.fs;
 		this.sessionsRootInput = options.sessionsRoot;
 	}
 
-	async create(
-		options: JsonlSessionCreateOptions,
-	): Promise<Session<JsonlSessionMetadata>> {
+	async create(options: JsonlSessionCreateOptions): Promise<Session<JsonlSessionMetadata>> {
 		const id = options.id ?? createSessionId();
 		const storage = await JsonlSessionStorage.create(
 			this.fs,
 			await this._createSessionFilePath(options.cwd, id, createTimestamp()),
-			{
-				cwd: options.cwd,
-				sessionId: id,
-				parentSessionPath: options.parentSessionPath,
-				metadata: options.metadata,
-			},
+			{ cwd: options.cwd, sessionId: id, parentSessionPath: options.parentSessionPath, metadata: options.metadata },
 		);
 		return toSession(storage);
 	}
 
-	async open(
-		metadata: JsonlSessionMetadata,
-	): Promise<Session<JsonlSessionMetadata>> {
+	async open(metadata: JsonlSessionMetadata): Promise<Session<JsonlSessionMetadata>> {
 		return toSession(await this._openStorage(metadata));
 	}
 
-	private async _openStorage(
-		metadata: JsonlSessionMetadata,
-	): Promise<JsonlSessionStorage> {
+	private async _openStorage(metadata: JsonlSessionMetadata): Promise<JsonlSessionStorage> {
 		const exists = getFileSystemResultOrThrow(
 			await this.fs.exists(metadata.path),
 			`Failed to check session ${metadata.path}`,
 		);
 		if (!exists) {
-			throw new SessionError(
-				"not_found",
-				`Session not found: ${metadata.path}`,
-			);
+			throw new SessionError("not_found", `Session not found: ${metadata.path}`);
 		}
 		return await JsonlSessionStorage.open(this.fs, metadata.path);
 	}
 
-	async list(
-		options: JsonlSessionListOptions = {},
-	): Promise<JsonlSessionMetadata[]> {
-		const cwdDirs = options.cwd
-			? [await this._getCwdDir(options.cwd)]
-			: await this._listCwdDirs();
+	async list(options: JsonlSessionListOptions = {}): Promise<JsonlSessionMetadata[]> {
+		const cwdDirs = options.cwd ? [await this._getCwdDir(options.cwd)] : await this._listCwdDirs();
 		const sessions: JsonlSessionMetadata[] = [];
 		for (const cwdDir of cwdDirs) {
 			for (const sessionDir of await this._listChildDirs(cwdDir)) {
@@ -152,19 +128,13 @@ export class SessionDirectoryRepo {
 					sessions.push(await loadJsonlSessionMetadata(this.fs, filePath));
 				} catch (error) {
 					const cause = toError(error);
-					if (
-						!(cause instanceof SessionError) ||
-						cause.code !== "invalid_session"
-					) {
+					if (!(cause instanceof SessionError) || cause.code !== "invalid_session") {
 						throw cause;
 					}
 				}
 			}
 		}
-		sessions.sort(
-			(a, b) =>
-				new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-		);
+		sessions.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 		return sessions;
 	}
 
@@ -184,11 +154,7 @@ export class SessionDirectoryRepo {
 	 */
 	async fork(
 		sourceMetadata: JsonlSessionMetadata,
-		options: JsonlSessionCreateOptions & {
-			entryId?: string;
-			position?: "before" | "at";
-			id?: string;
-		},
+		options: JsonlSessionCreateOptions & { entryId?: string; position?: "before" | "at"; id?: string },
 	): Promise<Session<JsonlSessionMetadata>> {
 		const source = await this._openStorage(sourceMetadata);
 		const forkedEntries = await getEntriesToFork(source, options);
@@ -226,11 +192,7 @@ export class SessionDirectoryRepo {
 		);
 	}
 
-	private async _createSessionFilePath(
-		cwd: string,
-		sessionId: string,
-		timestamp: string,
-	): Promise<string> {
+	private async _createSessionFilePath(cwd: string, sessionId: string, timestamp: string): Promise<string> {
 		const dir = await this._joinPath(
 			[await this._getCwdDir(cwd), sessionDirName(sessionId, timestamp)],
 			`Failed to resolve session directory for ${sessionId}`,
@@ -239,10 +201,7 @@ export class SessionDirectoryRepo {
 			await this.fs.createDir(dir, { recursive: true }),
 			`Failed to create session directory ${dir}`,
 		);
-		return await this._joinPath(
-			[dir, SESSION_FILE_NAME],
-			`Failed to resolve session file path for ${sessionId}`,
-		);
+		return await this._joinPath([dir, SESSION_FILE_NAME], `Failed to resolve session file path for ${sessionId}`);
 	}
 
 	private async _listCwdDirs(): Promise<string[]> {
@@ -250,15 +209,9 @@ export class SessionDirectoryRepo {
 	}
 
 	private async _listChildDirs(dir: string): Promise<string[]> {
-		const exists = getFileSystemResultOrThrow(
-			await this.fs.exists(dir),
-			`Failed to check session directory ${dir}`,
-		);
+		const exists = getFileSystemResultOrThrow(await this.fs.exists(dir), `Failed to check session directory ${dir}`);
 		if (!exists) return [];
-		return getFileSystemResultOrThrow(
-			await this.fs.listDir(dir),
-			`Failed to list sessions in ${dir}`,
-		)
+		return getFileSystemResultOrThrow(await this.fs.listDir(dir), `Failed to list sessions in ${dir}`)
 			.filter((entry) => entry.kind === "directory")
 			.map((entry) => entry.path);
 	}

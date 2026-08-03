@@ -3,10 +3,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import type { HumanRequestEnvelope } from "../../src/core/human-request.ts";
 import { HumanRequestMenu } from "../../src/tui/human-request.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
-import {
-	createTuiApplicationState,
-	setActiveAgent,
-} from "../../src/tui/state.ts";
+import { createTuiApplicationState, setActiveAgent } from "../../src/tui/state.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 
@@ -47,9 +44,7 @@ function plain(menu: HumanRequestMenu, width = 80): string {
 	return menu.render(width).join("\n").replace(ANSI_SEQUENCE, "");
 }
 
-function envelope(
-	overrides: Partial<HumanRequestEnvelope> & Pick<HumanRequestEnvelope, "kind">,
-): HumanRequestEnvelope {
+function envelope(overrides: Partial<HumanRequestEnvelope> & Pick<HumanRequestEnvelope, "kind">): HumanRequestEnvelope {
 	return {
 		id: "request-1",
 		agentId: "main",
@@ -64,12 +59,7 @@ describe("HumanRequestMenu", () => {
 	it("docks a select request with its options and a Submit tab", async () => {
 		const { menu, focusLog } = createMenu();
 		const response = menu.request(
-			envelope({
-				kind: "select",
-				title: "Select a model",
-				options: ["anthropic/claude"],
-				allowFreeInput: true,
-			}),
+			envelope({ kind: "select", title: "Select a model", options: ["anthropic/claude"], allowFreeInput: true }),
 		);
 
 		expect(menu.isOpen).toBe(true);
@@ -89,11 +79,7 @@ describe("HumanRequestMenu", () => {
 	it("keeps a single select provisional until the Submit tab commits", async () => {
 		const { menu } = createMenu();
 		const response = menu.request(
-			envelope({
-				kind: "select",
-				title: "Pick a color",
-				options: ["red", "green", "blue"],
-			}),
+			envelope({ kind: "select", title: "Pick a color", options: ["red", "green", "blue"] }),
 		);
 		// Number key picks green but does not resolve; it advances to Submit.
 		menu.handleInput("2");
@@ -106,11 +92,7 @@ describe("HumanRequestMenu", () => {
 	it("lets an earlier single-select answer be revised before submit", async () => {
 		const { menu } = createMenu();
 		const response = menu.request(
-			envelope({
-				kind: "select",
-				title: "Pick a color",
-				options: ["red", "green", "blue"],
-			}),
+			envelope({ kind: "select", title: "Pick a color", options: ["red", "green", "blue"] }),
 		);
 		menu.handleInput("2"); // green, now on Submit tab
 		menu.handleInput(KEY.left); // back to the question
@@ -140,59 +122,35 @@ describe("HumanRequestMenu", () => {
 		menu.handleInput("3"); // toggle Blue
 		menu.handleInput(KEY.right); // to Submit tab
 		menu.handleInput(KEY.enter);
-		await expect(response).resolves.toEqual({
-			kind: "multi-select",
-			values: ["red", "blue"],
-		});
+		await expect(response).resolves.toEqual({ kind: "multi-select", values: ["red", "blue"] });
 	});
 
 	it("toggles the multi-select cursor row with space", async () => {
 		const { menu } = createMenu();
 		const response = menu.request(
-			envelope({
-				kind: "multi-select",
-				title: "Pick colors",
-				options: ["red", "green", "blue"],
-			}),
+			envelope({ kind: "multi-select", title: "Pick colors", options: ["red", "green", "blue"] }),
 		);
 		menu.handleInput(KEY.down); // cursor on green
 		menu.handleInput(KEY.space); // toggle green
 		menu.handleInput(KEY.right); // Submit tab
 		menu.handleInput(KEY.enter);
-		await expect(response).resolves.toEqual({
-			kind: "multi-select",
-			values: ["green"],
-		});
+		await expect(response).resolves.toEqual({ kind: "multi-select", values: ["green"] });
 	});
 
 	it("resolves a confirm request through the Submit tab", async () => {
 		const { menu } = createMenu();
-		const response = menu.request(
-			envelope({ kind: "confirm", title: "Deploy?" }),
-		);
+		const response = menu.request(envelope({ kind: "confirm", title: "Deploy?" }));
 		menu.handleInput("1"); // Yes → advances to Submit
 		menu.handleInput(KEY.enter);
-		await expect(response).resolves.toEqual({
-			kind: "confirm",
-			confirmed: true,
-		});
+		await expect(response).resolves.toEqual({ kind: "confirm", confirmed: true });
 	});
 
 	it("dismisses every deferred request when Cancel/esc is used", async () => {
 		const { menu } = createMenu();
-		const response = menu.request(
-			envelope({
-				kind: "select",
-				title: "Pick a color",
-				options: ["red", "green"],
-			}),
-		);
+		const response = menu.request(envelope({ kind: "select", title: "Pick a color", options: ["red", "green"] }));
 		menu.handleInput(KEY.escape);
 		expect(menu.pendingCount).toBe(0);
-		await expect(response).resolves.toEqual({
-			kind: "select",
-			value: undefined,
-		});
+		await expect(response).resolves.toEqual({ kind: "select", value: undefined });
 	});
 
 	it("answers a multi-question request as one ordered batch", async () => {
@@ -203,11 +161,7 @@ describe("HumanRequestMenu", () => {
 				title: "Set up the deploy",
 				questions: [
 					{ title: "Target", options: ["staging", "prod"] },
-					{
-						title: "Regions",
-						multiSelect: true,
-						options: ["us", "eu", "asia"],
-					},
+					{ title: "Regions", multiSelect: true, options: ["us", "eu", "asia"] },
 				],
 			}),
 		);
@@ -278,12 +232,7 @@ describe("HumanRequestMenu", () => {
 	it("shows a tab strip and Submit across several pending requests", async () => {
 		const { menu } = createMenu();
 		const first = menu.request(
-			envelope({
-				id: "request-1",
-				kind: "select",
-				title: "Select login method",
-				options: ["Browser", "Device code"],
-			}),
+			envelope({ id: "request-1", kind: "select", title: "Select login method", options: ["Browser", "Device code"] }),
 		);
 		const second = menu.request(
 			envelope({
@@ -309,9 +258,7 @@ describe("HumanRequestMenu", () => {
 
 	it("closes the input panel and restores the editor after submit", async () => {
 		const { menu, state, focusLog } = createMenu();
-		const response = menu.request(
-			envelope({ kind: "input", title: "Which ticket id?" }),
-		);
+		const response = menu.request(envelope({ kind: "input", title: "Which ticket id?" }));
 		expect(menu.isOpen).toBe(true);
 		menu.focused = true;
 		menu.handleInput("W");
@@ -327,11 +274,7 @@ describe("HumanRequestMenu", () => {
 	it("keeps a provisional input request in the background and silently withdraws it on cancel", async () => {
 		const { menu, focusLog } = createMenu();
 		const response = menu.request(
-			envelope({
-				kind: "input",
-				title: "Paste the authorization code",
-				provisional: true,
-			}),
+			envelope({ kind: "input", title: "Paste the authorization code", provisional: true }),
 		);
 
 		// Provisional requests race another completion path (e.g. the OAuth

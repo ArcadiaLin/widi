@@ -1,10 +1,4 @@
-import {
-	type Component,
-	getKeybindings,
-	Input,
-	truncateToWidth,
-	visibleWidth,
-} from "@earendil-works/pi-tui";
+import { type Component, getKeybindings, Input, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	type HumanQuestionAnswer,
 	type HumanRequestEnvelope,
@@ -62,11 +56,7 @@ interface PendingEntry {
 }
 
 type Tab =
-	| {
-			readonly kind: "question";
-			readonly entry: number;
-			readonly question: number;
-	  }
+	| { readonly kind: "question"; readonly entry: number; readonly question: number }
 	| { readonly kind: "input"; readonly entry: number }
 	| { readonly kind: "submit" };
 
@@ -117,10 +107,7 @@ export class HumanRequestMenu implements Component {
 		return this.entries.length;
 	}
 
-	request(
-		request: HumanRequestEnvelope,
-		signal?: AbortSignal,
-	): Promise<HumanResponse> {
+	request(request: HumanRequestEnvelope, signal?: AbortSignal): Promise<HumanResponse> {
 		if (this.closed) {
 			return Promise.reject(new Error("TUI human request host is closed."));
 		}
@@ -143,9 +130,7 @@ export class HumanRequestMenu implements Component {
 			// dead authorization link. They stay in the background; the caller
 			// withdraws them when the flow settles.
 			const foreground =
-				(request.agentId === undefined ||
-					request.agentId === this.state.activeAgentId) &&
-				request.provisional !== true;
+				(request.agentId === undefined || request.agentId === this.state.activeAgentId) && request.provisional !== true;
 			if (this.opened) {
 				this.host.requestRender();
 			} else if (foreground) {
@@ -165,9 +150,7 @@ export class HumanRequestMenu implements Component {
 	}
 
 	cancelRequest(requestId: string): void {
-		const entry = this.entries.find(
-			(candidate) => candidate.request.id === requestId,
-		);
+		const entry = this.entries.find((candidate) => candidate.request.id === requestId);
 		if (entry) this.abort(entry);
 	}
 
@@ -232,10 +215,7 @@ export class HumanRequestMenu implements Component {
 			this.host.requestRender();
 			return;
 		}
-		if (
-			question.kind === "multi-select" &&
-			keybindings.matches(data, "app.request.toggle")
-		) {
+		if (question.kind === "multi-select" && keybindings.matches(data, "app.request.toggle")) {
 			this.activateOption(question, question.cursor);
 			this.host.requestRender();
 			return;
@@ -279,15 +259,12 @@ export class HumanRequestMenu implements Component {
 	private handleSubmitInput(data: string): void {
 		const keybindings = getKeybindings();
 		if (keybindings.matches(data, "tui.select.up")) {
-			this.submitActionIndex =
-				(this.submitActionIndex + SUBMIT_ACTIONS.length - 1) %
-				SUBMIT_ACTIONS.length;
+			this.submitActionIndex = (this.submitActionIndex + SUBMIT_ACTIONS.length - 1) % SUBMIT_ACTIONS.length;
 			this.host.requestRender();
 			return;
 		}
 		if (keybindings.matches(data, "tui.select.down")) {
-			this.submitActionIndex =
-				(this.submitActionIndex + 1) % SUBMIT_ACTIONS.length;
+			this.submitActionIndex = (this.submitActionIndex + 1) % SUBMIT_ACTIONS.length;
 			this.host.requestRender();
 			return;
 		}
@@ -405,10 +382,7 @@ export class HumanRequestMenu implements Component {
 
 	private assembleResponse(entry: PendingEntry): HumanResponse {
 		if (entry.request.kind === "questions") {
-			return {
-				kind: "questions",
-				answers: entry.questions.map((question) => questionAnswer(question)),
-			};
+			return { kind: "questions", answers: entry.questions.map((question) => questionAnswer(question)) };
 		}
 		const question = entry.questions[0];
 		if (!question) return fallbackResponse(entry.request);
@@ -416,25 +390,17 @@ export class HumanRequestMenu implements Component {
 			return { kind: "confirm", confirmed: question.single === "yes" };
 		}
 		if (question.kind === "multi-select") {
-			return {
-				kind: "multi-select",
-				values:
-					question.multi.size > 0 ? this.selectedValues(question) : undefined,
-			};
+			return { kind: "multi-select", values: question.multi.size > 0 ? this.selectedValues(question) : undefined };
 		}
 		return { kind: "select", value: question.single };
 	}
 
 	private selectedValues(question: QuestionState): string[] {
-		return question.options
-			.filter((option) => question.multi.has(option.value))
-			.map((option) => option.value);
+		return question.options.filter((option) => question.multi.has(option.value)).map((option) => option.value);
 	}
 
 	private isAnswered(question: QuestionState): boolean {
-		return question.kind === "multi-select"
-			? question.multi.size > 0
-			: question.single !== undefined;
+		return question.kind === "multi-select" ? question.multi.size > 0 : question.single !== undefined;
 	}
 
 	// ── Rendering ─────────────────────────────────────────────────────────
@@ -458,8 +424,7 @@ export class HumanRequestMenu implements Component {
 			this.pushSubmitView(lines, width);
 		} else {
 			const entry = this.entries[tab.entry];
-			if (entry && tab.kind === "input")
-				this.pushInputView(lines, entry, width);
+			if (entry && tab.kind === "input") this.pushInputView(lines, entry, width);
 			else if (entry && tab.kind === "question") {
 				const question = entry.questions[tab.question];
 				if (question) this.pushQuestionView(lines, entry, question, width);
@@ -474,20 +439,14 @@ export class HumanRequestMenu implements Component {
 		this.tabs().forEach((tab, index) => {
 			const active = index === this.focusedTab;
 			if (tab.kind === "submit") {
-				chips.push(
-					active ? theme.selection("● Submit") : theme.dim("○ Submit"),
-				);
+				chips.push(active ? theme.selection("● Submit") : theme.dim("○ Submit"));
 				return;
 			}
 			const entry = this.entries[tab.entry];
 			if (!entry) return;
 			if (tab.kind === "input") {
 				const label = `${this.resolveAgentLabel(entry.request.agentId)} · input`;
-				chips.push(
-					active
-						? theme.selection(`● ${singleLine(label, 40)}`)
-						: theme.dim(`○ ${singleLine(label, 40)}`),
-				);
+				chips.push(active ? theme.selection(`● ${singleLine(label, 40)}`) : theme.dim(`○ ${singleLine(label, 40)}`));
 				return;
 			}
 			const question = entry.questions[tab.question];
@@ -498,19 +457,10 @@ export class HumanRequestMenu implements Component {
 			else chips.push(theme.dim(`○ ${label}`));
 		});
 		const row = chips.join(theme.dim("  "));
-		lines.push(
-			visibleWidth(row) > width
-				? truncateToWidth(row, Math.max(1, width - 1), "…")
-				: row,
-		);
+		lines.push(visibleWidth(row) > width ? truncateToWidth(row, Math.max(1, width - 1), "…") : row);
 	}
 
-	private pushQuestionView(
-		lines: string[],
-		entry: PendingEntry,
-		question: QuestionState,
-		width: number,
-	): void {
+	private pushQuestionView(lines: string[], entry: PendingEntry, question: QuestionState, width: number): void {
 		this.pushHeading(lines, entry, width);
 		// For a batch, each question carries its own title line; a single-question
 		// entry is already headed by the request title.
@@ -519,13 +469,8 @@ export class HumanRequestMenu implements Component {
 		}
 		const message = question.message ?? entry.request.message;
 		if (message) {
-			for (const line of boundedText(message, {
-				maxLines: 12,
-				maxCharacters: 2_000,
-			}).split("\n")) {
-				lines.push(
-					theme.dim(truncateToWidth(line, Math.max(1, width - 2), "…")),
-				);
+			for (const line of boundedText(message, { maxLines: 12, maxCharacters: 2_000 }).split("\n")) {
+				lines.push(theme.dim(truncateToWidth(line, Math.max(1, width - 2), "…")));
 			}
 		}
 		lines.push("");
@@ -538,15 +483,11 @@ export class HumanRequestMenu implements Component {
 			}
 		}
 		if (start > 0 || end < question.options.length) {
-			lines.push(
-				theme.faint(`   (${question.cursor + 1}/${question.options.length})`),
-			);
+			lines.push(theme.faint(`   (${question.cursor + 1}/${question.options.length})`));
 		}
 		lines.push("");
-		const numbers =
-			question.options.length <= 1 ? "1" : `1-${question.options.length}`;
-		const pick =
-			question.kind === "multi-select" ? "space/# toggle" : `${numbers} choose`;
+		const numbers = question.options.length <= 1 ? "1" : `1-${question.options.length}`;
+		const pick = question.kind === "multi-select" ? "space/# toggle" : `${numbers} choose`;
 		lines.push(theme.dim(`↑/↓ move · ${pick} · ←/→ tabs · esc cancel`));
 	}
 
@@ -558,9 +499,7 @@ export class HumanRequestMenu implements Component {
 	): string[] {
 		const isCursor = index === question.cursor;
 		const isSelected =
-			question.kind === "multi-select"
-				? question.multi.has(option.value)
-				: question.single === option.value;
+			question.kind === "multi-select" ? question.multi.has(option.value) : question.single === option.value;
 		let prefix: string;
 		if (question.kind === "multi-select") {
 			prefix = `  [${isSelected ? "✓" : " "}] `;
@@ -583,14 +522,10 @@ export class HumanRequestMenu implements Component {
 			label = `${option.label}: ${question.freeValue}`;
 		}
 		const room = Math.max(1, width - visibleWidth(prefix) - 1);
-		const rows = [
-			tone(`${prefix}${truncateToWidth(singleLine(label, 400), room, "…")}`),
-		];
+		const rows = [tone(`${prefix}${truncateToWidth(singleLine(label, 400), room, "…")}`)];
 		if (option.description) {
 			rows.push(
-				theme.muted(
-					`      ${truncateToWidth(singleLine(option.description, 400), Math.max(1, width - 7), "…")}`,
-				),
+				theme.muted(`      ${truncateToWidth(singleLine(option.description, 400), Math.max(1, width - 7), "…")}`),
 			);
 		}
 		return rows;
@@ -606,9 +541,7 @@ export class HumanRequestMenu implements Component {
 			if (entry.mode !== "deferred") continue;
 			for (const question of entry.questions) {
 				const title = question.title || entry.request.title;
-				lines.push(
-					`  ${theme.dim("Q")} ${truncateToWidth(singleLine(title, 400), Math.max(1, width - 5), "…")}`,
-				);
+				lines.push(`  ${theme.dim("Q")} ${truncateToWidth(singleLine(title, 400), Math.max(1, width - 5), "…")}`);
 				const answer = this.answerSummary(question);
 				lines.push(
 					answer === undefined
@@ -620,30 +553,17 @@ export class HumanRequestMenu implements Component {
 		lines.push("");
 		SUBMIT_ACTIONS.forEach((label, index) => {
 			const active = index === this.submitActionIndex;
-			lines.push(
-				active
-					? theme.selection(`  → [${index + 1}] ${label}`)
-					: theme.dim(`    [${index + 1}] ${label}`),
-			);
+			lines.push(active ? theme.selection(`  → [${index + 1}] ${label}`) : theme.dim(`    [${index + 1}] ${label}`));
 		});
 		lines.push("");
 		lines.push(theme.dim("↑/↓ select · 1/2 choose · ↵ confirm · ←/→ tabs"));
 	}
 
-	private pushInputView(
-		lines: string[],
-		entry: PendingEntry,
-		width: number,
-	): void {
+	private pushInputView(lines: string[], entry: PendingEntry, width: number): void {
 		this.pushHeading(lines, entry, width);
 		if (entry.request.message) {
-			for (const line of boundedText(entry.request.message, {
-				maxLines: 12,
-				maxCharacters: 2_000,
-			}).split("\n")) {
-				lines.push(
-					theme.dim(truncateToWidth(line, Math.max(1, width - 2), "…")),
-				);
+			for (const line of boundedText(entry.request.message, { maxLines: 12, maxCharacters: 2_000 }).split("\n")) {
+				lines.push(theme.dim(truncateToWidth(line, Math.max(1, width - 2), "…")));
 			}
 		}
 		if (entry.request.placeholder && !entry.input?.getValue()) {
@@ -657,11 +577,7 @@ export class HumanRequestMenu implements Component {
 		lines.push(theme.dim("enter submit · ←/→ tabs · esc cancel"));
 	}
 
-	private pushHeading(
-		lines: string[],
-		entry: PendingEntry,
-		width: number,
-	): void {
+	private pushHeading(lines: string[], entry: PendingEntry, width: number): void {
 		const agentLabel = this.resolveAgentLabel(entry.request.agentId);
 		const provisional = entry.request.provisional ? " · provisional" : "";
 		lines.push(
@@ -682,9 +598,7 @@ export class HumanRequestMenu implements Component {
 	private renderPendingHint(width: number): string[] {
 		const keys = getKeybindings().getKeys("app.request.open");
 		const count = this.entries.length;
-		const hint = `${count} pending request${count > 1 ? "s" : ""}${
-			keys[0] ? ` · ${keys[0]} to answer` : ""
-		}`;
+		const hint = `${count} pending request${count > 1 ? "s" : ""}${keys[0] ? ` · ${keys[0]} to answer` : ""}`;
 		return [truncateToWidth(theme.warn(`! ${hint}`), width, "…")];
 	}
 
@@ -698,17 +612,12 @@ export class HumanRequestMenu implements Component {
 		}
 		if (question.single === undefined) return undefined;
 		if (question.freeValue !== undefined) return question.freeValue;
-		return (
-			question.options.find((option) => option.value === question.single)
-				?.label ?? question.single
-		);
+		return question.options.find((option) => option.value === question.single)?.label ?? question.single;
 	}
 
 	private hasUnanswered(): boolean {
 		return this.entries.some(
-			(entry) =>
-				entry.mode === "deferred" &&
-				entry.questions.some((question) => !this.isAnswered(question)),
+			(entry) => entry.mode === "deferred" && entry.questions.some((question) => !this.isAnswered(question)),
 		);
 	}
 
@@ -749,9 +658,7 @@ export class HumanRequestMenu implements Component {
 	private openEntry(entryIndex: number): void {
 		if (this.closed || this.entries.length === 0) return;
 		const tabs = this.tabs();
-		const index = tabs.findIndex(
-			(tab) => tab.kind !== "submit" && tab.entry === entryIndex,
-		);
+		const index = tabs.findIndex((tab) => tab.kind !== "submit" && tab.entry === entryIndex);
 		this.focusedTab = index >= 0 ? index : 0;
 		this.opened = true;
 		this.state.mode = "human-request";
@@ -777,15 +684,7 @@ export class HumanRequestMenu implements Component {
 		// buildInput's onSubmit closes over this exact entry object, so every
 		// path must attach the input to it and return it unchanged — never a
 		// spread copy, or finish() would target an entry that is not in the list.
-		const entry: PendingEntry = {
-			request,
-			signal,
-			resolve,
-			reject,
-			settled: false,
-			mode: "deferred",
-			questions: [],
-		};
+		const entry: PendingEntry = { request, signal, resolve, reject, settled: false, mode: "deferred", questions: [] };
 		if (request.kind === "input" || request.kind === "custom") {
 			entry.mode = "input";
 			entry.input = this.buildInput(entry);
@@ -805,12 +704,10 @@ export class HumanRequestMenu implements Component {
 				const options = normalizeHumanRequestOptions(question.options);
 				if (options.length === 0) continue;
 				entry.questions.push(
-					makeQuestion(
-						question.multiSelect ? "multi-select" : "select",
-						question.title,
-						options,
-						{ header: question.header, message: question.message },
-					),
+					makeQuestion(question.multiSelect ? "multi-select" : "select", question.title, options, {
+						header: question.header,
+						message: question.message,
+					}),
 				);
 			}
 			if (entry.questions.length === 0) {
@@ -892,11 +789,7 @@ function makeQuestion(
 	kind: QuestionState["kind"],
 	title: string,
 	options: NormalizedHumanRequestOption[],
-	extra: {
-		header?: string;
-		message?: string;
-		allowFreeInput?: boolean;
-	} = {},
+	extra: { header?: string; message?: string; allowFreeInput?: boolean } = {},
 ): QuestionState {
 	return {
 		kind,
@@ -918,9 +811,7 @@ function questionAnswer(question: QuestionState): HumanQuestionAnswer {
 		}
 		return {
 			kind: "multi-select",
-			values: question.options
-				.filter((option) => question.multi.has(option.value))
-				.map((option) => option.value),
+			values: question.options.filter((option) => question.multi.has(option.value)).map((option) => option.value),
 		};
 	}
 	return { kind: "select", value: question.single };
@@ -928,13 +819,7 @@ function questionAnswer(question: QuestionState): HumanQuestionAnswer {
 
 function windowStart(cursor: number, total: number): number {
 	if (total <= MAX_VISIBLE_OPTIONS) return 0;
-	return Math.max(
-		0,
-		Math.min(
-			cursor - Math.floor(MAX_VISIBLE_OPTIONS / 2),
-			total - MAX_VISIBLE_OPTIONS,
-		),
-	);
+	return Math.max(0, Math.min(cursor - Math.floor(MAX_VISIBLE_OPTIONS / 2), total - MAX_VISIBLE_OPTIONS));
 }
 
 function fallbackResponse(request: HumanRequestEnvelope): HumanResponse {
@@ -949,9 +834,7 @@ function fallbackResponse(request: HumanRequestEnvelope): HumanResponse {
 			return {
 				kind: "questions",
 				answers: (request.questions ?? []).map((question) =>
-					question.multiSelect
-						? { kind: "multi-select", values: undefined }
-						: { kind: "select", value: undefined },
+					question.multiSelect ? { kind: "multi-select", values: undefined } : { kind: "select", value: undefined },
 				),
 			};
 		case "custom":

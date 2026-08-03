@@ -1,22 +1,9 @@
 import { formatError } from "../utils/errors.ts";
-import {
-	type OrchestratorDiagnostic,
-	OrchestratorError,
-	toDiagnostic,
-} from "./diagnostics.ts";
-import {
-	agentIdFromOperationSource,
-	type OperationSource,
-} from "./operation-source.ts";
+import { type OrchestratorDiagnostic, OrchestratorError, toDiagnostic } from "./diagnostics.ts";
+import { agentIdFromOperationSource, type OperationSource } from "./operation-source.ts";
 import type { AgentId } from "./types.ts";
 
-export type HumanRequestKind =
-	| "confirm"
-	| "select"
-	| "multi-select"
-	| "questions"
-	| "input"
-	| "custom";
+export type HumanRequestKind = "confirm" | "select" | "multi-select" | "questions" | "input" | "custom";
 
 /**
  * One question inside a kind="questions" batch. Each question is a choice
@@ -68,11 +55,7 @@ export function normalizeHumanRequestOptions(
 	return options.map((option) =>
 		typeof option === "string"
 			? { value: option, label: option }
-			: {
-					value: option.value ?? option.label,
-					label: option.label,
-					description: option.description,
-				},
+			: { value: option.value ?? option.label, label: option.label, description: option.description },
 	);
 }
 
@@ -123,11 +106,7 @@ export interface ToolHumanHost {
 }
 
 export type HumanRequestEvent =
-	| {
-			readonly type: "human_request_pending";
-			agentId?: AgentId;
-			request: HumanRequestEnvelope;
-	  }
+	| { readonly type: "human_request_pending"; agentId?: AgentId; request: HumanRequestEnvelope }
 	| {
 			readonly type: "human_request_resolved";
 			agentId?: AgentId;
@@ -135,12 +114,7 @@ export type HumanRequestEvent =
 			response: HumanResponse;
 			completedAt: string;
 	  }
-	| {
-			readonly type: "human_request_timeout";
-			agentId?: AgentId;
-			requestId: string;
-			completedAt: string;
-	  }
+	| { readonly type: "human_request_timeout"; agentId?: AgentId; requestId: string; completedAt: string }
 	| {
 			readonly type: "human_request_cancelled";
 			agentId?: AgentId;
@@ -149,21 +123,13 @@ export type HumanRequestEvent =
 			completedAt: string;
 	  };
 
-export type HumanRequestHandler = (
-	request: HumanRequestEnvelope,
-	signal?: AbortSignal,
-) => Promise<HumanResponse>;
+export type HumanRequestHandler = (request: HumanRequestEnvelope, signal?: AbortSignal) => Promise<HumanResponse>;
 
 export interface HumanRequestBrokerHost {
 	findHumanRequestHandler(): HumanRequestHandler | undefined;
 	emit(event: HumanRequestEvent): Promise<void>;
 	publishDiagnostic(diagnostic: OrchestratorDiagnostic): Promise<void>;
-	recordAgentLifecycleFailure(
-		agentId: AgentId,
-		code: string,
-		message: string,
-		error: unknown,
-	): Promise<void>;
+	recordAgentLifecycleFailure(agentId: AgentId, code: string, message: string, error: unknown): Promise<void>;
 }
 
 interface PendingHumanRequest {
@@ -173,31 +139,21 @@ interface PendingHumanRequest {
 
 export class HumanRequestBroker {
 	private readonly host: HumanRequestBrokerHost;
-	private readonly pendingRequests: Map<string, PendingHumanRequest> =
-		new Map();
+	private readonly pendingRequests: Map<string, PendingHumanRequest> = new Map();
 	private nextRequestId = 1;
 
 	constructor(host: HumanRequestBrokerHost) {
 		this.host = host;
 	}
 
-	async request(
-		request: HumanRequest,
-		options: { agentId?: AgentId } = {},
-	): Promise<HumanResponse> {
+	async request(request: HumanRequest, options: { agentId?: AgentId } = {}): Promise<HumanResponse> {
 		const requestHuman = this.host.findHumanRequestHandler();
 		const requestId = this.createRequestId();
-		const agentId =
-			options.agentId ?? agentIdFromOperationSource(request.source);
+		const agentId = options.agentId ?? agentIdFromOperationSource(request.source);
 		// The caller's signal must not travel inside the envelope: handlers get
 		// the broker-owned signal as a separate argument.
 		const { signal: _callerSignal, ...requestFacts } = request;
-		const envelope: HumanRequestEnvelope = {
-			...requestFacts,
-			id: requestId,
-			agentId,
-			createdAt: now(),
-		};
+		const envelope: HumanRequestEnvelope = { ...requestFacts, id: requestId, agentId, createdAt: now() };
 
 		if (!requestHuman) {
 			const diagnostic: OrchestratorDiagnostic = {
@@ -237,10 +193,7 @@ export class HumanRequestBroker {
 						controller.signal.removeEventListener("abort", abortHandler);
 					}
 				};
-				const rejectWithDiagnostic = (
-					diagnostic: OrchestratorDiagnostic,
-					beforeReject?: () => void,
-				) => {
+				const rejectWithDiagnostic = (diagnostic: OrchestratorDiagnostic, beforeReject?: () => void) => {
 					if (settled) return;
 					settled = true;
 					cleanup();
@@ -255,33 +208,21 @@ export class HumanRequestBroker {
 						agentId,
 					});
 				};
-				controller.signal.addEventListener("abort", abortHandler, {
-					once: true,
-				});
+				controller.signal.addEventListener("abort", abortHandler, { once: true });
 				if (request.signal?.aborted) {
 					controller.abort();
 				} else {
-					request.signal?.addEventListener("abort", abortFromCaller, {
-						once: true,
-					});
+					request.signal?.addEventListener("abort", abortFromCaller, { once: true });
 					callerAbortRegistered = request.signal !== undefined;
 				}
 				cancelPending = async (reason) => {
 					if (settled) return;
-					await this.host.emit({
-						type: "human_request_cancelled",
-						agentId,
-						requestId,
-						reason,
-						completedAt: now(),
-					});
+					await this.host.emit({ type: "human_request_cancelled", agentId, requestId, reason, completedAt: now() });
 					rejectWithDiagnostic(
 						{
 							severity: "error",
 							code: "orchestrator.human_request_cancelled",
-							message: reason
-								? `Human request was cancelled: ${reason}`
-								: "Human request was cancelled.",
+							message: reason ? `Human request was cancelled: ${reason}` : "Human request was cancelled.",
 							agentId,
 						},
 						() => controller.abort(),
@@ -289,12 +230,7 @@ export class HumanRequestBroker {
 				};
 				if (request.timeoutMs !== undefined) {
 					timeoutId = setTimeout(() => {
-						void this.host.emit({
-							type: "human_request_timeout",
-							agentId,
-							requestId,
-							completedAt: now(),
-						});
+						void this.host.emit({ type: "human_request_timeout", agentId, requestId, completedAt: now() });
 						rejectWithDiagnostic(
 							{
 								severity: "error",
@@ -321,24 +257,11 @@ export class HumanRequestBroker {
 					},
 				);
 			});
-			this.pendingRequests.set(requestId, {
-				agentId,
-				cancel: (reason) => cancelPending(reason),
-			});
-			await this.host.emit({
-				type: "human_request_pending",
-				agentId,
-				request: envelope,
-			});
+			this.pendingRequests.set(requestId, { agentId, cancel: (reason) => cancelPending(reason) });
+			await this.host.emit({ type: "human_request_pending", agentId, request: envelope });
 			const response = await responsePromise;
 			this.pendingRequests.delete(requestId);
-			await this.host.emit({
-				type: "human_request_resolved",
-				agentId,
-				requestId,
-				response,
-				completedAt: now(),
-			});
+			await this.host.emit({ type: "human_request_resolved", agentId, requestId, response, completedAt: now() });
 			return response;
 		} catch (error) {
 			this.pendingRequests.delete(requestId);
@@ -348,8 +271,7 @@ export class HumanRequestBroker {
 				agentId,
 			});
 			const withdrawnProvisional =
-				request.provisional === true &&
-				diagnostic.code === "orchestrator.human_request_aborted";
+				request.provisional === true && diagnostic.code === "orchestrator.human_request_aborted";
 			if (!withdrawnProvisional) {
 				await this.host.publishDiagnostic(diagnostic);
 			}

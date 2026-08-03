@@ -10,12 +10,8 @@ import {
 import { resolveToCwd } from "./path-utils.ts";
 
 const writeSchema = Type.Object({
-	path: Type.String({
-		description: "Path to the file to write, relative to cwd or absolute.",
-	}),
-	content: Type.String({
-		description: "Content to write to the file.",
-	}),
+	path: Type.String({ description: "Path to the file to write, relative to cwd or absolute." }),
+	content: Type.String({ description: "Content to write to the file." }),
 });
 
 export type WriteToolInput = Static<typeof writeSchema>;
@@ -28,18 +24,14 @@ export interface WriteToolDetails {
 }
 
 export interface WriteToolOptions {
-	operations?: Pick<
-		CodingToolFileOperations,
-		"access" | "mkdir" | "writeFile" | "realpath"
-	>;
+	operations?: Pick<CodingToolFileOperations, "access" | "mkdir" | "writeFile" | "realpath">;
 }
 
 export function createWriteToolDefinition(
 	cwd: string,
 	options: WriteToolOptions = {},
 ): ToolDefinition<typeof writeSchema, WriteToolDetails> {
-	const operations =
-		options.operations ?? createLocalCodingToolFileOperations();
+	const operations = options.operations ?? createLocalCodingToolFileOperations();
 
 	return {
 		name: "write",
@@ -47,9 +39,7 @@ export function createWriteToolDefinition(
 		description:
 			"Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
 		promptSnippet: "Create or overwrite files",
-		promptGuidelines: [
-			"Use write only for new files or complete rewrites; use edit for partial changes.",
-		],
+		promptGuidelines: ["Use write only for new files or complete rewrites; use edit for partial changes."],
 		parameters: writeSchema,
 		execute: async (_toolCallId, input, context) => {
 			const absolutePath = resolveToCwd(input.path, cwd);
@@ -71,18 +61,8 @@ export function createWriteToolDefinition(
 
 					const bytes = Buffer.byteLength(input.content, "utf-8");
 					return {
-						content: [
-							{
-								type: "text" as const,
-								text: `Successfully wrote ${bytes} bytes to ${input.path}`,
-							},
-						],
-						details: {
-							path: input.path,
-							absolutePath,
-							bytes,
-							created,
-						},
+						content: [{ type: "text" as const, text: `Successfully wrote ${bytes} bytes to ${input.path}` }],
+						details: { path: input.path, absolutePath, bytes, created },
 					};
 				},
 				{ operations },

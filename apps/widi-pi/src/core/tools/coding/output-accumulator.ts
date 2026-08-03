@@ -2,12 +2,7 @@ import { randomBytes } from "node:crypto";
 import { createWriteStream, type WriteStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	DEFAULT_MAX_BYTES,
-	DEFAULT_MAX_LINES,
-	type TruncationResult,
-	truncateTail,
-} from "./truncate.ts";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type TruncationResult, truncateTail } from "./truncate.ts";
 
 export interface OutputAccumulatorOptions {
 	maxLines?: number;
@@ -94,15 +89,10 @@ export class OutputAccumulator {
 	}
 
 	snapshot(options: { persistIfTruncated?: boolean } = {}): OutputSnapshot {
-		const tailTruncation = truncateTail(this.getSnapshotText(), {
-			maxLines: this.maxLines,
-			maxBytes: this.maxBytes,
-		});
-		const truncated =
-			this.totalLines > this.maxLines || this.totalDecodedBytes > this.maxBytes;
+		const tailTruncation = truncateTail(this.getSnapshotText(), { maxLines: this.maxLines, maxBytes: this.maxBytes });
+		const truncated = this.totalLines > this.maxLines || this.totalDecodedBytes > this.maxBytes;
 		const truncatedBy = truncated
-			? (tailTruncation.truncatedBy ??
-				(this.totalDecodedBytes > this.maxBytes ? "bytes" : "lines"))
+			? (tailTruncation.truncatedBy ?? (this.totalDecodedBytes > this.maxBytes ? "bytes" : "lines"))
 			: null;
 		const truncation: TruncationResult = {
 			...tailTruncation,
@@ -118,11 +108,7 @@ export class OutputAccumulator {
 			this.ensureTempFile();
 		}
 
-		return {
-			content: truncation.content,
-			truncation,
-			fullOutputPath: this.tempFilePath,
-		};
+		return { content: truncation.content, truncation, fullOutputPath: this.tempFilePath };
 	}
 
 	async closeTempFile(): Promise<void> {
@@ -195,8 +181,7 @@ export class OutputAccumulator {
 			start++;
 		}
 
-		this.tailStartsAtLineBoundary =
-			start === 0 ? this.tailStartsAtLineBoundary : buffer[start - 1] === 0x0a;
+		this.tailStartsAtLineBoundary = start === 0 ? this.tailStartsAtLineBoundary : buffer[start - 1] === 0x0a;
 		this.tailText = buffer.subarray(start).toString("utf-8");
 		this.tailBytes = byteLength(this.tailText);
 	}
@@ -207,16 +192,12 @@ export class OutputAccumulator {
 		}
 
 		const firstNewline = this.tailText.indexOf("\n");
-		return firstNewline === -1
-			? this.tailText
-			: this.tailText.slice(firstNewline + 1);
+		return firstNewline === -1 ? this.tailText : this.tailText.slice(firstNewline + 1);
 	}
 
 	private shouldUseTempFile(): boolean {
 		return (
-			this.totalRawBytes > this.maxBytes ||
-			this.totalDecodedBytes > this.maxBytes ||
-			this.totalLines > this.maxLines
+			this.totalRawBytes > this.maxBytes || this.totalDecodedBytes > this.maxBytes || this.totalLines > this.maxLines
 		);
 	}
 

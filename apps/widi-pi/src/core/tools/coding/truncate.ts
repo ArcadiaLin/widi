@@ -31,10 +31,7 @@ export function formatSize(bytes: number): string {
 	return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-export function truncateHead(
-	content: string,
-	options: TruncationOptions = {},
-): TruncationResult {
+export function truncateHead(content: string, options: TruncationOptions = {}): TruncationResult {
 	const maxLines = options.maxLines ?? DEFAULT_MAX_LINES;
 	const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
 	const totalBytes = Buffer.byteLength(content, "utf-8");
@@ -117,10 +114,7 @@ export function truncateHead(
  * results). May return a partial first line when the last line of the original
  * content on its own exceeds the byte limit.
  */
-export function truncateTail(
-	content: string,
-	options: TruncationOptions = {},
-): TruncationResult {
+export function truncateTail(content: string, options: TruncationOptions = {}): TruncationResult {
 	const maxLines = options.maxLines ?? DEFAULT_MAX_LINES;
 	const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
 	const totalBytes = Buffer.byteLength(content, "utf-8");
@@ -150,8 +144,7 @@ export function truncateTail(
 
 	for (let i = lines.length - 1; i >= 0 && outputLines.length < maxLines; i--) {
 		const line = lines[i];
-		const lineBytes =
-			Buffer.byteLength(line, "utf-8") + (outputLines.length > 0 ? 1 : 0);
+		const lineBytes = Buffer.byteLength(line, "utf-8") + (outputLines.length > 0 ? 1 : 0);
 		if (outputBytes + lineBytes > maxBytes) {
 			truncatedBy = "bytes";
 			// No line has fit yet and this one alone exceeds the limit: keep its tail.
@@ -199,10 +192,7 @@ export function truncateLine(
 	if (line.length <= maxChars) {
 		return { text: line, wasTruncated: false };
 	}
-	return {
-		text: `${line.slice(0, maxChars)}... [truncated]`,
-		wasTruncated: true,
-	};
+	return { text: `${line.slice(0, maxChars)}... [truncated]`, wasTruncated: true };
 }
 
 /**

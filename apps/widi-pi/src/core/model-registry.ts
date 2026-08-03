@@ -44,10 +44,7 @@ import { mistralConversationsApi } from "@earendil-works/pi-ai/api/mistral-conve
 import { openAICodexResponsesApi } from "@earendil-works/pi-ai/api/openai-codex-responses.lazy";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
-import {
-	builtinProviders,
-	getBuiltinProviders,
-} from "@earendil-works/pi-ai/providers/all";
+import { builtinProviders, getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
 import type { ExecutionEnv, ThinkingLevel } from "@widi/agent-core";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
@@ -67,9 +64,7 @@ const PercentileCutoffsSchema = Type.Object({
 const OpenRouterRoutingSchema = Type.Object({
 	allow_fallbacks: Type.Optional(Type.Boolean()),
 	require_parameters: Type.Optional(Type.Boolean()),
-	data_collection: Type.Optional(
-		Type.Union([Type.Literal("deny"), Type.Literal("allow")]),
-	),
+	data_collection: Type.Optional(Type.Union([Type.Literal("deny"), Type.Literal("allow")])),
 	zdr: Type.Optional(Type.Boolean()),
 	enforce_distillable_text: Type.Optional(Type.Boolean()),
 	order: Type.Optional(Type.Array(Type.String())),
@@ -94,12 +89,8 @@ const OpenRouterRoutingSchema = Type.Object({
 			request: Type.Optional(Type.Union([Type.Number(), Type.String()])),
 		}),
 	),
-	preferred_min_throughput: Type.Optional(
-		Type.Union([Type.Number(), PercentileCutoffsSchema]),
-	),
-	preferred_max_latency: Type.Optional(
-		Type.Union([Type.Number(), PercentileCutoffsSchema]),
-	),
+	preferred_min_throughput: Type.Optional(Type.Union([Type.Number(), PercentileCutoffsSchema])),
+	preferred_max_latency: Type.Optional(Type.Union([Type.Number(), PercentileCutoffsSchema])),
 });
 
 const VercelGatewayRoutingSchema = Type.Object({
@@ -122,12 +113,7 @@ const OpenAICompletionsCompatSchema = Type.Object({
 	supportsDeveloperRole: Type.Optional(Type.Boolean()),
 	supportsReasoningEffort: Type.Optional(Type.Boolean()),
 	supportsUsageInStreaming: Type.Optional(Type.Boolean()),
-	maxTokensField: Type.Optional(
-		Type.Union([
-			Type.Literal("max_completion_tokens"),
-			Type.Literal("max_tokens"),
-		]),
-	),
+	maxTokensField: Type.Optional(Type.Union([Type.Literal("max_completion_tokens"), Type.Literal("max_tokens")])),
 	requiresToolResultName: Type.Optional(Type.Boolean()),
 	requiresAssistantAfterToolResult: Type.Optional(Type.Boolean()),
 	requiresThinkingAsText: Type.Optional(Type.Boolean()),
@@ -177,16 +163,9 @@ const ModelDefinitionSchema = Type.Object({
 	baseUrl: Type.Optional(Type.String({ minLength: 1 })),
 	reasoning: Type.Optional(Type.Boolean()),
 	thinkingLevelMap: Type.Optional(ThinkingLevelMapSchema),
-	input: Type.Optional(
-		Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")])),
-	),
+	input: Type.Optional(Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")]))),
 	cost: Type.Optional(
-		Type.Object({
-			input: Type.Number(),
-			output: Type.Number(),
-			cacheRead: Type.Number(),
-			cacheWrite: Type.Number(),
-		}),
+		Type.Object({ input: Type.Number(), output: Type.Number(), cacheRead: Type.Number(), cacheWrite: Type.Number() }),
 	),
 	contextWindow: Type.Optional(Type.Number()),
 	maxTokens: Type.Optional(Type.Number()),
@@ -198,9 +177,7 @@ const ModelOverrideSchema = Type.Object({
 	name: Type.Optional(Type.String({ minLength: 1 })),
 	reasoning: Type.Optional(Type.Boolean()),
 	thinkingLevelMap: Type.Optional(ThinkingLevelMapSchema),
-	input: Type.Optional(
-		Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")])),
-	),
+	input: Type.Optional(Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")]))),
 	cost: Type.Optional(
 		Type.Object({
 			input: Type.Optional(Type.Number()),
@@ -226,14 +203,10 @@ const ProviderConfigSchema = Type.Object({
 	compat: Type.Optional(ProviderCompatSchema),
 	authHeader: Type.Optional(Type.Boolean()),
 	models: Type.Optional(Type.Array(ModelDefinitionSchema)),
-	modelOverrides: Type.Optional(
-		Type.Record(Type.String(), ModelOverrideSchema),
-	),
+	modelOverrides: Type.Optional(Type.Record(Type.String(), ModelOverrideSchema)),
 });
 
-const ModelsConfigSchema = Type.Object({
-	providers: Type.Record(Type.String(), ProviderConfigSchema),
-});
+const ModelsConfigSchema = Type.Object({ providers: Type.Record(Type.String(), ProviderConfigSchema) });
 
 const validateModelsConfig = Compile(ModelsConfigSchema);
 type ModelsConfig = Static<typeof ModelsConfigSchema>;
@@ -250,20 +223,11 @@ interface ProviderRequestConfig {
 }
 
 export type ResolvedRequestAuth =
-	| {
-			ok: true;
-			apiKey?: string;
-			headers?: ProviderHeaders;
-	  }
-	| {
-			ok: false;
-			error: string;
-	  };
+	| { ok: true; apiKey?: string; headers?: ProviderHeaders }
+	| { ok: false; error: string };
 
 export type ModelDiagnostic = CoreDiagnostic;
-type DiagnosticPublisher = (
-	diagnostics: readonly ModelDiagnostic[],
-) => Promise<void> | void;
+type DiagnosticPublisher = (diagnostics: readonly ModelDiagnostic[]) => Promise<void> | void;
 
 interface CustomModelsResult {
 	models: Model<Api>[];
@@ -277,20 +241,11 @@ export interface ExtensionProviderProvenance {
 	agentId: string;
 }
 
-export type ExtensionProviderConflict =
-	| "builtin"
-	| "extension"
-	| "models_json"
-	| "runtime";
+export type ExtensionProviderConflict = "builtin" | "extension" | "models_json" | "runtime";
 
 export type ExtensionProviderRegistrationResult =
 	| { ok: true }
-	| {
-			ok: false;
-			reason: "conflict";
-			conflictWith: ExtensionProviderConflict;
-			ownerExtensionId?: string;
-	  }
+	| { ok: false; reason: "conflict"; conflictWith: ExtensionProviderConflict; ownerExtensionId?: string }
 	| { ok: false; reason: "invalid"; message: string };
 
 export interface ExtensionProviderRegistrationSnapshot {
@@ -316,18 +271,13 @@ export function modelReference(model: Model<Api>): string {
 	return `${model.provider}/${model.id}`;
 }
 
-export function parseModelReference(
-	reference: string,
-): { provider: string; modelId: string } | undefined {
+export function parseModelReference(reference: string): { provider: string; modelId: string } | undefined {
 	const trimmed = reference.trim();
 	const slashIndex = trimmed.indexOf("/");
 	if (slashIndex <= 0 || slashIndex === trimmed.length - 1) {
 		return undefined;
 	}
-	return {
-		provider: trimmed.slice(0, slashIndex),
-		modelId: trimmed.slice(slashIndex + 1),
-	};
+	return { provider: trimmed.slice(0, slashIndex), modelId: trimmed.slice(slashIndex + 1) };
 }
 
 export const THINKING_LEVEL_SET = {
@@ -340,24 +290,15 @@ export const THINKING_LEVEL_SET = {
 	max: true,
 } as const satisfies Record<ThinkingLevel | ModelThinkingLevel, true>;
 
-export const THINKING_LEVELS = Object.keys(
-	THINKING_LEVEL_SET,
-) as (keyof typeof THINKING_LEVEL_SET)[];
+export const THINKING_LEVELS = Object.keys(THINKING_LEVEL_SET) as (keyof typeof THINKING_LEVEL_SET)[];
 
 export function parseThinkingLevel(level: string): ThinkingLevel | undefined {
 	const trimmed = level.trim();
-	return THINKING_LEVELS.some((candidate) => candidate === trimmed)
-		? (trimmed as ThinkingLevel)
-		: undefined;
+	return THINKING_LEVELS.some((candidate) => candidate === trimmed) ? (trimmed as ThinkingLevel) : undefined;
 }
 
 function emptyCustomModelsResult(error?: string): CustomModelsResult {
-	return {
-		models: [],
-		providerOverrides: new Map(),
-		modelOverrides: new Map(),
-		error,
-	};
+	return { models: [], providerOverrides: new Map(), modelOverrides: new Map(), error };
 }
 
 function createApiStreams(api: Api): ProviderStreams {
@@ -395,14 +336,10 @@ function providerDisplayName(providerName: string): string {
 
 function formatValidationPath(error: TLocalizedValidationError): string {
 	if (error.keyword === "required") {
-		const requiredProperties = (
-			error.params as { requiredProperties?: string[] }
-		).requiredProperties;
+		const requiredProperties = (error.params as { requiredProperties?: string[] }).requiredProperties;
 		const requiredProperty = requiredProperties?.[0];
 		if (requiredProperty) {
-			const basePath = error.instancePath
-				.replace(/^\//, "")
-				.replace(/\//g, ".");
+			const basePath = error.instancePath.replace(/^\//, "").replace(/\//g, ".");
 			return basePath ? `${basePath}.${requiredProperty}` : requiredProperty;
 		}
 	}
@@ -412,13 +349,10 @@ function formatValidationPath(error: TLocalizedValidationError): string {
 
 function stripJsonComments(input: string): string {
 	return input
-		.replace(/"(?:\\.|[^"\\])*"|\/\/[^\n]*/g, (match) =>
-			match[0] === '"' ? match : "",
-		)
+		.replace(/"(?:\\.|[^"\\])*"|\/\/[^\n]*/g, (match) => (match[0] === '"' ? match : ""))
 		.replace(
 			/"(?:\\.|[^"\\])*"|,(\s*[}\]])/g,
-			(match, tail: string | undefined) =>
-				tail ?? (match[0] === '"' ? match : ""),
+			(match, tail: string | undefined) => tail ?? (match[0] === '"' ? match : ""),
 		);
 }
 
@@ -428,38 +362,22 @@ function mergeCompat(
 ): Model<Api>["compat"] | undefined {
 	if (!overrideCompat) return baseCompat;
 
-	const base = baseCompat as
-		| OpenAICompletionsCompat
-		| OpenAIResponsesCompat
-		| AnthropicMessagesCompat
-		| undefined;
-	const override = overrideCompat as
-		| OpenAICompletionsCompat
-		| OpenAIResponsesCompat
-		| AnthropicMessagesCompat;
-	const merged = { ...base, ...override } as
-		| OpenAICompletionsCompat
-		| OpenAIResponsesCompat
-		| AnthropicMessagesCompat;
+	const base = baseCompat as OpenAICompletionsCompat | OpenAIResponsesCompat | AnthropicMessagesCompat | undefined;
+	const override = overrideCompat as OpenAICompletionsCompat | OpenAIResponsesCompat | AnthropicMessagesCompat;
+	const merged = { ...base, ...override } as OpenAICompletionsCompat | OpenAIResponsesCompat | AnthropicMessagesCompat;
 
 	const baseCompletions = base as OpenAICompletionsCompat | undefined;
 	const overrideCompletions = override as OpenAICompletionsCompat;
 	const mergedCompletions = merged as OpenAICompletionsCompat;
 
-	if (
-		baseCompletions?.openRouterRouting ||
-		overrideCompletions.openRouterRouting
-	) {
+	if (baseCompletions?.openRouterRouting || overrideCompletions.openRouterRouting) {
 		mergedCompletions.openRouterRouting = {
 			...baseCompletions?.openRouterRouting,
 			...overrideCompletions.openRouterRouting,
 		};
 	}
 
-	if (
-		baseCompletions?.vercelGatewayRouting ||
-		overrideCompletions.vercelGatewayRouting
-	) {
+	if (baseCompletions?.vercelGatewayRouting || overrideCompletions.vercelGatewayRouting) {
 		mergedCompletions.vercelGatewayRouting = {
 			...baseCompletions?.vercelGatewayRouting,
 			...overrideCompletions.vercelGatewayRouting,
@@ -475,25 +393,17 @@ function mergeCompat(
  * Nested objects such as cost and compat are merged rather than replaced so
  * models.json can override only the fields it cares about.
  */
-function applyModelOverride(
-	model: Model<Api>,
-	override: ModelOverride,
-): Model<Api> {
+function applyModelOverride(model: Model<Api>, override: ModelOverride): Model<Api> {
 	const result = { ...model };
 
 	// Simple field overrides.
 	if (override.name !== undefined) result.name = override.name;
 	if (override.reasoning !== undefined) result.reasoning = override.reasoning;
 	if (override.thinkingLevelMap !== undefined) {
-		result.thinkingLevelMap = {
-			...model.thinkingLevelMap,
-			...override.thinkingLevelMap,
-		};
+		result.thinkingLevelMap = { ...model.thinkingLevelMap, ...override.thinkingLevelMap };
 	}
-	if (override.input !== undefined)
-		result.input = override.input as ("text" | "image")[];
-	if (override.contextWindow !== undefined)
-		result.contextWindow = override.contextWindow;
+	if (override.input !== undefined) result.input = override.input as ("text" | "image")[];
+	if (override.contextWindow !== undefined) result.contextWindow = override.contextWindow;
 	if (override.maxTokens !== undefined) result.maxTokens = override.maxTokens;
 
 	// Cost is a partial override; missing fields keep the built-in values.
@@ -517,16 +427,10 @@ function applyModelOverride(
 export class ModelRegistry {
 	private readonly runtime: MutableModels;
 	private readonly runtimeWithDiagnostics: Models;
-	private readonly providerRequestConfigs: Map<string, ProviderRequestConfig> =
-		new Map();
-	private readonly modelRequestHeaders: Map<string, Record<string, string>> =
-		new Map();
-	private readonly registeredProviders: Map<string, ProviderConfigInput> =
-		new Map();
-	private readonly extensionProviders: Map<
-		string,
-		ExtensionProviderRegistration
-	> = new Map();
+	private readonly providerRequestConfigs: Map<string, ProviderRequestConfig> = new Map();
+	private readonly modelRequestHeaders: Map<string, Record<string, string>> = new Map();
+	private readonly registeredProviders: Map<string, ProviderConfigInput> = new Map();
+	private readonly extensionProviders: Map<string, ExtensionProviderRegistration> = new Map();
 	private loadError: string | undefined;
 	private loadDiagnostic: ModelDiagnostic | undefined;
 	private diagnostics: ModelDiagnostic[] = [];
@@ -557,17 +461,11 @@ export class ModelRegistry {
 			},
 		});
 		this.authStorage.setOAuthProvidersSource(() =>
-			this.runtime.getProviders().flatMap((provider) =>
-				provider.auth.oauth
-					? [
-							{
-								id: provider.id,
-								name: provider.auth.oauth.name,
-								oauth: provider.auth.oauth,
-							},
-						]
-					: [],
-			),
+			this.runtime
+				.getProviders()
+				.flatMap((provider) =>
+					provider.auth.oauth ? [{ id: provider.id, name: provider.auth.oauth.name, oauth: provider.auth.oauth }] : [],
+				),
 		);
 		this.runtimeWithDiagnostics = new DiagnosticPublishingModels(
 			this.runtime,
@@ -576,9 +474,7 @@ export class ModelRegistry {
 			},
 			async (model) => {
 				return await this.configValueResolver.resolveHeadersOrThrow(
-					this.modelRequestHeaders.get(
-						this.getModelRequestKey(model.provider, model.id),
-					),
+					this.modelRequestHeaders.get(this.getModelRequestKey(model.provider, model.id)),
 					`model "${model.provider}/${model.id}"`,
 				);
 			},
@@ -586,12 +482,8 @@ export class ModelRegistry {
 	}
 
 	static async create(options: ModelRegistryOptions): Promise<ModelRegistry> {
-		const configValueResolver =
-			options.configValueResolver ??
-			new ConfigValueResolver(options.executionEnv);
-		const authStorage =
-			options.authStorage ??
-			AuthStorage.create(options.executionEnv, { configValueResolver });
+		const configValueResolver = options.configValueResolver ?? new ConfigValueResolver(options.executionEnv);
+		const authStorage = options.authStorage ?? AuthStorage.create(options.executionEnv, { configValueResolver });
 		await authStorage.initialize();
 		const registry = new ModelRegistry({
 			executionEnv: options.executionEnv,
@@ -603,14 +495,9 @@ export class ModelRegistry {
 		return registry;
 	}
 
-	static async inMemory(
-		options: Omit<ModelRegistryOptions, "modelsJsonPath">,
-	): Promise<ModelRegistry> {
-		const configValueResolver =
-			options.configValueResolver ??
-			new ConfigValueResolver(options.executionEnv);
-		const authStorage =
-			options.authStorage ?? AuthStorage.inMemory({ configValueResolver });
+	static async inMemory(options: Omit<ModelRegistryOptions, "modelsJsonPath">): Promise<ModelRegistry> {
+		const configValueResolver = options.configValueResolver ?? new ConfigValueResolver(options.executionEnv);
+		const authStorage = options.authStorage ?? AuthStorage.inMemory({ configValueResolver });
 		await authStorage.initialize();
 		const registry = new ModelRegistry({
 			executionEnv: options.executionEnv,
@@ -642,19 +529,12 @@ export class ModelRegistry {
 		// Extension registrations replay last and re-check first-registration-wins:
 		// a models.json edit or runtime registration that claimed the name since
 		// the extension registered drops the extension provider with a diagnostic.
-		for (const [
-			providerName,
-			registration,
-		] of this.extensionProviders.entries()) {
+		for (const [providerName, registration] of this.extensionProviders.entries()) {
 			const conflict = this.findCoreProviderConflict(providerName);
 			if (conflict) {
 				this.extensionProviders.delete(providerName);
 				this.recordModelDiagnostic(
-					createExtensionProviderDroppedDiagnostic(
-						providerName,
-						registration.extensionId,
-						conflict,
-					),
+					createExtensionProviderDroppedDiagnostic(providerName, registration.extensionId, conflict),
 				);
 				continue;
 			}
@@ -729,13 +609,9 @@ export class ModelRegistry {
 		if (this.authStorage.hasAuth(model.provider)) {
 			return true;
 		}
-		const providerApiKey = this.providerRequestConfigs.get(
-			model.provider,
-		)?.apiKey;
+		const providerApiKey = this.providerRequestConfigs.get(model.provider)?.apiKey;
 		if (providerApiKey !== undefined) {
-			return await this.configValueResolver.isConfigValueConfigured(
-				providerApiKey,
-			);
+			return await this.configValueResolver.isConfigValueConfigured(providerApiKey);
 		}
 
 		try {
@@ -759,14 +635,8 @@ export class ModelRegistry {
 	 * !command config values share the same ExecutionEnv boundary as auth keys.
 	 */
 	async getApiKeyAndHeaders(model: Model<Api>): Promise<ResolvedRequestAuth> {
-		const apiKeyFromAuthStorage = await this.authStorage.getApiKey(
-			model.provider,
-			{ includeFallback: false },
-		);
-		return await this.resolveConfiguredRequestAuth(
-			model,
-			apiKeyFromAuthStorage,
-		);
+		const apiKeyFromAuthStorage = await this.authStorage.getApiKey(model.provider, { includeFallback: false });
+		return await this.resolveConfiguredRequestAuth(model, apiKeyFromAuthStorage);
 	}
 
 	private async resolveConfiguredRequestAuth(
@@ -774,12 +644,7 @@ export class ModelRegistry {
 		baseApiKey?: string,
 		baseHeaders?: ProviderHeaders,
 	): Promise<ResolvedRequestAuth> {
-		return await this.resolveRequestAuth(
-			model.provider,
-			model.id,
-			baseApiKey,
-			baseHeaders,
-		);
+		return await this.resolveRequestAuth(model.provider, model.id, baseApiKey, baseHeaders);
 	}
 
 	/**
@@ -792,12 +657,7 @@ export class ModelRegistry {
 		baseApiKey?: string,
 		baseHeaders?: ProviderHeaders,
 	): Promise<ResolvedRequestAuth> {
-		return await this.resolveRequestAuth(
-			provider,
-			undefined,
-			baseApiKey,
-			baseHeaders,
-		);
+		return await this.resolveRequestAuth(provider, undefined, baseApiKey, baseHeaders);
 	}
 
 	private async resolveRequestAuth(
@@ -817,16 +677,13 @@ export class ModelRegistry {
 						)
 					: undefined);
 
-			const providerHeaders =
-				await this.configValueResolver.resolveHeadersOrThrow(
-					providerConfig?.headers,
-					`provider "${provider}"`,
-				);
+			const providerHeaders = await this.configValueResolver.resolveHeadersOrThrow(
+				providerConfig?.headers,
+				`provider "${provider}"`,
+			);
 			const modelHeaders = modelId
 				? await this.configValueResolver.resolveHeadersOrThrow(
-						this.modelRequestHeaders.get(
-							this.getModelRequestKey(provider, modelId),
-						),
+						this.modelRequestHeaders.get(this.getModelRequestKey(provider, modelId)),
 						`model "${provider}/${modelId}"`,
 					)
 				: undefined;
@@ -840,30 +697,17 @@ export class ModelRegistry {
 			if (providerConfig?.authHeader) {
 				if (!apiKey) {
 					const error = `No API key found for "${provider}"`;
-					this.recordModelDiagnostic(
-						createModelRequestDiagnostic("model.auth_missing", error, {
-							provider,
-							modelId,
-						}),
-					);
+					this.recordModelDiagnostic(createModelRequestDiagnostic("model.auth_missing", error, { provider, modelId }));
 					return { ok: false, error };
 				}
 				headers = { ...headers, Authorization: `Bearer ${apiKey}` };
 			}
 
-			return {
-				ok: true,
-				apiKey,
-				headers:
-					headers && Object.keys(headers).length > 0 ? headers : undefined,
-			};
+			return { ok: true, apiKey, headers: headers && Object.keys(headers).length > 0 ? headers : undefined };
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			this.recordModelDiagnostic(
-				createModelRequestDiagnostic("model.auth_resolution_failed", message, {
-					provider,
-					modelId,
-				}),
+				createModelRequestDiagnostic("model.auth_resolution_failed", message, { provider, modelId }),
 			);
 			return { ok: false, error: message };
 		}
@@ -886,17 +730,10 @@ export class ModelRegistry {
 				return { configured: true, source: "models_json_command" };
 			}
 
-			const envVarNames =
-				this.configValueResolver.getConfigValueEnvVarNames(providerApiKey);
+			const envVarNames = this.configValueResolver.getConfigValueEnvVarNames(providerApiKey);
 			if (envVarNames.length > 0) {
-				return (await this.configValueResolver.isConfigValueConfigured(
-					providerApiKey,
-				))
-					? {
-							configured: true,
-							source: "environment",
-							label: envVarNames.join(", "),
-						}
+				return (await this.configValueResolver.isConfigValueConfigured(providerApiKey))
+					? { configured: true, source: "environment", label: envVarNames.join(", ") }
 					: { configured: false };
 			}
 
@@ -910,8 +747,7 @@ export class ModelRegistry {
 				if (result?.source) {
 					return {
 						configured: true,
-						source:
-							result.source === "stored credential" ? "stored" : "environment",
+						source: result.source === "stored credential" ? "stored" : "environment",
 						label: result.source,
 					};
 				}
@@ -930,19 +766,13 @@ export class ModelRegistry {
 	 * Resolve an API key for a provider without using the fallback resolver.
 	 */
 	async getApiKeyForProvider(provider: string): Promise<string | undefined> {
-		const apiKey = await this.authStorage.getApiKey(provider, {
-			includeFallback: false,
-		});
+		const apiKey = await this.authStorage.getApiKey(provider, { includeFallback: false });
 		if (apiKey !== undefined) {
 			return apiKey;
 		}
 
 		const providerApiKey = this.providerRequestConfigs.get(provider)?.apiKey;
-		return providerApiKey
-			? await this.configValueResolver.resolveConfigValueUncached(
-					providerApiKey,
-				)
-			: undefined;
+		return providerApiKey ? await this.configValueResolver.resolveConfigValueUncached(providerApiKey) : undefined;
 	}
 
 	/**
@@ -992,20 +822,11 @@ export class ModelRegistry {
 	): ExtensionProviderRegistrationResult {
 		const name = providerName.trim();
 		if (!name) {
-			return {
-				ok: false,
-				reason: "invalid",
-				message: "Provider name must not be empty.",
-			};
+			return { ok: false, reason: "invalid", message: "Provider name must not be empty." };
 		}
 		const existing = this.extensionProviders.get(name);
 		if (existing && existing.extensionId !== provenance.extensionId) {
-			return {
-				ok: false,
-				reason: "conflict",
-				conflictWith: "extension",
-				ownerExtensionId: existing.extensionId,
-			};
+			return { ok: false, reason: "conflict", conflictWith: "extension", ownerExtensionId: existing.extensionId };
 		}
 		if (!existing) {
 			const conflict = this.findCoreProviderConflict(name);
@@ -1014,21 +835,13 @@ export class ModelRegistry {
 			}
 		}
 		if (!config.models || config.models.length === 0) {
-			return {
-				ok: false,
-				reason: "invalid",
-				message: `Provider ${name}: extension providers must define "models".`,
-			};
+			return { ok: false, reason: "invalid", message: `Provider ${name}: extension providers must define "models".` };
 		}
 		try {
 			this.validateProviderConfig(name, config);
 			this.applyProviderConfig(name, config);
 		} catch (error) {
-			return {
-				ok: false,
-				reason: "invalid",
-				message: error instanceof Error ? error.message : String(error),
-			};
+			return { ok: false, reason: "invalid", message: error instanceof Error ? error.message : String(error) };
 		}
 		if (existing) {
 			existing.config = config;
@@ -1069,18 +882,14 @@ export class ModelRegistry {
 	 * agents whose runners currently hold the registration.
 	 */
 	getExtensionProviderRegistrations(): ExtensionProviderRegistrationSnapshot[] {
-		return [...this.extensionProviders.entries()].map(
-			([providerName, registration]) => ({
-				providerName,
-				extensionId: registration.extensionId,
-				agentIds: [...registration.registrantAgentIds],
-			}),
-		);
+		return [...this.extensionProviders.entries()].map(([providerName, registration]) => ({
+			providerName,
+			extensionId: registration.extensionId,
+			agentIds: [...registration.registrantAgentIds],
+		}));
 	}
 
-	private findCoreProviderConflict(
-		providerName: string,
-	): Exclude<ExtensionProviderConflict, "extension"> | undefined {
+	private findCoreProviderConflict(providerName: string): Exclude<ExtensionProviderConflict, "extension"> | undefined {
 		if (new Set<string>(getBuiltinProviders()).has(providerName)) {
 			return "builtin";
 		}
@@ -1089,10 +898,7 @@ export class ModelRegistry {
 		}
 		// Anything else already present in the runtime or holding request auth
 		// config was declared by models.json.
-		if (
-			this.runtime.getProvider(providerName) ||
-			this.providerRequestConfigs.has(providerName)
-		) {
+		if (this.runtime.getProvider(providerName) || this.providerRequestConfigs.has(providerName)) {
 			return "models_json";
 		}
 		return undefined;
@@ -1105,16 +911,11 @@ export class ModelRegistry {
 			providerOverrides,
 			modelOverrides,
 			error,
-		} = this.modelsJsonPath
-			? await this.loadCustomModels(this.modelsJsonPath)
-			: emptyCustomModelsResult();
+		} = this.modelsJsonPath ? await this.loadCustomModels(this.modelsJsonPath) : emptyCustomModelsResult();
 
 		if (error) {
 			this.loadError = error;
-			this.loadDiagnostic = createModelLoadDiagnostic(
-				error,
-				this.modelsJsonPath,
-			);
+			this.loadDiagnostic = createModelLoadDiagnostic(error, this.modelsJsonPath);
 			this.recordModelDiagnostic(this.loadDiagnostic);
 			// Keep built-in models available even if custom model loading fails.
 		}
@@ -1158,14 +959,9 @@ export class ModelRegistry {
 				return model;
 			});
 
-			const mergedModels = this.mergeProviderModels(
-				models,
-				customModelsByProvider.get(provider.id) ?? [],
-			);
+			const mergedModels = this.mergeProviderModels(models, customModelsByProvider.get(provider.id) ?? []);
 			customModelsByProvider.delete(provider.id);
-			this.runtime.setProvider(
-				this.createConfiguredProvider(provider, mergedModels),
-			);
+			this.runtime.setProvider(this.createConfiguredProvider(provider, mergedModels));
 		}
 
 		for (const [providerName, models] of customModelsByProvider.entries()) {
@@ -1173,30 +969,18 @@ export class ModelRegistry {
 		}
 	}
 
-	private mergeProviderModels(
-		builtInModels: readonly Model<Api>[],
-		customModels: readonly Model<Api>[],
-	): Model<Api>[] {
+	private mergeProviderModels(builtInModels: readonly Model<Api>[], customModels: readonly Model<Api>[]): Model<Api>[] {
 		const merged = [...builtInModels];
 		for (const customModel of customModels) {
-			const existingIndex = merged.findIndex(
-				(model) => model.id === customModel.id,
-			);
+			const existingIndex = merged.findIndex((model) => model.id === customModel.id);
 			if (existingIndex >= 0) merged[existingIndex] = customModel;
 			else merged.push(customModel);
 		}
 		return merged;
 	}
 
-	private createConfiguredProvider(
-		provider: Provider,
-		models: readonly Model<Api>[],
-	): Provider {
-		return {
-			...provider,
-			auth: this.createProviderAuth(provider.id, provider.auth),
-			getModels: () => models,
-		};
+	private createConfiguredProvider(provider: Provider, models: readonly Model<Api>[]): Provider {
+		return { ...provider, auth: this.createProviderAuth(provider.id, provider.auth), getModels: () => models };
 	}
 
 	/**
@@ -1217,25 +1001,16 @@ export class ModelRegistry {
 				customStreamSimple && model.api === config?.api
 					? {
 							stream: (requestModel, context, options) =>
-								customStreamSimple(
-									requestModel,
-									context,
-									options as SimpleStreamOptions,
-								),
+								customStreamSimple(requestModel, context, options as SimpleStreamOptions),
 							streamSimple: customStreamSimple,
 						}
 					: createApiStreams(model.api),
 			);
 		}
-		return apiStreams.size === 1
-			? [...apiStreams.values()][0]
-			: Object.fromEntries(apiStreams.entries());
+		return apiStreams.size === 1 ? [...apiStreams.values()][0] : Object.fromEntries(apiStreams.entries());
 	}
 
-	private createCustomProvider(
-		providerName: string,
-		models: readonly Model<Api>[],
-	): Provider {
+	private createCustomProvider(providerName: string, models: readonly Model<Api>[]): Provider {
 		return createProvider({
 			id: providerName,
 			name: providerDisplayName(providerName),
@@ -1269,23 +1044,14 @@ export class ModelRegistry {
 		return {
 			...(oauth ? { oauth } : {}),
 			apiKey: {
-				name:
-					baseApiKeyAuth?.name ??
-					`${providerDisplayName(providerName)} API key`,
+				name: baseApiKeyAuth?.name ?? `${providerDisplayName(providerName)} API key`,
 				login: baseApiKeyAuth?.login,
 				resolve: async (input) => {
-					let baseResult:
-						| Awaited<
-								ReturnType<NonNullable<ProviderAuth["apiKey"]>["resolve"]>
-						  >
-						| undefined;
+					let baseResult: Awaited<ReturnType<NonNullable<ProviderAuth["apiKey"]>["resolve"]>> | undefined;
 					if (baseApiKeyAuth) {
 						baseResult = await baseApiKeyAuth.resolve(input);
 					} else if (input.credential?.key) {
-						baseResult = {
-							auth: { apiKey: input.credential.key },
-							source: "stored credential",
-						};
+						baseResult = { auth: { apiKey: input.credential.key }, source: "stored credential" };
 					}
 
 					const configuredAuth = await this.resolveProviderRequestAuth(
@@ -1296,19 +1062,11 @@ export class ModelRegistry {
 					if (!configuredAuth.ok) {
 						throw new Error(configuredAuth.error);
 					}
-					if (
-						!configuredAuth.apiKey &&
-						!configuredAuth.headers &&
-						!baseResult?.auth.baseUrl
-					) {
+					if (!configuredAuth.apiKey && !configuredAuth.headers && !baseResult?.auth.baseUrl) {
 						return undefined;
 					}
 					return {
-						auth: {
-							apiKey: configuredAuth.apiKey,
-							headers: configuredAuth.headers,
-							baseUrl: baseResult?.auth.baseUrl,
-						},
+						auth: { apiKey: configuredAuth.apiKey, headers: configuredAuth.headers, baseUrl: baseResult?.auth.baseUrl },
 						source: baseResult?.source,
 					};
 				},
@@ -1316,9 +1074,7 @@ export class ModelRegistry {
 		};
 	}
 
-	private async loadCustomModels(
-		modelsJsonPath: string,
-	): Promise<CustomModelsResult> {
+	private async loadCustomModels(modelsJsonPath: string): Promise<CustomModelsResult> {
 		// models.json is optional; absence is not an error.
 		const existsResult = await this.executionEnv.exists(modelsJsonPath);
 		if (!existsResult.ok) {
@@ -1345,13 +1101,9 @@ export class ModelRegistry {
 				const errors =
 					validateModelsConfig
 						.Errors(parsed)
-						.map(
-							(error) => `  - ${formatValidationPath(error)}: ${error.message}`,
-						)
+						.map((error) => `  - ${formatValidationPath(error)}: ${error.message}`)
 						.join("\n") || "Unknown schema error";
-				return emptyCustomModelsResult(
-					`Invalid models.json schema:\n${errors}\n\nFile: ${modelsJsonPath}`,
-				);
+				return emptyCustomModelsResult(`Invalid models.json schema:\n${errors}\n\nFile: ${modelsJsonPath}`);
 			}
 
 			const config = parsed as ModelsConfig;
@@ -1361,49 +1113,28 @@ export class ModelRegistry {
 			const providerOverrides = new Map<string, ProviderOverride>();
 			const modelOverrides = new Map<string, Map<string, ModelOverride>>();
 
-			for (const [providerName, providerConfig] of Object.entries(
-				config.providers,
-			)) {
+			for (const [providerName, providerConfig] of Object.entries(config.providers)) {
 				// Provider-level model overrides affect built-in models for that provider.
 				if (providerConfig.baseUrl || providerConfig.compat) {
-					providerOverrides.set(providerName, {
-						baseUrl: providerConfig.baseUrl,
-						compat: providerConfig.compat,
-					});
+					providerOverrides.set(providerName, { baseUrl: providerConfig.baseUrl, compat: providerConfig.compat });
 				}
 
 				// Request auth is stored separately from Model.headers so it can be resolved lazily.
 				this.storeProviderRequestConfig(providerName, providerConfig);
 
 				if (providerConfig.modelOverrides) {
-					modelOverrides.set(
-						providerName,
-						new Map(Object.entries(providerConfig.modelOverrides)),
-					);
-					for (const [modelId, modelOverride] of Object.entries(
-						providerConfig.modelOverrides,
-					)) {
+					modelOverrides.set(providerName, new Map(Object.entries(providerConfig.modelOverrides)));
+					for (const [modelId, modelOverride] of Object.entries(providerConfig.modelOverrides)) {
 						// Model override headers also resolve at request time.
-						this.storeModelHeaders(
-							providerName,
-							modelId,
-							modelOverride.headers,
-						);
+						this.storeModelHeaders(providerName, modelId, modelOverride.headers);
 					}
 				}
 			}
 
-			return {
-				models: this.parseModels(config),
-				providerOverrides,
-				modelOverrides,
-				error: undefined,
-			};
+			return { models: this.parseModels(config), providerOverrides, modelOverrides, error: undefined };
 		} catch (error) {
 			if (error instanceof SyntaxError) {
-				return emptyCustomModelsResult(
-					`Failed to parse models.json: ${error.message}\n\nFile: ${modelsJsonPath}`,
-				);
+				return emptyCustomModelsResult(`Failed to parse models.json: ${error.message}\n\nFile: ${modelsJsonPath}`);
 			}
 			return emptyCustomModelsResult(
 				`Failed to load models.json: ${error instanceof Error ? error.message : error}\n\nFile: ${modelsJsonPath}`,
@@ -1414,24 +1145,15 @@ export class ModelRegistry {
 	private validateConfig(config: ModelsConfig): void {
 		const builtInProviders = new Set<string>(getBuiltinProviders());
 
-		for (const [providerName, providerConfig] of Object.entries(
-			config.providers,
-		)) {
+		for (const [providerName, providerConfig] of Object.entries(config.providers)) {
 			const isBuiltIn = builtInProviders.has(providerName);
 			const hasProviderApi = !!providerConfig.api;
 			const models = providerConfig.models ?? [];
-			const hasModelOverrides =
-				providerConfig.modelOverrides &&
-				Object.keys(providerConfig.modelOverrides).length > 0;
+			const hasModelOverrides = providerConfig.modelOverrides && Object.keys(providerConfig.modelOverrides).length > 0;
 
 			if (models.length === 0) {
 				// Override-only provider config must still change something meaningful.
-				if (
-					!providerConfig.baseUrl &&
-					!providerConfig.headers &&
-					!providerConfig.compat &&
-					!hasModelOverrides
-				) {
+				if (!providerConfig.baseUrl && !providerConfig.headers && !providerConfig.compat && !hasModelOverrides) {
 					throw new Error(
 						`Provider ${providerName}: must specify "baseUrl", "headers", "compat", "modelOverrides", or "models".`,
 					);
@@ -1439,14 +1161,10 @@ export class ModelRegistry {
 			} else if (!isBuiltIn) {
 				// Custom providers need an endpoint and auth source when defining models.
 				if (!providerConfig.baseUrl) {
-					throw new Error(
-						`Provider ${providerName}: "baseUrl" is required when defining custom models.`,
-					);
+					throw new Error(`Provider ${providerName}: "baseUrl" is required when defining custom models.`);
 				}
 				if (!providerConfig.apiKey) {
-					throw new Error(
-						`Provider ${providerName}: "apiKey" is required when defining custom models.`,
-					);
+					throw new Error(`Provider ${providerName}: "apiKey" is required when defining custom models.`);
 				}
 			}
 			// Built-in providers can inherit api/baseUrl/auth from their built-in models and AuthStorage.
@@ -1459,18 +1177,11 @@ export class ModelRegistry {
 					);
 				}
 				// contextWindow and maxTokens have defaults, but provided values must be positive.
-				if (
-					modelDef.contextWindow !== undefined &&
-					modelDef.contextWindow <= 0
-				) {
-					throw new Error(
-						`Provider ${providerName}, model ${modelDef.id}: invalid contextWindow`,
-					);
+				if (modelDef.contextWindow !== undefined && modelDef.contextWindow <= 0) {
+					throw new Error(`Provider ${providerName}, model ${modelDef.id}: invalid contextWindow`);
 				}
 				if (modelDef.maxTokens !== undefined && modelDef.maxTokens <= 0) {
-					throw new Error(
-						`Provider ${providerName}, model ${modelDef.id}: invalid maxTokens`,
-					);
+					throw new Error(`Provider ${providerName}, model ${modelDef.id}: invalid maxTokens`);
 				}
 			}
 		}
@@ -1480,14 +1191,9 @@ export class ModelRegistry {
 		const models: Model<Api>[] = [];
 		const builtInProviders = new Set<string>(getBuiltinProviders());
 		// Cache built-in defaults per provider; custom models often inherit api/baseUrl.
-		const builtInDefaultsCache = new Map<
-			string,
-			{ api: string; baseUrl: string }
-		>();
+		const builtInDefaultsCache = new Map<string, { api: string; baseUrl: string }>();
 
-		const getBuiltInDefaults = (
-			providerName: string,
-		): { api: string; baseUrl: string } | undefined => {
+		const getBuiltInDefaults = (providerName: string): { api: string; baseUrl: string } | undefined => {
 			if (!builtInProviders.has(providerName)) return undefined;
 			const cached = builtInDefaultsCache.get(providerName);
 			if (cached) return cached;
@@ -1501,9 +1207,7 @@ export class ModelRegistry {
 			return defaults;
 		};
 
-		for (const [providerName, providerConfig] of Object.entries(
-			config.providers,
-		)) {
+		for (const [providerName, providerConfig] of Object.entries(config.providers)) {
 			const modelDefs = providerConfig.models ?? [];
 			// Override-only provider config does not create custom models.
 			if (modelDefs.length === 0) continue;
@@ -1514,10 +1218,7 @@ export class ModelRegistry {
 				const api = modelDef.api ?? providerConfig.api ?? builtInDefaults?.api;
 				if (!api) continue;
 
-				const baseUrl =
-					modelDef.baseUrl ??
-					providerConfig.baseUrl ??
-					builtInDefaults?.baseUrl;
+				const baseUrl = modelDef.baseUrl ?? providerConfig.baseUrl ?? builtInDefaults?.baseUrl;
 				if (!baseUrl) continue;
 
 				// Store request headers out of band so ConfigValueResolver can resolve them later.
@@ -1532,12 +1233,7 @@ export class ModelRegistry {
 					reasoning: modelDef.reasoning ?? false,
 					thinkingLevelMap: modelDef.thinkingLevelMap,
 					input: (modelDef.input ?? ["text"]) as ("text" | "image")[],
-					cost: modelDef.cost ?? {
-						input: 0,
-						output: 0,
-						cacheRead: 0,
-						cacheWrite: 0,
-					},
+					cost: modelDef.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 					contextWindow: modelDef.contextWindow ?? 128000,
 					maxTokens: modelDef.maxTokens ?? 16384,
 					headers: undefined,
@@ -1555,11 +1251,7 @@ export class ModelRegistry {
 
 	private storeProviderRequestConfig(
 		providerName: string,
-		config: {
-			apiKey?: string;
-			headers?: Record<string, string>;
-			authHeader?: boolean;
-		},
+		config: { apiKey?: string; headers?: Record<string, string>; authHeader?: boolean },
 	): void {
 		if (!config.apiKey && !config.headers && !config.authHeader) {
 			return;
@@ -1572,11 +1264,7 @@ export class ModelRegistry {
 		});
 	}
 
-	private storeModelHeaders(
-		providerName: string,
-		modelId: string,
-		headers?: Record<string, string>,
-	): void {
+	private storeModelHeaders(providerName: string, modelId: string, headers?: Record<string, string>): void {
 		const key = this.getModelRequestKey(providerName, modelId);
 		if (!headers || Object.keys(headers).length === 0) {
 			this.modelRequestHeaders.delete(key);
@@ -1591,10 +1279,7 @@ export class ModelRegistry {
 	 * Defined incoming fields replace existing fields; undefined fields preserve
 	 * the previously registered value.
 	 */
-	private upsertRegisteredProvider(
-		providerName: string,
-		config: ProviderConfigInput,
-	): void {
+	private upsertRegisteredProvider(providerName: string, config: ProviderConfigInput): void {
 		const existing = this.registeredProviders.get(providerName);
 		if (!existing) {
 			this.registeredProviders.set(providerName, config);
@@ -1607,14 +1292,9 @@ export class ModelRegistry {
 		}
 	}
 
-	private validateProviderConfig(
-		providerName: string,
-		config: ProviderConfigInput,
-	): void {
+	private validateProviderConfig(providerName: string, config: ProviderConfigInput): void {
 		if (config.streamSimple && !config.api) {
-			throw new Error(
-				`Provider ${providerName}: "api" is required when registering streamSimple.`,
-			);
+			throw new Error(`Provider ${providerName}: "api" is required when registering streamSimple.`);
 		}
 
 		if (!config.models || config.models.length === 0) {
@@ -1624,30 +1304,21 @@ export class ModelRegistry {
 
 		// Dynamic providers with models must be complete enough to instantiate requests.
 		if (!config.baseUrl) {
-			throw new Error(
-				`Provider ${providerName}: "baseUrl" is required when defining models.`,
-			);
+			throw new Error(`Provider ${providerName}: "baseUrl" is required when defining models.`);
 		}
 		if (!config.apiKey && !config.oauth) {
-			throw new Error(
-				`Provider ${providerName}: "apiKey" or "oauth" is required when defining models.`,
-			);
+			throw new Error(`Provider ${providerName}: "apiKey" or "oauth" is required when defining models.`);
 		}
 
 		for (const modelDef of config.models) {
 			const api = modelDef.api || config.api;
 			if (!api) {
-				throw new Error(
-					`Provider ${providerName}, model ${modelDef.id}: no "api" specified.`,
-				);
+				throw new Error(`Provider ${providerName}, model ${modelDef.id}: no "api" specified.`);
 			}
 		}
 	}
 
-	private applyProviderConfig(
-		providerName: string,
-		config: ProviderConfigInput,
-	): void {
+	private applyProviderConfig(providerName: string, config: ProviderConfigInput): void {
 		this.storeProviderRequestConfig(providerName, config);
 
 		if (config.models && config.models.length > 0) {
@@ -1656,9 +1327,7 @@ export class ModelRegistry {
 				const api = modelDef.api || config.api;
 				const baseUrl = modelDef.baseUrl ?? config.baseUrl;
 				if (!baseUrl) {
-					throw new Error(
-						`Provider ${providerName}: "baseUrl" is required when defining models.`,
-					);
+					throw new Error(`Provider ${providerName}: "baseUrl" is required when defining models.`);
 				}
 				this.storeModelHeaders(providerName, modelDef.id, modelDef.headers);
 
@@ -1683,25 +1352,16 @@ export class ModelRegistry {
 				const cred = this.authStorage.get(providerName);
 				if (cred?.type === "oauth") {
 					this.runtime.setProvider(
-						this.createDynamicProvider(
-							providerName,
-							config,
-							config.oauth.modifyModels(models, cred),
-						),
+						this.createDynamicProvider(providerName, config, config.oauth.modifyModels(models, cred)),
 					);
 					return;
 				}
 			}
-			this.runtime.setProvider(
-				this.createDynamicProvider(providerName, config, models),
-			);
+			this.runtime.setProvider(this.createDynamicProvider(providerName, config, models));
 		} else if (config.baseUrl || config.headers) {
 			const provider = this.runtime.getProvider(providerName);
 			if (!provider) return;
-			const models = provider.getModels().map((model) => ({
-				...model,
-				baseUrl: config.baseUrl ?? model.baseUrl,
-			}));
+			const models = provider.getModels().map((model) => ({ ...model, baseUrl: config.baseUrl ?? model.baseUrl }));
 			this.runtime.setProvider(this.createConfiguredProvider(provider, models));
 		}
 	}
@@ -1714,10 +1374,7 @@ export class ModelRegistry {
 		if (!this.diagnosticPublisher) {
 			return;
 		}
-		const diagnostics = [
-			...this.authStorage.drainDiagnostics(),
-			...this.drainDiagnostics(),
-		];
+		const diagnostics = [...this.authStorage.drainDiagnostics(), ...this.drainDiagnostics()];
 		if (diagnostics.length > 0) {
 			await this.diagnosticPublisher(diagnostics);
 		}
@@ -1729,16 +1386,12 @@ type AuthResolutionOverrides = Parameters<Models["getAuth"]>[1];
 class DiagnosticPublishingModels implements Models {
 	private readonly base: Models;
 	private readonly publishDiagnostics: () => Promise<void>;
-	private readonly resolveModelHeaders: (
-		model: Model<Api>,
-	) => Promise<ProviderHeaders | undefined>;
+	private readonly resolveModelHeaders: (model: Model<Api>) => Promise<ProviderHeaders | undefined>;
 
 	constructor(
 		base: Models,
 		publishDiagnostics: () => Promise<void>,
-		resolveModelHeaders: (
-			model: Model<Api>,
-		) => Promise<ProviderHeaders | undefined>,
+		resolveModelHeaders: (model: Model<Api>) => Promise<ProviderHeaders | undefined>,
 	) {
 		this.base = base;
 		this.publishDiagnostics = publishDiagnostics;
@@ -1785,33 +1438,18 @@ class DiagnosticPublishingModels implements Models {
 		}
 	}
 
-	getAuth(
-		providerId: string,
-		overrides?: AuthResolutionOverrides,
-	): Promise<AuthResult | undefined>;
-	getAuth(
-		model: Model<Api>,
-		overrides?: AuthResolutionOverrides,
-	): Promise<AuthResult | undefined>;
+	getAuth(providerId: string, overrides?: AuthResolutionOverrides): Promise<AuthResult | undefined>;
+	getAuth(model: Model<Api>, overrides?: AuthResolutionOverrides): Promise<AuthResult | undefined>;
 	async getAuth(
 		providerOrModel: string | Model<Api>,
 		overrides?: AuthResolutionOverrides,
 	): Promise<AuthResult | undefined> {
 		try {
-			const result = await this.base.getAuth(
-				providerOrModel as Model<Api>,
-				overrides,
-			);
+			const result = await this.base.getAuth(providerOrModel as Model<Api>, overrides);
 			if (result && typeof providerOrModel !== "string") {
 				const modelHeaders = await this.resolveModelHeaders(providerOrModel);
 				if (modelHeaders) {
-					return {
-						...result,
-						auth: {
-							...result.auth,
-							headers: { ...result.auth.headers, ...modelHeaders },
-						},
-					};
+					return { ...result, auth: { ...result.auth, headers: { ...result.auth.headers, ...modelHeaders } } };
 				}
 			}
 			return result;
@@ -1820,11 +1458,7 @@ class DiagnosticPublishingModels implements Models {
 		}
 	}
 
-	async login(
-		providerId: string,
-		type: AuthType,
-		interaction: AuthInteraction,
-	): Promise<Credential> {
+	async login(providerId: string, type: AuthType, interaction: AuthInteraction): Promise<Credential> {
 		try {
 			return await this.base.login(providerId, type, interaction);
 		} finally {
@@ -1845,9 +1479,7 @@ class DiagnosticPublishingModels implements Models {
 	 * model headers keep their original precedence: below request options, above
 	 * provider-level auth headers.
 	 */
-	private async withModelHeaders<
-		TOptions extends { headers?: ProviderHeaders },
-	>(
+	private async withModelHeaders<TOptions extends { headers?: ProviderHeaders }>(
 		model: Model<Api>,
 		options: TOptions | undefined,
 	): Promise<TOptions | undefined> {
@@ -1855,10 +1487,7 @@ class DiagnosticPublishingModels implements Models {
 		if (!modelHeaders) {
 			return options;
 		}
-		return {
-			...options,
-			headers: { ...modelHeaders, ...options?.headers },
-		} as TOptions;
+		return { ...options, headers: { ...modelHeaders, ...options?.headers } } as TOptions;
 	}
 
 	stream<TApi extends Api>(
@@ -1867,13 +1496,7 @@ class DiagnosticPublishingModels implements Models {
 		options?: ModelsApiStreamOptions<TApi>,
 	): AssistantMessageEventStream {
 		return this.watchStream(
-			lazyStream(model, async () =>
-				this.base.stream(
-					model,
-					context,
-					await this.withModelHeaders(model, options),
-				),
-			),
+			lazyStream(model, async () => this.base.stream(model, context, await this.withModelHeaders(model, options))),
 		);
 	}
 
@@ -1883,28 +1506,16 @@ class DiagnosticPublishingModels implements Models {
 		options?: ModelsApiStreamOptions<TApi>,
 	): Promise<AssistantMessage> {
 		try {
-			return await this.base.complete(
-				model,
-				context,
-				await this.withModelHeaders(model, options),
-			);
+			return await this.base.complete(model, context, await this.withModelHeaders(model, options));
 		} finally {
 			await this.publishDiagnostics();
 		}
 	}
 
-	streamSimple(
-		model: Model<Api>,
-		context: Context,
-		options?: ModelsSimpleStreamOptions,
-	): AssistantMessageEventStream {
+	streamSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): AssistantMessageEventStream {
 		return this.watchStream(
 			lazyStream(model, async () =>
-				this.base.streamSimple(
-					model,
-					context,
-					await this.withModelHeaders(model, options),
-				),
+				this.base.streamSimple(model, context, await this.withModelHeaders(model, options)),
 			),
 		);
 	}
@@ -1915,19 +1526,13 @@ class DiagnosticPublishingModels implements Models {
 		options?: ModelsSimpleStreamOptions,
 	): Promise<AssistantMessage> {
 		try {
-			return await this.base.completeSimple(
-				model,
-				context,
-				await this.withModelHeaders(model, options),
-			);
+			return await this.base.completeSimple(model, context, await this.withModelHeaders(model, options));
 		} finally {
 			await this.publishDiagnostics();
 		}
 	}
 
-	private watchStream(
-		stream: AssistantMessageEventStream,
-	): AssistantMessageEventStream {
+	private watchStream(stream: AssistantMessageEventStream): AssistantMessageEventStream {
 		void stream
 			.result()
 			.finally(async () => {
@@ -1938,10 +1543,7 @@ class DiagnosticPublishingModels implements Models {
 	}
 }
 
-function createModelLoadDiagnostic(
-	message: string,
-	modelsJsonPath: string | undefined,
-): ModelDiagnostic {
+function createModelLoadDiagnostic(message: string, modelsJsonPath: string | undefined): ModelDiagnostic {
 	return {
 		severity: "error",
 		code: "model.load_failed",
@@ -1955,11 +1557,7 @@ function createModelRequestDiagnostic(
 	ref: { provider: string; modelId?: string },
 ): ModelDiagnostic {
 	const target = ref.modelId ? `${ref.provider}/${ref.modelId}` : ref.provider;
-	return {
-		severity: "error",
-		code,
-		message: `${target}: ${message}`,
-	};
+	return { severity: "error", code, message: `${target}: ${message}` };
 }
 
 function createExtensionProviderDroppedDiagnostic(
@@ -1987,10 +1585,7 @@ export interface OAuthProviderConfig {
 	login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials>;
 	refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials>;
 	getApiKey(credentials: OAuthCredentials): string;
-	modifyModels?(
-		models: Model<Api>[],
-		credentials: OAuthCredentials,
-	): Model<Api>[];
+	modifyModels?(models: Model<Api>[], credentials: OAuthCredentials): Model<Api>[];
 }
 
 /**
@@ -2003,25 +1598,16 @@ function adaptOAuthConfig(config: OAuthProviderConfig): OAuthAuth {
 		login: async (interaction) => {
 			const credential = await config.login({
 				onAuth: (info) => interaction.notify({ type: "auth_url", ...info }),
-				onDeviceCode: (info) =>
-					interaction.notify({ type: "device_code", ...info }),
+				onDeviceCode: (info) => interaction.notify({ type: "device_code", ...info }),
 				onPrompt: (prompt) => interaction.prompt({ type: "text", ...prompt }),
-				onProgress: (message) =>
-					interaction.notify({ type: "progress", message }),
-				onManualCodeInput: () =>
-					interaction.prompt({
-						type: "manual_code",
-						message: "Paste the authorization code",
-					}),
+				onProgress: (message) => interaction.notify({ type: "progress", message }),
+				onManualCodeInput: () => interaction.prompt({ type: "manual_code", message: "Paste the authorization code" }),
 				onSelect: (prompt) => interaction.prompt({ type: "select", ...prompt }),
 				signal: interaction.signal,
 			});
 			return { ...credential, type: "oauth" };
 		},
-		refresh: async (credential) => ({
-			...(await config.refreshToken(credential)),
-			type: "oauth",
-		}),
+		refresh: async (credential) => ({ ...(await config.refreshToken(credential)), type: "oauth" }),
 		toAuth: async (credential) => ({ apiKey: config.getApiKey(credential) }),
 	};
 }
@@ -2031,11 +1617,7 @@ export interface ProviderConfigInput {
 	baseUrl?: string;
 	apiKey?: string;
 	api?: Api;
-	streamSimple?: (
-		model: Model<Api>,
-		context: Context,
-		options?: SimpleStreamOptions,
-	) => AssistantMessageEventStream;
+	streamSimple?: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
 	headers?: Record<string, string>;
 	authHeader?: boolean;
 	oauth?: OAuthProviderConfig;
@@ -2047,12 +1629,7 @@ export interface ProviderConfigInput {
 		reasoning: boolean;
 		thinkingLevelMap?: Model<Api>["thinkingLevelMap"];
 		input: ("text" | "image")[];
-		cost: {
-			input: number;
-			output: number;
-			cacheRead: number;
-			cacheWrite: number;
-		};
+		cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
 		contextWindow: number;
 		maxTokens: number;
 		headers?: Record<string, string>;

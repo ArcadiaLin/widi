@@ -56,11 +56,7 @@ export class CompletionMenu implements Component {
 	private filter = "";
 	private filteredItemCount = 0;
 
-	constructor(
-		host: CompletionMenuHost,
-		state: TuiApplicationState,
-		restoreFocus: () => void,
-	) {
+	constructor(host: CompletionMenuHost, state: TuiApplicationState, restoreFocus: () => void) {
 		this.host = host;
 		this.state = state;
 		this.restoreFocus = restoreFocus;
@@ -108,12 +104,7 @@ export class CompletionMenu implements Component {
 	handleInput(data: string): void {
 		if (!this.request) return;
 		const keybindings = getKeybindings();
-		const selectionActions = [
-			"tui.select.up",
-			"tui.select.down",
-			"tui.select.confirm",
-			"tui.select.cancel",
-		] as const;
+		const selectionActions = ["tui.select.up", "tui.select.down", "tui.select.confirm", "tui.select.cancel"] as const;
 		if (selectionActions.some((action) => keybindings.matches(data, action))) {
 			this.list?.handleInput(data);
 			this.host.requestRender();
@@ -146,14 +137,7 @@ export class CompletionMenu implements Component {
 	render(width: number): string[] {
 		const request = this.request;
 		if (!request || !this.list) return [];
-		const lines = [
-			"",
-			truncateToWidth(
-				theme.title(singleLine(request.title, 200)),
-				Math.max(1, width - 2),
-				"…",
-			),
-		];
+		const lines = ["", truncateToWidth(theme.title(singleLine(request.title, 200)), Math.max(1, width - 2), "…")];
 		if (this.filter) {
 			lines.push(theme.dim(`filter: ${singleLine(this.filter, 120)}`));
 		}
@@ -165,19 +149,13 @@ export class CompletionMenu implements Component {
 		const request = this.request;
 		if (!request) return;
 		const items = this.filter
-			? fuzzyFilter(
-					[...request.items],
-					this.filter,
-					(item) => `${item.label} ${item.value}`,
-				)
+			? fuzzyFilter([...request.items], this.filter, (item) => `${item.label} ${item.value}`)
 			: [...request.items];
 		this.filteredItemCount = items.length;
-		const list = new SelectList(
-			items,
-			Math.max(1, Math.min(MAX_VISIBLE_ITEMS, items.length)),
-			theme.selectListTheme,
-			{ minPrimaryColumnWidth: 16, maxPrimaryColumnWidth: 40 },
-		);
+		const list = new SelectList(items, Math.max(1, Math.min(MAX_VISIBLE_ITEMS, items.length)), theme.selectListTheme, {
+			minPrimaryColumnWidth: 16,
+			maxPrimaryColumnWidth: 40,
+		});
 		list.onSelect = (item) => {
 			const select = this.request?.onSelect;
 			this.close();

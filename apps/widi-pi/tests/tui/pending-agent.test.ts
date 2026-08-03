@@ -13,10 +13,7 @@ describe("PendingAgentController", () => {
 		const controller = createController({ spawnAgent });
 
 		controller.beginDefault(display());
-		controller.beginNewSession(
-			{ profileId: "main-agent", model: model() },
-			display(),
-		);
+		controller.beginNewSession({ profileId: "main-agent", model: model() }, display());
 
 		expect(spawnAgent).not.toHaveBeenCalled();
 	});
@@ -35,10 +32,7 @@ describe("PendingAgentController", () => {
 		const second = controller.materialize();
 		resolveSpawn("main");
 
-		await expect(Promise.all([first, second])).resolves.toEqual([
-			"main",
-			"main",
-		]);
+		await expect(Promise.all([first, second])).resolves.toEqual(["main", "main"]);
 		expect(spawnAgent).toHaveBeenCalledTimes(1);
 		expect(state.pendingAgent).toBeUndefined();
 	});
@@ -47,16 +41,10 @@ describe("PendingAgentController", () => {
 		const spawnAgent = vi.fn(async () => "main-2");
 		const controller = createController({ spawnAgent });
 		const sourceModel = model();
-		controller.beginNewSession(
-			{ profileId: "main-agent", model: sourceModel },
-			display(),
-		);
+		controller.beginNewSession({ profileId: "main-agent", model: sourceModel }, display());
 
 		await expect(controller.materialize()).resolves.toBe("main-2");
-		expect(spawnAgent).toHaveBeenCalledWith({
-			profileId: "main-agent",
-			model: sourceModel,
-		});
+		expect(spawnAgent).toHaveBeenCalledWith({ profileId: "main-agent", model: sourceModel });
 	});
 
 	it("keeps the pending intent after materialization fails", async () => {
@@ -76,19 +64,12 @@ function createController(
 	overrides: Partial<PendingAgentRuntime> = {},
 	state = createTuiApplicationState(),
 ): PendingAgentController {
-	const runtime: PendingAgentRuntime = {
-		spawnAgent: async () => "main",
-		...overrides,
-	};
+	const runtime: PendingAgentRuntime = { spawnAgent: async () => "main", ...overrides };
 	return new PendingAgentController(state, runtime, display());
 }
 
 function display(): PendingAgentDisplay {
-	return {
-		profileLabel: "Main Agent",
-		model: model(),
-		thinkingLevel: "medium",
-	};
+	return { profileLabel: "Main Agent", model: model(), thinkingLevel: "medium" };
 }
 
 function model(): RuntimeModel {
@@ -100,12 +81,7 @@ function model(): RuntimeModel {
 		baseUrl: "https://example.test",
 		reasoning: true,
 		input: ["text"],
-		cost: {
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-		},
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 1000,
 		maxTokens: 100,
 	};

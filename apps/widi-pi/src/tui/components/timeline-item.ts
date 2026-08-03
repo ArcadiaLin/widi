@@ -1,18 +1,6 @@
-import {
-	getKeybindings,
-	Markdown,
-	Text,
-	truncateToWidth,
-	visibleWidth,
-} from "@earendil-works/pi-tui";
+import { getKeybindings, Markdown, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { ExtensionMessage } from "../../core/extension/api.ts";
-import {
-	boundedText,
-	formatUnknown,
-	sanitizeTerminalText,
-	singleLine,
-	spinnerFrame,
-} from "../format.ts";
+import { boundedText, formatUnknown, sanitizeTerminalText, singleLine, spinnerFrame } from "../format.ts";
 import type { TimelineItem } from "../state.ts";
 import { theme } from "../theme/theme.ts";
 import { presentToolExecution } from "../tool-presenter.ts";
@@ -30,21 +18,14 @@ export interface TimelineRenderContext {
  * lines per item and only re-renders when these change, so this list must
  * cover every input renderTimelineItem reads.
  */
-export function renderDeps(
-	item: TimelineItem,
-	context: TimelineRenderContext,
-): readonly unknown[] {
+export function renderDeps(item: TimelineItem, context: TimelineRenderContext): readonly unknown[] {
 	switch (item.type) {
 		case "user-message":
 			return [item.text];
 		case "assistant-message": {
 			const liveThinking = context.liveThinkingIds.has(`${item.id}:thinking`);
 			const livePreparing = context.livePreparingAssistantIds.has(item.id);
-			const showsSpinner =
-				item.streaming &&
-				!/\S/u.test(item.text) &&
-				!liveThinking &&
-				!livePreparing;
+			const showsSpinner = item.streaming && !/\S/u.test(item.text) && !liveThinking && !livePreparing;
 			// The streaming placeholder spins, so the cache must expire per frame.
 			return [
 				item.text,
@@ -69,19 +50,9 @@ export function renderDeps(
 			];
 		case "thinking-status":
 			// The spinner and the rolling preview both animate while thinking.
-			return [
-				item.status,
-				item.preview,
-				...(item.status === "thinking" ? [spinnerTick()] : []),
-			];
+			return [item.status, item.preview, ...(item.status === "thinking" ? [spinnerTick()] : [])];
 		case "command-result":
-			return [
-				item.status,
-				item.result,
-				item.error,
-				item.display,
-				context.toolOutputExpanded,
-			];
+			return [item.status, item.result, item.error, item.display, context.toolOutputExpanded];
 		case "window-marker":
 			return [item.hiddenTurns];
 		case "session-marker":
@@ -112,13 +83,9 @@ function extensionMessageText(message: ExtensionMessage): string {
 		case "diff":
 			return message.path ? `${message.path}\n${message.patch}` : message.patch;
 		case "table":
-			return [message.columns.map((column) => column.label), ...message.rows]
-				.map((row) => row.join("  "))
-				.join("\n");
+			return [message.columns.map((column) => column.label), ...message.rows].map((row) => row.join("  ")).join("\n");
 		case "fields":
-			return message.fields
-				.map((field) => `${field.label}: ${field.value}`)
-				.join("\n");
+			return message.fields.map((field) => `${field.label}: ${field.value}`).join("\n");
 	}
 }
 
@@ -141,41 +108,22 @@ function markerSeparator(title: string, width: number): string {
 	return `${head}${"─".repeat(fill)}`;
 }
 
-export function renderTimelineItem(
-	item: TimelineItem,
-	width: number,
-	context: TimelineRenderContext,
-): string[] {
+export function renderTimelineItem(item: TimelineItem, width: number, context: TimelineRenderContext): string[] {
 	switch (item.type) {
 		case "user-message": {
-			const lines = new Text(
-				`${theme.bold("❯")} ${boundedText(item.text)}`,
-				1,
-				0,
-			).render(width);
+			const lines = new Text(`${theme.bold("❯")} ${boundedText(item.text)}`, 1, 0).render(width);
 			// Pad to the full row so the surface background spans the line.
-			return lines.map((line) =>
-				theme.surface(
-					line + " ".repeat(Math.max(0, width - visibleWidth(line))),
-				),
-			);
+			return lines.map((line) => theme.surface(line + " ".repeat(Math.max(0, width - visibleWidth(line)))));
 		}
 		case "assistant-message": {
 			const text = item.text.trim();
 			// A failed run (stopReason "error", e.g. provider timeout after a
 			// model switch) often carries no text at all; without this the
 			// failure is completely invisible in the transcript.
-			const errorMessage =
-				item.message?.stopReason === "error"
-					? item.message.errorMessage
-					: undefined;
+			const errorMessage = item.message?.stopReason === "error" ? item.message.errorMessage : undefined;
 			if (!text) {
 				if (errorMessage) {
-					return new Text(
-						`${theme.error("✕")} ${theme.error(singleLine(errorMessage, 400))}`,
-						1,
-						0,
-					).render(width);
+					return new Text(`${theme.error("✕")} ${theme.error(singleLine(errorMessage, 400))}`, 1, 0).render(width);
 				}
 				// A live thinking-status or preparing tool already shows progress;
 				// render nothing here so indicators never appear twice.
@@ -184,33 +132,17 @@ export function renderTimelineItem(
 					!context.liveThinkingIds.has(`${item.id}:thinking`) &&
 					!context.livePreparingAssistantIds.has(item.id)
 				) {
-					return new Text(
-						theme.dim(`${spinnerFrame()} Thinking…`),
-						1,
-						0,
-					).render(width);
+					return new Text(theme.dim(`${spinnerFrame()} Thinking…`), 1, 0).render(width);
 				}
 				return [];
 			}
 			const renderedText = context.toolOutputExpanded
 				? sanitizeTerminalText(text)
-				: boundedText(text, {
-						maxLines: 200,
-						maxCharacters: 30_000,
-					});
-			const lines = new Markdown(
-				renderedText,
-				1,
-				0,
-				theme.markdownTheme,
-			).render(width);
+				: boundedText(text, { maxLines: 200, maxCharacters: 30_000 });
+			const lines = new Markdown(renderedText, 1, 0, theme.markdownTheme).render(width);
 			if (errorMessage) {
 				lines.push(
-					...new Text(
-						`${theme.error("✕")} ${theme.error(singleLine(errorMessage, 400))}`,
-						1,
-						0,
-					).render(width),
+					...new Text(`${theme.error("✕")} ${theme.error(singleLine(errorMessage, 400))}`, 1, 0).render(width),
 				);
 			}
 			return lines;
@@ -218,29 +150,17 @@ export function renderTimelineItem(
 		case "thinking-status": {
 			if (item.status !== "thinking") return [];
 			// The spinner line plus a rolling tail of the streamed thinking text.
-			const lines = [
-				theme.dim(`${spinnerFrame()} ${item.label ?? "Thinking…"}`),
-			];
+			const lines = [theme.dim(`${spinnerFrame()} ${item.label ?? "Thinking…"}`)];
 			if (item.preview) {
 				for (const line of item.preview.split("\n")) {
-					lines.push(
-						theme.dim(
-							truncateToWidth(
-								sanitizeTerminalText(line),
-								Math.max(1, width - 2),
-								"…",
-							),
-						),
-					);
+					lines.push(theme.dim(truncateToWidth(sanitizeTerminalText(line), Math.max(1, width - 2), "…")));
 				}
 			}
 			return new Text(lines.join("\n"), 1, 0).render(width);
 		}
 		case "tool-execution":
 			return new Text(
-				presentToolExecution(item, Math.max(8, width - 2), {
-					expanded: context.toolOutputExpanded,
-				}).join("\n"),
+				presentToolExecution(item, Math.max(8, width - 2), { expanded: context.toolOutputExpanded }).join("\n"),
 				1,
 				0,
 			).render(width);
@@ -260,35 +180,20 @@ export function renderTimelineItem(
 			}
 			if (item.status === "failed") {
 				return new Text(
-					`${theme.dim(`/${item.name}`)} ${theme.severityPaint("error")(
-						item.error?.message ?? "command failed",
-					)}`,
+					`${theme.dim(`/${item.name}`)} ${theme.severityPaint("error")(item.error?.message ?? "command failed")}`,
 					1,
 					0,
 				).render(width);
 			}
 			if (item.display !== undefined) {
-				const display = context.toolOutputExpanded
-					? sanitizeTerminalText(item.display)
-					: boundedText(item.display);
-				return new Text(
-					`${theme.dim(`/${item.name}`)}\n${display}`,
-					1,
-					0,
-				).render(width);
+				const display = context.toolOutputExpanded ? sanitizeTerminalText(item.display) : boundedText(item.display);
+				return new Text(`${theme.dim(`/${item.name}`)}\n${display}`, 1, 0).render(width);
 			}
 			if (item.result === undefined) return [];
-			return new Text(
-				`${theme.dim(`/${item.name}`)}\n${formatUnknown(item.result)}`,
-				1,
-				0,
-			).render(width);
+			return new Text(`${theme.dim(`/${item.name}`)}\n${formatUnknown(item.result)}`, 1, 0).render(width);
 		case "extension-output":
 			return new Text(
-				`${theme.dim(`[${item.extensionId}]`)} ${boundedText(item.text, {
-					maxLines: 16,
-					maxCharacters: 4_000,
-				})}`,
+				`${theme.dim(`[${item.extensionId}]`)} ${boundedText(item.text, { maxLines: 16, maxCharacters: 4_000 })}`,
 				1,
 				0,
 			).render(width);
@@ -296,17 +201,12 @@ export function renderTimelineItem(
 			const title = item.message.title
 				? theme.title(singleLine(item.message.title, 400))
 				: theme.dim(`[${item.extensionId}]`);
-			const meta = theme.dim(
-				`persistent · ${item.extensionId} · ${item.message.kind}`,
-			);
+			const meta = theme.dim(`persistent · ${item.extensionId} · ${item.message.kind}`);
 			return new Text(
-				`${title}  ${meta}\n\n${boundedText(
-					extensionMessageText(item.message),
-					{
-						maxLines: 24,
-						maxCharacters: 8_000,
-					},
-				)}`,
+				`${title}  ${meta}\n\n${boundedText(extensionMessageText(item.message), {
+					maxLines: 24,
+					maxCharacters: 8_000,
+				})}`,
 				1,
 				0,
 			).render(width);
@@ -322,9 +222,7 @@ export function renderTimelineItem(
 							lines.push(theme.dim("    → (no answer)"));
 						} else {
 							for (const value of entry.values) {
-								lines.push(
-									`    ${theme.selection("▸")} ${singleLine(value, 400)}`,
-								);
+								lines.push(`    ${theme.selection("▸")} ${singleLine(value, 400)}`);
 							}
 						}
 					}
@@ -333,17 +231,12 @@ export function renderTimelineItem(
 				const summary = items
 					.map(
 						(entry) =>
-							`${singleLine(entry.title, 80)}: ${
-								entry.values.length > 0 ? entry.values.join(", ") : "(none)"
-							}`,
+							`${singleLine(entry.title, 80)}: ${entry.values.length > 0 ? entry.values.join(", ") : "(none)"}`,
 					)
 					.join(" · ");
-				return new Text(
-					theme.dim(`❯ ${singleLine(item.title, 200)} → `) +
-						singleLine(summary, 400),
-					1,
-					0,
-				).render(width);
+				return new Text(theme.dim(`❯ ${singleLine(item.title, 200)} → `) + singleLine(summary, 400), 1, 0).render(
+					width,
+				);
 			}
 			// The selected labels drive both the inline summary and the ▸ marks
 			// in the expanded list; multi-select carries several at once.
@@ -361,8 +254,7 @@ export function renderTimelineItem(
 			const options =
 				item.answer.kind === "confirm"
 					? ["Yes", "No"]
-					: item.answer.kind === "selected-option" ||
-							item.answer.kind === "selected-options"
+					: item.answer.kind === "selected-option" || item.answer.kind === "selected-options"
 						? (item.options ?? [])
 						: [];
 			if (context.toolOutputExpanded && options.length > 0) {
@@ -377,12 +269,7 @@ export function renderTimelineItem(
 				}
 				return new Text(lines.join("\n"), 1, 0).render(width);
 			}
-			return new Text(
-				theme.dim(`❯ ${singleLine(item.title, 400)} → `) +
-					singleLine(summary, 400),
-				1,
-				0,
-			).render(width);
+			return new Text(theme.dim(`❯ ${singleLine(item.title, 400)} → `) + singleLine(summary, 400), 1, 0).render(width);
 		}
 		case "application-notice":
 			return new Text(
@@ -390,43 +277,27 @@ export function renderTimelineItem(
 					`✱ ${
 						item.textMode === "full"
 							? sanitizeTerminalText(item.text)
-							: boundedText(item.text, {
-									maxLines: 4,
-									maxCharacters: 600,
-								})
+							: boundedText(item.text, { maxLines: 4, maxCharacters: 600 })
 					}`,
 				),
 				1,
 				0,
 			).render(width);
 		case "session-marker": {
-			const title =
-				item.marker === "compaction" ? "Compacted session" : "Branch summary";
+			const title = item.marker === "compaction" ? "Compacted session" : "Branch summary";
 			const keyLabel = expandKeyLabel();
 			if (!context.toolOutputExpanded) {
 				const hint = keyLabel ? ` · ${keyLabel} expand` : "";
-				return new Text(
-					theme.dim(markerSeparator(`${title}${hint}`, width)),
-					1,
-					0,
-				).render(width);
+				return new Text(theme.dim(markerSeparator(`${title}${hint}`, width)), 1, 0).render(width);
 			}
 			const hint = keyLabel ? ` · ${keyLabel} collapse` : "";
 			return new Text(
-				theme.dim(
-					`${markerSeparator(`${title}${hint}`, width)}\n${sanitizeTerminalText(item.summary)}`,
-				),
+				theme.dim(`${markerSeparator(`${title}${hint}`, width)}\n${sanitizeTerminalText(item.summary)}`),
 				1,
 				0,
 			).render(width);
 		}
 		case "window-marker":
-			return new Text(
-				theme.dim(
-					`— earlier turns hidden (${item.hiddenTurns} turns trimmed) —`,
-				),
-				1,
-				0,
-			).render(width);
+			return new Text(theme.dim(`— earlier turns hidden (${item.hiddenTurns} turns trimmed) —`), 1, 0).render(width);
 	}
 }

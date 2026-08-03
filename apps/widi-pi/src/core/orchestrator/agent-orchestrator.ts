@@ -3,32 +3,21 @@
  *
  * One criterion shapes this file: a fact about a single agent is read from that
  * agent's `AgentHarness`; the orchestrator only decides what needs more than one
- * agent to answer. That is AgentId allocation and non-reuse, spawn-tree
- * ownership and traversal, cross-agent routing and source attribution, who is
- * waiting on whom to go idle, and the persistence of those facts.
+ * agent to answer - AgentId allocation, spawn-tree ownership, cross-agent
+ * routing, who is waiting on whom to go idle, and the persistence of those
+ * facts. The exceptions are enumerated in `docs/agent-harness-ownership-plan.md`.
  *
- * The exceptions are enumerated in `docs/agent-harness-ownership-plan.md`:
- * declarative tool policy, the system-prompt and resource facts removed from the
- * harness fork, the four remaining `AgentSettings` entries, the per-run abort
- * signal, and the agentId-to-session-directory mapping.
- *
- * Collaborators are split by one rule: a runtime earns its own class only when
- * it owns state whose invariant it can maintain alone, without consulting
- * `_live`. Four qualify - `BackgroundJobRuntime`, `OrchestratorEventBus`,
- * `AgentContextMonitor`, `AuthRuntimeController`. Everything whose central
- * judgement is a join across `_live`, harness phase, the spawn tree, or
- * background jobs stays here, because that join is what an orchestrator is.
- * `MessageDeliveryQueue` is a tool this class calls, not a peer domain.
+ * A collaborator earns its own class only when it owns state whose invariant it
+ * can maintain without consulting `_live`. Four qualify: `BackgroundJobRuntime`,
+ * `OrchestratorEventBus`, `AgentContextMonitor`, `AuthRuntimeController`.
+ * Everything whose central judgement is a join across `_live`, harness phase,
+ * the spawn tree, or background jobs stays here.
  *
  * Design: `docs/orchestrator.pseudo.ts`.
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
-import {
-	type AssistantMessage,
-	getSupportedThinkingLevels,
-	type ImageContent,
-} from "@earendil-works/pi-ai";
+import { type AssistantMessage, getSupportedThinkingLevels, type ImageContent } from "@earendil-works/pi-ai";
 import {
 	type AbortResult,
 	AgentHarness,
@@ -48,12 +37,7 @@ import {
 	type ThinkingLevel,
 } from "@widi/agent-core";
 import { formatError } from "../../utils/errors.ts";
-import type {
-	AgentProfile,
-	AgentProfileOverride,
-	AgentProfileRegistry,
-	AgentProfileSource,
-} from "../agent-profile.js";
+import type { AgentProfile, AgentProfileOverride, AgentProfileRegistry, AgentProfileSource } from "../agent-profile.js";
 import { parseAgentProfileReference } from "../agent-profile.js";
 import {
 	type BackgroundJobDelivery,
@@ -67,16 +51,9 @@ import {
 	type OwnerAttachment,
 } from "../background/index.ts";
 import type { OrchestratorClient } from "../client.ts";
-import {
-	type OrchestratorDiagnostic,
-	OrchestratorError,
-} from "../diagnostics.ts";
+import { type OrchestratorDiagnostic, OrchestratorError } from "../diagnostics.ts";
 import type { ExtensionEventEnvelope } from "../extension/events.ts";
-import type {
-	ExtensionContextActions,
-	ExtensionCoreActions,
-	ExtensionIdentity,
-} from "../extension/index.ts";
+import type { ExtensionContextActions, ExtensionCoreActions, ExtensionIdentity } from "../extension/index.ts";
 import {
 	EXTENSION_OBSERVED_EVENT_NAMES,
 	ExtensionLoader,
@@ -155,16 +132,9 @@ import {
 	sessionDirNameFromPath,
 	toExtensionCustomType,
 } from "../session-manager.ts";
-import type {
-	AgentParentPointer,
-	AgentTreeRecord,
-	AgentTreeSpawnRecord,
-} from "../session-tree.ts";
+import type { AgentParentPointer, AgentTreeRecord, AgentTreeSpawnRecord } from "../session-tree.ts";
 import type { SettingManager } from "../setting-manager.js";
-import {
-	buildAgentSystemPrompt,
-	type ToolPromptGuidance,
-} from "../system-prompt.ts";
+import { buildAgentSystemPrompt, type ToolPromptGuidance } from "../system-prompt.ts";
 import {
 	createAgentHarnessToolsFromResolvedTools,
 	type ResolvedAgentHarnessTool,
@@ -194,12 +164,7 @@ import { AuthRuntimeController } from "./auth-controller.ts";
 import { AgentContextMonitor } from "./context-monitor.ts";
 import type { EventPublishOptions } from "./event-bus.ts";
 import { OrchestratorEventBus } from "./event-bus.ts";
-import type {
-	AgentBrief,
-	AgentDisposeScope,
-	AgentProfileBrief,
-	ToolAgentHost,
-} from "./host.ts";
+import type { AgentBrief, AgentDisposeScope, AgentProfileBrief, ToolAgentHost } from "./host.ts";
 import type {
 	AgentResourcesSnapshot,
 	AgentSettings,
@@ -265,10 +230,7 @@ export interface AgentSkillCandidateListResult {
 
 export type ExtensionReloadAgentStatus = "reloaded" | "skipped" | "failed";
 
-/**
- * Why a reload passed an agent over. `running` covers every non-idle phase: a
- * replacement would swap the interceptors an operation is midway through.
- */
+/** `running` covers every non-idle phase: a replacement would swap the interceptors an operation is midway through. */
 export type ExtensionReloadAgentSkipReason = "creating" | "running" | "gone";
 
 export interface ExtensionReloadAgentResult {
@@ -291,32 +253,17 @@ interface AgentTreeResumeOutcome {
 	readonly rootAgentId: AgentId;
 	readonly resumed: readonly AgentId[];
 	readonly failed: readonly AgentId[];
-	readonly remapped: ReadonlyArray<{
-		readonly from: AgentId;
-		readonly to: AgentId;
-	}>;
+	readonly remapped: ReadonlyArray<{ readonly from: AgentId; readonly to: AgentId }>;
 }
 
 /**
  * Where an agent's context comes from. Orthogonal to `parent`, which decides
- * spawn-tree ownership: a resumed agent can be someone's child, and a new
- * top-level agent has no parent.
+ * spawn-tree ownership.
  */
 export type SpawnAgentOrigin =
-	| {
-			readonly kind: "new";
-			readonly profileId?: string;
-			readonly profileOverride?: AgentProfileOverride;
-	  }
-	| {
-			readonly kind: "resume";
-			readonly reference: string | JsonlSessionMetadata;
-	  }
-	| {
-			readonly kind: "fork";
-			readonly sourceAgentId: AgentId;
-			readonly entryId?: string;
-	  };
+	| { readonly kind: "new"; readonly profileId?: string; readonly profileOverride?: AgentProfileOverride }
+	| { readonly kind: "resume"; readonly reference: string | JsonlSessionMetadata }
+	| { readonly kind: "fork"; readonly sourceAgentId: AgentId; readonly entryId?: string };
 
 export interface SpawnAgentOptions {
 	readonly origin: SpawnAgentOrigin;
@@ -327,12 +274,9 @@ export interface SpawnAgentOptions {
 }
 
 /**
- * Why an agent is going away.
- *
- * `removed` means it should not come back and writes a durable tombstone into
- * the tree log. `runtime_shutdown` writes nothing: without the distinction, a
- * normal exit would mark every agent as removed and tree restoration would never
- * restore anything.
+ * `removed` writes a durable tombstone into the tree log. `runtime_shutdown`
+ * writes nothing: without the distinction a normal exit would mark every agent
+ * removed and tree restoration would never restore anything.
  */
 export type AgentDisposeIntent = "removed" | "runtime_shutdown";
 
@@ -344,12 +288,9 @@ export interface DisposeAgentOptions {
 }
 
 /**
- * A creation in flight.
- *
- * Not a request-coalescing optimization: it exists so a second resume of the
- * same session reuses the first result (restoring a tree hits this whenever the
- * user already resumed a child by hand), and so a build caught by `disposeAll`
- * can be cancelled instead of becoming an orphan after the sweep.
+ * A creation in flight. Not a coalescing optimization: it exists so a second
+ * resume of the same session reuses the first result, and so a build caught by
+ * `disposeAll` can be cancelled instead of orphaned after the sweep.
  */
 interface AgentCreationReservation {
 	readonly agentId: AgentId;
@@ -364,26 +305,18 @@ interface AgentDisposalReservation {
 	readonly completion: Promise<void>;
 }
 
-/**
- * One lookup, one complete answer. The four cases exhaust what an AgentId can
- * mean, and each comes from exactly one table.
- */
+/** The four cases exhaust what an AgentId can mean; each comes from one table. */
 type AgentLookup =
 	| { readonly kind: "live"; readonly liveAgent: LiveAgent }
 	| { readonly kind: "gone" }
-	| {
-			readonly kind: "creating";
-			readonly reservation: AgentCreationReservation;
-	  }
+	| { readonly kind: "creating"; readonly reservation: AgentCreationReservation }
 	| { readonly kind: "unknown" };
 
 /**
- * A resolved delivery target.
- *
  * `phase` is read from the harness at lookup time rather than projected: the
- * delivery method is chosen from it, and harness errors do not cover every
- * phase (calling `followUp` on an idle target only yields a retryable
- * `invalid_state`, which would defer the message forever).
+ * delivery method is chosen from it, and harness errors do not cover every phase
+ * (`followUp` on an idle target yields only a retryable `invalid_state`, which
+ * would defer the message forever).
  */
 interface DeliveryTarget {
 	readonly agentId: AgentId;
@@ -413,35 +346,25 @@ interface ExtensionInputPresentationRecord {
 }
 
 /**
- * An input presentation waiting to be paired with the user message it belongs
- * to. Pairing happens on the harness `session_write` event, which carries both
- * the persisted entry and its id.
+ * An input presentation waiting to be paired with its user message on the
+ * harness `session_write` event.
  *
  * `method` is recorded because an abort clears the steer and follow-up queues
- * wholesale: everything delivered that way is now never going to be written,
- * while a `prompt` delivery has already committed its user message.
+ * wholesale - everything delivered that way will never be written - while a
+ * `prompt` delivery has already committed its user message.
  */
-interface PendingExtensionInputPresentation
-	extends ExtensionInputPresentationRecord {
+interface PendingExtensionInputPresentation extends ExtensionInputPresentationRecord {
 	method?: MessageDeliveryMethod;
 }
 
 /**
  * A message accepted into the target's delivery queue, or one an extension
- * ended before it got there.
- *
- * There is no third case for "written but undelivered": the provisional entry
- * pair and its retraction point are gone, because the accounting entries are
- * now written through the harness and ordered on its own write tail.
+ * ended before it got there. There is no third case for "written but
+ * undelivered": accounting entries go through the harness's own write tail.
  */
 type AcceptedMessage =
 	| { readonly kind: "accepted"; readonly receipt: MessageDeliveryReceipt }
-	| {
-			readonly kind: "blocked";
-			readonly inputId: string;
-			readonly reason?: string;
-			readonly blockedBy: string;
-	  };
+	| { readonly kind: "blocked"; readonly inputId: string; readonly reason?: string; readonly blockedBy: string };
 
 interface RouteMessageOptions {
 	/** The caller awaits this run's assistant message, so it must be a prompt. */
@@ -459,7 +382,7 @@ interface ResolvedAgentProfile {
 
 /**
  * Everything `_buildLiveAgent` needs, resolved before any live resource is
- * touched. Producing it can fail freely: nothing has been registered yet.
+ * touched. Producing it can fail freely: nothing is registered yet.
  */
 interface AgentBuildRequest {
 	readonly agentId: AgentId;
@@ -482,11 +405,9 @@ interface LiveAgentBuild {
 }
 
 /**
- * The synchronous cutover result of one dispose target.
- *
  * `liveAgent` may be absent: the target can already be a tombstone, or still be
- * building - in which case the creation reservation's `cancelled` flag makes the
- * builder run its own failure cleanup.
+ * building - in which case the reservation's `cancelled` flag makes the builder
+ * run its own failure cleanup.
  */
 interface DisposedLiveAgent {
 	readonly agentId: AgentId;
@@ -509,10 +430,9 @@ export class AgentOrchestrator {
 	// -- Independent runtimes ------------------------------------------------
 
 	/**
-	 * A sibling runtime. This reference exists only to attach and detach, hand
-	 * capabilities to scoped hosts, read `liveJobCount` and `carriedOverJobs`,
-	 * and receive t1 deliveries. Job state is never read from here, and an
-	 * unsettled job never makes its owner busy.
+	 * A sibling runtime: attach/detach, hand capabilities to scoped hosts, read
+	 * `liveJobCount` and `carriedOverJobs`, receive t1 deliveries. Job state is
+	 * never read from here, and an unsettled job never makes its owner busy.
 	 */
 	private readonly _backgroundJobs: BackgroundJobRuntime;
 
@@ -533,33 +453,22 @@ export class AgentOrchestrator {
 
 	// -- Message delivery ----------------------------------------------------
 
-	/**
-	 * Per-target FIFO with merge and failure requeue. Two ports, no knowledge of
-	 * the agent registry. There is no second message class: the judgement that
-	 * would justify one - where a message goes, and whether an agent is idle - is
-	 * a join across `_live`, harness phase, and background jobs, which is this
-	 * class by definition.
-	 */
+	/** Per-target FIFO with merge and failure requeue. No knowledge of the agent registry. */
 	private readonly _messages: MessageDeliveryQueue;
 
 	/**
 	 * Prompt runs this orchestrator started. The harness reports that it is in a
-	 * turn; it cannot report who started that turn, who is awaiting its result,
-	 * or whether the run ended by abort or settlement.
-	 *
-	 * Staleness is decided by object identity, which is why there is no
-	 * `_agentStatusRevisions`: a run only settles the idle edge while it is still
-	 * the value in this map.
+	 * turn; it cannot report who started it, who awaits its result, or whether it
+	 * ended by abort or settlement. Staleness is decided by object identity: a run
+	 * only settles the idle edge while it is still the value in this map.
 	 */
 	private readonly _agentPromptRuns = new Map<AgentId, AgentPromptRun>();
 
 	/**
 	 * Waiters for the target's next `agent_start`, registered before `prompt()`.
-	 *
-	 * Acceptance waits for that event because everything the harness does before
-	 * it is asynchronous and can fail, and a failure there means the user message
-	 * was never persisted. Phase cannot substitute: it flips to `turn` on the
-	 * first line of `prompt()`.
+	 * Everything the harness does before that event is asynchronous and can fail,
+	 * and a failure there means the user message was never persisted. Phase cannot
+	 * substitute: it flips to `turn` on the first line of `prompt()`.
 	 */
 	private readonly _agentRunStartWaiters = new Map<AgentId, Set<() => void>>();
 
@@ -567,29 +476,20 @@ export class AgentOrchestrator {
 	private readonly _agentRunSignals = new Map<AgentId, AbortSignal>();
 
 	/**
-	 * The idle edge: who is waiting for it, why the last one happened, and
-	 * whether it has already been published.
-	 *
-	 * All three read the one judgement in `_resolveAgentIdleState`, so a consumer
-	 * that awaited `waitForAgentIdle` and one subscribed to `agent_idle` can
-	 * never disagree about whether the agent stopped.
+	 * The idle edge: who waits for it, why the last one happened, whether it was
+	 * published. All three read `_resolveAgentIdleState`, so a `waitForAgentIdle`
+	 * caller and an `agent_idle` subscriber can never disagree.
 	 */
 	private readonly _agentIdleWaiters = new Map<AgentId, Set<AgentIdleWaiter>>();
 	private readonly _agentIdleReasons = new Map<AgentId, AgentIdleReason>();
 	private readonly _publishedAgentIdles = new Set<AgentId>();
 
 	/**
-	 * The activity last published for each agent.
-	 *
-	 * Not a mirror of the harness - every reader takes `getPhase()` - but
-	 * `agent_status_changed` is edge-triggered, and an edge cannot be detected
-	 * from a value alone. This is the previous value that makes the comparison
-	 * possible, and the source of the event's `previousActivity`.
+	 * The activity last published for each agent. Not a mirror of the harness -
+	 * every reader takes `getPhase()` - but `agent_status_changed` is
+	 * edge-triggered, and an edge cannot be detected from a value alone.
 	 */
-	private readonly _publishedAgentActivities = new Map<
-		AgentId,
-		AgentActivitySnapshot
-	>();
+	private readonly _publishedAgentActivities = new Map<AgentId, AgentActivitySnapshot>();
 
 	private _nextInputId = 1;
 	private _nextPresentationId = 1;
@@ -597,68 +497,48 @@ export class AgentOrchestrator {
 	// -- Extension data plane ------------------------------------------------
 
 	/**
-	 * Input presentations already delivered but not yet paired with a user
-	 * message, in delivery order per target. Pairing pops the head on the harness
-	 * `session_write` event, which carries the entry and its id together; the old
-	 * `expectedText` guess and the reverse session scan are both gone.
+	 * Presentations delivered but not yet paired with a user message, in delivery
+	 * order per target. Pairing pops the head on `session_write`.
 	 */
-	private readonly _pendingExtensionInputPresentations = new Map<
-		AgentId,
-		PendingExtensionInputPresentation[]
-	>();
+	private readonly _pendingExtensionInputPresentations = new Map<AgentId, PendingExtensionInputPresentation[]>();
 
 	/** Per-agent, per-generation extension load results. */
 	private readonly _extensionStatuses = new ExtensionStatusRegistry();
 
 	/**
 	 * Recursion depth for extension events. It belongs to the causal async chain,
-	 * not the runtime: independent concurrent emits must not consume one
-	 * another's budget, while a handler's nested emit inherits its parent's.
+	 * not the runtime: concurrent emits must not consume one another's budget,
+	 * while a handler's nested emit inherits its parent's.
 	 */
-	private readonly _extensionEventDispatchContext =
-		new AsyncLocalStorage<number>();
+	private readonly _extensionEventDispatchContext = new AsyncLocalStorage<number>();
 
 	/** Observed-event fan-out depth, which keeps diagnostics from self-feeding. */
 	private readonly _extensionObserverDispatchDepth = new Map<AgentId, number>();
 
-	/**
-	 * One action table shared by every runner. The methods take agentId and
-	 * extensionId explicitly and call this class's real methods, so no closure
-	 * set is rebuilt per agent or per tool.
-	 */
+	/** One table shared by every runner; agentId and extensionId are explicit arguments, so no closure set is rebuilt per agent. */
 	private readonly _extensionCoreActions: ExtensionCoreActions;
 
 	// -- Agent registry ------------------------------------------------------
 
 	/**
 	 * The only routable set, current generation only. Written by install, removed
-	 * synchronously by the dispose cutover. A hit means alive; nothing else needs
-	 * to be asked.
+	 * synchronously by the dispose cutover. A hit means alive.
 	 */
 	private readonly _live = new Map<AgentId, LiveAgent>();
 
 	/**
-	 * AgentIds that existed and are gone.
-	 *
-	 * The sole purpose is to keep a dead id from being reused: an in-flight
-	 * message aimed at a recycled id would reach a different agent. Intent, time,
-	 * and reason are carried by `agent_disposed` and by `agents/tree.jsonl`, so
-	 * nothing but the string is kept here.
+	 * AgentIds that existed and are gone, kept solely so a dead id is not reused:
+	 * an in-flight message aimed at a recycled id would reach a different agent.
+	 * Intent, time and reason live in `agent_disposed` and `agents/tree.jsonl`.
 	 */
 	private readonly _tombstones = new Set<AgentId>();
 
 	/**
-	 * Spawn-tree edges, child to parent. **Not deleted on dispose.**
-	 *
-	 * A single dispose does not take the subtree with it, so a vanished
-	 * intermediate node must still let an ancestor's subtree dispose reach its
-	 * surviving descendants. This is also the in-memory mirror of
-	 * `agents/tree.jsonl`.
-	 *
-	 * Pruning, without which this is just a slow leak in a new place: disposing a
-	 * node with no surviving descendants drops its edge, then walks up the
-	 * ancestor chain dropping every tombstone edge that likewise has none. What
-	 * remains is bounded by the number of concurrently live branches.
+	 * Spawn-tree edges, child to parent, and the in-memory mirror of
+	 * `agents/tree.jsonl`. **Not deleted on dispose:** a single dispose does not
+	 * take the subtree with it, so a vanished intermediate node must still let an
+	 * ancestor's subtree dispose reach its surviving descendants. `_pruneSpawnEdges`
+	 * is what keeps that from becoming a leak.
 	 */
 	private readonly _spawnParent = new Map<AgentId, AgentId>();
 
@@ -666,45 +546,23 @@ export class AgentOrchestrator {
 	private readonly _agentGenerations = new Map<AgentId, number>();
 
 	/** Resume de-duplication and build cancellation. Not an activity state. */
-	private readonly _agentCreations = new Map<
-		AgentId,
-		AgentCreationReservation
-	>();
+	private readonly _agentCreations = new Map<AgentId, AgentCreationReservation>();
 
 	/** Merges concurrent dispose requests only. */
-	private readonly _agentDisposals = new Map<
-		AgentId,
-		AgentDisposalReservation
-	>();
+	private readonly _agentDisposals = new Map<AgentId, AgentDisposalReservation>();
+
+	/** Diagnostics history per agent, read by `AgentSnapshot`. Separate from `LiveAgent`, which is thrown away wholesale on dispose. */
+	private readonly _agentDiagnostics = new Map<AgentId, OrchestratorDiagnostic[]>();
 
 	/**
-	 * Diagnostics history per agent, read by `AgentSnapshot`.
-	 *
-	 * A map is the whole thing: append, read by agent, drop on dispose. It is
-	 * separate from `LiveAgent` because a disposed agent's `LiveAgent` is thrown
-	 * away wholesale.
-	 */
-	private readonly _agentDiagnostics = new Map<
-		AgentId,
-		OrchestratorDiagnostic[]
-	>();
-
-	/**
-	 * Agents already scheduled for automatic compaction but not yet started.
-	 *
-	 * Phase cannot replace this. The decision spans an await (re-measuring
-	 * context usage), so phase only rejects at the second `compact()` call, and
-	 * that rejection lands in a catch and becomes a user-visible
-	 * `compaction.auto_failed` warning - a normal de-duplication turned into
-	 * noise. This expresses scheduling intent, which was never the harness's
-	 * question.
+	 * Agents scheduled for automatic compaction but not yet started. Phase cannot
+	 * replace this: the decision spans an await, so phase only rejects at the
+	 * second `compact()` call and that rejection surfaces as a user-visible
+	 * `compaction.auto_failed` warning. This is scheduling intent, not a phase.
 	 */
 	private readonly _autoCompactingAgents = new Set<AgentId>();
 
-	/**
-	 * Serialized write tail per root tree file, so appended `spawned` and
-	 * `removed` records keep the order the events happened in.
-	 */
+	/** Serialized write tail per root tree file, so `spawned` and `removed` keep event order. */
 	private readonly _treeWrites = new Map<AgentId, Promise<void>>();
 
 	// -- Runtime defaults ----------------------------------------------------
@@ -726,33 +584,23 @@ export class AgentOrchestrator {
 		this.toolRegistry = config.toolRegistry ?? new ToolRegistry();
 		this.extensionLoader = config.extensionLoader ?? new ExtensionLoader();
 		this._defaultProfileId = config.defaultProfileId;
-		this._enabledProfileIds = config.enabledProfileIds
-			? [...config.enabledProfileIds]
-			: undefined;
+		this._enabledProfileIds = config.enabledProfileIds ? [...config.enabledProfileIds] : undefined;
 		this._defaultModel = config.defaultModel;
 		this._defaultThinkingLevel = config.defaultThinkingLevel;
 
-		this.modelRegistry.setDiagnosticPublisher(
-			async (diagnostics) => await this._publishDiagnostics(diagnostics),
-		);
+		this.modelRegistry.setDiagnosticPublisher(async (diagnostics) => await this._publishDiagnostics(diagnostics));
 
 		// Every port below points back at a private method of this class, so the
-		// dependency edge stays one-way: a runtime knows its handful of callbacks
-		// and nothing about the orchestrator.
+		// dependency edge stays one-way: a runtime knows its callbacks and nothing
+		// about the orchestrator.
 		this._events = new OrchestratorEventBus({
-			diagnose: async (diagnostic, options) =>
-				await this._publishDiagnostic(diagnostic, options),
+			diagnose: async (diagnostic, options) => await this._publishDiagnostic(diagnostic, options),
 		});
 		this._context = new AgentContextMonitor({
 			sessionManager: this.sessionManager,
 			resolve: (agentId) => {
 				const liveAgent = this._live.get(agentId);
-				return liveAgent
-					? {
-							generation: liveAgent.generation,
-							model: liveAgent.harness.getModel(),
-						}
-					: undefined;
+				return liveAgent ? { generation: liveAgent.generation, model: liveAgent.harness.getModel() } : undefined;
 			},
 			publish: async (event) => await this._emit(event),
 			diagnose: async (diagnostic) => await this._publishDiagnostic(diagnostic),
@@ -760,8 +608,7 @@ export class AgentOrchestrator {
 		this._humanRequests = new HumanRequestBroker({
 			findHumanRequestHandler: () => this._events.findHumanRequestHandler(),
 			emit: async (event) => await this._emit(event),
-			publishDiagnostic: async (diagnostic) =>
-				await this._publishDiagnostic(diagnostic),
+			publishDiagnostic: async (diagnostic) => await this._publishDiagnostic(diagnostic),
 			recordAgentLifecycleFailure: async (agentId, code, message) =>
 				await this._recordAgentLifecycleFailure(agentId, code, message),
 		});
@@ -770,8 +617,7 @@ export class AgentOrchestrator {
 			humanRequests: this._humanRequests,
 			publish: async (event) => await this._emit(event),
 			diagnose: async (diagnostic) => await this._publishDiagnostic(diagnostic),
-			diagnoseMany: async (diagnostics) =>
-				await this._publishDiagnostics(diagnostics),
+			diagnoseMany: async (diagnostics) => await this._publishDiagnostics(diagnostics),
 		});
 		this._backgroundJobs = new BackgroundJobRuntime({
 			// Recording a job means putting a persistence ref on the branch, and the
@@ -779,13 +625,9 @@ export class AgentOrchestrator {
 			// in `docs/ZH/orchestrator-refactor.md`. Until it exists every owner is
 			// ephemeral: jobs run, they just leave no history.
 			openOwnerStore: async () => undefined,
-			deliverResult: async (delivery) =>
-				await this._deliverBackgroundResult(delivery),
-			// The runtime names its events for its own domain; the orchestrator's
-			// event union names them for the agent they belong to. Translating here
-			// keeps that vocabulary out of the runtime, which has no agents.
-			publish: async (event) =>
-				await this._emit(toOrchestratorBackgroundEvent(event)),
+			deliverResult: async (delivery) => await this._deliverBackgroundResult(delivery),
+			// Translated here so the runtime's vocabulary stays free of agents.
+			publish: async (event) => await this._emit(toOrchestratorBackgroundEvent(event)),
 			diagnose: async (diagnostic) => await this._publishDiagnostic(diagnostic),
 		});
 		this._messages = new MessageDeliveryQueue({
@@ -798,9 +640,8 @@ export class AgentOrchestrator {
 	// -----------------------------------------------------------------------
 	// Runtime defaults
 	//
-	// These are not any agent's state - a single agent's current values are read
-	// from its harness - so every setter affects later spawns only and never
-	// walks the live set rewriting it.
+	// Not any agent's state - a single agent's values are read from its harness -
+	// so every setter affects later spawns only.
 	// -----------------------------------------------------------------------
 
 	getDefaultModel(): RuntimeModel {
@@ -836,10 +677,8 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Publish the diagnostics services accumulated while starting up.
-	 *
-	 * A separate method rather than part of the constructor: at construction no
-	 * client has subscribed yet, so anything emitted there reaches nobody.
+	 * Separate from the constructor: at construction no client has subscribed
+	 * yet, so anything emitted there reaches nobody.
 	 */
 	async emitStartupDiagnostics(): Promise<void> {
 		await this._publishDiagnostics(this._drainCoreDiagnostics());
@@ -851,9 +690,6 @@ export class AgentOrchestrator {
 
 	/**
 	 * The single lookup entry point, giving the complete gate answer at once.
-	 *
-	 * A hit in `_live` is routable. On a miss, `_tombstones` and
-	 * `_agentCreations` tell `gone` from `creating`, and neither means `unknown`.
 	 * There is no second cross-table join afterwards: the hit itself carries the
 	 * harness, profile, settings, and runner.
 	 */
@@ -889,24 +725,15 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Take the harness, and reject the phases that would accept text nothing
-	 * reads.
+	 * Take the harness, rejecting `compaction` and `branch_summary` - the phases
+	 * that would accept text nothing reads.
 	 *
-	 * It rejects `compaction` and `branch_summary` only:
-	 *
-	 * - idle belongs to the harness. `steer()`, `followUp()`, and
-	 *   `promoteFollowUpsToSteer()` already throw `invalid_state` there, and
-	 *   checking it again would give one condition two producers.
-	 * - abort must be allowed while idle: draining the queues is a meaningful
-	 *   operation, not an error. Because only maintenance is blocked here, all
-	 *   four entry points can share this helper.
-	 * - a shut-down harness never reaches this point; `_requireLiveAgent` has
-	 *   already thrown on the `_live` miss.
+	 * Idle is deliberately not rejected here: the harness already throws
+	 * `invalid_state` for steer and follow-up, and abort while idle is meaningful
+	 * (it drains the queues). Blocking only maintenance is what lets all four
+	 * entry points share this helper.
 	 */
-	private _requireHarnessOutsideMaintenance(
-		agentId: AgentId,
-		action: string,
-	): WidiAgentHarness {
+	private _requireHarnessOutsideMaintenance(agentId: AgentId, action: string): WidiAgentHarness {
 		const harness = this._requireLiveAgent(agentId).harness;
 		const maintenance = toMaintenanceKind(harness.getPhase());
 		if (maintenance) {
@@ -919,20 +746,14 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Current activity, mapped straight from the harness phase.
-	 *
-	 * `turn` is running; `compaction` and `branch_summary` are running with a
-	 * maintenance kind; `idle` is idle. The mapping only holds for a live agent:
-	 * a shut-down harness also reports idle, and the `_live` miss rejects it
-	 * before this point.
+	 * Mapped straight from the harness phase. The mapping only holds for a live
+	 * agent: a shut-down harness also reports idle, and the `_live` miss rejects
+	 * it before this point.
 	 */
 	getAgentActivity(agentId: AgentId): AgentActivitySnapshot {
-		return toActivitySnapshot(
-			this._requireLiveAgent(agentId).harness.getPhase(),
-		);
+		return toActivitySnapshot(this._requireLiveAgent(agentId).harness.getPhase());
 	}
 
-	/** Combine `LiveAgent`, live harness values, and the standalone projections. */
 	private _snapshotAgent(liveAgent: LiveAgent): AgentSnapshot {
 		const { agentId, harness } = liveAgent;
 		const spawnedBy = this._spawnParent.get(agentId);
@@ -942,9 +763,7 @@ export class AgentOrchestrator {
 			generation: liveAgent.generation,
 			profile: liveAgent.profile,
 			...(spawnedBy === undefined ? undefined : { spawnedBy }),
-			...(liveAgent.sessionMetadata === undefined
-				? undefined
-				: { sessionMetadata: liveAgent.sessionMetadata }),
+			...(liveAgent.sessionMetadata === undefined ? undefined : { sessionMetadata: liveAgent.sessionMetadata }),
 			model: harness.getModel(),
 			thinkingLevel: harness.getThinkingLevel(),
 			tools: this._snapshotAgentTools(liveAgent),
@@ -959,23 +778,15 @@ export class AgentOrchestrator {
 		return this._snapshotAgent(this._requireLiveAgent(agentId));
 	}
 
-	/**
-	 * Live agents only. A tombstone never appears here; surfaces drop their row
-	 * on `agent_disposed`.
-	 */
+	/** Live agents only; surfaces drop a row on `agent_disposed`. */
 	listAgents(): AgentListResult {
-		return {
-			agents: Array.from(this._live.values(), (liveAgent) =>
-				this._snapshotAgent(liveAgent),
-			),
-		};
+		return { agents: Array.from(this._live.values(), (liveAgent) => this._snapshotAgent(liveAgent)) };
 	}
 
 	/**
-	 * Check that the three tables do not contradict each other: `_live` and
-	 * `_tombstones` are disjoint, and every parent in `_spawnParent` is either
-	 * live or a tombstone. For high-risk lifecycle boundaries and tests; never
-	 * part of a business branch.
+	 * `_live` and `_tombstones` are disjoint, and every parent in `_spawnParent`
+	 * is live or a tombstone. For lifecycle boundaries and tests; never part of a
+	 * business branch.
 	 */
 	private _assertRegistryInvariant(agentId?: AgentId): void {
 		for (const id of agentId ? [agentId] : this._live.keys()) {
@@ -985,9 +796,7 @@ export class AgentOrchestrator {
 		}
 		for (const [child, parent] of this._spawnParent) {
 			if (!this._live.has(parent) && !this._tombstones.has(parent)) {
-				throw new Error(
-					`Spawn edge ${child} -> ${parent} points at an unknown agent.`,
-				);
+				throw new Error(`Spawn edge ${child} -> ${parent} points at an unknown agent.`);
 			}
 		}
 	}
@@ -996,7 +805,7 @@ export class AgentOrchestrator {
 	// Spawn tree traversal
 	// -----------------------------------------------------------------------
 
-	/** Walk `_spawnParent` to the root of this agent's tree. */
+	/** Walk `_spawnParent` to the root, cycle-safe. */
 	private _resolveAgentTreeRoot(agentId: AgentId): AgentId {
 		const seen = new Set<AgentId>([agentId]);
 		let current = agentId;
@@ -1008,14 +817,8 @@ export class AgentOrchestrator {
 		}
 	}
 
-	private _agentsShareTree(
-		firstAgentId: AgentId,
-		secondAgentId: AgentId,
-	): boolean {
-		return (
-			this._resolveAgentTreeRoot(firstAgentId) ===
-			this._resolveAgentTreeRoot(secondAgentId)
-		);
+	private _agentsShareTree(firstAgentId: AgentId, secondAgentId: AgentId): boolean {
+		return this._resolveAgentTreeRoot(firstAgentId) === this._resolveAgentTreeRoot(secondAgentId);
 	}
 
 	/** Cycle-safe subtree snapshot in a deterministic leaf-to-root order. */
@@ -1039,11 +842,10 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Drop this agent's tree edge once it has no surviving descendants, then walk
-	 * up dropping every ancestor tombstone edge that likewise has none.
-	 *
-	 * Without it the map only grows: a long session that spawns and disposes
-	 * agents in a loop accumulates one dead edge per spawn.
+	 * Drop this agent's edge once it has no surviving descendants, then walk up
+	 * dropping every ancestor tombstone edge that likewise has none. Without it a
+	 * session that spawns and disposes in a loop accumulates one dead edge per
+	 * spawn.
 	 */
 	private _pruneSpawnEdges(agentId: AgentId): void {
 		let current: AgentId | undefined = agentId;
@@ -1069,11 +871,6 @@ export class AgentOrchestrator {
 	/**
 	 * The only creation entry point. It returns an AgentId and nothing else: the
 	 * harness never crosses this boundary.
-	 *
-	 * Validation combines both dimensions. The parent must exist, be live, not be
-	 * the agent itself, and not close a cycle; `resume` and `fork` require a
-	 * persistable profile because an ephemeral agent has no session, and `fork`
-	 * additionally requires its source to be live right now.
 	 */
 	async spawnAgent(options: SpawnAgentOptions): Promise<AgentId> {
 		await this.emitStartupDiagnostics();
@@ -1084,23 +881,18 @@ export class AgentOrchestrator {
 				message: "The runtime is shutting down and cannot spawn agents.",
 			});
 		}
-		if (options.parent !== undefined)
-			this._assertAgentCanParent(options.parent);
+		if (options.parent !== undefined) this._assertAgentCanParent(options.parent);
 		// A child resumed by hand is redirected to its root, so the tree comes back
-		// whole instead of as an orphan whose root would later open the same
-		// session a second time. Only a top-level resume can be redirected: a
-		// member being restored under `_resumeAgentTree` is already inside one.
+		// whole instead of as an orphan whose root would later open the same session
+		// twice. A member restored under `_resumeAgentTree` is already inside one.
 		if (options.origin.kind === "resume" && options.parent === undefined) {
-			const redirected = await this._redirectChildResumeToRoot(
-				options.origin.reference,
-			);
+			const redirected = await this._redirectChildResumeToRoot(options.origin.reference);
 			if (redirected !== undefined) return redirected;
 		}
 
 		const request = await this._resolveAgentBuild(options);
-		// A resume that names a session another caller is already resuming waits
-		// for that build instead of opening the same session twice. Tree recovery
-		// hits this whenever the user resumed a child by hand first.
+		// A resume that names a session another caller is already resuming waits for
+		// that build instead of opening the same session twice.
 		const existing = this._agentCreations.get(request.agentId);
 		if (existing) return await existing.completion;
 		if (this._live.has(request.agentId)) return request.agentId;
@@ -1137,14 +929,11 @@ export class AgentOrchestrator {
 					agentId,
 					profile: request.resolvedProfile.profile,
 					model: build.liveAgent.harness.getModel(),
-					...(request.parent === undefined
-						? undefined
-						: { spawnedBy: request.parent }),
+					...(request.parent === undefined ? undefined : { spawnedBy: request.parent }),
 				});
 			}
-			// After the root is routable and announced: its children are spawned
-			// under it, and a child whose parent is not yet live has nowhere to
-			// attach. A member resume is skipped - it is already inside a restore.
+			// After the root is routable and announced: a child whose parent is not
+			// yet live has nowhere to attach.
 			if (request.origin === "resume" && request.parent === undefined) {
 				await this._restoreSpawnTree(agentId);
 			}
@@ -1156,38 +945,21 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Resolve an origin into a build request: profile, session, model, thinking
-	 * level, settings snapshot, and the initial tool policy.
-	 *
-	 * `new` allocates a readable AgentId that avoids both tombstones and ids
-	 * already recorded in the tree, then creates the session. `resume` resolves
-	 * the reference and reuses the id the session recorded. `fork` forks a new
-	 * session from a live source and takes the new session's id.
-	 *
-	 * Nothing live is registered here: the result is a plain value.
+	 * Resolve an origin into a build request. `new` allocates a readable AgentId
+	 * and creates the session, `resume` reuses the id the session recorded, `fork`
+	 * takes the new session's id. Nothing live is registered here.
 	 */
-	private async _resolveAgentBuild(
-		options: SpawnAgentOptions,
-	): Promise<AgentBuildRequest> {
+	private async _resolveAgentBuild(options: SpawnAgentOptions): Promise<AgentBuildRequest> {
 		const settings = this._captureAgentSettings();
 		if (options.origin.kind === "resume") {
 			const metadata =
 				typeof options.origin.reference === "string"
-					? await this.sessionManager.resolveAgentSessionReference(
-							options.origin.reference,
-						)
+					? await this.sessionManager.resolveAgentSessionReference(options.origin.reference)
 					: options.origin.reference;
 			const agentId = metadata.id;
-			const resolvedProfile = await this._resolveResumeProfile(
-				agentId,
-				metadata,
-			);
-			const session = await this.sessionManager.resumeAgentSession({
-				agentId,
-				metadata,
-			});
-			const context =
-				await this.sessionManager.buildAgentSessionContext(agentId);
+			const resolvedProfile = await this._resolveResumeProfile(agentId, metadata);
+			const session = await this.sessionManager.resumeAgentSession({ agentId, metadata });
+			const context = await this.sessionManager.buildAgentSessionContext(agentId);
 			return {
 				agentId,
 				origin: "resume",
@@ -1196,9 +968,7 @@ export class AgentOrchestrator {
 				sessionMetadata: await session.getMetadata(),
 				model: options.model ?? this._resolveResumeModel(context.model),
 				thinkingLevel:
-					options.thinkingLevel ??
-					resolveThinkingLevel(context.thinkingLevel) ??
-					this._defaultThinkingLevel,
+					options.thinkingLevel ?? resolveThinkingLevel(context.thinkingLevel) ?? this._defaultThinkingLevel,
 				settings,
 				toolPolicy: {
 					requestedToolNames: resolvedProfile.profile.tools,
@@ -1223,30 +993,22 @@ export class AgentOrchestrator {
 			}
 			const metadata = await this.sessionManager.forkAgentSession(
 				source.agentId,
-				options.origin.entryId === undefined
-					? undefined
-					: { entryId: options.origin.entryId },
+				options.origin.entryId === undefined ? undefined : { entryId: options.origin.entryId },
 			);
 			await this._emit({
 				type: "agent_session_forked",
 				agentId: source.agentId,
 				forkedSessionId: metadata.id,
-				...(options.origin.entryId === undefined
-					? undefined
-					: { entryId: options.origin.entryId }),
+				...(options.origin.entryId === undefined ? undefined : { entryId: options.origin.entryId }),
 				createdAt: now(),
 			});
 			const agentId = metadata.id;
-			const session = await this.sessionManager.resumeAgentSession({
-				agentId,
-				metadata,
-			});
+			const session = await this.sessionManager.resumeAgentSession({ agentId, metadata });
 			return {
 				agentId,
 				origin: "fork",
-				// The source's exact profile, overrides included, rather than a fresh
-				// resolution: a fork continues one conversation, and re-resolving could
-				// hand it a profile the branch it inherits was never written under.
+				// The source's exact profile, overrides included: re-resolving could
+				// hand the fork a profile the branch it inherits was never written under.
 				resolvedProfile: {
 					profile: source.resolvedProfile,
 					source: source.profile.source,
@@ -1255,8 +1017,7 @@ export class AgentOrchestrator {
 				session,
 				sessionMetadata: await session.getMetadata(),
 				model: options.model ?? source.harness.getModel(),
-				thinkingLevel:
-					options.thinkingLevel ?? source.harness.getThinkingLevel(),
+				thinkingLevel: options.thinkingLevel ?? source.harness.getThinkingLevel(),
 				settings,
 				toolPolicy: source.toolPolicy,
 				parent: options.parent,
@@ -1265,10 +1026,7 @@ export class AgentOrchestrator {
 
 		const resolvedProfile = await this._resolveCreateProfile(options.origin);
 		const agentId = this._allocateAgentId(resolvedProfile.profile);
-		const session = await this.sessionManager.createAgentSession({
-			agentId,
-			agentProfile: resolvedProfile.profile,
-		});
+		const session = await this.sessionManager.createAgentSession({ agentId, agentProfile: resolvedProfile.profile });
 		return {
 			agentId,
 			origin: "new",
@@ -1278,22 +1036,19 @@ export class AgentOrchestrator {
 			model: options.model ?? this._defaultModel,
 			thinkingLevel: options.thinkingLevel ?? this._defaultThinkingLevel,
 			settings,
-			toolPolicy: {
-				requestedToolNames: resolvedProfile.profile.tools,
-				activeToolSelection: { mode: "default_all" },
-			},
+			toolPolicy: { requestedToolNames: resolvedProfile.profile.tools, activeToolSelection: { mode: "default_all" } },
 			parent: options.parent,
 		};
 	}
 
 	/**
-	 * Create the background attachment, runner, tools, harness, and bindings in
-	 * local variables. The live registry is not touched until this succeeds.
+	 * Build everything in local variables; the live registry is not touched until
+	 * this succeeds.
 	 *
 	 * Order matters: attach background, activate the runner, apply provider
 	 * contributions, resolve scoped tools against those contributions, create the
-	 * harness, then bind. The reservation is re-checked after every await, and
-	 * any failure or cancellation releases in the reverse order.
+	 * harness, then bind. The reservation is re-checked after every await, and any
+	 * failure releases in reverse order.
 	 */
 	private async _buildLiveAgent(
 		request: AgentBuildRequest,
@@ -1312,76 +1067,47 @@ export class AgentOrchestrator {
 
 		try {
 			const sessionId = (await request.session.getMetadata()).id;
-			partial.backgroundAttachment = await this._backgroundJobs.attachAgent({
-				agentId,
-				sessionId,
-			});
+			partial.backgroundAttachment = await this._backgroundJobs.attachAgent({ agentId, sessionId });
 			this._assertBuildNotCancelled(agentId, reservation);
 
-			const extensionRunner = await this._createExtensionRunner(
-				agentId,
-				profile.id,
-			);
+			const extensionRunner = await this._createExtensionRunner(agentId, profile.id);
 			partial.extensionRunner = extensionRunner;
 			await this._publishDiagnostics(extensionRunner.diagnostics);
 			this._addAgentDiagnostics(agentId, extensionRunner.diagnostics);
-			const blocked = extensionRunner.diagnostics.find(
-				isBlockedExtensionDiagnostic,
-			);
+			const blocked = extensionRunner.diagnostics.find(isBlockedExtensionDiagnostic);
 			if (blocked) throw new OrchestratorError(blocked);
-			// Contributed providers register before the harness exists so their
-			// models are selectable from the first turn. Model resolution for this
-			// spawn already happened and cannot reference them.
+			// Before the harness exists, so contributed models are selectable from the
+			// first turn. This spawn's own model resolution already happened.
 			await this._applyExtensionProviderContributions(agentId, extensionRunner);
 			this._assertBuildNotCancelled(agentId, reservation);
 
 			const loaded = await this.resourceLoader.loadAgentResources(profile);
-			const resourceDiagnostics = loaded.diagnostics.map((diagnostic) => ({
-				...diagnostic,
-				agentId,
-			}));
+			const resourceDiagnostics = loaded.diagnostics.map((diagnostic) => ({ ...diagnostic, agentId }));
 			await this._publishDiagnostics(resourceDiagnostics);
 			this._addAgentDiagnostics(agentId, resourceDiagnostics);
 			this._assertBuildNotCancelled(agentId, reservation);
 
 			const resources: AgentResourcesSnapshot = {
-				skills: loaded.skills.map(({ skill, source }) => ({
-					name: skill.name,
+				skills: loaded.skills.map(({ skill, source }) => ({ name: skill.name, source })),
+				promptTemplates: loaded.promptTemplates.map(({ promptTemplate, source }) => ({
+					name: promptTemplate.name,
 					source,
 				})),
-				promptTemplates: loaded.promptTemplates.map(
-					({ promptTemplate, source }) => ({
-						name: promptTemplate.name,
-						source,
-					}),
-				),
 			};
 			const systemPrompt: AgentSystemPromptFacts = {
 				basePrompt: profile.systemPrompt,
 				skills: loaded.skills.map(({ skill }) => skill),
 				// The role's own append text is the most specific statement about this
-				// agent, so it comes first; extension sections are read per turn from
-				// the runner and follow.
-				appendSections: profile.appendSystemPrompt
-					? [profile.appendSystemPrompt]
-					: [],
+				// agent, so it comes first; extension sections follow, read per turn.
+				appendSections: profile.appendSystemPrompt ? [profile.appendSystemPrompt] : [],
 				contextFiles: loaded.contextFiles,
-				...(profile.skillsListing === undefined
-					? undefined
-					: { includeSkills: profile.skillsListing }),
-				// The resource loader's cwd, not the execution env's: it is the
-				// project directory the file tools resolve relative paths against, and
-				// the prompt has to name the same one.
-				...((profile.includeCwd ?? true)
-					? { cwd: this.resourceLoader.getCwd() }
-					: undefined),
+				...(profile.skillsListing === undefined ? undefined : { includeSkills: profile.skillsListing }),
+				// The resource loader's cwd, not the execution env's: the file tools
+				// resolve relative paths against it, and the prompt must name the same one.
+				...((profile.includeCwd ?? true) ? { cwd: this.resourceLoader.getCwd() } : undefined),
 			};
 
-			const resolvedTools = await this._resolveAgentToolsForBuild(
-				agentId,
-				request.toolPolicy,
-				extensionRunner,
-			);
+			const resolvedTools = await this._resolveAgentToolsForBuild(agentId, request.toolPolicy, extensionRunner);
 			this._assertBuildNotCancelled(agentId, reservation);
 
 			const harness: WidiAgentHarness = new AgentHarness({
@@ -1391,11 +1117,9 @@ export class AgentOrchestrator {
 				streamOptions: request.settings.providerRetry,
 				retry: request.settings.retry,
 				tools: resolvedTools.tools,
-				// A callback rather than a string, so the skills listing tracks the
-				// harness's active tools at each turn start and follows an extension
-				// reload that replaced the runner.
-				systemPrompt: ({ activeTools }) =>
-					this._composeAgentSystemPrompt(agentId, activeTools),
+				// A callback, so the listing tracks the harness's active tools at each
+				// turn start and follows a reload that replaced the runner.
+				systemPrompt: ({ activeTools }) => this._composeAgentSystemPrompt(agentId, activeTools),
 				model: request.model,
 				thinkingLevel: request.thinkingLevel,
 				activeToolNames: [...resolvedTools.activeToolNames],
@@ -1409,9 +1133,7 @@ export class AgentOrchestrator {
 				generation,
 				profile: createAgentProfileRecordReference(resolvedProfile),
 				resolvedProfile: profile,
-				...(request.sessionMetadata === undefined
-					? undefined
-					: { sessionMetadata: request.sessionMetadata }),
+				...(request.sessionMetadata === undefined ? undefined : { sessionMetadata: request.sessionMetadata }),
 				resources,
 				systemPrompt,
 				harness,
@@ -1423,20 +1145,11 @@ export class AgentOrchestrator {
 				releaseHarnessBindings: async () => {},
 			};
 
-			const extensionBindings = await this._bindExtensionRunner(
-				agentId,
-				generation,
-				harness,
-				extensionRunner,
-			);
+			const extensionBindings = await this._bindExtensionRunner(agentId, generation, harness, extensionRunner);
 			partial.extensionBindings = extensionBindings;
 			liveAgent.extensionBindings = extensionBindings;
 
-			const releaseHarnessBindings = await this._bindHarness(
-				agentId,
-				generation,
-				harness,
-			);
+			const releaseHarnessBindings = await this._bindHarness(agentId, generation, harness);
 			partial.releaseHarnessBindings = releaseHarnessBindings;
 			Object.assign(liveAgent, { releaseHarnessBindings });
 			this._assertBuildNotCancelled(agentId, reservation);
@@ -1450,12 +1163,9 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Publish the agent with no await in between: allocate its generation, clear
-	 * any tombstone, and record the tree edge.
-	 *
-	 * This is spawn's only routing cutover. Appearing in `_live` is what makes an
-	 * agent routable; there is no intermediate "registered but harness pending"
-	 * state for anything to observe.
+	 * Spawn's only routing cutover, with no await in between. Appearing in `_live`
+	 * is what makes an agent routable; there is no intermediate "registered but
+	 * harness pending" state for anything to observe.
 	 */
 	private _installLiveAgent(build: LiveAgentBuild): AgentId {
 		const { liveAgent } = build;
@@ -1464,9 +1174,8 @@ export class AgentOrchestrator {
 		// A resumed session legitimately reuses an id this runtime buried earlier.
 		this._tombstones.delete(agentId);
 		this._live.set(agentId, liveAgent);
-		// The first idle this agent reaches has no turn behind it. Every later one
-		// is stamped by whoever ended the work: a prompt run, an abort, or the
-		// release of a maintenance operation.
+		// The first idle has no turn behind it; every later one is stamped by
+		// whoever ended the work.
 		this._agentIdleReasons.set(agentId, "ready");
 		if (build.treeRecord) {
 			this._spawnParent.set(agentId, build.treeRecord.spawnedBy);
@@ -1477,16 +1186,14 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Release a build that failed or was cancelled: detach background, dispose the
-	 * candidate runner, revoke bindings, and shut the half-built harness down.
+	 * Release a build that failed or was cancelled.
 	 *
-	 * `shutdown()` rather than `abort()`: this harness was never routable and
-	 * never will be, but the build may already have bound interceptors or written
-	 * to its session. Sealing it is closer to the truth than leaving it usable.
+	 * `shutdown()` rather than `abort()`: this harness was never routable, but the
+	 * build may already have bound interceptors or written to its session, so
+	 * sealing it is closer to the truth than leaving it usable.
 	 *
-	 * Nothing is published, and in particular **no tombstone is written**: the
-	 * agent never existed, so its AgentId stays available to a later spawn. The
-	 * failure reaches the caller as the thrown error.
+	 * **No tombstone is written**: the agent never existed, so its AgentId stays
+	 * available to a later spawn. The failure reaches the caller as the throw.
 	 */
 	private async _releaseFailedBuild(
 		agentId: AgentId,
@@ -1504,8 +1211,7 @@ export class AgentOrchestrator {
 		const harness = build.harness ?? liveAgent?.harness;
 		const runner = build.extensionRunner ?? liveAgent?.extensionRunner;
 		const bindings = build.extensionBindings ?? liveAgent?.extensionBindings;
-		const releaseHarnessBindings =
-			build.releaseHarnessBindings ?? liveAgent?.releaseHarnessBindings;
+		const releaseHarnessBindings = build.releaseHarnessBindings ?? liveAgent?.releaseHarnessBindings;
 
 		await this._tryTeardown(agentId, "release harness bindings", async () => {
 			await releaseHarnessBindings?.();
@@ -1517,12 +1223,7 @@ export class AgentOrchestrator {
 		}
 		if (runner) {
 			await this._tryTeardown(agentId, "dispose extension runner", async () => {
-				await this._disposeExtensionRunner(
-					agentId,
-					runner,
-					bindings,
-					"Agent creation failed.",
-				);
+				await this._disposeExtensionRunner(agentId, runner, bindings, "Agent creation failed.");
 			});
 		}
 		await this._tryTeardown(agentId, "withdraw providers", async () => {
@@ -1540,25 +1241,19 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Answer every t0 handle a previous runtime left open on this session.
-	 *
-	 * The jobs themselves are gone - a local job is a promise in a process that
-	 * exited - so this recovers the conversation, not the work: each unanswered
-	 * handle gets exactly one closing message, either the outcome recorded before
-	 * the exit or a cancellation explaining the restart.
+	 * Answer every t0 handle a previous runtime left open on this session. The
+	 * jobs are gone, so this recovers the conversation rather than the work: each
+	 * unanswered handle gets one closing message.
 	 *
 	 * The session history, not the job log, decides what is unanswered: a message
 	 * queued into a harness is never persisted, so acceptance is no evidence the
 	 * model read it.
 	 *
-	 * **Session write.** `harness.appendMessage` puts this straight on the branch,
-	 * which is where it belongs: the text must be in the session the moment this
-	 * returns, so a second interrupted resume finds it and stays idempotent, and
-	 * a resume must not start a model run nobody asked for over results that are
-	 * already stale. The harness is necessarily idle here, so the write lands
-	 * immediately and is ordered ahead of everything that follows on the same
-	 * write tail. Called before the agent becomes routable, because a stale result
-	 * arriving after that is a message, not context.
+	 * **Session write.** `harness.appendMessage` puts this on the branch, because
+	 * the text must be in the session the moment this returns - a second
+	 * interrupted resume has to find it and stay idempotent. Called before the
+	 * agent becomes routable: a stale result arriving after that is a message,
+	 * not context.
 	 */
 	private async _reconcileCarriedOverJobs(agentId: AgentId): Promise<void> {
 		const carried = this._backgroundJobs.carriedOverJobs(agentId);
@@ -1568,23 +1263,13 @@ export class AgentOrchestrator {
 		const snapshot = await this.sessionManager.getAgentSessionSnapshot(agentId);
 		const branchText = collectUserMessageText(snapshot.pathToRoot);
 		const unanswered = carried.filter(
-			(job) =>
-				!branchText.some((text) =>
-					text.includes(
-						backgroundJobResultHeaderPrefix(job.jobId, job.toolCallId),
-					),
-				),
+			(job) => !branchText.some((text) => text.includes(backgroundJobResultHeaderPrefix(job.jobId, job.toolCallId))),
 		);
 		if (unanswered.length === 0) return;
 		try {
 			await liveAgent.harness.appendMessage({
 				role: "user",
-				content: [
-					{
-						type: "text",
-						text: unanswered.map(toCarriedOverJobResultText).join("\n\n"),
-					},
-				],
+				content: [{ type: "text", text: unanswered.map(toCarriedOverJobResultText).join("\n\n") }],
 				timestamp: Date.now(),
 			});
 		} catch (error) {
@@ -1620,14 +1305,11 @@ export class AgentOrchestrator {
 		return agentId;
 	}
 
-	/** The parent must exist, be live, not be the child, and not close a cycle. */
 	private _assertAgentCanParent(parentAgentId: AgentId): void {
 		this._requireLiveAgent(parentAgentId);
 	}
 
-	private _createAgentCreationReservation(
-		agentId: AgentId,
-	): AgentCreationReservation {
+	private _createAgentCreationReservation(agentId: AgentId): AgentCreationReservation {
 		let settle!: (agentId: AgentId) => void;
 		let fail!: (error: unknown) => void;
 		const completion = new Promise<AgentId>((resolve, reject) => {
@@ -1642,8 +1324,7 @@ export class AgentOrchestrator {
 				reservation.cancelled = true;
 			},
 		};
-		// Nobody may await this promise before `_finishAgentCreation` settles it,
-		// and a rejection with no awaiter is an unhandled rejection.
+		// A rejection with no awaiter is an unhandled rejection.
 		completion.catch(() => {});
 		Object.assign(reservation, { _settle: settle, _fail: fail });
 		this._agentCreations.set(agentId, reservation);
@@ -1659,18 +1340,12 @@ export class AgentOrchestrator {
 		if (this._agentCreations.get(agentId) === reservation) {
 			this._agentCreations.delete(agentId);
 		}
-		const settlers = reservation as unknown as {
-			_settle: (agentId: AgentId) => void;
-			_fail: (error: unknown) => void;
-		};
+		const settlers = reservation as unknown as { _settle: (agentId: AgentId) => void; _fail: (error: unknown) => void };
 		if (result === undefined) settlers._fail(error);
 		else settlers._settle(result);
 	}
 
-	private _assertBuildNotCancelled(
-		agentId: AgentId,
-		reservation: AgentCreationReservation,
-	): void {
+	private _assertBuildNotCancelled(agentId: AgentId, reservation: AgentCreationReservation): void {
 		if (!reservation.cancelled) return;
 		throw new OrchestratorError({
 			severity: "error",
@@ -1685,24 +1360,16 @@ export class AgentOrchestrator {
 	// -----------------------------------------------------------------------
 
 	/**
-	 * Dispose one agent or a whole subtree.
-	 *
-	 * Every target completes its `_live` removal, tombstone write, and background
-	 * detach before the first await, so "is it routable" collapses to
-	 * `_live.has(agentId)` and no second `disposing` set is needed. Only
-	 * `intent: "removed"` writes a durable tombstone into the tree log.
+	 * Dispose one agent or a whole subtree. Every target completes its `_live`
+	 * removal, tombstone write and background detach before the first await, so
+	 * "is it routable" collapses to `_live.has(agentId)` and no second `disposing`
+	 * set is needed.
 	 */
-	async disposeAgent(
-		agentId: AgentId,
-		options: DisposeAgentOptions,
-	): Promise<readonly AgentId[]> {
-		const targets =
-			options.scope === "subtree"
-				? this._collectAgentSubtreePostOrder(agentId)
-				: [agentId];
+	async disposeAgent(agentId: AgentId, options: DisposeAgentOptions): Promise<readonly AgentId[]> {
+		const targets = options.scope === "subtree" ? this._collectAgentSubtreePostOrder(agentId) : [agentId];
 		// Duplicate requests share one teardown. A subtree dispose must wait for a
-		// descendant somebody else is already tearing down before it removes the
-		// ancestor, which is what makes this a lookup rather than a skip.
+		// descendant somebody else is tearing down before it removes the ancestor,
+		// which is what makes this a lookup rather than a skip.
 		const pending = targets
 			.map((target) => this._agentDisposals.get(target))
 			.filter((reservation) => reservation !== undefined);
@@ -1719,10 +1386,7 @@ export class AgentOrchestrator {
 			const completion = new Promise<void>((resolve) => {
 				settle = resolve;
 			});
-			this._agentDisposals.set(target.agentId, {
-				agentId: target.agentId,
-				completion,
-			});
+			this._agentDisposals.set(target.agentId, { agentId: target.agentId, completion });
 			try {
 				await this._disposeLiveAgent(target, options);
 			} catch (error) {
@@ -1737,48 +1401,35 @@ export class AgentOrchestrator {
 		}
 		if (failures.length === 1) throw failures[0];
 		if (failures.length > 1) {
-			throw new AggregateError(
-				failures,
-				`Failed to dispose ${failures.length} agents in subtree ${agentId}.`,
-			);
+			throw new AggregateError(failures, `Failed to dispose ${failures.length} agents in subtree ${agentId}.`);
 		}
 		return disposed.map((target) => target.agentId);
 	}
 
 	/**
-	 * Complete the cutover with no await: remove from `_live`, write
-	 * `_tombstones`, cancel the delivery queue, and detach background.
+	 * Complete the cutover with no await. `_spawnParent` is not deleted here: the
+	 * edge belongs to surviving descendants.
 	 *
-	 * `_spawnParent` is not deleted here - the edge belongs to surviving
-	 * descendants - and resources and system prompt vanish with the discarded
-	 * `LiveAgent` rather than needing to be cleared.
-	 *
-	 * The detach position is the background runtime's hard contract: after the
-	 * agent is marked as going away, before any other teardown.
-	 *
-	 * Cancelling the queue before tearing the harness down is also ordering, not
-	 * taste: a cancelled queue swaps its array, which is how requeue logic
-	 * decides an undeliverable message is `target_unavailable`. The other order
-	 * makes those messages hit a shutdown code first and take an extra lap.
+	 * Two orderings are contractual. The background detach must come after the
+	 * agent is marked as going away and before any other teardown. Cancelling the
+	 * queue must precede the harness teardown: a cancelled queue swaps its array,
+	 * which is how requeue logic decides an undeliverable message is
+	 * `target_unavailable` instead of taking an extra lap through a shutdown code.
 	 */
-	private _cutOverDisposed(
-		targets: readonly AgentId[],
-		options: DisposeAgentOptions,
-	): readonly DisposedLiveAgent[] {
+	private _cutOverDisposed(targets: readonly AgentId[], options: DisposeAgentOptions): readonly DisposedLiveAgent[] {
 		const disposed: DisposedLiveAgent[] = [];
 		for (const agentId of targets) {
 			const liveAgent = this._live.get(agentId);
 			const creation = this._agentCreations.get(agentId);
 			if (!liveAgent && !creation) continue;
-			// A build in flight is cancelled rather than waited on: its own failure
-			// path releases everything it had allocated.
+			// Cancelled rather than waited on: the build's own failure path releases
+			// everything it had allocated.
 			creation?.cancel();
 			this._live.delete(agentId);
 			if (options.intent === "removed") this._tombstones.add(agentId);
 			this._messages.cancel(
 				agentId,
-				options.reason ??
-					`Agent ${agentId} was disposed before the message was delivered.`,
+				options.reason ?? `Agent ${agentId} was disposed before the message was delivered.`,
 			);
 			this._backgroundJobs.detachAgent(agentId);
 			disposed.push(liveAgent ? { agentId, liveAgent } : { agentId });
@@ -1787,55 +1438,35 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Release the harness, runner, bindings, and surrounding workflows through
-	 * the references captured before the cutover. Failures record a diagnostic
-	 * and never restore live routing.
+	 * Release the harness, runner, bindings and surrounding workflows through the
+	 * references captured before the cutover. Failures record a diagnostic and
+	 * never restore live routing.
 	 *
-	 * The harness takes two calls, and their order is part of correctness:
-	 * **abort() first, then shutdown()**.
+	 * **abort() first, then shutdown().** `abort()` lets the interrupted turn run
+	 * its `finally` and flush the session writes it buffered; `shutdown()`
+	 * **discards** pending writes and so can never stand in for it. Both are
+	 * idempotent.
 	 *
-	 * - `abort()` lets the interrupted turn run its own `finally` and flush the
-	 *   session writes it had buffered. It now genuinely cancels compaction and
-	 *   branch summary as well, and waits for them to land.
-	 * - `shutdown()` **discards** pending session writes, so it can never stand in
-	 *   for `abort()`. It seals the harness and waits for every idle-time write
-	 *   to reach disk.
+	 * **shutdown() may only be disposal's tail.** `abort()` is not a tracked task,
+	 * so a concurrent shutdown can clear the subscriber table before abort emits
+	 * its last event. That is harmless only because this disposal is the sole
+	 * source of concurrency; a future "seal the harness but keep the agent" use
+	 * requires making `abort()` a harness lifecycle task first.
 	 *
-	 * Both are idempotent: on a repeat dispose `abort()` waits for the shutdown
-	 * and returns an empty result.
-	 *
-	 * **Constraint: shutdown() may only be disposal's tail.** `abort()` is not a
-	 * tracked task, so a concurrent shutdown can clear the subscriber table
-	 * before abort emits its last event, and that event is silently dropped.
-	 * Today that is harmless because this disposal is the only source of
-	 * concurrency and every consumer of that event checks generation against an
-	 * agent already absent from `_live`. If a "seal the harness but keep the
-	 * agent" use ever appears, `abort()` must first become a harness lifecycle
-	 * task (or share a teardown promise with shutdown) before that use lands.
-	 *
-	 * `shutdown()` waits without a bound - it waits for the operation to finish,
-	 * which depends on every awaited tool honouring the abort signal, and
-	 * `ask_human` waiting on a real person inside a tool call is a known
-	 * counter-example. The timeout here is required: on expiry it gives up
-	 * waiting, records a diagnostic, and continues the teardown without restoring
-	 * routing. The harness has already sealed further writes, so the cost is
-	 * bounded.
+	 * `shutdown()` waits unbounded - it depends on every awaited tool honouring
+	 * the abort signal, and `ask_human` inside a tool call is a counter-example -
+	 * so the timeout is required. On expiry the teardown continues without
+	 * restoring routing; the harness has already sealed further writes.
 	 */
-	private async _disposeLiveAgent(
-		disposed: DisposedLiveAgent,
-		options: DisposeAgentOptions,
-	): Promise<void> {
+	private async _disposeLiveAgent(disposed: DisposedLiveAgent, options: DisposeAgentOptions): Promise<void> {
 		const { agentId, liveAgent } = disposed;
 		const reason = options.reason ?? `Agent disposed: ${agentId}`;
 
 		this._humanInterrupts.forget(agentId);
 		this._resolveAgentRunStartWaiters(agentId);
-		this._rejectAgentIdleWaiters(
-			agentId,
-			`Agent ${agentId} was disposed while waiting for it to idle.`,
-		);
-		// A resumed session reuses this id; all of these describe the occupant
-		// that just left.
+		this._rejectAgentIdleWaiters(agentId, `Agent ${agentId} was disposed while waiting for it to idle.`);
+		// A resumed session reuses this id; all of these describe the occupant that
+		// just left.
 		this._agentIdleReasons.delete(agentId);
 		this._publishedAgentIdles.delete(agentId);
 		this._agentPromptRuns.delete(agentId);
@@ -1881,36 +1512,26 @@ export class AgentOrchestrator {
 			type: "agent_disposed",
 			agentId,
 			intent: options.intent,
-			...(options.reason === undefined
-				? undefined
-				: { reason: options.reason }),
+			...(options.reason === undefined ? undefined : { reason: options.reason }),
 			disposedAt: now(),
 		});
 	}
 
 	/**
-	 * Sever every live route synchronously, then release all runtime resources.
+	 * Sever every live route, then release all runtime resources. Not
+	 * `requestShutdown()`, which only broadcasts a request to extensions.
 	 *
-	 * `_shutdownRequested` is set first, then in-flight creation reservations are
-	 * cancelled and awaited, and only then does the full sweep run with intent
-	 * `runtime_shutdown` so nothing durable is written. Any other order lets an
-	 * agent finish installing after the sweep has passed it.
-	 *
-	 * This is not `requestShutdown()`, which only broadcasts a request to
-	 * extensions. When this returns, every harness is sealed and its session
-	 * writes have landed, so the process may exit - provided `_disposeLiveAgent`'s
-	 * timeout caught any tool that ignores its abort signal.
+	 * `_shutdownRequested` first, then in-flight reservations cancelled and
+	 * awaited, then the sweep with intent `runtime_shutdown` so nothing durable is
+	 * written. Any other order lets an agent finish installing after the sweep
+	 * passed it. When this returns every harness is sealed and its writes landed.
 	 */
 	async disposeAll(reason?: string): Promise<void> {
 		this._shutdownRequested = true;
 		for (const reservation of [...this._agentCreations.values()]) {
 			reservation.cancel();
 		}
-		await Promise.allSettled(
-			[...this._agentCreations.values()].map(
-				(reservation) => reservation.completion,
-			),
-		);
+		await Promise.allSettled([...this._agentCreations.values()].map((reservation) => reservation.completion));
 		for (const agentId of [...this._live.keys()]) {
 			try {
 				await this.disposeAgent(agentId, {
@@ -1939,11 +1560,7 @@ export class AgentOrchestrator {
 	}
 
 	/** Run one teardown step; a failure is recorded and never re-thrown. */
-	private async _tryTeardown(
-		agentId: AgentId,
-		step: string,
-		run: () => Promise<void>,
-	): Promise<void> {
+	private async _tryTeardown(agentId: AgentId, step: string, run: () => Promise<void>): Promise<void> {
 		try {
 			await run();
 		} catch (error) {
@@ -1960,48 +1577,33 @@ export class AgentOrchestrator {
 	// -----------------------------------------------------------------------
 
 	/**
-	 * The unified entry point for human, agent, background and system input.
-	 *
-	 * This overload is for the trusted shell (TUI, RPC), which may construct a
-	 * `human` or `system` source. Agent identity goes through
-	 * `sendMessageFromAgent`, which synthesizes the source itself.
+	 * The unified entry point, for the trusted shell (TUI, RPC) which may
+	 * construct a `human` or `system` source. Agent identity is synthesized by the
+	 * agent-facing path instead.
 	 */
 	async sendMessage(draft: MessageDraft): Promise<MessageSendOutcome> {
-		const accepted = await this._routeMessage(draft, {
-			requiresIdle: false,
-			awaited: false,
-		});
+		const accepted = await this._routeMessage(draft, { requiresIdle: false, awaited: false });
 		return accepted.kind === "blocked" ? accepted : { kind: "accepted" };
 	}
 
-	/**
-	 * The human text-input entry point: the same pipeline, waiting for the
-	 * assistant message the calling surface is going to render.
-	 */
+	/** The same pipeline, waiting for the assistant message the surface will render. */
 	async promptAgent(
 		agentId: AgentId,
 		text: string,
-		options?: {
-			readonly images?: readonly ImageContent[];
-			readonly presentation?: ExtensionInputPresentationRecord;
-		},
+		options?: { readonly images?: readonly ImageContent[]; readonly presentation?: ExtensionInputPresentationRecord },
 	): Promise<PromptOutcome> {
 		const accepted = await this._routeMessage(
 			{
 				source: { kind: "human" },
 				targetAgentId: agentId,
 				body: text,
-				...(options?.images === undefined
-					? undefined
-					: { images: options.images }),
+				...(options?.images === undefined ? undefined : { images: options.images }),
 				mode: "next_turn",
 			},
 			{
 				requiresIdle: true,
 				awaited: true,
-				...(options?.presentation === undefined
-					? undefined
-					: { presentation: options.presentation }),
+				...(options?.presentation === undefined ? undefined : { presentation: options.presentation }),
 			},
 		);
 		if (accepted.kind === "blocked") return accepted;
@@ -2016,31 +1618,21 @@ export class AgentOrchestrator {
 
 	/**
 	 * Run one message through interception, session accounting, and the target's
-	 * delivery queue.
+	 * delivery queue. It stays in this class because every step's dependency is
+	 * here: interception needs the target's runner, accounting its harness, the
+	 * input events the bus.
 	 *
-	 * All of it stays in this class because every step's dependency is here:
-	 * interception needs the target's runner, accounting needs its harness, and
-	 * the input events need the event bus. Cutting a message domain out of it
-	 * would make each message cross the boundary four times.
-	 *
-	 * `requiresIdle` expresses only that the caller must receive this run's
-	 * assistant result, so a busy target is refused up front rather than
-	 * silently becoming a follow-up whose reply nobody is waiting for.
+	 * `requiresIdle` means only that the caller must receive this run's assistant
+	 * result, so a busy target is refused up front rather than silently becoming a
+	 * follow-up whose reply nobody awaits.
 	 */
-	private async _routeMessage(
-		draft: MessageDraft,
-		options: RouteMessageOptions,
-	): Promise<AcceptedMessage> {
+	private async _routeMessage(draft: MessageDraft, options: RouteMessageOptions): Promise<AcceptedMessage> {
 		const agentId = draft.targetAgentId;
 		assertMessageBody(draft.body);
-		// Gate before interception and any session write: a prompt the harness
-		// would reject must not emit input events or leave accounting entries with
-		// no user message to pair with.
+		// Gate before interception and any session write: a prompt the harness would
+		// reject must not emit input events or leave unpaired accounting entries.
 		const target = this._resolveDeliveryTarget(agentId);
-		if (
-			options.requiresIdle &&
-			(target.phase !== "idle" || this._agentPromptRuns.has(agentId))
-		) {
+		if (options.requiresIdle && (target.phase !== "idle" || this._agentPromptRuns.has(agentId))) {
 			throw new OrchestratorError({
 				severity: "error",
 				code: "orchestrator.agent_busy",
@@ -2050,8 +1642,7 @@ export class AgentOrchestrator {
 		}
 
 		const outcome = await transformMessage(draft, {
-			intercept: async (event) =>
-				await this._interceptExtensionInput(agentId, draft.source, event),
+			intercept: async (event) => await this._interceptExtensionInput(agentId, draft.source, event),
 		});
 
 		if (outcome.kind === "block") {
@@ -2061,18 +1652,14 @@ export class AgentOrchestrator {
 				agentId,
 				inputId,
 				originalText: draft.body,
-				...(outcome.reason === undefined
-					? undefined
-					: { reason: outcome.reason }),
+				...(outcome.reason === undefined ? undefined : { reason: outcome.reason }),
 				blockedBy: outcome.blockedBy,
 				createdAt: now(),
 			});
 			return {
 				kind: "blocked",
 				inputId,
-				...(outcome.reason === undefined
-					? undefined
-					: { reason: outcome.reason }),
+				...(outcome.reason === undefined ? undefined : { reason: outcome.reason }),
 				blockedBy: outcome.blockedBy,
 			};
 		}
@@ -2096,27 +1683,21 @@ export class AgentOrchestrator {
 			});
 		}
 
-		// A job result is the one source with no caller left to hear about a
-		// failure: its tool call already returned, and the model is waiting for
-		// exactly one t1 that nobody else will resend. It is also the only source
-		// whose messages merge, since each carries its own job header already.
-		const jobSource =
-			draft.source.kind === "background_job" ? draft.source : undefined;
-		const pending: PendingExtensionInputPresentation | undefined =
-			options.presentation
-				? {
-						extensionId: options.presentation.extensionId,
-						presentation: validateExtensionInputPresentation(
-							options.presentation.presentation,
-						),
-					}
-				: undefined;
+		// A job result is the one source with no caller left to hear about a failure:
+		// its tool call already returned, and the model waits for exactly one t1 that
+		// nobody else will resend. It is also the only source whose messages merge,
+		// each already carrying its own job header.
+		const jobSource = draft.source.kind === "background_job" ? draft.source : undefined;
+		const pending: PendingExtensionInputPresentation | undefined = options.presentation
+			? {
+					extensionId: options.presentation.extensionId,
+					presentation: validateExtensionInputPresentation(options.presentation.presentation),
+				}
+			: undefined;
 		const receipt = await this._messages.enqueue({
 			targetAgentId: agentId,
 			text: renderMessageEnvelope(draft.source, outcome.text),
-			...(outcome.images === undefined
-				? undefined
-				: { images: outcome.images }),
+			...(outcome.images === undefined ? undefined : { images: outcome.images }),
 			mode: draft.mode,
 			requiresIdle: options.requiresIdle,
 			humanInterrupt: draft.source.kind === "human",
@@ -2125,11 +1706,7 @@ export class AgentOrchestrator {
 				: {
 						mergeKey: backgroundResultMergeKey(draft.mode),
 						onDeferredFailure: (error: unknown) => {
-							void this._reportDeferredDeliveryFailure(
-								agentId,
-								jobSource.jobId,
-								error,
-							);
+							void this._reportDeferredDeliveryFailure(agentId, jobSource.jobId, error);
 						},
 					}),
 			awaited: options.awaited,
@@ -2138,11 +1715,7 @@ export class AgentOrchestrator {
 				? undefined
 				: {
 						onDeliveryStart: (method: MessageDeliveryMethod) => {
-							this._beginExtensionInputPresentationDelivery(
-								agentId,
-								pending,
-								method,
-							);
+							this._beginExtensionInputPresentationDelivery(agentId, pending, method);
 						},
 						onDeliveryFailure: () => {
 							this._discardPendingExtensionInputPresentation(agentId, pending);
@@ -2155,26 +1728,14 @@ export class AgentOrchestrator {
 	/**
 	 * Record that an extension rewrote this message before the model saw it.
 	 *
-	 * **Session write.** It goes onto the branch through
-	 * `harness.appendCustomEntry`, the only supported way in, because it is the
-	 * durable half of a dual record: the user message carries the text the model
-	 * actually read, and only this entry can still answer what was submitted after
-	 * a resume. Blocked input writes nothing - it never reached the model and left
-	 * no state to explain.
+	 * **Session write.** `harness.appendCustomEntry` puts it on the branch because
+	 * it is the durable half of a dual record: the user message carries the text
+	 * the model read, and only this entry can still answer what was submitted
+	 * after a resume. Blocked input writes nothing.
 	 *
-	 * The harness's own write tail orders it ahead of the user message when the
-	 * target is idle, which is the ordinary prompt case. When the target is in a
-	 * turn the write buffers to the next save point and therefore lands after the
-	 * steered message it describes; the entry names its `inputId` rather than
-	 * relying on adjacency, so that is a display-order wrinkle, not a lost pair.
-	 * There is no retraction path: a delivery that fails afterwards leaves the
-	 * entry, and reaching back into a branch to remove it is exactly what the
-	 * harness write surface exists to prevent.
-	 *
-	 * Inline command expansion used to be written here too. It is gone: the
-	 * expansion happens in the interaction layer and is only ever read back by it,
-	 * so routing it through the orchestrator gave core a vocabulary - commands -
-	 * that no core decision depends on.
+	 * The entry names its `inputId` rather than relying on adjacency, so a write
+	 * buffered behind a running turn landing after the message it describes is a
+	 * display-order wrinkle, not a lost pair. There is no retraction path.
 	 */
 	private async _writeInputTransformEntry(
 		target: DeliveryTarget,
@@ -2193,15 +1754,7 @@ export class AgentOrchestrator {
 		} satisfies InputTransformEntryData);
 	}
 
-	/**
-	 * The first availability gate: the harness, its generation, and the phase read
-	 * on the spot.
-	 *
-	 * The phase is read rather than projected because the delivery method is
-	 * chosen from it and harness errors do not cover every phase - calling
-	 * `followUp` on an idle target yields only a retryable `invalid_state`, which
-	 * would defer the message forever.
-	 */
+	/** The first availability gate: harness, generation, and the phase read on the spot. */
 	private _resolveDeliveryTarget(agentId: AgentId): DeliveryTarget {
 		const liveAgent = this._requireLiveAgent(agentId);
 		return {
@@ -2212,50 +1765,29 @@ export class AgentOrchestrator {
 		};
 	}
 
-	/**
-	 * The delivery queue's `resolvePhase` port, re-read immediately before every
-	 * attempt. `undefined` means the agent is no longer routable.
-	 */
+	/** The queue's `resolvePhase` port, re-read before every attempt. `undefined` means unroutable. */
 	private _resolveDeliveryPhase(agentId: AgentId): MessageDeliveryPhase {
 		return this._live.get(agentId)?.harness.getPhase();
 	}
 
 	/**
-	 * The delivery queue's `deliver` port: called back when this target's turn to
-	 * receive a batch comes up.
-	 *
-	 * The method was already chosen from the phase the queue re-read; the race
-	 * between reading it and calling is what the typed harness errors arbitrate,
-	 * and the queue retries `busy` and `invalid_state` on the next phase change.
+	 * The queue's `deliver` port. The method was chosen from the phase the queue
+	 * re-read; the race between reading and calling is arbitrated by the typed
+	 * harness errors, which the queue retries on the next phase change.
 	 */
-	private async _deliverQueuedMessage(
-		request: MessageDeliveryRequest,
-	): Promise<MessageDeliveryReceipt> {
+	private async _deliverQueuedMessage(request: MessageDeliveryRequest): Promise<MessageDeliveryReceipt> {
 		const { agentId } = request;
 		const liveAgent = this._live.get(agentId);
 		if (!liveAgent) {
-			// Terminal for the queue, which is the point: no phase change brings a
-			// routing entry back, so a message with `retryOnFailure` must not sit
-			// here waiting for one. Practically unreachable - the dispose cutover
-			// cancels this queue on the same tick - but a silent requeue loop is a
-			// worse failure than an explicit one.
-			throw new AgentHarnessError(
-				"shutdown",
-				`Agent ${agentId} is no longer routable.`,
-			);
+			// Terminal for the queue: no phase change brings a routing entry back, so
+			// a `retryOnFailure` message must not sit here waiting for one.
+			throw new AgentHarnessError("shutdown", `Agent ${agentId} is no longer routable.`);
 		}
 		const { harness } = liveAgent;
-		const options = request.images
-			? { images: [...request.images] }
-			: undefined;
+		const options = request.images ? { images: [...request.images] } : undefined;
 		if (request.method === "prompt") {
 			return await this._startPrompt(
-				{
-					agentId,
-					generation: liveAgent.generation,
-					harness,
-					phase: harness.getPhase(),
-				},
+				{ agentId, generation: liveAgent.generation, harness, phase: harness.getPhase() },
 				request,
 			);
 		}
@@ -2263,11 +1795,9 @@ export class AgentOrchestrator {
 			await harness.followUp(request.text, options);
 			return { method: "follow_up" };
 		}
-		// A human steer is only "read" once the harness reports an empty steering
-		// queue, so the interrupt is registered around the call that hands it over.
-		const clearRevision = request.humanInterrupt
-			? this._humanInterrupts.captureClearRevision(agentId)
-			: undefined;
+		// A human steer counts as read only once the harness reports an empty
+		// steering queue, so the interrupt is registered around the hand-over.
+		const clearRevision = request.humanInterrupt ? this._humanInterrupts.captureClearRevision(agentId) : undefined;
 		await harness.steer(request.text, options);
 		if (clearRevision !== undefined) {
 			this._humanInterrupts.notifyIfUncleared(agentId, clearRevision);
@@ -2276,26 +1806,17 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Start a fresh prompt, which is the only delivery that must produce an
-	 * assistant result.
+	 * The only delivery that must produce an assistant result.
 	 *
 	 * Acceptance waits for the harness's own `agent_start`, racing the run
-	 * promise's rejection: everything the harness does before that event is
-	 * asynchronous and can fail, and a failure there means the user message was
-	 * never persisted. Resolving early would let the queue drop a background job
-	 * t1 the model is waiting for. The phase cannot stand in for the event - it
-	 * flips to `turn` on the first line of `prompt()`.
+	 * promise's rejection: a failure before that event means the user message was
+	 * never persisted, and resolving early would let the queue drop a background
+	 * job t1 the model is waiting for.
 	 */
-	private async _startPrompt(
-		target: DeliveryTarget,
-		request: MessageDeliveryRequest,
-	): Promise<MessageDeliveryReceipt> {
+	private async _startPrompt(target: DeliveryTarget, request: MessageDeliveryRequest): Promise<MessageDeliveryReceipt> {
 		const { agentId, harness } = target;
 		if (target.phase !== "idle" || this._agentPromptRuns.has(agentId)) {
-			throw new AgentHarnessError(
-				"busy",
-				`Agent ${agentId} cannot accept a prompt while ${target.phase}.`,
-			);
+			throw new AgentHarnessError("busy", `Agent ${agentId} cannot accept a prompt while ${target.phase}.`);
 		}
 
 		// Registered before the call, so a fast `agent_start` cannot be missed.
@@ -2303,12 +1824,9 @@ export class AgentOrchestrator {
 		const promptRun: AgentPromptRun = {};
 		this._agentPromptRuns.set(agentId, promptRun);
 		const run = harness.prompt(request.text, {
-			...(request.images === undefined
-				? undefined
-				: { images: [...request.images] }),
+			...(request.images === undefined ? undefined : { images: [...request.images] }),
 		});
-		// A run that settles without ever starting a loop still resolves here; the
-		// alternative is waiting forever for a signal that is not coming.
+		// A run that settles without ever starting a loop still resolves here.
 		const start = await Promise.race([
 			started.reached,
 			run.then(
@@ -2322,25 +1840,20 @@ export class AgentOrchestrator {
 				this._agentPromptRuns.delete(agentId);
 				// Nothing else will publish this edge: the run that would have has
 				// already failed. `_settleAgentIdle` re-reads the live phase, so a
-				// `busy` rejection - another operation won the race - simply finds the
-				// agent still working and re-arms.
+				// `busy` rejection just finds the agent still working and re-arms.
 				await this._settleAgentIdle(agentId);
 			}
 			throw start.error;
 		}
 
-		void this._finishPrompt(agentId, run, promptRun, {
-			reportFailure: !request.awaited,
-		}).catch(() => {});
+		void this._finishPrompt(agentId, run, promptRun, { reportFailure: !request.awaited }).catch(() => {});
 		return { method: "prompt", completed: run };
 	}
 
 	/**
-	 * Close out a prompt run and publish the idle edge it produced.
-	 *
-	 * Staleness is decided by object identity: disposal or a resumed session may
-	 * have replaced this run while its promise was settling, and a stale
-	 * completion must not stamp the successor's idle reason or publish its edge.
+	 * Close out a prompt run and publish the idle edge it produced. Staleness is
+	 * by object identity: a completion whose run was replaced while its promise
+	 * settled must not stamp the successor's idle reason.
 	 */
 	private async _finishPrompt(
 		agentId: AgentId,
@@ -2364,17 +1877,13 @@ export class AgentOrchestrator {
 				this._agentPromptRuns.delete(agentId);
 				this._agentIdleReasons.set(agentId, promptRun.idleReason ?? "settled");
 				this._messages.wake(agentId);
-				// Terminal harness events have already flipped the phase to idle;
-				// clearing this run is the last fact the waiters and the observable
-				// edge were missing.
+				// The phase is already idle; clearing this run is the last fact the
+				// waiters and the observable edge were missing.
 				await this._settleAgentIdle(agentId);
 			}
 		}
 	}
 
-	/**
-	 * A pending observation of the target's next agent-loop start.
-	 */
 	private _awaitAgentRunStart(agentId: AgentId): {
 		readonly reached: Promise<{ readonly kind: "started" }>;
 		readonly cancel: () => void;
@@ -2403,15 +1912,10 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * An unexpected delivery failure that will be retried at the target's next
-	 * phase change. Reported per attempt, so a target that never accepts is
-	 * visible instead of silently accumulating messages.
+	 * Reported per attempt, so a target that never accepts is visible instead of
+	 * silently accumulating messages.
 	 */
-	private async _reportDeferredDeliveryFailure(
-		agentId: AgentId,
-		jobId: string,
-		error: unknown,
-	): Promise<void> {
+	private async _reportDeferredDeliveryFailure(agentId: AgentId, jobId: string, error: unknown): Promise<void> {
 		await this._publishDiagnostic({
 			severity: "warning",
 			code: "orchestrator.background_job_delivery_failed",
@@ -2421,28 +1925,21 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * The background runtime's t1 delivery port. It hands the text to the ordinary
-	 * message entry point and neither reads the job record nor decides its
-	 * lifecycle.
+	 * The background runtime's t1 delivery port: hands the text to the ordinary
+	 * message entry point, reading no job record and deciding no lifecycle.
 	 */
-	private async _deliverBackgroundResult(
-		delivery: BackgroundJobDelivery,
-	): Promise<BackgroundJobDeliveryReceipt> {
+	private async _deliverBackgroundResult(delivery: BackgroundJobDelivery): Promise<BackgroundJobDeliveryReceipt> {
 		const agentId = delivery.ownerAgentId;
 		try {
 			await this.sendMessage({
-				source: {
-					kind: "background_job",
-					ownerAgentId: agentId,
-					jobId: delivery.jobId,
-				},
+				source: { kind: "background_job", ownerAgentId: agentId, jobId: delivery.jobId },
 				targetAgentId: agentId,
 				body: delivery.body,
 				mode: "interrupt",
 			});
 		} catch (error) {
 			// Retryable failures keep the result queued, so reaching here means the
-			// owner can never take it: the model will not see this job's outcome.
+			// owner can never take it.
 			await this._publishDiagnostic({
 				severity: "warning",
 				code: "orchestrator.background_job_dropped",
@@ -2475,28 +1972,17 @@ export class AgentOrchestrator {
 		text: string,
 		options?: { readonly images?: readonly ImageContent[] },
 	): Promise<void> {
-		const harness = this._requireHarnessOutsideMaintenance(
-			agentId,
-			"queue a follow-up",
-		);
+		const harness = this._requireHarnessOutsideMaintenance(agentId, "queue a follow-up");
 		await harness.followUp(text, toHarnessMessageOptions(options));
 	}
 
 	/**
-	 * Promote everything queued as a follow-up into steering, so it is read at the
-	 * next turn boundary instead of only where the run would have stopped.
-	 *
-	 * This is the "I cannot wait for this" path of a message the surface already
-	 * accepted: the text is in the harness, so re-sending it would deliver it
-	 * twice and only the harness can take it back. It is kept rather than exposed
-	 * as a bare `promoteFollowUpsToSteer` because it adds the human-interrupt
-	 * coordination. Returns how many messages moved.
+	 * Promote queued follow-ups into steering, so they are read at the next turn
+	 * boundary. Wrapped rather than exposed as a bare `promoteFollowUpsToSteer`
+	 * because it adds the human-interrupt coordination. Returns how many moved.
 	 */
 	async steerQueuedFollowUps(agentId: AgentId): Promise<number> {
-		const harness = this._requireHarnessOutsideMaintenance(
-			agentId,
-			"steer queued follow-ups",
-		);
+		const harness = this._requireHarnessOutsideMaintenance(agentId, "steer queued follow-ups");
 		const clearRevision = this._humanInterrupts.captureClearRevision(agentId);
 		const promoted = await harness.promoteFollowUpsToSteer();
 		if (promoted.length > 0) {
@@ -2506,14 +1992,10 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * End the current harness operation and settle what its cleared queues leave
-	 * behind.
-	 *
-	 * The result comes straight from the harness; there is no aborted/running
-	 * mirror to update. It can now also cancel compaction and branch summary and
-	 * waits for them to land - but those two phases are refused by
-	 * `_requireHarnessOutsideMaintenance`, so a user-initiated abort never reaches
-	 * that capability. Disposal is what uses it.
+	 * End the current harness operation. The result comes straight from the
+	 * harness; there is no aborted/running mirror. The harness can also cancel
+	 * compaction and branch summary, but `_requireHarnessOutsideMaintenance`
+	 * refuses those phases here - disposal is what uses that capability.
 	 */
 	async abortAgent(agentId: AgentId): Promise<AbortResult> {
 		const harness = this._requireHarnessOutsideMaintenance(agentId, "abort");
@@ -2526,10 +2008,7 @@ export class AgentOrchestrator {
 	// Activity and the idle edge
 	// -----------------------------------------------------------------------
 
-	/**
-	 * Whether the core delivery queue or either harness queue still holds text
-	 * nobody has read.
-	 */
+	/** Whether the delivery queue or either harness queue still holds unread text. */
 	agentHasPendingMessages(agentId: AgentId): boolean {
 		if (this._messages.hasPending(agentId)) return true;
 		const liveAgent = this._live.get(agentId);
@@ -2537,37 +2016,20 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Whether the agent can currently be treated as idle.
+	 * A join across four sources: the phase is idle, both harness queues are
+	 * empty, `_messages` has nothing pending, and no prompt run started by this
+	 * class is in flight. The last cannot be dropped - the phase goes idle inside
+	 * `agent_end` while `prompt()` still has a flush to do in its `finally`.
 	 *
-	 * The judgement is a join across four sources: the phase is idle, both harness
-	 * queues are empty, `_messages` has nothing pending, and no prompt run started
-	 * by this class is still in flight. The last one cannot be dropped - the
-	 * harness sets the phase to idle inside `agent_end` and only then emits
-	 * `settled`, while the `prompt()` promise still has to complete a second flush
-	 * in its `finally`, leaving a short window where the phase says idle and the
-	 * run has not been accounted for.
-	 *
-	 * It is still not a synonym for `harness.waitForIdle()`, for one remaining
-	 * reason: that call now covers compaction and tree navigation, but looks at no
-	 * queue at all, so a harness with a steer waiting in it reads as idle.
-	 *
-	 * This join spans `_live`, the harness and `_messages`, which is the direct
-	 * reason the message domain cannot be a class of its own.
+	 * Not a synonym for `harness.waitForIdle()`, which looks at no queue at all,
+	 * so a harness holding a steer reads as idle there.
 	 */
 	isAgentIdle(agentId: AgentId): boolean {
 		return this._resolveAgentIdleState(agentId).kind === "idle";
 	}
 
-	/**
-	 * Wait for that combined condition to hold.
-	 *
-	 * It rejects rather than hanging when the agent can never reach it: disposal
-	 * and a generation change both fail the wait.
-	 */
-	async waitForAgentIdle(
-		agentId: AgentId,
-		options: { readonly signal?: AbortSignal } = {},
-	): Promise<void> {
+	/** Rejects rather than hanging when the agent can never reach that condition. */
+	async waitForAgentIdle(agentId: AgentId, options: { readonly signal?: AbortSignal } = {}): Promise<void> {
 		const settled = this._resolveAgentIdleState(agentId);
 		if (settled.kind === "idle") return;
 		if (settled.kind === "gone") throw new Error(settled.message);
@@ -2583,9 +2045,8 @@ export class AgentOrchestrator {
 				waiters.add(waiter);
 				const signal = options.signal;
 				if (!signal) return;
-				// Detached in the finally below: the caller's signal usually outlives
-				// one wait (a run signal covers a whole turn), so a listener left
-				// behind would pin this promise's closure for the signal's lifetime.
+				// Detached in the finally below: the caller's signal usually outlives one
+				// wait, so a listener left behind pins this closure for its lifetime.
 				onAbort = () => reject(signal.reason);
 				signal.addEventListener("abort", onAbort, { once: true });
 			});
@@ -2596,10 +2057,7 @@ export class AgentOrchestrator {
 		}
 	}
 
-	/**
-	 * Idle now, never going to be, or simply still busy. A creating agent counts
-	 * as busy: it is on its way to a first idle.
-	 */
+	/** Idle now, never going to be, or still busy. A creating agent counts as busy. */
 	private _resolveAgentIdleState(agentId: AgentId): AgentIdleState {
 		const lookup = this._resolveAgent(agentId);
 		if (lookup.kind === "creating") return { kind: "busy" };
@@ -2610,31 +2068,23 @@ export class AgentOrchestrator {
 		if (harness.getPhase() !== "idle") return { kind: "busy" };
 		if (this._agentPromptRuns.has(agentId)) return { kind: "busy" };
 		if (queuedMessageCount(harness) > 0) return { kind: "busy" };
-		return this._messages.hasPending(agentId)
-			? { kind: "busy" }
-			: { kind: "idle" };
+		return this._messages.hasPending(agentId) ? { kind: "busy" } : { kind: "idle" };
 	}
 
 	/**
-	 * Settle everything waiting on this agent's idle: the promise waiters first,
-	 * then the event.
+	 * Waiters first, then the event: waiters resolve synchronously while a
+	 * listener may take as long as it likes.
 	 *
-	 * Both read the one judgement in `_resolveAgentIdleState`, so a consumer that
-	 * awaited `waitForAgentIdle` and one subscribed to `agent_idle` can never
-	 * disagree about whether the agent stopped. Waiters go first because they are
-	 * resolved synchronously and a listener may take as long as it likes.
-	 *
-	 * `liveJobCount` is a narrow query into the background runtime, not a term in
-	 * the judgement: an unsettled job never makes its owner busy, it only tells a
-	 * consumer that this idle is an agent waiting rather than an agent done.
+	 * `liveJobCount` is a query, not a term in the judgement: an unsettled job
+	 * never makes its owner busy, it only tells a consumer that this idle is an
+	 * agent waiting rather than an agent done.
 	 */
 	private async _settleAgentIdle(agentId: AgentId): Promise<void> {
 		this._settleAgentIdleWaiters(agentId);
 		const state = this._resolveAgentIdleState(agentId);
 		if (state.kind !== "idle") {
-			// Busy or gone re-arms the edge. A gone agent never publishes: its
-			// disposal is a fact of its own, and an agent that stopped because it was
-			// torn down did not become idle in any useful sense.
+			// Busy or gone re-arms the edge. A gone agent never publishes: being torn
+			// down is not becoming idle in any useful sense.
 			this._publishedAgentIdles.delete(agentId);
 			return;
 		}
@@ -2670,36 +2120,22 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Harness-event-driven activity edge detection: publish
-	 * `agent_status_changed` and `agent_idle` when they have actually moved, and
-	 * wake the delivery queue.
-	 *
-	 * The activity value itself comes from the harness (phase plus queue counts).
-	 * The event only supplies the timing - that an edge just happened - and the
-	 * causality an `AgentIdleReason` needs, which no phase carries: an abort, a
-	 * `turn_end` stop reason, a maintenance release.
+	 * Edge detection driven by harness events. The activity value comes from the
+	 * harness; the event supplies only the timing and the causality an
+	 * `AgentIdleReason` needs, which no phase carries.
 	 */
-	private async _observeHarnessActivity(
-		agentId: AgentId,
-		generation: number,
-		event: AgentHarnessEvent,
-	): Promise<void> {
+	private async _observeHarnessActivity(agentId: AgentId, generation: number, event: AgentHarnessEvent): Promise<void> {
 		const liveAgent = this._live.get(agentId);
 		if (!liveAgent || liveAgent.generation !== generation) return;
 
 		if (event.type === "agent_start") {
-			// The loop is running, so the prompt's user message is committed to this
-			// run and a pending delivery may be reported as accepted. Resolved before
+			// The prompt's user message is now committed to this run. Resolved before
 			// anything is awaited, so acceptance never waits on observers.
 			this._resolveAgentRunStartWaiters(agentId);
 		}
 		// A turn may be followed by tool execution and another turn, so it is not
 		// an idle boundary. It can still say that the eventual idle was an abort.
-		if (
-			event.type === "turn_end" &&
-			event.message.role === "assistant" &&
-			event.message.stopReason === "aborted"
-		) {
+		if (event.type === "turn_end" && event.message.role === "assistant" && event.message.stopReason === "aborted") {
 			const promptRun = this._agentPromptRuns.get(agentId);
 			if (promptRun) promptRun.idleReason = "aborted";
 		}
@@ -2710,59 +2146,42 @@ export class AgentOrchestrator {
 			// Everything the abort cleared is text the harness will never write.
 			this._discardQueuedExtensionInputPresentations(agentId);
 		}
-		// The loop reports its queues after every drain, so an empty steering queue
-		// is the only honest evidence that the human's interrupt was read - an
-		// abort clears the queue through the same event.
+		// An empty steering queue is the only honest evidence that the human's
+		// interrupt was read; an abort clears the queue through the same event.
 		if (event.type === "queue_update" && event.steer.length === 0) {
 			this._humanInterrupts.clear(agentId);
 		}
 
 		await this._publishAgentActivityEdge(agentId, liveAgent.harness.getPhase());
-		// Every harness event can change the delivery phase, so re-examine the
-		// queue: this is what resumes a message deferred during maintenance or
-		// retried after a busy race.
+		// Every harness event can change the delivery phase: this is what resumes a
+		// message deferred during maintenance or retried after a busy race.
 		this._messages.wake(agentId);
 		await this._settleAgentIdle(agentId);
 
-		// Auto-compaction rides the settled fact: the harness is idle and its
-		// pending session writes are flushed, so the branch and the last assistant
-		// usage are durable. A settled with queued next turns is skipped - the next
-		// run starts immediately and compaction would race its own idle check.
+		// Auto-compaction rides the settled fact: the harness is idle and its writes
+		// are flushed, so the branch and the last assistant usage are durable. A
+		// settled with queued next turns is skipped - the next run starts
+		// immediately and compaction would race its own idle check.
 		if (event.type === "settled" && event.nextTurnCount === 0) {
-			// The measurement walks the branch, so it runs once here and its result
-			// is handed to the trigger rather than read a second time.
+			// The measurement walks the branch, so it runs once and is handed on.
 			const contextTokens = await this._context.refresh(agentId);
 			await this._maybeAutoCompact(agentId, contextTokens);
 		}
 	}
 
-	/**
-	 * Publish `agent_status_changed` when the phase-derived activity differs from
-	 * the last one published for this agent.
-	 */
-	private async _publishAgentActivityEdge(
-		agentId: AgentId,
-		phase: AgentHarnessPhase,
-	): Promise<void> {
+	private async _publishAgentActivityEdge(agentId: AgentId, phase: AgentHarnessPhase): Promise<void> {
 		const activity = toActivitySnapshot(phase);
 		const previous = this._publishedAgentActivities.get(agentId);
-		if (
-			previous?.activity === activity.activity &&
-			previous.maintenance === activity.maintenance
-		) {
+		if (previous?.activity === activity.activity && previous.maintenance === activity.maintenance) {
 			return;
 		}
 		this._publishedAgentActivities.set(agentId, activity);
 		await this._emit({
 			type: "agent_status_changed",
 			agentId,
-			...(previous === undefined
-				? undefined
-				: { previousActivity: previous.activity }),
+			...(previous === undefined ? undefined : { previousActivity: previous.activity }),
 			activity: activity.activity,
-			...(activity.maintenance === undefined
-				? undefined
-				: { maintenance: activity.maintenance }),
+			...(activity.maintenance === undefined ? undefined : { maintenance: activity.maintenance }),
 			changedAt: now(),
 		});
 	}
@@ -2771,9 +2190,8 @@ export class AgentOrchestrator {
 	// Extension input presentations
 	//
 	// A presentation is delivered before the message it describes exists as a
-	// session entry, so it waits in a short per-target queue and is paired on the
-	// harness `session_write` event, which carries the persisted entry and its id
-	// together.
+	// session entry, so it waits in a per-target queue and is paired on the
+	// harness `session_write` event.
 	// -----------------------------------------------------------------------
 
 	/**
@@ -2809,28 +2227,21 @@ export class AgentOrchestrator {
 		pending: PendingExtensionInputPresentation,
 		method: MessageDeliveryMethod,
 	): void {
-		// A requeued delivery re-enters here; move it to the tail rather than
-		// leaving a duplicate that would pair with someone else's message.
+		// A requeued delivery re-enters here; move it to the tail rather than leave
+		// a duplicate that would pair with someone else's message.
 		this._discardPendingExtensionInputPresentation(agentId, pending);
 		pending.method = method;
-		const presentations =
-			this._pendingExtensionInputPresentations.get(agentId) ?? [];
+		const presentations = this._pendingExtensionInputPresentations.get(agentId) ?? [];
 		presentations.push(pending);
 		this._pendingExtensionInputPresentations.set(agentId, presentations);
 	}
 
 	/**
-	 * Pop the presentation belonging to the user message that was just persisted.
-	 *
-	 * Delivery order is the pairing rule, which is what makes this exact: the
-	 * queue serializes per target, so the head of this list is the presentation of
-	 * the oldest delivery still awaiting a write. The old fallbacks - guessing by
-	 * expected text, and scanning the session backwards by object identity - are
-	 * both gone.
+	 * Pop the presentation belonging to the user message just persisted. Delivery
+	 * order is the pairing rule and the queue serializes per target, so the head
+	 * is the presentation of the oldest delivery still awaiting a write.
 	 */
-	private _takePendingExtensionInputPresentation(
-		agentId: AgentId,
-	): PendingExtensionInputPresentation | undefined {
+	private _takePendingExtensionInputPresentation(agentId: AgentId): PendingExtensionInputPresentation | undefined {
 		const presentations = this._pendingExtensionInputPresentations.get(agentId);
 		if (!presentations || presentations.length === 0) return undefined;
 		const pending = presentations.shift();
@@ -2854,18 +2265,14 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Drop the presentations of everything an abort cleared.
-	 *
 	 * The steer and follow-up queues are emptied wholesale, so nothing delivered
 	 * that way will ever be written. A `prompt` delivery is left alone: its user
-	 * message was persisted at run start, and an abort does not take it back.
+	 * message was persisted at run start and an abort does not take it back.
 	 */
 	private _discardQueuedExtensionInputPresentations(agentId: AgentId): void {
 		const presentations = this._pendingExtensionInputPresentations.get(agentId);
 		if (!presentations) return;
-		const remaining = presentations.filter(
-			(pending) => pending.method === "prompt",
-		);
+		const remaining = presentations.filter((pending) => pending.method === "prompt");
 		if (remaining.length === 0) {
 			this._pendingExtensionInputPresentations.delete(agentId);
 		} else {
@@ -2874,20 +2281,13 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * The messaging half of the harness `session_write` observer.
-	 *
-	 * Two facts arrive through this one event. A persisted user message pairs with
+	 * Two facts arrive through this one event: a persisted user message pairs with
 	 * the presentation waiting for it, and the presentation entry written in
-	 * response comes back through here with the id its own event needs - which is
-	 * why nothing depends on `appendCustomEntry`'s return value: it is undefined
-	 * whenever the write was buffered behind a running turn, and that is the
-	 * common case.
+	 * response comes back with the id its own event needs. Nothing depends on
+	 * `appendCustomEntry`'s return value, which is undefined whenever the write
+	 * was buffered behind a running turn.
 	 */
-	private async _observeSessionWrite(
-		agentId: AgentId,
-		entryId: string,
-		write: PendingSessionWrite,
-	): Promise<void> {
+	private async _observeSessionWrite(agentId: AgentId, entryId: string, write: PendingSessionWrite): Promise<void> {
 		if (write.type === "message" && write.message.role === "user") {
 			const pending = this._takePendingExtensionInputPresentation(agentId);
 			if (pending) {
@@ -2895,10 +2295,7 @@ export class AgentOrchestrator {
 			}
 			return;
 		}
-		if (
-			write.type !== "custom" ||
-			write.customType !== EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE
-		) {
+		if (write.type !== "custom" || write.customType !== EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE) {
 			return;
 		}
 		const data = write.data as ExtensionInputPresentationEntryData;
@@ -2918,15 +2315,13 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Persist the presentation that explains how to render a message an extension
-	 * just sent in.
+	 * Persist how to render a message an extension sent in.
 	 *
-	 * **Session write.** `harness.appendCustomEntry` is the only supported way
-	 * onto the branch, and the branch is where this belongs: it names its user
-	 * message by entry id, so a client hydrating the session later renders that
-	 * message exactly as the live client did. It never becomes model context.
-	 * The `extension_input_presented` event is published from the write's own
-	 * `session_write`, not from here.
+	 * **Session write.** `harness.appendCustomEntry`; the branch is where this
+	 * belongs because it names its user message by entry id, so a client hydrating
+	 * the session later renders it exactly as the live client did. It never
+	 * becomes model context. The event is published from the write's own
+	 * `session_write`, not here.
 	 */
 	private async _commitExtensionInputPresentation(
 		agentId: AgentId,
@@ -2936,14 +2331,11 @@ export class AgentOrchestrator {
 		const liveAgent = this._live.get(agentId);
 		if (!liveAgent) return;
 		try {
-			await liveAgent.harness.appendCustomEntry(
-				EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE,
-				{
-					messageEntryId,
-					extensionId: pending.extensionId,
-					presentation: pending.presentation,
-				} satisfies ExtensionInputPresentationEntryData,
-			);
+			await liveAgent.harness.appendCustomEntry(EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE, {
+				messageEntryId,
+				extensionId: pending.extensionId,
+				presentation: pending.presentation,
+			} satisfies ExtensionInputPresentationEntryData);
 		} catch (error) {
 			await this._recordAgentLifecycleFailure(
 				agentId,
@@ -2958,17 +2350,11 @@ export class AgentOrchestrator {
 	// -----------------------------------------------------------------------
 
 	/**
-	 * Run compaction and invalidate the context-usage projection it obsoletes.
-	 *
 	 * Compaction replaces the branch the cached measurement described, and the
-	 * retained tail carries the pre-compaction assistant usage, so re-measuring
-	 * here would report the old number as if it were current. Drop it instead;
-	 * the next settled measures the new branch.
+	 * retained tail carries the pre-compaction usage, so re-measuring here would
+	 * report the old number as current. Drop it; the next settled re-measures.
 	 */
-	async compactAgent(
-		agentId: AgentId,
-		customInstructions?: string,
-	): Promise<CompactResult> {
+	async compactAgent(agentId: AgentId, customInstructions?: string): Promise<CompactResult> {
 		const result = await this._runMaintenanceOperation(
 			agentId,
 			async (harness) => await harness.compact(customInstructions),
@@ -2988,8 +2374,7 @@ export class AgentOrchestrator {
 			readonly label?: string;
 		},
 	): Promise<NavigateTreeResult> {
-		const previousLeafId =
-			await this.sessionManager.getAgentSessionLeafId(agentId);
+		const previousLeafId = await this.sessionManager.getAgentSessionLeafId(agentId);
 		try {
 			return await this._runMaintenanceOperation(
 				agentId,
@@ -2997,33 +2382,24 @@ export class AgentOrchestrator {
 			);
 		} finally {
 			// A post-move observer can fail after the harness changed the leaf.
-			// Comparing in `finally` keeps that path invalidating the old gauge,
+			// Comparing in `finally` still invalidates the old gauge on that path,
 			// while cancellation and no-op navigation leave it intact.
-			if (
-				(await this.sessionManager.getAgentSessionLeafId(agentId)) !==
-				previousLeafId
-			) {
+			if ((await this.sessionManager.getAgentSessionLeafId(agentId)) !== previousLeafId) {
 				await this._context.invalidate(agentId);
 			}
 		}
 	}
 
 	/**
-	 * Run a harness operation that occupies the agent without driving an agent
-	 * loop (compaction, tree navigation).
+	 * Run a harness operation that occupies the agent without driving a loop
+	 * (compaction, tree navigation). Concurrency is refused by the harness itself,
+	 * so there is no orchestrator-side maintenance table; what is left is
+	 * publishing the activity edges and stamping the released idle.
 	 *
-	 * Concurrency is refused by the harness itself - both operations require an
-	 * idle phase - so there is no orchestrator-side maintenance table. What is
-	 * left here is publishing the activity edges, invalidating nothing, and
-	 * stamping the released idle as `maintenance`.
-	 *
-	 * The order is part of correctness: **start the harness operation first, then
-	 * await the edge publication**. `compact()` and `navigateTree()` flip the
-	 * phase on their first synchronous line, so publishing first would leave a
+	 * **Start the operation first, then await the edge publication.** Both flip
+	 * the phase on their first synchronous line, so publishing first would leave a
 	 * window where the event says maintenance and the phase still says idle - and
-	 * a steer landing in that window would pass the phase guard. When the
-	 * publication in between throws, the already-started promise must be caught
-	 * explicitly before rethrowing, or it becomes an unhandled rejection.
+	 * a steer landing there would pass the phase guard.
 	 */
 	private async _runMaintenanceOperation<T>(
 		agentId: AgentId,
@@ -3031,9 +2407,8 @@ export class AgentOrchestrator {
 	): Promise<T> {
 		const harness = this._requireLiveAgent(agentId).harness;
 		const running = operation(harness);
-		// Read after the call, for the same reason the call comes first: this is
-		// what tells an operation that started from one the harness refused because
-		// it was already busy.
+		// Read after the call: this is what tells an operation that started from one
+		// the harness refused because it was already busy.
 		const started = toMaintenanceKind(harness.getPhase()) !== undefined;
 		try {
 			await this._publishAgentActivityEdge(agentId, harness.getPhase());
@@ -3045,9 +2420,8 @@ export class AgentOrchestrator {
 			return await running;
 		} finally {
 			if (started) {
-				// No agent loop ran, so there is no new assistant message - but the
-				// busy-to-idle edge really happened and has to be published, or a
-				// `waitForAgentIdle` caller misses it entirely.
+				// No loop ran, so there is no new assistant message - but the
+				// busy-to-idle edge happened, and a `waitForAgentIdle` caller needs it.
 				this._agentIdleReasons.set(agentId, "maintenance");
 				await this._publishAgentActivityEdge(agentId, harness.getPhase());
 				this._messages.wake(agentId);
@@ -3057,16 +2431,10 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Threshold trigger for automatic compaction.
-	 *
-	 * Failure is a warning diagnostic, never a thrown error: an uncompactable
-	 * over-threshold session keeps running until the provider rejects it, which is
-	 * what happened before this trigger existed.
+	 * Failure is a warning, never a throw: an uncompactable over-threshold session
+	 * keeps running until the provider rejects it, as it did before this trigger.
 	 */
-	private async _maybeAutoCompact(
-		agentId: AgentId,
-		contextTokens: number | undefined,
-	): Promise<void> {
+	private async _maybeAutoCompact(agentId: AgentId, contextTokens: number | undefined): Promise<void> {
 		if (contextTokens === undefined) return;
 		const settings = this.settingManager.getCompactionSettings();
 		if (!settings.enabled) return;
@@ -3112,9 +2480,7 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Per-extension load and failure state for this agent's current runner.
-	 *
-	 * Kept per agent because one extension can succeed for one agent and fail for
+	 * Per-agent because one extension can succeed for one agent and fail for
 	 * another - the profile decides the enabled set. A reload resets the whole
 	 * group rather than carrying the previous generation's failures forward.
 	 */
@@ -3122,50 +2488,29 @@ export class AgentOrchestrator {
 		return this._extensionStatuses.list(agentId);
 	}
 
-	/**
-	 * Refresh the extension catalog, then transactionally replace the runner of
-	 * every selected live agent.
-	 */
-	async reloadExtensions(
-		options: { readonly agentIds?: readonly AgentId[] } = {},
-	): Promise<ExtensionReloadResult> {
-		const catalog = await this.extensionLoader.reloadAvailableExtensions(
-			this.executionEnv,
-		);
+	/** Refresh the catalog, then transactionally replace every selected agent's runner. */
+	async reloadExtensions(options: { readonly agentIds?: readonly AgentId[] } = {}): Promise<ExtensionReloadResult> {
+		const catalog = await this.extensionLoader.reloadAvailableExtensions(this.executionEnv);
 		await this._publishDiagnostics(catalog.diagnostics);
-		const agentIds = options.agentIds
-			? [...new Set(options.agentIds)]
-			: [...this._live.keys()];
+		const agentIds = options.agentIds ? [...new Set(options.agentIds)] : [...this._live.keys()];
 		const agents: ExtensionReloadAgentResult[] = [];
 		for (const agentId of agentIds) {
 			agents.push(await this._reloadLiveAgentExtensions(agentId));
 		}
-		return {
-			catalog: {
-				loaded: [...catalog.loaded],
-				diagnostics: [...catalog.diagnostics],
-			},
-			agents,
-		};
+		return { catalog: { loaded: [...catalog.loaded], diagnostics: [...catalog.diagnostics] }, agents };
 	}
 
 	/**
 	 * Build a candidate runner, re-resolve tools under the agent's current policy,
-	 * install the new actions, interceptors and providers, then swap the
-	 * `LiveAgent`'s runner, bindings and policy in one step.
+	 * then swap runner, bindings and policy in one step.
 	 *
-	 * A failure before installation releases the candidate and leaves the original
-	 * runner untouched; a failure of the harness write rolls the three fields back
-	 * together. There is no state in which the harness holds the new tools while
-	 * the agent still points at the old runner.
-	 *
-	 * The skip test reads `harness.getPhase()` directly. A turn - or either
-	 * maintenance phase - is skipped, because replacing the runner underneath a
+	 * A failure before installation leaves the original runner untouched; a failed
+	 * harness write rolls all three fields back together. There is no state in
+	 * which the harness holds the new tools while the agent points at the old
+	 * runner. Any non-idle phase is skipped: replacing the runner underneath a
 	 * running operation would swap the interceptors it is midway through.
 	 */
-	private async _reloadLiveAgentExtensions(
-		agentId: AgentId,
-	): Promise<ExtensionReloadAgentResult> {
+	private async _reloadLiveAgentExtensions(agentId: AgentId): Promise<ExtensionReloadAgentResult> {
 		const lookup = this._resolveAgent(agentId);
 		if (lookup.kind !== "live") {
 			const reason = lookup.kind === "creating" ? "creating" : "gone";
@@ -3176,12 +2521,7 @@ export class AgentOrchestrator {
 				agentId,
 			};
 			await this._publishDiagnostic(diagnostic);
-			return {
-				agentId,
-				status: "skipped",
-				reason,
-				diagnostics: [diagnostic],
-			};
+			return { agentId, status: "skipped", reason, diagnostics: [diagnostic] };
 		}
 
 		const { liveAgent } = lookup;
@@ -3195,12 +2535,7 @@ export class AgentOrchestrator {
 			};
 			this._addAgentDiagnostics(agentId, [diagnostic]);
 			await this._publishDiagnostic(diagnostic);
-			return {
-				agentId,
-				status: "skipped",
-				reason: "running",
-				diagnostics: [diagnostic],
-			};
+			return { agentId, status: "skipped", reason: "running", diagnostics: [diagnostic] };
 		}
 
 		const previousRunner = liveAgent.extensionRunner;
@@ -3212,29 +2547,17 @@ export class AgentOrchestrator {
 		try {
 			const profileId = liveAgent.profile.reference.id;
 			candidate = await this._createExtensionRunner(agentId, profileId);
-			const resolvedTools = await this._resolveAgentToolsForBuild(
-				agentId,
-				previousPolicy,
-				candidate,
-			);
-			candidateBindings = await this._bindExtensionRunner(
-				agentId,
-				liveAgent.generation,
-				liveAgent.harness,
-				candidate,
-			);
-			// Publish the replacement before the awaited harness write: a turn
-			// starting mid-reload reads `extensionRunner` for its tool context and
-			// must capture the new runner rather than pin the one about to be
-			// disposed below.
+			const resolvedTools = await this._resolveAgentToolsForBuild(agentId, previousPolicy, candidate);
+			candidateBindings = await this._bindExtensionRunner(agentId, liveAgent.generation, liveAgent.harness, candidate);
+			// Before the awaited harness write: a turn starting mid-reload reads
+			// `extensionRunner` for its tool context and must capture the new runner
+			// rather than pin the one about to be disposed below.
 			liveAgent.extensionRunner = candidate;
 			liveAgent.extensionBindings = candidateBindings;
 			liveAgent.toolPolicy = resolvedTools.policy;
 			installed = true;
 			try {
-				await liveAgent.harness.setTools(resolvedTools.tools, [
-					...resolvedTools.activeToolNames,
-				]);
+				await liveAgent.harness.setTools(resolvedTools.tools, [...resolvedTools.activeToolNames]);
 			} catch (error) {
 				liveAgent.extensionRunner = previousRunner;
 				liveAgent.extensionBindings = previousBindings;
@@ -3253,17 +2576,12 @@ export class AgentOrchestrator {
 				previousBindings,
 				"Extension runtime has been reloaded.",
 			);
-			// Cleared before the new runner's diagnostics are published: those events
-			// reach its observers, and a status one of them sets must survive this
-			// generation's cleanup rather than be wiped by it.
+			// Before the new runner's diagnostics are published: those events reach
+			// its observers, and a status one of them sets must survive this cleanup.
 			await this._clearExtensionStatusesForAgent(agentId);
 			this._addAgentDiagnostics(agentId, candidate.diagnostics);
 			await this._publishDiagnostics(candidate.diagnostics);
-			return {
-				agentId,
-				status: "reloaded",
-				diagnostics: [...candidate.diagnostics],
-			};
+			return { agentId, status: "reloaded", diagnostics: [...candidate.diagnostics] };
 		} catch (error) {
 			if (candidate && !installed) {
 				await this._disposeExtensionRunner(
@@ -3286,37 +2604,26 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Activate the extension factories this agent's profile and settings select,
-	 * producing a candidate runner. Nothing is bound yet, so it is invisible to
-	 * the live registry until `_bindExtensionRunner` and installation.
+	 * Activate the factories this agent's profile and settings select. Nothing is
+	 * bound yet, so the candidate is invisible until installation.
 	 */
-	private async _createExtensionRunner(
-		agentId: AgentId,
-		profileId: string,
-	): Promise<ExtensionRunner> {
+	private async _createExtensionRunner(agentId: AgentId, profileId: string): Promise<ExtensionRunner> {
 		const enabledExtensionIds = this.settingManager.getEnabledExtensions();
 		const loadedScope = await this.extensionLoader.loadForAgent({
 			agentId,
 			profileId,
-			extensionIds:
-				enabledExtensionIds ?? this.extensionLoader.listAvailableExtensionIds(),
+			extensionIds: enabledExtensionIds ?? this.extensionLoader.listAvailableExtensionIds(),
 			missingExtensionSeverity: enabledExtensionIds ? "warning" : "ignore",
-			divisionSelections: {
-				settings: this.settingManager.getExtensionDivisionSelections(),
-			},
+			divisionSelections: { settings: this.settingManager.getExtensionDivisionSelections() },
 		});
 		return new ExtensionRunner({ loadedScope });
 	}
 
 	/**
-	 * Bind a runner to core and return a generation-scoped release handle.
-	 *
-	 * Two port groups go in: the shared `ExtensionCoreActions` table, and the
-	 * per-generation `ExtensionContextActions` (run signal, idle, namespaced
-	 * session access). The harness interceptors are registered here too, because
-	 * they are the part of a binding that has to be revoked by hand: `shutdown()`
-	 * clears the subscriber table on its own, but an extension reload replaces the
-	 * generation without one, and the release handle is that path's only exit.
+	 * Bind a runner to core and return a generation-scoped release handle. The
+	 * harness interceptors are registered here because they are the part of a
+	 * binding that must be revoked by hand: `shutdown()` clears the subscriber
+	 * table itself, but a reload replaces the generation without one.
 	 */
 	private async _bindExtensionRunner(
 		agentId: AgentId,
@@ -3324,15 +2631,8 @@ export class AgentOrchestrator {
 		harness: WidiAgentHarness,
 		runner: ExtensionRunner,
 	): Promise<ExtensionRunnerBindings> {
-		runner.bindCore(
-			this._extensionCoreActions,
-			this._createExtensionContextActions(agentId, generation),
-		);
-		const releaseInterceptors = this._registerExtensionHarnessInterceptors(
-			agentId,
-			harness,
-			runner,
-		);
+		runner.bindCore(this._extensionCoreActions, this._createExtensionContextActions(agentId, generation));
+		const releaseInterceptors = this._registerExtensionHarnessInterceptors(agentId, harness, runner);
 		return {
 			release: async () => {
 				releaseInterceptors();
@@ -3341,18 +2641,11 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * The signal, idle, session and failure-reporting ports of one runner
-	 * generation.
-	 *
 	 * Generation-scoped rather than shared: the run signal and the idle judgement
-	 * are only meaningful for the agent generation that installed them, and a
-	 * stale runner reaching a successor's session would be a cross-generation
-	 * write.
+	 * are only meaningful for the generation that installed them, and a stale
+	 * runner reaching a successor's session would be a cross-generation write.
 	 */
-	private _createExtensionContextActions(
-		agentId: AgentId,
-		generation: number,
-	): ExtensionContextActions {
+	private _createExtensionContextActions(agentId: AgentId, generation: number): ExtensionContextActions {
 		const requireGeneration = (): LiveAgent => {
 			const liveAgent = this._requireLiveAgent(agentId);
 			if (liveAgent.generation !== generation) {
@@ -3380,79 +2673,43 @@ export class AgentOrchestrator {
 				]);
 			},
 			session: {
-				// **Session write.** An extension's own namespaced entries go onto the
-				// branch through the harness, like every other write: they are this
-				// extension's durable state for this conversation, and `findEntries`
-				// reads them back after a resume. The persisted type is namespaced by
-				// extension id, so one extension cannot read or overwrite another's.
+				// **Session write.** An extension's own entries go onto the branch
+				// through the harness: they are its durable state for this conversation
+				// and `findEntries` reads them back after a resume. The persisted type
+				// is namespaced by extension id, so one cannot reach another's.
 				appendEntry: async (extensionId, type, data) =>
-					await requireGeneration().harness.appendCustomEntry(
-						toExtensionCustomType(extensionId, type),
-						data,
-					),
+					await requireGeneration().harness.appendCustomEntry(toExtensionCustomType(extensionId, type), data),
 				findEntries: async (extensionId, type) =>
-					await this.sessionManager.findExtensionCustomEntries(
-						agentId,
-						extensionId,
-						type,
-					),
-				// This agent's own session needs no extra gate: the extension already
-				// runs inside it and sees its messages through the interceptors.
+					await this.sessionManager.findExtensionCustomEntries(agentId, extensionId, type),
+				// No extra gate: the extension already runs inside this session.
 				getSnapshot: async () =>
-					toExtensionSessionSnapshot(
-						await this.sessionManager.getAgentSessionSnapshot(agentId),
-						this.sessionManager,
-					),
+					toExtensionSessionSnapshot(await this.sessionManager.getAgentSessionSnapshot(agentId), this.sessionManager),
 				getTree: async () =>
-					toExtensionSessionTree(
-						await this.sessionManager.getAgentSessionTree(agentId),
-						this.sessionManager,
-					),
-				getLeafId: async () =>
-					await this.sessionManager.getAgentSessionLeafId(agentId),
-				// The cross-session readers widen what an extension can see to every
-				// conversation recorded for this project, including ones it never took
-				// part in, so they carry the same trust bar as exec.
+					toExtensionSessionTree(await this.sessionManager.getAgentSessionTree(agentId), this.sessionManager),
+				getLeafId: async () => await this.sessionManager.getAgentSessionLeafId(agentId),
+				// The cross-session readers widen what an extension sees to every
+				// conversation in this project, so they carry the same bar as exec.
 				listSessions: async (extensionId) => {
-					this._requireProjectTrustForExtension(
-						agentId,
-						extensionId,
-						"list the project's sessions",
-					);
-					const candidates =
-						await this.sessionManager.listAgentSessionCandidates();
+					this._requireProjectTrustForExtension(agentId, extensionId, "list the project's sessions");
+					const candidates = await this.sessionManager.listAgentSessionCandidates();
 					return candidates.map((candidate) => ({
 						ref: this.sessionManager.toSessionHandle(candidate.path),
 						id: candidate.id,
 						createdAt: candidate.createdAt,
-						...(candidate.profile === undefined
-							? undefined
-							: { profile: { ...candidate.profile } }),
-						...(candidate.name === undefined
-							? undefined
-							: { name: candidate.name }),
+						...(candidate.profile === undefined ? undefined : { profile: { ...candidate.profile } }),
+						...(candidate.name === undefined ? undefined : { name: candidate.name }),
 						...(candidate.firstUserMessage === undefined
 							? undefined
 							: { firstUserMessage: candidate.firstUserMessage }),
 						...(candidate.parentSessionPath === undefined
 							? undefined
-							: {
-									parentRef: this.sessionManager.toSessionHandle(
-										candidate.parentSessionPath,
-									),
-								}),
+							: { parentRef: this.sessionManager.toSessionHandle(candidate.parentSessionPath) }),
 					}));
 				},
 				readSession: async (extensionId, ref) => {
-					this._requireProjectTrustForExtension(
-						agentId,
-						extensionId,
-						"read another session",
-					);
+					this._requireProjectTrustForExtension(agentId, extensionId, "read another session");
 					return toExtensionSessionTree(
-						await this.sessionManager.readSessionSnapshot(
-							this.sessionManager.resolveSessionHandle(ref),
-						),
+						await this.sessionManager.readSessionSnapshot(this.sessionManager.resolveSessionHandle(ref)),
 						this.sessionManager,
 					);
 				},
@@ -3461,10 +2718,9 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Register the five transformable harness hooks for this runner generation.
-	 *
-	 * The returned handle revokes exactly this generation's handlers, which is
-	 * what makes a reload a replacement rather than an accumulation.
+	 * Register the five transformable harness hooks. The returned handle revokes
+	 * exactly this generation's handlers, which is what makes a reload a
+	 * replacement rather than an accumulation.
 	 */
 	private _registerExtensionHarnessInterceptors(
 		agentId: AgentId,
@@ -3474,57 +2730,29 @@ export class AgentOrchestrator {
 		const unsubscribes = [
 			harness.on(
 				"before_agent_start",
-				async (event) =>
-					await this._runExtensionInterceptor<"before_agent_start">(
-						agentId,
-						runner,
-						event,
-					),
+				async (event) => await this._runExtensionInterceptor<"before_agent_start">(agentId, runner, event),
 			),
 			harness.on(
 				"before_provider_request",
-				async (event) =>
-					await this._runExtensionInterceptor<"before_provider_request">(
-						agentId,
-						runner,
-						event,
-					),
+				async (event) => await this._runExtensionInterceptor<"before_provider_request">(agentId, runner, event),
 			),
-			// The blockImages policy applies after the extension results inside this
-			// one handler: the harness keeps only the last non-undefined hook result,
-			// so a separately registered filter could be overridden by an extension
-			// transform.
+			// blockImages applies inside this one handler: the harness keeps only the
+			// last non-undefined hook result, so a separately registered filter could
+			// be overridden by an extension transform.
 			harness.on("context", async (event) => {
-				const result = await this._runExtensionInterceptor<"context">(
-					agentId,
-					runner,
-					event,
-				);
+				const result = await this._runExtensionInterceptor<"context">(agentId, runner, event);
 				const blockImages =
-					this._live.get(agentId)?.settings.blockImages ??
-					this.settingManager.getImageSettings().blockImages;
+					this._live.get(agentId)?.settings.blockImages ?? this.settingManager.getImageSettings().blockImages;
 				if (!blockImages) return result;
-				return {
-					messages: stripImagesFromMessages(result?.messages ?? event.messages),
-				};
+				return { messages: stripImagesFromMessages(result?.messages ?? event.messages) };
 			}),
 			harness.on(
 				"tool_call",
-				async (event) =>
-					await this._runExtensionInterceptor<"tool_call">(
-						agentId,
-						runner,
-						event,
-					),
+				async (event) => await this._runExtensionInterceptor<"tool_call">(agentId, runner, event),
 			),
 			harness.on(
 				"tool_result",
-				async (event) =>
-					await this._runExtensionInterceptor<"tool_result">(
-						agentId,
-						runner,
-						event,
-					),
+				async (event) => await this._runExtensionInterceptor<"tool_result">(agentId, runner, event),
 			),
 		];
 		return () => {
@@ -3533,9 +2761,7 @@ export class AgentOrchestrator {
 	}
 
 	/** Run one runner interceptor, recording its handler diagnostics. */
-	private async _runExtensionInterceptor<
-		TName extends ExtensionInterceptorName,
-	>(
+	private async _runExtensionInterceptor<TName extends ExtensionInterceptorName>(
 		agentId: AgentId,
 		runner: ExtensionRunner,
 		event: ExtensionInterceptorEventFor<TName>,
@@ -3546,11 +2772,8 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Run the input pipeline for one message ingress.
-	 *
 	 * Input is not a harness hook: it sits in front of the harness, at
-	 * `sendMessage`, so no delivery path can bypass an input policy. An agent with
-	 * no live runtime passes everything through.
+	 * `sendMessage`, so no delivery path can bypass an input policy.
 	 */
 	private async _interceptExtensionInput(
 		agentId: AgentId,
@@ -3561,8 +2784,7 @@ export class AgentOrchestrator {
 		if (!runner || runner.isStale()) return { kind: "pass" };
 		const run = await runner.interceptInput(event);
 		await this._recordAndPublishExtensionDiagnostics(agentId, run.diagnostics);
-		// A block this source does not enforce is still a fact worth recording: the
-		// extension asked for something the message contract cannot grant it.
+		// A block this source does not enforce is still worth recording.
 		if (run.kind === "block" && source.kind === "background_job") {
 			await this._publishDiagnostic({
 				severity: "warning",
@@ -3575,32 +2797,17 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Install this runner's provider contributions.
-	 *
 	 * Trust ruling: a `!command` config value resolves through `ExecutionEnv.exec`
-	 * at request time, so an untrusted project rejects the whole registration -
-	 * the same family as the scoped exec gate.
+	 * at request time, so an untrusted project rejects the whole registration.
 	 */
-	private async _applyExtensionProviderContributions(
-		agentId: AgentId,
-		runner: ExtensionRunner,
-	): Promise<void> {
+	private async _applyExtensionProviderContributions(agentId: AgentId, runner: ExtensionRunner): Promise<void> {
 		const contributions = runner.getProviderContributions();
 		if (contributions.length === 0) return;
 		const diagnostics: OrchestratorDiagnostic[] = [];
 		const projectTrusted = this.settingManager.isProjectTrusted();
 		for (const contribution of contributions) {
-			const attribution = {
-				agentId,
-				extensionId: contribution.extensionId,
-			} as const;
-			if (
-				!projectTrusted &&
-				hasCommandConfigValues(
-					contribution.config,
-					this.modelRegistry.configValueResolver,
-				)
-			) {
+			const attribution = { agentId, extensionId: contribution.extensionId } as const;
+			if (!projectTrusted && hasCommandConfigValues(contribution.config, this.modelRegistry.configValueResolver)) {
 				diagnostics.push({
 					...attribution,
 					severity: "error",
@@ -3609,11 +2816,10 @@ export class AgentOrchestrator {
 				});
 				continue;
 			}
-			const result = this.modelRegistry.registerExtensionProvider(
-				contribution.providerName,
-				contribution.config,
-				{ extensionId: contribution.extensionId, agentId },
-			);
+			const result = this.modelRegistry.registerExtensionProvider(contribution.providerName, contribution.config, {
+				extensionId: contribution.extensionId,
+				agentId,
+			});
 			if (result.ok) continue;
 			diagnostics.push(
 				result.reason === "conflict"
@@ -3637,9 +2843,7 @@ export class AgentOrchestrator {
 	}
 
 	/** Withdraw this agent's provider leases, leaving every other agent's alone. */
-	private async _withdrawExtensionProviderContributions(
-		agentId: AgentId,
-	): Promise<void> {
+	private async _withdrawExtensionProviderContributions(agentId: AgentId): Promise<void> {
 		try {
 			await this.modelRegistry.unregisterExtensionProviders(agentId);
 		} catch (error) {
@@ -3651,17 +2855,14 @@ export class AgentOrchestrator {
 		}
 	}
 
-	/**
-	 * Make the runner's contexts stale, revoke its bindings, and run every
-	 * `onDispose` handler, releasing the handler and module closures it held.
-	 */
+	/** Make the contexts stale, revoke bindings, run every `onDispose` handler. */
 	private async _disposeExtensionRunner(
 		agentId: AgentId,
 		runner: ExtensionRunner | undefined,
 		bindings: ExtensionRunnerBindings | undefined,
 		reason: string,
 	): Promise<void> {
-		// Bindings go first: a released interceptor cannot fire into an onDispose
+		// Bindings first: a released interceptor cannot fire into an onDispose
 		// handler that has already run.
 		try {
 			await bindings?.release();
@@ -3685,9 +2886,7 @@ export class AgentOrchestrator {
 	}
 
 	/** Drop every status this agent's runner published, announcing each removal. */
-	private async _clearExtensionStatusesForAgent(
-		agentId: AgentId,
-	): Promise<void> {
+	private async _clearExtensionStatusesForAgent(agentId: AgentId): Promise<void> {
 		for (const snapshot of this._extensionStatuses.clearAgent(agentId)) {
 			await this._emit(
 				{
@@ -3710,11 +2909,9 @@ export class AgentOrchestrator {
 		if (diagnostics.length === 0) return;
 		this._addAgentDiagnostics(agentId, diagnostics);
 		await this._publishDiagnostics(diagnostics, {
-			// A diagnostic produced while an observer is handling another event is
-			// still recorded and published to core consumers, but must not feed back
-			// into diagnostic observers and recurse indefinitely.
-			observeExtensions:
-				(this._extensionObserverDispatchDepth.get(agentId) ?? 0) === 0,
+			// Still recorded and published to core consumers, but a diagnostic raised
+			// inside an observer must not feed back into observers and recurse.
+			observeExtensions: (this._extensionObserverDispatchDepth.get(agentId) ?? 0) === 0,
 		});
 	}
 
@@ -3722,11 +2919,7 @@ export class AgentOrchestrator {
 	 * Trust gate for extension actions that reach beyond the agent's own session.
 	 * `action` completes "... is denied because the project is not trusted".
 	 */
-	private _requireProjectTrustForExtension(
-		agentId: AgentId,
-		extensionId: string,
-		action: string,
-	): void {
+	private _requireProjectTrustForExtension(agentId: AgentId, extensionId: string, action: string): void {
 		if (this.settingManager.isProjectTrusted()) return;
 		throw new OrchestratorError({
 			severity: "error",
@@ -3743,19 +2936,11 @@ export class AgentOrchestrator {
 
 	/**
 	 * Relay one named extension event to every live runner's subscribers.
-	 *
 	 * Runtime-level by construction: the runners are the subscriber set, so a
 	 * reload swaps subscriptions with the runner it replaced and disposal drops
-	 * them, with no second lifecycle to keep in step. A stale runner is skipped
-	 * for the same reason observers skip it - its context actions can only fail.
-	 *
-	 * The recursion budget lives in the async dispatch context rather than in a
-	 * field: two independent emits must not consume one another's depth, while a
-	 * handler's nested emit inherits its parent's.
+	 * them, with no second lifecycle to keep in step.
 	 */
-	private async _emitExtensionEvent(
-		envelope: ExtensionEventEnvelope,
-	): Promise<void> {
+	private async _emitExtensionEvent(envelope: ExtensionEventEnvelope): Promise<void> {
 		const immutable = freezeExtensionEventEnvelope(envelope);
 		const depth = this._extensionEventDispatchContext.getStore() ?? 0;
 		if (depth >= MAX_EXTENSION_EVENT_DISPATCH_DEPTH) {
@@ -3775,24 +2960,17 @@ export class AgentOrchestrator {
 			for (const [agentId, liveAgent] of [...this._live]) {
 				const runner = liveAgent.extensionRunner;
 				if (runner.isStale()) continue;
-				await this._recordAndPublishExtensionDiagnostics(
-					agentId,
-					await runner.emitExtensionEvent(immutable),
-				);
+				await this._recordAndPublishExtensionDiagnostics(agentId, await runner.emitExtensionEvent(immutable));
 			}
 		});
 	}
 
 	/**
-	 * Deliver a published orchestrator event to the runners that observe it.
-	 *
-	 * A runtime-scoped fact - today only `runtime_shutdown_requested` - is
-	 * broadcast to every live runner, because the agents that need to wind their
-	 * work down are not only the one whose extension asked.
+	 * A runtime-scoped fact - today only `runtime_shutdown_requested` - goes to
+	 * every live runner: the agents that must wind down are not only the one whose
+	 * extension asked.
 	 */
-	private async _dispatchExtensionObservedEvent(
-		event: ExtensionObservedEvent,
-	): Promise<void> {
+	private async _dispatchExtensionObservedEvent(event: ExtensionObservedEvent): Promise<void> {
 		const agentId =
 			event.type === "diagnostic"
 				? event.diagnostic.agentId
@@ -3805,10 +2983,7 @@ export class AgentOrchestrator {
 		}
 		if (event.type !== "runtime_shutdown_requested") return;
 		for (const observedAgentId of [...this._live.keys()]) {
-			await this._dispatchExtensionObservedEventForAgent(
-				observedAgentId,
-				event,
-			);
+			await this._dispatchExtensionObservedEventForAgent(observedAgentId, event);
 		}
 	}
 
@@ -3818,18 +2993,11 @@ export class AgentOrchestrator {
 	): Promise<void> {
 		const runner = this._live.get(agentId)?.extensionRunner;
 		if (!runner || runner.isStale()) return;
-		this._extensionObserverDispatchDepth.set(
-			agentId,
-			(this._extensionObserverDispatchDepth.get(agentId) ?? 0) + 1,
-		);
+		this._extensionObserverDispatchDepth.set(agentId, (this._extensionObserverDispatchDepth.get(agentId) ?? 0) + 1);
 		try {
-			await this._recordAndPublishExtensionDiagnostics(
-				agentId,
-				await runner.emitObserved(event),
-			);
+			await this._recordAndPublishExtensionDiagnostics(agentId, await runner.emitObserved(event));
 		} finally {
-			// Dispatches for one agent can interleave, so decrement the live counter
-			// instead of restoring a pre-increment snapshot.
+			// Dispatches interleave, so decrement rather than restore a snapshot.
 			const depth = this._extensionObserverDispatchDepth.get(agentId) ?? 1;
 			if (depth <= 1) this._extensionObserverDispatchDepth.delete(agentId);
 			else this._extensionObserverDispatchDepth.set(agentId, depth - 1);
@@ -3837,10 +3005,8 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Map the runner authors' actions onto host and runtime services.
-	 *
-	 * One shared table: the runner injects its own agentId and extensionId, so no
-	 * closure set is rebuilt per agent or per tool.
+	 * Map the runner authors' actions onto host and runtime services. One shared
+	 * table: the runner injects its own agentId and extensionId.
 	 */
 	private _createExtensionCoreActions(): ExtensionCoreActions {
 		return {
@@ -3851,17 +3017,11 @@ export class AgentOrchestrator {
 			setAgentActiveTools: async (agentId, toolNames) => {
 				await this.setAgentActiveTools(agentId, toolNames);
 			},
-			listAgentBackgroundJobs: (agentId) =>
-				this.listAgentBackgroundJobs(agentId),
-			readAgentBackgroundJobOutput: (agentId, jobId) =>
-				this.readAgentBackgroundJobOutput(agentId, jobId),
-			abortAgentBackgroundJob: (agentId, jobId, reason) =>
-				this.abortAgentBackgroundJob(agentId, jobId, reason),
+			listAgentBackgroundJobs: (agentId) => this.listAgentBackgroundJobs(agentId),
+			readAgentBackgroundJobOutput: (agentId, jobId) => this.readAgentBackgroundJobOutput(agentId, jobId),
+			abortAgentBackgroundJob: (agentId, jobId, reason) => this.abortAgentBackgroundJob(agentId, jobId, reason),
 			requestHuman: async (agentId, extensionId, request) =>
-				await this._requestHumanForAgent(agentId, {
-					...request,
-					source: { kind: "extension", extensionId },
-				}),
+				await this._requestHumanForAgent(agentId, { ...request, source: { kind: "extension", extensionId } }),
 			emitOutput: async (agentId, extensionId, text) => {
 				this._requireLiveAgent(agentId);
 				assertExtensionOutputText(text);
@@ -3943,17 +3103,15 @@ export class AgentOrchestrator {
 					extensionId,
 				};
 				this._addAgentDiagnostics(agentId, [diagnostic]);
-				// Extension-published facts never feed back into extension observers,
-				// regardless of observer dispatch depth.
+				// Extension-published facts never feed back into extension observers.
 				await this._publishDiagnostic(diagnostic, { observeExtensions: false });
 			},
 			/**
 			 * **Session write.** A published message is durable presentation content
-			 * that belongs to the conversation it was published into, so it goes onto
-			 * the branch through `harness.appendCustomEntry`. It never becomes model
-			 * context. Its `extension_message_published` event is emitted from the
-			 * resulting `session_write`, where the entry id is real; the id returned
-			 * here is only the fast path for a write that landed immediately.
+			 * belonging to the conversation it was published into, so it goes onto the
+			 * branch through `harness.appendCustomEntry`. It never becomes model
+			 * context. The id returned here is only the fast path for a write that
+			 * landed immediately; the event is emitted from the `session_write`.
 			 */
 			publishMessage: async (agentId, extensionId, message) => {
 				const liveAgent = this._requireLiveAgent(agentId);
@@ -3966,38 +3124,22 @@ export class AgentOrchestrator {
 				);
 				return entryId === undefined ? {} : { entryId };
 			},
-			// Prompt carries its presentation through the message pipeline, where a
-			// block returns before any session write: a presentation is never recorded
-			// for a message an interceptor refused.
+			// The presentation rides the message pipeline, where a block returns before
+			// any session write: none is recorded for a message an interceptor refused.
 			promptAgent: async (agentId, extensionId, text, options) => {
 				await this.promptAgent(agentId, text, {
-					...(options?.images === undefined
-						? undefined
-						: { images: options.images }),
+					...(options?.images === undefined ? undefined : { images: options.images }),
 					...(options?.presentation === undefined
 						? undefined
-						: {
-								presentation: {
-									extensionId,
-									presentation: options.presentation,
-								},
-							}),
+						: { presentation: { extensionId, presentation: options.presentation } }),
 				});
 			},
 			steerAgent: async (agentId, extensionId, text, options) => {
-				await this._withExtensionInputPresentation(
-					agentId,
-					extensionId,
-					"steer",
-					options?.presentation,
-					async () => {
-						await this.steerAgent(agentId, text, {
-							...(options?.images === undefined
-								? undefined
-								: { images: options.images }),
-						});
-					},
-				);
+				await this._withExtensionInputPresentation(agentId, extensionId, "steer", options?.presentation, async () => {
+					await this.steerAgent(agentId, text, {
+						...(options?.images === undefined ? undefined : { images: options.images }),
+					});
+				});
 			},
 			followUpAgent: async (agentId, extensionId, text, options) => {
 				await this._withExtensionInputPresentation(
@@ -4007,19 +3149,15 @@ export class AgentOrchestrator {
 					options?.presentation,
 					async () => {
 						await this.followUpAgent(agentId, text, {
-							...(options?.images === undefined
-								? undefined
-								: { images: options.images }),
+							...(options?.images === undefined ? undefined : { images: options.images }),
 						});
 					},
 				);
 			},
 			getAgentContextUsage: (agentId) => this._context.get(agentId),
 			isProjectTrusted: () => this.settingManager.isProjectTrusted(),
-			getAgentSystemPrompt: async (agentId) =>
-				await this.getAgentSystemPrompt(agentId),
-			agentHasPendingMessages: (agentId) =>
-				this.agentHasPendingMessages(agentId),
+			getAgentSystemPrompt: async (agentId) => await this.getAgentSystemPrompt(agentId),
+			agentHasPendingMessages: (agentId) => this.agentHasPendingMessages(agentId),
 			waitForAgentIdle: async (agentId, options) => {
 				await this.waitForAgentIdle(agentId, options);
 			},
@@ -4043,23 +3181,16 @@ export class AgentOrchestrator {
 			},
 			disposeRuntime: async (agentId, extensionId, reason) => {
 				this._requireLiveAgent(agentId);
-				await this.disposeAll(
-					reason ??
-						`Extension '${extensionId}' disposed the runtime from agent ${agentId}.`,
-				);
+				await this.disposeAll(reason ?? `Extension '${extensionId}' disposed the runtime from agent ${agentId}.`);
 			},
 			setAgentSessionName: async (agentId, name) => {
 				await this.setAgentSessionName(agentId, name);
 			},
-			getAgentSessionName: async (agentId) =>
-				await this.getAgentSessionName(agentId),
-			compactAgent: async (agentId, customInstructions) =>
-				await this.compactAgent(agentId, customInstructions),
-			setAgentModelByReference: async (agentId, reference) =>
-				await this.setAgentModelByReference(agentId, reference),
+			getAgentSessionName: async (agentId) => await this.getAgentSessionName(agentId),
+			compactAgent: async (agentId, customInstructions) => await this.compactAgent(agentId, customInstructions),
+			setAgentModelByReference: async (agentId, reference) => await this.setAgentModelByReference(agentId, reference),
 			getAgentModel: (agentId) => this.getAgentModel(agentId),
-			listModelCandidates: async () =>
-				(await this.listAvailableModelCandidates()).models,
+			listModelCandidates: async () => (await this.listAvailableModelCandidates()).models,
 			getAgentThinkingLevel: (agentId) => this.getAgentThinkingLevel(agentId),
 			setAgentThinkingLevel: async (agentId, level) => {
 				await this.setAgentThinkingLevel(agentId, level);
@@ -4067,8 +3198,7 @@ export class AgentOrchestrator {
 			abortAgent: async (agentId) => {
 				await this.abortAgent(agentId);
 			},
-			// Trust ruling: exec runs arbitrary commands in the project cwd, so it is
-			// denied until the project trust gate has passed.
+			// Trust ruling: exec runs arbitrary commands in the project cwd.
 			exec: async (agentId, extensionId, command, options) => {
 				if (!this.settingManager.isProjectTrusted()) {
 					throw new OrchestratorError({
@@ -4094,21 +3224,14 @@ export class AgentOrchestrator {
 	// -----------------------------------------------------------------------
 
 	/**
-	 * The `spawned` record for a build, or nothing when this agent is not a child
-	 * of a persistable tree.
-	 *
 	 * Both halves must be persistable: a child with no session directory has
-	 * nothing to record, and a root with none has nowhere to record it. Resolved
+	 * nothing to record, a root with none has nowhere to record it. Resolved
 	 * during the build so an unpersistable tree is known before install.
 	 */
-	private async _createTreeSpawnRecord(
-		request: AgentBuildRequest,
-	): Promise<AgentTreeSpawnRecord | undefined> {
+	private async _createTreeSpawnRecord(request: AgentBuildRequest): Promise<AgentTreeSpawnRecord | undefined> {
 		const { parent } = request;
 		if (parent === undefined) return undefined;
-		const sessionDir = await this.sessionManager.getAgentSessionDirName(
-			request.agentId,
-		);
+		const sessionDir = await this.sessionManager.getAgentSessionDirName(request.agentId);
 		if (!sessionDir) return undefined;
 		return {
 			v: 1,
@@ -4125,24 +3248,19 @@ export class AgentOrchestrator {
 	 * Append `spawned` to the root's `agents/tree.jsonl` and write the child's
 	 * `agents/parent.json`.
 	 *
-	 * The back-pointer is not optional. The tree index is one-way, but the session
-	 * picker lists child sessions too: without it, opening a child directly yields
-	 * an orphan top-level agent, and resuming its root afterwards opens the same
-	 * session a second time.
+	 * The back-pointer is not optional: the tree index is one-way, but the session
+	 * picker lists child sessions too, so without it opening a child directly
+	 * yields an orphan and resuming its root afterwards opens the same session
+	 * twice.
 	 *
 	 * A write failure is a diagnostic and never rolls the install back - an agent
-	 * that works but cannot be restored beats an agent that does not exist. When
-	 * the root itself has no session directory the whole tree goes unpersisted,
-	 * with one diagnostic saying so.
+	 * that works but cannot be restored beats an agent that does not exist.
 	 */
-	private async _recordAgentSpawnedInTree(
-		build: LiveAgentBuild,
-	): Promise<void> {
+	private async _recordAgentSpawnedInTree(build: LiveAgentBuild): Promise<void> {
 		const record = build.treeRecord;
 		if (!record) return;
 		const rootAgentId = this._resolveAgentTreeRoot(record.agentId);
-		const rootSessionDir =
-			await this.sessionManager.getAgentSessionDirName(rootAgentId);
+		const rootSessionDir = await this.sessionManager.getAgentSessionDirName(rootAgentId);
 		if (!rootSessionDir) {
 			await this._publishDiagnostic({
 				severity: "warning",
@@ -4163,54 +3281,34 @@ export class AgentOrchestrator {
 		});
 	}
 
-	/**
-	 * Append `removed` when the agent is meant not to come back.
-	 *
-	 * `runtime_shutdown` writes nothing, and that distinction is the whole reason
-	 * the intent exists: without it a normal exit would mark every agent removed
-	 * and tree restoration would never restore anything.
-	 */
-	private async _recordAgentRemovedFromTree(
-		agentId: AgentId,
-		intent: AgentDisposeIntent,
-	): Promise<void> {
+	/** Append `removed` only when the agent is meant not to come back. */
+	private async _recordAgentRemovedFromTree(agentId: AgentId, intent: AgentDisposeIntent): Promise<void> {
 		if (intent !== "removed") return;
 		if (this._spawnParent.get(agentId) === undefined) return;
 		const rootAgentId = this._resolveAgentTreeRoot(agentId);
 		if (rootAgentId === agentId) return;
 		await this._enqueueTreeWrite(rootAgentId, async () => {
-			await this.sessionManager.appendAgentTreeRecord(rootAgentId, {
-				v: 1,
-				type: "removed",
-				agentId,
-				at: now(),
-			});
+			await this.sessionManager.appendAgentTreeRecord(rootAgentId, { v: 1, type: "removed", agentId, at: now() });
 		});
 	}
 
 	/**
-	 * Serialize writes per root file so appended `spawned` and `removed` records
-	 * keep the order the events happened in, and report a failure without letting
-	 * it reach the lifecycle operation that triggered it.
+	 * Serialize writes per root file so records keep event order, and report a
+	 * failure without letting it reach the lifecycle operation that triggered it.
 	 */
-	private async _enqueueTreeWrite(
-		rootAgentId: AgentId,
-		write: () => Promise<void>,
-	): Promise<void> {
-		const tail = (this._treeWrites.get(rootAgentId) ?? Promise.resolve()).then(
-			async () => {
-				try {
-					await write();
-				} catch (error) {
-					await this._publishDiagnostic({
-						severity: "warning",
-						code: "orchestrator.agent_tree_write_failed",
-						message: `Failed to record a spawn-tree change under root ${rootAgentId}: ${formatError(error)}`,
-						agentId: rootAgentId,
-					});
-				}
-			},
-		);
+	private async _enqueueTreeWrite(rootAgentId: AgentId, write: () => Promise<void>): Promise<void> {
+		const tail = (this._treeWrites.get(rootAgentId) ?? Promise.resolve()).then(async () => {
+			try {
+				await write();
+			} catch (error) {
+				await this._publishDiagnostic({
+					severity: "warning",
+					code: "orchestrator.agent_tree_write_failed",
+					message: `Failed to record a spawn-tree change under root ${rootAgentId}: ${formatError(error)}`,
+					agentId: rootAgentId,
+				});
+			}
+		});
 		this._treeWrites.set(rootAgentId, tail);
 		await tail;
 		if (this._treeWrites.get(rootAgentId) === tail) {
@@ -4218,32 +3316,19 @@ export class AgentOrchestrator {
 		}
 	}
 
-	/**
-	 * Read a root session directory's tree log and reduce it to the members that
-	 * were still live when the log was last written.
-	 */
-	private async _planAgentTreeResume(
-		rootSessionDir: string,
-	): Promise<readonly AgentTreeSpawnRecord[]> {
-		return reduceAgentTreeRecords(
-			await this.sessionManager.readAgentTreeRecords(rootSessionDir),
-		);
+	private async _planAgentTreeResume(rootSessionDir: string): Promise<readonly AgentTreeSpawnRecord[]> {
+		return reduceAgentTreeRecords(await this.sessionManager.readAgentTreeRecords(rootSessionDir));
 	}
 
 	/**
 	 * Bring a resumed root's recorded children back, then tell the root what it
-	 * actually got.
-	 *
-	 * A root with no directory or no log restores nothing, which is the ordinary
-	 * case: most agents never spawn anyone. A failure to read the log is a
-	 * diagnostic, never a failure of the resume that triggered it - the root is
-	 * already live and usable.
+	 * got. A failure to read the log is a diagnostic, never a failure of the
+	 * resume that triggered it - the root is already live and usable.
 	 */
 	private async _restoreSpawnTree(rootAgentId: AgentId): Promise<void> {
 		let members: readonly AgentTreeSpawnRecord[];
 		try {
-			const rootSessionDir =
-				await this.sessionManager.getAgentSessionDirName(rootAgentId);
+			const rootSessionDir = await this.sessionManager.getAgentSessionDirName(rootAgentId);
 			if (!rootSessionDir) return;
 			members = await this._planAgentTreeResume(rootSessionDir);
 		} catch (error) {
@@ -4256,38 +3341,24 @@ export class AgentOrchestrator {
 			return;
 		}
 		if (members.length === 0) return;
-		await this._publishTreeResumeReconciliation(
-			await this._resumeAgentTree(rootAgentId, members),
-		);
+		await this._publishTreeResumeReconciliation(await this._resumeAgentTree(rootAgentId, members));
 	}
 
 	/**
-	 * Resume the root of a session the caller named directly, when that session
-	 * turns out to be somebody's child.
-	 *
-	 * Returns the AgentId now holding the named session - which is not necessarily
-	 * the id it was recorded under, because restoring the tree remaps a colliding
-	 * id. Returns undefined when the session is not a child, or when its root can
-	 * no longer be opened, in which case the caller resumes it as a top-level
-	 * agent exactly as before.
+	 * Resume the root of a directly named session that turns out to be somebody's
+	 * child. Returns the AgentId now holding that session, which is not
+	 * necessarily the recorded one because a restore remaps a colliding id;
+	 * undefined means the caller resumes it as a top-level agent as before.
 	 */
-	private async _redirectChildResumeToRoot(
-		reference: string | JsonlSessionMetadata,
-	): Promise<AgentId | undefined> {
+	private async _redirectChildResumeToRoot(reference: string | JsonlSessionMetadata): Promise<AgentId | undefined> {
 		const metadata =
-			typeof reference === "string"
-				? await this.sessionManager.resolveAgentSessionReference(reference)
-				: reference;
+			typeof reference === "string" ? await this.sessionManager.resolveAgentSessionReference(reference) : reference;
 		const sessionDir = sessionDirNameFromPath(metadata.path);
 		const pointer = await this._resolveResumeRoot(sessionDir);
 		if (!pointer || pointer.rootSessionDir === sessionDir) return undefined;
 		try {
-			const rootMetadata = await this.sessionManager.resolveAgentSessionByDir(
-				pointer.rootSessionDir,
-			);
-			await this.spawnAgent({
-				origin: { kind: "resume", reference: rootMetadata },
-			});
+			const rootMetadata = await this.sessionManager.resolveAgentSessionByDir(pointer.rootSessionDir);
+			await this.spawnAgent({ origin: { kind: "resume", reference: rootMetadata } });
 		} catch (error) {
 			await this._publishDiagnostic({
 				severity: "warning",
@@ -4296,23 +3367,20 @@ export class AgentOrchestrator {
 			});
 			return undefined;
 		}
-		// The restore opened this session under whatever id was free. If it did
-		// not - a member the log no longer lists, or one that failed - fall back to
-		// the ordinary top-level resume.
+		// The restore opened this session under whatever id was free. If it did not
+		// - a member the log no longer lists, or one that failed - fall back.
 		return this.sessionManager.findAgentIdBySessionDir(sessionDir);
 	}
 
 	/**
-	 * Restore a whole tree eagerly: the root first, then each member in the order
-	 * the log recorded it, so a parent always exists before its child.
+	 * Restore a tree eagerly, in the order the log recorded it, so a parent always
+	 * exists before its child.
 	 *
-	 * A recorded AgentId can collide across processes. When it does the member is
-	 * resumed under a freshly allocated id and the substitution is recorded: not
-	 * remapping would leave the parent's history naming `coder-2` while
-	 * `send_message("coder-2")` reaches somebody else entirely.
-	 *
-	 * One member failing is a diagnostic and a `failed` entry; it never takes the
-	 * root or its siblings down with it.
+	 * A recorded AgentId can collide across processes; the member is then resumed
+	 * under a fresh id and the substitution recorded, because not remapping would
+	 * leave the parent's history naming `coder-2` while `send_message("coder-2")`
+	 * reaches somebody else. One member failing never takes the root or its
+	 * siblings down with it.
 	 */
 	private async _resumeAgentTree(
 		rootAgentId: AgentId,
@@ -4320,23 +3388,16 @@ export class AgentOrchestrator {
 	): Promise<AgentTreeResumeOutcome> {
 		const resumed: AgentId[] = [];
 		const failed: AgentId[] = [];
-		const remapped: Array<{ readonly from: AgentId; readonly to: AgentId }> =
-			[];
-		// Records name the parent by its recorded id, which may itself have been
-		// remapped a moment ago.
+		const remapped: Array<{ readonly from: AgentId; readonly to: AgentId }> = [];
+		// A record names its parent by the recorded id, which may itself have just
+		// been remapped.
 		const substitutions = new Map<AgentId, AgentId>();
 		for (const member of members) {
 			const parent =
-				substitutions.get(member.spawnedBy) ??
-				(this._live.has(member.spawnedBy) ? member.spawnedBy : rootAgentId);
+				substitutions.get(member.spawnedBy) ?? (this._live.has(member.spawnedBy) ? member.spawnedBy : rootAgentId);
 			try {
-				const metadata = await this.sessionManager.resolveAgentSessionByDir(
-					member.sessionDir,
-				);
-				const agentId = await this.spawnAgent({
-					origin: { kind: "resume", reference: metadata },
-					parent,
-				});
+				const metadata = await this.sessionManager.resolveAgentSessionByDir(member.sessionDir);
+				const agentId = await this.spawnAgent({ origin: { kind: "resume", reference: metadata }, parent });
 				if (agentId !== member.agentId) {
 					substitutions.set(member.agentId, agentId);
 					remapped.push({ from: member.agentId, to: agentId });
@@ -4356,18 +3417,12 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Tell the root what its tree looks like now.
-	 *
 	 * **Session write.** The reconciliation goes onto the root's branch through
-	 * `harness.appendMessage`, because it is context the model must resume with
-	 * rather than a message arriving afterwards: a partial restore is the normal
-	 * case, and a model that is not told will keep addressing agents that no
-	 * longer exist or whose ids moved. Nothing is written when the tree came back
-	 * whole and unchanged, which is also the common case.
+	 * `harness.appendMessage`, because it is context the model must resume with:
+	 * a model that is not told keeps addressing agents that no longer exist or
+	 * whose ids moved. Nothing is written when the tree came back whole.
 	 */
-	private async _publishTreeResumeReconciliation(
-		outcome: AgentTreeResumeOutcome,
-	): Promise<void> {
+	private async _publishTreeResumeReconciliation(outcome: AgentTreeResumeOutcome): Promise<void> {
 		if (outcome.failed.length === 0 && outcome.remapped.length === 0) return;
 		const liveAgent = this._live.get(outcome.rootAgentId);
 		if (!liveAgent) return;
@@ -4376,9 +3431,7 @@ export class AgentOrchestrator {
 			lines.push(`Restored: ${outcome.resumed.join(", ")}.`);
 		}
 		if (outcome.failed.length > 0) {
-			lines.push(
-				`Not restored: ${outcome.failed.join(", ")}. Messages to them will fail.`,
-			);
+			lines.push(`Not restored: ${outcome.failed.join(", ")}. Messages to them will fail.`);
 		}
 		for (const { from, to } of outcome.remapped) {
 			lines.push(`Agent ${from} is now addressed as ${to}.`);
@@ -4399,16 +3452,10 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Find the root a directly resumed child belongs to, by reading its
-	 * `parent.json`.
-	 *
-	 * Found means the whole tree is restored instead and the view moves to that
-	 * child. Not found - old data, or a root that has since been deleted - means
-	 * it comes back as a top-level agent, with a diagnostic saying so.
+	 * Read a directly resumed child's `parent.json`. Not found - old data, or a
+	 * deleted root - means it comes back as a top-level agent.
 	 */
-	private async _resolveResumeRoot(
-		sessionDir: string,
-	): Promise<AgentParentPointer | undefined> {
+	private async _resolveResumeRoot(sessionDir: string): Promise<AgentParentPointer | undefined> {
 		try {
 			return await this.sessionManager.readAgentParentPointer(sessionDir);
 		} catch (error) {
@@ -4445,11 +3492,8 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Replace the requested tool set and re-derive the active selection under it.
-	 *
 	 * The policy is updated only after the harness accepts the new tools, so a
-	 * rejected write leaves the recorded intent describing what is actually
-	 * installed.
+	 * rejected write leaves the recorded intent describing what is installed.
 	 */
 	async setAgentTools(
 		agentId: AgentId,
@@ -4468,24 +3512,16 @@ export class AgentOrchestrator {
 			},
 			liveAgent.extensionRunner,
 		);
-		await liveAgent.harness.setTools(resolved.tools, [
-			...resolved.activeToolNames,
-		]);
+		await liveAgent.harness.setTools(resolved.tools, [...resolved.activeToolNames]);
 		liveAgent.toolPolicy = resolved.policy;
 	}
 
 	/**
-	 * Toggle which of the installed tools are active.
-	 *
 	 * Validation runs against the harness's live tool list with no await between
-	 * the check and the apply. Re-resolving the registry here would race a
-	 * concurrent `setTools` or extension reload, and would re-publish the standing
-	 * resolve diagnostics on every toggle.
+	 * check and apply. Re-resolving the registry here would race a concurrent
+	 * `setTools` and re-publish the standing resolve diagnostics on every toggle.
 	 */
-	async setAgentActiveTools(
-		agentId: AgentId,
-		toolNames: readonly string[],
-	): Promise<void> {
+	async setAgentActiveTools(agentId: AgentId, toolNames: readonly string[]): Promise<void> {
 		const liveAgent = this._requireLiveAgent(agentId);
 		const { harness } = liveAgent;
 		const { activeToolNames, diagnostics } = selectActiveToolNames(
@@ -4494,27 +3530,19 @@ export class AgentOrchestrator {
 			agentId,
 		);
 		await harness.setActiveTools(activeToolNames);
-		// Re-read after the await rather than reusing the list above: the harness
-		// is the source of truth, and a concurrent tool-set change must not be
-		// overwritten by a stale copy of the intent.
+		// Re-read after the await: the harness is the source of truth, and a
+		// concurrent tool-set change must not be overwritten by a stale copy.
 		liveAgent.toolPolicy = {
 			...liveAgent.toolPolicy,
-			activeToolSelection: {
-				mode: "explicit",
-				toolNames: harness.getActiveTools().map((tool) => tool.name),
-			},
+			activeToolSelection: { mode: "explicit", toolNames: harness.getActiveTools().map((tool) => tool.name) },
 		};
 		await this._publishDiagnostics(diagnostics);
 	}
 
 	/**
-	 * Resolve a tool policy into an installable tool set, against a registry this
-	 * runner has contributed to.
-	 *
-	 * The returned policy is the intent as the registry understood it, which is
-	 * what makes a later reload idempotent: an explicit active selection narrows
-	 * to what actually resolved, while `default_all` stays open and picks up tools
-	 * a replacement runner contributes.
+	 * The returned policy is the intent as the registry understood it, which makes
+	 * a later reload idempotent: an explicit selection narrows to what resolved,
+	 * while `default_all` stays open to tools a replacement runner contributes.
 	 */
 	private async _resolveAgentToolsForBuild(
 		agentId: AgentId,
@@ -4528,16 +3556,12 @@ export class AgentOrchestrator {
 		const registry = this.toolRegistry.clone();
 		extensionRunner.contributeToolsTo(registry);
 		const resolved = registry.resolve({
-			...(policy.requestedToolNames === undefined
-				? undefined
-				: { requestedToolNames: policy.requestedToolNames }),
+			...(policy.requestedToolNames === undefined ? undefined : { requestedToolNames: policy.requestedToolNames }),
 			...(policy.activeToolSelection.mode === "explicit"
 				? { activeToolNames: policy.activeToolSelection.toolNames }
 				: undefined),
 		});
-		await this._publishDiagnostics(
-			resolved.diagnostics.map((diagnostic) => ({ ...diagnostic, agentId })),
-		);
+		await this._publishDiagnostics(resolved.diagnostics.map((diagnostic) => ({ ...diagnostic, agentId })));
 		return {
 			tools: createAgentHarnessToolsFromResolvedTools(resolved.tools),
 			activeToolNames: resolved.activeToolNames,
@@ -4554,17 +3578,11 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Compose the system prompt for one turn from the agent's static facts plus
-	 * the harness's active tools for that turn.
-	 *
 	 * The runner is read here rather than captured at construction, which is the
-	 * whole reason this is a callback: an extension reload replaces the runner,
-	 * and the sections it appends have to follow.
+	 * whole reason this is a callback: a reload replaces the runner and the
+	 * sections it appends have to follow.
 	 */
-	private _composeAgentSystemPrompt(
-		agentId: AgentId,
-		activeTools: readonly ToolPromptGuidance[],
-	): string {
+	private _composeAgentSystemPrompt(agentId: AgentId, activeTools: readonly ToolPromptGuidance[]): string {
 		const liveAgent = this._requireLiveAgent(agentId);
 		const facts = liveAgent.systemPrompt;
 		return buildAgentSystemPrompt({
@@ -4572,23 +3590,16 @@ export class AgentOrchestrator {
 			skills: facts.skills,
 			activeTools,
 			agentId,
-			appendSections: [
-				...facts.appendSections,
-				...liveAgent.extensionRunner.getSystemPromptAppends(),
-			],
+			appendSections: [...facts.appendSections, ...liveAgent.extensionRunner.getSystemPromptAppends()],
 			contextFiles: facts.contextFiles,
-			...(facts.includeSkills === undefined
-				? undefined
-				: { includeSkills: facts.includeSkills }),
+			...(facts.includeSkills === undefined ? undefined : { includeSkills: facts.includeSkills }),
 			...(facts.cwd === undefined ? undefined : { cwd: facts.cwd }),
 		});
 	}
 
 	/**
-	 * The system prompt the agent's next turn would be built with. Read-only: the
-	 * write paths remain the profile's `appendSystemPrompt` and the
-	 * `before_agent_start` interceptor, which can still replace this text for one
-	 * turn without changing what this returns.
+	 * What the next turn would be built with. Read-only: `before_agent_start` can
+	 * still replace this text for one turn without changing what this returns.
 	 */
 	async getAgentSystemPrompt(agentId: AgentId): Promise<string> {
 		const { harness } = this._requireLiveAgent(agentId);
@@ -4596,60 +3607,37 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * The per-turn tool context: human requests, collaboration, background jobs,
-	 * and the extension context factory.
-	 *
 	 * The runner is captured into this snapshot, so a call that continues in the
 	 * background after a reload keeps the runner it started under and observes
-	 * that runner's stale boundary, instead of silently switching to the
-	 * replacement mid-call.
+	 * that runner's stale boundary instead of switching mid-call.
 	 */
-	private _createToolAdapterContext(
-		agentId: AgentId,
-		profileId: string,
-	): ToolAdapterContext {
+	private _createToolAdapterContext(agentId: AgentId, profileId: string): ToolAdapterContext {
 		const liveAgent = this._requireLiveAgent(agentId);
 		const extensionRunner = liveAgent.extensionRunner;
 		return {
 			human: {
 				request: async (request) =>
-					await this._requestHumanForAgent(agentId, {
-						...request,
-						source: { kind: "agent", agentId },
-					}),
+					await this._requestHumanForAgent(agentId, { ...request, source: { kind: "agent", agentId } }),
 			},
-			agents: this._createToolAgentHost(
-				agentId,
-				liveAgent.backgroundAttachment,
-			),
+			agents: this._createToolAgentHost(agentId, liveAgent.backgroundAttachment),
 			humanInterrupts: this._humanInterrupts.watch(agentId),
 			createExtensionContext: (source) => {
 				if (source.kind !== "extension") return undefined;
 				return {
 					extensionId: source.id,
-					host: {
-						agentId,
-						profileId,
-						actions: extensionRunner.createContext(source.id).actions,
-					},
+					host: { agentId, profileId, actions: extensionRunner.createContext(source.id).actions },
 				};
 			},
 		};
 	}
 
 	/**
-	 * The collaboration port for one agent's tools.
-	 *
 	 * The caller's identity is captured here and never read from tool arguments,
 	 * so no model-controlled value can forge the sender of a message, the owner of
-	 * a job, or the settler of someone else's. Discovery, exact-address messaging,
-	 * and dispose scope are resolved over private runtime state for the same
-	 * reason: a tool cannot argue its way past its caller-bound tree policy.
+	 * a job, or the settler of someone else's. Discovery and dispose scope resolve
+	 * over private runtime state for the same reason.
 	 */
-	private _createToolAgentHost(
-		agentId: AgentId,
-		attachment: OwnerAttachment,
-	): ToolAgentHost {
+	private _createToolAgentHost(agentId: AgentId, attachment: OwnerAttachment): ToolAgentHost {
 		return {
 			agentId,
 			listProfiles: async () => {
@@ -4661,131 +3649,90 @@ export class AgentOrchestrator {
 						(profile): AgentProfileBrief => ({
 							id: profile.id,
 							label: profile.label,
-							...(profile.description === undefined
-								? undefined
-								: { description: profile.description }),
-							...(profile.whenToUse === undefined
-								? undefined
-								: { whenToUse: profile.whenToUse }),
+							...(profile.description === undefined ? undefined : { description: profile.description }),
+							...(profile.whenToUse === undefined ? undefined : { whenToUse: profile.whenToUse }),
 							persist: profile.persist,
 						}),
 					);
 			},
-			// Discovery is tree-scoped. Exact ids stay runtime-wide addresses
-			// through `describe` and `sendMessage`, which is the deliberate soft
-			// bridge between otherwise isolated trees.
+			// Discovery is tree-scoped, while exact ids stay runtime-wide addresses
+			// through `describe` and `sendMessage` - the deliberate soft bridge
+			// between otherwise isolated trees.
 			listAgents: () => {
 				const rootAgentId = this._resolveAgentTreeRoot(agentId);
 				return [...this._live.values()]
-					.filter(
-						(liveAgent) =>
-							this._resolveAgentTreeRoot(liveAgent.agentId) === rootAgentId,
-					)
+					.filter((liveAgent) => this._resolveAgentTreeRoot(liveAgent.agentId) === rootAgentId)
 					.map((liveAgent) => describeAgentForTools(liveAgent));
 			},
 			describe: (targetAgentId) => {
 				const liveAgent = this._live.get(targetAgentId);
 				return liveAgent ? describeAgentForTools(liveAgent) : undefined;
 			},
-			// An agent-initiated spawn records the caller as the parent, so the child
-			// is both rendered under it and swept by its subtree dispose.
-			spawn: async (profileId) =>
-				await this.spawnAgent({
-					origin: { kind: "new", profileId },
-					parent: agentId,
-				}),
+			// The caller becomes the parent, so the child is rendered under it and
+			// swept by its subtree dispose.
+			spawn: async (profileId) => await this.spawnAgent({ origin: { kind: "new", profileId }, parent: agentId }),
 			sendMessage: async (targetAgentId, body) =>
 				await this.sendMessage({
 					source: { kind: "agent", agentId },
 					targetAgentId,
 					body,
-					// An agent message never preempts a turn already in flight: the
-					// target decides when to read it.
+					// Never preempts a turn in flight: the target decides when to read.
 					mode: "next_turn",
 				}),
 			dispose: async (targetAgentId, options) => {
 				if (!this._live.has(targetAgentId)) {
-					return {
-						kind: this._tombstones.has(targetAgentId)
-							? "already_disposed"
-							: "unknown",
-					};
+					return { kind: this._tombstones.has(targetAgentId) ? "already_disposed" : "unknown" };
 				}
 				if (!this._agentsShareTree(agentId, targetAgentId)) {
 					return { kind: "outside_tree" };
 				}
 				const selected =
-					options.scope === "subtree"
-						? this._collectAgentSubtreePostOrder(targetAgentId)
-						: [targetAgentId];
-				// An agent cannot dispose itself, directly or as a member of the
-				// subtree it named: the reply to this very tool call would have
-				// nowhere to land.
+					options.scope === "subtree" ? this._collectAgentSubtreePostOrder(targetAgentId) : [targetAgentId];
+				// An agent cannot dispose itself, directly or inside the subtree it
+				// named: the reply to this very tool call would have nowhere to land.
 				if (selected.includes(agentId)) return { kind: "self" };
 				const agentIds = await this.disposeAgent(targetAgentId, {
 					intent: "removed",
 					reason: options.reason,
 					scope: options.scope,
 				});
-				return agentIds.length > 0
-					? { kind: "disposed", agentIds }
-					: { kind: "already_disposed" };
+				return agentIds.length > 0 ? { kind: "disposed", agentIds } : { kind: "already_disposed" };
 			},
-			// The attachment's own capabilities, not an id-taking forwarder: they
-			// carry the owner and generation the job table authorizes against.
+			// The attachment's own capabilities, not an id-taking forwarder: they carry
+			// the owner and generation the job table authorizes against.
 			jobs: attachment.host,
 			settler: attachment.settler,
 			requestHuman: async (request) =>
-				await this._requestHumanForAgent(agentId, {
-					...request,
-					source: { kind: "agent", agentId },
-				}),
+				await this._requestHumanForAgent(agentId, { ...request, source: { kind: "agent", agentId } }),
 		};
 	}
 
 	// -----------------------------------------------------------------------
 	// Profiles, models, thinking levels, and resources
 	//
-	// All forwarding. A single agent's current model and thinking level live in
-	// its harness; what the orchestrator adds is the runtime policy around them -
-	// which profiles are enabled, which models are available, and the refusal to
-	// resume a session under a model that is no longer registered.
+	// Mostly forwarding. A single agent's model and thinking level live in its
+	// harness; what is added here is the runtime policy around them - enabled
+	// profiles, available models, and the refusal to resume under a model that is
+	// no longer registered.
 	// -----------------------------------------------------------------------
 
 	private _isProfileEnabled(profileId: string): boolean {
-		return (
-			this._enabledProfileIds === undefined ||
-			this._enabledProfileIds.includes(profileId)
-		);
+		return this._enabledProfileIds === undefined || this._enabledProfileIds.includes(profileId);
 	}
 
 	private async _resolveCreateProfile(
 		origin: Extract<SpawnAgentOrigin, { kind: "new" }>,
 	): Promise<ResolvedAgentProfile> {
-		const resolved = await this._resolveProfileById(
-			origin.profileId ?? this._defaultProfileId,
-			undefined,
-		);
-		return {
-			...resolved,
-			profile: await this._applyProfileOverride(
-				resolved.profile,
-				origin.profileOverride,
-			),
-		};
+		const resolved = await this._resolveProfileById(origin.profileId ?? this._defaultProfileId, undefined);
+		return { ...resolved, profile: await this._applyProfileOverride(resolved.profile, origin.profileOverride) };
 	}
 
 	/**
-	 * The profile a session was written under, resolved again from the registry.
-	 *
 	 * A session with no profile reference cannot be resumed at all: nothing else
-	 * on it records what the agent was, and guessing would resume the branch as
+	 * records what the agent was, and guessing would resume the branch as
 	 * something it never ran as.
 	 */
-	private async _resolveResumeProfile(
-		agentId: AgentId,
-		metadata: JsonlSessionMetadata,
-	): Promise<ResolvedAgentProfile> {
+	private async _resolveResumeProfile(agentId: AgentId, metadata: JsonlSessionMetadata): Promise<ResolvedAgentProfile> {
 		const reference = parseAgentProfileReference(metadata.metadata?.profile);
 		if (!reference) {
 			throw new OrchestratorError({
@@ -4798,10 +3745,7 @@ export class AgentOrchestrator {
 		return await this._resolveProfileById(reference.id, agentId);
 	}
 
-	private async _resolveProfileById(
-		profileId: string,
-		agentId: AgentId | undefined,
-	): Promise<ResolvedAgentProfile> {
+	private async _resolveProfileById(profileId: string, agentId: AgentId | undefined): Promise<ResolvedAgentProfile> {
 		const result = await this.profileRegistry.resolveProfile(profileId);
 		await this._publishDiagnostics(result.diagnostics);
 		if (!result.ok) {
@@ -4824,20 +3768,13 @@ export class AgentOrchestrator {
 				}),
 			);
 		}
-		return {
-			profile: result.profile,
-			source: result.source,
-			entryId: result.entryId,
-		};
+		return { profile: result.profile, source: result.source, entryId: result.entryId };
 	}
 
 	/**
-	 * Merge a caller's profile override.
-	 *
 	 * An override may not change the id, and a persistent profile may not have its
-	 * recoverable fields overridden: those fields are what a resume re-resolves
-	 * from the registry, so a session written under them could never be reopened
-	 * as the agent that wrote it.
+	 * recoverable fields overridden: a resume re-resolves those from the registry,
+	 * so such a session could never be reopened as the agent that wrote it.
 	 */
 	private async _applyProfileOverride(
 		profile: AgentProfile,
@@ -4867,24 +3804,15 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * The model a session last recorded, or the runtime default when it recorded
-	 * none.
-	 *
-	 * A recorded model that is no longer registered is an error rather than a
-	 * silent fallback: the branch was produced by that model, and reopening it
-	 * under a different one changes what the conversation is without saying so.
+	 * A recorded model that is no longer registered is an error, not a silent
+	 * fallback: the branch was produced by that model, and reopening it under
+	 * another changes what the conversation is without saying so.
 	 */
 	private _resolveResumeModel(
-		contextModel: {
-			readonly provider: string;
-			readonly modelId: string;
-		} | null,
+		contextModel: { readonly provider: string; readonly modelId: string } | null,
 	): RuntimeModel {
 		if (!contextModel) return this._defaultModel;
-		const model = this.modelRegistry.find(
-			contextModel.provider,
-			contextModel.modelId,
-		);
+		const model = this.modelRegistry.find(contextModel.provider, contextModel.modelId);
 		if (!model) {
 			throw new OrchestratorError({
 				severity: "error",
@@ -4896,11 +3824,9 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Snapshot the settings the harness cannot answer after construction.
-	 *
-	 * Read fresh per spawn rather than inherited from a parent: these are runtime
-	 * policy, and an agent created after the user changed a setting should run
-	 * under the setting that is now in force.
+	 * The settings the harness cannot answer after construction. Read fresh per
+	 * spawn rather than inherited: an agent created after the user changed a
+	 * setting should run under the setting now in force.
 	 */
 	private _captureAgentSettings(): AgentSettings {
 		return {
@@ -4917,8 +3843,7 @@ export class AgentOrchestrator {
 
 	async setAgentModel(agentId: AgentId, model: RuntimeModel): Promise<void> {
 		await this._requireLiveAgent(agentId).harness.setModel(model);
-		// The cached measurement names the previous model and its window, so it
-		// stops describing anything the moment the model changes.
+		// The cached measurement names the previous model and its window.
 		await this._context.invalidate(agentId);
 	}
 
@@ -4933,10 +3858,7 @@ export class AgentOrchestrator {
 		};
 	}
 
-	async setAgentModelByReference(
-		agentId: AgentId,
-		reference: string,
-	): Promise<RuntimeModel> {
+	async setAgentModelByReference(agentId: AgentId, reference: string): Promise<RuntimeModel> {
 		const parsed = parseModelReference(reference);
 		if (!parsed) {
 			throw new OrchestratorError({
@@ -4947,11 +3869,7 @@ export class AgentOrchestrator {
 			});
 		}
 		const models = await this.modelRegistry.getAvailable();
-		const model = models.find(
-			(candidate) =>
-				candidate.provider === parsed.provider &&
-				candidate.id === parsed.modelId,
-		);
+		const model = models.find((candidate) => candidate.provider === parsed.provider && candidate.id === parsed.modelId);
 		if (!model) {
 			throw new OrchestratorError({
 				severity: "error",
@@ -4979,29 +3897,20 @@ export class AgentOrchestrator {
 		return await this._auth.login(providerId, options);
 	}
 
-	async logoutAuthProvider(
-		providerId: string,
-	): Promise<AuthProviderLogoutResult> {
+	async logoutAuthProvider(providerId: string): Promise<AuthProviderLogoutResult> {
 		return await this._auth.logout(providerId);
 	}
 
-	listAgentThinkingLevelCandidates(
-		agentId: AgentId,
-	): AgentThinkingLevelCandidateListResult {
+	listAgentThinkingLevelCandidates(agentId: AgentId): AgentThinkingLevelCandidateListResult {
 		const { harness } = this._requireLiveAgent(agentId);
-		return {
-			levels: this._thinkingLevelCandidates(agentId, harness.getModel()),
-		};
+		return { levels: this._thinkingLevelCandidates(agentId, harness.getModel()) };
 	}
 
 	getAgentThinkingLevel(agentId: AgentId): ThinkingLevel {
 		return this._requireLiveAgent(agentId).harness.getThinkingLevel();
 	}
 
-	async setAgentThinkingLevel(
-		agentId: AgentId,
-		level: ThinkingLevel,
-	): Promise<void> {
+	async setAgentThinkingLevel(agentId: AgentId, level: ThinkingLevel): Promise<void> {
 		const { harness } = this._requireLiveAgent(agentId);
 		const model = harness.getModel();
 		const supported = this._thinkingLevelCandidates(agentId, model);
@@ -5016,10 +3925,7 @@ export class AgentOrchestrator {
 		await harness.setThinkingLevel(level);
 	}
 
-	async setAgentThinkingLevelByName(
-		agentId: AgentId,
-		levelName: string,
-	): Promise<AgentThinkingLevelResult> {
+	async setAgentThinkingLevelByName(agentId: AgentId, levelName: string): Promise<AgentThinkingLevelResult> {
 		const level = parseThinkingLevel(levelName);
 		if (!level) {
 			throw new OrchestratorError({
@@ -5034,14 +3940,10 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * A model with no reasoning at all throws rather than returning an empty list:
-	 * "none available" and "not a thinking model" are different answers, and a
-	 * surface that shows an empty picker has conflated them.
+	 * A model with no reasoning throws rather than returning an empty list: "none
+	 * available" and "not a thinking model" are different answers.
 	 */
-	private _thinkingLevelCandidates(
-		agentId: AgentId,
-		model: RuntimeModel,
-	): readonly CandidateItem[] {
+	private _thinkingLevelCandidates(agentId: AgentId, model: RuntimeModel): readonly CandidateItem[] {
 		if (!model.reasoning) {
 			throw new OrchestratorError({
 				severity: "error",
@@ -5050,32 +3952,20 @@ export class AgentOrchestrator {
 				agentId,
 			});
 		}
-		return getSupportedThinkingLevels(model).map((level) => ({
-			value: level,
-			label: level,
-		}));
+		return getSupportedThinkingLevels(model).map((level) => ({ value: level, label: level }));
 	}
 
-	async listAgentPromptTemplateCandidates(
-		agentId: AgentId,
-	): Promise<AgentPromptTemplateCandidateListResult> {
+	async listAgentPromptTemplateCandidates(agentId: AgentId): Promise<AgentPromptTemplateCandidateListResult> {
 		return {
-			templates: (await this._loadAgentPromptTemplates(agentId)).map(
-				(template) => ({
-					value: template.name,
-					label: template.name,
-					...(template.description === undefined
-						? undefined
-						: { description: template.description }),
-				}),
-			),
+			templates: (await this._loadAgentPromptTemplates(agentId)).map((template) => ({
+				value: template.name,
+				label: template.name,
+				...(template.description === undefined ? undefined : { description: template.description }),
+			})),
 		};
 	}
 
-	async getAgentPromptTemplate(
-		agentId: AgentId,
-		name: string,
-	): Promise<PromptTemplate> {
+	async getAgentPromptTemplate(agentId: AgentId, name: string): Promise<PromptTemplate> {
 		const templates = await this._loadAgentPromptTemplates(agentId);
 		const template = templates.find((candidate) => candidate.name === name);
 		if (!template) {
@@ -5089,13 +3979,8 @@ export class AgentOrchestrator {
 		return template;
 	}
 
-	/**
-	 * Reloaded from disk on every listing rather than read back off the agent: a
-	 * template the user just edited should be usable without restarting anything.
-	 */
-	private async _loadAgentPromptTemplates(
-		agentId: AgentId,
-	): Promise<readonly PromptTemplate[]> {
+	/** Reloaded per listing: a template the user just edited should be usable at once. */
+	private async _loadAgentPromptTemplates(agentId: AgentId): Promise<readonly PromptTemplate[]> {
 		this._requireLiveAgent(agentId);
 		const loaded = await this.resourceLoader.loadPromptTemplates();
 		await this._publishDiagnostics(
@@ -5109,16 +3994,12 @@ export class AgentOrchestrator {
 		return loaded.promptTemplates.map(({ promptTemplate }) => promptTemplate);
 	}
 
-	async listAgentSkillCandidates(
-		agentId: AgentId,
-	): Promise<AgentSkillCandidateListResult> {
+	async listAgentSkillCandidates(agentId: AgentId): Promise<AgentSkillCandidateListResult> {
 		return {
 			skills: (await this._loadAgentSkills(agentId)).map((skill) => ({
 				value: skill.name,
 				label: skill.name,
-				...(skill.description === undefined
-					? undefined
-					: { description: skill.description }),
+				...(skill.description === undefined ? undefined : { description: skill.description }),
 			})),
 		};
 	}
@@ -5155,9 +4036,8 @@ export class AgentOrchestrator {
 	// -----------------------------------------------------------------------
 	// Sessions
 	//
-	// Reads go straight to the SessionManager. The one write here goes through the
-	// harness, because the harness owns the session file while an operation is
-	// running and a direct write would race the entries it has buffered.
+	// Reads go straight to the SessionManager. The one write goes through the
+	// harness, which owns the session file while an operation is running.
 	// -----------------------------------------------------------------------
 
 	async listAgentSessions(): Promise<AgentSessionListResult> {
@@ -5169,9 +4049,7 @@ export class AgentOrchestrator {
 		return await this.sessionManager.getAgentSessionSnapshot(agentId);
 	}
 
-	async getAgentSessionTree(
-		agentId: AgentId,
-	): Promise<AgentSessionTreeSnapshot> {
+	async getAgentSessionTree(agentId: AgentId): Promise<AgentSessionTreeSnapshot> {
 		this._requireLiveAgent(agentId);
 		return await this.sessionManager.getAgentSessionTree(agentId);
 	}
@@ -5181,27 +4059,21 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * **Session write.** The name is session metadata rather than branch content,
-	 * but it takes the same route as everything else: `harness.setSessionName` is
-	 * the supported entry point, and it serializes behind whatever the harness has
-	 * already buffered instead of racing it.
+	 * **Session write.** Metadata rather than branch content, but it takes the
+	 * same route: `harness.setSessionName` serializes behind whatever the harness
+	 * has already buffered instead of racing it.
 	 */
 	async setAgentSessionName(agentId: AgentId, name: string): Promise<void> {
 		await this._requireLiveAgent(agentId).harness.setSessionName(name);
-		await this._emit({
-			type: "agent_session_info_changed",
-			agentId,
-			name,
-			changedAt: now(),
-		});
+		await this._emit({ type: "agent_session_info_changed", agentId, name, changedAt: now() });
 	}
 
 	// -----------------------------------------------------------------------
 	// Background jobs
 	//
-	// Forwarding to `BackgroundJobRuntime`, with the liveness gate this class
-	// owns. The runtime answers by owner id and knows nothing about `_live`, so
-	// without the gate a tombstoned agent's jobs would still be listable.
+	// Forwarding, plus the liveness gate this class owns: the runtime answers by
+	// owner id and knows nothing about `_live`, so without the gate a tombstoned
+	// agent's jobs would still be listable.
 	// -----------------------------------------------------------------------
 
 	/** Live backgrounded jobs: the t0 handles the model is currently holding. */
@@ -5210,33 +4082,19 @@ export class AgentOrchestrator {
 		return [...this._backgroundJobs.listJobs(agentId)];
 	}
 
-	/**
-	 * Current rolling output tail of a live job, or undefined when there is no
-	 * such job. Output is pull-only: change events never carry it.
-	 */
-	readAgentBackgroundJobOutput(
-		agentId: AgentId,
-		jobId: string,
-	): string | undefined {
+	/** Rolling output tail of a live job. Output is pull-only: events never carry it. */
+	readAgentBackgroundJobOutput(agentId: AgentId, jobId: string): string | undefined {
 		this._requireLiveAgent(agentId);
 		const result = this._backgroundJobs.readJobOutput(agentId, jobId);
 		return result.ok ? result.read.output : undefined;
 	}
 
 	/**
-	 * Request that a live job terminate. False means there was no such live job,
-	 * which a caller holding a snapshot cannot rule out - it may have settled
-	 * since it was listed.
-	 *
-	 * The abort is a request, not a kill: a local job stops only if its tool
-	 * honours the signal, while an external job has nothing watching and is
-	 * cancelled by the runtime itself.
+	 * A request, not a kill: a local job stops only if its tool honours the
+	 * signal, while an external job is cancelled by the runtime itself. False
+	 * means there was no such live job - it may have settled since it was listed.
 	 */
-	abortAgentBackgroundJob(
-		agentId: AgentId,
-		jobId: string,
-		reason?: string,
-	): boolean {
+	abortAgentBackgroundJob(agentId: AgentId, jobId: string, reason?: string): boolean {
 		this._requireLiveAgent(agentId);
 		return this._backgroundJobs.abortJob(agentId, jobId, reason).ok;
 	}
@@ -5256,22 +4114,14 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * The agent-scoped form. The agentId is a separate argument rather than part
-	 * of the request because it decides cancellation scope - disposing an agent
-	 * cancels what it was waiting on - and that must not be forgeable through the
-	 * request's own `source`.
+	 * The agentId is a separate argument because it decides cancellation scope,
+	 * and that must not be forgeable through the request's own `source`.
 	 */
-	private async _requestHumanForAgent(
-		agentId: AgentId,
-		request: HumanRequest,
-	): Promise<HumanResponse> {
+	private async _requestHumanForAgent(agentId: AgentId, request: HumanRequest): Promise<HumanResponse> {
 		return await this._humanRequests.request(request, { agentId });
 	}
 
-	async cancelHumanRequest(
-		requestId: string,
-		reason?: string,
-	): Promise<boolean> {
+	async cancelHumanRequest(requestId: string, reason?: string): Promise<boolean> {
 		return await this._humanRequests.cancel(requestId, reason);
 	}
 
@@ -5283,36 +4133,26 @@ export class AgentOrchestrator {
 		return this._events.subscribe(listener);
 	}
 
-	subscribeAgent(
-		agentId: AgentId,
-		listener: OrchestratorEventListener,
-	): () => void {
+	subscribeAgent(agentId: AgentId, listener: OrchestratorEventListener): () => void {
 		return this._events.subscribeAgent(agentId, listener);
 	}
 
 	/**
-	 * Broadcast a request that the runtime wind down, once.
+	 * Broadcast, once, that an exit is intended. Nothing is torn down here; the
+	 * host decides what to do about it.
 	 *
-	 * This is not `disposeAll`: nothing is torn down here. It tells extensions and
-	 * the host that an exit is intended, and the host decides what to do about it.
-	 *
-	 * The dispatch order is this method's one deliberate exception to `_emit`: a
-	 * host listener may start `disposeAll` the instant it sees the request, so
-	 * extension observers get their final persistence work in first.
+	 * The dispatch order is a deliberate exception to `_emit`: a host listener may
+	 * start `disposeAll` the instant it sees the request, so extension observers
+	 * get their final persistence work in first.
 	 */
 	async requestShutdown(request: RuntimeShutdownRequest): Promise<void> {
 		if (this._shutdownRequested) return;
 		this._shutdownRequested = true;
-		const event: Extract<
-			OrchestratorEvent,
-			{ type: "runtime_shutdown_requested" }
-		> = Object.freeze({
+		const event: Extract<OrchestratorEvent, { type: "runtime_shutdown_requested" }> = Object.freeze({
 			type: "runtime_shutdown_requested",
 			requestedBy: request.requestedBy,
 			requestedByAgentId: request.requestedByAgentId,
-			...(request.reason === undefined
-				? undefined
-				: { reason: request.reason }),
+			...(request.reason === undefined ? undefined : { reason: request.reason }),
 			createdAt: now(),
 		});
 		await this._dispatchExtensionObservedEvent(event);
@@ -5320,18 +4160,14 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Publish one event to listeners, clients, and extension observers.
-	 *
-	 * The bus owns the first two and their failure isolation; the third is a
-	 * runner lifecycle concern and is composed here rather than inside the bus,
-	 * which knows nothing about extensions. `observeExtensions: false` is how a
-	 * fact an extension itself produced avoids feeding straight back into it.
+	 * The bus owns listeners and clients; extension observers are a runner
+	 * lifecycle concern composed here rather than inside the bus, which knows
+	 * nothing about extensions. `observeExtensions: false` is how a fact an
+	 * extension produced avoids feeding straight back into it.
 	 */
 	private async _emit(
 		event: OrchestratorEvent,
-		options: EventPublishOptions & {
-			readonly observeExtensions?: boolean;
-		} = {},
+		options: EventPublishOptions & { readonly observeExtensions?: boolean } = {},
 	): Promise<void> {
 		await this._events.publish(event, options);
 		if (options.observeExtensions === false) return;
@@ -5341,21 +4177,14 @@ export class AgentOrchestrator {
 
 	private async _publishDiagnostic(
 		diagnostic: OrchestratorDiagnostic,
-		options: EventPublishOptions & {
-			readonly observeExtensions?: boolean;
-		} = {},
+		options: EventPublishOptions & { readonly observeExtensions?: boolean } = {},
 	): Promise<void> {
-		await this._emit(
-			{ type: "diagnostic", diagnostic, createdAt: now() },
-			options,
-		);
+		await this._emit({ type: "diagnostic", diagnostic, createdAt: now() }, options);
 	}
 
 	private async _publishDiagnostics(
 		diagnostics: readonly OrchestratorDiagnostic[],
-		options: EventPublishOptions & {
-			readonly observeExtensions?: boolean;
-		} = {},
+		options: EventPublishOptions & { readonly observeExtensions?: boolean } = {},
 	): Promise<void> {
 		for (const diagnostic of diagnostics) {
 			await this._publishDiagnostic(diagnostic, options);
@@ -5363,18 +4192,12 @@ export class AgentOrchestrator {
 	}
 
 	/** Publish a diagnostic and hand it back, for the throw-after-publish paths. */
-	private async _publishAndReturn(
-		diagnostic: OrchestratorDiagnostic,
-	): Promise<OrchestratorDiagnostic> {
+	private async _publishAndReturn(diagnostic: OrchestratorDiagnostic): Promise<OrchestratorDiagnostic> {
 		await this._publishDiagnostic(diagnostic);
 		return diagnostic;
 	}
 
-	/**
-	 * Everything the services accumulated before any client could hear it. Drained
-	 * rather than read, so a second call does not republish the same startup
-	 * warnings.
-	 */
+	/** Drained rather than read, so a second call does not republish the same warnings. */
 	private _drainCoreDiagnostics(): readonly OrchestratorDiagnostic[] {
 		return [
 			...this.settingManager.drainDiagnostics(),
@@ -5384,36 +4207,19 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * A failure in an agent's lifecycle plumbing: recorded on the agent so its
-	 * snapshot carries it, and published as a warning.
-	 *
-	 * Always a warning, never an error, and never re-thrown: these are reported
-	 * from teardown and observer paths where there is no caller left to handle a
-	 * rejection.
+	 * Always a warning and never re-thrown: these are reported from teardown and
+	 * observer paths where no caller is left to handle a rejection.
 	 */
-	private async _recordAgentLifecycleFailure(
-		agentId: AgentId,
-		code: string,
-		message: string,
-	): Promise<void> {
-		const diagnostic: OrchestratorDiagnostic = {
-			severity: "warning",
-			code,
-			message,
-			agentId,
-		};
+	private async _recordAgentLifecycleFailure(agentId: AgentId, code: string, message: string): Promise<void> {
+		const diagnostic: OrchestratorDiagnostic = { severity: "warning", code, message, agentId };
 		this._addAgentDiagnostics(agentId, [diagnostic]);
 		await this._publishDiagnostic(diagnostic);
 	}
 
 	/**
-	 * Subscribe to one agent generation's harness and return the release handle
-	 * disposal calls.
-	 *
 	 * One subscription, not two: the activity observer and the session-write
-	 * observer both need the same event and the same run signal, and splitting
-	 * them would double every dispatch and let the two views drift apart on
-	 * ordering.
+	 * observer need the same event and the same run signal, and splitting them
+	 * would double every dispatch and let the two views drift on ordering.
 	 */
 	private async _bindHarness(
 		agentId: AgentId,
@@ -5429,17 +4235,13 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * The single harness-event entry point.
-	 *
-	 * The run signal is installed before the observers run, so an extension asking
-	 * for the current run's signal during the turn gets one, and cleared after
-	 * `settled` - but only if it is still this run's signal, because a queued next
-	 * turn may already have installed its own while dispatch was pending.
+	 * The run signal is installed before the observers run and cleared after
+	 * `settled`, but only if it is still this run's signal: a queued next turn may
+	 * have installed its own while dispatch was pending.
 	 *
 	 * `agent_harness_event` is published before the session-write observer so a
 	 * client sees the persisted user message before the presentation entry that
-	 * names it; the reverse order would have surfaces rendering a presentation for
-	 * a message they have not been told about.
+	 * names it.
 	 */
 	private async _handleHarnessEvent(
 		agentId: AgentId,
@@ -5455,20 +4257,14 @@ export class AgentOrchestrator {
 				await this._observeSessionWrite(agentId, event.entryId, event.write);
 			}
 		} finally {
-			if (
-				event.type === "settled" &&
-				this._agentRunSignals.get(agentId) === signal
-			) {
+			if (event.type === "settled" && this._agentRunSignals.get(agentId) === signal) {
 				this._agentRunSignals.delete(agentId);
 			}
 		}
 	}
 
 	/** Append to this agent's diagnostics history, which the snapshot reads. */
-	private _addAgentDiagnostics(
-		agentId: AgentId,
-		diagnostics: readonly OrchestratorDiagnostic[],
-	): void {
+	private _addAgentDiagnostics(agentId: AgentId, diagnostics: readonly OrchestratorDiagnostic[]): void {
 		if (diagnostics.length === 0) return;
 		const history = this._agentDiagnostics.get(agentId) ?? [];
 		history.push(...diagnostics);
@@ -5476,17 +4272,10 @@ export class AgentOrchestrator {
 	}
 }
 
-/**
- * How long a dispose waits for `shutdown()` before giving up on it. The wait is
- * otherwise unbounded, because it depends on tools honouring their abort signal.
- */
+/** How long a dispose waits for `shutdown()`; the wait is otherwise unbounded. */
 const AGENT_SHUTDOWN_TIMEOUT_MS = 10_000;
 
-async function withTimeout(
-	work: Promise<void>,
-	timeoutMs: number,
-	message: string,
-): Promise<void> {
+async function withTimeout(work: Promise<void>, timeoutMs: number, message: string): Promise<void> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
 		await Promise.race([
@@ -5503,9 +4292,7 @@ async function withTimeout(
 }
 
 /** Maintenance phases the harness reports, in the vocabulary surfaces use. */
-function toMaintenanceKind(
-	phase: AgentHarnessPhase,
-): AgentMaintenanceKind | undefined {
+function toMaintenanceKind(phase: AgentHarnessPhase): AgentMaintenanceKind | undefined {
 	if (phase === "compaction") return "compaction";
 	if (phase === "branch_summary") return "tree-navigation";
 	return undefined;
@@ -5528,9 +4315,7 @@ function queuedMessageCount(harness: WidiAgentHarness): number {
 }
 
 /** One background-runtime event, renamed into the orchestrator's vocabulary. */
-function toOrchestratorBackgroundEvent(
-	event: BackgroundJobEvent,
-): OrchestratorEvent {
+function toOrchestratorBackgroundEvent(event: BackgroundJobEvent): OrchestratorEvent {
 	if (event.type === "job_changed") {
 		return {
 			type: "agent_background_job_changed",
@@ -5578,21 +4363,16 @@ function describeAgentForTools(liveAgent: LiveAgent): AgentBrief {
 }
 
 /**
- * Narrow a caller's requested active tools to the ones actually installed,
- * reporting each rejection rather than failing the whole call.
- *
- * Deliberately not the registry's own active-name resolution: this validates
- * against the harness's live tool set, which is the only set that can be
- * activated, and it never re-derives the installed tools as a side effect.
+ * Narrow requested active tools to the installed ones, reporting each rejection
+ * rather than failing the call. Deliberately not the registry's own resolution:
+ * this validates against the harness's live tool set, the only set that can be
+ * activated, and never re-derives the installed tools as a side effect.
  */
 function selectActiveToolNames(
 	toolNames: readonly string[],
 	installedNames: ReadonlySet<string>,
 	agentId: AgentId,
-): {
-	readonly activeToolNames: string[];
-	readonly diagnostics: readonly OrchestratorDiagnostic[];
-} {
+): { readonly activeToolNames: string[]; readonly diagnostics: readonly OrchestratorDiagnostic[] } {
 	const activeToolNames: string[] = [];
 	const diagnostics: OrchestratorDiagnostic[] = [];
 	const seen = new Set<string>();
@@ -5636,9 +4416,7 @@ function selectActiveToolNames(
  * on a persistent profile would produce a session that could never be reopened
  * as the agent that wrote it.
  */
-function changesRecoverableProfileFields(
-	override: AgentProfileOverride,
-): boolean {
+function changesRecoverableProfileFields(override: AgentProfileOverride): boolean {
 	return (
 		override.systemPrompt !== undefined ||
 		override.tools !== undefined ||
@@ -5652,9 +4430,7 @@ function changesRecoverableProfileFields(
 }
 
 /** Which orchestrator events extension runners are allowed to observe. */
-function isExtensionObservedEvent(
-	event: OrchestratorEvent,
-): event is ExtensionObservedEvent {
+function isExtensionObservedEvent(event: OrchestratorEvent): event is ExtensionObservedEvent {
 	return Object.hasOwn(EXTENSION_OBSERVED_EVENT_NAMES, event.type);
 }
 
@@ -5667,13 +4443,9 @@ function toHarnessMessageOptions(
 
 /**
  * Reduce the append-only tree log to the members still live when it was last
- * written: `spawned` establishes a member, `removed` drops it, and a repeated
- * record wins over the earlier one. The log is appended in event order, so
- * order is the truth.
+ * written. The log is appended in event order, so order is the truth.
  */
-function reduceAgentTreeRecords(
-	records: readonly AgentTreeRecord[],
-): readonly AgentTreeSpawnRecord[] {
+function reduceAgentTreeRecords(records: readonly AgentTreeRecord[]): readonly AgentTreeSpawnRecord[] {
 	const members = new Map<AgentId, AgentTreeSpawnRecord>();
 	for (const record of records) {
 		if (record.type === "removed") members.delete(record.agentId);
@@ -5683,23 +4455,17 @@ function reduceAgentTreeRecords(
 }
 
 /**
- * Project an internal snapshot onto the extension-facing shape: identity and
- * conversation, no filesystem layout. An ephemeral session owns no persisted
- * file and therefore has no ref.
+ * The extension-facing shape: identity and conversation, no filesystem layout.
+ * An ephemeral session owns no persisted file and therefore has no ref.
  */
 function toExtensionSessionSnapshot(
 	snapshot: AgentSessionSnapshot,
 	sessions: SessionManager,
 ): ExtensionSessionSnapshot {
 	const { metadata } = snapshot;
-	const path =
-		"path" in metadata && typeof metadata.path === "string"
-			? metadata.path
-			: undefined;
+	const path = "path" in metadata && typeof metadata.path === "string" ? metadata.path : undefined;
 	return {
-		...(path === undefined
-			? undefined
-			: { ref: sessions.toSessionHandle(path) }),
+		...(path === undefined ? undefined : { ref: sessions.toSessionHandle(path) }),
 		id: metadata.id,
 		...(snapshot.name === undefined ? undefined : { name: snapshot.name }),
 		leafId: snapshot.leafId,
@@ -5707,19 +4473,11 @@ function toExtensionSessionSnapshot(
 	};
 }
 
-function toExtensionSessionTree(
-	snapshot: AgentSessionTreeSnapshot,
-	sessions: SessionManager,
-): ExtensionSessionTree {
-	return {
-		...toExtensionSessionSnapshot(snapshot, sessions),
-		entries: cloneSessionEntries(snapshot.entries),
-	};
+function toExtensionSessionTree(snapshot: AgentSessionTreeSnapshot, sessions: SessionManager): ExtensionSessionTree {
+	return { ...toExtensionSessionSnapshot(snapshot, sessions), entries: cloneSessionEntries(snapshot.entries) };
 }
 
-function cloneSessionEntries(
-	entries: readonly SessionTreeEntry[],
-): readonly SessionTreeEntry[] {
+function cloneSessionEntries(entries: readonly SessionTreeEntry[]): readonly SessionTreeEntry[] {
 	return structuredClone(entries);
 }
 
@@ -5727,30 +4485,20 @@ function cloneSessionEntries(
  * Every config-value channel in a provider config: the provider api key, and
  * the provider- and model-level request headers.
  */
-function hasCommandConfigValues(
-	config: ProviderConfigInput,
-	resolver: ConfigValueResolver,
-): boolean {
+function hasCommandConfigValues(config: ProviderConfigInput, resolver: ConfigValueResolver): boolean {
 	const values = [
 		config.apiKey,
 		...Object.values(config.headers ?? {}),
-		...(config.models ?? []).flatMap((model) =>
-			Object.values(model.headers ?? {}),
-		),
+		...(config.models ?? []).flatMap((model) => Object.values(model.headers ?? {})),
 	];
-	return values.some(
-		(value) => value !== undefined && resolver.isCommandConfigValue(value),
-	);
+	return values.some((value) => value !== undefined && resolver.isCommandConfigValue(value));
 }
 
 /**
- * An extension that failed to load hard enough to block the build. Severity is
- * the whole test: a warning describes a degraded extension, an error describes
+ * Severity is the whole test: a warning describes a degraded extension, an error
  * one the agent cannot run without.
  */
-function isBlockedExtensionDiagnostic(
-	diagnostic: OrchestratorDiagnostic,
-): boolean {
+function isBlockedExtensionDiagnostic(diagnostic: OrchestratorDiagnostic): boolean {
 	return diagnostic.severity === "error";
 }
 
@@ -5760,9 +4508,7 @@ function resolveThinkingLevel(level: string): ThinkingLevel | undefined {
 	return parsed === level ? parsed : undefined;
 }
 
-function collectUserMessageText(
-	entries: readonly SessionTreeEntry[],
-): string[] {
+function collectUserMessageText(entries: readonly SessionTreeEntry[]): string[] {
 	const texts: string[] = [];
 	for (const entry of entries) {
 		if (entry.type !== "message" || entry.message.role !== "user") continue;
@@ -5778,10 +4524,7 @@ function collectUserMessageText(
 	return texts;
 }
 
-/**
- * Closing text for a job a previous run left unanswered: the outcome it settled
- * into when one was recorded, otherwise a cancellation for work the exit ended.
- */
+/** The recorded outcome when there is one, otherwise a cancellation for work the exit ended. */
 function toCarriedOverJobResultText(job: JobHistoryEntry): string {
 	return (
 		job.messageText ??
@@ -5789,9 +4532,7 @@ function toCarriedOverJobResultText(job: JobHistoryEntry): string {
 			jobId: job.jobId,
 			toolCallId: job.toolCallId,
 			toolName: job.toolName,
-			...(job.stopReason === undefined
-				? undefined
-				: { stopReason: job.stopReason }),
+			...(job.stopReason === undefined ? undefined : { stopReason: job.stopReason }),
 		})
 	);
 }

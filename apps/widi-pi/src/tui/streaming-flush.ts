@@ -35,10 +35,7 @@ export function flushStreaming(agent: AgentViewState): boolean {
 	const pending = agent.pendingAssistantText;
 	if (pending) {
 		agent.pendingAssistantText = undefined;
-		const item = agent.timeline.find(
-			(entry) =>
-				entry.type === "assistant-message" && entry.id === pending.itemId,
-		);
+		const item = agent.timeline.find((entry) => entry.type === "assistant-message" && entry.id === pending.itemId);
 		if (item?.type === "assistant-message") {
 			item.text = pending.text;
 			item.message = pending.message;
@@ -47,10 +44,7 @@ export function flushStreaming(agent: AgentViewState): boolean {
 	}
 	if (agent.pendingToolUpdates && agent.pendingToolUpdates.size > 0) {
 		for (const [toolCallId, update] of agent.pendingToolUpdates) {
-			const tool = agent.timeline.find(
-				(entry) =>
-					entry.type === "tool-execution" && entry.toolCallId === toolCallId,
-			);
+			const tool = agent.timeline.find((entry) => entry.type === "tool-execution" && entry.toolCallId === toolCallId);
 			if (tool?.type === "tool-execution") {
 				tool.args = update.args;
 				tool.partialResult = update.partialResult;

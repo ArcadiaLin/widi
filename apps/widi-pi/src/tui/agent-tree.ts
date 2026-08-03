@@ -24,9 +24,7 @@ export interface AgentTreeEntry {
  * across renders.
  */
 export function buildAgentTree(state: TuiApplicationState): AgentTree {
-	const visible = [...state.agents.values()].filter(
-		(agent) => agent.status !== "disposed",
-	);
+	const visible = [...state.agents.values()].filter((agent) => agent.status !== "disposed");
 	const visibleIds = new Set(visible.map((agent) => agent.agentId));
 	const topLevel: AgentViewState[] = [];
 	const childrenOf = new Map<AgentId, AgentViewState[]>();

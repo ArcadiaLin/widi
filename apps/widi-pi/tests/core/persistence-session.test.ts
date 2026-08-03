@@ -57,22 +57,14 @@ const ENTRIES: unknown[] = [
 		id: "u1000000",
 		parentId: null,
 		timestamp: "2026-08-01T00:00:01.000Z",
-		message: {
-			role: "user",
-			content: [{ type: "text", text: "hello" }],
-			timestamp: 1785204441457,
-		},
+		message: { role: "user", content: [{ type: "text", text: "hello" }], timestamp: 1785204441457 },
 	},
 	{
 		type: "message",
 		id: "a1000000",
 		parentId: "u1000000",
 		timestamp: "2026-08-01T00:00:02.000Z",
-		message: {
-			role: "assistant",
-			content: [{ type: "text", text: "hi" }],
-			usage: usage(100, 10),
-		},
+		message: { role: "assistant", content: [{ type: "text", text: "hi" }], usage: usage(100, 10) },
 	},
 	{
 		type: "custom",
@@ -119,22 +111,14 @@ const ENTRIES: unknown[] = [
 		id: "u2000000",
 		parentId: "c1000000",
 		timestamp: "2026-08-01T00:00:08.000Z",
-		message: {
-			role: "user",
-			content: [{ type: "text", text: "again" }],
-			timestamp: 1785204441458,
-		},
+		message: { role: "user", content: [{ type: "text", text: "again" }], timestamp: 1785204441458 },
 	},
 	{
 		type: "message",
 		id: "a2000000",
 		parentId: "u2000000",
 		timestamp: "2026-08-01T00:00:09.000Z",
-		message: {
-			role: "assistant",
-			content: [{ type: "text", text: "sure" }],
-			usage: usage(300, 30),
-		},
+		message: { role: "assistant", content: [{ type: "text", text: "sure" }], usage: usage(300, 30) },
 	},
 	{
 		type: "custom",
@@ -144,38 +128,20 @@ const ENTRIES: unknown[] = [
 		customType: PERSISTENCE_REF_CUSTOM_TYPE,
 		data: { version: 1, namespace: "test:late", stateRoot: ROOT_LATE },
 	},
-	{
-		type: "leaf",
-		id: "f1000000",
-		parentId: "r2000000",
-		timestamp: "2026-08-01T00:00:11.000Z",
-		targetId: "a1000000",
-	},
+	{ type: "leaf", id: "f1000000", parentId: "r2000000", timestamp: "2026-08-01T00:00:11.000Z", targetId: "a1000000" },
 ];
 
-function fixture(
-	lines: readonly unknown[] = [HEADER, ...ENTRIES],
-): MemoryFileSystem {
+function fixture(lines: readonly unknown[] = [HEADER, ...ENTRIES]): MemoryFileSystem {
 	const fs = new MemoryFileSystem();
-	fs.files.set(
-		PATH,
-		`${lines.map((line) => JSON.stringify(line)).join("\n")}\n`,
-	);
+	fs.files.set(PATH, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
 	return fs;
 }
 
-async function bothOpen(
-	fs: MemoryFileSystem,
-): Promise<[JsonlSession, JsonlSessionStorage]> {
-	return [
-		await JsonlSession.open(fs, PATH),
-		await JsonlSessionStorage.open(fs, PATH),
-	];
+async function bothOpen(fs: MemoryFileSystem): Promise<[JsonlSession, JsonlSessionStorage]> {
+	return [await JsonlSession.open(fs, PATH), await JsonlSessionStorage.open(fs, PATH)];
 }
 
-async function errorCodes(
-	fs: MemoryFileSystem,
-): Promise<[string | undefined, string | undefined]> {
+async function errorCodes(fs: MemoryFileSystem): Promise<[string | undefined, string | undefined]> {
 	const codeOf = async (open: () => Promise<unknown>) => {
 		try {
 			await open();
@@ -184,10 +150,7 @@ async function errorCodes(
 			return (error as { code?: string }).code;
 		}
 	};
-	return [
-		await codeOf(() => JsonlSession.open(fs, PATH)),
-		await codeOf(() => JsonlSessionStorage.open(fs, PATH)),
-	];
+	return [await codeOf(() => JsonlSession.open(fs, PATH)), await codeOf(() => JsonlSessionStorage.open(fs, PATH))];
 }
 
 describe("JsonlSession against pi's storage", () => {
@@ -198,23 +161,15 @@ describe("JsonlSession against pi's storage", () => {
 		expect(await widi.getLeafId()).toEqual(await pi.getLeafId());
 		expect(await widi.getSessionStats()).toEqual(await pi.getSessionStats());
 		expect(await widi.getSessionName()).toEqual(await pi.getSessionName());
-		expect(await widi.getLabel("a1000000")).toEqual(
-			await pi.getLabel("a1000000"),
-		);
+		expect(await widi.getLabel("a1000000")).toEqual(await pi.getLabel("a1000000"));
 	});
 
 	it("resolves the same entry lookups and cursors", async () => {
 		const [widi, pi] = await bothOpen(fixture());
-		expect(await widi.getEntry("c1000000")).toEqual(
-			await pi.getEntry("c1000000"),
-		);
+		expect(await widi.getEntry("c1000000")).toEqual(await pi.getEntry("c1000000"));
 		expect(await widi.getEntry("nothing")).toBeUndefined();
-		expect(await widi.findEntries("message")).toEqual(
-			await pi.findEntries("message"),
-		);
-		expect(await widi.findEntries("custom")).toEqual(
-			await pi.findEntries("custom"),
-		);
+		expect(await widi.findEntries("message")).toEqual(await pi.findEntries("message"));
+		expect(await widi.findEntries("custom")).toEqual(await pi.findEntries("custom"));
 		expect(await widi.getEntries({ afterEntrySeq: 3, limit: 2 })).toEqual(
 			await pi.getEntries({ afterEntrySeq: 3, limit: 2 }),
 		);
@@ -223,9 +178,7 @@ describe("JsonlSession against pi's storage", () => {
 	it("truncates at a compaction the same way", async () => {
 		const [widi, pi] = await bothOpen(fixture());
 		for (const leaf of ["a2000000", "a1000000", null]) {
-			expect(await widi.getPathToRootOrCompaction(leaf)).toEqual(
-				await pi.getPathToRootOrCompaction(leaf),
-			);
+			expect(await widi.getPathToRootOrCompaction(leaf)).toEqual(await pi.getPathToRootOrCompaction(leaf));
 		}
 	});
 
@@ -242,11 +195,7 @@ describe("JsonlSession against pi's storage", () => {
 			id: await created.createEntryId(),
 			parentId: null,
 			timestamp: "2026-08-01T00:00:01.000Z",
-			message: {
-				role: "user",
-				content: [{ type: "text", text: "hello" }],
-				timestamp: 1785204441457,
-			},
+			message: { role: "user", content: [{ type: "text", text: "hello" }], timestamp: 1785204441457 },
 		};
 		await created.appendEntry(entry);
 		await created.setLeafId(entry.id);
@@ -259,10 +208,7 @@ describe("JsonlSession against pi's storage", () => {
 
 	it("reads a session pi wrote", async () => {
 		const fs = new MemoryFileSystem();
-		const pi = await JsonlSessionStorage.create(fs, PATH, {
-			cwd: "/root/projs/widi",
-			sessionId: "widi-dev",
-		});
+		const pi = await JsonlSessionStorage.create(fs, PATH, { cwd: "/root/projs/widi", sessionId: "widi-dev" });
 		const id = await pi.createEntryId();
 		await pi.appendEntry({
 			type: "session_info",
@@ -279,32 +225,19 @@ describe("JsonlSession against pi's storage", () => {
 	});
 
 	it("rejects the same damage with the same code", async () => {
-		expect(await errorCodes(fixture([]))).toEqual([
-			"invalid_session",
-			"invalid_session",
+		expect(await errorCodes(fixture([]))).toEqual(["invalid_session", "invalid_session"]);
+		expect(await errorCodes(fixture(["not json at all"]))).toEqual(["invalid_session", "invalid_session"]);
+		expect(await errorCodes(fixture([{ ...HEADER, version: 2 }]))).toEqual(["invalid_session", "invalid_session"]);
+		expect(await errorCodes(fixture([{ ...HEADER, cwd: "" }]))).toEqual(["invalid_session", "invalid_session"]);
+		expect(await errorCodes(fixture([HEADER, { type: "message", id: "x" }]))).toEqual([
+			"invalid_entry",
+			"invalid_entry",
 		]);
-		expect(await errorCodes(fixture(["not json at all"]))).toEqual([
-			"invalid_session",
-			"invalid_session",
-		]);
-		expect(await errorCodes(fixture([{ ...HEADER, version: 2 }]))).toEqual([
-			"invalid_session",
-			"invalid_session",
-		]);
-		expect(await errorCodes(fixture([{ ...HEADER, cwd: "" }]))).toEqual([
-			"invalid_session",
-			"invalid_session",
-		]);
-		expect(
-			await errorCodes(fixture([HEADER, { type: "message", id: "x" }])),
-		).toEqual(["invalid_entry", "invalid_entry"]);
 	});
 
 	it("generates entry ids that avoid the ones already used", async () => {
 		const [widi] = await bothOpen(fixture());
-		const existing = new Set(
-			(await widi.getEntries()).map((entry) => entry.id),
-		);
+		const existing = new Set((await widi.getEntries()).map((entry) => entry.id));
 		for (let i = 0; i < 50; i++) {
 			expect(existing.has(await widi.createEntryId())).toBe(false);
 		}
@@ -319,9 +252,7 @@ describe("what the port deliberately does not inherit", () => {
 		const [widi, pi] = await bothOpen(fixture());
 		const entries = await widi.getEntries();
 
-		const truncated = projectBranch(
-			await pi.getPathToRootOrCompaction("r2000000"),
-		);
+		const truncated = projectBranch(await pi.getPathToRootOrCompaction("r2000000"));
 		expect([...truncated.namespaces.keys()]).toEqual(["test:late"]);
 
 		const full = projectBranch(getFullBranch(entries, "r2000000"));
@@ -331,20 +262,8 @@ describe("what the port deliberately does not inherit", () => {
 
 	it("throws on a cycle rather than walking it", async () => {
 		const entries: SessionTreeEntry[] = [
-			{
-				type: "session_info",
-				id: "a",
-				parentId: "b",
-				timestamp: "2026-08-01T00:00:01.000Z",
-				name: "a",
-			},
-			{
-				type: "session_info",
-				id: "b",
-				parentId: "a",
-				timestamp: "2026-08-01T00:00:02.000Z",
-				name: "b",
-			},
+			{ type: "session_info", id: "a", parentId: "b", timestamp: "2026-08-01T00:00:01.000Z", name: "a" },
+			{ type: "session_info", id: "b", parentId: "a", timestamp: "2026-08-01T00:00:02.000Z", name: "b" },
 		];
 		expect(() => getFullBranch(entries, "a")).toThrow(/cycle/);
 	});
@@ -354,11 +273,7 @@ describe("what the port deliberately does not inherit", () => {
 		const entries = await widi.getEntries();
 
 		expect(getEntriesToFork(entries, {})).toEqual(entries);
-		expect(
-			getEntriesToFork(entries, { entryId: "r2000000", position: "at" }).map(
-				(entry) => entry.id,
-			),
-		).toEqual([
+		expect(getEntriesToFork(entries, { entryId: "r2000000", position: "at" }).map((entry) => entry.id)).toEqual([
 			"u1000000",
 			"a1000000",
 			"r1000000",
@@ -370,11 +285,7 @@ describe("what the port deliberately does not inherit", () => {
 			"a2000000",
 			"r2000000",
 		]);
-		expect(
-			getEntriesToFork(entries, { entryId: "u2000000" }).map(
-				(entry) => entry.id,
-			),
-		).toEqual([
+		expect(getEntriesToFork(entries, { entryId: "u2000000" }).map((entry) => entry.id)).toEqual([
 			"u1000000",
 			"a1000000",
 			"r1000000",
@@ -383,11 +294,7 @@ describe("what the port deliberately does not inherit", () => {
 			"m1000000",
 			"c1000000",
 		]);
-		expect(() => getEntriesToFork(entries, { entryId: "a2000000" })).toThrow(
-			/not a user message/,
-		);
-		expect(() => getEntriesToFork(entries, { entryId: "gone" })).toThrow(
-			/not found/,
-		);
+		expect(() => getEntriesToFork(entries, { entryId: "a2000000" })).toThrow(/not a user message/);
+		expect(() => getEntriesToFork(entries, { entryId: "gone" })).toThrow(/not found/);
 	});
 });

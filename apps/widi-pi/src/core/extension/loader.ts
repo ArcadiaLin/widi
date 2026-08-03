@@ -1,11 +1,7 @@
 import type { ExecutionEnv, FileInfo } from "@widi/agent-core";
 import { formatError } from "../../utils/errors.ts";
 import type { CoreDiagnostic, DiagnosticSeverity } from "../diagnostics.ts";
-import {
-	EXTENSION_API_VERSION,
-	isSupportedExtensionApiVersion,
-	MIN_SUPPORTED_EXTENSION_API_VERSION,
-} from "./api.ts";
+import { EXTENSION_API_VERSION, isSupportedExtensionApiVersion, MIN_SUPPORTED_EXTENSION_API_VERSION } from "./api.ts";
 import {
 	ExtensionDivisionResolver,
 	joinDivisionId,
@@ -13,10 +9,7 @@ import {
 	validateDivisionId,
 } from "./division.ts";
 import { validateExtensionEventName } from "./events.ts";
-import {
-	type ExtensionModuleImporter,
-	JitiExtensionModuleImporter,
-} from "./module-importer.ts";
+import { type ExtensionModuleImporter, JitiExtensionModuleImporter } from "./module-importer.ts";
 import type {
 	ExtensionActivationApi,
 	ExtensionDisposeHandler,
@@ -60,9 +53,7 @@ export interface ExtensionObserverRegistration {
 	divisionId?: string;
 }
 
-export interface ExtensionInterceptorRegistration<
-	TName extends ExtensionInterceptorName,
-> {
+export interface ExtensionInterceptorRegistration<TName extends ExtensionInterceptorName> {
 	extensionId: string;
 	eventName: TName;
 	handler: ExtensionInterceptorFor<TName>;
@@ -99,12 +90,7 @@ export interface LoadExtensionScopeOptions {
 
 export type ExtensionSource =
 	| { readonly kind: "factory" }
-	| {
-			readonly kind: "file";
-			readonly path: string;
-			readonly resolvedPath: string;
-			readonly root: ExtensionRoot;
-	  }
+	| { readonly kind: "file"; readonly path: string; readonly resolvedPath: string; readonly root: ExtensionRoot }
 	| {
 			readonly kind: "package";
 			readonly path: string;
@@ -177,19 +163,13 @@ export interface LoadedExtensionScope {
 	toolContributions: readonly ExtensionToolContribution[];
 	providerContributions: readonly ExtensionProviderContribution[];
 	systemPromptContributions: readonly ExtensionSystemPromptContribution[];
-	observerHandlers: ReadonlyMap<
-		ExtensionObservedEventName,
-		readonly ExtensionObserverRegistration[]
-	>;
+	observerHandlers: ReadonlyMap<ExtensionObservedEventName, readonly ExtensionObserverRegistration[]>;
 	interceptorHandlers: ReadonlyMap<
 		ExtensionInterceptorName,
 		readonly ExtensionInterceptorRegistration<ExtensionInterceptorName>[]
 	>;
 	/** Extension event bus subscriptions, keyed by event name. */
-	extensionEventHandlers: ReadonlyMap<
-		string,
-		readonly ExtensionEventRegistration[]
-	>;
+	extensionEventHandlers: ReadonlyMap<string, readonly ExtensionEventRegistration[]>;
 	disposeHandlers: readonly ExtensionDisposeRegistration[];
 	divisions: readonly ExtensionDivisionSnapshot[];
 }
@@ -203,10 +183,7 @@ interface IncompatibleExtensionRecord {
 export class ExtensionLoader {
 	private readonly _factories = new Map<string, ExtensionFactory>();
 	private readonly _factoryIdentities = new Map<string, ExtensionIdentity>();
-	private readonly _incompatible = new Map<
-		string,
-		IncompatibleExtensionRecord
-	>();
+	private readonly _incompatible = new Map<string, IncompatibleExtensionRecord>();
 	private readonly _moduleFactories = new Map<string, ExtensionFactory>();
 	private readonly _divisionIssues = new Map<string, readonly string[]>();
 	private readonly _moduleImporter: ExtensionModuleImporter;
@@ -214,8 +191,7 @@ export class ExtensionLoader {
 
 	constructor(options: ExtensionLoaderOptions = {}) {
 		this._roots = options.roots ? [...options.roots] : [];
-		this._moduleImporter =
-			options.moduleImporter ?? new JitiExtensionModuleImporter();
+		this._moduleImporter = options.moduleImporter ?? new JitiExtensionModuleImporter();
 	}
 
 	getRoots(): readonly ExtensionRoot[] {
@@ -236,9 +212,7 @@ export class ExtensionLoader {
 		return [...this._factories.keys()];
 	}
 
-	async discover(
-		executionEnv: ExecutionEnv,
-	): Promise<ExtensionDiscoveryResult> {
+	async discover(executionEnv: ExecutionEnv): Promise<ExtensionDiscoveryResult> {
 		const candidates: ExtensionDiscoveryCandidate[] = [];
 		const diagnostics: CoreDiagnostic[] = [];
 
@@ -250,12 +224,8 @@ export class ExtensionLoader {
 				}
 				diagnostics.push(
 					createExtensionDiscoveryDiagnostic({
-						code:
-							infoResult.error.code === "not_found"
-								? "extension.source_missing"
-								: "extension.file_info_failed",
-						severity:
-							infoResult.error.code === "not_found" ? "warning" : "error",
+						code: infoResult.error.code === "not_found" ? "extension.source_missing" : "extension.file_info_failed",
+						severity: infoResult.error.code === "not_found" ? "warning" : "error",
 						message:
 							infoResult.error.code === "not_found"
 								? `Extension source not found: ${root.path}`
@@ -266,16 +236,8 @@ export class ExtensionLoader {
 				continue;
 			}
 
-			if (
-				infoResult.value.kind === "directory" &&
-				(await hasDirectoryEntry(executionEnv, infoResult.value.path))
-			) {
-				candidates.push({
-					id: basename(infoResult.value.path),
-					root,
-					path: infoResult.value.path,
-					kind: "directory",
-				});
+			if (infoResult.value.kind === "directory" && (await hasDirectoryEntry(executionEnv, infoResult.value.path))) {
+				candidates.push({ id: basename(infoResult.value.path), root, path: infoResult.value.path, kind: "directory" });
 				continue;
 			}
 
@@ -297,11 +259,7 @@ export class ExtensionLoader {
 		// the project, then the agent dir - and that order becomes activation
 		// order once every available extension loads, which decides the order
 		// interceptors, providers, and tool patches apply in.
-		return {
-			roots: this.getRoots(),
-			candidates,
-			diagnostics,
-		};
+		return { roots: this.getRoots(), candidates, diagnostics };
 	}
 
 	clearExtensionModuleCache(): void {
@@ -315,9 +273,7 @@ export class ExtensionLoader {
 		}
 		const resolved = resolveExtensionModule(module);
 		if (!resolved) {
-			throw new Error(
-				"Extension module must be a factory function or an { apiVersion, activate } definition.",
-			);
+			throw new Error("Extension module must be a factory function or an { apiVersion, activate } definition.");
 		}
 		const divisions = validateDivisionDeclarations(resolved.divisions);
 		const identity: ExtensionIdentity = {
@@ -326,10 +282,7 @@ export class ExtensionLoader {
 			divisions: divisions.divisions,
 		};
 
-		if (
-			resolved.declaredApiVersion !== undefined &&
-			!isSupportedExtensionApiVersion(resolved.declaredApiVersion)
-		) {
+		if (resolved.declaredApiVersion !== undefined && !isSupportedExtensionApiVersion(resolved.declaredApiVersion)) {
 			this._factories.delete(normalizedId);
 			this._factoryIdentities.delete(normalizedId);
 			this._divisionIssues.delete(normalizedId);
@@ -360,9 +313,7 @@ export class ExtensionLoader {
 		};
 	}
 
-	async loadAvailableExtensions(
-		executionEnv: ExecutionEnv,
-	): Promise<ExtensionLoadAvailableResult> {
+	async loadAvailableExtensions(executionEnv: ExecutionEnv): Promise<ExtensionLoadAvailableResult> {
 		this._removeModuleFactories();
 		const discovery = await this.discover(executionEnv);
 		const diagnostics: CoreDiagnostic[] = [...discovery.diagnostics];
@@ -374,10 +325,7 @@ export class ExtensionLoader {
 			if (!entry.entry) continue;
 
 			const registeredIncompatible = this._incompatible.get(candidate.id);
-			if (
-				this._factories.has(candidate.id) ||
-				(registeredIncompatible && !registeredIncompatible.fromModule)
-			) {
+			if (this._factories.has(candidate.id) || (registeredIncompatible && !registeredIncompatible.fromModule)) {
 				diagnostics.push(
 					createExtensionLoadDiagnostic({
 						code: "extension.id_conflict",
@@ -391,9 +339,7 @@ export class ExtensionLoader {
 
 			let moduleExport: unknown;
 			try {
-				moduleExport = await this._moduleImporter.importModule(
-					entry.entry.entryPath,
-				);
+				moduleExport = await this._moduleImporter.importModule(entry.entry.entryPath);
 			} catch (error) {
 				diagnostics.push(
 					createExtensionLoadDiagnostic({
@@ -426,10 +372,7 @@ export class ExtensionLoader {
 				divisions: divisions.divisions,
 			};
 
-			if (
-				resolved.declaredApiVersion !== undefined &&
-				!isSupportedExtensionApiVersion(resolved.declaredApiVersion)
-			) {
+			if (resolved.declaredApiVersion !== undefined && !isSupportedExtensionApiVersion(resolved.declaredApiVersion)) {
 				this._incompatible.set(candidate.id, {
 					identity,
 					declaredApiVersion: resolved.declaredApiVersion,
@@ -453,39 +396,25 @@ export class ExtensionLoader {
 			loaded.push(identity);
 		}
 
-		return {
-			discovery,
-			loaded,
-			diagnostics,
-		};
+		return { discovery, loaded, diagnostics };
 	}
 
-	async reloadAvailableExtensions(
-		executionEnv: ExecutionEnv,
-	): Promise<ExtensionLoadAvailableResult> {
+	async reloadAvailableExtensions(executionEnv: ExecutionEnv): Promise<ExtensionLoadAvailableResult> {
 		this.clearExtensionModuleCache();
 		return await this.loadAvailableExtensions(executionEnv);
 	}
 
-	async loadForAgent(
-		options: LoadExtensionScopeOptions,
-	): Promise<LoadedExtensionScope> {
+	async loadForAgent(options: LoadExtensionScopeOptions): Promise<LoadedExtensionScope> {
 		const diagnostics: CoreDiagnostic[] = [];
 		const toolContributions: ExtensionToolContribution[] = [];
 		const providerContributions: ExtensionProviderContribution[] = [];
 		const systemPromptContributions: ExtensionSystemPromptContribution[] = [];
-		const observerHandlers = new Map<
-			ExtensionObservedEventName,
-			ExtensionObserverRegistration[]
-		>();
+		const observerHandlers = new Map<ExtensionObservedEventName, ExtensionObserverRegistration[]>();
 		const interceptorHandlers = new Map<
 			ExtensionInterceptorName,
 			ExtensionInterceptorRegistration<ExtensionInterceptorName>[]
 		>();
-		const extensionEventHandlers = new Map<
-			string,
-			ExtensionEventRegistration[]
-		>();
+		const extensionEventHandlers = new Map<string, ExtensionEventRegistration[]>();
 		const disposeHandlers: ExtensionDisposeRegistration[] = [];
 		const divisions: ExtensionDivisionSnapshot[] = [];
 		const extensionIds = normalizeExtensionIds(options.extensionIds ?? []);
@@ -655,10 +584,7 @@ export class ExtensionLoader {
 		};
 	}
 
-	private _setDivisionIssues(
-		extensionId: string,
-		issues: readonly string[],
-	): void {
+	private _setDivisionIssues(extensionId: string, issues: readonly string[]): void {
 		if (issues.length === 0) {
 			this._divisionIssues.delete(extensionId);
 			return;
@@ -690,17 +616,11 @@ interface ResolvedExtensionModule {
 	readonly divisions?: unknown;
 }
 
-function resolveExtensionModule(
-	module: unknown,
-): ResolvedExtensionModule | undefined {
+function resolveExtensionModule(module: unknown): ResolvedExtensionModule | undefined {
 	if (typeof module === "function") {
 		return { factory: module as ExtensionFactory };
 	}
-	if (
-		isRecord(module) &&
-		typeof module.activate === "function" &&
-		typeof module.apiVersion === "number"
-	) {
+	if (isRecord(module) && typeof module.activate === "function" && typeof module.apiVersion === "number") {
 		return {
 			factory: module.activate as ExtensionFactory,
 			declaredApiVersion: module.apiVersion,
@@ -736,12 +656,7 @@ async function resolveCandidateEntry(
 		return {
 			entry: {
 				entryPath: candidate.path,
-				source: {
-					kind: "file",
-					path: candidate.path,
-					resolvedPath: candidate.path,
-					root: candidate.root,
-				},
+				source: { kind: "file", path: candidate.path, resolvedPath: candidate.path, root: candidate.root },
 			},
 			diagnostics: [],
 		};
@@ -749,18 +664,12 @@ async function resolveCandidateEntry(
 
 	const packageEntry = await resolvePackageEntry(executionEnv, candidate);
 	if (packageEntry.entry || packageEntry.hasManifest) {
-		return {
-			entry: packageEntry.entry,
-			diagnostics: packageEntry.diagnostics,
-		};
+		return { entry: packageEntry.entry, diagnostics: packageEntry.diagnostics };
 	}
 
 	const indexEntry = await resolveDirectoryIndexEntry(executionEnv, candidate);
 	if (indexEntry) {
-		return {
-			entry: indexEntry,
-			diagnostics: [],
-		};
+		return { entry: indexEntry, diagnostics: [] };
 	}
 
 	return {
@@ -778,11 +687,7 @@ async function resolveCandidateEntry(
 async function resolvePackageEntry(
 	executionEnv: ExecutionEnv,
 	candidate: ExtensionDiscoveryCandidate,
-): Promise<
-	ResolveCandidateEntryResult & {
-		readonly hasManifest: boolean;
-	}
-> {
+): Promise<ResolveCandidateEntryResult & { readonly hasManifest: boolean }> {
 	const packageJsonPath = joinPath(candidate.path, "package.json");
 	const infoResult = await executionEnv.fileInfo(packageJsonPath);
 	if (!infoResult.ok || infoResult.value.kind !== "file") {
@@ -857,13 +762,7 @@ async function resolvePackageEntry(
 		hasManifest: true,
 		entry: {
 			entryPath,
-			source: {
-				kind: "package",
-				path: candidate.path,
-				resolvedPath: packageJsonPath,
-				entryPath,
-				root: candidate.root,
-			},
+			source: { kind: "package", path: candidate.path, resolvedPath: packageJsonPath, entryPath, root: candidate.root },
 		},
 		diagnostics,
 	};
@@ -877,35 +776,20 @@ async function resolveDirectoryIndexEntry(
 		const entryPath = joinPath(candidate.path, `index${extension}`);
 		const infoResult = await executionEnv.fileInfo(entryPath);
 		if (infoResult.ok && infoResult.value.kind === "file") {
-			return {
-				entryPath,
-				source: {
-					kind: "file",
-					path: entryPath,
-					resolvedPath: entryPath,
-					root: candidate.root,
-				},
-			};
+			return { entryPath, source: { kind: "file", path: entryPath, resolvedPath: entryPath, root: candidate.root } };
 		}
 	}
 	return undefined;
 }
 
-async function hasDirectoryEntry(
-	executionEnv: ExecutionEnv,
-	directoryPath: string,
-): Promise<boolean> {
-	const packageInfo = await executionEnv.fileInfo(
-		joinPath(directoryPath, "package.json"),
-	);
+async function hasDirectoryEntry(executionEnv: ExecutionEnv, directoryPath: string): Promise<boolean> {
+	const packageInfo = await executionEnv.fileInfo(joinPath(directoryPath, "package.json"));
 	if (packageInfo.ok && packageInfo.value.kind === "file") {
 		return true;
 	}
 
 	for (const extension of EXTENSION_FILE_EXTENSIONS) {
-		const indexInfo = await executionEnv.fileInfo(
-			joinPath(directoryPath, `index${extension}`),
-		);
+		const indexInfo = await executionEnv.fileInfo(joinPath(directoryPath, `index${extension}`));
 		if (indexInfo.ok && indexInfo.value.kind === "file") {
 			return true;
 		}
@@ -922,21 +806,14 @@ function parseExtensionPackageManifest(content: string): ManifestParseResult {
 	try {
 		parsed = JSON.parse(content);
 	} catch (error) {
-		return {
-			ok: false,
-			reason: formatError(error),
-		};
+		return { ok: false, reason: formatError(error) };
 	}
 
 	if (!isRecord(parsed)) {
 		return { ok: false, reason: "package.json must contain an object." };
 	}
 
-	const section = isRecord(parsed.widi)
-		? parsed.widi
-		: isRecord(parsed.pi)
-			? parsed.pi
-			: undefined;
+	const section = isRecord(parsed.widi) ? parsed.widi : isRecord(parsed.pi) ? parsed.pi : undefined;
 	if (!section) {
 		return { ok: true };
 	}
@@ -945,19 +822,13 @@ function parseExtensionPackageManifest(content: string): ManifestParseResult {
 		return { ok: true };
 	}
 	if (!Array.isArray(section.extensions)) {
-		return {
-			ok: false,
-			reason: "extensions must be an array of entry paths.",
-		};
+		return { ok: false, reason: "extensions must be an array of entry paths." };
 	}
 
 	const entries: string[] = [];
 	for (const entry of section.extensions) {
 		if (typeof entry !== "string") {
-			return {
-				ok: false,
-				reason: "extensions must only contain string entry paths.",
-			};
+			return { ok: false, reason: "extensions must only contain string entry paths." };
 		}
 		const normalized = entry.trim();
 		if (normalized) entries.push(normalized);
@@ -992,10 +863,7 @@ interface ExtensionActivationScope {
 	readonly toolContributions: ExtensionToolContribution[];
 	readonly providerContributions: ExtensionProviderContribution[];
 	readonly systemPromptContributions: ExtensionSystemPromptContribution[];
-	readonly observerHandlers: Map<
-		ExtensionObservedEventName,
-		ExtensionObserverRegistration[]
-	>;
+	readonly observerHandlers: Map<ExtensionObservedEventName, ExtensionObserverRegistration[]>;
 	readonly interceptorHandlers: Map<
 		ExtensionInterceptorName,
 		ExtensionInterceptorRegistration<ExtensionInterceptorName>[]
@@ -1008,9 +876,7 @@ interface ExtensionActivationScope {
  * A division's `register` callback can open further divisions, so drain the
  * queue until it stays empty instead of awaiting one generation.
  */
-async function settlePendingDivisions(
-	scope: ExtensionActivationScope,
-): Promise<void> {
+async function settlePendingDivisions(scope: ExtensionActivationScope): Promise<void> {
 	while (scope.pending.length > 0) {
 		await Promise.all(scope.pending.splice(0));
 	}
@@ -1021,10 +887,7 @@ async function settlePendingDivisions(
  * never enabled, so an imperative branch cannot run side effects the scoped
  * form would have refused.
  */
-function resolveDivisionId(
-	scope: ExtensionActivationScope,
-	divisionId: string,
-): boolean {
+function resolveDivisionId(scope: ExtensionActivationScope, divisionId: string): boolean {
 	const invalid = validateDivisionId(divisionId);
 	if (invalid) {
 		scope.divisionDiagnostics.push(
@@ -1041,10 +904,7 @@ function resolveDivisionId(
 	return scope.resolver.isEnabled(divisionId);
 }
 
-function createActivationApi(
-	scope: ExtensionActivationScope,
-	divisionId?: string,
-): ExtensionActivationApi {
+function createActivationApi(scope: ExtensionActivationScope, divisionId?: string): ExtensionActivationApi {
 	const extensionId = scope.extensionId;
 	return {
 		extensionId,
@@ -1066,8 +926,7 @@ function createActivationApi(
 			scope.pending.push(pending);
 			await pending;
 		},
-		isDivisionEnabled: (id) =>
-			resolveDivisionId(scope, joinDivisionId(divisionId, id)),
+		isDivisionEnabled: (id) => resolveDivisionId(scope, joinDivisionId(divisionId, id)),
 		registerTool: (tool) => {
 			scope.toolContributions.push({
 				kind: "define",
@@ -1092,32 +951,18 @@ function createActivationApi(
 			if (!normalized) {
 				throw new Error("Extension provider name must not be empty.");
 			}
-			scope.providerContributions.push({
-				extensionId,
-				providerName: normalized,
-				config,
-				divisionId,
-			});
+			scope.providerContributions.push({ extensionId, providerName: normalized, config, divisionId });
 		},
 		appendSystemPrompt: (text) => {
 			const normalized = text.trim();
 			if (!normalized) {
 				throw new Error("Appended system prompt text must not be empty.");
 			}
-			scope.systemPromptContributions.push({
-				extensionId,
-				text: normalized,
-				divisionId,
-			});
+			scope.systemPromptContributions.push({ extensionId, text: normalized, divisionId });
 		},
 		observe: (eventName, handler) => {
 			const registrations = scope.observerHandlers.get(eventName) ?? [];
-			registrations.push({
-				extensionId,
-				eventName,
-				handler: handler as unknown as ExtensionObserver,
-				divisionId,
-			});
+			registrations.push({ extensionId, eventName, handler: handler as unknown as ExtensionObserver, divisionId });
 			scope.observerHandlers.set(eventName, registrations);
 		},
 		intercept: (eventName, handler) => {
@@ -1125,8 +970,7 @@ function createActivationApi(
 			registrations.push({
 				extensionId,
 				eventName,
-				handler:
-					handler as unknown as ExtensionInterceptorFor<ExtensionInterceptorName>,
+				handler: handler as unknown as ExtensionInterceptorFor<ExtensionInterceptorName>,
 				divisionId,
 			});
 			scope.interceptorHandlers.set(eventName, registrations);
@@ -1137,20 +981,11 @@ function createActivationApi(
 			// looks exactly like one nobody sent yet.
 			const eventName = validateExtensionEventName(name);
 			const registrations = scope.extensionEventHandlers.get(eventName) ?? [];
-			registrations.push({
-				extensionId,
-				eventName,
-				handler,
-				divisionId,
-			});
+			registrations.push({ extensionId, eventName, handler, divisionId });
 			scope.extensionEventHandlers.set(eventName, registrations);
 		},
 		onDispose: (handler) => {
-			scope.disposeHandlers.push({
-				extensionId,
-				handler,
-				divisionId,
-			});
+			scope.disposeHandlers.push({ extensionId, handler, divisionId });
 		},
 	};
 }
@@ -1202,17 +1037,9 @@ async function discoverDirectory(
 	};
 }
 
-function candidateFromFileInfo(
-	root: ExtensionRoot,
-	fileInfo: FileInfo,
-): ExtensionDiscoveryCandidate | undefined {
+function candidateFromFileInfo(root: ExtensionRoot, fileInfo: FileInfo): ExtensionDiscoveryCandidate | undefined {
 	if (fileInfo.kind === "directory") {
-		return {
-			id: basename(fileInfo.path),
-			root,
-			path: fileInfo.path,
-			kind: "directory",
-		};
+		return { id: basename(fileInfo.path), root, path: fileInfo.path, kind: "directory" };
 	}
 	if (fileInfo.kind !== "file") {
 		return undefined;
@@ -1222,12 +1049,7 @@ function candidateFromFileInfo(
 	if (!id) {
 		return undefined;
 	}
-	return {
-		id,
-		root,
-		path: fileInfo.path,
-		kind: "file",
-	};
+	return { id, root, path: fileInfo.path, kind: "file" };
 }
 
 function extensionFileId(path: string): string | undefined {
@@ -1272,19 +1094,12 @@ function normalizePath(path: string): string {
 }
 
 function createExtensionDiscoveryDiagnostic(options: {
-	code:
-		| "extension.source_missing"
-		| "extension.file_info_failed"
-		| "extension.list_failed";
+	code: "extension.source_missing" | "extension.file_info_failed" | "extension.list_failed";
 	severity: DiagnosticSeverity;
 	message: string;
 	root: ExtensionRoot;
 }): CoreDiagnostic {
-	return {
-		code: options.code,
-		severity: options.severity,
-		message: options.message,
-	};
+	return { code: options.code, severity: options.severity, message: options.message };
 }
 
 function createExtensionLoadDiagnostic(options: {
@@ -1300,12 +1115,7 @@ function createExtensionLoadDiagnostic(options: {
 	message: string;
 	extensionId: string;
 }): CoreDiagnostic {
-	return {
-		code: options.code,
-		severity: options.severity,
-		message: options.message,
-		extensionId: options.extensionId,
-	};
+	return { code: options.code, severity: options.severity, message: options.message, extensionId: options.extensionId };
 }
 
 function createMissingFactoryDiagnostic(options: {

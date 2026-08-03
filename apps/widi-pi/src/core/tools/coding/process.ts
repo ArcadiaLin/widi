@@ -14,9 +14,7 @@ const EXIT_STDIO_GRACE_MS = 100;
  * descendant keeps us reading, while a quiet inherited handle still releases us
  * after the grace elapses.
  */
-export function waitForChildProcess(
-	child: ChildProcess,
-): Promise<number | null> {
+export function waitForChildProcess(child: ChildProcess): Promise<number | null> {
 	return new Promise((resolve, reject) => {
 		let settled = false;
 		let exited = false;
@@ -115,11 +113,7 @@ export function waitForChildProcess(
 export function killProcessTree(pid: number): void {
 	if (process.platform === "win32") {
 		try {
-			spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
-				stdio: "ignore",
-				detached: true,
-				windowsHide: true,
-			});
+			spawn("taskkill", ["/F", "/T", "/PID", String(pid)], { stdio: "ignore", detached: true, windowsHide: true });
 		} catch {
 			// Ignore errors if taskkill fails.
 		}

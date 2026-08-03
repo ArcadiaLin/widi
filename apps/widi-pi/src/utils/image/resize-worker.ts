@@ -1,9 +1,5 @@
 import { parentPort } from "node:worker_threads";
-import {
-	type ImageResizeOptions,
-	type ResizedImage,
-	resizeImageInProcess,
-} from "./resize-core.ts";
+import { type ImageResizeOptions, type ResizedImage, resizeImageInProcess } from "./resize-core.ts";
 
 /**
  * Worker entry for image resizing. WASM decode/resize/encode is CPU bound, so
@@ -21,15 +17,10 @@ interface ResizeImageWorkerResponse {
 	error?: string;
 }
 
-function isResizeImageWorkerRequest(
-	value: unknown,
-): value is ResizeImageWorkerRequest {
+function isResizeImageWorkerRequest(value: unknown): value is ResizeImageWorkerRequest {
 	if (!value || typeof value !== "object") return false;
 	const record = value as Record<string, unknown>;
-	return (
-		record.inputBytes instanceof Uint8Array &&
-		typeof record.mimeType === "string"
-	);
+	return record.inputBytes instanceof Uint8Array && typeof record.mimeType === "string";
 }
 
 const port = parentPort;
@@ -42,17 +33,11 @@ port.once("message", (message: unknown) => {
 		if (!isResizeImageWorkerRequest(message)) {
 			throw new Error("Invalid image resize worker request");
 		}
-		const result = resizeImageInProcess(
-			message.inputBytes,
-			message.mimeType,
-			message.options,
-		);
+		const result = resizeImageInProcess(message.inputBytes, message.mimeType, message.options);
 		const response: ResizeImageWorkerResponse = { result };
 		port.postMessage(response);
 	} catch (error) {
-		const response: ResizeImageWorkerResponse = {
-			error: error instanceof Error ? error.message : String(error),
-		};
+		const response: ResizeImageWorkerResponse = { error: error instanceof Error ? error.message : String(error) };
 		port.postMessage(response);
 	}
 });

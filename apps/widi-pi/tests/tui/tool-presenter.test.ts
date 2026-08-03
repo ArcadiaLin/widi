@@ -29,11 +29,7 @@ function plain(lines: string[]): string[] {
 
 describe("presentToolExecution", () => {
 	it("summarizes ls calls without dumping raw JSON or entries", () => {
-		const item = toolItem({
-			toolName: "ls",
-			args: { path: "src" },
-			result: textResult("a.ts\nb.ts\ncore/\n"),
-		});
+		const item = toolItem({ toolName: "ls", args: { path: "src" }, result: textResult("a.ts\nb.ts\ncore/\n") });
 
 		const lines = plain(presentToolExecution(item, 80));
 
@@ -62,21 +58,11 @@ describe("presentToolExecution", () => {
 		const lines = plain(presentToolExecution(item, 80));
 
 		expect(lines[0]).toBe("✓ Bash ls -la");
-		expect(lines.slice(1)).toEqual([
-			"one",
-			"two",
-			"three",
-			"four",
-			"… +2 lines",
-		]);
+		expect(lines.slice(1)).toEqual(["one", "two", "three", "four", "… +2 lines"]);
 	});
 
 	it("marks running calls distinctly", () => {
-		const item = toolItem({
-			toolName: "bash",
-			status: "running",
-			args: { command: "sleep 5" },
-		});
+		const item = toolItem({ toolName: "bash", status: "running", args: { command: "sleep 5" } });
 
 		const lines = plain(presentToolExecution(item, 80));
 
@@ -110,11 +96,7 @@ describe("presentToolExecution", () => {
 	});
 
 	it("renders unknown tools with compact key-value arguments", () => {
-		const item = toolItem({
-			toolName: "deploy",
-			args: { target: "staging", dryRun: true },
-			result: textResult("ok"),
-		});
+		const item = toolItem({ toolName: "deploy", args: { target: "staging", dryRun: true }, result: textResult("ok") });
 
 		const lines = plain(presentToolExecution(item, 80));
 
@@ -130,22 +112,11 @@ describe("presentToolExecution", () => {
 
 		const lines = plain(presentToolExecution(item, 80, { expanded: true }));
 
-		expect(lines.slice(1)).toEqual([
-			"one",
-			"two",
-			"three",
-			"four",
-			"five",
-			"six",
-		]);
+		expect(lines.slice(1)).toEqual(["one", "two", "three", "four", "five", "six"]);
 	});
 
 	it("expands count-suffix tools to their content", () => {
-		const item = toolItem({
-			toolName: "ls",
-			args: { path: "src" },
-			result: textResult("a.ts\nb.ts"),
-		});
+		const item = toolItem({ toolName: "ls", args: { path: "src" }, result: textResult("a.ts\nb.ts") });
 
 		const lines = plain(presentToolExecution(item, 80, { expanded: true }));
 
@@ -154,24 +125,16 @@ describe("presentToolExecution", () => {
 	});
 
 	it("renders edit results as a bounded diff", () => {
-		const diff = Array.from(
-			{ length: 10 },
-			(_, i) => `+${i + 1} line ${i + 1}`,
-		).join("\n");
+		const diff = Array.from({ length: 10 }, (_, i) => `+${i + 1} line ${i + 1}`).join("\n");
 		const item = toolItem({
 			toolName: "edit",
 			args: { path: "src/app.ts", edits: [{ oldText: "a", newText: "b" }] },
-			result: {
-				content: [{ type: "text", text: "Edited src/app.ts" }],
-				details: { diff },
-			},
+			result: { content: [{ type: "text", text: "Edited src/app.ts" }], details: { diff } },
 		});
 
 		const collapsed = plain(presentToolExecution(item, 80));
 		expect(collapsed[0]).toBe("✓ Edit src/app.ts (1 edit)");
-		expect(collapsed.slice(1, 9)).toEqual(
-			Array.from({ length: 8 }, (_, i) => `+${i + 1} line ${i + 1}`),
-		);
+		expect(collapsed.slice(1, 9)).toEqual(Array.from({ length: 8 }, (_, i) => `+${i + 1} line ${i + 1}`));
 		expect(collapsed[9]).toBe("… +2 lines");
 
 		const expanded = plain(presentToolExecution(item, 80, { expanded: true }));
@@ -186,9 +149,7 @@ describe("presentToolExecution", () => {
 			result: textResult("Successfully wrote 16 bytes to notes.txt"),
 		});
 
-		expect(plain(presentToolExecution(item, 80))).toEqual([
-			"✓ Write notes.txt · 3 lines",
-		]);
+		expect(plain(presentToolExecution(item, 80))).toEqual(["✓ Write notes.txt · 3 lines"]);
 		expect(plain(presentToolExecution(item, 80, { expanded: true }))).toEqual([
 			"✓ Write notes.txt · 3 lines",
 			"alpha",
@@ -210,11 +171,7 @@ describe("presentToolExecution", () => {
 	});
 
 	it("renders a streamed call as preparing, with the verb in accent blue", () => {
-		const item = toolItem({
-			toolName: "read",
-			status: "preparing",
-			args: { path: "notes.txt" },
-		});
+		const item = toolItem({ toolName: "read", status: "preparing", args: { path: "notes.txt" } });
 
 		const lines = presentToolExecution(item, 80);
 
@@ -228,11 +185,7 @@ describe("presentToolExecution", () => {
 	});
 
 	it("renders a cancelled call dimmed without a preview", () => {
-		const item = toolItem({
-			toolName: "read",
-			status: "cancelled",
-			args: { path: "notes.txt" },
-		});
+		const item = toolItem({ toolName: "read", status: "cancelled", args: { path: "notes.txt" } });
 
 		const lines = plain(presentToolExecution(item, 80));
 

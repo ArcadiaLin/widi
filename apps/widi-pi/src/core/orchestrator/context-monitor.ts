@@ -1,17 +1,9 @@
-import {
-	calculateContextTokens,
-	getLastAssistantUsage,
-} from "@widi/agent-core";
+import { calculateContextTokens, getLastAssistantUsage } from "@widi/agent-core";
 import { formatError } from "../../utils/errors.ts";
 import type { OrchestratorDiagnostic } from "../diagnostics.ts";
 import { modelReference } from "../model-registry.js";
 import type { SessionManager } from "../session-manager.ts";
-import type {
-	AgentContextUsage,
-	AgentId,
-	OrchestratorEvent,
-	RuntimeModel,
-} from "../types.ts";
+import type { AgentContextUsage, AgentId, OrchestratorEvent, RuntimeModel } from "../types.ts";
 
 interface ContextSubject {
 	readonly generation: number;
@@ -28,9 +20,7 @@ export class AgentContextMonitor {
 	private readonly _sessionManager: SessionManager;
 	private readonly _resolve: (agentId: AgentId) => ContextSubject | undefined;
 	private readonly _publish: (event: OrchestratorEvent) => Promise<void>;
-	private readonly _diagnose: (
-		diagnostic: OrchestratorDiagnostic,
-	) => Promise<void>;
+	private readonly _diagnose: (diagnostic: OrchestratorDiagnostic) => Promise<void>;
 	private readonly _projections = new Map<AgentId, ContextProjection>();
 
 	constructor(options: {
@@ -58,10 +48,7 @@ export class AgentContextMonitor {
 	get(agentId: AgentId): AgentContextUsage | undefined {
 		const subject = this._resolve(agentId);
 		const projection = this._projections.get(agentId);
-		const usage =
-			subject && projection?.generation === subject.generation
-				? projection.usage
-				: undefined;
+		const usage = subject && projection?.generation === subject.generation ? projection.usage : undefined;
 		return usage ? { ...usage } : undefined;
 	}
 
@@ -75,8 +62,7 @@ export class AgentContextMonitor {
 		const subject = this._resolve(agentId);
 		if (!subject) return undefined;
 		try {
-			const snapshot =
-				await this._sessionManager.getAgentSessionSnapshot(agentId);
+			const snapshot = await this._sessionManager.getAgentSessionSnapshot(agentId);
 			const lastUsage = getLastAssistantUsage([...snapshot.pathToRoot]);
 			if (!lastUsage) {
 				await this._set(agentId, subject.generation, undefined);
@@ -108,11 +94,7 @@ export class AgentContextMonitor {
 		}
 	}
 
-	private async _set(
-		agentId: AgentId,
-		generation: number,
-		usage: AgentContextUsage | undefined,
-	): Promise<void> {
+	private async _set(agentId: AgentId, generation: number, usage: AgentContextUsage | undefined): Promise<void> {
 		const subject = this._resolve(agentId);
 		if (!subject || subject.generation !== generation) return;
 		const previous = this._projections.get(agentId);
@@ -124,10 +106,7 @@ export class AgentContextMonitor {
 		) {
 			return;
 		}
-		this._projections.set(agentId, {
-			generation,
-			...(usage === undefined ? undefined : { usage: { ...usage } }),
-		});
+		this._projections.set(agentId, { generation, ...(usage === undefined ? undefined : { usage: { ...usage } }) });
 		await this._publish({
 			type: "agent_context_usage_changed",
 			agentId,

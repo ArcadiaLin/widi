@@ -19,21 +19,11 @@ import type {
 	SessionMetadata,
 	SessionTreeEntry,
 } from "@widi/agent-core";
-import {
-	buildSessionContext,
-	InMemorySessionStore,
-	toSession,
-} from "@widi/agent-core";
+import { buildSessionContext, InMemorySessionStore, toSession } from "@widi/agent-core";
 import { formatError } from "../utils/errors.ts";
 import type { AgentProfile, AgentProfileReference } from "./agent-profile.js";
-import {
-	parseAgentProfileReference,
-	toAgentProfileReference,
-} from "./agent-profile.js";
-import type {
-	ExtensionInputPresentation,
-	ExtensionMessage,
-} from "./extension/presentation.ts";
+import { parseAgentProfileReference, toAgentProfileReference } from "./agent-profile.js";
+import type { ExtensionInputPresentation, ExtensionMessage } from "./extension/presentation.ts";
 import { SessionDirectoryRepo, sessionDirPath } from "./session-repo.ts";
 import {
 	AGENT_PARENT_FILE_NAME,
@@ -103,8 +93,7 @@ export interface ExtensionMessageEntryData {
 // extension sent into the agent. The user message carries the model-facing
 // text; this entry is appended after that message and names its stable entry
 // id, so hydration never depends on adjacency.
-export const EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE =
-	"core:extension_input_presentation";
+export const EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE = "core:extension_input_presentation";
 
 export interface ExtensionInputPresentationEntryData {
 	readonly messageEntryId: string;
@@ -173,31 +162,22 @@ export interface SessionManagerConfigs {
 	sessionsRoot: string;
 }
 
-type CreateAgentSessionOptions = {
-	agentId: AgentId;
-	agentProfile: AgentProfile;
-	parentSessionPath?: string;
-};
+type CreateAgentSessionOptions = { agentId: AgentId; agentProfile: AgentProfile; parentSessionPath?: string };
 
-type ResumeAgentSessionOptions = {
-	agentId: AgentId;
-	metadata: JsonlSessionMetadata;
-};
+type ResumeAgentSessionOptions = { agentId: AgentId; metadata: JsonlSessionMetadata };
 
 export class SessionManager {
 	readonly sessionRepo: SessionDirectoryRepo;
 	private readonly _fs: FileSystem;
 	private readonly _cwd: string;
-	private readonly _agentSessions: Map<AgentId, Session<AgentSessionMetadata>> =
-		new Map();
+	private readonly _agentSessions: Map<AgentId, Session<AgentSessionMetadata>> = new Map();
 	/** Runtime AgentId to persisted session directory name. */
 	private readonly _agentSessionDirs = new Map<AgentId, string>();
 	// Held as a store rather than through pi's SessionRepo: the repo now hands
 	// back a snapshot-backed Session that reloads the whole session on every
 	// read. Sessions here are long-lived handles, so they stay bound to the
 	// stateful storage the store already keeps.
-	private readonly _memorySessionStore: InMemorySessionStore =
-		new InMemorySessionStore();
+	private readonly _memorySessionStore: InMemorySessionStore = new InMemorySessionStore();
 	// Opaque session handles for consumers that must not see filesystem paths.
 	private readonly _sessionHandlesByPath: Map<string, string> = new Map();
 	private readonly _sessionPathsByHandle: Map<string, string> = new Map();
@@ -205,10 +185,7 @@ export class SessionManager {
 	constructor(config: SessionManagerConfigs) {
 		this._fs = config.fs;
 		this._cwd = config.cwd;
-		this.sessionRepo = new SessionDirectoryRepo({
-			fs: config.fs,
-			sessionsRoot: config.sessionsRoot,
-		});
+		this.sessionRepo = new SessionDirectoryRepo({ fs: config.fs, sessionsRoot: config.sessionsRoot });
 	}
 
 	async listAgentSessionCandidates(): Promise<AgentSessionCandidate[]> {
@@ -218,9 +195,7 @@ export class SessionManager {
 				const sessionDir = sessionDirPath(metadata.path);
 				return {
 					...toAgentSessionCandidate(metadata),
-					isChild:
-						(await this._readAgentParentPointerAtPath(sessionDir)) !==
-						undefined,
+					isChild: (await this._readAgentParentPointerAtPath(sessionDir)) !== undefined,
 					...(await this._loadSessionDisplayFacts(metadata.path)),
 				};
 			}),
@@ -230,16 +205,13 @@ export class SessionManager {
 	// Resume pickers need more than header metadata to make a session
 	// recognizable: the latest session_info name and the first user message.
 	// Unreadable files or lines degrade to header-only facts.
-	private async _loadSessionDisplayFacts(
-		path: string,
-	): Promise<{ name?: string; firstUserMessage?: string }> {
+	private async _loadSessionDisplayFacts(path: string): Promise<{ name?: string; firstUserMessage?: string }> {
 		const read = await this._fs.readTextFile(path);
 		if (!read.ok) return {};
 		const facts: { name?: string; firstUserMessage?: string } = {};
 		for (const line of read.value.split("\n")) {
 			// Cheap substring gate so only relevant lines pay for JSON.parse.
-			const wantsMessage =
-				facts.firstUserMessage === undefined && line.includes('"message"');
+			const wantsMessage = facts.firstUserMessage === undefined && line.includes('"message"');
 			const wantsName = line.includes('"session_info"');
 			if (!wantsMessage && !wantsName) continue;
 			let entry: unknown;
@@ -249,36 +221,22 @@ export class SessionManager {
 				continue;
 			}
 			if (typeof entry !== "object" || entry === null) continue;
-			const typed = entry as {
-				type?: unknown;
-				name?: unknown;
-				message?: { role?: unknown; content?: unknown };
-			};
+			const typed = entry as { type?: unknown; name?: unknown; message?: { role?: unknown; content?: unknown } };
 			if (typed.type === "session_info" && typeof typed.name === "string") {
 				facts.name = typed.name.trim() || undefined;
 				continue;
 			}
-			if (
-				wantsMessage &&
-				typed.type === "message" &&
-				typed.message?.role === "user"
-			) {
+			if (wantsMessage && typed.type === "message" && typed.message?.role === "user") {
 				facts.firstUserMessage = userMessageHeadline(typed.message.content);
 			}
 		}
 		return facts;
 	}
 
-	async resolveAgentSessionReference(
-		reference: string,
-	): Promise<JsonlSessionMetadata> {
+	async resolveAgentSessionReference(reference: string): Promise<JsonlSessionMetadata> {
 		const normalized = reference.trim();
 		if (!normalized) {
-			throw new AgentSessionResolutionError({
-				reason: "not_found",
-				reference,
-				candidates: [],
-			});
+			throw new AgentSessionResolutionError({ reason: "not_found", reference, candidates: [] });
 		}
 
 		const sessions = await this.sessionRepo.list({ cwd: this._cwd });
@@ -286,10 +244,7 @@ export class SessionManager {
 			await this._fs.absolutePath(normalized),
 			`Failed to resolve session reference ${normalized}`,
 		);
-		const pathMatches = sessions.filter(
-			(session) =>
-				session.path === normalized || session.path === absoluteReference,
-		);
+		const pathMatches = sessions.filter((session) => session.path === normalized || session.path === absoluteReference);
 		if (pathMatches.length === 1) return pathMatches[0];
 		if (pathMatches.length > 1) {
 			throw new AgentSessionResolutionError({
@@ -309,16 +264,10 @@ export class SessionManager {
 			});
 		}
 
-		throw new AgentSessionResolutionError({
-			reason: "not_found",
-			reference: normalized,
-			candidates: [],
-		});
+		throw new AgentSessionResolutionError({ reason: "not_found", reference: normalized, candidates: [] });
 	}
 
-	async createAgentSession(
-		options: CreateAgentSessionOptions,
-	): Promise<Session<AgentSessionMetadata>> {
+	async createAgentSession(options: CreateAgentSessionOptions): Promise<Session<AgentSessionMetadata>> {
 		const cachedSession = this._agentSessions.get(options.agentId);
 		if (cachedSession) {
 			return cachedSession;
@@ -332,37 +281,25 @@ export class SessionManager {
 		return session;
 	}
 
-	async resumeAgentSession(
-		options: ResumeAgentSessionOptions,
-	): Promise<Session<AgentSessionMetadata>> {
+	async resumeAgentSession(options: ResumeAgentSessionOptions): Promise<Session<AgentSessionMetadata>> {
 		const cachedSession = this._agentSessions.get(options.agentId);
 		if (cachedSession) {
 			return cachedSession;
 		}
 		const session = await this.sessionRepo.open(options.metadata);
 		this._agentSessions.set(options.agentId, session);
-		this._agentSessionDirs.set(
-			options.agentId,
-			sessionDirNameFromPath(sessionDirPath(options.metadata.path)),
-		);
+		this._agentSessionDirs.set(options.agentId, sessionDirNameFromPath(sessionDirPath(options.metadata.path)));
 		return session;
 	}
 
-	async getAgentSessionSnapshot(
-		agentId: AgentId,
-	): Promise<AgentSessionSnapshot> {
+	async getAgentSessionSnapshot(agentId: AgentId): Promise<AgentSessionSnapshot> {
 		const session = this._requireAgentSession(agentId);
 		return await this._snapshotSession(session);
 	}
 
-	async getAgentSessionTree(
-		agentId: AgentId,
-	): Promise<AgentSessionTreeSnapshot> {
+	async getAgentSessionTree(agentId: AgentId): Promise<AgentSessionTreeSnapshot> {
 		const session = this._requireAgentSession(agentId);
-		return {
-			...(await this._snapshotSession(session)),
-			entries: await session.getEntries(),
-		};
+		return { ...(await this._snapshotSession(session)), entries: await session.getEntries() };
 	}
 
 	async buildAgentSessionContext(agentId: AgentId): Promise<SessionContext> {
@@ -370,19 +307,13 @@ export class SessionManager {
 		return buildSessionContext(await this._getFullBranch(session));
 	}
 
-	async setAgentSessionName(
-		agentId: AgentId,
-		name: string,
-	): Promise<AgentSessionSnapshot> {
+	async setAgentSessionName(agentId: AgentId, name: string): Promise<AgentSessionSnapshot> {
 		const session = this._requireAgentSession(agentId);
 		await session.appendSessionName(name);
 		return await this._snapshotSession(session);
 	}
 
-	async forkAgentSession(
-		agentId: AgentId,
-		options: ForkAgentSessionOptions = {},
-	): Promise<JsonlSessionMetadata> {
+	async forkAgentSession(agentId: AgentId, options: ForkAgentSessionOptions = {}): Promise<JsonlSessionMetadata> {
 		const sourceSession = this._requireAgentSession(agentId);
 		const metadata = await sourceSession.getMetadata();
 		if (!isJsonlSessionMetadata(metadata)) {
@@ -395,10 +326,7 @@ export class SessionManager {
 		});
 		const forkedMetadata = await forkedSession.getMetadata();
 		this._agentSessions.set(forkedMetadata.id, forkedSession);
-		this._agentSessionDirs.set(
-			forkedMetadata.id,
-			sessionDirNameFromPath(sessionDirPath(forkedMetadata.path)),
-		);
+		this._agentSessionDirs.set(forkedMetadata.id, sessionDirNameFromPath(sessionDirPath(forkedMetadata.path)));
 		return forkedMetadata;
 	}
 
@@ -413,10 +341,7 @@ export class SessionManager {
 	 * that identity is stable even when the event bridge handles multiple
 	 * message_end events concurrently; reading the current leaf is not.
 	 */
-	async findAgentMessageEntryId(
-		agentId: AgentId,
-		message: AgentMessage,
-	): Promise<string | null> {
+	async findAgentMessageEntryId(agentId: AgentId, message: AgentMessage): Promise<string | null> {
 		const entries = await this._requireAgentSession(agentId).getEntries();
 		for (let index = entries.length - 1; index >= 0; index -= 1) {
 			const entry = entries[index];
@@ -432,9 +357,7 @@ export class SessionManager {
 	// live in memory and have none.
 	async getAgentSessionDir(agentId: AgentId): Promise<string | undefined> {
 		const metadata = await this._requireAgentSession(agentId).getMetadata();
-		return isJsonlSessionMetadata(metadata)
-			? sessionDirPath(metadata.path)
-			: undefined;
+		return isJsonlSessionMetadata(metadata) ? sessionDirPath(metadata.path) : undefined;
 	}
 
 	/** Persisted directory name used by the spawn-tree records. */
@@ -457,14 +380,9 @@ export class SessionManager {
 	}
 
 	/** Resolve one persisted session by its directory name, not its reusable id. */
-	async resolveAgentSessionByDir(
-		sessionDir: string,
-	): Promise<JsonlSessionMetadata> {
+	async resolveAgentSessionByDir(sessionDir: string): Promise<JsonlSessionMetadata> {
 		const sessions = await this.sessionRepo.list({ cwd: this._cwd });
-		const matches = sessions.filter(
-			(metadata) =>
-				sessionDirNameFromPath(sessionDirPath(metadata.path)) === sessionDir,
-		);
+		const matches = sessions.filter((metadata) => sessionDirNameFromPath(sessionDirPath(metadata.path)) === sessionDir);
 		if (matches.length !== 1) {
 			throw new AgentSessionResolutionError({
 				reason: matches.length > 1 ? "ambiguous" : "not_found",
@@ -479,24 +397,16 @@ export class SessionManager {
 	async openSessionByDir(
 		sessionDir: string,
 		agentId: AgentId,
-	): Promise<{
-		readonly metadata: JsonlSessionMetadata;
-		readonly session: Session<AgentSessionMetadata>;
-	}> {
+	): Promise<{ readonly metadata: JsonlSessionMetadata; readonly session: Session<AgentSessionMetadata> }> {
 		const metadata = await this.resolveAgentSessionByDir(sessionDir);
 		const session = await this.resumeAgentSession({ agentId, metadata });
 		return { metadata, session };
 	}
 
-	async appendAgentTreeRecord(
-		rootAgentId: AgentId,
-		record: AgentTreeRecord,
-	): Promise<void> {
+	async appendAgentTreeRecord(rootAgentId: AgentId, record: AgentTreeRecord): Promise<void> {
 		const sessionDir = await this.getAgentSessionDir(rootAgentId);
 		if (!sessionDir) {
-			throw new Error(
-				`Cannot persist an agent tree under ephemeral root ${rootAgentId}.`,
-			);
+			throw new Error(`Cannot persist an agent tree under ephemeral root ${rootAgentId}.`);
 		}
 		const paths = await this._agentTreePaths(sessionDir);
 		fileSystemValueOrThrow(
@@ -509,9 +419,7 @@ export class SessionManager {
 		);
 	}
 
-	async readAgentTreeRecords(
-		sessionDir: string,
-	): Promise<readonly AgentTreeRecord[]> {
+	async readAgentTreeRecords(sessionDir: string): Promise<readonly AgentTreeRecord[]> {
 		const absoluteDir = await this._resolveSessionDirPath(sessionDir);
 		const paths = await this._agentTreePaths(absoluteDir);
 		const exists = fileSystemValueOrThrow(
@@ -538,15 +446,10 @@ export class SessionManager {
 		return records;
 	}
 
-	async writeAgentParentPointer(
-		agentId: AgentId,
-		pointer: AgentParentPointer,
-	): Promise<void> {
+	async writeAgentParentPointer(agentId: AgentId, pointer: AgentParentPointer): Promise<void> {
 		const sessionDir = await this.getAgentSessionDir(agentId);
 		if (!sessionDir) {
-			throw new Error(
-				`Cannot persist an agent parent pointer for ephemeral agent ${agentId}.`,
-			);
+			throw new Error(`Cannot persist an agent parent pointer for ephemeral agent ${agentId}.`);
 		}
 		const paths = await this._agentTreePaths(sessionDir);
 		fileSystemValueOrThrow(
@@ -559,12 +462,8 @@ export class SessionManager {
 		);
 	}
 
-	async readAgentParentPointer(
-		sessionDir: string,
-	): Promise<AgentParentPointer | undefined> {
-		return await this._readAgentParentPointerAtPath(
-			await this._resolveSessionDirPath(sessionDir),
-		);
+	async readAgentParentPointer(sessionDir: string): Promise<AgentParentPointer | undefined> {
+		return await this._readAgentParentPointerAtPath(await this._resolveSessionDirPath(sessionDir));
 	}
 
 	// Retraction for provisional prompt records (expansion/transform entries
@@ -574,10 +473,7 @@ export class SessionManager {
 	// branch is left untouched.
 	async retractAgentSessionEntries(
 		agentId: AgentId,
-		options: {
-			readonly lastEntryId: string;
-			readonly previousLeafId: string | null;
-		},
+		options: { readonly lastEntryId: string; readonly previousLeafId: string | null },
 	): Promise<boolean> {
 		const session = this._requireAgentSession(agentId);
 		if ((await session.getLeafId()) !== options.lastEntryId) return false;
@@ -585,44 +481,23 @@ export class SessionManager {
 		return true;
 	}
 
-	async appendCommandExpansionEntry(
-		agentId: AgentId,
-		data: CommandExpansionEntryData,
-	): Promise<string> {
-		return await this._requireAgentSession(agentId).appendCustomEntry(
-			COMMAND_EXPANSION_CUSTOM_TYPE,
-			data,
-		);
+	async appendCommandExpansionEntry(agentId: AgentId, data: CommandExpansionEntryData): Promise<string> {
+		return await this._requireAgentSession(agentId).appendCustomEntry(COMMAND_EXPANSION_CUSTOM_TYPE, data);
 	}
 
-	async appendInputTransformEntry(
-		agentId: AgentId,
-		data: InputTransformEntryData,
-	): Promise<string> {
-		return await this._requireAgentSession(agentId).appendCustomEntry(
-			INPUT_TRANSFORM_CUSTOM_TYPE,
-			data,
-		);
+	async appendInputTransformEntry(agentId: AgentId, data: InputTransformEntryData): Promise<string> {
+		return await this._requireAgentSession(agentId).appendCustomEntry(INPUT_TRANSFORM_CUSTOM_TYPE, data);
 	}
 
-	async appendExtensionMessageEntry(
-		agentId: AgentId,
-		data: ExtensionMessageEntryData,
-	): Promise<string> {
-		return await this._requireAgentSession(agentId).appendCustomEntry(
-			EXTENSION_MESSAGE_CUSTOM_TYPE,
-			data,
-		);
+	async appendExtensionMessageEntry(agentId: AgentId, data: ExtensionMessageEntryData): Promise<string> {
+		return await this._requireAgentSession(agentId).appendCustomEntry(EXTENSION_MESSAGE_CUSTOM_TYPE, data);
 	}
 
 	async appendExtensionInputPresentationEntry(
 		agentId: AgentId,
 		data: ExtensionInputPresentationEntryData,
 	): Promise<string> {
-		return await this._requireAgentSession(agentId).appendCustomEntry(
-			EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE,
-			data,
-		);
+		return await this._requireAgentSession(agentId).appendCustomEntry(EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE, data);
 	}
 
 	/**
@@ -634,16 +509,11 @@ export class SessionManager {
 	 * runtime already has open, that live handle answers - opening a second
 	 * handle to the same file would read around its unflushed writes.
 	 */
-	async readSessionSnapshot(
-		reference: string,
-	): Promise<AgentSessionTreeSnapshot> {
+	async readSessionSnapshot(reference: string): Promise<AgentSessionTreeSnapshot> {
 		const metadata = await this.resolveAgentSessionReference(reference);
 		const live = await this._findOpenSession(metadata.path);
 		const session = live ?? (await this.sessionRepo.open(metadata));
-		return {
-			...(await this._snapshotSession(session)),
-			entries: await session.getEntries(),
-		};
+		return { ...(await this._snapshotSession(session)), entries: await session.getEntries() };
 	}
 
 	/**
@@ -666,16 +536,12 @@ export class SessionManager {
 	resolveSessionHandle(handle: string): string {
 		const path = this._sessionPathsByHandle.get(handle);
 		if (!path) {
-			throw new Error(
-				`Unknown session handle: ${handle}. Handles come from listing sessions.`,
-			);
+			throw new Error(`Unknown session handle: ${handle}. Handles come from listing sessions.`);
 		}
 		return path;
 	}
 
-	private async _findOpenSession(
-		path: string,
-	): Promise<Session<AgentSessionMetadata> | undefined> {
+	private async _findOpenSession(path: string): Promise<Session<AgentSessionMetadata> | undefined> {
 		for (const session of this._agentSessions.values()) {
 			const metadata = await session.getMetadata();
 			if (isJsonlSessionMetadata(metadata) && metadata.path === path) {
@@ -704,8 +570,7 @@ export class SessionManager {
 		extensionId: string,
 		type?: string,
 	): Promise<AgentExtensionCustomEntry<T>[]> {
-		const localType =
-			type === undefined ? undefined : normalizeExtensionCustomType(type);
+		const localType = type === undefined ? undefined : normalizeExtensionCustomType(type);
 		const session = this._requireAgentSession(agentId);
 		const entries = await this._getFullBranch(session);
 		const prefix = toPersistedExtensionCustomTypePrefix(extensionId);
@@ -721,16 +586,10 @@ export class SessionManager {
 		return result;
 	}
 
-	private async _rememberAgentSessionDir(
-		agentId: AgentId,
-		session: Session<AgentSessionMetadata>,
-	): Promise<void> {
+	private async _rememberAgentSessionDir(agentId: AgentId, session: Session<AgentSessionMetadata>): Promise<void> {
 		const metadata = await session.getMetadata();
 		if (!isJsonlSessionMetadata(metadata)) return;
-		this._agentSessionDirs.set(
-			agentId,
-			sessionDirNameFromPath(sessionDirPath(metadata.path)),
-		);
+		this._agentSessionDirs.set(agentId, sessionDirNameFromPath(sessionDirPath(metadata.path)));
 	}
 
 	private async _resolveSessionDirPath(sessionDir: string): Promise<string> {
@@ -738,11 +597,9 @@ export class SessionManager {
 		return sessionDirPath(metadata.path);
 	}
 
-	private async _agentTreePaths(sessionDir: string): Promise<{
-		readonly dir: string;
-		readonly tree: string;
-		readonly parent: string;
-	}> {
+	private async _agentTreePaths(
+		sessionDir: string,
+	): Promise<{ readonly dir: string; readonly tree: string; readonly parent: string }> {
 		const dir = fileSystemValueOrThrow(
 			await this._fs.joinPath([sessionDir, AGENTS_DIR_NAME]),
 			`Failed to resolve agent tree directory in ${sessionDir}`,
@@ -760,9 +617,7 @@ export class SessionManager {
 		};
 	}
 
-	private async _readAgentParentPointerAtPath(
-		sessionDir: string,
-	): Promise<AgentParentPointer | undefined> {
+	private async _readAgentParentPointerAtPath(sessionDir: string): Promise<AgentParentPointer | undefined> {
 		const paths = await this._agentTreePaths(sessionDir);
 		const exists = fileSystemValueOrThrow(
 			await this._fs.exists(paths.parent),
@@ -801,22 +656,16 @@ export class SessionManager {
 			id: options.agentId,
 			cwd: this._cwd,
 			parentSessionPath: options.parentSessionPath,
-			metadata: {
-				profile: toAgentProfileReference(options.agentProfile),
-			},
+			metadata: { profile: toAgentProfileReference(options.agentProfile) },
 		});
 	}
 
-	private async _createEphemeralAgentSession(
-		agentId: AgentId,
-	): Promise<Session<SessionMetadata>> {
+	private async _createEphemeralAgentSession(agentId: AgentId): Promise<Session<SessionMetadata>> {
 		const metadata = await this._memorySessionStore.create({ id: agentId });
 		return toSession(await this._memorySessionStore.open(metadata));
 	}
 
-	private _requireAgentSession(
-		agentId: AgentId,
-	): Session<AgentSessionMetadata> {
+	private _requireAgentSession(agentId: AgentId): Session<AgentSessionMetadata> {
 		const session = this._agentSessions.get(agentId);
 		if (!session) {
 			throw new Error(`Unknown agent session: ${agentId}`);
@@ -827,9 +676,7 @@ export class SessionManager {
 	// pi-agent-core's public branch is compaction-aware and may start at a
 	// retained-tail checkpoint. WIDI still needs the complete active path for
 	// timeline hydration, extension state, and durable runtime configuration.
-	private async _getFullBranch(
-		session: Session<AgentSessionMetadata>,
-	): Promise<SessionTreeEntry[]> {
+	private async _getFullBranch(session: Session<AgentSessionMetadata>): Promise<SessionTreeEntry[]> {
 		const entries: SessionTreeEntry[] = [];
 		const visited = new Set<string>();
 		let entryId = await session.getLeafId();
@@ -848,9 +695,7 @@ export class SessionManager {
 		return entries;
 	}
 
-	private async _snapshotSession(
-		session: Session<AgentSessionMetadata>,
-	): Promise<AgentSessionSnapshot> {
+	private async _snapshotSession(session: Session<AgentSessionMetadata>): Promise<AgentSessionSnapshot> {
 		return {
 			metadata: await session.getMetadata(),
 			name: await session.getSessionName(),
@@ -860,14 +705,9 @@ export class SessionManager {
 	}
 }
 
-function isJsonlSessionMetadata(
-	metadata: AgentSessionMetadata,
-): metadata is JsonlSessionMetadata {
+function isJsonlSessionMetadata(metadata: AgentSessionMetadata): metadata is JsonlSessionMetadata {
 	return (
-		"path" in metadata &&
-		typeof metadata.path === "string" &&
-		"cwd" in metadata &&
-		typeof metadata.cwd === "string"
+		"path" in metadata && typeof metadata.path === "string" && "cwd" in metadata && typeof metadata.cwd === "string"
 	);
 }
 
@@ -881,9 +721,7 @@ function fileSystemValueOrThrow<TValue>(
 	return result.value;
 }
 
-function toAgentSessionCandidate(
-	metadata: JsonlSessionMetadata,
-): AgentSessionCandidate {
+function toAgentSessionCandidate(metadata: JsonlSessionMetadata): AgentSessionCandidate {
 	return {
 		id: metadata.id,
 		path: metadata.path,
@@ -936,9 +774,7 @@ function normalizeExtensionCustomType(type: string): string {
 		throw new Error("Extension custom entry type must not be empty.");
 	}
 	if (!EXTENSION_CUSTOM_TYPE_PATTERN.test(normalized)) {
-		throw new Error(
-			"Extension custom entry type must contain only letters, numbers, '.', '_', ':', and '-'.",
-		);
+		throw new Error("Extension custom entry type must contain only letters, numbers, '.', '_', ':', and '-'.");
 	}
 	return normalized;
 }
@@ -950,22 +786,12 @@ function normalizeExtensionCustomType(type: string): string {
  * branch - while the naming rule has to stay here, next to the reader that
  * matches on it.
  */
-export function toExtensionCustomType(
-	extensionId: string,
-	type: string,
-	data?: unknown,
-): string {
+export function toExtensionCustomType(extensionId: string, type: string, data?: unknown): string {
 	assertJsonSerializable(data);
-	return toPersistedExtensionCustomType(
-		extensionId,
-		normalizeExtensionCustomType(type),
-	);
+	return toPersistedExtensionCustomType(extensionId, normalizeExtensionCustomType(type));
 }
 
-function toPersistedExtensionCustomType(
-	extensionId: string,
-	localType: string,
-): string {
+function toPersistedExtensionCustomType(extensionId: string, localType: string): string {
 	return `${toPersistedExtensionCustomTypePrefix(extensionId)}${localType}`;
 }
 
@@ -979,19 +805,14 @@ function assertJsonSerializable(data: unknown): void {
 	try {
 		serialized = JSON.stringify(data);
 	} catch (error) {
-		throw new Error(
-			`Extension custom entry data must be JSON serializable: ${formatError(error)}`,
-		);
+		throw new Error(`Extension custom entry data must be JSON serializable: ${formatError(error)}`);
 	}
 	if (serialized === undefined) {
 		throw new Error("Extension custom entry data must be JSON serializable.");
 	}
 }
 
-function toExtensionCustomEntry<T>(
-	entry: SessionTreeEntry,
-	prefix: string,
-): AgentExtensionCustomEntry<T> | undefined {
+function toExtensionCustomEntry<T>(entry: SessionTreeEntry, prefix: string): AgentExtensionCustomEntry<T> | undefined {
 	if (entry.type !== "custom") return undefined;
 	if (!entry.customType.startsWith(prefix)) return undefined;
 	const customEntry: AgentExtensionCustomEntry<T> = {

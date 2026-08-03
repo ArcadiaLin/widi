@@ -1,9 +1,5 @@
 import { type Static, Type } from "typebox";
-import {
-	type BackgroundJob,
-	type BackgroundJobStatus,
-	backgroundJobToolLabel,
-} from "../../background/index.ts";
+import { type BackgroundJob, type BackgroundJobStatus, backgroundJobToolLabel } from "../../background/index.ts";
 import type { ToolDefinition } from "../types.ts";
 import { waitForSettlements } from "./settlement-wait.ts";
 
@@ -60,10 +56,7 @@ export interface KillJobDetails {
  * before dying) still arrives as its normal background job result message -
  * kill does not suppress t1.
  */
-export function createKillJobToolDefinition(): ToolDefinition<
-	typeof killJobSchema,
-	KillJobDetails
-> {
+export function createKillJobToolDefinition(): ToolDefinition<typeof killJobSchema, KillJobDetails> {
 	return {
 		name: "kill_job",
 		label: "kill_job",
@@ -75,12 +68,7 @@ export function createKillJobToolDefinition(): ToolDefinition<
 			const table = context.backgroundJobTable;
 			if (!table) {
 				return {
-					content: [
-						{
-							type: "text",
-							text: "No background job registry is available, so there is nothing to kill.",
-						},
-					],
+					content: [{ type: "text", text: "No background job registry is available, so there is nothing to kill." }],
 					details: { jobs: [] },
 				};
 			}
@@ -115,12 +103,7 @@ export function createKillJobToolDefinition(): ToolDefinition<
 							timeoutMs,
 							signal: context.signal,
 							onSettled: (job, outcome) =>
-								statuses.set(job.id, {
-									jobId: job.id,
-									toolName: job.toolName,
-									name: job.name,
-									state: outcome.status,
-								}),
+								statuses.set(job.id, { jobId: job.id, toolName: job.toolName, name: job.name, state: outcome.status }),
 						})
 					: undefined;
 			// The listener drains `pending` as jobs settle; snapshot the ids first.
@@ -131,21 +114,11 @@ export function createKillJobToolDefinition(): ToolDefinition<
 
 			// Whatever is still pending got the abort but no settlement in time.
 			for (const [id, job] of pending) {
-				statuses.set(id, {
-					jobId: id,
-					toolName: job.toolName,
-					name: job.name,
-					state: "aborting",
-				});
+				statuses.set(id, { jobId: id, toolName: job.toolName, name: job.name, state: "aborting" });
 			}
 
-			const jobs = requestedIds.map(
-				(id) => statuses.get(id) ?? { jobId: id, state: "unknown" as const },
-			);
-			return {
-				content: [{ type: "text", text: formatKillSummary(jobs) }],
-				details: { jobs },
-			};
+			const jobs = requestedIds.map((id) => statuses.get(id) ?? { jobId: id, state: "unknown" as const });
+			return { content: [{ type: "text", text: formatKillSummary(jobs) }], details: { jobs } };
 		},
 	};
 }
@@ -165,9 +138,7 @@ function formatKillSummary(jobs: readonly KillJobJobStatus[]): string {
 		return "No matching background jobs to kill.";
 	}
 	const lines = jobs.map((job) => {
-		const label = job.toolName
-			? ` (${backgroundJobToolLabel({ toolName: job.toolName, name: job.name })})`
-			: "";
+		const label = job.toolName ? ` (${backgroundJobToolLabel({ toolName: job.toolName, name: job.name })})` : "";
 		switch (job.state) {
 			case "cancelled":
 				return `- ${job.jobId}${label}: cancelled`;

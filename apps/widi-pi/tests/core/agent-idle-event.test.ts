@@ -8,10 +8,7 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentHarnessEvent } from "@widi/agent-core";
 import { describe, expect, it, vi } from "vitest";
-import type {
-	AgentOrchestrator,
-	OrchestratorEvent,
-} from "../../src/core/agent-orchestrator.ts";
+import type { AgentOrchestrator, OrchestratorEvent } from "../../src/core/agent-orchestrator.ts";
 import {
 	createOrchestrator,
 	defaultModel,
@@ -38,18 +35,11 @@ async function emitHarnessEvent(
 	event: AgentHarnessEvent,
 ): Promise<void> {
 	await (
-		orchestrator as unknown as {
-			_handleAgentHarnessEvent(
-				agentId: string,
-				event: AgentHarnessEvent,
-			): Promise<void>;
-		}
+		orchestrator as unknown as { _handleAgentHarnessEvent(agentId: string, event: AgentHarnessEvent): Promise<void> }
 	)._handleAgentHarnessEvent(agentId, event);
 }
 
-function assistantMessage(
-	stopReason: AssistantMessage["stopReason"] = "stop",
-): AssistantMessage {
+function assistantMessage(stopReason: AssistantMessage["stopReason"] = "stop"): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [{ type: "text", text: "turn" }],
@@ -69,20 +59,14 @@ function assistantMessage(
 	};
 }
 
-function turnEnd(
-	message: AssistantMessage = assistantMessage(),
-): AgentHarnessEvent {
+function turnEnd(message: AssistantMessage = assistantMessage()): AgentHarnessEvent {
 	return { type: "turn_end", message, toolResults: [] };
 }
 
 function queueUpdate(steerCount: number): AgentHarnessEvent {
 	return {
 		type: "queue_update",
-		steer: Array.from({ length: steerCount }, () => ({
-			role: "user" as const,
-			content: "queued",
-			timestamp: 1,
-		})),
+		steer: Array.from({ length: steerCount }, () => ({ role: "user" as const, content: "queued", timestamp: 1 })),
 		followUp: [],
 		nextTurn: [],
 	};
@@ -101,14 +85,9 @@ function createDeferred<T>(): Deferred<T> {
 	return { promise, resolve };
 }
 
-async function startPromptRun(
-	orchestrator: AgentOrchestrator,
-	agentId: string,
-): Promise<Deferred<AssistantMessage>> {
+async function startPromptRun(orchestrator: AgentOrchestrator, agentId: string): Promise<Deferred<AssistantMessage>> {
 	const run = createDeferred<AssistantMessage>();
-	const prompt = vi
-		.spyOn(requireAgentHarness(orchestrator, agentId), "prompt")
-		.mockReturnValue(run.promise);
+	const prompt = vi.spyOn(requireAgentHarness(orchestrator, agentId), "prompt").mockReturnValue(run.promise);
 	const accepted = orchestrator.sendMessage({
 		source: { kind: "system", name: "idle-event-test" },
 		targetAgentId: agentId,
@@ -128,11 +107,7 @@ describe("agent_idle", () => {
 		const agentId = await orchestrator.spawnAgent();
 
 		expect(events).toHaveLength(1);
-		expect(events[0]).toMatchObject({
-			agentId,
-			reason: "ready",
-			liveJobCount: 0,
-		});
+		expect(events[0]).toMatchObject({ agentId, reason: "ready", liveJobCount: 0 });
 	});
 
 	it("fires once per arrival at idle, not once per confirming fact", async () => {
@@ -165,23 +140,13 @@ describe("agent_idle", () => {
 		const run = await startPromptRun(orchestrator, agentId);
 		const message = assistantMessage("aborted");
 		await emitHarnessEvent(orchestrator, agentId, turnEnd(message));
-		await emitHarnessEvent(orchestrator, agentId, {
-			type: "agent_end",
-			messages: [message],
-		});
-		await emitHarnessEvent(orchestrator, agentId, {
-			type: "settled",
-			nextTurnCount: 0,
-		});
+		await emitHarnessEvent(orchestrator, agentId, { type: "agent_end", messages: [message] });
+		await emitHarnessEvent(orchestrator, agentId, { type: "settled", nextTurnCount: 0 });
 		expect(events).toHaveLength(1);
 		run.resolve(message);
 		await vi.waitFor(() => expect(events).toHaveLength(2));
 		// AgentHarness emits abort only after the run promise has settled.
-		await emitHarnessEvent(orchestrator, agentId, {
-			type: "abort",
-			clearedSteer: [],
-			clearedFollowUp: [],
-		});
+		await emitHarnessEvent(orchestrator, agentId, { type: "abort", clearedSteer: [], clearedFollowUp: [] });
 
 		expect(events).toHaveLength(2);
 		expect(events[1]?.reason).toBe("aborted");
@@ -198,9 +163,7 @@ describe("agent_idle", () => {
 		await emitHarnessEvent(orchestrator, agentId, queueUpdate(1));
 		await emitHarnessEvent(orchestrator, agentId, turnEnd());
 		run.resolve(assistantMessage());
-		await vi.waitFor(() =>
-			expect(orchestrator.getAgentStatus(agentId)).toBe("idle"),
-		);
+		await vi.waitFor(() => expect(orchestrator.getAgentStatus(agentId)).toBe("idle"));
 		expect(events).toHaveLength(1);
 
 		// Draining the queue is the fact that completes the judgement.

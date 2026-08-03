@@ -19,10 +19,7 @@ export function parseLineCommand(text: string): ParsedLineCommand | undefined {
 	const whitespaceIndex = /\s/u.exec(body)?.index ?? -1;
 	let separatorIndex = -1;
 	let colonSyntax = false;
-	if (
-		colonIndex !== -1 &&
-		(whitespaceIndex === -1 || colonIndex < whitespaceIndex)
-	) {
+	if (colonIndex !== -1 && (whitespaceIndex === -1 || colonIndex < whitespaceIndex)) {
 		separatorIndex = colonIndex;
 		colonSyntax = true;
 	} else {
@@ -30,8 +27,7 @@ export function parseLineCommand(text: string): ParsedLineCommand | undefined {
 	}
 	const rawName = separatorIndex === -1 ? body : body.slice(0, separatorIndex);
 	if (!isCommandName(rawName)) return undefined;
-	const rawArgument =
-		separatorIndex === -1 ? "" : body.slice(separatorIndex + 1);
+	const rawArgument = separatorIndex === -1 ? "" : body.slice(separatorIndex + 1);
 	return {
 		name: rawName,
 		hasArgument: separatorIndex !== -1,
@@ -48,14 +44,8 @@ export function isCommandName(name: string): boolean {
  * The remainder is kept verbatim so free-form trailing instructions survive
  * quoting and whitespace exactly as typed.
  */
-export function splitLeadingToken(argument: string): {
-	token: string;
-	rest: string;
-} {
+export function splitLeadingToken(argument: string): { token: string; rest: string } {
 	const separatorIndex = /\s/u.exec(argument)?.index ?? -1;
 	if (separatorIndex === -1) return { token: argument, rest: "" };
-	return {
-		token: argument.slice(0, separatorIndex),
-		rest: argument.slice(separatorIndex + 1).trim(),
-	};
+	return { token: argument.slice(0, separatorIndex), rest: argument.slice(separatorIndex + 1).trim() };
 }

@@ -21,10 +21,7 @@
 import { formatError } from "../../utils/errors.ts";
 import { utf8ByteLength } from "../../utils/text.ts";
 import { jobOutputFileName, type SessionJobStore } from "./job-persistence.ts";
-import {
-	formatBackgroundJobResultMessageText,
-	stopReasonFromOutcome,
-} from "./messages.ts";
+import { formatBackgroundJobResultMessageText, stopReasonFromOutcome } from "./messages.ts";
 import {
 	BackgroundJobOutput,
 	DEFAULT_BACKGROUND_JOB_INCREMENT_MAX_BYTES,
@@ -154,21 +151,13 @@ export class BackgroundJobRuntime {
 	private _nextJobId = 0;
 	private _nextGeneration = 0;
 
-	constructor(
-		ports: BackgroundJobRuntimePorts,
-		options: BackgroundJobRuntimeOptions = {},
-	) {
+	constructor(ports: BackgroundJobRuntimePorts, options: BackgroundJobRuntimeOptions = {}) {
 		this._ports = ports;
-		this._createJobId =
-			options.createJobId ?? (() => `job-${++this._nextJobId}`);
-		this._progressThrottleMs =
-			options.progressThrottleMs ?? DEFAULT_BACKGROUND_JOB_PROGRESS_THROTTLE_MS;
-		this._reportThrottleMs =
-			options.reportThrottleMs ?? DEFAULT_BACKGROUND_JOB_REPORT_THROTTLE_MS;
-		this._outputCeilingBytes =
-			options.outputCeilingBytes ?? DEFAULT_BACKGROUND_JOB_OUTPUT_CEILING_BYTES;
-		this._incrementMaxBytes =
-			options.incrementMaxBytes ?? DEFAULT_BACKGROUND_JOB_INCREMENT_MAX_BYTES;
+		this._createJobId = options.createJobId ?? (() => `job-${++this._nextJobId}`);
+		this._progressThrottleMs = options.progressThrottleMs ?? DEFAULT_BACKGROUND_JOB_PROGRESS_THROTTLE_MS;
+		this._reportThrottleMs = options.reportThrottleMs ?? DEFAULT_BACKGROUND_JOB_REPORT_THROTTLE_MS;
+		this._outputCeilingBytes = options.outputCeilingBytes ?? DEFAULT_BACKGROUND_JOB_OUTPUT_CEILING_BYTES;
+		this._incrementMaxBytes = options.incrementMaxBytes ?? DEFAULT_BACKGROUND_JOB_INCREMENT_MAX_BYTES;
 	}
 
 	/**
@@ -177,20 +166,14 @@ export class BackgroundJobRuntime {
 	 * attach of the same id is a new generation: it inherits nothing, and does
 	 * not become the settler of jobs the previous generation owed.
 	 */
-	async attachAgent(input: {
-		agentId: string;
-		sessionId: string;
-	}): Promise<OwnerAttachment> {
+	async attachAgent(input: { agentId: string; sessionId: string }): Promise<OwnerAttachment> {
 		this.detachAgent(input.agentId);
 		const state = this._createAttachment(input.agentId, input.sessionId);
 		// Registered before the await: a tool starting a job in the same tick must
 		// find its scope, and a detach during the open must invalidate it.
 		this._attachments.set(input.agentId, state);
 		try {
-			const store = await this._ports.openOwnerStore({
-				agentId: input.agentId,
-				sessionId: input.sessionId,
-			});
+			const store = await this._ports.openOwnerStore({ agentId: input.agentId, sessionId: input.sessionId });
 			// Detached or superseded while the store was opening: it belongs to
 			// nobody.
 			if (this._attachments.get(input.agentId) !== state) {
@@ -249,10 +232,7 @@ export class BackgroundJobRuntime {
 		for (const jobId of [...state.owed]) {
 			const record = this._jobs.get(jobId);
 			if (record) {
-				this._forceCancel(
-					record,
-					`Settler agent ${agentId} was disposed before it reported a result.`,
-				);
+				this._forceCancel(record, `Settler agent ${agentId} was disposed before it reported a result.`);
 			}
 		}
 		void state.tail.then(() => {
@@ -292,10 +272,7 @@ export class BackgroundJobRuntime {
 	 * Current rolling output tail of one job. Rejects rather than reading empty
 	 * for an unknown id, so a caller can tell "nothing yet" from "not a job".
 	 */
-	readJobOutput(
-		agentId: string,
-		jobId: string,
-	): JobResult<{ read: BackgroundJobReadResult }> {
+	readJobOutput(agentId: string, jobId: string): JobResult<{ read: BackgroundJobReadResult }> {
 		const record = this._jobs.get(jobId);
 		if (!record || record.ownerId !== agentId) {
 			return { ok: false, reason: "unknown_job" };
@@ -303,10 +280,7 @@ export class BackgroundJobRuntime {
 		if (!isObservable(record.state)) {
 			return { ok: false, reason: "not_backgrounded" };
 		}
-		return {
-			ok: true,
-			read: { job: this._snapshot(record), output: record.output.read() },
-		};
+		return { ok: true, read: { job: this._snapshot(record), output: record.output.read() } };
 	}
 
 	/**
@@ -349,21 +323,10 @@ export class BackgroundJobRuntime {
 	 * Settle a job from outside its owner. A forwarding seam for hosts that hold
 	 * an id rather than a capability, under the same authorization.
 	 */
-	settleJob(
-		agentId: string,
-		jobId: string,
-		outcome: BackgroundJobOutcome,
-		settledBy: string,
-	): JobResult {
+	settleJob(agentId: string, jobId: string, outcome: BackgroundJobOutcome, settledBy: string): JobResult {
 		const settler = this._current(settledBy);
 		if (!settler) return { ok: false, reason: "stale_attachment" };
-		return this._settleExternal(
-			settler.agentId,
-			settler.generation,
-			agentId,
-			jobId,
-			outcome,
-		);
+		return this._settleExternal(settler.agentId, settler.generation, agentId, jobId, outcome);
 	}
 
 	// -- attachment ---------------------------------------------------------
@@ -375,18 +338,12 @@ export class BackgroundJobRuntime {
 	}
 
 	/** Both must hold: the agent is attached, and this handle is its current one. */
-	private _resolve(
-		agentId: string,
-		generation: number,
-	): AttachmentState | undefined {
+	private _resolve(agentId: string, generation: number): AttachmentState | undefined {
 		const state = this._current(agentId);
 		return state?.generation === generation ? state : undefined;
 	}
 
-	private _createAttachment(
-		agentId: string,
-		sessionId: string,
-	): AttachmentState {
+	private _createAttachment(agentId: string, sessionId: string): AttachmentState {
 		const generation = ++this._nextGeneration;
 		// Capabilities resolve by (agentId, generation) on every call rather than
 		// closing over the state, which keeps the guard a single expression.
@@ -423,10 +380,8 @@ export class BackgroundJobRuntime {
 					? { ok: true, execution: this._startLocal(state, input) }
 					: { ok: false, reason: "stale_attachment" };
 			},
-			createExternal: (input) =>
-				this._createExternal(agentId, generation, input),
-			list: () =>
-				this._resolve(agentId, generation) ? this.listJobs(agentId) : [],
+			createExternal: (input) => this._createExternal(agentId, generation, input),
+			list: () => (this._resolve(agentId, generation) ? this.listJobs(agentId) : []),
 			read: (jobId) =>
 				this._resolve(agentId, generation)
 					? this.readJobOutput(agentId, jobId)
@@ -439,19 +394,9 @@ export class BackgroundJobRuntime {
 		};
 	}
 
-	private _createSettler(
-		agentId: string,
-		generation: number,
-	): BackgroundJobSettler {
+	private _createSettler(agentId: string, generation: number): BackgroundJobSettler {
 		return {
-			settle: (input) =>
-				this._settleExternal(
-					agentId,
-					generation,
-					input.ownerAgentId,
-					input.jobId,
-					input.outcome,
-				),
+			settle: (input) => this._settleExternal(agentId, generation, input.ownerAgentId, input.jobId, input.outcome),
 		};
 	}
 
@@ -484,10 +429,7 @@ export class BackgroundJobRuntime {
 
 	// -- job creation -------------------------------------------------------
 
-	private _startLocal(
-		state: AttachmentState,
-		input: StartLocalJobInput,
-	): BackgroundJobExecution {
+	private _startLocal(state: AttachmentState, input: StartLocalJobInput): BackgroundJobExecution {
 		const record = this._createRecord(state, input, LOCAL_ORIGIN);
 		return {
 			jobId: record.id,
@@ -497,9 +439,7 @@ export class BackgroundJobRuntime {
 			acceptBackground: () => this._acceptBackground(record),
 			settle: (outcome) => {
 				const disposition = this._settle(record, outcome);
-				return disposition === "ignored"
-					? { ok: false, reason: "unknown_job" }
-					: { ok: true, disposition };
+				return disposition === "ignored" ? { ok: false, reason: "unknown_job" } : { ok: true, disposition };
 			},
 		};
 	}
@@ -530,10 +470,7 @@ export class BackgroundJobRuntime {
 		const committed = await this._commitBackgrounded(state, record);
 		if (!committed.ok) return committed;
 		if (this._resolve(input.settlerAgentId, settler.generation) === undefined) {
-			this._forceCancel(
-				record,
-				`Settler agent ${input.settlerAgentId} was disposed before the assignment was sent.`,
-			);
+			this._forceCancel(record, `Settler agent ${input.settlerAgentId} was disposed before the assignment was sent.`);
 			return { ok: false, reason: "stale_attachment" };
 		}
 		return committed;
@@ -548,21 +485,14 @@ export class BackgroundJobRuntime {
 		const id = this._createJobId();
 		const startedAt = Date.now();
 		const controller = new AbortController();
-		const output = new BackgroundJobOutput(
-			DEFAULT_BACKGROUND_JOB_OUTPUT_MAX_BYTES,
-			{
-				incrementMaxBytes: this._incrementMaxBytes,
-				onAppend: () => this._onOutputAppend(id),
-			},
-		);
+		const output = new BackgroundJobOutput(DEFAULT_BACKGROUND_JOB_OUTPUT_MAX_BYTES, {
+			incrementMaxBytes: this._incrementMaxBytes,
+			onAppend: () => this._onOutputAppend(id),
+		});
 		const initialReport =
 			input.report === undefined
 				? undefined
-				: freezeReportSnapshot(
-						validateBackgroundJobReport(input.report),
-						1,
-						startedAt,
-					);
+				: freezeReportSnapshot(validateBackgroundJobReport(input.report), 1, startedAt);
 		const record: LiveJob = {
 			id,
 			ownerId: state.agentId,
@@ -602,9 +532,7 @@ export class BackgroundJobRuntime {
 	 * rather than awaited, which is the one place this runtime does not yet meet
 	 * its own persistence contract.
 	 */
-	private _acceptBackground(
-		record: LiveJob,
-	): JobResult<{ job: BackgroundJobSnapshot }> {
+	private _acceptBackground(record: LiveJob): JobResult<{ job: BackgroundJobSnapshot }> {
 		const state = this._resolve(record.ownerId, record.ownerGeneration);
 		if (!state) return { ok: false, reason: "stale_attachment" };
 		if (isTerminal(record.state)) return { ok: false, reason: "unknown_job" };
@@ -646,9 +574,7 @@ export class BackgroundJobRuntime {
 			await this._degrade(state, error);
 			return { ok: false, reason: "degraded" };
 		}
-		void this._enqueue(state, () =>
-			this._publishChange(state, { transition: "backgrounded", job }),
-		);
+		void this._enqueue(state, () => this._publishChange(state, { transition: "backgrounded", job }));
 		return { ok: true, job };
 	}
 
@@ -664,17 +590,13 @@ export class BackgroundJobRuntime {
 		if (isTerminal(record.state)) return;
 		record.stopReason ??= reason;
 		const state = this._attachments.get(record.ownerId);
-		const announce =
-			record.state === "backgrounded" && !record.controller.signal.aborted;
+		const announce = record.state === "backgrounded" && !record.controller.signal.aborted;
 		if (announce) {
 			record.state = "abort_requested";
 			if (state) {
 				const job = this._snapshot(record);
 				void this._enqueue(state, async () => {
-					await this._publishChange(state, {
-						transition: "abort_requested",
-						job,
-					});
+					await this._publishChange(state, { transition: "abort_requested", job });
 				});
 			}
 		}
@@ -700,10 +622,7 @@ export class BackgroundJobRuntime {
 	 * that order, which is why `settled` is a barrier. `inline` means the job
 	 * settled inside the pre-t0 window and was never observable at all.
 	 */
-	private _settle(
-		record: LiveJob,
-		outcome: BackgroundJobOutcome,
-	): "inline" | "backgrounded" | "ignored" {
+	private _settle(record: LiveJob, outcome: BackgroundJobOutcome): "inline" | "backgrounded" | "ignored" {
 		if (isTerminal(record.state)) return "ignored";
 		const observable = isObservable(record.state);
 		record.endedAt = Date.now();
@@ -733,18 +652,10 @@ export class BackgroundJobRuntime {
 				messageText,
 				...(outputTail.length === 0 ? undefined : { outputTail }),
 			});
-			await this._publishChange(state, {
-				transition: "settled",
-				job,
-				outcome,
-			});
+			await this._publishChange(state, { transition: "settled", job, outcome });
 			if (state.detached) return;
 			try {
-				await this._ports.deliverResult({
-					ownerAgentId: record.ownerId,
-					jobId: record.id,
-					body: messageText,
-				});
+				await this._ports.deliverResult({ ownerAgentId: record.ownerId, jobId: record.id, body: messageText });
 			} catch (error) {
 				// The port owns delivery policy, retries included. Reaching here means
 				// the owner can never take this result.
@@ -773,10 +684,7 @@ export class BackgroundJobRuntime {
 		if (!record || record.ownerId !== ownerAgentId) {
 			return { ok: false, reason: "unknown_job" };
 		}
-		if (
-			record.origin.kind !== "external" ||
-			record.origin.settlerId !== settlerId
-		) {
+		if (record.origin.kind !== "external" || record.origin.settlerId !== settlerId) {
 			return { ok: false, reason: "not_settler" };
 		}
 		// Matching the id is not enough: a re-attached agent must not inherit the
@@ -787,9 +695,7 @@ export class BackgroundJobRuntime {
 		if (!isObservable(record.state)) {
 			return { ok: false, reason: "not_backgrounded" };
 		}
-		return this._settle(record, outcome) === "ignored"
-			? { ok: false, reason: "unknown_job" }
-			: { ok: true };
+		return this._settle(record, outcome) === "ignored" ? { ok: false, reason: "unknown_job" } : { ok: true };
 	}
 
 	/** Drop a job from the live indexes. Its record stays readable to the tail. */
@@ -811,11 +717,7 @@ export class BackgroundJobRuntime {
 		// so it throws where that tool can see it.
 		const value = validateBackgroundJobReport(report);
 		record.reportRevision += 1;
-		record.report = freezeReportSnapshot(
-			value,
-			record.reportRevision,
-			Date.now(),
-		);
+		record.report = freezeReportSnapshot(value, record.reportRevision, Date.now());
 		if (isObservable(record.state)) {
 			record.reportDirty = true;
 			this._scheduleReport(record);
@@ -852,10 +754,7 @@ export class BackgroundJobRuntime {
 		});
 	}
 
-	private async _flushReport(
-		state: AttachmentState,
-		record: LiveJob,
-	): Promise<void> {
+	private async _flushReport(state: AttachmentState, record: LiveJob): Promise<void> {
 		const report = record.report;
 		if (!record.reportDirty || report === undefined) return;
 		record.reportDirty = false;
@@ -923,10 +822,7 @@ export class BackgroundJobRuntime {
 		});
 	}
 
-	private async _flushProgress(
-		state: AttachmentState,
-		record: LiveJob,
-	): Promise<void> {
+	private async _flushProgress(state: AttachmentState, record: LiveJob): Promise<void> {
 		const increment = record.output.drainIncrement();
 		if (!increment) return;
 		record.lastProgressAt = Date.now();
@@ -964,10 +860,7 @@ export class BackgroundJobRuntime {
 	 * Chain a side effect onto the owner's tail. The returned promise reflects this
 	 * task; the chain itself absorbs failures so one cannot stall the rest.
 	 */
-	private _enqueue(
-		state: AttachmentState,
-		task: () => Promise<void>,
-	): Promise<void> {
+	private _enqueue(state: AttachmentState, task: () => Promise<void>): Promise<void> {
 		const result = state.tail.then(task);
 		state.tail = result.catch(() => {});
 		return result;
@@ -982,9 +875,7 @@ export class BackgroundJobRuntime {
 			sessionId: state.sessionId,
 			toolName: record.toolName,
 			...(record.name === undefined ? undefined : { name: record.name }),
-			...(record.description === undefined
-				? undefined
-				: { description: record.description }),
+			...(record.description === undefined ? undefined : { description: record.description }),
 			origin: record.origin,
 			startedAt: record.startedAt,
 			backgroundedAt: record.backgroundedAt ?? record.startedAt,
@@ -993,10 +884,7 @@ export class BackgroundJobRuntime {
 	}
 
 	/** Append, or throw. Used where a failure must change what the caller does. */
-	private async _append(
-		state: AttachmentState,
-		record: JobRecord,
-	): Promise<void> {
+	private async _append(state: AttachmentState, record: JobRecord): Promise<void> {
 		if (!state.store) return;
 		await state.store.append(record);
 	}
@@ -1005,10 +893,7 @@ export class BackgroundJobRuntime {
 	 * Append after t0, where liveness outweighs the history: a job the model was
 	 * told about cannot be un-backgrounded because a write failed.
 	 */
-	private async _write(
-		state: AttachmentState,
-		record: JobRecord,
-	): Promise<void> {
+	private async _write(state: AttachmentState, record: JobRecord): Promise<void> {
 		try {
 			await this._append(state, record);
 		} catch (error) {
@@ -1016,10 +901,7 @@ export class BackgroundJobRuntime {
 		}
 	}
 
-	private async _degrade(
-		state: AttachmentState,
-		error: unknown,
-	): Promise<void> {
+	private async _degrade(state: AttachmentState, error: unknown): Promise<void> {
 		state.health = "degraded";
 		if (state.degradedReported) return;
 		state.degradedReported = true;
@@ -1031,10 +913,7 @@ export class BackgroundJobRuntime {
 		});
 	}
 
-	private async _publishChange(
-		state: AttachmentState,
-		change: BackgroundJobChange,
-	): Promise<void> {
+	private async _publishChange(state: AttachmentState, change: BackgroundJobChange): Promise<void> {
 		if (state.detached) return;
 		// Local watchers first and synchronously: a waiting tool must not learn of a
 		// settlement later than a surface does.
@@ -1063,9 +942,7 @@ export class BackgroundJobRuntime {
 		}
 	}
 
-	private async _diagnose(
-		diagnostic: Parameters<BackgroundJobRuntimePorts["diagnose"]>[0],
-	): Promise<void> {
+	private async _diagnose(diagnostic: Parameters<BackgroundJobRuntimePorts["diagnose"]>[0]): Promise<void> {
 		try {
 			await this._ports.diagnose(diagnostic);
 		} catch {
@@ -1083,19 +960,13 @@ export class BackgroundJobRuntime {
 			toolCallId: record.toolCallId,
 			toolName: record.toolName,
 			...(record.name === undefined ? undefined : { name: record.name }),
-			...(record.description === undefined
-				? undefined
-				: { description: record.description }),
+			...(record.description === undefined ? undefined : { description: record.description }),
 			...(record.report === undefined ? undefined : { report: record.report }),
 			state: record.state as ObservableBackgroundJobState,
-			...(record.stopReason === undefined
-				? undefined
-				: { stopReason: record.stopReason }),
+			...(record.stopReason === undefined ? undefined : { stopReason: record.stopReason }),
 			startedAt: record.startedAt,
 			backgroundedAt: record.backgroundedAt ?? record.startedAt,
-			...(record.endedAt === undefined
-				? undefined
-				: { endedAt: record.endedAt }),
+			...(record.endedAt === undefined ? undefined : { endedAt: record.endedAt }),
 			totalBytesSeen: record.output.totalBytesSeen,
 			tailDroppedBytes: record.output.tailDroppedBytes,
 			progressDroppedBytes: record.output.progressDroppedBytes,
@@ -1124,47 +995,27 @@ function ceilingReason(ceilingBytes: number): string {
  * Validate, detach, and deeply freeze a tool-published report: later mutation of
  * the tool's input object cannot change the job without a new revision.
  */
-function validateBackgroundJobReport(
-	report: BackgroundJobReport,
-): BackgroundJobReport {
+function validateBackgroundJobReport(report: BackgroundJobReport): BackgroundJobReport {
 	if (typeof report !== "object" || report === null) {
 		throw new TypeError("Background job report must be an object.");
 	}
-	assertBoundedReportText(
-		report.kind,
-		"Background job report kind",
-		MAX_BACKGROUND_JOB_REPORT_KIND_BYTES,
-	);
+	assertBoundedReportText(report.kind, "Background job report kind", MAX_BACKGROUND_JOB_REPORT_KIND_BYTES);
 	if (!Number.isInteger(report.schemaVersion) || report.schemaVersion < 1) {
-		throw new TypeError(
-			"Background job report schemaVersion must be a positive integer.",
-		);
+		throw new TypeError("Background job report schemaVersion must be a positive integer.");
 	}
 	if (report.summary !== undefined) {
-		assertBoundedReportText(
-			report.summary,
-			"Background job report summary",
-			MAX_BACKGROUND_JOB_REPORT_SUMMARY_BYTES,
-		);
+		assertBoundedReportText(report.summary, "Background job report summary", MAX_BACKGROUND_JOB_REPORT_SUMMARY_BYTES);
 	}
 	const progress = report.progress;
 	if (progress !== undefined) {
 		if (typeof progress !== "object" || progress === null) {
 			throw new TypeError("Background job report progress must be an object.");
 		}
-		assertNonNegativeReportInteger(
-			progress.completed,
-			"Background job report progress completed",
-		);
+		assertNonNegativeReportInteger(progress.completed, "Background job report progress completed");
 		if (progress.total !== undefined) {
-			assertNonNegativeReportInteger(
-				progress.total,
-				"Background job report progress total",
-			);
+			assertNonNegativeReportInteger(progress.total, "Background job report progress total");
 			if (progress.completed > progress.total) {
-				throw new RangeError(
-					"Background job report progress completed cannot exceed total.",
-				);
+				throw new RangeError("Background job report progress completed cannot exceed total.");
 			}
 		}
 	}
@@ -1177,9 +1028,7 @@ function validateBackgroundJobReport(
 			: {
 					progress: {
 						completed: progress.completed,
-						...(progress.total === undefined
-							? undefined
-							: { total: progress.total }),
+						...(progress.total === undefined ? undefined : { total: progress.total }),
 					},
 				}),
 		...(report.data === undefined ? undefined : { data: report.data }),
@@ -1189,9 +1038,7 @@ function validateBackgroundJobReport(
 		serialized = JSON.stringify(normalized);
 	} catch (error) {
 		const message = error instanceof Error ? `: ${error.message}` : "";
-		throw new TypeError(
-			`Background job report must be JSON serializable${message}.`,
-		);
+		throw new TypeError(`Background job report must be JSON serializable${message}.`);
 	}
 	if (serialized === undefined) {
 		throw new TypeError("Background job report must be JSON serializable.");
@@ -1206,11 +1053,7 @@ function validateBackgroundJobReport(
 	return detached;
 }
 
-function assertBoundedReportText(
-	value: string,
-	label: string,
-	maxBytes: number,
-): void {
+function assertBoundedReportText(value: string, label: string, maxBytes: number): void {
 	if (typeof value !== "string" || value.trim().length === 0) {
 		throw new TypeError(`${label} must be a non-empty string.`);
 	}

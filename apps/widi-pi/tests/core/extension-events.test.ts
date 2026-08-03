@@ -5,20 +5,10 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import type {
-	AgentOrchestrator,
-	OrchestratorEvent,
-} from "../../src/core/agent-orchestrator.ts";
-import type {
-	ExtensionActivationApi,
-	ExtensionEventEnvelope,
-} from "../../src/core/extension/api.ts";
+import type { AgentOrchestrator, OrchestratorEvent } from "../../src/core/agent-orchestrator.ts";
+import type { ExtensionActivationApi, ExtensionEventEnvelope } from "../../src/core/extension/api.ts";
 import { MAX_EXTENSION_EVENT_DISPATCH_DEPTH } from "../../src/core/extension/index.ts";
-import {
-	createOrchestrator,
-	MemoryExecutionEnv,
-	requireAgentRecord,
-} from "../helpers/orchestrator.ts";
+import { createOrchestrator, MemoryExecutionEnv, requireAgentRecord } from "../helpers/orchestrator.ts";
 
 function requireActions(orchestrator: AgentOrchestrator, agentId: string) {
 	const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
@@ -29,10 +19,7 @@ function requireActions(orchestrator: AgentOrchestrator, agentId: string) {
 function collectDiagnostics(
 	orchestrator: AgentOrchestrator,
 ): Extract<OrchestratorEvent, { type: "diagnostic" }>["diagnostic"][] {
-	const diagnostics: Extract<
-		OrchestratorEvent,
-		{ type: "diagnostic" }
-	>["diagnostic"][] = [];
+	const diagnostics: Extract<OrchestratorEvent, { type: "diagnostic" }>["diagnostic"][] = [];
 	orchestrator.subscribe((event) => {
 		if (event.type === "diagnostic") diagnostics.push(event.diagnostic);
 	});
@@ -42,8 +29,7 @@ function collectDiagnostics(
 describe("extension event bus", () => {
 	it("delivers to every live runtime, including the sender's own", async () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
-		const received: { agentId: string; envelope: ExtensionEventEnvelope }[] =
-			[];
+		const received: { agentId: string; envelope: ExtensionEventEnvelope }[] = [];
 		orchestrator.registerExtension("sender", (api: ExtensionActivationApi) => {
 			api.onExtensionEvent("herdr:blocked", (envelope, context) => {
 				received.push({ agentId: context.agentId, envelope });
@@ -52,14 +38,9 @@ describe("extension event bus", () => {
 		const firstAgentId = await orchestrator.spawnAgent();
 		const secondAgentId = await orchestrator.spawnAgent();
 
-		await requireActions(orchestrator, firstAgentId).emitExtensionEvent(
-			"herdr:blocked",
-			{ pane: 3 },
-		);
+		await requireActions(orchestrator, firstAgentId).emitExtensionEvent("herdr:blocked", { pane: 3 });
 
-		expect(received.map((entry) => entry.agentId).sort()).toEqual(
-			[firstAgentId, secondAgentId].sort(),
-		);
+		expect(received.map((entry) => entry.agentId).sort()).toEqual([firstAgentId, secondAgentId].sort());
 		for (const entry of received) {
 			expect(entry.envelope.name).toBe("herdr:blocked");
 			expect(entry.envelope.payload).toEqual({ pane: 3 });
@@ -97,10 +78,7 @@ describe("extension event bus", () => {
 		const agentId = await orchestrator.spawnAgent();
 		const payload = { counts: [1, 2] };
 
-		await requireActions(orchestrator, agentId).emitExtensionEvent(
-			"state",
-			payload,
-		);
+		await requireActions(orchestrator, agentId).emitExtensionEvent("state", payload);
 		payload.counts.push(3);
 
 		expect(payloads).toEqual([{ counts: [1, 2] }]);
@@ -115,14 +93,9 @@ describe("extension event bus", () => {
 		orchestrator.registerExtension("sender", (api: ExtensionActivationApi) => {
 			api.onExtensionEvent("state", (envelope) => {
 				const payload = envelope.payload as { nested: { count: number } };
-				frozen.push(
-					Object.isFrozen(envelope),
-					Object.isFrozen(payload),
-					Object.isFrozen(payload.nested),
-				);
+				frozen.push(Object.isFrozen(envelope), Object.isFrozen(payload), Object.isFrozen(payload.nested));
 				try {
-					(envelope as { sourceExtensionId: string }).sourceExtensionId =
-						"forged";
+					(envelope as { sourceExtensionId: string }).sourceExtensionId = "forged";
 					sourceMutationSucceeded = true;
 				} catch {
 					// Runtime immutability is the behavior under test.
@@ -135,19 +108,14 @@ describe("extension event bus", () => {
 				}
 			});
 		});
-		orchestrator.registerExtension(
-			"receiver",
-			(api: ExtensionActivationApi) => {
-				api.onExtensionEvent("state", (envelope) => {
-					received = envelope;
-				});
-			},
-		);
+		orchestrator.registerExtension("receiver", (api: ExtensionActivationApi) => {
+			api.onExtensionEvent("state", (envelope) => {
+				received = envelope;
+			});
+		});
 		const agentId = await orchestrator.spawnAgent();
 
-		await requireActions(orchestrator, agentId).emitExtensionEvent("state", {
-			nested: { count: 1 },
-		});
+		await requireActions(orchestrator, agentId).emitExtensionEvent("state", { nested: { count: 1 } });
 
 		expect(frozen).toEqual([true, true, true]);
 		expect(sourceMutationSucceeded).toBe(false);
@@ -167,14 +135,8 @@ describe("extension event bus", () => {
 		const agentId = await orchestrator.spawnAgent();
 		const actions = requireActions(orchestrator, agentId);
 
-		await expect(actions.emitExtensionEvent("has space")).rejects.toThrow(
-			TypeError,
-		);
-		await expect(
-			actions.emitExtensionEvent("fine", {
-				big: "x".repeat(70_000),
-			}),
-		).rejects.toThrow(RangeError);
+		await expect(actions.emitExtensionEvent("has space")).rejects.toThrow(TypeError);
+		await expect(actions.emitExtensionEvent("fine", { big: "x".repeat(70_000) })).rejects.toThrow(RangeError);
 
 		expect(delivered).toBe(0);
 	});
@@ -188,9 +150,7 @@ describe("extension event bus", () => {
 			api.onExtensionEvent("has space", () => {});
 		});
 
-		await expect(orchestrator.spawnAgent()).rejects.toThrow(
-			"Extension event name must contain only",
-		);
+		await expect(orchestrator.spawnAgent()).rejects.toThrow("Extension event name must contain only");
 	});
 
 	it("reports a failing subscriber and still reaches the rest", async () => {
@@ -210,9 +170,7 @@ describe("extension event bus", () => {
 		await requireActions(orchestrator, agentId).emitExtensionEvent("ping");
 
 		expect(reached).toBe(1);
-		const failure = diagnostics.find(
-			(diagnostic) => diagnostic.code === "extension.handler_failed",
-		);
+		const failure = diagnostics.find((diagnostic) => diagnostic.code === "extension.handler_failed");
 		expect(failure?.message).toContain("subscriber exploded");
 	});
 
@@ -233,9 +191,7 @@ describe("extension event bus", () => {
 		expect(relays).toBe(MAX_EXTENSION_EVENT_DISPATCH_DEPTH);
 		expect(
 			diagnostics.some(
-				(diagnostic) =>
-					diagnostic.code === "extension.event_recursion_dropped" &&
-					diagnostic.extensionId === "sender",
+				(diagnostic) => diagnostic.code === "extension.event_recursion_dropped" && diagnostic.extensionId === "sender",
 			),
 		).toBe(true);
 	});
@@ -272,11 +228,7 @@ describe("extension event bus", () => {
 			await dispatches;
 		}
 
-		expect(
-			diagnostics.some(
-				(diagnostic) => diagnostic.code === "extension.event_recursion_dropped",
-			),
-		).toBe(false);
+		expect(diagnostics.some((diagnostic) => diagnostic.code === "extension.event_recursion_dropped")).toBe(false);
 	});
 
 	it("drops the subscriptions of a disposed agent", async () => {

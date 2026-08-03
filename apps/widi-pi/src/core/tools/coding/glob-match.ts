@@ -16,9 +16,7 @@
  * pattern with `/` matches relative paths at any depth unless it starts with
  * `/`, which anchors it to the search root. Throws on invalid patterns.
  */
-export function compileFindPattern(
-	pattern: string,
-): (relativePosixPath: string) => boolean {
+export function compileFindPattern(pattern: string): (relativePosixPath: string) => boolean {
 	if (pattern.length === 0) {
 		throw new Error("Invalid glob pattern: pattern is empty");
 	}
@@ -44,22 +42,7 @@ export function compileGlob(pattern: string): RegExp {
 	return new RegExp(`^${globToRegExpSource(pattern)}$`);
 }
 
-const REGEXP_SPECIALS = new Set([
-	".",
-	"+",
-	"^",
-	"$",
-	"(",
-	")",
-	"|",
-	"\\",
-	"[",
-	"]",
-	"{",
-	"}",
-	"*",
-	"?",
-]);
+const REGEXP_SPECIALS = new Set([".", "+", "^", "$", "(", ")", "|", "\\", "[", "]", "{", "}", "*", "?"]);
 
 function escapeRegExpChar(char: string): string {
 	return REGEXP_SPECIALS.has(char) ? `\\${char}` : char;
@@ -109,9 +92,7 @@ function globToRegExpSource(pattern: string): string {
 			}
 			case "}": {
 				if (braceDepth === 0) {
-					throw new Error(
-						`Invalid glob pattern: unmatched '}' in "${pattern}"`,
-					);
+					throw new Error(`Invalid glob pattern: unmatched '}' in "${pattern}"`);
 				}
 				braceDepth -= 1;
 				source += ")";
@@ -126,9 +107,7 @@ function globToRegExpSource(pattern: string): string {
 			case "\\": {
 				const escaped = pattern[index + 1];
 				if (escaped === undefined) {
-					throw new Error(
-						`Invalid glob pattern: trailing '\\' in "${pattern}"`,
-					);
+					throw new Error(`Invalid glob pattern: trailing '\\' in "${pattern}"`);
 				}
 				source += escapeRegExpChar(escaped);
 				index += 2;
@@ -147,10 +126,7 @@ function globToRegExpSource(pattern: string): string {
 	return source;
 }
 
-function parseCharacterClass(
-	pattern: string,
-	openIndex: number,
-): { classSource: string; nextIndex: number } {
+function parseCharacterClass(pattern: string, openIndex: number): { classSource: string; nextIndex: number } {
 	let body = "";
 	let index = openIndex + 1;
 	if (pattern[index] === "!" || pattern[index] === "^") {
@@ -168,14 +144,10 @@ function parseCharacterClass(
 		index += 1;
 	}
 	if (index >= pattern.length) {
-		throw new Error(
-			`Invalid glob pattern: unclosed character class in "${pattern}"`,
-		);
+		throw new Error(`Invalid glob pattern: unclosed character class in "${pattern}"`);
 	}
 	if (body === "" || body === "^") {
-		throw new Error(
-			`Invalid glob pattern: empty character class in "${pattern}"`,
-		);
+		throw new Error(`Invalid glob pattern: empty character class in "${pattern}"`);
 	}
 	return { classSource: `[${body}]`, nextIndex: index + 1 };
 }

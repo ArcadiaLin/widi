@@ -2,17 +2,11 @@ import type { AgentToolResult } from "@widi/agent-core";
 import { type Static, Type } from "typebox";
 import type { ToolAgentHost } from "../../orchestrator/host.ts";
 import type { ToolDefinition } from "../types.ts";
-import {
-	assignAgentTask,
-	describeAssignedTask,
-	requireAddressableAgent,
-	requireAgentHost,
-} from "./shared.ts";
+import { assignAgentTask, describeAssignedTask, requireAddressableAgent, requireAgentHost } from "./shared.ts";
 
 const sendMessageSchema = Type.Object({
 	agentId: Type.String({
-		description:
-			"Id of the agent to send to. For completeTask this is the agent that gave you the task.",
+		description: "Id of the agent to send to. For completeTask this is the agent that gave you the task.",
 	}),
 	message: Type.String({
 		description:
@@ -59,10 +53,7 @@ export interface SendMessageDetails {
  * calls plain `send_message`, and leaves its owner waiting forever. Here the
  * completion is a parameter on the tool it is already holding.
  */
-export function createSendMessageToolDefinition(): ToolDefinition<
-	typeof sendMessageSchema,
-	SendMessageDetails
-> {
+export function createSendMessageToolDefinition(): ToolDefinition<typeof sendMessageSchema, SendMessageDetails> {
 	return {
 		name: "send_message",
 		label: "send_message",
@@ -77,11 +68,7 @@ export function createSendMessageToolDefinition(): ToolDefinition<
 			"Include everything the other agent needs in the message: agents do not share conversations, sessions, or context.",
 		],
 		parameters: sendMessageSchema,
-		execute: async (
-			toolCallId,
-			{ agentId, message, assignTask, completeTask, taskFailed },
-			context,
-		) => {
+		execute: async (toolCallId, { agentId, message, assignTask, completeTask, taskFailed }, context) => {
 			const host = requireAgentHost(context);
 			const targetAgentId = agentId.trim();
 			const body = message.trim();
@@ -95,9 +82,7 @@ export function createSendMessageToolDefinition(): ToolDefinition<
 				throw new Error("send_message requires a non-empty message.");
 			}
 			if (targetAgentId === host.agentId) {
-				throw new Error(
-					"send_message cannot target yourself; it delivers text to another agent.",
-				);
+				throw new Error("send_message cannot target yourself; it delivers text to another agent.");
 			}
 			if (assignTask && completeTask !== undefined) {
 				throw new Error(
@@ -108,9 +93,7 @@ export function createSendMessageToolDefinition(): ToolDefinition<
 				throw new Error("send_message requires a non-empty completeTask id.");
 			}
 			if (taskFailed !== undefined && taskId === undefined) {
-				throw new Error(
-					"send_message only accepts taskFailed together with completeTask.",
-				);
+				throw new Error("send_message only accepts taskFailed together with completeTask.");
 			}
 
 			if (taskId !== undefined) {
@@ -133,29 +116,16 @@ export function createSendMessageToolDefinition(): ToolDefinition<
 					message: body,
 				});
 				return {
-					content: [
-						{
-							type: "text",
-							text: describeAssignedTask(assigned.taskId, targetAgentId),
-						},
-					],
-					details: {
-						targetAgentId,
-						mode: "assign_task",
-						taskId: assigned.taskId,
-					},
+					content: [{ type: "text", text: describeAssignedTask(assigned.taskId, targetAgentId) }],
+					details: { targetAgentId, mode: "assign_task", taskId: assigned.taskId },
 				};
 			}
 
 			requireAddressableAgent(host, targetAgentId);
 			const outcome = await host.send(targetAgentId, body);
 			if (outcome.kind === "blocked") {
-				const reason = outcome.reason
-					? `${outcome.blockedBy}: ${outcome.reason}`
-					: `blocked by ${outcome.blockedBy}`;
-				throw new Error(
-					`The message to agent ${targetAgentId} was blocked (${reason}) and was not delivered.`,
-				);
+				const reason = outcome.reason ? `${outcome.blockedBy}: ${outcome.reason}` : `blocked by ${outcome.blockedBy}`;
+				throw new Error(`The message to agent ${targetAgentId} was blocked (${reason}) and was not delivered.`);
 			}
 			return {
 				content: [
@@ -194,10 +164,7 @@ function completeAgentTask(input: {
 		);
 	}
 	const status = input.failed ? "failed" : "completed";
-	const result = host.settleTask(ownerAgentId, taskId, {
-		status,
-		text: input.text,
-	});
+	const result = host.settleTask(ownerAgentId, taskId, { status, text: input.text });
 	if (result === "denied") {
 		throw new Error(
 			`Task ${taskId} of agent ${ownerAgentId} was assigned to a different agent, so you cannot settle it.`,
@@ -215,10 +182,6 @@ function completeAgentTask(input: {
 				text: `Task ${taskId} was reported ${status} to agent ${ownerAgentId}; your message is the report it receives. You stay live and can keep working.`,
 			},
 		],
-		details: {
-			targetAgentId: ownerAgentId,
-			mode: "complete_task" as const,
-			taskId,
-		},
+		details: { targetAgentId: ownerAgentId, mode: "complete_task" as const, taskId },
 	};
 }

@@ -18,11 +18,7 @@
  * children the forked branch could actually see belong in the copy.
  */
 
-import type {
-	CustomStorage,
-	PersistenceForkPolicy,
-	PersistenceRegistry,
-} from "../custom-storage.ts";
+import type { CustomStorage, PersistenceForkPolicy, PersistenceRegistry } from "../custom-storage.ts";
 import { closeStorage } from "../custom-storage.ts";
 import type { PersistenceDiagnostics } from "./diagnostics.ts";
 import { formatSessionKey, type SessionKey } from "./layout.ts";
@@ -66,9 +62,7 @@ export interface ForkClosureRequest {
  * rest of the plan is still produced, because a fork that carries most of the
  * state is worth more than one that refuses to happen.
  */
-export async function planForkClosure(
-	request: ForkClosureRequest,
-): Promise<ForkPlan> {
+export async function planForkClosure(request: ForkClosureRequest): Promise<ForkPlan> {
 	const namespaces: NamespaceForkPlan[] = [];
 	const allSessions: SessionKey[] = [];
 
@@ -138,10 +132,7 @@ async function walkNamespace(options: {
 	readonly storage: CustomStorage;
 	readonly sourceKey: SessionKey;
 	readonly diagnostics: PersistenceDiagnostics;
-}): Promise<{
-	readonly objects: string[];
-	readonly sessions: SessionKey[];
-}> {
+}): Promise<{ readonly objects: string[]; readonly sessions: SessionKey[] }> {
 	const objects: string[] = [];
 	const sessions: SessionKey[] = [];
 	// Visited is keyed by state root within one namespace's storage. Two refs
@@ -178,8 +169,7 @@ async function walkNamespace(options: {
 		visited.add(root);
 		onPath.add(root);
 		objects.push(root);
-		for (const key of (await options.storage.listSessionDependencies?.(root)) ??
-			[]) {
+		for (const key of (await options.storage.listSessionDependencies?.(root)) ?? []) {
 			sessions.push(key);
 		}
 		for (const dependency of await options.storage.listDependencies(root)) {

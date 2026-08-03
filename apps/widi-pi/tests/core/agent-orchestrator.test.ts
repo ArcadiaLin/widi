@@ -1,46 +1,26 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type {
-	AgentHarnessEvent,
-	BeforeAgentStartEvent,
-	JsonlSessionMetadata,
-} from "@widi/agent-core";
+import type { AgentHarnessEvent, BeforeAgentStartEvent, JsonlSessionMetadata } from "@widi/agent-core";
 import { ok } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
-import {
-	AgentOrchestrator,
-	type OrchestratorEvent,
-} from "../../src/core/agent-orchestrator.ts";
+import { AgentOrchestrator, type OrchestratorEvent } from "../../src/core/agent-orchestrator.ts";
 import {
 	type AgentProfile,
 	AgentProfileRegistry,
 	InMemoryProfileStorageBackend,
 } from "../../src/core/agent-profile.ts";
-import {
-	AuthStorage,
-	type AuthStorageBackend,
-	type LockResult,
-} from "../../src/core/auth-storage.ts";
+import { AuthStorage, type AuthStorageBackend, type LockResult } from "../../src/core/auth-storage.ts";
 import type { ExtensionContext } from "../../src/core/extension/api.ts";
-import {
-	ModelRegistry,
-	type OAuthProviderConfig,
-} from "../../src/core/model-registry.ts";
+import { ModelRegistry, type OAuthProviderConfig } from "../../src/core/model-registry.ts";
 import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
 import { ResourceLoader } from "../../src/core/resource-loader.ts";
-import {
-	EXTENSION_MESSAGE_CUSTOM_TYPE,
-	SessionManager,
-} from "../../src/core/session-manager.ts";
+import { EXTENSION_MESSAGE_CUSTOM_TYPE, SessionManager } from "../../src/core/session-manager.ts";
 import {
 	SettingManager,
 	type SettingsLockResult,
 	type SettingsScope,
 	type SettingsStorage,
 } from "../../src/core/setting-manager.ts";
-import {
-	type ToolAdapterContext,
-	ToolRegistry,
-} from "../../src/core/tool-registry.ts";
+import { type ToolAdapterContext, ToolRegistry } from "../../src/core/tool-registry.ts";
 import { registerCoreInteractionTools } from "../../src/core/tools/interaction/builtin.ts";
 import {
 	createCoreCodingToolRegistry,
@@ -63,45 +43,22 @@ import {
 // Drives the private harness-event bridge directly (same private-access
 // precedent as requireAgentRecord): a real settled fact requires a full model
 // run, which unit tests never perform.
-async function emitSettled(
-	orchestrator: AgentOrchestrator,
-	agentId: string,
-	nextTurnCount: number,
-): Promise<void> {
+async function emitSettled(orchestrator: AgentOrchestrator, agentId: string, nextTurnCount: number): Promise<void> {
 	await (
-		orchestrator as unknown as {
-			_handleAgentHarnessEvent(
-				agentId: string,
-				event: AgentHarnessEvent,
-			): Promise<void>;
-		}
+		orchestrator as unknown as { _handleAgentHarnessEvent(agentId: string, event: AgentHarnessEvent): Promise<void> }
 	)._handleAgentHarnessEvent(agentId, { type: "settled", nextTurnCount });
 }
 
-async function resolveHarnessToolContext(
-	harness: ReturnType<typeof requireAgentHarness>,
-): Promise<ToolAdapterContext> {
+async function resolveHarnessToolContext(harness: ReturnType<typeof requireAgentHarness>): Promise<ToolAdapterContext> {
 	const source = (
-		harness as unknown as {
-			toolContext:
-				| ToolAdapterContext
-				| (() => ToolAdapterContext | Promise<ToolAdapterContext>);
-		}
+		harness as unknown as { toolContext: ToolAdapterContext | (() => ToolAdapterContext | Promise<ToolAdapterContext>) }
 	).toolContext;
 	return await (typeof source === "function" ? source() : source);
 }
 
-function requireExtensionToolActions(
-	context: ToolAdapterContext,
-	extensionId: string,
-): ExtensionContext["actions"] {
-	const extensionContext = context.createExtensionContext?.(
-		{ kind: "extension", id: extensionId },
-		"probe",
-	);
-	const host = extensionContext?.host as
-		| { actions?: ExtensionContext["actions"] }
-		| undefined;
+function requireExtensionToolActions(context: ToolAdapterContext, extensionId: string): ExtensionContext["actions"] {
+	const extensionContext = context.createExtensionContext?.({ kind: "extension", id: extensionId }, "probe");
+	const host = extensionContext?.host as { actions?: ExtensionContext["actions"] } | undefined;
 	if (!host?.actions) throw new Error("Expected extension tool actions.");
 	return host.actions;
 }
@@ -126,10 +83,7 @@ function overflowAssistantMessage(): AssistantMessage {
 	};
 }
 
-function expectExtendedMetadata(metadata: {
-	id: string;
-	createdAt: string;
-}): JsonlSessionMetadata {
+function expectExtendedMetadata(metadata: { id: string; createdAt: string }): JsonlSessionMetadata {
 	if (!("path" in metadata) || typeof metadata.path !== "string") {
 		throw new Error("Expected persistent JSONL session metadata.");
 	}
@@ -141,12 +95,7 @@ function expectExtendedMetadata(metadata: {
 function writeSessionFile(
 	env: MemoryExecutionEnv,
 	dirName: string,
-	options: {
-		id: string;
-		timestamp: string;
-		cwd?: string;
-		profileId?: string;
-	},
+	options: { id: string; timestamp: string; cwd?: string; profileId?: string },
 ): string {
 	const header = {
 		type: "session",
@@ -154,9 +103,7 @@ function writeSessionFile(
 		id: options.id,
 		timestamp: options.timestamp,
 		cwd: options.cwd ?? "/workspace/project",
-		metadata: options.profileId
-			? { profile: { id: options.profileId } }
-			: undefined,
+		metadata: options.profileId ? { profile: { id: options.profileId } } : undefined,
 	};
 	const sessionDir = `/sessions/--workspace-project--/${dirName}`;
 	env.dirs.add("/sessions");
@@ -177,16 +124,12 @@ class FailingSettingsStorage implements SettingsStorage {
 }
 
 class FailingAuthStorageBackend implements AuthStorageBackend {
-	async withLockAsync<T>(
-		_fn: (current: string | undefined) => Promise<LockResult<T>>,
-	): Promise<T> {
+	async withLockAsync<T>(_fn: (current: string | undefined) => Promise<LockResult<T>>): Promise<T> {
 		throw new Error("auth storage failed");
 	}
 }
 
-function createAssistantPartial(
-	content: AssistantMessage["content"],
-): AssistantMessage {
+function createAssistantPartial(content: AssistantMessage["content"]): AssistantMessage {
 	return {
 		role: "assistant",
 		content,
@@ -198,13 +141,7 @@ function createAssistantPartial(
 			output: 0,
 			cacheRead: 0,
 			cacheWrite: 0,
-			cost: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				total: 0,
-			},
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 			totalTokens: 0,
 		},
 		stopReason: "toolUse",
@@ -212,18 +149,10 @@ function createAssistantPartial(
 	};
 }
 
-type AgentStatusChangedEvent = Extract<
-	OrchestratorEvent,
-	{ type: "agent_status_changed" }
->;
+type AgentStatusChangedEvent = Extract<OrchestratorEvent, { type: "agent_status_changed" }>;
 
-function agentStatusChangedEvents(
-	events: readonly OrchestratorEvent[],
-): AgentStatusChangedEvent[] {
-	return events.filter(
-		(event): event is AgentStatusChangedEvent =>
-			event.type === "agent_status_changed",
-	);
+function agentStatusChangedEvents(events: readonly OrchestratorEvent[]): AgentStatusChangedEvent[] {
+	return events.filter((event): event is AgentStatusChangedEvent => event.type === "agent_status_changed");
 }
 
 async function createExtensionActionsHarness(): Promise<{
@@ -242,49 +171,30 @@ async function createExtensionActionsHarness(): Promise<{
 	const orchestrator = await createOrchestrator(env, {
 		defaultProfileId: extensionProfile.id,
 		profileRegistry: new AgentProfileRegistry(
-			InMemoryProfileStorageBackend.fromProfiles([
-				{ profile: extensionProfile },
-			]),
+			InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 		),
 	});
 	orchestrator.registerExtension("sample", () => {});
 	const agentId = await orchestrator.spawnAgent();
 	const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
 	if (!runner) throw new Error("Expected extension runner.");
-	return {
-		env,
-		orchestrator,
-		agentId,
-		actions: runner.createContext("sample").actions,
-	};
+	return { env, orchestrator, agentId, actions: runner.createContext("sample").actions };
 }
 
 /** Run the harness's own system prompt callback against its current state. */
-async function readSystemPrompt(
-	orchestrator: AgentOrchestrator,
-	agentId: string,
-): Promise<string> {
+async function readSystemPrompt(orchestrator: AgentOrchestrator, agentId: string): Promise<string> {
 	const harness = requireAgentHarness(orchestrator, agentId);
 	const systemPrompt = (
-		harness as unknown as {
-			systemPrompt: (context: {
-				activeTools: { name: string }[];
-			}) => string | Promise<string>;
-		}
+		harness as unknown as { systemPrompt: (context: { activeTools: { name: string }[] }) => string | Promise<string> }
 	).systemPrompt;
-	return await systemPrompt({
-		activeTools: harness.getActiveTools(),
-	});
+	return await systemPrompt({ activeTools: harness.getActiveTools() });
 }
 
 describe("AgentOrchestrator", () => {
 	it("emits drained startup diagnostics through the diagnostic event", async () => {
 		const env = new MemoryExecutionEnv();
 		const configValueResolver = new ConfigValueResolver(env);
-		const authStorage = AuthStorage.fromStorage(
-			new FailingAuthStorageBackend(),
-			{ configValueResolver },
-		);
+		const authStorage = AuthStorage.fromStorage(new FailingAuthStorageBackend(), { configValueResolver });
 		env.files.set("/workspace/project/models.json", "{ invalid");
 		const modelRegistry = await ModelRegistry.create({
 			executionEnv: env,
@@ -292,20 +202,11 @@ describe("AgentOrchestrator", () => {
 			configValueResolver,
 			modelsJsonPath: "/workspace/project/models.json",
 		});
-		const settingManager = await SettingManager.fromStorage(
-			new FailingSettingsStorage(),
-		);
+		const settingManager = await SettingManager.fromStorage(new FailingSettingsStorage());
 		const orchestrator = new AgentOrchestrator({
 			executionEnv: env,
-			resourceLoader: new ResourceLoader({
-				executionEnv: env,
-				cwd: "/workspace/project",
-			}),
-			sessionManager: new SessionManager({
-				fs: env,
-				cwd: "/workspace/project",
-				sessionsRoot: "/sessions",
-			}),
+			resourceLoader: new ResourceLoader({ executionEnv: env, cwd: "/workspace/project" }),
+			sessionManager: new SessionManager({ fs: env, cwd: "/workspace/project", sessionsRoot: "/sessions" }),
 			settingManager,
 			modelRegistry,
 			profileRegistry: createProfileRegistry(),
@@ -320,15 +221,11 @@ describe("AgentOrchestrator", () => {
 		await orchestrator.emitStartupDiagnostics();
 		await orchestrator.emitStartupDiagnostics();
 
-		const diagnosticCodes = events
-			.filter((event) => event.type === "diagnostic")
-			.map((event) => event.diagnostic.code);
+		const diagnosticCodes = events.filter((event) => event.type === "diagnostic").map((event) => event.diagnostic.code);
 		expect(diagnosticCodes).toContain("settings.load_failed");
 		expect(diagnosticCodes).toContain("auth.load_failed");
 		expect(diagnosticCodes).toContain("model.load_failed");
-		expect(
-			diagnosticCodes.filter((code) => code === "model.load_failed"),
-		).toHaveLength(1);
+		expect(diagnosticCodes.filter((code) => code === "model.load_failed")).toHaveLength(1);
 	});
 
 	it("emits profile registry diagnostics while spawning agents", async () => {
@@ -344,15 +241,8 @@ describe("AgentOrchestrator", () => {
 		);
 		const orchestrator = new AgentOrchestrator({
 			executionEnv: env,
-			resourceLoader: new ResourceLoader({
-				executionEnv: env,
-				cwd: "/workspace/project",
-			}),
-			sessionManager: new SessionManager({
-				fs: env,
-				cwd: "/workspace/project",
-				sessionsRoot: "/sessions",
-			}),
+			resourceLoader: new ResourceLoader({ executionEnv: env, cwd: "/workspace/project" }),
+			sessionManager: new SessionManager({ fs: env, cwd: "/workspace/project", sessionsRoot: "/sessions" }),
 			settingManager: new SettingManager(),
 			modelRegistry: await createModelRegistry(env),
 			profileRegistry,
@@ -372,9 +262,7 @@ describe("AgentOrchestrator", () => {
 				diagnostic: expect.objectContaining({
 					code: "profile.id_filename_mismatch",
 					severity: "warning",
-					message: expect.stringContaining(
-						'Profile id "main" does not match filename-derived id "filename-main".',
-					),
+					message: expect.stringContaining('Profile id "main" does not match filename-derived id "filename-main".'),
 				}),
 			}),
 		);
@@ -382,15 +270,8 @@ describe("AgentOrchestrator", () => {
 
 	it("resumes a persisted agent harness from session metadata", async () => {
 		const env = new MemoryExecutionEnv();
-		const sessionManager = new SessionManager({
-			fs: env,
-			cwd: "/workspace/project",
-			sessionsRoot: "/sessions",
-		});
-		const session = await sessionManager.createAgentSession({
-			agentId: "worker-agent",
-			agentProfile: restoredProfile,
-		});
+		const sessionManager = new SessionManager({ fs: env, cwd: "/workspace/project", sessionsRoot: "/sessions" });
+		const session = await sessionManager.createAgentSession({ agentId: "worker-agent", agentProfile: restoredProfile });
 		await session.appendModelChange(restoredModel.provider, restoredModel.id);
 		await session.appendThinkingLevelChange("medium");
 		const metadata = expectExtendedMetadata(await session.getMetadata());
@@ -399,10 +280,7 @@ describe("AgentOrchestrator", () => {
 
 		const orchestrator = new AgentOrchestrator({
 			executionEnv: env,
-			resourceLoader: new ResourceLoader({
-				executionEnv: env,
-				cwd: "/workspace/project",
-			}),
+			resourceLoader: new ResourceLoader({ executionEnv: env, cwd: "/workspace/project" }),
 			sessionManager,
 			settingManager: new SettingManager(),
 			modelRegistry,
@@ -414,38 +292,20 @@ describe("AgentOrchestrator", () => {
 			events.push(event);
 		});
 
-		const agentId = await orchestrator.spawnAgent({
-			resume: true,
-			metadata,
-		});
+		const agentId = await orchestrator.spawnAgent({ resume: true, metadata });
 
 		expect(agentId).toBe("worker-agent");
-		expect(requireAgentHarness(orchestrator, agentId).getModel()).toMatchObject(
-			{
-				provider: restoredModel.provider,
-				id: restoredModel.id,
-			},
-		);
+		expect(requireAgentHarness(orchestrator, agentId).getModel()).toMatchObject({
+			provider: restoredModel.provider,
+			id: restoredModel.id,
+		});
 		expect(orchestrator.getAgentThinkingLevel(agentId)).toBe("medium");
 		expect(agentStatusChangedEvents(events)).toMatchObject([
-			{
-				agentId: "worker-agent",
-				previousStatus: undefined,
-				status: "creating",
-			},
-			{
-				agentId: "worker-agent",
-				previousStatus: "creating",
-				status: "idle",
-			},
+			{ agentId: "worker-agent", previousStatus: undefined, status: "creating" },
+			{ agentId: "worker-agent", previousStatus: "creating", status: "idle" },
 		]);
-		expect(
-			events.findIndex((event) => event.type === "agent_resumed"),
-		).toBeGreaterThan(
-			events.findIndex(
-				(event) =>
-					event.type === "agent_status_changed" && event.status === "idle",
-			),
+		expect(events.findIndex((event) => event.type === "agent_resumed")).toBeGreaterThan(
+			events.findIndex((event) => event.type === "agent_status_changed" && event.status === "idle"),
 		);
 		expect(events).toContainEqual({
 			type: "agent_resumed",
@@ -457,37 +317,23 @@ describe("AgentOrchestrator", () => {
 
 	it("keeps an unavailable record when resume profile resolution fails", async () => {
 		const env = new MemoryExecutionEnv();
-		const sessionManager = new SessionManager({
-			fs: env,
-			cwd: "/workspace/project",
-			sessionsRoot: "/sessions",
-		});
-		const session = await sessionManager.createAgentSession({
-			agentId: "worker-agent",
-			agentProfile: restoredProfile,
-		});
+		const sessionManager = new SessionManager({ fs: env, cwd: "/workspace/project", sessionsRoot: "/sessions" });
+		const session = await sessionManager.createAgentSession({ agentId: "worker-agent", agentProfile: restoredProfile });
 		const metadata = expectExtendedMetadata(await session.getMetadata());
 		const orchestrator = new AgentOrchestrator({
 			executionEnv: env,
-			resourceLoader: new ResourceLoader({
-				executionEnv: env,
-				cwd: "/workspace/project",
-			}),
+			resourceLoader: new ResourceLoader({ executionEnv: env, cwd: "/workspace/project" }),
 			sessionManager,
 			settingManager: new SettingManager(),
 			modelRegistry: await createModelRegistry(env),
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: defaultProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: defaultProfile }]),
 			),
 			defaultProfileId: defaultProfile.id,
 			defaultModel,
 		});
 
-		await expect(
-			orchestrator.spawnAgent({ resume: true, metadata }),
-		).rejects.toMatchObject({
+		await expect(orchestrator.spawnAgent({ resume: true, metadata })).rejects.toMatchObject({
 			code: "profile.resolution_failed",
 		});
 
@@ -496,46 +342,32 @@ describe("AgentOrchestrator", () => {
 		expect(orchestrator.inspectAgent("worker-agent")).toMatchObject({
 			agentId: "worker-agent",
 			status: "unavailable",
-			profile: {
-				reference: { id: restoredProfile.id, label: restoredProfile.label },
-			},
+			profile: { reference: { id: restoredProfile.id, label: restoredProfile.label } },
 			hasHarness: false,
-			diagnostics: [
-				expect.objectContaining({ code: "profile.resolution_failed" }),
-			],
+			diagnostics: [expect.objectContaining({ code: "profile.resolution_failed" })],
 		});
 
 		// The record exists but its profile never loaded, so there is no skill
 		// selection to honour. Refusing is the only answer that cannot hand the
 		// agent resources its role was never read to grant.
-		await expect(
-			orchestrator.listAgentSkillCandidates("worker-agent"),
-		).rejects.toMatchObject({ code: "profile.unresolved" });
-		await expect(
-			orchestrator.getAgentSkill("worker-agent", "review"),
-		).rejects.toMatchObject({ code: "profile.unresolved" });
+		await expect(orchestrator.listAgentSkillCandidates("worker-agent")).rejects.toMatchObject({
+			code: "profile.unresolved",
+		});
+		await expect(orchestrator.getAgentSkill("worker-agent", "review")).rejects.toMatchObject({
+			code: "profile.unresolved",
+		});
 	});
 
 	it("keeps an unavailable record when resume model restoration fails", async () => {
 		const env = new MemoryExecutionEnv();
-		const sessionManager = new SessionManager({
-			fs: env,
-			cwd: "/workspace/project",
-			sessionsRoot: "/sessions",
-		});
-		const session = await sessionManager.createAgentSession({
-			agentId: "worker-agent",
-			agentProfile: restoredProfile,
-		});
+		const sessionManager = new SessionManager({ fs: env, cwd: "/workspace/project", sessionsRoot: "/sessions" });
+		const session = await sessionManager.createAgentSession({ agentId: "worker-agent", agentProfile: restoredProfile });
 		await session.appendModelChange(restoredModel.provider, restoredModel.id);
 		await session.appendThinkingLevelChange("medium");
 		const metadata = expectExtendedMetadata(await session.getMetadata());
 		const orchestrator = new AgentOrchestrator({
 			executionEnv: env,
-			resourceLoader: new ResourceLoader({
-				executionEnv: env,
-				cwd: "/workspace/project",
-			}),
+			resourceLoader: new ResourceLoader({ executionEnv: env, cwd: "/workspace/project" }),
 			sessionManager,
 			settingManager: new SettingManager(),
 			modelRegistry: await createEmptyModelRegistry(env),
@@ -544,18 +376,14 @@ describe("AgentOrchestrator", () => {
 			defaultModel,
 		});
 
-		await expect(
-			orchestrator.spawnAgent({ resume: true, metadata }),
-		).rejects.toThrow("model is not registered");
+		await expect(orchestrator.spawnAgent({ resume: true, metadata })).rejects.toThrow("model is not registered");
 
 		expect(orchestrator.inspectAgent("worker-agent")).toMatchObject({
 			agentId: "worker-agent",
 			status: "unavailable",
 			model: expect.objectContaining({ id: defaultModel.id }),
 			hasHarness: false,
-			diagnostics: [
-				expect.objectContaining({ code: "orchestrator.agent_unavailable" }),
-			],
+			diagnostics: [expect.objectContaining({ code: "orchestrator.agent_unavailable" })],
 		});
 	});
 
@@ -583,13 +411,9 @@ describe("AgentOrchestrator", () => {
 
 	it("rejects disabled profiles during create", async () => {
 		const env = new MemoryExecutionEnv();
-		const orchestrator = await createOrchestrator(env, {
-			enabledProfileIds: ["worker"],
-		});
+		const orchestrator = await createOrchestrator(env, { enabledProfileIds: ["worker"] });
 
-		await expect(orchestrator.spawnAgent()).rejects.toMatchObject({
-			code: "profile.disabled",
-		});
+		await expect(orchestrator.spawnAgent()).rejects.toMatchObject({ code: "profile.disabled" });
 	});
 
 	it("rejects persistent profile overrides that change recoverable fields", async () => {
@@ -597,20 +421,12 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env);
 
 		await expect(
-			orchestrator.spawnAgent({
-				profileOverride: { systemPrompt: "temporary prompt" },
-			}),
-		).rejects.toMatchObject({
-			code: "profile.override_not_persistable",
-		});
+			orchestrator.spawnAgent({ profileOverride: { systemPrompt: "temporary prompt" } }),
+		).rejects.toMatchObject({ code: "profile.override_not_persistable" });
 
 		// Skills are recoverable in the same way: recovery re-resolves by profile
 		// id and would silently come back with a different resource set.
-		await expect(
-			orchestrator.spawnAgent({
-				profileOverride: { skills: ["review"] },
-			}),
-		).rejects.toMatchObject({
+		await expect(orchestrator.spawnAgent({ profileOverride: { skills: ["review"] } })).rejects.toMatchObject({
 			code: "profile.override_not_persistable",
 		});
 
@@ -619,9 +435,7 @@ describe("AgentOrchestrator", () => {
 			{ includeCwd: false },
 			{ appendSystemPrompt: "temporary suffix" },
 		]) {
-			await expect(
-				orchestrator.spawnAgent({ profileOverride }),
-			).rejects.toMatchObject({
+			await expect(orchestrator.spawnAgent({ profileOverride })).rejects.toMatchObject({
 				code: "profile.override_not_persistable",
 			});
 		}
@@ -635,14 +449,9 @@ describe("AgentOrchestrator", () => {
 		const agentId = await orchestrator.spawnAgent();
 		const harness = requireAgentHarness(orchestrator, agentId);
 
-		expect(orchestrator.getAgentModel(agentId)).toMatchObject({
-			id: defaultModel.id,
-		});
+		expect(orchestrator.getAgentModel(agentId)).toMatchObject({ id: defaultModel.id });
 
-		expect(orchestrator.getAgentTools(agentId)).toEqual({
-			toolNames: ["echo"],
-			activeToolNames: ["echo"],
-		});
+		expect(orchestrator.getAgentTools(agentId)).toEqual({ toolNames: ["echo"], activeToolNames: ["echo"] });
 
 		await orchestrator.setAgentModel(agentId, restoredModel);
 		expect(harness.getModel()).toMatchObject({ id: restoredModel.id });
@@ -653,27 +462,15 @@ describe("AgentOrchestrator", () => {
 
 		await orchestrator.setAgentActiveTools(agentId, []);
 		expect(orchestrator.getAgentActiveTools(agentId)).toEqual([]);
-		await orchestrator.setAgentTools(
-			agentId,
-			["echo", "missing", "echo"],
-			["echo", "ghost"],
-		);
-		expect(orchestrator.getAgentTools(agentId)).toEqual({
-			toolNames: ["echo"],
-			activeToolNames: ["echo"],
-		});
-		expect(harness.getTools()).toEqual([
-			expect.objectContaining({ name: "echo" }),
-		]);
+		await orchestrator.setAgentTools(agentId, ["echo", "missing", "echo"], ["echo", "ghost"]);
+		expect(orchestrator.getAgentTools(agentId)).toEqual({ toolNames: ["echo"], activeToolNames: ["echo"] });
+		expect(harness.getTools()).toEqual([expect.objectContaining({ name: "echo" })]);
 	});
 
 	it("updates active tools without rebuilding harness tool objects", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env, {
-			toolRegistry: createToolRegistry(
-				createToolDefinition("alpha"),
-				createToolDefinition("beta"),
-			),
+			toolRegistry: createToolRegistry(createToolDefinition("alpha"), createToolDefinition("beta")),
 		});
 		const agentId = await orchestrator.spawnAgent();
 		const harness = requireAgentHarness(orchestrator, agentId);
@@ -697,9 +494,7 @@ describe("AgentOrchestrator", () => {
 		expect(setToolsCalls).toBe(0);
 		expect(harness.getTools()[0]).toBe(initialTools[0]);
 		expect(harness.getTools()[1]).toBe(initialTools[1]);
-		expect(harness.getActiveTools().map((tool) => tool.name)).toEqual([
-			"alpha",
-		]);
+		expect(harness.getActiveTools().map((tool) => tool.name)).toEqual(["alpha"]);
 
 		await orchestrator.setAgentTools(agentId, ["alpha", "beta"], ["beta"]);
 
@@ -714,9 +509,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env);
 		const agentId = await orchestrator.spawnAgent();
 
-		await expect(
-			orchestrator.setAgentThinkingLevel(agentId, "medium"),
-		).rejects.toMatchObject({
+		await expect(orchestrator.setAgentThinkingLevel(agentId, "medium")).rejects.toMatchObject({
 			code: "model.thinking_not_supported",
 			diagnostic: expect.objectContaining({
 				severity: "error",
@@ -727,9 +520,7 @@ describe("AgentOrchestrator", () => {
 		expect(orchestrator.getAgentThinkingLevel(agentId)).toBe("off");
 
 		await orchestrator.setAgentModel(agentId, reasoningModel);
-		await expect(
-			orchestrator.setAgentThinkingLevel(agentId, "minimal"),
-		).rejects.toMatchObject({
+		await expect(orchestrator.setAgentThinkingLevel(agentId, "minimal")).rejects.toMatchObject({
 			code: "model.thinking_level_not_supported",
 			diagnostic: expect.objectContaining({
 				severity: "error",
@@ -746,9 +537,7 @@ describe("AgentOrchestrator", () => {
 		const agentId = await orchestrator.spawnAgent();
 		const harness = requireAgentHarness(orchestrator, agentId);
 
-		await expect(
-			orchestrator.setAgentThinkingLevelByName(agentId, "high"),
-		).rejects.toMatchObject({
+		await expect(orchestrator.setAgentThinkingLevelByName(agentId, "high")).rejects.toMatchObject({
 			diagnostic: expect.objectContaining({
 				code: "model.thinking_not_supported",
 				message: `Model ${defaultModel.provider}/${defaultModel.id} does not support thinking levels.`,
@@ -771,14 +560,8 @@ describe("AgentOrchestrator", () => {
 		});
 
 		await expect(
-			orchestrator.setAgentModelByReference(
-				agentId,
-				`${reasoningModel.provider}/${reasoningModel.id}`,
-			),
-		).resolves.toMatchObject({
-			id: reasoningModel.id,
-			provider: reasoningModel.provider,
-		});
+			orchestrator.setAgentModelByReference(agentId, `${reasoningModel.provider}/${reasoningModel.id}`),
+		).resolves.toMatchObject({ id: reasoningModel.id, provider: reasoningModel.provider });
 		expect(harness.getModel()).toMatchObject({ id: reasoningModel.id });
 
 		expect(orchestrator.listAgentThinkingLevelCandidates(agentId)).toEqual({
@@ -790,11 +573,7 @@ describe("AgentOrchestrator", () => {
 			],
 		});
 
-		await expect(
-			orchestrator.setAgentThinkingLevelByName(agentId, "high"),
-		).resolves.toEqual({
-			level: "high",
-		});
+		await expect(orchestrator.setAgentThinkingLevelByName(agentId, "high")).resolves.toEqual({ level: "high" });
 		expect(orchestrator.getAgentThinkingLevel(agentId)).toBe("high");
 	});
 
@@ -809,9 +588,7 @@ describe("AgentOrchestrator", () => {
 			events.push(event);
 			const [statusEvent] = agentStatusChangedEvents([event]);
 			if (statusEvent) {
-				statusesVisibleDuringPublish.push(
-					orchestrator.getAgentStatus(statusEvent.agentId),
-				);
+				statusesVisibleDuringPublish.push(orchestrator.getAgentStatus(statusEvent.agentId));
 			}
 		});
 		const agentId = await orchestrator.spawnAgent();
@@ -834,13 +611,8 @@ describe("AgentOrchestrator", () => {
 			},
 		]);
 		expect(statusesVisibleDuringPublish).toEqual(["creating", "idle"]);
-		expect(
-			events.findIndex((event) => event.type === "agent_spawned"),
-		).toBeGreaterThan(
-			events.findIndex(
-				(event) =>
-					event.type === "agent_status_changed" && event.status === "idle",
-			),
+		expect(events.findIndex((event) => event.type === "agent_spawned")).toBeGreaterThan(
+			events.findIndex((event) => event.type === "agent_status_changed" && event.status === "idle"),
 		);
 
 		expect(orchestrator.getAgentStatus(agentId)).toBe("idle");
@@ -848,15 +620,9 @@ describe("AgentOrchestrator", () => {
 		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
 			agentId,
 			status: "idle",
-			profile: {
-				reference: { id: defaultProfile.id, label: defaultProfile.label },
-				entryId: "memory:main",
-			},
+			profile: { reference: { id: defaultProfile.id, label: defaultProfile.label }, entryId: "memory:main" },
 			hasHarness: true,
-			toolSnapshot: {
-				toolNames: ["echo"],
-				activeToolNames: ["echo"],
-			},
+			toolSnapshot: { toolNames: ["echo"], activeToolNames: ["echo"] },
 			resourceDiagnostics: [],
 			extensionDiagnostics: [],
 			diagnostics: [],
@@ -864,19 +630,10 @@ describe("AgentOrchestrator", () => {
 
 		expect(orchestrator.getAgentStatus(agentId)).toBe("idle");
 
-		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
-			agentId,
-			status: "idle",
-			hasHarness: true,
-		});
+		expect(orchestrator.inspectAgent(agentId)).toMatchObject({ agentId, status: "idle", hasHarness: true });
 
 		const handleHarnessEvent = (
-			orchestrator as unknown as {
-				_handleAgentHarnessEvent(
-					agentId: string,
-					event: AgentHarnessEvent,
-				): Promise<void>;
-			}
+			orchestrator as unknown as { _handleAgentHarnessEvent(agentId: string, event: AgentHarnessEvent): Promise<void> }
 		)._handleAgentHarnessEvent.bind(orchestrator);
 		const runtimeEvents: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
@@ -900,15 +657,11 @@ describe("AgentOrchestrator", () => {
 		expect(orchestrator.getAgentStatus(agentId)).toBe("running");
 		await handleHarnessEvent(agentId, {
 			type: "agent_end",
-			messages: [
-				createAssistantPartial([{ type: "text", text: "done again" }]),
-			],
+			messages: [createAssistantPartial([{ type: "text", text: "done again" }])],
 		});
 		await handleHarnessEvent(agentId, {
 			type: "agent_end",
-			messages: [
-				createAssistantPartial([{ type: "text", text: "done again" }]),
-			],
+			messages: [createAssistantPartial([{ type: "text", text: "done again" }])],
 		});
 		expect(orchestrator.getAgentStatus(agentId)).toBe("idle");
 		expect(agentStatusChangedEvents(runtimeEvents)).toMatchObject([
@@ -928,12 +681,7 @@ describe("AgentOrchestrator", () => {
 		});
 		(harness as unknown as { phase: "turn" }).phase = "turn";
 		const handleHarnessEvent = (
-			orchestrator as unknown as {
-				_handleAgentHarnessEvent(
-					agentId: string,
-					event: AgentHarnessEvent,
-				): Promise<void>;
-			}
+			orchestrator as unknown as { _handleAgentHarnessEvent(agentId: string, event: AgentHarnessEvent): Promise<void> }
 		)._handleAgentHarnessEvent.bind(orchestrator);
 		await handleHarnessEvent(agentId, { type: "turn_start" });
 
@@ -946,12 +694,7 @@ describe("AgentOrchestrator", () => {
 				type: "agent_harness_event",
 				event: expect.objectContaining({
 					type: "queue_update",
-					steer: [
-						expect.objectContaining({
-							role: "user",
-							content: [{ type: "text", text: "keep going" }],
-						}),
-					],
+					steer: [expect.objectContaining({ role: "user", content: [{ type: "text", text: "keep going" }] })],
 				}),
 			}),
 		);
@@ -960,12 +703,7 @@ describe("AgentOrchestrator", () => {
 				type: "agent_harness_event",
 				event: expect.objectContaining({
 					type: "queue_update",
-					followUp: [
-						expect.objectContaining({
-							role: "user",
-							content: [{ type: "text", text: "summarize next" }],
-						}),
-					],
+					followUp: [expect.objectContaining({ role: "user", content: [{ type: "text", text: "summarize next" }] })],
 				}),
 			}),
 		);
@@ -975,73 +713,45 @@ describe("AgentOrchestrator", () => {
 		const env = new MemoryExecutionEnv();
 		await env.writeFile(
 			"/workspace/project/.widi/skills/code-review/SKILL.md",
-			[
-				"---",
-				"name: code-review",
-				"description: Review code for issues.",
-				"---",
-				"SECRET BODY INSTRUCTIONS",
-			].join("\n"),
+			["---", "name: code-review", "description: Review code for issues.", "---", "SECRET BODY INSTRUCTIONS"].join(
+				"\n",
+			),
 		);
 		env.dirs.add("/workspace/project/.widi/skills");
-		const orchestrator = await createOrchestrator(env, {
-			toolRegistry: createCoreCodingToolRegistry(),
-		});
+		const orchestrator = await createOrchestrator(env, { toolRegistry: createCoreCodingToolRegistry() });
 		const agentId = await orchestrator.spawnAgent();
 		const harness = requireAgentHarness(orchestrator, agentId);
 
 		const systemPrompt = (
-			harness as unknown as {
-				systemPrompt: (context: {
-					activeTools: { name: string }[];
-				}) => string | Promise<string>;
-			}
+			harness as unknown as { systemPrompt: (context: { activeTools: { name: string }[] }) => string | Promise<string> }
 		).systemPrompt;
 		expect(typeof systemPrompt).toBe("function");
-		expect(orchestrator.getAgentTools(agentId).activeToolNames).toContain(
-			"read",
-		);
+		expect(orchestrator.getAgentTools(agentId).activeToolNames).toContain("read");
 
-		const withRead = await systemPrompt({
-			activeTools: harness.getActiveTools(),
-		});
+		const withRead = await systemPrompt({ activeTools: harness.getActiveTools() });
 		expect(withRead.startsWith("default prompt")).toBe(true);
 		expect(withRead).toContain("<available_skills>");
 		expect(withRead).toContain("<name>code-review</name>");
-		expect(withRead).toContain(
-			"<location>/workspace/project/.widi/skills/code-review/SKILL.md</location>",
-		);
+		expect(withRead).toContain("<location>/workspace/project/.widi/skills/code-review/SKILL.md</location>");
 		// The skill body stays in the file; the listing is metadata-only.
 		expect(withRead).not.toContain("SECRET BODY INSTRUCTIONS");
 
 		await orchestrator.setAgentActiveTools(agentId, ["write"]);
-		const withoutRead = await systemPrompt({
-			activeTools: harness.getActiveTools(),
-		});
+		const withoutRead = await systemPrompt({ activeTools: harness.getActiveTools() });
 		expect(withoutRead).not.toContain("<available_skills>");
-		expect(withoutRead).toContain(
-			"Available tools:\n- write: Create or overwrite files",
-		);
+		expect(withoutRead).toContain("Available tools:\n- write: Create or overwrite files");
 	});
 
 	it("composes tool guidance from active tool snippets and guidelines", async () => {
 		const env = new MemoryExecutionEnv();
-		const orchestrator = await createOrchestrator(env, {
-			toolRegistry: createCoreCodingToolRegistry(),
-		});
+		const orchestrator = await createOrchestrator(env, { toolRegistry: createCoreCodingToolRegistry() });
 		const agentId = await orchestrator.spawnAgent();
 		const harness = requireAgentHarness(orchestrator, agentId);
 		const systemPrompt = (
-			harness as unknown as {
-				systemPrompt: (context: {
-					activeTools: { name: string }[];
-				}) => string | Promise<string>;
-			}
+			harness as unknown as { systemPrompt: (context: { activeTools: { name: string }[] }) => string | Promise<string> }
 		).systemPrompt;
 
-		const prompt = await systemPrompt({
-			activeTools: harness.getActiveTools(),
-		});
+		const prompt = await systemPrompt({ activeTools: harness.getActiveTools() });
 
 		expect(prompt.startsWith("default prompt")).toBe(true);
 		// Snippets keep the fixed registration order.
@@ -1051,18 +761,10 @@ describe("AgentOrchestrator", () => {
 		expect(snippetOrder).toHaveLength(7);
 		expect([...snippetOrder].sort((a, b) => a - b)).toEqual(snippetOrder);
 		// The slice 4 guidance themes are present.
-		expect(prompt).toContain(
-			"Use read instead of bash cat or sed to inspect files.",
-		);
-		expect(prompt).toContain(
-			"Use grep for content searches; use find for file path searches.",
-		);
-		expect(prompt).toContain(
-			"Use ls to browse a single directory level; use find for recursive path searches.",
-		);
-		expect(prompt).toContain(
-			"Use write only for new files or complete rewrites; use edit for partial changes.",
-		);
+		expect(prompt).toContain("Use read instead of bash cat or sed to inspect files.");
+		expect(prompt).toContain("Use grep for content searches; use find for file path searches.");
+		expect(prompt).toContain("Use ls to browse a single directory level; use find for recursive path searches.");
+		expect(prompt).toContain("Use write only for new files or complete rewrites; use edit for partial changes.");
 		expect(prompt).toContain(
 			"Use bash for building, testing, version control, and commands not covered by a dedicated tool.",
 		);
@@ -1074,9 +776,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			profileRegistry: new AgentProfileRegistry(
 				InMemoryProfileStorageBackend.fromProfiles([
-					{
-						profile: { ...defaultProfile, appendSystemPrompt: "FROM PROFILE" },
-					},
+					{ profile: { ...defaultProfile, appendSystemPrompt: "FROM PROFILE" } },
 				]),
 			),
 		});
@@ -1087,15 +787,11 @@ describe("AgentOrchestrator", () => {
 
 		const prompt = await readSystemPrompt(orchestrator, agentId);
 
-		expect(prompt).toContain(
-			'<project_instructions path="/workspace/project/AGENTS.md">\nPROJECT RULES',
-		);
+		expect(prompt).toContain('<project_instructions path="/workspace/project/AGENTS.md">\nPROJECT RULES');
 		// The role states what it is; an extension's section follows it.
 		expect(prompt).toContain("FROM PROFILE\n\nFROM EXTENSION");
 		// The project directory the file tools resolve against, not the process's.
-		expect(
-			prompt.endsWith("Current working directory: /workspace/project"),
-		).toBe(true);
+		expect(prompt.endsWith("Current working directory: /workspace/project")).toBe(true);
 	});
 
 	it("lets a role turn off its project context and cwd", async () => {
@@ -1142,64 +838,35 @@ describe("AgentOrchestrator", () => {
 
 		expect(prompt).toContain("CLAUDE RULES");
 		expect(prompt).toContain("AGENTS RULES");
-		expect(prompt.indexOf("CLAUDE RULES")).toBeLessThan(
-			prompt.indexOf("AGENTS RULES"),
-		);
+		expect(prompt.indexOf("CLAUDE RULES")).toBeLessThan(prompt.indexOf("AGENTS RULES"));
 	});
 
 	it("lets a role decide the skills listing regardless of its read tool", async () => {
 		const env = new MemoryExecutionEnv();
 		await env.writeFile(
 			"/workspace/project/.widi/skills/code-review/SKILL.md",
-			[
-				"---",
-				"name: code-review",
-				"description: Review code for issues.",
-				"---",
-				"BODY",
-			].join("\n"),
+			["---", "name: code-review", "description: Review code for issues.", "---", "BODY"].join("\n"),
 		);
 		env.dirs.add("/workspace/project/.widi/skills");
 		const orchestrator = await createOrchestrator(env, {
 			toolRegistry: createCoreCodingToolRegistry(),
 			profileRegistry: new AgentProfileRegistry(
 				InMemoryProfileStorageBackend.fromProfiles([
-					{
-						profile: {
-							...defaultProfile,
-							id: "quiet",
-							skillsListing: false,
-						},
-					},
-					{
-						profile: {
-							...defaultProfile,
-							id: "loud",
-							tools: ["write"],
-							skillsListing: true,
-						},
-					},
+					{ profile: { ...defaultProfile, id: "quiet", skillsListing: false } },
+					{ profile: { ...defaultProfile, id: "loud", tools: ["write"], skillsListing: true } },
 				]),
 			),
 		});
 
 		const quietId = await orchestrator.spawnAgent({ profileId: "quiet" });
-		expect(orchestrator.getAgentTools(quietId).activeToolNames).toContain(
-			"read",
-		);
-		expect(await readSystemPrompt(orchestrator, quietId)).not.toContain(
-			"<available_skills>",
-		);
+		expect(orchestrator.getAgentTools(quietId).activeToolNames).toContain("read");
+		expect(await readSystemPrompt(orchestrator, quietId)).not.toContain("<available_skills>");
 
 		// No read tool, and the listing points at a file: the role still gets it
 		// when it asks, because it may read through a tool this layer cannot name.
 		const loudId = await orchestrator.spawnAgent({ profileId: "loud" });
-		expect(orchestrator.getAgentTools(loudId).activeToolNames).not.toContain(
-			"read",
-		);
-		expect(await readSystemPrompt(orchestrator, loudId)).toContain(
-			"<name>code-review</name>",
-		);
+		expect(orchestrator.getAgentTools(loudId).activeToolNames).not.toContain("read");
+		expect(await readSystemPrompt(orchestrator, loudId)).toContain("<name>code-review</name>");
 	});
 
 	it("promptAgent persists an expansion entry alongside the prompt", async () => {
@@ -1232,21 +899,15 @@ describe("AgentOrchestrator", () => {
 		});
 		expect(outcome.kind).toBe("completed");
 		expect(prompted).toEqual(["expanded text"]);
-		const entries = (
-			await orchestrator.getAgentSessionTree(agentId)
-		).entries.filter(
-			(entry) =>
-				entry.type === "custom" &&
-				entry.customType === "core:command_expansion",
+		const entries = (await orchestrator.getAgentSessionTree(agentId)).entries.filter(
+			(entry) => entry.type === "custom" && entry.customType === "core:command_expansion",
 		);
 		expect(entries).toMatchObject([
 			{
 				data: {
 					inputId: expect.any(String),
 					originalText: "/skill review",
-					expansions: [
-						expect.objectContaining({ commandId: "command-1", name: "skill" }),
-					],
+					expansions: [expect.objectContaining({ commandId: "command-1", name: "skill" })],
 				},
 			},
 		]);
@@ -1254,24 +915,16 @@ describe("AgentOrchestrator", () => {
 
 	it("promptAgent blocks input when an extension interceptor blocks", async () => {
 		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "prompt-policy-profile",
-			persist: false,
-		};
+		const extensionProfile: AgentProfile = { ...defaultProfile, id: "prompt-policy-profile", persist: false };
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		orchestrator.registerExtension("policy", (api) => {
 			api.intercept("input", (event) =>
-				event.text.includes("secret")
-					? { block: true, reason: "Sensitive input." }
-					: undefined,
+				event.text.includes("secret") ? { block: true, reason: "Sensitive input." } : undefined,
 			);
 		});
 		const events: OrchestratorEvent[] = [];
@@ -1288,9 +941,7 @@ describe("AgentOrchestrator", () => {
 			},
 		});
 
-		await expect(
-			orchestrator.promptAgent(agentId, "share the secret"),
-		).resolves.toEqual({
+		await expect(orchestrator.promptAgent(agentId, "share the secret")).resolves.toEqual({
 			kind: "blocked",
 			inputId: expect.any(String),
 			reason: "Sensitive input.",
@@ -1310,17 +961,11 @@ describe("AgentOrchestrator", () => {
 
 	it("promptAgent applies extension transforms and persists the transform entry", async () => {
 		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "prompt-rewriter-profile",
-			persist: false,
-		};
+		const extensionProfile: AgentProfile = { ...defaultProfile, id: "prompt-rewriter-profile", persist: false };
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		orchestrator.registerExtension("rewriter", (api) => {
@@ -1345,9 +990,7 @@ describe("AgentOrchestrator", () => {
 			},
 		});
 
-		await expect(
-			orchestrator.promptAgent(agentId, "hello"),
-		).resolves.toMatchObject({ kind: "completed" });
+		await expect(orchestrator.promptAgent(agentId, "hello")).resolves.toMatchObject({ kind: "completed" });
 		expect(prompted).toEqual(["hello!"]);
 		expect(events).toContainEqual(
 			expect.objectContaining({
@@ -1361,25 +1004,14 @@ describe("AgentOrchestrator", () => {
 		);
 		const findTransformEntries = async () =>
 			(await orchestrator.getAgentSessionTree(agentId)).entries.filter(
-				(entry) =>
-					entry.type === "custom" &&
-					entry.customType === "core:input_transform",
+				(entry) => entry.type === "custom" && entry.customType === "core:input_transform",
 			);
 		await expect(findTransformEntries()).resolves.toMatchObject([
-			{
-				data: {
-					inputId: expect.any(String),
-					originalText: "hello",
-					text: "hello!",
-					transformedBy: ["rewriter"],
-				},
-			},
+			{ data: { inputId: expect.any(String), originalText: "hello", text: "hello!", transformedBy: ["rewriter"] } },
 		]);
 
 		// Blocked input never reaches the session: no entry is written.
-		await expect(
-			orchestrator.promptAgent(agentId, "share the secret"),
-		).resolves.toMatchObject({ kind: "blocked" });
+		await expect(orchestrator.promptAgent(agentId, "share the secret")).resolves.toMatchObject({ kind: "blocked" });
 		await expect(findTransformEntries()).resolves.toHaveLength(1);
 	});
 
@@ -1407,47 +1039,35 @@ describe("AgentOrchestrator", () => {
 			],
 		};
 
-		await expect(
-			orchestrator.promptAgent(agentId, "expanded text", { expansion }),
-		).rejects.toThrow("before_agent_start hook exploded");
+		await expect(orchestrator.promptAgent(agentId, "expanded text", { expansion })).rejects.toThrow(
+			"before_agent_start hook exploded",
+		);
 
 		// The failed prompt never persisted a user message; a leftover entry
 		// on the active branch would pair with the next user message during
 		// hydration and show the wrong original text.
 		const branchCustomEntries = async () =>
-			(await orchestrator.getAgentSession(agentId)).pathToRoot.filter(
-				(entry) => entry.type === "custom",
-			);
+			(await orchestrator.getAgentSession(agentId)).pathToRoot.filter((entry) => entry.type === "custom");
 		await expect(branchCustomEntries()).resolves.toEqual([]);
 
 		// The branch stays usable: a later successful prompt persists its own
 		// expansion entry as the only one on the branch.
-		Object.assign(harness, {
-			prompt: async () => ({ role: "assistant" }) as AssistantMessage,
-		});
+		Object.assign(harness, { prompt: async () => ({ role: "assistant" }) as AssistantMessage });
 		await expect(
 			orchestrator.promptAgent(agentId, "expanded again", {
 				expansion: { ...expansion, originalText: "/skill audit" },
 			}),
 		).resolves.toMatchObject({ kind: "completed" });
-		await expect(branchCustomEntries()).resolves.toMatchObject([
-			{ data: { originalText: "/skill audit" } },
-		]);
+		await expect(branchCustomEntries()).resolves.toMatchObject([{ data: { originalText: "/skill audit" } }]);
 	});
 
 	it("promptAgent keeps provisional entries when the user message landed before the failure", async () => {
 		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "prompt-run-failure-profile",
-			persist: false,
-		};
+		const extensionProfile: AgentProfile = { ...defaultProfile, id: "prompt-run-failure-profile", persist: false };
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		orchestrator.registerExtension("rewriter", (api) => {
@@ -1460,44 +1080,29 @@ describe("AgentOrchestrator", () => {
 				// A run that persisted its user message and then failed at the
 				// provider: the transform entry has its pairing message and must
 				// survive the failure.
-				await harness.appendMessage({
-					role: "user",
-					content: [{ type: "text", text }],
-					timestamp: Date.now(),
-				});
+				await harness.appendMessage({ role: "user", content: [{ type: "text", text }], timestamp: Date.now() });
 				throw new Error("provider exploded");
 			},
 		});
 
-		await expect(orchestrator.promptAgent(agentId, "hello")).rejects.toThrow(
-			"provider exploded",
-		);
+		await expect(orchestrator.promptAgent(agentId, "hello")).rejects.toThrow("provider exploded");
 
 		const branch = (await orchestrator.getAgentSession(agentId)).pathToRoot;
 		const transformIndex = branch.findIndex(
-			(entry) =>
-				entry.type === "custom" && entry.customType === "core:input_transform",
+			(entry) => entry.type === "custom" && entry.customType === "core:input_transform",
 		);
-		const userMessageIndex = branch.findIndex(
-			(entry) => entry.type === "message" && entry.message.role === "user",
-		);
+		const userMessageIndex = branch.findIndex((entry) => entry.type === "message" && entry.message.role === "user");
 		expect(transformIndex).toBeGreaterThanOrEqual(0);
 		expect(userMessageIndex).toBeGreaterThan(transformIndex);
 	});
 
 	it("promptAgent rejects a busy agent before interception and session writes", async () => {
 		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "prompt-busy-profile",
-			persist: false,
-		};
+		const extensionProfile: AgentProfile = { ...defaultProfile, id: "prompt-busy-profile", persist: false };
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		let interceptorCalls = 0;
@@ -1515,32 +1120,22 @@ describe("AgentOrchestrator", () => {
 		requireAgentRecord(orchestrator, agentId).status = "running";
 
 		await expect(
-			orchestrator.promptAgent(agentId, "hello", {
-				expansion: { originalText: "hello", items: [] },
-			}),
+			orchestrator.promptAgent(agentId, "hello", { expansion: { originalText: "hello", items: [] } }),
 		).rejects.toMatchObject({ code: "orchestrator.agent_busy" });
 
 		expect(interceptorCalls).toBe(0);
-		expect(
-			events.filter((event) => event.type === "input_transformed"),
-		).toEqual([]);
+		expect(events.filter((event) => event.type === "input_transformed")).toEqual([]);
 		const branch = (await orchestrator.getAgentSession(agentId)).pathToRoot;
 		expect(branch.filter((entry) => entry.type === "custom")).toEqual([]);
 	});
 
 	it("rejects input fail-closed when an input interceptor throws", async () => {
 		const env = new MemoryExecutionEnv();
-		const extensionProfile: AgentProfile = {
-			...defaultProfile,
-			id: "broken-input-profile",
-			persist: false,
-		};
+		const extensionProfile: AgentProfile = { ...defaultProfile, id: "broken-input-profile", persist: false };
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		let healthyCalled = false;
@@ -1561,9 +1156,10 @@ describe("AgentOrchestrator", () => {
 		});
 		const agentId = await orchestrator.spawnAgent();
 
-		await expect(
-			orchestrator.promptAgent(agentId, "hello"),
-		).resolves.toMatchObject({ kind: "blocked", blockedBy: "broken" });
+		await expect(orchestrator.promptAgent(agentId, "hello")).resolves.toMatchObject({
+			kind: "blocked",
+			blockedBy: "broken",
+		});
 		expect(healthyCalled).toBe(false);
 		expect(events).toContainEqual(
 			expect.objectContaining({
@@ -1578,12 +1174,7 @@ describe("AgentOrchestrator", () => {
 			}),
 		);
 		expect(events).toContainEqual(
-			expect.objectContaining({
-				type: "input_blocked",
-				agentId,
-				originalText: "hello",
-				blockedBy: "broken",
-			}),
+			expect.objectContaining({ type: "input_blocked", agentId, originalText: "hello", blockedBy: "broken" }),
 		);
 	});
 
@@ -1600,12 +1191,7 @@ describe("AgentOrchestrator", () => {
 				agentId: "main-agent-2",
 				status: "idle",
 				hasHarness: true,
-				profile: {
-					reference: {
-						id: defaultProfile.id,
-						label: defaultProfile.label,
-					},
-				},
+				profile: { reference: { id: defaultProfile.id, label: defaultProfile.label } },
 				model: expect.objectContaining({ id: defaultModel.id }),
 			},
 		});
@@ -1634,17 +1220,11 @@ describe("AgentOrchestrator", () => {
 				expect.objectContaining({ id: agentId }),
 			]),
 		});
-		const result = await orchestrator.resumeAgentSessionByReference(
-			metadata.path,
-		);
+		const result = await orchestrator.resumeAgentSessionByReference(metadata.path);
 
 		expect(result).toMatchObject({
 			agentId: "worker-agent",
-			snapshot: {
-				agentId: "worker-agent",
-				status: "idle",
-				model: expect.objectContaining({ id: restoredModel.id }),
-			},
+			snapshot: { agentId: "worker-agent", status: "idle", model: expect.objectContaining({ id: restoredModel.id }) },
 		});
 	});
 
@@ -1662,9 +1242,9 @@ describe("AgentOrchestrator", () => {
 		});
 		const orchestrator = await createOrchestrator(env);
 
-		await expect(
-			orchestrator.resumeAgentSessionByReference("same"),
-		).rejects.toThrow("Ambiguous agent session reference: same");
+		await expect(orchestrator.resumeAgentSessionByReference("same")).rejects.toThrow(
+			"Ambiguous agent session reference: same",
+		);
 	});
 
 	it("lists runtime agents and persisted sessions through atomic methods", async () => {
@@ -1673,20 +1253,11 @@ describe("AgentOrchestrator", () => {
 		const agentId = await orchestrator.spawnAgent();
 
 		expect(orchestrator.listAgents()).toMatchObject({
-			agents: [
-				expect.objectContaining({
-					agentId,
-					status: "idle",
-					hasHarness: true,
-				}),
-			],
+			agents: [expect.objectContaining({ agentId, status: "idle", hasHarness: true })],
 		});
 		await expect(orchestrator.listAgentSessions()).resolves.toMatchObject({
 			sessions: [
-				expect.objectContaining({
-					id: agentId,
-					profile: { id: defaultProfile.id, label: defaultProfile.label },
-				}),
+				expect.objectContaining({ id: agentId, profile: { id: defaultProfile.id, label: defaultProfile.label } }),
 			],
 		});
 	});
@@ -1695,36 +1266,19 @@ describe("AgentOrchestrator", () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
 		const agentId = await orchestrator.spawnAgent();
-		const session = await orchestrator.sessionManager.createAgentSession({
-			agentId,
-			agentProfile: defaultProfile,
-		});
-		const userEntryId = await session.appendMessage({
-			role: "user",
-			content: "revise this",
-			timestamp: 1,
-		});
+		const session = await orchestrator.sessionManager.createAgentSession({ agentId, agentProfile: defaultProfile });
+		const userEntryId = await session.appendMessage({ role: "user", content: "revise this", timestamp: 1 });
 
-		await expect(
-			orchestrator.setAgentSessionName(agentId, "Planning Session"),
-		).resolves.toMatchObject({
+		await expect(orchestrator.setAgentSessionName(agentId, "Planning Session")).resolves.toMatchObject({
 			name: "Planning Session",
 		});
-		await expect(
-			orchestrator.getAgentSessionTree(agentId),
-		).resolves.toMatchObject({
+		await expect(orchestrator.getAgentSessionTree(agentId)).resolves.toMatchObject({
 			name: "Planning Session",
 			entries: [
 				expect.objectContaining({ id: userEntryId, type: "message" }),
-				expect.objectContaining({
-					type: "session_info",
-					name: "Planning Session",
-				}),
+				expect.objectContaining({ type: "session_info", name: "Planning Session" }),
 			],
-			pathToRoot: [
-				expect.objectContaining({ id: userEntryId }),
-				expect.objectContaining({ type: "session_info" }),
-			],
+			pathToRoot: [expect.objectContaining({ id: userEntryId }), expect.objectContaining({ type: "session_info" })],
 		});
 	});
 
@@ -1732,77 +1286,39 @@ describe("AgentOrchestrator", () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
 		const agentId = await orchestrator.spawnAgent();
-		const session = await orchestrator.sessionManager.createAgentSession({
-			agentId,
-			agentProfile: defaultProfile,
-		});
-		const userEntryId = await session.appendMessage({
-			role: "user",
-			content: "edit this",
-			timestamp: 1,
-		});
-		await session.appendMessage({
-			role: "user",
-			content: "current leaf",
-			timestamp: 2,
-		});
+		const session = await orchestrator.sessionManager.createAgentSession({ agentId, agentProfile: defaultProfile });
+		const userEntryId = await session.appendMessage({ role: "user", content: "edit this", timestamp: 1 });
+		await session.appendMessage({ role: "user", content: "current leaf", timestamp: 2 });
 
-		await expect(
-			orchestrator.navigateAgentTree(agentId, userEntryId),
-		).resolves.toMatchObject({
+		await expect(orchestrator.navigateAgentTree(agentId, userEntryId)).resolves.toMatchObject({
 			cancelled: false,
 			editorText: "edit this",
 		});
-		await expect(orchestrator.getAgentSession(agentId)).resolves.toMatchObject({
-			leafId: null,
-			pathToRoot: [],
-		});
+		await expect(orchestrator.getAgentSession(agentId)).resolves.toMatchObject({ leafId: null, pathToRoot: [] });
 	});
 
 	it("forks the current session into an idle runtime agent", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
 		const agentId = await orchestrator.spawnAgent();
-		const session = await orchestrator.sessionManager.createAgentSession({
-			agentId,
-			agentProfile: defaultProfile,
-		});
-		const keptEntryId = await session.appendMessage({
-			role: "user",
-			content: "keep me",
-			timestamp: 1,
-		});
-		const targetEntryId = await session.appendMessage({
-			role: "user",
-			content: "fork before me",
-			timestamp: 2,
-		});
+		const session = await orchestrator.sessionManager.createAgentSession({ agentId, agentProfile: defaultProfile });
+		const keptEntryId = await session.appendMessage({ role: "user", content: "keep me", timestamp: 1 });
+		const targetEntryId = await session.appendMessage({ role: "user", content: "fork before me", timestamp: 2 });
 
-		const result = await orchestrator.forkAgentSessionFromAgent(agentId, {
-			entryId: targetEntryId,
-		});
+		const result = await orchestrator.forkAgentSessionFromAgent(agentId, { entryId: targetEntryId });
 
 		expect(result).toMatchObject({
 			agentId: expect.not.stringMatching(`^${agentId}$`),
-			snapshot: {
-				status: "idle",
-				hasHarness: true,
-				model: expect.objectContaining({ id: defaultModel.id }),
-			},
+			snapshot: { status: "idle", hasHarness: true, model: expect.objectContaining({ id: defaultModel.id }) },
 		});
 		const forkedAgentId = result.agentId;
 		const forkedTree = await orchestrator.getAgentSessionTree(forkedAgentId);
 		expect(forkedTree).toMatchObject({
-			metadata: {
-				id: forkedAgentId,
-				parentSessionPath: expect.any(String),
-			},
+			metadata: { id: forkedAgentId, parentSessionPath: expect.any(String) },
 			entries: [expect.objectContaining({ id: keptEntryId })],
 			leafId: keptEntryId,
 		});
-		expect(forkedTree.entries.some((entry) => entry.id === targetEntryId)).toBe(
-			false,
-		);
+		expect(forkedTree.entries.some((entry) => entry.id === targetEntryId)).toBe(false);
 		expect(orchestrator.getAgentStatus(agentId)).toBe("idle");
 	});
 
@@ -1810,10 +1326,7 @@ describe("AgentOrchestrator", () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
 		const agentId = await orchestrator.spawnAgent();
-		const session = await orchestrator.sessionManager.createAgentSession({
-			agentId,
-			agentProfile: defaultProfile,
-		});
+		const session = await orchestrator.sessionManager.createAgentSession({ agentId, agentProfile: defaultProfile });
 		await session.appendMessage({ role: "user", content: "hi", timestamp: 1 });
 		// defaultModel.contextWindow is 1000 and the default reserve is 16384,
 		// so any positive usage is over threshold.
@@ -1838,10 +1351,7 @@ describe("AgentOrchestrator", () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
 		const agentId = await orchestrator.spawnAgent();
-		const session = await orchestrator.sessionManager.createAgentSession({
-			agentId,
-			agentProfile: defaultProfile,
-		});
+		const session = await orchestrator.sessionManager.createAgentSession({ agentId, agentProfile: defaultProfile });
 		const compacted: string[] = [];
 		Object.assign(orchestrator, {
 			compactAgent: async (targetAgentId: string) => {
@@ -1864,10 +1374,7 @@ describe("AgentOrchestrator", () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
 		const agentId = await orchestrator.spawnAgent();
-		const session = await orchestrator.sessionManager.createAgentSession({
-			agentId,
-			agentProfile: defaultProfile,
-		});
+		const session = await orchestrator.sessionManager.createAgentSession({ agentId, agentProfile: defaultProfile });
 		await session.appendMessage(overflowAssistantMessage());
 		Object.assign(orchestrator, {
 			compactAgent: async () => {
@@ -1905,9 +1412,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		orchestrator.registerExtension("stateful", () => {});
@@ -1917,21 +1422,14 @@ describe("AgentOrchestrator", () => {
 		if (!runner) throw new Error("Expected extension runner.");
 		expect(record.systemPrompt).toBeDefined();
 		const context = runner.createContext("stateful");
-		await context.actions.setStatus("sync", {
-			text: "Synchronizing",
-			progress: { completed: 1, total: 3 },
-		});
-		await context.actions.setStatus("watch", {
-			text: "Watching workspace",
-		});
+		await context.actions.setStatus("sync", { text: "Synchronizing", progress: { completed: 1, total: 3 } });
+		await context.actions.setStatus("watch", { text: "Watching workspace" });
 		const events: OrchestratorEvent[] = [];
 		const statusSnapshotsDuringClear: unknown[] = [];
 		orchestrator.subscribe((event) => {
 			events.push(event);
 			if (event.type === "extension_status_changed" && !event.status) {
-				statusSnapshotsDuringClear.push(
-					orchestrator.listExtensionStatuses(agentId),
-				);
+				statusSnapshotsDuringClear.push(orchestrator.listExtensionStatuses(agentId));
 			}
 		});
 
@@ -1944,34 +1442,24 @@ describe("AgentOrchestrator", () => {
 		expect(
 			events
 				.filter(
-					(
-						event,
-					): event is Extract<
-						OrchestratorEvent,
-						{ type: "extension_status_changed" }
-					> => event.type === "extension_status_changed" && !event.status,
+					(event): event is Extract<OrchestratorEvent, { type: "extension_status_changed" }> =>
+						event.type === "extension_status_changed" && !event.status,
 				)
 				.map((event) => event.key),
 		).toEqual(["sync", "watch"]);
 		expect(
 			events
-				.filter(
-					(event) => event.type === "extension_status_changed" && !event.status,
-				)
+				.filter((event) => event.type === "extension_status_changed" && !event.status)
 				.every((event) => !Object.hasOwn(event, "status")),
 		).toBe(true);
-		expect(agentStatusChangedEvents(events)).toMatchObject([
-			{ agentId, previousStatus: "idle", status: "disposed" },
-		]);
+		expect(agentStatusChangedEvents(events)).toMatchObject([{ agentId, previousStatus: "idle", status: "disposed" }]);
 		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
 			agentId,
 			status: "disposed",
 			hasHarness: false,
 			extensionIds: ["stateful"],
 		});
-		expect(() => context.actions.getTools()).toThrow(
-			"Agent has been disposed.",
-		);
+		expect(() => context.actions.getTools()).toThrow("Agent has been disposed.");
 	});
 
 	it("keeps a persisted session listed after disposing its runtime agent", async () => {
@@ -1986,12 +1474,7 @@ describe("AgentOrchestrator", () => {
 
 		expect(orchestrator.getAgentStatus(agentId)).toBe("disposed");
 		await expect(orchestrator.listAgentSessions()).resolves.toMatchObject({
-			sessions: expect.arrayContaining([
-				expect.objectContaining({
-					id: agentId,
-					path: persistedSession.path,
-				}),
-			]),
+			sessions: expect.arrayContaining([expect.objectContaining({ id: agentId, path: persistedSession.path })]),
 		});
 	});
 
@@ -2031,41 +1514,26 @@ describe("AgentOrchestrator", () => {
 		});
 		await Promise.resolve();
 
-		await orchestrator.disposeAgent(firstAgentId, {
-			reason: "agent disposed",
-		});
+		await orchestrator.disposeAgent(firstAgentId, { reason: "agent disposed" });
 
-		await expect(firstRequest).rejects.toMatchObject({
-			code: "orchestrator.human_request_cancelled",
-		});
+		await expect(firstRequest).rejects.toMatchObject({ code: "orchestrator.human_request_cancelled" });
 		expect(signals.get("first")?.aborted).toBe(true);
 		expect(signals.get("second")?.aborted).toBe(false);
 		await Promise.resolve();
 		expect(secondSettled).toBe(false);
 		const secondPending = events.find(
-			(
-				event,
-			): event is Extract<
-				OrchestratorEvent,
-				{ type: "human_request_pending" }
-			> =>
-				event.type === "human_request_pending" &&
-				event.request.title === "second",
+			(event): event is Extract<OrchestratorEvent, { type: "human_request_pending" }> =>
+				event.type === "human_request_pending" && event.request.title === "second",
 		);
 		if (!secondPending) throw new Error("Expected second pending request.");
 		await orchestrator.cancelHumanRequest(secondPending.request.id, "done");
-		await expect(secondRequest).rejects.toMatchObject({
-			code: "orchestrator.human_request_cancelled",
-		});
+		await expect(secondRequest).rejects.toMatchObject({ code: "orchestrator.human_request_cancelled" });
 	});
 
 	it("disposeAll disposes every agent and cancels remaining human requests", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		orchestrator.registerClient({
-			id: "human",
-			requestHuman: async () => await new Promise<never>(() => {}),
-		});
+		orchestrator.registerClient({ id: "human", requestHuman: async () => await new Promise<never>(() => {}) });
 		const firstAgentId = await orchestrator.spawnAgent();
 		const secondAgentId = await orchestrator.spawnAgent();
 		const request = orchestrator.requestHuman({
@@ -2082,9 +1550,7 @@ describe("AgentOrchestrator", () => {
 		expect(orchestrator.getAgentStatus(firstAgentId)).toBe("disposed");
 		expect(orchestrator.getAgentStatus(secondAgentId)).toBe("disposed");
 		expect(env.cleanupCalls).toBe(1);
-		await expect(request).rejects.toMatchObject({
-			code: "orchestrator.human_request_cancelled",
-		});
+		await expect(request).rejects.toMatchObject({ code: "orchestrator.human_request_cancelled" });
 	});
 
 	it("resolves profile requested tools through ToolRegistry diagnostics", async () => {
@@ -2098,9 +1564,7 @@ describe("AgentOrchestrator", () => {
 		};
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: toolProfile.id,
-			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([{ profile: toolProfile }]),
-			),
+			profileRegistry: new AgentProfileRegistry(InMemoryProfileStorageBackend.fromProfiles([{ profile: toolProfile }])),
 			toolRegistry: createToolRegistry(createToolDefinition("echo", "echo")),
 		});
 		const events: OrchestratorEvent[] = [];
@@ -2110,41 +1574,23 @@ describe("AgentOrchestrator", () => {
 
 		const agentId = await orchestrator.spawnAgent();
 
-		expect(orchestrator.getAgentTools(agentId)).toEqual({
-			toolNames: ["echo"],
-			activeToolNames: ["echo"],
-		});
-		expect(
-			events
-				.filter((event) => event.type === "diagnostic")
-				.map((event) => event.diagnostic.code),
-		).toEqual(["tool.requested_duplicate", "tool.requested_missing"]);
+		expect(orchestrator.getAgentTools(agentId)).toEqual({ toolNames: ["echo"], activeToolNames: ["echo"] });
+		expect(events.filter((event) => event.type === "diagnostic").map((event) => event.diagnostic.code)).toEqual([
+			"tool.requested_duplicate",
+			"tool.requested_missing",
+		]);
 	});
 
 	it("filters missing resume active tools through ToolRegistry diagnostics", async () => {
 		const env = new MemoryExecutionEnv();
-		const sessionManager = new SessionManager({
-			fs: env,
-			cwd: "/workspace/project",
-			sessionsRoot: "/sessions",
-		});
-		const session = await sessionManager.createAgentSession({
-			agentId: "worker-agent",
-			agentProfile: restoredProfile,
-		});
+		const sessionManager = new SessionManager({ fs: env, cwd: "/workspace/project", sessionsRoot: "/sessions" });
+		const session = await sessionManager.createAgentSession({ agentId: "worker-agent", agentProfile: restoredProfile });
 		await session.appendActiveToolsChange(["echo", "ghost"]);
 		const metadata = expectExtendedMetadata(await session.getMetadata());
-		const resumeSessionManager = new SessionManager({
-			fs: env,
-			cwd: "/workspace/project",
-			sessionsRoot: "/sessions",
-		});
+		const resumeSessionManager = new SessionManager({ fs: env, cwd: "/workspace/project", sessionsRoot: "/sessions" });
 		const orchestrator = new AgentOrchestrator({
 			executionEnv: env,
-			resourceLoader: new ResourceLoader({
-				executionEnv: env,
-				cwd: "/workspace/project",
-			}),
+			resourceLoader: new ResourceLoader({ executionEnv: env, cwd: "/workspace/project" }),
 			sessionManager: resumeSessionManager,
 			settingManager: new SettingManager(),
 			modelRegistry: await createModelRegistry(env),
@@ -2158,10 +1604,7 @@ describe("AgentOrchestrator", () => {
 			events.push(event);
 		});
 
-		const agentId = await orchestrator.spawnAgent({
-			resume: true,
-			metadata,
-		});
+		const agentId = await orchestrator.spawnAgent({ resume: true, metadata });
 
 		expect(orchestrator.getAgentActiveTools(agentId)).toEqual(["echo"]);
 		expect(events).toContainEqual(
@@ -2184,8 +1627,7 @@ describe("AgentOrchestrator", () => {
 		});
 		const agentId = await firstOrchestrator.spawnAgent();
 		await firstOrchestrator.setAgentActiveTools(agentId, []);
-		const sessionMetadata =
-			firstOrchestrator.inspectAgent(agentId).sessionMetadata;
+		const sessionMetadata = firstOrchestrator.inspectAgent(agentId).sessionMetadata;
 		if (!sessionMetadata) throw new Error("Expected session metadata.");
 
 		const resumedOrchestrator = await createOrchestrator(env, {
@@ -2197,26 +1639,15 @@ describe("AgentOrchestrator", () => {
 		});
 
 		expect(resumedAgentId).toBe(agentId);
-		expect(resumedOrchestrator.getAgentTools(resumedAgentId)).toEqual({
-			toolNames: ["echo"],
-			activeToolNames: [],
-		});
-		expect(
-			requireAgentHarness(resumedOrchestrator, resumedAgentId).getActiveTools(),
-		).toEqual([]);
+		expect(resumedOrchestrator.getAgentTools(resumedAgentId)).toEqual({ toolNames: ["echo"], activeToolNames: [] });
+		expect(requireAgentHarness(resumedOrchestrator, resumedAgentId).getActiveTools()).toEqual([]);
 	});
 
 	it("reports conflicts between registry tool registrations", async () => {
 		const env = new MemoryExecutionEnv();
 		const toolRegistry = new ToolRegistry();
-		toolRegistry.defineTool(createToolDefinition("echo", "base"), {
-			kind: "core",
-			id: "base",
-		});
-		toolRegistry.defineTool(createToolDefinition("echo", "override"), {
-			kind: "extension",
-			id: "override",
-		});
+		toolRegistry.defineTool(createToolDefinition("echo", "base"), { kind: "core", id: "base" });
+		toolRegistry.defineTool(createToolDefinition("echo", "override"), { kind: "extension", id: "override" });
 		const orchestrator = await createOrchestrator(env, { toolRegistry });
 		const events: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
@@ -2225,10 +1656,7 @@ describe("AgentOrchestrator", () => {
 
 		const agentId = await orchestrator.spawnAgent();
 
-		expect(orchestrator.getAgentTools(agentId)).toEqual({
-			toolNames: ["echo"],
-			activeToolNames: ["echo"],
-		});
+		expect(orchestrator.getAgentTools(agentId)).toEqual({ toolNames: ["echo"], activeToolNames: ["echo"] });
 		expect(events).toContainEqual(
 			expect.objectContaining({
 				type: "diagnostic",
@@ -2253,9 +1681,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		orchestrator.registerExtension("sample", (api) => {
@@ -2300,18 +1726,10 @@ describe("AgentOrchestrator", () => {
 
 		const agentId = await orchestrator.spawnAgent();
 
-		expect(orchestrator.getAgentTools(agentId)).toEqual({
-			toolNames: [],
-			activeToolNames: [],
-		});
+		expect(orchestrator.getAgentTools(agentId)).toEqual({ toolNames: [], activeToolNames: [] });
 		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
 			extensionIds: [],
-			extensionSnapshot: {
-				extensionIds: [],
-				hooks: [],
-				toolContributions: [],
-				stale: { stale: false },
-			},
+			extensionSnapshot: { extensionIds: [], hooks: [], toolContributions: [], stale: { stale: false } },
 		});
 	});
 
@@ -2326,9 +1744,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 			toolRegistry: createToolRegistry(createToolDefinition("base")),
 		});
@@ -2338,8 +1754,7 @@ describe("AgentOrchestrator", () => {
 			api.registerTool(createToolDefinition("sampleTool", "sample"));
 			api.patchTool("base", {
 				description: "patched base",
-				aroundExecute: async (next, toolCallId, params, context) =>
-					await next(toolCallId, params, context),
+				aroundExecute: async (next, toolCallId, params, context) => await next(toolCallId, params, context),
 			});
 		});
 
@@ -2347,29 +1762,14 @@ describe("AgentOrchestrator", () => {
 
 		expect(orchestrator.inspectAgent(agentId).extensionSnapshot).toEqual({
 			extensionIds: ["sample"],
-			extensions: [
-				{ id: "sample", source: { kind: "factory" }, divisions: [] },
-			],
+			extensions: [{ id: "sample", source: { kind: "factory" }, divisions: [] }],
 			divisions: [],
 			hooks: [
-				{
-					kind: "observe",
-					extensionId: "sample",
-					eventName: "agent_harness_event",
-				},
-				{
-					kind: "intercept",
-					extensionId: "sample",
-					eventName: "context",
-				},
+				{ kind: "observe", extensionId: "sample", eventName: "agent_harness_event" },
+				{ kind: "intercept", extensionId: "sample", eventName: "context" },
 			],
 			toolContributions: [
-				{
-					kind: "define",
-					extensionId: "sample",
-					toolName: "sampleTool",
-					source: { kind: "extension", id: "sample" },
-				},
+				{ kind: "define", extensionId: "sample", toolName: "sampleTool", source: { kind: "extension", id: "sample" } },
 				{
 					kind: "patch",
 					extensionId: "sample",
@@ -2395,13 +1795,9 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
-			settingManager: new SettingManager({
-				extensionDivisions: { integration: { disable: ["heavy"] } },
-			}),
+			settingManager: new SettingManager({ extensionDivisions: { integration: { disable: ["heavy"] } } }),
 		});
 		let heavyActivations = 0;
 		orchestrator.registerExtension("integration", {
@@ -2424,12 +1820,8 @@ describe("AgentOrchestrator", () => {
 		const agentId = await orchestrator.spawnAgent();
 
 		expect(heavyActivations).toBe(0);
-		expect(orchestrator.getAgentTools(agentId).toolNames).toEqual([
-			"lightTool",
-		]);
-		expect(
-			orchestrator.inspectAgent(agentId).extensionSnapshot.divisions,
-		).toEqual([
+		expect(orchestrator.getAgentTools(agentId).toolNames).toEqual(["lightTool"]);
+		expect(orchestrator.inspectAgent(agentId).extensionSnapshot.divisions).toEqual([
 			expect.objectContaining({ id: "heavy", enabled: false }),
 			expect.objectContaining({ id: "light", enabled: true }),
 		]);
@@ -2446,9 +1838,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		orchestrator.registerExtension("integration", {
@@ -2470,14 +1860,8 @@ describe("AgentOrchestrator", () => {
 
 		const agentId = await orchestrator.spawnAgent();
 
-		expect(orchestrator.getAgentTools(agentId).toolNames).toEqual([
-			"healthyTool",
-		]);
-		expect(
-			orchestrator
-				.inspectAgent(agentId)
-				.extensionDiagnostics.map((diagnostic) => diagnostic.code),
-		).toEqual([
+		expect(orchestrator.getAgentTools(agentId).toolNames).toEqual(["healthyTool"]);
+		expect(orchestrator.inspectAgent(agentId).extensionDiagnostics.map((diagnostic) => diagnostic.code)).toEqual([
 			"extension.division_invalid",
 			"extension.division_activation_failed",
 		]);
@@ -2494,13 +1878,9 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
-			settingManager: new SettingManager({
-				enabledExtensions: [" sample ", "", "sample", "missing"],
-			}),
+			settingManager: new SettingManager({ enabledExtensions: [" sample ", "", "sample", "missing"] }),
 		});
 		const events: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
@@ -2514,16 +1894,8 @@ describe("AgentOrchestrator", () => {
 
 		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
 			extensionIds: ["sample", "missing"],
-			extensionSnapshot: {
-				extensionIds: ["sample", "missing"],
-				stale: { stale: false },
-			},
-			extensionDiagnostics: [
-				expect.objectContaining({
-					code: "extension.factory_missing",
-					extensionId: "missing",
-				}),
-			],
+			extensionSnapshot: { extensionIds: ["sample", "missing"], stale: { stale: false } },
+			extensionDiagnostics: [expect.objectContaining({ code: "extension.factory_missing", extensionId: "missing" })],
 		});
 		expect(events).toContainEqual(
 			expect.objectContaining({
@@ -2533,16 +1905,14 @@ describe("AgentOrchestrator", () => {
 					severity: "warning",
 					extensionId: "missing",
 					agentId,
-					message:
-						"Extension 'missing' is enabled but no factory is registered.",
+					message: "Extension 'missing' is enabled but no factory is registered.",
 				}),
 			}),
 		);
 	});
 
 	it("delivers extension output and notifications without observer feedback or persistence", async () => {
-		const { env, orchestrator, agentId, actions } =
-			await createExtensionActionsHarness();
+		const { env, orchestrator, agentId, actions } = await createExtensionActionsHarness();
 		const events: OrchestratorEvent[] = [];
 		const clientEvents: OrchestratorEvent[] = [];
 		const extensionObservedEvents: OrchestratorEvent[] = [];
@@ -2567,9 +1937,7 @@ describe("AgentOrchestrator", () => {
 		await actions.notify("Report generated in 2.1s");
 
 		const presentationEvents = events.filter(
-			(event) =>
-				event.type === "extension_output" ||
-				event.type === "extension_notification",
+			(event) => event.type === "extension_output" || event.type === "extension_notification",
 		);
 		expect(presentationEvents).toEqual([
 			{
@@ -2599,9 +1967,7 @@ describe("AgentOrchestrator", () => {
 		]);
 		expect(clientEvents).toEqual(expect.arrayContaining(presentationEvents));
 		expect(extensionObservedEvents).not.toContainEqual(
-			expect.objectContaining({
-				type: expect.stringMatching("^extension_(output|notification)$"),
-			}),
+			expect.objectContaining({ type: expect.stringMatching("^extension_(output|notification)$") }),
 		);
 		const persisted = [...env.files.values()].join("\n");
 		expect(persisted).not.toContain("step 1");
@@ -2613,10 +1979,7 @@ describe("AgentOrchestrator", () => {
 		const delivered: OrchestratorEvent[] = [];
 		const clientEvents: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
-			if (
-				event.type === "extension_output" ||
-				event.type === "extension_notification"
-			) {
+			if (event.type === "extension_output" || event.type === "extension_notification") {
 				throw new Error("listener exploded");
 			}
 		});
@@ -2626,10 +1989,7 @@ describe("AgentOrchestrator", () => {
 		orchestrator.registerClient({
 			id: "broken-presentation-client",
 			receive: (event) => {
-				if (
-					event.type === "extension_output" ||
-					event.type === "extension_notification"
-				) {
+				if (event.type === "extension_output" || event.type === "extension_notification") {
 					throw new Error("client exploded");
 				}
 			},
@@ -2647,33 +2007,23 @@ describe("AgentOrchestrator", () => {
 		expect(delivered).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({ type: "extension_output", text: "working" }),
-				expect.objectContaining({
-					type: "extension_notification",
-					text: "Ready",
-				}),
+				expect.objectContaining({ type: "extension_notification", text: "Ready" }),
 			]),
 		);
 		expect(clientEvents).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({ type: "extension_output", text: "working" }),
-				expect.objectContaining({
-					type: "extension_notification",
-					text: "Ready",
-				}),
+				expect.objectContaining({ type: "extension_notification", text: "Ready" }),
 				expect.objectContaining({
 					type: "diagnostic",
-					diagnostic: expect.objectContaining({
-						code: "orchestrator.listener_failed",
-					}),
+					diagnostic: expect.objectContaining({ code: "orchestrator.listener_failed" }),
 				}),
 			]),
 		);
 		expect(delivered).toContainEqual(
 			expect.objectContaining({
 				type: "diagnostic",
-				diagnostic: expect.objectContaining({
-					code: "orchestrator.client_failed",
-				}),
+				diagnostic: expect.objectContaining({ code: "orchestrator.client_failed" }),
 			}),
 		);
 	});
@@ -2695,34 +2045,23 @@ describe("AgentOrchestrator", () => {
 			await expect(invalidCall()).rejects.toThrow();
 		}
 
-		expect(
-			events.filter((event) => event.type === "extension_notification"),
-		).toEqual([
-			expect.objectContaining({
-				text: "é".repeat(2_048),
-			}),
+		expect(events.filter((event) => event.type === "extension_notification")).toEqual([
+			expect.objectContaining({ text: "é".repeat(2_048) }),
 		]);
 		expect(
-			events.filter(
-				(event) =>
-					event.type === "diagnostic" &&
-					event.diagnostic.code === "extension.action_failed",
-			),
+			events.filter((event) => event.type === "diagnostic" && event.diagnostic.code === "extension.action_failed"),
 		).toHaveLength(4);
 	});
 
 	it("stores extension status mutation-first and protects snapshots from callers", async () => {
-		const { orchestrator, agentId, actions } =
-			await createExtensionActionsHarness();
+		const { orchestrator, agentId, actions } = await createExtensionActionsHarness();
 		const events: OrchestratorEvent[] = [];
 		const snapshotsDuringEvents: unknown[] = [];
 		const extensionObservedEvents: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
 			events.push(event);
 			if (event.type === "extension_status_changed") {
-				snapshotsDuringEvents.push(
-					orchestrator.listExtensionStatuses(event.agentId),
-				);
+				snapshotsDuringEvents.push(orchestrator.listExtensionStatuses(event.agentId));
 			}
 		});
 		Object.assign(orchestrator, {
@@ -2735,57 +2074,33 @@ describe("AgentOrchestrator", () => {
 		const first = { text: "Scanning" };
 		await actions.setStatus("index", first);
 		first.text = "mutated after set";
-		await actions.setStatus("index", {
-			text: "Building",
-			progress: { completed: 2, total: 5 },
-		});
+		await actions.setStatus("index", { text: "Building", progress: { completed: 2, total: 5 } });
 		await actions.clearStatus("index");
 		await actions.clearStatus("missing");
 		await actions.setStatus("ready", { text: "Ready" });
 
-		const statusEvents = events.filter(
-			(event) => event.type === "extension_status_changed",
-		);
+		const statusEvents = events.filter((event) => event.type === "extension_status_changed");
 		expect(statusEvents).toMatchObject([
 			{ key: "index", status: { text: "Scanning" } },
-			{
-				key: "index",
-				status: {
-					text: "Building",
-					progress: { completed: 2, total: 5 },
-				},
-			},
+			{ key: "index", status: { text: "Building", progress: { completed: 2, total: 5 } } },
 			{ key: "index" },
 			{ key: "ready", status: { text: "Ready" } },
 		]);
 		expect(Object.hasOwn(statusEvents[2] ?? {}, "status")).toBe(false);
 		expect(snapshotsDuringEvents).toMatchObject([
 			[{ key: "index", status: { text: "Scanning" } }],
-			[
-				{
-					key: "index",
-					status: {
-						text: "Building",
-						progress: { completed: 2, total: 5 },
-					},
-				},
-			],
+			[{ key: "index", status: { text: "Building", progress: { completed: 2, total: 5 } } }],
 			[],
 			[{ key: "ready", status: { text: "Ready" } }],
 		]);
-		expect(extensionObservedEvents).not.toContainEqual(
-			expect.objectContaining({ type: "extension_status_changed" }),
-		);
+		expect(extensionObservedEvents).not.toContainEqual(expect.objectContaining({ type: "extension_status_changed" }));
 		const snapshot = orchestrator.listExtensionStatuses(agentId);
 		(snapshot[0]?.status as { text: string }).text = "consumer mutation";
-		expect(orchestrator.listExtensionStatuses(agentId)[0]?.status.text).toBe(
-			"Ready",
-		);
+		expect(orchestrator.listExtensionStatuses(agentId)[0]?.status.text).toBe("Ready");
 	});
 
 	it("persists extension messages with one entry id and records attributed diagnostics", async () => {
-		const { orchestrator, agentId, actions } =
-			await createExtensionActionsHarness();
+		const { orchestrator, agentId, actions } = await createExtensionActionsHarness();
 		const events: OrchestratorEvent[] = [];
 		const extensionObservedEvents: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
@@ -2798,11 +2113,7 @@ describe("AgentOrchestrator", () => {
 			},
 		});
 
-		const draft: {
-			kind: "markdown";
-			title: string;
-			content: string;
-		} = {
+		const draft: { kind: "markdown"; title: string; content: string } = {
 			kind: "markdown",
 			title: "Index Summary",
 			content: "Indexed 672 files.",
@@ -2820,19 +2131,13 @@ describe("AgentOrchestrator", () => {
 			message: "Remote policy service is unavailable",
 		});
 
-		const messageEvent = events.find(
-			(event) => event.type === "extension_message_published",
-		);
+		const messageEvent = events.find((event) => event.type === "extension_message_published");
 		expect(messageEvent).toMatchObject({
 			type: "extension_message_published",
 			entryId: published.entryId,
 			agentId,
 			extensionId: "sample",
-			message: {
-				kind: "markdown",
-				title: "Index Summary",
-				content: "Indexed 672 files.",
-			},
+			message: { kind: "markdown", title: "Index Summary", content: "Indexed 672 files." },
 		});
 		const tree = await orchestrator.getAgentSessionTree(agentId);
 		expect(tree.entries).toContainEqual(
@@ -2842,11 +2147,7 @@ describe("AgentOrchestrator", () => {
 				customType: EXTENSION_MESSAGE_CUSTOM_TYPE,
 				data: expect.objectContaining({
 					extensionId: "sample",
-					message: {
-						kind: "markdown",
-						title: "Index Summary",
-						content: "Indexed 672 files.",
-					},
+					message: { kind: "markdown", title: "Index Summary", content: "Indexed 672 files." },
 				}),
 			}),
 		);
@@ -2854,8 +2155,7 @@ describe("AgentOrchestrator", () => {
 		const reported = events
 			.filter(
 				(event): event is Extract<OrchestratorEvent, { type: "diagnostic" }> =>
-					event.type === "diagnostic" &&
-					event.diagnostic.code.startsWith("extension.sample."),
+					event.type === "diagnostic" && event.diagnostic.code.startsWith("extension.sample."),
 			)
 			.map((event) => event.diagnostic);
 		expect(reported).toEqual([
@@ -2874,15 +2174,9 @@ describe("AgentOrchestrator", () => {
 				extensionId: "sample",
 			}),
 		]);
-		expect(orchestrator.inspectAgent(agentId).extensionDiagnostics).toEqual(
-			expect.arrayContaining(reported),
-		);
+		expect(orchestrator.inspectAgent(agentId).extensionDiagnostics).toEqual(expect.arrayContaining(reported));
 		expect(extensionObservedEvents).not.toContainEqual(
-			expect.objectContaining({
-				type: expect.stringMatching(
-					"^(extension_message_published|diagnostic)$",
-				),
-			}),
+			expect.objectContaining({ type: expect.stringMatching("^(extension_message_published|diagnostic)$") }),
 		);
 	});
 
@@ -2897,9 +2191,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		orchestrator.registerExtension("sample", () => {});
@@ -2917,35 +2209,17 @@ describe("AgentOrchestrator", () => {
 			() => actions.setStatus("é".repeat(65), { text: "Ready" }),
 			() => actions.setStatus("ready", { text: "" }),
 			() => actions.setStatus("ready", { text: "é".repeat(2_049) }),
-			() =>
-				actions.setStatus("ready", {
-					text: "Ready",
-					progress: { completed: -1 },
-				}),
-			() =>
-				actions.setStatus("ready", {
-					text: "Ready",
-					progress: { completed: 1.5 },
-				}),
-			() =>
-				actions.setStatus("ready", {
-					text: "Ready",
-					progress: { completed: 2, total: 1 },
-				}),
-			() =>
-				actions.setStatus("ready", {
-					text: "Ready",
-					progress: { completed: 1, total: -1 },
-				}),
+			() => actions.setStatus("ready", { text: "Ready", progress: { completed: -1 } }),
+			() => actions.setStatus("ready", { text: "Ready", progress: { completed: 1.5 } }),
+			() => actions.setStatus("ready", { text: "Ready", progress: { completed: 2, total: 1 } }),
+			() => actions.setStatus("ready", { text: "Ready", progress: { completed: 1, total: -1 } }),
 		];
 		for (const invalidCall of invalidCalls) {
 			await expect(invalidCall()).rejects.toThrow();
 		}
 
 		expect(orchestrator.listExtensionStatuses(agentId)).toEqual([]);
-		expect(events).not.toContainEqual(
-			expect.objectContaining({ type: "extension_status_changed" }),
-		);
+		expect(events).not.toContainEqual(expect.objectContaining({ type: "extension_status_changed" }));
 		expect(
 			events.filter(
 				(event) =>
@@ -2967,9 +2241,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		orchestrator.registerExtension("sample", () => {});
@@ -2983,43 +2255,19 @@ describe("AgentOrchestrator", () => {
 		const actions = runner.createContext("sample").actions;
 
 		const invalidCalls = [
-			() =>
-				actions.publishMessage({
-					kind: "html" as "text",
-					content: "Report",
-				}),
+			() => actions.publishMessage({ kind: "html" as "text", content: "Report" }),
 			() => actions.publishMessage({ kind: "text", content: "" }),
-			() =>
-				actions.publishMessage({
-					kind: "text",
-					content: "é".repeat(32_769),
-				}),
-			() =>
-				actions.publishMessage({
-					kind: "text",
-					title: "   ",
-					content: "Report",
-				}),
-			() =>
-				actions.publishMessage({
-					kind: "text",
-					title: "é".repeat(2_049),
-					content: "Report",
-				}),
+			() => actions.publishMessage({ kind: "text", content: "é".repeat(32_769) }),
+			() => actions.publishMessage({ kind: "text", title: "   ", content: "Report" }),
+			() => actions.publishMessage({ kind: "text", title: "é".repeat(2_049), content: "Report" }),
 		];
 		for (const invalidCall of invalidCalls) {
 			await expect(invalidCall()).rejects.toThrow();
 		}
 
-		expect(events).not.toContainEqual(
-			expect.objectContaining({ type: "extension_message_published" }),
-		);
+		expect(events).not.toContainEqual(expect.objectContaining({ type: "extension_message_published" }));
 		const tree = await orchestrator.getAgentSessionTree(agentId);
-		expect(tree.entries).not.toContainEqual(
-			expect.objectContaining({
-				customType: EXTENSION_MESSAGE_CUSTOM_TYPE,
-			}),
-		);
+		expect(tree.entries).not.toContainEqual(expect.objectContaining({ customType: EXTENSION_MESSAGE_CUSTOM_TYPE }));
 		expect(
 			events.filter(
 				(event) =>
@@ -3041,9 +2289,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		orchestrator.registerExtension("sample", () => {});
@@ -3057,53 +2303,19 @@ describe("AgentOrchestrator", () => {
 		const actions = runner.createContext("sample").actions;
 
 		const invalidCalls = [
-			() =>
-				actions.reportDiagnostic({
-					severity: "fatal" as "error",
-					code: "bad",
-					message: "Report",
-				}),
-			() =>
-				actions.reportDiagnostic({
-					severity: "warning",
-					code: "has space",
-					message: "Report",
-				}),
-			() =>
-				actions.reportDiagnostic({
-					severity: "warning",
-					code: "",
-					message: "Report",
-				}),
-			() =>
-				actions.reportDiagnostic({
-					severity: "warning",
-					code: "c".repeat(129),
-					message: "Report",
-				}),
-			() =>
-				actions.reportDiagnostic({
-					severity: "warning",
-					code: "bad",
-					message: "   ",
-				}),
-			() =>
-				actions.reportDiagnostic({
-					severity: "warning",
-					code: "bad",
-					message: "é".repeat(2_049),
-				}),
+			() => actions.reportDiagnostic({ severity: "fatal" as "error", code: "bad", message: "Report" }),
+			() => actions.reportDiagnostic({ severity: "warning", code: "has space", message: "Report" }),
+			() => actions.reportDiagnostic({ severity: "warning", code: "", message: "Report" }),
+			() => actions.reportDiagnostic({ severity: "warning", code: "c".repeat(129), message: "Report" }),
+			() => actions.reportDiagnostic({ severity: "warning", code: "bad", message: "   " }),
+			() => actions.reportDiagnostic({ severity: "warning", code: "bad", message: "é".repeat(2_049) }),
 		];
 		for (const invalidCall of invalidCalls) {
 			await expect(invalidCall()).rejects.toThrow();
 		}
 
 		expect(
-			events.filter(
-				(event) =>
-					event.type === "diagnostic" &&
-					event.diagnostic.code.startsWith("extension.sample."),
-			),
+			events.filter((event) => event.type === "diagnostic" && event.diagnostic.code.startsWith("extension.sample.")),
 		).toEqual([]);
 		expect(
 			events.filter(
@@ -3126,9 +2338,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		const events: OrchestratorEvent[] = [];
@@ -3139,18 +2349,14 @@ describe("AgentOrchestrator", () => {
 			throw new Error("activation exploded");
 		});
 
-		await expect(orchestrator.spawnAgent()).rejects.toThrow(
-			"activation exploded",
-		);
+		await expect(orchestrator.spawnAgent()).rejects.toThrow("activation exploded");
 
 		const agentId = "extension-profile";
 		expect(agentStatusChangedEvents(events)).toMatchObject([
 			{ agentId, previousStatus: undefined, status: "creating" },
 			{ agentId, previousStatus: "creating", status: "unavailable" },
 		]);
-		expect(events).not.toContainEqual(
-			expect.objectContaining({ type: "agent_spawned", agentId }),
-		);
+		expect(events).not.toContainEqual(expect.objectContaining({ type: "agent_spawned", agentId }));
 		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
 			agentId,
 			status: "unavailable",
@@ -3171,9 +2377,7 @@ describe("AgentOrchestrator", () => {
 					code: "extension.activation_failed",
 					severity: "error",
 					extensionId: "broken",
-					message: expect.stringContaining(
-						"Extension 'broken' activation failed",
-					),
+					message: expect.stringContaining("Extension 'broken' activation failed"),
 				}),
 			}),
 		);
@@ -3183,28 +2387,19 @@ describe("AgentOrchestrator", () => {
 		const env = new MemoryExecutionEnv();
 		await env.writeFile(
 			"/workspace/project/.widi/skills/review/SKILL.md",
-			[
-				"---",
-				"name: review",
-				"description: Review code.",
-				"---",
-				"SECRET SKILL BODY",
-			].join("\n"),
+			["---", "name: review", "description: Review code.", "---", "SECRET SKILL BODY"].join("\n"),
 		);
 		env.dirs.add("/workspace/project/.widi/skills");
 		const orchestrator = await createOrchestrator(env);
 		let loadedSkillBody: string | undefined;
 		Object.assign(orchestrator, {
 			_openBackgroundJobStore: async (agentId: string) => {
-				loadedSkillBody = requireAgentRecord(orchestrator, agentId).systemPrompt
-					?.skills[0]?.content;
+				loadedSkillBody = requireAgentRecord(orchestrator, agentId).systemPrompt?.skills[0]?.content;
 				throw new Error("background store exploded");
 			},
 		});
 
-		await expect(orchestrator.spawnAgent()).rejects.toThrow(
-			"background store exploded",
-		);
+		await expect(orchestrator.spawnAgent()).rejects.toThrow("background store exploded");
 
 		const record = requireAgentRecord(orchestrator, "main-agent");
 		expect(loadedSkillBody).toBe("SECRET SKILL BODY");
@@ -3224,9 +2419,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		orchestrator.registerExtension("sample", (api) => {
@@ -3236,18 +2429,13 @@ describe("AgentOrchestrator", () => {
 		const oldRunner = requireAgentRecord(orchestrator, agentId).extensionRunner;
 		if (!oldRunner) throw new Error("Expected extension runner.");
 		const oldContext = oldRunner.createContext("sample");
-		await oldContext.actions.setStatus("index", {
-			text: "Indexing",
-			progress: { completed: 2, total: 5 },
-		});
+		await oldContext.actions.setStatus("index", { text: "Indexing", progress: { completed: 2, total: 5 } });
 		const events: OrchestratorEvent[] = [];
 		const statusSnapshotsDuringClear: unknown[] = [];
 		orchestrator.subscribe((event) => {
 			events.push(event);
 			if (event.type === "extension_status_changed" && !event.status) {
-				statusSnapshotsDuringClear.push(
-					orchestrator.listExtensionStatuses(agentId),
-				);
+				statusSnapshotsDuringClear.push(orchestrator.listExtensionStatuses(agentId));
 			}
 		});
 		orchestrator.registerExtension("sample", (api) => {
@@ -3262,26 +2450,13 @@ describe("AgentOrchestrator", () => {
 				{
 					agentId,
 					status: "reloaded",
-					before: {
-						extensionSnapshot: {
-							stale: {
-								stale: true,
-								message: "Extension runtime has been reloaded.",
-							},
-						},
-					},
+					before: { extensionSnapshot: { stale: { stale: true, message: "Extension runtime has been reloaded." } } },
 					after: {
 						extensionSnapshot: {
 							stale: { stale: false },
 							toolContributions: [
-								expect.objectContaining({
-									kind: "define",
-									toolName: "alpha",
-								}),
-								expect.objectContaining({
-									kind: "define",
-									toolName: "beta",
-								}),
+								expect.objectContaining({ kind: "define", toolName: "alpha" }),
+								expect.objectContaining({ kind: "define", toolName: "beta" }),
 							],
 						},
 					},
@@ -3295,12 +2470,7 @@ describe("AgentOrchestrator", () => {
 		expect(orchestrator.listExtensionStatuses(agentId)).toEqual([]);
 		expect(statusSnapshotsDuringClear).toEqual([[]]);
 		const clearEvent = events.find(
-			(
-				event,
-			): event is Extract<
-				OrchestratorEvent,
-				{ type: "extension_status_changed" }
-			> =>
+			(event): event is Extract<OrchestratorEvent, { type: "extension_status_changed" }> =>
 				event.type === "extension_status_changed" &&
 				event.extensionId === "sample" &&
 				event.key === "index" &&
@@ -3313,9 +2483,7 @@ describe("AgentOrchestrator", () => {
 			key: "index",
 		});
 		expect(Object.hasOwn(clearEvent ?? {}, "status")).toBe(false);
-		expect(() => oldContext.actions.getTools()).toThrow(
-			"Extension runtime has been reloaded.",
-		);
+		expect(() => oldContext.actions.getTools()).toThrow("Extension runtime has been reloaded.");
 	});
 
 	it("switches new turn contexts to the reloaded runner without rebinding old snapshots", async () => {
@@ -3329,9 +2497,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		orchestrator.registerExtension("sample", (api) => {
@@ -3349,9 +2515,7 @@ describe("AgentOrchestrator", () => {
 		});
 		await orchestrator.reloadExtensions();
 
-		expect(() => oldActions.getTools()).toThrow(
-			"Extension runtime has been reloaded.",
-		);
+		expect(() => oldActions.getTools()).toThrow("Extension runtime has been reloaded.");
 		const newToolContext = await resolveHarnessToolContext(harness);
 		const newActions = requireExtensionToolActions(newToolContext, "sample");
 		expect(newActions).not.toBe(oldActions);
@@ -3369,9 +2533,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		orchestrator.registerExtension("sample", (api) => {
@@ -3387,10 +2549,7 @@ describe("AgentOrchestrator", () => {
 		const result = await orchestrator.reloadExtensions();
 
 		expect(result.agents).toMatchObject([{ agentId, status: "reloaded" }]);
-		expect(orchestrator.getAgentTools(agentId)).toEqual({
-			toolNames: ["alpha", "beta"],
-			activeToolNames: ["alpha"],
-		});
+		expect(orchestrator.getAgentTools(agentId)).toEqual({ toolNames: ["alpha", "beta"], activeToolNames: ["alpha"] });
 	});
 
 	it("skips running agents during extension reload and keeps old tools", async () => {
@@ -3404,9 +2563,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		orchestrator.registerExtension("sample", (api) => {
@@ -3415,16 +2572,9 @@ describe("AgentOrchestrator", () => {
 		const agentId = await orchestrator.spawnAgent();
 		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
 		if (!runner) throw new Error("Expected extension runner.");
-		await runner
-			.createContext("sample")
-			.actions.setStatus("index", { text: "Indexing" });
+		await runner.createContext("sample").actions.setStatus("index", { text: "Indexing" });
 		const handleHarnessEvent = (
-			orchestrator as unknown as {
-				_handleAgentHarnessEvent(
-					agentId: string,
-					event: AgentHarnessEvent,
-				): Promise<void>;
-			}
+			orchestrator as unknown as { _handleAgentHarnessEvent(agentId: string, event: AgentHarnessEvent): Promise<void> }
 		)._handleAgentHarnessEvent.bind(orchestrator);
 		await handleHarnessEvent(agentId, { type: "turn_start" });
 		orchestrator.registerExtension("sample", (api) => {
@@ -3433,25 +2583,13 @@ describe("AgentOrchestrator", () => {
 
 		const result = await orchestrator.reloadExtensions();
 
-		expect(result.agents).toMatchObject([
-			{ agentId, status: "skipped", reason: "running" },
-		]);
+		expect(result.agents).toMatchObject([{ agentId, status: "skipped", reason: "running" }]);
 		expect(result.agents[0]?.diagnostics).toContainEqual(
-			expect.objectContaining({
-				code: "extension.reload_agent_skipped",
-				agentId,
-			}),
+			expect.objectContaining({ code: "extension.reload_agent_skipped", agentId }),
 		);
-		expect(orchestrator.getAgentTools(agentId)).toEqual({
-			toolNames: ["alpha"],
-			activeToolNames: ["alpha"],
-		});
+		expect(orchestrator.getAgentTools(agentId)).toEqual({ toolNames: ["alpha"], activeToolNames: ["alpha"] });
 		expect(orchestrator.listExtensionStatuses(agentId)).toMatchObject([
-			{
-				extensionId: "sample",
-				key: "index",
-				status: { text: "Indexing" },
-			},
+			{ extensionId: "sample", key: "index", status: { text: "Indexing" } },
 		]);
 	});
 
@@ -3466,18 +2604,14 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		orchestrator.registerExtension("sample", () => {});
 		const agentId = await orchestrator.spawnAgent();
 		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
 		if (!runner) throw new Error("Expected extension runner.");
-		await runner
-			.createContext("sample")
-			.actions.setStatus("index", { text: "Indexing" });
+		await runner.createContext("sample").actions.setStatus("index", { text: "Indexing" });
 		const harness = requireAgentHarness(orchestrator, agentId);
 		harness.setTools = async () => {
 			throw new Error("reload tool binding failed");
@@ -3486,20 +2620,11 @@ describe("AgentOrchestrator", () => {
 		const result = await orchestrator.reloadExtensions();
 
 		expect(result.agents).toMatchObject([{ agentId, status: "failed" }]);
-		expect(requireAgentRecord(orchestrator, agentId).extensionRunner).toBe(
-			runner,
-		);
+		expect(requireAgentRecord(orchestrator, agentId).extensionRunner).toBe(runner);
 		expect(runner.isStale()).toBe(false);
-		expect(runner.createContext("sample").actions.getTools()).toEqual({
-			toolNames: [],
-			activeToolNames: [],
-		});
+		expect(runner.createContext("sample").actions.getTools()).toEqual({ toolNames: [], activeToolNames: [] });
 		expect(orchestrator.listExtensionStatuses(agentId)).toMatchObject([
-			{
-				extensionId: "sample",
-				key: "index",
-				status: { text: "Indexing" },
-			},
+			{ extensionId: "sample", key: "index", status: { text: "Indexing" } },
 		]);
 	});
 
@@ -3514,53 +2639,30 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 			toolRegistry: createToolRegistry(createToolDefinition("plain", "base")),
 		});
 		orchestrator.registerExtension("patcher", (api) => {
-			api.patchTool("late", {
-				description: "patched late tool",
-			});
+			api.patchTool("late", { description: "patched late tool" });
 			api.registerTool(createToolDefinition("late", "late-base"));
 			api.patchTool("plain", {
 				description: "patched plain tool",
-				execute: async () => ({
-					content: [{ type: "text", text: "patched" }],
-					details: { source: "patcher" },
-				}),
+				execute: async () => ({ content: [{ type: "text", text: "patched" }], details: { source: "patcher" } }),
 			});
 		});
 
 		const extensionAgentId = await orchestrator.spawnAgent();
-		const extensionHarness = requireAgentHarness(
-			orchestrator,
-			extensionAgentId,
-		);
-		const patchedPlain = extensionHarness
-			.getTools()
-			.find((tool) => tool.name === "plain");
-		const lateTool = extensionHarness
-			.getTools()
-			.find((tool) => tool.name === "late");
+		const extensionHarness = requireAgentHarness(orchestrator, extensionAgentId);
+		const patchedPlain = extensionHarness.getTools().find((tool) => tool.name === "plain");
+		const lateTool = extensionHarness.getTools().find((tool) => tool.name === "late");
 		if (!patchedPlain || !lateTool) {
 			throw new Error("Expected test tools to resolve.");
 		}
 
 		await expect(
-			patchedPlain.execute(
-				"call-1",
-				{},
-				undefined,
-				undefined,
-				await resolveHarnessToolContext(extensionHarness),
-			),
-		).resolves.toEqual({
-			content: [{ type: "text", text: "patched" }],
-			details: { source: "patcher" },
-		});
+			patchedPlain.execute("call-1", {}, undefined, undefined, await resolveHarnessToolContext(extensionHarness)),
+		).resolves.toEqual({ content: [{ type: "text", text: "patched" }], details: { source: "patcher" } });
 		// A patch registered before its target still lands on it.
 		expect(lateTool.description).toBe("patched late tool");
 		expect(orchestrator.getAgentTools(extensionAgentId)).toEqual({
@@ -3568,11 +2670,7 @@ describe("AgentOrchestrator", () => {
 			activeToolNames: ["plain", "late"],
 		});
 		// The patch is the agent's, not the runtime's.
-		expect(
-			orchestrator.toolRegistry.resolve().getToolDefinition("plain"),
-		).toMatchObject({
-			description: "plain tool",
-		});
+		expect(orchestrator.toolRegistry.resolve().getToolDefinition("plain")).toMatchObject({ description: "plain tool" });
 	});
 
 	it("emits extension diagnostics for missing factories", async () => {
@@ -3586,9 +2684,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 			settingManager: new SettingManager({ enabledExtensions: ["missing"] }),
 		});
@@ -3599,9 +2695,7 @@ describe("AgentOrchestrator", () => {
 
 		const agentId = await orchestrator.spawnAgent();
 
-		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
-			extensionIds: ["missing"],
-		});
+		expect(orchestrator.inspectAgent(agentId)).toMatchObject({ extensionIds: ["missing"] });
 		expect(events).toContainEqual(
 			expect.objectContaining({
 				type: "diagnostic",
@@ -3610,8 +2704,7 @@ describe("AgentOrchestrator", () => {
 					severity: "warning",
 					extensionId: "missing",
 					agentId,
-					message:
-						"Extension 'missing' is enabled but no factory is registered.",
+					message: "Extension 'missing' is enabled but no factory is registered.",
 				}),
 			}),
 		);
@@ -3630,9 +2723,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 			toolRegistry: createToolRegistry(createToolDefinition("plain")),
 		});
@@ -3640,19 +2731,12 @@ describe("AgentOrchestrator", () => {
 			api.observe("agent_harness_event", (event, context) => {
 				observedEvent = event.event;
 				const tools = context.actions.getTools();
-				observed.push(
-					`${context.extensionId}:${context.profileId}:${event.event.type}:${tools.toolNames.join(",")}`,
-				);
+				observed.push(`${context.extensionId}:${context.profileId}:${event.event.type}:${tools.toolNames.join(",")}`);
 			});
 		});
 		const agentId = await orchestrator.spawnAgent();
 		const handleHarnessEvent = (
-			orchestrator as unknown as {
-				_handleAgentHarnessEvent(
-					agentId: string,
-					event: AgentHarnessEvent,
-				): Promise<void>;
-			}
+			orchestrator as unknown as { _handleAgentHarnessEvent(agentId: string, event: AgentHarnessEvent): Promise<void> }
 		)._handleAgentHarnessEvent.bind(orchestrator);
 
 		const harnessEvent = {
@@ -3664,9 +2748,7 @@ describe("AgentOrchestrator", () => {
 		await handleHarnessEvent(agentId, harnessEvent);
 
 		expect(observedEvent).toBe(harnessEvent);
-		expect(observed).toEqual([
-			`observer:${extensionProfile.id}:tool_execution_start:plain`,
-		]);
+		expect(observed).toEqual([`observer:${extensionProfile.id}:tool_execution_start:plain`]);
 	});
 
 	it("exposes the current run signal to extension contexts until settled", async () => {
@@ -3682,9 +2764,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		orchestrator.registerExtension("observer", (api) => {
@@ -3705,19 +2785,11 @@ describe("AgentOrchestrator", () => {
 		)._handleSubscribedAgentHarnessEvent.bind(orchestrator);
 		const controller = new AbortController();
 
-		await handleSubscribedHarnessEvent(
-			agentId,
-			{ type: "turn_start" },
-			controller.signal,
-		);
+		await handleSubscribedHarnessEvent(agentId, { type: "turn_start" }, controller.signal);
 		expect(observedSignals).toEqual([controller.signal]);
 		expect(capturedContext?.signal).toBe(controller.signal);
 
-		await handleSubscribedHarnessEvent(
-			agentId,
-			{ type: "settled", nextTurnCount: 0 },
-			controller.signal,
-		);
+		await handleSubscribedHarnessEvent(agentId, { type: "settled", nextTurnCount: 0 }, controller.signal);
 		expect(observedSignals).toEqual([controller.signal, controller.signal]);
 		expect(capturedContext?.signal).toBeUndefined();
 	});
@@ -3734,9 +2806,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		const events: OrchestratorEvent[] = [];
@@ -3756,12 +2826,7 @@ describe("AgentOrchestrator", () => {
 
 		const agentId = await orchestrator.spawnAgent();
 		const handleHarnessEvent = (
-			orchestrator as unknown as {
-				_handleAgentHarnessEvent(
-					agentId: string,
-					event: AgentHarnessEvent,
-				): Promise<void>;
-			}
+			orchestrator as unknown as { _handleAgentHarnessEvent(agentId: string, event: AgentHarnessEvent): Promise<void> }
 		)._handleAgentHarnessEvent.bind(orchestrator);
 
 		await handleHarnessEvent(agentId, { type: "turn_start" });
@@ -3775,9 +2840,7 @@ describe("AgentOrchestrator", () => {
 					severity: "warning",
 					extensionId: "broken",
 					agentId,
-					message: expect.stringContaining(
-						"handler 'agent_harness_event' failed",
-					),
+					message: expect.stringContaining("handler 'agent_harness_event' failed"),
 				}),
 			}),
 		);
@@ -3794,32 +2857,18 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		orchestrator.registerExtension("first", (api) => {
 			api.intercept("before_agent_start", () => ({
-				messages: [
-					{
-						role: "user",
-						content: "first",
-						timestamp: 1,
-					},
-				],
+				messages: [{ role: "user", content: "first", timestamp: 1 }],
 				systemPrompt: "first prompt",
 			}));
 			api.intercept("context", (event) => ({
-				messages: [
-					...event.messages,
-					{ role: "user", content: "first context", timestamp: 2 },
-				],
+				messages: [...event.messages, { role: "user", content: "first context", timestamp: 2 }],
 			}));
-			api.intercept("tool_call", () => ({
-				block: true,
-				reason: "blocked by first",
-			}));
+			api.intercept("tool_call", () => ({ block: true, reason: "blocked by first" }));
 			api.intercept("tool_result", () => ({
 				content: [{ type: "text", text: "first result" }],
 				details: { first: true },
@@ -3828,37 +2877,22 @@ describe("AgentOrchestrator", () => {
 		});
 		orchestrator.registerExtension("second", (api) => {
 			api.intercept("before_agent_start", () => ({
-				messages: [
-					{
-						role: "user",
-						content: "second",
-						timestamp: 3,
-					},
-				],
+				messages: [{ role: "user", content: "second", timestamp: 3 }],
 				systemPrompt: "second prompt",
 			}));
 			api.intercept("context", (event) => ({
-				messages: [
-					...event.messages,
-					{ role: "user", content: "second context", timestamp: 4 },
-				],
+				messages: [...event.messages, { role: "user", content: "second context", timestamp: 4 }],
 			}));
 			api.intercept("tool_call", () => {
 				throw new Error("blocked tool_call should short-circuit");
 			});
-			api.intercept("tool_result", () => ({
-				content: [{ type: "text", text: "second result" }],
-				isError: true,
-			}));
+			api.intercept("tool_result", () => ({ content: [{ type: "text", text: "second result" }], isError: true }));
 		});
 
 		const agentId = await orchestrator.spawnAgent();
 		const harness = requireAgentHarness(orchestrator, agentId);
-		const handlers = (
-			harness as unknown as {
-				handlers: Map<string, Set<(event: unknown) => Promise<unknown>>>;
-			}
-		).handlers;
+		const handlers = (harness as unknown as { handlers: Map<string, Set<(event: unknown) => Promise<unknown>>> })
+			.handlers;
 		const runHook = async (name: string, event: unknown) => {
 			const handler = Array.from(handlers.get(name) ?? [])[0];
 			if (!handler) throw new Error(`Missing harness hook: ${name}`);
@@ -3879,10 +2913,7 @@ describe("AgentOrchestrator", () => {
 			systemPrompt: "second prompt",
 		});
 		await expect(
-			runHook("context", {
-				type: "context",
-				messages: [{ role: "user", content: "base", timestamp: 0 }],
-			}),
+			runHook("context", { type: "context", messages: [{ role: "user", content: "base", timestamp: 0 }] }),
 		).resolves.toEqual({
 			messages: [
 				{ role: "user", content: "base", timestamp: 0 },
@@ -3891,16 +2922,8 @@ describe("AgentOrchestrator", () => {
 			],
 		});
 		await expect(
-			runHook("tool_call", {
-				type: "tool_call",
-				toolCallId: "call-1",
-				toolName: "write",
-				input: {},
-			}),
-		).resolves.toEqual({
-			block: true,
-			reason: "blocked by first",
-		});
+			runHook("tool_call", { type: "tool_call", toolCallId: "call-1", toolName: "write", input: {} }),
+		).resolves.toEqual({ block: true, reason: "blocked by first" });
 		await expect(
 			runHook("tool_result", {
 				type: "tool_result",
@@ -3932,9 +2955,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		const events: OrchestratorEvent[] = [];
@@ -3962,11 +2983,8 @@ describe("AgentOrchestrator", () => {
 
 		const agentId = await orchestrator.spawnAgent();
 		const harness = requireAgentHarness(orchestrator, agentId);
-		const handlers = (
-			harness as unknown as {
-				handlers: Map<string, Set<(event: unknown) => Promise<unknown>>>;
-			}
-		).handlers;
+		const handlers = (harness as unknown as { handlers: Map<string, Set<(event: unknown) => Promise<unknown>>> })
+			.handlers;
 		const runHook = async (name: string, event: unknown) => {
 			const handler = Array.from(handlers.get(name) ?? [])[0];
 			if (!handler) throw new Error(`Missing harness hook: ${name}`);
@@ -3974,20 +2992,10 @@ describe("AgentOrchestrator", () => {
 		};
 
 		await expect(
-			runHook("context", {
-				type: "context",
-				messages: [{ role: "user", content: "base", timestamp: 0 }],
-			}),
-		).resolves.toEqual({
-			messages: [{ role: "user", content: "base", timestamp: 0 }],
-		});
+			runHook("context", { type: "context", messages: [{ role: "user", content: "base", timestamp: 0 }] }),
+		).resolves.toEqual({ messages: [{ role: "user", content: "base", timestamp: 0 }] });
 		await expect(
-			runHook("tool_call", {
-				type: "tool_call",
-				toolCallId: "call-1",
-				toolName: "write",
-				input: {},
-			}),
+			runHook("tool_call", { type: "tool_call", toolCallId: "call-1", toolName: "write", input: {} }),
 		).resolves.toEqual({ block: true });
 
 		expect(healthyCalled).toBe(true);
@@ -4028,9 +3036,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		orchestrator.registerExtension("observer", (api) => {
@@ -4046,12 +3052,7 @@ describe("AgentOrchestrator", () => {
 		if (!runner) throw new Error("Expected extension runner.");
 		const context = runner.createContext("observer");
 		const handleHarnessEvent = (
-			orchestrator as unknown as {
-				_handleAgentHarnessEvent(
-					agentId: string,
-					event: AgentHarnessEvent,
-				): Promise<void>;
-			}
+			orchestrator as unknown as { _handleAgentHarnessEvent(agentId: string, event: AgentHarnessEvent): Promise<void> }
 		)._handleAgentHarnessEvent.bind(orchestrator);
 
 		await handleHarnessEvent(agentId, { type: "turn_start" });
@@ -4072,36 +3073,21 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		orchestrator.registerExtension("stateful", (api) => {
 			api.observe("agent_harness_event", async (_event, context) => {
-				const before = await context.session.findEntries<{ count: number }>(
-					"state",
-				);
-				await context.session.appendEntry("state", {
-					count: before.length + 1,
-				});
-				const after = await context.session.findEntries<{ count: number }>(
-					"state",
-				);
-				observed.push(
-					`${context.extensionId}:${after.map((entry) => entry.data?.count).join(",")}`,
-				);
+				const before = await context.session.findEntries<{ count: number }>("state");
+				await context.session.appendEntry("state", { count: before.length + 1 });
+				const after = await context.session.findEntries<{ count: number }>("state");
+				observed.push(`${context.extensionId}:${after.map((entry) => entry.data?.count).join(",")}`);
 			});
 		});
 
 		const agentId = await orchestrator.spawnAgent();
 		const handleHarnessEvent = (
-			orchestrator as unknown as {
-				_handleAgentHarnessEvent(
-					agentId: string,
-					event: AgentHarnessEvent,
-				): Promise<void>;
-			}
+			orchestrator as unknown as { _handleAgentHarnessEvent(agentId: string, event: AgentHarnessEvent): Promise<void> }
 		)._handleAgentHarnessEvent.bind(orchestrator);
 
 		await handleHarnessEvent(agentId, { type: "turn_start" });
@@ -4109,11 +3095,7 @@ describe("AgentOrchestrator", () => {
 
 		expect(observed).toEqual(["stateful:1", "stateful:1,2"]);
 		await expect(
-			orchestrator.sessionManager.findExtensionCustomEntries(
-				agentId,
-				"stateful",
-				"state",
-			),
+			orchestrator.sessionManager.findExtensionCustomEntries(agentId, "stateful", "state"),
 		).resolves.toMatchObject([
 			{ type: "state", data: { count: 1 } },
 			{ type: "state", data: { count: 2 } },
@@ -4131,9 +3113,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		const events: OrchestratorEvent[] = [];
@@ -4148,12 +3128,7 @@ describe("AgentOrchestrator", () => {
 
 		const agentId = await orchestrator.spawnAgent();
 		const handleHarnessEvent = (
-			orchestrator as unknown as {
-				_handleAgentHarnessEvent(
-					agentId: string,
-					event: AgentHarnessEvent,
-				): Promise<void>;
-			}
+			orchestrator as unknown as { _handleAgentHarnessEvent(agentId: string, event: AgentHarnessEvent): Promise<void> }
 		)._handleAgentHarnessEvent.bind(orchestrator);
 
 		await handleHarnessEvent(agentId, { type: "turn_start" });
@@ -4176,17 +3151,13 @@ describe("AgentOrchestrator", () => {
 				diagnostic: expect.objectContaining({
 					code: "extension.handler_failed",
 					extensionId: "stateful",
-					message: expect.stringContaining(
-						"handler 'agent_harness_event' failed",
-					),
+					message: expect.stringContaining("handler 'agent_harness_event' failed"),
 				}),
 			}),
 		);
 		expect(orchestrator.inspectAgent(agentId).extensionDiagnostics).toEqual(
 			expect.arrayContaining([
-				expect.objectContaining({
-					code: "extension.custom_entry_append_failed",
-				}),
+				expect.objectContaining({ code: "extension.custom_entry_append_failed" }),
 				expect.objectContaining({ code: "extension.handler_failed" }),
 			]),
 		);
@@ -4203,9 +3174,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		orchestrator.registerExtension("sample", () => {});
@@ -4238,12 +3207,7 @@ describe("AgentOrchestrator", () => {
 				agentId,
 				event: expect.objectContaining({
 					type: "queue_update",
-					steer: [
-						expect.objectContaining({
-							role: "user",
-							content: [{ type: "text", text: "keep going" }],
-						}),
-					],
+					steer: [expect.objectContaining({ role: "user", content: [{ type: "text", text: "keep going" }] })],
 				}),
 			}),
 		);
@@ -4253,12 +3217,7 @@ describe("AgentOrchestrator", () => {
 				agentId,
 				event: expect.objectContaining({
 					type: "queue_update",
-					followUp: [
-						expect.objectContaining({
-							role: "user",
-							content: [{ type: "text", text: "summarize next" }],
-						}),
-					],
+					followUp: [expect.objectContaining({ role: "user", content: [{ type: "text", text: "summarize next" }] })],
 				}),
 			}),
 		);
@@ -4275,9 +3234,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		orchestrator.registerExtension("sample", () => {});
@@ -4291,16 +3248,10 @@ describe("AgentOrchestrator", () => {
 		});
 
 		await context.actions.setSessionName("audited session");
-		await expect(orchestrator.getAgentSession(agentId)).resolves.toMatchObject({
-			name: "audited session",
-		});
-		await expect(context.actions.getSessionName()).resolves.toBe(
-			"audited session",
-		);
+		await expect(orchestrator.getAgentSession(agentId)).resolves.toMatchObject({ name: "audited session" });
+		await expect(context.actions.getSessionName()).resolves.toBe("audited session");
 
-		const model = await context.actions.setModel(
-			"test-provider/reasoning-model",
-		);
+		const model = await context.actions.setModel("test-provider/reasoning-model");
 		expect(model.id).toBe("reasoning-model");
 		expect(orchestrator.getAgentModel(agentId).id).toBe("reasoning-model");
 		await context.actions.setThinkingLevel("high");
@@ -4318,10 +3269,7 @@ describe("AgentOrchestrator", () => {
 			abortAgent: async (abortedAgentId: string) => {
 				aborted.push(abortedAgentId);
 			},
-			compactAgent: async (
-				compactedAgentId: string,
-				customInstructions?: string,
-			) => {
+			compactAgent: async (compactedAgentId: string, customInstructions?: string) => {
 				compacted.push([compactedAgentId, customInstructions]);
 			},
 		});
@@ -4357,9 +3305,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		orchestrator.registerExtension("sample", () => {});
@@ -4369,22 +3315,13 @@ describe("AgentOrchestrator", () => {
 		const context = runner.createContext("sample");
 		const compacted: string[] = [];
 		Object.assign(orchestrator, {
-			compactAgent: async (
-				targetAgentId: string,
-				customInstructions?: string,
-			) => {
+			compactAgent: async (targetAgentId: string, customInstructions?: string) => {
 				compacted.push(`${targetAgentId}:${customInstructions ?? ""}`);
-				return {
-					summary: "compacted summary",
-					firstKeptEntryId: "entry-1",
-					tokensBefore: 1234,
-				};
+				return { summary: "compacted summary", firstKeptEntryId: "entry-1", tokensBefore: 1234 };
 			},
 		});
 
-		await expect(
-			context.actions.compact("keep architecture decisions"),
-		).resolves.toEqual({
+		await expect(context.actions.compact("keep architecture decisions")).resolves.toEqual({
 			summary: "compacted summary",
 			firstKeptEntryId: "entry-1",
 			tokensBefore: 1234,
@@ -4403,9 +3340,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		orchestrator.registerExtension("sample", () => {});
@@ -4444,9 +3379,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		orchestrator.registerExtension("sample", () => {});
@@ -4463,9 +3396,10 @@ describe("AgentOrchestrator", () => {
 			},
 		});
 
-		await expect(
-			context.actions.requestHuman({ kind: "confirm", title: "Approve?" }),
-		).resolves.toEqual({ kind: "confirm", confirmed: true });
+		await expect(context.actions.requestHuman({ kind: "confirm", title: "Approve?" })).resolves.toEqual({
+			kind: "confirm",
+			confirmed: true,
+		});
 		expect(captured).toMatchObject({
 			kind: "confirm",
 			title: "Approve?",
@@ -4497,9 +3431,7 @@ describe("AgentOrchestrator", () => {
 			{ kind: "select", title: "Pick a color", options: ["red", "green"] },
 			undefined,
 			undefined,
-			await resolveHarnessToolContext(
-				requireAgentHarness(orchestrator, agentId),
-			),
+			await resolveHarnessToolContext(requireAgentHarness(orchestrator, agentId)),
 		);
 		expect(captured).toMatchObject({
 			kind: "select",
@@ -4507,9 +3439,7 @@ describe("AgentOrchestrator", () => {
 			options: ["red", "green"],
 			source: { kind: "agent", agentId },
 		});
-		expect(result.content).toEqual([
-			{ type: "text", text: "The human selected: green" },
-		]);
+		expect(result.content).toEqual([{ type: "text", text: "The human selected: green" }]);
 	});
 
 	/**
@@ -4553,10 +3483,7 @@ describe("AgentOrchestrator", () => {
 			requestHuman: async (request) => {
 				if (request.kind === "select") {
 					const option = request.options?.[1];
-					const value =
-						typeof option === "string"
-							? option
-							: (option?.value ?? option?.label);
+					const value = typeof option === "string" ? option : (option?.value ?? option?.label);
 					return { kind: "select", value };
 				}
 				return { kind: "input", value: "auth-code-123" };
@@ -4573,30 +3500,18 @@ describe("AgentOrchestrator", () => {
 						{ id: "device", label: "Device code" },
 					],
 				});
-				callbacks.onAuth({
-					url: "https://example.test/authorize",
-					instructions: "Complete login in your browser.",
-				});
-				callbacks.onDeviceCode({
-					userCode: "ABCD-1234",
-					verificationUri: "https://example.test/device",
-				});
+				callbacks.onAuth({ url: "https://example.test/authorize", instructions: "Complete login in your browser." });
+				callbacks.onDeviceCode({ userCode: "ABCD-1234", verificationUri: "https://example.test/device" });
 				callbacks.onProgress?.("Exchanging code...");
 				const code = await callbacks.onPrompt({ message: "Paste the code:" });
-				return {
-					refresh: "refresh-token",
-					access: `access:${code}`,
-					expires: Date.now() + 60_000,
-				};
+				return { refresh: "refresh-token", access: `access:${code}`, expires: Date.now() + 60_000 };
 			},
 			refreshToken: async (credentials) => credentials,
 			getApiKey: (credentials) => credentials.access,
 		});
 
 		const agentId = await orchestrator.spawnAgent();
-		await expect(
-			orchestrator.loginAuthProvider("fake-oauth", { agentId }),
-		).resolves.toEqual({
+		await expect(orchestrator.loginAuthProvider("fake-oauth", { agentId })).resolves.toEqual({
 			providerId: "fake-oauth",
 			providerName: "Fake OAuth",
 		});
@@ -4625,11 +3540,7 @@ describe("AgentOrchestrator", () => {
 			}),
 		);
 		expect(events).toContainEqual(
-			expect.objectContaining({
-				type: "auth_login_progress",
-				providerId: "fake-oauth",
-				message: "Exchanging code...",
-			}),
+			expect.objectContaining({ type: "auth_login_progress", providerId: "fake-oauth", message: "Exchanging code..." }),
 		);
 	});
 
@@ -4642,10 +3553,7 @@ describe("AgentOrchestrator", () => {
 		});
 		// The human never answers: the manual input stays pending until the
 		// flow settles, exactly like a local callback server winning the race.
-		orchestrator.registerClient({
-			id: "human",
-			requestHuman: async () => await new Promise<never>(() => {}),
-		});
+		orchestrator.registerClient({ id: "human", requestHuman: async () => await new Promise<never>(() => {}) });
 		let manualOutcome: string | undefined;
 		registerOAuthTestProvider(orchestrator, "fake-callback-oauth", {
 			name: "Fake Callback OAuth",
@@ -4660,26 +3568,20 @@ describe("AgentOrchestrator", () => {
 					.catch(() => {
 						manualOutcome = "rejected";
 					});
-				return {
-					refresh: "refresh-token",
-					access: "access-token",
-					expires: Date.now() + 60_000,
-				};
+				return { refresh: "refresh-token", access: "access-token", expires: Date.now() + 60_000 };
 			},
 			refreshToken: async (credentials) => credentials,
 			getApiKey: (credentials) => credentials.access,
 		});
 
-		await expect(
-			orchestrator.loginAuthProvider("fake-callback-oauth"),
-		).resolves.toMatchObject({ providerId: "fake-callback-oauth" });
+		await expect(orchestrator.loginAuthProvider("fake-callback-oauth")).resolves.toMatchObject({
+			providerId: "fake-callback-oauth",
+		});
 		await new Promise((resolve) => setImmediate(resolve));
 		expect(manualOutcome).toBe("rejected");
 		expect(
 			events.filter(
-				(event) =>
-					event.type === "diagnostic" &&
-					event.diagnostic.code === "orchestrator.human_request_aborted",
+				(event) => event.type === "diagnostic" && event.diagnostic.code === "orchestrator.human_request_aborted",
 			),
 		).toEqual([]);
 	});
@@ -4687,61 +3589,50 @@ describe("AgentOrchestrator", () => {
 	it("fails the login when the human dismisses a required prompt", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
-		orchestrator.registerClient({
-			id: "human",
-			requestHuman: async () => ({ kind: "input", value: undefined }),
-		});
+		orchestrator.registerClient({ id: "human", requestHuman: async () => ({ kind: "input", value: undefined }) });
 		registerOAuthTestProvider(orchestrator, "fake-prompt-oauth", {
 			name: "Fake Prompt OAuth",
 			login: async (callbacks) => {
 				const code = await callbacks.onPrompt({ message: "Paste the code:" });
-				return {
-					refresh: "refresh-token",
-					access: `access:${code}`,
-					expires: Date.now() + 60_000,
-				};
+				return { refresh: "refresh-token", access: `access:${code}`, expires: Date.now() + 60_000 };
 			},
 			refreshToken: async (credentials) => credentials,
 			getApiKey: (credentials) => credentials.access,
 		});
 
-		await expect(
-			orchestrator.loginAuthProvider("fake-prompt-oauth"),
-		).rejects.toMatchObject({ code: "auth.login_failed" });
-		expect(
-			orchestrator.modelRegistry.authStorage.has("fake-prompt-oauth"),
-		).toBe(false);
+		await expect(orchestrator.loginAuthProvider("fake-prompt-oauth")).rejects.toMatchObject({
+			code: "auth.login_failed",
+		});
+		expect(orchestrator.modelRegistry.authStorage.has("fake-prompt-oauth")).toBe(false);
 	});
 
 	it("rejects unknown auth providers and lists login/logout candidates", async () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
 
-		await expect(
-			orchestrator.loginAuthProvider("no-such-provider"),
-		).rejects.toMatchObject({ code: "auth.provider_unknown" });
+		await expect(orchestrator.loginAuthProvider("no-such-provider")).rejects.toMatchObject({
+			code: "auth.provider_unknown",
+		});
 
 		const candidates = orchestrator.listAuthProviderCandidates().providers;
-		expect(candidates).toContainEqual(
-			expect.objectContaining({ value: "anthropic" }),
-		);
+		expect(candidates).toContainEqual(expect.objectContaining({ value: "anthropic" }));
 
 		const authStorage = orchestrator.modelRegistry.authStorage;
 		await authStorage.set("custom-provider", { type: "api_key", key: "key" });
-		expect(
-			(await orchestrator.listAuthCredentialCandidates()).providers,
-		).toEqual([{ value: "custom-provider", label: "custom-provider" }]);
+		expect((await orchestrator.listAuthCredentialCandidates()).providers).toEqual([
+			{ value: "custom-provider", label: "custom-provider" },
+		]);
 
-		await expect(
-			orchestrator.logoutAuthProvider("custom-provider"),
-		).resolves.toEqual({ providerId: "custom-provider", removed: true });
-		expect(authStorage.has("custom-provider")).toBe(false);
-		await expect(
-			orchestrator.logoutAuthProvider("custom-provider"),
-		).resolves.toEqual({ providerId: "custom-provider", removed: false });
-		await expect(orchestrator.logoutAuthProvider("  ")).rejects.toMatchObject({
-			code: "auth.provider_unknown",
+		await expect(orchestrator.logoutAuthProvider("custom-provider")).resolves.toEqual({
+			providerId: "custom-provider",
+			removed: true,
 		});
+		expect(authStorage.has("custom-provider")).toBe(false);
+		await expect(orchestrator.logoutAuthProvider("custom-provider")).resolves.toEqual({
+			providerId: "custom-provider",
+			removed: false,
+		});
+		await expect(orchestrator.logoutAuthProvider("  ")).rejects.toMatchObject({ code: "auth.provider_unknown" });
 	});
 
 	it("gates extension exec on project trust", async () => {
@@ -4760,9 +3651,7 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = await createOrchestrator(env, {
 			defaultProfileId: extensionProfile.id,
 			profileRegistry: new AgentProfileRegistry(
-				InMemoryProfileStorageBackend.fromProfiles([
-					{ profile: extensionProfile },
-				]),
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
 			),
 		});
 		orchestrator.registerExtension("sample", () => {});
@@ -4783,11 +3672,7 @@ describe("AgentOrchestrator", () => {
 
 		await orchestrator.settingManager.setProjectTrusted(false);
 		await expect(context.actions.exec("echo hi")).rejects.toMatchObject({
-			diagnostic: expect.objectContaining({
-				code: "extension.exec_denied",
-				extensionId: "sample",
-				agentId,
-			}),
+			diagnostic: expect.objectContaining({ code: "extension.exec_denied", extensionId: "sample", agentId }),
 		});
 		expect(execCalls).toEqual(["echo hi"]);
 		expect(events).toContainEqual(
@@ -4813,40 +3698,19 @@ describe("AgentOrchestrator", () => {
 		});
 		const agentId = await orchestrator.spawnAgent();
 		const handleHarnessEvent = (
-			orchestrator as unknown as {
-				_handleAgentHarnessEvent(
-					agentId: string,
-					event: AgentHarnessEvent,
-				): Promise<void>;
-			}
+			orchestrator as unknown as { _handleAgentHarnessEvent(agentId: string, event: AgentHarnessEvent): Promise<void> }
 		)._handleAgentHarnessEvent.bind(orchestrator);
-		const partial = createAssistantPartial([
-			{
-				type: "toolCall",
-				id: "call-1",
-				name: "plain",
-				arguments: {},
-			},
-		]);
+		const partial = createAssistantPartial([{ type: "toolCall", id: "call-1", name: "plain", arguments: {} }]);
 
 		await handleHarnessEvent(agentId, {
 			type: "message_update",
 			message: partial,
-			assistantMessageEvent: {
-				type: "toolcall_start",
-				contentIndex: 0,
-				partial,
-			},
+			assistantMessageEvent: { type: "toolcall_start", contentIndex: 0, partial },
 		});
 		await handleHarnessEvent(agentId, {
 			type: "message_update",
 			message: partial,
-			assistantMessageEvent: {
-				type: "toolcall_delta",
-				contentIndex: 0,
-				delta: '{"value"',
-				partial,
-			},
+			assistantMessageEvent: { type: "toolcall_delta", contentIndex: 0, delta: '{"value"', partial },
 		});
 		await handleHarnessEvent(agentId, {
 			type: "message_update",
@@ -4854,12 +3718,7 @@ describe("AgentOrchestrator", () => {
 			assistantMessageEvent: {
 				type: "toolcall_end",
 				contentIndex: 0,
-				toolCall: {
-					type: "toolCall",
-					id: "call-1",
-					name: "plain",
-					arguments: { value: "input" },
-				},
+				toolCall: { type: "toolCall", id: "call-1", name: "plain", arguments: { value: "input" } },
 				partial,
 			},
 		});
@@ -4874,36 +3733,24 @@ describe("AgentOrchestrator", () => {
 			toolCallId: "call-1",
 			toolName: "plain",
 			args: { value: "input" },
-			partialResult: {
-				content: [{ type: "text", text: "partial" }],
-				details: { progress: 1 },
-			},
+			partialResult: { content: [{ type: "text", text: "partial" }], details: { progress: 1 } },
 		} satisfies AgentHarnessEvent;
 		await handleHarnessEvent(agentId, updateEvent);
 		await handleHarnessEvent(agentId, {
 			type: "tool_execution_end",
 			toolCallId: "call-1",
 			toolName: "plain",
-			result: {
-				content: [{ type: "text", text: "done" }],
-				details: { value: "input" },
-			},
+			result: { content: [{ type: "text", text: "done" }], details: { value: "input" } },
 			isError: false,
 		});
 
 		const rawToolEvents = events.filter(
-			(
-				event,
-			): event is Extract<OrchestratorEvent, { type: "agent_harness_event" }> =>
+			(event): event is Extract<OrchestratorEvent, { type: "agent_harness_event" }> =>
 				event.type === "agent_harness_event",
 		);
 		expect(rawToolEvents).toHaveLength(6);
 		expect(rawToolEvents[4]?.event).toBe(updateEvent);
-		expect(rawToolEvents[4]).toEqual({
-			type: "agent_harness_event",
-			agentId,
-			event: updateEvent,
-		});
+		expect(rawToolEvents[4]).toEqual({ type: "agent_harness_event", agentId, event: updateEvent });
 	});
 
 	it("forwards non-tool raw harness events", async () => {
@@ -4915,22 +3762,13 @@ describe("AgentOrchestrator", () => {
 		});
 		const agentId = await orchestrator.spawnAgent();
 		const handleHarnessEvent = (
-			orchestrator as unknown as {
-				_handleAgentHarnessEvent(
-					agentId: string,
-					event: AgentHarnessEvent,
-				): Promise<void>;
-			}
+			orchestrator as unknown as { _handleAgentHarnessEvent(agentId: string, event: AgentHarnessEvent): Promise<void> }
 		)._handleAgentHarnessEvent.bind(orchestrator);
 
 		await handleHarnessEvent(agentId, { type: "turn_start" });
 
 		expect(events).toContainEqual(
-			expect.objectContaining({
-				type: "agent_harness_event",
-				agentId,
-				event: { type: "turn_start" },
-			}),
+			expect.objectContaining({ type: "agent_harness_event", agentId, event: { type: "turn_start" } }),
 		);
 	});
 
@@ -4945,38 +3783,18 @@ describe("AgentOrchestrator", () => {
 		});
 		const agentId = await orchestrator.spawnAgent();
 		const handleHarnessEvent = (
-			orchestrator as unknown as {
-				_handleAgentHarnessEvent(
-					agentId: string,
-					event: AgentHarnessEvent,
-				): Promise<void>;
-			}
+			orchestrator as unknown as { _handleAgentHarnessEvent(agentId: string, event: AgentHarnessEvent): Promise<void> }
 		)._handleAgentHarnessEvent.bind(orchestrator);
-		const partial = createAssistantPartial([
-			{
-				type: "toolCall",
-				id: "call-1",
-				name: "plain",
-				arguments: {},
-			},
-		]);
+		const partial = createAssistantPartial([{ type: "toolCall", id: "call-1", name: "plain", arguments: {} }]);
 
 		await handleHarnessEvent(agentId, {
 			type: "message_update",
 			message: partial,
-			assistantMessageEvent: {
-				type: "toolcall_start",
-				contentIndex: 0,
-				partial,
-			},
+			assistantMessageEvent: { type: "toolcall_start", contentIndex: 0, partial },
 		});
 		await handleHarnessEvent(agentId, {
 			type: "message_end",
-			message: {
-				...partial,
-				stopReason: "error",
-				errorMessage: "stream failed",
-			},
+			message: { ...partial, stopReason: "error", errorMessage: "stream failed" },
 		});
 		await handleHarnessEvent(agentId, {
 			type: "message_update",
@@ -4990,9 +3808,7 @@ describe("AgentOrchestrator", () => {
 		});
 
 		const rawEvents = events.filter(
-			(
-				event,
-			): event is Extract<OrchestratorEvent, { type: "agent_harness_event" }> =>
+			(event): event is Extract<OrchestratorEvent, { type: "agent_harness_event" }> =>
 				event.type === "agent_harness_event",
 		);
 		expect(rawEvents.at(-1)).toMatchObject({
@@ -5021,10 +3837,7 @@ describe("AgentOrchestrator", () => {
 			id: "human",
 			requestHuman: async (request) => {
 				handledAgentId = request.agentId;
-				return {
-					kind: "confirm",
-					confirmed: request.title === "Confirm",
-				};
+				return { kind: "confirm", confirmed: request.title === "Confirm" };
 			},
 		});
 
@@ -5038,16 +3851,10 @@ describe("AgentOrchestrator", () => {
 		).resolves.toEqual({ kind: "confirm", confirmed: true });
 		expect(handledAgentId).toBe(agentId);
 		const requestEvents = events.filter(
-			(event) =>
-				event.type === "human_request_pending" ||
-				event.type === "human_request_resolved",
+			(event) => event.type === "human_request_pending" || event.type === "human_request_resolved",
 		);
 		expect(requestEvents).toMatchObject([
-			{
-				type: "human_request_pending",
-				agentId,
-				request: { agentId },
-			},
+			{ type: "human_request_pending", agentId, request: { agentId } },
 			{ type: "human_request_resolved", agentId },
 		]);
 	});
@@ -5063,9 +3870,7 @@ describe("AgentOrchestrator", () => {
 				title: "Confirm",
 				message: "Continue?",
 			}),
-		).rejects.toMatchObject({
-			code: "orchestrator.human_request_unhandled",
-		});
+		).rejects.toMatchObject({ code: "orchestrator.human_request_unhandled" });
 	});
 
 	it("times out pending human requests", async () => {
@@ -5075,10 +3880,7 @@ describe("AgentOrchestrator", () => {
 		orchestrator.subscribe((event) => {
 			events.push(event);
 		});
-		orchestrator.registerClient({
-			id: "human",
-			requestHuman: async () => new Promise<never>(() => {}),
-		});
+		orchestrator.registerClient({ id: "human", requestHuman: async () => new Promise<never>(() => {}) });
 		const agentId = await orchestrator.spawnAgent();
 
 		await expect(
@@ -5089,15 +3891,8 @@ describe("AgentOrchestrator", () => {
 				message: "Continue?",
 				timeoutMs: 1,
 			}),
-		).rejects.toMatchObject({
-			code: "orchestrator.human_request_timeout",
-		});
-		expect(events).toContainEqual(
-			expect.objectContaining({
-				type: "human_request_timeout",
-				agentId,
-			}),
-		);
+		).rejects.toMatchObject({ code: "orchestrator.human_request_timeout" });
+		expect(events).toContainEqual(expect.objectContaining({ type: "human_request_timeout", agentId }));
 	});
 
 	it("aborts pending human requests from the caller signal", async () => {
@@ -5128,16 +3923,12 @@ describe("AgentOrchestrator", () => {
 		await Promise.resolve();
 		controller.abort();
 
-		await expect(requestPromise).rejects.toMatchObject({
-			code: "orchestrator.human_request_aborted",
-		});
+		await expect(requestPromise).rejects.toMatchObject({ code: "orchestrator.human_request_aborted" });
 		expect(clientSignal?.aborted).toBe(true);
 		expect(events).toContainEqual(
 			expect.objectContaining({
 				type: "diagnostic",
-				diagnostic: expect.objectContaining({
-					code: "orchestrator.human_request_aborted",
-				}),
+				diagnostic: expect.objectContaining({ code: "orchestrator.human_request_aborted" }),
 			}),
 		);
 	});
@@ -5168,19 +3959,13 @@ describe("AgentOrchestrator", () => {
 				message: "Continue?",
 				signal: controller.signal,
 			}),
-		).rejects.toMatchObject({
-			code: "orchestrator.human_request_aborted",
-		});
+		).rejects.toMatchObject({ code: "orchestrator.human_request_aborted" });
 		expect(requestHandled).toBe(false);
-		expect(events.some((event) => event.type === "human_request_pending")).toBe(
-			false,
-		);
+		expect(events.some((event) => event.type === "human_request_pending")).toBe(false);
 		expect(events).toContainEqual(
 			expect.objectContaining({
 				type: "diagnostic",
-				diagnostic: expect.objectContaining({
-					code: "orchestrator.human_request_aborted",
-				}),
+				diagnostic: expect.objectContaining({ code: "orchestrator.human_request_aborted" }),
 			}),
 		);
 	});
@@ -5210,23 +3995,15 @@ describe("AgentOrchestrator", () => {
 		});
 		await Promise.resolve();
 		const pending = events.find(
-			(
-				event,
-			): event is Extract<
-				OrchestratorEvent,
-				{ type: "human_request_pending" }
-			> => event.type === "human_request_pending",
+			(event): event is Extract<OrchestratorEvent, { type: "human_request_pending" }> =>
+				event.type === "human_request_pending",
 		);
 		if (!pending) throw new Error("Expected pending human request event.");
 		expect(pending.agentId).toBe(agentId);
 		expect(pending.request.agentId).toBe(agentId);
 
-		await expect(
-			orchestrator.cancelHumanRequest(pending.request.id, "dismissed"),
-		).resolves.toBe(true);
-		await expect(requestPromise).rejects.toMatchObject({
-			code: "orchestrator.human_request_cancelled",
-		});
+		await expect(orchestrator.cancelHumanRequest(pending.request.id, "dismissed")).resolves.toBe(true);
+		await expect(requestPromise).rejects.toMatchObject({ code: "orchestrator.human_request_cancelled" });
 		expect(clientSignal?.aborted).toBe(true);
 		expect(events).toContainEqual(
 			expect.objectContaining({
@@ -5236,8 +4013,6 @@ describe("AgentOrchestrator", () => {
 				reason: "dismissed",
 			}),
 		);
-		await expect(
-			orchestrator.cancelHumanRequest(pending.request.id),
-		).resolves.toBe(false);
+		await expect(orchestrator.cancelHumanRequest(pending.request.id)).resolves.toBe(false);
 	});
 });

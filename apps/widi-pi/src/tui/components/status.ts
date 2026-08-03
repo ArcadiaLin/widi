@@ -30,9 +30,7 @@ export class StatusView implements Component {
 			// A status is never cleared automatically when a command ends, so its
 			// age is the only staleness signal the user gets.
 			const age = statusAge(entry.updatedAt);
-			return `${theme.info("✻")} ${theme.dim(
-				entry.extensionId,
-			)} ${singleLine(entry.status.text, 400)}${progressText}${
+			return `${theme.info("✻")} ${theme.dim(entry.extensionId)} ${singleLine(entry.status.text, 400)}${progressText}${
 				age ? theme.dim(` · ${age}`) : ""
 			}`;
 		});
@@ -51,11 +49,6 @@ function statusAge(updatedAt: string): string | undefined {
 
 function progressBar(completed: number, total: number, width: number): string {
 	if (total <= 0) return "░".repeat(width);
-	const filled = Math.max(
-		0,
-		Math.min(width, Math.round((completed / total) * width)),
-	);
-	return `${theme.ok("█".repeat(filled))}${theme.dim(
-		"░".repeat(width - filled),
-	)}`;
+	const filled = Math.max(0, Math.min(width, Math.round((completed / total) * width)));
+	return `${theme.ok("█".repeat(filled))}${theme.dim("░".repeat(width - filled))}`;
 }

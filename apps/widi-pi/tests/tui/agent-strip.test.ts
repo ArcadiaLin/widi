@@ -1,10 +1,7 @@
 import { setKeybindings } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentTree } from "../../src/tui/agent-tree.ts";
-import {
-	AgentStripView,
-	moveAgentCursor,
-} from "../../src/tui/components/agent-strip.ts";
+import { AgentStripView, moveAgentCursor } from "../../src/tui/components/agent-strip.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
 import {
 	createTuiApplicationState,
@@ -25,14 +22,8 @@ beforeAll(() => {
 	setKeybindings(createWidiKeybindings());
 });
 
-function renderPlain(
-	state: TuiApplicationState,
-	width = 160,
-	panel?: AgentStripView,
-): string[] {
-	return (panel ?? new AgentStripView(state))
-		.render(width)
-		.map((line) => line.replace(ANSI_SEQUENCE, ""));
+function renderPlain(state: TuiApplicationState, width = 160, panel?: AgentStripView): string[] {
+	return (panel ?? new AgentStripView(state)).render(width).map((line) => line.replace(ANSI_SEQUENCE, ""));
 }
 
 function createPanel(state: TuiApplicationState) {

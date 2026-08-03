@@ -9,11 +9,7 @@ import {
 	resolveOperationHint,
 } from "../../src/tui/components/operation-hint.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
-import {
-	createTuiApplicationState,
-	ensureAgentProjection,
-	setActiveAgent,
-} from "../../src/tui/state.ts";
+import { createTuiApplicationState, ensureAgentProjection, setActiveAgent } from "../../src/tui/state.ts";
 
 const engine = new CommandEngine(builtInCommands);
 const keys = {
@@ -66,9 +62,7 @@ describe("resolveOperationHint", () => {
 				},
 				keys,
 			}),
-		).toBe(
-			"/model · Set the current agent model. · ↑/↓ choose · Enter apply · Esc cancel",
-		);
+		).toBe("/model · Set the current agent model. · ↑/↓ choose · Enter apply · Esc cancel");
 	});
 
 	it("uses exact command description and usage for editor autocomplete", () => {
@@ -76,24 +70,14 @@ describe("resolveOperationHint", () => {
 		setActiveAgent(state, "main").status = "idle";
 
 		expect(
-			resolveOperationHint({
-				state,
-				engine,
-				editorText: "/thinking",
-				editorAutocompleteVisible: true,
-				keys,
-			}),
+			resolveOperationHint({ state, engine, editorText: "/thinking", editorAutocompleteVisible: true, keys }),
 		).toContain("/thinking [level] · Set the current agent thinking level.");
 	});
 
 	it("uses application-owned command metadata for autocomplete help", () => {
 		const applicationEngine = new CommandEngine([
 			...builtInCommands,
-			...applicationCommands({
-				quit: () => {},
-				newSession: async () => {},
-				disposeAgent: async () => {},
-			}),
+			...applicationCommands({ quit: () => {}, newSession: async () => {}, disposeAgent: async () => {} }),
 		]);
 		const state = createTuiApplicationState();
 
@@ -105,9 +89,7 @@ describe("resolveOperationHint", () => {
 				editorAutocompleteVisible: true,
 				keys,
 			}),
-		).toContain(
-			"/new · Close the current agent and start a new session on the same profile.",
-		);
+		).toContain("/new · Close the current agent and start a new session on the same profile.");
 	});
 
 	it("prioritizes completion over autocomplete", () => {
@@ -127,9 +109,7 @@ describe("resolveOperationHint", () => {
 				},
 				keys,
 			}),
-		).toBe(
-			"/model · Set the current agent model. · ↑/↓ choose · Enter apply · Esc cancel",
-		);
+		).toBe("/model · Set the current agent model. · ↑/↓ choose · Enter apply · Esc cancel");
 	});
 
 	it("prioritizes autocomplete over pending human requests", () => {
@@ -149,13 +129,7 @@ describe("resolveOperationHint", () => {
 		];
 
 		expect(
-			resolveOperationHint({
-				state,
-				engine,
-				editorText: "/thinking",
-				editorAutocompleteVisible: true,
-				keys,
-			}),
+			resolveOperationHint({ state, engine, editorText: "/thinking", editorAutocompleteVisible: true, keys }),
 		).toContain("/thinking [level] · Set the current agent thinking level.");
 	});
 
@@ -190,18 +164,8 @@ describe("resolveOperationHint", () => {
 				engine,
 				editorText: "",
 				editorAutocompleteVisible: false,
-				completion: {
-					title: "/model",
-					confirmVerb: "apply",
-					itemCount: 1,
-				},
-				keys: {
-					...keys,
-					selectUp: "Ctrl+K",
-					selectDown: "Ctrl+J",
-					selectConfirm: "Space",
-					selectCancel: undefined,
-				},
+				completion: { title: "/model", confirmVerb: "apply", itemCount: 1 },
+				keys: { ...keys, selectUp: "Ctrl+K", selectDown: "Ctrl+J", selectConfirm: "Space", selectCancel: undefined },
 			}),
 		).toBe("/model · Ctrl+K/Ctrl+J choose · Space apply");
 	});
@@ -239,18 +203,11 @@ describe("resolveOperationHint", () => {
 			engine,
 			editorText: "",
 			editorAutocompleteVisible: false,
-			completion: {
-				title,
-				description,
-				confirmVerb: "apply",
-				itemCount: 1,
-			},
+			completion: { title, description, confirmVerb: "apply", itemCount: 1 },
 			keys,
 		});
 
-		expect(hint).toBe(
-			"/model next · Set model now · ↑/↓ choose · Enter apply · Esc cancel",
-		);
+		expect(hint).toBe("/model next · Set model now · ↑/↓ choose · Enter apply · Esc cancel");
 	});
 
 	it("drops sanitized-empty completion parts before pairing and joining", () => {
@@ -261,18 +218,8 @@ describe("resolveOperationHint", () => {
 			engine,
 			editorText: "",
 			editorAutocompleteVisible: false,
-			completion: {
-				title: "\u001b[2J",
-				description: "\u0000",
-				confirmVerb: "apply",
-				itemCount: 0,
-			},
-			keys: {
-				...keys,
-				selectUp: "",
-				selectDown: "→",
-				selectCancel: "\u0001",
-			},
+			completion: { title: "\u001b[2J", description: "\u0000", confirmVerb: "apply", itemCount: 0 },
+			keys: { ...keys, selectUp: "", selectDown: "→", selectCancel: "\u0001" },
 		});
 
 		expect(hint).toBe("→ choose");
@@ -304,10 +251,7 @@ describe("resolveOperationHint", () => {
 		const view = new OperationHintView({
 			state,
 			engine,
-			editor: {
-				getText: () => "",
-				isShowingAutocomplete: () => false,
-			},
+			editor: { getText: () => "", isShowingAutocomplete: () => false },
 			menu: {
 				hintContext: {
 					title: "/model\u001b[2J\nnext\u0000",
@@ -318,13 +262,9 @@ describe("resolveOperationHint", () => {
 			},
 		});
 
-		const rendered = view
-			.render(120)
-			.map((line) => line.replace(ANSI_SEQUENCE, ""));
+		const rendered = view.render(120).map((line) => line.replace(ANSI_SEQUENCE, ""));
 
-		expect(rendered).toEqual([
-			"/model next · Set model now · ↑/↓ choose · Enter apply · Esc cancel",
-		]);
+		expect(rendered).toEqual(["/model next · Set model now · ↑/↓ choose · Enter apply · Esc cancel"]);
 	});
 
 	it("renders configured autocomplete keys and omits an unbound action", () => {
@@ -341,10 +281,7 @@ describe("resolveOperationHint", () => {
 		const view = new OperationHintView({
 			state,
 			engine,
-			editor: {
-				getText: () => "/thinking",
-				isShowingAutocomplete: () => true,
-			},
+			editor: { getText: () => "/thinking", isShowingAutocomplete: () => true },
 			menu: { hintContext: undefined },
 		});
 
@@ -357,21 +294,14 @@ describe("resolveOperationHint", () => {
 
 	it("omits unbound running controls in the view", () => {
 		const keybindings = createWidiKeybindings();
-		keybindings.setUserBindings({
-			"app.interrupt": [],
-			"app.steer": "alt+s",
-			"tui.input.submit": [],
-		});
+		keybindings.setUserBindings({ "app.interrupt": [], "app.steer": "alt+s", "tui.input.submit": [] });
 		setKeybindings(keybindings);
 		const state = createTuiApplicationState();
 		setActiveAgent(state, "main").status = "running";
 		const view = new OperationHintView({
 			state,
 			engine,
-			editor: {
-				getText: () => "",
-				isShowingAutocomplete: () => false,
-			},
+			editor: { getText: () => "", isShowingAutocomplete: () => false },
 			menu: { hintContext: undefined },
 		});
 
@@ -397,15 +327,9 @@ describe("resolveOperationHint", () => {
 			},
 		];
 
-		expect(
-			resolveOperationHint({
-				state,
-				engine,
-				editorText: "",
-				editorAutocompleteVisible: false,
-				keys,
-			}),
-		).toBe("Ctrl+R open requests");
+		expect(resolveOperationHint({ state, engine, editorText: "", editorAutocompleteVisible: false, keys })).toBe(
+			"Ctrl+R open requests",
+		);
 	});
 
 	it("renders no separate hint while the human request menu owns focus", () => {
@@ -431,11 +355,7 @@ describe("resolveOperationHint", () => {
 				engine,
 				editorText: "/thinking",
 				editorAutocompleteVisible: true,
-				completion: {
-					title: "/model",
-					confirmVerb: "apply",
-					itemCount: 1,
-				},
+				completion: { title: "/model", confirmVerb: "apply", itemCount: 1 },
 				keys,
 			}),
 		).toBeUndefined();
@@ -452,12 +372,7 @@ describe("resolveOperationHint", () => {
 				engine,
 				editorText: "",
 				editorAutocompleteVisible: false,
-				keys: {
-					...keys,
-					interrupt: undefined,
-					steer: "Alt+S",
-					inputSubmit: undefined,
-				},
+				keys: { ...keys, interrupt: undefined, steer: "Alt+S", inputSubmit: undefined },
 			}),
 		).toBe("Alt+S steer");
 
@@ -477,12 +392,7 @@ describe("resolveOperationHint", () => {
 					baseUrl: "https://example.test",
 					reasoning: false,
 					input: ["text"],
-					cost: {
-						input: 0,
-						output: 0,
-						cacheRead: 0,
-						cacheWrite: 0,
-					},
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 					contextWindow: 1000,
 					maxTokens: 100,
 				},
@@ -507,55 +417,25 @@ describe("resolveOperationHint", () => {
 		main.status = "running";
 		ensureAgentProjection(state, "worker", "idle");
 
-		const running = resolveOperationHint({
-			state,
-			engine,
-			editorText: "",
-			editorAutocompleteVisible: false,
-			keys,
-		});
+		const running = resolveOperationHint({ state, engine, editorText: "", editorAutocompleteVisible: false, keys });
 		expect(running).toBe("Esc abort · Ctrl+S steer · Enter queue follow-up");
 
 		// With an empty editor and something already queued, the steer key
 		// promotes the queue instead of the (empty) editor text.
 		main.queue = { ...main.queue, followUp: ["already queued"] };
-		expect(
-			resolveOperationHint({
-				state,
-				engine,
-				editorText: "",
-				editorAutocompleteVisible: false,
-				keys,
-			}),
-		).toBe("Esc abort · Ctrl+S steer queued · Enter queue follow-up");
-		expect(
-			resolveOperationHint({
-				state,
-				engine,
-				editorText: "typing",
-				editorAutocompleteVisible: false,
-				keys,
-			}),
-		).toBe("Esc abort · Ctrl+S steer · Enter queue follow-up");
+		expect(resolveOperationHint({ state, engine, editorText: "", editorAutocompleteVisible: false, keys })).toBe(
+			"Esc abort · Ctrl+S steer queued · Enter queue follow-up",
+		);
+		expect(resolveOperationHint({ state, engine, editorText: "typing", editorAutocompleteVisible: false, keys })).toBe(
+			"Esc abort · Ctrl+S steer · Enter queue follow-up",
+		);
 		main.queue = { ...main.queue, followUp: [] };
 
 		main.status = "idle";
-		const multiple = resolveOperationHint({
-			state,
-			engine,
-			editorText: "",
-			editorAutocompleteVisible: false,
-			keys,
-		});
+		const multiple = resolveOperationHint({ state, engine, editorText: "", editorAutocompleteVisible: false, keys });
 		expect(multiple).toBe("← switch agent · /dispose close current");
 
-		const draft = resolveOperationHint({
-			state,
-			engine,
-			editorText: "draft",
-			editorAutocompleteVisible: false,
-			keys,
-		});
+		const draft = resolveOperationHint({ state, engine, editorText: "draft", editorAutocompleteVisible: false, keys });
 		expect(draft).toBe("/dispose close current");
 
 		state.activeAgentId = undefined;
@@ -574,28 +454,15 @@ describe("resolveOperationHint", () => {
 					baseUrl: "https://example.test",
 					reasoning: false,
 					input: ["text"],
-					cost: {
-						input: 0,
-						output: 0,
-						cacheRead: 0,
-						cacheWrite: 0,
-					},
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 					contextWindow: 1000,
 					maxTokens: 100,
 				},
 			},
 			nextLiveItemId: 1,
 		};
-		const pending = resolveOperationHint({
-			state,
-			engine,
-			editorText: "",
-			editorAutocompleteVisible: false,
-			keys,
-		});
-		expect(pending).toBe(
-			"Enter starts session · /model or /thinking configures before first prompt",
-		);
+		const pending = resolveOperationHint({ state, engine, editorText: "", editorAutocompleteVisible: false, keys });
+		expect(pending).toBe("Enter starts session · /model or /thinking configures before first prompt");
 	});
 
 	it("offers only the follow-up queue while maintenance work runs", () => {
@@ -604,25 +471,13 @@ describe("resolveOperationHint", () => {
 		main.status = "running";
 		main.maintenance = "compaction";
 
-		expect(
-			resolveOperationHint({
-				state,
-				engine,
-				editorText: "",
-				editorAutocompleteVisible: false,
-				keys,
-			}),
-		).toBe("Compacting… · Enter queue follow-up");
+		expect(resolveOperationHint({ state, engine, editorText: "", editorAutocompleteVisible: false, keys })).toBe(
+			"Compacting… · Enter queue follow-up",
+		);
 
 		main.maintenance = "tree-navigation";
-		expect(
-			resolveOperationHint({
-				state,
-				engine,
-				editorText: "typing",
-				editorAutocompleteVisible: false,
-				keys,
-			}),
-		).toBe("Navigating… · Enter queue follow-up");
+		expect(resolveOperationHint({ state, engine, editorText: "typing", editorAutocompleteVisible: false, keys })).toBe(
+			"Navigating… · Enter queue follow-up",
+		);
 	});
 });

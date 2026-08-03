@@ -9,11 +9,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import {
-	contentHash,
-	JsonlObjectStore,
-	PersistenceDiagnostics,
-} from "../../src/core/persistence/index.ts";
+import { contentHash, JsonlObjectStore, PersistenceDiagnostics } from "../../src/core/persistence/index.ts";
 import { MemoryFileSystem } from "../helpers/memory-fs.ts";
 
 const DIR = "/runs/--w--/root/persistence/test__counter";
@@ -21,12 +17,7 @@ const LOG = `${DIR}/objects.jsonl`;
 
 async function openStore(
 	fs: MemoryFileSystem,
-	options: {
-		formatVersion?: number;
-		diagnostics?: PersistenceDiagnostics;
-		dir?: string;
-		owner?: string;
-	} = {},
+	options: { formatVersion?: number; diagnostics?: PersistenceDiagnostics; dir?: string; owner?: string } = {},
 ): Promise<JsonlObjectStore> {
 	const dirPath = options.dir ?? DIR;
 	return await JsonlObjectStore.open({
@@ -89,10 +80,7 @@ describe("JsonlObjectStore", () => {
 		const fs = new MemoryFileSystem();
 		const store = await openStore(fs);
 		const base = await store.putObject({ data: { count: 1 } });
-		const derived = await store.putObject({
-			data: { count: 2 },
-			dependencies: [base],
-		});
+		const derived = await store.putObject({ data: { count: 2 }, dependencies: [base] });
 
 		const reopened = await openStore(fs);
 		expect(await reopened.resolveState(derived)).toEqual({ count: 2 });
@@ -103,9 +91,7 @@ describe("JsonlObjectStore", () => {
 	it("reports a missing object as undefined rather than throwing", async () => {
 		const fs = new MemoryFileSystem();
 		const store = await openStore(fs);
-		expect(
-			await store.resolveState(contentHash({ nope: true })),
-		).toBeUndefined();
+		expect(await store.resolveState(contentHash({ nope: true }))).toBeUndefined();
 		expect(await store.listDependencies("sha256:missing")).toEqual([]);
 	});
 
@@ -132,9 +118,7 @@ describe("JsonlObjectStore", () => {
 
 		const diagnostics = new PersistenceDiagnostics();
 		await openStore(fs, { diagnostics });
-		expect(diagnostics.entries.map((entry) => entry.code)).toEqual([
-			"persistence.corrupt_log",
-		]);
+		expect(diagnostics.entries.map((entry) => entry.code)).toEqual(["persistence.corrupt_log"]);
 		expect(diagnostics.hasErrors).toBe(true);
 	});
 
@@ -152,9 +136,7 @@ describe("JsonlObjectStore", () => {
 		const diagnostics = new PersistenceDiagnostics();
 		const store = await openStore(fs, { diagnostics });
 		expect(store.has("sha256:x")).toBe(false);
-		expect(diagnostics.entries.map((entry) => entry.code)).toEqual([
-			"persistence.unsupported_version",
-		]);
+		expect(diagnostics.entries.map((entry) => entry.code)).toEqual(["persistence.unsupported_version"]);
 	});
 
 	// Reading a log this build must not touch is survivable; appending to it is
@@ -164,12 +146,7 @@ describe("JsonlObjectStore", () => {
 		const fs = new MemoryFileSystem();
 		await fs.writeFile(
 			LOG,
-			`${JSON.stringify({
-				type: "persistence-objects",
-				version: 99,
-				namespace: "test:counter",
-				formatVersion: 1,
-			})}\n`,
+			`${JSON.stringify({ type: "persistence-objects", version: 99, namespace: "test:counter", formatVersion: 1 })}\n`,
 		);
 		const store = await openStore(fs);
 		await expect(store.putObject({ data: { count: 1 } })).rejects.toThrow();
@@ -181,9 +158,7 @@ describe("JsonlObjectStore ownership", () => {
 		const fs = new MemoryFileSystem();
 		const store = await openStore(fs, { owner: "ext:notes" });
 		const root = await store.putObject({ data: { count: 1 } });
-		expect(JSON.parse(logLines(fs)[0] ?? "{}")).toMatchObject({
-			owner: "ext:notes",
-		});
+		expect(JSON.parse(logLines(fs)[0] ?? "{}")).toMatchObject({ owner: "ext:notes" });
 
 		const reopened = await openStore(fs, { owner: "ext:notes" });
 		expect(await reopened.resolveState(root)).toEqual({ count: 1 });
@@ -201,9 +176,7 @@ describe("JsonlObjectStore ownership", () => {
 		const impostor = await openStore(fs, { owner: "ext:other", diagnostics });
 		expect(await impostor.resolveState(root)).toBeUndefined();
 		await expect(impostor.putObject({ data: {} })).rejects.toThrow();
-		expect(diagnostics.entries.map((entry) => entry.code)).toEqual([
-			"persistence.owner_mismatch",
-		]);
+		expect(diagnostics.entries.map((entry) => entry.code)).toEqual(["persistence.owner_mismatch"]);
 		expect(diagnostics.hasErrors).toBe(true);
 	});
 
@@ -213,18 +186,14 @@ describe("JsonlObjectStore ownership", () => {
 		await owned.putObject({ data: { count: 1 } });
 		const unowned = new PersistenceDiagnostics();
 		await openStore(fs, { diagnostics: unowned });
-		expect(unowned.entries.map((entry) => entry.code)).toEqual([
-			"persistence.owner_mismatch",
-		]);
+		expect(unowned.entries.map((entry) => entry.code)).toEqual(["persistence.owner_mismatch"]);
 
 		const otherFs = new MemoryFileSystem();
 		const core = await openStore(otherFs);
 		await core.putObject({ data: { count: 1 } });
 		const claimed = new PersistenceDiagnostics();
 		await openStore(otherFs, { owner: "ext:notes", diagnostics: claimed });
-		expect(claimed.entries.map((entry) => entry.code)).toEqual([
-			"persistence.owner_mismatch",
-		]);
+		expect(claimed.entries.map((entry) => entry.code)).toEqual(["persistence.owner_mismatch"]);
 	});
 
 	// The owner is an identity, not a build stamp: an extension upgrade bumps
@@ -232,18 +201,11 @@ describe("JsonlObjectStore ownership", () => {
 	// anything the check prevents.
 	it("keeps the owner stable across a format version bump", async () => {
 		const fs = new MemoryFileSystem();
-		const before = await openStore(fs, {
-			owner: "ext:notes",
-			formatVersion: 1,
-		});
+		const before = await openStore(fs, { owner: "ext:notes", formatVersion: 1 });
 		const root = await before.putObject({ data: { count: 1 } });
 
 		const diagnostics = new PersistenceDiagnostics();
-		const after = await openStore(fs, {
-			owner: "ext:notes",
-			formatVersion: 2,
-			diagnostics,
-		});
+		const after = await openStore(fs, { owner: "ext:notes", formatVersion: 2, diagnostics });
 		expect(await after.resolveState(root)).toEqual({ count: 1 });
 		expect(after.storedFormatVersion).toBe(1);
 		expect(diagnostics.entries).toHaveLength(0);
@@ -261,10 +223,7 @@ describe("JsonlObjectStore ownership", () => {
 		const fs = new MemoryFileSystem();
 		const source = await openStore(fs);
 		const base = await source.putObject({ data: { count: 1 } });
-		const derived = await source.putObject({
-			data: { count: 2 },
-			dependencies: [base],
-		});
+		const derived = await source.putObject({ data: { count: 2 }, dependencies: [base] });
 
 		const targetDir = "/runs/--w--/fork/persistence/test__counter";
 		const target = await openStore(fs, { dir: targetDir });

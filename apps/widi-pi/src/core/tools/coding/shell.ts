@@ -9,16 +9,12 @@ export interface ShellConfig {
 
 function isLegacyWslBashPath(path: string): boolean {
 	const normalized = path.replace(/\//g, "\\").toLowerCase();
-	return /^[a-z]:\\windows\\(?:system32|sysnative)\\bash\.exe$/.test(
-		normalized,
-	);
+	return /^[a-z]:\\windows\\(?:system32|sysnative)\\bash\.exe$/.test(normalized);
 }
 
 function getBashShellConfig(shell: string): ShellConfig {
 	// Legacy WSL bash cannot take the command as an argv element; feed it on stdin.
-	return isLegacyWslBashPath(shell)
-		? { shell, args: ["-s"], commandTransport: "stdin" }
-		: { shell, args: ["-c"] };
+	return isLegacyWslBashPath(shell) ? { shell, args: ["-s"], commandTransport: "stdin" } : { shell, args: ["-c"] };
 }
 
 /**
@@ -28,11 +24,7 @@ function findBashOnPath(): string | null {
 	if (process.platform === "win32") {
 		// `where` can return non-existent paths, so verify the file exists.
 		try {
-			const result = spawnSync("where", ["bash.exe"], {
-				encoding: "utf-8",
-				timeout: 5000,
-				windowsHide: true,
-			});
+			const result = spawnSync("where", ["bash.exe"], { encoding: "utf-8", timeout: 5000, windowsHide: true });
 			if (result.status === 0 && result.stdout) {
 				const firstMatch = result.stdout.trim().split(/\r?\n/)[0];
 				if (firstMatch && existsSync(firstMatch)) {
@@ -47,10 +39,7 @@ function findBashOnPath(): string | null {
 
 	// Trust `which` output (handles Termux and special filesystems).
 	try {
-		const result = spawnSync("which", ["bash"], {
-			encoding: "utf-8",
-			timeout: 5000,
-		});
+		const result = spawnSync("which", ["bash"], { encoding: "utf-8", timeout: 5000 });
 		if (result.status === 0 && result.stdout) {
 			const firstMatch = result.stdout.trim().split(/\r?\n/)[0];
 			if (firstMatch) {

@@ -1,12 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-	type BackgroundJobSettlement,
-	BackgroundJobTable,
-} from "../../src/core/background/index.ts";
-import {
-	createAgentHarnessToolFromResolvedTool,
-	ToolRegistry,
-} from "../../src/core/tool-registry.ts";
+import { type BackgroundJobSettlement, BackgroundJobTable } from "../../src/core/background/index.ts";
+import { createAgentHarnessToolFromResolvedTool, ToolRegistry } from "../../src/core/tool-registry.ts";
 import { createBashToolDefinition } from "../../src/core/tools/coding/bash.ts";
 import type { ToolSource } from "../../src/core/tools/types.ts";
 
@@ -44,9 +38,7 @@ describe("bash background integration", () => {
 
 		const settlement = await settled;
 		expect(settlement.outcome.status).toBe("completed");
-		const text = settlement.outcome.result?.content
-			.map((part) => (part.type === "text" ? part.text : ""))
-			.join("");
+		const text = settlement.outcome.result?.content.map((part) => (part.type === "text" ? part.text : "")).join("");
 		expect(text?.trim()).toBe("hi");
 		expect(table.list()).toEqual([]);
 	});
@@ -57,25 +49,16 @@ describe("bash background integration", () => {
 
 		const t0 = await bash.execute(
 			"call-1",
-			{
-				command: "sleep 0.2 && echo hi",
-				background: true,
-				name: "  run   the e2e suite  ",
-			},
+			{ command: "sleep 0.2 && echo hi", background: true, name: "  run   the e2e suite  " },
 			undefined,
 			undefined,
 			{ backgroundJobTable: table },
 		);
 
 		// Whitespace is collapsed; the command stays as the derived description.
-		expect(table.list()[0]).toMatchObject({
-			name: "run the e2e suite",
-			description: "sleep 0.2 && echo hi",
-		});
+		expect(table.list()[0]).toMatchObject({ name: "run the e2e suite", description: "sleep 0.2 && echo hi" });
 		expect(t0.details).toMatchObject({ name: "run the e2e suite" });
-		const handleText = t0.content
-			.map((part) => (part.type === "text" ? part.text : ""))
-			.join("");
+		const handleText = t0.content.map((part) => (part.type === "text" ? part.text : "")).join("");
 		expect(handleText).toContain('bash "run the e2e suite"');
 		table.abort(table.list()[0]?.id ?? "", "test cleanup");
 	});
@@ -112,17 +95,11 @@ describe("bash background integration", () => {
 		const table = new BackgroundJobTable();
 		const bash = resolveBashTool();
 
-		const result = await bash.execute(
-			"call-1",
-			{ command: "echo inline" },
-			undefined,
-			undefined,
-			{ backgroundJobTable: table },
-		);
+		const result = await bash.execute("call-1", { command: "echo inline" }, undefined, undefined, {
+			backgroundJobTable: table,
+		});
 
-		const text = result.content
-			.map((part) => (part.type === "text" ? part.text : ""))
-			.join("");
+		const text = result.content.map((part) => (part.type === "text" ? part.text : "")).join("");
 		expect(text.trim()).toBe("inline");
 		// No job was ever registered for a synchronous call.
 		expect(table.list()).toEqual([]);

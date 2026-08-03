@@ -54,11 +54,7 @@ export function groupTurns(items: readonly TimelineItem[]): TimelineTurn[] {
  * Returns an empty set while the turn count is within `maxTurns + hysteresis`.
  * Oldest turns are removed first; the most recent turn is never removed.
  */
-export function turnsToTrim(
-	turns: readonly TimelineTurn[],
-	maxTurns: number,
-	hysteresis: number,
-): Set<string> {
+export function turnsToTrim(turns: readonly TimelineTurn[], maxTurns: number, hysteresis: number): Set<string> {
 	const toRemove = new Set<string>();
 	if (maxTurns <= 0 || turns.length <= maxTurns + hysteresis) return toRemove;
 
@@ -87,9 +83,7 @@ export function applyTimelineWindow(agent: AgentViewState): boolean {
 	if (trim.size === 0) return false;
 
 	const kept = base.filter((item) => !trim.has(timelineKey(item)));
-	const hiddenTurns =
-		(marker?.type === "window-marker" ? marker.hiddenTurns : 0) +
-		countTrimmedTurns(turns, trim);
+	const hiddenTurns = (marker?.type === "window-marker" ? marker.hiddenTurns : 0) + countTrimmedTurns(turns, trim);
 	agent.timeline = [
 		{
 			type: "window-marker",
@@ -103,10 +97,7 @@ export function applyTimelineWindow(agent: AgentViewState): boolean {
 	return true;
 }
 
-function countTrimmedTurns(
-	turns: readonly TimelineTurn[],
-	trim: ReadonlySet<string>,
-): number {
+function countTrimmedTurns(turns: readonly TimelineTurn[], trim: ReadonlySet<string>): number {
 	let count = 0;
 	for (const turn of turns) {
 		if (turn.items.every((item) => trim.has(timelineKey(item)))) count++;

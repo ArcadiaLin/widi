@@ -20,10 +20,7 @@ export interface ListAgentsDetails {
  * marked unaddressable, so the model stops re-sending to a broken agent instead
  * of concluding it vanished.
  */
-export function createListAgentsToolDefinition(): ToolDefinition<
-	typeof listAgentsSchema,
-	ListAgentsDetails
-> {
+export function createListAgentsToolDefinition(): ToolDefinition<typeof listAgentsSchema, ListAgentsDetails> {
 	return {
 		name: "list_agents",
 		label: "list_agents",
@@ -42,10 +39,7 @@ export function createListAgentsToolDefinition(): ToolDefinition<
 	};
 }
 
-function formatAgents(
-	agents: readonly AgentBrief[],
-	callerAgentId: string,
-): string {
+function formatAgents(agents: readonly AgentBrief[], callerAgentId: string): string {
 	if (agents.length === 0) {
 		return "No agent is currently live in your tree.";
 	}

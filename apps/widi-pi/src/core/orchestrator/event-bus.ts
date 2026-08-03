@@ -1,11 +1,7 @@
 import { formatError } from "../../utils/errors.ts";
 import type { OrchestratorClient } from "../client.ts";
 import type { OrchestratorDiagnostic } from "../diagnostics.ts";
-import type {
-	AgentId,
-	OrchestratorEvent,
-	OrchestratorEventListener,
-} from "../types.ts";
+import type { AgentId, OrchestratorEvent, OrchestratorEventListener } from "../types.ts";
 
 export interface EventPublishOptions {
 	readonly sendToListeners?: boolean;
@@ -20,20 +16,11 @@ export interface EventPublishOptions {
  */
 export class OrchestratorEventBus {
 	private readonly _listeners = new Set<OrchestratorEventListener>();
-	private readonly _clients = new Map<
-		string,
-		OrchestratorClient<OrchestratorEvent>
-	>();
-	private readonly _diagnose: (
-		diagnostic: OrchestratorDiagnostic,
-		options?: EventPublishOptions,
-	) => Promise<void>;
+	private readonly _clients = new Map<string, OrchestratorClient<OrchestratorEvent>>();
+	private readonly _diagnose: (diagnostic: OrchestratorDiagnostic, options?: EventPublishOptions) => Promise<void>;
 
 	constructor(options: {
-		readonly diagnose: (
-			diagnostic: OrchestratorDiagnostic,
-			options?: EventPublishOptions,
-		) => Promise<void>;
+		readonly diagnose: (diagnostic: OrchestratorDiagnostic, options?: EventPublishOptions) => Promise<void>;
 	}) {
 		this._diagnose = options.diagnose;
 	}
@@ -47,12 +34,8 @@ export class OrchestratorEventBus {
 		};
 	}
 
-	findHumanRequestHandler():
-		| OrchestratorClient<OrchestratorEvent>["requestHuman"]
-		| undefined {
-		return Array.from(this._clients.values()).find(
-			(client) => client.requestHuman,
-		)?.requestHuman;
+	findHumanRequestHandler(): OrchestratorClient<OrchestratorEvent>["requestHuman"] | undefined {
+		return Array.from(this._clients.values()).find((client) => client.requestHuman)?.requestHuman;
 	}
 
 	subscribe(listener: OrchestratorEventListener): () => void {
@@ -60,10 +43,7 @@ export class OrchestratorEventBus {
 		return () => this._listeners.delete(listener);
 	}
 
-	subscribeAgent(
-		agentId: AgentId,
-		listener: OrchestratorEventListener,
-	): () => void {
+	subscribeAgent(agentId: AgentId, listener: OrchestratorEventListener): () => void {
 		return this.subscribe((event) => {
 			if ("agentId" in event && event.agentId === agentId) {
 				return listener(event);
@@ -71,10 +51,7 @@ export class OrchestratorEventBus {
 		});
 	}
 
-	async publish(
-		event: OrchestratorEvent,
-		options: EventPublishOptions = {},
-	): Promise<void> {
+	async publish(event: OrchestratorEvent, options: EventPublishOptions = {}): Promise<void> {
 		const listenerFailures: OrchestratorDiagnostic[] = [];
 		if (options.sendToListeners !== false) {
 			for (const listener of this._listeners) {
@@ -103,19 +80,13 @@ export class OrchestratorEventBus {
 							message: `Client failed for event ${event.type}: ${formatError(error)}`,
 							agentId: eventAgentId(event),
 						},
-						{
-							sendToListeners: options.sendToListeners,
-							sendToClients: false,
-						},
+						{ sendToListeners: options.sendToListeners, sendToClients: false },
 					);
 				}
 			}
 		}
 		for (const diagnostic of listenerFailures) {
-			await this._diagnose(diagnostic, {
-				sendToListeners: false,
-				sendToClients: options.sendToClients,
-			});
+			await this._diagnose(diagnostic, { sendToListeners: false, sendToClients: options.sendToClients });
 		}
 	}
 }

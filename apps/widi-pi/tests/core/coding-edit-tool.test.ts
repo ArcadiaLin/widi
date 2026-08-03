@@ -1,30 +1,20 @@
 import { describe, expect, it } from "vitest";
-import {
-	createAgentHarnessToolFromResolvedTool,
-	ToolRegistry,
-} from "../../src/core/tool-registry.ts";
-import {
-	createEditToolDefinition,
-	type EditToolInput,
-} from "../../src/core/tools/coding/edit.ts";
+import { createAgentHarnessToolFromResolvedTool, ToolRegistry } from "../../src/core/tool-registry.ts";
+import { createEditToolDefinition, type EditToolInput } from "../../src/core/tools/coding/edit.ts";
 
 class MemoryEditOperations {
 	readonly files = new Map<string, string>();
 
 	async access(path: string): Promise<void> {
 		if (!this.files.has(path)) {
-			throw Object.assign(new Error(`File not found: ${path}`), {
-				code: "ENOENT",
-			});
+			throw Object.assign(new Error(`File not found: ${path}`), { code: "ENOENT" });
 		}
 	}
 
 	async readFile(path: string): Promise<Buffer> {
 		const content = this.files.get(path);
 		if (content === undefined) {
-			throw Object.assign(new Error(`File not found: ${path}`), {
-				code: "ENOENT",
-			});
+			throw Object.assign(new Error(`File not found: ${path}`), { code: "ENOENT" });
 		}
 		return Buffer.from(content, "utf-8");
 	}
@@ -35,20 +25,13 @@ class MemoryEditOperations {
 
 	async realpath(path: string): Promise<string> {
 		if (!this.files.has(path)) {
-			throw Object.assign(new Error(`File not found: ${path}`), {
-				code: "ENOENT",
-			});
+			throw Object.assign(new Error(`File not found: ${path}`), { code: "ENOENT" });
 		}
 		return path;
 	}
 }
 
-const emptyExecutionContext = {
-	signal: undefined,
-	onUpdate: undefined,
-	extension: undefined,
-	human: undefined,
-};
+const emptyExecutionContext = { signal: undefined, onUpdate: undefined, extension: undefined, human: undefined };
 
 function createTool(operations: MemoryEditOperations) {
 	return createEditToolDefinition("/workspace/project", { operations });
@@ -57,27 +40,17 @@ function createTool(operations: MemoryEditOperations) {
 describe("core edit tool", () => {
 	it("applies a single exact replacement with diff and patch details", async () => {
 		const operations = new MemoryEditOperations();
-		operations.files.set(
-			"/workspace/project/file.ts",
-			"const a = 1;\nconst b = 2;\nconst c = 3;\n",
-		);
+		operations.files.set("/workspace/project/file.ts", "const a = 1;\nconst b = 2;\nconst c = 3;\n");
 		const tool = createTool(operations);
 
 		const result = await tool.execute(
 			"call-1",
-			{
-				path: "file.ts",
-				edits: [{ oldText: "const b = 2;", newText: "const b = 20;" }],
-			},
+			{ path: "file.ts", edits: [{ oldText: "const b = 2;", newText: "const b = 20;" }] },
 			emptyExecutionContext,
 		);
 
-		expect(operations.files.get("/workspace/project/file.ts")).toBe(
-			"const a = 1;\nconst b = 20;\nconst c = 3;\n",
-		);
-		expect(result.content).toEqual([
-			{ type: "text", text: "Successfully replaced 1 block(s) in file.ts." },
-		]);
+		expect(operations.files.get("/workspace/project/file.ts")).toBe("const a = 1;\nconst b = 20;\nconst c = 3;\n");
+		expect(result.content).toEqual([{ type: "text", text: "Successfully replaced 1 block(s) in file.ts." }]);
 		expect(result.details).toMatchObject({
 			path: "file.ts",
 			absolutePath: "/workspace/project/file.ts",
@@ -91,10 +64,7 @@ describe("core edit tool", () => {
 
 	it("applies multiple disjoint edits matched against the original file", async () => {
 		const operations = new MemoryEditOperations();
-		operations.files.set(
-			"/workspace/project/file.txt",
-			"alpha\nbeta\ngamma\ndelta\n",
-		);
+		operations.files.set("/workspace/project/file.txt", "alpha\nbeta\ngamma\ndelta\n");
 		const tool = createTool(operations);
 
 		const result = await tool.execute(
@@ -109,12 +79,8 @@ describe("core edit tool", () => {
 			emptyExecutionContext,
 		);
 
-		expect(operations.files.get("/workspace/project/file.txt")).toBe(
-			"ALPHA\nbeta\ngamma\nDELTA\n",
-		);
-		expect(result.content).toEqual([
-			{ type: "text", text: "Successfully replaced 2 block(s) in file.txt." },
-		]);
+		expect(operations.files.get("/workspace/project/file.txt")).toBe("ALPHA\nbeta\ngamma\nDELTA\n");
+		expect(result.content).toEqual([{ type: "text", text: "Successfully replaced 2 block(s) in file.txt." }]);
 	});
 
 	it("normalizes legacy oldText/newText arguments into edits", () => {
@@ -122,16 +88,9 @@ describe("core edit tool", () => {
 		const tool = createTool(operations);
 		if (!tool.prepareArguments) throw new Error("Expected prepareArguments.");
 
-		const prepared = tool.prepareArguments({
-			path: "file.txt",
-			oldText: "a",
-			newText: "b",
-		}) as EditToolInput;
+		const prepared = tool.prepareArguments({ path: "file.txt", oldText: "a", newText: "b" }) as EditToolInput;
 
-		expect(prepared).toEqual({
-			path: "file.txt",
-			edits: [{ oldText: "a", newText: "b" }],
-		});
+		expect(prepared).toEqual({ path: "file.txt", edits: [{ oldText: "a", newText: "b" }] });
 	});
 
 	it("parses edits sent as a JSON string", () => {
@@ -149,36 +108,23 @@ describe("core edit tool", () => {
 
 	it("fuzzy matches smart punctuation while preserving untouched lines", async () => {
 		const operations = new MemoryEditOperations();
-		operations.files.set(
-			"/workspace/project/doc.md",
-			"first line\t\nsays “hello” here\nlast line\t\n",
-		);
+		operations.files.set("/workspace/project/doc.md", "first line\t\nsays “hello” here\nlast line\t\n");
 		const tool = createTool(operations);
 
 		await tool.execute(
 			"call-1",
-			{
-				path: "doc.md",
-				edits: [
-					{ oldText: 'says "hello" here', newText: 'says "goodbye" here' },
-				],
-			},
+			{ path: "doc.md", edits: [{ oldText: 'says "hello" here', newText: 'says "goodbye" here' }] },
 			emptyExecutionContext,
 		);
 
 		// The edited line is rewritten from normalized content; untouched lines
 		// keep their original bytes (trailing tabs survive).
-		expect(operations.files.get("/workspace/project/doc.md")).toBe(
-			'first line\t\nsays "goodbye" here\nlast line\t\n',
-		);
+		expect(operations.files.get("/workspace/project/doc.md")).toBe('first line\t\nsays "goodbye" here\nlast line\t\n');
 	});
 
 	it("preserves CRLF line endings and BOM", async () => {
 		const operations = new MemoryEditOperations();
-		operations.files.set(
-			"/workspace/project/file.txt",
-			"\uFEFFone\r\ntwo\r\nthree\r\n",
-		);
+		operations.files.set("/workspace/project/file.txt", "\uFEFFone\r\ntwo\r\nthree\r\n");
 		const tool = createTool(operations);
 
 		await tool.execute(
@@ -187,9 +133,7 @@ describe("core edit tool", () => {
 			emptyExecutionContext,
 		);
 
-		expect(operations.files.get("/workspace/project/file.txt")).toBe(
-			"\uFEFFone\r\nTWO\r\nthree\r\n",
-		);
+		expect(operations.files.get("/workspace/project/file.txt")).toBe("\uFEFFone\r\nTWO\r\nthree\r\n");
 	});
 
 	it("rejects text that is not found", async () => {
@@ -212,14 +156,8 @@ describe("core edit tool", () => {
 		const tool = createTool(operations);
 
 		await expect(
-			tool.execute(
-				"call-1",
-				{ path: "file.txt", edits: [{ oldText: "dup", newText: "x" }] },
-				emptyExecutionContext,
-			),
-		).rejects.toThrow(
-			"Found 2 occurrences of the text in file.txt. The text must be unique.",
-		);
+			tool.execute("call-1", { path: "file.txt", edits: [{ oldText: "dup", newText: "x" }] }, emptyExecutionContext),
+		).rejects.toThrow("Found 2 occurrences of the text in file.txt. The text must be unique.");
 	});
 
 	it("rejects overlapping edits", async () => {
@@ -261,19 +199,11 @@ describe("core edit tool", () => {
 		operations.files.set("/workspace/project/file.txt", "alpha\n");
 		const tool = createTool(operations);
 
+		await expect(tool.execute("call-1", { path: "file.txt", edits: [] }, emptyExecutionContext)).rejects.toThrow(
+			"edits must contain at least one replacement",
+		);
 		await expect(
-			tool.execute(
-				"call-1",
-				{ path: "file.txt", edits: [] },
-				emptyExecutionContext,
-			),
-		).rejects.toThrow("edits must contain at least one replacement");
-		await expect(
-			tool.execute(
-				"call-1",
-				{ path: "absent.txt", edits: [{ oldText: "a", newText: "b" }] },
-				emptyExecutionContext,
-			),
+			tool.execute("call-1", { path: "absent.txt", edits: [{ oldText: "a", newText: "b" }] }, emptyExecutionContext),
 		).rejects.toThrow("Could not edit file: absent.txt. Error code: ENOENT.");
 	});
 
@@ -298,13 +228,10 @@ describe("core edit tool", () => {
 		const operations = new MemoryEditOperations();
 		operations.files.set("/workspace/project/file.txt", "alpha\n");
 		const registry = new ToolRegistry();
-		registry.defineTool(
-			createEditToolDefinition("/workspace/project", { operations }),
-			{
-				kind: "core",
-				id: "builtin",
-			},
-		);
+		registry.defineTool(createEditToolDefinition("/workspace/project", { operations }), {
+			kind: "core",
+			id: "builtin",
+		});
 		const resolved = registry.resolve().getTool("edit");
 		if (!resolved) throw new Error("Expected edit tool to resolve.");
 		const agentTool = createAgentHarnessToolFromResolvedTool(resolved);
@@ -313,24 +240,12 @@ describe("core edit tool", () => {
 		}
 
 		// The pi agent loop applies prepareArguments before execute.
-		const prepared = agentTool.prepareArguments({
-			path: "file.txt",
-			oldText: "alpha",
-			newText: "beta",
-		});
-		const result = await agentTool.execute(
-			"call-1",
-			prepared,
-			undefined,
-			undefined,
-			{},
-		);
+		const prepared = agentTool.prepareArguments({ path: "file.txt", oldText: "alpha", newText: "beta" });
+		const result = await agentTool.execute("call-1", prepared, undefined, undefined, {});
 
 		expect(operations.files.get("/workspace/project/file.txt")).toBe("beta\n");
 		expect(result).toMatchObject({
-			content: [
-				{ type: "text", text: "Successfully replaced 1 block(s) in file.txt." },
-			],
+			content: [{ type: "text", text: "Successfully replaced 1 block(s) in file.txt." }],
 		});
 	});
 });

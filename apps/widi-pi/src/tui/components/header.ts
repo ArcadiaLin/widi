@@ -16,18 +16,10 @@ export class HeaderView implements Component {
 	render(width: number): string[] {
 		const agent = activeAgent(this.state);
 		const pending = this.state.pendingAgent;
-		const label = agent
-			? agentLabel(agent)
-			: (pending?.display.profileLabel ?? "starting");
-		const model =
-			agent?.display.model?.id ??
-			agent?.snapshot?.model.id ??
-			pending?.display.model.id ??
-			"model";
+		const label = agent ? agentLabel(agent) : (pending?.display.profileLabel ?? "starting");
+		const model = agent?.display.model?.id ?? agent?.snapshot?.model.id ?? pending?.display.model.id ?? "model";
 		return new Text(
-			`${theme.bold(theme.title("WIDI"))} ${theme.dim(
-				`· ${label} · ${singleLine(model, 120)}`,
-			)}`,
+			`${theme.bold(theme.title("WIDI"))} ${theme.dim(`· ${label} · ${singleLine(model, 120)}`)}`,
 			1,
 			1,
 		).render(width);

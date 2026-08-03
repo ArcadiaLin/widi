@@ -14,10 +14,7 @@ function paletteSgr(hex: string): string {
 }
 
 function createEditor() {
-	const tui = {
-		terminal: { rows: 40, cols: 80 },
-		requestRender: () => {},
-	} as unknown as TUI;
+	const tui = { terminal: { rows: 40, cols: 80 }, requestRender: () => {} } as unknown as TUI;
 	return new WidiEditor(tui, theme.editorTheme, { paddingX: 4 });
 }
 

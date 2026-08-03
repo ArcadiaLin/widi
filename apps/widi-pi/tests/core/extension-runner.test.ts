@@ -8,9 +8,7 @@ import {
 	ExtensionRunner,
 } from "../../src/core/extension/index.ts";
 
-async function createRunner(
-	factories: readonly (readonly [string, ExtensionFactory])[],
-): Promise<ExtensionRunner> {
+async function createRunner(factories: readonly (readonly [string, ExtensionFactory])[]): Promise<ExtensionRunner> {
 	const loader = new ExtensionLoader();
 	for (const [extensionId, factory] of factories) {
 		loader.registerExtension(extensionId, factory);
@@ -35,52 +33,25 @@ describe("ExtensionRunner inspect", () => {
 				label: "Sample Tool",
 				description: "sample tool",
 				parameters: Type.Object({}),
-				execute: async () => ({
-					content: [{ type: "text", text: "sample" }],
-					details: undefined,
-				}),
+				execute: async () => ({ content: [{ type: "text", text: "sample" }], details: undefined }),
 			});
 			api.patchTool("base", {
 				strict: true,
-				execute: async () => ({
-					content: [{ type: "text", text: "patched" }],
-					details: undefined,
-				}),
+				execute: async () => ({ content: [{ type: "text", text: "patched" }], details: undefined }),
 			});
 		});
-		const scope = await loader.loadForAgent({
-			agentId: "agent",
-			profileId: "profile",
-			extensionIds: ["sample"],
-		});
+		const scope = await loader.loadForAgent({ agentId: "agent", profileId: "profile", extensionIds: ["sample"] });
 		const runner = new ExtensionRunner({ loadedScope: scope });
 
 		const snapshot = runner.inspect();
 
 		expect(snapshot.hooks).toEqual([
-			{
-				kind: "observe",
-				extensionId: "sample",
-				eventName: "agent_harness_event",
-			},
-			{
-				kind: "observe",
-				extensionId: "sample",
-				eventName: "agent_session_info_changed",
-			},
-			{
-				kind: "intercept",
-				extensionId: "sample",
-				eventName: "tool_call",
-			},
+			{ kind: "observe", extensionId: "sample", eventName: "agent_harness_event" },
+			{ kind: "observe", extensionId: "sample", eventName: "agent_session_info_changed" },
+			{ kind: "intercept", extensionId: "sample", eventName: "tool_call" },
 		]);
 		expect(snapshot.toolContributions).toEqual([
-			{
-				kind: "define",
-				extensionId: "sample",
-				toolName: "sampleTool",
-				source: { kind: "extension", id: "sample" },
-			},
+			{ kind: "define", extensionId: "sample", toolName: "sampleTool", source: { kind: "extension", id: "sample" } },
 			{
 				kind: "patch",
 				extensionId: "sample",
@@ -110,10 +81,7 @@ describe("ExtensionRunner inspect", () => {
 			],
 		]);
 
-		expect(runner.getSystemPromptAppends()).toEqual([
-			"from first",
-			"from second",
-		]);
+		expect(runner.getSystemPromptAppends()).toEqual(["from first", "from second"]);
 		// The text is prompt content, not an inspectable fact about the extension.
 		expect(runner.inspect().systemPromptContributions).toEqual([
 			{ extensionId: "first", divisionId: undefined },
@@ -135,9 +103,7 @@ describe("ExtensionRunner inspect", () => {
 
 		expect(runner.getSystemPromptAppends()).toEqual([]);
 		// The pre-disposal snapshot still answers what the extension contributed.
-		expect(runner.inspect().systemPromptContributions).toEqual([
-			{ extensionId: "sample", divisionId: undefined },
-		]);
+		expect(runner.inspect().systemPromptContributions).toEqual([{ extensionId: "sample", divisionId: undefined }]);
 	});
 
 	it("rejects an empty appended section", async () => {
@@ -150,27 +116,18 @@ describe("ExtensionRunner inspect", () => {
 					},
 				],
 			]),
-		).resolves.toMatchObject({
-			diagnostics: [{ code: "extension.activation_failed" }],
-		});
+		).resolves.toMatchObject({ diagnostics: [{ code: "extension.activation_failed" }] });
 	});
 
 	it("reports stale state after invalidation", async () => {
 		const loader = new ExtensionLoader();
 		loader.registerExtension("sample", () => {});
-		const scope = await loader.loadForAgent({
-			agentId: "agent",
-			profileId: "profile",
-			extensionIds: ["sample"],
-		});
+		const scope = await loader.loadForAgent({ agentId: "agent", profileId: "profile", extensionIds: ["sample"] });
 		const runner = new ExtensionRunner({ loadedScope: scope });
 
 		runner.invalidate("stale for test");
 
-		expect(runner.inspect().stale).toEqual({
-			stale: true,
-			message: "stale for test",
-		});
+		expect(runner.inspect().stale).toEqual({ stale: true, message: "stale for test" });
 	});
 });
 
@@ -178,9 +135,7 @@ describe("ExtensionRunner scoped output action", () => {
 	it("injects the runner agent and calling extension ids", async () => {
 		const runner = await createRunner([["sample", () => {}]]);
 		const calls: Array<[string, string, string]> = [];
-		const unboundActions = (
-			runner as unknown as { _actions: ExtensionCoreActions }
-		)._actions;
+		const unboundActions = (runner as unknown as { _actions: ExtensionCoreActions })._actions;
 		runner.bindCore(
 			{
 				...unboundActions,
@@ -200,9 +155,7 @@ describe("ExtensionRunner scoped output action", () => {
 		const runner = await createRunner([["sample", () => {}]]);
 		const failure = new Error("output delivery failed");
 		const reported: ExtensionActionFailure[] = [];
-		const unboundActions = (
-			runner as unknown as { _actions: ExtensionCoreActions }
-		)._actions;
+		const unboundActions = (runner as unknown as { _actions: ExtensionCoreActions })._actions;
 		runner.bindCore(
 			{
 				...unboundActions,
@@ -217,16 +170,9 @@ describe("ExtensionRunner scoped output action", () => {
 			},
 		);
 
-		await expect(
-			runner.createContext("sample").actions.emitOutput("working"),
-		).rejects.toBe(failure);
+		await expect(runner.createContext("sample").actions.emitOutput("working")).rejects.toBe(failure);
 		expect(reported).toEqual([
-			{
-				extensionId: "sample",
-				action: "emitOutput",
-				code: "extension.action_failed",
-				error: failure,
-			},
+			{ extensionId: "sample", action: "emitOutput", code: "extension.action_failed", error: failure },
 		]);
 	});
 });
@@ -235,9 +181,7 @@ describe("ExtensionRunner scoped notification action", () => {
 	it("injects attribution into notifications", async () => {
 		const runner = await createRunner([["sample", () => {}]]);
 		const calls: Array<[string, string, string]> = [];
-		const unboundActions = (
-			runner as unknown as { _actions: ExtensionCoreActions }
-		)._actions;
+		const unboundActions = (runner as unknown as { _actions: ExtensionCoreActions })._actions;
 		runner.bindCore(
 			{
 				...unboundActions,
@@ -257,9 +201,7 @@ describe("ExtensionRunner scoped notification action", () => {
 		const runner = await createRunner([["sample", () => {}]]);
 		const failure = new Error("notification delivery failed");
 		const reported: ExtensionActionFailure[] = [];
-		const unboundActions = (
-			runner as unknown as { _actions: ExtensionCoreActions }
-		)._actions;
+		const unboundActions = (runner as unknown as { _actions: ExtensionCoreActions })._actions;
 		runner.bindCore(
 			{
 				...unboundActions,
@@ -274,16 +216,9 @@ describe("ExtensionRunner scoped notification action", () => {
 			},
 		);
 
-		await expect(
-			runner.createContext("sample").actions.notify("ready"),
-		).rejects.toBe(failure);
+		await expect(runner.createContext("sample").actions.notify("ready")).rejects.toBe(failure);
 		expect(reported).toEqual([
-			{
-				extensionId: "sample",
-				action: "notify",
-				code: "extension.action_failed",
-				error: failure,
-			},
+			{ extensionId: "sample", action: "notify", code: "extension.action_failed", error: failure },
 		]);
 	});
 });
@@ -292,18 +227,10 @@ describe("ExtensionRunner scoped status actions", () => {
 	it("injects attribution into status mutations", async () => {
 		const runner = await createRunner([["sample", () => {}]]);
 		const calls: Array<
-			| [
-					"set",
-					string,
-					string,
-					string,
-					{ text: string; progress?: { completed: number; total?: number } },
-			  ]
+			| ["set", string, string, string, { text: string; progress?: { completed: number; total?: number } }]
 			| ["clear", string, string, string]
 		> = [];
-		const unboundActions = (
-			runner as unknown as { _actions: ExtensionCoreActions }
-		)._actions;
+		const unboundActions = (runner as unknown as { _actions: ExtensionCoreActions })._actions;
 		runner.bindCore(
 			{
 				...unboundActions,
@@ -311,43 +238,25 @@ describe("ExtensionRunner scoped status actions", () => {
 					agentId: string,
 					extensionId: string,
 					key: string,
-					status: {
-						text: string;
-						progress?: { completed: number; total?: number };
-					},
+					status: { text: string; progress?: { completed: number; total?: number } },
 				) => {
 					calls.push(["set", agentId, extensionId, key, status]);
 				},
-				clearStatus: async (
-					agentId: string,
-					extensionId: string,
-					key: string,
-				) => {
+				clearStatus: async (agentId: string, extensionId: string, key: string) => {
 					calls.push(["clear", agentId, extensionId, key]);
 				},
 			},
 			{},
 		);
 
-		await runner
-			.createContext("sample")
-			.actions.setStatus("index", { text: "Scanning" });
+		await runner.createContext("sample").actions.setStatus("index", { text: "Scanning" });
 		const actions = runner.createContext("sample").actions;
-		await actions.setStatus("index", {
-			text: "Building",
-			progress: { completed: 2, total: 5 },
-		});
+		await actions.setStatus("index", { text: "Building", progress: { completed: 2, total: 5 } });
 		await actions.clearStatus("index");
 
 		expect(calls).toEqual([
 			["set", "agent", "sample", "index", { text: "Scanning" }],
-			[
-				"set",
-				"agent",
-				"sample",
-				"index",
-				{ text: "Building", progress: { completed: 2, total: 5 } },
-			],
+			["set", "agent", "sample", "index", { text: "Building", progress: { completed: 2, total: 5 } }],
 			["clear", "agent", "sample", "index"],
 		]);
 	});
@@ -356,9 +265,7 @@ describe("ExtensionRunner scoped status actions", () => {
 		const runner = await createRunner([["sample", () => {}]]);
 		const failure = new Error("status delivery failed");
 		const reported: ExtensionActionFailure[] = [];
-		const unboundActions = (
-			runner as unknown as { _actions: ExtensionCoreActions }
-		)._actions;
+		const unboundActions = (runner as unknown as { _actions: ExtensionCoreActions })._actions;
 		runner.bindCore(
 			{
 				...unboundActions,
@@ -377,37 +284,24 @@ describe("ExtensionRunner scoped status actions", () => {
 		);
 		const actions = runner.createContext("sample").actions;
 
-		await expect(actions.setStatus("index", { text: "Scanning" })).rejects.toBe(
-			failure,
-		);
+		await expect(actions.setStatus("index", { text: "Scanning" })).rejects.toBe(failure);
 		await expect(actions.clearStatus("index")).rejects.toBe(failure);
-		expect(reported.map(({ action }) => action)).toEqual([
-			"setStatus",
-			"clearStatus",
-		]);
+		expect(reported.map(({ action }) => action)).toEqual(["setStatus", "clearStatus"]);
 	});
 });
 
 describe("ExtensionRunner scoped message actions", () => {
 	it("injects attribution and returns the entry id", async () => {
 		const runner = await createRunner([["sample", () => {}]]);
-		const calls: Array<
-			[string, string, { kind: string; title?: string; content: string }]
-		> = [];
-		const unboundActions = (
-			runner as unknown as { _actions: ExtensionCoreActions }
-		)._actions;
+		const calls: Array<[string, string, { kind: string; title?: string; content: string }]> = [];
+		const unboundActions = (runner as unknown as { _actions: ExtensionCoreActions })._actions;
 		runner.bindCore(
 			{
 				...unboundActions,
 				publishMessage: async (
 					agentId: string,
 					extensionId: string,
-					message: {
-						kind: "text" | "markdown" | "code";
-						title?: string;
-						content: string;
-					},
+					message: { kind: "text" | "markdown" | "code"; title?: string; content: string },
 				) => {
 					calls.push([agentId, extensionId, message]);
 					return { entryId: `entry-${calls.length}` };
@@ -417,25 +311,15 @@ describe("ExtensionRunner scoped message actions", () => {
 		);
 
 		await expect(
-			runner
-				.createContext("sample")
-				.actions.publishMessage({ kind: "text", content: "plain" }),
+			runner.createContext("sample").actions.publishMessage({ kind: "text", content: "plain" }),
 		).resolves.toEqual({ entryId: "entry-1" });
 		await expect(
-			runner.createContext("sample").actions.publishMessage({
-				kind: "markdown",
-				title: "Summary",
-				content: "Done.",
-			}),
+			runner.createContext("sample").actions.publishMessage({ kind: "markdown", title: "Summary", content: "Done." }),
 		).resolves.toEqual({ entryId: "entry-2" });
 
 		expect(calls).toEqual([
 			["agent", "sample", { kind: "text", content: "plain" }],
-			[
-				"agent",
-				"sample",
-				{ kind: "markdown", title: "Summary", content: "Done." },
-			],
+			["agent", "sample", { kind: "markdown", title: "Summary", content: "Done." }],
 		]);
 	});
 
@@ -443,9 +327,7 @@ describe("ExtensionRunner scoped message actions", () => {
 		const runner = await createRunner([["sample", () => {}]]);
 		const failure = new Error("message persistence failed");
 		const reported: ExtensionActionFailure[] = [];
-		const unboundActions = (
-			runner as unknown as { _actions: ExtensionCoreActions }
-		)._actions;
+		const unboundActions = (runner as unknown as { _actions: ExtensionCoreActions })._actions;
 		runner.bindCore(
 			{
 				...unboundActions,
@@ -461,9 +343,7 @@ describe("ExtensionRunner scoped message actions", () => {
 		);
 
 		await expect(
-			runner
-				.createContext("sample")
-				.actions.publishMessage({ kind: "text", content: "plain" }),
+			runner.createContext("sample").actions.publishMessage({ kind: "text", content: "plain" }),
 		).rejects.toBe(failure);
 		expect(reported.map(({ action }) => action)).toEqual(["publishMessage"]);
 	});
@@ -472,23 +352,15 @@ describe("ExtensionRunner scoped message actions", () => {
 describe("ExtensionRunner scoped diagnostic actions", () => {
 	it("injects attribution into reports", async () => {
 		const runner = await createRunner([["sample", () => {}]]);
-		const calls: Array<
-			[string, string, { severity: string; code: string; message: string }]
-		> = [];
-		const unboundActions = (
-			runner as unknown as { _actions: ExtensionCoreActions }
-		)._actions;
+		const calls: Array<[string, string, { severity: string; code: string; message: string }]> = [];
+		const unboundActions = (runner as unknown as { _actions: ExtensionCoreActions })._actions;
 		runner.bindCore(
 			{
 				...unboundActions,
 				reportDiagnostic: async (
 					agentId: string,
 					extensionId: string,
-					draft: {
-						severity: "warning" | "error";
-						code: string;
-						message: string;
-					},
+					draft: { severity: "warning" | "error"; code: string; message: string },
 				) => {
 					calls.push([agentId, extensionId, draft]);
 				},
@@ -496,28 +368,16 @@ describe("ExtensionRunner scoped diagnostic actions", () => {
 			{},
 		);
 
-		await runner.createContext("sample").actions.reportDiagnostic({
-			severity: "error",
-			code: "scan.failed",
-			message: "Scan failed",
-		});
-		await runner.createContext("sample").actions.reportDiagnostic({
-			severity: "warning",
-			code: "cache.stale",
-			message: "Cache is stale",
-		});
+		await runner
+			.createContext("sample")
+			.actions.reportDiagnostic({ severity: "error", code: "scan.failed", message: "Scan failed" });
+		await runner
+			.createContext("sample")
+			.actions.reportDiagnostic({ severity: "warning", code: "cache.stale", message: "Cache is stale" });
 
 		expect(calls).toEqual([
-			[
-				"agent",
-				"sample",
-				{ severity: "error", code: "scan.failed", message: "Scan failed" },
-			],
-			[
-				"agent",
-				"sample",
-				{ severity: "warning", code: "cache.stale", message: "Cache is stale" },
-			],
+			["agent", "sample", { severity: "error", code: "scan.failed", message: "Scan failed" }],
+			["agent", "sample", { severity: "warning", code: "cache.stale", message: "Cache is stale" }],
 		]);
 	});
 
@@ -525,9 +385,7 @@ describe("ExtensionRunner scoped diagnostic actions", () => {
 		const runner = await createRunner([["sample", () => {}]]);
 		const failure = new Error("diagnostic pipeline failed");
 		const reported: ExtensionActionFailure[] = [];
-		const unboundActions = (
-			runner as unknown as { _actions: ExtensionCoreActions }
-		)._actions;
+		const unboundActions = (runner as unknown as { _actions: ExtensionCoreActions })._actions;
 		runner.bindCore(
 			{
 				...unboundActions,
@@ -543,11 +401,9 @@ describe("ExtensionRunner scoped diagnostic actions", () => {
 		);
 
 		await expect(
-			runner.createContext("sample").actions.reportDiagnostic({
-				severity: "warning",
-				code: "cache.stale",
-				message: "Cache is stale",
-			}),
+			runner
+				.createContext("sample")
+				.actions.reportDiagnostic({ severity: "warning", code: "cache.stale", message: "Cache is stale" }),
 		).rejects.toBe(failure);
 		expect(reported.map(({ action }) => action)).toEqual(["reportDiagnostic"]);
 	});
@@ -614,10 +470,7 @@ describe("ExtensionRunner interceptors", () => {
 				"first",
 				(api) => {
 					api.intercept("context", (event) => ({
-						messages: [
-							...event.messages,
-							{ role: "user", content: "first", timestamp: 1 },
-						],
+						messages: [...event.messages, { role: "user", content: "first", timestamp: 1 }],
 					}));
 				},
 			],
@@ -642,27 +495,16 @@ describe("ExtensionRunner interceptors", () => {
 				(api) => {
 					api.intercept("context", (event) => {
 						lastMessages = event.messages;
-						return {
-							messages: [
-								...event.messages,
-								{ role: "user", content: "last", timestamp: 2 },
-							],
-						};
+						return { messages: [...event.messages, { role: "user", content: "last", timestamp: 2 }] };
 					});
 				},
 			],
 		]);
 		const base = { role: "user" as const, content: "base", timestamp: 0 };
 
-		const run = await runner.interceptWithDiagnostics({
-			type: "context",
-			messages: [base],
-		});
+		const run = await runner.interceptWithDiagnostics({ type: "context", messages: [base] });
 
-		expect(lastMessages).toEqual([
-			base,
-			{ role: "user", content: "first", timestamp: 1 },
-		]);
+		expect(lastMessages).toEqual([base, { role: "user", content: "first", timestamp: 1 }]);
 		expect(run.result).toEqual({
 			messages: [
 				base,
@@ -670,9 +512,7 @@ describe("ExtensionRunner interceptors", () => {
 				{ role: "user", content: "last", timestamp: 2 },
 			],
 		});
-		expect(run.diagnostics.map((diagnostic) => diagnostic.extensionId)).toEqual(
-			["broken-a", "broken-b"],
-		);
+		expect(run.diagnostics.map((diagnostic) => diagnostic.extensionId)).toEqual(["broken-a", "broken-b"]);
 	});
 
 	it("keeps tool_result patches around a failed handler", async () => {
@@ -763,9 +603,7 @@ describe("ExtensionRunner interceptors", () => {
 				},
 			],
 		]);
-		const images = [
-			{ type: "image" as const, data: "aGk=", mimeType: "image/png" },
-		];
+		const images = [{ type: "image" as const, data: "aGk=", mimeType: "image/png" }];
 
 		const run = await runner.interceptInput({
 			type: "input",
@@ -798,10 +636,7 @@ describe("ExtensionRunner interceptors", () => {
 			[
 				"policy",
 				(api) => {
-					api.intercept("input", () => ({
-						block: true,
-						reason: "Input is denied.",
-					}));
+					api.intercept("input", () => ({ block: true, reason: "Input is denied." }));
 				},
 			],
 			[
@@ -822,12 +657,7 @@ describe("ExtensionRunner interceptors", () => {
 			text: "base",
 		});
 
-		expect(run).toEqual({
-			kind: "block",
-			reason: "Input is denied.",
-			blockedBy: "policy",
-			diagnostics: [],
-		});
+		expect(run).toEqual({ kind: "block", reason: "Input is denied.", blockedBy: "policy", diagnostics: [] });
 		expect(lastCalled).toBe(false);
 	});
 
@@ -885,12 +715,7 @@ describe("ExtensionRunner interceptors", () => {
 		]);
 
 		await expect(
-			runner.interceptInput({
-				type: "input",
-				source: { kind: "human" },
-				targetAgentId: "agent-1",
-				text: "base",
-			}),
+			runner.interceptInput({ type: "input", source: { kind: "human" }, targetAgentId: "agent-1", text: "base" }),
 		).resolves.toEqual({ kind: "pass", diagnostics: [] });
 	});
 
@@ -955,10 +780,7 @@ describe("ExtensionRunner before_provider_request pipeline", () => {
 				"first",
 				(api) => {
 					api.intercept("before_provider_request", () => ({
-						streamOptions: {
-							timeoutMs: 5000,
-							headers: { legacy: undefined, "X-A": "1" },
-						},
+						streamOptions: { timeoutMs: 5000, headers: { legacy: undefined, "X-A": "1" } },
 					}));
 				},
 			],
@@ -979,12 +801,7 @@ describe("ExtensionRunner before_provider_request pipeline", () => {
 		});
 
 		expect(seenByLast).toEqual([{ "X-A": "1" }]);
-		expect(run.result).toEqual({
-			streamOptions: {
-				timeoutMs: 5000,
-				headers: { legacy: undefined, "X-A": "2" },
-			},
-		});
+		expect(run.result).toEqual({ streamOptions: { timeoutMs: 5000, headers: { legacy: undefined, "X-A": "2" } } });
 		expect(run.diagnostics).toEqual([]);
 	});
 
@@ -1001,28 +818,19 @@ describe("ExtensionRunner before_provider_request pipeline", () => {
 			[
 				"stamp",
 				(api) => {
-					api.intercept("before_provider_request", () => ({
-						streamOptions: { metadata: { audited: true } },
-					}));
+					api.intercept("before_provider_request", () => ({ streamOptions: { metadata: { audited: true } } }));
 				},
 			],
 		]);
 
-		const run = await runner.interceptWithDiagnostics({
-			...baseEvent,
-			streamOptions: {},
-		});
+		const run = await runner.interceptWithDiagnostics({ ...baseEvent, streamOptions: {} });
 
-		expect(run.result).toEqual({
-			streamOptions: { metadata: { audited: true } },
-		});
+		expect(run.result).toEqual({ streamOptions: { metadata: { audited: true } } });
 		expect(run.diagnostics).toEqual([
 			expect.objectContaining({
 				code: "extension.handler_failed",
 				extensionId: "broken",
-				message: expect.stringContaining(
-					"handler 'before_provider_request' failed",
-				),
+				message: expect.stringContaining("handler 'before_provider_request' failed"),
 			}),
 		]);
 	});
@@ -1037,10 +845,7 @@ describe("ExtensionRunner before_provider_request pipeline", () => {
 			],
 		]);
 
-		const run = await runner.interceptWithDiagnostics({
-			...baseEvent,
-			streamOptions: { timeoutMs: 1000 },
-		});
+		const run = await runner.interceptWithDiagnostics({ ...baseEvent, streamOptions: { timeoutMs: 1000 } });
 
 		expect(run.result).toBe(undefined);
 	});

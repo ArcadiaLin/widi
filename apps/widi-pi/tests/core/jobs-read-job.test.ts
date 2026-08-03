@@ -5,19 +5,11 @@ import { createReadJobToolDefinition } from "../../src/core/tools/jobs/read-job.
 const readJob = createReadJobToolDefinition();
 
 function contextWith(table?: BackgroundJobTable) {
-	return {
-		signal: undefined,
-		onUpdate: undefined,
-		extension: undefined,
-		human: undefined,
-		backgroundJobTable: table,
-	};
+	return { signal: undefined, onUpdate: undefined, extension: undefined, human: undefined, backgroundJobTable: table };
 }
 
 const textOf = (result: { content: Array<{ type: string; text?: string }> }) =>
-	result.content
-		.map((part) => (part.type === "text" ? part.text : ""))
-		.join("");
+	result.content.map((part) => (part.type === "text" ? part.text : "")).join("");
 
 describe("read_job tool", () => {
 	it("returns the live output tail of backgrounded jobs, defaulting to all", async () => {
@@ -70,11 +62,7 @@ describe("read_job tool", () => {
 		// Pre-t0 sync window: not observable, so not readable.
 		const running = table.create({ toolCallId: "call-2", toolName: "bash" });
 
-		const result = await readJob.execute(
-			"call-3",
-			{ jobIds: [settled.id, running.id, "job-99"] },
-			contextWith(table),
-		);
+		const result = await readJob.execute("call-3", { jobIds: [settled.id, running.id, "job-99"] }, contextWith(table));
 
 		expect(result.details).toEqual({
 			jobs: [
@@ -83,9 +71,7 @@ describe("read_job tool", () => {
 				{ jobId: "job-99", state: "unknown" },
 			],
 		});
-		expect(textOf(result)).toContain(
-			"not tracked (already finished, not backgrounded, or never started)",
-		);
+		expect(textOf(result)).toContain("not tracked (already finished, not backgrounded, or never started)");
 	});
 
 	it("reports tail and progress-buffer drops separately", async () => {
@@ -94,11 +80,7 @@ describe("read_job tool", () => {
 		table.background(job.id);
 		job.output.append("abcdef");
 
-		const result = await readJob.execute(
-			"call-2",
-			{ jobIds: [job.id] },
-			contextWith(table),
-		);
+		const result = await readJob.execute("call-2", { jobIds: [job.id] }, contextWith(table));
 
 		expect(result.details.jobs[0]).toMatchObject({
 			jobId: job.id,
@@ -120,21 +102,13 @@ describe("read_job tool", () => {
 		});
 		table.background(job.id);
 
-		const result = await readJob.execute(
-			"call-2",
-			{ jobIds: [job.id] },
-			contextWith(table),
-		);
+		const result = await readJob.execute("call-2", { jobIds: [job.id] }, contextWith(table));
 
 		expect(result.details.jobs[0]).toMatchObject({
 			jobId: job.id,
 			report: {
 				revision: 1,
-				value: {
-					kind: "test.plan",
-					summary: "Executing plan",
-					progress: { completed: 2, total: 4 },
-				},
+				value: { kind: "test.plan", summary: "Executing plan", progress: { completed: 2, total: 4 } },
 			},
 		});
 		expect(textOf(result)).toContain("Current report: Executing plan · 2/4");

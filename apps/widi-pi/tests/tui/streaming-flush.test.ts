@@ -2,11 +2,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import type { OrchestratorEvent } from "../../src/core/types.ts";
 import { EventProjector } from "../../src/tui/event-projector.ts";
-import {
-	createTuiApplicationState,
-	setActiveAgent,
-	type TimelineItem,
-} from "../../src/tui/state.ts";
+import { createTuiApplicationState, setActiveAgent, type TimelineItem } from "../../src/tui/state.ts";
 import { flushStreaming } from "../../src/tui/streaming-flush.ts";
 
 describe("streaming flush", () => {
@@ -14,9 +10,7 @@ describe("streaming flush", () => {
 		const state = createTuiApplicationState();
 		const projector = new EventProjector(state);
 		const agent = setActiveAgent(state, "main");
-		projector.apply(
-			harness("main", { type: "message_start", message: assistantMessage("") }),
-		);
+		projector.apply(harness("main", { type: "message_start", message: assistantMessage("") }));
 		const item = assistantItem(agent.timeline);
 		const initialMessage = item.message;
 
@@ -31,9 +25,7 @@ describe("streaming flush", () => {
 
 		expect(flushStreaming(agent)).toBe(true);
 		expect(item.text).toBe("Hello world");
-		expect(item.message?.content).toEqual([
-			{ type: "text", text: "Hello world" },
-		]);
+		expect(item.message?.content).toEqual([{ type: "text", text: "Hello world" }]);
 		expect(agent.pendingAssistantText).toBeUndefined();
 
 		// Idempotent once the buffer is drained.
@@ -44,17 +36,10 @@ describe("streaming flush", () => {
 		const state = createTuiApplicationState();
 		const projector = new EventProjector(state);
 		const agent = setActiveAgent(state, "main");
-		projector.apply(
-			harness("main", { type: "message_start", message: assistantMessage("") }),
-		);
+		projector.apply(harness("main", { type: "message_start", message: assistantMessage("") }));
 		projector.apply(harness("main", textUpdate("draft")));
 
-		projector.apply(
-			harness("main", {
-				type: "message_end",
-				message: assistantMessage("final"),
-			}),
-		);
+		projector.apply(harness("main", { type: "message_end", message: assistantMessage("final") }));
 
 		const item = assistantItem(agent.timeline);
 		expect(item.text).toBe("final");
@@ -66,9 +51,7 @@ describe("streaming flush", () => {
 		const state = createTuiApplicationState();
 		const projector = new EventProjector(state);
 		const agent = setActiveAgent(state, "main");
-		projector.apply(
-			harness("main", { type: "message_start", message: assistantMessage("") }),
-		);
+		projector.apply(harness("main", { type: "message_start", message: assistantMessage("") }));
 		projector.apply(harness("main", textUpdate("before tool")));
 
 		projector.apply(
@@ -88,9 +71,7 @@ describe("streaming flush", () => {
 		const state = createTuiApplicationState();
 		const projector = new EventProjector(state);
 		const agent = setActiveAgent(state, "main");
-		projector.apply(
-			harness("main", { type: "message_start", message: assistantMessage("") }),
-		);
+		projector.apply(harness("main", { type: "message_start", message: assistantMessage("") }));
 		projector.apply(harness("main", textUpdate("after thinking")));
 
 		projector.apply(
@@ -167,9 +148,7 @@ describe("streaming flush", () => {
 		const state = createTuiApplicationState();
 		const projector = new EventProjector(state);
 		const agent = setActiveAgent(state, "main");
-		projector.apply(
-			harness("main", { type: "message_start", message: assistantMessage("") }),
-		);
+		projector.apply(harness("main", { type: "message_start", message: assistantMessage("") }));
 		projector.apply(harness("main", textUpdate("needs input")));
 
 		projector.apply({
@@ -193,23 +172,11 @@ describe("streaming flush", () => {
 		const state = createTuiApplicationState();
 		const projector = new EventProjector(state);
 		const agent = setActiveAgent(state, "main");
-		projector.apply({
-			type: "agent_status_changed",
-			agentId: "main",
-			status: "running",
-			changedAt: timestamp(1),
-		});
-		projector.apply(
-			harness("main", { type: "message_start", message: assistantMessage("") }),
-		);
+		projector.apply({ type: "agent_status_changed", agentId: "main", status: "running", changedAt: timestamp(1) });
+		projector.apply(harness("main", { type: "message_start", message: assistantMessage("") }));
 		projector.apply(harness("main", textUpdate("interrupted tail")));
 
-		projector.apply({
-			type: "agent_status_changed",
-			agentId: "main",
-			status: "idle",
-			changedAt: timestamp(2),
-		});
+		projector.apply({ type: "agent_status_changed", agentId: "main", status: "idle", changedAt: timestamp(2) });
 
 		expect(assistantItem(agent.timeline).text).toBe("interrupted tail");
 		expect(agent.pendingAssistantText).toBeUndefined();
@@ -219,9 +186,7 @@ describe("streaming flush", () => {
 		const state = createTuiApplicationState();
 		const projector = new EventProjector(state);
 		const agent = setActiveAgent(state, "main");
-		projector.apply(
-			harness("main", { type: "message_start", message: assistantMessage("") }),
-		);
+		projector.apply(harness("main", { type: "message_start", message: assistantMessage("") }));
 		projector.apply(harness("main", textUpdate("stale draft")));
 
 		projector.beginHydration("main");
@@ -238,18 +203,11 @@ function harness(
 	return { type: "agent_harness_event", agentId, event };
 }
 
-function textUpdate(
-	text: string,
-): Extract<OrchestratorEvent, { type: "agent_harness_event" }>["event"] {
+function textUpdate(text: string): Extract<OrchestratorEvent, { type: "agent_harness_event" }>["event"] {
 	return {
 		type: "message_update",
 		message: assistantMessage(text),
-		assistantMessageEvent: {
-			type: "text_delta",
-			contentIndex: 0,
-			delta: text,
-			partial: assistantMessage(text),
-		},
+		assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: text, partial: assistantMessage(text) },
 	};
 }
 
@@ -263,11 +221,7 @@ function assistantItem(timeline: readonly TimelineItem[]) {
 
 function toolItem(timeline: readonly TimelineItem[], toolCallId: string) {
 	const item = timeline.find((entry) => entry.type === "tool-execution");
-	if (
-		!item ||
-		item.type !== "tool-execution" ||
-		item.toolCallId !== toolCallId
-	) {
+	if (!item || item.type !== "tool-execution" || item.toolCallId !== toolCallId) {
 		throw new Error("Expected a tool timeline item.");
 	}
 	return item;
@@ -286,13 +240,7 @@ function assistantMessage(text: string): AssistantMessage {
 			cacheRead: 0,
 			cacheWrite: 0,
 			totalTokens: 0,
-			cost: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				total: 0,
-			},
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		stopReason: "stop",
 		timestamp: Date.parse(timestamp(1)),

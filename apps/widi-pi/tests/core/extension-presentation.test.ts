@@ -7,10 +7,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type {
-	ExtensionMessage,
-	ExtensionStatus,
-} from "../../src/core/extension/presentation.ts";
+import type { ExtensionMessage, ExtensionStatus } from "../../src/core/extension/presentation.ts";
 import {
 	cloneExtensionStatus,
 	MAX_EXTENSION_MESSAGE_TABLE_ROWS,
@@ -18,11 +15,7 @@ import {
 	validateExtensionStatus,
 } from "../../src/core/extension/presentation.ts";
 import { EXTENSION_MESSAGE_CUSTOM_TYPE } from "../../src/core/session-manager.ts";
-import {
-	createOrchestrator,
-	MemoryExecutionEnv,
-	requireAgentRecord,
-} from "../helpers/orchestrator.ts";
+import { createOrchestrator, MemoryExecutionEnv, requireAgentRecord } from "../helpers/orchestrator.ts";
 
 describe("validateExtensionMessage", () => {
 	it("keeps the shape of every kind it admits", () => {
@@ -58,15 +51,8 @@ describe("validateExtensionMessage", () => {
 	// Rebuilding the top-level object was enough while every kind was flat.
 	// The arrays are the part an extension can still reach afterwards.
 	it("returns a copy detached down to the cells and fields", () => {
-		const table = {
-			kind: "table" as const,
-			columns: [{ label: "Path" }],
-			rows: [["src/a.ts"]],
-		};
-		const fields = {
-			kind: "fields" as const,
-			fields: [{ label: "Indexed", value: "672" }],
-		};
+		const table = { kind: "table" as const, columns: [{ label: "Path" }], rows: [["src/a.ts"]] };
+		const fields = { kind: "fields" as const, fields: [{ label: "Indexed", value: "672" }] };
 
 		const validatedTable = validateExtensionMessage(table);
 		const validatedFields = validateExtensionMessage(fields);
@@ -104,10 +90,7 @@ describe("validateExtensionMessage", () => {
 		let eventWasFrozen = false;
 		let downstreamMessage: ExtensionMessage | undefined;
 		orchestrator.subscribe((event) => {
-			if (
-				event.type !== "extension_message_published" ||
-				event.message.kind !== "table"
-			) {
+			if (event.type !== "extension_message_published" || event.message.kind !== "table") {
 				return;
 			}
 			eventWasFrozen = Object.isFrozen(event);
@@ -119,11 +102,7 @@ describe("validateExtensionMessage", () => {
 				// Runtime immutability is the behavior under test.
 			}
 			try {
-				(
-					event as unknown as {
-						message: ExtensionMessage;
-					}
-				).message = { kind: "text", content: "forged" };
+				(event as unknown as { message: ExtensionMessage }).message = { kind: "text", content: "forged" };
 				envelopeMutationSucceeded = true;
 			} catch {
 				// Runtime immutability is the behavior under test.
@@ -137,27 +116,20 @@ describe("validateExtensionMessage", () => {
 		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
 		if (!runner) throw new Error("Expected extension runner.");
 
-		await runner.createContext("sample").actions.publishMessage({
-			kind: "table",
-			columns: [{ label: "Path" }],
-			rows: [["original"]],
-		});
+		await runner
+			.createContext("sample")
+			.actions.publishMessage({ kind: "table", columns: [{ label: "Path" }], rows: [["original"]] });
 
 		const tree = await orchestrator.getAgentSessionTree(agentId);
 		const entry = tree.entries.find(
-			(candidate) =>
-				candidate.type === "custom" &&
-				candidate.customType === EXTENSION_MESSAGE_CUSTOM_TYPE,
+			(candidate) => candidate.type === "custom" && candidate.customType === EXTENSION_MESSAGE_CUSTOM_TYPE,
 		);
 		expect(eventWasFrozen).toBe(true);
 		expect(nestedMutationSucceeded).toBe(false);
 		expect(envelopeMutationSucceeded).toBe(false);
 		expect(Object.isFrozen(downstreamMessage)).toBe(true);
 		expect(entry?.type === "custom" && Object.isFrozen(entry.data)).toBe(true);
-		expect(downstreamMessage).toMatchObject({
-			kind: "table",
-			rows: [["original"]],
-		});
+		expect(downstreamMessage).toMatchObject({ kind: "table", rows: [["original"]] });
 		expect(JSON.stringify(tree)).toContain(EXTENSION_MESSAGE_CUSTOM_TYPE);
 		expect(JSON.stringify(tree)).toContain("original");
 		expect(JSON.stringify(tree)).not.toContain("forged");
@@ -170,23 +142,13 @@ describe("validateExtensionMessage", () => {
 		const sparseFields = new Array<{ label: string; value: string }>(1);
 		const messages: ExtensionMessage[] = [
 			{ kind: "table", columns: sparseColumns, rows: [] },
-			{
-				kind: "table",
-				columns: [{ label: "Path" }],
-				rows: sparseRows,
-			},
-			{
-				kind: "table",
-				columns: [{ label: "Path" }],
-				rows: [sparseCells],
-			},
+			{ kind: "table", columns: [{ label: "Path" }], rows: sparseRows },
+			{ kind: "table", columns: [{ label: "Path" }], rows: [sparseCells] },
 			{ kind: "fields", fields: sparseFields },
 		];
 
 		for (const message of messages) {
-			expect(() => validateExtensionMessage(message)).toThrow(
-				"must not contain empty slots",
-			);
+			expect(() => validateExtensionMessage(message)).toThrow("must not contain empty slots");
 		}
 	});
 
@@ -198,9 +160,7 @@ describe("validateExtensionMessage", () => {
 				rows: [["src/a.ts", ""]],
 			}),
 		).toMatchObject({ rows: [["src/a.ts", ""]] });
-		expect(() =>
-			validateExtensionMessage({ kind: "table", columns: [], rows: [] }),
-		).toThrow(TypeError);
+		expect(() => validateExtensionMessage({ kind: "table", columns: [], rows: [] })).toThrow(TypeError);
 	});
 
 	// A ragged row leaves the renderer guessing which column a cell belongs to,
@@ -216,40 +176,22 @@ describe("validateExtensionMessage", () => {
 	});
 
 	it("bounds columns, rows, cells and fields", () => {
-		const wideColumns = Array.from({ length: 13 }, (_, index) => ({
-			label: `c${index}`,
-		}));
-		expect(() =>
-			validateExtensionMessage({
-				kind: "table",
-				columns: wideColumns,
-				rows: [],
-			}),
-		).toThrow(RangeError);
+		const wideColumns = Array.from({ length: 13 }, (_, index) => ({ label: `c${index}` }));
+		expect(() => validateExtensionMessage({ kind: "table", columns: wideColumns, rows: [] })).toThrow(RangeError);
 		expect(() =>
 			validateExtensionMessage({
 				kind: "table",
 				columns: [{ label: "Path" }],
-				rows: Array.from(
-					{ length: MAX_EXTENSION_MESSAGE_TABLE_ROWS + 1 },
-					() => ["src/a.ts"],
-				),
+				rows: Array.from({ length: MAX_EXTENSION_MESSAGE_TABLE_ROWS + 1 }, () => ["src/a.ts"]),
 			}),
 		).toThrow(RangeError);
 		expect(() =>
-			validateExtensionMessage({
-				kind: "table",
-				columns: [{ label: "Path" }],
-				rows: [["é".repeat(513)]],
-			}),
+			validateExtensionMessage({ kind: "table", columns: [{ label: "Path" }], rows: [["é".repeat(513)]] }),
 		).toThrow(RangeError);
 		expect(() =>
 			validateExtensionMessage({
 				kind: "fields",
-				fields: Array.from({ length: 65 }, (_, index) => ({
-					label: `f${index}`,
-					value: "v",
-				})),
+				fields: Array.from({ length: 65 }, (_, index) => ({ label: `f${index}`, value: "v" })),
 			}),
 		).toThrow(RangeError);
 	});
@@ -261,9 +203,7 @@ describe("validateExtensionMessage", () => {
 			validateExtensionMessage({
 				kind: "table",
 				columns: [{ label: "Path" }],
-				rows: Array.from({ length: MAX_EXTENSION_MESSAGE_TABLE_ROWS }, () => [
-					"x".repeat(1_000),
-				]),
+				rows: Array.from({ length: MAX_EXTENSION_MESSAGE_TABLE_ROWS }, () => ["x".repeat(1_000)]),
 			}),
 		).toThrow(RangeError);
 	});
@@ -274,11 +214,7 @@ describe("validateExtensionMessage", () => {
 			{ kind: "code", content: "x", language: "type script" },
 			{ kind: "diff", patch: "" },
 			{ kind: "diff", path: "   ", patch: "@@" },
-			{
-				kind: "banner",
-				severity: "critical",
-				content: "x",
-			} as unknown as ExtensionMessage,
+			{ kind: "banner", severity: "critical", content: "x" } as unknown as ExtensionMessage,
 			{ kind: "fields", fields: [] },
 			{ kind: "fields", fields: [{ label: "  ", value: "v" }] },
 		];
@@ -303,19 +239,13 @@ describe("validateExtensionStatus", () => {
 	});
 
 	it("defaults the placement fields to absent", () => {
-		expect(validateExtensionStatus({ text: "Indexing" })).toEqual({
-			text: "Indexing",
-		});
+		expect(validateExtensionStatus({ text: "Indexing" })).toEqual({ text: "Indexing" });
 	});
 
 	// One user-perceived character, which is not one code point: a flag or a
 	// skin-toned emoji is a single icon.
 	it("admits a multi-code-point grapheme as one icon", () => {
-		expect(
-			validateExtensionStatus({ text: "Busy", icon: "👍🏽" }),
-		).toMatchObject({
-			icon: "👍🏽",
-		});
+		expect(validateExtensionStatus({ text: "Busy", icon: "👍🏽" })).toMatchObject({ icon: "👍🏽" });
 	});
 
 	it("rejects an unusable region, icon or tone", () => {
@@ -333,13 +263,8 @@ describe("validateExtensionStatus", () => {
 	});
 
 	it("carries the placement fields through a clone", () => {
-		expect(
-			cloneExtensionStatus({
-				text: "Indexing",
-				region: "agent-strip",
-				icon: "◈",
-				tone: "success",
-			}),
-		).toMatchObject({ region: "agent-strip", icon: "◈", tone: "success" });
+		expect(cloneExtensionStatus({ text: "Indexing", region: "agent-strip", icon: "◈", tone: "success" })).toMatchObject(
+			{ region: "agent-strip", icon: "◈", tone: "success" },
+		);
 	});
 });

@@ -1,8 +1,5 @@
 import { type Static, Type } from "typebox";
-import {
-	type BackgroundJobReportSnapshot,
-	backgroundJobToolLabel,
-} from "../../background/index.ts";
+import { type BackgroundJobReportSnapshot, backgroundJobToolLabel } from "../../background/index.ts";
 import type { ToolDefinition } from "../types.ts";
 
 const readJobSchema = Type.Object({
@@ -68,10 +65,7 @@ export interface ReadJobDetails {
  * the job's result: the full output still arrives as the job's background job
  * result message when it finishes.
  */
-export function createReadJobToolDefinition(): ToolDefinition<
-	typeof readJobSchema,
-	ReadJobDetails
-> {
+export function createReadJobToolDefinition(): ToolDefinition<typeof readJobSchema, ReadJobDetails> {
 	return {
 		name: "read_job",
 		label: "read_job",
@@ -83,12 +77,7 @@ export function createReadJobToolDefinition(): ToolDefinition<
 			const table = context.backgroundJobTable;
 			if (!table) {
 				return {
-					content: [
-						{
-							type: "text",
-							text: "No background job registry is available, so there is nothing to read.",
-						},
-					],
+					content: [{ type: "text", text: "No background job registry is available, so there is nothing to read." }],
 					details: { jobs: [] },
 				};
 			}
@@ -102,10 +91,7 @@ export function createReadJobToolDefinition(): ToolDefinition<
 					.filter((job) => job.phase === "backgrounded")
 					.map((job) => [job.id, job]),
 			);
-			const requestedIds =
-				jobIds && jobIds.length > 0
-					? Array.from(new Set(jobIds))
-					: Array.from(live.keys());
+			const requestedIds = jobIds && jobIds.length > 0 ? Array.from(new Set(jobIds)) : Array.from(live.keys());
 
 			const jobs = requestedIds.map((id): ReadJobJobStatus => {
 				const job = live.get(id);
@@ -116,24 +102,17 @@ export function createReadJobToolDefinition(): ToolDefinition<
 							name: job.name,
 							description: job.description,
 							state: "running",
-							...(job.origin.kind === "external"
-								? { settlerAgentId: job.origin.settlerId }
-								: undefined),
+							...(job.origin.kind === "external" ? { settlerAgentId: job.origin.settlerId } : undefined),
 							startedAt: job.startedAt,
 							totalBytesSeen: job.output.totalBytesSeen,
 							tailDroppedBytes: job.output.tailDroppedBytes,
 							progressDroppedBytes: job.output.progressDroppedBytes,
-							...(job.report === undefined
-								? undefined
-								: { report: job.report }),
+							...(job.report === undefined ? undefined : { report: job.report }),
 							output: job.output.read(),
 						}
 					: { jobId: id, state: "unknown" };
 			});
-			return {
-				content: [{ type: "text", text: formatReadSummary(jobs) }],
-				details: { jobs },
-			};
+			return { content: [{ type: "text", text: formatReadSummary(jobs) }], details: { jobs } };
 		},
 	};
 }
@@ -162,9 +141,7 @@ function formatReadSummary(jobs: readonly ReadJobJobStatus[]): string {
 	return `${sections.join("\n\n")}\n\nThis is a live tail, not the final result: each finished job's output arrives as a separate background job result message.`;
 }
 
-function formatReportSummary(
-	report: BackgroundJobReportSnapshot | undefined,
-): string | undefined {
+function formatReportSummary(report: BackgroundJobReportSnapshot | undefined): string | undefined {
 	if (!report) return undefined;
 	const parts: string[] = [];
 	if (report.value.summary) parts.push(report.value.summary);
@@ -175,7 +152,5 @@ function formatReportSummary(
 				: `${report.value.progress.completed}/${report.value.progress.total}`,
 		);
 	}
-	return parts.length > 0
-		? parts.join(" · ")
-		: `${report.value.kind} v${report.value.schemaVersion}`;
+	return parts.length > 0 ? parts.join(" · ") : `${report.value.kind} v${report.value.schemaVersion}`;
 }

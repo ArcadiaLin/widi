@@ -3,24 +3,12 @@ import type { AgentProfile, AgentProfileSource } from "../agent-profile.js";
 import { toAgentProfileReference } from "../agent-profile.js";
 import type { OwnerAttachment } from "../background/index.ts";
 import type { OrchestratorDiagnostic } from "../diagnostics.ts";
-import type {
-	ExtensionRunner,
-	ExtensionRunnerSnapshot,
-} from "../extension/index.ts";
+import type { ExtensionRunner, ExtensionRunnerSnapshot } from "../extension/index.ts";
 import type { ResourceSource } from "../resource-loader.js";
 import type { AgentSessionMetadata } from "../session-manager.ts";
 import type { ProjectContextFile } from "../system-prompt.ts";
-import type {
-	ResolvedAgentHarnessTool,
-	ToolAdapterContext,
-} from "../tool-registry.ts";
-import type {
-	AgentActivitySnapshot,
-	AgentContextUsage,
-	AgentId,
-	AgentToolsSnapshot,
-	RuntimeModel,
-} from "../types.ts";
+import type { ResolvedAgentHarnessTool, ToolAdapterContext } from "../tool-registry.ts";
+import type { AgentActivitySnapshot, AgentContextUsage, AgentId, AgentToolsSnapshot, RuntimeModel } from "../types.ts";
 
 /**
  * The serializable identity of a live agent's profile, for display and for the
@@ -32,10 +20,7 @@ import type {
  * `unavailable` gone, every profile here has actually been resolved.
  */
 export interface AgentProfileRecordReference {
-	readonly reference: {
-		readonly id: string;
-		readonly label?: string;
-	};
+	readonly reference: { readonly id: string; readonly label?: string };
 	readonly source: AgentProfileSource;
 	readonly entryId: string;
 }
@@ -61,10 +46,7 @@ export interface AgentSystemPromptFacts {
 }
 
 /** The concrete AgentHarness instantiation used by every WIDI agent. */
-export type WidiAgentHarness = AgentHarness<
-	ToolAdapterContext,
-	ResolvedAgentHarnessTool
->;
+export type WidiAgentHarness = AgentHarness<ToolAdapterContext, ResolvedAgentHarnessTool>;
 
 /**
  * Per-agent settings the harness cannot answer after construction.
@@ -72,21 +54,13 @@ export type WidiAgentHarness = AgentHarness<
  * This is a construction snapshot, not a second SettingManager.
  */
 export interface AgentSettings {
-	readonly retry: {
-		readonly enabled: boolean;
-		readonly maxRetries: number;
-		readonly baseDelayMs: number;
-	};
+	readonly retry: { readonly enabled: boolean; readonly maxRetries: number; readonly baseDelayMs: number };
 	readonly providerRetry: {
 		readonly timeoutMs?: number;
 		readonly maxRetries?: number;
 		readonly maxRetryDelayMs: number;
 	};
-	readonly compaction: {
-		readonly enabled: boolean;
-		readonly reserveTokens: number;
-		readonly keepRecentTokens: number;
-	};
+	readonly compaction: { readonly enabled: boolean; readonly reserveTokens: number; readonly keepRecentTokens: number };
 	readonly blockImages: boolean;
 }
 
@@ -147,9 +121,5 @@ export function createAgentProfileRecordReference(resolved: {
 	readonly source: AgentProfileSource;
 	readonly entryId: string;
 }): AgentProfileRecordReference {
-	return {
-		reference: toAgentProfileReference(resolved.profile),
-		source: resolved.source,
-		entryId: resolved.entryId,
-	};
+	return { reference: toAgentProfileReference(resolved.profile), source: resolved.source, entryId: resolved.entryId };
 }

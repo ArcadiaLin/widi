@@ -1,10 +1,6 @@
 import { setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
-import {
-	renderDeps,
-	renderTimelineItem,
-	type TimelineRenderContext,
-} from "../../src/tui/components/timeline-item.ts";
+import { renderDeps, renderTimelineItem, type TimelineRenderContext } from "../../src/tui/components/timeline-item.ts";
 import { SPINNER_FRAMES } from "../../src/tui/format.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
 import type {
@@ -65,12 +61,7 @@ describe("renderTimelineItem", () => {
 		expect(collapsed).toContain("row 0");
 		expect(collapsed).not.toContain("row 399");
 
-		const expanded = plain(
-			renderTimelineItem(item, 80, {
-				...context,
-				toolOutputExpanded: true,
-			}),
-		);
+		const expanded = plain(renderTimelineItem(item, 80, { ...context, toolOutputExpanded: true }));
 		expect(expanded.some((line) => line.includes("[truncated]"))).toBe(false);
 		expect(expanded).toContain("row 399");
 	});
@@ -116,10 +107,7 @@ describe("renderTimelineItem", () => {
 
 		const lines = plain(renderTimelineItem(item, 80, context));
 
-		expect(lines).toEqual([
-			"/resume",
-			"resumed agent-2 · Default · test-model",
-		]);
+		expect(lines).toEqual(["/resume", "resumed agent-2 · Default · test-model"]);
 	});
 
 	it("sanitizes and bounds formatted command display text", () => {
@@ -148,10 +136,7 @@ describe("renderTimelineItem", () => {
 		expect(output).toContain("[truncated]");
 		expect(output).not.toContain("line 29");
 
-		const expanded = renderTimelineItem(item, 80, {
-			...context,
-			toolOutputExpanded: true,
-		}).join("\n");
+		const expanded = renderTimelineItem(item, 80, { ...context, toolOutputExpanded: true }).join("\n");
 		expect(expanded).not.toContain(`${escapeCharacter}]52`);
 		expect(expanded).not.toContain(bell);
 		expect(expanded).toContain("line 29");
@@ -271,9 +256,7 @@ describe("renderTimelineItem", () => {
 			summary: "## Goal\nhidden summary body",
 		};
 
-		const lines = plain(
-			renderTimelineItem(item, 60, { ...context, toolOutputExpanded: true }),
-		);
+		const lines = plain(renderTimelineItem(item, 60, { ...context, toolOutputExpanded: true }));
 
 		expect(lines[0]).toContain("── Compacted session · Ctrl+O collapse ─");
 		expect(lines).toContain("hidden summary body");

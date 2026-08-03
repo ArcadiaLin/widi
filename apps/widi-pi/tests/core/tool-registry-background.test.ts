@@ -6,15 +6,8 @@ import {
 	type BackgroundJobSettlement,
 	BackgroundJobTable,
 } from "../../src/core/background/index.ts";
-import {
-	createAgentHarnessToolFromResolvedTool,
-	ToolRegistry,
-} from "../../src/core/tool-registry.ts";
-import type {
-	ToolDefinition,
-	ToolExecutionContext,
-	ToolSource,
-} from "../../src/core/tools/types.ts";
+import { createAgentHarnessToolFromResolvedTool, ToolRegistry } from "../../src/core/tool-registry.ts";
+import type { ToolDefinition, ToolExecutionContext, ToolSource } from "../../src/core/tools/types.ts";
 
 const coreSource: ToolSource = { kind: "core", id: "builtin" };
 const emptyParams = Type.Object({});
@@ -58,9 +51,7 @@ function createBackgroundableTool(
 	};
 }
 
-function resolveTool<TDetails>(
-	definition: ToolDefinition<typeof emptyParams, TDetails>,
-) {
+function resolveTool<TDetails>(definition: ToolDefinition<typeof emptyParams, TDetails>) {
 	const registry = new ToolRegistry();
 	registry.defineTool(definition, coreSource);
 	const resolvedTool = registry.resolve().getTool(definition.name);
@@ -83,9 +74,7 @@ describe("backgroundable tool adapter", () => {
 		const gate = createDeferred<AgentToolResult<undefined>>();
 		const agentTool = resolveTool(createBackgroundableTool(gate.promise));
 
-		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, {
-			backgroundJobTable: table,
-		});
+		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, { backgroundJobTable: table });
 		gate.resolve(textResult("done"));
 		const result = await execPromise;
 
@@ -104,18 +93,11 @@ describe("backgroundable tool adapter", () => {
 		const gate = createDeferred<AgentToolResult<undefined>>();
 		const agentTool = resolveTool(createBackgroundableTool(gate.promise));
 
-		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, {
-			backgroundJobTable: table,
-		});
+		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, { backgroundJobTable: table });
 		await vi.advanceTimersByTimeAsync(50);
 		const t0 = await execPromise;
 
-		expect(t0.details).toEqual({
-			jobId: "job-1",
-			toolCallId: "call-1",
-			toolName: "sleeper",
-			backgrounded: true,
-		});
+		expect(t0.details).toEqual({ jobId: "job-1", toolCallId: "call-1", toolName: "sleeper", backgrounded: true });
 		// The job stays live in the background until its promise settles.
 		expect(table.list()).toHaveLength(1);
 		expect(table.get("job-1")?.phase).toBe("backgrounded");
@@ -125,9 +107,7 @@ describe("backgroundable tool adapter", () => {
 
 		expect(delivered.job.id).toBe("job-1");
 		expect(delivered.outcome.status).toBe("completed");
-		expect(delivered.outcome.result?.content).toEqual([
-			{ type: "text", text: "late result" },
-		]);
+		expect(delivered.outcome.result?.content).toEqual([{ type: "text", text: "late result" }]);
 		expect(table.list()).toEqual([]);
 	});
 
@@ -136,9 +116,7 @@ describe("backgroundable tool adapter", () => {
 		const gate = createDeferred<AgentToolResult<undefined>>();
 		const agentTool = resolveTool(createBackgroundableTool(gate.promise));
 
-		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, {
-			backgroundJobTable: table,
-		});
+		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, { backgroundJobTable: table });
 		gate.reject(new Error("boom"));
 
 		await expect(execPromise).rejects.toThrow("boom");
@@ -156,13 +134,7 @@ describe("backgroundable tool adapter", () => {
 		);
 
 		const runController = new AbortController();
-		const execPromise = agentTool.execute(
-			"call-1",
-			{},
-			runController.signal,
-			undefined,
-			{ backgroundJobTable: table },
-		);
+		const execPromise = agentTool.execute("call-1", {}, runController.signal, undefined, { backgroundJobTable: table });
 		await vi.advanceTimersByTimeAsync(50);
 		await execPromise;
 
@@ -198,11 +170,9 @@ describe("backgroundable tool adapter", () => {
 		};
 		const agentTool = resolveTool(definition);
 
-		await expect(
-			agentTool.execute("call-1", {}, undefined, undefined, {
-				backgroundJobTable: table,
-			}),
-		).rejects.toThrow("sync boom");
+		await expect(agentTool.execute("call-1", {}, undefined, undefined, { backgroundJobTable: table })).rejects.toThrow(
+			"sync boom",
+		);
 		// The job is settled and removed rather than orphaned in the table.
 		expect(table.list()).toEqual([]);
 	});
@@ -220,11 +190,9 @@ describe("backgroundable tool adapter", () => {
 		} as unknown as ToolDefinition<typeof emptyParams, undefined>;
 		const agentTool = resolveTool(definition);
 
-		await expect(
-			agentTool.execute("call-1", {}, undefined, undefined, {
-				backgroundJobTable: table,
-			}),
-		).resolves.toEqual(textResult("sync result"));
+		await expect(agentTool.execute("call-1", {}, undefined, undefined, { backgroundJobTable: table })).resolves.toEqual(
+			textResult("sync result"),
+		);
 		expect(table.list()).toEqual([]);
 	});
 
@@ -245,23 +213,14 @@ describe("backgroundable tool adapter", () => {
 		};
 		const agentTool = resolveTool(definition);
 
-		const execPromise = agentTool.execute(
-			"call-1",
-			{ background: true },
-			undefined,
-			undefined,
-			{ backgroundJobTable: table },
-		);
+		const execPromise = agentTool.execute("call-1", { background: true }, undefined, undefined, {
+			backgroundJobTable: table,
+		});
 		// A deadline of 0 backgrounds on the next macrotask, not inline.
 		await vi.advanceTimersByTimeAsync(0);
 		const t0 = await execPromise;
 
-		expect(t0.details).toEqual({
-			jobId: "job-1",
-			toolCallId: "call-1",
-			toolName: "sleeper",
-			backgrounded: true,
-		});
+		expect(t0.details).toEqual({ jobId: "job-1", toolCallId: "call-1", toolName: "sleeper", backgrounded: true });
 		expect(table.get("job-1")?.phase).toBe("backgrounded");
 
 		gate.resolve(textResult("late result"));
@@ -282,9 +241,7 @@ describe("backgroundable tool adapter", () => {
 		};
 		const agentTool = resolveTool(definition);
 
-		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, {
-			backgroundJobTable: table,
-		});
+		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, { backgroundJobTable: table });
 		// No deadline and no request: it must never register a job or background.
 		await vi.advanceTimersByTimeAsync(120_000);
 		expect(table.list()).toEqual([]);
@@ -314,9 +271,7 @@ describe("backgroundable tool adapter", () => {
 		};
 		const agentTool = resolveTool(definition);
 
-		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, {
-			backgroundJobTable: table,
-		});
+		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, { backgroundJobTable: table });
 		expect(jobContext?.id).toBe("job-1");
 		// The context buffer is the job's own: the live tail is reachable through
 		// the table before the call even settles.
@@ -339,20 +294,13 @@ describe("backgroundable tool adapter", () => {
 			backgroundable: true,
 			backgroundTimeoutMs: 50,
 			execute: (_toolCallId, _params, context) => {
-				accepted =
-					context.job?.setReport({
-						kind: "test.status",
-						schemaVersion: 1,
-						summary: "Preparing",
-					}) ?? false;
+				accepted = context.job?.setReport({ kind: "test.status", schemaVersion: 1, summary: "Preparing" }) ?? false;
 				return gate.promise;
 			},
 		};
 		const agentTool = resolveTool(definition);
 
-		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, {
-			backgroundJobTable: table,
-		});
+		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, { backgroundJobTable: table });
 		expect(accepted).toBe(true);
 		expect(table.get("job-1")?.report).toMatchObject({
 			revision: 1,
@@ -394,42 +342,27 @@ describe("backgroundable tool adapter", () => {
 				}),
 			},
 			execute: (_toolCallId, _params, context) => {
-				publishUpdate = (details) =>
-					context.onUpdate?.({ content: [], details });
+				publishUpdate = (details) => context.onUpdate?.({ content: [], details });
 				return gate.promise;
 			},
 		};
 		const agentTool = resolveTool(definition);
 		const forwarded = vi.fn();
 
-		const execPromise = agentTool.execute("call-1", {}, undefined, forwarded, {
-			backgroundJobTable: table,
-		});
-		expect(table.get("job-1")?.report).toMatchObject({
-			revision: 1,
-			value: { summary: "Starting" },
-		});
+		const execPromise = agentTool.execute("call-1", {}, undefined, forwarded, { backgroundJobTable: table });
+		expect(table.get("job-1")?.report).toMatchObject({ revision: 1, value: { summary: "Starting" } });
 
 		publishUpdate?.({ completed: 1 });
-		expect(table.get("job-1")?.report).toMatchObject({
-			revision: 2,
-			value: { progress: { completed: 1, total: 2 } },
-		});
+		expect(table.get("job-1")?.report).toMatchObject({ revision: 2, value: { progress: { completed: 1, total: 2 } } });
 		expect(forwarded).toHaveBeenCalledTimes(1);
 
 		await vi.advanceTimersByTimeAsync(50);
 		await execPromise;
 		publishUpdate?.({ completed: 2 });
-		expect(table.get("job-1")?.report).toMatchObject({
-			revision: 3,
-			value: { progress: { completed: 2, total: 2 } },
-		});
+		expect(table.get("job-1")?.report).toMatchObject({ revision: 3, value: { progress: { completed: 2, total: 2 } } });
 		expect(forwarded).toHaveBeenCalledTimes(2);
 
-		gate.resolve({
-			content: [{ type: "text", text: "done" }],
-			details: { completed: 2 },
-		});
+		gate.resolve({ content: [{ type: "text", text: "done" }], details: { completed: 2 } });
 		await Promise.resolve();
 	});
 
@@ -449,9 +382,7 @@ describe("backgroundable tool adapter", () => {
 		};
 		const agentTool = resolveTool(definition);
 
-		await agentTool.execute("call-1", {}, undefined, undefined, {
-			backgroundJobTable: table,
-		});
+		await agentTool.execute("call-1", {}, undefined, undefined, { backgroundJobTable: table });
 		expect(sawJob).toBeUndefined();
 	});
 
@@ -466,13 +397,7 @@ describe("backgroundable tool adapter", () => {
 		);
 
 		const runController = new AbortController();
-		const execPromise = agentTool.execute(
-			"call-1",
-			{},
-			runController.signal,
-			undefined,
-			{ backgroundJobTable: table },
-		);
+		const execPromise = agentTool.execute("call-1", {}, runController.signal, undefined, { backgroundJobTable: table });
 
 		// Still in the synchronous window (deadline not advanced): a user
 		// interrupt on the run signal must cancel the in-flight call.

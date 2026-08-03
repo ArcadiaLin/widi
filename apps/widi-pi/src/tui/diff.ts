@@ -41,10 +41,7 @@ export function renderDiffText(diffText: string): string[] {
 			if (removed.length === 1 && added.length === 1) {
 				const [removedLine, addedLine] = [removed[0], added[0]];
 				if (removedLine && addedLine) {
-					const highlighted = renderIntraLineDiff(
-						replaceTabs(removedLine.content),
-						replaceTabs(addedLine.content),
-					);
+					const highlighted = renderIntraLineDiff(replaceTabs(removedLine.content), replaceTabs(addedLine.content));
 					result.push(
 						theme.error(`-${removedLine.lineNum} ${highlighted.removedLine}`),
 						theme.ok(`+${addedLine.lineNum} ${highlighted.addedLine}`),
@@ -52,25 +49,17 @@ export function renderDiffText(diffText: string): string[] {
 				}
 			} else {
 				for (const line of removed) {
-					result.push(
-						theme.error(`-${line.lineNum} ${replaceTabs(line.content)}`),
-					);
+					result.push(theme.error(`-${line.lineNum} ${replaceTabs(line.content)}`));
 				}
 				for (const line of added) {
-					result.push(
-						theme.ok(`+${line.lineNum} ${replaceTabs(line.content)}`),
-					);
+					result.push(theme.ok(`+${line.lineNum} ${replaceTabs(line.content)}`));
 				}
 			}
 		} else if (parsed.prefix === "+") {
-			result.push(
-				theme.ok(`+${parsed.lineNum} ${replaceTabs(parsed.content)}`),
-			);
+			result.push(theme.ok(`+${parsed.lineNum} ${replaceTabs(parsed.content)}`));
 			i++;
 		} else {
-			result.push(
-				theme.dim(` ${parsed.lineNum} ${replaceTabs(parsed.content)}`),
-			);
+			result.push(theme.dim(` ${parsed.lineNum} ${replaceTabs(parsed.content)}`));
 			i++;
 		}
 	}
@@ -87,11 +76,7 @@ interface ParsedDiffLine {
 function parseDiffLine(line: string): ParsedDiffLine | null {
 	const match = line.match(/^([+\-\s])(\s*\d*)\s(.*)$/);
 	if (!match) return null;
-	return {
-		prefix: match[1] ?? " ",
-		lineNum: match[2] ?? "",
-		content: match[3] ?? "",
-	};
+	return { prefix: match[1] ?? " ", lineNum: match[2] ?? "", content: match[3] ?? "" };
 }
 
 function replaceTabs(text: string): string {
@@ -102,10 +87,7 @@ function replaceTabs(text: string): string {
  * Word-level diff with inverse on changed tokens. Leading whitespace of the
  * first changed token stays unstyled so indentation is never highlighted.
  */
-function renderIntraLineDiff(
-	oldContent: string,
-	newContent: string,
-): { removedLine: string; addedLine: string } {
+function renderIntraLineDiff(oldContent: string, newContent: string): { removedLine: string; addedLine: string } {
 	const wordDiff = diffWords(oldContent, newContent);
 
 	let removedLine = "";

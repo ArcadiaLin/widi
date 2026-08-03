@@ -5,10 +5,7 @@
  * argument can select the sender, task settler, or background-job owner.
  */
 
-import type {
-	BackgroundJobHost,
-	BackgroundJobSettler,
-} from "../background/index.ts";
+import type { BackgroundJobHost, BackgroundJobSettler } from "../background/index.ts";
 import type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
 import type { MessageSendOutcome } from "../message.ts";
 import type { AgentActivity, AgentId } from "../types.ts";
@@ -42,13 +39,8 @@ export interface AgentRequestedDisposeOptions {
 }
 
 export type AgentRequestedDisposeOutcome =
-	| {
-			readonly kind: "disposed";
-			readonly agentIds: readonly AgentId[];
-	  }
-	| {
-			readonly kind: "already_disposed" | "outside_tree" | "self" | "unknown";
-	  };
+	| { readonly kind: "disposed"; readonly agentIds: readonly AgentId[] }
+	| { readonly kind: "already_disposed" | "outside_tree" | "self" | "unknown" };
 
 export interface ToolAgentHost {
 	readonly agentId: AgentId;
@@ -56,14 +48,8 @@ export interface ToolAgentHost {
 	listAgents(): readonly AgentBrief[];
 	describe(agentId: AgentId): AgentBrief | undefined;
 	spawn(profileId: string): Promise<AgentId>;
-	sendMessage(
-		targetAgentId: AgentId,
-		body: string,
-	): Promise<MessageSendOutcome>;
-	dispose(
-		agentId: AgentId,
-		options: AgentRequestedDisposeOptions,
-	): Promise<AgentRequestedDisposeOutcome>;
+	sendMessage(targetAgentId: AgentId, body: string): Promise<MessageSendOutcome>;
+	dispose(agentId: AgentId, options: AgentRequestedDisposeOptions): Promise<AgentRequestedDisposeOutcome>;
 	readonly jobs: BackgroundJobHost;
 	readonly settler: BackgroundJobSettler;
 	requestHuman(request: HumanRequestDraft): Promise<HumanResponse>;

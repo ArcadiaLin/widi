@@ -131,10 +131,7 @@ export interface CustomStorage {
 	copyReachable(target: CustomStorage, roots: readonly string[]): Promise<void>;
 
 	/** Write an object, returning its state root. Idempotent by content. */
-	putObject(options: {
-		readonly data: unknown;
-		readonly dependencies?: readonly string[];
-	}): Promise<string>;
+	putObject(options: { readonly data: unknown; readonly dependencies?: readonly string[] }): Promise<string>;
 
 	/**
 	 * Release handles.
@@ -159,9 +156,7 @@ export interface CustomStorage {
  * lets the rest of the layer rely on that: an implementation that breaks the
  * contract must not be able to fail an operation that has already succeeded.
  */
-export async function closeStorage(
-	storage: CustomStorage | undefined,
-): Promise<void> {
+export async function closeStorage(storage: CustomStorage | undefined): Promise<void> {
 	try {
 		await storage?.close?.();
 	} catch {
@@ -310,21 +305,14 @@ const NAMESPACE_PATTERN = /^[a-z0-9][a-z0-9-]*(?::[a-z0-9][a-z0-9-]*)+$/;
  * still be able to read a session written by a newer one.
  */
 export class PersistenceRegistry {
-	private readonly _definitions = new Map<
-		string,
-		PersistenceNamespaceDefinition
-	>();
+	private readonly _definitions = new Map<string, PersistenceNamespaceDefinition>();
 
 	register(definition: PersistenceNamespaceDefinition): void {
 		if (!NAMESPACE_PATTERN.test(definition.namespace)) {
-			throw new Error(
-				`Persistence namespace ${definition.namespace} is not of the form owner:name.`,
-			);
+			throw new Error(`Persistence namespace ${definition.namespace} is not of the form owner:name.`);
 		}
 		if (this._definitions.has(definition.namespace)) {
-			throw new Error(
-				`Persistence namespace ${definition.namespace} is already registered.`,
-			);
+			throw new Error(`Persistence namespace ${definition.namespace} is already registered.`);
 		}
 		this._definitions.set(definition.namespace, definition);
 	}

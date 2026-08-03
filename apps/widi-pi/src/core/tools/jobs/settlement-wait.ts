@@ -1,8 +1,4 @@
-import type {
-	BackgroundJob,
-	BackgroundJobOutcome,
-	BackgroundJobTable,
-} from "../../background/index.ts";
+import type { BackgroundJob, BackgroundJobOutcome, BackgroundJobTable } from "../../background/index.ts";
 import type { HumanInterruptWatch } from "../../human-interrupt.ts";
 
 /**
@@ -13,11 +9,7 @@ import type { HumanInterruptWatch } from "../../human-interrupt.ts";
  * - `steered`: the human sent a steer, so the wait gave the turn back rather
  *   than holding it open until the steer could be read.
  */
-export type SettlementWaitOutcome =
-	| "completed"
-	| "timed_out"
-	| "aborted"
-	| "steered";
+export type SettlementWaitOutcome = "completed" | "timed_out" | "aborted" | "steered";
 
 /**
  * Wait for every job in `pending` to settle, up to `timeoutMs`. Shared waiting
@@ -43,8 +35,7 @@ export function waitForSettlements(options: {
 	humanInterrupts?: HumanInterruptWatch;
 	onSettled: (job: BackgroundJob, outcome: BackgroundJobOutcome) => void;
 }): Promise<SettlementWaitOutcome> {
-	const { table, pending, timeoutMs, signal, humanInterrupts, onSettled } =
-		options;
+	const { table, pending, timeoutMs, signal, humanInterrupts, onSettled } = options;
 	return new Promise((resolve) => {
 		let finished = false;
 		let timer: NodeJS.Timeout | undefined;

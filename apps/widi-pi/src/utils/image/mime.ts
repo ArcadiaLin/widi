@@ -16,9 +16,7 @@ const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
  * Detect the MIME type of a supported image format from file content.
  * Returns null for non-images and for images the read tool cannot process.
  */
-export function detectSupportedImageMimeType(
-	buffer: Uint8Array,
-): string | null {
+export function detectSupportedImageMimeType(buffer: Uint8Array): string | null {
 	if (startsWithBytes(buffer, [0xff, 0xd8, 0xff])) {
 		// 0xf7 marks JPEG-LS, which the image decoder cannot parse.
 		return buffer[3] === 0xf7 ? null : "image/jpeg";
@@ -26,16 +24,10 @@ export function detectSupportedImageMimeType(
 	if (startsWithBytes(buffer, PNG_SIGNATURE)) {
 		return isPng(buffer) && !isAnimatedPng(buffer) ? "image/png" : null;
 	}
-	if (
-		startsWithAscii(buffer, 0, "GIF87a") ||
-		startsWithAscii(buffer, 0, "GIF89a")
-	) {
+	if (startsWithAscii(buffer, 0, "GIF87a") || startsWithAscii(buffer, 0, "GIF89a")) {
 		return "image/gif";
 	}
-	if (
-		startsWithAscii(buffer, 0, "RIFF") &&
-		startsWithAscii(buffer, 8, "WEBP")
-	) {
+	if (startsWithAscii(buffer, 0, "RIFF") && startsWithAscii(buffer, 8, "WEBP")) {
 		return "image/webp";
 	}
 	if (startsWithAscii(buffer, 0, "BM") && isBmp(buffer)) {
@@ -46,9 +38,7 @@ export function detectSupportedImageMimeType(
 
 function isPng(buffer: Uint8Array): boolean {
 	return (
-		buffer.length >= 16 &&
-		readUint32BE(buffer, PNG_SIGNATURE.length) === 13 &&
-		startsWithAscii(buffer, 12, "IHDR")
+		buffer.length >= 16 && readUint32BE(buffer, PNG_SIGNATURE.length) === 13 && startsWithAscii(buffer, 12, "IHDR")
 	);
 }
 
@@ -122,11 +112,7 @@ function startsWithBytes(buffer: Uint8Array, bytes: number[]): boolean {
 	return bytes.every((byte, index) => buffer[index] === byte);
 }
 
-function startsWithAscii(
-	buffer: Uint8Array,
-	offset: number,
-	text: string,
-): boolean {
+function startsWithAscii(buffer: Uint8Array, offset: number, text: string): boolean {
 	if (buffer.length < offset + text.length) return false;
 	for (let index = 0; index < text.length; index++) {
 		if (buffer[offset + index] !== text.charCodeAt(index)) return false;

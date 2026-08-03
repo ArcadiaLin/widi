@@ -8,17 +8,10 @@
 import type { TextContent } from "@earendil-works/pi-ai";
 import type { AgentToolResult } from "@widi/agent-core";
 import { formatError } from "../../utils/errors.ts";
-import type {
-	BackgroundJobOutcome,
-	BackgroundJobSettlement,
-	BackgroundJobStatus,
-} from "./types.ts";
+import type { BackgroundJobOutcome, BackgroundJobSettlement, BackgroundJobStatus } from "./types.ts";
 
 /** How a job is named next to other jobs: `bash "git pull"`, or just `bash`. */
-export function backgroundJobToolLabel(job: {
-	readonly toolName: string;
-	readonly name?: string;
-}): string {
+export function backgroundJobToolLabel(job: { readonly toolName: string; readonly name?: string }): string {
 	return job.name ? `${job.toolName} "${job.name}"` : job.toolName;
 }
 
@@ -65,10 +58,7 @@ export function createBackgroundJobStartedResult(input: {
  * matches it against the session history. The tool call id is what makes it
  * unambiguous, since job ids restart from 1 in every runtime.
  */
-export function backgroundJobResultHeaderPrefix(
-	jobId: string,
-	toolCallId: string,
-): string {
+export function backgroundJobResultHeaderPrefix(jobId: string, toolCallId: string): string {
 	return `Background job ${jobId} (started by tool call ${toolCallId},`;
 }
 
@@ -108,9 +98,7 @@ export function formatInterruptedBackgroundJobResultText(input: {
 }
 
 /** The t1 message: the same header, plus a body derived from the outcome. */
-export function formatBackgroundJobResultMessageText(
-	settlement: BackgroundJobSettlement,
-): string {
+export function formatBackgroundJobResultMessageText(settlement: BackgroundJobSettlement): string {
 	return formatBackgroundJobResultText({
 		jobId: settlement.job.jobId,
 		toolCallId: settlement.job.toolCallId,
@@ -120,9 +108,7 @@ export function formatBackgroundJobResultMessageText(
 	});
 }
 
-function extractBackgroundJobOutcomeText(
-	settlement: BackgroundJobSettlement,
-): string {
+function extractBackgroundJobOutcomeText(settlement: BackgroundJobSettlement): string {
 	const { outcome, job } = settlement;
 	if (outcome.result) {
 		return outcome.result.content
@@ -130,14 +116,11 @@ function extractBackgroundJobOutcomeText(
 			.map((part) => part.text)
 			.join("");
 	}
-	const errorText =
-		outcome.error === undefined ? undefined : formatError(outcome.error);
+	const errorText = outcome.error === undefined ? undefined : formatError(outcome.error);
 	// A stop reason explains why cancellation was requested; the error can still
 	// carry partial output. Keep both unless one was derived from the other.
 	if (job.stopReason !== undefined && job.stopReason.length > 0) {
-		return errorText && errorText !== job.stopReason
-			? `${job.stopReason}\n\n${errorText}`
-			: job.stopReason;
+		return errorText && errorText !== job.stopReason ? `${job.stopReason}\n\n${errorText}` : job.stopReason;
 	}
 	if (outcome.status === "cancelled" && errorText === undefined) {
 		return "The job was cancelled before it produced a result.";
@@ -147,12 +130,8 @@ function extractBackgroundJobOutcomeText(
 }
 
 /** Fill the terminal reason when no earlier abort supplied a more specific one. */
-export function stopReasonFromOutcome(
-	outcome: BackgroundJobOutcome,
-): string | undefined {
+export function stopReasonFromOutcome(outcome: BackgroundJobOutcome): string | undefined {
 	if (outcome.status === "completed") return undefined;
 	if (outcome.error !== undefined) return formatError(outcome.error);
-	return outcome.status === "cancelled"
-		? "The job was cancelled."
-		: "The job failed.";
+	return outcome.status === "cancelled" ? "The job was cancelled." : "The job failed.";
 }

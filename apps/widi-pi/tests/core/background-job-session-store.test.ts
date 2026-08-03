@@ -14,11 +14,7 @@ import {
 	jobOutputFileName,
 	SessionJobStore,
 } from "../../src/core/background/job-persistence.ts";
-import type {
-	JobBranchPort,
-	JobRecord,
-	JobStartedRecord,
-} from "../../src/core/background/types.ts";
+import type { JobBranchPort, JobRecord, JobStartedRecord } from "../../src/core/background/types.ts";
 import type { NamespaceProjection } from "../../src/core/persistence/index.ts";
 import { PersistenceDiagnostics } from "../../src/core/persistence/index.ts";
 import { MemoryFileSystem } from "../helpers/memory-fs.ts";
@@ -53,10 +49,7 @@ class FakeBranch implements JobBranchPort {
 
 	/** Drop the last `count` refs, as rewinding the conversation would. */
 	rewind(count: number): void {
-		this.committed = this.committed.slice(
-			0,
-			Math.max(0, this.committed.length - count),
-		);
+		this.committed = this.committed.slice(0, Math.max(0, this.committed.length - count));
 	}
 }
 
@@ -76,13 +69,7 @@ function started(toolCallId: string): JobStartedRecord {
 }
 
 function settled(toolCallId: string): JobRecord {
-	return {
-		kind: "settled",
-		toolCallId,
-		status: "completed",
-		endedAt: 9,
-		messageText: "ok",
-	};
+	return { kind: "settled", toolCallId, status: "completed", endedAt: 9, messageText: "ok" };
 }
 
 let fs: MemoryFileSystem;
@@ -128,9 +115,7 @@ describe("SessionJobStore", () => {
 		await first.append(settled("b"));
 
 		const second = await openStore();
-		expect(second.carriedOverJobs().map((job) => job.toolCallId)).toEqual([
-			"a",
-		]);
+		expect(second.carriedOverJobs().map((job) => job.toolCallId)).toEqual(["a"]);
 		expect(second.history()).toHaveLength(2);
 	});
 
@@ -150,9 +135,7 @@ describe("SessionJobStore", () => {
 
 		const second = await openStore();
 		await second.append(started("b"));
-		expect(second.carriedOverJobs().map((job) => job.toolCallId)).toEqual([
-			"a",
-		]);
+		expect(second.carriedOverJobs().map((job) => job.toolCallId)).toEqual(["a"]);
 	});
 
 	it("chains each record onto the root the branch currently names", async () => {
@@ -165,17 +148,11 @@ describe("SessionJobStore", () => {
 
 	it("serializes concurrent transitions without losing either branch ref", async () => {
 		const store = await openStore();
-		const roots = await Promise.all([
-			store.append(started("a")),
-			store.append(started("b")),
-		]);
+		const roots = await Promise.all([store.append(started("a")), store.append(started("b"))]);
 
 		expect(new Set(roots).size).toBe(2);
 		expect(branch.committed).toEqual(roots);
-		expect((await openStore()).history().map((job) => job.toolCallId)).toEqual([
-			"a",
-			"b",
-		]);
+		expect((await openStore()).history().map((job) => job.toolCallId)).toEqual(["a", "b"]);
 	});
 });
 
@@ -186,14 +163,9 @@ describe("SessionJobStore closure", () => {
 		await first.append(started("b"));
 
 		const second = await openStore();
-		const closed = await second.seal({
-			cause: "resume",
-			recognized: new Set(["b"]),
-		});
+		const closed = await second.seal({ cause: "resume", recognized: new Set(["b"]) });
 		expect(closed.map((record) => record.toolCallId)).toEqual(["a"]);
-		expect(
-			second.history().map((job) => [job.toolCallId, job.state, job.cause]),
-		).toEqual([
+		expect(second.history().map((job) => [job.toolCallId, job.state, job.cause])).toEqual([
 			["a", "closed", "resume"],
 			["b", "open", undefined],
 		]);
@@ -214,9 +186,7 @@ describe("SessionJobStore closure", () => {
 		const second = await openStore();
 		await second.seal({ cause: "resume", recognized: new Set() });
 		const third = await openStore();
-		expect(
-			await third.seal({ cause: "resume", recognized: new Set() }),
-		).toEqual([]);
+		expect(await third.seal({ cause: "resume", recognized: new Set() })).toEqual([]);
 	});
 });
 
@@ -243,9 +213,7 @@ describe("SessionJobStore under a failing branch", () => {
 		branch.failNextCommit = true;
 		await expect(store.append(started("a"))).rejects.toThrow(/refused/);
 		await store.append(started("b"));
-		expect((await openStore()).history().map((job) => job.toolCallId)).toEqual([
-			"b",
-		]);
+		expect((await openStore()).history().map((job) => job.toolCallId)).toEqual(["b"]);
 	});
 });
 

@@ -1,13 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import type {
-	AgentOrchestrator,
-	OrchestratorEvent,
-} from "../../src/core/agent-orchestrator.ts";
+import type { AgentOrchestrator, OrchestratorEvent } from "../../src/core/agent-orchestrator.ts";
 import type { AgentRecordSnapshot } from "../../src/core/agent-record.ts";
-import type {
-	WidiRuntime,
-	WidiRuntimeServices,
-} from "../../src/core/runtime-service.ts";
+import type { WidiRuntime, WidiRuntimeServices } from "../../src/core/runtime-service.ts";
 import type { RuntimeModel } from "../../src/core/types.ts";
 import { WidiTuiApplication } from "../../src/tui/application.ts";
 import { ensureAgentProjection, setActiveAgent } from "../../src/tui/state.ts";
@@ -33,9 +27,7 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		await submit(harness.application, "hello");
 
 		expect(harness.spawnAgent).toHaveBeenCalledTimes(1);
-		expect(harness.promptAgent).toHaveBeenCalledWith("main", "hello", {
-			expansion: undefined,
-		});
+		expect(harness.promptAgent).toHaveBeenCalledWith("main", "hello", { expansion: undefined });
 	});
 
 	it("spawns and persists a setting command before the first prompt", async () => {
@@ -44,10 +36,7 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		await submit(harness.application, "/model:test/next-model");
 
 		expect(harness.spawnAgent).toHaveBeenCalledTimes(1);
-		expect(harness.setAgentModelByReference).toHaveBeenCalledWith(
-			"main",
-			"test/next-model",
-		);
+		expect(harness.setAgentModelByReference).toHaveBeenCalledWith("main", "test/next-model");
 		expect(harness.promptAgent).not.toHaveBeenCalled();
 	});
 
@@ -57,10 +46,7 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		await submit(harness.application, "/thinking:high");
 
 		expect(harness.spawnAgent).toHaveBeenCalledTimes(1);
-		expect(harness.setAgentThinkingLevelByName).toHaveBeenCalledWith(
-			"main",
-			"high",
-		);
+		expect(harness.setAgentThinkingLevelByName).toHaveBeenCalledWith("main", "high");
 		expect(harness.promptAgent).not.toHaveBeenCalled();
 	});
 
@@ -70,10 +56,7 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		await submit(harness.application, "/rename:planned session");
 
 		expect(harness.spawnAgent).toHaveBeenCalledTimes(1);
-		expect(harness.setAgentSessionName).toHaveBeenCalledWith(
-			"main",
-			"planned session",
-		);
+		expect(harness.setAgentSessionName).toHaveBeenCalledWith("main", "planned session");
 		expect(harness.promptAgent).not.toHaveBeenCalled();
 	});
 
@@ -87,9 +70,7 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 
 		expect(harness.disposeAgent).toHaveBeenCalledWith(
 			"main",
-			expect.objectContaining({
-				reason: expect.stringContaining("new session"),
-			}),
+			expect.objectContaining({ reason: expect.stringContaining("new session") }),
 		);
 		// The replaced agent leaves no projection behind: nothing to switch back to.
 		expect(harness.application.state.agents.has("main")).toBe(false);
@@ -104,10 +85,7 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 			harness.application.state.pendingAgent?.timeline.find(
 				(item) => item.type === "command-result" && item.name === "new",
 			),
-		).toMatchObject({
-			type: "command-result",
-			status: "completed",
-		});
+		).toMatchObject({ type: "command-result", status: "completed" });
 	});
 
 	it("creates the /new session when its first message is submitted", async () => {
@@ -120,13 +98,8 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		await submit(harness.application, "second");
 
 		expect(harness.spawnAgent).toHaveBeenCalledOnce();
-		expect(harness.spawnAgent).toHaveBeenCalledWith({
-			profileId: "main",
-			model: model(),
-		});
-		expect(harness.promptAgent).toHaveBeenCalledWith("main-2", "second", {
-			expansion: undefined,
-		});
+		expect(harness.spawnAgent).toHaveBeenCalledWith({ profileId: "main", model: model() });
+		expect(harness.promptAgent).toHaveBeenCalledWith("main-2", "second", { expansion: undefined });
 	});
 
 	it("closes the current agent on /clear too", async () => {
@@ -137,14 +110,9 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 
 		expect(harness.disposeAgent).toHaveBeenCalledWith(
 			"main",
-			expect.objectContaining({
-				reason: expect.stringContaining("new session"),
-			}),
+			expect.objectContaining({ reason: expect.stringContaining("new session") }),
 		);
-		expect(harness.application.state.pendingAgent?.start).toMatchObject({
-			kind: "new-session",
-			profileId: "main",
-		});
+		expect(harness.application.state.pendingAgent?.start).toMatchObject({ kind: "new-session", profileId: "main" });
 	});
 
 	it("disposes a fork and returns to its source agent", async () => {
@@ -152,11 +120,7 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		await submit(harness.application, "first");
 		const source = harness.application.state.agents.get("main");
 		if (!source) throw new Error("Expected source agent.");
-		const fork = ensureAgentProjection(
-			harness.application.state,
-			"main-fork",
-			"idle",
-		);
+		const fork = ensureAgentProjection(harness.application.state, "main-fork", "idle");
 		fork.snapshot = snapshot("main-fork", model());
 		fork.display.forkedFromAgentId = "main";
 		setActiveAgent(harness.application.state, "main-fork");
@@ -176,22 +140,10 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		const source = harness.application.state.agents.get("main");
 		if (!source?.snapshot) throw new Error("Expected source agent.");
 		source.status = "unavailable";
-		source.snapshot = {
-			...source.snapshot,
-			status: "unavailable",
-			hasHarness: false,
-		};
-		const worker = ensureAgentProjection(
-			harness.application.state,
-			"worker",
-			"idle",
-		);
+		source.snapshot = { ...source.snapshot, status: "unavailable", hasHarness: false };
+		const worker = ensureAgentProjection(harness.application.state, "worker", "idle");
 		worker.snapshot = snapshot("worker", model());
-		const fork = ensureAgentProjection(
-			harness.application.state,
-			"main-fork",
-			"idle",
-		);
+		const fork = ensureAgentProjection(harness.application.state, "main-fork", "idle");
 		fork.snapshot = snapshot("main-fork", model());
 		fork.display.forkedFromAgentId = "main";
 		setActiveAgent(harness.application.state, "main-fork");
@@ -211,13 +163,9 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 
 		await submit(harness.application, "/dispose");
 
-		expect(harness.application.state.agents.get("main")?.status).toBe(
-			"disposed",
-		);
+		expect(harness.application.state.agents.get("main")?.status).toBe("disposed");
 		expect(harness.application.state.activeAgentId).toBeUndefined();
-		expect(harness.application.state.pendingAgent?.start).toEqual({
-			kind: "default",
-		});
+		expect(harness.application.state.pendingAgent?.start).toEqual({ kind: "default" });
 		expect(harness.spawnAgent).not.toHaveBeenCalled();
 	});
 
@@ -235,11 +183,7 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 				path: "/sessions/main.jsonl",
 			},
 		};
-		const fork = ensureAgentProjection(
-			harness.application.state,
-			"main-fork",
-			"idle",
-		);
+		const fork = ensureAgentProjection(harness.application.state, "main-fork", "idle");
 		fork.snapshot = {
 			...snapshot("main-fork", model()),
 			sessionMetadata: {
@@ -266,20 +210,14 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		await submit(harness.application, "/dispose");
 
 		expect(harness.application.state.activeAgentId).toBeUndefined();
-		expect(harness.application.state.pendingAgent?.start).toEqual({
-			kind: "default",
-		});
+		expect(harness.application.state.pendingAgent?.start).toEqual({ kind: "default" });
 		expect(harness.spawnAgent).not.toHaveBeenCalled();
 	});
 
 	it("switches to another live agent after disposing a non-fork agent", async () => {
 		const harness = await createApplicationHarness();
 		await submit(harness.application, "first");
-		const worker = ensureAgentProjection(
-			harness.application.state,
-			"worker",
-			"idle",
-		);
+		const worker = ensureAgentProjection(harness.application.state, "worker", "idle");
 		worker.snapshot = snapshot("worker", model());
 		setActiveAgent(harness.application.state, "main");
 
@@ -300,9 +238,7 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		expect(
 			harness.application.state.agents
 				.get("main")
-				?.timeline.find(
-					(item) => item.type === "command-result" && item.name === "dispose",
-				),
+				?.timeline.find((item) => item.type === "command-result" && item.name === "dispose"),
 		).toMatchObject({
 			type: "command-result",
 			status: "failed",
@@ -323,9 +259,7 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		expect(
 			harness.application.state.agents
 				.get("main")
-				?.timeline.find(
-					(item) => item.type === "command-result" && item.name === "new",
-				),
+				?.timeline.find((item) => item.type === "command-result" && item.name === "new"),
 		).toMatchObject({
 			type: "command-result",
 			status: "failed",
@@ -369,16 +303,8 @@ describe("WidiTuiApplication follow-up projection", () => {
 		const delivery = createDeferred<{ kind: "accepted" }>();
 		harness.sendMessage.mockReturnValueOnce(delivery.promise);
 
-		const submitting = (
-			harness.application as unknown as {
-				submit(text: string): Promise<void>;
-			}
-		).submit("queue this");
-		await vi.waitFor(() =>
-			expect(agent.pendingFollowUps).toEqual([
-				expect.objectContaining({ text: "queue this" }),
-			]),
-		);
+		const submitting = (harness.application as unknown as { submit(text: string): Promise<void> }).submit("queue this");
+		await vi.waitFor(() => expect(agent.pendingFollowUps).toEqual([expect.objectContaining({ text: "queue this" })]));
 
 		delivery.resolve({ kind: "accepted" });
 		await submitting;
@@ -410,9 +336,7 @@ describe("WidiTuiApplication OAuth notices", () => {
 			url,
 			createdAt: new Date().toISOString(),
 		});
-		expect(
-			harness.application.state.agents.get("main")?.timeline.at(-1),
-		).toMatchObject({
+		expect(harness.application.state.agents.get("main")?.timeline.at(-1)).toMatchObject({
 			type: "application-notice",
 			text: expect.stringContaining(url),
 			textMode: "full",
@@ -437,9 +361,7 @@ describe("WidiTuiApplication runtime shutdown requests", () => {
 		expect(harness.application.state.globalNotices.at(-1)).toMatchObject({
 			text: expect.stringContaining("quit-and-delete"),
 		});
-		expect(harness.application.state.globalNotices.at(-1)?.text).toContain(
-			"session archived",
-		);
+		expect(harness.application.state.globalNotices.at(-1)?.text).toContain("session archived");
 		await vi.waitFor(() => {
 			expect(harness.disposeAll).toHaveBeenCalled();
 		});
@@ -447,27 +369,13 @@ describe("WidiTuiApplication runtime shutdown requests", () => {
 	});
 });
 
-async function submit(
-	application: WidiTuiApplication,
-	text: string,
-): Promise<void> {
-	await (
-		application as unknown as {
-			submit(text: string): Promise<void>;
-		}
-	).submit(text);
+async function submit(application: WidiTuiApplication, text: string): Promise<void> {
+	await (application as unknown as { submit(text: string): Promise<void> }).submit(text);
 	await new Promise<void>((resolve) => queueMicrotask(resolve));
 }
 
-function deliverEvent(
-	application: WidiTuiApplication,
-	event: OrchestratorEvent,
-): void {
-	(
-		application as unknown as {
-			handleEvent(event: OrchestratorEvent): void;
-		}
-	).handleEvent(event);
+function deliverEvent(application: WidiTuiApplication, event: OrchestratorEvent): void {
+	(application as unknown as { handleEvent(event: OrchestratorEvent): void }).handleEvent(event);
 }
 
 async function createApplicationHarness() {
@@ -493,13 +401,7 @@ async function createApplicationHarness() {
 				cacheRead: 0,
 				cacheWrite: 0,
 				totalTokens: 0,
-				cost: {
-					input: 0,
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					total: 0,
-				},
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 			},
 			stopReason: "stop" as const,
 			timestamp: Date.now(),
@@ -515,9 +417,7 @@ async function createApplicationHarness() {
 	});
 	const inspectAgent = vi.fn((agentId: string) => {
 		const inspected = snapshot(agentId, runtimeModel);
-		return disposedAgentIds.has(agentId)
-			? { ...inspected, status: "disposed" as const, hasHarness: false }
-			: inspected;
+		return disposedAgentIds.has(agentId) ? { ...inspected, status: "disposed" as const, hasHarness: false } : inspected;
 	});
 	const disposeAll = vi.fn(async () => {});
 	const orchestrator = {
@@ -548,32 +448,14 @@ async function createApplicationHarness() {
 		diagnostics: [],
 		services: {
 			cwd: "/workspace",
-			defaultProfile: {
-				id: "main",
-				source: "builtin_fallback",
-				profileSource: { kind: "builtin" },
-			},
-			defaultModel: {
-				provider: runtimeModel.provider,
-				modelId: runtimeModel.id,
-				source: "runtime_override",
-			},
-			defaultThinkingLevel: {
-				level: "medium",
-				requestedLevel: "medium",
-				source: "runtime_override",
-				clamped: false,
-			},
+			defaultProfile: { id: "main", source: "builtin_fallback", profileSource: { kind: "builtin" } },
+			defaultModel: { provider: runtimeModel.provider, modelId: runtimeModel.id, source: "runtime_override" },
+			defaultThinkingLevel: { level: "medium", requestedLevel: "medium", source: "runtime_override", clamped: false },
 		} as unknown as WidiRuntimeServices,
 	} satisfies WidiRuntime;
-	const applicationPromise = WidiTuiApplication.create({
-		cwd: "/workspace",
-		runtime,
-	});
+	const applicationPromise = WidiTuiApplication.create({ cwd: "/workspace", runtime });
 	const application = await applicationPromise;
-	const tuiStart = vi
-		.spyOn(application.tui, "start")
-		.mockImplementation(() => {});
+	const tuiStart = vi.spyOn(application.tui, "start").mockImplementation(() => {});
 	vi.spyOn(application.tui, "stop").mockImplementation(() => {});
 	vi.spyOn(application.tui.terminal, "setTitle").mockImplementation(() => {});
 	return {
@@ -591,10 +473,7 @@ async function createApplicationHarness() {
 	};
 }
 
-function createDeferred<T>(): {
-	readonly promise: Promise<T>;
-	readonly resolve: (value: T) => void;
-} {
+function createDeferred<T>(): { readonly promise: Promise<T>; readonly resolve: (value: T) => void } {
 	let resolve!: (value: T) => void;
 	const promise = new Promise<T>((done) => {
 		resolve = done;
@@ -636,12 +515,7 @@ function model(): RuntimeModel {
 		baseUrl: "https://example.test",
 		reasoning: true,
 		input: ["text"],
-		cost: {
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-		},
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 1000,
 		maxTokens: 100,
 	};

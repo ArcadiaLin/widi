@@ -16,31 +16,15 @@ import {
 	jobOutputFileName,
 	MAX_JOB_CHAIN_LENGTH,
 } from "../../src/core/background/job-persistence.ts";
-import type {
-	JobHistory,
-	JobRecord,
-	JobStartedRecord,
-} from "../../src/core/background/types.ts";
-import {
-	contentHash,
-	PersistenceDiagnostics,
-	PersistenceRegistry,
-} from "../../src/core/persistence/index.ts";
+import type { JobHistory, JobRecord, JobStartedRecord } from "../../src/core/background/types.ts";
+import { contentHash, PersistenceDiagnostics, PersistenceRegistry } from "../../src/core/persistence/index.ts";
 import { MemoryFileSystem } from "../helpers/memory-fs.ts";
 
 const DIR = "/runs/--w--/root/persistence/core__jobs";
 const LOG = `${DIR}/objects.jsonl`;
 
-async function openStorage(
-	fs: MemoryFileSystem,
-	dirPath = DIR,
-): Promise<JobHistoryStorage> {
-	return await JobHistoryStorage.open({
-		fs,
-		dirPath,
-		sessionKey: ["root"],
-		diagnostics: new PersistenceDiagnostics(),
-	});
+async function openStorage(fs: MemoryFileSystem, dirPath = DIR): Promise<JobHistoryStorage> {
+	return await JobHistoryStorage.open({ fs, dirPath, sessionKey: ["root"], diagnostics: new PersistenceDiagnostics() });
 }
 
 function started(toolCallId: string): JobStartedRecord {
@@ -58,10 +42,7 @@ function started(toolCallId: string): JobStartedRecord {
 	};
 }
 
-async function appendAll(
-	storage: JobHistoryStorage,
-	records: readonly JobRecord[],
-): Promise<string> {
+async function appendAll(storage: JobHistoryStorage, records: readonly JobRecord[]): Promise<string> {
 	let root: string | null = null;
 	for (const record of records) root = await storage.appendRecord(record, root);
 	if (root === null) throw new Error("nothing appended");
@@ -74,12 +55,7 @@ function plantLog(
 	objects: readonly { id: string; deps: string[]; data: unknown }[],
 	dirPath = DIR,
 ): void {
-	const header = {
-		type: "persistence-objects",
-		version: 1,
-		namespace: JOBS_NAMESPACE,
-		formatVersion: 1,
-	};
+	const header = { type: "persistence-objects", version: 1, namespace: JOBS_NAMESPACE, formatVersion: 1 };
 	const lines = [header, ...objects].map((line) => JSON.stringify(line));
 	fs.files.set(`${dirPath}/objects.jsonl`, `${lines.join("\n")}\n`);
 }
@@ -97,13 +73,7 @@ describe("JobHistoryStorage", () => {
 		const root = await appendAll(storage, [
 			started("a"),
 			started("b"),
-			{
-				kind: "settled",
-				toolCallId: "a",
-				status: "completed",
-				endedAt: 9,
-				messageText: "ok",
-			},
+			{ kind: "settled", toolCallId: "a", status: "completed", endedAt: 9, messageText: "ok" },
 		]);
 		const history = (await storage.resolveState(root)) as JobHistory;
 		expect(history.truncated).toBe(false);
@@ -142,9 +112,7 @@ describe("JobHistoryStorage", () => {
 		const tip = { deps: [missing], data: started("b") };
 		plantLog(fs, [{ id: contentHash(tip), ...tip }]);
 		const storage = await openStorage(fs);
-		const history = (await storage.resolveState(
-			contentHash(tip),
-		)) as JobHistory;
+		const history = (await storage.resolveState(contentHash(tip))) as JobHistory;
 		expect(history.truncated).toBe(true);
 		expect(history.jobs.map((job) => job.toolCallId)).toEqual(["b"]);
 	});
@@ -165,18 +133,12 @@ describe("JobHistoryStorage", () => {
 		let previous: string | undefined;
 		for (let index = 0; index <= MAX_JOB_CHAIN_LENGTH; index += 1) {
 			const id = contentHash(`link-${index}`);
-			objects.push({
-				id,
-				deps: previous === undefined ? [] : [previous],
-				data: started(`call-${index}`),
-			});
+			objects.push({ id, deps: previous === undefined ? [] : [previous], data: started(`call-${index}`) });
 			previous = id;
 		}
 		plantLog(fs, objects);
 		const storage = await openStorage(fs);
-		const history = (await storage.resolveState(
-			contentHash(`link-${MAX_JOB_CHAIN_LENGTH}`),
-		)) as JobHistory;
+		const history = (await storage.resolveState(contentHash(`link-${MAX_JOB_CHAIN_LENGTH}`))) as JobHistory;
 		expect(history.truncated).toBe(true);
 		expect(history.jobs.length).toBeLessThanOrEqual(MAX_JOB_CHAIN_LENGTH);
 	});
@@ -189,13 +151,7 @@ describe("JobHistoryStorage", () => {
 		const alienId = contentHash(alien);
 		const tip = {
 			deps: [alienId],
-			data: {
-				kind: "settled",
-				toolCallId: "a",
-				status: "completed",
-				endedAt: 9,
-				messageText: "ok",
-			},
+			data: { kind: "settled", toolCallId: "a", status: "completed", endedAt: 9, messageText: "ok" },
 		};
 		plantLog(fs, [
 			{ id: headId, ...head },
@@ -203,9 +159,7 @@ describe("JobHistoryStorage", () => {
 			{ id: contentHash(tip), ...tip },
 		]);
 		const storage = await openStorage(fs);
-		const history = (await storage.resolveState(
-			contentHash(tip),
-		)) as JobHistory;
+		const history = (await storage.resolveState(contentHash(tip))) as JobHistory;
 		expect(history.truncated).toBe(false);
 		expect(history.jobs[0]).toMatchObject({ state: "settled" });
 	});
@@ -215,13 +169,7 @@ describe("JobHistoryStorage", () => {
 		const storage = await openStorage(fs);
 		await appendAll(storage, [
 			started("a"),
-			{
-				kind: "settled",
-				toolCallId: "a",
-				status: "completed",
-				endedAt: 9,
-				messageText: "m".repeat(200_000),
-			},
+			{ kind: "settled", toolCallId: "a", status: "completed", endedAt: 9, messageText: "m".repeat(200_000) },
 		]);
 		expect((fs.files.get(LOG) ?? "").length).toBeLessThan(150_000);
 	});
@@ -239,14 +187,8 @@ describe("JobHistoryStorage output files", () => {
 		const fs = new MemoryFileSystem();
 		const source = await openStorage(fs);
 		const root = await appendAll(source, [started("a"), started("b")]);
-		await fs.writeFile(
-			await source.outputFilePath(jobOutputFileName("a")),
-			"hello",
-		);
-		await fs.writeFile(
-			await source.outputFilePath(jobOutputFileName("b")),
-			"world",
-		);
+		await fs.writeFile(await source.outputFilePath(jobOutputFileName("a")), "hello");
+		await fs.writeFile(await source.outputFilePath(jobOutputFileName("b")), "world");
 		const targetDir = "/runs/--w--/forked/persistence/core__jobs";
 		const target = await openStorage(fs, targetDir);
 		await source.copyReachable(target, await source.reachableFrom(root));
@@ -254,16 +196,8 @@ describe("JobHistoryStorage output files", () => {
 
 		const copied = (await target.resolveState(root)) as JobHistory;
 		expect(copied.jobs.map((job) => job.toolCallId)).toEqual(["a", "b"]);
-		expect(
-			fs.files.get(
-				`${targetDir}/${JOB_OUTPUT_DIR_NAME}/${jobOutputFileName("a")}`,
-			),
-		).toBe("hello");
-		expect(
-			fs.files.get(
-				`${targetDir}/${JOB_OUTPUT_DIR_NAME}/${jobOutputFileName("b")}`,
-			),
-		).toBe("world");
+		expect(fs.files.get(`${targetDir}/${JOB_OUTPUT_DIR_NAME}/${jobOutputFileName("a")}`)).toBe("hello");
+		expect(fs.files.get(`${targetDir}/${JOB_OUTPUT_DIR_NAME}/${jobOutputFileName("b")}`)).toBe("world");
 	});
 
 	it("copies a job whose output file was never written", async () => {
@@ -301,9 +235,7 @@ describe("createJobsNamespace", () => {
 
 		expect(result?.stateRoot).toBeDefined();
 		expect(result?.stateRoot).not.toBe(root);
-		const forked = (await target.resolveState(
-			result?.stateRoot ?? "",
-		)) as JobHistory;
+		const forked = (await target.resolveState(result?.stateRoot ?? "")) as JobHistory;
 		expect(forked.jobs.map((job) => [job.state, job.cause])).toEqual([
 			["closed", "fork"],
 			["closed", "fork"],
@@ -318,13 +250,7 @@ describe("createJobsNamespace", () => {
 		const source = await openStorage(fs);
 		const root = await appendAll(source, [
 			started("a"),
-			{
-				kind: "settled",
-				toolCallId: "a",
-				status: "completed",
-				endedAt: 9,
-				messageText: "ok",
-			},
+			{ kind: "settled", toolCallId: "a", status: "completed", endedAt: 9, messageText: "ok" },
 		]);
 		const target = await openStorage(fs, "/runs/--w--/forked/p/core__jobs");
 		const result = await definition.fork?.({

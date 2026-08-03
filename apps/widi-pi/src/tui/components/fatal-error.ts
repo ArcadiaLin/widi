@@ -1,9 +1,4 @@
-import {
-	type Component,
-	SelectList,
-	truncateToWidth,
-	visibleWidth,
-} from "@earendil-works/pi-tui";
+import { type Component, SelectList, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { boundedText, singleLine } from "../format.ts";
 import { theme } from "../theme/theme.ts";
 
@@ -25,10 +20,7 @@ export class FatalErrorView implements Component {
 		readonly onViewDiagnostics: () => void;
 	}) {
 		this.code = singleLine(options.code, 120);
-		this.message = boundedText(options.message, {
-			maxLines: 8,
-			maxCharacters: 1_000,
-		});
+		this.message = boundedText(options.message, { maxLines: 8, maxCharacters: 1_000 });
 		this.list = new SelectList(
 			[
 				{ value: "quit", label: "Quit" },
@@ -54,22 +46,12 @@ export class FatalErrorView implements Component {
 
 	render(width: number): string[] {
 		const innerWidth = Math.max(1, width - 4);
-		const title = truncateToWidth(
-			" ✕ WIDI cannot continue ",
-			Math.max(1, width - 4),
-			"",
-		);
-		const top = `┌─${theme.error(title)}${"─".repeat(
-			Math.max(0, width - visibleWidth(title) - 3),
-		)}┐`;
+		const title = truncateToWidth(" ✕ WIDI cannot continue ", Math.max(1, width - 4), "");
+		const top = `┌─${theme.error(title)}${"─".repeat(Math.max(0, width - visibleWidth(title) - 3))}┐`;
 		const lines = [top];
 		const add = (line = "") => {
 			const clipped = truncateToWidth(line, innerWidth, "");
-			lines.push(
-				`│ ${clipped}${" ".repeat(
-					Math.max(0, innerWidth - visibleWidth(clipped)),
-				)} │`,
-			);
+			lines.push(`│ ${clipped}${" ".repeat(Math.max(0, innerWidth - visibleWidth(clipped)))} │`);
 		};
 		add(theme.dim(this.code));
 		for (const line of this.message.split("\n")) add(line);

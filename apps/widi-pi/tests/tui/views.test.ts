@@ -10,11 +10,7 @@ import { HeaderView } from "../../src/tui/components/header.ts";
 import { OperationHintView } from "../../src/tui/components/operation-hint.ts";
 import { StatusView } from "../../src/tui/components/status.ts";
 import { renderTimelineItem } from "../../src/tui/components/timeline-item.ts";
-import {
-	boundedText,
-	sanitizeTerminalText,
-	singleLine,
-} from "../../src/tui/format.ts";
+import { boundedText, sanitizeTerminalText, singleLine } from "../../src/tui/format.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
 import {
 	type AssistantMessageItem,
@@ -28,78 +24,69 @@ import {
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 
 describe("TUI views", () => {
-	it.each([40, 80, 120])(
-		"keeps chat, status, footer, operation hint and agent strip inside %s columns",
-		(width) => {
-			const state = createTuiApplicationState();
-			const main = setActiveAgent(state, "main");
-			main.status = "idle";
-			main.display.sessionName = "主代理";
-			main.timeline.push(
-				{
-					type: "user-message",
-					id: "user",
-					durability: "durable",
-					createdAt: timestamp(1),
-					text: "请检查这个很长的中文输入，并保证终端宽度不会溢出。",
-				},
-				{
-					type: "assistant-message",
-					id: "assistant",
-					durability: "durable",
-					createdAt: timestamp(2),
-					text: "这里是 **Markdown** 响应。\n\n- 第一项\n- 第二项",
-					streaming: false,
-				},
-				{
-					type: "extension-output",
-					id: "output",
-					presentationId: "output",
-					durability: "ephemeral",
-					createdAt: timestamp(3),
-					extensionId: "indexer",
-					text: "Scanning a path with a deliberately long output value.",
-				},
-			);
-			main.extensionStatuses.set("indexer\u0000build", {
-				agentId: "main",
+	it.each([40, 80, 120])("keeps chat, status, footer, operation hint and agent strip inside %s columns", (width) => {
+		const state = createTuiApplicationState();
+		const main = setActiveAgent(state, "main");
+		main.status = "idle";
+		main.display.sessionName = "主代理";
+		main.timeline.push(
+			{
+				type: "user-message",
+				id: "user",
+				durability: "durable",
+				createdAt: timestamp(1),
+				text: "请检查这个很长的中文输入，并保证终端宽度不会溢出。",
+			},
+			{
+				type: "assistant-message",
+				id: "assistant",
+				durability: "durable",
+				createdAt: timestamp(2),
+				text: "这里是 **Markdown** 响应。\n\n- 第一项\n- 第二项",
+				streaming: false,
+			},
+			{
+				type: "extension-output",
+				id: "output",
+				presentationId: "output",
+				durability: "ephemeral",
+				createdAt: timestamp(3),
 				extensionId: "indexer",
-				key: "build",
-				status: {
-					text: "Building symbol index",
-					progress: { completed: 418, total: 672 },
-				},
-				updatedAt: timestamp(4),
-			});
-			const worker = ensureAgentProjection(state, "reviewer");
-			worker.status = "running";
-			worker.unreadCount = 3;
-			const failed = ensureAgentProjection(state, "researcher");
-			failed.status = "unavailable";
-			failed.attention = "error";
+				text: "Scanning a path with a deliberately long output value.",
+			},
+		);
+		main.extensionStatuses.set("indexer\u0000build", {
+			agentId: "main",
+			extensionId: "indexer",
+			key: "build",
+			status: { text: "Building symbol index", progress: { completed: 418, total: 672 } },
+			updatedAt: timestamp(4),
+		});
+		const worker = ensureAgentProjection(state, "reviewer");
+		worker.status = "running";
+		worker.unreadCount = 3;
+		const failed = ensureAgentProjection(state, "researcher");
+		failed.status = "unavailable";
+		failed.attention = "error";
 
-			const views = [
-				new ChatView(state),
-				new StatusView(state),
-				new FooterView(state, "/home/arcadia/projs/widi"),
-				new OperationHintView({
-					state,
-					engine: new CommandEngine(builtInCommands),
-					editor: {
-						getText: () => "",
-						isShowingAutocomplete: () => false,
-					},
-					menu: { hintContext: undefined },
-				}),
-				new AgentStripView(state),
-			];
-			for (const view of views) {
-				for (const line of view.render(width)) {
-					expect(visibleWidth(line)).toBeLessThanOrEqual(width);
-				}
+		const views = [
+			new ChatView(state),
+			new StatusView(state),
+			new FooterView(state, "/home/arcadia/projs/widi"),
+			new OperationHintView({
+				state,
+				engine: new CommandEngine(builtInCommands),
+				editor: { getText: () => "", isShowingAutocomplete: () => false },
+				menu: { hintContext: undefined },
+			}),
+			new AgentStripView(state),
+		];
+		for (const view of views) {
+			for (const line of view.render(width)) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 			}
-		},
-	);
+		}
+	});
 
 	it("renders no operation hint for a single idle agent", () => {
 		const state = createTuiApplicationState();
@@ -107,10 +94,7 @@ describe("TUI views", () => {
 		const view = new OperationHintView({
 			state,
 			engine: new CommandEngine(builtInCommands),
-			editor: {
-				getText: () => "",
-				isShowingAutocomplete: () => false,
-			},
+			editor: { getText: () => "", isShowingAutocomplete: () => false },
 			menu: { hintContext: undefined },
 		});
 
@@ -122,22 +106,11 @@ describe("TUI views", () => {
 		const source = setActiveAgent(state, "widi-dev");
 		source.status = "idle";
 		source.snapshot = snapshot("widi-dev", "/sessions/source.jsonl");
-		const fork = ensureAgentProjection(
-			state,
-			"019f784f-4342-781c-8472-93e6547da47e",
-			"idle",
-		);
-		fork.snapshot = snapshot(
-			fork.agentId,
-			"/sessions/fork.jsonl",
-			"/sessions/source.jsonl",
-		);
+		const fork = ensureAgentProjection(state, "019f784f-4342-781c-8472-93e6547da47e", "idle");
+		fork.snapshot = snapshot(fork.agentId, "/sessions/fork.jsonl", "/sessions/source.jsonl");
 		fork.display.forkedFromAgentId = source.agentId;
 
-		const output = new AgentStripView(state)
-			.render(160)
-			.join("\n")
-			.replace(ANSI_SEQUENCE, "");
+		const output = new AgentStripView(state).render(160).join("\n").replace(ANSI_SEQUENCE, "");
 
 		expect(output).toContain("WIDI Dev [widi-dev]");
 		expect(output).toContain("WIDI Dev [fork from widi-dev · 547da47e]");
@@ -150,10 +123,7 @@ describe("TUI views", () => {
 		agent.snapshot = snapshot("widi-dev", "/sessions/source.jsonl");
 		agent.backgroundJobCount = 2;
 
-		const output = new AgentStripView(state)
-			.render(160)
-			.join("\n")
-			.replace(ANSI_SEQUENCE, "");
+		const output = new AgentStripView(state).render(160).join("\n").replace(ANSI_SEQUENCE, "");
 
 		expect(output).toContain("2 bg");
 	});
@@ -208,10 +178,7 @@ describe("TUI views", () => {
 			maxTokens: 100,
 		};
 
-		const [line] = new FooterView(
-			state,
-			"/home/arcadia/projs/widi/apps/widi-pi",
-		).render(120);
+		const [line] = new FooterView(state, "/home/arcadia/projs/widi/apps/widi-pi").render(120);
 
 		const plain = (line ?? "").replace(ANSI_SEQUENCE, "");
 		// The model the next prompt runs on sits directly under the editor.
@@ -255,10 +222,7 @@ describe("TUI views", () => {
 			...new OperationHintView({
 				state,
 				engine: new CommandEngine(builtInCommands),
-				editor: {
-					getText: () => "",
-					isShowingAutocomplete: () => false,
-				},
+				editor: { getText: () => "", isShowingAutocomplete: () => false },
 				menu: { hintContext: undefined },
 			}).render(120),
 		]
@@ -278,10 +242,7 @@ describe("TUI views", () => {
 			...new OperationHintView({
 				state,
 				engine: new CommandEngine(builtInCommands),
-				editor: {
-					getText: () => "",
-					isShowingAutocomplete: () => false,
-				},
+				editor: { getText: () => "", isShowingAutocomplete: () => false },
 				menu: { hintContext: undefined },
 			}).render(120),
 		]
@@ -308,12 +269,7 @@ describe("TUI views", () => {
 					baseUrl: "https://example.test",
 					reasoning: true,
 					input: ["text"],
-					cost: {
-						input: 0,
-						output: 0,
-						cacheRead: 0,
-						cacheWrite: 0,
-					},
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 					contextWindow: 1000,
 					maxTokens: 100,
 				},
@@ -322,18 +278,9 @@ describe("TUI views", () => {
 			nextLiveItemId: 1,
 		};
 
-		const chat = new ChatView(state)
-			.render(80)
-			.join("\n")
-			.replace(ANSI_SEQUENCE, "");
-		const header = new HeaderView(state)
-			.render(80)
-			.join("\n")
-			.replace(ANSI_SEQUENCE, "");
-		const footer = new FooterView(state, "/workspace")
-			.render(80)
-			.join("\n")
-			.replace(ANSI_SEQUENCE, "");
+		const chat = new ChatView(state).render(80).join("\n").replace(ANSI_SEQUENCE, "");
+		const header = new HeaderView(state).render(80).join("\n").replace(ANSI_SEQUENCE, "");
+		const footer = new FooterView(state, "/workspace").render(80).join("\n").replace(ANSI_SEQUENCE, "");
 
 		expect(chat).toContain("Ask WIDI");
 		expect(header).toContain("Main Agent");
@@ -413,10 +360,7 @@ describe("TUI views", () => {
 			status: "completed",
 		});
 
-		const output = new ChatView(state)
-			.render(80)
-			.join("\n")
-			.replace(ANSI_SEQUENCE, "");
+		const output = new ChatView(state).render(80).join("\n").replace(ANSI_SEQUENCE, "");
 
 		expect(output).toContain("✓ List src · 2 entries");
 		expect(output).not.toContain('{ "path": "src" }');
@@ -433,9 +377,7 @@ describe("TUI views", () => {
 			createdAt: timestamp(1),
 			toolName: "bash",
 			args: { command: "ls" },
-			result: {
-				content: [{ type: "text", text: "one\ntwo\nthree\nfour\nfive\nsix" }],
-			},
+			result: { content: [{ type: "text", text: "one\ntwo\nthree\nfour\nfive\nsix" }] },
 			isError: false,
 			status: "completed",
 		});
@@ -625,22 +567,12 @@ function timestamp(offset: number): string {
 	return new Date(Date.UTC(2026, 0, 1, 0, 0, offset)).toISOString();
 }
 
-function snapshot(
-	agentId: string,
-	path: string,
-	parentSessionPath?: string,
-): AgentRecordSnapshot {
+function snapshot(agentId: string, path: string, parentSessionPath?: string): AgentRecordSnapshot {
 	return {
 		agentId,
 		status: "idle",
 		profile: { reference: { id: "widi-dev", label: "WIDI Dev" } },
-		sessionMetadata: {
-			id: agentId,
-			createdAt: new Date(0).toISOString(),
-			cwd: "/workspace",
-			path,
-			parentSessionPath,
-		},
+		sessionMetadata: { id: agentId, createdAt: new Date(0).toISOString(), cwd: "/workspace", path, parentSessionPath },
 		model: {
 			id: "test-model",
 			name: "Test Model",

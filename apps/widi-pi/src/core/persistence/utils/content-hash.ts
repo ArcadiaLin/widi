@@ -41,14 +41,10 @@ export function canonicalJson(value: unknown): string {
 		const entries = Object.entries(value as Record<string, unknown>)
 			.filter(([, item]) => item !== undefined)
 			.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
-		const body = entries
-			.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
-			.join(",");
+		const body = entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",");
 		return `{${body}}`;
 	}
-	throw new Error(
-		`Persisted objects cannot hold a value of type ${typeof value}.`,
-	);
+	throw new Error(`Persisted objects cannot hold a value of type ${typeof value}.`);
 }
 
 /** The state root of an object body, as it appears in a ref. */

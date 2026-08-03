@@ -14,12 +14,8 @@ export class NoticeView implements Component {
 	invalidate(): void {}
 
 	render(width: number): string[] {
-		const startup = this.state.globalNotices.filter(
-			(notice) => notice.kind === "startup",
-		);
-		const transient = this.state.globalNotices
-			.filter((notice) => notice.kind !== "startup")
-			.slice(-4);
+		const startup = this.state.globalNotices.filter((notice) => notice.kind === "startup");
+		const transient = this.state.globalNotices.filter((notice) => notice.kind !== "startup").slice(-4);
 		const notices = [...startup, ...transient];
 		if (notices.length === 0) return [];
 		const lines = notices.map((notice) => {
@@ -34,14 +30,9 @@ export class NoticeView implements Component {
 				.join(" · ");
 			if (notice.diagnostic) {
 				const color = theme.severityPaint(notice.diagnostic.severity);
-				return color(
-					`${diagnosticGlyph(notice.diagnostic)} ${notice.diagnostic.code}: ${singleLine(notice.text)}`,
-				);
+				return color(`${diagnosticGlyph(notice.diagnostic)} ${notice.diagnostic.code}: ${singleLine(notice.text)}`);
 			}
-			const text =
-				notice.textMode === "full"
-					? sanitizeTerminalText(notice.text)
-					: singleLine(notice.text);
+			const text = notice.textMode === "full" ? sanitizeTerminalText(notice.text) : singleLine(notice.text);
 			return theme.info(`✱${attribution ? ` ${attribution}` : ""} ${text}`);
 		});
 		return new Text(lines.join("\n"), 1, 0).render(width);

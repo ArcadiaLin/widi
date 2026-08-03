@@ -145,11 +145,7 @@ describe("BackgroundJobTable", () => {
 
 	it("carries a description onto the job view", () => {
 		const table = new BackgroundJobTable();
-		const job = table.create({
-			toolCallId: "call-1",
-			toolName: "bash",
-			description: "npm run build",
-		});
+		const job = table.create({ toolCallId: "call-1", toolName: "bash", description: "npm run build" });
 		expect(job.description).toBe("npm run build");
 	});
 
@@ -162,20 +158,13 @@ describe("BackgroundJobTable", () => {
 			data: { items: ["first"] },
 		} satisfies BackgroundJobReport;
 		const table = new BackgroundJobTable();
-		const job = table.create({
-			toolCallId: "call-1",
-			toolName: "planner",
-			report: source,
-		});
+		const job = table.create({ toolCallId: "call-1", toolName: "planner", report: source });
 
 		source.data.items.push("mutated later");
 		expect(job.report).toMatchObject({
 			revision: 1,
 			updatedAt: expect.any(Number),
-			value: {
-				kind: "test.plan",
-				data: { items: ["first"] },
-			},
+			value: { kind: "test.plan", data: { items: ["first"] } },
 		});
 		expect(Object.isFrozen(job.report)).toBe(true);
 		expect(Object.isFrozen(job.report?.value.data)).toBe(true);
@@ -190,27 +179,17 @@ describe("BackgroundJobTable", () => {
 		table.onChange((change) => changes.push(change));
 		const job = table.create({ toolCallId: "call-1", toolName: "planner" });
 
-		expect(
-			table.setReport(job.id, {
-				kind: "test.plan",
-				schemaVersion: 1,
-				summary: "Prepared",
-			}),
-		).toBe(true);
+		expect(table.setReport(job.id, { kind: "test.plan", schemaVersion: 1, summary: "Prepared" })).toBe(true);
 		expect(reports).not.toHaveBeenCalled();
 
 		table.background(job.id);
-		expect(changes[0]?.job.report).toMatchObject({
-			revision: 1,
-			value: { summary: "Prepared" },
-		});
+		expect(changes[0]?.job.report).toMatchObject({ revision: 1, value: { summary: "Prepared" } });
 		expect(reports).not.toHaveBeenCalled();
 	});
 
 	it("coalesces reports and flushes the final revision before settlement", () => {
 		const table = new BackgroundJobTable({ reportThrottleMs: 10_000 });
-		const log: Array<{ kind: "report" | "change"; value: number | string }> =
-			[];
+		const log: Array<{ kind: "report" | "change"; value: number | string }> = [];
 		table.onReport((_job, report) => {
 			log.push({ kind: "report", value: report.revision });
 		});
@@ -221,11 +200,7 @@ describe("BackgroundJobTable", () => {
 		table.background(job.id);
 
 		for (const completed of [1, 2, 3]) {
-			table.setReport(job.id, {
-				kind: "test.plan",
-				schemaVersion: 1,
-				progress: { completed, total: 3 },
-			});
+			table.setReport(job.id, { kind: "test.plan", schemaVersion: 1, progress: { completed, total: 3 } });
 		}
 		expect(log).toEqual([{ kind: "change", value: "backgrounded" }]);
 
@@ -240,18 +215,10 @@ describe("BackgroundJobTable", () => {
 	it("rejects invalid or oversized reports without advancing the revision", () => {
 		const table = new BackgroundJobTable();
 		const job = table.create({ toolCallId: "call-1", toolName: "planner" });
-		table.setReport(job.id, {
-			kind: "test.plan",
-			schemaVersion: 1,
-			summary: "valid",
-		});
+		table.setReport(job.id, { kind: "test.plan", schemaVersion: 1, summary: "valid" });
 
 		expect(() =>
-			table.setReport(job.id, {
-				kind: "test.plan",
-				schemaVersion: 1,
-				progress: { completed: 2, total: 1 },
-			}),
+			table.setReport(job.id, { kind: "test.plan", schemaVersion: 1, progress: { completed: 2, total: 1 } }),
 		).toThrow(/cannot exceed total/);
 		expect(() =>
 			table.setReport(job.id, {
@@ -289,11 +256,7 @@ describe("BackgroundJobTable", () => {
 		table.background(job.id);
 		expect(progress).toHaveBeenCalledTimes(1);
 		expect(progress.mock.calls[0]?.[0]).toBe(job);
-		expect(
-			Buffer.from(job.output.drainIncrement()?.chunk ?? "", "base64").toString(
-				"utf-8",
-			),
-		).toBe("early output");
+		expect(Buffer.from(job.output.drainIncrement()?.chunk ?? "", "base64").toString("utf-8")).toBe("early output");
 	});
 
 	it("never publishes progress for a job that settles inline", () => {
@@ -351,20 +314,11 @@ describe("BackgroundJobTable", () => {
 			}
 		});
 
-		const failed = table.create({
-			toolCallId: "call-failed",
-			toolName: "bash",
-		});
+		const failed = table.create({ toolCallId: "call-failed", toolName: "bash" });
 		table.background(failed.id);
-		table.settle(failed.id, {
-			status: "failed",
-			error: new Error("command failed"),
-		});
+		table.settle(failed.id, { status: "failed", error: new Error("command failed") });
 
-		const cancelled = table.create({
-			toolCallId: "call-cancelled",
-			toolName: "bash",
-		});
+		const cancelled = table.create({ toolCallId: "call-cancelled", toolName: "bash" });
 		table.background(cancelled.id);
 		table.settle(cancelled.id, { status: "cancelled" });
 
@@ -383,10 +337,7 @@ describe("BackgroundJobTable", () => {
 		const job = table.create({ toolCallId: "call-1", toolName: "bash" });
 		table.background(job.id);
 		table.abort(job.id, "Cancellation requested by kill_job.");
-		table.settle(job.id, {
-			status: "cancelled",
-			error: new Error("partial output\n\nCommand aborted"),
-		});
+		table.settle(job.id, { status: "cancelled", error: new Error("partial output\n\nCommand aborted") });
 
 		expect(resultText).toContain("Cancellation requested by kill_job.");
 		expect(resultText).toContain("partial output");
@@ -401,9 +352,7 @@ describe("BackgroundJobTable", () => {
 		// A local job is settled by the call it was handed to, so an
 		// authorization argument is meaningless and ignored.
 		table.background(job.id);
-		expect(
-			table.settle(job.id, { status: "completed" }, { settledBy: "anyone" }),
-		).toBe("backgrounded");
+		expect(table.settle(job.id, { status: "completed" }, { settledBy: "anyone" })).toBe("backgrounded");
 	});
 
 	it("accepts an external job's outcome only from its named settler", () => {
@@ -416,22 +365,10 @@ describe("BackgroundJobTable", () => {
 		table.background(job.id);
 
 		expect(table.settle(job.id, { status: "completed" })).toBe("denied");
-		expect(
-			table.settle(
-				job.id,
-				{ status: "completed" },
-				{ settledBy: "agent-intruder" },
-			),
-		).toBe("denied");
+		expect(table.settle(job.id, { status: "completed" }, { settledBy: "agent-intruder" })).toBe("denied");
 		expect(table.get(job.id)).toBeDefined();
 
-		expect(
-			table.settle(
-				job.id,
-				{ status: "completed" },
-				{ settledBy: "agent-worker" },
-			),
-		).toBe("backgrounded");
+		expect(table.settle(job.id, { status: "completed" }, { settledBy: "agent-worker" })).toBe("backgrounded");
 		expect(table.get(job.id)).toBeUndefined();
 	});
 
@@ -439,42 +376,17 @@ describe("BackgroundJobTable", () => {
 	// passed must not be able to name a different settler afterwards.
 	it("detaches the origin it was given from the caller's object", () => {
 		const table = new BackgroundJobTable();
-		const origin = {
-			kind: "external" as const,
-			settlerId: "agent-worker",
-		};
-		const job = table.create({
-			toolCallId: "call-assign",
-			toolName: "assign_agent_task",
-			origin,
-		});
+		const origin = { kind: "external" as const, settlerId: "agent-worker" };
+		const job = table.create({ toolCallId: "call-assign", toolName: "assign_agent_task", origin });
 		const snapshot = snapshotBackgroundJob(job);
 		table.background(job.id);
 
 		Object.assign(origin, { settlerId: "agent-intruder" });
 
-		expect(job.origin).toEqual({
-			kind: "external",
-			settlerId: "agent-worker",
-		});
-		expect(snapshot.origin).toEqual({
-			kind: "external",
-			settlerId: "agent-worker",
-		});
-		expect(
-			table.settle(
-				job.id,
-				{ status: "completed" },
-				{ settledBy: "agent-intruder" },
-			),
-		).toBe("denied");
-		expect(
-			table.settle(
-				job.id,
-				{ status: "completed" },
-				{ settledBy: "agent-worker" },
-			),
-		).toBe("backgrounded");
+		expect(job.origin).toEqual({ kind: "external", settlerId: "agent-worker" });
+		expect(snapshot.origin).toEqual({ kind: "external", settlerId: "agent-worker" });
+		expect(table.settle(job.id, { status: "completed" }, { settledBy: "agent-intruder" })).toBe("denied");
+		expect(table.settle(job.id, { status: "completed" }, { settledBy: "agent-worker" })).toBe("backgrounded");
 	});
 
 	// Nothing watches an external job's signal, so an abort that only fired the
@@ -494,13 +406,7 @@ describe("BackgroundJobTable", () => {
 
 		expect(transitions).toEqual(["backgrounded", "aborting", "settled"]);
 		expect(table.get(job.id)).toBeUndefined();
-		expect(
-			table.settle(
-				job.id,
-				{ status: "completed" },
-				{ settledBy: "agent-worker" },
-			),
-		).toBe("ignored");
+		expect(table.settle(job.id, { status: "completed" }, { settledBy: "agent-worker" })).toBe("ignored");
 	});
 });
 
@@ -541,9 +447,7 @@ describe("ExternalJobDependencyIndex", () => {
 		]);
 		// Taking retires the entries, so a second sweep cannot abort them again.
 		expect(index.takeDependentsOf("agent-worker")).toEqual([]);
-		expect(index.takeDependentsOf("agent-other")).toEqual([
-			{ ownerId: "agent-owner", jobId: unrelated.id },
-		]);
+		expect(index.takeDependentsOf("agent-other")).toEqual([{ ownerId: "agent-owner", jobId: unrelated.id }]);
 	});
 
 	it("drops one owner's entry without disturbing another owner's", () => {
@@ -556,9 +460,7 @@ describe("ExternalJobDependencyIndex", () => {
 		index.track("agent-second-owner", live);
 		index.untrack("agent-owner", settled);
 
-		expect(index.takeDependentsOf("agent-worker")).toEqual([
-			{ ownerId: "agent-second-owner", jobId: live.id },
-		]);
+		expect(index.takeDependentsOf("agent-worker")).toEqual([{ ownerId: "agent-second-owner", jobId: live.id }]);
 	});
 
 	it("forgets every entry an owner held, whatever it was waiting on", () => {
@@ -574,8 +476,6 @@ describe("ExternalJobDependencyIndex", () => {
 		index.forgetOwner("agent-owner");
 
 		expect(index.takeDependentsOf("agent-other")).toEqual([]);
-		expect(index.takeDependentsOf("agent-worker")).toEqual([
-			{ ownerId: "agent-second-owner", jobId: survivor.id },
-		]);
+		expect(index.takeDependentsOf("agent-worker")).toEqual([{ ownerId: "agent-second-owner", jobId: survivor.id }]);
 	});
 });

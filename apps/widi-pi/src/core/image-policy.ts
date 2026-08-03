@@ -15,13 +15,9 @@ import type { AgentMessage } from "@widi/agent-core";
 export const BLOCKED_IMAGE_PLACEHOLDER =
 	"[Image omitted: the images.blockImages setting prevents sending images to model providers.]";
 
-function replaceImages(
-	content: readonly (TextContent | ImageContent)[],
-): (TextContent | ImageContent)[] {
+function replaceImages(content: readonly (TextContent | ImageContent)[]): (TextContent | ImageContent)[] {
 	return content.map((block) =>
-		block.type === "image"
-			? { type: "text" as const, text: BLOCKED_IMAGE_PLACEHOLDER }
-			: block,
+		block.type === "image" ? { type: "text" as const, text: BLOCKED_IMAGE_PLACEHOLDER } : block,
 	);
 }
 
@@ -33,15 +29,9 @@ function hasImage(content: readonly (TextContent | ImageContent)[]): boolean {
  * Replace every image block in user and tool-result messages with a text
  * placeholder. Messages without images are returned unchanged.
  */
-export function stripImagesFromMessages(
-	messages: readonly AgentMessage[],
-): AgentMessage[] {
+export function stripImagesFromMessages(messages: readonly AgentMessage[]): AgentMessage[] {
 	return messages.map((message) => {
-		if (
-			message.role === "user" &&
-			Array.isArray(message.content) &&
-			hasImage(message.content)
-		) {
+		if (message.role === "user" && Array.isArray(message.content) && hasImage(message.content)) {
 			return { ...message, content: replaceImages(message.content) };
 		}
 		if (message.role === "toolResult" && hasImage(message.content)) {

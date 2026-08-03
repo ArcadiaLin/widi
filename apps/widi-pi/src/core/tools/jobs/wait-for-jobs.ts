@@ -1,14 +1,7 @@
 import { type Static, Type } from "typebox";
-import {
-	type BackgroundJob,
-	type BackgroundJobStatus,
-	backgroundJobToolLabel,
-} from "../../background/index.ts";
+import { type BackgroundJob, type BackgroundJobStatus, backgroundJobToolLabel } from "../../background/index.ts";
 import type { ToolDefinition } from "../types.ts";
-import {
-	type SettlementWaitOutcome,
-	waitForSettlements,
-} from "./settlement-wait.ts";
+import { type SettlementWaitOutcome, waitForSettlements } from "./settlement-wait.ts";
 
 /** Default barrier timeout so a wait never hangs the agent indefinitely. */
 const DEFAULT_WAIT_TIMEOUT_MS = 60_000;
@@ -81,10 +74,7 @@ export interface WaitForJobsDetails {
  * message look ignored - up to ten minutes of it. Ending early gives the turn
  * back so the loop can deliver what the user typed.
  */
-export function createWaitForJobsToolDefinition(): ToolDefinition<
-	typeof waitForJobsSchema,
-	WaitForJobsDetails
-> {
+export function createWaitForJobsToolDefinition(): ToolDefinition<typeof waitForJobsSchema, WaitForJobsDetails> {
 	return {
 		name: "wait_for_jobs",
 		label: "wait_for_jobs",
@@ -97,10 +87,7 @@ export function createWaitForJobsToolDefinition(): ToolDefinition<
 			if (!table) {
 				return {
 					content: [
-						{
-							type: "text",
-							text: "No background job registry is available, so there is nothing to wait for.",
-						},
+						{ type: "text", text: "No background job registry is available, so there is nothing to wait for." },
 					],
 					details: { outcome: "completed", jobs: [] },
 				};
@@ -119,10 +106,7 @@ export function createWaitForJobsToolDefinition(): ToolDefinition<
 					.filter((job) => job.phase === "backgrounded")
 					.map((job) => [job.id, job]),
 			);
-			const requestedIds =
-				jobIds && jobIds.length > 0
-					? Array.from(new Set(jobIds))
-					: Array.from(live.keys());
+			const requestedIds = jobIds && jobIds.length > 0 ? Array.from(new Set(jobIds)) : Array.from(live.keys());
 
 			const statuses = new Map<string, WaitForJobsJobStatus>();
 			const pending = new Map<string, BackgroundJob>();
@@ -141,33 +125,18 @@ export function createWaitForJobsToolDefinition(): ToolDefinition<
 					signal: context.signal,
 					humanInterrupts: context.humanInterrupts,
 					onSettled: (job, jobOutcome) =>
-						statuses.set(job.id, {
-							jobId: job.id,
-							toolName: job.toolName,
-							name: job.name,
-							state: jobOutcome.status,
-						}),
+						statuses.set(job.id, { jobId: job.id, toolName: job.toolName, name: job.name, state: jobOutcome.status }),
 				});
 			}
 
 			// Anything still pending stopped short of settling (timeout or abort)
 			// while the job kept running.
 			for (const [id, job] of pending) {
-				statuses.set(id, {
-					jobId: id,
-					toolName: job.toolName,
-					name: job.name,
-					state: "running",
-				});
+				statuses.set(id, { jobId: id, toolName: job.toolName, name: job.name, state: "running" });
 			}
 
-			const jobs = requestedIds.map(
-				(id) => statuses.get(id) ?? { jobId: id, state: "unknown" as const },
-			);
-			return {
-				content: [{ type: "text", text: formatWaitSummary(jobs, outcome) }],
-				details: { outcome, jobs },
-			};
+			const jobs = requestedIds.map((id) => statuses.get(id) ?? { jobId: id, state: "unknown" as const });
+			return { content: [{ type: "text", text: formatWaitSummary(jobs, outcome) }], details: { outcome, jobs } };
 		},
 	};
 }
@@ -185,17 +154,12 @@ function resolveWaitTimeoutMs(timeout: number | undefined): number {
 	return Math.min(timeout * 1000, MAX_WAIT_TIMEOUT_MS);
 }
 
-function formatWaitSummary(
-	jobs: readonly WaitForJobsJobStatus[],
-	outcome: WaitForJobsOutcome,
-): string {
+function formatWaitSummary(jobs: readonly WaitForJobsJobStatus[], outcome: WaitForJobsOutcome): string {
 	if (jobs.length === 0) {
 		return "No matching background jobs to wait for.";
 	}
 	const lines = jobs.map((job) => {
-		const label = job.toolName
-			? ` (${backgroundJobToolLabel({ toolName: job.toolName, name: job.name })})`
-			: "";
+		const label = job.toolName ? ` (${backgroundJobToolLabel({ toolName: job.toolName, name: job.name })})` : "";
 		switch (job.state) {
 			case "completed":
 				return `- ${job.jobId}${label}: completed`;
@@ -210,10 +174,7 @@ function formatWaitSummary(
 		}
 	});
 	const anySettled = jobs.some(
-		(job) =>
-			job.state === "completed" ||
-			job.state === "failed" ||
-			job.state === "cancelled",
+		(job) => job.state === "completed" || job.state === "failed" || job.state === "cancelled",
 	);
 	const header =
 		outcome === "timed_out"

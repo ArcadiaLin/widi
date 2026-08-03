@@ -38,14 +38,10 @@ const EXTENSION_EVENT_NAME_PATTERN = /^[a-zA-Z0-9._:-]+$/;
 
 export function validateExtensionEventName(name: string): string {
 	if (typeof name !== "string" || !EXTENSION_EVENT_NAME_PATTERN.test(name)) {
-		throw new TypeError(
-			"Extension event name must contain only letters, numbers, '.', '_', ':', and '-'.",
-		);
+		throw new TypeError("Extension event name must contain only letters, numbers, '.', '_', ':', and '-'.");
 	}
 	if (utf8ByteLength(name) > MAX_EXTENSION_EVENT_NAME_BYTES) {
-		throw new RangeError(
-			`Extension event name exceeds ${MAX_EXTENSION_EVENT_NAME_BYTES} UTF-8 bytes.`,
-		);
+		throw new RangeError(`Extension event name exceeds ${MAX_EXTENSION_EVENT_NAME_BYTES} UTF-8 bytes.`);
 	}
 	return name;
 }
@@ -54,15 +50,9 @@ export function validateExtensionEventName(name: string): string {
  * Bound the payload and detach it from the emitter. The envelope is frozen
  * separately immediately before dispatch.
  */
-export function validateExtensionEventPayload(
-	payload: JsonValue | undefined,
-): JsonValue | undefined {
+export function validateExtensionEventPayload(payload: JsonValue | undefined): JsonValue | undefined {
 	if (payload === undefined) return undefined;
-	return normalizeJsonValue(
-		payload,
-		"Extension event payload",
-		MAX_EXTENSION_EVENT_PAYLOAD_BYTES,
-	);
+	return normalizeJsonValue(payload, "Extension event payload", MAX_EXTENSION_EVENT_PAYLOAD_BYTES);
 }
 
 /**
@@ -70,9 +60,7 @@ export function validateExtensionEventPayload(
  * the readonly API contract. Freezing recursively also prevents one subscriber
  * from changing what a later subscriber observes.
  */
-export function freezeExtensionEventEnvelope(
-	envelope: ExtensionEventEnvelope,
-): ExtensionEventEnvelope {
+export function freezeExtensionEventEnvelope(envelope: ExtensionEventEnvelope): ExtensionEventEnvelope {
 	if (envelope.payload !== undefined) freezeJsonValue(envelope.payload);
 	return Object.freeze(envelope);
 }

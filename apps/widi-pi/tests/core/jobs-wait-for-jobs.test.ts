@@ -1,21 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-	type BackgroundJobOutcome,
-	BackgroundJobTable,
-} from "../../src/core/background/index.ts";
+import { type BackgroundJobOutcome, BackgroundJobTable } from "../../src/core/background/index.ts";
 import { HumanInterruptRegistry } from "../../src/core/human-interrupt.ts";
-import {
-	createWaitForJobsToolDefinition,
-	type WaitForJobsDetails,
-} from "../../src/core/tools/jobs/wait-for-jobs.ts";
+import { createWaitForJobsToolDefinition, type WaitForJobsDetails } from "../../src/core/tools/jobs/wait-for-jobs.ts";
 import type { ToolExecutionContext } from "../../src/core/tools/types.ts";
 
 const completedOutcome: BackgroundJobOutcome = {
 	status: "completed",
-	result: {
-		content: [{ type: "text", text: "build done" }],
-		details: undefined,
-	},
+	result: { content: [{ type: "text", text: "build done" }], details: undefined },
 };
 
 function makeContext(
@@ -46,19 +37,13 @@ describe("wait_for_jobs tool", () => {
 		const jobId = backgroundJob(table);
 		const tool = createWaitForJobsToolDefinition();
 
-		const promise = tool.execute(
-			"wait-1",
-			{ jobIds: [jobId] },
-			makeContext(table),
-		);
+		const promise = tool.execute("wait-1", { jobIds: [jobId] }, makeContext(table));
 		// The wait is now subscribed; settling the job releases it.
 		table.settle(jobId, completedOutcome);
 		const result = await promise;
 
 		expect(result.details.outcome).toBe("completed");
-		expect(result.details.jobs).toEqual([
-			{ jobId, toolName: "bash", state: "completed" },
-		]);
+		expect(result.details.jobs).toEqual([{ jobId, toolName: "bash", state: "completed" }]);
 	});
 
 	it("waits for every live job when no ids are given", async () => {
@@ -73,26 +58,17 @@ describe("wait_for_jobs tool", () => {
 		const result = await promise;
 
 		expect(result.details.outcome).toBe("completed");
-		expect(result.details.jobs.map((job) => job.state)).toEqual([
-			"completed",
-			"failed",
-		]);
+		expect(result.details.jobs.map((job) => job.state)).toEqual(["completed", "failed"]);
 	});
 
 	it("reports unknown ids that match no live job", async () => {
 		const table = new BackgroundJobTable();
 		const tool = createWaitForJobsToolDefinition();
 
-		const result = await tool.execute(
-			"wait-1",
-			{ jobIds: ["job-404"] },
-			makeContext(table),
-		);
+		const result = await tool.execute("wait-1", { jobIds: ["job-404"] }, makeContext(table));
 
 		expect(result.details.outcome).toBe("completed");
-		expect(result.details.jobs).toEqual([
-			{ jobId: "job-404", state: "unknown" },
-		]);
+		expect(result.details.jobs).toEqual([{ jobId: "job-404", state: "unknown" }]);
 	});
 
 	it("does not wait on a job that has not been backgrounded yet", async () => {
@@ -110,11 +86,7 @@ describe("wait_for_jobs tool", () => {
 
 		// Explicitly naming the running job reports it as untracked rather than
 		// blocking on a settlement that will never notify.
-		const named = await tool.execute(
-			"wait-2",
-			{ jobIds: [job.id] },
-			makeContext(table),
-		);
+		const named = await tool.execute("wait-2", { jobIds: [job.id] }, makeContext(table));
 		expect(named.details.outcome).toBe("completed");
 		expect(named.details.jobs).toEqual([{ jobId: job.id, state: "unknown" }]);
 
@@ -129,18 +101,12 @@ describe("wait_for_jobs tool", () => {
 			const jobId = backgroundJob(table);
 			const tool = createWaitForJobsToolDefinition();
 
-			const promise = tool.execute(
-				"wait-1",
-				{ jobIds: [jobId], timeout: 1 },
-				makeContext(table),
-			);
+			const promise = tool.execute("wait-1", { jobIds: [jobId], timeout: 1 }, makeContext(table));
 			await vi.advanceTimersByTimeAsync(1000);
 			const result = await promise;
 
 			expect(result.details.outcome).toBe("timed_out");
-			expect(result.details.jobs).toEqual([
-				{ jobId, toolName: "bash", state: "running" },
-			]);
+			expect(result.details.jobs).toEqual([{ jobId, toolName: "bash", state: "running" }]);
 			// The job is untouched and keeps running.
 			expect(table.get(jobId)?.phase).toBe("backgrounded");
 		} finally {
@@ -154,22 +120,13 @@ describe("wait_for_jobs tool", () => {
 		const controller = new AbortController();
 		const tool = createWaitForJobsToolDefinition();
 
-		const promise = tool.execute(
-			"wait-1",
-			{ jobIds: [jobId] },
-			makeContext(table, controller.signal),
-		);
+		const promise = tool.execute("wait-1", { jobIds: [jobId] }, makeContext(table, controller.signal));
 		controller.abort();
 		const result = await promise;
 
 		expect(result.details.outcome).toBe("aborted");
-		expect(result.details.jobs).toEqual([
-			{ jobId, toolName: "bash", state: "running" },
-		]);
-		expect(result.content[0]).toMatchObject({
-			type: "text",
-			text: expect.stringContaining("interrupted"),
-		});
+		expect(result.details.jobs).toEqual([{ jobId, toolName: "bash", state: "running" }]);
+		expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("interrupted") });
 		expect(table.get(jobId)?.phase).toBe("backgrounded");
 	});
 
@@ -188,13 +145,8 @@ describe("wait_for_jobs tool", () => {
 		const result = await promise;
 
 		expect(result.details.outcome).toBe("steered");
-		expect(result.details.jobs).toEqual([
-			{ jobId, toolName: "bash", state: "running" },
-		]);
-		expect(result.content[0]).toMatchObject({
-			type: "text",
-			text: expect.stringContaining("the user sent a message"),
-		});
+		expect(result.details.jobs).toEqual([{ jobId, toolName: "bash", state: "running" }]);
+		expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("the user sent a message") });
 		expect(table.get(jobId)?.phase).toBe("backgrounded");
 	});
 
@@ -224,16 +176,10 @@ describe("wait_for_jobs tool", () => {
 
 		// timeout 0 must return promptly with the live status rather than falling
 		// back to the default 60s barrier.
-		const result = await tool.execute(
-			"wait-1",
-			{ jobIds: [jobId], timeout: 0 },
-			makeContext(table),
-		);
+		const result = await tool.execute("wait-1", { jobIds: [jobId], timeout: 0 }, makeContext(table));
 
 		expect(result.details.outcome).toBe("timed_out");
-		expect(result.details.jobs).toEqual([
-			{ jobId, toolName: "bash", state: "running" },
-		]);
+		expect(result.details.jobs).toEqual([{ jobId, toolName: "bash", state: "running" }]);
 		// The job is untouched and keeps running.
 		expect(table.get(jobId)?.phase).toBe("backgrounded");
 	});
@@ -247,18 +193,12 @@ describe("wait_for_jobs tool", () => {
 
 			// A day-long request must not hang: it is clamped to the 600s ceiling, so
 			// advancing 600s releases the wait.
-			const promise = tool.execute(
-				"wait-1",
-				{ jobIds: [jobId], timeout: 86_400 },
-				makeContext(table),
-			);
+			const promise = tool.execute("wait-1", { jobIds: [jobId], timeout: 86_400 }, makeContext(table));
 			await vi.advanceTimersByTimeAsync(600_000);
 			const result = await promise;
 
 			expect(result.details.outcome).toBe("timed_out");
-			expect(result.details.jobs).toEqual([
-				{ jobId, toolName: "bash", state: "running" },
-			]);
+			expect(result.details.jobs).toEqual([{ jobId, toolName: "bash", state: "running" }]);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -268,11 +208,7 @@ describe("wait_for_jobs tool", () => {
 		const table = new BackgroundJobTable();
 		const tool = createWaitForJobsToolDefinition();
 
-		const result = await tool.execute(
-			"wait-1",
-			{ jobIds: ["job-404"] },
-			makeContext(table),
-		);
+		const result = await tool.execute("wait-1", { jobIds: ["job-404"] }, makeContext(table));
 
 		expect(result.content[0]).toMatchObject({
 			type: "text",
@@ -286,11 +222,7 @@ describe("wait_for_jobs tool", () => {
 
 	it("reports no registry when the background job table is absent", async () => {
 		const tool = createWaitForJobsToolDefinition();
-		const result = await tool.execute(
-			"wait-1",
-			{ jobIds: ["job-1"] },
-			makeContext(undefined),
-		);
+		const result = await tool.execute("wait-1", { jobIds: ["job-1"] }, makeContext(undefined));
 
 		expect(result.details).toEqual({ outcome: "completed", jobs: [] });
 		expect(result.content[0]).toMatchObject({ type: "text" });

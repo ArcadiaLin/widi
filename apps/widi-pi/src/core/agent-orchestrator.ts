@@ -28,12 +28,7 @@ import {
 	type ThinkingLevel,
 } from "@widi/agent-core";
 import { formatError } from "../utils/errors.ts";
-import type {
-	AgentProfile,
-	AgentProfileOverride,
-	AgentProfileRegistry,
-	AgentProfileSource,
-} from "./agent-profile.js";
+import type { AgentProfile, AgentProfileOverride, AgentProfileRegistry, AgentProfileSource } from "./agent-profile.js";
 import { parseAgentProfileReference } from "./agent-profile.js";
 import {
 	type AgentRecord,
@@ -60,11 +55,7 @@ import {
 	snapshotBackgroundJob,
 } from "./background/index.ts";
 import type { OrchestratorClient } from "./client.ts";
-import {
-	type OrchestratorDiagnostic,
-	OrchestratorError,
-	toDiagnostic,
-} from "./diagnostics.ts";
+import { type OrchestratorDiagnostic, OrchestratorError, toDiagnostic } from "./diagnostics.ts";
 import {
 	EXTENSION_OBSERVED_EVENT_NAMES,
 	type ExtensionActionFailure,
@@ -101,11 +92,7 @@ import {
 } from "./extension/presentation.ts";
 import { ExtensionStatusRegistry } from "./extension/status-registry.ts";
 import { HumanInterruptRegistry } from "./human-interrupt.ts";
-import type {
-	HumanRequest,
-	HumanRequestDraft,
-	HumanResponse,
-} from "./human-request.ts";
+import type { HumanRequest, HumanRequestDraft, HumanResponse } from "./human-request.ts";
 import { HumanRequestBroker } from "./human-request.ts";
 import { stripImagesFromMessages } from "./image-policy.ts";
 import {
@@ -146,10 +133,7 @@ import type {
 	SessionManager,
 } from "./session-manager.ts";
 import type { SettingManager } from "./setting-manager.js";
-import {
-	buildAgentSystemPrompt,
-	type ToolPromptGuidance,
-} from "./system-prompt.ts";
+import { buildAgentSystemPrompt, type ToolPromptGuidance } from "./system-prompt.ts";
 import {
 	createAgentHarnessToolsFromResolvedTools,
 	type ResolvedAgentHarnessTool,
@@ -295,9 +279,7 @@ export interface SpawnAgentResumeOptions extends SpawnAgentCommonOptions {
 	metadata: JsonlSessionMetadata;
 }
 
-export type SpawnAgentOptions =
-	| SpawnAgentCreateOptions
-	| SpawnAgentResumeOptions;
+export type SpawnAgentOptions = SpawnAgentCreateOptions | SpawnAgentResumeOptions;
 
 export interface DisposeAgentOptions {
 	readonly reason?: string;
@@ -315,9 +297,7 @@ interface AgentCreationBarrier {
 	readonly complete: () => void;
 }
 
-type AgentDisposalResult =
-	| { readonly kind: "disposed" }
-	| { readonly kind: "failed"; readonly error: unknown };
+type AgentDisposalResult = { readonly kind: "disposed" } | { readonly kind: "failed"; readonly error: unknown };
 
 interface AgentDisposalBarrier {
 	readonly completion: Promise<AgentDisposalResult>;
@@ -326,16 +306,8 @@ interface AgentDisposalBarrier {
 
 type AgentDisposalOperation =
 	| { readonly kind: "already_disposed"; readonly agentId: AgentId }
-	| {
-			readonly kind: "existing";
-			readonly agentId: AgentId;
-			readonly barrier: AgentDisposalBarrier;
-	  }
-	| {
-			readonly kind: "owned";
-			readonly agentId: AgentId;
-			readonly barrier: AgentDisposalBarrier;
-	  };
+	| { readonly kind: "existing"; readonly agentId: AgentId; readonly barrier: AgentDisposalBarrier }
+	| { readonly kind: "owned"; readonly agentId: AgentId; readonly barrier: AgentDisposalBarrier };
 
 interface AgentPromptRun {
 	idleReason?: AgentIdleReason;
@@ -374,8 +346,7 @@ interface ExtensionInputPresentationRecord {
 	readonly presentation: ExtensionInputPresentation;
 }
 
-interface PendingExtensionInputPresentation
-	extends ExtensionInputPresentationRecord {
+interface PendingExtensionInputPresentation extends ExtensionInputPresentationRecord {
 	readonly expectedText?: string;
 	method?: MessageDeliveryMethod;
 	message?: AgentMessage;
@@ -397,12 +368,7 @@ type AcceptedMessage =
 			readonly receipt: MessageDeliveryReceipt;
 			readonly provisional?: ProvisionalPromptEntries;
 	  }
-	| {
-			readonly kind: "blocked";
-			readonly inputId: string;
-			readonly reason?: string;
-			readonly blockedBy: string;
-	  };
+	| { readonly kind: "blocked"; readonly inputId: string; readonly reason?: string; readonly blockedBy: string };
 
 export class AgentOrchestrator {
 	private _defaultModel: RuntimeModel;
@@ -420,8 +386,7 @@ export class AgentOrchestrator {
 	readonly extensionLoader: ExtensionLoader;
 
 	private _unsubscribeAgentHarness: Map<AgentId, () => void> = new Map();
-	private _unsubscribeAgentExtensionInterceptors: Map<AgentId, () => void> =
-		new Map();
+	private _unsubscribeAgentExtensionInterceptors: Map<AgentId, () => void> = new Map();
 	private _unsubscribeAgentJobChanges: Map<AgentId, () => void> = new Map();
 	private _unsubscribeAgentJobProgress: Map<AgentId, () => void> = new Map();
 	private _unsubscribeAgentJobReports: Map<AgentId, () => void> = new Map();
@@ -442,16 +407,8 @@ export class AgentOrchestrator {
 	private _progressSequence: Map<AgentId, Map<string, number>> = new Map();
 	// Latest report waiting on the serialized emission tail. Replacing the value
 	// coalesces intermediate revisions while preserving one queued task per job.
-	private _queuedJobReports: Map<
-		AgentId,
-		Map<
-			string,
-			{
-				report: BackgroundJobReportSnapshot;
-				operationRef: string;
-			}
-		>
-	> = new Map();
+	private _queuedJobReports: Map<AgentId, Map<string, { report: BackgroundJobReportSnapshot; operationRef: string }>> =
+		new Map();
 	private _eventListeners: Set<OrchestratorEventListener> = new Set();
 	private _extensionObserverDispatchDepth: Map<AgentId, number> = new Map();
 	private _agentRunSignals: Map<AgentId, AbortSignal> = new Map();
@@ -475,10 +432,7 @@ export class AgentOrchestrator {
 	// turn, but a steer, follow-up, or abort here would target the wrong phase.
 	// Inserting before the first await also serves as the per-agent maintenance
 	// lock, so a competing operation cannot overwrite the published kind.
-	private _maintenanceOperations: Map<
-		AgentId,
-		{ readonly kind: AgentMaintenanceKind }
-	> = new Map();
+	private _maintenanceOperations: Map<AgentId, { readonly kind: AgentMaintenanceKind }> = new Map();
 	// Waiters for a target's next agent-loop start, resolved from the harness's
 	// own `agent_start`. Accepting a prompt any earlier would report success for
 	// text the harness can still drop while it builds the turn.
@@ -501,8 +455,7 @@ export class AgentOrchestrator {
 	// Depth belongs to the causal async chain, not to the runtime as a whole:
 	// independent concurrent emits must not consume one another's recursion
 	// budget, while a handler's nested emit must inherit its parent's depth.
-	private readonly _extensionEventDispatchContext =
-		new AsyncLocalStorage<number>();
+	private readonly _extensionEventDispatchContext = new AsyncLocalStorage<number>();
 	// A shutdown request is a fact about the runtime, not about the extension
 	// that asked, so the second request adds nothing for the host to act on.
 	private _shutdownRequested = false;
@@ -522,16 +475,12 @@ export class AgentOrchestrator {
 	// registered, because a resumed session reuses its agent id.
 	private readonly _disposingAgents = new Set<AgentId>();
 	private readonly _extensionStatuses = new ExtensionStatusRegistry();
-	private _clients: Map<string, OrchestratorClient<OrchestratorEvent>> =
-		new Map();
+	private _clients: Map<string, OrchestratorClient<OrchestratorEvent>> = new Map();
 	private readonly _messages: MessageDeliveryQueue;
 	private readonly _humanRequests: HumanRequestBroker;
 	private _nextInputId = 1;
 	private _nextPresentationId = 1;
-	private readonly _pendingExtensionInputPresentations = new Map<
-		AgentId,
-		PendingExtensionInputPresentation[]
-	>();
+	private readonly _pendingExtensionInputPresentations = new Map<AgentId, PendingExtensionInputPresentation[]>();
 
 	constructor(config: AgentOrchestratorConfigs) {
 		this.executionEnv = config.executionEnv;
@@ -539,16 +488,12 @@ export class AgentOrchestrator {
 		this.sessionManager = config.sessionManager;
 		this.settingManager = config.settingManager;
 		this.modelRegistry = config.modelRegistry;
-		this.modelRegistry.setDiagnosticPublisher(
-			async (diagnostics) => await this._publishDiagnostics(diagnostics),
-		);
+		this.modelRegistry.setDiagnosticPublisher(async (diagnostics) => await this._publishDiagnostics(diagnostics));
 		this.profileRegistry = config.profileRegistry;
 		this.toolRegistry = config.toolRegistry ?? new ToolRegistry();
 		this.extensionLoader = config.extensionLoader ?? new ExtensionLoader();
 		this._defaultProfileId = config.defaultProfileId;
-		this._enabledProfileIds = config.enabledProfileIds
-			? [...config.enabledProfileIds]
-			: undefined;
+		this._enabledProfileIds = config.enabledProfileIds ? [...config.enabledProfileIds] : undefined;
 		this._defaultModel = config.defaultModel;
 		this._defaultThinkingLevel = config.defaultThinkingLevel;
 		this._messages = new MessageDeliveryQueue({
@@ -561,9 +506,7 @@ export class AgentOrchestrator {
 					});
 				}
 				const harness = this._requireAgentHarness(request.agentId);
-				const options = request.images
-					? { images: [...request.images] }
-					: undefined;
+				const options = request.images ? { images: [...request.images] } : undefined;
 				if (request.method === "follow_up") {
 					await harness.followUp(request.text, options);
 				} else {
@@ -572,10 +515,7 @@ export class AgentOrchestrator {
 						: undefined;
 					await harness.steer(request.text, options);
 					if (clearRevision !== undefined) {
-						this._humanInterrupts.notifyIfUncleared(
-							request.agentId,
-							clearRevision,
-						);
+						this._humanInterrupts.notifyIfUncleared(request.agentId, clearRevision);
 					}
 				}
 				return { method: request.method };
@@ -583,8 +523,7 @@ export class AgentOrchestrator {
 		});
 		this._humanRequests = new HumanRequestBroker({
 			findHumanRequestHandler: () =>
-				Array.from(this._clients.values()).find((entry) => entry.requestHuman)
-					?.requestHuman,
+				Array.from(this._clients.values()).find((entry) => entry.requestHuman)?.requestHuman,
 			emit: async (event) => {
 				await this._emit(event);
 			},
@@ -606,10 +545,7 @@ export class AgentOrchestrator {
 		return await this._spawnNewAgent(options);
 	}
 
-	private async _spawnNewAgent(
-		options: SpawnAgentCreateOptions,
-		spawnedBy?: AgentRecord,
-	): Promise<AgentId> {
+	private async _spawnNewAgent(options: SpawnAgentCreateOptions, spawnedBy?: AgentRecord): Promise<AgentId> {
 		if (spawnedBy) this._assertAgentCanSpawn(spawnedBy);
 		const agentProfile = await this._resolveCreateProfile(options);
 		const model = this._resolveSpawnModel(options);
@@ -674,11 +610,7 @@ export class AgentOrchestrator {
 	}
 
 	listAgents(): AgentListResult {
-		return {
-			agents: Array.from(this._agents.values()).map((record) =>
-				snapshotAgentRecord(record),
-			),
-		};
+		return { agents: Array.from(this._agents.values()).map((record) => snapshotAgentRecord(record)) };
 	}
 
 	listExtensionStatuses(agentId: AgentId): ExtensionStatusSnapshot[] {
@@ -686,18 +618,13 @@ export class AgentOrchestrator {
 		return this._extensionStatuses.list(agentId);
 	}
 
-	async newAgentSessionFromAgent(
-		agentId: AgentId,
-	): Promise<AgentSessionResult> {
+	async newAgentSessionFromAgent(agentId: AgentId): Promise<AgentSessionResult> {
 		const sourceRecord = this._requireAgentRecord(agentId);
 		const spawnedAgentId = await this.spawnAgent({
 			profileId: sourceRecord.profile.reference.id,
 			model: sourceRecord.model,
 		});
-		return {
-			agentId: spawnedAgentId,
-			snapshot: this.inspectAgent(spawnedAgentId),
-		};
+		return { agentId: spawnedAgentId, snapshot: this.inspectAgent(spawnedAgentId) };
 	}
 
 	async getAgentSession(agentId: AgentId): Promise<AgentSessionSnapshot> {
@@ -705,9 +632,7 @@ export class AgentOrchestrator {
 		return await this.sessionManager.getAgentSessionSnapshot(agentId);
 	}
 
-	async getAgentSessionTree(
-		agentId: AgentId,
-	): Promise<AgentSessionTreeSnapshot> {
+	async getAgentSessionTree(agentId: AgentId): Promise<AgentSessionTreeSnapshot> {
 		this._requireAgentRecord(agentId);
 		return await this.sessionManager.getAgentSessionTree(agentId);
 	}
@@ -716,33 +641,16 @@ export class AgentOrchestrator {
 		return (await this.getAgentSession(agentId)).name;
 	}
 
-	async setAgentSessionName(
-		agentId: AgentId,
-		name: string,
-	): Promise<AgentSessionSnapshot> {
+	async setAgentSessionName(agentId: AgentId, name: string): Promise<AgentSessionSnapshot> {
 		this._requireAgentRecord(agentId);
-		const snapshot = await this.sessionManager.setAgentSessionName(
-			agentId,
-			name,
-		);
-		await this._emit({
-			type: "agent_session_info_changed",
-			agentId,
-			name: snapshot.name,
-			changedAt: now(),
-		});
+		const snapshot = await this.sessionManager.setAgentSessionName(agentId, name);
+		await this._emit({ type: "agent_session_info_changed", agentId, name: snapshot.name, changedAt: now() });
 		return snapshot;
 	}
 
-	async forkAgentSessionFromAgent(
-		agentId: AgentId,
-		options?: ForkAgentSessionOptions,
-	): Promise<AgentSessionResult> {
+	async forkAgentSessionFromAgent(agentId: AgentId, options?: ForkAgentSessionOptions): Promise<AgentSessionResult> {
 		const sourceRecord = this._requireAgentRecord(agentId);
-		const metadata = await this.sessionManager.forkAgentSession(
-			agentId,
-			options,
-		);
+		const metadata = await this.sessionManager.forkAgentSession(agentId, options);
 		await this._emit({
 			type: "agent_session_forked",
 			agentId,
@@ -750,42 +658,21 @@ export class AgentOrchestrator {
 			entryId: options?.entryId,
 			createdAt: now(),
 		});
-		const spawnedAgentId = await this.spawnAgent({
-			resume: true,
-			metadata,
-			model: sourceRecord.model,
-		});
-		return {
-			agentId: spawnedAgentId,
-			snapshot: this.inspectAgent(spawnedAgentId),
-		};
+		const spawnedAgentId = await this.spawnAgent({ resume: true, metadata, model: sourceRecord.model });
+		return { agentId: spawnedAgentId, snapshot: this.inspectAgent(spawnedAgentId) };
 	}
 
 	async listAgentSessions(): Promise<AgentSessionListResult> {
-		return {
-			sessions: await this.sessionManager.listAgentSessionCandidates(),
-		};
+		return { sessions: await this.sessionManager.listAgentSessionCandidates() };
 	}
 
-	async resumeAgentSessionByReference(
-		reference: string,
-	): Promise<AgentSessionResult> {
-		const metadata =
-			await this.sessionManager.resolveAgentSessionReference(reference);
-		const spawnedAgentId = await this.spawnAgent({
-			resume: true,
-			metadata,
-		});
-		return {
-			agentId: spawnedAgentId,
-			snapshot: this.inspectAgent(spawnedAgentId),
-		};
+	async resumeAgentSessionByReference(reference: string): Promise<AgentSessionResult> {
+		const metadata = await this.sessionManager.resolveAgentSessionReference(reference);
+		const spawnedAgentId = await this.spawnAgent({ resume: true, metadata });
+		return { agentId: spawnedAgentId, snapshot: this.inspectAgent(spawnedAgentId) };
 	}
 
-	async recordExtensionDiagnostics(
-		agentId: AgentId,
-		diagnostics: readonly OrchestratorDiagnostic[],
-	): Promise<void> {
+	async recordExtensionDiagnostics(agentId: AgentId, diagnostics: readonly OrchestratorDiagnostic[]): Promise<void> {
 		await this._recordAndPublishExtensionDiagnostics(agentId, diagnostics);
 	}
 
@@ -812,10 +699,7 @@ export class AgentOrchestrator {
 		};
 	}
 
-	async setAgentModelByReference(
-		agentId: AgentId,
-		reference: string,
-	): Promise<RuntimeModel> {
+	async setAgentModelByReference(agentId: AgentId, reference: string): Promise<RuntimeModel> {
 		const parsed = parseModelReference(reference);
 		if (!parsed) {
 			throw new OrchestratorError({
@@ -826,11 +710,7 @@ export class AgentOrchestrator {
 			});
 		}
 		const models = await this.modelRegistry.getAvailable();
-		const model = models.find(
-			(candidate) =>
-				candidate.provider === parsed.provider &&
-				candidate.id === parsed.modelId,
-		);
+		const model = models.find((candidate) => candidate.provider === parsed.provider && candidate.id === parsed.modelId);
 		if (!model) {
 			throw new OrchestratorError({
 				severity: "error",
@@ -846,13 +726,13 @@ export class AgentOrchestrator {
 	listAuthProviderCandidates(): AuthProviderCandidateListResult {
 		const authStorage = this.modelRegistry.authStorage;
 		return {
-			providers: authStorage.getOAuthProviders().map((provider) => ({
-				value: provider.id,
-				label: provider.name,
-				description: authStorage.getAuthStatus(provider.id).configured
-					? "logged in"
-					: undefined,
-			})),
+			providers: authStorage
+				.getOAuthProviders()
+				.map((provider) => ({
+					value: provider.id,
+					label: provider.name,
+					description: authStorage.getAuthStatus(provider.id).configured ? "logged in" : undefined,
+				})),
 		};
 	}
 
@@ -863,9 +743,7 @@ export class AgentOrchestrator {
 		return {
 			providers: (await authStorage.list()).map((info) => ({
 				value: info.providerId,
-				label:
-					oauthProviders.find((provider) => provider.id === info.providerId)
-						?.name ?? info.providerId,
+				label: oauthProviders.find((provider) => provider.id === info.providerId)?.name ?? info.providerId,
 			})),
 		};
 	}
@@ -874,15 +752,10 @@ export class AgentOrchestrator {
 	// (authorization URL, device code, progress) broadcast as auth_login_*
 	// events; interactive steps go through the human-request broker, so any
 	// client that answers human requests can drive a login.
-	async loginAuthProvider(
-		providerId: string,
-		options?: { agentId?: AgentId },
-	): Promise<AuthProviderLoginResult> {
+	async loginAuthProvider(providerId: string, options?: { agentId?: AgentId }): Promise<AuthProviderLoginResult> {
 		const authStorage = this.modelRegistry.authStorage;
 		const reference = providerId.trim();
-		const provider = authStorage
-			.getOAuthProviders()
-			.find((candidate) => candidate.id === reference);
+		const provider = authStorage.getOAuthProviders().find((candidate) => candidate.id === reference);
 		if (!provider) {
 			throw new OrchestratorError({
 				severity: "error",
@@ -900,11 +773,7 @@ export class AgentOrchestrator {
 		try {
 			await authStorage.login(
 				provider.id,
-				this._createOAuthLoginCallbacks(
-					provider.id,
-					options?.agentId,
-					settle.signal,
-				),
+				this._createOAuthLoginCallbacks(provider.id, options?.agentId, settle.signal),
 			);
 		} catch (error) {
 			const diagnostic = toDiagnostic(error, {
@@ -935,9 +804,7 @@ export class AgentOrchestrator {
 		return { providerId: provider.id, providerName: provider.name };
 	}
 
-	async logoutAuthProvider(
-		providerId: string,
-	): Promise<AuthProviderLogoutResult> {
+	async logoutAuthProvider(providerId: string): Promise<AuthProviderLogoutResult> {
 		const authStorage = this.modelRegistry.authStorage;
 		const reference = providerId.trim();
 		if (!reference) {
@@ -963,12 +830,8 @@ export class AgentOrchestrator {
 		settleSignal: AbortSignal,
 	): OAuthLoginCallbacks {
 		const requestHuman = async (draft: HumanRequestDraft) =>
-			await this._humanRequests.request(
-				{ ...draft, source: { kind: "human" }, signal: settleSignal },
-				{ agentId },
-			);
-		const inputValue = (response: HumanResponse) =>
-			response.kind === "input" ? response.value : undefined;
+			await this._humanRequests.request({ ...draft, source: { kind: "human" }, signal: settleSignal }, { agentId });
+		const inputValue = (response: HumanResponse) => (response.kind === "input" ? response.value : undefined);
 		return {
 			signal: settleSignal,
 			onAuth: (info) => {
@@ -992,20 +855,10 @@ export class AgentOrchestrator {
 				});
 			},
 			onProgress: (message) => {
-				void this._emit({
-					type: "auth_login_progress",
-					providerId,
-					agentId,
-					message,
-					createdAt: now(),
-				});
+				void this._emit({ type: "auth_login_progress", providerId, agentId, message, createdAt: now() });
 			},
 			onPrompt: async (prompt) => {
-				const response = await requestHuman({
-					kind: "input",
-					title: prompt.message,
-					placeholder: prompt.placeholder,
-				});
+				const response = await requestHuman({ kind: "input", title: prompt.message, placeholder: prompt.placeholder });
 				const value = inputValue(response);
 				if (value !== undefined) return value;
 				if (prompt.allowEmpty) return "";
@@ -1014,8 +867,7 @@ export class AgentOrchestrator {
 			onManualCodeInput: async () => {
 				const response = await requestHuman({
 					kind: "input",
-					title:
-						"Complete login in your browser, or paste the authorization code / redirect URL here:",
+					title: "Complete login in your browser, or paste the authorization code / redirect URL here:",
 					provisional: true,
 				});
 				const value = inputValue(response);
@@ -1036,28 +888,19 @@ export class AgentOrchestrator {
 		};
 	}
 
-	listAgentThinkingLevelCandidates(
-		agentId: AgentId,
-	): AgentThinkingLevelCandidateListResult {
+	listAgentThinkingLevelCandidates(agentId: AgentId): AgentThinkingLevelCandidateListResult {
 		const record = this._requireAgentRecord(agentId);
-		return {
-			levels: this._getAgentThinkingLevelCandidates(record),
-		};
+		return { levels: this._getAgentThinkingLevelCandidates(record) };
 	}
 
 	getAgentThinkingLevel(agentId: AgentId): ThinkingLevel {
 		return this._requireAgentHarness(agentId).getThinkingLevel();
 	}
 
-	async setAgentThinkingLevel(
-		agentId: AgentId,
-		level: ThinkingLevel,
-	): Promise<void> {
+	async setAgentThinkingLevel(agentId: AgentId, level: ThinkingLevel): Promise<void> {
 		const record = this._requireAgentRecord(agentId);
 		if (!record.model.reasoning) {
-			throw new OrchestratorError(
-				this._createAgentThinkingNotSupportedDiagnostic(record),
-			);
+			throw new OrchestratorError(this._createAgentThinkingNotSupportedDiagnostic(record));
 		}
 		const supportedLevels = getSupportedThinkingLevels(record.model);
 		if (!supportedLevels.includes(level)) {
@@ -1071,9 +914,7 @@ export class AgentOrchestrator {
 		await this._requireAgentHarness(agentId).setThinkingLevel(level);
 	}
 
-	async listAgentPromptTemplateCandidates(
-		agentId: AgentId,
-	): Promise<AgentPromptTemplateCandidateListResult> {
+	async listAgentPromptTemplateCandidates(agentId: AgentId): Promise<AgentPromptTemplateCandidateListResult> {
 		const templates = await this._loadAgentPromptTemplates(agentId);
 		return {
 			templates: templates.map((template) => ({
@@ -1084,10 +925,7 @@ export class AgentOrchestrator {
 		};
 	}
 
-	async getAgentPromptTemplate(
-		agentId: AgentId,
-		name: string,
-	): Promise<PromptTemplate> {
+	async getAgentPromptTemplate(agentId: AgentId, name: string): Promise<PromptTemplate> {
 		const templates = await this._loadAgentPromptTemplates(agentId);
 		const template = templates.find((candidate) => candidate.name === name);
 		if (!template) {
@@ -1106,9 +944,7 @@ export class AgentOrchestrator {
 	 * a prompt template the user just edited should be usable without restarting
 	 * the agent.
 	 */
-	private async _loadAgentPromptTemplates(
-		agentId: AgentId,
-	): Promise<PromptTemplate[]> {
+	private async _loadAgentPromptTemplates(agentId: AgentId): Promise<PromptTemplate[]> {
 		this._requireAgentRecord(agentId);
 		const loaded = await this.resourceLoader.loadPromptTemplates();
 		await this._publishDiagnostics(
@@ -1122,16 +958,10 @@ export class AgentOrchestrator {
 		return loaded.promptTemplates.map(({ promptTemplate }) => promptTemplate);
 	}
 
-	async listAgentSkillCandidates(
-		agentId: AgentId,
-	): Promise<AgentSkillCandidateListResult> {
+	async listAgentSkillCandidates(agentId: AgentId): Promise<AgentSkillCandidateListResult> {
 		const skills = await this._loadAgentSkills(agentId);
 		return {
-			skills: skills.map((skill) => ({
-				value: skill.name,
-				label: skill.name,
-				description: skill.description,
-			})),
+			skills: skills.map((skill) => ({ value: skill.name, label: skill.name, description: skill.description })),
 		};
 	}
 
@@ -1164,10 +994,7 @@ export class AgentOrchestrator {
 		return loaded.skills.map(({ skill }) => skill);
 	}
 
-	async setAgentThinkingLevelByName(
-		agentId: AgentId,
-		levelName: string,
-	): Promise<AgentThinkingLevelResult> {
+	async setAgentThinkingLevelByName(agentId: AgentId, levelName: string): Promise<AgentThinkingLevelResult> {
 		const level = parseThinkingLevel(levelName);
 		if (!level) {
 			throw new OrchestratorError({
@@ -1181,23 +1008,14 @@ export class AgentOrchestrator {
 		return { level };
 	}
 
-	private _getAgentThinkingLevelCandidates(
-		record: AgentRecord,
-	): CandidateItem[] {
+	private _getAgentThinkingLevelCandidates(record: AgentRecord): CandidateItem[] {
 		if (!record.model.reasoning) {
-			throw new OrchestratorError(
-				this._createAgentThinkingNotSupportedDiagnostic(record),
-			);
+			throw new OrchestratorError(this._createAgentThinkingNotSupportedDiagnostic(record));
 		}
-		return getSupportedThinkingLevels(record.model).map((level) => ({
-			value: level,
-			label: level,
-		}));
+		return getSupportedThinkingLevels(record.model).map((level) => ({ value: level, label: level }));
 	}
 
-	private _createAgentThinkingNotSupportedDiagnostic(
-		record: AgentRecord,
-	): OrchestratorDiagnostic {
+	private _createAgentThinkingNotSupportedDiagnostic(record: AgentRecord): OrchestratorDiagnostic {
 		return {
 			severity: "error",
 			code: "model.thinking_not_supported",
@@ -1208,17 +1026,10 @@ export class AgentOrchestrator {
 
 	getAgentTools(agentId: AgentId): AgentToolsSnapshot {
 		const state = this._requireAgentToolSet(agentId);
-		return {
-			toolNames: [...state.toolNames],
-			activeToolNames: [...state.activeToolNames],
-		};
+		return { toolNames: [...state.toolNames], activeToolNames: [...state.activeToolNames] };
 	}
 
-	async setAgentTools(
-		agentId: AgentId,
-		toolNames: string[],
-		activeToolNames?: string[],
-	): Promise<void> {
+	async setAgentTools(agentId: AgentId, toolNames: string[], activeToolNames?: string[]): Promise<void> {
 		const harness = this._requireAgentHarness(agentId);
 		const currentState = this._requireAgentToolSet(agentId);
 		const next = await this._resolveAgentTools({
@@ -1226,9 +1037,7 @@ export class AgentOrchestrator {
 			profileId: currentState.profileId,
 			requestedToolNames: toolNames,
 			activeToolSelection:
-				activeToolNames === undefined
-					? { mode: "default_all" }
-					: { mode: "explicit", toolNames: activeToolNames },
+				activeToolNames === undefined ? { mode: "default_all" } : { mode: "explicit", toolNames: activeToolNames },
 		});
 		await harness.setTools(next.tools, [...next.activeToolNames]);
 		this._setAgentToolSet(agentId, next);
@@ -1238,10 +1047,7 @@ export class AgentOrchestrator {
 		return [...this._requireAgentToolSet(agentId).activeToolNames];
 	}
 
-	async setAgentActiveTools(
-		agentId: AgentId,
-		toolNames: string[],
-	): Promise<void> {
+	async setAgentActiveTools(agentId: AgentId, toolNames: string[]): Promise<void> {
 		const harness = this._requireAgentHarness(agentId);
 		const currentState = this._requireAgentToolSet(agentId);
 		// The harness owns the installed tools, so activation validates against
@@ -1249,27 +1055,18 @@ export class AgentOrchestrator {
 		// registry re-resolve here would race concurrent setTools/reload calls
 		// and re-publish standing resolve diagnostics on every toggle.
 		const installedNames = new Set(harness.getTools().map((tool) => tool.name));
-		const { activeToolNames, diagnostics } = selectActiveToolNames(
-			toolNames,
-			installedNames,
-			{ agentId },
-		);
+		const { activeToolNames, diagnostics } = selectActiveToolNames(toolNames, installedNames, { agentId });
 		await harness.setActiveTools(activeToolNames);
 		// Re-read the harness after the await: it is the source of truth, and a
 		// concurrent tool-set change must not be clobbered by our stale copy.
 		const tools = harness.getTools();
-		const nextActiveToolNames = harness
-			.getActiveTools()
-			.map((tool) => tool.name);
+		const nextActiveToolNames = harness.getActiveTools().map((tool) => tool.name);
 		this._setAgentToolSet(agentId, {
 			tools,
 			toolNames: tools.map((tool) => tool.name),
 			requestedToolNames: currentState.requestedToolNames,
 			activeToolNames: nextActiveToolNames,
-			activeToolSelection: {
-				mode: "explicit",
-				toolNames: [...nextActiveToolNames],
-			},
+			activeToolSelection: { mode: "explicit", toolNames: [...nextActiveToolNames] },
 			profileId: currentState.profileId,
 		});
 		await this._publishDiagnostics(diagnostics);
@@ -1292,10 +1089,7 @@ export class AgentOrchestrator {
 	 * no such job is live (settled, unknown, or never backgrounded). Output is
 	 * pull-only: surfaces poll this on demand; change events never carry output.
 	 */
-	readAgentBackgroundJobOutput(
-		agentId: AgentId,
-		jobId: string,
-	): string | undefined {
+	readAgentBackgroundJobOutput(agentId: AgentId, jobId: string): string | undefined {
 		const job = this._requireAgentRecord(agentId).backgroundJobTable.get(jobId);
 		return job?.phase === "backgrounded" ? job.output.read() : undefined;
 	}
@@ -1312,11 +1106,7 @@ export class AgentOrchestrator {
 	 * honors the signal, while an external job (nothing watches its signal) is
 	 * settled as cancelled by the table itself.
 	 */
-	abortAgentBackgroundJob(
-		agentId: AgentId,
-		jobId: string,
-		reason?: string,
-	): boolean {
+	abortAgentBackgroundJob(agentId: AgentId, jobId: string, reason?: string): boolean {
 		const table = this._requireAgentRecord(agentId).backgroundJobTable;
 		if (table.get(jobId)?.phase !== "backgrounded") return false;
 		table.abort(jobId, reason);
@@ -1340,11 +1130,7 @@ export class AgentOrchestrator {
 		outcome: BackgroundJobOutcome,
 		options: { settledBy: string },
 	): BackgroundJobSettleResult {
-		return this._requireAgentRecord(agentId).backgroundJobTable.settle(
-			jobId,
-			outcome,
-			options,
-		);
+		return this._requireAgentRecord(agentId).backgroundJobTable.settle(jobId, outcome, options);
 	}
 
 	/**
@@ -1363,10 +1149,7 @@ export class AgentOrchestrator {
 	 * how to report it, and only a delivery that could not happen at all throws.
 	 */
 	async sendMessage(draft: MessageDraft): Promise<MessageSendOutcome> {
-		const accepted = await this._sendMessage(draft, {
-			requiresIdle: false,
-			awaited: false,
-		});
+		const accepted = await this._sendMessage(draft, { requiresIdle: false, awaited: false });
 		return accepted.kind === "blocked" ? accepted : { kind: "accepted" };
 	}
 
@@ -1375,11 +1158,7 @@ export class AgentOrchestrator {
 	async promptAgent(
 		agentId: AgentId,
 		text: string,
-		options?: {
-			images?: ImageContent[];
-			expansion?: PromptExpansion;
-			presentation?: ExtensionInputPresentationRecord;
-		},
+		options?: { images?: ImageContent[]; expansion?: PromptExpansion; presentation?: ExtensionInputPresentationRecord },
 	): Promise<PromptOutcome> {
 		const accepted = await this._sendMessage(
 			{
@@ -1389,11 +1168,7 @@ export class AgentOrchestrator {
 				images: options?.images,
 				mode: "next_turn",
 			},
-			{
-				requiresIdle: true,
-				awaited: true,
-				presentation: options?.presentation,
-			},
+			{ requiresIdle: true, awaited: true, presentation: options?.presentation },
 		);
 		if (accepted.kind === "blocked") return accepted;
 		const completed = accepted.receipt.completed;
@@ -1420,11 +1195,7 @@ export class AgentOrchestrator {
 	 */
 	private async _sendMessage(
 		draft: MessageDraft,
-		options: {
-			requiresIdle: boolean;
-			awaited: boolean;
-			presentation?: ExtensionInputPresentationRecord;
-		},
+		options: { requiresIdle: boolean; awaited: boolean; presentation?: ExtensionInputPresentationRecord },
 	): Promise<AcceptedMessage> {
 		const agentId = draft.targetAgentId;
 		const record = this._requireAgentRecord(agentId);
@@ -1449,10 +1220,7 @@ export class AgentOrchestrator {
 				const runner = this._agents.get(agentId)?.extensionRunner;
 				if (!runner || runner.isStale()) return { kind: "pass" };
 				const run = await runner.interceptInput(event);
-				await this._recordAndPublishExtensionDiagnostics(
-					agentId,
-					run.diagnostics,
-				);
+				await this._recordAndPublishExtensionDiagnostics(agentId, run.diagnostics);
 				// A block this source does not enforce is still a fact worth
 				// recording: the extension asked for something the message contract
 				// cannot grant it.
@@ -1470,12 +1238,7 @@ export class AgentOrchestrator {
 
 		let inputId: string | undefined;
 		let pendingInputTransform:
-			| {
-					inputId: string;
-					originalText: string;
-					text: string;
-					transformedBy: readonly string[];
-			  }
+			| { inputId: string; originalText: string; text: string; transformedBy: readonly string[] }
 			| undefined;
 		if (outcome.kind === "block") {
 			inputId = this._createInputId();
@@ -1488,12 +1251,7 @@ export class AgentOrchestrator {
 				blockedBy: outcome.blockedBy,
 				createdAt: now(),
 			});
-			return {
-				kind: "blocked",
-				inputId,
-				reason: outcome.reason,
-				blockedBy: outcome.blockedBy,
-			};
+			return { kind: "blocked", inputId, reason: outcome.reason, blockedBy: outcome.blockedBy };
 		}
 		if (outcome.kind === "transform") {
 			inputId = this._createInputId();
@@ -1521,36 +1279,23 @@ export class AgentOrchestrator {
 		// until that write happens: track a retraction point in case delivery
 		// fails first. Only human input carries them - an agent message is
 		// already traceable through the tool call that sent it.
-		const expansion =
-			draft.source.kind === "human" ? draft.source.expansion : undefined;
+		const expansion = draft.source.kind === "human" ? draft.source.expansion : undefined;
 		const presentation = options.presentation
-			? {
-					...options.presentation,
-					presentation: validateExtensionInputPresentation(
-						options.presentation.presentation,
-					),
-				}
+			? { ...options.presentation, presentation: validateExtensionInputPresentation(options.presentation.presentation) }
 			: undefined;
 		let provisional: ProvisionalPromptEntries | undefined;
 		if (expansion || pendingInputTransform) {
-			const previousLeafId =
-				await this.sessionManager.getAgentSessionLeafId(agentId);
+			const previousLeafId = await this.sessionManager.getAgentSessionLeafId(agentId);
 			let lastEntryId: string | undefined;
 			if (expansion) {
-				lastEntryId = await this.sessionManager.appendCommandExpansionEntry(
-					agentId,
-					{
-						inputId: inputId ?? this._createInputId(),
-						originalText: expansion.originalText,
-						expansions: expansion.items,
-					},
-				);
+				lastEntryId = await this.sessionManager.appendCommandExpansionEntry(agentId, {
+					inputId: inputId ?? this._createInputId(),
+					originalText: expansion.originalText,
+					expansions: expansion.items,
+				});
 			}
 			if (pendingInputTransform) {
-				lastEntryId = await this.sessionManager.appendInputTransformEntry(
-					agentId,
-					pendingInputTransform,
-				);
+				lastEntryId = await this.sessionManager.appendInputTransformEntry(agentId, pendingInputTransform);
 			}
 			if (lastEntryId !== undefined) {
 				provisional = { previousLeafId, lastEntryId };
@@ -1561,15 +1306,9 @@ export class AgentOrchestrator {
 		// failure: its tool call already returned, and the model is waiting for
 		// exactly one t1 that nobody else will resend. It is also the only source
 		// whose messages merge, since each carries its own job header already.
-		const jobSource =
-			draft.source.kind === "background_job" ? draft.source : undefined;
+		const jobSource = draft.source.kind === "background_job" ? draft.source : undefined;
 		const renderedText = renderMessageEnvelope(draft.source, outcome.text);
-		const pendingPresentation = presentation
-			? {
-					...presentation,
-					expectedText: renderedText,
-				}
-			: undefined;
+		const pendingPresentation = presentation ? { ...presentation, expectedText: renderedText } : undefined;
 		try {
 			const receipt = await this._messages.enqueue({
 				targetAgentId: agentId,
@@ -1583,28 +1322,17 @@ export class AgentOrchestrator {
 				retryOnFailure: jobSource !== undefined,
 				onDeferredFailure: jobSource
 					? (error) => {
-							void this._reportDeferredDeliveryFailure(
-								agentId,
-								jobSource.jobId,
-								error,
-							);
+							void this._reportDeferredDeliveryFailure(agentId, jobSource.jobId, error);
 						}
 					: undefined,
 				onDeliveryStart: pendingPresentation
 					? (method) => {
-							this._beginExtensionInputPresentationDelivery(
-								agentId,
-								pendingPresentation,
-								method,
-							);
+							this._beginExtensionInputPresentationDelivery(agentId, pendingPresentation, method);
 						}
 					: undefined,
 				onDeliveryFailure: pendingPresentation
 					? () => {
-							this._discardPendingExtensionInputPresentation(
-								agentId,
-								pendingPresentation,
-							);
+							this._discardPendingExtensionInputPresentation(agentId, pendingPresentation);
 						}
 					: undefined,
 			});
@@ -1647,8 +1375,7 @@ export class AgentOrchestrator {
 		this._discardPendingExtensionInputPresentation(agentId, pending);
 		pending.method = method;
 		delete pending.message;
-		const presentations =
-			this._pendingExtensionInputPresentations.get(agentId) ?? [];
+		const presentations = this._pendingExtensionInputPresentations.get(agentId) ?? [];
 		presentations.push(pending);
 		this._pendingExtensionInputPresentations.set(agentId, presentations);
 	}
@@ -1662,10 +1389,7 @@ export class AgentOrchestrator {
 		if (!message) return;
 		const pending = this._pendingExtensionInputPresentations
 			.get(agentId)
-			?.find(
-				(candidate) =>
-					candidate.method === method && candidate.message === undefined,
-			);
+			?.find((candidate) => candidate.method === method && candidate.message === undefined);
 		if (pending) pending.message = message;
 	}
 
@@ -1676,16 +1400,12 @@ export class AgentOrchestrator {
 		if (message.role !== "user") return undefined;
 		const presentations = this._pendingExtensionInputPresentations.get(agentId);
 		if (!presentations) return undefined;
-		let index = presentations.findIndex(
-			(presentation) => presentation.message === message,
-		);
+		let index = presentations.findIndex((presentation) => presentation.message === message);
 		if (index < 0) {
 			const text = userMessageText(message);
 			index = presentations.findIndex(
 				(presentation) =>
-					presentation.method === "prompt" &&
-					presentation.message === undefined &&
-					presentation.expectedText === text,
+					presentation.method === "prompt" && presentation.message === undefined && presentation.expectedText === text,
 			);
 		}
 		if (index < 0) return undefined;
@@ -1709,18 +1429,13 @@ export class AgentOrchestrator {
 		}
 	}
 
-	private _discardClearedExtensionInputPresentations(
-		agentId: AgentId,
-		messages: readonly AgentMessage[],
-	): void {
+	private _discardClearedExtensionInputPresentations(agentId: AgentId, messages: readonly AgentMessage[]): void {
 		if (messages.length === 0) return;
 		const cleared = new Set(messages);
 		const presentations = this._pendingExtensionInputPresentations.get(agentId);
 		if (!presentations) return;
 		const remaining = presentations.filter(
-			(presentation) =>
-				presentation.message === undefined ||
-				!cleared.has(presentation.message),
+			(presentation) => presentation.message === undefined || !cleared.has(presentation.message),
 		);
 		if (remaining.length === 0) {
 			this._pendingExtensionInputPresentations.delete(agentId);
@@ -1743,15 +1458,11 @@ export class AgentOrchestrator {
 			return;
 		}
 		try {
-			const entryId =
-				await this.sessionManager.appendExtensionInputPresentationEntry(
-					agentId,
-					{
-						messageEntryId,
-						extensionId: pending.extensionId,
-						presentation: pending.presentation,
-					},
-				);
+			const entryId = await this.sessionManager.appendExtensionInputPresentationEntry(agentId, {
+				messageEntryId,
+				extensionId: pending.extensionId,
+				presentation: pending.presentation,
+			});
 			await this._emit(
 				{
 					type: "extension_input_presented",
@@ -1777,11 +1488,7 @@ export class AgentOrchestrator {
 	// An unexpected delivery failure that will be retried at the target's next
 	// phase change. Reported per attempt so a target that never accepts is
 	// visible instead of silently accumulating messages.
-	private async _reportDeferredDeliveryFailure(
-		agentId: AgentId,
-		jobId: string,
-		error: unknown,
-	): Promise<void> {
+	private async _reportDeferredDeliveryFailure(agentId: AgentId, jobId: string, error: unknown): Promise<void> {
 		await this._publishDiagnostic({
 			severity: "warning",
 			code: "orchestrator.background_job_delivery_failed",
@@ -1800,10 +1507,7 @@ export class AgentOrchestrator {
 	): Promise<void> {
 		if (!provisional) return;
 		try {
-			await this.sessionManager.retractAgentSessionEntries(
-				agentId,
-				provisional,
-			);
+			await this.sessionManager.retractAgentSessionEntries(agentId, provisional);
 		} catch (error) {
 			await this._recordAgentLifecycleFailure(
 				agentId,
@@ -1818,11 +1522,7 @@ export class AgentOrchestrator {
 	 * text must land. It runs no interception and writes no session entries -
 	 * `sendMessage` is the message entry point; this is the escape hatch under it.
 	 */
-	async steerAgent(
-		agentId: AgentId,
-		text: string,
-		options?: { images?: ImageContent[] },
-	): Promise<void> {
+	async steerAgent(agentId: AgentId, text: string, options?: { images?: ImageContent[] }): Promise<void> {
 		const harness = this._requireAgentHarness(agentId);
 		this._requireAgentOutsideMaintenance(agentId, "steer");
 		await harness.steer(text, options);
@@ -1852,11 +1552,7 @@ export class AgentOrchestrator {
 
 	/** Low-level harness primitive; see the note on {@link steerAgent}. */
 
-	async followUpAgent(
-		agentId: AgentId,
-		text: string,
-		options?: { images?: ImageContent[] },
-	): Promise<void> {
+	async followUpAgent(agentId: AgentId, text: string, options?: { images?: ImageContent[] }): Promise<void> {
 		const harness = this._requireAgentHarness(agentId);
 		this._requireAgentOutsideMaintenance(agentId, "queue a follow-up");
 		await harness.followUp(text, options);
@@ -1878,10 +1574,7 @@ export class AgentOrchestrator {
 	 * Rejects instead of hanging when the agent can never reach that state: it
 	 * is gone, being torn down, or already disposed.
 	 */
-	async waitForAgentIdle(
-		agentId: AgentId,
-		options: { signal?: AbortSignal } = {},
-	): Promise<void> {
+	async waitForAgentIdle(agentId: AgentId, options: { signal?: AbortSignal } = {}): Promise<void> {
 		const settled = this._resolveAgentIdleState(agentId);
 		if (settled.kind === "idle") return;
 		if (settled.kind === "gone") throw new Error(settled.message);
@@ -1917,17 +1610,10 @@ export class AgentOrchestrator {
 	 * the agents down from underneath it. An embedder without a host calls
 	 * `disposeAll` instead.
 	 */
-	async requestShutdown(request: {
-		requestedBy: string;
-		requestedByAgentId: AgentId;
-		reason?: string;
-	}): Promise<void> {
+	async requestShutdown(request: { requestedBy: string; requestedByAgentId: AgentId; reason?: string }): Promise<void> {
 		if (this._shutdownRequested) return;
 		this._shutdownRequested = true;
-		const event: Extract<
-			OrchestratorEvent,
-			{ type: "runtime_shutdown_requested" }
-		> = Object.freeze({
+		const event: Extract<OrchestratorEvent, { type: "runtime_shutdown_requested" }> = Object.freeze({
 			type: "runtime_shutdown_requested",
 			requestedBy: request.requestedBy,
 			requestedByAgentId: request.requestedByAgentId,
@@ -1952,50 +1638,31 @@ export class AgentOrchestrator {
 	 * `spawnedBy` is retained on disposed records. It is both creation
 	 * provenance and the runtime-local tree edge used by surviving descendants.
 	 */
-	async disposeAgent(
-		agentId: AgentId,
-		options: DisposeAgentOptions = {},
-	): Promise<AgentId[]> {
+	async disposeAgent(agentId: AgentId, options: DisposeAgentOptions = {}): Promise<AgentId[]> {
 		const orderedAgentIds =
 			options.scope === "subtree"
 				? this._collectAgentSubtreePostOrder(agentId)
 				: [this._requireAgentRecord(agentId).agentId];
 		const selectedAgentIds = new Set(orderedAgentIds);
-		const operations: AgentDisposalOperation[] = orderedAgentIds.map(
-			(candidateAgentId) => {
-				const record = this._requireAgentRecord(candidateAgentId);
-				if (record.status === "disposed") {
-					return { kind: "already_disposed", agentId: candidateAgentId };
-				}
-				const existing = this._agentDisposals.get(candidateAgentId);
-				if (existing) {
-					return {
-						kind: "existing",
-						agentId: candidateAgentId,
-						barrier: existing,
-					};
-				}
-				const barrier = this._beginAgentDisposal(candidateAgentId);
-				return {
-					kind: "owned",
-					agentId: candidateAgentId,
-					barrier,
-				};
-			},
-		);
+		const operations: AgentDisposalOperation[] = orderedAgentIds.map((candidateAgentId) => {
+			const record = this._requireAgentRecord(candidateAgentId);
+			if (record.status === "disposed") {
+				return { kind: "already_disposed", agentId: candidateAgentId };
+			}
+			const existing = this._agentDisposals.get(candidateAgentId);
+			if (existing) {
+				return { kind: "existing", agentId: candidateAgentId, barrier: existing };
+			}
+			const barrier = this._beginAgentDisposal(candidateAgentId);
+			return { kind: "owned", agentId: candidateAgentId, barrier };
+		});
 
 		const disposedAgentIds: AgentId[] = [];
 		const failures: unknown[] = [];
 		const blockedAgentErrors = new Map<AgentId, unknown>();
-		const blockSelectedAncestors = (
-			failedAgentId: AgentId,
-			error: unknown,
-		): void => {
+		const blockSelectedAncestors = (failedAgentId: AgentId, error: unknown): void => {
 			let parentAgentId = this._agents.get(failedAgentId)?.spawnedBy;
-			while (
-				parentAgentId !== undefined &&
-				selectedAgentIds.has(parentAgentId)
-			) {
+			while (parentAgentId !== undefined && selectedAgentIds.has(parentAgentId)) {
 				blockedAgentErrors.set(parentAgentId, error);
 				parentAgentId = this._agents.get(parentAgentId)?.spawnedBy;
 			}
@@ -2006,13 +1673,8 @@ export class AgentOrchestrator {
 			const candidateAgentId = operation.agentId;
 			if (blockedAgentErrors.has(candidateAgentId)) {
 				if (operation.kind === "owned") {
-					operation.barrier.complete({
-						kind: "failed",
-						error: blockedAgentErrors.get(candidateAgentId),
-					});
-					if (
-						this._agentDisposals.get(candidateAgentId) === operation.barrier
-					) {
+					operation.barrier.complete({ kind: "failed", error: blockedAgentErrors.get(candidateAgentId) });
+					if (this._agentDisposals.get(candidateAgentId) === operation.barrier) {
 						this._agentDisposals.delete(candidateAgentId);
 						this._disposingAgents.delete(candidateAgentId);
 					}
@@ -2047,18 +1709,12 @@ export class AgentOrchestrator {
 		}
 		if (failures.length === 1) throw failures[0];
 		if (failures.length > 1) {
-			throw new AggregateError(
-				failures,
-				`Failed to dispose ${failures.length} agents in subtree ${agentId}.`,
-			);
+			throw new AggregateError(failures, `Failed to dispose ${failures.length} agents in subtree ${agentId}.`);
 		}
 		return disposedAgentIds;
 	}
 
-	private async _disposeSingleAgent(
-		agentId: AgentId,
-		reason?: string,
-	): Promise<void> {
+	private async _disposeSingleAgent(agentId: AgentId, reason?: string): Promise<void> {
 		await this._agentCreations.get(agentId)?.completion;
 		const record = this._requireAgentRecord(agentId);
 
@@ -2079,8 +1735,7 @@ export class AgentOrchestrator {
 			}
 			this._unsubscribeAgentJobChanges.delete(agentId);
 		}
-		const unsubscribeJobProgress =
-			this._unsubscribeAgentJobProgress.get(agentId);
+		const unsubscribeJobProgress = this._unsubscribeAgentJobProgress.get(agentId);
 		if (unsubscribeJobProgress) {
 			try {
 				unsubscribeJobProgress();
@@ -2106,11 +1761,7 @@ export class AgentOrchestrator {
 			}
 			this._unsubscribeAgentJobReports.delete(agentId);
 		}
-		this._messages.cancel(
-			agentId,
-			reason ??
-				`Agent ${agentId} was disposed before the message was delivered.`,
-		);
+		this._messages.cancel(agentId, reason ?? `Agent ${agentId} was disposed before the message was delivered.`);
 		for (const job of record.backgroundJobTable.list()) {
 			record.backgroundJobTable.abort(job.id, "Agent disposed");
 		}
@@ -2120,10 +1771,7 @@ export class AgentOrchestrator {
 		for (const dependency of this._externalJobs.takeDependentsOf(agentId)) {
 			this._agents
 				.get(dependency.ownerId)
-				?.backgroundJobTable.abort(
-					dependency.jobId,
-					reason ?? `Settler agent ${agentId} was disposed.`,
-				);
+				?.backgroundJobTable.abort(dependency.jobId, reason ?? `Settler agent ${agentId} was disposed.`);
 		}
 		// Jobs this agent owned are aborted above, but their `settled` changes no
 		// longer reach the untracking listener - it was detached first, on
@@ -2134,10 +1782,7 @@ export class AgentOrchestrator {
 		this._humanInterrupts.forget(agentId);
 		this._maintenanceOperations.delete(agentId);
 		this._resolveAgentRunStartWaiters(agentId);
-		this._rejectAgentIdleWaiters(
-			agentId,
-			reason ?? `Agent ${agentId} was disposed while waiting for it to idle.`,
-		);
+		this._rejectAgentIdleWaiters(agentId, reason ?? `Agent ${agentId} was disposed while waiting for it to idle.`);
 		// A resumed session reuses this agent id, and both of these describe an
 		// idle that belonged to the previous occupant.
 		this._agentIdleReasons.delete(agentId);
@@ -2167,8 +1812,7 @@ export class AgentOrchestrator {
 			}
 			this._unsubscribeAgentHarness.delete(agentId);
 		}
-		const unsubscribeExtensionInterceptors =
-			this._unsubscribeAgentExtensionInterceptors.get(agentId);
+		const unsubscribeExtensionInterceptors = this._unsubscribeAgentExtensionInterceptors.get(agentId);
 		if (unsubscribeExtensionInterceptors) {
 			try {
 				unsubscribeExtensionInterceptors();
@@ -2182,21 +1826,14 @@ export class AgentOrchestrator {
 			this._unsubscribeAgentExtensionInterceptors.delete(agentId);
 		}
 
-		await this._disposeExtensionRunner(
-			agentId,
-			record.extensionRunner,
-			"Agent has been disposed.",
-		);
+		await this._disposeExtensionRunner(agentId, record.extensionRunner, "Agent has been disposed.");
 		await this._clearExtensionStatusesForAgent(agentId);
 		await this._withdrawExtensionProviderContributions(agentId);
 		delete record.harness;
 		delete record.systemPrompt;
 		this._agentRunSignals.delete(agentId);
 		this._agentToolSets.delete(agentId);
-		await this._humanRequests.cancelForAgent(
-			agentId,
-			reason ?? `Agent disposed: ${agentId}`,
-		);
+		await this._humanRequests.cancelForAgent(agentId, reason ?? `Agent disposed: ${agentId}`);
 		await this._transitionAgentStatus(agentId, "disposed", { force: true });
 	}
 
@@ -2216,29 +1853,17 @@ export class AgentOrchestrator {
 		}
 	}
 
-	async reloadExtensions(
-		options: { agentIds?: readonly AgentId[] } = {},
-	): Promise<ExtensionReloadResult> {
-		const catalog = await this.extensionLoader.reloadAvailableExtensions(
-			this.executionEnv,
-		);
+	async reloadExtensions(options: { agentIds?: readonly AgentId[] } = {}): Promise<ExtensionReloadResult> {
+		const catalog = await this.extensionLoader.reloadAvailableExtensions(this.executionEnv);
 		await this._publishDiagnostics(catalog.diagnostics);
 
-		const agentIds = options.agentIds
-			? [...new Set(options.agentIds)]
-			: [...this._agents.keys()];
+		const agentIds = options.agentIds ? [...new Set(options.agentIds)] : [...this._agents.keys()];
 		const agents: ExtensionReloadAgentResult[] = [];
 		for (const agentId of agentIds) {
 			agents.push(await this._reloadAgentExtensions(agentId));
 		}
 
-		return {
-			catalog: {
-				loaded: [...catalog.loaded],
-				diagnostics: [...catalog.diagnostics],
-			},
-			agents,
-		};
+		return { catalog: { loaded: [...catalog.loaded], diagnostics: [...catalog.diagnostics] }, agents };
 	}
 
 	/**
@@ -2288,21 +1913,13 @@ export class AgentOrchestrator {
 				agentId,
 			});
 		}
-		return this._buildAgentSystemPrompt(
-			agentId,
-			basePrompt,
-			harness.getActiveTools(),
-		);
+		return this._buildAgentSystemPrompt(agentId, basePrompt, harness.getActiveTools());
 	}
 
 	async compactAgent(agentId: AgentId, customInstructions?: string) {
-		const result = await this._runMaintenanceOperation(
-			agentId,
-			"compaction",
-			async (harness) => {
-				return await harness.compact(customInstructions);
-			},
-		);
+		const result = await this._runMaintenanceOperation(agentId, "compaction", async (harness) => {
+			return await harness.compact(customInstructions);
+		});
 		// Compaction replaces the branch the cached measurement described, and
 		// the retained tail carries the pre-compaction assistant usage, so
 		// re-measuring here would report the old number as if it were current.
@@ -2314,31 +1931,18 @@ export class AgentOrchestrator {
 	async navigateAgentTree(
 		agentId: AgentId,
 		targetId: string,
-		options?: {
-			summarize?: boolean;
-			customInstructions?: string;
-			replaceInstructions?: boolean;
-			label?: string;
-		},
+		options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string },
 	) {
-		const previousLeafId =
-			await this.sessionManager.getAgentSessionLeafId(agentId);
+		const previousLeafId = await this.sessionManager.getAgentSessionLeafId(agentId);
 		try {
-			return await this._runMaintenanceOperation(
-				agentId,
-				"tree-navigation",
-				async (harness) => {
-					return await harness.navigateTree(targetId, options);
-				},
-			);
+			return await this._runMaintenanceOperation(agentId, "tree-navigation", async (harness) => {
+				return await harness.navigateTree(targetId, options);
+			});
 		} finally {
 			// A post-move observer can fail after the harness changed the leaf.
 			// Compare in `finally` so that path still invalidates the old gauge,
 			// while cancellation and no-op navigation leave it intact.
-			if (
-				(await this.sessionManager.getAgentSessionLeafId(agentId)) !==
-				previousLeafId
-			) {
+			if ((await this.sessionManager.getAgentSessionLeafId(agentId)) !== previousLeafId) {
 				await this._setAgentContextUsage(agentId, undefined);
 			}
 		}
@@ -2357,17 +1961,11 @@ export class AgentOrchestrator {
 		return await this._humanRequests.request(request);
 	}
 
-	private async _requestHumanForAgent(
-		agentId: AgentId,
-		request: HumanRequest,
-	): Promise<HumanResponse> {
+	private async _requestHumanForAgent(agentId: AgentId, request: HumanRequest): Promise<HumanResponse> {
 		return await this._humanRequests.request(request, { agentId });
 	}
 
-	async cancelHumanRequest(
-		requestId: string,
-		reason?: string,
-	): Promise<boolean> {
+	async cancelHumanRequest(requestId: string, reason?: string): Promise<boolean> {
 		return await this._humanRequests.cancel(requestId, reason);
 	}
 
@@ -2376,10 +1974,7 @@ export class AgentOrchestrator {
 		return () => this._eventListeners.delete(listener);
 	}
 
-	subscribeAgent(
-		agentId: AgentId,
-		listener: OrchestratorEventListener,
-	): () => void {
+	subscribeAgent(agentId: AgentId, listener: OrchestratorEventListener): () => void {
 		return this.subscribe((event) => {
 			if ("agentId" in event && event.agentId === agentId) {
 				return listener(event);
@@ -2417,40 +2012,25 @@ export class AgentOrchestrator {
 		const visited = new Set<AgentId>();
 		while (record.spawnedBy !== undefined) {
 			if (visited.has(record.agentId)) {
-				throw new Error(
-					`Agent spawn tree contains a cycle at ${record.agentId}.`,
-				);
+				throw new Error(`Agent spawn tree contains a cycle at ${record.agentId}.`);
 			}
 			visited.add(record.agentId);
 			const parent = this._agents.get(record.spawnedBy);
 			if (!parent) {
-				throw new Error(
-					`Agent ${record.agentId} references missing spawner ${record.spawnedBy}.`,
-				);
+				throw new Error(`Agent ${record.agentId} references missing spawner ${record.spawnedBy}.`);
 			}
 			record = parent;
 		}
 		return record.agentId;
 	}
 
-	private _agentsShareTree(
-		firstAgentId: AgentId,
-		secondAgentId: AgentId,
-	): boolean {
-		return (
-			this._resolveAgentTreeRoot(firstAgentId) ===
-			this._resolveAgentTreeRoot(secondAgentId)
-		);
+	private _agentsShareTree(firstAgentId: AgentId, secondAgentId: AgentId): boolean {
+		return this._resolveAgentTreeRoot(firstAgentId) === this._resolveAgentTreeRoot(secondAgentId);
 	}
 
 	private _assertAgentCanSpawn(record: AgentRecord): void {
-		if (
-			this._agents.get(record.agentId) !== record ||
-			this._resolveDeliveryPhase(record.agentId) === "gone"
-		) {
-			throw new Error(
-				`Agent ${record.agentId} can no longer spawn child agents.`,
-			);
+		if (this._agents.get(record.agentId) !== record || this._resolveDeliveryPhase(record.agentId) === "gone") {
+			throw new Error(`Agent ${record.agentId} can no longer spawn child agents.`);
 		}
 	}
 
@@ -2464,10 +2044,7 @@ export class AgentOrchestrator {
 		return barrier;
 	}
 
-	private _finishAgentCreation(
-		agentId: AgentId,
-		barrier: AgentCreationBarrier,
-	): void {
+	private _finishAgentCreation(agentId: AgentId, barrier: AgentCreationBarrier): void {
 		if (this._agentCreations.get(agentId) === barrier) {
 			this._agentCreations.delete(agentId);
 		}
@@ -2498,10 +2075,7 @@ export class AgentOrchestrator {
 
 		const states = new Map<AgentId, "visiting" | "visited">();
 		const orderedAgentIds: AgentId[] = [];
-		const stack: Array<{
-			readonly agentId: AgentId;
-			readonly expanded: boolean;
-		}> = [{ agentId, expanded: false }];
+		const stack: Array<{ readonly agentId: AgentId; readonly expanded: boolean }> = [{ agentId, expanded: false }];
 		while (stack.length > 0) {
 			const entry = stack.pop();
 			if (!entry) break;
@@ -2512,9 +2086,7 @@ export class AgentOrchestrator {
 			}
 			const state = states.get(entry.agentId);
 			if (state === "visiting") {
-				throw new Error(
-					`Agent spawn tree contains a cycle at ${entry.agentId}.`,
-				);
+				throw new Error(`Agent spawn tree contains a cycle at ${entry.agentId}.`);
 			}
 			if (state === "visited") continue;
 			states.set(entry.agentId, "visiting");
@@ -2538,9 +2110,7 @@ export class AgentOrchestrator {
 		if (options.inheritModelFromAgentId) {
 			const sourceRecord = this._agents.get(options.inheritModelFromAgentId);
 			if (!sourceRecord) {
-				throw new Error(
-					`Cannot inherit model from unknown agent: ${options.inheritModelFromAgentId}`,
-				);
+				throw new Error(`Cannot inherit model from unknown agent: ${options.inheritModelFromAgentId}`);
 			}
 			return sourceRecord.model;
 		}
@@ -2548,30 +2118,17 @@ export class AgentOrchestrator {
 		return this._defaultModel;
 	}
 
-	private async _resolveCreateProfile(
-		options: SpawnAgentCreateOptions,
-	): Promise<ResolvedAgentProfile> {
+	private async _resolveCreateProfile(options: SpawnAgentCreateOptions): Promise<ResolvedAgentProfile> {
 		const profileId = options.profileId ?? this._defaultProfileId;
-		const resolvedProfile = await this._resolveProfileById(
-			profileId,
-			undefined,
-		);
+		const resolvedProfile = await this._resolveProfileById(profileId, undefined);
 		return {
 			...resolvedProfile,
-			profile: await this._applyProfileOverride(
-				resolvedProfile.profile,
-				options.profileOverride,
-			),
+			profile: await this._applyProfileOverride(resolvedProfile.profile, options.profileOverride),
 		};
 	}
 
-	private async _resolveResumeProfile(
-		agentId: AgentId,
-		metadata: JsonlSessionMetadata,
-	): Promise<ResolvedAgentProfile> {
-		const profileReference = parseAgentProfileReference(
-			metadata.metadata?.profile,
-		);
+	private async _resolveResumeProfile(agentId: AgentId, metadata: JsonlSessionMetadata): Promise<ResolvedAgentProfile> {
+		const profileReference = parseAgentProfileReference(metadata.metadata?.profile);
 		if (!profileReference) {
 			throw new OrchestratorError({
 				severity: "error",
@@ -2583,10 +2140,7 @@ export class AgentOrchestrator {
 		return await this._resolveProfileById(profileReference.id, agentId);
 	}
 
-	private async _resolveProfileById(
-		profileId: string,
-		agentId: AgentId | undefined,
-	): Promise<ResolvedAgentProfile> {
+	private async _resolveProfileById(profileId: string, agentId: AgentId | undefined): Promise<ResolvedAgentProfile> {
 		const result = await this.profileRegistry.resolveProfile(profileId);
 		await this._publishDiagnostics(result.diagnostics);
 		if (!result.ok) {
@@ -2611,18 +2165,11 @@ export class AgentOrchestrator {
 			throw new OrchestratorError(diagnostic);
 		}
 
-		return {
-			profile: result.profile,
-			source: result.source,
-			entryId: result.entryId,
-		};
+		return { profile: result.profile, source: result.source, entryId: result.entryId };
 	}
 
 	private _isProfileEnabled(profileId: string): boolean {
-		return (
-			this._enabledProfileIds === undefined ||
-			this._enabledProfileIds.includes(profileId)
-		);
+		return this._enabledProfileIds === undefined || this._enabledProfileIds.includes(profileId);
 	}
 
 	private async _applyProfileOverride(
@@ -2643,10 +2190,7 @@ export class AgentOrchestrator {
 			throw new OrchestratorError(diagnostic);
 		}
 
-		const merged: AgentProfile = {
-			...profile,
-			...override,
-		};
+		const merged: AgentProfile = { ...profile, ...override };
 		if (merged.persist && changesRecoverableProfileFields(override)) {
 			const diagnostic: OrchestratorDiagnostic = {
 				severity: "error",
@@ -2671,14 +2215,9 @@ export class AgentOrchestrator {
 			return this._defaultModel;
 		}
 
-		const model = this.modelRegistry.find(
-			contextModel.provider,
-			contextModel.modelId,
-		);
+		const model = this.modelRegistry.find(contextModel.provider, contextModel.modelId);
 		if (!model) {
-			throw new Error(
-				`Cannot resume model ${contextModel.provider}/${contextModel.modelId}: model is not registered.`,
-			);
+			throw new Error(`Cannot resume model ${contextModel.provider}/${contextModel.modelId}: model is not registered.`);
 		}
 		return model;
 	}
@@ -2686,9 +2225,7 @@ export class AgentOrchestrator {
 	private _resolveThinkingLevel(level: string): ThinkingLevel {
 		const parsed = parseThinkingLevel(level);
 		if (parsed && parsed === level) return parsed;
-		throw new Error(
-			`Cannot resume session with invalid thinking level: ${level}`,
-		);
+		throw new Error(`Cannot resume session with invalid thinking level: ${level}`);
 	}
 
 	private async _createAgentHarness(
@@ -2699,10 +2236,7 @@ export class AgentOrchestrator {
 		const { profile } = resolvedProfile;
 		if (options.spawnedBy) this._assertAgentCanSpawn(options.spawnedBy);
 		const agentId = this._allocateAgentId(profile);
-		const session = await this.sessionManager.createAgentSession({
-			agentId: agentId,
-			agentProfile: profile,
-		});
+		const session = await this.sessionManager.createAgentSession({ agentId: agentId, agentProfile: profile });
 		const sessionMetadata = await session.getMetadata();
 		if (options.spawnedBy) this._assertAgentCanSpawn(options.spawnedBy);
 		const spawnedByAgentId = options.spawnedBy?.agentId;
@@ -2742,19 +2276,11 @@ export class AgentOrchestrator {
 			// synchronously dispose the new agent without waiting on the event it is
 			// currently handling.
 			finishCreation();
-			await this._transitionAgentStatus(agentId, "idle", {
-				idleReason: "ready",
-			});
+			await this._transitionAgentStatus(agentId, "idle", { idleReason: "ready" });
 			if (this._resolveDeliveryPhase(agentId) === "gone") {
 				return { agentId, harness };
 			}
-			await this._emit({
-				type: "agent_spawned",
-				agentId,
-				profile,
-				model,
-				spawnedBy: spawnedByAgentId,
-			});
+			await this._emit({ type: "agent_spawned", agentId, profile, model, spawnedBy: spawnedByAgentId });
 			return { agentId, harness };
 		} catch (error) {
 			finishCreation();
@@ -2773,9 +2299,7 @@ export class AgentOrchestrator {
 		}
 	}
 
-	private async _resumeAgentHarness(
-		options: SpawnAgentResumeOptions,
-	): Promise<SpawnedAgentHarness> {
+	private async _resumeAgentHarness(options: SpawnAgentResumeOptions): Promise<SpawnedAgentHarness> {
 		const agentId = options.metadata.id;
 		const cachedRecord = this._agents.get(agentId);
 		if (cachedRecord?.harness) {
@@ -2793,18 +2317,11 @@ export class AgentOrchestrator {
 			this._finishAgentCreation(agentId, pending);
 		};
 		try {
-			resolvedProfile = await this._resolveResumeProfile(
-				agentId,
-				options.metadata,
-			);
+			resolvedProfile = await this._resolveResumeProfile(agentId, options.metadata);
 			const { profile } = resolvedProfile;
-			const session = await this.sessionManager.resumeAgentSession({
-				agentId,
-				metadata: options.metadata,
-			});
+			const session = await this.sessionManager.resumeAgentSession({ agentId, metadata: options.metadata });
 			sessionMetadata = await session.getMetadata();
-			const context =
-				await this.sessionManager.buildAgentSessionContext(agentId);
+			const context = await this.sessionManager.buildAgentSessionContext(agentId);
 			model = this._resolveResumeModel(options, context.model);
 			// A relationship from this runtime remains valid when a disposed
 			// session is resumed in place. After a process restart there is no
@@ -2833,9 +2350,7 @@ export class AgentOrchestrator {
 			await this._reconcileBackgroundJobs(agentId);
 
 			finishCreation();
-			await this._transitionAgentStatus(agentId, "idle", {
-				idleReason: "ready",
-			});
+			await this._transitionAgentStatus(agentId, "idle", { idleReason: "ready" });
 			if (this._resolveDeliveryPhase(agentId) === "gone") {
 				return { agentId, harness };
 			}
@@ -2877,18 +2392,11 @@ export class AgentOrchestrator {
 			session,
 			model,
 		} = options;
-		const extensionRunner = await this._createExtensionRunner(
-			agentId,
-			profile.id,
-		);
+		const extensionRunner = await this._createExtensionRunner(agentId, profile.id);
 		await this._publishDiagnostics(extensionRunner.diagnostics);
-		this._addAgentDiagnostics(agentId, {
-			extensionDiagnostics: [...extensionRunner.diagnostics],
-		});
+		this._addAgentDiagnostics(agentId, { extensionDiagnostics: [...extensionRunner.diagnostics] });
 		this._requireAgentRecord(agentId).extensionRunner = extensionRunner;
-		const blockedExtensionDiagnostic = extensionRunner.diagnostics.find(
-			isBlockedExtensionDiagnostic,
-		);
+		const blockedExtensionDiagnostic = extensionRunner.diagnostics.find(isBlockedExtensionDiagnostic);
 		if (blockedExtensionDiagnostic) {
 			throw new OrchestratorError(blockedExtensionDiagnostic);
 		}
@@ -2898,38 +2406,32 @@ export class AgentOrchestrator {
 		await this._applyExtensionProviderContributions(agentId, extensionRunner);
 
 		const loaded = await this.resourceLoader.loadAgentResources(profile);
-		const resourceDiagnostics: OrchestratorDiagnostic[] =
-			loaded.diagnostics.map((diagnostic) => ({ ...diagnostic, agentId }));
+		const resourceDiagnostics: OrchestratorDiagnostic[] = loaded.diagnostics.map((diagnostic) => ({
+			...diagnostic,
+			agentId,
+		}));
 		await this._publishDiagnostics(resourceDiagnostics);
 		this._addAgentDiagnostics(agentId, { resourceDiagnostics });
 
 		this._requireAgentRecord(agentId).resources = {
-			skills: loaded.skills.map(({ skill, source }) => ({
-				name: skill.name,
+			skills: loaded.skills.map(({ skill, source }) => ({ name: skill.name, source })),
+			promptTemplates: loaded.promptTemplates.map(({ promptTemplate, source }) => ({
+				name: promptTemplate.name,
 				source,
 			})),
-			promptTemplates: loaded.promptTemplates.map(
-				({ promptTemplate, source }) => ({
-					name: promptTemplate.name,
-					source,
-				}),
-			),
 		};
 		// The role's own append text comes first: it is the most specific
 		// statement about this agent. Extension sections follow, read per turn
 		// from the runner.
 		this._requireAgentRecord(agentId).systemPrompt = {
 			skills: loaded.skills.map(({ skill }) => skill),
-			appendSections: profile.appendSystemPrompt
-				? [profile.appendSystemPrompt]
-				: [],
+			appendSections: profile.appendSystemPrompt ? [profile.appendSystemPrompt] : [],
 			contextFiles: loaded.contextFiles,
 			includeSkills: profile.skillsListing,
 			// The resource loader's cwd, not the execution env's: it is the project
 			// directory the file tools resolve their relative paths against, and
 			// the prompt has to name the same one.
-			cwd:
-				(profile.includeCwd ?? true) ? this.resourceLoader.getCwd() : undefined,
+			cwd: (profile.includeCwd ?? true) ? this.resourceLoader.getCwd() : undefined,
 		};
 
 		const agentToolSet = await this._resolveAgentTools({
@@ -2953,12 +2455,7 @@ export class AgentOrchestrator {
 			// harness's active tools at each turn start. The record is read here
 			// rather than captured: an extension reload replaces the runner, and
 			// its appended sections must follow.
-			systemPrompt: ({ activeTools }) =>
-				this._buildAgentSystemPrompt(
-					agentId,
-					profile.systemPrompt,
-					activeTools,
-				),
+			systemPrompt: ({ activeTools }) => this._buildAgentSystemPrompt(agentId, profile.systemPrompt, activeTools),
 			model: model,
 			thinkingLevel: options.thinkingLevel,
 			activeToolNames: [...agentToolSet.activeToolNames],
@@ -2967,11 +2464,7 @@ export class AgentOrchestrator {
 		record.harness = harness;
 		this._setAgentToolSet(agentId, agentToolSet);
 		this._bindExtensionRunner(agentId, extensionRunner);
-		const unsubscribeInterceptors = this._registerExtensionInterceptors(
-			agentId,
-			harness,
-			extensionRunner,
-		);
+		const unsubscribeInterceptors = this._registerExtensionInterceptors(agentId, harness, extensionRunner);
 		const unsubscribeHarnessEvents = harness.subscribe((event, signal) => {
 			void this._handleSubscribedAgentHarnessEvent(agentId, event, signal);
 		});
@@ -3024,24 +2517,16 @@ export class AgentOrchestrator {
 	 * extension this runtime found is enabled. A named list can misspell an
 	 * extension, so that case is worth a warning; a derived list cannot.
 	 */
-	private async _createExtensionRunner(
-		agentId: AgentId,
-		profileId: string,
-	): Promise<ExtensionRunner> {
+	private async _createExtensionRunner(agentId: AgentId, profileId: string): Promise<ExtensionRunner> {
 		const enabledExtensionIds = this.settingManager.getEnabledExtensions();
 		const loadedExtensionScope = await this.extensionLoader.loadForAgent({
 			agentId,
 			profileId,
-			extensionIds:
-				enabledExtensionIds ?? this.extensionLoader.listAvailableExtensionIds(),
+			extensionIds: enabledExtensionIds ?? this.extensionLoader.listAvailableExtensionIds(),
 			missingExtensionSeverity: enabledExtensionIds ? "warning" : "ignore",
-			divisionSelections: {
-				settings: this.settingManager.getExtensionDivisionSelections(),
-			},
+			divisionSelections: { settings: this.settingManager.getExtensionDivisionSelections() },
 		});
-		return new ExtensionRunner({
-			loadedScope: loadedExtensionScope,
-		});
+		return new ExtensionRunner({ loadedScope: loadedExtensionScope });
 	}
 
 	private async _applyExtensionProviderContributions(
@@ -3053,20 +2538,11 @@ export class AgentOrchestrator {
 		const diagnostics: OrchestratorDiagnostic[] = [];
 		const projectTrusted = this.settingManager.isProjectTrusted();
 		for (const contribution of contributions) {
-			const diagnosticBase = {
-				agentId,
-				extensionId: contribution.extensionId,
-			} as const;
+			const diagnosticBase = { agentId, extensionId: contribution.extensionId } as const;
 			// Trust ruling: `!command` config values resolve through
 			// ExecutionEnv.exec at request time, so an untrusted project rejects
 			// the whole registration - the same family as the scoped exec gate.
-			if (
-				!projectTrusted &&
-				hasCommandConfigValues(
-					contribution.config,
-					this.modelRegistry.configValueResolver,
-				)
-			) {
+			if (!projectTrusted && hasCommandConfigValues(contribution.config, this.modelRegistry.configValueResolver)) {
 				diagnostics.push({
 					...diagnosticBase,
 					severity: "error",
@@ -3075,11 +2551,10 @@ export class AgentOrchestrator {
 				});
 				continue;
 			}
-			const result = this.modelRegistry.registerExtensionProvider(
-				contribution.providerName,
-				contribution.config,
-				{ extensionId: contribution.extensionId, agentId },
-			);
+			const result = this.modelRegistry.registerExtensionProvider(contribution.providerName, contribution.config, {
+				extensionId: contribution.extensionId,
+				agentId,
+			});
 			if (result.ok) continue;
 			if (result.reason === "conflict") {
 				diagnostics.push({
@@ -3102,9 +2577,7 @@ export class AgentOrchestrator {
 		await this._publishDiagnostics(diagnostics);
 	}
 
-	private async _withdrawExtensionProviderContributions(
-		agentId: AgentId,
-	): Promise<void> {
+	private async _withdrawExtensionProviderContributions(agentId: AgentId): Promise<void> {
 		try {
 			await this.modelRegistry.unregisterExtensionProviders(agentId);
 		} catch (error) {
@@ -3116,58 +2589,32 @@ export class AgentOrchestrator {
 		}
 	}
 
-	private _bindExtensionRunner(
-		agentId: AgentId,
-		extensionRunner: ExtensionRunner,
-	): void {
+	private _bindExtensionRunner(agentId: AgentId, extensionRunner: ExtensionRunner): void {
 		extensionRunner.bindCore(this._createExtensionActions(), {
 			getSignal: () => this._agentRunSignals.get(agentId),
 			isIdle: () => this._resolveAgentIdleState(agentId).kind === "idle",
 			reportActionFailure: async (failure) => {
-				const diagnostic = this._createExtensionActionFailureDiagnostic({
-					agentId,
-					failure,
-				});
+				const diagnostic = this._createExtensionActionFailureDiagnostic({ agentId, failure });
 				await this._recordAndPublishExtensionDiagnostics(agentId, [diagnostic]);
 			},
 			session: {
 				appendEntry: async (extensionId, type, data) =>
-					await this.sessionManager.appendExtensionCustomEntry(
-						agentId,
-						extensionId,
-						type,
-						data,
-					),
+					await this.sessionManager.appendExtensionCustomEntry(agentId, extensionId, type, data),
 				findEntries: async (extensionId, type) =>
-					await this.sessionManager.findExtensionCustomEntries(
-						agentId,
-						extensionId,
-						type,
-					),
+					await this.sessionManager.findExtensionCustomEntries(agentId, extensionId, type),
 				// This agent's own session needs no extra gate: the extension is
 				// already running inside it and sees its messages through the
 				// interceptors regardless.
 				getSnapshot: async () =>
-					this._toExtensionSessionSnapshot(
-						await this.sessionManager.getAgentSessionSnapshot(agentId),
-					),
-				getTree: async () =>
-					this._toExtensionSessionTree(
-						await this.sessionManager.getAgentSessionTree(agentId),
-					),
-				getLeafId: async () =>
-					await this.sessionManager.getAgentSessionLeafId(agentId),
+					this._toExtensionSessionSnapshot(await this.sessionManager.getAgentSessionSnapshot(agentId)),
+				getTree: async () => this._toExtensionSessionTree(await this.sessionManager.getAgentSessionTree(agentId)),
+				getLeafId: async () => await this.sessionManager.getAgentSessionLeafId(agentId),
 				// The cross-session readers do widen what an extension can see -
 				// every conversation recorded for this project, including ones it
 				// never took part in - so they carry the same trust bar as exec.
 				listSessions: async (extensionId) => {
-					this._requireProjectTrustForExtension(
-						agentId,
-						extensionId,
-						"list the project's sessions",
-					);
-					const candidates =
-						await this.sessionManager.listAgentSessionCandidates();
+					this._requireProjectTrustForExtension(agentId, extensionId, "list the project's sessions");
+					const candidates = await this.sessionManager.listAgentSessionCandidates();
 					return candidates.map((candidate) => ({
 						ref: this.sessionManager.toSessionHandle(candidate.path),
 						id: candidate.id,
@@ -3181,14 +2628,8 @@ export class AgentOrchestrator {
 					}));
 				},
 				readSession: async (extensionId, ref) => {
-					this._requireProjectTrustForExtension(
-						agentId,
-						extensionId,
-						"read another session",
-					);
-					const tree = await this.sessionManager.readSessionSnapshot(
-						this.sessionManager.resolveSessionHandle(ref),
-					);
+					this._requireProjectTrustForExtension(agentId, extensionId, "read another session");
+					const tree = await this.sessionManager.readSessionSnapshot(this.sessionManager.resolveSessionHandle(ref));
 					return this._toExtensionSessionTree(tree);
 				},
 			},
@@ -3203,56 +2644,31 @@ export class AgentOrchestrator {
 		return [
 			harness.on(
 				"before_agent_start",
-				async (event) =>
-					await this._runExtensionInterceptor<"before_agent_start">(
-						agentId,
-						extensionRunner,
-						event,
-					),
+				async (event) => await this._runExtensionInterceptor<"before_agent_start">(agentId, extensionRunner, event),
 			),
 			harness.on(
 				"before_provider_request",
 				async (event) =>
-					await this._runExtensionInterceptor<"before_provider_request">(
-						agentId,
-						extensionRunner,
-						event,
-					),
+					await this._runExtensionInterceptor<"before_provider_request">(agentId, extensionRunner, event),
 			),
 			// The blockImages policy applies after extension results inside this
 			// single handler: the harness keeps only the last non-undefined hook
 			// result, so a separately registered filter hook could be overridden
 			// by an extension transform.
 			harness.on("context", async (event) => {
-				const result = await this._runExtensionInterceptor<"context">(
-					agentId,
-					extensionRunner,
-					event,
-				);
+				const result = await this._runExtensionInterceptor<"context">(agentId, extensionRunner, event);
 				if (!this.settingManager.getImageSettings().blockImages) {
 					return result;
 				}
-				return {
-					messages: stripImagesFromMessages(result?.messages ?? event.messages),
-				};
+				return { messages: stripImagesFromMessages(result?.messages ?? event.messages) };
 			}),
 			harness.on(
 				"tool_call",
-				async (event) =>
-					await this._runExtensionInterceptor<"tool_call">(
-						agentId,
-						extensionRunner,
-						event,
-					),
+				async (event) => await this._runExtensionInterceptor<"tool_call">(agentId, extensionRunner, event),
 			),
 			harness.on(
 				"tool_result",
-				async (event) =>
-					await this._runExtensionInterceptor<"tool_result">(
-						agentId,
-						extensionRunner,
-						event,
-					),
+				async (event) => await this._runExtensionInterceptor<"tool_result">(agentId, extensionRunner, event),
 			),
 		];
 	}
@@ -3264,62 +2680,34 @@ export class AgentOrchestrator {
 		activeToolSelection?: ActiveToolSelection;
 		extensionRunner?: ExtensionRunner;
 	}): Promise<AgentToolSet> {
-		const activeToolSelection = options.activeToolSelection ?? {
-			mode: "default_all",
-		};
-		const activeToolNames =
-			activeToolSelection.mode === "explicit"
-				? activeToolSelection.toolNames
-				: undefined;
-		const toolRegistry = this._createScopedToolRegistry(
-			options.agentId,
-			options.extensionRunner,
-		);
-		const resolvedTools = toolRegistry.resolve({
-			requestedToolNames: options.requestedToolNames,
-			activeToolNames,
-		});
+		const activeToolSelection = options.activeToolSelection ?? { mode: "default_all" };
+		const activeToolNames = activeToolSelection.mode === "explicit" ? activeToolSelection.toolNames : undefined;
+		const toolRegistry = this._createScopedToolRegistry(options.agentId, options.extensionRunner);
+		const resolvedTools = toolRegistry.resolve({ requestedToolNames: options.requestedToolNames, activeToolNames });
 		await this._publishDiagnostics(
-			resolvedTools.diagnostics.map((diagnostic) => ({
-				...diagnostic,
-				agentId: options.agentId,
-			})),
+			resolvedTools.diagnostics.map((diagnostic) => ({ ...diagnostic, agentId: options.agentId })),
 		);
-		const agentTools = createAgentHarnessToolsFromResolvedTools(
-			resolvedTools.tools,
-		);
+		const agentTools = createAgentHarnessToolsFromResolvedTools(resolvedTools.tools);
 		return {
 			tools: agentTools,
 			toolNames: [...resolvedTools.toolNames],
-			requestedToolNames: options.requestedToolNames
-				? [...options.requestedToolNames]
-				: undefined,
+			requestedToolNames: options.requestedToolNames ? [...options.requestedToolNames] : undefined,
 			activeToolNames: [...resolvedTools.activeToolNames],
 			activeToolSelection:
 				activeToolSelection.mode === "explicit"
-					? {
-							mode: "explicit",
-							toolNames: [...resolvedTools.activeToolNames],
-						}
+					? { mode: "explicit", toolNames: [...resolvedTools.activeToolNames] }
 					: { mode: "default_all" },
 			profileId: options.profileId,
 		};
 	}
 
-	private _createToolAdapterContext(
-		agentId: AgentId,
-		profileId: string,
-	): ToolAdapterContext {
+	private _createToolAdapterContext(agentId: AgentId, profileId: string): ToolAdapterContext {
 		const record = this._requireAgentRecord(agentId);
 		const extensionRunner = record.extensionRunner;
 		return {
 			backgroundJobTable: record.backgroundJobTable,
 			human: {
-				request: async (request) =>
-					await this.requestHuman({
-						...request,
-						source: { kind: "agent", agentId },
-					}),
+				request: async (request) => await this.requestHuman({ ...request, source: { kind: "agent", agentId } }),
 			},
 			agents: this._createToolAgentHost(agentId),
 			humanInterrupts: this._humanInterrupts.watch(agentId),
@@ -3332,11 +2720,7 @@ export class AgentOrchestrator {
 				}
 				return {
 					extensionId: source.id,
-					host: {
-						agentId,
-						profileId,
-						actions: extensionRunner.createContext(source.id).actions,
-					},
+					host: { agentId, profileId, actions: extensionRunner.createContext(source.id).actions },
 				};
 			},
 		};
@@ -3374,9 +2758,7 @@ export class AgentOrchestrator {
 				const rootAgentId = this._resolveAgentTreeRoot(agentId);
 				return Array.from(this._agents.values())
 					.filter(
-						(record) =>
-							record.status !== "disposed" &&
-							this._resolveAgentTreeRoot(record.agentId) === rootAgentId,
+						(record) => record.status !== "disposed" && this._resolveAgentTreeRoot(record.agentId) === rootAgentId,
 					)
 					.map((record) => this._describeAgentForTools(record));
 			},
@@ -3409,28 +2791,20 @@ export class AgentOrchestrator {
 					return { kind: "outside_tree" };
 				}
 				const selectedAgentIds =
-					options.scope === "subtree"
-						? this._collectAgentSubtreePostOrder(targetAgentId)
-						: [targetAgentId];
+					options.scope === "subtree" ? this._collectAgentSubtreePostOrder(targetAgentId) : [targetAgentId];
 				if (selectedAgentIds.includes(agentId)) {
 					return { kind: "self" };
 				}
-				const disposedAgentIds = await this.disposeAgent(
-					targetAgentId,
-					options,
-				);
+				const disposedAgentIds = await this.disposeAgent(targetAgentId, options);
 				return disposedAgentIds.length > 0
 					? { kind: "disposed", agentIds: disposedAgentIds }
 					: { kind: "already_disposed" };
 			},
 			settleTask: (ownerAgentId, taskId, outcome) => {
 				if (!this._agents.has(ownerAgentId)) return "ignored";
-				return this.settleAgentBackgroundJob(
-					ownerAgentId,
-					taskId,
-					toBackgroundJobOutcome(outcome),
-					{ settledBy: agentId },
-				);
+				return this.settleAgentBackgroundJob(ownerAgentId, taskId, toBackgroundJobOutcome(outcome), {
+					settledBy: agentId,
+				});
 			},
 		};
 	}
@@ -3447,26 +2821,18 @@ export class AgentOrchestrator {
 		};
 	}
 
-	private _createScopedToolRegistry(
-		agentId: AgentId,
-		extensionRunner?: ExtensionRunner,
-	): ToolRegistry {
+	private _createScopedToolRegistry(agentId: AgentId, extensionRunner?: ExtensionRunner): ToolRegistry {
 		const registry = this.toolRegistry.clone();
-		(
-			extensionRunner ?? this._agents.get(agentId)?.extensionRunner
-		)?.contributeToolsTo(registry);
+		(extensionRunner ?? this._agents.get(agentId)?.extensionRunner)?.contributeToolsTo(registry);
 		return registry;
 	}
 
 	private _createExtensionActions(): ExtensionCoreActions {
 		return {
 			getAgentTools: (agentId) => this.getAgentTools(agentId),
-			listAgentBackgroundJobs: (agentId) =>
-				this.listAgentBackgroundJobs(agentId),
-			readAgentBackgroundJobOutput: (agentId, jobId) =>
-				this.readAgentBackgroundJobOutput(agentId, jobId),
-			abortAgentBackgroundJob: (agentId, jobId, reason) =>
-				this.abortAgentBackgroundJob(agentId, jobId, reason),
+			listAgentBackgroundJobs: (agentId) => this.listAgentBackgroundJobs(agentId),
+			readAgentBackgroundJobOutput: (agentId, jobId) => this.readAgentBackgroundJobOutput(agentId, jobId),
+			abortAgentBackgroundJob: (agentId, jobId, reason) => this.abortAgentBackgroundJob(agentId, jobId, reason),
 			setAgentTools: async (agentId, toolNames, activeToolNames) => {
 				await this.setAgentTools(agentId, toolNames, activeToolNames);
 			},
@@ -3474,10 +2840,7 @@ export class AgentOrchestrator {
 				await this.setAgentActiveTools(agentId, toolNames);
 			},
 			requestHuman: async (agentId, extensionId, request) => {
-				return await this._requestHumanForAgent(agentId, {
-					...request,
-					source: { kind: "extension", extensionId },
-				});
+				return await this._requestHumanForAgent(agentId, { ...request, source: { kind: "extension", extensionId } });
 			},
 			emitOutput: async (agentId, extensionId, text) => {
 				assertExtensionOutputText(text);
@@ -3511,16 +2874,9 @@ export class AgentOrchestrator {
 			setStatus: async (agentId, extensionId, key, status) => {
 				this._requireAgentRecord(agentId);
 				assertExtensionStatusKey(key);
-				const validatedStatus: ExtensionStatus =
-					validateExtensionStatus(status);
+				const validatedStatus: ExtensionStatus = validateExtensionStatus(status);
 				const changedAt = now();
-				const snapshot = this._extensionStatuses.set(
-					agentId,
-					extensionId,
-					key,
-					validatedStatus,
-					changedAt,
-				);
+				const snapshot = this._extensionStatuses.set(agentId, extensionId, key, validatedStatus, changedAt);
 				await this._emit(
 					{
 						type: "extension_status_changed",
@@ -3562,33 +2918,19 @@ export class AgentOrchestrator {
 					agentId,
 					extensionId,
 				};
-				this._addAgentDiagnostics(agentId, {
-					extensionDiagnostics: [diagnostic],
-				});
+				this._addAgentDiagnostics(agentId, { extensionDiagnostics: [diagnostic] });
 				// Extension-published facts never feed back into extension
 				// observers, regardless of observer dispatch depth.
-				await this._publishDiagnostic(diagnostic, {
-					observeExtensions: false,
-				});
+				await this._publishDiagnostic(diagnostic, { observeExtensions: false });
 			},
 			publishMessage: async (agentId, extensionId, message) => {
 				this._requireAgentRecord(agentId);
-				const validatedMessage: ExtensionMessage =
-					validateExtensionMessage(message);
-				const entryData = Object.freeze({
-					extensionId,
-					message: validatedMessage,
-				});
+				const validatedMessage: ExtensionMessage = validateExtensionMessage(message);
+				const entryData = Object.freeze({ extensionId, message: validatedMessage });
 				// Session write comes first: the entry id is the stable identity
 				// the event and the action result both carry.
-				const entryId = await this.sessionManager.appendExtensionMessageEntry(
-					agentId,
-					entryData,
-				);
-				const event: Extract<
-					OrchestratorEvent,
-					{ type: "extension_message_published" }
-				> = Object.freeze({
+				const entryId = await this.sessionManager.appendExtensionMessageEntry(agentId, entryData);
+				const event: Extract<OrchestratorEvent, { type: "extension_message_published" }> = Object.freeze({
 					type: "extension_message_published",
 					presentationId: this._createPresentationId(),
 					entryId,
@@ -3606,21 +2948,13 @@ export class AgentOrchestrator {
 			promptAgent: async (agentId, extensionId, text, options) => {
 				await this.promptAgent(agentId, text, {
 					images: options?.images,
-					presentation: options?.presentation
-						? { extensionId, presentation: options.presentation }
-						: undefined,
+					presentation: options?.presentation ? { extensionId, presentation: options.presentation } : undefined,
 				});
 			},
 			steerAgent: async (agentId, extensionId, text, options) => {
-				await this._withExtensionInputPresentation(
-					agentId,
-					extensionId,
-					"steer",
-					options?.presentation,
-					async () => {
-						await this.steerAgent(agentId, text, { images: options?.images });
-					},
-				);
+				await this._withExtensionInputPresentation(agentId, extensionId, "steer", options?.presentation, async () => {
+					await this.steerAgent(agentId, text, { images: options?.images });
+				});
 			},
 			followUpAgent: async (agentId, extensionId, text, options) => {
 				await this._withExtensionInputPresentation(
@@ -3629,9 +2963,7 @@ export class AgentOrchestrator {
 					"follow_up",
 					options?.presentation,
 					async () => {
-						await this.followUpAgent(agentId, text, {
-							images: options?.images,
-						});
+						await this.followUpAgent(agentId, text, { images: options?.images });
 					},
 				);
 			},
@@ -3640,18 +2972,14 @@ export class AgentOrchestrator {
 				return usage ? { ...usage } : undefined;
 			},
 			isProjectTrusted: () => this.settingManager.isProjectTrusted(),
-			getAgentSystemPrompt: async (agentId) =>
-				await this.getAgentSystemPrompt(agentId),
+			getAgentSystemPrompt: async (agentId) => await this.getAgentSystemPrompt(agentId),
 			// Both queues count: the orchestrator's, holding messages not yet
 			// handed over, and the harness's, holding messages handed over but not
 			// yet read. Checking only the first reported "nothing pending" for text
 			// an extension had just queued through steer/followUp.
 			agentHasPendingMessages: (agentId) => {
 				const record = this._requireAgentRecord(agentId);
-				return (
-					this._messages.hasPending(agentId) ||
-					(record.harnessQueuedMessageCount ?? 0) > 0
-				);
+				return this._messages.hasPending(agentId) || (record.harnessQueuedMessageCount ?? 0) > 0;
 			},
 			waitForAgentIdle: async (agentId, options) => {
 				await this.waitForAgentIdle(agentId, options);
@@ -3668,31 +2996,20 @@ export class AgentOrchestrator {
 			},
 			requestRuntimeShutdown: async (agentId, extensionId, reason) => {
 				this._requireAgentRecord(agentId);
-				await this.requestShutdown({
-					requestedBy: extensionId,
-					requestedByAgentId: agentId,
-					reason,
-				});
+				await this.requestShutdown({ requestedBy: extensionId, requestedByAgentId: agentId, reason });
 			},
 			disposeRuntime: async (agentId, extensionId, reason) => {
 				this._requireAgentRecord(agentId);
-				await this.disposeAll(
-					reason ??
-						`Extension '${extensionId}' disposed the runtime from agent ${agentId}.`,
-				);
+				await this.disposeAll(reason ?? `Extension '${extensionId}' disposed the runtime from agent ${agentId}.`);
 			},
 			setAgentSessionName: async (agentId, name) => {
 				await this.setAgentSessionName(agentId, name);
 			},
-			getAgentSessionName: async (agentId) =>
-				await this.getAgentSessionName(agentId),
-			compactAgent: async (agentId, customInstructions) =>
-				await this.compactAgent(agentId, customInstructions),
-			setAgentModelByReference: async (agentId, reference) =>
-				await this.setAgentModelByReference(agentId, reference),
+			getAgentSessionName: async (agentId) => await this.getAgentSessionName(agentId),
+			compactAgent: async (agentId, customInstructions) => await this.compactAgent(agentId, customInstructions),
+			setAgentModelByReference: async (agentId, reference) => await this.setAgentModelByReference(agentId, reference),
 			getAgentModel: (agentId) => this.getAgentModel(agentId),
-			listModelCandidates: async () =>
-				(await this.listAvailableModelCandidates()).models,
+			listModelCandidates: async () => (await this.listAvailableModelCandidates()).models,
 			getAgentThinkingLevel: (agentId) => this.getAgentThinkingLevel(agentId),
 			setAgentThinkingLevel: async (agentId, level) => {
 				await this.setAgentThinkingLevel(agentId, level);
@@ -3720,14 +3037,9 @@ export class AgentOrchestrator {
 	// Project the internal snapshot onto the extension-facing shape: identity
 	// and conversation, no filesystem layout. An ephemeral session has no
 	// persisted file and therefore no ref.
-	private _toExtensionSessionSnapshot(
-		snapshot: AgentSessionSnapshot,
-	): ExtensionSessionSnapshot {
+	private _toExtensionSessionSnapshot(snapshot: AgentSessionSnapshot): ExtensionSessionSnapshot {
 		const metadata = snapshot.metadata;
-		const path =
-			"path" in metadata && typeof metadata.path === "string"
-				? metadata.path
-				: undefined;
+		const path = "path" in metadata && typeof metadata.path === "string" ? metadata.path : undefined;
 		return {
 			ref: path ? this.sessionManager.toSessionHandle(path) : undefined,
 			id: metadata.id,
@@ -3737,23 +3049,14 @@ export class AgentOrchestrator {
 		};
 	}
 
-	private _toExtensionSessionTree(
-		snapshot: AgentSessionTreeSnapshot,
-	): ExtensionSessionTree {
-		return {
-			...this._toExtensionSessionSnapshot(snapshot),
-			entries: cloneSessionEntries(snapshot.entries),
-		};
+	private _toExtensionSessionTree(snapshot: AgentSessionTreeSnapshot): ExtensionSessionTree {
+		return { ...this._toExtensionSessionSnapshot(snapshot), entries: cloneSessionEntries(snapshot.entries) };
 	}
 
 	// Trust gate for extension actions that reach beyond the agent's own
 	// session. `action` completes "... is denied because the project is not
 	// trusted", so phrase it as the thing being attempted.
-	private _requireProjectTrustForExtension(
-		agentId: AgentId,
-		extensionId: string,
-		action: string,
-	): void {
+	private _requireProjectTrustForExtension(agentId: AgentId, extensionId: string, action: string): void {
 		if (this.settingManager.isProjectTrusted()) return;
 		throw new OrchestratorError({
 			severity: "error",
@@ -3785,11 +3088,7 @@ export class AgentOrchestrator {
 			: createAgentRecordFromProfileReference({
 					agentId: options.agentId,
 					status: "unavailable",
-					profile: {
-						reference: parseAgentProfileReference(
-							options.metadata.metadata?.profile,
-						) ?? { id: "unknown" },
-					},
+					profile: { reference: parseAgentProfileReference(options.metadata.metadata?.profile) ?? { id: "unknown" } },
 					sessionMetadata: options.sessionMetadata,
 					model: options.model,
 					spawnedBy: existing?.spawnedBy,
@@ -3797,20 +3096,13 @@ export class AgentOrchestrator {
 		this._agentToolSets.delete(options.agentId);
 		await this._registerAgentRecord({
 			...record,
-			resourceDiagnostics: existing?.resourceDiagnostics
-				? [...existing.resourceDiagnostics]
-				: [],
-			extensionDiagnostics: existing?.extensionDiagnostics
-				? [...existing.extensionDiagnostics]
-				: [],
+			resourceDiagnostics: existing?.resourceDiagnostics ? [...existing.resourceDiagnostics] : [],
+			extensionDiagnostics: existing?.extensionDiagnostics ? [...existing.extensionDiagnostics] : [],
 			diagnostics: [...(existing?.diagnostics ?? []), options.diagnostic],
 		});
 	}
 
-	private async _markExistingAgentUnavailable(
-		agentId: AgentId,
-		diagnostic: OrchestratorDiagnostic,
-	): Promise<void> {
+	private async _markExistingAgentUnavailable(agentId: AgentId, diagnostic: OrchestratorDiagnostic): Promise<void> {
 		const record = this._agents.get(agentId);
 		if (!record) return;
 		delete record.harness;
@@ -3818,10 +3110,7 @@ export class AgentOrchestrator {
 		if (!record.diagnostics.includes(diagnostic)) {
 			record.diagnostics.push(diagnostic);
 		}
-		if (
-			diagnostic.extensionId !== undefined &&
-			!record.extensionDiagnostics.includes(diagnostic)
-		) {
+		if (diagnostic.extensionId !== undefined && !record.extensionDiagnostics.includes(diagnostic)) {
 			record.extensionDiagnostics.push(diagnostic);
 		}
 		this._agentToolSets.delete(agentId);
@@ -3858,10 +3147,7 @@ export class AgentOrchestrator {
 	private _setAgentToolSet(agentId: AgentId, toolSet: AgentToolSet): void {
 		const record = this._requireAgentRecord(agentId);
 		this._agentToolSets.set(agentId, toolSet);
-		record.toolSnapshot = {
-			toolNames: [...toolSet.toolNames],
-			activeToolNames: [...toolSet.activeToolNames],
-		};
+		record.toolSnapshot = { toolNames: [...toolSet.toolNames], activeToolNames: [...toolSet.activeToolNames] };
 	}
 
 	private _addAgentDiagnostics(
@@ -3879,27 +3165,12 @@ export class AgentOrchestrator {
 		const generalDiagnostics = diagnostics.diagnostics ?? [];
 		record.resourceDiagnostics.push(...resourceDiagnostics);
 		record.extensionDiagnostics.push(...extensionDiagnostics);
-		record.diagnostics.push(
-			...resourceDiagnostics,
-			...extensionDiagnostics,
-			...generalDiagnostics,
-		);
+		record.diagnostics.push(...resourceDiagnostics, ...extensionDiagnostics, ...generalDiagnostics);
 	}
 
-	private async _recordAgentLifecycleFailure(
-		agentId: AgentId,
-		code: string,
-		message: string,
-	): Promise<void> {
-		const diagnostic: OrchestratorDiagnostic = {
-			severity: "warning",
-			code,
-			message,
-			agentId,
-		};
-		this._addAgentDiagnostics(agentId, {
-			diagnostics: [diagnostic],
-		});
+	private async _recordAgentLifecycleFailure(agentId: AgentId, code: string, message: string): Promise<void> {
+		const diagnostic: OrchestratorDiagnostic = { severity: "warning", code, message, agentId };
+		this._addAgentDiagnostics(agentId, { diagnostics: [diagnostic] });
 		await this._publishDiagnostic(diagnostic);
 	}
 
@@ -3907,21 +3178,16 @@ export class AgentOrchestrator {
 		agentId: AgentId,
 		diagnostics: readonly OrchestratorDiagnostic[],
 	): Promise<void> {
-		this._addAgentDiagnostics(agentId, {
-			extensionDiagnostics: diagnostics,
-		});
+		this._addAgentDiagnostics(agentId, { extensionDiagnostics: diagnostics });
 		await this._publishDiagnostics(diagnostics, {
 			// A diagnostic produced while an observer is handling another event is
 			// still recorded and published to core consumers, but must not feed back
 			// into diagnostic observers and recurse indefinitely.
-			observeExtensions:
-				(this._extensionObserverDispatchDepth.get(agentId) ?? 0) === 0,
+			observeExtensions: (this._extensionObserverDispatchDepth.get(agentId) ?? 0) === 0,
 		});
 	}
 
-	private async _runExtensionInterceptor<
-		TName extends ExtensionInterceptorName,
-	>(
+	private async _runExtensionInterceptor<TName extends ExtensionInterceptorName>(
 		agentId: AgentId,
 		extensionRunner: ExtensionRunner,
 		event: ExtensionInterceptorEventFor<TName>,
@@ -3945,9 +3211,7 @@ export class AgentOrchestrator {
 		};
 	}
 
-	private async _reloadAgentExtensions(
-		agentId: AgentId,
-	): Promise<ExtensionReloadAgentResult> {
+	private async _reloadAgentExtensions(agentId: AgentId): Promise<ExtensionReloadAgentResult> {
 		const record = this._agents.get(agentId);
 		if (!record) {
 			const diagnostic = this._createExtensionReloadDiagnostic({
@@ -3957,12 +3221,7 @@ export class AgentOrchestrator {
 				agentId,
 			});
 			await this._publishDiagnostic(diagnostic);
-			return {
-				agentId,
-				status: "failed",
-				reason: "unknown_agent",
-				diagnostics: [diagnostic],
-			};
+			return { agentId, status: "failed", reason: "unknown_agent", diagnostics: [diagnostic] };
 		}
 
 		const before = snapshotAgentRecord(record);
@@ -3974,9 +3233,7 @@ export class AgentOrchestrator {
 				message: `Skipped extension reload for agent ${agentId}: ${skipReason}.`,
 				agentId,
 			});
-			this._addAgentDiagnostics(agentId, {
-				extensionDiagnostics: [diagnostic],
-			});
+			this._addAgentDiagnostics(agentId, { extensionDiagnostics: [diagnostic] });
 			await this._publishDiagnostic(diagnostic);
 			return {
 				agentId,
@@ -4003,10 +3260,7 @@ export class AgentOrchestrator {
 				requestedToolNames: currentToolSet.requestedToolNames,
 				activeToolSelection:
 					currentToolSet.activeToolSelection.mode === "explicit"
-						? {
-								mode: "explicit",
-								toolNames: currentToolSet.activeToolNames,
-							}
+						? { mode: "explicit", toolNames: currentToolSet.activeToolNames }
 						: { mode: "default_all" },
 				extensionRunner: nextRunner,
 			});
@@ -4019,9 +3273,7 @@ export class AgentOrchestrator {
 			record.extensionRunner = nextRunner;
 			this._setAgentToolSet(agentId, nextToolSet);
 			try {
-				await harness.setTools(nextToolSet.tools, [
-					...nextToolSet.activeToolNames,
-				]);
+				await harness.setTools(nextToolSet.tools, [...nextToolSet.activeToolNames]);
 			} catch (error) {
 				record.extensionRunner = oldRunner;
 				this._setAgentToolSet(agentId, currentToolSet);
@@ -4029,15 +3281,10 @@ export class AgentOrchestrator {
 			}
 			candidateInstalled = true;
 
-			const unsubscribeOldInterceptors =
-				this._unsubscribeAgentExtensionInterceptors.get(agentId);
+			const unsubscribeOldInterceptors = this._unsubscribeAgentExtensionInterceptors.get(agentId);
 			unsubscribeOldInterceptors?.();
 			this._unsubscribeAgentExtensionInterceptors.delete(agentId);
-			const unsubscribeInterceptors = this._registerExtensionInterceptors(
-				agentId,
-				harness,
-				nextRunner,
-			);
+			const unsubscribeInterceptors = this._registerExtensionInterceptors(agentId, harness, nextRunner);
 			this._unsubscribeAgentExtensionInterceptors.set(agentId, () => {
 				for (const unsubscribe of unsubscribeInterceptors) {
 					unsubscribe();
@@ -4050,21 +3297,12 @@ export class AgentOrchestrator {
 			// re-registers its own.
 			await this._withdrawExtensionProviderContributions(agentId);
 			await this._applyExtensionProviderContributions(agentId, nextRunner);
-			await this._disposeExtensionRunner(
-				agentId,
-				oldRunner,
-				"Extension runtime has been reloaded.",
-			);
+			await this._disposeExtensionRunner(agentId, oldRunner, "Extension runtime has been reloaded.");
 			// Clear before publishing the new runner's diagnostics: diagnostic
 			// events reach the new runner's observers, and statuses they set
 			// must survive the reload cleanup.
 			await this._clearExtensionStatusesForAgent(agentId);
-			const staleBefore = oldRunner
-				? {
-						...before,
-						extensionSnapshot: oldRunner.inspect(),
-					}
-				: before;
+			const staleBefore = oldRunner ? { ...before, extensionSnapshot: oldRunner.inspect() } : before;
 			await this._publishDiagnostics(nextRunner.diagnostics);
 
 			return {
@@ -4076,11 +3314,7 @@ export class AgentOrchestrator {
 			};
 		} catch (error) {
 			if (candidateRunner && !candidateInstalled) {
-				await this._disposeExtensionRunner(
-					agentId,
-					candidateRunner,
-					"Extension reload failed before installation.",
-				);
+				await this._disposeExtensionRunner(agentId, candidateRunner, "Extension reload failed before installation.");
 			}
 			const diagnostic = this._createExtensionReloadDiagnostic({
 				code: "extension.reload_agent_failed",
@@ -4088,23 +3322,13 @@ export class AgentOrchestrator {
 				message: `Failed to reload extensions for agent ${agentId}: ${formatError(error)}`,
 				agentId,
 			});
-			this._addAgentDiagnostics(agentId, {
-				extensionDiagnostics: [diagnostic],
-			});
+			this._addAgentDiagnostics(agentId, { extensionDiagnostics: [diagnostic] });
 			await this._publishDiagnostic(diagnostic);
-			return {
-				agentId,
-				status: "failed",
-				diagnostics: [diagnostic],
-				before,
-				after: snapshotAgentRecord(record),
-			};
+			return { agentId, status: "failed", diagnostics: [diagnostic], before, after: snapshotAgentRecord(record) };
 		}
 	}
 
-	private _extensionReloadSkipReason(
-		record: AgentRecord,
-	): ExtensionReloadAgentSkipReason | undefined {
+	private _extensionReloadSkipReason(record: AgentRecord): ExtensionReloadAgentSkipReason | undefined {
 		if (record.status === "creating") return "creating";
 		if (record.status === "running") return "running";
 		if (record.status === "disposed") return "disposed";
@@ -4119,12 +3343,7 @@ export class AgentOrchestrator {
 		message: string;
 		agentId: AgentId;
 	}): OrchestratorDiagnostic {
-		return {
-			severity: options.severity,
-			code: options.code,
-			message: options.message,
-			agentId: options.agentId,
-		};
+		return { severity: options.severity, code: options.code, message: options.message, agentId: options.agentId };
 	}
 
 	private async _registerAgentRecord(record: AgentRecord): Promise<void> {
@@ -4139,28 +3358,15 @@ export class AgentOrchestrator {
 	private async _transitionAgentStatus(
 		agentId: AgentId,
 		status: AgentLifecycleStatus,
-		options: {
-			force?: boolean;
-			maintenance?: AgentMaintenanceKind;
-			idleReason?: AgentIdleReason;
-		} = {},
+		options: { force?: boolean; maintenance?: AgentMaintenanceKind; idleReason?: AgentIdleReason } = {},
 	): Promise<boolean> {
 		const record = this._requireAgentRecord(agentId);
 		const previousStatus = record.status;
 		if (previousStatus === status) return false;
-		if (
-			!options.force &&
-			(previousStatus === "disposed" || previousStatus === "unavailable")
-		) {
+		if (!options.force && (previousStatus === "disposed" || previousStatus === "unavailable")) {
 			return false;
 		}
-		return await this._commitAgentStatus(
-			record,
-			status,
-			previousStatus,
-			options.maintenance,
-			options.idleReason,
-		);
+		return await this._commitAgentStatus(record, status, previousStatus, options.maintenance, options.idleReason);
 	}
 
 	private async _commitAgentStatus(
@@ -4172,10 +3378,7 @@ export class AgentOrchestrator {
 	): Promise<boolean> {
 		if (previousStatus === status) return false;
 		record.status = status;
-		this._agentStatusRevisions.set(
-			record.agentId,
-			(this._agentStatusRevisions.get(record.agentId) ?? 0) + 1,
-		);
+		this._agentStatusRevisions.set(record.agentId, (this._agentStatusRevisions.get(record.agentId) ?? 0) + 1);
 		// Recorded before the emit, because the settle at the end of this method
 		// may already publish the idle this reason describes.
 		if (status === "idle") {
@@ -4194,10 +3397,7 @@ export class AgentOrchestrator {
 		return true;
 	}
 
-	private async _disposeAgentHarness(
-		agentId: AgentId,
-		harness: WidiAgentHarness,
-	): Promise<void> {
+	private async _disposeAgentHarness(agentId: AgentId, harness: WidiAgentHarness): Promise<void> {
 		try {
 			await harness.abort();
 		} catch (error) {
@@ -4250,17 +3450,13 @@ export class AgentOrchestrator {
 		settlement: BackgroundJobSettlement,
 	): Promise<void> {
 		const messageText = formatBackgroundJobResultMessageText(settlement);
-		await this._agents.get(agentId)?.backgroundJobStore?.recordSettled(
-			snapshotBackgroundJob(settlement.job, {
-				status: settlement.outcome.status,
-			}),
-			{ messageText, outputTail: settlement.job.output.read() },
-		);
-		await this._deliverBackgroundJobResult(
-			agentId,
-			settlement.job.id,
-			messageText,
-		);
+		await this._agents
+			.get(agentId)
+			?.backgroundJobStore?.recordSettled(
+				snapshotBackgroundJob(settlement.job, { status: settlement.outcome.status }),
+				{ messageText, outputTail: settlement.job.output.read() },
+			);
+		await this._deliverBackgroundJobResult(agentId, settlement.job.id, messageText);
 	}
 
 	/**
@@ -4274,11 +3470,7 @@ export class AgentOrchestrator {
 	 * would sit unread for the rest of the run. A result the model was told to
 	 * expect should reach it at the first point it can act on it.
 	 */
-	private async _deliverBackgroundJobResult(
-		agentId: AgentId,
-		jobId: string,
-		body: string,
-	): Promise<void> {
+	private async _deliverBackgroundJobResult(agentId: AgentId, jobId: string, body: string): Promise<void> {
 		try {
 			await this.sendMessage({
 				source: { kind: "background_job", ownerAgentId: agentId, jobId },
@@ -4304,9 +3496,7 @@ export class AgentOrchestrator {
 	 * reason to fail the agent: jobs keep running, they just stop being
 	 * recoverable across a restart.
 	 */
-	private async _openBackgroundJobStore(
-		agentId: AgentId,
-	): Promise<BackgroundJobStore | undefined> {
+	private async _openBackgroundJobStore(agentId: AgentId): Promise<BackgroundJobStore | undefined> {
 		let sessionDir: string | undefined;
 		try {
 			sessionDir = await this.sessionManager.getAgentSessionDir(agentId);
@@ -4363,22 +3553,12 @@ export class AgentOrchestrator {
 		const snapshot = await this.sessionManager.getAgentSessionSnapshot(agentId);
 		const branchText = collectUserMessageText(snapshot.pathToRoot);
 		const unanswered = carriedOver.filter(
-			(job) =>
-				!branchText.some((text) =>
-					text.includes(
-						backgroundJobResultHeaderPrefix(job.jobId, job.toolCallId),
-					),
-				),
+			(job) => !branchText.some((text) => text.includes(backgroundJobResultHeaderPrefix(job.jobId, job.toolCallId))),
 		);
 		if (unanswered.length === 0) return;
 		await harness.appendMessage({
 			role: "user",
-			content: [
-				{
-					type: "text",
-					text: unanswered.map(toCarriedOverJobResultText).join("\n\n"),
-				},
-			],
+			content: [{ type: "text", text: unanswered.map(toCarriedOverJobResultText).join("\n\n") }],
 			timestamp: Date.now(),
 		});
 		await this._publishDiagnostic({
@@ -4395,9 +3575,7 @@ export class AgentOrchestrator {
 	 * the history: settled jobs, and jobs a previous runtime never settled.
 	 */
 	backgroundJobHistory(agentId: AgentId): PersistedBackgroundJob[] {
-		return (
-			this._requireAgentRecord(agentId).backgroundJobStore?.history() ?? []
-		);
+		return this._requireAgentRecord(agentId).backgroundJobStore?.history() ?? [];
 	}
 
 	/**
@@ -4406,10 +3584,7 @@ export class AgentOrchestrator {
 	 * regardless of per-emit `_emit` duration. Failures are swallowed so one bad
 	 * emit cannot break the chain for later ones.
 	 */
-	private _enqueueBackgroundEmit(
-		agentId: AgentId,
-		task: () => Promise<void>,
-	): void {
+	private _enqueueBackgroundEmit(agentId: AgentId, task: () => Promise<void>): void {
 		const prior = this._backgroundJobEmits.get(agentId) ?? Promise.resolve();
 		const next = prior.then(task).catch(() => {});
 		this._backgroundJobEmits.set(agentId, next);
@@ -4421,10 +3596,7 @@ export class AgentOrchestrator {
 	 * settled job is already removed from the table, so the live count reflects
 	 * the change.
 	 */
-	private _emitBackgroundJobChange(
-		agentId: AgentId,
-		change: BackgroundJobChange,
-	): void {
+	private _emitBackgroundJobChange(agentId: AgentId, change: BackgroundJobChange): void {
 		const record = this._agents.get(agentId);
 		if (!record) return;
 		// Snapshot the job, count, and timestamp now, at the moment of the change,
@@ -4432,13 +3604,9 @@ export class AgentOrchestrator {
 		// the order the table changed rather than in async completion order.
 		const job = snapshotBackgroundJob(
 			change.job,
-			change.transition === "settled"
-				? { status: change.outcome.status }
-				: undefined,
+			change.transition === "settled" ? { status: change.outcome.status } : undefined,
 		);
-		const liveCount = record.backgroundJobTable
-			.list()
-			.filter((live) => live.phase === "backgrounded").length;
+		const liveCount = record.backgroundJobTable.list().filter((live) => live.phase === "backgrounded").length;
 		const changedAt = now();
 		this._enqueueBackgroundEmit(agentId, () =>
 			this._emit({
@@ -4457,11 +3625,7 @@ export class AgentOrchestrator {
 	 * the per-agent background emission tail. A later revision replaces the
 	 * pending value instead of growing an unbounded event queue.
 	 */
-	private _onJobReport(
-		agentId: AgentId,
-		job: BackgroundJob,
-		report: BackgroundJobReportSnapshot,
-	): void {
+	private _onJobReport(agentId: AgentId, job: BackgroundJob, report: BackgroundJobReportSnapshot): void {
 		const queued = this._queuedJobReports.get(agentId) ?? new Map();
 		const alreadyQueued = queued.has(job.id);
 		queued.set(job.id, { report, operationRef: job.toolCallId });
@@ -4475,9 +3639,7 @@ export class AgentOrchestrator {
 			// Persist the coalesced value, not every revision: the store keeps a
 			// latest-value register, so intermediate revisions would only cost
 			// writes.
-			void this._agents
-				.get(agentId)
-				?.backgroundJobStore?.recordReport(job.id, latest.report);
+			void this._agents.get(agentId)?.backgroundJobStore?.recordReport(job.id, latest.report);
 			await this._emit({
 				type: "agent_background_job_report_updated",
 				agentId,
@@ -4514,14 +3676,10 @@ export class AgentOrchestrator {
 	 * `agent_background_job_progress` event. No-op when nothing new was appended
 	 * since the previous drain.
 	 */
-	private async _emitJobProgress(
-		agentId: AgentId,
-		job: BackgroundJob,
-	): Promise<void> {
+	private async _emitJobProgress(agentId: AgentId, job: BackgroundJob): Promise<void> {
 		const increment = job.output.drainIncrement();
 		if (!increment) return;
-		const sequences =
-			this._progressSequence.get(agentId) ?? new Map<string, number>();
+		const sequences = this._progressSequence.get(agentId) ?? new Map<string, number>();
 		const sequence = sequences.get(job.id) ?? 0;
 		sequences.set(job.id, sequence + 1);
 		this._progressSequence.set(agentId, sequences);
@@ -4559,18 +3717,12 @@ export class AgentOrchestrator {
 	private async _startAgentPrompt(
 		agentId: AgentId,
 		text: string,
-		options: {
-			images?: readonly ImageContent[];
-			reportFailure: boolean;
-		},
+		options: { images?: readonly ImageContent[]; reportFailure: boolean },
 	): Promise<MessageDeliveryReceipt> {
 		const record = this._requireAgentRecord(agentId);
 		const harness = this._requireAgentHarness(agentId);
 		if (record.status !== "idle" || this._agentPromptRuns.has(agentId)) {
-			throw new AgentHarnessError(
-				"busy",
-				`Agent ${agentId} cannot accept a prompt while ${record.status}.`,
-			);
+			throw new AgentHarnessError("busy", `Agent ${agentId} cannot accept a prompt while ${record.status}.`);
 		}
 
 		await this._transitionAgentStatus(agentId, "running");
@@ -4578,9 +3730,7 @@ export class AgentOrchestrator {
 		const started = this._awaitAgentRunStart(agentId);
 		const runReservation: AgentPromptRun = {};
 		this._agentPromptRuns.set(agentId, runReservation);
-		const run = harness.prompt(text, {
-			images: options.images ? [...options.images] : undefined,
-		});
+		const run = harness.prompt(text, { images: options.images ? [...options.images] : undefined });
 		// A run that settles without ever starting a loop is still resolved here:
 		// the alternative is waiting forever for a signal that is not coming.
 		const start = await Promise.race([
@@ -4598,27 +3748,16 @@ export class AgentOrchestrator {
 			// A busy rejection means another harness operation won the race. Keep
 			// the runtime status running so the queue retries as a follow-up.
 			if (
-				!(
-					start.error instanceof AgentHarnessError &&
-					start.error.code === "busy"
-				) &&
+				!(start.error instanceof AgentHarnessError && start.error.code === "busy") &&
 				this._agentStatusRevisions.get(agentId) === statusRevision &&
 				this._agents.get(agentId)?.status === "running"
 			) {
-				await this._transitionAgentStatus(agentId, "idle", {
-					idleReason: runReservation.idleReason ?? "settled",
-				});
+				await this._transitionAgentStatus(agentId, "idle", { idleReason: runReservation.idleReason ?? "settled" });
 			}
 			throw start.error;
 		}
 
-		void this._finishAgentPrompt(
-			agentId,
-			run,
-			runReservation,
-			statusRevision,
-			options,
-		).catch(() => {});
+		void this._finishAgentPrompt(agentId, run, runReservation, statusRevision, options).catch(() => {});
 		return { method: "prompt", completed: run };
 	}
 
@@ -4663,16 +3802,11 @@ export class AgentOrchestrator {
 			return { kind: "gone", message: `Agent ${agentId} is gone.` };
 		}
 		if (record.status === "disposed" || record.status === "unavailable") {
-			return {
-				kind: "gone",
-				message: `Agent ${agentId} is ${record.status}.`,
-			};
+			return { kind: "gone", message: `Agent ${agentId} is ${record.status}.` };
 		}
 		if (this._agentPromptRuns.has(agentId)) return { kind: "busy" };
 		if (record.status !== "idle") return { kind: "busy" };
-		const pending =
-			this._messages.hasPending(agentId) ||
-			(record.harnessQueuedMessageCount ?? 0) > 0;
+		const pending = this._messages.hasPending(agentId) || (record.harnessQueuedMessageCount ?? 0) > 0;
 		return pending ? { kind: "busy" } : { kind: "idle" };
 	}
 
@@ -4708,9 +3842,7 @@ export class AgentOrchestrator {
 			type: "agent_idle",
 			agentId,
 			reason: this._agentIdleReasons.get(agentId) ?? "settled",
-			liveJobCount: record.backgroundJobTable
-				.list()
-				.filter((job) => job.phase === "backgrounded").length,
+			liveJobCount: record.backgroundJobTable.list().filter((job) => job.phase === "backgrounded").length,
 			idleAt: now(),
 		});
 	}
@@ -4743,9 +3875,7 @@ export class AgentOrchestrator {
 	 * them, with no second lifecycle to keep in step. A stale runner is skipped
 	 * for the same reason observers skip it - its context actions can only fail.
 	 */
-	private async _emitExtensionEvent(
-		envelope: ExtensionEventEnvelope,
-	): Promise<void> {
+	private async _emitExtensionEvent(envelope: ExtensionEventEnvelope): Promise<void> {
 		const immutableEnvelope = freezeExtensionEventEnvelope(envelope);
 		const dispatchDepth = this._extensionEventDispatchContext.getStore() ?? 0;
 		if (dispatchDepth >= MAX_EXTENSION_EVENT_DISPATCH_DEPTH) {
@@ -4761,21 +3891,14 @@ export class AgentOrchestrator {
 			);
 			return;
 		}
-		await this._extensionEventDispatchContext.run(
-			dispatchDepth + 1,
-			async () => {
-				for (const [agentId, record] of [...this._agents]) {
-					const extensionRunner = record.extensionRunner;
-					if (!extensionRunner || extensionRunner.isStale()) continue;
-					const diagnostics =
-						await extensionRunner.emitExtensionEvent(immutableEnvelope);
-					await this._recordAndPublishExtensionDiagnostics(
-						agentId,
-						diagnostics,
-					);
-				}
-			},
-		);
+		await this._extensionEventDispatchContext.run(dispatchDepth + 1, async () => {
+			for (const [agentId, record] of [...this._agents]) {
+				const extensionRunner = record.extensionRunner;
+				if (!extensionRunner || extensionRunner.isStale()) continue;
+				const diagnostics = await extensionRunner.emitExtensionEvent(immutableEnvelope);
+				await this._recordAndPublishExtensionDiagnostics(agentId, diagnostics);
+			}
+		});
 	}
 
 	private async _finishAgentPrompt(
@@ -4807,10 +3930,7 @@ export class AgentOrchestrator {
 				const idleReason = runReservation.idleReason ?? "settled";
 				this._agentIdleReasons.set(agentId, idleReason);
 				const record = this._agents.get(agentId);
-				if (
-					record?.status === "running" &&
-					this._agentStatusRevisions.get(agentId) === statusRevision
-				) {
+				if (record?.status === "running" && this._agentStatusRevisions.get(agentId) === statusRevision) {
 					await this._transitionAgentStatus(agentId, "idle", { idleReason });
 				}
 				this._messages.wake(agentId);
@@ -4840,9 +3960,7 @@ export class AgentOrchestrator {
 			throw new AgentHarnessError(
 				"busy",
 				`Agent ${agentId} cannot start ${maintenanceDescription(kind)} while ${
-					activeMaintenance
-						? maintenanceDescription(activeMaintenance)
-						: record.status
+					activeMaintenance ? maintenanceDescription(activeMaintenance) : record.status
 				}.`,
 			);
 		}
@@ -4852,9 +3970,7 @@ export class AgentOrchestrator {
 		const reservation = { kind };
 		this._maintenanceOperations.set(agentId, reservation);
 		try {
-			await this._transitionAgentStatus(agentId, "running", {
-				maintenance: kind,
-			});
+			await this._transitionAgentStatus(agentId, "running", { maintenance: kind });
 			return await operation(harness);
 		} finally {
 			// Disposal can clear this reservation, and a resumed session may reuse
@@ -4862,9 +3978,7 @@ export class AgentOrchestrator {
 			if (this._maintenanceOperations.get(agentId) === reservation) {
 				this._maintenanceOperations.delete(agentId);
 				if (this._agents.get(agentId)?.status === "running") {
-					await this._transitionAgentStatus(agentId, "idle", {
-						idleReason: "maintenance",
-					});
+					await this._transitionAgentStatus(agentId, "idle", { idleReason: "maintenance" });
 				}
 				// Leaving maintenance is a delivery-phase change even when another
 				// lifecycle transition prevented the idle commit.
@@ -4873,10 +3987,7 @@ export class AgentOrchestrator {
 		}
 	}
 
-	private _requireAgentOutsideMaintenance(
-		agentId: AgentId,
-		action: string,
-	): void {
+	private _requireAgentOutsideMaintenance(agentId: AgentId, action: string): void {
 		const maintenance = this._maintenanceOperations.get(agentId)?.kind;
 		if (!maintenance) return;
 		throw new AgentHarnessError(
@@ -4907,16 +4018,11 @@ export class AgentOrchestrator {
 				return this._agentPromptRuns.has(agentId) ? "turn" : "idle";
 			case "running":
 				if (!record.harness) return "gone";
-				return this._maintenanceOperations.has(agentId)
-					? "maintenance"
-					: "turn";
+				return this._maintenanceOperations.has(agentId) ? "maintenance" : "turn";
 		}
 	}
 
-	private async _updateAgentStatusFromHarnessEvent(
-		agentId: AgentId,
-		event: AgentHarnessEvent,
-	): Promise<void> {
+	private async _updateAgentStatusFromHarnessEvent(agentId: AgentId, event: AgentHarnessEvent): Promise<void> {
 		if (event.type === "agent_start" || event.type === "turn_start") {
 			await this._transitionAgentStatus(agentId, "running");
 			return;
@@ -4925,26 +4031,16 @@ export class AgentOrchestrator {
 			// A turn may be followed by tool execution and another turn, so it is
 			// not an idle boundary. It can still tell us that the eventual terminal
 			// idle was caused by an abort.
-			if (
-				event.message.role === "assistant" &&
-				event.message.stopReason === "aborted"
-			) {
+			if (event.message.role === "assistant" && event.message.stopReason === "aborted") {
 				const activeRun = this._agentPromptRuns.get(agentId);
 				if (activeRun) activeRun.idleReason = "aborted";
 			}
 			return;
 		}
-		if (
-			event.type === "agent_end" ||
-			event.type === "abort" ||
-			event.type === "settled"
-		) {
+		if (event.type === "agent_end" || event.type === "abort" || event.type === "settled") {
 			const activeRun = this._agentPromptRuns.get(agentId);
 			await this._transitionAgentStatus(agentId, "idle", {
-				idleReason:
-					event.type === "abort" || activeRun?.idleReason === "aborted"
-						? "aborted"
-						: "settled",
+				idleReason: event.type === "abort" || activeRun?.idleReason === "aborted" ? "aborted" : "settled",
 			});
 		}
 	}
@@ -4966,21 +4062,14 @@ export class AgentOrchestrator {
 		return state;
 	}
 
-	private async _handleAgentHarnessEvent(
-		agentId: AgentId,
-		event: AgentHarnessEvent,
-	): Promise<void> {
-		const presentedMessage =
-			event.type === "message_end" ? event.message : undefined;
+	private async _handleAgentHarnessEvent(agentId: AgentId, event: AgentHarnessEvent): Promise<void> {
+		const presentedMessage = event.type === "message_end" ? event.message : undefined;
 		const pendingPresentation = presentedMessage
 			? this._takePendingExtensionInputPresentation(agentId, presentedMessage)
 			: undefined;
 		const presentationMessageEntryId =
 			pendingPresentation && presentedMessage
-				? await this.sessionManager.findAgentMessageEntryId(
-						agentId,
-						presentedMessage,
-					)
+				? await this.sessionManager.findAgentMessageEntryId(agentId, presentedMessage)
 				: null;
 		// The agent loop is running, so the prompt's user message is committed to
 		// this run: a pending delivery may now be reported as accepted. Resolved
@@ -5002,37 +4091,21 @@ export class AgentOrchestrator {
 			// orchestrator's own delivery queue.
 			const record = this._agents.get(agentId);
 			if (record) {
-				record.harnessQueuedMessageCount =
-					event.steer.length + event.followUp.length + event.nextTurn.length;
+				record.harnessQueuedMessageCount = event.steer.length + event.followUp.length + event.nextTurn.length;
 				// The queue draining is the other half of the idle judgement; a
 				// status commit alone would report idle with text still unread.
 				await this._settleAgentIdle(agentId);
 			}
-			this._captureQueuedExtensionInputPresentation(
-				agentId,
-				"steer",
-				event.steer,
-			);
-			this._captureQueuedExtensionInputPresentation(
-				agentId,
-				"follow_up",
-				event.followUp,
-			);
+			this._captureQueuedExtensionInputPresentation(agentId, "steer", event.steer);
+			this._captureQueuedExtensionInputPresentation(agentId, "follow_up", event.followUp);
 		}
 		if (event.type === "abort") {
-			this._discardClearedExtensionInputPresentations(agentId, [
-				...event.clearedSteer,
-				...event.clearedFollowUp,
-			]);
+			this._discardClearedExtensionInputPresentations(agentId, [...event.clearedSteer, ...event.clearedFollowUp]);
 		}
 		await this._updateAgentStatusFromHarnessEvent(agentId, event);
 		await this._emit({ type: "agent_harness_event", agentId, event });
 		if (pendingPresentation) {
-			await this._commitExtensionInputPresentation(
-				agentId,
-				presentationMessageEntryId,
-				pendingPresentation,
-			);
+			await this._commitExtensionInputPresentation(agentId, presentationMessageEntryId, pendingPresentation);
 		}
 		// Every harness event can change the delivery phase, so re-examine the
 		// queue: this is what resumes a message deferred during maintenance or
@@ -5059,15 +4132,12 @@ export class AgentOrchestrator {
 	 * versus the model context window. A branch with no assistant usage yet has
 	 * no measurement - not a zero.
 	 */
-	private async _refreshAgentContextUsage(
-		agentId: AgentId,
-	): Promise<number | undefined> {
+	private async _refreshAgentContextUsage(agentId: AgentId): Promise<number | undefined> {
 		const record = this._agents.get(agentId);
 		if (!record) return undefined;
 		let usage: AgentContextUsage;
 		try {
-			const snapshot =
-				await this.sessionManager.getAgentSessionSnapshot(agentId);
+			const snapshot = await this.sessionManager.getAgentSessionSnapshot(agentId);
 			const lastUsage = getLastAssistantUsage([...snapshot.pathToRoot]);
 			if (!lastUsage) {
 				// A branch with nothing to measure must clear any earlier
@@ -5103,10 +4173,7 @@ export class AgentOrchestrator {
 
 	// Publish only on change: a settled that measures the same branch as the
 	// last one is not news for a gauge.
-	private async _setAgentContextUsage(
-		agentId: AgentId,
-		usage: AgentContextUsage | undefined,
-	): Promise<void> {
+	private async _setAgentContextUsage(agentId: AgentId, usage: AgentContextUsage | undefined): Promise<void> {
 		const record = this._agents.get(agentId);
 		if (!record) return;
 		const previous = record.contextUsage;
@@ -5130,10 +4197,7 @@ export class AgentOrchestrator {
 	// reserveTokens). Failure is a warning diagnostic, never a thrown error -
 	// an uncompactable over-threshold session keeps running until the provider
 	// rejects it, which is the same behavior as before this trigger existed.
-	private async _maybeAutoCompactAgent(
-		agentId: AgentId,
-		contextTokens: number | undefined,
-	): Promise<void> {
+	private async _maybeAutoCompactAgent(agentId: AgentId, contextTokens: number | undefined): Promise<void> {
 		if (contextTokens === undefined) return;
 		const settings = this.settingManager.getCompactionSettings();
 		if (!settings.enabled) return;
@@ -5172,18 +4236,13 @@ export class AgentOrchestrator {
 			// Keep the run signal visible to settled observers, then clear only
 			// the signal belonging to this run. A queued next turn may already
 			// have installed its own signal while observer dispatch was pending.
-			if (
-				event.type === "settled" &&
-				this._agentRunSignals.get(agentId) === signal
-			) {
+			if (event.type === "settled" && this._agentRunSignals.get(agentId) === signal) {
 				this._agentRunSignals.delete(agentId);
 			}
 		}
 	}
 
-	private _isExtensionObservedEvent(
-		event: OrchestratorEvent,
-	): event is ExtensionObservedEvent {
+	private _isExtensionObservedEvent(event: OrchestratorEvent): event is ExtensionObservedEvent {
 		return Object.hasOwn(EXTENSION_OBSERVED_EVENT_NAMES, event.type);
 	}
 
@@ -5192,17 +4251,13 @@ export class AgentOrchestrator {
 	 * runtime rather than one agent. A runtime-scoped fact is broadcast; a
 	 * diagnostic without an agent has no observer to reach.
 	 */
-	private _extensionObservedAgentId(
-		event: ExtensionObservedEvent,
-	): AgentId | undefined {
+	private _extensionObservedAgentId(event: ExtensionObservedEvent): AgentId | undefined {
 		if (event.type === "diagnostic") return event.diagnostic.agentId;
 		if (event.type === "runtime_shutdown_requested") return undefined;
 		return event.agentId;
 	}
 
-	private async _emitToExtensionObservers(
-		event: ExtensionObservedEvent,
-	): Promise<void> {
+	private async _emitToExtensionObservers(event: ExtensionObservedEvent): Promise<void> {
 		const agentId = this._extensionObservedAgentId(event);
 		if (!agentId) {
 			// Runtime-scoped: every live runtime is a subject, so a shutdown
@@ -5217,19 +4272,13 @@ export class AgentOrchestrator {
 		await this._emitToExtensionObserversForAgent(agentId, event);
 	}
 
-	private async _emitToExtensionObserversForAgent(
-		agentId: AgentId,
-		event: ExtensionObservedEvent,
-	): Promise<void> {
+	private async _emitToExtensionObserversForAgent(agentId: AgentId, event: ExtensionObservedEvent): Promise<void> {
 		const extensionRunner = this._agents.get(agentId)?.extensionRunner;
 		// A stale runner (agent disposed) keeps its record but must not
 		// receive further events: its context actions can only fail.
 		if (!extensionRunner || extensionRunner.isStale()) return;
 
-		this._extensionObserverDispatchDepth.set(
-			agentId,
-			(this._extensionObserverDispatchDepth.get(agentId) ?? 0) + 1,
-		);
+		this._extensionObserverDispatchDepth.set(agentId, (this._extensionObserverDispatchDepth.get(agentId) ?? 0) + 1);
 		try {
 			const diagnostics = await extensionRunner.emitObserved(event);
 			await this._recordAndPublishExtensionDiagnostics(agentId, diagnostics);
@@ -5247,11 +4296,7 @@ export class AgentOrchestrator {
 
 	private async _emit(
 		event: OrchestratorEvent,
-		options: {
-			sendToListeners?: boolean;
-			sendToClients?: boolean;
-			observeExtensions?: boolean;
-		} = {},
+		options: { sendToListeners?: boolean; sendToClients?: boolean; observeExtensions?: boolean } = {},
 	): Promise<void> {
 		const listenerFailures: OrchestratorDiagnostic[] = [];
 		if (options.sendToListeners !== false) {
@@ -5281,54 +4326,29 @@ export class AgentOrchestrator {
 							message: `Client failed for event ${event.type}: ${formatError(error)}`,
 							agentId: "agentId" in event ? event.agentId : undefined,
 						},
-						{
-							sendToListeners: options.sendToListeners,
-							sendToClients: false,
-							observeExtensions: false,
-						},
+						{ sendToListeners: options.sendToListeners, sendToClients: false, observeExtensions: false },
 					);
 				}
 			}
 		}
-		if (
-			options.observeExtensions !== false &&
-			this._isExtensionObservedEvent(event)
-		) {
+		if (options.observeExtensions !== false && this._isExtensionObservedEvent(event)) {
 			await this._emitToExtensionObservers(event);
 		}
 		for (const diagnostic of listenerFailures) {
-			await this._publishDiagnostic(diagnostic, {
-				sendToListeners: false,
-				observeExtensions: false,
-			});
+			await this._publishDiagnostic(diagnostic, { sendToListeners: false, observeExtensions: false });
 		}
 	}
 
 	private async _publishDiagnostic(
 		diagnostic: OrchestratorDiagnostic,
-		options: {
-			sendToListeners?: boolean;
-			sendToClients?: boolean;
-			observeExtensions?: boolean;
-		} = {},
+		options: { sendToListeners?: boolean; sendToClients?: boolean; observeExtensions?: boolean } = {},
 	): Promise<void> {
-		await this._emit(
-			{
-				type: "diagnostic",
-				diagnostic,
-				createdAt: now(),
-			},
-			options,
-		);
+		await this._emit({ type: "diagnostic", diagnostic, createdAt: now() }, options);
 	}
 
 	private async _publishDiagnostics(
 		diagnostics: readonly OrchestratorDiagnostic[],
-		options: {
-			sendToListeners?: boolean;
-			sendToClients?: boolean;
-			observeExtensions?: boolean;
-		} = {},
+		options: { sendToListeners?: boolean; sendToClients?: boolean; observeExtensions?: boolean } = {},
 	): Promise<void> {
 		for (const diagnostic of diagnostics) {
 			await this._publishDiagnostic(diagnostic, options);
@@ -5355,9 +4375,7 @@ export class AgentOrchestrator {
 		return id;
 	}
 
-	private async _clearExtensionStatusesForAgent(
-		agentId: AgentId,
-	): Promise<void> {
+	private async _clearExtensionStatusesForAgent(agentId: AgentId): Promise<void> {
 		const snapshots = this._extensionStatuses.clearAgent(agentId);
 		for (const snapshot of snapshots) {
 			await this._emit(
@@ -5375,9 +4393,7 @@ export class AgentOrchestrator {
 	}
 }
 
-function isBlockedExtensionDiagnostic(
-	diagnostic: OrchestratorDiagnostic,
-): boolean {
+function isBlockedExtensionDiagnostic(diagnostic: OrchestratorDiagnostic): boolean {
 	return diagnostic.severity === "error";
 }
 
@@ -5388,16 +4404,8 @@ function isBlockedExtensionDiagnostic(
  * explanation as an exception string. `status` only decides the header and the
  * snapshot field.
  */
-function toBackgroundJobOutcome(
-	outcome: AgentTaskOutcome,
-): BackgroundJobOutcome {
-	return {
-		status: outcome.status,
-		result: {
-			content: [{ type: "text", text: outcome.text }],
-			details: undefined,
-		},
-	};
+function toBackgroundJobOutcome(outcome: AgentTaskOutcome): BackgroundJobOutcome {
+	return { status: outcome.status, result: { content: [{ type: "text", text: outcome.text }], details: undefined } };
 }
 
 /**
@@ -5453,25 +4461,16 @@ function selectActiveToolNames(
 
 // Every config-value channel in a provider config: the provider api key and
 // the provider- and model-level request headers.
-function hasCommandConfigValues(
-	config: ProviderConfigInput,
-	resolver: ConfigValueResolver,
-): boolean {
+function hasCommandConfigValues(config: ProviderConfigInput, resolver: ConfigValueResolver): boolean {
 	const values = [
 		config.apiKey,
 		...Object.values(config.headers ?? {}),
-		...(config.models ?? []).flatMap((model) =>
-			Object.values(model.headers ?? {}),
-		),
+		...(config.models ?? []).flatMap((model) => Object.values(model.headers ?? {})),
 	];
-	return values.some(
-		(value) => value !== undefined && resolver.isCommandConfigValue(value),
-	);
+	return values.some((value) => value !== undefined && resolver.isCommandConfigValue(value));
 }
 
-function changesRecoverableProfileFields(
-	override: AgentProfileOverride,
-): boolean {
+function changesRecoverableProfileFields(override: AgentProfileOverride): boolean {
 	return (
 		override.systemPrompt !== undefined ||
 		override.tools !== undefined ||
@@ -5497,16 +4496,12 @@ function userMessageText(message: AgentMessage): string | undefined {
 		.join("");
 }
 
-function cloneSessionEntries(
-	entries: readonly SessionTreeEntry[],
-): readonly SessionTreeEntry[] {
+function cloneSessionEntries(entries: readonly SessionTreeEntry[]): readonly SessionTreeEntry[] {
 	return structuredClone(entries);
 }
 
 /** Text of every user message on a branch, for "was the model ever told X?". */
-function collectUserMessageText(
-	entries: readonly SessionTreeEntry[],
-): string[] {
+function collectUserMessageText(entries: readonly SessionTreeEntry[]): string[] {
 	const texts: string[] = [];
 	for (const entry of entries) {
 		if (entry.type !== "message" || entry.message.role !== "user") continue;

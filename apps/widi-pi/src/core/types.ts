@@ -7,11 +7,7 @@ import type {
 	BackgroundJobTransition,
 } from "./background/index.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
-import type {
-	ExtensionInputPresentation,
-	ExtensionMessage,
-	ExtensionStatus,
-} from "./extension/presentation.ts";
+import type { ExtensionInputPresentation, ExtensionMessage, ExtensionStatus } from "./extension/presentation.ts";
 import type { HumanRequestEvent } from "./human-request.ts";
 
 export type RuntimeModel = Model<Api>;
@@ -83,11 +79,7 @@ export interface AgentContextUsage {
 }
 
 export type OrchestratorEvent =
-	| {
-			readonly type: "agent_harness_event";
-			agentId: AgentId;
-			event: AgentHarnessEvent;
-	  }
+	| { readonly type: "agent_harness_event"; agentId: AgentId; event: AgentHarnessEvent }
 	| {
 			readonly type: "agent_status_changed";
 			agentId: AgentId;
@@ -240,18 +232,8 @@ export type OrchestratorEvent =
 			verificationUri: string;
 			createdAt: string;
 	  }
-	| {
-			readonly type: "auth_login_progress";
-			providerId: string;
-			agentId?: AgentId;
-			message: string;
-			createdAt: string;
-	  }
-	| {
-			readonly type: "diagnostic";
-			diagnostic: OrchestratorDiagnostic;
-			createdAt: string;
-	  }
+	| { readonly type: "auth_login_progress"; providerId: string; agentId?: AgentId; message: string; createdAt: string }
+	| { readonly type: "diagnostic"; diagnostic: OrchestratorDiagnostic; createdAt: string }
 	| {
 			readonly type: "agent_spawned";
 			agentId: AgentId;
@@ -274,23 +256,13 @@ export type OrchestratorEvent =
 			reason?: string;
 			disposedAt: string;
 	  }
-	| {
-			readonly type: "agent_session_info_changed";
-			agentId: AgentId;
-			name?: string;
-			changedAt: string;
-	  }
+	| { readonly type: "agent_session_info_changed"; agentId: AgentId; name?: string; changedAt: string }
 	// Context gauge fact, recomputed when the agent settles. Push rather than
 	// poll: a footer or a budget-watching extension would otherwise have to
 	// re-read the whole branch on a timer. An absent `usage` means the previous
 	// measurement no longer describes the branch and no new one exists yet -
 	// what compaction leaves behind until the next assistant message.
-	| {
-			readonly type: "agent_context_usage_changed";
-			agentId: AgentId;
-			usage?: AgentContextUsage;
-			changedAt: string;
-	  }
+	| { readonly type: "agent_context_usage_changed"; agentId: AgentId; usage?: AgentContextUsage; changedAt: string }
 	| {
 			readonly type: "agent_session_forked";
 			agentId: AgentId;
@@ -355,9 +327,7 @@ export type OrchestratorEvent =
 			operationRef?: string;
 	  };
 
-export type OrchestratorEventListener = (
-	event: OrchestratorEvent,
-) => Promise<void> | void;
+export type OrchestratorEventListener = (event: OrchestratorEvent) => Promise<void> | void;
 
 /** A completion candidate returned by orchestrator list methods. */
 export interface CandidateItem {
@@ -369,12 +339,7 @@ export interface CandidateItem {
 /** Result of promptAgent: the prompt completed or an interceptor blocked it. */
 export type PromptOutcome =
 	| { readonly kind: "completed"; readonly message: AssistantMessage }
-	| {
-			readonly kind: "blocked";
-			readonly inputId: string;
-			readonly reason?: string;
-			readonly blockedBy: string;
-	  };
+	| { readonly kind: "blocked"; readonly inputId: string; readonly reason?: string; readonly blockedBy: string };
 
 /**
  * Pre-expansion record of an interaction-layer inline expansion, persisted

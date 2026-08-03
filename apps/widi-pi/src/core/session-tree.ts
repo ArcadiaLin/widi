@@ -31,9 +31,7 @@ export interface AgentParentPointer {
 	readonly agentId: AgentId;
 }
 
-export function parseAgentTreeRecord(
-	value: unknown,
-): AgentTreeRecord | undefined {
+export function parseAgentTreeRecord(value: unknown): AgentTreeRecord | undefined {
 	if (typeof value !== "object" || value === null) return undefined;
 	const record = value as Partial<AgentTreeRecord>;
 	if (
@@ -58,9 +56,7 @@ export function parseAgentTreeRecord(
 	return undefined;
 }
 
-export function parseAgentParentPointer(
-	value: unknown,
-): AgentParentPointer | undefined {
+export function parseAgentParentPointer(value: unknown): AgentParentPointer | undefined {
 	if (typeof value !== "object" || value === null) return undefined;
 	const pointer = value as Partial<AgentParentPointer>;
 	return pointer.v === 1 &&

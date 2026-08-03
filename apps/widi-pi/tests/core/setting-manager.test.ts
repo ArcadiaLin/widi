@@ -1,17 +1,5 @@
-import type {
-	ExecutionEnv,
-	ExecutionError,
-	FileError,
-	FileInfo,
-	Result,
-	ShellExecOptions,
-} from "@widi/agent-core";
-import {
-	err,
-	ok,
-	ExecutionError as PiExecutionError,
-	FileError as PiFileError,
-} from "@widi/agent-core";
+import type { ExecutionEnv, ExecutionError, FileError, FileInfo, Result, ShellExecOptions } from "@widi/agent-core";
+import { err, ok, ExecutionError as PiExecutionError, FileError as PiFileError } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import {
 	InMemorySettingsStorage,
@@ -42,54 +30,31 @@ class MemoryExecutionEnv implements ExecutionEnv {
 		const normalized = this.normalize(path);
 		const content = this.files.get(normalized);
 		if (content === undefined) {
-			return err(
-				new PiFileError(
-					"not_found",
-					`File not found: ${normalized}`,
-					normalized,
-				),
-			);
+			return err(new PiFileError("not_found", `File not found: ${normalized}`, normalized));
 		}
 		return ok(content);
 	}
 
-	async readTextLines(
-		path: string,
-		options?: { maxLines?: number },
-	): Promise<Result<string[], FileError>> {
+	async readTextLines(path: string, options?: { maxLines?: number }): Promise<Result<string[], FileError>> {
 		const result = await this.readTextFile(path);
 		if (!result.ok) return result;
 		const lines = result.value.split("\n");
-		return ok(
-			options?.maxLines === undefined
-				? lines
-				: lines.slice(0, options.maxLines),
-		);
+		return ok(options?.maxLines === undefined ? lines : lines.slice(0, options.maxLines));
 	}
 
 	async readBinaryFile(): Promise<Result<Uint8Array, FileError>> {
 		return err(new PiFileError("not_supported", "not supported"));
 	}
 
-	async writeFile(
-		path: string,
-		content: string | Uint8Array,
-	): Promise<Result<void, FileError>> {
-		this.files.set(
-			this.normalize(path),
-			typeof content === "string" ? content : new TextDecoder().decode(content),
-		);
+	async writeFile(path: string, content: string | Uint8Array): Promise<Result<void, FileError>> {
+		this.files.set(this.normalize(path), typeof content === "string" ? content : new TextDecoder().decode(content));
 		return ok(undefined);
 	}
 
-	async appendFile(
-		path: string,
-		content: string | Uint8Array,
-	): Promise<Result<void, FileError>> {
+	async appendFile(path: string, content: string | Uint8Array): Promise<Result<void, FileError>> {
 		const normalized = this.normalize(path);
 		const current = this.files.get(normalized) ?? "";
-		const next =
-			typeof content === "string" ? content : new TextDecoder().decode(content);
+		const next = typeof content === "string" ? content : new TextDecoder().decode(content);
 		this.files.set(normalized, current + next);
 		return ok(undefined);
 	}
@@ -130,9 +95,7 @@ class MemoryExecutionEnv implements ExecutionEnv {
 	async exec(
 		_command: string,
 		_options?: ShellExecOptions,
-	): Promise<
-		Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>
-	> {
+	): Promise<Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>> {
 		return err(new PiExecutionError("shell_unavailable", "not supported"));
 	}
 
@@ -140,10 +103,7 @@ class MemoryExecutionEnv implements ExecutionEnv {
 }
 
 class TestSettingsStorage implements SettingsStorage {
-	private readonly data: Record<SettingsScope, string | undefined> = {
-		global: undefined,
-		project: undefined,
-	};
+	private readonly data: Record<SettingsScope, string | undefined> = { global: undefined, project: undefined };
 	readonly readFailures = new Set<SettingsScope>();
 	readonly writeFailures = new Set<SettingsScope>();
 
@@ -194,26 +154,13 @@ describe("SettingManager", () => {
 		expect(manager.getDefaultModel()).toBe("gpt-5-mini");
 		expect(manager.getDefaultProfile()).toBe("project-main");
 		expect(manager.getEnabledProfiles()).toEqual(["project-main"]);
-		expect(manager.getCompactionSettings()).toEqual({
-			enabled: true,
-			reserveTokens: 1000,
-			keepRecentTokens: 2000,
-		});
+		expect(manager.getCompactionSettings()).toEqual({ enabled: true, reserveTokens: 1000, keepRecentTokens: 2000 });
 	});
 
 	it("merges extension division rules per extension id", async () => {
 		const storage = new InMemorySettingsStorage(
-			{
-				extensionDivisions: {
-					mcp: { disable: ["tools"] },
-					plan: { enable: ["experimental"] },
-				},
-			},
-			{
-				extensionDivisions: {
-					mcp: { enable: ["experimental"] },
-				},
-			},
+			{ extensionDivisions: { mcp: { disable: ["tools"] }, plan: { enable: ["experimental"] } } },
+			{ extensionDivisions: { mcp: { enable: ["experimental"] } } },
 		);
 
 		const manager = await SettingManager.fromStorage(storage);
@@ -227,36 +174,24 @@ describe("SettingManager", () => {
 	});
 
 	it("ignores and protects project settings when project is not trusted", async () => {
-		const storage = new InMemorySettingsStorage(
-			{ defaultModel: "global-model" },
-			{ defaultModel: "project-model" },
-		);
+		const storage = new InMemorySettingsStorage({ defaultModel: "global-model" }, { defaultModel: "project-model" });
 
-		const manager = await SettingManager.fromStorage(storage, {
-			projectTrusted: false,
-		});
+		const manager = await SettingManager.fromStorage(storage, { projectTrusted: false });
 
 		expect(manager.getDefaultModel()).toBe("global-model");
-		expect(() => manager.setProjectExtensionPaths(["./ext.ts"])).toThrow(
-			"Project is not trusted",
-		);
+		expect(() => manager.setProjectExtensionPaths(["./ext.ts"])).toThrow("Project is not trusted");
 	});
 
 	it("persists global setters after flush", async () => {
 		const env = new MemoryExecutionEnv();
-		const manager = await SettingManager.create(env, {
-			agentDir: "/home/user/.widi",
-			cwd: "/workspace/project",
-		});
+		const manager = await SettingManager.create(env, { agentDir: "/home/user/.widi", cwd: "/workspace/project" });
 
 		manager.setDefaultModelAndProvider("test-provider", "test-model");
 		manager.setEnabledProfiles(["main", "main", "reviewer"]);
 		manager.setCompactionEnabled(false);
 		await manager.flush();
 
-		expect(
-			JSON.parse(env.files.get("/home/user/.widi/settings.json") ?? "{}"),
-		).toEqual({
+		expect(JSON.parse(env.files.get("/home/user/.widi/settings.json") ?? "{}")).toEqual({
 			defaultProvider: "test-provider",
 			defaultModel: "test-model",
 			enabledProfiles: ["main", "reviewer"],
@@ -268,21 +203,14 @@ describe("SettingManager", () => {
 		const env = new MemoryExecutionEnv();
 		env.files.set(
 			"/home/user/.widi/settings.json",
-			JSON.stringify({
-				compaction: { enabled: true, reserveTokens: 1234 },
-			}),
+			JSON.stringify({ compaction: { enabled: true, reserveTokens: 1234 } }),
 		);
-		const manager = await SettingManager.create(env, {
-			agentDir: "/home/user/.widi",
-			cwd: "/workspace/project",
-		});
+		const manager = await SettingManager.create(env, { agentDir: "/home/user/.widi", cwd: "/workspace/project" });
 
 		manager.setCompactionEnabled(false);
 		await manager.flush();
 
-		expect(
-			JSON.parse(env.files.get("/home/user/.widi/settings.json") ?? "{}"),
-		).toEqual({
+		expect(JSON.parse(env.files.get("/home/user/.widi/settings.json") ?? "{}")).toEqual({
 			compaction: { enabled: false, reserveTokens: 1234 },
 		});
 	});
@@ -294,17 +222,10 @@ describe("SettingManager", () => {
 		const manager = await SettingManager.fromStorage(storage);
 
 		expect(manager.drainErrors()).toEqual([
-			expect.objectContaining({
-				scope: "global",
-				error: expect.objectContaining({ message: "global read failed" }),
-			}),
+			expect.objectContaining({ scope: "global", error: expect.objectContaining({ message: "global read failed" }) }),
 		]);
 		expect(manager.drainDiagnostics()).toEqual([
-			{
-				severity: "error",
-				code: "settings.load_failed",
-				message: "global settings: global read failed",
-			},
+			{ severity: "error", code: "settings.load_failed", message: "global settings: global read failed" },
 		]);
 	});
 

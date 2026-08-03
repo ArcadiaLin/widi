@@ -1,19 +1,10 @@
-import type {
-	AssistantMessage,
-	ToolResultMessage,
-} from "@earendil-works/pi-ai";
+import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
 import type { AgentHarnessEvent } from "@widi/agent-core";
 import type { AgentRecordSnapshot } from "../core/agent-record.ts";
 import type { BackgroundJobReportSnapshot } from "../core/background/index.ts";
 import type { OrchestratorDiagnostic } from "../core/diagnostics.ts";
-import type {
-	ExtensionMessage,
-	ExtensionStatusSnapshot,
-} from "../core/extension/presentation.ts";
-import type {
-	HumanRequestEnvelope,
-	HumanRequestKind,
-} from "../core/human-request.ts";
+import type { ExtensionMessage, ExtensionStatusSnapshot } from "../core/extension/presentation.ts";
+import type { HumanRequestEnvelope, HumanRequestKind } from "../core/human-request.ts";
 import type {
 	AgentId,
 	AgentLifecycleStatus,
@@ -135,10 +126,7 @@ export interface HumanRequestTraceItem {
 		| { readonly kind: "selected-options"; readonly values: readonly string[] }
 		| {
 				readonly kind: "answered-questions";
-				readonly items: readonly {
-					readonly title: string;
-					readonly values: readonly string[];
-				}[];
+				readonly items: readonly { readonly title: string; readonly values: readonly string[] }[];
 		  }
 		| { readonly kind: "answered" };
 	readonly durability: "ephemeral";
@@ -187,12 +175,7 @@ export type TimelineItem =
 	| SessionMarkerItem
 	| WindowMarkerItem;
 
-export type AgentAttention =
-	| "none"
-	| "completed"
-	| "human-request"
-	| "warning"
-	| "error";
+export type AgentAttention = "none" | "completed" | "human-request" | "warning" | "error";
 
 export interface PendingInput {
 	readonly originalText: string;
@@ -207,22 +190,13 @@ export interface PendingInput {
  */
 export type PendingAgentStart =
 	| { readonly kind: "default" }
-	| {
-			readonly kind: "new-session";
-			readonly profileId: string;
-			readonly model: RuntimeModel;
-	  };
+	| { readonly kind: "new-session"; readonly profileId: string; readonly model: RuntimeModel };
 
 export interface PendingAgentViewState {
 	readonly start: PendingAgentStart;
 	timeline: TimelineItem[];
 	draft: string;
-	display: {
-		readonly profileLabel: string;
-		model: RuntimeModel;
-		thinkingLevel?: string;
-		sessionName?: string;
-	};
+	display: { readonly profileLabel: string; model: RuntimeModel; thinkingLevel?: string; sessionName?: string };
 	nextLiveItemId: number;
 }
 
@@ -316,11 +290,7 @@ export interface BackgroundJobViewState {
 
 export interface NoticeItem {
 	readonly id: string;
-	readonly kind:
-		| "extension-notification"
-		| "diagnostic"
-		| "application"
-		| "startup";
+	readonly kind: "extension-notification" | "diagnostic" | "application" | "startup";
 	readonly createdAt: string;
 	readonly text: string;
 	/** Full mode wraps sanitized text without abbreviating copy-sensitive values. */
@@ -358,10 +328,7 @@ export function createTuiApplicationState(): TuiApplicationState {
 	};
 }
 
-export function createAgentViewState(
-	agentId: AgentId,
-	status: AgentLifecycleStatus = "creating",
-): AgentViewState {
+export function createAgentViewState(agentId: AgentId, status: AgentLifecycleStatus = "creating"): AgentViewState {
 	return {
 		agentId,
 		status,
@@ -392,10 +359,7 @@ export function ensureAgentProjection(
 	return created;
 }
 
-export function setActiveAgent(
-	state: TuiApplicationState,
-	agentId: AgentId,
-): AgentViewState {
+export function setActiveAgent(state: TuiApplicationState, agentId: AgentId): AgentViewState {
 	const agent = ensureAgentProjection(state, agentId);
 	state.activeAgentId = agentId;
 	agent.unreadCount = 0;
@@ -409,19 +373,14 @@ export function setActiveAgent(
  * completed runs or background tool failures are dropped once the user looks
  * at the agent.
  */
-export function retainedAttention(
-	state: TuiApplicationState,
-	agent: AgentViewState,
-): AgentAttention {
+export function retainedAttention(state: TuiApplicationState, agent: AgentViewState): AgentAttention {
 	if (state.humanRequests.some((item) => item.agentId === agent.agentId)) {
 		return "human-request";
 	}
 	if (agent.status === "unavailable") return "error";
 	let attention: AgentAttention = "none";
 	const diagnostics = [
-		...agent.timeline.flatMap((item) =>
-			item.type === "diagnostic" ? [item.diagnostic] : [],
-		),
+		...agent.timeline.flatMap((item) => (item.type === "diagnostic" ? [item.diagnostic] : [])),
 		...(agent.snapshot?.diagnostics ?? []),
 	];
 	for (const diagnostic of diagnostics) {
@@ -458,13 +417,6 @@ function isTimelineHarnessEvent(event: AgentHarnessEvent): boolean {
 	);
 }
 
-export function isToolResultMessage(
-	message: unknown,
-): message is ToolResultMessage {
-	return (
-		typeof message === "object" &&
-		message !== null &&
-		"role" in message &&
-		message.role === "toolResult"
-	);
+export function isToolResultMessage(message: unknown): message is ToolResultMessage {
+	return typeof message === "object" && message !== null && "role" in message && message.role === "toolResult";
 }

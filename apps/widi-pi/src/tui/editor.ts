@@ -1,9 +1,4 @@
-import {
-	Editor,
-	getKeybindings,
-	truncateToWidth,
-	visibleWidth,
-} from "@earendil-works/pi-tui";
+import { Editor, getKeybindings, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { theme } from "./theme/theme.ts";
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI SGR matching requires ESC.
@@ -24,9 +19,7 @@ export class WidiEditor extends Editor {
 	private argumentHintProvider?: (text: string) => string | undefined;
 	private lastCompletionKeyAt = 0;
 
-	setArgumentHintProvider(
-		provider: (text: string) => string | undefined,
-	): void {
+	setArgumentHintProvider(provider: (text: string) => string | undefined): void {
 		this.argumentHintProvider = provider;
 	}
 
@@ -36,9 +29,7 @@ export class WidiEditor extends Editor {
 		// on the subdued border color. pi-tui paints its horizontal borders with
 		// this.borderColor during super.render, and wrapWithSideBorders routes
 		// corners and side bars through the same hook below.
-		this.borderColor = text.trimStart().startsWith("/")
-			? theme.borderActive
-			: theme.border;
+		this.borderColor = text.trimStart().startsWith("/") ? theme.borderActive : theme.border;
 		const rendered = super.render(width);
 		if (rendered.length < 3) {
 			return wrapWithSideBorders(rendered, (value) => this.borderColor(value));
@@ -50,11 +41,7 @@ export class WidiEditor extends Editor {
 		return wrapWithSideBorders(rendered, (value) => this.borderColor(value));
 	}
 
-	private applyArgumentHint(
-		rendered: string[],
-		width: number,
-		text: string,
-	): void {
+	private applyArgumentHint(rendered: string[], width: number, text: string): void {
 		if (text.includes("\n") || !/^\/\S+\s*$/.test(text)) return;
 		const hint = this.argumentHintProvider?.(text);
 		if (!hint) return;
@@ -62,13 +49,8 @@ export class WidiEditor extends Editor {
 		const line = (rendered[index] ?? "").replace(/ +$/u, "");
 		const available = width - visibleWidth(line) - 1;
 		if (available < 2) return;
-		const hintText =
-			visibleWidth(hint) > available
-				? truncateToWidth(hint, available, "…")
-				: hint;
-		const padding = " ".repeat(
-			Math.max(0, width - visibleWidth(line) - 1 - visibleWidth(hintText)),
-		);
+		const hintText = visibleWidth(hint) > available ? truncateToWidth(hint, available, "…") : hint;
+		const padding = " ".repeat(Math.max(0, width - visibleWidth(line) - 1 - visibleWidth(hintText)));
 		rendered[index] = `${line} ${theme.dim(hintText)}${padding}`;
 	}
 
@@ -90,21 +72,14 @@ export class WidiEditor extends Editor {
 			this.onOpenRequests?.();
 			return;
 		}
-		if (
-			keybindings.matches(data, "app.agents.open") &&
-			!this.isShowingAutocomplete() &&
-			this.isAtDraftEnd()
-		) {
+		if (keybindings.matches(data, "app.agents.open") && !this.isShowingAutocomplete() && this.isAtDraftEnd()) {
 			this.onOpenAgents?.();
 			return;
 		}
 		if (keybindings.matches(data, "app.interrupt")) {
 			if (this.isShowingAutocomplete()) {
 				this.passToSuper(data);
-			} else if (
-				Date.now() - this.lastCompletionKeyAt <
-				COMPLETION_KEY_SWALLOW_MS
-			) {
+			} else if (Date.now() - this.lastCompletionKeyAt < COMPLETION_KEY_SWALLOW_MS) {
 				// Esc right after a completion keystroke cancels the in-flight
 				// completion, not the agent.
 			} else {
@@ -132,10 +107,7 @@ export class WidiEditor extends Editor {
 		if (internals.historyIndex !== -1) return false;
 		const lines = this.getLines();
 		const cursor = this.getCursor();
-		return (
-			cursor.line === lines.length - 1 &&
-			cursor.col === (lines[cursor.line] ?? "").length
-		);
+		return cursor.line === lines.length - 1 && cursor.col === (lines[cursor.line] ?? "").length;
 	}
 
 	/** Timestamp printable keystrokes inside a completion context. */
@@ -188,10 +160,7 @@ function injectPromptSymbol(line: string, symbol = ">"): string | undefined {
  * only if they're literal spaces — that protects the cursor-overflow
  * case where the rightmost column is an SGR-tagged inverse cursor.
  */
-function wrapWithSideBorders(
-	lines: string[],
-	paint: (value: string) => string,
-): string[] {
+function wrapWithSideBorders(lines: string[], paint: (value: string) => string): string[] {
 	let seenTop = false;
 	return lines.map((line) => {
 		const plain = line.replace(ANSI_SGR, "");

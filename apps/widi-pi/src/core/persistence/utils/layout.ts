@@ -81,10 +81,7 @@ export function encodeCwd(cwd: string): string {
  * spawns `coder-1` again would otherwise land on the previous run's directory.
  * The compact form keeps the segment short enough for deep nesting.
  */
-export function createSessionDirName(
-	sessionId: string,
-	timestamp: string,
-): string {
+export function createSessionDirName(sessionId: string, timestamp: string): string {
 	return `${compactTimestamp(timestamp)}_${sessionId}`;
 }
 
@@ -109,22 +106,12 @@ export function sessionFileSegments(key: SessionKey): string[] {
 }
 
 /** Path segments of one namespace's directory, relative to its cwd group. */
-export function namespaceDirSegments(
-	key: SessionKey,
-	namespace: string,
-): string[] {
-	return [
-		...sessionDirSegments(key),
-		PERSISTENCE_DIR_NAME,
-		encodeNamespaceDirName(namespace),
-	];
+export function namespaceDirSegments(key: SessionKey, namespace: string): string[] {
+	return [...sessionDirSegments(key), PERSISTENCE_DIR_NAME, encodeNamespaceDirName(namespace)];
 }
 
 /** Path segments of one namespace's object log, relative to its cwd group. */
-export function namespaceObjectsSegments(
-	key: SessionKey,
-	namespace: string,
-): string[] {
+export function namespaceObjectsSegments(key: SessionKey, namespace: string): string[] {
 	return [...namespaceDirSegments(key, namespace), OBJECTS_FILE_NAME];
 }
 
@@ -139,10 +126,7 @@ export function encodeNamespaceDirName(namespace: string): string {
 	return namespace.replace(/:/g, "__");
 }
 
-export function childSessionKey(
-	parent: SessionKey,
-	dirName: string,
-): SessionKey {
+export function childSessionKey(parent: SessionKey, dirName: string): SessionKey {
 	return [...parent, dirName];
 }
 
@@ -166,16 +150,12 @@ export function formatSessionKey(key: SessionKey): string {
 export function parseSessionKey(text: string): SessionKey | undefined {
 	const key = text.split("/").filter((segment) => segment.length > 0);
 	if (key.length === 0 || key.length > MAX_SESSION_DEPTH) return undefined;
-	if (key.some((segment) => isReservedSessionDirName(segment)))
-		return undefined;
+	if (key.some((segment) => isReservedSessionDirName(segment))) return undefined;
 	return key;
 }
 
 export function sessionKeysEqual(left: SessionKey, right: SessionKey): boolean {
-	return (
-		left.length === right.length &&
-		left.every((segment, index) => segment === right[index])
-	);
+	return left.length === right.length && left.every((segment, index) => segment === right[index]);
 }
 
 /**
@@ -185,9 +165,7 @@ export function sessionKeysEqual(left: SessionKey, right: SessionKey): boolean {
  * session directory, which is how a listing walk stops at `persistence/` and at
  * whatever a custom storage created beneath it.
  */
-export function sessionKeyFromDirSegments(
-	segments: readonly string[],
-): SessionKey | undefined {
+export function sessionKeyFromDirSegments(segments: readonly string[]): SessionKey | undefined {
 	const key: string[] = [];
 	for (const [index, segment] of segments.entries()) {
 		const expectsConnector = index % 2 === 1;

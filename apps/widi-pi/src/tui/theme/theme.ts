@@ -1,8 +1,4 @@
-import type {
-	EditorTheme,
-	MarkdownTheme,
-	SelectListTheme,
-} from "@earendil-works/pi-tui";
+import type { EditorTheme, MarkdownTheme, SelectListTheme } from "@earendil-works/pi-tui";
 
 const ESC = "\u001b[";
 const SGR_RESET = `${ESC}0m`;
@@ -171,10 +167,7 @@ export class Theme {
 			scrollInfo: this.faint,
 			noMatch: this.faint,
 		};
-		this.editorTheme = {
-			borderColor: this.border,
-			selectList: this.selectListTheme,
-		};
+		this.editorTheme = { borderColor: this.border, selectList: this.selectListTheme };
 		this.markdownTheme = {
 			heading: (text) => this.bold(this.title(text)),
 			link: this.info,

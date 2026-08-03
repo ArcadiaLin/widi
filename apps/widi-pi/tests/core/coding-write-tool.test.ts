@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-	createAgentHarnessToolFromResolvedTool,
-	ToolRegistry,
-} from "../../src/core/tool-registry.ts";
+import { createAgentHarnessToolFromResolvedTool, ToolRegistry } from "../../src/core/tool-registry.ts";
 import { createWriteToolDefinition } from "../../src/core/tools/coding/write.ts";
 
 class MemoryWriteOperations {
@@ -12,9 +9,7 @@ class MemoryWriteOperations {
 
 	async access(path: string): Promise<void> {
 		if (!this.files.has(path)) {
-			throw Object.assign(new Error(`File not found: ${path}`), {
-				code: "ENOENT",
-			});
+			throw Object.assign(new Error(`File not found: ${path}`), { code: "ENOENT" });
 		}
 	}
 
@@ -31,27 +26,18 @@ class MemoryWriteOperations {
 
 	async realpath(path: string): Promise<string> {
 		if (!this.files.has(path)) {
-			throw Object.assign(new Error(`File not found: ${path}`), {
-				code: "ENOENT",
-			});
+			throw Object.assign(new Error(`File not found: ${path}`), { code: "ENOENT" });
 		}
 		return path;
 	}
 }
 
-const emptyExecutionContext = {
-	signal: undefined,
-	onUpdate: undefined,
-	extension: undefined,
-	human: undefined,
-};
+const emptyExecutionContext = { signal: undefined, onUpdate: undefined, extension: undefined, human: undefined };
 
 describe("core write tool", () => {
 	it("creates a new file relative to cwd with parent directories", async () => {
 		const operations = new MemoryWriteOperations();
-		const tool = createWriteToolDefinition("/workspace/project", {
-			operations,
-		});
+		const tool = createWriteToolDefinition("/workspace/project", { operations });
 
 		const result = await tool.execute(
 			"call-1",
@@ -59,16 +45,9 @@ describe("core write tool", () => {
 			emptyExecutionContext,
 		);
 
-		expect(operations.files.get("/workspace/project/src/new-file.ts")).toBe(
-			"alpha\nbeta\n",
-		);
+		expect(operations.files.get("/workspace/project/src/new-file.ts")).toBe("alpha\nbeta\n");
 		expect(operations.createdDirs).toEqual(["/workspace/project/src"]);
-		expect(result.content).toEqual([
-			{
-				type: "text",
-				text: "Successfully wrote 11 bytes to src/new-file.ts",
-			},
-		]);
+		expect(result.content).toEqual([{ type: "text", text: "Successfully wrote 11 bytes to src/new-file.ts" }]);
 		expect(result.details).toEqual({
 			path: "src/new-file.ts",
 			absolutePath: "/workspace/project/src/new-file.ts",
@@ -80,67 +59,34 @@ describe("core write tool", () => {
 	it("overwrites an existing file and reports created: false", async () => {
 		const operations = new MemoryWriteOperations();
 		operations.files.set("/workspace/project/file.txt", "old");
-		const tool = createWriteToolDefinition("/workspace/project", {
-			operations,
-		});
+		const tool = createWriteToolDefinition("/workspace/project", { operations });
 
-		const result = await tool.execute(
-			"call-1",
-			{ path: "file.txt", content: "new content" },
-			emptyExecutionContext,
-		);
+		const result = await tool.execute("call-1", { path: "file.txt", content: "new content" }, emptyExecutionContext);
 
-		expect(operations.files.get("/workspace/project/file.txt")).toBe(
-			"new content",
-		);
+		expect(operations.files.get("/workspace/project/file.txt")).toBe("new content");
 		expect(result.details).toMatchObject({ created: false });
 	});
 
 	it("reports byte count, not character count, for multibyte content", async () => {
 		const operations = new MemoryWriteOperations();
-		const tool = createWriteToolDefinition("/workspace/project", {
-			operations,
-		});
+		const tool = createWriteToolDefinition("/workspace/project", { operations });
 
-		const result = await tool.execute(
-			"call-1",
-			{ path: "file.txt", content: "中文" },
-			emptyExecutionContext,
-		);
+		const result = await tool.execute("call-1", { path: "file.txt", content: "中文" }, emptyExecutionContext);
 
-		expect(result.details).toMatchObject({
-			bytes: Buffer.byteLength("中文", "utf-8"),
-		});
-		expect(result.content).toEqual([
-			{ type: "text", text: "Successfully wrote 6 bytes to file.txt" },
-		]);
+		expect(result.details).toMatchObject({ bytes: Buffer.byteLength("中文", "utf-8") });
+		expect(result.content).toEqual([{ type: "text", text: "Successfully wrote 6 bytes to file.txt" }]);
 	});
 
 	it("serializes concurrent writes to the same resolved path", async () => {
 		const operations = new MemoryWriteOperations();
-		const tool = createWriteToolDefinition("/workspace/project", {
-			operations,
-		});
+		const tool = createWriteToolDefinition("/workspace/project", { operations });
 
 		await Promise.all([
-			tool.execute(
-				"call-1",
-				{ path: "file.txt", content: "first" },
-				emptyExecutionContext,
-			),
-			tool.execute(
-				"call-2",
-				{ path: "file.txt", content: "second" },
-				emptyExecutionContext,
-			),
+			tool.execute("call-1", { path: "file.txt", content: "first" }, emptyExecutionContext),
+			tool.execute("call-2", { path: "file.txt", content: "second" }, emptyExecutionContext),
 		]);
 
-		expect(operations.writeLog).toEqual([
-			"start:first",
-			"end:first",
-			"start:second",
-			"end:second",
-		]);
+		expect(operations.writeLog).toEqual(["start:first", "end:first", "start:second", "end:second"]);
 		expect(operations.files.get("/workspace/project/file.txt")).toBe("second");
 	});
 
@@ -148,9 +94,7 @@ describe("core write tool", () => {
 		const operations = new MemoryWriteOperations();
 		const controller = new AbortController();
 		controller.abort();
-		const tool = createWriteToolDefinition("/workspace/project", {
-			operations,
-		});
+		const tool = createWriteToolDefinition("/workspace/project", { operations });
 
 		await expect(
 			tool.execute(
@@ -168,52 +112,29 @@ describe("core write tool", () => {
 		operations.access = async () => {
 			throw Object.assign(new Error("Permission denied"), { code: "EACCES" });
 		};
-		const tool = createWriteToolDefinition("/workspace/project", {
-			operations,
-		});
+		const tool = createWriteToolDefinition("/workspace/project", { operations });
 
-		await expect(
-			tool.execute(
-				"call-1",
-				{ path: "file.txt", content: "data" },
-				emptyExecutionContext,
-			),
-		).rejects.toThrow("Permission denied");
+		await expect(tool.execute("call-1", { path: "file.txt", content: "data" }, emptyExecutionContext)).rejects.toThrow(
+			"Permission denied",
+		);
 	});
 
 	it("executes through the registry adapter with typed details", async () => {
 		const operations = new MemoryWriteOperations();
 		const registry = new ToolRegistry();
-		registry.defineTool(
-			createWriteToolDefinition("/workspace/project", { operations }),
-			{
-				kind: "core",
-				id: "builtin",
-			},
-		);
+		registry.defineTool(createWriteToolDefinition("/workspace/project", { operations }), {
+			kind: "core",
+			id: "builtin",
+		});
 		const resolved = registry.resolve().getTool("write");
 		if (!resolved) throw new Error("Expected write tool to resolve.");
 		const agentTool = createAgentHarnessToolFromResolvedTool(resolved);
 
-		const result = await agentTool.execute(
-			"call-1",
-			{
-				path: "file.txt",
-				content: "hello",
-			},
-			undefined,
-			undefined,
-			{},
-		);
+		const result = await agentTool.execute("call-1", { path: "file.txt", content: "hello" }, undefined, undefined, {});
 
 		expect(result).toMatchObject({
-			content: [
-				{ type: "text", text: "Successfully wrote 5 bytes to file.txt" },
-			],
-			details: {
-				absolutePath: "/workspace/project/file.txt",
-				created: true,
-			},
+			content: [{ type: "text", text: "Successfully wrote 5 bytes to file.txt" }],
+			details: { absolutePath: "/workspace/project/file.txt", created: true },
 		});
 	});
 });

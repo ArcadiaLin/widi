@@ -1,17 +1,5 @@
-import type {
-	ExecutionEnv,
-	ExecutionError,
-	FileError,
-	FileInfo,
-	Result,
-	ShellExecOptions,
-} from "@widi/agent-core";
-import {
-	err,
-	ok,
-	ExecutionError as PiExecutionError,
-	FileError as PiFileError,
-} from "@widi/agent-core";
+import type { ExecutionEnv, ExecutionError, FileError, FileInfo, Result, ShellExecOptions } from "@widi/agent-core";
+import { err, ok, ExecutionError as PiExecutionError, FileError as PiFileError } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import {
 	EXTENSION_API_VERSION,
@@ -72,13 +60,7 @@ class MemoryExecutionEnv implements ExecutionEnv {
 		const normalized = this.normalize(path);
 		const content = this.files.get(normalized);
 		if (content === undefined) {
-			return err(
-				new PiFileError(
-					"not_found",
-					`File not found: ${normalized}`,
-					normalized,
-				),
-			);
+			return err(new PiFileError("not_found", `File not found: ${normalized}`, normalized));
 		}
 		return ok(content);
 	}
@@ -113,25 +95,15 @@ class MemoryExecutionEnv implements ExecutionEnv {
 			});
 		}
 		if (this.dirs.has(normalized)) {
-			return ok({
-				name: this.basename(normalized),
-				path: normalized,
-				kind: "directory",
-				size: 0,
-				mtimeMs: 0,
-			});
+			return ok({ name: this.basename(normalized), path: normalized, kind: "directory", size: 0, mtimeMs: 0 });
 		}
-		return err(
-			new PiFileError("not_found", `File not found: ${normalized}`, normalized),
-		);
+		return err(new PiFileError("not_found", `File not found: ${normalized}`, normalized));
 	}
 
 	async listDir(path: string): Promise<Result<FileInfo[], FileError>> {
 		const dir = this.normalize(path);
 		if (!this.dirs.has(dir)) {
-			return err(
-				new PiFileError("not_found", `Directory not found: ${dir}`, dir),
-			);
+			return err(new PiFileError("not_found", `Directory not found: ${dir}`, dir));
 		}
 
 		const result: FileInfo[] = [];
@@ -147,17 +119,9 @@ class MemoryExecutionEnv implements ExecutionEnv {
 		}
 		for (const directory of this.dirs) {
 			if (directory === dir || this.dirname(directory) !== dir) continue;
-			result.push({
-				name: this.basename(directory),
-				path: directory,
-				kind: "directory",
-				size: 0,
-				mtimeMs: 0,
-			});
+			result.push({ name: this.basename(directory), path: directory, kind: "directory", size: 0, mtimeMs: 0 });
 		}
-		return ok(
-			result.sort((left, right) => left.path.localeCompare(right.path)),
-		);
+		return ok(result.sort((left, right) => left.path.localeCompare(right.path)));
 	}
 
 	async canonicalPath(path: string): Promise<Result<string, FileError>> {
@@ -191,9 +155,7 @@ class MemoryExecutionEnv implements ExecutionEnv {
 	async exec(
 		_command: string,
 		_options?: ShellExecOptions,
-	): Promise<
-		Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>
-	> {
+	): Promise<Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>> {
 		return err(new PiExecutionError("shell_unavailable", "not supported"));
 	}
 }
@@ -236,11 +198,7 @@ describe("ExtensionLoader file/module loading", () => {
 		});
 
 		const result = await loader.loadAvailableExtensions(env);
-		const scope = await loader.loadForAgent({
-			agentId: "agent",
-			profileId: "profile",
-			extensionIds: ["sample"],
-		});
+		const scope = await loader.loadForAgent({ agentId: "agent", profileId: "profile", extensionIds: ["sample"] });
 
 		expect(result.loaded).toEqual([
 			{
@@ -262,9 +220,7 @@ describe("ExtensionLoader file/module loading", () => {
 		const env = new MemoryExecutionEnv();
 		env.addFile(
 			"/extensions/package-extension/package.json",
-			JSON.stringify({
-				widi: { extensions: ["./main.ts", "./extra.ts"] },
-			}),
+			JSON.stringify({ widi: { extensions: ["./main.ts", "./extra.ts"] } }),
 		);
 		env.addFile("/extensions/package-extension/main.ts");
 		env.addFile("/extensions/package-extension/extra.ts");
@@ -293,10 +249,7 @@ describe("ExtensionLoader file/module loading", () => {
 			},
 		]);
 		expect(result.diagnostics).toContainEqual(
-			expect.objectContaining({
-				code: "extension.extra_entries_ignored",
-				extensionId: "package-extension",
-			}),
+			expect.objectContaining({ code: "extension.extra_entries_ignored", extensionId: "package-extension" }),
 		);
 	});
 
@@ -317,19 +270,12 @@ describe("ExtensionLoader file/module loading", () => {
 		});
 
 		const result = await loader.loadAvailableExtensions(env);
-		await loader.loadForAgent({
-			agentId: "agent",
-			profileId: "profile",
-			extensionIds: ["sample"],
-		});
+		await loader.loadForAgent({ agentId: "agent", profileId: "profile", extensionIds: ["sample"] });
 
 		expect(result.loaded).toEqual([]);
 		expect(importer.imports).toEqual([]);
 		expect(result.diagnostics).toContainEqual(
-			expect.objectContaining({
-				code: "extension.id_conflict",
-				extensionId: "sample",
-			}),
+			expect.objectContaining({ code: "extension.id_conflict", extensionId: "sample" }),
 		);
 		expect(activationSource).toBe("memory");
 	});
@@ -348,10 +294,7 @@ describe("ExtensionLoader file/module loading", () => {
 		await loader.reloadAvailableExtensions(env);
 
 		expect(importer.clearCalls).toBe(1);
-		expect(importer.imports).toEqual([
-			"/extensions/sample.ts",
-			"/extensions/sample.ts",
-		]);
+		expect(importer.imports).toEqual(["/extensions/sample.ts", "/extensions/sample.ts"]);
 	});
 });
 
@@ -373,11 +316,7 @@ describe("ExtensionLoader api version gate", () => {
 		});
 
 		const result = await loader.loadAvailableExtensions(env);
-		const scope = await loader.loadForAgent({
-			agentId: "agent",
-			profileId: "profile",
-			extensionIds: ["sample"],
-		});
+		const scope = await loader.loadForAgent({ agentId: "agent", profileId: "profile", extensionIds: ["sample"] });
 
 		expect(result.loaded).toHaveLength(1);
 		expect(result.diagnostics).toEqual([]);
@@ -402,11 +341,7 @@ describe("ExtensionLoader api version gate", () => {
 		});
 
 		const result = await loader.loadAvailableExtensions(env);
-		const scope = await loader.loadForAgent({
-			agentId: "agent",
-			profileId: "profile",
-			extensionIds: ["sample"],
-		});
+		const scope = await loader.loadForAgent({ agentId: "agent", profileId: "profile", extensionIds: ["sample"] });
 
 		expect(result.loaded).toEqual([]);
 		expect(result.diagnostics).toContainEqual(
@@ -421,15 +356,9 @@ describe("ExtensionLoader api version gate", () => {
 		expect(scope.extensions).toEqual([]);
 		// The requesting agent sees the true reason, not a missing factory.
 		expect(scope.diagnostics).toContainEqual(
-			expect.objectContaining({
-				code: "extension.version_incompatible",
-				extensionId: "sample",
-				severity: "error",
-			}),
+			expect.objectContaining({ code: "extension.version_incompatible", extensionId: "sample", severity: "error" }),
 		);
-		expect(scope.diagnostics).not.toContainEqual(
-			expect.objectContaining({ code: "extension.factory_missing" }),
-		);
+		expect(scope.diagnostics).not.toContainEqual(expect.objectContaining({ code: "extension.factory_missing" }));
 	});
 
 	it("rejects an in-memory definition with an unsupported version per agent", async () => {
@@ -442,31 +371,18 @@ describe("ExtensionLoader api version gate", () => {
 			},
 		});
 
-		const scope = await loader.loadForAgent({
-			agentId: "agent",
-			profileId: "profile",
-			extensionIds: ["sample"],
-		});
+		const scope = await loader.loadForAgent({ agentId: "agent", profileId: "profile", extensionIds: ["sample"] });
 
 		expect(activated).toBe(false);
 		expect(scope.extensions).toEqual([]);
 		expect(scope.diagnostics).toContainEqual(
-			expect.objectContaining({
-				code: "extension.version_incompatible",
-				extensionId: "sample",
-			}),
+			expect.objectContaining({ code: "extension.version_incompatible", extensionId: "sample" }),
 		);
 
 		// Withdrawing the incompatible registration returns the id to missing.
 		dispose();
-		const after = await loader.loadForAgent({
-			agentId: "agent",
-			profileId: "profile",
-			extensionIds: ["sample"],
-		});
-		expect(after.diagnostics).toContainEqual(
-			expect.objectContaining({ code: "extension.factory_missing" }),
-		);
+		const after = await loader.loadForAgent({ agentId: "agent", profileId: "profile", extensionIds: ["sample"] });
+		expect(after.diagnostics).toContainEqual(expect.objectContaining({ code: "extension.factory_missing" }));
 	});
 
 	// It is absent from the available ids, so nothing names it and no id can carry
@@ -474,10 +390,7 @@ describe("ExtensionLoader api version gate", () => {
 	// a file it was never read and so never had a load-time diagnostic.
 	it("still reports an incompatible registration that no id named", async () => {
 		const loader = new ExtensionLoader();
-		loader.registerExtension("sample", {
-			apiVersion: EXTENSION_API_VERSION + 1,
-			activate: () => {},
-		});
+		loader.registerExtension("sample", { apiVersion: EXTENSION_API_VERSION + 1, activate: () => {} });
 
 		expect(loader.listAvailableExtensionIds()).toEqual([]);
 
@@ -489,11 +402,7 @@ describe("ExtensionLoader api version gate", () => {
 
 		expect(scope.extensions).toEqual([]);
 		expect(scope.diagnostics).toContainEqual(
-			expect.objectContaining({
-				code: "extension.version_incompatible",
-				severity: "warning",
-				extensionId: "sample",
-			}),
+			expect.objectContaining({ code: "extension.version_incompatible", severity: "warning", extensionId: "sample" }),
 		);
 	});
 
@@ -533,10 +442,7 @@ describe("ExtensionLoader api version gate", () => {
 
 		expect(result.loaded).toEqual([]);
 		expect(result.diagnostics).toContainEqual(
-			expect.objectContaining({
-				code: "extension.factory_invalid",
-				extensionId: "sample",
-			}),
+			expect.objectContaining({ code: "extension.factory_invalid", extensionId: "sample" }),
 		);
 	});
 });

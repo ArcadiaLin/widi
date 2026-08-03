@@ -4,10 +4,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import {
-	CallToolRequestSchema,
-	ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { describe, expect, it } from "vitest";
 import {
 	activateMcpExtension,
@@ -36,9 +33,7 @@ async function writeConfig(content: string): Promise<string> {
 
 describe("loadMcpConfig", () => {
 	it("returns missing when the file does not exist", async () => {
-		const result = await loadMcpConfig(
-			join(tmpdir(), "widi-mcp-definitely-absent.json"),
-		);
+		const result = await loadMcpConfig(join(tmpdir(), "widi-mcp-definitely-absent.json"));
 		expect(result).toEqual({ kind: "missing" });
 	});
 
@@ -52,15 +47,8 @@ describe("loadMcpConfig", () => {
 			await writeConfig(
 				JSON.stringify({
 					mcpServers: {
-						fs: {
-							command: "npx",
-							args: ["-y", "server-fs"],
-							env: { MODE: "ro" },
-						},
-						remote: {
-							url: "https://example.com/mcp",
-							headers: { Authorization: "Bearer x" },
-						},
+						fs: { command: "npx", args: ["-y", "server-fs"], env: { MODE: "ro" } },
+						remote: { url: "https://example.com/mcp", headers: { Authorization: "Bearer x" } },
 					},
 				}),
 			),
@@ -69,15 +57,8 @@ describe("loadMcpConfig", () => {
 			kind: "ok",
 			config: {
 				servers: {
-					fs: {
-						command: "npx",
-						args: ["-y", "server-fs"],
-						env: { MODE: "ro" },
-					},
-					remote: {
-						url: "https://example.com/mcp",
-						headers: { Authorization: "Bearer x" },
-					},
+					fs: { command: "npx", args: ["-y", "server-fs"], env: { MODE: "ro" } },
+					remote: { url: "https://example.com/mcp", headers: { Authorization: "Bearer x" } },
 				},
 			},
 		});
@@ -90,10 +71,7 @@ describe("loadMcpConfig", () => {
 				await writeConfig(
 					JSON.stringify({
 						mcpServers: {
-							remote: {
-								url: "https://example.com/mcp",
-								headers: { Authorization: "Bearer $WIDI_MCP_TEST_TOKEN" },
-							},
+							remote: { url: "https://example.com/mcp", headers: { Authorization: "Bearer $WIDI_MCP_TEST_TOKEN" } },
 						},
 					}),
 				),
@@ -101,12 +79,7 @@ describe("loadMcpConfig", () => {
 			expect(result).toEqual({
 				kind: "ok",
 				config: {
-					servers: {
-						remote: {
-							url: "https://example.com/mcp",
-							headers: { Authorization: "Bearer secret-token" },
-						},
-					},
+					servers: { remote: { url: "https://example.com/mcp", headers: { Authorization: "Bearer secret-token" } } },
 				},
 			});
 		} finally {
@@ -119,10 +92,7 @@ describe("loadMcpConfig", () => {
 			await writeConfig(
 				JSON.stringify({
 					mcpServers: {
-						remote: {
-							url: "https://example.com/mcp",
-							headers: { Authorization: "Bearer $WIDI_MCP_UNSET_VAR" },
-						},
+						remote: { url: "https://example.com/mcp", headers: { Authorization: "Bearer $WIDI_MCP_UNSET_VAR" } },
 					},
 				}),
 			),
@@ -135,25 +105,13 @@ describe("loadMcpConfig", () => {
 
 	it("returns invalid when an entry has both command and url", async () => {
 		const result = await loadMcpConfig(
-			await writeConfig(
-				JSON.stringify({
-					mcpServers: {
-						bad: { command: "npx", url: "https://example.com/mcp" },
-					},
-				}),
-			),
+			await writeConfig(JSON.stringify({ mcpServers: { bad: { command: "npx", url: "https://example.com/mcp" } } })),
 		);
 		expect(result.kind).toBe("invalid");
 	});
 
 	it("returns invalid when an entry has neither command nor url", async () => {
-		const result = await loadMcpConfig(
-			await writeConfig(
-				JSON.stringify({
-					mcpServers: { bad: { args: [] } },
-				}),
-			),
-		);
+		const result = await loadMcpConfig(await writeConfig(JSON.stringify({ mcpServers: { bad: { args: [] } } })));
 		expect(result.kind).toBe("invalid");
 	});
 });
@@ -161,21 +119,13 @@ describe("loadMcpConfig", () => {
 describe("McpServerConnection", () => {
 	it("connects and lists tools through the injected factory", async () => {
 		const factory: McpClientFactory = async () => ({
-			listTools: async () => [
-				{ name: "echo", description: "Echo.", inputSchema: { type: "object" } },
-			],
+			listTools: async () => [{ name: "echo", description: "Echo.", inputSchema: { type: "object" } }],
 			callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
 			close: async () => {},
 		});
-		const connection = new McpServerConnection(
-			"fake",
-			{ command: "true" },
-			factory,
-		);
+		const connection = new McpServerConnection("fake", { command: "true" }, factory);
 		const tools = await connection.connect();
-		expect(tools).toEqual([
-			{ name: "echo", description: "Echo.", inputSchema: { type: "object" } },
-		]);
+		expect(tools).toEqual([{ name: "echo", description: "Echo.", inputSchema: { type: "object" } }]);
 	});
 
 	it("reconnects and retries once when callTool throws", async () => {
@@ -194,11 +144,7 @@ describe("McpServerConnection", () => {
 				close: async () => {},
 			};
 		};
-		const connection = new McpServerConnection(
-			"fake",
-			{ command: "true" },
-			factory,
-		);
+		const connection = new McpServerConnection("fake", { command: "true" }, factory);
 		await connection.connect();
 		const result = await connection.callTool("echo", {});
 		expect(result).toEqual({ content: [{ type: "text", text: "recovered" }] });
@@ -213,45 +159,26 @@ describe("McpServerConnection", () => {
 			},
 			close: async () => {},
 		});
-		const connection = new McpServerConnection(
-			"fake",
-			{ command: "true" },
-			factory,
-		);
+		const connection = new McpServerConnection("fake", { command: "true" }, factory);
 		await connection.connect();
-		await expect(connection.callTool("echo", {})).rejects.toThrow(
-			"still broken",
-		);
+		await expect(connection.callTool("echo", {})).rejects.toThrow("still broken");
 	});
 
 	it("works against a real MCP server over InMemoryTransport", async () => {
-		const server = new Server(
-			{ name: "fake", version: "0.0.1" },
-			{ capabilities: { tools: {} } },
-		);
+		const server = new Server({ name: "fake", version: "0.0.1" }, { capabilities: { tools: {} } });
 		server.setRequestHandler(ListToolsRequestSchema, async () => ({
 			tools: [
 				{
 					name: "echo",
 					description: "Echo text.",
-					inputSchema: {
-						type: "object",
-						properties: { text: { type: "string" } },
-						required: ["text"],
-					},
+					inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
 				},
 			],
 		}));
 		server.setRequestHandler(CallToolRequestSchema, async (request) => ({
-			content: [
-				{
-					type: "text",
-					text: `echo: ${String((request.params.arguments as { text?: string }).text ?? "")}`,
-				},
-			],
+			content: [{ type: "text", text: `echo: ${String((request.params.arguments as { text?: string }).text ?? "")}` }],
 		}));
-		const [clientTransport, serverTransport] =
-			InMemoryTransport.createLinkedPair();
+		const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 		await server.connect(serverTransport);
 
 		const factory: McpClientFactory = async () => {
@@ -264,20 +191,12 @@ describe("McpServerConnection", () => {
 						description: tool.description,
 						inputSchema: tool.inputSchema as Record<string, unknown>,
 					})),
-				callTool: (name, args) =>
-					client.callTool({
-						name,
-						arguments: args,
-					}) as Promise<McpCallToolResult>,
+				callTool: (name, args) => client.callTool({ name, arguments: args }) as Promise<McpCallToolResult>,
 				close: () => client.close(),
 			};
 		};
 
-		const connection = new McpServerConnection(
-			"fake",
-			{ command: "true" },
-			factory,
-		);
+		const connection = new McpServerConnection("fake", { command: "true" }, factory);
 		const tools = await connection.connect();
 		expect(tools.map((tool) => tool.name)).toEqual(["echo"]);
 		const result = await connection.callTool("echo", { text: "hi" });
@@ -293,19 +212,9 @@ const idleContext: ToolExecutionContext<unknown> = {
 	human: undefined,
 };
 
-async function connectedFake(
-	callTool: McpClientHandle["callTool"],
-): Promise<McpServerConnection> {
-	const factory: McpClientFactory = async () => ({
-		listTools: async () => [],
-		callTool,
-		close: async () => {},
-	});
-	const connection = new McpServerConnection(
-		"fake",
-		{ command: "true" },
-		factory,
-	);
+async function connectedFake(callTool: McpClientHandle["callTool"]): Promise<McpServerConnection> {
+	const factory: McpClientFactory = async () => ({ listTools: async () => [], callTool, close: async () => {} });
+	const connection = new McpServerConnection("fake", { command: "true" }, factory);
 	await connection.connect();
 	return connection;
 }
@@ -328,14 +237,8 @@ describe("createMcpToolDefinitions", () => {
 	];
 
 	it("maps MCP tools to prefixed tool definitions", async () => {
-		const definitions = createMcpToolDefinitions(
-			await connectedFake(async () => ({ content: [] })),
-			tools,
-		);
-		expect(definitions.map((definition) => definition.name)).toEqual([
-			"mcp_fake_echo",
-			"mcp_fake_no-desc",
-		]);
+		const definitions = createMcpToolDefinitions(await connectedFake(async () => ({ content: [] })), tools);
+		expect(definitions.map((definition) => definition.name)).toEqual(["mcp_fake_echo", "mcp_fake_no-desc"]);
 		expect(definitions[0].label).toBe("fake: echo");
 		expect(definitions[0].description).toBe("Echo text.");
 		expect(definitions[1].description).toContain("no-desc");
@@ -349,20 +252,13 @@ describe("createMcpToolDefinitions", () => {
 				content: [
 					{ type: "text", text: "hello" },
 					{ type: "image", data: "aW1n", mimeType: "image/png" },
-					{
-						type: "resource",
-						resource: { uri: "file:///x", text: "file body" },
-					},
+					{ type: "resource", resource: { uri: "file:///x", text: "file body" } },
 					{ type: "audio" },
 				],
 			})),
 			tools,
 		);
-		const result = await definitions[0].execute(
-			"call-1",
-			{ text: "hi" },
-			idleContext,
-		);
+		const result = await definitions[0].execute("call-1", { text: "hi" }, idleContext);
 		expect(result.content).toEqual([
 			{ type: "text", text: "hello" },
 			{ type: "image", data: "aW1n", mimeType: "image/png" },
@@ -372,25 +268,17 @@ describe("createMcpToolDefinitions", () => {
 	});
 
 	it("returns a placeholder when the result has no content", async () => {
-		const definitions = createMcpToolDefinitions(
-			await connectedFake(async () => ({})),
-			tools,
-		);
+		const definitions = createMcpToolDefinitions(await connectedFake(async () => ({})), tools);
 		const result = await definitions[0].execute("call-1", {}, idleContext);
 		expect(result.content).toEqual([{ type: "text", text: "(no content)" }]);
 	});
 
 	it("throws the flattened text when the MCP result is an error", async () => {
 		const definitions = createMcpToolDefinitions(
-			await connectedFake(async () => ({
-				isError: true,
-				content: [{ type: "text", text: "boom" }],
-			})),
+			await connectedFake(async () => ({ isError: true, content: [{ type: "text", text: "boom" }] })),
 			tools,
 		);
-		await expect(
-			definitions[0].execute("call-1", {}, idleContext),
-		).rejects.toThrow("boom");
+		await expect(definitions[0].execute("call-1", {}, idleContext)).rejects.toThrow("boom");
 	});
 
 	it("passes non-object params through as empty arguments", async () => {
@@ -442,10 +330,7 @@ function createFakeActivation(): FakeActivation {
 		registerProvider: () => {
 			throw new Error("not used");
 		},
-		observe: (
-			_name: string,
-			handler: (event: unknown, context: unknown) => void,
-		) => {
+		observe: (_name: string, handler: (event: unknown, context: unknown) => void) => {
 			observers.push(handler);
 		},
 		intercept: () => {
@@ -475,9 +360,7 @@ function createFakeActivation(): FakeActivation {
 }
 
 const echoFactory: McpClientFactory = async () => ({
-	listTools: async () => [
-		{ name: "echo", description: "Echo.", inputSchema: { type: "object" } },
-	],
+	listTools: async () => [{ name: "echo", description: "Echo.", inputSchema: { type: "object" } }],
 	callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
 	close: async () => {},
 });
@@ -495,12 +378,7 @@ describe("activateMcpExtension", () => {
 
 	it("registers tools from every reachable server and reports failures on agent_spawned", async () => {
 		const configPath = await writeConfig(
-			JSON.stringify({
-				mcpServers: {
-					good: { command: "good-cmd" },
-					bad: { command: "bad-cmd" },
-				},
-			}),
+			JSON.stringify({ mcpServers: { good: { command: "good-cmd" }, bad: { command: "bad-cmd" } } }),
 		);
 		const factory: McpClientFactory = async (serverName) => {
 			if (serverName === "bad") {
@@ -509,10 +387,7 @@ describe("activateMcpExtension", () => {
 			return echoFactory(serverName, { command: "good-cmd" });
 		};
 		const fake = createFakeActivation();
-		await activateMcpExtension(fake.api, {
-			configPath,
-			clientFactory: factory,
-		});
+		await activateMcpExtension(fake.api, { configPath, clientFactory: factory });
 		expect(fake.tools.map((tool) => tool.name)).toEqual(["mcp_good_echo"]);
 		expect(fake.diagnostics).toEqual([]);
 		await fake.fireSpawned();
@@ -526,10 +401,7 @@ describe("activateMcpExtension", () => {
 	it("reports an invalid config on agent_spawned and registers no tools", async () => {
 		const configPath = await writeConfig("{ not json");
 		const fake = createFakeActivation();
-		await activateMcpExtension(fake.api, {
-			configPath,
-			clientFactory: echoFactory,
-		});
+		await activateMcpExtension(fake.api, { configPath, clientFactory: echoFactory });
 		expect(fake.tools).toEqual([]);
 		await fake.fireSpawned();
 		expect(fake.diagnostics).toHaveLength(1);
@@ -538,12 +410,7 @@ describe("activateMcpExtension", () => {
 
 	it("closes every server connection when the extension is disposed", async () => {
 		const configPath = await writeConfig(
-			JSON.stringify({
-				mcpServers: {
-					good: { command: "good-cmd" },
-					bad: { command: "bad-cmd" },
-				},
-			}),
+			JSON.stringify({ mcpServers: { good: { command: "good-cmd" }, bad: { command: "bad-cmd" } } }),
 		);
 		const closed: string[] = [];
 		const factory: McpClientFactory = async (serverName) => {
@@ -551,13 +418,7 @@ describe("activateMcpExtension", () => {
 				throw new Error("spawn bad-cmd ENOENT");
 			}
 			return {
-				listTools: async () => [
-					{
-						name: "echo",
-						description: "Echo.",
-						inputSchema: { type: "object" },
-					},
-				],
+				listTools: async () => [{ name: "echo", description: "Echo.", inputSchema: { type: "object" } }],
 				callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
 				close: async () => {
 					closed.push(serverName);
@@ -565,10 +426,7 @@ describe("activateMcpExtension", () => {
 			};
 		};
 		const fake = createFakeActivation();
-		await activateMcpExtension(fake.api, {
-			configPath,
-			clientFactory: factory,
-		});
+		await activateMcpExtension(fake.api, { configPath, clientFactory: factory });
 		expect(fake.disposeHandlers).toHaveLength(1);
 		await fake.fireDispose();
 		expect(closed).toEqual(["good"]);

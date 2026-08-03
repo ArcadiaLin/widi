@@ -1,11 +1,7 @@
 import type { ExecutionEnv, FileError, FileInfo } from "@widi/agent-core";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { formatError } from "../utils/errors.ts";
-import {
-	DEFAULT_AGENT_DIR,
-	DEFAULT_PROFILE_DIR,
-	DEFAULT_PROFILE_FILE_EXTENSION,
-} from "./constants.js";
+import { DEFAULT_AGENT_DIR, DEFAULT_PROFILE_DIR, DEFAULT_PROFILE_FILE_EXTENSION } from "./constants.js";
 import type { CoreDiagnostic, DiagnosticSeverity } from "./diagnostics.ts";
 
 /**
@@ -57,10 +53,7 @@ export type AgentProfile = {
 
 export type AgentProfileOverride = Partial<Omit<AgentProfile, "id">>;
 
-export type AgentProfileReference = {
-	readonly id: string;
-	readonly label?: string;
-};
+export type AgentProfileReference = { readonly id: string; readonly label?: string };
 
 export type AgentProfileDiagnosticCode =
 	| "profile.file_info_failed"
@@ -105,12 +98,7 @@ export type AgentProfileSummary = {
 	readonly entryId: string;
 };
 
-export type ProfileCandidateStatus =
-	| "available"
-	| "shadowed"
-	| "duplicate"
-	| "invalid"
-	| "parse_failed";
+export type ProfileCandidateStatus = "available" | "shadowed" | "duplicate" | "invalid" | "parse_failed";
 
 export type ProfileCandidate = {
 	readonly entryId: string;
@@ -167,15 +155,8 @@ export type ProfileStorageListResult = {
 };
 
 export type ProfileStorageReadResult =
-	| {
-			readonly ok: true;
-			readonly entry: ProfileStorageEntry;
-			readonly content: string;
-	  }
-	| {
-			readonly ok: false;
-			readonly diagnostic: AgentProfileDiagnostic;
-	  };
+	| { readonly ok: true; readonly entry: ProfileStorageEntry; readonly content: string }
+	| { readonly ok: false; readonly diagnostic: AgentProfileDiagnostic };
 
 export interface ProfileStorageBackend {
 	listEntries(): Promise<ProfileStorageListResult>;
@@ -204,10 +185,7 @@ type AgentProfileFrontmatter = {
 	readonly [key: string]: unknown;
 };
 
-type ParsedProfileMarkdown = {
-	readonly frontmatter: AgentProfileFrontmatter;
-	readonly body: string;
-};
+type ParsedProfileMarkdown = { readonly frontmatter: AgentProfileFrontmatter; readonly body: string };
 
 type ProfileMetadata = {
 	readonly id: string;
@@ -247,29 +225,19 @@ const BUILTIN_DEFAULT_PROFILE: AgentProfile = {
 	persist: true,
 };
 
-export function toAgentProfileReference(
-	profile: Pick<AgentProfile, "id" | "label">,
-): AgentProfileReference {
-	return {
-		id: profile.id,
-		label: profile.label,
-	};
+export function toAgentProfileReference(profile: Pick<AgentProfile, "id" | "label">): AgentProfileReference {
+	return { id: profile.id, label: profile.label };
 }
 
 /**
  * Narrow an untyped session header metadata value to a profile reference.
  * Storage keeps header metadata opaque, so consumers validate the shape here.
  */
-export function parseAgentProfileReference(
-	value: unknown,
-): AgentProfileReference | undefined {
+export function parseAgentProfileReference(value: unknown): AgentProfileReference | undefined {
 	if (typeof value !== "object" || value === null) return undefined;
 	const record = value as { id?: unknown; label?: unknown };
 	if (typeof record.id !== "string" || !record.id) return undefined;
-	return {
-		id: record.id,
-		label: typeof record.label === "string" ? record.label : undefined,
-	};
+	return { id: record.id, label: typeof record.label === "string" ? record.label : undefined };
 }
 
 export function createDefaultProfileRoots(options: {
@@ -285,15 +253,7 @@ export function createBuiltinProfileStorageBackend(
 	priority = 0,
 ): InMemoryProfileStorageBackend {
 	return InMemoryProfileStorageBackend.fromProfiles([
-		{
-			profile,
-			entryId: `builtin:${profile.id}`,
-			source: {
-				kind: "builtin",
-				priority,
-				label: "builtin",
-			},
-		},
+		{ profile, entryId: `builtin:${profile.id}`, source: { kind: "builtin", priority, label: "builtin" } },
 	]);
 }
 
@@ -319,10 +279,7 @@ export class FileProfileStorageBackend implements ProfileStorageBackend {
 			diagnostics.push(...result.diagnostics);
 		}
 
-		return {
-			entries: entries.sort((a, b) => a.entryId.localeCompare(b.entryId)),
-			diagnostics,
-		};
+		return { entries: entries.sort((a, b) => a.entryId.localeCompare(b.entryId)), diagnostics };
 	}
 
 	async readEntry(entryId: string): Promise<ProfileStorageReadResult> {
@@ -340,29 +297,14 @@ export class FileProfileStorageBackend implements ProfileStorageBackend {
 
 		const result = await this.executionEnv.readTextFile(entry.source.path);
 		if (!result.ok) {
-			return {
-				ok: false,
-				diagnostic: fileErrorDiagnostic(
-					"profile.read_failed",
-					result.error,
-					entry.source,
-				),
-			};
+			return { ok: false, diagnostic: fileErrorDiagnostic("profile.read_failed", result.error, entry.source) };
 		}
 
 		return { ok: true, entry, content: result.value };
 	}
 
-	private async listRoot(
-		root: FileProfileRoot,
-		rootIndex: number,
-	): Promise<ProfileStorageListResult> {
-		const source: AgentProfileSource = {
-			kind: root.kind,
-			priority: root.priority,
-			path: root.path,
-			label: root.label,
-		};
+	private async listRoot(root: FileProfileRoot, rootIndex: number): Promise<ProfileStorageListResult> {
+		const source: AgentProfileSource = { kind: root.kind, priority: root.priority, path: root.path, label: root.label };
 		const infoResult = await this.executionEnv.fileInfo(root.path);
 		if (!infoResult.ok) {
 			// A missing conventional root (cwd/agent_dir) is silent; other file
@@ -370,16 +312,7 @@ export class FileProfileStorageBackend implements ProfileStorageBackend {
 			if (infoResult.error.code === "not_found") {
 				return { entries: [], diagnostics: [] };
 			}
-			return {
-				entries: [],
-				diagnostics: [
-					fileErrorDiagnostic(
-						"profile.file_info_failed",
-						infoResult.error,
-						source,
-					),
-				],
-			};
+			return { entries: [], diagnostics: [fileErrorDiagnostic("profile.file_info_failed", infoResult.error, source)] };
 		}
 
 		const kind = await this.resolveKind(infoResult.value);
@@ -401,36 +334,19 @@ export class FileProfileStorageBackend implements ProfileStorageBackend {
 	): Promise<ProfileStorageListResult> {
 		const entriesResult = await this.executionEnv.listDir(path);
 		if (!entriesResult.ok) {
-			return {
-				entries: [],
-				diagnostics: [
-					fileErrorDiagnostic(
-						"profile.list_failed",
-						entriesResult.error,
-						source,
-					),
-				],
-			};
+			return { entries: [], diagnostics: [fileErrorDiagnostic("profile.list_failed", entriesResult.error, source)] };
 		}
 
 		const entries: ProfileStorageEntry[] = [];
-		for (const entry of entriesResult.value.sort((a, b) =>
-			a.name.localeCompare(b.name),
-		)) {
+		for (const entry of entriesResult.value.sort((a, b) => a.name.localeCompare(b.name))) {
 			const kind = await this.resolveKind(entry);
 			if (kind !== "file" || !isProfileFileName(entry.name)) continue;
-			entries.push(
-				this.createFileEntry(entry, { ...source, path: entry.path }, rootIndex),
-			);
+			entries.push(this.createFileEntry(entry, { ...source, path: entry.path }, rootIndex));
 		}
 		return { entries, diagnostics: [] };
 	}
 
-	private createFileEntry(
-		info: FileInfo,
-		source: AgentProfileSource,
-		rootIndex: number,
-	): ProfileStorageEntry {
+	private createFileEntry(info: FileInfo, source: AgentProfileSource, rootIndex: number): ProfileStorageEntry {
 		const entry: ProfileStorageEntry = {
 			entryId: `file:${rootIndex}:${info.path}`,
 			source: { ...source, path: info.path },
@@ -441,9 +357,7 @@ export class FileProfileStorageBackend implements ProfileStorageBackend {
 		return entry;
 	}
 
-	private async resolveKind(
-		info: FileInfo,
-	): Promise<"file" | "directory" | undefined> {
+	private async resolveKind(info: FileInfo): Promise<"file" | "directory" | undefined> {
 		if (info.kind === "file" || info.kind === "directory") {
 			return info.kind;
 		}
@@ -456,17 +370,12 @@ export class FileProfileStorageBackend implements ProfileStorageBackend {
 		if (!target.ok) {
 			return undefined;
 		}
-		return target.value.kind === "file" || target.value.kind === "directory"
-			? target.value.kind
-			: undefined;
+		return target.value.kind === "file" || target.value.kind === "directory" ? target.value.kind : undefined;
 	}
 }
 
 export class InMemoryProfileStorageBackend implements ProfileStorageBackend {
-	private readonly entries: Map<
-		string,
-		{ entry: ProfileStorageEntry; content: string }
-	> = new Map();
+	private readonly entries: Map<string, { entry: ProfileStorageEntry; content: string }> = new Map();
 
 	constructor(
 		entries: readonly {
@@ -507,10 +416,7 @@ export class InMemoryProfileStorageBackend implements ProfileStorageBackend {
 	}
 
 	async listEntries(): Promise<ProfileStorageListResult> {
-		return {
-			entries: [...this.entries.values()].map(({ entry }) => entry),
-			diagnostics: [],
-		};
+		return { entries: [...this.entries.values()].map(({ entry }) => entry), diagnostics: [] };
 	}
 
 	async readEntry(entryId: string): Promise<ProfileStorageReadResult> {
@@ -531,10 +437,7 @@ export class InMemoryProfileStorageBackend implements ProfileStorageBackend {
 
 export class CompositeProfileStorageBackend implements ProfileStorageBackend {
 	private readonly backends: readonly ProfileStorageBackend[];
-	private readonly entrySources: Map<
-		string,
-		{ backend: ProfileStorageBackend; entryId: string }
-	> = new Map();
+	private readonly entrySources: Map<string, { backend: ProfileStorageBackend; entryId: string }> = new Map();
 
 	constructor(backends: readonly ProfileStorageBackend[]) {
 		this.backends = [...backends];
@@ -551,10 +454,7 @@ export class CompositeProfileStorageBackend implements ProfileStorageBackend {
 			diagnostics.push(...result.diagnostics);
 			for (const entry of result.entries) {
 				const compositeEntryId = `${index}:${entry.entryId}`;
-				this.entrySources.set(compositeEntryId, {
-					backend,
-					entryId: entry.entryId,
-				});
+				this.entrySources.set(compositeEntryId, { backend, entryId: entry.entryId });
 				entries.push({ ...entry, entryId: compositeEntryId });
 			}
 		}
@@ -577,16 +477,9 @@ export class CompositeProfileStorageBackend implements ProfileStorageBackend {
 
 		const result = await source.backend.readEntry(source.entryId);
 		if (!result.ok) {
-			return {
-				ok: false,
-				diagnostic: result.diagnostic,
-			};
+			return { ok: false, diagnostic: result.diagnostic };
 		}
-		return {
-			ok: true,
-			entry: { ...result.entry, entryId },
-			content: result.content,
-		};
+		return { ok: true, entry: { ...result.entry, entryId }, content: result.content };
 	}
 }
 
@@ -611,8 +504,7 @@ export class AgentProfileRegistry {
 	async resolveProfile(profileId: string): Promise<ResolveProfileResult> {
 		const normalizedProfileId = profileId.trim();
 		const index = await this.ensureIndex();
-		const candidates =
-			index.candidatesByProfileId.get(normalizedProfileId) ?? [];
+		const candidates = index.candidatesByProfileId.get(normalizedProfileId) ?? [];
 		if (candidates.length === 0) {
 			return {
 				ok: false,
@@ -632,46 +524,22 @@ export class AgentProfileRegistry {
 		const selected = selectProfileCandidate(candidates);
 		const diagnostics = [
 			...index.diagnostics,
-			...diagnosticsForProfileSelection(
-				normalizedProfileId,
-				candidates,
-				selected,
-			),
+			...diagnosticsForProfileSelection(normalizedProfileId, candidates, selected),
 		];
 
 		if (selected.status === "duplicate") {
-			return {
-				ok: false,
-				reason: "duplicate_profile_id",
-				profileId: normalizedProfileId,
-				diagnostics,
-			};
+			return { ok: false, reason: "duplicate_profile_id", profileId: normalizedProfileId, diagnostics };
 		}
 		if (selected.status === "parse_failed") {
-			return {
-				ok: false,
-				reason: "parse_failed",
-				profileId: normalizedProfileId,
-				diagnostics,
-			};
+			return { ok: false, reason: "parse_failed", profileId: normalizedProfileId, diagnostics };
 		}
 		if (selected.status === "invalid") {
-			return {
-				ok: false,
-				reason: "invalid_profile",
-				profileId: normalizedProfileId,
-				diagnostics,
-			};
+			return { ok: false, reason: "invalid_profile", profileId: normalizedProfileId, diagnostics };
 		}
 
 		const content = this.rawContent.get(selected.entry.entryId);
 		if (content === undefined) {
-			return {
-				ok: false,
-				reason: "profile_missing",
-				profileId: normalizedProfileId,
-				diagnostics,
-			};
+			return { ok: false, reason: "profile_missing", profileId: normalizedProfileId, diagnostics };
 		}
 
 		const parsed = parseProfileMarkdown(content);
@@ -682,21 +550,12 @@ export class AgentProfileRegistry {
 				profileId: normalizedProfileId,
 				diagnostics: [
 					...diagnostics,
-					diagnosticForEntry(
-						selected.entry,
-						"error",
-						"profile.parse_failed",
-						parsed.error,
-					),
+					diagnosticForEntry(selected.entry, "error", "profile.parse_failed", parsed.error),
 				],
 			};
 		}
 
-		const profileResult = parseAgentProfile(
-			selected.entry,
-			parsed.value,
-			selected.entry.filenameId,
-		);
+		const profileResult = parseAgentProfile(selected.entry, parsed.value, selected.entry.filenameId);
 		if (!profileResult.profile) {
 			return {
 				ok: false,
@@ -720,13 +579,11 @@ export class AgentProfileRegistry {
 		const profiles: AgentProfileSummary[] = [];
 		const diagnostics = [...index.diagnostics];
 
-		for (const [profileId, candidates] of [...index.candidatesByProfileId].sort(
-			([left], [right]) => left.localeCompare(right),
+		for (const [profileId, candidates] of [...index.candidatesByProfileId].sort(([left], [right]) =>
+			left.localeCompare(right),
 		)) {
 			const selected = selectProfileCandidate(candidates);
-			diagnostics.push(
-				...diagnosticsForProfileSelection(profileId, candidates, selected),
-			);
+			diagnostics.push(...diagnosticsForProfileSelection(profileId, candidates, selected));
 			if (selected.status !== "available" || !selected.metadata) continue;
 			profiles.push({
 				id: selected.metadata.id,
@@ -784,12 +641,7 @@ export class AgentProfileRegistry {
 			this.rawContent.set(entry.entryId, readResult.content);
 			const parsed = parseProfileMarkdown(readResult.content);
 			if (!parsed.ok) {
-				const diagnostic = diagnosticForEntry(
-					entry,
-					"error",
-					"profile.parse_failed",
-					parsed.error,
-				);
+				const diagnostic = diagnosticForEntry(entry, "error", "profile.parse_failed", parsed.error);
 				candidates.push({
 					entry,
 					status: "parse_failed",
@@ -799,11 +651,7 @@ export class AgentProfileRegistry {
 				continue;
 			}
 
-			const metadataResult = parseAgentProfileMetadata(
-				entry,
-				parsed.value,
-				entry.filenameId,
-			);
+			const metadataResult = parseAgentProfileMetadata(entry, parsed.value, entry.filenameId);
 			candidates.push({
 				entry,
 				markdown: parsed.value,
@@ -833,22 +681,11 @@ async function resolveDefaultProfileRoots(options: {
 		DEFAULT_AGENT_DIR,
 		DEFAULT_PROFILE_DIR,
 	]);
-	roots.push({
-		kind: "cwd",
-		path: cwdProfilePath,
-		priority: 200,
-	});
+	roots.push({ kind: "cwd", path: cwdProfilePath, priority: 200 });
 
 	if (options.agentDir) {
-		const agentProfilePath = await joinPathOrThrow(options.executionEnv, [
-			options.agentDir,
-			DEFAULT_PROFILE_DIR,
-		]);
-		roots.push({
-			kind: "agent_dir",
-			path: agentProfilePath,
-			priority: 100,
-		});
+		const agentProfilePath = await joinPathOrThrow(options.executionEnv, [options.agentDir, DEFAULT_PROFILE_DIR]);
+		roots.push({ kind: "agent_dir", path: agentProfilePath, priority: 100 });
 	}
 
 	// The agent dir may itself be the cwd's .widi directory; loading the same
@@ -875,16 +712,10 @@ function groupCandidatesByProfileId(
 	return groups;
 }
 
-function applyCandidateStatuses(
-	groups: Map<string, ParsedProfileCandidate[]>,
-): void {
+function applyCandidateStatuses(groups: Map<string, ParsedProfileCandidate[]>): void {
 	for (const candidates of groups.values()) {
-		const highestPriority = Math.max(
-			...candidates.map(({ entry }) => entry.source.priority),
-		);
-		const highest = candidates.filter(
-			({ entry }) => entry.source.priority === highestPriority,
-		);
+		const highestPriority = Math.max(...candidates.map(({ entry }) => entry.source.priority));
+		const highest = candidates.filter(({ entry }) => entry.source.priority === highestPriority);
 
 		if (highest.length > 1) {
 			for (const candidate of highest) {
@@ -900,24 +731,15 @@ function applyCandidateStatuses(
 	}
 }
 
-function mutateCandidateStatus(
-	candidate: ParsedProfileCandidate,
-	status: ProfileCandidateStatus,
-): void {
+function mutateCandidateStatus(candidate: ParsedProfileCandidate, status: ProfileCandidateStatus): void {
 	(candidate as { status: ProfileCandidateStatus }).status = status;
 }
 
-function selectProfileCandidate(
-	candidates: readonly ParsedProfileCandidate[],
-): ParsedProfileCandidate {
-	const highestPriority = Math.max(
-		...candidates.map(({ entry }) => entry.source.priority),
-	);
+function selectProfileCandidate(candidates: readonly ParsedProfileCandidate[]): ParsedProfileCandidate {
+	const highestPriority = Math.max(...candidates.map(({ entry }) => entry.source.priority));
 	return candidates
 		.filter(({ entry }) => entry.source.priority === highestPriority)
-		.sort((left, right) =>
-			left.entry.entryId.localeCompare(right.entry.entryId),
-		)[0] as ParsedProfileCandidate;
+		.sort((left, right) => left.entry.entryId.localeCompare(right.entry.entryId))[0] as ParsedProfileCandidate;
 }
 
 function diagnosticsForProfileSelection(
@@ -927,9 +749,7 @@ function diagnosticsForProfileSelection(
 ): AgentProfileDiagnostic[] {
 	const diagnostics = candidates.flatMap((candidate) => candidate.diagnostics);
 	const highestPriority = selected.entry.source.priority;
-	const highest = candidates.filter(
-		({ entry }) => entry.source.priority === highestPriority,
-	);
+	const highest = candidates.filter(({ entry }) => entry.source.priority === highestPriority);
 
 	if (highest.length > 1) {
 		diagnostics.push(
@@ -944,9 +764,7 @@ function diagnosticsForProfileSelection(
 	return diagnostics;
 }
 
-function caseConflictDiagnostics(
-	groups: Map<string, ParsedProfileCandidate[]>,
-): AgentProfileDiagnostic[] {
+function caseConflictDiagnostics(groups: Map<string, ParsedProfileCandidate[]>): AgentProfileDiagnostic[] {
 	const byLowercase = new Map<string, string[]>();
 	for (const id of groups.keys()) {
 		const lowered = id.toLocaleLowerCase();
@@ -974,10 +792,7 @@ function parseAgentProfile(
 	entry: ProfileStorageEntry,
 	parsed: ParsedProfileMarkdown,
 	filenameId: string | undefined,
-): {
-	profile: AgentProfile | undefined;
-	diagnostics: AgentProfileDiagnostic[];
-} {
+): { profile: AgentProfile | undefined; diagnostics: AgentProfileDiagnostic[] } {
 	const metadataResult = parseAgentProfileMetadata(entry, parsed, filenameId);
 	if (!metadataResult.metadata) {
 		return { profile: undefined, diagnostics: metadataResult.diagnostics };
@@ -989,29 +804,10 @@ function parseAgentProfile(
 	const metadataDiagnosticCount = metadataResult.diagnostics.length;
 	const diagnostics = [...metadataResult.diagnostics];
 	const tools = readStringArray(frontmatter.tools, "tools", entry, diagnostics);
-	const skills = readStringArray(
-		frontmatter.skills,
-		"skills",
-		entry,
-		diagnostics,
-	);
-	const projectContext = readProjectContext(
-		frontmatter.projectContext,
-		entry,
-		diagnostics,
-	);
-	const includeCwd = readBoolean(
-		frontmatter.includeCwd,
-		"includeCwd",
-		entry,
-		diagnostics,
-	);
-	const skillsListing = readBoolean(
-		frontmatter.skillsListing,
-		"skillsListing",
-		entry,
-		diagnostics,
-	);
+	const skills = readStringArray(frontmatter.skills, "skills", entry, diagnostics);
+	const projectContext = readProjectContext(frontmatter.projectContext, entry, diagnostics);
+	const includeCwd = readBoolean(frontmatter.includeCwd, "includeCwd", entry, diagnostics);
+	const skillsListing = readBoolean(frontmatter.skillsListing, "skillsListing", entry, diagnostics);
 	const appendSystemPrompt = readString(frontmatter.appendSystemPrompt);
 
 	if (diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
@@ -1041,11 +837,7 @@ function parseAgentProfileMetadata(
 	entry: ProfileStorageEntry,
 	parsed: ParsedProfileMarkdown,
 	filenameId: string | undefined,
-): {
-	metadata: ProfileMetadata | undefined;
-	blockingProfileId?: string;
-	diagnostics: AgentProfileDiagnostic[];
-} {
+): { metadata: ProfileMetadata | undefined; blockingProfileId?: string; diagnostics: AgentProfileDiagnostic[] } {
 	const frontmatter = parsed.frontmatter;
 	const diagnostics: AgentProfileDiagnostic[] = [];
 	const rawId = readString(frontmatter.id);
@@ -1053,31 +845,17 @@ function parseAgentProfileMetadata(
 	const label = readString(frontmatter.label) ?? id;
 	const description = readString(frontmatter.description);
 	const whenToUse = readString(frontmatter.whenToUse);
-	const persist =
-		readBoolean(frontmatter.persist, "persist", entry, diagnostics) ?? false;
+	const persist = readBoolean(frontmatter.persist, "persist", entry, diagnostics) ?? false;
 
 	if (!id) {
-		diagnostics.push(
-			diagnosticForEntry(
-				entry,
-				"error",
-				"profile.invalid",
-				"Profile id is missing.",
-			),
-		);
+		diagnostics.push(diagnosticForEntry(entry, "error", "profile.invalid", "Profile id is missing."));
 		return { metadata: undefined, diagnostics };
 	}
 
 	const idValidation = validateProfileId(id);
 	if (idValidation) {
-		diagnostics.push(
-			diagnosticForEntry(entry, "error", "profile.invalid", idValidation),
-		);
-		return {
-			metadata: undefined,
-			blockingProfileId: filenameId,
-			diagnostics,
-		};
+		diagnostics.push(diagnosticForEntry(entry, "error", "profile.invalid", idValidation));
+		return { metadata: undefined, blockingProfileId: filenameId, diagnostics };
 	}
 
 	if (rawId && filenameId && rawId !== filenameId) {
@@ -1102,17 +880,7 @@ function parseAgentProfileMetadata(
 		);
 	}
 
-	return {
-		metadata: {
-			id,
-			label: label ?? id,
-			description,
-			whenToUse,
-			persist,
-			filenameId,
-		},
-		diagnostics,
-	};
+	return { metadata: { id, label: label ?? id, description, whenToUse, persist, filenameId }, diagnostics };
 }
 
 function parseProfileMarkdown(
@@ -1125,43 +893,28 @@ function parseProfileMarkdown(
 
 	const endIndex = normalized.indexOf("\n---", 4);
 	if (endIndex === -1) {
-		return {
-			ok: false,
-			error: "Profile frontmatter is missing a closing --- marker.",
-		};
+		return { ok: false, error: "Profile frontmatter is missing a closing --- marker." };
 	}
 
 	let parsed: unknown;
 	try {
 		parsed = parseYaml(normalized.slice(4, endIndex));
 	} catch (error) {
-		return {
-			ok: false,
-			error: `Cannot parse profile frontmatter: ${formatError(error)}`,
-		};
+		return { ok: false, error: `Cannot parse profile frontmatter: ${formatError(error)}` };
 	}
 
 	// An empty frontmatter block parses to null, which is a profile with no
 	// declared fields rather than a malformed one.
 	if (parsed === null || parsed === undefined) {
-		return {
-			ok: true,
-			value: { frontmatter: {}, body: normalized.slice(endIndex + 4).trim() },
-		};
+		return { ok: true, value: { frontmatter: {}, body: normalized.slice(endIndex + 4).trim() } };
 	}
 	if (typeof parsed !== "object" || Array.isArray(parsed)) {
-		return {
-			ok: false,
-			error: "Profile frontmatter must be a mapping of fields.",
-		};
+		return { ok: false, error: "Profile frontmatter must be a mapping of fields." };
 	}
 
 	return {
 		ok: true,
-		value: {
-			frontmatter: parsed as AgentProfileFrontmatter,
-			body: normalized.slice(endIndex + 4).trim(),
-		},
+		value: { frontmatter: parsed as AgentProfileFrontmatter, body: normalized.slice(endIndex + 4).trim() },
 	};
 }
 
@@ -1178,12 +931,7 @@ function readBoolean(
 	if (value === undefined) return undefined;
 	if (typeof value === "boolean") return value;
 	diagnostics.push(
-		diagnosticForEntry(
-			entry,
-			"error",
-			"profile.invalid_metadata",
-			`Profile field "${fieldName}" must be a boolean.`,
-		),
+		diagnosticForEntry(entry, "error", "profile.invalid_metadata", `Profile field "${fieldName}" must be a boolean.`),
 	);
 	return undefined;
 }
@@ -1297,11 +1045,7 @@ function diagnosticForEntry(
 	code: AgentProfileDiagnosticCode,
 	message: string,
 ): AgentProfileDiagnostic {
-	return createProfileDiagnostic({
-		severity,
-		code,
-		message: `${message} (${formatSource(entry.source)})`,
-	});
+	return createProfileDiagnostic({ severity, code, message: `${message} (${formatSource(entry.source)})` });
 }
 
 function fileErrorDiagnostic(
@@ -1309,11 +1053,7 @@ function fileErrorDiagnostic(
 	error: FileError,
 	source: AgentProfileSource,
 ): AgentProfileDiagnostic {
-	return createProfileDiagnostic({
-		severity: "error",
-		code,
-		message: `${error.message} (${formatSource(source)})`,
-	});
+	return createProfileDiagnostic({ severity: "error", code, message: `${error.message} (${formatSource(source)})` });
 }
 
 function createProfileDiagnostic(options: {
@@ -1321,11 +1061,7 @@ function createProfileDiagnostic(options: {
 	readonly code: AgentProfileDiagnosticCode;
 	readonly message: string;
 }): AgentProfileDiagnostic {
-	return {
-		severity: options.severity,
-		code: options.code,
-		message: options.message,
-	};
+	return { severity: options.severity, code: options.code, message: options.message };
 }
 
 /**
@@ -1334,20 +1070,14 @@ function createProfileDiagnostic(options: {
  * the reader, and a round trip has to preserve which one this was.
  */
 function serializeProfile(profile: AgentProfile): string {
-	const frontmatter: Record<string, unknown> = {
-		id: profile.id,
-		label: profile.label,
-		persist: profile.persist,
-	};
+	const frontmatter: Record<string, unknown> = { id: profile.id, label: profile.label, persist: profile.persist };
 	if (profile.description) frontmatter.description = profile.description;
 	if (profile.whenToUse) frontmatter.whenToUse = profile.whenToUse;
 	if (profile.tools) frontmatter.tools = [...profile.tools];
 	if (profile.skills) frontmatter.skills = [...profile.skills];
 	if (profile.projectContext !== undefined) {
 		frontmatter.projectContext =
-			typeof profile.projectContext === "boolean"
-				? profile.projectContext
-				: [...profile.projectContext];
+			typeof profile.projectContext === "boolean" ? profile.projectContext : [...profile.projectContext];
 	}
 	if (profile.includeCwd !== undefined) {
 		frontmatter.includeCwd = profile.includeCwd;
@@ -1385,10 +1115,7 @@ function formatSource(source: AgentProfileSource): string {
 	return source.label ?? source.path ?? source.kind;
 }
 
-async function joinPathOrThrow(
-	executionEnv: ExecutionEnv,
-	parts: readonly string[],
-): Promise<string> {
+async function joinPathOrThrow(executionEnv: ExecutionEnv, parts: readonly string[]): Promise<string> {
 	const result = await executionEnv.joinPath([...parts]);
 	if (!result.ok) {
 		throw result.error;

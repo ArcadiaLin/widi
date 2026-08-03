@@ -1,17 +1,10 @@
 import { type Static, Type } from "typebox";
 import { formatError } from "../../../utils/errors.ts";
 import type { ToolDefinition } from "../types.ts";
-import {
-	assignAgentTask,
-	describeAssignedTask,
-	requireAgentHost,
-} from "./shared.ts";
+import { assignAgentTask, describeAssignedTask, requireAgentHost } from "./shared.ts";
 
 const spawnAgentSchema = Type.Object({
-	profile: Type.String({
-		description:
-			"Id of the profile the new agent should run as, from list_agent_profiles.",
-	}),
+	profile: Type.String({ description: "Id of the profile the new agent should run as, from list_agent_profiles." }),
 	task: Type.Optional(
 		Type.String({
 			description:
@@ -38,10 +31,7 @@ export interface SpawnAgentDetails {
  * whatever the child needs to know belongs in `task`, which costs one message
  * instead of the parent's whole transcript on every one of the child's turns.
  */
-export function createSpawnAgentToolDefinition(): ToolDefinition<
-	typeof spawnAgentSchema,
-	SpawnAgentDetails
-> {
+export function createSpawnAgentToolDefinition(): ToolDefinition<typeof spawnAgentSchema, SpawnAgentDetails> {
 	return {
 		name: "spawn_agent",
 		label: "spawn_agent",
@@ -57,9 +47,7 @@ export function createSpawnAgentToolDefinition(): ToolDefinition<
 			}
 			const trimmedTask = task?.trim();
 			if (task !== undefined && !trimmedTask) {
-				throw new Error(
-					"spawn_agent was given an empty task. Omit task to spawn an idle agent.",
-				);
+				throw new Error("spawn_agent was given an empty task. Omit task to spawn an idle agent.");
 			}
 
 			const agentId = await host.spawn(profileId);

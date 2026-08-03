@@ -1,18 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../../src/core/agent-orchestrator.ts";
 import { builtInCommands } from "../../../src/tui/commands/built-ins.ts";
-import {
-	CommandEngine,
-	switchedAgentId,
-} from "../../../src/tui/commands/engine.ts";
+import { CommandEngine, switchedAgentId } from "../../../src/tui/commands/engine.ts";
 
-function stubOrchestrator(
-	overrides: Record<string, unknown>,
-): AgentOrchestrator {
-	return {
-		getAgentStatus: () => "idle",
-		...overrides,
-	} as unknown as AgentOrchestrator;
+function stubOrchestrator(overrides: Record<string, unknown>): AgentOrchestrator {
+	return { getAgentStatus: () => "idle", ...overrides } as unknown as AgentOrchestrator;
 }
 
 function context(overrides: Record<string, unknown> = {}) {
@@ -27,9 +19,7 @@ describe("CommandEngine.handleInput", () => {
 	const engine = new CommandEngine(builtInCommands);
 
 	it("passes plain prompts through", async () => {
-		expect(await engine.handleInput("hello world", context())).toEqual({
-			kind: "pass",
-		});
+		expect(await engine.handleInput("hello world", context())).toEqual({ kind: "pass" });
 	});
 
 	it("executes a line command against orchestrator atomics", async () => {
@@ -49,11 +39,7 @@ describe("CommandEngine.handleInput", () => {
 	it("returns needs-argument for a bare command with completion", async () => {
 		const outcome = await engine.handleInput(
 			"/model",
-			context({
-				listAvailableModelCandidates: async () => ({
-					models: [{ value: "openai/gpt-5" }],
-				}),
-			}),
+			context({ listAvailableModelCandidates: async () => ({ models: [{ value: "openai/gpt-5" }] }) }),
 		);
 		expect(outcome.kind).toBe("needs-argument");
 		if (outcome.kind === "needs-argument") {
@@ -67,10 +53,7 @@ describe("CommandEngine.handleInput", () => {
 		const outcome = await engine.handleInput(
 			"/fork:",
 			context({
-				forkAgentSessionFromAgent: async (
-					_agentId: string,
-					options: unknown,
-				) => {
+				forkAgentSessionFromAgent: async (_agentId: string, options: unknown) => {
 					forkedWith = options;
 					return { agentId: "agent-2" };
 				},
@@ -150,10 +133,7 @@ describe("CommandEngine.handleInput", () => {
 
 		for (const input of ["/abort", "/follow-up later", "/steer now"]) {
 			const outcome = await engine.handleInput(input, commandContext);
-			expect(outcome).toMatchObject({
-				kind: "failed",
-				error: { message: expect.stringContaining("compaction") },
-			});
+			expect(outcome).toMatchObject({ kind: "failed", error: { message: expect.stringContaining("compaction") } });
 		}
 		expect(abortAgent).not.toHaveBeenCalled();
 		expect(followUpAgent).not.toHaveBeenCalled();
@@ -174,12 +154,7 @@ describe("CommandEngine.handleInput", () => {
 		);
 
 		expect(outcome).toMatchObject({ kind: "executed", name: "steer" });
-		expect(message).toEqual({
-			source: { kind: "human" },
-			targetAgentId: "agent-1",
-			body: "go now",
-			mode: "interrupt",
-		});
+		expect(message).toEqual({ source: { kind: "human" }, targetAgentId: "agent-1", body: "go now", mode: "interrupt" });
 	});
 
 	it("wraps execute exceptions as failed outcomes", async () => {
@@ -198,9 +173,7 @@ describe("CommandEngine.handleInput", () => {
 	it("executes runtime commands without an active agent", async () => {
 		const outcome = await engine.handleInput(
 			"/session",
-			pendingContext({
-				listAgentSessions: async () => ({ sessions: [] }),
-			}),
+			pendingContext({ listAgentSessions: async () => ({ sessions: [] }) }),
 		);
 
 		expect(outcome).toMatchObject({ kind: "executed", name: "session" });
@@ -212,10 +185,7 @@ describe("CommandEngine.handleInput", () => {
 			context({
 				resumeAgentSessionByReference: async () => ({
 					agentId: "agent-2",
-					snapshot: {
-						profile: { reference: { id: "default", label: "Default" } },
-						model: { id: "test-model" },
-					},
+					snapshot: { profile: { reference: { id: "default", label: "Default" } }, model: { id: "test-model" } },
 				}),
 			}),
 		);
@@ -230,38 +200,22 @@ describe("CommandEngine.handleInput", () => {
 	it("rejects active-only commands without an active agent", async () => {
 		const outcome = await engine.handleInput("/status", pendingContext());
 
-		expect(outcome).toMatchObject({
-			kind: "failed",
-			error: { message: expect.stringContaining("active agent") },
-		});
+		expect(outcome).toMatchObject({ kind: "failed", error: { message: expect.stringContaining("active agent") } });
 	});
 
 	it("offers model candidates without an active agent", async () => {
 		const outcome = await engine.handleInput(
 			"/model",
-			pendingContext({
-				listAvailableModelCandidates: async () => ({
-					models: [{ value: "openai/gpt-5" }],
-				}),
-			}),
+			pendingContext({ listAvailableModelCandidates: async () => ({ models: [{ value: "openai/gpt-5" }] }) }),
 		);
 
-		expect(outcome).toMatchObject({
-			kind: "needs-argument",
-			candidates: [{ value: "openai/gpt-5" }],
-		});
+		expect(outcome).toMatchObject({ kind: "needs-argument", candidates: [{ value: "openai/gpt-5" }] });
 	});
 
 	it("requires materialization before executing a setting command", async () => {
-		const outcome = await engine.handleInput(
-			"/model:openai/gpt-5",
-			pendingContext(),
-		);
+		const outcome = await engine.handleInput("/model:openai/gpt-5", pendingContext());
 
-		expect(outcome).toMatchObject({
-			kind: "failed",
-			error: { message: expect.stringContaining("active agent") },
-		});
+		expect(outcome).toMatchObject({ kind: "failed", error: { message: expect.stringContaining("active agent") } });
 	});
 
 	it("reports command start through hooks", async () => {
@@ -288,15 +242,11 @@ describe("CommandEngine.handleInput", () => {
 		);
 		expect(outcome.kind).toBe("expanded");
 		if (outcome.kind === "expanded") {
-			expect(outcome.text).toContain(
-				'<skill name="review" location="/skills/review/SKILL.md">',
-			);
+			expect(outcome.text).toContain('<skill name="review" location="/skills/review/SKILL.md">');
 			// The body is inlined, not pointed at.
 			expect(outcome.text).toContain("Review the diff carefully.");
 			expect(outcome.text).toContain("focus on locking");
-			expect(outcome.expansion.originalText).toBe(
-				"/skill review focus on locking",
-			);
+			expect(outcome.expansion.originalText).toBe("/skill review focus on locking");
 			expect(outcome.expansion.items).toEqual([
 				{
 					commandId: expect.any(String),
@@ -342,16 +292,9 @@ describe("CommandEngine.handleInput", () => {
 	it("offers candidates for a prompt command given no argument", async () => {
 		const outcome = await engine.handleInput(
 			"/skill",
-			context({
-				listAgentSkillCandidates: async () => ({
-					skills: [{ value: "review" }],
-				}),
-			}),
+			context({ listAgentSkillCandidates: async () => ({ skills: [{ value: "review" }] }) }),
 		);
-		expect(outcome).toMatchObject({
-			kind: "needs-argument",
-			candidates: [{ value: "review" }],
-		});
+		expect(outcome).toMatchObject({ kind: "needs-argument", candidates: [{ value: "review" }] });
 	});
 });
 
@@ -361,9 +304,7 @@ describe("CommandEngine.list and match", () => {
 	it("marks status-gated commands unavailable", () => {
 		const steer = engine.list("idle").find((view) => view.name === "steer");
 		expect(steer?.available).toBe(false);
-		const running = engine
-			.list("running")
-			.find((view) => view.name === "steer");
+		const running = engine.list("running").find((view) => view.name === "steer");
 		expect(running?.available).toBe(true);
 	});
 
@@ -397,21 +338,11 @@ describe("CommandEngine.list and match", () => {
 
 describe("switchedAgentId", () => {
 	it("extracts the agent id from fork/resume results only", () => {
+		expect(switchedAgentId({ kind: "executed", commandId: "c1", name: "resume", value: { agentId: "agent-9" } })).toBe(
+			"agent-9",
+		);
 		expect(
-			switchedAgentId({
-				kind: "executed",
-				commandId: "c1",
-				name: "resume",
-				value: { agentId: "agent-9" },
-			}),
-		).toBe("agent-9");
-		expect(
-			switchedAgentId({
-				kind: "executed",
-				commandId: "c2",
-				name: "status",
-				value: { agentId: "agent-9" },
-			}),
+			switchedAgentId({ kind: "executed", commandId: "c2", name: "status", value: { agentId: "agent-9" } }),
 		).toBeUndefined();
 		expect(switchedAgentId({ kind: "pass" })).toBeUndefined();
 	});

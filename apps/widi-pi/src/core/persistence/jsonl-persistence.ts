@@ -22,17 +22,8 @@
  * nobody has open yet.
  */
 
-import type {
-	FileInfo,
-	JsonlSessionMetadata,
-	SessionTreeEntry,
-} from "@widi/agent-core";
-import {
-	createTimestamp,
-	getFileSystemResultOrThrow,
-	SessionError,
-	toError,
-} from "@widi/agent-core";
+import type { FileInfo, JsonlSessionMetadata, SessionTreeEntry } from "@widi/agent-core";
+import { createTimestamp, getFileSystemResultOrThrow, SessionError, toError } from "@widi/agent-core";
 import type {
 	CustomStorage,
 	PersistenceFileSystem,
@@ -66,22 +57,10 @@ import {
 	sessionDirSegments,
 	sessionFileSegments,
 } from "./utils/layout.ts";
-import type {
-	PersistenceRefData,
-	PersistenceRefOrigin,
-} from "./utils/persistence-ref.ts";
-import {
-	createPersistenceRefData,
-	PERSISTENCE_REF_CUSTOM_TYPE,
-} from "./utils/persistence-ref.ts";
-import type {
-	BranchProjection,
-	StateProvenance,
-} from "./utils/state-projection.ts";
-import {
-	projectBranch,
-	projectionToForkRoots,
-} from "./utils/state-projection.ts";
+import type { PersistenceRefData, PersistenceRefOrigin } from "./utils/persistence-ref.ts";
+import { createPersistenceRefData, PERSISTENCE_REF_CUSTOM_TYPE } from "./utils/persistence-ref.ts";
+import type { BranchProjection, StateProvenance } from "./utils/state-projection.ts";
+import { projectBranch, projectionToForkRoots } from "./utils/state-projection.ts";
 
 /** An open session and the address that identifies its directory. */
 export interface PersistedSession {
@@ -178,12 +157,7 @@ export class JsonlPersistenceRepo {
 	 * producing a path that cannot be opened.
 	 */
 	async create(options: CreateSessionOptions): Promise<PersistedSession> {
-		const key = this._newSessionKey(
-			options.parent,
-			options.sessionId,
-			createTimestamp(),
-			options.diagnostics,
-		);
+		const key = this._newSessionKey(options.parent, options.sessionId, createTimestamp(), options.diagnostics);
 		const address: SessionAddress = { cwd: options.cwd, key };
 		return await this._createAt(address, {
 			sessionId: options.sessionId,
@@ -194,12 +168,7 @@ export class JsonlPersistenceRepo {
 
 	async open(address: SessionAddress): Promise<PersistedSession> {
 		const filePath = await this.sessionFilePath(address);
-		if (
-			!getFileSystemResultOrThrow(
-				await this._fs.exists(filePath),
-				`Failed to check session ${filePath}`,
-			)
-		) {
+		if (!getFileSystemResultOrThrow(await this._fs.exists(filePath), `Failed to check session ${filePath}`)) {
 			throw new SessionError("not_found", `Session not found: ${filePath}`);
 		}
 		const session = await JsonlSession.open(this._fs, filePath);
@@ -213,14 +182,8 @@ export class JsonlPersistenceRepo {
 	 * it, so listing them alongside their roots would offer the user a session
 	 * that opens the same conversation twice.
 	 */
-	async list(options: {
-		readonly cwd: string;
-	}): Promise<PersistedSessionInfo[]> {
-		return await this._listContainer(
-			options.cwd,
-			await this._cwdDirPath(options.cwd),
-			(name) => [name],
-		);
+	async list(options: { readonly cwd: string }): Promise<PersistedSessionInfo[]> {
+		return await this._listContainer(options.cwd, await this._cwdDirPath(options.cwd), (name) => [name]);
 	}
 
 	/** The sessions nested directly under one session. */
@@ -276,13 +239,7 @@ export class JsonlPersistenceRepo {
 		const states = new Map<string, ResolvedNamespaceState>();
 		for (const [namespace, entry] of projection.namespaces) {
 			if (entry.stateRoot === null) continue;
-			const resolved = await this._resolveNamespace(
-				address,
-				namespace,
-				entry.stateRoot,
-				entry.provenance,
-				diagnostics,
-			);
+			const resolved = await this._resolveNamespace(address, namespace, entry.stateRoot, entry.provenance, diagnostics);
 			if (resolved) states.set(namespace, resolved);
 		}
 		return { projection, states, diagnostics: diagnostics.entries };
@@ -310,14 +267,7 @@ export class JsonlPersistenceRepo {
 		const storage = await this.openStorage(address, namespace, diagnostics);
 		if (!storage) return undefined;
 		try {
-			return await this._readState(
-				address,
-				definition,
-				storage,
-				stateRoot,
-				provenance,
-				diagnostics,
-			);
+			return await this._readState(address, definition, storage, stateRoot, provenance, diagnostics);
 		} finally {
 			await closeStorage(storage);
 		}
@@ -360,11 +310,7 @@ export class JsonlPersistenceRepo {
 			});
 			return undefined;
 		}
-		const migrated = await definition.migrate({
-			fromVersion: stored,
-			stateRoot,
-			storage,
-		});
+		const migrated = await definition.migrate({ fromVersion: stored, stateRoot, storage });
 		if (migrated === undefined) {
 			diagnostics.report({
 				severity: "warning",
@@ -388,12 +334,7 @@ export class JsonlPersistenceRepo {
 			});
 			return undefined;
 		}
-		return {
-			namespace,
-			stateRoot: migrated,
-			state: migratedState,
-			provenance: "migrated",
-		};
+		return { namespace, stateRoot: migrated, state: migratedState, provenance: "migrated" };
 	}
 
 	// ---------------------------------------------------------------------
@@ -418,15 +359,10 @@ export class JsonlPersistenceRepo {
 	}): Promise<PersistenceRefData> {
 		const storage = await this.openStorage(options.address, options.namespace);
 		if (!storage) {
-			throw new Error(
-				`Persistence namespace ${options.namespace} is not registered.`,
-			);
+			throw new Error(`Persistence namespace ${options.namespace} is not registered.`);
 		}
 		try {
-			const stateRoot = await storage.putObject({
-				data: options.data,
-				dependencies: options.dependencies,
-			});
+			const stateRoot = await storage.putObject({ data: options.data, dependencies: options.dependencies });
 			return createPersistenceRefData({
 				namespace: options.namespace,
 				stateRoot,
@@ -439,11 +375,7 @@ export class JsonlPersistenceRepo {
 
 	/** Ref data that clears a namespace from here down the branch. */
 	clearState(namespace: string, anchorEntryId?: string): PersistenceRefData {
-		return createPersistenceRefData({
-			namespace,
-			stateRoot: null,
-			anchorEntryId,
-		});
+		return createPersistenceRefData({ namespace, stateRoot: null, anchorEntryId });
 	}
 
 	/**
@@ -549,17 +481,9 @@ export class JsonlPersistenceRepo {
 	 * Afterwards the new session reads nothing from the source directory, which
 	 * is the property the whole design is checked against.
 	 */
-	async fork(
-		source: SessionAddress,
-		options: ForkSessionOptions,
-	): Promise<ForkResult> {
+	async fork(source: SessionAddress, options: ForkSessionOptions): Promise<ForkResult> {
 		const diagnostics = new PersistenceDiagnostics();
-		const key = this._newSessionKey(
-			options.parent,
-			options.sessionId,
-			createTimestamp(),
-			diagnostics,
-		);
+		const key = this._newSessionKey(options.parent, options.sessionId, createTimestamp(), diagnostics);
 		const forked = await this._forkInto({
 			source,
 			target: { cwd: source.cwd, key },
@@ -575,10 +499,7 @@ export class JsonlPersistenceRepo {
 	private async _forkInto(request: {
 		readonly source: SessionAddress;
 		readonly target: SessionAddress;
-		readonly options: {
-			readonly entryId?: string;
-			readonly position?: "before" | "at";
-		};
+		readonly options: { readonly entryId?: string; readonly position?: "before" | "at" };
 		readonly parent: SessionKey | undefined;
 		readonly metadata: Record<string, unknown> | undefined;
 		readonly diagnostics: PersistenceDiagnostics;
@@ -587,18 +508,13 @@ export class JsonlPersistenceRepo {
 		const source = await this.open(request.source);
 		const entries = await source.session.getEntries();
 		const forkedEntries = getEntriesToFork(entries, request.options);
-		const leafId = getForkLeafId(
-			entries,
-			await source.session.getLeafId(),
-			request.options,
-		);
+		const leafId = getForkLeafId(entries, await source.session.getLeafId(), request.options);
 		const projection = projectBranch(getFullBranch(entries, leafId));
 
 		const plan = await planForkClosure({
 			roots: projectionToForkRoots(projection),
 			registry: this._registry,
-			openStorage: async (namespace) =>
-				await this.openStorage(request.source, namespace, request.diagnostics),
+			openStorage: async (namespace) => await this.openStorage(request.source, namespace, request.diagnostics),
 			sourceKey: request.source.key,
 			diagnostics: request.diagnostics,
 		});
@@ -613,14 +529,8 @@ export class JsonlPersistenceRepo {
 		}
 
 		for (const namespace of plan.namespaces) {
-			const ref = await this._forkNamespace(
-				request.source,
-				request.target,
-				namespace,
-				request.diagnostics,
-			);
-			if (ref)
-				await target.session.appendEntry(await this._refEntry(target, ref));
+			const ref = await this._forkNamespace(request.source, request.target, namespace, request.diagnostics);
+			if (ref) await target.session.appendEntry(await this._refEntry(target, ref));
 		}
 		await this._forkChildren(request, plan);
 		return { session: target, plan };
@@ -634,26 +544,13 @@ export class JsonlPersistenceRepo {
 	): Promise<PersistenceRefData | undefined> {
 		const definition = this._registry.get(plan.namespace);
 		if (!definition) return undefined;
-		const sourceStorage = await this.openStorage(
-			source,
-			plan.namespace,
-			diagnostics,
-		);
-		const targetStorage = await this.openStorage(
-			target,
-			plan.namespace,
-			diagnostics,
-		);
+		const sourceStorage = await this.openStorage(source, plan.namespace, diagnostics);
+		const targetStorage = await this.openStorage(target, plan.namespace, diagnostics);
 		try {
 			if (!sourceStorage || !targetStorage) return undefined;
 			await sourceStorage.copyReachable(targetStorage, plan.objects);
 			const result = definition.fork
-				? await definition.fork({
-						source: sourceStorage,
-						target: targetStorage,
-						roots: plan.objects,
-						diagnostics,
-					})
+				? await definition.fork({ source: sourceStorage, target: targetStorage, roots: plan.objects, diagnostics })
 				: { stateRoot: plan.stateRoot };
 			if (result.stateRoot === null) return undefined;
 			return createPersistenceRefData({
@@ -720,10 +617,7 @@ export class JsonlPersistenceRepo {
 			try {
 				await this._forkInto({
 					source: { cwd: request.source.cwd, key: childKey },
-					target: {
-						cwd: request.target.cwd,
-						key: childSessionKey(request.target.key, name),
-					},
+					target: { cwd: request.target.cwd, key: childSessionKey(request.target.key, name) },
 					options: {},
 					parent: request.target.key,
 					metadata: undefined,
@@ -762,20 +656,13 @@ export class JsonlPersistenceRepo {
 	// ---------------------------------------------------------------------
 
 	/** Where a new child of `parent` would live, or undefined if too deep. */
-	nextChildKey(
-		parent: SessionKey,
-		sessionId: string,
-		timestamp: string,
-	): SessionKey | undefined {
+	nextChildKey(parent: SessionKey, sessionId: string, timestamp: string): SessionKey | undefined {
 		if (!canNestUnder(parent)) return undefined;
 		return childSessionKey(parent, createSessionDirName(sessionId, timestamp));
 	}
 
 	async sessionFilePath(address: SessionAddress): Promise<string> {
-		return await this._join(
-			await this._cwdDirPath(address.cwd),
-			sessionFileSegments(address.key),
-		);
+		return await this._join(await this._cwdDirPath(address.cwd), sessionFileSegments(address.key));
 	}
 
 	// ---------------------------------------------------------------------
@@ -814,21 +701,14 @@ export class JsonlPersistenceRepo {
 			await this._fs.createDir(dirPath, { recursive: true }),
 			`Failed to create session directory ${dirPath}`,
 		);
-		const session = await JsonlSession.create(
-			this._fs,
-			await this.sessionFilePath(address),
-			{
-				cwd: address.cwd,
-				sessionId: options.sessionId,
-				parentSessionPath: options.parent
-					? await this.sessionFilePath({
-							cwd: address.cwd,
-							key: options.parent,
-						})
-					: undefined,
-				metadata: options.metadata,
-			},
-		);
+		const session = await JsonlSession.create(this._fs, await this.sessionFilePath(address), {
+			cwd: address.cwd,
+			sessionId: options.sessionId,
+			parentSessionPath: options.parent
+				? await this.sessionFilePath({ cwd: address.cwd, key: options.parent })
+				: undefined,
+			metadata: options.metadata,
+		});
 		return { address, metadata: await session.getMetadata(), session };
 	}
 
@@ -837,12 +717,7 @@ export class JsonlPersistenceRepo {
 		containerPath: string,
 		keyOf: (name: string) => SessionKey,
 	): Promise<PersistedSessionInfo[]> {
-		if (
-			!getFileSystemResultOrThrow(
-				await this._fs.exists(containerPath),
-				`Failed to check ${containerPath}`,
-			)
-		) {
+		if (!getFileSystemResultOrThrow(await this._fs.exists(containerPath), `Failed to check ${containerPath}`)) {
 			return [];
 		}
 		const dirs = getFileSystemResultOrThrow(
@@ -854,41 +729,23 @@ export class JsonlPersistenceRepo {
 		for (const dir of dirs) {
 			const address: SessionAddress = { cwd, key: keyOf(dir.name) };
 			const filePath = await this.sessionFilePath(address);
-			if (
-				!getFileSystemResultOrThrow(
-					await this._fs.exists(filePath),
-					`Failed to check session ${filePath}`,
-				)
-			) {
+			if (!getFileSystemResultOrThrow(await this._fs.exists(filePath), `Failed to check session ${filePath}`)) {
 				continue;
 			}
 			try {
-				sessions.push({
-					address,
-					metadata: await loadJsonlSessionMetadata(this._fs, filePath),
-				});
+				sessions.push({ address, metadata: await loadJsonlSessionMetadata(this._fs, filePath) });
 			} catch (error) {
 				const cause = toError(error);
-				if (
-					!(cause instanceof SessionError) ||
-					cause.code !== "invalid_session"
-				) {
+				if (!(cause instanceof SessionError) || cause.code !== "invalid_session") {
 					throw cause;
 				}
 			}
 		}
-		sessions.sort(
-			(a, b) =>
-				new Date(b.metadata.createdAt).getTime() -
-				new Date(a.metadata.createdAt).getTime(),
-		);
+		sessions.sort((a, b) => new Date(b.metadata.createdAt).getTime() - new Date(a.metadata.createdAt).getTime());
 		return sessions;
 	}
 
-	private async _refEntry(
-		target: PersistedSession,
-		data: PersistenceRefData,
-	): Promise<SessionTreeEntry> {
+	private async _refEntry(target: PersistedSession, data: PersistenceRefData): Promise<SessionTreeEntry> {
 		return {
 			type: "custom",
 			id: await target.session.createEntryId(),
@@ -914,18 +771,11 @@ export class JsonlPersistenceRepo {
 			namespaceDirSegments(address.key, definition.namespace),
 		);
 		if (!definition.locate) return defaultDirPath;
-		return await definition.locate({
-			address,
-			defaultDirPath,
-			persistenceRoot: await this._rootPath(),
-		});
+		return await definition.locate({ address, defaultDirPath, persistenceRoot: await this._rootPath() });
 	}
 
 	private async _sessionDirPath(address: SessionAddress): Promise<string> {
-		return await this._join(
-			await this._cwdDirPath(address.cwd),
-			sessionDirSegments(address.key),
-		);
+		return await this._join(await this._cwdDirPath(address.cwd), sessionDirSegments(address.key));
 	}
 
 	private async _cwdDirPath(cwd: string): Promise<string> {
@@ -950,8 +800,6 @@ export class JsonlPersistenceRepo {
 	}
 }
 
-function defaultForkOrigin(
-	definition: PersistenceNamespaceDefinition,
-): PersistenceRefOrigin {
+function defaultForkOrigin(definition: PersistenceNamespaceDefinition): PersistenceRefOrigin {
 	return definition.forkPolicy === "degrade" ? "fork_degraded" : "fork";
 }

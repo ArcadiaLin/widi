@@ -1,15 +1,6 @@
-import type {
-	AgentLifecycleStatus,
-	AgentMaintenanceKind,
-} from "../../core/types.ts";
+import type { AgentLifecycleStatus, AgentMaintenanceKind } from "../../core/types.ts";
 import { LINE_COMMAND_TRIGGER, parseLineCommand } from "./parse.ts";
-import type {
-	CommandContext,
-	CommandDefinition,
-	CommandError,
-	CommandView,
-	EngineOutcome,
-} from "./types.ts";
+import type { CommandContext, CommandDefinition, CommandError, CommandView, EngineOutcome } from "./types.ts";
 
 export interface EngineHooks {
 	onCommandStart?(commandId: string, name: string, argument: string): void;
@@ -23,10 +14,7 @@ export class CommandEngine {
 		for (const command of commands) this.commands.set(command.name, command);
 	}
 
-	list(
-		status: AgentLifecycleStatus | undefined,
-		maintenance?: AgentMaintenanceKind,
-	): CommandView[] {
+	list(status: AgentLifecycleStatus | undefined, maintenance?: AgentMaintenanceKind): CommandView[] {
 		const views: CommandView[] = [];
 		for (const command of this.commands.values()) {
 			const unavailableReason =
@@ -40,9 +28,7 @@ export class CommandEngine {
 				description: command.description,
 				argumentHint: command.argumentHint,
 				takesArgument:
-					command.argumentHint !== undefined ||
-					command.requiresArgument === true ||
-					command.complete !== undefined,
+					command.argumentHint !== undefined || command.requiresArgument === true || command.complete !== undefined,
 				available: unavailableReason === undefined,
 				unavailableReason,
 			});
@@ -59,22 +45,11 @@ export class CommandEngine {
 		return parsed ? this.commands.get(parsed.name) : undefined;
 	}
 
-	async handleInput(
-		text: string,
-		context: CommandContext,
-		hooks?: EngineHooks,
-	): Promise<EngineOutcome> {
+	async handleInput(text: string, context: CommandContext, hooks?: EngineHooks): Promise<EngineOutcome> {
 		const parsed = parseLineCommand(text);
 		const command = parsed ? this.commands.get(parsed.name) : undefined;
 		if (!parsed || !command) return { kind: "pass" };
-		return await this.runCommand(
-			command,
-			parsed.argument,
-			parsed.hasArgument,
-			text,
-			context,
-			hooks,
-		);
+		return await this.runCommand(command, parsed.argument, parsed.hasArgument, text, context, hooks);
 	}
 
 	private async runCommand(
@@ -87,9 +62,7 @@ export class CommandEngine {
 	): Promise<EngineOutcome> {
 		const commandId = this.createCommandId();
 		if (!context.agentId && command.agentPolicy === "active") {
-			return failed(commandId, command.name, {
-				message: `Command /${command.name} requires an active agent.`,
-			});
+			return failed(commandId, command.name, { message: `Command /${command.name} requires an active agent.` });
 		}
 		const unavailableReason = context.agentId
 			? command.checkStatus?.(
@@ -102,9 +75,7 @@ export class CommandEngine {
 		}
 		// A required argument that is missing or blank never runs; explicit blank
 		// arguments still run optional-argument commands (e.g. /fork:).
-		const missingArgument = command.requiresArgument
-			? argument.trim() === ""
-			: !hasArgument;
+		const missingArgument = command.requiresArgument ? argument.trim() === "" : !hasArgument;
 		if (missingArgument && (command.requiresArgument || command.complete)) {
 			try {
 				const candidates = (await command.complete?.(context, "")) ?? [];
@@ -119,9 +90,7 @@ export class CommandEngine {
 			}
 		}
 		if (!context.agentId && command.agentPolicy === "materialize") {
-			return failed(commandId, command.name, {
-				message: `Command /${command.name} requires an active agent.`,
-			});
+			return failed(commandId, command.name, { message: `Command /${command.name} requires an active agent.` });
 		}
 		hooks?.onCommandStart?.(commandId, command.name, argument);
 		try {
@@ -135,13 +104,7 @@ export class CommandEngine {
 				} catch {
 					display = undefined;
 				}
-				return {
-					kind: "executed",
-					commandId,
-					name: command.name,
-					value,
-					display,
-				};
+				return { kind: "executed", commandId, name: command.name, value, display };
 			}
 			return {
 				kind: "expanded",
@@ -151,14 +114,7 @@ export class CommandEngine {
 				expansion: {
 					originalText: text,
 					items: [
-						{
-							commandId,
-							name: command.name,
-							trigger: LINE_COMMAND_TRIGGER,
-							argument,
-							start: 0,
-							end: text.length,
-						},
+						{ commandId, name: command.name, trigger: LINE_COMMAND_TRIGGER, argument, start: 0, end: text.length },
 					],
 				},
 			};
@@ -184,22 +140,13 @@ export function switchedAgentId(outcome: EngineOutcome): string | undefined {
 		return undefined;
 	}
 	const agentId = (value as { agentId?: unknown }).agentId;
-	return typeof agentId === "string" && agentId.length > 0
-		? agentId
-		: undefined;
+	return typeof agentId === "string" && agentId.length > 0 ? agentId : undefined;
 }
 
-function failed(
-	commandId: string,
-	name: string,
-	error: CommandError,
-): EngineOutcome {
+function failed(commandId: string, name: string, error: CommandError): EngineOutcome {
 	return { kind: "failed", commandId, name, error };
 }
 
 function toCommandError(error: unknown): CommandError {
-	return {
-		message: error instanceof Error ? error.message : String(error),
-		cause: error,
-	};
+	return { message: error instanceof Error ? error.message : String(error), cause: error };
 }

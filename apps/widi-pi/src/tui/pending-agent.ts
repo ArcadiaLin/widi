@@ -1,9 +1,5 @@
 import type { RuntimeModel } from "../core/types.ts";
-import type {
-	PendingAgentStart,
-	PendingAgentViewState,
-	TuiApplicationState,
-} from "./state.ts";
+import type { PendingAgentStart, PendingAgentViewState, TuiApplicationState } from "./state.ts";
 
 export interface PendingAgentDisplay {
 	readonly profileLabel: string;
@@ -12,25 +8,15 @@ export interface PendingAgentDisplay {
 }
 
 export interface PendingAgentRuntime {
-	spawnAgent(options?: {
-		profileId?: string;
-		model?: RuntimeModel;
-	}): Promise<string>;
+	spawnAgent(options?: { profileId?: string; model?: RuntimeModel }): Promise<string>;
 }
 
 export class PendingAgentController {
 	private readonly state: TuiApplicationState;
 	private readonly runtime: PendingAgentRuntime;
-	private inFlight?: {
-		readonly start: PendingAgentStart;
-		readonly promise: Promise<string>;
-	};
+	private inFlight?: { readonly start: PendingAgentStart; readonly promise: Promise<string> };
 
-	constructor(
-		state: TuiApplicationState,
-		runtime: PendingAgentRuntime,
-		display: PendingAgentDisplay,
-	) {
+	constructor(state: TuiApplicationState, runtime: PendingAgentRuntime, display: PendingAgentDisplay) {
 		this.state = state;
 		this.runtime = runtime;
 		this.beginDefault(display);
@@ -78,22 +64,10 @@ export class PendingAgentController {
 
 	private async start(start: PendingAgentStart): Promise<string> {
 		if (start.kind === "default") return await this.runtime.spawnAgent();
-		return await this.runtime.spawnAgent({
-			profileId: start.profileId,
-			model: start.model,
-		});
+		return await this.runtime.spawnAgent({ profileId: start.profileId, model: start.model });
 	}
 }
 
-function createPendingAgent(
-	start: PendingAgentStart,
-	display: PendingAgentDisplay,
-): PendingAgentViewState {
-	return {
-		start,
-		timeline: [],
-		draft: "",
-		display: { ...display },
-		nextLiveItemId: 1,
-	};
+function createPendingAgent(start: PendingAgentStart, display: PendingAgentDisplay): PendingAgentViewState {
+	return { start, timeline: [], draft: "", display: { ...display }, nextLiveItemId: 1 };
 }
