@@ -162,6 +162,21 @@ describe("SessionJobStore", () => {
 		expect(rootB).not.toBe(rootA);
 		expect(branch.committed).toEqual([rootA, rootB]);
 	});
+
+	it("serializes concurrent transitions without losing either branch ref", async () => {
+		const store = await openStore();
+		const roots = await Promise.all([
+			store.append(started("a")),
+			store.append(started("b")),
+		]);
+
+		expect(new Set(roots).size).toBe(2);
+		expect(branch.committed).toEqual(roots);
+		expect((await openStore()).history().map((job) => job.toolCallId)).toEqual([
+			"a",
+			"b",
+		]);
+	});
 });
 
 describe("SessionJobStore closure", () => {

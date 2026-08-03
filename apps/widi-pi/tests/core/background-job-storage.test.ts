@@ -235,7 +235,7 @@ describe("JobHistoryStorage output files", () => {
 		expect(path.startsWith(`${DIR}/${JOB_OUTPUT_DIR_NAME}/`)).toBe(true);
 	});
 
-	it("copies the objects and the output files a fork can see", async () => {
+	it("copies the full reachable state so the fork survives source deletion", async () => {
 		const fs = new MemoryFileSystem();
 		const source = await openStorage(fs);
 		const root = await appendAll(source, [started("a"), started("b")]);
@@ -243,9 +243,14 @@ describe("JobHistoryStorage output files", () => {
 			await source.outputFilePath(jobOutputFileName("a")),
 			"hello",
 		);
+		await fs.writeFile(
+			await source.outputFilePath(jobOutputFileName("b")),
+			"world",
+		);
 		const targetDir = "/runs/--w--/forked/persistence/core__jobs";
 		const target = await openStorage(fs, targetDir);
 		await source.copyReachable(target, await source.reachableFrom(root));
+		await fs.remove(DIR, { recursive: true, force: true });
 
 		const copied = (await target.resolveState(root)) as JobHistory;
 		expect(copied.jobs.map((job) => job.toolCallId)).toEqual(["a", "b"]);
@@ -254,6 +259,11 @@ describe("JobHistoryStorage output files", () => {
 				`${targetDir}/${JOB_OUTPUT_DIR_NAME}/${jobOutputFileName("a")}`,
 			),
 		).toBe("hello");
+		expect(
+			fs.files.get(
+				`${targetDir}/${JOB_OUTPUT_DIR_NAME}/${jobOutputFileName("b")}`,
+			),
+		).toBe("world");
 	});
 
 	it("copies a job whose output file was never written", async () => {
