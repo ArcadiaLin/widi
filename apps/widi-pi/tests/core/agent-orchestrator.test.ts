@@ -833,50 +833,6 @@ describe("AgentOrchestrator", () => {
 		expect(await readSystemPrompt(orchestrator, loudId)).toContain("<name>code-review</name>");
 	});
 
-	it("promptAgent persists an expansion entry alongside the prompt", async () => {
-		const env = new MemoryExecutionEnv();
-		const orchestrator = await createOrchestrator(env);
-		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
-		const harness = requireAgentHarness(orchestrator, agentId);
-		const prompted: string[] = [];
-		Object.assign(harness, {
-			prompt: async (text: string) => {
-				prompted.push(text);
-				return { role: "assistant" } as AssistantMessage;
-			},
-		});
-
-		const outcome = await orchestrator.promptAgent(agentId, "expanded text", {
-			expansion: {
-				originalText: "/skill review",
-				items: [
-					{
-						commandId: "command-1",
-						name: "skill",
-						trigger: "/",
-						argument: "review",
-						start: 0,
-						end: "/skill review".length,
-					},
-				],
-			},
-		});
-		expect(outcome.kind).toBe("completed");
-		expect(prompted).toEqual(["expanded text"]);
-		const entries = (await orchestrator.getAgentSessionTree(agentId)).entries.filter(
-			(entry) => entry.type === "custom" && entry.customType === "core:command_expansion",
-		);
-		expect(entries).toMatchObject([
-			{
-				data: {
-					inputId: expect.any(String),
-					originalText: "/skill review",
-					expansions: [expect.objectContaining({ commandId: "command-1", name: "skill" })],
-				},
-			},
-		]);
-	});
-
 	it("promptAgent blocks input when an extension interceptor blocks", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = { ...defaultProfile, id: "prompt-policy-profile", persist: false };
@@ -979,54 +935,6 @@ describe("AgentOrchestrator", () => {
 		await expect(findTransformEntries()).resolves.toHaveLength(1);
 	});
 
-	it("promptAgent keeps the expansion entry when the prompt fails before its user message", async () => {
-		const env = new MemoryExecutionEnv();
-		const orchestrator = await createOrchestrator(env);
-		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
-		const harness = requireAgentHarness(orchestrator, agentId);
-		Object.assign(harness, {
-			prompt: async () => {
-				throw new Error("before_agent_start hook exploded");
-			},
-		});
-		const expansion = {
-			originalText: "/skill review",
-			items: [
-				{
-					commandId: "command-1",
-					name: "skill",
-					trigger: "/",
-					argument: "review",
-					start: 0,
-					end: "/skill review".length,
-				},
-			],
-		};
-
-		await expect(orchestrator.promptAgent(agentId, "expanded text", { expansion })).rejects.toThrow(
-			"before_agent_start hook exploded",
-		);
-
-		// The entry names its own inputId rather than relying on adjacency, so a
-		// prompt that fails after it was written leaves a record of what the user
-		// typed rather than a dangling pair. There is no retraction path.
-		const branchCustomEntries = async () =>
-			(await orchestrator.getAgentSession(agentId)).pathToRoot.filter((entry) => entry.type === "custom");
-		await expect(branchCustomEntries()).resolves.toMatchObject([{ data: { originalText: "/skill review" } }]);
-
-		// The branch stays usable: a later successful prompt writes its own entry.
-		Object.assign(harness, { prompt: async () => ({ role: "assistant" }) as AssistantMessage });
-		await expect(
-			orchestrator.promptAgent(agentId, "expanded again", {
-				expansion: { ...expansion, originalText: "/skill audit" },
-			}),
-		).resolves.toMatchObject({ kind: "completed" });
-		await expect(branchCustomEntries()).resolves.toMatchObject([
-			{ data: { originalText: "/skill review" } },
-			{ data: { originalText: "/skill audit" } },
-		]);
-	});
-
 	it("promptAgent writes nothing when the phase gate refuses the prompt", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = { ...defaultProfile, id: "prompt-run-failure-profile", persist: false };
@@ -1085,9 +993,7 @@ describe("AgentOrchestrator", () => {
 		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		(requireAgentHarness(orchestrator, agentId) as unknown as { phase: "turn" }).phase = "turn";
 
-		await expect(
-			orchestrator.promptAgent(agentId, "hello", { expansion: { originalText: "hello", items: [] } }),
-		).rejects.toMatchObject({ code: "orchestrator.agent_busy" });
+		await expect(orchestrator.promptAgent(agentId, "hello")).rejects.toMatchObject({ code: "orchestrator.agent_busy" });
 
 		expect(interceptorCalls).toBe(0);
 		expect(events.filter((event) => event.type === "input_transformed")).toEqual([]);
@@ -2716,6 +2622,45 @@ describe("AgentOrchestrator", () => {
 
 		expect(observedEvent).toBe(harnessEvent);
 		expect(observed).toEqual([`observer:${extensionProfile.id}:tool_execution_start:plain`]);
+	});
+
+	// The effect of an observer is still the observer's own doing, so it comes
+	// back to core consumers but not to the handler that caused it. Without the
+	// scope this renames forever: the rename publishes the event it observes.
+	it("does not observe an effect an extension's own observer caused", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
+			),
+		});
+		let renames = 0;
+		orchestrator.registerExtension("renamer", (api) => {
+			api.observe("agent_session_info_changed", async (_event, context) => {
+				renames += 1;
+				await context.actions.setSessionName(`renamed-${renames}`);
+			});
+		});
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+
+		await orchestrator.setAgentSessionName(agentId, "from-host");
+
+		expect(renames).toBe(1);
+		expect(events.filter((event) => event.type === "agent_session_info_changed")).toMatchObject([
+			{ name: "from-host" },
+			{ name: "renamed-1" },
+		]);
 	});
 
 	it("exposes the current run signal to extension contexts until settled", async () => {

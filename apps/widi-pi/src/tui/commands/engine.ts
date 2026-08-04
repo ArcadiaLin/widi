@@ -1,5 +1,5 @@
 import type { AgentActivitySnapshot } from "../../core/types.ts";
-import { LINE_COMMAND_TRIGGER, parseLineCommand } from "./parse.ts";
+import { parseLineCommand } from "./parse.ts";
 import type { CommandContext, CommandDefinition, CommandError, CommandView, EngineOutcome } from "./types.ts";
 
 export interface EngineHooks {
@@ -49,14 +49,13 @@ export class CommandEngine {
 		const parsed = parseLineCommand(text);
 		const command = parsed ? this.commands.get(parsed.name) : undefined;
 		if (!parsed || !command) return { kind: "pass" };
-		return await this.runCommand(command, parsed.argument, parsed.hasArgument, text, context, hooks);
+		return await this.runCommand(command, parsed.argument, parsed.hasArgument, context, hooks);
 	}
 
 	private async runCommand(
 		command: CommandDefinition,
 		argument: string,
 		hasArgument: boolean,
-		text: string,
 		context: CommandContext,
 		hooks?: EngineHooks,
 	): Promise<EngineOutcome> {
@@ -104,18 +103,7 @@ export class CommandEngine {
 				}
 				return { kind: "executed", commandId, name: command.name, value, display };
 			}
-			return {
-				kind: "expanded",
-				text: await command.expand(context, argument),
-				// The whole input is the command, so the expansion replaces all of
-				// it. The record lets the UI replay what the user actually typed.
-				expansion: {
-					originalText: text,
-					items: [
-						{ commandId, name: command.name, trigger: LINE_COMMAND_TRIGGER, argument, start: 0, end: text.length },
-					],
-				},
-			};
+			return { kind: "expanded", text: await command.expand(context, argument) };
 		} catch (error) {
 			return failed(commandId, command.name, toCommandError(error));
 		}

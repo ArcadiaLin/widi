@@ -27,7 +27,7 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		await submit(harness.application, "hello");
 
 		expect(harness.spawnAgent).toHaveBeenCalledTimes(1);
-		expect(harness.promptAgent).toHaveBeenCalledWith("main", "hello", { expansion: undefined });
+		expect(harness.promptAgent).toHaveBeenCalledWith("main", "hello");
 	});
 
 	it("spawns and persists a setting command before the first prompt", async () => {
@@ -99,7 +99,7 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 
 		expect(harness.spawnAgent).toHaveBeenCalledOnce();
 		expect(harness.spawnAgent).toHaveBeenCalledWith({ profileId: "main", model: model() });
-		expect(harness.promptAgent).toHaveBeenCalledWith("main-2", "second", { expansion: undefined });
+		expect(harness.promptAgent).toHaveBeenCalledWith("main-2", "second");
 	});
 
 	it("closes the current agent on /clear too", async () => {

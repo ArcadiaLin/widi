@@ -1,5 +1,5 @@
 import type { AgentOrchestrator } from "../../core/agent-orchestrator.ts";
-import type { AgentActivitySnapshot, CandidateItem, PromptExpansion, RuntimeModel } from "../../core/types.ts";
+import type { AgentActivitySnapshot, CandidateItem, RuntimeModel } from "../../core/types.ts";
 
 export type CommandAgentPolicy = "runtime" | "materialize" | "active";
 
@@ -60,7 +60,7 @@ export interface CommandView {
 
 export type EngineOutcome =
 	| { readonly kind: "pass" }
-	| { readonly kind: "expanded"; readonly text: string; readonly expansion: PromptExpansion }
+	| { readonly kind: "expanded"; readonly text: string }
 	| {
 			readonly kind: "executed";
 			readonly commandId: string;

@@ -145,14 +145,13 @@ import type {
 	SessionManager,
 } from "./session-manager.ts";
 import {
-	COMMAND_EXPANSION_CUSTOM_TYPE,
-	type CommandExpansionEntryData,
 	EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE,
 	EXTENSION_MESSAGE_CUSTOM_TYPE,
 	type ExtensionInputPresentationEntryData,
 	type ExtensionMessageEntryData,
 	INPUT_TRANSFORM_CUSTOM_TYPE,
 	type InputTransformEntryData,
+	isExtensionCustomType,
 	toExtensionCustomType,
 } from "./session-manager.ts";
 import type { SettingManager } from "./setting-manager.js";
@@ -172,7 +171,6 @@ import type {
 	CandidateItem,
 	OrchestratorEvent,
 	OrchestratorEventListener,
-	PromptExpansion,
 	PromptOutcome,
 	RuntimeModel,
 	RuntimeShutdownRequest,
@@ -365,7 +363,6 @@ interface RouteMessageOptions {
 	/** The enqueuing caller awaits `receipt.completed` itself. */
 	readonly awaited: boolean;
 	readonly presentation?: ExtensionInputPresentationRecord;
-	readonly expansion?: PromptExpansion;
 }
 
 interface ResolvedAgentProfile {
@@ -506,8 +503,13 @@ export class AgentOrchestrator {
 	 */
 	private readonly _extensionEventDispatchContext = new AsyncLocalStorage<number>();
 
-	/** Observed-event fan-out depth, which keeps diagnostics from self-feeding. */
-	private readonly _extensionObserverDispatchDepth = new Map<AgentId, number>();
+	/**
+	 * Set while an extension observer is on the stack, so everything the runtime
+	 * emits underneath it is recognisable as that extension's own doing. Causal
+	 * like the budget above and for the same reason: a concurrent emit from an
+	 * unrelated root is not inside anyone's observer and must stay observable.
+	 */
+	private readonly _extensionCausedScope = new AsyncLocalStorage<true>();
 
 	/** One table shared by every runner; agentId and extensionId are explicit arguments, so no closure set is rebuilt per agent. */
 	private readonly _extensionCoreActions: ExtensionCoreActions;
@@ -1493,7 +1495,6 @@ export class AgentOrchestrator {
 		this._autoCompactingAgents.delete(agentId);
 		this._publishedAgentActivities.delete(agentId);
 		this._pendingExtensionInputPresentations.delete(agentId);
-		this._extensionObserverDispatchDepth.delete(agentId);
 
 		if (liveAgent) {
 			await this._tryTeardown(agentId, "abort", async () => {
@@ -1608,12 +1609,7 @@ export class AgentOrchestrator {
 	async promptAgent(
 		agentId: AgentId,
 		text: string,
-		options?: {
-			readonly images?: readonly ImageContent[];
-			readonly presentation?: ExtensionInputPresentationRecord;
-			/** What the surface expanded to produce `text`, when it was a command. */
-			readonly expansion?: PromptExpansion;
-		},
+		options?: { readonly images?: readonly ImageContent[]; readonly presentation?: ExtensionInputPresentationRecord },
 	): Promise<PromptOutcome> {
 		const accepted = await this._routeMessage(
 			{
@@ -1627,7 +1623,6 @@ export class AgentOrchestrator {
 				requiresIdle: true,
 				awaited: true,
 				...(options?.presentation === undefined ? undefined : { presentation: options.presentation }),
-				...(options?.expansion === undefined ? undefined : { expansion: options.expansion }),
 			},
 		);
 		if (accepted.kind === "blocked") return accepted;
@@ -1686,10 +1681,6 @@ export class AgentOrchestrator {
 				...(outcome.reason === undefined ? undefined : { reason: outcome.reason }),
 				blockedBy: outcome.blockedBy,
 			};
-		}
-
-		if (options.expansion) {
-			await this._writeCommandExpansionEntry(target, options.expansion);
 		}
 
 		if (outcome.kind === "transform") {
@@ -1780,24 +1771,6 @@ export class AgentOrchestrator {
 			text: transform.text,
 			transformedBy: transform.transformedBy,
 		} satisfies InputTransformEntryData);
-	}
-
-	/**
-	 * Record what the surface expanded to produce this prompt.
-	 *
-	 * **Session write.** `harness.appendCustomEntry`, for the same reason as the
-	 * input transform above: the user message carries the expanded text the model
-	 * read, and only this entry can still answer what the human typed after a
-	 * resume. It never becomes model context, and like the transform entry it
-	 * names its own `inputId` instead of relying on adjacency, so a write
-	 * buffered behind a running turn is a display-order wrinkle, not a lost pair.
-	 */
-	private async _writeCommandExpansionEntry(target: DeliveryTarget, expansion: PromptExpansion): Promise<void> {
-		await target.harness.appendCustomEntry(COMMAND_EXPANSION_CUSTOM_TYPE, {
-			inputId: this._createInputId(),
-			originalText: expansion.originalText,
-			expansions: expansion.items,
-		} satisfies CommandExpansionEntryData);
 	}
 
 	/** The first availability gate: harness, generation, and the phase read on the spot. */
@@ -2954,11 +2927,9 @@ export class AgentOrchestrator {
 	): Promise<void> {
 		if (diagnostics.length === 0) return;
 		this._addAgentDiagnostics(agentId, diagnostics);
-		await this._publishDiagnostics(diagnostics, {
-			// Still recorded and published to core consumers, but a diagnostic raised
-			// inside an observer must not feed back into observers and recurse.
-			observeExtensions: (this._extensionObserverDispatchDepth.get(agentId) ?? 0) === 0,
-		});
+		// A diagnostic raised inside an observer must not feed back into observers,
+		// which `_emit` now decides for every event rather than only for this one.
+		await this._publishDiagnostics(diagnostics);
 	}
 
 	/**
@@ -3039,15 +3010,9 @@ export class AgentOrchestrator {
 	): Promise<void> {
 		const runner = this._live.get(agentId)?.extensionRunner;
 		if (!runner || runner.isStale()) return;
-		this._extensionObserverDispatchDepth.set(agentId, (this._extensionObserverDispatchDepth.get(agentId) ?? 0) + 1);
-		try {
+		await this._extensionCausedScope.run(true, async () => {
 			await this._recordAndPublishExtensionDiagnostics(agentId, await runner.emitObserved(event));
-		} finally {
-			// Dispatches interleave, so decrement rather than restore a snapshot.
-			const depth = this._extensionObserverDispatchDepth.get(agentId) ?? 1;
-			if (depth <= 1) this._extensionObserverDispatchDepth.delete(agentId);
-			else this._extensionObserverDispatchDepth.set(agentId, depth - 1);
-		}
+		});
 	}
 
 	/**
@@ -3967,7 +3932,24 @@ export class AgentOrchestrator {
 		await this._events.publish(event, options);
 		if (options.observeExtensions === false) return;
 		if (!isExtensionObservedEvent(event)) return;
+		if (this._isExtensionCaused(event)) return;
 		await this._dispatchExtensionObservedEvent(event);
+	}
+
+	/**
+	 * Whether an extension is the reason this event exists, and so must not
+	 * receive it: handing it back closes a cycle where the handler's own effect
+	 * re-triggers the handler.
+	 *
+	 * Two detectors because neither covers the other. The scope catches an effect
+	 * still on the observer's call stack - a spawn, a rename, a message - and
+	 * loses it wherever the runtime defers work onto another stack. A buffered
+	 * session write is exactly that case, and it stays recognisable because the
+	 * entry type travels with it.
+	 */
+	private _isExtensionCaused(event: OrchestratorEvent): boolean {
+		if (this._extensionCausedScope.getStore()) return true;
+		return event.type === "agent_harness_event" && isExtensionCausedWrite(event.event);
 	}
 
 	private async _publishDiagnostic(
@@ -4085,6 +4067,29 @@ async function withTimeout(work: Promise<void>, timeoutMs: number, message: stri
 		work.catch(() => {});
 	}
 }
+
+/**
+ * Whether this event reports a session entry that exists because an extension
+ * asked for it.
+ *
+ * Two shapes, one rule. An extension's own entries carry the provenance in the
+ * type, stamped by the single funnel every one of them goes through. The
+ * core-owned types below carry it in the payload instead - they are core's
+ * record of something an extension published - so they have to be named here.
+ * The namespace test alone would let `publishMessage` keep the cycle open.
+ */
+function isExtensionCausedWrite(event: AgentHarnessEvent): boolean {
+	if (event.type !== "session_write" || event.write.type !== "custom") return false;
+	return (
+		isExtensionCustomType(event.write.customType) || EXTENSION_CAUSED_CORE_CUSTOM_TYPES.has(event.write.customType)
+	);
+}
+
+/** Core-owned entry types the orchestrator writes only on an extension's behalf. */
+const EXTENSION_CAUSED_CORE_CUSTOM_TYPES: ReadonlySet<string> = new Set([
+	EXTENSION_MESSAGE_CUSTOM_TYPE,
+	EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE,
+]);
 
 /** Maintenance phases the harness reports, in the vocabulary surfaces use. */
 function toMaintenanceKind(phase: AgentHarnessPhase): AgentMaintenanceKind | undefined {

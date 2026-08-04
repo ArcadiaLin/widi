@@ -37,30 +37,10 @@ export interface AgentExtensionCustomEntry<T = unknown> {
 	data?: T;
 }
 
-// Core-owned custom entry recording the pre-expansion input of an inline
-// command expansion. The user message stores the expanded text (the model's
-// factual context); this entry preserves the original input and expansion
-// positions for UI replay.
-export const COMMAND_EXPANSION_CUSTOM_TYPE = "core:command_expansion";
-
-export interface CommandExpansionEntryData {
-	readonly inputId: string;
-	readonly originalText: string;
-	readonly expansions: ReadonlyArray<{
-		readonly commandId: string;
-		readonly name: string;
-		readonly trigger: string;
-		readonly argument: string;
-		readonly start: number;
-		readonly end: number;
-	}>;
-}
-
 // Core-owned custom entry recording an extension input rewrite (ME slice 7).
-// Same dual-record discipline as command expansion: the session only carries
-// the rewritten text the model saw, so the human's original input must stay
-// recoverable after resume. Blocked input writes nothing - it never reached
-// the model and left no session state to explain.
+// The session only carries the rewritten text the model saw, so the human's
+// original input must stay recoverable after resume. Blocked input writes
+// nothing - it never reached the model and left no session state to explain.
 export const INPUT_TRANSFORM_CUSTOM_TYPE = "core:input_transform";
 
 export interface InputTransformEntryData {
@@ -388,8 +368,8 @@ export class SessionManager {
 		return { metadata, session };
 	}
 
-	// Retraction for provisional prompt records (expansion/transform entries
-	// appended before the harness persists the paired user message). Only
+	// Retraction for provisional prompt records (transform entries appended
+	// before the harness persists the paired user message). Only
 	// rewinds when the branch leaf is still the last provisional entry; if
 	// anything landed after it - the user message, a concurrent write - the
 	// branch is left untouched.
@@ -401,10 +381,6 @@ export class SessionManager {
 		if ((await session.getLeafId()) !== options.lastEntryId) return false;
 		await session.moveTo(options.previousLeafId);
 		return true;
-	}
-
-	async appendCommandExpansionEntry(agentId: AgentId, data: CommandExpansionEntryData): Promise<string> {
-		return await this._requireAgentSession(agentId).appendCustomEntry(COMMAND_EXPANSION_CUSTOM_TYPE, data);
 	}
 
 	async appendInputTransformEntry(agentId: AgentId, data: InputTransformEntryData): Promise<string> {
@@ -663,12 +639,27 @@ export function toExtensionCustomType(extensionId: string, type: string, data?: 
 	return toPersistedExtensionCustomType(extensionId, normalizeExtensionCustomType(type));
 }
 
+/**
+ * Whether a persisted custom type names an entry some extension authored.
+ *
+ * The namespace doubles as a provenance mark, and it is the only one that
+ * survives the trip: it travels on the write itself, so a reader can still tell
+ * an extension's entry from a core one after the harness buffered the write
+ * behind a running turn and flushed it on an unrelated call stack.
+ */
+export function isExtensionCustomType(customType: string): boolean {
+	return customType.startsWith(EXTENSION_CUSTOM_TYPE_NAMESPACE);
+}
+
+/** Shared so the writer's prefix and the reader's test cannot drift apart. */
+const EXTENSION_CUSTOM_TYPE_NAMESPACE = "extension:";
+
 function toPersistedExtensionCustomType(extensionId: string, localType: string): string {
 	return `${toPersistedExtensionCustomTypePrefix(extensionId)}${localType}`;
 }
 
 function toPersistedExtensionCustomTypePrefix(extensionId: string): string {
-	return `extension:${extensionId}:`;
+	return `${EXTENSION_CUSTOM_TYPE_NAMESPACE}${extensionId}:`;
 }
 
 function assertJsonSerializable(data: unknown): void {

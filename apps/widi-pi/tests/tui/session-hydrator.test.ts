@@ -1,11 +1,7 @@
 import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { SessionTreeEntry } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
-import {
-	COMMAND_EXPANSION_CUSTOM_TYPE,
-	EXTENSION_MESSAGE_CUSTOM_TYPE,
-	INPUT_TRANSFORM_CUSTOM_TYPE,
-} from "../../src/core/session-manager.ts";
+import { EXTENSION_MESSAGE_CUSTOM_TYPE, INPUT_TRANSFORM_CUSTOM_TYPE } from "../../src/core/session-manager.ts";
 import { hydrateSessionEntries } from "../../src/tui/session-hydrator.ts";
 
 describe("hydrateSessionEntries", () => {
@@ -16,11 +12,6 @@ describe("hydrateSessionEntries", () => {
 				originalText: "human original",
 				text: "extension rewritten",
 				transformedBy: ["rewrite"],
-			}),
-			custom("expansion", COMMAND_EXPANSION_CUSTOM_TYPE, {
-				inputId: "input-1",
-				originalText: "extension rewritten",
-				expansions: [],
 			}),
 			message("user", userMessage("model-facing expanded text")),
 			message(

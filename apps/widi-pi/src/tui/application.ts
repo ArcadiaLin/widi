@@ -5,7 +5,7 @@ import type { AgentOrchestrator } from "../core/agent-orchestrator.ts";
 import { DEFAULT_AGENT_DIR } from "../core/constants.js";
 import { type OrchestratorDiagnostic, OrchestratorError } from "../core/diagnostics.ts";
 import { createWidiRuntime, type WidiRuntime } from "../core/runtime-service.ts";
-import type { AgentActivitySnapshot, CandidateItem, OrchestratorEvent, PromptExpansion } from "../core/types.ts";
+import type { AgentActivitySnapshot, CandidateItem, OrchestratorEvent } from "../core/types.ts";
 import { forkSourceAgentId } from "./agent-identity.ts";
 import { WidiCommandAutocompleteProvider } from "./autocomplete.ts";
 import { applicationCommands } from "./commands/app-commands.ts";
@@ -517,7 +517,7 @@ export class WidiTuiApplication {
 					await this.submitFollowUp(agentId, rawText, outcome.text);
 					return;
 				}
-				await this.submitPrompt(agentId, rawText, outcome.text, outcome.expansion);
+				await this.submitPrompt(agentId, rawText, outcome.text);
 				return;
 			case "executed": {
 				this.editor.addToHistory(rawText);
@@ -582,18 +582,13 @@ export class WidiTuiApplication {
 		}
 	}
 
-	private async submitPrompt(
-		agentId: string,
-		rawText: string,
-		text: string,
-		expansion?: PromptExpansion,
-	): Promise<void> {
+	private async submitPrompt(agentId: string, rawText: string, text: string): Promise<void> {
 		const agent = ensureAgentProjection(this.state, agentId);
 		agent.pendingInput = { originalText: rawText, submittedAt: new Date().toISOString() };
 		this.editor.addToHistory(rawText);
 		this.tui.requestRender();
 		try {
-			const outcome = await this.orchestrator.promptAgent(agentId, text, expansion ? { expansion } : undefined);
+			const outcome = await this.orchestrator.promptAgent(agentId, text);
 			if (outcome.kind === "blocked") {
 				agent.pendingInput = undefined;
 				this.restoreEditor(rawText, agentId);

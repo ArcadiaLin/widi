@@ -8,6 +8,12 @@ import {
 } from "../../src/core/agent-profile.ts";
 import type { OrchestratorDiagnostic } from "../../src/core/diagnostics.ts";
 import type { ExtensionCustomEntry, ExtensionFactory } from "../../src/core/extension/index.ts";
+import {
+	EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE,
+	EXTENSION_MESSAGE_CUSTOM_TYPE,
+	INPUT_TRANSFORM_CUSTOM_TYPE,
+	toExtensionCustomType,
+} from "../../src/core/session-manager.ts";
 import type { OrchestratorEvent } from "../../src/core/types.ts";
 import {
 	AUDIT_EVENT_ENTRY_TYPE,
@@ -120,6 +126,36 @@ describe("audit extension consumer", () => {
 		).resolves.toMatchObject([
 			{ data: { toolCallId: "call-1", toolName: "read", outcome: "allowed", decidedBy: "default" } },
 		]);
+	});
+
+	// Recording session writes onto the session is the shape that used to
+	// self-feed: the extension's own entry came back as another session_write.
+	// The core-owned types are the same cycle wearing core's namespace, so they
+	// are asserted here rather than in a test of their own.
+	it("does not report an extension-authored session write back to its observers", async () => {
+		const { orchestrator, agentId } = await createAuditHarness({ recordHarnessEvents: ["session_write"] });
+		const suppressed = [
+			toExtensionCustomType("audit", AUDIT_EVENT_ENTRY_TYPE),
+			EXTENSION_MESSAGE_CUSTOM_TYPE,
+			EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE,
+		];
+
+		await emitHarnessEvent(orchestrator, agentId, {
+			type: "session_write",
+			entryId: "entry-core",
+			write: { type: "custom", customType: INPUT_TRANSFORM_CUSTOM_TYPE, data: {} },
+		});
+		for (const [index, customType] of suppressed.entries()) {
+			await emitHarnessEvent(orchestrator, agentId, {
+				type: "session_write",
+				entryId: `entry-extension-${index}`,
+				write: { type: "custom", customType, data: {} },
+			});
+		}
+
+		await expect(
+			readAuditEntries<AuditEventEntry>(orchestrator, agentId, AUDIT_EVENT_ENTRY_TYPE),
+		).resolves.toMatchObject([{ data: { source: "harness", eventType: "session_write" } }]);
 	});
 
 	it("blocks explicit deny rules and records the reason", async () => {

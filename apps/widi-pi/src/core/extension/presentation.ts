@@ -110,8 +110,8 @@ export const MAX_EXTENSION_PRESENTATION_DETAILS_BYTES = 65_536;
  * How a client should render a message an extension sent into an agent.
  *
  * The message itself stays ordinary model context - this rides alongside it as
- * a separate record, the same dual-record discipline as command expansion and
- * input transform. Core never interprets `details`; it validates that the value
+ * a separate record, the same dual-record discipline as the input transform
+ * entry. Core never interprets `details`; it validates that the value
  * is JSON-serializable and bounded, then keeps a normalized detached copy.
  *
  * `customType` is not namespaced in the string: the persisted entry and the

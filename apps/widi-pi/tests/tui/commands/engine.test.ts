@@ -246,17 +246,6 @@ describe("CommandEngine.handleInput", () => {
 			// The body is inlined, not pointed at.
 			expect(outcome.text).toContain("Review the diff carefully.");
 			expect(outcome.text).toContain("focus on locking");
-			expect(outcome.expansion.originalText).toBe("/skill review focus on locking");
-			expect(outcome.expansion.items).toEqual([
-				{
-					commandId: expect.any(String),
-					name: "skill",
-					trigger: "/",
-					argument: "review focus on locking",
-					start: 0,
-					end: "/skill review focus on locking".length,
-				},
-			]);
 		}
 	});
 

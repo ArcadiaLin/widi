@@ -3,8 +3,6 @@ import type { SessionTreeEntry } from "@widi/agent-core";
 import type { ExtensionMessage } from "../core/extension/api.ts";
 import { validateExtensionMessage } from "../core/extension/presentation.ts";
 import {
-	COMMAND_EXPANSION_CUSTOM_TYPE,
-	type CommandExpansionEntryData,
 	EXTENSION_MESSAGE_CUSTOM_TYPE,
 	type ExtensionMessageEntryData,
 	INPUT_TRANSFORM_CUSTOM_TYPE,
@@ -51,8 +49,6 @@ export function hydrateSessionEntries(entries: readonly SessionTreeEntry[]): Hyd
 		switch (entry.type) {
 			case "custom": {
 				if (entry.customType === INPUT_TRANSFORM_CUSTOM_TYPE && isInputTransformData(entry.data)) {
-					pendingOriginalText ??= entry.data.originalText;
-				} else if (entry.customType === COMMAND_EXPANSION_CUSTOM_TYPE && isCommandExpansionData(entry.data)) {
 					pendingOriginalText ??= entry.data.originalText;
 				} else if (entry.customType === EXTENSION_MESSAGE_CUSTOM_TYPE) {
 					const data = parseExtensionMessageData(entry.data);
@@ -218,15 +214,6 @@ function isInputTransformData(data: unknown): data is InputTransformEntryData {
 		typeof data.originalText === "string" &&
 		typeof data.text === "string" &&
 		Array.isArray(data.transformedBy)
-	);
-}
-
-function isCommandExpansionData(data: unknown): data is CommandExpansionEntryData {
-	return (
-		isRecord(data) &&
-		typeof data.inputId === "string" &&
-		typeof data.originalText === "string" &&
-		Array.isArray(data.expansions)
 	);
 }
 
