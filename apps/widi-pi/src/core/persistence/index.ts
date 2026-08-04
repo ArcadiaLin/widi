@@ -70,6 +70,7 @@ export {
 	childSessionKey,
 	createSessionDirName,
 	encodeCwd,
+	encodeNamespaceDirName,
 	formatSessionKey,
 	isReservedSessionDirName,
 	isRootSessionKey,

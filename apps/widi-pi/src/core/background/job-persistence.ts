@@ -433,7 +433,7 @@ export class SessionJobStore {
 	private readonly _branch: JobBranchPort;
 	private readonly _jobs: Map<string, JobHistoryEntry>;
 	private readonly _carriedOver: readonly JobHistoryEntry[];
-	private readonly _truncated: boolean;
+	private _truncated: boolean;
 	private _stateRoot: string | null;
 	// Appends are serialized because each one chains onto the root the last one
 	// produced; two in the same tick would both chain onto the same root and one
@@ -503,6 +503,59 @@ export class SessionJobStore {
 		return next;
 	}
 
+	/**
+	 * Re-read the branch, then settle the difference between what it shows and
+	 * what this runtime knows.
+	 *
+	 * Navigation moves the leaf and stops nothing, so afterwards this store's
+	 * chain head can belong to a branch nobody is on any more. Rebinding is what
+	 * keeps the next append from extending an abandoned chain.
+	 *
+	 * A job the branch has open then has three possible answers. One this runtime
+	 * still holds an executor for is left alone. One this runtime watched finish
+	 * has its settlement recorded again - the outcome is a fact about the world,
+	 * and this branch is the one that asked for it, so it is owed the answer
+	 * rather than a notice that none is coming. Only a job with neither is closed.
+	 *
+	 * `announce` runs after the re-read and before the first record is written.
+	 * That order is the same one settlement uses and for the same reason: a record
+	 * claiming the model was told has to be the later of the two writes, so a
+	 * crash between them repeats a message instead of losing one.
+	 */
+	async rebind(
+		request: JobSealRequest,
+		announce: (jobs: readonly JobHistoryEntry[]) => Promise<void>,
+	): Promise<readonly JobRecord[]> {
+		const known = new Map(this._jobs);
+		await this._reproject();
+		const recovered = new Map<string, JobSettledRecord>();
+		for (const job of this._jobs.values()) {
+			if (job.state !== "open" || request.recognized.has(job.toolCallId)) continue;
+			const settled = toSettledRecord(known.get(job.toolCallId));
+			if (settled) recovered.set(job.toolCallId, settled);
+		}
+		const records: JobRecord[] = [
+			...recovered.values(),
+			...planJobClosures({
+				jobs: this.history(),
+				// A recovered outcome is this runtime's own answer, so the job it
+				// belongs to is no longer one nobody can account for.
+				recognized: new Set([...request.recognized, ...recovered.keys()]),
+				cause: request.cause,
+				closedAt: request.closedAt ?? Date.now(),
+				...(request.stopReason === undefined ? undefined : { stopReason: request.stopReason }),
+			}),
+		];
+		if (records.length === 0) return records;
+		// Described from the reduction these records produce, so each job is named
+		// in the words of the answer it actually got.
+		const described = new Map(this._jobs);
+		for (const record of records) applyJobRecord(described, record);
+		await announce(records.flatMap((record) => described.get(record.toolCallId) ?? []));
+		for (const record of records) await this.append(record);
+		return records;
+	}
+
 	/** Close every job the branch has open that `recognized` does not name. */
 	async seal(request: JobSealRequest): Promise<readonly JobClosedRecord[]> {
 		const records = planJobClosures({
@@ -531,4 +584,41 @@ export class SessionJobStore {
 		this._stateRoot = stateRoot;
 		return stateRoot;
 	}
+
+	/**
+	 * Take the branch's current word for this namespace as the whole truth. Same
+	 * rule as `open`, including the fresh chain a dangling ref falls back to.
+	 * `carriedOverJobs` is deliberately not recomputed: it answers what this
+	 * runtime inherited when it attached, which no later navigation changes.
+	 */
+	private async _reproject(): Promise<void> {
+		const named = (await this._branch.projection())?.stateRoot ?? null;
+		const history = named === null ? undefined : await this._storage.resolveState(named);
+		this._stateRoot = history === undefined ? null : named;
+		this._truncated = history === undefined ? named !== null : history.truncated;
+		this._jobs.clear();
+		for (const job of history?.jobs ?? []) this._jobs.set(job.toolCallId, job);
+	}
+}
+
+/**
+ * One runtime's own answer for a job, in a shape another branch can record.
+ *
+ * Undefined for anything that is not a complete settlement this build can
+ * reproduce - a job still open, one closed rather than settled, one whose t1
+ * text is missing. There is nothing to hand a branch in those cases, and
+ * inventing a settlement is worse than declaring the job closed.
+ */
+function toSettledRecord(job: JobHistoryEntry | undefined): JobSettledRecord | undefined {
+	if (job?.state !== "settled") return undefined;
+	if (job.status === undefined || job.endedAt === undefined || job.messageText === undefined) return undefined;
+	return {
+		kind: "settled",
+		toolCallId: job.toolCallId,
+		status: job.status,
+		endedAt: job.endedAt,
+		messageText: job.messageText,
+		...(job.stopReason === undefined ? undefined : { stopReason: job.stopReason }),
+		...(job.outputTail === undefined ? undefined : { outputTail: job.outputTail }),
+	};
 }

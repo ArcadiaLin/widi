@@ -270,6 +270,24 @@ export type OrchestratorEvent =
 			entryId?: string;
 			createdAt: string;
 	  }
+	// Which state a persistence namespace now has on this agent's branch. The
+	// ref itself is a pure index - it never becomes model context - so without
+	// this event nothing outside the namespace can see that the branch changed
+	// its mind about what a namespace holds.
+	//
+	// Published from the write's own `session_write`, not from the call that
+	// asked for it: the harness buffers writes behind a running turn and reports
+	// no entry id until it flushes. That makes `entryId` always real, at the cost
+	// of the event arriving at the save point rather than at the commit.
+	| {
+			readonly type: "agent_persistence_ref_changed";
+			agentId: AgentId;
+			namespace: string;
+			/** Null when the branch's last word on this namespace is to clear it. */
+			stateRoot: string | null;
+			entryId: string;
+			changedAt: string;
+	  }
 	// Per-job lifecycle fact for the agent's pseudo-async background jobs,
 	// emitted for every observable transition (backgrounded at t0, an abort
 	// request, settlement). The job is an immutable snapshot, not the live

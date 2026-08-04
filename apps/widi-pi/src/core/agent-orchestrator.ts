@@ -26,6 +26,7 @@ import {
 	type AgentHarnessPhase,
 	type CompactResult,
 	type ExecutionEnv,
+	getFileSystemResultOrThrow,
 	type JsonlSessionMetadata,
 	type NavigateTreeResult,
 	type PendingSessionWrite,
@@ -63,10 +64,15 @@ import {
 	type BackgroundJobEvent,
 	BackgroundJobRuntime,
 	type BackgroundJobSnapshot,
-	backgroundJobResultHeaderPrefix,
+	type BackgroundJobStartedDetails,
 	formatInterruptedBackgroundJobResultText,
+	JOBS_NAMESPACE,
+	type JobBranchPort,
+	type JobCloseCause,
 	type JobHistoryEntry,
+	JobHistoryStorage,
 	type OwnerAttachment,
+	SessionJobStore,
 } from "./background/index.ts";
 import type { OrchestratorClient } from "./client.ts";
 import { AgentContextMonitor } from "./context-monitor.ts";
@@ -135,6 +141,16 @@ import {
 	THINKING_LEVELS,
 } from "./model-registry.js";
 import type { ProviderConfigInput } from "./model-registry.ts";
+import {
+	createPersistenceRefData,
+	encodeNamespaceDirName,
+	type NamespaceProjection,
+	PERSISTENCE_DIR_NAME,
+	PERSISTENCE_REF_CUSTOM_TYPE,
+	PersistenceDiagnostics,
+	type PersistenceRefData,
+	projectBranch,
+} from "./persistence/index.ts";
 import type { ConfigValueResolver } from "./resolve-config-value.js";
 import type { ResourceLoader } from "./resource-loader.js";
 import type {
@@ -523,6 +539,16 @@ export class AgentOrchestrator {
 	private readonly _live = new Map<AgentId, LiveAgent>();
 
 	/**
+	 * Harnesses of agents that have left `_live` but are not torn down yet.
+	 *
+	 * Disposal is the one window where the branch still has to accept writes
+	 * while the agent is no longer routable: a job's closing record has to land
+	 * before the harness is shut down, and the cutover has already removed the
+	 * agent by then. Only branch writers look here - nothing routes through it.
+	 */
+	private readonly _disposingHarnesses = new Map<AgentId, WidiAgentHarness>();
+
+	/**
 	 * AgentIds that existed and are gone, kept solely so a dead id is not reused:
 	 * an in-flight message aimed at a recycled id would reach a different agent.
 	 * Intent, time and reason live in `agent_disposed`.
@@ -616,11 +642,7 @@ export class AgentOrchestrator {
 			diagnoseMany: async (diagnostics) => await this._publishDiagnostics(diagnostics),
 		});
 		this._backgroundJobs = new BackgroundJobRuntime({
-			// Recording a job means putting a persistence ref on the branch, and the
-			// capability that does that is the orchestrator extension point described
-			// in `docs/ZH/orchestrator-refactor.md`. Until it exists every owner is
-			// ephemeral: jobs run, they just leave no history.
-			openOwnerStore: async () => undefined,
+			openOwnerStore: async (owner) => await this._openAgentJobStore(owner.agentId),
 			deliverResult: async (delivery) => await this._deliverBackgroundResult(delivery),
 			// Translated here so the runtime's vocabulary stays free of agents.
 			publish: async (event) => await this._emit(toOrchestratorBackgroundEvent(event)),
@@ -910,7 +932,7 @@ export class AgentOrchestrator {
 				// Both write into the context the model resumes with, before it is
 				// routable: an unanswered t0 handle and a spawn tree that did not come
 				// back are facts of the resume, not messages arriving after it.
-				await this._reconcileCarriedOverJobs(agentId);
+				await this._reconcileAgentJobBranch(agentId, "resume", "The runtime that started this job is gone.");
 				await this._announceClosedSpawnTree(agentId);
 			}
 			if (this._live.has(agentId)) {
@@ -1225,51 +1247,90 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Answer every t0 handle a previous runtime left open on this session. The
-	 * jobs are gone, so this recovers the conversation rather than the work: each
-	 * unanswered handle gets one closing message.
+	 * Answer every t0 handle this branch has open that nothing in this runtime is
+	 * going to answer. Two moments need it and they are not the same: a resume
+	 * inherits handles whose executor died with the previous process, while a
+	 * navigation lands on a branch whose handles this runtime may well have
+	 * already answered somewhere else.
 	 *
-	 * The session history, not the job log, decides what is unanswered: a message
-	 * queued into a harness is never persisted, so acceptance is no evidence the
-	 * model read it.
+	 * The branch decides what is owed, and it is asked directly: a job the branch
+	 * still has open is one no runtime ever closed. The old criterion searched the
+	 * branch text for a result header, which is reading absence as evidence - text
+	 * is restated by the model, rewritten by compaction, pasted by the user.
 	 *
-	 * **Session write.** `harness.appendMessage` puts this on the branch, because
-	 * the text must be in the session the moment this returns - a second
-	 * interrupted resume has to find it and stay idempotent. Called before the
-	 * agent becomes routable: a stale result arriving after that is a message,
-	 * not context.
+	 * **Session write.** `harness.appendMessage` puts the outcomes on the branch,
+	 * because they have to be in the session the moment this returns - a second
+	 * interrupted resume has to find them and stay idempotent. At resume it runs
+	 * before the agent is routable, so a stale result is context rather than a
+	 * message arriving into it. The records follow the message, never precede it.
 	 */
-	private async _reconcileCarriedOverJobs(agentId: AgentId): Promise<void> {
-		const carried = this._backgroundJobs.carriedOverJobs(agentId);
-		if (carried.length === 0) return;
-		const liveAgent = this._live.get(agentId);
-		if (!liveAgent) return;
-		const snapshot = await this.sessionManager.getAgentSessionSnapshot(agentId);
-		const branchText = collectUserMessageText(snapshot.pathToRoot);
-		const unanswered = carried.filter(
-			(job) => !branchText.some((text) => text.includes(backgroundJobResultHeaderPrefix(job.jobId, job.toolCallId))),
-		);
-		if (unanswered.length === 0) return;
+	private async _reconcileAgentJobBranch(agentId: AgentId, cause: JobCloseCause, stopReason: string): Promise<void> {
+		let announced = 0;
 		try {
-			await liveAgent.harness.appendMessage({
-				role: "user",
-				content: [{ type: "text", text: unanswered.map(toCarriedOverJobResultText).join("\n\n") }],
-				timestamp: Date.now(),
+			await this._backgroundJobs.reconcileBranch(agentId, { cause, stopReason }, async (jobs) => {
+				const liveAgent = this._live.get(agentId);
+				if (!liveAgent) return;
+				await liveAgent.harness.appendMessage({
+					role: "user",
+					content: [{ type: "text", text: jobs.map(toCarriedOverJobResultText).join("\n\n") }],
+					timestamp: Date.now(),
+				});
+				announced = jobs.length;
 			});
 		} catch (error) {
 			await this._recordAgentLifecycleFailure(
 				agentId,
 				"orchestrator.background_jobs_interrupted",
-				`Failed to close carried-over background jobs for agent ${agentId}: ${formatError(error)}`,
+				`Failed to reconcile background jobs for agent ${agentId}: ${formatError(error)}`,
 			);
 			return;
 		}
+		announced += await this._announceOrphanedJobHandles(agentId);
+		if (announced === 0) return;
 		await this._publishDiagnostic({
 			severity: "warning",
 			code: "orchestrator.background_jobs_interrupted",
-			message: `Agent ${agentId} resumed with ${unanswered.length} background job result(s) left unanswered by a previous run; they were closed in the session.`,
+			message: `Agent ${agentId} has ${announced} background job(s) this runtime is not running; their outcomes were written into the session after the ${cause}.`,
 			agentId,
 		});
+	}
+
+	/**
+	 * Answer the t0 handles this branch shows that its job history has never
+	 * heard of.
+	 *
+	 * The two facts are written at different points in the tree. A t0 tool result
+	 * is written by the harness inside the turn; the ref that records the job is
+	 * buffered behind that turn and lands at its save point. Every entry between
+	 * them is a place a navigation can land, and landing there leaves the model
+	 * holding a promise on a branch that never started the job.
+	 *
+	 * Nothing is recorded for these. The branch has no `started` record to close
+	 * and inventing one would put a job on a branch that never ran it; what it is
+	 * owed is the answer that none is coming.
+	 *
+	 * A t1 cannot be on such a branch: the ref flushes at the end of the turn that
+	 * started the job, and a result arrives in a later one, so a branch carrying
+	 * the t1 carries the ref as well and its job is not orphaned at all.
+	 *
+	 * **Session write.** `harness.appendMessage`, on the same terms as the
+	 * reconciliation above.
+	 */
+	private async _announceOrphanedJobHandles(agentId: AgentId): Promise<number> {
+		const liveAgent = this._live.get(agentId);
+		if (!liveAgent) return 0;
+		const recorded = new Set(this._backgroundJobs.history(agentId).map((job) => job.toolCallId));
+		const snapshot = await this.sessionManager.getAgentSessionSnapshot(agentId);
+		const orphaned = collectBackgroundJobHandles(snapshot.pathToRoot).filter(
+			(handle) => !recorded.has(handle.toolCallId),
+		);
+		if (orphaned.length === 0) return 0;
+		await liveAgent.harness.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: orphaned.map(toOrphanedJobHandleText).join("\n\n") }],
+			timestamp: Date.now(),
+		});
+		return orphaned.length;
 	}
 
 	/**
@@ -1452,6 +1513,9 @@ export class AgentOrchestrator {
 				agentId,
 				options.reason ?? `Agent ${agentId} was disposed before the message was delivered.`,
 			);
+			// Kept writable across the teardown that follows: detaching cancels this
+			// agent's jobs, and the records saying so still have to reach the branch.
+			if (liveAgent) this._disposingHarnesses.set(agentId, liveAgent.harness);
 			this._backgroundJobs.detachAgent(agentId);
 			disposed.push(liveAgent ? { agentId, liveAgent } : { agentId });
 		}
@@ -1497,6 +1561,15 @@ export class AgentOrchestrator {
 		this._pendingExtensionInputPresentations.delete(agentId);
 
 		if (liveAgent) {
+			// Before anything is torn down. The cutover cancelled every job this
+			// agent owned; sealing here both waits for those records to land and
+			// closes whatever the branch still shows open. A closing record written
+			// after the harness is shut down is a record that was never written.
+			await this._tryTeardown(agentId, "seal background job history", async () => {
+				// Nothing is announced: the agent this branch belongs to is going away,
+				// so there is no next turn to read a closing message.
+				await this._backgroundJobs.reconcileBranch(agentId, { cause: "dispose", stopReason: reason }, async () => {});
+			});
 			await this._tryTeardown(agentId, "abort", async () => {
 				await liveAgent.harness.abort();
 			});
@@ -1524,6 +1597,7 @@ export class AgentOrchestrator {
 			this._context.detach(agentId, liveAgent.generation);
 		}
 
+		this._disposingHarnesses.delete(agentId);
 		await this._clearExtensionStatusesForAgent(agentId);
 		await this._humanRequests.cancelForAgent(agentId, reason);
 		this._pruneSpawnEdges(agentId);
@@ -2300,11 +2374,11 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Two facts arrive through this one event: a persisted user message pairs with
-	 * the presentation waiting for it, and the presentation entry written in
-	 * response comes back with the id its own event needs. Nothing depends on
-	 * `appendCustomEntry`'s return value, which is undefined whenever the write
-	 * was buffered behind a running turn.
+	 * Three facts arrive through this one event: a persisted user message pairs
+	 * with the presentation waiting for it, and the presentation entry and the
+	 * persistence ref written into the branch come back with the ids their own
+	 * events need. Nothing depends on `appendCustomEntry`'s return value, which is
+	 * undefined whenever the write was buffered behind a running turn.
 	 */
 	private async _observeSessionWrite(agentId: AgentId, entryId: string, write: PendingSessionWrite): Promise<void> {
 		if (write.type === "message" && write.message.role === "user") {
@@ -2314,9 +2388,20 @@ export class AgentOrchestrator {
 			}
 			return;
 		}
-		if (write.type !== "custom" || write.customType !== EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE) {
+		if (write.type !== "custom") return;
+		if (write.customType === PERSISTENCE_REF_CUSTOM_TYPE) {
+			const ref = write.data as PersistenceRefData;
+			await this._emit({
+				type: "agent_persistence_ref_changed",
+				agentId,
+				namespace: ref.namespace,
+				stateRoot: ref.stateRoot,
+				entryId,
+				changedAt: now(),
+			});
 			return;
 		}
+		if (write.customType !== EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE) return;
 		const data = write.data as ExtensionInputPresentationEntryData;
 		await this._emit(
 			{
@@ -2382,7 +2467,24 @@ export class AgentOrchestrator {
 		return result;
 	}
 
-	/** Run session tree navigation, invalidating the projection if the leaf moved. */
+	/**
+	 * Run session tree navigation, then bring everything that reads the branch
+	 * onto the branch the leaf moved to.
+	 *
+	 * Navigation is the one operation that changes which state is in force
+	 * without anything having been written, so both consumers have to be told
+	 * afterwards rather than noticing: the context gauge describes a branch that
+	 * is no longer current, and a job store's chain head can now belong to a
+	 * branch nobody is on.
+	 *
+	 * **This writes on a navigation that only looked.** The design would rather
+	 * defer the records until the new branch is actually extended
+	 * (`docs/ZH/background-job-persistence.md` 4.3), which needs a pending state
+	 * threaded through every write path. What lands here instead is one custom
+	 * entry per job the branch had open and this runtime cannot account for -
+	 * true of that branch either way, invisible to the model, and cheaper than
+	 * leaving the store bound to a chain it has left.
+	 */
 	async navigateAgentTree(
 		agentId: AgentId,
 		targetId: string,
@@ -2401,9 +2503,16 @@ export class AgentOrchestrator {
 			);
 		} finally {
 			// A post-move observer can fail after the harness changed the leaf.
-			// Comparing in `finally` still invalidates the old gauge on that path,
-			// while cancellation and no-op navigation leave it intact.
+			// Comparing in `finally` still reaches both consumers on that path, while
+			// cancellation and no-op navigation leave them intact.
 			if ((await this.sessionManager.getAgentSessionLeafId(agentId)) !== previousLeafId) {
+				// Reconciliation extends the branch, so the gauge is dropped after it
+				// rather than before, and its own failure never masks the navigation's.
+				await this._reconcileAgentJobBranch(
+					agentId,
+					"navigate",
+					"The conversation moved to a branch this job is not on.",
+				);
 				await this._context.invalidate(agentId);
 			}
 		}
@@ -3829,6 +3938,121 @@ export class AgentOrchestrator {
 	}
 
 	// -----------------------------------------------------------------------
+	// Branch state
+	//
+	// A branch is the register of what every persistence namespace holds, and
+	// only the harness may write one. So the modules that own such state - the
+	// background job runtime today - never reach for the branch: they ask through
+	// a port bound to their own namespace and this class does the writing.
+	// `docs/ZH/persistence-ref-writer.md` is why the split runs exactly here.
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Open one agent's job history, or nothing for an agent with no session
+	 * directory. An ephemeral agent still runs jobs; it just leaves no record.
+	 *
+	 * The namespace directory is addressed the way the new repository will
+	 * address it - `<session>/persistence/<namespace>` - so the migration in
+	 * `docs/ZH/orchestrator-wiring-plan.md` D renames session directories and
+	 * leaves everything written here where it is.
+	 */
+	private async _openAgentJobStore(agentId: AgentId): Promise<SessionJobStore | undefined> {
+		const sessionDir = await this.sessionManager.getAgentSessionDir(agentId);
+		if (sessionDir === undefined) return undefined;
+		const diagnostics = new PersistenceDiagnostics();
+		const storage = await JobHistoryStorage.open({
+			fs: this.executionEnv,
+			dirPath: getFileSystemResultOrThrow(
+				await this.executionEnv.joinPath([sessionDir, PERSISTENCE_DIR_NAME, encodeNamespaceDirName(JOBS_NAMESPACE)]),
+				`Failed to resolve the ${JOBS_NAMESPACE} directory of agent ${agentId}`,
+			),
+			// Diagnostic identity only, and the directory name is what a reader can
+			// still match against a session after this runtime is gone.
+			sessionKey: [(await this.sessionManager.getAgentSessionDirName(agentId)) ?? agentId],
+			diagnostics,
+		});
+		try {
+			return await SessionJobStore.open({ storage, branch: this._openBranchState(agentId, JOBS_NAMESPACE) });
+		} finally {
+			await this._publishPersistenceDiagnostics(agentId, diagnostics);
+		}
+	}
+
+	/**
+	 * One namespace's view of one agent's branch: what it holds, and how to
+	 * record a new root on it.
+	 *
+	 * The namespace is bound here rather than passed per call. A caller that
+	 * names its own namespace could clear somebody else's state, since `null` is
+	 * a legitimate root meaning "this namespace now holds nothing".
+	 */
+	private _openBranchState(agentId: AgentId, namespace: string): JobBranchPort {
+		return {
+			projection: async () => await this._projectBranchState(agentId, namespace),
+			commit: async (stateRoot) => await this._commitBranchState(agentId, namespace, stateRoot),
+		};
+	}
+
+	/**
+	 * The complete root-to-leaf path decides, not the model's view of it: a ref
+	 * older than a compaction checkpoint is still in force, because the model
+	 * forgetting a fact does not make the fact untrue.
+	 */
+	private async _projectBranchState(agentId: AgentId, namespace: string): Promise<NamespaceProjection | undefined> {
+		const snapshot = await this.sessionManager.getAgentSessionSnapshot(agentId);
+		const projection = projectBranch(snapshot.pathToRoot);
+		// A ref this build cannot read leaves its namespace unrestored, which is a
+		// fact worth reporting and never a reason to fail the read.
+		for (const rejection of projection.rejected) {
+			await this._publishDiagnostic({
+				severity: "warning",
+				code: "orchestrator.persistence_ref_unreadable",
+				message: `Agent ${agentId} carries a persistence ref this build cannot read (${rejection.problem}): ${rejection.detail}`,
+				agentId,
+			});
+		}
+		return projection.namespaces.get(namespace);
+	}
+
+	/**
+	 * **Session write.** `harness.appendCustomEntry` of a `widi:persistence-ref`.
+	 *
+	 * The branch is the right place because it is the only one that answers the
+	 * question being asked: rewinding past this entry takes the state with it and
+	 * forking carries it, and neither follows from a file beside the session. It
+	 * never becomes model context - refs have no entry projector - so it costs
+	 * the branch bytes and the model nothing.
+	 *
+	 * Throws on failure rather than degrading. What a failed write means -
+	 * retry, degrade, or abandon the record - depends on where in its own
+	 * lifecycle the caller is, which only the caller knows.
+	 */
+	private async _commitBranchState(agentId: AgentId, namespace: string, stateRoot: string | null): Promise<void> {
+		const harness = this._live.get(agentId)?.harness ?? this._disposingHarnesses.get(agentId);
+		if (!harness) {
+			throw new OrchestratorError({
+				severity: "error",
+				code: "orchestrator.branch_state_unwritable",
+				message: `Agent ${agentId} has no harness to record ${namespace} state on its branch.`,
+				agentId,
+			});
+		}
+		await harness.appendCustomEntry(PERSISTENCE_REF_CUSTOM_TYPE, createPersistenceRefData({ namespace, stateRoot }));
+	}
+
+	/** Persistence reports in its own vocabulary; the codes are republished as they are. */
+	private async _publishPersistenceDiagnostics(agentId: AgentId, diagnostics: PersistenceDiagnostics): Promise<void> {
+		await this._publishDiagnostics(
+			diagnostics.entries.map((entry) => ({
+				severity: entry.severity,
+				code: entry.code,
+				message: entry.message,
+				agentId,
+			})),
+		);
+	}
+
+	// -----------------------------------------------------------------------
 	// Background jobs
 	//
 	// Forwarding, plus the liveness gate this class owns: the runtime answers by
@@ -4295,23 +4519,41 @@ function resolveThinkingLevel(level: string): ThinkingLevel | undefined {
 	return parsed === level ? parsed : undefined;
 }
 
-function collectUserMessageText(entries: readonly SessionTreeEntry[]): string[] {
-	const texts: string[] = [];
+/** The recorded outcome when there is one, otherwise a cancellation for work the exit ended. */
+/**
+ * The t0 handles a branch carries, read off the structured details the
+ * background runtime stamped on each one rather than off their text: a result
+ * header is restated by the model, rewritten by compaction, and pasted by the
+ * user, while `backgrounded: true` is only ever written by the runtime.
+ */
+function collectBackgroundJobHandles(entries: readonly SessionTreeEntry[]): BackgroundJobStartedDetails[] {
+	const handles: BackgroundJobStartedDetails[] = [];
 	for (const entry of entries) {
-		if (entry.type !== "message" || entry.message.role !== "user") continue;
-		const content = entry.message.content;
-		if (typeof content === "string") {
-			texts.push(content);
-			continue;
-		}
-		for (const part of content) {
-			if (part.type === "text") texts.push(part.text);
-		}
+		if (entry.type !== "message" || entry.message.role !== "toolResult") continue;
+		const details = entry.message.details;
+		if (isBackgroundJobStartedDetails(details)) handles.push(details);
 	}
-	return texts;
+	return handles;
 }
 
-/** The recorded outcome when there is one, otherwise a cancellation for work the exit ended. */
+function isBackgroundJobStartedDetails(details: unknown): details is BackgroundJobStartedDetails {
+	if (typeof details !== "object" || details === null) return false;
+	const candidate = details as Partial<BackgroundJobStartedDetails>;
+	return (
+		candidate.backgrounded === true && typeof candidate.jobId === "string" && typeof candidate.toolCallId === "string"
+	);
+}
+
+function toOrphanedJobHandleText(handle: BackgroundJobStartedDetails): string {
+	return formatInterruptedBackgroundJobResultText({
+		jobId: handle.jobId,
+		toolCallId: handle.toolCallId,
+		toolName: handle.toolName,
+		stopReason:
+			"This part of the conversation never recorded the job, so nothing here can report its outcome. Start it again if its work is still needed.",
+	});
+}
+
 function toCarriedOverJobResultText(job: JobHistoryEntry): string {
 	return (
 		job.messageText ??

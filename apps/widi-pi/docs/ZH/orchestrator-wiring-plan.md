@@ -40,13 +40,15 @@
 
 **不存在"先做持久化、再接线"这个选项。**
 
-旧 orchestrator 已经编不过，新的没有任何导入方。今天写下的任何持久化改动都落在一条不能通过 `npm run check` 的分支上，没有可运行的路径去验证它。接线因此不是六项工作里的一项，它是其余五项的地基。
+旧 orchestrator 已经编不过，新的没有任何导入方。今天写下的任何持久化改动都落在一条不能通过 `npm run check` 的分支上，没有可运行的路径去验证它。接线因此不是一项普通工作，它是其余各项的地基。
 
 由此得到第一条排期纪律：**批次 1 的完成判据是 `npm run check` 归零**，在那之前不开始任何持久化工作。
 
 ---
 
-## 3. 六项工作
+## 3. 七项工作
+
+A–F 是立文时定下的六项。G 是 C 落地过程中长出来的，附在最后。
 
 ### A. 接线新 orchestrator
 
@@ -92,6 +94,8 @@
 
 ### C. ref 写入、ref 事件、下行通道
 
+> **落地状态**：C 的六个子项全部完成，含 navigate。navigate 的实际形状与本文原先的设想不同，见第 4 项下的说明。
+
 `orchestrator-refactor.md` 的第 1、3、4 条。三条是一件事的三个面，必须一起做——只有第 1 条，background 写得出 ref 但闭合不了；只有第 4 条，闭合时无处可写。
 
 1. **上行能力（第 1 条）**。orchestrator 内部开一个 core 侧的分支状态端口：请求方给 namespace 与 state root，orchestrator 用 `createPersistenceRefData` 构造载荷，经 `harness.appendCustomEntry(PERSISTENCE_REF_CUSTOM_TYPE, ...)` 写入。请求方不碰 harness、不构造 ref 载荷、不读整条分支。
@@ -118,11 +122,28 @@
 
    fork 不走这条通道——它发生在新会话里，走 namespace 自己的 `fork` 钩子，那个钩子已经实现（`job-persistence.ts:377`）。
 
+   > **navigate 做了，但形状与设计文档不同，值得单独记一笔。**
+   >
+   > 原设计把导航当成闭合规则的第四个实例：闭合分支上开着、而运行时不认识的 job。实现时发现这个描述漏掉了导航特有的一种情况——**导航是同进程操作，所以「运行时不认识」不等于「结果不存在」**。一个 job 可能在被绕开的那条分支上已经跑完并写下了 `settled`；导航回到它启动之前，分支重新显示 open，而进程内的归约里明明白白记着结局和 t1 原文。
+   >
+   > 对这种 job 写 `closed(navigate)` 是说谎。所以 `SessionJobStore.rebind` 给出三种答案而不是两种：运行时还持有执行器的不动，运行时看着它结束的**把自己的 settled 重新记到这条分支上并把 t1 投递进去**，两者皆无的才闭合。边界是 `started` 记录必须在当前分支上——否则这条分支从没启动过它，哪怕结局就在对象日志里也不投递。
+   >
+   > 跨进程救不回来：`resume` 之后进程内的归约已经不在了，`closed(resume)` 在那里是诚实的。
+   >
+   > 另外两处与文档的偏差：
+   >
+   > 1. **重新投影是必须的，文档没提。** 叶子一移动，store 缓存的链头可能属于一条已经没人在的分支，之后的每次 append 都会挂在那条链上。`rebind` 第一件事就是按新分支重读。这是比闭合更严重的问题——它让「回退掉一条分支就回退掉它起的 job」这个性质失效。
+   > 2. **写在导航当时，而不是分支「即将被延长」时**（`background-job-persistence.md` §4.3）。做成待决状态要把它穿进每一条写入路径。落地的取舍是：只看不续的导航会留下一条 custom 条目，它对那条分支是真陈述、不进模型上下文，比让 store 继续绑在一条已经离开的链上便宜。理由记在 `navigateAgentTree` 的注释里。
+
 5. **接上 background**。`openOwnerStore` 从 `async () => undefined` 换成真实实现：按 agent 的会话目录算出 `<sessionDir>/persistence/<encoded:core:jobs>/`，`JobHistoryStorage.open` + `SessionJobStore.open`。ephemeral agent 继续返回 `undefined`，调用方按"不持久化"处理。
 
 6. **`_reconcileCarriedOverJobs` 换判据**。今天它在分支文本里搜 `backgroundJobResultHeaderPrefix`，正是 `background-job-persistence.md` §1 要消灭的"拿没有信息当信息用"——文本被模型复述、被 compaction 改写、被用户粘贴，判断就错了。换成 `store.carriedOverJobs()`。
 
    `agent-tree-persistence.md` §8 顺带解决了这里最难的一处：subagent 永不跨运行时恢复之后，"任何 settler 都活不过一次 resume"是无条件成立的，所以这个方法无条件闭合全部 carried-over job 现在是一条正确陈述，不再是待修的近似。
+
+   > **落地时多做了一件事：孤儿 t0。** t0 tool_result 由 harness 在 turn 内写下，而记录这个 job 的 ref 被缓冲在这一轮后面、要到保存点才落盘。两者之间的每一条条目都是导航可以落脚的地方，落在那里就得到一条"模型持有一个承诺、而分支从没启动过这个 job"的分支。`_announceOrphanedJobHandles` 扫分支上的 toolResult 条目，挑出 `details.backgrounded === true` 而 job 历史查无此人的，告诉模型这里不会有答案——**但不为它们写任何记录**，这条分支没有 `started` 可闭合，凭空造一条等于把 job 放到一条从没跑过它的分支上。
+   >
+   > 判据仍然是结构化的：`ToolResultMessage.details` 随消息整条持久化，`BackgroundJobStartedDetails` 只有运行时会写。而且这种孤儿分支上不可能有 t1——ref 在启动那一轮的保存点 flush，t1 在更晚的一轮到达，所以带 t1 的分支必然也带 ref——因此不需要退回文本搜索。
 
 **这一项不依赖 D。** `background-job-persistence.md` §9 特意把分期切在这里：v1 只需要 ref 模式、分支投影、对象日志三样纯工具，不需要仓储的会话生命周期与 fork 闭包。已核对：`JobHistoryStorage.open` 只要 `{fs, dirPath, sessionKey, diagnostics, owner}`，而 `sessionKey` 在 session 依赖钩子被删（`b2e6c72`）之后只剩诊断用途。
 
@@ -132,7 +153,7 @@
 
 ### D. session-manager 迁移到 `JsonlPersistenceRepo`
 
-六项里最重的一项，也是唯一一项没有现成设计文档的。
+A–F 里最重的一项，也是唯一一项没有现成设计文档的。
 
 1. `SessionManager` 的仓储从 `SessionDirectoryRepo` 换成 `JsonlPersistenceRepo`。寻址从 `JsonlSessionMetadata.path` 换成 `SessionAddress` / `SessionKey`，句柄从 `Session<JsonlSessionMetadata>` 换成 `PersistedSession`。
 2. 目录命名规则变了（`layout.ts` 的 `createSessionDirName` vs `session-repo.ts` 的 `sessionDirName`）。旧会话在新布局下作为顶层会话打开，它的子会话作为独立的顶层会话存在——`agent-tree-persistence.md` §12 明说不做兼容读，恢复路径必须只有一条真相。
@@ -165,6 +186,52 @@
 真正被推迟的是**经纪那一半**：extension 卸载后已注册的 namespace 怎么办、同一个名字被两个 extension 争抢时如何裁决、namespace 名字如何由 extension id 派生（`NAMESPACE_PATTERN` 在 `custom-storage.ts:288`，要求 `owner:name` 且只收小写字母数字和连字符，而 extension id 未必满足）。
 
 **本次唯一要做的**：在 `ExtensionActivationApi` 旁边留一条注释，写明这道入口将来的准入标准是"**状态是不是对话的函数**"，不是"我想不想持久化"。理由见 `persistence-ref-writer.md` §3.1——进来之后回退就不再可选，一个缓存了 OAuth token 的 namespace 进来，用户回退一次对话就把自己登出了。这句话必须以 API 文档的形式写着，而不是留给 extension 作者推断。
+
+---
+
+### G. orchestrator message
+
+这一项是 C 落地过程中长出来的，不在原来的六项里。
+
+**问题**：「不是用户输入、但必须以用户输入的身份进入模型」的文本，今天有五个生产者、两套互不相识的机制，而且在 TUI 里全都渲染成用户消息。
+
+| 生产者 | 怎么进模型 | 唤醒 agent | TUI 里长什么样 |
+|---|---|---|---|
+| background t1 | `sendMessage(mode:"interrupt")` → prompt / steer | 是 | 用户消息 |
+| resume 未答 t0 | `harness.appendMessage` | 否 | 用户消息 |
+| spawn tree 关闭通告 | `harness.appendMessage` | 否 | 用户消息 |
+| navigate 回放 t1 / 孤儿 t0 | `harness.appendMessage` | 否 | 用户消息 |
+| extension `publishMessage` | `core:extension_message` custom 条目 | 否 | 有自己的渲染 |
+
+前四行是同一件事的四种写法。最后一行证明「有自己的渲染」这条路走得通，只是它绕开了模型上下文。
+
+**要用的 primitive 上游已经有了，widi 一行没用**：`custom_message` 条目。不是 `appendCustomEntry`——那个不进上下文（`session.ts:135`，`custom` 条目没注册 entry projector 就产出空数组）。
+
+```
+持久化    {type:"custom_message", customType, content, display, details}
+进上下文  role:"custom" 的 AgentMessage        session.ts:114
+进 LLM    role:"user"，content 原样            messages.ts:133
+```
+
+模型看到纯 user 文本，会话里存的是带类型的条目。这就是「在 TUI 层区分渲染」需要的全部，不需要新的条目类型。`appendCustomMessageEntry` 已经在 harness 的写入 API 里。
+
+1. **一个 orchestrator 内部的消息队列**，所有上表前四行的生产者改走它。入队带一个档位：
+
+   | 档位 | 语义 |
+   |---|---|
+   | `steer` | 打断当前这一轮，现在就读 |
+   | `follow_up` | 这一轮结束时读 |
+   | `precede` | 不唤醒，附在用户下一次输入之前 |
+
+   `precede` 不叫 `prompt`：`harness.prompt()` 是「立刻起一轮」，同一个词两个意思在这个文件里迟早出事。它描述的正是 resume 通告与 navigate 回放今天的实际行为——今天那是「写进分支然后碰运气」，具名之后「谁在等这条被读到」才是可查询的。
+
+2. **transform 在入队之前跑完，不进条目。** 闭包不可持久化，而条目要落到分支上：一条在投递前被缓冲、进程重启、或被 fork 带走的消息，会失去它的 transform，重放出的文本与当初进模型的不一致。队列里存最终文本，`details` 里存原文、产生者、经过了哪些 transform——与 `core:input_transform` 今天的纪律一致。
+
+3. **hydrator 与渲染**：`tui/session-hydrator.ts` 加 `custom_message` 分支，按 `customType` 分派渲染规则，与用户消息区分开。
+
+**v1 只做投递侧。** extension 的 transform 挂载点、以及把 `_pendingExtensionInputPresentations` 那套「user 消息 + custom 配对条目」的双记录并进来，都推迟：双记录确实是 orchestrator message 的一个特例（`details` 里放 presentation，`_observeSessionWrite` 能少一半），但它碰 extension 的公开面，范围比加一个队列大得多。等这一层有了真实用户，接口形状从两个实现里抽，而不是照着设想编。
+
+**这一项不依赖 C / D / E。** 它动的是消息进入模型的路径，与状态存在哪里无关。
 
 ---
 
@@ -202,13 +269,21 @@
                            │  F extension 注册    │
                            │  等第一个真实消费者  │
                            └─────────────────────┘
+
+      ┌─────────────────────┐
+      │  批次 5              │   G 与上面整条链无依赖：它动的是消息
+      │  G orchestrator      │   进入模型的路径，不是状态存在哪里。
+      │    message           │   排在 C 之后只是因为 C 又添了两个
+      │  → 渲染可区分         │   走 appendMessage 的生产者。
+      └─────────────────────┘
 ```
 
-三条边值得单独说明：
+四条边值得单独说明：
 
-- **C 与 D 解耦**，这是 `background-job-persistence.md` §9 特意设计的分期，不是巧合。可以并行，也可以先 C 后 D。先 C 能让 background 立刻拿到"跨 resume 的 job 历史"，是六项里对用户最可见的收益（§10：`read_job` 与 `list_jobs` 跨 resume 可用）。
+- **C 与 D 解耦**，这是 `background-job-persistence.md` §9 特意设计的分期，不是巧合。可以并行，也可以先 C 后 D。先 C 能让 background 立刻拿到"跨 resume 的 job 历史"，是 A–F 里对用户最可见的收益（§10：`read_job` 与 `list_jobs` 跨 resume 可用）。
 - **E 严格依赖 D**，无法提前。`list_agents` 要读 `repo.listChildren`，而运行时今天还在旧仓储上，两者互相看不见。在 D 之前 `list_agents` 只有 live agent——那是最终行为的子集，不是错误行为。
 - **B 可以先于 D 做**（`agent-tree-persistence.md` §10 的"在此之前唯一可以先做的是删除"）。代价是那段时间失去 subagent 跨 resume 恢复，但那个能力本来就要被删。
+- **G 谁都不依赖**，随时可插。它排在这里是因为 C 把 `appendMessage` 的生产者从两个添到了四个——同一件事的四种写法，再拖就是第五种。
 
 ---
 
@@ -216,10 +291,11 @@
 
 | 批次 | 内容 | 完成标志 | 可交付的用户可见变化 |
 |---|---|---|---|
-| 1 | A + B 合批 | `npm run check` 归零；`npm run tui` 能完成一轮对话 | 无（纯内部）。resume 不再恢复 subagent |
-| 2 | C：三条要求 + background 接入 | job 历史跨 resume 可读，`read_job` 能查到上一个运行时的 job | t0 悬着的承诺不再靠文本搜索判断；`read_job` / `list_jobs` 跨 resume 可用 |
+| 1 ✅ | A + B 合批 | `npm run check` 归零；`npm run tui` 能完成一轮对话 | 无（纯内部）。resume 不再恢复 subagent |
+| 2 ✅ | C：三条要求 + background 接入 | job 历史跨 resume 可读，`read_job` 能查到上一个运行时的 job | t0 悬着的承诺不再靠文本搜索判断；`read_job` / `list_jobs` 跨 resume 可用 |
 | 3 | D：session-manager 迁移 | 生产路径上第一次出现 `JsonlPersistenceRepo`；fork 之后删源目录，新会话仍完整可读 | fork 会话带走 job 历史与子会话目录 |
 | 4 | E：`list_agents` 读盘 | 一份 fork 或 resume 出来的树全部列为 closed | 模型能看见自己以前做过什么 |
+| 5 | G：orchestrator message | 上表前四行的生产者全部改走队列；hydrator 能按 `customType` 分派 | 运行时替模型写的话不再伪装成用户自己打的字 |
 | — | F | 等第一个真实 extension 消费者 | — |
 
 ---

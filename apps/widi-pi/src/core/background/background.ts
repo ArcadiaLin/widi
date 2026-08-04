@@ -48,6 +48,7 @@ import {
 	type CreateExternalJobInput,
 	DEFAULT_BACKGROUND_JOB_PROGRESS_THROTTLE_MS,
 	DEFAULT_BACKGROUND_JOB_REPORT_THROTTLE_MS,
+	type JobCloseCause,
 	type JobHistoryEntry,
 	type JobRecord,
 	type JobResult,
@@ -310,13 +311,49 @@ export class BackgroundJobRuntime {
 	}
 
 	/**
-	 * Jobs the branch had open when this runtime attached: the t0 handles whose
-	 * executor no longer exists. Whether each still owes the model a message is
-	 * the session history's answer, so this is only the input to the host's
-	 * resume reconciliation.
+	 * Bring this agent's history back in line with the branch it is on, and
+	 * settle whatever the two disagree about.
+	 *
+	 * The disagreement is decided against this runtime's own memory, which is
+	 * exactly why the host has to ask for this rather than the persistence layer
+	 * doing it on its own: a navigation kills no process, so a job open on the
+	 * branch and live here has to survive one, and a job this runtime watched
+	 * finish is owed its answer rather than a closure. A detached scope is still
+	 * reconciled - it is the scope that holds the store, and a disposal is the
+	 * case with nothing left to recognize.
+	 *
+	 * `announce` is handed the jobs the model has to be told about, before any of
+	 * it is written down. It does not run when there is nothing to say.
 	 */
-	carriedOverJobs(agentId: string): readonly JobHistoryEntry[] {
-		return this._current(agentId)?.store?.carriedOverJobs() ?? [];
+	async reconcileBranch(
+		agentId: string,
+		request: { readonly cause: JobCloseCause; readonly stopReason?: string },
+		announce: (jobs: readonly JobHistoryEntry[]) => Promise<void>,
+	): Promise<void> {
+		const state = this._attachments.get(agentId);
+		const store = state?.store;
+		if (!state || !store) return;
+		const recognized = new Set<string>();
+		for (const jobId of state.owned) {
+			const record = this._jobs.get(jobId);
+			if (record && !isTerminal(record.state)) recognized.add(record.toolCallId);
+		}
+		try {
+			// On the owner's tail, so this follows every record already queued ahead
+			// of it - a settlement racing it wins, as it should.
+			await this._enqueue(state, async () => {
+				await store.rebind(
+					{
+						cause: request.cause,
+						recognized,
+						...(request.stopReason === undefined ? undefined : { stopReason: request.stopReason }),
+					},
+					announce,
+				);
+			});
+		} catch (error) {
+			await this._degrade(state, error);
+		}
 	}
 
 	/**

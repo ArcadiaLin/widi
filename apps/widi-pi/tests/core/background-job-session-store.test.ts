@@ -190,6 +190,74 @@ describe("SessionJobStore closure", () => {
 	});
 });
 
+describe("SessionJobStore rebind", () => {
+	it("hands a rewound branch the outcome this runtime already saw", async () => {
+		const store = await openStore();
+		await store.append(started("a"));
+		await store.append(settled("a"));
+		// The conversation moved back to a point where this job was still running.
+		// It is not running - it finished, on the branch that was left behind.
+		branch.rewind(1);
+		const announced: string[][] = [];
+
+		const records = await store.rebind({ cause: "navigate", recognized: new Set() }, async (jobs) => {
+			announced.push(jobs.map((job) => job.messageText ?? ""));
+		});
+
+		expect(records.map((record) => record.kind)).toEqual(["settled"]);
+		expect(announced).toEqual([["ok"]]);
+		expect(store.history().map((job) => [job.toolCallId, job.state, job.status])).toEqual([
+			["a", "settled", "completed"],
+		]);
+	});
+
+	it("closes what no runtime can account for, and leaves alone what one still holds", async () => {
+		const first = await openStore();
+		await first.append(started("a"));
+		await first.append(started("b"));
+
+		// A fresh store knows nothing about either job, so only the one its caller
+		// still holds an executor for survives.
+		const second = await openStore();
+		const records = await second.rebind({ cause: "navigate", recognized: new Set(["b"]) }, async () => {});
+
+		expect(records.map((record) => [record.toolCallId, record.kind])).toEqual([["a", "closed"]]);
+		expect(second.history().map((job) => [job.toolCallId, job.state])).toEqual([
+			["a", "closed"],
+			["b", "open"],
+		]);
+	});
+
+	it("chains onto the branch's root again after the leaf moved", async () => {
+		const store = await openStore();
+		const rootA = await store.append(started("a"));
+		await store.append(started("b"));
+		branch.rewind(1);
+
+		// Nothing to settle: `a` is still open on the rewound branch and its caller
+		// still holds it. What must change is where the next record chains from.
+		await store.rebind({ cause: "navigate", recognized: new Set(["a"]) }, async () => {});
+		expect(store.stateRoot).toBe(rootA);
+		const next = await store.append(settled("a"));
+		expect(branch.committed[branch.committed.length - 1]).toBe(next);
+		expect((await openStore()).history().map((job) => job.toolCallId)).toEqual(["a"]);
+	});
+
+	it("says nothing when the branch and this runtime already agree", async () => {
+		const store = await openStore();
+		await store.append(started("a"));
+		const before = branch.committed.length;
+		let announcements = 0;
+
+		await store.rebind({ cause: "navigate", recognized: new Set(["a"]) }, async () => {
+			announcements += 1;
+		});
+
+		expect(announcements).toBe(0);
+		expect(branch.committed).toHaveLength(before);
+	});
+});
+
 describe("SessionJobStore under a failing branch", () => {
 	it("rejects and leaves the branch's root where it was", async () => {
 		const store = await openStore();
