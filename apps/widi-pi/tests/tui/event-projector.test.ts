@@ -1,6 +1,6 @@
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
-import type { AgentRecordSnapshot } from "../../src/core/agent-record.ts";
+import type { AgentSnapshot } from "../../src/core/agent-types.ts";
 import type { BackgroundJobReportSnapshot, BackgroundJobSnapshot } from "../../src/core/background/index.ts";
 import type { OrchestratorEvent, RuntimeModel } from "../../src/core/types.ts";
 import { applyAgentSnapshot, EventProjector } from "../../src/tui/event-projector.ts";
@@ -13,7 +13,7 @@ describe("EventProjector", () => {
 		const projector = new EventProjector(state);
 		setActiveAgent(state, "main");
 
-		projector.apply({ type: "agent_status_changed", agentId: "worker", status: "running", changedAt: timestamp(1) });
+		projector.apply({ type: "agent_status_changed", agentId: "worker", activity: "running", changedAt: timestamp(1) });
 		projector.apply({
 			type: "extension_output",
 			presentationId: "output-1",
@@ -486,13 +486,16 @@ describe("EventProjector", () => {
 			agentId: "worker",
 			job: {
 				jobId: "job-1",
+				ownerAgentId: "worker",
 				origin: { kind: "local" },
 				toolCallId: "call-1",
 				toolName: "bash",
-				phase: "backgrounded",
+				state: "backgrounded",
 				startedAt: 1,
+				backgroundedAt: 1,
 				totalBytesSeen: 0,
-				droppedBytes: 0,
+				tailDroppedBytes: 0,
+				progressDroppedBytes: 0,
 			},
 			transition: "backgrounded",
 			liveCount: 3,
@@ -505,15 +508,17 @@ describe("EventProjector", () => {
 			agentId: "worker",
 			job: {
 				jobId: "job-1",
+				ownerAgentId: "worker",
 				origin: { kind: "local" },
 				toolCallId: "call-1",
 				toolName: "bash",
-				phase: "backgrounded",
-				status: "completed",
+				state: "completed",
 				startedAt: 1,
+				backgroundedAt: 1,
 				endedAt: 2,
 				totalBytesSeen: 0,
-				droppedBytes: 0,
+				tailDroppedBytes: 0,
+				progressDroppedBytes: 0,
 			},
 			transition: "settled",
 			liveCount: 0,
@@ -546,7 +551,7 @@ describe("EventProjector", () => {
 			type: "agent_background_job_changed",
 			agentId: "main",
 			job: jobSnapshot("job-1"),
-			transition: "aborting",
+			transition: "abort_requested",
 			liveCount: 1,
 			changedAt: timestamp(2),
 		});
@@ -555,7 +560,7 @@ describe("EventProjector", () => {
 		projector.apply({
 			type: "agent_background_job_changed",
 			agentId: "main",
-			job: jobSnapshot("job-1", { status: "failed", endedAt: 2_000, totalBytesSeen: 42 }),
+			job: jobSnapshot("job-1", { state: "failed", endedAt: 2_000, totalBytesSeen: 42 }),
 			transition: "settled",
 			liveCount: 0,
 			changedAt: timestamp(3),
@@ -612,7 +617,7 @@ describe("EventProjector", () => {
 		projector.apply({
 			type: "agent_background_job_changed",
 			agentId: "main",
-			job: jobSnapshot("job-1", { status: "completed", endedAt: 2_000 }),
+			job: jobSnapshot("job-1", { state: "completed", endedAt: 2_000 }),
 			transition: "settled",
 			liveCount: 1,
 			changedAt: timestamp(2),
@@ -686,7 +691,7 @@ describe("EventProjector", () => {
 		projector.apply({
 			type: "agent_background_job_changed",
 			agentId: "main",
-			job: jobSnapshot("job-old", { status: "completed", endedAt: 2_000 }),
+			job: jobSnapshot("job-old", { state: "completed", endedAt: 2_000 }),
 			transition: "settled",
 			liveCount: 2,
 			changedAt: timestamp(2),
@@ -785,7 +790,7 @@ describe("EventProjector", () => {
 		const projector = new EventProjector(state);
 		const agent = setActiveAgent(state, "main");
 
-		projector.apply({ type: "agent_status_changed", agentId: "main", status: "running", changedAt: timestamp(1) });
+		projector.apply({ type: "agent_status_changed", agentId: "main", activity: "running", changedAt: timestamp(1) });
 		projector.apply(harness("main", { type: "message_start", message: assistantMessage("") }));
 		const partial = assistantToolCallMessage("tool-1", "read");
 		projector.apply(
@@ -795,7 +800,7 @@ describe("EventProjector", () => {
 				assistantMessageEvent: { type: "toolcall_start", contentIndex: 0, partial },
 			}),
 		);
-		projector.apply({ type: "agent_status_changed", agentId: "main", status: "idle", changedAt: timestamp(2) });
+		projector.apply({ type: "agent_status_changed", agentId: "main", activity: "idle", changedAt: timestamp(2) });
 
 		expect(agent.timeline).toMatchObject([
 			{ type: "assistant-message" },
@@ -811,7 +816,7 @@ describe("EventProjector", () => {
 			agent.timeline.find((item) => item.type === "thinking-status" && item.id.startsWith("awaiting:main:"));
 
 		// User submit to first token: the status change alone shows thinking.
-		projector.apply({ type: "agent_status_changed", agentId: "main", status: "running", changedAt: timestamp(1) });
+		projector.apply({ type: "agent_status_changed", agentId: "main", activity: "running", changedAt: timestamp(1) });
 		expect(awaiting()).toMatchObject({ status: "thinking" });
 		expect(awaiting()).not.toHaveProperty("preview");
 
@@ -838,10 +843,10 @@ describe("EventProjector", () => {
 		expect(agent.timeline.at(-1)?.type).toBe("thinking-status");
 
 		// Leaving "running" removes the transient indicator.
-		projector.apply({ type: "agent_status_changed", agentId: "main", status: "idle", changedAt: timestamp(2) });
+		projector.apply({ type: "agent_status_changed", agentId: "main", activity: "idle", changedAt: timestamp(2) });
 		expect(awaiting()).toBeUndefined();
 
-		projector.apply({ type: "agent_status_changed", agentId: "main", status: "running", changedAt: timestamp(3) });
+		projector.apply({ type: "agent_status_changed", agentId: "main", activity: "running", changedAt: timestamp(3) });
 		projector.apply(harness("main", { type: "message_start", message: userMessage("next turn") }));
 		expect(agent.timeline.at(-1)).toMatchObject({ type: "thinking-status", status: "thinking" });
 	});
@@ -856,19 +861,19 @@ describe("EventProjector", () => {
 		projector.apply({
 			type: "agent_status_changed",
 			agentId: "main",
-			status: "running",
+			activity: "running",
 			maintenance: "compaction",
 			changedAt: timestamp(1),
 		});
 		expect(agent.maintenance).toBe("compaction");
 		expect(awaiting()).toMatchObject({ status: "thinking", label: "Compacting…" });
 
-		projector.apply({ type: "agent_status_changed", agentId: "main", status: "idle", changedAt: timestamp(2) });
+		projector.apply({ type: "agent_status_changed", agentId: "main", activity: "idle", changedAt: timestamp(2) });
 		expect(agent.maintenance).toBeUndefined();
 		expect(awaiting()).toBeUndefined();
 
 		// A plain run keeps the default Thinking… label.
-		projector.apply({ type: "agent_status_changed", agentId: "main", status: "running", changedAt: timestamp(3) });
+		projector.apply({ type: "agent_status_changed", agentId: "main", activity: "running", changedAt: timestamp(3) });
 		expect(agent.maintenance).toBeUndefined();
 		expect(awaiting()).toMatchObject({ status: "thinking", label: undefined });
 	});
@@ -974,17 +979,21 @@ function model(): RuntimeModel {
 	};
 }
 
-function snapshot(agentId: string, path: string, parentSessionPath?: string): AgentRecordSnapshot {
+function snapshot(agentId: string, path: string, parentSessionPath?: string): AgentSnapshot {
 	return {
 		agentId,
-		status: "idle",
-		profile: { reference: { id: "widi-dev", label: "WIDI Dev" } },
+		generation: 1,
+		profile: {
+			reference: { id: "widi-dev", label: "WIDI Dev" },
+			source: { kind: "memory", priority: 0 },
+			entryId: "entry-1",
+		},
 		sessionMetadata: { id: agentId, createdAt: new Date(0).toISOString(), cwd: "/workspace", path, parentSessionPath },
 		model: model(),
-		hasHarness: true,
-		extensionIds: [],
-		extensions: [],
-		extensionSnapshot: {
+		thinkingLevel: "off",
+		tools: { toolNames: [], activeToolNames: [] },
+		activity: { activity: "idle" },
+		extensions: {
 			extensionIds: [],
 			extensions: [],
 			hooks: [],
@@ -994,8 +1003,6 @@ function snapshot(agentId: string, path: string, parentSessionPath?: string): Ag
 			divisions: [],
 			stale: { stale: false },
 		},
-		resourceDiagnostics: [],
-		extensionDiagnostics: [],
 		diagnostics: [],
 	};
 }
@@ -1007,14 +1014,17 @@ function timestamp(offset: number): string {
 function jobSnapshot(jobId: string, overrides: Partial<BackgroundJobSnapshot> = {}): BackgroundJobSnapshot {
 	return {
 		jobId,
+		ownerAgentId: "main",
 		origin: { kind: "local" },
 		toolCallId: `call-${jobId}`,
 		toolName: "bash",
 		description: `run ${jobId}`,
-		phase: "backgrounded",
+		state: "backgrounded",
 		startedAt: 1_000,
+		backgroundedAt: 1_000,
 		totalBytesSeen: 0,
-		droppedBytes: 0,
+		tailDroppedBytes: 0,
+		progressDroppedBytes: 0,
 		...overrides,
 	};
 }

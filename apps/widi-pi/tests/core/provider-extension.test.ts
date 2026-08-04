@@ -52,7 +52,7 @@ async function createProviderHarness(
 	orchestrator.subscribe((event) => {
 		events.push(event);
 	});
-	const agentId = await orchestrator.spawnAgent();
+	const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 	return { orchestrator, modelRegistry, agentId, events };
 }
 
@@ -92,7 +92,7 @@ describe("provider extension consumer", () => {
 		});
 
 		// Registration provenance is an inspect fact on both sides.
-		expect(orchestrator.inspectAgent(agentId).extensionSnapshot.providerContributions).toEqual([
+		expect(orchestrator.inspectAgent(agentId).extensions.providerContributions).toEqual([
 			{ extensionId: "gateway", providerName: "gateway", modelIds: ["gateway-model"], oauth: false },
 		]);
 		expect(modelRegistry.getExtensionProviderRegistrations()).toEqual([
@@ -120,9 +120,9 @@ describe("provider extension consumer", () => {
 				}),
 			}),
 		);
-		expect(orchestrator.inspectAgent(agentId).extensionDiagnostics).toContainEqual(
-			expect.objectContaining({ code: "extension.provider_conflict" }),
-		);
+		expect(
+			orchestrator.inspectAgent(agentId).diagnostics.filter((entry) => entry.extensionId !== undefined),
+		).toContainEqual(expect.objectContaining({ code: "extension.provider_conflict" }));
 	});
 
 	it("keeps the first extension's provider and drops a same-name late registration", async () => {
@@ -221,20 +221,20 @@ describe("provider extension consumer", () => {
 		const { orchestrator, modelRegistry, agentId } = await createProviderHarness([
 			{ id: "gateway", factory: createProviderExtension({ providerName: "gateway", config: gatewayProviderConfig() }) },
 		]);
-		const secondAgentId = await orchestrator.spawnAgent();
+		const secondAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
 		expect(modelRegistry.getExtensionProviderRegistrations()).toEqual([
 			{ providerName: "gateway", extensionId: "gateway", agentIds: [agentId, secondAgentId] },
 		]);
 
 		// The provider survives while another registrant agent is alive.
-		await orchestrator.disposeAgent(agentId);
+		await orchestrator.disposeAgent(agentId, { intent: "removed" });
 		expect(modelRegistry.getExtensionProviderRegistrations()).toEqual([
 			{ providerName: "gateway", extensionId: "gateway", agentIds: [secondAgentId] },
 		]);
 		expect(modelRegistry.find("gateway", "gateway-model")).toBeDefined();
 
-		await orchestrator.disposeAgent(secondAgentId);
+		await orchestrator.disposeAgent(secondAgentId, { intent: "removed" });
 		expect(modelRegistry.getExtensionProviderRegistrations()).toEqual([]);
 		expect(modelRegistry.find("gateway", "gateway-model")).toBe(undefined);
 	});

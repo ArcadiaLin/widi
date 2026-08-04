@@ -2,7 +2,7 @@ import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExecutionEnv, ThinkingLevel } from "@widi/agent-core";
 import { NodeExecutionEnv } from "@widi/agent-core/node";
 import { unwrapResult } from "../utils/result.ts";
-import { AgentOrchestrator, type AgentOrchestratorConfigs } from "./agent-orchestrator.js";
+import { AgentOrchestrator, type AgentOrchestratorConfig } from "./agent-orchestrator.js";
 import {
 	AgentProfileRegistry,
 	type AgentProfileSource,
@@ -526,7 +526,7 @@ export async function createWidiRuntime(options: CreateWidiRuntimeOptions): Prom
 	registerCoreInteractionTools(toolRegistry);
 	registerCoreJobTools(toolRegistry);
 	registerCoreAgentTools(toolRegistry);
-	const orchestratorConfig: AgentOrchestratorConfigs = {
+	const orchestratorConfig: AgentOrchestratorConfig = {
 		executionEnv,
 		resourceLoader,
 		sessionManager,

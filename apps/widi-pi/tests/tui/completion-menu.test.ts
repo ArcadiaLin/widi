@@ -1,7 +1,7 @@
 import { type SelectItem, setKeybindings } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
-import type { AgentRecordSnapshot } from "../../src/core/agent-record.ts";
+import type { AgentSnapshot } from "../../src/core/agent-types.ts";
 import type { WidiRuntime } from "../../src/core/runtime-service.ts";
 import { WidiTuiApplication } from "../../src/tui/application.ts";
 import { CompletionMenu } from "../../src/tui/completion-menu.ts";
@@ -351,16 +351,20 @@ async function flush(): Promise<void> {
 	await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-function agentSnapshot(agentId: string): AgentRecordSnapshot {
+function agentSnapshot(agentId: string): AgentSnapshot {
 	return {
 		agentId,
-		status: "idle",
-		profile: { reference: { id: "default-agent", label: agentId } },
-		model: { provider: "vllm", id: "qwen3.6" } as AgentRecordSnapshot["model"],
-		hasHarness: true,
-		extensionIds: [],
-		extensions: [],
-		extensionSnapshot: {
+		generation: 1,
+		profile: {
+			reference: { id: "default-agent", label: agentId },
+			source: { kind: "memory", priority: 0 },
+			entryId: "entry-1",
+		},
+		model: { provider: "vllm", id: "qwen3.6" } as AgentSnapshot["model"],
+		thinkingLevel: "off",
+		tools: { toolNames: [], activeToolNames: [] },
+		activity: { activity: "idle" },
+		extensions: {
 			extensionIds: [],
 			extensions: [],
 			hooks: [],
@@ -370,8 +374,6 @@ function agentSnapshot(agentId: string): AgentRecordSnapshot {
 			divisions: [],
 			stale: { stale: false },
 		},
-		resourceDiagnostics: [],
-		extensionDiagnostics: [],
 		diagnostics: [],
 	};
 }

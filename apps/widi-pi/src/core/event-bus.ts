@@ -1,7 +1,7 @@
-import { formatError } from "../../utils/errors.ts";
-import type { OrchestratorClient } from "../client.ts";
-import type { OrchestratorDiagnostic } from "../diagnostics.ts";
-import type { AgentId, OrchestratorEvent, OrchestratorEventListener } from "../types.ts";
+import { formatError } from "../utils/errors.ts";
+import type { OrchestratorClient } from "./client.ts";
+import type { OrchestratorDiagnostic } from "./diagnostics.ts";
+import type { AgentId, OrchestratorEvent, OrchestratorEventListener } from "./types.ts";
 
 export interface EventPublishOptions {
 	readonly sendToListeners?: boolean;

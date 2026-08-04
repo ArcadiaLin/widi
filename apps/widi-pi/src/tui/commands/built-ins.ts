@@ -6,13 +6,8 @@ import {
 	type NavigateTreeResult,
 	parseCommandArgs,
 } from "@widi/agent-core";
-import type {
-	AgentListResult,
-	AgentSessionListResult,
-	AgentSessionResult,
-	ExtensionReloadResult,
-} from "../../core/agent-orchestrator.ts";
-import type { AgentRecordSnapshot } from "../../core/agent-record.ts";
+import type { AgentListResult, AgentSessionListResult, ExtensionReloadResult } from "../../core/agent-orchestrator.ts";
+import type { AgentSnapshot } from "../../core/agent-types.ts";
 import type {
 	AgentSessionCandidate,
 	AgentSessionSnapshot,
@@ -28,7 +23,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		agentPolicy: "active",
 		name: "abort",
 		description: "Abort the current agent run.",
-		checkStatus: (_status, maintenance) => unavailableDuringMaintenance("abort", maintenance),
+		checkActivity: (activity) => unavailableDuringMaintenance("abort", activity.maintenance),
 		execute: async (context) => await context.orchestrator.abortAgent(requireAgentId(context)),
 	},
 	{
@@ -54,7 +49,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		description: "Queue a follow-up for the current agent.",
 		argumentHint: "<text>",
 		requiresArgument: true,
-		checkStatus: (_status, maintenance) => unavailableDuringMaintenance("follow-up", maintenance),
+		checkActivity: (activity) => unavailableDuringMaintenance("follow-up", activity.maintenance),
 		execute: async (context, argument) => {
 			await context.orchestrator.followUpAgent(requireAgentId(context), argument.trim());
 			return undefined;
@@ -69,12 +64,16 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		complete: async (context) => await listUserMessageEntryCandidates(context),
 		execute: async (context, argument) => {
 			const entryId = argument.trim() || undefined;
-			return await context.orchestrator.forkAgentSessionFromAgent(
-				requireAgentId(context),
-				entryId ? { entryId } : undefined,
-			);
+			const agentId = await context.orchestrator.spawnAgent({
+				origin: {
+					kind: "fork",
+					sourceAgentId: requireAgentId(context),
+					...(entryId === undefined ? undefined : { entryId }),
+				},
+			});
+			return context.orchestrator.inspectAgent(agentId);
 		},
-		formatResult: (result) => agentSessionResultText("forked", result),
+		formatResult: (result) => agentSnapshotResultText("forked", result),
 	},
 	{
 		kind: "action",
@@ -83,11 +82,10 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		description: "Inspect the current agent runtime facts.",
 		execute: async (context) => context.orchestrator.inspectAgent(requireAgentId(context)),
 		formatResult: (result) => {
-			const snapshot = result as AgentRecordSnapshot;
-			const toolCount = snapshot.toolSnapshot?.toolNames.length ?? 0;
+			const snapshot = result as AgentSnapshot;
 			return [
-				`${snapshot.agentId} · ${snapshot.status} · ${profileLabel(snapshot)} · ${snapshot.model.provider}/${snapshot.model.id}`,
-				`${toolCount} tools · ${snapshot.extensionIds.length} extensions`,
+				`${snapshot.agentId} · ${activityLabel(snapshot)} · ${profileLabel(snapshot)} · ${snapshot.model.provider}/${snapshot.model.id}`,
+				`${snapshot.tools.toolNames.length} tools · ${snapshot.extensions.extensionIds.length} extensions`,
 			].join("\n");
 		},
 	},
@@ -100,7 +98,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		formatResult: (result) => {
 			const { agents } = result as AgentListResult;
 			if (agents.length === 0) return "No runtime agents.";
-			return agents.map((agent) => `${agent.agentId} · ${agent.status} · ${profileLabel(agent)}`).join("\n");
+			return agents.map((agent) => `${agent.agentId} · ${activityLabel(agent)} · ${profileLabel(agent)}`).join("\n");
 		},
 	},
 	{
@@ -193,8 +191,8 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		name: "resume",
 		description: "Resume an existing agent session.",
 		argumentHint: "[session]",
-		checkStatus: (status) =>
-			status === "running" ? "Command /resume is not available while the agent is running." : undefined,
+		checkActivity: (activity) =>
+			activity.activity === "running" ? "Command /resume is not available while the agent is running." : undefined,
 		complete: async ({ orchestrator }) =>
 			(await orchestrator.listAgentSessions()).sessions.map((session) => ({
 				// Resolve by path, not id: the session id equals the creating
@@ -203,8 +201,11 @@ export const builtInCommands: readonly CommandDefinition[] = [
 				label: sessionCandidateLabel(session),
 				description: sessionCandidateDescription(session),
 			})),
-		execute: async ({ orchestrator }, argument) => await orchestrator.resumeAgentSessionByReference(argument.trim()),
-		formatResult: (result) => agentSessionResultText("resumed", result),
+		execute: async ({ orchestrator }, argument) => {
+			const agentId = await orchestrator.spawnAgent({ origin: { kind: "resume", reference: argument.trim() } });
+			return orchestrator.inspectAgent(agentId);
+		},
+		formatResult: (result) => agentSnapshotResultText("resumed", result),
 	},
 	{
 		kind: "action",
@@ -223,7 +224,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		agentPolicy: "active",
 		name: "status",
 		description: "Get the current agent status.",
-		execute: async (context) => context.orchestrator.getAgentStatus(requireAgentId(context)),
+		execute: async (context) => context.orchestrator.getAgentActivity(requireAgentId(context)),
 	},
 	{
 		kind: "action",
@@ -232,9 +233,11 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		description: "Steer the current running agent.",
 		argumentHint: "<text>",
 		requiresArgument: true,
-		checkStatus: (status, maintenance) =>
-			unavailableDuringMaintenance("steer", maintenance) ??
-			(status === "running" ? undefined : `Command /steer requires a running agent (status: ${status}).`),
+		checkActivity: (activity) =>
+			unavailableDuringMaintenance("steer", activity.maintenance) ??
+			(activity.activity === "running"
+				? undefined
+				: `Command /steer requires a running agent (status: ${activity.activity}).`),
 		execute: async (context, argument) => {
 			const outcome = await context.orchestrator.sendMessage({
 				source: { kind: "human" },
@@ -316,14 +319,19 @@ export const builtInCommands: readonly CommandDefinition[] = [
 	},
 ];
 
-function profileLabel(snapshot: AgentRecordSnapshot): string {
+function profileLabel(snapshot: AgentSnapshot): string {
 	return snapshot.profile.reference.label ?? snapshot.profile.reference.id;
 }
 
+/** Maintenance is what a bare "running" would hide, so it is named instead. */
+function activityLabel(snapshot: AgentSnapshot): string {
+	return snapshot.activity.maintenance ?? snapshot.activity.activity;
+}
+
 // Resume and fork both answer "which agent did I land on".
-function agentSessionResultText(verb: string, result: unknown): string {
-	const { agentId, snapshot } = result as AgentSessionResult;
-	return `${verb} ${agentId} · ${profileLabel(snapshot)} · ${snapshot.model.id}`;
+function agentSnapshotResultText(verb: string, result: unknown): string {
+	const snapshot = result as AgentSnapshot;
+	return `${verb} ${snapshot.agentId} · ${profileLabel(snapshot)} · ${snapshot.model.id}`;
 }
 
 // A session is recognized by what the user called it or first said in it;

@@ -35,11 +35,7 @@ export class ChatView implements Component {
 			this.cachedAgentId = viewId;
 		}
 		if (timeline.length === 0) {
-			const message =
-				agent?.status === "unavailable"
-					? "This agent is unavailable. Review its diagnostics below."
-					: "Ask WIDI to inspect, explain, or change this workspace.";
-			return new Text(theme.dim(message), 1, 1).render(width);
+			return new Text(theme.dim("Ask WIDI to inspect, explain, or change this workspace."), 1, 1).render(width);
 		}
 
 		const liveThinkingIds = new Set<string>();

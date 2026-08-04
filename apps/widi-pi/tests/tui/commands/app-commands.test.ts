@@ -43,7 +43,7 @@ describe("applicationCommands", () => {
 
 	it("stays available while the agent is running", async () => {
 		const { engine, host, context } = setup("running");
-		for (const view of engine.list("running")) {
+		for (const view of engine.list({ activity: "running" })) {
 			expect(view.available).toBe(true);
 		}
 		const outcome = await engine.handleInput("/quit", context);

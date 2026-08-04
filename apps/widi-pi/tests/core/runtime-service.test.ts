@@ -560,7 +560,7 @@ You are extension-profile.`,
 			defaultProfileId: "extension-profile",
 			extensionModuleImporter: importer,
 		});
-		const agentId = await runtime.orchestrator.spawnAgent();
+		const agentId = await runtime.orchestrator.spawnAgent({ origin: { kind: "new" } });
 
 		expect(importer.imports).toEqual(["/custom/extensions/runtime-smoke.ts"]);
 		expect(runtime.services.extensionLoad.loaded).toEqual([
@@ -757,7 +757,7 @@ You are extension-profile.`,
 			defaultThinkingLevel: "medium",
 		});
 
-		const agentId = await runtime.orchestrator.spawnAgent();
+		const agentId = await runtime.orchestrator.spawnAgent({ origin: { kind: "new" } });
 
 		expect(runtime.orchestrator.getAgentThinkingLevel(agentId)).toBe("medium");
 	});

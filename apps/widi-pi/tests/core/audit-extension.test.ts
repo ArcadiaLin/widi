@@ -21,9 +21,11 @@ import {
 } from "../extensions/audit-extension.ts";
 import {
 	createOrchestrator,
+	harnessEventDriver,
 	MemoryExecutionEnv,
+	recordExtensionDiagnostics,
 	requireAgentHarness,
-	requireAgentRecord,
+	requireLiveAgent,
 } from "../helpers/orchestrator.ts";
 
 function createAuditTestDiagnostic(agentId: string): OrchestratorDiagnostic {
@@ -66,7 +68,7 @@ async function createAuditHarness(
 	orchestrator.subscribe((event) => {
 		events.push(event);
 	});
-	const agentId = await orchestrator.spawnAgent();
+	const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 	return { orchestrator, agentId, events };
 }
 
@@ -89,9 +91,7 @@ async function emitHarnessEvent(
 	agentId: string,
 	event: AgentHarnessEvent,
 ): Promise<void> {
-	const handler = (
-		orchestrator as unknown as { _handleAgentHarnessEvent(agentId: string, event: AgentHarnessEvent): Promise<void> }
-	)._handleAgentHarnessEvent.bind(orchestrator);
+	const handler = harnessEventDriver(orchestrator);
 	await handler(agentId, event);
 }
 
@@ -100,7 +100,7 @@ async function readAuditEntries<T>(
 	agentId: string,
 	type: string,
 ): Promise<ExtensionCustomEntry<T>[]> {
-	const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+	const runner = requireLiveAgent(orchestrator, agentId).extensionRunner;
 	if (!runner) throw new Error("Missing audit extension runner.");
 	return await runner.createContext("audit").session.findEntries<T>(type);
 }
@@ -187,8 +187,8 @@ describe("audit extension consumer", () => {
 
 		await orchestrator.requestHuman({ source: { kind: "agent", agentId }, kind: "confirm", title: "Continue?" });
 		await orchestrator.setAgentSessionName(agentId, "Audited session");
-		await orchestrator.recordExtensionDiagnostics(agentId, [createAuditTestDiagnostic(agentId)]);
-		await orchestrator.forkAgentSessionFromAgent(agentId);
+		await recordExtensionDiagnostics(orchestrator, agentId, [createAuditTestDiagnostic(agentId)]);
+		await orchestrator.spawnAgent({ origin: { kind: "fork", sourceAgentId: agentId } });
 
 		const entries = await readAuditEntries<AuditEventEntry>(orchestrator, agentId, AUDIT_EVENT_ENTRY_TYPE);
 		expect(entries.map((entry) => entry.data?.eventType)).toEqual([
@@ -209,7 +209,7 @@ describe("audit extension consumer", () => {
 
 	it("does not leak orchestrator events across agent runners", async () => {
 		const { orchestrator, agentId } = await createAuditHarness({ recordCoreEvents: ["agent_session_info_changed"] });
-		const otherAgentId = await orchestrator.spawnAgent();
+		const otherAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
 		await orchestrator.setAgentSessionName(agentId, "Audited");
 
@@ -411,7 +411,7 @@ describe("audit extension consumer", () => {
 			{ beforeAudit: [{ id: "broken", factory: broken }] },
 		);
 
-		await orchestrator.recordExtensionDiagnostics(agentId, [createAuditTestDiagnostic(agentId)]);
+		await recordExtensionDiagnostics(orchestrator, agentId, [createAuditTestDiagnostic(agentId)]);
 
 		await expect(
 			readAuditEntries<AuditEventEntry>(orchestrator, agentId, AUDIT_EVENT_ENTRY_TYPE),
@@ -443,7 +443,7 @@ describe("audit extension consumer", () => {
 		release();
 		await Promise.all([first, second]);
 
-		await orchestrator.recordExtensionDiagnostics(agentId, [createAuditTestDiagnostic(agentId)]);
+		await recordExtensionDiagnostics(orchestrator, agentId, [createAuditTestDiagnostic(agentId)]);
 
 		await expect(
 			readAuditEntries<AuditEventEntry>(orchestrator, agentId, AUDIT_EVENT_ENTRY_TYPE),
@@ -462,9 +462,9 @@ describe("audit extension consumer", () => {
 			{ beforeAudit: [{ id: "probe", factory: probe }] },
 		);
 
-		await orchestrator.disposeAgent(agentId);
+		await orchestrator.disposeAgent(agentId, { intent: "removed" });
 		observed.length = 0;
-		await orchestrator.recordExtensionDiagnostics(agentId, [createAuditTestDiagnostic(agentId)]);
+		await recordExtensionDiagnostics(orchestrator, agentId, [createAuditTestDiagnostic(agentId)]);
 
 		expect(observed).toEqual([]);
 		expect(

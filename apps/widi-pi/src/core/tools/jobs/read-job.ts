@@ -74,43 +74,37 @@ export function createReadJobToolDefinition(): ToolDefinition<typeof readJobSche
 		promptSnippet: "Peek at the live output of running background jobs",
 		parameters: readJobSchema,
 		execute: async (_toolCallId, { jobIds }, context) => {
-			const table = context.backgroundJobTable;
-			if (!table) {
+			const host = context.jobs;
+			if (!host) {
 				return {
 					content: [{ type: "text", text: "No background job registry is available, so there is nothing to read." }],
 					details: { jobs: [] },
 				};
 			}
 
-			// Same observability ruling as wait_for_jobs: only backgrounded jobs
-			// exist for the model (their ids came from t0 handles); running-phase
-			// jobs are excluded on purpose.
-			const live = new Map(
-				table
-					.list()
-					.filter((job) => job.phase === "backgrounded")
-					.map((job) => [job.id, job]),
-			);
-			const requestedIds = jobIds && jobIds.length > 0 ? Array.from(new Set(jobIds)) : Array.from(live.keys());
+			// Only observable jobs exist for the model - their ids came from t0
+			// handles - and that is exactly what `list` and `read` answer with.
+			const requestedIds =
+				jobIds && jobIds.length > 0 ? Array.from(new Set(jobIds)) : host.list().map((job) => job.jobId);
 
 			const jobs = requestedIds.map((id): ReadJobJobStatus => {
-				const job = live.get(id);
-				return job
-					? {
-							jobId: id,
-							toolName: job.toolName,
-							name: job.name,
-							description: job.description,
-							state: "running",
-							...(job.origin.kind === "external" ? { settlerAgentId: job.origin.settlerId } : undefined),
-							startedAt: job.startedAt,
-							totalBytesSeen: job.output.totalBytesSeen,
-							tailDroppedBytes: job.output.tailDroppedBytes,
-							progressDroppedBytes: job.output.progressDroppedBytes,
-							...(job.report === undefined ? undefined : { report: job.report }),
-							output: job.output.read(),
-						}
-					: { jobId: id, state: "unknown" };
+				const result = host.read(id);
+				if (!result.ok) return { jobId: id, state: "unknown" };
+				const { job, output } = result.read;
+				return {
+					jobId: id,
+					toolName: job.toolName,
+					name: job.name,
+					description: job.description,
+					state: "running",
+					...(job.origin.kind === "external" ? { settlerAgentId: job.origin.settlerId } : undefined),
+					startedAt: job.startedAt,
+					totalBytesSeen: job.totalBytesSeen,
+					tailDroppedBytes: job.tailDroppedBytes,
+					progressDroppedBytes: job.progressDroppedBytes,
+					...(job.report === undefined ? undefined : { report: job.report }),
+					output,
+				};
 			});
 			return { content: [{ type: "text", text: formatReadSummary(jobs) }], details: { jobs } };
 		},

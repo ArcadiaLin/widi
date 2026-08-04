@@ -1,6 +1,6 @@
 import type { AgentToolResult } from "@widi/agent-core";
 import { type Static, Type } from "typebox";
-import type { ToolAgentHost } from "../../orchestrator/host.ts";
+import type { ToolAgentHost } from "../../host.ts";
 import type { ToolDefinition } from "../types.ts";
 import { assignAgentTask, describeAssignedTask, requireAddressableAgent, requireAgentHost } from "./shared.ts";
 
@@ -109,7 +109,7 @@ export function createSendMessageToolDefinition(): ToolDefinition<typeof sendMes
 			if (assignTask) {
 				const assigned = await assignAgentTask({
 					host,
-					table: context.backgroundJobTable,
+					jobs: host.jobs,
 					toolCallId,
 					toolName: "send_message",
 					targetAgentId,
@@ -122,7 +122,7 @@ export function createSendMessageToolDefinition(): ToolDefinition<typeof sendMes
 			}
 
 			requireAddressableAgent(host, targetAgentId);
-			const outcome = await host.send(targetAgentId, body);
+			const outcome = await host.sendMessage(targetAgentId, body);
 			if (outcome.kind === "blocked") {
 				const reason = outcome.reason ? `${outcome.blockedBy}: ${outcome.reason}` : `blocked by ${outcome.blockedBy}`;
 				throw new Error(`The message to agent ${targetAgentId} was blocked (${reason}) and was not delivered.`);
@@ -164,13 +164,19 @@ function completeAgentTask(input: {
 		);
 	}
 	const status = input.failed ? "failed" : "completed";
-	const result = host.settleTask(ownerAgentId, taskId, { status, text: input.text });
-	if (result === "denied") {
-		throw new Error(
-			`Task ${taskId} of agent ${ownerAgentId} was assigned to a different agent, so you cannot settle it.`,
-		);
-	}
-	if (result !== "backgrounded") {
+	// The report text is the job's result, so it is what the owner reads as this
+	// task's t1 and nothing further is sent.
+	const settled = host.settler.settle({
+		ownerAgentId,
+		jobId: taskId,
+		outcome: { status, result: { content: [{ type: "text", text: input.text }], details: undefined } },
+	});
+	if (!settled.ok) {
+		if (settled.reason === "not_settler") {
+			throw new Error(
+				`Task ${taskId} of agent ${ownerAgentId} was assigned to a different agent, so you cannot settle it.`,
+			);
+		}
 		throw new Error(
 			`Task ${taskId} of agent ${ownerAgentId} is not open: it was already completed, cancelled, or never existed.`,
 		);

@@ -1,11 +1,5 @@
 import type { AgentOrchestrator } from "../../core/agent-orchestrator.ts";
-import type {
-	AgentLifecycleStatus,
-	AgentMaintenanceKind,
-	CandidateItem,
-	PromptExpansion,
-	RuntimeModel,
-} from "../../core/types.ts";
+import type { AgentActivitySnapshot, CandidateItem, PromptExpansion, RuntimeModel } from "../../core/types.ts";
 
 export type CommandAgentPolicy = "runtime" | "materialize" | "active";
 
@@ -25,8 +19,8 @@ interface CommandBase {
 	readonly description: string;
 	readonly argumentHint?: string;
 	readonly requiresArgument?: boolean;
-	/** Returns why the current agent phase blocks this command, or undefined. */
-	checkStatus?(status: AgentLifecycleStatus, maintenance?: AgentMaintenanceKind): string | undefined;
+	/** Returns why the current agent activity blocks this command, or undefined. */
+	checkActivity?(activity: AgentActivitySnapshot): string | undefined;
 	complete?(context: CommandContext, argumentPrefix: string): Promise<readonly CandidateItem[]>;
 }
 

@@ -1,9 +1,9 @@
 import type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode } from "@widi/agent-core";
 import type { Static, TSchema } from "typebox";
-import type { BackgroundJobOutput, BackgroundJobReport, BackgroundJobTable } from "../background/index.ts";
+import type { BackgroundJobHost, BackgroundJobOutputWriter, BackgroundJobReport } from "../background/index.ts";
+import type { ToolAgentHost } from "../host.ts";
 import type { HumanInterruptWatch } from "../human-interrupt.ts";
 import type { ToolHumanHost } from "../human-request.ts";
-import type { ToolAgentHost } from "../orchestrator/host.ts";
 
 /**
  * Runtime context passed to a WIDI tool execution function.
@@ -30,11 +30,12 @@ export interface ToolExecutionContext<TDetails> {
 	 */
 	agents?: ToolAgentHost;
 	/**
-	 * Per-agent registry of pseudo-async background jobs, when the runtime wired
-	 * one. Job-control tools such as `wait_for_jobs` read live jobs and observe
-	 * their settlements through it; most tools ignore it.
+	 * Owner-scoped background job capabilities, bound to the agent whose turn is
+	 * executing, when the runtime wired a background runtime. Job-control tools
+	 * such as `wait_for_jobs` read live jobs and observe their settlements
+	 * through it; most tools ignore it.
 	 */
-	backgroundJobTable?: BackgroundJobTable;
+	jobs?: BackgroundJobHost;
 	/**
 	 * Pending human steers for the agent whose turn is executing. Only tools that
 	 * deliberately block read it, so the user does not have to wait out a barrier
@@ -43,11 +44,12 @@ export interface ToolExecutionContext<TDetails> {
 	humanInterrupts?: HumanInterruptWatch;
 	/**
 	 * Set when this call executes as a pseudo-async job (a `backgroundable`
-	 * call registered in the job table); undefined for plain synchronous calls.
-	 * The tool streams its raw output into `output` so job-control surfaces can
-	 * peek at live progress. The table's cooperative output ceiling only counts
-	 * bytes appended here, and termination still requires the tool to honor
-	 * `signal`; the tool's eventual result size is independent of this buffer.
+	 * call the background runtime accepted); undefined for plain synchronous
+	 * calls. The tool streams its raw output into `output` so job-control
+	 * surfaces can peek at live progress. The runtime's cooperative output
+	 * ceiling only counts bytes appended here, and termination still requires
+	 * the tool to honor `signal`; the tool's eventual result size is independent
+	 * of this buffer.
 	 */
 	job?: BackgroundJobExecutionContext;
 }
@@ -55,7 +57,7 @@ export interface ToolExecutionContext<TDetails> {
 /** Capabilities scoped to the pseudo-async job executing this tool call. */
 export interface BackgroundJobExecutionContext {
 	readonly id: string;
-	readonly output: BackgroundJobOutput;
+	readonly output: BackgroundJobOutputWriter;
 	/**
 	 * Replace the job's structured report. Returns false if the job already
 	 * settled before the update was published.

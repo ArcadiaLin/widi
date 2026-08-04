@@ -360,7 +360,7 @@ function formatAgent(state: TuiApplicationState, agent: AgentViewState, active: 
 }
 
 function agentGlyph(agent: AgentViewState, active: boolean): string {
-	if (agent.status === "unavailable" || agent.attention === "error") {
+	if (agent.attention === "error") {
 		return theme.error("!");
 	}
 	if (agent.attention === "human-request" || agent.attention === "warning") {

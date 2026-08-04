@@ -1,5 +1,9 @@
 import { type Static, Type } from "typebox";
-import { type BackgroundJob, type BackgroundJobStatus, backgroundJobToolLabel } from "../../background/index.ts";
+import {
+	type BackgroundJobSnapshot,
+	type BackgroundJobStatus,
+	backgroundJobToolLabel,
+} from "../../background/index.ts";
 import type { ToolDefinition } from "../types.ts";
 import { waitForSettlements } from "./settlement-wait.ts";
 
@@ -65,50 +69,49 @@ export function createKillJobToolDefinition(): ToolDefinition<typeof killJobSche
 		promptSnippet: "Terminate running background jobs",
 		parameters: killJobSchema,
 		execute: async (_toolCallId, { jobIds, timeout }, context) => {
-			const table = context.backgroundJobTable;
-			if (!table) {
+			const host = context.jobs;
+			if (!host) {
 				return {
 					content: [{ type: "text", text: "No background job registry is available, so there is nothing to kill." }],
 					details: { jobs: [] },
 				};
 			}
 
-			// Same observability ruling as wait_for_jobs: only backgrounded jobs
-			// exist for the model; running-phase jobs report `unknown`.
-			const live = new Map(
-				table
-					.list()
-					.filter((job) => job.phase === "backgrounded")
-					.map((job) => [job.id, job]),
-			);
+			// Only observable jobs exist for the model; anything else reports `unknown`.
+			const live = new Map(host.list().map((job) => [job.jobId, job]));
 			const requestedIds = Array.from(new Set(jobIds));
 
 			const statuses = new Map<string, KillJobJobStatus>();
-			const pending = new Map<string, BackgroundJob>();
+			const pending = new Map<string, BackgroundJobSnapshot>();
 			for (const id of requestedIds) {
 				const job = live.get(id);
 				if (job) pending.set(id, job);
 				else statuses.set(id, { jobId: id, state: "unknown" });
 			}
 
-			// Subscribe before aborting: a job that settles synchronously on its
-			// signal must still be observed as settled rather than waiting out the
-			// timeout. waitForSettlements subscribes synchronously.
+			// The wait subscribes synchronously, before the aborts below: a job that
+			// settles on its own signal must still be observed as settled rather
+			// than waiting out the timeout.
 			const timeoutMs = resolveKillTimeoutMs(timeout);
 			const settlementWait =
 				pending.size > 0 && timeoutMs > 0
 					? waitForSettlements({
-							table,
+							watch: host.watch(),
 							pending,
 							timeoutMs,
 							signal: context.signal,
 							onSettled: (job, outcome) =>
-								statuses.set(job.id, { jobId: job.id, toolName: job.toolName, name: job.name, state: outcome.status }),
+								statuses.set(job.jobId, {
+									jobId: job.jobId,
+									toolName: job.toolName,
+									name: job.name,
+									state: outcome.status,
+								}),
 						})
 					: undefined;
 			// The listener drains `pending` as jobs settle; snapshot the ids first.
 			for (const id of Array.from(pending.keys())) {
-				table.abort(id, "Cancellation requested by kill_job.");
+				host.abort(id, "Cancellation requested by kill_job.");
 			}
 			if (settlementWait) await settlementWait;
 

@@ -1,17 +1,11 @@
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
 import type { AgentHarnessEvent } from "@widi/agent-core";
-import type { AgentRecordSnapshot } from "../core/agent-record.ts";
+import type { AgentSnapshot } from "../core/agent-types.ts";
 import type { BackgroundJobReportSnapshot } from "../core/background/index.ts";
 import type { OrchestratorDiagnostic } from "../core/diagnostics.ts";
 import type { ExtensionMessage, ExtensionStatusSnapshot } from "../core/extension/presentation.ts";
 import type { HumanRequestEnvelope, HumanRequestKind } from "../core/human-request.ts";
-import type {
-	AgentId,
-	AgentLifecycleStatus,
-	AgentMaintenanceKind,
-	OrchestratorEvent,
-	RuntimeModel,
-} from "../core/types.ts";
+import type { AgentId, AgentMaintenanceKind, OrchestratorEvent, RuntimeModel } from "../core/types.ts";
 import type { CommandError } from "./commands/types.ts";
 
 export type TimelineDurability = "durable" | "ephemeral";
@@ -223,12 +217,22 @@ export interface PendingFollowUp {
 	readonly text: string;
 }
 
+/**
+ * Lifecycle of one agent row.
+ *
+ * Core reports only `idle` and `running`, and only for an agent that is live;
+ * the two extra states are the view's own - one before core has said anything
+ * about a row the TUI already had to create, one after the agent is gone and
+ * the row is kept so its transcript stays readable.
+ */
+export type AgentViewStatus = "creating" | "idle" | "running" | "disposed";
+
 export interface AgentViewState {
 	readonly agentId: AgentId;
-	snapshot?: AgentRecordSnapshot;
+	snapshot?: AgentSnapshot;
 	/** The agent whose tool spawned this one; unset for user-side spawns. */
 	spawnedBy?: AgentId;
-	status: AgentLifecycleStatus;
+	status: AgentViewStatus;
 	/** Set while status "running" is maintenance work (compaction, tree
 	 * navigation) rather than an agent turn: no steering or aborting applies. */
 	maintenance?: AgentMaintenanceKind;
@@ -328,7 +332,7 @@ export function createTuiApplicationState(): TuiApplicationState {
 	};
 }
 
-export function createAgentViewState(agentId: AgentId, status: AgentLifecycleStatus = "creating"): AgentViewState {
+export function createAgentViewState(agentId: AgentId, status: AgentViewStatus = "creating"): AgentViewState {
 	return {
 		agentId,
 		status,
@@ -350,7 +354,7 @@ export function createAgentViewState(agentId: AgentId, status: AgentLifecycleSta
 export function ensureAgentProjection(
 	state: TuiApplicationState,
 	agentId: AgentId,
-	status: AgentLifecycleStatus = "creating",
+	status: AgentViewStatus = "creating",
 ): AgentViewState {
 	const existing = state.agents.get(agentId);
 	if (existing) return existing;
@@ -377,7 +381,6 @@ export function retainedAttention(state: TuiApplicationState, agent: AgentViewSt
 	if (state.humanRequests.some((item) => item.agentId === agent.agentId)) {
 		return "human-request";
 	}
-	if (agent.status === "unavailable") return "error";
 	let attention: AgentAttention = "none";
 	const diagnostics = [
 		...agent.timeline.flatMap((item) => (item.type === "diagnostic" ? [item.diagnostic] : [])),

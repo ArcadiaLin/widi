@@ -6,27 +6,28 @@
  */
 
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
-import type { AgentHarnessEvent, AgentMessage } from "@widi/agent-core";
+import type { AgentMessage } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
-import type { AgentOrchestrator, OrchestratorEvent } from "../../src/core/agent-orchestrator.ts";
+import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import type { ExtensionInputPresentation, ExtensionObservedEventName } from "../../src/core/extension/api.ts";
 import { EXTENSION_OBSERVED_EVENT_NAMES } from "../../src/core/extension/index.ts";
 import { EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE } from "../../src/core/session-manager.ts";
+import type { OrchestratorEvent } from "../../src/core/types.ts";
 import {
 	createOrchestrator,
 	defaultModel,
 	defaultProfile,
+	harnessEventDriver,
 	MemoryExecutionEnv,
 	requireAgentHarness,
-	requireAgentRecord,
+	requireLiveAgent,
+	seedAgentContextUsage,
 } from "../helpers/orchestrator.ts";
 
 // Same private-access precedent as the orchestrator suite: a real settled fact
 // requires a full model run, which unit tests never perform.
 async function emitSettled(orchestrator: AgentOrchestrator, agentId: string): Promise<void> {
-	await (
-		orchestrator as unknown as { _handleAgentHarnessEvent(agentId: string, event: AgentHarnessEvent): Promise<void> }
-	)._handleAgentHarnessEvent(agentId, { type: "settled", nextTurnCount: 0 });
+	await harnessEventDriver(orchestrator)(agentId, { type: "settled", nextTurnCount: 0 });
 }
 
 async function emitQueueUpdate(
@@ -34,9 +35,7 @@ async function emitQueueUpdate(
 	agentId: string,
 	queues: { steer?: UserMessage[]; followUp?: UserMessage[]; nextTurn?: AgentMessage[] },
 ): Promise<void> {
-	await (
-		orchestrator as unknown as { _handleAgentHarnessEvent(agentId: string, event: AgentHarnessEvent): Promise<void> }
-	)._handleAgentHarnessEvent(agentId, {
+	await harnessEventDriver(orchestrator)(agentId, {
 		type: "queue_update",
 		steer: queues.steer ?? [],
 		followUp: queues.followUp ?? [],
@@ -73,9 +72,9 @@ async function createHarness() {
 	const orchestrator = await createOrchestrator(env);
 	await orchestrator.settingManager.setProjectTrusted(true);
 	orchestrator.registerExtension("sample", () => {});
-	const agentId = await orchestrator.spawnAgent();
+	const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 	const stored = await orchestrator.sessionManager.createAgentSession({ agentId, agentProfile: defaultProfile });
-	const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+	const runner = requireLiveAgent(orchestrator, agentId).extensionRunner;
 	if (!runner) throw new Error("Expected extension runner.");
 	const context = runner.createContext("sample");
 	return { env, orchestrator, agentId, actions: context.actions, session: context.session, stored };
@@ -354,12 +353,7 @@ describe("extension context usage", () => {
 
 	it("clears a stale measurement when refreshing the branch fails", async () => {
 		const { orchestrator, agentId, actions } = await createHarness();
-		requireAgentRecord(orchestrator, agentId).contextUsage = {
-			tokens: 10,
-			contextWindow: 100,
-			percent: 10,
-			model: "test/model",
-		};
+		seedAgentContextUsage(orchestrator, agentId, { tokens: 10, contextWindow: 100, percent: 10, model: "test/model" });
 		Object.assign(orchestrator.sessionManager, {
 			getAgentSessionSnapshot: async () => {
 				throw new Error("session read failed");
@@ -396,8 +390,7 @@ describe("extension context usage", () => {
 
 	it("returns detached usage and exposes it in the agent snapshot", async () => {
 		const { orchestrator, agentId, actions } = await createHarness();
-		const record = requireAgentRecord(orchestrator, agentId);
-		record.contextUsage = { tokens: 10, contextWindow: 100, percent: 10, model: "test/model" };
+		seedAgentContextUsage(orchestrator, agentId, { tokens: 10, contextWindow: 100, percent: 10, model: "test/model" });
 
 		const usage = actions.getContextUsage();
 		if (!usage) throw new Error("Expected context usage.");
@@ -480,9 +473,9 @@ describe("extension input presentation", () => {
 		orchestrator.registerExtension("sample", (api) => {
 			api.intercept("input", () => ({ block: true, reason: "policy" }));
 		});
-		const agentId = await orchestrator.spawnAgent();
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		await orchestrator.sessionManager.createAgentSession({ agentId, agentProfile: defaultProfile });
-		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+		const runner = requireLiveAgent(orchestrator, agentId).extensionRunner;
 		if (!runner) throw new Error("Expected extension runner.");
 		const events: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
@@ -642,8 +635,8 @@ describe("extension read-only runtime getters", () => {
 		orchestrator.registerExtension("sample", (api) => {
 			api.appendSystemPrompt("extension guidance section");
 		});
-		const agentId = await orchestrator.spawnAgent();
-		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const runner = requireLiveAgent(orchestrator, agentId).extensionRunner;
 		if (!runner) throw new Error("Expected extension runner.");
 
 		const prompt = await runner.createContext("sample").actions.getSystemPrompt();
@@ -689,7 +682,7 @@ describe("extension observer delivery", () => {
 				});
 			}
 		});
-		const agentId = await orchestrator.spawnAgent();
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		const stored = await orchestrator.sessionManager.createAgentSession({ agentId, agentProfile: defaultProfile });
 		orchestrator.settingManager.setCompactionEnabled(false);
 		await stored.appendMessage(assistantMessage(250));

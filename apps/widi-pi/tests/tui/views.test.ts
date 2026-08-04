@@ -1,6 +1,6 @@
 import { setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
-import type { AgentRecordSnapshot } from "../../src/core/agent-record.ts";
+import type { AgentSnapshot } from "../../src/core/agent-types.ts";
 import { builtInCommands } from "../../src/tui/commands/built-ins.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
 import { AgentStripView } from "../../src/tui/components/agent-strip.ts";
@@ -66,7 +66,7 @@ describe("TUI views", () => {
 		worker.status = "running";
 		worker.unreadCount = 3;
 		const failed = ensureAgentProjection(state, "researcher");
-		failed.status = "unavailable";
+		failed.status = "disposed";
 		failed.attention = "error";
 
 		const views = [
@@ -567,11 +567,15 @@ function timestamp(offset: number): string {
 	return new Date(Date.UTC(2026, 0, 1, 0, 0, offset)).toISOString();
 }
 
-function snapshot(agentId: string, path: string, parentSessionPath?: string): AgentRecordSnapshot {
+function snapshot(agentId: string, path: string, parentSessionPath?: string): AgentSnapshot {
 	return {
 		agentId,
-		status: "idle",
-		profile: { reference: { id: "widi-dev", label: "WIDI Dev" } },
+		generation: 1,
+		profile: {
+			reference: { id: "widi-dev", label: "WIDI Dev" },
+			source: { kind: "memory", priority: 0 },
+			entryId: "entry-1",
+		},
 		sessionMetadata: { id: agentId, createdAt: new Date(0).toISOString(), cwd: "/workspace", path, parentSessionPath },
 		model: {
 			id: "test-model",
@@ -585,10 +589,10 @@ function snapshot(agentId: string, path: string, parentSessionPath?: string): Ag
 			contextWindow: 1000,
 			maxTokens: 100,
 		},
-		hasHarness: true,
-		extensionIds: [],
-		extensions: [],
-		extensionSnapshot: {
+		thinkingLevel: "off",
+		tools: { toolNames: [], activeToolNames: [] },
+		activity: { activity: "idle" },
+		extensions: {
 			extensionIds: [],
 			extensions: [],
 			hooks: [],
@@ -598,8 +602,6 @@ function snapshot(agentId: string, path: string, parentSessionPath?: string): Ag
 			divisions: [],
 			stale: { stale: false },
 		},
-		resourceDiagnostics: [],
-		extensionDiagnostics: [],
 		diagnostics: [],
 	};
 }

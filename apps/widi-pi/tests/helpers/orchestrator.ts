@@ -1,5 +1,13 @@
 import type { Model } from "@earendil-works/pi-ai";
-import type { ExecutionEnv, ExecutionError, FileError, FileInfo, Result, ShellExecOptions } from "@widi/agent-core";
+import type {
+	AgentHarnessEvent,
+	ExecutionEnv,
+	ExecutionError,
+	FileError,
+	FileInfo,
+	Result,
+	ShellExecOptions,
+} from "@widi/agent-core";
 import { err, ok, ExecutionError as PiExecutionError, FileError as PiFileError } from "@widi/agent-core";
 import { Type } from "typebox";
 import { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
@@ -8,8 +16,11 @@ import {
 	AgentProfileRegistry,
 	InMemoryProfileStorageBackend,
 } from "../../src/core/agent-profile.ts";
-import type { AgentRecord } from "../../src/core/agent-record.ts";
+import type { LiveAgent, WidiAgentHarness } from "../../src/core/agent-types.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
+import type { BackgroundJobHost } from "../../src/core/background/index.ts";
+import type { AgentContextMonitor } from "../../src/core/context-monitor.ts";
+import type { OrchestratorDiagnostic } from "../../src/core/diagnostics.ts";
 import { ModelRegistry } from "../../src/core/model-registry.ts";
 import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
 import { ResourceLoader } from "../../src/core/resource-loader.ts";
@@ -18,6 +29,7 @@ import { SettingManager } from "../../src/core/setting-manager.ts";
 import { ToolRegistry } from "../../src/core/tool-registry.ts";
 import { registerCoreCodingTools } from "../../src/core/tools/coding/builtin.ts";
 import type { ToolDefinition } from "../../src/core/tools/types.ts";
+import type { AgentContextUsage } from "../../src/core/types.ts";
 
 export class MemoryExecutionEnv implements ExecutionEnv {
 	cwd = "/workspace";
@@ -322,17 +334,80 @@ export function createCoreCodingToolRegistry(): ToolRegistry {
 }
 
 // White-box test helper for driving harness hooks and inspecting live runners.
-export function requireAgentRecord(orchestrator: AgentOrchestrator, agentId: string): AgentRecord {
-	const record = (orchestrator as unknown as { _agents: Map<string, AgentRecord> })._agents.get(agentId);
-	if (!record) throw new Error(`Unknown agent record: ${agentId}`);
-	return record;
+export function requireLiveAgent(orchestrator: AgentOrchestrator, agentId: string): LiveAgent {
+	const liveAgent = (orchestrator as unknown as { _live: Map<string, LiveAgent> })._live.get(agentId);
+	if (!liveAgent) throw new Error(`Unknown live agent: ${agentId}`);
+	return liveAgent;
 }
 
-export function requireAgentHarness(
+export function requireAgentHarness(orchestrator: AgentOrchestrator, agentId: string): WidiAgentHarness {
+	return requireLiveAgent(orchestrator, agentId).harness;
+}
+
+/**
+ * Seed the context gauge a live agent projects, which is otherwise only ever
+ * produced by measuring a real branch.
+ */
+export function seedAgentContextUsage(
 	orchestrator: AgentOrchestrator,
 	agentId: string,
-): NonNullable<AgentRecord["harness"]> {
-	const harness = requireAgentRecord(orchestrator, agentId).harness;
-	if (!harness) throw new Error(`Missing agent harness: ${agentId}`);
-	return harness;
+	usage: AgentContextUsage | undefined,
+): void {
+	const monitor = (orchestrator as unknown as { _context: AgentContextMonitor })._context;
+	const projections = (
+		monitor as unknown as { _projections: Map<string, { generation: number; usage?: AgentContextUsage }> }
+	)._projections;
+	projections.set(agentId, {
+		generation: requireLiveAgent(orchestrator, agentId).generation,
+		...(usage === undefined ? undefined : { usage }),
+	});
+}
+
+/** Publish extension-sourced diagnostics the way a bound runner would. */
+export async function recordExtensionDiagnostics(
+	orchestrator: AgentOrchestrator,
+	agentId: string,
+	diagnostics: readonly OrchestratorDiagnostic[],
+): Promise<void> {
+	await (
+		orchestrator as unknown as {
+			_recordAndPublishExtensionDiagnostics(
+				agentId: string,
+				diagnostics: readonly OrchestratorDiagnostic[],
+			): Promise<void>;
+		}
+	)._recordAndPublishExtensionDiagnostics(agentId, diagnostics);
+}
+
+/**
+ * Drive a harness event through the orchestrator's own subscription, as the
+ * live harness would. The generation is read per call so a resumed agent's
+ * events reach its current occupant.
+ */
+export function harnessEventDriver(
+	orchestrator: AgentOrchestrator,
+): (agentId: string, event: AgentHarnessEvent) => Promise<void> {
+	return async (agentId, event) => {
+		const generation = requireLiveAgent(orchestrator, agentId).generation;
+		await (
+			orchestrator as unknown as {
+				_handleHarnessEvent(
+					agentId: string,
+					generation: number,
+					event: AgentHarnessEvent,
+					signal: AbortSignal | undefined,
+				): Promise<void>;
+			}
+		)._handleHarnessEvent(agentId, generation, event, undefined);
+	};
+}
+
+/** The spawn-tree parent the runtime holds in memory for this agent. */
+export function spawnParentOf(orchestrator: AgentOrchestrator, agentId: string): string | undefined {
+	return (orchestrator as unknown as { _spawnParent: Map<string, string> })._spawnParent.get(agentId);
+}
+
+/** The owner-scoped job capabilities the agent's own tools were handed. */
+export function requireAgentJobs(orchestrator: AgentOrchestrator, agentId: string): BackgroundJobHost {
+	return requireLiveAgent(orchestrator, agentId).backgroundAttachment.host;
 }

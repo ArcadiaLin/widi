@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { BackgroundJobTable } from "../../src/core/background/index.ts";
+import type { BackgroundJobHost } from "../../src/core/background/index.ts";
 import { createReadJobToolDefinition } from "../../src/core/tools/jobs/read-job.ts";
+import { createJobRuntimeHarness, startBackgroundedJob } from "../helpers/background-jobs.ts";
 
 const readJob = createReadJobToolDefinition();
 
-function contextWith(table?: BackgroundJobTable) {
-	return { signal: undefined, onUpdate: undefined, extension: undefined, human: undefined, backgroundJobTable: table };
+function contextWith(jobs?: BackgroundJobHost) {
+	return { signal: undefined, onUpdate: undefined, extension: undefined, human: undefined, jobs };
 }
 
 const textOf = (result: { content: Array<{ type: string; text?: string }> }) =>
@@ -13,20 +14,19 @@ const textOf = (result: { content: Array<{ type: string; text?: string }> }) =>
 
 describe("read_job tool", () => {
 	it("returns the live output tail of backgrounded jobs, defaulting to all", async () => {
-		const table = new BackgroundJobTable();
-		const first = table.create({ toolCallId: "call-1", toolName: "bash" });
-		const second = table.create({ toolCallId: "call-2", toolName: "bash" });
-		table.background(first.id);
-		table.background(second.id);
-		first.output.append("building...\n");
+		const { host } = await createJobRuntimeHarness();
+		const first = startBackgroundedJob(host, { toolCallId: "call-1" });
+		const second = startBackgroundedJob(host, { toolCallId: "call-2" });
+		first.execution.output.append("building...\n");
 
-		const result = await readJob.execute("call-3", {}, contextWith(table));
+		const result = await readJob.execute("call-3", {}, contextWith(host));
 
 		expect(result.details).toEqual({
 			jobs: [
 				{
-					jobId: first.id,
+					jobId: first.job.jobId,
 					toolName: "bash",
+					name: undefined,
 					description: undefined,
 					state: "running",
 					startedAt: expect.any(Number),
@@ -36,8 +36,9 @@ describe("read_job tool", () => {
 					output: "building...\n",
 				},
 				{
-					jobId: second.id,
+					jobId: second.job.jobId,
 					toolName: "bash",
+					name: undefined,
 					description: undefined,
 					state: "running",
 					startedAt: expect.any(Number),
@@ -54,20 +55,24 @@ describe("read_job tool", () => {
 		expect(text).toContain("(no output yet)");
 	});
 
-	it("reports settled, unknown, and running-phase ids as unknown", async () => {
-		const table = new BackgroundJobTable();
-		const settled = table.create({ toolCallId: "call-1", toolName: "bash" });
-		table.background(settled.id);
-		table.settle(settled.id, { status: "completed" });
+	it("reports settled, candidate, and unknown ids as unknown", async () => {
+		const { host } = await createJobRuntimeHarness();
+		const settled = startBackgroundedJob(host, { toolCallId: "call-1" });
+		settled.execution.settle({ status: "completed" });
 		// Pre-t0 sync window: not observable, so not readable.
-		const running = table.create({ toolCallId: "call-2", toolName: "bash" });
+		const candidate = host.startLocal({ toolCallId: "call-2", toolName: "bash" });
+		if (!candidate.ok) throw new Error("Expected a local job.");
 
-		const result = await readJob.execute("call-3", { jobIds: [settled.id, running.id, "job-99"] }, contextWith(table));
+		const result = await readJob.execute(
+			"call-3",
+			{ jobIds: [settled.job.jobId, candidate.execution.jobId, "job-99"] },
+			contextWith(host),
+		);
 
 		expect(result.details).toEqual({
 			jobs: [
-				{ jobId: settled.id, state: "unknown" },
-				{ jobId: running.id, state: "unknown" },
+				{ jobId: settled.job.jobId, state: "unknown" },
+				{ jobId: candidate.execution.jobId, state: "unknown" },
 				{ jobId: "job-99", state: "unknown" },
 			],
 		});
@@ -75,15 +80,14 @@ describe("read_job tool", () => {
 	});
 
 	it("reports tail and progress-buffer drops separately", async () => {
-		const table = new BackgroundJobTable({ incrementMaxBytes: 4 });
-		const job = table.create({ toolCallId: "call-1", toolName: "bash" });
-		table.background(job.id);
-		job.output.append("abcdef");
+		const { host } = await createJobRuntimeHarness({ incrementMaxBytes: 4 });
+		const { execution, job } = startBackgroundedJob(host);
+		execution.output.append("abcdef");
 
-		const result = await readJob.execute("call-2", { jobIds: [job.id] }, contextWith(table));
+		const result = await readJob.execute("call-2", { jobIds: [job.jobId] }, contextWith(host));
 
 		expect(result.details.jobs[0]).toMatchObject({
-			jobId: job.id,
+			jobId: job.jobId,
 			totalBytesSeen: 6,
 			tailDroppedBytes: 0,
 			progressDroppedBytes: 2,
@@ -92,20 +96,20 @@ describe("read_job tool", () => {
 	});
 
 	it("returns the latest structured report and its generic summary", async () => {
-		const table = new BackgroundJobTable();
-		const job = table.create({ toolCallId: "call-1", toolName: "planner" });
-		table.setReport(job.id, {
-			kind: "test.plan",
-			schemaVersion: 1,
-			summary: "Executing plan",
-			progress: { completed: 2, total: 4 },
+		const { host } = await createJobRuntimeHarness();
+		const started = host.startLocal({
+			toolCallId: "call-1",
+			toolName: "planner",
+			report: { kind: "test.plan", schemaVersion: 1, summary: "Executing plan", progress: { completed: 2, total: 4 } },
 		});
-		table.background(job.id);
+		if (!started.ok) throw new Error("Expected a local job.");
+		const accepted = started.execution.acceptBackground();
+		if (!accepted.ok) throw new Error("Expected the job to background.");
 
-		const result = await readJob.execute("call-2", { jobIds: [job.id] }, contextWith(table));
+		const result = await readJob.execute("call-2", { jobIds: [accepted.job.jobId] }, contextWith(host));
 
 		expect(result.details.jobs[0]).toMatchObject({
-			jobId: job.id,
+			jobId: accepted.job.jobId,
 			report: {
 				revision: 1,
 				value: { kind: "test.plan", summary: "Executing plan", progress: { completed: 2, total: 4 } },
@@ -115,9 +119,9 @@ describe("read_job tool", () => {
 	});
 
 	it("reports nothing to read when no jobs are live", async () => {
-		const table = new BackgroundJobTable();
+		const { host } = await createJobRuntimeHarness();
 
-		const result = await readJob.execute("call-1", {}, contextWith(table));
+		const result = await readJob.execute("call-1", {}, contextWith(host));
 
 		expect(result.details).toEqual({ jobs: [] });
 		expect(textOf(result)).toBe("No live background jobs to read.");

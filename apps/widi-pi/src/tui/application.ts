@@ -1,11 +1,11 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
-import type { AgentOrchestrator, OrchestratorEvent } from "../core/agent-orchestrator.ts";
+import type { AgentOrchestrator } from "../core/agent-orchestrator.ts";
 import { DEFAULT_AGENT_DIR } from "../core/constants.js";
 import { type OrchestratorDiagnostic, OrchestratorError } from "../core/diagnostics.ts";
 import { createWidiRuntime, type WidiRuntime } from "../core/runtime-service.ts";
-import type { CandidateItem, PromptExpansion } from "../core/types.ts";
+import type { AgentActivitySnapshot, CandidateItem, OrchestratorEvent, PromptExpansion } from "../core/types.ts";
 import { forkSourceAgentId } from "./agent-identity.ts";
 import { WidiCommandAutocompleteProvider } from "./autocomplete.ts";
 import { applicationCommands } from "./commands/app-commands.ts";
@@ -460,7 +460,7 @@ export class WidiTuiApplication {
 		}
 
 		const agent = agentId ? ensureAgentProjection(this.state, agentId) : undefined;
-		if (agent && (agent.status === "unavailable" || agent.status === "disposed" || !agent.snapshot?.hasHarness)) {
+		if (agent && agent.status === "disposed") {
 			this.restoreEditor(rawText, agentId);
 			this.addApplicationNotice(`Agent ${agentLabel(agent)} cannot accept input (${agent.status}).`, agentId);
 			return;
@@ -501,7 +501,7 @@ export class WidiTuiApplication {
 					await this.submitFollowUp(agentId, rawText, text);
 					return;
 				}
-				await this.submitPrompt(agentId, rawText, text, undefined);
+				await this.submitPrompt(agentId, rawText, text);
 				return;
 			case "expanded":
 				this.removeCommandItems(
@@ -586,14 +586,14 @@ export class WidiTuiApplication {
 		agentId: string,
 		rawText: string,
 		text: string,
-		expansion: PromptExpansion | undefined,
+		expansion?: PromptExpansion,
 	): Promise<void> {
 		const agent = ensureAgentProjection(this.state, agentId);
 		agent.pendingInput = { originalText: rawText, submittedAt: new Date().toISOString() };
 		this.editor.addToHistory(rawText);
 		this.tui.requestRender();
 		try {
-			const outcome = await this.orchestrator.promptAgent(agentId, text, { expansion });
+			const outcome = await this.orchestrator.promptAgent(agentId, text, expansion ? { expansion } : undefined);
 			if (outcome.kind === "blocked") {
 				agent.pendingInput = undefined;
 				this.restoreEditor(rawText, agentId);
@@ -862,14 +862,12 @@ export class WidiTuiApplication {
 	private async disposeAgent(agentId: string): Promise<void> {
 		const disposed = ensureAgentProjection(this.state, agentId);
 		const sourceAgentId = forkSourceAgentId(this.state, disposed);
-		await this.orchestrator.disposeAgent(agentId, { reason: "Disposed from the TUI." });
+		await this.orchestrator.disposeAgent(agentId, { intent: "removed", reason: "Disposed from the TUI." });
 		disposed.status = "disposed";
 		await this.syncAgent(agentId);
 
 		const isUsableNavigationTarget = (agent: AgentViewState) =>
-			agent.agentId !== agentId &&
-			(agent.status === "idle" || agent.status === "running") &&
-			agent.snapshot?.hasHarness !== false;
+			agent.agentId !== agentId && (agent.status === "idle" || agent.status === "running");
 		const source = sourceAgentId ? this.state.agents.get(sourceAgentId) : undefined;
 		if (source && isUsableNavigationTarget(source)) {
 			this.switchAgent(source.agentId);
@@ -937,7 +935,7 @@ export class WidiTuiApplication {
 	 * alone instead of a tombstone nobody can return to.
 	 */
 	private async closeAgentForNewSession(agentId: string): Promise<void> {
-		await this.orchestrator.disposeAgent(agentId, { reason: "Closed for a new session." });
+		await this.orchestrator.disposeAgent(agentId, { intent: "removed", reason: "Closed for a new session." });
 		this.state.agents.delete(agentId);
 		this.drafts.delete(agentId);
 		this.hydratedAgents.delete(agentId);
@@ -952,7 +950,7 @@ export class WidiTuiApplication {
 			new WidiCommandAutocompleteProvider({
 				engine: this.engine,
 				orchestrator: this.orchestrator,
-				getStatus: () => undefined,
+				getActivity: () => undefined,
 				getPendingModel: () => this.state.pendingAgent?.display.model,
 				cwd: this.runtime.services.cwd,
 			}),
@@ -975,15 +973,14 @@ export class WidiTuiApplication {
 				engine: this.engine,
 				agentId,
 				orchestrator: this.orchestrator,
-				getStatus: () => this.state.agents.get(agentId)?.status ?? "idle",
-				getMaintenance: () => this.state.agents.get(agentId)?.maintenance,
+				getActivity: () => toCommandActivity(this.state.agents.get(agentId)),
 				cwd: this.runtime.services.cwd,
 			}),
 		);
 		this.updateTerminalTitle();
 		this.tui.setFocus(this.editor);
 		this.tui.requestRender();
-		if (!this.hydratedAgents.has(agentId) && agent.status !== "unavailable" && agent.hydration !== "pending") {
+		if (!this.hydratedAgents.has(agentId) && agent.hydration !== "pending") {
 			this.projector.beginHydration(agentId);
 			this.schedule(() => this.hydrateAgent(agentId));
 		}
@@ -1135,12 +1132,7 @@ export class WidiTuiApplication {
 		const agentId = this.state.activeAgentId;
 		const agent = agentId ? this.state.agents.get(agentId) : undefined;
 		this.editor.disableSubmit =
-			this.state.shuttingDown ||
-			(!this.state.pendingAgent &&
-				(!agent ||
-					agent.status === "unavailable" ||
-					agent.status === "disposed" ||
-					agent.snapshot?.hasHarness === false));
+			this.state.shuttingDown || (!this.state.pendingAgent && (!agent || agent.status === "disposed"));
 	}
 
 	private restoreEditor(text: string, agentId?: string): void {
@@ -1229,6 +1221,18 @@ export class WidiTuiApplication {
 export async function runWidiTui(options: WidiTuiOptions): Promise<void> {
 	const application = await WidiTuiApplication.create(options);
 	await application.run();
+}
+
+/**
+ * The command engine asks about a live agent's activity; the view's own
+ * `creating` and `disposed` have no activity to report and read as idle, which
+ * is what the availability rules already assumed.
+ */
+function toCommandActivity(agent: AgentViewState | undefined): AgentActivitySnapshot | undefined {
+	if (!agent) return undefined;
+	return agent.status === "running"
+		? { activity: "running", ...(agent.maintenance === undefined ? undefined : { maintenance: agent.maintenance }) }
+		: { activity: "idle" };
 }
 
 function errorMessage(error: unknown): string {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AgentRecordSnapshot } from "../../src/core/agent-record.ts";
+import type { AgentSnapshot } from "../../src/core/agent-types.ts";
 import { agentIdentityLabel, forkSourceAgentId, shortAgentId } from "../../src/tui/agent-identity.ts";
 import { createTuiApplicationState, ensureAgentProjection } from "../../src/tui/state.ts";
 
@@ -93,11 +93,15 @@ describe("agent identity", () => {
 	});
 });
 
-function snapshot(agentId: string, path: string, parentSessionPath?: string): AgentRecordSnapshot {
+function snapshot(agentId: string, path: string, parentSessionPath?: string): AgentSnapshot {
 	return {
 		agentId,
-		status: "idle",
-		profile: { reference: { id: "widi-dev", label: "WIDI Dev" } },
+		generation: 1,
+		profile: {
+			reference: { id: "widi-dev", label: "WIDI Dev" },
+			source: { kind: "memory", priority: 0 },
+			entryId: "entry-1",
+		},
 		sessionMetadata: { id: agentId, createdAt: new Date(0).toISOString(), cwd: "/workspace", path, parentSessionPath },
 		model: {
 			id: "test-model",
@@ -111,10 +115,10 @@ function snapshot(agentId: string, path: string, parentSessionPath?: string): Ag
 			contextWindow: 1000,
 			maxTokens: 100,
 		},
-		hasHarness: true,
-		extensionIds: [],
-		extensions: [],
-		extensionSnapshot: {
+		thinkingLevel: "off",
+		tools: { toolNames: [], activeToolNames: [] },
+		activity: { activity: "idle" },
+		extensions: {
 			extensionIds: [],
 			extensions: [],
 			hooks: [],
@@ -124,8 +128,6 @@ function snapshot(agentId: string, path: string, parentSessionPath?: string): Ag
 			divisions: [],
 			stale: { stale: false },
 		},
-		resourceDiagnostics: [],
-		extensionDiagnostics: [],
 		diagnostics: [],
 	};
 }

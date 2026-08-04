@@ -5,13 +5,14 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import type { AgentOrchestrator, OrchestratorEvent } from "../../src/core/agent-orchestrator.ts";
+import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import type { ExtensionActivationApi, ExtensionEventEnvelope } from "../../src/core/extension/api.ts";
 import { MAX_EXTENSION_EVENT_DISPATCH_DEPTH } from "../../src/core/extension/index.ts";
-import { createOrchestrator, MemoryExecutionEnv, requireAgentRecord } from "../helpers/orchestrator.ts";
+import type { OrchestratorEvent } from "../../src/core/types.ts";
+import { createOrchestrator, MemoryExecutionEnv, requireLiveAgent } from "../helpers/orchestrator.ts";
 
 function requireActions(orchestrator: AgentOrchestrator, agentId: string) {
-	const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+	const runner = requireLiveAgent(orchestrator, agentId).extensionRunner;
 	if (!runner) throw new Error("Expected extension runner.");
 	return runner.createContext("sender").actions;
 }
@@ -35,8 +36,8 @@ describe("extension event bus", () => {
 				received.push({ agentId: context.agentId, envelope });
 			});
 		});
-		const firstAgentId = await orchestrator.spawnAgent();
-		const secondAgentId = await orchestrator.spawnAgent();
+		const firstAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const secondAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
 		await requireActions(orchestrator, firstAgentId).emitExtensionEvent("herdr:blocked", { pane: 3 });
 
@@ -60,7 +61,7 @@ describe("extension event bus", () => {
 				names.push("other");
 			});
 		});
-		const agentId = await orchestrator.spawnAgent();
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
 		await requireActions(orchestrator, agentId).emitExtensionEvent("wanted");
 
@@ -75,7 +76,7 @@ describe("extension event bus", () => {
 				payloads.push(envelope.payload);
 			});
 		});
-		const agentId = await orchestrator.spawnAgent();
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		const payload = { counts: [1, 2] };
 
 		await requireActions(orchestrator, agentId).emitExtensionEvent("state", payload);
@@ -113,7 +114,7 @@ describe("extension event bus", () => {
 				received = envelope;
 			});
 		});
-		const agentId = await orchestrator.spawnAgent();
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
 		await requireActions(orchestrator, agentId).emitExtensionEvent("state", { nested: { count: 1 } });
 
@@ -132,7 +133,7 @@ describe("extension event bus", () => {
 				delivered += 1;
 			});
 		});
-		const agentId = await orchestrator.spawnAgent();
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		const actions = requireActions(orchestrator, agentId);
 
 		await expect(actions.emitExtensionEvent("has space")).rejects.toThrow(TypeError);
@@ -150,7 +151,9 @@ describe("extension event bus", () => {
 			api.onExtensionEvent("has space", () => {});
 		});
 
-		await expect(orchestrator.spawnAgent()).rejects.toThrow("Extension event name must contain only");
+		await expect(orchestrator.spawnAgent({ origin: { kind: "new" } })).rejects.toThrow(
+			"Extension event name must contain only",
+		);
 	});
 
 	it("reports a failing subscriber and still reaches the rest", async () => {
@@ -165,7 +168,7 @@ describe("extension event bus", () => {
 				reached += 1;
 			});
 		});
-		const agentId = await orchestrator.spawnAgent();
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
 		await requireActions(orchestrator, agentId).emitExtensionEvent("ping");
 
@@ -184,7 +187,7 @@ describe("extension event bus", () => {
 				await context.actions.emitExtensionEvent("echo");
 			});
 		});
-		const agentId = await orchestrator.spawnAgent();
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
 		await requireActions(orchestrator, agentId).emitExtensionEvent("echo");
 
@@ -210,7 +213,7 @@ describe("extension event bus", () => {
 				await handlersReleased;
 			});
 		});
-		const agentId = await orchestrator.spawnAgent();
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		const actions = requireActions(orchestrator, agentId);
 
 		const dispatches = Promise.all(
@@ -239,9 +242,9 @@ describe("extension event bus", () => {
 				seen.push(context.agentId);
 			});
 		});
-		const survivorId = await orchestrator.spawnAgent();
-		const disposedId = await orchestrator.spawnAgent();
-		await orchestrator.disposeAgent(disposedId, { reason: "test" });
+		const survivorId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const disposedId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		await orchestrator.disposeAgent(disposedId, { intent: "removed", reason: "test" });
 
 		await requireActions(orchestrator, survivorId).emitExtensionEvent("ping");
 
@@ -258,7 +261,7 @@ describe("extension event bus", () => {
 				generations.push(activationGeneration);
 			});
 		});
-		const agentId = await orchestrator.spawnAgent();
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		await orchestrator.reloadExtensions({ agentIds: [agentId] });
 
 		await requireActions(orchestrator, agentId).emitExtensionEvent("ping");
@@ -271,9 +274,9 @@ describe("extension event bus", () => {
 		orchestrator.registerExtension("sender", (api: ExtensionActivationApi) => {
 			api.onExtensionEvent("herdr:blocked", () => {});
 		});
-		const agentId = await orchestrator.spawnAgent();
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
-		const hooks = orchestrator.inspectAgent(agentId).extensionSnapshot.hooks;
+		const hooks = orchestrator.inspectAgent(agentId).extensions.hooks;
 
 		expect(hooks).toContainEqual({
 			kind: "event",

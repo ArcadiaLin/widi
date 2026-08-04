@@ -1,9 +1,9 @@
 import type { OAuthLoginCallbacks } from "@earendil-works/pi-ai";
-import { formatError } from "../../utils/errors.ts";
-import { type OrchestratorDiagnostic, OrchestratorError, toDiagnostic } from "../diagnostics.ts";
-import type { HumanRequestBroker, HumanRequestDraft, HumanResponse } from "../human-request.ts";
-import type { ModelRegistry } from "../model-registry.js";
-import type { AgentId, CandidateItem, OrchestratorEvent } from "../types.ts";
+import { formatError } from "../utils/errors.ts";
+import { type OrchestratorDiagnostic, OrchestratorError, toDiagnostic } from "./diagnostics.ts";
+import type { HumanRequestBroker, HumanRequestDraft, HumanResponse } from "./human-request.ts";
+import type { ModelRegistry } from "./model-registry.js";
+import type { AgentId, CandidateItem, OrchestratorEvent } from "./types.ts";
 
 export interface AuthProviderCandidateListResult {
 	readonly providers: readonly CandidateItem[];

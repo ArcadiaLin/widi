@@ -40,7 +40,7 @@ async function createThirdPartyHarness(
 	module: ExtensionModule,
 ): Promise<{ orchestrator: AgentOrchestrator; agentId: string; events: OrchestratorEvent[] }> {
 	const { orchestrator, events } = await createThirdPartyOrchestrator(module);
-	const agentId = await orchestrator.spawnAgent();
+	const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 	return { orchestrator, agentId, events };
 }
 
@@ -50,12 +50,12 @@ describe("third-party extension consumer", () => {
 		const { orchestrator, agentId } = await createThirdPartyHarness(definition);
 
 		expect(orchestrator.getAgentTools(agentId).toolNames).toContain("tp_echo");
-		expect(orchestrator.inspectAgent(agentId).extensionSnapshot.toolContributions).toEqual(
+		expect(orchestrator.inspectAgent(agentId).extensions.toolContributions).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({ kind: "define", extensionId: "third-party", toolName: "tp_echo" }),
 			]),
 		);
-		expect(orchestrator.inspectAgent(agentId).extensionSnapshot.hooks).toContainEqual({
+		expect(orchestrator.inspectAgent(agentId).extensions.hooks).toContainEqual({
 			kind: "observe",
 			extensionId: "third-party",
 			eventName: "agent_harness_event",
@@ -74,7 +74,7 @@ describe("third-party extension consumer", () => {
 		// A blocked extension diagnostic fails the spawn, the same family as
 		// activation_failed: settings named this extension, so silently running
 		// without it would not be honouring the configuration.
-		await expect(orchestrator.spawnAgent()).rejects.toThrow(/targets extension API version/);
+		await expect(orchestrator.spawnAgent({ origin: { kind: "new" } })).rejects.toThrow(/targets extension API version/);
 		expect(activated).toBe(false);
 		expect(events).toContainEqual(
 			expect.objectContaining({
@@ -101,13 +101,13 @@ describe("third-party extension consumer", () => {
 			api.intercept("input", () => undefined);
 		});
 
-		expect(orchestrator.inspectAgent(agentId).extensionSnapshot.hooks).toContainEqual({
+		expect(orchestrator.inspectAgent(agentId).extensions.hooks).toContainEqual({
 			kind: "intercept",
 			extensionId: "third-party",
 			eventName: "input",
 		});
-		expect(orchestrator.inspectAgent(agentId).extensionDiagnostics).not.toContainEqual(
-			expect.objectContaining({ code: "extension.version_incompatible" }),
-		);
+		expect(
+			orchestrator.inspectAgent(agentId).diagnostics.filter((entry) => entry.extensionId !== undefined),
+		).not.toContainEqual(expect.objectContaining({ code: "extension.version_incompatible" }));
 	});
 });

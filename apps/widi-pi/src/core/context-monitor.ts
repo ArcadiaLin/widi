@@ -1,9 +1,9 @@
 import { calculateContextTokens, getLastAssistantUsage } from "@widi/agent-core";
-import { formatError } from "../../utils/errors.ts";
-import type { OrchestratorDiagnostic } from "../diagnostics.ts";
-import { modelReference } from "../model-registry.js";
-import type { SessionManager } from "../session-manager.ts";
-import type { AgentContextUsage, AgentId, OrchestratorEvent, RuntimeModel } from "../types.ts";
+import { formatError } from "../utils/errors.ts";
+import type { OrchestratorDiagnostic } from "./diagnostics.ts";
+import { modelReference } from "./model-registry.js";
+import type { SessionManager } from "./session-manager.ts";
+import type { AgentContextUsage, AgentId, OrchestratorEvent, RuntimeModel } from "./types.ts";
 
 interface ContextSubject {
 	readonly generation: number;

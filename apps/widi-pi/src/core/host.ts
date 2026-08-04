@@ -5,10 +5,10 @@
  * argument can select the sender, task settler, or background-job owner.
  */
 
-import type { BackgroundJobHost, BackgroundJobSettler } from "../background/index.ts";
-import type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
-import type { MessageSendOutcome } from "../message.ts";
-import type { AgentActivity, AgentId } from "../types.ts";
+import type { BackgroundJobHost, BackgroundJobSettler } from "./background/index.ts";
+import type { HumanRequestDraft, HumanResponse } from "./human-request.ts";
+import type { MessageSendOutcome } from "./message.ts";
+import type { AgentActivity, AgentId } from "./types.ts";
 
 export interface AgentProfileBrief {
 	readonly id: string;

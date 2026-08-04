@@ -1,8 +1,14 @@
 import { TextDecoder } from "node:util";
 import type { AssistantMessage, TextContent, ToolCall, UserMessage } from "@earendil-works/pi-ai";
 import type { AgentHarnessEvent, AgentMessage } from "@widi/agent-core";
-import type { AgentRecordSnapshot } from "../core/agent-record.ts";
-import type { BackgroundJobReportSnapshot, BackgroundJobSnapshot } from "../core/background/index.ts";
+import type { AgentSnapshot } from "../core/agent-types.ts";
+import type {
+	BackgroundJobReportSnapshot,
+	BackgroundJobSnapshot,
+	BackgroundJobStatus,
+	BackgroundJobTransition,
+	ObservableBackgroundJobState,
+} from "../core/background/index.ts";
 import type { OrchestratorDiagnostic } from "../core/diagnostics.ts";
 import type { ExtensionStatusSnapshot } from "../core/extension/presentation.ts";
 import {
@@ -58,6 +64,11 @@ function jobProgressKey(agentId: AgentId, jobId: string): string {
 
 function thinkingPreviewKey(agentId: AgentId, assistantId: string): string {
 	return `${agentId}\0${assistantId}`;
+}
+
+/** The three states a settled job can be in, as the panel labels them. */
+function isTerminalJobState(state: ObservableBackgroundJobState): state is BackgroundJobStatus {
+	return state === "completed" || state === "failed" || state === "cancelled";
 }
 
 function latestJobReport(
@@ -178,20 +189,20 @@ export class EventProjector {
 				this.applyHarnessEvent(ensureAgentProjection(this.state, event.agentId), event.event);
 				return;
 			case "agent_status_changed": {
-				const agent = ensureAgentProjection(this.state, event.agentId, event.status);
+				const agent = ensureAgentProjection(this.state, event.agentId, event.activity);
 				const wasRunning = agent.status === "running";
-				agent.status = event.status;
-				agent.maintenance = event.status === "running" ? event.maintenance : undefined;
-				agent.runStartedAt = event.status === "running" ? event.changedAt : undefined;
+				agent.status = event.activity;
+				agent.maintenance = event.activity === "running" ? event.maintenance : undefined;
+				agent.runStartedAt = event.activity === "running" ? event.changedAt : undefined;
 				// Experience indicator: covers the model's first-token latency
 				// after submit; completes (renders empty) once the run leaves
 				// "running".
-				if (event.status === "running") upsertAwaitingThinking(agent);
+				if (event.activity === "running") upsertAwaitingThinking(agent);
 				else {
 					completeAwaitingThinking(agent);
 					this.clearThinkingPreviews(event.agentId);
 				}
-				if (wasRunning && event.status !== "running") {
+				if (wasRunning && event.activity !== "running") {
 					// Abort can end a run without message_end; never lose the tail of
 					// the stream still sitting in the pending buffer.
 					flushStreaming(agent);
@@ -203,10 +214,9 @@ export class EventProjector {
 						}
 					}
 				}
-				if (wasRunning && event.status === "idle" && this.state.activeAgentId !== event.agentId) {
+				if (wasRunning && event.activity === "idle" && this.state.activeAgentId !== event.agentId) {
 					raiseAttention(agent, "completed");
 				}
-				if (event.status === "unavailable") raiseAttention(agent, "error");
 				return;
 			}
 			case "agent_spawned": {
@@ -372,7 +382,7 @@ export class EventProjector {
 	private applyBackgroundJobChange(
 		agent: AgentViewState,
 		snapshot: BackgroundJobSnapshot,
-		transition: "backgrounded" | "aborting" | "settled",
+		transition: BackgroundJobTransition,
 		liveCount: number,
 	): void {
 		agent.backgroundJobCount = liveCount;
@@ -391,13 +401,13 @@ export class EventProjector {
 		}
 		const existing = agent.backgroundJobs.get(snapshot.jobId);
 		if (!existing) return;
-		if (transition === "aborting") {
+		if (transition === "abort_requested") {
 			existing.status = "aborting";
 			existing.report = latestJobReport(existing.report, snapshot.report);
 			return;
 		}
 		// Settled jobs stay on the panel until the next user turn starts.
-		existing.status = snapshot.status ?? "completed";
+		existing.status = isTerminalJobState(snapshot.state) ? snapshot.state : "completed";
 		existing.endedAt = snapshot.endedAt;
 		existing.totalBytesSeen = snapshot.totalBytesSeen;
 		existing.report = latestJobReport(existing.report, snapshot.report);
@@ -721,13 +731,14 @@ export class EventProjector {
 	}
 }
 
-export function applyAgentSnapshot(state: TuiApplicationState, snapshot: AgentRecordSnapshot): AgentViewState {
-	const agent = ensureAgentProjection(state, snapshot.agentId, snapshot.status);
+export function applyAgentSnapshot(state: TuiApplicationState, snapshot: AgentSnapshot): AgentViewState {
+	const agent = ensureAgentProjection(state, snapshot.agentId, snapshot.activity.activity);
 	agent.snapshot = snapshot;
-	agent.status = snapshot.status;
+	agent.status = snapshot.activity.activity;
+	agent.maintenance = snapshot.activity.maintenance;
 	agent.display.model = snapshot.model;
 	if (snapshot.spawnedBy !== undefined) agent.spawnedBy = snapshot.spawnedBy;
-	agent.display.activeToolNames = snapshot.toolSnapshot?.activeToolNames ?? [];
+	agent.display.activeToolNames = [...snapshot.tools.activeToolNames];
 	for (const diagnostic of snapshot.diagnostics) {
 		raiseDiagnosticAttention(agent, diagnostic);
 	}

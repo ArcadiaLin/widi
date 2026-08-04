@@ -1,5 +1,9 @@
 import { type Static, Type } from "typebox";
-import { type BackgroundJob, type BackgroundJobStatus, backgroundJobToolLabel } from "../../background/index.ts";
+import {
+	type BackgroundJobSnapshot,
+	type BackgroundJobStatus,
+	backgroundJobToolLabel,
+} from "../../background/index.ts";
 import type { ToolDefinition } from "../types.ts";
 import { type SettlementWaitOutcome, waitForSettlements } from "./settlement-wait.ts";
 
@@ -83,8 +87,8 @@ export function createWaitForJobsToolDefinition(): ToolDefinition<typeof waitFor
 		promptSnippet: "Wait for background jobs to finish before continuing",
 		parameters: waitForJobsSchema,
 		execute: async (_toolCallId, { jobIds, timeout }, context) => {
-			const table = context.backgroundJobTable;
-			if (!table) {
+			const host = context.jobs;
+			if (!host) {
 				return {
 					content: [
 						{ type: "text", text: "No background job registry is available, so there is nothing to wait for." },
@@ -93,23 +97,17 @@ export function createWaitForJobsToolDefinition(): ToolDefinition<typeof waitFor
 				};
 			}
 
-			// Only jobs already moved to the background are safe to wait on: their
-			// settlement is guaranteed to emit a `settled` change. A job still in
-			// the `running` phase has not committed to background delivery and may
-			// settle inline (delivered to its own tool call, with no change
-			// emitted), which would strand the wait until it times out. Ids the
-			// model actually holds came from a t0 handle, so they are already
-			// backgrounded; running-phase jobs are excluded on purpose.
-			const live = new Map(
-				table
-					.list()
-					.filter((job) => job.phase === "backgrounded")
-					.map((job) => [job.id, job]),
-			);
+			// Only observable jobs are safe to wait on: their settlement is
+			// guaranteed to emit a `settled` change. A candidate has not committed to
+			// background delivery and may settle inline (delivered to its own tool
+			// call, with no change emitted), which would strand the wait until it
+			// times out. Ids the model actually holds came from a t0 handle, so they
+			// are already observable; candidates are never listed.
+			const live = new Map(host.list().map((job) => [job.jobId, job]));
 			const requestedIds = jobIds && jobIds.length > 0 ? Array.from(new Set(jobIds)) : Array.from(live.keys());
 
 			const statuses = new Map<string, WaitForJobsJobStatus>();
-			const pending = new Map<string, BackgroundJob>();
+			const pending = new Map<string, BackgroundJobSnapshot>();
 			for (const id of requestedIds) {
 				const job = live.get(id);
 				if (job) pending.set(id, job);
@@ -119,13 +117,18 @@ export function createWaitForJobsToolDefinition(): ToolDefinition<typeof waitFor
 			let outcome: WaitForJobsOutcome = "completed";
 			if (pending.size > 0) {
 				outcome = await waitForSettlements({
-					table,
+					watch: host.watch(),
 					pending,
 					timeoutMs: resolveWaitTimeoutMs(timeout),
 					signal: context.signal,
 					humanInterrupts: context.humanInterrupts,
 					onSettled: (job, jobOutcome) =>
-						statuses.set(job.id, { jobId: job.id, toolName: job.toolName, name: job.name, state: jobOutcome.status }),
+						statuses.set(job.jobId, {
+							jobId: job.jobId,
+							toolName: job.toolName,
+							name: job.name,
+							state: jobOutcome.status,
+						}),
 				});
 			}
 
@@ -135,7 +138,9 @@ export function createWaitForJobsToolDefinition(): ToolDefinition<typeof waitFor
 				statuses.set(id, { jobId: id, toolName: job.toolName, name: job.name, state: "running" });
 			}
 
-			const jobs = requestedIds.map((id) => statuses.get(id) ?? { jobId: id, state: "unknown" as const });
+			const jobs: WaitForJobsJobStatus[] = requestedIds.map(
+				(id) => statuses.get(id) ?? { jobId: id, state: "unknown" as const },
+			);
 			return { content: [{ type: "text", text: formatWaitSummary(jobs, outcome) }], details: { outcome, jobs } };
 		},
 	};

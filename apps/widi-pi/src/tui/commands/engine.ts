@@ -1,4 +1,4 @@
-import type { AgentLifecycleStatus, AgentMaintenanceKind } from "../../core/types.ts";
+import type { AgentActivitySnapshot } from "../../core/types.ts";
 import { LINE_COMMAND_TRIGGER, parseLineCommand } from "./parse.ts";
 import type { CommandContext, CommandDefinition, CommandError, CommandView, EngineOutcome } from "./types.ts";
 
@@ -14,15 +14,15 @@ export class CommandEngine {
 		for (const command of commands) this.commands.set(command.name, command);
 	}
 
-	list(status: AgentLifecycleStatus | undefined, maintenance?: AgentMaintenanceKind): CommandView[] {
+	list(activity: AgentActivitySnapshot | undefined): CommandView[] {
 		const views: CommandView[] = [];
 		for (const command of this.commands.values()) {
 			const unavailableReason =
-				status === undefined && command.agentPolicy === "active"
+				activity === undefined && command.agentPolicy === "active"
 					? `Command /${command.name} requires an active agent.`
-					: status === undefined
+					: activity === undefined
 						? undefined
-						: command.checkStatus?.(status, maintenance);
+						: command.checkActivity?.(activity);
 			views.push({
 				name: command.name,
 				description: command.description,
@@ -64,12 +64,10 @@ export class CommandEngine {
 		if (!context.agentId && command.agentPolicy === "active") {
 			return failed(commandId, command.name, { message: `Command /${command.name} requires an active agent.` });
 		}
-		const unavailableReason = context.agentId
-			? command.checkStatus?.(
-					context.orchestrator.getAgentStatus(context.agentId),
-					context.orchestrator.getAgentMaintenance?.(context.agentId),
-				)
-			: undefined;
+		// A gone agent has no activity to read. The command is let through and
+		// fails on its own terms, which says more than "requires a running agent".
+		const activity = context.agentId ? tryReadActivity(context) : undefined;
+		const unavailableReason = activity ? command.checkActivity?.(activity) : undefined;
 		if (unavailableReason) {
 			return failed(commandId, command.name, { message: unavailableReason });
 		}
@@ -141,6 +139,15 @@ export function switchedAgentId(outcome: EngineOutcome): string | undefined {
 	}
 	const agentId = (value as { agentId?: unknown }).agentId;
 	return typeof agentId === "string" && agentId.length > 0 ? agentId : undefined;
+}
+
+function tryReadActivity(context: CommandContext): AgentActivitySnapshot | undefined {
+	if (!context.agentId) return undefined;
+	try {
+		return context.orchestrator.getAgentActivity(context.agentId);
+	} catch {
+		return undefined;
+	}
 }
 
 function failed(commandId: string, name: string, error: CommandError): EngineOutcome {

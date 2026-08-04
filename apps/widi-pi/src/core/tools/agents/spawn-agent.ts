@@ -67,7 +67,7 @@ export function createSpawnAgentToolDefinition(): ToolDefinition<typeof spawnAge
 			try {
 				assigned = await assignAgentTask({
 					host,
-					table: context.backgroundJobTable,
+					jobs: host.jobs,
 					toolCallId,
 					toolName: "spawn_agent",
 					targetAgentId: agentId,

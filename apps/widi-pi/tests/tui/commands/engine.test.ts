@@ -302,14 +302,14 @@ describe("CommandEngine.list and match", () => {
 	const engine = new CommandEngine(builtInCommands);
 
 	it("marks status-gated commands unavailable", () => {
-		const steer = engine.list("idle").find((view) => view.name === "steer");
+		const steer = engine.list({ activity: "idle" }).find((view) => view.name === "steer");
 		expect(steer?.available).toBe(false);
-		const running = engine.list("running").find((view) => view.name === "steer");
+		const running = engine.list({ activity: "running" }).find((view) => view.name === "steer");
 		expect(running?.available).toBe(true);
 	});
 
 	it("marks turn controls unavailable during maintenance", () => {
-		const views = engine.list("running", "tree-navigation");
+		const views = engine.list({ activity: "running", maintenance: "tree-navigation" });
 		for (const name of ["abort", "follow-up", "steer"]) {
 			expect(views.find((view) => view.name === name)).toMatchObject({
 				available: false,

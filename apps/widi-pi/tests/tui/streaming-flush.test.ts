@@ -172,11 +172,11 @@ describe("streaming flush", () => {
 		const state = createTuiApplicationState();
 		const projector = new EventProjector(state);
 		const agent = setActiveAgent(state, "main");
-		projector.apply({ type: "agent_status_changed", agentId: "main", status: "running", changedAt: timestamp(1) });
+		projector.apply({ type: "agent_status_changed", agentId: "main", activity: "running", changedAt: timestamp(1) });
 		projector.apply(harness("main", { type: "message_start", message: assistantMessage("") }));
 		projector.apply(harness("main", textUpdate("interrupted tail")));
 
-		projector.apply({ type: "agent_status_changed", agentId: "main", status: "idle", changedAt: timestamp(2) });
+		projector.apply({ type: "agent_status_changed", agentId: "main", activity: "idle", changedAt: timestamp(2) });
 
 		expect(assistantItem(agent.timeline).text).toBe("interrupted tail");
 		expect(agent.pendingAssistantText).toBeUndefined();

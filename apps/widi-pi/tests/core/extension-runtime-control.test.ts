@@ -6,11 +6,17 @@
 
 import type { AgentHarnessEvent } from "@widi/agent-core";
 import { describe, expect, it, vi } from "vitest";
-import type { AgentOrchestrator, OrchestratorEvent } from "../../src/core/agent-orchestrator.ts";
-import { createOrchestrator, MemoryExecutionEnv, requireAgentRecord } from "../helpers/orchestrator.ts";
+import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
+import type { OrchestratorEvent } from "../../src/core/types.ts";
+import {
+	createOrchestrator,
+	harnessEventDriver,
+	MemoryExecutionEnv,
+	requireLiveAgent,
+} from "../helpers/orchestrator.ts";
 
 function requireActions(orchestrator: AgentOrchestrator, agentId: string, extensionId = "control") {
-	const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+	const runner = requireLiveAgent(orchestrator, agentId).extensionRunner;
 	if (!runner) throw new Error("Expected extension runner.");
 	return runner.createContext(extensionId).actions;
 }
@@ -18,7 +24,7 @@ function requireActions(orchestrator: AgentOrchestrator, agentId: string, extens
 async function createHarness() {
 	const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 	orchestrator.registerExtension("control", () => {});
-	const agentId = await orchestrator.spawnAgent();
+	const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 	return { orchestrator, agentId, actions: requireActions(orchestrator, agentId) };
 }
 
@@ -31,9 +37,7 @@ async function emitQueueUpdate(orchestrator: AgentOrchestrator, agentId: string,
 		followUp: [],
 		nextTurn: [],
 	};
-	await (
-		orchestrator as unknown as { _handleAgentHarnessEvent(agentId: string, event: AgentHarnessEvent): Promise<void> }
-	)._handleAgentHarnessEvent(agentId, event);
+	await harnessEventDriver(orchestrator)(agentId, event);
 }
 
 function settled(promise: Promise<void>): Promise<"settled" | "pending"> {
@@ -72,14 +76,14 @@ describe("extension waitForIdle", () => {
 		await emitQueueUpdate(orchestrator, agentId, 1);
 
 		const waiting = actions.waitForIdle();
-		await orchestrator.disposeAgent(agentId, { reason: "test teardown" });
+		await orchestrator.disposeAgent(agentId, { intent: "removed", reason: "test teardown" });
 
 		await expect(waiting).rejects.toThrow("test teardown");
 	});
 
 	it("rejects for an agent that can never idle again", async () => {
 		const { orchestrator, agentId, actions } = await createHarness();
-		await orchestrator.disposeAgent(agentId, { reason: "test teardown" });
+		await orchestrator.disposeAgent(agentId, { intent: "removed", reason: "test teardown" });
 
 		await expect(actions.waitForIdle()).rejects.toThrow("disposed");
 	});
@@ -120,7 +124,7 @@ describe("extension shutdown requests", () => {
 
 		await actions.requestShutdown();
 
-		expect(orchestrator.getAgentStatus(agentId)).toBe("idle");
+		expect(orchestrator.getAgentActivity(agentId).activity).toBe("idle");
 	});
 
 	it("reaches the extension runtimes of every agent, not just the requester", async () => {
@@ -131,8 +135,8 @@ describe("extension shutdown requests", () => {
 				notified.push(context.agentId);
 			});
 		});
-		const firstAgentId = await orchestrator.spawnAgent();
-		const secondAgentId = await orchestrator.spawnAgent();
+		const firstAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const secondAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
 		await requireActions(orchestrator, firstAgentId).requestShutdown();
 
@@ -158,8 +162,8 @@ describe("extension shutdown requests", () => {
 				notified.push(context.agentId);
 			});
 		});
-		const firstAgentId = await orchestrator.spawnAgent();
-		const secondAgentId = await orchestrator.spawnAgent();
+		const firstAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const secondAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		let hostSawRequest = false;
 		let hostDisposal: Promise<void> | undefined;
 		orchestrator.subscribe((event) => {
@@ -182,8 +186,8 @@ describe("extension shutdown requests", () => {
 
 		expect(hostSawRequest).toBe(true);
 		expect(notified.sort()).toEqual([firstAgentId, secondAgentId].sort());
-		expect(orchestrator.getAgentStatus(firstAgentId)).toBe("disposed");
-		expect(orchestrator.getAgentStatus(secondAgentId)).toBe("disposed");
+		expect(orchestrator.getAgentActivity(firstAgentId).activity).toBe("disposed");
+		expect(orchestrator.getAgentActivity(secondAgentId).activity).toBe("disposed");
 	});
 });
 
@@ -196,13 +200,13 @@ describe("extension disposeRuntime", () => {
 				disposals += 1;
 			});
 		});
-		const firstAgentId = await orchestrator.spawnAgent();
-		const secondAgentId = await orchestrator.spawnAgent();
+		const firstAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const secondAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
 		await requireActions(orchestrator, firstAgentId).disposeRuntime("bye");
 
-		expect(orchestrator.getAgentStatus(firstAgentId)).toBe("disposed");
-		expect(orchestrator.getAgentStatus(secondAgentId)).toBe("disposed");
+		expect(orchestrator.getAgentActivity(firstAgentId).activity).toBe("disposed");
+		expect(orchestrator.getAgentActivity(secondAgentId).activity).toBe("disposed");
 		expect(disposals).toBe(2);
 	});
 
@@ -212,6 +216,6 @@ describe("extension disposeRuntime", () => {
 		await actions.disposeRuntime("bye");
 
 		expect(() => actions.getModel()).toThrow("Agent has been disposed.");
-		expect(orchestrator.getAgentStatus(agentId)).toBe("disposed");
+		expect(orchestrator.getAgentActivity(agentId).activity).toBe("disposed");
 	});
 });

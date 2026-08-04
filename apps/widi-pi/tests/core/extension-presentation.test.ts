@@ -15,7 +15,7 @@ import {
 	validateExtensionStatus,
 } from "../../src/core/extension/presentation.ts";
 import { EXTENSION_MESSAGE_CUSTOM_TYPE } from "../../src/core/session-manager.ts";
-import { createOrchestrator, MemoryExecutionEnv, requireAgentRecord } from "../helpers/orchestrator.ts";
+import { createOrchestrator, MemoryExecutionEnv, requireLiveAgent } from "../helpers/orchestrator.ts";
 
 describe("validateExtensionMessage", () => {
 	it("keeps the shape of every kind it admits", () => {
@@ -84,7 +84,7 @@ describe("validateExtensionMessage", () => {
 	it("keeps the persisted message and event immutable for consumers", async () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		orchestrator.registerExtension("sample", () => {});
-		const agentId = await orchestrator.spawnAgent();
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		let nestedMutationSucceeded = false;
 		let envelopeMutationSucceeded = false;
 		let eventWasFrozen = false;
@@ -113,7 +113,7 @@ describe("validateExtensionMessage", () => {
 				downstreamMessage = event.message;
 			}
 		});
-		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+		const runner = requireLiveAgent(orchestrator, agentId).extensionRunner;
 		if (!runner) throw new Error("Expected extension runner.");
 
 		await runner

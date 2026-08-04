@@ -1,14 +1,14 @@
 import type { AgentHarness, Skill } from "@widi/agent-core";
-import type { AgentProfile, AgentProfileSource } from "../agent-profile.js";
-import { toAgentProfileReference } from "../agent-profile.js";
-import type { OwnerAttachment } from "../background/index.ts";
-import type { OrchestratorDiagnostic } from "../diagnostics.ts";
-import type { ExtensionRunner, ExtensionRunnerSnapshot } from "../extension/index.ts";
-import type { ResourceSource } from "../resource-loader.js";
-import type { AgentSessionMetadata } from "../session-manager.ts";
-import type { ProjectContextFile } from "../system-prompt.ts";
-import type { ResolvedAgentHarnessTool, ToolAdapterContext } from "../tool-registry.ts";
-import type { AgentActivitySnapshot, AgentContextUsage, AgentId, AgentToolsSnapshot, RuntimeModel } from "../types.ts";
+import type { AgentProfile, AgentProfileSource } from "./agent-profile.js";
+import { toAgentProfileReference } from "./agent-profile.js";
+import type { OwnerAttachment } from "./background/index.ts";
+import type { OrchestratorDiagnostic } from "./diagnostics.ts";
+import type { ExtensionRunner, ExtensionRunnerSnapshot } from "./extension/index.ts";
+import type { ResourceSource } from "./resource-loader.js";
+import type { AgentSessionMetadata } from "./session-manager.ts";
+import type { ProjectContextFile } from "./system-prompt.ts";
+import type { ResolvedAgentHarnessTool, ToolAdapterContext } from "./tool-registry.ts";
+import type { AgentActivitySnapshot, AgentContextUsage, AgentId, AgentToolsSnapshot, RuntimeModel } from "./types.ts";
 
 /**
  * The serializable identity of a live agent's profile, for display and for the

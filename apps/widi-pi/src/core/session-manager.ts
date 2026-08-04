@@ -25,15 +25,6 @@ import type { AgentProfile, AgentProfileReference } from "./agent-profile.js";
 import { parseAgentProfileReference, toAgentProfileReference } from "./agent-profile.js";
 import type { ExtensionInputPresentation, ExtensionMessage } from "./extension/presentation.ts";
 import { SessionDirectoryRepo, sessionDirPath } from "./session-repo.ts";
-import {
-	AGENT_PARENT_FILE_NAME,
-	AGENT_TREE_FILE_NAME,
-	AGENTS_DIR_NAME,
-	type AgentParentPointer,
-	type AgentTreeRecord,
-	parseAgentParentPointer,
-	parseAgentTreeRecord,
-} from "./session-tree.ts";
 import type { AgentId } from "./types.ts";
 
 export type AgentSessionMetadata = SessionMetadata | JsonlSessionMetadata;
@@ -107,8 +98,6 @@ export interface AgentSessionCandidate {
 	readonly createdAt: string;
 	readonly cwd: string;
 	readonly parentSessionPath?: string;
-	/** Spawn-tree child sessions are restored through their root by default. */
-	readonly isChild: boolean;
 	readonly profile?: AgentProfileReference;
 	/** Latest session_info name, when the user named the session. */
 	readonly name?: string;
@@ -191,14 +180,10 @@ export class SessionManager {
 	async listAgentSessionCandidates(): Promise<AgentSessionCandidate[]> {
 		const sessions = await this.sessionRepo.list({ cwd: this._cwd });
 		return await Promise.all(
-			sessions.map(async (metadata) => {
-				const sessionDir = sessionDirPath(metadata.path);
-				return {
-					...toAgentSessionCandidate(metadata),
-					isChild: (await this._readAgentParentPointerAtPath(sessionDir)) !== undefined,
-					...(await this._loadSessionDisplayFacts(metadata.path)),
-				};
-			}),
+			sessions.map(async (metadata) => ({
+				...toAgentSessionCandidate(metadata),
+				...(await this._loadSessionDisplayFacts(metadata.path)),
+			})),
 		);
 	}
 
@@ -403,69 +388,6 @@ export class SessionManager {
 		return { metadata, session };
 	}
 
-	async appendAgentTreeRecord(rootAgentId: AgentId, record: AgentTreeRecord): Promise<void> {
-		const sessionDir = await this.getAgentSessionDir(rootAgentId);
-		if (!sessionDir) {
-			throw new Error(`Cannot persist an agent tree under ephemeral root ${rootAgentId}.`);
-		}
-		const paths = await this._agentTreePaths(sessionDir);
-		fileSystemValueOrThrow(
-			await this._fs.createDir(paths.dir, { recursive: true }),
-			`Failed to create agent tree directory ${paths.dir}`,
-		);
-		fileSystemValueOrThrow(
-			await this._fs.appendFile(paths.tree, `${JSON.stringify(record)}\n`),
-			`Failed to append agent tree record for ${rootAgentId}`,
-		);
-	}
-
-	async readAgentTreeRecords(sessionDir: string): Promise<readonly AgentTreeRecord[]> {
-		const absoluteDir = await this._resolveSessionDirPath(sessionDir);
-		const paths = await this._agentTreePaths(absoluteDir);
-		const exists = fileSystemValueOrThrow(
-			await this._fs.exists(paths.tree),
-			`Failed to check agent tree ${paths.tree}`,
-		);
-		if (!exists) return [];
-		const text = fileSystemValueOrThrow(
-			await this._fs.readTextFile(paths.tree),
-			`Failed to read agent tree ${paths.tree}`,
-		);
-		const records: AgentTreeRecord[] = [];
-		for (const line of text.split("\n")) {
-			if (!line.trim()) continue;
-			let value: unknown;
-			try {
-				value = JSON.parse(line);
-			} catch {
-				continue;
-			}
-			const record = parseAgentTreeRecord(value);
-			if (record) records.push(record);
-		}
-		return records;
-	}
-
-	async writeAgentParentPointer(agentId: AgentId, pointer: AgentParentPointer): Promise<void> {
-		const sessionDir = await this.getAgentSessionDir(agentId);
-		if (!sessionDir) {
-			throw new Error(`Cannot persist an agent parent pointer for ephemeral agent ${agentId}.`);
-		}
-		const paths = await this._agentTreePaths(sessionDir);
-		fileSystemValueOrThrow(
-			await this._fs.createDir(paths.dir, { recursive: true }),
-			`Failed to create agent tree directory ${paths.dir}`,
-		);
-		fileSystemValueOrThrow(
-			await this._fs.writeFile(paths.parent, `${JSON.stringify(pointer)}\n`),
-			`Failed to write agent parent pointer for ${agentId}`,
-		);
-	}
-
-	async readAgentParentPointer(sessionDir: string): Promise<AgentParentPointer | undefined> {
-		return await this._readAgentParentPointerAtPath(await this._resolveSessionDirPath(sessionDir));
-	}
-
 	// Retraction for provisional prompt records (expansion/transform entries
 	// appended before the harness persists the paired user message). Only
 	// rewinds when the branch leaf is still the last provisional entry; if
@@ -592,55 +514,6 @@ export class SessionManager {
 		this._agentSessionDirs.set(agentId, sessionDirNameFromPath(sessionDirPath(metadata.path)));
 	}
 
-	private async _resolveSessionDirPath(sessionDir: string): Promise<string> {
-		const metadata = await this.resolveAgentSessionByDir(sessionDir);
-		return sessionDirPath(metadata.path);
-	}
-
-	private async _agentTreePaths(
-		sessionDir: string,
-	): Promise<{ readonly dir: string; readonly tree: string; readonly parent: string }> {
-		const dir = fileSystemValueOrThrow(
-			await this._fs.joinPath([sessionDir, AGENTS_DIR_NAME]),
-			`Failed to resolve agent tree directory in ${sessionDir}`,
-		);
-		return {
-			dir,
-			tree: fileSystemValueOrThrow(
-				await this._fs.joinPath([dir, AGENT_TREE_FILE_NAME]),
-				`Failed to resolve agent tree file in ${dir}`,
-			),
-			parent: fileSystemValueOrThrow(
-				await this._fs.joinPath([dir, AGENT_PARENT_FILE_NAME]),
-				`Failed to resolve agent parent file in ${dir}`,
-			),
-		};
-	}
-
-	private async _readAgentParentPointerAtPath(sessionDir: string): Promise<AgentParentPointer | undefined> {
-		const paths = await this._agentTreePaths(sessionDir);
-		const exists = fileSystemValueOrThrow(
-			await this._fs.exists(paths.parent),
-			`Failed to check agent parent pointer ${paths.parent}`,
-		);
-		if (!exists) return undefined;
-		const text = fileSystemValueOrThrow(
-			await this._fs.readTextFile(paths.parent),
-			`Failed to read agent parent pointer ${paths.parent}`,
-		);
-		let value: unknown;
-		try {
-			value = JSON.parse(text);
-		} catch {
-			throw new Error(`Invalid agent parent pointer: ${paths.parent}`);
-		}
-		const pointer = parseAgentParentPointer(value);
-		if (!pointer) {
-			throw new Error(`Invalid agent parent pointer: ${paths.parent}`);
-		}
-		return pointer;
-	}
-
 	private async _createPersistentAgentSession(
 		options: CreateAgentSessionOptions,
 	): Promise<Session<JsonlSessionMetadata>> {
@@ -728,7 +601,6 @@ function toAgentSessionCandidate(metadata: JsonlSessionMetadata): AgentSessionCa
 		createdAt: metadata.createdAt,
 		cwd: metadata.cwd,
 		parentSessionPath: metadata.parentSessionPath,
-		isChild: false,
 		profile: parseAgentProfileReference(metadata.metadata?.profile),
 	};
 }

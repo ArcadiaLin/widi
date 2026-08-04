@@ -9,7 +9,7 @@ import {
 	fuzzyFilter,
 } from "@earendil-works/pi-tui";
 import type { AgentOrchestrator } from "../core/agent-orchestrator.ts";
-import type { AgentLifecycleStatus, AgentMaintenanceKind, CandidateItem, RuntimeModel } from "../core/types.ts";
+import type { AgentActivitySnapshot, CandidateItem, RuntimeModel } from "../core/types.ts";
 import type { CommandEngine } from "./commands/engine.ts";
 import { LINE_COMMAND_TRIGGER } from "./commands/parse.ts";
 import type { CommandView } from "./commands/types.ts";
@@ -30,8 +30,7 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 	private readonly engine: CommandEngine;
 	private readonly agentId?: string;
 	private readonly orchestrator: AgentOrchestrator;
-	private readonly getStatus: () => AgentLifecycleStatus | undefined;
-	private readonly getMaintenance?: () => AgentMaintenanceKind | undefined;
+	private readonly getActivity: () => AgentActivitySnapshot | undefined;
 	private readonly getPendingModel?: () => RuntimeModel | undefined;
 	private readonly cwd?: string;
 	private readonly fdPath?: string;
@@ -41,8 +40,7 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 		readonly engine: CommandEngine;
 		readonly agentId?: string;
 		readonly orchestrator: AgentOrchestrator;
-		readonly getStatus: () => AgentLifecycleStatus | undefined;
-		readonly getMaintenance?: () => AgentMaintenanceKind | undefined;
+		readonly getActivity: () => AgentActivitySnapshot | undefined;
 		readonly getPendingModel?: () => RuntimeModel | undefined;
 		readonly cwd?: string;
 		/** fd binary override; undefined probes the PATH, null forces the fallback. */
@@ -51,8 +49,7 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 		this.engine = options.engine;
 		this.agentId = options.agentId;
 		this.orchestrator = options.orchestrator;
-		this.getStatus = options.getStatus;
-		this.getMaintenance = options.getMaintenance;
+		this.getActivity = options.getActivity;
 		this.getPendingModel = options.getPendingModel;
 		if (options.cwd) {
 			this.cwd = options.cwd;
@@ -151,7 +148,7 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 			};
 		}
 		const body = beforeCursor.slice(LINE_COMMAND_TRIGGER.length);
-		const items = this.engine.list(this.getStatus(), this.getMaintenance?.()).map(toCommandCompletionItem);
+		const items = this.engine.list(this.getActivity()).map(toCommandCompletionItem);
 		const filtered = fuzzyFilter(items, body, (item) => item.search).map((item) => ({
 			value: `${LINE_COMMAND_TRIGGER}${item.view.name}`,
 			label: item.label,

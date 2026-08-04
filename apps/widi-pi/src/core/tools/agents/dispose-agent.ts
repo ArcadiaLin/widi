@@ -1,6 +1,6 @@
 import { type Static, Type } from "typebox";
 import { formatError } from "../../../utils/errors.ts";
-import type { AgentDisposeScope, ToolAgentDisposeOutcome, ToolAgentHost } from "../../orchestrator/host.ts";
+import type { AgentDisposeScope, AgentRequestedDisposeOutcome, ToolAgentHost } from "../../host.ts";
 import type { ToolDefinition } from "../types.ts";
 import { requireAgentHost } from "./shared.ts";
 
@@ -101,7 +101,7 @@ async function disposeOne(
 function toDisposeStatus(
 	agentId: string,
 	scope: AgentDisposeScope,
-	outcome: ToolAgentDisposeOutcome,
+	outcome: AgentRequestedDisposeOutcome,
 ): DisposeAgentAgentStatus {
 	if (outcome.kind !== "disposed") {
 		return { agentId, state: outcome.kind };

@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AgentOrchestrator, OrchestratorEvent } from "../../src/core/agent-orchestrator.ts";
-import type { AgentRecordSnapshot } from "../../src/core/agent-record.ts";
+import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
+import type { AgentSnapshot } from "../../src/core/agent-types.ts";
 import type { WidiRuntime, WidiRuntimeServices } from "../../src/core/runtime-service.ts";
-import type { RuntimeModel } from "../../src/core/types.ts";
+import type { OrchestratorEvent, RuntimeModel } from "../../src/core/types.ts";
 import { WidiTuiApplication } from "../../src/tui/application.ts";
 import { ensureAgentProjection, setActiveAgent } from "../../src/tui/state.ts";
 
@@ -134,13 +134,12 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		expect(harness.application.state.activeAgentId).toBe("main");
 	});
 
-	it("skips an unavailable fork source and switches to another usable agent", async () => {
+	it("skips a disposed fork source and switches to another usable agent", async () => {
 		const harness = await createApplicationHarness();
 		await submit(harness.application, "first");
 		const source = harness.application.state.agents.get("main");
 		if (!source?.snapshot) throw new Error("Expected source agent.");
-		source.status = "unavailable";
-		source.snapshot = { ...source.snapshot, status: "unavailable", hasHarness: false };
+		source.status = "disposed";
 		const worker = ensureAgentProjection(harness.application.state, "worker", "idle");
 		worker.snapshot = snapshot("worker", model());
 		const fork = ensureAgentProjection(harness.application.state, "main-fork", "idle");
@@ -484,13 +483,17 @@ function createDeferred<T>(): { readonly promise: Promise<T>; readonly resolve: 
 function snapshot(agentId: string, runtimeModel: RuntimeModel) {
 	return {
 		agentId,
-		status: "idle",
-		profile: { reference: { id: "main", label: "Main Agent" } },
+		generation: 1,
+		profile: {
+			reference: { id: "main", label: "Main Agent" },
+			source: { kind: "memory", priority: 0 },
+			entryId: "entry-1",
+		},
 		model: runtimeModel,
-		hasHarness: true,
-		extensionIds: [],
-		extensions: [],
-		extensionSnapshot: {
+		thinkingLevel: "off",
+		tools: { toolNames: [], activeToolNames: [] },
+		activity: { activity: "idle" },
+		extensions: {
 			extensionIds: [],
 			extensions: [],
 			hooks: [],
@@ -500,10 +503,8 @@ function snapshot(agentId: string, runtimeModel: RuntimeModel) {
 			divisions: [],
 			stale: { stale: false },
 		},
-		resourceDiagnostics: [],
-		extensionDiagnostics: [],
 		diagnostics: [],
-	} satisfies AgentRecordSnapshot;
+	} satisfies AgentSnapshot;
 }
 
 function model(): RuntimeModel {

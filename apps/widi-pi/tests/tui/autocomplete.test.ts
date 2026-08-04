@@ -12,7 +12,7 @@ function provider(overrides: Record<string, unknown> = {}) {
 		engine: new CommandEngine(builtInCommands),
 		agentId: "main",
 		orchestrator: overrides as unknown as AgentOrchestrator,
-		getStatus: () => "idle",
+		getActivity: () => ({ activity: "idle" }),
 	});
 }
 
@@ -20,7 +20,7 @@ function pendingProvider(overrides: Record<string, unknown> = {}) {
 	return new WidiCommandAutocompleteProvider({
 		engine: new CommandEngine(builtInCommands),
 		orchestrator: overrides as unknown as AgentOrchestrator,
-		getStatus: () => undefined,
+		getActivity: () => undefined,
 	});
 }
 
@@ -29,7 +29,7 @@ function atProvider(cwd: string) {
 		engine: new CommandEngine(builtInCommands),
 		agentId: "main",
 		orchestrator: {} as unknown as AgentOrchestrator,
-		getStatus: () => "idle",
+		getActivity: () => ({ activity: "idle" }),
 		cwd,
 		// Force the Node fallback regardless of whether fd is installed.
 		fdPath: null,
@@ -151,8 +151,7 @@ describe("WidiCommandAutocompleteProvider", () => {
 			engine: new CommandEngine(builtInCommands),
 			agentId: "main",
 			orchestrator: {} as unknown as AgentOrchestrator,
-			getStatus: () => "running",
-			getMaintenance: () => "compaction",
+			getActivity: () => ({ activity: "running", maintenance: "compaction" }),
 		});
 		const result = await commandProvider.getSuggestions(["/ab"], 0, 3, { signal: signal() });
 		const abort = result?.items.find((item) => item.label === "/abort");
