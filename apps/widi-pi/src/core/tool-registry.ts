@@ -2,7 +2,7 @@ import type { AgentHarnessTool, AgentToolResult, AgentToolUpdateCallback } from 
 import type { TSchema } from "typebox";
 import { type BackgroundJobHost, createBackgroundJobStartedResult } from "./background/index.ts";
 import type { CoreDiagnostic, DiagnosticSeverity } from "./diagnostics.ts";
-import type { ToolAgentHost } from "./host.ts";
+import type { AgentToOrchestratorHost } from "./host.ts";
 import type { HumanInterruptWatch } from "./human-interrupt.ts";
 import type { ToolHumanHost } from "./human-request.ts";
 import type {
@@ -67,7 +67,7 @@ export interface ToolRegistryResolveResult {
 export interface ToolAdapterContext {
 	human?: ToolHumanHost;
 	/** Collaboration port bound to the agent this context belongs to. */
-	agents?: ToolAgentHost;
+	agents?: AgentToOrchestratorHost;
 	createExtensionContext?: (source: ToolSource, toolName: string) => ToolExtensionContext | undefined;
 	/**
 	 * Owner-scoped capabilities of the background job runtime. When provided, a

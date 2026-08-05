@@ -93,6 +93,23 @@ export interface ExtensionInputPresentationEntryData {
 	readonly presentation: ExtensionInputPresentation;
 }
 
+/**
+ * Core-owned type for every message the runtime puts into a model's context on
+ * someone else's behalf: another agent, a settled background job, an extension,
+ * or the runtime itself.
+ *
+ * One type rather than one per source, because the dispatch key is
+ * `details.source.kind` and that is open - a holder names its own source, so a
+ * reader has to tolerate kinds it has never seen. Minting a custom type per
+ * kind would put those names into the type space and still need the same
+ * fallback.
+ *
+ * Input the shell submits as the human is the deliberate exception: it stays a
+ * plain `role:"user"` entry with no type at all, and carrying none is what says
+ * the user typed it.
+ */
+export const ORCHESTRATOR_MESSAGE_CUSTOM_TYPE = "core:orchestrator_message";
+
 export interface AgentSessionCandidate {
 	/** Text form of the session address; how every consumer names this session. */
 	readonly ref: string;

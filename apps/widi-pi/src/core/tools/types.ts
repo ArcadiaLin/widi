@@ -1,7 +1,7 @@
 import type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode } from "@widi/agent-core";
 import type { Static, TSchema } from "typebox";
 import type { BackgroundJobHost, BackgroundJobOutputWriter, BackgroundJobReport } from "../background/index.ts";
-import type { ToolAgentHost } from "../host.ts";
+import type { AgentToOrchestratorHost } from "../host.ts";
 import type { HumanInterruptWatch } from "../human-interrupt.ts";
 import type { ToolHumanHost } from "../human-request.ts";
 
@@ -28,7 +28,7 @@ export interface ToolExecutionContext<TDetails> {
 	 * turn is executing. Only the collaboration tools read it; everything else
 	 * ignores it, and it is absent in runtimes that wire no orchestrator.
 	 */
-	agents?: ToolAgentHost;
+	agents?: AgentToOrchestratorHost;
 	/**
 	 * Owner-scoped background job capabilities, bound to the agent whose turn is
 	 * executing, when the runtime wired a background runtime. Job-control tools

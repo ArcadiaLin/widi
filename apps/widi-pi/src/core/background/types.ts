@@ -15,6 +15,7 @@
 import type { AgentToolResult } from "@widi/agent-core";
 import type { JsonValue } from "../../utils/json.ts";
 import type { CoreDiagnostic } from "../diagnostics.ts";
+import type { MessageSender, MessageSinkBinding } from "../message.ts";
 import type { NamespaceProjection } from "../persistence/index.ts";
 import type { JobHistoryStorage, SessionJobStore } from "./job-persistence.ts";
 
@@ -499,24 +500,6 @@ export const MAX_PERSISTED_JOB_OUTPUT_BYTES = 32 * 1024;
 // Ports
 // ---------------------------------------------------------------------------
 
-/** A settled job's t1, ready to be handed to the owner's input path. */
-export interface BackgroundJobDelivery {
-	readonly ownerAgentId: string;
-	readonly jobId: string;
-	/** The rendered t1 text; the runtime owns the wording. */
-	readonly body: string;
-}
-
-/**
- * What the host says about an accepted delivery. `entryId` is the provisioned
- * id of the queued entry - the thing that would turn "was this t1 delivered?"
- * from a text search into an existence check. Nothing produces or reads it yet;
- * it is declared so the day the input path can provision one, no shape changes.
- */
-export interface BackgroundJobDeliveryReceipt {
-	readonly entryId?: string;
-}
-
 /**
  * Everything the runtime needs from outside itself - and nothing more. There is
  * no port for "is this agent reachable" on purpose: the runtime asks for a
@@ -529,11 +512,12 @@ export interface BackgroundJobRuntimePorts {
 	 */
 	openOwnerStore(owner: { readonly agentId: string; readonly sessionId: string }): Promise<SessionJobStore | undefined>;
 	/**
-	 * Hand a settled job's text to its owner. Delivery policy - interception,
-	 * merging, prompt versus steer - belongs to the host; the runtime only says
-	 * that this owner has a result to read.
+	 * The one way anything reaches a model's context. The runtime holds it like
+	 * every other producer does and says what it has to say; how that lands -
+	 * interception, merging, prompt versus steer - is decided by the binding and
+	 * the host, not here.
 	 */
-	deliverResult(delivery: BackgroundJobDelivery): Promise<BackgroundJobDeliveryReceipt>;
+	messageSinkFor(binding: MessageSinkBinding): MessageSender;
 	publish(event: BackgroundJobEvent): Promise<void>;
 	/** Report a fact without depending on whoever collects it. */
 	diagnose(diagnostic: CoreDiagnostic): Promise<void>;

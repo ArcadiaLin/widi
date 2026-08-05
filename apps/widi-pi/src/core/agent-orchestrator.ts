@@ -17,7 +17,7 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
-import { type AssistantMessage, getSupportedThinkingLevels, type ImageContent } from "@earendil-works/pi-ai";
+import { type AssistantMessage, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import {
 	type AbortResult,
 	AgentHarness,
@@ -58,8 +58,6 @@ import type {
 } from "./auth-controller.ts";
 import { AuthRuntimeController } from "./auth-controller.ts";
 import {
-	type BackgroundJobDelivery,
-	type BackgroundJobDeliveryReceipt,
 	type BackgroundJobEvent,
 	BackgroundJobRuntime,
 	type BackgroundJobSnapshot,
@@ -79,7 +77,12 @@ import { type OrchestratorDiagnostic, OrchestratorError } from "./diagnostics.ts
 import type { EventPublishOptions } from "./event-bus.ts";
 import { OrchestratorEventBus } from "./event-bus.ts";
 import type { ExtensionEventEnvelope } from "./extension/events.ts";
-import type { ExtensionContextActions, ExtensionCoreActions, ExtensionIdentity } from "./extension/index.ts";
+import type {
+	ExtensionContextActions,
+	ExtensionCoreActions,
+	ExtensionIdentity,
+	ExtensionSendOptions,
+} from "./extension/index.ts";
 import {
 	EXTENSION_OBSERVED_EVENT_NAMES,
 	ExtensionLoader,
@@ -115,9 +118,9 @@ import type {
 	AgentBrief,
 	AgentDisposeScope,
 	AgentProfileBrief,
+	AgentToOrchestratorHost,
 	AgentTreeEntry,
 	AgentTreeListing,
-	ToolAgentHost,
 } from "./host.ts";
 import { HumanInterruptRegistry } from "./human-interrupt.ts";
 import type { HumanRequest, HumanResponse } from "./human-request.ts";
@@ -125,18 +128,23 @@ import { HumanRequestBroker } from "./human-request.ts";
 import { stripImagesFromMessages } from "./image-policy.ts";
 import {
 	assertMessageBody,
-	backgroundResultMergeKey,
 	type MessageDeliveryMethod,
+	type MessageDeliveryMode,
 	type MessageDeliveryPhase,
 	MessageDeliveryQueue,
 	type MessageDeliveryReceipt,
 	type MessageDeliveryRequest,
 	type MessageDraft,
+	type MessageEntryPayload,
 	type MessageInterceptEvent,
 	type MessageInterceptRun,
+	type MessageRequest,
 	type MessageSendOutcome,
+	type MessageSink,
+	type MessageSinkBinding,
 	type MessageSource,
-	renderMessageEnvelope,
+	messageBindingFor,
+	renderMessageContent,
 	transformMessage,
 } from "./message.ts";
 import {
@@ -176,6 +184,7 @@ import {
 	INPUT_TRANSFORM_CUSTOM_TYPE,
 	type InputTransformEntryData,
 	isExtensionCustomType,
+	ORCHESTRATOR_MESSAGE_CUSTOM_TYPE,
 	toExtensionCustomType,
 } from "./session-manager.ts";
 import type { SettingManager } from "./setting-manager.js";
@@ -651,7 +660,7 @@ export class AgentOrchestrator {
 		});
 		this._backgroundJobs = new BackgroundJobRuntime({
 			openOwnerStore: async (owner) => await this._openAgentJobStore(owner.agentId),
-			deliverResult: async (delivery) => await this._deliverBackgroundResult(delivery),
+			messageSinkFor: (binding) => this.messageSinkFor(binding),
 			// Translated here so the runtime's vocabulary stays free of agents.
 			publish: async (event) => await this._emit(toOrchestratorBackgroundEvent(event)),
 			diagnose: async (diagnostic) => await this._publishDiagnostic(diagnostic),
@@ -1411,25 +1420,17 @@ export class AgentOrchestrator {
 	 * branch text for a result header, which is reading absence as evidence - text
 	 * is restated by the model, rewritten by compaction, pasted by the user.
 	 *
-	 * **Session write.** `harness.appendMessage` puts the outcomes on the branch,
-	 * because they have to be in the session the moment this returns - a second
-	 * interrupted resume has to find them and stay idempotent. At resume it runs
-	 * before the agent is routable, so a stale result is context rather than a
-	 * message arriving into it. The records follow the message, never precede it.
+	 * **Session write.** A `precede` message, which lands as a `custom_message`
+	 * entry on the branch, because these outcomes have to be in the session the
+	 * moment this returns - a second interrupted resume has to find them and stay
+	 * idempotent. At resume it runs before the agent is routable, so a stale
+	 * result is context rather than a message arriving into it. The records follow
+	 * the message, never precede it.
 	 */
 	private async _reconcileAgentJobBranch(agentId: AgentId, cause: JobCloseCause, stopReason: string): Promise<void> {
 		let announced = 0;
 		try {
-			await this._backgroundJobs.reconcileBranch(agentId, { cause, stopReason }, async (jobs) => {
-				const liveAgent = this._live.get(agentId);
-				if (!liveAgent) return;
-				await liveAgent.harness.appendMessage({
-					role: "user",
-					content: [{ type: "text", text: jobs.map(toCarriedOverJobResultText).join("\n\n") }],
-					timestamp: Date.now(),
-				});
-				announced = jobs.length;
-			});
+			announced = await this._backgroundJobs.reconcileBranch(agentId, { cause, stopReason });
 		} catch (error) {
 			await this._recordAgentLifecycleFailure(
 				agentId,
@@ -1466,23 +1467,18 @@ export class AgentOrchestrator {
 	 * started the job, and a result arrives in a later one, so a branch carrying
 	 * the t1 carries the ref as well and its job is not orphaned at all.
 	 *
-	 * **Session write.** `harness.appendMessage`, on the same terms as the
+	 * **Session write.** A `precede` message, on the same terms as the
 	 * reconciliation above.
 	 */
 	private async _announceOrphanedJobHandles(agentId: AgentId): Promise<number> {
-		const liveAgent = this._live.get(agentId);
-		if (!liveAgent) return 0;
+		if (!this._live.has(agentId)) return 0;
 		const recorded = new Set(this._backgroundJobs.history(agentId).map((job) => job.toolCallId));
 		const snapshot = await this.sessionManager.getAgentSessionSnapshot(agentId);
 		const orphaned = collectBackgroundJobHandles(snapshot.pathToRoot).filter(
 			(handle) => !recorded.has(handle.toolCallId),
 		);
 		if (orphaned.length === 0) return 0;
-		await liveAgent.harness.appendMessage({
-			role: "user",
-			content: [{ type: "text", text: orphaned.map(toOrphanedJobHandleText).join("\n\n") }],
-			timestamp: Date.now(),
-		});
+		await this._sendRuntimeNotice(agentId, "orphaned_job_handles", orphaned.map(toOrphanedJobHandleText).join("\n\n"));
 		return orphaned.length;
 	}
 
@@ -1493,27 +1489,21 @@ export class AgentOrchestrator {
 	 * runtime that built it, so there is no partial restoration to describe and
 	 * nothing to enumerate; `list_agents` is where the closed sessions show up.
 	 *
-	 * **Session write.** `harness.appendMessage`, because this is context the
-	 * model must resume with: a branch that says "I asked coder-1 to do it" and a
+	 * **Session write.** A `precede` message, because this is context the model
+	 * must resume with: a branch that says "I asked coder-1 to do it" and a
 	 * runtime with no coder-1 otherwise disagree silently, and the model keeps
 	 * addressing an agent that does not exist. Written before the agent is
 	 * routable, so it is part of the context rather than a message arriving into
 	 * it.
 	 */
 	private async _announceClosedSpawnTree(agentId: AgentId): Promise<void> {
-		const liveAgent = this._live.get(agentId);
-		if (!liveAgent) return;
+		if (!this._live.has(agentId)) return;
 		try {
-			await liveAgent.harness.appendMessage({
-				role: "user",
-				content: [
-					{
-						type: "text",
-						text: "[Spawn tree closed] Every agent you created before this resume has been closed. Spawn new ones if you still need them.",
-					},
-				],
-				timestamp: Date.now(),
-			});
+			await this._sendRuntimeNotice(
+				agentId,
+				"spawn_tree_closed",
+				"[Spawn tree closed] Every agent you created before this resume has been closed. Spawn new ones if you still need them.",
+			);
 		} catch (error) {
 			await this._recordAgentLifecycleFailure(
 				agentId,
@@ -1521,6 +1511,22 @@ export class AgentOrchestrator {
 				`Failed to record the closed-spawn-tree notice for agent ${agentId}: ${formatError(error)}`,
 			);
 		}
+	}
+
+	/**
+	 * The runtime telling an agent a fact about its own situation.
+	 *
+	 * `precede` rather than a wake: none of these is news the agent should stop
+	 * for, and all of them are things it must already know by the time it reads
+	 * anything else. It goes through the ordinary message path like every other
+	 * producer, so it meets the same interception and lands with the same record
+	 * of who wrote it.
+	 */
+	private async _sendRuntimeNotice(agentId: AgentId, notice: string, body: string): Promise<void> {
+		await this.sendMessage(
+			{ targetAgentId: agentId, body, mode: "precede" },
+			messageBindingFor({ kind: "runtime", notice }),
+		);
 	}
 
 	/** A readable AgentId that collides with no live agent and no tombstone. */
@@ -1752,9 +1758,9 @@ export class AgentOrchestrator {
 			// closes whatever the branch still shows open. A closing record written
 			// after the harness is shut down is a record that was never written.
 			await this._tryTeardown(agentId, "seal background job history", async () => {
-				// Nothing is announced: the agent this branch belongs to is going away,
-				// so there is no next turn to read a closing message.
-				await this._backgroundJobs.reconcileBranch(agentId, { cause: "dispose", stopReason: reason }, async () => {});
+				// The `dispose` cause is what keeps this silent: the records are
+				// written, but the agent has no next turn to read a closing message in.
+				await this._backgroundJobs.reconcileBranch(agentId, { cause: "dispose", stopReason: reason });
 			});
 			await this._tryTeardown(agentId, "abort", async () => {
 				await liveAgent.harness.abort();
@@ -1856,40 +1862,65 @@ export class AgentOrchestrator {
 	// -----------------------------------------------------------------------
 
 	/**
-	 * The unified entry point, for the trusted shell (TUI, RPC) which may
-	 * construct a `human` or `system` source. Agent identity is synthesized by the
-	 * agent-facing path instead.
+	 * Hand out the message entry point, with an identity and a delivery policy
+	 * already fixed to it.
+	 *
+	 * Every producer of model-facing text holds one of these and nothing else -
+	 * there is no per-runtime wrapper on this class for background results,
+	 * extension input, or the runtime's own notices. What differs between them is
+	 * the binding, not the path.
+	 *
+	 * The two halves are bound for opposite reasons. `policy` decides what the
+	 * message *does* - whether it counts as a human interrupt, whether an
+	 * extension may end it, whether a failed delivery is retried - so a holder
+	 * that could set it would be choosing how hard its own text lands. `source`
+	 * only decides how the message is *rendered and traced*, so a request may
+	 * override it freely; a holder renders its own text anyway (`request.render`),
+	 * and binding the kind would not stop it from producing text that reads like
+	 * any other source's.
 	 */
-	async sendMessage(draft: MessageDraft): Promise<MessageSendOutcome> {
-		const accepted = await this._routeMessage(draft, { requiresIdle: false, awaited: false });
+	messageSinkFor(binding: MessageSinkBinding): MessageSink {
+		return {
+			send: async (request) => await this.sendMessage(request, binding),
+			prompt: async (request) => await this.promptAgent(request, binding),
+		};
+	}
+
+	/** The unified entry point. Resolves the request against its sink's binding. */
+	async sendMessage(
+		request: MessageRequest,
+		binding: MessageSinkBinding,
+		options?: { readonly presentation?: ExtensionInputPresentationRecord },
+	): Promise<MessageSendOutcome> {
+		const accepted = await this._routeMessage(toMessageDraft(request, binding), {
+			requiresIdle: false,
+			awaited: false,
+			...(options?.presentation === undefined ? undefined : { presentation: options.presentation }),
+		});
 		return accepted.kind === "blocked" ? accepted : { kind: "accepted" };
 	}
 
-	/** The same pipeline, waiting for the assistant message the surface will render. */
+	/**
+	 * The same pipeline, waiting for the assistant message the surface will
+	 * render. Only the shell's sink exposes it: it refuses a busy target rather
+	 * than queueing, which is the wrong answer for a holder that just wants its
+	 * text read eventually.
+	 */
 	async promptAgent(
-		agentId: AgentId,
-		text: string,
-		options?: { readonly images?: readonly ImageContent[]; readonly presentation?: ExtensionInputPresentationRecord },
+		request: MessageRequest,
+		binding: MessageSinkBinding,
+		options?: { readonly presentation?: ExtensionInputPresentationRecord },
 	): Promise<PromptOutcome> {
-		const accepted = await this._routeMessage(
-			{
-				source: { kind: "human" },
-				targetAgentId: agentId,
-				body: text,
-				...(options?.images === undefined ? undefined : { images: options.images }),
-				mode: "next_turn",
-			},
-			{
-				requiresIdle: true,
-				awaited: true,
-				...(options?.presentation === undefined ? undefined : { presentation: options.presentation }),
-			},
-		);
+		const accepted = await this._routeMessage(toMessageDraft(request, binding), {
+			requiresIdle: true,
+			awaited: true,
+			...(options?.presentation === undefined ? undefined : { presentation: options.presentation }),
+		});
 		if (accepted.kind === "blocked") return accepted;
 		const completed = accepted.receipt.completed;
 		if (!completed) {
 			throw new Error(
-				`Prompt for agent ${agentId} was delivered as ${accepted.receipt.method} and produced no assistant message.`,
+				`Prompt for agent ${request.targetAgentId} was delivered as ${accepted.receipt.method} and produced no assistant message.`,
 			);
 		}
 		return { kind: "completed", message: await completed };
@@ -1962,34 +1993,57 @@ export class AgentOrchestrator {
 			});
 		}
 
-		// A job result is the one source with no caller left to hear about a failure:
-		// its tool call already returned, and the model waits for exactly one t1 that
-		// nobody else will resend. It is also the only source whose messages merge,
-		// each already carrying its own job header.
-		const jobSource = draft.source.kind === "background_job" ? draft.source : undefined;
 		const pending: PendingExtensionInputPresentation | undefined = options.presentation
 			? {
 					extensionId: options.presentation.extensionId,
 					presentation: validateExtensionInputPresentation(options.presentation.presentation),
 				}
 			: undefined;
+		const { policy } = draft.binding;
+		// The one place the model-facing text is decided. A holder's own renderer
+		// runs here and only here: the queue re-attempts delivery across phase
+		// changes, and a second run would give one message two versions of itself.
+		const text = renderMessageContent(draft, outcome.text);
+		const transformedBy = outcome.kind === "transform" ? outcome.transformedBy : undefined;
+		// What this message records about itself. Absent only for the shell's own
+		// human input, which keeps landing as a plain user entry.
+		const entry: MessageEntryPayload | undefined =
+			draft.binding.plainEntry && draft.source === draft.binding.source
+				? undefined
+				: {
+						customType: ORCHESTRATOR_MESSAGE_CUSTOM_TYPE,
+						details: {
+							source: draft.source,
+							body: outcome.text,
+							...(transformedBy === undefined ? undefined : { transformedBy }),
+						},
+					};
 		const receipt = await this._messages.enqueue({
 			targetAgentId: agentId,
-			text: renderMessageEnvelope(draft.source, outcome.text),
+			text,
+			...(entry === undefined ? undefined : { entry }),
 			...(outcome.images === undefined ? undefined : { images: outcome.images }),
 			mode: draft.mode,
 			requiresIdle: options.requiresIdle,
-			humanInterrupt: draft.source.kind === "human",
-			...(jobSource === undefined
-				? undefined
-				: {
-						mergeKey: backgroundResultMergeKey(draft.mode),
-						onDeferredFailure: (error: unknown) => {
-							void this._reportDeferredDeliveryFailure(agentId, jobSource.jobId, error);
-						},
-					}),
+			humanInterrupt: policy.humanInterrupt,
+			...(policy.mergeKey === undefined ? undefined : { mergeKey: policy.mergeKey }),
 			awaited: options.awaited,
-			retryOnFailure: jobSource !== undefined,
+			retryOnFailure: policy.retryOnFailure,
+			// Reported per attempt, so a target that never accepts is visible rather
+			// than silently accumulating messages. Only for a sender that keeps
+			// waiting; one that gets its failure back has already been told.
+			...(policy.retryOnFailure
+				? {
+						onDeferredFailure: (error: unknown) => {
+							void this._publishDiagnostic({
+								severity: "warning",
+								code: "orchestrator.message_delivery_deferred",
+								message: `A message from ${draft.source.label ?? draft.source.kind} to agent ${agentId} could not be delivered and will be retried at the next transition: ${formatError(error)}`,
+								agentId,
+							});
+						},
+					}
+				: undefined),
 			...(pending === undefined
 				? undefined
 				: {
@@ -2064,6 +2118,19 @@ export class AgentOrchestrator {
 		}
 		const { harness } = liveAgent;
 		const options = request.images ? { images: [...request.images] } : undefined;
+		if (request.method === "append") {
+			// **Session write.** The message is the entry: there is no wake, so
+			// nothing else would ever put it on the branch. `custom_message` is the
+			// one entry type that carries a customType and still projects into model
+			// context, which is exactly what a message nobody is woken for needs.
+			await harness.appendCustomMessageEntry(
+				request.entry?.customType ?? ORCHESTRATOR_MESSAGE_CUSTOM_TYPE,
+				request.text,
+				true,
+				request.entry?.details,
+			);
+			return { method: "append" };
+		}
 		if (request.method === "prompt") {
 			return await this._startPrompt(
 				{ agentId, generation: liveAgent.generation, harness, phase: harness.getPhase() },
@@ -2188,71 +2255,6 @@ export class AgentOrchestrator {
 		if (!waiters) return;
 		this._agentRunStartWaiters.delete(agentId);
 		for (const waiter of waiters) waiter();
-	}
-
-	/**
-	 * Reported per attempt, so a target that never accepts is visible instead of
-	 * silently accumulating messages.
-	 */
-	private async _reportDeferredDeliveryFailure(agentId: AgentId, jobId: string, error: unknown): Promise<void> {
-		await this._publishDiagnostic({
-			severity: "warning",
-			code: "orchestrator.background_job_delivery_failed",
-			message: `Background job ${jobId} result delivery to agent ${agentId} failed, will retry at the next transition: ${formatError(error)}`,
-			agentId,
-		});
-	}
-
-	/**
-	 * The background runtime's t1 delivery port: hands the text to the ordinary
-	 * message entry point, reading no job record and deciding no lifecycle.
-	 */
-	private async _deliverBackgroundResult(delivery: BackgroundJobDelivery): Promise<BackgroundJobDeliveryReceipt> {
-		const agentId = delivery.ownerAgentId;
-		try {
-			await this.sendMessage({
-				source: { kind: "background_job", ownerAgentId: agentId, jobId: delivery.jobId },
-				targetAgentId: agentId,
-				body: delivery.body,
-				mode: "interrupt",
-			});
-		} catch (error) {
-			// Retryable failures keep the result queued, so reaching here means the
-			// owner can never take it.
-			await this._publishDiagnostic({
-				severity: "warning",
-				code: "orchestrator.background_job_dropped",
-				message: `Dropping the result of background job ${delivery.jobId} for agent ${agentId}: ${formatError(error)}`,
-				agentId,
-			});
-		}
-		return {};
-	}
-
-	// -----------------------------------------------------------------------
-	// Low-level harness input
-	//
-	// Entry points for a caller that has already decided how the text must land.
-	// They run the AgentId gate, the phase gate and the human-interrupt
-	// coordination, but not `sendMessage`'s interception or session accounting.
-	// -----------------------------------------------------------------------
-
-	async steerAgent(
-		agentId: AgentId,
-		text: string,
-		options?: { readonly images?: readonly ImageContent[] },
-	): Promise<void> {
-		const harness = this._requireHarnessOutsideMaintenance(agentId, "steer");
-		await harness.steer(text, toHarnessMessageOptions(options));
-	}
-
-	async followUpAgent(
-		agentId: AgentId,
-		text: string,
-		options?: { readonly images?: readonly ImageContent[] },
-	): Promise<void> {
-		const harness = this._requireHarnessOutsideMaintenance(agentId, "queue a follow-up");
-		await harness.followUp(text, toHarnessMessageOptions(options));
 	}
 
 	/**
@@ -2472,34 +2474,6 @@ export class AgentOrchestrator {
 	// session entry, so it waits in a per-target queue and is paired on the
 	// harness `session_write` event.
 	// -----------------------------------------------------------------------
-
-	/**
-	 * Wrap a direct steer or follow-up that carries a presentation, so a failed
-	 * hand-off does not leave one waiting for a message that never lands.
-	 */
-	private async _withExtensionInputPresentation(
-		agentId: AgentId,
-		extensionId: string,
-		method: "steer" | "follow_up",
-		presentation: ExtensionInputPresentation | undefined,
-		deliver: () => Promise<void>,
-	): Promise<void> {
-		if (!presentation) {
-			await deliver();
-			return;
-		}
-		const pending: PendingExtensionInputPresentation = {
-			extensionId,
-			presentation: validateExtensionInputPresentation(presentation),
-		};
-		this._beginExtensionInputPresentationDelivery(agentId, pending, method);
-		try {
-			await deliver();
-		} catch (error) {
-			this._discardPendingExtensionInputPresentation(agentId, pending);
-			throw error;
-		}
-	}
 
 	private _beginExtensionInputPresentationDelivery(
 		agentId: AgentId,
@@ -3433,34 +3407,30 @@ export class AgentOrchestrator {
 				);
 				return entryId === undefined ? {} : { entryId };
 			},
-			// The presentation rides the message pipeline, where a block returns before
-			// any session write: none is recorded for a message an interceptor refused.
+			// All three go through the one message path, so an extension's text meets
+			// the same interception as anything else and lands with the same record
+			// of who wrote it. The presentation rides that pipeline too, where a
+			// block returns before any session write: none is recorded for a message
+			// an interceptor refused.
 			promptAgent: async (agentId, extensionId, text, options) => {
-				await this.promptAgent(agentId, text, {
-					...(options?.images === undefined ? undefined : { images: options.images }),
-					...(options?.presentation === undefined
-						? undefined
-						: { presentation: { extensionId, presentation: options.presentation } }),
-				});
+				await this.promptAgent(
+					toExtensionMessageRequest(agentId, text, "next_turn", options),
+					messageBindingFor({ kind: "extension", extensionId }),
+					toExtensionPresentationOptions(extensionId, options),
+				);
 			},
 			steerAgent: async (agentId, extensionId, text, options) => {
-				await this._withExtensionInputPresentation(agentId, extensionId, "steer", options?.presentation, async () => {
-					await this.steerAgent(agentId, text, {
-						...(options?.images === undefined ? undefined : { images: options.images }),
-					});
-				});
+				await this.sendMessage(
+					toExtensionMessageRequest(agentId, text, "interrupt", options),
+					messageBindingFor({ kind: "extension", extensionId }),
+					toExtensionPresentationOptions(extensionId, options),
+				);
 			},
 			followUpAgent: async (agentId, extensionId, text, options) => {
-				await this._withExtensionInputPresentation(
-					agentId,
-					extensionId,
-					"follow_up",
-					options?.presentation,
-					async () => {
-						await this.followUpAgent(agentId, text, {
-							...(options?.images === undefined ? undefined : { images: options.images }),
-						});
-					},
+				await this.sendMessage(
+					toExtensionMessageRequest(agentId, text, "next_turn", options),
+					messageBindingFor({ kind: "extension", extensionId }),
+					toExtensionPresentationOptions(extensionId, options),
 				);
 			},
 			getAgentContextUsage: (agentId) => this._context.get(agentId),
@@ -3674,7 +3644,7 @@ export class AgentOrchestrator {
 				request: async (request) =>
 					await this._requestHumanForAgent(agentId, { ...request, source: { kind: "agent", agentId } }),
 			},
-			agents: this._createToolAgentHost(agentId, liveAgent.backgroundAttachment),
+			agents: this._createAgentHost(agentId, liveAgent.backgroundAttachment),
 			// The attachment's own capability, so a backgroundable call registers
 			// against the generation that started it rather than an id looked up later.
 			jobs: liveAgent.backgroundAttachment.host,
@@ -3695,7 +3665,7 @@ export class AgentOrchestrator {
 	 * a job, or the settler of someone else's. Discovery and dispose scope resolve
 	 * over private runtime state for the same reason.
 	 */
-	private _createToolAgentHost(agentId: AgentId, attachment: OwnerAttachment): ToolAgentHost {
+	private _createAgentHost(agentId: AgentId, attachment: OwnerAttachment): AgentToOrchestratorHost {
 		return {
 			agentId,
 			listProfiles: async () => {
@@ -3725,13 +3695,15 @@ export class AgentOrchestrator {
 			// swept by its subtree dispose.
 			spawn: async (profileId) => await this.spawnAgent({ origin: { kind: "new", profileId }, parent: agentId }),
 			sendMessage: async (targetAgentId, body) =>
-				await this.sendMessage({
-					source: { kind: "agent", agentId },
-					targetAgentId,
-					body,
-					// Never preempts a turn in flight: the target decides when to read.
-					mode: "next_turn",
-				}),
+				await this.sendMessage(
+					{
+						targetAgentId,
+						body,
+						// Never preempts a turn in flight: the target decides when to read.
+						mode: "next_turn",
+					},
+					messageBindingFor({ kind: "agent", senderAgentId: agentId }),
+				),
 			dispose: async (targetAgentId, options) => {
 				if (!this._live.has(targetAgentId)) {
 					return { kind: this._tombstones.has(targetAgentId) ? "already_disposed" : "unknown" };
@@ -4641,13 +4613,6 @@ function isExtensionObservedEvent(event: OrchestratorEvent): event is ExtensionO
 	return Object.hasOwn(EXTENSION_OBSERVED_EVENT_NAMES, event.type);
 }
 
-/** The harness takes a mutable image array; the orchestrator passes readonly ones. */
-function toHarnessMessageOptions(
-	options: { readonly images?: readonly ImageContent[] } | undefined,
-): { images: ImageContent[] } | undefined {
-	return options?.images ? { images: [...options.images] } : undefined;
-}
-
 /**
  * The extension-facing shape: identity and conversation, no filesystem layout.
  * An ephemeral session owns no persisted file and therefore has no ref.
@@ -4725,6 +4690,39 @@ function isBackgroundJobStartedDetails(details: unknown): details is BackgroundJ
 	);
 }
 
+/**
+ * Resolve a request against the sink it came through. The source is the
+ * request's if it named one, the sink's otherwise; the policy is always the
+ * sink's.
+ */
+function toMessageDraft(request: MessageRequest, binding: MessageSinkBinding): MessageDraft {
+	return { ...request, source: request.source ?? binding.source, binding };
+}
+
+/** The shared half of the three extension input actions. */
+function toExtensionMessageRequest(
+	agentId: AgentId,
+	text: string,
+	mode: MessageDeliveryMode,
+	options: ExtensionSendOptions | undefined,
+): MessageRequest {
+	return {
+		targetAgentId: agentId,
+		body: text,
+		...(options?.images === undefined ? undefined : { images: options.images }),
+		mode,
+	};
+}
+
+function toExtensionPresentationOptions(
+	extensionId: string,
+	options: ExtensionSendOptions | undefined,
+): { readonly presentation?: ExtensionInputPresentationRecord } {
+	return options?.presentation === undefined
+		? {}
+		: { presentation: { extensionId, presentation: options.presentation } };
+}
+
 function toOrphanedJobHandleText(handle: BackgroundJobStartedDetails): string {
 	return formatInterruptedBackgroundJobResultText({
 		jobId: handle.jobId,
@@ -4733,18 +4731,6 @@ function toOrphanedJobHandleText(handle: BackgroundJobStartedDetails): string {
 		stopReason:
 			"This part of the conversation never recorded the job, so nothing here can report its outcome. Start it again if its work is still needed.",
 	});
-}
-
-function toCarriedOverJobResultText(job: JobHistoryEntry): string {
-	return (
-		job.messageText ??
-		formatInterruptedBackgroundJobResultText({
-			jobId: job.jobId,
-			toolCallId: job.toolCallId,
-			toolName: job.toolName,
-			...(job.stopReason === undefined ? undefined : { stopReason: job.stopReason }),
-		})
-	);
 }
 
 function now(): string {

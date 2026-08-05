@@ -1,13 +1,13 @@
 import { formatError } from "../../../utils/errors.ts";
 import type { BackgroundJobHost } from "../../background/index.ts";
-import type { AgentBrief, ToolAgentHost } from "../../host.ts";
+import type { AgentBrief, AgentToOrchestratorHost } from "../../host.ts";
 import { formatAgentTaskMessageBody } from "../../message.ts";
 import type { ToolExecutionContext } from "../types.ts";
 
 /** Longest job description kept for a delegated task. */
 const MAX_TASK_DESCRIPTION_LENGTH = 80;
 
-export function requireAgentHost<TDetails>(context: ToolExecutionContext<TDetails>): ToolAgentHost {
+export function requireAgentHost<TDetails>(context: ToolExecutionContext<TDetails>): AgentToOrchestratorHost {
 	const host = context.agents;
 	if (!host) {
 		throw new Error("Agent collaboration is not available in this runtime, so there are no other agents to work with.");
@@ -21,7 +21,7 @@ export function requireAgentHost<TDetails>(context: ToolExecutionContext<TDetail
  * torn down has already left it, and work handed to one there would be accepted
  * after the sweep that was supposed to cancel it.
  */
-export function requireAddressableAgent(host: ToolAgentHost, agentId: string): AgentBrief {
+export function requireAddressableAgent(host: AgentToOrchestratorHost, agentId: string): AgentBrief {
 	const brief = host.describe(agentId);
 	if (!brief) {
 		throw new Error(
@@ -45,7 +45,7 @@ export interface AssignedAgentTask {
  * no record is how a task ends up owed by nobody.
  */
 export async function assignAgentTask(input: {
-	readonly host: ToolAgentHost;
+	readonly host: AgentToOrchestratorHost;
 	readonly jobs: BackgroundJobHost | undefined;
 	readonly toolCallId: string;
 	readonly toolName: string;
@@ -73,7 +73,7 @@ export async function assignAgentTask(input: {
 	// caller waiting. Aborting is what the owner is allowed to do: settlement
 	// authority belongs to the worker, and the runtime completes an aborted
 	// external job itself.
-	let outcome: Awaited<ReturnType<ToolAgentHost["sendMessage"]>>;
+	let outcome: Awaited<ReturnType<AgentToOrchestratorHost["sendMessage"]>>;
 	try {
 		outcome = await host.sendMessage(
 			targetAgentId,

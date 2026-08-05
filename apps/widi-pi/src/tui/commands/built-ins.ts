@@ -8,6 +8,7 @@ import {
 } from "@widi/agent-core";
 import type { AgentListResult, AgentSessionListResult, ExtensionReloadResult } from "../../core/agent-orchestrator.ts";
 import type { AgentSnapshot } from "../../core/agent-types.ts";
+import { messageBindingFor } from "../../core/message.ts";
 import type {
 	AgentSessionCandidate,
 	AgentSessionSnapshot,
@@ -51,7 +52,10 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		requiresArgument: true,
 		checkActivity: (activity) => unavailableDuringMaintenance("follow-up", activity.maintenance),
 		execute: async (context, argument) => {
-			await context.orchestrator.followUpAgent(requireAgentId(context), argument.trim());
+			await context.orchestrator.sendMessage(
+				{ targetAgentId: requireAgentId(context), body: argument.trim(), mode: "next_turn" },
+				messageBindingFor({ kind: "human" }),
+			);
 			return undefined;
 		},
 	},
@@ -239,12 +243,10 @@ export const builtInCommands: readonly CommandDefinition[] = [
 				? undefined
 				: `Command /steer requires a running agent (status: ${activity.activity}).`),
 		execute: async (context, argument) => {
-			const outcome = await context.orchestrator.sendMessage({
-				source: { kind: "human" },
-				targetAgentId: requireAgentId(context),
-				body: argument.trim(),
-				mode: "interrupt",
-			});
+			const outcome = await context.orchestrator.sendMessage(
+				{ targetAgentId: requireAgentId(context), body: argument.trim(), mode: "interrupt" },
+				messageBindingFor({ kind: "human" }),
+			);
 			if (outcome.kind === "blocked") {
 				throw new Error(
 					outcome.reason

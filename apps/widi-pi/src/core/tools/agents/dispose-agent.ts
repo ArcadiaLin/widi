@@ -1,6 +1,6 @@
 import { type Static, Type } from "typebox";
 import { formatError } from "../../../utils/errors.ts";
-import type { AgentDisposeScope, AgentRequestedDisposeOutcome, ToolAgentHost } from "../../host.ts";
+import type { AgentDisposeScope, AgentRequestedDisposeOutcome, AgentToOrchestratorHost } from "../../host.ts";
 import type { ToolDefinition } from "../types.ts";
 import { requireAgentHost } from "./shared.ts";
 
@@ -85,7 +85,7 @@ export function createDisposeAgentToolDefinition(): ToolDefinition<typeof dispos
 }
 
 async function disposeOne(
-	host: ToolAgentHost,
+	host: AgentToOrchestratorHost,
 	agentId: string,
 	scope: AgentDisposeScope,
 	reason: string,

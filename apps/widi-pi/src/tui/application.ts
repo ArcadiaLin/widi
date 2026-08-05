@@ -4,6 +4,7 @@ import { ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
 import type { AgentOrchestrator } from "../core/agent-orchestrator.ts";
 import { DEFAULT_AGENT_DIR } from "../core/constants.js";
 import { type OrchestratorDiagnostic, OrchestratorError } from "../core/diagnostics.ts";
+import { type MessageSink, messageBindingFor } from "../core/message.ts";
 import { createWidiRuntime, type WidiRuntime } from "../core/runtime-service.ts";
 import type { AgentActivitySnapshot, CandidateItem, OrchestratorEvent } from "../core/types.ts";
 import { forkSourceAgentId } from "./agent-identity.ts";
@@ -59,6 +60,8 @@ export class WidiTuiApplication {
 	readonly orchestrator: AgentOrchestrator;
 	readonly state: TuiApplicationState;
 	readonly tui: TUI;
+	/** Everything this shell puts into an agent's context goes through here. */
+	readonly messages: MessageSink;
 
 	private readonly projector: EventProjector;
 	private readonly editor: WidiEditor;
@@ -127,6 +130,7 @@ export class WidiTuiApplication {
 	private constructor(runtime: WidiRuntime) {
 		this.runtime = runtime;
 		this.orchestrator = runtime.orchestrator;
+		this.messages = this.orchestrator.messageSinkFor(messageBindingFor({ kind: "human" }));
 		this.state = createTuiApplicationState();
 		this.projector = new EventProjector(this.state);
 		this.jobsPanel = new JobsPanelView(this.state);
@@ -588,7 +592,7 @@ export class WidiTuiApplication {
 		this.editor.addToHistory(rawText);
 		this.tui.requestRender();
 		try {
-			const outcome = await this.orchestrator.promptAgent(agentId, text);
+			const outcome = await this.messages.prompt({ targetAgentId: agentId, body: text, mode: "next_turn" });
 			if (outcome.kind === "blocked") {
 				agent.pendingInput = undefined;
 				this.restoreEditor(rawText, agentId);
@@ -623,12 +627,7 @@ export class WidiTuiApplication {
 		ensureAgentProjection(this.state, agentId).pendingFollowUps.push(pending);
 		this.tui.requestRender();
 		try {
-			const outcome = await this.orchestrator.sendMessage({
-				source: { kind: "human" },
-				targetAgentId: agentId,
-				body: text,
-				mode: "next_turn",
-			});
+			const outcome = await this.messages.send({ targetAgentId: agentId, body: text, mode: "next_turn" });
 			if (outcome.kind === "blocked") {
 				this.restoreEditor(rawText, agentId);
 				this.addApplicationNotice(blockedInputNotice(outcome), agentId);
@@ -689,8 +688,8 @@ export class WidiTuiApplication {
 		this.drafts.set(agentId, "");
 		this.editor.addToHistory(text);
 		this.track(
-			this.orchestrator
-				.sendMessage({ source: { kind: "human" }, targetAgentId: agentId, body: text, mode: "interrupt" })
+			this.messages
+				.send({ targetAgentId: agentId, body: text, mode: "interrupt" })
 				.then((outcome) => {
 					if (outcome.kind !== "blocked") return;
 					this.restoreEditor(text, agentId);

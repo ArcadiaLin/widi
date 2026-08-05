@@ -48,6 +48,7 @@ export type {
 	ExtensionDivisionSelections,
 	ExtensionDivisionSnapshot,
 	ExtensionDivisionSource,
+	ExtensionSendOptions,
 	ExtensionSessionActions,
 } from "./types.ts";
 export { EXTENSION_OBSERVED_EVENT_NAMES } from "./types.ts";

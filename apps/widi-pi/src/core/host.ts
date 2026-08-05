@@ -93,7 +93,23 @@ export type AgentRequestedDisposeOutcome =
 	| { readonly kind: "disposed"; readonly agentIds: readonly AgentId[] }
 	| { readonly kind: "already_disposed" | "outside_tree" | "self" | "unknown" };
 
-export interface ToolAgentHost {
+/**
+ * What one agent can ask of the orchestrator, with the asking agent already
+ * bound.
+ *
+ * Every method is missing the same parameter - who is asking - and that absence
+ * is the point. The holder cannot name a different agent as itself, so `spawn`
+ * always parents under the asker, `listAgents` always scopes to its level,
+ * `dispose` always checks their shared tree, and `sendMessage` always attributes
+ * to it. A tool's arguments come from a model verbatim, so the identity has to
+ * be somewhere the arguments cannot reach.
+ *
+ * Held by any agent-scoped module outside the orchestrator, not tools alone.
+ * Modules that are not agent-scoped hold something else: the background runtime
+ * serves every agent and speaks as a job rather than as an agent, so it takes a
+ * message sink and none of this.
+ */
+export interface AgentToOrchestratorHost {
 	readonly agentId: AgentId;
 	listProfiles(): Promise<readonly AgentProfileBrief[]>;
 	listAgents(): Promise<AgentTreeListing>;

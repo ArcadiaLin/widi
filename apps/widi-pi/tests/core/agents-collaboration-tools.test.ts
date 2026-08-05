@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import { AgentProfileRegistry, InMemoryProfileStorageBackend } from "../../src/core/agent-profile.ts";
 import type { OwnerAttachment } from "../../src/core/background/index.ts";
-import type { AgentTreeEntry, AgentTreeRunningEntry, ToolAgentHost } from "../../src/core/host.ts";
+import type { AgentTreeEntry, AgentTreeRunningEntry, AgentToOrchestratorHost } from "../../src/core/host.ts";
 import { createDisposeAgentToolDefinition } from "../../src/core/tools/agents/dispose-agent.ts";
 import { createListAgentProfilesToolDefinition } from "../../src/core/tools/agents/list-agent-profiles.ts";
 import { createListAgentsToolDefinition } from "../../src/core/tools/agents/list-agents.ts";
@@ -38,7 +38,7 @@ afterEach(() => {
  */
 function toolContext<TDetails>(orchestrator: AgentOrchestrator, agentId: string): ToolExecutionContext<TDetails> {
 	const host = (
-		orchestrator as unknown as { _createToolAgentHost: (agentId: string, attachment: OwnerAttachment) => ToolAgentHost }
+		orchestrator as unknown as { _createToolAgentHost: (agentId: string, attachment: OwnerAttachment) => AgentToOrchestratorHost }
 	)._createToolAgentHost(agentId, requireLiveAgent(orchestrator, agentId).backgroundAttachment);
 	return {
 		signal: undefined,

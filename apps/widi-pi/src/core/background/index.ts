@@ -59,8 +59,6 @@ export {
 } from "./output.ts";
 export {
 	type BackgroundJobChange,
-	type BackgroundJobDelivery,
-	type BackgroundJobDeliveryReceipt,
 	type BackgroundJobEvent,
 	type BackgroundJobExecution,
 	type BackgroundJobHost,

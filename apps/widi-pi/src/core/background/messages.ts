@@ -8,7 +8,7 @@
 import type { TextContent } from "@earendil-works/pi-ai";
 import type { AgentToolResult } from "@widi/agent-core";
 import { formatError } from "../../utils/errors.ts";
-import type { BackgroundJobOutcome, BackgroundJobSettlement, BackgroundJobStatus } from "./types.ts";
+import type { BackgroundJobOutcome, BackgroundJobSettlement, BackgroundJobStatus, JobHistoryEntry } from "./types.ts";
 
 /** How a job is named next to other jobs: `bash "git pull"`, or just `bash`. */
 export function backgroundJobToolLabel(job: { readonly toolName: string; readonly name?: string }): string {
@@ -95,6 +95,23 @@ export function formatInterruptedBackgroundJobResultText(input: {
 			input.stopReason ??
 			"The job was still running when the runtime exited. It did not survive the restart and produced no result; start it again if its work is still needed.",
 	});
+}
+
+/**
+ * What a branch is told about a job it still has open that nothing is going to
+ * answer. A job this runtime watched finish keeps the words of its own result;
+ * only one with no outcome at all gets the interrupted form.
+ */
+export function carriedOverJobResultText(job: JobHistoryEntry): string {
+	return (
+		job.messageText ??
+		formatInterruptedBackgroundJobResultText({
+			jobId: job.jobId,
+			toolCallId: job.toolCallId,
+			toolName: job.toolName,
+			...(job.stopReason === undefined ? undefined : { stopReason: job.stopReason }),
+		})
+	);
 }
 
 /** The t1 message: the same header, plus a body derived from the outcome. */

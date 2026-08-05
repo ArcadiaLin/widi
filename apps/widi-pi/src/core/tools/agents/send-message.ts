@@ -1,6 +1,6 @@
 import type { AgentToolResult } from "@widi/agent-core";
 import { type Static, Type } from "typebox";
-import type { ToolAgentHost } from "../../host.ts";
+import type { AgentToOrchestratorHost } from "../../host.ts";
 import type { ToolDefinition } from "../types.ts";
 import { assignAgentTask, describeAssignedTask, requireAddressableAgent, requireAgentHost } from "./shared.ts";
 
@@ -152,7 +152,7 @@ export function createSendMessageToolDefinition(): ToolDefinition<typeof sendMes
  * task was handed back while the owner still waits for it.
  */
 function completeAgentTask(input: {
-	readonly host: ToolAgentHost;
+	readonly host: AgentToOrchestratorHost;
 	readonly ownerAgentId: string;
 	readonly taskId: string;
 	readonly text: string;

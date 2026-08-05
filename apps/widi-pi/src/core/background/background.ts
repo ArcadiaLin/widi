@@ -20,8 +20,9 @@
 
 import { formatError } from "../../utils/errors.ts";
 import { utf8ByteLength } from "../../utils/text.ts";
+import { type MessageDeliveryMode, messageBindingFor } from "../message.ts";
 import { jobOutputFileName, type SessionJobStore } from "./job-persistence.ts";
-import { formatBackgroundJobResultMessageText, stopReasonFromOutcome } from "./messages.ts";
+import { carriedOverJobResultText, formatBackgroundJobResultMessageText, stopReasonFromOutcome } from "./messages.ts";
 import {
 	BackgroundJobOutput,
 	DEFAULT_BACKGROUND_JOB_INCREMENT_MAX_BYTES,
@@ -322,17 +323,23 @@ export class BackgroundJobRuntime {
 	 * reconciled - it is the scope that holds the store, and a disposal is the
 	 * case with nothing left to recognize.
 	 *
-	 * `announce` is handed the jobs the model has to be told about, before any of
-	 * it is written down. It does not run when there is nothing to say.
+	 * The jobs the model has to be told about are announced from here, before any
+	 * of it is written down, and the count comes back so the host can report what
+	 * happened without being handed the wording.
+	 *
+	 * A disposal announces nothing. The records still have to be written - the
+	 * branch outlives the agent - but the agent has no next turn to read a closing
+	 * message in, so sending one would be addressing a context that will never be
+	 * built again.
 	 */
 	async reconcileBranch(
 		agentId: string,
 		request: { readonly cause: JobCloseCause; readonly stopReason?: string },
-		announce: (jobs: readonly JobHistoryEntry[]) => Promise<void>,
-	): Promise<void> {
+	): Promise<number> {
 		const state = this._attachments.get(agentId);
 		const store = state?.store;
-		if (!state || !store) return;
+		if (!state || !store) return 0;
+		let announced = 0;
 		const recognized = new Set<string>();
 		for (const jobId of state.owned) {
 			const record = this._jobs.get(jobId);
@@ -348,12 +355,40 @@ export class BackgroundJobRuntime {
 						recognized,
 						...(request.stopReason === undefined ? undefined : { stopReason: request.stopReason }),
 					},
-					announce,
+					async (jobs) => {
+						if (request.cause === "dispose") return;
+						// `precede`: the model is not woken for these. They are facts
+						// about the branch it is about to read, and at a resume they are
+						// written before the agent is routable at all.
+						await this._sendToOwner(agentId, undefined, "precede", jobs.map(carriedOverJobResultText).join("\n\n"));
+						announced = jobs.length;
+					},
 				);
 			});
 		} catch (error) {
 			await this._degrade(state, error);
 		}
+		return announced;
+	}
+
+	/**
+	 * Say something to an agent, as this runtime.
+	 *
+	 * A settled job speaks as that job, so the model can match the text against
+	 * the t0 handle it is holding; a branch reconciliation speaks as the runtime,
+	 * because no single job owns the statement that several of them are gone.
+	 */
+	private async _sendToOwner(
+		ownerAgentId: string,
+		jobId: string | undefined,
+		mode: MessageDeliveryMode,
+		body: string,
+	): Promise<void> {
+		const binding =
+			jobId === undefined
+				? messageBindingFor({ kind: "runtime", notice: "carried_over_jobs" })
+				: messageBindingFor({ kind: "background_job", ownerAgentId, jobId, mode });
+		await this._ports.messageSinkFor(binding).send({ targetAgentId: ownerAgentId, body, mode });
 	}
 
 	/**
@@ -692,10 +727,10 @@ export class BackgroundJobRuntime {
 			await this._publishChange(state, { transition: "settled", job, outcome });
 			if (state.detached) return;
 			try {
-				await this._ports.deliverResult({ ownerAgentId: record.ownerId, jobId: record.id, body: messageText });
+				await this._sendToOwner(record.ownerId, record.id, "interrupt", messageText);
 			} catch (error) {
-				// The port owns delivery policy, retries included. Reaching here means
-				// the owner can never take this result.
+				// The binding owns delivery policy, retries included. Reaching here
+				// means the owner can never take this result.
 				await this._diagnose({
 					severity: "warning",
 					code: "background.result_delivery_failed",
