@@ -91,6 +91,22 @@ function sessionRef(sessions: SessionManager, agentId: string): string {
 	return ref;
 }
 
+/**
+ * A session written by its own run: a fresh SessionManager on the shared
+ * filesystem, so the same AgentId produces a second session rather than
+ * returning the first one from the cache. Returns its address.
+ */
+async function writeRunSession(env: MemoryExecutionEnv, agentId: string): Promise<string> {
+	const sessions = new SessionManager({
+		fs: env,
+		cwd: "/workspace/project",
+		sessionsRoot: "/sessions",
+		registry: createCorePersistenceRegistry(),
+	});
+	await sessions.createAgentSession({ agentId, agentProfile: restoredProfile });
+	return sessionRef(sessions, agentId);
+}
+
 // Writes a session in the on-disk layout: one directory per session, holding
 // the conversation history file. Returns the history file path.
 function writeSessionFile(
@@ -329,6 +345,27 @@ describe("AgentOrchestrator", () => {
 			profile: restoredProfile,
 			model: expect.objectContaining({ id: restoredModel.id }),
 		});
+	});
+
+	// A header id names the agent that created the session, and two sessions
+	// written by different runs can carry the same one. Resuming the second must
+	// not hand back the agent already live under that id.
+	it("gives a resumed session its own id when the header id is live under another session", async () => {
+		const env = new MemoryExecutionEnv();
+		const firstRef = await writeRunSession(env, "worker-agent");
+		const secondRef = await writeRunSession(env, "worker-agent");
+		expect(secondRef).not.toBe(firstRef);
+		const orchestrator = await createOrchestrator(env);
+
+		const first = await orchestrator.spawnAgent({ origin: { kind: "resume", reference: firstRef } });
+		const second = await orchestrator.spawnAgent({ origin: { kind: "resume", reference: secondRef } });
+
+		expect(first).toBe("worker-agent");
+		expect(second).not.toBe(first);
+		expect(orchestrator.sessionManager.getAgentSessionRef(first)).toBe(firstRef);
+		expect(orchestrator.sessionManager.getAgentSessionRef(second)).toBe(secondRef);
+		// Resuming a session that is already open is still that same agent.
+		expect(await orchestrator.spawnAgent({ origin: { kind: "resume", reference: firstRef } })).toBe(first);
 	});
 
 	it("leaves no agent behind when resume profile resolution fails", async () => {
@@ -1082,9 +1119,12 @@ describe("AgentOrchestrator", () => {
 
 		const newAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
-		expect(newAgentId).toBe("main-agent-2");
+		// Same profile, a different id: the random half is what keeps two agents of
+		// one profile off each other's session directory, here and across runs.
+		expect(newAgentId).not.toBe(agentId);
+		expect(newAgentId).toMatch(/^main-[a-z0-9]{4}$/);
 		expect(orchestrator.inspectAgent(newAgentId)).toMatchObject({
-			agentId: "main-agent-2",
+			agentId: newAgentId,
 			activity: { activity: "idle" },
 			profile: { reference: { id: defaultProfile.id, label: defaultProfile.label } },
 			model: expect.objectContaining({ id: defaultModel.id }),

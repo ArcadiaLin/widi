@@ -109,6 +109,11 @@ export interface AgentSessionCandidate {
 	readonly firstUserMessage?: string;
 }
 
+export interface AgentSessionTreeNode extends AgentSessionCandidate {
+	/** The sessions nested directly under this one, oldest first. */
+	readonly children: readonly AgentSessionTreeNode[];
+}
+
 export interface AgentSessionSnapshot {
 	/** Absent for an ephemeral session, which owns no directory to address. */
 	readonly ref?: string;
@@ -246,6 +251,40 @@ export class SessionManager {
 			}
 		}
 		return facts;
+	}
+
+	/**
+	 * One session directory and, recursively, every session nested under it.
+	 *
+	 * This is the agent tree as it exists on disk, and the only record of it:
+	 * nothing writes the parent relation down, because the directory already is
+	 * that relation. The caller merges it with the runtime's live agents to tell
+	 * which of these sessions is currently running.
+	 *
+	 * Header lines only. The display facts a resume picker loads cost a full read
+	 * of every session file, and a tree with dozens of entries would pay that per
+	 * entry to show something this listing does not use.
+	 *
+	 * Depth needs no guard: a key cannot grow past `MAX_SESSION_DEPTH`, so the
+	 * recursion is bounded by the layout itself.
+	 */
+	async listAgentSessionTree(address: SessionAddress): Promise<AgentSessionTreeNode | undefined> {
+		const info = await this._readSessionInfo(address);
+		return info === undefined ? undefined : await this._toAgentSessionTreeNode(info);
+	}
+
+	private async _toAgentSessionTreeNode(info: PersistedSessionInfo): Promise<AgentSessionTreeNode> {
+		// `listChildren` answers newest first, which is what a picker wants. A tree
+		// reads the other way: siblings in the order they were spawned. Sorted
+		// rather than reversed, so sessions created in the same millisecond keep
+		// the order the directory listing gave them instead of having it flipped.
+		const children = (await this.repo.listChildren(info.address)).sort(
+			(left, right) => new Date(left.metadata.createdAt).getTime() - new Date(right.metadata.createdAt).getTime(),
+		);
+		return {
+			...toAgentSessionCandidate(info),
+			children: await Promise.all(children.map(async (child) => await this._toAgentSessionTreeNode(child))),
+		};
 	}
 
 	/**
@@ -524,9 +563,10 @@ export class SessionManager {
 		// boundary. Without an ExecutionEnv lock/transaction primitive, multiple
 		// WIDI processes writing the same sessions root are unsupported.
 		// The session id deliberately equals the creating agent's id: resume
-		// restores the agent under it (_resumeAgentHarness). It is unique only
-		// within one runtime — across runs it repeats, which is why the directory
-		// name carries a timestamp and why consumers address a session by ref.
+		// restores the agent under it (_resumeAgentHarness). An AgentId carries
+		// four random characters so it does not repeat across runs, which is what
+		// keeps a new session off an existing directory; it is still only an id,
+		// and consumers address a session by ref.
 		const parent = options.parentAgentId === undefined ? undefined : this._agentAddresses.get(options.parentAgentId);
 		const persisted = await this.repo.create({
 			cwd: this._cwd,

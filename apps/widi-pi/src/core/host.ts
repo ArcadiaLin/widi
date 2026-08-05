@@ -26,6 +26,57 @@ export interface AgentBrief {
 	readonly activity: AgentActivity;
 }
 
+/**
+ * One node of the caller's agent tree: an agent running now, or the session
+ * directory an agent that is no longer running left behind.
+ *
+ * Only a running entry carries an AgentId, and that is deliberate. A closed
+ * entry cannot be messaged or disposed, and the id its agent once had is both
+ * useless for that and re-used by later runs, so showing it would only invite
+ * the call that fails. A closed entry is for knowing what was done before, and
+ * for deciding whether to spawn a fresh agent on the same profile.
+ */
+export type AgentTreeEntry = AgentTreeRunningEntry | AgentTreeClosedEntry;
+
+export interface AgentTreeRunningEntry {
+	readonly status: "running";
+	readonly agentId: AgentId;
+	readonly activity: AgentActivity;
+	readonly profileId: string;
+	readonly label?: string;
+	/** Address of its session directory; absent for an ephemeral agent. */
+	readonly sessionRef?: string;
+	readonly children: readonly AgentTreeEntry[];
+}
+
+export interface AgentTreeClosedEntry {
+	readonly status: "closed";
+	/**
+	 * Address of the session directory, which is this entry's whole identity.
+	 *
+	 * The full address rather than the bare directory name: below the top level
+	 * the name alone resolves to nothing, and the address is the form `/resume`
+	 * and every other session reference already take.
+	 */
+	readonly sessionRef: string;
+	/** Absent when the session header predates profile references. */
+	readonly profileId?: string;
+	readonly label?: string;
+	readonly createdAt: string;
+	readonly children: readonly AgentTreeEntry[];
+}
+
+export interface AgentTreeListing {
+	/** The tree roots, normally exactly one: the root of the caller's own tree. */
+	readonly entries: readonly AgentTreeEntry[];
+	/**
+	 * Set when the session directories could not be read, so the listing holds
+	 * running agents only. Reported rather than thrown: a broken filesystem
+	 * should not take out the caller's view of who is running.
+	 */
+	readonly closedUnavailable?: boolean;
+}
+
 export interface AgentTaskOutcome {
 	readonly status: "completed" | "failed";
 	readonly text: string;
@@ -45,7 +96,7 @@ export type AgentRequestedDisposeOutcome =
 export interface ToolAgentHost {
 	readonly agentId: AgentId;
 	listProfiles(): Promise<readonly AgentProfileBrief[]>;
-	listAgents(): readonly AgentBrief[];
+	listAgents(): Promise<AgentTreeListing>;
 	describe(agentId: AgentId): AgentBrief | undefined;
 	spawn(profileId: string): Promise<AgentId>;
 	sendMessage(targetAgentId: AgentId, body: string): Promise<MessageSendOutcome>;

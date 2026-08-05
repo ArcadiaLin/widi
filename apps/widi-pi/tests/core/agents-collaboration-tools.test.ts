@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import { AgentProfileRegistry, InMemoryProfileStorageBackend } from "../../src/core/agent-profile.ts";
 import type { OwnerAttachment } from "../../src/core/background/index.ts";
-import type { ToolAgentHost } from "../../src/core/host.ts";
+import type { AgentTreeEntry, AgentTreeRunningEntry, ToolAgentHost } from "../../src/core/host.ts";
 import { createDisposeAgentToolDefinition } from "../../src/core/tools/agents/dispose-agent.ts";
 import { createListAgentProfilesToolDefinition } from "../../src/core/tools/agents/list-agent-profiles.ts";
 import { createListAgentsToolDefinition } from "../../src/core/tools/agents/list-agents.ts";
@@ -18,6 +18,7 @@ import {
 	requireAgentHarness,
 	requireAgentJobs,
 	requireLiveAgent,
+	restoredProfile,
 	spawnParentOf,
 } from "../helpers/orchestrator.ts";
 
@@ -63,6 +64,36 @@ function createDeferred<T>(): { readonly promise: Promise<T>; readonly resolve: 
 		resolve = done;
 	});
 	return { promise, resolve };
+}
+
+/** The listing as indented lines, so the assertion covers nesting and order too. */
+function treeLines(entries: readonly AgentTreeEntry[], depth = 0): string[] {
+	return entries.flatMap((entry) => [
+		`${"  ".repeat(depth)}${entry.status === "running" ? `running ${entry.agentId}` : `closed ${entry.sessionRef}`}`,
+		...treeLines(entry.children, depth + 1),
+	]);
+}
+
+function runningEntry(entries: readonly AgentTreeEntry[], agentId: string): AgentTreeRunningEntry {
+	const entry = findRunning(entries, agentId);
+	if (!entry) throw new Error(`No running entry for ${agentId}.`);
+	return entry;
+}
+
+function findRunning(entries: readonly AgentTreeEntry[], agentId: string): AgentTreeRunningEntry | undefined {
+	for (const entry of entries) {
+		if (entry.status === "running" && entry.agentId === agentId) return entry;
+		const nested = findRunning(entry.children, agentId);
+		if (nested) return nested;
+	}
+	return undefined;
+}
+
+/** The address of an agent's session directory, which a persistent agent always has. */
+function sessionRef(orchestrator: AgentOrchestrator, agentId: string): string {
+	const ref = orchestrator.sessionManager.getAgentSessionRef(agentId);
+	if (ref === undefined) throw new Error(`Expected a persistent session for ${agentId}.`);
+	return ref;
 }
 
 async function spawnChild(orchestrator: AgentOrchestrator, parentAgentId: string, profile = "worker"): Promise<string> {
@@ -138,11 +169,15 @@ describe("list_agent_profiles", () => {
 });
 
 describe("list_agents", () => {
-	it("lists only the caller's tree, omits disposed agents, and reports unavailable ones", async () => {
+	// The directories are the complete set and memory is a subset of them: a
+	// disposed agent leaves the live registry and stays on the list as the
+	// session it wrote, which is exactly what it now is.
+	it("nests the caller's tree, keeps a disposed agent as a closed session, and excludes other trees", async () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		const caller = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		const broken = await spawnChild(orchestrator, caller);
 		const gone = await spawnChild(orchestrator, caller);
+		const goneRef = sessionRef(orchestrator, gone);
 		const otherRoot = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		const otherChild = await spawnChild(orchestrator, otherRoot);
 		await orchestrator.disposeAgent(gone, { intent: "removed" });
@@ -150,14 +185,15 @@ describe("list_agents", () => {
 		const result = await listAgents.execute("call-1", {}, toolContext(orchestrator, caller));
 
 		expect(result.details.callerAgentId).toBe(caller);
-		expect(result.details.agents.map((agent) => agent.agentId)).toEqual([caller, broken]);
-		expect(result.details.agents.find((agent) => agent.agentId === caller)?.activity).toBe("idle");
-		expect(result.details.agents).not.toContainEqual(expect.objectContaining({ agentId: otherRoot }));
-		expect(result.details.agents).not.toContainEqual(expect.objectContaining({ agentId: otherChild }));
+		expect(treeLines(result.details.entries)).toEqual([
+			`running ${caller}`,
+			`  running ${broken}`,
+			`  closed ${goneRef}`,
+		]);
+		expect(runningEntry(result.details.entries, caller).activity).toBe("idle");
 		expect(orchestrator.listAgents().agents.map((agent) => agent.agentId)).toEqual([
 			caller,
 			broken,
-			gone,
 			otherRoot,
 			otherChild,
 		]);
@@ -169,13 +205,70 @@ describe("list_agents", () => {
 		const child = await spawnChild(orchestrator, root);
 		const grandchild = await spawnChild(orchestrator, child);
 		const sibling = await spawnChild(orchestrator, root);
-		const otherRoot = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
 		for (const caller of [root, child, grandchild, sibling]) {
 			const result = await listAgents.execute(`list-${caller}`, {}, toolContext(orchestrator, caller));
-			expect(result.details.agents.map((agent) => agent.agentId)).toEqual([root, child, grandchild, sibling]);
-			expect(result.details.agents).not.toContainEqual(expect.objectContaining({ agentId: otherRoot }));
+			expect(treeLines(result.details.entries)).toEqual([
+				`running ${root}`,
+				`  running ${child}`,
+				`    running ${grandchild}`,
+				`  running ${sibling}`,
+			]);
 		}
+	});
+
+	// The point of reading the directories: subagents never come back, so after a
+	// resume the whole tree below the root is closed - and still visible, which is
+	// how the model learns what this session did before.
+	it("reads the subagents of an earlier run as closed sessions", async () => {
+		const env = new MemoryExecutionEnv();
+		const first = await createOrchestrator(env);
+		const root = await first.spawnAgent({ origin: { kind: "new" } });
+		const child = await spawnChild(first, root);
+		const grandchild = await spawnChild(first, child);
+		const rootRef = sessionRef(first, root);
+		const childRef = sessionRef(first, child);
+		const grandchildRef = sessionRef(first, grandchild);
+
+		const second = await createOrchestrator(env);
+		const resumed = await second.spawnAgent({ origin: { kind: "resume", reference: rootRef } });
+		const result = await listAgents.execute("list-after-resume", {}, toolContext(second, resumed));
+
+		expect(treeLines(result.details.entries)).toEqual([
+			`running ${resumed}`,
+			`  closed ${childRef}`,
+			`    closed ${grandchildRef}`,
+		]);
+		expect(result.details.entries[0]?.children[0]).toMatchObject({ status: "closed", profileId: "worker" });
+		expect(result.content[0]).toMatchObject({
+			type: "text",
+			text: expect.stringContaining("cannot be messaged or disposed"),
+		});
+	});
+
+	// An ephemeral agent owns no directory, so its children are top-level
+	// sessions. The spawn edge is still the truth about who spawned whom.
+	it("keeps a child of an ephemeral agent under it", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv(), {
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: { ...defaultProfile, persist: false } },
+					{ profile: restoredProfile },
+				]),
+			),
+		});
+		const root = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const child = await spawnChild(orchestrator, root);
+
+		const result = await listAgents.execute("list-from-ephemeral", {}, toolContext(orchestrator, root));
+
+		expect(treeLines(result.details.entries)).toEqual([`running ${root}`, `  running ${child}`]);
+		expect(result.details.entries[0]).not.toHaveProperty("sessionRef");
+		expect(result.details.entries[0]?.children[0]).toMatchObject({
+			status: "running",
+			sessionRef: sessionRef(orchestrator, child),
+		});
 	});
 });
 
@@ -269,7 +362,7 @@ describe("send_message plain delivery", () => {
 		const secondPrompt = stubPrompt(orchestrator, secondRoot);
 
 		const listed = await listAgents.execute("list-first-tree", {}, toolContext(orchestrator, firstRoot));
-		expect(listed.details.agents.map((agent) => agent.agentId)).toEqual([firstRoot]);
+		expect(treeLines(listed.details.entries)).toEqual([`running ${firstRoot}`]);
 
 		await sendMessage.execute(
 			"cross-tree-message",
@@ -528,8 +621,7 @@ describe("dispose_agent", () => {
 		const parent = await spawnChild(orchestrator, root);
 		const grandchild = await spawnChild(orchestrator, parent);
 		const sibling = await spawnChild(orchestrator, root);
-		const parentRef = orchestrator.sessionManager.getAgentSessionRef(parent);
-		if (parentRef === undefined) throw new Error("Expected a persistent child session.");
+		const parentRef = sessionRef(orchestrator, parent);
 
 		await disposeAgent.execute(
 			"dispose-parent-only",
@@ -541,13 +633,25 @@ describe("dispose_agent", () => {
 		expect(orchestrator.getAgentActivity(grandchild).activity).toBe("idle");
 		expect(spawnParentOf(orchestrator, parent)).toBe(root);
 		expect(spawnParentOf(orchestrator, grandchild)).toBe(parent);
+		// The disposed agent's directory still holds the grandchild's, so the
+		// surviving descendant keeps its place under a closed entry.
 		const listed = await listAgents.execute("list-from-grandchild", {}, toolContext(orchestrator, grandchild));
-		expect(listed.details.agents.map((agent) => agent.agentId)).toEqual([root, grandchild, sibling]);
+		expect(treeLines(listed.details.entries)).toEqual([
+			`running ${root}`,
+			`  closed ${parentRef}`,
+			`    running ${grandchild}`,
+			`  running ${sibling}`,
+		]);
 
 		await orchestrator.spawnAgent({ origin: { kind: "resume", reference: parentRef } });
 		expect(spawnParentOf(orchestrator, parent)).toBe(root);
 		const relisted = await listAgents.execute("list-after-parent-resume", {}, toolContext(orchestrator, grandchild));
-		expect(relisted.details.agents.map((agent) => agent.agentId)).toEqual([root, parent, grandchild, sibling]);
+		expect(treeLines(relisted.details.entries)).toEqual([
+			`running ${root}`,
+			`  running ${parent}`,
+			`    running ${grandchild}`,
+			`  running ${sibling}`,
+		]);
 	});
 
 	it("recursively disposes a subtree in leaf-to-root order", async () => {

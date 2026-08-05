@@ -159,7 +159,13 @@ export class JsonlPersistenceRepo {
 	 * producing a path that cannot be opened.
 	 */
 	async create(options: CreateSessionOptions): Promise<PersistedSession> {
-		const key = this._newSessionKey(options.parent, options.sessionId, createTimestamp(), options.diagnostics);
+		const key = await this._newSessionKey(
+			options.cwd,
+			options.parent,
+			options.sessionId,
+			createTimestamp(),
+			options.diagnostics,
+		);
 		const address: SessionAddress = { cwd: options.cwd, key };
 		return await this._createAt(address, {
 			sessionId: options.sessionId,
@@ -479,7 +485,13 @@ export class JsonlPersistenceRepo {
 	 */
 	async fork(source: SessionAddress, options: ForkSessionOptions): Promise<ForkResult> {
 		const diagnostics = new PersistenceDiagnostics();
-		const key = this._newSessionKey(options.parent, options.sessionId, createTimestamp(), diagnostics);
+		const key = await this._newSessionKey(
+			source.cwd,
+			options.parent,
+			options.sessionId,
+			createTimestamp(),
+			diagnostics,
+		);
 		const forked = await this._forkInto({
 			source,
 			target: { cwd: source.cwd, key },
@@ -663,12 +675,6 @@ export class JsonlPersistenceRepo {
 	// Paths
 	// ---------------------------------------------------------------------
 
-	/** Where a new child of `parent` would live, or undefined if too deep. */
-	nextChildKey(parent: SessionKey, sessionId: string, timestamp: string): SessionKey | undefined {
-		if (!canNestUnder(parent)) return undefined;
-		return childSessionKey(parent, createSessionDirName(sessionId, timestamp));
-	}
-
 	async sessionFilePath(address: SessionAddress): Promise<string> {
 		return await this._join(await this._cwdDirPath(address.cwd), sessionFileSegments(address.key));
 	}
@@ -677,23 +683,44 @@ export class JsonlPersistenceRepo {
 	// Internals
 	// ---------------------------------------------------------------------
 
-	private _newSessionKey(
+	private async _newSessionKey(
+		cwd: string,
 		parent: SessionKey | undefined,
 		sessionId: string,
 		timestamp: string,
 		diagnostics?: PersistenceDiagnostics,
-	): SessionKey {
+	): Promise<SessionKey> {
 		const name = createSessionDirName(sessionId, timestamp);
-		if (!parent) return [name];
-		const nested = this.nextChildKey(parent, sessionId, timestamp);
-		if (nested) return nested;
+		if (parent === undefined) return await this._vacantSessionKey(cwd, [], name);
+		if (canNestUnder(parent)) return await this._vacantSessionKey(cwd, parent, name);
 		diagnostics?.report({
 			severity: "warning",
 			code: "persistence.nesting_limit",
 			message: `${formatSessionKey(parent)} is too deep to nest ${sessionId}; it was persisted as a top-level session.`,
 			sessionKey: parent,
 		});
-		return [name];
+		return await this._vacantSessionKey(cwd, [], name);
+	}
+
+	/**
+	 * The first directory name in this container that no session already owns.
+	 *
+	 * Session ids carry four random characters, so a repeat needs the same
+	 * profile, the same draw, and the same second; this loop is the backstop for
+	 * that, not the naming scheme. It has to exist all the same: `_createAt`
+	 * writes the header with `writeFile`, so a name already in use does not fail
+	 * the create, it truncates another session's history.
+	 */
+	private async _vacantSessionKey(cwd: string, parent: SessionKey, name: string): Promise<SessionKey> {
+		for (let attempt = 1; ; attempt += 1) {
+			const key = childSessionKey(parent, attempt === 1 ? name : `${name}-${attempt}`);
+			const dirPath = await this._sessionDirPath({ cwd, key });
+			const taken = getFileSystemResultOrThrow(
+				await this._fs.exists(dirPath),
+				`Failed to check session directory ${dirPath}`,
+			);
+			if (!taken) return key;
+		}
 	}
 
 	/**

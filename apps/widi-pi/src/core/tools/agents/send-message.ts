@@ -63,6 +63,7 @@ export function createSendMessageToolDefinition(): ToolDefinition<typeof sendMes
 		promptGuidelines: [
 			"send_message never blocks: it returns once the other agent has the text, not when it replies. Continue working, or end your turn and wait to be woken by the reply.",
 			"list_agents only discovers your own tree. An exact agent id shared by a human, another agent, or an incoming message is enough to communicate across trees.",
+			"Only the running agents list_agents reports can be sent to. Its closed entries are sessions, not addresses: nothing can be delivered to one, and reviving that work means spawning a new agent.",
 			"A task you were given stays open until you call send_message with completeTask; ending a turn, going idle, or sending an ordinary message does not finish it.",
 			"Completing a task does not dispose the agent that did the work, and being disposed is not how work is finished.",
 			"Include everything the other agent needs in the message: agents do not share conversations, sessions, or context.",

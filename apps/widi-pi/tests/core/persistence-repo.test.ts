@@ -187,6 +187,23 @@ describe("sessions on disk", () => {
 		expect(listed.map((info) => info.metadata.id)).toEqual(["second", "first"]);
 	});
 
+	// Session ids do not repeat in practice - an AgentId carries four random
+	// characters - but creating a session writes its header with `writeFile`, so
+	// a name already in use would truncate the session that owns it rather than
+	// fail. The check is what keeps that impossible instead of unlikely.
+	it("never lands a new session on a directory that exists", async () => {
+		const { repo } = makeRepo();
+		const first = await repo.create({ cwd: CWD, sessionId: "root" });
+		await say(first, "the first session");
+
+		const second = await repo.create({ cwd: CWD, sessionId: "root" });
+
+		expect(second.address.key).not.toEqual(first.address.key);
+		expect((await (await repo.open(first.address)).session.getEntries()).length).toBe(1);
+		expect(await (await repo.open(second.address)).session.getEntries()).toEqual([]);
+		expect((await repo.list({ cwd: CWD })).length).toBe(2);
+	});
+
 	it("reopens a session and refuses one that is not there", async () => {
 		const { repo } = makeRepo();
 		const created = await repo.create({ cwd: CWD, sessionId: "root" });

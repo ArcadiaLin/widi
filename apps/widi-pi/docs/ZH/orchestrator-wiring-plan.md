@@ -209,6 +209,18 @@ A–F 里最重的一项，也是唯一一项没有现成设计文档的。
 5. `list-agents.ts` 现在的注释写着 "Disposed agents are omitted entirely"，这条正好反过来。
 6. `send_message` / `dispose_agent` 的工具描述必须写明 closed 条目不可操作。否则模型看见一个 id 就会去用它。
 
+> **落地状态**：完成（批次 4）。三条偏离本节写法的地方，都在实现里写了理由：
+>
+> - **第 3 条改成了「身份是完整 ref，且 closed 条目不显示 AgentId」。** 深度 ≥ 2 时单独一个目录名不可寻址（`parseSessionKey` 收的是 `root/child`），而完整 ref 正是 `/resume` 已经在收的形式。至于 AgentId：本节自己列的 closed 条目两个用途都不需要它，显示它只会制造第 6 条想避免的那个动作。类型上做成了判别联合，running 才有 `agentId`。
+> - **递归锚点是内存树根的目录，只向下不向上。** 一个从别人树里 resume 出来的会话，向上走会把它从未 spawn 过的兄弟子树一并拖进来。
+> - **磁盘读失败降级而不抛。** 谁在运行是内存单独就能回答的，为一次文件系统故障丢掉这个答案不划算：发 `orchestrator.session_tree_unreadable`，列表照出，文末说明 closed 部分不可读。
+>
+> 落地过程中修掉的两个界外 bug（都不在本节范围内，但都由这一批的验证暴露）：
+>
+> - **AgentId 改成 `<profile>-<4 位 base36 随机>`**（原来是 profile label + `-2`/`-3` 计数）。旧规则只在单次运行内唯一，而会话目录名是 `<秒级时间戳>_<AgentId>`：resume 一个根之后它的第一个孩子必然又叫 `worker-agent`，与上一次运行同秒时目录名逐字节相同，而 `_createAt` 用 `writeFile` 建 header——不报错，直接把上一个会话的历史截断。`layout.ts` 里时间戳前缀的职责随之改写：它现在只负责让容器按时间排序，唯一性由 id 自己保证。
+> - **`_newSessionKey` 加了目录占用检查**（占用则加 `-2` 后缀）。随机 id 把碰撞压到 10⁻⁶ 量级，这条把它压到 0。
+> - **resume 时 header id 若被另一个会话的 live agent 占用，另分配 AgentId。** header id 是「创建这个会话的 agent 叫什么」，不是地址；两次运行写的两个会话可以带同一个 id，而 `spawnAgent` 那句 `if (this._live.has(request.agentId)) return request.agentId` 会把已经在跑的那个 agent 静默还给调用方。批次 3 之后会话按 address 寻址，所以换 id 不需要改盘上任何字节。
+
 ---
 
 ### F. extension 的 persistence 注册
@@ -313,7 +325,7 @@ A–F 里最重的一项，也是唯一一项没有现成设计文档的。
 四条边值得单独说明：
 
 - **C 与 D 解耦**，这是 `background-job-persistence.md` §9 特意设计的分期，不是巧合。实际是先 C 后 D，D 落地时 C 写下的 ref 与对象一行没改——分期的前提兑现了。
-- **E 严格依赖 D**，无法提前。`list_agents` 要读 `repo.listChildren`，D 之前运行时还在旧仓储上，两者互相看不见。**D 已落地，E 的前提现在具备了**：spawn 出来的会话确实嵌在父目录下，`listChildren` 读得到。
+- **E 严格依赖 D**，无法提前。`list_agents` 要读 `repo.listChildren`，D 之前运行时还在旧仓储上，两者互相看不见。**两者都已落地**，这条边如期兑现：E 一行仓储代码都没改，只是把 D 建好的嵌套读了出来。
 - **B 可以先于 D 做**（`agent-tree-persistence.md` §10 的"在此之前唯一可以先做的是删除"）。代价是那段时间失去 subagent 跨 resume 恢复，但那个能力本来就要被删。
 - **G 谁都不依赖**，随时可插。它排在这里是因为 C 把 `appendMessage` 的生产者从两个添到了四个——同一件事的四种写法，再拖就是第五种。
 
@@ -326,12 +338,12 @@ A–F 里最重的一项，也是唯一一项没有现成设计文档的。
 | 1 ✅ | A + B 合批 | `npm run check` 归零；`npm run tui` 能完成一轮对话 | 无（纯内部）。resume 不再恢复 subagent |
 | 2 ✅ | C：三条要求 + background 接入 | job 历史跨 resume 可读，`read_job` 能查到上一个运行时的 job | t0 悬着的承诺不再靠文本搜索判断；`read_job` / `list_jobs` 跨 resume 可用 |
 | 3 ✅ | D：session-manager 迁移 | 生产路径上第一次出现 `JsonlPersistenceRepo`；fork 之后删源目录，新会话仍完整可读 | fork 会话带走 job 历史与子会话目录；spawn 出来的 agent 的会话嵌在父会话目录下 |
-| 4 | E：`list_agents` 读盘 | 一份 fork 或 resume 出来的树全部列为 closed | 模型能看见自己以前做过什么 |
+| 4 ✅ | E：`list_agents` 读盘 | 一份 fork 或 resume 出来的树全部列为 closed | 模型能看见自己以前做过什么 |
 | 5 | G：orchestrator message | 上表前四行的生产者全部改走队列；hydrator 能按 `customType` 分派 | 运行时替模型写的话不再伪装成用户自己打的字 |
 | — | F | 等第一个真实 extension 消费者 | — |
 | — | 清偿批次 1 的测试欠账 | `npm run test` 归零 | 无（但在此之前，非持久化行为没有测试兜底） |
 
-批次 4 与 5 都不依赖对方，可以任意顺序。**测试欠账那一行没有编号，因为它不是排期的一环而是一笔债**——见第 7 节风险 1，它越晚清偿，越难判断某条失败是本来就坏的还是新弄坏的。
+批次 5 不依赖任何其它批次。**测试欠账那一行没有编号，因为它不是排期的一环而是一笔债**——见第 7 节风险 1，它越晚清偿，越难判断某条失败是本来就坏的还是新弄坏的。
 
 ---
 

@@ -75,10 +75,13 @@ export function encodeCwd(cwd: string): string {
 /**
  * Directory name for a new session.
  *
- * The timestamp prefix is not decoration. A session id equals the AgentId that
- * created it, which is unique only within one runtime: a resumed root that
- * spawns `coder-1` again would otherwise land on the previous run's directory.
- * The compact form keeps the segment short enough for deep nesting.
+ * The timestamp prefix orders a container chronologically, which is what makes
+ * an `agents/` directory readable to a human without opening anything. It is not
+ * what makes the name unique - a session id carries four random characters for
+ * that, because a session id equals the AgentId that created it and a counter
+ * would restart in every runtime. The compact, second-resolution form keeps the
+ * segment short enough for deep nesting; the repository checks for a name
+ * already in use before it creates one.
  */
 export function createSessionDirName(sessionId: string, timestamp: string): string {
 	return `${compactTimestamp(timestamp)}_${sessionId}`;

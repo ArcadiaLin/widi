@@ -111,7 +111,14 @@ import type {
 	ExtensionSessionSnapshot,
 	ExtensionSessionTree,
 } from "./extension/types.ts";
-import type { AgentBrief, AgentDisposeScope, AgentProfileBrief, ToolAgentHost } from "./host.ts";
+import type {
+	AgentBrief,
+	AgentDisposeScope,
+	AgentProfileBrief,
+	AgentTreeEntry,
+	AgentTreeListing,
+	ToolAgentHost,
+} from "./host.ts";
 import { HumanInterruptRegistry } from "./human-interrupt.ts";
 import type { HumanRequest, HumanResponse } from "./human-request.ts";
 import { HumanRequestBroker } from "./human-request.ts";
@@ -149,6 +156,7 @@ import {
 	PersistenceDiagnostics,
 	type PersistenceRefData,
 	projectBranch,
+	sessionKeysEqual,
 } from "./persistence/index.ts";
 import type { ConfigValueResolver } from "./resolve-config-value.js";
 import type { ResourceLoader } from "./resource-loader.js";
@@ -156,6 +164,7 @@ import type {
 	AgentSessionCandidate,
 	AgentSessionMetadata,
 	AgentSessionSnapshot,
+	AgentSessionTreeNode,
 	AgentSessionTreeSnapshot,
 	SessionManager,
 } from "./session-manager.ts";
@@ -860,6 +869,134 @@ export class AgentOrchestrator {
 	}
 
 	/**
+	 * The caller's agent tree: who is running now, and which sessions were left
+	 * behind by agents that are not.
+	 *
+	 * The directories are the complete set and memory is a subset of them. A
+	 * session whose agent is live reads as running; every other one reads as
+	 * closed, which is the truth about a forked or resumed tree - none of its
+	 * subagents come back (`docs/ZH/agent-tree-persistence.md` §6).
+	 *
+	 * The scope stays what it has always been - the caller's whole tree, not one
+	 * level of it, so a grandchild's id is still discoverable. The walk starts at
+	 * the tree root's own directory and only goes down. Never up: a session
+	 * resumed from inside another tree would otherwise drag in sibling subtrees
+	 * it never spawned.
+	 */
+	private async _listAgentTree(agentId: AgentId): Promise<AgentTreeListing> {
+		const rootAgentId = this._resolveAgentTreeRoot(agentId);
+		const liveInTree = [...this._live.values()].filter(
+			(liveAgent) => this._resolveAgentTreeRoot(liveAgent.agentId) === rootAgentId,
+		);
+		const liveByRef = new Map<string, LiveAgent>();
+		const liveChildren = new Map<AgentId, LiveAgent[]>();
+		for (const liveAgent of liveInTree) {
+			if (liveAgent.sessionRef !== undefined) liveByRef.set(liveAgent.sessionRef, liveAgent);
+			const parent = this._spawnParent.get(liveAgent.agentId);
+			if (parent === undefined) continue;
+			const siblings = liveChildren.get(parent);
+			if (siblings) siblings.push(liveAgent);
+			else liveChildren.set(parent, [liveAgent]);
+		}
+		const walked = await this._readAgentSessionTrees([rootAgentId, ...liveInTree.map((live) => live.agentId)]);
+
+		const rendered = new Set<AgentId>();
+		const fromLiveAgent = (liveAgent: LiveAgent): AgentTreeEntry => {
+			rendered.add(liveAgent.agentId);
+			const node = liveAgent.sessionRef === undefined ? undefined : walked.nodesByRef.get(liveAgent.sessionRef);
+			const children = (node?.children ?? []).map(fromSessionNode);
+			// Live agents whose session is not under this one's directory: an
+			// ephemeral spawner owns no directory, and a spawn too deep to nest
+			// degrades to a top-level session. The spawn edge is still the truth.
+			for (const child of liveChildren.get(liveAgent.agentId) ?? []) {
+				if (!rendered.has(child.agentId)) children.push(fromLiveAgent(child));
+			}
+			const { reference } = liveAgent.profile;
+			return {
+				status: "running",
+				agentId: liveAgent.agentId,
+				activity: toActivitySnapshot(liveAgent.harness.getPhase()).activity,
+				profileId: reference.id,
+				...(reference.label === undefined ? undefined : { label: reference.label }),
+				...(liveAgent.sessionRef === undefined ? undefined : { sessionRef: liveAgent.sessionRef }),
+				children,
+			};
+		};
+		const fromSessionNode = (node: AgentSessionTreeNode): AgentTreeEntry => {
+			const liveAgent = liveByRef.get(node.ref);
+			if (liveAgent) return fromLiveAgent(liveAgent);
+			return {
+				status: "closed",
+				sessionRef: node.ref,
+				...(node.profile === undefined ? undefined : { profileId: node.profile.id }),
+				...(node.profile?.label === undefined ? undefined : { label: node.profile.label }),
+				createdAt: node.createdAt,
+				children: node.children.map(fromSessionNode),
+			};
+		};
+
+		const entries: AgentTreeEntry[] = [];
+		const rootLiveAgent = this._live.get(rootAgentId);
+		const rootRef = this.sessionManager.getAgentSessionRef(rootAgentId);
+		const rootNode = rootRef === undefined ? undefined : walked.nodesByRef.get(rootRef);
+		if (rootLiveAgent) entries.push(fromLiveAgent(rootLiveAgent));
+		else if (rootNode) entries.push(fromSessionNode(rootNode));
+		// Whatever the root did not reach becomes a root of its own, but only once
+		// its own spawner has had its turn - otherwise a child would be promoted
+		// out from under a parent that was going to render it.
+		for (const liveAgent of liveInTree) {
+			const parent = this._spawnParent.get(liveAgent.agentId);
+			if (rendered.has(liveAgent.agentId) || (parent !== undefined && this._live.has(parent))) continue;
+			entries.push(fromLiveAgent(liveAgent));
+		}
+		// A spawn-edge cycle leaves every member skipped above; listing them flat
+		// beats dropping them, and matches how the other traversals stay cycle-safe.
+		for (const liveAgent of liveInTree) {
+			if (!rendered.has(liveAgent.agentId)) entries.push(fromLiveAgent(liveAgent));
+		}
+		return { entries, ...(walked.unavailable ? { closedUnavailable: true } : undefined) };
+	}
+
+	/**
+	 * Index every session directory reachable from these agents, one walk per
+	 * tree they do not share.
+	 *
+	 * Normally the first walk answers everything, since the root's directory
+	 * holds the whole tree; the rest of the list then costs one map lookup each.
+	 * A failed walk is reported and skipped rather than thrown: which agents are
+	 * running is readable from memory alone, and losing that answer to a
+	 * filesystem error would be the worse trade.
+	 */
+	private async _readAgentSessionTrees(
+		agentIds: readonly AgentId[],
+	): Promise<{ readonly nodesByRef: ReadonlyMap<string, AgentSessionTreeNode>; readonly unavailable: boolean }> {
+		const nodesByRef = new Map<string, AgentSessionTreeNode>();
+		const index = (node: AgentSessionTreeNode): void => {
+			nodesByRef.set(node.ref, node);
+			for (const child of node.children) index(child);
+		};
+		let unavailable = false;
+		for (const agentId of agentIds) {
+			const ref = this.sessionManager.getAgentSessionRef(agentId);
+			const address = this.sessionManager.getAgentSessionAddress(agentId);
+			if (ref === undefined || address === undefined || nodesByRef.has(ref)) continue;
+			try {
+				const node = await this.sessionManager.listAgentSessionTree(address);
+				if (node) index(node);
+			} catch (error) {
+				unavailable = true;
+				await this._publishDiagnostic({
+					severity: "warning",
+					code: "orchestrator.session_tree_unreadable",
+					message: `Sessions under ${ref} could not be listed: ${formatError(error)}`,
+					agentId,
+				});
+			}
+		}
+		return { nodesByRef, unavailable };
+	}
+
+	/**
 	 * Drop this agent's edge once it has no surviving descendants, then walk up
 	 * dropping every ancestor tombstone edge that likewise has none. Without it a
 	 * session that spawns and disposes in a loop accumulates one dead edge per
@@ -963,8 +1100,8 @@ export class AgentOrchestrator {
 				typeof options.origin.reference === "string"
 					? await this.sessionManager.resolveAgentSessionReference(options.origin.reference)
 					: options.origin.reference;
-			const agentId = info.metadata.id;
-			const resolvedProfile = await this._resolveResumeProfile(agentId, info.metadata);
+			const resolvedProfile = await this._resolveResumeProfile(info.metadata.id, info.metadata);
+			const agentId = this._resumeAgentId(info, resolvedProfile.profile);
 			const session = await this.sessionManager.resumeAgentSession({ agentId, info });
 			const context = await this.sessionManager.buildAgentSessionContext(agentId);
 			return {
@@ -1387,20 +1524,53 @@ export class AgentOrchestrator {
 	}
 
 	/** A readable AgentId that collides with no live agent and no tombstone. */
+	/**
+	 * The id a resumed session's agent runs under.
+	 *
+	 * The header id normally answers: it is the id the session was created with,
+	 * and restoring the agent under it keeps a resumed conversation recognizable.
+	 * It is not an address though - it names whichever agent created that session,
+	 * and a session written by another run can carry the same one. While it is
+	 * held by a live agent that is not this very session, reusing it would hand
+	 * the caller that agent instead of this session, silently. So this session
+	 * takes a fresh id, and the header keeps naming its creator.
+	 */
+	private _resumeAgentId(info: PersistedSessionInfo, profile: AgentProfile): AgentId {
+		const headerAgentId = info.metadata.id;
+		const bound = this.sessionManager.getAgentSessionAddress(headerAgentId);
+		const boundToThisSession = bound !== undefined && sessionKeysEqual(bound.key, info.address.key);
+		if (boundToThisSession || !this._live.has(headerAgentId)) return headerAgentId;
+		return this._allocateAgentId(profile);
+	}
+
+	/**
+	 * A readable, runtime-unique agent id: the profile it runs, plus four random
+	 * characters.
+	 *
+	 * The random half is what keeps ids from repeating across runs, and the
+	 * session directory named after one needs exactly that. A counter would
+	 * restart at 1 in every runtime, so a resumed root's first child would be
+	 * handed the name the previous run's first child already owns - and creating
+	 * a session writes its header with `writeFile`, which truncates rather than
+	 * fails.
+	 *
+	 * Four characters, not a UUID: an id is quoted back by the model on every
+	 * `send_message` and read by a human in the agent strip, and `worker-a3f9`
+	 * stays inside the compact width where a UUID would be shown as a tail.
+	 * Collisions inside one runtime are resolved by drawing again, and
+	 * persistence still checks the directory it is about to create.
+	 */
 	private _allocateAgentId(profile: AgentProfile): AgentId {
 		const base =
-			profile.label
+			profile.id
 				.trim()
 				.toLocaleLowerCase()
 				.replace(/[^a-z0-9-]+/g, "-")
 				.replace(/^-+|-+$/g, "") || "agent";
-		let agentId: AgentId = base;
-		let suffix = 2;
-		while (this._resolveAgent(agentId).kind !== "unknown") {
-			agentId = `${base}-${suffix}`;
-			suffix += 1;
+		for (;;) {
+			const agentId: AgentId = `${base}-${randomAgentIdSuffix()}`;
+			if (this._resolveAgent(agentId).kind === "unknown") return agentId;
 		}
-		return agentId;
 	}
 
 	private _assertAgentCanParent(parentAgentId: AgentId): void {
@@ -3546,12 +3716,7 @@ export class AgentOrchestrator {
 			// Discovery is tree-scoped, while exact ids stay runtime-wide addresses
 			// through `describe` and `sendMessage` - the deliberate soft bridge
 			// between otherwise isolated trees.
-			listAgents: () => {
-				const rootAgentId = this._resolveAgentTreeRoot(agentId);
-				return [...this._live.values()]
-					.filter((liveAgent) => this._resolveAgentTreeRoot(liveAgent.agentId) === rootAgentId)
-					.map((liveAgent) => describeAgentForTools(liveAgent));
-			},
+			listAgents: async () => await this._listAgentTree(agentId),
 			describe: (targetAgentId) => {
 				const liveAgent = this._live.get(targetAgentId);
 				return liveAgent ? describeAgentForTools(liveAgent) : undefined;
@@ -4384,6 +4549,13 @@ function toOrchestratorBackgroundEvent(event: BackgroundJobEvent): OrchestratorE
 		observedAt: event.observedAt,
 		operationRef: event.operationRef,
 	};
+}
+
+/** Four base36 characters: the half of an agent id that does not repeat across runs. */
+function randomAgentIdSuffix(): string {
+	return Math.floor(Math.random() * 36 ** 4)
+		.toString(36)
+		.padStart(4, "0");
 }
 
 /** Model-visible summary of one live agent, for the collaboration tools. */

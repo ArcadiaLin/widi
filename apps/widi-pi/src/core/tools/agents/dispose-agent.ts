@@ -61,7 +61,7 @@ export function createDisposeAgentToolDefinition(): ToolDefinition<typeof dispos
 		name: "dispose_agent",
 		label: "dispose_agent",
 		description:
-			"Destroy one or more agents in your agent tree. scope agent destroys only the named agents and leaves their descendants running; scope subtree recursively destroys each named agent and all descendants. Each destroyed agent is stopped, its background work is cancelled, and any task it still owed is reported as cancelled. A selection containing you is refused. Disposing an agent is not how you finish its task: complete the task first.",
+			"Destroy one or more agents in your agent tree. scope agent destroys only the named agents and leaves their descendants running; scope subtree recursively destroys each named agent and all descendants. Each destroyed agent is stopped, its background work is cancelled, and any task it still owed is reported as cancelled. A selection containing you is refused. Only the running agents list_agents reports can be disposed; its closed entries are already not running. Disposing an agent is not how you finish its task: complete the task first.",
 		promptSnippet: "Destroy same-tree agents individually or recursively by subtree",
 		parameters: disposeAgentSchema,
 		execute: async (_toolCallId, { agentIds, scope, reason }, context) => {
