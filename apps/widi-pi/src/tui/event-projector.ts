@@ -1,6 +1,6 @@
 import { TextDecoder } from "node:util";
 import type { AssistantMessage, TextContent, ToolCall, UserMessage } from "@earendil-works/pi-ai";
-import type { AgentHarnessEvent, AgentMessage } from "@widi/agent-core";
+import type { AgentHarnessEvent, AgentMessage, CustomMessage } from "@widi/agent-core";
 import type { AgentSnapshot } from "../core/agent-types.ts";
 import type {
 	BackgroundJobReportSnapshot,
@@ -18,6 +18,8 @@ import {
 	type HumanResponse,
 	normalizeHumanRequestOptions,
 } from "../core/human-request.ts";
+import type { MessageEntryDetails } from "../core/message.ts";
+import { ORCHESTRATOR_MESSAGE_CUSTOM_TYPE } from "../core/session-manager.ts";
 import type { AgentId, OrchestratorEvent } from "../core/types.ts";
 import { maintenanceLabel } from "./components/common.ts";
 import type { HydrationResult } from "./session-hydrator.ts";
@@ -28,6 +30,7 @@ import {
 	ensureAgentProjection,
 	extensionStatusKey,
 	isTimelineEvent,
+	type OrchestratorMessageItem,
 	retainedAttention,
 	type TimelineItem,
 	type ToolExecutionItem,
@@ -627,6 +630,19 @@ export class EventProjector {
 	private applyMessageStart(agent: AgentViewState, message: AgentMessage): void {
 		if (message.role === "toolResult") return;
 		const id = `live-message:${agent.agentId}:${agent.nextLiveItemId++}`;
+		// Everything the runtime put into context on someone else's behalf. It
+		// opens a turn exactly as a user message does - the model is reading it
+		// either way - so the window and job housekeeping are the same.
+		if (message.role === "custom") {
+			const item = toLiveOrchestratorMessage(id, message);
+			if (!item) return;
+			upsertTimeline(agent, item);
+			if (agent.status === "running") upsertAwaitingThinking(agent);
+			applyTimelineWindow(agent);
+			this.clearSettledBackgroundJobs(agent);
+			this.markBackgroundActivity(agent.agentId);
+			return;
+		}
 		if (message.role === "user") {
 			const modelText = userText(message);
 			const text = agent.pendingInput?.originalText ?? modelText;
@@ -970,7 +986,50 @@ function summarizeHumanResponse(
 function queuedMessageText(message: AgentMessage): string {
 	if (message.role === "user") return userText(message);
 	if (message.role === "assistant") return assistantText(message);
+	// Queued input the runtime wrote. The queue preview is what is waiting to be
+	// read, so it shows the body a person would recognize, not the rendered form
+	// carrying the attribution prefix.
+	if (message.role === "custom") {
+		const details = message.details;
+		if (isMessageEntryDetails(details)) return details.body;
+		return customMessageText(message.content);
+	}
 	return "";
+}
+
+/**
+ * One live orchestrator message, or undefined when the entry carries no record
+ * of who wrote it - the same rule the hydrator applies, for the same reason.
+ */
+function toLiveOrchestratorMessage(id: string, message: CustomMessage): OrchestratorMessageItem | undefined {
+	if (message.customType !== ORCHESTRATOR_MESSAGE_CUSTOM_TYPE) return undefined;
+	if (!isMessageEntryDetails(message.details)) return undefined;
+	const modelText = customMessageText(message.content);
+	return {
+		type: "orchestrator-message",
+		id,
+		durability: "durable",
+		createdAt: messageTimestamp(message),
+		source: message.details.source,
+		text: message.details.body,
+		...(message.details.body === modelText ? undefined : { modelText }),
+	};
+}
+
+function isMessageEntryDetails(details: unknown): details is MessageEntryDetails {
+	if (typeof details !== "object" || details === null) return false;
+	const record = details as { body?: unknown; source?: unknown };
+	if (typeof record.body !== "string") return false;
+	const source = record.source;
+	return typeof source === "object" && source !== null && typeof (source as { kind?: unknown }).kind === "string";
+}
+
+function customMessageText(content: CustomMessage["content"]): string {
+	if (typeof content === "string") return content;
+	return content
+		.filter((part): part is TextContent => part.type === "text")
+		.map((part) => part.text)
+		.join("");
 }
 
 function nonEmpty(text: string): boolean {

@@ -1,10 +1,66 @@
 import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { SessionTreeEntry } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
-import { EXTENSION_MESSAGE_CUSTOM_TYPE, INPUT_TRANSFORM_CUSTOM_TYPE } from "../../src/core/session-manager.ts";
+import {
+	EXTENSION_MESSAGE_CUSTOM_TYPE,
+	INPUT_TRANSFORM_CUSTOM_TYPE,
+	ORCHESTRATOR_MESSAGE_CUSTOM_TYPE,
+} from "../../src/core/session-manager.ts";
 import { hydrateSessionEntries } from "../../src/tui/session-hydrator.ts";
 
 describe("hydrateSessionEntries", () => {
+	// Both entry forms carry the same details, so both hydrate to the same item.
+	// The person reads `details.body`; `modelText` holds the rendered form the
+	// model read, and is absent when the renderer changed nothing.
+	it("restores orchestrator messages from both entry forms", () => {
+		const result = hydrateSessionEntries([
+			orchestratorMessage("agent-msg", "[Message from worker-7]\n\nthree duplicates found", {
+				source: { kind: "agent", label: "worker-7" },
+				body: "three duplicates found",
+			}),
+			orchestratorNotice("runtime-notice", "[Spawn tree closed] Every agent you created is gone.", {
+				source: { kind: "runtime", label: "spawn tree closed", details: { notice: "spawn_tree_closed" } },
+				body: "[Spawn tree closed] Every agent you created is gone.",
+			}),
+		]);
+
+		expect(result.timeline).toEqual([
+			{
+				type: "orchestrator-message",
+				id: "agent-msg",
+				durability: "durable",
+				createdAt: timestamp(1),
+				source: { kind: "agent", label: "worker-7" },
+				text: "three duplicates found",
+				modelText: "[Message from worker-7]\n\nthree duplicates found",
+			},
+			{
+				type: "orchestrator-message",
+				id: "runtime-notice",
+				durability: "durable",
+				createdAt: timestamp(1),
+				source: { kind: "runtime", label: "spawn tree closed", details: { notice: "spawn_tree_closed" } },
+				text: "[Spawn tree closed] Every agent you created is gone.",
+			},
+		]);
+	});
+
+	// An entry with no record of who wrote it cannot be attributed, and showing
+	// it as a plain user message would claim the person said it.
+	it("drops an orchestrator message that carries no source", () => {
+		const foreign = {
+			...orchestratorNotice("other-type", "not ours", { source: { kind: "agent" }, body: "not ours" }),
+			customType: "someone-else:message",
+		};
+		const result = hydrateSessionEntries([
+			orchestratorMessage("no-details", "orphan", undefined),
+			orchestratorNotice("bad-details", "orphan", { body: 7 }),
+			foreign,
+		]);
+
+		expect(result.timeline).toEqual([]);
+	});
+
 	it("restores human-facing messages, tools, extension messages and display facts", () => {
 		const entries: SessionTreeEntry[] = [
 			custom("transform", INPUT_TRANSFORM_CUSTOM_TYPE, {
@@ -139,6 +195,46 @@ describe("hydrateSessionEntries", () => {
 		]);
 	});
 });
+
+/** The waking form: a typed message the agent loop persisted. */
+function orchestratorMessage(
+	id: string,
+	content: string,
+	details: unknown,
+): Extract<SessionTreeEntry, { type: "message" }> {
+	return {
+		type: "message",
+		id,
+		parentId: null,
+		timestamp: timestamp(1),
+		message: {
+			role: "custom",
+			customType: ORCHESTRATOR_MESSAGE_CUSTOM_TYPE,
+			content,
+			display: true,
+			details,
+			timestamp: Date.parse(timestamp(1)),
+		},
+	};
+}
+
+/** The non-waking form: a `precede` notice appended straight to the branch. */
+function orchestratorNotice(
+	id: string,
+	content: string,
+	details: unknown,
+): Extract<SessionTreeEntry, { type: "custom_message" }> {
+	return {
+		type: "custom_message",
+		id,
+		parentId: null,
+		timestamp: timestamp(1),
+		customType: ORCHESTRATOR_MESSAGE_CUSTOM_TYPE,
+		content,
+		display: true,
+		details,
+	};
+}
 
 function message(
 	id: string,

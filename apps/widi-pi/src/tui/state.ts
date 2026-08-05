@@ -5,6 +5,7 @@ import type { BackgroundJobReportSnapshot } from "../core/background/index.ts";
 import type { OrchestratorDiagnostic } from "../core/diagnostics.ts";
 import type { ExtensionMessage, ExtensionStatusSnapshot } from "../core/extension/presentation.ts";
 import type { HumanRequestEnvelope, HumanRequestKind } from "../core/human-request.ts";
+import type { MessageSource } from "../core/message.ts";
 import type { AgentId, AgentMaintenanceKind, OrchestratorEvent, RuntimeModel } from "../core/types.ts";
 import type { CommandError } from "./commands/types.ts";
 
@@ -16,6 +17,30 @@ export interface UserMessageItem {
 	readonly id: string;
 	readonly durability: TimelineDurability;
 	readonly createdAt: string;
+	text: string;
+	modelText?: string;
+}
+
+/**
+ * Input the runtime put into this agent's context on someone else's behalf: a
+ * peer agent, a settled background job, an extension, or the runtime itself.
+ *
+ * Distinct from `user-message`, which is only what the person at this keyboard
+ * typed. The two are indistinguishable to the model - both reach it as user
+ * text - and that is exactly why they must not be here: a reader who cannot
+ * tell them apart cannot tell what they were answering.
+ *
+ * `text` is the semantic body and `modelText` the rendered form the model
+ * actually read, present only when the source's renderer changed it. The
+ * attribution prefix lives in `modelText`; on screen it is the source line's
+ * job, so the same fact is never shown twice.
+ */
+export interface OrchestratorMessageItem {
+	readonly type: "orchestrator-message";
+	readonly id: string;
+	readonly durability: TimelineDurability;
+	readonly createdAt: string;
+	readonly source: MessageSource;
 	text: string;
 	modelText?: string;
 }
@@ -157,6 +182,7 @@ export interface WindowMarkerItem {
 
 export type TimelineItem =
 	| UserMessageItem
+	| OrchestratorMessageItem
 	| AssistantMessageItem
 	| ToolExecutionItem
 	| ThinkingStatusItem

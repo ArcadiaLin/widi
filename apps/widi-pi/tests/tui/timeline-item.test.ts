@@ -7,6 +7,7 @@ import type {
 	ApplicationNoticeItem,
 	AssistantMessageItem,
 	CommandResultItem,
+	OrchestratorMessageItem,
 	SessionMarkerItem,
 	ThinkingStatusItem,
 	UserMessageItem,
@@ -25,6 +26,43 @@ function plain(lines: string[]): string[] {
 }
 
 describe("renderTimelineItem", () => {
+	// The attribution is a line of its own, so the body stays as the producer
+	// wrote it. The model reads the prefixed `modelText`; showing that here
+	// would state the same fact twice.
+	it("names the source above an orchestrator message and leaves the body unprefixed", () => {
+		const item: OrchestratorMessageItem = {
+			type: "orchestrator-message",
+			id: "msg-1",
+			durability: "durable",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			source: { kind: "agent", label: "worker-7" },
+			text: "three duplicates found",
+			modelText: "[Message from worker-7]\n\nthree duplicates found",
+		};
+
+		const lines = plain(renderTimelineItem(item, 60, context));
+
+		expect(lines).toContain("↳ agent worker-7");
+		expect(lines).toContain("three duplicates found");
+		expect(lines.join("\n")).not.toContain("[Message from worker-7]");
+	});
+
+	// `kind` is open by design: a producer may declare one core has never heard
+	// of, and that is a normal message rather than a broken one.
+	it("falls back to the label for a source kind it does not know", () => {
+		const item: OrchestratorMessageItem = {
+			type: "orchestrator-message",
+			id: "msg-2",
+			durability: "durable",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			source: { kind: "slack-bridge", label: "Slack @arcadia" },
+			text: "why is CI red",
+		};
+
+		expect(plain(renderTimelineItem(item, 60, context))).toContain("↳ Slack @arcadia");
+		expect(renderDeps(item, context)).toEqual(["why is CI red", "slack-bridge", "Slack @arcadia"]);
+	});
+
 	it("paints user message rows with the surface background at full width", () => {
 		const item: UserMessageItem = {
 			type: "user-message",

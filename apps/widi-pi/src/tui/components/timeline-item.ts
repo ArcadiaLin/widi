@@ -22,6 +22,8 @@ export function renderDeps(item: TimelineItem, context: TimelineRenderContext): 
 	switch (item.type) {
 		case "user-message":
 			return [item.text];
+		case "orchestrator-message":
+			return [item.text, item.source.kind, item.source.label];
 		case "assistant-message": {
 			const liveThinking = context.liveThinkingIds.has(`${item.id}:thinking`);
 			const livePreparing = context.livePreparingAssistantIds.has(item.id);
@@ -108,12 +110,39 @@ function markerSeparator(title: string, width: number): string {
 	return `${head}${"─".repeat(fill)}`;
 }
 
+/** One line naming who wrote a message the person did not type. */
+function orchestratorMessageTitle(kind: string, label: string): string {
+	if (kind === "human") return `from ${label}`;
+	if (kind === "agent") return `agent ${label}`;
+	if (kind === "background_job") return label;
+	if (kind === "runtime") return `runtime · ${label}`;
+	if (kind.startsWith("extension:")) return `extension ${label}`;
+	return label;
+}
+
 export function renderTimelineItem(item: TimelineItem, width: number, context: TimelineRenderContext): string[] {
 	switch (item.type) {
 		case "user-message": {
 			const lines = new Text(`${theme.bold("❯")} ${boundedText(item.text)}`, 1, 0).render(width);
 			// Pad to the full row so the surface background spans the line.
 			return lines.map((line) => theme.surface(line + " ".repeat(Math.max(0, width - visibleWidth(line)))));
+		}
+		// Everything that entered the model's context without the person typing
+		// it. The source line carries the attribution, so the body is shown
+		// unprefixed even though the model read the prefixed form: repeating
+		// "[Message from worker-7]" in the text would say it twice.
+		//
+		// Dispatch is on `source.kind`, which is open - a kind core has never
+		// heard of is a normal case, not corruption - so the fallback is the
+		// same shape as every other branch rather than an error path.
+		case "orchestrator-message": {
+			const label = item.source.label ?? item.source.kind;
+			const title = orchestratorMessageTitle(item.source.kind, label);
+			return new Text(
+				`${theme.dim(`↳ ${title}`)}\n${boundedText(item.text, { maxLines: 24, maxCharacters: 8_000 })}`,
+				1,
+				0,
+			).render(width);
 		}
 		case "assistant-message": {
 			const text = item.text.trim();

@@ -1,11 +1,14 @@
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
+import type { CustomMessage } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import type { AgentSnapshot } from "../../src/core/agent-types.ts";
 import type { BackgroundJobReportSnapshot, BackgroundJobSnapshot } from "../../src/core/background/index.ts";
+import { ORCHESTRATOR_MESSAGE_CUSTOM_TYPE } from "../../src/core/session-manager.ts";
 import type { OrchestratorEvent, RuntimeModel } from "../../src/core/types.ts";
 import { applyAgentSnapshot, EventProjector } from "../../src/tui/event-projector.ts";
 import { hydrateSessionEntries } from "../../src/tui/session-hydrator.ts";
 import { createTuiApplicationState, setActiveAgent } from "../../src/tui/state.ts";
+import { groupTurns } from "../../src/tui/timeline-window.ts";
 
 describe("EventProjector", () => {
 	it("lazily creates provisional agents before spawn and tracks background facts", () => {
@@ -442,6 +445,59 @@ describe("EventProjector", () => {
 		projector.apply(harness("main", { type: "message_end", message }));
 
 		expect(agent.timeline).toMatchObject([{ type: "assistant-message", text: "first\n\nsecond" }]);
+	});
+
+	// A message the runtime wrote opens a turn exactly as a typed one does: the
+	// model is reading it either way, so the transcript has to show the reply
+	// under it rather than folded into whatever came before.
+	it("projects a live orchestrator message and opens a turn with it", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+		const agent = setActiveAgent(state, "main");
+
+		projector.apply(
+			harness("main", {
+				type: "message_start",
+				message: orchestratorMessage("[Message from worker-7]\n\nscan finished", {
+					source: { kind: "agent", label: "worker-7" },
+					body: "scan finished",
+				}),
+			}),
+		);
+		projector.apply(harness("main", { type: "message_start", message: assistantMessage("noted") }));
+
+		expect(agent.timeline).toMatchObject([
+			{
+				type: "orchestrator-message",
+				source: { kind: "agent", label: "worker-7" },
+				text: "scan finished",
+				modelText: "[Message from worker-7]\n\nscan finished",
+			},
+			{ type: "assistant-message" },
+		]);
+		expect(groupTurns(agent.timeline)).toHaveLength(1);
+	});
+
+	it("previews a queued orchestrator message by its body, not its rendered form", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+		const agent = setActiveAgent(state, "main");
+
+		projector.apply(
+			harness("main", {
+				type: "queue_update",
+				steer: [
+					orchestratorMessage("[Input from extension mcp]\n\ntools refreshed", {
+						source: { kind: "extension:mcp", label: "mcp" },
+						body: "tools refreshed",
+					}),
+				],
+				followUp: [],
+				nextTurn: [],
+			}),
+		);
+
+		expect(agent.queue).toMatchObject({ steer: ["tools refreshed"] });
 	});
 
 	it("restores diagnostic attention after a human request is resolved", () => {
@@ -934,6 +990,17 @@ function harness(
 
 function userMessage(content: string): UserMessage {
 	return { role: "user", content, timestamp: Date.parse(timestamp(1)) };
+}
+
+function orchestratorMessage(content: string, details: unknown): CustomMessage {
+	return {
+		role: "custom",
+		customType: ORCHESTRATOR_MESSAGE_CUSTOM_TYPE,
+		content,
+		display: true,
+		details,
+		timestamp: Date.parse(timestamp(1)),
+	};
 }
 
 function assistantToolCallMessage(id: string, name: string, args: Record<string, unknown> = {}): AssistantMessage {

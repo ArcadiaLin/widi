@@ -28,15 +28,19 @@ export interface TimelineTurn {
 }
 
 /**
- * Group items into turns that open at each user message. Items before the
- * first user message (command results, notices) attach to the next turn;
- * stray items after the last turn's content form their own tail turn.
+ * Group items into turns that open at each message the model reads as input -
+ * what the person typed, and what the runtime put there on someone else's
+ * behalf. Both start a reply, so both start a turn; counting only the typed
+ * ones would leave a session driven by agent or job messages as one unbounded
+ * turn that never trims. Items before the first such message (command results,
+ * notices) attach to the next turn; stray items after the last turn's content
+ * form their own tail turn.
  */
 export function groupTurns(items: readonly TimelineItem[]): TimelineTurn[] {
 	const turns: TimelineItem[][] = [];
 	let pending: TimelineItem[] = [];
 	for (const item of items) {
-		if (item.type === "user-message") {
+		if (item.type === "user-message" || item.type === "orchestrator-message") {
 			turns.push([...pending, item]);
 			pending = [];
 		} else if (turns.length === 0) {

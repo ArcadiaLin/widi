@@ -2,14 +2,17 @@ import type { AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMe
 import type { SessionTreeEntry } from "@widi/agent-core";
 import type { ExtensionMessage } from "../core/extension/api.ts";
 import { validateExtensionMessage } from "../core/extension/presentation.ts";
+import type { MessageEntryDetails } from "../core/message.ts";
 import {
 	EXTENSION_MESSAGE_CUSTOM_TYPE,
 	type ExtensionMessageEntryData,
 	INPUT_TRANSFORM_CUSTOM_TYPE,
 	type InputTransformEntryData,
+	ORCHESTRATOR_MESSAGE_CUSTOM_TYPE,
 } from "../core/session-manager.ts";
 import type {
 	AssistantMessageItem,
+	OrchestratorMessageItem,
 	PersistentMessageItem,
 	SessionMarkerItem,
 	TimelineItem,
@@ -56,8 +59,22 @@ export function hydrateSessionEntries(entries: readonly SessionTreeEntry[]): Hyd
 				}
 				break;
 			}
+			// A message the runtime wrote on someone else's behalf and woke the
+			// agent with. Same entry type as a user message, different role.
+			case "custom_message": {
+				if (entry.customType !== ORCHESTRATOR_MESSAGE_CUSTOM_TYPE) break;
+				const item = toOrchestratorMessage(entry.id, entry.timestamp, entry.content, entry.details);
+				if (item) timeline.push(item);
+				break;
+			}
 			case "message": {
 				const message = entry.message;
+				if (message.role === "custom") {
+					if (message.customType !== ORCHESTRATOR_MESSAGE_CUSTOM_TYPE) break;
+					const item = toOrchestratorMessage(entry.id, entry.timestamp, message.content, message.details);
+					if (item) timeline.push(item);
+					break;
+				}
 				if (message.role === "user") {
 					const modelText = messageText(message);
 					const text = pendingOriginalText ?? modelText;
@@ -141,6 +158,47 @@ function toAssistantMessage(id: string, createdAt: string, message: AssistantMes
 		streaming: false,
 		message,
 	};
+}
+
+/**
+ * One orchestrator message, from either entry form.
+ *
+ * `details` is what the producer recorded about itself and is the whole basis
+ * for rendering, so an entry without it is dropped rather than shown as an
+ * anonymous user message - claiming the person said it would be worse than
+ * saying nothing.
+ */
+function toOrchestratorMessage(
+	id: string,
+	createdAt: string,
+	content: string | readonly { type: string; text?: string }[],
+	details: unknown,
+): OrchestratorMessageItem | undefined {
+	if (!isMessageEntryDetails(details)) return undefined;
+	const modelText = contentText(content);
+	return {
+		type: "orchestrator-message",
+		id,
+		durability: "durable",
+		createdAt,
+		source: details.source,
+		text: details.body,
+		...(details.body === modelText ? undefined : { modelText }),
+	};
+}
+
+function isMessageEntryDetails(details: unknown): details is MessageEntryDetails {
+	if (!isRecord(details) || typeof details.body !== "string") return false;
+	const source = details.source;
+	return isRecord(source) && typeof source.kind === "string";
+}
+
+function contentText(content: string | readonly { type: string; text?: string }[]): string {
+	if (typeof content === "string") return content;
+	return content
+		.filter((part) => part.type === "text" && part.text !== undefined)
+		.map((part) => part.text)
+		.join("");
 }
 
 function toExtensionMessage(

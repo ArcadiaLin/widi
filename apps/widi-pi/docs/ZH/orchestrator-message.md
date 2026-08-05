@@ -2,7 +2,7 @@
 
 面向 `apps/widi-pi/src/core/message.ts`、`core/agent-orchestrator.ts` 与 `src/tui/`。前置阅读：`orchestrator-wiring-plan.md` §G。
 
-> **状态：core 已落地（`ce52f26`、`7041083`），TUI 与 fork 未动。** 尚未落地的部分逐条列在 §8，正文其余部分描述的是已经在跑的代码。
+> **状态：全部落地。** core、fork 放宽、TUI 渲染都已完成，`npm run check` 与全量测试通过（1159 passing）。正文描述的是正在跑的代码。
 >
 > 本文举例用到的 multi-agent 工具与 human-request，两者都在重做中，例子不代表它们当前或将来的形状。见 §10。
 
@@ -511,7 +511,7 @@ core:orchestrator_message
 
 ---
 
-## 7. UI 层如何区分渲染——**未做**
+## 7. UI 层如何区分渲染
 
 今天 TUI 只有两种输入形态：`user-message`（用户打的字，也包括运行时冒名写的）和 `extension-message`（`core:extension_message` 自定义条目，有自己的渲染但不进模型上下文）。改造后多出一类：**进了模型上下文、但不是从外壳进来的用户输入**。
 
@@ -523,14 +523,20 @@ core:orchestrator_message
 两条路径产出同一个新的 timeline item：
 
 ```ts
-interface OrchestratorMessageItem {
-    type: "orchestrator-message";
-    source: MessageSource;       // 分派与显示都看它
-    text: string;                // details.body，人读的原文
-    modelText?: string;          // content，与 text 不同时才带
-    ...
+export interface OrchestratorMessageItem {
+    readonly type: "orchestrator-message";
+    readonly id: string;
+    readonly durability: TimelineDurability;
+    readonly createdAt: string;
+    readonly source: MessageSource;   // 分派与显示都看它
+    text: string;                     // details.body，人读的原文
+    modelText?: string;               // content，与 text 不同时才带
 }
 ```
+
+**没有 `details` 的条目会被丢掉，不会退化成 user message。** 无法追溯是谁写的时候，把它显示成用户自己打的字，比什么都不显示更糟。
+
+**它和 user message 一样开启一个 turn。** `groupTurns` 两种都认：模型读到哪一种都会作答，只数用户打的字会让一个全靠 agent / job 消息驱动的会话变成一个永不裁剪的巨型 turn。
 
 ### 建议的渲染分派
 
@@ -543,7 +549,9 @@ interface OrchestratorMessageItem {
 | `agent` | 带发送方 agent id 的消息块，与用户消息不同的边框/颜色 |
 | `background_job` | 折叠块，标题是 job id 与状态，正文默认收起 |
 | `runtime` | 系统通告条，不进对话流的主视觉层次 |
-| 其它 / 未知 | 通用"外部输入"样式，标题取 `source.label ?? source.kind` |
+| 其它 / 未知 | 标题取 `source.label ?? source.kind` |
+
+落地的标题行（`orchestratorMessageTitle`）：`↳ agent worker-7` / `↳ job 3` / `↳ runtime · spawn tree closed` / `↳ extension mcp` / 未知 kind 直接用 label。
 
 最后一行不是补丁，是常态：kind 开放之后，UI 见到没听说过的 kind 是正常情况，不是数据损坏。
 
@@ -553,15 +561,17 @@ interface OrchestratorMessageItem {
 
 ## 8. 这一批要动的东西
 
-### fork 改动（`packages/agent`）——**未做**
+### fork 改动（`packages/agent`）
 
-唤醒路径要能带类型，需要放宽 harness 的类型收窄。在此之前，走 `prompt`/`steer`/`follow_up` 的消息落盘仍是裸 `role:"user"`，§6 表格第 2 行还没生效：
+唤醒路径要能带类型，放宽了 harness 的类型收窄：
 
 - `steerQueue` / `followUpQueue`：`UserMessage[]` → `AgentMessage[]`（`nextTurnQueue` 本来就是宽的）
 - `prompt` / `steer` / `followUp` / `nextTurn`：接受 `string | AgentMessage`
 - `promoteFollowUpsToSteer`、`abort` 的返回类型、`queue_update` 的载荷跟着放宽
 
-`agent-loop.ts` 那一侧早就是 `AgentMessage[]`（`packages/agent/src/types.ts:239/252`），所以这是纯类型放宽，对现有调用方零行为变化。**这是一处新的 fork 分叉，要记进 `docs/pi-fork.md`。**
+`agent-loop.ts` 那一侧早就是 `AgentMessage[]`（`packages/agent/src/types.ts:239/252`），`AbortResult` 与 `queue_update` 载荷本来就是宽的，所以这是纯类型放宽，对现有调用方零行为变化。传字符串的调用方拿到的还是原来那条 user message；`toInputMessage` 与 `toInputText` 两个 helper 就是全部实现。已记进 `docs/pi-fork.md` 的"The typed input widening"一节。
+
+orchestrator 这一侧只有一个生产者构造这种消息：`toHarnessInput`，从 `MessageEntryPayload` 造 `CustomMessage`。外壳的人类输入仍然走裸字符串，落成裸 `role:"user"` 条目。
 
 ### 消失的东西
 
