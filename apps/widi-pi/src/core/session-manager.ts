@@ -29,7 +29,7 @@ import { buildSessionContext, getFileSystemResultOrThrow, InMemorySessionStore, 
 import { formatError } from "../utils/errors.ts";
 import type { AgentProfile, AgentProfileReference } from "./agent-profile.js";
 import { parseAgentProfileReference, toAgentProfileReference } from "./agent-profile.js";
-import type { ExtensionInputPresentation, ExtensionMessage } from "./extension/presentation.ts";
+import type { ExtensionMessage } from "./extension/presentation.ts";
 import type {
 	PersistedSessionInfo,
 	PersistenceDiagnostic,
@@ -79,18 +79,6 @@ export const EXTENSION_MESSAGE_CUSTOM_TYPE = "core:extension_message";
 export interface ExtensionMessageEntryData {
 	readonly extensionId: string;
 	readonly message: ExtensionMessage;
-}
-
-// Core-owned custom entry recording how a client should render a message an
-// extension sent into the agent. The user message carries the model-facing
-// text; this entry is appended after that message and names its stable entry
-// id, so hydration never depends on adjacency.
-export const EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE = "core:extension_input_presentation";
-
-export interface ExtensionInputPresentationEntryData {
-	readonly messageEntryId: string;
-	readonly extensionId: string;
-	readonly presentation: ExtensionInputPresentation;
 }
 
 /**
@@ -471,13 +459,6 @@ export class SessionManager {
 
 	async appendExtensionMessageEntry(agentId: AgentId, data: ExtensionMessageEntryData): Promise<string> {
 		return await this._requireAgentSession(agentId).appendCustomEntry(EXTENSION_MESSAGE_CUSTOM_TYPE, data);
-	}
-
-	async appendExtensionInputPresentationEntry(
-		agentId: AgentId,
-		data: ExtensionInputPresentationEntryData,
-	): Promise<string> {
-		return await this._requireAgentSession(agentId).appendCustomEntry(EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE, data);
 	}
 
 	/**

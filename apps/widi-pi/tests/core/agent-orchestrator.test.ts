@@ -35,6 +35,7 @@ import {
 	defaultModel,
 	defaultProfile,
 	harnessEventDriver,
+	humanSink,
 	MemoryExecutionEnv,
 	reasoningModel,
 	requireAgentHarness,
@@ -711,8 +712,8 @@ describe("AgentOrchestrator", () => {
 		const handleHarnessEvent = harnessEventDriver(orchestrator);
 		await handleHarnessEvent(agentId, { type: "turn_start" });
 
-		await orchestrator.steerAgent(agentId, "keep going");
-		await orchestrator.followUpAgent(agentId, "summarize next");
+		await humanSink(orchestrator).send({ targetAgentId: agentId, body: "keep going", mode: "interrupt" });
+		await humanSink(orchestrator).send({ targetAgentId: agentId, body: "summarize next", mode: "next_turn" });
 		expect(orchestrator.getAgentActivity(agentId).activity).toBe("running");
 
 		expect(events).toContainEqual(
@@ -923,7 +924,9 @@ describe("AgentOrchestrator", () => {
 			},
 		});
 
-		await expect(orchestrator.promptAgent(agentId, "share the secret")).resolves.toEqual({
+		await expect(
+			humanSink(orchestrator).prompt({ targetAgentId: agentId, body: "share the secret", mode: "next_turn" }),
+		).resolves.toEqual({
 			kind: "blocked",
 			inputId: expect.any(String),
 			reason: "Sensitive input.",
@@ -972,7 +975,9 @@ describe("AgentOrchestrator", () => {
 			},
 		});
 
-		await expect(orchestrator.promptAgent(agentId, "hello")).resolves.toMatchObject({ kind: "completed" });
+		await expect(
+			humanSink(orchestrator).prompt({ targetAgentId: agentId, body: "hello", mode: "next_turn" }),
+		).resolves.toMatchObject({ kind: "completed" });
 		expect(prompted).toEqual(["hello!"]);
 		expect(events).toContainEqual(
 			expect.objectContaining({
@@ -993,7 +998,9 @@ describe("AgentOrchestrator", () => {
 		]);
 
 		// Blocked input never reaches the session: no entry is written.
-		await expect(orchestrator.promptAgent(agentId, "share the secret")).resolves.toMatchObject({ kind: "blocked" });
+		await expect(
+			humanSink(orchestrator).prompt({ targetAgentId: agentId, body: "share the secret", mode: "next_turn" }),
+		).resolves.toMatchObject({ kind: "blocked" });
 		await expect(findTransformEntries()).resolves.toHaveLength(1);
 	});
 
@@ -1021,7 +1028,9 @@ describe("AgentOrchestrator", () => {
 			},
 		});
 
-		await expect(orchestrator.promptAgent(agentId, "hello")).rejects.toThrow("provider exploded");
+		await expect(
+			humanSink(orchestrator).prompt({ targetAgentId: agentId, body: "hello", mode: "next_turn" }),
+		).rejects.toThrow("provider exploded");
 
 		const branch = (await orchestrator.getAgentSession(agentId)).pathToRoot;
 		const transformIndex = branch.findIndex(
@@ -1055,7 +1064,9 @@ describe("AgentOrchestrator", () => {
 		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		(requireAgentHarness(orchestrator, agentId) as unknown as { phase: "turn" }).phase = "turn";
 
-		await expect(orchestrator.promptAgent(agentId, "hello")).rejects.toMatchObject({ code: "orchestrator.agent_busy" });
+		await expect(
+			humanSink(orchestrator).prompt({ targetAgentId: agentId, body: "hello", mode: "next_turn" }),
+		).rejects.toMatchObject({ code: "orchestrator.agent_busy" });
 
 		expect(interceptorCalls).toBe(0);
 		expect(events.filter((event) => event.type === "input_transformed")).toEqual([]);
@@ -1090,10 +1101,9 @@ describe("AgentOrchestrator", () => {
 		});
 		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
-		await expect(orchestrator.promptAgent(agentId, "hello")).resolves.toMatchObject({
-			kind: "blocked",
-			blockedBy: "broken",
-		});
+		await expect(
+			humanSink(orchestrator).prompt({ targetAgentId: agentId, body: "hello", mode: "next_turn" }),
+		).resolves.toMatchObject({ kind: "blocked", blockedBy: "broken" });
 		expect(healthyCalled).toBe(false);
 		expect(events).toContainEqual(
 			expect.objectContaining({

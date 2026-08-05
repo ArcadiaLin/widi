@@ -21,6 +21,7 @@ import { AuthStorage } from "../../src/core/auth-storage.ts";
 import type { BackgroundJobHost } from "../../src/core/background/index.ts";
 import type { AgentContextMonitor } from "../../src/core/context-monitor.ts";
 import type { OrchestratorDiagnostic } from "../../src/core/diagnostics.ts";
+import { type MessageSink, messageBindingFor } from "../../src/core/message.ts";
 import { ModelRegistry } from "../../src/core/model-registry.ts";
 import { createCorePersistenceRegistry } from "../../src/core/persistence-registry.ts";
 import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
@@ -197,6 +198,16 @@ export class MemoryExecutionEnv implements ExecutionEnv {
 	async cleanup(): Promise<void> {
 		this.cleanupCalls += 1;
 	}
+}
+
+/** The sink the shell holds on the human's behalf. */
+export function humanSink(orchestrator: AgentOrchestrator): MessageSink {
+	return orchestrator.messageSinkFor(messageBindingFor({ kind: "human" }));
+}
+
+/** The sink a peer agent holds, with its identity already bound in. */
+export function agentSink(orchestrator: AgentOrchestrator, senderAgentId: string): MessageSink {
+	return orchestrator.messageSinkFor(messageBindingFor({ kind: "agent", senderAgentId }));
 }
 
 export const defaultProfile: AgentProfile = {

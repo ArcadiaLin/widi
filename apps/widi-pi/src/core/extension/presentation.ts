@@ -1,4 +1,3 @@
-import { type JsonValue, normalizeJsonValue } from "../../utils/json.ts";
 import { utf8ByteLength } from "../../utils/text.ts";
 import type { DiagnosticSeverity } from "../diagnostics.ts";
 
@@ -102,27 +101,6 @@ export type ExtensionMessage =
 	| ExtensionFieldsMessage
 	| ExtensionDiffMessage
 	| ExtensionBannerMessage;
-
-export const MAX_EXTENSION_PRESENTATION_TYPE_BYTES = 128;
-export const MAX_EXTENSION_PRESENTATION_DETAILS_BYTES = 65_536;
-
-/**
- * How a client should render a message an extension sent into an agent.
- *
- * The message itself stays ordinary model context - this rides alongside it as
- * a separate record, the same dual-record discipline as the input transform
- * entry. Core never interprets `details`; it validates that the value
- * is JSON-serializable and bounded, then keeps a normalized detached copy.
- *
- * `customType` is not namespaced in the string: the persisted entry and the
- * published event both carry `extensionId` next to it, so two extensions may
- * use the same local type without colliding and a renderer keys on the pair.
- */
-export interface ExtensionInputPresentation {
-	readonly customType: string;
-	readonly title?: string;
-	readonly details?: JsonValue;
-}
 
 export const EXTENSION_DIAGNOSTIC_SEVERITIES = ["warning", "error"] as const satisfies readonly DiagnosticSeverity[];
 
@@ -428,50 +406,6 @@ function deepFreeze(value: unknown): void {
 	}
 	for (const child of Object.values(value)) deepFreeze(child);
 	Object.freeze(value);
-}
-
-const EXTENSION_PRESENTATION_TYPE_PATTERN = /^[a-zA-Z0-9._:-]+$/;
-
-export function validateExtensionInputPresentation(
-	presentation: ExtensionInputPresentation,
-): ExtensionInputPresentation {
-	if (typeof presentation !== "object" || presentation === null) {
-		throw new TypeError("Extension input presentation must be an object.");
-	}
-	const customType = presentation.customType;
-	if (typeof customType !== "string" || !EXTENSION_PRESENTATION_TYPE_PATTERN.test(customType)) {
-		throw new TypeError(
-			"Extension input presentation customType must contain only letters, numbers, '.', '_', ':', and '-'.",
-		);
-	}
-	if (utf8ByteLength(customType) > MAX_EXTENSION_PRESENTATION_TYPE_BYTES) {
-		throw new RangeError(
-			`Extension input presentation customType exceeds ${MAX_EXTENSION_PRESENTATION_TYPE_BYTES} UTF-8 bytes.`,
-		);
-	}
-	const result: { customType: string; title?: string; details?: JsonValue } = { customType };
-	if (presentation.title !== undefined) {
-		assertBoundedNonBlankText(
-			presentation.title,
-			"Extension input presentation title",
-			MAX_EXTENSION_MESSAGE_TITLE_BYTES,
-		);
-		result.title = presentation.title;
-	}
-	if (presentation.details !== undefined) {
-		// Core stores and republishes details without reading them, so the only
-		// contract it can enforce is that the value survives the session file.
-		result.details = normalizeJsonValue(
-			presentation.details,
-			"Extension input presentation details",
-			MAX_EXTENSION_PRESENTATION_DETAILS_BYTES,
-		);
-	}
-	return result;
-}
-
-export function cloneExtensionInputPresentation(presentation: ExtensionInputPresentation): ExtensionInputPresentation {
-	return structuredClone(presentation);
 }
 
 const EXTENSION_DIAGNOSTIC_CODE_PATTERN = /^[a-zA-Z0-9_.-]+$/;

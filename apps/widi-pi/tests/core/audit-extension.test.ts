@@ -9,7 +9,6 @@ import {
 import type { OrchestratorDiagnostic } from "../../src/core/diagnostics.ts";
 import type { ExtensionCustomEntry, ExtensionFactory } from "../../src/core/extension/index.ts";
 import {
-	EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE,
 	EXTENSION_MESSAGE_CUSTOM_TYPE,
 	INPUT_TRANSFORM_CUSTOM_TYPE,
 	toExtensionCustomType,
@@ -28,6 +27,7 @@ import {
 import {
 	createOrchestrator,
 	harnessEventDriver,
+	humanSink,
 	MemoryExecutionEnv,
 	recordExtensionDiagnostics,
 	requireAgentHarness,
@@ -134,11 +134,7 @@ describe("audit extension consumer", () => {
 	// are asserted here rather than in a test of their own.
 	it("does not report an extension-authored session write back to its observers", async () => {
 		const { orchestrator, agentId } = await createAuditHarness({ recordHarnessEvents: ["session_write"] });
-		const suppressed = [
-			toExtensionCustomType("audit", AUDIT_EVENT_ENTRY_TYPE),
-			EXTENSION_MESSAGE_CUSTOM_TYPE,
-			EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE,
-		];
+		const suppressed = [toExtensionCustomType("audit", AUDIT_EVENT_ENTRY_TYPE), EXTENSION_MESSAGE_CUSTOM_TYPE];
 
 		await emitHarnessEvent(orchestrator, agentId, {
 			type: "session_write",
@@ -346,8 +342,12 @@ describe("audit extension consumer", () => {
 		});
 		Object.assign(requireAgentHarness(orchestrator, agentId), { prompt: async () => ({ role: "assistant" }) });
 
-		await expect(orchestrator.promptAgent(agentId, "status report")).resolves.toMatchObject({ kind: "completed" });
-		await expect(orchestrator.promptAgent(agentId, "share the secret")).resolves.toEqual({
+		await expect(
+			humanSink(orchestrator).prompt({ targetAgentId: agentId, body: "status report", mode: "next_turn" }),
+		).resolves.toMatchObject({ kind: "completed" });
+		await expect(
+			humanSink(orchestrator).prompt({ targetAgentId: agentId, body: "share the secret", mode: "next_turn" }),
+		).resolves.toEqual({
 			kind: "blocked",
 			inputId: expect.any(String),
 			reason: "Sensitive input.",
@@ -383,15 +383,13 @@ describe("audit extension consumer", () => {
 		);
 
 		// First input fails closed on the broken extension before audit runs.
-		await expect(orchestrator.promptAgent(agentId, "status report")).resolves.toMatchObject({
-			kind: "blocked",
-			blockedBy: "broken",
-		});
+		await expect(
+			humanSink(orchestrator).prompt({ targetAgentId: agentId, body: "status report", mode: "next_turn" }),
+		).resolves.toMatchObject({ kind: "blocked", blockedBy: "broken" });
 		// The next input reaches the audit policy, which still enforces.
-		await expect(orchestrator.promptAgent(agentId, "share the secret")).resolves.toMatchObject({
-			kind: "blocked",
-			blockedBy: "audit",
-		});
+		await expect(
+			humanSink(orchestrator).prompt({ targetAgentId: agentId, body: "share the secret", mode: "next_turn" }),
+		).resolves.toMatchObject({ kind: "blocked", blockedBy: "audit" });
 
 		await expect(
 			readAuditEntries<AuditInputVerdictEntry>(orchestrator, agentId, AUDIT_INPUT_VERDICT_ENTRY_TYPE),

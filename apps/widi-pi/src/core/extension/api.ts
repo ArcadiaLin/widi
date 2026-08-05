@@ -52,7 +52,6 @@ export type {
 	ExtensionDiagnosticDraft,
 	ExtensionDiffMessage,
 	ExtensionFieldsMessage,
-	ExtensionInputPresentation,
 	ExtensionMessage,
 	ExtensionMessageField,
 	ExtensionMessageKind,

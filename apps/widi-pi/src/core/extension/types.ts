@@ -18,7 +18,7 @@ import type { JsonValue } from "../../utils/json.ts";
 import type { AgentProfileReference } from "../agent-profile.js";
 import type { BackgroundJobSnapshot } from "../background/index.ts";
 import type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
-import type { MessageSource } from "../message.ts";
+import type { MessageSink, MessageSource } from "../message.ts";
 import type { ProviderConfigInput } from "../model-registry.ts";
 import type { ToolDefinition, ToolDefinitionPatch } from "../tools/types.ts";
 import type {
@@ -30,12 +30,7 @@ import type {
 	RuntimeModel,
 } from "../types.ts";
 import type { ExtensionEventEnvelope } from "./events.ts";
-import type {
-	ExtensionDiagnosticDraft,
-	ExtensionInputPresentation,
-	ExtensionMessage,
-	ExtensionStatus,
-} from "./presentation.ts";
+import type { ExtensionDiagnosticDraft, ExtensionMessage, ExtensionStatus } from "./presentation.ts";
 
 // The tool contract lives in the core tools layer (ME slice 0 dependency
 // inversion); the extension layer consumes and re-exports it for its own
@@ -256,7 +251,6 @@ export type ExtensionCompactionResult = CompactResult;
 
 export interface ExtensionSendOptions {
 	images?: ImageContent[];
-	presentation?: ExtensionInputPresentation;
 }
 
 /**
@@ -317,11 +311,10 @@ export interface ExtensionActions {
 	// extension.<extensionId>.<code>. Reported diagnostics never feed back
 	// into extension observers.
 	reportDiagnostic(draft: ExtensionDiagnosticDraft): Promise<void>;
-	// The three message-injection paths. `presentation` is optional on all of
-	// them: the text still reaches the model verbatim, and the presentation is
-	// persisted as a core:extension_input_presentation entry that explicitly
-	// references the user-message entry. Core never interprets
-	// `presentation.details`.
+	// The three message-injection paths. All three go through the one core
+	// message pipeline, so the text meets the same interception as any other
+	// producer's and lands with the same record of who wrote it. `prompt`
+	// refuses a busy agent instead of queueing; the other two always queue.
 	prompt(text: string, options?: ExtensionSendOptions): Promise<void>;
 	steer(text: string, options?: ExtensionSendOptions): Promise<void>;
 	followUp(text: string, options?: ExtensionSendOptions): Promise<void>;
@@ -401,9 +394,13 @@ export interface ExtensionCoreActions {
 	clearStatus(agentId: string, extensionId: string, key: string): Promise<void>;
 	publishMessage(agentId: string, extensionId: string, message: ExtensionMessage): Promise<{ entryId?: string }>;
 	reportDiagnostic(agentId: string, extensionId: string, draft: ExtensionDiagnosticDraft): Promise<void>;
-	promptAgent(agentId: string, extensionId: string, text: string, options?: ExtensionSendOptions): Promise<void>;
-	steerAgent(agentId: string, extensionId: string, text: string, options?: ExtensionSendOptions): Promise<void>;
-	followUpAgent(agentId: string, extensionId: string, text: string, options?: ExtensionSendOptions): Promise<void>;
+	/**
+	 * The message entry point, bound to one extension's identity and delivery
+	 * policy. The same shape the background runtime holds: what differs between
+	 * producers is the binding, not the path. The target agent rides on the
+	 * request rather than on this call, so one sink serves every target.
+	 */
+	messageSinkFor(extensionId: string): MessageSink;
 	getAgentContextUsage(agentId: string): AgentContextUsage | undefined;
 	isProjectTrusted(): boolean;
 	getAgentSystemPrompt(agentId: string): Promise<string>;

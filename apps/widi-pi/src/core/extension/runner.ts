@@ -10,6 +10,7 @@ import type {
 } from "@widi/agent-core";
 import { formatError } from "../../utils/errors.ts";
 import type { CoreDiagnostic } from "../diagnostics.ts";
+import type { MessageDeliveryMode, MessageRequest } from "../message.ts";
 import type { ToolRegistry } from "../tool-registry.ts";
 import type { ExtensionEventEnvelope } from "./events.ts";
 import type {
@@ -34,6 +35,7 @@ import type {
 	ExtensionInterceptorResultFor,
 	ExtensionObservedEvent,
 	ExtensionObserver,
+	ExtensionSendOptions,
 	ExtensionSessionContext,
 } from "./types.ts";
 
@@ -671,17 +673,17 @@ export class ExtensionRunner {
 			},
 			prompt: async (text, options) => {
 				await this._runReportedAction(failure("prompt"), async () => {
-					await this._actions.promptAgent(agentId, extensionId, text, options);
+					await this._actions.messageSinkFor(extensionId).prompt(toMessageRequest(agentId, text, "next_turn", options));
 				});
 			},
 			steer: async (text, options) => {
 				await this._runReportedAction(failure("steer"), async () => {
-					await this._actions.steerAgent(agentId, extensionId, text, options);
+					await this._actions.messageSinkFor(extensionId).send(toMessageRequest(agentId, text, "interrupt", options));
 				});
 			},
 			followUp: async (text, options) => {
 				await this._runReportedAction(failure("followUp"), async () => {
-					await this._actions.followUpAgent(agentId, extensionId, text, options);
+					await this._actions.messageSinkFor(extensionId).send(toMessageRequest(agentId, text, "next_turn", options));
 				});
 			},
 			getContextUsage: () => {
@@ -958,6 +960,25 @@ function diffRecord<T>(
 	return Object.keys(patch).length > 0 ? patch : undefined;
 }
 
+/**
+ * The extension half of a message request. The source and the delivery policy
+ * are not here: they belong to the sink, which the orchestrator bound to this
+ * extension before handing it over.
+ */
+function toMessageRequest(
+	agentId: string,
+	text: string,
+	mode: MessageDeliveryMode,
+	options: ExtensionSendOptions | undefined,
+): MessageRequest {
+	return {
+		targetAgentId: agentId,
+		body: text,
+		...(options?.images === undefined ? undefined : { images: options.images }),
+		mode,
+	};
+}
+
 function createUnboundActions(): ExtensionCoreActions {
 	const notBound = () => {
 		throw new Error("Extension runner core actions are not bound.");
@@ -976,9 +997,7 @@ function createUnboundActions(): ExtensionCoreActions {
 		clearStatus: async () => notBound(),
 		publishMessage: async () => notBound(),
 		reportDiagnostic: async () => notBound(),
-		promptAgent: async () => notBound(),
-		steerAgent: async () => notBound(),
-		followUpAgent: async () => notBound(),
+		messageSinkFor: () => notBound(),
 		getAgentContextUsage: () => notBound(),
 		isProjectTrusted: () => notBound(),
 		getAgentSystemPrompt: async () => notBound(),

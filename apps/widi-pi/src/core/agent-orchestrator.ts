@@ -77,12 +77,7 @@ import { type OrchestratorDiagnostic, OrchestratorError } from "./diagnostics.ts
 import type { EventPublishOptions } from "./event-bus.ts";
 import { OrchestratorEventBus } from "./event-bus.ts";
 import type { ExtensionEventEnvelope } from "./extension/events.ts";
-import type {
-	ExtensionContextActions,
-	ExtensionCoreActions,
-	ExtensionIdentity,
-	ExtensionSendOptions,
-} from "./extension/index.ts";
+import type { ExtensionContextActions, ExtensionCoreActions, ExtensionIdentity } from "./extension/index.ts";
 import {
 	EXTENSION_OBSERVED_EVENT_NAMES,
 	ExtensionLoader,
@@ -96,11 +91,8 @@ import {
 	assertExtensionNotificationText,
 	assertExtensionOutputText,
 	assertExtensionStatusKey,
-	cloneExtensionInputPresentation,
-	type ExtensionInputPresentation,
 	type ExtensionStatusSnapshot,
 	validateExtensionDiagnosticDraft,
-	validateExtensionInputPresentation,
 	validateExtensionMessage,
 	validateExtensionStatus,
 } from "./extension/presentation.ts";
@@ -128,8 +120,6 @@ import { HumanRequestBroker } from "./human-request.ts";
 import { stripImagesFromMessages } from "./image-policy.ts";
 import {
 	assertMessageBody,
-	type MessageDeliveryMethod,
-	type MessageDeliveryMode,
 	type MessageDeliveryPhase,
 	MessageDeliveryQueue,
 	type MessageDeliveryReceipt,
@@ -177,9 +167,7 @@ import type {
 	SessionManager,
 } from "./session-manager.ts";
 import {
-	EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE,
 	EXTENSION_MESSAGE_CUSTOM_TYPE,
-	type ExtensionInputPresentationEntryData,
 	type ExtensionMessageEntryData,
 	INPUT_TRANSFORM_CUSTOM_TYPE,
 	type InputTransformEntryData,
@@ -364,23 +352,6 @@ type AgentIdleState =
 	| { readonly kind: "busy" }
 	| { readonly kind: "gone"; readonly message: string };
 
-interface ExtensionInputPresentationRecord {
-	readonly extensionId: string;
-	readonly presentation: ExtensionInputPresentation;
-}
-
-/**
- * An input presentation waiting to be paired with its user message on the
- * harness `session_write` event.
- *
- * `method` is recorded because an abort clears the steer and follow-up queues
- * wholesale - everything delivered that way will never be written - while a
- * `prompt` delivery has already committed its user message.
- */
-interface PendingExtensionInputPresentation extends ExtensionInputPresentationRecord {
-	method?: MessageDeliveryMethod;
-}
-
 /**
  * A message accepted into the target's delivery queue, or one an extension
  * ended before it got there. There is no third case for "written but
@@ -395,7 +366,6 @@ interface RouteMessageOptions {
 	readonly requiresIdle: boolean;
 	/** The enqueuing caller awaits `receipt.completed` itself. */
 	readonly awaited: boolean;
-	readonly presentation?: ExtensionInputPresentationRecord;
 }
 
 interface ResolvedAgentProfile {
@@ -519,12 +489,6 @@ export class AgentOrchestrator {
 	private _nextPresentationId = 1;
 
 	// -- Extension data plane ------------------------------------------------
-
-	/**
-	 * Presentations delivered but not yet paired with a user message, in delivery
-	 * order per target. Pairing pops the head on `session_write`.
-	 */
-	private readonly _pendingExtensionInputPresentations = new Map<AgentId, PendingExtensionInputPresentation[]>();
 
 	/** Per-agent, per-generation extension load results. */
 	private readonly _extensionStatuses = new ExtensionStatusRegistry();
@@ -1750,7 +1714,6 @@ export class AgentOrchestrator {
 		this._agentRunSignals.delete(agentId);
 		this._autoCompactingAgents.delete(agentId);
 		this._publishedAgentActivities.delete(agentId);
-		this._pendingExtensionInputPresentations.delete(agentId);
 
 		if (liveAgent) {
 			// Before anything is torn down. The cutover cancelled every job this
@@ -1887,15 +1850,10 @@ export class AgentOrchestrator {
 	}
 
 	/** The unified entry point. Resolves the request against its sink's binding. */
-	async sendMessage(
-		request: MessageRequest,
-		binding: MessageSinkBinding,
-		options?: { readonly presentation?: ExtensionInputPresentationRecord },
-	): Promise<MessageSendOutcome> {
+	async sendMessage(request: MessageRequest, binding: MessageSinkBinding): Promise<MessageSendOutcome> {
 		const accepted = await this._routeMessage(toMessageDraft(request, binding), {
 			requiresIdle: false,
 			awaited: false,
-			...(options?.presentation === undefined ? undefined : { presentation: options.presentation }),
 		});
 		return accepted.kind === "blocked" ? accepted : { kind: "accepted" };
 	}
@@ -1906,16 +1864,8 @@ export class AgentOrchestrator {
 	 * than queueing, which is the wrong answer for a holder that just wants its
 	 * text read eventually.
 	 */
-	async promptAgent(
-		request: MessageRequest,
-		binding: MessageSinkBinding,
-		options?: { readonly presentation?: ExtensionInputPresentationRecord },
-	): Promise<PromptOutcome> {
-		const accepted = await this._routeMessage(toMessageDraft(request, binding), {
-			requiresIdle: true,
-			awaited: true,
-			...(options?.presentation === undefined ? undefined : { presentation: options.presentation }),
-		});
+	async promptAgent(request: MessageRequest, binding: MessageSinkBinding): Promise<PromptOutcome> {
+		const accepted = await this._routeMessage(toMessageDraft(request, binding), { requiresIdle: true, awaited: true });
 		if (accepted.kind === "blocked") return accepted;
 		const completed = accepted.receipt.completed;
 		if (!completed) {
@@ -1993,12 +1943,6 @@ export class AgentOrchestrator {
 			});
 		}
 
-		const pending: PendingExtensionInputPresentation | undefined = options.presentation
-			? {
-					extensionId: options.presentation.extensionId,
-					presentation: validateExtensionInputPresentation(options.presentation.presentation),
-				}
-			: undefined;
 		const { policy } = draft.binding;
 		// The one place the model-facing text is decided. A holder's own renderer
 		// runs here and only here: the queue re-attempts delivery across phase
@@ -2044,16 +1988,6 @@ export class AgentOrchestrator {
 						},
 					}
 				: undefined),
-			...(pending === undefined
-				? undefined
-				: {
-						onDeliveryStart: (method: MessageDeliveryMethod) => {
-							this._beginExtensionInputPresentationDelivery(agentId, pending, method);
-						},
-						onDeliveryFailure: () => {
-							this._discardPendingExtensionInputPresentation(agentId, pending);
-						},
-					}),
 		});
 		return { kind: "accepted", receipt };
 	}
@@ -2424,8 +2358,6 @@ export class AgentOrchestrator {
 			const promptRun = this._agentPromptRuns.get(agentId);
 			if (promptRun) promptRun.idleReason = "aborted";
 			else this._agentIdleReasons.set(agentId, "aborted");
-			// Everything the abort cleared is text the harness will never write.
-			this._discardQueuedExtensionInputPresentations(agentId);
 		}
 		// An empty steering queue is the only honest evidence that the human's
 		// interrupt was read; an abort clears the queue through the same event.
@@ -2467,146 +2399,23 @@ export class AgentOrchestrator {
 		});
 	}
 
-	// -----------------------------------------------------------------------
-	// Extension input presentations
-	//
-	// A presentation is delivered before the message it describes exists as a
-	// session entry, so it waits in a per-target queue and is paired on the
-	// harness `session_write` event.
-	// -----------------------------------------------------------------------
-
-	private _beginExtensionInputPresentationDelivery(
-		agentId: AgentId,
-		pending: PendingExtensionInputPresentation,
-		method: MessageDeliveryMethod,
-	): void {
-		// A requeued delivery re-enters here; move it to the tail rather than leave
-		// a duplicate that would pair with someone else's message.
-		this._discardPendingExtensionInputPresentation(agentId, pending);
-		pending.method = method;
-		const presentations = this._pendingExtensionInputPresentations.get(agentId) ?? [];
-		presentations.push(pending);
-		this._pendingExtensionInputPresentations.set(agentId, presentations);
-	}
-
 	/**
-	 * Pop the presentation belonging to the user message just persisted. Delivery
-	 * order is the pairing rule and the queue serializes per target, so the head
-	 * is the presentation of the oldest delivery still awaiting a write.
-	 */
-	private _takePendingExtensionInputPresentation(agentId: AgentId): PendingExtensionInputPresentation | undefined {
-		const presentations = this._pendingExtensionInputPresentations.get(agentId);
-		if (!presentations || presentations.length === 0) return undefined;
-		const pending = presentations.shift();
-		if (presentations.length === 0) {
-			this._pendingExtensionInputPresentations.delete(agentId);
-		}
-		return pending;
-	}
-
-	private _discardPendingExtensionInputPresentation(
-		agentId: AgentId,
-		pending: PendingExtensionInputPresentation,
-	): void {
-		const presentations = this._pendingExtensionInputPresentations.get(agentId);
-		if (!presentations) return;
-		const index = presentations.indexOf(pending);
-		if (index >= 0) presentations.splice(index, 1);
-		if (presentations.length === 0) {
-			this._pendingExtensionInputPresentations.delete(agentId);
-		}
-	}
-
-	/**
-	 * The steer and follow-up queues are emptied wholesale, so nothing delivered
-	 * that way will ever be written. A `prompt` delivery is left alone: its user
-	 * message was persisted at run start and an abort does not take it back.
-	 */
-	private _discardQueuedExtensionInputPresentations(agentId: AgentId): void {
-		const presentations = this._pendingExtensionInputPresentations.get(agentId);
-		if (!presentations) return;
-		const remaining = presentations.filter((pending) => pending.method === "prompt");
-		if (remaining.length === 0) {
-			this._pendingExtensionInputPresentations.delete(agentId);
-		} else {
-			this._pendingExtensionInputPresentations.set(agentId, remaining);
-		}
-	}
-
-	/**
-	 * Three facts arrive through this one event: a persisted user message pairs
-	 * with the presentation waiting for it, and the presentation entry and the
-	 * persistence ref written into the branch come back with the ids their own
-	 * events need. Nothing depends on `appendCustomEntry`'s return value, which is
-	 * undefined whenever the write was buffered behind a running turn.
+	 * Republish the writes whose own events need the entry id the harness only
+	 * knows once the write lands. Nothing depends on `appendCustomEntry`'s return
+	 * value, which is undefined whenever the write was buffered behind a running
+	 * turn.
 	 */
 	private async _observeSessionWrite(agentId: AgentId, entryId: string, write: PendingSessionWrite): Promise<void> {
-		if (write.type === "message" && write.message.role === "user") {
-			const pending = this._takePendingExtensionInputPresentation(agentId);
-			if (pending) {
-				await this._commitExtensionInputPresentation(agentId, entryId, pending);
-			}
-			return;
-		}
-		if (write.type !== "custom") return;
-		if (write.customType === PERSISTENCE_REF_CUSTOM_TYPE) {
-			const ref = write.data as PersistenceRefData;
-			await this._emit({
-				type: "agent_persistence_ref_changed",
-				agentId,
-				namespace: ref.namespace,
-				stateRoot: ref.stateRoot,
-				entryId,
-				changedAt: now(),
-			});
-			return;
-		}
-		if (write.customType !== EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE) return;
-		const data = write.data as ExtensionInputPresentationEntryData;
-		await this._emit(
-			{
-				type: "extension_input_presented",
-				presentationId: this._createPresentationId(),
-				entryId,
-				messageEntryId: data.messageEntryId,
-				agentId,
-				extensionId: data.extensionId,
-				presentation: cloneExtensionInputPresentation(data.presentation),
-				createdAt: now(),
-			},
-			{ observeExtensions: false },
-		);
-	}
-
-	/**
-	 * Persist how to render a message an extension sent in.
-	 *
-	 * **Session write.** `harness.appendCustomEntry`; the branch is where this
-	 * belongs because it names its user message by entry id, so a client hydrating
-	 * the session later renders it exactly as the live client did. It never
-	 * becomes model context. The event is published from the write's own
-	 * `session_write`, not here.
-	 */
-	private async _commitExtensionInputPresentation(
-		agentId: AgentId,
-		messageEntryId: string,
-		pending: PendingExtensionInputPresentation,
-	): Promise<void> {
-		const liveAgent = this._live.get(agentId);
-		if (!liveAgent) return;
-		try {
-			await liveAgent.harness.appendCustomEntry(EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE, {
-				messageEntryId,
-				extensionId: pending.extensionId,
-				presentation: pending.presentation,
-			} satisfies ExtensionInputPresentationEntryData);
-		} catch (error) {
-			await this._recordAgentLifecycleFailure(
-				agentId,
-				"orchestrator.extension_input_presentation_failed",
-				`Failed to persist extension input presentation for agent ${agentId}: ${formatError(error)}`,
-			);
-		}
+		if (write.type !== "custom" || write.customType !== PERSISTENCE_REF_CUSTOM_TYPE) return;
+		const ref = write.data as PersistenceRefData;
+		await this._emit({
+			type: "agent_persistence_ref_changed",
+			agentId,
+			namespace: ref.namespace,
+			stateRoot: ref.stateRoot,
+			entryId,
+			changedAt: now(),
+		});
 	}
 
 	// -----------------------------------------------------------------------
@@ -3407,32 +3216,10 @@ export class AgentOrchestrator {
 				);
 				return entryId === undefined ? {} : { entryId };
 			},
-			// All three go through the one message path, so an extension's text meets
-			// the same interception as anything else and lands with the same record
-			// of who wrote it. The presentation rides that pipeline too, where a
-			// block returns before any session write: none is recorded for a message
-			// an interceptor refused.
-			promptAgent: async (agentId, extensionId, text, options) => {
-				await this.promptAgent(
-					toExtensionMessageRequest(agentId, text, "next_turn", options),
-					messageBindingFor({ kind: "extension", extensionId }),
-					toExtensionPresentationOptions(extensionId, options),
-				);
-			},
-			steerAgent: async (agentId, extensionId, text, options) => {
-				await this.sendMessage(
-					toExtensionMessageRequest(agentId, text, "interrupt", options),
-					messageBindingFor({ kind: "extension", extensionId }),
-					toExtensionPresentationOptions(extensionId, options),
-				);
-			},
-			followUpAgent: async (agentId, extensionId, text, options) => {
-				await this.sendMessage(
-					toExtensionMessageRequest(agentId, text, "next_turn", options),
-					messageBindingFor({ kind: "extension", extensionId }),
-					toExtensionPresentationOptions(extensionId, options),
-				);
-			},
+			// The same sink every other producer holds, with this extension's
+			// identity and policy already bound into it. Nothing about an
+			// extension's input is special enough to need its own path.
+			messageSinkFor: (extensionId) => this.messageSinkFor(messageBindingFor({ kind: "extension", extensionId })),
 			getAgentContextUsage: (agentId) => this._context.get(agentId),
 			isProjectTrusted: () => this.settingManager.isProjectTrusted(),
 			getAgentSystemPrompt: async (agentId) => await this.getAgentSystemPrompt(agentId),
@@ -4458,10 +4245,7 @@ function isExtensionCausedWrite(event: AgentHarnessEvent): boolean {
 }
 
 /** Core-owned entry types the orchestrator writes only on an extension's behalf. */
-const EXTENSION_CAUSED_CORE_CUSTOM_TYPES: ReadonlySet<string> = new Set([
-	EXTENSION_MESSAGE_CUSTOM_TYPE,
-	EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE,
-]);
+const EXTENSION_CAUSED_CORE_CUSTOM_TYPES: ReadonlySet<string> = new Set([EXTENSION_MESSAGE_CUSTOM_TYPE]);
 
 /** Maintenance phases the harness reports, in the vocabulary surfaces use. */
 function toMaintenanceKind(phase: AgentHarnessPhase): AgentMaintenanceKind | undefined {
@@ -4697,30 +4481,6 @@ function isBackgroundJobStartedDetails(details: unknown): details is BackgroundJ
  */
 function toMessageDraft(request: MessageRequest, binding: MessageSinkBinding): MessageDraft {
 	return { ...request, source: request.source ?? binding.source, binding };
-}
-
-/** The shared half of the three extension input actions. */
-function toExtensionMessageRequest(
-	agentId: AgentId,
-	text: string,
-	mode: MessageDeliveryMode,
-	options: ExtensionSendOptions | undefined,
-): MessageRequest {
-	return {
-		targetAgentId: agentId,
-		body: text,
-		...(options?.images === undefined ? undefined : { images: options.images }),
-		mode,
-	};
-}
-
-function toExtensionPresentationOptions(
-	extensionId: string,
-	options: ExtensionSendOptions | undefined,
-): { readonly presentation?: ExtensionInputPresentationRecord } {
-	return options?.presentation === undefined
-		? {}
-		: { presentation: { extensionId, presentation: options.presentation } };
 }
 
 function toOrphanedJobHandleText(handle: BackgroundJobStartedDetails): string {

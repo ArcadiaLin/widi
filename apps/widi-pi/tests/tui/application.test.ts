@@ -27,7 +27,7 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		await submit(harness.application, "hello");
 
 		expect(harness.spawnAgent).toHaveBeenCalledTimes(1);
-		expect(harness.promptAgent).toHaveBeenCalledWith("main", "hello");
+		expect(harness.promptAgent).toHaveBeenCalledWith(expect.objectContaining({ targetAgentId: "main", body: "hello" }));
 	});
 
 	it("spawns and persists a setting command before the first prompt", async () => {
@@ -99,7 +99,9 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 
 		expect(harness.spawnAgent).toHaveBeenCalledOnce();
 		expect(harness.spawnAgent).toHaveBeenCalledWith({ profileId: "main", model: model() });
-		expect(harness.promptAgent).toHaveBeenCalledWith("main-2", "second");
+		expect(harness.promptAgent).toHaveBeenCalledWith(
+			expect.objectContaining({ targetAgentId: "main-2", body: "second" }),
+		);
 	});
 
 	it("closes the current agent on /clear too", async () => {
@@ -427,6 +429,8 @@ async function createApplicationHarness() {
 		spawnAgent,
 		promptAgent,
 		sendMessage,
+		// The shell holds one sink; every submit path goes through it.
+		messageSinkFor: () => ({ send: sendMessage, prompt: promptAgent }),
 		setAgentModelByReference,
 		setAgentThinkingLevelByName,
 		setAgentSessionName,

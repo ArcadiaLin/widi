@@ -9,6 +9,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentHarnessEvent } from "@widi/agent-core";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
+import { messageBindingFor } from "../../src/core/message.ts";
 import type { OrchestratorEvent } from "../../src/core/types.ts";
 import {
 	createOrchestrator,
@@ -88,12 +89,9 @@ function createDeferred<T>(): Deferred<T> {
 async function startPromptRun(orchestrator: AgentOrchestrator, agentId: string): Promise<Deferred<AssistantMessage>> {
 	const run = createDeferred<AssistantMessage>();
 	const prompt = vi.spyOn(requireAgentHarness(orchestrator, agentId), "prompt").mockReturnValue(run.promise);
-	const accepted = orchestrator.sendMessage({
-		source: { kind: "system", name: "idle-event-test" },
-		targetAgentId: agentId,
-		body: "run",
-		mode: "next_turn",
-	});
+	const accepted = orchestrator
+		.messageSinkFor(messageBindingFor({ kind: "agent", senderAgentId: "idle-event-test" }))
+		.send({ targetAgentId: agentId, body: "run", mode: "next_turn" });
 	await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
 	await emitHarnessEvent(orchestrator, agentId, { type: "agent_start" });
 	await accepted;

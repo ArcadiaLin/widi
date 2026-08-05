@@ -7,7 +7,7 @@ import type {
 	BackgroundJobTransition,
 } from "./background/index.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
-import type { ExtensionInputPresentation, ExtensionMessage, ExtensionStatus } from "./extension/presentation.ts";
+import type { ExtensionMessage, ExtensionStatus } from "./extension/presentation.ts";
 import type { HumanRequestEvent } from "./human-request.ts";
 
 export type RuntimeModel = Model<Api>;
@@ -168,23 +168,6 @@ export type OrchestratorEvent =
 			// Absent means the keyed status was cleared.
 			status?: ExtensionStatus;
 			changedAt: string;
-	  }
-	// How a client should render a message an extension just sent into the
-	// agent. The message itself still arrives through the harness as ordinary
-	// user input; this record explicitly names that message's session entry.
-	// `extensionId` is injected by core, so a renderer keyed on
-	// (extensionId, customType) cannot be claimed by another extension.
-	| {
-			readonly type: "extension_input_presented";
-			presentationId: string;
-			/** Session custom entry id, for deduping against hydration. */
-			entryId: string;
-			/** User-message session entry this presentation renders. */
-			messageEntryId: string;
-			agentId: AgentId;
-			extensionId: string;
-			presentation: ExtensionInputPresentation;
-			createdAt: string;
 	  }
 	| {
 			readonly type: "extension_message_published";

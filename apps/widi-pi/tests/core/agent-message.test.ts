@@ -1,5 +1,4 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { AgentHarnessEvent } from "@widi/agent-core";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import {
@@ -11,8 +10,11 @@ import { MessageError } from "../../src/core/message.ts";
 import type { OrchestratorEvent } from "../../src/core/types.ts";
 import { collectJobChanges, startBackgroundedJob } from "../helpers/background-jobs.ts";
 import {
+	agentSink,
 	createOrchestrator,
 	defaultProfile,
+	harnessEventDriver,
+	humanSink,
 	MemoryExecutionEnv,
 	requireAgentHarness,
 	requireAgentJobs,
@@ -38,11 +40,7 @@ function createDeferred<T>(): { readonly promise: Promise<T>; readonly resolve: 
  * `prompt` has to produce that fact itself.
  */
 async function driveAgentStart(orchestrator: AgentOrchestrator, agentId: string): Promise<void> {
-	await (
-		orchestrator as unknown as {
-			_handleSubscribedAgentHarnessEvent: (agentId: string, event: AgentHarnessEvent) => Promise<void>;
-		}
-	)._handleSubscribedAgentHarnessEvent(agentId, { type: "agent_start" });
+	await harnessEventDriver(orchestrator)(agentId, { type: "agent_start" });
 }
 
 /** An orchestrator whose default profile loads the named extension. */
@@ -62,8 +60,7 @@ describe("AgentOrchestrator.sendMessage", () => {
 		const run = createDeferred<AssistantMessage>();
 		const prompt = vi.spyOn(requireAgentHarness(orchestrator, targetAgentId), "prompt").mockReturnValue(run.promise);
 
-		const accepted = orchestrator.sendMessage({
-			source: { kind: "agent", agentId: sourceAgentId },
+		const accepted = agentSink(orchestrator, sourceAgentId).send({
 			targetAgentId,
 			body: "Please review this.",
 			mode: "next_turn",
@@ -90,18 +87,8 @@ describe("AgentOrchestrator.sendMessage", () => {
 		const followUp = vi.spyOn(harness, "followUp").mockResolvedValue();
 
 		const accepted = Promise.all([
-			orchestrator.sendMessage({
-				source: { kind: "system", name: "first" },
-				targetAgentId,
-				body: "first",
-				mode: "next_turn",
-			}),
-			orchestrator.sendMessage({
-				source: { kind: "system", name: "second" },
-				targetAgentId,
-				body: "second",
-				mode: "next_turn",
-			}),
+			agentSink(orchestrator, "first").send({ targetAgentId, body: "first", mode: "next_turn" }),
+			agentSink(orchestrator, "second").send({ targetAgentId, body: "second", mode: "next_turn" }),
 		]);
 		await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
 		await driveAgentStart(orchestrator, targetAgentId);
@@ -122,13 +109,8 @@ describe("AgentOrchestrator.sendMessage", () => {
 		const followUp = vi.spyOn(harness, "followUp").mockResolvedValue();
 		(harness as unknown as { phase: "turn" }).phase = "turn";
 
-		await orchestrator.sendMessage({
-			source: { kind: "agent", agentId: "agent-peer" },
-			targetAgentId,
-			body: "ordinary",
-			mode: "next_turn",
-		});
-		await orchestrator.sendMessage({ source: { kind: "human" }, targetAgentId, body: "stop that", mode: "interrupt" });
+		await agentSink(orchestrator, "agent-peer").send({ targetAgentId, body: "ordinary", mode: "next_turn" });
+		await humanSink(orchestrator).send({ targetAgentId, body: "stop that", mode: "interrupt" });
 
 		expect(followUp).toHaveBeenCalledTimes(1);
 		expect(steer).toHaveBeenCalledTimes(1);
@@ -148,8 +130,7 @@ describe("AgentOrchestrator.sendMessage", () => {
 		const steer = vi.spyOn(harness, "steer").mockResolvedValue();
 
 		const compacting = orchestrator.compactAgent(targetAgentId);
-		const accepted = orchestrator.sendMessage({
-			source: { kind: "agent", agentId: "agent-peer" },
+		const accepted = agentSink(orchestrator, "agent-peer").send({
 			targetAgentId,
 			body: "while compacting",
 			mode: "next_turn",
@@ -179,12 +160,7 @@ describe("AgentOrchestrator.sendMessage", () => {
 		});
 
 		await expect(
-			orchestrator.sendMessage({
-				source: { kind: "system", name: "watchdog" },
-				targetAgentId,
-				body: "never landed",
-				mode: "next_turn",
-			}),
+			agentSink(orchestrator, "watchdog").send({ targetAgentId, body: "never landed", mode: "next_turn" }),
 		).rejects.toThrow("failed while building the turn");
 		expect(activityOf(orchestrator, targetAgentId)).toBe("idle");
 	});
@@ -246,8 +222,6 @@ describe("AgentOrchestrator.sendMessage", () => {
 		await vi.waitFor(() => expect(orchestrator.getAgentActivity(targetAgentId).maintenance).toBe("compaction"));
 
 		await expect(orchestrator.abortAgent(targetAgentId)).rejects.toMatchObject({ code: "busy" });
-		await expect(orchestrator.followUpAgent(targetAgentId, "later")).rejects.toMatchObject({ code: "busy" });
-		await expect(orchestrator.steerAgent(targetAgentId, "now")).rejects.toMatchObject({ code: "busy" });
 		await expect(orchestrator.steerQueuedFollowUps(targetAgentId)).rejects.toMatchObject({ code: "busy" });
 
 		expect(abort).not.toHaveBeenCalled();
@@ -264,20 +238,10 @@ describe("AgentOrchestrator.sendMessage", () => {
 		const targetAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
 		await expect(
-			orchestrator.sendMessage({
-				source: { kind: "system", name: "test" },
-				targetAgentId: "agent-missing",
-				body: "hello",
-				mode: "next_turn",
-			}),
+			agentSink(orchestrator, "test").send({ targetAgentId: "agent-missing", body: "hello", mode: "next_turn" }),
 		).rejects.toThrow("Unknown agent");
 		await expect(
-			orchestrator.sendMessage({
-				source: { kind: "system", name: "test" },
-				targetAgentId,
-				body: "   ",
-				mode: "next_turn",
-			}),
+			agentSink(orchestrator, "test").send({ targetAgentId, body: "   ", mode: "next_turn" }),
 		).rejects.toBeInstanceOf(MessageError);
 	});
 
@@ -297,12 +261,7 @@ describe("AgentOrchestrator.sendMessage", () => {
 		expect(orchestrator.getAgentActivity(targetAgentId).activity).toBe("idle");
 
 		await expect(
-			orchestrator.sendMessage({
-				source: { kind: "agent", agentId: "agent-peer" },
-				targetAgentId,
-				body: "landed mid-teardown",
-				mode: "next_turn",
-			}),
+			agentSink(orchestrator, "agent-peer").send({ targetAgentId, body: "landed mid-teardown", mode: "next_turn" }),
 		).rejects.toBeInstanceOf(MessageError);
 		expect(prompt).not.toHaveBeenCalled();
 
@@ -326,13 +285,8 @@ describe("AgentOrchestrator message interception", () => {
 		const harness = requireAgentHarness(orchestrator, targetAgentId);
 		vi.spyOn(harness, "prompt").mockResolvedValue({} as AssistantMessage);
 
-		await orchestrator.sendMessage({
-			source: { kind: "agent", agentId: "agent-peer" },
-			targetAgentId,
-			body: "from a peer",
-			mode: "next_turn",
-		});
-		await orchestrator.promptAgent(targetAgentId, "from a human");
+		await agentSink(orchestrator, "agent-peer").send({ targetAgentId, body: "from a peer", mode: "next_turn" });
+		await humanSink(orchestrator).prompt({ targetAgentId, body: "from a human", mode: "next_turn" });
 
 		expect(seen).toEqual([
 			{ source: "agent", targetAgentId },
@@ -356,12 +310,7 @@ describe("AgentOrchestrator message interception", () => {
 		});
 
 		await expect(
-			orchestrator.sendMessage({
-				source: { kind: "agent", agentId: "agent-peer" },
-				targetAgentId,
-				body: "from a peer",
-				mode: "next_turn",
-			}),
+			agentSink(orchestrator, "agent-peer").send({ targetAgentId, body: "from a peer", mode: "next_turn" }),
 		).resolves.toEqual({
 			kind: "blocked",
 			inputId: expect.any(String),

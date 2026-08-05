@@ -3,12 +3,11 @@
  * real job capabilities rather than a whole orchestrator.
  *
  * Everything a caller has to reach for is here: the owner's capabilities, the
- * events the runtime published, and the deliveries it handed out.
+ * events the runtime published, and the messages it sent through its sink.
  */
 
 import {
 	type BackgroundJobChange,
-	type BackgroundJobDelivery,
 	type BackgroundJobEvent,
 	type BackgroundJobExecution,
 	type BackgroundJobHost,
@@ -19,6 +18,13 @@ import {
 	type OwnerAttachment,
 } from "../../src/core/background/index.ts";
 import type { CoreDiagnostic } from "../../src/core/diagnostics.ts";
+import type { MessageRequest, MessageSinkBinding } from "../../src/core/message.ts";
+
+/** One message the runtime handed to its sink, with the identity it used. */
+export interface RecordedJobMessage {
+	readonly binding: MessageSinkBinding;
+	readonly request: MessageRequest;
+}
 
 export interface JobRuntimeHarness {
 	readonly runtime: BackgroundJobRuntime;
@@ -27,7 +33,7 @@ export interface JobRuntimeHarness {
 	readonly settler: BackgroundJobSettler;
 	readonly agentId: string;
 	readonly events: BackgroundJobEvent[];
-	readonly deliveries: BackgroundJobDelivery[];
+	readonly deliveries: RecordedJobMessage[];
 	readonly diagnostics: CoreDiagnostic[];
 	attach(agentId: string, sessionId?: string): Promise<OwnerAttachment>;
 }
@@ -37,15 +43,17 @@ export async function createJobRuntimeHarness(
 ): Promise<JobRuntimeHarness> {
 	const { agentId = "owner", ...runtimeOptions } = options;
 	const events: BackgroundJobEvent[] = [];
-	const deliveries: BackgroundJobDelivery[] = [];
+	const deliveries: RecordedJobMessage[] = [];
 	const diagnostics: CoreDiagnostic[] = [];
 	const runtime = new BackgroundJobRuntime(
 		{
 			openOwnerStore: async () => undefined,
-			deliverResult: async (delivery) => {
-				deliveries.push(delivery);
-				return {};
-			},
+			messageSinkFor: (binding) => ({
+				send: async (request) => {
+					deliveries.push({ binding, request });
+					return { kind: "accepted" };
+				},
+			}),
 			publish: async (event) => {
 				events.push(event);
 			},

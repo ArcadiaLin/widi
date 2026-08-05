@@ -333,8 +333,8 @@ describe("BackgroundJobRuntime settlement", () => {
 		});
 
 		await vi.waitFor(() => expect(deliveries).toHaveLength(1));
-		expect(deliveries[0]).toMatchObject({ ownerAgentId: agentId, jobId: job.jobId });
-		expect(deliveries[0]?.body).toContain("build done");
+		expect(deliveries[0]?.binding.source.details).toMatchObject({ ownerAgentId: agentId, jobId: job.jobId });
+		expect(deliveries[0]?.request.body).toContain("build done");
 	});
 });
 

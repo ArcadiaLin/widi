@@ -1,6 +1,7 @@
 import { AgentHarnessError } from "@widi/agent-core";
 import { describe, expect, it, vi } from "vitest";
 import {
+	type BuiltInMessageProducer,
 	backgroundResultMergeKey,
 	decideMessageDelivery,
 	formatAgentTaskMessageBody,
@@ -11,8 +12,8 @@ import {
 	type MessageDraft,
 	MessageError,
 	type MessageInterceptRun,
-	messageBlockPolicy,
-	renderMessageEnvelope,
+	messageBindingFor,
+	renderMessageContent,
 	transformMessage,
 } from "../../src/core/message.ts";
 
@@ -24,9 +25,12 @@ function createDeferred<T = void>(): { readonly promise: Promise<T>; readonly re
 	return { promise, resolve };
 }
 
+const AGENT_BINDING = messageBindingFor({ kind: "agent", senderAgentId: "agent-source" });
+
 function createDraft(overrides: Partial<MessageDraft> = {}): MessageDraft {
 	return {
-		source: { kind: "agent", agentId: "agent-source" },
+		source: AGENT_BINDING.source,
+		binding: AGENT_BINDING,
 		targetAgentId: "agent-target",
 		body: "please review",
 		mode: "next_turn",
@@ -89,22 +93,29 @@ function enqueue(
 	});
 }
 
-describe("message envelopes", () => {
-	it("attributes cross-agent and system messages, leaving self-describing text alone", () => {
-		expect(renderMessageEnvelope({ kind: "human" }, "hello")).toBe("hello");
-		expect(renderMessageEnvelope({ kind: "agent", agentId: "agent-7" }, "hello")).toBe(
-			"[Message from agent-7]\n\nhello",
-		);
-		expect(renderMessageEnvelope({ kind: "system", name: "watchdog" }, "hello")).toBe(
-			"[Message from watchdog]\n\nhello",
-		);
+describe("message bindings", () => {
+	const render = (producer: BuiltInMessageProducer) =>
+		renderMessageContent(createDraft({ binding: messageBindingFor(producer) }), "hello");
+
+	it("attributes cross-agent and extension messages, leaving self-describing text alone", () => {
+		expect(render({ kind: "human" })).toBe("hello");
+		expect(render({ kind: "agent", senderAgentId: "agent-7" })).toBe("[Message from agent-7]\n\nhello");
+		expect(render({ kind: "extension", extensionId: "watchdog" })).toBe("[Input from extension watchdog]\n\nhello");
 		// A job result already carries its own job id, tool, and status header.
-		expect(
-			renderMessageEnvelope(
-				{ kind: "background_job", ownerAgentId: "agent-1", jobId: "job-2" },
-				"Background job job-2 completed",
-			),
-		).toBe("Background job job-2 completed");
+		expect(render({ kind: "background_job", ownerAgentId: "agent-1", jobId: "job-2", mode: "interrupt" })).toBe(
+			"hello",
+		);
+		expect(render({ kind: "runtime", notice: "carried_over_jobs" })).toBe("hello");
+	});
+
+	// The two halves of a binding are bound for opposite reasons: a request may
+	// relabel itself freely, but the text it produces stays the sink's unless it
+	// brings its own renderer.
+	it("keeps the sink's renderer when a request overrides only the source", () => {
+		const binding = messageBindingFor({ kind: "extension", extensionId: "watchdog" });
+		const draft = createDraft({ binding, source: { kind: "human" } });
+		expect(renderMessageContent(draft, "hello")).toBe("[Input from extension watchdog]\n\nhello");
+		expect(renderMessageContent({ ...draft, render: (body) => `> ${body}` }, "hello")).toBe("> hello");
 	});
 
 	it("tells the worker which job id completes its task", () => {
@@ -132,7 +143,7 @@ describe("message interception", () => {
 		await transformMessage(createDraft(), { intercept });
 		expect(intercept).toHaveBeenCalledWith({
 			type: "input",
-			source: { kind: "agent", agentId: "agent-source" },
+			source: { kind: "agent", label: "agent-source" },
 			targetAgentId: "agent-target",
 			text: "please review",
 			images: undefined,
@@ -150,9 +161,9 @@ describe("message interception", () => {
 	});
 
 	it("enforces a block for every source that can be told about it", async () => {
-		expect(messageBlockPolicy({ kind: "human" })).toBe("enforce");
-		expect(messageBlockPolicy({ kind: "agent", agentId: "agent-1" })).toBe("enforce");
-		expect(messageBlockPolicy({ kind: "system", name: "watchdog" })).toBe("enforce");
+		expect(messageBindingFor({ kind: "human" }).policy.blockPolicy).toBe("enforce");
+		expect(messageBindingFor({ kind: "agent", senderAgentId: "agent-1" }).policy.blockPolicy).toBe("enforce");
+		expect(messageBindingFor({ kind: "extension", extensionId: "watchdog" }).policy.blockPolicy).toBe("enforce");
 		const outcome = await run(createDraft(), { kind: "block", reason: "denied", blockedBy: "guard" });
 		expect(outcome).toEqual({ kind: "block", reason: "denied", blockedBy: "guard" });
 	});
@@ -160,9 +171,17 @@ describe("message interception", () => {
 	// The model already holds this job's t0 handle and is waiting for exactly one
 	// result. Dropping it would strand the model, so the block is not enforced.
 	it("delivers a blocked background job result anyway", async () => {
-		const source = { kind: "background_job" as const, ownerAgentId: "agent-1", jobId: "job-2" };
-		expect(messageBlockPolicy(source)).toBe("ignore");
-		const outcome = await run(createDraft({ source, body: "job done" }), { kind: "block", blockedBy: "guard" });
+		const binding = messageBindingFor({
+			kind: "background_job",
+			ownerAgentId: "agent-1",
+			jobId: "job-2",
+			mode: "interrupt",
+		});
+		expect(binding.policy.blockPolicy).toBe("ignore");
+		const outcome = await run(createDraft({ binding, source: binding.source, body: "job done" }), {
+			kind: "block",
+			blockedBy: "guard",
+		});
 		expect(outcome).toEqual({ kind: "pass", text: "job done", images: undefined });
 	});
 });

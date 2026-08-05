@@ -268,7 +268,7 @@ describe("WidiTuiApplication completion menu integration", () => {
 
 describe("WidiTuiApplication command submission", () => {
 	it("submits an expanded prompt command without leaving a command item", async () => {
-		const promptAgent = vi.fn(async (_agentId: string, _text: string) => ({ kind: "accepted" }) as const);
+		const promptAgent = vi.fn(async (_request: { body: string }) => ({ kind: "accepted" }) as const);
 		const { application } = await createApplication({
 			getAgentSkill: async (_agentId: string, name: string) => ({
 				name,
@@ -282,7 +282,7 @@ describe("WidiTuiApplication command submission", () => {
 		await submit(application, "/skill review");
 
 		expect(promptAgent).toHaveBeenCalledOnce();
-		expect(promptAgent.mock.calls[0]?.[1]).toContain("Review the diff carefully.");
+		expect(promptAgent.mock.calls[0]?.[0]?.body).toContain("Review the diff carefully.");
 		expect(application.state.agents.get("agent-1")?.timeline.filter((item) => item.type === "command-result")).toEqual(
 			[],
 		);
@@ -327,11 +327,17 @@ describe("WidiTuiApplication command submission", () => {
 
 async function createApplication(overrides: Record<string, unknown> = {}) {
 	const defaultModel = agentSnapshot("default").model;
+	const promptAgent = overrides.promptAgent ?? (async () => ({ kind: "accepted" }) as const);
+	const sendMessage = overrides.sendMessage ?? (async () => ({ kind: "accepted" }) as const);
 	const orchestrator = {
 		getAgentStatus: () => "idle",
+		getAgentActivity: () => ({ activity: "idle" }),
 		getDefaultModel: () => defaultModel,
 		getDefaultThinkingLevel: () => "medium",
+		sendMessage,
+		promptAgent,
 		...overrides,
+		messageSinkFor: () => ({ send: sendMessage, prompt: promptAgent }),
 	} as unknown as AgentOrchestrator;
 	const runtime = {
 		orchestrator,
