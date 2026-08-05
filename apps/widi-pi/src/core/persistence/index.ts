@@ -102,6 +102,13 @@ export {
 	PERSISTENCE_REF_VERSION,
 	parsePersistenceRef,
 } from "./utils/persistence-ref.ts";
+export type { SessionOrigin } from "./utils/session-origin.ts";
+export {
+	createSessionOrigin,
+	parseSessionOrigin,
+	SESSION_ORIGIN_METADATA_KEY,
+	withSessionOrigin,
+} from "./utils/session-origin.ts";
 export type {
 	BranchProjection,
 	NamespaceProjection,

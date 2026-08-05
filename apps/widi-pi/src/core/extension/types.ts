@@ -459,8 +459,14 @@ export interface ExtensionSessionCandidate {
 	readonly name?: string;
 	/** First non-empty line of the first user message. */
 	readonly firstUserMessage?: string;
-	/** Ref of the session this one was forked from, when it was. */
-	readonly parentRef?: string;
+	/**
+	 * Ref of the session this one's history was forked from, when it was.
+	 *
+	 * Only a fork has one. The session that *spawned* a session is a different
+	 * relation and is not reported here: listed sessions are top-level ones, and
+	 * a spawned session is reached through the session that owns it.
+	 */
+	readonly forkedFromRef?: string;
 }
 
 export interface ExtensionSessionSnapshot {
@@ -512,7 +518,12 @@ export interface ExtensionSessionContext {
 	/** As `getSnapshot`, plus every entry in the session's tree. */
 	getTree(): Promise<ExtensionSessionTree>;
 	getLeafId(): Promise<string | null>;
-	/** Every session recorded for the current project, newest first. */
+	/**
+	 * Top-level sessions of the current project, newest first.
+	 *
+	 * Sessions an agent spawned are not listed: they belong to the tree of the
+	 * session that spawned them and are reached through it.
+	 */
 	listSessions(): Promise<ExtensionSessionCandidate[]>;
 	readSession(ref: string): Promise<ExtensionSessionTree>;
 }

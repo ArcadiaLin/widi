@@ -2,8 +2,8 @@
  * The session directory repository: one entry point for a session's history,
  * its custom storage, and the sessions it owns.
  *
- * It replaces `SessionDirectoryRepo`'s directory-level job and adds the two
- * things that job was missing - the custom storages registered against a
+ * It does the directory-level job the old session repository did and adds the
+ * two things that job was missing - the custom storages registered against a
  * session, and the child sessions nested inside it. Nothing here interprets a
  * namespace: the repository executes what a registered namespace declares, and
  * a child session is a directory it copies or deletes without asking what the
@@ -59,6 +59,7 @@ import {
 } from "./utils/layout.ts";
 import type { PersistenceRefData, PersistenceRefOrigin } from "./utils/persistence-ref.ts";
 import { createPersistenceRefData, PERSISTENCE_REF_CUSTOM_TYPE } from "./utils/persistence-ref.ts";
+import { createSessionOrigin, withSessionOrigin } from "./utils/session-origin.ts";
 import type { BranchProjection, StateProvenance } from "./utils/state-projection.ts";
 import { projectBranch, projectionToForkRoots } from "./utils/state-projection.ts";
 
@@ -88,6 +89,7 @@ export interface CreateSessionOptions {
 }
 
 export interface ForkSessionOptions {
+	/** Id of the new session: its directory name and its header both carry it. */
 	readonly sessionId: string;
 	readonly entryId?: string;
 	readonly position?: "before" | "at";
@@ -481,6 +483,7 @@ export class JsonlPersistenceRepo {
 		const forked = await this._forkInto({
 			source,
 			target: { cwd: source.cwd, key },
+			sessionId: options.sessionId,
 			options,
 			parent: options.parent,
 			metadata: options.metadata,
@@ -493,6 +496,12 @@ export class JsonlPersistenceRepo {
 	private async _forkInto(request: {
 		readonly source: SessionAddress;
 		readonly target: SessionAddress;
+		/**
+		 * Header id of the new session. The fork target gets one because its
+		 * directory name is built from it; a copied child keeps its own directory
+		 * name and therefore keeps its own id.
+		 */
+		readonly sessionId: string | undefined;
 		readonly options: { readonly entryId?: string; readonly position?: "before" | "at" };
 		readonly parent: SessionKey | undefined;
 		readonly metadata: Record<string, unknown> | undefined;
@@ -514,9 +523,13 @@ export class JsonlPersistenceRepo {
 		});
 
 		const target = await this._createAt(request.target, {
-			sessionId: source.metadata.id,
+			sessionId: request.sessionId ?? source.metadata.id,
 			parent: request.parent,
 			metadata: request.metadata ?? source.metadata.metadata,
+			forkedFrom: {
+				key: request.source.key,
+				...(request.options.entryId === undefined ? undefined : { entryId: request.options.entryId }),
+			},
 		});
 		for (const entry of forkedEntries) {
 			await target.session.appendEntry(entry);
@@ -612,6 +625,7 @@ export class JsonlPersistenceRepo {
 				await this._forkInto({
 					source: { cwd: request.source.cwd, key: childKey },
 					target: { cwd: request.target.cwd, key: childSessionKey(request.target.key, name) },
+					sessionId: undefined,
 					options: {},
 					parent: request.target.key,
 					metadata: undefined,
@@ -682,12 +696,20 @@ export class JsonlPersistenceRepo {
 		return [name];
 	}
 
+	/**
+	 * Write the session file, with the two lineage facts its header owes a
+	 * reader: which session's directory holds it, and which session's history it
+	 * was copied from. Both are recomputed here rather than carried over in
+	 * `metadata`, which for a copied child is the source's and names the tree it
+	 * was copied out of. See `utils/session-origin.ts`.
+	 */
 	private async _createAt(
 		address: SessionAddress,
 		options: {
 			readonly sessionId: string;
 			readonly parent: SessionKey | undefined;
 			readonly metadata: Record<string, unknown> | undefined;
+			readonly forkedFrom?: { readonly key: SessionKey; readonly entryId?: string };
 		},
 	): Promise<PersistedSession> {
 		const dirPath = await this._sessionDirPath(address);
@@ -695,13 +717,18 @@ export class JsonlPersistenceRepo {
 			await this._fs.createDir(dirPath, { recursive: true }),
 			`Failed to create session directory ${dirPath}`,
 		);
+		const origin = createSessionOrigin({
+			...(options.parent === undefined ? undefined : { spawnedBy: options.parent }),
+			...(options.forkedFrom === undefined ? undefined : { forkedFrom: options.forkedFrom.key }),
+			...(options.forkedFrom?.entryId === undefined ? undefined : { forkEntryId: options.forkedFrom.entryId }),
+		});
 		const session = await JsonlSession.create(this._fs, await this.sessionFilePath(address), {
 			cwd: address.cwd,
 			sessionId: options.sessionId,
 			parentSessionPath: options.parent
 				? await this.sessionFilePath({ cwd: address.cwd, key: options.parent })
 				: undefined,
-			metadata: options.metadata,
+			metadata: withSessionOrigin(options.metadata, origin),
 		});
 		return { address, metadata: await session.getMetadata(), session };
 	}

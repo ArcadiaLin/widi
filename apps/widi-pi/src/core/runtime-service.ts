@@ -27,6 +27,7 @@ import {
 } from "./extension/index.ts";
 import { HumanRequestBroker, type HumanRequestHandler } from "./human-request.ts";
 import { ModelRegistry } from "./model-registry.js";
+import { createCorePersistenceRegistry } from "./persistence-registry.ts";
 import {
 	createProjectExtensionTrustDiagnostics,
 	type ProjectTrustResolution,
@@ -498,7 +499,12 @@ export async function createWidiRuntime(options: CreateWidiRuntimeOptions): Prom
 			...(projectTrust.trusted ? [{ kind: "cwd" as const, path: cwd }] : []),
 		],
 	});
-	const sessionManager = new SessionManager({ fs: executionEnv, cwd, sessionsRoot: sessionRoot });
+	const sessionManager = new SessionManager({
+		fs: executionEnv,
+		cwd,
+		sessionsRoot: sessionRoot,
+		registry: createCorePersistenceRegistry(),
+	});
 	const extensionLoader =
 		options.extensionLoader ??
 		new ExtensionLoader({

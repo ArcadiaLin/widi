@@ -45,11 +45,11 @@ async function branchUserText(orchestrator: AgentOrchestrator, agentId: string):
 		.join("\n");
 }
 
-/** The session path of a live agent, for resuming it from another runtime. */
-async function sessionPath(orchestrator: AgentOrchestrator, agentId: string): Promise<string> {
-	const { metadata } = await orchestrator.getAgentSession(agentId);
-	if (!("path" in metadata)) throw new Error(`Agent ${agentId} has no persisted session.`);
-	return metadata.path;
+/** The session address of a live agent, for resuming it from another runtime. */
+function sessionRef(orchestrator: AgentOrchestrator, agentId: string): string {
+	const ref = orchestrator.sessionManager.getAgentSessionRef(agentId);
+	if (ref === undefined) throw new Error(`Agent ${agentId} has no persisted session.`);
+	return ref;
 }
 
 describe("branch state", () => {
@@ -80,18 +80,18 @@ describe("branch state", () => {
 		const agentId = await first.spawnAgent({ origin: { kind: "new" } });
 		startBackgroundedJob(requireAgentJobs(first, agentId), { toolCallId: "call-1", toolName: "sleeper" });
 		await vi.waitFor(async () => expect(await branchRefs(first, agentId)).toHaveLength(1));
-		const path = await sessionPath(first, agentId);
+		const ref = sessionRef(first, agentId);
 
 		// A second runtime over the same files: the process died, the session did not.
 		const second = await createOrchestrator(env);
-		const resumed = await second.spawnAgent({ origin: { kind: "resume", reference: path } });
+		const resumed = await second.spawnAgent({ origin: { kind: "resume", reference: ref } });
 
 		expect(second.agentBackgroundJobHistory(resumed)).toMatchObject([
 			{ toolCallId: "call-1", state: "closed", cause: "resume" },
 		]);
 		// A third runtime believes the branch, not this process: the job is over.
 		const third = await createOrchestrator(env);
-		const again = await third.spawnAgent({ origin: { kind: "resume", reference: path } });
+		const again = await third.spawnAgent({ origin: { kind: "resume", reference: ref } });
 		expect(third.agentBackgroundJobHistory(again)).toMatchObject([{ toolCallId: "call-1", state: "closed" }]);
 	});
 
@@ -145,10 +145,10 @@ describe("branch state", () => {
 			isError: false,
 			timestamp: Date.now(),
 		});
-		const path = await sessionPath(first, agentId);
+		const ref = sessionRef(first, agentId);
 
 		const second = await createOrchestrator(env);
-		const resumed = await second.spawnAgent({ origin: { kind: "resume", reference: path } });
+		const resumed = await second.spawnAgent({ origin: { kind: "resume", reference: ref } });
 
 		// Nothing is recorded for it: this branch has no start to close, and
 		// inventing one would put a job on a branch that never ran it.
@@ -163,7 +163,7 @@ describe("branch state", () => {
 		const agentId = await first.spawnAgent({ origin: { kind: "new" } });
 		startBackgroundedJob(requireAgentJobs(first, agentId), { toolCallId: "call-1", toolName: "sleeper" });
 		await vi.waitFor(async () => expect(await branchRefs(first, agentId)).toHaveLength(1));
-		const path = await sessionPath(first, agentId);
+		const ref = sessionRef(first, agentId);
 
 		// Disposal cancels the job, and that cancellation is the executor's own
 		// answer: the branch has to carry it, or the next resume re-closes a job
@@ -171,7 +171,7 @@ describe("branch state", () => {
 		await first.disposeAgent(agentId, { intent: "removed" });
 
 		const second = await createOrchestrator(env);
-		const resumed = await second.spawnAgent({ origin: { kind: "resume", reference: path } });
+		const resumed = await second.spawnAgent({ origin: { kind: "resume", reference: ref } });
 		expect(second.agentBackgroundJobHistory(resumed)).toMatchObject([
 			{ toolCallId: "call-1", state: "settled", status: "cancelled" },
 		]);

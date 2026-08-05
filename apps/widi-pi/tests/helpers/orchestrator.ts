@@ -22,6 +22,7 @@ import type { BackgroundJobHost } from "../../src/core/background/index.ts";
 import type { AgentContextMonitor } from "../../src/core/context-monitor.ts";
 import type { OrchestratorDiagnostic } from "../../src/core/diagnostics.ts";
 import { ModelRegistry } from "../../src/core/model-registry.ts";
+import { createCorePersistenceRegistry } from "../../src/core/persistence-registry.ts";
 import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
 import { ResourceLoader } from "../../src/core/resource-loader.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
@@ -292,7 +293,12 @@ export async function createOrchestrator(
 	return new AgentOrchestrator({
 		executionEnv: env,
 		resourceLoader: new ResourceLoader({ executionEnv: env, cwd: "/workspace/project" }),
-		sessionManager: new SessionManager({ fs: env, cwd: "/workspace/project", sessionsRoot: "/sessions" }),
+		sessionManager: new SessionManager({
+			fs: env,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+			registry: createCorePersistenceRegistry(),
+		}),
 		settingManager: options.settingManager ?? new SettingManager(),
 		modelRegistry: options.modelRegistry ?? (await createModelRegistry(env)),
 		profileRegistry: options.profileRegistry ?? createProfileRegistry(),

@@ -1,3 +1,4 @@
+import { parseSessionOrigin } from "../core/persistence/index.ts";
 import type { AgentId } from "../core/types.ts";
 import { agentLabel } from "./components/common.ts";
 import { singleLine } from "./format.ts";
@@ -32,25 +33,28 @@ export function forkSourceAgentId(state: TuiApplicationState, agent: AgentViewSt
 	return findForkSource(state, agent)?.agentId;
 }
 
+/**
+ * The fork event when this runtime took the fork, the session header otherwise.
+ *
+ * The header records which session the history was copied from, which is what
+ * survives the runtime that did the copying. It is deliberately not the session
+ * that *spawned* this one - every subagent has one of those, and treating it as
+ * fork provenance would label the whole spawn tree as forks.
+ */
 function findForkSource(state: TuiApplicationState, agent: AgentViewState): AgentViewState | undefined {
 	if (agent.display.forkedFromAgentId) {
 		return state.agents.get(agent.display.forkedFromAgentId);
 	}
-	const parentPath = parentSessionPath(agent);
-	if (!parentPath) return undefined;
-	return [...state.agents.values()].find((candidate) => sessionPath(candidate) === parentPath);
+	const forkedFrom = forkSourceRef(agent);
+	if (!forkedFrom) return undefined;
+	return [...state.agents.values()].find((candidate) => candidate.snapshot?.sessionRef === forkedFrom);
 }
 
 function hasForkParent(agent: AgentViewState): boolean {
-	return agent.display.forkedFromAgentId !== undefined || parentSessionPath(agent) !== undefined;
+	return agent.display.forkedFromAgentId !== undefined || forkSourceRef(agent) !== undefined;
 }
 
-function parentSessionPath(agent: AgentViewState): string | undefined {
+function forkSourceRef(agent: AgentViewState): string | undefined {
 	const metadata = agent.snapshot?.sessionMetadata;
-	return metadata && "parentSessionPath" in metadata ? metadata.parentSessionPath : undefined;
-}
-
-function sessionPath(agent: AgentViewState): string | undefined {
-	const metadata = agent.snapshot?.sessionMetadata;
-	return metadata && "path" in metadata ? metadata.path : undefined;
+	return parseSessionOrigin(metadata && "metadata" in metadata ? metadata.metadata : undefined)?.forkedFrom;
 }

@@ -2,6 +2,9 @@ import type { FileError, FileInfo, FileSystem, Result } from "@widi/agent-core";
 import { err, ok, FileError as PiFileError } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import type { AgentProfile } from "../../src/core/agent-profile.ts";
+import type { SessionAddress } from "../../src/core/persistence/index.ts";
+import { formatSessionKey, parseSessionOrigin } from "../../src/core/persistence/index.ts";
+import { createCorePersistenceRegistry } from "../../src/core/persistence-registry.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 
 class MemoryFileSystem implements FileSystem {
@@ -155,6 +158,12 @@ const profile: AgentProfile = {
 	skills: ["code"],
 };
 
+function requireAddress(manager: SessionManager, agentId: string): SessionAddress {
+	const address = manager.getAgentSessionAddress(agentId);
+	if (!address) throw new Error(`Expected a persisted session for ${agentId}.`);
+	return address;
+}
+
 // Writes a session in the on-disk layout: one directory per session, holding
 // the conversation history file. Returns the history file path.
 function writeSessionFile(
@@ -184,15 +193,20 @@ function writeSessionFile(
 describe("SessionManager", () => {
 	it("stores agent profile references in extended jsonl session headers", async () => {
 		const fs = new MemoryFileSystem();
-		const manager = new SessionManager({ fs, cwd: "/workspace/project", sessionsRoot: "/sessions" });
+		const manager = new SessionManager({
+			fs,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+			registry: createCorePersistenceRegistry(),
+		});
 
 		await manager.createAgentSession({ agentId: "main", agentProfile: profile });
-		const [metadata] = await manager.sessionRepo.list({ cwd: "/workspace/project" });
+		const [listed] = await manager.repo.list({ cwd: "/workspace/project" });
 		const profileReference = { id: profile.id, label: profile.label };
 
-		expect(metadata?.metadata?.profile).toEqual(profileReference);
-		if (!metadata) throw new Error("Expected session metadata.");
-		const headerLine = fs.files.get(metadata.path)?.split("\n")[0];
+		expect(listed?.metadata.metadata?.profile).toEqual(profileReference);
+		if (!listed) throw new Error("Expected session metadata.");
+		const headerLine = fs.files.get(listed.metadata.path)?.split("\n")[0];
 		if (!headerLine) throw new Error("Expected session header line.");
 		expect(JSON.parse(headerLine)).toMatchObject({
 			type: "session",
@@ -204,42 +218,54 @@ describe("SessionManager", () => {
 
 	it("gives each persistent session a directory of its own", async () => {
 		const fs = new MemoryFileSystem();
-		const manager = new SessionManager({ fs, cwd: "/workspace/project", sessionsRoot: "/sessions" });
+		const manager = new SessionManager({
+			fs,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+			registry: createCorePersistenceRegistry(),
+		});
 		const session = await manager.createAgentSession({ agentId: "main", agentProfile: profile });
 		const metadata = await session.getMetadata();
 		if (!("path" in metadata)) throw new Error("Expected persisted metadata.");
 
-		const sessionDir = await manager.getAgentSessionDir("main");
-		expect(sessionDir).toMatch(/^\/sessions\/--workspace-project--\/[\d-]+T[\d-]+Z_main$/);
+		const address = requireAddress(manager, "main");
+		expect(address.key).toMatchObject([expect.stringMatching(/^\d{8}T\d{6}Z_main$/)]);
+		const sessionDir = `/sessions/--workspace-project--/${address.key[0]}`;
 		expect(metadata.path).toBe(`${sessionDir}/session.jsonl`);
 
 		// Artifacts a session owns beyond its history live next to it and must
 		// not be mistaken for sessions themselves.
 		await fs.writeFile(`${sessionDir}/overrides.json`, "{}");
-		await expect(manager.listAgentSessionCandidates()).resolves.toMatchObject([{ id: "main", path: metadata.path }]);
+		await expect(manager.listAgentSessionCandidates()).resolves.toMatchObject([{ id: "main", ref: address.key[0] }]);
 	});
 
-	it("reports no session directory for ephemeral sessions", async () => {
+	it("reports no session address for ephemeral sessions", async () => {
 		const manager = new SessionManager({
 			fs: new MemoryFileSystem(),
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
+			registry: createCorePersistenceRegistry(),
 		});
 		await manager.createAgentSession({ agentId: "scratch", agentProfile: { ...profile, persist: false } });
 
-		await expect(manager.getAgentSessionDir("scratch")).resolves.toBeUndefined();
+		expect(manager.getAgentSessionAddress("scratch")).toBeUndefined();
+		expect(manager.getAgentSessionRef("scratch")).toBeUndefined();
 	});
 
 	it("deletes a session directory with every artifact it owns", async () => {
 		const fs = new MemoryFileSystem();
-		const manager = new SessionManager({ fs, cwd: "/workspace/project", sessionsRoot: "/sessions" });
-		const session = await manager.createAgentSession({ agentId: "main", agentProfile: profile });
-		const metadata = await session.getMetadata();
-		if (!("path" in metadata)) throw new Error("Expected persisted metadata.");
-		const sessionDir = await manager.getAgentSessionDir("main");
+		const manager = new SessionManager({
+			fs,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+			registry: createCorePersistenceRegistry(),
+		});
+		await manager.createAgentSession({ agentId: "main", agentProfile: profile });
+		const address = requireAddress(manager, "main");
+		const sessionDir = `/sessions/--workspace-project--/${address.key[0]}`;
 		await fs.writeFile(`${sessionDir}/overrides.json`, "{}");
 
-		await manager.sessionRepo.delete(metadata);
+		await manager.repo.delete(address);
 
 		await expect(manager.listAgentSessionCandidates()).resolves.toEqual([]);
 		expect(fs.files.has(`${sessionDir}/overrides.json`)).toBe(false);
@@ -247,32 +273,32 @@ describe("SessionManager", () => {
 
 	it("lists current cwd agent session candidates", async () => {
 		const fs = new MemoryFileSystem();
-		const alphaPath = writeSessionFile(fs, "2026-01-02T00-00-00-000Z_alpha", {
+		writeSessionFile(fs, "2026-01-02T00-00-00-000Z_alpha", {
 			id: "alpha",
 			timestamp: "2026-01-02T00:00:00.000Z",
 			profileId: "main",
 		});
-		const betaPath = writeSessionFile(fs, "2026-01-01T00-00-00-000Z_beta", {
-			id: "beta",
-			timestamp: "2026-01-01T00:00:00.000Z",
-			parentSession: "/sessions/source.jsonl",
+		writeSessionFile(fs, "2026-01-01T00-00-00-000Z_beta", { id: "beta", timestamp: "2026-01-01T00:00:00.000Z" });
+		const manager = new SessionManager({
+			fs,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+			registry: createCorePersistenceRegistry(),
 		});
-		const manager = new SessionManager({ fs, cwd: "/workspace/project", sessionsRoot: "/sessions" });
 
 		await expect(manager.listAgentSessionCandidates()).resolves.toEqual([
 			{
 				id: "alpha",
-				path: alphaPath,
+				ref: "2026-01-02T00-00-00-000Z_alpha",
 				createdAt: "2026-01-02T00:00:00.000Z",
 				cwd: "/workspace/project",
 				profile: { id: "main" },
 			},
 			{
 				id: "beta",
-				path: betaPath,
+				ref: "2026-01-01T00-00-00-000Z_beta",
 				createdAt: "2026-01-01T00:00:00.000Z",
 				cwd: "/workspace/project",
-				parentSessionPath: "/sessions/source.jsonl",
 			},
 		]);
 	});
@@ -307,27 +333,51 @@ describe("SessionManager", () => {
 			},
 		];
 		fs.files.set(path, `${fs.files.get(path)}${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
-		const manager = new SessionManager({ fs, cwd: "/workspace/project", sessionsRoot: "/sessions" });
+		const manager = new SessionManager({
+			fs,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+			registry: createCorePersistenceRegistry(),
+		});
 
 		const [candidate] = await manager.listAgentSessionCandidates();
 		expect(candidate).toMatchObject({ id: "gamma", name: "auth-fix", firstUserMessage: "Fix the flaky auth test" });
 	});
 
-	it("resolves session references by path before id", async () => {
+	// A directory name and a header id can collide, because the id is the AgentId
+	// that created the session and the user is free to name nothing at all.
+	it("resolves session references by address before id", async () => {
 		const fs = new MemoryFileSystem();
 		writeSessionFile(fs, "2026-01-02T00-00-00-000Z_alpha", { id: "same", timestamp: "2026-01-02T00:00:00.000Z" });
-		const pathTarget = writeSessionFile(fs, "same", { id: "path-target", timestamp: "2026-01-03T00:00:00.000Z" });
-		const manager = new SessionManager({ fs, cwd: "/workspace/project", sessionsRoot: "/sessions" });
+		writeSessionFile(fs, "same", { id: "address-target", timestamp: "2026-01-03T00:00:00.000Z" });
+		const manager = new SessionManager({
+			fs,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+			registry: createCorePersistenceRegistry(),
+		});
 
-		await expect(manager.resolveAgentSessionReference(pathTarget)).resolves.toMatchObject({ id: "path-target" });
-		await expect(manager.resolveAgentSessionReference("same")).resolves.toMatchObject({ id: "same" });
+		await expect(manager.resolveAgentSessionReference("same")).resolves.toMatchObject({
+			metadata: { id: "address-target" },
+		});
+		await expect(manager.resolveAgentSessionReference("2026-01-02T00-00-00-000Z_alpha")).resolves.toMatchObject({
+			metadata: { id: "same" },
+		});
+		await expect(manager.resolveAgentSessionReference("missing-everywhere")).rejects.toMatchObject({
+			reason: "not_found",
+		});
 	});
 
 	it("rejects ambiguous session ids with candidate facts", async () => {
 		const fs = new MemoryFileSystem();
 		writeSessionFile(fs, "2026-01-02T00-00-00-000Z_same", { id: "same", timestamp: "2026-01-02T00:00:00.000Z" });
 		writeSessionFile(fs, "2026-01-01T00-00-00-000Z_same", { id: "same", timestamp: "2026-01-01T00:00:00.000Z" });
-		const manager = new SessionManager({ fs, cwd: "/workspace/project", sessionsRoot: "/sessions" });
+		const manager = new SessionManager({
+			fs,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+			registry: createCorePersistenceRegistry(),
+		});
 
 		await expect(manager.resolveAgentSessionReference("same")).rejects.toMatchObject({
 			reason: "ambiguous",
@@ -337,7 +387,12 @@ describe("SessionManager", () => {
 
 	it("stores namespaced extension custom entries on the current branch path", async () => {
 		const fs = new MemoryFileSystem();
-		const manager = new SessionManager({ fs, cwd: "/workspace/project", sessionsRoot: "/sessions" });
+		const manager = new SessionManager({
+			fs,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+			registry: createCorePersistenceRegistry(),
+		});
 		const session = await manager.createAgentSession({ agentId: "main", agentProfile: profile });
 
 		const firstId = await manager.appendExtensionCustomEntry("main", "writer", "state", { value: 1 });
@@ -372,7 +427,12 @@ describe("SessionManager", () => {
 
 	it("keeps extension custom entries as branch facts across fork and compaction", async () => {
 		const fs = new MemoryFileSystem();
-		const manager = new SessionManager({ fs, cwd: "/workspace/project", sessionsRoot: "/sessions" });
+		const manager = new SessionManager({
+			fs,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+			registry: createCorePersistenceRegistry(),
+		});
 		const session = await manager.createAgentSession({ agentId: "main", agentProfile: profile });
 		await session.appendMessage({ role: "user", content: "first", timestamp: 1 });
 		await manager.appendExtensionCustomEntry("main", "writer", "state", { value: 1 });
@@ -381,8 +441,8 @@ describe("SessionManager", () => {
 
 		// Fork before the second user message: the copied path carries the
 		// first entry; the later entry stays on the source branch only.
-		const forkedMetadata = await manager.forkAgentSession("main", { entryId: secondUserId });
-		await expect(manager.findExtensionCustomEntries(forkedMetadata.id, "writer", "state")).resolves.toMatchObject([
+		await manager.forkAgentSession("main", { sessionId: "forked", entryId: secondUserId });
+		await expect(manager.findExtensionCustomEntries("forked", "writer", "state")).resolves.toMatchObject([
 			{ data: { value: 1 } },
 		]);
 		await expect(manager.findExtensionCustomEntries("main", "writer", "state")).resolves.toMatchObject([
@@ -406,6 +466,7 @@ describe("SessionManager", () => {
 			fs: new MemoryFileSystem(),
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
+			registry: createCorePersistenceRegistry(),
 		});
 		const session = await manager.createAgentSession({ agentId: "main", agentProfile: profile });
 		await session.appendModelChange("test", "model-2");
@@ -437,7 +498,12 @@ describe("SessionManager", () => {
 
 	it("snapshots, names, and forks persistent agent sessions", async () => {
 		const fs = new MemoryFileSystem();
-		const manager = new SessionManager({ fs, cwd: "/workspace/project", sessionsRoot: "/sessions" });
+		const manager = new SessionManager({
+			fs,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+			registry: createCorePersistenceRegistry(),
+		});
 		const session = await manager.createAgentSession({ agentId: "main", agentProfile: profile });
 		const userEntryId = await session.appendMessage({ role: "user", content: "hello", timestamp: 1 });
 		await manager.setAgentSessionName("main", "Design Thread");
@@ -454,18 +520,92 @@ describe("SessionManager", () => {
 			entries: [expect.objectContaining({ id: userEntryId }), expect.objectContaining({ type: "session_info" })],
 		});
 
-		const sourceMetadata = await session.getMetadata();
-		if (!("path" in sourceMetadata)) {
-			throw new Error("Expected persisted source metadata.");
-		}
-		const forkedMetadata = await manager.forkAgentSession("main");
+		const forked = await manager.forkAgentSession("main", { sessionId: "forked" });
 
-		expect(forkedMetadata.id).not.toBe("main");
-		expect(forkedMetadata.parentSessionPath).toBe(sourceMetadata.path);
-		expect(forkedMetadata.metadata?.profile).toEqual({ id: profile.id, label: profile.label });
-		await expect(manager.getAgentSessionTree(forkedMetadata.id)).resolves.toMatchObject({
+		// A fork is a new line of work: its own id, its own top-level directory,
+		// and the profile the source ran under.
+		expect(forked.diagnostics).toEqual([]);
+		expect(forked.info.metadata.id).toBe("forked");
+		expect(forked.info.address.key).toMatchObject([expect.stringMatching(/^\d{8}T\d{6}Z_forked$/)]);
+		expect(forked.info.metadata.metadata?.profile).toEqual({ id: profile.id, label: profile.label });
+		await expect(manager.getAgentSessionTree("forked")).resolves.toMatchObject({
+			ref: forked.info.address.key[0],
 			name: "Design Thread",
 			entries: [expect.objectContaining({ id: userEntryId }), expect.objectContaining({ type: "session_info" })],
+		});
+	});
+
+	// The directory nesting is the only record of the agent tree, so this is
+	// where the parent-child relation is asserted: nothing else writes it down.
+	it("nests a spawned agent's session under the session that spawned it", async () => {
+		const fs = new MemoryFileSystem();
+		const manager = new SessionManager({
+			fs,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+			registry: createCorePersistenceRegistry(),
+		});
+		await manager.createAgentSession({ agentId: "root", agentProfile: profile });
+		await manager.createAgentSession({ agentId: "child", agentProfile: profile, parentAgentId: "root" });
+		await manager.createAgentSession({ agentId: "grandchild", agentProfile: profile, parentAgentId: "child" });
+
+		const root = requireAddress(manager, "root");
+		expect(requireAddress(manager, "child").key).toMatchObject([root.key[0], expect.stringContaining("_child")]);
+		expect(requireAddress(manager, "grandchild").key).toHaveLength(3);
+		await expect(manager.repo.listChildren(root)).resolves.toMatchObject([{ metadata: { id: "child" } }]);
+
+		// The header says who spawned it, addressed the same way every other
+		// reference is, so the relation survives the runtime that created it.
+		const [rootCandidate] = await manager.listAgentSessionCandidates();
+		expect(rootCandidate?.origin).toBeUndefined();
+		const [childInfo] = await manager.repo.listChildren(root);
+		expect(parseSessionOrigin(childInfo?.metadata.metadata)).toEqual({ spawnedBy: formatSessionKey(root.key) });
+
+		// Only roots are offered for resume; a child is reached through its root.
+		await expect(manager.listAgentSessionCandidates()).resolves.toMatchObject([{ id: "root" }]);
+		// A child is still addressable, which is what makes it resumable at all.
+		await expect(
+			manager.resolveAgentSessionReference(manager.getAgentSessionRef("grandchild") ?? ""),
+		).resolves.toMatchObject({ metadata: { id: "grandchild" } });
+	});
+
+	// The standard this layer is checked against: after a fork, deleting the
+	// source directory must leave the new session completely readable.
+	it("forks a session with the sessions nested under it", async () => {
+		const fs = new MemoryFileSystem();
+		const manager = new SessionManager({
+			fs,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+			registry: createCorePersistenceRegistry(),
+		});
+		const root = await manager.createAgentSession({ agentId: "root", agentProfile: profile });
+		await root.appendMessage({ role: "user", content: "plan it", timestamp: 1 });
+		const child = await manager.createAgentSession({ agentId: "child", agentProfile: profile, parentAgentId: "root" });
+		await child.appendMessage({ role: "user", content: "do it", timestamp: 2 });
+
+		const sourceRoot = requireAddress(manager, "root");
+		const sourceChild = requireAddress(manager, "child");
+		const forked = await manager.forkAgentSession("root", { sessionId: "forked" });
+		await manager.repo.delete(sourceRoot);
+
+		const [forkedChild] = await manager.repo.listChildren(forked.info.address);
+		if (!forkedChild) throw new Error("Expected the child session to be copied.");
+		expect(forkedChild.metadata.id).toBe("child");
+		// Lineage is recomputed per copied session, never carried over: the copied
+		// child was spawned by the *new* root, and its history came from the old
+		// child. Copying the source header verbatim would name the source tree.
+		expect(parseSessionOrigin(forked.info.metadata.metadata)).toEqual({ forkedFrom: formatSessionKey(sourceRoot.key) });
+		expect(parseSessionOrigin(forkedChild.metadata.metadata)).toEqual({
+			spawnedBy: formatSessionKey(forked.info.address.key),
+			forkedFrom: formatSessionKey(sourceChild.key),
+		});
+		const opened = await manager.repo.open(forkedChild.address);
+		await expect(opened.session.getFullBranch()).resolves.toMatchObject([
+			{ type: "message", message: { content: "do it" } },
+		]);
+		await expect(manager.getAgentSessionTree("forked")).resolves.toMatchObject({
+			pathToRoot: [{ type: "message", message: { content: "plan it" } }],
 		});
 	});
 
@@ -474,6 +614,7 @@ describe("SessionManager", () => {
 			fs: new MemoryFileSystem(),
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
+			registry: createCorePersistenceRegistry(),
 		});
 		await manager.createAgentSession({ agentId: "main", agentProfile: profile });
 		const circular: { self?: unknown } = {};

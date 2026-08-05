@@ -528,8 +528,8 @@ describe("dispose_agent", () => {
 		const parent = await spawnChild(orchestrator, root);
 		const grandchild = await spawnChild(orchestrator, parent);
 		const sibling = await spawnChild(orchestrator, root);
-		const parentMetadata = orchestrator.inspectAgent(parent).sessionMetadata;
-		if (!parentMetadata || !("path" in parentMetadata)) throw new Error("Expected a persistent child session.");
+		const parentRef = orchestrator.sessionManager.getAgentSessionRef(parent);
+		if (parentRef === undefined) throw new Error("Expected a persistent child session.");
 
 		await disposeAgent.execute(
 			"dispose-parent-only",
@@ -544,7 +544,7 @@ describe("dispose_agent", () => {
 		const listed = await listAgents.execute("list-from-grandchild", {}, toolContext(orchestrator, grandchild));
 		expect(listed.details.agents.map((agent) => agent.agentId)).toEqual([root, grandchild, sibling]);
 
-		await orchestrator.spawnAgent({ origin: { kind: "resume", reference: parentMetadata } });
+		await orchestrator.spawnAgent({ origin: { kind: "resume", reference: parentRef } });
 		expect(spawnParentOf(orchestrator, parent)).toBe(root);
 		const relisted = await listAgents.execute("list-after-parent-resume", {}, toolContext(orchestrator, grandchild));
 		expect(relisted.details.agents.map((agent) => agent.agentId)).toEqual([root, parent, grandchild, sibling]);

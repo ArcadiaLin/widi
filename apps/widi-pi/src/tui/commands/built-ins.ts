@@ -195,9 +195,9 @@ export const builtInCommands: readonly CommandDefinition[] = [
 			activity.activity === "running" ? "Command /resume is not available while the agent is running." : undefined,
 		complete: async ({ orchestrator }) =>
 			(await orchestrator.listAgentSessions()).sessions.map((session) => ({
-				// Resolve by path, not id: the session id equals the creating
+				// Resolve by address, not id: the session id equals the creating
 				// agent's id and repeats across runs, making bare ids ambiguous.
-				value: session.path,
+				value: session.ref,
 				label: sessionCandidateLabel(session),
 				description: sessionCandidateDescription(session),
 			})),

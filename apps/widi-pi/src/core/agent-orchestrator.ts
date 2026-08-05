@@ -26,7 +26,6 @@ import {
 	type AgentHarnessPhase,
 	type CompactResult,
 	type ExecutionEnv,
-	getFileSystemResultOrThrow,
 	type JsonlSessionMetadata,
 	type NavigateTreeResult,
 	type PendingSessionWrite,
@@ -143,10 +142,10 @@ import {
 import type { ProviderConfigInput } from "./model-registry.ts";
 import {
 	createPersistenceRefData,
-	encodeNamespaceDirName,
 	type NamespaceProjection,
-	PERSISTENCE_DIR_NAME,
 	PERSISTENCE_REF_CUSTOM_TYPE,
+	type PersistedSessionInfo,
+	type PersistenceDiagnostic,
 	PersistenceDiagnostics,
 	type PersistenceRefData,
 	projectBranch,
@@ -269,7 +268,7 @@ export interface ExtensionReloadResult {
  */
 export type SpawnAgentOrigin =
 	| { readonly kind: "new"; readonly profileId?: string; readonly profileOverride?: AgentProfileOverride }
-	| { readonly kind: "resume"; readonly reference: string | JsonlSessionMetadata }
+	| { readonly kind: "resume"; readonly reference: string | PersistedSessionInfo }
 	| { readonly kind: "fork"; readonly sourceAgentId: AgentId; readonly entryId?: string };
 
 export interface SpawnAgentOptions {
@@ -782,6 +781,7 @@ export class AgentOrchestrator {
 			profile: liveAgent.profile,
 			...(spawnedBy === undefined ? undefined : { spawnedBy }),
 			...(liveAgent.sessionMetadata === undefined ? undefined : { sessionMetadata: liveAgent.sessionMetadata }),
+			...(liveAgent.sessionRef === undefined ? undefined : { sessionRef: liveAgent.sessionRef }),
 			model: harness.getModel(),
 			thinkingLevel: harness.getThinkingLevel(),
 			tools: this._snapshotAgentTools(liveAgent),
@@ -952,20 +952,20 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Resolve an origin into a build request. `new` allocates a readable AgentId
-	 * and creates the session, `resume` reuses the id the session recorded, `fork`
-	 * takes the new session's id. Nothing live is registered here.
+	 * Resolve an origin into a build request. `new` and `fork` allocate a readable
+	 * AgentId and create the session under it, `resume` reuses the id the session
+	 * recorded. Nothing live is registered here.
 	 */
 	private async _resolveAgentBuild(options: SpawnAgentOptions): Promise<AgentBuildRequest> {
 		const settings = this._captureAgentSettings();
 		if (options.origin.kind === "resume") {
-			const metadata =
+			const info =
 				typeof options.origin.reference === "string"
 					? await this.sessionManager.resolveAgentSessionReference(options.origin.reference)
 					: options.origin.reference;
-			const agentId = metadata.id;
-			const resolvedProfile = await this._resolveResumeProfile(agentId, metadata);
-			const session = await this.sessionManager.resumeAgentSession({ agentId, metadata });
+			const agentId = info.metadata.id;
+			const resolvedProfile = await this._resolveResumeProfile(agentId, info.metadata);
+			const session = await this.sessionManager.resumeAgentSession({ agentId, info });
 			const context = await this.sessionManager.buildAgentSessionContext(agentId);
 			return {
 				agentId,
@@ -998,19 +998,23 @@ export class AgentOrchestrator {
 					agentId: source.agentId,
 				});
 			}
-			const metadata = await this.sessionManager.forkAgentSession(
-				source.agentId,
-				options.origin.entryId === undefined ? undefined : { entryId: options.origin.entryId },
-			);
+			// The fork owns a new session directory, so it needs an id of its own
+			// before the copy: the directory name is built from it, and the source's
+			// id is taken by the agent still running under it.
+			const agentId = this._allocateAgentId(source.resolvedProfile);
+			const forked = await this.sessionManager.forkAgentSession(source.agentId, {
+				sessionId: agentId,
+				...(options.origin.entryId === undefined ? undefined : { entryId: options.origin.entryId }),
+			});
+			await this._publishPersistenceDiagnostics(agentId, forked.diagnostics);
 			await this._emit({
 				type: "agent_session_forked",
 				agentId: source.agentId,
-				forkedSessionId: metadata.id,
+				forkedSessionId: agentId,
 				...(options.origin.entryId === undefined ? undefined : { entryId: options.origin.entryId }),
 				createdAt: now(),
 			});
-			const agentId = metadata.id;
-			const session = await this.sessionManager.resumeAgentSession({ agentId, metadata });
+			const session = await this.sessionManager.resumeAgentSession({ agentId, info: forked.info });
 			return {
 				agentId,
 				origin: "fork",
@@ -1033,7 +1037,17 @@ export class AgentOrchestrator {
 
 		const resolvedProfile = await this._resolveCreateProfile(options.origin);
 		const agentId = this._allocateAgentId(resolvedProfile.profile);
-		const session = await this.sessionManager.createAgentSession({ agentId, agentProfile: resolvedProfile.profile });
+		// The spawner's session directory owns the new one. That nesting is the
+		// only record of the agent tree - `docs/ZH/agent-tree-persistence.md` §1 -
+		// so it is established here, at the one moment the parent is known.
+		const diagnostics = new PersistenceDiagnostics();
+		const session = await this.sessionManager.createAgentSession({
+			agentId,
+			agentProfile: resolvedProfile.profile,
+			...(options.parent === undefined ? undefined : { parentAgentId: options.parent }),
+			diagnostics,
+		});
+		await this._publishPersistenceDiagnostics(agentId, diagnostics.entries);
 		return {
 			agentId,
 			origin: "new",
@@ -1074,6 +1088,7 @@ export class AgentOrchestrator {
 
 		try {
 			const sessionId = (await request.session.getMetadata()).id;
+			const sessionRef = this.sessionManager.getAgentSessionRef(agentId);
 			partial.backgroundAttachment = await this._backgroundJobs.attachAgent({ agentId, sessionId });
 			this._assertBuildNotCancelled(agentId, reservation);
 
@@ -1141,6 +1156,7 @@ export class AgentOrchestrator {
 				profile: createAgentProfileRecordReference(resolvedProfile),
 				resolvedProfile: profile,
 				...(request.sessionMetadata === undefined ? undefined : { sessionMetadata: request.sessionMetadata }),
+				...(sessionRef === undefined ? undefined : { sessionRef }),
 				resources,
 				systemPrompt,
 				harness,
@@ -2821,7 +2837,7 @@ export class AgentOrchestrator {
 					this._requireProjectTrustForExtension(agentId, extensionId, "list the project's sessions");
 					const candidates = await this.sessionManager.listAgentSessionCandidates();
 					return candidates.map((candidate) => ({
-						ref: this.sessionManager.toSessionHandle(candidate.path),
+						ref: this.sessionManager.toSessionHandle(candidate.ref),
 						id: candidate.id,
 						createdAt: candidate.createdAt,
 						...(candidate.profile === undefined ? undefined : { profile: { ...candidate.profile } }),
@@ -2829,9 +2845,12 @@ export class AgentOrchestrator {
 						...(candidate.firstUserMessage === undefined
 							? undefined
 							: { firstUserMessage: candidate.firstUserMessage }),
-						...(candidate.parentSessionPath === undefined
+						// A ref for a session the extension may never have been shown: it
+						// buys nothing it could not get by listing, since only sessions of
+						// this project are listed and every one of them is listed.
+						...(candidate.origin?.forkedFrom === undefined
 							? undefined
-							: { parentRef: this.sessionManager.toSessionHandle(candidate.parentSessionPath) }),
+							: { forkedFromRef: this.sessionManager.toSessionHandle(candidate.origin.forkedFrom) }),
 					}));
 				},
 				readSession: async (extensionId, ref) => {
@@ -3951,30 +3970,24 @@ export class AgentOrchestrator {
 	 * Open one agent's job history, or nothing for an agent with no session
 	 * directory. An ephemeral agent still runs jobs; it just leaves no record.
 	 *
-	 * The namespace directory is addressed the way the new repository will
-	 * address it - `<session>/persistence/<namespace>` - so the migration in
-	 * `docs/ZH/orchestrator-wiring-plan.md` D renames session directories and
-	 * leaves everything written here where it is.
+	 * The storage comes from the repository rather than being opened against a
+	 * computed path, so the namespace lands where the registered definition says
+	 * it does. What comes back is whatever `core:jobs` registered; a foreign
+	 * storage under that name means the registry was tampered with, and there is
+	 * nothing sensible to do with it.
 	 */
 	private async _openAgentJobStore(agentId: AgentId): Promise<SessionJobStore | undefined> {
-		const sessionDir = await this.sessionManager.getAgentSessionDir(agentId);
-		if (sessionDir === undefined) return undefined;
+		const address = this.sessionManager.getAgentSessionAddress(agentId);
+		if (address === undefined) return undefined;
 		const diagnostics = new PersistenceDiagnostics();
-		const storage = await JobHistoryStorage.open({
-			fs: this.executionEnv,
-			dirPath: getFileSystemResultOrThrow(
-				await this.executionEnv.joinPath([sessionDir, PERSISTENCE_DIR_NAME, encodeNamespaceDirName(JOBS_NAMESPACE)]),
-				`Failed to resolve the ${JOBS_NAMESPACE} directory of agent ${agentId}`,
-			),
-			// Diagnostic identity only, and the directory name is what a reader can
-			// still match against a session after this runtime is gone.
-			sessionKey: [(await this.sessionManager.getAgentSessionDirName(agentId)) ?? agentId],
-			diagnostics,
-		});
+		const storage = await this.sessionManager.repo.openStorage(address, JOBS_NAMESPACE, diagnostics);
 		try {
+			if (!(storage instanceof JobHistoryStorage)) {
+				throw new Error(`Persistence namespace ${JOBS_NAMESPACE} is not registered as the job history.`);
+			}
 			return await SessionJobStore.open({ storage, branch: this._openBranchState(agentId, JOBS_NAMESPACE) });
 		} finally {
-			await this._publishPersistenceDiagnostics(agentId, diagnostics);
+			await this._publishPersistenceDiagnostics(agentId, diagnostics.entries);
 		}
 	}
 
@@ -4041,14 +4054,12 @@ export class AgentOrchestrator {
 	}
 
 	/** Persistence reports in its own vocabulary; the codes are republished as they are. */
-	private async _publishPersistenceDiagnostics(agentId: AgentId, diagnostics: PersistenceDiagnostics): Promise<void> {
+	private async _publishPersistenceDiagnostics(
+		agentId: AgentId,
+		diagnostics: readonly PersistenceDiagnostic[],
+	): Promise<void> {
 		await this._publishDiagnostics(
-			diagnostics.entries.map((entry) => ({
-				severity: entry.severity,
-				code: entry.code,
-				message: entry.message,
-				agentId,
-			})),
+			diagnostics.map((entry) => ({ severity: entry.severity, code: entry.code, message: entry.message, agentId })),
 		);
 	}
 
@@ -4473,11 +4484,9 @@ function toExtensionSessionSnapshot(
 	snapshot: AgentSessionSnapshot,
 	sessions: SessionManager,
 ): ExtensionSessionSnapshot {
-	const { metadata } = snapshot;
-	const path = "path" in metadata && typeof metadata.path === "string" ? metadata.path : undefined;
 	return {
-		...(path === undefined ? undefined : { ref: sessions.toSessionHandle(path) }),
-		id: metadata.id,
+		...(snapshot.ref === undefined ? undefined : { ref: sessions.toSessionHandle(snapshot.ref) }),
+		id: snapshot.metadata.id,
 		...(snapshot.name === undefined ? undefined : { name: snapshot.name }),
 		leafId: snapshot.leafId,
 		pathToRoot: cloneSessionEntries(snapshot.pathToRoot),

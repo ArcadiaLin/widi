@@ -1,5 +1,5 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { AgentHarnessEvent, BeforeAgentStartEvent, JsonlSessionMetadata } from "@widi/agent-core";
+import type { AgentHarnessEvent, BeforeAgentStartEvent } from "@widi/agent-core";
 import { ok } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
@@ -11,6 +11,7 @@ import {
 import { AuthStorage, type AuthStorageBackend, type LockResult } from "../../src/core/auth-storage.ts";
 import type { ExtensionContext } from "../../src/core/extension/api.ts";
 import { ModelRegistry, type OAuthProviderConfig } from "../../src/core/model-registry.ts";
+import { createCorePersistenceRegistry } from "../../src/core/persistence-registry.ts";
 import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
 import { ResourceLoader } from "../../src/core/resource-loader.ts";
 import { EXTENSION_MESSAGE_CUSTOM_TYPE, SessionManager } from "../../src/core/session-manager.ts";
@@ -83,11 +84,11 @@ function overflowAssistantMessage(): AssistantMessage {
 	};
 }
 
-function expectExtendedMetadata(metadata: { id: string; createdAt: string }): JsonlSessionMetadata {
-	if (!("path" in metadata) || typeof metadata.path !== "string") {
-		throw new Error("Expected persistent JSONL session metadata.");
-	}
-	return metadata as JsonlSessionMetadata;
+// A session is addressed by its ref; only a persisted one has one.
+function sessionRef(sessions: SessionManager, agentId: string): string {
+	const ref = sessions.getAgentSessionRef(agentId);
+	if (ref === undefined) throw new Error(`Expected a persisted session for ${agentId}.`);
+	return ref;
 }
 
 // Writes a session in the on-disk layout: one directory per session, holding
@@ -206,7 +207,12 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = new AgentOrchestrator({
 			executionEnv: env,
 			resourceLoader: new ResourceLoader({ executionEnv: env, cwd: "/workspace/project" }),
-			sessionManager: new SessionManager({ fs: env, cwd: "/workspace/project", sessionsRoot: "/sessions" }),
+			sessionManager: new SessionManager({
+				fs: env,
+				cwd: "/workspace/project",
+				sessionsRoot: "/sessions",
+				registry: createCorePersistenceRegistry(),
+			}),
 			settingManager,
 			modelRegistry,
 			profileRegistry: createProfileRegistry(),
@@ -242,7 +248,12 @@ describe("AgentOrchestrator", () => {
 		const orchestrator = new AgentOrchestrator({
 			executionEnv: env,
 			resourceLoader: new ResourceLoader({ executionEnv: env, cwd: "/workspace/project" }),
-			sessionManager: new SessionManager({ fs: env, cwd: "/workspace/project", sessionsRoot: "/sessions" }),
+			sessionManager: new SessionManager({
+				fs: env,
+				cwd: "/workspace/project",
+				sessionsRoot: "/sessions",
+				registry: createCorePersistenceRegistry(),
+			}),
 			settingManager: new SettingManager(),
 			modelRegistry: await createModelRegistry(env),
 			profileRegistry,
@@ -270,11 +281,15 @@ describe("AgentOrchestrator", () => {
 
 	it("resumes a persisted agent harness from session metadata", async () => {
 		const env = new MemoryExecutionEnv();
-		const sessionManager = new SessionManager({ fs: env, cwd: "/workspace/project", sessionsRoot: "/sessions" });
+		const sessionManager = new SessionManager({
+			fs: env,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+			registry: createCorePersistenceRegistry(),
+		});
 		const session = await sessionManager.createAgentSession({ agentId: "worker-agent", agentProfile: restoredProfile });
 		await session.appendModelChange(restoredModel.provider, restoredModel.id);
 		await session.appendThinkingLevelChange("medium");
-		const metadata = expectExtendedMetadata(await session.getMetadata());
 		const modelRegistry = await createModelRegistry(env);
 		const events: OrchestratorEvent[] = [];
 
@@ -292,7 +307,9 @@ describe("AgentOrchestrator", () => {
 			events.push(event);
 		});
 
-		const agentId = await orchestrator.spawnAgent({ origin: { kind: "resume", reference: metadata } });
+		const agentId = await orchestrator.spawnAgent({
+			origin: { kind: "resume", reference: sessionRef(sessionManager, "worker-agent") },
+		});
 
 		expect(agentId).toBe("worker-agent");
 		expect(requireAgentHarness(orchestrator, agentId).getModel()).toMatchObject({
@@ -316,9 +333,13 @@ describe("AgentOrchestrator", () => {
 
 	it("leaves no agent behind when resume profile resolution fails", async () => {
 		const env = new MemoryExecutionEnv();
-		const sessionManager = new SessionManager({ fs: env, cwd: "/workspace/project", sessionsRoot: "/sessions" });
-		const session = await sessionManager.createAgentSession({ agentId: "worker-agent", agentProfile: restoredProfile });
-		const metadata = expectExtendedMetadata(await session.getMetadata());
+		const sessionManager = new SessionManager({
+			fs: env,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+			registry: createCorePersistenceRegistry(),
+		});
+		await sessionManager.createAgentSession({ agentId: "worker-agent", agentProfile: restoredProfile });
 		const orchestrator = new AgentOrchestrator({
 			executionEnv: env,
 			resourceLoader: new ResourceLoader({ executionEnv: env, cwd: "/workspace/project" }),
@@ -332,9 +353,9 @@ describe("AgentOrchestrator", () => {
 			defaultModel,
 		});
 
-		await expect(orchestrator.spawnAgent({ origin: { kind: "resume", reference: metadata } })).rejects.toMatchObject({
-			code: "profile.resolution_failed",
-		});
+		await expect(
+			orchestrator.spawnAgent({ origin: { kind: "resume", reference: sessionRef(sessionManager, "worker-agent") } }),
+		).rejects.toMatchObject({ code: "profile.resolution_failed" });
 
 		// A build that fails registers nothing: the failure reached the caller as
 		// the throw, and there is no half-agent left for anything to address.
@@ -350,11 +371,15 @@ describe("AgentOrchestrator", () => {
 
 	it("leaves no agent behind when resume model restoration fails", async () => {
 		const env = new MemoryExecutionEnv();
-		const sessionManager = new SessionManager({ fs: env, cwd: "/workspace/project", sessionsRoot: "/sessions" });
+		const sessionManager = new SessionManager({
+			fs: env,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+			registry: createCorePersistenceRegistry(),
+		});
 		const session = await sessionManager.createAgentSession({ agentId: "worker-agent", agentProfile: restoredProfile });
 		await session.appendModelChange(restoredModel.provider, restoredModel.id);
 		await session.appendThinkingLevelChange("medium");
-		const metadata = expectExtendedMetadata(await session.getMetadata());
 		const orchestrator = new AgentOrchestrator({
 			executionEnv: env,
 			resourceLoader: new ResourceLoader({ executionEnv: env, cwd: "/workspace/project" }),
@@ -366,9 +391,9 @@ describe("AgentOrchestrator", () => {
 			defaultModel,
 		});
 
-		await expect(orchestrator.spawnAgent({ origin: { kind: "resume", reference: metadata } })).rejects.toThrow(
-			"model is not registered",
-		);
+		await expect(
+			orchestrator.spawnAgent({ origin: { kind: "resume", reference: sessionRef(sessionManager, "worker-agent") } }),
+		).rejects.toThrow("model is not registered");
 
 		expect(orchestrator.listAgents().agents).toEqual([]);
 		expect(() => orchestrator.inspectAgent("worker-agent")).toThrow(/Unknown agent/);
@@ -1077,19 +1102,20 @@ describe("AgentOrchestrator", () => {
 		});
 		await session.appendModelChange(restoredModel.provider, restoredModel.id);
 		await session.appendThinkingLevelChange("medium");
-		const metadata = expectExtendedMetadata(await session.getMetadata());
 
 		await expect(orchestrator.listAgentSessions()).resolves.toMatchObject({
 			sessions: expect.arrayContaining([
 				expect.objectContaining({
 					id: "worker-agent",
-					path: metadata.path,
+					ref: sessionRef(orchestrator.sessionManager, "worker-agent"),
 					profile: { id: restoredProfile.id, label: restoredProfile.label },
 				}),
 				expect.objectContaining({ id: agentId }),
 			]),
 		});
-		const resumedAgentId = await orchestrator.spawnAgent({ origin: { kind: "resume", reference: metadata.path } });
+		const resumedAgentId = await orchestrator.spawnAgent({
+			origin: { kind: "resume", reference: sessionRef(orchestrator.sessionManager, "worker-agent") },
+		});
 
 		expect(resumedAgentId).toBe("worker-agent");
 		expect(orchestrator.inspectAgent(resumedAgentId)).toMatchObject({
@@ -1186,8 +1212,11 @@ describe("AgentOrchestrator", () => {
 			model: expect.objectContaining({ id: defaultModel.id }),
 		});
 		const forkedTree = await orchestrator.getAgentSessionTree(forkedAgentId);
+		// A top-level session of its own: the fork is a new line of work, and its
+		// id is the AgentId it runs under rather than the source's.
 		expect(forkedTree).toMatchObject({
-			metadata: { id: forkedAgentId, parentSessionPath: expect.any(String) },
+			ref: sessionRef(orchestrator.sessionManager, forkedAgentId),
+			metadata: { id: forkedAgentId, parentSessionPath: undefined },
 			entries: [expect.objectContaining({ id: keptEntryId })],
 			leafId: keptEntryId,
 		});
@@ -1341,15 +1370,13 @@ describe("AgentOrchestrator", () => {
 		const env = new MemoryExecutionEnv();
 		const orchestrator = await createOrchestrator(env);
 		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
-		const sessionMetadata = orchestrator.inspectAgent(agentId).sessionMetadata;
-		if (!sessionMetadata) throw new Error("Expected agent session metadata.");
-		const persistedSession = expectExtendedMetadata(sessionMetadata);
+		const ref = sessionRef(orchestrator.sessionManager, agentId);
 
 		await orchestrator.disposeAgent(agentId, { intent: "removed", reason: "runtime cleanup" });
 
 		expect(orchestrator.getAgentActivity(agentId).activity).toBe("disposed");
 		await expect(orchestrator.listAgentSessions()).resolves.toMatchObject({
-			sessions: expect.arrayContaining([expect.objectContaining({ id: agentId, path: persistedSession.path })]),
+			sessions: expect.arrayContaining([expect.objectContaining({ id: agentId, ref })]),
 		});
 	});
 
@@ -1458,11 +1485,20 @@ describe("AgentOrchestrator", () => {
 
 	it("filters missing resume active tools through ToolRegistry diagnostics", async () => {
 		const env = new MemoryExecutionEnv();
-		const sessionManager = new SessionManager({ fs: env, cwd: "/workspace/project", sessionsRoot: "/sessions" });
+		const sessionManager = new SessionManager({
+			fs: env,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+			registry: createCorePersistenceRegistry(),
+		});
 		const session = await sessionManager.createAgentSession({ agentId: "worker-agent", agentProfile: restoredProfile });
 		await session.appendActiveToolsChange(["echo", "ghost"]);
-		const metadata = expectExtendedMetadata(await session.getMetadata());
-		const resumeSessionManager = new SessionManager({ fs: env, cwd: "/workspace/project", sessionsRoot: "/sessions" });
+		const resumeSessionManager = new SessionManager({
+			fs: env,
+			cwd: "/workspace/project",
+			sessionsRoot: "/sessions",
+			registry: createCorePersistenceRegistry(),
+		});
 		const orchestrator = new AgentOrchestrator({
 			executionEnv: env,
 			resourceLoader: new ResourceLoader({ executionEnv: env, cwd: "/workspace/project" }),
@@ -1479,7 +1515,9 @@ describe("AgentOrchestrator", () => {
 			events.push(event);
 		});
 
-		const agentId = await orchestrator.spawnAgent({ origin: { kind: "resume", reference: metadata } });
+		const agentId = await orchestrator.spawnAgent({
+			origin: { kind: "resume", reference: sessionRef(sessionManager, "worker-agent") },
+		});
 
 		expect(orchestrator.getAgentTools(agentId).activeToolNames).toEqual(["echo"]);
 		expect(events).toContainEqual(
@@ -1502,14 +1540,12 @@ describe("AgentOrchestrator", () => {
 		});
 		const agentId = await firstOrchestrator.spawnAgent({ origin: { kind: "new" } });
 		await firstOrchestrator.setAgentActiveTools(agentId, []);
-		const sessionMetadata = firstOrchestrator.inspectAgent(agentId).sessionMetadata;
-		if (!sessionMetadata) throw new Error("Expected session metadata.");
 
 		const resumedOrchestrator = await createOrchestrator(env, {
 			toolRegistry: createToolRegistry(createToolDefinition("echo")),
 		});
 		const resumedAgentId = await resumedOrchestrator.spawnAgent({
-			origin: { kind: "resume", reference: expectExtendedMetadata(sessionMetadata) },
+			origin: { kind: "resume", reference: sessionRef(firstOrchestrator.sessionManager, agentId) },
 		});
 
 		expect(resumedAgentId).toBe(agentId);

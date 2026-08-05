@@ -1,16 +1,22 @@
 /**
- * SessionManager owns session repositories used by AgentOrchestrator.
+ * SessionManager owns the session repository used by AgentOrchestrator.
  *
- * Persistent sessions use pi-agent-core JSONL storage, laid out one directory
- * per session by SessionDirectoryRepo so a session can own artifacts beyond its
- * conversation history. WIDI stores profile references in the JSONL session
- * header metadata so resume can rebuild harness context.
+ * Persistent sessions live in `JsonlPersistenceRepo`: one directory per
+ * session, holding its history, the custom storage of every persistence
+ * namespace, and the directories of the sessions it spawned. WIDI stores
+ * profile references in the JSONL session header metadata so resume can rebuild
+ * harness context.
+ *
+ * A session is addressed by its {@link SessionAddress} - the cwd group plus the
+ * chain of directory names down to it - never by the path of its history file.
+ * The text form of that address is what a `/resume` argument, an extension
+ * session handle, and every other reference carry. Paths stay inside the
+ * repository, which is what lets the layout change without a migration.
  */
 
 import { randomUUID } from "node:crypto";
 import type {
 	AgentMessage,
-	FileError,
 	FileSystem,
 	JsonlSessionMetadata,
 	Session,
@@ -19,12 +25,27 @@ import type {
 	SessionMetadata,
 	SessionTreeEntry,
 } from "@widi/agent-core";
-import { buildSessionContext, InMemorySessionStore, toSession } from "@widi/agent-core";
+import { buildSessionContext, getFileSystemResultOrThrow, InMemorySessionStore, toSession } from "@widi/agent-core";
 import { formatError } from "../utils/errors.ts";
 import type { AgentProfile, AgentProfileReference } from "./agent-profile.js";
 import { parseAgentProfileReference, toAgentProfileReference } from "./agent-profile.js";
 import type { ExtensionInputPresentation, ExtensionMessage } from "./extension/presentation.ts";
-import { SessionDirectoryRepo, sessionDirPath } from "./session-repo.ts";
+import type {
+	PersistedSessionInfo,
+	PersistenceDiagnostic,
+	PersistenceRegistry,
+	SessionAddress,
+	SessionOrigin,
+} from "./persistence/index.ts";
+import {
+	formatSessionKey,
+	JsonlPersistenceRepo,
+	loadJsonlSessionMetadata,
+	type PersistenceDiagnostics,
+	parseSessionKey,
+	parseSessionOrigin,
+	sessionKeysEqual,
+} from "./persistence/index.ts";
 import type { AgentId } from "./types.ts";
 
 export type AgentSessionMetadata = SessionMetadata | JsonlSessionMetadata;
@@ -73,11 +94,14 @@ export interface ExtensionInputPresentationEntryData {
 }
 
 export interface AgentSessionCandidate {
+	/** Text form of the session address; how every consumer names this session. */
+	readonly ref: string;
+	/** The header id, which equals the AgentId that created it and repeats across runs. */
 	readonly id: string;
-	readonly path: string;
 	readonly createdAt: string;
 	readonly cwd: string;
-	readonly parentSessionPath?: string;
+	/** Where this session came from: which session spawned it, which it was forked from. */
+	readonly origin?: SessionOrigin;
 	readonly profile?: AgentProfileReference;
 	/** Latest session_info name, when the user named the session. */
 	readonly name?: string;
@@ -86,6 +110,8 @@ export interface AgentSessionCandidate {
 }
 
 export interface AgentSessionSnapshot {
+	/** Absent for an ephemeral session, which owns no directory to address. */
+	readonly ref?: string;
 	readonly metadata: AgentSessionMetadata;
 	readonly name?: string;
 	readonly leafId: string | null;
@@ -97,8 +123,16 @@ export interface AgentSessionTreeSnapshot extends AgentSessionSnapshot {
 }
 
 export interface ForkAgentSessionOptions {
+	/** Id of the new session. The caller owns AgentId allocation, so it picks. */
+	readonly sessionId: string;
 	readonly entryId?: string;
 	readonly position?: SessionForkOptions["position"];
+}
+
+export interface AgentSessionForkResult {
+	readonly info: PersistedSessionInfo;
+	/** Namespaces that could not be carried over, per session copied. */
+	readonly diagnostics: readonly PersistenceDiagnostic[];
 }
 
 export type AgentSessionResolutionFailureReason = "not_found" | "ambiguous";
@@ -129,40 +163,56 @@ export interface SessionManagerConfigs {
 	fs: FileSystem;
 	cwd: string;
 	sessionsRoot: string;
+	/** Which persistence namespaces this build can read; see `persistence-registry.ts`. */
+	registry: PersistenceRegistry;
 }
 
-type CreateAgentSessionOptions = { agentId: AgentId; agentProfile: AgentProfile; parentSessionPath?: string };
+type CreateAgentSessionOptions = {
+	agentId: AgentId;
+	agentProfile: AgentProfile;
+	/** The agent that spawned this one; its session directory holds the new one. */
+	parentAgentId?: AgentId;
+	diagnostics?: PersistenceDiagnostics;
+};
 
-type ResumeAgentSessionOptions = { agentId: AgentId; metadata: JsonlSessionMetadata };
+type ResumeAgentSessionOptions = { agentId: AgentId; info: PersistedSessionInfo };
 
 export class SessionManager {
-	readonly sessionRepo: SessionDirectoryRepo;
+	readonly repo: JsonlPersistenceRepo;
 	private readonly _fs: FileSystem;
 	private readonly _cwd: string;
 	private readonly _agentSessions: Map<AgentId, Session<AgentSessionMetadata>> = new Map();
-	/** Runtime AgentId to persisted session directory name. */
-	private readonly _agentSessionDirs = new Map<AgentId, string>();
+	/** Runtime AgentId to the session directory it is bound to; ephemeral agents have none. */
+	private readonly _agentAddresses = new Map<AgentId, SessionAddress>();
 	// Held as a store rather than through pi's SessionRepo: the repo now hands
 	// back a snapshot-backed Session that reloads the whole session on every
 	// read. Sessions here are long-lived handles, so they stay bound to the
 	// stateful storage the store already keeps.
 	private readonly _memorySessionStore: InMemorySessionStore = new InMemorySessionStore();
-	// Opaque session handles for consumers that must not see filesystem paths.
-	private readonly _sessionHandlesByPath: Map<string, string> = new Map();
-	private readonly _sessionPathsByHandle: Map<string, string> = new Map();
+	// Opaque session handles for consumers that must not see the layout at all.
+	private readonly _sessionHandlesByRef: Map<string, string> = new Map();
+	private readonly _sessionRefsByHandle: Map<string, string> = new Map();
 
 	constructor(config: SessionManagerConfigs) {
 		this._fs = config.fs;
 		this._cwd = config.cwd;
-		this.sessionRepo = new SessionDirectoryRepo({ fs: config.fs, sessionsRoot: config.sessionsRoot });
+		this.repo = new JsonlPersistenceRepo({ fs: config.fs, root: config.sessionsRoot, registry: config.registry });
 	}
 
+	/**
+	 * Top-level sessions of this project, newest first.
+	 *
+	 * Child sessions are deliberately absent: a spawned agent's session belongs
+	 * to the tree of the session that spawned it and is restored - or, today, not
+	 * restored - through it. Offering one in a resume picker would open the same
+	 * conversation twice.
+	 */
 	async listAgentSessionCandidates(): Promise<AgentSessionCandidate[]> {
-		const sessions = await this.sessionRepo.list({ cwd: this._cwd });
+		const sessions = await this.repo.list({ cwd: this._cwd });
 		return await Promise.all(
-			sessions.map(async (metadata) => ({
-				...toAgentSessionCandidate(metadata),
-				...(await this._loadSessionDisplayFacts(metadata.path)),
+			sessions.map(async (info) => ({
+				...toAgentSessionCandidate(info),
+				...(await this._loadSessionDisplayFacts(info.metadata.path)),
 			})),
 		);
 	}
@@ -198,28 +248,27 @@ export class SessionManager {
 		return facts;
 	}
 
-	async resolveAgentSessionReference(reference: string): Promise<JsonlSessionMetadata> {
+	/**
+	 * Resolve a reference to one session of this project.
+	 *
+	 * An address is tried first and answers for any depth, so a child session can
+	 * be named even though nothing lists one. A header id is the fallback for
+	 * people typing what they see: it equals the AgentId that created the session
+	 * and repeats across runs, so it can be ambiguous, and an ambiguous one fails
+	 * loudly rather than picking a session.
+	 */
+	async resolveAgentSessionReference(reference: string): Promise<PersistedSessionInfo> {
 		const normalized = reference.trim();
 		if (!normalized) {
 			throw new AgentSessionResolutionError({ reason: "not_found", reference, candidates: [] });
 		}
 
-		const sessions = await this.sessionRepo.list({ cwd: this._cwd });
-		const absoluteReference = fileSystemValueOrThrow(
-			await this._fs.absolutePath(normalized),
-			`Failed to resolve session reference ${normalized}`,
-		);
-		const pathMatches = sessions.filter((session) => session.path === normalized || session.path === absoluteReference);
-		if (pathMatches.length === 1) return pathMatches[0];
-		if (pathMatches.length > 1) {
-			throw new AgentSessionResolutionError({
-				reason: "ambiguous",
-				reference: normalized,
-				candidates: pathMatches.map(toAgentSessionCandidate),
-			});
-		}
+		const key = parseSessionKey(normalized);
+		const addressed = key === undefined ? undefined : await this._readSessionInfo({ cwd: this._cwd, key });
+		if (addressed) return addressed;
 
-		const idMatches = sessions.filter((session) => session.id === normalized);
+		const sessions = await this.repo.list({ cwd: this._cwd });
+		const idMatches = sessions.filter((session) => session.metadata.id === normalized);
 		if (idMatches.length === 1) return idMatches[0];
 		if (idMatches.length > 1) {
 			throw new AgentSessionResolutionError({
@@ -232,6 +281,17 @@ export class SessionManager {
 		throw new AgentSessionResolutionError({ reason: "not_found", reference: normalized, candidates: [] });
 	}
 
+	/** Header facts of one session directory, or undefined when there is none. */
+	private async _readSessionInfo(address: SessionAddress): Promise<PersistedSessionInfo | undefined> {
+		const filePath = await this.repo.sessionFilePath(address);
+		const exists = getFileSystemResultOrThrow(
+			await this._fs.exists(filePath),
+			`Failed to check session ${formatSessionKey(address.key)}`,
+		);
+		if (!exists) return undefined;
+		return { address, metadata: await loadJsonlSessionMetadata(this._fs, filePath) };
+	}
+
 	async createAgentSession(options: CreateAgentSessionOptions): Promise<Session<AgentSessionMetadata>> {
 		const cachedSession = this._agentSessions.get(options.agentId);
 		if (cachedSession) {
@@ -242,7 +302,6 @@ export class SessionManager {
 			? await this._createPersistentAgentSession(options)
 			: await this._createEphemeralAgentSession(options.agentId);
 		this._agentSessions.set(options.agentId, session);
-		await this._rememberAgentSessionDir(options.agentId, session);
 		return session;
 	}
 
@@ -251,20 +310,24 @@ export class SessionManager {
 		if (cachedSession) {
 			return cachedSession;
 		}
-		const session = await this.sessionRepo.open(options.metadata);
+		const persisted = await this.repo.open(options.info.address);
+		const session = toSession(persisted.session);
 		this._agentSessions.set(options.agentId, session);
-		this._agentSessionDirs.set(options.agentId, sessionDirNameFromPath(sessionDirPath(options.metadata.path)));
+		this._agentAddresses.set(options.agentId, options.info.address);
 		return session;
 	}
 
 	async getAgentSessionSnapshot(agentId: AgentId): Promise<AgentSessionSnapshot> {
 		const session = this._requireAgentSession(agentId);
-		return await this._snapshotSession(session);
+		return await this._snapshotSession(session, this.getAgentSessionRef(agentId));
 	}
 
 	async getAgentSessionTree(agentId: AgentId): Promise<AgentSessionTreeSnapshot> {
 		const session = this._requireAgentSession(agentId);
-		return { ...(await this._snapshotSession(session)), entries: await session.getEntries() };
+		return {
+			...(await this._snapshotSession(session, this.getAgentSessionRef(agentId))),
+			entries: await session.getEntries(),
+		};
 	}
 
 	async buildAgentSessionContext(agentId: AgentId): Promise<SessionContext> {
@@ -275,24 +338,36 @@ export class SessionManager {
 	async setAgentSessionName(agentId: AgentId, name: string): Promise<AgentSessionSnapshot> {
 		const session = this._requireAgentSession(agentId);
 		await session.appendSessionName(name);
-		return await this._snapshotSession(session);
+		return await this._snapshotSession(session, this.getAgentSessionRef(agentId));
 	}
 
-	async forkAgentSession(agentId: AgentId, options: ForkAgentSessionOptions = {}): Promise<JsonlSessionMetadata> {
-		const sourceSession = this._requireAgentSession(agentId);
-		const metadata = await sourceSession.getMetadata();
-		if (!isJsonlSessionMetadata(metadata)) {
+	/**
+	 * Fork a persisted agent session, with everything its directory holds.
+	 *
+	 * The copy carries the branch's persisted state and every child session
+	 * nested under the source, so the new session stands on its own the moment it
+	 * exists: deleting the source directory afterwards leaves it fully readable.
+	 *
+	 * A fork lands as a top-level session even when the source is a child. It is
+	 * a new line of work, not a new member of the source's tree.
+	 */
+	async forkAgentSession(agentId: AgentId, options: ForkAgentSessionOptions): Promise<AgentSessionForkResult> {
+		this._requireAgentSession(agentId);
+		const source = this._agentAddresses.get(agentId);
+		if (!source) {
 			throw new Error(`Cannot fork ephemeral agent session: ${agentId}`);
 		}
-		const forkedSession = await this.sessionRepo.fork(metadata, {
-			cwd: this._cwd,
+		const forked = await this.repo.fork(source, {
+			sessionId: options.sessionId,
 			entryId: options.entryId,
 			position: options.position,
 		});
-		const forkedMetadata = await forkedSession.getMetadata();
-		this._agentSessions.set(forkedMetadata.id, forkedSession);
-		this._agentSessionDirs.set(forkedMetadata.id, sessionDirNameFromPath(sessionDirPath(forkedMetadata.path)));
-		return forkedMetadata;
+		this._agentSessions.set(options.sessionId, toSession(forked.session.session));
+		this._agentAddresses.set(options.sessionId, forked.session.address);
+		return {
+			info: { address: forked.session.address, metadata: forked.session.metadata },
+			diagnostics: forked.diagnostics.entries,
+		};
 	}
 
 	async getAgentSessionLeafId(agentId: AgentId): Promise<string | null> {
@@ -317,70 +392,21 @@ export class SessionManager {
 		return null;
 	}
 
-	// Directory owning every persisted artifact of an agent's session, for
-	// consumers that store more than conversation history. Ephemeral sessions
-	// live in memory and have none.
-	async getAgentSessionDir(agentId: AgentId): Promise<string | undefined> {
-		const metadata = await this._requireAgentSession(agentId).getMetadata();
-		return isJsonlSessionMetadata(metadata) ? sessionDirPath(metadata.path) : undefined;
+	/**
+	 * The directory an agent's persisted session owns, as an address.
+	 *
+	 * This is the handle every session-owned artifact is reached through -
+	 * persistence namespaces, child sessions, deletion. An ephemeral agent has
+	 * none, and consumers read that as "this agent persists nothing".
+	 */
+	getAgentSessionAddress(agentId: AgentId): SessionAddress | undefined {
+		return this._agentAddresses.get(agentId);
 	}
 
-	/** Persisted directory name used by the spawn-tree records. */
-	async getAgentSessionDirName(agentId: AgentId): Promise<string | undefined> {
-		const remembered = this._agentSessionDirs.get(agentId);
-		if (remembered) return remembered;
-		const dir = await this.getAgentSessionDir(agentId);
-		if (!dir) return undefined;
-		const name = sessionDirNameFromPath(dir);
-		this._agentSessionDirs.set(agentId, name);
-		return name;
-	}
-
-	/** Current runtime agent already holding this persisted session, if any. */
-	findAgentIdBySessionDir(sessionDir: string): AgentId | undefined {
-		for (const [agentId, candidate] of this._agentSessionDirs) {
-			if (candidate === sessionDir) return agentId;
-		}
-		return undefined;
-	}
-
-	/** Resolve one persisted session by its directory name, not its reusable id. */
-	async resolveAgentSessionByDir(sessionDir: string): Promise<JsonlSessionMetadata> {
-		const sessions = await this.sessionRepo.list({ cwd: this._cwd });
-		const matches = sessions.filter((metadata) => sessionDirNameFromPath(sessionDirPath(metadata.path)) === sessionDir);
-		if (matches.length !== 1) {
-			throw new AgentSessionResolutionError({
-				reason: matches.length > 1 ? "ambiguous" : "not_found",
-				reference: sessionDir,
-				candidates: matches.map(toAgentSessionCandidate),
-			});
-		}
-		return matches[0];
-	}
-
-	/** Open a session addressed by directory under a runtime-local AgentId. */
-	async openSessionByDir(
-		sessionDir: string,
-		agentId: AgentId,
-	): Promise<{ readonly metadata: JsonlSessionMetadata; readonly session: Session<AgentSessionMetadata> }> {
-		const metadata = await this.resolveAgentSessionByDir(sessionDir);
-		const session = await this.resumeAgentSession({ agentId, metadata });
-		return { metadata, session };
-	}
-
-	// Retraction for provisional prompt records (transform entries appended
-	// before the harness persists the paired user message). Only
-	// rewinds when the branch leaf is still the last provisional entry; if
-	// anything landed after it - the user message, a concurrent write - the
-	// branch is left untouched.
-	async retractAgentSessionEntries(
-		agentId: AgentId,
-		options: { readonly lastEntryId: string; readonly previousLeafId: string | null },
-	): Promise<boolean> {
-		const session = this._requireAgentSession(agentId);
-		if ((await session.getLeafId()) !== options.lastEntryId) return false;
-		await session.moveTo(options.previousLeafId);
-		return true;
+	/** Text form of {@link getAgentSessionAddress}, for consumers that pass refs around. */
+	getAgentSessionRef(agentId: AgentId): string | undefined {
+		const address = this._agentAddresses.get(agentId);
+		return address === undefined ? undefined : formatSessionKey(address.key);
 	}
 
 	async appendInputTransformEntry(agentId: AgentId, data: InputTransformEntryData): Promise<string> {
@@ -401,50 +427,48 @@ export class SessionManager {
 	/**
 	 * Snapshot any session of the current project, live or historical.
 	 *
-	 * A reference is a session path or id, resolved by
+	 * A reference is a session address or header id, resolved by
 	 * {@link resolveAgentSessionReference} so an ambiguous id fails loudly
 	 * instead of silently picking one. When the reference names a session this
 	 * runtime already has open, that live handle answers - opening a second
 	 * handle to the same file would read around its unflushed writes.
 	 */
 	async readSessionSnapshot(reference: string): Promise<AgentSessionTreeSnapshot> {
-		const metadata = await this.resolveAgentSessionReference(reference);
-		const live = await this._findOpenSession(metadata.path);
-		const session = live ?? (await this.sessionRepo.open(metadata));
-		return { ...(await this._snapshotSession(session)), entries: await session.getEntries() };
+		const info = await this.resolveAgentSessionReference(reference);
+		const ref = formatSessionKey(info.address.key);
+		const live = this._findOpenSession(info.address);
+		const session = live ?? toSession((await this.repo.open(info.address)).session);
+		return { ...(await this._snapshotSession(session, ref)), entries: await session.getEntries() };
 	}
 
 	/**
-	 * Mint an opaque handle for a session path, or resolve one back.
+	 * Mint an opaque handle for a session ref, or resolve one back.
 	 *
-	 * Consumers that must not learn filesystem layout - extensions - address
-	 * sessions through these instead of paths. The mapping is runtime-local and
+	 * Consumers that must not learn the storage layout - extensions - address
+	 * sessions through these instead of refs. The mapping is runtime-local and
 	 * grows only as sessions are listed, so a handle cannot be guessed or
 	 * constructed to reach a session the caller was never shown.
 	 */
-	toSessionHandle(path: string): string {
-		const existing = this._sessionHandlesByPath.get(path);
+	toSessionHandle(ref: string): string {
+		const existing = this._sessionHandlesByRef.get(ref);
 		if (existing) return existing;
 		const handle = `session-${randomUUID()}`;
-		this._sessionHandlesByPath.set(path, handle);
-		this._sessionPathsByHandle.set(handle, path);
+		this._sessionHandlesByRef.set(ref, handle);
+		this._sessionRefsByHandle.set(handle, ref);
 		return handle;
 	}
 
 	resolveSessionHandle(handle: string): string {
-		const path = this._sessionPathsByHandle.get(handle);
-		if (!path) {
+		const ref = this._sessionRefsByHandle.get(handle);
+		if (!ref) {
 			throw new Error(`Unknown session handle: ${handle}. Handles come from listing sessions.`);
 		}
-		return path;
+		return ref;
 	}
 
-	private async _findOpenSession(path: string): Promise<Session<AgentSessionMetadata> | undefined> {
-		for (const session of this._agentSessions.values()) {
-			const metadata = await session.getMetadata();
-			if (isJsonlSessionMetadata(metadata) && metadata.path === path) {
-				return session;
-			}
+	private _findOpenSession(address: SessionAddress): Session<AgentSessionMetadata> | undefined {
+		for (const [agentId, candidate] of this._agentAddresses) {
+			if (sessionKeysEqual(candidate.key, address.key)) return this._agentSessions.get(agentId);
 		}
 		return undefined;
 	}
@@ -484,29 +508,35 @@ export class SessionManager {
 		return result;
 	}
 
-	private async _rememberAgentSessionDir(agentId: AgentId, session: Session<AgentSessionMetadata>): Promise<void> {
-		const metadata = await session.getMetadata();
-		if (!isJsonlSessionMetadata(metadata)) return;
-		this._agentSessionDirs.set(agentId, sessionDirNameFromPath(sessionDirPath(metadata.path)));
-	}
-
+	/**
+	 * Create the directory a persistent agent owns, nested under its spawner's.
+	 *
+	 * Nesting is how the agent tree is recorded: nothing else writes the parent
+	 * relation down, and nothing has to, because ownership, deletion and forking
+	 * all follow the directory. A spawner with no directory of its own - an
+	 * ephemeral agent - has nothing to nest under, so its children are top-level
+	 * sessions.
+	 */
 	private async _createPersistentAgentSession(
 		options: CreateAgentSessionOptions,
-	): Promise<Session<JsonlSessionMetadata>> {
+	): Promise<Session<AgentSessionMetadata>> {
 		// Persistent JSONL sessions currently follow the M2 single-process storage
 		// boundary. Without an ExecutionEnv lock/transaction primitive, multiple
-		// WIDI processes writing the same sessionsRoot are unsupported.
-		// TODO: Add extension persistence once extension lifecycle and storage boundaries are defined.
+		// WIDI processes writing the same sessions root are unsupported.
 		// The session id deliberately equals the creating agent's id: resume
 		// restores the agent under it (_resumeAgentHarness). It is unique only
-		// within one runtime — across runs it repeats, so consumers resolving a
-		// session must reference it by path, never by bare id.
-		return this.sessionRepo.create({
-			id: options.agentId,
+		// within one runtime — across runs it repeats, which is why the directory
+		// name carries a timestamp and why consumers address a session by ref.
+		const parent = options.parentAgentId === undefined ? undefined : this._agentAddresses.get(options.parentAgentId);
+		const persisted = await this.repo.create({
 			cwd: this._cwd,
-			parentSessionPath: options.parentSessionPath,
+			sessionId: options.agentId,
+			...(parent === undefined ? undefined : { parent: parent.key }),
 			metadata: { profile: toAgentProfileReference(options.agentProfile) },
+			...(options.diagnostics === undefined ? undefined : { diagnostics: options.diagnostics }),
 		});
+		this._agentAddresses.set(options.agentId, persisted.address);
+		return toSession(persisted.session);
 	}
 
 	private async _createEphemeralAgentSession(agentId: AgentId): Promise<Session<SessionMetadata>> {
@@ -544,8 +574,12 @@ export class SessionManager {
 		return entries;
 	}
 
-	private async _snapshotSession(session: Session<AgentSessionMetadata>): Promise<AgentSessionSnapshot> {
+	private async _snapshotSession(
+		session: Session<AgentSessionMetadata>,
+		ref: string | undefined,
+	): Promise<AgentSessionSnapshot> {
 		return {
+			...(ref === undefined ? undefined : { ref }),
 			metadata: await session.getMetadata(),
 			name: await session.getSessionName(),
 			leafId: await session.getLeafId(),
@@ -554,37 +588,15 @@ export class SessionManager {
 	}
 }
 
-function isJsonlSessionMetadata(metadata: AgentSessionMetadata): metadata is JsonlSessionMetadata {
-	return (
-		"path" in metadata && typeof metadata.path === "string" && "cwd" in metadata && typeof metadata.cwd === "string"
-	);
-}
-
-function fileSystemValueOrThrow<TValue>(
-	result: { ok: true; value: TValue } | { ok: false; error: FileError },
-	message: string,
-): TValue {
-	if (!result.ok) {
-		throw new Error(`${message}: ${result.error.message}`);
-	}
-	return result.value;
-}
-
-function toAgentSessionCandidate(metadata: JsonlSessionMetadata): AgentSessionCandidate {
+function toAgentSessionCandidate(info: PersistedSessionInfo): AgentSessionCandidate {
 	return {
-		id: metadata.id,
-		path: metadata.path,
-		createdAt: metadata.createdAt,
-		cwd: metadata.cwd,
-		parentSessionPath: metadata.parentSessionPath,
-		profile: parseAgentProfileReference(metadata.metadata?.profile),
+		ref: formatSessionKey(info.address.key),
+		id: info.metadata.id,
+		createdAt: info.metadata.createdAt,
+		cwd: info.metadata.cwd,
+		origin: parseSessionOrigin(info.metadata.metadata),
+		profile: parseAgentProfileReference(info.metadata.metadata?.profile),
 	};
-}
-
-/** The persisted directory name of a session, as the tree records address it. */
-export function sessionDirNameFromPath(path: string): string {
-	const separator = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-	return separator < 0 ? path : path.slice(separator + 1);
 }
 
 // The first non-empty line of a user message, bounded for list display.
