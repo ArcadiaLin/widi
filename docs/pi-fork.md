@@ -31,13 +31,14 @@ The second set is the session store split, `9b50b046d` (PR #7163). Its subject i
 
 The first set is the harness shutdown lifecycle, `82c485983`, `bc031ae45`, `871a99047` and `9cde1725d`. They are taken early because the orchestrator refactor removes the maintenance registry that today is the only orchestrator-side handle on a running compaction, leaving `AgentHarness` as the only place that can abort and await one. See "The shutdown lifecycle" below. The four commits also touch `skill()`, `promptFromTemplate()` and the resource generics, none of which exist here; only the task-tracking half was applied.
 
-`packages/agent/src` diverges from upstream in four places, three additions and one removal:
+`packages/agent/src` diverges from upstream in six places, four additions, one widening and one removal:
 
 - **Added** to `src/harness/agent-harness.ts`: `AgentHarness.promoteFollowUpsToSteer()`. A follow-up is only read where the agent would otherwise stop, so a user who queued one and then cannot wait has no way to promote it; re-sending the text as a steer would deliver it twice, and only the harness can take the message back out. Used by `agent-orchestrator.ts` via `steerQueuedFollowUps`.
 - **Added** to `src/harness/agent-harness.ts` and `src/harness/types.ts`: `AgentHarness.getPhase()`, `AgentHarness.getQueuedMessageCounts()`, and the `AgentHarnessQueuedMessageCounts` type. Two facts the harness already owns but exposed only as events, forcing every consumer to mirror them. See "The observation getters" below.
 - **Added** to `src/harness/agent-harness.ts` and `src/harness/types.ts`: the session write surface. `appendCustomEntry()`, `appendCustomMessageEntry()`, `appendLabel()`, `setSessionName()`, entry ids returned from `appendMessage()` and the four new methods, and the `session_write` event with its `SessionWriteEvent` type. See "The session write surface" below.
 - **Added** to `src/harness/types.ts`: the `"shutdown"` member of `AgentHarnessErrorCode`. Upstream rejects a shut-down harness with `invalid_state`, the same code as "cannot steer while idle", so a caller cannot tell a phase it can wait out from a state that will never change. `isRetryableDeliveryError` in `core/message.ts` retries on `busy` and `invalid_state`; without a distinct code its only termination condition is that the orchestrator re-resolves the target on every attempt and eventually finds it gone. See "The shutdown lifecycle" below.
 - **Changed** in `src/harness/agent-harness.ts`: `abort()` on a shut-down harness awaits the shutdown and returns an empty `AbortResult` instead of throwing, `shutdown()` publishes its promise before aborting the active operation so that a listener reentering through `abort()` has something to await, and it releases the subscriber table once everything has settled. Teardown calls `abort()` then `shutdown()`, and duplicate teardown is normal; upstream's asymmetry - `shutdown()` idempotent, `abort()` fatal afterwards - would push that guard into every caller. See "The shutdown lifecycle" below.
+- **Widened** in `src/harness/agent-harness.ts`: `prompt()`, `steer()`, `followUp()` and `nextTurn()` take `string | AgentMessage`, the `steerQueue` and `followUpQueue` fields are `AgentMessage[]`, and `promoteFollowUpsToSteer()` returns `AgentMessage[]`. See "The typed input widening" below.
 - **Removed** from `src/harness/agent-harness.ts` and `src/harness/types.ts`: the harness's entire resource surface. `skill()`, `promptFromTemplate()`, `getResources()`, `setResources()`, the `resources` option, the `resources_update` event, `BeforeAgentStartEvent.resources`, the `resources` field of the system-prompt callback context, the `AgentHarnessResources` type, and the `TSkill`/`TPromptTemplate` type parameters. `AgentHarness` is now `AgentHarness<TContext, TTool>`. See "The resource removal" below.
 
 `packages/agent/test` diverges in six places:
@@ -100,6 +101,23 @@ Four rules hold the surface together, three of them fixing races the upstream co
 On re-sync, harness-v2's record model has to answer the same requirement - an application writing its own records into the branch the harness owns, and getting their identity back - so this is a case of adopting its equivalent rather than porting these methods.
 
 **Downstream rule.** These five methods are the only supported way into a live session, and using one is a design decision, not a convenience. Reach for them only when the entry genuinely belongs on the branch the harness owns; anything the runtime can keep beside the session should live beside it. Any new call site is reported to the developer when it is added, with what it writes and why the branch is the right place for it. The cost of an unnecessary entry is permanent: it is replayed into context on every resume and forked into every child session.
+
+### The typed input widening
+
+Every message WIDI puts into an agent's context goes through one path, and each one records who wrote it - a peer agent, a settled background job, an extension, the runtime itself. That record has to reach the branch, because a session read back later has to render the same way the live client did, and a bare `role:"user"` entry carries nothing to render from.
+
+`CustomMessage` is already the answer. It is an `AgentMessage` union member, it carries `customType`, `display` and `details`, and `convertToLlm` maps it to `role:"user"` with the content verbatim - so the model reads exactly what it read before. The agent loop already persists whatever messages it is handed, and `nextTurnQueue` was already `AgentMessage[]`.
+
+What blocked it was two narrowed fields and four `string` parameters. `steerQueue` and `followUpQueue` were `UserMessage[]`, and the four input entry points built the message themselves from text. The change is a pure widening:
+
+- `toInputMessage(input, images)` returns `createUserMessage(input, images)` for a string and the message itself otherwise. A caller passing text gets the message it always got.
+- `toInputText(input)` extracts the text for `before_agent_start`, whose `prompt` field is a string. For a string input it is the identity.
+
+No existing call site changes behavior, and nothing new is stored: `AgentMessage[]` is what the loop consumed all along (`src/types.ts:239/252`), and `AbortResult` and the `queue_update` payload were already declared with it.
+
+**Downstream rule.** A typed input is not a way to smuggle structure past the model. `content` is the whole of what the model reads; `customType` and `details` reach storage and the UI only. In WIDI exactly one producer builds these - `toHarnessInput` in `agent-orchestrator.ts`, from a `MessageEntryPayload` the message pipeline assembled - and shell input deliberately stays a bare user message so existing sessions read back unchanged. See `apps/widi-pi/docs/ZH/orchestrator-message.md` §6.
+
+On re-sync, check whether harness-v2's lane records already carry an application-defined type. Its queues are durable records rather than in-memory arrays, so the natural expectation is that they do, and this widening disappears rather than porting.
 
 ### The session store split
 

@@ -32,6 +32,7 @@ import {
 	createToolDefinition,
 	createToolRegistry,
 	defaultProfile,
+	harnessInputText,
 	MemoryExecutionEnv,
 	requireAgentHarness,
 	requireAgentJobs,
@@ -125,7 +126,7 @@ describe("AgentOrchestrator background job router", () => {
 		const jobId = settleBackgroundedJob(jobs, completedOutcome);
 		await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
 
-		const text = prompt.mock.calls[0]?.[0] as string;
+		const text = harnessInputText(prompt.mock.calls[0]?.[0]);
 		expect(text).toContain(jobId);
 		expect(text).toContain("completed");
 		expect(text).toContain("build done");
@@ -148,7 +149,7 @@ describe("AgentOrchestrator background job router", () => {
 		await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(1));
 		expect(prompt).not.toHaveBeenCalled();
 		expect(followUp).not.toHaveBeenCalled();
-		const text = steer.mock.calls[0]?.[0] as string;
+		const text = harnessInputText(steer.mock.calls[0]?.[0]);
 		expect(text).toContain(jobId);
 		expect(text).toContain("build done");
 	});

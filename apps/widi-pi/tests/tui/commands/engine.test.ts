@@ -4,7 +4,13 @@ import { builtInCommands } from "../../../src/tui/commands/built-ins.ts";
 import { CommandEngine, switchedAgentId } from "../../../src/tui/commands/engine.ts";
 
 function stubOrchestrator(overrides: Record<string, unknown>): AgentOrchestrator {
-	return { getAgentStatus: () => "idle", ...overrides } as unknown as AgentOrchestrator;
+	// Status gates read `getAgentActivity`; the overrides may replace it.
+	return {
+		getAgentStatus: () => "idle",
+		getAgentActivity: () => ({ activity: "idle" }),
+		sendMessage: async () => ({ kind: "accepted" }),
+		...overrides,
+	} as unknown as AgentOrchestrator;
 }
 
 function context(overrides: Record<string, unknown> = {}) {
@@ -49,18 +55,20 @@ describe("CommandEngine.handleInput", () => {
 	});
 
 	it("executes an explicit empty argument instead of re-prompting", async () => {
-		let forkedWith: unknown = "unset";
+		let forkedFrom: unknown = "unset";
 		const outcome = await engine.handleInput(
 			"/fork:",
 			context({
-				forkAgentSessionFromAgent: async (_agentId: string, options: unknown) => {
-					forkedWith = options;
-					return { agentId: "agent-2" };
+				spawnAgent: async (request: { origin: unknown }) => {
+					forkedFrom = request.origin;
+					return "agent-2";
 				},
+				inspectAgent: () => ({ agentId: "agent-2" }),
 			}),
 		);
 		expect(outcome.kind).toBe("executed");
-		expect(forkedWith).toBeUndefined();
+		// An explicit empty argument forks at the current leaf, so no entry id.
+		expect(forkedFrom).toEqual({ kind: "fork", sourceAgentId: "agent-1" });
 	});
 
 	it("runs the bare form when an optional argument has no candidates", async () => {
@@ -121,13 +129,10 @@ describe("CommandEngine.handleInput", () => {
 
 	it("blocks turn-control commands during maintenance", async () => {
 		const abortAgent = vi.fn(async () => {});
-		const followUpAgent = vi.fn(async () => {});
 		const sendMessage = vi.fn(async () => ({ kind: "accepted" as const }));
 		const commandContext = context({
-			getAgentStatus: () => "running",
-			getAgentMaintenance: () => "compaction",
+			getAgentActivity: () => ({ activity: "running", maintenance: "compaction" }),
 			abortAgent,
-			followUpAgent,
 			sendMessage,
 		});
 
@@ -136,7 +141,6 @@ describe("CommandEngine.handleInput", () => {
 			expect(outcome).toMatchObject({ kind: "failed", error: { message: expect.stringContaining("compaction") } });
 		}
 		expect(abortAgent).not.toHaveBeenCalled();
-		expect(followUpAgent).not.toHaveBeenCalled();
 		expect(sendMessage).not.toHaveBeenCalled();
 	});
 
@@ -145,16 +149,24 @@ describe("CommandEngine.handleInput", () => {
 		const outcome = await engine.handleInput(
 			"/steer go now",
 			context({
-				getAgentStatus: () => "running",
-				sendMessage: async (draft: unknown) => {
-					message = draft;
+				getAgentActivity: () => ({ activity: "running" }),
+				sendMessage: async (draft: unknown, binding: unknown) => {
+					message = { draft, binding };
 					return { kind: "accepted" as const };
 				},
 			}),
 		);
 
 		expect(outcome).toMatchObject({ kind: "executed", name: "steer" });
-		expect(message).toEqual({ source: { kind: "human" }, targetAgentId: "agent-1", body: "go now", mode: "interrupt" });
+		// The request names only what it wants said; the sink's binding is what
+		// makes it count as the human interrupting.
+		expect(message).toEqual({
+			draft: { targetAgentId: "agent-1", body: "go now", mode: "interrupt" },
+			binding: expect.objectContaining({
+				source: { kind: "human" },
+				policy: expect.objectContaining({ humanInterrupt: true }),
+			}),
+		});
 	});
 
 	it("wraps execute exceptions as failed outcomes", async () => {
@@ -183,9 +195,11 @@ describe("CommandEngine.handleInput", () => {
 		const outcome = await engine.handleInput(
 			"/resume session-1",
 			context({
-				resumeAgentSessionByReference: async () => ({
+				spawnAgent: async () => "agent-2",
+				inspectAgent: () => ({
 					agentId: "agent-2",
-					snapshot: { profile: { reference: { id: "default", label: "Default" } }, model: { id: "test-model" } },
+					profile: { reference: { id: "default", label: "Default" } },
+					model: { id: "test-model" },
 				}),
 			}),
 		);

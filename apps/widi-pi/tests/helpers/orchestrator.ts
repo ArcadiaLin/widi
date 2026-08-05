@@ -1,6 +1,7 @@
-import type { Model } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
 import type {
 	AgentHarnessEvent,
+	CompactResult,
 	ExecutionEnv,
 	ExecutionError,
 	FileError,
@@ -10,6 +11,7 @@ import type {
 } from "@widi/agent-core";
 import { err, ok, ExecutionError as PiExecutionError, FileError as PiFileError } from "@widi/agent-core";
 import { Type } from "typebox";
+import { type MockInstance, vi } from "vitest";
 import { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import {
 	type AgentProfile,
@@ -198,6 +200,80 @@ export class MemoryExecutionEnv implements ExecutionEnv {
 	async cleanup(): Promise<void> {
 		this.cleanupCalls += 1;
 	}
+}
+
+/**
+ * The model-facing text of one harness input.
+ *
+ * Since the fork widening, `prompt`/`steer`/`followUp` take a message as well
+ * as a string: everything but bare shell input arrives as a `CustomMessage`
+ * carrying its source. `content` is what the model reads either way.
+ */
+export function harnessInputText(input: unknown): string {
+	if (typeof input === "string") return input;
+	const content = (input as { content?: unknown } | undefined)?.content;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.filter((part): part is { type: "text"; text: string } => (part as { type?: unknown }).type === "text")
+		.map((part) => part.text)
+		.join("");
+}
+
+/**
+ * Replace `compact()` with one the test controls, moving the harness phase the
+ * way the real one does.
+ *
+ * Maintenance is read from `getPhase()` rather than tracked in the
+ * orchestrator, so a mock that only returns a promise leaves the agent looking
+ * idle and every maintenance gate open. The real `compact()` sets the phase
+ * synchronously ahead of its first await, and clears it in a `finally`.
+ */
+export function stubCompaction(harness: WidiAgentHarness): { resolve: (result: CompactResult) => void } {
+	let resolve!: (result: CompactResult) => void;
+	const promise = new Promise<CompactResult>((done) => {
+		resolve = done;
+	});
+	const setPhase = (phase: string) => {
+		(harness as unknown as { phase: string }).phase = phase;
+	};
+	vi.spyOn(harness, "compact").mockImplementation(async () => {
+		setPhase("compaction");
+		try {
+			return await promise;
+		} finally {
+			setPhase("idle");
+		}
+	});
+	return { resolve };
+}
+
+/**
+ * Replace `prompt()` with one the test controls, moving the harness phase the
+ * way the real one does. Same reason as {@link stubCompaction}: activity is
+ * read from the phase, so a mock that only returns a promise leaves the agent
+ * looking idle for the whole run.
+ */
+export function stubPromptRun(harness: WidiAgentHarness): {
+	readonly prompt: MockInstance<WidiAgentHarness["prompt"]>;
+	readonly resolve: (message: AssistantMessage) => void;
+} {
+	let resolve!: (message: AssistantMessage) => void;
+	const promise = new Promise<AssistantMessage>((done) => {
+		resolve = done;
+	});
+	const setPhase = (phase: string) => {
+		(harness as unknown as { phase: string }).phase = phase;
+	};
+	const prompt = vi.spyOn(harness, "prompt").mockImplementation(async () => {
+		setPhase("turn");
+		try {
+			return await promise;
+		} finally {
+			setPhase("idle");
+		}
+	});
+	return { prompt, resolve };
 }
 
 /** The sink the shell holds on the human's behalf. */
@@ -403,8 +479,8 @@ export async function recordExtensionDiagnostics(
  */
 export function harnessEventDriver(
 	orchestrator: AgentOrchestrator,
-): (agentId: string, event: AgentHarnessEvent) => Promise<void> {
-	return async (agentId, event) => {
+): (agentId: string, event: AgentHarnessEvent, signal?: AbortSignal) => Promise<void> {
+	return async (agentId, event, signal) => {
 		const generation = requireLiveAgent(orchestrator, agentId).generation;
 		await (
 			orchestrator as unknown as {
@@ -415,7 +491,7 @@ export function harnessEventDriver(
 					signal: AbortSignal | undefined,
 				): Promise<void>;
 			}
-		)._handleHarnessEvent(agentId, generation, event, undefined);
+		)._handleHarnessEvent(agentId, generation, event, signal);
 	};
 }
 

@@ -14,7 +14,11 @@ import { ModelRegistry, type OAuthProviderConfig } from "../../src/core/model-re
 import { createCorePersistenceRegistry } from "../../src/core/persistence-registry.ts";
 import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
 import { ResourceLoader } from "../../src/core/resource-loader.ts";
-import { EXTENSION_MESSAGE_CUSTOM_TYPE, SessionManager } from "../../src/core/session-manager.ts";
+import {
+	EXTENSION_MESSAGE_CUSTOM_TYPE,
+	ORCHESTRATOR_MESSAGE_CUSTOM_TYPE,
+	SessionManager,
+} from "../../src/core/session-manager.ts";
 import {
 	SettingManager,
 	type SettingsLockResult,
@@ -334,9 +338,7 @@ describe("AgentOrchestrator", () => {
 			id: restoredModel.id,
 		});
 		expect(orchestrator.getAgentThinkingLevel(agentId)).toBe("medium");
-		expect(agentStatusChangedEvents(events)).toMatchObject([
-			{ agentId: "worker-agent", previousActivity: undefined, activity: "idle" },
-		]);
+		expect(agentStatusChangedEvents(events)).toMatchObject([{ agentId: "worker-agent", activity: "idle" }]);
 		expect(events.findIndex((event) => event.type === "agent_resumed")).toBeGreaterThan(
 			events.findIndex((event) => event.type === "agent_status_changed" && event.activity === "idle"),
 		);
@@ -431,7 +433,7 @@ describe("AgentOrchestrator", () => {
 
 		await expect(
 			orchestrator.spawnAgent({ origin: { kind: "resume", reference: sessionRef(sessionManager, "worker-agent") } }),
-		).rejects.toThrow("model is not registered");
+		).rejects.toThrow("is not registered");
 
 		expect(orchestrator.listAgents().agents).toEqual([]);
 		expect(() => orchestrator.inspectAgent("worker-agent")).toThrow(/Unknown agent/);
@@ -644,6 +646,7 @@ describe("AgentOrchestrator", () => {
 			}
 		});
 		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const harness = requireAgentHarness(orchestrator, agentId);
 		const creationStatusEvents = agentStatusChangedEvents(events);
 
 		expect(creationStatusEvents).toEqual([
@@ -668,7 +671,13 @@ describe("AgentOrchestrator", () => {
 		orchestrator.subscribe((event) => {
 			runtimeEvents.push(event);
 		});
+		// Activity is read from the harness phase, so a synthetic event sequence
+		// has to move the phase itself; the events only mark the edges.
+		const setPhase = (phase: "idle" | "turn") => {
+			(harness as unknown as { phase: string }).phase = phase;
+		};
 
+		setPhase("turn");
 		await handleHarnessEvent(agentId, { type: "turn_start" });
 		await handleHarnessEvent(agentId, { type: "turn_start" });
 		expect(orchestrator.getAgentActivity(agentId).activity).toBe("running");
@@ -684,6 +693,7 @@ describe("AgentOrchestrator", () => {
 			toolResults: [],
 		});
 		expect(orchestrator.getAgentActivity(agentId).activity).toBe("running");
+		setPhase("idle");
 		await handleHarnessEvent(agentId, {
 			type: "agent_end",
 			messages: [createAssistantPartial([{ type: "text", text: "done again" }])],
@@ -1200,7 +1210,7 @@ describe("AgentOrchestrator", () => {
 		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
 		expect(orchestrator.listAgents()).toMatchObject({
-			agents: [expect.objectContaining({ agentId, status: "idle", hasHarness: true })],
+			agents: [expect.objectContaining({ agentId, activity: { activity: "idle" } })],
 		});
 		await expect(orchestrator.listAgentSessions()).resolves.toMatchObject({
 			sessions: [
@@ -1216,9 +1226,7 @@ describe("AgentOrchestrator", () => {
 		const session = await orchestrator.sessionManager.createAgentSession({ agentId, agentProfile: defaultProfile });
 		const userEntryId = await session.appendMessage({ role: "user", content: "revise this", timestamp: 1 });
 
-		await expect(orchestrator.setAgentSessionName(agentId, "Planning Session")).resolves.toMatchObject({
-			name: "Planning Session",
-		});
+		await orchestrator.setAgentSessionName(agentId, "Planning Session");
 		await expect(orchestrator.getAgentSessionTree(agentId)).resolves.toMatchObject({
 			name: "Planning Session",
 			entries: [
@@ -1404,9 +1412,7 @@ describe("AgentOrchestrator", () => {
 				.filter((event) => event.type === "extension_status_changed" && !event.status)
 				.every((event) => !Object.hasOwn(event, "status")),
 		).toBe(true);
-		expect(agentStatusChangedEvents(events)).toMatchObject([
-			{ agentId, previousActivity: undefined, activity: "idle" },
-		]);
+		expect(agentStatusChangedEvents(events)).toMatchObject([{ agentId, activity: "idle" }]);
 		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
 			agentId,
 			status: "disposed",
@@ -1655,7 +1661,6 @@ describe("AgentOrchestrator", () => {
 			activeToolNames: ["sampleTool"],
 		});
 		expect(orchestrator.inspectAgent(extensionAgentId)).toMatchObject({
-			extensionIds: ["sample"],
 			extensions: {
 				extensionIds: ["sample"],
 				hooks: [],
@@ -1688,7 +1693,6 @@ describe("AgentOrchestrator", () => {
 
 		expect(orchestrator.getAgentTools(agentId)).toEqual({ toolNames: [], activeToolNames: [] });
 		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
-			extensionIds: [],
 			extensions: { extensionIds: [], hooks: [], toolContributions: [], stale: { stale: false } },
 		});
 	});
@@ -1855,9 +1859,8 @@ describe("AgentOrchestrator", () => {
 		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
 		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
-			extensionIds: ["sample", "missing"],
 			extensions: { extensionIds: ["sample", "missing"], stale: { stale: false } },
-			extensionDiagnostics: [expect.objectContaining({ code: "extension.factory_missing", extensionId: "missing" })],
+			diagnostics: [expect.objectContaining({ code: "extension.factory_missing", extensionId: "missing" })],
 		});
 		expect(events).toContainEqual(
 			expect.objectContaining({
@@ -2656,7 +2659,7 @@ describe("AgentOrchestrator", () => {
 
 		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
-		expect(orchestrator.inspectAgent(agentId)).toMatchObject({ extensionIds: ["missing"] });
+		expect(orchestrator.inspectAgent(agentId)).toMatchObject({ extensions: { extensionIds: ["missing"] } });
 		expect(events).toContainEqual(
 			expect.objectContaining({
 				type: "diagnostic",
@@ -2772,15 +2775,7 @@ describe("AgentOrchestrator", () => {
 			});
 		});
 		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
-		const handleSubscribedHarnessEvent = (
-			orchestrator as unknown as {
-				_handleSubscribedAgentHarnessEvent(
-					agentId: string,
-					event: AgentHarnessEvent,
-					signal?: AbortSignal,
-				): Promise<void>;
-			}
-		)._handleSubscribedAgentHarnessEvent.bind(orchestrator);
+		const handleSubscribedHarnessEvent = harnessEventDriver(orchestrator);
 		const controller = new AbortController();
 
 		await handleSubscribedHarnessEvent(agentId, { type: "turn_start" }, controller.signal);
@@ -3048,6 +3043,8 @@ describe("AgentOrchestrator", () => {
 		if (!runner) throw new Error("Expected extension runner.");
 		const context = runner.createContext("observer");
 		const handleHarnessEvent = harnessEventDriver(orchestrator);
+		// `isIdle` reads the harness phase, so a synthetic turn has to move it.
+		(requireAgentHarness(orchestrator, agentId) as unknown as { phase: string }).phase = "turn";
 
 		await handleHarnessEvent(agentId, { type: "turn_start" });
 
@@ -3181,9 +3178,9 @@ describe("AgentOrchestrator", () => {
 		});
 		const prompted: string[] = [];
 		Object.assign(orchestrator, {
-			promptAgent: async (targetAgentId: string, text: string) => {
-				prompted.push(`${targetAgentId}:${text}`);
-				return { role: "assistant" } as AssistantMessage;
+			promptAgent: async (request: { targetAgentId: string; body: string }) => {
+				prompted.push(`${request.targetAgentId}:${request.body}`);
+				return { kind: "completed", message: { role: "assistant" } as AssistantMessage };
 			},
 		});
 		const harness = requireAgentHarness(orchestrator, agentId);
@@ -3194,24 +3191,31 @@ describe("AgentOrchestrator", () => {
 		await context.actions.followUp("summarize next");
 
 		expect(prompted).toEqual([`${agentId}:start here`]);
+		// The extension's text lands as a typed message rather than a bare user
+		// one: the branch records which extension wrote it, and the model still
+		// reads plain text - the rendered content, prefix included.
+		const queued = (message: string) =>
+			expect.objectContaining({
+				role: "custom",
+				customType: ORCHESTRATOR_MESSAGE_CUSTOM_TYPE,
+				content: `[Input from extension sample]\n\n${message}`,
+				details: expect.objectContaining({
+					source: expect.objectContaining({ kind: "extension:sample", label: "sample" }),
+					body: message,
+				}),
+			});
 		expect(events).toContainEqual(
 			expect.objectContaining({
 				type: "agent_harness_event",
 				agentId,
-				event: expect.objectContaining({
-					type: "queue_update",
-					steer: [expect.objectContaining({ role: "user", content: [{ type: "text", text: "keep going" }] })],
-				}),
+				event: expect.objectContaining({ type: "queue_update", steer: [queued("keep going")] }),
 			}),
 		);
 		expect(events).toContainEqual(
 			expect.objectContaining({
 				type: "agent_harness_event",
 				agentId,
-				event: expect.objectContaining({
-					type: "queue_update",
-					followUp: [expect.objectContaining({ role: "user", content: [{ type: "text", text: "summarize next" }] })],
-				}),
+				event: expect.objectContaining({ type: "queue_update", followUp: [queued("summarize next")] }),
 			}),
 		);
 	});

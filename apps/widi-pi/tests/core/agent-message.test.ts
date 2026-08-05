@@ -14,11 +14,14 @@ import {
 	createOrchestrator,
 	defaultProfile,
 	harnessEventDriver,
+	harnessInputText,
 	humanSink,
 	MemoryExecutionEnv,
 	requireAgentHarness,
 	requireAgentJobs,
 	requireLiveAgent,
+	stubCompaction,
+	stubPromptRun,
 } from "../helpers/orchestrator.ts";
 
 /** The activity a live agent currently reports. */
@@ -57,8 +60,7 @@ describe("AgentOrchestrator.sendMessage", () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		const sourceAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		const targetAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
-		const run = createDeferred<AssistantMessage>();
-		const prompt = vi.spyOn(requireAgentHarness(orchestrator, targetAgentId), "prompt").mockReturnValue(run.promise);
+		const { prompt, resolve: finishRun } = stubPromptRun(requireAgentHarness(orchestrator, targetAgentId));
 
 		const accepted = agentSink(orchestrator, sourceAgentId).send({
 			targetAgentId,
@@ -71,10 +73,10 @@ describe("AgentOrchestrator.sendMessage", () => {
 
 		// Acceptance, not completion: the run is still in flight.
 		expect(prompt).toHaveBeenCalledTimes(1);
-		expect(prompt.mock.calls[0]?.[0]).toBe(`[Message from ${sourceAgentId}]\n\nPlease review this.`);
+		expect(harnessInputText(prompt.mock.calls[0]?.[0])).toBe(`[Message from ${sourceAgentId}]\n\nPlease review this.`);
 		expect(activityOf(orchestrator, targetAgentId)).toBe("running");
 
-		run.resolve({} as AssistantMessage);
+		finishRun({} as AssistantMessage);
 		await vi.waitFor(() => expect(activityOf(orchestrator, targetAgentId)).toBe("idle"));
 	});
 
@@ -82,8 +84,7 @@ describe("AgentOrchestrator.sendMessage", () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		const targetAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		const harness = requireAgentHarness(orchestrator, targetAgentId);
-		const run = createDeferred<AssistantMessage>();
-		const prompt = vi.spyOn(harness, "prompt").mockReturnValue(run.promise);
+		const { prompt, resolve: finishRun } = stubPromptRun(harness);
 		const followUp = vi.spyOn(harness, "followUp").mockResolvedValue();
 
 		const accepted = Promise.all([
@@ -95,10 +96,10 @@ describe("AgentOrchestrator.sendMessage", () => {
 		await accepted;
 
 		expect(prompt).toHaveBeenCalledTimes(1);
-		expect(prompt.mock.calls[0]?.[0]).toBe("[Message from first]\n\nfirst");
+		expect(harnessInputText(prompt.mock.calls[0]?.[0])).toBe("[Message from first]\n\nfirst");
 		expect(followUp).toHaveBeenCalledTimes(1);
-		expect(followUp.mock.calls[0]?.[0]).toBe("[Message from second]\n\nsecond");
-		run.resolve({} as AssistantMessage);
+		expect(harnessInputText(followUp.mock.calls[0]?.[0])).toBe("[Message from second]\n\nsecond");
+		finishRun({} as AssistantMessage);
 	});
 
 	it("steers only when the sender asks to interrupt", async () => {
@@ -114,7 +115,7 @@ describe("AgentOrchestrator.sendMessage", () => {
 
 		expect(followUp).toHaveBeenCalledTimes(1);
 		expect(steer).toHaveBeenCalledTimes(1);
-		expect(steer.mock.calls[0]?.[0]).toBe("stop that");
+		expect(harnessInputText(steer.mock.calls[0]?.[0])).toBe("stop that");
 	});
 
 	// `AgentLifecycleStatus.running` covers compaction too, but a compacting
@@ -123,8 +124,7 @@ describe("AgentOrchestrator.sendMessage", () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		const targetAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		const harness = requireAgentHarness(orchestrator, targetAgentId);
-		const compaction = createDeferred<Awaited<ReturnType<typeof harness.compact>>>();
-		vi.spyOn(harness, "compact").mockReturnValue(compaction.promise);
+		const compaction = stubCompaction(harness);
 		const prompt = vi.spyOn(harness, "prompt").mockResolvedValue({} as AssistantMessage);
 		const followUp = vi.spyOn(harness, "followUp").mockResolvedValue();
 		const steer = vi.spyOn(harness, "steer").mockResolvedValue();
@@ -144,7 +144,7 @@ describe("AgentOrchestrator.sendMessage", () => {
 		await compacting;
 		await accepted;
 		expect(prompt).toHaveBeenCalledTimes(1);
-		expect(prompt.mock.calls[0]?.[0]).toContain("while compacting");
+		expect(harnessInputText(prompt.mock.calls[0]?.[0])).toContain("while compacting");
 	});
 
 	// The harness builds the turn context, session metadata, and tool context
@@ -173,15 +173,12 @@ describe("AgentOrchestrator.sendMessage", () => {
 		orchestrator.subscribe((event) => {
 			events.push(event);
 		});
-		const compaction = createDeferred<Awaited<ReturnType<typeof harness.compact>>>();
-		const compact = vi.spyOn(harness, "compact").mockReturnValue(compaction.promise);
-		const navigateTree = vi.spyOn(harness, "navigateTree");
+		const compaction = stubCompaction(harness);
 
 		const compacting = orchestrator.compactAgent(targetAgentId);
-		await vi.waitFor(() => expect(compact).toHaveBeenCalledOnce());
+		await vi.waitFor(() => expect(orchestrator.getAgentActivity(targetAgentId).maintenance).toBe("compaction"));
 
 		await expect(orchestrator.navigateAgentTree(targetAgentId, "entry-1")).rejects.toMatchObject({ code: "busy" });
-		expect(navigateTree).not.toHaveBeenCalled();
 		expect(orchestrator.getAgentActivity(targetAgentId).maintenance).toBe("compaction");
 		expect(orchestrator.getAgentActivity(targetAgentId).activity).toBe("running");
 		expect(events.filter((event) => event.type === "agent_status_changed" && event.activity === "running")).toEqual([
@@ -198,11 +195,12 @@ describe("AgentOrchestrator.sendMessage", () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		const targetAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		const harness = requireAgentHarness(orchestrator, targetAgentId);
-		const compact = vi.spyOn(harness, "compact");
 		(harness as unknown as { phase: "turn" }).phase = "turn";
 
+		// The harness is the authority: the orchestrator no longer keeps a parallel
+		// reservation that could refuse ahead of it, so the rejection comes back
+		// from `compact()` itself and the active kind is never overwritten.
 		await expect(orchestrator.compactAgent(targetAgentId)).rejects.toMatchObject({ code: "busy" });
-		expect(compact).not.toHaveBeenCalled();
 		expect(orchestrator.getAgentActivity(targetAgentId).maintenance).toBeUndefined();
 		expect(activityOf(orchestrator, targetAgentId)).toBe("running");
 	});
@@ -211,8 +209,7 @@ describe("AgentOrchestrator.sendMessage", () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		const targetAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		const harness = requireAgentHarness(orchestrator, targetAgentId);
-		const compaction = createDeferred<Awaited<ReturnType<typeof harness.compact>>>();
-		vi.spyOn(harness, "compact").mockReturnValue(compaction.promise);
+		const compaction = stubCompaction(harness);
 		const abort = vi.spyOn(harness, "abort");
 		const followUp = vi.spyOn(harness, "followUp");
 		const steer = vi.spyOn(harness, "steer");
@@ -346,7 +343,7 @@ describe("AgentOrchestrator message interception", () => {
 		});
 
 		await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
-		expect(prompt.mock.calls[0]?.[0]).toContain("build done");
+		expect(harnessInputText(prompt.mock.calls[0]?.[0])).toContain("build done");
 		expect(events.filter((event) => event.type === "diagnostic").map((event) => event.diagnostic.code)).toContain(
 			"orchestrator.message_block_ignored",
 		);
@@ -401,8 +398,8 @@ describe("AgentOrchestrator delegated task jobs", () => {
 		).toEqual({ ok: true });
 
 		await vi.waitFor(() => expect(ownerPrompt).toHaveBeenCalledTimes(1));
-		expect(ownerPrompt.mock.calls[0]?.[0]).toContain(taskId);
-		expect(ownerPrompt.mock.calls[0]?.[0]).toContain("The router is sound.");
+		expect(harnessInputText(ownerPrompt.mock.calls[0]?.[0])).toContain(taskId);
+		expect(harnessInputText(ownerPrompt.mock.calls[0]?.[0])).toContain("The router is sound.");
 		// Exactly one completion message: the job's t1 is the whole protocol.
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(ownerPrompt).toHaveBeenCalledTimes(1);
@@ -431,7 +428,7 @@ describe("AgentOrchestrator delegated task jobs", () => {
 		// returns is a race between two independent chains.
 		expect(orchestrator.getAgentActivity(ownerAgentId).activity).not.toBe("disposed");
 		await vi.waitFor(() => expect(ownerPrompt).toHaveBeenCalledTimes(1));
-		expect(ownerPrompt.mock.calls[0]?.[0]).toContain("Worker was killed");
+		expect(harnessInputText(ownerPrompt.mock.calls[0]?.[0])).toContain("Worker was killed");
 	});
 
 	// Dispose detaches the owner's job listener before aborting its jobs, so the

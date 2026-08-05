@@ -14,6 +14,7 @@ import type { ToolExecutionContext } from "../../src/core/tools/types.ts";
 import {
 	createOrchestrator,
 	defaultProfile,
+	harnessInputText,
 	MemoryExecutionEnv,
 	requireAgentHarness,
 	requireAgentJobs,
@@ -316,8 +317,8 @@ describe("spawn_agent", () => {
 		expect(result.details.profileId).toBe("worker");
 		expect(result.details.taskId).toBe("job-1");
 		expect(orchestrator.getAgentActivity(result.details.agentId).activity).toBe("idle");
-		expect(prompt.mock.calls[0]?.[0]).toContain("Task job-1 assigned to you.");
-		expect(prompt.mock.calls[0]?.[0]).toContain("audit the parser");
+		expect(harnessInputText(prompt.mock.calls[0]?.[0])).toContain("Task job-1 assigned to you.");
+		expect(harnessInputText(prompt.mock.calls[0]?.[0])).toContain("audit the parser");
 	});
 
 	it("fails without leaving a half-built agent when the profile is unknown", async () => {
@@ -366,7 +367,9 @@ describe("send_message plain delivery", () => {
 		);
 
 		expect(result.details.mode).toBe("message");
-		expect(workerPrompt.mock.calls[0]?.[0]).toBe(`[Message from ${owner}]\n\nhave a look at the diff`);
+		expect(harnessInputText(workerPrompt.mock.calls[0]?.[0])).toBe(
+			`[Message from ${owner}]\n\nhave a look at the diff`,
+		);
 	});
 
 	it("delivers across trees when the caller knows the exact agent id", async () => {
@@ -384,7 +387,7 @@ describe("send_message plain delivery", () => {
 			toolContext(orchestrator, firstRoot),
 		);
 
-		expect(secondPrompt.mock.calls[0]?.[0]).toBe(`[Message from ${firstRoot}]\n\nshared id bridge`);
+		expect(harnessInputText(secondPrompt.mock.calls[0]?.[0])).toBe(`[Message from ${firstRoot}]\n\nshared id bridge`);
 	});
 
 	it("fails against an agent that is already disposed", async () => {
@@ -419,7 +422,7 @@ describe("send_message task delegation", () => {
 		);
 
 		await vi.waitFor(() => expect(ownerPrompt).toHaveBeenCalledTimes(1));
-		expect(ownerPrompt.mock.calls[0]?.[0]).toContain("boundary inspected");
+		expect(harnessInputText(ownerPrompt.mock.calls[0]?.[0])).toContain("boundary inspected");
 	});
 
 	it("tracks the task as a job the worker settles", async () => {
@@ -432,7 +435,7 @@ describe("send_message task delegation", () => {
 		);
 
 		expect(assigned.details).toMatchObject({ mode: "assign_task", taskId: "job-1", targetAgentId: worker });
-		expect(workerPrompt.mock.calls[0]?.[0]).toContain("Task job-1 assigned to you.");
+		expect(harnessInputText(workerPrompt.mock.calls[0]?.[0])).toContain("Task job-1 assigned to you.");
 		const job = requireAgentJobs(orchestrator, owner).list()[0];
 		expect(job?.jobId).toBe("job-1");
 		expect(job?.origin).toEqual({ kind: "external", settlerId: worker });
@@ -468,7 +471,7 @@ describe("send_message task delegation", () => {
 
 		expect(completion.details).toMatchObject({ mode: "complete_task", taskId: "job-1" });
 		await vi.waitFor(() => expect(ownerPrompt).toHaveBeenCalledTimes(1));
-		const delivered = ownerPrompt.mock.calls[0]?.[0] as string;
+		const delivered = harnessInputText(ownerPrompt.mock.calls[0]?.[0]);
 		expect(delivered).toContain("Background job job-1");
 		expect(delivered).toContain("completed");
 		expect(delivered).toContain("renamed 3 files");
@@ -492,7 +495,7 @@ describe("send_message task delegation", () => {
 		);
 
 		await vi.waitFor(() => expect(ownerPrompt).toHaveBeenCalledTimes(1));
-		const delivered = ownerPrompt.mock.calls[0]?.[0] as string;
+		const delivered = harnessInputText(ownerPrompt.mock.calls[0]?.[0]);
 		expect(delivered).toContain("failed");
 		expect(delivered).toContain("the module does not exist");
 	});
@@ -534,7 +537,7 @@ describe("send_message task delegation", () => {
 		// keeps running and simply finds the task closed.
 		expect(orchestrator.abortAgentBackgroundJob(owner, "job-1")).toBe(true);
 		await vi.waitFor(() => expect(ownerPrompt).toHaveBeenCalledTimes(1));
-		expect(ownerPrompt.mock.calls[0]?.[0]).toContain("cancelled");
+		expect(harnessInputText(ownerPrompt.mock.calls[0]?.[0])).toContain("cancelled");
 		expect(orchestrator.getAgentActivity(worker).activity).toBe("idle");
 
 		await expect(
@@ -557,7 +560,7 @@ describe("send_message task delegation", () => {
 		await disposeAgent.execute("call-2", { agentIds: [worker] }, toolContext(orchestrator, owner));
 
 		await vi.waitFor(() => expect(ownerPrompt).toHaveBeenCalledTimes(1));
-		expect(ownerPrompt.mock.calls[0]?.[0]).toContain("cancelled");
+		expect(harnessInputText(ownerPrompt.mock.calls[0]?.[0])).toContain("cancelled");
 		expect(orchestrator.getAgentActivity(worker).activity).toBe("disposed");
 		expect(orchestrator.getAgentActivity(owner).activity).toBe("idle");
 	});
@@ -576,7 +579,7 @@ describe("send_message task delegation", () => {
 
 		expect(requireAgentJobs(orchestrator, owner).list()).toEqual([]);
 		await vi.waitFor(() => expect(ownerPrompt).toHaveBeenCalledTimes(1));
-		expect(ownerPrompt.mock.calls[0]?.[0]).toContain("never assigned");
+		expect(harnessInputText(ownerPrompt.mock.calls[0]?.[0])).toContain("never assigned");
 	});
 
 	it("refuses to delegate into a dispose already under way", async () => {

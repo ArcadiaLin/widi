@@ -73,6 +73,24 @@ function queueUpdate(steerCount: number): AgentHarnessEvent {
 	};
 }
 
+/**
+ * Put text into the harness's own steering queue.
+ *
+ * The idle judgement reads `getQueuedMessageCounts()` rather than mirroring the
+ * `queue_update` payload, so a synthetic event alone proves nothing: the queue
+ * itself is the input under test. The event still has to follow, because that
+ * is what asks the orchestrator to judge again.
+ */
+async function setQueuedSteer(orchestrator: AgentOrchestrator, agentId: string, count: number): Promise<void> {
+	const harness = requireAgentHarness(orchestrator, agentId);
+	const queue = (harness as unknown as { steerQueue: unknown[] }).steerQueue;
+	queue.length = 0;
+	for (let index = 0; index < count; index += 1) {
+		queue.push({ role: "user", content: "queued", timestamp: 1 });
+	}
+	await emitHarnessEvent(orchestrator, agentId, queueUpdate(count));
+}
+
 interface Deferred<T> {
 	readonly promise: Promise<T>;
 	readonly resolve: (value: T) => void;
@@ -155,23 +173,29 @@ describe("agent_idle", () => {
 		const events = collectIdleEvents(orchestrator);
 		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
-		// Status commits to idle, but the harness reports queued steer text: the
+		// The agent announced itself ready when it was built; that edge is behind us.
+		expect(events).toHaveLength(1);
+
+		// Status commits to idle, but the harness still holds queued steer text: the
 		// agent stopped without having read what it was already given.
 		const run = await startPromptRun(orchestrator, agentId);
-		await emitHarnessEvent(orchestrator, agentId, queueUpdate(1));
+		await setQueuedSteer(orchestrator, agentId, 1);
 		await emitHarnessEvent(orchestrator, agentId, turnEnd());
 		run.resolve(assistantMessage());
 		await vi.waitFor(() => expect(orchestrator.getAgentActivity(agentId).activity).toBe("idle"));
 		expect(events).toHaveLength(1);
 
 		// Draining the queue is the fact that completes the judgement.
-		await emitHarnessEvent(orchestrator, agentId, queueUpdate(0));
+		await setQueuedSteer(orchestrator, agentId, 0);
 		expect(events).toHaveLength(2);
 		expect(events[1]?.reason).toBe("settled");
 	});
 
 	it("reports the jobs an idle agent is still waiting on", async () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		// An external job is owed by a live settler, so the worker exists first and
+		// its own ready edge stays out of the collected events.
+		const settlerAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		const events = collectIdleEvents(orchestrator);
 		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
@@ -180,13 +204,14 @@ describe("agent_idle", () => {
 			toolCallId: "call-1",
 			toolName: "send_message",
 			description: "delegated task",
-			settlerAgentId: "agent-2",
+			settlerAgentId,
 		});
 		expect(created.ok).toBe(true);
 
 		const run = await startPromptRun(orchestrator, agentId);
 		run.resolve(assistantMessage());
 
+		// The ready edge from the build, then the one this run settled into.
 		await vi.waitFor(() => expect(events).toHaveLength(2));
 		expect(events[1]?.liveJobCount).toBe(1);
 	});

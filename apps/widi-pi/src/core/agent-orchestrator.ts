@@ -24,7 +24,9 @@ import {
 	AgentHarnessError,
 	type AgentHarnessEvent,
 	type AgentHarnessPhase,
+	type AgentMessage,
 	type CompactResult,
+	createCustomMessage,
 	type ExecutionEnv,
 	type JsonlSessionMetadata,
 	type NavigateTreeResult,
@@ -1038,6 +1040,11 @@ export class AgentOrchestrator {
 			// Released before the lifecycle event so a listener may synchronously
 			// dispose the agent it was just told about.
 			this._finishAgentCreation(agentId, reservation, agentId);
+			// The first activity edge for this agent, ahead of both the resume
+			// notices and the lifecycle event. A consumer that learns an agent's
+			// activity from `agent_status_changed` must not have to special-case
+			// arrival by reading the registry once at subscribe time.
+			await this._publishAgentActivityEdge(agentId, build.liveAgent.harness.getPhase());
 			if (request.origin === "resume") {
 				// Both write into the context the model resumes with, before it is
 				// routable: an unanswered t0 handle and a spawn tree that did not come
@@ -1045,6 +1052,10 @@ export class AgentOrchestrator {
 				await this._reconcileAgentJobBranch(agentId, "resume", "The runtime that started this job is gone.");
 				await this._announceClosedSpawnTree(agentId);
 			}
+			// The first arrival at idle, stamped `ready` by `_installLiveAgent`. It
+			// has no turn behind it, and a consumer that waits to be told an agent is
+			// ready has nothing else to wait for.
+			await this._settleAgentIdle(agentId);
 			if (this._live.has(agentId)) {
 				await this._emit({
 					type: request.origin === "resume" ? "agent_resumed" : "agent_spawned",
@@ -2051,7 +2062,10 @@ export class AgentOrchestrator {
 			throw new AgentHarnessError("shutdown", `Agent ${agentId} is no longer routable.`);
 		}
 		const { harness } = liveAgent;
-		const options = request.images ? { images: [...request.images] } : undefined;
+		// A typed message carries its own images, so passing them again through
+		// `options` would put every image on the branch twice.
+		const input = toHarnessInput(request);
+		const options = typeof input === "string" && request.images ? { images: [...request.images] } : undefined;
 		if (request.method === "append") {
 			// **Session write.** The message is the entry: there is no wake, so
 			// nothing else would ever put it on the branch. `custom_message` is the
@@ -2069,16 +2083,17 @@ export class AgentOrchestrator {
 			return await this._startPrompt(
 				{ agentId, generation: liveAgent.generation, harness, phase: harness.getPhase() },
 				request,
+				input,
 			);
 		}
 		if (request.method === "follow_up") {
-			await harness.followUp(request.text, options);
+			await harness.followUp(input, options);
 			return { method: "follow_up" };
 		}
 		// A human steer counts as read only once the harness reports an empty
 		// steering queue, so the interrupt is registered around the hand-over.
 		const clearRevision = request.humanInterrupt ? this._humanInterrupts.captureClearRevision(agentId) : undefined;
-		await harness.steer(request.text, options);
+		await harness.steer(input, options);
 		if (clearRevision !== undefined) {
 			this._humanInterrupts.notifyIfUncleared(agentId, clearRevision);
 		}
@@ -2093,7 +2108,11 @@ export class AgentOrchestrator {
 	 * never persisted, and resolving early would let the queue drop a background
 	 * job t1 the model is waiting for.
 	 */
-	private async _startPrompt(target: DeliveryTarget, request: MessageDeliveryRequest): Promise<MessageDeliveryReceipt> {
+	private async _startPrompt(
+		target: DeliveryTarget,
+		request: MessageDeliveryRequest,
+		input: string | AgentMessage,
+	): Promise<MessageDeliveryReceipt> {
 		const { agentId, harness } = target;
 		if (target.phase !== "idle" || this._agentPromptRuns.has(agentId)) {
 			throw new AgentHarnessError("busy", `Agent ${agentId} cannot accept a prompt while ${target.phase}.`);
@@ -2103,8 +2122,8 @@ export class AgentOrchestrator {
 		const started = this._awaitAgentRunStart(agentId);
 		const promptRun: AgentPromptRun = {};
 		this._agentPromptRuns.set(agentId, promptRun);
-		const run = harness.prompt(request.text, {
-			...(request.images === undefined ? undefined : { images: [...request.images] }),
+		const run = harness.prompt(input, {
+			...(typeof input !== "string" || request.images === undefined ? undefined : { images: [...request.images] }),
 		});
 		// A run that settles without ever starting a loop still resolves here.
 		const start = await Promise.race([
@@ -2406,16 +2425,33 @@ export class AgentOrchestrator {
 	 * turn.
 	 */
 	private async _observeSessionWrite(agentId: AgentId, entryId: string, write: PendingSessionWrite): Promise<void> {
-		if (write.type !== "custom" || write.customType !== PERSISTENCE_REF_CUSTOM_TYPE) return;
-		const ref = write.data as PersistenceRefData;
-		await this._emit({
-			type: "agent_persistence_ref_changed",
-			agentId,
-			namespace: ref.namespace,
-			stateRoot: ref.stateRoot,
-			entryId,
-			changedAt: now(),
-		});
+		if (write.type !== "custom") return;
+		if (write.customType === PERSISTENCE_REF_CUSTOM_TYPE) {
+			const ref = write.data as PersistenceRefData;
+			await this._emit({
+				type: "agent_persistence_ref_changed",
+				agentId,
+				namespace: ref.namespace,
+				stateRoot: ref.stateRoot,
+				entryId,
+				changedAt: now(),
+			});
+			return;
+		}
+		if (write.customType !== EXTENSION_MESSAGE_CUSTOM_TYPE) return;
+		const data = write.data as ExtensionMessageEntryData;
+		await this._emit(
+			{
+				type: "extension_message_published",
+				presentationId: this._createPresentationId(),
+				entryId,
+				agentId,
+				extensionId: data.extensionId,
+				message: structuredClone(data.message),
+				createdAt: now(),
+			},
+			{ observeExtensions: false },
+		);
 	}
 
 	// -----------------------------------------------------------------------
@@ -4481,6 +4517,22 @@ function isBackgroundJobStartedDetails(details: unknown): details is BackgroundJ
  */
 function toMessageDraft(request: MessageRequest, binding: MessageSinkBinding): MessageDraft {
 	return { ...request, source: request.source ?? binding.source, binding };
+}
+
+/**
+ * The message the harness persists for one delivery.
+ *
+ * A request with no entry is the shell's own human input and stays a bare user
+ * message - existing sessions read back unchanged, and carrying no type at all
+ * is what says the user typed it. Everything else becomes a custom message, so
+ * the branch records who wrote it. Either way the model reads the same text:
+ * `convertToLlm` maps `role:"custom"` to `role:"user"` with the content verbatim.
+ */
+function toHarnessInput(request: MessageDeliveryRequest): string | AgentMessage {
+	if (request.entry === undefined) return request.text;
+	const content =
+		request.images === undefined ? request.text : [{ type: "text" as const, text: request.text }, ...request.images];
+	return createCustomMessage(request.entry.customType, content, true, request.entry.details, now());
 }
 
 function toOrphanedJobHandleText(handle: BackgroundJobStartedDetails): string {
