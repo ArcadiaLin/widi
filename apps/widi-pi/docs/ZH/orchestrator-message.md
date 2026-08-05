@@ -2,7 +2,7 @@
 
 面向 `apps/widi-pi/src/core/message.ts`、`core/agent-orchestrator.ts` 与 `src/tui/`。前置阅读：`orchestrator-wiring-plan.md` §G。
 
-> **状态：设计，未落地。** 本文是 `orchestrator-wiring-plan.md` 批次 5（G）的设计说明，落地前可改。
+> **状态：core 已落地（`ce52f26`、`7041083`），TUI 与 fork 未动。** 尚未落地的部分逐条列在 §8，正文其余部分描述的是已经在跑的代码。
 >
 > 本文举例用到的 multi-agent 工具与 human-request，两者都在重做中，例子不代表它们当前或将来的形状。见 §10。
 
@@ -14,7 +14,7 @@
 
 三条直接推论：
 
-- orchestrator 不再为任何 runtime 保留私有的投递包装方法。`_deliverBackgroundResult`、`steerAgent`/`followUpAgent`、`_withExtensionInputPresentation`、三处 `harness.appendMessage` 通告，全部消失。
+- orchestrator 不再为任何 runtime 保留私有的投递包装方法。`_deliverBackgroundResult`、`steerAgent`/`followUpAgent`、`_sendShellMessage`、`_withExtensionInputPresentation`、三处 `harness.appendMessage` 通告，全部消失。`harness.appendMessage` 现在零调用点。
 - 条目自带来源与原文，UI 不靠猜。今天运行时替模型写的话和用户自己打的字在会话里是同一种条目，分不出来。
 - 模型看到的仍然是纯 user 文本。带类型是给存储和 UI 的，不是给模型的。
 
@@ -58,7 +58,6 @@ export interface MessageRequest {
     readonly render?: (body: string) => string;
     readonly images?: readonly ImageContent[];
     readonly mode: MessageDeliveryMode;   // next_turn | interrupt | precede
-    readonly presentation?: ExtensionInputPresentation;
 }
 
 export interface MessageSender {
@@ -73,11 +72,32 @@ export interface MessageSink extends MessageSender {
 orchestrator 只暴露一个工厂：
 
 ```ts
-messageSinkFor(binding: {
-    readonly source: MessageSource;      // 默认 source，持有者可覆盖
-    readonly policy: MessageDeliveryPolicy;  // 投递策略，持有者不可覆盖
-}): MessageSink
+messageSinkFor(binding: MessageSinkBinding): MessageSink
+
+export interface MessageSinkBinding {
+    readonly source: MessageSource;          // 默认 source，请求可覆盖
+    readonly policy: MessageDeliveryPolicy;  // 投递策略，请求不可覆盖
+    /** 请求不自带 render 时用它。属于 sink 而不属于 source：改了 source 只是换标签。 */
+    readonly render?: (body: string) => string;
+    /** 落成裸 `role:"user"` 条目。只有外壳是 true，见 §6。 */
+    readonly plainEntry?: boolean;
+}
 ```
+
+内置生产者不各自拼 binding，走同一个函数、同一个 switch：
+
+```ts
+export type BuiltInMessageProducer =
+    | { kind: "human" }
+    | { kind: "agent"; senderAgentId: AgentId }
+    | { kind: "background_job"; ownerAgentId: AgentId; jobId: string; mode: MessageDeliveryMode }
+    | { kind: "runtime"; notice: string }
+    | { kind: "extension"; extensionId: string };
+
+export function messageBindingFor(producer: BuiltInMessageProducer): MessageSinkBinding
+```
+
+三样东西放在一个 switch 里是有意的：它们回答的是同一个问题——"这个生产者说话是怎么回事"——拆成一张 source 表、一张 policy 表、一个 render switch，就是它们开始各走各的方式：新加一个生产者只补了其中两处，读起来就像第三处有 bug。
 
 `MessageDeliveryPolicy` 就是今天散在 `_routeMessage` 里、按 `source.kind` 分支算出来的那几个字段，现在改成绑定时给定：
 
@@ -96,19 +116,21 @@ export interface MessageDeliveryPolicy {
 
 ### 谁拿到什么
 
-| 持有者 | 默认 source | policy | 接口 |
+| 持有者 | 默认 source | policy | 拿到什么 |
 |---|---|---|---|
-| TUI / RPC 外壳 | `{kind:"human"}` | `humanInterrupt`，`enforce` | `MessageSink` |
-| tool adapter（每个 agent 一个） | `{kind:"agent", label:agentId}` | `enforce` | `MessageSender` |
-| extension runner（每个 extension 一个） | `{kind:"extension:<name>"}` | `enforce` | `MessageSender` |
-| background runtime（每次结算一个） | `{kind:"background_job", details:{jobId}}` | `ignore`、`retryOnFailure`、`mergeKey` | `MessageSender` |
-| orchestrator 自身的通告 | `{kind:"runtime", details:{notice}}` | `ignore` | `MessageSender` |
+| TUI 外壳 | `{kind:"human"}` | `humanInterrupt`，`enforce`，`plainEntry` | `MessageSink`（`application.messages`） |
+| agent（经 `AgentToOrchestratorHost`） | `{kind:"agent", label:senderAgentId}` | `enforce` | host 的 `sendMessage`，绑住"谁在问" |
+| extension runner（每个 extension 一个） | `{kind:"extension:<name>", label:<name>}` | `enforce` | `MessageSink`（`ExtensionCoreActions.messageSinkFor`） |
+| background runtime（每次结算一个） | `{kind:"background_job", details:{ownerAgentId, jobId}}` | `ignore`、`retryOnFailure`、`mergeKey` | `MessageSender`（端口 `messageSinkFor`） |
+| orchestrator 自身的通告 | `{kind:"runtime", details:{notice}}` | `ignore` | `_sendRuntimeNotice` 内部自取 |
+
+background runtime 拿的是 `MessageSender` 而不是 host：它不是 agent 作用域的模块，它服务所有 agent，说话时的身份是一个 job 而不是一个 agent。host 的每个方法都少一个"谁在问"的参数，而 background 根本没有那个"谁"。
 
 **没有例外，source 全部可覆盖。** 包括 tool adapter：模型填的是 tool schema 里的参数，而 `source` 不在任何 tool 的 schema 里，所以选 source 的是写 tool 的人，不是模型。内置 tool 用默认值就好；extension 提供的 tool 自己填，和 extension runner 同一个信任层级。
 
-`source.details` 必须可 JSON 序列化，入队时校验（`assertJsonSerializable`）。晚于这一刻发现，消息已经过了 transform 正要投递，失败点就落在了错的地方。
+`source.details` 必须可 JSON 序列化——它要原样落进 jsonl。**目前没有运行时校验**：内置生产者填的都是字面量对象，而 extension 填的东西一旦不可序列化，会在写会话时炸在 harness 里，位置不理想但不静默。真要加，加在入队处而不是投递处。
 
-**为什么 `prompt` 只给外壳。** `prompt` 带 `requiresIdle`：调用方要等这一轮的 assistant 结果，所以 target 忙时当场拒绝而不是排队。tool 和 extension 调它只会拿到"agent 忙"的失败，而它们要的是"排进去"。这不是路径不统一，是能力大小不同，一个 `extends` 表达得了。
+**`prompt` 与 `send` 的区别是等不等，不是谁能用。** `prompt` 带 `requiresIdle`：调用方要拿这一轮的 assistant 结果，所以 target 忙时当场拒绝而不是排队。外壳和 extension 都拿得到它——extension 的 `actions.prompt` 语义正是"现在就跑一轮"，忙时报错是它要的行为。要"排进去"的用 `send`。能力大小的差别用一个 `extends` 表达：`MessageSender` 只有 `send`，`MessageSink` 多一个 `prompt`。
 
 ---
 
@@ -124,7 +146,9 @@ export interface MessageDeliveryPolicy {
 
 `precede` 不叫 `prompt`：`harness.prompt()` 是"立刻起一轮"，同一个词两个意思。它描述的是 resume 通告今天的实际行为——写进分支然后等着被读到。
 
-`precede` 不需要队列。`appendCustomMessageEntry` 直接落在当前 leaf 上，天然排在下一次用户输入之前，而且跨进程存活。harness 的 `nextTurn` 队列不能用——它只在内存里，重启就没了，而 resume 通告必须能被第二次中断的 resume 找到。
+`precede` 与其它两档走同一条队列，但它是唯一没有 phase 闸门的：`decideMessageDelivery` 在 `requiresIdle` 与 compaction 两道检查之前就返回 `append`。理由是 append 不驱动 agent loop 也不进 harness 的任何队列——harness 会把这次写入缓冲在当前操作后面，落在那一轮的保存点，所以没有哪个 phase 需要拒绝它。
+
+harness 的 `nextTurn` 队列不能用来做这件事：它只在内存里，重启就没了，而 resume 通告必须能被第二次中断的 resume 找到。`appendCustomMessageEntry` 落在分支上，跨进程存活。
 
 ---
 
@@ -224,7 +248,8 @@ orchestrator 自身 ───────►│                                 
 | `agent` | `[Message from <label>]\n\n` |
 | `background_job` | 无——正文自带 job header |
 | `runtime` | 无——正文自带标记，且 carried-over 必须保持 job result 的形状 |
-| 其它（含 `extension:<name>`） | `[Input from <label ?? kind>]\n\n` |
+| `extension:<name>` | `[Input from extension <name>]\n\n` |
+| 其它（手工搭的 sink） | 无——core 不替一个它没定义过的来源发明署名 |
 
 ### 各来源实际长什么样
 
@@ -266,10 +291,10 @@ src/core/host.ts
 src/core/message.ts
 ```
 
-**extension，缺省渲染**——`{kind:"extension:mcp"}`。
+**extension，缺省渲染**——`messageBindingFor({kind:"extension", extensionId:"mcp"})`，source 是 `{kind:"extension:mcp", label:"mcp"}`。
 
 ```
-[Input from extension:mcp]
+[Input from extension mcp]
 
 工具目录已刷新，新增 4 个工具。
 ```
@@ -453,7 +478,7 @@ core:orchestrator_message
 
 ### 积压的 precede 遇到唤醒消息会怎样
 
-**它不会积压，也不会转化。** `precede` 不进 `MessageDeliveryQueue`——`appendCustomMessageEntry` 当场把条目挂到当前 leaf 上，写完就结束。"等着被读到"是指它躺在分支上等下一轮构建上下文时一起读进去，不是躺在内存队列里等着被合并进某条用户消息。
+**它不会转化，也不会被合并进别的消息。** `precede` 和唤醒消息排同一条 per-target FIFO，但轮到它时 `appendCustomMessageEntry` 把条目挂到当前 leaf 上，写完就结束。"等着被读到"是指它躺在分支上等下一轮构建上下文时一起读进去，不是躺在队列里等着被拼进某条用户消息。
 
 所以用户接着输入时，只是多了一条 `parentId` 指向 ④ 的普通条目：
 
@@ -481,12 +506,12 @@ core:orchestrator_message
 
 两个附带的事实：
 
-- **没有合并。** 队列的 `mergeKey` 只作用于走队列的消息，`append` 不走队列，所以 ④ 和 ⑤ 是两条独立的 user 消息，不会拼成一条。
+- **没有合并。** 合并要求相邻两条带同一个 `mergeKey`，而 runtime binding 不带 mergeKey（只有 background t1 带），所以 ④ 和 ⑤ 是两条独立的 user 消息，不会拼成一条。
 - **跑轮期间写的 precede 会被缓冲。** harness 在运行操作时 buffer 自己的写入，条目落在那一轮的保存点，排在那一轮的消息之后。它的位置取决于 flush 时 leaf 在哪，不是调用 `send` 的那一刻。
 
 ---
 
-## 7. UI 层如何区分渲染
+## 7. UI 层如何区分渲染——**未做**
 
 今天 TUI 只有两种输入形态：`user-message`（用户打的字，也包括运行时冒名写的）和 `extension-message`（`core:extension_message` 自定义条目，有自己的渲染但不进模型上下文）。改造后多出一类：**进了模型上下文、但不是从外壳进来的用户输入**。
 
@@ -528,9 +553,9 @@ interface OrchestratorMessageItem {
 
 ## 8. 这一批要动的东西
 
-### fork 改动（`packages/agent`）
+### fork 改动（`packages/agent`）——**未做**
 
-唤醒路径要能带类型，需要放宽 harness 的类型收窄：
+唤醒路径要能带类型，需要放宽 harness 的类型收窄。在此之前，走 `prompt`/`steer`/`follow_up` 的消息落盘仍是裸 `role:"user"`，§6 表格第 2 行还没生效：
 
 - `steerQueue` / `followUpQueue`：`UserMessage[]` → `AgentMessage[]`（`nextTurnQueue` 本来就是宽的）
 - `prompt` / `steer` / `followUp` / `nextTurn`：接受 `string | AgentMessage`
@@ -546,10 +571,25 @@ interface OrchestratorMessageItem {
 | `BackgroundJobDelivery` / `BackgroundJobDeliveryReceipt` / `deliverResult` 端口 | 同上；`entryId` 本来就没人产没人读 |
 | `reconcileBranch` 的 `announce` 回调 | background 自己发；`toCarriedOverJobResultText` 从 orchestrator 挪进 `background/` |
 | `steerAgent` / `followUpAgent` | 收编进 `_routeMessage`，`mode` 表达同一件事 |
-| `_withExtensionInputPresentation` | presentation 变成 `MessageRequest` 的字段，走已有的 `onDeliveryStart` 配对 |
+| `_withExtensionInputPresentation` | input presentation 整条通道删除，见下 |
+| `_sendShellMessage` | 外壳持 sink，不需要 orchestrator 替它包一层 |
+| `ExtensionCoreActions.promptAgent` / `steerAgent` / `followUpAgent` | 三者只差 `mode` 与等不等，收成一个 `messageSinkFor(extensionId)` |
+| `sendMessage` / `promptAgent` 的第三个参数 | presentation 没了，直接调用与 sink 调用再无能力差 |
 | 三处 `harness.appendMessage` 通告 | 变成 `mode:"precede"` |
 | `_routeMessage` 里按 `source.kind` 分支算 policy 的代码 | policy 改成发 sink 时绑定 |
 | `MessageSource` 的封闭联合类型 | kind 变成开放字符串 |
+| `messageBlockPolicy(source)` | policy 改成绑定时给定，不再从 kind 反推 |
+| `ExtensionInputPresentation` 及其 validate / clone | 见下 |
+| `core:extension_input_presentation` 条目、`extension_input_presented` 事件 | 同上 |
+| `_pendingExtensionInputPresentations` 及配套的六个方法 | 同上 |
+
+### input presentation 整条删除
+
+`ExtensionSendOptions.presentation` 这条通道**没有任何消费者**：TUI 既没有渲染 `extension_input_presented` 事件，也没有读过 `core:extension_input_presentation` 条目。它是一条只写不读的链路，从 extension 作者 API 一直到 orchestrator 的 per-target 配对队列。
+
+删掉的理由不是"没人用所以砍掉"，是它放错了层：一条消息在界面上长什么样，属于 TUI 侧的 extension 宿主，不属于 core 的投递管线。core 该保证的是消息带着 `source` 和 `details` 完整落盘（§6 做到了），够 UI 层自己决定渲染。重建时它落在 TUI 层。
+
+`ExtensionMessage` / `ExtensionStatus` / `emitOutput` / `notify` / `reportDiagnostic` 这些**保留**：它们和消息投递无关，是 extension 自己的展示面。
 
 ### 要承认的行为变化
 
@@ -557,13 +597,15 @@ interface OrchestratorMessageItem {
 2. **extension 的 steer / followUp 会被拦截。** 今天这两条完全绕过 input 管线，改造后会经过别的 extension 的 transform，也可能被 block。
 3. **runtime 通告的 block 策略是 `ignore`。** 与 background t1 同理且更硬：`reconcileBranch` 的通告发完就写 job 记录，如果 extension 把它 block 掉，记录照写、模型永远不知道，那是静默丢失。block 降级成诊断。
 4. **老会话不追溯。** 已经落成 `role:"user"` 的通告继续按用户消息渲染，不做迁移。
+5. **extension 的 `presentation` 参数消失。** 传了会是类型错误。见上一节。
+6. **`precede` 与唤醒消息共用 per-target FIFO。** compaction / branch_summary 期间被 defer 的消息会挡住排在它后面的通告——是停顿不是死锁，phase 一变两条都走。要不要给 `precede` 单开一条道还没定。
 
 ---
 
 ## 9. 不在本次范围
 
 - **subagent 运行状态进上下文。** 机制上做完这一批就只是再发一个 sink，但它缺一条策略：哪些状态变化值得进父 agent 的上下文、要不要节流。子 agent 每次 idle/running 翻转都进上下文是 token 水龙头。等规则想清楚单开。
-- **`_pendingExtensionInputPresentations` 的双记录并入。** 它确实是 orchestrator message 的一个特例（`details` 里放 presentation，`_observeSessionWrite` 能少一半），但它碰 extension 的公开面，范围比这一批大。等这一层有了真实用户，接口形状从两个实现里抽。
+- **input presentation 在 TUI 层的重建。** core 侧已经整条删除（§8）。重建时它读的是 `details.source` 与 `details.body`，不需要 core 再存第二份记录。
 - **extension 的 transform 挂载点。** 同上，v1 只做投递侧。
 
 ---
