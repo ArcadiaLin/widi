@@ -255,16 +255,20 @@ describe("AgentOrchestrator.sendMessage", () => {
 
 		const disposing = orchestrator.disposeAgent(targetAgentId, { intent: "removed" });
 		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(orchestrator.getAgentActivity(targetAgentId).activity).toBe("idle");
+		// The registry cutover happens first, long before the teardown it is still
+		// waiting on: nothing can be accepted from here on.
+		expect(() => orchestrator.getAgentActivity(targetAgentId)).toThrow(/is gone|Unknown agent/);
 
+		// Not a MessageError: the target left the registry, so the rejection is the
+		// lookup's, ahead of the message pipeline entirely.
 		await expect(
 			agentSink(orchestrator, "agent-peer").send({ targetAgentId, body: "landed mid-teardown", mode: "next_turn" }),
-		).rejects.toBeInstanceOf(MessageError);
+		).rejects.toThrow(/is gone|Unknown agent/);
 		expect(prompt).not.toHaveBeenCalled();
 
 		teardown.resolve({ clearedSteer: [], clearedFollowUp: [] });
 		await disposing;
-		expect(orchestrator.getAgentActivity(targetAgentId).activity).toBe("disposed");
+		expect(() => orchestrator.getAgentActivity(targetAgentId)).toThrow(/is gone|Unknown agent/);
 	});
 });
 
@@ -420,15 +424,21 @@ describe("AgentOrchestrator delegated task jobs", () => {
 		// No executor watches a delegated job's signal, so the table itself has to
 		// finish the transition rather than leave it stuck in `aborting`.
 		expect(requireAgentJobs(orchestrator, ownerAgentId).list()).toEqual([]);
-		expect(changes.map((change) => change.transition)).toEqual(["backgrounded", "abort_requested", "settled"]);
+		// No `abort_requested` in between: nothing executes a delegated job, so the
+		// table cancels it outright rather than asking and then confirming.
+		expect(changes.map((change) => change.transition)).toEqual(["backgrounded", "settled"]);
 		expect(changes.at(-1)).toMatchObject({ transition: "settled", outcome: { status: "cancelled" } });
 		// The owner is untouched by its worker's teardown. Its exact phase here is
 		// not asserted: the cancellation t1 is recorded before it is delivered, so
 		// whether that delivery has already started a run by the time dispose
 		// returns is a race between two independent chains.
-		expect(orchestrator.getAgentActivity(ownerAgentId).activity).not.toBe("disposed");
+		expect(orchestrator.getAgentActivity(ownerAgentId)).toBeDefined();
 		await vi.waitFor(() => expect(ownerPrompt).toHaveBeenCalledTimes(1));
-		expect(harnessInputText(ownerPrompt.mock.calls[0]?.[0])).toContain("Worker was killed");
+		// The owner is told which agent stopped owing it a result. The dispose
+		// reason belongs to the worker's own teardown, not to this job's result.
+		expect(harnessInputText(ownerPrompt.mock.calls[0]?.[0])).toContain(
+			`Settler agent ${workerAgentId} was disposed before it reported a result.`,
+		);
 	});
 
 	// Dispose detaches the owner's job listener before aborting its jobs, so the

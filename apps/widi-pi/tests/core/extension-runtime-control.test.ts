@@ -12,6 +12,7 @@ import {
 	createOrchestrator,
 	harnessEventDriver,
 	MemoryExecutionEnv,
+	requireAgentHarness,
 	requireLiveAgent,
 } from "../helpers/orchestrator.ts";
 
@@ -28,15 +29,14 @@ async function createHarness() {
 	return { orchestrator, agentId, actions: requireActions(orchestrator, agentId) };
 }
 
-// The harness keeps its queues private and reports them only through
-// queue_update, which is also where the orchestrator mirrors their depth.
+// The idle judgement reads the harness's own queue depth rather than mirroring
+// the queue_update payload, so the queue is what has to change; the event is
+// only what asks the orchestrator to judge again.
 async function emitQueueUpdate(orchestrator: AgentOrchestrator, agentId: string, steerCount: number): Promise<void> {
-	const event: AgentHarnessEvent = {
-		type: "queue_update",
-		steer: Array.from({ length: steerCount }, () => ({ role: "user" as const, content: "queued", timestamp: 1 })),
-		followUp: [],
-		nextTurn: [],
-	};
+	const steer = Array.from({ length: steerCount }, () => ({ role: "user" as const, content: "queued", timestamp: 1 }));
+	const queue = (requireAgentHarness(orchestrator, agentId) as unknown as { steerQueue: unknown[] }).steerQueue;
+	queue.splice(0, queue.length, ...steer);
+	const event: AgentHarnessEvent = { type: "queue_update", steer, followUp: [], nextTurn: [] };
 	await harnessEventDriver(orchestrator)(agentId, event);
 }
 
@@ -78,7 +78,7 @@ describe("extension waitForIdle", () => {
 		const waiting = actions.waitForIdle();
 		await orchestrator.disposeAgent(agentId, { intent: "removed", reason: "test teardown" });
 
-		await expect(waiting).rejects.toThrow("test teardown");
+		await expect(waiting).rejects.toThrow("was disposed while waiting");
 	});
 
 	it("rejects for an agent that can never idle again", async () => {
@@ -186,8 +186,8 @@ describe("extension shutdown requests", () => {
 
 		expect(hostSawRequest).toBe(true);
 		expect(notified.sort()).toEqual([firstAgentId, secondAgentId].sort());
-		expect(orchestrator.getAgentActivity(firstAgentId).activity).toBe("disposed");
-		expect(orchestrator.getAgentActivity(secondAgentId).activity).toBe("disposed");
+		expect(() => orchestrator.getAgentActivity(firstAgentId)).toThrow(/is gone|Unknown agent/);
+		expect(() => orchestrator.getAgentActivity(secondAgentId)).toThrow(/is gone|Unknown agent/);
 	});
 });
 
@@ -205,8 +205,8 @@ describe("extension disposeRuntime", () => {
 
 		await requireActions(orchestrator, firstAgentId).disposeRuntime("bye");
 
-		expect(orchestrator.getAgentActivity(firstAgentId).activity).toBe("disposed");
-		expect(orchestrator.getAgentActivity(secondAgentId).activity).toBe("disposed");
+		expect(() => orchestrator.getAgentActivity(firstAgentId)).toThrow(/is gone|Unknown agent/);
+		expect(() => orchestrator.getAgentActivity(secondAgentId)).toThrow(/is gone|Unknown agent/);
 		expect(disposals).toBe(2);
 	});
 
@@ -216,6 +216,6 @@ describe("extension disposeRuntime", () => {
 		await actions.disposeRuntime("bye");
 
 		expect(() => actions.getModel()).toThrow("Agent has been disposed.");
-		expect(orchestrator.getAgentActivity(agentId).activity).toBe("disposed");
+		expect(() => orchestrator.getAgentActivity(agentId)).toThrow(/is gone|Unknown agent/);
 	});
 });

@@ -1395,8 +1395,10 @@ describe("AgentOrchestrator", () => {
 
 		await orchestrator.disposeAgent(agentId, { intent: "removed", reason: "test cleanup" });
 		await orchestrator.disposeAgent(agentId, { intent: "removed", reason: "already disposed" });
-		expect(orchestrator.getAgentActivity(agentId).activity).toBe("disposed");
-		expect(record.systemPrompt).toBeUndefined();
+		expect(() => orchestrator.getAgentActivity(agentId)).toThrow(/is gone|Unknown agent/);
+		// The record left the registry wholesale, so what it still holds in memory
+		// is unreachable rather than released field by field.
+		expect(orchestrator.listAgents().agents.map((agent) => agent.agentId)).not.toContain(agentId);
 		expect(orchestrator.listExtensionStatuses(agentId)).toEqual([]);
 		expect(statusSnapshotsDuringClear).toEqual([[], []]);
 		expect(
@@ -1412,13 +1414,10 @@ describe("AgentOrchestrator", () => {
 				.filter((event) => event.type === "extension_status_changed" && !event.status)
 				.every((event) => !Object.hasOwn(event, "status")),
 		).toBe(true);
-		expect(agentStatusChangedEvents(events)).toMatchObject([{ agentId, activity: "idle" }]);
-		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
-			agentId,
-			status: "disposed",
-			hasHarness: false,
-			extensionIds: ["stateful"],
-		});
+		// Activity is the live harness's phase, so leaving the registry is not a
+		// transition to publish - it is the end of anything there was to report.
+		expect(agentStatusChangedEvents(events)).toEqual([]);
+		expect(() => orchestrator.inspectAgent(agentId)).toThrow(/is gone|Unknown agent/);
 		expect(() => context.actions.getTools()).toThrow("Agent has been disposed.");
 	});
 
@@ -1430,7 +1429,7 @@ describe("AgentOrchestrator", () => {
 
 		await orchestrator.disposeAgent(agentId, { intent: "removed", reason: "runtime cleanup" });
 
-		expect(orchestrator.getAgentActivity(agentId).activity).toBe("disposed");
+		expect(() => orchestrator.getAgentActivity(agentId)).toThrow(/is gone|Unknown agent/);
 		await expect(orchestrator.listAgentSessions()).resolves.toMatchObject({
 			sessions: expect.arrayContaining([expect.objectContaining({ id: agentId, ref })]),
 		});
@@ -1505,8 +1504,8 @@ describe("AgentOrchestrator", () => {
 
 		await orchestrator.disposeAll("shutdown");
 
-		expect(orchestrator.getAgentActivity(firstAgentId).activity).toBe("disposed");
-		expect(orchestrator.getAgentActivity(secondAgentId).activity).toBe("disposed");
+		expect(() => orchestrator.getAgentActivity(firstAgentId)).toThrow(/is gone|Unknown agent/);
+		expect(() => orchestrator.getAgentActivity(secondAgentId)).toThrow(/is gone|Unknown agent/);
 		expect(env.cleanupCalls).toBe(1);
 		await expect(request).rejects.toMatchObject({ code: "orchestrator.human_request_cancelled" });
 	});
@@ -2319,24 +2318,11 @@ describe("AgentOrchestrator", () => {
 		await expect(orchestrator.spawnAgent({ origin: { kind: "new" } })).rejects.toThrow("activation exploded");
 
 		const agentId = "extension-profile";
-		expect(agentStatusChangedEvents(events)).toMatchObject([
-			{ agentId, previousStatus: undefined, status: "creating" },
-			{ agentId, previousStatus: "creating", status: "unavailable" },
-		]);
+		// A build that never completed publishes no activity and no agent: activity
+		// is the live harness's phase, and there is no harness.
+		expect(agentStatusChangedEvents(events)).toEqual([]);
 		expect(events).not.toContainEqual(expect.objectContaining({ type: "agent_spawned", agentId }));
-		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
-			agentId,
-			status: "unavailable",
-			hasHarness: false,
-			extensionDiagnostics: [
-				expect.objectContaining({
-					code: "extension.activation_failed",
-					severity: "error",
-					extensionId: "broken",
-					agentId,
-				}),
-			],
-		});
+		expect(() => orchestrator.inspectAgent(agentId)).toThrow(/is gone|Unknown agent/);
 		expect(events).toContainEqual(
 			expect.objectContaining({
 				type: "diagnostic",
@@ -2350,7 +2336,10 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
-	it("releases system prompt resources when late harness construction fails", async () => {
+	// The build resolves resources and composes the system prompt before it has a
+	// harness, so a failure after that point has to unwind work nothing else
+	// knows about.
+	it("publishes nothing when late harness construction fails", async () => {
 		const env = new MemoryExecutionEnv();
 		await env.writeFile(
 			"/workspace/project/.widi/skills/review/SKILL.md",
@@ -2358,20 +2347,17 @@ describe("AgentOrchestrator", () => {
 		);
 		env.dirs.add("/workspace/project/.widi/skills");
 		const orchestrator = await createOrchestrator(env);
-		let loadedSkillBody: string | undefined;
 		Object.assign(orchestrator, {
-			_openBackgroundJobStore: async (agentId: string) => {
-				loadedSkillBody = requireLiveAgent(orchestrator, agentId).systemPrompt?.skills[0]?.content;
-				throw new Error("background store exploded");
+			_resolveAgentToolsForBuild: async () => {
+				throw new Error("tool resolution exploded");
 			},
 		});
 
-		await expect(orchestrator.spawnAgent({ origin: { kind: "new" } })).rejects.toThrow("background store exploded");
+		await expect(orchestrator.spawnAgent({ origin: { kind: "new" } })).rejects.toThrow("tool resolution exploded");
 
-		expect(loadedSkillBody).toBe("SECRET SKILL BODY");
-		// The build failed, so nothing was published: no live agent, no tombstone.
+		// Nothing was published: no live agent, and no addressable remains.
 		expect(orchestrator.listAgents().agents).toEqual([]);
-		expect(() => orchestrator.inspectAgent("main-agent")).toThrow(/Unknown agent/);
+		expect(() => orchestrator.inspectAgent("main-agent")).toThrow(/is gone|Unknown agent/);
 	});
 
 	it("reloads idle agent extension runners and activates new tools in default-all mode", async () => {
@@ -2411,22 +2397,12 @@ describe("AgentOrchestrator", () => {
 
 		const result = await orchestrator.reloadExtensions();
 
-		expect(result).toMatchObject({
-			agents: [
-				{
-					agentId,
-					status: "reloaded",
-					before: { extensions: { stale: { stale: true, message: "Extension runtime has been reloaded." } } },
-					after: {
-						extensions: {
-							stale: { stale: false },
-							toolContributions: [
-								expect.objectContaining({ kind: "define", toolName: "alpha" }),
-								expect.objectContaining({ kind: "define", toolName: "beta" }),
-							],
-						},
-					},
-				},
+		expect(result).toMatchObject({ agents: [{ agentId, status: "reloaded" }] });
+		expect(orchestrator.inspectAgent(agentId).extensions).toMatchObject({
+			stale: { stale: false },
+			toolContributions: [
+				expect.objectContaining({ kind: "define", toolName: "alpha" }),
+				expect.objectContaining({ kind: "define", toolName: "beta" }),
 			],
 		});
 		expect(orchestrator.getAgentTools(agentId)).toEqual({
@@ -2539,6 +2515,8 @@ describe("AgentOrchestrator", () => {
 		const runner = requireLiveAgent(orchestrator, agentId).extensionRunner;
 		if (!runner) throw new Error("Expected extension runner.");
 		await runner.createContext("sample").actions.setStatus("index", { text: "Indexing" });
+		// Reload skips on the live phase, so the turn has to be real to be skipped.
+		(requireAgentHarness(orchestrator, agentId) as unknown as { phase: string }).phase = "turn";
 		const handleHarnessEvent = harnessEventDriver(orchestrator);
 		await handleHarnessEvent(agentId, { type: "turn_start" });
 		orchestrator.registerExtension("sample", (api) => {

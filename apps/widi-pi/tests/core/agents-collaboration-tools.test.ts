@@ -396,7 +396,7 @@ describe("send_message plain delivery", () => {
 
 		await expect(
 			sendMessage.execute("call-1", { agentId: worker, message: "anyone there" }, toolContext(orchestrator, owner)),
-		).rejects.toThrow(/can no longer be given work/);
+		).rejects.toThrow(/is gone|Unknown agent/);
 	});
 });
 
@@ -561,7 +561,7 @@ describe("send_message task delegation", () => {
 
 		await vi.waitFor(() => expect(ownerPrompt).toHaveBeenCalledTimes(1));
 		expect(harnessInputText(ownerPrompt.mock.calls[0]?.[0])).toContain("cancelled");
-		expect(orchestrator.getAgentActivity(worker).activity).toBe("disposed");
+		expect(() => orchestrator.getAgentActivity(worker)).toThrow(/is gone|Unknown agent/);
 		expect(orchestrator.getAgentActivity(owner).activity).toBe("idle");
 	});
 
@@ -589,9 +589,9 @@ describe("send_message task delegation", () => {
 		vi.spyOn(harness, "abort").mockReturnValue(teardown.promise);
 		const disposing = orchestrator.disposeAgent(worker, { intent: "removed" });
 		await new Promise((resolve) => setTimeout(resolve, 0));
-		// The teardown has not committed the status yet, so `idle` is still what a
-		// status check would report.
-		expect(orchestrator.getAgentActivity(worker).activity).toBe("idle");
+		// The registry cutover is the first thing dispose does, well ahead of the
+		// teardown it is still waiting on: the agent is unaddressable already.
+		expect(() => orchestrator.getAgentActivity(worker)).toThrow(/is gone|Unknown agent/);
 
 		await expect(
 			sendMessage.execute(
@@ -599,7 +599,7 @@ describe("send_message task delegation", () => {
 				{ agentId: worker, message: "one more thing", assignTask: true },
 				toolContext(orchestrator, owner),
 			),
-		).rejects.toThrow(/can no longer be given work/);
+		).rejects.toThrow(/is gone|Unknown agent/);
 		expect(requireAgentJobs(orchestrator, owner).list()).toEqual([]);
 
 		teardown.resolve({ clearedSteer: [], clearedFollowUp: [] });
@@ -646,7 +646,7 @@ describe("dispose_agent", () => {
 			toolContext(orchestrator, root),
 		);
 
-		expect(orchestrator.getAgentActivity(parent).activity).toBe("disposed");
+		expect(() => orchestrator.getAgentActivity(parent)).toThrow(/is gone|Unknown agent/);
 		expect(orchestrator.getAgentActivity(grandchild).activity).toBe("idle");
 		expect(spawnParentOf(orchestrator, parent)).toBe(root);
 		expect(spawnParentOf(orchestrator, grandchild)).toBe(parent);
@@ -693,11 +693,13 @@ describe("dispose_agent", () => {
 			agents: [{ agentId: parent, state: "disposed", disposedAgentIds: [grandchild, firstChild, secondChild, parent] }],
 		});
 		for (const agentId of [parent, firstChild, grandchild, secondChild]) {
-			expect(orchestrator.getAgentActivity(agentId).activity).toBe("disposed");
+			expect(() => orchestrator.getAgentActivity(agentId)).toThrow(/is gone|Unknown agent/);
 		}
 		expect(orchestrator.getAgentActivity(root).activity).toBe("idle");
 		expect(orchestrator.getAgentActivity(sibling).activity).toBe("idle");
-		expect(spawnParentOf(orchestrator, parent)).toBe(root);
+		// Nothing points into the disposed subtree afterwards: a whole branch went,
+		// so there is no surviving descendant for an edge to be about.
+		expect(spawnParentOf(orchestrator, parent)).toBeUndefined();
 	});
 
 	it("waits for an overlapping descendant disposal before removing its parent", async () => {
@@ -726,8 +728,8 @@ describe("dispose_agent", () => {
 		teardown.resolve({ clearedSteer: [], clearedFollowUp: [] });
 		await expect(leafDisposal).resolves.toEqual([leaf]);
 		await expect(parentDisposal).resolves.toEqual([parent]);
-		expect(orchestrator.getAgentActivity(leaf).activity).toBe("disposed");
-		expect(orchestrator.getAgentActivity(parent).activity).toBe("disposed");
+		expect(() => orchestrator.getAgentActivity(leaf)).toThrow(/is gone|Unknown agent/);
+		expect(() => orchestrator.getAgentActivity(parent)).toThrow(/is gone|Unknown agent/);
 	});
 
 	it("marks the whole subtree unaddressable before recursive teardown awaits", async () => {
@@ -744,7 +746,7 @@ describe("dispose_agent", () => {
 			{ profile: "worker" },
 			toolContext(orchestrator, leaf),
 		);
-		const escapingSpawnFailure = expect(escapingSpawn).rejects.toThrow(/can no longer spawn child agents/);
+		const escapingSpawnFailure = expect(escapingSpawn).rejects.toThrow(/is gone|Unknown agent/);
 		const disposing = disposeAgent.execute(
 			"dispose-blocked-subtree",
 			{ agentIds: [parent], scope: "subtree" },
@@ -759,7 +761,7 @@ describe("dispose_agent", () => {
 				{ agentId: parent, message: "late task", assignTask: true },
 				toolContext(orchestrator, root),
 			),
-		).rejects.toThrow(/can no longer be given work/);
+		).rejects.toThrow(/is gone|Unknown agent/);
 
 		teardown.resolve({ clearedSteer: [], clearedFollowUp: [] });
 		await disposing;

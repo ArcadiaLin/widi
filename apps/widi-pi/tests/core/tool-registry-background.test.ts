@@ -280,11 +280,12 @@ describe("backgroundable tool adapter", () => {
 
 		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, { jobs: host });
 		expect(jobContext?.id).toBe("job-1");
-		// The context buffer is the job's own: the live tail is reachable through
-		// the table before the call even settles.
-		expect(readJobOutput(host, "job-1")).toBe("step 1\n");
 
 		await vi.advanceTimersByTimeAsync(50);
+		// The context buffer is the job's own: once the job is backgrounded its
+		// live tail is reachable through the table, with the call still running.
+		// A local job is not readable there - it has no t0 handle to observe.
+		expect(readJobOutput(host, "job-1")).toBe("step 1\n");
 		await execPromise;
 		gate.resolve(textResult("done"));
 	});
@@ -309,12 +310,13 @@ describe("backgroundable tool adapter", () => {
 
 		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, { jobs: host });
 		expect(accepted).toBe(true);
+
+		await vi.advanceTimersByTimeAsync(50);
+		// Set while the job was still local, and carried into the table with it.
 		expect(readJobReport(host, "job-1")).toMatchObject({
 			revision: 1,
 			value: { kind: "test.status", summary: "Preparing" },
 		});
-
-		await vi.advanceTimersByTimeAsync(50);
 		await execPromise;
 		gate.resolve(textResult("done"));
 		await Promise.resolve();
@@ -357,16 +359,16 @@ describe("backgroundable tool adapter", () => {
 		const forwarded = vi.fn();
 
 		const execPromise = agentTool.execute("call-1", {}, undefined, forwarded, { jobs: host });
-		expect(readJobReport(host, "job-1")).toMatchObject({ revision: 1, value: { summary: "Starting" } });
-
 		publishUpdate?.({ completed: 1 });
+		expect(forwarded).toHaveBeenCalledTimes(1);
+
+		await vi.advanceTimersByTimeAsync(50);
+		// Both revisions were mapped while the job was local; the table shows the
+		// latest once it is backgrounded and readable.
 		expect(readJobReport(host, "job-1")).toMatchObject({
 			revision: 2,
 			value: { progress: { completed: 1, total: 2 } },
 		});
-		expect(forwarded).toHaveBeenCalledTimes(1);
-
-		await vi.advanceTimersByTimeAsync(50);
 		await execPromise;
 		publishUpdate?.({ completed: 2 });
 		expect(readJobReport(host, "job-1")).toMatchObject({
