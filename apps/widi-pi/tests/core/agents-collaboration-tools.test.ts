@@ -199,7 +199,10 @@ describe("list_agents", () => {
 		]);
 	});
 
-	it("gives roots, children, and grandchildren the same tree view", async () => {
+	// Every caller sees the level it owns, not the level below the root: a list
+	// that answered the same thing everywhere would tell a child about agents it
+	// did not spawn and hide the ones it did.
+	it("anchors the level on the caller and counts what is below it", async () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		const root = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		const child = await spawnChild(orchestrator, root);
@@ -207,15 +210,22 @@ describe("list_agents", () => {
 		const sibling = await spawnChild(orchestrator, root);
 		await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
-		for (const caller of [root, child, grandchild, sibling]) {
-			const result = await listAgents.execute(`list-${caller}`, {}, toolContext(orchestrator, caller));
-			expect(treeLines(result.details.entries)).toEqual([
-				`running ${root}`,
-				`  running ${child}`,
-				`    running ${grandchild}`,
-				`  running ${sibling}`,
-			]);
-		}
+		const fromRoot = await listAgents.execute("list-root", {}, toolContext(orchestrator, root));
+		const fromChild = await listAgents.execute("list-child", {}, toolContext(orchestrator, child));
+		const fromGrandchild = await listAgents.execute("list-grandchild", {}, toolContext(orchestrator, grandchild));
+
+		expect(treeLines(fromRoot.details.entries)).toEqual([
+			`running ${root}`,
+			`  running ${child}`,
+			`  running ${sibling}`,
+		]);
+		expect(treeLines(fromChild.details.entries)).toEqual([`running ${child}`, `  running ${grandchild}`]);
+		expect(treeLines(fromGrandchild.details.entries)).toEqual([`running ${grandchild}`]);
+		// The hidden level is counted rather than dropped without a word.
+		expect(fromRoot.content[0]).toMatchObject({
+			type: "text",
+			text: expect.stringContaining(`- agent ${child} [profile worker] idle (+1 nested)`),
+		});
 	});
 
 	// The point of reading the directories: subagents never come back, so after a
@@ -226,21 +236,23 @@ describe("list_agents", () => {
 		const first = await createOrchestrator(env);
 		const root = await first.spawnAgent({ origin: { kind: "new" } });
 		const child = await spawnChild(first, root);
-		const grandchild = await spawnChild(first, child);
+		await spawnChild(first, child);
 		const rootRef = sessionRef(first, root);
 		const childRef = sessionRef(first, child);
-		const grandchildRef = sessionRef(first, grandchild);
 
 		const second = await createOrchestrator(env);
 		const resumed = await second.spawnAgent({ origin: { kind: "resume", reference: rootRef } });
 		const result = await listAgents.execute("list-after-resume", {}, toolContext(second, resumed));
 
-		expect(treeLines(result.details.entries)).toEqual([
-			`running ${resumed}`,
-			`  closed ${childRef}`,
-			`    closed ${grandchildRef}`,
-		]);
+		expect(treeLines(result.details.entries)).toEqual([`running ${resumed}`, `  closed ${childRef}`]);
 		expect(result.details.entries[0]?.children[0]).toMatchObject({ status: "closed", profileId: "worker" });
+		expect(result.content[0]).toMatchObject({
+			type: "text",
+			text: expect.stringContaining(`- session ${childRef} [profile worker] closed, started `),
+		});
+		// The grandchild's session is still on disk under the child; it is counted,
+		// not expanded.
+		expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("(+1 nested)") });
 		expect(result.content[0]).toMatchObject({
 			type: "text",
 			text: expect.stringContaining("cannot be messaged or disposed"),
@@ -633,23 +645,25 @@ describe("dispose_agent", () => {
 		expect(orchestrator.getAgentActivity(grandchild).activity).toBe("idle");
 		expect(spawnParentOf(orchestrator, parent)).toBe(root);
 		expect(spawnParentOf(orchestrator, grandchild)).toBe(parent);
-		// The disposed agent's directory still holds the grandchild's, so the
-		// surviving descendant keeps its place under a closed entry.
-		const listed = await listAgents.execute("list-from-grandchild", {}, toolContext(orchestrator, grandchild));
+		// The disposed agent's directory still holds the grandchild's, so from the
+		// root the entry turns closed and keeps counting what survived under it.
+		const listed = await listAgents.execute("list-from-root", {}, toolContext(orchestrator, root));
 		expect(treeLines(listed.details.entries)).toEqual([
 			`running ${root}`,
 			`  closed ${parentRef}`,
-			`    running ${grandchild}`,
 			`  running ${sibling}`,
 		]);
+		expect(listed.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("(+1 nested)") });
+		// The grandchild owns its own level and still sees nothing but itself.
+		const fromGrandchild = await listAgents.execute("list-from-grandchild", {}, toolContext(orchestrator, grandchild));
+		expect(treeLines(fromGrandchild.details.entries)).toEqual([`running ${grandchild}`]);
 
 		await orchestrator.spawnAgent({ origin: { kind: "resume", reference: parentRef } });
 		expect(spawnParentOf(orchestrator, parent)).toBe(root);
-		const relisted = await listAgents.execute("list-after-parent-resume", {}, toolContext(orchestrator, grandchild));
+		const relisted = await listAgents.execute("list-after-parent-resume", {}, toolContext(orchestrator, root));
 		expect(treeLines(relisted.details.entries)).toEqual([
 			`running ${root}`,
 			`  running ${parent}`,
-			`    running ${grandchild}`,
 			`  running ${sibling}`,
 		]);
 	});
