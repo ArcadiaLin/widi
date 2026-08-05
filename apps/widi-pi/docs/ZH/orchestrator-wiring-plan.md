@@ -213,7 +213,7 @@ A–F 里最重的一项，也是唯一一项没有现成设计文档的。
 >
 > - **第 3 条改成了「身份是完整 ref，且 closed 条目不显示 AgentId」。** 深度 ≥ 2 时单独一个目录名不可寻址（`parseSessionKey` 收的是 `root/child`），而完整 ref 正是 `/resume` 已经在收的形式。至于 AgentId：本节自己列的 closed 条目两个用途都不需要它，显示它只会制造第 6 条想避免的那个动作。类型上做成了判别联合，running 才有 `agentId`。
 > - **递归锚点是内存树根的目录，只向下不向上。** 一个从别人树里 resume 出来的会话，向上走会把它从未 spawn 过的兄弟子树一并拖进来。
-> - **工具层只输出一级**（后续决定）：`list_agents` 锚定**调用者**，列它自己与直接子女，再往下不展开，被隐藏的那些以 `(+N nested)` 计数。这与 `agent-tree-persistence.md` §6「保持整棵树，不收窄到一层」相反——§6 的理由是「孙子的 id 就发现不了了」，而实际的跨级寻址不依赖发现：worker 回复 owner 用的是任务消息里带的 `ownerAgentId`，`send_message` 收任何精确 id。裁剪只发生在 `list-agents.ts`，orchestrator 仍然把整棵树读出来交给它，所以放开这个限制不需要动运行时。
+> - **工具层只输出一级**（后续决定）：`list_agents` 锚定**调用者**，列它自己与直接子女，再往下不展开，被隐藏的那些以 `(+N nested)` 计数。`agent-tree-persistence.md` §6 原来写的是「保持整棵树，不收窄到一层」，理由是「孙子的 id 就发现不了了」；那条理由不成立，跨级寻址从不走发现，§6 已随之改写。裁剪只发生在 `list-agents.ts`，orchestrator 仍然把整棵树读出来交给它，所以放开这个限制不需要动运行时。
 > - **磁盘读失败降级而不抛。** 谁在运行是内存单独就能回答的，为一次文件系统故障丢掉这个答案不划算：发 `orchestrator.session_tree_unreadable`，列表照出，文末说明 closed 部分不可读。
 >
 > 落地过程中修掉的两个界外 bug（都不在本节范围内，但都由这一批的验证暴露）：
@@ -358,7 +358,7 @@ A–F 里最重的一项，也是唯一一项没有现成设计文档的。
 - **不在 harness 里加 hook。** 上行不需要（`appendCustomEntry` 已经是），下行属于 orchestrator 的知识（`persistence-ref-writer.md` §11）。
 - **投影不可覆写。** "分支上哪条 ref 在生效"由框架统一计算，否则回退的含义会随会话恰好持久化了什么而变（同上 §7.1）。
 - **不做 ref 的撤销。** 分支是 append-only 的，要"取消"正确的动作是回退（同上 §11）。
-- **`resume_agent(sessionDirName)` 逃生口不在本次范围。** 若 `agent-tree-persistence.md` §11 第 2 条成为真实痛点再独立决定（同上 §13）。
+- **`resume_agent(sessionRef)` 逃生口不在本次范围。** 若 `agent-tree-persistence.md` §11 第 2 条成为真实痛点再独立决定（同上 §13）。
 
 ---
 

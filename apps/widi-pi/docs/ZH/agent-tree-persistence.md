@@ -1,8 +1,10 @@
 # Agent 树的组织与恢复
 
-面向 `apps/widi-pi/src/core/persistence/` 与 `apps/widi-pi/src/core/orchestrator/`。前置阅读：`docs/ZH/persistence.md`。
+面向 `apps/widi-pi/src/core/persistence/` 与 `apps/widi-pi/src/core/`。前置阅读：`docs/ZH/persistence.md`。
 
 本文替换先前的 `core:subagent` 设计。那份设计把成员关系做成父分支上的 persistence ref，本文取消它。
+
+> **本文已全部落地**（`orchestrator-wiring-plan.md` 批次 1、3、4）。§9 的删除清单与 §10 的接线前提因此成了记录而非计划，各自节内有标注；§6 的 `list_agents` 语义在落地时改了两处，改动与理由写在该节。其余各节描述的是今天的实际行为。
 
 ---
 
@@ -125,19 +127,25 @@
 
 旧设计里那个"孤儿"问题在这里以另一种方式消解：父回退到某次 spawn 之前，那个目录仍在盘上，仍被列为 closed。模型的上下文里没有它、列表里有它，两者都是真的，而列表明确说了它已经关闭。**没有任何一方在声称一件需要被兑现的事。**
 
-注意 `list-agents.ts` 现在的注释写着 "Disposed agents are omitted entirely"，这条正好反过来。
+注意 `list-agents.ts` 原来的注释写着 "Disposed agents are omitted entirely"，这条正好反过来。
 
-### 保持"整棵树"，不收窄到一层
+### 只列调用者自己那一层
 
-今天 `list_agents` 列的是同一个根下的全部 live agent，不只是直接子女。这个范围保留，否则一个孙子的 id 就发现不了了，而 `send_message` 的说明依赖 "list_agents only discovers your own tree"。
+`list_agents` 锚定**调用者**，列它自己与它的直接子女，再往下不展开；被隐藏的条目以 `(+N nested)` 计数，并告诉模型下一层要向哪个 running agent 要。
 
-实现上：running 的部分照旧从内存算（`_spawnParent` 里有完整的树），closed 的部分从磁盘递归。深度受 `MAX_SESSION_DEPTH` 约束，所以递归是有界的。
+> 本节此前的写法是「保持整棵树，不收窄到一层」，理由是「否则一个孙子的 id 就发现不了」。那条理由不成立：**跨级寻址从来不走发现**。worker 回复 owner 用的是任务消息里带的 `ownerAgentId`（`tools/agents/shared.ts` 的 `formatAgentTaskMessageBody`），`send_message` 接受任何精确 id，无论它在哪一级、哪棵树。发现只决定「模型能自己找到谁」，而一个 agent 需要自己找到的，就是它自己 spawn 的那些。
 
-输出要保留层级——现在列表里可能有几十个 closed 条目，扁平列表读不出谁是谁的子女。
+锚点必须是调用者而不是树根：只砍深度却仍从树根出发，会让一个 child 看见它没 spawn 过的 agent、同时看不见它 spawn 的。
 
-### 身份：目录名，不是 AgentId
+实现上：running 的部分照旧从内存算（`_spawnParent` 里有完整的树），closed 的部分从磁盘递归，深度受 `MAX_SESSION_DEPTH` 约束。**运行时仍然读整棵树**，一层是 `list-agents.ts` 在输出前裁的——放宽或取消这个限制是改一个格式化函数，不碰运行时。
 
-一个 closed 条目的 AgentId 可能与一条 live 条目撞车（resume 之后 AgentId 会被复用，`layout.ts:78-86` 就是为这件事加的时间戳前缀）。所以列表条目的身份是**目录名**，AgentId 只作显示。
+输出保留层级缩进。即使只有一层，closed 条目也可能有几十个，缩进是「谁在谁下面」的唯一线索。
+
+### 身份：会话地址，不是 AgentId
+
+一个 closed 条目的 AgentId 可能与一条 live 条目撞车，所以列表条目的身份是**会话地址**（`root/child` 这样的 ref）而不是 AgentId。用完整地址而不是末段目录名：深度 ≥ 2 时单独一个目录名解析不到东西，而完整地址正是 `/resume` 已经在收的形式。
+
+**closed 条目根本不显示 AgentId。** 本节下面列的两个用途都不需要它，而显示一个看上去可用的 id，正好制造下一小节想避免的那个动作。类型上做成判别联合：running 才有 `agentId`，closed 只有 `sessionRef`。
 
 ### closed 条目不可操作
 
@@ -176,6 +184,8 @@ subtree scope 的递归 dispose 不变，它走的是内存里的 `_spawnParent`
 
 ## 9. 删除清单
 
+> **已执行**（`orchestrator-wiring-plan.md` 批次 1）。下面这份清单留作记录：它说明今天 `agent-orchestrator.ts` 里为什么找不到任何一处「树的持久化」，以及那些扩展点为什么消失。
+
 代码：
 
 - `src/core/orchestrator/agent-tree.ts` 整个文件。
@@ -200,11 +210,13 @@ subtree scope 的递归 dispose 不变，它走的是内存里的 `_spawnParent`
 
 ## 10. 接线前提
 
-`list_agents` 要读 `repo.listChildren`，fork 要复制嵌套目录，两者都需要运行时已经迁到 `JsonlPersistenceRepo`。今天运行时仍在用旧的会话目录仓储，两者目录命名规则不同、互相看不见。
+> **已满足**：删除在批次 1 完成，运行时在批次 3 迁到 `JsonlPersistenceRepo`，`list_agents` 在批次 4 读盘。本节留作记录。
+
+`list_agents` 要读 `repo.listChildren`，fork 要复制嵌套目录，两者都需要运行时已经迁到 `JsonlPersistenceRepo`。在那之前运行时用的是旧的会话目录仓储，两者目录命名规则不同、互相看不见。
 
 所以本文的接线**排在 session-manager 迁移到 `JsonlPersistenceRepo` 之后，或与之同批**。
 
-在此之前唯一可以先做的是删除：旧的 `tree.jsonl` / `parent.json` 路径可以先拆掉，代价是那段时间 resume 不再恢复 subagent、`list_agents` 只有内存里的 live agent——正是本设计的最终行为，只是少了 closed 条目。
+在此之前唯一可以先做的是删除：旧的 `tree.jsonl` / `parent.json` 路径可以先拆掉，代价是那段时间 resume 不再恢复 subagent、`list_agents` 只有内存里的 live agent——正是本设计的最终行为，只是少了 closed 条目。实际就是这么走的：批次 1 先删，批次 4 才把 closed 条目补上。
 
 ---
 
@@ -234,10 +246,10 @@ subtree scope 的递归 dispose 不变，它走的是内存里的 `_spawnParent`
 如果第 11 节第 2 条成为真实痛点，可以加一个显式恢复动作：
 
 ```
-resume_agent(sessionDirName) -> AgentId
+resume_agent(sessionRef) -> AgentId
 ```
 
-从 `list_agents` 列出的 closed 条目里点名一个目录，把它拉起来成为一个 live agent。
+从 `list_agents` 列出的 closed 条目里点名一个会话地址，把它拉起来成为一个 live agent。参数正好是 closed 条目已经显示的那个 ref，也正是 `/resume` 收的形式（`SessionManager.resolveAgentSessionReference`）。
 
 它不需要任何分支状态：它不声称"这条分支知道有这些 agent"，只声称"这个目录在盘上，我要打开它"。回退语义不受影响，因为它不参与投影。fork 语义也不受影响，因为目录本来就被复制过去了。
 
