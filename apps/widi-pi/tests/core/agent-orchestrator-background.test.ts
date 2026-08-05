@@ -188,9 +188,11 @@ describe("AgentOrchestrator background job router", () => {
 		});
 
 		settleBackgroundedJob(jobs, completedOutcome);
+		// The retry belongs to the sink's binding now, so the warning is the
+		// generic one every retrying producer gets, not a job-specific code.
 		await vi.waitFor(() =>
 			expect(events.filter((event) => event.type === "diagnostic").map((event) => event.diagnostic.code)).toContain(
-				"orchestrator.background_job_delivery_failed",
+				"orchestrator.message_delivery_deferred",
 			),
 		);
 		// The result is preserved (not dropped) and a diagnostic is recorded.
@@ -220,25 +222,23 @@ describe("AgentOrchestrator background job router", () => {
 		expect(pendingMessages(orchestrator, agentId)).toBe(false);
 	});
 
-	it("drops a result whose owning agent is gone, with a diagnostic", async () => {
+	// Delivery is the sink's job, so a result the owner can never take comes back
+	// as a throw rather than as a routing decision the runtime makes itself.
+	it("reports a result the owner can never take", async () => {
 		const { orchestrator, agentId, jobs } = await spawnAgent();
 		const events: OrchestratorEvent[] = [];
 		orchestrator.subscribe((event) => {
 			events.push(event);
 		});
-		const { execution } = startBackgroundedJob(jobs, { toolName: "sleeper" });
-		// Delivery is attempted after the owner left the registry, and no phase
-		// change ever brings it back, so the result cannot be retried.
-		const deliver = (
-			orchestrator as unknown as {
-				_deliverBackgroundResult: (delivery: { ownerAgentId: string; jobId: string; body: string }) => Promise<unknown>;
-			}
-		)._deliverBackgroundResult.bind(orchestrator);
-		await orchestrator.disposeAgent(agentId, { intent: "removed" });
-		await deliver({ ownerAgentId: agentId, jobId: execution.jobId, body: "late result" });
+		vi.spyOn(orchestrator, "sendMessage").mockRejectedValue(new Error("owner is unreachable"));
 
-		const codes = events.filter((event) => event.type === "diagnostic").map((event) => event.diagnostic.code);
-		expect(codes).toContain("orchestrator.background_job_dropped");
+		settleBackgroundedJob(jobs, completedOutcome);
+
+		await vi.waitFor(() =>
+			expect(events.filter((event) => event.type === "diagnostic").map((event) => event.diagnostic.code)).toContain(
+				"background.result_delivery_failed",
+			),
+		);
 		expect(pendingMessages(orchestrator, agentId)).toBe(false);
 	});
 
@@ -454,6 +454,10 @@ describe("AgentOrchestrator background job extension observability", () => {
 		holdAgentBusy(orchestrator, agentId);
 
 		const { execution } = startBackgroundedJob(jobs);
+		// Let the backgrounded change reach the observer before settling: the count
+		// it carries is the runtime's at dispatch, and settling first would make
+		// both events report the same emptied table.
+		await vi.waitFor(() => expect(seen).toEqual([{ transition: "backgrounded", liveCount: 1 }]));
 		execution.settle(completedOutcome);
 
 		await vi.waitFor(() =>

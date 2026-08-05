@@ -18,6 +18,7 @@ import {
 	defaultProfile,
 	harnessEventDriver,
 	MemoryExecutionEnv,
+	requireAgentHarness,
 	requireLiveAgent,
 	seedAgentContextUsage,
 } from "../helpers/orchestrator.ts";
@@ -28,17 +29,30 @@ async function emitSettled(orchestrator: AgentOrchestrator, agentId: string): Pr
 	await harnessEventDriver(orchestrator)(agentId, { type: "settled", nextTurnCount: 0 });
 }
 
+/**
+ * Set the harness's own queues and then announce them.
+ *
+ * The pending judgement reads `getQueuedMessageCounts()` rather than mirroring
+ * the event payload, so the queues themselves are the input; the event is only
+ * what asks the orchestrator to look again.
+ */
 async function emitQueueUpdate(
 	orchestrator: AgentOrchestrator,
 	agentId: string,
 	queues: { steer?: UserMessage[]; followUp?: UserMessage[]; nextTurn?: AgentMessage[] },
 ): Promise<void> {
-	await harnessEventDriver(orchestrator)(agentId, {
-		type: "queue_update",
-		steer: queues.steer ?? [],
-		followUp: queues.followUp ?? [],
-		nextTurn: queues.nextTurn ?? [],
-	});
+	const steer = queues.steer ?? [];
+	const followUp = queues.followUp ?? [];
+	const nextTurn = queues.nextTurn ?? [];
+	const harness = requireAgentHarness(orchestrator, agentId) as unknown as {
+		steerQueue: unknown[];
+		followUpQueue: unknown[];
+		nextTurnQueue: unknown[];
+	};
+	harness.steerQueue.splice(0, harness.steerQueue.length, ...steer);
+	harness.followUpQueue.splice(0, harness.followUpQueue.length, ...followUp);
+	harness.nextTurnQueue.splice(0, harness.nextTurnQueue.length, ...nextTurn);
+	await harnessEventDriver(orchestrator)(agentId, { type: "queue_update", steer, followUp, nextTurn });
 }
 
 function assistantMessage(totalTokens: number): AssistantMessage {

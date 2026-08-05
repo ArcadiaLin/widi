@@ -32,16 +32,27 @@ async function branchRefs(
 		.map((entry) => ({ id: entry.id, data: (entry as { data: PersistenceRefData }).data }));
 }
 
-/** The text of every user message on the agent's current branch. */
+/**
+ * Every text the model reads as input on this branch.
+ *
+ * Three entry forms carry it: a bare `role:"user"` message (the shell's own
+ * input), a `role:"custom"` message (anything that woke the agent on someone
+ * else's behalf), and a `custom_message` entry (a `precede` notice, which never
+ * woke it at all). All three project into context as user text.
+ */
 async function branchUserText(orchestrator: AgentOrchestrator, agentId: string): Promise<string> {
 	const snapshot = await orchestrator.getAgentSession(agentId);
+	const toText = (content: string | readonly { type: string; text?: string }[]): string =>
+		typeof content === "string"
+			? content
+			: content.flatMap((part) => (part.type === "text" && part.text !== undefined ? [part.text] : [])).join(" ");
 	return snapshot.pathToRoot
-		.flatMap((entry) => (entry.type === "message" && entry.message.role === "user" ? [entry.message.content] : []))
-		.map((content) =>
-			typeof content === "string"
-				? content
-				: content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(" "),
-		)
+		.flatMap((entry) => {
+			if (entry.type === "custom_message") return [toText(entry.content)];
+			if (entry.type !== "message") return [];
+			const { message } = entry;
+			return message.role === "user" || message.role === "custom" ? [toText(message.content)] : [];
+		})
 		.join("\n");
 }
 

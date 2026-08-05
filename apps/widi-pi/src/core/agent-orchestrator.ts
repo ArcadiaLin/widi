@@ -2440,16 +2440,18 @@ export class AgentOrchestrator {
 		}
 		if (write.customType !== EXTENSION_MESSAGE_CUSTOM_TYPE) return;
 		const data = write.data as ExtensionMessageEntryData;
+		// The entry data is already a deep-frozen normalized copy, so the event
+		// carries the same value the branch holds and no consumer can edit either.
 		await this._emit(
-			{
-				type: "extension_message_published",
+			Object.freeze({
+				type: "extension_message_published" as const,
 				presentationId: this._createPresentationId(),
 				entryId,
 				agentId,
 				extensionId: data.extensionId,
-				message: structuredClone(data.message),
+				message: data.message,
 				createdAt: now(),
-			},
+			}),
 			{ observeExtensions: false },
 		);
 	}

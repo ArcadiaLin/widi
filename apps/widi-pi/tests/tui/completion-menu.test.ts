@@ -219,7 +219,7 @@ describe("WidiTuiApplication completion menu integration", () => {
 	});
 
 	it("offers the current position before explicit fork points", async () => {
-		const forkAgentSessionFromAgent = vi.fn(async () => undefined);
+		const spawnAgent = vi.fn(async (_request: { origin: unknown }) => "agent-2");
 		const { application } = await createApplication({
 			getAgentSessionTree: async () => ({
 				entries: [
@@ -231,7 +231,8 @@ describe("WidiTuiApplication completion menu integration", () => {
 					},
 				],
 			}),
-			forkAgentSessionFromAgent,
+			spawnAgent,
+			inspectAgent: () => ({ agentId: "agent-2" }),
 		});
 
 		await submit(application, "/fork");
@@ -240,7 +241,8 @@ describe("WidiTuiApplication completion menu integration", () => {
 		expect(plainRender(menu)).toContain("Fork here (current position)");
 		menu.handleInput(ENTER);
 		await flush();
-		expect(forkAgentSessionFromAgent).toHaveBeenCalledWith("agent-1", undefined);
+		// The current position carries no entry id: the fork lands on the leaf.
+		expect(spawnAgent).toHaveBeenCalledWith({ origin: { kind: "fork", sourceAgentId: "agent-1" } });
 	});
 
 	it("focuses the agent panel from the empty editor with the down key", async () => {

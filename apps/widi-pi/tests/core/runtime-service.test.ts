@@ -576,8 +576,7 @@ You are extension-profile.`,
 			},
 		]);
 		expect(runtime.orchestrator.inspectAgent(agentId)).toMatchObject({
-			extensionIds: ["runtime-smoke"],
-			extensions: runtime.services.extensionLoad.loaded,
+			extensions: { extensionIds: ["runtime-smoke"], extensions: runtime.services.extensionLoad.loaded },
 		});
 	});
 

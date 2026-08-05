@@ -122,7 +122,9 @@ describe("AgentStripView tree rendering", () => {
 	it("overrides the glyph with ! for attention states", () => {
 		const state = createTuiApplicationState();
 		setActiveAgent(state, "main").status = "idle";
-		const failed = ensureAgentProjection(state, "failed", "disposed");
+		// Not disposed: the strip hides those entirely, so attention would have
+		// nothing to override.
+		const failed = ensureAgentProjection(state, "failed", "idle");
 		failed.attention = "error";
 		const waiting = ensureAgentProjection(state, "waiting", "idle");
 		waiting.attention = "human-request";
