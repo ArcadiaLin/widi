@@ -122,6 +122,7 @@ import { HumanRequestBroker } from "./human-request.ts";
 import { stripImagesFromMessages } from "./image-policy.ts";
 import {
 	assertMessageBody,
+	type MessageBlockPolicy,
 	type MessageDeliveryPhase,
 	MessageDeliveryQueue,
 	type MessageDeliveryReceipt,
@@ -134,7 +135,6 @@ import {
 	type MessageSendOutcome,
 	type MessageSink,
 	type MessageSinkBinding,
-	type MessageSource,
 	messageBindingFor,
 	renderMessageContent,
 	transformMessage,
@@ -1913,7 +1913,7 @@ export class AgentOrchestrator {
 		}
 
 		const outcome = await transformMessage(draft, {
-			intercept: async (event) => await this._interceptExtensionInput(agentId, draft.source, event),
+			intercept: async (event) => await this._interceptExtensionInput(agentId, draft.binding.policy.blockPolicy, event),
 		});
 
 		if (outcome.kind === "block") {
@@ -2915,19 +2915,19 @@ export class AgentOrchestrator {
 	 */
 	private async _interceptExtensionInput(
 		agentId: AgentId,
-		source: MessageSource,
+		blockPolicy: MessageBlockPolicy,
 		event: MessageInterceptEvent,
 	): Promise<MessageInterceptRun> {
 		const runner = this._live.get(agentId)?.extensionRunner;
 		if (!runner || runner.isStale()) return { kind: "pass" };
 		const run = await runner.interceptInput(event);
 		await this._recordAndPublishExtensionDiagnostics(agentId, run.diagnostics);
-		// A block this source does not enforce is still worth recording.
-		if (run.kind === "block" && source.kind === "background_job") {
+		// A block this producer does not enforce is still worth recording.
+		if (run.kind === "block" && blockPolicy === "ignore") {
 			await this._publishDiagnostic({
 				severity: "warning",
 				code: "orchestrator.message_block_ignored",
-				message: `Extension '${run.blockedBy}' blocked a background job result for agent ${agentId}; it was delivered anyway because the model is waiting for that result.`,
+				message: `Extension '${run.blockedBy}' blocked a ${event.source.kind} message for agent ${agentId}; it was delivered anyway because this producer does not enforce blocks.`,
 				agentId,
 			});
 		}

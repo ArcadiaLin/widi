@@ -352,6 +352,35 @@ describe("AgentOrchestrator message interception", () => {
 			"orchestrator.message_block_ignored",
 		);
 	});
+
+	// A runtime notice is the other `blockPolicy: "ignore"` producer: the facts it
+	// announces are recorded either way, so a block degrades the same.
+	it("delivers a blocked runtime notice anyway, with a diagnostic", async () => {
+		const env = new MemoryExecutionEnv();
+		const first = await createOrchestrator(env);
+		const agentId = await first.spawnAgent({ origin: { kind: "new" } });
+		const reference = first.sessionManager.getAgentSessionRef(agentId);
+		if (reference === undefined) throw new Error(`Expected a persisted session for ${agentId}.`);
+
+		// A second runtime over the same files: the process died, the session did not.
+		const second = await createOrchestrator(env);
+		second.registerExtension("policy", (api) => {
+			api.intercept("input", () => ({ block: true, reason: "Nothing gets in." }));
+		});
+		const events: OrchestratorEvent[] = [];
+		second.subscribe((event) => {
+			events.push(event);
+		});
+
+		const resumed = await second.spawnAgent({ origin: { kind: "resume", reference } });
+
+		expect(events.filter((event) => event.type === "diagnostic").map((event) => event.diagnostic.code)).toContain(
+			"orchestrator.message_block_ignored",
+		);
+		// Delivered anyway: the notice is on the branch the model resumes with.
+		const snapshot = await second.getAgentSession(resumed);
+		expect(JSON.stringify(snapshot.pathToRoot)).toContain("Spawn tree closed");
+	});
 });
 
 describe("AgentOrchestrator delegated task jobs", () => {

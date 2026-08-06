@@ -453,14 +453,6 @@ export class SessionManager {
 		return address === undefined ? undefined : formatSessionKey(address.key);
 	}
 
-	async appendInputTransformEntry(agentId: AgentId, data: InputTransformEntryData): Promise<string> {
-		return await this._requireAgentSession(agentId).appendCustomEntry(INPUT_TRANSFORM_CUSTOM_TYPE, data);
-	}
-
-	async appendExtensionMessageEntry(agentId: AgentId, data: ExtensionMessageEntryData): Promise<string> {
-		return await this._requireAgentSession(agentId).appendCustomEntry(EXTENSION_MESSAGE_CUSTOM_TYPE, data);
-	}
-
 	/**
 	 * Snapshot any session of the current project, live or historical.
 	 *
