@@ -5,7 +5,7 @@
  * agent's `AgentHarness`; the orchestrator only decides what needs more than one
  * agent to answer - AgentId allocation, spawn-tree ownership, cross-agent
  * routing, who is waiting on whom to go idle, and the persistence of those
- * facts. The exceptions are enumerated in `docs/agent-harness-ownership-plan.md`.
+ * facts. The exceptions are enumerated in `notes/develop/agent-harness-ownership-plan.md`.
  *
  * A collaborator earns its own class only when it owns state whose invariant it
  * can maintain without consulting `_live`. Four qualify: `BackgroundJobRuntime`,
@@ -850,7 +850,7 @@ export class AgentOrchestrator {
 	 * The directories are the complete set and memory is a subset of them. A
 	 * session whose agent is live reads as running; every other one reads as
 	 * closed, which is the truth about a forked or resumed tree - none of its
-	 * subagents come back (`docs/ZH/agent-tree-persistence.md` §6).
+	 * subagents come back (`notes/develop/ZH/agent-tree-persistence.md` §6).
 	 *
 	 * The scope stays what it has always been - the caller's whole tree, not one
 	 * level of it, so a grandchild's id is still discoverable. The walk starts at
@@ -1159,7 +1159,7 @@ export class AgentOrchestrator {
 		const resolvedProfile = await this._resolveCreateProfile(options.origin);
 		const agentId = this._allocateAgentId(resolvedProfile.profile);
 		// The spawner's session directory owns the new one. That nesting is the
-		// only record of the agent tree - `docs/ZH/agent-tree-persistence.md` §1 -
+		// only record of the agent tree - `notes/develop/ZH/agent-tree-persistence.md` §1 -
 		// so it is established here, at the one moment the parent is known.
 		const diagnostics = new PersistenceDiagnostics();
 		const session = await this.sessionManager.createAgentSession({
@@ -2486,7 +2486,7 @@ export class AgentOrchestrator {
 	 *
 	 * **This writes on a navigation that only looked.** The design would rather
 	 * defer the records until the new branch is actually extended
-	 * (`docs/ZH/background-job-persistence.md` 4.3), which needs a pending state
+	 * (`notes/develop/ZH/background-job-persistence.md` 4.3), which needs a pending state
 	 * threaded through every write path. What lands here instead is one custom
 	 * entry per job the branch had open and this runtime cannot account for -
 	 * true of that branch either way, invisible to the model, and cheaper than
@@ -3925,7 +3925,7 @@ export class AgentOrchestrator {
 	// only the harness may write one. So the modules that own such state - the
 	// background job runtime today - never reach for the branch: they ask through
 	// a port bound to their own namespace and this class does the writing.
-	// `docs/ZH/persistence-ref-writer.md` is why the split runs exactly here.
+	// `notes/develop/ZH/persistence-ref-writer.md` is why the split runs exactly here.
 	// -----------------------------------------------------------------------
 
 	/**

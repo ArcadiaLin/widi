@@ -1,6 +1,7 @@
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExecutionEnv, ThinkingLevel } from "@widi/agent-core";
 import { NodeExecutionEnv } from "@widi/agent-core/node";
+import { formatError } from "../utils/errors.ts";
 import { unwrapResult } from "../utils/result.ts";
 import { AgentOrchestrator, type AgentOrchestratorConfig } from "./agent-orchestrator.js";
 import {
@@ -25,6 +26,7 @@ import {
 	type ExtensionModuleImporter,
 	type ExtensionRoot,
 } from "./extension/index.ts";
+import { applyHttpProxySettings, configureHttpDispatcher } from "./http-dispatcher.ts";
 import { HumanRequestBroker, type HumanRequestHandler } from "./human-request.ts";
 import { ModelRegistry } from "./model-registry.js";
 import { createCorePersistenceRegistry } from "./persistence-registry.ts";
@@ -442,6 +444,24 @@ export async function createWidiRuntime(options: CreateWidiRuntimeOptions): Prom
 		projectConfigDir,
 		projectTrusted: projectTrust.trusted,
 	});
+	// Settings may name their own proxy and idle timeout. The CLI entry already
+	// installed a dispatcher from the environment; this is the settings-aware
+	// second pass, and it still has to precede the first provider request.
+	const httpDiagnostics: CoreDiagnostic[] = [];
+	applyHttpProxySettings(settingManager.getHttpProxy());
+	let httpIdleTimeoutMs: number | undefined;
+	try {
+		httpIdleTimeoutMs = settingManager.getHttpIdleTimeoutMs();
+	} catch (error) {
+		// A mistyped timeout degrades to the default rather than refusing to start.
+		httpDiagnostics.push({
+			severity: "warning",
+			code: "settings.http_idle_timeout_invalid",
+			message: `Ignoring httpIdleTimeoutMs: ${formatError(error)}`,
+		});
+	}
+	configureHttpDispatcher(httpIdleTimeoutMs);
+
 	const configValueResolver = new ConfigValueResolver(executionEnv);
 	const authStorage = AuthStorage.create(
 		executionEnv,
@@ -587,6 +607,7 @@ export async function createWidiRuntime(options: CreateWidiRuntimeOptions): Prom
 		...(projectTrust.diagnostic ? [projectTrust.diagnostic] : []),
 		...trustPromptDiagnostics,
 		...settingManager.drainDiagnostics(),
+		...httpDiagnostics,
 		...authStorage.drainDiagnostics(),
 		...modelRegistry.drainDiagnostics(),
 		...defaultProfile.diagnostics,

@@ -14,7 +14,7 @@
  * The closure is over objects, all of them inside one namespace's storage. The
  * child sessions nested under the source are not part of it: they are copied
  * wholesale by the repository, because nothing on a branch decides which of them
- * belong to it. See `docs/ZH/agent-tree-persistence.md`.
+ * belong to it. See `notes/develop/ZH/agent-tree-persistence.md`.
  */
 
 import type { CustomStorage, PersistenceForkPolicy, PersistenceRegistry } from "../custom-storage.ts";

@@ -601,7 +601,7 @@ export class JsonlPersistenceRepo {
 	 * which children belong to it, so the directory listing is the only answer
 	 * available. Each child is copied whole, at its own current leaf, for the
 	 * same reason - no ref ever pinned a child to a point in the parent's
-	 * history. See `docs/ZH/agent-tree-persistence.md`.
+	 * history. See `notes/develop/ZH/agent-tree-persistence.md`.
 	 */
 	private async _forkChildren(request: {
 		readonly source: SessionAddress;

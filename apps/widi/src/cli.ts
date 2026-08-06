@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { runWidiTui } from "./tui/application.ts";
 
 interface EntryOptions {
@@ -33,6 +34,11 @@ function requireValue(argv: string[], index: number, flag: string): string {
 	if (value === undefined) throw new Error(`Missing value for ${flag}`);
 	return value;
 }
+
+// From the environment alone, before anything can issue a request. The runtime
+// configures it a second time once settings are loaded and may name their own
+// proxy or idle timeout.
+configureHttpDispatcher();
 
 runWidiTui(parseArgs(process.argv.slice(2))).catch((error) => {
 	process.stderr.write(`${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
