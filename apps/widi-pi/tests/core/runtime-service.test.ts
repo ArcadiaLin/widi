@@ -621,6 +621,33 @@ You are extension-profile.`,
 		});
 	});
 
+	// The repo's own dev run points `--agent-dir` at the checkout's config
+	// directory, so the project root and the agent dir name the same extensions
+	// directory. Discovered twice, every extension in it collides with the copy
+	// the first pass registered and is skipped.
+	it("discovers an extensions directory once when the agent dir is the project's", async () => {
+		const env = new MemoryExecutionEnv();
+		env.addFile("/workspace/project/.widi/extensions/project-extension.ts", "");
+		const importer = new FakeModuleImporter();
+		importer.setFactory("/workspace/project/.widi/extensions/project-extension.ts", () => {});
+
+		const runtime = await createWidiRuntime({
+			cwd: "/workspace/project",
+			agentDir: "/workspace/project/.widi",
+			executionEnv: env,
+			defaultModel,
+			trustOverride: true,
+			extensionModuleImporter: importer,
+		});
+
+		expect(runtime.services.extensionLoader.getRoots()).toEqual([
+			{ kind: "cwd", path: "/workspace/project/.widi/extensions" },
+		]);
+		expect(runtime.services.extensionDiscovery.candidates).toHaveLength(1);
+		expect(runtime.services.extensionLoad.loaded).toHaveLength(1);
+		expect(runtime.diagnostics).not.toContainEqual(expect.objectContaining({ code: "extension.id_conflict" }));
+	});
+
 	it("skips untrusted project extension modules with diagnostics", async () => {
 		const env = new MemoryExecutionEnv();
 		env.addFile("/workspace/project/.widi/extensions/project-extension.ts", "");

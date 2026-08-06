@@ -199,7 +199,7 @@ async function createExtensionRoots(options: {
 			path: await absolutePath(options.executionEnv, path),
 		})),
 	);
-	return [
+	const roots: ExtensionRoot[] = [
 		...settingsRoots,
 		...(options.projectTrusted
 			? [
@@ -211,6 +211,18 @@ async function createExtensionRoots(options: {
 			: []),
 		{ kind: "agent_dir" as const, path: await joinPath(options.executionEnv, [options.agentDir, "extensions"]) },
 	];
+
+	// The agent dir may itself be the cwd's config directory, the way the repo's
+	// own dev run points both at the checkout. Discovering the same directory
+	// twice makes the second pass report every extension in it as an id conflict
+	// against the copy the first pass just registered. Root order is activation
+	// order, so the earlier root is the one kept.
+	const seenPaths = new Set<string>();
+	return roots.filter((root) => {
+		if (seenPaths.has(root.path)) return false;
+		seenPaths.add(root.path);
+		return true;
+	});
 }
 
 async function createProfileRegistry(options: {
