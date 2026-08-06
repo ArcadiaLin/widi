@@ -1,10 +1,10 @@
-# widi-pi
+# widi
 
-`widi-pi` is the core of WIDI: a multi-agent runtime built natively on Pi's
+`widi` is the core of WIDI: a multi-agent runtime built natively on Pi's
 `AgentHarness` (`@earendil-works/pi-agent-core`).
 
 Pi's harness is kept as the single-agent execution kernel — model turns, the
-session tree, resources, tools, and stream lifecycle. `widi-pi` adds the
+session tree, resources, tools, and stream lifecycle. `widi` adds the
 runtime around it, with one design rule throughout: multi-agent orchestration
 is a first-class, observable, recoverable capability of the runtime, not an
 external script or subprocess trick.
@@ -72,7 +72,7 @@ and diagnostics are English throughout.
 
 ```bash
 npm install
-npm --workspace apps/widi-pi run test
+npm --workspace apps/widi run test
 ```
 
 Tests run the vendored agent core from source, so no build step is needed first. `@earendil-works/pi-ai` and `@earendil-works/pi-tui` come from the registry as prebuilt packages; see [`../../docs/pi-fork.md`](../../docs/pi-fork.md) for why only the harness is vendored.

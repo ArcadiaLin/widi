@@ -11,8 +11,8 @@
 	"include": [
 		"packages/agent/src/**/*",
 		"packages/agent/test/**/*",
-		"apps/widi-pi/src/**/*",
-		"apps/widi-pi/tests/**/*"
+		"apps/widi/src/**/*",
+		"apps/widi/tests/**/*"
 	],
 	"exclude": ["**/dist/**"]
 }

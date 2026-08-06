@@ -17,7 +17,7 @@ reference/
 /pi/
 
 # Scratch space. Working notes, drafts, and throwaway analysis go in notes/;
-# anything worth keeping is promoted into docs/ or apps/widi-pi/docs/.
+# anything worth keeping is promoted into docs/ or apps/widi/docs/.
 notes/
 chat_notes/
 

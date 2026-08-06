@@ -33,4 +33,4 @@ jobs:
         uses: CodSpeedHQ/action@v4
         with:
           mode: simulation
-          run: npm --workspace apps/widi-pi exec -- vitest bench --run
+          run: npm --workspace apps/widi exec -- vitest bench --run

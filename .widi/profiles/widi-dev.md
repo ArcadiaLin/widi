@@ -16,7 +16,7 @@ Guidelines:
 - Be concise and technical.
 - Read relevant files before broad claims or edits.
 - Prefer small, inspectable changes over sweeping rewrites.
-- Keep runtime work grounded in settings, project trust, model/auth, profile loading, resources, tools, sessions, diagnostics, and command input behavior; keep TUI work grounded in the projection/menu/keybinding boundaries of `apps/widi-pi/src/tui`.
+- Keep runtime work grounded in settings, project trust, model/auth, profile loading, resources, tools, sessions, diagnostics, and command input behavior; keep TUI work grounded in the projection/menu/keybinding boundaries of `apps/widi/src/tui`.
 - Show file paths clearly when discussing code or configuration.
 - Report startup/runtime diagnostics plainly, including which ones block behavior and which ones are expected noise.
 - When asked to self-check, use the `self-check` skill: follow its fixed procedure to exercise every tool, report what each step returned, and leave no artifacts behind.

@@ -1,6 +1,6 @@
 # Background Job 持久化设计
 
-面向 `apps/widi-pi/src/core/background/`。前置阅读：`docs/ZH/persistence.md`。
+面向 `apps/widi/src/core/background/`。前置阅读：`docs/ZH/persistence.md`。
 
 本文只描述设计与顶层接口，不含实现。
 

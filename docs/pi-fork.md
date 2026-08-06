@@ -115,7 +115,7 @@ What blocked it was two narrowed fields and four `string` parameters. `steerQueu
 
 No existing call site changes behavior, and nothing new is stored: `AgentMessage[]` is what the loop consumed all along (`src/types.ts:239/252`), and `AbortResult` and the `queue_update` payload were already declared with it.
 
-**Downstream rule.** A typed input is not a way to smuggle structure past the model. `content` is the whole of what the model reads; `customType` and `details` reach storage and the UI only. In WIDI exactly one producer builds these - `toHarnessInput` in `agent-orchestrator.ts`, from a `MessageEntryPayload` the message pipeline assembled - and shell input deliberately stays a bare user message so existing sessions read back unchanged. See `apps/widi-pi/docs/ZH/orchestrator-message.md` §6.
+**Downstream rule.** A typed input is not a way to smuggle structure past the model. `content` is the whole of what the model reads; `customType` and `details` reach storage and the UI only. In WIDI exactly one producer builds these - `toHarnessInput` in `agent-orchestrator.ts`, from a `MessageEntryPayload` the message pipeline assembled - and shell input deliberately stays a bare user message so existing sessions read back unchanged. See `apps/widi/docs/ZH/orchestrator-message.md` §6.
 
 On re-sync, check whether harness-v2's lane records already carry an application-defined type. Its queues are durable records rather than in-memory arrays, so the natural expectation is that they do, and this widening disappears rather than porting.
 
@@ -210,11 +210,11 @@ Breaking any of these is how this arrangement fails.
 
 **Pin `pi-ai` and `pi-tui` to exact versions, never a caret range.** They iterate fast and have broken us: v0.83.0 added a five-minute proactive OAuth refresh window in `src/auth/resolve.ts`, which sent a WIDI test at the real GitHub API. Bump deliberately, with the test suite as the gate. A caret range on a fast-moving dependency is also what produced the shadowing bug below.
 
-**A version range that the workspace cannot satisfy is silently fatal.** When `apps/widi-pi` still asked for `^0.81.1` while the workspace held 0.83.0, npm installed published 0.81.1 into `apps/widi-pi/node_modules/@earendil-works/` and shadowed the workspace packages. The root type check stayed green because it resolves through path mappings; only `tsconfig.build.json`, which resolves from `node_modules`, failed. Renaming the vendored package to `@widi/agent-core` removes the collision for the agent package - do not rename it back.
+**A version range that the workspace cannot satisfy is silently fatal.** When `apps/widi` still asked for `^0.81.1` while the workspace held 0.83.0, npm installed published 0.81.1 into `apps/widi/node_modules/@earendil-works/` and shadowed the workspace packages. The root type check stayed green because it resolves through path mappings; only `tsconfig.build.json`, which resolves from `node_modules`, failed. Renaming the vendored package to `@widi/agent-core` removes the collision for the agent package - do not rename it back.
 
 **Do not reformat `packages/agent`.** Root `biome.json` applies upstream's formatter settings (tab, width 3, line width 120) and upstream's lint relaxations to `packages/agent/**`, while `apps/**` keeps WIDI's defaults (tab, width 2, line width 80). The partition exists so `npm run check --write` cannot rewrite ten thousand vendored lines.
 
-**Type-check from the repository root.** `npm run check` uses the root `tsconfig.json`, which covers `packages/agent/{src,test}` and `apps/widi-pi/{src,tests}`. The app's own `check` script only sees the app.
+**Type-check from the repository root.** `npm run check` uses the root `tsconfig.json`, which covers `packages/agent/{src,test}` and `apps/widi/{src,tests}`. The app's own `check` script only sees the app.
 
 ## What the fork bought us
 

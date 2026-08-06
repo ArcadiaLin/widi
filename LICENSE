@@ -24,5 +24,5 @@ SOFTWARE.
 
 The pi/ directory is a git submodule of the upstream Pi repository
 (https://github.com/earendil-works/pi), which carries its own MIT license
-(Copyright (c) 2025 Mario Zechner). Portions of apps/widi-pi/src/storage are
+(Copyright (c) 2025 Mario Zechner). Portions of apps/widi/src/storage are
 adapted from Pi's JSONL session storage and remain subject to that notice.

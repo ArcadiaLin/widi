@@ -1,6 +1,6 @@
 # Orchestrator 接线与持久化落地：实施排期
 
-面向 `apps/widi-pi/src/core/`。前置阅读：`docs/ZH/orchestrator-refactor.md`、`docs/ZH/persistence-ref-writer.md`、`docs/ZH/agent-tree-persistence.md`、`docs/ZH/background-job-persistence.md`。
+面向 `apps/widi/src/core/`。前置阅读：`docs/ZH/orchestrator-refactor.md`、`docs/ZH/persistence-ref-writer.md`、`docs/ZH/agent-tree-persistence.md`、`docs/ZH/background-job-persistence.md`。
 
 那四份文档各自描述一件事该长什么样。本文不重复它们的设计，只回答三个问题：**现在到底停在哪、每项工作要动哪些文件、哪些工作卡着哪些工作**。
 

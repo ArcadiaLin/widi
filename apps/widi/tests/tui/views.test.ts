@@ -178,7 +178,7 @@ describe("TUI views", () => {
 			maxTokens: 100,
 		};
 
-		const [line] = new FooterView(state, "/home/arcadia/projs/widi/apps/widi-pi").render(120);
+		const [line] = new FooterView(state, "/home/arcadia/projs/widi/apps/widi").render(120);
 
 		const plain = (line ?? "").replace(ANSI_SEQUENCE, "");
 		// The model the next prompt runs on sits directly under the editor.

@@ -3,7 +3,7 @@ import type {
 	BackgroundJobReport,
 	ExtensionActivationApi,
 	ToolDefinition,
-} from "../../../apps/widi-pi/src/core/extension/api.ts";
+} from "../../../apps/widi/src/core/extension/api.ts";
 
 /**
  * Plan demo extension: an `update_plan` tool rendered through background-job

@@ -1,6 +1,6 @@
 # Persistence 使用指南
 
-代码位置：`apps/widi-pi/src/core/persistence/`。
+代码位置：`apps/widi/src/core/persistence/`。
 
 这一层回答一个问题：**会话被回退、被分叉、被删除时，它附带的状态该怎么办。**
 

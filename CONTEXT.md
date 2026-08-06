@@ -1,11 +1,11 @@
 # WIDI Pi Context
 
-This glossary defines the core language used by `widi-pi`, a multi-agent runtime built around Pi AgentHarness. It records domain terms only, not implementation plans or API details.
+This glossary defines the core language used by `widi`, a multi-agent runtime built around Pi AgentHarness. It records domain terms only, not implementation plans or API details.
 
 ## Language
 
 **Core**:
-The recoverable and diagnosable agent runtime foundation of `widi-pi`, including orchestration, dependency registries, client fanout, human requests, diagnostics, sessions, and runtime boundaries. Product interaction modes, concrete UI presentation, and coding-agent presets are built on top of Core rather than being Core primitives.
+The recoverable and diagnosable agent runtime foundation of `widi`, including orchestration, dependency registries, client fanout, human requests, diagnostics, sessions, and runtime boundaries. Product interaction modes, concrete UI presentation, and coding-agent presets are built on top of Core rather than being Core primitives.
 _Avoid_: Product feature set, preset, application adapter
 
 **Orchestrator**:

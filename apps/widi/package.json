@@ -1,8 +1,8 @@
 {
-  "name": "widi-pi",
+  "name": "widi",
   "version": "0.0.0",
   "private": true,
-  "description": "WIDI Pi is a terminal coding harness based on the pi-agent-core",
+  "description": "WIDI is a terminal coding harness based on the pi-agent-core",
   "type": "module",
   "bin": {
     "widi-harness": "dist/cli.js"

@@ -1,6 +1,6 @@
 # 谁来写 persistence ref
 
-面向 `apps/widi-pi/src/core/`。前置阅读：`docs/ZH/persistence.md`，`docs/ZH/background-job-persistence.md`。
+面向 `apps/widi/src/core/`。前置阅读：`docs/ZH/persistence.md`，`docs/ZH/background-job-persistence.md`。
 
 本文只描述设计与顶层接口，不含实现，不改动 orchestrator。
 

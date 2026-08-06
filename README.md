@@ -75,11 +75,11 @@ Pi 上游正在持续迭代 `AgentHarness` 与存储模型。WIDI 当前从 Pi `
 
 ## 仓库结构
 
-- [`apps/widi-pi`](apps/widi-pi)：WIDI 的运行时、内置工具、扩展系统和终端 TUI；构建后提供 `widi-harness` 二进制。
+- [`apps/widi`](apps/widi)：WIDI 的运行时、内置工具、扩展系统和终端 TUI；构建后提供 `widi-harness` 二进制。
 - [`packages/agent`](packages/agent)：从 Pi fork 的 `@widi/agent-core`，作为 WIDI 的单 Agent 执行内核。
 - [`docs/pi-fork.md`](docs/pi-fork.md)：Pi fork 的维护约束和设计背景。
 - [`CONTEXT.md`](CONTEXT.md)：运行时领域术语表。
-- [`apps/widi-pi/docs`](apps/widi-pi/docs)：当前实现相关的设计与持久化说明。
+- [`apps/widi/docs`](apps/widi/docs)：当前实现相关的设计与持久化说明。
 
 ## 开发
 

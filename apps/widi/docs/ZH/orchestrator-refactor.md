@@ -1,6 +1,6 @@
 # Orchestrator 重构：可接线的扩展点
 
-面向 `apps/widi-pi/src/core/orchestrator/`。展开在 `docs/ZH/persistence-ref-writer.md`。
+面向 `apps/widi/src/core/orchestrator/`。展开在 `docs/ZH/persistence-ref-writer.md`。
 
 本文只列要求，不含设计细节。
 

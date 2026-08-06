@@ -6,7 +6,7 @@
 
 Workspace packages:
 
-- `apps/widi-pi`: WIDI terminal coding harness. This is the active product code.
+- `apps/widi`: WIDI terminal coding harness. This is the active product code.
 - `packages/agent`: `@widi/agent-core`, a fork of `@earendil-works/pi-agent-core` vendored at pi `v0.83.0`.
 
 `@earendil-works/pi-ai` and `@earendil-works/pi-tui` are ordinary dependencies installed from the registry at exact versions. They are not workspace packages and their source is not in this repository.
@@ -19,28 +19,28 @@ Why the fork exists, its complete divergence from upstream, the invariants that 
 
 ## Current Focus
 
-- Default all runtime design and implementation work to `apps/widi-pi`.
+- Default all runtime design and implementation work to `apps/widi`.
 - Treat `packages/agent` as vendored upstream code. Keep it byte-identical to upstream except for the divergences recorded in `docs/pi-fork.md`; every gratuitous edit costs a conflict on the next cherry-pick. Do not modify it unless the user explicitly asks.
 - Treat `reference/*` as read-only upstream mirrors. Do not modify them; read `reference/pi/packages/*` as reference code only.
-- Scratch space is `notes/` (gitignored): working notes, drafts, throwaway analysis. Do not invent new ignored paths for them - that is how the old ignore list accumulated a dozen dead entries. Anything worth keeping gets promoted into `docs/` (repo-level) or `apps/widi-pi/docs/` (runtime docs).
+- Scratch space is `notes/` (gitignored): working notes, drafts, throwaway analysis. Do not invent new ignored paths for them - that is how the old ignore list accumulated a dozen dead entries. Anything worth keeping gets promoted into `docs/` (repo-level) or `apps/widi/docs/` (runtime docs).
 
 ## Project Shape
 
 - Root package: private ESM package named `widi`.
 - Node engine: `>=22.19.0`.
 - Root TypeScript config maps `@widi/agent-core` imports to `packages/agent/src`; `pi-ai` and `pi-tui` resolve from `node_modules` through their published type declarations.
-- Root check covers `packages/agent/{src,test}` and `apps/widi-pi/{src,tests}`. The app's own `check` script only sees the app, and the app's `tsconfig.build.json` deliberately has no path mappings so it resolves exactly what the runtime resolves.
+- Root check covers `packages/agent/{src,test}` and `apps/widi/{src,tests}`. The app's own `check` script only sees the app, and the app's `tsconfig.build.json` deliberately has no path mappings so it resolves exactly what the runtime resolves.
 - Root `biome.json` partitions formatting: `apps/**` uses WIDI's defaults (tab, width 2, line width 80), `packages/agent/**` keeps upstream's settings (tab, width 3, line width 120) plus upstream's lint relaxations. Never reformat `packages/agent` into WIDI style.
-- `apps/widi-pi` builds from `src` to `dist` with `tsgo`.
-- `apps/widi-pi` exposes the `widi-harness` binary from `dist/cli.js`; `src/cli.ts` is the single command entry and routes straight into the TUI (the old minimal line CLI was removed).
+- `apps/widi` builds from `src` to `dist` with `tsgo`.
+- `apps/widi` exposes the `widi-harness` binary from `dist/cli.js`; `src/cli.ts` is the single command entry and routes straight into the TUI (the old minimal line CLI was removed).
 - Root `npm run tui` starts the TUI against the repo-local `.widi` config (vllm local model by default; `moonshot`/`anthropic` providers activate via `$MOONSHOT_API_KEY`/`$ANTHROPIC_API_KEY`). Override with `--agent-dir`/`--profile`; the runtime cwd is inherited from the terminal.
-- `pi-ai` and `pi-tui` ship prebuilt dists, and `pi-ai` ships its generated model catalogs in `dist/providers/data/*.json`. No model-data generation and no network access are needed to build. Only `packages/agent` is built locally, by `npm --workspace apps/widi-pi run build:deps`.
+- `pi-ai` and `pi-tui` ship prebuilt dists, and `pi-ai` ships its generated model catalogs in `dist/providers/data/*.json`. No model-data generation and no network access are needed to build. Only `packages/agent` is built locally, by `npm --workspace apps/widi run build:deps`.
 - `pi-ai` and `pi-tui` are pinned to exact versions, never caret ranges, and `typebox` must stay at exactly the version published `pi-ai` pins (1.3.7 today) because `TSchema` crosses the package boundary. `docs/pi-fork.md` explains both failure modes.
 - `.widi/extensions/mcp/` is the checked-in sample MCP extension (loaded via the repo-local agent dir; config in `.widi/mcp.json`). It is gitignore-excepted from the blanket `.widi/*` ignore rule.
 
 ## Dependencies
 
-`apps/widi-pi` depends on:
+`apps/widi` depends on:
 
 - Agent core: `@widi/agent-core` (workspace).
 - Pi packages from the registry, pinned exactly: `@earendil-works/pi-ai`, `@earendil-works/pi-tui`.
@@ -89,9 +89,9 @@ npm run check
 Useful package commands:
 
 ```bash
-npm --workspace apps/widi-pi run build
-npm --workspace apps/widi-pi run check
-npm --workspace apps/widi-pi run test
+npm --workspace apps/widi run build
+npm --workspace apps/widi run check
+npm --workspace apps/widi run test
 npm --workspace @widi/agent-core run test
 npm run test                                  # both workspaces
 ```

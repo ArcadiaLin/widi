@@ -1,4 +1,4 @@
-import type { ExtensionDefinition } from "../../../apps/widi-pi/src/core/extension/api.ts";
+import type { ExtensionDefinition } from "../../../apps/widi/src/core/extension/api.ts";
 import { activatePlanExtension } from "./lib.ts";
 
 const extension: ExtensionDefinition = {

@@ -9,7 +9,7 @@ import type { TSchema } from "typebox";
 import type {
 	ExtensionActivationApi,
 	ToolDefinition,
-} from "../../../apps/widi-pi/src/core/extension/api.ts";
+} from "../../../apps/widi/src/core/extension/api.ts";
 
 export interface McpStdioServerConfig {
 	readonly command: string;

@@ -96,7 +96,7 @@ function alignSides(left: string, right: string, width: number): string {
 	return truncateToWidth(`${left}  ${right}`, width, "…");
 }
 
-/** Abbreviate a cwd to `~/p/widi-pi` style: home prefix plus one-letter parents. */
+/** Abbreviate a cwd to `~/p/widi` style: home prefix plus one-letter parents. */
 function shortCwd(cwd: string): string {
 	const home = process.env.HOME;
 	const relative = home && cwd.startsWith(home) ? `~${cwd.slice(home.length) || "/"}` : cwd;

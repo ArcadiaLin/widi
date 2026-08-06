@@ -826,7 +826,7 @@ harness-v2 的 step 模型下多半本来就成立。等 harness-v2 的观测面
 **做什么**：给 `SessionManager` 加一组 agent-tree 原语，落在 session 目录里，与
 `jobs/` 并列。
 
-- 新增 `apps/widi-pi/src/core/session-tree.ts`（或并入 `session-manager.ts`）：
+- 新增 `apps/widi/src/core/session-tree.ts`（或并入 `session-manager.ts`）：
   常量 `AGENTS_DIR_NAME = "agents"` / `AGENT_TREE_FILE_NAME = "tree.jsonl"` /
   `AGENT_PARENT_FILE_NAME = "parent.json"`，记录类型与 replay 归约；
 - `SessionManager` 新增：`appendAgentTreeRecord(rootAgentId, record)`、
@@ -846,7 +846,7 @@ harness-v2 的 step 模型下多半本来就成立。等 harness-v2 的观测面
 
 ### 待办 3：`createOrchestratorHost`，统一对外面与能力收窄
 
-**做什么**：重构落地之后，新增一个 `apps/widi-pi/src/core/orchestrator-host.ts`，
+**做什么**：重构落地之后，新增一个 `apps/widi/src/core/orchestrator-host.ts`，
 用 `createOrchestratorHost(orchestrator)` 生成对外类型，并由它派生调用者绑定的窄视图，
 取代今天并列的 `AgentHost` / `ToolAgentHost`。
 

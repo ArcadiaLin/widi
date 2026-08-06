@@ -1,6 +1,6 @@
 # Agent 树的组织与恢复
 
-面向 `apps/widi-pi/src/core/persistence/` 与 `apps/widi-pi/src/core/`。前置阅读：`docs/ZH/persistence.md`。
+面向 `apps/widi/src/core/persistence/` 与 `apps/widi/src/core/`。前置阅读：`docs/ZH/persistence.md`。
 
 本文替换先前的 `core:subagent` 设计。那份设计把成员关系做成父分支上的 persistence ref，本文取消它。
 

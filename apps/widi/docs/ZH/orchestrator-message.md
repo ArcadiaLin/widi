@@ -1,6 +1,6 @@
 # Orchestrator message：进入模型上下文的唯一入口
 
-面向 `apps/widi-pi/src/core/message.ts`、`core/agent-orchestrator.ts` 与 `src/tui/`。前置阅读：`orchestrator-wiring-plan.md` §G。
+面向 `apps/widi/src/core/message.ts`、`core/agent-orchestrator.ts` 与 `src/tui/`。前置阅读：`orchestrator-wiring-plan.md` §G。
 
 > **状态：全部落地。** core、fork 放宽、TUI 渲染都已完成，`npm run check` 与全量测试通过（1163 passing）。正文描述的是正在跑的代码。
 >

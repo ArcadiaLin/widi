@@ -2,7 +2,7 @@
 
 调研日期：2026-07-27（第 4 节生态对照补充于 2026-07-28；第 8 节实施决议补充于 2026-07-29）。对照的 pi 快照为 in-tree `pi/`，生态样本为 `chat_notes/pi-extensions`（ogulcancelik 的扩展集，20 个包）。文中行号以这两份快照为准，upstream 更新后可能漂移。
 
-文档位置：本文自 2026-07-29 起纳入 git 追踪，落在 `apps/widi-pi/docs/tui-extension-host.md`。同日 `docs/zh-CN/*` 整套说明文档移出 git 追踪（现存于 `chat_notes/zh-CN/`），因此**本轮实施不依赖也不同步那批文档**；这一工作流的唯一权威描述是本文。文中引用 `docs/zh-CN/...` 的地方一律是历史陈述，不是待更新的目标。
+文档位置：本文自 2026-07-29 起纳入 git 追踪，落在 `apps/widi/docs/tui-extension-host.md`。同日 `docs/zh-CN/*` 整套说明文档移出 git 追踪（现存于 `chat_notes/zh-CN/`），因此**本轮实施不依赖也不同步那批文档**；这一工作流的唯一权威描述是本文。文中引用 `docs/zh-CN/...` 的地方一律是历史陈述，不是待更新的目标。
 
 **一句话结论**：能做，且 widi 的分层比 pi 更适合做。推荐"双入口扩展 + TUI 扩展宿主"，core 保持零 TUI 依赖；宿主是 TUI 应用自己的装配模块，**不是** core 扩展。生态对照后追加一条：**真正的瓶颈不止在 TUI 半，core 半也缺三块高频能力**（会话读取、上下文用量、侧信道模型查询），详见第 4 节。
 
@@ -99,7 +99,7 @@ interface Component {
 
 ### 3.1 A 类已经做完了
 
-`ExtensionActions`（`apps/widi-pi/src/core/extension/types.ts`）已有：
+`ExtensionActions`（`apps/widi/src/core/extension/types.ts`）已有：
 
 - `notify(text)`——瞬时通知。
 - `setStatus(key, status)` / `clearStatus(key)`——键控状态，含 `progress { completed, total }`。
@@ -119,7 +119,7 @@ payload 形状与体积上限在 `core/extension/presentation.ts`：`ExtensionMe
 这三条决定了不能照搬 pi：
 
 1. **runner 是 per-agent，TUI 是 per-runtime。** widi 的 `loadForAgent({ agentId, profileId })` 为每个 agent 建一个 runner；TUI 是单例，同时展示多个 agent。TUI 扩展只能是 runtime 级单例，`agentId` 只能作为回调参数出现。pi 是单 session 单 TUI，没有这个问题。
-2. **slash command 引擎已经在 TUI 层。** `apps/widi-pi/src/tui/commands/`，而 pi 的 `registerCommand` 在 core。`docs/zh-CN/core/extensions.md` 已经写明"不提供 registerCommand，交互命令属于 TUI 命令引擎"——这条决定现在正好可以兑现。
+2. **slash command 引擎已经在 TUI 层。** `apps/widi/src/tui/commands/`，而 pi 的 `registerCommand` 在 core。`docs/zh-CN/core/extensions.md` 已经写明"不提供 registerCommand，交互命令属于 TUI 命令引擎"——这条决定现在正好可以兑现。
 3. **工具渲染已经在 TUI 层。** `tui/tool-presenter.ts` 的 `presentToolExecution(item, width, options) → string[]` 是纯函数，按 `toolName` 分发；`ToolDefinition`（`core/tools/types.ts`）完全没有渲染字段。这是 widi 相对 pi 的一个净优势，也意味着"扩展提供的工具无法自绘"是当前的一个真实缺口。
 
 第 4 节的生态对照又暴露出第四条差异，见 4.4。
@@ -368,7 +368,7 @@ core（零 TUI 依赖，不变）
         │
         │  OrchestratorEvent（只读投影） + session custom entries
         ▼
-tui 宿主（发行版装配，apps/widi-pi/src/tui/extension-host/）
+tui 宿主（发行版装配，apps/widi/src/tui/extension-host/）
   WidiTuiExtensionApi:    registerCommand / registerShortcut /
                           registerMessageRenderer / registerEntryRenderer /
                           registerToolPresenter / setWidget / setFooter /
@@ -683,7 +683,7 @@ tone?: ExtensionTone;                          // 语义 token，不给颜色
 6. 编辑器文本与主题：`getEditorText` / `setEditorText` / `pasteToEditor` / `getAllThemes` / `setTheme`。
 7. 宿主本体：发现（复用 `ExtensionDiscoveryResult`）→ 导入（复用 `JitiExtensionModuleImporter`）→ 激活 → dispose。
 
-新增目录：`apps/widi-pi/src/tui/extension-host/`。
+新增目录：`apps/widi/src/tui/extension-host/`。
 
 ### 阶段 3（可选，按需）
 
@@ -743,18 +743,18 @@ pi-extensions 生态样本（`chat_notes/pi-extensions/packages/`）：
 
 widi：
 
-- `apps/widi-pi/src/core/extension/types.ts` — `ExtensionActivationApi` / `ExtensionActions` / `ExtensionSessionContext`
-- `apps/widi-pi/src/core/extension/presentation.ts` — 呈现协议与上限
-- `apps/widi-pi/src/core/extension/loader.ts:89-145` — 发现与 identity 类型
-- `apps/widi-pi/src/core/extension/module-importer.ts` — 可复用的导入器
-- `apps/widi-pi/src/core/extension/runner.ts:815-840` — 现有 session context 绑定（C1 的改动点）
-- `apps/widi-pi/src/core/human-request.ts` — `HumanRequestKind` / `HumanQuestion`（已覆盖 pi 的对话框）
-- `apps/widi-pi/src/core/session-manager.ts:174-402` — C1 所需原语已就位
-- `apps/widi-pi/src/core/agent-orchestrator.ts:3875` — `calculateContextTokens`（C2 的数据源）
-- `apps/widi-pi/src/core/client.ts` — `OrchestratorClient`
-- `apps/widi-pi/src/tui/application.ts` — 当前装配点
-- `apps/widi-pi/src/tui/tool-presenter.ts` — 工具渲染分发
-- `apps/widi-pi/src/tui/keybindings.ts:34` — `WIDI_KEYBINDINGS` 可配置表（`registerShortcut` 的落点）
-- `apps/widi-pi/src/tui/commands/` — 命令引擎
-- `apps/widi-pi/src/tui/theme/theme.ts` — 主题
-- `apps/widi-pi/docs/zh-CN/core/extensions.md` — 现行扩展契约
+- `apps/widi/src/core/extension/types.ts` — `ExtensionActivationApi` / `ExtensionActions` / `ExtensionSessionContext`
+- `apps/widi/src/core/extension/presentation.ts` — 呈现协议与上限
+- `apps/widi/src/core/extension/loader.ts:89-145` — 发现与 identity 类型
+- `apps/widi/src/core/extension/module-importer.ts` — 可复用的导入器
+- `apps/widi/src/core/extension/runner.ts:815-840` — 现有 session context 绑定（C1 的改动点）
+- `apps/widi/src/core/human-request.ts` — `HumanRequestKind` / `HumanQuestion`（已覆盖 pi 的对话框）
+- `apps/widi/src/core/session-manager.ts:174-402` — C1 所需原语已就位
+- `apps/widi/src/core/agent-orchestrator.ts:3875` — `calculateContextTokens`（C2 的数据源）
+- `apps/widi/src/core/client.ts` — `OrchestratorClient`
+- `apps/widi/src/tui/application.ts` — 当前装配点
+- `apps/widi/src/tui/tool-presenter.ts` — 工具渲染分发
+- `apps/widi/src/tui/keybindings.ts:34` — `WIDI_KEYBINDINGS` 可配置表（`registerShortcut` 的落点）
+- `apps/widi/src/tui/commands/` — 命令引擎
+- `apps/widi/src/tui/theme/theme.ts` — 主题
+- `apps/widi/docs/zh-CN/core/extensions.md` — 现行扩展契约
