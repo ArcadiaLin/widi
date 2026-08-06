@@ -2,7 +2,7 @@
 
 面向 `apps/widi-pi/src/core/message.ts`、`core/agent-orchestrator.ts` 与 `src/tui/`。前置阅读：`orchestrator-wiring-plan.md` §G。
 
-> **状态：全部落地。** core、fork 放宽、TUI 渲染都已完成，`npm run check` 与全量测试通过（1159 passing）。正文描述的是正在跑的代码。
+> **状态：全部落地。** core、fork 放宽、TUI 渲染都已完成，`npm run check` 与全量测试通过（1163 passing）。正文描述的是正在跑的代码。
 >
 > 本文举例用到的 multi-agent 工具与 human-request，两者都在重做中，例子不代表它们当前或将来的形状。见 §10。
 
@@ -126,7 +126,7 @@ export interface MessageDeliveryPolicy {
 
 background runtime 拿的是 `MessageSender` 而不是 host：它不是 agent 作用域的模块，它服务所有 agent，说话时的身份是一个 job 而不是一个 agent。host 的每个方法都少一个"谁在问"的参数，而 background 根本没有那个"谁"。
 
-**没有例外，source 全部可覆盖。** 包括 tool adapter：模型填的是 tool schema 里的参数，而 `source` 不在任何 tool 的 schema 里，所以选 source 的是写 tool 的人，不是模型。内置 tool 用默认值就好；extension 提供的 tool 自己填，和 extension runner 同一个信任层级。
+**没有例外，source 全部可覆盖。** 包括 tool adapter：模型填的是 tool schema 里的参数，而 `source` 不在任何 tool 的 schema 里，所以选 source 的是写 tool 的人，不是模型。内置 tool 用默认值就好；extension 提供的 tool 自己填，和 extension runner 同一个信任层级：作者 API 是 `actions.prompt` / `steer` / `followUp` 的第二个参数 `ExtensionSendOptions`（`{images, source?, render?}`），三个字段原样透传进 `MessageRequest`，见 §5。
 
 `source.details` 必须可 JSON 序列化——它要原样落进 jsonl。**目前没有运行时校验**：内置生产者填的都是字面量对象，而 extension 填的东西一旦不可序列化，会在写会话时炸在 harness 里，位置不理想但不静默。真要加，加在入队处而不是投递处。
 
@@ -299,15 +299,12 @@ src/core/message.ts
 工具目录已刷新，新增 4 个工具。
 ```
 
-**extension，自带 render 与自选 source**——一个 Slack 网关，把远端的人如实记下来。
+**extension，自带 render 与自选 source**——一个 Slack 网关，把远端的人如实记下来。作者 API 是 `actions.prompt` / `steer` / `followUp` 的 `ExtensionSendOptions`，`source` 与 `render` 透传进 `MessageRequest`，盖过 sink 的默认值。
 
 ```ts
-sink.send({
-    targetAgentId,
-    body: text,
+actions.followUp(text, {
     source: { kind: "human", label: "Slack @arcadia", details: { via: "slack-bridge" } },
     render: (body) => `[Slack @arcadia]\n\n${body}`,
-    mode: "next_turn",
 });
 ```
 
@@ -318,6 +315,8 @@ sink.send({
 ```
 
 它也可以把 `render` 写成 `(body) => body`，产出与用户输入逐字相同的 `content`；`details.source` 里仍然留着它自己填的那份记录。**这是有意允许的**：`render` 归持有者之后，绑定 kind 本来就拦不住这件事，见 §1。
+
+两条边界。覆盖 `source` 只是换 label，不是换能力：投递策略仍由 binding 固定，把 source 填成 `human` 不会让它触发 human interrupt，也躲不开 input 拦截。`render` 替换的是缺省的 `[Input from extension <id>]` 前缀，入队时跑一次；只覆盖 `source` 不覆盖 `render` 时，label 是作者填的，模型侧仍然带缺省前缀。
 
 **runtime / `carried_over_jobs`**——`mode:"precede"`，无前缀。正文必须保持 job result 的形状，模型靠它匹配自己手上的 t0 handle。
 
@@ -423,7 +422,7 @@ core:orchestrator_message
             "content":[{"type":"text","text":"Background job 3 (started by tool call call_a1b2, tool bash) completed:\n\nsrc/core/host.ts\nsrc/core/message.ts"}],
             "display":true,
             "details":{"source":{"kind":"background_job","label":"job 3",
-                                 "details":{"jobId":"3","toolCallId":"call_a1b2"}},
+                                 "details":{"ownerAgentId":"main-5yhi","jobId":"3"}},
                        "body":"Background job 3 (started by tool call call_a1b2, tool bash) completed:\n\nsrc/core/host.ts\nsrc/core/message.ts"},
             "timestamp":1785663251880}}
 ```
@@ -538,17 +537,20 @@ export interface OrchestratorMessageItem {
 
 **它和 user message 一样开启一个 turn。** `groupTurns` 两种都认：模型读到哪一种都会作答，只数用户打的字会让一个全靠 agent / job 消息驱动的会话变成一个永不裁剪的巨型 turn。
 
-### 建议的渲染分派
+### 渲染分派
 
-按 `source.kind` 分派，**必须有兜底**：
+当前实现是统一的一种块，不按 kind 分形态：所有 `orchestrator-message` 条目都渲染成 `↳ 标题 + body`，body 只做截断（`maxLines: 24`、`maxCharacters: 8_000`）。`background_job` 不折叠，`runtime` 也不降出对话流的主视觉层次——这两种更精细的形态是未实现的后续方向，不是现状。
 
-| source.kind | 渲染 |
+标题按 `source.kind` 经 `orchestratorMessageTitle` 得出，**必须有兜底**：
+
+| 条目 / source.kind | 渲染 |
 |---|---|
 | 条目是裸 `role:"user"` | 用户消息，与今天一致 |
-| `human`（来自非外壳的 sink） | 同上样式，但角标注明 `source.label` |
-| `agent` | 带发送方 agent id 的消息块，与用户消息不同的边框/颜色 |
-| `background_job` | 折叠块，标题是 job id 与状态，正文默认收起 |
-| `runtime` | 系统通告条，不进对话流的主视觉层次 |
+| `human`（来自非外壳的 sink） | `↳ from <label>` |
+| `agent` | `↳ agent <label>` |
+| `background_job` | `↳ <label>`（label 即 `job <id>`） |
+| `runtime` | `↳ runtime · <label>` |
+| `extension:<name>` | `↳ extension <name>` |
 | 其它 / 未知 | 标题取 `source.label ?? source.kind` |
 
 落地的标题行（`orchestratorMessageTitle`）：`↳ agent worker-7` / `↳ job 3` / `↳ runtime · spawn tree closed` / `↳ extension mcp` / 未知 kind 直接用 label。
@@ -595,7 +597,7 @@ orchestrator 这一侧只有一个生产者构造这种消息：`toHarnessInput`
 
 ### input presentation 整条删除
 
-`ExtensionSendOptions.presentation` 这条通道**没有任何消费者**：TUI 既没有渲染 `extension_input_presented` 事件，也没有读过 `core:extension_input_presentation` 条目。它是一条只写不读的链路，从 extension 作者 API 一直到 orchestrator 的 per-target 配对队列。
+`ExtensionSendOptions.presentation` 这条通道**已经整体删除**：`ExtensionSendOptions` 上没有 `presentation` 字段，`ExtensionInputPresentation` 类型及其 validate / clone、`extension_input_presented` 事件、`core:extension_input_presentation` 条目、orchestrator 的 `_pendingExtensionInputPresentations` 配对队列全部不存在。删除前它就是一条只写不读的链路——TUI 既没有渲染过那个事件，也没有读过那种条目，从 extension 作者 API 一直到 orchestrator 的 per-target 配对队列都没有消费者。
 
 删掉的理由不是"没人用所以砍掉"，是它放错了层：一条消息在界面上长什么样，属于 TUI 侧的 extension 宿主，不属于 core 的投递管线。core 该保证的是消息带着 `source` 和 `details` 完整落盘（§6 做到了），够 UI 层自己决定渲染。重建时它落在 TUI 层。
 
@@ -603,9 +605,9 @@ orchestrator 这一侧只有一个生产者构造这种消息：`toHarnessInput`
 
 ### 要承认的行为变化
 
-1. **extension 的输入默认不再冒充人类。** 今天 `actions.promptAgent` 转手调 orchestrator 的 `promptAgent`，后者写死 `source:{kind:"human"}`，所以 extension 打的字在会话里、在 `_humanInterrupts` 协调里、在 TUI 里和用户完全一样。改造后它的默认 source 是 `{kind:"extension:<name>"}`。它仍然可以把 source 填回 `human`——那是 extension 作者的选择，也是本设计有意保留的能力——但 `humanInterrupt` 跟着 policy 走，填 source 改不了它。
+1. **extension 的输入默认不再冒充人类。** 改造前 `actions.promptAgent` 转手调 orchestrator 的 `promptAgent`，后者写死 `source:{kind:"human"}`，所以 extension 打的字在会话里、在 `_humanInterrupts` 协调里、在 TUI 里和用户完全一样。现在它的默认 source 是 `{kind:"extension:<name>"}`。它仍然可以把 source 填回 `human`——`prompt` / `steer` / `followUp` 的 `ExtensionSendOptions.source` / `render` 就是这个用途，已落地，见 §5——但 `humanInterrupt` 跟着 policy 走，填 source 改不了它。
 2. **extension 的 steer / followUp 会被拦截。** 今天这两条完全绕过 input 管线，改造后会经过别的 extension 的 transform，也可能被 block。
-3. **runtime 通告的 block 策略是 `ignore`。** 与 background t1 同理且更硬：`reconcileBranch` 的通告发完就写 job 记录，如果 extension 把它 block 掉，记录照写、模型永远不知道，那是静默丢失。block 降级成诊断。
+3. **runtime 通告的 block 策略是 `ignore`。** 与 background t1 同理且更硬：`reconcileBranch` 的通告发完就写 job 记录，如果 extension 把它 block 掉，记录照写、模型永远不知道，那是静默丢失。block 降级成诊断：任何 `blockPolicy:"ignore"` 的生产者被 block 时都记 `orchestrator.message_block_ignored`，不再只针对 background_job。
 4. **老会话不追溯。** 已经落成 `role:"user"` 的通告继续按用户消息渲染，不做迁移。
 5. **extension 的 `presentation` 参数消失。** 传了会是类型错误。见上一节。
 6. **`precede` 与唤醒消息共用 per-target FIFO。** compaction / branch_summary 期间被 defer 的消息会挡住排在它后面的通告——是停顿不是死锁，phase 一变两条都走。要不要给 `precede` 单开一条道还没定。
