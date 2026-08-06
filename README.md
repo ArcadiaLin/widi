@@ -79,7 +79,7 @@ Pi 上游正在持续迭代 `AgentHarness` 与存储模型。WIDI 当前从 Pi `
 - [`packages/agent`](packages/agent)：从 Pi fork 的 `@widi/agent-core`，作为 WIDI 的单 Agent 执行内核。
 - [`docs/pi-fork.md`](docs/pi-fork.md)：Pi fork 的维护约束和设计背景。
 - [`CONTEXT.md`](CONTEXT.md)：运行时领域术语表。
-- [`apps/widi/docs`](apps/widi/docs)：当前实现相关的设计与持久化说明。
+- [`apps/widi/docs`](apps/widi/docs)：persistence、orchestrator、background 三个核心模块的理念文档；实现期设计文档在 `notes/develop/`（scratch）。
 
 ## 开发
 

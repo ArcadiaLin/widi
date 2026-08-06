@@ -115,7 +115,7 @@ What blocked it was two narrowed fields and four `string` parameters. `steerQueu
 
 No existing call site changes behavior, and nothing new is stored: `AgentMessage[]` is what the loop consumed all along (`src/types.ts:239/252`), and `AbortResult` and the `queue_update` payload were already declared with it.
 
-**Downstream rule.** A typed input is not a way to smuggle structure past the model. `content` is the whole of what the model reads; `customType` and `details` reach storage and the UI only. In WIDI exactly one producer builds these - `toHarnessInput` in `agent-orchestrator.ts`, from a `MessageEntryPayload` the message pipeline assembled - and shell input deliberately stays a bare user message so existing sessions read back unchanged. See `apps/widi/docs/ZH/orchestrator-message.md` §6.
+**Downstream rule.** A typed input is not a way to smuggle structure past the model. `content` is the whole of what the model reads; `customType` and `details` reach storage and the UI only. In WIDI exactly one producer builds these - `toHarnessInput` in `agent-orchestrator.ts`, from a `MessageEntryPayload` the message pipeline assembled - and shell input deliberately stays a bare user message so existing sessions read back unchanged. See `notes/develop/ZH/orchestrator-message.md` §6.
 
 On re-sync, check whether harness-v2's lane records already carry an application-defined type. Its queues are durable records rather than in-memory arrays, so the natural expectation is that they do, and this widening disappears rather than porting.
 
