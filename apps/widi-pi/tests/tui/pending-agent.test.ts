@@ -44,7 +44,18 @@ describe("PendingAgentController", () => {
 		controller.beginNewSession({ profileId: "main-agent", model: sourceModel }, display());
 
 		await expect(controller.materialize()).resolves.toBe("main-2");
-		expect(spawnAgent).toHaveBeenCalledWith({ profileId: "main-agent", model: sourceModel });
+		expect(spawnAgent).toHaveBeenCalledWith({ origin: { kind: "new", profileId: "main-agent" }, model: sourceModel });
+	});
+
+	// The orchestrator reads `options.origin` before anything else, so a default
+	// start that hands it nothing fails on the first line of the spawn.
+	it("materializes the default agent on a new-origin spawn", async () => {
+		const spawnAgent = vi.fn(async () => "main");
+		const controller = createController({ spawnAgent });
+		controller.beginDefault(display());
+
+		await expect(controller.materialize()).resolves.toBe("main");
+		expect(spawnAgent).toHaveBeenCalledWith({ origin: { kind: "new" } });
 	});
 
 	it("keeps the pending intent after materialization fails", async () => {

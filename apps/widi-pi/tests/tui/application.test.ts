@@ -98,7 +98,7 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		await submit(harness.application, "second");
 
 		expect(harness.spawnAgent).toHaveBeenCalledOnce();
-		expect(harness.spawnAgent).toHaveBeenCalledWith({ profileId: "main", model: model() });
+		expect(harness.spawnAgent).toHaveBeenCalledWith({ origin: { kind: "new", profileId: "main" }, model: model() });
 		expect(harness.promptAgent).toHaveBeenCalledWith(
 			expect.objectContaining({ targetAgentId: "main-2", body: "second" }),
 		);

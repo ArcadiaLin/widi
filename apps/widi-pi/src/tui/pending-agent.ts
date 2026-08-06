@@ -1,3 +1,4 @@
+import type { SpawnAgentOptions } from "../core/agent-orchestrator.ts";
 import type { RuntimeModel } from "../core/types.ts";
 import type { PendingAgentStart, PendingAgentViewState, TuiApplicationState } from "./state.ts";
 
@@ -8,7 +9,10 @@ export interface PendingAgentDisplay {
 }
 
 export interface PendingAgentRuntime {
-	spawnAgent(options?: { profileId?: string; model?: RuntimeModel }): Promise<string>;
+	// The orchestrator's own parameter, not a narrowed restatement of it: a
+	// method parameter is bivariant, so a narrower one here would keep type
+	// checking a call the orchestrator cannot answer.
+	spawnAgent(options: SpawnAgentOptions): Promise<string>;
 }
 
 export class PendingAgentController {
@@ -63,8 +67,8 @@ export class PendingAgentController {
 	}
 
 	private async start(start: PendingAgentStart): Promise<string> {
-		if (start.kind === "default") return await this.runtime.spawnAgent();
-		return await this.runtime.spawnAgent({ profileId: start.profileId, model: start.model });
+		if (start.kind === "default") return await this.runtime.spawnAgent({ origin: { kind: "new" } });
+		return await this.runtime.spawnAgent({ origin: { kind: "new", profileId: start.profileId }, model: start.model });
 	}
 }
 
