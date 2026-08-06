@@ -1,17 +1,10 @@
-import type {
-	AgentHarnessTool,
-	AgentToolResult,
-	AgentToolUpdateCallback,
-} from "@widi/agent-core";
+import type { AgentHarnessTool, AgentToolResult, AgentToolUpdateCallback } from "@widi/agent-core";
 import type { TSchema } from "typebox";
-import {
-	type BackgroundJobTable,
-	createBackgroundJobStartedResult,
-} from "./background/index.ts";
+import { type BackgroundJobHost, createBackgroundJobStartedResult } from "./background/index.ts";
 import type { CoreDiagnostic, DiagnosticSeverity } from "./diagnostics.ts";
+import type { AgentToOrchestratorHost } from "./host.ts";
 import type { HumanInterruptWatch } from "./human-interrupt.ts";
 import type { ToolHumanHost } from "./human-request.ts";
-import type { ToolAgentHost } from "./orchestrator/host.ts";
 import type {
 	ToolDefinition,
 	ToolDefinitionPatch,
@@ -74,36 +67,22 @@ export interface ToolRegistryResolveResult {
 export interface ToolAdapterContext {
 	human?: ToolHumanHost;
 	/** Collaboration port bound to the agent this context belongs to. */
-	agents?: ToolAgentHost;
-	createExtensionContext?: (
-		source: ToolSource,
-		toolName: string,
-	) => ToolExtensionContext | undefined;
+	agents?: AgentToOrchestratorHost;
+	createExtensionContext?: (source: ToolSource, toolName: string) => ToolExtensionContext | undefined;
 	/**
-	 * Table that owns pseudo-async background jobs. When provided, a
+	 * Owner-scoped capabilities of the background job runtime. When provided, a
 	 * `backgroundable` tool races a deadline and may settle its call with a job
 	 * handle (t0) while the real work continues in the background. When omitted,
 	 * every tool runs fully synchronously regardless of `backgroundable`.
 	 */
-	backgroundJobTable?: BackgroundJobTable;
+	jobs?: BackgroundJobHost;
 	/** Pending human steers for the agent this context belongs to. */
 	humanInterrupts?: HumanInterruptWatch;
 }
 
 type StoredToolRegistration =
-	| {
-			kind: "define";
-			definition: RegistryToolDefinition;
-			source: ToolSource;
-			order: number;
-	  }
-	| {
-			kind: "patch";
-			targetToolName: string;
-			patch: RegistryToolDefinitionPatch;
-			source: ToolSource;
-			order: number;
-	  };
+	| { kind: "define"; definition: RegistryToolDefinition; source: ToolSource; order: number }
+	| { kind: "patch"; targetToolName: string; patch: RegistryToolDefinitionPatch; source: ToolSource; order: number };
 
 interface DefinitionEntry {
 	definition: RegistryToolDefinition;
@@ -120,9 +99,7 @@ interface PatchEntry {
 const bindToolExecutionContextSymbol = Symbol("bindToolExecutionContext");
 
 type BindableToolExecutionContext<TDetails> = ToolExecutionContext<TDetails> & {
-	[bindToolExecutionContextSymbol]?: (
-		source: ToolSource,
-	) => ToolExecutionContext<TDetails>;
+	[bindToolExecutionContextSymbol]?: (source: ToolSource) => ToolExecutionContext<TDetails>;
 };
 
 const patchReplaceFields = [
@@ -191,11 +168,7 @@ export class ToolRegistry {
 
 		const resolvedByName = new Map<string, ResolvedTool>();
 		for (const [name, entry] of definitions) {
-			const resolved = this._resolveDefinition(
-				entry,
-				patchesByTarget.get(name) ?? [],
-				diagnostics,
-			);
+			const resolved = this._resolveDefinition(entry, patchesByTarget.get(name) ?? [], diagnostics);
 			resolvedByName.set(name, resolved);
 		}
 
@@ -213,22 +186,10 @@ export class ToolRegistry {
 		}
 
 		const allTools = Array.from(resolvedByName.values());
-		const visibleToolNames = this._resolveVisibleToolNames(
-			options.requestedToolNames,
-			resolvedByName,
-			diagnostics,
-		);
-		const tools = visibleToolNames
-			.map((name) => resolvedByName.get(name))
-			.filter(isResolvedTool);
-		const visibleByName = new Map(
-			tools.map((tool) => [tool.definition.name, tool]),
-		);
-		const activeToolNames = this._resolveActiveToolNames(
-			options.activeToolNames,
-			visibleByName,
-			diagnostics,
-		);
+		const visibleToolNames = this._resolveVisibleToolNames(options.requestedToolNames, resolvedByName, diagnostics);
+		const tools = visibleToolNames.map((name) => resolvedByName.get(name)).filter(isResolvedTool);
+		const visibleByName = new Map(tools.map((tool) => [tool.definition.name, tool]));
+		const activeToolNames = this._resolveActiveToolNames(options.activeToolNames, visibleByName, diagnostics);
 
 		return {
 			allTools,
@@ -258,10 +219,7 @@ export class ToolRegistry {
 			return;
 		}
 
-		const nextEntry: DefinitionEntry = {
-			definition: stored.definition,
-			source: stored.source,
-		};
+		const nextEntry: DefinitionEntry = { definition: stored.definition, source: stored.source };
 		const previousEntry = definitions.get(toolName);
 		if (!previousEntry) {
 			definitions.set(toolName, nextEntry);
@@ -294,12 +252,7 @@ export class ToolRegistry {
 			return;
 		}
 
-		const patch: PatchEntry = {
-			targetToolName,
-			patch: stored.patch,
-			source: stored.source,
-			order: stored.order,
-		};
+		const patch: PatchEntry = { targetToolName, patch: stored.patch, source: stored.source, order: stored.order };
 		const patches = patchesByTarget.get(targetToolName) ?? [];
 		patches.push(patch);
 		patchesByTarget.set(targetToolName, patches);
@@ -312,10 +265,7 @@ export class ToolRegistry {
 	): ResolvedTool {
 		let definition = entry.definition;
 		const appliedPatches = [...patches].sort(comparePatchApplyOrder);
-		const fieldOwners = new Map<
-			keyof RegistryToolDefinitionPatch,
-			PatchEntry
-		>();
+		const fieldOwners = new Map<keyof RegistryToolDefinitionPatch, PatchEntry>();
 
 		for (const patchEntry of appliedPatches) {
 			if (
@@ -348,13 +298,7 @@ export class ToolRegistry {
 			definition = applyPatch(definition, patchEntry);
 		}
 
-		return {
-			definition,
-			source: entry.source,
-			patches: appliedPatches.map((patch) => ({
-				source: patch.source,
-			})),
-		};
+		return { definition, source: entry.source, patches: appliedPatches.map((patch) => ({ source: patch.source })) };
 	}
 
 	private _resolveVisibleToolNames(
@@ -365,11 +309,7 @@ export class ToolRegistry {
 		if (!requestedToolNames) {
 			return Array.from(resolvedByName.keys());
 		}
-		const names = normalizeToolNames(
-			requestedToolNames,
-			"tool.requested_duplicate",
-			diagnostics,
-		);
+		const names = normalizeToolNames(requestedToolNames, "tool.requested_duplicate", diagnostics);
 		const visibleToolNames: string[] = [];
 		for (const name of names) {
 			if (resolvedByName.has(name)) {
@@ -395,11 +335,7 @@ export class ToolRegistry {
 		if (!activeToolNames) {
 			return Array.from(visibleByName.keys());
 		}
-		const names = normalizeToolNames(
-			activeToolNames,
-			"tool.active_duplicate",
-			diagnostics,
-		);
+		const names = normalizeToolNames(activeToolNames, "tool.active_duplicate", diagnostics);
 		const resolvedActiveToolNames: string[] = [];
 		for (const name of names) {
 			if (visibleByName.has(name)) {
@@ -423,8 +359,7 @@ export class ToolRegistry {
  * Prompt guidance remains attached so system prompt composition can consume it
  * from the harness's active tool list without reaching back into the registry.
  */
-export interface ResolvedAgentHarnessTool
-	extends AgentHarnessTool<ToolAdapterContext, TSchema, unknown> {
+export interface ResolvedAgentHarnessTool extends AgentHarnessTool<ToolAdapterContext, TSchema, unknown> {
 	/** Optional system-prompt snippet copied from the WIDI tool definition. */
 	promptSnippet?: string;
 	/** Optional prompt guidance bullets copied from the WIDI tool definition. */
@@ -435,9 +370,7 @@ export interface ResolvedAgentHarnessTool
 	backgroundTimeoutMs?: number;
 }
 
-export function createAgentHarnessToolFromResolvedTool(
-	resolvedTool: ResolvedTool,
-): ResolvedAgentHarnessTool {
+export function createAgentHarnessToolFromResolvedTool(resolvedTool: ResolvedTool): ResolvedAgentHarnessTool {
 	const definition = resolvedTool.definition;
 	return {
 		name: definition.name,
@@ -451,13 +384,13 @@ export function createAgentHarnessToolFromResolvedTool(
 		prepareArguments: definition.prepareArguments,
 		executionMode: definition.executionMode,
 		execute: (toolCallId, params, signal, onUpdate, context) => {
-			if (definition.backgroundable && context.backgroundJobTable) {
+			if (definition.backgroundable && context.jobs) {
 				const deadlineMs = resolveBackgroundDeadlineMs(definition, params);
 				if (deadlineMs !== undefined) {
 					return runBackgroundableToolCall({
 						resolvedTool,
 						context,
-						table: context.backgroundJobTable,
+						jobs: context.jobs,
 						toolCallId,
 						params,
 						signal,
@@ -485,17 +418,10 @@ export function createAgentHarnessToolFromResolvedTool(
  * `backgroundable` never changes its behavior until a caller or the tool asks
  * for it.
  */
-function resolveBackgroundDeadlineMs(
-	definition: RegistryToolDefinition,
-	params: unknown,
-): number | undefined {
+function resolveBackgroundDeadlineMs(definition: RegistryToolDefinition, params: unknown): number | undefined {
 	if (isBackgroundRequested(params)) return 0;
 	const configured = definition.backgroundTimeoutMs;
-	if (
-		typeof configured === "number" &&
-		Number.isFinite(configured) &&
-		configured >= 0
-	) {
+	if (typeof configured === "number" && Number.isFinite(configured) && configured >= 0) {
 		return configured;
 	}
 	return undefined;
@@ -515,52 +441,31 @@ const MAX_BACKGROUND_NAME_LENGTH = 60;
  * optional describer, collapsing whitespace and eliding an over-long result so
  * the snapshot carries a compact label rather than a full command dump.
  */
-function resolveBackgroundDescription(
-	definition: RegistryToolDefinition,
-	params: unknown,
-): string | undefined {
-	return compactBackgroundLabel(
-		definition.backgroundDescription?.(params),
-		MAX_BACKGROUND_DESCRIPTION_LENGTH,
-	);
+function resolveBackgroundDescription(definition: RegistryToolDefinition, params: unknown): string | undefined {
+	return compactBackgroundLabel(definition.backgroundDescription?.(params), MAX_BACKGROUND_DESCRIPTION_LENGTH);
 }
 
 /** Resolve the caller-chosen name for a backgrounded call, when the tool takes one. */
-function resolveBackgroundName(
-	definition: RegistryToolDefinition,
-	params: unknown,
-): string | undefined {
-	return compactBackgroundLabel(
-		definition.backgroundName?.(params),
-		MAX_BACKGROUND_NAME_LENGTH,
-	);
+function resolveBackgroundName(definition: RegistryToolDefinition, params: unknown): string | undefined {
+	return compactBackgroundLabel(definition.backgroundName?.(params), MAX_BACKGROUND_NAME_LENGTH);
 }
 
-function compactBackgroundLabel(
-	raw: string | undefined,
-	maxLength: number,
-): string | undefined {
+function compactBackgroundLabel(raw: string | undefined, maxLength: number): string | undefined {
 	if (raw === undefined) return undefined;
 	const collapsed = raw.replace(/\s+/g, " ").trim();
 	if (collapsed.length === 0) return undefined;
-	return collapsed.length > maxLength
-		? `${collapsed.slice(0, maxLength - 1)}…`
-		: collapsed;
+	return collapsed.length > maxLength ? `${collapsed.slice(0, maxLength - 1)}…` : collapsed;
 }
 
 /** True when tool arguments explicitly opt this call into background execution. */
 function isBackgroundRequested(params: unknown): boolean {
-	return (
-		typeof params === "object" &&
-		params !== null &&
-		(params as { background?: unknown }).background === true
-	);
+	return typeof params === "object" && params !== null && (params as { background?: unknown }).background === true;
 }
 
 interface RunBackgroundableToolCallOptions {
 	resolvedTool: ResolvedTool;
 	context: ToolAdapterContext;
-	table: BackgroundJobTable;
+	jobs: BackgroundJobHost;
 	toolCallId: string;
 	params: unknown;
 	signal: AbortSignal | undefined;
@@ -577,31 +482,48 @@ interface RunBackgroundableToolCallOptions {
  * before the deadline, the real result is returned inline (the common case). If
  * the deadline wins, the call is moved to the background and settled with a job
  * handle (t0); the still-running promise records its terminal outcome on the
- * job, which drives the later t1 message via the table's result listeners.
+ * job, which is what produces the later t1 message.
+ *
+ * A refused `startLocal` - the owner was disposed mid-call - is not an error
+ * here: the call simply runs as an ordinary synchronous tool call, which is
+ * what it would have been without a background runtime at all.
  */
-function runBackgroundableToolCall(
-	options: RunBackgroundableToolCallOptions,
-): Promise<AgentToolResult<unknown>> {
+function runBackgroundableToolCall(options: RunBackgroundableToolCallOptions): Promise<AgentToolResult<unknown>> {
 	const definition = options.resolvedTool.definition;
 	const timeoutMs = options.deadlineMs;
-	const initialReport = definition.backgroundReport?.initial?.(options.params);
-	const job = options.table.create({
+	const started = options.jobs.startLocal({
 		toolCallId: options.toolCallId,
 		toolName: definition.name,
 		name: resolveBackgroundName(definition, options.params),
 		description: resolveBackgroundDescription(definition, options.params),
-		report: initialReport,
+		report: definition.backgroundReport?.initial?.(options.params),
 	});
+	if (!started.ok) {
+		return Promise.resolve(
+			definition.execute(
+				options.toolCallId,
+				options.params,
+				createToolExecutionContext(options.resolvedTool, options.context, options.signal, options.onUpdate),
+			),
+		);
+	}
+	const execution = started.execution;
 
-	// Forward the run signal to the job only during the synchronous window
-	// (before t0): while pi still treats this as an in-flight tool call, a user
-	// interrupt must cancel it. The forward is detached the moment the race
-	// resolves (see below), so once the call is backgrounded the run signal no
-	// longer owns the work.
+	// The tool runs on a signal of this adapter's own, aborted by the job (which
+	// owns the work from t0 on) and, only during the synchronous window before
+	// t0, by the run signal: while pi still treats this as an in-flight tool
+	// call, a user interrupt must cancel it. The run-signal forward is detached
+	// the moment the race resolves, so once the call is backgrounded the run
+	// signal no longer owns the work.
+	const toolAbort = new AbortController();
+	const abortTool = (reason?: unknown) => {
+		if (!toolAbort.signal.aborted) toolAbort.abort(reason);
+	};
+	if (execution.signal.aborted) abortTool(execution.signal.reason);
+	else execution.signal.addEventListener("abort", () => abortTool(execution.signal.reason), { once: true });
 	const signal = options.signal;
-	const forwardAbort = () => options.table.abort(job.id);
-	const detachForwardAbort = () =>
-		signal?.removeEventListener("abort", forwardAbort);
+	const forwardAbort = () => abortTool(signal?.reason);
+	const detachForwardAbort = () => signal?.removeEventListener("abort", forwardAbort);
 	if (signal) {
 		if (signal.aborted) forwardAbort();
 		else signal.addEventListener("abort", forwardAbort, { once: true });
@@ -614,61 +536,52 @@ function runBackgroundableToolCall(
 			: (partialResult) => {
 					const report = reportFromUpdate(partialResult);
 					if (report !== undefined) {
-						options.table.setReport(job.id, report);
+						execution.setReport(report);
 					}
 					options.onUpdate?.(partialResult);
 				};
-	const toolContext = createToolExecutionContext(
-		options.resolvedTool,
-		options.context,
-		job.signal,
-		onUpdate,
-		{
-			id: job.id,
-			output: job.output,
-			setReport: (report) => options.table.setReport(job.id, report),
-		},
-	);
+	const toolContext = createToolExecutionContext(options.resolvedTool, options.context, toolAbort.signal, onUpdate, {
+		id: execution.jobId,
+		output: execution.output,
+		setReport: (report) => execution.setReport(report).ok,
+	});
 	// An untyped execute may throw synchronously or return a plain result instead
 	// of a promise. Either would otherwise skip settlement, the race, or
-	// abort-listener cleanup and orphan the job in the table. Normalize every
+	// abort-listener cleanup and orphan the job in the runtime. Normalize every
 	// return shape at this adapter boundary so the rest of the pipeline always
 	// operates on a real promise.
 	let executePromise: Promise<AgentToolResult<unknown>>;
 	try {
-		executePromise = Promise.resolve(
-			definition.execute(options.toolCallId, options.params, toolContext),
-		);
+		executePromise = Promise.resolve(definition.execute(options.toolCallId, options.params, toolContext));
 	} catch (error) {
 		executePromise = Promise.reject(error);
 	}
 
 	// Record the terminal outcome for the job. When it has already been
-	// backgrounded this fires the table's result listeners (t1); otherwise the
-	// inline return below delivers the result.
+	// backgrounded this is what produces t1; otherwise the inline return below
+	// delivers the result and nothing was ever observable.
 	executePromise.then(
-		(result) => options.table.settle(job.id, { status: "completed", result }),
-		(error) =>
-			options.table.settle(job.id, {
-				status: job.signal.aborted ? "cancelled" : "failed",
-				error,
-			}),
+		(result) => execution.settle({ status: "completed", result }),
+		(error) => execution.settle({ status: toolAbort.signal.aborted ? "cancelled" : "failed", error }),
 	);
 
 	return raceSettlement(executePromise, timeoutMs).then((winner) => {
 		// The race is resolved: the tool_use is now settled (t0 for the
 		// backgrounded branch, or the real result for the inline branch). Detach
 		// the run-signal forward so a later abortAgent() cannot cancel a
-		// backgrounded job; its lifetime is the job table's from here (dispose
-		// cascade or explicit abort).
+		// backgrounded job; its lifetime belongs to the background runtime from
+		// here (dispose cascade or explicit abort).
 		detachForwardAbort();
-		if (winner === "timeout" && options.table.background(job.id)) {
-			return createBackgroundJobStartedResult({
-				jobId: job.id,
-				toolCallId: options.toolCallId,
-				toolName: definition.name,
-				name: job.name,
-			});
+		if (winner === "timeout") {
+			const accepted = execution.acceptBackground();
+			if (accepted.ok) {
+				return createBackgroundJobStartedResult({
+					jobId: accepted.job.jobId,
+					toolCallId: options.toolCallId,
+					toolName: definition.name,
+					name: accepted.job.name,
+				});
+			}
 		}
 		// Settled before the deadline (or the deadline lost the microtask race):
 		// return or throw the real result inline.
@@ -681,10 +594,7 @@ function runBackgroundableToolCall(
  * elapses first, whichever comes first. Never rejects: both branches only report
  * the winner, so the caller decides how to consume the settled promise.
  */
-function raceSettlement(
-	promise: Promise<unknown>,
-	timeoutMs: number,
-): Promise<"settled" | "timeout"> {
+function raceSettlement(promise: Promise<unknown>, timeoutMs: number): Promise<"settled" | "timeout"> {
 	return new Promise((resolve) => {
 		const timer = setTimeout(() => resolve("timeout"), timeoutMs);
 		const onSettled = () => {
@@ -698,15 +608,10 @@ function raceSettlement(
 export function createAgentHarnessToolsFromResolvedTools(
 	resolvedTools: readonly ResolvedTool[],
 ): ResolvedAgentHarnessTool[] {
-	return resolvedTools.map((resolvedTool) =>
-		createAgentHarnessToolFromResolvedTool(resolvedTool),
-	);
+	return resolvedTools.map((resolvedTool) => createAgentHarnessToolFromResolvedTool(resolvedTool));
 }
 
-function applyPatch(
-	definition: RegistryToolDefinition,
-	patchEntry: PatchEntry,
-): RegistryToolDefinition {
+function applyPatch(definition: RegistryToolDefinition, patchEntry: PatchEntry): RegistryToolDefinition {
 	const patch = patchEntry.patch;
 	const next: RegistryToolDefinition = { ...definition };
 	if (patch.description !== undefined) next.description = patch.description;
@@ -717,22 +622,14 @@ function applyPatch(
 	const patchExecute = patch.execute;
 	const execute: ToolExecute<TSchema, unknown> = patchExecute
 		? (toolCallId, params, context) =>
-				patchExecute(
-					toolCallId,
-					params,
-					bindToolExecutionContext(context, patchEntry.source),
-				)
+				patchExecute(toolCallId, params, bindToolExecutionContext(context, patchEntry.source))
 		: previousExecute;
 	if (patch.aroundExecute) {
 		const aroundExecute = patch.aroundExecute;
 		next.execute = (toolCallId, params, context) =>
 			aroundExecute(
 				(nextToolCallId, nextParams, nextContext) =>
-					execute(
-						nextToolCallId,
-						nextParams,
-						restoreInnerToolExecutionContext(nextContext, context),
-					),
+					execute(nextToolCallId, nextParams, restoreInnerToolExecutionContext(nextContext, context)),
 				toolCallId,
 				params,
 				bindToolExecutionContext(context, patchEntry.source),
@@ -753,13 +650,10 @@ function createToolExecutionContext(
 	const bindContext = (source: ToolSource) => ({
 		signal,
 		onUpdate,
-		extension: context.createExtensionContext?.(
-			source,
-			resolvedTool.definition.name,
-		),
+		extension: context.createExtensionContext?.(source, resolvedTool.definition.name),
 		human: context.human,
 		agents: context.agents,
-		backgroundJobTable: context.backgroundJobTable,
+		jobs: context.jobs,
 		humanInterrupts: context.humanInterrupts,
 		job,
 		[bindToolExecutionContextSymbol]: bindContext,
@@ -771,9 +665,7 @@ function bindToolExecutionContext<TDetails>(
 	context: ToolExecutionContext<TDetails>,
 	source: ToolSource,
 ): ToolExecutionContext<TDetails> {
-	const bindContext = (context as BindableToolExecutionContext<TDetails>)[
-		bindToolExecutionContextSymbol
-	];
+	const bindContext = (context as BindableToolExecutionContext<TDetails>)[bindToolExecutionContextSymbol];
 	return bindContext?.(source) ?? context;
 }
 
@@ -781,21 +673,17 @@ function restoreInnerToolExecutionContext<TDetails>(
 	context: ToolExecutionContext<TDetails>,
 	innerContext: ToolExecutionContext<TDetails>,
 ): ToolExecutionContext<TDetails> {
-	const bindContext = (innerContext as BindableToolExecutionContext<TDetails>)[
-		bindToolExecutionContextSymbol
-	];
+	const bindContext = (innerContext as BindableToolExecutionContext<TDetails>)[bindToolExecutionContextSymbol];
 	return {
 		signal: context.signal,
 		onUpdate: context.onUpdate,
 		extension: innerContext.extension,
 		human: context.human,
 		agents: context.agents,
-		backgroundJobTable: context.backgroundJobTable,
+		jobs: context.jobs,
 		humanInterrupts: context.humanInterrupts,
 		job: context.job,
-		...(bindContext
-			? { [bindToolExecutionContextSymbol]: bindContext }
-			: undefined),
+		...(bindContext ? { [bindToolExecutionContextSymbol]: bindContext } : undefined),
 	};
 }
 
@@ -839,20 +727,14 @@ function createToolDiagnostic(options: {
 	readonly code: ToolRegistryDiagnosticCode;
 	readonly message: string;
 }): ToolRegistryDiagnostic {
-	return {
-		severity: options.severity,
-		code: options.code,
-		message: options.message,
-	};
+	return { severity: options.severity, code: options.code, message: options.message };
 }
 
 function comparePatchApplyOrder(left: PatchEntry, right: PatchEntry): number {
 	return left.order - right.order;
 }
 
-function isResolvedTool(
-	value: ResolvedTool | undefined,
-): value is ResolvedTool {
+function isResolvedTool(value: ResolvedTool | undefined): value is ResolvedTool {
 	return value !== undefined;
 }
 

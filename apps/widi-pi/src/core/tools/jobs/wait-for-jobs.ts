@@ -1,14 +1,11 @@
 import { type Static, Type } from "typebox";
 import {
-	type BackgroundJob,
+	type BackgroundJobSnapshot,
 	type BackgroundJobStatus,
 	backgroundJobToolLabel,
 } from "../../background/index.ts";
 import type { ToolDefinition } from "../types.ts";
-import {
-	type SettlementWaitOutcome,
-	waitForSettlements,
-} from "./settlement-wait.ts";
+import { type SettlementWaitOutcome, waitForSettlements } from "./settlement-wait.ts";
 
 /** Default barrier timeout so a wait never hangs the agent indefinitely. */
 const DEFAULT_WAIT_TIMEOUT_MS = 60_000;
@@ -81,10 +78,7 @@ export interface WaitForJobsDetails {
  * message look ignored - up to ten minutes of it. Ending early gives the turn
  * back so the loop can deliver what the user typed.
  */
-export function createWaitForJobsToolDefinition(): ToolDefinition<
-	typeof waitForJobsSchema,
-	WaitForJobsDetails
-> {
+export function createWaitForJobsToolDefinition(): ToolDefinition<typeof waitForJobsSchema, WaitForJobsDetails> {
 	return {
 		name: "wait_for_jobs",
 		label: "wait_for_jobs",
@@ -93,39 +87,27 @@ export function createWaitForJobsToolDefinition(): ToolDefinition<
 		promptSnippet: "Wait for background jobs to finish before continuing",
 		parameters: waitForJobsSchema,
 		execute: async (_toolCallId, { jobIds, timeout }, context) => {
-			const table = context.backgroundJobTable;
-			if (!table) {
+			const host = context.jobs;
+			if (!host) {
 				return {
 					content: [
-						{
-							type: "text",
-							text: "No background job registry is available, so there is nothing to wait for.",
-						},
+						{ type: "text", text: "No background job registry is available, so there is nothing to wait for." },
 					],
 					details: { outcome: "completed", jobs: [] },
 				};
 			}
 
-			// Only jobs already moved to the background are safe to wait on: their
-			// settlement is guaranteed to emit a `settled` change. A job still in
-			// the `running` phase has not committed to background delivery and may
-			// settle inline (delivered to its own tool call, with no change
-			// emitted), which would strand the wait until it times out. Ids the
-			// model actually holds came from a t0 handle, so they are already
-			// backgrounded; running-phase jobs are excluded on purpose.
-			const live = new Map(
-				table
-					.list()
-					.filter((job) => job.phase === "backgrounded")
-					.map((job) => [job.id, job]),
-			);
-			const requestedIds =
-				jobIds && jobIds.length > 0
-					? Array.from(new Set(jobIds))
-					: Array.from(live.keys());
+			// Only observable jobs are safe to wait on: their settlement is
+			// guaranteed to emit a `settled` change. A candidate has not committed to
+			// background delivery and may settle inline (delivered to its own tool
+			// call, with no change emitted), which would strand the wait until it
+			// times out. Ids the model actually holds came from a t0 handle, so they
+			// are already observable; candidates are never listed.
+			const live = new Map(host.list().map((job) => [job.jobId, job]));
+			const requestedIds = jobIds && jobIds.length > 0 ? Array.from(new Set(jobIds)) : Array.from(live.keys());
 
 			const statuses = new Map<string, WaitForJobsJobStatus>();
-			const pending = new Map<string, BackgroundJob>();
+			const pending = new Map<string, BackgroundJobSnapshot>();
 			for (const id of requestedIds) {
 				const job = live.get(id);
 				if (job) pending.set(id, job);
@@ -135,14 +117,14 @@ export function createWaitForJobsToolDefinition(): ToolDefinition<
 			let outcome: WaitForJobsOutcome = "completed";
 			if (pending.size > 0) {
 				outcome = await waitForSettlements({
-					table,
+					watch: host.watch(),
 					pending,
 					timeoutMs: resolveWaitTimeoutMs(timeout),
 					signal: context.signal,
 					humanInterrupts: context.humanInterrupts,
 					onSettled: (job, jobOutcome) =>
-						statuses.set(job.id, {
-							jobId: job.id,
+						statuses.set(job.jobId, {
+							jobId: job.jobId,
 							toolName: job.toolName,
 							name: job.name,
 							state: jobOutcome.status,
@@ -153,21 +135,13 @@ export function createWaitForJobsToolDefinition(): ToolDefinition<
 			// Anything still pending stopped short of settling (timeout or abort)
 			// while the job kept running.
 			for (const [id, job] of pending) {
-				statuses.set(id, {
-					jobId: id,
-					toolName: job.toolName,
-					name: job.name,
-					state: "running",
-				});
+				statuses.set(id, { jobId: id, toolName: job.toolName, name: job.name, state: "running" });
 			}
 
-			const jobs = requestedIds.map(
+			const jobs: WaitForJobsJobStatus[] = requestedIds.map(
 				(id) => statuses.get(id) ?? { jobId: id, state: "unknown" as const },
 			);
-			return {
-				content: [{ type: "text", text: formatWaitSummary(jobs, outcome) }],
-				details: { outcome, jobs },
-			};
+			return { content: [{ type: "text", text: formatWaitSummary(jobs, outcome) }], details: { outcome, jobs } };
 		},
 	};
 }
@@ -185,17 +159,12 @@ function resolveWaitTimeoutMs(timeout: number | undefined): number {
 	return Math.min(timeout * 1000, MAX_WAIT_TIMEOUT_MS);
 }
 
-function formatWaitSummary(
-	jobs: readonly WaitForJobsJobStatus[],
-	outcome: WaitForJobsOutcome,
-): string {
+function formatWaitSummary(jobs: readonly WaitForJobsJobStatus[], outcome: WaitForJobsOutcome): string {
 	if (jobs.length === 0) {
 		return "No matching background jobs to wait for.";
 	}
 	const lines = jobs.map((job) => {
-		const label = job.toolName
-			? ` (${backgroundJobToolLabel({ toolName: job.toolName, name: job.name })})`
-			: "";
+		const label = job.toolName ? ` (${backgroundJobToolLabel({ toolName: job.toolName, name: job.name })})` : "";
 		switch (job.state) {
 			case "completed":
 				return `- ${job.jobId}${label}: completed`;
@@ -210,10 +179,7 @@ function formatWaitSummary(
 		}
 	});
 	const anySettled = jobs.some(
-		(job) =>
-			job.state === "completed" ||
-			job.state === "failed" ||
-			job.state === "cancelled",
+		(job) => job.state === "completed" || job.state === "failed" || job.state === "cancelled",
 	);
 	const header =
 		outcome === "timed_out"

@@ -4,19 +4,9 @@ import { access as fsAccess } from "node:fs/promises";
 import { type Static, Type } from "typebox";
 import type { ToolDefinition } from "../types.ts";
 import { OutputAccumulator } from "./output-accumulator.ts";
-import {
-	killProcessTree,
-	trackDetachedChildPid,
-	untrackDetachedChildPid,
-	waitForChildProcess,
-} from "./process.ts";
+import { killProcessTree, trackDetachedChildPid, untrackDetachedChildPid, waitForChildProcess } from "./process.ts";
 import { getShellConfig, getShellEnv } from "./shell.ts";
-import {
-	DEFAULT_MAX_BYTES,
-	DEFAULT_MAX_LINES,
-	formatSize,
-	type TruncationResult,
-} from "./truncate.ts";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult } from "./truncate.ts";
 
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const MAX_TIMEOUT_SECONDS = MAX_TIMEOUT_MS / 1000;
@@ -29,20 +19,14 @@ function resolveTimeoutMs(timeout: number | undefined): number | undefined {
 	}
 	const timeoutMs = timeout * 1000;
 	if (timeoutMs > MAX_TIMEOUT_MS) {
-		throw new Error(
-			`Invalid timeout: maximum is ${MAX_TIMEOUT_SECONDS} seconds`,
-		);
+		throw new Error(`Invalid timeout: maximum is ${MAX_TIMEOUT_SECONDS} seconds`);
 	}
 	return timeoutMs;
 }
 
 const bashSchema = Type.Object({
 	command: Type.String({ description: "Bash command to execute" }),
-	timeout: Type.Optional(
-		Type.Number({
-			description: "Timeout in seconds (optional, no default timeout)",
-		}),
-	),
+	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
 	background: Type.Optional(
 		Type.Boolean({
 			description:
@@ -73,12 +57,7 @@ export interface BashOperations {
 	exec: (
 		command: string,
 		cwd: string,
-		options: {
-			onData: (data: Buffer) => void;
-			signal?: AbortSignal;
-			timeout?: number;
-			env?: NodeJS.ProcessEnv;
-		},
+		options: { onData: (data: Buffer) => void; signal?: AbortSignal; timeout?: number; env?: NodeJS.ProcessEnv },
 	) => Promise<{ exitCode: number | null }>;
 }
 
@@ -86,9 +65,7 @@ export interface BashOperations {
  * Default local backend: resolve a bash shell and run the command in a detached
  * process group so aborts and timeouts can kill the whole tree.
  */
-export function createLocalBashOperations(options?: {
-	shellPath?: string;
-}): BashOperations {
+export function createLocalBashOperations(options?: { shellPath?: string }): BashOperations {
 	return {
 		exec: async (command, cwd, { onData, signal, timeout, env }) => {
 			const timeoutMs = resolveTimeoutMs(timeout);
@@ -99,23 +76,17 @@ export function createLocalBashOperations(options?: {
 			try {
 				await fsAccess(cwd, constants.F_OK);
 			} catch {
-				throw new Error(
-					`Working directory does not exist: ${cwd}\nCannot execute bash commands.`,
-				);
+				throw new Error(`Working directory does not exist: ${cwd}\nCannot execute bash commands.`);
 			}
 
 			const commandFromStdin = shellConfig.commandTransport === "stdin";
-			const child = spawn(
-				shellConfig.shell,
-				commandFromStdin ? shellConfig.args : [...shellConfig.args, command],
-				{
-					cwd,
-					detached: process.platform !== "win32",
-					env: env ?? getShellEnv(),
-					stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
-					windowsHide: true,
-				},
-			);
+			const child = spawn(shellConfig.shell, commandFromStdin ? shellConfig.args : [...shellConfig.args, command], {
+				cwd,
+				detached: process.platform !== "win32",
+				env: env ?? getShellEnv(),
+				stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
+				windowsHide: true,
+			});
 			if (commandFromStdin) {
 				child.stdin?.on("error", () => {});
 				child.stdin?.end(command);
@@ -171,17 +142,14 @@ export function createBashToolDefinition(
 	cwd: string,
 	options: BashToolOptions = {},
 ): ToolDefinition<typeof bashSchema, BashToolDetails | undefined> {
-	const ops =
-		options.operations ??
-		createLocalBashOperations({ shellPath: options.shellPath });
+	const ops = options.operations ?? createLocalBashOperations({ shellPath: options.shellPath });
 	const commandPrefix = options.commandPrefix;
 
 	return {
 		name: "bash",
 		label: "bash",
 		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to the last ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}, whichever is hit first. If truncated, the full output is saved to a temp file. Optionally provide a timeout in seconds.`,
-		promptSnippet:
-			"Execute bash commands for builds, tests, and version control",
+		promptSnippet: "Execute bash commands for builds, tests, and version control",
 		promptGuidelines: [
 			"Use bash for building, testing, version control, and commands not covered by a dedicated tool.",
 			"Do not use bash to replace read, grep, find, or ls; the dedicated tools are more precise.",
@@ -196,9 +164,7 @@ export function createBashToolDefinition(
 		execute: async (_toolCallId, { command, timeout }, context) => {
 			const signal = context.signal;
 			const onUpdate = context.onUpdate;
-			const resolvedCommand = commandPrefix
-				? `${commandPrefix}\n${command}`
-				: command;
+			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
 			const output = new OutputAccumulator({ tempFilePrefix: "widi-bash" });
 			let acceptingOutput = true;
 			let updateTimer: NodeJS.Timeout | undefined;
@@ -213,9 +179,7 @@ export function createBashToolDefinition(
 				onUpdate({
 					content: [{ type: "text", text: snapshot.content || "" }],
 					details: {
-						truncation: snapshot.truncation.truncated
-							? snapshot.truncation
-							: undefined,
+						truncation: snapshot.truncation.truncated ? snapshot.truncation : undefined,
 						fullOutputPath: snapshot.fullOutputPath,
 					},
 				});
@@ -267,10 +231,7 @@ export function createBashToolDefinition(
 				return snapshot;
 			};
 
-			const formatOutput = (
-				snapshot: Awaited<ReturnType<typeof finishOutput>>,
-				emptyText = "(no output)",
-			) => {
+			const formatOutput = (snapshot: Awaited<ReturnType<typeof finishOutput>>, emptyText = "(no output)") => {
 				const truncation = snapshot.truncation;
 				let text = snapshot.content || emptyText;
 				let details: BashToolDetails | undefined;
@@ -290,17 +251,12 @@ export function createBashToolDefinition(
 				return { text, details };
 			};
 
-			const appendStatus = (text: string, status: string) =>
-				`${text ? `${text}\n\n` : ""}${status}`;
+			const appendStatus = (text: string, status: string) => `${text ? `${text}\n\n` : ""}${status}`;
 
 			try {
 				let exitCode: number | null;
 				try {
-					const result = await ops.exec(resolvedCommand, cwd, {
-						onData: handleData,
-						signal,
-						timeout,
-					});
+					const result = await ops.exec(resolvedCommand, cwd, { onData: handleData, signal, timeout });
 					exitCode = result.exitCode;
 				} catch (err) {
 					const snapshot = await finishOutput();
@@ -310,12 +266,7 @@ export function createBashToolDefinition(
 					}
 					if (err instanceof Error && err.message.startsWith("timeout:")) {
 						const timeoutSecs = err.message.split(":")[1];
-						throw new Error(
-							appendStatus(
-								text,
-								`Command timed out after ${timeoutSecs} seconds`,
-							),
-						);
+						throw new Error(appendStatus(text, `Command timed out after ${timeoutSecs} seconds`));
 					}
 					throw err;
 				}
@@ -323,9 +274,7 @@ export function createBashToolDefinition(
 				const snapshot = await finishOutput();
 				const { text: outputText, details } = formatOutput(snapshot);
 				if (exitCode !== 0 && exitCode !== null) {
-					throw new Error(
-						appendStatus(outputText, `Command exited with code ${exitCode}`),
-					);
+					throw new Error(appendStatus(outputText, `Command exited with code ${exitCode}`));
 				}
 				return { content: [{ type: "text", text: outputText }], details };
 			} finally {

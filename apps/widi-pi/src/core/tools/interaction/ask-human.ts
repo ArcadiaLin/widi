@@ -1,18 +1,10 @@
 import { type Static, Type } from "typebox";
-import {
-	type HumanQuestionAnswer,
-	type HumanResponse,
-	normalizeHumanRequestOptions,
-} from "../../human-request.ts";
+import { type HumanQuestionAnswer, type HumanResponse, normalizeHumanRequestOptions } from "../../human-request.ts";
 import type { ToolDefinition } from "../types.ts";
 
 const optionSchema = Type.Union([
 	Type.String(),
-	Type.Object({
-		label: Type.String(),
-		value: Type.Optional(Type.String()),
-		description: Type.Optional(Type.String()),
-	}),
+	Type.Object({ label: Type.String(), value: Type.Optional(Type.String()), description: Type.Optional(Type.String()) }),
 ]);
 
 const askHumanSchema = Type.Object({
@@ -33,11 +25,7 @@ const askHumanSchema = Type.Object({
 		description:
 			"Short heading shown to the human. For kind=questions this is the panel heading; each question carries its own title.",
 	}),
-	message: Type.Optional(
-		Type.String({
-			description: "Optional longer context shown below the title.",
-		}),
-	),
+	message: Type.Optional(Type.String({ description: "Optional longer context shown below the title." })),
 	options: Type.Optional(
 		Type.Array(optionSchema, {
 			description:
@@ -59,16 +47,9 @@ const askHumanSchema = Type.Object({
 			},
 		),
 	),
-	placeholder: Type.Optional(
-		Type.String({
-			description: "Optional input placeholder for kind=input.",
-		}),
-	),
+	placeholder: Type.Optional(Type.String({ description: "Optional input placeholder for kind=input." })),
 	allowFreeInput: Type.Optional(
-		Type.Boolean({
-			description:
-				"For kind=select: also offer a free-form answer besides the options.",
-		}),
+		Type.Boolean({ description: "For kind=select: also offer a free-form answer besides the options." }),
 	),
 });
 
@@ -84,10 +65,7 @@ export interface AskHumanToolDetails {
  * orchestrator human-request broker: routing, events, cancellation, and
  * profile capability gating all live in core, not here.
  */
-export function createAskHumanToolDefinition(): ToolDefinition<
-	typeof askHumanSchema,
-	AskHumanToolDetails
-> {
+export function createAskHumanToolDefinition(): ToolDefinition<typeof askHumanSchema, AskHumanToolDetails> {
 	return {
 		name: "ask_human",
 		label: "ask human",
@@ -129,22 +107,16 @@ export function createAskHumanToolDefinition(): ToolDefinition<
 
 function validateAskHumanInput(input: AskHumanToolInput): void {
 	if (!input.title.trim()) {
-		throw new Error(
-			"Ask human tool input is invalid. title must not be empty.",
-		);
+		throw new Error("Ask human tool input is invalid. title must not be empty.");
 	}
 	const optionsKind = input.kind === "select" || input.kind === "multi-select";
 	if (optionsKind) {
 		if (!input.options || input.options.length === 0) {
-			throw new Error(
-				`Ask human tool input is invalid. kind=${input.kind} requires a non-empty options list.`,
-			);
+			throw new Error(`Ask human tool input is invalid. kind=${input.kind} requires a non-empty options list.`);
 		}
 		const normalized = normalizeHumanRequestOptions(input.options);
 		if (normalized.some((option) => !option.label.trim())) {
-			throw new Error(
-				"Ask human tool input is invalid. options must not contain empty labels.",
-			);
+			throw new Error("Ask human tool input is invalid. options must not contain empty labels.");
 		}
 	} else if (input.options !== undefined) {
 		throw new Error(
@@ -153,29 +125,17 @@ function validateAskHumanInput(input: AskHumanToolInput): void {
 	}
 	if (input.kind === "questions") {
 		if (!input.questions || input.questions.length === 0) {
-			throw new Error(
-				"Ask human tool input is invalid. kind=questions requires a non-empty questions list.",
-			);
+			throw new Error("Ask human tool input is invalid. kind=questions requires a non-empty questions list.");
 		}
 		for (const [index, question] of input.questions.entries()) {
 			if (!question.title.trim()) {
-				throw new Error(
-					`Ask human tool input is invalid. questions[${index}].title must not be empty.`,
-				);
+				throw new Error(`Ask human tool input is invalid. questions[${index}].title must not be empty.`);
 			}
 			if (question.options.length === 0) {
-				throw new Error(
-					`Ask human tool input is invalid. questions[${index}] requires a non-empty options list.`,
-				);
+				throw new Error(`Ask human tool input is invalid. questions[${index}] requires a non-empty options list.`);
 			}
-			if (
-				normalizeHumanRequestOptions(question.options).some(
-					(option) => !option.label.trim(),
-				)
-			) {
-				throw new Error(
-					`Ask human tool input is invalid. questions[${index}] options must not contain empty labels.`,
-				);
+			if (normalizeHumanRequestOptions(question.options).some((option) => !option.label.trim())) {
+				throw new Error(`Ask human tool input is invalid. questions[${index}] options must not contain empty labels.`);
 			}
 		}
 	} else if (input.questions !== undefined) {
@@ -184,21 +144,14 @@ function validateAskHumanInput(input: AskHumanToolInput): void {
 		);
 	}
 	if (input.allowFreeInput !== undefined && input.kind !== "select") {
-		throw new Error(
-			"Ask human tool input is invalid. allowFreeInput is only valid for kind=select.",
-		);
+		throw new Error("Ask human tool input is invalid. allowFreeInput is only valid for kind=select.");
 	}
 }
 
-function formatHumanResponse(
-	response: HumanResponse,
-	input: AskHumanToolInput,
-): string {
+function formatHumanResponse(response: HumanResponse, input: AskHumanToolInput): string {
 	switch (response.kind) {
 		case "confirm":
-			return response.confirmed
-				? "The human confirmed."
-				: "The human declined.";
+			return response.confirmed ? "The human confirmed." : "The human declined.";
 		case "select":
 			return response.value === undefined
 				? "The human dismissed the request without selecting an option."

@@ -1,10 +1,6 @@
 import { type Static, Type } from "typebox";
 import { formatError } from "../../../utils/errors.ts";
-import type {
-	AgentDisposeScope,
-	ToolAgentDisposeOutcome,
-	ToolAgentHost,
-} from "../../orchestrator/host.ts";
+import type { AgentDisposeScope, AgentRequestedDisposeOutcome, AgentToOrchestratorHost } from "../../host.ts";
 import type { ToolDefinition } from "../types.ts";
 import { requireAgentHost } from "./shared.ts";
 
@@ -19,12 +15,7 @@ const disposeAgentSchema = Type.Object({
 				"How much to destroy. agent affects only each named agent; subtree recursively includes all descendants. Defaults to agent.",
 		}),
 	),
-	reason: Type.Optional(
-		Type.String({
-			description:
-				"Short note recorded on the cancellations this dispose causes.",
-		}),
-	),
+	reason: Type.Optional(Type.String({ description: "Short note recorded on the cancellations this dispose causes." })),
 });
 
 export type DisposeAgentInput = Static<typeof disposeAgentSchema>;
@@ -38,13 +29,7 @@ export type DisposeAgentInput = Static<typeof disposeAgentSchema>;
  * - `self`: refused, the selected scope contains the caller;
  * - `failed`: the teardown reported an error.
  */
-export type DisposeAgentState =
-	| "disposed"
-	| "already_disposed"
-	| "outside_tree"
-	| "unknown"
-	| "self"
-	| "failed";
+export type DisposeAgentState = "disposed" | "already_disposed" | "outside_tree" | "unknown" | "self" | "failed";
 
 export interface DisposeAgentAgentStatus {
 	readonly agentId: string;
@@ -71,46 +56,28 @@ export interface DisposeAgentDetails {
  * an agent whose harness is being torn down needs deferred disposal, which the
  * runtime does not have.
  */
-export function createDisposeAgentToolDefinition(): ToolDefinition<
-	typeof disposeAgentSchema,
-	DisposeAgentDetails
-> {
+export function createDisposeAgentToolDefinition(): ToolDefinition<typeof disposeAgentSchema, DisposeAgentDetails> {
 	return {
 		name: "dispose_agent",
 		label: "dispose_agent",
 		description:
-			"Destroy one or more agents in your agent tree. scope agent destroys only the named agents and leaves their descendants running; scope subtree recursively destroys each named agent and all descendants. Each destroyed agent is stopped, its background work is cancelled, and any task it still owed is reported as cancelled. A selection containing you is refused. Disposing an agent is not how you finish its task: complete the task first.",
-		promptSnippet:
-			"Destroy same-tree agents individually or recursively by subtree",
+			"Destroy one or more agents in your agent tree. scope agent destroys only the named agents and leaves their descendants running; scope subtree recursively destroys each named agent and all descendants. Each destroyed agent is stopped, its background work is cancelled, and any task it still owed is reported as cancelled. A selection containing you is refused. Only the running agents list_agents reports can be disposed; its closed entries are already not running. Disposing an agent is not how you finish its task: complete the task first.",
+		promptSnippet: "Destroy same-tree agents individually or recursively by subtree",
 		parameters: disposeAgentSchema,
 		execute: async (_toolCallId, { agentIds, scope, reason }, context) => {
 			const host = requireAgentHost(context);
 			const disposeScope: AgentDisposeScope = scope ?? "agent";
-			const requestedIds = Array.from(
-				new Set(agentIds.map((agentId) => agentId.trim()).filter(Boolean)),
-			);
+			const requestedIds = Array.from(new Set(agentIds.map((agentId) => agentId.trim()).filter(Boolean)));
 			const note = reason?.trim();
-			const action =
-				disposeScope === "subtree"
-					? "recursively disposed this agent subtree"
-					: "disposed this agent";
-			const disposeReason = note
-				? `Agent ${host.agentId} ${action}: ${note}`
-				: `Agent ${host.agentId} ${action}.`;
+			const action = disposeScope === "subtree" ? "recursively disposed this agent subtree" : "disposed this agent";
+			const disposeReason = note ? `Agent ${host.agentId} ${action}: ${note}` : `Agent ${host.agentId} ${action}.`;
 
 			const agents: DisposeAgentAgentStatus[] = [];
 			for (const agentId of requestedIds) {
-				agents.push(
-					await disposeOne(host, agentId, disposeScope, disposeReason),
-				);
+				agents.push(await disposeOne(host, agentId, disposeScope, disposeReason));
 			}
 			return {
-				content: [
-					{
-						type: "text",
-						text: formatDisposeSummary(agents, disposeScope),
-					},
-				],
+				content: [{ type: "text", text: formatDisposeSummary(agents, disposeScope) }],
 				details: { scope: disposeScope, agents },
 			};
 		},
@@ -118,7 +85,7 @@ export function createDisposeAgentToolDefinition(): ToolDefinition<
 }
 
 async function disposeOne(
-	host: ToolAgentHost,
+	host: AgentToOrchestratorHost,
 	agentId: string,
 	scope: AgentDisposeScope,
 	reason: string,
@@ -134,24 +101,17 @@ async function disposeOne(
 function toDisposeStatus(
 	agentId: string,
 	scope: AgentDisposeScope,
-	outcome: ToolAgentDisposeOutcome,
+	outcome: AgentRequestedDisposeOutcome,
 ): DisposeAgentAgentStatus {
 	if (outcome.kind !== "disposed") {
 		return { agentId, state: outcome.kind };
 	}
 	return scope === "subtree"
-		? {
-				agentId,
-				state: "disposed",
-				disposedAgentIds: outcome.agentIds,
-			}
+		? { agentId, state: "disposed", disposedAgentIds: outcome.agentIds }
 		: { agentId, state: "disposed" };
 }
 
-function formatDisposeSummary(
-	agents: readonly DisposeAgentAgentStatus[],
-	scope: AgentDisposeScope,
-): string {
+function formatDisposeSummary(agents: readonly DisposeAgentAgentStatus[], scope: AgentDisposeScope): string {
 	if (agents.length === 0) {
 		return "No agent id was given, so nothing was disposed.";
 	}

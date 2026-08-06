@@ -21,11 +21,7 @@ describe("renderDiffText", () => {
 		expect(lines[0]).toContain(DIM);
 		expect(lines[1]).toContain(REMOVED);
 		expect(lines[2]).toContain(ADDED);
-		expect(plain(lines)).toEqual([
-			" 1 unchanged",
-			"-2 old line",
-			"+2 new line",
-		]);
+		expect(plain(lines)).toEqual([" 1 unchanged", "-2 old line", "+2 new line"]);
 	});
 
 	it("highlights changed words inline for single-line modifications", () => {
@@ -35,10 +31,7 @@ describe("renderDiffText", () => {
 
 		expect(lines[0]).toContain(INVERSE);
 		expect(lines[1]).toContain(INVERSE);
-		expect(plain(lines)).toEqual([
-			"-3 const value = 1;",
-			"+3 const value = 2;",
-		]);
+		expect(plain(lines)).toEqual(["-3 const value = 1;", "+3 const value = 2;"]);
 	});
 
 	it("skips intra-line highlighting for multi-line change groups", () => {
@@ -49,11 +42,7 @@ describe("renderDiffText", () => {
 		for (const line of lines) {
 			expect(line).not.toContain(INVERSE);
 		}
-		expect(plain(lines)).toEqual([
-			"-1 first old",
-			"-2 second old",
-			"+1 replacement",
-		]);
+		expect(plain(lines)).toEqual(["-1 first old", "-2 second old", "+1 replacement"]);
 	});
 
 	it("replaces tabs with spaces", () => {

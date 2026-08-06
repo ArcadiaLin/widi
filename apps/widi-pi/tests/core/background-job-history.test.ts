@@ -40,24 +40,11 @@ function started(overrides: Partial<JobStartedRecord> = {}): JobStartedRecord {
 }
 
 function settled(overrides: Partial<JobSettledRecord> = {}): JobSettledRecord {
-	return {
-		kind: "settled",
-		toolCallId: "call-1",
-		status: "completed",
-		endedAt: 30,
-		messageText: "done",
-		...overrides,
-	};
+	return { kind: "settled", toolCallId: "call-1", status: "completed", endedAt: 30, messageText: "done", ...overrides };
 }
 
 function closed(overrides: Partial<JobClosedRecord> = {}): JobClosedRecord {
-	return {
-		kind: "closed",
-		toolCallId: "call-1",
-		cause: "resume",
-		closedAt: 40,
-		...overrides,
-	};
+	return { kind: "closed", toolCallId: "call-1", cause: "resume", closedAt: 40, ...overrides };
 }
 
 describe("reduceJobRecords", () => {
@@ -96,16 +83,8 @@ describe("reduceJobRecords", () => {
 	});
 
 	it("keeps the cause of a closure readable without inspecting anything else", () => {
-		const jobs = reduceJobRecords([
-			started(),
-			closed({ cause: "dispose", stopReason: "agent disposed" }),
-		]);
-		expect(jobs[0]).toMatchObject({
-			state: "closed",
-			cause: "dispose",
-			stopReason: "agent disposed",
-			endedAt: 40,
-		});
+		const jobs = reduceJobRecords([started(), closed({ cause: "dispose", stopReason: "agent disposed" })]);
+		expect(jobs[0]).toMatchObject({ state: "closed", cause: "dispose", stopReason: "agent disposed", endedAt: 40 });
 		expect(jobs[0]?.status).toBeUndefined();
 	});
 
@@ -121,10 +100,7 @@ describe("reduceJobRecords", () => {
 	});
 
 	it("keeps the first head when a tool call id is started twice", () => {
-		const jobs = reduceJobRecords([
-			started({ jobId: "job-1" }),
-			started({ jobId: "job-9", toolName: "other" }),
-		]);
+		const jobs = reduceJobRecords([started({ jobId: "job-1" }), started({ jobId: "job-9", toolName: "other" })]);
 		expect(jobs).toHaveLength(1);
 		expect(jobs[0]).toMatchObject({ jobId: "job-1", toolName: "bash" });
 	});
@@ -167,9 +143,7 @@ describe("toJobRecord", () => {
 	});
 
 	it("rejects an origin that names no settler", () => {
-		expect(
-			toJobRecord({ ...started(), origin: { kind: "external" } }),
-		).toBeUndefined();
+		expect(toJobRecord({ ...started(), origin: { kind: "external" } })).toBeUndefined();
 	});
 });
 
@@ -193,9 +167,7 @@ describe("boundJobRecord", () => {
 	});
 
 	it("drops an empty output tail rather than storing a blank field", () => {
-		const record = boundJobRecord(
-			settled({ outputTail: "" }),
-		) as JobSettledRecord;
+		const record = boundJobRecord(settled({ outputTail: "" })) as JobSettledRecord;
 		expect(record.outputTail).toBeUndefined();
 	});
 });
@@ -209,15 +181,8 @@ describe("planJobClosures", () => {
 	]);
 
 	it("closes what the branch has open and the runtime does not hold", () => {
-		const plan = planJobClosures({
-			jobs: openJobs,
-			recognized: new Set(["a"]),
-			cause: "navigate",
-			closedAt: 99,
-		});
-		expect(plan).toEqual([
-			{ kind: "closed", toolCallId: "b", cause: "navigate", closedAt: 99 },
-		]);
+		const plan = planJobClosures({ jobs: openJobs, recognized: new Set(["a"]), cause: "navigate", closedAt: 99 });
+		expect(plan).toEqual([{ kind: "closed", toolCallId: "b", cause: "navigate", closedAt: 99 }]);
 	});
 
 	it("closes everything when the runtime holds nothing", () => {
@@ -229,9 +194,7 @@ describe("planJobClosures", () => {
 			stopReason: "agent disposed",
 		});
 		expect(plan.map((record) => record.toolCallId)).toEqual(["a", "b"]);
-		expect(plan.every((record) => record.stopReason === "agent disposed")).toBe(
-			true,
-		);
+		expect(plan.every((record) => record.stopReason === "agent disposed")).toBe(true);
 	});
 
 	it("never reopens a job that already has a terminal record", () => {
@@ -245,12 +208,7 @@ describe("planJobClosures", () => {
 	});
 
 	it("writes nothing when every open job is still recognized", () => {
-		const plan = planJobClosures({
-			jobs: openJobs,
-			recognized: new Set(["a", "b"]),
-			cause: "navigate",
-			closedAt: 99,
-		});
+		const plan = planJobClosures({ jobs: openJobs, recognized: new Set(["a", "b"]), cause: "navigate", closedAt: 99 });
 		expect(plan).toEqual([]);
 	});
 });
@@ -266,9 +224,7 @@ describe("jobOutputFileName", () => {
 
 	it("produces a single safe path segment for hostile ids", () => {
 		for (const id of ["../../etc/passwd", "a\\b:c*d", "", "  ", "."]) {
-			expect(jobOutputFileName(id)).toMatch(
-				/^[A-Za-z0-9_-]*-[0-9a-f]{8}\.log$/,
-			);
+			expect(jobOutputFileName(id)).toMatch(/^[A-Za-z0-9_-]*-[0-9a-f]{8}\.log$/);
 		}
 	});
 

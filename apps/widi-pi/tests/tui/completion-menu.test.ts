@@ -1,7 +1,7 @@
 import { type SelectItem, setKeybindings } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
-import type { AgentRecordSnapshot } from "../../src/core/agent-record.ts";
+import type { AgentSnapshot } from "../../src/core/agent-types.ts";
 import type { WidiRuntime } from "../../src/core/runtime-service.ts";
 import { WidiTuiApplication } from "../../src/tui/application.ts";
 import { CompletionMenu } from "../../src/tui/completion-menu.ts";
@@ -10,10 +10,7 @@ import { FooterView } from "../../src/tui/components/footer.ts";
 import { OperationHintView } from "../../src/tui/components/operation-hint.ts";
 import { WidiEditor } from "../../src/tui/editor.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
-import {
-	createTuiApplicationState,
-	ensureAgentProjection,
-} from "../../src/tui/state.ts";
+import { createTuiApplicationState, ensureAgentProjection } from "../../src/tui/state.ts";
 
 const ESCAPE = String.fromCharCode(27);
 const ANSI_SEQUENCE = new RegExp(`${ESCAPE}\\[[0-9;]*m`, "g");
@@ -61,10 +58,7 @@ describe("CompletionMenu", () => {
 		menu.open({
 			title: "/model",
 			items,
-			operation: {
-				description: "Set the current agent model.",
-				confirmVerb: "apply",
-			},
+			operation: { description: "Set the current agent model.", confirmVerb: "apply" },
 			onSelect: () => {},
 		});
 
@@ -85,12 +79,7 @@ describe("CompletionMenu", () => {
 
 	it("filters items with typed characters and restores on backspace", () => {
 		const { menu } = createMenu();
-		menu.open({
-			title: "/model",
-			items,
-			operation: { confirmVerb: "apply" },
-			onSelect: () => {},
-		});
+		menu.open({ title: "/model", items, operation: { confirmVerb: "apply" }, onSelect: () => {} });
 		expect(menu.hintContext?.itemCount).toBe(3);
 
 		menu.handleInput("g");
@@ -111,19 +100,12 @@ describe("CompletionMenu", () => {
 
 	it("routes printable selection keybindings before filter input", () => {
 		const keybindings = createWidiKeybindings();
-		keybindings.setUserBindings({
-			"tui.select.down": "j",
-			"tui.select.confirm": "space",
-		});
+		keybindings.setUserBindings({ "tui.select.down": "j", "tui.select.confirm": "space" });
 		setKeybindings(keybindings);
 		try {
 			const { menu } = createMenu();
 			const selected: string[] = [];
-			menu.open({
-				title: "/model",
-				items,
-				onSelect: (item) => selected.push(item.value),
-			});
+			menu.open({ title: "/model", items, onSelect: (item) => selected.push(item.value) });
 
 			menu.handleInput("j");
 			menu.handleInput(" ");
@@ -145,11 +127,7 @@ describe("CompletionMenu", () => {
 	it("selects with enter and closes", () => {
 		const { menu, state, focus } = createMenu();
 		const selected: string[] = [];
-		menu.open({
-			title: "/model",
-			items,
-			onSelect: (item) => selected.push(item.value),
-		});
+		menu.open({ title: "/model", items, onSelect: (item) => selected.push(item.value) });
 
 		menu.handleInput(ENTER);
 
@@ -185,21 +163,11 @@ describe("WidiTuiApplication completion menu integration", () => {
 	it("mounts completion and operation hints in normal component flow", async () => {
 		const { application } = await createApplication();
 		const children = application.tui.children;
-		const completionIndex = children.findIndex(
-			(child) => child instanceof CompletionMenu,
-		);
-		const editorIndex = children.findIndex(
-			(child) => child instanceof WidiEditor,
-		);
-		const footerIndex = children.findIndex(
-			(child) => child instanceof FooterView,
-		);
-		const hintIndex = children.findIndex(
-			(child) => child instanceof OperationHintView,
-		);
-		const agentStripIndex = children.findIndex(
-			(child) => child instanceof AgentStripView,
-		);
+		const completionIndex = children.findIndex((child) => child instanceof CompletionMenu);
+		const editorIndex = children.findIndex((child) => child instanceof WidiEditor);
+		const footerIndex = children.findIndex((child) => child instanceof FooterView);
+		const hintIndex = children.findIndex((child) => child instanceof OperationHintView);
+		const agentStripIndex = children.findIndex((child) => child instanceof AgentStripView);
 
 		expect(completionIndex).toBeGreaterThan(-1);
 		expect(completionIndex).toBeLessThan(editorIndex);
@@ -212,9 +180,7 @@ describe("WidiTuiApplication completion menu integration", () => {
 		const setAgentModelByReference = vi.fn(async () => undefined);
 		const { application } = await createApplication({
 			listAvailableModelCandidates: async () => ({
-				models: [
-					{ value: "vllm/qwen3.6", label: "Qwen 3.6", description: "local" },
-				],
+				models: [{ value: "vllm/qwen3.6", label: "Qwen 3.6", description: "local" }],
 			}),
 			setAgentModelByReference,
 		});
@@ -235,17 +201,12 @@ describe("WidiTuiApplication completion menu integration", () => {
 		menu.handleInput(ENTER);
 		await flush();
 
-		expect(setAgentModelByReference).toHaveBeenCalledWith(
-			"agent-1",
-			"vllm/qwen3.6",
-		);
+		expect(setAgentModelByReference).toHaveBeenCalledWith("agent-1", "vllm/qwen3.6");
 	});
 
 	it("restores the submitted command when the inline menu is cancelled", async () => {
 		const { application } = await createApplication({
-			listAvailableModelCandidates: async () => ({
-				models: [{ value: "vllm/qwen3.6", label: "Qwen 3.6" }],
-			}),
+			listAvailableModelCandidates: async () => ({ models: [{ value: "vllm/qwen3.6", label: "Qwen 3.6" }] }),
 		});
 		const editor = requireEditor(application);
 		editor.setText("");
@@ -258,7 +219,7 @@ describe("WidiTuiApplication completion menu integration", () => {
 	});
 
 	it("offers the current position before explicit fork points", async () => {
-		const forkAgentSessionFromAgent = vi.fn(async () => undefined);
+		const spawnAgent = vi.fn(async (_request: { origin: unknown }) => "agent-2");
 		const { application } = await createApplication({
 			getAgentSessionTree: async () => ({
 				entries: [
@@ -270,7 +231,8 @@ describe("WidiTuiApplication completion menu integration", () => {
 					},
 				],
 			}),
-			forkAgentSessionFromAgent,
+			spawnAgent,
+			inspectAgent: () => ({ agentId: "agent-2" }),
 		});
 
 		await submit(application, "/fork");
@@ -279,10 +241,8 @@ describe("WidiTuiApplication completion menu integration", () => {
 		expect(plainRender(menu)).toContain("Fork here (current position)");
 		menu.handleInput(ENTER);
 		await flush();
-		expect(forkAgentSessionFromAgent).toHaveBeenCalledWith(
-			"agent-1",
-			undefined,
-		);
+		// The current position carries no entry id: the fork lands on the leaf.
+		expect(spawnAgent).toHaveBeenCalledWith({ origin: { kind: "fork", sourceAgentId: "agent-1" } });
 	});
 
 	it("focuses the agent panel from the empty editor with the down key", async () => {
@@ -293,9 +253,7 @@ describe("WidiTuiApplication completion menu integration", () => {
 		editor.handleInput("\x1b[B");
 
 		expect(application.state.mode).toBe("agent-panel");
-		const panel = application.tui.children.find(
-			(child) => child instanceof AgentStripView,
-		);
+		const panel = application.tui.children.find((child) => child instanceof AgentStripView);
 		if (!panel) throw new Error("Expected the agent panel to be mounted.");
 		expect(panel.focused).toBe(true);
 		expect(panel.cursor).toBe("agent-1");
@@ -312,10 +270,7 @@ describe("WidiTuiApplication completion menu integration", () => {
 
 describe("WidiTuiApplication command submission", () => {
 	it("submits an expanded prompt command without leaving a command item", async () => {
-		const promptAgent = vi.fn(
-			async (_agentId: string, _text: string) =>
-				({ kind: "accepted" }) as const,
-		);
+		const promptAgent = vi.fn(async (_request: { body: string }) => ({ kind: "accepted" }) as const);
 		const { application } = await createApplication({
 			getAgentSkill: async (_agentId: string, name: string) => ({
 				name,
@@ -329,14 +284,10 @@ describe("WidiTuiApplication command submission", () => {
 		await submit(application, "/skill review");
 
 		expect(promptAgent).toHaveBeenCalledOnce();
-		expect(promptAgent.mock.calls[0]?.[1]).toContain(
-			"Review the diff carefully.",
+		expect(promptAgent.mock.calls[0]?.[0]?.body).toContain("Review the diff carefully.");
+		expect(application.state.agents.get("agent-1")?.timeline.filter((item) => item.type === "command-result")).toEqual(
+			[],
 		);
-		expect(
-			application.state.agents
-				.get("agent-1")
-				?.timeline.filter((item) => item.type === "command-result"),
-		).toEqual([]);
 	});
 
 	it("keeps a failed expansion out of the prompt and records the failure", async () => {
@@ -352,16 +303,9 @@ describe("WidiTuiApplication command submission", () => {
 
 		expect(promptAgent).not.toHaveBeenCalled();
 		expect(
-			application.state.agents
-				.get("agent-1")
-				?.timeline.filter((item) => item.type === "command-result"),
+			application.state.agents.get("agent-1")?.timeline.filter((item) => item.type === "command-result"),
 		).toMatchObject([
-			{
-				name: "skill",
-				argument: "broken",
-				status: "failed",
-				error: { message: "skill expansion failed" },
-			},
+			{ name: "skill", argument: "broken", status: "failed", error: { message: "skill expansion failed" } },
 		]);
 	});
 
@@ -371,17 +315,13 @@ describe("WidiTuiApplication command submission", () => {
 		await submit(application, "/steer:go");
 
 		expect(
-			application.state.agents
-				.get("agent-1")
-				?.timeline.filter((item) => item.type === "command-result"),
+			application.state.agents.get("agent-1")?.timeline.filter((item) => item.type === "command-result"),
 		).toMatchObject([
 			{
 				name: "steer",
 				argument: "go",
 				status: "failed",
-				error: {
-					message: "Command /steer requires a running agent (status: idle).",
-				},
+				error: { message: "Command /steer requires a running agent (status: idle)." },
 			},
 		]);
 	});
@@ -389,24 +329,24 @@ describe("WidiTuiApplication command submission", () => {
 
 async function createApplication(overrides: Record<string, unknown> = {}) {
 	const defaultModel = agentSnapshot("default").model;
+	const promptAgent = overrides.promptAgent ?? (async () => ({ kind: "accepted" }) as const);
+	const sendMessage = overrides.sendMessage ?? (async () => ({ kind: "accepted" }) as const);
 	const orchestrator = {
 		getAgentStatus: () => "idle",
+		getAgentActivity: () => ({ activity: "idle" }),
 		getDefaultModel: () => defaultModel,
 		getDefaultThinkingLevel: () => "medium",
+		sendMessage,
+		promptAgent,
 		...overrides,
+		messageSinkFor: () => ({ send: sendMessage, prompt: promptAgent }),
 	} as unknown as AgentOrchestrator;
 	const runtime = {
 		orchestrator,
-		services: {
-			cwd: "/repo",
-			defaultProfile: { id: "default-agent" },
-		},
+		services: { cwd: "/repo", defaultProfile: { id: "default-agent" } },
 		diagnostics: [],
 	} as unknown as WidiRuntime;
-	const application = await WidiTuiApplication.create({
-		cwd: "/repo",
-		runtime,
-	});
+	const application = await WidiTuiApplication.create({ cwd: "/repo", runtime });
 	application.tui.requestRender = vi.fn();
 	const agent = ensureAgentProjection(application.state, "agent-1", "idle");
 	agent.snapshot = agentSnapshot("agent-1");
@@ -419,19 +359,20 @@ async function flush(): Promise<void> {
 	await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-function agentSnapshot(agentId: string): AgentRecordSnapshot {
+function agentSnapshot(agentId: string): AgentSnapshot {
 	return {
 		agentId,
-		status: "idle",
-		profile: { reference: { id: "default-agent", label: agentId } },
-		model: {
-			provider: "vllm",
-			id: "qwen3.6",
-		} as AgentRecordSnapshot["model"],
-		hasHarness: true,
-		extensionIds: [],
-		extensions: [],
-		extensionSnapshot: {
+		generation: 1,
+		profile: {
+			reference: { id: "default-agent", label: agentId },
+			source: { kind: "memory", priority: 0 },
+			entryId: "entry-1",
+		},
+		model: { provider: "vllm", id: "qwen3.6" } as AgentSnapshot["model"],
+		thinkingLevel: "off",
+		tools: { toolNames: [], activeToolNames: [] },
+		activity: { activity: "idle" },
+		extensions: {
 			extensionIds: [],
 			extensions: [],
 			hooks: [],
@@ -441,35 +382,22 @@ function agentSnapshot(agentId: string): AgentRecordSnapshot {
 			divisions: [],
 			stale: { stale: false },
 		},
-		resourceDiagnostics: [],
-		extensionDiagnostics: [],
 		diagnostics: [],
 	};
 }
 
 function requireMenu(application: WidiTuiApplication): CompletionMenu {
-	const menu = application.tui.children.find(
-		(child) => child instanceof CompletionMenu,
-	);
+	const menu = application.tui.children.find((child) => child instanceof CompletionMenu);
 	if (!menu) throw new Error("Expected the completion menu to be mounted.");
 	return menu;
 }
 
 function requireEditor(application: WidiTuiApplication): WidiEditor {
-	const editor = application.tui.children.find(
-		(child) => child instanceof WidiEditor,
-	);
+	const editor = application.tui.children.find((child) => child instanceof WidiEditor);
 	if (!editor) throw new Error("Expected the editor to be mounted.");
 	return editor;
 }
 
-async function submit(
-	application: WidiTuiApplication,
-	text: string,
-): Promise<void> {
-	await (
-		application as unknown as {
-			submit(rawText: string): Promise<void>;
-		}
-	).submit(text);
+async function submit(application: WidiTuiApplication, text: string): Promise<void> {
+	await (application as unknown as { submit(rawText: string): Promise<void> }).submit(text);
 }

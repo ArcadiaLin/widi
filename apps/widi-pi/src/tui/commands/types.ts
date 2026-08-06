@@ -1,11 +1,5 @@
 import type { AgentOrchestrator } from "../../core/agent-orchestrator.ts";
-import type {
-	AgentLifecycleStatus,
-	AgentMaintenanceKind,
-	CandidateItem,
-	PromptExpansion,
-	RuntimeModel,
-} from "../../core/types.ts";
+import type { AgentActivitySnapshot, CandidateItem, RuntimeModel } from "../../core/types.ts";
 
 export type CommandAgentPolicy = "runtime" | "materialize" | "active";
 
@@ -25,15 +19,9 @@ interface CommandBase {
 	readonly description: string;
 	readonly argumentHint?: string;
 	readonly requiresArgument?: boolean;
-	/** Returns why the current agent phase blocks this command, or undefined. */
-	checkStatus?(
-		status: AgentLifecycleStatus,
-		maintenance?: AgentMaintenanceKind,
-	): string | undefined;
-	complete?(
-		context: CommandContext,
-		argumentPrefix: string,
-	): Promise<readonly CandidateItem[]>;
+	/** Returns why the current agent activity blocks this command, or undefined. */
+	checkActivity?(activity: AgentActivitySnapshot): string | undefined;
+	complete?(context: CommandContext, argumentPrefix: string): Promise<readonly CandidateItem[]>;
 }
 
 /** Performs an action; the returned value is rendered as the command result. */
@@ -72,11 +60,7 @@ export interface CommandView {
 
 export type EngineOutcome =
 	| { readonly kind: "pass" }
-	| {
-			readonly kind: "expanded";
-			readonly text: string;
-			readonly expansion: PromptExpansion;
-	  }
+	| { readonly kind: "expanded"; readonly text: string }
 	| {
 			readonly kind: "executed";
 			readonly commandId: string;
@@ -84,12 +68,7 @@ export type EngineOutcome =
 			readonly value: unknown;
 			readonly display?: string;
 	  }
-	| {
-			readonly kind: "failed";
-			readonly commandId: string;
-			readonly name: string;
-			readonly error: CommandError;
-	  }
+	| { readonly kind: "failed"; readonly commandId: string; readonly name: string; readonly error: CommandError }
 	| {
 			readonly kind: "needs-argument";
 			readonly command: CommandDefinition;

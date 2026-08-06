@@ -13,10 +13,7 @@ function registerSampleTool(api: ExtensionActivationApi, name: string): void {
 		label: name,
 		description: name,
 		parameters: Type.Object({}),
-		execute: async () => ({
-			content: [{ type: "text", text: name }],
-			details: undefined,
-		}),
+		execute: async () => ({ content: [{ type: "text", text: name }], details: undefined }),
 	});
 }
 
@@ -36,15 +33,8 @@ async function loadScope(
 }
 
 function toolNames(scope: { toolContributions: readonly unknown[] }): string[] {
-	return (
-		scope.toolContributions as readonly {
-			kind: string;
-			definition?: { name: string };
-		}[]
-	).flatMap((contribution) =>
-		contribution.kind === "define" && contribution.definition
-			? [contribution.definition.name]
-			: [],
+	return (scope.toolContributions as readonly { kind: string; definition?: { name: string } }[]).flatMap(
+		(contribution) => (contribution.kind === "define" && contribution.definition ? [contribution.definition.name] : []),
 	);
 }
 
@@ -66,23 +56,12 @@ describe("extension divisions", () => {
 			},
 		});
 
-		const scope = await loader.loadForAgent({
-			agentId: "agent",
-			profileId: "profile",
-			extensionIds: ["integration"],
-		});
+		const scope = await loader.loadForAgent({ agentId: "agent", profileId: "profile", extensionIds: ["integration"] });
 
-		expect(scope.extensions[0]?.divisions.map((entry) => entry.id)).toEqual([
-			"servers",
-			"tools",
-		]);
+		expect(scope.extensions[0]?.divisions.map((entry) => entry.id)).toEqual(["servers", "tools"]);
 		expect(toolNames(scope)).toEqual(["rootTool", "divisionTool"]);
-		expect(
-			scope.toolContributions.map((contribution) => contribution.divisionId),
-		).toEqual([undefined, "tools"]);
-		expect(scope.observerHandlers.get("agent_spawned")?.[0]?.divisionId).toBe(
-			"tools",
-		);
+		expect(scope.toolContributions.map((contribution) => contribution.divisionId)).toEqual([undefined, "tools"]);
+		expect(scope.observerHandlers.get("agent_spawned")?.[0]?.divisionId).toBe("tools");
 		expect(scope.divisions).toEqual([
 			{
 				extensionId: "integration",
@@ -121,11 +100,7 @@ describe("extension divisions", () => {
 		);
 
 		expect(scope.systemPromptContributions).toEqual([
-			{
-				extensionId: "integration",
-				text: "root section",
-				divisionId: undefined,
-			},
+			{ extensionId: "integration", text: "root section", divisionId: undefined },
 		]);
 	});
 
@@ -148,19 +123,13 @@ describe("extension divisions", () => {
 
 		expect(registerRuns).toBe(0);
 		expect(toolNames(scope)).toEqual(["rootTool"]);
-		expect(scope.divisions[0]).toMatchObject({
-			id: "tools",
-			enabled: false,
-			source: "settings",
-		});
+		expect(scope.divisions[0]).toMatchObject({ id: "tools", enabled: false, source: "settings" });
 	});
 
 	it("honours enabledByDefault and lets a rule turn the part back on", async () => {
 		const definition: ExtensionDefinition = {
 			apiVersion: 1,
-			divisions: [
-				{ id: "experimental", label: "Experimental", enabledByDefault: false },
-			],
+			divisions: [{ id: "experimental", label: "Experimental", enabledByDefault: false }],
 			activate: async (api) => {
 				await api.division("experimental", (division) => {
 					registerSampleTool(division, "experimentalTool");
@@ -170,19 +139,11 @@ describe("extension divisions", () => {
 
 		const off = await loadScope(definition);
 		expect(toolNames(off)).toEqual([]);
-		expect(off.divisions[0]).toMatchObject({
-			enabled: false,
-			source: "default",
-		});
+		expect(off.divisions[0]).toMatchObject({ enabled: false, source: "default" });
 
-		const on = await loadScope(definition, {
-			settings: { integration: { enable: ["experimental"] } },
-		});
+		const on = await loadScope(definition, { settings: { integration: { enable: ["experimental"] } } });
 		expect(toolNames(on)).toEqual(["experimentalTool"]);
-		expect(on.divisions[0]).toMatchObject({
-			enabled: true,
-			source: "settings",
-		});
+		expect(on.divisions[0]).toMatchObject({ enabled: true, source: "settings" });
 	});
 
 	it("applies a rule to the whole subtree and gates children behind ancestors", async () => {
@@ -206,27 +167,22 @@ describe("extension divisions", () => {
 			},
 		};
 
-		const subtreeOff = await loadScope(definition, {
-			settings: { integration: { disable: ["servers"] } },
-		});
+		const subtreeOff = await loadScope(definition, { settings: { integration: { disable: ["servers"] } } });
 		expect(toolNames(subtreeOff)).toEqual([]);
 
 		// The child rule is more specific, but a disabled ancestor is a hard gate:
 		// the child never gets a chance to re-enable itself.
 		const childForcedOff = await loadScope(definition, {
-			settings: {
-				integration: { disable: ["servers"], enable: ["servers.github"] },
-			},
+			settings: { integration: { disable: ["servers"], enable: ["servers.github"] } },
 		});
 		expect(toolNames(childForcedOff)).toEqual([]);
 
-		const oneChildOff = await loadScope(definition, {
-			settings: { integration: { disable: ["servers.gitlab"] } },
-		});
+		const oneChildOff = await loadScope(definition, { settings: { integration: { disable: ["servers.gitlab"] } } });
 		expect(toolNames(oneChildOff)).toEqual(["serversTool", "githubTool"]);
-		expect(
-			oneChildOff.divisions.find((entry) => entry.id === "servers.gitlab"),
-		).toMatchObject({ enabled: false, source: "settings" });
+		expect(oneChildOff.divisions.find((entry) => entry.id === "servers.gitlab")).toMatchObject({
+			enabled: false,
+			source: "settings",
+		});
 	});
 
 	it("lets the nearest rule win over an inherited one", async () => {
@@ -250,15 +206,14 @@ describe("extension divisions", () => {
 		// rule of its own. Only an inherited *disable* is absolute, and that is
 		// the ancestor gate rather than this rule.
 		const scope = await loadScope(definition, {
-			settings: {
-				integration: { enable: ["servers"], disable: ["servers.github"] },
-			},
+			settings: { integration: { enable: ["servers"], disable: ["servers.github"] } },
 		});
 
 		expect(toolNames(scope)).toEqual(["serversTool"]);
-		expect(
-			scope.divisions.find((entry) => entry.id === "servers.github"),
-		).toMatchObject({ enabled: false, source: "settings" });
+		expect(scope.divisions.find((entry) => entry.id === "servers.github")).toMatchObject({
+			enabled: false,
+			source: "settings",
+		});
 	});
 
 	it("keeps an undeclared division enabled and reports it", async () => {
@@ -272,35 +227,20 @@ describe("extension divisions", () => {
 		});
 
 		expect(toolNames(scope)).toEqual(["adHocTool"]);
-		expect(scope.divisions[0]).toMatchObject({
-			id: "ad-hoc",
-			label: "ad-hoc",
-			declared: false,
-			enabled: true,
-		});
+		expect(scope.divisions[0]).toMatchObject({ id: "ad-hoc", label: "ad-hoc", declared: false, enabled: true });
 		expect(scope.diagnostics).toContainEqual(
-			expect.objectContaining({
-				code: "extension.division_undeclared",
-				severity: "warning",
-			}),
+			expect.objectContaining({ code: "extension.division_undeclared", severity: "warning" }),
 		);
 	});
 
 	it("reports selection rules that match no division", async () => {
 		const scope = await loadScope(
-			{
-				apiVersion: 1,
-				divisions: [{ id: "tools", label: "Tools" }],
-				activate: () => {},
-			},
+			{ apiVersion: 1, divisions: [{ id: "tools", label: "Tools" }], activate: () => {} },
 			{ settings: { integration: { disable: ["typo"] } } },
 		);
 
 		expect(scope.diagnostics).toContainEqual(
-			expect.objectContaining({
-				code: "extension.division_unknown",
-				severity: "warning",
-			}),
+			expect.objectContaining({ code: "extension.division_unknown", severity: "warning" }),
 		);
 	});
 
@@ -318,15 +258,9 @@ describe("extension divisions", () => {
 			},
 		});
 
-		expect(scope.extensions[0]?.divisions.map((entry) => entry.id)).toEqual([
-			"ok",
-		]);
+		expect(scope.extensions[0]?.divisions.map((entry) => entry.id)).toEqual(["ok"]);
 		expect(toolNames(scope)).toEqual(["rootTool"]);
-		expect(
-			scope.diagnostics.filter(
-				(diagnostic) => diagnostic.code === "extension.division_invalid",
-			),
-		).toHaveLength(3);
+		expect(scope.diagnostics.filter((diagnostic) => diagnostic.code === "extension.division_invalid")).toHaveLength(3);
 	});
 
 	it("settles a division that the author forgot to await", async () => {
@@ -365,17 +299,14 @@ describe("extension divisions", () => {
 
 		expect(toolNames(scope)).toEqual(["healthyTool"]);
 		const failures = scope.diagnostics.filter(
-			(diagnostic) =>
-				diagnostic.code === "extension.division_activation_failed",
+			(diagnostic) => diagnostic.code === "extension.division_activation_failed",
 		);
 		expect(failures).toHaveLength(1);
 		expect(failures[0]?.message).toContain("division 'broken'");
 		// Non-blocking: the orchestrator refuses agent creation on any error-level
 		// extension diagnostic, and one broken part must not cost the agent.
 		expect(failures[0]?.severity).toBe("warning");
-		expect(
-			scope.diagnostics.some((diagnostic) => diagnostic.severity === "error"),
-		).toBe(false);
+		expect(scope.diagnostics.some((diagnostic) => diagnostic.severity === "error")).toBe(false);
 	});
 
 	it("drains an unawaited division even when the root factory throws", async () => {
@@ -398,10 +329,7 @@ describe("extension divisions", () => {
 		expect(lateSideEffect).toBe(1);
 		expect(toolNames(scope)).toEqual(["divisionTool"]);
 		expect(scope.diagnostics).toContainEqual(
-			expect.objectContaining({
-				code: "extension.activation_failed",
-				severity: "error",
-			}),
+			expect.objectContaining({ code: "extension.activation_failed", severity: "error" }),
 		);
 	});
 
@@ -422,21 +350,11 @@ describe("extension divisions", () => {
 			},
 		} as unknown as ExtensionDefinition);
 
-		const scope = await loader.loadForAgent({
-			agentId: "agent",
-			profileId: "profile",
-			extensionIds: ["integration"],
-		});
+		const scope = await loader.loadForAgent({ agentId: "agent", profileId: "profile", extensionIds: ["integration"] });
 
-		expect(scope.extensions[0]?.divisions.map((entry) => entry.id)).toEqual([
-			"ok",
-		]);
+		expect(scope.extensions[0]?.divisions.map((entry) => entry.id)).toEqual(["ok"]);
 		expect(toolNames(scope)).toEqual(["rootTool"]);
-		expect(
-			scope.diagnostics.every(
-				(diagnostic) => diagnostic.severity === "warning",
-			),
-		).toBe(true);
+		expect(scope.diagnostics.every((diagnostic) => diagnostic.severity === "warning")).toBe(true);
 	});
 
 	it("reports a non-array divisions field instead of ignoring it", async () => {
@@ -447,10 +365,7 @@ describe("extension divisions", () => {
 		} as unknown as ExtensionDefinition);
 
 		expect(scope.diagnostics).toContainEqual(
-			expect.objectContaining({
-				code: "extension.division_invalid",
-				severity: "warning",
-			}),
+			expect.objectContaining({ code: "extension.division_invalid", severity: "warning" }),
 		);
 	});
 
@@ -466,10 +381,7 @@ describe("extension divisions", () => {
 		expect(sideEffects).toBe(0);
 		expect(scope.divisions).toEqual([]);
 		expect(scope.diagnostics).toContainEqual(
-			expect.objectContaining({
-				code: "extension.division_invalid",
-				severity: "warning",
-			}),
+			expect.objectContaining({ code: "extension.division_invalid", severity: "warning" }),
 		);
 	});
 
@@ -491,9 +403,6 @@ describe("extension divisions", () => {
 		);
 
 		expect(seen).toEqual([true, false]);
-		expect(scope.divisions.map((entry) => entry.enabled)).toEqual([
-			false,
-			true,
-		]);
+		expect(scope.divisions.map((entry) => entry.enabled)).toEqual([false, true]);
 	});
 });

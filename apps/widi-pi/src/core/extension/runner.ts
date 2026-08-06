@@ -10,6 +10,7 @@ import type {
 } from "@widi/agent-core";
 import { formatError } from "../../utils/errors.ts";
 import type { CoreDiagnostic } from "../diagnostics.ts";
+import type { MessageDeliveryMode, MessageRequest } from "../message.ts";
 import type { ToolRegistry } from "../tool-registry.ts";
 import type { ExtensionEventEnvelope } from "./events.ts";
 import type {
@@ -34,6 +35,7 @@ import type {
 	ExtensionInterceptorResultFor,
 	ExtensionObservedEvent,
 	ExtensionObserver,
+	ExtensionSendOptions,
 	ExtensionSessionContext,
 } from "./types.ts";
 
@@ -41,18 +43,14 @@ export interface ExtensionRunnerOptions {
 	loadedScope: LoadedExtensionScope;
 }
 
-export interface ExtensionInterceptorRun<
-	TName extends ExtensionInterceptorName,
-> {
+export interface ExtensionInterceptorRun<TName extends ExtensionInterceptorName> {
 	result: ExtensionInterceptorResultFor<TName>;
 	diagnostics: readonly CoreDiagnostic[];
 }
 
 // Input runs carry extension attribution so the orchestrator can publish
 // input_transformed/input_blocked facts without re-deriving blame.
-export type ExtensionInputInterceptRun = {
-	diagnostics: readonly CoreDiagnostic[];
-} & (
+export type ExtensionInputInterceptRun = { diagnostics: readonly CoreDiagnostic[] } & (
 	| { kind: "pass" }
 	| {
 			kind: "transform";
@@ -71,28 +69,12 @@ export type ExtensionInputInterceptRun = {
 );
 
 type ExtensionInterceptorHandlerRun<TName extends ExtensionInterceptorName> =
-	| {
-			ok: true;
-			result: ExtensionInterceptorResultFor<TName>;
-	  }
-	| {
-			ok: false;
-			diagnostic: CoreDiagnostic;
-	  };
+	| { ok: true; result: ExtensionInterceptorResultFor<TName> }
+	| { ok: false; diagnostic: CoreDiagnostic };
 
 export type ExtensionHookSnapshot =
-	| {
-			kind: "observe";
-			extensionId: string;
-			eventName: ExtensionObservedEvent["type"];
-			divisionId?: string;
-	  }
-	| {
-			kind: "intercept";
-			extensionId: string;
-			eventName: ExtensionInterceptorName;
-			divisionId?: string;
-	  }
+	| { kind: "observe"; extensionId: string; eventName: ExtensionObservedEvent["type"]; divisionId?: string }
+	| { kind: "intercept"; extensionId: string; eventName: ExtensionInterceptorName; divisionId?: string }
 	| {
 			kind: "event";
 			extensionId: string;
@@ -145,19 +127,10 @@ export interface ExtensionRunnerSnapshot {
 	// Declared and used divisions with their resolved state; empty for an agent
 	// whose extensions declare none.
 	divisions: readonly ExtensionDivisionSnapshot[];
-	stale: {
-		readonly stale: boolean;
-		readonly message?: string;
-	};
+	stale: { readonly stale: boolean; readonly message?: string };
 }
 
-const patchInspectableFields = [
-	"description",
-	"parameters",
-	"strict",
-	"execute",
-	"aroundExecute",
-] as const;
+const patchInspectableFields = ["description", "parameters", "strict", "execute", "aroundExecute"] as const;
 
 export class ExtensionRunner {
 	readonly agentId: string;
@@ -182,19 +155,14 @@ export class ExtensionRunner {
 		this.diagnostics = [...options.loadedScope.diagnostics];
 	}
 
-	bindCore(
-		actions: ExtensionCoreActions,
-		contextActions: ExtensionContextActions,
-	): void {
+	bindCore(actions: ExtensionCoreActions, contextActions: ExtensionContextActions): void {
 		this._actions = actions;
 		this._contextActions = contextActions;
 	}
 
 	createContext(extensionId = this.extensionIds[0]): ExtensionContext {
 		if (!extensionId) {
-			throw new Error(
-				"Extension context requires an extension id; this runner has no loaded extensions.",
-			);
+			throw new Error("Extension context requires an extension id; this runner has no loaded extensions.");
 		}
 		const runner = this;
 		return {
@@ -220,14 +188,10 @@ export class ExtensionRunner {
 
 	/** The appended system prompt sections, in registration order. */
 	getSystemPromptAppends(): readonly string[] {
-		return this._loadedScope.systemPromptContributions.map(
-			(contribution) => contribution.text,
-		);
+		return this._loadedScope.systemPromptContributions.map((contribution) => contribution.text);
 	}
 
-	invalidate(
-		message = "This extension context is stale after runtime replacement or reload.",
-	): void {
+	invalidate(message = "This extension context is stale after runtime replacement or reload."): void {
 		this._staleMessage = message;
 	}
 
@@ -237,9 +201,7 @@ export class ExtensionRunner {
 	 * aggregated and rethrown after all handlers ran, so one broken
 	 * extension cannot skip the others' cleanup.
 	 */
-	async dispose(
-		message = "This extension context is stale after runtime replacement or reload.",
-	): Promise<void> {
+	async dispose(message = "This extension context is stale after runtime replacement or reload."): Promise<void> {
 		if (this._disposed) return;
 		this._disposed = true;
 		this.invalidate(message);
@@ -321,47 +283,38 @@ export class ExtensionRunner {
 			extensionIds: [...this.extensionIds],
 			extensions: [...this.extensions],
 			hooks,
-			toolContributions: this._loadedScope.toolContributions.map(
-				(contribution) => {
-					if (contribution.kind === "define") {
-						return {
-							kind: "define",
-							extensionId: contribution.extensionId,
-							toolName: contribution.definition.name,
-							source: contribution.source,
-							divisionId: contribution.divisionId,
-						};
-					}
+			toolContributions: this._loadedScope.toolContributions.map((contribution) => {
+				if (contribution.kind === "define") {
 					return {
-						kind: "patch",
+						kind: "define",
 						extensionId: contribution.extensionId,
-						targetToolName: contribution.targetToolName,
-						patchedFields: patchInspectableFields.filter((field) =>
-							Object.hasOwn(contribution.patch, field),
-						),
+						toolName: contribution.definition.name,
 						source: contribution.source,
 						divisionId: contribution.divisionId,
 					};
-				},
-			),
-			providerContributions: this._loadedScope.providerContributions.map(
-				(contribution) => ({
+				}
+				return {
+					kind: "patch",
 					extensionId: contribution.extensionId,
-					providerName: contribution.providerName,
-					modelIds: (contribution.config.models ?? []).map((model) => model.id),
-					oauth: contribution.config.oauth !== undefined,
+					targetToolName: contribution.targetToolName,
+					patchedFields: patchInspectableFields.filter((field) => Object.hasOwn(contribution.patch, field)),
+					source: contribution.source,
 					divisionId: contribution.divisionId,
-				}),
-			),
-			systemPromptContributions:
-				this._loadedScope.systemPromptContributions.map((contribution) => ({
-					extensionId: contribution.extensionId,
-					divisionId: contribution.divisionId,
-				})),
+				};
+			}),
+			providerContributions: this._loadedScope.providerContributions.map((contribution) => ({
+				extensionId: contribution.extensionId,
+				providerName: contribution.providerName,
+				modelIds: (contribution.config.models ?? []).map((model) => model.id),
+				oauth: contribution.config.oauth !== undefined,
+				divisionId: contribution.divisionId,
+			})),
+			systemPromptContributions: this._loadedScope.systemPromptContributions.map((contribution) => ({
+				extensionId: contribution.extensionId,
+				divisionId: contribution.divisionId,
+			})),
 			divisions: [...this._loadedScope.divisions],
-			stale: this._staleMessage
-				? { stale: true, message: this._staleMessage }
-				: { stale: false },
+			stale: this._staleMessage ? { stale: true, message: this._staleMessage } : { stale: false },
 		};
 	}
 
@@ -370,11 +323,7 @@ export class ExtensionRunner {
 			if (contribution.kind === "define") {
 				registry.defineTool(contribution.definition, contribution.source);
 			} else {
-				registry.patchTool(
-					contribution.targetToolName,
-					contribution.patch,
-					contribution.source,
-				);
+				registry.patchTool(contribution.targetToolName, contribution.patch, contribution.source);
 			}
 		}
 	}
@@ -384,10 +333,7 @@ export class ExtensionRunner {
 		const handlers = this._loadedScope.observerHandlers.get(event.type) ?? [];
 		for (const registration of handlers) {
 			try {
-				await (registration.handler as ExtensionObserver)(
-					event,
-					this.createContext(registration.extensionId),
-				);
+				await (registration.handler as ExtensionObserver)(event, this.createContext(registration.extensionId));
 			} catch (error) {
 				diagnostics.push(this._createHandlerDiagnostic(registration, error));
 			}
@@ -401,18 +347,12 @@ export class ExtensionRunner {
 	 * instances of the same extension in different agents are exactly the case
 	 * the bus exists for.
 	 */
-	async emitExtensionEvent(
-		envelope: ExtensionEventEnvelope,
-	): Promise<CoreDiagnostic[]> {
+	async emitExtensionEvent(envelope: ExtensionEventEnvelope): Promise<CoreDiagnostic[]> {
 		const diagnostics: CoreDiagnostic[] = [];
-		const handlers =
-			this._loadedScope.extensionEventHandlers.get(envelope.name) ?? [];
+		const handlers = this._loadedScope.extensionEventHandlers.get(envelope.name) ?? [];
 		for (const registration of handlers) {
 			try {
-				await registration.handler(
-					envelope,
-					this.createContext(registration.extensionId),
-				);
+				await registration.handler(envelope, this.createContext(registration.extensionId));
 			} catch (error) {
 				diagnostics.push(this._createHandlerDiagnostic(registration, error));
 			}
@@ -429,29 +369,19 @@ export class ExtensionRunner {
 	async interceptWithDiagnostics<TName extends ExtensionInterceptorName>(
 		event: ExtensionInterceptorEventFor<TName>,
 	): Promise<ExtensionInterceptorRun<TName>> {
-		const handlers = this._loadedScope.interceptorHandlers.get(
-			event.type as TName,
-		);
+		const handlers = this._loadedScope.interceptorHandlers.get(event.type as TName);
 		if (!handlers || handlers.length === 0) {
-			return {
-				result: undefined as ExtensionInterceptorResultFor<TName>,
-				diagnostics: [],
-			};
+			return { result: undefined as ExtensionInterceptorResultFor<TName>, diagnostics: [] };
 		}
 		if (event.type === "input") {
-			const run = await this.interceptInput(
-				event as ExtensionInterceptorEventFor<"input">,
-			);
+			const run = await this.interceptInput(event as ExtensionInterceptorEventFor<"input">);
 			const result: ExtensionInputResult =
 				run.kind === "block"
 					? { block: true, reason: run.reason }
 					: run.kind === "transform"
 						? { text: run.text, images: run.images }
 						: undefined;
-			return {
-				result: result as ExtensionInterceptorResultFor<TName>,
-				diagnostics: run.diagnostics,
-			};
+			return { result: result as ExtensionInterceptorResultFor<TName>, diagnostics: run.diagnostics };
 		}
 		const diagnostics: CoreDiagnostic[] = [];
 		let result: ExtensionInterceptorResultFor<TName>;
@@ -529,10 +459,7 @@ export class ExtensionRunner {
 		let current = base;
 		let hasResult = false;
 		for (const registration of registrations) {
-			const run = await this._runInterceptor(registration, {
-				...event,
-				streamOptions: cloneStreamOptions(current),
-			});
+			const run = await this._runInterceptor(registration, { ...event, streamOptions: cloneStreamOptions(current) });
 			if (!run.ok) {
 				diagnostics.push(run.diagnostic);
 				continue;
@@ -554,10 +481,7 @@ export class ExtensionRunner {
 		let messages = [...event.messages];
 		let hasResult = false;
 		for (const registration of registrations) {
-			const run = await this._runInterceptor(registration, {
-				...event,
-				messages,
-			});
+			const run = await this._runInterceptor(registration, { ...event, messages });
 			if (!run.ok) {
 				diagnostics.push(run.diagnostic);
 				continue;
@@ -613,9 +537,7 @@ export class ExtensionRunner {
 			nextEvent = {
 				...nextEvent,
 				content: patch.content ?? nextEvent.content,
-				details: Object.hasOwn(patch, "details")
-					? patch.details
-					: nextEvent.details,
+				details: Object.hasOwn(patch, "details") ? patch.details : nextEvent.details,
 				isError: patch.isError ?? nextEvent.isError,
 			};
 		}
@@ -626,9 +548,7 @@ export class ExtensionRunner {
 	// far (like context); the first block short-circuits (like tool_call). A
 	// crashed handler blocks fail-closed - an input policy must not be
 	// bypassed by its own failure.
-	async interceptInput(
-		event: ExtensionInputEvent,
-	): Promise<ExtensionInputInterceptRun> {
+	async interceptInput(event: ExtensionInputEvent): Promise<ExtensionInputInterceptRun> {
 		const registrations = (this._loadedScope.interceptorHandlers.get("input") ??
 			[]) as readonly ExtensionInterceptorRegistration<"input">[];
 		const diagnostics: CoreDiagnostic[] = [];
@@ -636,28 +556,15 @@ export class ExtensionRunner {
 		let text = event.text;
 		let images = event.images;
 		for (const registration of registrations) {
-			const run = await this._runInterceptor(registration, {
-				...event,
-				text,
-				images,
-			});
+			const run = await this._runInterceptor(registration, { ...event, text, images });
 			if (!run.ok) {
 				diagnostics.push(run.diagnostic);
-				return {
-					kind: "block",
-					diagnostics,
-					blockedBy: registration.extensionId,
-				};
+				return { kind: "block", diagnostics, blockedBy: registration.extensionId };
 			}
 			const result = run.result;
 			if (result === undefined) continue;
 			if ("block" in result) {
-				return {
-					kind: "block",
-					diagnostics,
-					reason: result.reason,
-					blockedBy: registration.extensionId,
-				};
+				return { kind: "block", diagnostics, reason: result.reason, blockedBy: registration.extensionId };
 			}
 			transformedBy.push(registration.extensionId);
 			text = result.text;
@@ -682,10 +589,7 @@ export class ExtensionRunner {
 				),
 			};
 		} catch (error) {
-			return {
-				ok: false,
-				diagnostic: this._createHandlerDiagnostic(registration, error),
-			};
+			return { ok: false, diagnostic: this._createHandlerDiagnostic(registration, error) };
 		}
 	}
 
@@ -700,9 +604,7 @@ export class ExtensionRunner {
 	// in an ExtensionActions signature.
 	private _createContextActions(extensionId: string): ExtensionActions {
 		const agentId = this.agentId;
-		const failure = (
-			action: ExtensionActionFailure["action"],
-		): Omit<ExtensionActionFailure, "error"> => ({
+		const failure = (action: ExtensionActionFailure["action"]): Omit<ExtensionActionFailure, "error"> => ({
 			extensionId,
 			action,
 			code: "extension.action_failed",
@@ -726,11 +628,7 @@ export class ExtensionRunner {
 				),
 			setTools: async (toolNames, activeToolNames) => {
 				await this._runReportedAction(failure("setTools"), async () => {
-					await this._actions.setAgentTools(
-						agentId,
-						toolNames,
-						activeToolNames,
-					);
+					await this._actions.setAgentTools(agentId, toolNames, activeToolNames);
 				});
 			},
 			setActiveTools: async (toolNames) => {
@@ -741,8 +639,7 @@ export class ExtensionRunner {
 			requestHuman: async (request) =>
 				await this._runReportedAction(
 					failure("requestHuman"),
-					async () =>
-						await this._actions.requestHuman(agentId, extensionId, request),
+					async () => await this._actions.requestHuman(agentId, extensionId, request),
 				),
 			emitOutput: async (text) => {
 				await this._runReportedAction(failure("emitOutput"), async () => {
@@ -767,8 +664,7 @@ export class ExtensionRunner {
 			publishMessage: async (message) =>
 				await this._runReportedAction(
 					failure("publishMessage"),
-					async () =>
-						await this._actions.publishMessage(agentId, extensionId, message),
+					async () => await this._actions.publishMessage(agentId, extensionId, message),
 				),
 			reportDiagnostic: async (draft) => {
 				await this._runReportedAction(failure("reportDiagnostic"), async () => {
@@ -777,22 +673,17 @@ export class ExtensionRunner {
 			},
 			prompt: async (text, options) => {
 				await this._runReportedAction(failure("prompt"), async () => {
-					await this._actions.promptAgent(agentId, extensionId, text, options);
+					await this._actions.messageSinkFor(extensionId).prompt(toMessageRequest(agentId, text, "next_turn", options));
 				});
 			},
 			steer: async (text, options) => {
 				await this._runReportedAction(failure("steer"), async () => {
-					await this._actions.steerAgent(agentId, extensionId, text, options);
+					await this._actions.messageSinkFor(extensionId).send(toMessageRequest(agentId, text, "interrupt", options));
 				});
 			},
 			followUp: async (text, options) => {
 				await this._runReportedAction(failure("followUp"), async () => {
-					await this._actions.followUpAgent(
-						agentId,
-						extensionId,
-						text,
-						options,
-					);
+					await this._actions.messageSinkFor(extensionId).send(toMessageRequest(agentId, text, "next_turn", options));
 				});
 			},
 			getContextUsage: () => {
@@ -818,25 +709,13 @@ export class ExtensionRunner {
 				});
 			},
 			emitExtensionEvent: async (name, payload) => {
-				await this._runReportedAction(
-					failure("emitExtensionEvent"),
-					async () => {
-						await this._actions.emitExtensionEvent(
-							agentId,
-							extensionId,
-							name,
-							payload,
-						);
-					},
-				);
+				await this._runReportedAction(failure("emitExtensionEvent"), async () => {
+					await this._actions.emitExtensionEvent(agentId, extensionId, name, payload);
+				});
 			},
 			requestShutdown: async (reason) => {
 				await this._runReportedAction(failure("requestShutdown"), async () => {
-					await this._actions.requestRuntimeShutdown(
-						agentId,
-						extensionId,
-						reason,
-					);
+					await this._actions.requestRuntimeShutdown(agentId, extensionId, reason);
 				});
 			},
 			disposeRuntime: async (reason) => {
@@ -860,14 +739,12 @@ export class ExtensionRunner {
 			compact: async (customInstructions) =>
 				await this._runReportedAction(
 					failure("compact"),
-					async () =>
-						await this._actions.compactAgent(agentId, customInstructions),
+					async () => await this._actions.compactAgent(agentId, customInstructions),
 				),
 			setModel: async (reference) =>
 				await this._runReportedAction(
 					failure("setModel"),
-					async () =>
-						await this._actions.setAgentModelByReference(agentId, reference),
+					async () => await this._actions.setAgentModelByReference(agentId, reference),
 				),
 			getModel: () => {
 				this._assertActive();
@@ -895,8 +772,7 @@ export class ExtensionRunner {
 			exec: async (command, options) =>
 				await this._runReportedAction(
 					failure("exec"),
-					async () =>
-						await this._actions.exec(agentId, extensionId, command, options),
+					async () => await this._actions.exec(agentId, extensionId, command, options),
 				),
 		};
 	}
@@ -915,9 +791,7 @@ export class ExtensionRunner {
 	}
 
 	private _createSessionContext(extensionId: string): ExtensionSessionContext {
-		const sessionFailure = (
-			action: ExtensionActionFailure["action"],
-		): Omit<ExtensionActionFailure, "error"> => ({
+		const sessionFailure = (action: ExtensionActionFailure["action"]): Omit<ExtensionActionFailure, "error"> => ({
 			extensionId,
 			action,
 			code: "extension.session_read_failed",
@@ -925,27 +799,13 @@ export class ExtensionRunner {
 		return {
 			appendEntry: async (type, data) =>
 				await this._runReportedAction(
-					{
-						extensionId,
-						action: "appendEntry",
-						code: "extension.custom_entry_append_failed",
-					},
-					async () =>
-						await this._requireSessionActions().appendEntry(
-							extensionId,
-							type,
-							data,
-						),
+					{ extensionId, action: "appendEntry", code: "extension.custom_entry_append_failed" },
+					async () => await this._requireSessionActions().appendEntry(extensionId, type, data),
 				),
 			findEntries: async (type) =>
 				await this._runReportedAction(
-					{
-						extensionId,
-						action: "findEntries",
-						code: "extension.custom_entry_find_failed",
-					},
-					async () =>
-						await this._requireSessionActions().findEntries(extensionId, type),
+					{ extensionId, action: "findEntries", code: "extension.custom_entry_find_failed" },
+					async () => await this._requireSessionActions().findEntries(extensionId, type),
 				),
 			getSnapshot: async () =>
 				await this._runReportedAction(
@@ -965,17 +825,12 @@ export class ExtensionRunner {
 			listSessions: async () =>
 				await this._runReportedAction(
 					sessionFailure("listSessions"),
-					async () =>
-						await this._requireSessionActions().listSessions(extensionId),
+					async () => await this._requireSessionActions().listSessions(extensionId),
 				),
 			readSession: async (reference) =>
 				await this._runReportedAction(
 					sessionFailure("readSession"),
-					async () =>
-						await this._requireSessionActions().readSession(
-							extensionId,
-							reference,
-						),
+					async () => await this._requireSessionActions().readSession(extensionId, reference),
 				),
 		};
 	}
@@ -988,18 +843,12 @@ export class ExtensionRunner {
 		return session;
 	}
 
-	private async _reportActionFailure(
-		failure: ExtensionActionFailure,
-	): Promise<void> {
+	private async _reportActionFailure(failure: ExtensionActionFailure): Promise<void> {
 		await this._contextActions.reportActionFailure?.(failure);
 	}
 
 	private _createHandlerDiagnostic(
-		registration: {
-			readonly extensionId: string;
-			readonly eventName: string;
-			readonly divisionId?: string;
-		},
+		registration: { readonly extensionId: string; readonly eventName: string; readonly divisionId?: string },
 		error: unknown,
 	): CoreDiagnostic {
 		const origin = registration.divisionId
@@ -1015,15 +864,11 @@ export class ExtensionRunner {
 	}
 }
 
-function cloneStreamOptions(
-	streamOptions: AgentHarnessStreamOptions,
-): AgentHarnessStreamOptions {
+function cloneStreamOptions(streamOptions: AgentHarnessStreamOptions): AgentHarnessStreamOptions {
 	return {
 		...streamOptions,
 		headers: streamOptions.headers ? { ...streamOptions.headers } : undefined,
-		metadata: streamOptions.metadata
-			? { ...streamOptions.metadata }
-			: undefined,
+		metadata: streamOptions.metadata ? { ...streamOptions.metadata } : undefined,
 	};
 }
 
@@ -1115,6 +960,28 @@ function diffRecord<T>(
 	return Object.keys(patch).length > 0 ? patch : undefined;
 }
 
+/**
+ * The extension half of a message request. The delivery policy is not here: it
+ * belongs to the sink, which the orchestrator bound to this extension before
+ * handing it over. Source and render are the author's optional overrides; the
+ * sink's defaults fill in whatever they omit.
+ */
+function toMessageRequest(
+	agentId: string,
+	text: string,
+	mode: MessageDeliveryMode,
+	options: ExtensionSendOptions | undefined,
+): MessageRequest {
+	return {
+		targetAgentId: agentId,
+		body: text,
+		...(options?.images === undefined ? undefined : { images: options.images }),
+		...(options?.source === undefined ? undefined : { source: options.source }),
+		...(options?.render === undefined ? undefined : { render: options.render }),
+		mode,
+	};
+}
+
 function createUnboundActions(): ExtensionCoreActions {
 	const notBound = () => {
 		throw new Error("Extension runner core actions are not bound.");
@@ -1133,9 +1000,7 @@ function createUnboundActions(): ExtensionCoreActions {
 		clearStatus: async () => notBound(),
 		publishMessage: async () => notBound(),
 		reportDiagnostic: async () => notBound(),
-		promptAgent: async () => notBound(),
-		steerAgent: async () => notBound(),
-		followUpAgent: async () => notBound(),
+		messageSinkFor: () => notBound(),
 		getAgentContextUsage: () => notBound(),
 		isProjectTrusted: () => notBound(),
 		getAgentSystemPrompt: async () => notBound(),

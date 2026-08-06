@@ -1,23 +1,18 @@
-import type {
-	AssistantMessage,
-	TextContent,
-	ToolCall,
-	ToolResultMessage,
-	UserMessage,
-} from "@earendil-works/pi-ai";
+import type { AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { SessionTreeEntry } from "@widi/agent-core";
 import type { ExtensionMessage } from "../core/extension/api.ts";
 import { validateExtensionMessage } from "../core/extension/presentation.ts";
+import type { MessageEntryDetails } from "../core/message.ts";
 import {
-	COMMAND_EXPANSION_CUSTOM_TYPE,
-	type CommandExpansionEntryData,
 	EXTENSION_MESSAGE_CUSTOM_TYPE,
 	type ExtensionMessageEntryData,
 	INPUT_TRANSFORM_CUSTOM_TYPE,
 	type InputTransformEntryData,
+	ORCHESTRATOR_MESSAGE_CUSTOM_TYPE,
 } from "../core/session-manager.ts";
 import type {
 	AssistantMessageItem,
+	OrchestratorMessageItem,
 	PersistentMessageItem,
 	SessionMarkerItem,
 	TimelineItem,
@@ -47,9 +42,7 @@ export class SessionHydrator {
  * Pure current-branch hydrator. Unknown/custom extension data is intentionally
  * ignored unless it uses a core-owned presentation entry type.
  */
-export function hydrateSessionEntries(
-	entries: readonly SessionTreeEntry[],
-): HydrationResult {
+export function hydrateSessionEntries(entries: readonly SessionTreeEntry[]): HydrationResult {
 	const timeline: TimelineItem[] = [];
 	const display: HydratedDisplayFacts = {};
 	let pendingOriginalText: string | undefined;
@@ -58,15 +51,7 @@ export function hydrateSessionEntries(
 	for (const entry of entries) {
 		switch (entry.type) {
 			case "custom": {
-				if (
-					entry.customType === INPUT_TRANSFORM_CUSTOM_TYPE &&
-					isInputTransformData(entry.data)
-				) {
-					pendingOriginalText ??= entry.data.originalText;
-				} else if (
-					entry.customType === COMMAND_EXPANSION_CUSTOM_TYPE &&
-					isCommandExpansionData(entry.data)
-				) {
+				if (entry.customType === INPUT_TRANSFORM_CUSTOM_TYPE && isInputTransformData(entry.data)) {
 					pendingOriginalText ??= entry.data.originalText;
 				} else if (entry.customType === EXTENSION_MESSAGE_CUSTOM_TYPE) {
 					const data = parseExtensionMessageData(entry.data);
@@ -74,8 +59,22 @@ export function hydrateSessionEntries(
 				}
 				break;
 			}
+			// A message the runtime wrote on someone else's behalf and woke the
+			// agent with. Same entry type as a user message, different role.
+			case "custom_message": {
+				if (entry.customType !== ORCHESTRATOR_MESSAGE_CUSTOM_TYPE) break;
+				const item = toOrchestratorMessage(entry.id, entry.timestamp, entry.content, entry.details);
+				if (item) timeline.push(item);
+				break;
+			}
 			case "message": {
 				const message = entry.message;
+				if (message.role === "custom") {
+					if (message.customType !== ORCHESTRATOR_MESSAGE_CUSTOM_TYPE) break;
+					const item = toOrchestratorMessage(entry.id, entry.timestamp, message.content, message.details);
+					if (item) timeline.push(item);
+					break;
+				}
 				if (message.role === "user") {
 					const modelText = messageText(message);
 					const text = pendingOriginalText ?? modelText;
@@ -149,11 +148,7 @@ export function hydrateSessionEntries(
 	return { timeline, display };
 }
 
-function toAssistantMessage(
-	id: string,
-	createdAt: string,
-	message: AssistantMessage,
-): AssistantMessageItem {
+function toAssistantMessage(id: string, createdAt: string, message: AssistantMessage): AssistantMessageItem {
 	return {
 		type: "assistant-message",
 		id,
@@ -163,6 +158,47 @@ function toAssistantMessage(
 		streaming: false,
 		message,
 	};
+}
+
+/**
+ * One orchestrator message, from either entry form.
+ *
+ * `details` is what the producer recorded about itself and is the whole basis
+ * for rendering, so an entry without it is dropped rather than shown as an
+ * anonymous user message - claiming the person said it would be worse than
+ * saying nothing.
+ */
+function toOrchestratorMessage(
+	id: string,
+	createdAt: string,
+	content: string | readonly { type: string; text?: string }[],
+	details: unknown,
+): OrchestratorMessageItem | undefined {
+	if (!isMessageEntryDetails(details)) return undefined;
+	const modelText = contentText(content);
+	return {
+		type: "orchestrator-message",
+		id,
+		durability: "durable",
+		createdAt,
+		source: details.source,
+		text: details.body,
+		...(details.body === modelText ? undefined : { modelText }),
+	};
+}
+
+function isMessageEntryDetails(details: unknown): details is MessageEntryDetails {
+	if (!isRecord(details) || typeof details.body !== "string") return false;
+	const source = details.source;
+	return isRecord(source) && typeof source.kind === "string";
+}
+
+function contentText(content: string | readonly { type: string; text?: string }[]): string {
+	if (typeof content === "string") return content;
+	return content
+		.filter((part) => part.type === "text" && part.text !== undefined)
+		.map((part) => part.text)
+		.join("");
 }
 
 function toExtensionMessage(
@@ -226,12 +262,7 @@ function messageText(message: UserMessage): string {
 }
 
 function isToolCall(content: unknown): content is ToolCall {
-	return (
-		typeof content === "object" &&
-		content !== null &&
-		"type" in content &&
-		content.type === "toolCall"
-	);
+	return typeof content === "object" && content !== null && "type" in content && content.type === "toolCall";
 }
 
 function isInputTransformData(data: unknown): data is InputTransformEntryData {
@@ -244,32 +275,16 @@ function isInputTransformData(data: unknown): data is InputTransformEntryData {
 	);
 }
 
-function isCommandExpansionData(
-	data: unknown,
-): data is CommandExpansionEntryData {
-	return (
-		isRecord(data) &&
-		typeof data.inputId === "string" &&
-		typeof data.originalText === "string" &&
-		Array.isArray(data.expansions)
-	);
-}
-
 /**
  * Read a persisted extension message back through the same validator that
  * admitted it. A hand-written shape check here would have to enumerate the
  * message kinds a second time, and a kind it failed to learn about would be
  * dropped silently: fine live, gone after a restart.
  */
-function parseExtensionMessageData(
-	data: unknown,
-): ExtensionMessageEntryData | undefined {
+function parseExtensionMessageData(data: unknown): ExtensionMessageEntryData | undefined {
 	if (!isRecord(data) || typeof data.extensionId !== "string") return undefined;
 	try {
-		return {
-			extensionId: data.extensionId,
-			message: validateExtensionMessage(data.message as ExtensionMessage),
-		};
+		return { extensionId: data.extensionId, message: validateExtensionMessage(data.message as ExtensionMessage) };
 	} catch {
 		return undefined;
 	}
@@ -280,9 +295,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function upsertTimeline(timeline: TimelineItem[], item: TimelineItem): void {
-	const index = timeline.findIndex(
-		(existing) => existing.type === item.type && existing.id === item.id,
-	);
+	const index = timeline.findIndex((existing) => existing.type === item.type && existing.id === item.id);
 	if (index === -1) timeline.push(item);
 	else timeline[index] = item;
 }

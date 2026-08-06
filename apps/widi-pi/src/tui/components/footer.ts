@@ -1,9 +1,5 @@
 import { execFile } from "node:child_process";
-import {
-	type Component,
-	truncateToWidth,
-	visibleWidth,
-} from "@earendil-works/pi-tui";
+import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { singleLine } from "../format.ts";
 import type { TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
@@ -25,19 +21,14 @@ export class FooterView implements Component {
 	render(width: number): string[] {
 		const agent = activeAgent(this.state);
 		const pending = this.state.pendingAgent;
-		const model =
-			agent?.display.model ?? agent?.snapshot?.model ?? pending?.display.model;
-		const thinkingLevel =
-			agent?.display.thinkingLevel ??
-			(!agent ? pending?.display.thinkingLevel : undefined);
+		const model = agent?.display.model ?? agent?.snapshot?.model ?? pending?.display.model;
+		const thinkingLevel = agent?.display.thinkingLevel ?? (!agent ? pending?.display.thinkingLevel : undefined);
 		const branch = this.git.current();
 		const queueParts: string[] = [];
 		if (agent?.queue.steer.length) {
 			queueParts.push(`${agent.queue.steer.length} steer`);
 		}
-		const followUpCount =
-			(agent?.queue.followUp.length ?? 0) +
-			(agent?.pendingFollowUps.length ?? 0);
+		const followUpCount = (agent?.queue.followUp.length ?? 0) + (agent?.pendingFollowUps.length ?? 0);
 		if (followUpCount > 0) {
 			queueParts.push(`${followUpCount} follow-up`);
 		}
@@ -69,12 +60,7 @@ export class FooterView implements Component {
 
 		const rightWidth = visibleWidth(right);
 		let left = buildLeft(0);
-		for (
-			let dropped = 1;
-			dropped <= optionalParts.length &&
-			visibleWidth(left) + rightWidth + 2 > width;
-			dropped++
-		) {
+		for (let dropped = 1; dropped <= optionalParts.length && visibleWidth(left) + rightWidth + 2 > width; dropped++) {
 			left = buildLeft(dropped);
 		}
 		return [alignSides(left, right, width)];
@@ -86,8 +72,7 @@ function contextReadout(state: TuiApplicationState): string | undefined {
 	const agent = activeAgent(state);
 	if (!agent) return undefined;
 	const tokens = agent.display.contextTokens;
-	const contextWindow =
-		agent.display.model?.contextWindow ?? agent.snapshot?.model.contextWindow;
+	const contextWindow = agent.display.model?.contextWindow ?? agent.snapshot?.model.contextWindow;
 	if (tokens === undefined || !contextWindow || contextWindow <= 0) {
 		return undefined;
 	}
@@ -114,8 +99,7 @@ function alignSides(left: string, right: string, width: number): string {
 /** Abbreviate a cwd to `~/p/widi-pi` style: home prefix plus one-letter parents. */
 function shortCwd(cwd: string): string {
 	const home = process.env.HOME;
-	const relative =
-		home && cwd.startsWith(home) ? `~${cwd.slice(home.length) || "/"}` : cwd;
+	const relative = home && cwd.startsWith(home) ? `~${cwd.slice(home.length) || "/"}` : cwd;
 	const segments = relative.split("/").filter((segment) => segment !== "");
 	if (segments.length <= 2) return relative || "/";
 	const abbreviated = segments.map((segment, index) => {
@@ -169,23 +153,15 @@ class GitBranchCache {
 
 function queryGitBranch(cwd: string): Promise<string | undefined> {
 	return new Promise((resolve) => {
-		execFile(
-			"git",
-			["-C", cwd, "branch", "--show-current"],
-			(error, stdout) => {
-				if (!error && stdout.trim()) {
-					resolve(stdout.trim());
-					return;
-				}
-				// Detached HEAD or an unborn branch: fall back to the short commit.
-				execFile(
-					"git",
-					["-C", cwd, "rev-parse", "--short", "HEAD"],
-					(revError, revStdout) => {
-						resolve(revError ? undefined : revStdout.trim() || undefined);
-					},
-				);
-			},
-		);
+		execFile("git", ["-C", cwd, "branch", "--show-current"], (error, stdout) => {
+			if (!error && stdout.trim()) {
+				resolve(stdout.trim());
+				return;
+			}
+			// Detached HEAD or an unborn branch: fall back to the short commit.
+			execFile("git", ["-C", cwd, "rev-parse", "--short", "HEAD"], (revError, revStdout) => {
+				resolve(revError ? undefined : revStdout.trim() || undefined);
+			});
+		});
 	});
 }

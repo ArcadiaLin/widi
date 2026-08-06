@@ -45,40 +45,23 @@ export class MemoryFileSystem implements PersistenceFileSystem {
 		return ok(content);
 	}
 
-	async readTextLines(
-		path: string,
-		options?: { maxLines?: number },
-	): Promise<Result<string[], FileError>> {
+	async readTextLines(path: string, options?: { maxLines?: number }): Promise<Result<string[], FileError>> {
 		const read = await this.readTextFile(path);
 		if (!read.ok) return read;
 		const lines = read.value.split("\n");
-		return ok(
-			options?.maxLines === undefined
-				? lines
-				: lines.slice(0, options.maxLines),
-		);
+		return ok(options?.maxLines === undefined ? lines : lines.slice(0, options.maxLines));
 	}
 
-	async writeFile(
-		path: string,
-		content: string | Uint8Array,
-	): Promise<Result<void, FileError>> {
+	async writeFile(path: string, content: string | Uint8Array): Promise<Result<void, FileError>> {
 		const normalized = this._normalize(path);
 		this.dirs.add(this._dirname(normalized));
-		this.files.set(
-			normalized,
-			typeof content === "string" ? content : new TextDecoder().decode(content),
-		);
+		this.files.set(normalized, typeof content === "string" ? content : new TextDecoder().decode(content));
 		return ok(undefined);
 	}
 
-	async appendFile(
-		path: string,
-		content: string | Uint8Array,
-	): Promise<Result<void, FileError>> {
+	async appendFile(path: string, content: string | Uint8Array): Promise<Result<void, FileError>> {
 		const normalized = this._normalize(path);
-		const text =
-			typeof content === "string" ? content : new TextDecoder().decode(content);
+		const text = typeof content === "string" ? content : new TextDecoder().decode(content);
 		this.files.set(normalized, (this.files.get(normalized) ?? "") + text);
 		return ok(undefined);
 	}
@@ -107,15 +90,9 @@ export class MemoryFileSystem implements PersistenceFileSystem {
 		return ok(this.files.has(normalized) || this.dirs.has(normalized));
 	}
 
-	async createDir(
-		path: string,
-		options?: { recursive?: boolean },
-	): Promise<Result<void, FileError>> {
+	async createDir(path: string, options?: { recursive?: boolean }): Promise<Result<void, FileError>> {
 		const normalized = this._normalize(path);
-		if (
-			options?.recursive === false &&
-			!this.dirs.has(this._dirname(normalized))
-		) {
+		if (options?.recursive === false && !this.dirs.has(this._dirname(normalized))) {
 			return err(new PiFileError("not_found", `No parent: ${path}`, path));
 		}
 		let current = "";
@@ -126,10 +103,7 @@ export class MemoryFileSystem implements PersistenceFileSystem {
 		return ok(undefined);
 	}
 
-	async remove(
-		path: string,
-		options?: { recursive?: boolean; force?: boolean },
-	): Promise<Result<void, FileError>> {
+	async remove(path: string, options?: { recursive?: boolean; force?: boolean }): Promise<Result<void, FileError>> {
 		const normalized = this._normalize(path);
 		const prefix = `${normalized}/`;
 		const existed = this.files.has(normalized) || this.dirs.has(normalized);
@@ -150,16 +124,6 @@ export class MemoryFileSystem implements PersistenceFileSystem {
 	}
 }
 
-function toFileInfo(
-	path: string,
-	kind: "file" | "directory",
-	size: number,
-): FileInfo {
-	return {
-		name: path.slice(path.lastIndexOf("/") + 1),
-		path,
-		kind,
-		size,
-		mtimeMs: 0,
-	};
+function toFileInfo(path: string, kind: "file" | "directory", size: number): FileInfo {
+	return { name: path.slice(path.lastIndexOf("/") + 1), path, kind, size, mtimeMs: 0 };
 }

@@ -1,8 +1,5 @@
 import { type Static, Type } from "typebox";
-import {
-	type BackgroundJobReportSnapshot,
-	backgroundJobToolLabel,
-} from "../../background/index.ts";
+import { type BackgroundJobReportSnapshot, backgroundJobToolLabel } from "../../background/index.ts";
 import type { ToolDefinition } from "../types.ts";
 
 const readJobSchema = Type.Object({
@@ -68,10 +65,7 @@ export interface ReadJobDetails {
  * the job's result: the full output still arrives as the job's background job
  * result message when it finishes.
  */
-export function createReadJobToolDefinition(): ToolDefinition<
-	typeof readJobSchema,
-	ReadJobDetails
-> {
+export function createReadJobToolDefinition(): ToolDefinition<typeof readJobSchema, ReadJobDetails> {
 	return {
 		name: "read_job",
 		label: "read_job",
@@ -80,60 +74,39 @@ export function createReadJobToolDefinition(): ToolDefinition<
 		promptSnippet: "Peek at the live output of running background jobs",
 		parameters: readJobSchema,
 		execute: async (_toolCallId, { jobIds }, context) => {
-			const table = context.backgroundJobTable;
-			if (!table) {
+			const host = context.jobs;
+			if (!host) {
 				return {
-					content: [
-						{
-							type: "text",
-							text: "No background job registry is available, so there is nothing to read.",
-						},
-					],
+					content: [{ type: "text", text: "No background job registry is available, so there is nothing to read." }],
 					details: { jobs: [] },
 				};
 			}
 
-			// Same observability ruling as wait_for_jobs: only backgrounded jobs
-			// exist for the model (their ids came from t0 handles); running-phase
-			// jobs are excluded on purpose.
-			const live = new Map(
-				table
-					.list()
-					.filter((job) => job.phase === "backgrounded")
-					.map((job) => [job.id, job]),
-			);
+			// Only observable jobs exist for the model - their ids came from t0
+			// handles - and that is exactly what `list` and `read` answer with.
 			const requestedIds =
-				jobIds && jobIds.length > 0
-					? Array.from(new Set(jobIds))
-					: Array.from(live.keys());
+				jobIds && jobIds.length > 0 ? Array.from(new Set(jobIds)) : host.list().map((job) => job.jobId);
 
 			const jobs = requestedIds.map((id): ReadJobJobStatus => {
-				const job = live.get(id);
-				return job
-					? {
-							jobId: id,
-							toolName: job.toolName,
-							name: job.name,
-							description: job.description,
-							state: "running",
-							...(job.origin.kind === "external"
-								? { settlerAgentId: job.origin.settlerId }
-								: undefined),
-							startedAt: job.startedAt,
-							totalBytesSeen: job.output.totalBytesSeen,
-							tailDroppedBytes: job.output.tailDroppedBytes,
-							progressDroppedBytes: job.output.progressDroppedBytes,
-							...(job.report === undefined
-								? undefined
-								: { report: job.report }),
-							output: job.output.read(),
-						}
-					: { jobId: id, state: "unknown" };
+				const result = host.read(id);
+				if (!result.ok) return { jobId: id, state: "unknown" };
+				const { job, output } = result.read;
+				return {
+					jobId: id,
+					toolName: job.toolName,
+					name: job.name,
+					description: job.description,
+					state: "running",
+					...(job.origin.kind === "external" ? { settlerAgentId: job.origin.settlerId } : undefined),
+					startedAt: job.startedAt,
+					totalBytesSeen: job.totalBytesSeen,
+					tailDroppedBytes: job.tailDroppedBytes,
+					progressDroppedBytes: job.progressDroppedBytes,
+					...(job.report === undefined ? undefined : { report: job.report }),
+					output,
+				};
 			});
-			return {
-				content: [{ type: "text", text: formatReadSummary(jobs) }],
-				details: { jobs },
-			};
+			return { content: [{ type: "text", text: formatReadSummary(jobs) }], details: { jobs } };
 		},
 	};
 }
@@ -162,9 +135,7 @@ function formatReadSummary(jobs: readonly ReadJobJobStatus[]): string {
 	return `${sections.join("\n\n")}\n\nThis is a live tail, not the final result: each finished job's output arrives as a separate background job result message.`;
 }
 
-function formatReportSummary(
-	report: BackgroundJobReportSnapshot | undefined,
-): string | undefined {
+function formatReportSummary(report: BackgroundJobReportSnapshot | undefined): string | undefined {
 	if (!report) return undefined;
 	const parts: string[] = [];
 	if (report.value.summary) parts.push(report.value.summary);
@@ -175,7 +146,5 @@ function formatReportSummary(
 				: `${report.value.progress.completed}/${report.value.progress.total}`,
 		);
 	}
-	return parts.length > 0
-		? parts.join(" · ")
-		: `${report.value.kind} v${report.value.schemaVersion}`;
+	return parts.length > 0 ? parts.join(" · ") : `${report.value.kind} v${report.value.schemaVersion}`;
 }

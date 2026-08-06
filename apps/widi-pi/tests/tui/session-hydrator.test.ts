@@ -1,18 +1,66 @@
-import type {
-	AssistantMessage,
-	ToolResultMessage,
-	UserMessage,
-} from "@earendil-works/pi-ai";
+import type { AssistantMessage, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { SessionTreeEntry } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import {
-	COMMAND_EXPANSION_CUSTOM_TYPE,
 	EXTENSION_MESSAGE_CUSTOM_TYPE,
 	INPUT_TRANSFORM_CUSTOM_TYPE,
+	ORCHESTRATOR_MESSAGE_CUSTOM_TYPE,
 } from "../../src/core/session-manager.ts";
 import { hydrateSessionEntries } from "../../src/tui/session-hydrator.ts";
 
 describe("hydrateSessionEntries", () => {
+	// Both entry forms carry the same details, so both hydrate to the same item.
+	// The person reads `details.body`; `modelText` holds the rendered form the
+	// model read, and is absent when the renderer changed nothing.
+	it("restores orchestrator messages from both entry forms", () => {
+		const result = hydrateSessionEntries([
+			orchestratorMessage("agent-msg", "[Message from worker-7]\n\nthree duplicates found", {
+				source: { kind: "agent", label: "worker-7" },
+				body: "three duplicates found",
+			}),
+			orchestratorNotice("runtime-notice", "[Spawn tree closed] Every agent you created is gone.", {
+				source: { kind: "runtime", label: "spawn tree closed", details: { notice: "spawn_tree_closed" } },
+				body: "[Spawn tree closed] Every agent you created is gone.",
+			}),
+		]);
+
+		expect(result.timeline).toEqual([
+			{
+				type: "orchestrator-message",
+				id: "agent-msg",
+				durability: "durable",
+				createdAt: timestamp(1),
+				source: { kind: "agent", label: "worker-7" },
+				text: "three duplicates found",
+				modelText: "[Message from worker-7]\n\nthree duplicates found",
+			},
+			{
+				type: "orchestrator-message",
+				id: "runtime-notice",
+				durability: "durable",
+				createdAt: timestamp(1),
+				source: { kind: "runtime", label: "spawn tree closed", details: { notice: "spawn_tree_closed" } },
+				text: "[Spawn tree closed] Every agent you created is gone.",
+			},
+		]);
+	});
+
+	// An entry with no record of who wrote it cannot be attributed, and showing
+	// it as a plain user message would claim the person said it.
+	it("drops an orchestrator message that carries no source", () => {
+		const foreign = {
+			...orchestratorNotice("other-type", "not ours", { source: { kind: "agent" }, body: "not ours" }),
+			customType: "someone-else:message",
+		};
+		const result = hydrateSessionEntries([
+			orchestratorMessage("no-details", "orphan", undefined),
+			orchestratorNotice("bad-details", "orphan", { body: 7 }),
+			foreign,
+		]);
+
+		expect(result.timeline).toEqual([]);
+	});
+
 	it("restores human-facing messages, tools, extension messages and display facts", () => {
 		const entries: SessionTreeEntry[] = [
 			custom("transform", INPUT_TRANSFORM_CUSTOM_TYPE, {
@@ -21,21 +69,11 @@ describe("hydrateSessionEntries", () => {
 				text: "extension rewritten",
 				transformedBy: ["rewrite"],
 			}),
-			custom("expansion", COMMAND_EXPANSION_CUSTOM_TYPE, {
-				inputId: "input-1",
-				originalText: "extension rewritten",
-				expansions: [],
-			}),
 			message("user", userMessage("model-facing expanded text")),
 			message(
 				"assistant",
 				assistantMessage("I will inspect.", [
-					{
-						type: "toolCall",
-						id: "call-1",
-						name: "read",
-						arguments: { path: "README.md" },
-					},
+					{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "README.md" } },
 				]),
 			),
 			message("tool-result", toolResult("call-1", "read", "file contents")),
@@ -44,11 +82,7 @@ describe("hydrateSessionEntries", () => {
 				// Legacy entries may carry this removed field; structural
 				// hydration ignores it without rewriting the stored entry.
 				commandId: "legacy-command",
-				message: {
-					kind: "markdown",
-					title: "Report",
-					content: "durable result",
-				},
+				message: { kind: "markdown", title: "Report", content: "durable result" },
 			}),
 			custom("private", "extension:reports:private", { secret: true }),
 			{
@@ -59,27 +93,9 @@ describe("hydrateSessionEntries", () => {
 				provider: "test",
 				modelId: "model-2",
 			},
-			{
-				type: "thinking_level_change",
-				id: "thinking",
-				parentId: null,
-				timestamp: timestamp(8),
-				thinkingLevel: "high",
-			},
-			{
-				type: "active_tools_change",
-				id: "tools",
-				parentId: null,
-				timestamp: timestamp(9),
-				activeToolNames: ["read"],
-			},
-			{
-				type: "session_info",
-				id: "session-info",
-				parentId: null,
-				timestamp: timestamp(10),
-				name: "research",
-			},
+			{ type: "thinking_level_change", id: "thinking", parentId: null, timestamp: timestamp(8), thinkingLevel: "high" },
+			{ type: "active_tools_change", id: "tools", parentId: null, timestamp: timestamp(9), activeToolNames: ["read"] },
+			{ type: "session_info", id: "session-info", parentId: null, timestamp: timestamp(10), name: "research" },
 			{
 				type: "compaction",
 				id: "compact",
@@ -143,11 +159,7 @@ describe("hydrateSessionEntries", () => {
 			}),
 			custom("ragged", EXTENSION_MESSAGE_CUSTOM_TYPE, {
 				extensionId: "reports",
-				message: {
-					kind: "table",
-					columns: [{ label: "Path" }],
-					rows: [["src/a.ts", "12"]],
-				},
+				message: { kind: "table", columns: [{ label: "Path" }], rows: [["src/a.ts", "12"]] },
 			}),
 		]);
 
@@ -178,56 +190,68 @@ describe("hydrateSessionEntries", () => {
 		]);
 
 		expect(result.timeline).toMatchObject([
-			{
-				type: "tool-execution",
-				toolCallId: "missing-call",
-				status: "completed",
-				isError: true,
-			},
-			{
-				type: "session-marker",
-				marker: "branch-summary",
-			},
+			{ type: "tool-execution", toolCallId: "missing-call", status: "completed", isError: true },
+			{ type: "session-marker", marker: "branch-summary" },
 		]);
 	});
 });
 
-function message(
+/** The waking form: a typed message the agent loop persisted. */
+function orchestratorMessage(
 	id: string,
-	value: UserMessage | AssistantMessage | ToolResultMessage,
+	content: string,
+	details: unknown,
 ): Extract<SessionTreeEntry, { type: "message" }> {
 	return {
 		type: "message",
 		id,
 		parentId: null,
 		timestamp: timestamp(1),
-		message: value,
+		message: {
+			role: "custom",
+			customType: ORCHESTRATOR_MESSAGE_CUSTOM_TYPE,
+			content,
+			display: true,
+			details,
+			timestamp: Date.parse(timestamp(1)),
+		},
 	};
 }
 
-function custom(
+/** The non-waking form: a `precede` notice appended straight to the branch. */
+function orchestratorNotice(
 	id: string,
-	customType: string,
-	data: unknown,
-): Extract<SessionTreeEntry, { type: "custom" }> {
+	content: string,
+	details: unknown,
+): Extract<SessionTreeEntry, { type: "custom_message" }> {
 	return {
-		type: "custom",
+		type: "custom_message",
 		id,
 		parentId: null,
 		timestamp: timestamp(1),
-		customType,
-		data,
+		customType: ORCHESTRATOR_MESSAGE_CUSTOM_TYPE,
+		content,
+		display: true,
+		details,
 	};
+}
+
+function message(
+	id: string,
+	value: UserMessage | AssistantMessage | ToolResultMessage,
+): Extract<SessionTreeEntry, { type: "message" }> {
+	return { type: "message", id, parentId: null, timestamp: timestamp(1), message: value };
+}
+
+function custom(id: string, customType: string, data: unknown): Extract<SessionTreeEntry, { type: "custom" }> {
+	return { type: "custom", id, parentId: null, timestamp: timestamp(1), customType, data };
 }
 
 function userMessage(content: string): UserMessage {
 	return { role: "user", content, timestamp: Date.parse(timestamp(1)) };
 }
 
-function assistantMessage(
-	text: string,
-	extra: AssistantMessage["content"] = [],
-): AssistantMessage {
+function assistantMessage(text: string, extra: AssistantMessage["content"] = []): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [{ type: "text", text }, ...extra],
@@ -240,25 +264,14 @@ function assistantMessage(
 			cacheRead: 0,
 			cacheWrite: 0,
 			totalTokens: 0,
-			cost: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				total: 0,
-			},
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		stopReason: "stop",
 		timestamp: Date.parse(timestamp(2)),
 	};
 }
 
-function toolResult(
-	toolCallId: string,
-	toolName: string,
-	text: string,
-	isError = false,
-): ToolResultMessage {
+function toolResult(toolCallId: string, toolName: string, text: string, isError = false): ToolResultMessage {
 	return {
 		role: "toolResult",
 		toolCallId,

@@ -2,10 +2,9 @@
  * The repository, checked against the one property that decides the design:
  * a forked session stands on its own once the source is gone.
  *
- * The namespace used here owns objects and may name child sessions, which is
- * enough to exercise both halves of a closure without pulling the spawn tree
- * in. Everything the repository does with it, it does by executing what the
- * definition declares - it never learns what a counter is.
+ * The namespace used here is a plain object log, which is enough to exercise
+ * the closure. Everything the repository does with it, it does by executing
+ * what the definition declares - it never learns what a counter is.
  */
 
 import type { SessionTreeEntry } from "@widi/agent-core";
@@ -17,7 +16,6 @@ import type {
 	PersistenceForkPolicy,
 	PersistenceNamespaceDefinition,
 	SessionAddress,
-	SessionKey,
 } from "../../src/core/persistence/index.ts";
 import {
 	closeStorage,
@@ -33,16 +31,6 @@ const ROOT = "/runs";
 
 interface CounterState {
 	readonly count: number;
-	readonly sessions?: readonly SessionKey[];
-}
-
-/**
- * The state names its child sessions, and the object log reads them out through
- * the one hook it takes. A namespace like this brings no storage of its own -
- * that is the whole point of the callback.
- */
-function counterSessions(data: unknown): readonly SessionKey[] {
-	return (data as CounterState | undefined)?.sessions ?? [];
 }
 
 function counterNamespace(
@@ -75,7 +63,6 @@ function counterNamespace(
 				formatVersion: version,
 				sessionKey: context.sessionKey,
 				diagnostics: context.diagnostics,
-				sessionDependenciesOf: counterSessions,
 			});
 			return options.wrap ? options.wrap(objects) : objects;
 		},
@@ -103,23 +90,11 @@ class CountingStorage implements CustomStorage {
 		return await this._objects.listDependencies(stateRoot);
 	}
 
-	async listSessionDependencies(
-		stateRoot: string,
-	): Promise<readonly SessionKey[]> {
-		return await this._objects.listSessionDependencies(stateRoot);
-	}
-
-	async copyReachable(
-		target: CustomStorage,
-		roots: readonly string[],
-	): Promise<void> {
+	async copyReachable(target: CustomStorage, roots: readonly string[]): Promise<void> {
 		await this._objects.copyReachable(target, roots);
 	}
 
-	async putObject(options: {
-		readonly data: unknown;
-		readonly dependencies?: readonly string[];
-	}): Promise<string> {
+	async putObject(options: { readonly data: unknown; readonly dependencies?: readonly string[] }): Promise<string> {
 		return await this._objects.putObject(options);
 	}
 
@@ -128,18 +103,16 @@ class CountingStorage implements CustomStorage {
 	}
 }
 
-function repoOver(
-	fs: MemoryFileSystem,
-	definitions: readonly PersistenceNamespaceDefinition[],
-): JsonlPersistenceRepo {
+function repoOver(fs: MemoryFileSystem, definitions: readonly PersistenceNamespaceDefinition[]): JsonlPersistenceRepo {
 	const registry = new PersistenceRegistry();
 	for (const definition of definitions) registry.register(definition);
 	return new JsonlPersistenceRepo({ fs, root: ROOT, registry });
 }
 
-function makeRepo(
-	definitions: readonly PersistenceNamespaceDefinition[] = [counterNamespace()],
-): { fs: MemoryFileSystem; repo: JsonlPersistenceRepo } {
+function makeRepo(definitions: readonly PersistenceNamespaceDefinition[] = [counterNamespace()]): {
+	fs: MemoryFileSystem;
+	repo: JsonlPersistenceRepo;
+} {
 	const fs = new MemoryFileSystem();
 	return { fs, repo: repoOver(fs, definitions) };
 }
@@ -155,11 +128,7 @@ async function commitState(
 	namespace: string,
 	data: unknown,
 ): Promise<void> {
-	const ref = await repo.stageState({
-		address: target.address,
-		namespace,
-		data,
-	});
+	const ref = await repo.stageState({ address: target.address, namespace, data });
 	await target.session.appendEntry({
 		type: "custom",
 		id: await target.session.createEntryId(),
@@ -177,11 +146,7 @@ async function say(target: PersistedSession, text: string): Promise<string> {
 		id,
 		parentId: await target.session.getLeafId(),
 		timestamp: new Date().toISOString(),
-		message: {
-			role: "user",
-			content: [{ type: "text", text }],
-			timestamp: Date.now(),
-		},
+		message: { role: "user", content: [{ type: "text", text }], timestamp: Date.now() },
 	};
 	await target.session.appendEntry(entry);
 	return id;
@@ -198,17 +163,11 @@ describe("sessions on disk", () => {
 	it("nests a child under its parent and lists only roots", async () => {
 		const { repo } = makeRepo();
 		const root = await repo.create({ cwd: CWD, sessionId: "root" });
-		const child = await repo.create({
-			cwd: CWD,
-			sessionId: "child",
-			parent: root.address.key,
-		});
+		const child = await repo.create({ cwd: CWD, sessionId: "child", parent: root.address.key });
 
 		expect(child.address.key).toHaveLength(2);
 		expect(await repo.sessionFilePath(child.address)).toContain("/agents/");
-		expect(child.metadata.parentSessionPath).toBe(
-			await repo.sessionFilePath(root.address),
-		);
+		expect(child.metadata.parentSessionPath).toBe(await repo.sessionFilePath(root.address));
 
 		const roots = await repo.list({ cwd: CWD });
 		expect(roots.map((info) => info.metadata.id)).toEqual(["root"]);
@@ -228,6 +187,23 @@ describe("sessions on disk", () => {
 		expect(listed.map((info) => info.metadata.id)).toEqual(["second", "first"]);
 	});
 
+	// Session ids do not repeat in practice - an AgentId carries four random
+	// characters - but creating a session writes its header with `writeFile`, so
+	// a name already in use would truncate the session that owns it rather than
+	// fail. The check is what keeps that impossible instead of unlikely.
+	it("never lands a new session on a directory that exists", async () => {
+		const { repo } = makeRepo();
+		const first = await repo.create({ cwd: CWD, sessionId: "root" });
+		await say(first, "the first session");
+
+		const second = await repo.create({ cwd: CWD, sessionId: "root" });
+
+		expect(second.address.key).not.toEqual(first.address.key);
+		expect((await (await repo.open(first.address)).session.getEntries()).length).toBe(1);
+		expect(await (await repo.open(second.address)).session.getEntries()).toEqual([]);
+		expect((await repo.list({ cwd: CWD })).length).toBe(2);
+	});
+
 	it("reopens a session and refuses one that is not there", async () => {
 		const { repo } = makeRepo();
 		const created = await repo.create({ cwd: CWD, sessionId: "root" });
@@ -235,9 +211,7 @@ describe("sessions on disk", () => {
 
 		const reopened = await repo.open(created.address);
 		expect((await reopened.session.getEntries()).length).toBe(1);
-		await expect(
-			repo.open({ cwd: CWD, key: ["nothing"] }),
-		).rejects.toMatchObject({ code: "not_found" });
+		await expect(repo.open({ cwd: CWD, key: ["nothing"] })).rejects.toMatchObject({ code: "not_found" });
 	});
 
 	// The bug nesting exists to fix: the flat layout left a deleted root's
@@ -245,21 +219,13 @@ describe("sessions on disk", () => {
 	it("deletes the whole subtree, storage included", async () => {
 		const { fs, repo } = makeRepo();
 		const root = await repo.create({ cwd: CWD, sessionId: "root" });
-		const child = await repo.create({
-			cwd: CWD,
-			sessionId: "child",
-			parent: root.address.key,
-		});
+		const child = await repo.create({ cwd: CWD, sessionId: "child", parent: root.address.key });
 		await commitState(repo, child, "test:counter", { count: 1 });
-		expect([...fs.files.keys()].some((p) => p.includes("objects.jsonl"))).toBe(
-			true,
-		);
+		expect([...fs.files.keys()].some((p) => p.includes("objects.jsonl"))).toBe(true);
 
 		await repo.delete(root.address);
 		const rootDir = `/runs/--root-projs-widi--/${root.address.key[0]}`;
-		expect([...fs.files.keys()].filter((p) => p.startsWith(rootDir))).toEqual(
-			[],
-		);
+		expect([...fs.files.keys()].filter((p) => p.startsWith(rootDir))).toEqual([]);
 		expect([...fs.dirs].filter((p) => p.startsWith(rootDir))).toEqual([]);
 	});
 });
@@ -284,14 +250,9 @@ describe("storage handles", () => {
 		await repo.fork(root.address, { sessionId: "forked" });
 
 		expect(opened.length).toBeGreaterThan(0);
-		expect(opened.map((storage) => storage.closes)).toEqual(
-			opened.map(() => 1),
-		);
+		expect(opened.map((storage) => storage.closes)).toEqual(opened.map(() => 1));
 
-		const mine = (await repo.openStorage(
-			root.address,
-			"test:counter",
-		)) as CountingStorage;
+		const mine = (await repo.openStorage(root.address, "test:counter")) as CountingStorage;
 		expect(mine.closes).toBe(0);
 		await closeStorage(mine);
 		expect(mine.closes).toBe(1);
@@ -302,9 +263,7 @@ describe("where a namespace lives", () => {
 	it("rejects a name that is not of the form owner:name", async () => {
 		const registry = new PersistenceRegistry();
 		for (const namespace of ["counter", "test:", "Test:Counter", "../escape"]) {
-			expect(() => registry.register(counterNamespace({ namespace }))).toThrow(
-				/owner:name/,
-			);
+			expect(() => registry.register(counterNamespace({ namespace }))).toThrow(/owner:name/);
 		}
 		expect(() => registry.register(counterNamespace())).not.toThrow();
 	});
@@ -315,36 +274,27 @@ describe("where a namespace lives", () => {
 	it("puts a located namespace outside the session and still forks it", async () => {
 		const { fs, repo } = makeRepo([
 			counterNamespace({
-				locate: ({ address, persistenceRoot }) =>
-					`${persistenceRoot}/elsewhere/${address.key.join("-")}`,
+				locate: ({ address, persistenceRoot }) => `${persistenceRoot}/elsewhere/${address.key.join("-")}`,
 			}),
 		]);
 		const root = await repo.create({ cwd: CWD, sessionId: "root" });
 		await commitState(repo, root, "test:counter", { count: 4 });
 
 		const sessionDir = `/runs/--root-projs-widi--/${root.address.key[0]}`;
-		expect(
-			[...fs.files.keys()].filter((path) => path.startsWith(sessionDir)),
-		).toEqual([`${sessionDir}/session.jsonl`]);
-		expect(
-			fs.files.has(`/runs/elsewhere/${root.address.key[0]}/objects.jsonl`),
-		).toBe(true);
+		expect([...fs.files.keys()].filter((path) => path.startsWith(sessionDir))).toEqual([`${sessionDir}/session.jsonl`]);
+		expect(fs.files.has(`/runs/elsewhere/${root.address.key[0]}/objects.jsonl`)).toBe(true);
 		expect(counted((await repo.resolveState(root.address)).states)).toBe(4);
 
 		const forked = await repo.fork(root.address, { sessionId: "forked" });
 		expect(forked.diagnostics.entries).toEqual([]);
-		expect(
-			counted((await repo.resolveState(forked.session.address)).states),
-		).toBe(4);
+		expect(counted((await repo.resolveState(forked.session.address)).states)).toBe(4);
 	});
 
 	// Deleting a session deletes its directory, and that is all it ever did.
 	// Reclaiming a directory the namespace placed is the namespace's problem.
 	it("leaves a located directory behind when the session is deleted", async () => {
 		const { fs, repo } = makeRepo([
-			counterNamespace({
-				locate: ({ persistenceRoot }) => `${persistenceRoot}/elsewhere`,
-			}),
+			counterNamespace({ locate: ({ persistenceRoot }) => `${persistenceRoot}/elsewhere` }),
 		]);
 		const root = await repo.create({ cwd: CWD, sessionId: "root" });
 		await commitState(repo, root, "test:counter", { count: 4 });
@@ -380,15 +330,9 @@ describe("resolving a branch", () => {
 		const bare = repoOver(fs, []);
 		const resolved = await bare.resolveState(root.address);
 		expect(resolved.states.size).toBe(0);
-		expect(resolved.diagnostics.map((entry) => entry.code)).toEqual([
-			"persistence.unknown_namespace",
-		]);
-		expect(
-			resolved.diagnostics.every((entry) => entry.severity !== "error"),
-		).toBe(true);
-		expect(
-			await (await bare.open(root.address)).session.getEntries(),
-		).toHaveLength(2);
+		expect(resolved.diagnostics.map((entry) => entry.code)).toEqual(["persistence.unknown_namespace"]);
+		expect(resolved.diagnostics.every((entry) => entry.severity !== "error")).toBe(true);
+		expect(await (await bare.open(root.address)).session.getEntries()).toHaveLength(2);
 		expect(fs.files).toEqual(before);
 
 		// And it is still there once the extension comes back.
@@ -396,10 +340,7 @@ describe("resolving a branch", () => {
 	});
 
 	it("reports an unresolvable namespace without losing the others", async () => {
-		const { repo } = makeRepo([
-			counterNamespace(),
-			counterNamespace({ namespace: "test:other" }),
-		]);
+		const { repo } = makeRepo([counterNamespace(), counterNamespace({ namespace: "test:other" })]);
 		const root = await repo.create({ cwd: CWD, sessionId: "root" });
 		await commitState(repo, root, "test:counter", { count: 7 });
 		await root.session.appendEntry({
@@ -408,19 +349,13 @@ describe("resolving a branch", () => {
 			parentId: await root.session.getLeafId(),
 			timestamp: new Date().toISOString(),
 			customType: PERSISTENCE_REF_CUSTOM_TYPE,
-			data: {
-				version: 1,
-				namespace: "test:other",
-				stateRoot: `sha256:${"0".repeat(64)}`,
-			},
+			data: { version: 1, namespace: "test:other", stateRoot: `sha256:${"0".repeat(64)}` },
 		});
 
 		const resolved = await repo.resolveState(root.address);
 		expect(counted(resolved.states)).toBe(7);
 		expect(resolved.states.has("test:other")).toBe(false);
-		expect(resolved.diagnostics.map((entry) => entry.code)).toEqual([
-			"persistence.dangling_ref",
-		]);
+		expect(resolved.diagnostics.map((entry) => entry.code)).toEqual(["persistence.dangling_ref"]);
 	});
 
 	it("migrates an older object and says so", async () => {
@@ -456,9 +391,7 @@ describe("resolving a branch", () => {
 
 		const resolved = await upgraded.resolveState(root.address);
 		expect(resolved.states.size).toBe(0);
-		expect(resolved.diagnostics.map((entry) => entry.code)).toEqual([
-			"persistence.unsupported_version",
-		]);
+		expect(resolved.diagnostics.map((entry) => entry.code)).toEqual(["persistence.unsupported_version"]);
 	});
 });
 
@@ -467,28 +400,17 @@ describe("fork", () => {
 	it("stands on its own after the source directory is deleted", async () => {
 		const { fs, repo } = makeRepo();
 		const root = await repo.create({ cwd: CWD, sessionId: "root" });
-		const child = await repo.create({
-			cwd: CWD,
-			sessionId: "child",
-			parent: root.address.key,
-		});
+		const child = await repo.create({ cwd: CWD, sessionId: "child", parent: root.address.key });
 		await say(child, "child work");
 		await commitState(repo, child, "test:counter", { count: 99 });
 		await say(root, "root work");
-		await commitState(repo, root, "test:counter", {
-			count: 5,
-			sessions: [child.address.key],
-		});
+		await commitState(repo, root, "test:counter", { count: 5 });
 
 		const forked = await repo.fork(root.address, { sessionId: "forked" });
 		expect(forked.diagnostics.entries).toEqual([]);
 
 		await repo.delete(root.address);
-		expect(
-			[...fs.files.keys()].some((path) =>
-				path.includes(`/${root.address.key[0]}/`),
-			),
-		).toBe(false);
+		expect([...fs.files.keys()].some((path) => path.includes(`/${root.address.key[0]}/`))).toBe(false);
 
 		const resolved = await repo.resolveState(forked.session.address);
 		expect(counted(resolved.states)).toBe(5);
@@ -496,9 +418,7 @@ describe("fork", () => {
 
 		const children = await repo.listChildren(forked.session.address);
 		expect(children.map((info) => info.metadata.id)).toEqual(["child"]);
-		const childState = await repo.resolveState(
-			children[0]?.address as SessionAddress,
-		);
+		const childState = await repo.resolveState(children[0]?.address as SessionAddress);
 		expect(counted(childState.states)).toBe(99);
 	});
 
@@ -524,13 +444,8 @@ describe("fork", () => {
 		const midpoint = await say(root, "fork here");
 		await commitState(repo, root, "test:counter", { count: 2 });
 
-		const forked = await repo.fork(root.address, {
-			sessionId: "forked",
-			entryId: midpoint,
-		});
-		expect(
-			counted((await repo.resolveState(forked.session.address)).states),
-		).toBe(1);
+		const forked = await repo.fork(root.address, { sessionId: "forked", entryId: midpoint });
+		expect(counted((await repo.resolveState(forked.session.address)).states)).toBe(1);
 		expect(counted((await repo.resolveState(root.address)).states)).toBe(2);
 	});
 
@@ -551,18 +466,13 @@ describe("fork", () => {
 
 		expect(counted((await repo.resolveState(root.address)).states)).toBe(1);
 		const forked = await repo.fork(root.address, { sessionId: "forked" });
-		expect(
-			counted((await repo.resolveState(forked.session.address)).states),
-		).toBe(1);
+		expect(counted((await repo.resolveState(forked.session.address)).states)).toBe(1);
 		// The abandoned branch still comes along; it is history, not state.
 		expect(await forked.session.session.findEntries("message")).toHaveLength(2);
 	});
 
 	it("leaves an omit namespace behind and keeps the rest", async () => {
-		const { repo } = makeRepo([
-			counterNamespace(),
-			counterNamespace({ namespace: "test:live", forkPolicy: "omit" }),
-		]);
+		const { repo } = makeRepo([counterNamespace(), counterNamespace({ namespace: "test:live", forkPolicy: "omit" })]);
 		const root = await repo.create({ cwd: CWD, sessionId: "root" });
 		await commitState(repo, root, "test:counter", { count: 1 });
 		await commitState(repo, root, "test:live", { count: 2 });
@@ -571,9 +481,7 @@ describe("fork", () => {
 		const resolved = await repo.resolveState(forked.session.address);
 		expect(counted(resolved.states)).toBe(1);
 		expect(resolved.states.has("test:live")).toBe(false);
-		expect(forked.diagnostics.entries.map((entry) => entry.code)).toEqual([
-			"persistence.fork_omitted",
-		]);
+		expect(forked.diagnostics.entries.map((entry) => entry.code)).toEqual(["persistence.fork_omitted"]);
 	});
 
 	it("marks what a degrade policy rewrote", async () => {
@@ -585,11 +493,7 @@ describe("fork", () => {
 				async fork({ source, target, roots }) {
 					const root = roots[0] as string;
 					const state = (await source.resolveState(root)) as CounterState;
-					return {
-						stateRoot: await target.putObject({
-							data: { count: state.count, interrupted: true },
-						}),
-					};
+					return { stateRoot: await target.putObject({ data: { count: state.count, interrupted: true } }) };
 				},
 			}),
 		]);
@@ -598,45 +502,28 @@ describe("fork", () => {
 
 		const forked = await repo.fork(root.address, { sessionId: "forked" });
 		const resolved = await repo.resolveState(forked.session.address);
-		expect(resolved.states.get("test:jobs")?.state).toEqual({
-			count: 3,
-			interrupted: true,
-		});
+		expect(resolved.states.get("test:jobs")?.state).toEqual({ count: 3, interrupted: true });
 		expect(resolved.states.get("test:jobs")?.provenance).toBe("degraded");
-		expect(
-			counted((await repo.resolveState(root.address)).states, "test:jobs"),
-		).toBe(3);
+		expect(counted((await repo.resolveState(root.address)).states, "test:jobs")).toBe(3);
 	});
 
-	it("does not carry a child spawned after the fork point", async () => {
+	// Rewinding decides what the conversation and the namespace states say, and
+	// nothing else: no record anywhere names a child session, so the directory
+	// listing is the only account of which children exist. A child spawned after
+	// the fork point comes along, disposed like every other one.
+	it("carries every child on disk, fork point or not", async () => {
 		const { repo } = makeRepo();
 		const root = await repo.create({ cwd: CWD, sessionId: "root" });
-		const early = await repo.create({
-			cwd: CWD,
-			sessionId: "early",
-			parent: root.address.key,
-		});
-		await commitState(repo, root, "test:counter", {
-			count: 1,
-			sessions: [early.address.key],
-		});
+		await repo.create({ cwd: CWD, sessionId: "early", parent: root.address.key });
+		await commitState(repo, root, "test:counter", { count: 1 });
 		const midpoint = await say(root, "fork here");
-		const late = await repo.create({
-			cwd: CWD,
-			sessionId: "late",
-			parent: root.address.key,
-		});
-		await commitState(repo, root, "test:counter", {
-			count: 2,
-			sessions: [early.address.key, late.address.key],
-		});
+		await repo.create({ cwd: CWD, sessionId: "late", parent: root.address.key });
+		await commitState(repo, root, "test:counter", { count: 2 });
 
-		const forked = await repo.fork(root.address, {
-			sessionId: "forked",
-			entryId: midpoint,
-		});
+		const forked = await repo.fork(root.address, { sessionId: "forked", entryId: midpoint });
 		const children = await repo.listChildren(forked.session.address);
-		expect(children.map((info) => info.metadata.id)).toEqual(["early"]);
+		expect(children.map((info) => info.metadata.id).sort()).toEqual(["early", "late"]);
+		expect(counted((await repo.resolveState(forked.session.address)).states)).toBe(1);
 	});
 
 	it("writes nothing into the source", async () => {
@@ -644,15 +531,11 @@ describe("fork", () => {
 		const root = await repo.create({ cwd: CWD, sessionId: "root" });
 		await commitState(repo, root, "test:counter", { count: 1 });
 		const sourcePrefix = `/runs/--root-projs-widi--/${root.address.key[0]}`;
-		const before = new Map(
-			[...fs.files].filter(([path]) => path.startsWith(sourcePrefix)),
-		);
+		const before = new Map([...fs.files].filter(([path]) => path.startsWith(sourcePrefix)));
 
 		await repo.fork(root.address, { sessionId: "forked" });
 
-		const after = new Map(
-			[...fs.files].filter(([path]) => path.startsWith(sourcePrefix)),
-		);
+		const after = new Map([...fs.files].filter(([path]) => path.startsWith(sourcePrefix)));
 		expect(after).toEqual(before);
 	});
 });

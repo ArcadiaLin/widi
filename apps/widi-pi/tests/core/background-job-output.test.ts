@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { BackgroundJobOutput } from "../../src/core/background/index.ts";
 
-const base64 = (value: string | Buffer) =>
-	Buffer.from(value).toString("base64");
+const base64 = (value: string | Buffer) => Buffer.from(value).toString("base64");
 
 describe("BackgroundJobOutput", () => {
 	it("accumulates appended chunks and reads them back as UTF-8", () => {
@@ -113,9 +112,7 @@ describe("BackgroundJobOutput", () => {
 		expect(first).toMatchObject({ startByte: 0, endByte: 1 });
 		expect(second).toMatchObject({ startByte: 1, endByte: 2 });
 		const reconstructed = Buffer.concat(
-			[first, second].map((increment) =>
-				Buffer.from(increment?.chunk ?? "", "base64"),
-			),
+			[first, second].map((increment) => Buffer.from(increment?.chunk ?? "", "base64")),
 		);
 		expect(reconstructed).toEqual(bytes);
 	});

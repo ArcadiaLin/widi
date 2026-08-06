@@ -1,5 +1,5 @@
 import { Type } from "typebox";
-import type { AgentProfileBrief } from "../../orchestrator/host.ts";
+import type { AgentProfileBrief } from "../../host.ts";
 import type { ToolDefinition } from "../types.ts";
 import { requireAgentHost } from "./shared.ts";
 
@@ -28,10 +28,7 @@ export function createListAgentProfilesToolDefinition(): ToolDefinition<
 		parameters: listAgentProfilesSchema,
 		execute: async (_toolCallId, _params, context) => {
 			const profiles = await requireAgentHost(context).listProfiles();
-			return {
-				content: [{ type: "text", text: formatProfiles(profiles) }],
-				details: { profiles },
-			};
+			return { content: [{ type: "text", text: formatProfiles(profiles) }], details: { profiles } };
 		},
 	};
 }
@@ -42,9 +39,7 @@ function formatProfiles(profiles: readonly AgentProfileBrief[]): string {
 	}
 	const lines = profiles.map((profile) => {
 		const description = profile.description ? `: ${profile.description}` : "";
-		const session = profile.persist
-			? "persistent session"
-			: "ephemeral session";
+		const session = profile.persist ? "persistent session" : "ephemeral session";
 		const head = `- ${profile.id} (${profile.label})${description} [${session}]`;
 		if (!profile.whenToUse) return head;
 		// Indented under its own entry: selection advice runs to a paragraph, and

@@ -14,8 +14,7 @@ export class StartupHumanPrompt {
 	private tui: TUI | undefined;
 	private menu: HumanRequestMenu | undefined;
 
-	readonly requestHuman: HumanRequestHandler = (request, signal) =>
-		this.ensureMenu().request(request, signal);
+	readonly requestHuman: HumanRequestHandler = (request, signal) => this.ensureMenu().request(request, signal);
 
 	private ensureMenu(): HumanRequestMenu {
 		if (this.menu) return this.menu;

@@ -9,10 +9,7 @@ import { createReadToolDefinition } from "./read.ts";
 import { createWriteToolDefinition } from "./write.ts";
 
 /** Registration owner for runtime built-in tools. */
-export const coreBuiltinToolSource: ToolSource = {
-	kind: "core",
-	id: "builtin",
-};
+export const coreBuiltinToolSource: ToolSource = { kind: "core", id: "builtin" };
 
 export interface CoreCodingToolOptions {
 	/** Explicit shell path for the bash tool. */
@@ -41,28 +38,16 @@ export function registerCoreCodingTools(
 	options: CoreCodingToolOptions = {},
 ): void {
 	registry.defineTool(
-		createReadToolDefinition(cwd, {
-			autoResizeImages: options.autoResizeImages,
-			blockImages: options.blockImages,
-		}),
+		createReadToolDefinition(cwd, { autoResizeImages: options.autoResizeImages, blockImages: options.blockImages }),
 		coreBuiltinToolSource,
 	);
 	registry.defineTool(
-		createBashToolDefinition(cwd, {
-			shellPath: options.shellPath,
-			commandPrefix: options.shellCommandPrefix,
-		}),
+		createBashToolDefinition(cwd, { shellPath: options.shellPath, commandPrefix: options.shellCommandPrefix }),
 		coreBuiltinToolSource,
 	);
 	registry.defineTool(createEditToolDefinition(cwd), coreBuiltinToolSource);
 	registry.defineTool(createWriteToolDefinition(cwd), coreBuiltinToolSource);
-	registry.defineTool(
-		createGrepToolDefinition(cwd, { rgPath: options.rgPath }),
-		coreBuiltinToolSource,
-	);
-	registry.defineTool(
-		createFindToolDefinition(cwd, { rgPath: options.rgPath }),
-		coreBuiltinToolSource,
-	);
+	registry.defineTool(createGrepToolDefinition(cwd, { rgPath: options.rgPath }), coreBuiltinToolSource);
+	registry.defineTool(createFindToolDefinition(cwd, { rgPath: options.rgPath }), coreBuiltinToolSource);
 	registry.defineTool(createLsToolDefinition(cwd), coreBuiltinToolSource);
 }

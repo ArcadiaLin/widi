@@ -15,11 +15,7 @@ import type {
 	PersistenceFileSystem,
 	PersistenceNamespaceDefinition,
 } from "../persistence/index.ts";
-import {
-	contentHash,
-	JsonlObjectStore,
-	OBJECTS_FILE_NAME,
-} from "../persistence/index.ts";
+import { contentHash, JsonlObjectStore, OBJECTS_FILE_NAME } from "../persistence/index.ts";
 import type {
 	BackgroundJobOrigin,
 	JobBranchPort,
@@ -34,10 +30,7 @@ import type {
 	JobStartedRecord,
 	SessionJobStoreOptions,
 } from "./types.ts";
-import {
-	MAX_PERSISTED_JOB_MESSAGE_BYTES,
-	MAX_PERSISTED_JOB_OUTPUT_BYTES,
-} from "./types.ts";
+import { MAX_PERSISTED_JOB_MESSAGE_BYTES, MAX_PERSISTED_JOB_OUTPUT_BYTES } from "./types.ts";
 
 export const JOBS_NAMESPACE = "core:jobs";
 
@@ -51,13 +44,7 @@ export const MAX_JOB_CHAIN_LENGTH = 10_000;
 
 const MAX_OUTPUT_NAME_PREFIX = 64;
 
-const CLOSE_CAUSES: ReadonlySet<string> = new Set<JobCloseCause>([
-	"resume",
-	"navigate",
-	"dispose",
-	"fork",
-	"abort",
-]);
+const CLOSE_CAUSES: ReadonlySet<string> = new Set<JobCloseCause>(["resume", "navigate", "dispose", "fork", "abort"]);
 
 // -- records --------------------------------------------------------------
 
@@ -68,19 +55,14 @@ const CLOSE_CAUSES: ReadonlySet<string> = new Set<JobCloseCause>([
  * past a job's start never sees the job; and the first terminal record wins, so
  * a closure racing a settlement cannot rewrite an answer that already arrived.
  */
-export function reduceJobRecords(
-	records: readonly JobRecord[],
-): readonly JobHistoryEntry[] {
+export function reduceJobRecords(records: readonly JobRecord[]): readonly JobHistoryEntry[] {
 	const jobs = new Map<string, JobHistoryEntry>();
 	for (const record of records) applyJobRecord(jobs, record);
 	return [...jobs.values()];
 }
 
 /** One step of {@link reduceJobRecords}, for a reduction kept up to date live. */
-export function applyJobRecord(
-	jobs: Map<string, JobHistoryEntry>,
-	record: JobRecord,
-): void {
+export function applyJobRecord(jobs: Map<string, JobHistoryEntry>, record: JobRecord): void {
 	if (record.kind === "started") {
 		if (jobs.has(record.toolCallId)) return;
 		jobs.set(record.toolCallId, {
@@ -113,13 +95,7 @@ export function applyJobRecord(
 					messageText: record.messageText,
 					outputTail: record.outputTail,
 				}
-			: {
-					...job,
-					state: "closed",
-					cause: record.cause,
-					stopReason: record.stopReason,
-					endedAt: record.closedAt,
-				},
+			: { ...job, state: "closed", cause: record.cause, stopReason: record.stopReason, endedAt: record.closedAt },
 	);
 }
 
@@ -129,9 +105,7 @@ export function applyJobRecord(
  * never the branch alone - a navigation kills nothing, so a job open on the
  * branch and live in this process must survive it.
  */
-export function planJobClosures(
-	request: JobClosurePlanRequest,
-): readonly JobClosedRecord[] {
+export function planJobClosures(request: JobClosurePlanRequest): readonly JobClosedRecord[] {
 	const records: JobClosedRecord[] = [];
 	for (const job of request.jobs) {
 		if (job.state !== "open") continue;
@@ -141,9 +115,7 @@ export function planJobClosures(
 			toolCallId: job.toolCallId,
 			cause: request.cause,
 			closedAt: request.closedAt,
-			...(request.stopReason === undefined
-				? undefined
-				: { stopReason: request.stopReason }),
+			...(request.stopReason === undefined ? undefined : { stopReason: request.stopReason }),
 		});
 	}
 	return records;
@@ -153,9 +125,7 @@ export function planJobClosures(
 export function jobOutputFileName(toolCallId: string): string {
 	// The hash suffix is unconditional: sanitizing alone would let two ids that
 	// differ only in characters a path cannot hold collide on one file.
-	const safe = toolCallId
-		.replace(/[^A-Za-z0-9_-]/g, "")
-		.slice(0, MAX_OUTPUT_NAME_PREFIX);
+	const safe = toolCallId.replace(/[^A-Za-z0-9_-]/g, "").slice(0, MAX_OUTPUT_NAME_PREFIX);
 	return `${safe}-${contentHash(toolCallId).slice(-8)}.log`;
 }
 
@@ -170,17 +140,11 @@ export function toJobRecord(value: unknown): JobRecord | undefined {
 	}
 	switch (record.kind) {
 		case "started":
-			return isStartedRecord(record)
-				? (record as unknown as JobStartedRecord)
-				: undefined;
+			return isStartedRecord(record) ? (record as unknown as JobStartedRecord) : undefined;
 		case "settled":
-			return isSettledRecord(record)
-				? (record as unknown as JobSettledRecord)
-				: undefined;
+			return isSettledRecord(record) ? (record as unknown as JobSettledRecord) : undefined;
 		case "closed":
-			return isClosedRecord(record)
-				? (record as unknown as JobClosedRecord)
-				: undefined;
+			return isClosedRecord(record) ? (record as unknown as JobClosedRecord) : undefined;
 		default:
 			return undefined;
 	}
@@ -218,9 +182,7 @@ function isStartedRecord(record: Record<string, unknown>): boolean {
 
 function isSettledRecord(record: Record<string, unknown>): boolean {
 	return (
-		(record.status === "completed" ||
-			record.status === "failed" ||
-			record.status === "cancelled") &&
+		(record.status === "completed" || record.status === "failed" || record.status === "cancelled") &&
 		typeof record.endedAt === "number" &&
 		typeof record.messageText === "string" &&
 		isOptionalString(record.stopReason) &&
@@ -275,19 +237,13 @@ export class JobHistoryStorage implements CustomStorage {
 	private readonly _objects: JsonlObjectStore;
 	private readonly _outputDirPath: string;
 
-	private constructor(options: {
-		fs: PersistenceFileSystem;
-		objects: JsonlObjectStore;
-		outputDirPath: string;
-	}) {
+	private constructor(options: { fs: PersistenceFileSystem; objects: JsonlObjectStore; outputDirPath: string }) {
 		this._fs = options.fs;
 		this._objects = options.objects;
 		this._outputDirPath = options.outputDirPath;
 	}
 
-	static async open(
-		context: NamespaceStorageContext,
-	): Promise<JobHistoryStorage> {
+	static async open(context: NamespaceStorageContext): Promise<JobHistoryStorage> {
 		const join = async (segments: string[]): Promise<string> =>
 			getFileSystemResultOrThrow(
 				await context.fs.joinPath(segments),
@@ -321,11 +277,7 @@ export class JobHistoryStorage implements CustomStorage {
 		let truncated = false;
 		let current: string | undefined = stateRoot;
 		while (current !== undefined) {
-			if (
-				visited.has(current) ||
-				!this._objects.has(current) ||
-				visited.size >= MAX_JOB_CHAIN_LENGTH
-			) {
+			if (visited.has(current) || !this._objects.has(current) || visited.size >= MAX_JOB_CHAIN_LENGTH) {
 				truncated = true;
 				break;
 			}
@@ -343,17 +295,11 @@ export class JobHistoryStorage implements CustomStorage {
 		return await this._objects.listDependencies(stateRoot);
 	}
 
-	async putObject(options: {
-		readonly data: unknown;
-		readonly dependencies?: readonly string[];
-	}): Promise<string> {
+	async putObject(options: { readonly data: unknown; readonly dependencies?: readonly string[] }): Promise<string> {
 		return await this._objects.putObject(options);
 	}
 
-	async copyReachable(
-		target: CustomStorage,
-		roots: readonly string[],
-	): Promise<void> {
+	async copyReachable(target: CustomStorage, roots: readonly string[]): Promise<void> {
 		await this._objects.copyReachable(target, roots);
 		if (!(target instanceof JobHistoryStorage)) return;
 		const files = new Set<string>();
@@ -365,10 +311,7 @@ export class JobHistoryStorage implements CustomStorage {
 	}
 
 	/** Append a transition onto `previousRoot`, returning the new state root. */
-	async appendRecord(
-		record: JobRecord,
-		previousRoot: string | null,
-	): Promise<string> {
+	async appendRecord(record: JobRecord, previousRoot: string | null): Promise<string> {
 		return await this._objects.putObject({
 			data: boundJobRecord(record),
 			dependencies: previousRoot === null ? [] : [previousRoot],
@@ -402,26 +345,16 @@ export class JobHistoryStorage implements CustomStorage {
 
 	/** Created on first write, so a session with no job output grows no directory. */
 	async ensureOutputDir(): Promise<void> {
-		const created = await this._fs.createDir(this._outputDirPath, {
-			recursive: true,
-		});
+		const created = await this._fs.createDir(this._outputDirPath, { recursive: true });
 		if (!created.ok) throw new Error(created.error.message);
 	}
 
-	private async _copyOutput(
-		target: JobHistoryStorage,
-		fileName: string,
-	): Promise<void> {
-		const read = await this._fs.readTextFile(
-			await this.outputFilePath(fileName),
-		);
+	private async _copyOutput(target: JobHistoryStorage, fileName: string): Promise<void> {
+		const read = await this._fs.readTextFile(await this.outputFilePath(fileName));
 		// A job that printed nothing has no file, which is not a failure to copy.
 		if (!read.ok) return;
 		await target.ensureOutputDir();
-		const wrote = await this._fs.writeFile(
-			await target.outputFilePath(fileName),
-			read.value,
-		);
+		const wrote = await this._fs.writeFile(await target.outputFilePath(fileName), read.value);
 		if (!wrote.ok) throw new Error(wrote.error.message);
 	}
 }
@@ -441,9 +374,7 @@ export function createJobsNamespace(): PersistenceNamespaceDefinition {
  * closures are written into the target only: nothing is running in the new
  * session, and the source keeps running whatever it was running.
  */
-async function forkJobHistory(
-	request: NamespaceForkRequest,
-): Promise<NamespaceForkResult> {
+async function forkJobHistory(request: NamespaceForkRequest): Promise<NamespaceForkResult> {
 	await request.source.copyReachable(request.target, request.roots);
 	if (request.roots.length === 0) return { stateRoot: null };
 	const target = request.target;
@@ -466,17 +397,11 @@ async function forkJobHistory(
 	for (const record of closures) {
 		stateRoot = await target.appendRecord(record, stateRoot);
 	}
-	return {
-		stateRoot,
-		origin: closures.length > 0 ? "fork_degraded" : "fork",
-	};
+	return { stateRoot, origin: closures.length > 0 ? "fork_degraded" : "fork" };
 }
 
 /** The one object in the closure nothing else depends on. */
-async function chainTip(
-	storage: CustomStorage,
-	roots: readonly string[],
-): Promise<string> {
+async function chainTip(storage: CustomStorage, roots: readonly string[]): Promise<string> {
 	const depended = new Set<string>();
 	for (const root of roots) {
 		for (const dep of await storage.listDependencies(root)) depended.add(dep);
@@ -484,9 +409,7 @@ async function chainTip(
 	const tips = roots.filter((root) => !depended.has(root));
 	const tip = tips[0];
 	if (tips.length !== 1 || tip === undefined) {
-		throw new Error(
-			`${JOBS_NAMESPACE} expected one chain tip, found ${tips.length}.`,
-		);
+		throw new Error(`${JOBS_NAMESPACE} expected one chain tip, found ${tips.length}.`);
 	}
 	return tip;
 }
@@ -510,7 +433,7 @@ export class SessionJobStore {
 	private readonly _branch: JobBranchPort;
 	private readonly _jobs: Map<string, JobHistoryEntry>;
 	private readonly _carriedOver: readonly JobHistoryEntry[];
-	private readonly _truncated: boolean;
+	private _truncated: boolean;
 	private _stateRoot: string | null;
 	// Appends are serialized because each one chains onto the root the last one
 	// produced; two in the same tick would both chain onto the same root and one
@@ -534,8 +457,7 @@ export class SessionJobStore {
 
 	static async open(options: SessionJobStoreOptions): Promise<SessionJobStore> {
 		const named = (await options.branch.projection())?.stateRoot ?? null;
-		const history =
-			named === null ? undefined : await options.storage.resolveState(named);
+		const history = named === null ? undefined : await options.storage.resolveState(named);
 		// A ref naming an object nobody can find gets a fresh chain rather than a
 		// chain rooted at a pointer that will never resolve again.
 		return new SessionJobStore({
@@ -581,6 +503,59 @@ export class SessionJobStore {
 		return next;
 	}
 
+	/**
+	 * Re-read the branch, then settle the difference between what it shows and
+	 * what this runtime knows.
+	 *
+	 * Navigation moves the leaf and stops nothing, so afterwards this store's
+	 * chain head can belong to a branch nobody is on any more. Rebinding is what
+	 * keeps the next append from extending an abandoned chain.
+	 *
+	 * A job the branch has open then has three possible answers. One this runtime
+	 * still holds an executor for is left alone. One this runtime watched finish
+	 * has its settlement recorded again - the outcome is a fact about the world,
+	 * and this branch is the one that asked for it, so it is owed the answer
+	 * rather than a notice that none is coming. Only a job with neither is closed.
+	 *
+	 * `announce` runs after the re-read and before the first record is written.
+	 * That order is the same one settlement uses and for the same reason: a record
+	 * claiming the model was told has to be the later of the two writes, so a
+	 * crash between them repeats a message instead of losing one.
+	 */
+	async rebind(
+		request: JobSealRequest,
+		announce: (jobs: readonly JobHistoryEntry[]) => Promise<void>,
+	): Promise<readonly JobRecord[]> {
+		const known = new Map(this._jobs);
+		await this._reproject();
+		const recovered = new Map<string, JobSettledRecord>();
+		for (const job of this._jobs.values()) {
+			if (job.state !== "open" || request.recognized.has(job.toolCallId)) continue;
+			const settled = toSettledRecord(known.get(job.toolCallId));
+			if (settled) recovered.set(job.toolCallId, settled);
+		}
+		const records: JobRecord[] = [
+			...recovered.values(),
+			...planJobClosures({
+				jobs: this.history(),
+				// A recovered outcome is this runtime's own answer, so the job it
+				// belongs to is no longer one nobody can account for.
+				recognized: new Set([...request.recognized, ...recovered.keys()]),
+				cause: request.cause,
+				closedAt: request.closedAt ?? Date.now(),
+				...(request.stopReason === undefined ? undefined : { stopReason: request.stopReason }),
+			}),
+		];
+		if (records.length === 0) return records;
+		// Described from the reduction these records produce, so each job is named
+		// in the words of the answer it actually got.
+		const described = new Map(this._jobs);
+		for (const record of records) applyJobRecord(described, record);
+		await announce(records.flatMap((record) => described.get(record.toolCallId) ?? []));
+		for (const record of records) await this.append(record);
+		return records;
+	}
+
 	/** Close every job the branch has open that `recognized` does not name. */
 	async seal(request: JobSealRequest): Promise<readonly JobClosedRecord[]> {
 		const records = planJobClosures({
@@ -588,9 +563,7 @@ export class SessionJobStore {
 			recognized: request.recognized,
 			cause: request.cause,
 			closedAt: request.closedAt ?? Date.now(),
-			...(request.stopReason === undefined
-				? undefined
-				: { stopReason: request.stopReason }),
+			...(request.stopReason === undefined ? undefined : { stopReason: request.stopReason }),
 		});
 		for (const record of records) await this.append(record);
 		return records;
@@ -611,4 +584,41 @@ export class SessionJobStore {
 		this._stateRoot = stateRoot;
 		return stateRoot;
 	}
+
+	/**
+	 * Take the branch's current word for this namespace as the whole truth. Same
+	 * rule as `open`, including the fresh chain a dangling ref falls back to.
+	 * `carriedOverJobs` is deliberately not recomputed: it answers what this
+	 * runtime inherited when it attached, which no later navigation changes.
+	 */
+	private async _reproject(): Promise<void> {
+		const named = (await this._branch.projection())?.stateRoot ?? null;
+		const history = named === null ? undefined : await this._storage.resolveState(named);
+		this._stateRoot = history === undefined ? null : named;
+		this._truncated = history === undefined ? named !== null : history.truncated;
+		this._jobs.clear();
+		for (const job of history?.jobs ?? []) this._jobs.set(job.toolCallId, job);
+	}
+}
+
+/**
+ * One runtime's own answer for a job, in a shape another branch can record.
+ *
+ * Undefined for anything that is not a complete settlement this build can
+ * reproduce - a job still open, one closed rather than settled, one whose t1
+ * text is missing. There is nothing to hand a branch in those cases, and
+ * inventing a settlement is worse than declaring the job closed.
+ */
+function toSettledRecord(job: JobHistoryEntry | undefined): JobSettledRecord | undefined {
+	if (job?.state !== "settled") return undefined;
+	if (job.status === undefined || job.endedAt === undefined || job.messageText === undefined) return undefined;
+	return {
+		kind: "settled",
+		toolCallId: job.toolCallId,
+		status: job.status,
+		endedAt: job.endedAt,
+		messageText: job.messageText,
+		...(job.stopReason === undefined ? undefined : { stopReason: job.stopReason }),
+		...(job.outputTail === undefined ? undefined : { outputTail: job.outputTail }),
+	};
 }

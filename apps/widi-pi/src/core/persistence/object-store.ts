@@ -24,10 +24,7 @@
 
 import type { CustomStorage, PersistenceFileSystem } from "./custom-storage.ts";
 import { contentHash } from "./utils/content-hash.ts";
-import type {
-	PersistenceDiagnosticCode,
-	PersistenceDiagnostics,
-} from "./utils/diagnostics.ts";
+import type { PersistenceDiagnosticCode, PersistenceDiagnostics } from "./utils/diagnostics.ts";
 import type { SessionKey } from "./utils/layout.ts";
 
 export const OBJECT_LOG_HEADER_TYPE = "persistence-objects";
@@ -66,18 +63,6 @@ export interface JsonlObjectStoreOptions {
 	 * previous owner wrote.
 	 */
 	readonly owner?: string;
-	/**
-	 * Which other sessions an object names, read out of the object's own data.
-	 *
-	 * This is the one thing a namespace whose state refers to child sessions -
-	 * `core:subagent` above all - cannot express in a plain object log, and the
-	 * only reason such a namespace would otherwise have to write a storage of its
-	 * own. Given here it stays a pure function of the data, which keeps the walk
-	 * in `fork-closure.ts` the single implementation of the recursion.
-	 *
-	 * Omitted means this namespace's objects never name a session.
-	 */
-	readonly sessionDependenciesOf?: (data: unknown) => readonly SessionKey[];
 }
 
 export class JsonlObjectStore implements CustomStorage {
@@ -89,9 +74,6 @@ export class JsonlObjectStore implements CustomStorage {
 	private readonly _sessionKey: SessionKey;
 	private readonly _diagnostics: PersistenceDiagnostics | undefined;
 	private readonly _owner: string | undefined;
-	private readonly _sessionDependenciesOf:
-		| ((data: unknown) => readonly SessionKey[])
-		| undefined;
 	private readonly _objects = new Map<string, PersistedObject>();
 	// Appends are serialized so two writes in the same tick cannot interleave
 	// their lines, and so a caller awaiting one object knows every earlier one
@@ -114,12 +96,9 @@ export class JsonlObjectStore implements CustomStorage {
 		this._sessionKey = options.sessionKey;
 		this._diagnostics = options.diagnostics;
 		this._owner = options.owner;
-		this._sessionDependenciesOf = options.sessionDependenciesOf;
 	}
 
-	static async open(
-		options: JsonlObjectStoreOptions,
-	): Promise<JsonlObjectStore> {
+	static async open(options: JsonlObjectStoreOptions): Promise<JsonlObjectStore> {
 		const store = new JsonlObjectStore(options);
 		await store._replay();
 		return store;
@@ -146,22 +125,6 @@ export class JsonlObjectStore implements CustomStorage {
 		return this._objects.get(stateRoot)?.deps ?? [];
 	}
 
-	/**
-	 * The sessions this object names, per
-	 * {@link JsonlObjectStoreOptions.sessionDependenciesOf}.
-	 *
-	 * A root that is not here answers empty rather than throwing: the closure
-	 * walk only asks about roots it is already carrying, and a missing one is
-	 * reported as a dangling ref where the branch names it, not here.
-	 */
-	async listSessionDependencies(
-		stateRoot: string,
-	): Promise<readonly SessionKey[]> {
-		const object = this._objects.get(stateRoot);
-		if (!object || !this._sessionDependenciesOf) return [];
-		return this._sessionDependenciesOf(object.data);
-	}
-
 	has(stateRoot: string): boolean {
 		return this._objects.has(stateRoot);
 	}
@@ -173,10 +136,7 @@ export class JsonlObjectStore implements CustomStorage {
 	 * one root. That is what makes a fork safe to retry and several refs able to
 	 * share a root without any coordination between their writers.
 	 */
-	async putObject(options: {
-		readonly data: unknown;
-		readonly dependencies?: readonly string[];
-	}): Promise<string> {
+	async putObject(options: { readonly data: unknown; readonly dependencies?: readonly string[] }): Promise<string> {
 		if (this._sealed !== undefined) {
 			throw new Error(`Refusing to write ${this._filePath}: ${this._sealed}`);
 		}
@@ -202,17 +162,11 @@ export class JsonlObjectStore implements CustomStorage {
 	 * how a fork of a branch that names one root from three places still writes
 	 * it once.
 	 */
-	async copyReachable(
-		target: CustomStorage,
-		roots: readonly string[],
-	): Promise<void> {
+	async copyReachable(target: CustomStorage, roots: readonly string[]): Promise<void> {
 		for (const root of roots) {
 			const object = this._objects.get(root);
 			if (!object) continue;
-			await target.putObject({
-				data: object.data,
-				dependencies: object.deps,
-			});
+			await target.putObject({ data: object.data, dependencies: object.deps });
 		}
 	}
 
@@ -221,11 +175,7 @@ export class JsonlObjectStore implements CustomStorage {
 		if (!exists.ok || !exists.value) return;
 		const read = await this._fs.readTextFile(this._filePath);
 		if (!read.ok) {
-			this._report(
-				"error",
-				"persistence.corrupt_log",
-				`Failed to read ${this._filePath}: ${read.error.message}`,
-			);
+			this._report("error", "persistence.corrupt_log", `Failed to read ${this._filePath}: ${read.error.message}`);
 			return;
 		}
 		this._fileReady = true;
@@ -241,11 +191,7 @@ export class JsonlObjectStore implements CustomStorage {
 				// Anywhere else it means the log has a hole, and a hole nobody can
 				// size is worth reporting rather than reading past.
 				if (index < lines.length - 1) {
-					this._report(
-						"error",
-						"persistence.corrupt_log",
-						`Line ${index + 1} of ${this._filePath} is not valid JSON.`,
-					);
+					this._report("error", "persistence.corrupt_log", `Line ${index + 1} of ${this._filePath} is not valid JSON.`);
 				}
 				continue;
 			}
@@ -288,9 +234,7 @@ export class JsonlObjectStore implements CustomStorage {
 
 	private async _appendLine(object: PersistedObject): Promise<void> {
 		if (!this._fileReady) {
-			const created = await this._fs.createDir(this._dirPath, {
-				recursive: true,
-			});
+			const created = await this._fs.createDir(this._dirPath, { recursive: true });
 			if (!created.ok) throw new Error(created.error.message);
 			const header: ObjectLogHeader = {
 				type: OBJECT_LOG_HEADER_TYPE,
@@ -299,42 +243,22 @@ export class JsonlObjectStore implements CustomStorage {
 				formatVersion: this._formatVersion,
 				...(this._owner === undefined ? undefined : { owner: this._owner }),
 			};
-			const wrote = await this._fs.writeFile(
-				this._filePath,
-				`${JSON.stringify(header)}\n`,
-			);
+			const wrote = await this._fs.writeFile(this._filePath, `${JSON.stringify(header)}\n`);
 			if (!wrote.ok) throw new Error(wrote.error.message);
 			this._fileReady = true;
 			this._storedFormatVersion ??= this._formatVersion;
 		}
-		const appended = await this._fs.appendFile(
-			this._filePath,
-			`${JSON.stringify(object)}\n`,
-		);
+		const appended = await this._fs.appendFile(this._filePath, `${JSON.stringify(object)}\n`);
 		if (!appended.ok) throw new Error(appended.error.message);
 	}
 
-	private _seal(
-		severity: "warning" | "error",
-		code: PersistenceDiagnosticCode,
-		message: string,
-	): void {
+	private _seal(severity: "warning" | "error", code: PersistenceDiagnosticCode, message: string): void {
 		this._sealed = message;
 		this._report(severity, code, message);
 	}
 
-	private _report(
-		severity: "warning" | "error",
-		code: PersistenceDiagnosticCode,
-		message: string,
-	): void {
-		this._diagnostics?.report({
-			severity,
-			code,
-			message,
-			namespace: this._namespace,
-			sessionKey: this._sessionKey,
-		});
+	private _report(severity: "warning" | "error", code: PersistenceDiagnosticCode, message: string): void {
+		this._diagnostics?.report({ severity, code, message, namespace: this._namespace, sessionKey: this._sessionKey });
 	}
 }
 

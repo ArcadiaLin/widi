@@ -33,12 +33,7 @@ describe("session layout", () => {
 			"agents",
 			"grandchild",
 		]);
-		expect(sessionFileSegments(["root", "child"])).toEqual([
-			"root",
-			"agents",
-			"child",
-			"session.jsonl",
-		]);
+		expect(sessionFileSegments(["root", "child"])).toEqual(["root", "agents", "child", "session.jsonl"]);
 	});
 
 	it("round trips a key through its directory segments", () => {
@@ -55,9 +50,7 @@ describe("session layout", () => {
 		expect(sessionKeyFromDirSegments(["root", "jobs", "x"])).toBeUndefined();
 		expect(sessionKeyFromDirSegments(["root", "agents"])).toBeUndefined();
 		expect(sessionKeyFromDirSegments([])).toBeUndefined();
-		expect(
-			sessionKeyFromDirSegments(["agents", "agents", "x"]),
-		).toBeUndefined();
+		expect(sessionKeyFromDirSegments(["agents", "agents", "x"])).toBeUndefined();
 	});
 
 	it("keeps a timestamp prefix so a reused agent id cannot collide", () => {
@@ -85,26 +78,14 @@ describe("session layout", () => {
 		expect(parseSessionKey("root/child")).toEqual(["root", "child"]);
 		expect(parseSessionKey("root/persistence")).toBeUndefined();
 		expect(parseSessionKey("")).toBeUndefined();
-		expect(
-			parseSessionKey(
-				Array.from({ length: MAX_SESSION_DEPTH + 1 }, (_, i) => `s${i}`).join(
-					"/",
-				),
-			),
-		).toBeUndefined();
+		expect(parseSessionKey(Array.from({ length: MAX_SESSION_DEPTH + 1 }, (_, i) => `s${i}`).join("/"))).toBeUndefined();
 	});
 
 	// ':' is not a legal Windows path character, and collapsing it to '-' would
-	// let core:subagent and a hypothetical core-subagent share a directory.
+	// let core:jobs and a hypothetical core-jobs share a directory.
 	it("encodes a namespace into a portable directory name", () => {
-		expect(namespaceDirSegments(["root"], "core:subagent")).toEqual([
-			"root",
-			"persistence",
-			"core__subagent",
-		]);
-		expect(namespaceDirSegments(["root"], "core-subagent")).not.toEqual(
-			namespaceDirSegments(["root"], "core:subagent"),
-		);
+		expect(namespaceDirSegments(["root"], "core:jobs")).toEqual(["root", "persistence", "core__jobs"]);
+		expect(namespaceDirSegments(["root"], "core-jobs")).not.toEqual(namespaceDirSegments(["root"], "core:jobs"));
 		expect(namespaceObjectsSegments(["root"], "core:jobs")).toEqual([
 			"root",
 			"persistence",
@@ -114,18 +95,14 @@ describe("session layout", () => {
 	});
 
 	it("turns a cwd into one path segment", () => {
-		expect(encodeCwd("/home/me/projects/widi")).toBe(
-			"--home-me-projects-widi--",
-		);
+		expect(encodeCwd("/home/me/projects/widi")).toBe("--home-me-projects-widi--");
 	});
 });
 
 describe("content addressing", () => {
 	it("hashes independently of key order", () => {
 		expect(canonicalJson({ b: 1, a: 2 })).toBe('{"a":2,"b":1}');
-		expect(contentHash({ a: 1, b: [1, 2] })).toBe(
-			contentHash({ b: [1, 2], a: 1 }),
-		);
+		expect(contentHash({ a: 1, b: [1, 2] })).toBe(contentHash({ b: [1, 2], a: 1 }));
 	});
 
 	it("keeps array order significant", () => {

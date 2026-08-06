@@ -22,14 +22,9 @@ import { DEFAULT_AGENT_DIR } from "./constants.js";
 import type { CoreDiagnostic } from "./diagnostics.ts";
 import type { ConfigValueResolver } from "./resolve-config-value.js";
 
-export type ApiKeyCredential = {
-	type: "api_key";
-	key: string;
-};
+export type ApiKeyCredential = { type: "api_key"; key: string };
 
-export type OAuthCredential = {
-	type: "oauth";
-} & OAuthCredentials;
+export type OAuthCredential = { type: "oauth" } & OAuthCredentials;
 
 export type AuthCredential = ApiKeyCredential | OAuthCredential;
 
@@ -37,29 +32,18 @@ export type AuthStorageData = Record<string, AuthCredential>;
 
 export type AuthStatus = {
 	configured: boolean;
-	source?:
-		| "stored"
-		| "runtime"
-		| "environment"
-		| "fallback"
-		| "models_json_key"
-		| "models_json_command";
+	source?: "stored" | "runtime" | "environment" | "fallback" | "models_json_key" | "models_json_command";
 	label?: string;
 };
 
-export type LockResult<T> = {
-	result: T;
-	next?: string;
-};
+export type LockResult<T> = { result: T; next?: string };
 
 export type AuthDiagnostic = CoreDiagnostic;
 
 const DEFAULT_AUTH_PATH = `${DEFAULT_AGENT_DIR}/auth.json`;
 
 export interface AuthStorageBackend {
-	withLockAsync<T>(
-		fn: (current: string | undefined) => Promise<LockResult<T>>,
-	): Promise<T>;
+	withLockAsync<T>(fn: (current: string | undefined) => Promise<LockResult<T>>): Promise<T>;
 }
 
 /**
@@ -75,17 +59,12 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 	private readonly authPath: string;
 	private readonly lock = new AsyncLock();
 
-	constructor(
-		executionEnv: ExecutionEnv,
-		authPath: string = DEFAULT_AUTH_PATH,
-	) {
+	constructor(executionEnv: ExecutionEnv, authPath: string = DEFAULT_AUTH_PATH) {
 		this.executionEnv = executionEnv;
 		this.authPath = authPath;
 	}
 
-	async withLockAsync<T>(
-		fn: (current: string | undefined) => Promise<LockResult<T>>,
-	): Promise<T> {
+	async withLockAsync<T>(fn: (current: string | undefined) => Promise<LockResult<T>>): Promise<T> {
 		return await this.lock.run(async () => {
 			await this.ensureFileExists();
 			const current = await this.readCurrent();
@@ -137,9 +116,7 @@ export class InMemoryAuthStorageBackend implements AuthStorageBackend {
 		}
 	}
 
-	async withLockAsync<T>(
-		fn: (current: string | undefined) => Promise<LockResult<T>>,
-	): Promise<T> {
+	async withLockAsync<T>(fn: (current: string | undefined) => Promise<LockResult<T>>): Promise<T> {
 		return await this.lock.run(async () => {
 			const { result, next } = await fn(this.value);
 			if (next !== undefined) {
@@ -177,40 +154,21 @@ export class AuthStorage implements CredentialStore {
 	private readonly storage: AuthStorageBackend;
 	private readonly configValueResolver: ConfigValueResolver;
 
-	private constructor(
-		storage: AuthStorageBackend,
-		options: AuthStorageOptions,
-	) {
+	private constructor(storage: AuthStorageBackend, options: AuthStorageOptions) {
 		this.storage = storage;
 		this.configValueResolver = options.configValueResolver;
 	}
 
-	static create(
-		executionEnv: ExecutionEnv,
-		options: AuthStorageOptions,
-		authPath?: string,
-	): AuthStorage {
-		return new AuthStorage(
-			new FileAuthStorageBackend(executionEnv, authPath),
-			options,
-		);
+	static create(executionEnv: ExecutionEnv, options: AuthStorageOptions, authPath?: string): AuthStorage {
+		return new AuthStorage(new FileAuthStorageBackend(executionEnv, authPath), options);
 	}
 
-	static fromStorage(
-		storage: AuthStorageBackend,
-		options: AuthStorageOptions,
-	): AuthStorage {
+	static fromStorage(storage: AuthStorageBackend, options: AuthStorageOptions): AuthStorage {
 		return new AuthStorage(storage, options);
 	}
 
-	static inMemory(
-		options: AuthStorageOptions,
-		data: AuthStorageData = {},
-	): AuthStorage {
-		return AuthStorage.fromStorage(
-			new InMemoryAuthStorageBackend(data),
-			options,
-		);
+	static inMemory(options: AuthStorageOptions, data: AuthStorageData = {}): AuthStorage {
+		return AuthStorage.fromStorage(new InMemoryAuthStorageBackend(data), options);
 	}
 
 	/**
@@ -242,9 +200,7 @@ export class AuthStorage implements CredentialStore {
 	 *
 	 * ModelRegistry uses this for provider API keys declared in models.json.
 	 */
-	setFallbackResolver(
-		resolver: (provider: string) => string | undefined,
-	): void {
+	setFallbackResolver(resolver: (provider: string) => string | undefined): void {
 		this.fallbackResolver = resolver;
 	}
 
@@ -258,24 +214,16 @@ export class AuthStorage implements CredentialStore {
 		this.oauthProvidersSource = source;
 	}
 
-	private getOAuthProviderSource(
-		providerId: string,
-	): OAuthProviderSource | undefined {
-		return this.oauthProvidersSource?.().find(
-			(source) => source.id === providerId,
-		);
+	private getOAuthProviderSource(providerId: string): OAuthProviderSource | undefined {
+		return this.oauthProvidersSource?.().find((source) => source.id === providerId);
 	}
 
 	private recordError(
 		error: unknown,
-		code:
-			| "auth.load_failed"
-			| "auth.persist_failed"
-			| "auth.oauth_refresh_failed",
+		code: "auth.load_failed" | "auth.persist_failed" | "auth.oauth_refresh_failed",
 		provider?: string,
 	): AuthDiagnostic {
-		const normalizedError =
-			error instanceof Error ? error : new Error(String(error));
+		const normalizedError = error instanceof Error ? error : new Error(String(error));
 		this.errors.push(normalizedError);
 		const diagnostic = createAuthDiagnostic(code, normalizedError, provider);
 		this.diagnostics.push(diagnostic);
@@ -308,10 +256,7 @@ export class AuthStorage implements CredentialStore {
 		}
 	}
 
-	private async persistProviderChange(
-		provider: string,
-		credential: AuthCredential | undefined,
-	): Promise<void> {
+	private async persistProviderChange(provider: string, credential: AuthCredential | undefined): Promise<void> {
 		if (this.loadError) {
 			return;
 		}
@@ -378,9 +323,7 @@ export class AuthStorage implements CredentialStore {
 	 */
 	async modify(
 		providerId: string,
-		fn: (
-			current: PiCredential | undefined,
-		) => Promise<PiCredential | undefined>,
+		fn: (current: PiCredential | undefined) => Promise<PiCredential | undefined>,
 	): Promise<PiCredential | undefined> {
 		let postCredential: AuthCredential | undefined;
 		let recordedFailure = false;
@@ -406,16 +349,10 @@ export class AuthStorage implements CredentialStore {
 					return { result: postCredential };
 				}
 
-				const merged: AuthStorageData = {
-					...currentData,
-					[providerId]: nextCredential as AuthCredential,
-				};
+				const merged: AuthStorageData = { ...currentData, [providerId]: nextCredential as AuthCredential };
 				this.data = merged;
 				postCredential = merged[providerId];
-				return {
-					result: postCredential,
-					next: JSON.stringify(merged, null, 2),
-				};
+				return { result: postCredential, next: JSON.stringify(merged, null, 2) };
 			});
 		} catch (error) {
 			if (!recordedFailure) {
@@ -434,10 +371,7 @@ export class AuthStorage implements CredentialStore {
 	 * List stored credential metadata without exposing secrets.
 	 */
 	async list(): Promise<readonly CredentialInfo[]> {
-		return Object.entries(this.data).map(([providerId, credential]) => ({
-			providerId,
-			type: credential.type,
-		}));
+		return Object.entries(this.data).map(([providerId, credential]) => ({ providerId, type: credential.type }));
 	}
 
 	/**
@@ -472,11 +406,7 @@ export class AuthStorage implements CredentialStore {
 		}
 
 		if (this.fallbackResolver?.(provider)) {
-			return {
-				configured: false,
-				source: "fallback",
-				label: "custom provider config",
-			};
+			return { configured: false, source: "fallback", label: "custom provider config" };
 		}
 
 		return { configured: false };
@@ -489,16 +419,11 @@ export class AuthStorage implements CredentialStore {
 		return { ...this.data };
 	}
 
-	private async resolveCredentialForRead(
-		credential: AuthCredential | undefined,
-	): Promise<PiCredential | undefined> {
+	private async resolveCredentialForRead(credential: AuthCredential | undefined): Promise<PiCredential | undefined> {
 		if (!credential || credential.type !== "api_key") {
 			return credential;
 		}
-		return {
-			...credential,
-			key: await this.configValueResolver.resolveConfigValue(credential.key),
-		};
+		return { ...credential, key: await this.configValueResolver.resolveConfigValue(credential.key) };
 	}
 
 	drainErrors(): Error[] {
@@ -520,18 +445,13 @@ export class AuthStorage implements CredentialStore {
 	/**
 	 * Login to an OAuth provider and persist the returned credentials.
 	 */
-	async login(
-		providerId: string,
-		callbacks: OAuthLoginCallbacks,
-	): Promise<void> {
+	async login(providerId: string, callbacks: OAuthLoginCallbacks): Promise<void> {
 		const source = this.getOAuthProviderSource(providerId);
 		if (!source) {
 			throw new Error(`Unknown OAuth provider: ${providerId}`);
 		}
 
-		const credential = await source.oauth.login(
-			oauthLoginCallbacksToInteraction(callbacks),
-		);
+		const credential = await source.oauth.login(oauthLoginCallbacksToInteraction(callbacks));
 		await this.set(providerId, credential);
 	}
 
@@ -572,9 +492,7 @@ export class AuthStorage implements CredentialStore {
 				if (apiKey === undefined) {
 					return { result: null };
 				}
-				return {
-					result: { apiKey, newCredentials: cred },
-				};
+				return { result: { apiKey, newCredentials: cred } };
 			}
 
 			const newCredentials = await source.oauth.refresh(cred);
@@ -583,17 +501,11 @@ export class AuthStorage implements CredentialStore {
 				return { result: null };
 			}
 
-			const merged: AuthStorageData = {
-				...currentData,
-				[providerId]: newCredentials,
-			};
+			const merged: AuthStorageData = { ...currentData, [providerId]: newCredentials };
 			this.data = merged;
 			this.loadError = null;
 			this.loadDiagnostic = undefined;
-			return {
-				result: { apiKey, newCredentials },
-				next: JSON.stringify(merged, null, 2),
-			};
+			return { result: { apiKey, newCredentials }, next: JSON.stringify(merged, null, 2) };
 		});
 	}
 
@@ -609,10 +521,7 @@ export class AuthStorage implements CredentialStore {
 	 * Ambient sources (env vars, cloud profiles) are not consulted here; they
 	 * resolve through the provider-owned auth on the Models runtime.
 	 */
-	async getApiKey(
-		providerId: string,
-		options?: { includeFallback?: boolean },
-	): Promise<string | undefined> {
+	async getApiKey(providerId: string, options?: { includeFallback?: boolean }): Promise<string | undefined> {
 		const runtimeKey = this.runtimeOverrides.get(providerId);
 		if (runtimeKey) {
 			return runtimeKey;
@@ -641,10 +550,7 @@ export class AuthStorage implements CredentialStore {
 					// Refresh failed. Re-read storage in case another backend actor refreshed first.
 					await this.reload();
 					const updatedCred = this.data[providerId];
-					if (
-						updatedCred?.type === "oauth" &&
-						Date.now() < updatedCred.expires
-					) {
+					if (updatedCred?.type === "oauth" && Date.now() < updatedCred.expires) {
 						// Another actor refreshed successfully; use those credentials.
 						return (await source.oauth.toAuth(updatedCred)).apiKey;
 					}
@@ -666,60 +572,39 @@ export class AuthStorage implements CredentialStore {
 	 * Get all OAuth-capable runtime providers.
 	 */
 	getOAuthProviders(): { id: string; name: string }[] {
-		return (this.oauthProvidersSource?.() ?? []).map(({ id, name }) => ({
-			id,
-			name,
-		}));
+		return (this.oauthProvidersSource?.() ?? []).map(({ id, name }) => ({ id, name }));
 	}
 }
 
 function createAuthDiagnostic(
-	code:
-		| "auth.load_failed"
-		| "auth.persist_failed"
-		| "auth.oauth_refresh_failed",
+	code: "auth.load_failed" | "auth.persist_failed" | "auth.oauth_refresh_failed",
 	error: Error,
 	provider: string | undefined,
 ): AuthDiagnostic {
-	return {
-		severity: "error",
-		code,
-		message: provider ? `${provider}: ${error.message}` : error.message,
-	};
+	return { severity: "error", code, message: provider ? `${provider}: ${error.message}` : error.message };
 }
 
 /**
  * Adapt the legacy extension-style OAuth login callbacks to the pi-ai
  * AuthInteraction surface expected by provider-owned OAuthAuth flows.
  */
-function oauthLoginCallbacksToInteraction(
-	callbacks: OAuthLoginCallbacks,
-): AuthInteraction {
+function oauthLoginCallbacksToInteraction(callbacks: OAuthLoginCallbacks): AuthInteraction {
 	return {
 		signal: callbacks.signal,
 		prompt: async (prompt) => {
 			switch (prompt.type) {
 				case "text":
 				case "secret":
-					return await callbacks.onPrompt({
-						message: prompt.message,
-						placeholder: prompt.placeholder,
-					});
+					return await callbacks.onPrompt({ message: prompt.message, placeholder: prompt.placeholder });
 				case "manual_code":
 					if (callbacks.onManualCodeInput) {
 						return await callbacks.onManualCodeInput();
 					}
-					return await callbacks.onPrompt({
-						message: prompt.message,
-						placeholder: prompt.placeholder,
-					});
+					return await callbacks.onPrompt({ message: prompt.message, placeholder: prompt.placeholder });
 				case "select": {
 					const selected = await callbacks.onSelect({
 						message: prompt.message,
-						options: prompt.options.map((option) => ({
-							id: option.id,
-							label: option.label,
-						})),
+						options: prompt.options.map((option) => ({ id: option.id, label: option.label })),
 					});
 					if (selected === undefined) {
 						throw new Error("Login cancelled");
@@ -731,10 +616,7 @@ function oauthLoginCallbacksToInteraction(
 		notify: (event) => {
 			switch (event.type) {
 				case "auth_url":
-					callbacks.onAuth({
-						url: event.url,
-						instructions: event.instructions,
-					});
+					callbacks.onAuth({ url: event.url, instructions: event.instructions });
 					break;
 				case "device_code":
 					callbacks.onDeviceCode({

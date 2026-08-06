@@ -1,15 +1,6 @@
-import type {
-	AgentLifecycleStatus,
-	AgentMaintenanceKind,
-} from "../../core/types.ts";
-import { LINE_COMMAND_TRIGGER, parseLineCommand } from "./parse.ts";
-import type {
-	CommandContext,
-	CommandDefinition,
-	CommandError,
-	CommandView,
-	EngineOutcome,
-} from "./types.ts";
+import type { AgentActivitySnapshot } from "../../core/types.ts";
+import { parseLineCommand } from "./parse.ts";
+import type { CommandContext, CommandDefinition, CommandError, CommandView, EngineOutcome } from "./types.ts";
 
 export interface EngineHooks {
 	onCommandStart?(commandId: string, name: string, argument: string): void;
@@ -23,26 +14,21 @@ export class CommandEngine {
 		for (const command of commands) this.commands.set(command.name, command);
 	}
 
-	list(
-		status: AgentLifecycleStatus | undefined,
-		maintenance?: AgentMaintenanceKind,
-	): CommandView[] {
+	list(activity: AgentActivitySnapshot | undefined): CommandView[] {
 		const views: CommandView[] = [];
 		for (const command of this.commands.values()) {
 			const unavailableReason =
-				status === undefined && command.agentPolicy === "active"
+				activity === undefined && command.agentPolicy === "active"
 					? `Command /${command.name} requires an active agent.`
-					: status === undefined
+					: activity === undefined
 						? undefined
-						: command.checkStatus?.(status, maintenance);
+						: command.checkActivity?.(activity);
 			views.push({
 				name: command.name,
 				description: command.description,
 				argumentHint: command.argumentHint,
 				takesArgument:
-					command.argumentHint !== undefined ||
-					command.requiresArgument === true ||
-					command.complete !== undefined,
+					command.argumentHint !== undefined || command.requiresArgument === true || command.complete !== undefined,
 				available: unavailableReason === undefined,
 				unavailableReason,
 			});
@@ -59,52 +45,34 @@ export class CommandEngine {
 		return parsed ? this.commands.get(parsed.name) : undefined;
 	}
 
-	async handleInput(
-		text: string,
-		context: CommandContext,
-		hooks?: EngineHooks,
-	): Promise<EngineOutcome> {
+	async handleInput(text: string, context: CommandContext, hooks?: EngineHooks): Promise<EngineOutcome> {
 		const parsed = parseLineCommand(text);
 		const command = parsed ? this.commands.get(parsed.name) : undefined;
 		if (!parsed || !command) return { kind: "pass" };
-		return await this.runCommand(
-			command,
-			parsed.argument,
-			parsed.hasArgument,
-			text,
-			context,
-			hooks,
-		);
+		return await this.runCommand(command, parsed.argument, parsed.hasArgument, context, hooks);
 	}
 
 	private async runCommand(
 		command: CommandDefinition,
 		argument: string,
 		hasArgument: boolean,
-		text: string,
 		context: CommandContext,
 		hooks?: EngineHooks,
 	): Promise<EngineOutcome> {
 		const commandId = this.createCommandId();
 		if (!context.agentId && command.agentPolicy === "active") {
-			return failed(commandId, command.name, {
-				message: `Command /${command.name} requires an active agent.`,
-			});
+			return failed(commandId, command.name, { message: `Command /${command.name} requires an active agent.` });
 		}
-		const unavailableReason = context.agentId
-			? command.checkStatus?.(
-					context.orchestrator.getAgentStatus(context.agentId),
-					context.orchestrator.getAgentMaintenance?.(context.agentId),
-				)
-			: undefined;
+		// A gone agent has no activity to read. The command is let through and
+		// fails on its own terms, which says more than "requires a running agent".
+		const activity = context.agentId ? tryReadActivity(context) : undefined;
+		const unavailableReason = activity ? command.checkActivity?.(activity) : undefined;
 		if (unavailableReason) {
 			return failed(commandId, command.name, { message: unavailableReason });
 		}
 		// A required argument that is missing or blank never runs; explicit blank
 		// arguments still run optional-argument commands (e.g. /fork:).
-		const missingArgument = command.requiresArgument
-			? argument.trim() === ""
-			: !hasArgument;
+		const missingArgument = command.requiresArgument ? argument.trim() === "" : !hasArgument;
 		if (missingArgument && (command.requiresArgument || command.complete)) {
 			try {
 				const candidates = (await command.complete?.(context, "")) ?? [];
@@ -119,9 +87,7 @@ export class CommandEngine {
 			}
 		}
 		if (!context.agentId && command.agentPolicy === "materialize") {
-			return failed(commandId, command.name, {
-				message: `Command /${command.name} requires an active agent.`,
-			});
+			return failed(commandId, command.name, { message: `Command /${command.name} requires an active agent.` });
 		}
 		hooks?.onCommandStart?.(commandId, command.name, argument);
 		try {
@@ -135,33 +101,9 @@ export class CommandEngine {
 				} catch {
 					display = undefined;
 				}
-				return {
-					kind: "executed",
-					commandId,
-					name: command.name,
-					value,
-					display,
-				};
+				return { kind: "executed", commandId, name: command.name, value, display };
 			}
-			return {
-				kind: "expanded",
-				text: await command.expand(context, argument),
-				// The whole input is the command, so the expansion replaces all of
-				// it. The record lets the UI replay what the user actually typed.
-				expansion: {
-					originalText: text,
-					items: [
-						{
-							commandId,
-							name: command.name,
-							trigger: LINE_COMMAND_TRIGGER,
-							argument,
-							start: 0,
-							end: text.length,
-						},
-					],
-				},
-			};
+			return { kind: "expanded", text: await command.expand(context, argument) };
 		} catch (error) {
 			return failed(commandId, command.name, toCommandError(error));
 		}
@@ -184,22 +126,22 @@ export function switchedAgentId(outcome: EngineOutcome): string | undefined {
 		return undefined;
 	}
 	const agentId = (value as { agentId?: unknown }).agentId;
-	return typeof agentId === "string" && agentId.length > 0
-		? agentId
-		: undefined;
+	return typeof agentId === "string" && agentId.length > 0 ? agentId : undefined;
 }
 
-function failed(
-	commandId: string,
-	name: string,
-	error: CommandError,
-): EngineOutcome {
+function tryReadActivity(context: CommandContext): AgentActivitySnapshot | undefined {
+	if (!context.agentId) return undefined;
+	try {
+		return context.orchestrator.getAgentActivity(context.agentId);
+	} catch {
+		return undefined;
+	}
+}
+
+function failed(commandId: string, name: string, error: CommandError): EngineOutcome {
 	return { kind: "failed", commandId, name, error };
 }
 
 function toCommandError(error: unknown): CommandError {
-	return {
-		message: error instanceof Error ? error.message : String(error),
-		cause: error,
-	};
+	return { message: error instanceof Error ? error.message : String(error), cause: error };
 }

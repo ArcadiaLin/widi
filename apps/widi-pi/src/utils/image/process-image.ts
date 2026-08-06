@@ -27,10 +27,7 @@ export type ProcessImageResult =
 			/** Known only when the image was decoded for resizing. */
 			dimensions?: ProcessedImageDimensions;
 	  }
-	| {
-			ok: false;
-			reason: string;
-	  };
+	| { ok: false; reason: string };
 
 /**
  * Image processing seam for consumers. Override this to fake processing in
@@ -68,10 +65,7 @@ interface NormalizedImage {
 	convertedFrom?: string;
 }
 
-function normalizeImage(
-	bytes: Uint8Array,
-	mimeType: string,
-): NormalizedImage | null {
+function normalizeImage(bytes: Uint8Array, mimeType: string): NormalizedImage | null {
 	const normalizedMimeType = normalizeSupportedImageMimeType(mimeType);
 	if (normalizedMimeType) {
 		return { bytes, mimeType: normalizedMimeType };
@@ -83,38 +77,22 @@ function normalizeImage(
 		return null;
 	}
 
-	return {
-		bytes: pngBytes,
-		mimeType: "image/png",
-		convertedFrom: baseMimeType(mimeType),
-	};
+	return { bytes: pngBytes, mimeType: "image/png", convertedFrom: baseMimeType(mimeType) };
 }
 
-function conversionResult(
-	convertedFrom: string | undefined,
-	finalMimeType: string,
-): string | undefined {
-	return convertedFrom && convertedFrom !== finalMimeType
-		? convertedFrom
-		: undefined;
+function conversionResult(convertedFrom: string | undefined, finalMimeType: string): string | undefined {
+	return convertedFrom && convertedFrom !== finalMimeType ? convertedFrom : undefined;
 }
 
 /**
  * Normalize an image to a provider-supported inline format and, unless
  * disabled, resize it to fit inline dimension and payload limits.
  */
-export const processImage: ImageProcessor = async (
-	bytes,
-	mimeType,
-	options,
-) => {
+export const processImage: ImageProcessor = async (bytes, mimeType, options) => {
 	const autoResize = options?.autoResize ?? true;
 	const normalized = normalizeImage(bytes, mimeType);
 	if (!normalized) {
-		return {
-			ok: false,
-			reason: "could not be converted to a supported inline image format",
-		};
+		return { ok: false, reason: "could not be converted to a supported inline image format" };
 	}
 
 	if (!autoResize) {
@@ -122,23 +100,13 @@ export const processImage: ImageProcessor = async (
 			ok: true,
 			data: Buffer.from(normalized.bytes).toString("base64"),
 			mimeType: normalized.mimeType,
-			convertedFrom: conversionResult(
-				normalized.convertedFrom,
-				normalized.mimeType,
-			),
+			convertedFrom: conversionResult(normalized.convertedFrom, normalized.mimeType),
 		};
 	}
 
-	const resized = await resizeImage(
-		normalized.bytes,
-		normalized.mimeType,
-		options?.resizeOptions,
-	);
+	const resized = await resizeImage(normalized.bytes, normalized.mimeType, options?.resizeOptions);
 	if (!resized) {
-		return {
-			ok: false,
-			reason: "could not be resized below the inline image size limit",
-		};
+		return { ok: false, reason: "could not be resized below the inline image size limit" };
 	}
 
 	return {

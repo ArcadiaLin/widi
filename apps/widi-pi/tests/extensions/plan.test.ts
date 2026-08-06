@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createUpdatePlanToolDefinition } from "../../../../.widi/extensions/plan-demo/lib.ts";
-import {
-	BackgroundJobOutput,
-	type BackgroundJobReport,
-} from "../../src/core/background/index.ts";
+import { BackgroundJobOutput, type BackgroundJobReport } from "../../src/core/background/index.ts";
 import type { ToolExecutionContext } from "../../src/core/tools/types.ts";
 
 function makeContext(
@@ -40,12 +37,7 @@ describe("update_plan tool definition", () => {
 		const definition = createUpdatePlanToolDefinition();
 		expect(definition.backgroundable).toBe(true);
 		expect(definition.backgroundTimeoutMs).toBe(0);
-		expect(
-			definition.backgroundDescription?.({
-				title: "ship the panel",
-				items: [],
-			}),
-		).toBe("plan: ship the panel");
+		expect(definition.backgroundDescription?.({ title: "ship the panel", items: [] })).toBe("plan: ship the panel");
 	});
 
 	it("streams the header and one glyph line per item, then settles with a summary", async () => {
@@ -57,17 +49,9 @@ describe("update_plan tool definition", () => {
 			{ title: "demo", items: [...sampleItems], stepMs: 0 },
 			makeContext(output, undefined, reports),
 		);
-		expect(output.read()).toBe(
-			"Plan: demo\n" +
-				"✓ survey the codebase\n" +
-				"● draft the plan\n" +
-				"○ implement\n",
-		);
+		expect(output.read()).toBe("Plan: demo\n" + "✓ survey the codebase\n" + "● draft the plan\n" + "○ implement\n");
 		expect(result.content).toEqual([
-			{
-				type: "text",
-				text: "Plan 'demo' published: 1 done, 1 in progress, 1 pending.",
-			},
+			{ type: "text", text: "Plan 'demo' published: 1 done, 1 in progress, 1 pending." },
 		]);
 		expect(reports).toHaveLength(4);
 		expect(reports[0]).toMatchObject({

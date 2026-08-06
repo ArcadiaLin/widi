@@ -5,23 +5,14 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import type {
-	AgentOrchestrator,
-	OrchestratorEvent,
-} from "../../src/core/agent-orchestrator.ts";
-import type {
-	ExtensionActivationApi,
-	ExtensionEventEnvelope,
-} from "../../src/core/extension/api.ts";
+import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
+import type { ExtensionActivationApi, ExtensionEventEnvelope } from "../../src/core/extension/api.ts";
 import { MAX_EXTENSION_EVENT_DISPATCH_DEPTH } from "../../src/core/extension/index.ts";
-import {
-	createOrchestrator,
-	MemoryExecutionEnv,
-	requireAgentRecord,
-} from "../helpers/orchestrator.ts";
+import type { OrchestratorEvent } from "../../src/core/types.ts";
+import { createOrchestrator, MemoryExecutionEnv, requireLiveAgent } from "../helpers/orchestrator.ts";
 
 function requireActions(orchestrator: AgentOrchestrator, agentId: string) {
-	const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+	const runner = requireLiveAgent(orchestrator, agentId).extensionRunner;
 	if (!runner) throw new Error("Expected extension runner.");
 	return runner.createContext("sender").actions;
 }
@@ -29,10 +20,7 @@ function requireActions(orchestrator: AgentOrchestrator, agentId: string) {
 function collectDiagnostics(
 	orchestrator: AgentOrchestrator,
 ): Extract<OrchestratorEvent, { type: "diagnostic" }>["diagnostic"][] {
-	const diagnostics: Extract<
-		OrchestratorEvent,
-		{ type: "diagnostic" }
-	>["diagnostic"][] = [];
+	const diagnostics: Extract<OrchestratorEvent, { type: "diagnostic" }>["diagnostic"][] = [];
 	orchestrator.subscribe((event) => {
 		if (event.type === "diagnostic") diagnostics.push(event.diagnostic);
 	});
@@ -42,24 +30,18 @@ function collectDiagnostics(
 describe("extension event bus", () => {
 	it("delivers to every live runtime, including the sender's own", async () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
-		const received: { agentId: string; envelope: ExtensionEventEnvelope }[] =
-			[];
+		const received: { agentId: string; envelope: ExtensionEventEnvelope }[] = [];
 		orchestrator.registerExtension("sender", (api: ExtensionActivationApi) => {
 			api.onExtensionEvent("herdr:blocked", (envelope, context) => {
 				received.push({ agentId: context.agentId, envelope });
 			});
 		});
-		const firstAgentId = await orchestrator.spawnAgent();
-		const secondAgentId = await orchestrator.spawnAgent();
+		const firstAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const secondAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
-		await requireActions(orchestrator, firstAgentId).emitExtensionEvent(
-			"herdr:blocked",
-			{ pane: 3 },
-		);
+		await requireActions(orchestrator, firstAgentId).emitExtensionEvent("herdr:blocked", { pane: 3 });
 
-		expect(received.map((entry) => entry.agentId).sort()).toEqual(
-			[firstAgentId, secondAgentId].sort(),
-		);
+		expect(received.map((entry) => entry.agentId).sort()).toEqual([firstAgentId, secondAgentId].sort());
 		for (const entry of received) {
 			expect(entry.envelope.name).toBe("herdr:blocked");
 			expect(entry.envelope.payload).toEqual({ pane: 3 });
@@ -79,7 +61,7 @@ describe("extension event bus", () => {
 				names.push("other");
 			});
 		});
-		const agentId = await orchestrator.spawnAgent();
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
 		await requireActions(orchestrator, agentId).emitExtensionEvent("wanted");
 
@@ -94,13 +76,10 @@ describe("extension event bus", () => {
 				payloads.push(envelope.payload);
 			});
 		});
-		const agentId = await orchestrator.spawnAgent();
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		const payload = { counts: [1, 2] };
 
-		await requireActions(orchestrator, agentId).emitExtensionEvent(
-			"state",
-			payload,
-		);
+		await requireActions(orchestrator, agentId).emitExtensionEvent("state", payload);
 		payload.counts.push(3);
 
 		expect(payloads).toEqual([{ counts: [1, 2] }]);
@@ -115,14 +94,9 @@ describe("extension event bus", () => {
 		orchestrator.registerExtension("sender", (api: ExtensionActivationApi) => {
 			api.onExtensionEvent("state", (envelope) => {
 				const payload = envelope.payload as { nested: { count: number } };
-				frozen.push(
-					Object.isFrozen(envelope),
-					Object.isFrozen(payload),
-					Object.isFrozen(payload.nested),
-				);
+				frozen.push(Object.isFrozen(envelope), Object.isFrozen(payload), Object.isFrozen(payload.nested));
 				try {
-					(envelope as { sourceExtensionId: string }).sourceExtensionId =
-						"forged";
+					(envelope as { sourceExtensionId: string }).sourceExtensionId = "forged";
 					sourceMutationSucceeded = true;
 				} catch {
 					// Runtime immutability is the behavior under test.
@@ -135,19 +109,14 @@ describe("extension event bus", () => {
 				}
 			});
 		});
-		orchestrator.registerExtension(
-			"receiver",
-			(api: ExtensionActivationApi) => {
-				api.onExtensionEvent("state", (envelope) => {
-					received = envelope;
-				});
-			},
-		);
-		const agentId = await orchestrator.spawnAgent();
-
-		await requireActions(orchestrator, agentId).emitExtensionEvent("state", {
-			nested: { count: 1 },
+		orchestrator.registerExtension("receiver", (api: ExtensionActivationApi) => {
+			api.onExtensionEvent("state", (envelope) => {
+				received = envelope;
+			});
 		});
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+
+		await requireActions(orchestrator, agentId).emitExtensionEvent("state", { nested: { count: 1 } });
 
 		expect(frozen).toEqual([true, true, true]);
 		expect(sourceMutationSucceeded).toBe(false);
@@ -164,17 +133,11 @@ describe("extension event bus", () => {
 				delivered += 1;
 			});
 		});
-		const agentId = await orchestrator.spawnAgent();
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		const actions = requireActions(orchestrator, agentId);
 
-		await expect(actions.emitExtensionEvent("has space")).rejects.toThrow(
-			TypeError,
-		);
-		await expect(
-			actions.emitExtensionEvent("fine", {
-				big: "x".repeat(70_000),
-			}),
-		).rejects.toThrow(RangeError);
+		await expect(actions.emitExtensionEvent("has space")).rejects.toThrow(TypeError);
+		await expect(actions.emitExtensionEvent("fine", { big: "x".repeat(70_000) })).rejects.toThrow(RangeError);
 
 		expect(delivered).toBe(0);
 	});
@@ -188,7 +151,7 @@ describe("extension event bus", () => {
 			api.onExtensionEvent("has space", () => {});
 		});
 
-		await expect(orchestrator.spawnAgent()).rejects.toThrow(
+		await expect(orchestrator.spawnAgent({ origin: { kind: "new" } })).rejects.toThrow(
 			"Extension event name must contain only",
 		);
 	});
@@ -205,14 +168,12 @@ describe("extension event bus", () => {
 				reached += 1;
 			});
 		});
-		const agentId = await orchestrator.spawnAgent();
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
 		await requireActions(orchestrator, agentId).emitExtensionEvent("ping");
 
 		expect(reached).toBe(1);
-		const failure = diagnostics.find(
-			(diagnostic) => diagnostic.code === "extension.handler_failed",
-		);
+		const failure = diagnostics.find((diagnostic) => diagnostic.code === "extension.handler_failed");
 		expect(failure?.message).toContain("subscriber exploded");
 	});
 
@@ -226,16 +187,14 @@ describe("extension event bus", () => {
 				await context.actions.emitExtensionEvent("echo");
 			});
 		});
-		const agentId = await orchestrator.spawnAgent();
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
 		await requireActions(orchestrator, agentId).emitExtensionEvent("echo");
 
 		expect(relays).toBe(MAX_EXTENSION_EVENT_DISPATCH_DEPTH);
 		expect(
 			diagnostics.some(
-				(diagnostic) =>
-					diagnostic.code === "extension.event_recursion_dropped" &&
-					diagnostic.extensionId === "sender",
+				(diagnostic) => diagnostic.code === "extension.event_recursion_dropped" && diagnostic.extensionId === "sender",
 			),
 		).toBe(true);
 	});
@@ -254,7 +213,7 @@ describe("extension event bus", () => {
 				await handlersReleased;
 			});
 		});
-		const agentId = await orchestrator.spawnAgent();
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		const actions = requireActions(orchestrator, agentId);
 
 		const dispatches = Promise.all(
@@ -272,11 +231,7 @@ describe("extension event bus", () => {
 			await dispatches;
 		}
 
-		expect(
-			diagnostics.some(
-				(diagnostic) => diagnostic.code === "extension.event_recursion_dropped",
-			),
-		).toBe(false);
+		expect(diagnostics.some((diagnostic) => diagnostic.code === "extension.event_recursion_dropped")).toBe(false);
 	});
 
 	it("drops the subscriptions of a disposed agent", async () => {
@@ -287,9 +242,9 @@ describe("extension event bus", () => {
 				seen.push(context.agentId);
 			});
 		});
-		const survivorId = await orchestrator.spawnAgent();
-		const disposedId = await orchestrator.spawnAgent();
-		await orchestrator.disposeAgent(disposedId, { reason: "test" });
+		const survivorId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const disposedId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		await orchestrator.disposeAgent(disposedId, { intent: "removed", reason: "test" });
 
 		await requireActions(orchestrator, survivorId).emitExtensionEvent("ping");
 
@@ -306,7 +261,7 @@ describe("extension event bus", () => {
 				generations.push(activationGeneration);
 			});
 		});
-		const agentId = await orchestrator.spawnAgent();
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		await orchestrator.reloadExtensions({ agentIds: [agentId] });
 
 		await requireActions(orchestrator, agentId).emitExtensionEvent("ping");
@@ -319,9 +274,9 @@ describe("extension event bus", () => {
 		orchestrator.registerExtension("sender", (api: ExtensionActivationApi) => {
 			api.onExtensionEvent("herdr:blocked", () => {});
 		});
-		const agentId = await orchestrator.spawnAgent();
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
-		const hooks = orchestrator.inspectAgent(agentId).extensionSnapshot.hooks;
+		const hooks = orchestrator.inspectAgent(agentId).extensions.hooks;
 
 		expect(hooks).toContainEqual({
 			kind: "event",

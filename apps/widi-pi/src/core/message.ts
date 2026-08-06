@@ -15,37 +15,116 @@
 
 import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
 import { AgentHarnessError, type AgentHarnessPhase } from "@widi/agent-core";
-import type { AgentId } from "./types.ts";
+import type { AgentId, PromptOutcome } from "./types.ts";
 
 /**
- * Trusted origin of a message. Never derived from model-supplied arguments:
- * a tool call carries only its target and body, and the caller identity is
- * injected from the tool adapter context so an agent cannot forge a sender.
+ * Where a message came from. **Rendering and provenance only** - nothing here
+ * decides behavior, so a holder may declare whatever it likes, including a kind
+ * core has never heard of.
+ *
+ * The reason it can be open: the model-facing text comes from the holder's own
+ * `render` (see {@link MessageRequest}), so binding `kind` would not stop a
+ * holder from producing text identical to any other source's. What does decide
+ * behavior is {@link MessageDeliveryPolicy}, which is bound when the sink is
+ * handed out and cannot be overridden.
  */
-export type MessageSource =
-	| { readonly kind: "human" }
-	| { readonly kind: "agent"; readonly agentId: AgentId }
-	| {
-			readonly kind: "background_job";
-			readonly ownerAgentId: AgentId;
-			readonly jobId: string;
-	  }
-	| { readonly kind: "system"; readonly name: string };
+export interface MessageSource {
+	/** Core knows `human`, `agent`, `background_job`, `runtime`; anything else is rendered generically. */
+	readonly kind: string;
+	/** One human-readable line; what a UI shows when it does not know the kind. */
+	readonly label?: string;
+	/** The source's own payload. Stored verbatim, never interpreted. Must be JSON-serializable. */
+	readonly details?: unknown;
+}
 
 /**
  * Caller intent, not a harness method. The harness method is chosen at delivery
  * time from the target's live phase: `next_turn` never preempts the reasoning
- * of a turn already in flight, `interrupt` does.
+ * of a turn already in flight, `interrupt` does, and `precede` never wakes the
+ * target at all.
+ *
+ * `precede` is not called `prompt`: `harness.prompt()` means "start a turn now",
+ * and one word for two meanings would not survive this file. It describes what
+ * a resume notice does - land on the branch and wait to be read with whatever
+ * input comes next.
  */
-export type MessageDeliveryMode = "next_turn" | "interrupt";
+export type MessageDeliveryMode = "next_turn" | "interrupt" | "precede";
 
-export interface MessageDraft {
+/**
+ * What a message does at delivery, as opposed to what it says about itself.
+ * Bound when a sink is handed out, never taken from a request: a holder that
+ * could set these would be choosing how hard its text lands, not just how it
+ * is labelled.
+ */
+export interface MessageDeliveryPolicy {
+	/** Counts as the human interrupting; drives the human-interrupt coordination. */
+	readonly humanInterrupt: boolean;
+	/** Whether an extension block ends the message or degrades to a diagnostic. */
+	readonly blockPolicy: MessageBlockPolicy;
+	/** Keep retrying past a delivery failure instead of failing the caller. */
+	readonly retryOnFailure: boolean;
+	/** Adjacent messages sharing a key merge into one user message. */
+	readonly mergeKey?: string;
+}
+
+/** What a sink fixes on behalf of its holder. */
+export interface MessageSinkBinding {
+	/** The default source; a request may override it. */
 	readonly source: MessageSource;
+	readonly policy: MessageDeliveryPolicy;
+	/**
+	 * How this sink turns a body into the text the model reads, when the request
+	 * does not bring its own. It belongs to the sink rather than to the declared
+	 * source: a request that renames its source is choosing a label, and if it
+	 * also wants different text it says so with `render`.
+	 */
+	readonly render?: (body: string) => string;
+	/**
+	 * This sink's messages land as plain `role:"user"` entries - no type, no
+	 * record of a source. True for the shell alone: existing sessions read back
+	 * unchanged, and carrying no type at all is what says the user typed it. A
+	 * request that overrides the source is no longer the shell speaking and gets
+	 * a typed entry like everyone else.
+	 */
+	readonly plainEntry?: boolean;
+}
+
+/** What a holder asks for. Identity is a label here, not a capability. */
+export interface MessageRequest {
 	readonly targetAgentId: AgentId;
 	/** Semantic body, before any source attribution is rendered onto it. */
 	readonly body: string;
+	/** Overrides the sink's source. Rendering and provenance only. */
+	readonly source?: MessageSource;
+	/**
+	 * Produces the text the model reads. Runs once, at enqueue: the queue
+	 * re-attempts delivery across phase changes, and a second run would give one
+	 * message two versions. Defaults to {@link renderMessageContent}.
+	 */
+	readonly render?: (body: string) => string;
 	readonly images?: readonly ImageContent[];
 	readonly mode: MessageDeliveryMode;
+}
+
+/** A request resolved against the sink it arrived through. */
+export interface MessageDraft extends MessageRequest {
+	/** The request's source if it named one, the sink's otherwise. */
+	readonly source: MessageSource;
+	readonly binding: MessageSinkBinding;
+}
+
+/** Everything a holder can do with a bound sink. */
+export interface MessageSender {
+	send(request: MessageRequest): Promise<MessageSendOutcome>;
+}
+
+/**
+ * A sender that may also start a turn and wait for its assistant message. Only
+ * the trusted shell gets one: `prompt` refuses a busy target rather than
+ * queueing, which is the wrong answer for every other holder.
+ */
+export interface MessageSink extends MessageSender {
+	prompt(request: MessageRequest): Promise<PromptOutcome>;
 }
 
 /**
@@ -60,7 +139,13 @@ export interface MessageDraft {
  */
 export type MessageDeliveryPhase = AgentHarnessPhase | undefined;
 
-export type MessageDeliveryMethod = "prompt" | "follow_up" | "steer";
+/**
+ * `append` is the one method that does not wake the target: it writes the
+ * message onto the branch at the current leaf, where the next turn reads it
+ * along with everything else. It is durable, which is why a resume notice uses
+ * it rather than the harness's in-memory next-turn queue.
+ */
+export type MessageDeliveryMethod = "prompt" | "follow_up" | "steer" | "append";
 
 export type MessageDeliveryDecision =
 	| { readonly kind: "deliver"; readonly method: MessageDeliveryMethod }
@@ -80,11 +165,7 @@ export type MessageInterceptRun =
 			readonly images?: readonly ImageContent[];
 			readonly transformedBy: readonly string[];
 	  }
-	| {
-			readonly kind: "block";
-			readonly reason?: string;
-			readonly blockedBy: string;
-	  };
+	| { readonly kind: "block"; readonly reason?: string; readonly blockedBy: string };
 
 export interface MessageInterceptEvent {
 	readonly type: "input";
@@ -95,36 +176,113 @@ export interface MessageInterceptEvent {
 }
 
 export type MessageTransformOutcome =
-	| {
-			readonly kind: "pass";
-			readonly text: string;
-			readonly images?: readonly ImageContent[];
-	  }
+	| { readonly kind: "pass"; readonly text: string; readonly images?: readonly ImageContent[] }
 	| {
 			readonly kind: "transform";
 			readonly text: string;
 			readonly images?: readonly ImageContent[];
 			readonly transformedBy: readonly string[];
 	  }
-	| {
-			readonly kind: "block";
-			readonly reason?: string;
-			readonly blockedBy: string;
-	  };
+	| { readonly kind: "block"; readonly reason?: string; readonly blockedBy: string };
 
 /**
- * What a `block` from the input pipeline means for this source.
+ * What a `block` from the input pipeline means for this message.
  *
  * `enforce` ends the message: the human sees a blocked input, an agent sees its
- * tool call fail. `ignore` is reserved for background job results, where the
- * model already holds the job handle from t0 and is waiting for exactly one
- * result; dropping it would strand the model forever. There, a block degrades
- * to a diagnostic and the original body is delivered.
+ * tool call fail. `ignore` is for the senders with nobody left to tell - a
+ * background job result the model is already waiting for, a runtime notice
+ * whose records are written whether or not the model hears about them. There a
+ * block degrades to a diagnostic and the original body is delivered.
  */
 export type MessageBlockPolicy = "enforce" | "ignore";
 
-export function messageBlockPolicy(source: MessageSource): MessageBlockPolicy {
-	return source.kind === "background_job" ? "ignore" : "enforce";
+/**
+ * The producers core ships with. Anyone else declares its own source and gets
+ * the generic treatment; these five are the ones whose identity, delivery
+ * policy and default rendering core decides.
+ */
+export type BuiltInMessageProducer =
+	| { readonly kind: "human" }
+	| { readonly kind: "agent"; readonly senderAgentId: AgentId }
+	| {
+			readonly kind: "background_job";
+			readonly ownerAgentId: AgentId;
+			readonly jobId: string;
+			readonly mode: MessageDeliveryMode;
+	  }
+	| { readonly kind: "runtime"; readonly notice: string }
+	| { readonly kind: "extension"; readonly extensionId: string };
+
+/**
+ * Everything core decides about a built-in producer, in one place: who it says
+ * it is, what its messages do on arrival, and how its text reaches the model.
+ *
+ * The three are together on purpose. They are the answer to one question - "what
+ * is it for this producer to speak?" - and splitting them across a source table,
+ * a policy table and a renderer switch is how they drift: a new producer added
+ * to two of the three reads as a bug in the third.
+ *
+ * A prefix is rendered only where the reader needs to know the text is not its
+ * own and the body does not already say so. Job results and runtime notices
+ * carry their own headers - a carried-over job result in particular has to keep
+ * the shape of a job result, because that is what the model matches its open t0
+ * handle against.
+ */
+export function messageBindingFor(producer: BuiltInMessageProducer): MessageSinkBinding {
+	switch (producer.kind) {
+		case "human":
+			// The shell speaking for the person at the keyboard: the only binding
+			// that counts as a human interrupt, and the only one whose text reaches
+			// the model unmarked, because it is the model's baseline user message.
+			return {
+				source: { kind: "human" },
+				policy: { humanInterrupt: true, blockPolicy: "enforce", retryOnFailure: false },
+				render: (body) => body,
+				plainEntry: true,
+			};
+		case "agent": {
+			const senderAgentId = producer.senderAgentId;
+			return {
+				source: { kind: "agent", label: senderAgentId },
+				policy: { humanInterrupt: false, blockPolicy: "enforce", retryOnFailure: false },
+				render: (body) => `[Message from ${senderAgentId}]\n\n${body}`,
+			};
+		}
+		case "background_job":
+			// `retryOnFailure` because the tool call already returned: nobody is left
+			// to be told the text was lost, and the model waits for exactly one
+			// result that no one will resend.
+			return {
+				source: {
+					kind: "background_job",
+					label: `job ${producer.jobId}`,
+					details: { ownerAgentId: producer.ownerAgentId, jobId: producer.jobId },
+				},
+				policy: {
+					humanInterrupt: false,
+					blockPolicy: "ignore",
+					retryOnFailure: true,
+					mergeKey: backgroundResultMergeKey(producer.mode),
+				},
+				render: (body) => body,
+			};
+		case "runtime":
+			// `ignore` because the facts these announce are recorded either way; a
+			// block would leave the records written and the model uninformed.
+			return {
+				source: { kind: "runtime", label: producer.notice.replaceAll("_", " "), details: { notice: producer.notice } },
+				policy: { humanInterrupt: false, blockPolicy: "ignore", retryOnFailure: false },
+				render: (body) => body,
+			};
+		case "extension": {
+			const extensionId = producer.extensionId;
+			return {
+				source: { kind: `extension:${extensionId}`, label: extensionId },
+				policy: { humanInterrupt: false, blockPolicy: "enforce", retryOnFailure: false },
+				render: (body) => `[Input from extension ${extensionId}]\n\n${body}`,
+			};
+		}
+	}
 }
 
 /**
@@ -134,17 +292,9 @@ export function messageBlockPolicy(source: MessageSource): MessageBlockPolicy {
  */
 export type MessageSendOutcome =
 	| { readonly kind: "accepted" }
-	| {
-			readonly kind: "blocked";
-			readonly inputId: string;
-			readonly reason?: string;
-			readonly blockedBy: string;
-	  };
+	| { readonly kind: "blocked"; readonly inputId: string; readonly reason?: string; readonly blockedBy: string };
 
-export type MessageErrorCode =
-	| "message_invalid"
-	| "target_unavailable"
-	| "delivery_rejected";
+export type MessageErrorCode = "message_invalid" | "target_unavailable" | "delivery_rejected";
 
 export class MessageError extends Error {
 	readonly code: MessageErrorCode;
@@ -158,34 +308,21 @@ export class MessageError extends Error {
 
 export function assertMessageBody(body: string): void {
 	if (typeof body !== "string" || body.trim().length === 0) {
-		throw new MessageError(
-			"message_invalid",
-			"Message body must be a non-empty string.",
-		);
+		throw new MessageError("message_invalid", "Message body must be a non-empty string.");
 	}
 }
 
 /**
- * Render the model-facing text for a message. Applied after interception, so
- * extensions see the semantic body and cannot forge an attribution prefix.
+ * The text the model reads, chosen once and applied after interception - so the
+ * extension pipeline sees the semantic body and never a rendered one.
+ *
+ * Three sources of the answer, most specific first: what this request asked for,
+ * what its sink renders by default, and finally the body unchanged. The last is
+ * for a sink built by hand rather than by {@link messageBindingFor}, where
+ * marking the text would be core inventing an attribution nobody asked for.
  */
-export function renderMessageEnvelope(
-	source: MessageSource,
-	text: string,
-): string {
-	switch (source.kind) {
-		case "human":
-			// Human input is the model's baseline user message: no prefix, so
-			// existing sessions and prompt behavior are unchanged.
-			return text;
-		case "agent":
-			return `[Message from ${source.agentId}]\n\n${text}`;
-		case "background_job":
-			// Job results already carry their own job id, tool, and status header.
-			return text;
-		case "system":
-			return `[Message from ${source.name}]\n\n${text}`;
-	}
+export function renderMessageContent(draft: MessageDraft, body: string): string {
+	return (draft.render ?? draft.binding.render ?? ((text: string) => text))(body);
 }
 
 /**
@@ -209,9 +346,7 @@ export interface MessageTransformPorts {
 	 * Run the target's extension input pipeline. Returns `pass` when the target
 	 * has no live extension runtime.
 	 */
-	readonly intercept: (
-		event: MessageInterceptEvent,
-	) => Promise<MessageInterceptRun>;
+	readonly intercept: (event: MessageInterceptEvent) => Promise<MessageInterceptRun>;
 }
 
 /**
@@ -232,14 +367,9 @@ export async function transformMessage(
 		images: draft.images,
 	});
 	if (run.kind === "transform") {
-		return {
-			kind: "transform",
-			text: run.text,
-			images: run.images ?? draft.images,
-			transformedBy: run.transformedBy,
-		};
+		return { kind: "transform", text: run.text, images: run.images ?? draft.images, transformedBy: run.transformedBy };
 	}
-	if (run.kind === "block" && messageBlockPolicy(draft.source) === "enforce") {
+	if (run.kind === "block" && draft.binding.policy.blockPolicy === "enforce") {
 		return { kind: "block", reason: run.reason, blockedBy: run.blockedBy };
 	}
 	return { kind: "pass", text: draft.body, images: draft.images };
@@ -260,16 +390,14 @@ export function decideMessageDelivery(input: {
 }): MessageDeliveryDecision {
 	const { phase, targetAgentId } = input;
 	if (phase === undefined) {
-		return {
-			kind: "reject",
-			reason: `Agent ${targetAgentId} can no longer receive messages.`,
-		};
+		return { kind: "reject", reason: `Agent ${targetAgentId} can no longer receive messages.` };
 	}
+	// An append drives no agent loop and joins no queue, so no phase can refuse
+	// it: the harness buffers the write behind whatever is running and lands it
+	// at that operation's save point. It is the one method with no phase gate.
+	if (input.mode === "precede") return { kind: "deliver", method: "append" };
 	if (input.requiresIdle && phase !== "idle") {
-		return {
-			kind: "reject",
-			reason: `Agent ${targetAgentId} cannot accept a prompt while ${phase}.`,
-		};
+		return { kind: "reject", reason: `Agent ${targetAgentId} cannot accept a prompt while ${phase}.` };
 	}
 	// Maintenance work does not run an agent loop, so a steer or follow-up would
 	// be accepted into a queue nothing drains. It waits for the next phase change
@@ -279,10 +407,7 @@ export function decideMessageDelivery(input: {
 		return { kind: "defer" };
 	}
 	if (phase === "idle") return { kind: "deliver", method: "prompt" };
-	return {
-		kind: "deliver",
-		method: input.mode === "interrupt" ? "steer" : "follow_up",
-	};
+	return { kind: "deliver", method: input.mode === "interrupt" ? "steer" : "follow_up" };
 }
 
 /** Outcome of one accepted delivery. */
@@ -296,11 +421,33 @@ export interface MessageDeliveryReceipt {
 	readonly completed?: Promise<AssistantMessage>;
 }
 
+/**
+ * What a delivery records about itself, beyond the text the model reads.
+ *
+ * Absent only for input the shell submits as the human: that lands as a plain
+ * `role:"user"` entry, and having no type at all is what says "this is what the
+ * user typed". Everything else carries one, so a UI reading the branch back
+ * knows who wrote it without inferring anything from the text.
+ */
+export interface MessageEntryPayload {
+	readonly customType: string;
+	readonly details: MessageEntryDetails;
+}
+
+export interface MessageEntryDetails {
+	readonly source: MessageSource;
+	/** The body before rendering: what a UI shows, as opposed to what the model read. */
+	readonly body: string;
+	readonly transformedBy?: readonly string[];
+}
+
 export interface MessageDeliveryRequest {
 	readonly agentId: AgentId;
 	readonly method: MessageDeliveryMethod;
 	readonly text: string;
 	readonly images: readonly ImageContent[] | undefined;
+	/** Absent for plain shell input; present for every other source. */
+	readonly entry: MessageEntryPayload | undefined;
 	/** The batch contains input submitted directly by the human surface. */
 	readonly humanInterrupt: boolean;
 	/** True when the enqueuing caller awaits `receipt.completed` itself. */
@@ -310,15 +457,15 @@ export interface MessageDeliveryRequest {
 export interface MessageDeliveryPorts {
 	/** Re-read immediately before every delivery attempt, never cached. */
 	readonly resolvePhase: (agentId: AgentId) => MessageDeliveryPhase;
-	readonly deliver: (
-		request: MessageDeliveryRequest,
-	) => Promise<MessageDeliveryReceipt>;
+	readonly deliver: (request: MessageDeliveryRequest) => Promise<MessageDeliveryReceipt>;
 }
 
 export interface MessageEnqueueInput {
 	readonly targetAgentId: AgentId;
 	/** Rendered, post-interception text. */
 	readonly text: string;
+	/** Absent for plain shell input; present for every other source. */
+	readonly entry?: MessageEntryPayload;
 	readonly images?: readonly ImageContent[];
 	readonly mode: MessageDeliveryMode;
 	readonly requiresIdle: boolean;
@@ -340,17 +487,11 @@ export interface MessageEnqueueInput {
 	readonly retryOnFailure: boolean;
 	/** Notified each time such a failure defers the message. */
 	readonly onDeferredFailure?: (error: unknown) => void;
-	/**
-	 * Internal delivery lifecycle hooks. They run around the actual harness
-	 * call, not when the message merely enters this queue, so metadata that must
-	 * follow a concrete user message can bind to the correct attempt.
-	 */
-	readonly onDeliveryStart?: (method: MessageDeliveryMethod) => void;
-	readonly onDeliveryFailure?: (error: unknown) => void;
 }
 
 interface QueuedMessage {
 	readonly text: string;
+	readonly entry: MessageEntryPayload | undefined;
 	readonly images: readonly ImageContent[] | undefined;
 	readonly mode: MessageDeliveryMode;
 	readonly requiresIdle: boolean;
@@ -359,10 +500,6 @@ interface QueuedMessage {
 	readonly awaited: boolean;
 	readonly retryOnFailure: boolean;
 	readonly onDeferredFailure: ((error: unknown) => void) | undefined;
-	readonly onDeliveryStart:
-		| ((method: MessageDeliveryMethod) => void)
-		| undefined;
-	readonly onDeliveryFailure: ((error: unknown) => void) | undefined;
 	readonly resolve: (receipt: MessageDeliveryReceipt) => void;
 	readonly reject: (error: unknown) => void;
 	settled: boolean;
@@ -410,6 +547,7 @@ export class MessageDeliveryQueue {
 			const queue = this._queues.get(input.targetAgentId) ?? [];
 			queue.push({
 				text: input.text,
+				entry: input.entry,
 				images: input.images,
 				mode: input.mode,
 				requiresIdle: input.requiresIdle,
@@ -418,8 +556,6 @@ export class MessageDeliveryQueue {
 				awaited: input.awaited,
 				retryOnFailure: input.retryOnFailure,
 				onDeferredFailure: input.onDeferredFailure,
-				onDeliveryStart: input.onDeliveryStart,
-				onDeliveryFailure: input.onDeliveryFailure,
 				resolve,
 				reject,
 				settled: false,
@@ -450,10 +586,7 @@ export class MessageDeliveryQueue {
 
 	/** Whether any message is still waiting for or being handed to this target. */
 	hasPending(agentId: AgentId): boolean {
-		return (
-			(this._queues.get(agentId)?.length ?? 0) > 0 ||
-			(this._inFlight.get(agentId)?.length ?? 0) > 0
-		);
+		return (this._queues.get(agentId)?.length ?? 0) > 0 || (this._inFlight.get(agentId)?.length ?? 0) > 0;
 	}
 
 	/**
@@ -462,10 +595,7 @@ export class MessageDeliveryQueue {
 	 * settle, and its senders must not be left waiting forever.
 	 */
 	cancel(agentId: AgentId, reason: string): void {
-		const outstanding = [
-			...(this._queues.get(agentId) ?? []),
-			...(this._inFlight.get(agentId) ?? []),
-		];
+		const outstanding = [...(this._queues.get(agentId) ?? []), ...(this._inFlight.get(agentId) ?? [])];
 		this._queues.delete(agentId);
 		this._inFlight.delete(agentId);
 		for (const message of outstanding) {
@@ -495,10 +625,7 @@ export class MessageDeliveryQueue {
 				if (decision.kind === "defer") break;
 				if (decision.kind === "reject") {
 					queue.shift();
-					this._fail(
-						head,
-						new MessageError("delivery_rejected", decision.reason),
-					);
+					this._fail(head, new MessageError("delivery_rejected", decision.reason));
 					continue;
 				}
 
@@ -509,13 +636,11 @@ export class MessageDeliveryQueue {
 				this._inFlight.set(agentId, batch);
 				let failure: { readonly error: unknown } | undefined;
 				try {
-					for (const message of batch) {
-						message.onDeliveryStart?.(decision.method);
-					}
 					const receipt = await this._ports.deliver({
 						agentId,
 						method: decision.method,
 						text,
+						entry: mergeEntryPayloads(batch),
 						images: head.images,
 						humanInterrupt: batch.some((message) => message.humanInterrupt),
 						awaited: batch.some((message) => message.awaited),
@@ -529,9 +654,6 @@ export class MessageDeliveryQueue {
 					}
 				}
 				if (!failure) continue;
-				for (const message of batch) {
-					message.onDeliveryFailure?.(failure.error);
-				}
 
 				// `busy` and `invalid_state` are expected races against a run that
 				// started or ended between resolving the phase and the call, and are
@@ -602,12 +724,7 @@ export class MessageDeliveryQueue {
 		if (head.mergeKey === undefined || head.images !== undefined) return batch;
 		while (queue.length > 0) {
 			const next = queue[0];
-			if (
-				next.settled ||
-				next.mergeKey !== head.mergeKey ||
-				next.images !== undefined ||
-				next.requiresIdle
-			) {
+			if (next.settled || next.mergeKey !== head.mergeKey || next.images !== undefined || next.requiresIdle) {
 				break;
 			}
 			queue.shift();
@@ -616,10 +733,7 @@ export class MessageDeliveryQueue {
 		return batch;
 	}
 
-	private _resolve(
-		message: QueuedMessage,
-		receipt: MessageDeliveryReceipt,
-	): void {
+	private _resolve(message: QueuedMessage, receipt: MessageDeliveryReceipt): void {
 		if (message.settled) return;
 		message.settled = true;
 		message.resolve(receipt);
@@ -632,11 +746,32 @@ export class MessageDeliveryQueue {
 	}
 }
 
+/**
+ * One entry for a merged batch. The batch becomes a single user message, so it
+ * gets a single record: the head names it, and the bodies are joined the way
+ * the texts were, so `details.body` still describes the whole message.
+ *
+ * Only sources whose policy sets a `mergeKey` reach a batch larger than one,
+ * and today that is job results alone - all for one owner, differing only in
+ * which job settled.
+ */
+function mergeEntryPayloads(batch: readonly QueuedMessage[]): MessageEntryPayload | undefined {
+	const head = batch[0];
+	if (!head?.entry) return undefined;
+	if (batch.length === 1) return head.entry;
+	const transformedBy = batch.flatMap((message) => message.entry?.details.transformedBy ?? []);
+	return {
+		customType: head.entry.customType,
+		details: {
+			source: head.entry.details.source,
+			body: batch.map((message) => message.entry?.details.body ?? message.text).join("\n\n"),
+			...(transformedBy.length === 0 ? undefined : { transformedBy }),
+		},
+	};
+}
+
 export function isRetryableDeliveryError(error: unknown): boolean {
-	return (
-		error instanceof AgentHarnessError &&
-		(error.code === "busy" || error.code === "invalid_state")
-	);
+	return error instanceof AgentHarnessError && (error.code === "busy" || error.code === "invalid_state");
 }
 
 /**

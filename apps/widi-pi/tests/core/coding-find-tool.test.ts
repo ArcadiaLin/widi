@@ -17,13 +17,7 @@ type FindResult = AgentToolResult<FindToolDetails>;
 function makeContext(
 	overrides: Partial<ToolExecutionContext<FindToolDetails>> = {},
 ): ToolExecutionContext<FindToolDetails> {
-	return {
-		signal: undefined,
-		onUpdate: undefined,
-		extension: undefined,
-		human: undefined,
-		...overrides,
-	};
+	return { signal: undefined, onUpdate: undefined, extension: undefined, human: undefined, ...overrides };
 }
 
 function textOf(result: FindResult): string {
@@ -78,9 +72,7 @@ describe("find tool", () => {
 	const tempRoots: string[] = [];
 
 	afterEach(async () => {
-		await Promise.all(
-			tempRoots.map((root) => rm(root, { force: true, recursive: true })),
-		);
+		await Promise.all(tempRoots.map((root) => rm(root, { force: true, recursive: true })));
 		tempRoots.length = 0;
 	});
 
@@ -98,11 +90,7 @@ describe("find tool", () => {
 		await writeFile(join(cwd, "src", "deep", "c.ts"), "");
 		await writeFile(join(cwd, "readme.md"), "");
 		const tool = createFindToolDefinition(cwd);
-		const result = await tool.execute(
-			"call-1",
-			{ pattern: "*.ts" },
-			makeContext(),
-		);
+		const result = await tool.execute("call-1", { pattern: "*.ts" }, makeContext());
 		expect(textOf(result)).toBe("b.ts\nsrc/a.ts\nsrc/deep/c.ts");
 		expect(result.details).toMatchObject({ path: ".", absolutePath: cwd });
 	});
@@ -115,11 +103,7 @@ describe("find tool", () => {
 		await writeFile(join(cwd, "src", "deep", "b.spec.ts"), "");
 		await writeFile(join(cwd, "other", "c.spec.ts"), "");
 		const tool = createFindToolDefinition(cwd);
-		const result = await tool.execute(
-			"call-1",
-			{ pattern: "src/**/*.spec.ts" },
-			makeContext(),
-		);
+		const result = await tool.execute("call-1", { pattern: "src/**/*.spec.ts" }, makeContext());
 		expect(textOf(result)).toBe("src/a.spec.ts\nsrc/deep/b.spec.ts");
 	});
 
@@ -128,11 +112,7 @@ describe("find tool", () => {
 		await writeFile(join(cwd, ".hidden.ts"), "");
 		await writeFile(join(cwd, "visible.ts"), "");
 		const tool = createFindToolDefinition(cwd);
-		const result = await tool.execute(
-			"call-1",
-			{ pattern: "*.ts" },
-			makeContext(),
-		);
+		const result = await tool.execute("call-1", { pattern: "*.ts" }, makeContext());
 		expect(textOf(result)).toBe(".hidden.ts\nvisible.ts");
 	});
 
@@ -144,11 +124,7 @@ describe("find tool", () => {
 		await writeFile(join(cwd, "node_modules", "pkg", "mod.ts"), "");
 		await writeFile(join(cwd, "app.ts"), "");
 		const tool = createFindToolDefinition(cwd);
-		const result = await tool.execute(
-			"call-1",
-			{ pattern: "*.ts" },
-			makeContext(),
-		);
+		const result = await tool.execute("call-1", { pattern: "*.ts" }, makeContext());
 		expect(textOf(result)).toBe("app.ts");
 	});
 
@@ -160,11 +136,7 @@ describe("find tool", () => {
 		await writeFile(join(cwd, "dist", "out.ts"), "");
 		await writeFile(join(cwd, "in.ts"), "");
 		const tool = createFindToolDefinition(cwd);
-		const result = await tool.execute(
-			"call-1",
-			{ pattern: "*.ts" },
-			makeContext(),
-		);
+		const result = await tool.execute("call-1", { pattern: "*.ts" }, makeContext());
 		expect(textOf(result)).toBe("in.ts");
 	});
 
@@ -174,11 +146,7 @@ describe("find tool", () => {
 		await writeFile(join(cwd, "ignored.txt"), "");
 		await writeFile(join(cwd, "kept.txt"), "");
 		const tool = createFindToolDefinition(cwd);
-		const result = await tool.execute(
-			"call-1",
-			{ pattern: "*.txt" },
-			makeContext(),
-		);
+		const result = await tool.execute("call-1", { pattern: "*.txt" }, makeContext());
 		expect(textOf(result)).toBe("kept.txt");
 	});
 
@@ -192,11 +160,7 @@ describe("find tool", () => {
 		await writeFile(join(cwd, "shared-name.txt"), "");
 		await writeFile(join(cwd, "nested", "shared-name.txt"), "");
 		const tool = createFindToolDefinition(cwd);
-		const result = await tool.execute(
-			"call-1",
-			{ pattern: "*.txt" },
-			makeContext(),
-		);
+		const result = await tool.execute("call-1", { pattern: "*.txt" }, makeContext());
 		expect(textOf(result)).toBe("nested/shared-name.txt");
 	});
 
@@ -206,11 +170,7 @@ describe("find tool", () => {
 			await writeFile(join(cwd, `file-${i}.txt`), "");
 		}
 		const tool = createFindToolDefinition(cwd);
-		const result = await tool.execute(
-			"call-1",
-			{ pattern: "*.txt", limit: 3 },
-			makeContext(),
-		);
+		const result = await tool.execute("call-1", { pattern: "*.txt", limit: 3 }, makeContext());
 		expect(result.details.resultLimitReached).toBe(3);
 		expect(textOf(result)).toBe(
 			"file-0.txt\nfile-1.txt\nfile-2.txt\n\n[3 results limit reached. Use limit=6 for more, or refine pattern]",
@@ -221,56 +181,42 @@ describe("find tool", () => {
 		const cwd = await tempCwd();
 		await writeFile(join(cwd, "a.txt"), "");
 		const tool = createFindToolDefinition(cwd);
-		const result = await tool.execute(
-			"call-1",
-			{ pattern: "*.zzz" },
-			makeContext(),
-		);
+		const result = await tool.execute("call-1", { pattern: "*.zzz" }, makeContext());
 		expect(textOf(result)).toBe("No files found matching pattern");
 	});
 
 	it("rejects invalid glob patterns before spawning rg", async () => {
 		const cwd = await tempCwd();
 		const tool = createFindToolDefinition(cwd, { rgPath: "/no/such/rg" });
-		await expect(
-			tool.execute("call-1", { pattern: "[" }, makeContext()),
-		).rejects.toThrow(/Invalid glob pattern/);
+		await expect(tool.execute("call-1", { pattern: "[" }, makeContext())).rejects.toThrow(/Invalid glob pattern/);
 	});
 
 	it("rejects an invalid limit", async () => {
 		const cwd = await tempCwd();
 		const tool = createFindToolDefinition(cwd);
-		await expect(
-			tool.execute("call-1", { pattern: "*.ts", limit: 0 }, makeContext()),
-		).rejects.toThrow(/limit must be a positive integer/);
+		await expect(tool.execute("call-1", { pattern: "*.ts", limit: 0 }, makeContext())).rejects.toThrow(
+			/limit must be a positive integer/,
+		);
 	});
 
 	it("throws distinct errors for missing paths and non-directories", async () => {
 		const cwd = await tempCwd();
 		await writeFile(join(cwd, "file.txt"), "");
 		const tool = createFindToolDefinition(cwd);
-		await expect(
-			tool.execute(
-				"call-1",
-				{ pattern: "*.ts", path: "no-such-dir" },
-				makeContext(),
-			),
-		).rejects.toThrow(/Path not found/);
-		await expect(
-			tool.execute(
-				"call-1",
-				{ pattern: "*.ts", path: "file.txt" },
-				makeContext(),
-			),
-		).rejects.toThrow(/Not a directory/);
+		await expect(tool.execute("call-1", { pattern: "*.ts", path: "no-such-dir" }, makeContext())).rejects.toThrow(
+			/Path not found/,
+		);
+		await expect(tool.execute("call-1", { pattern: "*.ts", path: "file.txt" }, makeContext())).rejects.toThrow(
+			/Not a directory/,
+		);
 	});
 
 	it("throws when the configured ripgrep path is missing", async () => {
 		const cwd = await tempCwd();
 		const tool = createFindToolDefinition(cwd, { rgPath: "/no/such/rg" });
-		await expect(
-			tool.execute("call-1", { pattern: "*.ts" }, makeContext()),
-		).rejects.toThrow(/Custom ripgrep path not found/);
+		await expect(tool.execute("call-1", { pattern: "*.ts" }, makeContext())).rejects.toThrow(
+			/Custom ripgrep path not found/,
+		);
 	});
 
 	it("aborts a running search via the signal", async () => {
@@ -279,20 +225,12 @@ describe("find tool", () => {
 			...createLocalFindOperations(),
 			runRg: (_args, { signal }) =>
 				new Promise((_resolve, reject) => {
-					signal?.addEventListener(
-						"abort",
-						() => reject(new Error("Operation aborted")),
-						{ once: true },
-					);
+					signal?.addEventListener("abort", () => reject(new Error("Operation aborted")), { once: true });
 				}),
 		};
 		const tool = createFindToolDefinition(cwd, { operations });
 		const controller = new AbortController();
-		const pending = tool.execute(
-			"call-1",
-			{ pattern: "*.ts" },
-			makeContext({ signal: controller.signal }),
-		);
+		const pending = tool.execute("call-1", { pattern: "*.ts" }, makeContext({ signal: controller.signal }));
 		setTimeout(() => controller.abort(), 20);
 		await expect(pending).rejects.toThrow(/Operation aborted/);
 	});

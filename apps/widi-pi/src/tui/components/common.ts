@@ -3,12 +3,8 @@ import type { AgentMaintenanceKind } from "../../core/types.ts";
 import { singleLine } from "../format.ts";
 import type { AgentViewState, TuiApplicationState } from "../state.ts";
 
-export function activeAgent(
-	state: TuiApplicationState,
-): AgentViewState | undefined {
-	return state.activeAgentId
-		? state.agents.get(state.activeAgentId)
-		: undefined;
+export function activeAgent(state: TuiApplicationState): AgentViewState | undefined {
+	return state.activeAgentId ? state.agents.get(state.activeAgentId) : undefined;
 }
 
 /** Display word for maintenance work, e.g. "Compacting" in "Compacting…". */

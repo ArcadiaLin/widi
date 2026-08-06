@@ -6,12 +6,7 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import { agentIdentityLabel } from "../agent-identity.ts";
-import {
-	type AgentTree,
-	type AgentTreeEntry,
-	buildAgentTree,
-	flattenAgentTree,
-} from "../agent-tree.ts";
+import { type AgentTree, type AgentTreeEntry, buildAgentTree, flattenAgentTree } from "../agent-tree.ts";
 import type { AgentViewState, TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
 import { maintenanceLabel } from "./common.ts";
@@ -30,10 +25,7 @@ export interface AgentPanelHost {
 
 export type AgentPanelNavigation = "up" | "down" | "left" | "right";
 
-const NOOP_HOST: AgentPanelHost = {
-	setFocus: () => {},
-	requestRender: () => {},
-};
+const NOOP_HOST: AgentPanelHost = { setFocus: () => {}, requestRender: () => {} };
 
 /**
  * Bottom agent panel. Unfocused it is a read-only strip: top-level agents sit
@@ -141,14 +133,10 @@ export class AgentStripView implements Component {
 			.filter((agent) => top.columns.has(agent.agentId))
 			.map((agent) => ({
 				start: top.columns.get(agent.agentId) ?? 0,
-				rows: flattenAgentTree({
-					topLevel: [agent],
-					childrenOf: tree.childrenOf,
-				})
+				rows: flattenAgentTree({ topLevel: [agent], childrenOf: tree.childrenOf })
 					.filter((entry) => entry.depth > 0)
 					.map((entry) => {
-						const selected =
-							this.focused && entry.agent.agentId === this.cursorAgentId;
+						const selected = this.focused && entry.agent.agentId === this.cursorAgentId;
 						const agentContent = formatAgent(
 							this.state,
 							entry.agent,
@@ -182,9 +170,7 @@ export class AgentStripView implements Component {
 				// Deep indentation can consume a narrow column completely. Keep
 				// the selected agent visible by dropping its tree prefix and using
 				// the whole column segment as a compact fallback.
-				const compactSelected =
-					entry.selected &&
-					limit - desiredIndent < TREE_PREFIX_WIDTH + MIN_LABEL_WIDTH;
+				const compactSelected = entry.selected && limit - desiredIndent < TREE_PREFIX_WIDTH + MIN_LABEL_WIDTH;
 				const indent = compactSelected ? column.start : desiredIndent;
 				if (indent >= limit) continue;
 				const padding = indent - visibleWidth(line);
@@ -214,16 +200,11 @@ export class AgentStripView implements Component {
 			return true;
 		}
 		const active = this.state.activeAgentId;
-		this.cursorAgentId = entries.some((entry) => entry.agent.agentId === active)
-			? active
-			: entries[0].agent.agentId;
+		this.cursorAgentId = entries.some((entry) => entry.agent.agentId === active) ? active : entries[0].agent.agentId;
 		return true;
 	}
 
-	private layoutTopRow(
-		tree: AgentTree,
-		width: number,
-	): { line: string; columns: Map<string, number> } {
+	private layoutTopRow(tree: AgentTree, width: number): { line: string; columns: Map<string, number> } {
 		const topLevel = tree.topLevel;
 		const labels = topLevel.map((agent) =>
 			formatAgent(
@@ -233,9 +214,7 @@ export class AgentStripView implements Component {
 				this.focused && agent.agentId === this.cursorAgentId,
 			),
 		);
-		const cursorTop = this.focused
-			? topLevelColumnIndex(tree, this.cursorAgentId)
-			: -1;
+		const cursorTop = this.focused ? topLevelColumnIndex(tree, this.cursorAgentId) : -1;
 		// The window is recomputed per render: anchored as far left as possible
 		// while containing the cursor, so widening the terminal or moving the
 		// cursor back left always reveals more agents instead of sticking to a
@@ -278,15 +257,9 @@ export class AgentStripView implements Component {
 	): { line: string; columns: Map<string, number> } | undefined {
 		const rightHidden = topLevel.length - end;
 		const leftIndicator =
-			start > 0
-				? theme.dim(`‹${start} `)
-				: !this.focused && rightHidden > 0
-					? theme.dim(`+${rightHidden} `)
-					: "";
-		const rightIndicator =
-			this.focused && rightHidden > 0 ? theme.dim(` ${rightHidden}›`) : "";
-		const available =
-			width - visibleWidth(leftIndicator) - visibleWidth(rightIndicator);
+			start > 0 ? theme.dim(`‹${start} `) : !this.focused && rightHidden > 0 ? theme.dim(`+${rightHidden} `) : "";
+		const rightIndicator = this.focused && rightHidden > 0 ? theme.dim(` ${rightHidden}›`) : "";
+		const available = width - visibleWidth(leftIndicator) - visibleWidth(rightIndicator);
 		const widths = labels.slice(start, end).map((label) => visibleWidth(label));
 		const truncated = labels.slice(start, end);
 		const gaps = (truncated.length - 1) * COLUMN_GAP;
@@ -298,11 +271,7 @@ export class AgentStripView implements Component {
 			}
 			if (widths[longest] <= MIN_LABEL_WIDTH) return undefined;
 			widths[longest]--;
-			truncated[longest] = truncateToWidth(
-				labels[start + longest],
-				widths[longest],
-				"…",
-			);
+			truncated[longest] = truncateToWidth(labels[start + longest], widths[longest], "…");
 		}
 		const columns = new Map<string, number>();
 		let column = visibleWidth(leftIndicator);
@@ -355,27 +324,19 @@ export function moveAgentCursor(
  * top-level, its nearest ancestor above it in the flattened tree otherwise.
  * -1 when the agent is not in the tree.
  */
-function topLevelColumnIndex(
-	tree: AgentTree,
-	agentId: string | undefined,
-): number {
+function topLevelColumnIndex(tree: AgentTree, agentId: string | undefined): number {
 	const entries = flattenAgentTree(tree);
 	const index = entries.findIndex((entry) => entry.agent.agentId === agentId);
 	if (index < 0) return -1;
 	for (let cursor = index; cursor >= 0; cursor--) {
 		if (entries[cursor].depth === 0) {
-			return tree.topLevel.findIndex(
-				(agent) => agent.agentId === entries[cursor].agent.agentId,
-			);
+			return tree.topLevel.findIndex((agent) => agent.agentId === entries[cursor].agent.agentId);
 		}
 	}
 	return -1;
 }
 
-function matchNavigation(
-	keybindings: KeybindingsManager,
-	data: string,
-): AgentPanelNavigation | undefined {
+function matchNavigation(keybindings: KeybindingsManager, data: string): AgentPanelNavigation | undefined {
 	if (keybindings.matches(data, "tui.select.up")) return "up";
 	if (keybindings.matches(data, "tui.select.down")) return "down";
 	if (keybindings.matches(data, "app.agents.previous")) return "left";
@@ -383,33 +344,23 @@ function matchNavigation(
 	return undefined;
 }
 
-function formatAgent(
-	state: TuiApplicationState,
-	agent: AgentViewState,
-	active: boolean,
-	selected = false,
-): string {
+function formatAgent(state: TuiApplicationState, agent: AgentViewState, active: boolean, selected = false): string {
 	const label = agentIdentityLabel(state, agent);
 	const statusText =
-		agent.status === "running" && agent.maintenance
-			? maintenanceLabel(agent.maintenance).toLowerCase()
-			: agent.status;
+		agent.status === "running" && agent.maintenance ? maintenanceLabel(agent.maintenance).toLowerCase() : agent.status;
 	const base =
 		agent.attention === "human-request"
 			? "needs input"
 			: agent.unreadCount > 0
 				? `${statusText} · ${agent.unreadCount} unread`
 				: statusText;
-	const detail =
-		agent.backgroundJobCount > 0
-			? `${base} · ${agent.backgroundJobCount} bg`
-			: base;
+	const detail = agent.backgroundJobCount > 0 ? `${base} · ${agent.backgroundJobCount} bg` : base;
 	const text = `${agentGlyph(agent, active)} ${active ? theme.bold(label) : label} ${theme.dim(detail)}`;
 	return selected ? theme.inverse(text) : text;
 }
 
 function agentGlyph(agent: AgentViewState, active: boolean): string {
-	if (agent.status === "unavailable" || agent.attention === "error") {
+	if (agent.attention === "error") {
 		return theme.error("!");
 	}
 	if (agent.attention === "human-request" || agent.attention === "warning") {

@@ -24,16 +24,7 @@ import { MemoryFileSystem } from "../helpers/memory-fs.ts";
 
 const SOURCE_KEY: SessionKey = ["root"];
 
-interface CounterState {
-	readonly count: number;
-	/** Child sessions this state claims, the way a spawn tree would. */
-	readonly sessions?: readonly SessionKey[];
-}
-
-/**
- * A namespace whose objects may name child sessions, so the session half of the
- * closure has something to find without pulling the real spawn tree in.
- */
+/** A minimal namespace storage, so the closure has objects to walk. */
 class CounterStorage implements CustomStorage {
 	private readonly _objects: JsonlObjectStore;
 
@@ -49,35 +40,17 @@ class CounterStorage implements CustomStorage {
 		return await this._objects.listDependencies(stateRoot);
 	}
 
-	async listSessionDependencies(
-		stateRoot: string,
-	): Promise<readonly SessionKey[]> {
-		const state = (await this._objects.resolveState(stateRoot)) as
-			| CounterState
-			| undefined;
-		return state?.sessions ?? [];
-	}
-
-	async copyReachable(
-		target: CustomStorage,
-		roots: readonly string[],
-	): Promise<void> {
+	async copyReachable(target: CustomStorage, roots: readonly string[]): Promise<void> {
 		await this._objects.copyReachable(target, roots);
 	}
 
-	async putObject(options: {
-		readonly data: unknown;
-		readonly dependencies?: readonly string[];
-	}): Promise<string> {
+	async putObject(options: { readonly data: unknown; readonly dependencies?: readonly string[] }): Promise<string> {
 		return await this._objects.putObject(options);
 	}
 }
 
 function counterNamespace(
-	options: {
-		readonly namespace?: string;
-		readonly forkPolicy?: "copy" | "omit" | "degrade";
-	} = {},
+	options: { readonly namespace?: string; readonly forkPolicy?: "copy" | "omit" | "degrade" } = {},
 ): PersistenceNamespaceDefinition {
 	const namespace = options.namespace ?? "test:counter";
 	return {
@@ -121,18 +94,9 @@ describe("fork closure", () => {
 		const fs = new MemoryFileSystem();
 		const storage = await openCounterStorage(fs);
 		const shared = await storage.putObject({ data: { count: 0 } });
-		const left = await storage.putObject({
-			data: { count: 1 },
-			dependencies: [shared],
-		});
-		const right = await storage.putObject({
-			data: { count: 2 },
-			dependencies: [shared],
-		});
-		const top = await storage.putObject({
-			data: { count: 3 },
-			dependencies: [left, right],
-		});
+		const left = await storage.putObject({ data: { count: 1 }, dependencies: [shared] });
+		const right = await storage.putObject({ data: { count: 2 }, dependencies: [shared] });
+		const top = await storage.putObject({ data: { count: 3 }, dependencies: [left, right] });
 
 		const registry = new PersistenceRegistry();
 		registry.register(counterNamespace());
@@ -159,12 +123,7 @@ describe("fork closure", () => {
 		await fs.writeFile(
 			`${dirPath}/objects.jsonl`,
 			[
-				JSON.stringify({
-					type: "persistence-objects",
-					version: 1,
-					namespace: "test:counter",
-					formatVersion: 1,
-				}),
+				JSON.stringify({ type: "persistence-objects", version: 1, namespace: "test:counter", formatVersion: 1 }),
 				JSON.stringify({ id: "sha256:a", deps: ["sha256:b"], data: {} }),
 				JSON.stringify({ id: "sha256:b", deps: ["sha256:a"], data: {} }),
 				"",
@@ -183,23 +142,15 @@ describe("fork closure", () => {
 			diagnostics,
 		});
 
-		expect(diagnostics.entries.map((entry) => entry.code)).toEqual([
-			"persistence.dependency_cycle",
-		]);
-		expect([...(plan.namespaces[0]?.objects ?? [])].sort()).toEqual([
-			"sha256:a",
-			"sha256:b",
-		]);
+		expect(diagnostics.entries.map((entry) => entry.code)).toEqual(["persistence.dependency_cycle"]);
+		expect([...(plan.namespaces[0]?.objects ?? [])].sort()).toEqual(["sha256:a", "sha256:b"]);
 	});
 
 	it("reports a missing object and keeps the rest of the plan", async () => {
 		const fs = new MemoryFileSystem();
 		const storage = await openCounterStorage(fs);
 		const present = await storage.putObject({ data: { count: 1 } });
-		const top = await storage.putObject({
-			data: { count: 2 },
-			dependencies: [present, "sha256:gone"],
-		});
+		const top = await storage.putObject({ data: { count: 2 }, dependencies: [present, "sha256:gone"] });
 
 		const registry = new PersistenceRegistry();
 		registry.register(counterNamespace());
@@ -212,12 +163,8 @@ describe("fork closure", () => {
 			diagnostics,
 		});
 
-		expect(diagnostics.entries.map((entry) => entry.code)).toEqual([
-			"persistence.dangling_ref",
-		]);
-		expect([...(plan.namespaces[0]?.objects ?? [])].sort()).toEqual(
-			[present, top].sort(),
-		);
+		expect(diagnostics.entries.map((entry) => entry.code)).toEqual(["persistence.dangling_ref"]);
+		expect([...(plan.namespaces[0]?.objects ?? [])].sort()).toEqual([present, top].sort());
 	});
 
 	it("leaves an omit namespace out", async () => {
@@ -237,9 +184,7 @@ describe("fork closure", () => {
 		});
 
 		expect(plan.namespaces).toHaveLength(0);
-		expect(diagnostics.entries.map((entry) => entry.code)).toEqual([
-			"persistence.fork_omitted",
-		]);
+		expect(diagnostics.entries.map((entry) => entry.code)).toEqual(["persistence.fork_omitted"]);
 	});
 
 	// An old build reading a session a newer one wrote must still fork it.
@@ -254,43 +199,6 @@ describe("fork closure", () => {
 		});
 
 		expect(plan.namespaces).toHaveLength(0);
-		expect(diagnostics.entries.map((entry) => entry.code)).toEqual([
-			"persistence.unknown_namespace",
-		]);
-	});
-
-	it("collects the child sessions a state names, without duplicates", async () => {
-		const fs = new MemoryFileSystem();
-		const storage = await openCounterStorage(fs);
-		const first = await storage.putObject({
-			data: { count: 1, sessions: [["root", "child-a"]] },
-		});
-		const second = await storage.putObject({
-			data: {
-				count: 2,
-				sessions: [
-					["root", "child-a"],
-					["root", "child-b"],
-				],
-			},
-			dependencies: [first],
-		});
-
-		const registry = new PersistenceRegistry();
-		registry.register(counterNamespace());
-		const diagnostics = new PersistenceDiagnostics();
-		const plan = await planForkClosure({
-			roots: new Map([["test:counter", second]]),
-			registry,
-			openStorage: async () => storage,
-			sourceKey: SOURCE_KEY,
-			diagnostics,
-		});
-
-		expect(plan.sessions).toEqual([
-			["root", "child-a"],
-			["root", "child-b"],
-		]);
-		expect(diagnostics.entries).toHaveLength(0);
+		expect(diagnostics.entries.map((entry) => entry.code)).toEqual(["persistence.unknown_namespace"]);
 	});
 });

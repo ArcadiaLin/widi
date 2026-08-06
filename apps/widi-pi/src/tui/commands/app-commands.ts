@@ -14,9 +14,7 @@ export interface ApplicationCommandHost {
 }
 
 /** Commands that operate on the application itself, not the orchestrator. */
-export function applicationCommands(
-	host: ApplicationCommandHost,
-): readonly CommandDefinition[] {
+export function applicationCommands(host: ApplicationCommandHost): readonly CommandDefinition[] {
 	const quit = async () => {
 		host.quit();
 		return undefined;
@@ -28,42 +26,27 @@ export function applicationCommands(
 		return undefined;
 	};
 	return [
-		{
-			kind: "action",
-			agentPolicy: "runtime",
-			name: "quit",
-			description: "Exit the application.",
-			execute: quit,
-		},
-		{
-			kind: "action",
-			agentPolicy: "runtime",
-			name: "exit",
-			description: "Exit the application.",
-			execute: quit,
-		},
+		{ kind: "action", agentPolicy: "runtime", name: "quit", description: "Exit the application.", execute: quit },
+		{ kind: "action", agentPolicy: "runtime", name: "exit", description: "Exit the application.", execute: quit },
 		{
 			kind: "action",
 			agentPolicy: "runtime",
 			name: "new",
-			description:
-				"Close the current agent and start a new session on the same profile.",
+			description: "Close the current agent and start a new session on the same profile.",
 			execute: newSession,
 		},
 		{
 			kind: "action",
 			agentPolicy: "runtime",
 			name: "clear",
-			description:
-				"Close the current agent and start a new session on the same profile.",
+			description: "Close the current agent and start a new session on the same profile.",
 			execute: newSession,
 		},
 		{
 			kind: "action",
 			agentPolicy: "active",
 			name: "dispose",
-			description:
-				"Close the current runtime agent without deleting its session.",
+			description: "Close the current runtime agent without deleting its session.",
 			execute: async (context) => {
 				if (!context.agentId) {
 					throw new Error("Command /dispose requires an active agent.");

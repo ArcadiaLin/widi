@@ -4,9 +4,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
  * Characters that must not start a rendered line (CJK line-start kinsoku).
  * Limited to full-width punctuation so code and ASCII prose never match.
  */
-const PROHIBITED_LINE_START = new Set([
-	..."，。！？；：、）》〉】〕」』…‥·—―～",
-]);
+const PROHIBITED_LINE_START = new Set([..."，。！？；：、）》〉】〕」』…‥·—―～"]);
 
 const ESCAPE = String.fromCharCode(27);
 const ANSI_SEQUENCE = new RegExp(`${ESCAPE}\\[[0-9;]*m`, "g");
@@ -35,12 +33,7 @@ export function fixCjkLineStarts(lines: string[], width: number): string[] {
 
 		const { body, suffix } = splitTrailingAnsi(previous);
 		const tail = lastGrapheme(body);
-		if (
-			!tail ||
-			visibleWidth(tail) < 2 ||
-			!isCjkText(tail) ||
-			PROHIBITED_LINE_START.has(tail)
-		) {
+		if (!tail || visibleWidth(tail) < 2 || !isCjkText(tail) || PROHIBITED_LINE_START.has(tail)) {
 			continue;
 		}
 
@@ -50,10 +43,7 @@ export function fixCjkLineStarts(lines: string[], width: number): string[] {
 			result[index - 1] = pad(body + punctuation + suffix, width);
 			result[index] = pad(prefix + remainder, width);
 		} else if (visibleWidth(prefix + rest) + visibleWidth(tail) <= width) {
-			result[index - 1] = pad(
-				body.slice(0, body.length - tail.length) + suffix,
-				width,
-			);
+			result[index - 1] = pad(body.slice(0, body.length - tail.length) + suffix, width);
 			result[index] = pad(prefix + tail + rest, width);
 		}
 	}

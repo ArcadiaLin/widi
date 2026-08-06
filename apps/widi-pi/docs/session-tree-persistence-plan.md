@@ -6,8 +6,10 @@
 ## 结论
 
 WIDI 将 `session.jsonl` 的对话树作为「某一时刻哪些 custom state 有效」的权威依据。
-subagent tree、background job、extension state 不再各自定义一套与对话树脱节的恢复
-规则。
+background job、extension state 不再各自定义一套与对话树脱节的恢复规则。
+
+agent 树不在此列：它的父子关系由会话目录嵌套表达，不由任何分支状态表达，见
+`docs/ZH/agent-tree-persistence.md`。
 
 每个可持久化对象由两部分组成：
 
@@ -97,8 +99,8 @@ fork：复制对话 entries → 从**源会话的完整分支**投影出各 name
   没有前缀会让 resume 后再次 spawn 的同名 agent 撞上上次的目录。
 - 嵌套深度上限 8。每层增加两个路径段，Windows 的 260 字符限制是真约束；超限的
   spawn 降级为顶层会话并出诊断。
-- namespace 目录名把 `:` 编码为 `__`（`core:subagent` → `core__subagent`）。`:` 在
-  Windows 上非法，用 `-` 替换会与 `core-subagent` 撞名。
+- namespace 目录名把 `:` 编码为 `__`（`core:jobs` → `core__jobs`）。`:` 在
+  Windows 上非法，用 `-` 替换会与 `core-jobs` 撞名。
 - **`agents/` 嵌套是 session 层的规定**，只属于 `jsonl-session.ts`。custom storage 在
   自己的 namespace 目录里想怎么组织都行，框架只承诺给它一个目录。
 
@@ -152,13 +154,11 @@ build 注册了哪些 namespace。
 或 owner 不匹配，该 storage 被封存：读降级为空，写抛错——不能让调用方以为对象写成功了，
 然后往分支上写一条指向不存在对象的 ref。
 
-依赖有两种：
+依赖只有一种：**对象依赖**，namespace 内部，复制进新会话的同名 storage。namespace 只
+声明依赖，不自己递归。去重和环检测只有一份实现，在仓储里。
 
-- **对象依赖**：namespace 内部，复制进新会话的同名 storage；
-- **会话依赖**：整个子会话目录，由仓储递归 fork。`core:subagent` 用它回答「这个成员
-  集合包含哪些子会话」，仓储因此不需要知道 spawn tree 是什么。
-
-namespace 只声明依赖，不自己递归。去重和环检测只有一份实现，在仓储里。
+一个 namespace 的状态不能点名另一个会话。子会话的复制不由任何 namespace 驱动——fork
+复制源会话 `agents/` 下的全部子会话。
 
 ## 关键约束
 
@@ -201,16 +201,15 @@ sessionsRoot 的多进程并发写入继续不受支持。
 
 | namespace 类型 | fork 行为 |
 | --- | --- |
-| subagent tree 的拓扑与成员 | copy（连同子会话目录递归复制） |
 | extension 的 JSON state / snapshot | 通常 copy |
 | 已结算 job 的历史 | degrade（历史保留，标记为「在来源会话中中断」） |
 | 正在执行的 job、PID、socket、lock | omit |
 | credential、外部资源句柄 | omit |
 
-已定的两条子语义：
+子会话不是一个 namespace，不进这张表。已定的两条子语义：
 
-- **fork 根不会回退子会话**。ref 只决定子会话是否属于这棵树；子会话按其当前 leaf 整体
-  复制。要精确到子会话的某条 entry，就得在子每次 turn 后更新父的 ref，写入量不可接受。
+- **子会话全部复制，按各自的当前 leaf**。没有任何记录点名过子会话，所以「哪些属于这棵
+  树」和「回退到哪」都没有依据可查，目录列举是唯一的答案。
 - **fork 的子会话保留原 session id**。寻址已经是路径，不再有歧义。
 
 ## 实施阶段
@@ -224,9 +223,9 @@ sessionsRoot 的多进程并发写入继续不受支持。
    **已完成**
 4. ~~仓储实现~~：create/open/list/listChildren/delete/fork，含子会话递归复制。验收
    「fork 后删除源目录，新会话仍可独立恢复」已通过。**已完成**
-5. **迁移 `core:subagent`**（需等新 orchestrator 接线，否则要在两个 orchestrator 里各写
-   一遍）：state root = 成员快照；`parent.json` 改为 session header metadata；
-   `agents/tree.jsonl` 保留只读兼容。
+5. ~~`core:subagent`~~：**取消**。agent 关系归目录嵌套，不做 namespace，理由与新的
+   `list_agents` 语义见 `docs/ZH/agent-tree-persistence.md`。删除 `agents/tree.jsonl`
+   与 `parent.json` 属于该文档的接线范围。
 6. **迁移 `core:jobs`**：state root = 已结算历史快照；活着的 job 不进 ref；一个 turn 内的
    多次变更合并成一条 ref。
 7. **extension persistence**：等 project trust、配额、生命周期明确后再开。

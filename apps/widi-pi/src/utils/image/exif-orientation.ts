@@ -11,8 +11,7 @@ import type { PhotonImage, PhotonModule } from "./photon.ts";
 function readOrientationFromTiff(bytes: Uint8Array, tiffStart: number): number {
 	if (tiffStart + 8 > bytes.length) return 1;
 
-	const byteOrder =
-		((bytes[tiffStart] ?? 0) << 8) | (bytes[tiffStart + 1] ?? 0);
+	const byteOrder = ((bytes[tiffStart] ?? 0) << 8) | (bytes[tiffStart + 1] ?? 0);
 	const littleEndian = byteOrder === 0x4949;
 
 	const read16 = (pos: number): number => {
@@ -93,10 +92,7 @@ function findWebpTiffOffset(bytes: Uint8Array): number {
 		if (chunkId === "EXIF") {
 			if (dataStart + chunkSize > bytes.length) return -1;
 			// Some WebP files have an "Exif\0\0" prefix before the TIFF header.
-			const tiffStart =
-				chunkSize >= 6 && hasExifHeader(bytes, dataStart)
-					? dataStart + 6
-					: dataStart;
+			const tiffStart = chunkSize >= 6 && hasExifHeader(bytes, dataStart) ? dataStart + 6 : dataStart;
 			return tiffStart;
 		}
 
@@ -147,11 +143,7 @@ export function getExifOrientation(bytes: Uint8Array): number {
 
 type DstIndexFn = (x: number, y: number, w: number, h: number) => number;
 
-function rotate90(
-	photon: PhotonModule,
-	image: PhotonImage,
-	dstIndex: DstIndexFn,
-): PhotonImage {
+function rotate90(photon: PhotonModule, image: PhotonImage, dstIndex: DstIndexFn): PhotonImage {
 	const width = image.get_width();
 	const height = image.get_height();
 	const src = image.get_raw_pixels();
@@ -176,11 +168,7 @@ function rotate90(
  * Flip orientations mutate in place. Rotations return a new image; the caller
  * must free the old one when the returned image differs.
  */
-export function applyExifOrientation(
-	photon: PhotonModule,
-	image: PhotonImage,
-	originalBytes: Uint8Array,
-): PhotonImage {
+export function applyExifOrientation(photon: PhotonModule, image: PhotonImage, originalBytes: Uint8Array): PhotonImage {
 	const orientation = getExifOrientation(originalBytes);
 	if (orientation === 1) return image;
 
@@ -196,22 +184,14 @@ export function applyExifOrientation(
 			photon.flipv(image);
 			return image;
 		case 5: {
-			const rotated = rotate90(
-				photon,
-				image,
-				(x, y, _w, h) => x * h + (h - 1 - y),
-			);
+			const rotated = rotate90(photon, image, (x, y, _w, h) => x * h + (h - 1 - y));
 			photon.fliph(rotated);
 			return rotated;
 		}
 		case 6:
 			return rotate90(photon, image, (x, y, _w, h) => x * h + (h - 1 - y));
 		case 7: {
-			const rotated = rotate90(
-				photon,
-				image,
-				(x, y, w, h) => (w - 1 - x) * h + y,
-			);
+			const rotated = rotate90(photon, image, (x, y, w, h) => (w - 1 - x) * h + y);
 			photon.fliph(rotated);
 			return rotated;
 		}

@@ -1,17 +1,9 @@
-import type {
-	AgentToolResult,
-	AgentToolUpdateCallback,
-	ToolExecutionMode,
-} from "@widi/agent-core";
+import type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode } from "@widi/agent-core";
 import type { Static, TSchema } from "typebox";
-import type {
-	BackgroundJobOutput,
-	BackgroundJobReport,
-	BackgroundJobTable,
-} from "../background/index.ts";
+import type { BackgroundJobHost, BackgroundJobOutputWriter, BackgroundJobReport } from "../background/index.ts";
+import type { AgentToOrchestratorHost } from "../host.ts";
 import type { HumanInterruptWatch } from "../human-interrupt.ts";
 import type { ToolHumanHost } from "../human-request.ts";
-import type { ToolAgentHost } from "../orchestrator/host.ts";
 
 /**
  * Runtime context passed to a WIDI tool execution function.
@@ -36,13 +28,14 @@ export interface ToolExecutionContext<TDetails> {
 	 * turn is executing. Only the collaboration tools read it; everything else
 	 * ignores it, and it is absent in runtimes that wire no orchestrator.
 	 */
-	agents?: ToolAgentHost;
+	agents?: AgentToOrchestratorHost;
 	/**
-	 * Per-agent registry of pseudo-async background jobs, when the runtime wired
-	 * one. Job-control tools such as `wait_for_jobs` read live jobs and observe
-	 * their settlements through it; most tools ignore it.
+	 * Owner-scoped background job capabilities, bound to the agent whose turn is
+	 * executing, when the runtime wired a background runtime. Job-control tools
+	 * such as `wait_for_jobs` read live jobs and observe their settlements
+	 * through it; most tools ignore it.
 	 */
-	backgroundJobTable?: BackgroundJobTable;
+	jobs?: BackgroundJobHost;
 	/**
 	 * Pending human steers for the agent whose turn is executing. Only tools that
 	 * deliberately block read it, so the user does not have to wait out a barrier
@@ -51,11 +44,12 @@ export interface ToolExecutionContext<TDetails> {
 	humanInterrupts?: HumanInterruptWatch;
 	/**
 	 * Set when this call executes as a pseudo-async job (a `backgroundable`
-	 * call registered in the job table); undefined for plain synchronous calls.
-	 * The tool streams its raw output into `output` so job-control surfaces can
-	 * peek at live progress. The table's cooperative output ceiling only counts
-	 * bytes appended here, and termination still requires the tool to honor
-	 * `signal`; the tool's eventual result size is independent of this buffer.
+	 * call the background runtime accepted); undefined for plain synchronous
+	 * calls. The tool streams its raw output into `output` so job-control
+	 * surfaces can peek at live progress. The runtime's cooperative output
+	 * ceiling only counts bytes appended here, and termination still requires
+	 * the tool to honor `signal`; the tool's eventual result size is independent
+	 * of this buffer.
 	 */
 	job?: BackgroundJobExecutionContext;
 }
@@ -63,7 +57,7 @@ export interface ToolExecutionContext<TDetails> {
 /** Capabilities scoped to the pseudo-async job executing this tool call. */
 export interface BackgroundJobExecutionContext {
 	readonly id: string;
-	readonly output: BackgroundJobOutput;
+	readonly output: BackgroundJobOutputWriter;
 	/**
 	 * Replace the job's structured report. Returns false if the job already
 	 * settled before the update was published.
@@ -86,10 +80,7 @@ export interface ToolExtensionContext {
 }
 
 /** Execute function implemented by a WIDI tool definition. */
-export type ToolExecute<
-	TParamsSchema extends TSchema = TSchema,
-	TDetails = unknown,
-> = (
+export type ToolExecute<TParamsSchema extends TSchema = TSchema, TDetails = unknown> = (
 	toolCallId: string,
 	params: Static<TParamsSchema>,
 	context: ToolExecutionContext<TDetails>,
@@ -102,10 +93,7 @@ export type ToolExecute<
  * sandboxing, argument rewriting, and backend delegation when the original tool
  * behavior should remain mostly intact.
  */
-export type ToolExecuteMiddleware<
-	TParamsSchema extends TSchema = TSchema,
-	TDetails = unknown,
-> = (
+export type ToolExecuteMiddleware<TParamsSchema extends TSchema = TSchema, TDetails = unknown> = (
 	next: ToolExecute<TParamsSchema, TDetails>,
 	toolCallId: string,
 	params: Static<TParamsSchema>,
@@ -119,10 +107,7 @@ export type ToolExecuteMiddleware<
  * description, parameters, strict metadata, or execute function.
  * `aroundExecute` wraps the current execute function instead of replacing it.
  */
-export interface ToolDefinitionPatch<
-	TParamsSchema extends TSchema = TSchema,
-	TDetails = unknown,
-> {
+export interface ToolDefinitionPatch<TParamsSchema extends TSchema = TSchema, TDetails = unknown> {
 	/** Model-visible description passed to Pi AgentTool. */
 	description?: string;
 	/** TypeBox schema for model arguments. */
@@ -153,16 +138,11 @@ export interface ToolSource {
  * structured background job report. This is opt-in: arbitrary `details` are
  * never treated as job state without a tool-owned mapper.
  */
-export interface BackgroundJobReportAdapter<
-	TParamsSchema extends TSchema = TSchema,
-	TDetails = unknown,
-> {
+export interface BackgroundJobReportAdapter<TParamsSchema extends TSchema = TSchema, TDetails = unknown> {
 	/** Seed the first report when the adapter creates the job. */
 	initial?: (params: Static<TParamsSchema>) => BackgroundJobReport | undefined;
 	/** Replace the report when the tool publishes a partial result. */
-	fromUpdate?: (
-		partialResult: AgentToolResult<TDetails>,
-	) => BackgroundJobReport | undefined;
+	fromUpdate?: (partialResult: AgentToolResult<TDetails>) => BackgroundJobReport | undefined;
 }
 
 /**
@@ -174,10 +154,7 @@ export interface BackgroundJobReportAdapter<
  * execute closure only. UI preview/state is derived outside the tool from raw
  * harness events and tool results.
  */
-export interface ToolDefinition<
-	TParamsSchema extends TSchema = TSchema,
-	TDetails = unknown,
-> {
+export interface ToolDefinition<TParamsSchema extends TSchema = TSchema, TDetails = unknown> {
 	/** Stable model-visible and session-visible tool name. */
 	name: string;
 	/** Short label for debug/UI surfaces. */

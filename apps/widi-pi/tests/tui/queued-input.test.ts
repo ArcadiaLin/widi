@@ -2,10 +2,7 @@ import { setKeybindings } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it } from "vitest";
 import { QueuedInputView } from "../../src/tui/components/queued-input.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
-import {
-	createTuiApplicationState,
-	setActiveAgent,
-} from "../../src/tui/state.ts";
+import { createTuiApplicationState, setActiveAgent } from "../../src/tui/state.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 
@@ -21,10 +18,7 @@ describe("QueuedInputView", () => {
 		agent.maintenance = "compaction";
 		agent.pendingFollowUps.push({ id: 1, text: "wait until compacted" });
 
-		const rendered = new QueuedInputView(state)
-			.render(100)
-			.join("\n")
-			.replace(ANSI_SEQUENCE, "");
+		const rendered = new QueuedInputView(state).render(100).join("\n").replace(ANSI_SEQUENCE, "");
 
 		expect(rendered).toContain("wait until compacted");
 		expect(rendered).not.toContain("steer now");

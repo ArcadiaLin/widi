@@ -1,16 +1,13 @@
 import { setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
-import {
-	renderDeps,
-	renderTimelineItem,
-	type TimelineRenderContext,
-} from "../../src/tui/components/timeline-item.ts";
+import { renderDeps, renderTimelineItem, type TimelineRenderContext } from "../../src/tui/components/timeline-item.ts";
 import { SPINNER_FRAMES } from "../../src/tui/format.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
 import type {
 	ApplicationNoticeItem,
 	AssistantMessageItem,
 	CommandResultItem,
+	OrchestratorMessageItem,
 	SessionMarkerItem,
 	ThinkingStatusItem,
 	UserMessageItem,
@@ -29,6 +26,43 @@ function plain(lines: string[]): string[] {
 }
 
 describe("renderTimelineItem", () => {
+	// The attribution is a line of its own, so the body stays as the producer
+	// wrote it. The model reads the prefixed `modelText`; showing that here
+	// would state the same fact twice.
+	it("names the source above an orchestrator message and leaves the body unprefixed", () => {
+		const item: OrchestratorMessageItem = {
+			type: "orchestrator-message",
+			id: "msg-1",
+			durability: "durable",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			source: { kind: "agent", label: "worker-7" },
+			text: "three duplicates found",
+			modelText: "[Message from worker-7]\n\nthree duplicates found",
+		};
+
+		const lines = plain(renderTimelineItem(item, 60, context));
+
+		expect(lines).toContain("↳ agent worker-7");
+		expect(lines).toContain("three duplicates found");
+		expect(lines.join("\n")).not.toContain("[Message from worker-7]");
+	});
+
+	// `kind` is open by design: a producer may declare one core has never heard
+	// of, and that is a normal message rather than a broken one.
+	it("falls back to the label for a source kind it does not know", () => {
+		const item: OrchestratorMessageItem = {
+			type: "orchestrator-message",
+			id: "msg-2",
+			durability: "durable",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			source: { kind: "slack-bridge", label: "Slack @arcadia" },
+			text: "why is CI red",
+		};
+
+		expect(plain(renderTimelineItem(item, 60, context))).toContain("↳ Slack @arcadia");
+		expect(renderDeps(item, context)).toEqual(["why is CI red", "slack-bridge", "Slack @arcadia"]);
+	});
+
 	it("paints user message rows with the surface background at full width", () => {
 		const item: UserMessageItem = {
 			type: "user-message",
@@ -65,12 +99,7 @@ describe("renderTimelineItem", () => {
 		expect(collapsed).toContain("row 0");
 		expect(collapsed).not.toContain("row 399");
 
-		const expanded = plain(
-			renderTimelineItem(item, 80, {
-				...context,
-				toolOutputExpanded: true,
-			}),
-		);
+		const expanded = plain(renderTimelineItem(item, 80, { ...context, toolOutputExpanded: true }));
 		expect(expanded.some((line) => line.includes("[truncated]"))).toBe(false);
 		expect(expanded).toContain("row 399");
 	});
@@ -116,10 +145,7 @@ describe("renderTimelineItem", () => {
 
 		const lines = plain(renderTimelineItem(item, 80, context));
 
-		expect(lines).toEqual([
-			"/resume",
-			"resumed agent-2 · Default · test-model",
-		]);
+		expect(lines).toEqual(["/resume", "resumed agent-2 · Default · test-model"]);
 	});
 
 	it("sanitizes and bounds formatted command display text", () => {
@@ -148,10 +174,7 @@ describe("renderTimelineItem", () => {
 		expect(output).toContain("[truncated]");
 		expect(output).not.toContain("line 29");
 
-		const expanded = renderTimelineItem(item, 80, {
-			...context,
-			toolOutputExpanded: true,
-		}).join("\n");
+		const expanded = renderTimelineItem(item, 80, { ...context, toolOutputExpanded: true }).join("\n");
 		expect(expanded).not.toContain(`${escapeCharacter}]52`);
 		expect(expanded).not.toContain(bell);
 		expect(expanded).toContain("line 29");
@@ -271,9 +294,7 @@ describe("renderTimelineItem", () => {
 			summary: "## Goal\nhidden summary body",
 		};
 
-		const lines = plain(
-			renderTimelineItem(item, 60, { ...context, toolOutputExpanded: true }),
-		);
+		const lines = plain(renderTimelineItem(item, 60, { ...context, toolOutputExpanded: true }));
 
 		expect(lines[0]).toContain("── Compacted session · Ctrl+O collapse ─");
 		expect(lines).toContain("hidden summary body");

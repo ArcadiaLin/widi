@@ -46,6 +46,20 @@ harness 里没有对应物（`save_point`、`session_write` 都是事后的）�
 
 ---
 
+## `core:subagent` 取消之后
+
+agent 的父子关系改由会话目录嵌套表达，不再有成员 ref、不再有恢复递归（`docs/ZH/agent-tree-persistence.md`）。这去掉了本文原本预设的第二个消费者，三条要求因此定形：
+
+**第 4 条只服务一个消费者。** resume / navigate / dispose / fork 四个时机里，subagent 一侧全部不再写入——resume 不恢复、dispose 不写记录、fork 不做筛选。所以下行通道的形状按 background 的闭合需要定，不为第二种消费者预留。
+
+**第 1 条的反向读直接按 `JobBranchPort` 定形。** 曾经存在的 `SubagentBranchPort` 是同形状的第二个实现，取消后不再有。原先"要从两个可工作的实现里抽形状"的理由随之消失，不必再等。
+
+**新增一条：`list_agents` 要读磁盘。** 新的语义是列出本会话 `agents/` 下的子会话并标出哪些在跑，closed 的条目只来自目录。orchestrator 因此需要一条通往 `repo.listChildren` 的路径。
+
+这条与第 1 条共用同一个前提——`session-manager` 迁到 `JsonlPersistenceRepo`。两者可以合并排期；在此之前 `list_agents` 只有内存里的 live agent，正是最终行为减去 closed 条目。
+
+---
+
 ## 边界
 
 - **不改 harness。** `appendCustomEntry` 的 `customType` 本来就是任意字符串，命名规则全部在 orchestrator 侧。

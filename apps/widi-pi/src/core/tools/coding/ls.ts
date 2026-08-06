@@ -1,31 +1,16 @@
-import {
-	access as fsAccess,
-	readdir as fsReaddir,
-	stat as fsStat,
-} from "node:fs/promises";
+import { access as fsAccess, readdir as fsReaddir, stat as fsStat } from "node:fs/promises";
 import { join } from "node:path";
 import { type Static, Type } from "typebox";
 import type { ToolDefinition } from "../types.ts";
 import { resolveToCwd } from "./path-utils.ts";
-import {
-	DEFAULT_MAX_BYTES,
-	formatSize,
-	type TruncationResult,
-	truncateHead,
-} from "./truncate.ts";
+import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
 
 const DEFAULT_ENTRY_LIMIT = 500;
 
 const lsSchema = Type.Object({
-	path: Type.Optional(
-		Type.String({
-			description: "Directory to list (default: current directory)",
-		}),
-	),
+	path: Type.Optional(Type.String({ description: "Directory to list (default: current directory)" })),
 	limit: Type.Optional(
-		Type.Number({
-			description: `Maximum number of entries to return (default: ${DEFAULT_ENTRY_LIMIT})`,
-		}),
+		Type.Number({ description: `Maximum number of entries to return (default: ${DEFAULT_ENTRY_LIMIT})` }),
 	),
 });
 
@@ -45,9 +30,7 @@ export interface LsToolDetails {
 export interface LsOperations {
 	exists: (absolutePath: string) => Promise<boolean> | boolean;
 	/** Get file or directory stats. Throws if not found. */
-	stat: (
-		absolutePath: string,
-	) => Promise<{ isDirectory(): boolean }> | { isDirectory(): boolean };
+	stat: (absolutePath: string) => Promise<{ isDirectory(): boolean }> | { isDirectory(): boolean };
 	readdir: (absolutePath: string) => Promise<string[]> | string[];
 }
 
@@ -82,9 +65,7 @@ export function createLsToolDefinition(
 		label: "ls",
 		description: `List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to ${DEFAULT_ENTRY_LIMIT} entries or ${formatSize(DEFAULT_MAX_BYTES)}, whichever is hit first.`,
 		promptSnippet: "List directory contents",
-		promptGuidelines: [
-			"Use ls to browse a single directory level; use find for recursive path searches.",
-		],
+		promptGuidelines: ["Use ls to browse a single directory level; use find for recursive path searches."],
 		parameters: lsSchema,
 		execute: async (_toolCallId, input, context) => {
 			validateLsInput(input);
@@ -105,9 +86,7 @@ export function createLsToolDefinition(
 			try {
 				entries = [...(await operations.readdir(absolutePath))];
 			} catch (error) {
-				throw new Error(
-					`Cannot read directory: ${error instanceof Error ? error.message : String(error)}`,
-				);
+				throw new Error(`Cannot read directory: ${error instanceof Error ? error.message : String(error)}`);
 			}
 			entries.sort(compareEntryNames);
 
@@ -132,22 +111,15 @@ export function createLsToolDefinition(
 
 			const details: LsToolDetails = { path: inputPath, absolutePath };
 			if (renderedEntries.length === 0) {
-				return {
-					content: [{ type: "text", text: "(empty directory)" }],
-					details,
-				};
+				return { content: [{ type: "text", text: "(empty directory)" }], details };
 			}
 
 			// Entry count is already capped, so only the byte limit applies here.
-			const truncation = truncateHead(renderedEntries.join("\n"), {
-				maxLines: Number.MAX_SAFE_INTEGER,
-			});
+			const truncation = truncateHead(renderedEntries.join("\n"), { maxLines: Number.MAX_SAFE_INTEGER });
 			let output = truncation.content;
 			const notices: string[] = [];
 			if (entryLimitReached) {
-				notices.push(
-					`${entryLimit} entries limit reached. Use limit=${entryLimit * 2} for more`,
-				);
+				notices.push(`${entryLimit} entries limit reached. Use limit=${entryLimit * 2} for more`);
 				details.entryLimitReached = entryLimit;
 			}
 			if (truncation.truncated) {
@@ -177,13 +149,8 @@ function compareEntryNames(left: string, right: string): number {
 }
 
 function validateLsInput(input: LsToolInput): void {
-	if (
-		input.limit !== undefined &&
-		(!Number.isInteger(input.limit) || input.limit < 1)
-	) {
-		throw new Error(
-			"Ls tool input is invalid. limit must be a positive integer.",
-		);
+	if (input.limit !== undefined && (!Number.isInteger(input.limit) || input.limit < 1)) {
+		throw new Error("Ls tool input is invalid. limit must be a positive integer.");
 	}
 }
 

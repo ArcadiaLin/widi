@@ -5,23 +5,15 @@ import {
 	AgentProfileRegistry,
 	InMemoryProfileStorageBackend,
 } from "../../src/core/agent-profile.ts";
-import {
-	EXTENSION_API_VERSION,
-	type ExtensionModule,
-} from "../../src/core/extension/index.ts";
+import { EXTENSION_API_VERSION, type ExtensionModule } from "../../src/core/extension/index.ts";
 import { SettingManager } from "../../src/core/setting-manager.ts";
 import type { OrchestratorEvent } from "../../src/core/types.ts";
 import { createThirdPartyExtension } from "../extensions/third-party-extension.ts";
-import {
-	createOrchestrator,
-	defaultProfile,
-	MemoryExecutionEnv,
-} from "../helpers/orchestrator.ts";
+import { createOrchestrator, defaultProfile, MemoryExecutionEnv } from "../helpers/orchestrator.ts";
 
-async function createThirdPartyOrchestrator(module: ExtensionModule): Promise<{
-	orchestrator: AgentOrchestrator;
-	events: OrchestratorEvent[];
-}> {
+async function createThirdPartyOrchestrator(
+	module: ExtensionModule,
+): Promise<{ orchestrator: AgentOrchestrator; events: OrchestratorEvent[] }> {
 	const profile: AgentProfile = {
 		...defaultProfile,
 		id: "third-party-profile",
@@ -31,14 +23,10 @@ async function createThirdPartyOrchestrator(module: ExtensionModule): Promise<{
 	const env = new MemoryExecutionEnv();
 	const orchestrator = await createOrchestrator(env, {
 		defaultProfileId: profile.id,
-		profileRegistry: new AgentProfileRegistry(
-			InMemoryProfileStorageBackend.fromProfiles([{ profile }]),
-		),
+		profileRegistry: new AgentProfileRegistry(InMemoryProfileStorageBackend.fromProfiles([{ profile }])),
 		// Named rather than left to the default "everything available": these
 		// tests are about an extension the user asked for by name.
-		settingManager: new SettingManager({
-			enabledExtensions: ["third-party"],
-		}),
+		settingManager: new SettingManager({ enabledExtensions: ["third-party"] }),
 	});
 	orchestrator.registerExtension("third-party", module);
 	const events: OrchestratorEvent[] = [];
@@ -48,13 +36,11 @@ async function createThirdPartyOrchestrator(module: ExtensionModule): Promise<{
 	return { orchestrator, events };
 }
 
-async function createThirdPartyHarness(module: ExtensionModule): Promise<{
-	orchestrator: AgentOrchestrator;
-	agentId: string;
-	events: OrchestratorEvent[];
-}> {
+async function createThirdPartyHarness(
+	module: ExtensionModule,
+): Promise<{ orchestrator: AgentOrchestrator; agentId: string; events: OrchestratorEvent[] }> {
 	const { orchestrator, events } = await createThirdPartyOrchestrator(module);
-	const agentId = await orchestrator.spawnAgent();
+	const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 	return { orchestrator, agentId, events };
 }
 
@@ -64,20 +50,12 @@ describe("third-party extension consumer", () => {
 		const { orchestrator, agentId } = await createThirdPartyHarness(definition);
 
 		expect(orchestrator.getAgentTools(agentId).toolNames).toContain("tp_echo");
-		expect(
-			orchestrator.inspectAgent(agentId).extensionSnapshot.toolContributions,
-		).toEqual(
+		expect(orchestrator.inspectAgent(agentId).extensions.toolContributions).toEqual(
 			expect.arrayContaining([
-				expect.objectContaining({
-					kind: "define",
-					extensionId: "third-party",
-					toolName: "tp_echo",
-				}),
+				expect.objectContaining({ kind: "define", extensionId: "third-party", toolName: "tp_echo" }),
 			]),
 		);
-		expect(
-			orchestrator.inspectAgent(agentId).extensionSnapshot.hooks,
-		).toContainEqual({
+		expect(orchestrator.inspectAgent(agentId).extensions.hooks).toContainEqual({
 			kind: "observe",
 			extensionId: "third-party",
 			eventName: "agent_harness_event",
@@ -96,9 +74,7 @@ describe("third-party extension consumer", () => {
 		// A blocked extension diagnostic fails the spawn, the same family as
 		// activation_failed: settings named this extension, so silently running
 		// without it would not be honouring the configuration.
-		await expect(orchestrator.spawnAgent()).rejects.toThrow(
-			/targets extension API version/,
-		);
+		await expect(orchestrator.spawnAgent({ origin: { kind: "new" } })).rejects.toThrow(/targets extension API version/);
 		expect(activated).toBe(false);
 		expect(events).toContainEqual(
 			expect.objectContaining({
@@ -107,9 +83,7 @@ describe("third-party extension consumer", () => {
 					code: "extension.version_incompatible",
 					extensionId: "third-party",
 					severity: "error",
-					message: expect.stringContaining(
-						`targets extension API version ${EXTENSION_API_VERSION + 1}`,
-					),
+					message: expect.stringContaining(`targets extension API version ${EXTENSION_API_VERSION + 1}`),
 				}),
 			}),
 		);
@@ -117,9 +91,7 @@ describe("third-party extension consumer", () => {
 		expect(events).not.toContainEqual(
 			expect.objectContaining({
 				type: "diagnostic",
-				diagnostic: expect.objectContaining({
-					code: "extension.factory_missing",
-				}),
+				diagnostic: expect.objectContaining({ code: "extension.factory_missing" }),
 			}),
 		);
 	});
@@ -129,17 +101,13 @@ describe("third-party extension consumer", () => {
 			api.intercept("input", () => undefined);
 		});
 
-		expect(
-			orchestrator.inspectAgent(agentId).extensionSnapshot.hooks,
-		).toContainEqual({
+		expect(orchestrator.inspectAgent(agentId).extensions.hooks).toContainEqual({
 			kind: "intercept",
 			extensionId: "third-party",
 			eventName: "input",
 		});
 		expect(
-			orchestrator.inspectAgent(agentId).extensionDiagnostics,
-		).not.toContainEqual(
-			expect.objectContaining({ code: "extension.version_incompatible" }),
-		);
+			orchestrator.inspectAgent(agentId).diagnostics.filter((entry) => entry.extensionId !== undefined),
+		).not.toContainEqual(expect.objectContaining({ code: "extension.version_incompatible" }));
 	});
 });

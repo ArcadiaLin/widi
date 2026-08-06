@@ -1,24 +1,15 @@
 import type { AgentToolResult } from "@widi/agent-core";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
-import {
-	createAgentHarnessToolFromResolvedTool,
-	ToolRegistry,
-} from "../../src/core/tool-registry.ts";
+import { createAgentHarnessToolFromResolvedTool, ToolRegistry } from "../../src/core/tool-registry.ts";
 import type { ToolDefinition, ToolSource } from "../../src/core/tools/types.ts";
 
 const emptyParams = Type.Object({});
 
 const coreSource: ToolSource = { kind: "core", id: "builtin" };
-const extensionSource: ToolSource = {
-	kind: "extension",
-	id: "ext",
-};
+const extensionSource: ToolSource = { kind: "extension", id: "ext" };
 
-function createTool(
-	name: string,
-	content: string = name,
-): ToolDefinition<typeof emptyParams, undefined> {
+function createTool(name: string, content: string = name): ToolDefinition<typeof emptyParams, undefined> {
 	return {
 		name,
 		label: name,
@@ -67,27 +58,13 @@ describe("ToolRegistry", () => {
 		expect(resolvedTool).toBeDefined();
 		if (!resolvedTool) throw new Error("Expected write tool to resolve.");
 		expect(resolvedTool.definition.description).toBe("Write via sandbox");
-		expect(resolvedTool.patches.map((patch) => patch.source.id)).toEqual([
-			"audit",
-			"sandbox",
-		]);
+		expect(resolvedTool.patches.map((patch) => patch.source.id)).toEqual(["audit", "sandbox"]);
 
 		const agentTool = createAgentHarnessToolFromResolvedTool(resolvedTool);
-		const toolResult = await agentTool.execute(
-			"call-1",
-			{},
-			undefined,
-			undefined,
-			{},
-		);
+		const toolResult = await agentTool.execute("call-1", {}, undefined, undefined, {});
 
 		expect(toolResult.content).toEqual([{ type: "text", text: "base" }]);
-		expect(calls).toEqual([
-			"sandbox:before",
-			"audit:before",
-			"audit:after",
-			"sandbox:after",
-		]);
+		expect(calls).toEqual(["sandbox:before", "audit:before", "audit:after", "sandbox:after"]);
 	});
 
 	it("keeps one definition for duplicate tool names and reports a conflict", () => {
@@ -103,8 +80,7 @@ describe("ToolRegistry", () => {
 			expect.objectContaining({
 				severity: "warning",
 				code: "tool.define_conflict",
-				message:
-					"Tool 'read' is defined by both core:builtin and extension:ext; keeping core:builtin.",
+				message: "Tool 'read' is defined by both core:builtin and extension:ext; keeping core:builtin.",
 			}),
 		);
 	});
@@ -132,11 +108,7 @@ describe("ToolRegistry", () => {
 
 	it("reports patches that target missing tools", () => {
 		const registry = new ToolRegistry();
-		registry.patchTool(
-			"write",
-			{ description: "Write elsewhere" },
-			extensionSource,
-		);
+		registry.patchTool("write", { description: "Write elsewhere" }, extensionSource);
 
 		const result = registry.resolve();
 
@@ -153,13 +125,7 @@ describe("ToolRegistry", () => {
 	it("reports parameters patches that do not also patch execution", () => {
 		const registry = new ToolRegistry();
 		registry.defineTool(createTool("write"), coreSource);
-		registry.patchTool(
-			"write",
-			{
-				parameters: Type.Object({ path: Type.String() }),
-			},
-			extensionSource,
-		);
+		registry.patchTool("write", { parameters: Type.Object({ path: Type.String() }) }, extensionSource);
 
 		const result = registry.resolve();
 
@@ -181,10 +147,7 @@ describe("ToolRegistry", () => {
 				...createTool("write"),
 				execute: async (_toolCallId, _params, context) => {
 					events.push(`execute:${context.extension?.extensionId}`);
-					return {
-						content: [{ type: "text", text: "base" }],
-						details: undefined,
-					};
+					return { content: [{ type: "text", text: "base" }], details: undefined };
 				},
 			},
 			coreSource,
@@ -220,21 +183,9 @@ describe("ToolRegistry", () => {
 				description: "Ask human",
 				parameters: emptyParams,
 				execute: async (_toolCallId, _params, context) => {
-					const response = await context.human?.request({
-						kind: "confirm",
-						title: "Confirm",
-						message: "Continue?",
-					});
+					const response = await context.human?.request({ kind: "confirm", title: "Confirm", message: "Continue?" });
 					return {
-						content: [
-							{
-								type: "text",
-								text:
-									response?.kind === "confirm" && response.confirmed
-										? "yes"
-										: "no",
-							},
-						],
+						content: [{ type: "text", text: response?.kind === "confirm" && response.confirmed ? "yes" : "no" }],
 						details: response,
 					};
 				},
@@ -247,23 +198,13 @@ describe("ToolRegistry", () => {
 		const agentTool = createAgentHarnessToolFromResolvedTool(resolvedTool);
 
 		const first = await agentTool.execute("call-1", {}, undefined, undefined, {
-			human: {
-				request: async () => ({ kind: "confirm", confirmed: true }),
-			},
+			human: { request: async () => ({ kind: "confirm", confirmed: true }) },
 		});
 		const second = await agentTool.execute("call-2", {}, undefined, undefined, {
-			human: {
-				request: async () => ({ kind: "confirm", confirmed: false }),
-			},
+			human: { request: async () => ({ kind: "confirm", confirmed: false }) },
 		});
 
-		expect(first).toEqual({
-			content: [{ type: "text", text: "yes" }],
-			details: { kind: "confirm", confirmed: true },
-		});
-		expect(second).toEqual({
-			content: [{ type: "text", text: "no" }],
-			details: { kind: "confirm", confirmed: false },
-		});
+		expect(first).toEqual({ content: [{ type: "text", text: "yes" }], details: { kind: "confirm", confirmed: true } });
+		expect(second).toEqual({ content: [{ type: "text", text: "no" }], details: { kind: "confirm", confirmed: false } });
 	});
 });

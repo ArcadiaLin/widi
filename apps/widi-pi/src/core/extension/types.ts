@@ -18,7 +18,7 @@ import type { JsonValue } from "../../utils/json.ts";
 import type { AgentProfileReference } from "../agent-profile.js";
 import type { BackgroundJobSnapshot } from "../background/index.ts";
 import type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
-import type { MessageSource } from "../message.ts";
+import type { MessageSink, MessageSource } from "../message.ts";
 import type { ProviderConfigInput } from "../model-registry.ts";
 import type { ToolDefinition, ToolDefinitionPatch } from "../tools/types.ts";
 import type {
@@ -30,12 +30,7 @@ import type {
 	RuntimeModel,
 } from "../types.ts";
 import type { ExtensionEventEnvelope } from "./events.ts";
-import type {
-	ExtensionDiagnosticDraft,
-	ExtensionInputPresentation,
-	ExtensionMessage,
-	ExtensionStatus,
-} from "./presentation.ts";
+import type { ExtensionDiagnosticDraft, ExtensionMessage, ExtensionStatus } from "./presentation.ts";
 
 // The tool contract lives in the core tools layer (ME slice 0 dependency
 // inversion); the extension layer consumes and re-exports it for its own
@@ -128,9 +123,10 @@ export type ExtensionObservedEvent = Extract<
 	}
 >;
 
-export type ExtensionObservedEventFor<
-	TName extends ExtensionObservedEventName,
-> = Extract<ExtensionObservedEvent, { type: TName }>;
+export type ExtensionObservedEventFor<TName extends ExtensionObservedEventName> = Extract<
+	ExtensionObservedEvent,
+	{ type: TName }
+>;
 
 /**
  * Runtime membership test for the observed set, keyed so it cannot drift from
@@ -138,9 +134,7 @@ export type ExtensionObservedEventFor<
  * here is a type error, and vice versa. A hand-written switch let an event be
  * declared observable while the dispatcher silently dropped it.
  */
-export const EXTENSION_OBSERVED_EVENT_NAMES: Readonly<
-	Record<ExtensionObservedEventName, true>
-> = {
+export const EXTENSION_OBSERVED_EVENT_NAMES: Readonly<Record<ExtensionObservedEventName, true>> = {
 	agent_background_job_changed: true,
 	agent_background_job_progress: true,
 	agent_background_job_report_updated: true,
@@ -239,18 +233,12 @@ export interface ExtensionInterceptorResultMap {
 	tool_result: AgentHarnessEventResultMap["tool_result"];
 }
 
-export type ExtensionInterceptorEventFor<
-	TName extends ExtensionInterceptorName,
-> = ExtensionInterceptorEventMap[TName];
+export type ExtensionInterceptorEventFor<TName extends ExtensionInterceptorName> = ExtensionInterceptorEventMap[TName];
 
-export type ExtensionInterceptorResultFor<
-	TName extends ExtensionInterceptorName,
-> = ExtensionInterceptorResultMap[TName];
+export type ExtensionInterceptorResultFor<TName extends ExtensionInterceptorName> =
+	ExtensionInterceptorResultMap[TName];
 
-export type ExtensionExecResult = Result<
-	{ stdout: string; stderr: string; exitCode: number },
-	ExecutionError
->;
+export type ExtensionExecResult = Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>;
 
 /**
  * Result of an extension-initiated compaction. The compaction entry is
@@ -263,7 +251,17 @@ export type ExtensionCompactionResult = CompactResult;
 
 export interface ExtensionSendOptions {
 	images?: ImageContent[];
-	presentation?: ExtensionInputPresentation;
+	/**
+	 * Overrides the message's source label (default `extension:<id>`). A label,
+	 * not a capability: the delivery policy stays the binding's, so renaming the
+	 * source cannot forge a human interrupt or dodge an input policy.
+	 */
+	source?: MessageSource;
+	/**
+	 * Produces the text the model reads, replacing the default
+	 * `[Input from extension <id>]` prefix. Runs once, at enqueue.
+	 */
+	render?: (body: string) => string;
 }
 
 /**
@@ -324,11 +322,10 @@ export interface ExtensionActions {
 	// extension.<extensionId>.<code>. Reported diagnostics never feed back
 	// into extension observers.
 	reportDiagnostic(draft: ExtensionDiagnosticDraft): Promise<void>;
-	// The three message-injection paths. `presentation` is optional on all of
-	// them: the text still reaches the model verbatim, and the presentation is
-	// persisted as a core:extension_input_presentation entry that explicitly
-	// references the user-message entry. Core never interprets
-	// `presentation.details`.
+	// The three message-injection paths. All three go through the one core
+	// message pipeline, so the text meets the same interception as any other
+	// producer's and lands with the same record of who wrote it. `prompt`
+	// refuses a busy agent instead of queueing; the other two always queue.
 	prompt(text: string, options?: ExtensionSendOptions): Promise<void>;
 	steer(text: string, options?: ExtensionSendOptions): Promise<void>;
 	followUp(text: string, options?: ExtensionSendOptions): Promise<void>;
@@ -386,10 +383,7 @@ export interface ExtensionActions {
 	// Aborts the agent's current run; queued steer/followUp input is cleared.
 	abort(): Promise<void>;
 	// Denied with a structured diagnostic when the project is not trusted.
-	exec(
-		command: string,
-		options?: ShellExecOptions,
-	): Promise<ExtensionExecResult>;
+	exec(command: string, options?: ShellExecOptions): Promise<ExtensionExecResult>;
 }
 
 /**
@@ -400,108 +394,42 @@ export interface ExtensionActions {
 export interface ExtensionCoreActions {
 	getAgentTools(agentId: string): AgentToolsSnapshot;
 	listAgentBackgroundJobs(agentId: string): BackgroundJobSnapshot[];
-	readAgentBackgroundJobOutput(
-		agentId: string,
-		jobId: string,
-	): string | undefined;
-	abortAgentBackgroundJob(
-		agentId: string,
-		jobId: string,
-		reason?: string,
-	): boolean;
-	setAgentTools(
-		agentId: string,
-		toolNames: string[],
-		activeToolNames?: string[],
-	): Promise<void>;
+	readAgentBackgroundJobOutput(agentId: string, jobId: string): string | undefined;
+	abortAgentBackgroundJob(agentId: string, jobId: string, reason?: string): boolean;
+	setAgentTools(agentId: string, toolNames: string[], activeToolNames?: string[]): Promise<void>;
 	setAgentActiveTools(agentId: string, toolNames: string[]): Promise<void>;
-	requestHuman(
-		agentId: string,
-		extensionId: string,
-		request: HumanRequestDraft,
-	): Promise<HumanResponse>;
+	requestHuman(agentId: string, extensionId: string, request: HumanRequestDraft): Promise<HumanResponse>;
 	emitOutput(agentId: string, extensionId: string, text: string): Promise<void>;
 	notify(agentId: string, extensionId: string, text: string): Promise<void>;
-	setStatus(
-		agentId: string,
-		extensionId: string,
-		key: string,
-		status: ExtensionStatus,
-	): Promise<void>;
+	setStatus(agentId: string, extensionId: string, key: string, status: ExtensionStatus): Promise<void>;
 	clearStatus(agentId: string, extensionId: string, key: string): Promise<void>;
-	publishMessage(
-		agentId: string,
-		extensionId: string,
-		message: ExtensionMessage,
-	): Promise<{ entryId?: string }>;
-	reportDiagnostic(
-		agentId: string,
-		extensionId: string,
-		draft: ExtensionDiagnosticDraft,
-	): Promise<void>;
-	promptAgent(
-		agentId: string,
-		extensionId: string,
-		text: string,
-		options?: ExtensionSendOptions,
-	): Promise<void>;
-	steerAgent(
-		agentId: string,
-		extensionId: string,
-		text: string,
-		options?: ExtensionSendOptions,
-	): Promise<void>;
-	followUpAgent(
-		agentId: string,
-		extensionId: string,
-		text: string,
-		options?: ExtensionSendOptions,
-	): Promise<void>;
+	publishMessage(agentId: string, extensionId: string, message: ExtensionMessage): Promise<{ entryId?: string }>;
+	reportDiagnostic(agentId: string, extensionId: string, draft: ExtensionDiagnosticDraft): Promise<void>;
+	/**
+	 * The message entry point, bound to one extension's identity and delivery
+	 * policy. The same shape the background runtime holds: what differs between
+	 * producers is the binding, not the path. The target agent rides on the
+	 * request rather than on this call, so one sink serves every target.
+	 */
+	messageSinkFor(extensionId: string): MessageSink;
 	getAgentContextUsage(agentId: string): AgentContextUsage | undefined;
 	isProjectTrusted(): boolean;
 	getAgentSystemPrompt(agentId: string): Promise<string>;
 	agentHasPendingMessages(agentId: string): boolean;
-	waitForAgentIdle(
-		agentId: string,
-		options?: { signal?: AbortSignal },
-	): Promise<void>;
-	emitExtensionEvent(
-		agentId: string,
-		extensionId: string,
-		name: string,
-		payload?: JsonValue,
-	): Promise<void>;
-	requestRuntimeShutdown(
-		agentId: string,
-		extensionId: string,
-		reason?: string,
-	): Promise<void>;
-	disposeRuntime(
-		agentId: string,
-		extensionId: string,
-		reason?: string,
-	): Promise<void>;
+	waitForAgentIdle(agentId: string, options?: { signal?: AbortSignal }): Promise<void>;
+	emitExtensionEvent(agentId: string, extensionId: string, name: string, payload?: JsonValue): Promise<void>;
+	requestRuntimeShutdown(agentId: string, extensionId: string, reason?: string): Promise<void>;
+	disposeRuntime(agentId: string, extensionId: string, reason?: string): Promise<void>;
 	setAgentSessionName(agentId: string, name: string): Promise<void>;
 	getAgentSessionName(agentId: string): Promise<string | undefined>;
-	compactAgent(
-		agentId: string,
-		customInstructions?: string,
-	): Promise<ExtensionCompactionResult>;
-	setAgentModelByReference(
-		agentId: string,
-		reference: string,
-	): Promise<RuntimeModel>;
+	compactAgent(agentId: string, customInstructions?: string): Promise<ExtensionCompactionResult>;
+	setAgentModelByReference(agentId: string, reference: string): Promise<RuntimeModel>;
 	getAgentModel(agentId: string): RuntimeModel;
 	listModelCandidates(): Promise<readonly CandidateItem[]>;
 	getAgentThinkingLevel(agentId: string): ThinkingLevel;
 	setAgentThinkingLevel(agentId: string, level: ThinkingLevel): Promise<void>;
 	abortAgent(agentId: string): Promise<void>;
-	exec(
-		agentId: string,
-		extensionId: string,
-		command: string,
-		options?: ShellExecOptions,
-	): Promise<ExtensionExecResult>;
+	exec(agentId: string, extensionId: string, command: string, options?: ShellExecOptions): Promise<ExtensionExecResult>;
 }
 
 export interface ExtensionContextActions {
@@ -539,8 +467,14 @@ export interface ExtensionSessionCandidate {
 	readonly name?: string;
 	/** First non-empty line of the first user message. */
 	readonly firstUserMessage?: string;
-	/** Ref of the session this one was forked from, when it was. */
-	readonly parentRef?: string;
+	/**
+	 * Ref of the session this one's history was forked from, when it was.
+	 *
+	 * Only a fork has one. The session that *spawned* a session is a different
+	 * relation and is not reported here: listed sessions are top-level ones, and
+	 * a spawned session is reached through the session that owns it.
+	 */
+	readonly forkedFromRef?: string;
 }
 
 export interface ExtensionSessionSnapshot {
@@ -592,21 +526,19 @@ export interface ExtensionSessionContext {
 	/** As `getSnapshot`, plus every entry in the session's tree. */
 	getTree(): Promise<ExtensionSessionTree>;
 	getLeafId(): Promise<string | null>;
-	/** Every session recorded for the current project, newest first. */
+	/**
+	 * Top-level sessions of the current project, newest first.
+	 *
+	 * Sessions an agent spawned are not listed: they belong to the tree of the
+	 * session that spawned them and are reached through it.
+	 */
 	listSessions(): Promise<ExtensionSessionCandidate[]>;
 	readSession(ref: string): Promise<ExtensionSessionTree>;
 }
 
 export interface ExtensionSessionActions {
-	appendEntry<T = unknown>(
-		extensionId: string,
-		type: string,
-		data?: T,
-	): Promise<string | undefined>;
-	findEntries<T = unknown>(
-		extensionId: string,
-		type?: string,
-	): Promise<ExtensionCustomEntry<T>[]>;
+	appendEntry<T = unknown>(extensionId: string, type: string, data?: T): Promise<string | undefined>;
+	findEntries<T = unknown>(extensionId: string, type?: string): Promise<ExtensionCustomEntry<T>[]>;
 	getSnapshot(): Promise<ExtensionSessionSnapshot>;
 	getTree(): Promise<ExtensionSessionTree>;
 	getLeafId(): Promise<string | null>;
@@ -676,22 +608,21 @@ export interface ExtensionContext {
  */
 export type ExtensionProviderConfig = ProviderConfigInput;
 
-export type ExtensionObserver<
-	TEvent extends ExtensionObservedEvent = ExtensionObservedEvent,
-> = (event: TEvent, context: ExtensionContext) => Promise<void> | void;
+export type ExtensionObserver<TEvent extends ExtensionObservedEvent = ExtensionObservedEvent> = (
+	event: TEvent,
+	context: ExtensionContext,
+) => Promise<void> | void;
 
 /**
  * Subscriber to the runtime-level extension event bus. The context is the
  * receiving runtime's own - agent-scoped, as everywhere else - while the
  * envelope names who sent the event and from which agent.
  */
-export type ExtensionEventHandler = (
-	event: ExtensionEventEnvelope,
-	context: ExtensionContext,
-) => Promise<void> | void;
+export type ExtensionEventHandler = (event: ExtensionEventEnvelope, context: ExtensionContext) => Promise<void> | void;
 
-export type ExtensionObserverFor<TName extends ExtensionObservedEventName> =
-	ExtensionObserver<ExtensionObservedEventFor<TName>>;
+export type ExtensionObserverFor<TName extends ExtensionObservedEventName> = ExtensionObserver<
+	ExtensionObservedEventFor<TName>
+>;
 
 /**
  * Teardown callback registered at activation time. Runs when the owning
@@ -704,9 +635,7 @@ export type ExtensionDisposeHandler = () => Promise<void> | void;
 export type ExtensionInterceptorFor<TName extends ExtensionInterceptorName> = (
 	event: ExtensionInterceptorEventFor<TName>,
 	context: ExtensionContext,
-) =>
-	| Promise<ExtensionInterceptorResultFor<TName>>
-	| ExtensionInterceptorResultFor<TName>;
+) => Promise<ExtensionInterceptorResultFor<TName>> | ExtensionInterceptorResultFor<TName>;
 
 export interface ExtensionActivationApi {
 	readonly extensionId: string;
@@ -722,15 +651,10 @@ export interface ExtensionActivationApi {
 	 * pending registration before it settles the scope, so a forgotten `await`
 	 * still lands its contributions.
 	 */
-	division(
-		id: string,
-		register: (api: ExtensionActivationApi) => void | Promise<void>,
-	): Promise<void>;
+	division(id: string, register: (api: ExtensionActivationApi) => void | Promise<void>): Promise<void>;
 	/** Relative to the current division scope, like `division`. */
 	isDivisionEnabled(id: string): boolean;
-	registerTool<TParamsSchema extends TSchema, TDetails>(
-		tool: ToolDefinition<TParamsSchema, TDetails>,
-	): void;
+	registerTool<TParamsSchema extends TSchema, TDetails>(tool: ToolDefinition<TParamsSchema, TDetails>): void;
 	patchTool<TParamsSchema extends TSchema, TDetails>(
 		targetToolName: string,
 		patch: ToolDefinitionPatch<TParamsSchema, TDetails>,
@@ -745,14 +669,8 @@ export interface ExtensionActivationApi {
 	 * `before_agent_start` interceptor is for.
 	 */
 	appendSystemPrompt(text: string): void;
-	observe<TName extends ExtensionObservedEventName>(
-		eventName: TName,
-		handler: ExtensionObserverFor<TName>,
-	): void;
-	intercept<TName extends ExtensionInterceptorName>(
-		eventName: TName,
-		handler: ExtensionInterceptorFor<TName>,
-	): void;
+	observe<TName extends ExtensionObservedEventName>(eventName: TName, handler: ExtensionObserverFor<TName>): void;
+	intercept<TName extends ExtensionInterceptorName>(eventName: TName, handler: ExtensionInterceptorFor<TName>): void;
 	/**
 	 * Subscribe to the runtime-level extension event bus (`emitExtensionEvent`).
 	 * This is how two extensions agree on a protocol - `herdr:blocked` and the
@@ -765,9 +683,7 @@ export interface ExtensionActivationApi {
 	onDispose(handler: ExtensionDisposeHandler): void;
 }
 
-export type ExtensionFactory = (
-	api: ExtensionActivationApi,
-) => Promise<void> | void;
+export type ExtensionFactory = (api: ExtensionActivationApi) => Promise<void> | void;
 
 /**
  * Versioned extension declaration (ME slice 10). `apiVersion` names the

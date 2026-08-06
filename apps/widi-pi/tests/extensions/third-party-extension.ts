@@ -1,8 +1,5 @@
 import { Type } from "typebox";
-import {
-	EXTENSION_API_VERSION,
-	type ExtensionDefinition,
-} from "../../src/core/extension/api.ts";
+import { EXTENSION_API_VERSION, type ExtensionDefinition } from "../../src/core/extension/api.ts";
 
 export interface ThirdPartyObservedFact {
 	readonly source: "harness";

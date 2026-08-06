@@ -20,17 +20,11 @@ describe("buildAgentSystemPrompt", () => {
 				{ name: "b", promptGuidelines: ["Shared.", "  ", "Extra."] },
 				{ name: "c" },
 			]),
-		).toBe(
-			"Available tools:\n- a: First\n\nTool guidelines:\n- Shared.\n- Extra.",
-		);
+		).toBe("Available tools:\n- a: First\n\nTool guidelines:\n- Shared.\n- Extra.");
 		expect(formatToolGuidanceForSystemPrompt([{ name: "plain" }])).toBe("");
-		expect(
-			buildAgentSystemPrompt({
-				basePrompt: "base prompt",
-				skills: [],
-				activeTools: [{ name: "plain" }],
-			}),
-		).toBe("base prompt");
+		expect(buildAgentSystemPrompt({ basePrompt: "base prompt", skills: [], activeTools: [{ name: "plain" }] })).toBe(
+			"base prompt",
+		);
 	});
 
 	it("names the agent only when it can address other agents", () => {
@@ -49,26 +43,16 @@ describe("buildAgentSystemPrompt", () => {
 				activeTools: [{ name: "send_message" }],
 				agentId: "worker-2",
 			}),
-		).toBe(
-			"base prompt\n\nYou are agent worker-2. Other agents address you by that id.",
-		);
+		).toBe("base prompt\n\nYou are agent worker-2. Other agents address you by that id.");
 		expect(
-			buildAgentSystemPrompt({
-				basePrompt: "base prompt",
-				skills: [],
-				activeTools: [{ name: "send_message" }],
-			}),
+			buildAgentSystemPrompt({ basePrompt: "base prompt", skills: [], activeTools: [{ name: "send_message" }] }),
 		).toBe("base prompt");
 	});
 
 	it("keeps the base system prompt when skills are absent or model-hidden", () => {
-		expect(
-			buildAgentSystemPrompt({
-				basePrompt: "base prompt",
-				skills: [],
-				activeTools: [{ name: "read" }],
-			}),
-		).toBe("base prompt");
+		expect(buildAgentSystemPrompt({ basePrompt: "base prompt", skills: [], activeTools: [{ name: "read" }] })).toBe(
+			"base prompt",
+		);
 		expect(
 			buildAgentSystemPrompt({
 				basePrompt: "base prompt",
@@ -77,11 +61,7 @@ describe("buildAgentSystemPrompt", () => {
 			}),
 		).toBe("base prompt");
 		expect(
-			buildAgentSystemPrompt({
-				basePrompt: "base prompt",
-				skills: [skill],
-				activeTools: [{ name: "read" }],
-			}),
+			buildAgentSystemPrompt({ basePrompt: "base prompt", skills: [skill], activeTools: [{ name: "read" }] }),
 		).toContain("<available_skills>");
 	});
 
@@ -160,31 +140,15 @@ describe("buildAgentSystemPrompt", () => {
 			].join("\n"),
 		);
 		expect(formatProjectContextForSystemPrompt([])).toBe("");
-		expect(
-			buildAgentSystemPrompt({
-				basePrompt: "base prompt",
-				skills: [],
-				activeTools: [],
-				contextFiles: [],
-			}),
-		).toBe("base prompt");
+		expect(buildAgentSystemPrompt({ basePrompt: "base prompt", skills: [], activeTools: [], contextFiles: [] })).toBe(
+			"base prompt",
+		);
 	});
 
 	it("states the working directory only when one is given, in one path shape", () => {
+		expect(buildAgentSystemPrompt({ basePrompt: "base prompt", skills: [], activeTools: [] })).toBe("base prompt");
 		expect(
-			buildAgentSystemPrompt({
-				basePrompt: "base prompt",
-				skills: [],
-				activeTools: [],
-			}),
-		).toBe("base prompt");
-		expect(
-			buildAgentSystemPrompt({
-				basePrompt: "base prompt",
-				skills: [],
-				activeTools: [],
-				cwd: "C:\\repo\\app",
-			}),
+			buildAgentSystemPrompt({ basePrompt: "base prompt", skills: [], activeTools: [], cwd: "C:\\repo\\app" }),
 		).toBe("base prompt\n\nCurrent working directory: C:/repo/app");
 	});
 });
@@ -200,11 +164,7 @@ describe("buildAgentSystemPrompt composed text", () => {
 	const everySection = {
 		basePrompt: "You are a reviewer.",
 		activeTools: [
-			{
-				name: "read",
-				promptSnippet: "Read file contents",
-				promptGuidelines: ["Read before editing."],
-			},
+			{ name: "read", promptSnippet: "Read file contents", promptGuidelines: ["Read before editing."] },
 			{ name: "send_message" },
 		],
 		agentId: "worker-2" as const,
@@ -214,12 +174,7 @@ describe("buildAgentSystemPrompt composed text", () => {
 	};
 
 	it("composes every section", () => {
-		expect(
-			buildAgentSystemPrompt({
-				...everySection,
-				skills: [skill],
-			}),
-		).toMatchInlineSnapshot(`
+		expect(buildAgentSystemPrompt({ ...everySection, skills: [skill] })).toMatchInlineSnapshot(`
 			"You are a reviewer.
 
 			You are agent worker-2. Other agents address you by that id.
@@ -262,10 +217,7 @@ describe("buildAgentSystemPrompt composed text", () => {
 
 	it("drops only the listing when no skill is model-visible", () => {
 		expect(
-			buildAgentSystemPrompt({
-				...everySection,
-				skills: [{ ...skill, disableModelInvocation: true }],
-			}),
+			buildAgentSystemPrompt({ ...everySection, skills: [{ ...skill, disableModelInvocation: true }] }),
 		).toMatchInlineSnapshot(`
 			"You are a reviewer.
 
@@ -297,11 +249,7 @@ describe("buildAgentSystemPrompt composed text", () => {
 
 	it("drops only the listing when no read tool is active", () => {
 		expect(
-			buildAgentSystemPrompt({
-				...everySection,
-				activeTools: [{ name: "send_message" }],
-				skills: [skill],
-			}),
+			buildAgentSystemPrompt({ ...everySection, activeTools: [{ name: "send_message" }], skills: [skill] }),
 		).toMatchInlineSnapshot(`
 			"You are a reviewer.
 

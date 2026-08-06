@@ -5,30 +5,14 @@ import type { ToolDefinition } from "../types.ts";
 import { compileFindPattern } from "./glob-match.ts";
 import { resolveToCwd } from "./path-utils.ts";
 import { createLocalRgRunner, type RgRunner } from "./ripgrep.ts";
-import {
-	DEFAULT_MAX_BYTES,
-	formatSize,
-	type TruncationResult,
-	truncateHead,
-} from "./truncate.ts";
+import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
 
 const DEFAULT_RESULT_LIMIT = 1000;
 
 const findSchema = Type.Object({
-	pattern: Type.String({
-		description:
-			"Glob pattern to match files, e.g. '*.ts', '**/*.json', or 'src/**/*.spec.ts'",
-	}),
-	path: Type.Optional(
-		Type.String({
-			description: "Directory to search in (default: current directory)",
-		}),
-	),
-	limit: Type.Optional(
-		Type.Number({
-			description: `Maximum number of results (default: ${DEFAULT_RESULT_LIMIT})`,
-		}),
-	),
+	pattern: Type.String({ description: "Glob pattern to match files, e.g. '*.ts', '**/*.json', or 'src/**/*.spec.ts'" }),
+	path: Type.Optional(Type.String({ description: "Directory to search in (default: current directory)" })),
+	limit: Type.Optional(Type.Number({ description: `Maximum number of results (default: ${DEFAULT_RESULT_LIMIT})` })),
 });
 
 export type FindToolInput = Static<typeof findSchema>;
@@ -51,9 +35,7 @@ export interface FindOperations {
 	runRg: RgRunner;
 }
 
-export function createLocalFindOperations(options?: {
-	rgPath?: string;
-}): FindOperations {
+export function createLocalFindOperations(options?: { rgPath?: string }): FindOperations {
 	return {
 		exists: async (absolutePath) => {
 			try {
@@ -63,8 +45,7 @@ export function createLocalFindOperations(options?: {
 				return false;
 			}
 		},
-		isDirectory: async (absolutePath) =>
-			(await fsStat(absolutePath)).isDirectory(),
+		isDirectory: async (absolutePath) => (await fsStat(absolutePath)).isDirectory(),
 		runRg: createLocalRgRunner(options?.rgPath),
 	};
 }
@@ -80,17 +61,14 @@ export function createFindToolDefinition(
 	cwd: string,
 	options: FindToolOptions = {},
 ): ToolDefinition<typeof findSchema, FindToolDetails> {
-	const operations =
-		options.operations ?? createLocalFindOperations({ rgPath: options.rgPath });
+	const operations = options.operations ?? createLocalFindOperations({ rgPath: options.rgPath });
 
 	return {
 		name: "find",
 		label: "find",
 		description: `Search for files by glob pattern. A pattern without '/' matches file names at any depth; a pattern with '/' matches paths relative to the search directory. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to ${DEFAULT_RESULT_LIMIT} results or ${formatSize(DEFAULT_MAX_BYTES)}, whichever is hit first.`,
 		promptSnippet: "Find files by glob pattern (respects .gitignore)",
-		promptGuidelines: [
-			"Use find to locate files by name or path pattern; use grep for content searches.",
-		],
+		promptGuidelines: ["Use find to locate files by name or path pattern; use grep for content searches."],
 		parameters: findSchema,
 		execute: async (_toolCallId, input, context) => {
 			validateFindInput(input);
@@ -137,9 +115,7 @@ export function createFindToolDefinition(
 				onLine: (line, stop) => {
 					const cleaned = line.replace(/\r$/, "");
 					if (!cleaned) return;
-					const relativePath = relative(searchPath, cleaned)
-						.split(sep)
-						.join("/");
+					const relativePath = relative(searchPath, cleaned).split(sep).join("/");
 					if (!relativePath || relativePath.startsWith("..")) return;
 					if (!matchesPattern(relativePath)) return;
 					results.push(relativePath);
@@ -151,38 +127,21 @@ export function createFindToolDefinition(
 			});
 			// rg --files exits 0 when it lists files and 1 when nothing is listed;
 			// anything else is an execution error unless we stopped rg early.
-			if (
-				!runResult.stoppedEarly &&
-				runResult.exitCode !== 0 &&
-				runResult.exitCode !== 1
-			) {
-				throw new Error(
-					runResult.stderr.trim() ||
-						`ripgrep exited with code ${runResult.exitCode}`,
-				);
+			if (!runResult.stoppedEarly && runResult.exitCode !== 0 && runResult.exitCode !== 1) {
+				throw new Error(runResult.stderr.trim() || `ripgrep exited with code ${runResult.exitCode}`);
 			}
 
-			const details: FindToolDetails = {
-				path: inputPath,
-				absolutePath: searchPath,
-			};
+			const details: FindToolDetails = { path: inputPath, absolutePath: searchPath };
 			if (results.length === 0) {
-				return {
-					content: [{ type: "text", text: "No files found matching pattern" }],
-					details,
-				};
+				return { content: [{ type: "text", text: "No files found matching pattern" }], details };
 			}
 
 			// The result limit already caps rows, so only the byte limit applies.
-			const truncation = truncateHead(results.join("\n"), {
-				maxLines: Number.MAX_SAFE_INTEGER,
-			});
+			const truncation = truncateHead(results.join("\n"), { maxLines: Number.MAX_SAFE_INTEGER });
 			let output = truncation.content;
 			const notices: string[] = [];
 			if (resultLimitReached) {
-				notices.push(
-					`${resultLimit} results limit reached. Use limit=${resultLimit * 2} for more, or refine pattern`,
-				);
+				notices.push(`${resultLimit} results limit reached. Use limit=${resultLimit * 2} for more, or refine pattern`);
 				details.resultLimitReached = resultLimit;
 			}
 			if (truncation.truncated) {
@@ -197,10 +156,7 @@ export function createFindToolDefinition(
 	};
 }
 
-async function isInsideGitRepository(
-	searchPath: string,
-	operations: Pick<FindOperations, "exists">,
-): Promise<boolean> {
+async function isInsideGitRepository(searchPath: string, operations: Pick<FindOperations, "exists">): Promise<boolean> {
 	for (let current = searchPath; ; ) {
 		if (await operations.exists(join(current, ".git"))) {
 			return true;
@@ -214,13 +170,8 @@ async function isInsideGitRepository(
 }
 
 function validateFindInput(input: FindToolInput): void {
-	if (
-		input.limit !== undefined &&
-		(!Number.isInteger(input.limit) || input.limit < 1)
-	) {
-		throw new Error(
-			"Find tool input is invalid. limit must be a positive integer.",
-		);
+	if (input.limit !== undefined && (!Number.isInteger(input.limit) || input.limit < 1)) {
+		throw new Error("Find tool input is invalid. limit must be a positive integer.");
 	}
 }
 

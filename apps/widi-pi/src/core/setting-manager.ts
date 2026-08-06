@@ -133,12 +133,7 @@ export interface Settings {
 	/** Default: "tree". */
 	doubleEscapeAction?: "fork" | "tree" | "none";
 	/** Default: "default". */
-	treeFilterMode?:
-		| "default"
-		| "no-tools"
-		| "user-only"
-		| "labeled-only"
-		| "all";
+	treeFilterMode?: "default" | "no-tools" | "user-only" | "labeled-only" | "all";
 	/** Default: 0. Horizontal padding for input editors. */
 	editorPaddingX?: number;
 	/** Default: 5. Max visible items in autocomplete dropdowns. */
@@ -173,10 +168,7 @@ export interface SettingsError {
 
 export type SettingsDiagnostic = CoreDiagnostic;
 
-export type SettingsLockResult<T> = {
-	result: T;
-	next?: string;
-};
+export type SettingsLockResult<T> = { result: T; next?: string };
 
 export interface SettingsStorage {
 	withLockAsync<T>(
@@ -185,10 +177,7 @@ export interface SettingsStorage {
 	): Promise<T>;
 }
 
-type SettingFileSystem = Pick<
-	ExecutionEnv,
-	"joinPath" | "readTextFile" | "writeFile" | "exists"
->;
+type SettingFileSystem = Pick<ExecutionEnv, "joinPath" | "readTextFile" | "writeFile" | "exists">;
 
 function deepMergeSettings(base: Settings, overrides: Settings): Settings {
 	const result: Settings = { ...base };
@@ -234,13 +223,8 @@ function migrateSettings(settings: Record<string, unknown>): Settings {
 		settings.skills !== null &&
 		!Array.isArray(settings.skills)
 	) {
-		const skillsSettings = settings.skills as {
-			customDirectories?: unknown;
-		};
-		if (
-			Array.isArray(skillsSettings.customDirectories) &&
-			skillsSettings.customDirectories.length > 0
-		) {
+		const skillsSettings = settings.skills as { customDirectories?: unknown };
+		if (Array.isArray(skillsSettings.customDirectories) && skillsSettings.customDirectories.length > 0) {
 			settings.skills = skillsSettings.customDirectories;
 		} else {
 			delete settings.skills;
@@ -255,19 +239,14 @@ function migrateSettings(settings: Record<string, unknown>): Settings {
 	) {
 		const retrySettings = settings.retry as Record<string, unknown>;
 		const providerSettings =
-			typeof retrySettings.provider === "object" &&
-			retrySettings.provider !== null
+			typeof retrySettings.provider === "object" && retrySettings.provider !== null
 				? (retrySettings.provider as Record<string, unknown>)
 				: undefined;
 		if (
 			typeof retrySettings.maxDelayMs === "number" &&
-			(providerSettings?.maxRetryDelayMs === undefined ||
-				providerSettings.maxRetryDelayMs === null)
+			(providerSettings?.maxRetryDelayMs === undefined || providerSettings.maxRetryDelayMs === null)
 		) {
-			retrySettings.provider = {
-				...(providerSettings ?? {}),
-				maxRetryDelayMs: retrySettings.maxDelayMs,
-			};
+			retrySettings.provider = { ...(providerSettings ?? {}), maxRetryDelayMs: retrySettings.maxDelayMs };
 		}
 		delete retrySettings.maxDelayMs;
 	}
@@ -288,17 +267,11 @@ export class FileSettingsStorage implements SettingsStorage {
 	private readonly cwd: string;
 	private readonly agentDir: string;
 	private readonly projectConfigDir: string;
-	private readonly locks: Record<SettingsScope, AsyncLock> = {
-		global: new AsyncLock(),
-		project: new AsyncLock(),
-	};
+	private readonly locks: Record<SettingsScope, AsyncLock> = { global: new AsyncLock(), project: new AsyncLock() };
 	private globalSettingsPath: string | undefined;
 	private projectSettingsPath: string | undefined;
 
-	constructor(
-		executionEnv: SettingFileSystem & { cwd: string },
-		options: SettingManagerCreateOptions = {},
-	) {
+	constructor(executionEnv: SettingFileSystem & { cwd: string }, options: SettingManagerCreateOptions = {}) {
 		this.fs = executionEnv;
 		this.cwd = options.cwd ?? executionEnv.cwd;
 		this.agentDir = options.agentDir ?? DEFAULT_AGENT_DIR;
@@ -312,9 +285,7 @@ export class FileSettingsStorage implements SettingsStorage {
 		return await this.locks[scope].run(async () => {
 			const path = await this.getSettingsPath(scope);
 			const exists = unwrapResult(await this.fs.exists(path));
-			const current = exists
-				? unwrapResult(await this.fs.readTextFile(path))
-				: undefined;
+			const current = exists ? unwrapResult(await this.fs.readTextFile(path)) : undefined;
 			const { result, next } = await fn(current);
 			if (next !== undefined) {
 				unwrapResult(await this.fs.writeFile(path, next));
@@ -326,20 +297,14 @@ export class FileSettingsStorage implements SettingsStorage {
 	private async getSettingsPath(scope: SettingsScope): Promise<string> {
 		if (scope === "global") {
 			if (!this.globalSettingsPath) {
-				this.globalSettingsPath = unwrapResult(
-					await this.fs.joinPath([this.agentDir, "settings.json"]),
-				);
+				this.globalSettingsPath = unwrapResult(await this.fs.joinPath([this.agentDir, "settings.json"]));
 			}
 			return this.globalSettingsPath;
 		}
 
 		if (!this.projectSettingsPath) {
 			this.projectSettingsPath = unwrapResult(
-				await this.fs.joinPath([
-					this.cwd,
-					this.projectConfigDir,
-					"settings.json",
-				]),
+				await this.fs.joinPath([this.cwd, this.projectConfigDir, "settings.json"]),
 			);
 		}
 		return this.projectSettingsPath;
@@ -349,26 +314,15 @@ export class FileSettingsStorage implements SettingsStorage {
 export class InMemorySettingsStorage implements SettingsStorage {
 	private global: string | undefined;
 	private project: string | undefined;
-	private readonly locks: Record<SettingsScope, AsyncLock> = {
-		global: new AsyncLock(),
-		project: new AsyncLock(),
-	};
+	private readonly locks: Record<SettingsScope, AsyncLock> = { global: new AsyncLock(), project: new AsyncLock() };
 
 	constructor(initialGlobal?: Settings, initialProject?: Settings) {
 		if (initialGlobal) {
-			this.global = JSON.stringify(
-				migrateSettings(
-					structuredClone(initialGlobal) as Record<string, unknown>,
-				),
-				null,
-				2,
-			);
+			this.global = JSON.stringify(migrateSettings(structuredClone(initialGlobal) as Record<string, unknown>), null, 2);
 		}
 		if (initialProject) {
 			this.project = JSON.stringify(
-				migrateSettings(
-					structuredClone(initialProject) as Record<string, unknown>,
-				),
+				migrateSettings(structuredClone(initialProject) as Record<string, unknown>),
 				null,
 				2,
 			);
@@ -409,24 +363,15 @@ export class SettingManager {
 	private errors: SettingsError[];
 	private diagnostics: SettingsDiagnostic[];
 	private readonly modifiedFields: Set<keyof Settings> = new Set();
-	private readonly modifiedNestedFields: Map<keyof Settings, Set<string>> =
-		new Map();
+	private readonly modifiedNestedFields: Map<keyof Settings, Set<string>> = new Map();
 	private readonly modifiedProjectFields: Set<keyof Settings> = new Set();
-	private readonly modifiedProjectNestedFields: Map<
-		keyof Settings,
-		Set<string>
-	> = new Map();
+	private readonly modifiedProjectNestedFields: Map<keyof Settings, Set<string>> = new Map();
 
 	constructor(settings: Partial<Settings> = {}) {
 		this.storage = new InMemorySettingsStorage(settings);
-		this.globalSettings = migrateSettings(
-			structuredClone(settings) as Record<string, unknown>,
-		);
+		this.globalSettings = migrateSettings(structuredClone(settings) as Record<string, unknown>);
 		this.projectSettings = {};
-		this.settings = deepMergeSettings(
-			this.globalSettings,
-			this.projectSettings,
-		);
+		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
 		this.projectTrusted = true;
 		this.globalSettingsLoadError = null;
 		this.projectSettingsLoadError = null;
@@ -458,14 +403,8 @@ export class SettingManager {
 		return manager;
 	}
 
-	static async create(
-		executionEnv: ExecutionEnv,
-		options: SettingManagerCreateOptions = {},
-	): Promise<SettingManager> {
-		return await SettingManager.fromStorage(
-			new FileSettingsStorage(executionEnv, options),
-			options,
-		);
+	static async create(executionEnv: ExecutionEnv, options: SettingManagerCreateOptions = {}): Promise<SettingManager> {
+		return await SettingManager.fromStorage(new FileSettingsStorage(executionEnv, options), options);
 	}
 
 	static async fromStorage(
@@ -473,15 +412,8 @@ export class SettingManager {
 		options: SettingManagerCreateOptions = {},
 	): Promise<SettingManager> {
 		const projectTrusted = options.projectTrusted ?? true;
-		const globalLoad = await SettingManager.tryLoadFromStorage(
-			storage,
-			"global",
-		);
-		const projectLoad = await SettingManager.tryLoadFromStorage(
-			storage,
-			"project",
-			projectTrusted,
-		);
+		const globalLoad = await SettingManager.tryLoadFromStorage(storage, "global");
+		const projectLoad = await SettingManager.tryLoadFromStorage(storage, "project", projectTrusted);
 		const initialErrors: SettingsError[] = [];
 		if (globalLoad.error) {
 			initialErrors.push({ scope: "global", error: globalLoad.error });
@@ -529,14 +461,7 @@ export class SettingManager {
 		projectTrusted = true,
 	): Promise<{ settings: Settings; error: Error | null }> {
 		try {
-			return {
-				settings: await SettingManager.loadFromStorage(
-					storage,
-					scope,
-					projectTrusted,
-				),
-				error: null,
-			};
+			return { settings: await SettingManager.loadFromStorage(storage, scope, projectTrusted), error: null };
 		} catch (error) {
 			return { settings: {}, error: error as Error };
 		}
@@ -567,35 +492,22 @@ export class SettingManager {
 		if (!trusted) {
 			this.projectSettings = {};
 			this.projectSettingsLoadError = null;
-			this.settings = deepMergeSettings(
-				this.globalSettings,
-				this.projectSettings,
-			);
+			this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
 			return;
 		}
 
-		const projectLoad = await SettingManager.tryLoadFromStorage(
-			this.storage,
-			"project",
-			trusted,
-		);
+		const projectLoad = await SettingManager.tryLoadFromStorage(this.storage, "project", trusted);
 		this.projectSettings = projectLoad.settings;
 		this.projectSettingsLoadError = projectLoad.error;
 		if (projectLoad.error) {
 			this.recordError("project", projectLoad.error, "settings.load_failed");
 		}
-		this.settings = deepMergeSettings(
-			this.globalSettings,
-			this.projectSettings,
-		);
+		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
 	}
 
 	async reload(): Promise<void> {
 		await this.writeQueue;
-		const globalLoad = await SettingManager.tryLoadFromStorage(
-			this.storage,
-			"global",
-		);
+		const globalLoad = await SettingManager.tryLoadFromStorage(this.storage, "global");
 		if (globalLoad.error) {
 			this.globalSettingsLoadError = globalLoad.error;
 			this.recordError("global", globalLoad.error, "settings.load_failed");
@@ -604,11 +516,7 @@ export class SettingManager {
 			this.globalSettingsLoadError = null;
 		}
 
-		const projectLoad = await SettingManager.tryLoadFromStorage(
-			this.storage,
-			"project",
-			this.projectTrusted,
-		);
+		const projectLoad = await SettingManager.tryLoadFromStorage(this.storage, "project", this.projectTrusted);
 		if (projectLoad.error) {
 			this.projectSettingsLoadError = projectLoad.error;
 			this.recordError("project", projectLoad.error, "settings.load_failed");
@@ -621,10 +529,7 @@ export class SettingManager {
 		this.modifiedNestedFields.clear();
 		this.modifiedProjectFields.clear();
 		this.modifiedProjectNestedFields.clear();
-		this.settings = deepMergeSettings(
-			this.globalSettings,
-			this.projectSettings,
-		);
+		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
 	}
 
 	applyOverrides(overrides: Partial<Settings>): void {
@@ -768,10 +673,7 @@ export class SettingManager {
 	}
 
 	setCompactionEnabled(enabled: boolean): void {
-		this.globalSettings.compaction = {
-			...(this.globalSettings.compaction ?? {}),
-			enabled,
-		};
+		this.globalSettings.compaction = { ...(this.globalSettings.compaction ?? {}), enabled };
 		this.markModified("compaction", "enabled");
 		this.save();
 	}
@@ -784,11 +686,7 @@ export class SettingManager {
 		return this.settings.compaction?.keepRecentTokens ?? 20000;
 	}
 
-	getCompactionSettings(): {
-		enabled: boolean;
-		reserveTokens: number;
-		keepRecentTokens: number;
-	} {
+	getCompactionSettings(): { enabled: boolean; reserveTokens: number; keepRecentTokens: number } {
 		return {
 			enabled: this.getCompactionEnabled(),
 			reserveTokens: this.getCompactionReserveTokens(),
@@ -808,19 +706,12 @@ export class SettingManager {
 	}
 
 	setRetryEnabled(enabled: boolean): void {
-		this.globalSettings.retry = {
-			...(this.globalSettings.retry ?? {}),
-			enabled,
-		};
+		this.globalSettings.retry = { ...(this.globalSettings.retry ?? {}), enabled };
 		this.markModified("retry", "enabled");
 		this.save();
 	}
 
-	getRetrySettings(): {
-		enabled: boolean;
-		maxRetries: number;
-		baseDelayMs: number;
-	} {
+	getRetrySettings(): { enabled: boolean; maxRetries: number; baseDelayMs: number } {
 		return {
 			enabled: this.getRetryEnabled(),
 			maxRetries: this.settings.retry?.maxRetries ?? 3,
@@ -828,11 +719,7 @@ export class SettingManager {
 		};
 	}
 
-	getProviderRetrySettings(): {
-		timeoutMs?: number;
-		maxRetries?: number;
-		maxRetryDelayMs: number;
-	} {
+	getProviderRetrySettings(): { timeoutMs?: number; maxRetries?: number; maxRetryDelayMs: number } {
 		return {
 			timeoutMs: this.settings.retry?.provider?.timeoutMs,
 			maxRetries: this.settings.retry?.provider?.maxRetries,
@@ -928,24 +815,18 @@ export class SettingManager {
 	}
 
 	getEnabledProfiles(): string[] | undefined {
-		return this.settings.enabledProfiles
-			? [...this.settings.enabledProfiles]
-			: undefined;
+		return this.settings.enabledProfiles ? [...this.settings.enabledProfiles] : undefined;
 	}
 
 	setEnabledProfiles(profileIds: string[] | undefined): void {
-		this.globalSettings.enabledProfiles = profileIds
-			? [...new Set(profileIds)]
-			: undefined;
+		this.globalSettings.enabledProfiles = profileIds ? [...new Set(profileIds)] : undefined;
 		this.markModified("enabledProfiles");
 		this.save();
 	}
 
 	setProjectEnabledProfiles(profileIds: string[] | undefined): void {
 		this.updateProjectField("enabledProfiles", (settings) => {
-			settings.enabledProfiles = profileIds
-				? [...new Set(profileIds)]
-				: undefined;
+			settings.enabledProfiles = profileIds ? [...new Set(profileIds)] : undefined;
 		});
 	}
 
@@ -967,24 +848,18 @@ export class SettingManager {
 
 	/** Undefined means no restriction: every available extension is enabled. */
 	getEnabledExtensions(): string[] | undefined {
-		return this.settings.enabledExtensions
-			? [...this.settings.enabledExtensions]
-			: undefined;
+		return this.settings.enabledExtensions ? [...this.settings.enabledExtensions] : undefined;
 	}
 
 	setEnabledExtensions(extensionIds: string[] | undefined): void {
-		this.globalSettings.enabledExtensions = extensionIds
-			? [...new Set(extensionIds)]
-			: undefined;
+		this.globalSettings.enabledExtensions = extensionIds ? [...new Set(extensionIds)] : undefined;
 		this.markModified("enabledExtensions");
 		this.save();
 	}
 
 	setProjectEnabledExtensions(extensionIds: string[] | undefined): void {
 		this.updateProjectField("enabledExtensions", (settings) => {
-			settings.enabledExtensions = extensionIds
-				? [...new Set(extensionIds)]
-				: undefined;
+			settings.enabledExtensions = extensionIds ? [...new Set(extensionIds)] : undefined;
 		});
 	}
 
@@ -992,17 +867,13 @@ export class SettingManager {
 		return structuredClone(this.settings.extensionDivisions ?? {});
 	}
 
-	setExtensionDivisionSelections(
-		selections: Record<string, ExtensionDivisionSelection>,
-	): void {
+	setExtensionDivisionSelections(selections: Record<string, ExtensionDivisionSelection>): void {
 		this.globalSettings.extensionDivisions = structuredClone(selections);
 		this.markModified("extensionDivisions");
 		this.save();
 	}
 
-	setProjectExtensionDivisionSelections(
-		selections: Record<string, ExtensionDivisionSelection>,
-	): void {
+	setProjectExtensionDivisionSelections(selections: Record<string, ExtensionDivisionSelection>): void {
 		this.updateProjectField("extensionDivisions", (settings) => {
 			settings.extensionDivisions = structuredClone(selections);
 		});
@@ -1057,9 +928,7 @@ export class SettingManager {
 	}
 
 	getEnabledModels(): string[] | undefined {
-		return this.settings.enabledModels
-			? [...this.settings.enabledModels]
-			: undefined;
+		return this.settings.enabledModels ? [...this.settings.enabledModels] : undefined;
 	}
 
 	setEnabledModels(patterns: string[] | undefined): void {
@@ -1073,8 +942,7 @@ export class SettingManager {
 			showImages: this.settings.terminal?.showImages ?? true,
 			imageWidthCells: this.settings.terminal?.imageWidthCells ?? 60,
 			clearOnShrink: this.settings.terminal?.clearOnShrink ?? false,
-			showTerminalProgress:
-				this.settings.terminal?.showTerminalProgress ?? false,
+			showTerminalProgress: this.settings.terminal?.showTerminalProgress ?? false,
 		};
 	}
 
@@ -1090,32 +958,20 @@ export class SettingManager {
 	}
 
 	getHttpIdleTimeoutMs(): number | undefined {
-		return this.validateTimeoutSetting(
-			this.settings.httpIdleTimeoutMs,
-			"httpIdleTimeoutMs",
-		);
+		return this.validateTimeoutSetting(this.settings.httpIdleTimeoutMs, "httpIdleTimeoutMs");
 	}
 
 	setHttpIdleTimeoutMs(timeoutMs: number): void {
-		this.globalSettings.httpIdleTimeoutMs = this.validateTimeoutSetting(
-			timeoutMs,
-			"httpIdleTimeoutMs",
-		);
+		this.globalSettings.httpIdleTimeoutMs = this.validateTimeoutSetting(timeoutMs, "httpIdleTimeoutMs");
 		this.markModified("httpIdleTimeoutMs");
 		this.save();
 	}
 
 	getWebSocketConnectTimeoutMs(): number | undefined {
-		return this.validateTimeoutSetting(
-			this.settings.websocketConnectTimeoutMs,
-			"websocketConnectTimeoutMs",
-		);
+		return this.validateTimeoutSetting(this.settings.websocketConnectTimeoutMs, "websocketConnectTimeoutMs");
 	}
 
-	private validateTimeoutSetting(
-		value: number | undefined,
-		settingName: string,
-	): number | undefined {
+	private validateTimeoutSetting(value: number | undefined, settingName: string): number | undefined {
 		if (value === undefined) return undefined;
 		if (!Number.isFinite(value) || value < 0) {
 			throw new Error(`Invalid ${settingName} setting: ${String(value)}`);
@@ -1123,10 +979,7 @@ export class SettingManager {
 		return Math.floor(value);
 	}
 
-	private updateProjectField(
-		field: keyof Settings,
-		update: (settings: Settings) => void,
-	): void {
+	private updateProjectField(field: keyof Settings, update: (settings: Settings) => void): void {
 		this.assertProjectTrustedForWrite();
 		const projectSettings = structuredClone(this.projectSettings);
 		update(projectSettings);
@@ -1154,9 +1007,7 @@ export class SettingManager {
 
 	private assertProjectTrustedForWrite(): void {
 		if (!this.projectTrusted) {
-			throw new Error(
-				"Project is not trusted; refusing to write project settings",
-			);
+			throw new Error("Project is not trusted; refusing to write project settings");
 		}
 	}
 
@@ -1165,12 +1016,9 @@ export class SettingManager {
 		error: unknown,
 		code: "settings.load_failed" | "settings.write_failed",
 	): void {
-		const normalizedError =
-			error instanceof Error ? error : new Error(String(error));
+		const normalizedError = error instanceof Error ? error : new Error(String(error));
 		this.errors.push({ scope, error: normalizedError });
-		this.diagnostics.push(
-			createSettingsDiagnostic(scope, code, normalizedError),
-		);
+		this.diagnostics.push(createSettingsDiagnostic(scope, code, normalizedError));
 	}
 
 	private clearModifiedScope(scope: SettingsScope): void {
@@ -1195,9 +1043,7 @@ export class SettingManager {
 			});
 	}
 
-	private cloneModifiedNestedFields(
-		source: Map<keyof Settings, Set<string>>,
-	): Map<keyof Settings, Set<string>> {
+	private cloneModifiedNestedFields(source: Map<keyof Settings, Set<string>>): Map<keyof Settings, Set<string>> {
 		const snapshot = new Map<keyof Settings, Set<string>>();
 		for (const [key, value] of source.entries()) {
 			snapshot.set(key, new Set(value));
@@ -1212,23 +1058,13 @@ export class SettingManager {
 		modifiedNestedFields: Map<keyof Settings, Set<string>>,
 	): Promise<void> {
 		await this.storage.withLockAsync(scope, async (current) => {
-			const currentFileSettings = current
-				? migrateSettings(JSON.parse(current) as Record<string, unknown>)
-				: {};
+			const currentFileSettings = current ? migrateSettings(JSON.parse(current) as Record<string, unknown>) : {};
 			const mergedSettings: Settings = { ...currentFileSettings };
 			for (const field of modifiedFields) {
 				const value = snapshotSettings[field];
-				if (
-					modifiedNestedFields.has(field) &&
-					typeof value === "object" &&
-					value !== null &&
-					!Array.isArray(value)
-				) {
+				if (modifiedNestedFields.has(field) && typeof value === "object" && value !== null && !Array.isArray(value)) {
 					const nestedModified = modifiedNestedFields.get(field);
-					const baseNested =
-						(currentFileSettings[field] as
-							| Record<string, unknown>
-							| undefined) ?? {};
+					const baseNested = (currentFileSettings[field] as Record<string, unknown> | undefined) ?? {};
 					const inMemoryNested = value as Record<string, unknown>;
 					const mergedNested = { ...baseNested };
 					for (const nestedKey of nestedModified ?? []) {
@@ -1240,56 +1076,33 @@ export class SettingManager {
 				}
 			}
 
-			return {
-				result: undefined,
-				next: JSON.stringify(mergedSettings, null, 2),
-			};
+			return { result: undefined, next: JSON.stringify(mergedSettings, null, 2) };
 		});
 	}
 
 	private save(): void {
-		this.settings = deepMergeSettings(
-			this.globalSettings,
-			this.projectSettings,
-		);
+		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
 		if (this.globalSettingsLoadError) return;
 
 		const snapshotGlobalSettings = structuredClone(this.globalSettings);
 		const modifiedFields = new Set(this.modifiedFields);
-		const modifiedNestedFields = this.cloneModifiedNestedFields(
-			this.modifiedNestedFields,
-		);
+		const modifiedNestedFields = this.cloneModifiedNestedFields(this.modifiedNestedFields);
 		this.enqueueWrite("global", async () => {
-			await this.persistScopedSettings(
-				"global",
-				snapshotGlobalSettings,
-				modifiedFields,
-				modifiedNestedFields,
-			);
+			await this.persistScopedSettings("global", snapshotGlobalSettings, modifiedFields, modifiedNestedFields);
 		});
 	}
 
 	private saveProjectSettings(settings: Settings): void {
 		this.assertProjectTrustedForWrite();
 		this.projectSettings = structuredClone(settings);
-		this.settings = deepMergeSettings(
-			this.globalSettings,
-			this.projectSettings,
-		);
+		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
 		if (this.projectSettingsLoadError) return;
 
 		const snapshotProjectSettings = structuredClone(this.projectSettings);
 		const modifiedFields = new Set(this.modifiedProjectFields);
-		const modifiedNestedFields = this.cloneModifiedNestedFields(
-			this.modifiedProjectNestedFields,
-		);
+		const modifiedNestedFields = this.cloneModifiedNestedFields(this.modifiedProjectNestedFields);
 		this.enqueueWrite("project", async () => {
-			await this.persistScopedSettings(
-				"project",
-				snapshotProjectSettings,
-				modifiedFields,
-				modifiedNestedFields,
-			);
+			await this.persistScopedSettings("project", snapshotProjectSettings, modifiedFields, modifiedNestedFields);
 		});
 	}
 }
@@ -1299,11 +1112,7 @@ function createSettingsDiagnostic(
 	code: "settings.load_failed" | "settings.write_failed",
 	error: Error,
 ): SettingsDiagnostic {
-	return {
-		severity: "error",
-		code,
-		message: `${scope} settings: ${error.message}`,
-	};
+	return { severity: "error", code, message: `${scope} settings: ${error.message}` };
 }
 
 export { SettingManager as SettingsManager };

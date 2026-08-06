@@ -1,8 +1,5 @@
 import type { AgentHarnessStreamOptionsPatch } from "@widi/agent-core";
-import type {
-	ExtensionFactory,
-	ExtensionProviderConfig,
-} from "../../src/core/extension/index.ts";
+import type { ExtensionFactory, ExtensionProviderConfig } from "../../src/core/extension/index.ts";
 
 export interface ProviderExtensionOptions {
 	readonly providerName: string;
@@ -23,9 +20,7 @@ export interface ProviderExtensionOptions {
  * candidates - so the integration tests exercise the contribution surface
  * end to end.
  */
-export function createProviderExtension(
-	options: ProviderExtensionOptions,
-): ExtensionFactory {
+export function createProviderExtension(options: ProviderExtensionOptions): ExtensionFactory {
 	return (api) => {
 		api.registerProvider(options.providerName, options.config);
 		if (options.requestHeaders || options.requestMetadata) {
@@ -34,16 +29,12 @@ export function createProviderExtension(
 			const patch: AgentHarnessStreamOptionsPatch = {};
 			if (options.requestHeaders) patch.headers = options.requestHeaders;
 			if (options.requestMetadata) patch.metadata = options.requestMetadata;
-			api.intercept("before_provider_request", () => ({
-				streamOptions: patch,
-			}));
+			api.intercept("before_provider_request", () => ({ streamOptions: patch }));
 		}
 	};
 }
 
-export function gatewayProviderConfig(
-	overrides: Partial<ExtensionProviderConfig> = {},
-): ExtensionProviderConfig {
+export function gatewayProviderConfig(overrides: Partial<ExtensionProviderConfig> = {}): ExtensionProviderConfig {
 	return {
 		baseUrl: "https://gateway.test/v1",
 		apiKey: "gateway-key",

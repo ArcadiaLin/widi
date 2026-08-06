@@ -3,10 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentToolResult } from "@widi/agent-core";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-	createLsToolDefinition,
-	type LsToolDetails,
-} from "../../src/core/tools/coding/ls.ts";
+import { createLsToolDefinition, type LsToolDetails } from "../../src/core/tools/coding/ls.ts";
 import type { ToolExecutionContext } from "../../src/core/tools/types.ts";
 
 type LsResult = AgentToolResult<LsToolDetails>;
@@ -14,13 +11,7 @@ type LsResult = AgentToolResult<LsToolDetails>;
 function makeContext(
 	overrides: Partial<ToolExecutionContext<LsToolDetails>> = {},
 ): ToolExecutionContext<LsToolDetails> {
-	return {
-		signal: undefined,
-		onUpdate: undefined,
-		extension: undefined,
-		human: undefined,
-		...overrides,
-	};
+	return { signal: undefined, onUpdate: undefined, extension: undefined, human: undefined, ...overrides };
 }
 
 function textOf(result: LsResult): string {
@@ -35,9 +26,7 @@ describe("ls tool", () => {
 	const tempRoots: string[] = [];
 
 	afterEach(async () => {
-		await Promise.all(
-			tempRoots.map((root) => rm(root, { force: true, recursive: true })),
-		);
+		await Promise.all(tempRoots.map((root) => rm(root, { force: true, recursive: true })));
 		tempRoots.length = 0;
 	});
 
@@ -74,10 +63,7 @@ describe("ls tool", () => {
 		const tool = createLsToolDefinition(cwd);
 		const result = await tool.execute("call-1", { path: "sub" }, makeContext());
 		expect(textOf(result)).toBe("inner.txt");
-		expect(result.details).toMatchObject({
-			path: "sub",
-			absolutePath: join(cwd, "sub"),
-		});
+		expect(result.details).toMatchObject({ path: "sub", absolutePath: join(cwd, "sub") });
 	});
 
 	it("returns (empty directory) for an empty directory", async () => {
@@ -104,10 +90,7 @@ describe("ls tool", () => {
 		const cwd = await tempCwd();
 		const longName = "n".repeat(200);
 		for (let i = 0; i < 300; i++) {
-			await writeFile(
-				join(cwd, `${longName}-${String(i).padStart(3, "0")}`),
-				"",
-			);
+			await writeFile(join(cwd, `${longName}-${String(i).padStart(3, "0")}`), "");
 		}
 		const tool = createLsToolDefinition(cwd);
 		const result = await tool.execute("call-1", {}, makeContext());
@@ -127,24 +110,20 @@ describe("ls tool", () => {
 	it("rejects an invalid limit", async () => {
 		const cwd = await tempCwd();
 		const tool = createLsToolDefinition(cwd);
-		await expect(
-			tool.execute("call-1", { limit: 0 }, makeContext()),
-		).rejects.toThrow(/limit must be a positive integer/);
-		await expect(
-			tool.execute("call-1", { limit: 1.5 }, makeContext()),
-		).rejects.toThrow(/limit must be a positive integer/);
+		await expect(tool.execute("call-1", { limit: 0 }, makeContext())).rejects.toThrow(
+			/limit must be a positive integer/,
+		);
+		await expect(tool.execute("call-1", { limit: 1.5 }, makeContext())).rejects.toThrow(
+			/limit must be a positive integer/,
+		);
 	});
 
 	it("throws distinct errors for missing paths and non-directories", async () => {
 		const cwd = await tempCwd();
 		await writeFile(join(cwd, "file.txt"), "f");
 		const tool = createLsToolDefinition(cwd);
-		await expect(
-			tool.execute("call-1", { path: "no-such-dir" }, makeContext()),
-		).rejects.toThrow(/Path not found/);
-		await expect(
-			tool.execute("call-1", { path: "file.txt" }, makeContext()),
-		).rejects.toThrow(/Not a directory/);
+		await expect(tool.execute("call-1", { path: "no-such-dir" }, makeContext())).rejects.toThrow(/Path not found/);
+		await expect(tool.execute("call-1", { path: "file.txt" }, makeContext())).rejects.toThrow(/Not a directory/);
 	});
 
 	it("aborts when the signal is already aborted", async () => {
@@ -152,8 +131,8 @@ describe("ls tool", () => {
 		const tool = createLsToolDefinition(cwd);
 		const controller = new AbortController();
 		controller.abort();
-		await expect(
-			tool.execute("call-1", {}, makeContext({ signal: controller.signal })),
-		).rejects.toThrow(/Operation aborted/);
+		await expect(tool.execute("call-1", {}, makeContext({ signal: controller.signal }))).rejects.toThrow(
+			/Operation aborted/,
+		);
 	});
 });

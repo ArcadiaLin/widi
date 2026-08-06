@@ -7,9 +7,7 @@ export interface ExtensionModuleImporter {
 
 export class JitiExtensionModuleImporter implements ExtensionModuleImporter {
 	private readonly modules = new Map<string, unknown>();
-	private readonly jiti = createJiti(import.meta.url, {
-		moduleCache: false,
-	});
+	private readonly jiti = createJiti(import.meta.url, { moduleCache: false });
 	private generation = 0;
 
 	async importModule(entryPath: string): Promise<unknown> {

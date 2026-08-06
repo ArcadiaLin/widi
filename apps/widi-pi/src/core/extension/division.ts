@@ -37,15 +37,10 @@ export interface ValidatedDivisionDeclarations {
  * unknown until checked here - a malformed declaration must produce an issue,
  * never a thrown TypeError that takes the catalog load down with it.
  */
-export function validateDivisionDeclarations(
-	declarations: unknown,
-): ValidatedDivisionDeclarations {
+export function validateDivisionDeclarations(declarations: unknown): ValidatedDivisionDeclarations {
 	if (declarations === undefined) return { divisions: [], issues: [] };
 	if (!Array.isArray(declarations)) {
-		return {
-			divisions: [],
-			issues: ["divisions must be an array of division declarations."],
-		};
+		return { divisions: [], issues: ["divisions must be an array of division declarations."] };
 	}
 
 	const divisions: ExtensionDivisionDeclaration[] = [];
@@ -59,8 +54,7 @@ export function validateDivisionDeclarations(
 		}
 		const declaration = entry as Record<string, unknown>;
 
-		const id =
-			typeof declaration.id === "string" ? declaration.id.trim() : undefined;
+		const id = typeof declaration.id === "string" ? declaration.id.trim() : undefined;
 		const invalid = validateDivisionId(id ?? "");
 		if (invalid) {
 			issues.push(invalid);
@@ -71,24 +65,16 @@ export function validateDivisionDeclarations(
 			continue;
 		}
 		const label =
-			typeof declaration.label === "string" && declaration.label.trim()
-				? declaration.label.trim()
-				: undefined;
+			typeof declaration.label === "string" && declaration.label.trim() ? declaration.label.trim() : undefined;
 		if (!label) {
 			issues.push(`Division '${id}' must declare a non-empty label.`);
 			continue;
 		}
-		if (
-			declaration.description !== undefined &&
-			typeof declaration.description !== "string"
-		) {
+		if (declaration.description !== undefined && typeof declaration.description !== "string") {
 			issues.push(`Division '${id}' description must be a string.`);
 			continue;
 		}
-		if (
-			declaration.enabledByDefault !== undefined &&
-			typeof declaration.enabledByDefault !== "boolean"
-		) {
+		if (declaration.enabledByDefault !== undefined && typeof declaration.enabledByDefault !== "boolean") {
 			issues.push(`Division '${id}' enabledByDefault must be a boolean.`);
 			continue;
 		}
@@ -105,10 +91,7 @@ export function validateDivisionDeclarations(
 	return { divisions, issues };
 }
 
-export function joinDivisionId(
-	parentId: string | undefined,
-	id: string,
-): string {
+export function joinDivisionId(parentId: string | undefined, id: string): string {
 	const normalized = id.trim();
 	return parentId ? `${parentId}.${normalized}` : normalized;
 }
@@ -157,19 +140,14 @@ export class ExtensionDivisionResolver {
 	}
 
 	listUndeclaredIds(): string[] {
-		return [...this._used]
-			.filter((id) => !this._declared.has(id))
-			.sort((left, right) => left.localeCompare(right));
+		return [...this._used].filter((id) => !this._declared.has(id)).sort((left, right) => left.localeCompare(right));
 	}
 
 	/** Selection rules naming a division that neither exists nor was used. */
 	listUnknownSelectionIds(): string[] {
 		const known = new Set([...this._declared.keys(), ...this._used]);
 		const unknown = new Set<string>();
-		for (const id of [
-			...(this._settings?.enable ?? []),
-			...(this._settings?.disable ?? []),
-		]) {
+		for (const id of [...(this._settings?.enable ?? []), ...(this._settings?.disable ?? [])]) {
 			if (!known.has(id)) unknown.add(id);
 		}
 		return [...unknown].sort((left, right) => left.localeCompare(right));
@@ -218,17 +196,11 @@ export class ExtensionDivisionResolver {
 				return { enabled: settings, source: "settings" };
 			}
 		}
-		return {
-			enabled: this._declared.get(id)?.enabledByDefault ?? true,
-			source: "default",
-		};
+		return { enabled: this._declared.get(id)?.enabledByDefault ?? true, source: "default" };
 	}
 }
 
-function ruleFor(
-	selection: ExtensionDivisionSelection | undefined,
-	id: string,
-): boolean | undefined {
+function ruleFor(selection: ExtensionDivisionSelection | undefined, id: string): boolean | undefined {
 	if (!selection) return undefined;
 	if (selection.disable?.includes(id)) return false;
 	if (selection.enable?.includes(id)) return true;

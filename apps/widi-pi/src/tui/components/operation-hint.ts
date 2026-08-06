@@ -1,15 +1,7 @@
-import {
-	type Component,
-	getKeybindings,
-	type KeyId,
-	truncateToWidth,
-} from "@earendil-works/pi-tui";
+import { type Component, getKeybindings, type KeyId, truncateToWidth } from "@earendil-works/pi-tui";
 import type { CommandEngine } from "../commands/engine.ts";
 import { parseLineCommand } from "../commands/parse.ts";
-import type {
-	CompletionMenu,
-	CompletionMenuHintContext,
-} from "../completion-menu.ts";
+import type { CompletionMenu, CompletionMenuHintContext } from "../completion-menu.ts";
 import type { WidiEditor } from "../editor.ts";
 import { singleLine } from "../format.ts";
 import type { TuiApplicationState } from "../state.ts";
@@ -40,9 +32,7 @@ export interface ResolveOperationHintOptions {
 	readonly keys: OperationHintKeys;
 }
 
-export function resolveOperationHint(
-	options: ResolveOperationHintOptions,
-): string | undefined {
+export function resolveOperationHint(options: ResolveOperationHintOptions): string | undefined {
 	if (options.state.mode === "human-request") return undefined;
 
 	if (options.state.mode === "agent-panel") {
@@ -61,9 +51,7 @@ export function resolveOperationHint(
 			completion.title,
 			completion.description,
 			keyPair(options.keys.selectUp, options.keys.selectDown, "choose"),
-			completion.itemCount > 0
-				? keyAction(options.keys.selectConfirm, completion.confirmVerb)
-				: undefined,
+			completion.itemCount > 0 ? keyAction(options.keys.selectConfirm, completion.confirmVerb) : undefined,
 			keyAction(options.keys.selectCancel, "cancel"),
 		);
 	}
@@ -77,18 +65,12 @@ export function resolveOperationHint(
 		const controls = [
 			keyPair(options.keys.selectUp, options.keys.selectDown, "navigate"),
 			keyAction(tab, "complete"),
-			confirm && confirm !== tab
-				? keyAction(confirm, confirm === submit ? "submit" : "complete")
-				: undefined,
-			submit && submit !== tab && submit !== confirm
-				? keyAction(submit, "submit")
-				: undefined,
+			confirm && confirm !== tab ? keyAction(confirm, confirm === submit ? "submit" : "complete") : undefined,
+			submit && submit !== tab && submit !== confirm ? keyAction(submit, "submit") : undefined,
 			keyAction(options.keys.selectCancel, "close"),
 		];
 		if (command) {
-			const usage = command.argumentHint
-				? `/${command.name} ${command.argumentHint}`
-				: `/${command.name}`;
+			const usage = command.argumentHint ? `/${command.name} ${command.argumentHint}` : `/${command.name}`;
 			return hintParts(usage, command.description, ...controls);
 		}
 		return hintParts("Commands", ...controls);
@@ -110,8 +92,7 @@ export function resolveOperationHint(
 		}
 		// With an empty editor the steer key promotes what enter already queued,
 		// so the hint has to say which of the two it would do.
-		const steersQueue =
-			options.editorText.trim().length === 0 && agent.queue.followUp.length > 0;
+		const steersQueue = options.editorText.trim().length === 0 && agent.queue.followUp.length > 0;
 		return hintParts(
 			keyAction(options.keys.interrupt, "abort"),
 			keyAction(options.keys.steer, steersQueue ? "steer queued" : "steer"),
@@ -123,9 +104,7 @@ export function resolveOperationHint(
 	).length;
 	if (agent && visibleAgentCount > 1) {
 		return hintParts(
-			options.editorText.length === 0
-				? keyAction(options.keys.agents, "switch agent")
-				: undefined,
+			options.editorText.length === 0 ? keyAction(options.keys.agents, "switch agent") : undefined,
 			"/dispose close current",
 		);
 	}
@@ -138,29 +117,18 @@ export function resolveOperationHint(
 	return undefined;
 }
 
-function keyAction(
-	key: string | undefined,
-	action: string,
-): string | undefined {
+function keyAction(key: string | undefined, action: string): string | undefined {
 	const safeKey = safePart(key);
 	return safeKey ? `${safeKey} ${action}` : undefined;
 }
 
-function keyPair(
-	first: string | undefined,
-	second: string | undefined,
-	action: string,
-): string | undefined {
-	const keys = [safePart(first), safePart(second)].filter(
-		(candidate): candidate is string => candidate !== undefined,
-	);
+function keyPair(first: string | undefined, second: string | undefined, action: string): string | undefined {
+	const keys = [safePart(first), safePart(second)].filter((candidate): candidate is string => candidate !== undefined);
 	return keys.length > 0 ? `${keys.join("/")} ${action}` : undefined;
 }
 
 function hintParts(...parts: Array<string | undefined>): string | undefined {
-	const safeParts = parts
-		.map((part) => safePart(part))
-		.filter((part): part is string => part !== undefined);
+	const safeParts = parts.map((part) => safePart(part)).filter((part): part is string => part !== undefined);
 	return safeParts.length > 0 ? safeParts.join(" · ") : undefined;
 }
 
@@ -178,11 +146,7 @@ export function formatOperationHintKey(key: KeyId): string {
 		if (separatorIndex < 0) break;
 		const modifier = base.slice(0, separatorIndex);
 		if (!["ctrl", "shift", "alt", "super"].includes(modifier)) break;
-		modifiers.push(
-			modifier === "ctrl"
-				? "Ctrl"
-				: modifier[0]?.toUpperCase() + modifier.slice(1),
-		);
+		modifiers.push(modifier === "ctrl" ? "Ctrl" : modifier[0]?.toUpperCase() + modifier.slice(1));
 		base = base.slice(separatorIndex + 1);
 	}
 	const baseLabel =
@@ -212,10 +176,7 @@ export function formatOperationHintKey(key: KeyId): string {
 export class OperationHintView implements Component {
 	private readonly state: TuiApplicationState;
 	private readonly engine: CommandEngine;
-	private readonly editor: Pick<
-		WidiEditor,
-		"getText" | "isShowingAutocomplete"
-	>;
+	private readonly editor: Pick<WidiEditor, "getText" | "isShowingAutocomplete">;
 	private readonly menu: Pick<CompletionMenu, "hintContext">;
 
 	constructor(options: {
@@ -234,9 +195,7 @@ export class OperationHintView implements Component {
 
 	render(width: number): string[] {
 		const keybindings = getKeybindings();
-		const key = (
-			action: Parameters<typeof keybindings.getKeys>[0],
-		): string | undefined => {
+		const key = (action: Parameters<typeof keybindings.getKeys>[0]): string | undefined => {
 			const keyId = keybindings.getKeys(action)[0];
 			return keyId ? formatOperationHintKey(keyId) : undefined;
 		};

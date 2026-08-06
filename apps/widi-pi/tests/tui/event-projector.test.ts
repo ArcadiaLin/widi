@@ -1,20 +1,14 @@
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
+import type { CustomMessage } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
-import type { AgentRecordSnapshot } from "../../src/core/agent-record.ts";
-import type {
-	BackgroundJobReportSnapshot,
-	BackgroundJobSnapshot,
-} from "../../src/core/background/index.ts";
+import type { AgentSnapshot } from "../../src/core/agent-types.ts";
+import type { BackgroundJobReportSnapshot, BackgroundJobSnapshot } from "../../src/core/background/index.ts";
+import { ORCHESTRATOR_MESSAGE_CUSTOM_TYPE } from "../../src/core/session-manager.ts";
 import type { OrchestratorEvent, RuntimeModel } from "../../src/core/types.ts";
-import {
-	applyAgentSnapshot,
-	EventProjector,
-} from "../../src/tui/event-projector.ts";
+import { applyAgentSnapshot, EventProjector } from "../../src/tui/event-projector.ts";
 import { hydrateSessionEntries } from "../../src/tui/session-hydrator.ts";
-import {
-	createTuiApplicationState,
-	setActiveAgent,
-} from "../../src/tui/state.ts";
+import { createTuiApplicationState, setActiveAgent } from "../../src/tui/state.ts";
+import { groupTurns } from "../../src/tui/timeline-window.ts";
 
 describe("EventProjector", () => {
 	it("lazily creates provisional agents before spawn and tracks background facts", () => {
@@ -22,12 +16,7 @@ describe("EventProjector", () => {
 		const projector = new EventProjector(state);
 		setActiveAgent(state, "main");
 
-		projector.apply({
-			type: "agent_status_changed",
-			agentId: "worker",
-			status: "running",
-			changedAt: timestamp(1),
-		});
+		projector.apply({ type: "agent_status_changed", agentId: "worker", activity: "running", changedAt: timestamp(1) });
 		projector.apply({
 			type: "extension_output",
 			presentationId: "output-1",
@@ -55,61 +44,26 @@ describe("EventProjector", () => {
 		});
 
 		const worker = state.agents.get("worker");
-		expect(worker).toMatchObject({
-			status: "running",
-			unreadCount: 1,
-			attention: "none",
-		});
+		expect(worker).toMatchObject({ status: "running", unreadCount: 1, attention: "none" });
 		expect(worker?.timeline).toMatchObject([
-			{
-				type: "thinking-status",
-				id: expect.stringMatching(/^awaiting:worker:/),
-				status: "thinking",
-			},
-			{
-				type: "extension-output",
-				id: "output-1",
-				text: "Searching…",
-			},
+			{ type: "thinking-status", id: expect.stringMatching(/^awaiting:worker:/), status: "thinking" },
+			{ type: "extension-output", id: "output-1", text: "Searching…" },
 		]);
 		if (!worker) throw new Error("Expected worker projection.");
 		expect([...worker.extensionStatuses.values()]).toMatchObject([
-			{
-				extensionId: "search",
-				key: "progress",
-				status: { text: "Searching" },
-			},
+			{ extensionId: "search", key: "progress", status: { text: "Searching" } },
 		]);
-		expect(state.globalNotices).toMatchObject([
-			{
-				id: "notice-1",
-				kind: "extension-notification",
-				agentId: "worker",
-			},
-		]);
+		expect(state.globalNotices).toMatchObject([{ id: "notice-1", kind: "extension-notification", agentId: "worker" }]);
 	});
 
 	it("unwraps streaming harness events and consumes pending original input", () => {
 		const state = createTuiApplicationState();
 		const projector = new EventProjector(state);
 		const agent = setActiveAgent(state, "main");
-		agent.pendingInput = {
-			originalText: "show <file:README.md>",
-			submittedAt: timestamp(1),
-		};
+		agent.pendingInput = { originalText: "show <file:README.md>", submittedAt: timestamp(1) };
 
-		projector.apply(
-			harness("main", {
-				type: "message_start",
-				message: userMessage("show expanded README"),
-			}),
-		);
-		projector.apply(
-			harness("main", {
-				type: "message_start",
-				message: assistantMessage(""),
-			}),
-		);
+		projector.apply(harness("main", { type: "message_start", message: userMessage("show expanded README") }));
+		projector.apply(harness("main", { type: "message_start", message: assistantMessage("") }));
 		projector.apply(
 			harness("main", {
 				type: "message_update",
@@ -139,30 +93,12 @@ describe("EventProjector", () => {
 				isError: false,
 			}),
 		);
-		projector.apply(
-			harness("main", {
-				type: "message_end",
-				message: assistantMessage("Hello"),
-			}),
-		);
+		projector.apply(harness("main", { type: "message_end", message: assistantMessage("Hello") }));
 
 		expect(agent.timeline).toMatchObject([
-			{
-				type: "user-message",
-				text: "show <file:README.md>",
-				modelText: "show expanded README",
-			},
-			{
-				type: "assistant-message",
-				text: "Hello",
-				streaming: false,
-			},
-			{
-				type: "tool-execution",
-				toolCallId: "tool-1",
-				status: "completed",
-				isError: false,
-			},
+			{ type: "user-message", text: "show <file:README.md>", modelText: "show expanded README" },
+			{ type: "assistant-message", text: "Hello", streaming: false },
+			{ type: "tool-execution", toolCallId: "tool-1", status: "completed", isError: false },
 		]);
 		expect(agent.pendingInput).toBeUndefined();
 	});
@@ -174,12 +110,7 @@ describe("EventProjector", () => {
 		projector.apply({
 			type: "agent_spawned",
 			agentId: "main",
-			profile: {
-				id: "default",
-				label: "Default",
-				systemPrompt: "test",
-				persist: true,
-			},
+			profile: { id: "default", label: "Default", systemPrompt: "test", persist: true },
 			model: model(),
 		});
 		projector.apply({
@@ -221,10 +152,7 @@ describe("EventProjector", () => {
 				parentId: null,
 				timestamp: timestamp(1),
 				customType: "core:extension_message",
-				data: {
-					extensionId: "reports",
-					message: { kind: "text", content: "same durable message" },
-				},
+				data: { extensionId: "reports", message: { kind: "text", content: "same durable message" } },
 			},
 		]);
 		projector.completeHydration("main", history, [
@@ -239,16 +167,9 @@ describe("EventProjector", () => {
 
 		expect(agent.hydration).toBe("ready");
 		expect(agent.bufferedEvents).toEqual([]);
-		expect(agent.timeline.map((item) => item.type)).toEqual([
-			"extension-message",
-			"extension-output",
-		]);
-		expect(
-			agent.timeline.filter((item) => item.type === "extension-message"),
-		).toHaveLength(1);
-		expect([...agent.extensionStatuses.values()]).toMatchObject([
-			{ status: { text: "new status" } },
-		]);
+		expect(agent.timeline.map((item) => item.type)).toEqual(["extension-message", "extension-output"]);
+		expect(agent.timeline.filter((item) => item.type === "extension-message")).toHaveLength(1);
+		expect([...agent.extensionStatuses.values()]).toMatchObject([{ status: { text: "new status" } }]);
 	});
 
 	it("does not discard buffered events when hydration is requested twice", () => {
@@ -284,19 +205,11 @@ describe("EventProjector", () => {
 		projector.apply({
 			type: "agent_resumed",
 			agentId: "019f784f-4342-781c-8472-93e6547da47e",
-			profile: {
-				id: "widi-dev",
-				label: "WIDI Dev",
-				systemPrompt: "test",
-				persist: true,
-			},
+			profile: { id: "widi-dev", label: "WIDI Dev", systemPrompt: "test", persist: true },
 			model: model(),
 		});
 
-		expect(
-			state.agents.get("019f784f-4342-781c-8472-93e6547da47e")?.display
-				.forkedFromAgentId,
-		).toBe("widi-dev");
+		expect(state.agents.get("019f784f-4342-781c-8472-93e6547da47e")?.display.forkedFromAgentId).toBe("widi-dev");
 	});
 
 	it("retains explicit fork lineage through snapshot application and hydration", () => {
@@ -310,26 +223,15 @@ describe("EventProjector", () => {
 			forkedSessionId: targetId,
 			createdAt: timestamp(1),
 		});
-		applyAgentSnapshot(
-			state,
-			snapshot(targetId, "/sessions/fork.jsonl", "/sessions/source.jsonl"),
-		);
+		applyAgentSnapshot(state, snapshot(targetId, "/sessions/fork.jsonl", "/sessions/source.jsonl"));
 
-		expect(state.agents.get(targetId)?.display.forkedFromAgentId).toBe(
-			"widi-dev",
-		);
+		expect(state.agents.get(targetId)?.display.forkedFromAgentId).toBe("widi-dev");
 
 		projector.beginHydration(targetId);
 		projector.completeHydration(
 			targetId,
 			hydrateSessionEntries([
-				{
-					type: "session_info",
-					id: "session-info",
-					parentId: null,
-					timestamp: timestamp(2),
-					name: "fork work",
-				},
+				{ type: "session_info", id: "session-info", parentId: null, timestamp: timestamp(2), name: "fork work" },
 			]),
 		);
 
@@ -366,12 +268,7 @@ describe("EventProjector", () => {
 		});
 		projector.apply({
 			type: "diagnostic",
-			diagnostic: {
-				severity: "error",
-				code: "extension.failed",
-				message: "Worker failed",
-				agentId: "worker",
-			},
+			diagnostic: { severity: "error", code: "extension.failed", message: "Worker failed", agentId: "worker" },
 			createdAt: timestamp(3),
 		});
 
@@ -379,14 +276,8 @@ describe("EventProjector", () => {
 		if (!worker) throw new Error("Expected worker projection.");
 		expect(worker.attention).toBe("error");
 		expect(worker.timeline).toMatchObject([
-			{
-				type: "human-request-trace",
-				answer: { kind: "selected-option", value: "safe" },
-			},
-			{
-				type: "diagnostic",
-				id: "diagnostic:extension.failed:worker::Worker failed",
-			},
+			{ type: "human-request-trace", answer: { kind: "selected-option", value: "safe" } },
+			{ type: "diagnostic", id: "diagnostic:extension.failed:worker::Worker failed" },
 		]);
 		expect(state.humanRequests).toEqual([]);
 		expect(state.mode).toBe("editor");
@@ -531,12 +422,7 @@ describe("EventProjector", () => {
 		setActiveAgent(state, "main");
 		projector.apply({
 			type: "diagnostic",
-			diagnostic: {
-				severity: "warning",
-				code: "extension.degraded",
-				message: "Still degraded",
-				agentId: "worker",
-			},
+			diagnostic: { severity: "warning", code: "extension.degraded", message: "Still degraded", agentId: "worker" },
 			createdAt: timestamp(1),
 		});
 
@@ -558,9 +444,60 @@ describe("EventProjector", () => {
 		projector.apply(harness("main", { type: "message_start", message }));
 		projector.apply(harness("main", { type: "message_end", message }));
 
+		expect(agent.timeline).toMatchObject([{ type: "assistant-message", text: "first\n\nsecond" }]);
+	});
+
+	// A message the runtime wrote opens a turn exactly as a typed one does: the
+	// model is reading it either way, so the transcript has to show the reply
+	// under it rather than folded into whatever came before.
+	it("projects a live orchestrator message and opens a turn with it", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+		const agent = setActiveAgent(state, "main");
+
+		projector.apply(
+			harness("main", {
+				type: "message_start",
+				message: orchestratorMessage("[Message from worker-7]\n\nscan finished", {
+					source: { kind: "agent", label: "worker-7" },
+					body: "scan finished",
+				}),
+			}),
+		);
+		projector.apply(harness("main", { type: "message_start", message: assistantMessage("noted") }));
+
 		expect(agent.timeline).toMatchObject([
-			{ type: "assistant-message", text: "first\n\nsecond" },
+			{
+				type: "orchestrator-message",
+				source: { kind: "agent", label: "worker-7" },
+				text: "scan finished",
+				modelText: "[Message from worker-7]\n\nscan finished",
+			},
+			{ type: "assistant-message" },
 		]);
+		expect(groupTurns(agent.timeline)).toHaveLength(1);
+	});
+
+	it("previews a queued orchestrator message by its body, not its rendered form", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+		const agent = setActiveAgent(state, "main");
+
+		projector.apply(
+			harness("main", {
+				type: "queue_update",
+				steer: [
+					orchestratorMessage("[Input from extension mcp]\n\ntools refreshed", {
+						source: { kind: "extension:mcp", label: "mcp" },
+						body: "tools refreshed",
+					}),
+				],
+				followUp: [],
+				nextTurn: [],
+			}),
+		);
+
+		expect(agent.queue).toMatchObject({ steer: ["tools refreshed"] });
 	});
 
 	it("restores diagnostic attention after a human request is resolved", () => {
@@ -569,12 +506,7 @@ describe("EventProjector", () => {
 		setActiveAgent(state, "main");
 		projector.apply({
 			type: "diagnostic",
-			diagnostic: {
-				severity: "warning",
-				code: "extension.warning",
-				message: "Still degraded",
-				agentId: "worker",
-			},
+			diagnostic: { severity: "warning", code: "extension.warning", message: "Still degraded", agentId: "worker" },
 			createdAt: timestamp(1),
 		});
 		projector.apply({
@@ -610,13 +542,16 @@ describe("EventProjector", () => {
 			agentId: "worker",
 			job: {
 				jobId: "job-1",
+				ownerAgentId: "worker",
 				origin: { kind: "local" },
 				toolCallId: "call-1",
 				toolName: "bash",
-				phase: "backgrounded",
+				state: "backgrounded",
 				startedAt: 1,
+				backgroundedAt: 1,
 				totalBytesSeen: 0,
-				droppedBytes: 0,
+				tailDroppedBytes: 0,
+				progressDroppedBytes: 0,
 			},
 			transition: "backgrounded",
 			liveCount: 3,
@@ -629,15 +564,17 @@ describe("EventProjector", () => {
 			agentId: "worker",
 			job: {
 				jobId: "job-1",
+				ownerAgentId: "worker",
 				origin: { kind: "local" },
 				toolCallId: "call-1",
 				toolName: "bash",
-				phase: "backgrounded",
-				status: "completed",
+				state: "completed",
 				startedAt: 1,
+				backgroundedAt: 1,
 				endedAt: 2,
 				totalBytesSeen: 0,
-				droppedBytes: 0,
+				tailDroppedBytes: 0,
+				progressDroppedBytes: 0,
 			},
 			transition: "settled",
 			liveCount: 0,
@@ -670,7 +607,7 @@ describe("EventProjector", () => {
 			type: "agent_background_job_changed",
 			agentId: "main",
 			job: jobSnapshot("job-1"),
-			transition: "aborting",
+			transition: "abort_requested",
 			liveCount: 1,
 			changedAt: timestamp(2),
 		});
@@ -679,20 +616,12 @@ describe("EventProjector", () => {
 		projector.apply({
 			type: "agent_background_job_changed",
 			agentId: "main",
-			job: jobSnapshot("job-1", {
-				status: "failed",
-				endedAt: 2_000,
-				totalBytesSeen: 42,
-			}),
+			job: jobSnapshot("job-1", { state: "failed", endedAt: 2_000, totalBytesSeen: 42 }),
 			transition: "settled",
 			liveCount: 0,
 			changedAt: timestamp(3),
 		});
-		expect(agent.backgroundJobs.get("job-1")).toMatchObject({
-			status: "failed",
-			endedAt: 2_000,
-			totalBytesSeen: 42,
-		});
+		expect(agent.backgroundJobs.get("job-1")).toMatchObject({ status: "failed", endedAt: 2_000, totalBytesSeen: 42 });
 		expect(agent.backgroundJobCount).toBe(0);
 	});
 
@@ -724,10 +653,7 @@ describe("EventProjector", () => {
 			changedAt: timestamp(2),
 		});
 
-		expect(agent.backgroundJobs.get("job-1")?.report).toMatchObject({
-			revision: 3,
-			value: { summary: "Newest" },
-		});
+		expect(agent.backgroundJobs.get("job-1")?.report).toMatchObject({ revision: 3, value: { summary: "Newest" } });
 	});
 
 	it("retains settled jobs until a new user turn starts", () => {
@@ -747,16 +673,14 @@ describe("EventProjector", () => {
 		projector.apply({
 			type: "agent_background_job_changed",
 			agentId: "main",
-			job: jobSnapshot("job-1", { status: "completed", endedAt: 2_000 }),
+			job: jobSnapshot("job-1", { state: "completed", endedAt: 2_000 }),
 			transition: "settled",
 			liveCount: 1,
 			changedAt: timestamp(2),
 		});
 		expect(agent.backgroundJobs.has("job-1")).toBe(true);
 
-		projector.apply(
-			harness("main", { type: "message_start", message: userMessage("next") }),
-		);
+		projector.apply(harness("main", { type: "message_start", message: userMessage("next") }));
 
 		expect(agent.backgroundJobs.has("job-1")).toBe(false);
 		expect(agent.backgroundJobs.get("job-2")?.status).toBe("live");
@@ -778,12 +702,8 @@ describe("EventProjector", () => {
 		// Split the byte stream inside the multi-byte character.
 		const full = Buffer.from("booting\nhalf 中\n", "utf-8");
 		const splitAt = full.indexOf(Buffer.from("中", "utf-8")) + 1;
-		projector.apply(
-			progressEvent("main", "job-1", 0, full.subarray(0, splitAt), 0),
-		);
-		projector.apply(
-			progressEvent("main", "job-1", 1, full.subarray(splitAt), splitAt),
-		);
+		projector.apply(progressEvent("main", "job-1", 0, full.subarray(0, splitAt), 0));
+		projector.apply(progressEvent("main", "job-1", 1, full.subarray(splitAt), splitAt));
 
 		const job = agent.backgroundJobs.get("job-1");
 		expect(job?.lastLine).toBe("half 中");
@@ -805,9 +725,7 @@ describe("EventProjector", () => {
 
 		projector.apply(progressEvent("main", "job-1", 0, Buffer.from("par"), 0));
 		// A gap: the next increment starts at byte 20 instead of byte 3.
-		projector.apply(
-			progressEvent("main", "job-1", 1, Buffer.from("fresh line\n"), 20),
-		);
+		projector.apply(progressEvent("main", "job-1", 1, Buffer.from("fresh line\n"), 20));
 
 		expect(agent.backgroundJobs.get("job-1")?.lastLine).toBe("fresh line");
 	});
@@ -829,26 +747,16 @@ describe("EventProjector", () => {
 		projector.apply({
 			type: "agent_background_job_changed",
 			agentId: "main",
-			job: jobSnapshot("job-old", { status: "completed", endedAt: 2_000 }),
+			job: jobSnapshot("job-old", { state: "completed", endedAt: 2_000 }),
 			transition: "settled",
 			liveCount: 2,
 			changedAt: timestamp(2),
 		});
 
-		projector.seedBackgroundJobs("main", [
-			jobSnapshot("job-live", { totalBytesSeen: 10 }),
-			jobSnapshot("job-new"),
-		]);
+		projector.seedBackgroundJobs("main", [jobSnapshot("job-live", { totalBytesSeen: 10 }), jobSnapshot("job-new")]);
 
-		expect([...agent.backgroundJobs.keys()].sort()).toEqual([
-			"job-live",
-			"job-new",
-			"job-old",
-		]);
-		expect(agent.backgroundJobs.get("job-live")).toMatchObject({
-			status: "live",
-			totalBytesSeen: 10,
-		});
+		expect([...agent.backgroundJobs.keys()].sort()).toEqual(["job-live", "job-new", "job-old"]);
+		expect(agent.backgroundJobs.get("job-live")).toMatchObject({ status: "live", totalBytesSeen: 10 });
 		expect(agent.backgroundJobs.get("job-old")?.status).toBe("completed");
 		expect(agent.backgroundJobCount).toBe(2);
 	});
@@ -858,33 +766,19 @@ describe("EventProjector", () => {
 		const projector = new EventProjector(state);
 		const agent = setActiveAgent(state, "main");
 
-		projector.apply(
-			harness("main", {
-				type: "message_start",
-				message: assistantMessage(""),
-			}),
-		);
+		projector.apply(harness("main", { type: "message_start", message: assistantMessage("") }));
 		const partial = assistantToolCallMessage("tool-1", "read");
 		projector.apply(
 			harness("main", {
 				type: "message_update",
 				message: partial,
-				assistantMessageEvent: {
-					type: "toolcall_start",
-					contentIndex: 0,
-					partial,
-				},
+				assistantMessageEvent: { type: "toolcall_start", contentIndex: 0, partial },
 			}),
 		);
 
 		expect(agent.timeline).toMatchObject([
 			{ type: "assistant-message" },
-			{
-				type: "tool-execution",
-				toolCallId: "tool-1",
-				toolName: "read",
-				status: "preparing",
-			},
+			{ type: "tool-execution", toolCallId: "tool-1", toolName: "read", status: "preparing" },
 		]);
 
 		projector.apply(
@@ -896,14 +790,9 @@ describe("EventProjector", () => {
 			}),
 		);
 
-		const tools = agent.timeline.filter(
-			(item) => item.type === "tool-execution",
-		);
+		const tools = agent.timeline.filter((item) => item.type === "tool-execution");
 		expect(tools).toHaveLength(1);
-		expect(tools[0]).toMatchObject({
-			status: "running",
-			args: { path: "README.md" },
-		});
+		expect(tools[0]).toMatchObject({ status: "running", args: { path: "README.md" } });
 	});
 
 	it("reconciles a preparing tool whose provider id arrives in a later delta", () => {
@@ -911,27 +800,16 @@ describe("EventProjector", () => {
 		const projector = new EventProjector(state);
 		const agent = setActiveAgent(state, "main");
 
-		projector.apply(
-			harness("main", {
-				type: "message_start",
-				message: assistantMessage(""),
-			}),
-		);
+		projector.apply(harness("main", { type: "message_start", message: assistantMessage("") }));
 		const started = assistantToolCallMessage("", "");
 		projector.apply(
 			harness("main", {
 				type: "message_update",
 				message: started,
-				assistantMessageEvent: {
-					type: "toolcall_start",
-					contentIndex: 0,
-					partial: started,
-				},
+				assistantMessageEvent: { type: "toolcall_start", contentIndex: 0, partial: started },
 			}),
 		);
-		const updated = assistantToolCallMessage("tool-1", "read", {
-			path: "README.md",
-		});
+		const updated = assistantToolCallMessage("tool-1", "read", { path: "README.md" });
 		projector.apply(
 			harness("main", {
 				type: "message_update",
@@ -953,9 +831,7 @@ describe("EventProjector", () => {
 			}),
 		);
 
-		const tools = agent.timeline.filter(
-			(item) => item.type === "tool-execution",
-		);
+		const tools = agent.timeline.filter((item) => item.type === "tool-execution");
 		expect(tools).toHaveLength(1);
 		expect(tools[0]).toMatchObject({
 			toolCallId: "tool-1",
@@ -970,36 +846,17 @@ describe("EventProjector", () => {
 		const projector = new EventProjector(state);
 		const agent = setActiveAgent(state, "main");
 
-		projector.apply({
-			type: "agent_status_changed",
-			agentId: "main",
-			status: "running",
-			changedAt: timestamp(1),
-		});
-		projector.apply(
-			harness("main", {
-				type: "message_start",
-				message: assistantMessage(""),
-			}),
-		);
+		projector.apply({ type: "agent_status_changed", agentId: "main", activity: "running", changedAt: timestamp(1) });
+		projector.apply(harness("main", { type: "message_start", message: assistantMessage("") }));
 		const partial = assistantToolCallMessage("tool-1", "read");
 		projector.apply(
 			harness("main", {
 				type: "message_update",
 				message: partial,
-				assistantMessageEvent: {
-					type: "toolcall_start",
-					contentIndex: 0,
-					partial,
-				},
+				assistantMessageEvent: { type: "toolcall_start", contentIndex: 0, partial },
 			}),
 		);
-		projector.apply({
-			type: "agent_status_changed",
-			agentId: "main",
-			status: "idle",
-			changedAt: timestamp(2),
-		});
+		projector.apply({ type: "agent_status_changed", agentId: "main", activity: "idle", changedAt: timestamp(2) });
 
 		expect(agent.timeline).toMatchObject([
 			{ type: "assistant-message" },
@@ -1012,42 +869,20 @@ describe("EventProjector", () => {
 		const projector = new EventProjector(state);
 		const agent = setActiveAgent(state, "main");
 		const awaiting = () =>
-			agent.timeline.find(
-				(item) =>
-					item.type === "thinking-status" &&
-					item.id.startsWith("awaiting:main:"),
-			);
+			agent.timeline.find((item) => item.type === "thinking-status" && item.id.startsWith("awaiting:main:"));
 
 		// User submit to first token: the status change alone shows thinking.
-		projector.apply({
-			type: "agent_status_changed",
-			agentId: "main",
-			status: "running",
-			changedAt: timestamp(1),
-		});
+		projector.apply({ type: "agent_status_changed", agentId: "main", activity: "running", changedAt: timestamp(1) });
 		expect(awaiting()).toMatchObject({ status: "thinking" });
 		expect(awaiting()).not.toHaveProperty("preview");
 
 		// The harness user message follows the status event, so the indicator is
 		// moved behind it instead of staying above the current turn.
-		projector.apply(
-			harness("main", {
-				type: "message_start",
-				message: userMessage("inspect the workspace"),
-			}),
-		);
-		expect(agent.timeline.map((item) => item.type)).toEqual([
-			"user-message",
-			"thinking-status",
-		]);
+		projector.apply(harness("main", { type: "message_start", message: userMessage("inspect the workspace") }));
+		expect(agent.timeline.map((item) => item.type)).toEqual(["user-message", "thinking-status"]);
 
 		// The first assistant message starts the real stream; the gap closes.
-		projector.apply(
-			harness("main", {
-				type: "message_start",
-				message: assistantMessage(""),
-			}),
-		);
+		projector.apply(harness("main", { type: "message_start", message: assistantMessage("") }));
 		expect(awaiting()).toBeUndefined();
 
 		// Between tool executions the gap indicator comes back.
@@ -1064,30 +899,12 @@ describe("EventProjector", () => {
 		expect(agent.timeline.at(-1)?.type).toBe("thinking-status");
 
 		// Leaving "running" removes the transient indicator.
-		projector.apply({
-			type: "agent_status_changed",
-			agentId: "main",
-			status: "idle",
-			changedAt: timestamp(2),
-		});
+		projector.apply({ type: "agent_status_changed", agentId: "main", activity: "idle", changedAt: timestamp(2) });
 		expect(awaiting()).toBeUndefined();
 
-		projector.apply({
-			type: "agent_status_changed",
-			agentId: "main",
-			status: "running",
-			changedAt: timestamp(3),
-		});
-		projector.apply(
-			harness("main", {
-				type: "message_start",
-				message: userMessage("next turn"),
-			}),
-		);
-		expect(agent.timeline.at(-1)).toMatchObject({
-			type: "thinking-status",
-			status: "thinking",
-		});
+		projector.apply({ type: "agent_status_changed", agentId: "main", activity: "running", changedAt: timestamp(3) });
+		projector.apply(harness("main", { type: "message_start", message: userMessage("next turn") }));
+		expect(agent.timeline.at(-1)).toMatchObject({ type: "thinking-status", status: "thinking" });
 	});
 
 	it("labels the gap indicator for maintenance work and clears it on idle", () => {
@@ -1095,41 +912,24 @@ describe("EventProjector", () => {
 		const projector = new EventProjector(state);
 		const agent = setActiveAgent(state, "main");
 		const awaiting = () =>
-			agent.timeline.find(
-				(item) =>
-					item.type === "thinking-status" &&
-					item.id.startsWith("awaiting:main:"),
-			);
+			agent.timeline.find((item) => item.type === "thinking-status" && item.id.startsWith("awaiting:main:"));
 
 		projector.apply({
 			type: "agent_status_changed",
 			agentId: "main",
-			status: "running",
+			activity: "running",
 			maintenance: "compaction",
 			changedAt: timestamp(1),
 		});
 		expect(agent.maintenance).toBe("compaction");
-		expect(awaiting()).toMatchObject({
-			status: "thinking",
-			label: "Compacting…",
-		});
+		expect(awaiting()).toMatchObject({ status: "thinking", label: "Compacting…" });
 
-		projector.apply({
-			type: "agent_status_changed",
-			agentId: "main",
-			status: "idle",
-			changedAt: timestamp(2),
-		});
+		projector.apply({ type: "agent_status_changed", agentId: "main", activity: "idle", changedAt: timestamp(2) });
 		expect(agent.maintenance).toBeUndefined();
 		expect(awaiting()).toBeUndefined();
 
 		// A plain run keeps the default Thinking… label.
-		projector.apply({
-			type: "agent_status_changed",
-			agentId: "main",
-			status: "running",
-			changedAt: timestamp(3),
-		});
+		projector.apply({ type: "agent_status_changed", agentId: "main", activity: "running", changedAt: timestamp(3) });
 		expect(agent.maintenance).toBeUndefined();
 		expect(awaiting()).toMatchObject({ status: "thinking", label: undefined });
 	});
@@ -1139,27 +939,16 @@ describe("EventProjector", () => {
 		const projector = new EventProjector(state);
 		const agent = setActiveAgent(state, "main");
 
-		projector.apply(
-			harness("main", {
-				type: "message_start",
-				message: assistantMessage(""),
-			}),
-		);
+		projector.apply(harness("main", { type: "message_start", message: assistantMessage("") }));
 		const start = thinkingPartial("");
 		projector.apply(
 			harness("main", {
 				type: "message_update",
 				message: start,
-				assistantMessageEvent: {
-					type: "thinking_start",
-					contentIndex: 0,
-					partial: start,
-				},
+				assistantMessageEvent: { type: "thinking_start", contentIndex: 0, partial: start },
 			}),
 		);
-		const thinking = agent.timeline.find(
-			(item) => item.type === "thinking-status",
-		);
+		const thinking = agent.timeline.find((item) => item.type === "thinking-status");
 		expect(thinking).toMatchObject({ status: "thinking", preview: undefined });
 
 		const firstDelta = thinkingPartial("first line\nsec");
@@ -1188,10 +977,7 @@ describe("EventProjector", () => {
 				},
 			}),
 		);
-		expect(thinking).toMatchObject({
-			status: "thinking",
-			preview: "second line\nthird line",
-		});
+		expect(thinking).toMatchObject({ status: "thinking", preview: "second line\nthird line" });
 	});
 });
 
@@ -1206,22 +992,23 @@ function userMessage(content: string): UserMessage {
 	return { role: "user", content, timestamp: Date.parse(timestamp(1)) };
 }
 
-function assistantToolCallMessage(
-	id: string,
-	name: string,
-	args: Record<string, unknown> = {},
-): AssistantMessage {
+function orchestratorMessage(content: string, details: unknown): CustomMessage {
 	return {
-		...assistantMessage(""),
-		content: [{ type: "toolCall", id, name, arguments: args }],
+		role: "custom",
+		customType: ORCHESTRATOR_MESSAGE_CUSTOM_TYPE,
+		content,
+		display: true,
+		details,
+		timestamp: Date.parse(timestamp(1)),
 	};
 }
 
+function assistantToolCallMessage(id: string, name: string, args: Record<string, unknown> = {}): AssistantMessage {
+	return { ...assistantMessage(""), content: [{ type: "toolCall", id, name, arguments: args }] };
+}
+
 function thinkingPartial(thinking: string): AssistantMessage {
-	return {
-		...assistantMessage(""),
-		content: [{ type: "thinking", thinking }],
-	};
+	return { ...assistantMessage(""), content: [{ type: "thinking", thinking }] };
 }
 
 function assistantMessage(text: string): AssistantMessage {
@@ -1237,13 +1024,7 @@ function assistantMessage(text: string): AssistantMessage {
 			cacheRead: 0,
 			cacheWrite: 0,
 			totalTokens: 0,
-			cost: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				total: 0,
-			},
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		stopReason: "stop",
 		timestamp: Date.parse(timestamp(1)),
@@ -1259,38 +1040,27 @@ function model(): RuntimeModel {
 		baseUrl: "https://example.test",
 		reasoning: false,
 		input: ["text"],
-		cost: {
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-		},
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 1000,
 		maxTokens: 100,
 	};
 }
 
-function snapshot(
-	agentId: string,
-	path: string,
-	parentSessionPath?: string,
-): AgentRecordSnapshot {
+function snapshot(agentId: string, path: string, parentSessionPath?: string): AgentSnapshot {
 	return {
 		agentId,
-		status: "idle",
-		profile: { reference: { id: "widi-dev", label: "WIDI Dev" } },
-		sessionMetadata: {
-			id: agentId,
-			createdAt: new Date(0).toISOString(),
-			cwd: "/workspace",
-			path,
-			parentSessionPath,
+		generation: 1,
+		profile: {
+			reference: { id: "widi-dev", label: "WIDI Dev" },
+			source: { kind: "memory", priority: 0 },
+			entryId: "entry-1",
 		},
+		sessionMetadata: { id: agentId, createdAt: new Date(0).toISOString(), cwd: "/workspace", path, parentSessionPath },
 		model: model(),
-		hasHarness: true,
-		extensionIds: [],
-		extensions: [],
-		extensionSnapshot: {
+		thinkingLevel: "off",
+		tools: { toolNames: [], activeToolNames: [] },
+		activity: { activity: "idle" },
+		extensions: {
 			extensionIds: [],
 			extensions: [],
 			hooks: [],
@@ -1300,8 +1070,6 @@ function snapshot(
 			divisions: [],
 			stale: { stale: false },
 		},
-		resourceDiagnostics: [],
-		extensionDiagnostics: [],
 		diagnostics: [],
 	};
 }
@@ -1310,20 +1078,20 @@ function timestamp(offset: number): string {
 	return new Date(Date.UTC(2026, 0, 1, 0, 0, offset)).toISOString();
 }
 
-function jobSnapshot(
-	jobId: string,
-	overrides: Partial<BackgroundJobSnapshot> = {},
-): BackgroundJobSnapshot {
+function jobSnapshot(jobId: string, overrides: Partial<BackgroundJobSnapshot> = {}): BackgroundJobSnapshot {
 	return {
 		jobId,
+		ownerAgentId: "main",
 		origin: { kind: "local" },
 		toolCallId: `call-${jobId}`,
 		toolName: "bash",
 		description: `run ${jobId}`,
-		phase: "backgrounded",
+		state: "backgrounded",
 		startedAt: 1_000,
+		backgroundedAt: 1_000,
 		totalBytesSeen: 0,
-		droppedBytes: 0,
+		tailDroppedBytes: 0,
+		progressDroppedBytes: 0,
 		...overrides,
 	};
 }
@@ -1349,17 +1117,6 @@ function progressEvent(
 	};
 }
 
-function jobReport(
-	revision: number,
-	summary: string,
-): BackgroundJobReportSnapshot {
-	return {
-		revision,
-		updatedAt: revision * 1_000,
-		value: {
-			kind: "test.status",
-			schemaVersion: 1,
-			summary,
-		},
-	};
+function jobReport(revision: number, summary: string): BackgroundJobReportSnapshot {
+	return { revision, updatedAt: revision * 1_000, value: { kind: "test.status", schemaVersion: 1, summary } };
 }

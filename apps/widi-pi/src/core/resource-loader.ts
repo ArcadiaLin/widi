@@ -1,14 +1,5 @@
-import type {
-	ExecutionEnv,
-	PromptTemplate,
-	PromptTemplateDiagnostic,
-	Skill,
-	SkillDiagnostic,
-} from "@widi/agent-core";
-import {
-	loadSourcedPromptTemplates,
-	loadSourcedSkills,
-} from "@widi/agent-core";
+import type { ExecutionEnv, PromptTemplate, PromptTemplateDiagnostic, Skill, SkillDiagnostic } from "@widi/agent-core";
+import { loadSourcedPromptTemplates, loadSourcedSkills } from "@widi/agent-core";
 import type { AgentProfile } from "./agent-profile.js";
 import {
 	DEFAULT_AGENT_DIR,
@@ -70,10 +61,7 @@ interface ResourceInput {
 /** Everything an agent harness is built with, plus what went wrong loading it. */
 export interface LoadedAgentResources {
 	readonly skills: readonly { skill: Skill; source: ResourceSource }[];
-	readonly promptTemplates: readonly {
-		promptTemplate: PromptTemplate;
-		source: ResourceSource;
-	}[];
+	readonly promptTemplates: readonly { promptTemplate: PromptTemplate; source: ResourceSource }[];
 	/** Empty when the agent's role turned project context off. */
 	readonly contextFiles: readonly ProjectContextFile[];
 	/** Already carries a `resource.*` code and the offending path. */
@@ -107,9 +95,7 @@ export class ResourceLoader {
 		this._cwd = options.cwd;
 		this._agentDir = options.agentDir ?? DEFAULT_AGENT_DIR;
 		this._skillRoots = options.skillRoots ? [...options.skillRoots] : undefined;
-		this._promptTemplateRoots = options.promptTemplateRoots
-			? [...options.promptTemplateRoots]
-			: undefined;
+		this._promptTemplateRoots = options.promptTemplateRoots ? [...options.promptTemplateRoots] : undefined;
 		this._contextFileRoots = options.contextFileRoots
 			? [...options.contextFileRoots]
 			: [
@@ -143,9 +129,7 @@ export class ResourceLoader {
 	 * Diagnostics come back namespaced and path-annotated so the caller only has
 	 * to attach the agent id and publish them.
 	 */
-	async loadAgentResources(
-		profile: AgentProfile,
-	): Promise<LoadedAgentResources> {
+	async loadAgentResources(profile: AgentProfile): Promise<LoadedAgentResources> {
 		// The role is the only authority on its project context: an unset field
 		// means the conventional file names, a list means those names instead.
 		const projectContext = profile.projectContext ?? true;
@@ -154,9 +138,7 @@ export class ResourceLoader {
 			this.loadPromptTemplates(),
 			projectContext === false
 				? Promise.resolve({ contextFiles: [], diagnostics: [] })
-				: this.loadContextFiles(
-						projectContext === true ? undefined : projectContext,
-					),
+				: this.loadContextFiles(projectContext === true ? undefined : projectContext),
 		]);
 		return {
 			skills: skills.skills,
@@ -164,10 +146,7 @@ export class ResourceLoader {
 			contextFiles: contextFiles.contextFiles,
 			diagnostics: [
 				...toResourceDiagnostics("skill", skills.diagnostics),
-				...toResourceDiagnostics(
-					"prompt_template",
-					promptTemplates.diagnostics,
-				),
+				...toResourceDiagnostics("prompt_template", promptTemplates.diagnostics),
 				...contextFiles.diagnostics,
 			],
 		};
@@ -187,26 +166,20 @@ export class ResourceLoader {
 	 * but cannot be read is reported, because that is a project instruction the
 	 * agent is running without.
 	 */
-	async loadContextFiles(fileNames?: readonly string[]): Promise<{
-		contextFiles: ProjectContextFile[];
-		diagnostics: CoreDiagnostic[];
-	}> {
+	async loadContextFiles(
+		fileNames?: readonly string[],
+	): Promise<{ contextFiles: ProjectContextFile[]; diagnostics: CoreDiagnostic[] }> {
 		const contextFiles: ProjectContextFile[] = [];
 		const diagnostics: CoreDiagnostic[] = [];
 		const seenPaths = new Set<string>();
 
 		for (const root of this._contextFileRoots) {
 			const rootPath = await this._absolutePath(root.path);
-			const directories =
-				root.kind === "cwd" ? ancestorPaths(rootPath) : [rootPath];
+			const directories = root.kind === "cwd" ? ancestorPaths(rootPath) : [rootPath];
 			// Ancestors come back nearest-first; the outermost instructions are
 			// the most general, so they go in first.
 			for (const directory of [...directories].reverse()) {
-				const files = await this._loadContextFilesFromDir(
-					directory,
-					fileNames,
-					diagnostics,
-				);
+				const files = await this._loadContextFilesFromDir(directory, fileNames, diagnostics);
 				for (const file of files) {
 					if (seenPaths.has(file.path)) continue;
 					seenPaths.add(file.path);
@@ -265,11 +238,7 @@ export class ResourceLoader {
 		skillDir: string = DEFAULT_SKILL_DIR,
 	): Promise<{
 		skills: Array<{ skill: Skill; source: ResourceSource }>;
-		diagnostics: Array<
-			(SkillDiagnostic | MissingResourceDiagnostic) & {
-				source: ResourceSource;
-			}
-		>;
+		diagnostics: Array<(SkillDiagnostic | MissingResourceDiagnostic) & { source: ResourceSource }>;
 	}> {
 		const inputs = await this._resolveResourceNames(skillDir, skillNames);
 		const loaded = await loadSourcedSkills(this._executionEnv, inputs);
@@ -294,21 +263,12 @@ export class ResourceLoader {
 	async loadPromptTemplates(
 		promptTemplateNames: readonly string[] = [],
 	): Promise<{
-		promptTemplates: Array<{
-			promptTemplate: PromptTemplate;
-			source: ResourceSource;
-		}>;
-		diagnostics: Array<
-			(PromptTemplateDiagnostic | MissingResourceDiagnostic) & {
-				source: ResourceSource;
-			}
-		>;
+		promptTemplates: Array<{ promptTemplate: PromptTemplate; source: ResourceSource }>;
+		diagnostics: Array<(PromptTemplateDiagnostic | MissingResourceDiagnostic) & { source: ResourceSource }>;
 	}> {
-		const inputs = await this._resolveResourceNames(
-			DEFAULT_PROMPT_TEMPLATE_DIR,
-			promptTemplateNames,
-			{ fileExtension: DEFAULT_PROMPT_TEMPLATE_FILE_EXTENSION },
-		);
+		const inputs = await this._resolveResourceNames(DEFAULT_PROMPT_TEMPLATE_DIR, promptTemplateNames, {
+			fileExtension: DEFAULT_PROMPT_TEMPLATE_FILE_EXTENSION,
+		});
 		const loaded = await loadSourcedPromptTemplates(this._executionEnv, inputs);
 		return {
 			promptTemplates: loaded.promptTemplates,
@@ -340,9 +300,7 @@ export class ResourceLoader {
 				root.kind === "settings"
 					? root.path
 					: await this._joinPath(
-							root.kind === "cwd"
-								? await this._joinPath(root.path, DEFAULT_AGENT_DIR)
-								: root.path,
+							root.kind === "cwd" ? await this._joinPath(root.path, DEFAULT_AGENT_DIR) : root.path,
 							resourceDirName,
 						);
 			if (seenRoots.has(resourceRoot)) continue;
@@ -354,20 +312,13 @@ export class ResourceLoader {
 					? [{ path: resourceRoot, name: undefined }]
 					: await Promise.all(
 							names.map(async (name) => ({
-								path: await this._joinPath(
-									resourceRoot,
-									this._withFileExtension(name, options?.fileExtension),
-								),
+								path: await this._joinPath(resourceRoot, this._withFileExtension(name, options?.fileExtension)),
 								name,
 							})),
 						);
 
 			for (const entry of entries) {
-				resolved.push({
-					path: entry.path,
-					name: entry.name,
-					source: { kind: root.kind, path: entry.path },
-				});
+				resolved.push({ path: entry.path, name: entry.name, source: { kind: root.kind, path: entry.path } });
 			}
 		}
 
@@ -378,16 +329,11 @@ export class ResourceLoader {
 		if (resourceDirName === DEFAULT_SKILL_DIR && this._skillRoots) {
 			return this._skillRoots;
 		}
-		if (
-			resourceDirName === DEFAULT_PROMPT_TEMPLATE_DIR &&
-			this._promptTemplateRoots
-		) {
+		if (resourceDirName === DEFAULT_PROMPT_TEMPLATE_DIR && this._promptTemplateRoots) {
 			return this._promptTemplateRoots;
 		}
 		return [
-			...(this._agentDir
-				? [{ kind: "agent_dir" as const, path: this._agentDir }]
-				: []),
+			...(this._agentDir ? [{ kind: "agent_dir" as const, path: this._agentDir }] : []),
 			{ kind: "cwd" as const, path: this._cwd },
 		];
 	}
@@ -435,10 +381,7 @@ function ancestorPaths(path: string): string[] {
 	}
 	while (current && paths.length < MAX_CONTEXT_FILE_ANCESTORS) {
 		paths.push(current);
-		const separatorIndex = Math.max(
-			current.lastIndexOf("/"),
-			current.lastIndexOf("\\"),
-		);
+		const separatorIndex = Math.max(current.lastIndexOf("/"), current.lastIndexOf("\\"));
 		if (separatorIndex < 0) break;
 		const parent = current.slice(0, separatorIndex);
 		// A path directly under a posix root slices down to "": that root is the
@@ -455,12 +398,7 @@ function ancestorPaths(path: string): string[] {
 
 function toResourceDiagnostics(
 	kind: "skill" | "prompt_template",
-	diagnostics: readonly {
-		type: "warning";
-		code: string;
-		message: string;
-		path: string;
-	}[],
+	diagnostics: readonly { type: "warning"; code: string; message: string; path: string }[],
 ): CoreDiagnostic[] {
 	return diagnostics.map((diagnostic) => ({
 		severity: diagnostic.type,
@@ -481,9 +419,7 @@ function missingNameDiagnostics(
 ): Array<MissingResourceDiagnostic & { source: ResourceSource }> {
 	if (names.length === 0) return [];
 	const loadedPaths = new Set(loadedSources.map((source) => source.path));
-	const diagnostics: Array<
-		MissingResourceDiagnostic & { source: ResourceSource }
-	> = [];
+	const diagnostics: Array<MissingResourceDiagnostic & { source: ResourceSource }> = [];
 	for (const name of names) {
 		const candidates = inputs.filter((input) => input.name === name);
 		if (candidates.length === 0) continue;

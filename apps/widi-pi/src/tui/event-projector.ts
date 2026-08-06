@@ -1,15 +1,13 @@
 import { TextDecoder } from "node:util";
-import type {
-	AssistantMessage,
-	TextContent,
-	ToolCall,
-	UserMessage,
-} from "@earendil-works/pi-ai";
-import type { AgentHarnessEvent, AgentMessage } from "@widi/agent-core";
-import type { AgentRecordSnapshot } from "../core/agent-record.ts";
+import type { AssistantMessage, TextContent, ToolCall, UserMessage } from "@earendil-works/pi-ai";
+import type { AgentHarnessEvent, AgentMessage, CustomMessage } from "@widi/agent-core";
+import type { AgentSnapshot } from "../core/agent-types.ts";
 import type {
 	BackgroundJobReportSnapshot,
 	BackgroundJobSnapshot,
+	BackgroundJobStatus,
+	BackgroundJobTransition,
+	ObservableBackgroundJobState,
 } from "../core/background/index.ts";
 import type { OrchestratorDiagnostic } from "../core/diagnostics.ts";
 import type { ExtensionStatusSnapshot } from "../core/extension/presentation.ts";
@@ -20,6 +18,8 @@ import {
 	type HumanResponse,
 	normalizeHumanRequestOptions,
 } from "../core/human-request.ts";
+import type { MessageEntryDetails } from "../core/message.ts";
+import { ORCHESTRATOR_MESSAGE_CUSTOM_TYPE } from "../core/session-manager.ts";
 import type { AgentId, OrchestratorEvent } from "../core/types.ts";
 import { maintenanceLabel } from "./components/common.ts";
 import type { HydrationResult } from "./session-hydrator.ts";
@@ -30,6 +30,7 @@ import {
 	ensureAgentProjection,
 	extensionStatusKey,
 	isTimelineEvent,
+	type OrchestratorMessageItem,
 	retainedAttention,
 	type TimelineItem,
 	type ToolExecutionItem,
@@ -68,6 +69,11 @@ function thinkingPreviewKey(agentId: AgentId, assistantId: string): string {
 	return `${agentId}\0${assistantId}`;
 }
 
+/** The three states a settled job can be in, as the panel labels them. */
+function isTerminalJobState(state: ObservableBackgroundJobState): state is BackgroundJobStatus {
+	return state === "completed" || state === "failed" || state === "cancelled";
+}
+
 function latestJobReport(
 	current: BackgroundJobReportSnapshot | undefined,
 	incoming: BackgroundJobReportSnapshot | undefined,
@@ -95,10 +101,7 @@ export class EventProjector {
 
 	apply(event: OrchestratorEvent): void {
 		const agentId = eventAgentId(event);
-		if (
-			agentId &&
-			this.shouldBuffer(ensureAgentProjection(this.state, agentId), event)
-		) {
+		if (agentId && this.shouldBuffer(ensureAgentProjection(this.state, agentId), event)) {
 			ensureAgentProjection(this.state, agentId).bufferedEvents.push(event);
 			return;
 		}
@@ -129,8 +132,7 @@ export class EventProjector {
 		// old window marker must not survive: its hidden-turn count would be
 		// double-counted when the window re-trims the rebuilt timeline.
 		const liveBeforeHydration = agent.timeline.filter(
-			(item) =>
-				item.durability === "ephemeral" && item.type !== "window-marker",
+			(item) => item.durability === "ephemeral" && item.type !== "window-marker",
 		);
 		agent.timeline = mergeTimeline(result.timeline, liveBeforeHydration);
 		if (result.display.model && agent.display.model) {
@@ -150,10 +152,7 @@ export class EventProjector {
 			agent.display.sessionName = result.display.sessionName;
 		}
 		agent.extensionStatuses = new Map(
-			extensionStatuses.map((status) => [
-				extensionStatusKey(status.extensionId, status.key),
-				status,
-			]),
+			extensionStatuses.map((status) => [extensionStatusKey(status.extensionId, status.key), status]),
 		);
 		const buffered = agent.bufferedEvents;
 		agent.bufferedEvents = [];
@@ -178,10 +177,7 @@ export class EventProjector {
 		for (const event of buffered) this.applyImmediately(event);
 	}
 
-	private shouldBuffer(
-		agent: AgentViewState,
-		event: OrchestratorEvent,
-	): boolean {
+	private shouldBuffer(agent: AgentViewState, event: OrchestratorEvent): boolean {
 		if (agent.hydration !== "pending") return false;
 		// Resolution must close the capturing overlay immediately. Its trace is
 		// ephemeral and completeHydration preserves pre-existing ephemeral items.
@@ -193,54 +189,37 @@ export class EventProjector {
 	private applyImmediately(event: OrchestratorEvent): void {
 		switch (event.type) {
 			case "agent_harness_event":
-				this.applyHarnessEvent(
-					ensureAgentProjection(this.state, event.agentId),
-					event.event,
-				);
+				this.applyHarnessEvent(ensureAgentProjection(this.state, event.agentId), event.event);
 				return;
 			case "agent_status_changed": {
-				const agent = ensureAgentProjection(
-					this.state,
-					event.agentId,
-					event.status,
-				);
+				const agent = ensureAgentProjection(this.state, event.agentId, event.activity);
 				const wasRunning = agent.status === "running";
-				agent.status = event.status;
-				agent.maintenance =
-					event.status === "running" ? event.maintenance : undefined;
-				agent.runStartedAt =
-					event.status === "running" ? event.changedAt : undefined;
+				agent.status = event.activity;
+				agent.maintenance = event.activity === "running" ? event.maintenance : undefined;
+				agent.runStartedAt = event.activity === "running" ? event.changedAt : undefined;
 				// Experience indicator: covers the model's first-token latency
 				// after submit; completes (renders empty) once the run leaves
 				// "running".
-				if (event.status === "running") upsertAwaitingThinking(agent);
+				if (event.activity === "running") upsertAwaitingThinking(agent);
 				else {
 					completeAwaitingThinking(agent);
 					this.clearThinkingPreviews(event.agentId);
 				}
-				if (wasRunning && event.status !== "running") {
+				if (wasRunning && event.activity !== "running") {
 					// Abort can end a run without message_end; never lose the tail of
 					// the stream still sitting in the pending buffer.
 					flushStreaming(agent);
 					// A run can end while a streamed tool call never reached
 					// tool_execution_start; don't leave its placeholder preparing.
 					for (const entry of agent.timeline) {
-						if (
-							entry.type === "tool-execution" &&
-							entry.status === "preparing"
-						) {
+						if (entry.type === "tool-execution" && entry.status === "preparing") {
 							entry.status = "cancelled";
 						}
 					}
 				}
-				if (
-					wasRunning &&
-					event.status === "idle" &&
-					this.state.activeAgentId !== event.agentId
-				) {
+				if (wasRunning && event.activity === "idle" && this.state.activeAgentId !== event.agentId) {
 					raiseAttention(agent, "completed");
 				}
-				if (event.status === "unavailable") raiseAttention(agent, "error");
 				return;
 			}
 			case "agent_spawned": {
@@ -257,23 +236,15 @@ export class EventProjector {
 				return;
 			}
 			case "agent_session_info_changed":
-				ensureAgentProjection(this.state, event.agentId).display.sessionName =
-					event.name;
+				ensureAgentProjection(this.state, event.agentId).display.sessionName = event.name;
 				return;
 			case "agent_session_forked": {
-				ensureAgentProjection(
-					this.state,
-					event.agentId,
-				).display.rehydrateRequested = true;
-				ensureAgentProjection(
-					this.state,
-					event.forkedSessionId,
-				).display.forkedFromAgentId = event.agentId;
+				ensureAgentProjection(this.state, event.agentId).display.rehydrateRequested = true;
+				ensureAgentProjection(this.state, event.forkedSessionId).display.forkedFromAgentId = event.agentId;
 				return;
 			}
 			case "input_blocked":
-				ensureAgentProjection(this.state, event.agentId).pendingInput =
-					undefined;
+				ensureAgentProjection(this.state, event.agentId).pendingInput = undefined;
 				return;
 			case "extension_output": {
 				const agent = ensureAgentProjection(this.state, event.agentId);
@@ -339,27 +310,17 @@ export class EventProjector {
 					flushStreaming(ensureAgentProjection(this.state, event.agentId));
 				}
 				this.state.humanRequests = [
-					...this.state.humanRequests.filter(
-						(item) => item.request.id !== event.request.id,
-					),
+					...this.state.humanRequests.filter((item) => item.request.id !== event.request.id),
 					{ request: event.request, agentId: event.agentId },
 				];
 				if (event.agentId) {
-					raiseAttention(
-						ensureAgentProjection(this.state, event.agentId),
-						"human-request",
-					);
+					raiseAttention(ensureAgentProjection(this.state, event.agentId), "human-request");
 				}
 				this.state.mode = "human-request";
 				return;
 			}
 			case "human_request_resolved":
-				this.resolveHumanRequest(
-					event.agentId,
-					event.requestId,
-					event.response,
-					event.completedAt,
-				);
+				this.resolveHumanRequest(event.agentId, event.requestId, event.response, event.completedAt);
 				return;
 			case "human_request_timeout":
 			case "human_request_cancelled":
@@ -376,23 +337,16 @@ export class EventProjector {
 				);
 				return;
 			case "agent_background_job_report_updated":
-				this.applyBackgroundJobReport(
-					ensureAgentProjection(this.state, event.agentId),
-					event.jobId,
-					event.report,
-				);
+				this.applyBackgroundJobReport(ensureAgentProjection(this.state, event.agentId), event.jobId, event.report);
 				return;
 			case "agent_background_job_progress":
-				this.applyBackgroundJobProgress(
-					ensureAgentProjection(this.state, event.agentId),
-					{
-						jobId: event.jobId,
-						chunk: event.chunk,
-						startByte: event.startByte,
-						endByte: event.endByte,
-						totalBytesSeen: event.totalBytesSeen,
-					},
-				);
+				this.applyBackgroundJobProgress(ensureAgentProjection(this.state, event.agentId), {
+					jobId: event.jobId,
+					chunk: event.chunk,
+					startByte: event.startByte,
+					endByte: event.endByte,
+					totalBytesSeen: event.totalBytesSeen,
+				});
 				return;
 		}
 	}
@@ -402,10 +356,7 @@ export class EventProjector {
 	 * sync/hydration). Retained settled entries survive; entries the core no
 	 * longer reports as live are dropped.
 	 */
-	seedBackgroundJobs(
-		agentId: AgentId,
-		jobs: readonly BackgroundJobSnapshot[],
-	): void {
+	seedBackgroundJobs(agentId: AgentId, jobs: readonly BackgroundJobSnapshot[]): void {
 		const agent = ensureAgentProjection(this.state, agentId);
 		const seeded = new Map<string, BackgroundJobViewState>();
 		for (const snapshot of jobs) {
@@ -434,7 +385,7 @@ export class EventProjector {
 	private applyBackgroundJobChange(
 		agent: AgentViewState,
 		snapshot: BackgroundJobSnapshot,
-		transition: "backgrounded" | "aborting" | "settled",
+		transition: BackgroundJobTransition,
 		liveCount: number,
 	): void {
 		agent.backgroundJobCount = liveCount;
@@ -453,24 +404,20 @@ export class EventProjector {
 		}
 		const existing = agent.backgroundJobs.get(snapshot.jobId);
 		if (!existing) return;
-		if (transition === "aborting") {
+		if (transition === "abort_requested") {
 			existing.status = "aborting";
 			existing.report = latestJobReport(existing.report, snapshot.report);
 			return;
 		}
 		// Settled jobs stay on the panel until the next user turn starts.
-		existing.status = snapshot.status ?? "completed";
+		existing.status = isTerminalJobState(snapshot.state) ? snapshot.state : "completed";
 		existing.endedAt = snapshot.endedAt;
 		existing.totalBytesSeen = snapshot.totalBytesSeen;
 		existing.report = latestJobReport(existing.report, snapshot.report);
 		this.jobProgress.delete(jobProgressKey(agent.agentId, snapshot.jobId));
 	}
 
-	private applyBackgroundJobReport(
-		agent: AgentViewState,
-		jobId: string,
-		report: BackgroundJobReportSnapshot,
-	): void {
+	private applyBackgroundJobReport(agent: AgentViewState, jobId: string, report: BackgroundJobReportSnapshot): void {
 		const job = agent.backgroundJobs.get(jobId);
 		if (!job) return;
 		job.report = latestJobReport(job.report, report);
@@ -478,13 +425,7 @@ export class EventProjector {
 
 	private applyBackgroundJobProgress(
 		agent: AgentViewState,
-		event: {
-			jobId: string;
-			chunk: string;
-			startByte: number;
-			endByte: number;
-			totalBytesSeen: number;
-		},
+		event: { jobId: string; chunk: string; startByte: number; endByte: number; totalBytesSeen: number },
 	): void {
 		const job = agent.backgroundJobs.get(event.jobId);
 		if (!job) return;
@@ -492,11 +433,7 @@ export class EventProjector {
 		const key = jobProgressKey(agent.agentId, event.jobId);
 		let progress = this.jobProgress.get(key);
 		if (!progress) {
-			progress = {
-				decoder: new TextDecoder("utf-8"),
-				expectedByte: event.startByte,
-				lineBuffer: "",
-			};
+			progress = { decoder: new TextDecoder("utf-8"), expectedByte: event.startByte, lineBuffer: "" };
 			this.jobProgress.set(key, progress);
 		}
 		if (event.startByte !== progress.expectedByte) {
@@ -510,9 +447,7 @@ export class EventProjector {
 		// sequences split across chunks intact.
 		const bytes = Buffer.from(event.chunk, "base64");
 		progress.expectedByte = event.endByte;
-		const lines = (
-			progress.lineBuffer + progress.decoder.decode(bytes, { stream: true })
-		).split("\n");
+		const lines = (progress.lineBuffer + progress.decoder.decode(bytes, { stream: true })).split("\n");
 		progress.lineBuffer = lines.at(-1) ?? "";
 		for (let i = lines.length - 1; i >= 0; i--) {
 			const candidate = lines[i] ?? "";
@@ -539,10 +474,7 @@ export class EventProjector {
 		}
 	}
 
-	private applyHarnessEvent(
-		agent: AgentViewState,
-		event: AgentHarnessEvent,
-	): void {
+	private applyHarnessEvent(agent: AgentViewState, event: AgentHarnessEvent): void {
 		switch (event.type) {
 			case "message_start":
 				this.applyMessageStart(agent, event.message);
@@ -554,26 +486,15 @@ export class EventProjector {
 				// Deltas accumulate in the pending buffer; the timeline item only
 				// changes on flush, keeping the ChatView render cache valid between
 				// flushes.
-				agent.pendingAssistantText = {
-					itemId: item.id,
-					text: assistantText(event.message),
-					message: event.message,
-				};
+				agent.pendingAssistantText = { itemId: item.id, text: assistantText(event.message), message: event.message };
 				const streamEvent = event.assistantMessageEvent;
 				if (streamEvent.type === "thinking_start") {
-					const previewState: ThinkingPreviewState = {
-						agentId: agent.agentId,
-						completedLines: [],
-						currentLine: "",
-					};
+					const previewState: ThinkingPreviewState = { agentId: agent.agentId, completedLines: [], currentLine: "" };
 					const content = event.message.content[streamEvent.contentIndex];
 					if (content?.type === "thinking") {
 						appendThinkingPreview(previewState, content.thinking);
 					}
-					this.thinkingPreviews.set(
-						thinkingPreviewKey(agent.agentId, item.id),
-						previewState,
-					);
+					this.thinkingPreviews.set(thinkingPreviewKey(agent.agentId, item.id), previewState);
 					upsertTimeline(agent, {
 						type: "thinking-status",
 						id: `${item.id}:thinking`,
@@ -584,9 +505,7 @@ export class EventProjector {
 					});
 				} else if (streamEvent.type === "thinking_delta") {
 					const thinking = agent.timeline.find(
-						(entry) =>
-							entry.type === "thinking-status" &&
-							entry.id === `${item.id}:thinking`,
+						(entry) => entry.type === "thinking-status" && entry.id === `${item.id}:thinking`,
 					);
 					if (thinking?.type === "thinking-status") {
 						const key = thinkingPreviewKey(agent.agentId, item.id);
@@ -605,16 +524,12 @@ export class EventProjector {
 				} else if (streamEvent.type === "thinking_end") {
 					flushStreaming(agent);
 					const thinking = agent.timeline.find(
-						(entry) =>
-							entry.type === "thinking-status" &&
-							entry.id === `${item.id}:thinking`,
+						(entry) => entry.type === "thinking-status" && entry.id === `${item.id}:thinking`,
 					);
 					if (thinking?.type === "thinking-status") {
 						thinking.status = "completed";
 					}
-					this.thinkingPreviews.delete(
-						thinkingPreviewKey(agent.agentId, item.id),
-					);
+					this.thinkingPreviews.delete(thinkingPreviewKey(agent.agentId, item.id));
 				} else if (
 					streamEvent.type === "toolcall_start" ||
 					streamEvent.type === "toolcall_delta" ||
@@ -625,12 +540,7 @@ export class EventProjector {
 					// execution event supplies the stable call id.
 					const content = event.message.content[streamEvent.contentIndex];
 					if (content?.type === "toolCall") {
-						upsertPreparingTool(
-							agent,
-							item.id,
-							streamEvent.contentIndex,
-							content,
-						);
+						upsertPreparingTool(agent, item.id, streamEvent.contentIndex, content);
 					}
 				}
 				return;
@@ -643,14 +553,11 @@ export class EventProjector {
 						item.text = assistantText(event.message);
 						item.message = event.message;
 						item.streaming = false;
-						this.thinkingPreviews.delete(
-							thinkingPreviewKey(agent.agentId, item.id),
-						);
+						this.thinkingPreviews.delete(thinkingPreviewKey(agent.agentId, item.id));
 					}
 					const usage = event.message.usage;
 					if (usage) {
-						agent.display.contextTokens =
-							usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+						agent.display.contextTokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
 					}
 					agent.currentAssistantId = undefined;
 				}
@@ -663,10 +570,7 @@ export class EventProjector {
 			case "tool_execution_update": {
 				if (!findTool(agent, event.toolCallId)) return;
 				if (!agent.pendingToolUpdates) agent.pendingToolUpdates = new Map();
-				agent.pendingToolUpdates.set(event.toolCallId, {
-					args: event.args,
-					partialResult: event.partialResult,
-				});
+				agent.pendingToolUpdates.set(event.toolCallId, { args: event.args, partialResult: event.partialResult });
 				return;
 			}
 			case "tool_execution_end": {
@@ -723,12 +627,22 @@ export class EventProjector {
 		}
 	}
 
-	private applyMessageStart(
-		agent: AgentViewState,
-		message: AgentMessage,
-	): void {
+	private applyMessageStart(agent: AgentViewState, message: AgentMessage): void {
 		if (message.role === "toolResult") return;
 		const id = `live-message:${agent.agentId}:${agent.nextLiveItemId++}`;
+		// Everything the runtime put into context on someone else's behalf. It
+		// opens a turn exactly as a user message does - the model is reading it
+		// either way - so the window and job housekeeping are the same.
+		if (message.role === "custom") {
+			const item = toLiveOrchestratorMessage(id, message);
+			if (!item) return;
+			upsertTimeline(agent, item);
+			if (agent.status === "running") upsertAwaitingThinking(agent);
+			applyTimelineWindow(agent);
+			this.clearSettledBackgroundJobs(agent);
+			this.markBackgroundActivity(agent.agentId);
+			return;
+		}
 		if (message.role === "user") {
 			const modelText = userText(message);
 			const text = agent.pendingInput?.originalText ?? modelText;
@@ -765,20 +679,11 @@ export class EventProjector {
 		this.markBackgroundActivity(agent.agentId);
 	}
 
-	private applyDiagnostic(
-		diagnostic: OrchestratorDiagnostic,
-		createdAt: string,
-	): void {
+	private applyDiagnostic(diagnostic: OrchestratorDiagnostic, createdAt: string): void {
 		if (!diagnostic.agentId) {
 			const id = diagnosticKey(diagnostic);
 			if (!this.state.globalNotices.some((notice) => notice.id === id)) {
-				this.state.globalNotices.push({
-					id,
-					kind: "diagnostic",
-					createdAt,
-					text: diagnostic.message,
-					diagnostic,
-				});
+				this.state.globalNotices.push({ id, kind: "diagnostic", createdAt, text: diagnostic.message, diagnostic });
 			}
 			return;
 		}
@@ -800,9 +705,7 @@ export class EventProjector {
 		response: HumanResponse,
 		completedAt: string,
 	): void {
-		const pending = this.state.humanRequests.find(
-			(item) => item.request.id === requestId,
-		);
+		const pending = this.state.humanRequests.find((item) => item.request.id === requestId);
 		this.removeHumanRequest(requestId, agentId);
 		const resolvedAgentId = agentId ?? pending?.agentId;
 		if (!pending || !resolvedAgentId) return;
@@ -815,11 +718,8 @@ export class EventProjector {
 			requestKind: pending.request.kind,
 			title: pending.request.title,
 			options:
-				pending.request.kind === "select" ||
-				pending.request.kind === "multi-select"
-					? normalizeHumanRequestOptions(pending.request.options).map(
-							(option) => option.label,
-						)
+				pending.request.kind === "select" || pending.request.kind === "multi-select"
+					? normalizeHumanRequestOptions(pending.request.options).map((option) => option.label)
 					: undefined,
 			answer,
 			durability: "ephemeral",
@@ -829,27 +729,17 @@ export class EventProjector {
 	}
 
 	private removeHumanRequest(requestId: string, agentId?: AgentId): void {
-		this.state.humanRequests = this.state.humanRequests.filter(
-			(item) => item.request.id !== requestId,
-		);
+		this.state.humanRequests = this.state.humanRequests.filter((item) => item.request.id !== requestId);
 		if (agentId) {
 			const agent = ensureAgentProjection(this.state, agentId);
-			if (
-				agent.attention === "human-request" &&
-				!this.state.humanRequests.some((item) => item.agentId === agentId)
-			) {
+			if (agent.attention === "human-request" && !this.state.humanRequests.some((item) => item.agentId === agentId)) {
 				agent.attention = retainedAttention(this.state, agent);
 			}
 		}
-		this.state.mode =
-			this.state.humanRequests.length > 0 ? "human-request" : "editor";
+		this.state.mode = this.state.humanRequests.length > 0 ? "human-request" : "editor";
 	}
 
-	private markBackgroundActivity(
-		agentId: AgentId,
-		incrementUnread = true,
-		attention?: AgentAttention,
-	): void {
+	private markBackgroundActivity(agentId: AgentId, incrementUnread = true, attention?: AgentAttention): void {
 		if (this.state.activeAgentId === agentId) return;
 		const agent = ensureAgentProjection(this.state, agentId);
 		if (incrementUnread) agent.unreadCount++;
@@ -857,16 +747,14 @@ export class EventProjector {
 	}
 }
 
-export function applyAgentSnapshot(
-	state: TuiApplicationState,
-	snapshot: AgentRecordSnapshot,
-): AgentViewState {
-	const agent = ensureAgentProjection(state, snapshot.agentId, snapshot.status);
+export function applyAgentSnapshot(state: TuiApplicationState, snapshot: AgentSnapshot): AgentViewState {
+	const agent = ensureAgentProjection(state, snapshot.agentId, snapshot.activity.activity);
 	agent.snapshot = snapshot;
-	agent.status = snapshot.status;
+	agent.status = snapshot.activity.activity;
+	agent.maintenance = snapshot.activity.maintenance;
 	agent.display.model = snapshot.model;
 	if (snapshot.spawnedBy !== undefined) agent.spawnedBy = snapshot.spawnedBy;
-	agent.display.activeToolNames = snapshot.toolSnapshot?.activeToolNames ?? [];
+	agent.display.activeToolNames = [...snapshot.tools.activeToolNames];
 	for (const diagnostic of snapshot.diagnostics) {
 		raiseDiagnosticAttention(agent, diagnostic);
 	}
@@ -882,9 +770,7 @@ function eventAgentId(event: OrchestratorEvent): AgentId | undefined {
 }
 
 function upsertTimeline(agent: AgentViewState, item: TimelineItem): void {
-	const index = agent.timeline.findIndex(
-		(existing) => existing.type === item.type && existing.id === item.id,
-	);
+	const index = agent.timeline.findIndex((existing) => existing.type === item.type && existing.id === item.id);
 	if (index === -1) agent.timeline.push(item);
 	else agent.timeline[index] = item;
 }
@@ -904,9 +790,7 @@ function upsertAwaitingThinking(agent: AgentViewState): void {
 		durability: "ephemeral",
 		createdAt: now(),
 		status: "thinking",
-		label: agent.maintenance
-			? `${maintenanceLabel(agent.maintenance)}…`
-			: undefined,
+		label: agent.maintenance ? `${maintenanceLabel(agent.maintenance)}…` : undefined,
 	});
 }
 
@@ -931,9 +815,7 @@ function upsertPreparingTool(
 	content: ToolCall,
 ): void {
 	const id = preparingToolId(sourceAssistantId, contentIndex);
-	const index = agent.timeline.findIndex(
-		(item) => item.type === "tool-execution" && item.id === id,
-	);
+	const index = agent.timeline.findIndex((item) => item.type === "tool-execution" && item.id === id);
 	const existing = index === -1 ? undefined : agent.timeline[index];
 	const previous = existing?.type === "tool-execution" ? existing : undefined;
 	const item = {
@@ -951,19 +833,11 @@ function upsertPreparingTool(
 	else agent.timeline[index] = item;
 }
 
-function preparingToolId(
-	sourceAssistantId: string,
-	contentIndex: number,
-): string {
+function preparingToolId(sourceAssistantId: string, contentIndex: number): string {
 	return `preparing-tool:${sourceAssistantId}:${contentIndex}`;
 }
 
-function startToolExecution(
-	agent: AgentViewState,
-	toolCallId: string,
-	toolName: string,
-	args: unknown,
-): void {
+function startToolExecution(agent: AgentViewState, toolCallId: string, toolName: string, args: unknown): void {
 	const preparing =
 		findPreparingTool(agent, (item) => item.toolCallId === toolCallId) ??
 		findPreparingTool(agent, (item) => item.toolName === toolName) ??
@@ -971,13 +845,7 @@ function startToolExecution(
 	const existing = preparing ?? findTool(agent, toolCallId);
 	if (existing) {
 		const index = agent.timeline.indexOf(existing);
-		agent.timeline[index] = {
-			...existing,
-			toolCallId,
-			toolName,
-			args,
-			status: "running",
-		} satisfies ToolExecutionItem;
+		agent.timeline[index] = { ...existing, toolCallId, toolName, args, status: "running" } satisfies ToolExecutionItem;
 		return;
 	}
 	upsertTimeline(agent, {
@@ -997,22 +865,13 @@ function findPreparingTool(
 	matches: (item: ToolExecutionItem) => boolean = () => true,
 ): ToolExecutionItem | undefined {
 	return agent.timeline.find(
-		(item): item is ToolExecutionItem =>
-			item.type === "tool-execution" &&
-			item.status === "preparing" &&
-			matches(item),
+		(item): item is ToolExecutionItem => item.type === "tool-execution" && item.status === "preparing" && matches(item),
 	);
 }
 
-function appendThinkingPreview(
-	state: ThinkingPreviewState,
-	delta: string,
-): void {
+function appendThinkingPreview(state: ThinkingPreviewState, delta: string): void {
 	const segments = delta.replace(/\r\n?/g, "\n").split("\n");
-	state.currentLine = appendThinkingLineTail(
-		state.currentLine,
-		segments[0] ?? "",
-	);
+	state.currentLine = appendThinkingLineTail(state.currentLine, segments[0] ?? "");
 	for (let index = 1; index < segments.length; index++) {
 		commitThinkingLine(state);
 		state.currentLine = appendThinkingLineTail("", segments[index] ?? "");
@@ -1038,15 +897,10 @@ function thinkingPreviewText(state: ThinkingPreviewState): string | undefined {
 	return lines.length === 0 ? undefined : lines.slice(-2).join("\n");
 }
 
-function mergeTimeline(
-	base: readonly TimelineItem[],
-	existing: readonly TimelineItem[],
-): TimelineItem[] {
+function mergeTimeline(base: readonly TimelineItem[], existing: readonly TimelineItem[]): TimelineItem[] {
 	const merged = [...base];
 	for (const item of existing) {
-		const index = merged.findIndex(
-			(candidate) => candidate.type === item.type && candidate.id === item.id,
-		);
+		const index = merged.findIndex((candidate) => candidate.type === item.type && candidate.id === item.id);
 		if (index === -1) merged.push(item);
 		else merged[index] = item;
 	}
@@ -1055,33 +909,22 @@ function mergeTimeline(
 
 function findAssistant(agent: AgentViewState, id?: string) {
 	if (!id) return undefined;
-	const item = agent.timeline.find(
-		(entry) => entry.type === "assistant-message" && entry.id === id,
-	);
+	const item = agent.timeline.find((entry) => entry.type === "assistant-message" && entry.id === id);
 	return item?.type === "assistant-message" ? item : undefined;
 }
 
 function findTool(agent: AgentViewState, toolCallId: string) {
-	const item = agent.timeline.find(
-		(entry) =>
-			entry.type === "tool-execution" && entry.toolCallId === toolCallId,
-	);
+	const item = agent.timeline.find((entry) => entry.type === "tool-execution" && entry.toolCallId === toolCallId);
 	return item?.type === "tool-execution" ? item : undefined;
 }
 
-function raiseAttention(
-	agent: AgentViewState,
-	attention: AgentAttention,
-): void {
+function raiseAttention(agent: AgentViewState, attention: AgentAttention): void {
 	if (ATTENTION_PRIORITY[attention] > ATTENTION_PRIORITY[agent.attention]) {
 		agent.attention = attention;
 	}
 }
 
-function raiseDiagnosticAttention(
-	agent: AgentViewState,
-	diagnostic: OrchestratorDiagnostic,
-): void {
+function raiseDiagnosticAttention(agent: AgentViewState, diagnostic: OrchestratorDiagnostic): void {
 	if (diagnostic.severity === "error") raiseAttention(agent, "error");
 	else if (diagnostic.severity === "warning") raiseAttention(agent, "warning");
 }
@@ -1103,10 +946,7 @@ function summarizeHumanResponse(
 	| { kind: "confirm"; confirmed: boolean }
 	| { kind: "selected-option"; value: string }
 	| { kind: "selected-options"; values: string[] }
-	| {
-			kind: "answered-questions";
-			items: { title: string; values: string[] }[];
-	  }
+	| { kind: "answered-questions"; items: { title: string; values: string[] }[] }
 	| { kind: "answered" } {
 	if (request.kind === "confirm" && response.kind === "confirm") {
 		return { kind: "confirm", confirmed: response.confirmed };
@@ -1117,37 +957,22 @@ function summarizeHumanResponse(
 			const question = questions[index];
 			const options = normalizeHumanRequestOptions(question?.options);
 			const values =
-				answer.kind === "multi-select"
-					? (answer.values ?? [])
-					: answer.value !== undefined
-						? [answer.value]
-						: [];
+				answer.kind === "multi-select" ? (answer.values ?? []) : answer.value !== undefined ? [answer.value] : [];
 			return {
 				title: question?.title ?? `Question ${index + 1}`,
 				values: values
-					.map(
-						(value) =>
-							options.find((option) => option.value === value)?.label ?? value,
-					)
+					.map((value) => options.find((option) => option.value === value)?.label ?? value)
 					.filter((label) => label.length > 0),
 			};
 		});
 		return { kind: "answered-questions", items };
 	}
 	const options = normalizeHumanRequestOptions(request.options);
-	if (
-		request.kind === "select" &&
-		response.kind === "select" &&
-		response.value !== undefined
-	) {
+	if (request.kind === "select" && response.kind === "select" && response.value !== undefined) {
 		const match = options.find((option) => option.value === response.value);
 		if (match) return { kind: "selected-option", value: match.label };
 	}
-	if (
-		request.kind === "multi-select" &&
-		response.kind === "multi-select" &&
-		response.values !== undefined
-	) {
+	if (request.kind === "multi-select" && response.kind === "multi-select" && response.values !== undefined) {
 		// Only options the request itself offered may appear in the transcript;
 		// free-form or unknown values are dropped to a generic "answered".
 		const labels = response.values
@@ -1161,7 +986,50 @@ function summarizeHumanResponse(
 function queuedMessageText(message: AgentMessage): string {
 	if (message.role === "user") return userText(message);
 	if (message.role === "assistant") return assistantText(message);
+	// Queued input the runtime wrote. The queue preview is what is waiting to be
+	// read, so it shows the body a person would recognize, not the rendered form
+	// carrying the attribution prefix.
+	if (message.role === "custom") {
+		const details = message.details;
+		if (isMessageEntryDetails(details)) return details.body;
+		return customMessageText(message.content);
+	}
 	return "";
+}
+
+/**
+ * One live orchestrator message, or undefined when the entry carries no record
+ * of who wrote it - the same rule the hydrator applies, for the same reason.
+ */
+function toLiveOrchestratorMessage(id: string, message: CustomMessage): OrchestratorMessageItem | undefined {
+	if (message.customType !== ORCHESTRATOR_MESSAGE_CUSTOM_TYPE) return undefined;
+	if (!isMessageEntryDetails(message.details)) return undefined;
+	const modelText = customMessageText(message.content);
+	return {
+		type: "orchestrator-message",
+		id,
+		durability: "durable",
+		createdAt: messageTimestamp(message),
+		source: message.details.source,
+		text: message.details.body,
+		...(message.details.body === modelText ? undefined : { modelText }),
+	};
+}
+
+function isMessageEntryDetails(details: unknown): details is MessageEntryDetails {
+	if (typeof details !== "object" || details === null) return false;
+	const record = details as { body?: unknown; source?: unknown };
+	if (typeof record.body !== "string") return false;
+	const source = record.source;
+	return typeof source === "object" && source !== null && typeof (source as { kind?: unknown }).kind === "string";
+}
+
+function customMessageText(content: CustomMessage["content"]): string {
+	if (typeof content === "string") return content;
+	return content
+		.filter((part): part is TextContent => part.type === "text")
+		.map((part) => part.text)
+		.join("");
 }
 
 function nonEmpty(text: string): boolean {

@@ -49,6 +49,30 @@ function createUserMessage(text: string, images?: ImageContent[]): UserMessage {
 	return { role: "user", content, timestamp: Date.now() };
 }
 
+/**
+ * WIDI fork: the four input entry points take a message, not only text.
+ *
+ * A caller that hands over a plain string still gets the user message it always
+ * got. One that builds its own message keeps whatever role and type it chose,
+ * which is how an input can record who wrote it and still reach the model as
+ * ordinary user text.
+ */
+function toInputMessage(input: string | AgentMessage, images?: ImageContent[]): AgentMessage {
+	return typeof input === "string" ? createUserMessage(input, images) : input;
+}
+
+/** The text an input hook sees, whichever form the caller used. */
+function toInputText(input: string | AgentMessage): string {
+	if (typeof input === "string") return input;
+	const content = (input as { content?: unknown }).content;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.filter((part): part is TextContent => (part as { type?: unknown }).type === "text")
+		.map((part) => part.text)
+		.join("");
+}
+
 function createFailureMessage(model: Model<any>, error: unknown, aborted: boolean): AssistantMessage {
 	return {
 		role: "assistant",
@@ -199,9 +223,9 @@ export class AgentHarness<
 	private retry: RetryPolicy | undefined;
 	private tools = new Map<string, TTool>();
 	private activeToolNames: string[];
-	private steerQueue: UserMessage[] = [];
+	private steerQueue: AgentMessage[] = [];
 	private steeringQueueMode: QueueMode;
-	private followUpQueue: UserMessage[] = [];
+	private followUpQueue: AgentMessage[] = [];
 	private followUpQueueMode: QueueMode;
 	private nextTurnQueue: AgentMessage[] = [];
 	private handlers = new Map<string, Set<AgentHarnessHandler>>();
@@ -716,13 +740,13 @@ export class AgentHarness<
 
 	private async executeTurn(
 		turnState: AgentHarnessTurnState<TContext, TTool>,
-		text: string,
+		input: string | AgentMessage,
 		signal: AbortSignal,
 		options?: { images?: ImageContent[] },
 	): Promise<AssistantMessage> {
 		this.assertNotShutDown();
 		let activeTurnState = turnState;
-		let messages: AgentMessage[] = [createUserMessage(text, options?.images)];
+		let messages: AgentMessage[] = [toInputMessage(input, options?.images)];
 		if (this.nextTurnQueue.length > 0) {
 			const queuedMessages = this.nextTurnQueue.splice(0);
 			try {
@@ -735,7 +759,7 @@ export class AgentHarness<
 		}
 		const beforeResult = await this.emitHook({
 			type: "before_agent_start",
-			prompt: text,
+			prompt: toInputText(input),
 			images: options?.images,
 			systemPrompt: turnState.systemPrompt,
 		});
@@ -782,7 +806,7 @@ export class AgentHarness<
 		}
 	}
 
-	async prompt(text: string, options?: { images?: ImageContent[] }): Promise<AssistantMessage> {
+	async prompt(input: string | AgentMessage, options?: { images?: ImageContent[] }): Promise<AssistantMessage> {
 		this.assertNotShutDown();
 		if (this.phase !== "idle") throw new AgentHarnessError("busy", "AgentHarness is busy");
 		this.phase = "turn";
@@ -790,7 +814,7 @@ export class AgentHarness<
 		try {
 			await this.settleSessionOwnership();
 			const turnState = await this.createTurnState();
-			return await this.executeTurn(turnState, text, operation.signal, options);
+			return await this.executeTurn(turnState, input, operation.signal, options);
 		} catch (error) {
 			this.phase = "idle";
 			throw normalizeHarnessError(error, "unknown");
@@ -799,17 +823,17 @@ export class AgentHarness<
 		}
 	}
 
-	async steer(text: string, options?: { images?: ImageContent[] }): Promise<void> {
+	async steer(input: string | AgentMessage, options?: { images?: ImageContent[] }): Promise<void> {
 		this.assertNotShutDown();
 		if (this.phase === "idle") throw new AgentHarnessError("invalid_state", "Cannot steer while idle");
-		this.steerQueue.push(createUserMessage(text, options?.images));
+		this.steerQueue.push(toInputMessage(input, options?.images));
 		await this.emitQueueUpdate();
 	}
 
-	async followUp(text: string, options?: { images?: ImageContent[] }): Promise<void> {
+	async followUp(input: string | AgentMessage, options?: { images?: ImageContent[] }): Promise<void> {
 		this.assertNotShutDown();
 		if (this.phase === "idle") throw new AgentHarnessError("invalid_state", "Cannot follow up while idle");
-		this.followUpQueue.push(createUserMessage(text, options?.images));
+		this.followUpQueue.push(toInputMessage(input, options?.images));
 		await this.emitQueueUpdate();
 	}
 
@@ -824,7 +848,7 @@ export class AgentHarness<
 	 * order - and preserves "steering first" by appending after any steer already
 	 * queued.
 	 */
-	async promoteFollowUpsToSteer(): Promise<UserMessage[]> {
+	async promoteFollowUpsToSteer(): Promise<AgentMessage[]> {
 		this.assertNotShutDown();
 		if (this.followUpQueue.length === 0) return [];
 		if (this.phase === "idle") throw new AgentHarnessError("invalid_state", "Cannot steer while idle");
@@ -847,9 +871,9 @@ export class AgentHarness<
 		return promoted;
 	}
 
-	async nextTurn(text: string, options?: { images?: ImageContent[] }): Promise<void> {
+	async nextTurn(input: string | AgentMessage, options?: { images?: ImageContent[] }): Promise<void> {
 		this.assertNotShutDown();
-		this.nextTurnQueue.push(createUserMessage(text, options?.images));
+		this.nextTurnQueue.push(toInputMessage(input, options?.images));
 		await this.emitQueueUpdate();
 	}
 

@@ -18,9 +18,7 @@ describe("NoticeView", () => {
 		});
 
 		const lines = new NoticeView(state).render(40);
-		const output = lines
-			.map((line) => line.replace(ANSI_SEQUENCE, "").trim())
-			.join("");
+		const output = lines.map((line) => line.replace(ANSI_SEQUENCE, "").trim()).join("");
 
 		expect(output).toContain(url);
 		expect(output).not.toContain("…");

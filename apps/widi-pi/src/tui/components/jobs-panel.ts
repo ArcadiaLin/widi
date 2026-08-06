@@ -9,9 +9,7 @@ const MAX_COLLAPSED_JOBS = 3;
 
 type JobReportRenderer = (report: BackgroundJobReport) => string[];
 
-const REPORT_RENDERERS = new Map<string, JobReportRenderer>([
-	["widi.plan@1", renderPlanReport],
-]);
+const REPORT_RENDERERS = new Map<string, JobReportRenderer>([["widi.plan@1", renderPlanReport]]);
 
 /**
  * Background jobs of the active agent, shown above the editor. The panel is
@@ -49,11 +47,7 @@ export class JobsPanelView implements Component {
 			}
 		}
 		if (jobs.length > visible.length) {
-			lines.push(
-				theme.dim(
-					`  … +${jobs.length - visible.length} more · ctrl+t to expand`,
-				),
-			);
+			lines.push(theme.dim(`  … +${jobs.length - visible.length} more · ctrl+t to expand`));
 		}
 		if (this.expanded && jobs.length > MAX_COLLAPSED_JOBS) {
 			lines.push(theme.dim(`  all ${jobs.length} jobs · ctrl+t to collapse`));
@@ -67,14 +61,10 @@ function isLive(job: BackgroundJobViewState): boolean {
 }
 
 /** Live jobs first, then the most recently active settled jobs. */
-function orderedJobs(
-	jobs: ReadonlyMap<string, BackgroundJobViewState>,
-): BackgroundJobViewState[] {
+function orderedJobs(jobs: ReadonlyMap<string, BackgroundJobViewState>): BackgroundJobViewState[] {
 	return [...jobs.values()].sort((left, right) => {
 		if (isLive(left) !== isLive(right)) return isLive(left) ? -1 : 1;
-		return (
-			(right.endedAt ?? right.startedAt) - (left.endedAt ?? left.startedAt)
-		);
+		return (right.endedAt ?? right.startedAt) - (left.endedAt ?? left.startedAt);
 	});
 }
 
@@ -85,40 +75,29 @@ function orderedJobs(
  */
 function renderJob(job: BackgroundJobViewState): string {
 	const label = job.name ?? job.description;
-	const title = label
-		? `${job.toolName} ${theme.dim("·")} ${singleLine(label, 120)}`
-		: job.toolName;
+	const title = label ? `${job.toolName} ${theme.dim("·")} ${singleLine(label, 120)}` : job.toolName;
 	return `  ${jobGlyph(job)} ${title} ${theme.dim(`· ${elapsedText(job)} · ${bytesText(job.totalBytesSeen)}`)}`;
 }
 
 function renderJobReport(job: BackgroundJobViewState): string[] {
 	const report = job.report?.value;
 	if (!report) return [];
-	const renderer = REPORT_RENDERERS.get(
-		`${report.kind}@${report.schemaVersion}`,
-	);
+	const renderer = REPORT_RENDERERS.get(`${report.kind}@${report.schemaVersion}`);
 	const rendered = renderer?.(report);
 	if (rendered && rendered.length > 0) return rendered;
 	const headline = reportHeadline(report);
-	return [
-		theme.dim(
-			`    ${singleLine(headline || `${report.kind} v${report.schemaVersion}`, 200)}`,
-		),
-	];
+	return [theme.dim(`    ${singleLine(headline || `${report.kind} v${report.schemaVersion}`, 200)}`)];
 }
 
 function renderPlanReport(report: BackgroundJobReport): string[] {
 	const data = readPlanReportData(report.data);
-	const headline =
-		reportHeadline(report) ?? (data ? `Plan: ${data.title}` : undefined);
+	const headline = reportHeadline(report) ?? (data ? `Plan: ${data.title}` : undefined);
 	if (!data) {
 		return headline ? [theme.dim(`    ${singleLine(headline, 200)}`)] : [];
 	}
 	const lines = headline ? [theme.dim(`    ${singleLine(headline, 200)}`)] : [];
 	for (const item of data.items) {
-		lines.push(
-			`    ${planItemGlyph(item.status)} ${singleLine(item.title, 180)}`,
-		);
+		lines.push(`    ${planItemGlyph(item.status)} ${singleLine(item.title, 180)}`);
 	}
 	return lines;
 }
@@ -138,21 +117,14 @@ function reportHeadline(report: BackgroundJobReport): string | undefined {
 
 type PlanItemStatus = "pending" | "in_progress" | "done";
 
-function readPlanReportData(value: unknown):
-	| {
-			title: string;
-			items: Array<{ title: string; status: PlanItemStatus }>;
-	  }
-	| undefined {
+function readPlanReportData(
+	value: unknown,
+): { title: string; items: Array<{ title: string; status: PlanItemStatus }> } | undefined {
 	if (!isRecord(value) || typeof value.title !== "string") return undefined;
 	if (!Array.isArray(value.items)) return undefined;
 	const items: Array<{ title: string; status: PlanItemStatus }> = [];
 	for (const item of value.items) {
-		if (
-			!isRecord(item) ||
-			typeof item.title !== "string" ||
-			!isPlanItemStatus(item.status)
-		) {
+		if (!isRecord(item) || typeof item.title !== "string" || !isPlanItemStatus(item.status)) {
 			return undefined;
 		}
 		items.push({ title: item.title, status: item.status });
@@ -195,10 +167,7 @@ function jobGlyph(job: BackgroundJobViewState): string {
 }
 
 function elapsedText(job: BackgroundJobViewState): string {
-	const seconds = Math.max(
-		0,
-		Math.round(((job.endedAt ?? Date.now()) - job.startedAt) / 1_000),
-	);
+	const seconds = Math.max(0, Math.round(((job.endedAt ?? Date.now()) - job.startedAt) / 1_000));
 	if (seconds < 60) return `${seconds}s`;
 	const minutes = Math.floor(seconds / 60);
 	if (minutes < 60) return `${minutes}m ${seconds % 60}s`;

@@ -33,11 +33,7 @@ export class OrchestratorError extends Error {
 /** Unwrap an OrchestratorError's diagnostic, or build one from the fallback. */
 export function toDiagnostic(
 	error: unknown,
-	fallback: {
-		readonly code: string;
-		readonly message: string;
-		readonly agentId?: string;
-	},
+	fallback: { readonly code: string; readonly message: string; readonly agentId?: string },
 ): OrchestratorDiagnostic {
 	if (error instanceof OrchestratorError) return error.diagnostic;
 	return { severity: "error", ...fallback };

@@ -1,14 +1,7 @@
-import {
-	cloneExtensionStatus,
-	type ExtensionStatus,
-	type ExtensionStatusSnapshot,
-} from "./presentation.ts";
+import { cloneExtensionStatus, type ExtensionStatus, type ExtensionStatusSnapshot } from "./presentation.ts";
 
 export class ExtensionStatusRegistry {
-	private readonly agents = new Map<
-		string,
-		Map<string, Map<string, ExtensionStatusSnapshot>>
-	>();
+	private readonly agents = new Map<string, Map<string, Map<string, ExtensionStatusSnapshot>>>();
 
 	set(
 		agentId: string,
@@ -60,11 +53,6 @@ export class ExtensionStatusRegistry {
 	}
 }
 
-function cloneSnapshot(
-	snapshot: ExtensionStatusSnapshot,
-): ExtensionStatusSnapshot {
-	return {
-		...snapshot,
-		status: cloneExtensionStatus(snapshot.status),
-	};
+function cloneSnapshot(snapshot: ExtensionStatusSnapshot): ExtensionStatusSnapshot {
+	return { ...snapshot, status: cloneExtensionStatus(snapshot.status) };
 }

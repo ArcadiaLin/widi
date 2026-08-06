@@ -3,11 +3,7 @@ import { fixCjkLineStarts } from "../cjk-wrap.ts";
 import type { TimelineItem, TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
 import { activeAgent } from "./common.ts";
-import {
-	renderDeps,
-	renderTimelineItem,
-	type TimelineRenderContext,
-} from "./timeline-item.ts";
+import { renderDeps, renderTimelineItem, type TimelineRenderContext } from "./timeline-item.ts";
 
 interface CachedItemRender {
 	readonly deps: readonly unknown[];
@@ -30,9 +26,7 @@ export class ChatView implements Component {
 		const agent = activeAgent(this.state);
 		const pending = this.state.pendingAgent;
 		if (!agent && !pending) {
-			return new Text(theme.dim("Preparing the first agent…"), 1, 1).render(
-				width,
-			);
+			return new Text(theme.dim("Preparing the first agent…"), 1, 1).render(width);
 		}
 		const timeline = agent?.timeline ?? pending?.timeline ?? [];
 		const viewId = agent?.agentId ?? "pending";
@@ -41,11 +35,7 @@ export class ChatView implements Component {
 			this.cachedAgentId = viewId;
 		}
 		if (timeline.length === 0) {
-			const message =
-				agent?.status === "unavailable"
-					? "This agent is unavailable. Review its diagnostics below."
-					: "Ask WIDI to inspect, explain, or change this workspace.";
-			return new Text(theme.dim(message), 1, 1).render(width);
+			return new Text(theme.dim("Ask WIDI to inspect, explain, or change this workspace."), 1, 1).render(width);
 		}
 
 		const liveThinkingIds = new Set<string>();
@@ -53,11 +43,7 @@ export class ChatView implements Component {
 		for (const item of timeline) {
 			if (item.type === "thinking-status" && item.status === "thinking") {
 				liveThinkingIds.add(item.id);
-			} else if (
-				item.type === "tool-execution" &&
-				item.status === "preparing" &&
-				item.sourceAssistantId
-			) {
+			} else if (item.type === "tool-execution" && item.status === "preparing" && item.sourceAssistantId) {
 				livePreparingAssistantIds.add(item.sourceAssistantId);
 			}
 		}
@@ -87,21 +73,13 @@ export class ChatView implements Component {
 	 * Timeline items keep a stable identity, so historical Markdown parsing and
 	 * wrapping only reruns when an item's render-relevant facts change.
 	 */
-	private renderItem(
-		item: TimelineItem,
-		width: number,
-		context: TimelineRenderContext,
-		key: string,
-	): string[] {
+	private renderItem(item: TimelineItem, width: number, context: TimelineRenderContext, key: string): string[] {
 		const deps = renderDeps(item, context);
 		const cached = this.itemCache.get(key);
 		if (cached && cached.width === width && sameDeps(cached.deps, deps)) {
 			return cached.lines;
 		}
-		const lines = fixCjkLineStarts(
-			renderTimelineItem(item, width, context),
-			width,
-		);
+		const lines = fixCjkLineStarts(renderTimelineItem(item, width, context), width);
 		this.itemCache.set(key, { deps, width, lines });
 		return lines;
 	}

@@ -105,15 +105,10 @@ export type PersistenceRefResult =
  * conversation itself unreadable, which is the one thing the session file is
  * for.
  */
-export function parsePersistenceRef(
-	entry: SessionTreeEntry,
-): PersistenceRefResult | undefined {
+export function parsePersistenceRef(entry: SessionTreeEntry): PersistenceRefResult | undefined {
 	if (entry.type !== "custom") return undefined;
 	if (entry.customType !== PERSISTENCE_REF_CUSTOM_TYPE) return undefined;
-	const reject = (
-		problem: PersistenceRefProblem,
-		detail: string,
-	): PersistenceRefResult => ({
+	const reject = (problem: PersistenceRefProblem, detail: string): PersistenceRefResult => ({
 		ok: false,
 		rejection: { entryId: entry.id, problem, detail },
 	});
@@ -124,10 +119,7 @@ export function parsePersistenceRef(
 	}
 	const candidate = data as Partial<PersistenceRefData>;
 	if (candidate.version !== PERSISTENCE_REF_VERSION) {
-		return reject(
-			"unsupported_version",
-			`ref version ${String(candidate.version)} is not supported`,
-		);
+		return reject("unsupported_version", `ref version ${String(candidate.version)} is not supported`);
 	}
 	if (typeof candidate.namespace !== "string" || !candidate.namespace) {
 		return reject("malformed", "ref is missing a namespace");
@@ -135,19 +127,10 @@ export function parsePersistenceRef(
 	if (candidate.stateRoot !== null && typeof candidate.stateRoot !== "string") {
 		return reject("malformed", "ref stateRoot must be a string or null");
 	}
-	if (
-		typeof candidate.stateRoot === "string" &&
-		!isContentHash(candidate.stateRoot)
-	) {
-		return reject(
-			"invalid_state_root",
-			`ref stateRoot ${candidate.stateRoot} is not a content hash`,
-		);
+	if (typeof candidate.stateRoot === "string" && !isContentHash(candidate.stateRoot)) {
+		return reject("invalid_state_root", `ref stateRoot ${candidate.stateRoot} is not a content hash`);
 	}
-	if (
-		candidate.anchorEntryId !== undefined &&
-		typeof candidate.anchorEntryId !== "string"
-	) {
+	if (candidate.anchorEntryId !== undefined && typeof candidate.anchorEntryId !== "string") {
 		return reject("malformed", "ref anchorEntryId must be a string");
 	}
 	if (candidate.origin !== undefined && typeof candidate.origin !== "string") {
@@ -193,24 +176,18 @@ export function createPersistenceRefData(options: {
 	readonly origin?: PersistenceRefOrigin;
 }): PersistenceRefData {
 	if (options.stateRoot !== null && !isContentHash(options.stateRoot)) {
-		throw new Error(
-			`A persistence ref must name a content hash, got ${options.stateRoot}.`,
-		);
+		throw new Error(`A persistence ref must name a content hash, got ${options.stateRoot}.`);
 	}
 	const data: PersistenceRefData = {
 		version: PERSISTENCE_REF_VERSION,
 		namespace: options.namespace,
 		stateRoot: options.stateRoot,
-		...(options.anchorEntryId === undefined
-			? undefined
-			: { anchorEntryId: options.anchorEntryId }),
+		...(options.anchorEntryId === undefined ? undefined : { anchorEntryId: options.anchorEntryId }),
 		...(options.origin === undefined ? undefined : { origin: options.origin }),
 	};
 	const size = Buffer.byteLength(JSON.stringify(data), "utf-8");
 	if (size > MAX_PERSISTENCE_REF_BYTES) {
-		throw new Error(
-			`A persistence ref must stay under ${MAX_PERSISTENCE_REF_BYTES} bytes, got ${size}.`,
-		);
+		throw new Error(`A persistence ref must stay under ${MAX_PERSISTENCE_REF_BYTES} bytes, got ${size}.`);
 	}
 	return data;
 }

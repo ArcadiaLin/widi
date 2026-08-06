@@ -17,8 +17,7 @@ export async function withFileMutationQueue<T>(
 	fn: () => Promise<T>,
 	options: FileMutationQueueOptions = {},
 ): Promise<T> {
-	const operations =
-		options.operations ?? createLocalCodingToolFileOperations();
+	const operations = options.operations ?? createLocalCodingToolFileOperations();
 	const registration = registrationQueue.then(async () => {
 		const key = await getMutationQueueKey(filePath, operations);
 		const currentQueue = fileMutationQueues.get(key) ?? Promise.resolve();

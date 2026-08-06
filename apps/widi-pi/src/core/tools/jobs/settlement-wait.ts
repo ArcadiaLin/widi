@@ -1,8 +1,4 @@
-import type {
-	BackgroundJob,
-	BackgroundJobOutcome,
-	BackgroundJobTable,
-} from "../../background/index.ts";
+import type { BackgroundJobOutcome, BackgroundJobSnapshot, BackgroundJobWatch } from "../../background/index.ts";
 import type { HumanInterruptWatch } from "../../human-interrupt.ts";
 
 /**
@@ -13,11 +9,7 @@ import type { HumanInterruptWatch } from "../../human-interrupt.ts";
  * - `steered`: the human sent a steer, so the wait gave the turn back rather
  *   than holding it open until the steer could be read.
  */
-export type SettlementWaitOutcome =
-	| "completed"
-	| "timed_out"
-	| "aborted"
-	| "steered";
+export type SettlementWaitOutcome = "completed" | "timed_out" | "aborted" | "steered";
 
 /**
  * Wait for every job in `pending` to settle, up to `timeoutMs`. Shared waiting
@@ -26,9 +18,11 @@ export type SettlementWaitOutcome =
  * Each settlement is reported through `onSettled` and removed from `pending`,
  * so whatever remains in `pending` afterwards is still running. The change
  * listener, the timer, the abort listener and the interrupt subscription are
- * all released on every exit path (`finish` is idempotent). Subscribes
- * synchronously, so a caller may start the wait before triggering the
- * settlements it expects to observe.
+ * all released on every exit path (`finish` is idempotent).
+ *
+ * `watch` is taken rather than opened here: it buffers from the instant it was
+ * created, so the caller lists and subscribes without a gap and may trigger the
+ * settlements it expects to observe before this is even called.
  *
  * `humanInterrupts` opts the wait into ending on a human steer. A steer is only
  * read at a turn boundary, so a wait that keeps holding the turn is exactly
@@ -36,15 +30,14 @@ export type SettlementWaitOutcome =
  * lets the loop drain it.
  */
 export function waitForSettlements(options: {
-	table: BackgroundJobTable;
-	pending: Map<string, BackgroundJob>;
+	watch: BackgroundJobWatch;
+	pending: Map<string, BackgroundJobSnapshot>;
 	timeoutMs: number;
 	signal: AbortSignal | undefined;
 	humanInterrupts?: HumanInterruptWatch;
-	onSettled: (job: BackgroundJob, outcome: BackgroundJobOutcome) => void;
+	onSettled: (job: BackgroundJobSnapshot, outcome: BackgroundJobOutcome) => void;
 }): Promise<SettlementWaitOutcome> {
-	const { table, pending, timeoutMs, signal, humanInterrupts, onSettled } =
-		options;
+	const { watch, pending, timeoutMs, signal, humanInterrupts, onSettled } = options;
 	return new Promise((resolve) => {
 		let finished = false;
 		let timer: NodeJS.Timeout | undefined;
@@ -59,10 +52,10 @@ export function waitForSettlements(options: {
 			resolve(outcome);
 		};
 		const onAbort = () => finish("aborted");
-		const unsubscribe = table.onChange((change) => {
+		const unsubscribe = watch.start((change) => {
 			if (change.transition !== "settled") return;
-			if (!pending.has(change.job.id)) return;
-			pending.delete(change.job.id);
+			if (!pending.has(change.job.jobId)) return;
+			pending.delete(change.job.jobId);
 			onSettled(change.job, change.outcome);
 			if (pending.size === 0) finish("completed");
 		});

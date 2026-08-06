@@ -1,55 +1,37 @@
 import type { AgentToolResult } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
-import {
-	createAgentHarnessToolFromResolvedTool,
-	ToolRegistry,
-} from "../../src/core/tool-registry.ts";
+import { createAgentHarnessToolFromResolvedTool, ToolRegistry } from "../../src/core/tool-registry.ts";
 import {
 	createLocalReadImageOperations,
 	createReadToolDefinition,
 	type ReadImageOperations,
 	type ReadToolDetails,
 } from "../../src/core/tools/coding/read.ts";
-import type {
-	ImageProcessor,
-	ProcessImageResult,
-} from "../../src/utils/image/process-image.ts";
+import type { ImageProcessor, ProcessImageResult } from "../../src/utils/image/process-image.ts";
 
 class MemoryReadOperations {
 	readonly files = new Map<string, Buffer>();
 
 	set(path: string, content: string | Buffer): void {
-		this.files.set(
-			path,
-			typeof content === "string" ? Buffer.from(content, "utf-8") : content,
-		);
+		this.files.set(path, typeof content === "string" ? Buffer.from(content, "utf-8") : content);
 	}
 
 	async access(path: string): Promise<void> {
 		if (!this.files.has(path)) {
-			throw Object.assign(new Error(`File not found: ${path}`), {
-				code: "ENOENT",
-			});
+			throw Object.assign(new Error(`File not found: ${path}`), { code: "ENOENT" });
 		}
 	}
 
 	async readFile(path: string): Promise<Buffer> {
 		const content = this.files.get(path);
 		if (!content) {
-			throw Object.assign(new Error(`File not found: ${path}`), {
-				code: "ENOENT",
-			});
+			throw Object.assign(new Error(`File not found: ${path}`), { code: "ENOENT" });
 		}
 		return content;
 	}
 }
 
-const emptyExecutionContext = {
-	signal: undefined,
-	onUpdate: undefined,
-	extension: undefined,
-	human: undefined,
-};
+const emptyExecutionContext = { signal: undefined, onUpdate: undefined, extension: undefined, human: undefined };
 
 /** Valid PNG header: signature plus a minimal IHDR chunk. */
 const PNG_FILE = Buffer.concat([
@@ -59,24 +41,12 @@ const PNG_FILE = Buffer.concat([
 	Buffer.alloc(13 + 4),
 ]);
 
-function makeImageOperations(
-	processImage: ImageProcessor,
-): ReadImageOperations {
-	return {
-		detectImageMimeType: createLocalReadImageOperations().detectImageMimeType,
-		processImage,
-	};
+function makeImageOperations(processImage: ImageProcessor): ReadImageOperations {
+	return { detectImageMimeType: createLocalReadImageOperations().detectImageMimeType, processImage };
 }
 
-function successProcessor(
-	overrides: Partial<Extract<ProcessImageResult, { ok: true }>> = {},
-): ImageProcessor {
-	return async () => ({
-		ok: true,
-		data: "cHJvY2Vzc2Vk",
-		mimeType: "image/png",
-		...overrides,
-	});
+function successProcessor(overrides: Partial<Extract<ProcessImageResult, { ok: true }>> = {}): ImageProcessor {
+	return async () => ({ ok: true, data: "cHJvY2Vzc2Vk", mimeType: "image/png", ...overrides });
 }
 
 function getTextContent(result: AgentToolResult<ReadToolDetails>): string {
@@ -93,11 +63,7 @@ describe("core read tool", () => {
 		operations.set("/workspace/project/src/file.ts", "alpha\nbeta\n");
 		const tool = createReadToolDefinition("/workspace/project", { operations });
 
-		const result = await tool.execute(
-			"call-1",
-			{ path: "src/file.ts" },
-			emptyExecutionContext,
-		);
+		const result = await tool.execute("call-1", { path: "src/file.ts" }, emptyExecutionContext);
 
 		expect(result.content).toEqual([{ type: "text", text: "alpha\nbeta\n" }]);
 		expect(result.details).toMatchObject({
@@ -116,17 +82,10 @@ describe("core read tool", () => {
 		operations.set("/workspace/project/file.txt", "one\ntwo\nthree\nfour");
 		const tool = createReadToolDefinition("/workspace/project", { operations });
 
-		const result = await tool.execute(
-			"call-1",
-			{ path: "file.txt", offset: 2, limit: 2 },
-			emptyExecutionContext,
-		);
+		const result = await tool.execute("call-1", { path: "file.txt", offset: 2, limit: 2 }, emptyExecutionContext);
 
 		expect(result.content).toEqual([
-			{
-				type: "text",
-				text: "two\nthree\n\n[1 more lines in file. Use offset=4 to continue.]",
-			},
+			{ type: "text", text: "two\nthree\n\n[1 more lines in file. Use offset=4 to continue.]" },
 		]);
 		expect(result.details.returnedLineRange).toEqual({ start: 2, end: 3 });
 	});
@@ -134,69 +93,36 @@ describe("core read tool", () => {
 	it("reports truncation by line limit with typed details", async () => {
 		const operations = new MemoryReadOperations();
 		operations.set("/workspace/project/file.txt", "one\ntwo\nthree");
-		const tool = createReadToolDefinition("/workspace/project", {
-			operations,
-			maxLines: 2,
-			maxBytes: 100,
-		});
+		const tool = createReadToolDefinition("/workspace/project", { operations, maxLines: 2, maxBytes: 100 });
 
-		const result = await tool.execute(
-			"call-1",
-			{ path: "file.txt" },
-			emptyExecutionContext,
-		);
+		const result = await tool.execute("call-1", { path: "file.txt" }, emptyExecutionContext);
 
 		expect(result.content).toEqual([
-			{
-				type: "text",
-				text: "one\ntwo\n\n[Showing lines 1-2 of 3. Use offset=3 to continue.]",
-			},
+			{ type: "text", text: "one\ntwo\n\n[Showing lines 1-2 of 3. Use offset=3 to continue.]" },
 		]);
-		expect(result.details.truncation).toMatchObject({
-			truncated: true,
-			truncatedBy: "lines",
-			outputLines: 2,
-		});
+		expect(result.details.truncation).toMatchObject({ truncated: true, truncatedBy: "lines", outputLines: 2 });
 	});
 
 	it("does not return partial lines when byte limit cuts the first line", async () => {
 		const operations = new MemoryReadOperations();
 		operations.set("/workspace/project/file.txt", "123456\nok");
-		const tool = createReadToolDefinition("/workspace/project", {
-			operations,
-			maxLines: 10,
-			maxBytes: 4,
-		});
+		const tool = createReadToolDefinition("/workspace/project", { operations, maxLines: 10, maxBytes: 4 });
 
-		const result = await tool.execute(
-			"call-1",
-			{ path: "file.txt" },
-			emptyExecutionContext,
-		);
+		const result = await tool.execute("call-1", { path: "file.txt" }, emptyExecutionContext);
 
 		expect(getTextContent(result)).toBe(
 			"[Line 1 in file.txt is 6B, exceeding the 4B read limit. The core read tool does not return partial lines.]",
 		);
-		expect(result.details.truncation).toMatchObject({
-			firstLineExceedsLimit: true,
-			outputLines: 0,
-		});
+		expect(result.details.truncation).toMatchObject({ firstLineExceedsLimit: true, outputLines: 0 });
 	});
 
 	it("treats files that only spoof an image signature as binary", async () => {
 		const operations = new MemoryReadOperations();
 		// PNG signature without an IHDR chunk fails image detection.
-		operations.set(
-			"/workspace/project/image.png",
-			Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-		);
+		operations.set("/workspace/project/image.png", Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
 		const tool = createReadToolDefinition("/workspace/project", { operations });
 
-		const result = await tool.execute(
-			"call-1",
-			{ path: "image.png" },
-			emptyExecutionContext,
-		);
+		const result = await tool.execute("call-1", { path: "image.png" }, emptyExecutionContext);
 
 		expect(getTextContent(result)).toBe(
 			"Cannot read image.png: Binary or non-UTF-8 files are not supported by the core read tool.",
@@ -206,27 +132,17 @@ describe("core read tool", () => {
 
 	it("reports binary files as unsupported structured results", async () => {
 		const operations = new MemoryReadOperations();
-		operations.set(
-			"/workspace/project/blob.bin",
-			Buffer.from([0x66, 0x00, 0x67]),
-		);
+		operations.set("/workspace/project/blob.bin", Buffer.from([0x66, 0x00, 0x67]));
 		const tool = createReadToolDefinition("/workspace/project", { operations });
 
-		const result = await tool.execute(
-			"call-1",
-			{ path: "blob.bin" },
-			emptyExecutionContext,
-		);
+		const result = await tool.execute("call-1", { path: "blob.bin" }, emptyExecutionContext);
 
 		expect(getTextContent(result)).toBe(
 			"Cannot read blob.bin: Binary or non-UTF-8 files are not supported by the core read tool.",
 		);
 		expect(result.details).toMatchObject({
 			mediaKind: "binary",
-			unsupported: {
-				reason:
-					"Binary or non-UTF-8 files are not supported by the core read tool.",
-			},
+			unsupported: { reason: "Binary or non-UTF-8 files are not supported by the core read tool." },
 		});
 	});
 
@@ -235,46 +151,26 @@ describe("core read tool", () => {
 		operations.set("/workspace/project/file.txt", "one\ntwo");
 		const tool = createReadToolDefinition("/workspace/project", { operations });
 
-		await expect(
-			tool.execute(
-				"call-1",
-				{ path: "file.txt", offset: 3 },
-				emptyExecutionContext,
-			),
-		).rejects.toThrow("Offset 3 is beyond end of file (2 lines total).");
-		await expect(
-			tool.execute(
-				"call-1",
-				{ path: "file.txt", limit: 0 },
-				emptyExecutionContext,
-			),
-		).rejects.toThrow("limit must be a positive line count");
+		await expect(tool.execute("call-1", { path: "file.txt", offset: 3 }, emptyExecutionContext)).rejects.toThrow(
+			"Offset 3 is beyond end of file (2 lines total).",
+		);
+		await expect(tool.execute("call-1", { path: "file.txt", limit: 0 }, emptyExecutionContext)).rejects.toThrow(
+			"limit must be a positive line count",
+		);
 	});
 
 	it("returns a text note and an image block for image files", async () => {
 		const operations = new MemoryReadOperations();
 		operations.set("/workspace/project/image.png", PNG_FILE);
-		const seenCalls: Array<{
-			mimeType: string;
-			autoResize: boolean | undefined;
-		}> = [];
-		const imageOperations = makeImageOperations(
-			async (bytes, mimeType, options) => {
-				seenCalls.push({ mimeType, autoResize: options?.autoResize });
-				expect(Buffer.from(bytes).equals(PNG_FILE)).toBe(true);
-				return { ok: true, data: "cHJvY2Vzc2Vk", mimeType: "image/png" };
-			},
-		);
-		const tool = createReadToolDefinition("/workspace/project", {
-			operations,
-			imageOperations,
+		const seenCalls: Array<{ mimeType: string; autoResize: boolean | undefined }> = [];
+		const imageOperations = makeImageOperations(async (bytes, mimeType, options) => {
+			seenCalls.push({ mimeType, autoResize: options?.autoResize });
+			expect(Buffer.from(bytes).equals(PNG_FILE)).toBe(true);
+			return { ok: true, data: "cHJvY2Vzc2Vk", mimeType: "image/png" };
 		});
+		const tool = createReadToolDefinition("/workspace/project", { operations, imageOperations });
 
-		const result = await tool.execute(
-			"call-1",
-			{ path: "image.png" },
-			emptyExecutionContext,
-		);
+		const result = await tool.execute("call-1", { path: "image.png" }, emptyExecutionContext);
 
 		expect(result.content).toEqual([
 			{ type: "text", text: "Read image file [image/png]" },
@@ -283,12 +179,7 @@ describe("core read tool", () => {
 		expect(result.details).toMatchObject({
 			mediaKind: "image",
 			bytes: PNG_FILE.byteLength,
-			image: {
-				originalMimeType: "image/png",
-				mimeType: "image/png",
-				converted: false,
-				resized: false,
-			},
+			image: { originalMimeType: "image/png", mimeType: "image/png", converted: false, resized: false },
 		});
 		expect(seenCalls).toEqual([{ mimeType: "image/png", autoResize: true }]);
 	});
@@ -302,22 +193,12 @@ describe("core read tool", () => {
 				successProcessor({
 					mimeType: "image/jpeg",
 					convertedFrom: "image/png",
-					dimensions: {
-						originalWidth: 4000,
-						originalHeight: 3000,
-						width: 2000,
-						height: 1500,
-						wasResized: true,
-					},
+					dimensions: { originalWidth: 4000, originalHeight: 3000, width: 2000, height: 1500, wasResized: true },
 				}),
 			),
 		});
 
-		const result = await tool.execute(
-			"call-1",
-			{ path: "photo.png" },
-			emptyExecutionContext,
-		);
+		const result = await tool.execute("call-1", { path: "photo.png" }, emptyExecutionContext);
 
 		expect(getTextContent(result)).toBe(
 			[
@@ -369,11 +250,7 @@ describe("core read tool", () => {
 			}),
 		});
 
-		const result = await tool.execute(
-			"call-1",
-			{ path: "image.png" },
-			emptyExecutionContext,
-		);
+		const result = await tool.execute("call-1", { path: "image.png" }, emptyExecutionContext);
 
 		expect(processorCalled).toBe(false);
 		expect(result.content).toEqual([
@@ -382,10 +259,7 @@ describe("core read tool", () => {
 				text: "Read image file [image/png]\n[Image blocked: the images.blockImages setting prevents sending images to model providers.]",
 			},
 		]);
-		expect(result.details.image).toMatchObject({
-			originalMimeType: "image/png",
-			blocked: true,
-		});
+		expect(result.details.image).toMatchObject({ originalMimeType: "image/png", blocked: true });
 	});
 
 	it("returns a text-only omitted note when image processing fails", async () => {
@@ -399,11 +273,7 @@ describe("core read tool", () => {
 			})),
 		});
 
-		const result = await tool.execute(
-			"call-1",
-			{ path: "image.png" },
-			emptyExecutionContext,
-		);
+		const result = await tool.execute("call-1", { path: "image.png" }, emptyExecutionContext);
 
 		expect(result.content).toEqual([
 			{
@@ -425,20 +295,12 @@ describe("core read tool", () => {
 			imageOperations: makeImageOperations(successProcessor()),
 		});
 
-		await expect(
-			tool.execute(
-				"call-1",
-				{ path: "image.png", offset: 1 },
-				emptyExecutionContext,
-			),
-		).rejects.toThrow("offset and limit are not supported for image files");
-		await expect(
-			tool.execute(
-				"call-1",
-				{ path: "image.png", limit: 5 },
-				emptyExecutionContext,
-			),
-		).rejects.toThrow("offset and limit are not supported for image files");
+		await expect(tool.execute("call-1", { path: "image.png", offset: 1 }, emptyExecutionContext)).rejects.toThrow(
+			"offset and limit are not supported for image files",
+		);
+		await expect(tool.execute("call-1", { path: "image.png", limit: 5 }, emptyExecutionContext)).rejects.toThrow(
+			"offset and limit are not supported for image files",
+		);
 	});
 
 	it("keeps image content through the registry adapter", async () => {
@@ -456,13 +318,7 @@ describe("core read tool", () => {
 		if (!resolved) throw new Error("Expected read tool to resolve.");
 		const agentTool = createAgentHarnessToolFromResolvedTool(resolved);
 
-		const result = await agentTool.execute(
-			"call-1",
-			{ path: "image.png" },
-			undefined,
-			undefined,
-			{},
-		);
+		const result = await agentTool.execute("call-1", { path: "image.png" }, undefined, undefined, {});
 
 		expect(result.content).toEqual([
 			{ type: "text", text: "Read image file [image/png]" },
@@ -474,31 +330,19 @@ describe("core read tool", () => {
 		const operations = new MemoryReadOperations();
 		operations.set("/workspace/project/file.txt", "hello");
 		const registry = new ToolRegistry();
-		registry.defineTool(
-			createReadToolDefinition("/workspace/project", { operations }),
-			{
-				kind: "core",
-				id: "builtin",
-			},
-		);
+		registry.defineTool(createReadToolDefinition("/workspace/project", { operations }), {
+			kind: "core",
+			id: "builtin",
+		});
 		const resolved = registry.resolve().getTool("read");
 		if (!resolved) throw new Error("Expected read tool to resolve.");
 		const agentTool = createAgentHarnessToolFromResolvedTool(resolved);
 
-		const result = await agentTool.execute(
-			"call-1",
-			{ path: "file.txt" },
-			undefined,
-			undefined,
-			{},
-		);
+		const result = await agentTool.execute("call-1", { path: "file.txt" }, undefined, undefined, {});
 
 		expect(result).toMatchObject({
 			content: [{ type: "text", text: "hello" }],
-			details: {
-				absolutePath: "/workspace/project/file.txt",
-				mediaKind: "text",
-			},
+			details: { absolutePath: "/workspace/project/file.txt", mediaKind: "text" },
 		});
 	});
 });

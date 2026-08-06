@@ -2,11 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
-import {
-	killProcessTree,
-	trackDetachedChildPid,
-	untrackDetachedChildPid,
-} from "./process.ts";
+import { killProcessTree, trackDetachedChildPid, untrackDetachedChildPid } from "./process.ts";
 
 export interface RgRunOptions {
 	signal?: AbortSignal;
@@ -26,10 +22,7 @@ export interface RgRunResult {
  * Override this to delegate search execution to a sandbox, SSH host, or remote
  * environment.
  */
-export type RgRunner = (
-	args: readonly string[],
-	options: RgRunOptions,
-) => Promise<RgRunResult>;
+export type RgRunner = (args: readonly string[], options: RgRunOptions) => Promise<RgRunResult>;
 
 /**
  * Resolve the ripgrep executable from an explicit settings path or PATH.
@@ -46,9 +39,7 @@ export function resolveRgExecutable(explicitPath?: string): string {
 	if (rgOnPath) {
 		return rgOnPath;
 	}
-	throw new Error(
-		"ripgrep (rg) was not found on PATH. Install ripgrep or set rgPath in settings.",
-	);
+	throw new Error("ripgrep (rg) was not found on PATH. Install ripgrep or set rgPath in settings.");
 }
 
 let cachedRgOnPath: string | null | undefined;
@@ -57,8 +48,7 @@ function findRgOnPath(): string | null {
 	if (cachedRgOnPath !== undefined) {
 		return cachedRgOnPath;
 	}
-	const executableNames =
-		process.platform === "win32" ? ["rg.exe", "rg"] : ["rg"];
+	const executableNames = process.platform === "win32" ? ["rg.exe", "rg"] : ["rg"];
 	for (const directory of (process.env.PATH ?? "").split(delimiter)) {
 		if (!directory) continue;
 		for (const executableName of executableNames) {
@@ -131,9 +121,7 @@ export function createLocalRgRunner(rgPath?: string): RgRunner {
 				onLine(line, stop);
 			});
 			child.on("error", (error) => {
-				settle(() =>
-					reject(new Error(`Failed to run ripgrep: ${error.message}`)),
-				);
+				settle(() => reject(new Error(`Failed to run ripgrep: ${error.message}`)));
 			});
 			child.on("close", (code) => {
 				settle(() => {

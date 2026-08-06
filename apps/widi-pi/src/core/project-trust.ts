@@ -17,11 +17,7 @@ export interface ProjectTrustUpdate {
 	readonly decision: ProjectTrustDecision;
 }
 
-export type ProjectTrustDecisionSource =
-	| "override"
-	| "store"
-	| "settings_default"
-	| "implicit_no_project_resources";
+export type ProjectTrustDecisionSource = "override" | "store" | "settings_default" | "implicit_no_project_resources";
 
 export interface ProjectTrustResolution {
 	readonly trusted: boolean;
@@ -50,9 +46,7 @@ const TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES = [
 ] as const;
 
 function normalizePath(path: string): string {
-	return (
-		path.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/, "") || "/"
-	);
+	return path.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/, "") || "/";
 }
 
 function dirname(path: string): string {
@@ -73,9 +67,7 @@ function parseTrustFile(content: string | undefined): TrustFile {
 	const data: TrustFile = {};
 	for (const [key, value] of Object.entries(parsed)) {
 		if (value !== true && value !== false && value !== null) {
-			throw new Error(
-				`Invalid trust store: value for ${JSON.stringify(key)} must be true, false, or null`,
-			);
+			throw new Error(`Invalid trust store: value for ${JSON.stringify(key)} must be true, false, or null`);
 		}
 		data[normalizePath(key)] = value;
 	}
@@ -93,10 +85,7 @@ function serializeTrustFile(data: TrustFile): string {
 	return `${JSON.stringify(sorted, null, 2)}\n`;
 }
 
-function findNearestTrustEntry(
-	data: TrustFile,
-	cwd: string,
-): ProjectTrustStoreEntry | null {
+function findNearestTrustEntry(data: TrustFile, cwd: string): ProjectTrustStoreEntry | null {
 	let current = normalizePath(cwd);
 	while (true) {
 		const decision = data[current];
@@ -116,10 +105,7 @@ export class ProjectTrustStore {
 	private readonly lock = new AsyncLock();
 	private trustPath: string | undefined;
 
-	constructor(options: {
-		readonly executionEnv: ExecutionEnv;
-		readonly agentDir?: string;
-	}) {
+	constructor(options: { readonly executionEnv: ExecutionEnv; readonly agentDir?: string }) {
 		this.executionEnv = options.executionEnv;
 		this.agentDir = options.agentDir ?? DEFAULT_AGENT_DIR;
 	}
@@ -130,9 +116,7 @@ export class ProjectTrustStore {
 
 	async getEntry(cwd: string): Promise<ProjectTrustStoreEntry | null> {
 		const normalizedCwd = await this.absolutePath(cwd);
-		return await this.withTrustFile(async (data) =>
-			findNearestTrustEntry(data, normalizedCwd),
-		);
+		return await this.withTrustFile(async (data) => findNearestTrustEntry(data, normalizedCwd));
 	}
 
 	async set(cwd: string, decision: ProjectTrustDecision): Promise<void> {
@@ -141,10 +125,7 @@ export class ProjectTrustStore {
 
 	async setMany(updates: readonly ProjectTrustUpdate[]): Promise<void> {
 		const normalizedUpdates = await Promise.all(
-			updates.map(async (update) => ({
-				path: await this.absolutePath(update.path),
-				decision: update.decision,
-			})),
+			updates.map(async (update) => ({ path: await this.absolutePath(update.path), decision: update.decision })),
 		);
 		await this.withTrustFile(async (data) => {
 			for (const update of normalizedUpdates) {
@@ -158,15 +139,11 @@ export class ProjectTrustStore {
 		});
 	}
 
-	private async withTrustFile<T>(
-		fn: (data: TrustFile) => Promise<T> | T,
-	): Promise<T> {
+	private async withTrustFile<T>(fn: (data: TrustFile) => Promise<T> | T): Promise<T> {
 		return await this.lock.run(async () => {
 			const path = await this.getTrustPath();
 			const exists = unwrapResult(await this.executionEnv.exists(path));
-			const current = exists
-				? unwrapResult(await this.executionEnv.readTextFile(path))
-				: undefined;
+			const current = exists ? unwrapResult(await this.executionEnv.readTextFile(path)) : undefined;
 			const data = parseTrustFile(current);
 			const before = serializeTrustFile(data);
 			const result = await fn(data);
@@ -180,17 +157,13 @@ export class ProjectTrustStore {
 
 	private async getTrustPath(): Promise<string> {
 		if (!this.trustPath) {
-			this.trustPath = unwrapResult(
-				await this.executionEnv.joinPath([this.agentDir, "trust.json"]),
-			);
+			this.trustPath = unwrapResult(await this.executionEnv.joinPath([this.agentDir, "trust.json"]));
 		}
 		return this.trustPath;
 	}
 
 	private async absolutePath(path: string): Promise<string> {
-		return normalizePath(
-			unwrapResult(await this.executionEnv.absolutePath(path)),
-		);
+		return normalizePath(unwrapResult(await this.executionEnv.absolutePath(path)));
 	}
 }
 
@@ -199,18 +172,12 @@ export async function hasTrustRequiringProjectResources(options: {
 	readonly cwd: string;
 	readonly projectConfigDir?: string;
 }): Promise<boolean> {
-	const cwd = unwrapResult(
-		await options.executionEnv.absolutePath(options.cwd),
-	);
+	const cwd = unwrapResult(await options.executionEnv.absolutePath(options.cwd));
 	const projectConfigDir = options.projectConfigDir ?? DEFAULT_AGENT_DIR;
-	const configDir = unwrapResult(
-		await options.executionEnv.joinPath([cwd, projectConfigDir]),
-	);
+	const configDir = unwrapResult(await options.executionEnv.joinPath([cwd, projectConfigDir]));
 
 	for (const entry of TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES) {
-		const path = unwrapResult(
-			await options.executionEnv.joinPath([configDir, entry]),
-		);
+		const path = unwrapResult(await options.executionEnv.joinPath([configDir, entry]));
 		const exists = await options.executionEnv.exists(path);
 		if (exists.ok && exists.value) return true;
 		if (!exists.ok && exists.error.code !== "not_found") return true;
@@ -227,13 +194,9 @@ export async function createProjectExtensionTrustDiagnostics(options: {
 }): Promise<CoreDiagnostic[]> {
 	if (options.projectTrusted) return [];
 
-	const cwd = unwrapResult(
-		await options.executionEnv.absolutePath(options.cwd),
-	);
+	const cwd = unwrapResult(await options.executionEnv.absolutePath(options.cwd));
 	const projectConfigDir = options.projectConfigDir ?? DEFAULT_AGENT_DIR;
-	const path = unwrapResult(
-		await options.executionEnv.joinPath([cwd, projectConfigDir, "extensions"]),
-	);
+	const path = unwrapResult(await options.executionEnv.joinPath([cwd, projectConfigDir, "extensions"]));
 	const infoResult = await options.executionEnv.fileInfo(path);
 	if (!infoResult.ok || infoResult.value.kind !== "directory") {
 		return [];
@@ -248,9 +211,7 @@ export async function createProjectExtensionTrustDiagnostics(options: {
 	];
 }
 
-export async function resolveProjectTrust(
-	options: ResolveProjectTrustOptions,
-): Promise<ProjectTrustResolution> {
+export async function resolveProjectTrust(options: ResolveProjectTrustOptions): Promise<ProjectTrustResolution> {
 	if (options.trustOverride !== undefined) {
 		return { trusted: options.trustOverride, source: "override" };
 	}

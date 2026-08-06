@@ -1,11 +1,6 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { renderDiffText } from "./diff.ts";
-import {
-	formatUnknown,
-	sanitizeTerminalText,
-	singleLine,
-	spinnerFrame,
-} from "./format.ts";
+import { formatUnknown, sanitizeTerminalText, singleLine, spinnerFrame } from "./format.ts";
 import type { ToolExecutionItem } from "./state.ts";
 import { theme } from "./theme/theme.ts";
 
@@ -17,11 +12,7 @@ const PREVIEW_MAX_CHARACTERS = 1_600;
 const EXPANDED_MAX_CHARACTERS = 40_000;
 
 /** Built-in tools whose successful results collapse to a count suffix. */
-const COUNT_SUFFIX_TOOLS: Record<string, string> = {
-	ls: "entries",
-	read: "lines",
-	find: "matches",
-};
+const COUNT_SUFFIX_TOOLS: Record<string, string> = { ls: "entries", read: "lines", find: "matches" };
 
 export interface PresentToolOptions {
 	/** Show full output instead of the collapsed preview (ctrl+o toggle). */
@@ -53,33 +44,20 @@ export function presentToolExecution(
 		return [truncateToWidth(headline, Math.max(8, width), "…")];
 	}
 
-	const glyph =
-		item.status === "running"
-			? theme.info("●")
-			: item.isError
-				? theme.error("✕")
-				: theme.ok("✓");
+	const glyph = item.status === "running" ? theme.info("●") : item.isError ? theme.error("✕") : theme.ok("✓");
 
-	const resultText =
-		item.status === "running"
-			? toolResultText(item.partialResult)
-			: toolResultText(item.result);
-	const maxCharacters = expanded
-		? EXPANDED_MAX_CHARACTERS
-		: PREVIEW_MAX_CHARACTERS;
+	const resultText = item.status === "running" ? toolResultText(item.partialResult) : toolResultText(item.result);
+	const maxCharacters = expanded ? EXPANDED_MAX_CHARACTERS : PREVIEW_MAX_CHARACTERS;
 	const resultLines = resultText
 		? sanitizeTerminalText(resultText)
 				.slice(0, maxCharacters)
 				.split("\n")
-				.filter(
-					(line, index, all) => line.trim() !== "" || index < all.length - 1,
-				)
+				.filter((line, index, all) => line.trim() !== "" || index < all.length - 1)
 		: [];
 
 	const completedOk = item.status === "completed" && !item.isError;
 	const countUnit = COUNT_SUFFIX_TOOLS[item.toolName];
-	const writtenLines =
-		item.toolName === "write" ? writeContentLines(item.args) : undefined;
+	const writtenLines = item.toolName === "write" ? writeContentLines(item.args) : undefined;
 	const diffText = completedOk ? editDiffText(item) : undefined;
 
 	let suffix = "";
@@ -148,49 +126,33 @@ function writeContentLines(args: unknown): string[] | undefined {
 	if (!isRecord(args)) return undefined;
 	const content = args.content;
 	if (typeof content !== "string") return undefined;
-	return sanitizeTerminalText(content)
-		.slice(0, EXPANDED_MAX_CHARACTERS)
-		.split("\n");
+	return sanitizeTerminalText(content).slice(0, EXPANDED_MAX_CHARACTERS).split("\n");
 }
 
-function describeToolCall(
-	toolName: string,
-	args: unknown,
-): { verb: string; target: string } {
+function describeToolCall(toolName: string, args: unknown): { verb: string; target: string } {
 	const record = isRecord(args) ? args : {};
 	const path = stringField(record, "path");
 	switch (toolName) {
 		case "ls":
 			return { verb: "List", target: path ?? "." };
 		case "read":
-			return {
-				verb: "Read",
-				target: joinParts(path, readRange(record)),
-			};
+			return { verb: "Read", target: joinParts(path, readRange(record)) };
 		case "bash":
 			return { verb: "Bash", target: stringField(record, "command") ?? "" };
 		case "grep": {
 			const pattern = stringField(record, "pattern") ?? "";
 			const glob = stringField(record, "glob");
-			return {
-				verb: "Grep",
-				target: joinParts(pattern, path && `in ${path}`, glob && `[${glob}]`),
-			};
+			return { verb: "Grep", target: joinParts(pattern, path && `in ${path}`, glob && `[${glob}]`) };
 		}
 		case "find": {
 			const pattern = stringField(record, "pattern") ?? "";
 			return { verb: "Find", target: joinParts(pattern, path && `in ${path}`) };
 		}
 		case "edit": {
-			const edits = Array.isArray(record.edits)
-				? record.edits.length
-				: undefined;
+			const edits = Array.isArray(record.edits) ? record.edits.length : undefined;
 			return {
 				verb: "Edit",
-				target: joinParts(
-					path,
-					edits !== undefined && `(${edits} ${edits === 1 ? "edit" : "edits"})`,
-				),
+				target: joinParts(path, edits !== undefined && `(${edits} ${edits === 1 ? "edit" : "edits"})`),
 			};
 		}
 		case "write":
@@ -236,22 +198,14 @@ function joinParts(...parts: (string | false | undefined)[]): string {
 	return parts.filter((part): part is string => Boolean(part)).join(" ");
 }
 
-function stringField(
-	record: Record<string, unknown>,
-	key: string,
-): string | undefined {
+function stringField(record: Record<string, unknown>, key: string): string | undefined {
 	const value = record[key];
 	return typeof value === "string" ? value : undefined;
 }
 
-function numberField(
-	record: Record<string, unknown>,
-	key: string,
-): number | undefined {
+function numberField(record: Record<string, unknown>, key: string): number | undefined {
 	const value = record[key];
-	return typeof value === "number" && Number.isFinite(value)
-		? value
-		: undefined;
+	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

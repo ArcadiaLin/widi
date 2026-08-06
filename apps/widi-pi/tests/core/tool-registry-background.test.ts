@@ -1,20 +1,14 @@
 import type { AgentToolResult } from "@widi/agent-core";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-	type BackgroundJobChange,
-	type BackgroundJobSettlement,
-	BackgroundJobTable,
-} from "../../src/core/background/index.ts";
-import {
-	createAgentHarnessToolFromResolvedTool,
-	ToolRegistry,
-} from "../../src/core/tool-registry.ts";
 import type {
-	ToolDefinition,
-	ToolExecutionContext,
-	ToolSource,
-} from "../../src/core/tools/types.ts";
+	BackgroundJobHost,
+	BackgroundJobReportSnapshot,
+	BackgroundJobSettlement,
+} from "../../src/core/background/index.ts";
+import { createAgentHarnessToolFromResolvedTool, ToolRegistry } from "../../src/core/tool-registry.ts";
+import type { ToolDefinition, ToolExecutionContext, ToolSource } from "../../src/core/tools/types.ts";
+import { collectJobChanges, createJobRuntimeHarness } from "../helpers/background-jobs.ts";
 
 const coreSource: ToolSource = { kind: "core", id: "builtin" };
 const emptyParams = Type.Object({});
@@ -58,9 +52,18 @@ function createBackgroundableTool(
 	};
 }
 
-function resolveTool<TDetails>(
-	definition: ToolDefinition<typeof emptyParams, TDetails>,
-) {
+/** The job's rolling tail, read the way a job-control tool would. */
+function readJobOutput(host: BackgroundJobHost, jobId: string): string | undefined {
+	const read = host.read(jobId);
+	return read.ok ? read.read.output : undefined;
+}
+
+function readJobReport(host: BackgroundJobHost, jobId: string): BackgroundJobReportSnapshot | undefined {
+	const read = host.read(jobId);
+	return read.ok ? read.read.job.report : undefined;
+}
+
+function resolveTool<TDetails>(definition: ToolDefinition<typeof emptyParams, TDetails>) {
 	const registry = new ToolRegistry();
 	registry.defineTool(definition, coreSource);
 	const resolvedTool = registry.resolve().getTool(definition.name);
@@ -77,76 +80,62 @@ describe("backgroundable tool adapter", () => {
 	});
 
 	it("returns the real result inline when it settles before the deadline", async () => {
-		const table = new BackgroundJobTable();
-		const changes: BackgroundJobChange[] = [];
-		table.onChange((change) => changes.push(change));
+		const { host } = await createJobRuntimeHarness();
+		const { changes } = collectJobChanges(host);
 		const gate = createDeferred<AgentToolResult<undefined>>();
 		const agentTool = resolveTool(createBackgroundableTool(gate.promise));
 
-		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, {
-			backgroundJobTable: table,
-		});
+		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, { jobs: host });
 		gate.resolve(textResult("done"));
 		const result = await execPromise;
 
 		expect(result.content).toEqual([{ type: "text", text: "done" }]);
 		// Never backgrounded, so no change fired and no job lingers.
 		expect(changes).toEqual([]);
-		expect(table.list()).toEqual([]);
+		expect(host.list()).toEqual([]);
 	});
 
 	it("settles with a job handle at the deadline and delivers t1 later", async () => {
-		const table = new BackgroundJobTable();
+		const { host } = await createJobRuntimeHarness();
 		const settlement = createDeferred<BackgroundJobSettlement>();
-		table.onChange((change) => {
+		host.watch().start((change) => {
 			if (change.transition === "settled") settlement.resolve(change);
 		});
 		const gate = createDeferred<AgentToolResult<undefined>>();
 		const agentTool = resolveTool(createBackgroundableTool(gate.promise));
 
-		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, {
-			backgroundJobTable: table,
-		});
+		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, { jobs: host });
 		await vi.advanceTimersByTimeAsync(50);
 		const t0 = await execPromise;
 
-		expect(t0.details).toEqual({
-			jobId: "job-1",
-			toolCallId: "call-1",
-			toolName: "sleeper",
-			backgrounded: true,
-		});
+		expect(t0.details).toEqual({ jobId: "job-1", toolCallId: "call-1", toolName: "sleeper", backgrounded: true });
 		// The job stays live in the background until its promise settles.
-		expect(table.list()).toHaveLength(1);
-		expect(table.get("job-1")?.phase).toBe("backgrounded");
+		expect(host.list()).toHaveLength(1);
+		expect(host.list().map((job) => job.jobId)).toEqual(["job-1"]);
 
 		gate.resolve(textResult("late result"));
 		const delivered = await settlement.promise;
 
-		expect(delivered.job.id).toBe("job-1");
+		expect(delivered.job.jobId).toBe("job-1");
 		expect(delivered.outcome.status).toBe("completed");
-		expect(delivered.outcome.result?.content).toEqual([
-			{ type: "text", text: "late result" },
-		]);
-		expect(table.list()).toEqual([]);
+		expect(delivered.outcome.result?.content).toEqual([{ type: "text", text: "late result" }]);
+		expect(host.list()).toEqual([]);
 	});
 
 	it("propagates a rejection inline when it fails before the deadline", async () => {
-		const table = new BackgroundJobTable();
+		const { host } = await createJobRuntimeHarness();
 		const gate = createDeferred<AgentToolResult<undefined>>();
 		const agentTool = resolveTool(createBackgroundableTool(gate.promise));
 
-		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, {
-			backgroundJobTable: table,
-		});
+		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, { jobs: host });
 		gate.reject(new Error("boom"));
 
 		await expect(execPromise).rejects.toThrow("boom");
-		expect(table.list()).toEqual([]);
+		expect(host.list()).toEqual([]);
 	});
 
 	it("runs the tool under the job signal, decoupled from the run signal after t0", async () => {
-		const table = new BackgroundJobTable();
+		const { host } = await createJobRuntimeHarness();
 		const gate = createDeferred<AgentToolResult<undefined>>();
 		let toolSignal: AbortSignal | undefined;
 		const agentTool = resolveTool(
@@ -156,27 +145,21 @@ describe("backgroundable tool adapter", () => {
 		);
 
 		const runController = new AbortController();
-		const execPromise = agentTool.execute(
-			"call-1",
-			{},
-			runController.signal,
-			undefined,
-			{ backgroundJobTable: table },
-		);
+		const execPromise = agentTool.execute("call-1", {}, runController.signal, undefined, { jobs: host });
 		await vi.advanceTimersByTimeAsync(50);
 		await execPromise;
 
 		// The tool saw the job's own signal, distinct from the run signal.
 		expect(toolSignal).toBeDefined();
 		expect(toolSignal).not.toBe(runController.signal);
-		expect(toolSignal).toBe(table.get("job-1")?.signal);
+		// The adapter owns the tool signal so it can detach the run signal at t0.
 
 		// After t0 the run signal no longer owns the job: aborting it does nothing.
 		runController.abort();
 		expect(toolSignal?.aborted).toBe(false);
 
 		// The job table still owns the lifecycle and can cancel it.
-		table.abort("job-1");
+		host.abort("job-1");
 		expect(toolSignal?.aborted).toBe(true);
 
 		gate.resolve(textResult("ignored"));
@@ -184,7 +167,7 @@ describe("backgroundable tool adapter", () => {
 	});
 
 	it("normalizes a synchronous throw from execute and cleans up the job", async () => {
-		const table = new BackgroundJobTable();
+		const { host } = await createJobRuntimeHarness();
 		const definition: ToolDefinition<typeof emptyParams, undefined> = {
 			name: "sleeper",
 			label: "sleeper",
@@ -198,17 +181,13 @@ describe("backgroundable tool adapter", () => {
 		};
 		const agentTool = resolveTool(definition);
 
-		await expect(
-			agentTool.execute("call-1", {}, undefined, undefined, {
-				backgroundJobTable: table,
-			}),
-		).rejects.toThrow("sync boom");
+		await expect(agentTool.execute("call-1", {}, undefined, undefined, { jobs: host })).rejects.toThrow("sync boom");
 		// The job is settled and removed rather than orphaned in the table.
-		expect(table.list()).toEqual([]);
+		expect(host.list()).toEqual([]);
 	});
 
 	it("normalizes a plain synchronous result from an untyped execute", async () => {
-		const table = new BackgroundJobTable();
+		const { host } = await createJobRuntimeHarness();
 		const definition = {
 			name: "sleeper",
 			label: "sleeper",
@@ -220,18 +199,16 @@ describe("backgroundable tool adapter", () => {
 		} as unknown as ToolDefinition<typeof emptyParams, undefined>;
 		const agentTool = resolveTool(definition);
 
-		await expect(
-			agentTool.execute("call-1", {}, undefined, undefined, {
-				backgroundJobTable: table,
-			}),
-		).resolves.toEqual(textResult("sync result"));
-		expect(table.list()).toEqual([]);
+		await expect(agentTool.execute("call-1", {}, undefined, undefined, { jobs: host })).resolves.toEqual(
+			textResult("sync result"),
+		);
+		expect(host.list()).toEqual([]);
 	});
 
 	it("backgrounds immediately when the call requests it, without a configured deadline", async () => {
-		const table = new BackgroundJobTable();
+		const { host } = await createJobRuntimeHarness();
 		const settlement = createDeferred<BackgroundJobSettlement>();
-		table.onChange((change) => {
+		host.watch().start((change) => {
 			if (change.transition === "settled") settlement.resolve(change);
 		});
 		const gate = createDeferred<AgentToolResult<undefined>>();
@@ -245,24 +222,13 @@ describe("backgroundable tool adapter", () => {
 		};
 		const agentTool = resolveTool(definition);
 
-		const execPromise = agentTool.execute(
-			"call-1",
-			{ background: true },
-			undefined,
-			undefined,
-			{ backgroundJobTable: table },
-		);
+		const execPromise = agentTool.execute("call-1", { background: true }, undefined, undefined, { jobs: host });
 		// A deadline of 0 backgrounds on the next macrotask, not inline.
 		await vi.advanceTimersByTimeAsync(0);
 		const t0 = await execPromise;
 
-		expect(t0.details).toEqual({
-			jobId: "job-1",
-			toolCallId: "call-1",
-			toolName: "sleeper",
-			backgrounded: true,
-		});
-		expect(table.get("job-1")?.phase).toBe("backgrounded");
+		expect(t0.details).toEqual({ jobId: "job-1", toolCallId: "call-1", toolName: "sleeper", backgrounded: true });
+		expect(host.list().map((job) => job.jobId)).toEqual(["job-1"]);
 
 		gate.resolve(textResult("late result"));
 		const delivered = await settlement.promise;
@@ -270,7 +236,7 @@ describe("backgroundable tool adapter", () => {
 	});
 
 	it("stays synchronous when no deadline is configured and the call does not request background", async () => {
-		const table = new BackgroundJobTable();
+		const { host } = await createJobRuntimeHarness();
 		const gate = createDeferred<AgentToolResult<undefined>>();
 		const definition: ToolDefinition<typeof emptyParams, undefined> = {
 			name: "sleeper",
@@ -282,21 +248,19 @@ describe("backgroundable tool adapter", () => {
 		};
 		const agentTool = resolveTool(definition);
 
-		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, {
-			backgroundJobTable: table,
-		});
+		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, { jobs: host });
 		// No deadline and no request: it must never register a job or background.
 		await vi.advanceTimersByTimeAsync(120_000);
-		expect(table.list()).toEqual([]);
+		expect(host.list()).toEqual([]);
 
 		gate.resolve(textResult("inline"));
 		const result = await execPromise;
 		expect(result.content).toEqual([{ type: "text", text: "inline" }]);
-		expect(table.list()).toEqual([]);
+		expect(host.list()).toEqual([]);
 	});
 
 	it("injects the job context and mirrors appended output into the table", async () => {
-		const table = new BackgroundJobTable();
+		const { host } = await createJobRuntimeHarness();
 		const gate = createDeferred<AgentToolResult<undefined>>();
 		let jobContext: ToolExecutionContext<undefined>["job"];
 		const definition: ToolDefinition<typeof emptyParams, undefined> = {
@@ -314,21 +278,20 @@ describe("backgroundable tool adapter", () => {
 		};
 		const agentTool = resolveTool(definition);
 
-		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, {
-			backgroundJobTable: table,
-		});
+		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, { jobs: host });
 		expect(jobContext?.id).toBe("job-1");
-		// The context buffer is the job's own: the live tail is reachable through
-		// the table before the call even settles.
-		expect(table.get("job-1")?.output.read()).toBe("step 1\n");
 
 		await vi.advanceTimersByTimeAsync(50);
+		// The context buffer is the job's own: once the job is backgrounded its
+		// live tail is reachable through the table, with the call still running.
+		// A local job is not readable there - it has no t0 handle to observe.
+		expect(readJobOutput(host, "job-1")).toBe("step 1\n");
 		await execPromise;
 		gate.resolve(textResult("done"));
 	});
 
 	it("lets a tool explicitly replace its structured job report", async () => {
-		const table = new BackgroundJobTable();
+		const { host } = await createJobRuntimeHarness();
 		const gate = createDeferred<AgentToolResult<undefined>>();
 		let accepted = false;
 		const definition: ToolDefinition<typeof emptyParams, undefined> = {
@@ -339,27 +302,21 @@ describe("backgroundable tool adapter", () => {
 			backgroundable: true,
 			backgroundTimeoutMs: 50,
 			execute: (_toolCallId, _params, context) => {
-				accepted =
-					context.job?.setReport({
-						kind: "test.status",
-						schemaVersion: 1,
-						summary: "Preparing",
-					}) ?? false;
+				accepted = context.job?.setReport({ kind: "test.status", schemaVersion: 1, summary: "Preparing" }) ?? false;
 				return gate.promise;
 			},
 		};
 		const agentTool = resolveTool(definition);
 
-		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, {
-			backgroundJobTable: table,
-		});
+		const execPromise = agentTool.execute("call-1", {}, undefined, undefined, { jobs: host });
 		expect(accepted).toBe(true);
-		expect(table.get("job-1")?.report).toMatchObject({
+
+		await vi.advanceTimersByTimeAsync(50);
+		// Set while the job was still local, and carried into the table with it.
+		expect(readJobReport(host, "job-1")).toMatchObject({
 			revision: 1,
 			value: { kind: "test.status", summary: "Preparing" },
 		});
-
-		await vi.advanceTimersByTimeAsync(50);
 		await execPromise;
 		gate.resolve(textResult("done"));
 		await Promise.resolve();
@@ -369,7 +326,7 @@ describe("backgroundable tool adapter", () => {
 		interface StatusDetails {
 			completed: number;
 		}
-		const table = new BackgroundJobTable();
+		const { host } = await createJobRuntimeHarness();
 		const gate = createDeferred<AgentToolResult<StatusDetails>>();
 		let publishUpdate: ((details: StatusDetails) => void) | undefined;
 		const definition: ToolDefinition<typeof emptyParams, StatusDetails> = {
@@ -394,47 +351,38 @@ describe("backgroundable tool adapter", () => {
 				}),
 			},
 			execute: (_toolCallId, _params, context) => {
-				publishUpdate = (details) =>
-					context.onUpdate?.({ content: [], details });
+				publishUpdate = (details) => context.onUpdate?.({ content: [], details });
 				return gate.promise;
 			},
 		};
 		const agentTool = resolveTool(definition);
 		const forwarded = vi.fn();
 
-		const execPromise = agentTool.execute("call-1", {}, undefined, forwarded, {
-			backgroundJobTable: table,
-		});
-		expect(table.get("job-1")?.report).toMatchObject({
-			revision: 1,
-			value: { summary: "Starting" },
-		});
-
+		const execPromise = agentTool.execute("call-1", {}, undefined, forwarded, { jobs: host });
 		publishUpdate?.({ completed: 1 });
-		expect(table.get("job-1")?.report).toMatchObject({
-			revision: 2,
-			value: { progress: { completed: 1, total: 2 } },
-		});
 		expect(forwarded).toHaveBeenCalledTimes(1);
 
 		await vi.advanceTimersByTimeAsync(50);
+		// Both revisions were mapped while the job was local; the table shows the
+		// latest once it is backgrounded and readable.
+		expect(readJobReport(host, "job-1")).toMatchObject({
+			revision: 2,
+			value: { progress: { completed: 1, total: 2 } },
+		});
 		await execPromise;
 		publishUpdate?.({ completed: 2 });
-		expect(table.get("job-1")?.report).toMatchObject({
+		expect(readJobReport(host, "job-1")).toMatchObject({
 			revision: 3,
 			value: { progress: { completed: 2, total: 2 } },
 		});
 		expect(forwarded).toHaveBeenCalledTimes(2);
 
-		gate.resolve({
-			content: [{ type: "text", text: "done" }],
-			details: { completed: 2 },
-		});
+		gate.resolve({ content: [{ type: "text", text: "done" }], details: { completed: 2 } });
 		await Promise.resolve();
 	});
 
 	it("does not inject a job context on the plain synchronous path", async () => {
-		const table = new BackgroundJobTable();
+		const { host } = await createJobRuntimeHarness();
 		let sawJob: ToolExecutionContext<undefined>["job"] | "unset" = "unset";
 		const definition: ToolDefinition<typeof emptyParams, undefined> = {
 			name: "sleeper",
@@ -449,14 +397,12 @@ describe("backgroundable tool adapter", () => {
 		};
 		const agentTool = resolveTool(definition);
 
-		await agentTool.execute("call-1", {}, undefined, undefined, {
-			backgroundJobTable: table,
-		});
+		await agentTool.execute("call-1", {}, undefined, undefined, { jobs: host });
 		expect(sawJob).toBeUndefined();
 	});
 
 	it("lets the run signal cancel the call before it is backgrounded", async () => {
-		const table = new BackgroundJobTable();
+		const { host } = await createJobRuntimeHarness();
 		const gate = createDeferred<AgentToolResult<undefined>>();
 		let toolSignal: AbortSignal | undefined;
 		const agentTool = resolveTool(
@@ -466,13 +412,7 @@ describe("backgroundable tool adapter", () => {
 		);
 
 		const runController = new AbortController();
-		const execPromise = agentTool.execute(
-			"call-1",
-			{},
-			runController.signal,
-			undefined,
-			{ backgroundJobTable: table },
-		);
+		const execPromise = agentTool.execute("call-1", {}, runController.signal, undefined, { jobs: host });
 
 		// Still in the synchronous window (deadline not advanced): a user
 		// interrupt on the run signal must cancel the in-flight call.
@@ -481,6 +421,6 @@ describe("backgroundable tool adapter", () => {
 
 		gate.reject(new Error("aborted"));
 		await expect(execPromise).rejects.toThrow("aborted");
-		expect(table.list()).toEqual([]);
+		expect(host.list()).toEqual([]);
 	});
 });

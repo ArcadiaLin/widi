@@ -111,16 +111,6 @@ export interface CustomStorage {
 	readonly storedFormatVersion?: number;
 
 	/**
-	 * Other sessions this root needs, when the state names them.
-	 *
-	 * This is how the spawn tree gets forked without the repository knowing what
-	 * a spawn tree is: `core:subagent` answers with the child sessions its
-	 * membership set contains, and the repository copies those subtrees. A
-	 * namespace with no such state omits the method.
-	 */
-	listSessionDependencies?(stateRoot: string): Promise<readonly SessionKey[]>;
-
-	/**
 	 * Copy the closure of `roots` into another storage of the same namespace.
 	 *
 	 * Called after the repository has resolved the closure, so an implementation
@@ -131,10 +121,7 @@ export interface CustomStorage {
 	copyReachable(target: CustomStorage, roots: readonly string[]): Promise<void>;
 
 	/** Write an object, returning its state root. Idempotent by content. */
-	putObject(options: {
-		readonly data: unknown;
-		readonly dependencies?: readonly string[];
-	}): Promise<string>;
+	putObject(options: { readonly data: unknown; readonly dependencies?: readonly string[] }): Promise<string>;
 
 	/**
 	 * Release handles.
@@ -159,9 +146,7 @@ export interface CustomStorage {
  * lets the rest of the layer rely on that: an implementation that breaks the
  * contract must not be able to fail an operation that has already succeeded.
  */
-export async function closeStorage(
-	storage: CustomStorage | undefined,
-): Promise<void> {
+export async function closeStorage(storage: CustomStorage | undefined): Promise<void> {
 	try {
 		await storage?.close?.();
 	} catch {
@@ -204,7 +189,7 @@ export interface NamespaceLocateRequest {
 }
 
 export interface PersistenceNamespaceDefinition {
-	/** Stable and globally unique, e.g. `core:subagent`. */
+	/** Stable and globally unique, e.g. `core:jobs`. */
 	readonly namespace: string;
 
 	/** Format version of this namespace's objects, written into its log. */
@@ -292,7 +277,7 @@ export interface PersistenceNamespaceDefinition {
 }
 
 /**
- * Two or more lowercase segments joined by colons, as in `core:subagent`.
+ * Two or more lowercase segments joined by colons, as in `core:jobs`.
  *
  * Checked at registration, where the name is still a programming decision and
  * the error can name the definition that made it. It is a naming rule and not a
@@ -310,21 +295,14 @@ const NAMESPACE_PATTERN = /^[a-z0-9][a-z0-9-]*(?::[a-z0-9][a-z0-9-]*)+$/;
  * still be able to read a session written by a newer one.
  */
 export class PersistenceRegistry {
-	private readonly _definitions = new Map<
-		string,
-		PersistenceNamespaceDefinition
-	>();
+	private readonly _definitions = new Map<string, PersistenceNamespaceDefinition>();
 
 	register(definition: PersistenceNamespaceDefinition): void {
 		if (!NAMESPACE_PATTERN.test(definition.namespace)) {
-			throw new Error(
-				`Persistence namespace ${definition.namespace} is not of the form owner:name.`,
-			);
+			throw new Error(`Persistence namespace ${definition.namespace} is not of the form owner:name.`);
 		}
 		if (this._definitions.has(definition.namespace)) {
-			throw new Error(
-				`Persistence namespace ${definition.namespace} is already registered.`,
-			);
+			throw new Error(`Persistence namespace ${definition.namespace} is already registered.`);
 		}
 		this._definitions.set(definition.namespace, definition);
 	}

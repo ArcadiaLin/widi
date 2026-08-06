@@ -1,15 +1,7 @@
 import { describe, expect, it } from "vitest";
-import {
-	agentTreePrefix,
-	buildAgentTree,
-	flattenAgentTree,
-} from "../../src/tui/agent-tree.ts";
+import { agentTreePrefix, buildAgentTree, flattenAgentTree } from "../../src/tui/agent-tree.ts";
 import { AgentStripView } from "../../src/tui/components/agent-strip.ts";
-import {
-	createTuiApplicationState,
-	ensureAgentProjection,
-	setActiveAgent,
-} from "../../src/tui/state.ts";
+import { createTuiApplicationState, ensureAgentProjection, setActiveAgent } from "../../src/tui/state.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 
@@ -22,11 +14,7 @@ describe("buildAgentTree", () => {
 
 		const tree = buildAgentTree(state);
 
-		expect(tree.topLevel.map((agent) => agent.agentId)).toEqual([
-			"zeta",
-			"alpha",
-			"mid",
-		]);
+		expect(tree.topLevel.map((agent) => agent.agentId)).toEqual(["zeta", "alpha", "mid"]);
 	});
 
 	it("groups children under their spawner in insertion order", () => {
@@ -40,9 +28,7 @@ describe("buildAgentTree", () => {
 		const tree = buildAgentTree(state);
 
 		expect(tree.topLevel.map((agent) => agent.agentId)).toEqual(["parent"]);
-		expect(
-			tree.childrenOf.get("parent")?.map((agent) => agent.agentId),
-		).toEqual(["child-a", "child-b"]);
+		expect(tree.childrenOf.get("parent")?.map((agent) => agent.agentId)).toEqual(["child-a", "child-b"]);
 	});
 
 	it("treats a child whose spawner is missing as top-level", () => {
@@ -78,12 +64,8 @@ describe("buildAgentTree", () => {
 		const tree = buildAgentTree(state);
 
 		expect(tree.topLevel.map((agent) => agent.agentId)).toEqual(["parent"]);
-		expect(
-			tree.childrenOf.get("parent")?.map((agent) => agent.agentId),
-		).toEqual(["child"]);
-		expect(tree.childrenOf.get("child")?.map((agent) => agent.agentId)).toEqual(
-			["grandchild"],
-		);
+		expect(tree.childrenOf.get("parent")?.map((agent) => agent.agentId)).toEqual(["child"]);
+		expect(tree.childrenOf.get("child")?.map((agent) => agent.agentId)).toEqual(["grandchild"]);
 	});
 });
 
@@ -101,9 +83,7 @@ describe("flattenAgentTree", () => {
 
 		const entries = flattenAgentTree(buildAgentTree(state));
 
-		expect(
-			entries.map((entry) => [entry.agent.agentId, entry.depth, entry.last]),
-		).toEqual([
+		expect(entries.map((entry) => [entry.agent.agentId, entry.depth, entry.last])).toEqual([
 			["other", 0, false],
 			["parent", 0, true],
 			["child-a", 1, false],
@@ -126,12 +106,7 @@ describe("agentTreePrefix", () => {
 
 		const entries = flattenAgentTree(buildAgentTree(state));
 
-		expect(entries.map(agentTreePrefix)).toEqual([
-			"",
-			"├── ",
-			"    └── ",
-			"└── ",
-		]);
+		expect(entries.map(agentTreePrefix)).toEqual(["", "├── ", "    └── ", "└── "]);
 	});
 });
 
@@ -145,14 +120,9 @@ describe("agent panel ordering", () => {
 		const childB = ensureAgentProjection(state, "child-b", "idle");
 		childB.spawnedBy = "parent";
 
-		const output = new AgentStripView(state)
-			.render(500)
-			.join("\n")
-			.replace(ANSI_SEQUENCE, "");
+		const output = new AgentStripView(state).render(500).join("\n").replace(ANSI_SEQUENCE, "");
 
-		const order = ["other", "parent", "├── ○ child-a", "└── ○ child-b"].map(
-			(label) => output.indexOf(label),
-		);
+		const order = ["other", "parent", "├── ○ child-a", "└── ○ child-b"].map((label) => output.indexOf(label));
 		expect(order.every((index) => index >= 0)).toBe(true);
 		expect(order).toEqual([...order].sort((a, b) => a - b));
 	});

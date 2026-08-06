@@ -6,11 +6,7 @@ import {
 	setActiveAgent,
 	type TimelineItem,
 } from "../../src/tui/state.ts";
-import {
-	applyTimelineWindow,
-	groupTurns,
-	turnsToTrim,
-} from "../../src/tui/timeline-window.ts";
+import { applyTimelineWindow, groupTurns, turnsToTrim } from "../../src/tui/timeline-window.ts";
 
 describe("groupTurns", () => {
 	it("opens a new turn at each user message", () => {
@@ -28,21 +24,13 @@ describe("groupTurns", () => {
 	});
 
 	it("attaches leading stray items to the next turn", () => {
-		const turns = groupTurns([
-			noticeItem("n1"),
-			userItem("u1"),
-			assistantItem("a1"),
-		]);
-		expect(turns.map((turn) => turn.items.map((item) => item.id))).toEqual([
-			["n1", "u1", "a1"],
-		]);
+		const turns = groupTurns([noticeItem("n1"), userItem("u1"), assistantItem("a1")]);
+		expect(turns.map((turn) => turn.items.map((item) => item.id))).toEqual([["n1", "u1", "a1"]]);
 	});
 
 	it("collects stray items into their own turn when no user message exists", () => {
 		const turns = groupTurns([noticeItem("n1"), noticeItem("n2")]);
-		expect(turns.map((turn) => turn.items.map((item) => item.id))).toEqual([
-			["n1", "n2"],
-		]);
+		expect(turns.map((turn) => turn.items.map((item) => item.id))).toEqual([["n1", "n2"]]);
 	});
 });
 
@@ -92,10 +80,7 @@ describe("applyTimelineWindow", () => {
 		const marker = agent.timeline[0];
 		expect(marker).toMatchObject({ type: "window-marker", hiddenTurns: 6 });
 		expect(agent.timeline).toHaveLength(1 + 15 * 2);
-		expect(agent.timeline[1]).toMatchObject({
-			type: "user-message",
-			id: "user-6",
-		});
+		expect(agent.timeline[1]).toMatchObject({ type: "user-message", id: "user-6" });
 	});
 
 	it("is idempotent and accumulates hiddenTurns across later trims", () => {
@@ -105,9 +90,7 @@ describe("applyTimelineWindow", () => {
 
 		// No new turns: nothing changes, no second marker.
 		expect(applyTimelineWindow(agent)).toBe(false);
-		expect(
-			agent.timeline.filter((item) => item.type === "window-marker"),
-		).toHaveLength(1);
+		expect(agent.timeline.filter((item) => item.type === "window-marker")).toHaveLength(1);
 
 		// Six more turns arrive; the window trims again and the count adds up.
 		agent.timeline.push(...turnItems(6, 21));
@@ -121,9 +104,7 @@ describe("applyTimelineWindow", () => {
 		const agent = createAgentViewState("main");
 		agent.timeline = turnItems(20);
 		expect(applyTimelineWindow(agent)).toBe(false);
-		expect(agent.timeline.some((item) => item.type === "window-marker")).toBe(
-			false,
-		);
+		expect(agent.timeline.some((item) => item.type === "window-marker")).toBe(false);
 	});
 });
 
@@ -138,10 +119,7 @@ describe("timeline window integration", () => {
 
 		const agent = state.agents.get("main");
 		if (!agent) throw new Error("Expected main projection.");
-		expect(agent.timeline[0]).toMatchObject({
-			type: "window-marker",
-			hiddenTurns: 6,
-		});
+		expect(agent.timeline[0]).toMatchObject({ type: "window-marker", hiddenTurns: 6 });
 		expect(agent.timeline).toHaveLength(1 + 15);
 	});
 
@@ -160,14 +138,9 @@ describe("timeline window integration", () => {
 		});
 
 		projector.beginHydration("main");
-		projector.completeHydration("main", {
-			timeline: turnItems(25),
-			display: {},
-		});
+		projector.completeHydration("main", { timeline: turnItems(25), display: {} });
 
-		const markers = agent.timeline.filter(
-			(item) => item.type === "window-marker",
-		);
+		const markers = agent.timeline.filter((item) => item.type === "window-marker");
 		expect(markers).toHaveLength(1);
 		expect(markers[0]).toMatchObject({ hiddenTurns: 10 });
 		expect(agent.timeline).toHaveLength(1 + 15 * 2);
@@ -183,13 +156,7 @@ function turnItems(count: number, startIndex = 0): TimelineItem[] {
 }
 
 function userItem(id: string): TimelineItem {
-	return {
-		type: "user-message",
-		id,
-		durability: "durable",
-		createdAt: timestamp(0),
-		text: `message ${id}`,
-	};
+	return { type: "user-message", id, durability: "durable", createdAt: timestamp(0), text: `message ${id}` };
 }
 
 function assistantItem(id: string): TimelineItem {
@@ -216,13 +183,7 @@ function toolItem(id: string): TimelineItem {
 }
 
 function noticeItem(id: string): TimelineItem {
-	return {
-		type: "application-notice",
-		id,
-		durability: "ephemeral",
-		createdAt: timestamp(0),
-		text: `notice ${id}`,
-	};
+	return { type: "application-notice", id, durability: "ephemeral", createdAt: timestamp(0), text: `notice ${id}` };
 }
 
 function userMessageStart(agentId: string, text: string) {
@@ -231,11 +192,7 @@ function userMessageStart(agentId: string, text: string) {
 		agentId,
 		event: {
 			type: "message_start" as const,
-			message: {
-				role: "user" as const,
-				content: text,
-				timestamp: Date.parse(timestamp(0)),
-			},
+			message: { role: "user" as const, content: text, timestamp: Date.parse(timestamp(0)) },
 		},
 	};
 }

@@ -1,9 +1,5 @@
 import { Worker } from "node:worker_threads";
-import {
-	type ImageResizeOptions,
-	type ResizedImage,
-	resizeImageInProcess,
-} from "./resize-core.ts";
+import { type ImageResizeOptions, type ResizedImage, resizeImageInProcess } from "./resize-core.ts";
 
 /** Worker-backed facade for the shared image resize implementation. */
 
@@ -14,9 +10,7 @@ interface ResizeImageWorkerResponse {
 	error?: string;
 }
 
-function isResizeImageWorkerResponse(
-	value: unknown,
-): value is ResizeImageWorkerResponse {
+function isResizeImageWorkerResponse(value: unknown): value is ResizeImageWorkerResponse {
 	return value !== null && typeof value === "object";
 }
 
@@ -65,14 +59,7 @@ async function resizeImageInWorker(
 					fail(new Error(`Image resize worker exited with code ${code}`));
 				}
 			});
-			worker.postMessage(
-				{
-					inputBytes: inputBytesForWorker,
-					mimeType,
-					options,
-				},
-				[inputBytesForWorker.buffer],
-			);
+			worker.postMessage({ inputBytes: inputBytesForWorker, mimeType, options }, [inputBytesForWorker.buffer]);
 		});
 	} finally {
 		void worker.terminate().catch(() => undefined);
@@ -95,9 +82,7 @@ export async function resizeImage(
 	options?: ImageResizeOptions,
 ): Promise<ResizedImage | null> {
 	const workerUrl = new URL(
-		import.meta.url.endsWith(".ts")
-			? "./resize-worker.ts"
-			: "./resize-worker.js",
+		import.meta.url.endsWith(".ts") ? "./resize-worker.ts" : "./resize-worker.js",
 		import.meta.url,
 	);
 

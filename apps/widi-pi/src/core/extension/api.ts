@@ -21,9 +21,7 @@ export const MIN_SUPPORTED_EXTENSION_API_VERSION: number = 1;
 
 export function isSupportedExtensionApiVersion(version: number): boolean {
 	return (
-		Number.isInteger(version) &&
-		version >= MIN_SUPPORTED_EXTENSION_API_VERSION &&
-		version <= EXTENSION_API_VERSION
+		Number.isInteger(version) && version >= MIN_SUPPORTED_EXTENSION_API_VERSION && version <= EXTENSION_API_VERSION
 	);
 }
 
@@ -54,7 +52,6 @@ export type {
 	ExtensionDiagnosticDraft,
 	ExtensionDiffMessage,
 	ExtensionFieldsMessage,
-	ExtensionInputPresentation,
 	ExtensionMessage,
 	ExtensionMessageField,
 	ExtensionMessageKind,

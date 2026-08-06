@@ -1,5 +1,7 @@
-import type { Model } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
 import type {
+	AgentHarnessEvent,
+	CompactResult,
 	ExecutionEnv,
 	ExecutionError,
 	FileError,
@@ -7,22 +9,23 @@ import type {
 	Result,
 	ShellExecOptions,
 } from "@widi/agent-core";
-import {
-	err,
-	ok,
-	ExecutionError as PiExecutionError,
-	FileError as PiFileError,
-} from "@widi/agent-core";
+import { err, ok, ExecutionError as PiExecutionError, FileError as PiFileError } from "@widi/agent-core";
 import { Type } from "typebox";
+import { type MockInstance, vi } from "vitest";
 import { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import {
 	type AgentProfile,
 	AgentProfileRegistry,
 	InMemoryProfileStorageBackend,
 } from "../../src/core/agent-profile.ts";
-import type { AgentRecord } from "../../src/core/agent-record.ts";
+import type { LiveAgent, WidiAgentHarness } from "../../src/core/agent-types.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
+import type { BackgroundJobHost } from "../../src/core/background/index.ts";
+import type { AgentContextMonitor } from "../../src/core/context-monitor.ts";
+import type { OrchestratorDiagnostic } from "../../src/core/diagnostics.ts";
+import { type MessageSink, messageBindingFor } from "../../src/core/message.ts";
 import { ModelRegistry } from "../../src/core/model-registry.ts";
+import { createCorePersistenceRegistry } from "../../src/core/persistence-registry.ts";
 import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
 import { ResourceLoader } from "../../src/core/resource-loader.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
@@ -30,6 +33,7 @@ import { SettingManager } from "../../src/core/setting-manager.ts";
 import { ToolRegistry } from "../../src/core/tool-registry.ts";
 import { registerCoreCodingTools } from "../../src/core/tools/coding/builtin.ts";
 import type { ToolDefinition } from "../../src/core/tools/types.ts";
+import type { AgentContextUsage } from "../../src/core/types.ts";
 
 export class MemoryExecutionEnv implements ExecutionEnv {
 	cwd = "/workspace";
@@ -60,56 +64,33 @@ export class MemoryExecutionEnv implements ExecutionEnv {
 		const normalized = this.normalize(path);
 		const content = this.files.get(normalized);
 		if (content === undefined) {
-			return err(
-				new PiFileError(
-					"not_found",
-					`File not found: ${normalized}`,
-					normalized,
-				),
-			);
+			return err(new PiFileError("not_found", `File not found: ${normalized}`, normalized));
 		}
 		return ok(content);
 	}
 
-	async readTextLines(
-		path: string,
-		options?: { maxLines?: number },
-	): Promise<Result<string[], FileError>> {
+	async readTextLines(path: string, options?: { maxLines?: number }): Promise<Result<string[], FileError>> {
 		const result = await this.readTextFile(path);
 		if (!result.ok) return result;
 		const lines = result.value.split("\n");
-		return ok(
-			options?.maxLines === undefined
-				? lines
-				: lines.slice(0, options.maxLines),
-		);
+		return ok(options?.maxLines === undefined ? lines : lines.slice(0, options.maxLines));
 	}
 
 	async readBinaryFile(): Promise<Result<Uint8Array, FileError>> {
 		return err(new PiFileError("not_supported", "not supported"));
 	}
 
-	async writeFile(
-		path: string,
-		content: string | Uint8Array,
-	): Promise<Result<void, FileError>> {
+	async writeFile(path: string, content: string | Uint8Array): Promise<Result<void, FileError>> {
 		const normalized = this.normalize(path);
 		this.dirs.add(this.dirname(normalized));
-		this.files.set(
-			normalized,
-			typeof content === "string" ? content : new TextDecoder().decode(content),
-		);
+		this.files.set(normalized, typeof content === "string" ? content : new TextDecoder().decode(content));
 		return ok(undefined);
 	}
 
-	async appendFile(
-		path: string,
-		content: string | Uint8Array,
-	): Promise<Result<void, FileError>> {
+	async appendFile(path: string, content: string | Uint8Array): Promise<Result<void, FileError>> {
 		const normalized = this.normalize(path);
 		const current = this.files.get(normalized) ?? "";
-		const next =
-			typeof content === "string" ? content : new TextDecoder().decode(content);
+		const next = typeof content === "string" ? content : new TextDecoder().decode(content);
 		this.files.set(normalized, current + next);
 		return ok(undefined);
 	}
@@ -119,13 +100,7 @@ export class MemoryExecutionEnv implements ExecutionEnv {
 		if (this.files.has(normalized)) {
 			const content = this.files.get(normalized);
 			if (content === undefined) {
-				return err(
-					new PiFileError(
-						"not_found",
-						`Path not found: ${normalized}`,
-						normalized,
-					),
-				);
+				return err(new PiFileError("not_found", `Path not found: ${normalized}`, normalized));
 			}
 			return ok({
 				name: normalized.slice(normalized.lastIndexOf("/") + 1),
@@ -144,17 +119,13 @@ export class MemoryExecutionEnv implements ExecutionEnv {
 				mtimeMs: 0,
 			});
 		}
-		return err(
-			new PiFileError("not_found", `Path not found: ${normalized}`, normalized),
-		);
+		return err(new PiFileError("not_found", `Path not found: ${normalized}`, normalized));
 	}
 
 	async listDir(path: string): Promise<Result<FileInfo[], FileError>> {
 		const dir = this.normalize(path);
 		if (!this.dirs.has(dir)) {
-			return err(
-				new PiFileError("not_found", `Directory not found: ${dir}`, dir),
-			);
+			return err(new PiFileError("not_found", `Directory not found: ${dir}`, dir));
 		}
 
 		const entries: FileInfo[] = [];
@@ -190,22 +161,10 @@ export class MemoryExecutionEnv implements ExecutionEnv {
 		return ok(this.files.has(normalized) || this.dirs.has(normalized));
 	}
 
-	async createDir(
-		path: string,
-		options?: { recursive?: boolean },
-	): Promise<Result<void, FileError>> {
+	async createDir(path: string, options?: { recursive?: boolean }): Promise<Result<void, FileError>> {
 		const normalized = this.normalize(path);
-		if (
-			options?.recursive === false &&
-			!this.dirs.has(this.dirname(normalized))
-		) {
-			return err(
-				new PiFileError(
-					"not_found",
-					`Parent not found: ${this.dirname(normalized)}`,
-					normalized,
-				),
-			);
+		if (options?.recursive === false && !this.dirs.has(this.dirname(normalized))) {
+			return err(new PiFileError("not_found", `Parent not found: ${this.dirname(normalized)}`, normalized));
 		}
 
 		let current = "";
@@ -234,15 +193,97 @@ export class MemoryExecutionEnv implements ExecutionEnv {
 	async exec(
 		_command: string,
 		_options?: ShellExecOptions,
-	): Promise<
-		Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>
-	> {
+	): Promise<Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>> {
 		return err(new PiExecutionError("shell_unavailable", "not supported"));
 	}
 
 	async cleanup(): Promise<void> {
 		this.cleanupCalls += 1;
 	}
+}
+
+/**
+ * The model-facing text of one harness input.
+ *
+ * Since the fork widening, `prompt`/`steer`/`followUp` take a message as well
+ * as a string: everything but bare shell input arrives as a `CustomMessage`
+ * carrying its source. `content` is what the model reads either way.
+ */
+export function harnessInputText(input: unknown): string {
+	if (typeof input === "string") return input;
+	const content = (input as { content?: unknown } | undefined)?.content;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.filter((part): part is { type: "text"; text: string } => (part as { type?: unknown }).type === "text")
+		.map((part) => part.text)
+		.join("");
+}
+
+/**
+ * Replace `compact()` with one the test controls, moving the harness phase the
+ * way the real one does.
+ *
+ * Maintenance is read from `getPhase()` rather than tracked in the
+ * orchestrator, so a mock that only returns a promise leaves the agent looking
+ * idle and every maintenance gate open. The real `compact()` sets the phase
+ * synchronously ahead of its first await, and clears it in a `finally`.
+ */
+export function stubCompaction(harness: WidiAgentHarness): { resolve: (result: CompactResult) => void } {
+	let resolve!: (result: CompactResult) => void;
+	const promise = new Promise<CompactResult>((done) => {
+		resolve = done;
+	});
+	const setPhase = (phase: string) => {
+		(harness as unknown as { phase: string }).phase = phase;
+	};
+	vi.spyOn(harness, "compact").mockImplementation(async () => {
+		setPhase("compaction");
+		try {
+			return await promise;
+		} finally {
+			setPhase("idle");
+		}
+	});
+	return { resolve };
+}
+
+/**
+ * Replace `prompt()` with one the test controls, moving the harness phase the
+ * way the real one does. Same reason as {@link stubCompaction}: activity is
+ * read from the phase, so a mock that only returns a promise leaves the agent
+ * looking idle for the whole run.
+ */
+export function stubPromptRun(harness: WidiAgentHarness): {
+	readonly prompt: MockInstance<WidiAgentHarness["prompt"]>;
+	readonly resolve: (message: AssistantMessage) => void;
+} {
+	let resolve!: (message: AssistantMessage) => void;
+	const promise = new Promise<AssistantMessage>((done) => {
+		resolve = done;
+	});
+	const setPhase = (phase: string) => {
+		(harness as unknown as { phase: string }).phase = phase;
+	};
+	const prompt = vi.spyOn(harness, "prompt").mockImplementation(async () => {
+		setPhase("turn");
+		try {
+			return await promise;
+		} finally {
+			setPhase("idle");
+		}
+	});
+	return { prompt, resolve };
+}
+
+/** The sink the shell holds on the human's behalf. */
+export function humanSink(orchestrator: AgentOrchestrator): MessageSink {
+	return orchestrator.messageSinkFor(messageBindingFor({ kind: "human" }));
+}
+
+/** The sink a peer agent holds, with its identity already bound in. */
+export function agentSink(orchestrator: AgentOrchestrator, senderAgentId: string): MessageSink {
+	return orchestrator.messageSinkFor(messageBindingFor({ kind: "agent", senderAgentId }));
 }
 
 export const defaultProfile: AgentProfile = {
@@ -286,16 +327,10 @@ export const reasoningModel: Model<"openai-completions"> = {
 	thinkingLevelMap: { minimal: null, high: "high" },
 };
 
-export async function createModelRegistry(
-	env: MemoryExecutionEnv,
-): Promise<ModelRegistry> {
+export async function createModelRegistry(env: MemoryExecutionEnv): Promise<ModelRegistry> {
 	const configValueResolver = new ConfigValueResolver(env);
 	const authStorage = AuthStorage.inMemory({ configValueResolver });
-	const registry = await ModelRegistry.inMemory({
-		executionEnv: env,
-		authStorage,
-		configValueResolver,
-	});
+	const registry = await ModelRegistry.inMemory({ executionEnv: env, authStorage, configValueResolver });
 	registry.registerProvider("test-provider", {
 		baseUrl: "https://example.test/v1",
 		apiKey: "test-key",
@@ -325,16 +360,10 @@ export async function createModelRegistry(
 	return registry;
 }
 
-export async function createEmptyModelRegistry(
-	env: MemoryExecutionEnv,
-): Promise<ModelRegistry> {
+export async function createEmptyModelRegistry(env: MemoryExecutionEnv): Promise<ModelRegistry> {
 	const configValueResolver = new ConfigValueResolver(env);
 	const authStorage = AuthStorage.inMemory({ configValueResolver });
-	return await ModelRegistry.inMemory({
-		executionEnv: env,
-		authStorage,
-		configValueResolver,
-	});
+	return await ModelRegistry.inMemory({ executionEnv: env, authStorage, configValueResolver });
 }
 
 export async function createOrchestrator(
@@ -350,14 +379,12 @@ export async function createOrchestrator(
 ): Promise<AgentOrchestrator> {
 	return new AgentOrchestrator({
 		executionEnv: env,
-		resourceLoader: new ResourceLoader({
-			executionEnv: env,
-			cwd: "/workspace/project",
-		}),
+		resourceLoader: new ResourceLoader({ executionEnv: env, cwd: "/workspace/project" }),
 		sessionManager: new SessionManager({
 			fs: env,
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
+			registry: createCorePersistenceRegistry(),
 		}),
 		settingManager: options.settingManager ?? new SettingManager(),
 		modelRegistry: options.modelRegistry ?? (await createModelRegistry(env)),
@@ -371,26 +398,17 @@ export async function createOrchestrator(
 
 export function createProfileRegistry(): AgentProfileRegistry {
 	return new AgentProfileRegistry(
-		InMemoryProfileStorageBackend.fromProfiles([
-			{ profile: defaultProfile },
-			{ profile: restoredProfile },
-		]),
+		InMemoryProfileStorageBackend.fromProfiles([{ profile: defaultProfile }, { profile: restoredProfile }]),
 	);
 }
 
-export function createToolDefinition(
-	name: string,
-	text: string = name,
-): ToolDefinition {
+export function createToolDefinition(name: string, text: string = name): ToolDefinition {
 	return {
 		name,
 		label: name,
 		description: `${name} tool`,
 		parameters: Type.Object({}),
-		execute: async () => ({
-			content: [{ type: "text", text }],
-			details: undefined,
-		}),
+		execute: async () => ({ content: [{ type: "text", text }], details: undefined }),
 	};
 }
 
@@ -409,22 +427,80 @@ export function createCoreCodingToolRegistry(): ToolRegistry {
 }
 
 // White-box test helper for driving harness hooks and inspecting live runners.
-export function requireAgentRecord(
-	orchestrator: AgentOrchestrator,
-	agentId: string,
-): AgentRecord {
-	const record = (
-		orchestrator as unknown as { _agents: Map<string, AgentRecord> }
-	)._agents.get(agentId);
-	if (!record) throw new Error(`Unknown agent record: ${agentId}`);
-	return record;
+export function requireLiveAgent(orchestrator: AgentOrchestrator, agentId: string): LiveAgent {
+	const liveAgent = (orchestrator as unknown as { _live: Map<string, LiveAgent> })._live.get(agentId);
+	if (!liveAgent) throw new Error(`Unknown live agent: ${agentId}`);
+	return liveAgent;
 }
 
-export function requireAgentHarness(
+export function requireAgentHarness(orchestrator: AgentOrchestrator, agentId: string): WidiAgentHarness {
+	return requireLiveAgent(orchestrator, agentId).harness;
+}
+
+/**
+ * Seed the context gauge a live agent projects, which is otherwise only ever
+ * produced by measuring a real branch.
+ */
+export function seedAgentContextUsage(
 	orchestrator: AgentOrchestrator,
 	agentId: string,
-): NonNullable<AgentRecord["harness"]> {
-	const harness = requireAgentRecord(orchestrator, agentId).harness;
-	if (!harness) throw new Error(`Missing agent harness: ${agentId}`);
-	return harness;
+	usage: AgentContextUsage | undefined,
+): void {
+	const monitor = (orchestrator as unknown as { _context: AgentContextMonitor })._context;
+	const projections = (
+		monitor as unknown as { _projections: Map<string, { generation: number; usage?: AgentContextUsage }> }
+	)._projections;
+	projections.set(agentId, {
+		generation: requireLiveAgent(orchestrator, agentId).generation,
+		...(usage === undefined ? undefined : { usage }),
+	});
+}
+
+/** Publish extension-sourced diagnostics the way a bound runner would. */
+export async function recordExtensionDiagnostics(
+	orchestrator: AgentOrchestrator,
+	agentId: string,
+	diagnostics: readonly OrchestratorDiagnostic[],
+): Promise<void> {
+	await (
+		orchestrator as unknown as {
+			_recordAndPublishExtensionDiagnostics(
+				agentId: string,
+				diagnostics: readonly OrchestratorDiagnostic[],
+			): Promise<void>;
+		}
+	)._recordAndPublishExtensionDiagnostics(agentId, diagnostics);
+}
+
+/**
+ * Drive a harness event through the orchestrator's own subscription, as the
+ * live harness would. The generation is read per call so a resumed agent's
+ * events reach its current occupant.
+ */
+export function harnessEventDriver(
+	orchestrator: AgentOrchestrator,
+): (agentId: string, event: AgentHarnessEvent, signal?: AbortSignal) => Promise<void> {
+	return async (agentId, event, signal) => {
+		const generation = requireLiveAgent(orchestrator, agentId).generation;
+		await (
+			orchestrator as unknown as {
+				_handleHarnessEvent(
+					agentId: string,
+					generation: number,
+					event: AgentHarnessEvent,
+					signal: AbortSignal | undefined,
+				): Promise<void>;
+			}
+		)._handleHarnessEvent(agentId, generation, event, signal);
+	};
+}
+
+/** The spawn-tree parent the runtime holds in memory for this agent. */
+export function spawnParentOf(orchestrator: AgentOrchestrator, agentId: string): string | undefined {
+	return (orchestrator as unknown as { _spawnParent: Map<string, string> })._spawnParent.get(agentId);
+}
+
+/** The owner-scoped job capabilities the agent's own tools were handed. */
+export function requireAgentJobs(orchestrator: AgentOrchestrator, agentId: string): BackgroundJobHost {
+	return requireLiveAgent(orchestrator, agentId).backgroundAttachment.host;
 }

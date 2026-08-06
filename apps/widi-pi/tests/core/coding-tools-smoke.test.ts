@@ -25,18 +25,10 @@ describe("core coding tools smoke", () => {
 	}
 
 	async function execute(name: string, toolCallId: string, params: unknown) {
-		return await tool(name).execute(
-			toolCallId,
-			params,
-			undefined,
-			undefined,
-			{},
-		);
+		return await tool(name).execute(toolCallId, params, undefined, undefined, {});
 	}
 
-	function textOf(result: {
-		content: { type: string; text?: string }[];
-	}): string {
+	function textOf(result: { content: { type: string; text?: string }[] }): string {
 		const first = result.content[0];
 		if (first?.type !== "text" || first.text === undefined) {
 			throw new Error("Expected a text content block.");
@@ -51,9 +43,7 @@ describe("core coding tools smoke", () => {
 		const resolved = registry.resolve();
 		expect(resolved.diagnostics).toEqual([]);
 		tools = new Map(
-			createAgentHarnessToolsFromResolvedTools(resolved.tools).map(
-				(agentTool) => [agentTool.name, agentTool],
-			),
+			createAgentHarnessToolsFromResolvedTools(resolved.tools).map((agentTool) => [agentTool.name, agentTool]),
 		);
 	});
 
@@ -65,15 +55,7 @@ describe("core coding tools smoke", () => {
 		const registry = new ToolRegistry();
 		registerCoreCodingTools(registry, cwd);
 		const resolved = registry.resolve();
-		expect(resolved.toolNames).toEqual([
-			"read",
-			"bash",
-			"edit",
-			"write",
-			"grep",
-			"find",
-			"ls",
-		]);
+		expect(resolved.toolNames).toEqual(["read", "bash", "edit", "write", "grep", "find", "ls"]);
 		// No allowlist means every resolved tool is visible and active.
 		expect(resolved.activeToolNames).toEqual(resolved.toolNames);
 	});
@@ -81,50 +63,31 @@ describe("core coding tools smoke", () => {
 	it("validates resumed active tool names against the registry without aliases", () => {
 		const registry = new ToolRegistry();
 		registerCoreCodingTools(registry, cwd);
-		const resolved = registry.resolve({
-			activeToolNames: ["read", "run_shell", "grep"],
-		});
+		const resolved = registry.resolve({ activeToolNames: ["read", "run_shell", "grep"] });
 		expect(resolved.activeToolNames).toEqual(["read", "grep"]);
-		expect(resolved.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
-			"tool.active_missing",
-		]);
+		expect(resolved.diagnostics.map((diagnostic) => diagnostic.code)).toEqual(["tool.active_missing"]);
 	});
 
 	it("runs a write-read-edit-bash-grep-find-ls round trip", async () => {
-		await execute("write", "call-write", {
-			path: "src/app.txt",
-			content: "alpha needle one\nbeta line two\n",
-		});
-		expect(await readFile(join(cwd, "src", "app.txt"), "utf-8")).toBe(
-			"alpha needle one\nbeta line two\n",
-		);
+		await execute("write", "call-write", { path: "src/app.txt", content: "alpha needle one\nbeta line two\n" });
+		expect(await readFile(join(cwd, "src", "app.txt"), "utf-8")).toBe("alpha needle one\nbeta line two\n");
 
-		const readResult = await execute("read", "call-read", {
-			path: "src/app.txt",
-		});
+		const readResult = await execute("read", "call-read", { path: "src/app.txt" });
 		expect(textOf(readResult)).toBe("alpha needle one\nbeta line two\n");
 
 		await execute("edit", "call-edit", {
 			path: "src/app.txt",
 			edits: [{ oldText: "beta line two", newText: "gamma line two" }],
 		});
-		expect(await readFile(join(cwd, "src", "app.txt"), "utf-8")).toBe(
-			"alpha needle one\ngamma line two\n",
-		);
+		expect(await readFile(join(cwd, "src", "app.txt"), "utf-8")).toBe("alpha needle one\ngamma line two\n");
 
-		const bashResult = await execute("bash", "call-bash", {
-			command: "wc -l < src/app.txt",
-		});
+		const bashResult = await execute("bash", "call-bash", { command: "wc -l < src/app.txt" });
 		expect(textOf(bashResult).trim()).toBe("2");
 
-		const grepResult = await execute("grep", "call-grep", {
-			pattern: "needle",
-		});
+		const grepResult = await execute("grep", "call-grep", { pattern: "needle" });
 		expect(textOf(grepResult)).toBe("src/app.txt:1: alpha needle one");
 
-		const findResult = await execute("find", "call-find", {
-			pattern: "*.txt",
-		});
+		const findResult = await execute("find", "call-find", { pattern: "*.txt" });
 		expect(textOf(findResult)).toBe("src/app.txt");
 
 		const lsResult = await execute("ls", "call-ls", {});

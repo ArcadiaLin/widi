@@ -6,10 +6,7 @@ import { createListAgentsToolDefinition } from "./list-agents.ts";
 import { createSendMessageToolDefinition } from "./send-message.ts";
 import { createSpawnAgentToolDefinition } from "./spawn-agent.ts";
 
-const coreBuiltinToolSource: ToolSource = {
-	kind: "core",
-	id: "builtin",
-};
+const coreBuiltinToolSource: ToolSource = { kind: "core", id: "builtin" };
 
 /**
  * Register the core built-in agent collaboration tools: discovery, creation,
@@ -27,15 +24,9 @@ const coreBuiltinToolSource: ToolSource = {
  * `kill_job` already work on task ids.
  */
 export function registerCoreAgentTools(registry: ToolRegistry): void {
-	registry.defineTool(
-		createListAgentProfilesToolDefinition(),
-		coreBuiltinToolSource,
-	);
+	registry.defineTool(createListAgentProfilesToolDefinition(), coreBuiltinToolSource);
 	registry.defineTool(createListAgentsToolDefinition(), coreBuiltinToolSource);
 	registry.defineTool(createSpawnAgentToolDefinition(), coreBuiltinToolSource);
 	registry.defineTool(createSendMessageToolDefinition(), coreBuiltinToolSource);
-	registry.defineTool(
-		createDisposeAgentToolDefinition(),
-		coreBuiltinToolSource,
-	);
+	registry.defineTool(createDisposeAgentToolDefinition(), coreBuiltinToolSource);
 }

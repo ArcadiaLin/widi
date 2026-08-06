@@ -9,12 +9,7 @@ import {
 	fuzzyFilter,
 } from "@earendil-works/pi-tui";
 import type { AgentOrchestrator } from "../core/agent-orchestrator.ts";
-import type {
-	AgentLifecycleStatus,
-	AgentMaintenanceKind,
-	CandidateItem,
-	RuntimeModel,
-} from "../core/types.ts";
+import type { AgentActivitySnapshot, CandidateItem, RuntimeModel } from "../core/types.ts";
 import type { CommandEngine } from "./commands/engine.ts";
 import { LINE_COMMAND_TRIGGER } from "./commands/parse.ts";
 import type { CommandView } from "./commands/types.ts";
@@ -35,8 +30,7 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 	private readonly engine: CommandEngine;
 	private readonly agentId?: string;
 	private readonly orchestrator: AgentOrchestrator;
-	private readonly getStatus: () => AgentLifecycleStatus | undefined;
-	private readonly getMaintenance?: () => AgentMaintenanceKind | undefined;
+	private readonly getActivity: () => AgentActivitySnapshot | undefined;
 	private readonly getPendingModel?: () => RuntimeModel | undefined;
 	private readonly cwd?: string;
 	private readonly fdPath?: string;
@@ -46,8 +40,7 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 		readonly engine: CommandEngine;
 		readonly agentId?: string;
 		readonly orchestrator: AgentOrchestrator;
-		readonly getStatus: () => AgentLifecycleStatus | undefined;
-		readonly getMaintenance?: () => AgentMaintenanceKind | undefined;
+		readonly getActivity: () => AgentActivitySnapshot | undefined;
 		readonly getPendingModel?: () => RuntimeModel | undefined;
 		readonly cwd?: string;
 		/** fd binary override; undefined probes the PATH, null forces the fallback. */
@@ -56,20 +49,12 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 		this.engine = options.engine;
 		this.agentId = options.agentId;
 		this.orchestrator = options.orchestrator;
-		this.getStatus = options.getStatus;
-		this.getMaintenance = options.getMaintenance;
+		this.getActivity = options.getActivity;
 		this.getPendingModel = options.getPendingModel;
 		if (options.cwd) {
 			this.cwd = options.cwd;
-			this.fdPath =
-				options.fdPath === undefined
-					? detectFdPath()
-					: (options.fdPath ?? undefined);
-			this.fileProvider = new CombinedAutocompleteProvider(
-				[],
-				options.cwd,
-				this.fdPath ?? null,
-			);
+			this.fdPath = options.fdPath === undefined ? detectFdPath() : (options.fdPath ?? undefined);
+			this.fileProvider = new CombinedAutocompleteProvider([], options.cwd, this.fdPath ?? null);
 		}
 	}
 
@@ -93,14 +78,7 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 		if (atPrefix !== undefined && this.cwd && !this.fdPath) {
 			return this.atFallbackSuggestions(atPrefix, options.signal);
 		}
-		return (
-			(await this.fileProvider?.getSuggestions(
-				lines,
-				cursorLine,
-				cursorCol,
-				options,
-			)) ?? null
-		);
+		return (await this.fileProvider?.getSuggestions(lines, cursorLine, cursorCol, options)) ?? null;
 	}
 
 	applyCompletion(
@@ -119,50 +97,23 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 			// submits right after applying a "/" completion, and the trailing
 			// space is trimmed there.
 			nextLines[cursorLine] = `${before}${item.value} ${after}`;
-			return {
-				lines: nextLines,
-				cursorLine,
-				cursorCol: before.length + item.value.length + 1,
-			};
+			return { lines: nextLines, cursorLine, cursorCol: before.length + item.value.length + 1 };
 		}
 		if (this.fileProvider) {
 			// Argument values, "@" mentions and paths. The combined provider's
 			// apply logic (quoting, no space after directories) is independent of
 			// where the candidates came from.
-			return this.fileProvider.applyCompletion(
-				lines,
-				cursorLine,
-				cursorCol,
-				item,
-				prefix,
-			);
+			return this.fileProvider.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
 		}
 		nextLines[cursorLine] = `${before}${item.value}${after}`;
-		return {
-			lines: nextLines,
-			cursorLine,
-			cursorCol: before.length + item.value.length,
-		};
+		return { lines: nextLines, cursorLine, cursorCol: before.length + item.value.length };
 	}
 
-	shouldTriggerFileCompletion(
-		lines: string[],
-		cursorLine: number,
-		cursorCol: number,
-	): boolean {
-		return (
-			this.fileProvider?.shouldTriggerFileCompletion?.(
-				lines,
-				cursorLine,
-				cursorCol,
-			) ?? false
-		);
+	shouldTriggerFileCompletion(lines: string[], cursorLine: number, cursorCol: number): boolean {
+		return this.fileProvider?.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ?? false;
 	}
 
-	private async commandSuggestions(
-		beforeCursor: string,
-		signal: AbortSignal,
-	): Promise<AutocompleteSuggestions | null> {
+	private async commandSuggestions(beforeCursor: string, signal: AbortSignal): Promise<AutocompleteSuggestions | null> {
 		// Argument phase: `/name arg…`. The command's own completer lists
 		// candidates; filtering happens here because completers ignore the prefix.
 		// Only the first argument completes: anything past it is free-form input
@@ -174,10 +125,7 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 			const argumentPrefix = argumentMatch[2] ?? "";
 			let candidates: readonly CandidateItem[];
 			try {
-				candidates = await command.complete(
-					this.commandContext(),
-					argumentPrefix,
-				);
+				candidates = await command.complete(this.commandContext(), argumentPrefix);
 			} catch {
 				return null;
 			}
@@ -185,10 +133,7 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 			const filtered = filterArgumentCandidates(candidates, argumentPrefix);
 			// A sole exact match is already typed out; keeping the menu open
 			// would make Enter confirm a no-op instead of submitting.
-			if (
-				filtered.length === 1 &&
-				filtered[0]?.value.toLowerCase() === argumentPrefix.toLowerCase()
-			) {
+			if (filtered.length === 1 && filtered[0]?.value.toLowerCase() === argumentPrefix.toLowerCase()) {
 				return null;
 			}
 			if (filtered.length === 0) return null;
@@ -203,41 +148,25 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 			};
 		}
 		const body = beforeCursor.slice(LINE_COMMAND_TRIGGER.length);
-		const items = this.engine
-			.list(this.getStatus(), this.getMaintenance?.())
-			.map(toCommandCompletionItem);
-		const filtered = fuzzyFilter(items, body, (item) => item.search).map(
-			(item) => ({
-				value: `${LINE_COMMAND_TRIGGER}${item.view.name}`,
-				label: item.label,
-				description: item.description,
-			}),
-		);
-		return filtered.length > 0
-			? { items: filtered, prefix: beforeCursor }
-			: null;
+		const items = this.engine.list(this.getActivity()).map(toCommandCompletionItem);
+		const filtered = fuzzyFilter(items, body, (item) => item.search).map((item) => ({
+			value: `${LINE_COMMAND_TRIGGER}${item.view.name}`,
+			label: item.label,
+			description: item.description,
+		}));
+		return filtered.length > 0 ? { items: filtered, prefix: beforeCursor } : null;
 	}
 
-	private atFallbackSuggestions(
-		atPrefix: string,
-		signal: AbortSignal,
-	): AutocompleteSuggestions | null {
+	private atFallbackSuggestions(atPrefix: string, signal: AbortSignal): AutocompleteSuggestions | null {
 		if (!this.cwd) return null;
 		const query = atPrefix.slice(1).replace(/^"/u, "");
-		const ranked = rankAtCandidates(
-			collectAtCandidates(this.cwd, signal),
-			query,
-		).slice(0, AT_FALLBACK_MAX_SUGGESTIONS);
+		const ranked = rankAtCandidates(collectAtCandidates(this.cwd, signal), query).slice(0, AT_FALLBACK_MAX_SUGGESTIONS);
 		if (signal.aborted || ranked.length === 0) return null;
 		return { items: ranked.map(toAtItem), prefix: atPrefix };
 	}
 
 	private commandContext() {
-		return {
-			agentId: this.agentId,
-			orchestrator: this.orchestrator,
-			pendingModel: this.getPendingModel?.(),
-		};
+		return { agentId: this.agentId, orchestrator: this.orchestrator, pendingModel: this.getPendingModel?.() };
 	}
 }
 
@@ -253,34 +182,23 @@ function filterArgumentCandidates(
 			(candidate.label ?? candidate.value).toLowerCase().startsWith(lower),
 	);
 	if (prefixHits.length > 0) return prefixHits;
-	return fuzzyFilter(
-		[...candidates],
-		argumentPrefix,
-		(candidate) => candidate.label ?? candidate.value,
-	);
+	return fuzzyFilter([...candidates], argumentPrefix, (candidate) => candidate.label ?? candidate.value);
 }
 
 function toCommandCompletionItem(view: CommandView): CommandCompletionItem {
 	const availability =
-		view.available === false
-			? `unavailable: ${view.unavailableReason ?? "not available"}`
-			: undefined;
+		view.available === false ? `unavailable: ${view.unavailableReason ?? "not available"}` : undefined;
 	return {
 		view,
 		search: view.name,
 		label: `${LINE_COMMAND_TRIGGER}${view.name}`,
-		description: [view.argumentHint, view.description, availability]
-			.filter(Boolean)
-			.join(" — "),
+		description: [view.argumentHint, view.description, availability].filter(Boolean).join(" — "),
 	};
 }
 
 /** The whitespace-delimited token at the cursor when it starts with "@". */
 function extractAtPrefix(beforeCursor: string): string | undefined {
-	const boundary = Math.max(
-		beforeCursor.lastIndexOf(" "),
-		beforeCursor.lastIndexOf("\t"),
-	);
+	const boundary = Math.max(beforeCursor.lastIndexOf(" "), beforeCursor.lastIndexOf("\t"));
 	const token = beforeCursor.slice(boundary + 1);
 	return token.startsWith("@") ? token : undefined;
 }
@@ -321,9 +239,7 @@ function collectAtCandidates(cwd: string, signal: AbortSignal): AtCandidate[] {
 		for (const entry of entries) {
 			if (signal.aborted || scanned >= AT_FALLBACK_MAX_SCAN) break;
 			if (entry.name === ".git") continue;
-			const relativePath = relativeDir
-				? `${relativeDir}/${entry.name}`
-				: entry.name;
+			const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name;
 			let isDirectory = entry.isDirectory();
 			if (!isDirectory && entry.isSymbolicLink()) {
 				try {
@@ -341,10 +257,7 @@ function collectAtCandidates(cwd: string, signal: AbortSignal): AtCandidate[] {
 	return candidates;
 }
 
-function rankAtCandidates(
-	candidates: readonly AtCandidate[],
-	query: string,
-): AtCandidate[] {
+function rankAtCandidates(candidates: readonly AtCandidate[], query: string): AtCandidate[] {
 	const lowerQuery = query.toLowerCase();
 	const scored: Array<{ candidate: AtCandidate; score: number }> = [];
 	for (const candidate of candidates) {
@@ -377,9 +290,7 @@ function scoreAtCandidate(candidate: AtCandidate, lowerQuery: string): number {
 }
 
 function toAtItem(candidate: AtCandidate): AutocompleteItem {
-	const valuePath = candidate.isDirectory
-		? `${candidate.path}/`
-		: candidate.path;
+	const valuePath = candidate.isDirectory ? `${candidate.path}/` : candidate.path;
 	const value = valuePath.includes(" ") ? `@"${valuePath}"` : `@${valuePath}`;
 	return {
 		value,

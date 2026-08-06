@@ -3,18 +3,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { withFileMutationQueue } from "../../src/core/tools/coding/file-mutation-queue.ts";
-import {
-	createLocalCodingToolFileOperations,
-	isMissingPathError,
-} from "../../src/core/tools/coding/operations.ts";
+import { createLocalCodingToolFileOperations, isMissingPathError } from "../../src/core/tools/coding/operations.ts";
 import { OutputAccumulator } from "../../src/core/tools/coding/output-accumulator.ts";
 import { resolveToCwd } from "../../src/core/tools/coding/path-utils.ts";
-import {
-	formatSize,
-	truncateHead,
-	truncateLine,
-	truncateTail,
-} from "../../src/core/tools/coding/truncate.ts";
+import { formatSize, truncateHead, truncateLine, truncateTail } from "../../src/core/tools/coding/truncate.ts";
 
 function deferred<T>(): {
 	promise: Promise<T>;
@@ -34,19 +26,13 @@ describe("coding tool shared primitives", () => {
 	const tempRoots: string[] = [];
 
 	afterEach(async () => {
-		await Promise.all(
-			tempRoots.map((root) => rm(root, { force: true, recursive: true })),
-		);
+		await Promise.all(tempRoots.map((root) => rm(root, { force: true, recursive: true })));
 		tempRoots.length = 0;
 	});
 
 	it("resolves relative paths against cwd and normalizes absolute paths", () => {
-		expect(resolveToCwd("src/../README.md", "/workspace/project")).toBe(
-			"/workspace/project/README.md",
-		);
-		expect(resolveToCwd("/tmp/../var/file.txt", "/workspace/project")).toBe(
-			"/var/file.txt",
-		);
+		expect(resolveToCwd("src/../README.md", "/workspace/project")).toBe("/workspace/project/README.md");
+		expect(resolveToCwd("/tmp/../var/file.txt", "/workspace/project")).toBe("/var/file.txt");
 	});
 
 	it("provides local file operations without exposing ExecutionEnv", async () => {
@@ -59,9 +45,7 @@ describe("coding tool shared primitives", () => {
 		await operations.writeFile(filePath, "hello");
 
 		await expect(operations.access(filePath, "read")).resolves.toBeUndefined();
-		await expect(operations.readFile(filePath)).resolves.toEqual(
-			Buffer.from("hello"),
-		);
+		await expect(operations.readFile(filePath)).resolves.toEqual(Buffer.from("hello"));
 		await expect(operations.realpath(filePath)).resolves.toBe(filePath);
 	});
 
@@ -76,9 +60,7 @@ describe("coding tool shared primitives", () => {
 		const firstStarted = deferred<void>();
 		const releaseFirst = deferred<void>();
 		const events: string[] = [];
-		const operations = {
-			realpath: async (path: string) => path.replace("/link", "/target"),
-		};
+		const operations = { realpath: async (path: string) => path.replace("/link", "/target") };
 
 		const first = withFileMutationQueue(
 			"/workspace/link",
@@ -105,10 +87,7 @@ describe("coding tool shared primitives", () => {
 		expect(events).toEqual(["first:start"]);
 
 		releaseFirst.resolve();
-		await expect(Promise.all([first, second])).resolves.toEqual([
-			"first",
-			"second",
-		]);
+		await expect(Promise.all([first, second])).resolves.toEqual(["first", "second"]);
 		expect(events).toEqual(["first:start", "first:end", "second:start"]);
 	});
 
@@ -139,10 +118,7 @@ describe("coding tool shared primitives", () => {
 	});
 
 	it("truncates file reads by line and byte limits without partial lines", () => {
-		const byLines = truncateHead("one\ntwo\nthree", {
-			maxLines: 2,
-			maxBytes: 100,
-		});
+		const byLines = truncateHead("one\ntwo\nthree", { maxLines: 2, maxBytes: 100 });
 		expect(byLines).toMatchObject({
 			content: "one\ntwo",
 			truncated: true,
@@ -151,10 +127,7 @@ describe("coding tool shared primitives", () => {
 			outputLines: 2,
 		});
 
-		const byBytes = truncateHead("alpha\nbeta\ngamma", {
-			maxLines: 10,
-			maxBytes: 9,
-		});
+		const byBytes = truncateHead("alpha\nbeta\ngamma", { maxLines: 10, maxBytes: 9 });
 		expect(byBytes).toMatchObject({
 			content: "alpha",
 			truncated: true,
@@ -163,10 +136,7 @@ describe("coding tool shared primitives", () => {
 			firstLineExceedsLimit: false,
 		});
 
-		const firstLineTooLarge = truncateHead("123456\nok", {
-			maxLines: 10,
-			maxBytes: 4,
-		});
+		const firstLineTooLarge = truncateHead("123456\nok", { maxLines: 10, maxBytes: 4 });
 		expect(firstLineTooLarge).toMatchObject({
 			content: "",
 			truncated: true,
@@ -183,10 +153,7 @@ describe("coding tool shared primitives", () => {
 	});
 
 	it("truncates command output from the tail by line and byte limits", () => {
-		const byLines = truncateTail("one\ntwo\nthree", {
-			maxLines: 2,
-			maxBytes: 100,
-		});
+		const byLines = truncateTail("one\ntwo\nthree", { maxLines: 2, maxBytes: 100 });
 		expect(byLines).toMatchObject({
 			content: "two\nthree",
 			truncated: true,
@@ -196,10 +163,7 @@ describe("coding tool shared primitives", () => {
 			lastLinePartial: false,
 		});
 
-		const byBytes = truncateTail("alpha\nbeta\ngamma", {
-			maxLines: 10,
-			maxBytes: 9,
-		});
+		const byBytes = truncateTail("alpha\nbeta\ngamma", { maxLines: 10, maxBytes: 9 });
 		expect(byBytes).toMatchObject({
 			content: "gamma",
 			truncated: true,
@@ -215,9 +179,7 @@ describe("coding tool shared primitives", () => {
 			truncated: false,
 			totalLines: 0,
 		});
-		expect(
-			truncateTail("only line\n", { maxLines: 10, maxBytes: 100 }),
-		).toMatchObject({
+		expect(truncateTail("only line\n", { maxLines: 10, maxBytes: 100 })).toMatchObject({
 			content: "only line\n",
 			truncated: false,
 			totalLines: 1,
@@ -236,14 +198,8 @@ describe("coding tool shared primitives", () => {
 	});
 
 	it("truncates long single lines with a suffix", () => {
-		expect(truncateLine("short", 10)).toEqual({
-			text: "short",
-			wasTruncated: false,
-		});
-		expect(truncateLine("0123456789abc", 10)).toEqual({
-			text: "0123456789... [truncated]",
-			wasTruncated: true,
-		});
+		expect(truncateLine("short", 10)).toEqual({ text: "short", wasTruncated: false });
+		expect(truncateLine("0123456789abc", 10)).toEqual({ text: "0123456789... [truncated]", wasTruncated: true });
 	});
 
 	it("accumulates output with line-limited tail snapshots", () => {
@@ -281,9 +237,7 @@ describe("coding tool shared primitives", () => {
 		const acc = new OutputAccumulator();
 		acc.append(Buffer.from("data"));
 		acc.finish();
-		expect(() => acc.append(Buffer.from("more"))).toThrow(
-			"Cannot append to a finished output accumulator",
-		);
+		expect(() => acc.append(Buffer.from("more"))).toThrow("Cannot append to a finished output accumulator");
 	});
 
 	it("spills the full raw output to a temp file without loss", async () => {

@@ -1,17 +1,9 @@
 import type { OAuthLoginCallbacks } from "@earendil-works/pi-ai";
-import { formatError } from "../../utils/errors.ts";
-import {
-	type OrchestratorDiagnostic,
-	OrchestratorError,
-	toDiagnostic,
-} from "../diagnostics.ts";
-import type {
-	HumanRequestBroker,
-	HumanRequestDraft,
-	HumanResponse,
-} from "../human-request.ts";
-import type { ModelRegistry } from "../model-registry.js";
-import type { AgentId, CandidateItem, OrchestratorEvent } from "../types.ts";
+import { formatError } from "../utils/errors.ts";
+import { type OrchestratorDiagnostic, OrchestratorError, toDiagnostic } from "./diagnostics.ts";
+import type { HumanRequestBroker, HumanRequestDraft, HumanResponse } from "./human-request.ts";
+import type { ModelRegistry } from "./model-registry.js";
+import type { AgentId, CandidateItem, OrchestratorEvent } from "./types.ts";
 
 export interface AuthProviderCandidateListResult {
 	readonly providers: readonly CandidateItem[];
@@ -36,21 +28,15 @@ export class AuthRuntimeController {
 	private readonly _models: ModelRegistry;
 	private readonly _humanRequests: HumanRequestBroker;
 	private readonly _publish: (event: OrchestratorEvent) => Promise<void>;
-	private readonly _diagnose: (
-		diagnostic: OrchestratorDiagnostic,
-	) => Promise<void>;
-	private readonly _diagnoseMany: (
-		diagnostics: readonly OrchestratorDiagnostic[],
-	) => Promise<void>;
+	private readonly _diagnose: (diagnostic: OrchestratorDiagnostic) => Promise<void>;
+	private readonly _diagnoseMany: (diagnostics: readonly OrchestratorDiagnostic[]) => Promise<void>;
 
 	constructor(options: {
 		readonly models: ModelRegistry;
 		readonly humanRequests: HumanRequestBroker;
 		readonly publish: (event: OrchestratorEvent) => Promise<void>;
 		readonly diagnose: (diagnostic: OrchestratorDiagnostic) => Promise<void>;
-		readonly diagnoseMany: (
-			diagnostics: readonly OrchestratorDiagnostic[],
-		) => Promise<void>;
+		readonly diagnoseMany: (diagnostics: readonly OrchestratorDiagnostic[]) => Promise<void>;
 	}) {
 		this._models = options.models;
 		this._humanRequests = options.humanRequests;
@@ -62,13 +48,13 @@ export class AuthRuntimeController {
 	listProviders(): AuthProviderCandidateListResult {
 		const storage = this._models.authStorage;
 		return {
-			providers: storage.getOAuthProviders().map((provider) => ({
-				value: provider.id,
-				label: provider.name,
-				description: storage.getAuthStatus(provider.id).configured
-					? "logged in"
-					: undefined,
-			})),
+			providers: storage
+				.getOAuthProviders()
+				.map((provider) => ({
+					value: provider.id,
+					label: provider.name,
+					description: storage.getAuthStatus(provider.id).configured ? "logged in" : undefined,
+				})),
 		};
 	}
 
@@ -78,22 +64,15 @@ export class AuthRuntimeController {
 		return {
 			providers: (await storage.list()).map((info) => ({
 				value: info.providerId,
-				label:
-					providers.find((provider) => provider.id === info.providerId)?.name ??
-					info.providerId,
+				label: providers.find((provider) => provider.id === info.providerId)?.name ?? info.providerId,
 			})),
 		};
 	}
 
-	async login(
-		providerId: string,
-		options?: { readonly agentId?: AgentId },
-	): Promise<AuthProviderLoginResult> {
+	async login(providerId: string, options?: { readonly agentId?: AgentId }): Promise<AuthProviderLoginResult> {
 		const storage = this._models.authStorage;
 		const reference = providerId.trim();
-		const provider = storage
-			.getOAuthProviders()
-			.find((candidate) => candidate.id === reference);
+		const provider = storage.getOAuthProviders().find((candidate) => candidate.id === reference);
 		if (!provider) {
 			throw new OrchestratorError({
 				severity: "error",
@@ -107,10 +86,7 @@ export class AuthRuntimeController {
 		}
 		const settle = new AbortController();
 		try {
-			await storage.login(
-				provider.id,
-				this._createCallbacks(provider.id, options?.agentId, settle.signal),
-			);
+			await storage.login(provider.id, this._createCallbacks(provider.id, options?.agentId, settle.signal));
 		} catch (error) {
 			throw new OrchestratorError(
 				toDiagnostic(error, {
@@ -151,18 +127,10 @@ export class AuthRuntimeController {
 		return { providerId: reference, removed };
 	}
 
-	private _createCallbacks(
-		providerId: string,
-		agentId: AgentId | undefined,
-		signal: AbortSignal,
-	): OAuthLoginCallbacks {
+	private _createCallbacks(providerId: string, agentId: AgentId | undefined, signal: AbortSignal): OAuthLoginCallbacks {
 		const requestHuman = async (draft: HumanRequestDraft) =>
-			await this._humanRequests.request(
-				{ ...draft, source: { kind: "human" }, signal },
-				{ agentId },
-			);
-		const inputValue = (response: HumanResponse) =>
-			response.kind === "input" ? response.value : undefined;
+			await this._humanRequests.request({ ...draft, source: { kind: "human" }, signal }, { agentId });
+		const inputValue = (response: HumanResponse) => (response.kind === "input" ? response.value : undefined);
 		return {
 			signal,
 			onAuth: (info) => {
@@ -186,20 +154,10 @@ export class AuthRuntimeController {
 				});
 			},
 			onProgress: (message) => {
-				void this._publish({
-					type: "auth_login_progress",
-					providerId,
-					agentId,
-					message,
-					createdAt: now(),
-				});
+				void this._publish({ type: "auth_login_progress", providerId, agentId, message, createdAt: now() });
 			},
 			onPrompt: async (prompt) => {
-				const response = await requestHuman({
-					kind: "input",
-					title: prompt.message,
-					placeholder: prompt.placeholder,
-				});
+				const response = await requestHuman({ kind: "input", title: prompt.message, placeholder: prompt.placeholder });
 				const value = inputValue(response);
 				if (value !== undefined) return value;
 				if (prompt.allowEmpty) return "";
@@ -208,8 +166,7 @@ export class AuthRuntimeController {
 			onManualCodeInput: async () => {
 				const response = await requestHuman({
 					kind: "input",
-					title:
-						"Complete login in your browser, or paste the authorization code / redirect URL here:",
+					title: "Complete login in your browser, or paste the authorization code / redirect URL here:",
 					provisional: true,
 				});
 				const value = inputValue(response);

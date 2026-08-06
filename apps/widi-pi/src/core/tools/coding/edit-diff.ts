@@ -20,10 +20,7 @@ export function normalizeToLF(text: string): string {
 	return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
-export function restoreLineEndings(
-	text: string,
-	ending: "\r\n" | "\n",
-): string {
+export function restoreLineEndings(text: string, ending: "\r\n" | "\n"): string {
 	return ending === "\r\n" ? text.replace(/\n/g, "\r\n") : text;
 }
 
@@ -73,10 +70,7 @@ interface MatchedEdit {
 	newText: string;
 }
 
-type TextReplacement = Pick<
-	MatchedEdit,
-	"matchIndex" | "matchLength" | "newText"
->;
+type TextReplacement = Pick<MatchedEdit, "matchIndex" | "matchLength" | "newText">;
 
 function getLineSpans(content: string): LineSpan[] {
 	let offset = 0;
@@ -87,10 +81,7 @@ function getLineSpans(content: string): LineSpan[] {
 	});
 }
 
-function getReplacementLineRange(
-	lines: LineSpan[],
-	replacement: TextReplacement,
-) {
+function getReplacementLineRange(lines: LineSpan[], replacement: TextReplacement) {
 	const replacementStart = replacement.matchIndex;
 	const replacementEnd = replacement.matchIndex + replacement.matchLength;
 
@@ -117,19 +108,13 @@ function getReplacementLineRange(
 	return { startLine, endLine: endLine + 1 };
 }
 
-function applyReplacements(
-	content: string,
-	replacements: TextReplacement[],
-	offset = 0,
-): string {
+function applyReplacements(content: string, replacements: TextReplacement[], offset = 0): string {
 	let result = content;
 	for (let i = replacements.length - 1; i >= 0; i--) {
 		const replacement = replacements[i];
 		const matchIndex = replacement.matchIndex - offset;
 		result =
-			result.substring(0, matchIndex) +
-			replacement.newText +
-			result.substring(matchIndex + replacement.matchLength);
+			result.substring(0, matchIndex) + replacement.newText + result.substring(matchIndex + replacement.matchLength);
 	}
 	return result;
 }
@@ -152,19 +137,11 @@ export function applyReplacementsPreservingUnchangedLines(
 	const originalLines = splitLinesWithEndings(originalContent);
 	const baseLines = getLineSpans(baseContent);
 	if (originalLines.length !== baseLines.length) {
-		throw new Error(
-			"Cannot preserve unchanged lines because the base content has a different line count.",
-		);
+		throw new Error("Cannot preserve unchanged lines because the base content has a different line count.");
 	}
 
-	const groups: Array<{
-		startLine: number;
-		endLine: number;
-		replacements: TextReplacement[];
-	}> = [];
-	const sortedReplacements = [...replacements].sort(
-		(a, b) => a.matchIndex - b.matchIndex,
-	);
+	const groups: Array<{ startLine: number; endLine: number; replacements: TextReplacement[] }> = [];
+	const sortedReplacements = [...replacements].sort((a, b) => a.matchIndex - b.matchIndex);
 	for (const replacement of sortedReplacements) {
 		const range = getReplacementLineRange(baseLines, replacement);
 		const current = groups[groups.length - 1];
@@ -227,10 +204,7 @@ export interface AppliedEditsResult {
  * fuzzy-normalized version of the content (trailing whitespace stripped,
  * Unicode quotes/dashes normalized to ASCII).
  */
-export function fuzzyFindText(
-	content: string,
-	oldText: string,
-): FuzzyMatchResult {
+export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResult {
 	// Try exact match first
 	const exactIndex = content.indexOf(oldText);
 	if (exactIndex !== -1) {
@@ -249,13 +223,7 @@ export function fuzzyFindText(
 	const fuzzyIndex = fuzzyContent.indexOf(fuzzyOldText);
 
 	if (fuzzyIndex === -1) {
-		return {
-			found: false,
-			index: -1,
-			matchLength: 0,
-			usedFuzzyMatch: false,
-			contentForReplacement: content,
-		};
+		return { found: false, index: -1, matchLength: 0, usedFuzzyMatch: false, contentForReplacement: content };
 	}
 
 	// When fuzzy matching, return offsets in normalized space. Callers can use
@@ -272,9 +240,7 @@ export function fuzzyFindText(
 
 /** Strip UTF-8 BOM if present, return both the BOM (if any) and the text without it */
 export function stripBom(content: string): { bom: string; text: string } {
-	return content.startsWith("\uFEFF")
-		? { bom: "\uFEFF", text: content.slice(1) }
-		: { bom: "", text: content };
+	return content.startsWith("\uFEFF") ? { bom: "\uFEFF", text: content.slice(1) } : { bom: "", text: content };
 }
 
 function countOccurrences(content: string, oldText: string): number {
@@ -283,11 +249,7 @@ function countOccurrences(content: string, oldText: string): number {
 	return fuzzyContent.split(fuzzyOldText).length - 1;
 }
 
-function getNotFoundError(
-	path: string,
-	editIndex: number,
-	totalEdits: number,
-): Error {
+function getNotFoundError(path: string, editIndex: number, totalEdits: number): Error {
 	if (totalEdits === 1) {
 		return new Error(
 			`Could not find the exact text in ${path}. The old text must match exactly including all whitespace and newlines.`,
@@ -298,12 +260,7 @@ function getNotFoundError(
 	);
 }
 
-function getDuplicateError(
-	path: string,
-	editIndex: number,
-	totalEdits: number,
-	occurrences: number,
-): Error {
+function getDuplicateError(path: string, editIndex: number, totalEdits: number, occurrences: number): Error {
 	if (totalEdits === 1) {
 		return new Error(
 			`Found ${occurrences} occurrences of the text in ${path}. The text must be unique. Please provide more context to make it unique.`,
@@ -314,11 +271,7 @@ function getDuplicateError(
 	);
 }
 
-function getEmptyOldTextError(
-	path: string,
-	editIndex: number,
-	totalEdits: number,
-): Error {
+function getEmptyOldTextError(path: string, editIndex: number, totalEdits: number): Error {
 	if (totalEdits === 1) {
 		return new Error(`oldText must not be empty in ${path}.`);
 	}
@@ -331,9 +284,7 @@ function getNoChangeError(path: string, totalEdits: number): Error {
 			`No changes made to ${path}. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected.`,
 		);
 	}
-	return new Error(
-		`No changes made to ${path}. The replacements produced identical content.`,
-	);
+	return new Error(`No changes made to ${path}. The replacements produced identical content.`);
 }
 
 /**
@@ -361,13 +312,9 @@ export function applyEditsToNormalizedContent(
 		}
 	}
 
-	const initialMatches = normalizedEdits.map((edit) =>
-		fuzzyFindText(normalizedContent, edit.oldText),
-	);
+	const initialMatches = normalizedEdits.map((edit) => fuzzyFindText(normalizedContent, edit.oldText));
 	const usedFuzzyMatch = initialMatches.some((match) => match.usedFuzzyMatch);
-	const replacementBaseContent = usedFuzzyMatch
-		? normalizeForFuzzyMatch(normalizedContent)
-		: normalizedContent;
+	const replacementBaseContent = usedFuzzyMatch ? normalizeForFuzzyMatch(normalizedContent) : normalizedContent;
 
 	const matchedEdits: MatchedEdit[] = [];
 	for (let i = 0; i < normalizedEdits.length; i++) {
@@ -403,11 +350,7 @@ export function applyEditsToNormalizedContent(
 
 	const baseContent = normalizedContent;
 	const newContent = usedFuzzyMatch
-		? applyReplacementsPreservingUnchangedLines(
-				normalizedContent,
-				replacementBaseContent,
-				matchedEdits,
-			)
+		? applyReplacementsPreservingUnchangedLines(normalizedContent, replacementBaseContent, matchedEdits)
 		: applyReplacements(replacementBaseContent, matchedEdits);
 
 	if (baseContent === newContent) {
@@ -418,24 +361,11 @@ export function applyEditsToNormalizedContent(
 }
 
 /** Generate a standard unified patch. */
-export function generateUnifiedPatch(
-	path: string,
-	oldContent: string,
-	newContent: string,
-	contextLines = 4,
-): string {
-	return createTwoFilesPatch(
-		path,
-		path,
-		oldContent,
-		newContent,
-		undefined,
-		undefined,
-		{
-			context: contextLines,
-			headerOptions: FILE_HEADERS_ONLY,
-		},
-	);
+export function generateUnifiedPatch(path: string, oldContent: string, newContent: string, contextLines = 4): string {
+	return createTwoFilesPatch(path, path, oldContent, newContent, undefined, undefined, {
+		context: contextLines,
+		headerOptions: FILE_HEADERS_ONLY,
+	});
 }
 
 /**
@@ -489,8 +419,7 @@ export function generateDiffString(
 			lastWasChange = true;
 		} else {
 			// Context lines - only show a few before/after changes
-			const nextPartIsChange =
-				i < parts.length - 1 && (parts[i + 1].added || parts[i + 1].removed);
+			const nextPartIsChange = i < parts.length - 1 && (parts[i + 1].added || parts[i + 1].removed);
 			const hasLeadingChange = lastWasChange;
 			const hasTrailingChange = nextPartIsChange;
 
@@ -505,8 +434,7 @@ export function generateDiffString(
 				} else {
 					const leadingLines = raw.slice(0, contextLines);
 					const trailingLines = raw.slice(raw.length - contextLines);
-					const skippedLines =
-						raw.length - leadingLines.length - trailingLines.length;
+					const skippedLines = raw.length - leadingLines.length - trailingLines.length;
 
 					for (const line of leadingLines) {
 						const lineNum = String(oldLineNum).padStart(lineNumWidth, " ");

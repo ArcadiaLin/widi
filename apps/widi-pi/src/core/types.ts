@@ -7,11 +7,7 @@ import type {
 	BackgroundJobTransition,
 } from "./background/index.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
-import type {
-	ExtensionInputPresentation,
-	ExtensionMessage,
-	ExtensionStatus,
-} from "./extension/presentation.ts";
+import type { ExtensionMessage, ExtensionStatus } from "./extension/presentation.ts";
 import type { HumanRequestEvent } from "./human-request.ts";
 
 export type RuntimeModel = Model<Api>;
@@ -83,11 +79,7 @@ export interface AgentContextUsage {
 }
 
 export type OrchestratorEvent =
-	| {
-			readonly type: "agent_harness_event";
-			agentId: AgentId;
-			event: AgentHarnessEvent;
-	  }
+	| { readonly type: "agent_harness_event"; agentId: AgentId; event: AgentHarnessEvent }
 	| {
 			readonly type: "agent_status_changed";
 			agentId: AgentId;
@@ -177,23 +169,6 @@ export type OrchestratorEvent =
 			status?: ExtensionStatus;
 			changedAt: string;
 	  }
-	// How a client should render a message an extension just sent into the
-	// agent. The message itself still arrives through the harness as ordinary
-	// user input; this record explicitly names that message's session entry.
-	// `extensionId` is injected by core, so a renderer keyed on
-	// (extensionId, customType) cannot be claimed by another extension.
-	| {
-			readonly type: "extension_input_presented";
-			presentationId: string;
-			/** Session custom entry id, for deduping against hydration. */
-			entryId: string;
-			/** User-message session entry this presentation renders. */
-			messageEntryId: string;
-			agentId: AgentId;
-			extensionId: string;
-			presentation: ExtensionInputPresentation;
-			createdAt: string;
-	  }
 	| {
 			readonly type: "extension_message_published";
 			presentationId: string;
@@ -240,18 +215,8 @@ export type OrchestratorEvent =
 			verificationUri: string;
 			createdAt: string;
 	  }
-	| {
-			readonly type: "auth_login_progress";
-			providerId: string;
-			agentId?: AgentId;
-			message: string;
-			createdAt: string;
-	  }
-	| {
-			readonly type: "diagnostic";
-			diagnostic: OrchestratorDiagnostic;
-			createdAt: string;
-	  }
+	| { readonly type: "auth_login_progress"; providerId: string; agentId?: AgentId; message: string; createdAt: string }
+	| { readonly type: "diagnostic"; diagnostic: OrchestratorDiagnostic; createdAt: string }
 	| {
 			readonly type: "agent_spawned";
 			agentId: AgentId;
@@ -274,29 +239,37 @@ export type OrchestratorEvent =
 			reason?: string;
 			disposedAt: string;
 	  }
-	| {
-			readonly type: "agent_session_info_changed";
-			agentId: AgentId;
-			name?: string;
-			changedAt: string;
-	  }
+	| { readonly type: "agent_session_info_changed"; agentId: AgentId; name?: string; changedAt: string }
 	// Context gauge fact, recomputed when the agent settles. Push rather than
 	// poll: a footer or a budget-watching extension would otherwise have to
 	// re-read the whole branch on a timer. An absent `usage` means the previous
 	// measurement no longer describes the branch and no new one exists yet -
 	// what compaction leaves behind until the next assistant message.
-	| {
-			readonly type: "agent_context_usage_changed";
-			agentId: AgentId;
-			usage?: AgentContextUsage;
-			changedAt: string;
-	  }
+	| { readonly type: "agent_context_usage_changed"; agentId: AgentId; usage?: AgentContextUsage; changedAt: string }
 	| {
 			readonly type: "agent_session_forked";
 			agentId: AgentId;
 			forkedSessionId: string;
 			entryId?: string;
 			createdAt: string;
+	  }
+	// Which state a persistence namespace now has on this agent's branch. The
+	// ref itself is a pure index - it never becomes model context - so without
+	// this event nothing outside the namespace can see that the branch changed
+	// its mind about what a namespace holds.
+	//
+	// Published from the write's own `session_write`, not from the call that
+	// asked for it: the harness buffers writes behind a running turn and reports
+	// no entry id until it flushes. That makes `entryId` always real, at the cost
+	// of the event arriving at the save point rather than at the commit.
+	| {
+			readonly type: "agent_persistence_ref_changed";
+			agentId: AgentId;
+			namespace: string;
+			/** Null when the branch's last word on this namespace is to clear it. */
+			stateRoot: string | null;
+			entryId: string;
+			changedAt: string;
 	  }
 	// Per-job lifecycle fact for the agent's pseudo-async background jobs,
 	// emitted for every observable transition (backgrounded at t0, an abort
@@ -355,9 +328,7 @@ export type OrchestratorEvent =
 			operationRef?: string;
 	  };
 
-export type OrchestratorEventListener = (
-	event: OrchestratorEvent,
-) => Promise<void> | void;
+export type OrchestratorEventListener = (event: OrchestratorEvent) => Promise<void> | void;
 
 /** A completion candidate returned by orchestrator list methods. */
 export interface CandidateItem {
@@ -369,25 +340,4 @@ export interface CandidateItem {
 /** Result of promptAgent: the prompt completed or an interceptor blocked it. */
 export type PromptOutcome =
 	| { readonly kind: "completed"; readonly message: AssistantMessage }
-	| {
-			readonly kind: "blocked";
-			readonly inputId: string;
-			readonly reason?: string;
-			readonly blockedBy: string;
-	  };
-
-/**
- * Pre-expansion record of an interaction-layer inline expansion, persisted
- * by promptAgent as a core:command_expansion session entry (format unchanged).
- */
-export interface PromptExpansion {
-	readonly originalText: string;
-	readonly items: ReadonlyArray<{
-		readonly commandId: string;
-		readonly name: string;
-		readonly trigger: string;
-		readonly argument: string;
-		readonly start: number;
-		readonly end: number;
-	}>;
-}
+	| { readonly kind: "blocked"; readonly inputId: string; readonly reason?: string; readonly blockedBy: string };

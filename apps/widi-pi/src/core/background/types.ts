@@ -15,6 +15,7 @@
 import type { AgentToolResult } from "@widi/agent-core";
 import type { JsonValue } from "../../utils/json.ts";
 import type { CoreDiagnostic } from "../diagnostics.ts";
+import type { MessageSender, MessageSinkBinding } from "../message.ts";
 import type { NamespaceProjection } from "../persistence/index.ts";
 import type { JobHistoryStorage, SessionJobStore } from "./job-persistence.ts";
 
@@ -43,16 +44,10 @@ export type BackgroundJobLifecycleState =
 export type BackgroundJobStatus = "completed" | "failed" | "cancelled";
 
 /** The states an observer can ever see: candidates are never handed out. */
-export type ObservableBackgroundJobState = Exclude<
-	BackgroundJobLifecycleState,
-	"foreground" | "accepting"
->;
+export type ObservableBackgroundJobState = Exclude<BackgroundJobLifecycleState, "foreground" | "accepting">;
 
 /** Not states: `settled` names the transition into any terminal state. */
-export type BackgroundJobTransition =
-	| "backgrounded"
-	| "abort_requested"
-	| "settled";
+export type BackgroundJobTransition = "backgrounded" | "abort_requested" | "settled";
 
 /**
  * Whether a job has a local executor, and if not, who may settle it. `local`
@@ -119,10 +114,7 @@ export interface BackgroundJobSettlement {
 
 /** One observable lifecycle change, as delivered to a watcher. */
 export type BackgroundJobChange =
-	| {
-			readonly transition: "backgrounded" | "abort_requested";
-			readonly job: BackgroundJobSnapshot;
-	  }
+	| { readonly transition: "backgrounded" | "abort_requested"; readonly job: BackgroundJobSnapshot }
 	| ({ readonly transition: "settled" } & BackgroundJobSettlement);
 
 // ---------------------------------------------------------------------------
@@ -142,10 +134,7 @@ export interface BackgroundJobReport {
 	/** Short dynamic fallback for consumers that do not know `kind`. */
 	readonly summary?: string;
 	/** Optional generic progress that every consumer can render. */
-	readonly progress?: {
-		readonly completed: number;
-		readonly total?: number;
-	};
+	readonly progress?: { readonly completed: number; readonly total?: number };
 	/** Kind-specific JSON data. */
 	readonly data?: JsonValue;
 }
@@ -210,10 +199,7 @@ export type JobRejection =
  * - `degraded`: a write failed, or the history could not be read back in full.
  *   Live behavior is unchanged - this is a claim about the record, not the job.
  */
-export type BackgroundJobPersistenceHealth =
-	| "ephemeral"
-	| "durable"
-	| "degraded";
+export type BackgroundJobPersistenceHealth = "ephemeral" | "durable" | "degraded";
 
 /**
  * One agent's scope, handed out by `attachAgent` and dead after `detachAgent`.
@@ -279,17 +265,13 @@ export interface BackgroundJobHost {
 	 * refuses rather than throwing when the attachment is stale, because "the
 	 * agent was disposed mid-call" is an ordinary outcome for a tool, not a bug.
 	 */
-	startLocal(
-		input: StartLocalJobInput,
-	): JobResult<{ execution: BackgroundJobExecution }>;
+	startLocal(input: StartLocalJobInput): JobResult<{ execution: BackgroundJobExecution }>;
 	/**
 	 * Create a job another agent will settle. Async because the job must have a
 	 * durable head before the assignment goes out: an assignment whose job left
 	 * no record is how a task ends up owed by nobody.
 	 */
-	createExternal(
-		input: CreateExternalJobInput,
-	): Promise<JobResult<{ job: BackgroundJobSnapshot }>>;
+	createExternal(input: CreateExternalJobInput): Promise<JobResult<{ job: BackgroundJobSnapshot }>>;
 	/** Observable jobs owned by this agent, oldest first. */
 	list(): readonly BackgroundJobSnapshot[];
 	read(jobId: string): JobResult<{ read: BackgroundJobReadResult }>;
@@ -319,9 +301,7 @@ export interface BackgroundJobExecution {
 	 * background, so the caller returns the result as an ordinary tool result and
 	 * nothing was ever observable.
 	 */
-	settle(
-		outcome: BackgroundJobOutcome,
-	): JobResult<{ disposition: "inline" | "backgrounded" }>;
+	settle(outcome: BackgroundJobOutcome): JobResult<{ disposition: "inline" | "backgrounded" }>;
 }
 
 /**
@@ -395,12 +375,7 @@ export type BackgroundJobEvent =
 // ---------------------------------------------------------------------------
 
 /** Why a runtime closed a job the executor never answered for. */
-export type JobCloseCause =
-	| "resume"
-	| "navigate"
-	| "dispose"
-	| "fork"
-	| "abort";
+export type JobCloseCause = "resume" | "navigate" | "dispose" | "fork" | "abort";
 
 export interface JobStartedRecord {
 	readonly kind: "started";
@@ -525,24 +500,6 @@ export const MAX_PERSISTED_JOB_OUTPUT_BYTES = 32 * 1024;
 // Ports
 // ---------------------------------------------------------------------------
 
-/** A settled job's t1, ready to be handed to the owner's input path. */
-export interface BackgroundJobDelivery {
-	readonly ownerAgentId: string;
-	readonly jobId: string;
-	/** The rendered t1 text; the runtime owns the wording. */
-	readonly body: string;
-}
-
-/**
- * What the host says about an accepted delivery. `entryId` is the provisioned
- * id of the queued entry - the thing that would turn "was this t1 delivered?"
- * from a text search into an existence check. Nothing produces or reads it yet;
- * it is declared so the day the input path can provision one, no shape changes.
- */
-export interface BackgroundJobDeliveryReceipt {
-	readonly entryId?: string;
-}
-
 /**
  * Everything the runtime needs from outside itself - and nothing more. There is
  * no port for "is this agent reachable" on purpose: the runtime asks for a
@@ -553,18 +510,14 @@ export interface BackgroundJobRuntimePorts {
 	 * Open the owner's job history, or resolve undefined for an agent with no
 	 * session directory. Creates nothing eagerly.
 	 */
-	openOwnerStore(owner: {
-		readonly agentId: string;
-		readonly sessionId: string;
-	}): Promise<SessionJobStore | undefined>;
+	openOwnerStore(owner: { readonly agentId: string; readonly sessionId: string }): Promise<SessionJobStore | undefined>;
 	/**
-	 * Hand a settled job's text to its owner. Delivery policy - interception,
-	 * merging, prompt versus steer - belongs to the host; the runtime only says
-	 * that this owner has a result to read.
+	 * The one way anything reaches a model's context. The runtime holds it like
+	 * every other producer does and says what it has to say; how that lands -
+	 * interception, merging, prompt versus steer - is decided by the binding and
+	 * the host, not here.
 	 */
-	deliverResult(
-		delivery: BackgroundJobDelivery,
-	): Promise<BackgroundJobDeliveryReceipt>;
+	messageSinkFor(binding: MessageSinkBinding): MessageSender;
 	publish(event: BackgroundJobEvent): Promise<void>;
 	/** Report a fact without depending on whoever collects it. */
 	diagnose(diagnostic: CoreDiagnostic): Promise<void>;

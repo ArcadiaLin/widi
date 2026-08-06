@@ -6,22 +6,18 @@
 
 import type { AgentHarnessEvent } from "@widi/agent-core";
 import { describe, expect, it, vi } from "vitest";
-import type {
-	AgentOrchestrator,
-	OrchestratorEvent,
-} from "../../src/core/agent-orchestrator.ts";
+import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
+import type { OrchestratorEvent } from "../../src/core/types.ts";
 import {
 	createOrchestrator,
+	harnessEventDriver,
 	MemoryExecutionEnv,
-	requireAgentRecord,
+	requireAgentHarness,
+	requireLiveAgent,
 } from "../helpers/orchestrator.ts";
 
-function requireActions(
-	orchestrator: AgentOrchestrator,
-	agentId: string,
-	extensionId = "control",
-) {
-	const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+function requireActions(orchestrator: AgentOrchestrator, agentId: string, extensionId = "control") {
+	const runner = requireLiveAgent(orchestrator, agentId).extensionRunner;
 	if (!runner) throw new Error("Expected extension runner.");
 	return runner.createContext(extensionId).actions;
 }
@@ -29,39 +25,19 @@ function requireActions(
 async function createHarness() {
 	const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 	orchestrator.registerExtension("control", () => {});
-	const agentId = await orchestrator.spawnAgent();
-	return {
-		orchestrator,
-		agentId,
-		actions: requireActions(orchestrator, agentId),
-	};
+	const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+	return { orchestrator, agentId, actions: requireActions(orchestrator, agentId) };
 }
 
-// The harness keeps its queues private and reports them only through
-// queue_update, which is also where the orchestrator mirrors their depth.
-async function emitQueueUpdate(
-	orchestrator: AgentOrchestrator,
-	agentId: string,
-	steerCount: number,
-): Promise<void> {
-	const event: AgentHarnessEvent = {
-		type: "queue_update",
-		steer: Array.from({ length: steerCount }, () => ({
-			role: "user" as const,
-			content: "queued",
-			timestamp: 1,
-		})),
-		followUp: [],
-		nextTurn: [],
-	};
-	await (
-		orchestrator as unknown as {
-			_handleAgentHarnessEvent(
-				agentId: string,
-				event: AgentHarnessEvent,
-			): Promise<void>;
-		}
-	)._handleAgentHarnessEvent(agentId, event);
+// The idle judgement reads the harness's own queue depth rather than mirroring
+// the queue_update payload, so the queue is what has to change; the event is
+// only what asks the orchestrator to judge again.
+async function emitQueueUpdate(orchestrator: AgentOrchestrator, agentId: string, steerCount: number): Promise<void> {
+	const steer = Array.from({ length: steerCount }, () => ({ role: "user" as const, content: "queued", timestamp: 1 }));
+	const queue = (requireAgentHarness(orchestrator, agentId) as unknown as { steerQueue: unknown[] }).steerQueue;
+	queue.splice(0, queue.length, ...steer);
+	const event: AgentHarnessEvent = { type: "queue_update", steer, followUp: [], nextTurn: [] };
+	await harnessEventDriver(orchestrator)(agentId, event);
 }
 
 function settled(promise: Promise<void>): Promise<"settled" | "pending"> {
@@ -100,14 +76,14 @@ describe("extension waitForIdle", () => {
 		await emitQueueUpdate(orchestrator, agentId, 1);
 
 		const waiting = actions.waitForIdle();
-		await orchestrator.disposeAgent(agentId, { reason: "test teardown" });
+		await orchestrator.disposeAgent(agentId, { intent: "removed", reason: "test teardown" });
 
-		await expect(waiting).rejects.toThrow("test teardown");
+		await expect(waiting).rejects.toThrow("was disposed while waiting");
 	});
 
 	it("rejects for an agent that can never idle again", async () => {
 		const { orchestrator, agentId, actions } = await createHarness();
-		await orchestrator.disposeAgent(agentId, { reason: "test teardown" });
+		await orchestrator.disposeAgent(agentId, { intent: "removed", reason: "test teardown" });
 
 		await expect(actions.waitForIdle()).rejects.toThrow("disposed");
 	});
@@ -127,10 +103,7 @@ describe("extension waitForIdle", () => {
 describe("extension shutdown requests", () => {
 	it("publishes the request once, with core-injected attribution", async () => {
 		const { orchestrator, agentId, actions } = await createHarness();
-		const requests: Extract<
-			OrchestratorEvent,
-			{ type: "runtime_shutdown_requested" }
-		>[] = [];
+		const requests: Extract<OrchestratorEvent, { type: "runtime_shutdown_requested" }>[] = [];
 		orchestrator.subscribe((event) => {
 			if (event.type === "runtime_shutdown_requested") requests.push(event);
 		});
@@ -151,7 +124,7 @@ describe("extension shutdown requests", () => {
 
 		await actions.requestShutdown();
 
-		expect(orchestrator.getAgentStatus(agentId)).toBe("idle");
+		expect(orchestrator.getAgentActivity(agentId).activity).toBe("idle");
 	});
 
 	it("reaches the extension runtimes of every agent, not just the requester", async () => {
@@ -162,8 +135,8 @@ describe("extension shutdown requests", () => {
 				notified.push(context.agentId);
 			});
 		});
-		const firstAgentId = await orchestrator.spawnAgent();
-		const secondAgentId = await orchestrator.spawnAgent();
+		const firstAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const secondAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
 		await requireActions(orchestrator, firstAgentId).requestShutdown();
 
@@ -189,8 +162,8 @@ describe("extension shutdown requests", () => {
 				notified.push(context.agentId);
 			});
 		});
-		const firstAgentId = await orchestrator.spawnAgent();
-		const secondAgentId = await orchestrator.spawnAgent();
+		const firstAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const secondAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		let hostSawRequest = false;
 		let hostDisposal: Promise<void> | undefined;
 		orchestrator.subscribe((event) => {
@@ -199,10 +172,7 @@ describe("extension shutdown requests", () => {
 			hostDisposal = orchestrator.disposeAll("host shutdown");
 		});
 
-		const request = requireActions(
-			orchestrator,
-			firstAgentId,
-		).requestShutdown();
+		const request = requireActions(orchestrator, firstAgentId).requestShutdown();
 		try {
 			await vi.waitFor(() => {
 				expect(firstObserverStarted || hostSawRequest).toBe(true);
@@ -216,8 +186,8 @@ describe("extension shutdown requests", () => {
 
 		expect(hostSawRequest).toBe(true);
 		expect(notified.sort()).toEqual([firstAgentId, secondAgentId].sort());
-		expect(orchestrator.getAgentStatus(firstAgentId)).toBe("disposed");
-		expect(orchestrator.getAgentStatus(secondAgentId)).toBe("disposed");
+		expect(() => orchestrator.getAgentActivity(firstAgentId)).toThrow(/is gone|Unknown agent/);
+		expect(() => orchestrator.getAgentActivity(secondAgentId)).toThrow(/is gone|Unknown agent/);
 	});
 });
 
@@ -230,13 +200,13 @@ describe("extension disposeRuntime", () => {
 				disposals += 1;
 			});
 		});
-		const firstAgentId = await orchestrator.spawnAgent();
-		const secondAgentId = await orchestrator.spawnAgent();
+		const firstAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const secondAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
 		await requireActions(orchestrator, firstAgentId).disposeRuntime("bye");
 
-		expect(orchestrator.getAgentStatus(firstAgentId)).toBe("disposed");
-		expect(orchestrator.getAgentStatus(secondAgentId)).toBe("disposed");
+		expect(() => orchestrator.getAgentActivity(firstAgentId)).toThrow(/is gone|Unknown agent/);
+		expect(() => orchestrator.getAgentActivity(secondAgentId)).toThrow(/is gone|Unknown agent/);
 		expect(disposals).toBe(2);
 	});
 
@@ -246,6 +216,6 @@ describe("extension disposeRuntime", () => {
 		await actions.disposeRuntime("bye");
 
 		expect(() => actions.getModel()).toThrow("Agent has been disposed.");
-		expect(orchestrator.getAgentStatus(agentId)).toBe("disposed");
+		expect(() => orchestrator.getAgentActivity(agentId)).toThrow(/is gone|Unknown agent/);
 	});
 });

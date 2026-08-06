@@ -1,23 +1,8 @@
 import type { Model } from "@earendil-works/pi-ai";
-import type {
-	ExecutionEnv,
-	ExecutionError,
-	FileError,
-	FileInfo,
-	Result,
-	ShellExecOptions,
-} from "@widi/agent-core";
-import {
-	err,
-	ok,
-	ExecutionError as PiExecutionError,
-	FileError as PiFileError,
-} from "@widi/agent-core";
+import type { ExecutionEnv, ExecutionError, FileError, FileInfo, Result, ShellExecOptions } from "@widi/agent-core";
+import { err, ok, ExecutionError as PiExecutionError, FileError as PiFileError } from "@widi/agent-core";
 import { describe, expect, it, vi } from "vitest";
-import type {
-	ExtensionFactory,
-	ExtensionModuleImporter,
-} from "../../src/core/extension/index.ts";
+import type { ExtensionFactory, ExtensionModuleImporter } from "../../src/core/extension/index.ts";
 import type { HumanRequestEnvelope } from "../../src/core/human-request.ts";
 import { createWidiRuntime } from "../../src/core/runtime-service.ts";
 
@@ -74,13 +59,7 @@ class MemoryExecutionEnv implements ExecutionEnv {
 		const normalized = this.normalize(path);
 		const content = this.files.get(normalized);
 		if (content === undefined) {
-			return err(
-				new PiFileError(
-					"not_found",
-					`File not found: ${normalized}`,
-					normalized,
-				),
-			);
+			return err(new PiFileError("not_found", `File not found: ${normalized}`, normalized));
 		}
 		return ok(content);
 	}
@@ -95,29 +74,17 @@ class MemoryExecutionEnv implements ExecutionEnv {
 		return err(new PiFileError("not_supported", "not supported"));
 	}
 
-	async writeFile(
-		path: string,
-		content: string | Uint8Array,
-	): Promise<Result<void, FileError>> {
+	async writeFile(path: string, content: string | Uint8Array): Promise<Result<void, FileError>> {
 		const normalized = this.normalize(path);
 		this.addDir(this.dirname(normalized));
-		this.files.set(
-			normalized,
-			typeof content === "string" ? content : new TextDecoder().decode(content),
-		);
+		this.files.set(normalized, typeof content === "string" ? content : new TextDecoder().decode(content));
 		return ok(undefined);
 	}
 
-	async appendFile(
-		path: string,
-		content: string | Uint8Array,
-	): Promise<Result<void, FileError>> {
+	async appendFile(path: string, content: string | Uint8Array): Promise<Result<void, FileError>> {
 		const normalized = this.normalize(path);
 		const current = this.files.get(normalized) ?? "";
-		this.addFile(
-			normalized,
-			`${current}${typeof content === "string" ? content : new TextDecoder().decode(content)}`,
-		);
+		this.addFile(normalized, `${current}${typeof content === "string" ? content : new TextDecoder().decode(content)}`);
 		return ok(undefined);
 	}
 
@@ -133,25 +100,15 @@ class MemoryExecutionEnv implements ExecutionEnv {
 			});
 		}
 		if (this.dirs.has(normalized)) {
-			return ok({
-				name: this.basename(normalized),
-				path: normalized,
-				kind: "directory",
-				size: 0,
-				mtimeMs: 0,
-			});
+			return ok({ name: this.basename(normalized), path: normalized, kind: "directory", size: 0, mtimeMs: 0 });
 		}
-		return err(
-			new PiFileError("not_found", `File not found: ${normalized}`, normalized),
-		);
+		return err(new PiFileError("not_found", `File not found: ${normalized}`, normalized));
 	}
 
 	async listDir(path: string): Promise<Result<FileInfo[], FileError>> {
 		const dir = this.normalize(path);
 		if (!this.dirs.has(dir)) {
-			return err(
-				new PiFileError("not_found", `Directory not found: ${dir}`, dir),
-			);
+			return err(new PiFileError("not_found", `Directory not found: ${dir}`, dir));
 		}
 
 		const result: FileInfo[] = [];
@@ -167,17 +124,9 @@ class MemoryExecutionEnv implements ExecutionEnv {
 		}
 		for (const directory of this.dirs) {
 			if (directory === dir || this.dirname(directory) !== dir) continue;
-			result.push({
-				name: this.basename(directory),
-				path: directory,
-				kind: "directory",
-				size: 0,
-				mtimeMs: 0,
-			});
+			result.push({ name: this.basename(directory), path: directory, kind: "directory", size: 0, mtimeMs: 0 });
 		}
-		return ok(
-			result.sort((left, right) => left.path.localeCompare(right.path)),
-		);
+		return ok(result.sort((left, right) => left.path.localeCompare(right.path)));
 	}
 
 	async canonicalPath(path: string): Promise<Result<string, FileError>> {
@@ -211,9 +160,7 @@ class MemoryExecutionEnv implements ExecutionEnv {
 	async exec(
 		_command: string,
 		_options?: ShellExecOptions,
-	): Promise<
-		Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>
-	> {
+	): Promise<Result<{ stdout: string; stderr: string; exitCode: number }, ExecutionError>> {
 		return err(new PiExecutionError("shell_unavailable", "not supported"));
 	}
 }
@@ -392,31 +339,15 @@ describe("createWidiRuntime", () => {
 			"send_message",
 			"dispose_agent",
 		]);
-		for (const name of [
-			"read",
-			"bash",
-			"edit",
-			"write",
-			"grep",
-			"find",
-			"ls",
-			"ask_human",
-			"wait_for_jobs",
-		]) {
-			expect(resolved.getTool(name)?.source).toEqual({
-				kind: "core",
-				id: "builtin",
-			});
+		for (const name of ["read", "bash", "edit", "write", "grep", "find", "ls", "ask_human", "wait_for_jobs"]) {
+			expect(resolved.getTool(name)?.source).toEqual({ kind: "core", id: "builtin" });
 		}
 		expect(resolved.diagnostics).toEqual([]);
 	});
 
 	it("gates project profiles when project trust is not granted", async () => {
 		const env = new MemoryExecutionEnv();
-		env.addFile(
-			"/workspace/project/.widi/profiles/project.md",
-			profileMarkdown("project"),
-		);
+		env.addFile("/workspace/project/.widi/profiles/project.md", profileMarkdown("project"));
 
 		await expect(
 			createWidiRuntime({
@@ -426,17 +357,12 @@ describe("createWidiRuntime", () => {
 				defaultModel,
 				defaultProfileId: "project",
 			}),
-		).rejects.toMatchObject({
-			code: "profile.default_resolution_failed",
-		});
+		).rejects.toMatchObject({ code: "profile.default_resolution_failed" });
 	});
 
 	it("loads project profiles when trust is granted by override", async () => {
 		const env = new MemoryExecutionEnv();
-		env.addFile(
-			"/workspace/project/.widi/profiles/project.md",
-			profileMarkdown("project"),
-		);
+		env.addFile("/workspace/project/.widi/profiles/project.md", profileMarkdown("project"));
 
 		const runtime = await createWidiRuntime({
 			cwd: "/workspace/project",
@@ -466,14 +392,8 @@ describe("createWidiRuntime", () => {
 				defaultModel: "settings-model",
 			}),
 		);
-		env.addFile(
-			"/workspace/project/.widi/profiles/project.md",
-			profileMarkdown("project"),
-		);
-		env.addFile(
-			"/home/user/.widi/agent/models.json",
-			modelsJson("settings-provider", "settings-model"),
-		);
+		env.addFile("/workspace/project/.widi/profiles/project.md", profileMarkdown("project"));
+		env.addFile("/home/user/.widi/agent/models.json", modelsJson("settings-provider", "settings-model"));
 
 		const runtime = await createWidiRuntime({
 			cwd: "/workspace/project",
@@ -506,10 +426,7 @@ describe("createWidiRuntime", () => {
 	it("uses stored parent trust decisions", async () => {
 		const env = new MemoryExecutionEnv();
 		env.addFile("/home/user/.widi/trust.json", '{ "/workspace": true }');
-		env.addFile(
-			"/workspace/project/.widi/profiles/project.md",
-			profileMarkdown("project"),
-		);
+		env.addFile("/workspace/project/.widi/profiles/project.md", profileMarkdown("project"));
 
 		const runtime = await createWidiRuntime({
 			cwd: "/workspace/project",
@@ -519,19 +436,13 @@ describe("createWidiRuntime", () => {
 			defaultProfileId: "project",
 		});
 
-		expect(runtime.services.projectTrust).toMatchObject({
-			trusted: true,
-			source: "store",
-		});
+		expect(runtime.services.projectTrust).toMatchObject({ trusted: true, source: "store" });
 		expect(runtime.orchestrator.getDefaultProfileId()).toBe("project");
 	});
 
 	it("grants project trust through a confirmed human request", async () => {
 		const env = new MemoryExecutionEnv();
-		env.addFile(
-			"/workspace/project/.widi/profiles/project.md",
-			profileMarkdown("project"),
-		);
+		env.addFile("/workspace/project/.widi/profiles/project.md", profileMarkdown("project"));
 		const requests: HumanRequestEnvelope[] = [];
 
 		const runtime = await createWidiRuntime({
@@ -548,22 +459,14 @@ describe("createWidiRuntime", () => {
 
 		expect(requests).toHaveLength(1);
 		expect(requests[0]).toMatchObject({ kind: "confirm" });
-		expect(runtime.services.projectTrust).toMatchObject({
-			trusted: true,
-			source: "store",
-		});
+		expect(runtime.services.projectTrust).toMatchObject({ trusted: true, source: "store" });
 		expect(runtime.orchestrator.getDefaultProfileId()).toBe("project");
-		expect(env.files.get("/home/user/.widi/trust.json")).toContain(
-			'"/workspace/project": true',
-		);
+		expect(env.files.get("/home/user/.widi/trust.json")).toContain('"/workspace/project": true');
 	});
 
 	it("stays untrusted when the trust human request is declined", async () => {
 		const env = new MemoryExecutionEnv();
-		env.addFile(
-			"/workspace/project/.widi/profiles/project.md",
-			profileMarkdown("project"),
-		);
+		env.addFile("/workspace/project/.widi/profiles/project.md", profileMarkdown("project"));
 
 		await expect(
 			createWidiRuntime({
@@ -574,18 +477,13 @@ describe("createWidiRuntime", () => {
 				defaultProfileId: "project",
 				requestHuman: async () => ({ kind: "confirm", confirmed: false }),
 			}),
-		).rejects.toMatchObject({
-			code: "profile.default_resolution_failed",
-		});
+		).rejects.toMatchObject({ code: "profile.default_resolution_failed" });
 		expect(env.files.has("/home/user/.widi/trust.json")).toBe(false);
 	});
 
 	it("stays untrusted with a diagnostic when the trust human request fails", async () => {
 		const env = new MemoryExecutionEnv();
-		env.addFile(
-			"/workspace/project/.widi/profiles/project.md",
-			profileMarkdown("project"),
-		);
+		env.addFile("/workspace/project/.widi/profiles/project.md", profileMarkdown("project"));
 
 		const runtime = await createWidiRuntime({
 			cwd: "/workspace/project",
@@ -597,13 +495,8 @@ describe("createWidiRuntime", () => {
 			},
 		});
 
-		expect(runtime.services.projectTrust).toMatchObject({
-			trusted: false,
-			source: "settings_default",
-		});
-		expect(runtime.diagnostics).toContainEqual(
-			expect.objectContaining({ code: "orchestrator.human_request_failed" }),
-		);
+		expect(runtime.services.projectTrust).toMatchObject({ trusted: false, source: "settings_default" });
+		expect(runtime.diagnostics).toContainEqual(expect.objectContaining({ code: "orchestrator.human_request_failed" }));
 		expect(env.files.has("/home/user/.widi/trust.json")).toBe(false);
 	});
 
@@ -612,11 +505,7 @@ describe("createWidiRuntime", () => {
 		env.addDir("/custom/extensions/runtime-smoke");
 		env.addFile(
 			"/home/user/.widi/settings.json",
-			JSON.stringify({
-				skills: ["/custom/skills"],
-				prompts: ["/custom/prompts"],
-				extensions: ["/custom/extensions"],
-			}),
+			JSON.stringify({ skills: ["/custom/skills"], prompts: ["/custom/prompts"], extensions: ["/custom/extensions"] }),
 		);
 
 		const runtime = await createWidiRuntime({
@@ -630,9 +519,7 @@ describe("createWidiRuntime", () => {
 			kind: "settings",
 			path: "/custom/skills",
 		});
-		expect(
-			runtime.services.resourceLoader.getPromptTemplateRoots(),
-		).toContainEqual({
+		expect(runtime.services.resourceLoader.getPromptTemplateRoots()).toContainEqual({
 			kind: "settings",
 			path: "/custom/prompts",
 		});
@@ -644,19 +531,13 @@ describe("createWidiRuntime", () => {
 			id: "runtime-smoke",
 			kind: "directory",
 			path: "/custom/extensions/runtime-smoke",
-			root: {
-				kind: "settings",
-				path: "/custom/extensions",
-			},
+			root: { kind: "settings", path: "/custom/extensions" },
 		});
 	});
 
 	it("loads settings extension modules during runtime composition", async () => {
 		const env = new MemoryExecutionEnv();
-		env.addFile(
-			"/home/user/.widi/settings.json",
-			JSON.stringify({ extensions: ["/custom/extensions"] }),
-		);
+		env.addFile("/home/user/.widi/settings.json", JSON.stringify({ extensions: ["/custom/extensions"] }));
 		env.addFile(
 			"/home/user/.widi/profiles/extension-profile.md",
 			`---
@@ -679,7 +560,7 @@ You are extension-profile.`,
 			defaultProfileId: "extension-profile",
 			extensionModuleImporter: importer,
 		});
-		const agentId = await runtime.orchestrator.spawnAgent();
+		const agentId = await runtime.orchestrator.spawnAgent({ origin: { kind: "new" } });
 
 		expect(importer.imports).toEqual(["/custom/extensions/runtime-smoke.ts"]);
 		expect(runtime.services.extensionLoad.loaded).toEqual([
@@ -695,17 +576,13 @@ You are extension-profile.`,
 			},
 		]);
 		expect(runtime.orchestrator.inspectAgent(agentId)).toMatchObject({
-			extensionIds: ["runtime-smoke"],
-			extensions: runtime.services.extensionLoad.loaded,
+			extensions: { extensionIds: ["runtime-smoke"], extensions: runtime.services.extensionLoad.loaded },
 		});
 	});
 
 	it("reports missing settings extension roots through runtime diagnostics", async () => {
 		const env = new MemoryExecutionEnv();
-		env.addFile(
-			"/home/user/.widi/settings.json",
-			JSON.stringify({ extensions: ["/missing/extensions"] }),
-		);
+		env.addFile("/home/user/.widi/settings.json", JSON.stringify({ extensions: ["/missing/extensions"] }));
 
 		const runtime = await createWidiRuntime({
 			cwd: "/workspace/project",
@@ -714,9 +591,7 @@ You are extension-profile.`,
 			defaultModel,
 		});
 
-		expect(runtime.diagnostics).toContainEqual(
-			expect.objectContaining({ code: "extension.source_missing" }),
-		);
+		expect(runtime.diagnostics).toContainEqual(expect.objectContaining({ code: "extension.source_missing" }));
 	});
 
 	it("gates project extension discovery on project trust", async () => {
@@ -738,27 +613,46 @@ You are extension-profile.`,
 			defaultModel,
 			trustOverride: true,
 		});
-		expect(
-			trustedRuntime.services.extensionDiscovery.candidates,
-		).toContainEqual({
+		expect(trustedRuntime.services.extensionDiscovery.candidates).toContainEqual({
 			id: "project-extension",
 			kind: "directory",
 			path: "/workspace/project/.widi/extensions/project-extension",
-			root: {
-				kind: "cwd",
-				path: "/workspace/project/.widi/extensions",
-			},
+			root: { kind: "cwd", path: "/workspace/project/.widi/extensions" },
 		});
+	});
+
+	// The repo's own dev run points `--agent-dir` at the checkout's config
+	// directory, so the project root and the agent dir name the same extensions
+	// directory. Discovered twice, every extension in it collides with the copy
+	// the first pass registered and is skipped.
+	it("discovers an extensions directory once when the agent dir is the project's", async () => {
+		const env = new MemoryExecutionEnv();
+		env.addFile("/workspace/project/.widi/extensions/project-extension.ts", "");
+		const importer = new FakeModuleImporter();
+		importer.setFactory("/workspace/project/.widi/extensions/project-extension.ts", () => {});
+
+		const runtime = await createWidiRuntime({
+			cwd: "/workspace/project",
+			agentDir: "/workspace/project/.widi",
+			executionEnv: env,
+			defaultModel,
+			trustOverride: true,
+			extensionModuleImporter: importer,
+		});
+
+		expect(runtime.services.extensionLoader.getRoots()).toEqual([
+			{ kind: "cwd", path: "/workspace/project/.widi/extensions" },
+		]);
+		expect(runtime.services.extensionDiscovery.candidates).toHaveLength(1);
+		expect(runtime.services.extensionLoad.loaded).toHaveLength(1);
+		expect(runtime.diagnostics).not.toContainEqual(expect.objectContaining({ code: "extension.id_conflict" }));
 	});
 
 	it("skips untrusted project extension modules with diagnostics", async () => {
 		const env = new MemoryExecutionEnv();
 		env.addFile("/workspace/project/.widi/extensions/project-extension.ts", "");
 		const importer = new FakeModuleImporter();
-		importer.setFactory(
-			"/workspace/project/.widi/extensions/project-extension.ts",
-			() => {},
-		);
+		importer.setFactory("/workspace/project/.widi/extensions/project-extension.ts", () => {});
 
 		const untrustedRuntime = await createWidiRuntime({
 			cwd: "/workspace/project",
@@ -787,21 +681,15 @@ You are extension-profile.`,
 			extensionModuleImporter: importer,
 		});
 
-		expect(importer.imports).toEqual([
-			"/workspace/project/.widi/extensions/project-extension.ts",
-		]);
+		expect(importer.imports).toEqual(["/workspace/project/.widi/extensions/project-extension.ts"]);
 		expect(trustedRuntime.services.extensionLoad.loaded).toEqual([
 			{
 				id: "project-extension",
 				source: {
 					kind: "file",
 					path: "/workspace/project/.widi/extensions/project-extension.ts",
-					resolvedPath:
-						"/workspace/project/.widi/extensions/project-extension.ts",
-					root: {
-						kind: "cwd",
-						path: "/workspace/project/.widi/extensions",
-					},
+					resolvedPath: "/workspace/project/.widi/extensions/project-extension.ts",
+					root: { kind: "cwd", path: "/workspace/project/.widi/extensions" },
 				},
 				divisions: [],
 			},
@@ -810,10 +698,7 @@ You are extension-profile.`,
 
 	it("combines project, agent dir, and builtin profile sources", async () => {
 		const env = new MemoryExecutionEnv();
-		env.addFile(
-			"/workspace/project/.widi/profiles/project.md",
-			profileMarkdown("project"),
-		);
+		env.addFile("/workspace/project/.widi/profiles/project.md", profileMarkdown("project"));
 		env.addFile("/home/user/.widi/profiles/agent.md", profileMarkdown("agent"));
 
 		const runtime = await createWidiRuntime({
@@ -825,42 +710,31 @@ You are extension-profile.`,
 		});
 
 		expect(runtime.services.profileRoots).toEqual([
-			expect.objectContaining({
-				kind: "cwd",
-				path: "/workspace/project/.widi/profiles",
-				priority: 200,
-			}),
-			expect.objectContaining({
-				kind: "agent_dir",
-				path: "/home/user/.widi/profiles",
-				priority: 100,
-			}),
+			expect.objectContaining({ kind: "cwd", path: "/workspace/project/.widi/profiles", priority: 200 }),
+			expect.objectContaining({ kind: "agent_dir", path: "/home/user/.widi/profiles", priority: 100 }),
 		]);
 
-		await expect(
-			runtime.services.profileRegistry.resolveProfile("project"),
-		).resolves.toMatchObject({ ok: true, source: { kind: "cwd" } });
-		await expect(
-			runtime.services.profileRegistry.resolveProfile("agent"),
-		).resolves.toMatchObject({ ok: true, source: { kind: "agent_dir" } });
-		await expect(
-			runtime.services.profileRegistry.resolveProfile("main"),
-		).resolves.toMatchObject({ ok: true, source: { kind: "builtin" } });
+		await expect(runtime.services.profileRegistry.resolveProfile("project")).resolves.toMatchObject({
+			ok: true,
+			source: { kind: "cwd" },
+		});
+		await expect(runtime.services.profileRegistry.resolveProfile("agent")).resolves.toMatchObject({
+			ok: true,
+			source: { kind: "agent_dir" },
+		});
+		await expect(runtime.services.profileRegistry.resolveProfile("main")).resolves.toMatchObject({
+			ok: true,
+			source: { kind: "builtin" },
+		});
 	});
 
 	it("resolves default model from settings", async () => {
 		const env = new MemoryExecutionEnv();
 		env.addFile(
 			"/home/user/.widi/settings.json",
-			JSON.stringify({
-				defaultProvider: "settings-provider",
-				defaultModel: "settings-model",
-			}),
+			JSON.stringify({ defaultProvider: "settings-provider", defaultModel: "settings-model" }),
 		);
-		env.addFile(
-			"/home/user/.widi/agent/models.json",
-			modelsJson("settings-provider", "settings-model"),
-		);
+		env.addFile("/home/user/.widi/agent/models.json", modelsJson("settings-provider", "settings-model"));
 
 		const runtime = await createWidiRuntime({
 			cwd: "/workspace/project",
@@ -881,10 +755,7 @@ You are extension-profile.`,
 
 	it("resolves default thinking level from settings", async () => {
 		const env = new MemoryExecutionEnv();
-		env.addFile(
-			"/home/user/.widi/settings.json",
-			JSON.stringify({ defaultThinkingLevel: "high" }),
-		);
+		env.addFile("/home/user/.widi/settings.json", JSON.stringify({ defaultThinkingLevel: "high" }));
 
 		const runtime = await createWidiRuntime({
 			cwd: "/workspace/project",
@@ -912,7 +783,7 @@ You are extension-profile.`,
 			defaultThinkingLevel: "medium",
 		});
 
-		const agentId = await runtime.orchestrator.spawnAgent();
+		const agentId = await runtime.orchestrator.spawnAgent({ origin: { kind: "new" } });
 
 		expect(runtime.orchestrator.getAgentThinkingLevel(agentId)).toBe("medium");
 	});
@@ -925,10 +796,7 @@ You are extension-profile.`,
 		}
 		try {
 			const env = new MemoryExecutionEnv();
-			env.addFile(
-				"/home/user/.widi/agent/models.json",
-				modelsJson("available-provider", "available-model"),
-			);
+			env.addFile("/home/user/.widi/agent/models.json", modelsJson("available-provider", "available-model"));
 
 			const runtime = await createWidiRuntime({
 				cwd: "/workspace/project",
@@ -950,39 +818,25 @@ You are extension-profile.`,
 		const env = new MemoryExecutionEnv();
 		env.addFile(
 			"/home/user/.widi/settings.json",
-			JSON.stringify({
-				defaultProvider: "settings-provider",
-				defaultModel: "missing-model",
-			}),
+			JSON.stringify({ defaultProvider: "settings-provider", defaultModel: "missing-model" }),
 		);
-		env.addFile(
-			"/home/user/.widi/agent/models.json",
-			modelsJson("settings-provider", "settings-model"),
-		);
+		env.addFile("/home/user/.widi/agent/models.json", modelsJson("settings-provider", "settings-model"));
 
 		await expect(
-			createWidiRuntime({
-				cwd: "/workspace/project",
-				agentDir: "/home/user/.widi",
-				executionEnv: env,
-			}),
+			createWidiRuntime({ cwd: "/workspace/project", agentDir: "/home/user/.widi", executionEnv: env }),
 		).rejects.toMatchObject({
 			code: "model.default_unavailable",
 			diagnostic: expect.objectContaining({
 				severity: "error",
 				code: "model.default_unavailable",
-				message:
-					"Default model is unavailable: settings-provider/missing-model.",
+				message: "Default model is unavailable: settings-provider/missing-model.",
 			}),
 		});
 	});
 
 	it("prefers explicit session root over settings and fallback", async () => {
 		const env = new MemoryExecutionEnv();
-		env.addFile(
-			"/home/user/.widi/settings.json",
-			JSON.stringify({ sessionDir: "/settings/sessions" }),
-		);
+		env.addFile("/home/user/.widi/settings.json", JSON.stringify({ sessionDir: "/settings/sessions" }));
 
 		const runtime = await createWidiRuntime({
 			cwd: "/workspace/project",

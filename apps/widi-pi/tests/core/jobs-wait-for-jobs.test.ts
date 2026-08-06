@@ -1,206 +1,164 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-	type BackgroundJobOutcome,
-	BackgroundJobTable,
+import type {
+	BackgroundJobExecution,
+	BackgroundJobHost,
+	BackgroundJobOutcome,
 } from "../../src/core/background/index.ts";
 import { HumanInterruptRegistry } from "../../src/core/human-interrupt.ts";
-import {
-	createWaitForJobsToolDefinition,
-	type WaitForJobsDetails,
-} from "../../src/core/tools/jobs/wait-for-jobs.ts";
+import { createWaitForJobsToolDefinition, type WaitForJobsDetails } from "../../src/core/tools/jobs/wait-for-jobs.ts";
 import type { ToolExecutionContext } from "../../src/core/tools/types.ts";
+import { createJobRuntimeHarness, startBackgroundedJob } from "../helpers/background-jobs.ts";
 
 const completedOutcome: BackgroundJobOutcome = {
 	status: "completed",
-	result: {
-		content: [{ type: "text", text: "build done" }],
-		details: undefined,
-	},
+	result: { content: [{ type: "text", text: "build done" }], details: undefined },
 };
 
 function makeContext(
-	table: BackgroundJobTable | undefined,
+	jobs: BackgroundJobHost | undefined,
 	signal?: AbortSignal,
 	humanInterrupts?: ToolExecutionContext<WaitForJobsDetails>["humanInterrupts"],
 ): ToolExecutionContext<WaitForJobsDetails> {
-	return {
-		signal,
-		onUpdate: undefined,
-		extension: undefined,
-		human: undefined,
-		backgroundJobTable: table,
-		humanInterrupts,
-	};
+	return { signal, onUpdate: undefined, extension: undefined, human: undefined, jobs, humanInterrupts };
 }
 
-/** Register a backgrounded job on the table and return its id. */
-function backgroundJob(table: BackgroundJobTable, toolName = "bash"): string {
-	const job = table.create({ toolCallId: `call-${toolName}`, toolName });
-	table.background(job.id);
-	return job.id;
+/** Background a job and keep its handle, which is the only way to settle it. */
+function backgroundJob(
+	host: BackgroundJobHost,
+	toolName = "bash",
+): { readonly jobId: string; readonly execution: BackgroundJobExecution } {
+	const { execution, job } = startBackgroundedJob(host, { toolCallId: `call-${toolName}`, toolName });
+	return { jobId: job.jobId, execution };
+}
+
+/** Observable jobs still live on the host, by id. */
+function liveJobIds(host: BackgroundJobHost): string[] {
+	return host.list().map((job) => job.jobId);
 }
 
 describe("wait_for_jobs tool", () => {
 	it("resolves when a waited-on job settles and reports its status", async () => {
-		const table = new BackgroundJobTable();
-		const jobId = backgroundJob(table);
+		const { host } = await createJobRuntimeHarness();
+		const { jobId, execution } = backgroundJob(host);
 		const tool = createWaitForJobsToolDefinition();
 
-		const promise = tool.execute(
-			"wait-1",
-			{ jobIds: [jobId] },
-			makeContext(table),
-		);
+		const promise = tool.execute("wait-1", { jobIds: [jobId] }, makeContext(host));
 		// The wait is now subscribed; settling the job releases it.
-		table.settle(jobId, completedOutcome);
+		execution.settle(completedOutcome);
 		const result = await promise;
 
 		expect(result.details.outcome).toBe("completed");
-		expect(result.details.jobs).toEqual([
-			{ jobId, toolName: "bash", state: "completed" },
-		]);
+		expect(result.details.jobs).toEqual([{ jobId, toolName: "bash", name: undefined, state: "completed" }]);
 	});
 
 	it("waits for every live job when no ids are given", async () => {
-		const table = new BackgroundJobTable();
-		const first = backgroundJob(table, "bash");
-		const second = backgroundJob(table, "spawn_agent");
+		const { host } = await createJobRuntimeHarness();
+		const first = backgroundJob(host, "bash");
+		const second = backgroundJob(host, "spawn_agent");
 		const tool = createWaitForJobsToolDefinition();
 
-		const promise = tool.execute("wait-1", {}, makeContext(table));
-		table.settle(first, completedOutcome);
-		table.settle(second, { status: "failed", error: new Error("boom") });
+		const promise = tool.execute("wait-1", {}, makeContext(host));
+		first.execution.settle(completedOutcome);
+		second.execution.settle({ status: "failed", error: new Error("boom") });
 		const result = await promise;
 
 		expect(result.details.outcome).toBe("completed");
-		expect(result.details.jobs.map((job) => job.state)).toEqual([
-			"completed",
-			"failed",
-		]);
+		expect(result.details.jobs.map((job) => job.state)).toEqual(["completed", "failed"]);
 	});
 
 	it("reports unknown ids that match no live job", async () => {
-		const table = new BackgroundJobTable();
+		const { host } = await createJobRuntimeHarness();
 		const tool = createWaitForJobsToolDefinition();
 
-		const result = await tool.execute(
-			"wait-1",
-			{ jobIds: ["job-404"] },
-			makeContext(table),
-		);
+		const result = await tool.execute("wait-1", { jobIds: ["job-404"] }, makeContext(host));
 
 		expect(result.details.outcome).toBe("completed");
-		expect(result.details.jobs).toEqual([
-			{ jobId: "job-404", state: "unknown" },
-		]);
+		expect(result.details.jobs).toEqual([{ jobId: "job-404", state: "unknown" }]);
 	});
 
 	it("does not wait on a job that has not been backgrounded yet", async () => {
-		const table = new BackgroundJobTable();
-		// A `running`-phase job (created but not yet past its deadline). It may
-		// still settle inline, which never notifies listeners, so waiting on it
-		// would strand until timeout. It must be excluded from the wait.
-		const job = table.create({ toolCallId: "c1", toolName: "bash" });
+		const { host } = await createJobRuntimeHarness();
+		// A candidate (started but not yet past its deadline). It may still settle
+		// inline, which never notifies listeners, so waiting on it would strand
+		// until timeout. It must be excluded from the wait.
+		const started = host.startLocal({ toolCallId: "c1", toolName: "bash" });
+		if (!started.ok) throw new Error("Expected a local job.");
 		const tool = createWaitForJobsToolDefinition();
 
-		// No ids: the snapshot only sees backgrounded jobs, so there is nothing to
+		// No ids: the snapshot only sees observable jobs, so there is nothing to
 		// wait for and the call returns immediately.
-		const all = await tool.execute("wait-1", {}, makeContext(table));
+		const all = await tool.execute("wait-1", {}, makeContext(host));
 		expect(all.details).toEqual({ outcome: "completed", jobs: [] });
 
-		// Explicitly naming the running job reports it as untracked rather than
+		// Explicitly naming the candidate reports it as untracked rather than
 		// blocking on a settlement that will never notify.
-		const named = await tool.execute(
-			"wait-2",
-			{ jobIds: [job.id] },
-			makeContext(table),
-		);
+		const named = await tool.execute("wait-2", { jobIds: [started.execution.jobId] }, makeContext(host));
 		expect(named.details.outcome).toBe("completed");
-		expect(named.details.jobs).toEqual([{ jobId: job.id, state: "unknown" }]);
+		expect(named.details.jobs).toEqual([{ jobId: started.execution.jobId, state: "unknown" }]);
 
 		// The job later settling inline is a no-op for the (already returned) wait.
-		expect(table.settle(job.id, completedOutcome)).toBe("inline");
+		expect(started.execution.settle(completedOutcome)).toEqual({ ok: true, disposition: "inline" });
 	});
 
 	it("returns still-running status on timeout instead of hanging", async () => {
 		vi.useFakeTimers();
 		try {
-			const table = new BackgroundJobTable();
-			const jobId = backgroundJob(table);
+			const { host } = await createJobRuntimeHarness();
+			const { jobId } = backgroundJob(host);
 			const tool = createWaitForJobsToolDefinition();
 
-			const promise = tool.execute(
-				"wait-1",
-				{ jobIds: [jobId], timeout: 1 },
-				makeContext(table),
-			);
+			const promise = tool.execute("wait-1", { jobIds: [jobId], timeout: 1 }, makeContext(host));
 			await vi.advanceTimersByTimeAsync(1000);
 			const result = await promise;
 
 			expect(result.details.outcome).toBe("timed_out");
-			expect(result.details.jobs).toEqual([
-				{ jobId, toolName: "bash", state: "running" },
-			]);
+			expect(result.details.jobs).toEqual([{ jobId, toolName: "bash", name: undefined, state: "running" }]);
 			// The job is untouched and keeps running.
-			expect(table.get(jobId)?.phase).toBe("backgrounded");
+			expect(liveJobIds(host)).toEqual([jobId]);
 		} finally {
 			vi.useRealTimers();
 		}
 	});
 
 	it("reports an aborted wait distinctly from a timeout, leaving the job running", async () => {
-		const table = new BackgroundJobTable();
-		const jobId = backgroundJob(table);
+		const { host } = await createJobRuntimeHarness();
+		const { jobId } = backgroundJob(host);
 		const controller = new AbortController();
 		const tool = createWaitForJobsToolDefinition();
 
-		const promise = tool.execute(
-			"wait-1",
-			{ jobIds: [jobId] },
-			makeContext(table, controller.signal),
-		);
+		const promise = tool.execute("wait-1", { jobIds: [jobId] }, makeContext(host, controller.signal));
 		controller.abort();
 		const result = await promise;
 
 		expect(result.details.outcome).toBe("aborted");
-		expect(result.details.jobs).toEqual([
-			{ jobId, toolName: "bash", state: "running" },
-		]);
-		expect(result.content[0]).toMatchObject({
-			type: "text",
-			text: expect.stringContaining("interrupted"),
-		});
-		expect(table.get(jobId)?.phase).toBe("backgrounded");
+		expect(result.details.jobs).toEqual([{ jobId, toolName: "bash", name: undefined, state: "running" }]);
+		expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("interrupted") });
+		expect(liveJobIds(host)).toEqual([jobId]);
 	});
 
 	it("gives the turn back when the human steers mid-wait, leaving the job running", async () => {
-		const table = new BackgroundJobTable();
-		const jobId = backgroundJob(table);
+		const { host } = await createJobRuntimeHarness();
+		const { jobId } = backgroundJob(host);
 		const interrupts = new HumanInterruptRegistry();
 		const tool = createWaitForJobsToolDefinition();
 
 		const promise = tool.execute(
 			"wait-1",
 			{ jobIds: [jobId] },
-			makeContext(table, undefined, interrupts.watch("agent-1")),
+			makeContext(host, undefined, interrupts.watch("agent-1")),
 		);
 		interrupts.notify("agent-1");
 		const result = await promise;
 
 		expect(result.details.outcome).toBe("steered");
-		expect(result.details.jobs).toEqual([
-			{ jobId, toolName: "bash", state: "running" },
-		]);
-		expect(result.content[0]).toMatchObject({
-			type: "text",
-			text: expect.stringContaining("the user sent a message"),
-		});
-		expect(table.get(jobId)?.phase).toBe("backgrounded");
+		expect(result.details.jobs).toEqual([{ jobId, toolName: "bash", name: undefined, state: "running" }]);
+		expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("the user sent a message") });
+		expect(liveJobIds(host)).toEqual([jobId]);
 	});
 
 	it("returns immediately when a steer is already waiting to be read", async () => {
-		const table = new BackgroundJobTable();
-		const jobId = backgroundJob(table);
+		const { host } = await createJobRuntimeHarness();
+		const { jobId } = backgroundJob(host);
 		const interrupts = new HumanInterruptRegistry();
 		// The steer arrived while an earlier tool call ran: it is just as unread,
 		// so the barrier must not start blocking at all.
@@ -210,69 +168,53 @@ describe("wait_for_jobs tool", () => {
 		const result = await tool.execute(
 			"wait-1",
 			{ jobIds: [jobId] },
-			makeContext(table, undefined, interrupts.watch("agent-1")),
+			makeContext(host, undefined, interrupts.watch("agent-1")),
 		);
 
 		expect(result.details.outcome).toBe("steered");
-		expect(table.get(jobId)?.phase).toBe("backgrounded");
+		expect(liveJobIds(host)).toEqual([jobId]);
 	});
 
 	it("polls the current status without blocking when timeout is 0", async () => {
-		const table = new BackgroundJobTable();
-		const jobId = backgroundJob(table);
+		const { host } = await createJobRuntimeHarness();
+		const { jobId } = backgroundJob(host);
 		const tool = createWaitForJobsToolDefinition();
 
 		// timeout 0 must return promptly with the live status rather than falling
 		// back to the default 60s barrier.
-		const result = await tool.execute(
-			"wait-1",
-			{ jobIds: [jobId], timeout: 0 },
-			makeContext(table),
-		);
+		const result = await tool.execute("wait-1", { jobIds: [jobId], timeout: 0 }, makeContext(host));
 
 		expect(result.details.outcome).toBe("timed_out");
-		expect(result.details.jobs).toEqual([
-			{ jobId, toolName: "bash", state: "running" },
-		]);
+		expect(result.details.jobs).toEqual([{ jobId, toolName: "bash", name: undefined, state: "running" }]);
 		// The job is untouched and keeps running.
-		expect(table.get(jobId)?.phase).toBe("backgrounded");
+		expect(liveJobIds(host)).toEqual([jobId]);
 	});
 
 	it("clamps an oversized timeout to the ceiling", async () => {
 		vi.useFakeTimers();
 		try {
-			const table = new BackgroundJobTable();
-			const jobId = backgroundJob(table);
+			const { host } = await createJobRuntimeHarness();
+			const { jobId } = backgroundJob(host);
 			const tool = createWaitForJobsToolDefinition();
 
 			// A day-long request must not hang: it is clamped to the 600s ceiling, so
 			// advancing 600s releases the wait.
-			const promise = tool.execute(
-				"wait-1",
-				{ jobIds: [jobId], timeout: 86_400 },
-				makeContext(table),
-			);
+			const promise = tool.execute("wait-1", { jobIds: [jobId], timeout: 86_400 }, makeContext(host));
 			await vi.advanceTimersByTimeAsync(600_000);
 			const result = await promise;
 
 			expect(result.details.outcome).toBe("timed_out");
-			expect(result.details.jobs).toEqual([
-				{ jobId, toolName: "bash", state: "running" },
-			]);
+			expect(result.details.jobs).toEqual([{ jobId, toolName: "bash", name: undefined, state: "running" }]);
 		} finally {
 			vi.useRealTimers();
 		}
 	});
 
 	it("does not claim jobs finished when every requested id is unknown", async () => {
-		const table = new BackgroundJobTable();
+		const { host } = await createJobRuntimeHarness();
 		const tool = createWaitForJobsToolDefinition();
 
-		const result = await tool.execute(
-			"wait-1",
-			{ jobIds: ["job-404"] },
-			makeContext(table),
-		);
+		const result = await tool.execute("wait-1", { jobIds: ["job-404"] }, makeContext(host));
 
 		expect(result.content[0]).toMatchObject({
 			type: "text",
@@ -286,11 +228,7 @@ describe("wait_for_jobs tool", () => {
 
 	it("reports no registry when the background job table is absent", async () => {
 		const tool = createWaitForJobsToolDefinition();
-		const result = await tool.execute(
-			"wait-1",
-			{ jobIds: ["job-1"] },
-			makeContext(undefined),
-		);
+		const result = await tool.execute("wait-1", { jobIds: ["job-1"] }, makeContext(undefined));
 
 		expect(result.details).toEqual({ outcome: "completed", jobs: [] });
 		expect(result.content[0]).toMatchObject({ type: "text" });

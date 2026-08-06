@@ -6,65 +6,53 @@
  */
 
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
-import type { AgentHarnessEvent, AgentMessage } from "@widi/agent-core";
+import type { AgentMessage } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
-import type {
-	AgentOrchestrator,
-	OrchestratorEvent,
-} from "../../src/core/agent-orchestrator.ts";
-import type {
-	ExtensionInputPresentation,
-	ExtensionObservedEventName,
-} from "../../src/core/extension/api.ts";
+import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
+import type { ExtensionObservedEventName } from "../../src/core/extension/api.ts";
 import { EXTENSION_OBSERVED_EVENT_NAMES } from "../../src/core/extension/index.ts";
-import { EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE } from "../../src/core/session-manager.ts";
+import type { OrchestratorEvent } from "../../src/core/types.ts";
 import {
 	createOrchestrator,
 	defaultModel,
 	defaultProfile,
+	harnessEventDriver,
 	MemoryExecutionEnv,
 	requireAgentHarness,
-	requireAgentRecord,
+	requireLiveAgent,
+	seedAgentContextUsage,
 } from "../helpers/orchestrator.ts";
 
 // Same private-access precedent as the orchestrator suite: a real settled fact
 // requires a full model run, which unit tests never perform.
-async function emitSettled(
-	orchestrator: AgentOrchestrator,
-	agentId: string,
-): Promise<void> {
-	await (
-		orchestrator as unknown as {
-			_handleAgentHarnessEvent(
-				agentId: string,
-				event: AgentHarnessEvent,
-			): Promise<void>;
-		}
-	)._handleAgentHarnessEvent(agentId, { type: "settled", nextTurnCount: 0 });
+async function emitSettled(orchestrator: AgentOrchestrator, agentId: string): Promise<void> {
+	await harnessEventDriver(orchestrator)(agentId, { type: "settled", nextTurnCount: 0 });
 }
 
+/**
+ * Set the harness's own queues and then announce them.
+ *
+ * The pending judgement reads `getQueuedMessageCounts()` rather than mirroring
+ * the event payload, so the queues themselves are the input; the event is only
+ * what asks the orchestrator to look again.
+ */
 async function emitQueueUpdate(
 	orchestrator: AgentOrchestrator,
 	agentId: string,
-	queues: {
-		steer?: UserMessage[];
-		followUp?: UserMessage[];
-		nextTurn?: AgentMessage[];
-	},
+	queues: { steer?: UserMessage[]; followUp?: UserMessage[]; nextTurn?: AgentMessage[] },
 ): Promise<void> {
-	await (
-		orchestrator as unknown as {
-			_handleAgentHarnessEvent(
-				agentId: string,
-				event: AgentHarnessEvent,
-			): Promise<void>;
-		}
-	)._handleAgentHarnessEvent(agentId, {
-		type: "queue_update",
-		steer: queues.steer ?? [],
-		followUp: queues.followUp ?? [],
-		nextTurn: queues.nextTurn ?? [],
-	});
+	const steer = queues.steer ?? [];
+	const followUp = queues.followUp ?? [];
+	const nextTurn = queues.nextTurn ?? [];
+	const harness = requireAgentHarness(orchestrator, agentId) as unknown as {
+		steerQueue: unknown[];
+		followUpQueue: unknown[];
+		nextTurnQueue: unknown[];
+	};
+	harness.steerQueue.splice(0, harness.steerQueue.length, ...steer);
+	harness.followUpQueue.splice(0, harness.followUpQueue.length, ...followUp);
+	harness.nextTurnQueue.splice(0, harness.nextTurnQueue.length, ...nextTurn);
+	await harnessEventDriver(orchestrator)(agentId, { type: "queue_update", steer, followUp, nextTurn });
 }
 
 function assistantMessage(totalTokens: number): AssistantMessage {
@@ -96,110 +84,12 @@ async function createHarness() {
 	const orchestrator = await createOrchestrator(env);
 	await orchestrator.settingManager.setProjectTrusted(true);
 	orchestrator.registerExtension("sample", () => {});
-	const agentId = await orchestrator.spawnAgent();
-	const stored = await orchestrator.sessionManager.createAgentSession({
-		agentId,
-		agentProfile: defaultProfile,
-	});
-	const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+	const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+	const stored = await orchestrator.sessionManager.createAgentSession({ agentId, agentProfile: defaultProfile });
+	const runner = requireLiveAgent(orchestrator, agentId).extensionRunner;
 	if (!runner) throw new Error("Expected extension runner.");
 	const context = runner.createContext("sample");
-	return {
-		env,
-		orchestrator,
-		agentId,
-		actions: context.actions,
-		session: context.session,
-		stored,
-	};
-}
-
-type Harness = Awaited<ReturnType<typeof createHarness>>;
-
-async function emitHarnessMessageEnd(
-	orchestrator: AgentOrchestrator,
-	agentId: string,
-	message: AgentMessage,
-): Promise<void> {
-	const harness = requireAgentHarness(orchestrator, agentId);
-	await (
-		harness as unknown as {
-			handleAgentEvent(event: {
-				type: "message_end";
-				message: AgentMessage;
-			}): Promise<void>;
-		}
-	).handleAgentEvent({ type: "message_end", message });
-}
-
-type ExtensionInputPresentedEvent = Extract<
-	OrchestratorEvent,
-	{ type: "extension_input_presented" }
->;
-
-function waitForQueuedFollowUp(
-	orchestrator: AgentOrchestrator,
-	agentId: string,
-): Promise<AgentMessage> {
-	return new Promise((resolve) => {
-		let unsubscribe = () => {};
-		unsubscribe = orchestrator.subscribe((event) => {
-			if (
-				event.type !== "agent_harness_event" ||
-				event.agentId !== agentId ||
-				event.event.type !== "queue_update"
-			) {
-				return;
-			}
-			const message = event.event.followUp.at(-1);
-			if (!message) return;
-			unsubscribe();
-			resolve(message);
-		});
-	});
-}
-
-function waitForInputPresentation(
-	orchestrator: AgentOrchestrator,
-	agentId: string,
-): Promise<ExtensionInputPresentedEvent> {
-	return new Promise((resolve) => {
-		let unsubscribe = () => {};
-		unsubscribe = orchestrator.subscribe((event) => {
-			if (
-				event.type !== "extension_input_presented" ||
-				event.agentId !== agentId
-			) {
-				return;
-			}
-			unsubscribe();
-			resolve(event);
-		});
-	});
-}
-
-async function commitPresentedFollowUp(
-	harness: Harness,
-	text: string,
-	presentation: ExtensionInputPresentation,
-): Promise<ExtensionInputPresentedEvent> {
-	const agentHarness = requireAgentHarness(
-		harness.orchestrator,
-		harness.agentId,
-	);
-	(agentHarness as unknown as { phase: "turn" }).phase = "turn";
-	const queued = waitForQueuedFollowUp(harness.orchestrator, harness.agentId);
-	const presented = waitForInputPresentation(
-		harness.orchestrator,
-		harness.agentId,
-	);
-	await harness.actions.followUp(text, { presentation });
-	await emitHarnessMessageEnd(
-		harness.orchestrator,
-		harness.agentId,
-		await queued,
-	);
-	return await presented;
+	return { env, orchestrator, agentId, actions: context.actions, session: context.session, stored };
 }
 
 describe("extension session reads", () => {
@@ -223,11 +113,7 @@ describe("extension session reads", () => {
 
 	it("lists the project's sessions and reads one back by its opaque ref", async () => {
 		const { agentId, session, stored } = await createHarness();
-		await stored.appendMessage({
-			role: "user",
-			content: "remembered",
-			timestamp: 1,
-		});
+		await stored.appendMessage({ role: "user", content: "remembered", timestamp: 1 });
 
 		const sessions = await session.listSessions();
 		const own = sessions.find((candidate) => candidate.id === agentId);
@@ -251,9 +137,7 @@ describe("extension session reads", () => {
 	it("refuses a session ref it never handed out", async () => {
 		const { session } = await createHarness();
 
-		await expect(
-			session.readSession("/sessions/somewhere.jsonl"),
-		).rejects.toThrow(/Unknown session handle/);
+		await expect(session.readSession("/sessions/somewhere.jsonl")).rejects.toThrow(/Unknown session handle/);
 	});
 
 	it("reads a live session through its open handle rather than a stale reopen", async () => {
@@ -262,11 +146,7 @@ describe("extension session reads", () => {
 		const own = sessions.find((candidate) => candidate.id === agentId);
 		if (!own) throw new Error("Expected the agent's own session to be listed.");
 
-		await stored.appendMessage({
-			role: "user",
-			content: "written after listing",
-			timestamp: 1,
-		});
+		await stored.appendMessage({ role: "user", content: "written after listing", timestamp: 1 });
 
 		const read = await session.readSession(own.ref);
 		expect(read.leafId).toBe(await stored.getLeafId());
@@ -276,12 +156,8 @@ describe("extension session reads", () => {
 		const { orchestrator, session } = await createHarness();
 		await orchestrator.settingManager.setProjectTrusted(false);
 
-		await expect(session.listSessions()).rejects.toThrow(
-			/may not list the project's sessions/,
-		);
-		await expect(session.readSession("whatever")).rejects.toThrow(
-			/may not read another session/,
-		);
+		await expect(session.listSessions()).rejects.toThrow(/may not list the project's sessions/);
+		await expect(session.readSession("whatever")).rejects.toThrow(/may not read another session/);
 		// The extension already runs inside this session, so reading it needs no
 		// further permission.
 		await expect(session.getSnapshot()).resolves.toBeDefined();
@@ -310,16 +186,10 @@ describe("extension session reads", () => {
 
 	it("returns detached entries that cannot mutate the live session", async () => {
 		const { session, stored } = await createHarness();
-		await stored.appendMessage({
-			role: "user",
-			content: "stored text",
-			timestamp: 1,
-		});
+		await stored.appendMessage({ role: "user", content: "stored text", timestamp: 1 });
 
 		const firstRead = await session.getTree();
-		const userEntry = firstRead.pathToRoot.find(
-			(entry) => entry.type === "message" && entry.message.role === "user",
-		);
+		const userEntry = firstRead.pathToRoot.find((entry) => entry.type === "message" && entry.message.role === "user");
 		if (userEntry?.type !== "message" || userEntry.message.role !== "user") {
 			throw new Error("Expected a user message.");
 		}
@@ -330,8 +200,7 @@ describe("extension session reads", () => {
 			(entry) => entry.type === "message" && entry.message.role === "user",
 		);
 		expect(
-			storedUserEntry?.type === "message" &&
-				storedUserEntry.message.role === "user"
+			storedUserEntry?.type === "message" && storedUserEntry.message.role === "user"
 				? storedUserEntry.message.content
 				: undefined,
 		).toBe("stored text");
@@ -370,9 +239,7 @@ describe("extension context usage", () => {
 			percent: 25,
 			model: `${defaultModel.provider}/${defaultModel.id}`,
 		});
-		const usageEvents = events.filter(
-			(event) => event.type === "agent_context_usage_changed",
-		);
+		const usageEvents = events.filter((event) => event.type === "agent_context_usage_changed");
 		expect(usageEvents).toEqual([
 			expect.objectContaining({
 				type: "agent_context_usage_changed",
@@ -399,15 +266,9 @@ describe("extension context usage", () => {
 		orchestrator.settingManager.setCompactionEnabled(false);
 		await stored.appendMessage(assistantMessage(250));
 		await emitSettled(orchestrator, agentId);
-		expect(actions.getContextUsage()?.model).toBe(
-			`${defaultModel.provider}/${defaultModel.id}`,
-		);
+		expect(actions.getContextUsage()?.model).toBe(`${defaultModel.provider}/${defaultModel.id}`);
 
-		await orchestrator.setAgentModel(agentId, {
-			...defaultModel,
-			id: "wide-model",
-			contextWindow: 100_000,
-		});
+		await orchestrator.setAgentModel(agentId, { ...defaultModel, id: "wide-model", contextWindow: 100_000 });
 
 		// Never report the old window, or the old model's name, as current.
 		expect(actions.getContextUsage()).toBeUndefined();
@@ -437,23 +298,14 @@ describe("extension context usage", () => {
 		await orchestrator.navigateAgentTree(agentId, measuredEntryId);
 		expect(actions.getContextUsage()).toBeDefined();
 
-		await stored.appendMessage({
-			role: "user",
-			content: "later branch",
-			timestamp: 3,
-		});
+		await stored.appendMessage({ role: "user", content: "later branch", timestamp: 3 });
 		await orchestrator.navigateAgentTree(agentId, measuredEntryId);
 		expect(actions.getContextUsage()).toBeUndefined();
 	});
 
 	it("clears a stale measurement when refreshing the branch fails", async () => {
 		const { orchestrator, agentId, actions } = await createHarness();
-		requireAgentRecord(orchestrator, agentId).contextUsage = {
-			tokens: 10,
-			contextWindow: 100,
-			percent: 10,
-			model: "test/model",
-		};
+		seedAgentContextUsage(orchestrator, agentId, { tokens: 10, contextWindow: 100, percent: 10, model: "test/model" });
 		Object.assign(orchestrator.sessionManager, {
 			getAgentSessionSnapshot: async () => {
 				throw new Error("session read failed");
@@ -477,34 +329,20 @@ describe("extension context usage", () => {
 			events.push(event);
 		});
 		Object.assign(orchestrator, {
-			_runMaintenanceOperation: async () => ({
-				summary: "s",
-				firstKeptEntryId: "e",
-				tokensBefore: 250,
-			}),
+			_runMaintenanceOperation: async () => ({ summary: "s", firstKeptEntryId: "e", tokensBefore: 250 }),
 		});
 
 		await orchestrator.compactAgent(agentId);
 
 		expect(actions.getContextUsage()).toBeUndefined();
 		expect(events).toContainEqual(
-			expect.objectContaining({
-				type: "agent_context_usage_changed",
-				agentId,
-				usage: undefined,
-			}),
+			expect.objectContaining({ type: "agent_context_usage_changed", agentId, usage: undefined }),
 		);
 	});
 
 	it("returns detached usage and exposes it in the agent snapshot", async () => {
 		const { orchestrator, agentId, actions } = await createHarness();
-		const record = requireAgentRecord(orchestrator, agentId);
-		record.contextUsage = {
-			tokens: 10,
-			contextWindow: 100,
-			percent: 10,
-			model: "test/model",
-		};
+		seedAgentContextUsage(orchestrator, agentId, { tokens: 10, contextWindow: 100, percent: 10, model: "test/model" });
 
 		const usage = actions.getContextUsage();
 		if (!usage) throw new Error("Expected context usage.");
@@ -512,302 +350,8 @@ describe("extension context usage", () => {
 
 		expect(actions.getContextUsage()?.tokens).toBe(10);
 		expect(orchestrator.inspectAgent(agentId)).toMatchObject({
-			contextUsage: {
-				tokens: 10,
-				contextWindow: 100,
-				percent: 10,
-				model: "test/model",
-			},
+			contextUsage: { tokens: 10, contextWindow: 100, percent: 10, model: "test/model" },
 		});
-	});
-});
-
-describe("extension input presentation", () => {
-	it("persists the presentation with core-injected attribution and publishes it", async () => {
-		const harness = await createHarness();
-		const { orchestrator, agentId } = harness;
-		const presented = await commitPresentedFollowUp(
-			harness,
-			"task 7 finished",
-			{
-				customType: "subagent-result",
-				title: "Task 7",
-				details: { taskId: 7, status: "ok" },
-			},
-		);
-		expect(presented).toMatchObject({
-			type: "extension_input_presented",
-			agentId,
-			extensionId: "sample",
-			presentation: {
-				customType: "subagent-result",
-				title: "Task 7",
-				details: { taskId: 7, status: "ok" },
-			},
-		});
-		const tree = await orchestrator.getAgentSessionTree(agentId);
-		expect(tree.entries).toContainEqual(
-			expect.objectContaining({
-				id: presented.entryId,
-				type: "custom",
-				customType: EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE,
-				data: expect.objectContaining({
-					messageEntryId: presented.messageEntryId,
-					// Attribution is injected by core, never taken from the caller.
-					extensionId: "sample",
-				}),
-			}),
-		);
-		expect(tree.entries).toContainEqual(
-			expect.objectContaining({
-				id: presented.messageEntryId,
-				type: "message",
-				message: expect.objectContaining({
-					role: "user",
-					content: [
-						{
-							type: "text",
-							text: "task 7 finished",
-						},
-					],
-				}),
-			}),
-		);
-	});
-
-	it("commits a prompt presentation only after its user message lands", async () => {
-		const { orchestrator, agentId, actions } = await createHarness();
-		const presented = waitForInputPresentation(orchestrator, agentId);
-		Object.assign(orchestrator, {
-			_startAgentPrompt: async (
-				targetAgentId: string,
-				text: string,
-			): Promise<{
-				method: "prompt";
-				completed: Promise<AssistantMessage>;
-			}> => {
-				await emitHarnessMessageEnd(orchestrator, targetAgentId, {
-					role: "user",
-					content: text,
-					timestamp: 1,
-				});
-				return {
-					method: "prompt",
-					completed: Promise.resolve(assistantMessage(1)),
-				};
-			},
-		});
-
-		await actions.prompt("prompt text", {
-			presentation: { customType: "note" },
-		});
-
-		const event = await presented;
-		const tree = await orchestrator.getAgentSessionTree(agentId);
-		expect(
-			tree.entries.find((entry) => entry.id === event.messageEntryId),
-		).toMatchObject({
-			type: "message",
-			message: { role: "user", content: "prompt text" },
-		});
-	});
-
-	// A blocked prompt is a returned outcome, not a rejection, so a wrapper that
-	// only caught throws left a presentation describing a message that never
-	// existed. Routing prompt through the message pipeline means the block
-	// returns before any session write.
-	it("records nothing when an interceptor blocks the prompt it described", async () => {
-		const env = new MemoryExecutionEnv();
-		const orchestrator = await createOrchestrator(env);
-		orchestrator.registerExtension("sample", (api) => {
-			api.intercept("input", () => ({ block: true, reason: "policy" }));
-		});
-		const agentId = await orchestrator.spawnAgent();
-		await orchestrator.sessionManager.createAgentSession({
-			agentId,
-			agentProfile: defaultProfile,
-		});
-		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
-		if (!runner) throw new Error("Expected extension runner.");
-		const events: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			events.push(event);
-		});
-
-		await runner.createContext("sample").actions.prompt("blocked text", {
-			presentation: { customType: "note" },
-		});
-
-		expect(
-			events.some((event) => event.type === "extension_input_presented"),
-		).toBe(false);
-		const tree = await orchestrator.getAgentSessionTree(agentId);
-		expect(
-			tree.entries.some(
-				(entry) =>
-					entry.type === "custom" &&
-					entry.customType === EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE,
-			),
-		).toBe(false);
-	});
-
-	it("records no presentation when direct delivery fails", async () => {
-		const { orchestrator, agentId, actions } = await createHarness();
-		Object.assign(orchestrator, {
-			steerAgent: async () => {
-				throw new Error("harness rejected the steer");
-			},
-		});
-		const events: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			events.push(event);
-		});
-
-		await expect(
-			actions.steer("never lands", {
-				presentation: { customType: "note" },
-			}),
-		).rejects.toThrow("harness rejected the steer");
-
-		const tree = await orchestrator.getAgentSessionTree(agentId);
-		expect(
-			tree.pathToRoot.some(
-				(entry) =>
-					entry.type === "custom" &&
-					entry.customType === EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE,
-			),
-		).toBe(false);
-		// And nothing was announced: an event cannot be taken back the way the
-		// branch can, so it waits until the harness owns the text.
-		expect(
-			events.some((event) => event.type === "extension_input_presented"),
-		).toBe(false);
-	});
-
-	it("drops a presentation when abort clears its accepted queued message", async () => {
-		const { orchestrator, agentId, actions } = await createHarness();
-		const harness = requireAgentHarness(orchestrator, agentId);
-		(harness as unknown as { phase: "turn" }).phase = "turn";
-		const events: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			events.push(event);
-		});
-
-		await actions.followUp("queued then aborted", {
-			presentation: { customType: "note" },
-		});
-		await orchestrator.abortAgent(agentId);
-
-		const tree = await orchestrator.getAgentSessionTree(agentId);
-		expect(
-			tree.pathToRoot.some(
-				(entry) =>
-					entry.type === "custom" &&
-					entry.customType === EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE,
-			),
-		).toBe(false);
-		expect(
-			events.some((event) => event.type === "extension_input_presented"),
-		).toBe(false);
-	});
-
-	it("rejects a presentation core could not store or attribute", async () => {
-		const { orchestrator, actions } = await createHarness();
-		Object.assign(orchestrator, { followUpAgent: async () => {} });
-
-		await expect(
-			actions.followUp("text", { presentation: { customType: "bad/type" } }),
-		).rejects.toThrow(/customType must contain only/);
-		await expect(
-			actions.followUp("text", {
-				presentation: { customType: "ok", title: "   " },
-			}),
-		).rejects.toThrow(/title must be a non-blank string/);
-		const cyclic: Record<string, unknown> = {};
-		cyclic.self = cyclic;
-		await expect(
-			actions.followUp("text", {
-				presentation: {
-					customType: "ok",
-					// Extensions load untyped, so the runtime guard is what protects
-					// the session file, not the JsonValue annotation.
-					details: cyclic as never,
-				},
-			}),
-		).rejects.toThrow(/details must be JSON serializable/);
-	});
-
-	it("stores a detached, JSON-normalized copy of details", async () => {
-		const harness = await createHarness();
-		const { orchestrator, agentId } = harness;
-
-		const details: Record<string, unknown> = {
-			kept: "yes",
-			dropped: undefined,
-		};
-		const presented = await commitPresentedFollowUp(harness, "text", {
-			customType: "ok",
-			details: details as never,
-		});
-		// Mutating after the call must not reach anything core already recorded.
-		details.kept = "mutated";
-
-		// The published value is the same one the JSONL will round-trip to:
-		// `undefined` is already gone, so live and hydrated views agree.
-		expect(presented.presentation.details).toEqual({ kept: "yes" });
-		const tree = await orchestrator.getAgentSessionTree(agentId);
-		const entry = tree.entries.find(
-			(candidate) =>
-				candidate.type === "custom" &&
-				candidate.customType === EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE,
-		);
-		expect(entry).toMatchObject({
-			data: { presentation: { details: { kept: "yes" } } },
-		});
-	});
-
-	it("does not let a live event mutate the persisted presentation", async () => {
-		const harness = await createHarness();
-		const { orchestrator, agentId } = harness;
-		const presented = await commitPresentedFollowUp(harness, "queued", {
-			customType: "note",
-			details: { value: "stored" },
-		});
-		const details = presented.presentation.details;
-		if (
-			typeof details !== "object" ||
-			details === null ||
-			Array.isArray(details)
-		) {
-			throw new Error("Expected object details.");
-		}
-		(details as { value: string }).value = "mutated by client";
-
-		const tree = await orchestrator.getAgentSessionTree(agentId);
-		const entry = tree.entries.find(
-			(candidate) =>
-				candidate.type === "custom" &&
-				candidate.customType === EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE,
-		);
-		expect(entry).toMatchObject({
-			data: { presentation: { details: { value: "stored" } } },
-		});
-	});
-
-	it("leaves messages sent without a presentation unrecorded", async () => {
-		const { orchestrator, agentId, actions } = await createHarness();
-		Object.assign(orchestrator, { followUpAgent: async () => {} });
-
-		await actions.followUp("plain text");
-
-		const tree = await orchestrator.getAgentSessionTree(agentId);
-		expect(
-			tree.entries.some(
-				(entry) =>
-					entry.type === "custom" &&
-					entry.customType === EXTENSION_INPUT_PRESENTATION_CUSTOM_TYPE,
-			),
-		).toBe(false);
 	});
 });
 
@@ -827,13 +371,11 @@ describe("extension read-only runtime getters", () => {
 		orchestrator.registerExtension("sample", (api) => {
 			api.appendSystemPrompt("extension guidance section");
 		});
-		const agentId = await orchestrator.spawnAgent();
-		const runner = requireAgentRecord(orchestrator, agentId).extensionRunner;
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const runner = requireLiveAgent(orchestrator, agentId).extensionRunner;
 		if (!runner) throw new Error("Expected extension runner.");
 
-		const prompt = await runner
-			.createContext("sample")
-			.actions.getSystemPrompt();
+		const prompt = await runner.createContext("sample").actions.getSystemPrompt();
 
 		expect(prompt).toContain(defaultProfile.systemPrompt);
 		expect(prompt).toContain("extension guidance section");
@@ -870,19 +412,14 @@ describe("extension observer delivery", () => {
 		const orchestrator = await createOrchestrator(env);
 		const observed: string[] = [];
 		orchestrator.registerExtension("sample", (api) => {
-			for (const name of Object.keys(
-				EXTENSION_OBSERVED_EVENT_NAMES,
-			) as ExtensionObservedEventName[]) {
+			for (const name of Object.keys(EXTENSION_OBSERVED_EVENT_NAMES) as ExtensionObservedEventName[]) {
 				api.observe(name, (event) => {
 					observed.push(event.type);
 				});
 			}
 		});
-		const agentId = await orchestrator.spawnAgent();
-		const stored = await orchestrator.sessionManager.createAgentSession({
-			agentId,
-			agentProfile: defaultProfile,
-		});
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const stored = await orchestrator.sessionManager.createAgentSession({ agentId, agentProfile: defaultProfile });
 		orchestrator.settingManager.setCompactionEnabled(false);
 		await stored.appendMessage(assistantMessage(250));
 
