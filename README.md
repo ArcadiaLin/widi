@@ -1,101 +1,92 @@
-# widi
+# WIDI
 
-[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/ArcadiaLin/widi?utm_source=badge)
+WIDI fork 自 [Pi](https://github.com/earendil-works/pi)，以其 `AgentHarness` 作为单 Agent 执行内核。
 
-WIDI is a multi-agent runtime built on the `AgentHarness` module of [Pi](https://github.com/earendil-works/pi) (`pi-agent-core`). Pi's harness owns single-agent concerns — model turns, the session tree, resources, tools, stream lifecycle. WIDI adds the runtime above it: agent lifecycle and orchestration, declarative profiles, session resume, model/auth registries, structured diagnostics, and an extension surface over all of it.
+WIDI 是一个可扩展的终端 coding agent。在单 Agent 内核之上，它提供原生多 Agent 编排、持久会话、Profile、后台任务和扩展能力，并通过终端 TUI 交互使用。
 
-To be precise about what this repository is today: a runtime core with a documented architecture and a test suite, not yet a usable coding-agent product. What might still make it worth reading:
+> 项目仍在快速迭代中，当前以源码工作区方式运行。
 
-**It is a real consumer of Pi's harness module.** `pi-coding-agent` runs on its own `AgentSession` runtime and does not use `AgentHarness`; the harness is a clean module without a first-party product consumer so far. WIDI builds its entire runtime on it — session tree, resume, compaction, queue semantics — and sends the gaps it hits upstream as pull requests. Missing primitives are recorded in the [`Pi upstream roadmap`](apps/widi-pi/docs/zh-CN/core/pi-upstream-roadmap.md); WIDI consumes Pi's JSONL session repository directly, including opaque header metadata used for recovery references. Since upstream began rewriting the harness, WIDI owns a frozen fork of it ([`docs/pi-fork.md`](docs/pi-fork.md)) rather than tracking a moving target.
+## 它能做什么
 
-**Agents are runtime entities, not processes.** Pi's experimental orchestrator package supervises full coding-agent instances as RPC subprocesses. WIDI takes the other branch of that trade-off: multiple harnesses live in one process and share a tool registry, profile registry, session repo, and diagnostics channel, so agent lifecycle, availability, and recovery are observable inside the runtime rather than across process boundaries. This costs the isolation a process model gives you; the bet is that first-class orchestration semantics are worth it, and it is a bet — the collaboration tools that would prove it are still on the roadmap.
+- **终端 coding agent**：在 TUI 中完成代码阅读、搜索、编辑、写入和 shell 执行。
+- **原生多 Agent 协作**：Agent 可以发现可用 Profile、创建子 Agent、向其他 Agent 发送消息、等待任务结果并销毁已完成的 Agent。
+- **持久会话**：支持新建与恢复历史会话、分叉会话树、树导航和上下文压缩。
+- **基于 Profile 的 Agent 角色定义**：通过 Markdown Profile 定义系统提示词、可见工具、技能和项目上下文。
+- **高度可扩展**：扩展可以注册或修改工具、注册命令和模型提供方、订阅事件、拦截输入，并提供受控的运行时操作。官方扩展可在同一运行时基础上提供不同发行版；MCP 是其中一种扩展方式。
+- **异步后台任务**：支持后台 shell 任务的读取、等待和取消，也可用于 Agent 委派任务。
+- **人工交互**：Agent 可以向人请求确认或输入。
 
-**Decisions are recorded, including the failed ones.** Milestones stay at planning level and only admit work with a concrete runtime goal ([`TODO.md`](apps/widi-pi/docs/zh-CN/TODO.md)). Settled boundaries live in canonical mechanism documents; detailed implementation history stays in Git. For example, command input is documented as an interaction-layer engine owned by the TUI rather than the orchestrator in [`runtime.md`](apps/widi-pi/docs/zh-CN/core/runtime.md), and session/auth/config storage explicitly declares a single-process write assumption rather than shipping a half-locked file protocol.
+## 快速开始
 
-## At a glance
+前置条件：Node.js `>= 22.19.0` 和 npm。
 
-Three ways to get more than one agent out of the Pi codebase today:
+```bash
+npm install
+npm run build
+npm run tui
+```
 
-| | `pi-coding-agent` | pi `orchestrator` (experimental) | WIDI |
-| --- | --- | --- | --- |
-| Execution kernel | its own `AgentSession` runtime | one full coding-agent per instance | Pi `AgentHarness` |
-| An "agent" is | the app session | an RPC subprocess | a runtime entity: profile + harness + session + status |
-| Shared across agents | — (single agent) | nothing — per-process state | tool registry, profile registry, session repo, diagnostics channel |
-| Failure surface | app/UI messages | process exit, RPC errors | structured diagnostics (`profile.*`, `model.*`, `extension.*`) with recoverability flags |
-| Extension scope | single-agent app events (shipped, mature) | — | API v1: tool register/patch, resources/providers, scoped actions, observers/interceptors |
+`npm run tui` 使用仓库内的 `.widi/` 配置，并继承当前终端的工作目录。默认配置面向本仓库的本地开发环境。
 
-Two pipelines that are already landed and tested. Input handling — an interaction-layer command engine owned by the TUI (the CLI entry routes straight into it), not an orchestrator protocol:
+## TUI 使用
+
+直接输入文本即可向当前 Agent 发送任务。Agent 正在运行时，普通输入会排入下一轮；使用 `/steer <text>` 可立即介入，`/abort` 可中止当前运行。
+
+常用命令：
+
+| 命令 | 用途 |
+| --- | --- |
+| `/new`、`/clear` | 关闭当前 Agent，按相同 Profile 创建新会话 |
+| `/resume`、`/session` | 恢复或列出持久会话 |
+| `/fork`、`/tree` | 分叉会话或查看、导航会话树 |
+| `/agent`、`/inspect` | 查看运行中的 Agent 或当前 Agent 状态 |
+| `/model`、`/thinking` | 切换模型或思考等级 |
+| `/compact` | 压缩当前会话上下文 |
+| `/skill`、`/prompt` | 应用 Skill 或 Prompt 模板 |
+| `/reload` | 重载当前 Agent 的扩展 |
+| `/quit` | 退出程序 |
+
+命令支持自动补全。运行中的 Agent 也可以通过工具创建子 Agent、委派任务并读取后台任务结果。
+
+## 配置、Profile 与扩展
+
+agent 目录是 WIDI 的配置根目录，常见结构如下：
 
 ```text
-client input ──→ CommandEngine ──→ /command ──→ atomic orchestrator method ──→ event fanout
-                    │                │
-                    │                └─ /quit /exit ──→ ApplicationCommandHost ──→ app shutdown
-                    │
-                    └──→ inline expansion <prompt:…> <skill:…> ──→ promptAgent ──→ harness turn
-                          └─ original input preserved as a session custom entry
+.widi/
+├── settings.json          # 运行时默认值、启用的 Profile 与扩展
+├── agent/models.json      # 模型提供方和模型定义
+├── profiles/*.md          # Agent Profile
+├── skills/*/SKILL.md      # Skill
+├── prompts/*.md           # Prompt 模板
+├── extensions/*/          # 扩展
+└── mcp.json               # MCP 服务配置
 ```
 
-Session resume — the reason WIDI needs [header metadata](https://github.com/ArcadiaLin/pi/tree/jsonl-header-metadata) on line 1 of the JSONL file:
+Profile 是带 YAML frontmatter 的 Markdown 文件，可声明角色名称、系统提示词、持久化行为、允许使用的工具、Skill 和项目上下文。模型由 `agent/models.json` 配置；密钥可以通过环境变量引用，例如 `$MOONSHOT_API_KEY` 或 `$ANTHROPIC_API_KEY`，不应提交真实密钥。项目目录中的 `.widi/` 配置属于项目本地代码，只有在项目被信任后才会加载；这避免了打开未知项目时自动执行其扩展或读取其指令。
 
-```text
-sessions/*.jsonl ──→ list(): read line 1 only ──→ candidates (id, cwd, metadata.profile)
-                                                        │
-        profile registry ←── parse profile reference ←──┘
-              │
-              ├─ missing / disabled ──→ structured diagnostic, no harness created
-              │
-              └─ resolved ──→ session.buildContext() ──→ messages, model, thinking level,
-                                                         active tools ──→ new AgentHarness
-```
+扩展是运行时的一等参与者：它们可以贡献工具、命令、资源和模型提供方，也可以订阅事件或在受控钩子中检查、改写、阻止输入。仓库中的 `.widi/extensions/mcp/` 是 MCP 扩展示例，配置见 `.widi/mcp.json`。
 
-## Status
+## 与 Pi 的关系和未来接入
 
-The runtime foundation, seven core coding tools, command input, structured diagnostics, and extension API v1 are implemented. Current milestones are deliberately high-level: close the minimal multi-agent collaboration loop, move diagnostic construction toward domain runtimes, then improve core readability. See the [Chinese milestones](apps/widi-pi/docs/zh-CN/TODO.md).
+WIDI 的单 Agent 内核来自 Pi 的 `AgentHarness`：模型调用、工具循环、流式事件和会话树仍由它负责。WIDI 在其外层实现多 Agent 生命周期、运行时依赖解析、跨 Agent 消息、后台任务、客户端事件分发和扩展机制。
 
-Documentation uses a stable [language entry point](apps/widi-pi/docs/README.md); the current canonical set is Simplified Chinese. Code, identifiers, and diagnostics are English throughout. See [`apps/widi-pi/README.md`](apps/widi-pi/README.md) for the module-by-module overview.
+Pi 上游正在持续迭代 `AgentHarness` 与存储模型。WIDI 当前从 Pi `v0.83.0` fork 并维护 `packages/agent`，包名为 `@widi/agent-core`；`@earendil-works/pi-ai` 与 `@earendil-works/pi-tui` 仍使用 npm 上的固定版本。随着上游新 harness 稳定，WIDI 会评估接入其新模型的时机与迁移路径。当前 fork 的维护约束、差异和重新同步条件见 [`docs/pi-fork.md`](docs/pi-fork.md)。
 
-## Workspace layout
+## 仓库结构
 
-- `apps/widi-pi`: the WIDI runtime core (active product code), exposing the `widi-harness` binary from `dist/cli.js`.
-- `packages/agent`: `@widi/agent-core`, a fork of `@earendil-works/pi-agent-core` vendored at pi `v0.83.0`.
+- [`apps/widi-pi`](apps/widi-pi)：WIDI 的运行时、内置工具、扩展系统和终端 TUI；构建后提供 `widi-harness` 二进制。
+- [`packages/agent`](packages/agent)：从 Pi fork 的 `@widi/agent-core`，作为 WIDI 的单 Agent 执行内核。
+- [`docs/pi-fork.md`](docs/pi-fork.md)：Pi fork 的维护约束和设计背景。
+- [`CONTEXT.md`](CONTEXT.md)：运行时领域术语表。
+- [`apps/widi-pi/docs`](apps/widi-pi/docs)：当前实现相关的设计与持久化说明。
 
-`@earendil-works/pi-ai` and `@earendil-works/pi-tui` are installed from the registry at exact versions; only the harness package is vendored. The upstream pi repository is not part of this repository — clone it into `reference/pi` (gitignored, never built) when you want to read upstream source.
-
-The harness is forked because upstream is replacing it: [`harness-v2.md`](packages/agent/docs/harness-v2.md) specifies a full rewrite of `packages/agent/src/harness` under a compatibility policy that preserves nothing but v3 JSONL session loading. [`docs/pi-fork.md`](docs/pi-fork.md) records why the fork exists, its complete divergence from upstream, the invariants that keep it working, and the conditions for re-syncing. Gaps WIDI still needs from upstream are recorded in the [upstream roadmap](apps/widi-pi/docs/zh-CN/core/pi-upstream-roadmap.md).
-
-## Development setup
-
-Prerequisites: Node.js >= 22.19 and npm. Then:
+## 开发
 
 ```bash
-npm install          # install workspace dependencies
-npm run build        # build @widi/agent-core, then the app
-npm run check        # Biome formatting/linting and TypeScript checks
-npm run test         # run workspace tests
+npm run build   # 构建 agent core 和 WIDI 应用
+npm run check   # Biome 格式化/lint 与 TypeScript 检查
+npm run test    # 运行工作区测试
 ```
 
-No network access and no code generation are needed to build: `pi-ai` ships its provider model catalogs inside the published tarball.
-
-Upstream pi is optional and only useful for reading. Clone it when you want its source or history:
-
-```bash
-git clone https://github.com/earendil-works/pi.git reference/pi
-```
-
-Notes on the moving parts:
-
-- **`npm run check` covers both workspaces.** It type-checks `packages/agent/{src,test}` and `apps/widi-pi/{src,tests}` through the root `tsconfig.json`. The app's own `check` script only sees the app.
-- **Biome formatting is partitioned.** `apps/**` uses WIDI's defaults; `packages/agent/**` keeps upstream's settings so the vendored files stay byte-identical to upstream and cherry-picks stay cheap.
-- **The pi dependencies are pinned exactly, not by range**, and `typebox` must match the version published `pi-ai` pins. Both constraints and their failure modes are in [`docs/pi-fork.md`](docs/pi-fork.md).
-
-## Benchmarks
-
-Performance is tracked continuously with [CodSpeed](https://codspeed.io). The benchmarks use [vitest](https://vitest.dev) bench through the `@codspeed/vitest-plugin` and live in `apps/widi-pi/bench`.
-
-Run them locally:
-
-```bash
-npm --workspace apps/widi-pi exec -- vitest bench --run
-```
-
-On every push to `main` and every pull request, the CodSpeed GitHub Actions workflow runs the benchmarks in CPU simulation mode and reports performance changes.
+`packages/agent` 是刻意保持接近上游的 vendored 代码。除非修改明确属于 fork 差异，不应随意重构或重新格式化该目录。
