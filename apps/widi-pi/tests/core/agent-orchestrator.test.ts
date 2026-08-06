@@ -3198,6 +3198,67 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
+	it("lets an extension override the source label and the model-facing render", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
+			),
+		});
+		orchestrator.registerExtension("sample", () => {});
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const runner = requireLiveAgent(orchestrator, agentId).extensionRunner;
+		if (!runner) throw new Error("Expected extension runner.");
+		const context = runner.createContext("sample");
+		const events: OrchestratorEvent[] = [];
+		orchestrator.subscribe((event) => {
+			events.push(event);
+		});
+		const harness = requireAgentHarness(orchestrator, agentId);
+		(harness as unknown as { phase: "turn" }).phase = "turn";
+
+		await context.actions.steer("deploy finished", {
+			source: { kind: "slack", label: "#deploys" },
+			render: (body) => `[Slack #deploys]\n\n${body}`,
+		});
+		// A source-only override keeps the sink's default rendering: the label is
+		// the author's, the prefix still names the extension that spoke.
+		await context.actions.steer("build green", { source: { kind: "slack", label: "#deploys" } });
+
+		const steered = events.flatMap((event) =>
+			event.type === "agent_harness_event" && event.event.type === "queue_update" ? event.event.steer : [],
+		);
+		expect(steered).toContainEqual(
+			expect.objectContaining({
+				role: "custom",
+				customType: ORCHESTRATOR_MESSAGE_CUSTOM_TYPE,
+				content: "[Slack #deploys]\n\ndeploy finished",
+				details: expect.objectContaining({
+					source: expect.objectContaining({ kind: "slack", label: "#deploys" }),
+					body: "deploy finished",
+				}),
+			}),
+		);
+		expect(steered).toContainEqual(
+			expect.objectContaining({
+				role: "custom",
+				customType: ORCHESTRATOR_MESSAGE_CUSTOM_TYPE,
+				content: "[Input from extension sample]\n\nbuild green",
+				details: expect.objectContaining({
+					source: expect.objectContaining({ kind: "slack", label: "#deploys" }),
+					body: "build green",
+				}),
+			}),
+		);
+	});
+
 	it("exposes scoped session, model, and thinking extension actions", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = {

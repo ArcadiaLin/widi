@@ -961,9 +961,10 @@ function diffRecord<T>(
 }
 
 /**
- * The extension half of a message request. The source and the delivery policy
- * are not here: they belong to the sink, which the orchestrator bound to this
- * extension before handing it over.
+ * The extension half of a message request. The delivery policy is not here: it
+ * belongs to the sink, which the orchestrator bound to this extension before
+ * handing it over. Source and render are the author's optional overrides; the
+ * sink's defaults fill in whatever they omit.
  */
 function toMessageRequest(
 	agentId: string,
@@ -975,6 +976,8 @@ function toMessageRequest(
 		targetAgentId: agentId,
 		body: text,
 		...(options?.images === undefined ? undefined : { images: options.images }),
+		...(options?.source === undefined ? undefined : { source: options.source }),
+		...(options?.render === undefined ? undefined : { render: options.render }),
 		mode,
 	};
 }

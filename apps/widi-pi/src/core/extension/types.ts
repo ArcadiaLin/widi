@@ -251,6 +251,17 @@ export type ExtensionCompactionResult = CompactResult;
 
 export interface ExtensionSendOptions {
 	images?: ImageContent[];
+	/**
+	 * Overrides the message's source label (default `extension:<id>`). A label,
+	 * not a capability: the delivery policy stays the binding's, so renaming the
+	 * source cannot forge a human interrupt or dodge an input policy.
+	 */
+	source?: MessageSource;
+	/**
+	 * Produces the text the model reads, replacing the default
+	 * `[Input from extension <id>]` prefix. Runs once, at enqueue.
+	 */
+	render?: (body: string) => string;
 }
 
 /**
