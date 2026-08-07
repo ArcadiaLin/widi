@@ -71,20 +71,7 @@ export class WidiTuiApplication {
 	private readonly pendingAgents: PendingAgentController;
 	/** Unknown "/" input awaiting a confirming second enter (v2 §11.2). */
 	private pendingUnknownCommand?: { scopeId: string; text: string };
-	private readonly engine = new CommandEngine([
-		...builtInCommands,
-		...applicationCommands({
-			quit: () => {
-				void this.shutdown("user exit").catch(() => {});
-			},
-			newSession: async (sourceAgentId) => {
-				await this.beginNewSession(sourceAgentId);
-			},
-			disposeAgent: async (agentId) => {
-				await this.disposeAgent(agentId);
-			},
-		}),
-	]);
+	private readonly engine = new CommandEngine();
 	private unsubscribeEvents?: () => void;
 	private unregisterClient?: () => void;
 	private readonly hydrationGeneration = new Map<string, number>();
@@ -111,7 +98,7 @@ export class WidiTuiApplication {
 		void this.shutdown("SIGINT").catch(() => {});
 	};
 	private fatalOverlayShown = false;
-	/** Diagnostics from user TUI config (keybindings, themes), projected on run. */
+	/** Diagnostics from user TUI config (keybindings, themes) and command registration, projected on run. */
 	private readonly userConfigDiagnostics: OrchestratorDiagnostic[] = [];
 	private readonly onUncaughtError = (error: unknown) => {
 		// The fatal application-error boundary (v2 §13.1): state may be corrupt,
@@ -137,6 +124,27 @@ export class WidiTuiApplication {
 		this.projector = new EventProjector(this.state);
 		this.jobsPanel = new JobsPanelView(this.state);
 		this.pendingAgents = new PendingAgentController(this.state, this.orchestrator, this.defaultPendingDisplay());
+
+		// Built-ins go through the same runtime registration path extension
+		// commands will use (Step 6); a name conflict becomes a startup
+		// diagnostic instead of a silent override.
+		for (const command of [
+			...builtInCommands,
+			...applicationCommands({
+				quit: () => {
+					void this.shutdown("user exit").catch(() => {});
+				},
+				newSession: async (sourceAgentId) => {
+					await this.beginNewSession(sourceAgentId);
+				},
+				disposeAgent: async (agentId) => {
+					await this.disposeAgent(agentId);
+				},
+			}),
+		]) {
+			const diagnostic = this.engine.register(command);
+			if (diagnostic) this.userConfigDiagnostics.push(diagnostic);
+		}
 
 		const userKeybindings = loadUserKeybindings(runtime.services.agentDir);
 		this.userConfigDiagnostics.push(...userKeybindings.diagnostics);

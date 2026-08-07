@@ -1,3 +1,4 @@
+import type { OrchestratorDiagnostic } from "../../core/diagnostics.ts";
 import type { AgentActivitySnapshot } from "../../core/types.ts";
 import { parseLineCommand } from "./parse.ts";
 import type { CommandContext, CommandDefinition, CommandError, CommandView, EngineOutcome } from "./types.ts";
@@ -10,8 +11,30 @@ export class CommandEngine {
 	private readonly commands = new Map<string, CommandDefinition>();
 	private nextCommandId = 1;
 
-	constructor(commands: readonly CommandDefinition[]) {
-		for (const command of commands) this.commands.set(command.name, command);
+	constructor(commands: readonly CommandDefinition[] = []) {
+		for (const command of commands) this.register(command);
+	}
+
+	/**
+	 * Add a command at runtime. A taken name is a conflict: the registration
+	 * is refused and reported, never a silent override. The caller surfaces
+	 * the returned diagnostic.
+	 */
+	register(command: CommandDefinition): OrchestratorDiagnostic | undefined {
+		if (this.commands.has(command.name)) {
+			return {
+				severity: "warning",
+				code: "command.name_conflict",
+				message: `Command /${command.name} is already registered; the new registration was refused.`,
+			};
+		}
+		this.commands.set(command.name, command);
+		return undefined;
+	}
+
+	/** Remove a command by name; returns whether one was registered. */
+	unregister(name: string): boolean {
+		return this.commands.delete(name);
 	}
 
 	list(activity: AgentActivitySnapshot | undefined): CommandView[] {

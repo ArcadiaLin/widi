@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../../src/core/agent-orchestrator.ts";
 import { builtInCommands } from "../../../src/tui/commands/built-ins.ts";
 import { CommandEngine, switchedAgentId } from "../../../src/tui/commands/engine.ts";
+import type { CommandDefinition } from "../../../src/tui/commands/types.ts";
 
 function stubOrchestrator(overrides: Record<string, unknown>): AgentOrchestrator {
 	// Status gates read `getAgentActivity`; the overrides may replace it.
@@ -348,5 +349,52 @@ describe("switchedAgentId", () => {
 			switchedAgentId({ kind: "executed", commandId: "c2", name: "status", value: { agentId: "agent-9" } }),
 		).toBeUndefined();
 		expect(switchedAgentId({ kind: "pass" })).toBeUndefined();
+	});
+});
+
+describe("CommandEngine runtime registration", () => {
+	function actionCommand(name: string): CommandDefinition {
+		return {
+			kind: "action",
+			name,
+			description: `${name} command`,
+			agentPolicy: "runtime",
+			execute: async () => `ran ${name}`,
+		};
+	}
+
+	it("registers and unregisters a command at runtime", async () => {
+		const engine = new CommandEngine();
+		expect(engine.list(undefined)).toEqual([]);
+
+		expect(engine.register(actionCommand("deploy"))).toBeUndefined();
+		expect(engine.match("/deploy now")?.name).toBe("deploy");
+		const outcome = await engine.handleInput("/deploy now", pendingContext());
+		expect(outcome).toMatchObject({ kind: "executed", name: "deploy", value: "ran deploy" });
+
+		expect(engine.unregister("deploy")).toBe(true);
+		expect(engine.match("/deploy now")).toBeUndefined();
+		expect(engine.unregister("deploy")).toBe(false);
+	});
+
+	it("refuses a conflicting name and keeps the original", () => {
+		const engine = new CommandEngine();
+		const original = actionCommand("deploy");
+		engine.register(original);
+
+		const diagnostic = engine.register(actionCommand("deploy"));
+
+		expect(diagnostic).toMatchObject({ severity: "warning", code: "command.name_conflict" });
+		expect(engine.get("deploy")).toBe(original);
+	});
+
+	it("list() snapshots reflect runtime registration changes", () => {
+		const engine = new CommandEngine();
+		engine.register(actionCommand("alpha"));
+		engine.register(actionCommand("beta"));
+		expect(engine.list(undefined).map((view) => view.name)).toEqual(["alpha", "beta"]);
+
+		engine.unregister("alpha");
+		expect(engine.list(undefined).map((view) => view.name)).toEqual(["beta"]);
 	});
 });
