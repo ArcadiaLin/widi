@@ -1,10 +1,12 @@
 import { getKeybindings, Markdown, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { ExtensionMessage } from "../../core/extension/api.ts";
+import type { ExtensionFieldsMessage, ExtensionMessage, ExtensionTableMessage } from "../../core/extension/api.ts";
+import { MAX_EXTENSION_MESSAGE_CELL_BYTES } from "../../core/extension/presentation.ts";
+import { renderDiffText } from "../diff.ts";
 import { boundedText, formatUnknown, sanitizeTerminalText, singleLine, spinnerFrame } from "../format.ts";
 import type { TimelineItem } from "../state.ts";
 import { theme } from "../theme/theme.ts";
 import { presentToolExecution } from "../tool-presenter.ts";
-import { diagnosticGlyph } from "./common.ts";
+import { diagnosticGlyph, tonePaint } from "./common.ts";
 import { formatOperationHintKey } from "./operation-hint.ts";
 
 export interface TimelineRenderContext {
@@ -68,27 +70,100 @@ export function renderDeps(item: TimelineItem, context: TimelineRenderContext): 
 	}
 }
 
+/** A table column never grows past this, however long its cells are. */
+const TABLE_COLUMN_MAX_WIDTH = 40;
+/** Below this a column cannot even show an ellipsis next to a character. */
+const TABLE_COLUMN_MIN_WIDTH = 3;
+const TABLE_SEPARATOR = ` ${theme.dim("│")} `;
+const TABLE_SEPARATOR_WIDTH = 3;
+
 /**
- * Flatten a published extension message to plain text.
- *
- * Every kind stays readable without kind-aware layout; the structured kinds
- * get their own rendering (column widths, diff paint, banner tone) when the
- * built-in renderers land.
+ * Render a published extension message into styled lines, dispatched on kind:
+ * tables get computed column widths, fields get aligned labels, diffs get the
+ * edit tool's diff paint, and banners get their tone's color. Width is the
+ * usable text width (render width minus the Text padding).
  */
-function extensionMessageText(message: ExtensionMessage): string {
+function extensionMessageLines(message: ExtensionMessage, width: number): string[] {
 	switch (message.kind) {
 		case "text":
 		case "markdown":
 		case "code":
-		case "banner":
-			return message.content;
-		case "diff":
-			return message.path ? `${message.path}\n${message.patch}` : message.patch;
+			return boundedText(message.content, { maxLines: 24, maxCharacters: 8_000 }).split("\n");
+		case "banner": {
+			const paint = tonePaint(message.severity);
+			return boundedText(message.content, { maxLines: 24, maxCharacters: 8_000 })
+				.split("\n")
+				.map((line) => (line ? paint(line) : line));
+		}
+		case "diff": {
+			const patch = boundedText(message.patch, { maxLines: 24, maxCharacters: 8_000 });
+			const lines = renderDiffText(patch);
+			return message.path === undefined ? lines : [theme.dim(singleLine(message.path, 400)), ...lines];
+		}
 		case "table":
-			return [message.columns.map((column) => column.label), ...message.rows].map((row) => row.join("  ")).join("\n");
+			return extensionTableLines(message, width);
 		case "fields":
-			return message.fields.map((field) => `${field.label}: ${field.value}`).join("\n");
+			return extensionFieldsLines(message);
 	}
+}
+
+/**
+ * Column widths come from the widest content per column (header included),
+ * capped at TABLE_COLUMN_MAX_WIDTH; when the row still overflows, the longest
+ * column shrinks one cell at a time so narrower columns keep their content.
+ */
+function extensionTableLines(message: ExtensionTableMessage, width: number): string[] {
+	const header = message.columns.map((column) => singleLine(column.label, MAX_EXTENSION_MESSAGE_CELL_BYTES));
+	const rows = message.rows.map((row) => row.map((cell) => singleLine(cell, MAX_EXTENSION_MESSAGE_CELL_BYTES)));
+	const widths = message.columns.map((_, index) => {
+		let natural = visibleWidth(header[index]);
+		for (const row of rows) natural = Math.max(natural, visibleWidth(row[index]));
+		return Math.min(TABLE_COLUMN_MAX_WIDTH, Math.max(TABLE_COLUMN_MIN_WIDTH, natural));
+	});
+	const totalWidth = () =>
+		widths.reduce((sum, columnWidth) => sum + columnWidth, 0) + TABLE_SEPARATOR_WIDTH * (widths.length - 1);
+	while (totalWidth() > width) {
+		let longest = 0;
+		for (let index = 1; index < widths.length; index += 1) {
+			if (widths[index] > widths[longest]) longest = index;
+		}
+		if (widths[longest] <= TABLE_COLUMN_MIN_WIDTH) break;
+		widths[longest]--;
+	}
+	const formatRow = (cells: readonly string[]): string =>
+		cells
+			.map((cell, index) => {
+				const truncated = truncateToWidth(cell, widths[index], "…");
+				const padding = " ".repeat(Math.max(0, widths[index] - visibleWidth(truncated)));
+				return message.columns[index].align === "right" ? `${padding}${truncated}` : `${truncated}${padding}`;
+			})
+			.join(TABLE_SEPARATOR);
+	return boundLines([theme.bold(formatRow(header)), ...rows.map(formatRow)]).map((line) =>
+		truncateToWidth(line, width, "…"),
+	);
+}
+
+function extensionFieldsLines(message: ExtensionFieldsMessage): string[] {
+	const fields = message.fields.map((field) => ({
+		label: singleLine(field.label, MAX_EXTENSION_MESSAGE_CELL_BYTES),
+		value: singleLine(field.value, MAX_EXTENSION_MESSAGE_CELL_BYTES),
+		tone: field.tone,
+	}));
+	const labelWidth = Math.max(...fields.map((field) => visibleWidth(field.label)));
+	return boundLines(
+		fields.map(
+			(field) =>
+				`${theme.dim(field.label)}${" ".repeat(Math.max(0, labelWidth - visibleWidth(field.label)))}  ${tonePaint(
+					field.tone,
+				)(field.value)}`,
+		),
+	);
+}
+
+/** boundedText for lines that are already rendered: same budget, same marker. */
+function boundLines(lines: string[], maxLines = 24): string[] {
+	if (lines.length <= maxLines) return lines;
+	return [...lines.slice(0, maxLines), theme.dim("… [truncated]")];
 }
 
 /** Current spinner frame index; advances every 160ms (see spinnerFrame). */
@@ -231,14 +306,8 @@ export function renderTimelineItem(item: TimelineItem, width: number, context: T
 				? theme.title(singleLine(item.message.title, 400))
 				: theme.dim(`[${item.extensionId}]`);
 			const meta = theme.dim(`persistent · ${item.extensionId} · ${item.message.kind}`);
-			return new Text(
-				`${title}  ${meta}\n\n${boundedText(extensionMessageText(item.message), {
-					maxLines: 24,
-					maxCharacters: 8_000,
-				})}`,
-				1,
-				0,
-			).render(width);
+			const body = extensionMessageLines(item.message, Math.max(8, width - 2));
+			return new Text(`${title}  ${meta}\n\n${body.join("\n")}`, 1, 0).render(width);
 		}
 		case "human-request-trace": {
 			if (item.answer.kind === "answered-questions") {

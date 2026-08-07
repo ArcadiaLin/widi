@@ -20,6 +20,7 @@ import {
 	type HumanRequestTraceItem,
 	setActiveAgent,
 } from "../../src/tui/state.ts";
+import { theme } from "../../src/tui/theme/theme.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 
@@ -211,6 +212,76 @@ describe("TUI views", () => {
 		expect(narrow).not.toContain("vllm");
 		expect(narrow).not.toContain("thinking");
 		expect(visibleWidth(narrow)).toBeLessThanOrEqual(40);
+	});
+
+	it("shows only panel-region statuses in the status view, with icon and tone", () => {
+		const state = createTuiApplicationState();
+		const main = setActiveAgent(state, "main");
+		main.status = "idle";
+		main.extensionStatuses.set("indexer build", {
+			agentId: "main",
+			extensionId: "indexer",
+			key: "build",
+			status: { text: "Building index", region: "panel", icon: "◆", tone: "success" },
+			updatedAt: timestamp(4),
+		});
+		// No region: the default is "panel".
+		main.extensionStatuses.set("linter scan", {
+			agentId: "main",
+			extensionId: "linter",
+			key: "scan",
+			status: { text: "Scanning sources" },
+			updatedAt: timestamp(5),
+		});
+		main.extensionStatuses.set("watcher files", {
+			agentId: "main",
+			extensionId: "watcher",
+			key: "files",
+			status: { text: "Watching files", region: "footer" },
+			updatedAt: timestamp(6),
+		});
+
+		const raw = new StatusView(state).render(80).join("\n");
+		const output = raw.replace(ANSI_SEQUENCE, "");
+
+		expect(output).toContain("◆");
+		expect(output).toContain("Building index");
+		expect(output).toContain("Scanning sources");
+		expect(output).not.toContain("Watching files");
+		expect(raw).toContain(theme.ok("x").split("x")[0]);
+	});
+
+	it("renders the latest footer-region status as a compact footer segment", () => {
+		const state = createTuiApplicationState();
+		const agent = setActiveAgent(state, "main");
+		agent.status = "idle";
+		agent.extensionStatuses.set("watcher old", {
+			agentId: "main",
+			extensionId: "watcher",
+			key: "old",
+			status: { text: "Stale status", region: "footer" },
+			updatedAt: timestamp(4),
+		});
+		agent.extensionStatuses.set("watcher new", {
+			agentId: "main",
+			extensionId: "watcher",
+			key: "new",
+			status: { text: "Watching files", region: "footer", icon: "◐" },
+			updatedAt: timestamp(5),
+		});
+		agent.extensionStatuses.set("indexer build", {
+			agentId: "main",
+			extensionId: "indexer",
+			key: "build",
+			status: { text: "Panel only" },
+			updatedAt: timestamp(6),
+		});
+
+		const line = (new FooterView(state, "/workspace").render(120)[0] ?? "").replace(ANSI_SEQUENCE, "");
+
+		expect(line).toContain("◐ Watching files");
+		expect(line).not.toContain("Stale status");
+		expect(line).not.toContain("Panel only");
 	});
 
 	it("renders the running steer action only once across footer and operation hint", () => {

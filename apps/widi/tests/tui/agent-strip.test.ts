@@ -411,6 +411,33 @@ describe("AgentStripView focus and navigation", () => {
 
 		expect(panel.cursor).toBe("main");
 	});
+
+	it("marks an agent publishing an agent-strip status with its icon", () => {
+		const state = createTuiApplicationState();
+		const main = setActiveAgent(state, "main");
+		main.status = "idle";
+		main.extensionStatuses.set("indexer build", {
+			agentId: "main",
+			extensionId: "indexer",
+			key: "build",
+			status: { text: "Building index", region: "agent-strip", icon: "✦", tone: "warning" },
+			updatedAt: new Date(0).toISOString(),
+		});
+		main.extensionStatuses.set("watcher files", {
+			agentId: "main",
+			extensionId: "watcher",
+			key: "files",
+			// No region: the default "panel" keeps it out of the strip.
+			status: { text: "Watching files" },
+			updatedAt: new Date(0).toISOString(),
+		});
+
+		const [top] = renderPlain(state);
+
+		expect(top).toContain("✦");
+		expect(top).not.toContain("✻");
+		expect(top).not.toContain("Watching files");
+	});
 });
 
 describe("moveAgentCursor", () => {

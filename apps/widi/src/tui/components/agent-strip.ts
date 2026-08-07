@@ -9,7 +9,7 @@ import { agentIdentityLabel } from "../agent-identity.ts";
 import { type AgentTree, type AgentTreeEntry, buildAgentTree, flattenAgentTree } from "../agent-tree.ts";
 import type { AgentViewState, TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
-import { maintenanceLabel } from "./common.ts";
+import { extensionStatusesInRegion, maintenanceLabel, tonePaint } from "./common.ts";
 
 const TREE_INDENT = 4;
 /** Visible width of `├── ` / `└── `. */
@@ -355,7 +355,14 @@ function formatAgent(state: TuiApplicationState, agent: AgentViewState, active: 
 				? `${statusText} · ${agent.unreadCount} unread`
 				: statusText;
 	const detail = agent.backgroundJobCount > 0 ? `${base} · ${agent.backgroundJobCount} bg` : base;
-	const text = `${agentGlyph(agent, active)} ${active ? theme.bold(label) : label} ${theme.dim(detail)}`;
+	// Agent-strip statuses mark the agent item itself: just the icon, painted
+	// with its tone, one per publishing extension status.
+	const markers = extensionStatusesInRegion(agent, "agent-strip").map((entry) =>
+		tonePaint(entry.status.tone)(entry.status.icon ?? "✻"),
+	);
+	const text = `${agentGlyph(agent, active)} ${active ? theme.bold(label) : label} ${theme.dim(detail)}${
+		markers.length > 0 ? ` ${markers.join(" ")}` : ""
+	}`;
 	return selected ? theme.inverse(text) : text;
 }
 

@@ -2,7 +2,7 @@ import { type Component, Text } from "@earendil-works/pi-tui";
 import { formatRelativeAge, singleLine } from "../format.ts";
 import type { TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
-import { activeAgent } from "./common.ts";
+import { activeAgent, extensionStatusesInRegion, tonePaint } from "./common.ts";
 
 export class StatusView implements Component {
 	private readonly state: TuiApplicationState;
@@ -16,9 +16,12 @@ export class StatusView implements Component {
 	render(width: number): string[] {
 		const agent = activeAgent(this.state);
 		if (!agent) return [];
-		const statuses = [...agent.extensionStatuses.values()];
+		// The panel is the default region; footer and agent-strip statuses are
+		// surfaced by their own components.
+		const statuses = extensionStatusesInRegion(agent, "panel");
 		if (statuses.length === 0) return [];
 		const lines = statuses.slice(0, 4).map((entry) => {
+			const paint = tonePaint(entry.status.tone);
 			const progress = entry.status.progress;
 			let progressText = "";
 			if (progress?.total !== undefined) {
@@ -30,7 +33,8 @@ export class StatusView implements Component {
 			// A status is never cleared automatically when a command ends, so its
 			// age is the only staleness signal the user gets.
 			const age = statusAge(entry.updatedAt);
-			return `${theme.info("✻")} ${theme.dim(entry.extensionId)} ${singleLine(entry.status.text, 400)}${progressText}${
+			const icon = entry.status.icon ? paint(entry.status.icon) : theme.info("✻");
+			return `${icon} ${theme.dim(entry.extensionId)} ${paint(singleLine(entry.status.text, 400))}${progressText}${
 				age ? theme.dim(` · ${age}`) : ""
 			}`;
 		});

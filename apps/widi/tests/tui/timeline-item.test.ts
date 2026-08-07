@@ -1,19 +1,29 @@
 import { setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
+import type { ExtensionMessage } from "../../src/core/extension/presentation.ts";
+import { EXTENSION_MESSAGE_CUSTOM_TYPE } from "../../src/core/session-manager.ts";
 import { renderDeps, renderTimelineItem, type TimelineRenderContext } from "../../src/tui/components/timeline-item.ts";
 import { SPINNER_FRAMES } from "../../src/tui/format.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
+import { hydrateSessionEntries } from "../../src/tui/session-hydrator.ts";
 import type {
 	ApplicationNoticeItem,
 	AssistantMessageItem,
 	CommandResultItem,
 	OrchestratorMessageItem,
+	PersistentMessageItem,
 	SessionMarkerItem,
 	ThinkingStatusItem,
 	UserMessageItem,
 } from "../../src/tui/state.ts";
+import { theme } from "../../src/tui/theme/theme.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+
+/** The opening SGR sequence of a paint, for asserting a specific hue applied. */
+function paintOpen(paint: (text: string) => string): string {
+	return paint("x").split("x")[0];
+}
 
 const context: TimelineRenderContext = {
 	liveThinkingIds: new Set(),
@@ -299,4 +309,133 @@ describe("renderTimelineItem", () => {
 		expect(lines[0]).toContain("── Compacted session · Ctrl+O collapse ─");
 		expect(lines).toContain("hidden summary body");
 	});
+
+	it("renders a table extension message with computed column widths and alignment", () => {
+		const item = extensionMessageItem({
+			kind: "table",
+			title: "Files",
+			columns: [{ label: "Path" }, { label: "Lines", align: "right" }],
+			rows: [
+				["src/a.ts", "12"],
+				["src/long-file-name.ts", "300"],
+			],
+		});
+
+		const lines = plain(renderTimelineItem(item, 60, context));
+
+		expect(lines[0]).toContain("Files");
+		expect(lines).toContain(`Path${" ".repeat(17)} │ Lines`);
+		expect(lines).toContain(`src/a.ts${" ".repeat(13)} │ ${" ".repeat(3)}12`);
+		expect(lines).toContain(`src/long-file-name.ts │ ${" ".repeat(2)}300`);
+	});
+
+	it("caps a table column and truncates the overflowing cell", () => {
+		const cell = "x".repeat(100);
+		const item = extensionMessageItem({ kind: "table", columns: [{ label: "Data" }], rows: [[cell]] });
+
+		const row = plain(renderTimelineItem(item, 80, context)).find((line) => line.includes("xxx"));
+
+		expect(row).toBeDefined();
+		expect(row).toContain("…");
+		expect(row).not.toContain(cell);
+		// The column cap is 40 columns wide.
+		expect(visibleWidth(row ?? "")).toBe(40);
+	});
+
+	it("aligns field labels to the longest label and paints toned values", () => {
+		const item = extensionMessageItem({
+			kind: "fields",
+			fields: [
+				{ label: "Host", value: "example.test" },
+				{ label: "Region", value: "us-east" },
+				{ label: "Files", value: "3 written", tone: "success" },
+			],
+		});
+
+		const rendered = renderTimelineItem(item, 60, context);
+		const lines = plain(rendered);
+
+		expect(lines).toContain("Host    example.test");
+		expect(lines).toContain("Region  us-east");
+		expect(lines).toContain("Files   3 written");
+		expect(rendered.join("\n")).toContain(`${paintOpen(theme.ok)}3 written`);
+	});
+
+	it("renders a diff extension message through the diff paint", () => {
+		const item = extensionMessageItem({
+			kind: "diff",
+			path: "src/a.ts",
+			patch: " 1 context\n-2 old line\n+2 new line",
+		});
+
+		const raw = renderTimelineItem(item, 60, context).join("\n");
+		const lines = plain(renderTimelineItem(item, 60, context));
+
+		expect(lines).toContain("src/a.ts");
+		expect(lines).toContain("-2 old line");
+		expect(lines).toContain("+2 new line");
+		expect(raw).toContain(`${paintOpen(theme.error)}-2 `);
+		expect(raw).toContain(`${paintOpen(theme.ok)}+2 `);
+	});
+
+	it("paints a banner with its severity tone", () => {
+		const item = extensionMessageItem({ kind: "banner", severity: "warning", content: "Index rebuilt" });
+
+		const raw = renderTimelineItem(item, 60, context).join("\n");
+
+		expect(raw).toContain(`${paintOpen(theme.warn)}Index rebuilt`);
+	});
+
+	it("leaves a neutral banner unpainted", () => {
+		const item = extensionMessageItem({ kind: "banner", severity: "neutral", content: "All quiet" });
+
+		const raw = renderTimelineItem(item, 60, context).join("\n");
+
+		expect(raw).toContain("All quiet");
+		// No foreground color anywhere: title and meta are dim decorations only.
+		expect(raw).not.toContain("38;2;");
+	});
+
+	it("renders a structured message that survived persistence and hydration", () => {
+		const persisted = JSON.parse(
+			JSON.stringify({
+				extensionId: "reports",
+				message: {
+					kind: "table",
+					title: "Files",
+					columns: [{ label: "Path" }, { label: "Lines", align: "right" }],
+					rows: [["src/a.ts", "12"]],
+				},
+			}),
+		) as unknown;
+		const result = hydrateSessionEntries([
+			{
+				type: "custom",
+				id: "ext-1",
+				parentId: null,
+				timestamp: "2026-01-01T00:00:00.000Z",
+				customType: EXTENSION_MESSAGE_CUSTOM_TYPE,
+				data: persisted,
+			},
+		]);
+
+		const item = result.timeline[0];
+		expect(item?.type).toBe("extension-message");
+		const lines = plain(renderTimelineItem(item as PersistentMessageItem, 60, context));
+
+		expect(lines).toContain(`Path${" ".repeat(4)} │ Lines`);
+		expect(lines).toContain(`src/a.ts │ ${" ".repeat(3)}12`);
+	});
 });
+
+function extensionMessageItem(message: ExtensionMessage): PersistentMessageItem {
+	return {
+		type: "extension-message",
+		id: "ext-1",
+		entryId: "ext-1",
+		extensionId: "reports",
+		message,
+		durability: "durable",
+		createdAt: "2026-01-01T00:00:00.000Z",
+	};
+}

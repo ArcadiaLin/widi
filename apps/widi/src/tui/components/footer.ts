@@ -3,7 +3,7 @@ import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/p
 import { singleLine } from "../format.ts";
 import type { TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
-import { activeAgent } from "./common.ts";
+import { activeAgent, latestExtensionStatus, tonePaint } from "./common.ts";
 
 export class FooterView implements Component {
 	private readonly state: TuiApplicationState;
@@ -33,6 +33,17 @@ export class FooterView implements Component {
 			queueParts.push(`${followUpCount} follow-up`);
 		}
 		if (agent?.unreadCount) queueParts.push(`${agent.unreadCount} unread`);
+
+		// A footer-region status joins the always-kept parts as a single compact
+		// segment: the latest one only, icon plus one line of text.
+		const extensionStatus = latestExtensionStatus(agent, "footer");
+		if (extensionStatus) {
+			queueParts.push(
+				tonePaint(extensionStatus.status.tone)(
+					`${extensionStatus.status.icon ?? "✻"} ${singleLine(extensionStatus.status.text, 80)}`,
+				),
+			);
+		}
 
 		const context = contextReadout(this.state);
 		const right = context ? theme.dim(context) : "";
