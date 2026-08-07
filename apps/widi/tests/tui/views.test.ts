@@ -5,6 +5,7 @@ import { builtInCommands } from "../../src/tui/commands/built-ins.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
 import { AgentStripView } from "../../src/tui/components/agent-strip.ts";
 import { ChatView } from "../../src/tui/components/chat.ts";
+import { FatalErrorView } from "../../src/tui/components/fatal-error.ts";
 import { FooterView } from "../../src/tui/components/footer.ts";
 import { HeaderView } from "../../src/tui/components/header.ts";
 import { OperationHintView } from "../../src/tui/components/operation-hint.ts";
@@ -23,6 +24,30 @@ import {
 import { theme } from "../../src/tui/theme/theme.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+
+describe("FatalErrorView", () => {
+	it("renders horizontal rules without side borders", () => {
+		const view = new FatalErrorView({
+			code: "orchestrator.startup_failed",
+			message: "No usable agent.",
+			onQuit: () => {},
+			onViewDiagnostics: () => {},
+		});
+
+		const lines = view.render(60).map((line) => line.replace(ANSI_SEQUENCE, ""));
+		const joined = lines.join("\n");
+
+		expect(lines[0]).toMatch(/^─+$/u);
+		expect(lines.at(-1)).toMatch(/^─+$/u);
+		expect(lines.some((line) => line.includes("│") || line.includes("┌") || line.includes("└"))).toBe(false);
+		expect(joined).toContain("✕ WIDI cannot continue");
+		expect(joined).toContain("orchestrator.startup_failed");
+		expect(joined).toContain("Quit");
+		for (const line of lines) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(60);
+		}
+	});
+});
 
 describe("TUI views", () => {
 	it.each([40, 80, 120])("keeps chat, status, footer, operation hint and agent strip inside %s columns", (width) => {

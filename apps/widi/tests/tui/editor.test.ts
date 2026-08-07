@@ -1,5 +1,9 @@
 import { setKeybindings, type TUI, visibleWidth } from "@earendil-works/pi-tui";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
+import { WidiCommandAutocompleteProvider } from "../../src/tui/autocomplete.ts";
+import { builtInCommands } from "../../src/tui/commands/built-ins.ts";
+import { CommandEngine } from "../../src/tui/commands/engine.ts";
 import { WidiEditor } from "../../src/tui/editor.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
 import { theme } from "../../src/tui/theme/theme.ts";
@@ -15,7 +19,7 @@ function paletteSgr(hex: string): string {
 
 function createEditor() {
 	const tui = { terminal: { rows: 40, cols: 80 }, requestRender: () => {} } as unknown as TUI;
-	return new WidiEditor(tui, theme.editorTheme, { paddingX: 4 });
+	return new WidiEditor(tui, theme.editorTheme, {});
 }
 
 beforeAll(() => {
@@ -23,29 +27,28 @@ beforeAll(() => {
 });
 
 describe("WidiEditor chrome", () => {
-	it("draws a rounded box with a > prompt on the first content line", () => {
+	it("draws pi-style horizontal rules without side borders or a prompt symbol", () => {
 		const editor = createEditor();
 		editor.setText("hello");
 		const lines = editor.render(60).map(strip);
-		expect(lines[0]).toMatch(/^╭─+╮$/u);
-		expect(lines.at(-1)).toMatch(/^╰─+╯$/u);
-		expect(lines[1]).toMatch(/^│ > hello\s+│$/u);
+		expect(lines[0]).toMatch(/^─+$/u);
+		expect(lines.at(-1)).toMatch(/^─+$/u);
+		expect(lines[1]).toMatch(/^hello\s+$/u);
+		expect(lines[1]).not.toContain(">");
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBe(60);
 		}
 	});
 
-	it("keeps the box when the editor is empty", () => {
+	it("keeps the rules when the editor is empty", () => {
 		const editor = createEditor();
 		const lines = editor.render(40).map(strip);
-		expect(lines[0]).toMatch(/^╭─+╮$/u);
-		expect(lines.at(-1)).toMatch(/^╰─+╯$/u);
-		// The inverse-video cursor occupies one cell after the prompt.
-		expect(lines[1]).toMatch(/^│ > /u);
-		expect(lines[1]).toMatch(/│$/u);
+		expect(lines[0]).toMatch(/^─+$/u);
+		expect(lines.at(-1)).toMatch(/^─+$/u);
+		expect(lines.some((line) => line.includes("│") || line.includes(">"))).toBe(false);
 	});
 
-	it("paints the border with the accent color in slash-command context", () => {
+	it("paints the rules with the accent color in slash-command context", () => {
 		const editor = createEditor();
 		editor.setText("/model");
 		const top = editor.render(60)[0] ?? "";
@@ -58,6 +61,64 @@ describe("WidiEditor chrome", () => {
 		editor.setText("hello");
 		const top = editor.render(60)[0] ?? "";
 		expect(top).toContain(paletteSgr(theme.palette.rule));
+	});
+});
+
+describe("WidiEditor argument completion", () => {
+	function createEditorWithProvider(orchestrator: Record<string, unknown>) {
+		const editor = createEditor();
+		editor.setAutocompleteProvider(
+			new WidiCommandAutocompleteProvider({
+				engine: new CommandEngine(builtInCommands),
+				agentId: "main",
+				orchestrator: orchestrator as unknown as AgentOrchestrator,
+				getActivity: () => ({ activity: "idle" }),
+			}),
+		);
+		return editor;
+	}
+
+	it("submits the completed command when enter accepts a terminal argument candidate", async () => {
+		const editor = createEditorWithProvider({
+			listAvailableModelCandidates: async () => ({ models: [{ value: "anthropic/claude", label: "Claude" }] }),
+		});
+		let submitted: string | undefined;
+		editor.onSubmit = (text) => {
+			submitted = text;
+		};
+		editor.setText("/model an");
+		editor.handleInput("t");
+		await vi.waitFor(() => {
+			expect(editor.isShowingAutocomplete()).toBe(true);
+		});
+
+		editor.handleInput("\r");
+
+		// pi-tui's fall-through: the "/" prefixed completion applies and the
+		// same Enter goes on to submit the now-complete command line.
+		expect(submitted).toBe("/model anthropic/claude");
+		expect(editor.getText()).toBe("");
+	});
+
+	it("only inserts the candidate for a free-text argument command", async () => {
+		const editor = createEditorWithProvider({
+			listAgentSkillCandidates: async () => ({ skills: [{ value: "self-check", label: "self-check" }] }),
+		});
+		let submitted: string | undefined;
+		editor.onSubmit = (text) => {
+			submitted = text;
+		};
+		editor.setText("/skill se");
+		editor.handleInput("l");
+		await vi.waitFor(() => {
+			expect(editor.isShowingAutocomplete()).toBe(true);
+		});
+
+		editor.handleInput("\r");
+
+		expect(submitted).toBeUndefined();
+		expect(editor.getText()).toBe("/skill self-check");
+		expect(editor.isShowingAutocomplete()).toBe(false);
 	});
 });
 

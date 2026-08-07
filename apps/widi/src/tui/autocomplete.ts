@@ -93,6 +93,13 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 		const after = currentLine.slice(cursorCol);
 		const nextLines = [...lines];
 		if (prefix.startsWith(LINE_COMMAND_TRIGGER)) {
+			if (prefix.includes(" ")) {
+				// Terminal argument phase: the item value is the full "/name value"
+				// text. pi-tui submits right after applying a "/" completion, so
+				// no trailing space is added here.
+				nextLines[cursorLine] = `${before}${item.value}${after}`;
+				return { lines: nextLines, cursorLine, cursorCol: before.length + item.value.length };
+			}
 			// Command-name phase: land the cursor in argument position. pi-tui
 			// submits right after applying a "/" completion, and the trailing
 			// space is trimmed there.
@@ -137,6 +144,19 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 				return null;
 			}
 			if (filtered.length === 0) return null;
+			if (command.argumentCompletes) {
+				// Terminal candidates: the item value is the whole command line
+				// and the prefix covers `/name arg…`, so pi-tui's fall-through
+				// submits the completed command the moment Enter accepts it.
+				return {
+					items: filtered.map((candidate) => ({
+						value: `${LINE_COMMAND_TRIGGER}${command.name} ${candidate.value}`,
+						label: candidate.label ?? candidate.value,
+						description: candidate.description,
+					})),
+					prefix: beforeCursor,
+				};
+			}
 			return {
 				items: filtered.map((candidate) => ({
 					value: candidate.value,

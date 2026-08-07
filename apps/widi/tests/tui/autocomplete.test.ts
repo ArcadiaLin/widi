@@ -52,14 +52,19 @@ describe("WidiCommandAutocompleteProvider", () => {
 		expect(applied.cursorCol).toBe("/model ".length);
 	});
 
-	it("completes command arguments after a space", async () => {
+	it("completes a terminal command argument as the full command line", async () => {
 		const commandProvider = provider({
 			listAvailableModelCandidates: async () => ({
 				models: [{ value: "anthropic/claude", label: "claude", description: "anthropic" }],
 			}),
 		});
 		const result = await commandProvider.getSuggestions(["/model ant"], 0, "/model ant".length, { signal: signal() });
-		expect(result).toMatchObject({ prefix: "ant", items: [{ value: "anthropic/claude", label: "claude" }] });
+		// The prefix covers "/name arg…", so pi-tui's fall-through submits the
+		// completed command the moment Enter accepts the candidate.
+		expect(result).toMatchObject({
+			prefix: "/model ant",
+			items: [{ value: "/model anthropic/claude", label: "claude" }],
+		});
 		if (!result?.items[0]) throw new Error("Expected argument completion.");
 		const applied = commandProvider.applyCompletion(
 			["/model ant"],
@@ -82,9 +87,9 @@ describe("WidiCommandAutocompleteProvider", () => {
 			}),
 		});
 		const byValue = await commandProvider.getSuggestions(["/model ANT"], 0, "/model ANT".length, { signal: signal() });
-		expect(byValue?.items.map((item) => item.value)).toEqual(["anthropic/claude"]);
+		expect(byValue?.items.map((item) => item.value)).toEqual(["/model anthropic/claude"]);
 		const byLabel = await commandProvider.getSuggestions(["/model gpt"], 0, "/model gpt".length, { signal: signal() });
-		expect(byLabel?.items.map((item) => item.value)).toEqual(["openai/gpt"]);
+		expect(byLabel?.items.map((item) => item.value)).toEqual(["/model openai/gpt"]);
 	});
 
 	it("falls back to fuzzy filtering when no prefix matches", async () => {
@@ -92,7 +97,7 @@ describe("WidiCommandAutocompleteProvider", () => {
 			listAvailableModelCandidates: async () => ({ models: [{ value: "fast-mode", label: "fast-mode" }] }),
 		});
 		const result = await commandProvider.getSuggestions(["/model fm"], 0, "/model fm".length, { signal: signal() });
-		expect(result?.items.map((item) => item.value)).toEqual(["fast-mode"]);
+		expect(result?.items.map((item) => item.value)).toEqual(["/model fast-mode"]);
 	});
 
 	it("closes the menu on a sole exact argument match", async () => {

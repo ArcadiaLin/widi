@@ -66,6 +66,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		description: "Fork the current agent session.",
 		argumentHint: "[entry]",
 		complete: async (context) => await listUserMessageEntryCandidates(context),
+		argumentCompletes: true,
 		execute: async (context, argument) => {
 			const entryId = argument.trim() || undefined;
 			const agentId = await context.orchestrator.spawnAgent({
@@ -112,6 +113,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		description: "Log in to an LLM provider subscription.",
 		argumentHint: "[provider]",
 		complete: async ({ orchestrator }) => orchestrator.listAuthProviderCandidates().providers,
+		argumentCompletes: true,
 		execute: async ({ orchestrator, agentId }, argument) => {
 			const result = await orchestrator.loginAuthProvider(argument.trim(), { agentId });
 			return `Logged in to ${result.providerName}`;
@@ -124,6 +126,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		description: "Remove a stored LLM provider credential.",
 		argumentHint: "[provider]",
 		complete: async ({ orchestrator }) => (await orchestrator.listAuthCredentialCandidates()).providers,
+		argumentCompletes: true,
 		execute: async ({ orchestrator }, argument) => {
 			const result = await orchestrator.logoutAuthProvider(argument.trim());
 			return result.removed
@@ -139,6 +142,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		argumentHint: "[provider/model]",
 		requiresArgument: true,
 		complete: async ({ orchestrator }) => (await orchestrator.listAvailableModelCandidates()).models,
+		argumentCompletes: true,
 		execute: async (context, argument) => {
 			const model = await context.orchestrator.setAgentModelByReference(requireAgentId(context), argument.trim());
 			return `Switched to ${model.provider}/${model.id}`;
@@ -158,6 +162,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 			if (!context.pendingModel?.reasoning) return [];
 			return getSupportedThinkingLevels(context.pendingModel).map((level) => ({ value: level, label: level }));
 		},
+		argumentCompletes: true,
 		execute: async (context, argument) =>
 			await context.orchestrator.setAgentThinkingLevelByName(requireAgentId(context), argument.trim()),
 	},
@@ -205,6 +210,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 				label: sessionCandidateLabel(session),
 				description: sessionCandidateDescription(session),
 			})),
+		argumentCompletes: true,
 		execute: async ({ orchestrator }, argument) => {
 			const agentId = await orchestrator.spawnAgent({ origin: { kind: "resume", reference: argument.trim() } });
 			return orchestrator.inspectAgent(agentId);
@@ -264,6 +270,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		description: "Inspect or navigate the current session tree.",
 		argumentHint: "[entry]",
 		complete: async (context) => await listUserMessageEntryCandidates(context),
+		argumentCompletes: true,
 		execute: async (context, argument) => {
 			const agentId = requireAgentId(context);
 			const targetId = argument.trim();

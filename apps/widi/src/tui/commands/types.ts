@@ -37,6 +37,13 @@ export type ResolveArgumentOutcome =
  * they produce: an action result or prompt text.
  */
 interface CommandBase {
+	/**
+	 * True when the candidates are the whole argument space (`/model`,
+	 * `/thinking`, `/login`): accepting a completion lands a complete command,
+	 * so the editor submits it right away. Free-text arguments (`/prompt`,
+	 * `/skill`, `/rename`, `/steer`) leave it unset and Enter only inserts.
+	 */
+	readonly argumentCompletes?: boolean;
 	readonly agentPolicy: CommandAgentPolicy;
 	readonly name: string;
 	readonly description: string;

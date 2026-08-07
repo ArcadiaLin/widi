@@ -1,4 +1,4 @@
-import { type Component, SelectList, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, SelectList, truncateToWidth } from "@earendil-works/pi-tui";
 import { boundedText, singleLine } from "../format.ts";
 import { theme } from "../theme/theme.ts";
 
@@ -45,19 +45,12 @@ export class FatalErrorView implements Component {
 	}
 
 	render(width: number): string[] {
-		const innerWidth = Math.max(1, width - 4);
-		const title = truncateToWidth(" ✕ WIDI cannot continue ", Math.max(1, width - 4), "");
-		const top = `┌─${theme.error(title)}${"─".repeat(Math.max(0, width - visibleWidth(title) - 3))}┐`;
-		const lines = [top];
-		const add = (line = "") => {
-			const clipped = truncateToWidth(line, innerWidth, "");
-			lines.push(`│ ${clipped}${" ".repeat(Math.max(0, innerWidth - visibleWidth(clipped)))} │`);
-		};
-		add(theme.dim(this.code));
-		for (const line of this.message.split("\n")) add(line);
-		add();
-		for (const line of this.list.render(innerWidth)) add(line);
-		lines.push(`└${"─".repeat(Math.max(0, width - 2))}┘`);
-		return lines;
+		// Same family as the other overlays: horizontal rules above and below,
+		// no side borders.
+		const rule = theme.border("─".repeat(Math.max(1, width)));
+		const lines = [rule, "", theme.error("✕ WIDI cannot continue"), theme.dim(this.code)];
+		for (const line of this.message.split("\n")) lines.push(line);
+		lines.push("", ...this.list.render(width), "", rule);
+		return lines.map((line) => truncateToWidth(line, width, ""));
 	}
 }

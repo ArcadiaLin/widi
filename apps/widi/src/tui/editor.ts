@@ -1,9 +1,6 @@
 import { Editor, getKeybindings, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { theme } from "./theme/theme.ts";
 
-// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI SGR matching requires ESC.
-const ANSI_SGR = /\u001B\[[0-9;]*m/g;
-
 /** Esc within this window of a completion keystroke cancels the completion. */
 const COMPLETION_KEY_SWALLOW_MS = 250;
 
@@ -25,20 +22,15 @@ export class WidiEditor extends Editor {
 
 	override render(width: number): string[] {
 		const text = this.getText();
-		// Slash-command context gets the active border; everything else stays
-		// on the subdued border color. pi-tui paints its horizontal borders with
-		// this.borderColor during super.render, and wrapWithSideBorders routes
-		// corners and side bars through the same hook below.
+		// Slash-command context gets the active rule color; everything else
+		// stays on the subdued rule color. pi-tui paints its horizontal rules
+		// with this.borderColor during super.render.
 		this.borderColor = text.trimStart().startsWith("/") ? theme.borderActive : theme.border;
 		const rendered = super.render(width);
-		if (rendered.length < 3) {
-			return wrapWithSideBorders(rendered, (value) => this.borderColor(value));
+		if (rendered.length >= 3) {
+			this.applyArgumentHint(rendered, width, text);
 		}
-		this.applyArgumentHint(rendered, width, text);
-		// Index 1 is the first content line, right under the top border.
-		const prompt = injectPromptSymbol(rendered[1] ?? "");
-		if (prompt !== undefined) rendered[1] = prompt;
-		return wrapWithSideBorders(rendered, (value) => this.borderColor(value));
+		return rendered;
 	}
 
 	private applyArgumentHint(rendered: string[], width: number, text: string): void {
@@ -129,52 +121,4 @@ export class WidiEditor extends Editor {
 			this.tui.requestRender(true);
 		}
 	}
-}
-
-/**
- * Overlay a terminal-style `> ` prompt symbol on the first content line.
- * Column 0 is reserved for the left vertical border (overlaid later by
- * wrapWithSideBorders); column 1 is a single-space gap, so the `>` token
- * lives at column 2 with column 3 separating it from content. Relies on the
- * editor being configured with `paddingX >= 4` so the line starts with at
- * least four literal spaces. Returns `undefined` if the line is too short or
- * doesn't begin with the expected padding.
- */
-function injectPromptSymbol(line: string, symbol = ">"): string | undefined {
-	if (line.length < 4) return undefined;
-	for (let i = 0; i < 4; i++) {
-		if (line[i] !== " ") return undefined;
-	}
-	return `  ${symbol} ${line.slice(4)}`;
-}
-
-/**
- * Post-process pi-tui's editor output to draw a full box around it.
- *
- * pi-tui only renders horizontal top/bottom borders; we wrap them with
- * `╭╮╰╯` corners and add vertical `│` bars on each row's outer columns.
- * Horizontal-border rows (those whose first visible char is `─`, including
- * scroll indicators like `── ↑ N more ──`) are stripped of their existing
- * SGR and repainted as a single box-drawn span. Content rows keep their
- * inner SGR intact; only column 0 and the last column are overlaid, and
- * only if they're literal spaces — that protects the cursor-overflow
- * case where the rightmost column is an SGR-tagged inverse cursor.
- */
-function wrapWithSideBorders(lines: string[], paint: (value: string) => string): string[] {
-	let seenTop = false;
-	return lines.map((line) => {
-		const plain = line.replace(ANSI_SGR, "");
-		if (plain.length > 0 && plain[0] === "─") {
-			const leftCorner = seenTop ? "╰" : "╭";
-			const rightCorner = seenTop ? "╯" : "╮";
-			seenTop = true;
-			if (plain.length === 1) return paint(leftCorner);
-			return paint(leftCorner + plain.slice(1, -1) + rightCorner);
-		}
-		if (line.length === 0) return line;
-		const head = line[0] === " " ? paint("│") : line[0];
-		if (line.length === 1) return head;
-		const tail = line.endsWith(" ") ? paint("│") : (line.at(-1) ?? "");
-		return head + line.slice(1, -1) + tail;
-	});
 }

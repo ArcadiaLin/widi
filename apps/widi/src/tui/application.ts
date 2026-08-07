@@ -152,13 +152,7 @@ export class WidiTuiApplication {
 		this.userConfigDiagnostics.push(...loadThemes(runtime.services.agentDir));
 		setKeybindings(createWidiKeybindings(userKeybindings.bindings));
 		this.tui = new TUI(new ProcessTerminal());
-		this.editor = new WidiEditor(this.tui, theme.editorTheme, {
-			// paddingX 4 reserves column 0 for the left vertical border (│),
-			// column 1 as a gap, column 2 for the `>` prompt token, and column 3
-			// as the gap between prompt and content (see WidiEditor.render).
-			paddingX: 4,
-			autocompleteMaxVisible: 8,
-		});
+		this.editor = new WidiEditor(this.tui, theme.editorTheme, { autocompleteMaxVisible: 8 });
 		this.editor.setArgumentHintProvider((text) => {
 			const name = /^\/(\S+)\s*$/.exec(text)?.[1];
 			return name ? this.engine.get(name)?.argumentHint : undefined;
