@@ -54,12 +54,7 @@ describe("resolveOperationHint", () => {
 				engine,
 				editorText: "/model",
 				editorAutocompleteVisible: false,
-				completion: {
-					title: "/model",
-					description: "Set the current agent model.",
-					confirmVerb: "apply",
-					itemCount: 2,
-				},
+				selector: { title: "/model", description: "Set the current agent model.", confirmVerb: "apply", itemCount: 2 },
 				keys,
 			}),
 		).toBe("/model · Set the current agent model. · ↑/↓ choose · Enter apply · Esc cancel");
@@ -101,12 +96,7 @@ describe("resolveOperationHint", () => {
 				engine,
 				editorText: "/thinking",
 				editorAutocompleteVisible: true,
-				completion: {
-					title: "/model",
-					description: "Set the current agent model.",
-					confirmVerb: "apply",
-					itemCount: 1,
-				},
+				selector: { title: "/model", description: "Set the current agent model.", confirmVerb: "apply", itemCount: 1 },
 				keys,
 			}),
 		).toBe("/model · Set the current agent model. · ↑/↓ choose · Enter apply · Esc cancel");
@@ -142,7 +132,7 @@ describe("resolveOperationHint", () => {
 			engine,
 			editorText: "/rename",
 			editorAutocompleteVisible: false,
-			completion: {
+			selector: {
 				title: "/rename",
 				description: "Rename the current agent session.",
 				confirmVerb: "apply",
@@ -164,7 +154,7 @@ describe("resolveOperationHint", () => {
 				engine,
 				editorText: "",
 				editorAutocompleteVisible: false,
-				completion: { title: "/model", confirmVerb: "apply", itemCount: 1 },
+				selector: { title: "/model", confirmVerb: "apply", itemCount: 1 },
 				keys: { ...keys, selectUp: "Ctrl+K", selectDown: "Ctrl+J", selectConfirm: "Space", selectCancel: undefined },
 			}),
 		).toBe("/model · Ctrl+K/Ctrl+J choose · Space apply");
@@ -203,7 +193,7 @@ describe("resolveOperationHint", () => {
 			engine,
 			editorText: "",
 			editorAutocompleteVisible: false,
-			completion: { title, description, confirmVerb: "apply", itemCount: 1 },
+			selector: { title, description, confirmVerb: "apply", itemCount: 1 },
 			keys,
 		});
 
@@ -218,7 +208,7 @@ describe("resolveOperationHint", () => {
 			engine,
 			editorText: "",
 			editorAutocompleteVisible: false,
-			completion: { title: "\u001b[2J", description: "\u0000", confirmVerb: "apply", itemCount: 0 },
+			selector: { title: "\u001b[2J", description: "\u0000", confirmVerb: "apply", itemCount: 0 },
 			keys: { ...keys, selectUp: "", selectDown: "→", selectCancel: "\u0001" },
 		});
 
@@ -252,14 +242,12 @@ describe("resolveOperationHint", () => {
 			state,
 			engine,
 			editor: { getText: () => "", isShowingAutocomplete: () => false },
-			menu: {
-				hintContext: {
-					title: "/model\u001b[2J\nnext\u0000",
-					description: "Set\u001b]0;owned\u0007 model\r\nnow\u0001",
-					confirmVerb: "apply",
-					itemCount: 1,
-				},
-			},
+			selectorHint: () => ({
+				title: "/model\u001b[2J\nnext\u0000",
+				description: "Set\u001b]0;owned\u0007 model\r\nnow\u0001",
+				confirmVerb: "apply",
+				itemCount: 1,
+			}),
 		});
 
 		const rendered = view.render(120).map((line) => line.replace(ANSI_SEQUENCE, ""));
@@ -282,7 +270,7 @@ describe("resolveOperationHint", () => {
 			state,
 			engine,
 			editor: { getText: () => "/thinking", isShowingAutocomplete: () => true },
-			menu: { hintContext: undefined },
+			selectorHint: () => undefined,
 		});
 
 		const rendered = view.render(180).join("\n").replace(ANSI_SEQUENCE, "");
@@ -302,7 +290,7 @@ describe("resolveOperationHint", () => {
 			state,
 			engine,
 			editor: { getText: () => "", isShowingAutocomplete: () => false },
-			menu: { hintContext: undefined },
+			selectorHint: () => undefined,
 		});
 
 		const rendered = view.render(80).join("\n").replace(ANSI_SEQUENCE, "");
@@ -355,7 +343,7 @@ describe("resolveOperationHint", () => {
 				engine,
 				editorText: "/thinking",
 				editorAutocompleteVisible: true,
-				completion: { title: "/model", confirmVerb: "apply", itemCount: 1 },
+				selector: { title: "/model", confirmVerb: "apply", itemCount: 1 },
 				keys,
 			}),
 		).toBeUndefined();

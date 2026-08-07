@@ -341,7 +341,7 @@ export interface TuiApplicationState {
 	agents: Map<AgentId, AgentViewState>;
 	globalNotices: NoticeItem[];
 	humanRequests: PendingHumanRequestView[];
-	mode: "editor" | "completion-menu" | "human-request" | "agent-panel";
+	mode: "editor" | "selector" | "human-request" | "agent-panel";
 	shuttingDown: boolean;
 	/** Global toggle: show full transcript details instead of collapsed previews. */
 	toolOutputExpanded: boolean;

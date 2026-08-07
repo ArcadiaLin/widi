@@ -1,3 +1,4 @@
+import type { Component, SelectItem } from "@earendil-works/pi-tui";
 import type { AgentOrchestrator } from "../../core/agent-orchestrator.ts";
 import type { AgentActivitySnapshot, CandidateItem, RuntimeModel } from "../../core/types.ts";
 
@@ -8,6 +9,26 @@ export interface CommandContext {
 	readonly orchestrator: AgentOrchestrator;
 	readonly pendingModel?: RuntimeModel;
 }
+
+/** What the application hands a command's dedicated Enter-time selector. */
+export interface CommandSelectorRequest {
+	readonly title: string;
+	readonly items: readonly SelectItem[];
+	onSelect(item: SelectItem): void;
+	onCancel?(): void;
+	/**
+	 * Hides the host overlay and restores focus. Runs before onSelect/onCancel
+	 * so a callback is free to open another selector.
+	 */
+	onClose(): void;
+}
+
+/** Builds the command's Enter-time picker; the shared ListSelector is the default. */
+export type SelectorFactory = (request: CommandSelectorRequest) => Component;
+
+export type ResolveArgumentOutcome =
+	| { readonly kind: "resolved"; readonly value: string }
+	| { readonly kind: "open-selector"; readonly query: string };
 
 /**
  * Everything a `/name argument` command shares. Commands differ only in what
@@ -22,6 +43,18 @@ interface CommandBase {
 	/** Returns why the current agent activity blocks this command, or undefined. */
 	checkActivity?(activity: AgentActivitySnapshot): string | undefined;
 	complete?(context: CommandContext, argumentPrefix: string): Promise<readonly CandidateItem[]>;
+	/** Enter-time picker; defaults to the shared ListSelector fed with complete() candidates. */
+	readonly selector?: SelectorFactory;
+	/**
+	 * Resolves a submitted argument against the candidates; defaults to the
+	 * engine's generic exact-then-unique-prefix matching. Execution-time wiring
+	 * lands with the engine's resolution pass (Step 3d).
+	 */
+	resolveArgument?(
+		context: CommandContext,
+		argument: string,
+		candidates: readonly CandidateItem[],
+	): ResolveArgumentOutcome | Promise<ResolveArgumentOutcome>;
 }
 
 /** Performs an action; the returned value is rendered as the command result. */

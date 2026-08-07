@@ -1,41 +1,24 @@
-import { type SelectItem, setKeybindings } from "@earendil-works/pi-tui";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { type Component, type OverlayHandle, type SelectItem, setKeybindings } from "@earendil-works/pi-tui";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import type { AgentSnapshot } from "../../src/core/agent-types.ts";
 import type { WidiRuntime } from "../../src/core/runtime-service.ts";
 import { WidiTuiApplication } from "../../src/tui/application.ts";
-import { CompletionMenu } from "../../src/tui/completion-menu.ts";
 import { AgentStripView } from "../../src/tui/components/agent-strip.ts";
-import { FooterView } from "../../src/tui/components/footer.ts";
 import { OperationHintView } from "../../src/tui/components/operation-hint.ts";
 import { WidiEditor } from "../../src/tui/editor.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
-import { createTuiApplicationState, ensureAgentProjection } from "../../src/tui/state.ts";
+import { ListSelector } from "../../src/tui/selectors/list-selector.ts";
+import { ensureAgentProjection } from "../../src/tui/state.ts";
 
 const ESCAPE = String.fromCharCode(27);
 const ANSI_SEQUENCE = new RegExp(`${ESCAPE}\\[[0-9;]*m`, "g");
 const ENTER = "\r";
 const BACKSPACE = "\u007f";
 
-beforeAll(() => {
+beforeEach(() => {
 	setKeybindings(createWidiKeybindings());
 });
-
-function createMenu() {
-	const focus: string[] = [];
-	const state = createTuiApplicationState();
-	const menu = new CompletionMenu(
-		{
-			setFocus: (component) => {
-				focus.push(component === menu ? "menu" : "editor");
-			},
-			requestRender: () => {},
-		},
-		state,
-		() => focus.push("restored"),
-	);
-	return { menu, state, focus };
-}
 
 const items: SelectItem[] = [
 	{ value: "vllm/qwen3.6", label: "vllm/qwen3.6", description: "local" },
@@ -43,140 +26,171 @@ const items: SelectItem[] = [
 	{ value: "anthropic/claude", label: "anthropic/claude", description: "api" },
 ];
 
-function plainRender(menu: CompletionMenu, width = 80): string {
-	return menu.render(width).join("\n").replace(ANSI_SEQUENCE, "");
+function plainRender(selector: ListSelector, width = 80): string {
+	return selector.render(width).join("\n").replace(ANSI_SEQUENCE, "");
 }
 
-describe("CompletionMenu", () => {
-	it("renders nothing while closed", () => {
-		const { menu } = createMenu();
-		expect(menu.render(80)).toEqual([]);
-	});
-
-	it("renders title and items without duplicating operation controls", () => {
-		const { menu, state, focus } = createMenu();
-		menu.open({
+describe("ListSelector", () => {
+	it("renders rules, title, items and key hints around the list", () => {
+		const selector = new ListSelector({
 			title: "/model",
 			items,
 			operation: { description: "Set the current agent model.", confirmVerb: "apply" },
 			onSelect: () => {},
+			onClose: () => {},
 		});
 
-		const rendered = plainRender(menu);
+		const rendered = plainRender(selector);
+		expect(rendered).toContain("─");
 		expect(rendered).toContain("/model");
 		expect(rendered).toContain("vllm/qwen3.6");
 		expect(rendered).toContain("anthropic/claude");
-		expect(rendered).not.toContain("esc cancel");
-		expect(menu.hintContext).toEqual({
+		expect(rendered).toContain("→");
+		expect(rendered).toContain("navigate");
+		expect(rendered).toContain("Enter select");
+		expect(rendered).toContain("Esc cancel");
+		expect(selector.hintContext).toEqual({
 			title: "/model",
 			description: "Set the current agent model.",
 			confirmVerb: "apply",
 			itemCount: 3,
 		});
-		expect(state.mode).toBe("completion-menu");
-		expect(focus).toEqual(["menu"]);
 	});
 
 	it("filters items with typed characters and restores on backspace", () => {
-		const { menu } = createMenu();
-		menu.open({ title: "/model", items, operation: { confirmVerb: "apply" }, onSelect: () => {} });
-		expect(menu.hintContext?.itemCount).toBe(3);
+		const selector = new ListSelector({
+			title: "/model",
+			items,
+			operation: { confirmVerb: "apply" },
+			onSelect: () => {},
+			onClose: () => {},
+		});
+		expect(selector.hintContext?.itemCount).toBe(3);
 
-		menu.handleInput("g");
-		menu.handleInput("l");
-		menu.handleInput("m");
-		let rendered = plainRender(menu);
+		selector.handleInput("g");
+		selector.handleInput("l");
+		selector.handleInput("m");
+		let rendered = plainRender(selector);
 		expect(rendered).toContain("vllm/glm-5");
+		expect(rendered).toContain("filter: glm (1/3)");
 		expect(rendered).not.toContain("anthropic/claude");
-		expect(menu.hintContext?.itemCount).toBe(1);
+		expect(selector.hintContext?.itemCount).toBe(1);
 
-		menu.handleInput(BACKSPACE);
-		menu.handleInput(BACKSPACE);
-		menu.handleInput(BACKSPACE);
-		rendered = plainRender(menu);
+		selector.handleInput(BACKSPACE);
+		selector.handleInput(BACKSPACE);
+		selector.handleInput(BACKSPACE);
+		rendered = plainRender(selector);
 		expect(rendered).toContain("anthropic/claude");
-		expect(menu.hintContext?.itemCount).toBe(3);
+		expect(rendered).not.toContain("filter:");
+		expect(selector.hintContext?.itemCount).toBe(3);
+	});
+
+	it("opens with a pre-filled filter", () => {
+		const selector = new ListSelector({
+			title: "/model",
+			items,
+			initialFilter: "claude",
+			onSelect: () => {},
+			onClose: () => {},
+		});
+
+		const rendered = plainRender(selector);
+		expect(rendered).toContain("filter: claude (1/3)");
+		expect(rendered).toContain("anthropic/claude");
+		expect(rendered).not.toContain("vllm/glm-5");
 	});
 
 	it("routes printable selection keybindings before filter input", () => {
 		const keybindings = createWidiKeybindings();
 		keybindings.setUserBindings({ "tui.select.down": "j", "tui.select.confirm": "space" });
 		setKeybindings(keybindings);
-		try {
-			const { menu } = createMenu();
-			const selected: string[] = [];
-			menu.open({ title: "/model", items, onSelect: (item) => selected.push(item.value) });
+		const selected: string[] = [];
+		const selector = new ListSelector({
+			title: "/model",
+			items,
+			onSelect: (item) => selected.push(item.value),
+			onClose: () => {},
+		});
 
-			menu.handleInput("j");
-			menu.handleInput(" ");
+		selector.handleInput("j");
+		selector.handleInput(" ");
 
-			expect(selected).toEqual(["vllm/glm-5"]);
-			expect(menu.isOpen).toBe(false);
-		} finally {
-			setKeybindings(createWidiKeybindings());
-		}
+		expect(selected).toEqual(["vllm/glm-5"]);
 	});
 
 	it("does not expose hint context without an operation", () => {
-		const { menu } = createMenu();
-		menu.open({ title: "/model", items, onSelect: () => {} });
+		const selector = new ListSelector({ title: "/model", items, onSelect: () => {}, onClose: () => {} });
 
-		expect(menu.hintContext).toBeUndefined();
+		expect(selector.hintContext).toBeUndefined();
 	});
 
-	it("selects with enter and closes", () => {
-		const { menu, state, focus } = createMenu();
-		const selected: string[] = [];
-		menu.open({ title: "/model", items, onSelect: (item) => selected.push(item.value) });
+	it("selects the initial index with enter and closes", () => {
+		const calls: string[] = [];
+		const selector = new ListSelector({
+			title: "/model",
+			items,
+			initialIndex: 1,
+			onSelect: (item) => calls.push(`select:${item.value}`),
+			onClose: () => calls.push("close"),
+		});
 
-		menu.handleInput(ENTER);
+		selector.handleInput(ENTER);
 
-		expect(selected).toEqual(["vllm/qwen3.6"]);
-		expect(menu.isOpen).toBe(false);
-		expect(state.mode).toBe("editor");
-		expect(focus).toEqual(["menu", "restored"]);
+		// onClose runs first so a re-opened selector is not torn down by it.
+		expect(calls).toEqual(["close", "select:vllm/glm-5"]);
+		expect(selector.render(80)).toEqual([]);
+		expect(selector.hintContext).toBeUndefined();
 	});
 
 	it("cancels with escape", () => {
-		const { menu } = createMenu();
-		let cancelled = false;
-		menu.open({
+		const calls: string[] = [];
+		const selector = new ListSelector({
 			title: "/model",
 			items,
 			operation: { confirmVerb: "apply" },
 			onSelect: () => {},
-			onCancel: () => {
-				cancelled = true;
-			},
+			onCancel: () => calls.push("cancel"),
+			onClose: () => calls.push("close"),
 		});
 
-		menu.handleInput(ESCAPE);
+		selector.handleInput(ESCAPE);
 
-		expect(cancelled).toBe(true);
-		expect(menu.isOpen).toBe(false);
-		expect(menu.hintContext).toBeUndefined();
-		expect(menu.render(80)).toEqual([]);
+		expect(calls).toEqual(["close", "cancel"]);
+		expect(selector.hintContext).toBeUndefined();
+		expect(selector.render(80)).toEqual([]);
+	});
+
+	it("ignores input after closing", () => {
+		const selected: string[] = [];
+		const selector = new ListSelector({
+			title: "/model",
+			items,
+			onSelect: (item) => selected.push(item.value),
+			onClose: () => {},
+		});
+		selector.handleInput(ENTER);
+
+		selector.handleInput(ENTER);
+
+		expect(selected).toEqual(["vllm/qwen3.6"]);
 	});
 });
 
-describe("WidiTuiApplication completion menu integration", () => {
-	it("mounts completion and operation hints in normal component flow", async () => {
-		const { application } = await createApplication();
-		const children = application.tui.children;
-		const completionIndex = children.findIndex((child) => child instanceof CompletionMenu);
-		const editorIndex = children.findIndex((child) => child instanceof WidiEditor);
-		const footerIndex = children.findIndex((child) => child instanceof FooterView);
-		const hintIndex = children.findIndex((child) => child instanceof OperationHintView);
-		const agentStripIndex = children.findIndex((child) => child instanceof AgentStripView);
+describe("WidiTuiApplication command selector", () => {
+	it("opens the selector as an overlay, not a docked child", async () => {
+		const { application } = await createApplication({
+			listAvailableModelCandidates: async () => ({ models: [{ value: "vllm/qwen3.6", label: "Qwen 3.6" }] }),
+		});
+		expect(application.tui.hasOverlay()).toBe(false);
 
-		expect(completionIndex).toBeGreaterThan(-1);
-		expect(completionIndex).toBeLessThan(editorIndex);
-		expect(editorIndex).toBeLessThan(footerIndex);
-		expect(footerIndex).toBeLessThan(hintIndex);
-		expect(hintIndex).toBeLessThan(agentStripIndex);
+		await submit(application, "/model");
+
+		expect(application.state.mode).toBe("selector");
+		expect(application.tui.hasOverlay()).toBe(true);
+		expect(application.tui.children.some((child) => child instanceof ListSelector)).toBe(false);
 	});
 
-	it("opens the inline menu for a bare selector and resubmits its selection", async () => {
+	it("resubmits the selection and hands focus back to the editor", async () => {
 		const setAgentModelByReference = vi.fn(async () => undefined);
 		const { application } = await createApplication({
 			listAvailableModelCandidates: async () => ({
@@ -187,24 +201,41 @@ describe("WidiTuiApplication completion menu integration", () => {
 
 		await submit(application, "/model");
 
-		const menu = requireMenu(application);
-		expect(application.state.mode).toBe("completion-menu");
-		expect(plainRender(menu)).toContain("Qwen 3.6");
-		expect(menu.hintContext).toEqual({
+		const selector = requireSelector(application);
+		expect(plainRender(selector)).toContain("Qwen 3.6");
+		expect(selector.hintContext).toEqual({
 			title: "/model",
 			description: "Set the current agent model.",
 			confirmVerb: "apply",
 			itemCount: 1,
 		});
 		expect(setAgentModelByReference).not.toHaveBeenCalled();
+		expect(requireEditor(application).focused).toBe(false);
 
-		menu.handleInput(ENTER);
+		selector.handleInput(ENTER);
 		await flush();
 
 		expect(setAgentModelByReference).toHaveBeenCalledWith("agent-1", "vllm/qwen3.6");
+		expect(application.state.mode).toBe("editor");
+		expect(application.tui.hasOverlay()).toBe(false);
+		expect(requireEditor(application).focused).toBe(true);
 	});
 
-	it("restores the submitted command when the inline menu is cancelled", async () => {
+	it("feeds the open selector into the operation hint", async () => {
+		const { application } = await createApplication({
+			listAvailableModelCandidates: async () => ({ models: [{ value: "vllm/qwen3.6", label: "Qwen 3.6" }] }),
+		});
+
+		await submit(application, "/model");
+
+		const hint = application.tui.children.find((child) => child instanceof OperationHintView);
+		if (!hint) throw new Error("Expected the operation hint to be mounted.");
+		const rendered = hint.render(120).join("\n").replace(ANSI_SEQUENCE, "");
+		expect(rendered).toContain("/model");
+		expect(rendered).toContain("apply");
+	});
+
+	it("restores the submitted command when the selector is cancelled", async () => {
 		const { application } = await createApplication({
 			listAvailableModelCandidates: async () => ({ models: [{ value: "vllm/qwen3.6", label: "Qwen 3.6" }] }),
 		});
@@ -212,10 +243,26 @@ describe("WidiTuiApplication completion menu integration", () => {
 		editor.setText("");
 
 		await submit(application, "/model");
-		requireMenu(application).handleInput(ESCAPE);
+		requireSelector(application).handleInput(ESCAPE);
 
 		expect(editor.getText()).toBe("/model");
 		expect(application.state.mode).toBe("editor");
+		expect(application.tui.hasOverlay()).toBe(false);
+	});
+
+	it("dismisses the selector on interrupt without restoring the command", async () => {
+		const { application } = await createApplication({
+			listAvailableModelCandidates: async () => ({ models: [{ value: "vllm/qwen3.6", label: "Qwen 3.6" }] }),
+		});
+		const editor = requireEditor(application);
+		editor.setText("");
+
+		await submit(application, "/model");
+		(application as unknown as { interrupt(): void }).interrupt();
+
+		expect(application.tui.hasOverlay()).toBe(false);
+		expect(application.state.mode).toBe("editor");
+		expect(editor.getText()).toBe("");
 	});
 
 	it("offers the current position before explicit fork points", async () => {
@@ -236,10 +283,10 @@ describe("WidiTuiApplication completion menu integration", () => {
 		});
 
 		await submit(application, "/fork");
-		const menu = requireMenu(application);
+		const selector = requireSelector(application);
 
-		expect(plainRender(menu)).toContain("Fork here (current position)");
-		menu.handleInput(ENTER);
+		expect(plainRender(selector)).toContain("Fork here (current position)");
+		selector.handleInput(ENTER);
 		await flush();
 		// The current position carries no entry id: the fork lands on the leaf.
 		expect(spawnAgent).toHaveBeenCalledWith({ origin: { kind: "fork", sourceAgentId: "agent-1" } });
@@ -386,10 +433,11 @@ function agentSnapshot(agentId: string): AgentSnapshot {
 	};
 }
 
-function requireMenu(application: WidiTuiApplication): CompletionMenu {
-	const menu = application.tui.children.find((child) => child instanceof CompletionMenu);
-	if (!menu) throw new Error("Expected the completion menu to be mounted.");
-	return menu;
+function requireSelector(application: WidiTuiApplication): ListSelector {
+	const active = (application as unknown as { activeSelector?: { view: Component; overlay: OverlayHandle } })
+		.activeSelector;
+	if (!(active?.view instanceof ListSelector)) throw new Error("Expected a command selector overlay to be open.");
+	return active.view;
 }
 
 function requireEditor(application: WidiTuiApplication): WidiEditor {

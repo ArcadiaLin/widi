@@ -78,7 +78,7 @@ describe("TUI views", () => {
 				state,
 				engine: new CommandEngine(builtInCommands),
 				editor: { getText: () => "", isShowingAutocomplete: () => false },
-				menu: { hintContext: undefined },
+				selectorHint: () => undefined,
 			}),
 			new AgentStripView(state),
 		];
@@ -96,7 +96,7 @@ describe("TUI views", () => {
 			state,
 			engine: new CommandEngine(builtInCommands),
 			editor: { getText: () => "", isShowingAutocomplete: () => false },
-			menu: { hintContext: undefined },
+			selectorHint: () => undefined,
 		});
 
 		expect(view.render(80)).toEqual([]);
@@ -294,7 +294,7 @@ describe("TUI views", () => {
 				state,
 				engine: new CommandEngine(builtInCommands),
 				editor: { getText: () => "", isShowingAutocomplete: () => false },
-				menu: { hintContext: undefined },
+				selectorHint: () => undefined,
 			}).render(120),
 		]
 			.join("\n")
@@ -314,7 +314,7 @@ describe("TUI views", () => {
 				state,
 				engine: new CommandEngine(builtInCommands),
 				editor: { getText: () => "", isShowingAutocomplete: () => false },
-				menu: { hintContext: undefined },
+				selectorHint: () => undefined,
 			}).render(120),
 		]
 			.join("\n")

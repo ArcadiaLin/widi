@@ -1,9 +1,9 @@
 import { type Component, getKeybindings, type KeyId, truncateToWidth } from "@earendil-works/pi-tui";
 import type { CommandEngine } from "../commands/engine.ts";
 import { parseLineCommand } from "../commands/parse.ts";
-import type { CompletionMenu, CompletionMenuHintContext } from "../completion-menu.ts";
 import type { WidiEditor } from "../editor.ts";
 import { singleLine } from "../format.ts";
+import type { ListSelectorHintContext } from "../selectors/list-selector.ts";
 import type { TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
 import { activeAgent, maintenanceLabel } from "./common.ts";
@@ -28,7 +28,7 @@ export interface ResolveOperationHintOptions {
 	readonly engine: CommandEngine;
 	readonly editorText: string;
 	readonly editorAutocompleteVisible: boolean;
-	readonly completion?: CompletionMenuHintContext;
+	readonly selector?: ListSelectorHintContext;
 	readonly keys: OperationHintKeys;
 }
 
@@ -45,13 +45,13 @@ export function resolveOperationHint(options: ResolveOperationHintOptions): stri
 		);
 	}
 
-	const completion = options.completion;
-	if (completion) {
+	const selector = options.selector;
+	if (selector) {
 		return hintParts(
-			completion.title,
-			completion.description,
+			selector.title,
+			selector.description,
 			keyPair(options.keys.selectUp, options.keys.selectDown, "choose"),
-			completion.itemCount > 0 ? keyAction(options.keys.selectConfirm, completion.confirmVerb) : undefined,
+			selector.itemCount > 0 ? keyAction(options.keys.selectConfirm, selector.confirmVerb) : undefined,
 			keyAction(options.keys.selectCancel, "cancel"),
 		);
 	}
@@ -177,18 +177,18 @@ export class OperationHintView implements Component {
 	private readonly state: TuiApplicationState;
 	private readonly engine: CommandEngine;
 	private readonly editor: Pick<WidiEditor, "getText" | "isShowingAutocomplete">;
-	private readonly menu: Pick<CompletionMenu, "hintContext">;
+	private readonly selectorHint: () => ListSelectorHintContext | undefined;
 
 	constructor(options: {
 		readonly state: TuiApplicationState;
 		readonly engine: CommandEngine;
 		readonly editor: Pick<WidiEditor, "getText" | "isShowingAutocomplete">;
-		readonly menu: Pick<CompletionMenu, "hintContext">;
+		readonly selectorHint: () => ListSelectorHintContext | undefined;
 	}) {
 		this.state = options.state;
 		this.engine = options.engine;
 		this.editor = options.editor;
-		this.menu = options.menu;
+		this.selectorHint = options.selectorHint;
 	}
 
 	invalidate(): void {}
@@ -204,7 +204,7 @@ export class OperationHintView implements Component {
 			engine: this.engine,
 			editorText: this.editor.getText(),
 			editorAutocompleteVisible: this.editor.isShowingAutocomplete(),
-			completion: this.menu.hintContext,
+			selector: this.selectorHint(),
 			keys: {
 				agents: key("app.agents.open"),
 				agentsPrevious: key("app.agents.previous"),

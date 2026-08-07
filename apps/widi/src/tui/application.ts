@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
+import { type Component, type OverlayHandle, ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
 import type { AgentOrchestrator } from "../core/agent-orchestrator.ts";
 import { DEFAULT_AGENT_DIR } from "../core/constants.js";
 import { type OrchestratorDiagnostic, OrchestratorError } from "../core/diagnostics.ts";
@@ -14,7 +14,6 @@ import { builtInCommands } from "./commands/built-ins.ts";
 import { CommandEngine, switchedAgentId } from "./commands/engine.ts";
 import { parseLineCommand } from "./commands/parse.ts";
 import type { CommandDefinition, CommandError, EngineOutcome } from "./commands/types.ts";
-import { CompletionMenu } from "./completion-menu.ts";
 import { AgentStripView } from "./components/agent-strip.ts";
 import { ChatView } from "./components/chat.ts";
 import { agentLabel, maintenanceLabel } from "./components/common.ts";
@@ -31,6 +30,7 @@ import { applyAgentSnapshot, EventProjector } from "./event-projector.ts";
 import { HumanRequestMenu } from "./human-request.ts";
 import { createWidiKeybindings, loadUserKeybindings } from "./keybindings.ts";
 import { PendingAgentController, type PendingAgentDisplay } from "./pending-agent.ts";
+import { ListSelector, type ListSelectorRequest } from "./selectors/list-selector.ts";
 import { hydrateSessionEntries } from "./session-hydrator.ts";
 import { StartupHumanPrompt } from "./startup-human-prompt.ts";
 import {
@@ -65,7 +65,8 @@ export class WidiTuiApplication {
 
 	private readonly projector: EventProjector;
 	private readonly editor: WidiEditor;
-	private readonly completionMenu: CompletionMenu;
+	/** The open command selector overlay, if any (Step 4 folds this into the overlay stack). */
+	private activeSelector?: { readonly view: Component; readonly overlay: OverlayHandle };
 	private readonly humanRequests: HumanRequestMenu;
 	private readonly agentPanel: AgentStripView;
 	private readonly pendingAgents: PendingAgentController;
@@ -162,11 +163,6 @@ export class WidiTuiApplication {
 			const name = /^\/(\S+)\s*$/.exec(text)?.[1];
 			return name ? this.engine.get(name)?.argumentHint : undefined;
 		});
-		// Later-opened menus own the focus; closing one hands focus back to the
-		// still-open human-request menu before falling back to the editor.
-		this.completionMenu = new CompletionMenu(this.tui, this.state, () => {
-			this.tui.setFocus(this.humanRequests.isOpen ? this.humanRequests : this.editor);
-		});
 		this.humanRequests = new HumanRequestMenu({
 			host: this.tui,
 			state: this.state,
@@ -190,7 +186,6 @@ export class WidiTuiApplication {
 		this.tui.addChild(new QueuedInputView(this.state));
 		this.tui.addChild(this.jobsPanel);
 		this.tui.addChild(this.humanRequests);
-		this.tui.addChild(this.completionMenu);
 		this.tui.addChild(this.editor);
 		this.tui.addChild(
 			new FooterView(this.state, runtime.services.cwd, () => {
@@ -198,7 +193,15 @@ export class WidiTuiApplication {
 			}),
 		);
 		this.tui.addChild(
-			new OperationHintView({ state: this.state, engine: this.engine, editor: this.editor, menu: this.completionMenu }),
+			new OperationHintView({
+				state: this.state,
+				engine: this.engine,
+				editor: this.editor,
+				selectorHint: () => {
+					const view = this.activeSelector?.view;
+					return view instanceof ListSelector ? view.hintContext : undefined;
+				},
+			}),
 		);
 		this.tui.addChild(this.agentPanel);
 		this.tui.setFocus(this.editor);
@@ -570,7 +573,7 @@ export class WidiTuiApplication {
 				return;
 			}
 			case "needs-argument":
-				this.openCommandCompletionMenu(agentId, rawText, outcome.command, outcome.candidates);
+				this.openCommandSelector(agentId, rawText, outcome.command, outcome.candidates);
 				return;
 		}
 	}
@@ -795,16 +798,16 @@ export class WidiTuiApplication {
 		}
 	}
 
-	private openCommandCompletionMenu(
+	private openCommandSelector(
 		agentId: string | undefined,
 		originalText: string,
 		command: CommandDefinition,
 		candidates: readonly CandidateItem[],
 	): void {
 		if (candidates.length === 0) {
-			// Nothing to pick from: an empty menu is a dead end, a usage line is
-			// not. A completer that returned nothing counts too — that is what a
-			// misconfigured resource directory looks like from here.
+			// Nothing to pick from: an empty selector is a dead end, a usage line
+			// is not. A completer that returned nothing counts too — that is what
+			// a misconfigured resource directory looks like from here.
 			this.restoreEditor(originalText, agentId);
 			this.addApplicationNotice(
 				`Command /${command.name} needs an argument: /${command.name} ${command.argumentHint ?? "<argument>"}`,
@@ -824,10 +827,11 @@ export class WidiTuiApplication {
 				description: "Use the current session position",
 			});
 		}
-		this.completionMenu.open({
+		const request: ListSelectorRequest = {
 			title: `/${command.name}`,
 			items,
 			operation: { description: command.description, confirmVerb: "apply" },
+			onClose: () => this.closeActiveSelector(),
 			onSelect: (item) => {
 				// Space syntax cannot express an explicit empty argument (submit
 				// trims it away); the colon form keeps "use current position"
@@ -835,7 +839,34 @@ export class WidiTuiApplication {
 				this.track(this.submit(item.value === "" ? `/${command.name}:` : `/${command.name} ${item.value}`));
 			},
 			onCancel: () => this.restoreEditor(originalText, agentId),
+		};
+		const view = command.selector ? command.selector(request) : new ListSelector(request);
+		const overlay = this.tui.showOverlay(view, {
+			width: "70%",
+			minWidth: 36,
+			maxHeight: "60%",
+			anchor: "center",
+			margin: 1,
 		});
+		this.activeSelector = { view, overlay };
+		this.state.mode = "selector";
+		this.tui.requestRender();
+	}
+
+	/**
+	 * Hides the selector overlay and hands focus back to the still-open
+	 * human-request menu before falling back to the editor. The selector calls
+	 * this through its request's onClose before running onSelect/onCancel; the
+	 * interrupt path calls it directly to dismiss without either callback.
+	 */
+	private closeActiveSelector(): void {
+		const active = this.activeSelector;
+		if (!active) return;
+		this.activeSelector = undefined;
+		active.overlay.hide();
+		if (this.state.mode === "selector") this.state.mode = "editor";
+		this.tui.setFocus(this.humanRequests.isOpen ? this.humanRequests : this.editor);
+		this.tui.requestRender();
 	}
 
 	private async activateNavigationAgent(agentId: string): Promise<void> {
@@ -1114,8 +1145,8 @@ export class WidiTuiApplication {
 	}
 
 	private interrupt(): void {
-		if (this.completionMenu.isOpen) {
-			this.completionMenu.close();
+		if (this.activeSelector) {
+			this.closeActiveSelector();
 			return;
 		}
 		const agentId = this.state.activeAgentId;
