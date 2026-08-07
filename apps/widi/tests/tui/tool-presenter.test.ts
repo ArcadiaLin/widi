@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { SPINNER_FRAMES } from "../../src/tui/format.ts";
 import type { ToolExecutionItem } from "../../src/tui/state.ts";
-import { presentToolExecution } from "../../src/tui/tool-presenter.ts";
+import { presentToolExecution, registerToolPresenter, unregisterToolPresenter } from "../../src/tui/tool-presenter.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 
@@ -190,5 +190,50 @@ describe("presentToolExecution", () => {
 		const lines = plain(presentToolExecution(item, 80));
 
 		expect(lines).toEqual(["⊘ Read notes.txt"]);
+	});
+});
+
+describe("tool presenter registry", () => {
+	afterEach(() => {
+		unregisterToolPresenter("deploy");
+		unregisterToolPresenter("ls");
+	});
+
+	it("renders a registered lines presenter for its tool", () => {
+		const diagnostic = registerToolPresenter("deploy", { kind: "lines", present: () => ["custom deploy row"] });
+
+		expect(diagnostic).toBeUndefined();
+		const item = toolItem({ toolName: "deploy", args: { target: "staging" }, result: textResult("ok") });
+		expect(presentToolExecution(item, 80)).toEqual(["custom deploy row"]);
+	});
+
+	it("reports overriding a built-in presenter instead of replacing it silently", () => {
+		const diagnostic = registerToolPresenter("ls", { kind: "lines", present: () => ["custom ls row"] });
+
+		expect(diagnostic).toMatchObject({ severity: "warning", code: "tool_presenter.overridden" });
+		const item = toolItem({ toolName: "ls", args: { path: "src" }, result: textResult("a.ts") });
+		expect(presentToolExecution(item, 80)).toEqual(["custom ls row"]);
+
+		// The built-in presenter is visible again once the override is gone.
+		unregisterToolPresenter("ls");
+		expect(plain(presentToolExecution(item, 80))).toEqual(["✓ List src · 1 entries"]);
+	});
+
+	it("keeps the generic fallback for unregistered tools", () => {
+		const item = toolItem({ toolName: "deploy", args: { target: "staging", dryRun: true }, result: textResult("ok") });
+
+		expect(plain(presentToolExecution(item, 80))[0]).toBe("✓ deploy target: staging, dryRun: true");
+	});
+
+	it("renders a registered component presenter as the generic fallback for now", () => {
+		registerToolPresenter("deploy", {
+			kind: "component",
+			factory: () => {
+				throw new Error("component presenters are not instantiated yet");
+			},
+		});
+
+		const item = toolItem({ toolName: "deploy", args: { target: "staging" }, result: textResult("ok") });
+		expect(plain(presentToolExecution(item, 80))[0]).toBe("✓ deploy target: staging");
 	});
 });
