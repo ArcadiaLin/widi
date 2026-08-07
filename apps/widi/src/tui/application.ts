@@ -29,7 +29,7 @@ import { StatusView } from "./components/status.ts";
 import { WidiEditor } from "./editor.ts";
 import { applyAgentSnapshot, EventProjector } from "./event-projector.ts";
 import { HumanRequestMenu } from "./human-request.ts";
-import { createWidiKeybindings } from "./keybindings.ts";
+import { createWidiKeybindings, loadUserKeybindings } from "./keybindings.ts";
 import { PendingAgentController, type PendingAgentDisplay } from "./pending-agent.ts";
 import { hydrateSessionEntries } from "./session-hydrator.ts";
 import { StartupHumanPrompt } from "./startup-human-prompt.ts";
@@ -42,7 +42,7 @@ import {
 	type TuiApplicationState,
 } from "./state.ts";
 import { flushStreaming, STREAM_FLUSH_MS } from "./streaming-flush.ts";
-import { theme } from "./theme/theme.ts";
+import { loadThemes, theme } from "./theme/theme.ts";
 
 const NOTIFICATION_TTL_MS = 5_000;
 /** Spinner frame cadence while the visible agent is running. */
@@ -111,6 +111,8 @@ export class WidiTuiApplication {
 		void this.shutdown("SIGINT").catch(() => {});
 	};
 	private fatalOverlayShown = false;
+	/** Diagnostics from user TUI config (keybindings, themes), projected on run. */
+	private readonly userConfigDiagnostics: OrchestratorDiagnostic[] = [];
 	private readonly onUncaughtError = (error: unknown) => {
 		// The fatal application-error boundary (v2 §13.1): state may be corrupt,
 		// so the modal overlay only offers Quit or read-only diagnostics. If the
@@ -136,8 +138,10 @@ export class WidiTuiApplication {
 		this.jobsPanel = new JobsPanelView(this.state);
 		this.pendingAgents = new PendingAgentController(this.state, this.orchestrator, this.defaultPendingDisplay());
 
-		const keybindings = createWidiKeybindings();
-		setKeybindings(keybindings);
+		const userKeybindings = loadUserKeybindings(runtime.services.agentDir);
+		this.userConfigDiagnostics.push(...userKeybindings.diagnostics);
+		this.userConfigDiagnostics.push(...loadThemes(runtime.services.agentDir));
+		setKeybindings(createWidiKeybindings(userKeybindings.bindings));
 		this.tui = new TUI(new ProcessTerminal());
 		this.editor = new WidiEditor(this.tui, theme.editorTheme, {
 			// paddingX 4 reserves column 0 for the left vertical border (│),
@@ -249,6 +253,9 @@ export class WidiTuiApplication {
 		// Every startup diagnostic is a warning or error and gets projected;
 		// the routine resolution facts collapse to one synthesized summary line.
 		for (const diagnostic of this.runtime.diagnostics) {
+			this.projectDiagnostic(diagnostic);
+		}
+		for (const diagnostic of this.userConfigDiagnostics) {
 			this.projectDiagnostic(diagnostic);
 		}
 		this.addStartupSummary();

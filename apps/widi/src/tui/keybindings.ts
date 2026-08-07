@@ -1,9 +1,14 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
 	getKeybindings,
 	type KeybindingDefinitions,
+	type KeybindingsConfig,
 	KeybindingsManager,
+	type KeyId,
 	TUI_KEYBINDINGS,
 } from "@earendil-works/pi-tui";
+import type { CoreDiagnostic } from "../core/diagnostics.ts";
 
 declare module "@earendil-works/pi-tui" {
 	interface Keybindings {
@@ -86,6 +91,123 @@ export function matchRequestOptionIndex(data: string): number | undefined {
 	return undefined;
 }
 
-export function createWidiKeybindings(): KeybindingsManager {
-	return new KeybindingsManager({ ...TUI_KEYBINDINGS, ...WIDI_KEYBINDINGS });
+const KEY_MODIFIERS = new Set(["ctrl", "shift", "alt", "super"]);
+const SPECIAL_KEYS = new Set([
+	"escape",
+	"esc",
+	"enter",
+	"return",
+	"tab",
+	"space",
+	"backspace",
+	"delete",
+	"insert",
+	"clear",
+	"home",
+	"end",
+	"pageUp",
+	"pageDown",
+	"up",
+	"down",
+	"left",
+	"right",
+	"f1",
+	"f2",
+	"f3",
+	"f4",
+	"f5",
+	"f6",
+	"f7",
+	"f8",
+	"f9",
+	"f10",
+	"f11",
+	"f12",
+]);
+
+/**
+ * Runtime shape check for a pi-tui `KeyId` (the type only exists at compile
+ * time): optional modifier prefixes, then a single character or a named
+ * special key.
+ */
+function isKeyId(value: string): boolean {
+	let rest = value;
+	for (;;) {
+		const separator = rest.indexOf("+");
+		if (separator <= 0 || !KEY_MODIFIERS.has(rest.slice(0, separator))) break;
+		rest = rest.slice(separator + 1);
+		if (rest.length === 0) return false;
+	}
+	return rest.length === 1 || SPECIAL_KEYS.has(rest);
+}
+
+export interface UserKeybindingsLoad {
+	readonly bindings: KeybindingsConfig;
+	readonly diagnostics: CoreDiagnostic[];
+}
+
+/**
+ * Read `<agentDir>/keybindings.json` (action name → key sequence or list of
+ * sequences; an empty list unbinds the action). A missing file is the normal
+ * case, not an error. Unreadable files and invalid entries (unknown action,
+ * malformed key sequence) are collected as diagnostics and skipped so the TUI
+ * still starts on defaults.
+ */
+export function loadUserKeybindings(agentDir: string): UserKeybindingsLoad {
+	const path = join(agentDir, "keybindings.json");
+	if (!existsSync(path)) return { bindings: {}, diagnostics: [] };
+	let raw: unknown;
+	try {
+		raw = JSON.parse(readFileSync(path, "utf8"));
+	} catch (error) {
+		return {
+			bindings: {},
+			diagnostics: [
+				{
+					severity: "error",
+					code: "keybindings.read_failed",
+					message: `Could not parse ${path}: ${error instanceof Error ? error.message : String(error)}`,
+				},
+			],
+		};
+	}
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+		return {
+			bindings: {},
+			diagnostics: [
+				{
+					severity: "error",
+					code: "keybindings.read_failed",
+					message: `${path} must contain a JSON object mapping action names to key sequences.`,
+				},
+			],
+		};
+	}
+	const bindings: KeybindingsConfig = {};
+	const diagnostics: CoreDiagnostic[] = [];
+	for (const [action, value] of Object.entries(raw)) {
+		if (!(action in WIDI_KEYBINDINGS) && !(action in TUI_KEYBINDINGS)) {
+			diagnostics.push({
+				severity: "warning",
+				code: "keybindings.invalid_entry",
+				message: `${path}: unknown action "${action}"; the entry is ignored.`,
+			});
+			continue;
+		}
+		const keys = Array.isArray(value) ? value : [value];
+		if (keys.every((key) => typeof key === "string" && isKeyId(key))) {
+			bindings[action] = value as KeyId | KeyId[];
+			continue;
+		}
+		diagnostics.push({
+			severity: "warning",
+			code: "keybindings.invalid_entry",
+			message: `${path}: invalid key sequence for "${action}": ${JSON.stringify(value)}; the entry is ignored.`,
+		});
+	}
+	return { bindings, diagnostics };
+}
+
+export function createWidiKeybindings(userBindings: KeybindingsConfig = {}): KeybindingsManager {
+	return new KeybindingsManager({ ...TUI_KEYBINDINGS, ...WIDI_KEYBINDINGS }, userBindings);
 }

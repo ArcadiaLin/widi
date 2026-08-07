@@ -1,4 +1,7 @@
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { EditorTheme, MarkdownTheme, SelectListTheme } from "@earendil-works/pi-tui";
+import type { CoreDiagnostic } from "../../core/diagnostics.ts";
 
 const ESC = "\u001b[";
 const SGR_RESET = `${ESC}0m`;
@@ -191,5 +194,149 @@ export class Theme {
 	}
 }
 
-/** The active color scheme. Components always paint through this singleton. */
-export const theme = new Theme();
+// ============================================================================
+// Theme registry and the live holder
+// ============================================================================
+
+const DEFAULT_THEME_NAME = "default";
+const PALETTE_KEYS = ["accent", "ok", "warn", "error", "info", "muted", "faint", "rule", "surface"] as const;
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+interface RegisteredTheme {
+	readonly name: string;
+	readonly palette: ThemePalette;
+	readonly sourcePath?: string;
+}
+
+export interface ThemeInfo {
+	readonly name: string;
+	readonly sourcePath?: string;
+}
+
+const registry = new Map<string, RegisteredTheme>();
+let activeThemeName = DEFAULT_THEME_NAME;
+let activeCore: Theme = new Theme(defaultPalette);
+
+/**
+ * Live stand-in for a snapshot object so consumers that captured it before a
+ * theme switch (the editor keeps its `EditorTheme`, for one) still read the
+ * active core's values.
+ */
+function delegating<T extends object>(pick: () => T): T {
+	return new Proxy({} as T, { get: (_target, property) => Reflect.get(pick(), property) });
+}
+
+const liveSelectListTheme = delegating(() => activeCore.selectListTheme);
+const liveEditorTheme = delegating(() => activeCore.editorTheme);
+const liveMarkdownTheme = delegating(() => activeCore.markdownTheme);
+
+/**
+ * The active color scheme. Components always paint through this holder: every
+ * property access is forwarded to the current core, so a reference captured
+ * before a `setTheme` switch picks up the new paints. Note this only covers
+ * access through `theme`; a paint *result* captured at module scope (a styled
+ * constant) still freezes the old colors, so paint at render time instead.
+ */
+export const theme: Theme = new Proxy({} as Theme, {
+	get: (_target, property) => {
+		if (property === "selectListTheme") return liveSelectListTheme;
+		if (property === "editorTheme") return liveEditorTheme;
+		if (property === "markdownTheme") return liveMarkdownTheme;
+		return Reflect.get(activeCore, property);
+	},
+});
+
+/** Switch the holder to a registered palette; false when the name is unknown. */
+export function setTheme(name: string): boolean {
+	const entry = registry.get(name);
+	if (!entry) return false;
+	activeThemeName = name;
+	activeCore = new Theme(entry.palette);
+	return true;
+}
+
+/** Name of the theme the holder currently paints with. */
+export function getThemeName(): string {
+	return activeThemeName;
+}
+
+/** Every registered theme, the default first. */
+export function getAllThemes(): ThemeInfo[] {
+	return [...registry.values()].map(({ name, sourcePath }) => ({ name, sourcePath }));
+}
+
+/** Restore the default palette as the only and active theme. Test support. */
+export function resetThemes(): void {
+	registry.clear();
+	registry.set(DEFAULT_THEME_NAME, { name: DEFAULT_THEME_NAME, palette: defaultPalette });
+	activeThemeName = DEFAULT_THEME_NAME;
+	activeCore = new Theme(defaultPalette);
+}
+resetThemes();
+
+/** List what's wrong with a candidate palette; empty means it is usable. */
+function paletteErrors(value: unknown): string[] {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		return ["expected a JSON object of semantic colors"];
+	}
+	const candidate = value as Record<string, unknown>;
+	const errors: string[] = [];
+	for (const key of PALETTE_KEYS) {
+		const color = candidate[key];
+		if (typeof color !== "string" || !HEX_COLOR.test(color)) {
+			errors.push(`"${key}" must be a #rrggbb hex string`);
+		}
+	}
+	return errors;
+}
+
+/**
+ * Register every `<agentDir>/themes/*.json` file as a named palette (the file
+ * basename becomes the theme name; the content is a flat ThemePalette object).
+ * A missing directory is the normal case, not an error. Unreadable files and
+ * palettes with missing or malformed colors are reported as diagnostics and
+ * skipped, leaving the registry usable.
+ */
+export function loadThemes(agentDir: string): CoreDiagnostic[] {
+	const themesDir = join(agentDir, "themes");
+	if (!existsSync(themesDir)) return [];
+	let files: string[];
+	try {
+		files = readdirSync(themesDir);
+	} catch (error) {
+		return [
+			{
+				severity: "error",
+				code: "theme.read_failed",
+				message: `Could not list ${themesDir}: ${error instanceof Error ? error.message : String(error)}`,
+			},
+		];
+	}
+	const diagnostics: CoreDiagnostic[] = [];
+	for (const file of files.filter((entry) => entry.endsWith(".json")).sort()) {
+		const path = join(themesDir, file);
+		const name = file.slice(0, -".json".length);
+		let raw: unknown;
+		try {
+			raw = JSON.parse(readFileSync(path, "utf8"));
+		} catch (error) {
+			diagnostics.push({
+				severity: "error",
+				code: "theme.read_failed",
+				message: `Could not parse ${path}: ${error instanceof Error ? error.message : String(error)}`,
+			});
+			continue;
+		}
+		const errors = paletteErrors(raw);
+		if (errors.length > 0) {
+			diagnostics.push({
+				severity: "warning",
+				code: "theme.invalid",
+				message: `${path}: invalid theme "${name}" (${errors.join("; ")}); the file is ignored.`,
+			});
+			continue;
+		}
+		registry.set(name, { name, palette: raw as ThemePalette, sourcePath: path });
+	}
+	return diagnostics;
+}

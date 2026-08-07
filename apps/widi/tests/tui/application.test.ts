@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import type { AgentSnapshot } from "../../src/core/agent-types.ts";
@@ -379,7 +382,35 @@ function deliverEvent(application: WidiTuiApplication, event: OrchestratorEvent)
 	(application as unknown as { handleEvent(event: OrchestratorEvent): void }).handleEvent(event);
 }
 
-async function createApplicationHarness() {
+describe("WidiTuiApplication user config diagnostics", () => {
+	it("projects keybindings and theme load diagnostics into the startup notices", async () => {
+		const agentDir = await mkdtemp(join(tmpdir(), "widi-tui-config-"));
+		try {
+			await writeFile(join(agentDir, "keybindings.json"), JSON.stringify({ "app.nope": "x" }));
+			await mkdir(join(agentDir, "themes"), { recursive: true });
+			await writeFile(join(agentDir, "themes", "broken.json"), "{ not json");
+			const harness = await createApplicationHarness({ agentDir });
+			const runPromise = harness.application.run();
+			try {
+				await vi.waitFor(() => {
+					expect(harness.tuiStart).toHaveBeenCalledTimes(1);
+				});
+				const codes = harness.application.state.globalNotices
+					.filter((notice) => notice.kind === "diagnostic")
+					.map((notice) => notice.diagnostic?.code);
+				expect(codes).toContain("keybindings.invalid_entry");
+				expect(codes).toContain("theme.read_failed");
+			} finally {
+				await harness.application.shutdown("test cleanup");
+				await runPromise;
+			}
+		} finally {
+			await rm(agentDir, { recursive: true, force: true });
+		}
+	});
+});
+
+async function createApplicationHarness(options: { agentDir?: string } = {}) {
 	const runtimeModel = model();
 	// The first spawn is the startup agent; later ones are the sessions /new
 	// opens after closing it.
@@ -451,6 +482,7 @@ async function createApplicationHarness() {
 		diagnostics: [],
 		services: {
 			cwd: "/workspace",
+			agentDir: options.agentDir ?? "/workspace/.widi-test-missing",
 			defaultProfile: { id: "main", source: "builtin_fallback", profileSource: { kind: "builtin" } },
 			defaultModel: { provider: runtimeModel.provider, modelId: runtimeModel.id, source: "runtime_override" },
 			defaultThinkingLevel: { level: "medium", requestedLevel: "medium", source: "runtime_override", clamped: false },

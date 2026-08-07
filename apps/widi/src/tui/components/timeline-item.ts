@@ -74,8 +74,12 @@ export function renderDeps(item: TimelineItem, context: TimelineRenderContext): 
 const TABLE_COLUMN_MAX_WIDTH = 40;
 /** Below this a column cannot even show an ellipsis next to a character. */
 const TABLE_COLUMN_MIN_WIDTH = 3;
-const TABLE_SEPARATOR = ` ${theme.dim("│")} `;
 const TABLE_SEPARATOR_WIDTH = 3;
+
+/** Painted at render time so a theme switch shows up in the next render. */
+function tableSeparator(): string {
+	return ` ${theme.dim("│")} `;
+}
 
 /**
  * Render a published extension message into styled lines, dispatched on kind:
@@ -137,7 +141,7 @@ function extensionTableLines(message: ExtensionTableMessage, width: number): str
 				const padding = " ".repeat(Math.max(0, widths[index] - visibleWidth(truncated)));
 				return message.columns[index].align === "right" ? `${padding}${truncated}` : `${truncated}${padding}`;
 			})
-			.join(TABLE_SEPARATOR);
+			.join(tableSeparator());
 	return boundLines([theme.bold(formatRow(header)), ...rows.map(formatRow)]).map((line) =>
 		truncateToWidth(line, width, "…"),
 	);

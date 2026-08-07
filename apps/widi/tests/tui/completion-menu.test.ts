@@ -343,7 +343,7 @@ async function createApplication(overrides: Record<string, unknown> = {}) {
 	} as unknown as AgentOrchestrator;
 	const runtime = {
 		orchestrator,
-		services: { cwd: "/repo", defaultProfile: { id: "default-agent" } },
+		services: { cwd: "/repo", agentDir: "/repo/.widi-test-missing", defaultProfile: { id: "default-agent" } },
 		diagnostics: [],
 	} as unknown as WidiRuntime;
 	const application = await WidiTuiApplication.create({ cwd: "/repo", runtime });
