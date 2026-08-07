@@ -465,6 +465,14 @@ async function createApplicationHarness(options: { agentDir?: string } = {}) {
 		setAgentModelByReference,
 		setAgentThinkingLevelByName,
 		setAgentSessionName,
+		// Argument resolution consults the completers before execute.
+		listAvailableModelCandidates: async () => ({ models: [{ value: "test/next-model", label: "Next Model" }] }),
+		listAgentThinkingLevelCandidates: () => ({
+			levels: [
+				{ value: "high", label: "high" },
+				{ value: "medium", label: "medium" },
+			],
+		}),
 		getDefaultModel: () => runtimeModel,
 		getDefaultThinkingLevel: () => "medium",
 		getAgentStatus: () => "idle",

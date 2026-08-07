@@ -575,6 +575,9 @@ export class WidiTuiApplication {
 			case "needs-argument":
 				this.openCommandSelector(agentId, rawText, outcome.command, outcome.candidates);
 				return;
+			case "open-selector":
+				this.openCommandSelector(agentId, rawText, outcome.command, outcome.candidates, outcome.query);
+				return;
 		}
 	}
 
@@ -803,6 +806,7 @@ export class WidiTuiApplication {
 		originalText: string,
 		command: CommandDefinition,
 		candidates: readonly CandidateItem[],
+		initialFilter?: string,
 	): void {
 		if (candidates.length === 0) {
 			// Nothing to pick from: an empty selector is a dead end, a usage line
@@ -831,6 +835,7 @@ export class WidiTuiApplication {
 			title: `/${command.name}`,
 			items,
 			operation: { description: command.description, confirmVerb: "apply" },
+			...(initialFilter !== undefined && initialFilter !== "" ? { initialFilter } : {}),
 			onClose: () => this.closeActiveSelector(),
 			onSelect: (item) => {
 				// Space syntax cannot express an explicit empty argument (submit

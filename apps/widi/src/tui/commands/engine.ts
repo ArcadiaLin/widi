@@ -1,7 +1,14 @@
 import type { OrchestratorDiagnostic } from "../../core/diagnostics.ts";
-import type { AgentActivitySnapshot } from "../../core/types.ts";
+import type { AgentActivitySnapshot, CandidateItem } from "../../core/types.ts";
 import { parseLineCommand } from "./parse.ts";
-import type { CommandContext, CommandDefinition, CommandError, CommandView, EngineOutcome } from "./types.ts";
+import type {
+	CommandContext,
+	CommandDefinition,
+	CommandError,
+	CommandView,
+	EngineOutcome,
+	ResolveArgumentOutcome,
+} from "./types.ts";
 
 export interface EngineHooks {
 	onCommandStart?(commandId: string, name: string, argument: string): void;
@@ -112,6 +119,34 @@ export class CommandEngine {
 		if (!context.agentId && command.agentPolicy === "materialize") {
 			return failed(commandId, command.name, { message: `Command /${command.name} requires an active agent.` });
 		}
+		// A submitted action argument is resolved against the candidates before
+		// it reaches execute: an exact value match (case-insensitive) snaps to
+		// the canonical value, a unique prefix does the same, and anything else
+		// opens the selector with the typed text as its query (pi's
+		// showModelSelector(searchTerm) semantics). Prompt commands skip this:
+		// their argument is free text. No candidates means the completer has
+		// nothing to say, so the raw argument goes to execute as before.
+		if (command.kind === "action" && argument.trim() !== "" && command.complete) {
+			let candidates: readonly CandidateItem[];
+			try {
+				candidates = await command.complete(context, argument.trim());
+			} catch (error) {
+				return failed(commandId, command.name, toCommandError(error));
+			}
+			if (candidates.length > 0) {
+				try {
+					const resolution = command.resolveArgument
+						? await command.resolveArgument(context, argument.trim(), candidates)
+						: resolveArgumentValue(argument.trim(), candidates);
+					if (resolution.kind === "open-selector") {
+						return { kind: "open-selector", command, candidates, query: resolution.query };
+					}
+					argument = resolution.value;
+				} catch (error) {
+					return failed(commandId, command.name, toCommandError(error));
+				}
+			}
+		}
 		hooks?.onCommandStart?.(commandId, command.name, argument);
 		try {
 			if (command.kind === "action") {
@@ -163,6 +198,20 @@ function tryReadActivity(context: CommandContext): AgentActivitySnapshot | undef
 
 function failed(commandId: string, name: string, error: CommandError): EngineOutcome {
 	return { kind: "failed", commandId, name, error };
+}
+
+/**
+ * The default argument resolution: an exact case-insensitive value match wins,
+ * a unique value prefix snaps to it, and zero or several hits defer to the
+ * selector with the typed text as the query.
+ */
+function resolveArgumentValue(argument: string, candidates: readonly CandidateItem[]): ResolveArgumentOutcome {
+	const lower = argument.toLowerCase();
+	const exact = candidates.find((candidate) => candidate.value.toLowerCase() === lower);
+	if (exact) return { kind: "resolved", value: exact.value };
+	const prefixed = candidates.filter((candidate) => candidate.value.toLowerCase().startsWith(lower));
+	if (prefixed.length === 1 && prefixed[0]) return { kind: "resolved", value: prefixed[0].value };
+	return { kind: "open-selector", query: argument };
 }
 
 function toCommandError(error: unknown): CommandError {

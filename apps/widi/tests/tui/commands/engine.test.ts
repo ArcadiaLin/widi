@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../../src/core/agent-orchestrator.ts";
 import { builtInCommands } from "../../../src/tui/commands/built-ins.ts";
 import { CommandEngine, switchedAgentId } from "../../../src/tui/commands/engine.ts";
-import type { CommandDefinition } from "../../../src/tui/commands/types.ts";
+import type { ActionCommand, CommandDefinition } from "../../../src/tui/commands/types.ts";
 
 function stubOrchestrator(overrides: Record<string, unknown>): AgentOrchestrator {
 	// Status gates read `getAgentActivity`; the overrides may replace it.
@@ -196,6 +196,9 @@ describe("CommandEngine.handleInput", () => {
 		const outcome = await engine.handleInput(
 			"/resume session-1",
 			context({
+				listAgentSessions: async () => ({
+					sessions: [{ id: "session-1", ref: "session-1", createdAt: "2026-01-01T00:00:00.000Z", cwd: "/workspace" }],
+				}),
 				spawnAgent: async () => "agent-2",
 				inspectAgent: () => ({
 					agentId: "agent-2",
@@ -299,6 +302,130 @@ describe("CommandEngine.handleInput", () => {
 			context({ listAgentSkillCandidates: async () => ({ skills: [{ value: "review" }] }) }),
 		);
 		expect(outcome).toMatchObject({ kind: "needs-argument", candidates: [{ value: "review" }] });
+	});
+});
+
+describe("CommandEngine argument resolution", () => {
+	function picker(received: string[], overrides: Partial<ActionCommand> = {}): CommandDefinition {
+		return {
+			kind: "action",
+			agentPolicy: "runtime",
+			name: "pick",
+			description: "Pick a value.",
+			argumentHint: "<value>",
+			requiresArgument: true,
+			complete: async () => [{ value: "alpha-one" }, { value: "alpha-two" }, { value: "beta" }],
+			execute: async (_context, argument) => {
+				received.push(argument);
+				return argument;
+			},
+			...overrides,
+		};
+	}
+
+	it("snaps an exact match to the canonical candidate value", async () => {
+		const received: string[] = [];
+		const engine = new CommandEngine([picker(received)]);
+
+		const outcome = await engine.handleInput("/pick ALPHA-ONE", pendingContext());
+
+		expect(outcome.kind).toBe("executed");
+		expect(received).toEqual(["alpha-one"]);
+	});
+
+	it("snaps a unique prefix to its candidate", async () => {
+		const received: string[] = [];
+		const engine = new CommandEngine([picker(received)]);
+
+		const outcome = await engine.handleInput("/pick alpha-t", pendingContext());
+
+		expect(outcome.kind).toBe("executed");
+		expect(received).toEqual(["alpha-two"]);
+	});
+
+	it("opens the selector with the query on an ambiguous prefix", async () => {
+		const received: string[] = [];
+		const engine = new CommandEngine([picker(received)]);
+
+		const outcome = await engine.handleInput("/pick alpha", pendingContext());
+
+		expect(outcome).toMatchObject({ kind: "open-selector", query: "alpha" });
+		if (outcome.kind === "open-selector") {
+			expect(outcome.command.name).toBe("pick");
+			expect(outcome.candidates).toHaveLength(3);
+		}
+		expect(received).toEqual([]);
+	});
+
+	it("opens the selector with the query on no match", async () => {
+		const received: string[] = [];
+		const engine = new CommandEngine([picker(received)]);
+
+		const outcome = await engine.handleInput("/pick zzz", pendingContext());
+
+		expect(outcome).toMatchObject({ kind: "open-selector", query: "zzz" });
+		expect(received).toEqual([]);
+	});
+
+	it("passes the raw argument through when there are no candidates", async () => {
+		const received: string[] = [];
+		const engine = new CommandEngine([picker(received, { complete: async () => [] })]);
+
+		const outcome = await engine.handleInput("/pick anything", pendingContext());
+
+		expect(outcome.kind).toBe("executed");
+		expect(received).toEqual(["anything"]);
+	});
+
+	it("prefers the command's own resolveArgument over the generic matching", async () => {
+		const received: string[] = [];
+		const engine = new CommandEngine([
+			picker(received, { resolveArgument: () => ({ kind: "resolved", value: "custom" }) }),
+		]);
+
+		const outcome = await engine.handleInput("/pick whatever", pendingContext());
+
+		expect(outcome.kind).toBe("executed");
+		expect(received).toEqual(["custom"]);
+	});
+
+	it("does not resolve prompt command arguments", async () => {
+		const engine = new CommandEngine([
+			{
+				kind: "prompt",
+				agentPolicy: "runtime",
+				name: "echo",
+				description: "Echo the argument.",
+				argumentHint: "<text>",
+				requiresArgument: true,
+				complete: async () => [{ value: "alpha-one" }],
+				expand: async (_context, argument) => argument,
+			},
+		]);
+
+		// "alpha" prefixes the sole candidate, but a prompt argument is free
+		// text: it reaches expand exactly as typed.
+		const outcome = await engine.handleInput("/echo alpha", pendingContext());
+
+		expect(outcome).toEqual({ kind: "expanded", text: "alpha" });
+	});
+
+	it("resolves a unique model prefix to the full reference", async () => {
+		const setAgentModelByReference = vi.fn(async () => ({ provider: "vllm", id: "hello-world" }));
+		const engine = new CommandEngine(builtInCommands);
+
+		const outcome = await engine.handleInput(
+			"/model vllm/hello",
+			context({
+				listAvailableModelCandidates: async () => ({
+					models: [{ value: "vllm/hello-world" }, { value: "openai/gpt-5" }],
+				}),
+				setAgentModelByReference,
+			}),
+		);
+
+		expect(outcome).toMatchObject({ kind: "executed", name: "model" });
+		expect(setAgentModelByReference).toHaveBeenCalledWith("agent-1", "vllm/hello-world");
 	});
 });
 

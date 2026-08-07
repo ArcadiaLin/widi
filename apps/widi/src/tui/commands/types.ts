@@ -14,6 +14,8 @@ export interface CommandContext {
 export interface CommandSelectorRequest {
 	readonly title: string;
 	readonly items: readonly SelectItem[];
+	/** Pre-filled filter text (a query the submit path already tried). */
+	readonly initialFilter?: string;
 	onSelect(item: SelectItem): void;
 	onCancel?(): void;
 	/**
@@ -47,8 +49,7 @@ interface CommandBase {
 	readonly selector?: SelectorFactory;
 	/**
 	 * Resolves a submitted argument against the candidates; defaults to the
-	 * engine's generic exact-then-unique-prefix matching. Execution-time wiring
-	 * lands with the engine's resolution pass (Step 3d).
+	 * engine's generic exact-then-unique-prefix matching on candidate values.
 	 */
 	resolveArgument?(
 		context: CommandContext,
@@ -106,4 +107,10 @@ export type EngineOutcome =
 			readonly kind: "needs-argument";
 			readonly command: CommandDefinition;
 			readonly candidates: readonly CandidateItem[];
+	  }
+	| {
+			readonly kind: "open-selector";
+			readonly command: CommandDefinition;
+			readonly candidates: readonly CandidateItem[];
+			readonly query: string;
 	  };

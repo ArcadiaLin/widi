@@ -190,6 +190,51 @@ describe("WidiTuiApplication command selector", () => {
 		expect(application.tui.children.some((child) => child instanceof ListSelector)).toBe(false);
 	});
 
+	it("opens the selector pre-filled with the query when a submitted argument does not resolve", async () => {
+		const setAgentModelByReference = vi.fn(async () => undefined);
+		const { application } = await createApplication({
+			listAvailableModelCandidates: async () => ({
+				models: [
+					{ value: "vllm/qwen3.6", label: "Qwen 3.6" },
+					{ value: "vllm/glm-5", label: "GLM 5" },
+				],
+			}),
+			setAgentModelByReference,
+		});
+
+		await submit(application, "/model gl");
+
+		expect(setAgentModelByReference).not.toHaveBeenCalled();
+		expect(application.state.mode).toBe("selector");
+		const selector = requireSelector(application);
+		const rendered = plainRender(selector);
+		expect(rendered).toContain("filter: gl (1/2)");
+		expect(rendered).toContain("GLM 5");
+
+		selector.handleInput(ESCAPE);
+		expect(requireEditor(application).getText()).toBe("/model gl");
+		expect(application.state.mode).toBe("editor");
+	});
+
+	it("executes a unique argument prefix without opening the selector", async () => {
+		const setAgentModelByReference = vi.fn(async () => ({ provider: "vllm", id: "glm-5" }));
+		const { application } = await createApplication({
+			listAvailableModelCandidates: async () => ({
+				models: [
+					{ value: "vllm/qwen3.6", label: "Qwen 3.6" },
+					{ value: "vllm/glm-5", label: "GLM 5" },
+				],
+			}),
+			setAgentModelByReference,
+		});
+
+		await submit(application, "/model vllm/gl");
+
+		expect(setAgentModelByReference).toHaveBeenCalledWith("agent-1", "vllm/glm-5");
+		expect(application.tui.hasOverlay()).toBe(false);
+		expect(application.state.mode).toBe("editor");
+	});
+
 	it("resubmits the selection and hands focus back to the editor", async () => {
 		const setAgentModelByReference = vi.fn(async () => undefined);
 		const { application } = await createApplication({
