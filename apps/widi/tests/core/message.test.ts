@@ -105,7 +105,11 @@ describe("message bindings", () => {
 		expect(render({ kind: "background_job", ownerAgentId: "agent-1", jobId: "job-2", mode: "interrupt" })).toBe(
 			"hello",
 		);
-		expect(render({ kind: "runtime", notice: "carried_over_jobs" })).toBe("hello");
+		// A recap is framed instead: it describes the session rather than continuing
+		// it, and the tag is what says so without a sentence of preamble.
+		expect(render({ kind: "recap", recap: "carried_over_jobs" })).toBe(
+			'<recap type="carried_over_jobs">\nhello\n</recap>',
+		);
 	});
 
 	// The two halves of a binding are bound for opposite reasons: a request may

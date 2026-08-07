@@ -375,8 +375,13 @@ export class BackgroundJobRuntime {
 	 * Say something to an agent, as this runtime.
 	 *
 	 * A settled job speaks as that job, so the model can match the text against
-	 * the t0 handle it is holding; a branch reconciliation speaks as the runtime,
-	 * because no single job owns the statement that several of them are gone.
+	 * the t0 handle it is holding; a branch reconciliation is a recap, because no
+	 * single job owns the statement that several of them are gone.
+	 *
+	 * The recap names no ids. Every other recap is idempotent because its entry
+	 * lists what it covered; this one is idempotent because `rebind` wrote a
+	 * closing record for each job it announces, and a closed job is never open on
+	 * the branch again. See `core/recap.ts`.
 	 */
 	private async _sendToOwner(
 		ownerAgentId: string,
@@ -386,7 +391,7 @@ export class BackgroundJobRuntime {
 	): Promise<void> {
 		const binding =
 			jobId === undefined
-				? messageBindingFor({ kind: "runtime", notice: "carried_over_jobs" })
+				? messageBindingFor({ kind: "recap", recap: "carried_over_jobs" })
 				: messageBindingFor({ kind: "background_job", ownerAgentId, jobId, mode });
 		await this._ports.messageSinkFor(binding).send({ targetAgentId: ownerAgentId, body, mode });
 	}

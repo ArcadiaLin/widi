@@ -18,6 +18,9 @@ const disposeAgentSchema = Type.Object({
 	reason: Type.Optional(Type.String({ description: "Short note recorded on the cancellations this dispose causes." })),
 });
 
+/** Read back off a resumed branch, for the same reason as the spawn tool's name. */
+export const DISPOSE_AGENT_TOOL_NAME = "dispose_agent";
+
 export type DisposeAgentInput = Static<typeof disposeAgentSchema>;
 
 /**
@@ -58,8 +61,8 @@ export interface DisposeAgentDetails {
  */
 export function createDisposeAgentToolDefinition(): ToolDefinition<typeof disposeAgentSchema, DisposeAgentDetails> {
 	return {
-		name: "dispose_agent",
-		label: "dispose_agent",
+		name: DISPOSE_AGENT_TOOL_NAME,
+		label: DISPOSE_AGENT_TOOL_NAME,
 		description:
 			"Destroy one or more agents in your agent tree. scope agent destroys only the named agents and leaves their descendants running; scope subtree recursively destroys each named agent and all descendants. Each destroyed agent is stopped, its background work is cancelled, and any task it still owed is reported as cancelled. A selection containing you is refused. Only the running agents list_agents reports can be disposed; its closed entries are already not running. Disposing an agent is not how you finish its task: complete the task first.",
 		promptSnippet: "Destroy same-tree agents individually or recursively by subtree",

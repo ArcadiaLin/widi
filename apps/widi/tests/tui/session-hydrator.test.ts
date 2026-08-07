@@ -18,9 +18,9 @@ describe("hydrateSessionEntries", () => {
 				source: { kind: "agent", label: "worker-7" },
 				body: "three duplicates found",
 			}),
-			orchestratorNotice("runtime-notice", "[Spawn tree closed] Every agent you created is gone.", {
-				source: { kind: "runtime", label: "spawn tree closed", details: { notice: "spawn_tree_closed" } },
-				body: "[Spawn tree closed] Every agent you created is gone.",
+			orchestratorNotice("spawn-tree-recap", '<recap type="spawn_tree">\nEvery agent you created is gone.\n</recap>', {
+				source: { kind: "recap", label: "spawn tree", details: { recap: "spawn_tree", ids: ["coder-a1b2"] } },
+				body: "Every agent you created is gone.",
 			}),
 		]);
 
@@ -36,11 +36,12 @@ describe("hydrateSessionEntries", () => {
 			},
 			{
 				type: "orchestrator-message",
-				id: "runtime-notice",
+				id: "spawn-tree-recap",
 				durability: "durable",
 				createdAt: timestamp(1),
-				source: { kind: "runtime", label: "spawn tree closed", details: { notice: "spawn_tree_closed" } },
-				text: "[Spawn tree closed] Every agent you created is gone.",
+				source: { kind: "recap", label: "spawn tree", details: { recap: "spawn_tree", ids: ["coder-a1b2"] } },
+				text: "Every agent you created is gone.",
+				modelText: '<recap type="spawn_tree">\nEvery agent you created is gone.\n</recap>',
 			},
 		]);
 	});

@@ -11,6 +11,7 @@ import type { OrchestratorEvent } from "../../src/core/types.ts";
 import { collectJobChanges, startBackgroundedJob } from "../helpers/background-jobs.ts";
 import {
 	agentSink,
+	appendSpawnResult,
 	createOrchestrator,
 	defaultProfile,
 	harnessEventDriver,
@@ -353,12 +354,14 @@ describe("AgentOrchestrator message interception", () => {
 		);
 	});
 
-	// A runtime notice is the other `blockPolicy: "ignore"` producer: the facts it
-	// announces are recorded either way, so a block degrades the same.
-	it("delivers a blocked runtime notice anyway, with a diagnostic", async () => {
+	// A recap is the other `blockPolicy: "ignore"` producer: the facts it states
+	// are recorded either way, so a block degrades the same.
+	it("delivers a blocked recap anyway, with a diagnostic", async () => {
 		const env = new MemoryExecutionEnv();
 		const first = await createOrchestrator(env);
 		const agentId = await first.spawnAgent({ origin: { kind: "new" } });
+		// The branch has to be owed the recap: an agent it spawned and never disposed.
+		await appendSpawnResult(first, agentId, "call-1", "worker-9c3f");
 		const reference = first.sessionManager.getAgentSessionRef(agentId);
 		if (reference === undefined) throw new Error(`Expected a persisted session for ${agentId}.`);
 
@@ -377,9 +380,9 @@ describe("AgentOrchestrator message interception", () => {
 		expect(events.filter((event) => event.type === "diagnostic").map((event) => event.diagnostic.code)).toContain(
 			"orchestrator.message_block_ignored",
 		);
-		// Delivered anyway: the notice is on the branch the model resumes with.
+		// Delivered anyway: the recap is on the branch the model resumes with.
 		const snapshot = await second.getAgentSession(resumed);
-		expect(JSON.stringify(snapshot.pathToRoot)).toContain("Spawn tree closed");
+		expect(JSON.stringify(snapshot.pathToRoot)).toContain('<recap type=\\"spawn_tree\\">');
 	});
 });
 

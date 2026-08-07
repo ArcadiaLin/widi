@@ -29,7 +29,7 @@ import type { AgentId, PromptOutcome } from "./types.ts";
  * handed out and cannot be overridden.
  */
 export interface MessageSource {
-	/** Core knows `human`, `agent`, `background_job`, `runtime`; anything else is rendered generically. */
+	/** Core knows `human`, `agent`, `background_job`, `recap`; anything else is rendered generically. */
 	readonly kind: string;
 	/** One human-readable line; what a UI shows when it does not know the kind. */
 	readonly label?: string;
@@ -45,8 +45,8 @@ export interface MessageSource {
  *
  * `precede` is not called `prompt`: `harness.prompt()` means "start a turn now",
  * and one word for two meanings would not survive this file. It describes what
- * a resume notice does - land on the branch and wait to be read with whatever
- * input comes next.
+ * a recap does - land on the branch and wait to be read with whatever input
+ * comes next.
  */
 export type MessageDeliveryMode = "next_turn" | "interrupt" | "precede";
 
@@ -142,8 +142,8 @@ export type MessageDeliveryPhase = AgentHarnessPhase | undefined;
 /**
  * `append` is the one method that does not wake the target: it writes the
  * message onto the branch at the current leaf, where the next turn reads it
- * along with everything else. It is durable, which is why a resume notice uses
- * it rather than the harness's in-memory next-turn queue.
+ * along with everything else. It is durable, which is why a recap uses it rather
+ * than the harness's in-memory next-turn queue.
  */
 export type MessageDeliveryMethod = "prompt" | "follow_up" | "steer" | "append";
 
@@ -190,8 +190,8 @@ export type MessageTransformOutcome =
  *
  * `enforce` ends the message: the human sees a blocked input, an agent sees its
  * tool call fail. `ignore` is for the senders with nobody left to tell - a
- * background job result the model is already waiting for, a runtime notice
- * whose records are written whether or not the model hears about them. There a
+ * background job result the model is already waiting for, a recap whose records
+ * are written whether or not the model hears about them. There a
  * block degrades to a diagnostic and the original body is delivered.
  */
 export type MessageBlockPolicy = "enforce" | "ignore";
@@ -210,8 +210,49 @@ export type BuiltInMessageProducer =
 			readonly jobId: string;
 			readonly mode: MessageDeliveryMode;
 	  }
-	| { readonly kind: "runtime"; readonly notice: string }
+	| {
+			readonly kind: "recap";
+			/** Which recap this is - `spawn_tree_closed`, `carried_over_jobs`. */
+			readonly recap: string;
+			/**
+			 * What this recap accounts for, in whatever ids the sender names its
+			 * subjects by: spawned agents, job handles. It is recorded in the entry's
+			 * source so a later resume can read the branch and tell a fact already
+			 * recapped from one still owed. A recap with nothing enumerable to name
+			 * omits it and stays idempotent by some other means.
+			 */
+			readonly ids?: readonly string[];
+	  }
 	| { readonly kind: "extension"; readonly extensionId: string };
+
+/**
+ * What a recap records about itself in `MessageSource.details`. It is the only
+ * source payload core reads back: a recap that has already been given is not
+ * owed again, and the branch is the only place that answer survives a restart.
+ */
+export interface RecapSourceDetails {
+	readonly recap: string;
+	readonly ids?: readonly string[];
+}
+
+/**
+ * What a recap looks like to the model: the body inside a tag naming which recap
+ * it is.
+ *
+ * A recap arrives as user text, in a turn that also carries whatever the person
+ * typed, and it is describing the conversation rather than continuing it. The
+ * tag is what makes that legible without a sentence of preamble - a delimiter
+ * the model reads as a frame, so the text inside is understood as the runtime
+ * speaking about the session and never as an instruction the person gave.
+ *
+ * It is rendered here rather than written into each body so that every recap
+ * gets the same frame, including the one the background job layer sends. Bodies
+ * are plain prose and are not escaped; nothing interpolates untrusted text into
+ * the tag itself, which carries only a recap name this codebase declares.
+ */
+export function renderRecapText(recap: string, body: string): string {
+	return `<recap type="${recap}">\n${body}\n</recap>`;
+}
 
 /**
  * Everything core decides about a built-in producer, in one place: who it says
@@ -222,11 +263,10 @@ export type BuiltInMessageProducer =
  * a policy table and a renderer switch is how they drift: a new producer added
  * to two of the three reads as a bug in the third.
  *
- * A prefix is rendered only where the reader needs to know the text is not its
- * own and the body does not already say so. Job results and runtime notices
- * carry their own headers - a carried-over job result in particular has to keep
- * the shape of a job result, because that is what the model matches its open t0
- * handle against.
+ * Attribution is rendered only where the reader needs to know the text is not
+ * its own and the body does not already say so. A job result says it in its own
+ * header, which it has to keep - that header is what the model matches its open
+ * t0 handle against. A recap says it in a tag, {@link renderRecapText}.
  */
 export function messageBindingFor(producer: BuiltInMessageProducer): MessageSinkBinding {
 	switch (producer.kind) {
@@ -266,14 +306,23 @@ export function messageBindingFor(producer: BuiltInMessageProducer): MessageSink
 				},
 				render: (body) => body,
 			};
-		case "runtime":
-			// `ignore` because the facts these announce are recorded either way; a
+		case "recap": {
+			const recap = producer.recap;
+			// `ignore` because the facts a recap states are recorded either way; a
 			// block would leave the records written and the model uninformed.
 			return {
-				source: { kind: "runtime", label: producer.notice.replaceAll("_", " "), details: { notice: producer.notice } },
+				source: {
+					kind: "recap",
+					label: recap.replaceAll("_", " "),
+					details: {
+						recap,
+						...(producer.ids === undefined ? undefined : { ids: [...producer.ids] }),
+					} satisfies RecapSourceDetails,
+				},
 				policy: { humanInterrupt: false, blockPolicy: "ignore", retryOnFailure: false },
-				render: (body) => body,
+				render: (body) => renderRecapText(recap, body),
 			};
+		}
 		case "extension": {
 			const extensionId = producer.extensionId;
 			return {
@@ -439,6 +488,27 @@ export interface MessageEntryDetails {
 	/** The body before rendering: what a UI shows, as opposed to what the model read. */
 	readonly body: string;
 	readonly transformedBy?: readonly string[];
+}
+
+/**
+ * The subjects a branch entry says this recap already covered, empty for every
+ * entry that is not one.
+ *
+ * Read defensively rather than cast: the entry may have been written by an older
+ * build, by a hand-edited session, or by another recap entirely, and a recap
+ * that mistakes one of those for its own record stays silent about a fact it
+ * still owes.
+ */
+export function recapEntryIds(details: unknown, recap: string): readonly string[] {
+	if (typeof details !== "object" || details === null) return [];
+	const source = (details as { source?: unknown }).source;
+	if (typeof source !== "object" || source === null) return [];
+	if ((source as MessageSource).kind !== "recap") return [];
+	const payload = (source as { details?: unknown }).details;
+	if (typeof payload !== "object" || payload === null) return [];
+	const record = payload as Partial<RecapSourceDetails>;
+	if (record.recap !== recap || !Array.isArray(record.ids)) return [];
+	return record.ids.filter((id): id is string => typeof id === "string");
 }
 
 export interface MessageDeliveryRequest {

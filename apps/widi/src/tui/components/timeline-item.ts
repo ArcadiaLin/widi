@@ -194,7 +194,7 @@ function orchestratorMessageTitle(kind: string, label: string): string {
 	if (kind === "human") return `from ${label}`;
 	if (kind === "agent") return `agent ${label}`;
 	if (kind === "background_job") return label;
-	if (kind === "runtime") return `runtime · ${label}`;
+	if (kind === "recap") return `recap · ${label}`;
 	if (kind.startsWith("extension:")) return `extension ${label}`;
 	return label;
 }

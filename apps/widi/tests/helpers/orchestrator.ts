@@ -7,6 +7,7 @@ import type {
 	FileError,
 	FileInfo,
 	Result,
+	Session,
 	ShellExecOptions,
 } from "@widi/agent-core";
 import { err, ok, ExecutionError as PiExecutionError, FileError as PiFileError } from "@widi/agent-core";
@@ -28,9 +29,11 @@ import { ModelRegistry } from "../../src/core/model-registry.ts";
 import { createCorePersistenceRegistry } from "../../src/core/persistence-registry.ts";
 import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
 import { ResourceLoader } from "../../src/core/resource-loader.ts";
-import { SessionManager } from "../../src/core/session-manager.ts";
+import { type AgentSessionMetadata, SessionManager } from "../../src/core/session-manager.ts";
 import { SettingManager } from "../../src/core/setting-manager.ts";
 import { ToolRegistry } from "../../src/core/tool-registry.ts";
+import { DISPOSE_AGENT_TOOL_NAME, type DisposeAgentDetails } from "../../src/core/tools/agents/dispose-agent.ts";
+import { SPAWN_AGENT_TOOL_NAME, type SpawnAgentDetails } from "../../src/core/tools/agents/spawn-agent.ts";
 import { registerCoreCodingTools } from "../../src/core/tools/coding/builtin.ts";
 import type { ToolDefinition } from "../../src/core/tools/types.ts";
 import type { AgentContextUsage } from "../../src/core/types.ts";
@@ -503,4 +506,69 @@ export function spawnParentOf(orchestrator: AgentOrchestrator, agentId: string):
 /** The owner-scoped job capabilities the agent's own tools were handed. */
 export function requireAgentJobs(orchestrator: AgentOrchestrator, agentId: string): BackgroundJobHost {
 	return requireLiveAgent(orchestrator, agentId).backgroundAttachment.host;
+}
+
+/**
+ * Put a `spawn_agent` result on an agent's branch, as a turn that called the
+ * tool would. What the recap reads is the record, not the live spawn edge, so a
+ * test can write the record without running a child agent.
+ */
+export async function appendSpawnResult(
+	orchestrator: AgentOrchestrator,
+	agentId: string,
+	toolCallId: string,
+	spawnedAgentId: string,
+	profileId = "worker",
+): Promise<void> {
+	await requireAgentHarness(orchestrator, agentId).appendMessage({
+		role: "toolResult",
+		toolCallId,
+		toolName: SPAWN_AGENT_TOOL_NAME,
+		content: [{ type: "text", text: `Agent ${spawnedAgentId} was created from profile ${profileId} and is idle.` }],
+		details: { agentId: spawnedAgentId, profileId } satisfies SpawnAgentDetails,
+		isError: false,
+		timestamp: Date.now(),
+	});
+}
+
+/**
+ * Compact the branch at an entry, the way a real compaction checkpoints it: what
+ * is behind `firstKeptEntryId` leaves the model's context and stays in the file.
+ *
+ * Written straight to the session because the harness only ever produces one
+ * from a real model run. The agent is idle in these tests, so there is no
+ * buffered write for it to race.
+ */
+export async function appendCompactionCheckpoint(
+	orchestrator: AgentOrchestrator,
+	agentId: string,
+	firstKeptEntryId: string,
+): Promise<void> {
+	const sessions = (
+		orchestrator.sessionManager as unknown as { _agentSessions: Map<string, Session<AgentSessionMetadata>> }
+	)._agentSessions;
+	const session = sessions.get(agentId);
+	if (!session) throw new Error(`Agent ${agentId} has no persisted session.`);
+	await session.appendCompaction("Earlier work, summarized.", firstKeptEntryId, 1000);
+}
+
+/** The matching `dispose_agent` record: the branch's own word that an agent is gone. */
+export async function appendDisposeResult(
+	orchestrator: AgentOrchestrator,
+	agentId: string,
+	toolCallId: string,
+	disposedAgentId: string,
+): Promise<void> {
+	await requireAgentHarness(orchestrator, agentId).appendMessage({
+		role: "toolResult",
+		toolCallId,
+		toolName: DISPOSE_AGENT_TOOL_NAME,
+		content: [{ type: "text", text: `- ${disposedAgentId}: disposed` }],
+		details: {
+			scope: "agent",
+			agents: [{ agentId: disposedAgentId, state: "disposed" }],
+		} satisfies DisposeAgentDetails,
+		isError: false,
+		timestamp: Date.now(),
+	});
 }

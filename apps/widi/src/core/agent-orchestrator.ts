@@ -63,8 +63,6 @@ import {
 	type BackgroundJobEvent,
 	BackgroundJobRuntime,
 	type BackgroundJobSnapshot,
-	type BackgroundJobStartedDetails,
-	formatInterruptedBackgroundJobResultText,
 	JOBS_NAMESPACE,
 	type JobBranchPort,
 	type JobCloseCause,
@@ -158,6 +156,7 @@ import {
 	projectBranch,
 	sessionKeysEqual,
 } from "./persistence/index.ts";
+import { createOrphanedJobHandlesRecap, createSpawnTreeRecap, type RecapDefinition, selectOwedRecap } from "./recap.ts";
 import type { ConfigValueResolver } from "./resolve-config-value.js";
 import type { ResourceLoader } from "./resource-loader.js";
 import type {
@@ -1050,7 +1049,12 @@ export class AgentOrchestrator {
 				// routable: an unanswered t0 handle and a spawn tree that did not come
 				// back are facts of the resume, not messages arriving after it.
 				await this._reconcileAgentJobBranch(agentId, "resume", "The runtime that started this job is gone.");
-				await this._announceClosedSpawnTree(agentId);
+				await this._recap(agentId, createSpawnTreeRecap("resume"));
+			} else if (request.origin === "fork") {
+				// A fork inherits the text of a spawn tree it does not own: the agents
+				// are alive under the source and outside this agent's tree, so every
+				// message and dispose it addresses to one is refused.
+				await this._recap(agentId, createSpawnTreeRecap("fork"));
 			}
 			// The first arrival at idle, stamped `ready` by `_installLiveAgent`. It
 			// has no turn behind it, and a consumer that waits to be told an agent is
@@ -1395,7 +1399,7 @@ export class AgentOrchestrator {
 	 * branch text for a result header, which is reading absence as evidence - text
 	 * is restated by the model, rewritten by compaction, pasted by the user.
 	 *
-	 * **Session write.** A `precede` message, which lands as a `custom_message`
+	 * **Session write.** A `precede` recap, which lands as a `custom_message`
 	 * entry on the branch, because these outcomes have to be in the session the
 	 * moment this returns - a second interrupted resume has to find them and stay
 	 * idempotent. At resume it runs before the agent is routable, so a stale
@@ -1414,7 +1418,13 @@ export class AgentOrchestrator {
 			);
 			return;
 		}
-		announced += await this._announceOrphanedJobHandles(agentId);
+		// The handles the job layer itself never knew about. Its history is the one
+		// input the branch cannot supply: a handle this runtime is tracking is one
+		// the reconciliation above has already answered.
+		announced += await this._recap(
+			agentId,
+			createOrphanedJobHandlesRecap(new Set(this._backgroundJobs.history(agentId).map((job) => job.toolCallId))),
+		);
 		if (announced === 0) return;
 		await this._publishDiagnostic({
 			severity: "warning",
@@ -1425,83 +1435,54 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * Answer the t0 handles this branch shows that its job history has never
-	 * heard of.
+	 * Give one recap, if the branch is still owed it.
 	 *
-	 * The two facts are written at different points in the tree. A t0 tool result
-	 * is written by the harness inside the turn; the ref that records the job is
-	 * buffered behind that turn and lands at its save point. Every entry between
-	 * them is a place a navigation can land, and landing there leaves the model
-	 * holding a promise on a branch that never started the job.
+	 * The whole of the mechanism: read the branch, ask the definition what it
+	 * shows, drop what an earlier recap already covered, and say the rest. Every
+	 * kind of recap goes through here, so what is owed is decided one way and the
+	 * subjects a recap covered are marked one way - see `recap.ts` for why the
+	 * mark is the recap's own entry.
 	 *
-	 * Nothing is recorded for these. The branch has no `started` record to close
-	 * and inventing one would put a job on a branch that never ran it; what it is
-	 * owed is the answer that none is coming.
+	 * The branch read is the compaction-aware one, because a recap corrects what
+	 * the model believes and compaction is what it stopped believing. It cuts both
+	 * ways and has to: a spawn compaction dropped is not recapped, and a recap
+	 * compaction dropped is given again if its subject is still there.
 	 *
-	 * A t1 cannot be on such a branch: the ref flushes at the end of the turn that
-	 * started the job, and a result arrives in a later one, so a branch carrying
-	 * the t1 carries the ref as well and its job is not orphaned at all.
+	 * `precede` rather than a wake: no recap is news the agent should stop for,
+	 * and all of it is what it must already know by the time it reads anything
+	 * else. It goes through the ordinary message path like every other producer,
+	 * so it meets the same interception and lands with the same record of who
+	 * wrote it.
 	 *
-	 * **Session write.** A `precede` message, on the same terms as the
-	 * reconciliation above.
+	 * A failure is reported and swallowed. A recap describes a situation the
+	 * runtime is already in; failing the resume over an unsent one would trade a
+	 * model that is missing context for a conversation that cannot be opened.
+	 *
+	 * **Session write.** A `custom_message` entry per recap given, on the branch
+	 * because that is the only place it survives the process: the model has to
+	 * read it after the next restart too, and the ids on it are what stop it being
+	 * given twice. Both callers run it before the agent is routable at a resume,
+	 * so it is context rather than a message arriving into it.
 	 */
-	private async _announceOrphanedJobHandles(agentId: AgentId): Promise<number> {
+	private async _recap(agentId: AgentId, definition: RecapDefinition): Promise<number> {
 		if (!this._live.has(agentId)) return 0;
-		const recorded = new Set(this._backgroundJobs.history(agentId).map((job) => job.toolCallId));
-		const snapshot = await this.sessionManager.getAgentSessionSnapshot(agentId);
-		const orphaned = collectBackgroundJobHandles(snapshot.pathToRoot).filter(
-			(handle) => !recorded.has(handle.toolCallId),
-		);
-		if (orphaned.length === 0) return 0;
-		await this._sendRuntimeNotice(agentId, "orphaned_job_handles", orphaned.map(toOrphanedJobHandleText).join("\n\n"));
-		return orphaned.length;
-	}
-
-	/**
-	 * Tell a resumed agent that the agents it spawned are gone.
-	 *
-	 * Unconditional and without a member list. A spawn tree does not survive the
-	 * runtime that built it, so there is no partial restoration to describe and
-	 * nothing to enumerate; `list_agents` is where the closed sessions show up.
-	 *
-	 * **Session write.** A `precede` message, because this is context the model
-	 * must resume with: a branch that says "I asked coder-1 to do it" and a
-	 * runtime with no coder-1 otherwise disagree silently, and the model keeps
-	 * addressing an agent that does not exist. Written before the agent is
-	 * routable, so it is part of the context rather than a message arriving into
-	 * it.
-	 */
-	private async _announceClosedSpawnTree(agentId: AgentId): Promise<void> {
-		if (!this._live.has(agentId)) return;
 		try {
-			await this._sendRuntimeNotice(
-				agentId,
-				"spawn_tree_closed",
-				"[Spawn tree closed] Every agent you created before this resume has been closed. Spawn new ones if you still need them.",
+			const branch = await this.sessionManager.getAgentSessionContextBranch(agentId);
+			const owed = selectOwedRecap(branch, definition);
+			if (owed === undefined) return 0;
+			await this.sendMessage(
+				{ targetAgentId: agentId, body: owed.body, mode: "precede" },
+				messageBindingFor({ kind: "recap", recap: definition.recap, ids: owed.ids }),
 			);
+			return owed.ids.length;
 		} catch (error) {
 			await this._recordAgentLifecycleFailure(
 				agentId,
-				"orchestrator.spawn_tree_notice_failed",
-				`Failed to record the closed-spawn-tree notice for agent ${agentId}: ${formatError(error)}`,
+				"orchestrator.recap_failed",
+				`Failed to record the ${definition.recap} recap for agent ${agentId}: ${formatError(error)}`,
 			);
+			return 0;
 		}
-	}
-
-	/**
-	 * The runtime telling an agent a fact about its own situation.
-	 *
-	 * `precede` rather than a wake: none of these is news the agent should stop
-	 * for, and all of them are things it must already know by the time it reads
-	 * anything else. It goes through the ordinary message path like every other
-	 * producer, so it meets the same interception and lands with the same record
-	 * of who wrote it.
-	 */
-	private async _sendRuntimeNotice(agentId: AgentId, notice: string, body: string): Promise<void> {
-		await this.sendMessage(
-			{ targetAgentId: agentId, body, mode: "precede" },
-			messageBindingFor({ kind: "runtime", notice }),
-		);
 	}
 
 	/** A readable AgentId that collides with no live agent and no tombstone. */
@@ -4487,31 +4468,6 @@ function resolveThinkingLevel(level: string): ThinkingLevel | undefined {
 	return parsed === level ? parsed : undefined;
 }
 
-/** The recorded outcome when there is one, otherwise a cancellation for work the exit ended. */
-/**
- * The t0 handles a branch carries, read off the structured details the
- * background runtime stamped on each one rather than off their text: a result
- * header is restated by the model, rewritten by compaction, and pasted by the
- * user, while `backgrounded: true` is only ever written by the runtime.
- */
-function collectBackgroundJobHandles(entries: readonly SessionTreeEntry[]): BackgroundJobStartedDetails[] {
-	const handles: BackgroundJobStartedDetails[] = [];
-	for (const entry of entries) {
-		if (entry.type !== "message" || entry.message.role !== "toolResult") continue;
-		const details = entry.message.details;
-		if (isBackgroundJobStartedDetails(details)) handles.push(details);
-	}
-	return handles;
-}
-
-function isBackgroundJobStartedDetails(details: unknown): details is BackgroundJobStartedDetails {
-	if (typeof details !== "object" || details === null) return false;
-	const candidate = details as Partial<BackgroundJobStartedDetails>;
-	return (
-		candidate.backgrounded === true && typeof candidate.jobId === "string" && typeof candidate.toolCallId === "string"
-	);
-}
-
 /**
  * Resolve a request against the sink it came through. The source is the
  * request's if it named one, the sink's otherwise; the policy is always the
@@ -4535,16 +4491,6 @@ function toHarnessInput(request: MessageDeliveryRequest): string | AgentMessage 
 	const content =
 		request.images === undefined ? request.text : [{ type: "text" as const, text: request.text }, ...request.images];
 	return createCustomMessage(request.entry.customType, content, true, request.entry.details, now());
-}
-
-function toOrphanedJobHandleText(handle: BackgroundJobStartedDetails): string {
-	return formatInterruptedBackgroundJobResultText({
-		jobId: handle.jobId,
-		toolCallId: handle.toolCallId,
-		toolName: handle.toolName,
-		stopReason:
-			"This part of the conversation never recorded the job, so nothing here can report its outcome. Start it again if its work is still needed.",
-	});
 }
 
 function now(): string {

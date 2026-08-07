@@ -15,6 +15,9 @@ import { PERSISTENCE_REF_CUSTOM_TYPE, type PersistenceRefData } from "../../src/
 import type { OrchestratorEvent } from "../../src/core/types.ts";
 import { startBackgroundedJob } from "../helpers/background-jobs.ts";
 import {
+	appendCompactionCheckpoint,
+	appendDisposeResult,
+	appendSpawnResult,
 	createOrchestrator,
 	MemoryExecutionEnv,
 	requireAgentHarness,
@@ -61,6 +64,28 @@ function sessionRef(orchestrator: AgentOrchestrator, agentId: string): string {
 	const ref = orchestrator.sessionManager.getAgentSessionRef(agentId);
 	if (ref === undefined) throw new Error(`Agent ${agentId} has no persisted session.`);
 	return ref;
+}
+
+/**
+ * Every recap of one kind on the branch, in the ids it recorded.
+ *
+ * Read from the persisted source rather than through the reader under test: what
+ * these assert is that the mark is on the branch in the shape a later run will
+ * look for, and reusing the reader would pass whatever shape it happened to write.
+ */
+async function recapIds(
+	orchestrator: AgentOrchestrator,
+	agentId: string,
+	recap: string,
+): Promise<readonly (readonly string[])[]> {
+	const snapshot = await orchestrator.getAgentSession(agentId);
+	return snapshot.pathToRoot.flatMap((entry) => {
+		if (entry.type !== "custom_message") return [];
+		const source = (entry.details as { source?: { kind?: string; details?: { recap?: string; ids?: string[] } } })
+			?.source;
+		if (source?.kind !== "recap" || source.details?.recap !== recap) return [];
+		return [source.details.ids ?? []];
+	});
 }
 
 describe("branch state", () => {
@@ -166,6 +191,13 @@ describe("branch state", () => {
 		expect(await branchRefs(second, resumed)).toHaveLength(0);
 		await expect(branchUserText(second, resumed)).resolves.toContain("job-1");
 		await expect(branchUserText(second, resumed)).resolves.toContain("never recorded the job");
+
+		// With no record to write, the recap is its own record: the handle is still
+		// orphaned on this branch and still unknown to the job history, and the only
+		// thing that stops a third runtime restating it is the recap already there.
+		const third = await createOrchestrator(env);
+		const again = await third.spawnAgent({ origin: { kind: "resume", reference: ref } });
+		expect(await recapIds(third, again, "orphaned_job_handles")).toEqual([["call-1"]]);
 	});
 
 	it("gets a disposal's own settlement onto the branch before the harness is torn down", async () => {
@@ -186,5 +218,122 @@ describe("branch state", () => {
 		expect(second.agentBackgroundJobHistory(resumed)).toMatchObject([
 			{ toolCallId: "call-1", state: "settled", status: "cancelled" },
 		]);
+	});
+});
+
+/**
+ * What the branch says was already said.
+ *
+ * A recap corrects a belief only the branch holds, so the branch is both what
+ * decides it is owed and what records that it was given. These are the two
+ * halves of that: what a resume finds owed, and what a second resume of the same
+ * branch finds already answered.
+ */
+describe("recaps", () => {
+	it("names the agents a resumed branch still shows as running, and says it once", async () => {
+		const env = new MemoryExecutionEnv();
+		const first = await createOrchestrator(env);
+		const agentId = await first.spawnAgent({ origin: { kind: "new" } });
+		await appendSpawnResult(first, agentId, "call-1", "worker-a1b2");
+		await appendSpawnResult(first, agentId, "call-2", "worker-c3d4");
+		const ref = sessionRef(first, agentId);
+
+		const second = await createOrchestrator(env);
+		const resumed = await second.spawnAgent({ origin: { kind: "resume", reference: ref } });
+
+		expect(await recapIds(second, resumed, "spawn_tree")).toEqual([["worker-a1b2", "worker-c3d4"]]);
+		// What the model reads: the body inside the tag that says which recap it is.
+		await expect(branchUserText(second, resumed)).resolves.toContain(
+			'<recap type="spawn_tree">\nThe agents you created before this resume have been closed: ' +
+				"worker-a1b2 (profile worker), worker-c3d4 (profile worker).",
+		);
+
+		// The third runtime reads the same spawn records and the recap that answered
+		// them. Without the second half it would restate the whole tree, and the
+		// branch would grow one of these per resume for as long as it lives.
+		const third = await createOrchestrator(env);
+		const again = await third.spawnAgent({ origin: { kind: "resume", reference: ref } });
+		expect(await recapIds(third, again, "spawn_tree")).toEqual([["worker-a1b2", "worker-c3d4"]]);
+	});
+
+	// The recap exists to correct a belief. An agent that never spawned anything,
+	// or disposed what it spawned, holds no belief to correct.
+	it("stays silent about a branch that shows nothing running", async () => {
+		const env = new MemoryExecutionEnv();
+		const first = await createOrchestrator(env);
+		const untouched = await first.spawnAgent({ origin: { kind: "new" } });
+		const tidy = await first.spawnAgent({ origin: { kind: "new" } });
+		await appendSpawnResult(first, tidy, "call-1", "worker-a1b2");
+		await appendDisposeResult(first, tidy, "call-2", "worker-a1b2");
+		const untouchedRef = sessionRef(first, untouched);
+		const tidyRef = sessionRef(first, tidy);
+
+		const second = await createOrchestrator(env);
+		const resumedUntouched = await second.spawnAgent({ origin: { kind: "resume", reference: untouchedRef } });
+		const resumedTidy = await second.spawnAgent({ origin: { kind: "resume", reference: tidyRef } });
+
+		expect(await recapIds(second, resumedUntouched, "spawn_tree")).toEqual([]);
+		expect(await recapIds(second, resumedTidy, "spawn_tree")).toEqual([]);
+	});
+
+	// A fork inherits the text of a spawn tree it does not own. The agents are
+	// alive, under the source, and outside the fork's tree, so it is owed the same
+	// correction in different words - and under the same recap name, so its own
+	// later resume does not say it all again.
+	it("tells a fork the inherited agents are not its own", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await createOrchestrator(env);
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		await appendSpawnResult(orchestrator, agentId, "call-1", "worker-a1b2");
+
+		const forked = await orchestrator.spawnAgent({ origin: { kind: "fork", sourceAgentId: agentId } });
+
+		expect(await recapIds(orchestrator, forked, "spawn_tree")).toEqual([["worker-a1b2"]]);
+		const text = await branchUserText(orchestrator, forked);
+		expect(text).toContain('<recap type="spawn_tree">');
+		expect(text).toContain("worker-a1b2 (profile worker) - belong to the session this one was forked from");
+		// The source keeps its own tree and is told nothing.
+		expect(await recapIds(orchestrator, agentId, "spawn_tree")).toEqual([]);
+	});
+
+	// The judgement is the model's context, not the file: a spawn behind a
+	// compaction checkpoint is not a belief anything still holds.
+	it("says nothing about a spawn compaction has already dropped", async () => {
+		const env = new MemoryExecutionEnv();
+		const first = await createOrchestrator(env);
+		const agentId = await first.spawnAgent({ origin: { kind: "new" } });
+		await appendSpawnResult(first, agentId, "call-1", "worker-a1b2");
+		const keptId = await requireAgentHarness(first, agentId).appendMessage({
+			role: "user",
+			content: "carry on",
+			timestamp: Date.now(),
+		});
+		if (keptId === undefined) throw new Error("Expected the appended message to land immediately.");
+		await appendCompactionCheckpoint(first, agentId, keptId);
+		const ref = sessionRef(first, agentId);
+
+		const second = await createOrchestrator(env);
+		const resumed = await second.spawnAgent({ origin: { kind: "resume", reference: ref } });
+
+		expect(await recapIds(second, resumed, "spawn_tree")).toEqual([]);
+	});
+
+	// The mark is per subject, not per branch: the walk is what makes an agent
+	// spawned after a recap owed one of its own.
+	it("recaps an agent spawned after the last recap, and only that one", async () => {
+		const env = new MemoryExecutionEnv();
+		const first = await createOrchestrator(env);
+		const agentId = await first.spawnAgent({ origin: { kind: "new" } });
+		await appendSpawnResult(first, agentId, "call-1", "worker-a1b2");
+		const ref = sessionRef(first, agentId);
+
+		const second = await createOrchestrator(env);
+		const resumed = await second.spawnAgent({ origin: { kind: "resume", reference: ref } });
+		await appendSpawnResult(second, resumed, "call-2", "worker-c3d4");
+
+		const third = await createOrchestrator(env);
+		const again = await third.spawnAgent({ origin: { kind: "resume", reference: ref } });
+
+		expect(await recapIds(third, again, "spawn_tree")).toEqual([["worker-a1b2"], ["worker-c3d4"]]);
 	});
 });

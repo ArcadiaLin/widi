@@ -379,6 +379,20 @@ export class SessionManager {
 		return buildSessionContext(await this._getFullBranch(session));
 	}
 
+	/**
+	 * The branch as far back as the model can still see it: pi-agent-core's own
+	 * compaction-aware path, which stops at the last compaction or its retained
+	 * tail.
+	 *
+	 * Every other reader here wants `pathToRoot` instead, because hydration,
+	 * extension state and durable configuration are about what the session holds.
+	 * This one is for the readers whose question is what the model believes, and
+	 * a fact compaction dropped is one it no longer believes.
+	 */
+	async getAgentSessionContextBranch(agentId: AgentId): Promise<readonly SessionTreeEntry[]> {
+		return await this._requireAgentSession(agentId).getBranch();
+	}
+
 	async setAgentSessionName(agentId: AgentId, name: string): Promise<AgentSessionSnapshot> {
 		const session = this._requireAgentSession(agentId);
 		await session.appendSessionName(name);

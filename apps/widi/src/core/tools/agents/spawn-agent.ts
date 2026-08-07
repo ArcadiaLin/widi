@@ -13,6 +13,13 @@ const spawnAgentSchema = Type.Object({
 	),
 });
 
+/**
+ * Exported because the tool result is a durable record: the orchestrator reads
+ * a resumed branch for the agents it says were spawned, and matching that by a
+ * literal in two files is how the two drift apart.
+ */
+export const SPAWN_AGENT_TOOL_NAME = "spawn_agent";
+
 export type SpawnAgentInput = Static<typeof spawnAgentSchema>;
 
 export interface SpawnAgentDetails {
@@ -33,8 +40,8 @@ export interface SpawnAgentDetails {
  */
 export function createSpawnAgentToolDefinition(): ToolDefinition<typeof spawnAgentSchema, SpawnAgentDetails> {
 	return {
-		name: "spawn_agent",
-		label: "spawn_agent",
+		name: SPAWN_AGENT_TOOL_NAME,
+		label: SPAWN_AGENT_TOOL_NAME,
 		description:
 			"Create a new agent from a profile and get its agent id back. The new agent is idle and runs independently; it does not see your conversation. Pass task to hand it a first task at the same time, which returns a task id that settles when that agent reports the task complete. Use list_agent_profiles first to pick a profile.",
 		promptSnippet: "Create a new agent, optionally with a first task",
