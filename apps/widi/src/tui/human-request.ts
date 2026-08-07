@@ -8,7 +8,7 @@ import {
 } from "../core/human-request.ts";
 import { boundedText, singleLine } from "./format.ts";
 import { matchRequestOptionIndex } from "./keybindings.ts";
-import type { TuiApplicationState } from "./state.ts";
+import { clearDockedFocus, setDockedFocus, type TuiApplicationState } from "./state.ts";
 import { theme } from "./theme/theme.ts";
 
 const FREE_INPUT_VALUE = "\x00free-input";
@@ -661,14 +661,14 @@ export class HumanRequestMenu implements Component {
 		const index = tabs.findIndex((tab) => tab.kind !== "submit" && tab.entry === entryIndex);
 		this.focusedTab = index >= 0 ? index : 0;
 		this.opened = true;
-		this.state.mode = "human-request";
+		setDockedFocus(this.state, "human-request");
 		this.host.setFocus(this);
 		this.host.requestRender();
 	}
 
 	private closeMenu(): void {
 		this.opened = false;
-		if (this.state.mode === "human-request") this.state.mode = "editor";
+		clearDockedFocus(this.state, "human-request");
 		this.restoreFocus();
 		this.host.requestRender();
 	}

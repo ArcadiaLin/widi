@@ -335,13 +335,36 @@ export interface PendingHumanRequestView {
 	readonly agentId?: AgentId;
 }
 
+/** Which interaction layer owns input; derived from TuiFocusState. */
+export type TuiInteractionMode = "editor" | "selector" | "human-request" | "agent-panel";
+
+/** Docked layout components that can hold input focus instead of the editor. */
+export type TuiDockedFocus = "human-request" | "agent-panel";
+
+export interface TuiOverlayFocusEntry {
+	/** Interaction mode the overlay contributes while it sits on the stack. */
+	readonly mode?: TuiInteractionMode;
+}
+
+/**
+ * The single source of truth behind `state.mode`. The application overlay
+ * stack pushes/pops overlay entries as overlays open and close; docked
+ * components claim and release `docked` as they take and lose input focus.
+ * Nobody writes `mode` directly.
+ */
+export interface TuiFocusState {
+	readonly overlays: TuiOverlayFocusEntry[];
+	docked?: TuiDockedFocus;
+}
+
 export interface TuiApplicationState {
 	activeAgentId?: AgentId;
 	pendingAgent?: PendingAgentViewState;
 	agents: Map<AgentId, AgentViewState>;
 	globalNotices: NoticeItem[];
 	humanRequests: PendingHumanRequestView[];
-	mode: "editor" | "selector" | "human-request" | "agent-panel";
+	readonly focus: TuiFocusState;
+	readonly mode: TuiInteractionMode;
 	shuttingDown: boolean;
 	/** Global toggle: show full transcript details instead of collapsed previews. */
 	toolOutputExpanded: boolean;
@@ -352,10 +375,47 @@ export function createTuiApplicationState(): TuiApplicationState {
 		agents: new Map(),
 		globalNotices: [],
 		humanRequests: [],
-		mode: "editor",
+		focus: { overlays: [] },
+		get mode() {
+			return interactionMode(this);
+		},
 		shuttingDown: false,
 		toolOutputExpanded: false,
 	};
+}
+
+/**
+ * The interaction mode is derived, never assigned: the top-most overlay wins,
+ * then the docked component holding input focus, then the editor. A pending
+ * human request on its own is not a mode — only the open menu claims it.
+ */
+export function interactionMode(state: TuiApplicationState): TuiInteractionMode {
+	for (let i = state.focus.overlays.length - 1; i >= 0; i--) {
+		const mode = state.focus.overlays[i]?.mode;
+		if (mode) return mode;
+	}
+	return state.focus.docked ?? "editor";
+}
+
+/** Record an opened overlay at the top of the focus stack. */
+export function pushOverlayFocus(state: TuiApplicationState, entry: TuiOverlayFocusEntry): TuiOverlayFocusEntry {
+	state.focus.overlays.push(entry);
+	return entry;
+}
+
+export function removeOverlayFocus(state: TuiApplicationState, entry: TuiOverlayFocusEntry): void {
+	const index = state.focus.overlays.indexOf(entry);
+	if (index >= 0) state.focus.overlays.splice(index, 1);
+}
+
+/** A docked component takes input focus. */
+export function setDockedFocus(state: TuiApplicationState, docked: TuiDockedFocus): void {
+	state.focus.docked = docked;
+}
+
+/** Release the docked focus claim; a mismatched claimant leaves it alone. */
+export function clearDockedFocus(state: TuiApplicationState, docked?: TuiDockedFocus): void {
+	if (docked === undefined || state.focus.docked === docked) state.focus.docked = undefined;
 }
 
 export function createAgentViewState(agentId: AgentId, status: AgentViewStatus = "creating"): AgentViewState {

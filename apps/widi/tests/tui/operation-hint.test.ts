@@ -9,7 +9,12 @@ import {
 	resolveOperationHint,
 } from "../../src/tui/components/operation-hint.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
-import { createTuiApplicationState, ensureAgentProjection, setActiveAgent } from "../../src/tui/state.ts";
+import {
+	createTuiApplicationState,
+	ensureAgentProjection,
+	setActiveAgent,
+	setDockedFocus,
+} from "../../src/tui/state.ts";
 
 const engine = new CommandEngine(builtInCommands);
 const keys = {
@@ -322,7 +327,9 @@ describe("resolveOperationHint", () => {
 
 	it("renders no separate hint while the human request menu owns focus", () => {
 		const state = createTuiApplicationState();
-		state.mode = "human-request";
+		// The open menu claims the docked focus slot, which derives mode
+		// "human-request" (state.ts).
+		setDockedFocus(state, "human-request");
 		state.humanRequests = [
 			{
 				agentId: "main",

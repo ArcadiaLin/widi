@@ -7,7 +7,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { agentIdentityLabel } from "../agent-identity.ts";
 import { type AgentTree, type AgentTreeEntry, buildAgentTree, flattenAgentTree } from "../agent-tree.ts";
-import type { AgentViewState, TuiApplicationState } from "../state.ts";
+import { type AgentViewState, clearDockedFocus, setDockedFocus, type TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
 import { extensionStatusesInRegion, maintenanceLabel, tonePaint } from "./common.ts";
 
@@ -71,14 +71,14 @@ export class AgentStripView implements Component {
 		const entries = flattenAgentTree(tree);
 		this.cursorAgentId = undefined;
 		if (!this.ensureCursor(entries) || !this.cursorAgentId) return;
-		this.state.mode = "agent-panel";
+		setDockedFocus(this.state, "agent-panel");
 		this.host.setFocus(this);
 		this.host.requestRender();
 	}
 
 	close(): void {
 		if (!this.focused && this.state.mode !== "agent-panel") return;
-		if (this.state.mode === "agent-panel") this.state.mode = "editor";
+		clearDockedFocus(this.state, "agent-panel");
 		this.onClose();
 	}
 

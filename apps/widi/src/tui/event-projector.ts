@@ -316,7 +316,6 @@ export class EventProjector {
 				if (event.agentId) {
 					raiseAttention(ensureAgentProjection(this.state, event.agentId), "human-request");
 				}
-				this.state.mode = "human-request";
 				return;
 			}
 			case "human_request_resolved":
@@ -736,7 +735,6 @@ export class EventProjector {
 				agent.attention = retainedAttention(this.state, agent);
 			}
 		}
-		this.state.mode = this.state.humanRequests.length > 0 ? "human-request" : "editor";
 	}
 
 	private markBackgroundActivity(agentId: AgentId, incrementUnread = true, attention?: AgentAttention): void {

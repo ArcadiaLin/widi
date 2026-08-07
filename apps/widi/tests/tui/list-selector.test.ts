@@ -1,4 +1,4 @@
-import { type Component, type OverlayHandle, type SelectItem, setKeybindings } from "@earendil-works/pi-tui";
+import { type SelectItem, setKeybindings } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import type { AgentSnapshot } from "../../src/core/agent-types.ts";
@@ -8,6 +8,7 @@ import { AgentStripView } from "../../src/tui/components/agent-strip.ts";
 import { OperationHintView } from "../../src/tui/components/operation-hint.ts";
 import { WidiEditor } from "../../src/tui/editor.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
+import type { OverlayStack } from "../../src/tui/layout/overlay-stack.ts";
 import { ListSelector } from "../../src/tui/selectors/list-selector.ts";
 import { ensureAgentProjection } from "../../src/tui/state.ts";
 
@@ -479,10 +480,13 @@ function agentSnapshot(agentId: string): AgentSnapshot {
 }
 
 function requireSelector(application: WidiTuiApplication): ListSelector {
-	const active = (application as unknown as { activeSelector?: { view: Component; overlay: OverlayHandle } })
-		.activeSelector;
-	if (!(active?.view instanceof ListSelector)) throw new Error("Expected a command selector overlay to be open.");
-	return active.view;
+	const overlays = (application as unknown as { overlays: OverlayStack }).overlays;
+	const handles = overlays.list();
+	for (let i = handles.length - 1; i >= 0; i--) {
+		const view = handles[i]?.component;
+		if (view instanceof ListSelector) return view;
+	}
+	throw new Error("Expected a command selector overlay to be open.");
 }
 
 function requireEditor(application: WidiTuiApplication): WidiEditor {

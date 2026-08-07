@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { type Component, type OverlayHandle, ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
+import { ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
 import type { AgentOrchestrator } from "../core/agent-orchestrator.ts";
 import { DEFAULT_AGENT_DIR } from "../core/constants.js";
 import { type OrchestratorDiagnostic, OrchestratorError } from "../core/diagnostics.ts";
@@ -29,13 +29,15 @@ import { WidiEditor } from "./editor.ts";
 import { applyAgentSnapshot, EventProjector } from "./event-projector.ts";
 import { HumanRequestMenu } from "./human-request.ts";
 import { createWidiKeybindings, loadUserKeybindings } from "./keybindings.ts";
+import { type AppOverlayHandle, OverlayStack } from "./layout/overlay-stack.ts";
 import { type LayoutSlotEntry, LayoutSlots } from "./layout/slots.ts";
 import { PendingAgentController, type PendingAgentDisplay } from "./pending-agent.ts";
-import { ListSelector, type ListSelectorRequest } from "./selectors/list-selector.ts";
+import { ListSelector, type ListSelectorHintContext, type ListSelectorRequest } from "./selectors/list-selector.ts";
 import { hydrateSessionEntries } from "./session-hydrator.ts";
 import { StartupHumanPrompt } from "./startup-human-prompt.ts";
 import {
 	type AgentViewState,
+	clearDockedFocus,
 	createTuiApplicationState,
 	ensureAgentProjection,
 	type NoticeTextMode,
@@ -66,8 +68,8 @@ export class WidiTuiApplication {
 
 	private readonly projector: EventProjector;
 	private readonly editor: WidiEditor;
-	/** The open command selector overlay, if any (Step 4 folds this into the overlay stack). */
-	private activeSelector?: { readonly view: Component; readonly overlay: OverlayHandle };
+	/** Application overlay stack: selectors, the fatal boundary, future extension overlays. */
+	private readonly overlays: OverlayStack;
 	private readonly humanRequests: HumanRequestMenu;
 	private readonly agentPanel: AgentStripView;
 	private readonly pendingAgents: PendingAgentController;
@@ -164,17 +166,22 @@ export class WidiTuiApplication {
 			host: this.tui,
 			state: this.state,
 			resolveAgentLabel: (agentId) => this.resolveAgentLabel(agentId),
-			restoreFocus: () => this.tui.setFocus(this.editor),
+			restoreFocus: () => this.overlays.restoreFocus(),
 		});
 		this.agentPanel = new AgentStripView(
 			this.state,
 			this.tui,
 			(agentId) => this.switchAgent(agentId),
 			() => {
-				this.tui.setFocus(this.editor);
-				this.tui.requestRender();
+				this.overlays.restoreFocus();
 			},
 		);
+		this.overlays = new OverlayStack({
+			host: this.tui,
+			state: this.state,
+			editor: this.editor,
+			dockedFocusTarget: () => (this.humanRequests.isOpen ? this.humanRequests : undefined),
+		});
 
 		// The built-in views dogfood the same slot registry extension widgets
 		// will use; registration order is the render order the hardcoded
@@ -242,15 +249,22 @@ export class WidiTuiApplication {
 						state: this.state,
 						engine: this.engine,
 						editor: this.editor,
-						selectorHint: () => {
-							const view = this.activeSelector?.view;
-							return view instanceof ListSelector ? view.hintContext : undefined;
-						},
+						selectorHint: () => this.topSelectorHint(),
 					}),
 			},
 			{ key: "agentStrip", slot: "agentStrip", scope: "global", factory: () => this.agentPanel },
 		];
 		for (const entry of entries) this.layout.register(entry);
+	}
+
+	/** Hint context of the topmost list selector on the overlay stack, if any. */
+	private topSelectorHint(): ListSelectorHintContext | undefined {
+		const handles = this.overlays.list();
+		for (let i = handles.length - 1; i >= 0; i--) {
+			const view = handles[i]?.component;
+			if (view instanceof ListSelector) return view.hintContext;
+		}
+		return undefined;
 	}
 
 	static async create(options: WidiTuiOptions): Promise<WidiTuiApplication> {
@@ -853,12 +867,13 @@ export class WidiTuiApplication {
 				description: "Use the current session position",
 			});
 		}
+		let handle: AppOverlayHandle | undefined;
 		const request: ListSelectorRequest = {
 			title: `/${command.name}`,
 			items,
 			operation: { description: command.description, confirmVerb: "apply" },
 			...(initialFilter !== undefined && initialFilter !== "" ? { initialFilter } : {}),
-			onClose: () => this.closeActiveSelector(),
+			onClose: () => handle?.close(),
 			onSelect: (item) => {
 				// Space syntax cannot express an explicit empty argument (submit
 				// trims it away); the colon form keeps "use current position"
@@ -868,31 +883,15 @@ export class WidiTuiApplication {
 			onCancel: () => this.restoreEditor(originalText, agentId),
 		};
 		const view = command.selector ? command.selector(request) : new ListSelector(request);
-		const overlay = this.tui.showOverlay(view, {
+		handle = this.overlays.show(view, {
+			mode: "selector",
+			dismissible: true,
 			width: "70%",
 			minWidth: 36,
 			maxHeight: "60%",
 			anchor: "center",
 			margin: 1,
 		});
-		this.activeSelector = { view, overlay };
-		this.state.mode = "selector";
-		this.tui.requestRender();
-	}
-
-	/**
-	 * Hides the selector overlay and hands focus back to the still-open
-	 * human-request menu before falling back to the editor. The selector calls
-	 * this through its request's onClose before running onSelect/onCancel; the
-	 * interrupt path calls it directly to dismiss without either callback.
-	 */
-	private closeActiveSelector(): void {
-		const active = this.activeSelector;
-		if (!active) return;
-		this.activeSelector = undefined;
-		active.overlay.hide();
-		if (this.state.mode === "selector") this.state.mode = "editor";
-		this.tui.setFocus(this.humanRequests.isOpen ? this.humanRequests : this.editor);
 		this.tui.requestRender();
 	}
 
@@ -1033,7 +1032,7 @@ export class WidiTuiApplication {
 		const agent = setActiveAgent(this.state, agentId);
 		this.updateJobsTicker();
 		this.editor.setText(this.drafts.get(agentId) ?? "");
-		this.state.mode = "editor";
+		clearDockedFocus(this.state);
 		this.updateEditorAvailability();
 		this.editor.setAutocompleteProvider(
 			new WidiCommandAutocompleteProvider({
@@ -1093,6 +1092,7 @@ export class WidiTuiApplication {
 	private showFatalOverlay(code: string, message: string): void {
 		if (this.state.shuttingDown || this.fatalOverlayShown) return;
 		this.fatalOverlayShown = true;
+		let handle: AppOverlayHandle | undefined;
 		const view = new FatalErrorView({
 			code,
 			message,
@@ -1101,18 +1101,10 @@ export class WidiTuiApplication {
 			},
 			onViewDiagnostics: () => {
 				this.fatalOverlayShown = false;
-				overlay.hide();
-				this.tui.setFocus(this.editor);
-				this.tui.requestRender();
+				handle?.close();
 			},
 		});
-		const overlay = this.tui.showOverlay(view, {
-			width: "70%",
-			minWidth: 36,
-			maxHeight: "70%",
-			anchor: "center",
-			margin: 1,
-		});
+		handle = this.overlays.show(view, { width: "70%", minWidth: 36, maxHeight: "70%", anchor: "center", margin: 1 });
 	}
 
 	private projectDiagnostic(diagnostic: OrchestratorDiagnostic): void {
@@ -1172,10 +1164,7 @@ export class WidiTuiApplication {
 	}
 
 	private interrupt(): void {
-		if (this.activeSelector) {
-			this.closeActiveSelector();
-			return;
-		}
+		if (this.overlays.dismiss()) return;
 		const agentId = this.state.activeAgentId;
 		if (!agentId) return;
 		const agent = ensureAgentProjection(this.state, agentId);
