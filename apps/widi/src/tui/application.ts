@@ -29,6 +29,7 @@ import { WidiEditor } from "./editor.ts";
 import { applyAgentSnapshot, EventProjector } from "./event-projector.ts";
 import { HumanRequestMenu } from "./human-request.ts";
 import { createWidiKeybindings, loadUserKeybindings } from "./keybindings.ts";
+import { type LayoutSlotEntry, LayoutSlots } from "./layout/slots.ts";
 import { PendingAgentController, type PendingAgentDisplay } from "./pending-agent.ts";
 import { ListSelector, type ListSelectorRequest } from "./selectors/list-selector.ts";
 import { hydrateSessionEntries } from "./session-hydrator.ts";
@@ -82,6 +83,8 @@ export class WidiTuiApplication {
 	private jobsTicker?: NodeJS.Timeout;
 	private jobsTickerInterval?: number;
 	private readonly jobsPanel: JobsPanelView;
+	/** Layout assembly: every mounted view is a registered slot entry. */
+	readonly layout = new LayoutSlots();
 	private readonly pendingTasks = new Set<Promise<unknown>>();
 	private readonly lifecycleTasks = new Set<Promise<unknown>>();
 	private readonly drafts = new Map<string, string>();
@@ -173,31 +176,11 @@ export class WidiTuiApplication {
 			},
 		);
 
-		this.tui.addChild(new HeaderView(this.state));
-		this.tui.addChild(new NoticeView(this.state));
-		this.tui.addChild(new ChatView(this.state));
-		this.tui.addChild(new StatusView(this.state));
-		this.tui.addChild(new QueuedInputView(this.state));
-		this.tui.addChild(this.jobsPanel);
-		this.tui.addChild(this.humanRequests);
-		this.tui.addChild(this.editor);
-		this.tui.addChild(
-			new FooterView(this.state, runtime.services.cwd, () => {
-				this.tui.requestRender();
-			}),
-		);
-		this.tui.addChild(
-			new OperationHintView({
-				state: this.state,
-				engine: this.engine,
-				editor: this.editor,
-				selectorHint: () => {
-					const view = this.activeSelector?.view;
-					return view instanceof ListSelector ? view.hintContext : undefined;
-				},
-			}),
-		);
-		this.tui.addChild(this.agentPanel);
+		// The built-in views dogfood the same slot registry extension widgets
+		// will use; registration order is the render order the hardcoded
+		// addChild sequence used to fix.
+		this.registerBuiltInSlots();
+		this.layout.mount(this.tui, this.state);
 		this.tui.setFocus(this.editor);
 
 		this.editor.onSubmit = (text) => {
@@ -223,6 +206,51 @@ export class WidiTuiApplication {
 		this.editor.onExit = () => {
 			void this.shutdown("user exit").catch(() => {});
 		};
+	}
+
+	/**
+	 * Every mounted view registers as a slot entry, in render order. Views the
+	 * application itself drives (editor, human requests, jobs panel, agent
+	 * strip) are constructed beforehand and their factories return the held
+	 * instance.
+	 */
+	private registerBuiltInSlots(): void {
+		const entries: LayoutSlotEntry[] = [
+			{ key: "header", slot: "header", scope: "global", factory: () => new HeaderView(this.state) },
+			{ key: "notices", slot: "notices", scope: "global", factory: () => new NoticeView(this.state) },
+			{ key: "chat", slot: "chat", scope: "global", factory: () => new ChatView(this.state) },
+			{ key: "status", slot: "status", scope: "global", factory: () => new StatusView(this.state) },
+			{ key: "queuedInput", slot: "aboveEditor", scope: "global", factory: () => new QueuedInputView(this.state) },
+			{ key: "jobsPanel", slot: "jobsPanel", scope: "global", factory: () => this.jobsPanel },
+			{ key: "humanRequests", slot: "aboveEditor", scope: "global", factory: () => this.humanRequests },
+			{ key: "editor", slot: "editor", scope: "global", factory: () => this.editor },
+			{
+				key: "footer",
+				slot: "footer",
+				scope: "global",
+				factory: () =>
+					new FooterView(this.state, this.runtime.services.cwd, () => {
+						this.tui.requestRender();
+					}),
+			},
+			{
+				key: "operationHint",
+				slot: "belowEditor",
+				scope: "global",
+				factory: () =>
+					new OperationHintView({
+						state: this.state,
+						engine: this.engine,
+						editor: this.editor,
+						selectorHint: () => {
+							const view = this.activeSelector?.view;
+							return view instanceof ListSelector ? view.hintContext : undefined;
+						},
+					}),
+			},
+			{ key: "agentStrip", slot: "agentStrip", scope: "global", factory: () => this.agentPanel },
+		];
+		for (const entry of entries) this.layout.register(entry);
 	}
 
 	static async create(options: WidiTuiOptions): Promise<WidiTuiApplication> {
