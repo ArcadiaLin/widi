@@ -225,39 +225,33 @@ export function harnessInputText(input: unknown): string {
 }
 
 /**
- * Replace `compact()` with one the test controls, moving the harness phase the
- * way the real one does.
- *
- * Maintenance is read from `getPhase()` rather than tracked in the
- * orchestrator, so a mock that only returns a promise leaves the agent looking
- * idle and every maintenance gate open. The real `compact()` sets the phase
- * synchronously ahead of its first await, and clears it in a `finally`.
+ * The harness's own phase transition, so a stubbed operation moves the phase and
+ * emits `phase_change` exactly as the real one does. Activity is read from
+ * `getPhase()` and published from the event, so a mock that only returns a
+ * promise leaves the agent looking idle and every maintenance gate open.
  */
+function movePhase(harness: WidiAgentHarness, phase: string): Promise<void> {
+	return (harness as unknown as { setPhase: (next: string) => Promise<void> }).setPhase(phase);
+}
+
+/** Replace `compact()` with one the test controls. */
 export function stubCompaction(harness: WidiAgentHarness): { resolve: (result: CompactResult) => void } {
 	let resolve!: (result: CompactResult) => void;
 	const promise = new Promise<CompactResult>((done) => {
 		resolve = done;
 	});
-	const setPhase = (phase: string) => {
-		(harness as unknown as { phase: string }).phase = phase;
-	};
 	vi.spyOn(harness, "compact").mockImplementation(async () => {
-		setPhase("compaction");
+		await movePhase(harness, "compaction");
 		try {
 			return await promise;
 		} finally {
-			setPhase("idle");
+			await movePhase(harness, "idle");
 		}
 	});
 	return { resolve };
 }
 
-/**
- * Replace `prompt()` with one the test controls, moving the harness phase the
- * way the real one does. Same reason as {@link stubCompaction}: activity is
- * read from the phase, so a mock that only returns a promise leaves the agent
- * looking idle for the whole run.
- */
+/** Replace `prompt()` with one the test controls. */
 export function stubPromptRun(harness: WidiAgentHarness): {
 	readonly prompt: MockInstance<WidiAgentHarness["prompt"]>;
 	readonly resolve: (message: AssistantMessage) => void;
@@ -266,15 +260,12 @@ export function stubPromptRun(harness: WidiAgentHarness): {
 	const promise = new Promise<AssistantMessage>((done) => {
 		resolve = done;
 	});
-	const setPhase = (phase: string) => {
-		(harness as unknown as { phase: string }).phase = phase;
-	};
 	const prompt = vi.spyOn(harness, "prompt").mockImplementation(async () => {
-		setPhase("turn");
+		await movePhase(harness, "turn");
 		try {
 			return await promise;
 		} finally {
-			setPhase("idle");
+			await movePhase(harness, "idle");
 		}
 	});
 	return { prompt, resolve };

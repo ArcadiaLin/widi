@@ -354,6 +354,17 @@ export class AgentHarness<
 		return current;
 	}
 
+	/**
+	 * Assign synchronously, then announce. A no-op transition emits nothing: a
+	 * failure path back to `idle` can run after the operation's tail cleared it.
+	 */
+	private async setPhase(phase: AgentHarnessPhase): Promise<void> {
+		const previousPhase = this.phase;
+		if (previousPhase === phase) return;
+		this.phase = phase;
+		await this.emitOwn({ type: "phase_change", phase, previousPhase });
+	}
+
 	private async emitQueueUpdate(): Promise<void> {
 		await this.emitOwn({
 			type: "queue_update",
@@ -716,7 +727,7 @@ export class AgentHarness<
 		}
 		if (event.type === "agent_end") {
 			await this.flushPendingSessionWrites();
-			this.phase = "idle";
+			await this.setPhase("idle");
 			await this.emitAny(event, signal);
 			await this.emitOwn({ type: "settled", nextTurnCount: this.nextTurnQueue.length }, signal);
 			return;
@@ -809,14 +820,16 @@ export class AgentHarness<
 	async prompt(input: string | AgentMessage, options?: { images?: ImageContent[] }): Promise<AssistantMessage> {
 		this.assertNotShutDown();
 		if (this.phase !== "idle") throw new AgentHarnessError("busy", "AgentHarness is busy");
-		this.phase = "turn";
+		// Registered before the phase is announced, so an observer that reacts by
+		// aborting finds a controller to abort.
 		const operation = this.startOperation();
 		try {
+			await this.setPhase("turn");
 			await this.settleSessionOwnership();
 			const turnState = await this.createTurnState();
 			return await this.executeTurn(turnState, input, operation.signal, options);
 		} catch (error) {
-			this.phase = "idle";
+			await this.setPhase("idle");
 			throw normalizeHarnessError(error, "unknown");
 		} finally {
 			operation.finish();
@@ -933,9 +946,9 @@ export class AgentHarness<
 	async compact(customInstructions?: string): Promise<CompactResult> {
 		this.assertNotShutDown();
 		if (this.phase !== "idle") throw new AgentHarnessError("busy", "compact() requires idle harness");
-		this.phase = "compaction";
 		const operation = this.startOperation();
 		try {
+			await this.setPhase("compaction");
 			await this.settleSessionOwnership();
 			const model = this.model;
 			if (!model) throw new AgentHarnessError("invalid_state", "No model set for compaction");
@@ -990,8 +1003,8 @@ export class AgentHarness<
 			try {
 				await this.flushPendingSessionWrites();
 			} finally {
-				this.phase = "idle";
 				operation.finish();
+				await this.setPhase("idle");
 			}
 		}
 	}
@@ -1002,9 +1015,9 @@ export class AgentHarness<
 	): Promise<NavigateTreeResult> {
 		this.assertNotShutDown();
 		if (this.phase !== "idle") throw new AgentHarnessError("busy", "navigateTree() requires idle harness");
-		this.phase = "branch_summary";
 		const operation = this.startOperation();
 		try {
+			await this.setPhase("branch_summary");
 			await this.settleSessionOwnership();
 			const oldLeafId = await this.session.getLeafId();
 			if (oldLeafId === targetId) return { cancelled: false };
@@ -1095,8 +1108,8 @@ export class AgentHarness<
 			try {
 				await this.flushPendingSessionWrites();
 			} finally {
-				this.phase = "idle";
 				operation.finish();
+				await this.setPhase("idle");
 			}
 		}
 	}

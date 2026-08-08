@@ -21,6 +21,7 @@ import {
 	requireAgentHarness,
 	requireLiveAgent,
 	seedAgentContextUsage,
+	stubCompaction,
 } from "../helpers/orchestrator.ts";
 
 // Same private-access precedent as the orchestrator suite: a real settled fact
@@ -328,11 +329,10 @@ describe("extension context usage", () => {
 		orchestrator.subscribe((event) => {
 			events.push(event);
 		});
-		Object.assign(orchestrator, {
-			_runMaintenanceOperation: async () => ({ summary: "s", firstKeptEntryId: "e", tokensBefore: 250 }),
-		});
-
-		await orchestrator.compactAgent(agentId);
+		const compaction = stubCompaction(requireAgentHarness(orchestrator, agentId));
+		const compacting = orchestrator.compactAgent(agentId);
+		compaction.resolve({ summary: "s", firstKeptEntryId: "e", tokensBefore: 250 });
+		await compacting;
 
 		expect(actions.getContextUsage()).toBeUndefined();
 		expect(events).toContainEqual(

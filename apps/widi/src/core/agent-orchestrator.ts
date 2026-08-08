@@ -2511,6 +2511,11 @@ export class AgentOrchestrator {
 			if (promptRun) promptRun.idleReason = "aborted";
 			else this._agentIdleReasons.set(agentId, "aborted");
 		}
+		// Maintenance releases the harness with no turn behind it, so no prompt run
+		// completion will stamp this idle.
+		if (event.type === "phase_change" && event.phase === "idle" && toMaintenanceKind(event.previousPhase)) {
+			this._agentIdleReasons.set(agentId, "maintenance");
+		}
 		// An empty steering queue is the only honest evidence that the human's
 		// interrupt was read; an abort clears the queue through the same event.
 		if (event.type === "queue_update" && event.steer.length === 0) {
@@ -2599,10 +2604,7 @@ export class AgentOrchestrator {
 	 * report the old number as current. Drop it; the next settled re-measures.
 	 */
 	async compactAgent(agentId: AgentId, customInstructions?: string): Promise<CompactResult> {
-		const result = await this._runMaintenanceOperation(
-			agentId,
-			async (harness) => await harness.compact(customInstructions),
-		);
+		const result = await this._requireLiveAgent(agentId).harness.compact(customInstructions);
 		await this._context.invalidate(agentId);
 		return result;
 	}
@@ -2637,10 +2639,7 @@ export class AgentOrchestrator {
 	): Promise<NavigateTreeResult> {
 		const previousLeafId = await this.sessionManager.getAgentSessionLeafId(agentId);
 		try {
-			return await this._runMaintenanceOperation(
-				agentId,
-				async (harness) => await harness.navigateTree(targetId, options),
-			);
+			return await this._requireLiveAgent(agentId).harness.navigateTree(targetId, options);
 		} finally {
 			// A post-move observer can fail after the harness changed the leaf.
 			// Comparing in `finally` still reaches both consumers on that path, while
@@ -2654,46 +2653,6 @@ export class AgentOrchestrator {
 					"The conversation moved to a branch this job is not on.",
 				);
 				await this._context.invalidate(agentId);
-			}
-		}
-	}
-
-	/**
-	 * Run a harness operation that occupies the agent without driving a loop
-	 * (compaction, tree navigation). Concurrency is refused by the harness itself,
-	 * so there is no orchestrator-side maintenance table; what is left is
-	 * publishing the activity edges and stamping the released idle.
-	 *
-	 * **Start the operation first, then await the edge publication.** Both flip
-	 * the phase on their first synchronous line, so publishing first would leave a
-	 * window where the event says maintenance and the phase still says idle - and
-	 * a steer landing there would pass the phase guard.
-	 */
-	private async _runMaintenanceOperation<T>(
-		agentId: AgentId,
-		operation: (harness: WidiAgentHarness) => Promise<T>,
-	): Promise<T> {
-		const harness = this._requireLiveAgent(agentId).harness;
-		const running = operation(harness);
-		// Read after the call: this is what tells an operation that started from one
-		// the harness refused because it was already busy.
-		const started = toMaintenanceKind(harness.getPhase()) !== undefined;
-		try {
-			await this._publishAgentActivityEdge(agentId, harness.getPhase());
-		} catch (error) {
-			running.catch(() => {});
-			throw error;
-		}
-		try {
-			return await running;
-		} finally {
-			if (started) {
-				// No loop ran, so there is no new assistant message - but the
-				// busy-to-idle edge happened, and a `waitForAgentIdle` caller needs it.
-				this._agentIdleReasons.set(agentId, "maintenance");
-				await this._publishAgentActivityEdge(agentId, harness.getPhase());
-				this._messages.wake(agentId);
-				await this._settleAgentIdle(agentId);
 			}
 		}
 	}

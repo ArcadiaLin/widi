@@ -594,6 +594,16 @@ export type PendingSessionWrite = SessionTreeEntry extends infer TEntry
 		: never
 	: never;
 
+/**
+ * The harness moved between phases. `getPhase()` already reports `phase` when an
+ * observer runs; the event only makes the edge observable without polling.
+ */
+export interface PhaseChangeEvent {
+	type: "phase_change";
+	phase: AgentHarnessPhase;
+	previousPhase: AgentHarnessPhase;
+}
+
 export interface QueueUpdateEvent {
 	type: "queue_update";
 	steer: AgentMessage[];
@@ -752,6 +762,7 @@ export interface ToolsUpdateEvent {
 }
 
 export type AgentHarnessOwnEvent =
+	| PhaseChangeEvent
 	| QueueUpdateEvent
 	| SavePointEvent
 	| SessionWriteEvent
@@ -843,6 +854,7 @@ export type AgentHarnessEventResultMap = {
 	model_update: undefined;
 	thinking_level_update: undefined;
 	tools_update: undefined;
+	phase_change: undefined;
 	queue_update: undefined;
 	save_point: undefined;
 	session_write: undefined;

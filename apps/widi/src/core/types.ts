@@ -20,8 +20,7 @@ export type AgentActivity = "idle" | "running";
 
 /**
  * Maintenance work that marks an agent "running" without driving an agent
- * loop (see AgentOrchestrator._runMaintenanceOperation). Steering and aborting
- * do not apply while it is set.
+ * loop. Steering and aborting do not apply while it is set.
  */
 export type AgentMaintenanceKind = "compaction" | "tree-navigation";
 

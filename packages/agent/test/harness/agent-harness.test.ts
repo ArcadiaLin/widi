@@ -864,6 +864,30 @@ describe("AgentHarness", () => {
 		expect(harness.getPhase()).toBe("idle");
 	});
 
+	it("announces every phase transition as an edge", async () => {
+		const registration = newFaux();
+		const session = new Session(new InMemorySessionStorage());
+		const harness = new AgentHarness({ models, session, model: registration.getModel() });
+		registration.setResponses([fauxAssistantMessage("first"), fauxAssistantMessage("## Goal\nTest summary")]);
+		const edges: Array<[string, string]> = [];
+		harness.subscribe((event) => {
+			if (event.type === "phase_change") edges.push([event.previousPhase, event.phase]);
+			// The phase is assigned before the event, so an observer never reads the
+			// one the edge just left.
+			if (event.type === "phase_change") expect(harness.getPhase()).toBe(event.phase);
+		});
+
+		await harness.prompt("hello");
+		await harness.compact();
+
+		expect(edges).toEqual([
+			["idle", "turn"],
+			["turn", "idle"],
+			["idle", "compaction"],
+			["compaction", "idle"],
+		]);
+	});
+
 	it("reports queued message counts per lane without a queue_update subscription", async () => {
 		const registration = newFaux();
 		const firstResponseStarted = deferred();
