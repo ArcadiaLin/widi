@@ -184,8 +184,8 @@ describe("agent watches", () => {
 	 * keyboard of the agent it was waiting for, and a send_message from here would
 	 * land in the middle of their turn.
 	 */
-	it("tells the watcher to check with the human when a person interrupted the worker", async () => {
-		const { orchestrator, watch, watcherAgentId, workerAgentId } = await createPair();
+	it("tells the watcher a human took the worker over, and keeps the subscription", async () => {
+		const { orchestrator, watches, watch, watcherAgentId, workerAgentId } = await createPair();
 		const inbox = watchInbox(orchestrator, watcherAgentId);
 		await watch(watcherAgentId, workerAgentId);
 
@@ -195,8 +195,18 @@ describe("agent watches", () => {
 		const notice = inbox.texts[0] ?? "";
 		expect(notice).toContain(`reason="aborted" aborted-by="human"`);
 		expect(notice).toContain("was interrupted by a human");
-		expect(notice).toContain("ask the human");
-		expect(notice).not.toContain("Continue it with send_message");
+		expect(notice).toContain("still watching it");
+		// The delegation was interrupted, not finished, so the report it is owed has
+		// not been given and the subscription is not spent.
+		expect(watches.isWatchedBy(workerAgentId, watcherAgentId)).toBe(true);
+
+		// The human hands it back and it runs to a real stop.
+		await runAndStop(orchestrator, workerAgentId, assistantMessage("Router rewritten."));
+
+		await vi.waitFor(() => expect(inbox.texts).toHaveLength(2));
+		expect(inbox.texts[1]).toContain("Router rewritten.");
+		expect(inbox.texts[1]).toContain("finished a turn");
+		expect(watches.isWatchedBy(workerAgentId, watcherAgentId)).toBe(false);
 	});
 
 	it("carries the abort origin on the idle edge", async () => {

@@ -80,12 +80,20 @@ export class AgentWatches {
 			if (stop.reason === "ready" || stop.reason === "maintenance") continue;
 			if (stop.liveJobCount > 0) continue;
 			if (this._holdsWatches(targetAgentId)) continue;
-			this._watchers.delete(targetAgentId);
-			await this._deliver(host, targetAgentId, {
+			const notice: AgentNotice = {
 				status: "idle",
 				reason: stop.reason,
 				...(stop.abortedBy === undefined ? undefined : { abortedBy: stop.abortedBy }),
-			});
+			};
+			// A human taking the agent over is not the stop this was waiting for, but
+			// it is one the watcher has to hear about: it must stop assuming progress
+			// without losing the report it is still owed.
+			if (stop.abortedBy === "human") {
+				await this._deliver(host, targetAgentId, notice);
+				continue;
+			}
+			this._watchers.delete(targetAgentId);
+			await this._deliver(host, targetAgentId, notice);
 			return;
 		}
 	}
@@ -201,14 +209,9 @@ function formatNoticeBody(agentId: AgentId, notice: AgentNotice, report: string 
 	].join("\n\n");
 }
 
-/**
- * A human at the keyboard is the one case where the watcher must not act on its
- * own: the person is working with that agent directly, and a send_message from
- * here would land in the middle of their turn.
- */
 function formatNoticeClosing(agentId: AgentId, notice: AgentNotice): string {
 	if (notice.abortedBy === "human") {
-		return `${agentId} was interrupted by a human, who is working with it directly. You are no longer watching it. Do not send it anything yet; ask the human whether to take it back over or to wait for it to answer again.`;
+		return `${agentId} was interrupted by a human, who is working with it directly, so it has not finished what you gave it. You are still watching it and will be told when it next stops. A message from you now would land in the middle of their conversation: wait unless you have something that conversation needs, and continue it with send_message once the human hands it back.`;
 	}
 	if (notice.reason === "aborted") {
 		return `${agentId} was interrupted and stopped, so what it said may be a fragment. You are no longer watching it. Continue it with send_message, or dispose_agent to release it.`;
