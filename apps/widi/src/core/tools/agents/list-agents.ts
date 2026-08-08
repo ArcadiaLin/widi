@@ -48,7 +48,7 @@ export function createListAgentsToolDefinition(): ToolDefinition<typeof listAgen
 		name: "list_agents",
 		label: "list_agents",
 		description:
-			"List what you can delegate to: the profiles you can spawn an agent from, the agents you spawned that are running now with what each is doing and whether you are watching it, and the sessions you can resume. It shows one level - your own agents, not theirs - and does not enumerate other trees. You may still send_message to an exact agent id shared with you, from any tree or level. Only a running agent can be messaged, watched, or disposed; a resumable session must be spawned from first.",
+			"List what you can delegate to: the profiles you can spawn an agent from, the agents you spawned that are running now with what each is doing, and the sessions you can resume. It shows one level - your own agents, not theirs - and does not enumerate other trees. You may still send_message to an exact agent id shared with you, from any tree or level. Only a running agent can be messaged, watched, or disposed; a resumable session must be spawned from first.",
 		promptSnippet: "List the profiles, running agents, and resumable sessions",
 		parameters: listAgentsSchema,
 		execute: async (_toolCallId, { include }, context) => {
@@ -150,17 +150,8 @@ function formatLive(live: readonly AgentTreeRunningEntry[]): string {
 	if (live.length === 0) return "You have no agents running.";
 	const lines = live.map((entry) => {
 		const state = entry.activity === "running" ? "working" : "idle";
-		const watch = entry.watchedByCaller ? "watched" : "not watched";
-		return `- agent ${entry.agentId} [profile ${entry.profileId}] ${state}, ${watch}${nestedSuffix(entry)}`;
+		return `- agent ${entry.agentId} [profile ${entry.profileId}] ${state}${nestedSuffix(entry)}`;
 	});
-	// Surfacing the ones nobody is listening to, rather than reclaiming them: a
-	// stopped agent left running may well be one the caller means to come back to.
-	const unwatched = live.filter((entry) => !entry.watchedByCaller);
-	if (unwatched.length > 0) {
-		lines.push(
-			`Nothing will tell you when ${unwatched.map((entry) => entry.agentId).join(", ")} stops. Use watch_agent to subscribe, or dispose_agent to release an agent you are done with.`,
-		);
-	}
 	if (live.some((entry) => countNested(entry) > 0)) {
 		lines.push("+N counts the agents and sessions nested below an entry; ask a running agent to list its own.");
 	}

@@ -1,7 +1,7 @@
 import { type Static, Type } from "typebox";
 import type { ToolDefinition } from "../types.ts";
 import { requireAddressableAgent, requireAgentHost } from "./shared.ts";
-import { describeOutcome } from "./watch-agent.ts";
+import { type AgentWatches, describeOutcome } from "./watch-agent.ts";
 
 const sendMessageSchema = Type.Object({
 	agentId: Type.String({ description: "Id of the agent to send to." }),
@@ -31,7 +31,9 @@ export interface SendMessageDetails {
  * it last said before it stopped, and the runtime observes the stop itself, so
  * there is nothing here for a worker to remember to call.
  */
-export function createSendMessageToolDefinition(): ToolDefinition<typeof sendMessageSchema, SendMessageDetails> {
+export function createSendMessageToolDefinition(
+	watches: AgentWatches,
+): ToolDefinition<typeof sendMessageSchema, SendMessageDetails> {
 	return {
 		name: "send_message",
 		label: "send_message",
@@ -65,7 +67,7 @@ export function createSendMessageToolDefinition(): ToolDefinition<typeof sendMes
 			// the two calls. Nothing is rolled back if the send then fails - the
 			// caller is told, and an unspent watch costs one stale notification at
 			// worst.
-			const watchOutcome = watch === true ? host.watch(targetAgentId, true) : undefined;
+			const watchOutcome = watch === true ? watches.start(host, targetAgentId) : undefined;
 			const outcome = await host.sendMessage(targetAgentId, body);
 			if (outcome.kind === "blocked") {
 				const reason = outcome.reason ? `${outcome.blockedBy}: ${outcome.reason}` : `blocked by ${outcome.blockedBy}`;

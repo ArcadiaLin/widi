@@ -8,8 +8,8 @@
 import type { ThinkingLevel } from "@widi/agent-core";
 import type { BackgroundJobHost } from "./background/index.ts";
 import type { HumanRequestDraft, HumanResponse } from "./human-request.ts";
-import type { MessageSendOutcome } from "./message.ts";
-import type { AgentActivity, AgentId } from "./types.ts";
+import type { AgentNotice, MessageSendOutcome } from "./message.ts";
+import type { AgentActivity, AgentId, AgentIdleReason } from "./types.ts";
 
 export interface AgentProfileBrief {
 	readonly id: string;
@@ -25,8 +25,6 @@ export interface AgentBrief {
 	readonly profileId: string;
 	readonly label?: string;
 	readonly activity: AgentActivity;
-	/** The caller is subscribed to this agent's next stop. */
-	readonly watchedByCaller: boolean;
 }
 
 /**
@@ -49,11 +47,22 @@ export interface AgentSpawnRequest {
 	readonly thinkingLevel?: ThinkingLevel;
 }
 
-/**
- * `taken` means another agent already watches the target: a stop has exactly
- * one reader. The rest mirror the dispose vocabulary.
- */
-export type AgentWatchOutcome = "watching" | "not_watching" | "taken" | "outside_tree" | "self" | "unknown";
+/** One agent stopping, as the runtime observed it. */
+export interface AgentStop {
+	readonly reason: AgentIdleReason;
+	readonly liveJobCount: number;
+}
+
+/** A wait ended because an agent it depended on is gone; `agentId` names which. */
+export class AgentGoneError extends Error {
+	readonly agentId: AgentId;
+
+	constructor(agentId: AgentId) {
+		super(`Agent ${agentId} is gone.`);
+		this.name = "AgentGoneError";
+		this.agentId = agentId;
+	}
+}
 
 /**
  * One node of the caller's agent tree: an agent running now, or the session
@@ -75,8 +84,6 @@ export interface AgentTreeRunningEntry {
 	readonly label?: string;
 	/** Address of its session directory; absent for an ephemeral agent. */
 	readonly sessionRef?: string;
-	/** The caller is subscribed to this agent's next stop. */
-	readonly watchedByCaller: boolean;
 	readonly children: readonly AgentTreeEntry[];
 }
 
@@ -140,15 +147,20 @@ export interface AgentToOrchestratorHost {
 	describe(agentId: AgentId): AgentBrief | undefined;
 	spawn(request: AgentSpawnRequest): Promise<AgentId>;
 	sendMessage(targetAgentId: AgentId, body: string): Promise<MessageSendOutcome>;
+	/** Whether the target is in the caller's own tree, the scope lifecycle control uses. */
+	sharesTree(targetAgentId: AgentId): boolean;
 	/**
-	 * Subscribe to, or unsubscribe from, the target's next stop. It registers a
-	 * subscription and never waits for one to fire.
-	 *
-	 * Subscribe *before* sending the work. A pending delivery already counts the
-	 * target as busy, so a subscription registered first cannot miss the stop
-	 * that follows; registered after the send, it races one.
+	 * The target's *next* stop, edge-triggered: an agent already idle keeps this
+	 * waiting until it runs and stops again. Rejects when either side is disposed.
 	 */
-	watch(targetAgentId: AgentId, watching: boolean): AgentWatchOutcome;
+	waitForAgentStop(targetAgentId: AgentId, options?: { readonly signal?: AbortSignal }): Promise<AgentStop>;
+	/** What the target said in the run that just ended. */
+	readAgentReport(targetAgentId: AgentId): Promise<string | undefined>;
+	/**
+	 * Put text into the caller's own inbox, attributed to another agent.
+	 * `sendMessage` cannot express this: it always speaks *as* the caller.
+	 */
+	notifySelf(aboutAgentId: AgentId, notice: AgentNotice, body: string): Promise<MessageSendOutcome>;
 	dispose(agentId: AgentId, options: AgentRequestedDisposeOptions): Promise<AgentRequestedDisposeOutcome>;
 	readonly jobs: BackgroundJobHost;
 	requestHuman(request: HumanRequestDraft): Promise<HumanResponse>;

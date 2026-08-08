@@ -4,6 +4,7 @@ import type { AgentSpawnOrigin, AgentToOrchestratorHost } from "../../host.ts";
 import type { RecordedAgent } from "../../recap.ts";
 import type { ToolDefinition } from "../types.ts";
 import { requireAgentHost } from "./shared.ts";
+import type { AgentWatches } from "./watch-agent.ts";
 
 const spawnAgentItemSchema = Type.Object({
 	profile: Type.Optional(
@@ -115,7 +116,9 @@ function readSpawnedAgents(details: unknown): readonly RecordedAgent[] {
  * of a profile decides the agent's tools, and a caller able to name those could
  * hand a child what it does not itself hold.
  */
-export function createSpawnAgentToolDefinition(): ToolDefinition<typeof spawnAgentSchema, SpawnAgentDetails> {
+export function createSpawnAgentToolDefinition(
+	watches: AgentWatches,
+): ToolDefinition<typeof spawnAgentSchema, SpawnAgentDetails> {
 	return {
 		name: SPAWN_AGENT_TOOL_NAME,
 		label: SPAWN_AGENT_TOOL_NAME,
@@ -139,7 +142,7 @@ export function createSpawnAgentToolDefinition(): ToolDefinition<typeof spawnAge
 			// Sequential: agent ids are handed out as each spawn runs, and a caller
 			// reading its own result should see them in the order it asked for.
 			for (const request of agents) {
-				statuses.push(await spawnOne(host, request));
+				statuses.push(await spawnOne(watches, host, request));
 			}
 			return { content: [{ type: "text", text: formatSpawnSummary(statuses) }], details: { agents: statuses } };
 		},
@@ -147,6 +150,7 @@ export function createSpawnAgentToolDefinition(): ToolDefinition<typeof spawnAge
 }
 
 async function spawnOne(
+	watches: AgentWatches,
 	host: AgentToOrchestratorHost,
 	request: Static<typeof spawnAgentItemSchema>,
 ): Promise<SpawnAgentAgentStatus> {
@@ -175,7 +179,7 @@ async function spawnOne(
 
 	// Before the task, never after: a pending delivery already counts the agent
 	// busy, so a subscription registered first cannot miss the stop that follows.
-	const watching = (request.watch ?? task !== undefined) && host.watch(agentId, true) === "watching";
+	const watching = (request.watch ?? task !== undefined) && watches.start(host, agentId) === "watching";
 	const status = { origin: origin.kind, agentId, ...(profileId === undefined ? undefined : { profileId }), watching };
 	if (task === undefined) return status;
 

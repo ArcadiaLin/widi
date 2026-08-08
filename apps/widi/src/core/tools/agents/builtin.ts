@@ -4,7 +4,7 @@ import { createDisposeAgentToolDefinition } from "./dispose-agent.ts";
 import { createListAgentsToolDefinition } from "./list-agents.ts";
 import { createSendMessageToolDefinition } from "./send-message.ts";
 import { createSpawnAgentToolDefinition } from "./spawn-agent.ts";
-import { createWatchAgentToolDefinition } from "./watch-agent.ts";
+import { AgentWatches, createWatchAgentToolDefinition } from "./watch-agent.ts";
 
 const coreBuiltinToolSource: ToolSource = { kind: "core", id: "builtin" };
 
@@ -18,11 +18,16 @@ const coreBuiltinToolSource: ToolSource = { kind: "core", id: "builtin" };
  * tree, while exact-id messaging is the deliberate soft cross-tree bridge.
  * A profile that lists no tools grants the full group, including to spawned
  * workers, so worker profiles should still list their tools explicitly.
+ *
+ * The watch table is created here and closed over by the three tools that read
+ * or write it. It is runtime-scoped because exclusivity is a claim on the
+ * watched agent, which no single caller's view could settle.
  */
 export function registerCoreAgentTools(registry: ToolRegistry): void {
+	const watches = new AgentWatches();
 	registry.defineTool(createListAgentsToolDefinition(), coreBuiltinToolSource);
-	registry.defineTool(createSpawnAgentToolDefinition(), coreBuiltinToolSource);
-	registry.defineTool(createSendMessageToolDefinition(), coreBuiltinToolSource);
-	registry.defineTool(createWatchAgentToolDefinition(), coreBuiltinToolSource);
+	registry.defineTool(createSpawnAgentToolDefinition(watches), coreBuiltinToolSource);
+	registry.defineTool(createSendMessageToolDefinition(watches), coreBuiltinToolSource);
+	registry.defineTool(createWatchAgentToolDefinition(watches), coreBuiltinToolSource);
 	registry.defineTool(createDisposeAgentToolDefinition(), coreBuiltinToolSource);
 }

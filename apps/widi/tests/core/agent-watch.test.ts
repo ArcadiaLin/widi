@@ -1,6 +1,5 @@
 /**
- * Watches: the runtime observing that an agent stopped and telling whoever was
- * waiting on it.
+ * Watches: one agent waiting on another, and being told when it stops.
  *
  * The property under test is that the report does not depend on the stopped
  * agent doing anything. It is delivered when the agent is interrupted, when it
@@ -8,13 +7,22 @@
  * finished" call loses. The gates are the other half: an agent that paused to
  * wait on work it started has not stopped, and must not be reported as though
  * it had.
+ *
+ * Driven through the tool, because the tool is where all of this lives. The
+ * runtime below it only answers whether an agent stopped, what it said, and
+ * delivers a message.
  */
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentHarnessEvent, CompactResult } from "@widi/agent-core";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
+import type { OwnerAttachment } from "../../src/core/background/index.ts";
+import type { AgentToOrchestratorHost } from "../../src/core/host.ts";
 import { messageBindingFor } from "../../src/core/message.ts";
+import { SettingManager } from "../../src/core/setting-manager.ts";
+import { AgentWatches, createWatchAgentToolDefinition } from "../../src/core/tools/agents/watch-agent.ts";
+import type { ToolExecutionContext } from "../../src/core/tools/types.ts";
 import {
 	createOrchestrator,
 	defaultModel,
@@ -23,6 +31,7 @@ import {
 	MemoryExecutionEnv,
 	requireAgentHarness,
 	requireAgentJobs,
+	requireLiveAgent,
 	stubCompaction,
 } from "../helpers/orchestrator.ts";
 
@@ -59,6 +68,25 @@ function createDeferred(): Deferred {
 	return { promise, resolve };
 }
 
+function agentHost(orchestrator: AgentOrchestrator, agentId: string): AgentToOrchestratorHost {
+	return (
+		orchestrator as unknown as {
+			_createAgentHost: (agentId: string, attachment: OwnerAttachment) => AgentToOrchestratorHost;
+		}
+	)._createAgentHost(agentId, requireLiveAgent(orchestrator, agentId).backgroundAttachment);
+}
+
+function toolContext<TDetails>(orchestrator: AgentOrchestrator, agentId: string): ToolExecutionContext<TDetails> {
+	return {
+		signal: undefined,
+		onUpdate: undefined,
+		extension: undefined,
+		human: undefined,
+		agents: agentHost(orchestrator, agentId),
+		jobs: requireAgentJobs(orchestrator, agentId),
+	};
+}
+
 /**
  * Take over the watcher's harness so what it is told is observable. Every
  * notice arrives as a prompt: the watcher is idle, waiting to be woken.
@@ -76,10 +104,14 @@ async function emit(orchestrator: AgentOrchestrator, agentId: string, event: Age
 	await harnessEventDriver(orchestrator)(agentId, event);
 }
 
+async function settle(): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 /**
  * Run one turn on `agentId` and let it stop, which is the edge a watch fires
- * on. The prompt promise is the run boundary, so it is held until the turn has
- * been reported.
+ * on. The assistant message is written to the branch as a real run would, since
+ * the branch is where the report is read from.
  */
 async function runAndStop(orchestrator: AgentOrchestrator, agentId: string, said: AssistantMessage): Promise<void> {
 	const run = createDeferred();
@@ -90,6 +122,7 @@ async function runAndStop(orchestrator: AgentOrchestrator, agentId: string, said
 	await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
 	await emit(orchestrator, agentId, { type: "agent_start" });
 	await accepted;
+	if (said.content.length > 0) await requireAgentHarness(orchestrator, agentId).appendMessage(said);
 	await emit(orchestrator, agentId, { type: "turn_end", message: said, toolResults: [] });
 	run.resolve(said);
 	await emit(orchestrator, agentId, { type: "settled", nextTurnCount: 0 });
@@ -97,20 +130,35 @@ async function runAndStop(orchestrator: AgentOrchestrator, agentId: string, said
 
 async function createPair(): Promise<{
 	readonly orchestrator: AgentOrchestrator;
+	readonly watches: AgentWatches;
+	readonly watch: (watcherAgentId: string, targetAgentId: string) => Promise<void>;
 	readonly watcherAgentId: string;
 	readonly workerAgentId: string;
 }> {
-	const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+	// The test model's context window is smaller than the default compaction
+	// reserve, so a branch that carries any usage at all would auto-compact.
+	const orchestrator = await createOrchestrator(new MemoryExecutionEnv(), {
+		settingManager: new SettingManager({ compaction: { enabled: false } }),
+	});
+	const watches = new AgentWatches();
+	const tool = createWatchAgentToolDefinition(watches);
 	const watcherAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 	const workerAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" }, parent: watcherAgentId });
-	return { orchestrator, watcherAgentId, workerAgentId };
+	const watch = async (callerAgentId: string, targetAgentId: string) => {
+		await tool.execute(
+			"call-watch",
+			{ agentId: targetAgentId, watching: true },
+			toolContext(orchestrator, callerAgentId),
+		);
+	};
+	return { orchestrator, watches, watch, watcherAgentId, workerAgentId };
 }
 
 describe("agent watches", () => {
 	it("reports a worker that was interrupted, carrying what it last said", async () => {
-		const { orchestrator, watcherAgentId, workerAgentId } = await createPair();
+		const { orchestrator, watch, watcherAgentId, workerAgentId } = await createPair();
 		const inbox = watchInbox(orchestrator, watcherAgentId);
-		expect(orchestrator.watchAgent(watcherAgentId, workerAgentId, true)).toBe("watching");
+		await watch(watcherAgentId, workerAgentId);
 
 		await runAndStop(orchestrator, workerAgentId, assistantMessage("Half of the router is rewritten.", "aborted"));
 
@@ -122,9 +170,9 @@ describe("agent watches", () => {
 	});
 
 	it("reports a worker that stopped silently", async () => {
-		const { orchestrator, watcherAgentId, workerAgentId } = await createPair();
+		const { orchestrator, watch, watcherAgentId, workerAgentId } = await createPair();
 		const inbox = watchInbox(orchestrator, watcherAgentId);
-		orchestrator.watchAgent(watcherAgentId, workerAgentId, true);
+		await watch(watcherAgentId, workerAgentId);
 
 		await runAndStop(orchestrator, workerAgentId, assistantMessage("Done: the config was already correct."));
 
@@ -136,9 +184,9 @@ describe("agent watches", () => {
 	// The case a voluntary report cannot express at all: a run that produced no
 	// text still has to reach the watcher, or the delegation hangs on silence.
 	it("reports a worker whose run said nothing", async () => {
-		const { orchestrator, watcherAgentId, workerAgentId } = await createPair();
+		const { orchestrator, watch, watcherAgentId, workerAgentId } = await createPair();
 		const inbox = watchInbox(orchestrator, watcherAgentId);
-		orchestrator.watchAgent(watcherAgentId, workerAgentId, true);
+		await watch(watcherAgentId, workerAgentId);
 
 		await runAndStop(orchestrator, workerAgentId, assistantMessage(""));
 
@@ -147,26 +195,27 @@ describe("agent watches", () => {
 	});
 
 	it("fires once and revokes itself", async () => {
-		const { orchestrator, watcherAgentId, workerAgentId } = await createPair();
+		const { orchestrator, watches, watch, watcherAgentId, workerAgentId } = await createPair();
 		const inbox = watchInbox(orchestrator, watcherAgentId);
-		orchestrator.watchAgent(watcherAgentId, workerAgentId, true);
+		await watch(watcherAgentId, workerAgentId);
 
 		await runAndStop(orchestrator, workerAgentId, assistantMessage("first"));
 		await vi.waitFor(() => expect(inbox.texts).toHaveLength(1));
+		expect(watches.isWatchedBy(workerAgentId, watcherAgentId)).toBe(false);
 
 		// Continued by hand rather than by the subscription: the watcher is no
 		// longer listening, so this second stop is nobody's to hear.
 		await runAndStop(orchestrator, workerAgentId, assistantMessage("second"));
-		await new Promise((resolve) => setTimeout(resolve, 0));
+		await settle();
 		expect(inbox.texts).toHaveLength(1);
 	});
 
 	// Maintenance releases the agent back to idle without a turn behind it, so
 	// the report it would carry is whatever the worker said before compacting.
 	it("stays silent when the worker only came back from maintenance", async () => {
-		const { orchestrator, watcherAgentId, workerAgentId } = await createPair();
+		const { orchestrator, watch, watcherAgentId, workerAgentId } = await createPair();
 		const inbox = watchInbox(orchestrator, watcherAgentId);
-		orchestrator.watchAgent(watcherAgentId, workerAgentId, true);
+		await watch(watcherAgentId, workerAgentId);
 
 		const compaction = stubCompaction(requireAgentHarness(orchestrator, workerAgentId));
 		const compacting = orchestrator.compactAgent(workerAgentId);
@@ -176,15 +225,15 @@ describe("agent watches", () => {
 		await emit(orchestrator, workerAgentId, { type: "queue_update", steer: [], followUp: [], nextTurn: [] });
 		compaction.resolve({ messages: [], summary: "compacted" } as unknown as CompactResult);
 		await compacting;
-		await new Promise((resolve) => setTimeout(resolve, 0));
+		await settle();
 
 		expect(inbox.texts).toHaveLength(0);
 	});
 
 	it("stays silent while the worker waits on a job it started", async () => {
-		const { orchestrator, watcherAgentId, workerAgentId } = await createPair();
+		const { orchestrator, watch, watcherAgentId, workerAgentId } = await createPair();
 		const inbox = watchInbox(orchestrator, watcherAgentId);
-		orchestrator.watchAgent(watcherAgentId, workerAgentId, true);
+		await watch(watcherAgentId, workerAgentId);
 
 		const started = requireAgentJobs(orchestrator, workerAgentId).startLocal({
 			toolCallId: "call-1",
@@ -194,7 +243,7 @@ describe("agent watches", () => {
 		if (started.ok) expect(started.execution.acceptBackground().ok).toBe(true);
 
 		await runAndStop(orchestrator, workerAgentId, assistantMessage("started the build"));
-		await new Promise((resolve) => setTimeout(resolve, 0));
+		await settle();
 
 		// It stopped, but it is waiting on its own work and will be woken by it.
 		expect(inbox.texts).toHaveLength(0);
@@ -206,14 +255,14 @@ describe("agent watches", () => {
 	 * says otherwise.
 	 */
 	it("stays silent while the worker waits on a subagent of its own", async () => {
-		const { orchestrator, watcherAgentId, workerAgentId } = await createPair();
+		const { orchestrator, watch, watcherAgentId, workerAgentId } = await createPair();
 		const inbox = watchInbox(orchestrator, watcherAgentId);
 		const grandchildAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" }, parent: workerAgentId });
-		orchestrator.watchAgent(watcherAgentId, workerAgentId, true);
-		orchestrator.watchAgent(workerAgentId, grandchildAgentId, true);
+		await watch(watcherAgentId, workerAgentId);
+		await watch(workerAgentId, grandchildAgentId);
 
 		await runAndStop(orchestrator, workerAgentId, assistantMessage("delegated the search"));
-		await new Promise((resolve) => setTimeout(resolve, 0));
+		await settle();
 		expect(inbox.texts).toHaveLength(0);
 
 		// Once the level below reports, the worker's own next stop is a real stop.
@@ -225,9 +274,9 @@ describe("agent watches", () => {
 	});
 
 	it("tells the watcher when the agent it waited on is disposed", async () => {
-		const { orchestrator, watcherAgentId, workerAgentId } = await createPair();
+		const { orchestrator, watch, watcherAgentId, workerAgentId } = await createPair();
 		const inbox = watchInbox(orchestrator, watcherAgentId);
-		orchestrator.watchAgent(watcherAgentId, workerAgentId, true);
+		await watch(watcherAgentId, workerAgentId);
 
 		await orchestrator.disposeAgent(workerAgentId, { intent: "removed", reason: "no longer needed" });
 
@@ -237,42 +286,46 @@ describe("agent watches", () => {
 	});
 
 	it("drops the watches a disposed watcher held", async () => {
-		const { orchestrator, watcherAgentId, workerAgentId } = await createPair();
-		orchestrator.watchAgent(watcherAgentId, workerAgentId, true);
+		const { orchestrator, watches, watch, watcherAgentId, workerAgentId } = await createPair();
+		await watch(watcherAgentId, workerAgentId);
 
 		await orchestrator.disposeAgent(watcherAgentId, { intent: "removed" });
+		await settle();
+		expect(watches.isWatchedBy(workerAgentId, watcherAgentId)).toBe(false);
+
 		// Nothing is delivered to an agent that is gone; the worker stopping after
 		// its watcher did must not fail a send into a cancelled queue.
 		await runAndStop(orchestrator, workerAgentId, assistantMessage("done"));
-		await new Promise((resolve) => setTimeout(resolve, 0));
-
-		expect(orchestrator.watchAgent(workerAgentId, workerAgentId, false)).toBe("self");
+		await settle();
 	});
 
 	it("refuses a watch it cannot honour", async () => {
-		const { orchestrator, watcherAgentId, workerAgentId } = await createPair();
+		const { orchestrator, watches, watcherAgentId, workerAgentId } = await createPair();
 		const otherTreeAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const host = agentHost(orchestrator, watcherAgentId);
 
-		expect(orchestrator.watchAgent(watcherAgentId, watcherAgentId, true)).toBe("self");
-		expect(orchestrator.watchAgent(watcherAgentId, "ag-nope", true)).toBe("unknown");
-		expect(orchestrator.watchAgent(watcherAgentId, otherTreeAgentId, true)).toBe("outside_tree");
+		expect(watches.start(host, watcherAgentId)).toBe("self");
+		expect(watches.start(host, "ag-nope")).toBe("unknown");
+		expect(watches.start(host, otherTreeAgentId)).toBe("outside_tree");
 
 		// A stop has one report to give, so a second claim on it is refused rather
 		// than silently replacing the first.
-		expect(orchestrator.watchAgent(watcherAgentId, workerAgentId, true)).toBe("watching");
+		expect(watches.start(host, workerAgentId)).toBe("watching");
 		const siblingAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" }, parent: watcherAgentId });
-		expect(orchestrator.watchAgent(siblingAgentId, workerAgentId, true)).toBe("taken");
-		expect(orchestrator.watchAgent(siblingAgentId, workerAgentId, false)).toBe("not_watching");
+		const siblingHost = agentHost(orchestrator, siblingAgentId);
+		expect(watches.start(siblingHost, workerAgentId)).toBe("taken");
+		expect(watches.stop(siblingHost, workerAgentId)).toBe("not_watching");
+		expect(watches.isWatchedBy(workerAgentId, watcherAgentId)).toBe(true);
 	});
 
 	it("stops reporting once the watcher unsubscribes", async () => {
-		const { orchestrator, watcherAgentId, workerAgentId } = await createPair();
+		const { orchestrator, watches, watch, watcherAgentId, workerAgentId } = await createPair();
 		const inbox = watchInbox(orchestrator, watcherAgentId);
-		orchestrator.watchAgent(watcherAgentId, workerAgentId, true);
-		expect(orchestrator.watchAgent(watcherAgentId, workerAgentId, false)).toBe("not_watching");
+		await watch(watcherAgentId, workerAgentId);
+		expect(watches.stop(agentHost(orchestrator, watcherAgentId), workerAgentId)).toBe("not_watching");
 
 		await runAndStop(orchestrator, workerAgentId, assistantMessage("done"));
-		await new Promise((resolve) => setTimeout(resolve, 0));
+		await settle();
 
 		expect(inbox.texts).toHaveLength(0);
 	});

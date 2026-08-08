@@ -9,7 +9,7 @@ import { createDisposeAgentToolDefinition } from "../../src/core/tools/agents/di
 import { createListAgentsToolDefinition, type ListAgentsDetails } from "../../src/core/tools/agents/list-agents.ts";
 import { createSendMessageToolDefinition } from "../../src/core/tools/agents/send-message.ts";
 import { createSpawnAgentToolDefinition } from "../../src/core/tools/agents/spawn-agent.ts";
-import { createWatchAgentToolDefinition } from "../../src/core/tools/agents/watch-agent.ts";
+import { AgentWatches, createWatchAgentToolDefinition } from "../../src/core/tools/agents/watch-agent.ts";
 import type { ToolExecutionContext } from "../../src/core/tools/types.ts";
 import {
 	createOrchestrator,
@@ -23,10 +23,11 @@ import {
 	spawnParentOf,
 } from "../helpers/orchestrator.ts";
 
+const watches = new AgentWatches();
 const listAgents = createListAgentsToolDefinition();
-const spawnAgent = createSpawnAgentToolDefinition();
-const sendMessage = createSendMessageToolDefinition();
-const watchAgent = createWatchAgentToolDefinition();
+const spawnAgent = createSpawnAgentToolDefinition(watches);
+const sendMessage = createSendMessageToolDefinition(watches);
+const watchAgent = createWatchAgentToolDefinition(watches);
 const disposeAgent = createDisposeAgentToolDefinition();
 
 afterEach(() => {
@@ -190,29 +191,24 @@ describe("list_agents live and resumable sections", () => {
 	});
 
 	// §5.2: the old listing refused to say what an agent was doing because the
-	// task lived in a job table. Activity and watch state are both to hand now.
-	it("reports each agent's activity and whether the caller is watching it", async () => {
+	// task lived in a job table. Activity is to hand now; who is watching whom is
+	// not this tool's to know.
+	it("reports each agent's activity", async () => {
 		const { orchestrator, owner, worker } = await createPair();
 		const other = await spawnChild(orchestrator, owner);
 
-		await watchAgent.execute("watch-1", { agentId: worker, watching: true }, toolContext(orchestrator, owner));
 		const result = await listAgents.execute("call-1", { include: ["live"] }, toolContext(orchestrator, owner));
 
-		expect(result.details.live?.map((entry) => [entry.agentId, entry.activity, entry.watchedByCaller])).toEqual([
-			[worker, "idle", true],
-			[other, "idle", false],
+		expect(result.details.live?.map((entry) => [entry.agentId, entry.activity])).toEqual([
+			[worker, "idle"],
+			[other, "idle"],
 		]);
 		const text = result.content[0];
 		expect(text).toMatchObject({
 			type: "text",
-			text: expect.stringContaining(`- agent ${worker} [profile worker] idle, watched`),
+			text: expect.stringContaining(`- agent ${worker} [profile worker] idle`),
 		});
-		// The forgotten subagent is made visible rather than reclaimed: leaving one
-		// running may well be deliberate.
-		expect(text).toMatchObject({
-			type: "text",
-			text: expect.stringContaining(`Nothing will tell you when ${other} stops.`),
-		});
+		expect(text).toMatchObject({ type: "text", text: expect.not.stringContaining("watch") });
 	});
 
 	// Every caller sees the level it owns, not the level below the root: a list
@@ -240,7 +236,7 @@ describe("list_agents live and resumable sections", () => {
 		// The hidden level is counted rather than dropped without a word.
 		expect(fromRoot.content[0]).toMatchObject({
 			type: "text",
-			text: expect.stringContaining(`- agent ${child} [profile worker] idle, not watched (+1 nested)`),
+			text: expect.stringContaining(`- agent ${child} [profile worker] idle (+1 nested)`),
 		});
 	});
 
@@ -363,8 +359,7 @@ describe("spawn_agent", () => {
 		expect(status).toMatchObject({ profileId: "worker", watching: true });
 		expect(harnessInputText(prompt.mock.calls[0]?.[0])).toBe(`[Message from ${caller}]\n\naudit the parser`);
 		expect(requireAgentJobs(orchestrator, caller).list()).toEqual([]);
-		const listed = await listAgents.execute("after", { include: ["live"] }, toolContext(orchestrator, caller));
-		expect(listed.details.live?.[0]?.watchedByCaller).toBe(true);
+		expect(watches.isWatchedBy(status?.agentId ?? "", caller)).toBe(true);
 	});
 
 	// The window the other order opens: the child could run the task and stop
@@ -377,7 +372,7 @@ describe("spawn_agent", () => {
 		const host = context.agents;
 		if (!host) throw new Error("Expected an agent host.");
 		const order: string[] = [];
-		const watch = vi.spyOn(host, "watch").mockImplementation(() => {
+		const start = vi.spyOn(watches, "start").mockImplementation(() => {
 			order.push("watch");
 			return "watching";
 		});
@@ -389,7 +384,7 @@ describe("spawn_agent", () => {
 		await spawnAgent.execute("call-1", { agents: [{ profile: "worker", task: "audit the parser" }] }, context);
 
 		expect(order).toEqual(["watch", "send"]);
-		expect(watch).toHaveBeenCalledWith(expect.any(String), true);
+		expect(start).toHaveBeenCalledWith(host, expect.any(String));
 	});
 
 	it("honours watch false against the task default", async () => {
@@ -503,8 +498,8 @@ describe("send_message", () => {
 		const order: string[] = [];
 		const host = toolContext(orchestrator, owner).agents;
 		if (!host) throw new Error("Expected an agent host.");
-		vi.spyOn(host, "watch").mockImplementation((targetAgentId, watching) => {
-			order.push(`watch:${targetAgentId}:${watching}`);
+		vi.spyOn(watches, "start").mockImplementation((_host, targetAgentId) => {
+			order.push(`watch:${targetAgentId}`);
 			return "watching";
 		});
 		vi.spyOn(host, "sendMessage").mockImplementation(async (targetAgentId) => {
@@ -518,7 +513,7 @@ describe("send_message", () => {
 			{ signal: undefined, onUpdate: undefined, extension: undefined, human: undefined, agents: host, jobs: undefined },
 		);
 
-		expect(order).toEqual([`watch:${worker}:true`, `send:${worker}`]);
+		expect(order).toEqual([`watch:${worker}`, `send:${worker}`]);
 		expect(result.details.watching).toBe(true);
 	});
 
@@ -600,19 +595,17 @@ describe("send_message", () => {
 });
 
 describe("watch_agent", () => {
-	it("subscribes and unsubscribes, and the listing agrees", async () => {
+	it("subscribes and unsubscribes", async () => {
 		const { orchestrator, owner, worker } = await createPair();
 		const context = toolContext(orchestrator, owner);
 
 		const watched = await watchAgent.execute("call-1", { agentId: worker, watching: true }, context);
 		expect(watched.details).toEqual({ agentId: worker, outcome: "watching" });
-		const listed = await listAgents.execute("call-2", { include: ["live"] }, context);
-		expect(listed.details.live?.[0]?.watchedByCaller).toBe(true);
+		expect(watches.isWatchedBy(worker, owner)).toBe(true);
 
 		const dropped = await watchAgent.execute("call-3", { agentId: worker, watching: false }, context);
 		expect(dropped.details).toEqual({ agentId: worker, outcome: "not_watching" });
-		const relisted = await listAgents.execute("call-4", { include: ["live"] }, context);
-		expect(relisted.details.live?.[0]?.watchedByCaller).toBe(false);
+		expect(watches.isWatchedBy(worker, owner)).toBe(false);
 	});
 
 	// A refused subscription that read as success is the failure the whole
