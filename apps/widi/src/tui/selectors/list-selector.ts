@@ -6,22 +6,15 @@ import {
 	SelectList,
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
-import { formatOperationHintKey } from "../components/operation-hint.ts";
 import { singleLine } from "../format.ts";
 import { theme } from "../theme/theme.ts";
+import { type SelectorHintContext, selectorKeyHints } from "./hints.ts";
 
 const MAX_VISIBLE_ITEMS = 8;
 
 export interface ListSelectorOperation {
 	readonly description?: string;
 	readonly confirmVerb: "apply" | "switch";
-}
-
-export interface ListSelectorHintContext {
-	readonly title: string;
-	readonly description?: string;
-	readonly confirmVerb: "apply" | "switch";
-	readonly itemCount: number;
 }
 
 export interface ListSelectorRequest {
@@ -64,7 +57,7 @@ export class ListSelector implements Component {
 		if (request.initialIndex !== undefined) this.list.setSelectedIndex(request.initialIndex);
 	}
 
-	get hintContext(): ListSelectorHintContext | undefined {
+	get hintContext(): SelectorHintContext | undefined {
 		if (this.closed) return undefined;
 		const operation = this.request.operation;
 		if (!operation) return undefined;
@@ -118,7 +111,7 @@ export class ListSelector implements Component {
 				theme.dim(`filter: ${singleLine(this.filter, 120)} (${this.filteredItemCount}/${this.request.items.length})`),
 			);
 		}
-		lines.push("", ...this.list.render(width), "", theme.dim(keyHints()), rule);
+		lines.push("", ...this.list.render(width), "", theme.dim(selectorKeyHints({ filter: true })), rule);
 		return lines.map((line) => truncateToWidth(line, width, ""));
 	}
 
@@ -145,28 +138,6 @@ export class ListSelector implements Component {
 		};
 		return list;
 	}
-}
-
-function keyHints(): string {
-	const keybindings = getKeybindings();
-	const key = (action: Parameters<typeof keybindings.getKeys>[0]): string | undefined => {
-		const keyId = keybindings.getKeys(action)[0];
-		return keyId ? formatOperationHintKey(keyId) : undefined;
-	};
-	const keyAction = (action: Parameters<typeof keybindings.getKeys>[0], label: string): string | undefined => {
-		const keyId = key(action);
-		return keyId ? `${keyId} ${label}` : undefined;
-	};
-	const navigate = [key("tui.select.up"), key("tui.select.down")]
-		.filter((candidate): candidate is string => candidate !== undefined)
-		.join("/");
-	const parts = [
-		navigate ? `${navigate} navigate` : undefined,
-		"type to filter",
-		keyAction("tui.select.confirm", "select"),
-		keyAction("tui.select.cancel", "cancel"),
-	];
-	return parts.filter((part): part is string => part !== undefined).join("  ");
 }
 
 function isPrintable(data: string): boolean {

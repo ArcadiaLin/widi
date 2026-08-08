@@ -25,8 +25,16 @@ export interface CommandSelectorRequest {
 	onClose(): void;
 }
 
-/** Builds the command's Enter-time picker; the shared ListSelector is the default. */
-export type SelectorFactory = (request: CommandSelectorRequest) => Component;
+/**
+ * Builds the command's Enter-time picker; the shared ListSelector is the default.
+ * The context is the same one execute() would get, so a picker may fetch richer
+ * data than the flat candidate list (the /tree graph needs the entry tree);
+ * returning a promise lets it do so before the overlay opens.
+ */
+export type SelectorFactory = (
+	request: CommandSelectorRequest,
+	context: CommandContext,
+) => Component | Promise<Component>;
 
 export type ResolveArgumentOutcome =
 	| { readonly kind: "resolved"; readonly value: string }

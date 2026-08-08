@@ -1,4 +1,4 @@
-import { getSupportedThinkingLevels, type TextContent, type UserMessage } from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import {
 	type CompactResult,
 	formatPromptTemplateInvocation,
@@ -15,6 +15,8 @@ import type {
 	AgentSessionTreeSnapshot,
 } from "../../core/session-manager.ts";
 import type { AgentMaintenanceKind, CandidateItem } from "../../core/types.ts";
+import { TreeSelector } from "../selectors/tree-selector.ts";
+import { buildSessionEntryRows, findSessionEntryRow, userMessageHeadline } from "../session-tree.ts";
 import { splitLeadingToken } from "./parse.ts";
 import type { CommandContext, CommandDefinition } from "./types.ts";
 
@@ -271,6 +273,21 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		argumentHint: "[entry]",
 		complete: async (context) => await listUserMessageEntryCandidates(context),
 		argumentCompletes: true,
+		// The graph picker needs the entry tree itself, not the flat candidate
+		// list, so it fetches the snapshot again rather than reading request.items.
+		selector: async (request, context) => {
+			const tree = await context.orchestrator.getAgentSessionTree(requireAgentId(context));
+			const rows = buildSessionEntryRows(tree);
+			const initialEntryId = request.initialFilter ? findSessionEntryRow(rows, request.initialFilter) : undefined;
+			return new TreeSelector({
+				title: request.title,
+				rows,
+				...(initialEntryId === undefined ? undefined : { initialEntryId }),
+				onSelect: (entryId) => request.onSelect({ value: entryId, label: entryId }),
+				onCancel: request.onCancel,
+				onClose: request.onClose,
+			});
+		},
 		execute: async (context, argument) => {
 			const agentId = requireAgentId(context);
 			const targetId = argument.trim();
@@ -379,20 +396,4 @@ function unavailableDuringMaintenance(
 	if (!maintenance) return undefined;
 	const operation = maintenance === "compaction" ? "compaction" : "tree navigation";
 	return `Command /${commandName} is not available during ${operation}.`;
-}
-
-function userMessageHeadline(message: UserMessage): string {
-	const text =
-		typeof message.content === "string"
-			? message.content
-			: message.content
-					.filter((part): part is TextContent => part.type === "text")
-					.map((part) => part.text)
-					.join(" ");
-	const line =
-		text
-			.split("\n")
-			.find((candidate) => candidate.trim() !== "")
-			?.trim() ?? "";
-	return line.length > 80 ? `${line.slice(0, 79)}…` : line;
 }

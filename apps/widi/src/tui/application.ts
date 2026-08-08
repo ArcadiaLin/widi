@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
+import { type Component, ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
 import type { AgentOrchestrator } from "../core/agent-orchestrator.ts";
 import { DEFAULT_AGENT_DIR } from "../core/constants.js";
 import { type OrchestratorDiagnostic, OrchestratorError } from "../core/diagnostics.ts";
@@ -32,7 +32,9 @@ import { createWidiKeybindings, loadUserKeybindings } from "./keybindings.ts";
 import { type AppOverlayHandle, OverlayStack } from "./layout/overlay-stack.ts";
 import { type LayoutSlotEntry, LayoutSlots } from "./layout/slots.ts";
 import { PendingAgentController, type PendingAgentDisplay } from "./pending-agent.ts";
-import { ListSelector, type ListSelectorHintContext, type ListSelectorRequest } from "./selectors/list-selector.ts";
+import type { SelectorHintContext } from "./selectors/hints.ts";
+import { ListSelector, type ListSelectorRequest } from "./selectors/list-selector.ts";
+import { TreeSelector } from "./selectors/tree-selector.ts";
 import { hydrateSessionEntries } from "./session-hydrator.ts";
 import { StartupHumanPrompt } from "./startup-human-prompt.ts";
 import {
@@ -257,12 +259,12 @@ export class WidiTuiApplication {
 		for (const entry of entries) this.layout.register(entry);
 	}
 
-	/** Hint context of the topmost list selector on the overlay stack, if any. */
-	private topSelectorHint(): ListSelectorHintContext | undefined {
+	/** Hint context of the topmost selector on the overlay stack, if any. */
+	private topSelectorHint(): SelectorHintContext | undefined {
 		const handles = this.overlays.list();
 		for (let i = handles.length - 1; i >= 0; i--) {
 			const view = handles[i]?.component;
-			if (view instanceof ListSelector) return view.hintContext;
+			if (view instanceof ListSelector || view instanceof TreeSelector) return view.hintContext;
 		}
 		return undefined;
 	}
@@ -609,10 +611,10 @@ export class WidiTuiApplication {
 				return;
 			}
 			case "needs-argument":
-				this.openCommandSelector(agentId, rawText, outcome.command, outcome.candidates);
+				await this.openCommandSelector(agentId, rawText, outcome.command, outcome.candidates);
 				return;
 			case "open-selector":
-				this.openCommandSelector(agentId, rawText, outcome.command, outcome.candidates, outcome.query);
+				await this.openCommandSelector(agentId, rawText, outcome.command, outcome.candidates, outcome.query);
 				return;
 		}
 	}
@@ -837,13 +839,13 @@ export class WidiTuiApplication {
 		}
 	}
 
-	private openCommandSelector(
+	private async openCommandSelector(
 		agentId: string | undefined,
 		originalText: string,
 		command: CommandDefinition,
 		candidates: readonly CandidateItem[],
 		initialFilter?: string,
-	): void {
+	): Promise<void> {
 		if (candidates.length === 0) {
 			// Nothing to pick from: an empty selector is a dead end, a usage line
 			// is not. A completer that returned nothing counts too — that is what
@@ -882,7 +884,23 @@ export class WidiTuiApplication {
 			},
 			onCancel: () => this.restoreEditor(originalText, agentId),
 		};
-		const view = command.selector ? command.selector(request) : new ListSelector(request);
+		let view: Component;
+		try {
+			view = command.selector
+				? await command.selector(request, {
+						agentId,
+						orchestrator: this.orchestrator,
+						pendingModel: this.state.pendingAgent?.display.model,
+					})
+				: new ListSelector(request);
+		} catch (error) {
+			// A factory that cannot load its data (e.g. the agent's session tree)
+			// fails like the empty-candidate path: the command goes back to the
+			// editor with a notice instead of an overlay stuck half-built.
+			this.restoreEditor(originalText, agentId);
+			this.addApplicationNotice(`Command /${command.name} selector failed: ${errorMessage(error)}`, agentId);
+			return;
+		}
 		handle = this.overlays.show(view, {
 			mode: "selector",
 			dismissible: true,

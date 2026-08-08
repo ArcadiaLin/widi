@@ -3,7 +3,7 @@ import type { CommandEngine } from "../commands/engine.ts";
 import { parseLineCommand } from "../commands/parse.ts";
 import type { WidiEditor } from "../editor.ts";
 import { singleLine } from "../format.ts";
-import type { ListSelectorHintContext } from "../selectors/list-selector.ts";
+import type { SelectorHintContext } from "../selectors/hints.ts";
 import type { TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
 import { activeAgent, maintenanceLabel } from "./common.ts";
@@ -28,7 +28,7 @@ export interface ResolveOperationHintOptions {
 	readonly engine: CommandEngine;
 	readonly editorText: string;
 	readonly editorAutocompleteVisible: boolean;
-	readonly selector?: ListSelectorHintContext;
+	readonly selector?: SelectorHintContext;
 	readonly keys: OperationHintKeys;
 }
 
@@ -177,13 +177,13 @@ export class OperationHintView implements Component {
 	private readonly state: TuiApplicationState;
 	private readonly engine: CommandEngine;
 	private readonly editor: Pick<WidiEditor, "getText" | "isShowingAutocomplete">;
-	private readonly selectorHint: () => ListSelectorHintContext | undefined;
+	private readonly selectorHint: () => SelectorHintContext | undefined;
 
 	constructor(options: {
 		readonly state: TuiApplicationState;
 		readonly engine: CommandEngine;
 		readonly editor: Pick<WidiEditor, "getText" | "isShowingAutocomplete">;
-		readonly selectorHint: () => ListSelectorHintContext | undefined;
+		readonly selectorHint: () => SelectorHintContext | undefined;
 	}) {
 		this.state = options.state;
 		this.engine = options.engine;
