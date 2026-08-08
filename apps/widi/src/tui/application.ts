@@ -27,6 +27,7 @@ import { QueuedInputView } from "./components/queued-input.ts";
 import { StatusView } from "./components/status.ts";
 import { WidiEditor } from "./editor.ts";
 import { applyAgentSnapshot, EventProjector } from "./event-projector.ts";
+import { TuiExtensionHost } from "./extension-host/index.ts";
 import { HumanRequestMenu } from "./human-request.ts";
 import { createWidiKeybindings, loadUserKeybindings } from "./keybindings.ts";
 import { type AppOverlayHandle, OverlayStack } from "./layout/overlay-stack.ts";
@@ -106,6 +107,8 @@ export class WidiTuiApplication {
 		void this.shutdown("SIGINT").catch(() => {});
 	};
 	private fatalOverlayShown = false;
+	/** TUI extension host, activated in create(); undefined until then. */
+	private extensionHost?: TuiExtensionHost;
 	/** Diagnostics from user TUI config (keybindings, themes) and command registration, projected on run. */
 	private readonly userConfigDiagnostics: OrchestratorDiagnostic[] = [];
 	private readonly onUncaughtError = (error: unknown) => {
@@ -154,12 +157,14 @@ export class WidiTuiApplication {
 			if (diagnostic) this.userConfigDiagnostics.push(diagnostic);
 		}
 
-		const userKeybindings = loadUserKeybindings(runtime.services.agentDir);
-		this.userConfigDiagnostics.push(...userKeybindings.diagnostics);
+		// User keybindings load after the extension host activates (create()),
+		// because extension shortcut actions are only valid override targets once
+		// they exist; the constructor starts on defaults.
+		setKeybindings(createWidiKeybindings());
 		this.userConfigDiagnostics.push(...loadThemes(runtime.services.agentDir));
-		setKeybindings(createWidiKeybindings(userKeybindings.bindings));
 		this.tui = new TUI(new ProcessTerminal());
 		this.editor = new WidiEditor(this.tui, theme.editorTheme, { autocompleteMaxVisible: 8 });
+		this.editor.onExtensionShortcut = (data) => this.extensionHost?.handleShortcut(data) ?? false;
 		this.editor.setArgumentHintProvider((text) => {
 			const name = /^\/(\S+)\s*$/.exec(text)?.[1];
 			return name ? this.engine.get(name)?.argumentHint : undefined;
@@ -270,7 +275,11 @@ export class WidiTuiApplication {
 	}
 
 	static async create(options: WidiTuiOptions): Promise<WidiTuiApplication> {
-		if (options.runtime) return new WidiTuiApplication(options.runtime);
+		if (options.runtime) {
+			const application = new WidiTuiApplication(options.runtime);
+			await application.activateTuiExtensions();
+			return application;
+		}
 		const startupPrompt = new StartupHumanPrompt();
 		try {
 			const runtime = await createWidiRuntime({
@@ -279,10 +288,53 @@ export class WidiTuiApplication {
 				defaultProfileId: options.profileId,
 				requestHuman: startupPrompt.requestHuman,
 			});
-			return new WidiTuiApplication(runtime);
+			const application = new WidiTuiApplication(runtime);
+			await application.activateTuiExtensions();
+			return application;
 		} finally {
 			startupPrompt.dispose();
 		}
+	}
+
+	/**
+	 * Activate the TUI halves of the extensions the core pipeline discovered,
+	 * then rebuild keybindings: extension shortcut actions are known now, so
+	 * keybindings.json is validated against them and the manager picks up both
+	 * the user's bindings and the extension definitions. Host failures are
+	 * diagnostics, never a startup abort.
+	 */
+	private async activateTuiExtensions(): Promise<void> {
+		try {
+			this.extensionHost = new TuiExtensionHost({
+				identities: this.runtime.services.extensionLoad.loaded,
+				commandEngine: this.engine,
+				reportDiagnostic: (diagnostic) => this.reportHostDiagnostic(diagnostic),
+			});
+			await this.extensionHost.activate();
+		} catch (error) {
+			this.reportHostDiagnostic({
+				severity: "error",
+				code: "tui_extension.host_failed",
+				message: `TUI extension host activation failed: ${errorMessage(error)}`,
+			});
+		}
+		const userKeybindings = loadUserKeybindings(
+			this.runtime.services.agentDir,
+			this.extensionHost?.keybindingDefinitions,
+		);
+		this.userConfigDiagnostics.push(...userKeybindings.diagnostics);
+		setKeybindings(createWidiKeybindings(userKeybindings.bindings, this.extensionHost?.keybindingDefinitions));
+		this.extensionHost?.setUserKeybindings(userKeybindings.bindings);
+	}
+
+	/** Host diagnostics join the startup batch before run() and project live after it. */
+	private reportHostDiagnostic(diagnostic: OrchestratorDiagnostic): void {
+		if (this.started) {
+			this.projectDiagnostic(diagnostic);
+			this.tui.requestRender();
+			return;
+		}
+		this.userConfigDiagnostics.push(diagnostic);
 	}
 
 	async run(): Promise<void> {
@@ -342,6 +394,9 @@ export class WidiTuiApplication {
 		}
 		for (const agent of this.state.agents.values()) flushStreaming(agent);
 		this.removeLifecycleHandlers();
+		// The extension host disposes its tui halves (reverse activation order)
+		// before the runtime goes away; it isolates its own failures.
+		await this.extensionHost?.dispose();
 		try {
 			await this.orchestrator.disposeAll(reason);
 			await Promise.allSettled([...this.lifecycleTasks, ...this.pendingTasks]);

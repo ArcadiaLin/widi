@@ -1,12 +1,14 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { getKeybindings, type Keybinding } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import type { AgentSnapshot } from "../../src/core/agent-types.ts";
 import type { WidiRuntime, WidiRuntimeServices } from "../../src/core/runtime-service.ts";
 import type { OrchestratorEvent, RuntimeModel } from "../../src/core/types.ts";
 import { WidiTuiApplication } from "../../src/tui/application.ts";
+import type { CommandEngine } from "../../src/tui/commands/engine.ts";
 import { ensureAgentProjection, setActiveAgent } from "../../src/tui/state.ts";
 
 describe("WidiTuiApplication lazy agent spawn", () => {
@@ -410,7 +412,72 @@ describe("WidiTuiApplication user config diagnostics", () => {
 	});
 });
 
-async function createApplicationHarness(options: { agentDir?: string } = {}) {
+describe("WidiTuiApplication TUI extension host", () => {
+	it("activates tui halves at create() and merges their shortcuts into the keybindings table", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "widi-tui-ext-"));
+		const agentDir = await mkdtemp(join(tmpdir(), "widi-tui-config-"));
+		try {
+			const entryPath = join(dir, "index.ts");
+			await writeFile(
+				entryPath,
+				`export const tui = {
+					apiVersion: 1,
+					activate(api) {
+						api.registerCommand({
+							kind: "action",
+							agentPolicy: "runtime",
+							name: "ext-wiring",
+							description: "wiring test command",
+							execute: async () => "ok",
+						});
+						api.registerShortcut("poke", { defaultKeys: "ctrl+x", handler: () => {} });
+					},
+				};
+				export default { apiVersion: 1, activate: () => {} };
+				`,
+			);
+			// The user override targets an extension action: valid only because the
+			// host activated before keybindings.json was validated.
+			await writeFile(join(agentDir, "keybindings.json"), JSON.stringify({ "ext.wiring.poke": "ctrl+g" }));
+			const extensionLoad = {
+				discovery: { roots: [], candidates: [], diagnostics: [] },
+				loaded: [
+					{
+						id: "wiring",
+						source: { kind: "file", path: entryPath, resolvedPath: entryPath, root: { kind: "settings", path: dir } },
+						divisions: [],
+					},
+				],
+				diagnostics: [],
+			};
+			const harness = await createApplicationHarness({ agentDir, extensionLoad });
+
+			const engine = (harness.application as unknown as { engine: CommandEngine }).engine;
+			expect(engine.get("ext-wiring")?.description).toBe("wiring test command");
+			expect(getKeybindings().getKeys("ext.wiring.poke" as Keybinding)).toEqual(["ctrl+g"]);
+
+			const runPromise = harness.application.run();
+			try {
+				await vi.waitFor(() => {
+					expect(harness.tuiStart).toHaveBeenCalledTimes(1);
+				});
+				const codes = harness.application.state.globalNotices
+					.filter((notice) => notice.kind === "diagnostic")
+					.map((notice) => notice.diagnostic?.code);
+				expect(codes).not.toContain("keybindings.invalid_entry");
+				expect(codes.filter((code) => code?.startsWith("tui_extension."))).toEqual([]);
+			} finally {
+				await harness.application.shutdown("test cleanup");
+				await runPromise;
+			}
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+			await rm(agentDir, { recursive: true, force: true });
+		}
+	});
+});
+
+async function createApplicationHarness(options: { agentDir?: string; extensionLoad?: unknown } = {}) {
 	const runtimeModel = model();
 	// The first spawn is the startup agent; later ones are the sessions /new
 	// opens after closing it.
@@ -494,6 +561,11 @@ async function createApplicationHarness(options: { agentDir?: string } = {}) {
 			defaultProfile: { id: "main", source: "builtin_fallback", profileSource: { kind: "builtin" } },
 			defaultModel: { provider: runtimeModel.provider, modelId: runtimeModel.id, source: "runtime_override" },
 			defaultThinkingLevel: { level: "medium", requestedLevel: "medium", source: "runtime_override", clamped: false },
+			extensionLoad: options.extensionLoad ?? {
+				discovery: { roots: [], candidates: [], diagnostics: [] },
+				loaded: [],
+				diagnostics: [],
+			},
 		} as unknown as WidiRuntimeServices,
 	} satisfies WidiRuntime;
 	const applicationPromise = WidiTuiApplication.create({ cwd: "/workspace", runtime });

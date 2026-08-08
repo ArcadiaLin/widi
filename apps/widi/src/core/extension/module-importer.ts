@@ -21,6 +21,21 @@ export class JitiExtensionModuleImporter implements ExtensionModuleImporter {
 		return module;
 	}
 
+	/**
+	 * The full module namespace, for a consumer that needs named exports beside
+	 * the default one - the TUI extension host reads the `tui` export this way.
+	 */
+	async importModuleNamespace(entryPath: string): Promise<unknown> {
+		const cacheKey = `namespace:${this.generation}:${entryPath}`;
+		if (this.modules.has(cacheKey)) {
+			return this.modules.get(cacheKey);
+		}
+
+		const module = await this.jiti.import(entryPath);
+		this.modules.set(cacheKey, module);
+		return module;
+	}
+
 	clearCache(): void {
 		this.modules.clear();
 		this.generation++;

@@ -130,7 +130,7 @@ const SPECIAL_KEYS = new Set([
  * time): optional modifier prefixes, then a single character or a named
  * special key.
  */
-function isKeyId(value: string): boolean {
+export function isKeyId(value: string): boolean {
 	let rest = value;
 	for (;;) {
 		const separator = rest.indexOf("+");
@@ -152,8 +152,12 @@ export interface UserKeybindingsLoad {
  * case, not an error. Unreadable files and invalid entries (unknown action,
  * malformed key sequence) are collected as diagnostics and skipped so the TUI
  * still starts on defaults.
+ *
+ * `extraDefinitions` names actions beyond the built-ins that are valid
+ * override targets - the TUI extension host passes its registered shortcut
+ * actions, which only exist after extensions activate.
  */
-export function loadUserKeybindings(agentDir: string): UserKeybindingsLoad {
+export function loadUserKeybindings(agentDir: string, extraDefinitions?: KeybindingDefinitions): UserKeybindingsLoad {
 	const path = join(agentDir, "keybindings.json");
 	if (!existsSync(path)) return { bindings: {}, diagnostics: [] };
 	let raw: unknown;
@@ -186,7 +190,11 @@ export function loadUserKeybindings(agentDir: string): UserKeybindingsLoad {
 	const bindings: KeybindingsConfig = {};
 	const diagnostics: CoreDiagnostic[] = [];
 	for (const [action, value] of Object.entries(raw)) {
-		if (!(action in WIDI_KEYBINDINGS) && !(action in TUI_KEYBINDINGS)) {
+		if (
+			!(action in WIDI_KEYBINDINGS) &&
+			!(action in TUI_KEYBINDINGS) &&
+			!(extraDefinitions && action in extraDefinitions)
+		) {
 			diagnostics.push({
 				severity: "warning",
 				code: "keybindings.invalid_entry",
@@ -208,6 +216,9 @@ export function loadUserKeybindings(agentDir: string): UserKeybindingsLoad {
 	return { bindings, diagnostics };
 }
 
-export function createWidiKeybindings(userBindings: KeybindingsConfig = {}): KeybindingsManager {
-	return new KeybindingsManager({ ...TUI_KEYBINDINGS, ...WIDI_KEYBINDINGS }, userBindings);
+export function createWidiKeybindings(
+	userBindings: KeybindingsConfig = {},
+	extraDefinitions: KeybindingDefinitions = {},
+): KeybindingsManager {
+	return new KeybindingsManager({ ...TUI_KEYBINDINGS, ...WIDI_KEYBINDINGS, ...extraDefinitions }, userBindings);
 }

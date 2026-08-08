@@ -12,6 +12,8 @@ export class WidiEditor extends Editor {
 	onToggleJobs?: () => void;
 	onSteer?: () => void;
 	onOpenRequests?: () => void;
+	/** Extension shortcut dispatch; returning true consumes the input. */
+	onExtensionShortcut?: (data: string) => boolean;
 
 	private argumentHintProvider?: (text: string) => string | undefined;
 	private lastCompletionKeyAt = 0;
@@ -81,6 +83,12 @@ export class WidiEditor extends Editor {
 		}
 		if (keybindings.matches(data, "app.exit") && this.getText().length === 0) {
 			this.onExit?.();
+			return;
+		}
+		// Extension shortcuts lose to the built-ins above: a default key that
+		// collides with an app action keeps the app's behavior, and the user
+		// resolves the overlap in keybindings.json.
+		if (this.onExtensionShortcut?.(data)) {
 			return;
 		}
 		this.noteCompletionKey(data);
