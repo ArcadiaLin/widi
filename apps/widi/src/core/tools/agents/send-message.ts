@@ -62,11 +62,10 @@ export function createSendMessageToolDefinition(
 			}
 			requireAddressableAgent(host, targetAgentId);
 
-			// Subscribing first is what makes the subscription reliable: a pending
+			// Watching first is what makes the subscription reliable: a pending
 			// delivery already counts the target busy, so a stop cannot slip between
 			// the two calls. Nothing is rolled back if the send then fails - the
-			// caller is told, and an unspent watch costs one stale notification at
-			// worst.
+			// caller is told, and is watching an agent it did not reach.
 			const watchOutcome = watch === true ? watches.start(host, targetAgentId) : undefined;
 			const outcome = await host.sendMessage(targetAgentId, body);
 			if (outcome.kind === "blocked") {

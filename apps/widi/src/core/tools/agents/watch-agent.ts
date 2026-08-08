@@ -12,53 +12,78 @@ import { requireAgentHost } from "./shared.ts";
 export type AgentWatchOutcome = "watching" | "not_watching" | "taken" | "outside_tree" | "self" | "unknown";
 
 /**
- * Who is waiting on whom, and the reporting that follows from it.
+ * One agent's claim on another's stops.
+ *
+ * `pending` is the difference between waiting on an agent and merely keeping an
+ * eye on it. It is set when work is handed over and cleared by the report that
+ * answers it, which is what lets a watcher's own stop be judged: an agent that
+ * is waiting on a subagent has not stopped in any sense its own watcher cares
+ * about.
+ */
+interface AgentWatch {
+	readonly watcherAgentId: AgentId;
+	pending: boolean;
+}
+
+/**
+ * Who is watching whom, and the reporting that follows from it.
  *
  * The runtime answers three questions - has this agent stopped, what did it
  * say, put this text in my inbox - and every judgement built on those answers
- * is here: which idles count as a stop, that a stop has one reader, that a
- * subscription is spent on the stop it reports, and what the report says.
+ * is here: which idles count as a stop, that a stop has one reader, and what
+ * the report says.
  *
- * One table per runtime, since exclusivity is a claim on the target. In memory
- * only - a resume brings back no subagents to watch.
+ * A watch is standing, not spent on one stop. It ends when the watched agent is
+ * disposed, when the watcher is disposed, or when the watcher drops it - and
+ * nothing else, so a watcher that has not let go always knows what is happening
+ * over there. One table per runtime, since exclusivity is a claim on the
+ * target. In memory only - a resume brings back no subagents to watch.
  */
 export class AgentWatches {
-	private readonly _watchers = new Map<AgentId, AgentId>();
+	private readonly _watches = new Map<AgentId, AgentWatch>();
 
+	/**
+	 * Claim the target's stops, or re-arm a claim already held: calling this as
+	 * work is handed over is what marks the watcher as waiting rather than just
+	 * listening.
+	 */
 	start(host: AgentToOrchestratorHost, targetAgentId: AgentId): AgentWatchOutcome {
 		if (targetAgentId === host.agentId) return "self";
 		if (!host.describe(targetAgentId)) return "unknown";
 		if (!host.sharesTree(targetAgentId)) return "outside_tree";
-		const current = this._watchers.get(targetAgentId);
-		if (current === host.agentId) return "watching";
-		if (current !== undefined) return "taken";
-		this._watchers.set(targetAgentId, host.agentId);
+		const current = this._watches.get(targetAgentId);
+		if (current && current.watcherAgentId !== host.agentId) return "taken";
+		if (current) {
+			current.pending = true;
+			return "watching";
+		}
+		this._watches.set(targetAgentId, { watcherAgentId: host.agentId, pending: true });
 		void this._report(host, targetAgentId);
 		return "watching";
 	}
 
 	/** Never fails: whatever the reason, the caller is not watching afterwards. */
 	stop(host: AgentToOrchestratorHost, targetAgentId: AgentId): AgentWatchOutcome {
-		if (this._watchers.get(targetAgentId) === host.agentId) this._watchers.delete(targetAgentId);
+		if (this.isWatchedBy(targetAgentId, host.agentId)) this._watches.delete(targetAgentId);
 		return "not_watching";
 	}
 
 	isWatchedBy(targetAgentId: AgentId, watcherAgentId: AgentId): boolean {
-		return this._watchers.get(targetAgentId) === watcherAgentId;
+		return this._watches.get(targetAgentId)?.watcherAgentId === watcherAgentId;
 	}
 
-	/** Whether this agent is itself waiting on a subagent. */
-	private _holdsWatches(agentId: AgentId): boolean {
-		for (const watcherAgentId of this._watchers.values()) {
-			if (watcherAgentId === agentId) return true;
+	/** Whether this agent is itself waiting on a subagent that has not reported. */
+	private _awaitsSubagent(agentId: AgentId): boolean {
+		for (const watch of this._watches.values()) {
+			if (watch.watcherAgentId === agentId && watch.pending) return true;
 		}
 		return false;
 	}
 
 	/**
-	 * Wait for a stop worth reporting, report it once, and let the subscription
-	 * go. Looping is what keeps the gates below simple: an idle that is not the
-	 * agent stopping leaves the subscription armed for the next one.
+	 * Report every stop worth reporting for as long as the watch stands. Looping
+	 * is what keeps the gates below simple: an idle that is not the agent stopping
+	 * is skipped rather than needing a rule about when to re-register.
 	 */
 	private async _report(host: AgentToOrchestratorHost, targetAgentId: AgentId): Promise<void> {
 		for (;;) {
@@ -67,42 +92,32 @@ export class AgentWatches {
 				stop = await host.waitForAgentStop(targetAgentId);
 			} catch (error) {
 				if (!this.isWatchedBy(targetAgentId, host.agentId)) return;
-				this._watchers.delete(targetAgentId);
+				this._watches.delete(targetAgentId);
 				// A watcher that is gone has no turn left to read anything in.
 				if (error instanceof AgentGoneError && error.agentId === targetAgentId) {
 					await this._deliver(host, targetAgentId, { status: "gone" });
 				}
 				return;
 			}
-			if (!this.isWatchedBy(targetAgentId, host.agentId)) return;
-			// `ready` and `maintenance` have no turn behind them; live jobs and watches
-			// of its own mean it is waiting on work that will wake it.
+			const watch = this._watches.get(targetAgentId);
+			if (watch?.watcherAgentId !== host.agentId) return;
+			// `ready` and `maintenance` have no turn behind them; live jobs and an
+			// unanswered delegation mean it is waiting on work that will wake it.
 			if (stop.reason === "ready" || stop.reason === "maintenance") continue;
 			if (stop.liveJobCount > 0) continue;
-			if (this._holdsWatches(targetAgentId)) continue;
-			const notice: AgentNotice = {
+			if (this._awaitsSubagent(targetAgentId)) continue;
+			// A human taking the agent over answers nothing the watcher handed it, so
+			// the delegation is still outstanding after the report.
+			if (stop.abortedBy !== "human") watch.pending = false;
+			await this._deliver(host, targetAgentId, {
 				status: "idle",
 				reason: stop.reason,
 				...(stop.abortedBy === undefined ? undefined : { abortedBy: stop.abortedBy }),
-			};
-			// A human taking the agent over is not the stop this was waiting for, but
-			// it is one the watcher has to hear about: it must stop assuming progress
-			// without losing the report it is still owed.
-			if (stop.abortedBy === "human") {
-				await this._deliver(host, targetAgentId, notice);
-				continue;
-			}
-			this._watchers.delete(targetAgentId);
-			await this._deliver(host, targetAgentId, notice);
-			return;
+			});
 		}
 	}
 
-	/**
-	 * The subscription is revoked before this runs, so a failure loses the notice
-	 * rather than duplicating it. Swallowed because the party that would be told
-	 * is the one that could not be reached.
-	 */
+	/** Swallowed because the party that would be told is the one that could not be reached. */
 	private async _deliver(host: AgentToOrchestratorHost, targetAgentId: AgentId, notice: AgentNotice): Promise<void> {
 		const report = await host.readAgentReport(targetAgentId).catch(() => undefined);
 		try {
@@ -116,7 +131,7 @@ export class AgentWatches {
 const watchAgentSchema = Type.Object({
 	agentId: Type.String({ description: "Id of the agent to start or stop watching." }),
 	watching: Type.Boolean({
-		description: "true subscribes to that agent's next stop; false drops a subscription you already hold.",
+		description: "true starts watching that agent; false stops watching one you already watch.",
 	}),
 });
 
@@ -142,10 +157,11 @@ export function createWatchAgentToolDefinition(
 		name: "watch_agent",
 		label: "watch_agent",
 		description:
-			"Start or stop watching an agent. While you watch one, you are told the moment it stops - the notification carries its last message - and the subscription is spent on that one stop. An agent has one watcher at a time. Prefer the watch parameter on spawn_agent and send_message, which subscribes before the work is handed over; use this tool when there is no message to send.",
+			"Start or stop watching an agent. While you watch one you are told every time it stops, and the notification carries what it last said, so you always know where that agent stands. Watching continues until you turn it off or the agent is disposed. An agent has one watcher at a time. Prefer the watch parameter on spawn_agent and send_message, which starts watching before the work is handed over; use this tool when there is no message to send.",
 		promptSnippet: "Start or stop being told when an agent stops",
 		promptGuidelines: [
 			"Being told is the only reliable signal that an agent finished. Do not poll it with send_message and do not infer from silence that it is still working.",
+			"Turn a watch off once you are done with that agent. It keeps reporting otherwise, and a report you have no use for still costs you a turn.",
 		],
 		parameters: watchAgentSchema,
 		execute: async (_toolCallId, { agentId, watching }, context) => {
@@ -173,7 +189,7 @@ export function createWatchAgentToolDefinition(
 export function describeOutcome(agentId: string, outcome: AgentWatchOutcome): string {
 	switch (outcome) {
 		case "watching":
-			return `You are watching agent ${agentId}. It will report to you once, when it stops.`;
+			return `You are watching agent ${agentId}. It reports to you every time it stops, until you stop watching it.`;
 		case "not_watching":
 			return `You are not watching agent ${agentId}; nothing will be reported to you when it stops.`;
 		case "taken":
@@ -214,7 +230,7 @@ function formatNoticeClosing(agentId: AgentId, notice: AgentNotice): string {
 		return `${agentId} was interrupted by a human, who is working with it directly, so it has not finished what you gave it. You are still watching it and will be told when it next stops. A message from you now would land in the middle of their conversation: wait unless you have something that conversation needs, and continue it with send_message once the human hands it back.`;
 	}
 	if (notice.reason === "aborted") {
-		return `${agentId} was interrupted and stopped, so what it said may be a fragment. You are no longer watching it. Continue it with send_message, or dispose_agent to release it.`;
+		return `${agentId} was interrupted and stopped, so what it said may be a fragment. You are still watching it. Continue it with send_message, or dispose_agent to release it.`;
 	}
-	return `${agentId} finished a turn and will not continue on its own. You are no longer watching it. Continue it with send_message if the task is not done, or carry on with your own work if it is; dispose_agent releases it.`;
+	return `${agentId} finished a turn and will not continue on its own. You are still watching it, so its next stop reaches you too. Continue it with send_message if the task is not done; carry on with your own work if it is, and dispose_agent releases it.`;
 }

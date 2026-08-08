@@ -206,7 +206,6 @@ describe("agent watches", () => {
 		await vi.waitFor(() => expect(inbox.texts).toHaveLength(2));
 		expect(inbox.texts[1]).toContain("Router rewritten.");
 		expect(inbox.texts[1]).toContain("finished a turn");
-		expect(watches.isWatchedBy(workerAgentId, watcherAgentId)).toBe(false);
 	});
 
 	it("carries the abort origin on the idle edge", async () => {
@@ -250,20 +249,28 @@ describe("agent watches", () => {
 		expect(inbox.texts[0]).toContain(`${workerAgentId} stopped without a closing message.`);
 	});
 
-	it("fires once and revokes itself", async () => {
+	/**
+	 * A watch is not spent on the stop it reports. Nothing but a dispose or the
+	 * watcher letting go ends it, so an agent that keeps working keeps being
+	 * accounted for rather than going quiet after one report.
+	 */
+	it("keeps reporting until the watcher drops it", async () => {
 		const { orchestrator, watches, watch, watcherAgentId, workerAgentId } = await createPair();
 		const inbox = watchInbox(orchestrator, watcherAgentId);
 		await watch(watcherAgentId, workerAgentId);
 
 		await runAndStop(orchestrator, workerAgentId, assistantMessage("first"));
 		await vi.waitFor(() => expect(inbox.texts).toHaveLength(1));
-		expect(watches.isWatchedBy(workerAgentId, watcherAgentId)).toBe(false);
+		expect(watches.isWatchedBy(workerAgentId, watcherAgentId)).toBe(true);
 
-		// Continued by hand rather than by the subscription: the watcher is no
-		// longer listening, so this second stop is nobody's to hear.
 		await runAndStop(orchestrator, workerAgentId, assistantMessage("second"));
+		await vi.waitFor(() => expect(inbox.texts).toHaveLength(2));
+		expect(inbox.texts[1]).toContain("second");
+
+		expect(watches.stop(agentHost(orchestrator, watcherAgentId), workerAgentId)).toBe("not_watching");
+		await runAndStop(orchestrator, workerAgentId, assistantMessage("third"));
 		await settle();
-		expect(inbox.texts).toHaveLength(1);
+		expect(inbox.texts).toHaveLength(2);
 	});
 
 	// Maintenance releases the agent back to idle without a turn behind it, so
