@@ -197,6 +197,7 @@ import {
 	ToolRegistry,
 } from "./tool-registry.ts";
 import type {
+	AgentAbortOrigin,
 	AgentActivitySnapshot,
 	AgentId,
 	AgentIdleReason,
@@ -350,9 +351,15 @@ interface DeliveryTarget {
 	readonly phase: AgentHarnessPhase;
 }
 
+/** Why an agent arrived at idle, with the abort's origin when it had one. */
+interface AgentIdleCause {
+	readonly reason: AgentIdleReason;
+	readonly abortedBy?: AgentAbortOrigin;
+}
+
 /** A prompt run this orchestrator started and still owes an outcome for. */
 interface AgentPromptRun {
-	idleReason?: AgentIdleReason;
+	idleCause?: AgentIdleCause;
 }
 
 interface AgentIdleWaiter {
@@ -488,7 +495,7 @@ export class AgentOrchestrator {
 	 * caller and an `agent_idle` subscriber can never disagree.
 	 */
 	private readonly _agentIdleWaiters = new Map<AgentId, Set<AgentIdleWaiter>>();
-	private readonly _agentIdleReasons = new Map<AgentId, AgentIdleReason>();
+	private readonly _agentIdleCauses = new Map<AgentId, AgentIdleCause>();
 	private readonly _publishedAgentIdles = new Set<AgentId>();
 
 	/**
@@ -1346,7 +1353,7 @@ export class AgentOrchestrator {
 		this._live.set(agentId, liveAgent);
 		// The first idle has no turn behind it; every later one is stamped by
 		// whoever ended the work.
-		this._agentIdleReasons.set(agentId, "ready");
+		this._agentIdleCauses.set(agentId, { reason: "ready" });
 		if (build.parent !== undefined) {
 			this._spawnParent.set(agentId, build.parent);
 		}
@@ -1733,7 +1740,7 @@ export class AgentOrchestrator {
 		this._rejectAgentIdleWaiters(agentId, `Agent ${agentId} was disposed while waiting for it to idle.`);
 		// A resumed session reuses this id; all of these describe the occupant that
 		// just left.
-		this._agentIdleReasons.delete(agentId);
+		this._agentIdleCauses.delete(agentId);
 		this._publishedAgentIdles.delete(agentId);
 		this._agentPromptRuns.delete(agentId);
 		this._agentRunSignals.delete(agentId);
@@ -2179,7 +2186,7 @@ export class AgentOrchestrator {
 	): Promise<void> {
 		try {
 			const message = await run;
-			if (message.stopReason === "aborted") promptRun.idleReason = "aborted";
+			if (message.stopReason === "aborted") promptRun.idleCause ??= { reason: "aborted" };
 		} catch (error) {
 			if (options.reportFailure) {
 				await this._recordAgentLifecycleFailure(
@@ -2191,7 +2198,7 @@ export class AgentOrchestrator {
 		} finally {
 			if (this._agentPromptRuns.get(agentId) === promptRun) {
 				this._agentPromptRuns.delete(agentId);
-				this._agentIdleReasons.set(agentId, promptRun.idleReason ?? "settled");
+				this._agentIdleCauses.set(agentId, promptRun.idleCause ?? { reason: "settled" });
 				this._messages.wake(agentId);
 				// The phase is already idle; clearing this run is the last fact the
 				// waiters and the observable edge were missing.
@@ -2248,10 +2255,14 @@ export class AgentOrchestrator {
 	 * compaction and branch summary, but `_requireHarnessOutsideMaintenance`
 	 * refuses those phases here - disposal is what uses that capability.
 	 */
-	async abortAgent(agentId: AgentId): Promise<AbortResult> {
+	async abortAgent(agentId: AgentId, abortedBy: AgentAbortOrigin): Promise<AbortResult> {
 		const harness = this._requireHarnessOutsideMaintenance(agentId, "abort");
+		const cause: AgentIdleCause = { reason: "aborted", abortedBy };
+		// Recorded before the harness is told, so the abort's own `abort` event
+		// finds the origin already there rather than stamping a plain abort over it.
 		const promptRun = this._agentPromptRuns.get(agentId);
-		if (promptRun) promptRun.idleReason = "aborted";
+		if (promptRun) promptRun.idleCause = cause;
+		else this._agentIdleCauses.set(agentId, cause);
 		return await harness.abort();
 	}
 
@@ -2341,9 +2352,16 @@ export class AgentOrchestrator {
 		}
 		if (this._publishedAgentIdles.has(agentId)) return;
 		this._publishedAgentIdles.add(agentId);
-		const reason = this._agentIdleReasons.get(agentId) ?? "settled";
+		const cause = this._agentIdleCauses.get(agentId) ?? { reason: "settled" };
 		const liveJobCount = this._backgroundJobs.liveJobCount(agentId);
-		await this._emit({ type: "agent_idle", agentId, reason, liveJobCount, idleAt: now() });
+		await this._emit({
+			type: "agent_idle",
+			agentId,
+			reason: cause.reason,
+			...(cause.abortedBy === undefined ? undefined : { abortedBy: cause.abortedBy }),
+			liveJobCount,
+			idleAt: now(),
+		});
 	}
 
 	/**
@@ -2363,7 +2381,11 @@ export class AgentOrchestrator {
 			return await new Promise<AgentStop>((resolve, reject) => {
 				unsubscribe = this.subscribe((event) => {
 					if (event.type === "agent_idle" && event.agentId === agentId) {
-						resolve({ reason: event.reason, liveJobCount: event.liveJobCount });
+						resolve({
+							reason: event.reason,
+							...(event.abortedBy === undefined ? undefined : { abortedBy: event.abortedBy }),
+							liveJobCount: event.liveJobCount,
+						});
 					} else if (event.type === "agent_disposed" && event.agentId === agentId) {
 						reject(new AgentGoneError(agentId));
 					} else if (event.type === "agent_disposed" && event.agentId === waiterAgentId) {
@@ -2444,18 +2466,18 @@ export class AgentOrchestrator {
 		if (event.type === "turn_end" && event.message.role === "assistant") {
 			if (event.message.stopReason === "aborted") {
 				const promptRun = this._agentPromptRuns.get(agentId);
-				if (promptRun) promptRun.idleReason = "aborted";
+				if (promptRun) promptRun.idleCause ??= { reason: "aborted" };
 			}
 		}
 		if (event.type === "abort") {
 			const promptRun = this._agentPromptRuns.get(agentId);
-			if (promptRun) promptRun.idleReason = "aborted";
-			else this._agentIdleReasons.set(agentId, "aborted");
+			if (promptRun) promptRun.idleCause ??= { reason: "aborted" };
+			else this._agentIdleCauses.set(agentId, { reason: "aborted" });
 		}
 		// Maintenance releases the harness with no turn behind it, so no prompt run
 		// completion will stamp this idle.
 		if (event.type === "phase_change" && event.phase === "idle" && toMaintenanceKind(event.previousPhase)) {
-			this._agentIdleReasons.set(agentId, "maintenance");
+			this._agentIdleCauses.set(agentId, { reason: "maintenance" });
 		}
 		// An empty steering queue is the only honest evidence that the human's
 		// interrupt was read; an abort clears the queue through the same event.
@@ -3359,7 +3381,7 @@ export class AgentOrchestrator {
 				await this.setAgentThinkingLevel(agentId, level);
 			},
 			abortAgent: async (agentId) => {
-				await this.abortAgent(agentId);
+				await this.abortAgent(agentId, "extension");
 			},
 			// Trust ruling: exec runs arbitrary commands in the project cwd.
 			exec: async (agentId, extensionId, command, options) => {

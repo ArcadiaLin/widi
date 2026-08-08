@@ -29,7 +29,7 @@ export const builtInCommands: readonly CommandDefinition[] = [
 		name: "abort",
 		description: "Abort the current agent run.",
 		checkActivity: (activity) => unavailableDuringMaintenance("abort", activity.maintenance),
-		execute: async (context) => await context.orchestrator.abortAgent(requireAgentId(context)),
+		execute: async (context) => await context.orchestrator.abortAgent(requireAgentId(context), "human"),
 	},
 	{
 		kind: "action",

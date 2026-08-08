@@ -219,7 +219,7 @@ describe("AgentOrchestrator.sendMessage", () => {
 		const compacting = orchestrator.compactAgent(targetAgentId);
 		await vi.waitFor(() => expect(orchestrator.getAgentActivity(targetAgentId).maintenance).toBe("compaction"));
 
-		await expect(orchestrator.abortAgent(targetAgentId)).rejects.toMatchObject({ code: "busy" });
+		await expect(orchestrator.abortAgent(targetAgentId, "human")).rejects.toMatchObject({ code: "busy" });
 		await expect(orchestrator.steerQueuedFollowUps(targetAgentId)).rejects.toMatchObject({ code: "busy" });
 
 		expect(abort).not.toHaveBeenCalled();

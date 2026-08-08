@@ -15,7 +15,7 @@
 
 import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
 import { AgentHarnessError, type AgentHarnessPhase } from "@widi/agent-core";
-import type { AgentId, AgentIdleReason, PromptOutcome } from "./types.ts";
+import type { AgentAbortOrigin, AgentId, AgentIdleReason, PromptOutcome } from "./types.ts";
 
 /**
  * Where a message came from. **Rendering and provenance only** - nothing here
@@ -243,6 +243,8 @@ export interface AgentNotice {
 	readonly status: "idle" | "gone";
 	/** Only meaningful for `idle`: whether it settled or was cut short. */
 	readonly reason?: AgentIdleReason;
+	/** Only with `aborted`, and only when the abort was asked for. */
+	readonly abortedBy?: AgentAbortOrigin;
 }
 
 /** What an agent notice records in `MessageSource.details`. */
@@ -264,7 +266,8 @@ export const AGENT_NOTICE_MERGE_KEY = "agent_notice";
  */
 export function renderAgentNoticeText(senderAgentId: AgentId, notice: AgentNotice, body: string): string {
 	const reason = notice.reason === undefined ? "" : ` reason="${notice.reason}"`;
-	return `<agent-notification from="${senderAgentId}" status="${notice.status}"${reason}>\n${body}\n</agent-notification>`;
+	const abortedBy = notice.abortedBy === undefined ? "" : ` aborted-by="${notice.abortedBy}"`;
+	return `<agent-notification from="${senderAgentId}" status="${notice.status}"${reason}${abortedBy}>\n${body}\n</agent-notification>`;
 }
 
 /**

@@ -9,7 +9,7 @@ import type { ThinkingLevel } from "@widi/agent-core";
 import type { BackgroundJobHost } from "./background/index.ts";
 import type { HumanRequestDraft, HumanResponse } from "./human-request.ts";
 import type { AgentNotice, MessageSendOutcome } from "./message.ts";
-import type { AgentActivity, AgentId, AgentIdleReason } from "./types.ts";
+import type { AgentAbortOrigin, AgentActivity, AgentId, AgentIdleReason } from "./types.ts";
 
 export interface AgentProfileBrief {
 	readonly id: string;
@@ -50,6 +50,8 @@ export interface AgentSpawnRequest {
 /** One agent stopping, as the runtime observed it. */
 export interface AgentStop {
 	readonly reason: AgentIdleReason;
+	/** Only with `aborted`, and only when the abort was asked for. */
+	readonly abortedBy?: AgentAbortOrigin;
 	readonly liveJobCount: number;
 }
 

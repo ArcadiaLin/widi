@@ -41,6 +41,13 @@ export interface AgentActivitySnapshot {
  */
 export type AgentIdleReason = "ready" | "settled" | "aborted" | "maintenance";
 
+/**
+ * Who asked for an abort. Absent when nobody did: a run can end aborted because
+ * the harness cancelled it, and a consumer that treats that as a person at the
+ * keyboard would wait for an instruction nobody is coming to give.
+ */
+export type AgentAbortOrigin = "human" | "extension";
+
 export interface AgentToolsSnapshot {
 	readonly toolNames: readonly string[];
 	readonly activeToolNames: readonly string[];
@@ -101,6 +108,8 @@ export type OrchestratorEvent =
 			readonly type: "agent_idle";
 			agentId: AgentId;
 			reason: AgentIdleReason;
+			/** Only with `aborted`, and only when the abort was asked for. */
+			abortedBy?: AgentAbortOrigin;
 			/**
 			 * Backgrounded jobs the agent still owns at this moment, including
 			 * tasks delegated to other agents. An idle with live jobs is an agent

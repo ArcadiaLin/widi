@@ -23,6 +23,7 @@ import { messageBindingFor } from "../../src/core/message.ts";
 import { SettingManager } from "../../src/core/setting-manager.ts";
 import { AgentWatches, createWatchAgentToolDefinition } from "../../src/core/tools/agents/watch-agent.ts";
 import type { ToolExecutionContext } from "../../src/core/tools/types.ts";
+import type { AgentAbortOrigin } from "../../src/core/types.ts";
 import {
 	createOrchestrator,
 	defaultModel,
@@ -113,7 +114,12 @@ async function settle(): Promise<void> {
  * on. The assistant message is written to the branch as a real run would, since
  * the branch is where the report is read from.
  */
-async function runAndStop(orchestrator: AgentOrchestrator, agentId: string, said: AssistantMessage): Promise<void> {
+async function runAndStop(
+	orchestrator: AgentOrchestrator,
+	agentId: string,
+	said: AssistantMessage,
+	interruptedBy?: AgentAbortOrigin,
+): Promise<void> {
 	const run = createDeferred();
 	const prompt = vi.spyOn(requireAgentHarness(orchestrator, agentId), "prompt").mockReturnValue(run.promise);
 	const accepted = orchestrator
@@ -122,6 +128,7 @@ async function runAndStop(orchestrator: AgentOrchestrator, agentId: string, said
 	await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
 	await emit(orchestrator, agentId, { type: "agent_start" });
 	await accepted;
+	if (interruptedBy) await orchestrator.abortAgent(agentId, interruptedBy);
 	if (said.content.length > 0) await requireAgentHarness(orchestrator, agentId).appendMessage(said);
 	await emit(orchestrator, agentId, { type: "turn_end", message: said, toolResults: [] });
 	run.resolve(said);
@@ -167,6 +174,43 @@ describe("agent watches", () => {
 		expect(notice).toContain(`<agent-notification from="${workerAgentId}" status="idle" reason="aborted">`);
 		expect(notice).toContain("Half of the router is rewritten.");
 		expect(notice).toContain("dispose_agent");
+		// Nobody asked for this abort, so it carries no origin and the watcher is
+		// free to pick the work back up.
+		expect(notice).not.toContain("aborted-by");
+	});
+
+	/**
+	 * The one stop the watcher must not act on by itself: a person is at the
+	 * keyboard of the agent it was waiting for, and a send_message from here would
+	 * land in the middle of their turn.
+	 */
+	it("tells the watcher to check with the human when a person interrupted the worker", async () => {
+		const { orchestrator, watch, watcherAgentId, workerAgentId } = await createPair();
+		const inbox = watchInbox(orchestrator, watcherAgentId);
+		await watch(watcherAgentId, workerAgentId);
+
+		await runAndStop(orchestrator, workerAgentId, assistantMessage("Halfway through.", "aborted"), "human");
+
+		await vi.waitFor(() => expect(inbox.texts).toHaveLength(1));
+		const notice = inbox.texts[0] ?? "";
+		expect(notice).toContain(`reason="aborted" aborted-by="human"`);
+		expect(notice).toContain("was interrupted by a human");
+		expect(notice).toContain("ask the human");
+		expect(notice).not.toContain("Continue it with send_message");
+	});
+
+	it("carries the abort origin on the idle edge", async () => {
+		const { orchestrator, workerAgentId } = await createPair();
+		const idles: Array<[string, string | undefined]> = [];
+		orchestrator.subscribe((event) => {
+			if (event.type === "agent_idle" && event.agentId === workerAgentId) {
+				idles.push([event.reason, event.abortedBy]);
+			}
+		});
+
+		await runAndStop(orchestrator, workerAgentId, assistantMessage("half done", "aborted"), "extension");
+
+		expect(idles).toEqual([["aborted", "extension"]]);
 	});
 
 	it("reports a worker that stopped silently", async () => {
@@ -179,6 +223,8 @@ describe("agent watches", () => {
 		await vi.waitFor(() => expect(inbox.texts).toHaveLength(1));
 		expect(inbox.texts[0]).toContain(`status="idle" reason="settled"`);
 		expect(inbox.texts[0]).toContain("Done: the config was already correct.");
+		expect(inbox.texts[0]).toContain("finished a turn and will not continue on its own");
+		expect(inbox.texts[0]).toContain("Continue it with send_message if the task is not done");
 	});
 
 	// The case a voluntary report cannot express at all: a run that produced no

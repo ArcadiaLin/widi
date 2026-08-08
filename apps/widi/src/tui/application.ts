@@ -1339,7 +1339,7 @@ export class WidiTuiApplication {
 				return;
 			}
 			this.track(
-				this.orchestrator.abortAgent(agentId).catch((error) => {
+				this.orchestrator.abortAgent(agentId, "human").catch((error) => {
 					this.addApplicationNotice(errorMessage(error), agentId);
 				}),
 			);

@@ -81,7 +81,11 @@ export class AgentWatches {
 			if (stop.liveJobCount > 0) continue;
 			if (this._holdsWatches(targetAgentId)) continue;
 			this._watchers.delete(targetAgentId);
-			await this._deliver(host, targetAgentId, { status: "idle", reason: stop.reason });
+			await this._deliver(host, targetAgentId, {
+				status: "idle",
+				reason: stop.reason,
+				...(stop.abortedBy === undefined ? undefined : { abortedBy: stop.abortedBy }),
+			});
 			return;
 		}
 	}
@@ -188,15 +192,26 @@ function formatNoticeBody(agentId: AgentId, notice: AgentNotice, report: string 
 		const closing = `${agentId} was disposed and will not report. You are no longer watching it.`;
 		return report ? `${report}\n\n${closing}` : closing;
 	}
-	const state =
-		notice.reason === "aborted"
-			? `${agentId} was interrupted and stopped`
-			: `${agentId} is idle and will not continue on its own`;
 	return [
 		// A run that ended without a word is a fact the watcher has to be told, not
 		// a reason to stay silent: it is exactly the case the old voluntary report
 		// lost, and an empty notification body would read as a delivery bug.
 		report ?? `${agentId} stopped without a closing message.`,
-		`${state}. You are no longer watching it. Continue it with send_message, or dispose_agent to release it.`,
+		formatNoticeClosing(agentId, notice),
 	].join("\n\n");
+}
+
+/**
+ * A human at the keyboard is the one case where the watcher must not act on its
+ * own: the person is working with that agent directly, and a send_message from
+ * here would land in the middle of their turn.
+ */
+function formatNoticeClosing(agentId: AgentId, notice: AgentNotice): string {
+	if (notice.abortedBy === "human") {
+		return `${agentId} was interrupted by a human, who is working with it directly. You are no longer watching it. Do not send it anything yet; ask the human whether to take it back over or to wait for it to answer again.`;
+	}
+	if (notice.reason === "aborted") {
+		return `${agentId} was interrupted and stopped, so what it said may be a fragment. You are no longer watching it. Continue it with send_message, or dispose_agent to release it.`;
+	}
+	return `${agentId} finished a turn and will not continue on its own. You are no longer watching it. Continue it with send_message if the task is not done, or carry on with your own work if it is; dispose_agent releases it.`;
 }
