@@ -201,7 +201,6 @@ import type {
 	AgentActivitySnapshot,
 	AgentId,
 	AgentIdleReason,
-	AgentMaintenanceKind,
 	AgentToolsSnapshot,
 	CandidateItem,
 	OrchestratorEvent,
@@ -210,6 +209,7 @@ import type {
 	RuntimeModel,
 	RuntimeShutdownRequest,
 } from "./types.ts";
+import { maintenanceDescription, maintenanceKindOf } from "./types.ts";
 
 export type { AgentSnapshot, LiveAgent } from "./agent-types.ts";
 export type {
@@ -754,7 +754,7 @@ export class AgentOrchestrator {
 	 */
 	private _requireHarnessOutsideMaintenance(agentId: AgentId, action: string): WidiAgentHarness {
 		const harness = this._requireLiveAgent(agentId).harness;
-		const maintenance = toMaintenanceKind(harness.getPhase());
+		const maintenance = maintenanceKindOf(harness.getPhase());
 		if (maintenance) {
 			throw new AgentHarnessError(
 				"busy",
@@ -2476,7 +2476,7 @@ export class AgentOrchestrator {
 		}
 		// Maintenance releases the harness with no turn behind it, so no prompt run
 		// completion will stamp this idle.
-		if (event.type === "phase_change" && event.phase === "idle" && toMaintenanceKind(event.previousPhase)) {
+		if (event.type === "phase_change" && event.phase === "idle" && maintenanceKindOf(event.previousPhase)) {
 			this._agentIdleCauses.set(agentId, { reason: "maintenance" });
 		}
 		// An empty steering queue is the only honest evidence that the human's
@@ -4416,21 +4416,10 @@ function isExtensionCausedWrite(event: AgentHarnessEvent): boolean {
 /** Core-owned entry types the orchestrator writes only on an extension's behalf. */
 const EXTENSION_CAUSED_CORE_CUSTOM_TYPES: ReadonlySet<string> = new Set([EXTENSION_MESSAGE_CUSTOM_TYPE]);
 
-/** Maintenance phases the harness reports, in the vocabulary surfaces use. */
-function toMaintenanceKind(phase: AgentHarnessPhase): AgentMaintenanceKind | undefined {
-	if (phase === "compaction") return "compaction";
-	if (phase === "branch_summary") return "tree-navigation";
-	return undefined;
-}
-
 function toActivitySnapshot(phase: AgentHarnessPhase): AgentActivitySnapshot {
-	const maintenance = toMaintenanceKind(phase);
+	const maintenance = maintenanceKindOf(phase);
 	if (maintenance) return { activity: "running", maintenance };
 	return { activity: phase === "idle" ? "idle" : "running" };
-}
-
-function maintenanceDescription(kind: AgentMaintenanceKind): string {
-	return kind === "tree-navigation" ? "tree navigation" : "compaction";
 }
 
 /** Everything handed to a harness that it has not read yet. */

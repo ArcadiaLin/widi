@@ -15,6 +15,7 @@ import type {
 	AgentSessionTreeSnapshot,
 } from "../../core/session-manager.ts";
 import type { AgentMaintenanceKind, CandidateItem } from "../../core/types.ts";
+import { maintenanceDescription } from "../../core/types.ts";
 import { commandHeadline, commandPreviewLines, type PresentCommandOptions } from "../command-presenter.ts";
 import { TreeNavigationSelector } from "../selectors/tree-navigation.ts";
 import { buildSessionEntryRows, findSessionEntryRow, userMessageHeadline } from "../session-tree.ts";
@@ -476,6 +477,5 @@ function unavailableDuringMaintenance(
 	maintenance: AgentMaintenanceKind | undefined,
 ): string | undefined {
 	if (!maintenance) return undefined;
-	const operation = maintenance === "compaction" ? "compaction" : "tree navigation";
-	return `Command /${commandName} is not available during ${operation}.`;
+	return `Command /${commandName} is not available during ${maintenanceDescription(maintenance)}.`;
 }

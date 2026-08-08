@@ -1,5 +1,5 @@
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
-import type { AgentHarnessEvent } from "@widi/agent-core";
+import type { AgentHarnessEvent, AgentHarnessPhase } from "@widi/agent-core";
 import type { AgentProfile } from "./agent-profile.js";
 import type {
 	BackgroundJobReportSnapshot,
@@ -23,6 +23,23 @@ export type AgentActivity = "idle" | "running";
  * loop. Steering and aborting do not apply while it is set.
  */
 export type AgentMaintenanceKind = "compaction" | "tree-navigation";
+
+/**
+ * The one place a harness phase is judged to be maintenance. Everything that
+ * has to know reads it here - the activity a surface shows, the turn controls
+ * it refuses, the messages held rather than queued, the idle with no turn
+ * behind it - so the set cannot drift between them.
+ */
+export function maintenanceKindOf(phase: AgentHarnessPhase): AgentMaintenanceKind | undefined {
+	if (phase === "compaction") return "compaction";
+	if (phase === "branch_summary") return "tree-navigation";
+	return undefined;
+}
+
+/** The work as a noun, for the surfaces that have to say what is blocking. */
+export function maintenanceDescription(kind: AgentMaintenanceKind): string {
+	return kind === "compaction" ? "compaction" : "tree navigation";
+}
 
 export interface AgentActivitySnapshot {
 	readonly activity: AgentActivity;

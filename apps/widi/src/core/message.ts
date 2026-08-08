@@ -16,6 +16,7 @@
 import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
 import { AgentHarnessError, type AgentHarnessPhase } from "@widi/agent-core";
 import type { AgentAbortOrigin, AgentId, AgentIdleReason, PromptOutcome } from "./types.ts";
+import { maintenanceKindOf } from "./types.ts";
 
 /**
  * Where a message came from. **Rendering and provenance only** - nothing here
@@ -502,9 +503,7 @@ export function decideMessageDelivery(input: {
 	// be accepted into a queue nothing drains. It waits for the next phase change
 	// instead. A retry is inside a turn, and the loop that resumes will read both
 	// queues, so it is delivered exactly like one.
-	if (phase === "compaction" || phase === "branch_summary") {
-		return { kind: "defer" };
-	}
+	if (maintenanceKindOf(phase)) return { kind: "defer" };
 	if (phase === "idle") return { kind: "deliver", method: "prompt" };
 	return { kind: "deliver", method: input.mode === "interrupt" ? "steer" : "follow_up" };
 }
