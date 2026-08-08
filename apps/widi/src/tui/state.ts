@@ -74,6 +74,12 @@ export interface ToolExecutionItem {
 	 * "cancelled".
 	 */
 	status: "preparing" | "running" | "completed" | "cancelled";
+	/**
+	 * Per-item expand override (parity §4.3-3): set, it wins over the global
+	 * toolOutputExpanded toggle; unset, the item follows the global state.
+	 * The projector preserves it across item updates.
+	 */
+	expanded?: boolean;
 }
 
 export interface ThinkingStatusItem {

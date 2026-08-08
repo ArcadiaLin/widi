@@ -14,6 +14,7 @@ import type {
 	PersistentMessageItem,
 	SessionMarkerItem,
 	ThinkingStatusItem,
+	ToolExecutionItem,
 	UserMessageItem,
 } from "../../src/tui/state.ts";
 import { theme } from "../../src/tui/theme/theme.ts";
@@ -439,3 +440,41 @@ function extensionMessageItem(message: ExtensionMessage): PersistentMessageItem 
 		createdAt: "2026-01-01T00:00:00.000Z",
 	};
 }
+
+describe("per-item tool expansion (parity §4.3-3)", () => {
+	function bashToolItem(expanded?: boolean): ToolExecutionItem {
+		return {
+			type: "tool-execution",
+			id: "tool-1",
+			toolCallId: "tool-1",
+			durability: "durable",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			toolName: "bash",
+			args: { command: "seq 10" },
+			status: "completed",
+			isError: false,
+			...(expanded !== undefined ? { expanded } : {}),
+			result: { content: [{ type: "text", text: Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join("\n") }] },
+		};
+	}
+
+	it("renders the full output for an expanded item while the global toggle is off", () => {
+		const collapsed = plain(renderTimelineItem(bashToolItem(), 80, context));
+		const expanded = plain(renderTimelineItem(bashToolItem(true), 80, context));
+
+		expect(collapsed.some((line) => line.includes("+6 lines"))).toBe(true);
+		expect(collapsed.some((line) => line.includes("line 6"))).toBe(false);
+		expect(expanded.some((line) => line.includes("+6 lines"))).toBe(false);
+		expect(expanded.some((line) => line.includes("line 10"))).toBe(true);
+	});
+
+	it("collapses an item whose flag is false while the global toggle is on", () => {
+		const lines = plain(renderTimelineItem(bashToolItem(false), 80, { ...context, toolOutputExpanded: true }));
+
+		expect(lines.some((line) => line.includes("+6 lines"))).toBe(true);
+	});
+
+	it("includes the per-item flag in the render deps", () => {
+		expect(renderDeps(bashToolItem(), context)).not.toEqual(renderDeps(bashToolItem(true), context));
+	});
+});

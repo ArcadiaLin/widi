@@ -22,8 +22,10 @@ export interface PresentToolOptions {
 // A presenter renders one tool-execution timeline item. "lines" is the
 // default form: a stateless pure function, so hydration, windowing, and the
 // per-item render cache all keep working unchanged. "component" is opt-in for
-// tool rows that need interaction; only its type exists here - instantiation
-// and the per-toolCallId instance cache land with per-item expansion (Step 6).
+// tool rows that need interaction; the timeline layer (ChatView) owns its
+// per-toolCallId instance cache: the factory runs once per call, updates are
+// fed through update() as the item changes, and dispose() runs when the row
+// leaves the timeline (windowing) or the view switches agents.
 
 /** Semantic headline of a tool call: an accent verb plus a plain target. */
 export interface ToolCallHeadline {
@@ -59,14 +61,21 @@ export interface LinesToolPresenterSpec {
 	success?(item: ToolExecutionItem, resultLines: readonly string[]): ToolSuccessPresentation;
 }
 
-/** Context the timeline layer hands a component factory (Step 6). */
+/** Context the timeline layer hands a component factory. */
 export interface ToolRowContext {
 	/** Per-item expanded state maintained by the timeline layer. */
 	readonly expanded: boolean;
 }
 
-/** A stateful tool row. Instantiation is reserved for Step 6. */
-export type ToolRowComponent = Component;
+/**
+ * A stateful tool row. update() is fed the latest item as the timeline entry
+ * changes under a live row (stream transitions replace the item object);
+ * dispose() runs when the row is dropped from the view.
+ */
+export type ToolRowComponent = Component & {
+	update?(item: ToolExecutionItem, context: ToolRowContext): void;
+	dispose?(): void;
+};
 
 export type ToolPresenter =
 	| { readonly kind: "lines"; present(item: ToolExecutionItem, width: number, options: PresentToolOptions): string[] }
@@ -85,8 +94,8 @@ export function presentToolExecution(
 ): string[] {
 	const presenter = lookupToolPresenter(item.toolName);
 	if (presenter?.kind === "lines") return presenter.present(item, width, options);
-	// A component presenter cannot be instantiated yet (Step 6); render the
-	// generic lines fallback instead of dropping the row.
+	// A component presenter is instantiated by the timeline layer (ChatView);
+	// anywhere else the row degrades to the generic lines fallback.
 	return presentLines(item, width, options, {
 		describe: () => ({ verb: item.toolName, target: compactArguments(item.args) }),
 	});
@@ -100,7 +109,8 @@ export function presentToolExecution(
 
 const registeredPresenters = new Map<string, ToolPresenter>();
 
-function lookupToolPresenter(toolName: string): ToolPresenter | undefined {
+/** The presenter a tool name resolves to, if any (registered, then built-in). */
+export function lookupToolPresenter(toolName: string): ToolPresenter | undefined {
 	return registeredPresenters.get(toolName) ?? builtInPresenters.get(toolName);
 }
 

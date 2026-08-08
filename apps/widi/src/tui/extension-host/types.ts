@@ -3,6 +3,7 @@ import type { CommandDefinition } from "../commands/types.ts";
 import type { AppOverlayHandle, ShowOverlayOptions } from "../layout/overlay-stack.ts";
 import type { Theme, ThemeInfo } from "../theme/theme.ts";
 import type { ToolPresenter } from "../tool-presenter.ts";
+import type { TuiExtensionEntryRenderer, TuiExtensionMessageRenderer } from "./renderers.ts";
 
 /**
  * The `tui` half of the dual-entry extension contract (host doc §6.2). A
@@ -51,9 +52,9 @@ export interface TuiExtensionEditorAccess {
 }
 
 /**
- * The API object the host hands to a `tui` half at activation. Step 6a covers
- * the registration-class surface; Step 6b adds the component-class methods
- * (widgets, overlays, theme, editor text, renderers) onto this same object.
+ * The API object the host hands to a `tui` half at activation: the
+ * registration-class surface (commands, shortcuts, presenters, renderers)
+ * plus the component-class surface (widgets, overlays, theme, editor text).
  */
 export interface WidiTuiExtensionApi {
 	readonly extensionId: string;
@@ -70,6 +71,21 @@ export interface WidiTuiExtensionApi {
 
 	/** Presenter for a tool name, into the tool-presenter registry. */
 	registerToolPresenter(toolName: string, presenter: ToolPresenter): void;
+
+	/**
+	 * Renderer for this extension's published messages of one kind (including
+	 * an override of a built-in kind for this extension's own messages). It
+	 * replaces the body of the built-in frame; a throwing renderer degrades to
+	 * the built-in body and reports one diagnostic.
+	 */
+	registerMessageRenderer(kind: string, render: TuiExtensionMessageRenderer): void;
+
+	/**
+	 * Whole-frame renderer for this extension's messages of one kind. The
+	 * context's renderBody() supplies the message-renderer-or-built-in body,
+	 * so an entry renderer wraps whatever the body would have been.
+	 */
+	registerEntryRenderer(kind: string, render: TuiExtensionEntryRenderer): void;
 
 	/**
 	 * Mount a component into a named layout slot. The key is namespaced to the

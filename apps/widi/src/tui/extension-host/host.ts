@@ -9,6 +9,15 @@ import type { AppOverlayHandle, ShowOverlayOptions } from "../layout/overlay-sta
 import type { LayoutSlots } from "../layout/slots.ts";
 import { getAllThemes, setTheme, theme } from "../theme/theme.ts";
 import { registerToolPresenter } from "../tool-presenter.ts";
+import {
+	registerExtensionEntryRenderer,
+	registerExtensionMessageRenderer,
+	setExtensionRendererReporter,
+	type TuiExtensionEntryRenderer,
+	type TuiExtensionMessageRenderer,
+	unregisterExtensionEntryRenderer,
+	unregisterExtensionMessageRenderer,
+} from "./renderers.ts";
 import { ExtensionShortcutRegistry } from "./shortcuts.ts";
 import {
 	TUI_EXTENSION_API_VERSION,
@@ -89,6 +98,7 @@ export class TuiExtensionHost {
 		this.requestRender = options.requestRender ?? (() => {});
 		this.moduleImporter = options.moduleImporter ?? new JitiExtensionModuleImporter();
 		this.shortcuts = new ExtensionShortcutRegistry({ reportDiagnostic: options.reportDiagnostic });
+		setExtensionRendererReporter(options.reportDiagnostic);
 	}
 
 	/** Shortcut definitions registered so far, for the global keybindings merge. */
@@ -236,6 +246,32 @@ export class TuiExtensionHost {
 			registerToolPresenter: (toolName, presenter) => {
 				const diagnostic = registerToolPresenter(toolName, presenter);
 				if (diagnostic) this.reportDiagnostic({ ...diagnostic, extensionId });
+			},
+			registerMessageRenderer: (kind: string, render: TuiExtensionMessageRenderer) => {
+				const diagnostic = registerExtensionMessageRenderer(extensionId, kind, render);
+				if (diagnostic) {
+					this.reportDiagnostic(diagnostic);
+					return;
+				}
+				this.disposers.push({
+					extensionId,
+					dispose: () => {
+						unregisterExtensionMessageRenderer(extensionId, kind);
+					},
+				});
+			},
+			registerEntryRenderer: (kind: string, render: TuiExtensionEntryRenderer) => {
+				const diagnostic = registerExtensionEntryRenderer(extensionId, kind, render);
+				if (diagnostic) {
+					this.reportDiagnostic(diagnostic);
+					return;
+				}
+				this.disposers.push({
+					extensionId,
+					dispose: () => {
+						unregisterExtensionEntryRenderer(extensionId, kind);
+					},
+				});
 			},
 			setWidget: (
 				key: string,

@@ -1120,3 +1120,36 @@ function progressEvent(
 function jobReport(revision: number, summary: string): BackgroundJobReportSnapshot {
 	return { revision, updatedAt: revision * 1_000, value: { kind: "test.status", schemaVersion: 1, summary } };
 }
+
+describe("per-item tool expansion (parity §4.3-3)", () => {
+	it("keeps the per-item expand override across tool execution updates", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+		setActiveAgent(state, "main");
+
+		projector.apply(
+			harness("main", {
+				type: "tool_execution_start",
+				toolCallId: "tool-1",
+				toolName: "bash",
+				args: { command: "seq 3" },
+			}),
+		);
+		projector.setToolExpanded("main", "tool-1", true);
+		projector.apply(
+			harness("main", {
+				type: "tool_execution_end",
+				toolCallId: "tool-1",
+				toolName: "bash",
+				result: { content: [{ type: "text", text: "1\n2\n3" }] },
+				isError: false,
+			}),
+		);
+
+		const item = state.agents.get("main")?.timeline.find((entry) => entry.type === "tool-execution");
+		expect(item).toMatchObject({ type: "tool-execution", status: "completed", expanded: true });
+
+		projector.setToolExpanded("main", "tool-1", undefined);
+		expect(item).not.toHaveProperty("expanded");
+	});
+});

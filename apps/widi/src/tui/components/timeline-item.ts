@@ -2,6 +2,7 @@ import { getKeybindings, Markdown, Text, truncateToWidth, visibleWidth } from "@
 import type { ExtensionFieldsMessage, ExtensionMessage, ExtensionTableMessage } from "../../core/extension/api.ts";
 import { MAX_EXTENSION_MESSAGE_CELL_BYTES } from "../../core/extension/presentation.ts";
 import { renderDiffText } from "../diff.ts";
+import { renderExtensionEntry, renderExtensionMessageBody } from "../extension-host/renderers.ts";
 import { boundedText, formatUnknown, sanitizeTerminalText, singleLine, spinnerFrame } from "../format.ts";
 import type { TimelineItem } from "../state.ts";
 import { theme } from "../theme/theme.ts";
@@ -49,6 +50,7 @@ export function renderDeps(item: TimelineItem, context: TimelineRenderContext): 
 				item.args,
 				item.partialResult,
 				item.result,
+				item.expanded,
 				context.toolOutputExpanded,
 				...(item.status === "preparing" ? [spinnerTick()] : []),
 			];
@@ -268,7 +270,9 @@ export function renderTimelineItem(item: TimelineItem, width: number, context: T
 		}
 		case "tool-execution":
 			return new Text(
-				presentToolExecution(item, Math.max(8, width - 2), { expanded: context.toolOutputExpanded }).join("\n"),
+				presentToolExecution(item, Math.max(8, width - 2), {
+					expanded: item.expanded ?? context.toolOutputExpanded,
+				}).join("\n"),
 				1,
 				0,
 			).render(width);
@@ -306,11 +310,18 @@ export function renderTimelineItem(item: TimelineItem, width: number, context: T
 				0,
 			).render(width);
 		case "extension-message": {
+			const usableWidth = Math.max(8, width - 2);
+			// A registered entry renderer owns the whole frame; its renderBody()
+			// wraps the message renderer (or the built-in body) inside it. A
+			// message renderer alone only replaces the body. A throwing renderer
+			// already reported its diagnostic; what remains is the built-in path.
+			const entry = renderExtensionEntry(item, width, (bodyWidth) => extensionMessageLines(item.message, bodyWidth));
+			if (entry) return entry;
 			const title = item.message.title
 				? theme.title(singleLine(item.message.title, 400))
 				: theme.dim(`[${item.extensionId}]`);
 			const meta = theme.dim(`persistent · ${item.extensionId} · ${item.message.kind}`);
-			const body = extensionMessageLines(item.message, Math.max(8, width - 2));
+			const body = renderExtensionMessageBody(item, usableWidth) ?? extensionMessageLines(item.message, usableWidth);
 			return new Text(`${title}  ${meta}\n\n${body.join("\n")}`, 1, 0).render(width);
 		}
 		case "human-request-trace": {

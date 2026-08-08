@@ -3,8 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ChatView } from "../../src/tui/components/chat.ts";
-import { createTuiApplicationState, setActiveAgent } from "../../src/tui/state.ts";
+import { createTuiApplicationState, setActiveAgent, type ToolExecutionItem } from "../../src/tui/state.ts";
 import { loadThemes, resetThemes, setTheme, type ThemePalette } from "../../src/tui/theme/theme.ts";
+import { registerToolPresenter, unregisterToolPresenter } from "../../src/tui/tool-presenter.ts";
 
 const ALT_PALETTE: ThemePalette = {
 	accent: "#ff0000",
@@ -65,5 +66,94 @@ describe("ChatView render cache", () => {
 		// differently, so a stale cache would fail this byte comparison.
 		expect(repainted).not.toEqual(first);
 		expect(stripAnsi(repainted)).toEqual(stripAnsi(first));
+	});
+});
+
+function toolItem(overrides: Partial<ToolExecutionItem>): ToolExecutionItem {
+	return {
+		type: "tool-execution",
+		id: "tool-1",
+		toolCallId: "tool-1",
+		durability: "durable",
+		createdAt: "2026-01-01T00:00:00.000Z",
+		toolName: "bash",
+		args: { command: "seq 3" },
+		status: "completed",
+		isError: false,
+		...overrides,
+	};
+}
+
+function stateWithTimeline(items: readonly ToolExecutionItem[], agentId = "agent-1") {
+	const state = createTuiApplicationState();
+	const agent = setActiveAgent(state, agentId);
+	agent.timeline.push(...items);
+	return state;
+}
+
+describe("ChatView component presenters (parity §4.3-2)", () => {
+	afterEach(() => {
+		unregisterToolPresenter("bash");
+	});
+
+	it("creates one instance per toolCallId, feeds updates, disposes on trim", () => {
+		const calls: string[] = [];
+		let current: ToolExecutionItem | undefined;
+		let currentExpanded = false;
+		registerToolPresenter("bash", {
+			kind: "component",
+			factory: (item, context) => {
+				calls.push("factory");
+				current = item;
+				currentExpanded = context.expanded;
+				return {
+					render: () => [`row:${current?.args ? JSON.stringify(current.args) : ""}:${currentExpanded}`],
+					invalidate: () => {},
+					update: (next, nextContext) => {
+						calls.push("update");
+						current = next;
+						currentExpanded = nextContext.expanded;
+					},
+					dispose: () => {
+						calls.push("dispose");
+					},
+				};
+			},
+		});
+		const item = toolItem({});
+		const state = stateWithTimeline([item]);
+		const view = new ChatView(state);
+
+		const first = view.render(60);
+		expect(calls).toEqual(["factory"]);
+		expect(first.some((line) => line.includes('row:{"command":"seq 3"}:false'))).toBe(true);
+
+		// A same-toolCallId replacement (what the projector does on stream
+		// transitions) reuses the instance through update(); the per-item flag
+		// wins over the global toggle.
+		const replacement = toolItem({ args: { command: "seq 9" }, expanded: true });
+		state.agents.get("agent-1")?.timeline.splice(0, 1, replacement);
+		const second = view.render(60);
+		expect(calls).toEqual(["factory", "update"]);
+		expect(second.some((line) => line.includes('row:{"command":"seq 9"}:true'))).toBe(true);
+
+		// The row left the timeline (windowing): the instance is disposed.
+		state.agents.get("agent-1")?.timeline.splice(0, 1);
+		view.render(60);
+		expect(calls).toEqual(["factory", "update", "dispose"]);
+	});
+
+	it("degrades to the generic lines when the factory or the render throws", () => {
+		registerToolPresenter("bash", {
+			kind: "component",
+			factory: () => {
+				throw new Error("factory boom");
+			},
+		});
+		const state = stateWithTimeline([toolItem({})]);
+		const view = new ChatView(state);
+
+		const lines = stripAnsi(view.render(60));
+		expect(lines.some((line) => line.includes("bash command: seq 3"))).toBe(true);
 	});
 });

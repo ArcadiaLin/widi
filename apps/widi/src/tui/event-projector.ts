@@ -99,6 +99,18 @@ export class EventProjector {
 		return ensureAgentProjection(this.state, agentId);
 	}
 
+	/**
+	 * Set or clear a tool item's per-item expand override (parity §4.3-3).
+	 * The override survives later item updates; clearing it returns the item
+	 * to the global toolOutputExpanded toggle.
+	 */
+	setToolExpanded(agentId: AgentId, toolCallId: string, expanded: boolean | undefined): void {
+		const item = findTool(ensureAgentProjection(this.state, agentId), toolCallId);
+		if (!item) return;
+		if (expanded === undefined) delete item.expanded;
+		else item.expanded = expanded;
+	}
+
 	apply(event: OrchestratorEvent): void {
 		const agentId = eventAgentId(event);
 		if (agentId && this.shouldBuffer(ensureAgentProjection(this.state, agentId), event)) {
@@ -825,6 +837,7 @@ function upsertPreparingTool(
 		sourceAssistantId,
 		toolName: content.name || previous?.toolName || "tool",
 		args: content.arguments,
+		...(previous?.expanded !== undefined ? { expanded: previous.expanded } : {}),
 		status: "preparing",
 	} satisfies ToolExecutionItem;
 	if (index === -1) agent.timeline.push(item);

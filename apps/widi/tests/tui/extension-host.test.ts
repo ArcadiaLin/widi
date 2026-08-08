@@ -1,17 +1,20 @@
 import type { Component } from "@earendil-works/pi-tui";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { OrchestratorDiagnostic } from "../../src/core/diagnostics.ts";
 import type { ExtensionIdentity } from "../../src/core/extension/loader.ts";
+import type { ExtensionMessage } from "../../src/core/extension/presentation.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
 import type { CommandDefinition } from "../../src/tui/commands/types.ts";
+import { renderTimelineItem, type TimelineRenderContext } from "../../src/tui/components/timeline-item.ts";
 import {
+	resetExtensionRenderers,
 	TuiExtensionHost,
 	type TuiExtensionModuleImporter,
 	type WidiTuiExtensionApi,
 } from "../../src/tui/extension-host/index.ts";
 import type { ShowOverlayOptions } from "../../src/tui/layout/overlay-stack.ts";
 import { LayoutSlots } from "../../src/tui/layout/slots.ts";
-import { createTuiApplicationState, type ToolExecutionItem } from "../../src/tui/state.ts";
+import { createTuiApplicationState, type PersistentMessageItem, type ToolExecutionItem } from "../../src/tui/state.ts";
 import { resetThemes } from "../../src/tui/theme/theme.ts";
 import { defineLinesPresenter, presentToolExecution, unregisterToolPresenter } from "../../src/tui/tool-presenter.ts";
 
@@ -649,5 +652,129 @@ describe("TuiExtensionHost", () => {
 		api?.pasteToEditor(" world");
 		expect(api?.getEditorText()).toBe("hello world");
 		expect(fixture.renderRequests()).toBe(2);
+	});
+});
+
+describe("extension renderers (host doc §6.3/§6.5)", () => {
+	const renderContext: TimelineRenderContext = {
+		liveThinkingIds: new Set(),
+		livePreparingAssistantIds: new Set(),
+		toolOutputExpanded: false,
+	};
+
+	function messageItem(extensionId: string, message: ExtensionMessage): PersistentMessageItem {
+		return {
+			type: "extension-message",
+			id: "ext-1",
+			entryId: "ext-1",
+			extensionId,
+			message,
+			durability: "durable",
+			createdAt: "2026-01-01T00:00:00.000Z",
+		};
+	}
+
+	function plain(lines: string[]): string[] {
+		return lines.map((line) => line.replace(ANSI_SEQUENCE, "").trim());
+	}
+
+	afterEach(() => {
+		resetExtensionRenderers();
+	});
+
+	it("replaces the body for the matching (extensionId, kind) pair only", async () => {
+		const fixture = createHostFixture();
+		fixture.modules.set("/ext/acme/index.ts", {
+			tui: (api: WidiTuiExtensionApi) => {
+				api.registerMessageRenderer("text", (message) => ({
+					render: () => [`CUSTOM:${message.kind}`],
+					invalidate: () => {},
+				}));
+			},
+		});
+		const host = fixture.activate([["acme", identity("acme", "/ext/acme/index.ts")]]);
+		await host.activate();
+
+		const own = plain(
+			renderTimelineItem(messageItem("acme", { kind: "text", content: "built-in body" }), 60, renderContext),
+		);
+		expect(own.some((line) => line.includes("CUSTOM:text"))).toBe(true);
+		// The built-in frame (title/meta) survives a body-only renderer.
+		expect(own.some((line) => line.includes("persistent · acme · text"))).toBe(true);
+		expect(own.some((line) => line.includes("built-in body"))).toBe(false);
+
+		const other = plain(
+			renderTimelineItem(messageItem("other", { kind: "text", content: "built-in body" }), 60, renderContext),
+		);
+		expect(other.some((line) => line.includes("CUSTOM:text"))).toBe(false);
+		expect(other.some((line) => line.includes("built-in body"))).toBe(true);
+		expect(fixture.diagnostics).toEqual([]);
+	});
+
+	it("degrades a throwing renderer to the built-in body with one diagnostic", async () => {
+		const fixture = createHostFixture();
+		fixture.modules.set("/ext/acme/index.ts", {
+			tui: (api: WidiTuiExtensionApi) => {
+				api.registerMessageRenderer("text", () => {
+					throw new Error("render boom");
+				});
+			},
+		});
+		const host = fixture.activate([["acme", identity("acme", "/ext/acme/index.ts")]]);
+		await host.activate();
+
+		const item = messageItem("acme", { kind: "text", content: "built-in body" });
+		const first = plain(renderTimelineItem(item, 60, renderContext));
+		renderTimelineItem(item, 60, renderContext);
+
+		expect(first.some((line) => line.includes("built-in body"))).toBe(true);
+		const failures = fixture.diagnostics.filter((diagnostic) => diagnostic.code === "tui_extension.renderer_failed");
+		expect(failures).toHaveLength(1);
+		expect(failures[0]).toMatchObject({ severity: "warning", extensionId: "acme" });
+		expect(failures[0]?.message).toContain("render boom");
+	});
+
+	it("wraps the message-renderer body in an entry renderer's frame", async () => {
+		const fixture = createHostFixture();
+		fixture.modules.set("/ext/acme/index.ts", {
+			tui: (api: WidiTuiExtensionApi) => {
+				api.registerMessageRenderer("text", () => ({ render: () => ["inner body"], invalidate: () => {} }));
+				api.registerEntryRenderer("text", (_item, context) => ({
+					render: () => [`ENTRY<${context.renderBody().join("/")}>`],
+					invalidate: () => {},
+				}));
+			},
+		});
+		const host = fixture.activate([["acme", identity("acme", "/ext/acme/index.ts")]]);
+		await host.activate();
+
+		const lines = plain(renderTimelineItem(messageItem("acme", { kind: "text", content: "x" }), 60, renderContext));
+
+		expect(lines).toEqual(["ENTRY<inner body>"]);
+	});
+
+	it("refuses a duplicate registration and unregisters on dispose", async () => {
+		const fixture = createHostFixture();
+		fixture.modules.set("/ext/acme/index.ts", {
+			tui: (api: WidiTuiExtensionApi) => {
+				api.registerMessageRenderer("text", () => ({ render: () => ["first"], invalidate: () => {} }));
+				api.registerMessageRenderer("text", () => ({ render: () => ["second"], invalidate: () => {} }));
+			},
+		});
+		const host = fixture.activate([["acme", identity("acme", "/ext/acme/index.ts")]]);
+		await host.activate();
+
+		expect(fixture.diagnostics[0]).toMatchObject({
+			severity: "warning",
+			code: "tui_extension.renderer_conflict",
+			extensionId: "acme",
+		});
+		const item = messageItem("acme", { kind: "text", content: "built-in body" });
+		expect(plain(renderTimelineItem(item, 60, renderContext)).some((line) => line.includes("first"))).toBe(true);
+
+		await host.dispose();
+		expect(plain(renderTimelineItem(item, 60, renderContext)).some((line) => line.includes("built-in body"))).toBe(
+			true,
+		);
 	});
 });
