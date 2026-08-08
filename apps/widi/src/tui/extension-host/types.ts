@@ -1,4 +1,4 @@
-import type { KeyId } from "@earendil-works/pi-tui";
+import type { Component, KeyId } from "@earendil-works/pi-tui";
 import type { CommandDefinition } from "../commands/types.ts";
 import type { ToolPresenter } from "../tool-presenter.ts";
 
@@ -25,6 +25,23 @@ export interface TuiExtensionShortcutOptions {
 }
 
 /**
+ * Instantiates a component the extension mounts into the layout or shows as
+ * an overlay. An optional dispose() on the component runs when the host
+ * removes it. Factories get no arguments: the live `theme` holder on the API
+ * object is the painting resource, and it survives theme switches.
+ */
+export type TuiExtensionComponentFactory = () => Component;
+
+export interface TuiExtensionWidgetOptions {
+	/**
+	 * Which named slot the widget joins. Host doc §6.3 also sketches an
+	 * "agent" scope (render only while that agent is visible); the layout
+	 * registry implements "global" only, so scope is not an option yet.
+	 */
+	readonly placement: "aboveEditor" | "belowEditor";
+}
+
+/**
  * The API object the host hands to a `tui` half at activation. Step 6a covers
  * the registration-class surface; Step 6b adds the component-class methods
  * (widgets, overlays, theme, editor text, renderers) onto this same object.
@@ -44,6 +61,20 @@ export interface WidiTuiExtensionApi {
 
 	/** Presenter for a tool name, into the tool-presenter registry. */
 	registerToolPresenter(toolName: string, presenter: ToolPresenter): void;
+
+	/**
+	 * Mount a component into a named layout slot. The key is namespaced to the
+	 * extension, so two extensions cannot collide; re-setting the same key
+	 * replaces the widget, and a undefined factory removes it. Removal and
+	 * replacement both dispose the previous component.
+	 */
+	setWidget(key: string, factory: TuiExtensionComponentFactory | undefined, options: TuiExtensionWidgetOptions): void;
+
+	/** An extension segment appended after the built-in footer. */
+	setFooter(factory: TuiExtensionComponentFactory | undefined): void;
+
+	/** An extension segment appended after the built-in header. */
+	setHeader(factory: TuiExtensionComponentFactory | undefined): void;
 
 	/** Cleanup run when the host shuts down; disposers run in reverse order. */
 	onDispose(handler: () => void | Promise<void>): void;

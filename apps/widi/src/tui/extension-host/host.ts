@@ -5,13 +5,16 @@ import { JitiExtensionModuleImporter } from "../../core/extension/module-importe
 import { formatError } from "../../utils/errors.ts";
 import type { CommandEngine } from "../commands/engine.ts";
 import type { CommandDefinition } from "../commands/types.ts";
+import type { LayoutSlots } from "../layout/slots.ts";
 import { registerToolPresenter } from "../tool-presenter.ts";
 import { ExtensionShortcutRegistry } from "./shortcuts.ts";
 import {
 	TUI_EXTENSION_API_VERSION,
 	type TuiExtensionActivate,
+	type TuiExtensionComponentFactory,
 	type TuiExtensionDispose,
 	type TuiExtensionShortcutOptions,
+	type TuiExtensionWidgetOptions,
 	type WidiTuiExtensionApi,
 } from "./types.ts";
 
@@ -34,6 +37,8 @@ export interface TuiExtensionHostOptions {
 	 */
 	readonly identities: readonly ExtensionIdentity[];
 	readonly commandEngine: CommandEngine;
+	/** The mounted layout the application assembled; widgets join it at runtime. */
+	readonly layout: LayoutSlots;
 	readonly reportDiagnostic: (diagnostic: OrchestratorDiagnostic) => void;
 	readonly moduleImporter?: TuiExtensionModuleImporter;
 }
@@ -56,6 +61,7 @@ export class TuiExtensionHost {
 
 	private readonly identities: readonly ExtensionIdentity[];
 	private readonly commandEngine: CommandEngine;
+	private readonly layout: LayoutSlots;
 	private readonly reportDiagnostic: (diagnostic: OrchestratorDiagnostic) => void;
 	private readonly moduleImporter: TuiExtensionModuleImporter;
 	private readonly disposers: HostDisposer[] = [];
@@ -64,6 +70,7 @@ export class TuiExtensionHost {
 	constructor(options: TuiExtensionHostOptions) {
 		this.identities = options.identities;
 		this.commandEngine = options.commandEngine;
+		this.layout = options.layout;
 		this.reportDiagnostic = options.reportDiagnostic;
 		this.moduleImporter = options.moduleImporter ?? new JitiExtensionModuleImporter();
 		this.shortcuts = new ExtensionShortcutRegistry({ reportDiagnostic: options.reportDiagnostic });
@@ -169,6 +176,38 @@ export class TuiExtensionHost {
 	}
 
 	private createApi(extensionId: string): WidiTuiExtensionApi {
+		// Layout keys this extension owns; one cleanup disposer removes them all
+		// when the host shuts down.
+		const layoutKeys = new Set<string>();
+		let layoutCleanupRegistered = false;
+		const setLayoutComponent = (
+			slot: "header" | "aboveEditor" | "belowEditor" | "footer",
+			key: string,
+			factory: TuiExtensionComponentFactory | undefined,
+		) => {
+			if (factory === undefined) {
+				layoutKeys.delete(key);
+				this.layout.unregister(key);
+				return;
+			}
+			if (!layoutCleanupRegistered) {
+				layoutCleanupRegistered = true;
+				this.disposers.push({
+					extensionId,
+					dispose: () => {
+						for (const layoutKey of layoutKeys) this.layout.unregister(layoutKey);
+					},
+				});
+			}
+			// Re-setting a key replaces the widget; unregister disposes the old one.
+			this.layout.unregister(key);
+			const diagnostic = this.layout.register({ key, slot, scope: "global", factory });
+			if (diagnostic) {
+				this.reportDiagnostic({ ...diagnostic, extensionId });
+				return;
+			}
+			layoutKeys.add(key);
+		};
 		return {
 			extensionId,
 			registerCommand: (definition: CommandDefinition) => {
@@ -182,6 +221,29 @@ export class TuiExtensionHost {
 			registerToolPresenter: (toolName, presenter) => {
 				const diagnostic = registerToolPresenter(toolName, presenter);
 				if (diagnostic) this.reportDiagnostic({ ...diagnostic, extensionId });
+			},
+			setWidget: (
+				key: string,
+				factory: TuiExtensionComponentFactory | undefined,
+				options: TuiExtensionWidgetOptions,
+			) => {
+				const normalizedKey = key.trim();
+				if (!normalizedKey || /\s/.test(normalizedKey)) {
+					this.reportDiagnostic({
+						severity: "warning",
+						code: "tui_extension.widget_invalid",
+						message: `Extension '${extensionId}' set a widget with an invalid key; it was refused.`,
+						extensionId,
+					});
+					return;
+				}
+				setLayoutComponent(options.placement, `ext.${extensionId}.${normalizedKey}`, factory);
+			},
+			setFooter: (factory: TuiExtensionComponentFactory | undefined) => {
+				setLayoutComponent("footer", `ext.${extensionId}.footer`, factory);
+			},
+			setHeader: (factory: TuiExtensionComponentFactory | undefined) => {
+				setLayoutComponent("header", `ext.${extensionId}.header`, factory);
 			},
 			onDispose: (handler) => {
 				this.disposers.push({ extensionId, dispose: handler });

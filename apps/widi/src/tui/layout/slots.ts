@@ -36,19 +36,43 @@ export interface LayoutSlotEntry {
 }
 
 /**
+ * The slice of pi-tui's Container the slots mount into. removeChild/children
+ * are what make runtime register/unregister visible after the initial mount;
+ * a host without them (a minimal test fake) still mounts the initial sequence.
+ */
+export interface LayoutSlotHost {
+	addChild(component: Component): void;
+	removeChild?(component: Component): void;
+	/** Live child list, used to insert a runtime entry at its slot position. */
+	children?: Component[];
+}
+
+interface MountedLayout {
+	readonly host: LayoutSlotHost;
+	readonly state: TuiApplicationState;
+	readonly components: Map<string, Component>;
+}
+
+/**
  * Ordered registry of layout entries. Registration order is render order:
  * mount() adds the instantiated components to the host top to bottom exactly
  * as registered, so the registry is a drop-in replacement for the hardcoded
  * addChild sequence it replaces. Built-in views register through the same
  * path extension widgets will use.
+ *
+ * After mount() the registry stays live: register() instantiates and inserts
+ * the new entry at its slot's position (a runtime widget joins the entries
+ * already mounted for that slot instead of landing at the very bottom), and
+ * unregister() removes the mounted component from the host and disposes it.
  */
 export class LayoutSlots {
 	private readonly registrations: LayoutSlotEntry[] = [];
+	private mounted?: MountedLayout;
 
 	/**
-	 * Add an entry at runtime. A taken key is a conflict: the registration is
-	 * refused and reported, never a silent override (same rule as the command
-	 * engine). The caller surfaces the returned diagnostic.
+	 * Add an entry. A taken key is a conflict: the registration is refused and
+	 * reported, never a silent override (same rule as the command engine). The
+	 * caller surfaces the returned diagnostic.
 	 */
 	register(entry: LayoutSlotEntry): OrchestratorDiagnostic | undefined {
 		if (this.registrations.some((existing) => existing.key === entry.key)) {
@@ -58,7 +82,29 @@ export class LayoutSlots {
 				message: `Layout entry "${entry.key}" is already registered; the new registration was refused.`,
 			};
 		}
-		this.registrations.push(entry);
+		if (!this.mounted) {
+			this.registrations.push(entry);
+			return undefined;
+		}
+		// Runtime registration: a widget belongs with its slot, not at the end
+		// of the mounted sequence. Insert it after the last entry of the same
+		// slot (there is always one for the extension-facing slots: the built-in
+		// anchor), or at the end when the slot has no anchor yet.
+		let index = this.registrations.length;
+		for (let i = this.registrations.length - 1; i >= 0; i--) {
+			if (this.registrations[i]?.slot === entry.slot) {
+				index = i + 1;
+				break;
+			}
+		}
+		this.registrations.splice(index, 0, entry);
+		try {
+			this.mountEntry(entry);
+		} catch (error) {
+			// A factory that throws must not leave a phantom registration behind.
+			this.registrations.splice(this.registrations.indexOf(entry), 1);
+			throw error;
+		}
 		return undefined;
 	}
 
@@ -67,6 +113,12 @@ export class LayoutSlots {
 		const index = this.registrations.findIndex((entry) => entry.key === key);
 		if (index < 0) return false;
 		this.registrations.splice(index, 1);
+		const mounted = this.mounted?.components.get(key);
+		if (this.mounted && mounted) {
+			this.mounted.components.delete(key);
+			this.mounted.host.removeChild?.(mounted);
+			disposeComponent(mounted);
+		}
 		return true;
 	}
 
@@ -81,12 +133,51 @@ export class LayoutSlots {
 	 * predicate on every render, so state-driven visibility needs no event
 	 * subscription of its own.
 	 */
-	mount(host: { addChild(component: Component): void }, state: TuiApplicationState): void {
+	mount(host: LayoutSlotHost, state: TuiApplicationState): void {
+		this.mounted = { host, state, components: new Map() };
 		for (const entry of this.registrations) {
-			const component = entry.factory();
-			host.addChild(entry.visible ? new SlotVisibilityGate(component, entry.visible, state) : component);
+			const component = this.instantiate(entry);
+			this.mounted.components.set(entry.key, component);
+			host.addChild(component);
 		}
 	}
+
+	/** Mount one runtime-registered entry at its registration position. */
+	private mountEntry(entry: LayoutSlotEntry): void {
+		const mounted = this.mounted;
+		if (!mounted) return;
+		const component = this.instantiate(entry);
+		mounted.components.set(entry.key, component);
+		const anchor = this.nextMountedComponent(entry);
+		const siblings = mounted.host.children;
+		const at = anchor && siblings ? siblings.indexOf(anchor) : -1;
+		if (anchor && siblings && at >= 0) {
+			siblings.splice(at, 0, component);
+			return;
+		}
+		mounted.host.addChild(component);
+	}
+
+	/** The mounted component directly below the entry, if any. */
+	private nextMountedComponent(entry: LayoutSlotEntry): Component | undefined {
+		const index = this.registrations.indexOf(entry);
+		for (let i = index + 1; i < this.registrations.length; i++) {
+			const component = this.mounted?.components.get(this.registrations[i]?.key ?? "");
+			if (component) return component;
+		}
+		return undefined;
+	}
+
+	private instantiate(entry: LayoutSlotEntry): Component {
+		const component = entry.factory();
+		const mounted = this.mounted;
+		return entry.visible && mounted ? new SlotVisibilityGate(component, entry.visible, mounted.state) : component;
+	}
+}
+
+/** Run the optional teardown of a layout component (host doc §6.3 factory). */
+function disposeComponent(component: Component): void {
+	(component as Component & { dispose?(): void }).dispose?.();
 }
 
 /**
@@ -120,6 +211,10 @@ class SlotVisibilityGate implements Component {
 
 	invalidate(): void {
 		this.inner.invalidate();
+	}
+
+	dispose(): void {
+		disposeComponent(this.inner);
 	}
 
 	render(width: number): string[] {

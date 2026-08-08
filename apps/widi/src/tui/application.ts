@@ -308,6 +308,7 @@ export class WidiTuiApplication {
 			this.extensionHost = new TuiExtensionHost({
 				identities: this.runtime.services.extensionLoad.loaded,
 				commandEngine: this.engine,
+				layout: this.layout,
 				reportDiagnostic: (diagnostic) => this.reportHostDiagnostic(diagnostic),
 			});
 			await this.extensionHost.activate();

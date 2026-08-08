@@ -4,9 +4,11 @@ export {
 	TUI_EXTENSION_API_VERSION,
 	type TuiExtensionActivate,
 	type TuiExtensionActivateResult,
+	type TuiExtensionComponentFactory,
 	type TuiExtensionDispose,
 	type TuiExtensionModule,
 	type TuiExtensionShortcutContext,
 	type TuiExtensionShortcutOptions,
+	type TuiExtensionWidgetOptions,
 	type WidiTuiExtensionApi,
 } from "./types.ts";

@@ -1,10 +1,16 @@
+import type { Component } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import type { OrchestratorDiagnostic } from "../../src/core/diagnostics.ts";
 import type { ExtensionIdentity } from "../../src/core/extension/loader.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
 import type { CommandDefinition } from "../../src/tui/commands/types.ts";
-import { TuiExtensionHost, type TuiExtensionModuleImporter } from "../../src/tui/extension-host/index.ts";
-import type { ToolExecutionItem } from "../../src/tui/state.ts";
+import {
+	TuiExtensionHost,
+	type TuiExtensionModuleImporter,
+	type WidiTuiExtensionApi,
+} from "../../src/tui/extension-host/index.ts";
+import { LayoutSlots } from "../../src/tui/layout/slots.ts";
+import { createTuiApplicationState, type ToolExecutionItem } from "../../src/tui/state.ts";
 import { defineLinesPresenter, presentToolExecution, unregisterToolPresenter } from "../../src/tui/tool-presenter.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
@@ -44,8 +50,9 @@ function toolItem(overrides: Partial<ToolExecutionItem>): ToolExecutionItem {
 /**
  * Headless host fixture (host doc open question 5): no terminal, no jiti, no
  * file system. Fake module namespaces sit behind an injected importer; the
- * command engine and shortcut registry are the real ones, and diagnostics are
- * collected into an array.
+ * command engine, shortcut registry, and layout slots are the real ones, and
+ * diagnostics are collected into an array. The layout is pre-mounted with the
+ * built-in anchors the extension-facing slots attach to.
  */
 function createHostFixture() {
 	const modules = new Map<string, unknown>();
@@ -57,14 +64,40 @@ function createHostFixture() {
 	};
 	const engine = new CommandEngine();
 	const diagnostics: OrchestratorDiagnostic[] = [];
+	const children: Component[] = [];
+	const layout = new LayoutSlots();
+	const anchors = [
+		["header", "header"],
+		["queuedInput", "aboveEditor"],
+		["editor", "editor"],
+		["footer", "footer"],
+		["operationHint", "belowEditor"],
+	] as const;
+	for (const [key, slot] of anchors) {
+		layout.register({ key, slot, scope: "global", factory: () => ({ render: () => [key], invalidate: () => {} }) });
+	}
+	layout.mount(
+		{
+			addChild: (component) => {
+				children.push(component);
+			},
+			removeChild: (component) => {
+				const index = children.indexOf(component);
+				if (index >= 0) children.splice(index, 1);
+			},
+			children,
+		},
+		createTuiApplicationState(),
+	);
 	const activate = (entries: readonly [string, ExtensionIdentity][]) =>
 		new TuiExtensionHost({
 			identities: entries.map(([, id]) => id),
 			commandEngine: engine,
+			layout,
 			reportDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
 			moduleImporter,
 		});
-	return { modules, engine, diagnostics, activate };
+	return { modules, engine, diagnostics, children, activate };
 }
 
 describe("TuiExtensionHost", () => {
@@ -360,5 +393,139 @@ describe("TuiExtensionHost", () => {
 			code: "tui_extension.dispose_failed",
 			extensionId: "one",
 		});
+	});
+
+	it("mounts a widget into its layout slot at runtime", async () => {
+		const fixture = createHostFixture();
+		fixture.modules.set("/ext/acme/index.ts", {
+			tui: (api: WidiTuiExtensionApi) => {
+				api.setWidget("clock", () => ({ render: () => ["acme-clock"], invalidate: () => {} }), {
+					placement: "aboveEditor",
+				});
+			},
+		});
+
+		const host = fixture.activate([["acme", identity("acme", "/ext/acme/index.ts")]]);
+		await host.activate();
+
+		expect(fixture.children.map((component) => component.render(80))).toEqual([
+			["header"],
+			["queuedInput"],
+			["acme-clock"],
+			["editor"],
+			["footer"],
+			["operationHint"],
+		]);
+		expect(fixture.diagnostics).toEqual([]);
+	});
+
+	it("appends footer and header segments after their built-in anchors", async () => {
+		const fixture = createHostFixture();
+		fixture.modules.set("/ext/acme/index.ts", {
+			tui: (api: WidiTuiExtensionApi) => {
+				api.setFooter(() => ({ render: () => ["acme-footer"], invalidate: () => {} }));
+				api.setHeader(() => ({ render: () => ["acme-header"], invalidate: () => {} }));
+			},
+		});
+
+		const host = fixture.activate([["acme", identity("acme", "/ext/acme/index.ts")]]);
+		await host.activate();
+
+		expect(fixture.children.map((component) => component.render(80))).toEqual([
+			["header"],
+			["acme-header"],
+			["queuedInput"],
+			["editor"],
+			["footer"],
+			["acme-footer"],
+			["operationHint"],
+		]);
+	});
+
+	it("replaces a re-set widget, removes it on a undefined factory, and disposes both", async () => {
+		const fixture = createHostFixture();
+		const disposed: string[] = [];
+		let api: WidiTuiExtensionApi | undefined;
+		fixture.modules.set("/ext/acme/index.ts", {
+			tui: (hostApi: WidiTuiExtensionApi) => {
+				api = hostApi;
+				hostApi.setWidget(
+					"clock",
+					() => ({ render: () => ["clock-v1"], invalidate: () => {}, dispose: () => disposed.push("v1") }),
+					{ placement: "belowEditor" },
+				);
+				hostApi.setWidget(
+					"clock",
+					() => ({ render: () => ["clock-v2"], invalidate: () => {}, dispose: () => disposed.push("v2") }),
+					{ placement: "belowEditor" },
+				);
+			},
+		});
+
+		const host = fixture.activate([["acme", identity("acme", "/ext/acme/index.ts")]]);
+		await host.activate();
+
+		expect(fixture.children.map((component) => component.render(80))).toEqual([
+			["header"],
+			["queuedInput"],
+			["editor"],
+			["footer"],
+			["operationHint"],
+			["clock-v2"],
+		]);
+		expect(disposed).toEqual(["v1"]);
+
+		api?.setWidget("clock", undefined, { placement: "belowEditor" });
+		expect(fixture.children.map((component) => component.render(80))).toEqual([
+			["header"],
+			["queuedInput"],
+			["editor"],
+			["footer"],
+			["operationHint"],
+		]);
+		expect(disposed).toEqual(["v1", "v2"]);
+	});
+
+	it("removes the extension's layout components when the host disposes", async () => {
+		const fixture = createHostFixture();
+		fixture.modules.set("/ext/acme/index.ts", {
+			tui: (api: WidiTuiExtensionApi) => {
+				api.setWidget("clock", () => ({ render: () => ["acme-clock"], invalidate: () => {} }), {
+					placement: "aboveEditor",
+				});
+				api.setFooter(() => ({ render: () => ["acme-footer"], invalidate: () => {} }));
+			},
+		});
+
+		const host = fixture.activate([["acme", identity("acme", "/ext/acme/index.ts")]]);
+		await host.activate();
+		await host.dispose();
+
+		expect(fixture.children.map((component) => component.render(80))).toEqual([
+			["header"],
+			["queuedInput"],
+			["editor"],
+			["footer"],
+			["operationHint"],
+		]);
+	});
+
+	it("refuses a widget with an invalid key", async () => {
+		const fixture = createHostFixture();
+		fixture.modules.set("/ext/acme/index.ts", {
+			tui: (api: WidiTuiExtensionApi) => {
+				api.setWidget("  ", () => ({ render: () => ["nope"], invalidate: () => {} }), { placement: "aboveEditor" });
+			},
+		});
+
+		const host = fixture.activate([["acme", identity("acme", "/ext/acme/index.ts")]]);
+		await host.activate();
+
+		expect(fixture.diagnostics[0]).toMatchObject({
+			severity: "warning",
+			code: "tui_extension.widget_invalid",
+			extensionId: "acme",
+		});
+		expect(fixture.children.map((component) => component.render(80))).not.toContainEqual(["nope"]);
 	});
 });

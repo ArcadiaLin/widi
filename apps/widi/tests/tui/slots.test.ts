@@ -70,3 +70,113 @@ describe("LayoutSlots", () => {
 		expect(gated.render(80)).toEqual([]);
 	});
 });
+
+describe("LayoutSlots runtime mounting", () => {
+	function createMountedHost(entries: readonly LayoutSlotEntry[]) {
+		const children: Component[] = [];
+		const host = {
+			addChild: (component: Component) => {
+				children.push(component);
+			},
+			removeChild: (component: Component) => {
+				const index = children.indexOf(component);
+				if (index >= 0) children.splice(index, 1);
+			},
+			children,
+		};
+		const slots = new LayoutSlots();
+		for (const registered of entries) slots.register(registered);
+		slots.mount(host, createTuiApplicationState());
+		return { slots, children };
+	}
+
+	it("inserts a runtime registration after the last entry of its slot", () => {
+		const { slots, children } = createMountedHost([
+			entry("queued", { slot: "aboveEditor" }),
+			entry("requests", { slot: "aboveEditor" }),
+			entry("editor", { slot: "editor" }),
+			entry("footer", { slot: "footer" }),
+		]);
+
+		expect(slots.register(entry("widget", { slot: "aboveEditor" }))).toBeUndefined();
+
+		expect(children.map((component) => component.render(80))).toEqual([
+			["queued"],
+			["requests"],
+			["widget"],
+			["editor"],
+			["footer"],
+		]);
+	});
+
+	it("appends a runtime registration whose slot has no mounted anchor", () => {
+		const { slots, children } = createMountedHost([entry("header", { slot: "header" })]);
+
+		slots.register(entry("widget", { slot: "belowEditor" }));
+
+		expect(children.map((component) => component.render(80))).toEqual([["header"], ["widget"]]);
+	});
+
+	it("removes a runtime registration from the host and disposes it", () => {
+		const { slots, children } = createMountedHost([
+			entry("header", { slot: "header" }),
+			entry("footer", { slot: "footer" }),
+		]);
+		let disposed = false;
+		slots.register(
+			entry("widget", {
+				slot: "footer",
+				factory: () => ({
+					render: () => ["widget"],
+					invalidate: () => {},
+					dispose: () => {
+						disposed = true;
+					},
+				}),
+			}),
+		);
+		expect(children.map((component) => component.render(80))).toEqual([["header"], ["footer"], ["widget"]]);
+
+		expect(slots.unregister("widget")).toBe(true);
+
+		expect(children.map((component) => component.render(80))).toEqual([["header"], ["footer"]]);
+		expect(disposed).toBe(true);
+	});
+
+	it("disposes the inner component when a gated entry is unregistered", () => {
+		const { slots } = createMountedHost([entry("header", { slot: "header" })]);
+		let disposed = false;
+		slots.register(
+			entry("gated", {
+				visible: () => true,
+				factory: () => ({
+					render: () => ["gated"],
+					invalidate: () => {},
+					dispose: () => {
+						disposed = true;
+					},
+				}),
+			}),
+		);
+
+		expect(slots.unregister("gated")).toBe(true);
+		expect(disposed).toBe(true);
+	});
+
+	it("rolls back the registration when the runtime factory throws", () => {
+		const { slots, children } = createMountedHost([entry("header", { slot: "header" })]);
+
+		expect(() =>
+			slots.register(
+				entry("broken", {
+					factory: () => {
+						throw new Error("factory boom");
+					},
+				}),
+			),
+		).toThrow("factory boom");
+
+		expect(slots.entries().map((registered) => registered.key)).toEqual(["header"]);
+		expect(children).toHaveLength(1);
+	});
+});
