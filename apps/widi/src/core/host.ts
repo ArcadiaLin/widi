@@ -5,6 +5,7 @@
  * argument can select the sender, task settler, or background-job owner.
  */
 
+import type { ThinkingLevel } from "@widi/agent-core";
 import type { BackgroundJobHost, BackgroundJobSettler } from "./background/index.ts";
 import type { HumanRequestDraft, HumanResponse } from "./human-request.ts";
 import type { MessageSendOutcome } from "./message.ts";
@@ -24,7 +25,35 @@ export interface AgentBrief {
 	readonly profileId: string;
 	readonly label?: string;
 	readonly activity: AgentActivity;
+	/** The caller is subscribed to this agent's next stop. */
+	readonly watchedByCaller: boolean;
 }
+
+/**
+ * Where a spawned agent's context comes from. Narrower than the orchestrator's
+ * own origin type, which also carries a full profile override: an agent able to
+ * name its child's tools could grant one the parent does not itself hold.
+ */
+export type AgentSpawnOrigin =
+	/** Fresh context from a profile; omitted takes the runtime default. */
+	| { readonly kind: "new"; readonly profileId?: string }
+	/** Reopen a session left behind by an agent that is no longer running. */
+	| { readonly kind: "resume"; readonly reference: string }
+	/** Copy a live agent's branch. Only for a source whose profile persists. */
+	| { readonly kind: "fork"; readonly sourceAgentId: AgentId; readonly entryId?: string };
+
+export interface AgentSpawnRequest {
+	readonly origin: AgentSpawnOrigin;
+	/** Model reference (`provider/id`); refused when the runtime does not have it. */
+	readonly model?: string;
+	readonly thinkingLevel?: ThinkingLevel;
+}
+
+/**
+ * `taken` means another agent already watches the target: a stop has exactly
+ * one reader. The rest mirror the dispose vocabulary.
+ */
+export type AgentWatchOutcome = "watching" | "not_watching" | "taken" | "outside_tree" | "self" | "unknown";
 
 /**
  * One node of the caller's agent tree: an agent running now, or the session
@@ -46,6 +75,8 @@ export interface AgentTreeRunningEntry {
 	readonly label?: string;
 	/** Address of its session directory; absent for an ephemeral agent. */
 	readonly sessionRef?: string;
+	/** The caller is subscribed to this agent's next stop. */
+	readonly watchedByCaller: boolean;
 	readonly children: readonly AgentTreeEntry[];
 }
 
@@ -114,8 +145,17 @@ export interface AgentToOrchestratorHost {
 	listProfiles(): Promise<readonly AgentProfileBrief[]>;
 	listAgents(): Promise<AgentTreeListing>;
 	describe(agentId: AgentId): AgentBrief | undefined;
-	spawn(profileId: string): Promise<AgentId>;
+	spawn(request: AgentSpawnRequest): Promise<AgentId>;
 	sendMessage(targetAgentId: AgentId, body: string): Promise<MessageSendOutcome>;
+	/**
+	 * Subscribe to, or unsubscribe from, the target's next stop. It registers a
+	 * subscription and never waits for one to fire.
+	 *
+	 * Subscribe *before* sending the work. A pending delivery already counts the
+	 * target as busy, so a subscription registered first cannot miss the stop
+	 * that follows; registered after the send, it races one.
+	 */
+	watch(targetAgentId: AgentId, watching: boolean): AgentWatchOutcome;
 	dispose(agentId: AgentId, options: AgentRequestedDisposeOptions): Promise<AgentRequestedDisposeOutcome>;
 	readonly jobs: BackgroundJobHost;
 	readonly settler: BackgroundJobSettler;

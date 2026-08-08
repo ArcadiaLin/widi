@@ -17,7 +17,7 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
-import { type AssistantMessage, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import { type AssistantMessage, getSupportedThinkingLevels, type TextContent } from "@earendil-works/pi-ai";
 import {
 	type AbortResult,
 	AgentHarness,
@@ -110,15 +110,18 @@ import type {
 	AgentBrief,
 	AgentDisposeScope,
 	AgentProfileBrief,
+	AgentSpawnOrigin,
 	AgentToOrchestratorHost,
 	AgentTreeEntry,
 	AgentTreeListing,
+	AgentWatchOutcome,
 } from "./host.ts";
 import { HumanInterruptRegistry } from "./human-interrupt.ts";
 import type { HumanRequest, HumanResponse } from "./human-request.ts";
 import { HumanRequestBroker } from "./human-request.ts";
 import { stripImagesFromMessages } from "./image-policy.ts";
 import {
+	type AgentNotice,
 	assertMessageBody,
 	type MessageBlockPolicy,
 	type MessageDeliveryPhase,
@@ -485,6 +488,22 @@ export class AgentOrchestrator {
 	 * edge-triggered, and an edge cannot be detected from a value alone.
 	 */
 	private readonly _publishedAgentActivities = new Map<AgentId, AgentActivitySnapshot>();
+
+	// -- Agent watches -------------------------------------------------------
+
+	/**
+	 * Who to tell when an agent stops, keyed by the watched agent: a stop has one
+	 * report to give, so it has at most one watcher. One-shot, cleared on
+	 * delivery. In memory only - a resume brings back no subagents to watch.
+	 */
+	private readonly _agentWatches = new Map<AgentId, AgentId>();
+
+	/**
+	 * The report a watcher reads: whatever the agent last said. Cleared at
+	 * `agent_start` so it belongs to the run that just ended, and kept across a
+	 * tool-only turn, which said nothing rather than retracting what came before.
+	 */
+	private readonly _agentLastAssistantText = new Map<AgentId, string>();
 
 	private _nextInputId = 1;
 	private _nextPresentationId = 1;
@@ -893,6 +912,7 @@ export class AgentOrchestrator {
 				profileId: reference.id,
 				...(reference.label === undefined ? undefined : { label: reference.label }),
 				...(liveAgent.sessionRef === undefined ? undefined : { sessionRef: liveAgent.sessionRef }),
+				watchedByCaller: this._agentWatches.get(liveAgent.agentId) === agentId,
 				children,
 			};
 		};
@@ -1698,6 +1718,12 @@ export class AgentOrchestrator {
 		this._humanInterrupts.forget(agentId);
 		this._resolveAgentRunStartWaiters(agentId);
 		this._rejectAgentIdleWaiters(agentId, `Agent ${agentId} was disposed while waiting for it to idle.`);
+		// Taken synchronously and delivered only if owed, so an agent nobody was
+		// watching is torn down on exactly the schedule it always was.
+		const orphanedWatcherAgentId = this._takeDisposedAgentWatcher(agentId);
+		if (orphanedWatcherAgentId !== undefined) {
+			await this._deliverAgentNotice(orphanedWatcherAgentId, agentId, { status: "gone" });
+		}
 		// A resumed session reuses this id; all of these describe the occupant that
 		// just left.
 		this._agentIdleReasons.delete(agentId);
@@ -1706,6 +1732,7 @@ export class AgentOrchestrator {
 		this._agentRunSignals.delete(agentId);
 		this._autoCompactingAgents.delete(agentId);
 		this._publishedAgentActivities.delete(agentId);
+		this._agentLastAssistantText.delete(agentId);
 
 		if (liveAgent) {
 			// Before anything is torn down. The cutover cancelled every job this
@@ -2305,13 +2332,98 @@ export class AgentOrchestrator {
 		}
 		if (this._publishedAgentIdles.has(agentId)) return;
 		this._publishedAgentIdles.add(agentId);
-		await this._emit({
-			type: "agent_idle",
-			agentId,
-			reason: this._agentIdleReasons.get(agentId) ?? "settled",
-			liveJobCount: this._backgroundJobs.liveJobCount(agentId),
-			idleAt: now(),
-		});
+		const reason = this._agentIdleReasons.get(agentId) ?? "settled";
+		const liveJobCount = this._backgroundJobs.liveJobCount(agentId);
+		await this._emit({ type: "agent_idle", agentId, reason, liveJobCount, idleAt: now() });
+		const watcherAgentId = this._takeIdleAgentWatcher(agentId, reason, liveJobCount);
+		if (watcherAgentId !== undefined) {
+			await this._deliverAgentNotice(watcherAgentId, agentId, { status: "idle", reason });
+		}
+	}
+
+	/**
+	 * The watcher owed a notice for this idle, with the subscription already
+	 * revoked. Synchronous throughout, which is what makes the check-and-clear
+	 * atomic: delivery can defer or retry, and a subscription left standing
+	 * across it would be a second notice for the same stop.
+	 *
+	 * `undefined` also covers the idles that are not the agent stopping. `ready`
+	 * and `maintenance` have no turn behind them; live jobs mean it is waiting on
+	 * work that will wake it; watches of its own mean the same thing one level
+	 * down, which the job count cannot see now that a delegation is not a job.
+	 */
+	private _takeIdleAgentWatcher(agentId: AgentId, reason: AgentIdleReason, liveJobCount: number): AgentId | undefined {
+		if (reason === "ready" || reason === "maintenance") return undefined;
+		if (liveJobCount > 0) return undefined;
+		if (this._agentHoldsWatches(agentId)) return undefined;
+		const watcherAgentId = this._agentWatches.get(agentId);
+		if (watcherAgentId !== undefined) this._agentWatches.delete(agentId);
+		return watcherAgentId;
+	}
+
+	/**
+	 * Both sides of a disposed agent's subscriptions: the watches it held are
+	 * dropped, so nothing is delivered to an agent that is gone, and its own
+	 * watcher is returned to be told the report is never coming.
+	 */
+	private _takeDisposedAgentWatcher(agentId: AgentId): AgentId | undefined {
+		for (const [watched, watcher] of this._agentWatches) {
+			if (watcher === agentId) this._agentWatches.delete(watched);
+		}
+		const watcherAgentId = this._agentWatches.get(agentId);
+		if (watcherAgentId !== undefined) this._agentWatches.delete(agentId);
+		return watcherAgentId;
+	}
+
+	/** Whether this agent is itself waiting on a subagent. */
+	private _agentHoldsWatches(agentId: AgentId): boolean {
+		for (const watcherAgentId of this._agentWatches.values()) {
+			if (watcherAgentId === agentId) return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Deliver one lifecycle notice. The subscription is already revoked by the
+	 * time this runs, so a failure loses the notice rather than duplicating it -
+	 * reported as a diagnostic, since the watcher is the party that would have
+	 * been told and it is the one that cannot be reached.
+	 */
+	private async _deliverAgentNotice(watcherAgentId: AgentId, agentId: AgentId, notice: AgentNotice): Promise<void> {
+		if (!this._live.has(watcherAgentId)) return;
+		const body = formatAgentNoticeBody(agentId, notice, this._agentLastAssistantText.get(agentId));
+		try {
+			await this.sendMessage(
+				{ targetAgentId: watcherAgentId, body, mode: "next_turn" },
+				messageBindingFor({ kind: "agent", senderAgentId: agentId, notice }),
+			);
+		} catch (error) {
+			await this._publishDiagnostic({
+				severity: "warning",
+				code: "orchestrator.agent_notice_undelivered",
+				message: `Agent ${watcherAgentId} was not told that agent ${agentId} is ${notice.status}: ${formatError(error)}`,
+				agentId: watcherAgentId,
+			});
+		}
+	}
+
+	/**
+	 * Register or drop a subscription to `agentId`'s next stop. Tree-scoped like
+	 * dispose: watching is lifecycle control, and an exact id shared across trees
+	 * buys messaging, not the right to be told when that agent stops.
+	 */
+	watchAgent(watcherAgentId: AgentId, agentId: AgentId, watching: boolean): AgentWatchOutcome {
+		if (agentId === watcherAgentId) return "self";
+		if (!this._live.has(agentId)) return "unknown";
+		if (!this._agentsShareTree(watcherAgentId, agentId)) return "outside_tree";
+		const current = this._agentWatches.get(agentId);
+		if (!watching) {
+			if (current === watcherAgentId) this._agentWatches.delete(agentId);
+			return "not_watching";
+		}
+		if (current !== undefined && current !== watcherAgentId) return "taken";
+		this._agentWatches.set(agentId, watcherAgentId);
+		return "watching";
 	}
 
 	private _settleAgentIdleWaiters(agentId: AgentId): void {
@@ -2347,12 +2459,19 @@ export class AgentOrchestrator {
 			// The prompt's user message is now committed to this run. Resolved before
 			// anything is awaited, so acceptance never waits on observers.
 			this._resolveAgentRunStartWaiters(agentId);
+			// Whatever this agent last said belongs to the run that just ended.
+			this._agentLastAssistantText.delete(agentId);
 		}
 		// A turn may be followed by tool execution and another turn, so it is not
-		// an idle boundary. It can still say that the eventual idle was an abort.
-		if (event.type === "turn_end" && event.message.role === "assistant" && event.message.stopReason === "aborted") {
-			const promptRun = this._agentPromptRuns.get(agentId);
-			if (promptRun) promptRun.idleReason = "aborted";
+		// an idle boundary. It can still say that the eventual idle was an abort,
+		// and it carries the text a watcher will read as this run's report.
+		if (event.type === "turn_end" && event.message.role === "assistant") {
+			if (event.message.stopReason === "aborted") {
+				const promptRun = this._agentPromptRuns.get(agentId);
+				if (promptRun) promptRun.idleReason = "aborted";
+			}
+			const text = assistantMessageText(event.message);
+			if (text !== "") this._agentLastAssistantText.set(agentId, text);
 		}
 		if (event.type === "abort") {
 			const promptRun = this._agentPromptRuns.get(agentId);
@@ -3495,11 +3614,19 @@ export class AgentOrchestrator {
 			listAgents: async () => await this._listAgentTree(agentId),
 			describe: (targetAgentId) => {
 				const liveAgent = this._live.get(targetAgentId);
-				return liveAgent ? describeAgentForTools(liveAgent) : undefined;
+				return liveAgent
+					? describeAgentForTools(liveAgent, this._agentWatches.get(targetAgentId) === agentId)
+					: undefined;
 			},
 			// The caller becomes the parent, so the child is rendered under it and
-			// swept by its subtree dispose.
-			spawn: async (profileId) => await this.spawnAgent({ origin: { kind: "new", profileId }, parent: agentId }),
+			// swept by its subtree dispose, whichever origin its context came from.
+			spawn: async (request) =>
+				await this.spawnAgent({
+					origin: toSpawnAgentOrigin(request.origin),
+					parent: agentId,
+					...(request.model === undefined ? undefined : { model: await this._resolveModelByReference(request.model) }),
+					...(request.thinkingLevel === undefined ? undefined : { thinkingLevel: request.thinkingLevel }),
+				}),
 			sendMessage: async (targetAgentId, body) =>
 				await this.sendMessage(
 					{
@@ -3510,6 +3637,7 @@ export class AgentOrchestrator {
 					},
 					messageBindingFor({ kind: "agent", senderAgentId: agentId }),
 				),
+			watch: (targetAgentId, watching) => this.watchAgent(agentId, targetAgentId, watching),
 			dispose: async (targetAgentId, options) => {
 				if (!this._live.has(targetAgentId)) {
 					return { kind: this._tombstones.has(targetAgentId) ? "already_disposed" : "unknown" };
@@ -3690,13 +3818,20 @@ export class AgentOrchestrator {
 	}
 
 	async setAgentModelByReference(agentId: AgentId, reference: string): Promise<RuntimeModel> {
+		const model = await this._resolveModelByReference(reference, agentId);
+		await this.setAgentModel(agentId, model);
+		return model;
+	}
+
+	/** A `provider/id` reference against the registered models, or a refusal. */
+	private async _resolveModelByReference(reference: string, agentId?: AgentId): Promise<RuntimeModel> {
 		const parsed = parseModelReference(reference);
 		if (!parsed) {
 			throw new OrchestratorError({
 				severity: "error",
 				code: "model.reference_invalid",
 				message: `Model reference must use provider/model syntax: ${reference}`,
-				agentId,
+				...(agentId === undefined ? undefined : { agentId }),
 			});
 		}
 		const models = await this.modelRegistry.getAvailable();
@@ -3706,10 +3841,9 @@ export class AgentOrchestrator {
 				severity: "error",
 				code: "model.not_available",
 				message: `Model is not available: ${parsed.provider}/${parsed.modelId}`,
-				agentId,
+				...(agentId === undefined ? undefined : { agentId }),
 			});
 		}
-		await this.setAgentModel(agentId, model);
 		return model;
 	}
 
@@ -4334,14 +4468,70 @@ function randomAgentIdSuffix(): string {
 }
 
 /** Model-visible summary of one live agent, for the collaboration tools. */
-function describeAgentForTools(liveAgent: LiveAgent): AgentBrief {
+function describeAgentForTools(liveAgent: LiveAgent, watchedByCaller: boolean): AgentBrief {
 	const { reference } = liveAgent.profile;
 	return {
 		agentId: liveAgent.agentId,
 		profileId: reference.id,
 		...(reference.label === undefined ? undefined : { label: reference.label }),
 		activity: toActivitySnapshot(liveAgent.harness.getPhase()).activity,
+		watchedByCaller,
 	};
+}
+
+/**
+ * Widen a host origin into the orchestrator's own. The two differ only in what
+ * a `new` origin may carry: the host form has no profile override, which is
+ * what keeps an agent from choosing its child's tools.
+ */
+function toSpawnAgentOrigin(origin: AgentSpawnOrigin): SpawnAgentOrigin {
+	switch (origin.kind) {
+		case "new":
+			return { kind: "new", ...(origin.profileId === undefined ? undefined : { profileId: origin.profileId }) };
+		case "resume":
+			return { kind: "resume", reference: origin.reference };
+		case "fork":
+			return {
+				kind: "fork",
+				sourceAgentId: origin.sourceAgentId,
+				...(origin.entryId === undefined ? undefined : { entryId: origin.entryId }),
+			};
+	}
+}
+
+/** Text parts of one assistant message, joined; empty for a tool-only turn. */
+function assistantMessageText(message: AssistantMessage): string {
+	return message.content
+		.filter((part): part is TextContent => part.type === "text")
+		.map((part) => part.text)
+		.join("")
+		.trim();
+}
+
+/**
+ * The body of a lifecycle notice: what the agent last said, then what the
+ * watcher can do about it.
+ *
+ * The closing lines are here rather than in a system prompt because this is
+ * where the decision is made. A prompt was read before the context filled up;
+ * this text arrives in the turn that has to act on it.
+ */
+function formatAgentNoticeBody(agentId: AgentId, notice: AgentNotice, report: string | undefined): string {
+	if (notice.status === "gone") {
+		const closing = `${agentId} was disposed and will not report. You are no longer watching it.`;
+		return report ? `${report}\n\n${closing}` : closing;
+	}
+	const state =
+		notice.reason === "aborted"
+			? `${agentId} was interrupted and stopped`
+			: `${agentId} is idle and will not continue on its own`;
+	return [
+		// A run that ended without a word is a fact the watcher has to be told, not
+		// a reason to stay silent: it is exactly the case the old voluntary report
+		// lost, and an empty notification body would read as a delivery bug.
+		report ?? `${agentId} stopped without a closing message.`,
+		`${state}. You are no longer watching it. Continue it with send_message, or dispose_agent to release it.`,
+	].join("\n\n");
 }
 
 /**

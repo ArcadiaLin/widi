@@ -15,7 +15,7 @@
 
 import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
 import { AgentHarnessError, type AgentHarnessPhase } from "@widi/agent-core";
-import type { AgentId, PromptOutcome } from "./types.ts";
+import type { AgentId, AgentIdleReason, PromptOutcome } from "./types.ts";
 
 /**
  * Where a message came from. **Rendering and provenance only** - nothing here
@@ -203,7 +203,15 @@ export type MessageBlockPolicy = "enforce" | "ignore";
  */
 export type BuiltInMessageProducer =
 	| { readonly kind: "human" }
-	| { readonly kind: "agent"; readonly senderAgentId: AgentId }
+	| {
+			readonly kind: "agent";
+			readonly senderAgentId: AgentId;
+			/**
+			 * Set when the runtime is speaking *about* that agent rather than
+			 * relaying something it said. See {@link AgentNotice}.
+			 */
+			readonly notice?: AgentNotice;
+	  }
 	| {
 			readonly kind: "background_job";
 			readonly ownerAgentId: AgentId;
@@ -224,6 +232,40 @@ export type BuiltInMessageProducer =
 			readonly ids?: readonly string[];
 	  }
 	| { readonly kind: "extension"; readonly extensionId: string };
+
+/**
+ * The runtime observing that an agent stopped, as opposed to that agent
+ * choosing to speak. The body still carries the agent's own last words; that
+ * there will be no more of them is the runtime's to state.
+ */
+export interface AgentNotice {
+	/** `idle`: stopped and not continuing on its own. `gone`: disposed. */
+	readonly status: "idle" | "gone";
+	/** Only meaningful for `idle`: whether it settled or was cut short. */
+	readonly reason?: AgentIdleReason;
+}
+
+/** What an agent notice records in `MessageSource.details`. */
+export interface AgentNoticeSourceDetails {
+	readonly senderAgentId: AgentId;
+	readonly notice: AgentNotice;
+}
+
+/**
+ * Shared by every notice regardless of sender, so a fan-out that finishes
+ * together costs the watcher one turn. Safe across senders because merging here
+ * concatenates rather than summarizes, and each notice keeps its own tag.
+ */
+export const AGENT_NOTICE_MERGE_KEY = "agent_notice";
+
+/**
+ * Same framing as {@link renderRecapText}, and the same non-guarantee: bodies
+ * are not escaped, so the tag is a convention, not an isolation boundary.
+ */
+export function renderAgentNoticeText(senderAgentId: AgentId, notice: AgentNotice, body: string): string {
+	const reason = notice.reason === undefined ? "" : ` reason="${notice.reason}"`;
+	return `<agent-notification from="${senderAgentId}" status="${notice.status}"${reason}>\n${body}\n</agent-notification>`;
+}
 
 /**
  * What a recap records about itself in `MessageSource.details`. It is the only
@@ -282,10 +324,31 @@ export function messageBindingFor(producer: BuiltInMessageProducer): MessageSink
 			};
 		case "agent": {
 			const senderAgentId = producer.senderAgentId;
+			const notice = producer.notice;
+			if (notice === undefined) {
+				return {
+					source: { kind: "agent", label: senderAgentId },
+					policy: { humanInterrupt: false, blockPolicy: "enforce", retryOnFailure: false },
+					render: (body) => `[Message from ${senderAgentId}]\n\n${body}`,
+				};
+			}
+			// `ignore` because an extension able to block this would leave the
+			// watcher waiting forever on an agent that will never speak again - the
+			// failure the notice exists to remove. `retryOnFailure` because the stop
+			// happened once and there is nobody left to tell that telling failed.
 			return {
-				source: { kind: "agent", label: senderAgentId },
-				policy: { humanInterrupt: false, blockPolicy: "enforce", retryOnFailure: false },
-				render: (body) => `[Message from ${senderAgentId}]\n\n${body}`,
+				source: {
+					kind: "agent",
+					label: senderAgentId,
+					details: { senderAgentId, notice } satisfies AgentNoticeSourceDetails,
+				},
+				policy: {
+					humanInterrupt: false,
+					blockPolicy: "ignore",
+					retryOnFailure: true,
+					mergeKey: AGENT_NOTICE_MERGE_KEY,
+				},
+				render: (body) => renderAgentNoticeText(senderAgentId, notice, body),
 			};
 		}
 		case "background_job":
@@ -578,8 +641,12 @@ interface QueuedMessage {
 /**
  * Merge key for background job results: consecutive settlements for one target
  * collapse into a single user message, which is what the previous per-agent
- * result buffer did. Other sources stay separate - a human prompt owns its own
- * run, and merging two agents' messages would blur their attribution blocks.
+ * result buffer did.
+ *
+ * Merging is for text that already carries its own attribution and arrives in
+ * bursts - job results and agent notices ({@link AGENT_NOTICE_MERGE_KEY}). A
+ * human prompt owns its own run, and an ordinary agent message is one agent
+ * addressing another, so neither merges.
  */
 export function backgroundResultMergeKey(mode: MessageDeliveryMode): string {
 	return `background_job:${mode}`;
@@ -818,12 +885,8 @@ export class MessageDeliveryQueue {
 
 /**
  * One entry for a merged batch. The batch becomes a single user message, so it
- * gets a single record: the head names it, and the bodies are joined the way
- * the texts were, so `details.body` still describes the whole message.
- *
- * Only sources whose policy sets a `mergeKey` reach a batch larger than one,
- * and today that is job results alone - all for one owner, differing only in
- * which job settled.
+ * gets a single record: one source, and the bodies joined the way the texts
+ * were, so `details.body` still describes the whole message.
  */
 function mergeEntryPayloads(batch: readonly QueuedMessage[]): MessageEntryPayload | undefined {
 	const head = batch[0];
@@ -833,11 +896,27 @@ function mergeEntryPayloads(batch: readonly QueuedMessage[]): MessageEntryPayloa
 	return {
 		customType: head.entry.customType,
 		details: {
-			source: head.entry.details.source,
+			source: mergeEntrySources(batch),
 			body: batch.map((message) => message.entry?.details.body ?? message.text).join("\n\n"),
 			...(transformedBy.length === 0 ? undefined : { transformedBy }),
 		},
 	};
+}
+
+/**
+ * Naming the head would file the whole batch under whoever was first: job
+ * results differ in which job settled, notices in which agent stopped. The kind
+ * is unanimous (a `mergeKey` is kind-scoped) so it stays; anything the batch
+ * disagrees on is dropped rather than guessed. Nothing is lost - the merged
+ * text is self-attributing, each message keeping its own header or tag.
+ */
+function mergeEntrySources(batch: readonly QueuedMessage[]): MessageSource {
+	const sources = batch.map((message) => message.entry?.details.source).filter((source) => source !== undefined);
+	const head = sources[0];
+	if (head === undefined) return { kind: "merged" };
+	if (sources.every((source) => source.label === head.label && source.details === head.details)) return head;
+	const label = sources.every((source) => source.label === head.label) ? head.label : undefined;
+	return { kind: head.kind, ...(label === undefined ? undefined : { label }) };
 }
 
 export function isRetryableDeliveryError(error: unknown): boolean {

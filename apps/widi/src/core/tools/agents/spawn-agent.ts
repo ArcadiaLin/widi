@@ -57,7 +57,7 @@ export function createSpawnAgentToolDefinition(): ToolDefinition<typeof spawnAge
 				throw new Error("spawn_agent was given an empty task. Omit task to spawn an idle agent.");
 			}
 
-			const agentId = await host.spawn(profileId);
+			const agentId = await host.spawn({ origin: { kind: "new", profileId } });
 			if (!trimmedTask) {
 				return {
 					content: [
