@@ -3373,6 +3373,8 @@ export class AgentOrchestrator {
 			},
 			getAgentSessionName: async (agentId) => await this.getAgentSessionName(agentId),
 			compactAgent: async (agentId, customInstructions) => await this.compactAgent(agentId, customInstructions),
+			navigateAgentTree: async (agentId, targetEntryId, options) =>
+				await this.navigateAgentTree(agentId, targetEntryId, options),
 			setAgentModelByReference: async (agentId, reference) => await this.setAgentModelByReference(agentId, reference),
 			getAgentModel: (agentId) => this.getAgentModel(agentId),
 			listModelCandidates: async () => (await this.listAvailableModelCandidates()).models,

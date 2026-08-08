@@ -764,6 +764,11 @@ export class ExtensionRunner {
 					failure("compact"),
 					async () => await this._actions.compactAgent(agentId, customInstructions),
 				),
+			navigateTree: async (targetEntryId, options) =>
+				await this._runReportedAction(
+					failure("navigateTree"),
+					async () => await this._actions.navigateAgentTree(agentId, targetEntryId, options),
+				),
 			setModel: async (reference) =>
 				await this._runReportedAction(
 					failure("setModel"),
@@ -1040,6 +1045,7 @@ function createUnboundActions(): ExtensionCoreActions {
 		setAgentSessionName: async () => notBound(),
 		getAgentSessionName: async () => notBound(),
 		compactAgent: async () => notBound(),
+		navigateAgentTree: async () => notBound(),
 		setAgentModelByReference: async () => notBound(),
 		getAgentModel: () => notBound(),
 		listModelCandidates: async () => notBound(),

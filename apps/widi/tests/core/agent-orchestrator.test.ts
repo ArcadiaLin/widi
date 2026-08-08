@@ -3357,6 +3357,40 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
+	it("forwards the navigateTree extension action to the agent it is bound to", async () => {
+		const env = new MemoryExecutionEnv();
+		const extensionProfile: AgentProfile = {
+			...defaultProfile,
+			id: "extension-profile",
+			label: "Extension Profile",
+			persist: false,
+		};
+		const orchestrator = await createOrchestrator(env, {
+			defaultProfileId: extensionProfile.id,
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: extensionProfile }]),
+			),
+		});
+		orchestrator.registerExtension("sample", () => {});
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const runner = requireLiveAgent(orchestrator, agentId).extensionRunner;
+		if (!runner) throw new Error("Expected extension runner.");
+		const context = runner.createContext("sample");
+		const navigations: Array<[string, string, unknown]> = [];
+		Object.assign(orchestrator, {
+			navigateAgentTree: async (targetAgentId: string, targetEntryId: string, options?: unknown) => {
+				navigations.push([targetAgentId, targetEntryId, options]);
+				return { cancelled: false, editorText: "the original prompt" };
+			},
+		});
+
+		await expect(context.actions.navigateTree("entry-7", { summarize: true, label: "detour" })).resolves.toEqual({
+			cancelled: false,
+			editorText: "the original prompt",
+		});
+		expect(navigations).toEqual([[agentId, "entry-7", { summarize: true, label: "detour" }]]);
+	});
+
 	it("returns the compaction result from the compact extension action", async () => {
 		const env = new MemoryExecutionEnv();
 		const extensionProfile: AgentProfile = {

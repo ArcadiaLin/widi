@@ -6,6 +6,7 @@ import type {
 	CompactResult,
 	ContextEvent,
 	ExecutionError,
+	NavigateTreeResult,
 	Result,
 	SessionTreeEntry,
 	ShellExecOptions,
@@ -282,6 +283,23 @@ export type ExtensionExecResult = Result<{ stdout: string; stderr: string; exitC
 export type ExtensionCompactionResult = CompactResult;
 
 /**
+ * Where a tree navigation lands and what it wrote getting there. `editorText`
+ * is the target user message handed back for editing, which only a client that
+ * owns an editor has any use for.
+ */
+export type ExtensionNavigateTreeResult = NavigateTreeResult;
+
+export interface ExtensionNavigateTreeOptions {
+	/** Summarize what the move leaves behind onto the branch it lands on. */
+	readonly summarize?: boolean;
+	readonly customInstructions?: string;
+	/** Use `customInstructions` alone rather than appending them to the default. */
+	readonly replaceInstructions?: boolean;
+	/** Label for the branch summary entry. */
+	readonly label?: string;
+}
+
+/**
  * Durable presentation content an extension publishes into an agent, as core
  * knows it: a `kind` naming the shape, and opaque JSON beside it.
  *
@@ -553,6 +571,12 @@ export interface ExtensionActions {
 	getSessionName(): Promise<string | undefined>;
 	// Requires an idle harness; rejects with the harness busy error otherwise.
 	compact(customInstructions?: string): Promise<ExtensionCompactionResult>;
+	// Move the agent to another entry of its session tree, which becomes the leaf
+	// every later turn extends. The counterpart to the `session` readers: those
+	// show every branch, this is what picks one. Same idle requirement as
+	// `compact`, and navigating to the current leaf is a no-op that reports
+	// itself as one rather than failing.
+	navigateTree(targetEntryId: string, options?: ExtensionNavigateTreeOptions): Promise<ExtensionNavigateTreeResult>;
 	setModel(reference: string): Promise<RuntimeModel>;
 	getModel(): RuntimeModel;
 	// Candidate values are model references accepted by setModel.
@@ -611,6 +635,11 @@ export interface ExtensionCoreActions {
 	setAgentSessionName(agentId: string, name: string): Promise<void>;
 	getAgentSessionName(agentId: string): Promise<string | undefined>;
 	compactAgent(agentId: string, customInstructions?: string): Promise<ExtensionCompactionResult>;
+	navigateAgentTree(
+		agentId: string,
+		targetEntryId: string,
+		options?: ExtensionNavigateTreeOptions,
+	): Promise<ExtensionNavigateTreeResult>;
 	setAgentModelByReference(agentId: string, reference: string): Promise<RuntimeModel>;
 	getAgentModel(agentId: string): RuntimeModel;
 	listModelCandidates(): Promise<readonly CandidateItem[]>;
@@ -759,6 +788,7 @@ export interface ExtensionActionFailure {
 		| "listModelCandidates"
 		| "listProfiles"
 		| "listSessions"
+		| "navigateTree"
 		| "notify"
 		| "precede"
 		| "prompt"

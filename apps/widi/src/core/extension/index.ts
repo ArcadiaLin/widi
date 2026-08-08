@@ -41,7 +41,6 @@ export {
 } from "./runner.ts";
 export type {
 	ExtensionActionFailure,
-	ExtensionCompactionResult,
 	ExtensionContextActions,
 	ExtensionCoreActions,
 	ExtensionDivisionSelection,
