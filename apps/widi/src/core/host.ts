@@ -8,7 +8,7 @@
 import type { ThinkingLevel } from "@widi/agent-core";
 import type { BackgroundJobHost } from "./background/index.ts";
 import type { HumanRequestDraft, HumanResponse } from "./human-request.ts";
-import type { AgentNotice, MessageSendOutcome } from "./message.ts";
+import type { AgentNotice, MessageDeliveryMode, MessageSendOutcome } from "./message.ts";
 import type { AgentAbortOrigin, AgentActivity, AgentId, AgentIdleReason } from "./types.ts";
 
 export interface AgentProfileBrief {
@@ -53,6 +53,19 @@ export interface AgentStop {
 	/** Only with `aborted`, and only when the abort was asked for. */
 	readonly abortedBy?: AgentAbortOrigin;
 	readonly liveJobCount: number;
+}
+
+/** Something the runtime tells an agent about another agent. */
+export interface AgentSelfNotification {
+	/** Whose stop this is; the text is attributed to it, not to the caller. */
+	readonly aboutAgentId: AgentId;
+	readonly notice: AgentNotice;
+	readonly body: string;
+	/**
+	 * How hard it lands: `interrupt` reaches a turn already running, `next_turn`
+	 * waits for that turn to end, `precede` only records it on the branch.
+	 */
+	readonly mode: MessageDeliveryMode;
 }
 
 /** A wait ended because an agent it depended on is gone; `agentId` names which. */
@@ -160,9 +173,13 @@ export interface AgentToOrchestratorHost {
 	readAgentReport(targetAgentId: AgentId): Promise<string | undefined>;
 	/**
 	 * Put text into the caller's own inbox, attributed to another agent.
-	 * `sendMessage` cannot express this: it always speaks *as* the caller.
+	 *
+	 * `sendMessage` cannot express this: it always speaks *as* the caller, and it
+	 * fixes the delivery mode because one agent must not preempt another's turn.
+	 * Here the turn being interrupted is the caller's own, so the urgency is its
+	 * to choose.
 	 */
-	notifySelf(aboutAgentId: AgentId, notice: AgentNotice, body: string): Promise<MessageSendOutcome>;
+	notifySelf(notification: AgentSelfNotification): Promise<MessageSendOutcome>;
 	dispose(agentId: AgentId, options: AgentRequestedDisposeOptions): Promise<AgentRequestedDisposeOutcome>;
 	readonly jobs: BackgroundJobHost;
 	requestHuman(request: HumanRequestDraft): Promise<HumanResponse>;

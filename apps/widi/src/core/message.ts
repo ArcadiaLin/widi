@@ -839,6 +839,9 @@ export class MessageDeliveryQueue {
 	 * Take the head plus every immediately following message that merges with
 	 * it. Images never merge: a merged batch is one user message and a rewritten
 	 * image set could not be attributed back to its own body.
+	 *
+	 * The whole batch is delivered by the head's mode, so a differing mode ends
+	 * it: merging across modes would silently re-decide how hard the tail lands.
 	 */
 	private _takeMergeableBatch(queue: QueuedMessage[]): QueuedMessage[] {
 		const head = queue.shift();
@@ -847,7 +850,13 @@ export class MessageDeliveryQueue {
 		if (head.mergeKey === undefined || head.images !== undefined) return batch;
 		while (queue.length > 0) {
 			const next = queue[0];
-			if (next.settled || next.mergeKey !== head.mergeKey || next.images !== undefined || next.requiresIdle) {
+			if (
+				next.settled ||
+				next.mergeKey !== head.mergeKey ||
+				next.mode !== head.mode ||
+				next.images !== undefined ||
+				next.requiresIdle
+			) {
 				break;
 			}
 			queue.shift();

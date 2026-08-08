@@ -273,6 +273,29 @@ describe("agent watches", () => {
 		expect(inbox.texts).toHaveLength(2);
 	});
 
+	/**
+	 * How hard a report lands is the watcher's own choice, and the choice is only
+	 * visible while it is busy: to an idle watcher every mode starts a turn alike.
+	 */
+	it("interrupts the watcher for the work it handed over, and waits its turn otherwise", async () => {
+		const { orchestrator, watch, watcherAgentId, workerAgentId } = await createPair();
+		const harness = requireAgentHarness(orchestrator, watcherAgentId);
+		vi.spyOn(harness, "getPhase").mockReturnValue("turn");
+		const steer = vi.spyOn(harness, "steer").mockResolvedValue(undefined);
+		const followUp = vi.spyOn(harness, "followUp").mockResolvedValue(undefined);
+		await watch(watcherAgentId, workerAgentId);
+
+		// The answer it delegated for reaches the turn it is in.
+		await runAndStop(orchestrator, workerAgentId, assistantMessage("done"));
+		await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(1));
+		expect(followUp).not.toHaveBeenCalled();
+
+		// That delegation is answered, so the watch is only keeping an eye on it now.
+		await runAndStop(orchestrator, workerAgentId, assistantMessage("and again"));
+		await vi.waitFor(() => expect(followUp).toHaveBeenCalledTimes(1));
+		expect(steer).toHaveBeenCalledTimes(1);
+	});
+
 	// Maintenance releases the agent back to idle without a turn behind it, so
 	// the report it would carry is whatever the worker said before compacting.
 	it("stays silent when the worker only came back from maintenance", async () => {

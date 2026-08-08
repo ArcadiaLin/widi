@@ -91,11 +91,12 @@ export class AgentWatches {
 			try {
 				stop = await host.waitForAgentStop(targetAgentId);
 			} catch (error) {
-				if (!this.isWatchedBy(targetAgentId, host.agentId)) return;
+				const ended = this._watches.get(targetAgentId);
+				if (ended?.watcherAgentId !== host.agentId) return;
 				this._watches.delete(targetAgentId);
 				// A watcher that is gone has no turn left to read anything in.
 				if (error instanceof AgentGoneError && error.agentId === targetAgentId) {
-					await this._deliver(host, targetAgentId, { status: "gone" });
+					await this._deliver(host, targetAgentId, { status: "gone" }, ended.pending);
 				}
 				return;
 			}
@@ -106,22 +107,47 @@ export class AgentWatches {
 			if (stop.reason === "ready" || stop.reason === "maintenance") continue;
 			if (stop.liveJobCount > 0) continue;
 			if (this._awaitsSubagent(targetAgentId)) continue;
+			const awaited = watch.pending;
 			// A human taking the agent over answers nothing the watcher handed it, so
 			// the delegation is still outstanding after the report.
 			if (stop.abortedBy !== "human") watch.pending = false;
-			await this._deliver(host, targetAgentId, {
-				status: "idle",
-				reason: stop.reason,
-				...(stop.abortedBy === undefined ? undefined : { abortedBy: stop.abortedBy }),
-			});
+			await this._deliver(
+				host,
+				targetAgentId,
+				{
+					status: "idle",
+					reason: stop.reason,
+					...(stop.abortedBy === undefined ? undefined : { abortedBy: stop.abortedBy }),
+				},
+				awaited,
+			);
 		}
 	}
 
-	/** Swallowed because the party that would be told is the one that could not be reached. */
-	private async _deliver(host: AgentToOrchestratorHost, targetAgentId: AgentId, notice: AgentNotice): Promise<void> {
+	/**
+	 * `awaited` is what decides the urgency. Work the watcher handed over and has
+	 * not heard back on reaches the turn it is in: that is the answer it delegated
+	 * for, and finishing a long turn before reading it is how a watcher keeps
+	 * working on something the report would have changed. A stop it was merely
+	 * keeping an eye on waits for that turn to end.
+	 *
+	 * Failure is swallowed because the party that would be told is the one that
+	 * could not be reached.
+	 */
+	private async _deliver(
+		host: AgentToOrchestratorHost,
+		targetAgentId: AgentId,
+		notice: AgentNotice,
+		awaited: boolean,
+	): Promise<void> {
 		const report = await host.readAgentReport(targetAgentId).catch(() => undefined);
 		try {
-			await host.notifySelf(targetAgentId, notice, formatNoticeBody(targetAgentId, notice, report));
+			await host.notifySelf({
+				aboutAgentId: targetAgentId,
+				notice,
+				body: formatNoticeBody(targetAgentId, notice, report),
+				mode: awaited ? "interrupt" : "next_turn",
+			});
 		} catch {
 			return;
 		}

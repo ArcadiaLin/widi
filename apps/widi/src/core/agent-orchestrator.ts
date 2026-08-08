@@ -3598,10 +3598,10 @@ export class AgentOrchestrator {
 			waitForAgentStop: async (targetAgentId, options) =>
 				await this.waitForAgentStop(agentId, targetAgentId, options ?? {}),
 			readAgentReport: async (targetAgentId) => await this.readAgentReport(targetAgentId),
-			notifySelf: async (aboutAgentId, notice, body) =>
+			notifySelf: async (notification) =>
 				await this.sendMessage(
-					{ targetAgentId: agentId, body, mode: "next_turn" },
-					messageBindingFor({ kind: "agent", senderAgentId: aboutAgentId, notice }),
+					{ targetAgentId: agentId, body: notification.body, mode: notification.mode },
+					messageBindingFor({ kind: "agent", senderAgentId: notification.aboutAgentId, notice: notification.notice }),
 				),
 			dispose: async (targetAgentId, options) => await this._disposeForCaller(agentId, targetAgentId, options),
 			// The attachment's own capabilities, not an id-taking forwarder: they carry
