@@ -216,6 +216,13 @@ export interface ThemeInfo {
 const registry = new Map<string, RegisteredTheme>();
 let activeThemeName = DEFAULT_THEME_NAME;
 let activeCore: Theme = new Theme(defaultPalette);
+/** Bumped on every switch; render caches key on it so stale paints expire. */
+let generation = 0;
+
+/** The current theme generation; changes with every setTheme/resetThemes. */
+export function themeGeneration(): number {
+	return generation;
+}
 
 /**
  * Live stand-in for a snapshot object so consumers that captured it before a
@@ -252,6 +259,7 @@ export function setTheme(name: string): boolean {
 	if (!entry) return false;
 	activeThemeName = name;
 	activeCore = new Theme(entry.palette);
+	generation++;
 	return true;
 }
 
@@ -271,6 +279,7 @@ export function resetThemes(): void {
 	registry.set(DEFAULT_THEME_NAME, { name: DEFAULT_THEME_NAME, palette: defaultPalette });
 	activeThemeName = DEFAULT_THEME_NAME;
 	activeCore = new Theme(defaultPalette);
+	generation++;
 }
 resetThemes();
 

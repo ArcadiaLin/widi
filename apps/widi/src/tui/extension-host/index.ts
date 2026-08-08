@@ -6,6 +6,7 @@ export {
 	type TuiExtensionActivateResult,
 	type TuiExtensionComponentFactory,
 	type TuiExtensionDispose,
+	type TuiExtensionEditorAccess,
 	type TuiExtensionModule,
 	type TuiExtensionShortcutContext,
 	type TuiExtensionShortcutOptions,

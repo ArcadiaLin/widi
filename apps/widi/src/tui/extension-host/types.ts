@@ -1,5 +1,7 @@
 import type { Component, KeyId } from "@earendil-works/pi-tui";
 import type { CommandDefinition } from "../commands/types.ts";
+import type { AppOverlayHandle, ShowOverlayOptions } from "../layout/overlay-stack.ts";
+import type { Theme, ThemeInfo } from "../theme/theme.ts";
 import type { ToolPresenter } from "../tool-presenter.ts";
 
 /**
@@ -41,6 +43,13 @@ export interface TuiExtensionWidgetOptions {
 	readonly placement: "aboveEditor" | "belowEditor";
 }
 
+/** The slice of the TUI editor the host hands extensions for text access. */
+export interface TuiExtensionEditorAccess {
+	getText(): string;
+	setText(text: string): void;
+	insertTextAtCursor?(text: string): void;
+}
+
 /**
  * The API object the host hands to a `tui` half at activation. Step 6a covers
  * the registration-class surface; Step 6b adds the component-class methods
@@ -75,6 +84,35 @@ export interface WidiTuiExtensionApi {
 
 	/** An extension segment appended after the built-in header. */
 	setHeader(factory: TuiExtensionComponentFactory | undefined): void;
+
+	/**
+	 * Open a component on the application overlay stack. Extension overlays are
+	 * dismissible by default (interrupt closes them before the agent); the
+	 * returned handle closes the overlay, and the host closes anything still
+	 * open when the extension is disposed.
+	 */
+	showOverlay(component: Component, options?: ShowOverlayOptions): AppOverlayHandle;
+
+	/** The editor's current draft text. */
+	getEditorText(): string;
+
+	/** Replace the editor's draft text. */
+	setEditorText(text: string): void;
+
+	/** Insert text at the cursor, keeping the rest of the draft. */
+	pasteToEditor(text: string): void;
+
+	/**
+	 * The live theme holder: paints read through it always reflect the active
+	 * theme, so components can capture it once at factory time.
+	 */
+	readonly theme: Theme;
+
+	/** Switch the active theme by name; false when the name is unknown. */
+	setTheme(name: string): boolean;
+
+	/** Every registered theme, the default first. */
+	getAllThemes(): ThemeInfo[];
 
 	/** Cleanup run when the host shuts down; disposers run in reverse order. */
 	onDispose(handler: () => void | Promise<void>): void;

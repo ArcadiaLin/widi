@@ -1,7 +1,7 @@
 import { type Component, Text } from "@earendil-works/pi-tui";
 import { fixCjkLineStarts } from "../cjk-wrap.ts";
 import type { TimelineItem, TuiApplicationState } from "../state.ts";
-import { theme } from "../theme/theme.ts";
+import { theme, themeGeneration } from "../theme/theme.ts";
 import { activeAgent } from "./common.ts";
 import { renderDeps, renderTimelineItem, type TimelineRenderContext } from "./timeline-item.ts";
 
@@ -15,6 +15,7 @@ export class ChatView implements Component {
 	private readonly state: TuiApplicationState;
 	private readonly itemCache = new Map<string, CachedItemRender>();
 	private cachedAgentId?: string;
+	private cachedThemeGeneration?: number;
 
 	constructor(state: TuiApplicationState) {
 		this.state = state;
@@ -23,6 +24,13 @@ export class ChatView implements Component {
 	invalidate(): void {}
 
 	render(width: number): string[] {
+		// renderDeps cannot see a theme switch (the paints change underneath an
+		// unchanged item), so the generation guards the whole cache instead.
+		const generation = themeGeneration();
+		if (generation !== this.cachedThemeGeneration) {
+			this.itemCache.clear();
+			this.cachedThemeGeneration = generation;
+		}
 		const agent = activeAgent(this.state);
 		const pending = this.state.pendingAgent;
 		if (!agent && !pending) {

@@ -309,6 +309,9 @@ export class WidiTuiApplication {
 				identities: this.runtime.services.extensionLoad.loaded,
 				commandEngine: this.engine,
 				layout: this.layout,
+				overlays: this.overlays,
+				editor: this.editor,
+				requestRender: () => this.tui.requestRender(),
 				reportDiagnostic: (diagnostic) => this.reportHostDiagnostic(diagnostic),
 			});
 			await this.extensionHost.activate();

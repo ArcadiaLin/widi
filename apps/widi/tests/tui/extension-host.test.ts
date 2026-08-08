@@ -9,8 +9,10 @@ import {
 	type TuiExtensionModuleImporter,
 	type WidiTuiExtensionApi,
 } from "../../src/tui/extension-host/index.ts";
+import type { ShowOverlayOptions } from "../../src/tui/layout/overlay-stack.ts";
 import { LayoutSlots } from "../../src/tui/layout/slots.ts";
 import { createTuiApplicationState, type ToolExecutionItem } from "../../src/tui/state.ts";
+import { resetThemes } from "../../src/tui/theme/theme.ts";
 import { defineLinesPresenter, presentToolExecution, unregisterToolPresenter } from "../../src/tui/tool-presenter.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
@@ -64,6 +66,37 @@ function createHostFixture() {
 	};
 	const engine = new CommandEngine();
 	const diagnostics: OrchestratorDiagnostic[] = [];
+	const shownOverlays: { component: Component; options?: ShowOverlayOptions; closed: boolean }[] = [];
+	const overlays = {
+		show: (component: Component, options?: ShowOverlayOptions) => {
+			const record: { component: Component; options?: ShowOverlayOptions; closed: boolean } = {
+				component,
+				...(options !== undefined ? { options } : {}),
+				closed: false,
+			};
+			shownOverlays.push(record);
+			return {
+				component,
+				get closed() {
+					return record.closed;
+				},
+				close: () => {
+					record.closed = true;
+				},
+			};
+		},
+	};
+	const editorState = { text: "" };
+	const editor = {
+		getText: () => editorState.text,
+		setText: (text: string) => {
+			editorState.text = text;
+		},
+		insertTextAtCursor: (text: string) => {
+			editorState.text += text;
+		},
+	};
+	let renderRequests = 0;
 	const children: Component[] = [];
 	const layout = new LayoutSlots();
 	const anchors = [
@@ -94,10 +127,24 @@ function createHostFixture() {
 			identities: entries.map(([, id]) => id),
 			commandEngine: engine,
 			layout,
+			overlays,
+			editor,
+			requestRender: () => {
+				renderRequests++;
+			},
 			reportDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
 			moduleImporter,
 		});
-	return { modules, engine, diagnostics, children, activate };
+	return {
+		modules,
+		engine,
+		diagnostics,
+		children,
+		shownOverlays,
+		editor,
+		activate,
+		renderRequests: () => renderRequests,
+	};
 }
 
 describe("TuiExtensionHost", () => {
@@ -527,5 +574,80 @@ describe("TuiExtensionHost", () => {
 			extensionId: "acme",
 		});
 		expect(fixture.children.map((component) => component.render(80))).not.toContainEqual(["nope"]);
+	});
+
+	it("shows an overlay as dismissible by default and closes it on dispose", async () => {
+		const fixture = createHostFixture();
+		let api: WidiTuiExtensionApi | undefined;
+		fixture.modules.set("/ext/acme/index.ts", {
+			tui: (hostApi: WidiTuiExtensionApi) => {
+				api = hostApi;
+			},
+		});
+
+		const host = fixture.activate([["acme", identity("acme", "/ext/acme/index.ts")]]);
+		await host.activate();
+
+		const overlay: Component = { render: () => ["overlay"], invalidate: () => {} };
+		const handle = api?.showOverlay(overlay);
+		expect(fixture.shownOverlays).toHaveLength(1);
+		expect(fixture.shownOverlays[0]?.component).toBe(overlay);
+		expect(fixture.shownOverlays[0]?.options?.dismissible).toBe(true);
+		expect(fixture.renderRequests()).toBe(1);
+		expect(handle?.closed).toBe(false);
+
+		handle?.close();
+		expect(fixture.shownOverlays[0]?.closed).toBe(true);
+
+		const lingering = api?.showOverlay({ render: () => ["second"], invalidate: () => {} });
+		expect(lingering?.closed).toBe(false);
+		await host.dispose();
+		expect(fixture.shownOverlays[1]?.closed).toBe(true);
+	});
+
+	it("exposes the theme holder, switches themes by name, and lists them", async () => {
+		const fixture = createHostFixture();
+		let api: WidiTuiExtensionApi | undefined;
+		fixture.modules.set("/ext/acme/index.ts", {
+			tui: (hostApi: WidiTuiExtensionApi) => {
+				api = hostApi;
+			},
+		});
+
+		try {
+			const host = fixture.activate([["acme", identity("acme", "/ext/acme/index.ts")]]);
+			await host.activate();
+
+			expect(api?.getAllThemes().map((info) => info.name)).toEqual(["default"]);
+			expect(api?.setTheme("no-such-theme")).toBe(false);
+			expect(fixture.renderRequests()).toBe(0);
+			expect(api?.setTheme("default")).toBe(true);
+			expect(fixture.renderRequests()).toBe(1);
+			// The holder is live: reading a paint through it after a switch hits
+			// the new core (covered end-to-end in chat-view.test.ts).
+			expect(api?.theme.palette.accent).toBeDefined();
+		} finally {
+			resetThemes();
+		}
+	});
+
+	it("reads, replaces, and pastes editor text", async () => {
+		const fixture = createHostFixture();
+		let api: WidiTuiExtensionApi | undefined;
+		fixture.modules.set("/ext/acme/index.ts", {
+			tui: (hostApi: WidiTuiExtensionApi) => {
+				api = hostApi;
+			},
+		});
+
+		const host = fixture.activate([["acme", identity("acme", "/ext/acme/index.ts")]]);
+		await host.activate();
+
+		expect(api?.getEditorText()).toBe("");
+		api?.setEditorText("hello");
+		expect(api?.getEditorText()).toBe("hello");
+		api?.pasteToEditor(" world");
+		expect(api?.getEditorText()).toBe("hello world");
+		expect(fixture.renderRequests()).toBe(2);
 	});
 });

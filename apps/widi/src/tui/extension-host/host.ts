@@ -1,11 +1,13 @@
-import type { KeybindingDefinitions, KeybindingsConfig } from "@earendil-works/pi-tui";
+import type { Component, KeybindingDefinitions, KeybindingsConfig } from "@earendil-works/pi-tui";
 import type { OrchestratorDiagnostic } from "../../core/diagnostics.ts";
 import type { ExtensionIdentity, ExtensionSource } from "../../core/extension/loader.ts";
 import { JitiExtensionModuleImporter } from "../../core/extension/module-importer.ts";
 import { formatError } from "../../utils/errors.ts";
 import type { CommandEngine } from "../commands/engine.ts";
 import type { CommandDefinition } from "../commands/types.ts";
+import type { AppOverlayHandle, ShowOverlayOptions } from "../layout/overlay-stack.ts";
 import type { LayoutSlots } from "../layout/slots.ts";
+import { getAllThemes, setTheme, theme } from "../theme/theme.ts";
 import { registerToolPresenter } from "../tool-presenter.ts";
 import { ExtensionShortcutRegistry } from "./shortcuts.ts";
 import {
@@ -13,6 +15,7 @@ import {
 	type TuiExtensionActivate,
 	type TuiExtensionComponentFactory,
 	type TuiExtensionDispose,
+	type TuiExtensionEditorAccess,
 	type TuiExtensionShortcutOptions,
 	type TuiExtensionWidgetOptions,
 	type WidiTuiExtensionApi,
@@ -39,7 +42,13 @@ export interface TuiExtensionHostOptions {
 	readonly commandEngine: CommandEngine;
 	/** The mounted layout the application assembled; widgets join it at runtime. */
 	readonly layout: LayoutSlots;
+	/** The application overlay stack extension overlays open on. */
+	readonly overlays: { show(component: Component, options?: ShowOverlayOptions): AppOverlayHandle };
+	/** Editor text access for getEditorText/setEditorText/pasteToEditor. */
+	readonly editor: TuiExtensionEditorAccess;
 	readonly reportDiagnostic: (diagnostic: OrchestratorDiagnostic) => void;
+	/** Repaint request after a visible change (theme switch, overlay, edit). */
+	readonly requestRender?: () => void;
 	readonly moduleImporter?: TuiExtensionModuleImporter;
 }
 
@@ -62,7 +71,10 @@ export class TuiExtensionHost {
 	private readonly identities: readonly ExtensionIdentity[];
 	private readonly commandEngine: CommandEngine;
 	private readonly layout: LayoutSlots;
+	private readonly overlays: TuiExtensionHostOptions["overlays"];
+	private readonly editor: TuiExtensionEditorAccess;
 	private readonly reportDiagnostic: (diagnostic: OrchestratorDiagnostic) => void;
+	private readonly requestRender: () => void;
 	private readonly moduleImporter: TuiExtensionModuleImporter;
 	private readonly disposers: HostDisposer[] = [];
 	private activated = false;
@@ -71,7 +83,10 @@ export class TuiExtensionHost {
 		this.identities = options.identities;
 		this.commandEngine = options.commandEngine;
 		this.layout = options.layout;
+		this.overlays = options.overlays;
+		this.editor = options.editor;
 		this.reportDiagnostic = options.reportDiagnostic;
+		this.requestRender = options.requestRender ?? (() => {});
 		this.moduleImporter = options.moduleImporter ?? new JitiExtensionModuleImporter();
 		this.shortcuts = new ExtensionShortcutRegistry({ reportDiagnostic: options.reportDiagnostic });
 	}
@@ -245,6 +260,37 @@ export class TuiExtensionHost {
 			setHeader: (factory: TuiExtensionComponentFactory | undefined) => {
 				setLayoutComponent("header", `ext.${extensionId}.header`, factory);
 			},
+			showOverlay: (component, options) => {
+				const handle = this.overlays.show(component, { dismissible: true, ...options });
+				this.disposers.push({
+					extensionId,
+					dispose: () => {
+						if (!handle.closed) handle.close();
+					},
+				});
+				this.requestRender();
+				return handle;
+			},
+			getEditorText: () => this.editor.getText(),
+			setEditorText: (text: string) => {
+				this.editor.setText(text);
+				this.requestRender();
+			},
+			pasteToEditor: (text: string) => {
+				if (this.editor.insertTextAtCursor) {
+					this.editor.insertTextAtCursor(text);
+				} else {
+					this.editor.setText(this.editor.getText() + text);
+				}
+				this.requestRender();
+			},
+			theme,
+			setTheme: (name: string) => {
+				const switched = setTheme(name);
+				if (switched) this.requestRender();
+				return switched;
+			},
+			getAllThemes,
 			onDispose: (handler) => {
 				this.disposers.push({ extensionId, dispose: handler });
 			},
