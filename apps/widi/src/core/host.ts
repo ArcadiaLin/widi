@@ -1,8 +1,8 @@
 /**
- * Caller-bound collaboration capabilities exposed to agent tools.
+ * The orchestrator's collaboration capabilities, bound to one agent's identity.
  *
- * The caller identity is captured by the orchestrator. No model-controlled
- * argument can select the sender, the watcher, or the background-job owner.
+ * The binding supplies the identity so a holder never passes it: that is how
+ * the surface is built, not what it is for.
  */
 
 import type { ThinkingLevel } from "@widi/agent-core";
@@ -31,8 +31,8 @@ export interface AgentBrief {
 
 /**
  * Where a spawned agent's context comes from. Narrower than the orchestrator's
- * own origin type, which also carries a full profile override: an agent able to
- * name its child's tools could grant one the parent does not itself hold.
+ * own origin type, which also carries a full profile override: a profile is the
+ * unit an agent may choose from, not a set of fields it may assemble.
  */
 export type AgentSpawnOrigin =
 	/** Fresh context from a profile; omitted takes the runtime default. */
@@ -123,14 +123,12 @@ export type AgentRequestedDisposeOutcome =
  * What one agent can ask of the orchestrator, with the asking agent already
  * bound.
  *
- * Every method is missing the same parameter - who is asking - and that absence
- * is the point. The holder cannot name a different agent as itself, so `spawn`
- * always parents under the asker, `listAgents` always scopes to its level,
- * `dispose` always checks their shared tree, and `sendMessage` always attributes
- * to it. A tool's arguments come from a model verbatim, so the identity has to
- * be somewhere the arguments cannot reach.
+ * Every method is missing the same parameter - who is asking - because the
+ * binding already carries it. That is what makes this one surface usable by any
+ * runtime allowed to act as the agent: `spawn` parents under it, `listAgents`
+ * scopes to its level, `dispose` checks their shared tree, and `sendMessage`
+ * attributes to it, whoever is holding the object. Tools are the first holder.
  *
- * Held by any agent-scoped module outside the orchestrator, not tools alone.
  * Modules that are not agent-scoped hold something else: the background runtime
  * serves every agent and speaks as a job rather than as an agent, so it takes a
  * message sink and none of this.

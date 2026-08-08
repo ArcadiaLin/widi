@@ -1,5 +1,10 @@
-import { cloneExtensionStatus, type ExtensionStatus, type ExtensionStatusSnapshot } from "./presentation.ts";
+import type { ExtensionStatus, ExtensionStatusSnapshot } from "./types.ts";
 
+/**
+ * Keyed current state per (agent, extension). The status itself is opaque here:
+ * it arrives already normalized and deep-frozen by `validateExtensionStatus`,
+ * so handing the same object to every reader is safe and no clone is needed.
+ */
 export class ExtensionStatusRegistry {
 	private readonly agents = new Map<string, Map<string, Map<string, ExtensionStatusSnapshot>>>();
 
@@ -14,15 +19,9 @@ export class ExtensionStatusRegistry {
 		this.agents.set(agentId, extensions);
 		const statuses = extensions.get(extensionId) ?? new Map();
 		extensions.set(extensionId, statuses);
-		const snapshot: ExtensionStatusSnapshot = {
-			agentId,
-			extensionId,
-			key,
-			status: cloneExtensionStatus(status),
-			updatedAt,
-		};
+		const snapshot: ExtensionStatusSnapshot = { agentId, extensionId, key, status, updatedAt };
 		statuses.set(key, snapshot);
-		return cloneSnapshot(snapshot);
+		return snapshot;
 	}
 
 	clear(agentId: string, extensionId: string, key: string): boolean {
@@ -46,13 +45,9 @@ export class ExtensionStatusRegistry {
 		const snapshots: ExtensionStatusSnapshot[] = [];
 		for (const statuses of extensions.values()) {
 			for (const snapshot of statuses.values()) {
-				snapshots.push(cloneSnapshot(snapshot));
+				snapshots.push(snapshot);
 			}
 		}
 		return snapshots;
 	}
-}
-
-function cloneSnapshot(snapshot: ExtensionStatusSnapshot): ExtensionStatusSnapshot {
-	return { ...snapshot, status: cloneExtensionStatus(snapshot.status) };
 }

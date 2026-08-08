@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { type Component, ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
+import type { NavigateTreeResult } from "@widi/agent-core";
 import type { AgentOrchestrator } from "../core/agent-orchestrator.ts";
 import { DEFAULT_AGENT_DIR } from "../core/constants.js";
 import { type OrchestratorDiagnostic, OrchestratorError } from "../core/diagnostics.ts";
@@ -33,10 +34,13 @@ import { createWidiKeybindings, loadUserKeybindings } from "./keybindings.ts";
 import { type AppOverlayHandle, OverlayStack } from "./layout/overlay-stack.ts";
 import { type LayoutSlotEntry, LayoutSlots } from "./layout/slots.ts";
 import { PendingAgentController, type PendingAgentDisplay } from "./pending-agent.ts";
+import { SelectorDock } from "./selectors/dock.ts";
 import type { SelectorHintContext } from "./selectors/hints.ts";
 import { ListSelector, type ListSelectorRequest } from "./selectors/list-selector.ts";
+import { TreeNavigationSelector } from "./selectors/tree-navigation.ts";
 import { TreeSelector } from "./selectors/tree-selector.ts";
 import { hydrateSessionEntries } from "./session-hydrator.ts";
+import { buildSessionEntryRows } from "./session-tree.ts";
 import { StartupHumanPrompt } from "./startup-human-prompt.ts";
 import {
 	type AgentViewState,
@@ -71,9 +75,11 @@ export class WidiTuiApplication {
 
 	private readonly projector: EventProjector;
 	private readonly editor: WidiEditor;
-	/** Application overlay stack: selectors, the fatal boundary, future extension overlays. */
+	/** Application overlay stack: the fatal boundary and extension overlays. Command selectors dock instead. */
 	private readonly overlays: OverlayStack;
 	private readonly humanRequests: HumanRequestMenu;
+	/** Docked command-selector host: the open selector takes the editor's place. */
+	private readonly selectorDock: SelectorDock;
 	private readonly agentPanel: AgentStripView;
 	private readonly pendingAgents: PendingAgentController;
 	/** Unknown "/" input awaiting a confirming second enter (v2 §11.2). */
@@ -175,6 +181,11 @@ export class WidiTuiApplication {
 			resolveAgentLabel: (agentId) => this.resolveAgentLabel(agentId),
 			restoreFocus: () => this.overlays.restoreFocus(),
 		});
+		this.selectorDock = new SelectorDock({
+			host: this.tui,
+			state: this.state,
+			restoreFocus: () => this.overlays.restoreFocus(),
+		});
 		this.agentPanel = new AgentStripView(
 			this.state,
 			this.tui,
@@ -187,7 +198,11 @@ export class WidiTuiApplication {
 			host: this.tui,
 			state: this.state,
 			editor: this.editor,
-			dockedFocusTarget: () => (this.humanRequests.isOpen ? this.humanRequests : undefined),
+			dockedFocusTarget: () => {
+				// The selector dock is the newer claimant when both are somehow open.
+				if (this.selectorDock.isOpen) return this.selectorDock;
+				return this.humanRequests.isOpen ? this.humanRequests : undefined;
+			},
 		});
 
 		// The built-in views dogfood the same slot registry extension widgets
@@ -217,6 +232,7 @@ export class WidiTuiApplication {
 		this.editor.onInterrupt = () => this.interrupt();
 		this.editor.onSteer = () => this.steerFromEditor();
 		this.editor.onOpenRequests = () => this.humanRequests.openLatest();
+		this.editor.onOpenTree = () => this.track(this.openTreeSelectorDirect());
 		this.editor.onExit = () => {
 			void this.shutdown("user exit").catch(() => {});
 		};
@@ -237,7 +253,16 @@ export class WidiTuiApplication {
 			{ key: "queuedInput", slot: "aboveEditor", scope: "global", factory: () => new QueuedInputView(this.state) },
 			{ key: "jobsPanel", slot: "jobsPanel", scope: "global", factory: () => this.jobsPanel },
 			{ key: "humanRequests", slot: "aboveEditor", scope: "global", factory: () => this.humanRequests },
-			{ key: "editor", slot: "editor", scope: "global", factory: () => this.editor },
+			{ key: "selectorDock", slot: "aboveEditor", scope: "global", factory: () => this.selectorDock },
+			{
+				key: "editor",
+				slot: "editor",
+				scope: "global",
+				factory: () => this.editor,
+				// Like pi's showSelector, an open command selector takes the editor's
+				// place: the editor leaves the layout while the dock holds a view.
+				visible: (state) => state.focus.docked !== "selector",
+			},
 			{
 				key: "footer",
 				slot: "footer",
@@ -264,12 +289,11 @@ export class WidiTuiApplication {
 		for (const entry of entries) this.layout.register(entry);
 	}
 
-	/** Hint context of the topmost selector on the overlay stack, if any. */
+	/** Hint context of the selector currently docked in the editor's place, if any. */
 	private topSelectorHint(): SelectorHintContext | undefined {
-		const handles = this.overlays.list();
-		for (let i = handles.length - 1; i >= 0; i--) {
-			const view = handles[i]?.component;
-			if (view instanceof ListSelector || view instanceof TreeSelector) return view.hintContext;
+		const view = this.selectorDock.current;
+		if (view instanceof ListSelector || view instanceof TreeSelector || view instanceof TreeNavigationSelector) {
+			return view.hintContext;
 		}
 		return undefined;
 	}
@@ -646,6 +670,13 @@ export class WidiTuiApplication {
 					result: outcome.value,
 					display: outcome.display,
 				});
+				if (outcome.name === "tree") {
+					// Navigating to a user message un-sends it: the harness returns its
+					// text so the editor can offer it back for editing/resubmission.
+					const navigation = outcome.value as NavigateTreeResult;
+					if (navigation.cancelled) this.restoreEditor(rawText, agentId);
+					else if (navigation.editorText !== undefined) this.editor.setText(navigation.editorText);
+				}
 				const nextAgentId = switchedAgentId(outcome);
 				if (nextAgentId) await this.activateNavigationAgent(nextAgentId);
 				this.tui.requestRender();
@@ -928,13 +959,12 @@ export class WidiTuiApplication {
 				description: "Use the current session position",
 			});
 		}
-		let handle: AppOverlayHandle | undefined;
 		const request: ListSelectorRequest = {
 			title: `/${command.name}`,
 			items,
 			operation: { description: command.description, confirmVerb: "apply" },
 			...(initialFilter !== undefined && initialFilter !== "" ? { initialFilter } : {}),
-			onClose: () => handle?.close(),
+			onClose: () => this.selectorDock.close(),
 			onSelect: (item) => {
 				// Space syntax cannot express an explicit empty argument (submit
 				// trims it away); the colon form keeps "use current position"
@@ -955,21 +985,69 @@ export class WidiTuiApplication {
 		} catch (error) {
 			// A factory that cannot load its data (e.g. the agent's session tree)
 			// fails like the empty-candidate path: the command goes back to the
-			// editor with a notice instead of an overlay stuck half-built.
+			// editor with a notice instead of a dock stuck half-built.
 			this.restoreEditor(originalText, agentId);
 			this.addApplicationNotice(`Command /${command.name} selector failed: ${errorMessage(error)}`, agentId);
 			return;
 		}
-		handle = this.overlays.show(view, {
-			mode: "selector",
-			dismissible: true,
-			width: "70%",
-			minWidth: 36,
-			maxHeight: "60%",
-			anchor: "center",
-			margin: 1,
-		});
+		this.selectorDock.open(view);
 		this.tui.requestRender();
+	}
+
+	/**
+	 * app.tree.open: the tree navigator without going through the editor, so the
+	 * unsubmitted draft survives both the selector and the navigation (pi opens
+	 * its tree the same way, from a keybinding rather than a submitted command).
+	 */
+	private async openTreeSelectorDirect(): Promise<void> {
+		const agentId = this.state.activeAgentId;
+		if (!agentId || this.selectorDock.isOpen) return;
+		try {
+			const tree = await this.orchestrator.getAgentSessionTree(agentId);
+			const rows = buildSessionEntryRows(tree);
+			if (rows.length === 0) {
+				this.addApplicationNotice("No entries in this session tree.", agentId);
+				return;
+			}
+			const view = new TreeNavigationSelector({
+				title: "/tree",
+				rows,
+				onClose: () => this.selectorDock.close(),
+				// The draft never left the editor, so cancel has nothing to restore.
+				onNavigate: (entryId, summarize, customInstructions) =>
+					this.track(this.applyTreeNavigation(agentId, entryId, summarize, customInstructions)),
+			});
+			this.selectorDock.open(view);
+			this.tui.requestRender();
+		} catch (error) {
+			this.addApplicationNotice(`Session tree failed: ${errorMessage(error)}`, agentId);
+		}
+	}
+
+	/** Shared tail of both tree navigation paths: navigate, then surface the result. */
+	private async applyTreeNavigation(
+		agentId: string,
+		entryId: string,
+		summarize: boolean,
+		customInstructions?: string,
+	): Promise<void> {
+		try {
+			const result = await this.orchestrator.navigateAgentTree(
+				agentId,
+				entryId,
+				summarize
+					? { summarize: true, ...(customInstructions === undefined ? {} : { customInstructions }) }
+					: undefined,
+			);
+			if (result.cancelled) {
+				this.addApplicationNotice("Navigation cancelled.", agentId);
+				return;
+			}
+			if (result.editorText !== undefined) this.editor.setText(result.editorText);
+			this.addApplicationNotice(result.summaryEntry ? "Navigated (branch summarized)." : "Navigated.", agentId);
+		} catch (error) {
+			this.addApplicationNotice(errorMessage(error), agentId);
+		}
 	}
 
 	private async activateNavigationAgent(agentId: string): Promise<void> {
@@ -1242,6 +1320,13 @@ export class WidiTuiApplication {
 
 	private interrupt(): void {
 		if (this.overlays.dismiss()) return;
+		// A docked selector goes away before the running agent is aborted, same
+		// as the dismissible overlay it used to be. Closing skips onCancel, so
+		// the submitted command is not restored (the overlay behaved the same).
+		if (this.selectorDock.isOpen) {
+			this.selectorDock.close();
+			return;
+		}
 		const agentId = this.state.activeAgentId;
 		if (!agentId) return;
 		const agent = ensureAgentProjection(this.state, agentId);

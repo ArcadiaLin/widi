@@ -610,6 +610,24 @@ export class ExtensionRunner {
 			code: "extension.action_failed",
 		});
 		return {
+			listProfiles: async () =>
+				await this._runReportedAction(failure("listProfiles"), async () => await this._actions.listProfileBriefs()),
+			listAgents: async () =>
+				await this._runReportedAction(failure("listAgents"), async () => await this._actions.listAgentTree(agentId)),
+			describeAgent: (targetAgentId) => {
+				this._assertActive();
+				return this._actions.describeAgentFor(agentId, targetAgentId);
+			},
+			spawnAgent: async (request) =>
+				await this._runReportedAction(
+					failure("spawnAgent"),
+					async () => await this._actions.spawnAgentFor(agentId, request),
+				),
+			disposeAgent: async (targetAgentId, options) =>
+				await this._runReportedAction(
+					failure("disposeAgent"),
+					async () => await this._actions.disposeAgentFor(agentId, targetAgentId, options),
+				),
 			getTools: () => {
 				this._assertActive();
 				return this._actions.getAgentTools(agentId);
@@ -684,6 +702,11 @@ export class ExtensionRunner {
 			followUp: async (text, options) => {
 				await this._runReportedAction(failure("followUp"), async () => {
 					await this._actions.messageSinkFor(extensionId).send(toMessageRequest(agentId, text, "next_turn", options));
+				});
+			},
+			precede: async (text, options) => {
+				await this._runReportedAction(failure("precede"), async () => {
+					await this._actions.messageSinkFor(extensionId).send(toMessageRequest(agentId, text, "precede", options));
 				});
 			},
 			getContextUsage: () => {
@@ -973,7 +996,7 @@ function toMessageRequest(
 	options: ExtensionSendOptions | undefined,
 ): MessageRequest {
 	return {
-		targetAgentId: agentId,
+		targetAgentId: options?.target ?? agentId,
 		body: text,
 		...(options?.images === undefined ? undefined : { images: options.images }),
 		...(options?.source === undefined ? undefined : { source: options.source }),
@@ -987,6 +1010,11 @@ function createUnboundActions(): ExtensionCoreActions {
 		throw new Error("Extension runner core actions are not bound.");
 	};
 	return {
+		listProfileBriefs: async () => notBound(),
+		listAgentTree: async () => notBound(),
+		describeAgentFor: () => notBound(),
+		spawnAgentFor: async () => notBound(),
+		disposeAgentFor: async () => notBound(),
 		getAgentTools: () => notBound(),
 		listAgentBackgroundJobs: () => notBound(),
 		readAgentBackgroundJobOutput: () => notBound(),

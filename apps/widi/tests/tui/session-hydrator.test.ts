@@ -147,7 +147,10 @@ describe("hydrateSessionEntries", () => {
 	// Live events carry the message shape straight through; hydration is the
 	// path that used to enumerate the kinds a second time, so a structured
 	// message that survives a restart is the thing worth asserting.
-	it("restores structured extension messages and drops malformed ones", () => {
+	// Hydration restores anything core would have admitted, its own kinds
+	// included: whether this build can draw a shape is settled at render time,
+	// where an unreadable one degrades instead of vanishing from the timeline.
+	it("restores every published message with a kind, and drops the rest", () => {
 		const result = hydrateSessionEntries([
 			custom("table", EXTENSION_MESSAGE_CUSTOM_TYPE, {
 				extensionId: "reports",
@@ -158,9 +161,13 @@ describe("hydrateSessionEntries", () => {
 					rows: [["src/a.ts", "12"]],
 				},
 			}),
-			custom("ragged", EXTENSION_MESSAGE_CUSTOM_TYPE, {
+			custom("foreign", EXTENSION_MESSAGE_CUSTOM_TYPE, {
 				extensionId: "reports",
-				message: { kind: "table", columns: [{ label: "Path" }], rows: [["src/a.ts", "12"]] },
+				message: { kind: "reports:coverage", percent: 91.2 },
+			}),
+			custom("kindless", EXTENSION_MESSAGE_CUSTOM_TYPE, {
+				extensionId: "reports",
+				message: { columns: [{ label: "Path" }] },
 			}),
 		]);
 
@@ -174,6 +181,7 @@ describe("hydrateSessionEntries", () => {
 					rows: [["src/a.ts", "12"]],
 				},
 			},
+			{ type: "extension-message", entryId: "foreign", message: { kind: "reports:coverage", percent: 91.2 } },
 		]);
 	});
 

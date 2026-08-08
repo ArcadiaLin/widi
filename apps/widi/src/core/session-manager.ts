@@ -29,7 +29,7 @@ import { buildSessionContext, getFileSystemResultOrThrow, InMemorySessionStore, 
 import { formatError } from "../utils/errors.ts";
 import type { AgentProfile, AgentProfileReference } from "./agent-profile.js";
 import { parseAgentProfileReference, toAgentProfileReference } from "./agent-profile.js";
-import type { ExtensionMessage } from "./extension/presentation.ts";
+import type { ExtensionMessage } from "./extension/types.ts";
 import type {
 	PersistedSessionInfo,
 	PersistenceDiagnostic,

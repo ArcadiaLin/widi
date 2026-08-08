@@ -1,9 +1,16 @@
 import { getKeybindings, Markdown, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { ExtensionFieldsMessage, ExtensionMessage, ExtensionTableMessage } from "../../core/extension/api.ts";
-import { MAX_EXTENSION_MESSAGE_CELL_BYTES } from "../../core/extension/presentation.ts";
+import type { ExtensionMessage } from "../../core/extension/api.ts";
+import { presentCommandResult } from "../command-presenter.ts";
 import { renderDiffText } from "../diff.ts";
+import {
+	type BuiltInExtensionMessage,
+	type ExtensionFieldsMessage,
+	type ExtensionTableMessage,
+	MAX_EXTENSION_MESSAGE_CELL_BYTES,
+	parseBuiltInMessage,
+} from "../extension-host/presentation.ts";
 import { renderExtensionEntry, renderExtensionMessageBody } from "../extension-host/renderers.ts";
-import { boundedText, formatUnknown, sanitizeTerminalText, singleLine, spinnerFrame } from "../format.ts";
+import { boundedText, sanitizeTerminalText, singleLine, spinnerFrame } from "../format.ts";
 import type { TimelineItem } from "../state.ts";
 import { theme } from "../theme/theme.ts";
 import { presentToolExecution } from "../tool-presenter.ts";
@@ -88,8 +95,16 @@ function tableSeparator(): string {
  * tables get computed column widths, fields get aligned labels, diffs get the
  * edit tool's diff paint, and banners get their tone's color. Width is the
  * usable text width (render width minus the Text padding).
+ *
+ * A kind this build has no renderer for - an extension's own, or one written by
+ * a newer build - degrades to the frame's header rather than dropping the entry.
  */
 function extensionMessageLines(message: ExtensionMessage, width: number): string[] {
+	const parsed = parseBuiltInMessage(message);
+	return parsed ? builtInMessageLines(parsed, width) : [];
+}
+
+function builtInMessageLines(message: BuiltInExtensionMessage, width: number): string[] {
 	switch (message.kind) {
 		case "text":
 		case "markdown":
@@ -287,22 +302,13 @@ export function renderTimelineItem(item: TimelineItem, width: number, context: T
 			).render(width);
 		}
 		case "command-result":
-			if (item.status === "running") {
-				return new Text(theme.dim(`/${item.name} …`), 1, 0).render(width);
-			}
-			if (item.status === "failed") {
-				return new Text(
-					`${theme.dim(`/${item.name}`)} ${theme.severityPaint("error")(item.error?.message ?? "command failed")}`,
-					1,
-					0,
-				).render(width);
-			}
-			if (item.display !== undefined) {
-				const display = context.toolOutputExpanded ? sanitizeTerminalText(item.display) : boundedText(item.display);
-				return new Text(`${theme.dim(`/${item.name}`)}\n${display}`, 1, 0).render(width);
-			}
-			if (item.result === undefined) return [];
-			return new Text(`${theme.dim(`/${item.name}`)}\n${formatUnknown(item.result)}`, 1, 0).render(width);
+			// Running/failed and the unregistered fallback live in the shared
+			// frame; a completed result may carry its own presenter.
+			return new Text(
+				presentCommandResult(item, Math.max(8, width - 2), { expanded: context.toolOutputExpanded }).join("\n"),
+				1,
+				0,
+			).render(width);
 		case "extension-output":
 			return new Text(
 				`${theme.dim(`[${item.extensionId}]`)} ${boundedText(item.text, { maxLines: 16, maxCharacters: 4_000 })}`,
@@ -317,9 +323,10 @@ export function renderTimelineItem(item: TimelineItem, width: number, context: T
 			// already reported its diagnostic; what remains is the built-in path.
 			const entry = renderExtensionEntry(item, width, (bodyWidth) => extensionMessageLines(item.message, bodyWidth));
 			if (entry) return entry;
-			const title = item.message.title
-				? theme.title(singleLine(item.message.title, 400))
-				: theme.dim(`[${item.extensionId}]`);
+			const title =
+				typeof item.message.title === "string" && item.message.title
+					? theme.title(singleLine(item.message.title, 400))
+					: theme.dim(`[${item.extensionId}]`);
 			const meta = theme.dim(`persistent · ${item.extensionId} · ${item.message.kind}`);
 			const body = renderExtensionMessageBody(item, usableWidth) ?? extensionMessageLines(item.message, usableWidth);
 			return new Text(`${title}  ${meta}\n\n${body.join("\n")}`, 1, 0).render(width);

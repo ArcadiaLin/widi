@@ -23,11 +23,12 @@ export interface TreeSelectorRequest {
 
 /**
  * /tree's graph navigator: the branch structure of the visible agent's session
- * drawn like the agent strip (├──/└── indentation), with a cursor over the
- * user-message rows. Confirm navigates the session to the row's entry, cancel
- * dismisses. Chrome matches the ListSelector family: rules above and below, a
- * title, and a key-hint footer. Mounting is the caller's job; the application
- * shows it through the overlay stack and wires onClose to hide that overlay.
+ * drawn like the agent strip (├──/└── indentation), with a cursor over every
+ * entry row - messages, tool calls, summaries, bookkeeping. Confirm picks the
+ * row's entry, cancel dismisses. Chrome matches the ListSelector family: rules
+ * above and below, a title, and a key-hint footer. Mounting is the caller's
+ * job: the application docks it in place of the editor through the
+ * SelectorDock and wires onClose to close that dock.
  */
 export class TreeSelector implements Component {
 	focused = false;
@@ -93,15 +94,14 @@ export class TreeSelector implements Component {
 		];
 		const rows = this.request.rows;
 		if (rows.length === 0) {
-			lines.push(theme.dim("No user messages in this session tree."));
+			lines.push(theme.dim("No entries in this session tree."));
 		} else {
 			const window = this.visibleWindow(rows.length);
-			if (window.start > 0) lines.push(theme.dim(`… ${window.start} more above`));
 			for (let index = window.start; index < window.end; index++) {
 				const row = rows[index];
 				if (row) lines.push(this.renderRow(row, index === this.cursor, width));
 			}
-			if (window.end < rows.length) lines.push(theme.dim(`… ${rows.length - window.end} more below`));
+			lines.push(theme.faint(`  (${this.cursor + 1}/${rows.length})`));
 		}
 		lines.push("", theme.dim(selectorKeyHints({ confirmLabel: "switch" })), rule);
 		return lines.map((line) => truncateToWidth(line, width, ""));
@@ -121,16 +121,48 @@ export class TreeSelector implements Component {
 	}
 
 	private renderRow(row: SessionEntryTreeRow, selected: boolean, width: number): string {
-		// Same tree-line family as the agent strip: 4-column generations, ├──/└──.
-		const prefix = row.depth === 0 ? "" : `${"    ".repeat(row.depth - 1)}${row.last ? "└── " : "├── "}`;
-		const glyph = row.current ? theme.info("●") : theme.dim("○");
-		const headline = singleLine(row.headline, 80);
+		// Same tree-line family as the agent strip: 4-column levels, ├──/└──
+		// connectors, and │ gutters where an ancestor's sibling group continues.
+		// A connector sits at the row's last level (level 0 for root groups).
+		const connectorLevel = row.connector ? Math.max(0, row.indent - 1) : -1;
+		let prefix = "";
+		for (let level = 0; level < Math.max(row.indent, connectorLevel + 1); level++) {
+			if (level === connectorLevel) prefix += row.last ? "└── " : "├── ";
+			else prefix += row.gutters[level] ? "│   " : "    ";
+		}
+		const marker = row.current ? `${theme.info("●")} ` : "";
 		const age = formatEntryAge(row.timestamp);
-		const content = `${theme.dim(prefix)}${glyph} ${row.current ? theme.bold(headline) : headline}${
-			age ? ` ${theme.dim(age)}` : ""
-		}`;
+		const content = `${theme.dim(prefix)}${marker}${this.kindText(row)}${age ? ` ${theme.dim(age)}` : ""}`;
 		const line = selected ? theme.inverse(content) : content;
 		return truncateToWidth(line, Math.max(1, width), "…");
+	}
+
+	/** pi's per-kind row text: colored role prefixes, dim bookkeeping rows. */
+	private kindText(row: SessionEntryTreeRow): string {
+		switch (row.kind) {
+			case "user":
+				return `${theme.accent("user: ")}${row.headline}`;
+			case "assistant":
+				return `${theme.ok("assistant: ")}${row.headline}`;
+			case "tool":
+				return theme.muted(row.headline);
+			case "compaction":
+				return theme.info(`[compaction: ${row.headline}]`);
+			case "branch-summary":
+				return `${theme.warn("[branch summary]: ")}${row.headline}`;
+			case "model-change":
+				return theme.dim(`[model: ${row.headline}]`);
+			case "thinking-change":
+				return theme.dim(`[thinking: ${row.headline}]`);
+			case "custom":
+				return theme.dim(`[custom: ${row.headline}]`);
+			case "custom-message":
+				return `${theme.info(`[${row.tag ?? "custom"}]: `)}${row.headline}`;
+			case "label":
+				return theme.dim(`[label: ${row.headline}]`);
+			case "session-info":
+				return theme.dim(`[title: ${row.headline}]`);
+		}
 	}
 }
 

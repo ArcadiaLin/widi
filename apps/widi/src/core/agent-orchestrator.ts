@@ -73,13 +73,14 @@ import {
 } from "./background/index.ts";
 import type { OrchestratorClient } from "./client.ts";
 import { AgentContextMonitor } from "./context-monitor.ts";
-import { type OrchestratorDiagnostic, OrchestratorError } from "./diagnostics.ts";
+import { type OrchestratorDiagnostic, OrchestratorError, validateExtensionDiagnosticDraft } from "./diagnostics.ts";
 import type { EventPublishOptions } from "./event-bus.ts";
 import { OrchestratorEventBus } from "./event-bus.ts";
 import type { ExtensionEventEnvelope } from "./extension/events.ts";
 import type { ExtensionContextActions, ExtensionCoreActions, ExtensionIdentity } from "./extension/index.ts";
 import {
 	EXTENSION_OBSERVED_EVENT_NAMES,
+	EXTENSION_TREE_BROADCAST_EVENT_NAMES,
 	ExtensionLoader,
 	ExtensionRunner,
 	freezeExtensionEventEnvelope,
@@ -87,15 +88,6 @@ import {
 	validateExtensionEventName,
 	validateExtensionEventPayload,
 } from "./extension/index.ts";
-import {
-	assertExtensionNotificationText,
-	assertExtensionOutputText,
-	assertExtensionStatusKey,
-	type ExtensionStatusSnapshot,
-	validateExtensionDiagnosticDraft,
-	validateExtensionMessage,
-	validateExtensionStatus,
-} from "./extension/presentation.ts";
 import { ExtensionStatusRegistry } from "./extension/status-registry.ts";
 import type {
 	ExtensionInterceptorEventFor,
@@ -105,11 +97,22 @@ import type {
 	ExtensionObservedEvent,
 	ExtensionSessionSnapshot,
 	ExtensionSessionTree,
+	ExtensionSpawnOrigin,
+} from "./extension/types.ts";
+import {
+	assertExtensionNotificationText,
+	assertExtensionOutputText,
+	assertExtensionStatusKey,
+	type ExtensionStatusSnapshot,
+	validateExtensionMessage,
+	validateExtensionStatus,
 } from "./extension/types.ts";
 import type {
 	AgentBrief,
 	AgentDisposeScope,
 	AgentProfileBrief,
+	AgentRequestedDisposeOptions,
+	AgentRequestedDisposeOutcome,
 	AgentSpawnOrigin,
 	AgentToOrchestratorHost,
 	AgentTreeEntry,
@@ -1087,13 +1090,24 @@ export class AgentOrchestrator {
 			// ready has nothing else to wait for.
 			await this._settleAgentIdle(agentId);
 			if (this._live.has(agentId)) {
-				await this._emit({
-					type: request.origin === "resume" ? "agent_resumed" : "agent_spawned",
-					agentId,
-					profile: request.resolvedProfile.profile,
-					model: build.liveAgent.harness.getModel(),
-					...(request.parent === undefined ? undefined : { spawnedBy: request.parent }),
-				});
+				await this._emit(
+					request.origin === "resume"
+						? {
+								type: "agent_resumed",
+								agentId,
+								profile: request.resolvedProfile.profile,
+								model: build.liveAgent.harness.getModel(),
+								...(request.parent === undefined ? undefined : { spawnedBy: request.parent }),
+							}
+						: {
+								type: "agent_spawned",
+								agentId,
+								profile: request.resolvedProfile.profile,
+								model: build.liveAgent.harness.getModel(),
+								origin: request.origin,
+								...(request.parent === undefined ? undefined : { spawnedBy: request.parent }),
+							},
+				);
 			}
 			return agentId;
 		} catch (error) {
@@ -1790,7 +1804,9 @@ export class AgentOrchestrator {
 		this._disposingHarnesses.delete(agentId);
 		await this._clearExtensionStatusesForAgent(agentId);
 		await this._humanRequests.cancelForAgent(agentId, reason);
-		this._pruneSpawnEdges(agentId);
+		// Announced before the edge is dropped, not after: the tree this agent
+		// belonged to is who the notice is for, and pruning first would resolve a
+		// disposed leaf to a tree of its own with nobody left in it.
 		await this._emit({
 			type: "agent_disposed",
 			agentId,
@@ -1798,6 +1814,7 @@ export class AgentOrchestrator {
 			...(options.reason === undefined ? undefined : { reason: options.reason }),
 			disposedAt: now(),
 		});
+		this._pruneSpawnEdges(agentId);
 	}
 
 	/**
@@ -3229,13 +3246,25 @@ export class AgentOrchestrator {
 				: event.type === "runtime_shutdown_requested"
 					? undefined
 					: event.agentId;
-		if (agentId !== undefined) {
+		if (agentId === undefined) {
+			if (event.type !== "runtime_shutdown_requested") return;
+			for (const observedAgentId of [...this._live.keys()]) {
+				await this._dispatchExtensionObservedEventForAgent(observedAgentId, event);
+			}
+			return;
+		}
+		if (!Object.hasOwn(EXTENSION_TREE_BROADCAST_EVENT_NAMES, event.type)) {
 			await this._dispatchExtensionObservedEventForAgent(agentId, event);
 			return;
 		}
-		if (event.type !== "runtime_shutdown_requested") return;
+		// An agent's tree learns that one of its own arrived, stopped, or is gone.
+		// Only live agents have runners, so a disposed subject never hears its own
+		// notice; the tree it belonged to is who the notice is for. Snapshotted
+		// because a handler may spawn or dispose while this is walking.
 		for (const observedAgentId of [...this._live.keys()]) {
-			await this._dispatchExtensionObservedEventForAgent(observedAgentId, event);
+			if (observedAgentId === agentId || this._agentsShareTree(observedAgentId, agentId)) {
+				await this._dispatchExtensionObservedEventForAgent(observedAgentId, event);
+			}
 		}
 	}
 
@@ -3256,6 +3285,20 @@ export class AgentOrchestrator {
 	 */
 	private _createExtensionCoreActions(): ExtensionCoreActions {
 		return {
+			listProfileBriefs: async () => await this._listProfileBriefs(),
+			listAgentTree: async (agentId) => await this._listAgentTree(agentId),
+			describeAgentFor: (callerAgentId, targetAgentId) => this._describeAgentForCaller(callerAgentId, targetAgentId),
+			// The extension's own agent becomes the parent, exactly as it would for a
+			// tool the agent called: the child belongs to that tree either way.
+			spawnAgentFor: async (callerAgentId, request) =>
+				await this._spawnForCaller(
+					callerAgentId,
+					toExtensionSpawnAgentOrigin(request.origin),
+					request.model,
+					request.thinkingLevel,
+				),
+			disposeAgentFor: async (callerAgentId, targetAgentId, options) =>
+				await this._disposeForCaller(callerAgentId, targetAgentId, options),
 			getAgentTools: (agentId) => this.getAgentTools(agentId),
 			setAgentTools: async (agentId, toolNames, activeToolNames) => {
 				await this.setAgentTools(agentId, toolNames, activeToolNames);
@@ -3601,48 +3644,24 @@ export class AgentOrchestrator {
 	}
 
 	/**
-	 * The caller's identity is captured here and never read from tool arguments,
-	 * so no model-controlled value can forge the sender of a message, the owner of
-	 * a job, or the settler of someone else's. Discovery and dispose scope resolve
-	 * over private runtime state for the same reason.
+	 * Bind the orchestrator's collaboration surface to one agent. Everything the
+	 * bound methods decide - who sent a message, who owns a job, which agents are
+	 * discoverable, what a dispose may reach - resolves from this `agentId` over
+	 * private runtime state, so a holder cannot ask as anyone else.
 	 */
 	private _createAgentHost(agentId: AgentId, attachment: OwnerAttachment): AgentToOrchestratorHost {
 		return {
 			agentId,
-			listProfiles: async () => {
-				const result = await this.profileRegistry.listProfiles();
-				await this._publishDiagnostics(result.diagnostics);
-				return result.profiles
-					.filter((profile) => this._isProfileEnabled(profile.id))
-					.map(
-						(profile): AgentProfileBrief => ({
-							id: profile.id,
-							label: profile.label,
-							...(profile.description === undefined ? undefined : { description: profile.description }),
-							...(profile.whenToUse === undefined ? undefined : { whenToUse: profile.whenToUse }),
-							persist: profile.persist,
-						}),
-					);
-			},
+			listProfiles: async () => await this._listProfileBriefs(),
 			// Discovery is tree-scoped, while exact ids stay runtime-wide addresses
 			// through `describe` and `sendMessage` - the deliberate soft bridge
 			// between otherwise isolated trees.
 			listAgents: async () => await this._listAgentTree(agentId),
-			describe: (targetAgentId) => {
-				const liveAgent = this._live.get(targetAgentId);
-				return liveAgent
-					? describeAgentForTools(liveAgent, this._agentWatches.get(targetAgentId) === agentId)
-					: undefined;
-			},
+			describe: (targetAgentId) => this._describeAgentForCaller(agentId, targetAgentId),
 			// The caller becomes the parent, so the child is rendered under it and
 			// swept by its subtree dispose, whichever origin its context came from.
 			spawn: async (request) =>
-				await this.spawnAgent({
-					origin: toSpawnAgentOrigin(request.origin),
-					parent: agentId,
-					...(request.model === undefined ? undefined : { model: await this._resolveModelByReference(request.model) }),
-					...(request.thinkingLevel === undefined ? undefined : { thinkingLevel: request.thinkingLevel }),
-				}),
+				await this._spawnForCaller(agentId, toSpawnAgentOrigin(request.origin), request.model, request.thinkingLevel),
 			sendMessage: async (targetAgentId, body) =>
 				await this.sendMessage(
 					{
@@ -3654,31 +3673,85 @@ export class AgentOrchestrator {
 					messageBindingFor({ kind: "agent", senderAgentId: agentId }),
 				),
 			watch: (targetAgentId, watching) => this.watchAgent(agentId, targetAgentId, watching),
-			dispose: async (targetAgentId, options) => {
-				if (!this._live.has(targetAgentId)) {
-					return { kind: this._tombstones.has(targetAgentId) ? "already_disposed" : "unknown" };
-				}
-				if (!this._agentsShareTree(agentId, targetAgentId)) {
-					return { kind: "outside_tree" };
-				}
-				const selected =
-					options.scope === "subtree" ? this._collectAgentSubtreePostOrder(targetAgentId) : [targetAgentId];
-				// An agent cannot dispose itself, directly or inside the subtree it
-				// named: the reply to this very tool call would have nowhere to land.
-				if (selected.includes(agentId)) return { kind: "self" };
-				const agentIds = await this.disposeAgent(targetAgentId, {
-					intent: "removed",
-					reason: options.reason,
-					scope: options.scope,
-				});
-				return agentIds.length > 0 ? { kind: "disposed", agentIds } : { kind: "already_disposed" };
-			},
+			dispose: async (targetAgentId, options) => await this._disposeForCaller(agentId, targetAgentId, options),
 			// The attachment's own capabilities, not an id-taking forwarder: they carry
 			// the owner and generation the job table authorizes against.
 			jobs: attachment.host,
 			requestHuman: async (request) =>
 				await this._requestHumanForAgent(agentId, { ...request, source: { kind: "agent", agentId } }),
 		};
+	}
+
+	// -----------------------------------------------------------------------
+	// Caller-scoped collaboration
+	//
+	// The bodies behind the agent host, kept here rather than inside it because
+	// they have a second holder: the extension runtime asks the same questions
+	// bound to the agent its runner belongs to. Scope and structure follow from
+	// the caller id and nothing else, which is why one implementation serves
+	// both - what differs between the two surfaces is attribution, and that is
+	// decided by whoever builds the request, not here.
+	// -----------------------------------------------------------------------
+
+	private async _listProfileBriefs(): Promise<readonly AgentProfileBrief[]> {
+		const result = await this.profileRegistry.listProfiles();
+		await this._publishDiagnostics(result.diagnostics);
+		return result.profiles
+			.filter((profile) => this._isProfileEnabled(profile.id))
+			.map(
+				(profile): AgentProfileBrief => ({
+					id: profile.id,
+					label: profile.label,
+					...(profile.description === undefined ? undefined : { description: profile.description }),
+					...(profile.whenToUse === undefined ? undefined : { whenToUse: profile.whenToUse }),
+					persist: profile.persist,
+				}),
+			);
+	}
+
+	private _describeAgentForCaller(callerAgentId: AgentId, targetAgentId: AgentId): AgentBrief | undefined {
+		const liveAgent = this._live.get(targetAgentId);
+		return liveAgent
+			? describeAgentForTools(liveAgent, this._agentWatches.get(targetAgentId) === callerAgentId)
+			: undefined;
+	}
+
+	private async _spawnForCaller(
+		callerAgentId: AgentId,
+		origin: SpawnAgentOrigin,
+		model: string | undefined,
+		thinkingLevel: ThinkingLevel | undefined,
+	): Promise<AgentId> {
+		return await this.spawnAgent({
+			origin,
+			parent: callerAgentId,
+			...(model === undefined ? undefined : { model: await this._resolveModelByReference(model) }),
+			...(thinkingLevel === undefined ? undefined : { thinkingLevel }),
+		});
+	}
+
+	private async _disposeForCaller(
+		callerAgentId: AgentId,
+		targetAgentId: AgentId,
+		options: AgentRequestedDisposeOptions,
+	): Promise<AgentRequestedDisposeOutcome> {
+		if (!this._live.has(targetAgentId)) {
+			return { kind: this._tombstones.has(targetAgentId) ? "already_disposed" : "unknown" };
+		}
+		if (!this._agentsShareTree(callerAgentId, targetAgentId)) {
+			return { kind: "outside_tree" };
+		}
+		const selected = options.scope === "subtree" ? this._collectAgentSubtreePostOrder(targetAgentId) : [targetAgentId];
+		// A caller cannot dispose the agent it is bound to, directly or inside the
+		// subtree it named: the runtime being torn down is the one that would have
+		// to receive this call's result.
+		if (selected.includes(callerAgentId)) return { kind: "self" };
+		const agentIds = await this.disposeAgent(targetAgentId, {
+			intent: "removed",
+			reason: options.reason,
+			scope: options.scope,
+		});
+		return agentIds.length > 0 ? { kind: "disposed", agentIds } : { kind: "already_disposed" };
 	}
 
 	// -----------------------------------------------------------------------
@@ -4496,13 +4569,41 @@ function describeAgentForTools(liveAgent: LiveAgent, watchedByCaller: boolean): 
 
 /**
  * Widen a host origin into the orchestrator's own. The two differ only in what
- * a `new` origin may carry: the host form has no profile override, which is
- * what keeps an agent from choosing its child's tools.
+ * a `new` origin may carry: the host form has no profile override, so an agent
+ * chooses its child's role from the profile directory rather than assembling
+ * one out of fields.
  */
 function toSpawnAgentOrigin(origin: AgentSpawnOrigin): SpawnAgentOrigin {
 	switch (origin.kind) {
 		case "new":
 			return { kind: "new", ...(origin.profileId === undefined ? undefined : { profileId: origin.profileId }) };
+		case "resume":
+			return { kind: "resume", reference: origin.reference };
+		case "fork":
+			return {
+				kind: "fork",
+				sourceAgentId: origin.sourceAgentId,
+				...(origin.entryId === undefined ? undefined : { entryId: origin.entryId }),
+			};
+	}
+}
+
+/**
+ * Widen an extension origin into the orchestrator's own. It carries the profile
+ * override an agent's does not: an extension is installed code, so building a
+ * role out of fields is a decision the installation already made.
+ *
+ * `resume` narrows the other way - a ref string, never a `PersistedSessionInfo`
+ * - because refs are what the extension session API hands out.
+ */
+function toExtensionSpawnAgentOrigin(origin: ExtensionSpawnOrigin): SpawnAgentOrigin {
+	switch (origin.kind) {
+		case "new":
+			return {
+				kind: "new",
+				...(origin.profileId === undefined ? undefined : { profileId: origin.profileId }),
+				...(origin.profileOverride === undefined ? undefined : { profileOverride: origin.profileOverride }),
+			};
 		case "resume":
 			return { kind: "resume", reference: origin.reference };
 		case "fork":

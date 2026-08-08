@@ -72,7 +72,22 @@ extension 的 `input` 拦截器作用于语义 body（`transformMessage` 返回 
 
 拦截器名单（`ExtensionInterceptorName`）：`before_agent_start | before_provider_request | context | input | tool_call | tool_result`。除 `input` 外复用 pi harness 的事件与结果类型；`input` 是 WIDI 自有，结果为放行 / 替换 / 阻断三态，阻断短路整条管线。
 
-观察事件名单（`ExtensionObservedEvent`）：`agent_spawned | agent_resumed | agent_idle | agent_session_forked | agent_session_info_changed | agent_harness_event | agent_background_job_changed | agent_background_job_progress | agent_background_job_report_updated | agent_context_usage_changed | human_request_pending | human_request_resolved | human_request_timeout | human_request_cancelled | input_blocked | input_transformed | diagnostic | runtime_shutdown_requested`。诊断与 extension 自产事件不回流 observer（orchestrator 用 AsyncLocalStorage 标记 extension 引起的写入，防止扩展收到自己触发的事件而互答死循环；runtime 级 `emitExtensionEvent` 另有派发深度上限 8）。
+观察事件名单（`ExtensionObservedEvent`）：`agent_spawned | agent_resumed | agent_disposed | agent_status_changed | agent_idle | agent_session_forked | agent_session_info_changed | agent_persistence_ref_changed | agent_harness_event | agent_background_job_changed | agent_background_job_progress | agent_background_job_report_updated | agent_context_usage_changed | human_request_pending | human_request_resolved | human_request_timeout | human_request_cancelled | input_blocked | input_transformed | diagnostic | runtime_shutdown_requested`。诊断与 extension 自产事件不回流 observer（orchestrator 用 AsyncLocalStorage 标记 extension 引起的写入，防止扩展收到自己触发的事件而互答死循环；runtime 级 `emitExtensionEvent` 另有派发深度上限 8）。
+
+### 事件的作用域
+
+事件按主体 agent 派发（`_dispatchExtensionObservedEvent`），分两档：
+
+- **树内广播**（`EXTENSION_TREE_BROADCAST_EVENT_NAMES`）：`agent_spawned | agent_resumed | agent_disposed | agent_idle | agent_status_changed`。同一棵 agent 树里每个扩展都收到。这几条是「持有别的 agent 的 id」这件事的前提——不知道它何时到达、何时停止、何时消失，跨 agent 能力就无从用起。低频，每轮至多几条。
+- **只给主体 agent**：其余全部。最要紧的是 `agent_harness_event`——它是逐轮的原始事件流，订阅它的人说的是「我这一轮」；跨 agent 广播既会放大 N×M，也会改变它的含义。
+
+代价可接受：`emitObserved` 对没注册该事件的 runner 是一次 map 查找就返回；`_agentsShareTree` 是两次父指针走到根。
+
+三条必须知道的事实：
+
+1. **`agent_disposed` 在剪边之前发出。** `_pruneSpawnEdges` 会删掉已销毁叶子的父边，先剪再发就会把它解析成一棵只剩它自己的树，广播找不到任何人。所以顺序是先发后剪。被销毁的 agent 自己收不到这条——它的 runner 已经不在 `_live` 里了，这条通知是给它所属的那棵树的。
+2. **到达顺序不保证。** `_publishAgentActivityEdge` 发出到达边沿、`_recap` 写入、`_settleAgentIdle` 发出 `ready` idle，三者都排在 `agent_spawned` 之前。所以观察者可能先看到某个陌生 id 的 `agent_status_changed` 或 `agent_idle`，再看到它的 `agent_spawned`。扩展必须容忍陌生 id。
+3. **`agent_spawned` 带 `origin: "new" | "fork"`。** resume 单独走 `agent_resumed`。fork 值得单独分辨：它继承了一棵不属于自己的 spawn tree，树里每个 agent 都会拒绝它的消息与 dispose。
 
 ### Presentation 能力
 
@@ -91,49 +106,59 @@ extension 可以把状态交给会话历史管理：`ExtensionSessionContext.app
 
 `ExtensionLoader` 负责发现（`ExtensionRoot`：`agent_dir | cwd | settings`）、注册（`registerExtension(extensionId, module)`）、加载与重载。`reloadExtensions({ agentIds? })` 按 agent 报告 `reloaded | skipped | failed`（跳过原因：`creating | running | gone`）；重载时整代注销旧 harness 拦截器再装新。
 
-### 能力缺口
+### 跨 agent 能力
 
-以下是 core 有、`ExtensionActions` 没有的能力。记在这里是因为它们各自有明确的理由或明确的待办，不是遗漏清单——每条都注明是有意的边界还是欠的账。
+extension 拿到与 agent host 同名的五个方法，作用域与结构由「扩展绑在哪个 agent 上」唯一确定：`listProfiles`、`listAgents`（本树）、`describeAgent`（runtime 全域寻址）、`spawnAgent`（挂在本 agent 下）、`disposeAgent`（同树，拒绝含自身的选择）。消息不另开方法，`ExtensionSendOptions.target` 让四条注入路径都能打到别的 agent。
 
-**跨 agent 面（有意，但边界待定）**
+底下的实现只有一份：`_listProfileBriefs` / `_listAgentTree` / `_describeAgentForCaller` / `_spawnForCaller` / `_disposeForCaller` 是 orchestrator 的私有方法，agent host 和 `ExtensionCoreActions` 各自薄薄地包一层。两个面的差别不在逻辑，在**归属**——host 说话算 agent，extension 说话算 extension，而归属由构造请求的那一方决定，不由这几个方法决定。
 
-`ExtensionActions` 的注释写死了「Cross-agent operations are not part of this contract」。extension 拿不到 `listProfiles` / `listAgents` / `describe` / `spawn` / `watch` / `dispose`，`prompt`/`steer`/`followUp` 全部绑死在自己那个 agent 上。
+三条刻意的差异：
 
-但它**能观测** `agent_spawned` 和 `agent_idle`。自从 agent 停止上报改为运行时观测 idle 边沿（见 `host.ts` 的 `watch`），`agent_idle` 就是那套机制真正的触发点——extension 看得见这条边沿，却没有任何手段订阅或寻址。
+- **`spawnAgent` 的 origin 更宽。** `ExtensionSpawnOrigin` 带 `profileOverride`，可以拿字段拼出一个 profile 目录里没有的角色；agent host 的 origin 没有这个字段，agent 只能从目录里挑。扩展是运维装进来的代码，拼角色是安装时就已经做过的决定。
+- **不给 `watch`。** 它相对于观测 `agent_idle` 只多出「独占」（一次停止只有一个读者）和「投递进某个 agent 的上下文」，扩展两样都用不上——它没有 turn 循环，叫不醒。更要紧的是 `_agentHoldsWatches`：持有 watch 的 agent 不再发自己的 idle 通知，所以扩展代表宿主 agent 去 watch 别人，等于悄悄废掉宿主的上报，它的 owner 再也不知道它停了。
+- **不给 `BackgroundJobHost`。** 扩展现有的 `listJobs` / `readJobOutput` / `killJob` 是观测侧；起后台任务是创建侧，另行决定。
 
-管道其实已经铺好：`ExtensionCoreActions.messageSinkFor(extensionId)` 的 sink 把 target 挂在 request 上，一个 sink 服务所有目标。所以这不是「做不了」，是**跨 agent 的授权边界还没定**——一个扩展能对别人的 agent 做什么，需要先有答案。
+### `precede`
 
-**`precede` 投递模式（欠账）**
+`MessageDeliveryMode` 三态现在扩展都够得到：`prompt`/`followUp` 走 `next_turn`，`steer` 走 `interrupt`，`precede` 走 `precede`。
 
-`MessageDeliveryMode` 三态里 extension 只映射到两个：`prompt`/`followUp` 走 `next_turn`，`steer` 走 `interrupt`。`precede` 够不到。
+`precede` 与另外三个的差别是实质的：`decideMessageDelivery` 里它单独短路成 `append`，是**唯一一个不过 phase 闸门的方法**——不会被拒绝、不会被 defer、不进任何队列，也不唤醒目标。而 `next_turn` 打到一个 idle 的 agent 会被判成 `prompt`，直接起一轮。
 
-这条差别是实质的。`decideMessageDelivery` 里 `precede` 单独短路成 `append`——唯一不过 phase 闸门、也不唤醒目标的方法；而 `next_turn` 打到一个 idle 的 agent 会被判成 `prompt`，**直接起一轮**。
+落点要分清：接受不等于可见。harness 把写入缓冲在正在跑的操作之后，落在那次操作的 save point，下一轮读分支时才随其余条目一起进入上下文。它不会在 turn 中途插进模型上下文。
 
-后果：extension 没有「模型可读 + 不唤醒 + 落分支」这条通道。`appendEntry` / `publishMessage` 确实落盘，但明确不进模型上下文。想给一个刚 resume 的 agent 铺垫上下文，只能在「把它叫醒」和「写在模型看不见的地方」之间选。
+这是扩展第一次拿到「模型可读 + 不唤醒 + 落分支」这条通道。`appendEntry` / `publishMessage` 确实落盘，但明确不进模型上下文。
 
-开这条口之前要想清楚：`precede` 不受 phase 约束，等于允许扩展往正在跑的分支上追加模型可读文本，权限强于它现有的任何一个方法。
+**recap 机制随之可自建。** recap 实质是三件事：读分支、比对还欠什么、不唤醒地写进模型上下文。extension 现在三件都有——`session.getTree()` 返回的就是 `collect` 的入参类型，`findEntries` 的私有命名空间做幂等比 core 把 id 编进 `MessageSource.details` 还干净，写入就是 `precede`。`RecapDefinition` / `selectOwedRecap` 是否还要导出到 `extension/api.ts`，取决于 recap 定位成 core 内部机制还是公开原语，未定。
 
-**recap 机制（未定）**
+**扩展工具可以参与 recap（已开放）。** `readAgentBranchFacts` 定义在 `ToolDefinition` 上，而 extension 贡献的正是 `ToolDefinition`。所以一个由扩展提供、会创建 agent 的工具可以声明自己的 branch reader，core 的 spawn-tree recap 会认。这是依赖反转的顺带结果，不是刻意设计——写在这里以免被误撞发现。
 
-`RecapDefinition` / `selectOwedRecap` 没有导出到 `extension/api.ts`。recap 实质是三件事：读分支、比对还欠什么、不唤醒地写进模型上下文。extension 有前两件——`session.getTree()` 返回的就是 `collect` 的入参类型，`findEntries` 的私有命名空间做幂等比 core 把 id 编进 `MessageSource.details` 还干净——只缺第三件，即上面那条 `precede`。
-
-给了 `precede` 之后是否还要把机制本身导出，取决于 recap 定位成 core 内部机制还是公开原语。
-
-**可路由之前的钩子（未定）**
-
-`_buildLiveAgent` 里 `bindCore` 是最后一步，所以 `activate()` 阶段 actions 未绑，什么都做不了。最早的可操作点是 `agent_spawned` / `agent_resumed` observer，那时 core 的 recap 已经写完、`ready` idle 已经发过。observer 是被 `await` 的（`event-bus.ts`），所以扩展的写入仍在 `spawnAgent()` 返回前落地，不会和第一次人类输入抢跑——但它只能追加在 core 之后，无法先于或替换 core 的行为。
-
-**扩展工具可以参与 recap（已开放，需明示）**
-
-`readAgentBranchFacts` 定义在 `ToolDefinition` 上，而 extension 贡献的正是 `ToolDefinition`。所以一个由扩展提供、会创建 agent 的工具，可以声明自己的 branch reader，core 的 spawn-tree recap 会认。这是依赖反转的顺带结果，不是刻意设计——写在这里以免被误撞发现。
-
-### 已知隔离缺陷
+### 有意的越权面
 
 `ExtensionSendOptions.source` 被原样透传（含 `details`），消息落盘时成为条目的 `details.source`；而 `recapEntryIds` 只凭 `source.kind === "recap"` 加 `details.recap` 判定一条 recap 是否已给过。
 
 于是扩展可以发一条 `source: { kind: "recap", details: { recap: "spawn_tree", ids: [...] } }` 的消息，让 core 自己对这些 id 的 recap 永久闭嘴。
 
-`source` 的注释说它「A label, not a capability」——就投递策略而言成立，但 recap 命名空间是 core 会**读回来做判断**的，那它就不止是标签。修的方向是让 core 保留的 `kind` 不可被请求方冒充。开放 `precede` 之前应先堵上这个。
+**这是允许的，不是待修的缺陷。** core 保留的 `kind` 不做校验，扩展可以借此接管或压制 core 的某类 recap。代价是 recap 命名空间从此是共享的：排查「core 的 recap 不出现了」，第一步查扩展，不是查 core。
+
+### 剩余缺口
+
+**可路由之前的钩子（未定）**
+
+`_buildLiveAgent` 里 `bindCore` 是最后一步，所以 `activate()` 阶段 actions 未绑，什么都做不了。最早的可操作点是 `agent_spawned` / `agent_resumed` observer，那时 core 的 recap 已经写完、`ready` idle 已经发过。observer 是被 `await` 的（`event-bus.ts`），所以扩展的写入仍在 `spawnAgent()` 返回前落地，不会和第一次人类输入抢跑——但它只能追加在 core 之后，无法先于或替换 core 的行为。
+
+生命周期级**拦截器**（`before_agent_spawn` 之类）是明确不做的，不是漏做：一旦存在就要回答「否决一次 spawn 之后，发起方看到什么」，而发起方多半是一次 tool call，那就变成 tool 结果语义的问题，比事件面大得多。想控制 spawn 的扩展可以用 `setActiveTools` 关掉 core 的 spawn 工具、自己接管，这比否决权更直接，也不引入新的失败语义。
+
+**runtime 级 extension（未做，方向记录）**
+
+现在的模型是「模块级单例 + 每 agent 一次激活」：`loadAvailableExtensions` 只 import 一次、存下 factory，`loadForAgent` 对每个 agent 调一次 `factory(...)`，observers / interceptors / tools / providers / systemPrompt 追加全部落进那个 agent 的 scope。
+
+per-agent 这层是对的——profile 决定装哪些扩展、division 按 agent 选、五个拦截器天然只在某个 agent 的 turn 循环里有意义、工具和 prompt 追加本来就属于某个 agent 的注册表。缺的是它**上面**那层，证据有三条：
+
+1. `emitExtensionEvent` 的注释自己写着「同一扩展在不同 agent 的两个实例之间协调是一等场景」——一条 runtime 级总线被加进来，专门缝合 per-agent 切开的东西。
+2. 20 个 agent 就跑 20 次 `factory()`，任何昂贵的初始化重复 20 遍。
+3. 想持有 runtime 级资源（一个连接、一个索引）只能塞进模块作用域——能跑，但 core 完全看不见：没有生命周期、没有诊断、没有 dispose。
+
+方向是加第二层而不是推翻第一层，形状与 TUI 的双入口一致：一个模块两个 host，`default` 导出 per-agent 半（原封不动），另一个具名导出 per-orchestrator 半，拿全量事件与 runtime 生命周期，不拿拦截器、工具与 presentation。
 
 ## 5. 客户端、事件与诊断
 

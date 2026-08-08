@@ -26,14 +26,27 @@ export function isSupportedExtensionApiVersion(version: number): boolean {
 }
 
 export type { JsonValue } from "../../utils/json.ts";
-export type { AgentProfileReference } from "../agent-profile.js";
+export type { AgentProfile, AgentProfileOverride, AgentProfileReference } from "../agent-profile.js";
 // WIDI core types named in author-facing signatures are re-exported here so
 // a third-party extension never imports core internals directly.
 export type {
 	BackgroundJobReport,
 	BackgroundJobReportSnapshot,
 } from "../background/index.ts";
-export type { CoreDiagnostic } from "../diagnostics.ts";
+export type { CoreDiagnostic, ExtensionDiagnosticDraft } from "../diagnostics.ts";
+// The cross-agent vocabulary, shared with the agent host: what a profile looks
+// like in a listing, what a live agent looks like, and what a tree walk returns.
+export type {
+	AgentBrief,
+	AgentDisposeScope,
+	AgentProfileBrief,
+	AgentRequestedDisposeOptions,
+	AgentRequestedDisposeOutcome,
+	AgentTreeClosedEntry,
+	AgentTreeEntry,
+	AgentTreeListing,
+	AgentTreeRunningEntry,
+} from "../host.ts";
 export type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
 export type {
 	AgentContextUsage,
@@ -46,25 +59,9 @@ export {
 	MAX_EXTENSION_EVENT_NAME_BYTES,
 	MAX_EXTENSION_EVENT_PAYLOAD_BYTES,
 } from "./events.ts";
-export type {
-	ExtensionBannerMessage,
-	ExtensionCodeMessage,
-	ExtensionDiagnosticDraft,
-	ExtensionDiffMessage,
-	ExtensionFieldsMessage,
-	ExtensionMessage,
-	ExtensionMessageField,
-	ExtensionMessageKind,
-	ExtensionStatus,
-	ExtensionStatusProgress,
-	ExtensionStatusRegion,
-	ExtensionStatusSnapshot,
-	ExtensionTableAlignment,
-	ExtensionTableColumn,
-	ExtensionTableMessage,
-	ExtensionTextMessage,
-	ExtensionTone,
-} from "./presentation.ts";
+// A published message is a `kind` plus opaque JSON. The shapes behind a kind
+// are a contract between an extension and whoever renders it, so they live with
+// the renderer, not here.
 export type {
 	BackgroundJobExecutionContext,
 	BackgroundJobReportAdapter,
@@ -84,6 +81,7 @@ export type {
 	ExtensionInterceptorFor,
 	ExtensionInterceptorName,
 	ExtensionInterceptorResultFor,
+	ExtensionMessage,
 	ExtensionModule,
 	ExtensionObservedEvent,
 	ExtensionObservedEventFor,
@@ -96,6 +94,10 @@ export type {
 	ExtensionSessionContext,
 	ExtensionSessionSnapshot,
 	ExtensionSessionTree,
+	ExtensionSpawnOrigin,
+	ExtensionSpawnRequest,
+	ExtensionStatus,
+	ExtensionStatusSnapshot,
 	ToolDefinition,
 	ToolDefinitionPatch,
 	ToolExecute,
@@ -103,4 +105,16 @@ export type {
 	ToolExecutionContext,
 	ToolExtensionContext,
 	ToolSource,
+} from "./types.ts";
+export {
+	MAX_EXTENSION_MESSAGE_BYTES,
+	MAX_EXTENSION_MESSAGE_KIND_BYTES,
+	MAX_EXTENSION_NOTIFICATION_BYTES,
+	MAX_EXTENSION_OUTPUT_BYTES,
+	MAX_EXTENSION_STATUS_BYTES,
+	MAX_EXTENSION_STATUS_KEY_BYTES,
+	// The admission checks, exported so a client reading a message back off a
+	// branch runs the same one core ran to admit it.
+	validateExtensionMessage,
+	validateExtensionStatus,
 } from "./types.ts";

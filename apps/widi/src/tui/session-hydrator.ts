@@ -1,7 +1,6 @@
 import type { AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { SessionTreeEntry } from "@widi/agent-core";
-import type { ExtensionMessage } from "../core/extension/api.ts";
-import { validateExtensionMessage } from "../core/extension/presentation.ts";
+import { type ExtensionMessage, validateExtensionMessage } from "../core/extension/api.ts";
 import type { MessageEntryDetails } from "../core/message.ts";
 import {
 	EXTENSION_MESSAGE_CUSTOM_TYPE,
@@ -277,9 +276,9 @@ function isInputTransformData(data: unknown): data is InputTransformEntryData {
 
 /**
  * Read a persisted extension message back through the same validator that
- * admitted it. A hand-written shape check here would have to enumerate the
- * message kinds a second time, and a kind it failed to learn about would be
- * dropped silently: fine live, gone after a restart.
+ * admitted it: a bounded, detached value carrying a kind. What that kind means
+ * is decided later, at render time, where a shape this build cannot draw
+ * degrades to the frame's header instead of disappearing from the timeline.
  */
 function parseExtensionMessageData(data: unknown): ExtensionMessageEntryData | undefined {
 	if (!isRecord(data) || typeof data.extensionId !== "string") return undefined;

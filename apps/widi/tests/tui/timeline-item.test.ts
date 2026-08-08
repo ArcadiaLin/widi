@@ -1,6 +1,6 @@
 import { setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
-import type { ExtensionMessage } from "../../src/core/extension/presentation.ts";
+import type { ExtensionMessage } from "../../src/core/extension/api.ts";
 import { EXTENSION_MESSAGE_CUSTOM_TYPE } from "../../src/core/session-manager.ts";
 import { renderDeps, renderTimelineItem, type TimelineRenderContext } from "../../src/tui/components/timeline-item.ts";
 import { SPINNER_FRAMES } from "../../src/tui/format.ts";

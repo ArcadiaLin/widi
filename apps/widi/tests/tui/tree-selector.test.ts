@@ -8,9 +8,10 @@ import type { AgentSessionTreeSnapshot } from "../../src/core/session-manager.ts
 import { WidiTuiApplication } from "../../src/tui/application.ts";
 import { switchedAgentId } from "../../src/tui/commands/engine.ts";
 import { OperationHintView } from "../../src/tui/components/operation-hint.ts";
-import { WidiEditor } from "../../src/tui/editor.ts";
+import type { WidiEditor } from "../../src/tui/editor.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
-import type { OverlayStack } from "../../src/tui/layout/overlay-stack.ts";
+import type { SelectorDock } from "../../src/tui/selectors/dock.ts";
+import { TreeNavigationSelector } from "../../src/tui/selectors/tree-navigation.ts";
 import { TreeSelector } from "../../src/tui/selectors/tree-selector.ts";
 import { buildSessionEntryRows, type SessionEntryTreeRow } from "../../src/tui/session-tree.ts";
 import { ensureAgentProjection } from "../../src/tui/state.ts";
@@ -74,7 +75,7 @@ function branchRows(): SessionEntryTreeRow[] {
 	return buildSessionEntryRows(branchSnapshot());
 }
 
-function plainRender(selector: TreeSelector, width = 80): string {
+function plainRender(selector: TreeSelector | TreeNavigationSelector, width = 80): string {
 	return selector.render(width).join("\n").replace(ANSI_SEQUENCE, "");
 }
 
@@ -87,16 +88,19 @@ describe("TreeSelector", () => {
 		const rendered = plainRender(selector);
 		expect(rendered).toContain("─");
 		expect(rendered).toContain("/tree");
-		expect(rendered).toContain("○ first question 7d");
-		expect(rendered).toContain("├── ○ follow up 7d");
-		expect(rendered).toContain("└── ● new branch 7d");
+		expect(rendered).toContain("user: first question 7d");
+		expect(rendered).toContain("assistant: (no content) 7d");
+		expect(rendered).toContain("├── user: follow up 7d");
+		expect(rendered).toContain("└── user: new branch 7d");
+		expect(rendered).toContain("● assistant: (no content) 7d");
+		expect(rendered).toContain("(6/6)");
 		expect(rendered).toContain("navigate");
 		expect(rendered).toContain("Enter switch");
 		expect(rendered).toContain("Esc cancel");
-		expect(selector.hintContext).toEqual({ title: "/tree", confirmVerb: "switch", itemCount: 3 });
+		expect(selector.hintContext).toEqual({ title: "/tree", confirmVerb: "switch", itemCount: 6 });
 	});
 
-	it("renders a single chain without branch markers at the root", () => {
+	it("renders a single chain flat, without connectors or drift", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(NOW);
 		const rows = buildSessionEntryRows(
@@ -108,26 +112,108 @@ describe("TreeSelector", () => {
 		const selector = new TreeSelector({ title: "/tree", rows, onSelect: () => {}, onClose: () => {} });
 
 		const rendered = plainRender(selector);
-		expect(rendered).toContain("○ first question 7d");
-		expect(rendered).toContain("└── ● follow up 7d");
+		expect(rendered).toContain("user: first question 7d");
+		expect(rendered).toContain("assistant: (no content) 7d");
+		expect(rendered).toContain("● user: follow up 7d");
+		expect(rendered).toContain("(3/3)");
 		expect(rendered).not.toContain("├──");
+		expect(rendered).not.toContain("└──");
+	});
+
+	it("renders a gutter below a branching row and keeps the chain flat", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(NOW);
+		const rows = buildSessionEntryRows(
+			snapshot(
+				[
+					userEntry("u1", null, "root"),
+					assistantEntry("a1", "u1"),
+					userEntry("u2", "a1", "branch one"),
+					userEntry("u3", "a1", "branch two"),
+					assistantEntry("a2", "u2"),
+					userEntry("u4", "a2", "branch one follow up"),
+					assistantEntry("a4", "u4"),
+					userEntry("u5", "a4", "branch one later"),
+				],
+				"u3",
+			),
+		);
+		const selector = new TreeSelector({ title: "/tree", rows, onSelect: () => {}, onClose: () => {} });
+
+		const rendered = plainRender(selector);
+		expect(rendered).toContain("├── user: branch one 7d");
+		expect(rendered).toContain("│       assistant: (no content) 7d");
+		expect(rendered).toContain("│       user: branch one follow up 7d");
+		expect(rendered).toContain("│       user: branch one later 7d");
+		expect(rendered).toContain("└── ● user: branch two 7d");
+	});
+
+	it("renders tool calls and branch summaries with their own labels", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(NOW);
+		const entries: SessionTreeEntry[] = [
+			userEntry("u1", null, "question"),
+			{
+				type: "message",
+				id: "a1",
+				parentId: "u1",
+				timestamp: TIMESTAMP,
+				message: {
+					role: "assistant",
+					content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "README.md" } }],
+				} as unknown as MessageEntry["message"],
+			},
+			{
+				type: "message",
+				id: "t1",
+				parentId: "a1",
+				timestamp: TIMESTAMP,
+				message: {
+					role: "toolResult",
+					toolCallId: "call-1",
+					toolName: "read",
+					content: [],
+				} as unknown as MessageEntry["message"],
+			},
+			{
+				type: "branch_summary",
+				id: "s1",
+				parentId: "t1",
+				timestamp: TIMESTAMP,
+				fromId: "u1",
+				summary: "where the abandoned branch went",
+			} as unknown as SessionTreeEntry,
+		];
+		const rows = buildSessionEntryRows(snapshot(entries, "s1"));
+		const selector = new TreeSelector({ title: "/tree", rows, onSelect: () => {}, onClose: () => {} });
+
+		const rendered = plainRender(selector);
+		expect(rendered).toContain("[read: README.md]");
+		expect(rendered).toContain("[branch summary]: where the abandoned branch went");
 	});
 
 	it("renders an empty tree as a notice, not a dead list", () => {
 		const selector = new TreeSelector({ title: "/tree", rows: [], onSelect: () => {}, onClose: () => {} });
 
-		expect(plainRender(selector)).toContain("No user messages in this session tree.");
+		expect(plainRender(selector)).toContain("No entries in this session tree.");
 		expect(selector.cursorEntryId).toBeUndefined();
 	});
 
 	it("opens with the cursor on the current row and clamps at both ends", () => {
 		const selector = new TreeSelector({ title: "/tree", rows: branchRows(), onSelect: () => {}, onClose: () => {} });
 
-		expect(selector.cursorEntryId).toBe("u3");
+		// The leaf is the a3 assistant entry, so the cursor starts on its row.
+		expect(selector.cursorEntryId).toBe("a3");
 		selector.handleInput(DOWN);
+		expect(selector.cursorEntryId).toBe("a3");
+		selector.handleInput(UP);
 		expect(selector.cursorEntryId).toBe("u3");
 		selector.handleInput(UP);
+		expect(selector.cursorEntryId).toBe("a2");
+		selector.handleInput(UP);
 		expect(selector.cursorEntryId).toBe("u2");
+		selector.handleInput(UP);
+		expect(selector.cursorEntryId).toBe("a1");
 		selector.handleInput(UP);
 		expect(selector.cursorEntryId).toBe("u1");
 		selector.handleInput(UP);
@@ -159,7 +245,7 @@ describe("TreeSelector", () => {
 		selector.handleInput(ENTER);
 
 		// onClose runs first so a re-opened selector is not torn down by it.
-		expect(calls).toEqual(["close", "select:u2"]);
+		expect(calls).toEqual(["close", "select:u3"]);
 		expect(selector.render(80)).toEqual([]);
 		expect(selector.hintContext).toBeUndefined();
 	});
@@ -188,7 +274,7 @@ describe("TreeSelector", () => {
 
 		selector.handleInput("k");
 
-		expect(selector.cursorEntryId).toBe("u2");
+		expect(selector.cursorEntryId).toBe("u3");
 	});
 
 	it("ignores input after closing", () => {
@@ -203,10 +289,10 @@ describe("TreeSelector", () => {
 
 		selector.handleInput(ENTER);
 
-		expect(selected).toEqual(["u3"]);
+		expect(selected).toEqual(["a3"]);
 	});
 
-	it("scrolls the window once the cursor leaves it", () => {
+	it("keeps the cursor position in the counter as the window scrolls", () => {
 		const entries: SessionTreeEntry[] = [];
 		let parentId: string | null = null;
 		for (let index = 0; index < 15; index++) {
@@ -220,24 +306,25 @@ describe("TreeSelector", () => {
 
 		expect(selector.cursorEntryId).toBe("u12");
 		const rendered = plainRender(selector);
-		expect(rendered).toContain("… 3 more above");
-		expect(rendered).toContain("… 2 more below");
+		expect(rendered).toContain("(13/15)");
+		expect(rendered).not.toContain("user: question 2 ");
+		expect(rendered).not.toContain("user: question 13");
 	});
 });
 
 describe("WidiTuiApplication /tree selector", () => {
-	it("opens the graph selector as an overlay on a bare /tree", async () => {
+	it("opens the graph selector docked in the editor's place on a bare /tree", async () => {
 		const { application } = await createApplication();
 
 		await submit(application, "/tree");
 
 		expect(application.state.mode).toBe("selector");
-		expect(application.tui.hasOverlay()).toBe(true);
-		const selector = requireTreeSelector(application);
+		expect(application.tui.hasOverlay()).toBe(false);
+		const selector = requireTreeNavigation(application);
 		const rendered = plainRender(selector);
-		expect(rendered).toContain("├── ○ follow up");
-		expect(rendered).toContain("└── ● new branch");
-		expect(selector.hintContext).toEqual({ title: "/tree", confirmVerb: "switch", itemCount: 3 });
+		expect(rendered).toContain("├── user: follow up");
+		expect(rendered).toContain("└── user: new branch");
+		expect(selector.hintContext).toEqual({ title: "/tree", confirmVerb: "switch", itemCount: 6 });
 	});
 
 	it("feeds the open graph selector into the operation hint", async () => {
@@ -257,12 +344,17 @@ describe("WidiTuiApplication /tree selector", () => {
 		const { application } = await createApplication({ navigateAgentTree });
 
 		await submit(application, "/tree");
-		const selector = requireTreeSelector(application);
+		const selector = requireTreeNavigation(application);
+		// Cursor opens on the leaf row a3: three ups reach u2.
 		selector.handleInput(UP);
+		selector.handleInput(UP);
+		selector.handleInput(UP);
+		selector.handleInput(ENTER);
+		// The summarize step opens; the default "No summary" is confirmed.
 		selector.handleInput(ENTER);
 		await flush();
 
-		expect(navigateAgentTree).toHaveBeenCalledWith("agent-1", "u2");
+		expect(navigateAgentTree).toHaveBeenCalledWith("agent-1", "u2", undefined);
 		// Tree navigation moves the session, not the agent: no fork/resume-style
 		// agent switch fires for it.
 		expect(switchedAgentId({ kind: "executed", commandId: "c1", name: "tree", value: { cancelled: false } })).toBe(
@@ -273,6 +365,178 @@ describe("WidiTuiApplication /tree selector", () => {
 		expect(application.tui.hasOverlay()).toBe(false);
 	});
 
+	it("passes the summarize choice through to the navigation", async () => {
+		const navigateAgentTree = vi.fn(async () => ({ cancelled: false, summaryEntry: { type: "branch_summary" } }));
+		const { application } = await createApplication({ navigateAgentTree });
+
+		await submit(application, "/tree");
+		const selector = requireTreeNavigation(application);
+		selector.handleInput(UP);
+		selector.handleInput(ENTER);
+		selector.handleInput(DOWN);
+		selector.handleInput(ENTER);
+		await flush();
+
+		expect(navigateAgentTree).toHaveBeenCalledWith("agent-1", "u3", { summarize: true });
+	});
+
+	it("collects custom summarization instructions through the input step", async () => {
+		const navigateAgentTree = vi.fn(async () => ({ cancelled: false }));
+		const { application } = await createApplication({ navigateAgentTree });
+
+		await submit(application, "/tree");
+		const selector = requireTreeNavigation(application);
+		selector.handleInput(UP);
+		selector.handleInput(ENTER);
+		// Third summary choice: "Summarize with custom prompt".
+		selector.handleInput(DOWN);
+		selector.handleInput(DOWN);
+		selector.handleInput(ENTER);
+
+		expect(plainRender(selector)).toContain("Custom summarization instructions");
+
+		selector.handleInput("focus on tests");
+		selector.handleInput(ENTER);
+		await flush();
+
+		expect(navigateAgentTree).toHaveBeenCalledWith("agent-1", "u3", {
+			summarize: true,
+			customInstructions: "focus on tests",
+		});
+	});
+
+	it("falls back to a plain summary when the custom instructions are blank", async () => {
+		const navigateAgentTree = vi.fn(async () => ({ cancelled: false }));
+		const { application } = await createApplication({ navigateAgentTree });
+
+		await submit(application, "/tree");
+		const selector = requireTreeNavigation(application);
+		selector.handleInput(UP);
+		selector.handleInput(ENTER);
+		selector.handleInput(DOWN);
+		selector.handleInput(DOWN);
+		selector.handleInput(ENTER);
+		selector.handleInput(ENTER);
+		await flush();
+
+		expect(navigateAgentTree).toHaveBeenCalledWith("agent-1", "u3", { summarize: true });
+	});
+
+	it("returns from the custom input step to the summarize step on escape", async () => {
+		const navigateAgentTree = vi.fn(async () => ({ cancelled: false }));
+		const { application } = await createApplication({ navigateAgentTree });
+
+		await submit(application, "/tree");
+		const selector = requireTreeNavigation(application);
+		selector.handleInput(UP);
+		selector.handleInput(ENTER);
+		selector.handleInput(DOWN);
+		selector.handleInput(DOWN);
+		selector.handleInput(ENTER);
+		selector.handleInput(ESCAPE);
+
+		expect(plainRender(selector)).toContain("Summarize branch?");
+		expect(navigateAgentTree).not.toHaveBeenCalled();
+	});
+
+	it("accepts custom instructions in the typed /tree argument", async () => {
+		const navigateAgentTree = vi.fn(async () => ({ cancelled: false }));
+		const { application } = await createApplication({ navigateAgentTree });
+
+		await submit(application, "/tree u3 summarize -- focus on tests");
+		await flush();
+
+		expect(navigateAgentTree).toHaveBeenCalledWith("agent-1", "u3", {
+			summarize: true,
+			customInstructions: "focus on tests",
+		});
+	});
+
+	it("returns from the summarize step to the tree with the pending row preselected", async () => {
+		const navigateAgentTree = vi.fn(async () => ({ cancelled: false }));
+		const { application } = await createApplication({ navigateAgentTree });
+
+		await submit(application, "/tree");
+		const selector = requireTreeNavigation(application);
+		selector.handleInput(UP);
+		selector.handleInput(ENTER);
+		selector.handleInput(ESCAPE);
+
+		// Back on the tree step, u3 still under the cursor; confirming it now
+		// opens the summarize step again instead of navigating.
+		selector.handleInput(ENTER);
+		selector.handleInput(ENTER);
+		await flush();
+
+		expect(navigateAgentTree).toHaveBeenCalledWith("agent-1", "u3", undefined);
+	});
+
+	it("puts the un-sent user message back into the editor after navigating to it", async () => {
+		const navigateAgentTree = vi.fn(async () => ({ cancelled: false, editorText: "follow up" }));
+		const { application } = await createApplication({ navigateAgentTree });
+		const editor = requireEditor(application);
+		editor.setText("");
+
+		await submit(application, "/tree");
+		const selector = requireTreeNavigation(application);
+		selector.handleInput(UP);
+		selector.handleInput(UP);
+		selector.handleInput(UP);
+		selector.handleInput(ENTER);
+		selector.handleInput(ENTER);
+		await flush();
+
+		expect(editor.getText()).toBe("follow up");
+	});
+
+	it("opens the tree from app.tree.open without touching the editor draft", async () => {
+		const navigateAgentTree = vi.fn(async () => ({ cancelled: false }));
+		const { application } = await createApplication({ navigateAgentTree });
+		const editor = requireEditor(application);
+		editor.setText("draft in progress");
+
+		editor.handleInput("\x07");
+		// The direct open fetches the tree first, so the dock appears a tick later.
+		await flush();
+
+		expect(application.state.mode).toBe("selector");
+		expect(editor.getText()).toBe("draft in progress");
+
+		// Cancelling leaves the draft alone; navigating to a non-user row does too.
+		const selector = requireTreeNavigation(application);
+		selector.handleInput(ENTER);
+		selector.handleInput(ENTER);
+		await flush();
+
+		expect(navigateAgentTree).toHaveBeenCalledWith("agent-1", "a3", undefined);
+		expect(editor.getText()).toBe("draft in progress");
+		expect(application.state.mode).toBe("editor");
+	});
+
+	it("passes custom instructions through the direct tree navigation", async () => {
+		const navigateAgentTree = vi.fn(async () => ({ cancelled: false }));
+		const { application } = await createApplication({ navigateAgentTree });
+		const editor = requireEditor(application);
+		editor.setText("");
+
+		editor.handleInput("\x07");
+		await flush();
+
+		const selector = requireTreeNavigation(application);
+		selector.handleInput(ENTER);
+		selector.handleInput(DOWN);
+		selector.handleInput(DOWN);
+		selector.handleInput(ENTER);
+		selector.handleInput("keep it short");
+		selector.handleInput(ENTER);
+		await flush();
+
+		expect(navigateAgentTree).toHaveBeenCalledWith("agent-1", "a3", {
+			summarize: true,
+			customInstructions: "keep it short",
+		});
+	});
+
 	it("restores the submitted command when the graph selector is cancelled", async () => {
 		const navigateAgentTree = vi.fn(async () => ({ cancelled: false }));
 		const { application } = await createApplication({ navigateAgentTree });
@@ -280,7 +544,7 @@ describe("WidiTuiApplication /tree selector", () => {
 		editor.setText("");
 
 		await submit(application, "/tree");
-		requireTreeSelector(application).handleInput(ESCAPE);
+		requireTreeNavigation(application).handleInput(ESCAPE);
 
 		expect(navigateAgentTree).not.toHaveBeenCalled();
 		expect(editor.getText()).toBe("/tree");
@@ -350,20 +614,17 @@ function agentSnapshot(agentId: string): AgentSnapshot {
 	};
 }
 
-function requireTreeSelector(application: WidiTuiApplication): TreeSelector {
-	const overlays = (application as unknown as { overlays: OverlayStack }).overlays;
-	const handles = overlays.list();
-	for (let i = handles.length - 1; i >= 0; i--) {
-		const view = handles[i]?.component;
-		if (view instanceof TreeSelector) return view;
-	}
-	throw new Error("Expected a tree selector overlay to be open.");
+function requireTreeNavigation(application: WidiTuiApplication): TreeNavigationSelector {
+	const dock = (application as unknown as { selectorDock: SelectorDock }).selectorDock;
+	const view = dock.current;
+	if (view instanceof TreeNavigationSelector) return view;
+	throw new Error("Expected a tree navigation selector to be docked.");
 }
 
 function requireEditor(application: WidiTuiApplication): WidiEditor {
-	const editor = application.tui.children.find((child) => child instanceof WidiEditor);
-	if (!editor) throw new Error("Expected the editor to be mounted.");
-	return editor;
+	// The mounted editor is wrapped in a slot visibility gate, so the instance
+	// comes from the application's own field rather than the child list.
+	return (application as unknown as { editor: WidiEditor }).editor;
 }
 
 async function submit(application: WidiTuiApplication, text: string): Promise<void> {

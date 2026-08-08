@@ -1,6 +1,7 @@
 import type { Component, SelectItem } from "@earendil-works/pi-tui";
 import type { AgentOrchestrator } from "../../core/agent-orchestrator.ts";
 import type { AgentActivitySnapshot, CandidateItem, RuntimeModel } from "../../core/types.ts";
+import type { CommandPresenter } from "../command-presenter.ts";
 
 export type CommandAgentPolicy = "runtime" | "materialize" | "active";
 
@@ -79,9 +80,17 @@ export interface ActionCommand extends CommandBase {
 	execute(context: CommandContext, argument: string): Promise<unknown>;
 	/**
 	 * Optional short human-readable summary of the result. When defined, the
-	 * transcript shows it instead of dumping the raw result value.
+	 * transcript shows it instead of dumping the raw result value. A presenter
+	 * takes precedence over this when both are defined.
 	 */
 	formatResult?(result: unknown): string;
+	/**
+	 * Renders the completed command-result timeline row (lines or component
+	 * form). The engine syncs it into the command presenter registry on
+	 * register/unregister, so host commands get the same row path as built-ins.
+	 * Absent, the row falls back to formatResult (or the raw result value).
+	 */
+	readonly presenter?: CommandPresenter;
 }
 
 /** Pure expansion: the returned text is submitted as the user prompt. */

@@ -24,6 +24,7 @@ declare module "@earendil-works/pi-tui" {
 		"app.request.previous": true;
 		"app.request.next": true;
 		"app.request.toggle": true;
+		"app.tree.open": true;
 		"app.request.option1": true;
 		"app.request.option2": true;
 		"app.request.option3": true;
@@ -55,6 +56,7 @@ export const WIDI_KEYBINDINGS = {
 		defaultKeys: "space",
 		description: "Toggle the highlighted option in a multi-select request",
 	},
+	"app.tree.open": { defaultKeys: "ctrl+g", description: "Open the session tree without submitting the editor draft" },
 	"app.request.option1": { defaultKeys: "1", description: "Choose the first option in a human request" },
 	"app.request.option2": { defaultKeys: "2", description: "Choose the second option in a human request" },
 	"app.request.option3": { defaultKeys: "3", description: "Choose the third option in a human request" },

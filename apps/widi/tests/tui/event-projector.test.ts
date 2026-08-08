@@ -112,6 +112,7 @@ describe("EventProjector", () => {
 			agentId: "main",
 			profile: { id: "default", label: "Default", systemPrompt: "test", persist: true },
 			model: model(),
+			origin: "new",
 		});
 		projector.apply({
 			type: "extension_message_published",

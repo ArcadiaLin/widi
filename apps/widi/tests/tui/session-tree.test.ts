@@ -30,7 +30,7 @@ function snapshot(entries: readonly SessionTreeEntry[], leafId: string | null): 
 }
 
 describe("buildSessionEntryRows", () => {
-	it("flattens a single chain, skipping the assistant entries in between", () => {
+	it("flattens a single chain, keeping the assistant rows in between", () => {
 		const rows = buildSessionEntryRows(
 			snapshot(
 				[userEntry("u1", null, "first question"), assistantEntry("a1", "u1"), userEntry("u2", "a1", "follow up")],
@@ -38,9 +38,42 @@ describe("buildSessionEntryRows", () => {
 			),
 		);
 
+		// A single-child chain stays flat (pi flattenTree semantics): no indent,
+		// no connectors; assistant entries are rows too.
 		expect(rows).toEqual([
-			{ entryId: "u1", headline: "first question", timestamp: TIMESTAMP, depth: 0, last: true, current: false },
-			{ entryId: "u2", headline: "follow up", timestamp: TIMESTAMP, depth: 1, last: true, current: true },
+			{
+				entryId: "u1",
+				kind: "user",
+				headline: "first question",
+				timestamp: TIMESTAMP,
+				indent: 0,
+				connector: false,
+				last: true,
+				gutters: [],
+				current: false,
+			},
+			{
+				entryId: "a1",
+				kind: "assistant",
+				headline: "(no content)",
+				timestamp: TIMESTAMP,
+				indent: 0,
+				connector: false,
+				last: true,
+				gutters: [],
+				current: false,
+			},
+			{
+				entryId: "u2",
+				kind: "user",
+				headline: "follow up",
+				timestamp: TIMESTAMP,
+				indent: 0,
+				connector: false,
+				last: true,
+				gutters: [],
+				current: true,
+			},
 		]);
 	});
 
@@ -59,28 +92,63 @@ describe("buildSessionEntryRows", () => {
 			),
 		);
 
-		expect(rows.map((row) => [row.entryId, row.depth, row.last, row.current])).toEqual([
-			["u1", 0, true, false],
-			["u2", 1, false, false],
-			["u3", 1, true, true],
+		expect(rows.map((row) => [row.entryId, row.indent, row.connector, row.last, row.current])).toEqual([
+			["u1", 0, false, true, false],
+			["a1", 0, false, true, false],
+			["u2", 1, true, false, false],
+			["a2", 2, false, true, false],
+			["u3", 1, true, true, false],
+			["a3", 2, false, true, true],
 		]);
 	});
 
-	it("marks the current row by the nearest user message at or above the leaf", () => {
+	it("groups one level below a branching row, then stays flat with a gutter", () => {
+		const rows = buildSessionEntryRows(
+			snapshot(
+				[
+					userEntry("u1", null, "root"),
+					assistantEntry("a1", "u1"),
+					userEntry("u2", "a1", "branch one"),
+					userEntry("u3", "a1", "branch two"),
+					assistantEntry("a2", "u2"),
+					userEntry("u4", "a2", "branch one follow up"),
+					assistantEntry("a4", "u4"),
+					userEntry("u5", "a4", "branch one later"),
+				],
+				"u3",
+			),
+		);
+
+		expect(rows.map((row) => [row.entryId, row.indent, row.connector, row.last, row.gutters])).toEqual([
+			["u1", 0, false, true, []],
+			["a1", 0, false, true, []],
+			["u2", 1, true, false, []],
+			["a2", 2, false, true, [true]],
+			["u4", 2, false, true, [true]],
+			["a4", 2, false, true, [true]],
+			["u5", 2, false, true, [true]],
+			["u3", 1, true, true, []],
+		]);
+	});
+
+	it("marks the current row by the nearest row entry at or above the leaf", () => {
 		const rows = buildSessionEntryRows(
 			snapshot([userEntry("u1", null, "first question"), assistantEntry("a1", "u1")], "a1"),
 		);
 
-		expect(rows).toHaveLength(1);
-		expect(rows[0]?.current).toBe(true);
+		expect(rows).toHaveLength(2);
+		expect(rows[1]?.current).toBe(true);
 	});
 
 	it("returns no rows for an empty tree", () => {
 		expect(buildSessionEntryRows(snapshot([], null))).toEqual([]);
 	});
 
-	it("returns no rows when the tree has no user messages", () => {
-		expect(buildSessionEntryRows(snapshot([assistantEntry("a1", "gone")], "a1"))).toEqual([]);
+	it("rows assistant messages even without user messages", () => {
+		const rows = buildSessionEntryRows(snapshot([assistantEntry("a1", "gone")], "a1"));
+
+		expect(rows.map((row) => row.kind)).toEqual(["assistant"]);
+		expect(rows[0]?.current).toBe(true);
 	});
 
 	it("marks nothing current when the leaf is unset", () => {

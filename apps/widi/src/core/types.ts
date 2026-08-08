@@ -7,7 +7,7 @@ import type {
 	BackgroundJobTransition,
 } from "./background/index.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
-import type { ExtensionMessage, ExtensionStatus } from "./extension/presentation.ts";
+import type { ExtensionMessage, ExtensionStatus } from "./extension/types.ts";
 import type { HumanRequestEvent } from "./human-request.ts";
 
 export type RuntimeModel = Model<Api>;
@@ -222,6 +222,12 @@ export type OrchestratorEvent =
 			agentId: AgentId;
 			profile: AgentProfile;
 			model: RuntimeModel;
+			/**
+			 * Where the agent's context came from. A resume is its own event, so only
+			 * these two land here - and they are worth telling apart: a fork carries a
+			 * spawn tree it does not own, every member of which refuses its messages.
+			 */
+			origin: "new" | "fork";
 			/** Set when another agent's tool initiated the spawn. */
 			spawnedBy?: AgentId;
 	  }

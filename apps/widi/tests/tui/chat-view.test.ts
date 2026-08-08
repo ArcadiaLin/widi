@@ -2,8 +2,15 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { registerCommandPresenter, unregisterCommandPresenter } from "../../src/tui/command-presenter.ts";
 import { ChatView } from "../../src/tui/components/chat.ts";
-import { createTuiApplicationState, setActiveAgent, type ToolExecutionItem } from "../../src/tui/state.ts";
+import {
+	type CommandResultItem,
+	createTuiApplicationState,
+	setActiveAgent,
+	type TimelineItem,
+	type ToolExecutionItem,
+} from "../../src/tui/state.ts";
 import { loadThemes, resetThemes, setTheme, type ThemePalette } from "../../src/tui/theme/theme.ts";
 import { registerToolPresenter, unregisterToolPresenter } from "../../src/tui/tool-presenter.ts";
 
@@ -84,7 +91,7 @@ function toolItem(overrides: Partial<ToolExecutionItem>): ToolExecutionItem {
 	};
 }
 
-function stateWithTimeline(items: readonly ToolExecutionItem[], agentId = "agent-1") {
+function stateWithTimeline(items: readonly TimelineItem[], agentId = "agent-1") {
 	const state = createTuiApplicationState();
 	const agent = setActiveAgent(state, agentId);
 	agent.timeline.push(...items);
@@ -155,5 +162,82 @@ describe("ChatView component presenters (parity §4.3-2)", () => {
 
 		const lines = stripAnsi(view.render(60));
 		expect(lines.some((line) => line.includes("bash command: seq 3"))).toBe(true);
+	});
+});
+
+function commandResultItem(overrides: Partial<CommandResultItem>): CommandResultItem {
+	return {
+		type: "command-result",
+		id: "command-item-1",
+		commandId: "cmd-1",
+		durability: "ephemeral",
+		createdAt: "2026-01-01T00:00:00.000Z",
+		name: "demo",
+		argument: "",
+		status: "completed",
+		...overrides,
+	};
+}
+
+describe("ChatView command component presenters", () => {
+	afterEach(() => {
+		unregisterCommandPresenter("demo");
+	});
+
+	it("creates one instance per commandId, feeds updates, disposes on trim", () => {
+		const calls: string[] = [];
+		let current: CommandResultItem | undefined;
+		registerCommandPresenter("demo", {
+			kind: "component",
+			factory: (item) => {
+				calls.push("factory");
+				current = item;
+				return {
+					render: () => [`row:${typeof current?.result === "string" ? current.result : ""}`],
+					invalidate: () => {},
+					update: (next) => {
+						calls.push("update");
+						current = next;
+					},
+					dispose: () => {
+						calls.push("dispose");
+					},
+				};
+			},
+		});
+		const state = stateWithTimeline([commandResultItem({ result: "first" })]);
+		const view = new ChatView(state);
+
+		const first = view.render(60);
+		expect(calls).toEqual(["factory"]);
+		expect(first.some((line) => line.includes("row:first"))).toBe(true);
+
+		// A same-commandId replacement reuses the instance through update().
+		state.agents.get("agent-1")?.timeline.splice(0, 1, commandResultItem({ result: "second" }));
+		const second = view.render(60);
+		expect(calls).toEqual(["factory", "update"]);
+		expect(second.some((line) => line.includes("row:second"))).toBe(true);
+
+		// The row left the timeline: the instance is disposed.
+		state.agents.get("agent-1")?.timeline.splice(0, 1);
+		view.render(60);
+		expect(calls).toEqual(["factory", "update", "dispose"]);
+	});
+
+	it("keeps running and failed rows on the shared frame, never the presenter", () => {
+		let factoryCalls = 0;
+		registerCommandPresenter("demo", {
+			kind: "component",
+			factory: () => {
+				factoryCalls += 1;
+				return { render: () => ["component row"], invalidate: () => {} };
+			},
+		});
+		const state = stateWithTimeline([commandResultItem({ status: "running" })]);
+		const view = new ChatView(state);
+
+		const lines = stripAnsi(view.render(60));
+		expect(factoryCalls).toBe(0);
+		expect(lines.some((line) => line.includes("/demo …"))).toBe(true);
 	});
 });

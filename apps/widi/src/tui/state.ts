@@ -3,7 +3,7 @@ import type { AgentHarnessEvent } from "@widi/agent-core";
 import type { AgentSnapshot } from "../core/agent-types.ts";
 import type { BackgroundJobReportSnapshot } from "../core/background/index.ts";
 import type { OrchestratorDiagnostic } from "../core/diagnostics.ts";
-import type { ExtensionMessage, ExtensionStatusSnapshot } from "../core/extension/presentation.ts";
+import type { ExtensionMessage, ExtensionStatusSnapshot } from "../core/extension/api.ts";
 import type { HumanRequestEnvelope, HumanRequestKind } from "../core/human-request.ts";
 import type { MessageSource } from "../core/message.ts";
 import type { AgentId, AgentMaintenanceKind, OrchestratorEvent, RuntimeModel } from "../core/types.ts";
@@ -345,7 +345,7 @@ export interface PendingHumanRequestView {
 export type TuiInteractionMode = "editor" | "selector" | "human-request" | "agent-panel";
 
 /** Docked layout components that can hold input focus instead of the editor. */
-export type TuiDockedFocus = "human-request" | "agent-panel";
+export type TuiDockedFocus = "human-request" | "agent-panel" | "selector";
 
 export interface TuiOverlayFocusEntry {
 	/** Interaction mode the overlay contributes while it sits on the stack. */

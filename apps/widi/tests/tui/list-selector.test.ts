@@ -6,9 +6,9 @@ import type { WidiRuntime } from "../../src/core/runtime-service.ts";
 import { WidiTuiApplication } from "../../src/tui/application.ts";
 import { AgentStripView } from "../../src/tui/components/agent-strip.ts";
 import { OperationHintView } from "../../src/tui/components/operation-hint.ts";
-import { WidiEditor } from "../../src/tui/editor.ts";
+import type { WidiEditor } from "../../src/tui/editor.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
-import type { OverlayStack } from "../../src/tui/layout/overlay-stack.ts";
+import type { SelectorDock } from "../../src/tui/selectors/dock.ts";
 import { ListSelector } from "../../src/tui/selectors/list-selector.ts";
 import { ensureAgentProjection } from "../../src/tui/state.ts";
 
@@ -72,8 +72,8 @@ describe("ListSelector", () => {
 		selector.handleInput("l");
 		selector.handleInput("m");
 		let rendered = plainRender(selector);
+		expect(rendered).toContain("> glm");
 		expect(rendered).toContain("vllm/glm-5");
-		expect(rendered).toContain("filter: glm (1/3)");
 		expect(rendered).not.toContain("anthropic/claude");
 		expect(selector.hintContext?.itemCount).toBe(1);
 
@@ -82,7 +82,7 @@ describe("ListSelector", () => {
 		selector.handleInput(BACKSPACE);
 		rendered = plainRender(selector);
 		expect(rendered).toContain("anthropic/claude");
-		expect(rendered).not.toContain("filter:");
+		expect(rendered).not.toContain("> glm");
 		expect(selector.hintContext?.itemCount).toBe(3);
 	});
 
@@ -96,7 +96,7 @@ describe("ListSelector", () => {
 		});
 
 		const rendered = plainRender(selector);
-		expect(rendered).toContain("filter: claude (1/3)");
+		expect(rendered).toContain("> claude");
 		expect(rendered).toContain("anthropic/claude");
 		expect(rendered).not.toContain("vllm/glm-5");
 	});
@@ -178,7 +178,7 @@ describe("ListSelector", () => {
 });
 
 describe("WidiTuiApplication command selector", () => {
-	it("opens the selector as an overlay, not a docked child", async () => {
+	it("opens the selector docked in the editor's place, not as an overlay", async () => {
 		const { application } = await createApplication({
 			listAvailableModelCandidates: async () => ({ models: [{ value: "vllm/qwen3.6", label: "Qwen 3.6" }] }),
 		});
@@ -187,8 +187,17 @@ describe("WidiTuiApplication command selector", () => {
 		await submit(application, "/model");
 
 		expect(application.state.mode).toBe("selector");
-		expect(application.tui.hasOverlay()).toBe(true);
-		expect(application.tui.children.some((child) => child instanceof ListSelector)).toBe(false);
+		expect(application.tui.hasOverlay()).toBe(false);
+		const dock = requireDock(application);
+		expect(dock.current).toBeInstanceOf(ListSelector);
+		// The editor leaves the layout while the selector is docked, pi-style.
+		const editorSlot = application.tui.children[application.tui.children.indexOf(dock) + 1];
+		expect(editorSlot?.render(80)).toEqual([]);
+
+		dock.current?.handleInput?.(ESCAPE);
+
+		expect(application.state.mode).toBe("editor");
+		expect(editorSlot?.render(80).length).toBeGreaterThan(0);
 	});
 
 	it("opens the selector pre-filled with the query when a submitted argument does not resolve", async () => {
@@ -209,7 +218,7 @@ describe("WidiTuiApplication command selector", () => {
 		expect(application.state.mode).toBe("selector");
 		const selector = requireSelector(application);
 		const rendered = plainRender(selector);
-		expect(rendered).toContain("filter: gl (1/2)");
+		expect(rendered).toContain("> gl");
 		expect(rendered).toContain("GLM 5");
 
 		selector.handleInput(ESCAPE);
@@ -479,20 +488,20 @@ function agentSnapshot(agentId: string): AgentSnapshot {
 	};
 }
 
+function requireDock(application: WidiTuiApplication): SelectorDock {
+	return (application as unknown as { selectorDock: SelectorDock }).selectorDock;
+}
+
 function requireSelector(application: WidiTuiApplication): ListSelector {
-	const overlays = (application as unknown as { overlays: OverlayStack }).overlays;
-	const handles = overlays.list();
-	for (let i = handles.length - 1; i >= 0; i--) {
-		const view = handles[i]?.component;
-		if (view instanceof ListSelector) return view;
-	}
-	throw new Error("Expected a command selector overlay to be open.");
+	const view = requireDock(application).current;
+	if (view instanceof ListSelector) return view;
+	throw new Error("Expected a command selector to be docked.");
 }
 
 function requireEditor(application: WidiTuiApplication): WidiEditor {
-	const editor = application.tui.children.find((child) => child instanceof WidiEditor);
-	if (!editor) throw new Error("Expected the editor to be mounted.");
-	return editor;
+	// The mounted editor is wrapped in a slot visibility gate, so the instance
+	// comes from the application's own field rather than the child list.
+	return (application as unknown as { editor: WidiEditor }).editor;
 }
 
 async function submit(application: WidiTuiApplication, text: string): Promise<void> {

@@ -40,11 +40,10 @@ export type AgentProfile = {
 	/** Whether the system prompt states the working directory. Default: true. */
 	readonly includeCwd?: boolean;
 	/**
-	 * Whether the system prompt lists this role's skills. Unset lets the active
-	 * tools decide: the listing tells the model to go read a skill file, so it
-	 * appears only when a `read` tool is active. Set it to keep the listing out
-	 * of a prompt that would otherwise get one, or to force it in for a role
-	 * that reads files through some other tool.
+	 * Whether the system prompt lists this role's skills. Unset means no listing:
+	 * the listing tells the model to go read a skill file, and whether this role's
+	 * tools can open one is the role's own judgement, not something core guesses
+	 * from the active tool names.
 	 */
 	readonly skillsListing?: boolean;
 	/** Extra text appended to this role's system prompt, ahead of the extensions' own. */

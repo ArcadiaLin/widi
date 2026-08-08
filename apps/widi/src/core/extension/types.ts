@@ -14,9 +14,18 @@ import type {
 	ToolResultEvent,
 } from "@widi/agent-core";
 import type { TSchema } from "typebox";
-import type { JsonValue } from "../../utils/json.ts";
-import type { AgentProfileReference } from "../agent-profile.js";
+import { freezeJsonValue, type JsonValue, normalizeJsonValue } from "../../utils/json.ts";
+import { utf8ByteLength } from "../../utils/text.ts";
+import type { AgentProfileOverride, AgentProfileReference } from "../agent-profile.js";
 import type { BackgroundJobSnapshot } from "../background/index.ts";
+import type { ExtensionDiagnosticDraft } from "../diagnostics.ts";
+import type {
+	AgentBrief,
+	AgentProfileBrief,
+	AgentRequestedDisposeOptions,
+	AgentRequestedDisposeOutcome,
+	AgentTreeListing,
+} from "../host.ts";
 import type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
 import type { MessageSink, MessageSource } from "../message.ts";
 import type { ProviderConfigInput } from "../model-registry.ts";
@@ -30,7 +39,6 @@ import type {
 	RuntimeModel,
 } from "../types.ts";
 import type { ExtensionEventEnvelope } from "./events.ts";
-import type { ExtensionDiagnosticDraft, ExtensionMessage, ExtensionStatus } from "./presentation.ts";
 
 // The tool contract lives in the core tools layer (ME slice 0 dependency
 // inversion); the extension layer consumes and re-exports it for its own
@@ -106,12 +114,15 @@ export type ExtensionObservedEvent = Extract<
 			| "agent_background_job_progress"
 			| "agent_background_job_report_updated"
 			| "agent_context_usage_changed"
+			| "agent_disposed"
 			| "agent_harness_event"
 			| "agent_idle"
+			| "agent_persistence_ref_changed"
 			| "agent_resumed"
 			| "agent_session_forked"
 			| "agent_session_info_changed"
 			| "agent_spawned"
+			| "agent_status_changed"
 			| "diagnostic"
 			| "human_request_cancelled"
 			| "human_request_pending"
@@ -139,12 +150,15 @@ export const EXTENSION_OBSERVED_EVENT_NAMES: Readonly<Record<ExtensionObservedEv
 	agent_background_job_progress: true,
 	agent_background_job_report_updated: true,
 	agent_context_usage_changed: true,
+	agent_disposed: true,
 	agent_harness_event: true,
 	agent_idle: true,
+	agent_persistence_ref_changed: true,
 	agent_resumed: true,
 	agent_session_forked: true,
 	agent_session_info_changed: true,
 	agent_spawned: true,
+	agent_status_changed: true,
 	diagnostic: true,
 	human_request_cancelled: true,
 	human_request_pending: true,
@@ -153,6 +167,24 @@ export const EXTENSION_OBSERVED_EVENT_NAMES: Readonly<Record<ExtensionObservedEv
 	input_blocked: true,
 	input_transformed: true,
 	runtime_shutdown_requested: true,
+};
+
+/**
+ * Observed events every extension in the subject's agent tree receives, rather
+ * than the subject's own extensions alone.
+ *
+ * These are the facts an extension holding another agent's id cannot do without
+ * - that it exists, that it stopped, that it is gone - and they arrive at most
+ * a few times per turn. Everything outside this set stays scoped to the agent
+ * it is about, which matters most for `agent_harness_event`: it is the raw
+ * per-turn stream, and its subscribers mean "my turn" by it.
+ */
+export const EXTENSION_TREE_BROADCAST_EVENT_NAMES: Readonly<Partial<Record<ExtensionObservedEventName, true>>> = {
+	agent_disposed: true,
+	agent_idle: true,
+	agent_resumed: true,
+	agent_spawned: true,
+	agent_status_changed: true,
 };
 
 /**
@@ -249,8 +281,101 @@ export type ExtensionExecResult = Result<{ stdout: string; stderr: string; exitC
  */
 export type ExtensionCompactionResult = CompactResult;
 
+/**
+ * Durable presentation content an extension publishes into an agent, as core
+ * knows it: a `kind` naming the shape, and opaque JSON beside it.
+ *
+ * `kind` is required because it is what a renderer dispatches on and the only
+ * field core stamps a meaning on. Everything else is the renderer's contract
+ * with the extension; core neither reads nor bounds it field by field.
+ *
+ * Core carrying the shapes themselves cost a per-shape validator, a per-shape
+ * byte cap, and an API export for every kind anyone wanted - while the client
+ * re-validated on hydration anyway, because a branch outlives the build that
+ * wrote it and no renderer can trust a write-time check it did not run.
+ */
+export interface ExtensionMessage {
+	readonly kind: string;
+	readonly [field: string]: JsonValue;
+}
+
+/** Current state an extension keyed into a client's status area. Opaque to core. */
+export type ExtensionStatus = JsonValue;
+
+export interface ExtensionStatusSnapshot {
+	readonly agentId: string;
+	readonly extensionId: string;
+	readonly key: string;
+	readonly status: ExtensionStatus;
+	readonly updatedAt: string;
+}
+
+export const MAX_EXTENSION_OUTPUT_BYTES = 65_536;
+export const MAX_EXTENSION_NOTIFICATION_BYTES = 4_096;
+export const MAX_EXTENSION_STATUS_KEY_BYTES = 128;
+export const MAX_EXTENSION_STATUS_BYTES = 8_192;
+export const MAX_EXTENSION_MESSAGE_KIND_BYTES = 128;
+export const MAX_EXTENSION_MESSAGE_BYTES = 65_536;
+
+const EXTENSION_MESSAGE_KIND_PATTERN = /^[a-zA-Z0-9._:-]+$/;
+
+/**
+ * Validate a published message and return a detached, frozen copy core owns
+ * alone. The round trip is the same one persistence and transport use, so a
+ * message that survives this is a message that survives being written.
+ */
+export function validateExtensionMessage(message: ExtensionMessage): ExtensionMessage {
+	if (typeof message !== "object" || message === null || Array.isArray(message)) {
+		throw new TypeError("Extension message must be an object.");
+	}
+	if (typeof message.kind !== "string" || !EXTENSION_MESSAGE_KIND_PATTERN.test(message.kind)) {
+		throw new TypeError("Extension message kind must contain only letters, numbers, '.', '_', ':', and '-'.");
+	}
+	if (utf8ByteLength(message.kind) > MAX_EXTENSION_MESSAGE_KIND_BYTES) {
+		throw new RangeError(`Extension message kind exceeds ${MAX_EXTENSION_MESSAGE_KIND_BYTES} UTF-8 bytes.`);
+	}
+	const normalized = normalizeJsonValue(message, "Extension message", MAX_EXTENSION_MESSAGE_BYTES);
+	return freezeJsonValue(normalized) as ExtensionMessage;
+}
+
+export function validateExtensionStatus(status: ExtensionStatus): ExtensionStatus {
+	return freezeJsonValue(normalizeJsonValue(status, "Extension status", MAX_EXTENSION_STATUS_BYTES));
+}
+
+export function assertExtensionOutputText(text: string): void {
+	if (typeof text !== "string" || text.length === 0) {
+		throw new TypeError("Extension output text must be a non-empty string.");
+	}
+	if (utf8ByteLength(text) > MAX_EXTENSION_OUTPUT_BYTES) {
+		throw new RangeError(`Extension output text exceeds ${MAX_EXTENSION_OUTPUT_BYTES} UTF-8 bytes.`);
+	}
+}
+
+export function assertExtensionNotificationText(text: string): void {
+	assertBoundedNonBlankText(text, "Extension notification text", MAX_EXTENSION_NOTIFICATION_BYTES);
+}
+
+export function assertExtensionStatusKey(key: string): void {
+	assertBoundedNonBlankText(key, "Extension status key", MAX_EXTENSION_STATUS_KEY_BYTES);
+}
+
+function assertBoundedNonBlankText(value: string, label: string, maxBytes: number): void {
+	if (typeof value !== "string" || value.trim().length === 0) {
+		throw new TypeError(`${label} must be a non-blank string.`);
+	}
+	if (utf8ByteLength(value) > maxBytes) {
+		throw new RangeError(`${label} exceeds ${maxBytes} UTF-8 bytes.`);
+	}
+}
+
 export interface ExtensionSendOptions {
 	images?: ImageContent[];
+	/**
+	 * Another agent to deliver to; defaults to the extension's own. An id, not a
+	 * scope: unlike `listAgents` and `disposeAgent`, addressing is runtime-wide,
+	 * the same soft bridge between trees the agent host's `sendMessage` is.
+	 */
+	target?: string;
 	/**
 	 * Overrides the message's source label (default `extension:<id>`). A label,
 	 * not a capability: the delivery policy stays the binding's, so renaming the
@@ -265,12 +390,59 @@ export interface ExtensionSendOptions {
 }
 
 /**
- * Agent-scoped action surface handed to extension authors. Every action is
- * bound to the extension's own agent; the agent id is injected by the runner
- * and never appears in a signature. Cross-agent operations are not part of
- * this contract (they belong to the M3 collaboration facade).
+ * Where an extension-spawned agent's context comes from.
+ *
+ * Wider than the agent host's own origin: `profileOverride` assembles a role
+ * out of fields rather than choosing one from the profile directory. An agent
+ * picks a profile; an extension is installed code and may build the role.
+ */
+export type ExtensionSpawnOrigin =
+	/** Fresh context; the runtime default profile when none is named. */
+	| { readonly kind: "new"; readonly profileId?: string; readonly profileOverride?: AgentProfileOverride }
+	/** Reopen a session left behind by an agent that is no longer running. */
+	| { readonly kind: "resume"; readonly reference: string }
+	/** Copy a live agent's branch, optionally truncated at an entry. */
+	| { readonly kind: "fork"; readonly sourceAgentId: string; readonly entryId?: string };
+
+export interface ExtensionSpawnRequest {
+	readonly origin: ExtensionSpawnOrigin;
+	/** Model reference (`provider/id`); refused when the runtime does not have it. */
+	readonly model?: string;
+	readonly thinkingLevel?: ThinkingLevel;
+}
+
+/**
+ * Action surface handed to extension authors, bound to the extension's own
+ * agent. That agent's id is injected by the runner and never appears in a
+ * signature.
+ *
+ * The cross-agent actions are bound the same way, and their scope follows from
+ * it with nothing left to choose: `listAgents` reports that agent's tree,
+ * `spawnAgent` parents under it, `disposeAgent` refuses another tree. What does
+ * not follow from the binding is attribution, and that stays the extension's:
+ * a message says an extension sent it unless the caller overrides `source`, and
+ * a dispose records the extension as the one that asked.
+ *
+ * Deliberately absent: `watch`. Over observing `agent_idle` it adds only
+ * exclusivity and delivery into an agent's context, neither of which an
+ * extension can use - and a watch held on an agent's behalf would silence that
+ * agent's own idle notice, so its owner would never learn it stopped.
  */
 export interface ExtensionActions {
+	/** Profiles this runtime has enabled, the same listing agents choose from. */
+	listProfiles(): Promise<readonly AgentProfileBrief[]>;
+	/** The extension's own agent tree: who is running, and what sessions were left behind. */
+	listAgents(): Promise<AgentTreeListing>;
+	/** One live agent anywhere in the runtime, or undefined when there is no such agent. */
+	describeAgent(agentId: string): AgentBrief | undefined;
+	/** Create an agent parented under the extension's own, and get its id back. */
+	spawnAgent(request: ExtensionSpawnRequest): Promise<string>;
+	/**
+	 * Destroy a same-tree agent. A selection containing the extension's own agent
+	 * is refused: the runtime tearing it down is the one that would receive this
+	 * call's result.
+	 */
+	disposeAgent(agentId: string, options: AgentRequestedDisposeOptions): Promise<AgentRequestedDisposeOutcome>;
 	getTools(): AgentToolsSnapshot;
 	// The agent's live backgrounded jobs: the ones whose t0 handles the model is
 	// currently holding. Pairs with the three job observers, which report
@@ -299,15 +471,15 @@ export interface ExtensionActions {
 	// notices have no severity, code, dedupe, clear, or attention semantics.
 	notify(text: string): Promise<void>;
 	// Keyed runtime current state for client status areas. Reusing a key
-	// replaces the previous value; clearing a missing key is a no-op. `region`
-	// asks for a placement (panel by default), `icon` and `tone` are hints a
-	// client with no such surface may ignore.
+	// replaces the previous value; clearing a missing key is a no-op. The value
+	// is opaque to core, which bounds and detaches it and nothing more; what a
+	// client draws from it is that client's contract with the extension.
 	setStatus(key: string, status: ExtensionStatus): Promise<void>;
 	clearStatus(key: string): Promise<void>;
 	// Durable presentation content: persisted as a core:extension_message
-	// session custom entry, never model context. The kind chooses the shape -
-	// text/markdown/code, or the structured table/fields/diff/banner - and core
-	// keeps a deep copy of it.
+	// session custom entry, never model context. `kind` names the shape a
+	// renderer dispatches on; the rest is opaque JSON core detaches and bounds
+	// without reading. Use `precede` instead when the model should see it.
 	//
 	// `entryId` is absent when the write was buffered behind a running turn: the
 	// harness owns the branch for the duration of an operation, and an entry it
@@ -322,13 +494,20 @@ export interface ExtensionActions {
 	// extension.<extensionId>.<code>. Reported diagnostics never feed back
 	// into extension observers.
 	reportDiagnostic(draft: ExtensionDiagnosticDraft): Promise<void>;
-	// The three message-injection paths. All three go through the one core
+	// The four message-injection paths. All four go through the one core
 	// message pipeline, so the text meets the same interception as any other
 	// producer's and lands with the same record of who wrote it. `prompt`
-	// refuses a busy agent instead of queueing; the other two always queue.
+	// refuses a busy agent instead of queueing; steer and followUp always queue.
 	prompt(text: string, options?: ExtensionSendOptions): Promise<void>;
 	steer(text: string, options?: ExtensionSendOptions): Promise<void>;
 	followUp(text: string, options?: ExtensionSendOptions): Promise<void>;
+	// Model-readable text that does not wake anything. Alone among the four it
+	// passes no phase gate and can therefore never be refused or deferred: the
+	// harness buffers the write behind whatever is running and lands it at that
+	// operation's save point, where the next turn reads it along with the rest
+	// of the branch. Use it to put context in front of work that has not
+	// started yet; use followUp when the agent should act on the text.
+	precede(text: string, options?: ExtensionSendOptions): Promise<void>;
 	// Context occupancy of the agent's current branch, or undefined before the
 	// branch carries an assistant usage to measure. Recomputed when the agent
 	// settles and after compaction; observe `agent_context_usage_changed` to be
@@ -392,6 +571,15 @@ export interface ExtensionActions {
  * ExtensionActions above. Not part of the extension-author API.
  */
 export interface ExtensionCoreActions {
+	listProfileBriefs(): Promise<readonly AgentProfileBrief[]>;
+	listAgentTree(agentId: string): Promise<AgentTreeListing>;
+	describeAgentFor(callerAgentId: string, targetAgentId: string): AgentBrief | undefined;
+	spawnAgentFor(callerAgentId: string, request: ExtensionSpawnRequest): Promise<string>;
+	disposeAgentFor(
+		callerAgentId: string,
+		targetAgentId: string,
+		options: AgentRequestedDisposeOptions,
+	): Promise<AgentRequestedDisposeOutcome>;
 	getAgentTools(agentId: string): AgentToolsSnapshot;
 	listAgentBackgroundJobs(agentId: string): BackgroundJobSnapshot[];
 	readAgentBackgroundJobOutput(agentId: string, jobId: string): string | undefined;
@@ -553,6 +741,8 @@ export interface ExtensionActionFailure {
 		| "appendEntry"
 		| "clearStatus"
 		| "compact"
+		| "describeAgent"
+		| "disposeAgent"
 		| "disposeRuntime"
 		| "emitExtensionEvent"
 		| "emitOutput"
@@ -565,9 +755,12 @@ export interface ExtensionActionFailure {
 		| "getSystemPrompt"
 		| "getTree"
 		| "killJob"
+		| "listAgents"
 		| "listModelCandidates"
+		| "listProfiles"
 		| "listSessions"
 		| "notify"
+		| "precede"
 		| "prompt"
 		| "publishMessage"
 		| "readSession"
@@ -580,6 +773,7 @@ export interface ExtensionActionFailure {
 		| "setStatus"
 		| "setThinkingLevel"
 		| "setTools"
+		| "spawnAgent"
 		| "steer"
 		| "waitForIdle";
 	code: string;

@@ -1,8 +1,8 @@
 import type { Component } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, it } from "vitest";
 import type { OrchestratorDiagnostic } from "../../src/core/diagnostics.ts";
+import type { ExtensionMessage } from "../../src/core/extension/api.ts";
 import type { ExtensionIdentity } from "../../src/core/extension/loader.ts";
-import type { ExtensionMessage } from "../../src/core/extension/presentation.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
 import type { CommandDefinition } from "../../src/tui/commands/types.ts";
 import { renderTimelineItem, type TimelineRenderContext } from "../../src/tui/components/timeline-item.ts";

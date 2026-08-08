@@ -1,5 +1,6 @@
 import type { OrchestratorDiagnostic } from "../../core/diagnostics.ts";
 import type { AgentActivitySnapshot, CandidateItem } from "../../core/types.ts";
+import { registerCommandPresenter, unregisterCommandPresenter } from "../command-presenter.ts";
 import { parseLineCommand } from "./parse.ts";
 import type {
 	CommandContext,
@@ -36,12 +37,22 @@ export class CommandEngine {
 			};
 		}
 		this.commands.set(command.name, command);
+		if (command.kind === "action" && command.presenter) {
+			// The presenter registry is keyed by the same name the conflict check
+			// just cleared, so this never overrides a live registration.
+			registerCommandPresenter(command.name, command.presenter);
+		}
 		return undefined;
 	}
 
 	/** Remove a command by name; returns whether one was registered. */
 	unregister(name: string): boolean {
-		return this.commands.delete(name);
+		const command = this.commands.get(name);
+		const removed = this.commands.delete(name);
+		if (removed && command?.kind === "action" && command.presenter) {
+			unregisterCommandPresenter(name);
+		}
+		return removed;
 	}
 
 	list(activity: AgentActivitySnapshot | undefined): CommandView[] {

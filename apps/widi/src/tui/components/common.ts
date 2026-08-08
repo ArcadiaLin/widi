@@ -1,10 +1,12 @@
 import type { OrchestratorDiagnostic } from "../../core/diagnostics.ts";
-import type {
-	ExtensionStatusRegion,
-	ExtensionStatusSnapshot,
-	ExtensionTone,
-} from "../../core/extension/presentation.ts";
+import type { ExtensionStatusSnapshot } from "../../core/extension/api.ts";
 import type { AgentMaintenanceKind } from "../../core/types.ts";
+import {
+	type ExtensionStatus,
+	type ExtensionStatusRegion,
+	type ExtensionTone,
+	parseExtensionStatus,
+} from "../extension-host/presentation.ts";
 import { singleLine } from "../format.ts";
 import type { AgentViewState, TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
@@ -39,7 +41,7 @@ export function diagnosticGlyph(diagnostic: OrchestratorDiagnostic): string {
 
 /**
  * Map an extension tone onto the theme's status hues. Tones are semantic
- * emphasis, not colors (`ExtensionTone` in core), so this is the one place
+ * emphasis, not colors, so this is the one place
  * that pairing is decided; "neutral" (and an unset tone) means no paint.
  */
 export function tonePaint(tone: ExtensionTone | undefined): (text: string) => string {
@@ -57,25 +59,41 @@ export function tonePaint(tone: ExtensionTone | undefined): (text: string) => st
 	}
 }
 
+/**
+ * One keyed status this TUI could read. Core stores the value opaquely, so the
+ * parse happens here and a status this build cannot read is simply not shown -
+ * the same degrade a renderer does for a message kind it does not know.
+ */
+export interface ExtensionStatusView {
+	readonly extensionId: string;
+	readonly key: string;
+	readonly updatedAt: string;
+	readonly status: ExtensionStatus;
+}
+
+function toStatusView(snapshot: ExtensionStatusSnapshot): ExtensionStatusView | undefined {
+	const status = parseExtensionStatus(snapshot.status);
+	return status && { extensionId: snapshot.extensionId, key: snapshot.key, updatedAt: snapshot.updatedAt, status };
+}
+
 /** Statuses an extension aimed at one region; an unset region means "panel". */
-export function extensionStatusesInRegion(
-	agent: AgentViewState,
-	region: ExtensionStatusRegion,
-): ExtensionStatusSnapshot[] {
-	return [...agent.extensionStatuses.values()].filter((entry) => (entry.status.region ?? "panel") === region);
+export function extensionStatusesInRegion(agent: AgentViewState, region: ExtensionStatusRegion): ExtensionStatusView[] {
+	return [...agent.extensionStatuses.values()].flatMap((snapshot) => {
+		const view = toStatusView(snapshot);
+		return view && (view.status.region ?? "panel") === region ? [view] : [];
+	});
 }
 
 /** The freshest status aimed at a region, for clients that show only one. */
 export function latestExtensionStatus(
 	agent: AgentViewState | undefined,
 	region: ExtensionStatusRegion,
-): ExtensionStatusSnapshot | undefined {
+): ExtensionStatusView | undefined {
 	if (!agent) return undefined;
-	let latest: ExtensionStatusSnapshot | undefined;
-	for (const entry of agent.extensionStatuses.values()) {
-		if ((entry.status.region ?? "panel") !== region) continue;
+	let latest: ExtensionStatusView | undefined;
+	for (const view of extensionStatusesInRegion(agent, region)) {
 		// ISO 8601 timestamps order lexicographically.
-		if (!latest || entry.updatedAt > latest.updatedAt) latest = entry;
+		if (!latest || view.updatedAt > latest.updatedAt) latest = view;
 	}
 	return latest;
 }

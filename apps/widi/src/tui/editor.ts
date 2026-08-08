@@ -12,6 +12,7 @@ export class WidiEditor extends Editor {
 	onToggleJobs?: () => void;
 	onSteer?: () => void;
 	onOpenRequests?: () => void;
+	onOpenTree?: () => void;
 	/** Extension shortcut dispatch; returning true consumes the input. */
 	onExtensionShortcut?: (data: string) => boolean;
 
@@ -64,6 +65,11 @@ export class WidiEditor extends Editor {
 		}
 		if (keybindings.matches(data, "app.request.open")) {
 			this.onOpenRequests?.();
+			return;
+		}
+		if (keybindings.matches(data, "app.tree.open") && !this.isShowingAutocomplete()) {
+			// The draft stays in the editor; the docked selector only covers it.
+			this.onOpenTree?.();
 			return;
 		}
 		if (keybindings.matches(data, "app.agents.open") && !this.isShowingAutocomplete() && this.isAtDraftEnd()) {

@@ -2,15 +2,15 @@ import {
 	type Component,
 	fuzzyFilter,
 	getKeybindings,
+	Input,
 	type SelectItem,
-	SelectList,
 	truncateToWidth,
 } from "@earendil-works/pi-tui";
 import { singleLine } from "../format.ts";
 import { theme } from "../theme/theme.ts";
 import { type SelectorHintContext, selectorKeyHints } from "./hints.ts";
 
-const MAX_VISIBLE_ITEMS = 8;
+const MAX_VISIBLE_ITEMS = 10;
 
 export interface ListSelectorOperation {
 	readonly description?: string;
@@ -28,33 +28,48 @@ export interface ListSelectorRequest {
 	onSelect(item: SelectItem): void;
 	onCancel?(): void;
 	/**
-	 * Hides the host overlay and restores focus. Runs before onSelect/onCancel
-	 * so a callback is free to open another selector.
+	 * Hides the host dock and restores focus. Runs before onSelect/onCancel so
+	 * a callback is free to open another selector.
 	 */
 	onClose(): void;
 }
 
 /**
- * Shared overlay selector for picking one candidate out of a list, styled
- * after pi's ExtensionSelectorComponent: horizontal rules above and below, an
- * optional filter line, the SelectList cursor, and a key-hint footer.
- * Printable characters build a fuzzy filter, everything else drives the
- * embedded SelectList. Mounting is the caller's job: the application shows it
- * through `tui.showOverlay` and wires `onClose` to hide that overlay.
+ * Shared docked selector for picking one candidate out of a list, styled after
+ * pi's ModelSelectorComponent: horizontal rules above and below, an Input
+ * filter line with a live cursor, → cursor rows carrying an inline dim
+ * description, a scroll indicator, and a key-hint footer. Keys that are not
+ * selection bindings fall through to the Input, so typing refilters the list
+ * in place and jumps to the best match. Mounting is the caller's job: the
+ * application docks it in place of the editor through the SelectorDock and
+ * wires onClose to close that dock.
  */
 export class ListSelector implements Component {
-	focused = false;
 	private readonly request: ListSelectorRequest;
-	private list: SelectList;
-	private filter: string;
-	private filteredItemCount = 0;
+	private readonly input = new Input();
+	private filtered: SelectItem[];
+	private selectedIndex = 0;
 	private closed = false;
 
 	constructor(request: ListSelectorRequest) {
 		this.request = request;
-		this.filter = request.initialFilter ?? "";
-		this.list = this.buildList();
-		if (request.initialIndex !== undefined) this.list.setSelectedIndex(request.initialIndex);
+		if (request.initialFilter) {
+			// Typed through the input rather than setValue so the cursor lands at
+			// the end of the pre-filled filter (setValue keeps it at 0).
+			this.input.handleInput(request.initialFilter);
+		}
+		this.filtered = this.filterItems();
+		if (request.initialIndex !== undefined) {
+			this.selectedIndex = Math.min(Math.max(0, request.initialIndex), Math.max(0, this.filtered.length - 1));
+		}
+	}
+
+	get focused(): boolean {
+		return this.input.focused;
+	}
+
+	set focused(value: boolean) {
+		this.input.focused = value;
 	}
 
 	get hintContext(): SelectorHintContext | undefined {
@@ -65,37 +80,42 @@ export class ListSelector implements Component {
 			title: this.request.title,
 			description: operation.description,
 			confirmVerb: operation.confirmVerb,
-			itemCount: this.filteredItemCount,
+			itemCount: this.filtered.length,
 		};
 	}
 
 	handleInput(data: string): void {
 		if (this.closed) return;
 		const keybindings = getKeybindings();
-		const selectionActions = ["tui.select.up", "tui.select.down", "tui.select.confirm", "tui.select.cancel"] as const;
-		if (selectionActions.some((action) => keybindings.matches(data, action))) {
-			this.list.handleInput(data);
+		if (keybindings.matches(data, "tui.select.up")) {
+			this.move(-1);
 			return;
 		}
-		if (data === "\u007f" || data === "\b") {
-			if (this.filter.length > 0) {
-				this.filter = this.filter.slice(0, -1);
-				this.list = this.buildList();
-			}
+		if (keybindings.matches(data, "tui.select.down")) {
+			this.move(1);
 			return;
 		}
-		if (isPrintable(data)) {
-			this.filter += data;
-			this.list = this.buildList();
+		if (keybindings.matches(data, "tui.select.confirm")) {
+			this.confirm();
 			return;
 		}
-		// Arrow keys, enter, and escape belong to the list; escape lands in its
-		// onCancel and enter in its onSelect.
-		this.list.handleInput(data);
+		if (keybindings.matches(data, "tui.select.cancel")) {
+			this.cancel();
+			return;
+		}
+		// Everything else is filter text: the Input owns the editing keys
+		// (backspace, paste, undo), and the refiltered list jumps to the best
+		// match while a query is active.
+		const before = this.input.getValue();
+		this.input.handleInput(data);
+		const query = this.input.getValue();
+		if (query === before) return;
+		this.filtered = this.filterItems();
+		this.selectedIndex = query ? 0 : Math.min(this.selectedIndex, Math.max(0, this.filtered.length - 1));
 	}
 
 	invalidate(): void {
-		this.list.invalidate();
+		this.input.invalidate();
 	}
 
 	render(width: number): string[] {
@@ -105,48 +125,61 @@ export class ListSelector implements Component {
 			rule,
 			"",
 			truncateToWidth(theme.title(singleLine(this.request.title, 200)), Math.max(1, width - 2), "…"),
+			"",
 		];
-		if (this.filter) {
-			lines.push(
-				theme.dim(`filter: ${singleLine(this.filter, 120)} (${this.filteredItemCount}/${this.request.items.length})`),
+		lines.push(...this.input.render(width));
+		lines.push("");
+		const count = this.filtered.length;
+		if (count === 0) {
+			lines.push(theme.faint("  No matching items"));
+		} else {
+			const start = Math.max(
+				0,
+				Math.min(this.selectedIndex - Math.floor(MAX_VISIBLE_ITEMS / 2), count - MAX_VISIBLE_ITEMS),
 			);
+			const end = Math.min(start + MAX_VISIBLE_ITEMS, count);
+			for (let i = start; i < end; i++) {
+				const item = this.filtered[i];
+				if (item) lines.push(this.renderRow(item, i === this.selectedIndex, width));
+			}
+			if (start > 0 || end < count) lines.push(theme.faint(`  (${this.selectedIndex + 1}/${count})`));
 		}
-		lines.push("", ...this.list.render(width), "", theme.dim(selectorKeyHints({ filter: true })), rule);
+		lines.push("", theme.dim(selectorKeyHints({ filter: true })), rule);
 		return lines.map((line) => truncateToWidth(line, width, ""));
 	}
 
-	private buildList(): SelectList {
-		const items = this.filter
-			? fuzzyFilter([...this.request.items], this.filter, (item) => `${item.label} ${item.value}`)
-			: [...this.request.items];
-		this.filteredItemCount = items.length;
-		const list = new SelectList(items, Math.max(1, Math.min(MAX_VISIBLE_ITEMS, items.length)), theme.selectListTheme, {
-			minPrimaryColumnWidth: 16,
-			maxPrimaryColumnWidth: 40,
-		});
-		list.onSelect = (item) => {
-			if (this.closed) return;
-			this.closed = true;
-			this.request.onClose();
-			this.request.onSelect(item);
-		};
-		list.onCancel = () => {
-			if (this.closed) return;
-			this.closed = true;
-			this.request.onClose();
-			this.request.onCancel?.();
-		};
-		return list;
+	private renderRow(item: SelectItem, selected: boolean, width: number): string {
+		const prefix = selected ? theme.selection("→ ") : "  ";
+		const label = selected ? theme.selection(singleLine(item.label, 200)) : singleLine(item.label, 200);
+		const description = item.description ? ` ${theme.dim(singleLine(item.description, 200))}` : "";
+		return truncateToWidth(`${prefix}${label}${description}`, Math.max(1, width), "…");
 	}
-}
 
-function isPrintable(data: string): boolean {
-	if (data.length === 0) return false;
-	// Reject anything containing control characters (escape sequences, enter,
-	// tab); multi-character pastes of plain text are allowed.
-	for (const char of data) {
-		const code = char.codePointAt(0) ?? 0;
-		if (code < 32 || code === 127) return false;
+	private filterItems(): SelectItem[] {
+		const query = this.input.getValue();
+		return query
+			? fuzzyFilter([...this.request.items], query, (item) => `${item.label} ${item.value}`)
+			: [...this.request.items];
 	}
-	return true;
+
+	private move(delta: number): void {
+		const count = this.filtered.length;
+		if (count === 0) return;
+		// Wrap like pi: up from the first row lands on the last and vice versa.
+		this.selectedIndex = (this.selectedIndex + delta + count) % count;
+	}
+
+	private confirm(): void {
+		const item = this.filtered[this.selectedIndex];
+		if (!item) return;
+		this.closed = true;
+		this.request.onClose();
+		this.request.onSelect(item);
+	}
+
+	private cancel(): void {
+		this.closed = true;
+		this.request.onClose();
+		this.request.onCancel?.();
+	}
 }

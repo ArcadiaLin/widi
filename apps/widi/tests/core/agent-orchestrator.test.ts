@@ -9,7 +9,7 @@ import {
 	InMemoryProfileStorageBackend,
 } from "../../src/core/agent-profile.ts";
 import { AuthStorage, type AuthStorageBackend, type LockResult } from "../../src/core/auth-storage.ts";
-import type { ExtensionContext } from "../../src/core/extension/api.ts";
+import type { ExtensionContext, ExtensionMessage } from "../../src/core/extension/api.ts";
 import { ModelRegistry, type OAuthProviderConfig } from "../../src/core/model-registry.ts";
 import { createCorePersistenceRegistry } from "../../src/core/persistence-registry.ts";
 import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
@@ -2085,8 +2085,11 @@ describe("AgentOrchestrator", () => {
 		]);
 		expect(extensionObservedEvents).not.toContainEqual(expect.objectContaining({ type: "extension_status_changed" }));
 		const snapshot = orchestrator.listExtensionStatuses(agentId);
-		(snapshot[0]?.status as { text: string }).text = "consumer mutation";
-		expect(orchestrator.listExtensionStatuses(agentId)[0]?.status.text).toBe("Ready");
+		// Frozen at admission, so a consumer cannot edit what the next reader sees.
+		expect(() => {
+			(snapshot[0]?.status as { text: string }).text = "consumer mutation";
+		}).toThrow(TypeError);
+		expect(orchestrator.listExtensionStatuses(agentId)[0]?.status).toMatchObject({ text: "Ready" });
 	});
 
 	it("persists extension messages with one entry id and records attributed diagnostics", async () => {
@@ -2196,15 +2199,12 @@ describe("AgentOrchestrator", () => {
 		if (!runner) throw new Error("Expected extension runner.");
 		const actions = runner.createContext("sample").actions;
 
+		// Core owns the key and the size; what a status says is the client's.
 		const invalidCalls = [
 			() => actions.setStatus("", { text: "Ready" }),
 			() => actions.setStatus("é".repeat(65), { text: "Ready" }),
-			() => actions.setStatus("ready", { text: "" }),
-			() => actions.setStatus("ready", { text: "é".repeat(2_049) }),
-			() => actions.setStatus("ready", { text: "Ready", progress: { completed: -1 } }),
-			() => actions.setStatus("ready", { text: "Ready", progress: { completed: 1.5 } }),
-			() => actions.setStatus("ready", { text: "Ready", progress: { completed: 2, total: 1 } }),
-			() => actions.setStatus("ready", { text: "Ready", progress: { completed: 1, total: -1 } }),
+			() => actions.setStatus("   ", { text: "Ready" }),
+			() => actions.setStatus("ready", { text: "é".repeat(4_097) }),
 		];
 		for (const invalidCall of invalidCalls) {
 			await expect(invalidCall()).rejects.toThrow();
@@ -2246,12 +2246,13 @@ describe("AgentOrchestrator", () => {
 		if (!runner) throw new Error("Expected extension runner.");
 		const actions = runner.createContext("sample").actions;
 
+		// A kind and a size, nothing else: an unknown kind is admitted here and
+		// declined by the renderer, which is where knowing kinds belongs.
 		const invalidCalls = [
-			() => actions.publishMessage({ kind: "html" as "text", content: "Report" }),
-			() => actions.publishMessage({ kind: "text", content: "" }),
+			() => actions.publishMessage({ content: "Report" } as unknown as ExtensionMessage),
+			() => actions.publishMessage({ kind: "", content: "Report" }),
+			() => actions.publishMessage({ kind: "has space", content: "Report" }),
 			() => actions.publishMessage({ kind: "text", content: "é".repeat(32_769) }),
-			() => actions.publishMessage({ kind: "text", title: "   ", content: "Report" }),
-			() => actions.publishMessage({ kind: "text", title: "é".repeat(2_049), content: "Report" }),
 		];
 		for (const invalidCall of invalidCalls) {
 			await expect(invalidCall()).rejects.toThrow();

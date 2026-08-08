@@ -10,7 +10,7 @@ import type {
 	ObservableBackgroundJobState,
 } from "../core/background/index.ts";
 import type { OrchestratorDiagnostic } from "../core/diagnostics.ts";
-import type { ExtensionStatusSnapshot } from "../core/extension/presentation.ts";
+import type { ExtensionStatusSnapshot } from "../core/extension/api.ts";
 import {
 	type HumanQuestion,
 	type HumanRequestKind,

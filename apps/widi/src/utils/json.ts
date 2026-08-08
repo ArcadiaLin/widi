@@ -26,3 +26,16 @@ export function normalizeJsonValue(value: JsonValue, label: string, maxBytes: nu
 	}
 	return JSON.parse(serialized) as JsonValue;
 }
+
+/**
+ * Make a normalized value's runtime behavior match the readonly type it is
+ * handed out under. Recursive, so one holder cannot change what a later holder
+ * sees through a nested array or object.
+ */
+export function freezeJsonValue(value: JsonValue): JsonValue {
+	if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
+		return value;
+	}
+	for (const child of Object.values(value)) freezeJsonValue(child);
+	return Object.freeze(value);
+}

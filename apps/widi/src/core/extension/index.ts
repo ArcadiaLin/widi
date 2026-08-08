@@ -50,4 +50,4 @@ export type {
 	ExtensionDivisionSource,
 	ExtensionSessionActions,
 } from "./types.ts";
-export { EXTENSION_OBSERVED_EVENT_NAMES } from "./types.ts";
+export { EXTENSION_OBSERVED_EVENT_NAMES, EXTENSION_TREE_BROADCAST_EVENT_NAMES } from "./types.ts";
