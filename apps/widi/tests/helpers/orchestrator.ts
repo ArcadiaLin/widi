@@ -32,6 +32,7 @@ import { ResourceLoader } from "../../src/core/resource-loader.ts";
 import { type AgentSessionMetadata, SessionManager } from "../../src/core/session-manager.ts";
 import { SettingManager } from "../../src/core/setting-manager.ts";
 import { ToolRegistry } from "../../src/core/tool-registry.ts";
+import { registerCoreAgentTools } from "../../src/core/tools/agents/builtin.ts";
 import { DISPOSE_AGENT_TOOL_NAME, type DisposeAgentDetails } from "../../src/core/tools/agents/dispose-agent.ts";
 import { SPAWN_AGENT_TOOL_NAME, type SpawnAgentDetails } from "../../src/core/tools/agents/spawn-agent.ts";
 import { registerCoreCodingTools } from "../../src/core/tools/coding/builtin.ts";
@@ -423,6 +424,18 @@ export function createToolRegistry(...tools: ToolDefinition[]): ToolRegistry {
 	return registry;
 }
 
+/**
+ * The default for these tests: the collaboration tools are registered, which is
+ * how the runtime always has them. The spawn-tree recap reads a resumed branch
+ * through the tool that wrote each result, so a registry without them makes a
+ * branch full of spawns read as empty.
+ */
+export function createCoreAgentToolRegistry(): ToolRegistry {
+	const registry = new ToolRegistry();
+	registerCoreAgentTools(registry);
+	return registry;
+}
+
 export function createCoreCodingToolRegistry(): ToolRegistry {
 	const registry = new ToolRegistry();
 	registerCoreCodingTools(registry, "/workspace/project");
@@ -524,8 +537,8 @@ export async function appendSpawnResult(
 		role: "toolResult",
 		toolCallId,
 		toolName: SPAWN_AGENT_TOOL_NAME,
-		content: [{ type: "text", text: `Agent ${spawnedAgentId} was created from profile ${profileId} and is idle.` }],
-		details: { agentId: spawnedAgentId, profileId } satisfies SpawnAgentDetails,
+		content: [{ type: "text", text: `- agent ${spawnedAgentId} [profile ${profileId}] created by new` }],
+		details: { agents: [{ origin: "new", agentId: spawnedAgentId, profileId }] } satisfies SpawnAgentDetails,
 		isError: false,
 		timestamp: Date.now(),
 	});

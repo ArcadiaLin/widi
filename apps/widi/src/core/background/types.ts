@@ -26,39 +26,23 @@ import type { JobHistoryStorage, SessionJobStore } from "./job-persistence.ts";
 /**
  * Every state a job passes through, including the two that are private.
  *
- * `foreground` and `accepting` belong to a candidate, not a job: the model has
- * no handle and an inline settlement ends the story. Only from `backgrounded`
- * on is the job something anyone else can name, which is also the point from
- * which it owes exactly one terminal outcome and one live t1 delivery attempt.
+ * `foreground` belongs to a candidate, not a job: the model has no handle and an
+ * inline settlement ends the story. Only from `backgrounded` on is the job
+ * something anyone else can name, which is also the point from which it owes
+ * exactly one terminal outcome and one live t1 delivery attempt.
  * `abort_requested` says the runtime fired the signal, not that the executor
  * stopped; the confirmation is the settlement.
  */
-export type BackgroundJobLifecycleState =
-	| "foreground"
-	| "accepting"
-	| "backgrounded"
-	| "abort_requested"
-	| BackgroundJobStatus;
+export type BackgroundJobLifecycleState = "foreground" | "backgrounded" | "abort_requested" | BackgroundJobStatus;
 
 /** Terminal execution state. A job reaches exactly one, at most once. */
 export type BackgroundJobStatus = "completed" | "failed" | "cancelled";
 
-/** The states an observer can ever see: candidates are never handed out. */
-export type ObservableBackgroundJobState = Exclude<BackgroundJobLifecycleState, "foreground" | "accepting">;
+/** The states an observer can ever see: a candidate is never handed out. */
+export type ObservableBackgroundJobState = Exclude<BackgroundJobLifecycleState, "foreground">;
 
 /** Not states: `settled` names the transition into any terminal state. */
 export type BackgroundJobTransition = "backgrounded" | "abort_requested" | "settled";
-
-/**
- * Whether a job has a local executor, and if not, who may settle it. `local`
- * holds its own promise, so one place settles it and watches the abort signal.
- * `external` has no such promise - the outcome is written from outside by the
- * named settler - which is why settlement needs authorization and why an abort
- * has to be completed by the runtime itself.
- */
-export type BackgroundJobOrigin =
-	| { readonly kind: "local" }
-	| { readonly kind: "external"; readonly settlerId: string };
 
 /** Terminal outcome recorded when a job's underlying work settles. */
 export interface BackgroundJobOutcome {
@@ -79,7 +63,6 @@ export interface BackgroundJobSnapshot {
 	readonly jobId: string;
 	/** Agent that owns the job and will read its t1. */
 	readonly ownerAgentId: string;
-	readonly origin: BackgroundJobOrigin;
 	readonly toolCallId: string;
 	readonly toolName: string;
 	/** Short label the caller named this job with, when the tool takes one. */
@@ -180,8 +163,6 @@ export type JobRejection =
 	| "unknown_job"
 	/** Still a candidate: the caller should not have had this id at all. */
 	| "not_backgrounded"
-	/** External settlement from someone other than the recorded settler. */
-	| "not_settler"
 	/** The capability's attachment was superseded or detached. */
 	| "stale_attachment"
 	/** Only where a caller must distinguish a persistence downgrade. */
@@ -208,8 +189,7 @@ export type BackgroundJobPersistenceHealth = "ephemeral" | "durable" | "degraded
  *
  * The generation answers exactly one question - "is this handle the current
  * one?" - and deliberately not "is the agent alive". A re-attached agent gets a
- * new generation, inherits no jobs, and does not become the settler of anything
- * its previous generation was assigned.
+ * new generation and inherits no jobs.
  */
 export interface OwnerAttachment {
 	readonly agentId: string;
@@ -219,8 +199,6 @@ export interface OwnerAttachment {
 	readonly persistenceHealth: BackgroundJobPersistenceHealth;
 	/** What this agent may do to its own jobs. */
 	readonly host: BackgroundJobHost;
-	/** What this agent may settle for other agents. */
-	readonly settler: BackgroundJobSettler;
 }
 
 /** What a tool needs to start a job it will settle itself. */
@@ -230,12 +208,6 @@ export interface StartLocalJobInput {
 	readonly name?: string;
 	readonly description?: string;
 	readonly report?: BackgroundJobReport;
-}
-
-/** What an assigning tool needs to create a job someone else will settle. */
-export interface CreateExternalJobInput extends StartLocalJobInput {
-	/** The agent authorized to write this job's outcome. */
-	readonly settlerAgentId: string;
 }
 
 /** A pull read of a job's rolling output tail, with the job it belongs to. */
@@ -266,12 +238,6 @@ export interface BackgroundJobHost {
 	 * agent was disposed mid-call" is an ordinary outcome for a tool, not a bug.
 	 */
 	startLocal(input: StartLocalJobInput): JobResult<{ execution: BackgroundJobExecution }>;
-	/**
-	 * Create a job another agent will settle. Async because the job must have a
-	 * durable head before the assignment goes out: an assignment whose job left
-	 * no record is how a task ends up owed by nobody.
-	 */
-	createExternal(input: CreateExternalJobInput): Promise<JobResult<{ job: BackgroundJobSnapshot }>>;
 	/** Observable jobs owned by this agent, oldest first. */
 	list(): readonly BackgroundJobSnapshot[];
 	read(jobId: string): JobResult<{ read: BackgroundJobReadResult }>;
@@ -302,19 +268,6 @@ export interface BackgroundJobExecution {
 	 * nothing was ever observable.
 	 */
 	settle(outcome: BackgroundJobOutcome): JobResult<{ disposition: "inline" | "backgrounded" }>;
-}
-
-/**
- * Settler-scoped capability: write the outcome of a job owned by someone else.
- * Authorization is the settler attachment recorded on the job, generation
- * included, so a resumed agent cannot settle what its predecessor was assigned.
- */
-export interface BackgroundJobSettler {
-	settle(input: {
-		readonly ownerAgentId: string;
-		readonly jobId: string;
-		readonly outcome: BackgroundJobOutcome;
-	}): JobResult;
 }
 
 /** Write-only view of a job's output stream, as given to a running tool. */
@@ -387,7 +340,6 @@ export interface JobStartedRecord {
 	readonly toolName: string;
 	readonly name?: string;
 	readonly description?: string;
-	readonly origin: BackgroundJobOrigin;
 	readonly startedAt: number;
 	readonly backgroundedAt: number;
 	/** File name inside the namespace's output directory, never a path. */
@@ -430,7 +382,6 @@ export interface JobHistoryEntry {
 	readonly toolName: string;
 	readonly name?: string;
 	readonly description?: string;
-	readonly origin: BackgroundJobOrigin;
 	readonly startedAt: number;
 	readonly backgroundedAt: number;
 	readonly outputFile: string;

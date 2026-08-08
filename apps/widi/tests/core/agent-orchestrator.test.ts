@@ -746,7 +746,10 @@ describe("AgentOrchestrator", () => {
 		);
 	});
 
-	it("lists loaded skills in the harness system prompt when the resolved read tool is active", async () => {
+	// The listing follows the role's own `skillsListing`, not what its tools are
+	// called: a role that can open a skill file some other way still gets one, and
+	// a role that holds `read` for unrelated reasons does not.
+	it("lists loaded skills in the harness system prompt when the role asked for the listing", async () => {
 		const env = new MemoryExecutionEnv();
 		await env.writeFile(
 			"/workspace/project/.widi/skills/code-review/SKILL.md",
@@ -755,7 +758,12 @@ describe("AgentOrchestrator", () => {
 			),
 		);
 		env.dirs.add("/workspace/project/.widi/skills");
-		const orchestrator = await createOrchestrator(env, { toolRegistry: createCoreCodingToolRegistry() });
+		const orchestrator = await createOrchestrator(env, {
+			toolRegistry: createCoreCodingToolRegistry(),
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([{ profile: { ...defaultProfile, skillsListing: true } }]),
+			),
+		});
 		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		const harness = requireAgentHarness(orchestrator, agentId);
 
@@ -763,20 +771,38 @@ describe("AgentOrchestrator", () => {
 			harness as unknown as { systemPrompt: (context: { activeTools: { name: string }[] }) => string | Promise<string> }
 		).systemPrompt;
 		expect(typeof systemPrompt).toBe("function");
-		expect(orchestrator.getAgentTools(agentId).activeToolNames).toContain("read");
 
-		const withRead = await systemPrompt({ activeTools: harness.getActiveTools() });
-		expect(withRead.startsWith("default prompt")).toBe(true);
-		expect(withRead).toContain("<available_skills>");
-		expect(withRead).toContain("<name>code-review</name>");
-		expect(withRead).toContain("<location>/workspace/project/.widi/skills/code-review/SKILL.md</location>");
+		const prompt = await systemPrompt({ activeTools: harness.getActiveTools() });
+		expect(prompt.startsWith("default prompt")).toBe(true);
+		expect(prompt).toContain("<available_skills>");
+		expect(prompt).toContain("<name>code-review</name>");
+		expect(prompt).toContain("<location>/workspace/project/.widi/skills/code-review/SKILL.md</location>");
 		// The skill body stays in the file; the listing is metadata-only.
-		expect(withRead).not.toContain("SECRET BODY INSTRUCTIONS");
+		expect(prompt).not.toContain("SECRET BODY INSTRUCTIONS");
 
+		// Dropping the read tool changes the tool guidance and nothing else.
 		await orchestrator.setAgentActiveTools(agentId, ["write"]);
 		const withoutRead = await systemPrompt({ activeTools: harness.getActiveTools() });
-		expect(withoutRead).not.toContain("<available_skills>");
+		expect(withoutRead).toContain("<available_skills>");
 		expect(withoutRead).toContain("Available tools:\n- write: Create or overwrite files");
+	});
+
+	it("omits the skills listing for a role that did not ask for one", async () => {
+		const env = new MemoryExecutionEnv();
+		await env.writeFile(
+			"/workspace/project/.widi/skills/code-review/SKILL.md",
+			["---", "name: code-review", "description: Review code for issues.", "---", "BODY"].join("\n"),
+		);
+		env.dirs.add("/workspace/project/.widi/skills");
+		const orchestrator = await createOrchestrator(env, { toolRegistry: createCoreCodingToolRegistry() });
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const harness = requireAgentHarness(orchestrator, agentId);
+		expect(orchestrator.getAgentTools(agentId).activeToolNames).toContain("read");
+
+		const systemPrompt = (
+			harness as unknown as { systemPrompt: (context: { activeTools: { name: string }[] }) => string | Promise<string> }
+		).systemPrompt;
+		expect(await systemPrompt({ activeTools: harness.getActiveTools() })).not.toContain("<available_skills>");
 	});
 
 	it("composes tool guidance from active tool snippets and guidelines", async () => {

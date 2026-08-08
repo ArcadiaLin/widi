@@ -27,45 +27,36 @@ describe("buildAgentSystemPrompt", () => {
 		);
 	});
 
-	it("names the agent only when it can address other agents", () => {
+	// Naming the agent follows the caller passing an id, not what its tools are
+	// called. Whether anything will address it by that id is the caller's to know.
+	it("names the agent exactly when it was given an id", () => {
 		expect(
-			buildAgentSystemPrompt({
-				basePrompt: "base prompt",
-				skills: [],
-				activeTools: [{ name: "read" }],
-				agentId: "worker-2",
-			}),
-		).toBe("base prompt");
-		expect(
-			buildAgentSystemPrompt({
-				basePrompt: "base prompt",
-				skills: [],
-				activeTools: [{ name: "send_message" }],
-				agentId: "worker-2",
-			}),
+			buildAgentSystemPrompt({ basePrompt: "base prompt", skills: [], activeTools: [], agentId: "worker-2" }),
 		).toBe("base prompt\n\nYou are agent worker-2. Other agents address you by that id.");
-		expect(
-			buildAgentSystemPrompt({ basePrompt: "base prompt", skills: [], activeTools: [{ name: "send_message" }] }),
-		).toBe("base prompt");
+		expect(buildAgentSystemPrompt({ basePrompt: "base prompt", skills: [], activeTools: [] })).toBe("base prompt");
 	});
 
 	it("keeps the base system prompt when skills are absent or model-hidden", () => {
-		expect(buildAgentSystemPrompt({ basePrompt: "base prompt", skills: [], activeTools: [{ name: "read" }] })).toBe(
-			"base prompt",
-		);
+		expect(
+			buildAgentSystemPrompt({ basePrompt: "base prompt", skills: [], activeTools: [], includeSkills: true }),
+		).toBe("base prompt");
 		expect(
 			buildAgentSystemPrompt({
 				basePrompt: "base prompt",
 				skills: [{ ...skill, disableModelInvocation: true }],
-				activeTools: [{ name: "read" }],
+				activeTools: [],
+				includeSkills: true,
 			}),
 		).toBe("base prompt");
-		expect(
-			buildAgentSystemPrompt({ basePrompt: "base prompt", skills: [skill], activeTools: [{ name: "read" }] }),
-		).toContain("<available_skills>");
 	});
 
-	it("lets includeSkills decide the listing over the active tools", () => {
+	// The role asks for the listing or does not get one. The tools it holds are
+	// not consulted: whether any of them can open a skill file is not knowable
+	// from here, and a role that lists none still gets `/skill`.
+	it("lists skills only when the role asked for the listing", () => {
+		expect(
+			buildAgentSystemPrompt({ basePrompt: "base prompt", skills: [skill], activeTools: [{ name: "read" }] }),
+		).toBe("base prompt");
 		expect(
 			buildAgentSystemPrompt({
 				basePrompt: "base prompt",
@@ -75,12 +66,7 @@ describe("buildAgentSystemPrompt", () => {
 			}),
 		).toBe("base prompt");
 		expect(
-			buildAgentSystemPrompt({
-				basePrompt: "base prompt",
-				skills: [skill],
-				activeTools: [{ name: "write" }],
-				includeSkills: true,
-			}),
+			buildAgentSystemPrompt({ basePrompt: "base prompt", skills: [skill], activeTools: [], includeSkills: true }),
 		).toContain("<available_skills>");
 	});
 
@@ -102,6 +88,7 @@ describe("buildAgentSystemPrompt", () => {
 			activeTools: [{ name: "read", promptSnippet: "Read file contents" }],
 			appendSections: ["APPENDED"],
 			contextFiles: [{ path: "/repo/AGENTS.md", content: "RULES" }],
+			includeSkills: true,
 			cwd: "/repo",
 		});
 		const order = [
@@ -170,6 +157,7 @@ describe("buildAgentSystemPrompt composed text", () => {
 		agentId: "worker-2" as const,
 		appendSections: ["FROM PROFILE", "FROM EXTENSION"],
 		contextFiles: [{ path: "/repo/AGENTS.md", content: "ROOT RULES" }],
+		includeSkills: true,
 		cwd: "/repo",
 	};
 
@@ -247,13 +235,19 @@ describe("buildAgentSystemPrompt composed text", () => {
 		`);
 	});
 
-	it("drops only the listing when no read tool is active", () => {
-		expect(
-			buildAgentSystemPrompt({ ...everySection, activeTools: [{ name: "send_message" }], skills: [skill] }),
-		).toMatchInlineSnapshot(`
+	// Same input with the listing left unasked-for: only that section goes.
+	it("drops only the listing when the role did not ask for one", () => {
+		const { includeSkills: _asked, ...withoutListing } = everySection;
+		expect(buildAgentSystemPrompt({ ...withoutListing, skills: [skill] })).toMatchInlineSnapshot(`
 			"You are a reviewer.
 
 			You are agent worker-2. Other agents address you by that id.
+
+			Available tools:
+			- read: Read file contents
+
+			Tool guidelines:
+			- Read before editing.
 
 			FROM PROFILE
 
@@ -268,49 +262,6 @@ describe("buildAgentSystemPrompt composed text", () => {
 			</project_instructions>
 
 			</project_context>
-
-			Current working directory: /repo"
-		`);
-	});
-
-	it("keeps the listing when includeSkills overrides the active tools", () => {
-		expect(
-			buildAgentSystemPrompt({
-				...everySection,
-				activeTools: [{ name: "send_message" }],
-				includeSkills: true,
-				skills: [skill],
-			}),
-		).toMatchInlineSnapshot(`
-			"You are a reviewer.
-
-			You are agent worker-2. Other agents address you by that id.
-
-			FROM PROFILE
-
-			FROM EXTENSION
-
-			<project_context>
-
-			Project-specific instructions and guidelines:
-
-			<project_instructions path="/repo/AGENTS.md">
-			ROOT RULES
-			</project_instructions>
-
-			</project_context>
-
-			The following skills provide specialized instructions for specific tasks.
-			Read the full skill file when the task matches its description.
-			When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.
-
-			<available_skills>
-			  <skill>
-			    <name>code-review</name>
-			    <description>Review code for issues.</description>
-			    <location>/skills/code-review/SKILL.md</location>
-			  </skill>
-			</available_skills>
 
 			Current working directory: /repo"
 		`);

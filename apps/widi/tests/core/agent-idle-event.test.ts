@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import { messageBindingFor } from "../../src/core/message.ts";
 import type { OrchestratorEvent } from "../../src/core/types.ts";
+import { startBackgroundedJob } from "../helpers/background-jobs.ts";
 import {
 	createOrchestrator,
 	defaultModel,
@@ -193,20 +194,10 @@ describe("agent_idle", () => {
 
 	it("reports the jobs an idle agent is still waiting on", async () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
-		// An external job is owed by a live settler, so the worker exists first and
-		// its own ready edge stays out of the collected events.
-		const settlerAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		const events = collectIdleEvents(orchestrator);
 		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
-		const jobs = requireAgentJobs(orchestrator, agentId);
-		const created = await jobs.createExternal({
-			toolCallId: "call-1",
-			toolName: "send_message",
-			description: "delegated task",
-			settlerAgentId,
-		});
-		expect(created.ok).toBe(true);
+		startBackgroundedJob(requireAgentJobs(orchestrator, agentId), { toolName: "bash", description: "a long build" });
 
 		const run = await startPromptRun(orchestrator, agentId);
 		run.resolve(assistantMessage());

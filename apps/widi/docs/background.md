@@ -38,20 +38,20 @@ LLM 协议没有 deferred tool_result：一个工具调用一旦结案，就再�
 
 ### 能力对象
 
-agent 经 `attachAgent({ agentId, sessionId })` 附着，得到 `OwnerAttachment`（`generation` 单调递增；`persistenceHealth` 可在运行中从 `durable` 降为 `degraded`），其上挂两个能力：
+agent 经 `attachAgent({ agentId, sessionId })` 附着，得到 `OwnerAttachment`（`generation` 单调递增；`persistenceHealth` 可在运行中从 `durable` 降为 `degraded`），其上挂一个能力：
 
-- `BackgroundJobHost`：`startLocal` / `createExternal` / `list` / `read` / `watch` / `abort`。attachment 失效统一返回 `stale_attachment`。
-- `BackgroundJobSettler`：`settle({ ownerAgentId, jobId, outcome })`，供外部执行者回报结果。授权是 job 上记录的 `origin.settlerId` 与 `settlerGeneration` 双匹配——模型参数无法伪造调用者身份。
+- `BackgroundJobHost`：`startLocal` / `list` / `read` / `watch` / `abort`。attachment 失效统一返回 `stale_attachment`。
 
-`detachAgent` 是同步摘除：对自己拥有的每个 job 强制取消（`abort` + `settle(cancelled)` 一步到位），对自己欠账的 job 同样取消（owner 的作业照走正常 t1）。store 打开失败或历史截断只把 health 置为 `degraded` 并发诊断——作业继续跑，只是不再可跨重启恢复。
+每个 job 都有本地执行器，所以结算只有一条路径：执行句柄自己写终态。没有「由别的 agent 回报结果」这回事——一个 agent 停了这件事由运行时观测（见 `docs/` 里的 agent 协作部分），不再走作业表。
+
+`detachAgent` 是同步摘除：对自己拥有的每个 job 强制取消（`abort` + `settle(cancelled)` 一步到位）。store 打开失败或历史截断只把 health 置为 `degraded` 并发诊断——作业继续跑，只是不再可跨重启恢复。
 
 ### 状态机
 
-`BackgroundJobLifecycleState = "foreground" | "accepting" | "backgrounded" | "abort_requested" | "completed" | "failed" | "cancelled"`。前两个是候选态（不可观测），后三个是终态（恰好到达一个，至多一次）。
+`BackgroundJobLifecycleState = "foreground" | "backgrounded" | "abort_requested" | "completed" | "failed" | "cancelled"`。第一个是候选态（不可观测），后三个是终态（恰好到达一个，至多一次）。
 
-- 创建：本地执行 → `foreground`；外部执行者 → `accepting`（等待 settler 回报）。
+- 创建：`foreground`。
 - `foreground` → `backgrounded`：执行句柄调 `acceptBackground()`（deadline 输了的时刻）。
-- `accepting` → `backgrounded`：started 记录落盘后提交；落盘失败则 job 置 `cancelled` 并降级。
 - `backgrounded` → `abort_requested`：`abortJob` 或输出熔断触发；只发信号，确认以 settlement 的形式后到。
 - 任意非终态 → 终态：`_settle`，最多一次。候选态结算返回 `inline`（从未可观测）；可观测态走 settlement 流程。
 

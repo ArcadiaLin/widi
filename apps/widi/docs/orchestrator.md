@@ -91,6 +91,50 @@ extension 可以把状态交给会话历史管理：`ExtensionSessionContext.app
 
 `ExtensionLoader` 负责发现（`ExtensionRoot`：`agent_dir | cwd | settings`）、注册（`registerExtension(extensionId, module)`）、加载与重载。`reloadExtensions({ agentIds? })` 按 agent 报告 `reloaded | skipped | failed`（跳过原因：`creating | running | gone`）；重载时整代注销旧 harness 拦截器再装新。
 
+### 能力缺口
+
+以下是 core 有、`ExtensionActions` 没有的能力。记在这里是因为它们各自有明确的理由或明确的待办，不是遗漏清单——每条都注明是有意的边界还是欠的账。
+
+**跨 agent 面（有意，但边界待定）**
+
+`ExtensionActions` 的注释写死了「Cross-agent operations are not part of this contract」。extension 拿不到 `listProfiles` / `listAgents` / `describe` / `spawn` / `watch` / `dispose`，`prompt`/`steer`/`followUp` 全部绑死在自己那个 agent 上。
+
+但它**能观测** `agent_spawned` 和 `agent_idle`。自从 agent 停止上报改为运行时观测 idle 边沿（见 `host.ts` 的 `watch`），`agent_idle` 就是那套机制真正的触发点——extension 看得见这条边沿，却没有任何手段订阅或寻址。
+
+管道其实已经铺好：`ExtensionCoreActions.messageSinkFor(extensionId)` 的 sink 把 target 挂在 request 上，一个 sink 服务所有目标。所以这不是「做不了」，是**跨 agent 的授权边界还没定**——一个扩展能对别人的 agent 做什么，需要先有答案。
+
+**`precede` 投递模式（欠账）**
+
+`MessageDeliveryMode` 三态里 extension 只映射到两个：`prompt`/`followUp` 走 `next_turn`，`steer` 走 `interrupt`。`precede` 够不到。
+
+这条差别是实质的。`decideMessageDelivery` 里 `precede` 单独短路成 `append`——唯一不过 phase 闸门、也不唤醒目标的方法；而 `next_turn` 打到一个 idle 的 agent 会被判成 `prompt`，**直接起一轮**。
+
+后果：extension 没有「模型可读 + 不唤醒 + 落分支」这条通道。`appendEntry` / `publishMessage` 确实落盘，但明确不进模型上下文。想给一个刚 resume 的 agent 铺垫上下文，只能在「把它叫醒」和「写在模型看不见的地方」之间选。
+
+开这条口之前要想清楚：`precede` 不受 phase 约束，等于允许扩展往正在跑的分支上追加模型可读文本，权限强于它现有的任何一个方法。
+
+**recap 机制（未定）**
+
+`RecapDefinition` / `selectOwedRecap` 没有导出到 `extension/api.ts`。recap 实质是三件事：读分支、比对还欠什么、不唤醒地写进模型上下文。extension 有前两件——`session.getTree()` 返回的就是 `collect` 的入参类型，`findEntries` 的私有命名空间做幂等比 core 把 id 编进 `MessageSource.details` 还干净——只缺第三件，即上面那条 `precede`。
+
+给了 `precede` 之后是否还要把机制本身导出，取决于 recap 定位成 core 内部机制还是公开原语。
+
+**可路由之前的钩子（未定）**
+
+`_buildLiveAgent` 里 `bindCore` 是最后一步，所以 `activate()` 阶段 actions 未绑，什么都做不了。最早的可操作点是 `agent_spawned` / `agent_resumed` observer，那时 core 的 recap 已经写完、`ready` idle 已经发过。observer 是被 `await` 的（`event-bus.ts`），所以扩展的写入仍在 `spawnAgent()` 返回前落地，不会和第一次人类输入抢跑——但它只能追加在 core 之后，无法先于或替换 core 的行为。
+
+**扩展工具可以参与 recap（已开放，需明示）**
+
+`readAgentBranchFacts` 定义在 `ToolDefinition` 上，而 extension 贡献的正是 `ToolDefinition`。所以一个由扩展提供、会创建 agent 的工具，可以声明自己的 branch reader，core 的 spawn-tree recap 会认。这是依赖反转的顺带结果，不是刻意设计——写在这里以免被误撞发现。
+
+### 已知隔离缺陷
+
+`ExtensionSendOptions.source` 被原样透传（含 `details`），消息落盘时成为条目的 `details.source`；而 `recapEntryIds` 只凭 `source.kind === "recap"` 加 `details.recap` 判定一条 recap 是否已给过。
+
+于是扩展可以发一条 `source: { kind: "recap", details: { recap: "spawn_tree", ids: [...] } }` 的消息，让 core 自己对这些 id 的 recap 永久闭嘴。
+
+`source` 的注释说它「A label, not a capability」——就投递策略而言成立，但 recap 命名空间是 core 会**读回来做判断**的，那它就不止是标签。修的方向是让 core 保留的 `kind` 不可被请求方冒充。开放 `precede` 之前应先堵上这个。
+
 ## 5. 客户端、事件与诊断
 
 **OrchestratorClient**（`client.ts`）是 TUI 实现的被动接收端，经 `registerClient` 注册：

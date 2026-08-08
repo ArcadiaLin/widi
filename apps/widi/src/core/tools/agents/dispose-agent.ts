@@ -48,6 +48,26 @@ export interface DisposeAgentDetails {
 }
 
 /**
+ * Every agent a recorded result says is gone, the named scope included. Beside
+ * the writer for the same reason `spawn_agent`'s reader is: the shape of this
+ * record is this tool's, and nothing else should have to learn it.
+ *
+ * `unknown` counts: the branch asked about that agent and was told there is no
+ * such agent, which is the same fact as gone for anything reading this back.
+ */
+function readDisposedAgentIds(details: unknown): readonly string[] {
+	if (typeof details !== "object" || details === null) return [];
+	const agents = (details as Partial<DisposeAgentDetails>).agents;
+	if (!Array.isArray(agents)) return [];
+	return agents.flatMap((agent: DisposeAgentAgentStatus) =>
+		typeof agent?.agentId === "string" &&
+		(agent.state === "disposed" || agent.state === "already_disposed" || agent.state === "unknown")
+			? [agent.agentId, ...(agent.disposedAgentIds ?? [])]
+			: [],
+	);
+}
+
+/**
  * Destroy named same-tree agents.
  *
  * Each id is handled on its own so one bad entry cannot hide the others, and
@@ -64,8 +84,9 @@ export function createDisposeAgentToolDefinition(): ToolDefinition<typeof dispos
 		name: DISPOSE_AGENT_TOOL_NAME,
 		label: DISPOSE_AGENT_TOOL_NAME,
 		description:
-			"Destroy one or more agents in your agent tree. scope agent destroys only the named agents and leaves their descendants running; scope subtree recursively destroys each named agent and all descendants. Each destroyed agent is stopped, its background work is cancelled, and any task it still owed is reported as cancelled. A selection containing you is refused. Only the running agents list_agents reports can be disposed; its closed entries are already not running. Disposing an agent is not how you finish its task: complete the task first.",
+			"Destroy one or more agents in your agent tree. scope agent destroys only the named agents and leaves their descendants running; scope subtree recursively destroys each named agent and all descendants. Each destroyed agent is stopped and its background work is cancelled; if you were watching one, you are told it is gone rather than left waiting. A selection containing you is refused. Only the running agents list_agents reports can be disposed; a resumable session is already not running. Dispose an agent once you are done with it - an agent you stop needing but leave running is a decision, not a way to finish its work.",
 		promptSnippet: "Destroy same-tree agents individually or recursively by subtree",
+		readAgentBranchFacts: (details) => ({ gone: readDisposedAgentIds(details) }),
 		parameters: disposeAgentSchema,
 		execute: async (_toolCallId, { agentIds, scope, reason }, context) => {
 			const host = requireAgentHost(context);

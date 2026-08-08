@@ -30,10 +30,6 @@ import type { BackgroundJobStartedDetails } from "./background/index.ts";
 import { formatInterruptedBackgroundJobResultText } from "./background/index.ts";
 import { recapEntryIds } from "./message.ts";
 import { ORCHESTRATOR_MESSAGE_CUSTOM_TYPE } from "./session-manager.ts";
-import type { DisposeAgentDetails } from "./tools/agents/dispose-agent.ts";
-import { DISPOSE_AGENT_TOOL_NAME } from "./tools/agents/dispose-agent.ts";
-import type { SpawnAgentDetails } from "./tools/agents/spawn-agent.ts";
-import { SPAWN_AGENT_TOOL_NAME } from "./tools/agents/spawn-agent.ts";
 
 /** One thing a branch is owed a word about. */
 export interface RecapSubject {
@@ -46,6 +42,33 @@ export interface RecapSubject {
 	/** What the model reads about this subject alone. */
 	readonly text: string;
 }
+
+/** An agent as some tool's recorded result named it. */
+export interface RecordedAgent {
+	readonly agentId: string;
+	/** Absent when the record does not say which profile it ran as. */
+	readonly profileId?: string;
+}
+
+/** What one recorded tool result says about the agents a branch believes in. */
+export interface AgentBranchFacts {
+	/** Agents the result says it created. */
+	readonly created?: readonly RecordedAgent[];
+	/** Agents the result says are gone. */
+	readonly gone?: readonly string[];
+}
+
+/**
+ * Ask whatever wrote a result what it says about the branch's agents.
+ *
+ * A recap has to read records it did not write, and the shape of a record
+ * belongs to its writer. Reading them here instead would put a copy of every
+ * tool's result schema in core, kept in step by hand - which is the same
+ * arrangement as a table of tool names, one indirection further in.
+ *
+ * Returns nothing for a tool with nothing to say, which is nearly all of them.
+ */
+export type AgentBranchFactReader = (toolName: string, details: unknown) => AgentBranchFacts | undefined;
 
 /**
  * One kind of recap: what to look for on a branch, and how to say it.
@@ -135,7 +158,7 @@ export function collectRecappedIds(entries: readonly SessionTreeEntry[], recap: 
  * gets a new tree, so those agents are outside it and refuse both `send_message`
  * and `dispose_agent`.
  */
-export function createSpawnTreeRecap(cause: SpawnTreeRecapCause): RecapDefinition {
+export function createSpawnTreeRecap(cause: SpawnTreeRecapCause, read: AgentBranchFactReader): RecapDefinition {
 	return {
 		recap: SPAWN_TREE_RECAP,
 		collect: (entries) => {
@@ -143,12 +166,12 @@ export function createSpawnTreeRecap(cause: SpawnTreeRecapCause): RecapDefinitio
 			for (const entry of entries) {
 				for (const id of entryRecapIds(entry, SPAWN_TREE_RECAP)) open.delete(id);
 				if (entry.type !== "message" || entry.message.role !== "toolResult" || entry.message.isError) continue;
-				const { toolName, details } = entry.message;
-				if (toolName === SPAWN_AGENT_TOOL_NAME && isSpawnAgentDetails(details)) {
-					open.set(details.agentId, { id: details.agentId, text: `${details.agentId} (profile ${details.profileId})` });
-				} else if (toolName === DISPOSE_AGENT_TOOL_NAME && isDisposeAgentDetails(details)) {
-					for (const id of disposedAgentIds(details)) open.delete(id);
+				const facts = read(entry.message.toolName, entry.message.details);
+				if (facts === undefined) continue;
+				for (const { agentId, profileId } of facts.created ?? []) {
+					open.set(agentId, { id: agentId, text: profileId ? `${agentId} (profile ${profileId})` : agentId });
 				}
+				for (const agentId of facts.gone ?? []) open.delete(agentId);
 			}
 			return [...open.values()];
 		},
@@ -206,30 +229,6 @@ export function createOrphanedJobHandlesRecap(recorded: ReadonlySet<string>): Re
 function entryRecapIds(entry: SessionTreeEntry, recap: string): readonly string[] {
 	if (entry.type !== "custom_message" || entry.customType !== ORCHESTRATOR_MESSAGE_CUSTOM_TYPE) return [];
 	return recapEntryIds(entry.details, recap);
-}
-
-/** Every agent a recorded dispose says is gone, the caller's own scope included. */
-function disposedAgentIds(details: DisposeAgentDetails): readonly string[] {
-	return details.agents.flatMap((agent) =>
-		agent.state === "disposed" || agent.state === "already_disposed" || agent.state === "unknown"
-			? [agent.agentId, ...(agent.disposedAgentIds ?? [])]
-			: [],
-	);
-}
-
-function isSpawnAgentDetails(details: unknown): details is SpawnAgentDetails {
-	if (typeof details !== "object" || details === null) return false;
-	const candidate = details as Partial<SpawnAgentDetails>;
-	return typeof candidate.agentId === "string" && typeof candidate.profileId === "string";
-}
-
-function isDisposeAgentDetails(details: unknown): details is DisposeAgentDetails {
-	if (typeof details !== "object" || details === null) return false;
-	const candidate = details as Partial<DisposeAgentDetails>;
-	return (
-		Array.isArray(candidate.agents) &&
-		candidate.agents.every((agent) => typeof agent === "object" && agent !== null && typeof agent.agentId === "string")
-	);
 }
 
 /**

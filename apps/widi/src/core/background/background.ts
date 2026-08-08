@@ -35,7 +35,6 @@ import {
 	type BackgroundJobExecution,
 	type BackgroundJobHost,
 	type BackgroundJobLifecycleState,
-	type BackgroundJobOrigin,
 	type BackgroundJobOutcome,
 	type BackgroundJobPersistenceHealth,
 	type BackgroundJobReadResult,
@@ -43,10 +42,8 @@ import {
 	type BackgroundJobReportSnapshot,
 	type BackgroundJobRuntimeOptions,
 	type BackgroundJobRuntimePorts,
-	type BackgroundJobSettler,
 	type BackgroundJobSnapshot,
 	type BackgroundJobWatch,
-	type CreateExternalJobInput,
 	DEFAULT_BACKGROUND_JOB_PROGRESS_THROTTLE_MS,
 	DEFAULT_BACKGROUND_JOB_REPORT_THROTTLE_MS,
 	type JobCloseCause,
@@ -60,8 +57,6 @@ import {
 	type OwnerAttachment,
 	type StartLocalJobInput,
 } from "./types.ts";
-
-const LOCAL_ORIGIN: BackgroundJobOrigin = Object.freeze({ kind: "local" });
 
 /**
  * Everything the runtime holds for one attached agent. It outlives
@@ -84,8 +79,6 @@ interface AttachmentState {
 	detached: boolean;
 	/** Job ids this agent owns, candidates included, in creation order. */
 	readonly owned: Set<string>;
-	/** Job ids this agent owes an outcome as external settler. */
-	readonly owed: Set<string>;
 	/** Live local subscribers, fed in the same order as published events. */
 	readonly watchers: Set<(change: BackgroundJobChange) => void>;
 	/**
@@ -99,17 +92,14 @@ interface AttachmentState {
 }
 
 /**
- * A job in any state, observable or not. Candidates (`foreground`, `accepting`)
- * live in the same table as backgrounded jobs so there is one place to look up
- * an id; only the observable ones are ever handed out.
+ * A job in any state, observable or not. A `foreground` candidate lives in the
+ * same table as backgrounded jobs so there is one place to look up an id; only
+ * the observable ones are ever handed out.
  */
 interface LiveJob {
 	readonly id: string;
 	readonly ownerId: string;
 	readonly ownerGeneration: number;
-	readonly origin: BackgroundJobOrigin;
-	/** Generation of the settler attachment at creation, for external jobs. */
-	readonly settlerGeneration?: number;
 	readonly toolCallId: string;
 	readonly toolName: string;
 	readonly name?: string;
@@ -149,7 +139,6 @@ export class BackgroundJobRuntime {
 	private readonly _reportThrottleMs: number;
 	private readonly _outputCeilingBytes: number;
 	private readonly _incrementMaxBytes: number;
-	/** Runtime-wide: ids never restart, so the settler index can key on one. */
 	private _nextJobId = 0;
 	private _nextGeneration = 0;
 
@@ -163,10 +152,9 @@ export class BackgroundJobRuntime {
 	}
 
 	/**
-	 * Bring an agent into scope and hand back its two capabilities. An owner with
-	 * no session directory attaches as `ephemeral` and keeps no history. A second
-	 * attach of the same id is a new generation: it inherits nothing, and does
-	 * not become the settler of jobs the previous generation owed.
+	 * Bring an agent into scope and hand back its capabilities. An owner with no
+	 * session directory attaches as `ephemeral` and keeps no history. A second
+	 * attach of the same id is a new generation and inherits nothing.
 	 */
 	async attachAgent(input: { agentId: string; sessionId: string }): Promise<OwnerAttachment> {
 		this.detachAgent(input.agentId);
@@ -211,10 +199,9 @@ export class BackgroundJobRuntime {
 
 	/**
 	 * Take an agent out of scope: invalidate the attachment synchronously, then
-	 * force-cancel the jobs it owned and the external jobs it owed, so nothing is
-	 * left waiting on a settler that will never write it. A detached owner gets
-	 * no events and no t1, but history is still written, which is why the scope
-	 * is dropped only once its tail has drained.
+	 * force-cancel the jobs it owned. A detached owner gets no events and no t1,
+	 * but history is still written, which is why the scope is dropped only once
+	 * its tail has drained.
 	 *
 	 * Ordering is contract: the host calls this after marking the agent disposing
 	 * and before any other teardown.
@@ -228,15 +215,6 @@ export class BackgroundJobRuntime {
 			const record = this._jobs.get(jobId);
 			if (record) this._forceCancel(record, `Agent ${agentId} was disposed.`);
 		}
-		// Work this agent owed to other agents cannot be settled now. Cancelling
-		// the owner's job reports that through the owner's normal t1 path; the
-		// owner itself stays live.
-		for (const jobId of [...state.owed]) {
-			const record = this._jobs.get(jobId);
-			if (record) {
-				this._forceCancel(record, `Settler agent ${agentId} was disposed before it reported a result.`);
-			}
-		}
 		void state.tail.then(() => {
 			// A re-attach may already own this id; only the scope that was detached
 			// is dropped.
@@ -249,11 +227,6 @@ export class BackgroundJobRuntime {
 	/** Owner-scoped capability. Identity is closed over, never taken from input. */
 	hostFor(agentId: string): BackgroundJobHost | undefined {
 		return this._current(agentId)?.attachment.host;
-	}
-
-	/** Settler-scoped capability: write the outcome of someone else's job. */
-	settlerFor(agentId: string): BackgroundJobSettler | undefined {
-		return this._current(agentId)?.attachment.settler;
 	}
 
 	/** Observable jobs owned by `agentId`, oldest first. Candidates never appear. */
@@ -396,16 +369,6 @@ export class BackgroundJobRuntime {
 		await this._ports.messageSinkFor(binding).send({ targetAgentId: ownerAgentId, body, mode });
 	}
 
-	/**
-	 * Settle a job from outside its owner. A forwarding seam for hosts that hold
-	 * an id rather than a capability, under the same authorization.
-	 */
-	settleJob(agentId: string, jobId: string, outcome: BackgroundJobOutcome, settledBy: string): JobResult {
-		const settler = this._current(settledBy);
-		if (!settler) return { ok: false, reason: "stale_attachment" };
-		return this._settleExternal(settler.agentId, settler.generation, agentId, jobId, outcome);
-	}
-
 	// -- attachment ---------------------------------------------------------
 
 	/** The agent's live scope, or nothing once it has been detached. */
@@ -433,7 +396,6 @@ export class BackgroundJobRuntime {
 			degradedReported: false,
 			detached: false,
 			owned: new Set(),
-			owed: new Set(),
 			watchers: new Set(),
 			tail: Promise.resolve(),
 			attachment: {
@@ -444,7 +406,6 @@ export class BackgroundJobRuntime {
 					return health();
 				},
 				host: this._createHost(agentId, generation),
-				settler: this._createSettler(agentId, generation),
 			},
 		};
 	}
@@ -457,7 +418,6 @@ export class BackgroundJobRuntime {
 					? { ok: true, execution: this._startLocal(state, input) }
 					: { ok: false, reason: "stale_attachment" };
 			},
-			createExternal: (input) => this._createExternal(agentId, generation, input),
 			list: () => (this._resolve(agentId, generation) ? this.listJobs(agentId) : []),
 			read: (jobId) =>
 				this._resolve(agentId, generation)
@@ -468,12 +428,6 @@ export class BackgroundJobRuntime {
 				this._resolve(agentId, generation)
 					? this.abortJob(agentId, jobId, reason)
 					: { ok: false, reason: "stale_attachment" },
-		};
-	}
-
-	private _createSettler(agentId: string, generation: number): BackgroundJobSettler {
-		return {
-			settle: (input) => this._settleExternal(agentId, generation, input.ownerAgentId, input.jobId, input.outcome),
 		};
 	}
 
@@ -507,7 +461,7 @@ export class BackgroundJobRuntime {
 	// -- job creation -------------------------------------------------------
 
 	private _startLocal(state: AttachmentState, input: StartLocalJobInput): BackgroundJobExecution {
-		const record = this._createRecord(state, input, LOCAL_ORIGIN);
+		const record = this._createRecord(state, input);
 		return {
 			jobId: record.id,
 			signal: record.controller.signal,
@@ -521,44 +475,7 @@ export class BackgroundJobRuntime {
 		};
 	}
 
-	/**
-	 * Create a job another agent will settle, returning only once it has a durable
-	 * head: an assignment whose job left no trace is how a task ends up owed by
-	 * nobody. The settler is validated on both sides of the append, because that
-	 * await is exactly where it can be disposed.
-	 */
-	private async _createExternal(
-		agentId: string,
-		generation: number,
-		input: CreateExternalJobInput,
-	): Promise<JobResult<{ job: BackgroundJobSnapshot }>> {
-		const state = this._resolve(agentId, generation);
-		if (!state) return { ok: false, reason: "stale_attachment" };
-		const settler = this._current(input.settlerAgentId);
-		if (!settler) return { ok: false, reason: "stale_attachment" };
-		const record = this._createRecord(
-			state,
-			input,
-			Object.freeze({ kind: "external", settlerId: input.settlerAgentId }),
-			settler.generation,
-		);
-		settler.owed.add(record.id);
-		record.state = "accepting";
-		const committed = await this._commitBackgrounded(state, record);
-		if (!committed.ok) return committed;
-		if (this._resolve(input.settlerAgentId, settler.generation) === undefined) {
-			this._forceCancel(record, `Settler agent ${input.settlerAgentId} was disposed before the assignment was sent.`);
-			return { ok: false, reason: "stale_attachment" };
-		}
-		return committed;
-	}
-
-	private _createRecord(
-		state: AttachmentState,
-		input: StartLocalJobInput,
-		origin: BackgroundJobOrigin,
-		settlerGeneration?: number,
-	): LiveJob {
+	private _createRecord(state: AttachmentState, input: StartLocalJobInput): LiveJob {
 		const id = this._createJobId();
 		const startedAt = Date.now();
 		const controller = new AbortController();
@@ -574,10 +491,6 @@ export class BackgroundJobRuntime {
 			id,
 			ownerId: state.agentId,
 			ownerGeneration: state.generation,
-			// Detached and frozen: the origin is the settlement authority, and the
-			// caller's input object must not be able to rename the settler.
-			origin,
-			settlerGeneration,
 			toolCallId: input.toolCallId,
 			toolName: input.toolName,
 			name: input.name,
@@ -630,31 +543,6 @@ export class BackgroundJobRuntime {
 		return { ok: true, job };
 	}
 
-	/**
-	 * Unlike the local path this awaits the append: nothing has been returned to a
-	 * model yet, so a failure here means the job never existed.
-	 */
-	private async _commitBackgrounded(
-		state: AttachmentState,
-		record: LiveJob,
-	): Promise<JobResult<{ job: BackgroundJobSnapshot }>> {
-		record.state = "backgrounded";
-		record.backgroundedAt = Date.now();
-		record.lastReportAt = record.backgroundedAt;
-		const job = this._snapshot(record);
-		const head = this._startedRecord(state, record);
-		try {
-			await this._enqueue(state, () => this._append(state, head));
-		} catch (error) {
-			record.state = "cancelled";
-			this._discard(record);
-			await this._degrade(state, error);
-			return { ok: false, reason: "degraded" };
-		}
-		void this._enqueue(state, () => this._publishChange(state, { transition: "backgrounded", job }));
-		return { ok: true, job };
-	}
-
 	// -- abort and settlement ----------------------------------------------
 
 	/**
@@ -678,11 +566,6 @@ export class BackgroundJobRuntime {
 			}
 		}
 		record.controller.abort();
-		// An external job has no executor watching the signal, so nothing would ever
-		// confirm the abort. Complete it here rather than leave it stuck.
-		if (record.origin.kind === "external" && !isTerminal(record.state)) {
-			this._settle(record, { status: "cancelled" });
-		}
 	}
 
 	/** Abort and settle in one step, for a scope that is going away. */
@@ -747,41 +630,10 @@ export class BackgroundJobRuntime {
 		return "backgrounded";
 	}
 
-	private _settleExternal(
-		settlerId: string,
-		settlerGeneration: number,
-		ownerAgentId: string,
-		jobId: string,
-		outcome: BackgroundJobOutcome,
-	): JobResult {
-		if (!this._resolve(settlerId, settlerGeneration)) {
-			return { ok: false, reason: "stale_attachment" };
-		}
-		const record = this._jobs.get(jobId);
-		if (!record || record.ownerId !== ownerAgentId) {
-			return { ok: false, reason: "unknown_job" };
-		}
-		if (record.origin.kind !== "external" || record.origin.settlerId !== settlerId) {
-			return { ok: false, reason: "not_settler" };
-		}
-		// Matching the id is not enough: a re-attached agent must not inherit the
-		// authority its predecessor was assigned.
-		if (record.settlerGeneration !== settlerGeneration) {
-			return { ok: false, reason: "stale_attachment" };
-		}
-		if (!isObservable(record.state)) {
-			return { ok: false, reason: "not_backgrounded" };
-		}
-		return this._settle(record, outcome) === "ignored" ? { ok: false, reason: "unknown_job" } : { ok: true };
-	}
-
 	/** Drop a job from the live indexes. Its record stays readable to the tail. */
 	private _discard(record: LiveJob): void {
 		this._jobs.delete(record.id);
 		this._attachments.get(record.ownerId)?.owned.delete(record.id);
-		if (record.origin.kind === "external") {
-			this._attachments.get(record.origin.settlerId)?.owed.delete(record.id);
-		}
 	}
 
 	// -- report -------------------------------------------------------------
@@ -953,7 +805,6 @@ export class BackgroundJobRuntime {
 			toolName: record.toolName,
 			...(record.name === undefined ? undefined : { name: record.name }),
 			...(record.description === undefined ? undefined : { description: record.description }),
-			origin: record.origin,
 			startedAt: record.startedAt,
 			backgroundedAt: record.backgroundedAt ?? record.startedAt,
 			outputFile: jobOutputFileName(record.toolCallId),
@@ -1033,7 +884,6 @@ export class BackgroundJobRuntime {
 		return {
 			jobId: record.id,
 			ownerAgentId: record.ownerId,
-			origin: record.origin,
 			toolCallId: record.toolCallId,
 			toolName: record.toolName,
 			...(record.name === undefined ? undefined : { name: record.name }),

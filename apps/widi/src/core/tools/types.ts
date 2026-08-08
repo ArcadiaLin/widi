@@ -4,6 +4,7 @@ import type { BackgroundJobHost, BackgroundJobOutputWriter, BackgroundJobReport 
 import type { AgentToOrchestratorHost } from "../host.ts";
 import type { HumanInterruptWatch } from "../human-interrupt.ts";
 import type { ToolHumanHost } from "../human-request.ts";
+import type { AgentBranchFacts } from "../recap.ts";
 
 /**
  * Runtime context passed to a WIDI tool execution function.
@@ -166,6 +167,14 @@ export interface ToolDefinition<TParamsSchema extends TSchema = TSchema, TDetail
 	promptSnippet?: string;
 	/** Optional additional prompt guidance. */
 	promptGuidelines?: string[];
+
+	/**
+	 * Read one of this tool's own recorded results back off a branch: which
+	 * agents it says it created, which it says are gone. Declared only by the
+	 * tools that do either, and the only way anything else learns what a result
+	 * of this shape meant.
+	 */
+	readAgentBranchFacts?: (details: unknown) => AgentBranchFacts;
 
 	/** TypeBox schema for model arguments. */
 	parameters: TParamsSchema;

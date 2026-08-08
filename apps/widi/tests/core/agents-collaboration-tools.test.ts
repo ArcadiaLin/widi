@@ -4,12 +4,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import { AgentProfileRegistry, InMemoryProfileStorageBackend } from "../../src/core/agent-profile.ts";
 import type { OwnerAttachment } from "../../src/core/background/index.ts";
-import type { AgentToOrchestratorHost, AgentTreeEntry, AgentTreeRunningEntry } from "../../src/core/host.ts";
+import type { AgentToOrchestratorHost } from "../../src/core/host.ts";
 import { createDisposeAgentToolDefinition } from "../../src/core/tools/agents/dispose-agent.ts";
-import { createListAgentProfilesToolDefinition } from "../../src/core/tools/agents/list-agent-profiles.ts";
-import { createListAgentsToolDefinition } from "../../src/core/tools/agents/list-agents.ts";
+import { createListAgentsToolDefinition, type ListAgentsDetails } from "../../src/core/tools/agents/list-agents.ts";
 import { createSendMessageToolDefinition } from "../../src/core/tools/agents/send-message.ts";
 import { createSpawnAgentToolDefinition } from "../../src/core/tools/agents/spawn-agent.ts";
+import { createWatchAgentToolDefinition } from "../../src/core/tools/agents/watch-agent.ts";
 import type { ToolExecutionContext } from "../../src/core/tools/types.ts";
 import {
 	createOrchestrator,
@@ -23,10 +23,10 @@ import {
 	spawnParentOf,
 } from "../helpers/orchestrator.ts";
 
-const listAgentProfiles = createListAgentProfilesToolDefinition();
 const listAgents = createListAgentsToolDefinition();
 const spawnAgent = createSpawnAgentToolDefinition();
 const sendMessage = createSendMessageToolDefinition();
+const watchAgent = createWatchAgentToolDefinition();
 const disposeAgent = createDisposeAgentToolDefinition();
 
 afterEach(() => {
@@ -69,27 +69,12 @@ function createDeferred<T>(): { readonly promise: Promise<T>; readonly resolve: 
 	return { promise, resolve };
 }
 
-/** The listing as indented lines, so the assertion covers nesting and order too. */
-function treeLines(entries: readonly AgentTreeEntry[], depth = 0): string[] {
-	return entries.flatMap((entry) => [
-		`${"  ".repeat(depth)}${entry.status === "running" ? `running ${entry.agentId}` : `closed ${entry.sessionRef}`}`,
-		...treeLines(entry.children, depth + 1),
-	]);
+function liveIds(details: ListAgentsDetails): readonly string[] {
+	return (details.live ?? []).map((entry) => entry.agentId);
 }
 
-function runningEntry(entries: readonly AgentTreeEntry[], agentId: string): AgentTreeRunningEntry {
-	const entry = findRunning(entries, agentId);
-	if (!entry) throw new Error(`No running entry for ${agentId}.`);
-	return entry;
-}
-
-function findRunning(entries: readonly AgentTreeEntry[], agentId: string): AgentTreeRunningEntry | undefined {
-	for (const entry of entries) {
-		if (entry.status === "running" && entry.agentId === agentId) return entry;
-		const nested = findRunning(entry.children, agentId);
-		if (nested) return nested;
-	}
-	return undefined;
+function resumableRefs(details: ListAgentsDetails): readonly string[] {
+	return (details.resumable ?? []).map((entry) => entry.sessionRef);
 }
 
 /** The address of an agent's session directory, which a persistent agent always has. */
@@ -99,13 +84,17 @@ function sessionRef(orchestrator: AgentOrchestrator, agentId: string): string {
 	return ref;
 }
 
+let spawnCallSeq = 0;
+
 async function spawnChild(orchestrator: AgentOrchestrator, parentAgentId: string, profile = "worker"): Promise<string> {
 	const result = await spawnAgent.execute(
-		`spawn-${parentAgentId}`,
-		{ profile },
+		`spawn-${++spawnCallSeq}`,
+		{ agents: [{ profile }] },
 		toolContext(orchestrator, parentAgentId),
 	);
-	return result.details.agentId;
+	const status = result.details.agents[0];
+	if (!status?.agentId) throw new Error(`Expected a spawned agent, got: ${status?.error}`);
+	return status.agentId;
 }
 
 /** An owner and a worker, both able to accept messages. */
@@ -122,14 +111,16 @@ async function createPair() {
 	};
 }
 
-describe("list_agent_profiles", () => {
+describe("list_agents profiles section", () => {
 	it("lists enabled profiles only", async () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv(), { enabledProfileIds: ["main"] });
 		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
-		const result = await listAgentProfiles.execute("call-1", {}, toolContext(orchestrator, agentId));
+		const result = await listAgents.execute("call-1", { include: ["profiles"] }, toolContext(orchestrator, agentId));
 
-		expect(result.details.profiles.map((profile) => profile.id)).toEqual(["main"]);
+		expect(result.details.profiles?.map((profile) => profile.id)).toEqual(["main"]);
+		expect(result.details.live).toBeUndefined();
+		expect(result.details.resumable).toBeUndefined();
 		expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("main (Main Agent)") });
 	});
 
@@ -155,12 +146,12 @@ describe("list_agent_profiles", () => {
 		});
 		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
-		const result = await listAgentProfiles.execute("call-1", {}, toolContext(orchestrator, agentId));
+		const result = await listAgents.execute("call-1", { include: ["profiles"] }, toolContext(orchestrator, agentId));
 
 		expect(result.content[0]).toMatchObject({
 			type: "text",
 			text: [
-				"Agent profiles available to spawn_agent:",
+				"Profiles you can spawn an agent from:",
 				"- explore (Explore Agent) [ephemeral session]",
 				"  Use for a wide search.",
 				"",
@@ -171,14 +162,14 @@ describe("list_agent_profiles", () => {
 	});
 });
 
-describe("list_agents", () => {
+describe("list_agents live and resumable sections", () => {
 	// The directories are the complete set and memory is a subset of them: a
-	// disposed agent leaves the live registry and stays on the list as the
-	// session it wrote, which is exactly what it now is.
-	it("nests the caller's tree, keeps a disposed agent as a closed session, and excludes other trees", async () => {
+	// disposed agent leaves the live registry and stays on the list as the session
+	// it wrote, which is exactly what it now is.
+	it("splits running agents from resumable sessions and excludes other trees", async () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		const caller = await orchestrator.spawnAgent({ origin: { kind: "new" } });
-		const broken = await spawnChild(orchestrator, caller);
+		const running = await spawnChild(orchestrator, caller);
 		const gone = await spawnChild(orchestrator, caller);
 		const goneRef = sessionRef(orchestrator, gone);
 		const otherRoot = await orchestrator.spawnAgent({ origin: { kind: "new" } });
@@ -188,18 +179,40 @@ describe("list_agents", () => {
 		const result = await listAgents.execute("call-1", {}, toolContext(orchestrator, caller));
 
 		expect(result.details.callerAgentId).toBe(caller);
-		expect(treeLines(result.details.entries)).toEqual([
-			`running ${caller}`,
-			`  running ${broken}`,
-			`  closed ${goneRef}`,
-		]);
-		expect(runningEntry(result.details.entries, caller).activity).toBe("idle");
+		expect(liveIds(result.details)).toEqual([running]);
+		expect(resumableRefs(result.details)).toEqual([goneRef]);
 		expect(orchestrator.listAgents().agents.map((agent) => agent.agentId)).toEqual([
 			caller,
-			broken,
+			running,
 			otherRoot,
 			otherChild,
 		]);
+	});
+
+	// §5.2: the old listing refused to say what an agent was doing because the
+	// task lived in a job table. Activity and watch state are both to hand now.
+	it("reports each agent's activity and whether the caller is watching it", async () => {
+		const { orchestrator, owner, worker } = await createPair();
+		const other = await spawnChild(orchestrator, owner);
+
+		await watchAgent.execute("watch-1", { agentId: worker, watching: true }, toolContext(orchestrator, owner));
+		const result = await listAgents.execute("call-1", { include: ["live"] }, toolContext(orchestrator, owner));
+
+		expect(result.details.live?.map((entry) => [entry.agentId, entry.activity, entry.watchedByCaller])).toEqual([
+			[worker, "idle", true],
+			[other, "idle", false],
+		]);
+		const text = result.content[0];
+		expect(text).toMatchObject({
+			type: "text",
+			text: expect.stringContaining(`- agent ${worker} [profile worker] idle, watched`),
+		});
+		// The forgotten subagent is made visible rather than reclaimed: leaving one
+		// running may well be deliberate.
+		expect(text).toMatchObject({
+			type: "text",
+			text: expect.stringContaining(`Nothing will tell you when ${other} stops.`),
+		});
 	});
 
 	// Every caller sees the level it owns, not the level below the root: a list
@@ -213,28 +226,28 @@ describe("list_agents", () => {
 		const sibling = await spawnChild(orchestrator, root);
 		await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
-		const fromRoot = await listAgents.execute("list-root", {}, toolContext(orchestrator, root));
-		const fromChild = await listAgents.execute("list-child", {}, toolContext(orchestrator, child));
-		const fromGrandchild = await listAgents.execute("list-grandchild", {}, toolContext(orchestrator, grandchild));
+		const fromRoot = await listAgents.execute("list-root", { include: ["live"] }, toolContext(orchestrator, root));
+		const fromChild = await listAgents.execute("list-child", { include: ["live"] }, toolContext(orchestrator, child));
+		const fromGrandchild = await listAgents.execute(
+			"list-grandchild",
+			{ include: ["live"] },
+			toolContext(orchestrator, grandchild),
+		);
 
-		expect(treeLines(fromRoot.details.entries)).toEqual([
-			`running ${root}`,
-			`  running ${child}`,
-			`  running ${sibling}`,
-		]);
-		expect(treeLines(fromChild.details.entries)).toEqual([`running ${child}`, `  running ${grandchild}`]);
-		expect(treeLines(fromGrandchild.details.entries)).toEqual([`running ${grandchild}`]);
+		expect(liveIds(fromRoot.details)).toEqual([child, sibling]);
+		expect(liveIds(fromChild.details)).toEqual([grandchild]);
+		expect(liveIds(fromGrandchild.details)).toEqual([]);
 		// The hidden level is counted rather than dropped without a word.
 		expect(fromRoot.content[0]).toMatchObject({
 			type: "text",
-			text: expect.stringContaining(`- agent ${child} [profile worker] idle (+1 nested)`),
+			text: expect.stringContaining(`- agent ${child} [profile worker] idle, not watched (+1 nested)`),
 		});
 	});
 
 	// The point of reading the directories: subagents never come back, so after a
-	// resume the whole tree below the root is closed - and still visible, which is
-	// how the model learns what this session did before.
-	it("reads the subagents of an earlier run as closed sessions", async () => {
+	// resume the whole tree below the root is resumable - and still visible, which
+	// is how the model learns what this session did before.
+	it("reads the subagents of an earlier run as resumable sessions", async () => {
 		const env = new MemoryExecutionEnv();
 		const first = await createOrchestrator(env);
 		const root = await first.spawnAgent({ origin: { kind: "new" } });
@@ -247,18 +260,19 @@ describe("list_agents", () => {
 		const resumed = await second.spawnAgent({ origin: { kind: "resume", reference: rootRef } });
 		const result = await listAgents.execute("list-after-resume", {}, toolContext(second, resumed));
 
-		expect(treeLines(result.details.entries)).toEqual([`running ${resumed}`, `  closed ${childRef}`]);
-		expect(result.details.entries[0]?.children[0]).toMatchObject({ status: "closed", profileId: "worker" });
+		expect(liveIds(result.details)).toEqual([]);
+		expect(resumableRefs(result.details)).toEqual([childRef]);
+		expect(result.details.resumable?.[0]).toMatchObject({ status: "closed", profileId: "worker" });
 		expect(result.content[0]).toMatchObject({
 			type: "text",
-			text: expect.stringContaining(`- session ${childRef} [profile worker] closed, started `),
+			// The grandchild's session is still on disk under the child; it is
+			// counted, not expanded.
+			text: expect.stringContaining(`- ${childRef} [profile worker] started `),
 		});
-		// The grandchild's session is still on disk under the child; it is counted,
-		// not expanded.
 		expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("(+1 nested)") });
 		expect(result.content[0]).toMatchObject({
 			type: "text",
-			text: expect.stringContaining("cannot be messaged or disposed"),
+			text: expect.stringContaining("Pass its address to spawn_agent as resume"),
 		});
 	});
 
@@ -276,32 +290,63 @@ describe("list_agents", () => {
 		const root = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		const child = await spawnChild(orchestrator, root);
 
-		const result = await listAgents.execute("list-from-ephemeral", {}, toolContext(orchestrator, root));
+		const result = await listAgents.execute(
+			"list-from-ephemeral",
+			{ include: ["live"] },
+			toolContext(orchestrator, root),
+		);
 
-		expect(treeLines(result.details.entries)).toEqual([`running ${root}`, `  running ${child}`]);
-		expect(result.details.entries[0]).not.toHaveProperty("sessionRef");
-		expect(result.details.entries[0]?.children[0]).toMatchObject({
-			status: "running",
-			sessionRef: sessionRef(orchestrator, child),
-		});
+		expect(result.details.live).toMatchObject([{ agentId: child, sessionRef: sessionRef(orchestrator, child) }]);
 	});
 });
 
 describe("spawn_agent", () => {
-	it("creates an idle agent and registers no task", async () => {
+	it("creates an idle unwatched agent and registers no job", async () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		const caller = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		const context = toolContext(orchestrator, caller);
 
-		const result = await spawnAgent.execute("call-1", { profile: "worker" }, context);
+		const result = await spawnAgent.execute("call-1", { agents: [{ profile: "worker" }] }, context);
 
-		expect(result.details.profileId).toBe("worker");
-		expect(result.details.taskId).toBeUndefined();
-		expect(orchestrator.getAgentActivity(result.details.agentId).activity).toBe("idle");
+		const status = result.details.agents[0];
+		expect(status).toMatchObject({ origin: "new", profileId: "worker", watching: false });
+		expect(orchestrator.getAgentActivity(status?.agentId ?? "").activity).toBe("idle");
 		expect(context.jobs?.list()).toEqual([]);
 	});
 
-	it("delegates the first task when one is given", async () => {
+	// Batch is the whole reason the schema takes an array: several agents in one
+	// turn stops depending on the model emitting several tool calls.
+	it("creates every entry in order and keeps a failure from taking out the rest", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const caller = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+
+		const result = await spawnAgent.execute(
+			"call-1",
+			{
+				agents: [
+					{ profile: "worker" },
+					{ profile: "nonexistent" },
+					{ profile: "worker", resume: "also-this" },
+					{ profile: "worker" },
+				],
+			},
+			toolContext(orchestrator, caller),
+		);
+
+		const [first, unknownProfile, ambiguous, last] = result.details.agents;
+		expect(first?.agentId).toBeDefined();
+		expect(last?.agentId).toBeDefined();
+		expect(unknownProfile).toEqual({ origin: "new", error: expect.stringContaining("nonexistent") });
+		expect(ambiguous).toEqual({
+			origin: "new",
+			error: expect.stringContaining("exactly one of profile, resume, or fork"),
+		});
+		expect(orchestrator.listAgents().agents).toHaveLength(3);
+	});
+
+	// The task is an ordinary message now, not an assignment: no job is opened and
+	// the worker has nothing to remember to settle.
+	it("sends the first task as a message and watches the agent by default", async () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		const caller = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		// The child does not exist yet when the call starts, so its harness cannot
@@ -310,53 +355,131 @@ describe("spawn_agent", () => {
 
 		const result = await spawnAgent.execute(
 			"call-1",
-			{ profile: "worker", task: "audit the parser" },
+			{ agents: [{ profile: "worker", task: "audit the parser" }] },
 			toolContext(orchestrator, caller),
 		);
 
-		expect(result.details.profileId).toBe("worker");
-		expect(result.details.taskId).toBe("job-1");
-		expect(orchestrator.getAgentActivity(result.details.agentId).activity).toBe("idle");
-		expect(harnessInputText(prompt.mock.calls[0]?.[0])).toContain("Task job-1 assigned to you.");
-		expect(harnessInputText(prompt.mock.calls[0]?.[0])).toContain("audit the parser");
+		const status = result.details.agents[0];
+		expect(status).toMatchObject({ profileId: "worker", watching: true });
+		expect(harnessInputText(prompt.mock.calls[0]?.[0])).toBe(`[Message from ${caller}]\n\naudit the parser`);
+		expect(requireAgentJobs(orchestrator, caller).list()).toEqual([]);
+		const listed = await listAgents.execute("after", { include: ["live"] }, toolContext(orchestrator, caller));
+		expect(listed.details.live?.[0]?.watchedByCaller).toBe(true);
 	});
 
-	it("fails without leaving a half-built agent when the profile is unknown", async () => {
+	// The window the other order opens: the child could run the task and stop
+	// before the subscription exists, and nothing would ever say so.
+	it("subscribes before the task is handed over", async () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		const caller = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		vi.spyOn(AgentHarness.prototype, "prompt").mockResolvedValue({} as AssistantMessage);
 		const context = toolContext(orchestrator, caller);
+		const host = context.agents;
+		if (!host) throw new Error("Expected an agent host.");
+		const order: string[] = [];
+		const watch = vi.spyOn(host, "watch").mockImplementation(() => {
+			order.push("watch");
+			return "watching";
+		});
+		vi.spyOn(host, "sendMessage").mockImplementation(async () => {
+			order.push("send");
+			return { kind: "accepted" };
+		});
 
-		await expect(spawnAgent.execute("call-1", { profile: "nonexistent" }, context)).rejects.toThrow(/nonexistent/);
+		await spawnAgent.execute("call-1", { agents: [{ profile: "worker", task: "audit the parser" }] }, context);
 
-		expect(orchestrator.listAgents().agents).toHaveLength(1);
+		expect(order).toEqual(["watch", "send"]);
+		expect(watch).toHaveBeenCalledWith(expect.any(String), true);
 	});
-});
 
-describe("send_message argument validation", () => {
-	it("rejects the illegal combinations before anything happens", async () => {
-		const { orchestrator, owner, worker, workerPrompt } = await createPair();
-		const context = toolContext(orchestrator, owner);
+	it("honours watch false against the task default", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const caller = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		vi.spyOn(AgentHarness.prototype, "prompt").mockResolvedValue({} as AssistantMessage);
 
-		await expect(
-			sendMessage.execute(
-				"call-1",
-				{ agentId: worker, message: "both", assignTask: true, completeTask: "job-1" },
-				context,
-			),
-		).rejects.toThrow(/cannot both assign a task and complete one/);
-		await expect(
-			sendMessage.execute("call-2", { agentId: worker, message: "orphan flag", taskFailed: true }, context),
-		).rejects.toThrow(/only accepts taskFailed together with completeTask/);
-		await expect(sendMessage.execute("call-3", { agentId: owner, message: "to myself" }, context)).rejects.toThrow(
-			/cannot target yourself/,
+		const result = await spawnAgent.execute(
+			"call-1",
+			{ agents: [{ profile: "worker", task: "audit the parser", watch: false }] },
+			toolContext(orchestrator, caller),
 		);
 
-		expect(workerPrompt).not.toHaveBeenCalled();
-		expect(requireAgentJobs(orchestrator, owner).list()).toEqual([]);
+		expect(result.details.agents[0]?.watching).toBe(false);
+	});
+
+	// Destroying a working agent to tidy up a failed call is worse than leaving
+	// it, so both facts are reported and the id stays usable.
+	it("keeps the agent when its task cannot be delivered", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const caller = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		vi.spyOn(AgentHarness.prototype, "prompt").mockRejectedValue(new Error("harness exploded"));
+
+		const result = await spawnAgent.execute(
+			"call-1",
+			{ agents: [{ profile: "worker", task: "audit the parser" }] },
+			toolContext(orchestrator, caller),
+		);
+
+		const status = result.details.agents[0];
+		expect(status?.agentId).toBeDefined();
+		expect(status?.error).toContain("harness exploded");
+		expect(orchestrator.getAgentActivity(status?.agentId ?? "").activity).toBe("idle");
+	});
+
+	it("reopens a session with resume and copies a live branch with fork", async () => {
+		const env = new MemoryExecutionEnv();
+		const first = await createOrchestrator(env);
+		const root = await first.spawnAgent({ origin: { kind: "new" } });
+		const closed = await spawnChild(first, root);
+		const closedRef = sessionRef(first, closed);
+
+		const second = await createOrchestrator(env);
+		const caller = await second.spawnAgent({ origin: { kind: "resume", reference: sessionRef(first, root) } });
+		const result = await spawnAgent.execute(
+			"call-1",
+			{ agents: [{ resume: closedRef }, { fork: caller }] },
+			toolContext(second, caller),
+		);
+
+		expect(result.details.agents.map((agent) => agent.origin)).toEqual(["resume", "fork"]);
+		for (const agent of result.details.agents) {
+			expect(agent.error).toBeUndefined();
+			expect(second.getAgentActivity(agent.agentId ?? "").activity).toBe("idle");
+		}
+	});
+
+	it("refuses a fork of an agent whose profile does not persist", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv(), {
+			profileRegistry: new AgentProfileRegistry(
+				InMemoryProfileStorageBackend.fromProfiles([
+					{ profile: defaultProfile },
+					{ profile: { ...restoredProfile, persist: false } },
+				]),
+			),
+		});
+		const caller = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const ephemeral = await spawnChild(orchestrator, caller);
+
+		const result = await spawnAgent.execute(
+			"call-1",
+			{ agents: [{ fork: ephemeral }] },
+			toolContext(orchestrator, caller),
+		);
+
+		expect(result.details.agents[0]).toMatchObject({ origin: "fork", error: expect.any(String) });
+		expect(result.details.agents[0]?.agentId).toBeUndefined();
+	});
+
+	it("rejects a call with no entries", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const caller = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+
+		await expect(spawnAgent.execute("call-1", { agents: [] }, toolContext(orchestrator, caller))).rejects.toThrow(
+			/at least one entry/,
+		);
 	});
 });
 
-describe("send_message plain delivery", () => {
+describe("send_message", () => {
 	it("delivers attributed text and does not wait for a reply", async () => {
 		const { orchestrator, owner, worker, workerPrompt } = await createPair();
 
@@ -366,10 +489,54 @@ describe("send_message plain delivery", () => {
 			toolContext(orchestrator, owner),
 		);
 
-		expect(result.details.mode).toBe("message");
+		expect(result.details).toEqual({ targetAgentId: worker, watching: false });
 		expect(harnessInputText(workerPrompt.mock.calls[0]?.[0])).toBe(
 			`[Message from ${owner}]\n\nhave a look at the diff`,
 		);
+	});
+
+	// Subscribe before the send, never after: a pending delivery already counts
+	// the target busy, so the subscription cannot lose a race with the stop it is
+	// there to catch.
+	it("subscribes before handing over the work when watch is set", async () => {
+		const { orchestrator, owner, worker } = await createPair();
+		const order: string[] = [];
+		const host = toolContext(orchestrator, owner).agents;
+		if (!host) throw new Error("Expected an agent host.");
+		vi.spyOn(host, "watch").mockImplementation((targetAgentId, watching) => {
+			order.push(`watch:${targetAgentId}:${watching}`);
+			return "watching";
+		});
+		vi.spyOn(host, "sendMessage").mockImplementation(async (targetAgentId) => {
+			order.push(`send:${targetAgentId}`);
+			return { kind: "accepted" };
+		});
+
+		const result = await sendMessage.execute(
+			"call-1",
+			{ agentId: worker, message: "rename the module", watch: true },
+			{ signal: undefined, onUpdate: undefined, extension: undefined, human: undefined, agents: host, jobs: undefined },
+		);
+
+		expect(order).toEqual([`watch:${worker}:true`, `send:${worker}`]);
+		expect(result.details.watching).toBe(true);
+	});
+
+	it("reports a refused subscription instead of claiming one", async () => {
+		const { orchestrator, owner, worker } = await createPair();
+		// Same tree, so the refusal is `taken` rather than the tree boundary: a stop
+		// has exactly one reader and the owner already holds it.
+		const bystander = await spawnChild(orchestrator, owner);
+		await watchAgent.execute("watch-1", { agentId: worker, watching: true }, toolContext(orchestrator, owner));
+
+		const result = await sendMessage.execute(
+			"call-1",
+			{ agentId: worker, message: "mine now", watch: true },
+			toolContext(orchestrator, bystander),
+		);
+
+		expect(result.details.watching).toBe(false);
+		expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("already watched") });
 	});
 
 	it("delivers across trees when the caller knows the exact agent id", async () => {
@@ -378,8 +545,12 @@ describe("send_message plain delivery", () => {
 		const secondRoot = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		const secondPrompt = stubPrompt(orchestrator, secondRoot);
 
-		const listed = await listAgents.execute("list-first-tree", {}, toolContext(orchestrator, firstRoot));
-		expect(treeLines(listed.details.entries)).toEqual([`running ${firstRoot}`]);
+		const listed = await listAgents.execute(
+			"list-first-tree",
+			{ include: ["live"] },
+			toolContext(orchestrator, firstRoot),
+		);
+		expect(liveIds(listed.details)).toEqual([]);
 
 		await sendMessage.execute(
 			"cross-tree-message",
@@ -390,199 +561,25 @@ describe("send_message plain delivery", () => {
 		expect(harnessInputText(secondPrompt.mock.calls[0]?.[0])).toBe(`[Message from ${firstRoot}]\n\nshared id bridge`);
 	});
 
-	it("fails against an agent that is already disposed", async () => {
-		const { orchestrator, owner, worker } = await createPair();
+	it("rejects an empty, self-addressed, or disposed target before anything happens", async () => {
+		const { orchestrator, owner, worker, workerPrompt } = await createPair();
+		const context = toolContext(orchestrator, owner);
+
+		await expect(sendMessage.execute("call-1", { agentId: " ", message: "nowhere" }, context)).rejects.toThrow(
+			/non-empty agentId/,
+		);
+		await expect(sendMessage.execute("call-2", { agentId: owner, message: "to myself" }, context)).rejects.toThrow(
+			/cannot target yourself/,
+		);
 		await orchestrator.disposeAgent(worker, { intent: "removed" });
-
-		await expect(
-			sendMessage.execute("call-1", { agentId: worker, message: "anyone there" }, toolContext(orchestrator, owner)),
-		).rejects.toThrow(/is gone|Unknown agent/);
-	});
-});
-
-describe("send_message task delegation", () => {
-	it("assigns and completes a task across trees by exact ids", async () => {
-		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
-		const owner = await orchestrator.spawnAgent({ origin: { kind: "new" } });
-		const worker = await orchestrator.spawnAgent({ origin: { kind: "new" } });
-		const ownerPrompt = stubPrompt(orchestrator, owner);
-		stubPrompt(orchestrator, worker);
-
-		const assigned = await sendMessage.execute(
-			"cross-tree-task",
-			{ agentId: worker, message: "inspect the boundary", assignTask: true },
-			toolContext(orchestrator, owner),
-		);
-		const taskId = assigned.details.taskId;
-		if (!taskId) throw new Error("Expected a delegated task id.");
-		await sendMessage.execute(
-			"cross-tree-completion",
-			{ agentId: owner, message: "boundary inspected", completeTask: taskId },
-			toolContext(orchestrator, worker),
+		await expect(sendMessage.execute("call-3", { agentId: worker, message: "anyone there" }, context)).rejects.toThrow(
+			/Unknown agent/,
 		);
 
-		await vi.waitFor(() => expect(ownerPrompt).toHaveBeenCalledTimes(1));
-		expect(harnessInputText(ownerPrompt.mock.calls[0]?.[0])).toContain("boundary inspected");
+		expect(workerPrompt).not.toHaveBeenCalled();
 	});
 
-	it("tracks the task as a job the worker settles", async () => {
-		const { orchestrator, owner, worker, ownerPrompt, workerPrompt } = await createPair();
-
-		const assigned = await sendMessage.execute(
-			"call-1",
-			{ agentId: worker, message: "rename the module", assignTask: true },
-			toolContext(orchestrator, owner),
-		);
-
-		expect(assigned.details).toMatchObject({ mode: "assign_task", taskId: "job-1", targetAgentId: worker });
-		expect(harnessInputText(workerPrompt.mock.calls[0]?.[0])).toContain("Task job-1 assigned to you.");
-		const job = requireAgentJobs(orchestrator, owner).list()[0];
-		expect(job?.jobId).toBe("job-1");
-		expect(job?.origin).toEqual({ kind: "external", settlerId: worker });
-		expect(job?.description).toBe("rename the module");
-
-		// An ordinary message from the worker is not a completion.
-		await sendMessage.execute(
-			"call-2",
-			{ agentId: owner, message: "still working on it" },
-			toolContext(orchestrator, worker),
-		);
-		await vi.waitFor(() => expect(ownerPrompt).toHaveBeenCalledTimes(1));
-		expect(
-			requireAgentJobs(orchestrator, owner)
-				.list()
-				.map((job) => job.jobId),
-		).toEqual(["job-1"]);
-	});
-
-	it("settles the task through exactly one result message", async () => {
-		const { orchestrator, owner, worker, ownerPrompt } = await createPair();
-		await sendMessage.execute(
-			"call-1",
-			{ agentId: worker, message: "rename the module", assignTask: true },
-			toolContext(orchestrator, owner),
-		);
-
-		const completion = await sendMessage.execute(
-			"call-2",
-			{ agentId: owner, message: "renamed 3 files", completeTask: "job-1" },
-			toolContext(orchestrator, worker),
-		);
-
-		expect(completion.details).toMatchObject({ mode: "complete_task", taskId: "job-1" });
-		await vi.waitFor(() => expect(ownerPrompt).toHaveBeenCalledTimes(1));
-		const delivered = harnessInputText(ownerPrompt.mock.calls[0]?.[0]);
-		expect(delivered).toContain("Background job job-1");
-		expect(delivered).toContain("completed");
-		expect(delivered).toContain("renamed 3 files");
-		expect(orchestrator.getAgentActivity(worker).activity).not.toBe("disposed");
-		// The report is the job result; no second ordinary message follows it.
-		expect(ownerPrompt).toHaveBeenCalledTimes(1);
-	});
-
-	it("reports a failed task through the same result channel", async () => {
-		const { orchestrator, owner, worker, ownerPrompt } = await createPair();
-		await sendMessage.execute(
-			"call-1",
-			{ agentId: worker, message: "rename the module", assignTask: true },
-			toolContext(orchestrator, owner),
-		);
-
-		await sendMessage.execute(
-			"call-2",
-			{ agentId: owner, message: "the module does not exist", completeTask: "job-1", taskFailed: true },
-			toolContext(orchestrator, worker),
-		);
-
-		await vi.waitFor(() => expect(ownerPrompt).toHaveBeenCalledTimes(1));
-		const delivered = harnessInputText(ownerPrompt.mock.calls[0]?.[0]);
-		expect(delivered).toContain("failed");
-		expect(delivered).toContain("the module does not exist");
-	});
-
-	it("refuses a settlement from an agent the task was not assigned to", async () => {
-		const { orchestrator, owner, worker } = await createPair();
-		const bystander = await orchestrator.spawnAgent({ origin: { kind: "new" } });
-		stubPrompt(orchestrator, bystander);
-		await sendMessage.execute(
-			"call-1",
-			{ agentId: worker, message: "rename the module", assignTask: true },
-			toolContext(orchestrator, owner),
-		);
-
-		await expect(
-			sendMessage.execute(
-				"call-2",
-				{ agentId: owner, message: "I did it", completeTask: "job-1" },
-				toolContext(orchestrator, bystander),
-			),
-		).rejects.toThrow(/assigned to a different agent/);
-
-		expect(
-			requireAgentJobs(orchestrator, owner)
-				.list()
-				.map((job) => job.jobId),
-		).toEqual(["job-1"]);
-	});
-
-	it("refuses a settlement for a task that is no longer open", async () => {
-		const { orchestrator, owner, worker, ownerPrompt } = await createPair();
-		await sendMessage.execute(
-			"call-1",
-			{ agentId: worker, message: "rename the module", assignTask: true },
-			toolContext(orchestrator, owner),
-		);
-
-		// The owner giving up on the task is an abort of its own job; the worker
-		// keeps running and simply finds the task closed.
-		expect(orchestrator.abortAgentBackgroundJob(owner, "job-1")).toBe(true);
-		await vi.waitFor(() => expect(ownerPrompt).toHaveBeenCalledTimes(1));
-		expect(harnessInputText(ownerPrompt.mock.calls[0]?.[0])).toContain("cancelled");
-		expect(orchestrator.getAgentActivity(worker).activity).toBe("idle");
-
-		await expect(
-			sendMessage.execute(
-				"call-2",
-				{ agentId: owner, message: "done anyway", completeTask: "job-1" },
-				toolContext(orchestrator, worker),
-			),
-		).rejects.toThrow(/is not open/);
-	});
-
-	it("cancels the task and keeps the owner alive when the worker is disposed", async () => {
-		const { orchestrator, owner, worker, ownerPrompt } = await createPair();
-		await sendMessage.execute(
-			"call-1",
-			{ agentId: worker, message: "rename the module", assignTask: true },
-			toolContext(orchestrator, owner),
-		);
-
-		await disposeAgent.execute("call-2", { agentIds: [worker] }, toolContext(orchestrator, owner));
-
-		await vi.waitFor(() => expect(ownerPrompt).toHaveBeenCalledTimes(1));
-		expect(harnessInputText(ownerPrompt.mock.calls[0]?.[0])).toContain("cancelled");
-		expect(() => orchestrator.getAgentActivity(worker)).toThrow(/is gone|Unknown agent/);
-		expect(orchestrator.getAgentActivity(owner).activity).toBe("idle");
-	});
-
-	it("retires the task when the assignment message cannot be delivered", async () => {
-		const { orchestrator, owner, worker, ownerPrompt } = await createPair();
-		vi.spyOn(requireAgentHarness(orchestrator, worker), "prompt").mockRejectedValue(new Error("harness exploded"));
-
-		await expect(
-			sendMessage.execute(
-				"call-1",
-				{ agentId: worker, message: "rename the module", assignTask: true },
-				toolContext(orchestrator, owner),
-			),
-		).rejects.toThrow(/harness exploded/);
-
-		expect(requireAgentJobs(orchestrator, owner).list()).toEqual([]);
-		await vi.waitFor(() => expect(ownerPrompt).toHaveBeenCalledTimes(1));
-		expect(harnessInputText(ownerPrompt.mock.calls[0]?.[0])).toContain("never assigned");
-	});
-
-	it("refuses to delegate into a dispose already under way", async () => {
+	it("refuses to deliver into a dispose already under way", async () => {
 		const { orchestrator, owner, worker } = await createPair();
 		const harness = requireAgentHarness(orchestrator, worker);
 		const teardown = createDeferred<Awaited<ReturnType<typeof harness.abort>>>();
@@ -594,16 +591,61 @@ describe("send_message task delegation", () => {
 		expect(() => orchestrator.getAgentActivity(worker)).toThrow(/is gone|Unknown agent/);
 
 		await expect(
-			sendMessage.execute(
-				"call-1",
-				{ agentId: worker, message: "one more thing", assignTask: true },
-				toolContext(orchestrator, owner),
-			),
+			sendMessage.execute("call-1", { agentId: worker, message: "one more thing" }, toolContext(orchestrator, owner)),
 		).rejects.toThrow(/is gone|Unknown agent/);
-		expect(requireAgentJobs(orchestrator, owner).list()).toEqual([]);
 
 		teardown.resolve({ clearedSteer: [], clearedFollowUp: [] });
 		await disposing;
+	});
+});
+
+describe("watch_agent", () => {
+	it("subscribes and unsubscribes, and the listing agrees", async () => {
+		const { orchestrator, owner, worker } = await createPair();
+		const context = toolContext(orchestrator, owner);
+
+		const watched = await watchAgent.execute("call-1", { agentId: worker, watching: true }, context);
+		expect(watched.details).toEqual({ agentId: worker, outcome: "watching" });
+		const listed = await listAgents.execute("call-2", { include: ["live"] }, context);
+		expect(listed.details.live?.[0]?.watchedByCaller).toBe(true);
+
+		const dropped = await watchAgent.execute("call-3", { agentId: worker, watching: false }, context);
+		expect(dropped.details).toEqual({ agentId: worker, outcome: "not_watching" });
+		const relisted = await listAgents.execute("call-4", { include: ["live"] }, context);
+		expect(relisted.details.live?.[0]?.watchedByCaller).toBe(false);
+	});
+
+	// A refused subscription that read as success is the failure the whole
+	// mechanism exists to remove: the caller ends its turn waiting for a
+	// notification nobody will send.
+	it("throws when a subscription is refused", async () => {
+		const { orchestrator, owner, worker } = await createPair();
+		const outsider = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		await watchAgent.execute("call-1", { agentId: worker, watching: true }, toolContext(orchestrator, owner));
+
+		await expect(
+			watchAgent.execute("call-2", { agentId: worker, watching: true }, toolContext(orchestrator, outsider)),
+		).rejects.toThrow(/another tree/);
+		await expect(
+			watchAgent.execute("call-3", { agentId: owner, watching: true }, toolContext(orchestrator, owner)),
+		).rejects.toThrow(/cannot watch itself/);
+		await expect(
+			watchAgent.execute("call-4", { agentId: "nobody", watching: true }, toolContext(orchestrator, owner)),
+		).rejects.toThrow(/Unknown agent/);
+	});
+
+	// Dropping never fails: whatever the reason, the caller is not watching the
+	// agent afterwards, which is the state it asked for.
+	it("reports rather than throws when dropping a subscription it never held", async () => {
+		const { orchestrator, owner, worker } = await createPair();
+
+		const result = await watchAgent.execute(
+			"call-1",
+			{ agentId: worker, watching: false },
+			toolContext(orchestrator, owner),
+		);
+
+		expect(result.details.outcome).toBe("not_watching");
 	});
 });
 
@@ -632,6 +674,20 @@ describe("dispose_agent", () => {
 		expect(orchestrator.getAgentActivity(outsideTree).activity).toBe("idle");
 	});
 
+	// Disposing a watched agent is the caller's own doing, so the notice is the
+	// courtesy of not leaving it waiting rather than news.
+	it("tells a watcher that the agent it was watching is gone", async () => {
+		const { orchestrator, owner, worker, ownerPrompt } = await createPair();
+		await watchAgent.execute("call-1", { agentId: worker, watching: true }, toolContext(orchestrator, owner));
+
+		await disposeAgent.execute("call-2", { agentIds: [worker] }, toolContext(orchestrator, owner));
+
+		await vi.waitFor(() => expect(ownerPrompt).toHaveBeenCalledTimes(1));
+		const delivered = harnessInputText(ownerPrompt.mock.calls[0]?.[0]);
+		expect(delivered).toContain(`<agent-notification from="${worker}" status="gone">`);
+		expect(delivered).toContain("will not report");
+	});
+
 	it("keeps surviving descendants in the original tree after single-agent disposal", async () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		const root = await orchestrator.spawnAgent({ origin: { kind: "new" } });
@@ -651,26 +707,24 @@ describe("dispose_agent", () => {
 		expect(spawnParentOf(orchestrator, parent)).toBe(root);
 		expect(spawnParentOf(orchestrator, grandchild)).toBe(parent);
 		// The disposed agent's directory still holds the grandchild's, so from the
-		// root the entry turns closed and keeps counting what survived under it.
+		// root the entry turns resumable and keeps counting what survived under it.
 		const listed = await listAgents.execute("list-from-root", {}, toolContext(orchestrator, root));
-		expect(treeLines(listed.details.entries)).toEqual([
-			`running ${root}`,
-			`  closed ${parentRef}`,
-			`  running ${sibling}`,
-		]);
+		expect(liveIds(listed.details)).toEqual([sibling]);
+		expect(resumableRefs(listed.details)).toEqual([parentRef]);
 		expect(listed.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("(+1 nested)") });
 		// The grandchild owns its own level and still sees nothing but itself.
-		const fromGrandchild = await listAgents.execute("list-from-grandchild", {}, toolContext(orchestrator, grandchild));
-		expect(treeLines(fromGrandchild.details.entries)).toEqual([`running ${grandchild}`]);
+		const fromGrandchild = await listAgents.execute(
+			"list-from-grandchild",
+			{ include: ["live"] },
+			toolContext(orchestrator, grandchild),
+		);
+		expect(liveIds(fromGrandchild.details)).toEqual([]);
 
 		await orchestrator.spawnAgent({ origin: { kind: "resume", reference: parentRef } });
 		expect(spawnParentOf(orchestrator, parent)).toBe(root);
 		const relisted = await listAgents.execute("list-after-parent-resume", {}, toolContext(orchestrator, root));
-		expect(treeLines(relisted.details.entries)).toEqual([
-			`running ${root}`,
-			`  running ${parent}`,
-			`  running ${sibling}`,
-		]);
+		expect(liveIds(relisted.details)).toEqual([parent, sibling]);
+		expect(resumableRefs(relisted.details)).toEqual([]);
 	});
 
 	it("recursively disposes a subtree in leaf-to-root order", async () => {
@@ -743,10 +797,9 @@ describe("dispose_agent", () => {
 
 		const escapingSpawn = spawnAgent.execute(
 			"late-subtree-spawn",
-			{ profile: "worker" },
+			{ agents: [{ profile: "worker" }] },
 			toolContext(orchestrator, leaf),
 		);
-		const escapingSpawnFailure = expect(escapingSpawn).rejects.toThrow(/is gone|Unknown agent/);
 		const disposing = disposeAgent.execute(
 			"dispose-blocked-subtree",
 			{ agentIds: [parent], scope: "subtree" },
@@ -754,11 +807,11 @@ describe("dispose_agent", () => {
 		);
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
-		await escapingSpawnFailure;
+		expect((await escapingSpawn).details.agents[0]?.error).toMatch(/is gone|Unknown agent/);
 		await expect(
 			sendMessage.execute(
-				"late-subtree-task",
-				{ agentId: parent, message: "late task", assignTask: true },
+				"late-subtree-message",
+				{ agentId: parent, message: "late" },
 				toolContext(orchestrator, root),
 			),
 		).rejects.toThrow(/is gone|Unknown agent/);

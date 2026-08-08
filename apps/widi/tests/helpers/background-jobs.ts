@@ -13,7 +13,6 @@ import {
 	type BackgroundJobHost,
 	BackgroundJobRuntime,
 	type BackgroundJobRuntimeOptions,
-	type BackgroundJobSettler,
 	type BackgroundJobSnapshot,
 	type OwnerAttachment,
 } from "../../src/core/background/index.ts";
@@ -30,7 +29,6 @@ export interface JobRuntimeHarness {
 	readonly runtime: BackgroundJobRuntime;
 	readonly attachment: OwnerAttachment;
 	readonly host: BackgroundJobHost;
-	readonly settler: BackgroundJobSettler;
 	readonly agentId: string;
 	readonly events: BackgroundJobEvent[];
 	readonly deliveries: RecordedJobMessage[];
@@ -66,17 +64,7 @@ export async function createJobRuntimeHarness(
 	const attach = async (id: string, sessionId = `${id}-session`) =>
 		await runtime.attachAgent({ agentId: id, sessionId });
 	const attachment = await attach(agentId);
-	return {
-		runtime,
-		attachment,
-		host: attachment.host,
-		settler: attachment.settler,
-		agentId,
-		events,
-		deliveries,
-		diagnostics,
-		attach,
-	};
+	return { runtime, attachment, host: attachment.host, agentId, events, deliveries, diagnostics, attach };
 }
 
 /**

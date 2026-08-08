@@ -371,7 +371,6 @@ describe("AgentOrchestrator background job router", () => {
 			{
 				jobId: started.execution.jobId,
 				ownerAgentId: agentId,
-				origin: { kind: "local" },
 				toolCallId: "call-1",
 				toolName: "bash",
 				name: undefined,
@@ -559,7 +558,6 @@ describe("AgentOrchestrator background job extension observability", () => {
 				toolName: "bash",
 				description: "sleep 60",
 				state: "backgrounded",
-				origin: { kind: "local" },
 			}),
 		]);
 		expect(actions.readJobOutput(started.execution.jobId)).toBe("partial output");

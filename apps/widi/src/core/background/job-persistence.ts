@@ -17,7 +17,6 @@ import type {
 } from "../persistence/index.ts";
 import { contentHash, JsonlObjectStore, OBJECTS_FILE_NAME } from "../persistence/index.ts";
 import type {
-	BackgroundJobOrigin,
 	JobBranchPort,
 	JobCloseCause,
 	JobClosedRecord,
@@ -73,7 +72,6 @@ export function applyJobRecord(jobs: Map<string, JobHistoryEntry>, record: JobRe
 			toolName: record.toolName,
 			name: record.name,
 			description: record.description,
-			origin: record.origin,
 			startedAt: record.startedAt,
 			backgroundedAt: record.backgroundedAt,
 			outputFile: record.outputFile,
@@ -174,7 +172,6 @@ function isStartedRecord(record: Record<string, unknown>): boolean {
 		typeof record.outputFile === "string" &&
 		typeof record.startedAt === "number" &&
 		typeof record.backgroundedAt === "number" &&
-		isOrigin(record.origin) &&
 		isOptionalString(record.name) &&
 		isOptionalString(record.description)
 	);
@@ -197,13 +194,6 @@ function isClosedRecord(record: Record<string, unknown>): boolean {
 		typeof record.closedAt === "number" &&
 		isOptionalString(record.stopReason)
 	);
-}
-
-function isOrigin(value: unknown): value is BackgroundJobOrigin {
-	if (typeof value !== "object" || value === null) return false;
-	const origin = value as Record<string, unknown>;
-	if (origin.kind === "local") return true;
-	return origin.kind === "external" && typeof origin.settlerId === "string";
 }
 
 function isOptionalString(value: unknown): boolean {

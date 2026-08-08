@@ -159,7 +159,13 @@ import {
 	projectBranch,
 	sessionKeysEqual,
 } from "./persistence/index.ts";
-import { createOrphanedJobHandlesRecap, createSpawnTreeRecap, type RecapDefinition, selectOwedRecap } from "./recap.ts";
+import {
+	type AgentBranchFactReader,
+	createOrphanedJobHandlesRecap,
+	createSpawnTreeRecap,
+	type RecapDefinition,
+	selectOwedRecap,
+} from "./recap.ts";
 import type { ConfigValueResolver } from "./resolve-config-value.js";
 import type { ResourceLoader } from "./resource-loader.js";
 import type {
@@ -1069,12 +1075,12 @@ export class AgentOrchestrator {
 				// routable: an unanswered t0 handle and a spawn tree that did not come
 				// back are facts of the resume, not messages arriving after it.
 				await this._reconcileAgentJobBranch(agentId, "resume", "The runtime that started this job is gone.");
-				await this._recap(agentId, createSpawnTreeRecap("resume"));
+				await this._recap(agentId, createSpawnTreeRecap("resume", this._agentBranchFactReader()));
 			} else if (request.origin === "fork") {
 				// A fork inherits the text of a spawn tree it does not own: the agents
 				// are alive under the source and outside this agent's tree, so every
 				// message and dispose it addresses to one is refused.
-				await this._recap(agentId, createSpawnTreeRecap("fork"));
+				await this._recap(agentId, createSpawnTreeRecap("fork", this._agentBranchFactReader()));
 			}
 			// The first arrival at idle, stamped `ready` by `_installLiveAgent`. It
 			// has no turn behind it, and a consumer that waits to be told an agent is
@@ -1484,6 +1490,16 @@ export class AgentOrchestrator {
 	 * given twice. Both callers run it before the agent is routable at a resume,
 	 * so it is context rather than a message arriving into it.
 	 */
+	/**
+	 * Ask each tool what its own recorded results said. Resolved once per recap
+	 * rather than per entry: the walk covers a whole branch, and the registry is
+	 * not going to change under it.
+	 */
+	private _agentBranchFactReader(): AgentBranchFactReader {
+		const resolved = this.toolRegistry.resolve();
+		return (toolName, details) => resolved.getToolDefinition(toolName)?.readAgentBranchFacts?.(details);
+	}
+
 	private async _recap(agentId: AgentId, definition: RecapDefinition): Promise<number> {
 		if (!this._live.has(agentId)) return 0;
 		try {
@@ -3660,7 +3676,6 @@ export class AgentOrchestrator {
 			// The attachment's own capabilities, not an id-taking forwarder: they carry
 			// the owner and generation the job table authorizes against.
 			jobs: attachment.host,
-			settler: attachment.settler,
 			requestHuman: async (request) =>
 				await this._requestHumanForAgent(agentId, { ...request, source: { kind: "agent", agentId } }),
 		};

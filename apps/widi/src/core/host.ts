@@ -2,11 +2,11 @@
  * Caller-bound collaboration capabilities exposed to agent tools.
  *
  * The caller identity is captured by the orchestrator. No model-controlled
- * argument can select the sender, task settler, or background-job owner.
+ * argument can select the sender, the watcher, or the background-job owner.
  */
 
 import type { ThinkingLevel } from "@widi/agent-core";
-import type { BackgroundJobHost, BackgroundJobSettler } from "./background/index.ts";
+import type { BackgroundJobHost } from "./background/index.ts";
 import type { HumanRequestDraft, HumanResponse } from "./human-request.ts";
 import type { MessageSendOutcome } from "./message.ts";
 import type { AgentActivity, AgentId } from "./types.ts";
@@ -108,11 +108,6 @@ export interface AgentTreeListing {
 	readonly closedUnavailable?: boolean;
 }
 
-export interface AgentTaskOutcome {
-	readonly status: "completed" | "failed";
-	readonly text: string;
-}
-
 export type AgentDisposeScope = "agent" | "subtree";
 
 export interface AgentRequestedDisposeOptions {
@@ -158,14 +153,5 @@ export interface AgentToOrchestratorHost {
 	watch(targetAgentId: AgentId, watching: boolean): AgentWatchOutcome;
 	dispose(agentId: AgentId, options: AgentRequestedDisposeOptions): Promise<AgentRequestedDisposeOutcome>;
 	readonly jobs: BackgroundJobHost;
-	readonly settler: BackgroundJobSettler;
 	requestHuman(request: HumanRequestDraft): Promise<HumanResponse>;
 }
-
-export const CORE_AGENT_TOOL_NAMES: readonly string[] = [
-	"list_agent_profiles",
-	"list_agents",
-	"spawn_agent",
-	"send_message",
-	"dispose_agent",
-];

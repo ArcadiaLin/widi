@@ -31,7 +31,6 @@ function started(overrides: Partial<JobStartedRecord> = {}): JobStartedRecord {
 		ownerAgentId: "coder",
 		sessionId: "coder",
 		toolName: "bash",
-		origin: { kind: "local" },
 		startedAt: 10,
 		backgroundedAt: 20,
 		outputFile: jobOutputFileName("call-1"),
@@ -62,7 +61,6 @@ describe("reduceJobRecords", () => {
 				toolName: "bash",
 				name: "build",
 				description: "npm run build",
-				origin: { kind: "local" },
 				startedAt: 10,
 				backgroundedAt: 20,
 				outputFile: jobOutputFileName("call-1"),
@@ -140,10 +138,6 @@ describe("toJobRecord", () => {
 		for (const value of [null, undefined, 7, "started", [started()]]) {
 			expect(toJobRecord(value)).toBeUndefined();
 		}
-	});
-
-	it("rejects an origin that names no settler", () => {
-		expect(toJobRecord({ ...started(), origin: { kind: "external" } })).toBeUndefined();
 	});
 });
 

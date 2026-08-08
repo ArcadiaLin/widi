@@ -1,16 +1,57 @@
 import { type Static, Type } from "typebox";
 import { formatError } from "../../../utils/errors.ts";
+import type { AgentSpawnOrigin, AgentToOrchestratorHost } from "../../host.ts";
+import type { RecordedAgent } from "../../recap.ts";
 import type { ToolDefinition } from "../types.ts";
-import { assignAgentTask, describeAssignedTask, requireAgentHost } from "./shared.ts";
+import { requireAgentHost } from "./shared.ts";
 
-const spawnAgentSchema = Type.Object({
-	profile: Type.String({ description: "Id of the profile the new agent should run as, from list_agent_profiles." }),
+const spawnAgentItemSchema = Type.Object({
+	profile: Type.Optional(
+		Type.String({ description: "Id of a profile from list_agents to start a new agent with an empty context." }),
+	),
+	resume: Type.Optional(
+		Type.String({ description: "Session address from the resumable list, reopened as a running agent." }),
+	),
+	fork: Type.Optional(
+		Type.String({
+			description:
+				"Id of a running agent whose context to copy, yourself included. Expensive: the whole transcript is carried into every one of the new agent's turns.",
+		}),
+	),
+	entry: Type.Optional(Type.String({ description: "With fork: copy the source's branch up to this entry id only." })),
 	task: Type.Optional(
 		Type.String({
 			description:
-				"Optional first task to delegate to the new agent. Include everything it needs to know: it starts with no knowledge of your conversation. You get back a task id you can wait on.",
+				"First message to send it. It starts with no knowledge of your conversation, so state the whole job.",
 		}),
 	),
+	watch: Type.Optional(
+		Type.Boolean({
+			description: "Be told when this agent stops. Defaults to true when task is given, false otherwise.",
+		}),
+	),
+	model: Type.Optional(Type.String({ description: "Model reference as provider/id. Defaults to the profile's." })),
+	thinking: Type.Optional(
+		Type.Union(
+			[
+				Type.Literal("off"),
+				Type.Literal("minimal"),
+				Type.Literal("low"),
+				Type.Literal("medium"),
+				Type.Literal("high"),
+				Type.Literal("xhigh"),
+				Type.Literal("max"),
+			],
+			{ description: "Reasoning effort for the new agent. Defaults to the profile's." },
+		),
+	),
+});
+
+const spawnAgentSchema = Type.Object({
+	agents: Type.Array(spawnAgentItemSchema, {
+		description:
+			"The agents to create, one entry each. Exactly one of profile, resume, or fork per entry. Entries are independent: one failing does not stop the rest.",
+	}),
 });
 
 /**
@@ -22,81 +63,169 @@ export const SPAWN_AGENT_TOOL_NAME = "spawn_agent";
 
 export type SpawnAgentInput = Static<typeof spawnAgentSchema>;
 
+export interface SpawnAgentAgentStatus {
+	readonly origin: AgentSpawnOrigin["kind"];
+	/** Absent when the entry never produced an agent. */
+	readonly agentId?: string;
+	readonly profileId?: string;
+	readonly watching?: boolean;
+	/** What went wrong; an agent id may still be present beside it. */
+	readonly error?: string;
+}
+
 export interface SpawnAgentDetails {
-	readonly agentId: string;
-	readonly profileId: string;
-	/** Present only when a first task was delegated. */
-	readonly taskId?: string;
+	readonly agents: readonly SpawnAgentAgentStatus[];
 }
 
 /**
- * Create one agent.
+ * The agents a recorded result says this tool created, for a reader that has
+ * the branch and not the runtime that wrote it.
  *
- * No count, background, or timeout arguments: agents are concurrent by nature,
- * spawning only waits for the harness to be ready, and several tool calls in
- * one batch already run in parallel. No fresh/fork context choice either -
- * whatever the child needs to know belongs in `task`, which costs one message
- * instead of the parent's whole transcript on every one of the child's turns.
+ * Here rather than at the reading end because the batch is this tool's own
+ * composition - `host.spawn` creates one agent - so how several of them are
+ * written into one record is not something anything else should have to know.
+ * A record from a build that wrote a different shape reads as no agents, which
+ * is the safe direction: nothing is claimed that the branch did not say.
+ */
+function readSpawnedAgents(details: unknown): readonly RecordedAgent[] {
+	if (typeof details !== "object" || details === null) return [];
+	const agents = (details as Partial<SpawnAgentDetails>).agents;
+	if (!Array.isArray(agents)) return [];
+	return agents.flatMap((agent: SpawnAgentAgentStatus) =>
+		typeof agent?.agentId === "string"
+			? [
+					{
+						agentId: agent.agentId,
+						...(typeof agent.profileId === "string" ? { profileId: agent.profileId } : undefined),
+					},
+				]
+			: [],
+	);
+}
+
+/**
+ * Create agents.
+ *
+ * An array rather than one per call, so several agents in one turn is a
+ * guarantee rather than a hope that the model emits several tool calls. No
+ * count, background, or timeout arguments: agents are concurrent by nature and
+ * spawning only waits for the harness to be ready.
+ *
+ * `model` and `thinking` are the whole of what a caller may override. The rest
+ * of a profile decides the agent's tools, and a caller able to name those could
+ * hand a child what it does not itself hold.
  */
 export function createSpawnAgentToolDefinition(): ToolDefinition<typeof spawnAgentSchema, SpawnAgentDetails> {
 	return {
 		name: SPAWN_AGENT_TOOL_NAME,
 		label: SPAWN_AGENT_TOOL_NAME,
 		description:
-			"Create a new agent from a profile and get its agent id back. The new agent is idle and runs independently; it does not see your conversation. Pass task to hand it a first task at the same time, which returns a task id that settles when that agent reports the task complete. Use list_agent_profiles first to pick a profile.",
-		promptSnippet: "Create a new agent, optionally with a first task",
+			"Create one or more agents and get their ids back. Each entry names where its context comes from: profile starts an empty one, resume reopens a session, fork copies a running agent's context. A new agent runs independently and does not see your conversation, so pass task to hand it the work. By default you then watch it and are told when it stops. Call list_agents first for the profiles and sessions available.",
+		promptSnippet: "Create agents from a profile, a session, or a fork",
+		readAgentBranchFacts: (details) => ({ created: readSpawnedAgents(details) }),
+		promptGuidelines: [
+			"Delegation is a loop with an end: spawn, get woken by the notification, read the report, then either continue that agent with send_message or release it with dispose_agent. An agent you stop needing but never dispose keeps running.",
+			"Ending your turn is how you wait. You will be woken; do not poll the agent, sleep, or check on its progress.",
+			"Brief an agent like a colleague who just walked into the room: it has your task text and nothing else. Never delegate the understanding itself.",
+			"profile is the cheap default. fork carries your whole transcript into every one of the child's turns, so use it only when the child genuinely needs your context and the task text cannot carry it.",
+		],
 		parameters: spawnAgentSchema,
-		execute: async (toolCallId, { profile, task }, context) => {
+		execute: async (_toolCallId, { agents }, context) => {
 			const host = requireAgentHost(context);
-			const profileId = profile.trim();
-			if (!profileId) {
-				throw new Error("spawn_agent requires a non-empty profile id.");
+			if (agents.length === 0) {
+				throw new Error("spawn_agent requires at least one entry in agents.");
 			}
-			const trimmedTask = task?.trim();
-			if (task !== undefined && !trimmedTask) {
-				throw new Error("spawn_agent was given an empty task. Omit task to spawn an idle agent.");
+			const statuses: SpawnAgentAgentStatus[] = [];
+			// Sequential: agent ids are handed out as each spawn runs, and a caller
+			// reading its own result should see them in the order it asked for.
+			for (const request of agents) {
+				statuses.push(await spawnOne(host, request));
 			}
-
-			const agentId = await host.spawn({ origin: { kind: "new", profileId } });
-			if (!trimmedTask) {
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Agent ${agentId} was created from profile ${profileId} and is idle. Use send_message to give it work.`,
-						},
-					],
-					details: { agentId, profileId },
-				};
-			}
-
-			let assigned: Awaited<ReturnType<typeof assignAgentTask>>;
-			try {
-				assigned = await assignAgentTask({
-					host,
-					jobs: host.jobs,
-					toolCallId,
-					toolName: "spawn_agent",
-					targetAgentId: agentId,
-					message: trimmedTask,
-				});
-			} catch (error) {
-				// The agent exists and is fine; only the assignment failed. Destroying
-				// a working agent to tidy up a failed call is worse than leaving it,
-				// so report both facts and let the caller decide.
-				throw new Error(
-					`Agent ${agentId} was created from profile ${profileId} and is idle, but the task was not assigned: ${formatError(error)}`,
-				);
-			}
-			return {
-				content: [
-					{
-						type: "text",
-						text: `Agent ${agentId} was created from profile ${profileId}. ${describeAssignedTask(assigned.taskId, agentId)}`,
-					},
-				],
-				details: { agentId, profileId, taskId: assigned.taskId },
-			};
+			return { content: [{ type: "text", text: formatSpawnSummary(statuses) }], details: { agents: statuses } };
 		},
 	};
+}
+
+async function spawnOne(
+	host: AgentToOrchestratorHost,
+	request: Static<typeof spawnAgentItemSchema>,
+): Promise<SpawnAgentAgentStatus> {
+	let origin: AgentSpawnOrigin;
+	try {
+		origin = toSpawnOrigin(request);
+	} catch (error) {
+		return { origin: "new", error: formatError(error) };
+	}
+	const task = request.task?.trim();
+	if (request.task !== undefined && !task) {
+		return { origin: origin.kind, error: "task was empty. Omit it to create an idle agent." };
+	}
+
+	let agentId: string;
+	try {
+		agentId = await host.spawn({
+			origin,
+			...(request.model === undefined ? undefined : { model: request.model }),
+			...(request.thinking === undefined ? undefined : { thinkingLevel: request.thinking }),
+		});
+	} catch (error) {
+		return { origin: origin.kind, error: formatError(error) };
+	}
+	const profileId = host.describe(agentId)?.profileId;
+
+	// Before the task, never after: a pending delivery already counts the agent
+	// busy, so a subscription registered first cannot miss the stop that follows.
+	const watching = (request.watch ?? task !== undefined) && host.watch(agentId, true) === "watching";
+	const status = { origin: origin.kind, agentId, ...(profileId === undefined ? undefined : { profileId }), watching };
+	if (task === undefined) return status;
+
+	try {
+		const outcome = await host.sendMessage(agentId, task);
+		if (outcome.kind === "blocked") {
+			const reason = outcome.reason ? `${outcome.blockedBy}: ${outcome.reason}` : `blocked by ${outcome.blockedBy}`;
+			return { ...status, error: `the agent was created but its task was blocked (${reason})` };
+		}
+	} catch (error) {
+		// The agent exists and is fine; only the task failed to reach it. Destroying
+		// a working agent to tidy up is worse than leaving it, so report both facts.
+		return { ...status, error: `the agent was created but its task was not delivered: ${formatError(error)}` };
+	}
+	return status;
+}
+
+/** The one origin an entry names, refusing a request that names none or several. */
+function toSpawnOrigin(request: Static<typeof spawnAgentItemSchema>): AgentSpawnOrigin {
+	const profileId = request.profile?.trim();
+	const reference = request.resume?.trim();
+	const sourceAgentId = request.fork?.trim();
+	const entryId = request.entry?.trim();
+	if (entryId && !sourceAgentId) {
+		throw new Error("entry only applies to fork.");
+	}
+	if ([profileId, reference, sourceAgentId].filter(Boolean).length === 1) {
+		if (profileId) return { kind: "new", profileId };
+		if (reference) return { kind: "resume", reference };
+		if (sourceAgentId) return { kind: "fork", sourceAgentId, ...(entryId ? { entryId } : undefined) };
+	}
+	throw new Error("each spawn_agent entry needs exactly one of profile, resume, or fork.");
+}
+
+function formatSpawnSummary(statuses: readonly SpawnAgentAgentStatus[]): string {
+	const lines = statuses.map((status) => {
+		if (status.agentId === undefined) return `- not created (${status.origin}): ${status.error}`;
+		const profile = status.profileId ? ` [profile ${status.profileId}]` : "";
+		const head = `- agent ${status.agentId}${profile} created by ${status.origin}`;
+		if (status.error) return `${head}, but ${status.error}`;
+		return status.watching
+			? `${head}, watched: it reports to you when it stops`
+			: `${head}, not watched: nothing will tell you when it stops`;
+	});
+	const watched = statuses.some((status) => status.watching && status.error === undefined);
+	return [
+		"Spawn requested:",
+		...lines,
+		watched
+			? "End your turn to wait; the notification wakes you. Then continue that agent with send_message, or dispose_agent to release it."
+			: "Nothing is waiting on these agents. Use watch_agent if you want to be told when one stops.",
+	].join("\n");
 }

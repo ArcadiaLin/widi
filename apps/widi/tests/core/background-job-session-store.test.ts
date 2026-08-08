@@ -61,7 +61,6 @@ function started(toolCallId: string): JobStartedRecord {
 		ownerAgentId: "coder",
 		sessionId: "coder",
 		toolName: "bash",
-		origin: { kind: "local" },
 		startedAt: 1,
 		backgroundedAt: 2,
 		outputFile: jobOutputFileName(toolCallId),

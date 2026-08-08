@@ -8,10 +8,11 @@ import {
 } from "../../src/core/agent-profile.ts";
 import { MessageError } from "../../src/core/message.ts";
 import type { OrchestratorEvent } from "../../src/core/types.ts";
-import { collectJobChanges, startBackgroundedJob } from "../helpers/background-jobs.ts";
+import { startBackgroundedJob } from "../helpers/background-jobs.ts";
 import {
 	agentSink,
 	appendSpawnResult,
+	createCoreAgentToolRegistry,
 	createOrchestrator,
 	defaultProfile,
 	harnessEventDriver,
@@ -20,7 +21,6 @@ import {
 	MemoryExecutionEnv,
 	requireAgentHarness,
 	requireAgentJobs,
-	requireLiveAgent,
 	stubCompaction,
 	stubPromptRun,
 } from "../helpers/orchestrator.ts";
@@ -358,7 +358,10 @@ describe("AgentOrchestrator message interception", () => {
 	// are recorded either way, so a block degrades the same.
 	it("delivers a blocked recap anyway, with a diagnostic", async () => {
 		const env = new MemoryExecutionEnv();
-		const first = await createOrchestrator(env);
+		// The recap reads the branch through the tool that wrote each result, so the
+		// collaboration tools have to be registered for a spawn record to be legible.
+		const toolRegistry = createCoreAgentToolRegistry();
+		const first = await createOrchestrator(env, { toolRegistry });
 		const agentId = await first.spawnAgent({ origin: { kind: "new" } });
 		// The branch has to be owed the recap: an agent it spawned and never disposed.
 		await appendSpawnResult(first, agentId, "call-1", "worker-9c3f");
@@ -366,7 +369,7 @@ describe("AgentOrchestrator message interception", () => {
 		if (reference === undefined) throw new Error(`Expected a persisted session for ${agentId}.`);
 
 		// A second runtime over the same files: the process died, the session did not.
-		const second = await createOrchestrator(env);
+		const second = await createOrchestrator(env, { toolRegistry: createCoreAgentToolRegistry() });
 		second.registerExtension("policy", (api) => {
 			api.intercept("input", () => ({ block: true, reason: "Nothing gets in." }));
 		});
@@ -383,117 +386,5 @@ describe("AgentOrchestrator message interception", () => {
 		// Delivered anyway: the recap is on the branch the model resumes with.
 		const snapshot = await second.getAgentSession(resumed);
 		expect(JSON.stringify(snapshot.pathToRoot)).toContain('<recap type=\\"spawn_tree\\">');
-	});
-});
-
-describe("AgentOrchestrator delegated task jobs", () => {
-	async function assignTask(
-		orchestrator: AgentOrchestrator,
-		ownerAgentId: string,
-		workerAgentId: string,
-	): Promise<string> {
-		const created = await requireAgentJobs(orchestrator, ownerAgentId).createExternal({
-			toolCallId: "call-assign",
-			toolName: "assign_agent_task",
-			settlerAgentId: workerAgentId,
-		});
-		if (!created.ok) throw new Error(`Expected an external job, got ${created.reason}.`);
-		return created.job.jobId;
-	}
-
-	it("routes a worker's completion to the owner through the job's own result", async () => {
-		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
-		const ownerAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
-		const workerAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
-		const ownerPrompt = vi
-			.spyOn(requireAgentHarness(orchestrator, ownerAgentId), "prompt")
-			.mockResolvedValue({} as AssistantMessage);
-		const taskId = await assignTask(orchestrator, ownerAgentId, workerAgentId);
-
-		// Only the assigned worker may settle it.
-		const intruderId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
-		expect(
-			requireLiveAgent(orchestrator, intruderId).backgroundAttachment.settler.settle({
-				ownerAgentId,
-				jobId: taskId,
-				outcome: { status: "completed" },
-			}),
-		).toEqual({ ok: false, reason: "not_settler" });
-		expect(requireAgentJobs(orchestrator, ownerAgentId).list()).toHaveLength(1);
-		expect(ownerPrompt).not.toHaveBeenCalled();
-
-		expect(
-			requireLiveAgent(orchestrator, workerAgentId).backgroundAttachment.settler.settle({
-				ownerAgentId,
-				jobId: taskId,
-				outcome: {
-					status: "completed",
-					result: { content: [{ type: "text", text: "The router is sound." }], details: undefined },
-				},
-			}),
-		).toEqual({ ok: true });
-
-		await vi.waitFor(() => expect(ownerPrompt).toHaveBeenCalledTimes(1));
-		expect(harnessInputText(ownerPrompt.mock.calls[0]?.[0])).toContain(taskId);
-		expect(harnessInputText(ownerPrompt.mock.calls[0]?.[0])).toContain("The router is sound.");
-		// Exactly one completion message: the job's t1 is the whole protocol.
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(ownerPrompt).toHaveBeenCalledTimes(1);
-	});
-
-	it("cancels the tasks a disposed worker still owes, keeping its owner alive", async () => {
-		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
-		const ownerAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
-		const workerAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
-		const ownerPrompt = vi
-			.spyOn(requireAgentHarness(orchestrator, ownerAgentId), "prompt")
-			.mockResolvedValue({} as AssistantMessage);
-		const { changes } = collectJobChanges(requireAgentJobs(orchestrator, ownerAgentId));
-		await assignTask(orchestrator, ownerAgentId, workerAgentId);
-
-		await orchestrator.disposeAgent(workerAgentId, { intent: "removed", reason: "Worker was killed" });
-
-		// No executor watches a delegated job's signal, so the table itself has to
-		// finish the transition rather than leave it stuck in `aborting`.
-		expect(requireAgentJobs(orchestrator, ownerAgentId).list()).toEqual([]);
-		// No `abort_requested` in between: nothing executes a delegated job, so the
-		// table cancels it outright rather than asking and then confirming.
-		expect(changes.map((change) => change.transition)).toEqual(["backgrounded", "settled"]);
-		expect(changes.at(-1)).toMatchObject({ transition: "settled", outcome: { status: "cancelled" } });
-		// The owner is untouched by its worker's teardown. Its exact phase here is
-		// not asserted: the cancellation t1 is recorded before it is delivered, so
-		// whether that delivery has already started a run by the time dispose
-		// returns is a race between two independent chains.
-		expect(orchestrator.getAgentActivity(ownerAgentId)).toBeDefined();
-		await vi.waitFor(() => expect(ownerPrompt).toHaveBeenCalledTimes(1));
-		// The owner is told which agent stopped owing it a result. The dispose
-		// reason belongs to the worker's own teardown, not to this job's result.
-		expect(harnessInputText(ownerPrompt.mock.calls[0]?.[0])).toContain(
-			`Settler agent ${workerAgentId} was disposed before it reported a result.`,
-		);
-	});
-
-	// Dispose detaches the owner's job listener before aborting its jobs, so the
-	// `settled` changes that normally clear the index never arrive. A resumed
-	// agent reuses the id with a table numbering from job-1 again, and a stale
-	// entry would later cancel an unrelated job that shares the id. The second
-	// owner is the control: it proves the sweep is targeted rather than the
-	// index simply having been empty all along.
-	it("forgets a disposed owner's tasks instead of leaving stale index entries", async () => {
-		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
-		const disposedOwnerId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
-		const survivingOwnerId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
-		const workerAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
-		await assignTask(orchestrator, disposedOwnerId, workerAgentId);
-		const survivingTaskId = await assignTask(orchestrator, survivingOwnerId, workerAgentId);
-
-		await orchestrator.disposeAgent(disposedOwnerId, { intent: "removed" });
-
-		// The disposed owner's task is gone with it; the surviving owner's is not.
-		expect(
-			requireAgentJobs(orchestrator, survivingOwnerId)
-				.list()
-				.map((job) => job.jobId),
-		).toEqual([survivingTaskId]);
 	});
 });

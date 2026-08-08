@@ -4,7 +4,6 @@ import {
 	type BuiltInMessageProducer,
 	backgroundResultMergeKey,
 	decideMessageDelivery,
-	formatAgentTaskMessageBody,
 	type MessageDeliveryPhase,
 	type MessageDeliveryPorts,
 	MessageDeliveryQueue,
@@ -120,17 +119,6 @@ describe("message bindings", () => {
 		const draft = createDraft({ binding, source: { kind: "human" } });
 		expect(renderMessageContent(draft, "hello")).toBe("[Input from extension watchdog]\n\nhello");
 		expect(renderMessageContent({ ...draft, render: (body) => `> ${body}` }, "hello")).toBe("> hello");
-	});
-
-	it("tells the worker which job id completes its task", () => {
-		const body = formatAgentTaskMessageBody({
-			ownerAgentId: "agent-main",
-			taskId: "job-12",
-			task: "Inspect the router.",
-		});
-		expect(body).toContain("Task job-12 assigned to you.");
-		expect(body).toContain("Inspect the router.");
-		expect(body).toContain("settle task job-12 for agent-main");
 	});
 });
 

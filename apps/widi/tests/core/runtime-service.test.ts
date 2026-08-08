@@ -333,10 +333,10 @@ describe("createWidiRuntime", () => {
 			"wait_for_jobs",
 			"read_job",
 			"kill_job",
-			"list_agent_profiles",
 			"list_agents",
 			"spawn_agent",
 			"send_message",
+			"watch_agent",
 			"dispose_agent",
 		]);
 		for (const name of ["read", "bash", "edit", "write", "grep", "find", "ls", "ask_human", "wait_for_jobs"]) {

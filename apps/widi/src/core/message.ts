@@ -437,22 +437,6 @@ export function renderMessageContent(draft: MessageDraft, body: string): string 
 	return (draft.render ?? draft.binding.render ?? ((text: string) => text))(body);
 }
 
-/**
- * Body of a task assignment. The task id is the owner's background job id, so
- * completion is a settlement of that job rather than a second message protocol.
- */
-export function formatAgentTaskMessageBody(input: {
-	readonly ownerAgentId: AgentId;
-	readonly taskId: string;
-	readonly task: string;
-}): string {
-	return (
-		`Task ${input.taskId} assigned to you.\n\n${input.task}\n\n` +
-		`When the work is complete, settle task ${input.taskId} for ` +
-		`${input.ownerAgentId}. An ordinary message does not complete it.`
-	);
-}
-
 export interface MessageTransformPorts {
 	/**
 	 * Run the target's extension input pipeline. Returns `pass` when the target

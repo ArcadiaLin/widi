@@ -1,62 +1,74 @@
-import { Type } from "typebox";
-import type { AgentTreeEntry } from "../../host.ts";
+import { type Static, Type } from "typebox";
+import type { AgentProfileBrief, AgentTreeClosedEntry, AgentTreeEntry, AgentTreeRunningEntry } from "../../host.ts";
 import type { ToolDefinition } from "../types.ts";
 import { requireAgentHost } from "./shared.ts";
 
-const listAgentsSchema = Type.Object({});
+/** Newest resumable sessions kept in the listing; the rest are counted. */
+const MAX_RESUMABLE_ENTRIES = 10;
+
+const listAgentsSchema = Type.Object({
+	include: Type.Optional(
+		Type.Array(Type.Union([Type.Literal("profiles"), Type.Literal("live"), Type.Literal("resumable")]), {
+			description: "Which sections to return. Defaults to all three.",
+		}),
+	),
+});
+
+export type ListAgentsInput = Static<typeof listAgentsSchema>;
 
 export interface ListAgentsDetails {
 	readonly callerAgentId: string;
-	/** The caller, holding the agents and sessions directly under it. */
-	readonly entries: readonly AgentTreeEntry[];
-	/** Set when the closed sessions could not be read, leaving running agents only. */
+	/** Each section is absent when it was not asked for. */
+	readonly profiles?: readonly AgentProfileBrief[];
+	/** The caller's own agents, each keeping the subtree below it. */
+	readonly live?: readonly AgentTreeRunningEntry[];
+	readonly resumable?: readonly AgentTreeClosedEntry[];
+	/** Set when the session directories could not be read, leaving running agents only. */
 	readonly closedUnavailable?: boolean;
 }
 
 /**
- * Tree-scoped discovery. Any agent holding `send_message` can talk to any
- * runtime-local agent id it already knows, including one in another tree; this
- * tool only enumerates the caller's own tree. Cross-tree communication starts
- * when a human, another agent, or an incoming message shares an exact id.
+ * Everything a caller needs to decide who does the next piece of work: the
+ * profiles it can spawn from, the agents it already has running, and the
+ * sessions it can reopen. One tool because the three are read together - an
+ * origin is chosen by comparing them.
  *
- * Both live and closed agents are listed. A closed entry is a session directory
- * whose agent is not running - a subagent from an earlier run, or one disposed
- * in this one - and it is named by its session address, never by the AgentId it
- * used to hold: only a running entry can be given work.
+ * Tree-scoped. Any agent holding `send_message` can talk to any runtime-local
+ * agent id it already knows, including one in another tree; this tool only
+ * enumerates the caller's own. Cross-tree contact starts when a human, another
+ * agent, or an incoming message shares an exact id.
  *
- * One level deep: the caller and what it spawned, not what those spawned in
- * turn. The runtime hands over the whole tree and this is where it is cut, so
- * the depth is a decision about what a model should read at once rather than
- * about what can be known. Deeper entries are counted, never dropped silently -
- * an agent that needs the level below asks the agent that owns it.
+ * One level deep: the caller's own agents, not what those spawned in turn. The
+ * runtime hands over the whole tree and this is where it is cut, so the depth is
+ * a decision about what a model should read at once rather than about what can
+ * be known. Deeper entries are counted, never dropped silently.
  */
 export function createListAgentsToolDefinition(): ToolDefinition<typeof listAgentsSchema, ListAgentsDetails> {
 	return {
 		name: "list_agents",
 		label: "list_agents",
 		description:
-			"List the agents you spawned: the ones running now, and the sessions of the ones no longer running. It shows one level - your own agents, not theirs - and does not enumerate other trees. You may still use send_message with an exact agent id that was shared with you, from any tree or level. Only running agents can be messaged or disposed; a closed session is a record of past work, not an address. It does not report what each agent is working on; ask the agent itself.",
-		promptSnippet: "List the agents you spawned and their status",
+			"List what you can delegate to: the profiles you can spawn an agent from, the agents you spawned that are running now with what each is doing and whether you are watching it, and the sessions you can resume. It shows one level - your own agents, not theirs - and does not enumerate other trees. You may still send_message to an exact agent id shared with you, from any tree or level. Only a running agent can be messaged, watched, or disposed; a resumable session must be spawned from first.",
+		promptSnippet: "List the profiles, running agents, and resumable sessions",
 		parameters: listAgentsSchema,
-		execute: async (_toolCallId, _params, context) => {
+		execute: async (_toolCallId, { include }, context) => {
 			const host = requireAgentHost(context);
-			const listing = await host.listAgents();
-			const level = toCallerLevel(listing.entries, host.agentId);
+			const sections = new Set(include ?? ["profiles", "live", "resumable"]);
+			const wantsTree = sections.has("live") || sections.has("resumable");
+			const profiles = sections.has("profiles") ? await host.listProfiles() : undefined;
+			const listing = wantsTree ? await host.listAgents() : undefined;
+			const children = listing ? callerChildren(listing.entries, host.agentId) : [];
+			const live = sections.has("live") ? children.filter(isRunning) : undefined;
+			const resumable = sections.has("resumable") ? children.filter(isClosed) : undefined;
+			const closedUnavailable = resumable !== undefined && listing?.closedUnavailable === true;
 			return {
-				content: [
-					{
-						type: "text",
-						text: formatAgentTree(level.entries, {
-							callerAgentId: host.agentId,
-							nested: level.nested,
-							closedUnavailable: listing.closedUnavailable,
-						}),
-					},
-				],
+				content: [{ type: "text", text: format({ profiles, live, resumable, closedUnavailable }) }],
 				details: {
 					callerAgentId: host.agentId,
-					entries: level.entries,
-					...(listing.closedUnavailable ? { closedUnavailable: true } : undefined),
+					...(profiles === undefined ? undefined : { profiles }),
+					...(live === undefined ? undefined : { live }),
+					...(resumable === undefined ? undefined : { resumable }),
+					...(closedUnavailable ? { closedUnavailable: true } : undefined),
 				},
 			};
 		},
@@ -64,38 +76,16 @@ export function createListAgentsToolDefinition(): ToolDefinition<typeof listAgen
 }
 
 /**
- * The caller with its direct children, each stripped of its own.
+ * The agents and sessions directly under the caller.
  *
  * The listing arrives rooted at the tree root, which is where discovery used to
  * start; anchoring on the caller is what makes "one level" mean the level the
- * caller owns rather than the level below the root. A caller that is somehow
- * not in its own tree falls back to the roots, so the tool still answers.
+ * caller owns rather than the level below the root. A caller that is somehow not
+ * in its own tree falls back to the roots, so the tool still answers.
  */
-function toCallerLevel(
-	entries: readonly AgentTreeEntry[],
-	callerAgentId: string,
-): { readonly entries: readonly AgentTreeEntry[]; readonly nested: ReadonlyMap<string, number> } {
+function callerChildren(entries: readonly AgentTreeEntry[], callerAgentId: string): readonly AgentTreeEntry[] {
 	const caller = findCaller(entries, callerAgentId);
-	const anchors = caller ? [caller] : entries;
-	const nested = new Map<string, number>();
-	const level = anchors.map((anchor) => ({
-		...anchor,
-		children: anchor.children.map((child) => {
-			const count = countNested(child);
-			if (count > 0) nested.set(entryKey(child), count);
-			return { ...child, children: [] };
-		}),
-	}));
-	return { entries: level, nested };
-}
-
-function countNested(entry: AgentTreeEntry): number {
-	return entry.children.reduce((total, child) => total + 1 + countNested(child), 0);
-}
-
-/** How an entry is named in the listing: an agent id, or a session address. */
-function entryKey(entry: AgentTreeEntry): string {
-	return entry.status === "running" ? entry.agentId : entry.sessionRef;
+	return caller ? caller.children : entries;
 }
 
 function findCaller(entries: readonly AgentTreeEntry[], callerAgentId: string): AgentTreeEntry | undefined {
@@ -107,50 +97,94 @@ function findCaller(entries: readonly AgentTreeEntry[], callerAgentId: string): 
 	return undefined;
 }
 
-function formatAgentTree(
-	entries: readonly AgentTreeEntry[],
-	options: {
-		readonly callerAgentId: string;
-		readonly nested: ReadonlyMap<string, number>;
-		readonly closedUnavailable: boolean | undefined;
-	},
-): string {
-	if (entries.length === 0) {
-		return "No agent is currently live in your tree.";
-	}
-	const lines: string[] = ["Agents in your tree:"];
-	let hasClosed = false;
-	let hasNested = false;
-	const write = (entry: AgentTreeEntry, depth: number): void => {
-		const indent = "  ".repeat(depth);
-		const count = options.nested.get(entryKey(entry));
-		const nested = count === undefined ? "" : ` (+${count} nested)`;
-		if (count !== undefined) hasNested = true;
-		if (entry.status === "running") {
-			const suffix = entry.agentId === options.callerAgentId ? " (you)" : "";
-			const state = entry.activity === "running" ? "working" : "idle";
-			lines.push(`${indent}- agent ${entry.agentId} [profile ${entry.profileId}] ${state}${nested}${suffix}`);
-		} else {
-			hasClosed = true;
-			const profile = entry.profileId ? ` [profile ${entry.profileId}]` : "";
-			lines.push(`${indent}- session ${entry.sessionRef}${profile} closed, started ${entry.createdAt}${nested}`);
-		}
-		for (const child of entry.children) write(child, depth + 1);
-	};
-	for (const entry of entries) write(entry, 0);
+function isRunning(entry: AgentTreeEntry): entry is AgentTreeRunningEntry {
+	return entry.status === "running";
+}
 
-	if (hasNested) {
+function isClosed(entry: AgentTreeEntry): entry is AgentTreeClosedEntry {
+	return entry.status === "closed";
+}
+
+function countNested(entry: AgentTreeEntry): number {
+	return entry.children.reduce((total, child) => total + 1 + countNested(child), 0);
+}
+
+/** ` (+N nested)`, or nothing when this entry is a leaf. */
+function nestedSuffix(entry: AgentTreeEntry): string {
+	const count = countNested(entry);
+	return count === 0 ? "" : ` (+${count} nested)`;
+}
+
+function format(input: {
+	readonly profiles: readonly AgentProfileBrief[] | undefined;
+	readonly live: readonly AgentTreeRunningEntry[] | undefined;
+	readonly resumable: readonly AgentTreeClosedEntry[] | undefined;
+	readonly closedUnavailable: boolean;
+}): string {
+	const sections: string[] = [];
+	if (input.profiles) sections.push(formatProfiles(input.profiles));
+	if (input.live) sections.push(formatLive(input.live));
+	if (input.resumable) sections.push(formatResumable(input.resumable, input.closedUnavailable));
+	return sections.join("\n\n");
+}
+
+function formatProfiles(profiles: readonly AgentProfileBrief[]): string {
+	if (profiles.length === 0) return "No agent profile is available to spawn from.";
+	const lines = profiles.map((profile) => {
+		const description = profile.description ? `: ${profile.description}` : "";
+		const session = profile.persist ? "persistent session" : "ephemeral session";
+		const head = `- ${profile.id} (${profile.label})${description} [${session}]`;
+		if (!profile.whenToUse) return head;
+		// Indented under its own entry: selection advice runs to a paragraph, and
+		// unindented it would read as the start of the next profile.
+		const advice = profile.whenToUse
+			.split("\n")
+			.map((line) => (line ? `  ${line}` : ""))
+			.join("\n");
+		return `${head}\n${advice}`;
+	});
+	return `Profiles you can spawn an agent from:\n${lines.join("\n")}`;
+}
+
+function formatLive(live: readonly AgentTreeRunningEntry[]): string {
+	if (live.length === 0) return "You have no agents running.";
+	const lines = live.map((entry) => {
+		const state = entry.activity === "running" ? "working" : "idle";
+		const watch = entry.watchedByCaller ? "watched" : "not watched";
+		return `- agent ${entry.agentId} [profile ${entry.profileId}] ${state}, ${watch}${nestedSuffix(entry)}`;
+	});
+	// Surfacing the ones nobody is listening to, rather than reclaiming them: a
+	// stopped agent left running may well be one the caller means to come back to.
+	const unwatched = live.filter((entry) => !entry.watchedByCaller);
+	if (unwatched.length > 0) {
 		lines.push(
-			"This list shows one level. +N counts the agents and sessions nested below an entry; ask a running agent to list its own.",
+			`Nothing will tell you when ${unwatched.map((entry) => entry.agentId).join(", ")} stops. Use watch_agent to subscribe, or dispose_agent to release an agent you are done with.`,
 		);
 	}
-	if (hasClosed) {
-		lines.push(
-			"A closed session is not running: it cannot be messaged or disposed. Spawn a new agent on the same profile if that work needs continuing.",
-		);
+	if (live.some((entry) => countNested(entry) > 0)) {
+		lines.push("+N counts the agents and sessions nested below an entry; ask a running agent to list its own.");
 	}
-	if (options.closedUnavailable) {
-		lines.push("The closed sessions could not be read, so only running agents are listed.");
+	return `Agents you spawned that are running now:\n${lines.join("\n")}`;
+}
+
+function formatResumable(resumable: readonly AgentTreeClosedEntry[], closedUnavailable: boolean): string {
+	if (closedUnavailable) {
+		return "The sessions you could resume could not be read, so none are listed.";
 	}
-	return lines.join("\n");
+	if (resumable.length === 0) return "You have no sessions to resume.";
+	// Newest first and capped: this section is the one that grows without bound
+	// across runs, and an older session is the less likely one to be wanted.
+	const ordered = [...resumable].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+	const shown = ordered.slice(0, MAX_RESUMABLE_ENTRIES);
+	const lines = shown.map((entry) => {
+		const profile = entry.profileId ? ` [profile ${entry.profileId}]` : "";
+		return `- ${entry.sessionRef}${profile} started ${entry.createdAt}${nestedSuffix(entry)}`;
+	});
+	if (ordered.length > shown.length) {
+		lines.push(`${ordered.length - shown.length} older sessions are not listed.`);
+	}
+	lines.push(
+		"A session is not running: it cannot be messaged, watched, or disposed. Pass its address to spawn_agent as resume to reopen it as a new agent.",
+	);
+	return `Sessions you can resume:\n${lines.join("\n")}`;
 }
