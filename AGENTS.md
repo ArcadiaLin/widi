@@ -63,6 +63,7 @@ Before using an external API, check installed package types or source in `node_m
 - Read files in full before broad changes, before editing files not yet inspected, and when investigating or auditing.
 - Do not rely on search snippets for broad changes.
 - Write Human-readable code.
+- Write few comments. Do not comment what the code already says: no restating a signature, no narrating an obvious branch, no section banners over self-evident blocks. Comment only what the code cannot carry - why a non-obvious choice was made, an invariant a reader would otherwise break, a constraint imposed from outside. When in doubt, leave it out.
 - Avoid `any` unless there is no practical typed alternative.
 - Inline single-use, single-line helpers.
 - Use top-level imports only. Do not use `await import()`, `import("pkg").Type`, or dynamic type imports.
