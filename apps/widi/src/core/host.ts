@@ -83,17 +83,18 @@ export class AgentGoneError extends Error {
  * One node of the caller's agent tree: an agent running now, or the session
  * directory an agent that is no longer running left behind.
  *
- * Only a running entry carries an AgentId, and that is deliberate. A closed
- * entry cannot be messaged or disposed, and the id its agent once had is both
- * useless for that and re-used by later runs, so showing it would only invite
- * the call that fails. A closed entry is for knowing what was done before, and
- * for deciding whether to spawn a fresh agent on the same profile.
+ * Both kinds carry `sessionAgentId`, the id their session was written under,
+ * which is the name a conversation older than this runtime still uses. A closed
+ * entry withholds it once this runtime has buried that id - an agent it disposed
+ * or is disposing - so a message can never resurrect one it has already answered
+ * for.
  */
 export type AgentTreeEntry = AgentTreeRunningEntry | AgentTreeClosedEntry;
 
 export interface AgentTreeRunningEntry {
 	readonly status: "running";
 	readonly agentId: AgentId;
+	readonly sessionAgentId?: string;
 	readonly activity: AgentActivity;
 	readonly profileId: string;
 	readonly label?: string;
@@ -112,6 +113,7 @@ export interface AgentTreeClosedEntry {
 	 * and every other session reference already take.
 	 */
 	readonly sessionRef: string;
+	readonly sessionAgentId?: string;
 	/** Absent when the session header predates profile references. */
 	readonly profileId?: string;
 	readonly label?: string;

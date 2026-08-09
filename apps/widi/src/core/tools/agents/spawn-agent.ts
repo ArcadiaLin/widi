@@ -1,7 +1,6 @@
 import { type Static, Type } from "typebox";
 import { formatError } from "../../../utils/errors.ts";
 import type { AgentSpawnOrigin, AgentToOrchestratorHost } from "../../host.ts";
-import type { RecordedAgent } from "../../recap.ts";
 import type { ToolDefinition } from "../types.ts";
 import { requireAgentHost } from "./shared.ts";
 import type { AgentWatches } from "./watch-agent.ts";
@@ -55,13 +54,6 @@ const spawnAgentSchema = Type.Object({
 	}),
 });
 
-/**
- * Exported because the tool result is a durable record: the orchestrator reads
- * a resumed branch for the agents it says were spawned, and matching that by a
- * literal in two files is how the two drift apart.
- */
-export const SPAWN_AGENT_TOOL_NAME = "spawn_agent";
-
 export type SpawnAgentInput = Static<typeof spawnAgentSchema>;
 
 export interface SpawnAgentAgentStatus {
@@ -76,32 +68,6 @@ export interface SpawnAgentAgentStatus {
 
 export interface SpawnAgentDetails {
 	readonly agents: readonly SpawnAgentAgentStatus[];
-}
-
-/**
- * The agents a recorded result says this tool created, for a reader that has
- * the branch and not the runtime that wrote it.
- *
- * Here rather than at the reading end because the batch is this tool's own
- * composition - `host.spawn` creates one agent - so how several of them are
- * written into one record is not something anything else should have to know.
- * A record from a build that wrote a different shape reads as no agents, which
- * is the safe direction: nothing is claimed that the branch did not say.
- */
-function readSpawnedAgents(details: unknown): readonly RecordedAgent[] {
-	if (typeof details !== "object" || details === null) return [];
-	const agents = (details as Partial<SpawnAgentDetails>).agents;
-	if (!Array.isArray(agents)) return [];
-	return agents.flatMap((agent: SpawnAgentAgentStatus) =>
-		typeof agent?.agentId === "string"
-			? [
-					{
-						agentId: agent.agentId,
-						...(typeof agent.profileId === "string" ? { profileId: agent.profileId } : undefined),
-					},
-				]
-			: [],
-	);
 }
 
 /**
@@ -120,12 +86,11 @@ export function createSpawnAgentToolDefinition(
 	watches: AgentWatches,
 ): ToolDefinition<typeof spawnAgentSchema, SpawnAgentDetails> {
 	return {
-		name: SPAWN_AGENT_TOOL_NAME,
-		label: SPAWN_AGENT_TOOL_NAME,
+		name: "spawn_agent",
+		label: "spawn_agent",
 		description:
 			"Create one or more agents and get their ids back. Each entry names where its context comes from: profile starts an empty one, resume reopens a session, fork copies a running agent's context. A new agent runs independently and does not see your conversation, so pass task to hand it the work. By default you then watch it and are told when it stops. Call list_agents first for the profiles and sessions available.",
 		promptSnippet: "Create agents from a profile, a session, or a fork",
-		readAgentBranchFacts: (details) => ({ created: readSpawnedAgents(details) }),
 		promptGuidelines: [
 			"Delegation is a loop with an end: spawn, get woken by the notification, read the report, then either continue that agent with send_message or release it with dispose_agent. An agent you stop needing but never dispose keeps running.",
 			"Ending your turn is how you wait. You will be woken; do not poll the agent, sleep, or check on its progress.",

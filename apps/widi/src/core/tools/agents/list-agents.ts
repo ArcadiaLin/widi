@@ -1,7 +1,7 @@
 import { type Static, Type } from "typebox";
 import type { AgentProfileBrief, AgentTreeClosedEntry, AgentTreeEntry, AgentTreeRunningEntry } from "../../host.ts";
 import type { ToolDefinition } from "../types.ts";
-import { requireAgentHost } from "./shared.ts";
+import { callerChildren, requireAgentHost } from "./shared.ts";
 
 /** Newest resumable sessions kept in the listing; the rest are counted. */
 const MAX_RESUMABLE_ENTRIES = 10;
@@ -48,7 +48,7 @@ export function createListAgentsToolDefinition(): ToolDefinition<typeof listAgen
 		name: "list_agents",
 		label: "list_agents",
 		description:
-			"List what you can delegate to: the profiles you can spawn an agent from, the agents you spawned that are running now with what each is doing, and the sessions you can resume. It shows one level - your own agents, not theirs - and does not enumerate other trees. You may still send_message to an exact agent id shared with you, from any tree or level. Only a running agent can be messaged, watched, or disposed; a resumable session must be spawned from first.",
+			"List what you can delegate to: the profiles you can spawn an agent from, the agents you spawned that are running now with what each is doing, and the sessions you can resume. It shows one level - your own agents, not theirs - and does not enumerate other trees. You may still send_message to an exact agent id shared with you, from any tree or level. Only a running agent can be watched or disposed; a session you resume becomes a running agent, and messaging the agent id a session was written under reopens it for you.",
 		promptSnippet: "List the profiles, running agents, and resumable sessions",
 		parameters: listAgentsSchema,
 		execute: async (_toolCallId, { include }, context) => {
@@ -73,28 +73,6 @@ export function createListAgentsToolDefinition(): ToolDefinition<typeof listAgen
 			};
 		},
 	};
-}
-
-/**
- * The agents and sessions directly under the caller.
- *
- * The listing arrives rooted at the tree root, which is where discovery used to
- * start; anchoring on the caller is what makes "one level" mean the level the
- * caller owns rather than the level below the root. A caller that is somehow not
- * in its own tree falls back to the roots, so the tool still answers.
- */
-function callerChildren(entries: readonly AgentTreeEntry[], callerAgentId: string): readonly AgentTreeEntry[] {
-	const caller = findCaller(entries, callerAgentId);
-	return caller ? caller.children : entries;
-}
-
-function findCaller(entries: readonly AgentTreeEntry[], callerAgentId: string): AgentTreeEntry | undefined {
-	for (const entry of entries) {
-		if (entry.status === "running" && entry.agentId === callerAgentId) return entry;
-		const nested = findCaller(entry.children, callerAgentId);
-		if (nested) return nested;
-	}
-	return undefined;
 }
 
 function isRunning(entry: AgentTreeEntry): entry is AgentTreeRunningEntry {
@@ -168,14 +146,15 @@ function formatResumable(resumable: readonly AgentTreeClosedEntry[], closedUnava
 	const ordered = [...resumable].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 	const shown = ordered.slice(0, MAX_RESUMABLE_ENTRIES);
 	const lines = shown.map((entry) => {
+		const agent = entry.sessionAgentId ? ` agent ${entry.sessionAgentId}` : "";
 		const profile = entry.profileId ? ` [profile ${entry.profileId}]` : "";
-		return `- ${entry.sessionRef}${profile} started ${entry.createdAt}${nestedSuffix(entry)}`;
+		return `-${agent} ${entry.sessionRef}${profile} started ${entry.createdAt}${nestedSuffix(entry)}`;
 	});
 	if (ordered.length > shown.length) {
 		lines.push(`${ordered.length - shown.length} older sessions are not listed.`);
 	}
 	lines.push(
-		"A session is not running: it cannot be messaged, watched, or disposed. Pass its address to spawn_agent as resume to reopen it as a new agent.",
+		"None of these is running, so none can be watched or disposed as it stands. Send a message to one of the agent ids above and its session is reopened for you, with everything that agent had; pass an address to spawn_agent as resume to reopen one without a message.",
 	);
 	return `Sessions you can resume:\n${lines.join("\n")}`;
 }

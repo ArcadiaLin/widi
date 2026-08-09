@@ -162,13 +162,7 @@ import {
 	projectBranch,
 	sessionKeysEqual,
 } from "./persistence/index.ts";
-import {
-	type AgentBranchFactReader,
-	createOrphanedJobHandlesRecap,
-	createSpawnTreeRecap,
-	type RecapDefinition,
-	selectOwedRecap,
-} from "./recap.ts";
+import { createOrphanedJobHandlesRecap, type RecapDefinition, selectOwedRecap } from "./recap.ts";
 import type { ConfigValueResolver } from "./resolve-config-value.js";
 import type { ResourceLoader } from "./resource-loader.js";
 import type {
@@ -282,10 +276,6 @@ export interface ExtensionReloadResult {
 	readonly agents: readonly ExtensionReloadAgentResult[];
 }
 
-/**
- * Where an agent's context comes from. Orthogonal to `parent`, which decides
- * spawn-tree ownership.
- */
 export type SpawnAgentOrigin =
 	| { readonly kind: "new"; readonly profileId?: string; readonly profileOverride?: AgentProfileOverride }
 	| { readonly kind: "resume"; readonly reference: string | PersistedSessionInfo }
@@ -299,11 +289,6 @@ export interface SpawnAgentOptions {
 	readonly thinkingLevel?: ThinkingLevel;
 }
 
-/**
- * `removed` writes a durable tombstone into the tree log. `runtime_shutdown`
- * writes nothing: without the distinction a normal exit would mark every agent
- * removed and tree restoration would never restore anything.
- */
 export type AgentDisposeIntent = "removed" | "runtime_shutdown";
 
 export interface DisposeAgentOptions {
@@ -313,11 +298,6 @@ export interface DisposeAgentOptions {
 	readonly scope?: AgentDisposeScope;
 }
 
-/**
- * A creation in flight. Not a coalescing optimization: it exists so a second
- * resume of the same session reuses the first result, and so a build caught by
- * `disposeAll` can be cancelled instead of orphaned after the sweep.
- */
 interface AgentCreationReservation {
 	readonly agentId: AgentId;
 	readonly completion: Promise<AgentId>;
@@ -338,12 +318,6 @@ type AgentLookup =
 	| { readonly kind: "creating"; readonly reservation: AgentCreationReservation }
 	| { readonly kind: "unknown" };
 
-/**
- * `phase` is read from the harness at lookup time rather than projected: the
- * delivery method is chosen from it, and harness errors do not cover every phase
- * (`followUp` on an idle target yields only a retryable `invalid_state`, which
- * would defer the message forever).
- */
 interface DeliveryTarget {
 	readonly agentId: AgentId;
 	readonly generation: number;
@@ -372,11 +346,6 @@ type AgentIdleState =
 	| { readonly kind: "busy" }
 	| { readonly kind: "gone"; readonly message: string };
 
-/**
- * A message accepted into the target's delivery queue, or one an extension
- * ended before it got there. There is no third case for "written but
- * undelivered": accounting entries go through the harness's own write tail.
- */
 type AcceptedMessage =
 	| { readonly kind: "accepted"; readonly receipt: MessageDeliveryReceipt }
 	| { readonly kind: "blocked"; readonly inputId: string; readonly reason?: string; readonly blockedBy: string };
@@ -411,29 +380,19 @@ interface AgentBuildRequest {
 	readonly parent: AgentId | undefined;
 }
 
-/** A finished build, not yet published to `_live`. */
 interface LiveAgentBuild {
 	readonly liveAgent: LiveAgent;
-	/** The spawn-tree edge to record on install. Absent means top-level. */
 	readonly parent?: AgentId;
 }
 
-/**
- * `liveAgent` may be absent: the target can already be a tombstone, or still be
- * building - in which case the reservation's `cancelled` flag makes the builder
- * run its own failure cleanup.
- */
 interface DisposedLiveAgent {
 	readonly agentId: AgentId;
 	readonly liveAgent?: LiveAgent;
 }
 
 export class AgentOrchestrator {
-	// -- Injected services ---------------------------------------------------
-
 	readonly executionEnv: ExecutionEnv;
 	readonly resourceLoader: ResourceLoader;
-	/** Also owns the spawn-tree directory layout and its IO primitives. */
 	readonly sessionManager: SessionManager;
 	readonly settingManager: SettingManager;
 	readonly modelRegistry: ModelRegistry;
@@ -443,149 +402,43 @@ export class AgentOrchestrator {
 
 	// -- Independent runtimes ------------------------------------------------
 
-	/**
-	 * A sibling runtime: attach/detach, hand capabilities to scoped hosts, read
-	 * `liveJobCount` and `carriedOverJobs`, receive t1 deliveries. Job state is
-	 * never read from here, and an unsettled job never makes its owner busy.
-	 */
 	private readonly _backgroundJobs: BackgroundJobRuntime;
-
-	/** Clients, listeners, and listener failure isolation. */
 	private readonly _events: OrchestratorEventBus;
-
-	/** Session-derived context usage, with its own generation checks. */
 	private readonly _context: AgentContextMonitor;
-
-	/** OAuth, credential mutation, and the human prompts a login needs. */
 	private readonly _auth: AuthRuntimeController;
-
-	/** Registration and cancellation semantics for every human request. */
 	private readonly _humanRequests: HumanRequestBroker;
-
-	/** Whether a human steer is still unread by the harness. */
 	private readonly _humanInterrupts = new HumanInterruptRegistry();
 
 	// -- Message delivery ----------------------------------------------------
 
-	/** Per-target FIFO with merge and failure requeue. No knowledge of the agent registry. */
 	private readonly _messages: MessageDeliveryQueue;
-
-	/**
-	 * Prompt runs this orchestrator started. The harness reports that it is in a
-	 * turn; it cannot report who started it, who awaits its result, or whether it
-	 * ended by abort or settlement. Staleness is decided by object identity: a run
-	 * only settles the idle edge while it is still the value in this map.
-	 */
 	private readonly _agentPromptRuns = new Map<AgentId, AgentPromptRun>();
-
-	/**
-	 * Waiters for the target's next `agent_start`, registered before `prompt()`.
-	 * Everything the harness does before that event is asynchronous and can fail,
-	 * and a failure there means the user message was never persisted. Phase cannot
-	 * substitute: it flips to `turn` on the first line of `prompt()`.
-	 */
 	private readonly _agentRunStartWaiters = new Map<AgentId, Set<() => void>>();
-
-	/** The current run's abort signal, captured from the harness subscription. */
 	private readonly _agentRunSignals = new Map<AgentId, AbortSignal>();
-
-	/**
-	 * The idle edge: who waits for it, why the last one happened, whether it was
-	 * published. All three read `_resolveAgentIdleState`, so a `waitForAgentIdle`
-	 * caller and an `agent_idle` subscriber can never disagree.
-	 */
 	private readonly _agentIdleWaiters = new Map<AgentId, Set<AgentIdleWaiter>>();
 	private readonly _agentIdleCauses = new Map<AgentId, AgentIdleCause>();
 	private readonly _publishedAgentIdles = new Set<AgentId>();
-
-	/**
-	 * The activity last published for each agent. Not a mirror of the harness -
-	 * every reader takes `getPhase()` - but `agent_status_changed` is
-	 * edge-triggered, and an edge cannot be detected from a value alone.
-	 */
 	private readonly _publishedAgentActivities = new Map<AgentId, AgentActivitySnapshot>();
-
 	private _nextInputId = 1;
 	private _nextPresentationId = 1;
 
 	// -- Extension data plane ------------------------------------------------
 
-	/** Per-agent, per-generation extension load results. */
 	private readonly _extensionStatuses = new ExtensionStatusRegistry();
-
-	/**
-	 * Recursion depth for extension events. It belongs to the causal async chain,
-	 * not the runtime: concurrent emits must not consume one another's budget,
-	 * while a handler's nested emit inherits its parent's.
-	 */
 	private readonly _extensionEventDispatchContext = new AsyncLocalStorage<number>();
-
-	/**
-	 * Set while an extension observer is on the stack, so everything the runtime
-	 * emits underneath it is recognisable as that extension's own doing. Causal
-	 * like the budget above and for the same reason: a concurrent emit from an
-	 * unrelated root is not inside anyone's observer and must stay observable.
-	 */
 	private readonly _extensionCausedScope = new AsyncLocalStorage<true>();
-
-	/** One table shared by every runner; agentId and extensionId are explicit arguments, so no closure set is rebuilt per agent. */
 	private readonly _extensionCoreActions: ExtensionCoreActions;
 
 	// -- Agent registry ------------------------------------------------------
 
-	/**
-	 * The only routable set, current generation only. Written by install, removed
-	 * synchronously by the dispose cutover. A hit means alive.
-	 */
 	private readonly _live = new Map<AgentId, LiveAgent>();
-
-	/**
-	 * Harnesses of agents that have left `_live` but are not torn down yet.
-	 *
-	 * Disposal is the one window where the branch still has to accept writes
-	 * while the agent is no longer routable: a job's closing record has to land
-	 * before the harness is shut down, and the cutover has already removed the
-	 * agent by then. Only branch writers look here - nothing routes through it.
-	 */
 	private readonly _disposingHarnesses = new Map<AgentId, WidiAgentHarness>();
-
-	/**
-	 * AgentIds that existed and are gone, kept solely so a dead id is not reused:
-	 * an in-flight message aimed at a recycled id would reach a different agent.
-	 * Intent, time and reason live in `agent_disposed`.
-	 */
 	private readonly _tombstones = new Set<AgentId>();
-
-	/**
-	 * Spawn-tree edges, child to parent. Purely in-memory and never persisted:
-	 * the durable shape of a tree is the nesting of its session directories, and
-	 * an agent's children do not outlive the runtime that spawned them.
-	 *
-	 * **Not deleted on dispose:** a single dispose does not take the subtree with
-	 * it, so a vanished intermediate node must still let an ancestor's subtree
-	 * dispose reach its surviving descendants. `_pruneSpawnEdges` is what keeps
-	 * that from becoming a leak.
-	 */
 	private readonly _spawnParent = new Map<AgentId, AgentId>();
-
-	/** Next generation per AgentId, monotonic across resume of the same id. */
 	private readonly _agentGenerations = new Map<AgentId, number>();
-
-	/** Resume de-duplication and build cancellation. Not an activity state. */
 	private readonly _agentCreations = new Map<AgentId, AgentCreationReservation>();
-
-	/** Merges concurrent dispose requests only. */
 	private readonly _agentDisposals = new Map<AgentId, AgentDisposalReservation>();
-
-	/** Diagnostics history per agent, read by `AgentSnapshot`. Separate from `LiveAgent`, which is thrown away wholesale on dispose. */
 	private readonly _agentDiagnostics = new Map<AgentId, OrchestratorDiagnostic[]>();
-
-	/**
-	 * Agents scheduled for automatic compaction but not yet started. Phase cannot
-	 * replace this: the decision spans an await, so phase only rejects at the
-	 * second `compact()` call and that rejection surfaces as a user-visible
-	 * `compaction.auto_failed` warning. This is scheduling intent, not a phase.
-	 */
 	private readonly _autoCompactingAgents = new Set<AgentId>();
 
 	// -- Runtime defaults ----------------------------------------------------
@@ -655,13 +508,6 @@ export class AgentOrchestrator {
 		});
 		this._extensionCoreActions = this._createExtensionCoreActions();
 	}
-
-	// -----------------------------------------------------------------------
-	// Runtime defaults
-	//
-	// Not any agent's state - a single agent's values are read from its harness -
-	// so every setter affects later spawns only.
-	// -----------------------------------------------------------------------
 
 	getDefaultModel(): RuntimeModel {
 		return this._defaultModel;
@@ -861,21 +707,6 @@ export class AgentOrchestrator {
 		return ordered;
 	}
 
-	/**
-	 * The caller's agent tree: who is running now, and which sessions were left
-	 * behind by agents that are not.
-	 *
-	 * The directories are the complete set and memory is a subset of them. A
-	 * session whose agent is live reads as running; every other one reads as
-	 * closed, which is the truth about a forked or resumed tree - none of its
-	 * subagents come back (`notes/develop/ZH/agent-tree-persistence.md` §6).
-	 *
-	 * The scope stays what it has always been - the caller's whole tree, not one
-	 * level of it, so a grandchild's id is still discoverable. The walk starts at
-	 * the tree root's own directory and only goes down. Never up: a session
-	 * resumed from inside another tree would otherwise drag in sibling subtrees
-	 * it never spawned.
-	 */
 	private async _listAgentTree(agentId: AgentId): Promise<AgentTreeListing> {
 		const rootAgentId = this._resolveAgentTreeRoot(agentId);
 		const liveInTree = [...this._live.values()].filter(
@@ -908,6 +739,7 @@ export class AgentOrchestrator {
 			return {
 				status: "running",
 				agentId: liveAgent.agentId,
+				...(node === undefined ? undefined : { sessionAgentId: node.id }),
 				activity: toActivitySnapshot(liveAgent.harness.getPhase()).activity,
 				profileId: reference.id,
 				...(reference.label === undefined ? undefined : { label: reference.label }),
@@ -921,6 +753,11 @@ export class AgentOrchestrator {
 			return {
 				status: "closed",
 				sessionRef: node.ref,
+				// Withheld once this runtime has buried the id, so a message cannot
+				// reopen a session whose agent it disposed or is disposing. A live agent
+				// elsewhere holding the same id is not that: the session here is another
+				// one, and reopening it takes a free id.
+				...(this._resolveAgent(node.id).kind === "gone" ? undefined : { sessionAgentId: node.id }),
 				...(node.profile === undefined ? undefined : { profileId: node.profile.id }),
 				...(node.profile?.label === undefined ? undefined : { label: node.profile.label }),
 				createdAt: node.createdAt,
@@ -1064,16 +901,10 @@ export class AgentOrchestrator {
 			// arrival by reading the registry once at subscribe time.
 			await this._publishAgentActivityEdge(agentId, build.liveAgent.harness.getPhase());
 			if (request.origin === "resume") {
-				// Both write into the context the model resumes with, before it is
-				// routable: an unanswered t0 handle and a spawn tree that did not come
-				// back are facts of the resume, not messages arriving after it.
+				// Written into the context the model resumes with, before it is
+				// routable: an unanswered t0 handle is a fact of the resume, not a
+				// message arriving after it.
 				await this._reconcileAgentJobBranch(agentId, "resume", "The runtime that started this job is gone.");
-				await this._recap(agentId, createSpawnTreeRecap("resume", this._agentBranchFactReader()));
-			} else if (request.origin === "fork") {
-				// A fork inherits the text of a spawn tree it does not own: the agents
-				// are alive under the source and outside this agent's tree, so every
-				// message and dispose it addresses to one is refused.
-				await this._recap(agentId, createSpawnTreeRecap("fork", this._agentBranchFactReader()));
 			}
 			// The first arrival at idle, stamped `ready` by `_installLiveAgent`. It
 			// has no turn behind it, and a consumer that waits to be told an agent is
@@ -1475,7 +1306,7 @@ export class AgentOrchestrator {
 	 *
 	 * The branch read is the compaction-aware one, because a recap corrects what
 	 * the model believes and compaction is what it stopped believing. It cuts both
-	 * ways and has to: a spawn compaction dropped is not recapped, and a recap
+	 * ways and has to: a subject compaction dropped is not recapped, and a recap
 	 * compaction dropped is given again if its subject is still there.
 	 *
 	 * `precede` rather than a wake: no recap is news the agent should stop for,
@@ -1494,16 +1325,6 @@ export class AgentOrchestrator {
 	 * given twice. Both callers run it before the agent is routable at a resume,
 	 * so it is context rather than a message arriving into it.
 	 */
-	/**
-	 * Ask each tool what its own recorded results said. Resolved once per recap
-	 * rather than per entry: the walk covers a whole branch, and the registry is
-	 * not going to change under it.
-	 */
-	private _agentBranchFactReader(): AgentBranchFactReader {
-		const resolved = this.toolRegistry.resolve();
-		return (toolName, details) => resolved.getToolDefinition(toolName)?.readAgentBranchFacts?.(details);
-	}
-
 	private async _recap(agentId: AgentId, definition: RecapDefinition): Promise<number> {
 		if (!this._live.has(agentId)) return 0;
 		try {

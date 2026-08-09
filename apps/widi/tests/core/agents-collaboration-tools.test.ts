@@ -263,12 +263,12 @@ describe("list_agents live and resumable sections", () => {
 			type: "text",
 			// The grandchild's session is still on disk under the child; it is
 			// counted, not expanded.
-			text: expect.stringContaining(`- ${childRef} [profile worker] started `),
+			text: expect.stringContaining(`- agent ${child} ${childRef} [profile worker] started `),
 		});
 		expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("(+1 nested)") });
 		expect(result.content[0]).toMatchObject({
 			type: "text",
-			text: expect.stringContaining("Pass its address to spawn_agent as resume"),
+			text: expect.stringContaining("Send a message to one of the agent ids above"),
 		});
 	});
 
@@ -554,6 +554,74 @@ describe("send_message", () => {
 		);
 
 		expect(harnessInputText(secondPrompt.mock.calls[0]?.[0])).toBe(`[Message from ${firstRoot}]\n\nshared id bridge`);
+	});
+
+	// The name outlives the runtime that could answer to it. Nothing tells the
+	// model its agents are gone any more, so the name has to keep working: the
+	// session is on disk, and the message is what reopens it.
+	it("reopens an agent of an earlier run that the branch still names", async () => {
+		const env = new MemoryExecutionEnv();
+		const first = await createOrchestrator(env);
+		const root = await first.spawnAgent({ origin: { kind: "new" } });
+		const worker = await spawnChild(first, root);
+		const rootRef = sessionRef(first, root);
+		const workerRef = sessionRef(first, worker);
+
+		const second = await createOrchestrator(env);
+		const resumed = await second.spawnAgent({ origin: { kind: "resume", reference: rootRef } });
+		// The worker does not exist yet when the call starts, so its harness cannot
+		// be stubbed per instance the way the other tests do it.
+		const prompt = vi.spyOn(AgentHarness.prototype, "prompt").mockResolvedValue({} as AssistantMessage);
+
+		const result = await sendMessage.execute(
+			"call-1",
+			{ agentId: worker, message: "still there?" },
+			toolContext(second, resumed),
+		);
+
+		expect(result.details).toEqual({ targetAgentId: worker, watching: false, resumedFrom: workerRef });
+		expect(harnessInputText(prompt.mock.calls[0]?.[0])).toBe(`[Message from ${resumed}]\n\nstill there?`);
+		expect(result.content[0]).toMatchObject({
+			type: "text",
+			text: expect.stringContaining("was reopened from session"),
+		});
+	});
+
+	// A fork inherits a conversation that names the source's agents, and a copy of
+	// each of their sessions came with it. Its own copy is what those names have to
+	// reach: the originals are still working for the agent it was forked from.
+	it("reaches its own copy of an inherited agent rather than the original", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const owner = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const worker = await spawnChild(orchestrator, owner);
+		const workerPrompt = stubPrompt(orchestrator, worker);
+		const forked = await orchestrator.spawnAgent({ origin: { kind: "fork", sourceAgentId: owner } });
+		// The copy keeps the directory name its original has, under the fork's own.
+		const copyRef = `${sessionRef(orchestrator, forked)}/${sessionRef(orchestrator, worker).split("/").pop()}`;
+		const prompt = vi.spyOn(AgentHarness.prototype, "prompt").mockResolvedValue({} as AssistantMessage);
+
+		const woken = await sendMessage.execute(
+			"call-1",
+			{ agentId: worker, message: "carry on" },
+			toolContext(orchestrator, forked),
+		);
+
+		const copy = woken.details.targetAgentId;
+		expect(copy).not.toBe(worker);
+		expect(woken.details.resumedFrom).toBe(copyRef);
+		expect(woken.content[0]).toMatchObject({ type: "text", text: expect.stringContaining(`It runs as ${copy} now`) });
+		expect(harnessInputText(prompt.mock.calls[0]?.[0])).toBe(`[Message from ${forked}]\n\ncarry on`);
+
+		// The conversation goes on using the name it inherited, and it keeps landing
+		// on the copy that name already woke.
+		const again = await sendMessage.execute(
+			"call-2",
+			{ agentId: worker, message: "and this too" },
+			toolContext(orchestrator, forked),
+		);
+
+		expect(again.details).toEqual({ targetAgentId: copy, watching: false });
+		expect(workerPrompt).not.toHaveBeenCalled();
 	});
 
 	it("rejects an empty, self-addressed, or disposed target before anything happens", async () => {

@@ -18,10 +18,18 @@ describe("hydrateSessionEntries", () => {
 				source: { kind: "agent", label: "worker-7" },
 				body: "three duplicates found",
 			}),
-			orchestratorNotice("spawn-tree-recap", '<recap type="spawn_tree">\nEvery agent you created is gone.\n</recap>', {
-				source: { kind: "recap", label: "spawn tree", details: { recap: "spawn_tree", ids: ["coder-a1b2"] } },
-				body: "Every agent you created is gone.",
-			}),
+			orchestratorNotice(
+				"job-handles-recap",
+				'<recap type="orphaned_job_handles">\nJob job-1 was never recorded.\n</recap>',
+				{
+					source: {
+						kind: "recap",
+						label: "orphaned job handles",
+						details: { recap: "orphaned_job_handles", ids: ["call-1"] },
+					},
+					body: "Job job-1 was never recorded.",
+				},
+			),
 		]);
 
 		expect(result.timeline).toEqual([
@@ -36,12 +44,16 @@ describe("hydrateSessionEntries", () => {
 			},
 			{
 				type: "orchestrator-message",
-				id: "spawn-tree-recap",
+				id: "job-handles-recap",
 				durability: "durable",
 				createdAt: timestamp(1),
-				source: { kind: "recap", label: "spawn tree", details: { recap: "spawn_tree", ids: ["coder-a1b2"] } },
-				text: "Every agent you created is gone.",
-				modelText: '<recap type="spawn_tree">\nEvery agent you created is gone.\n</recap>',
+				source: {
+					kind: "recap",
+					label: "orphaned job handles",
+					details: { recap: "orphaned_job_handles", ids: ["call-1"] },
+				},
+				text: "Job job-1 was never recorded.",
+				modelText: '<recap type="orphaned_job_handles">\nJob job-1 was never recorded.\n</recap>',
 			},
 		]);
 	});

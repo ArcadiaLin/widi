@@ -2,11 +2,17 @@
  * Recaps: what a branch is owed when the runtime that wrote it is gone.
  *
  * A resume rebuilds a conversation out of a session file, and some of what that
- * conversation believes was true only of the process that ended - agents it
- * spawned, background jobs it started. Nobody is going to correct those beliefs
- * on their own: the model reads its branch, sees "I asked coder-1 to do it", and
- * keeps addressing an agent that does not exist. A recap is the runtime saying
- * so, on the branch, before the agent is routable.
+ * conversation believes was true only of the process that ended. Nobody is going
+ * to correct those beliefs on their own: the model reads its branch, sees a
+ * promise the runtime made it, and goes on waiting for something no longer
+ * coming. A recap is the runtime saying so, on the branch, before the agent is
+ * routable.
+ *
+ * Not every stale belief needs one. A branch that names an agent it spawned is
+ * left alone, because that name still resolves: `send_message` reopens the
+ * agent's session when nothing is running under it, so the conversation is
+ * corrected by acting on it rather than by being told. What is left here are the
+ * beliefs nothing can act on, where the fact has to arrive as a fact.
  *
  * Two rules make it one mechanism rather than a family of special cases:
  *
@@ -35,40 +41,13 @@ import { ORCHESTRATOR_MESSAGE_CUSTOM_TYPE } from "./session-manager.ts";
 export interface RecapSubject {
 	/**
 	 * How this subject is named on the branch, and the whole of what makes the
-	 * recap idempotent: an agent id, a tool call id. It has to be stable across
-	 * runtimes, because the run that reads it back is never the one that wrote it.
+	 * recap idempotent: a tool call id, say. It has to be stable across runtimes,
+	 * because the run that reads it back is never the one that wrote it.
 	 */
 	readonly id: string;
 	/** What the model reads about this subject alone. */
 	readonly text: string;
 }
-
-/** An agent as some tool's recorded result named it. */
-export interface RecordedAgent {
-	readonly agentId: string;
-	/** Absent when the record does not say which profile it ran as. */
-	readonly profileId?: string;
-}
-
-/** What one recorded tool result says about the agents a branch believes in. */
-export interface AgentBranchFacts {
-	/** Agents the result says it created. */
-	readonly created?: readonly RecordedAgent[];
-	/** Agents the result says are gone. */
-	readonly gone?: readonly string[];
-}
-
-/**
- * Ask whatever wrote a result what it says about the branch's agents.
- *
- * A recap has to read records it did not write, and the shape of a record
- * belongs to its writer. Reading them here instead would put a copy of every
- * tool's result schema in core, kept in step by hand - which is the same
- * arrangement as a table of tool names, one indirection further in.
- *
- * Returns nothing for a tool with nothing to say, which is nearly all of them.
- */
-export type AgentBranchFactReader = (toolName: string, details: unknown) => AgentBranchFacts | undefined;
 
 /**
  * One kind of recap: what to look for on a branch, and how to say it.
@@ -90,18 +69,7 @@ export interface OwedRecap {
 	readonly ids: readonly string[];
 }
 
-/**
- * One name for both ways a branch can outlive its agent tree - a resume, where
- * the agents are gone, and a fork, where they belong to someone else. The
- * subject is the same either way, "an agent this conversation names and cannot
- * reach", and one name is what lets a fork's own resume see that the fork
- * already said it.
- */
-export const SPAWN_TREE_RECAP = "spawn_tree";
 export const ORPHANED_JOB_HANDLES_RECAP = "orphaned_job_handles";
-
-/** Why the branch outlived its tree, which is the whole of what the two recaps differ in. */
-export type SpawnTreeRecapCause = "resume" | "fork";
 
 /**
  * Read a branch for what this recap still owes it.
@@ -135,64 +103,6 @@ export function collectRecappedIds(entries: readonly SessionTreeEntry[], recap: 
 		for (const id of entryRecapIds(entry, recap)) ids.add(id);
 	}
 	return ids;
-}
-
-/**
- * The agents this branch spawned and still shows as running, which after a
- * resume or a fork is exactly the set the model can address and the runtime
- * cannot.
- *
- * A single pass, because the answer is what the branch says last: a spawn adds
- * an agent, a dispose the branch records removes it, and a recap already given
- * removes it too. That last one is what keeps a resume of a resume silent, and
- * it is also why the walk cannot be replaced by a set difference - an agent
- * spawned again after a recap is owed a new one.
- *
- * Only spawns the model itself made are here. An agent created for it by a
- * surface leaves no tool result on this branch, and the model has no reference
- * to it to correct.
- *
- * The two causes differ in what is true of those agents, not in which they are.
- * A resume inherits a tree that no longer exists; a fork inherits a tree that
- * exists and belongs to the session it was forked from - a new line of work
- * gets a new tree, so those agents are outside it and refuse both `send_message`
- * and `dispose_agent`.
- */
-export function createSpawnTreeRecap(cause: SpawnTreeRecapCause, read: AgentBranchFactReader): RecapDefinition {
-	return {
-		recap: SPAWN_TREE_RECAP,
-		collect: (entries) => {
-			const open = new Map<string, RecapSubject>();
-			for (const entry of entries) {
-				for (const id of entryRecapIds(entry, SPAWN_TREE_RECAP)) open.delete(id);
-				if (entry.type !== "message" || entry.message.role !== "toolResult" || entry.message.isError) continue;
-				const facts = read(entry.message.toolName, entry.message.details);
-				if (facts === undefined) continue;
-				for (const { agentId, profileId } of facts.created ?? []) {
-					open.set(agentId, { id: agentId, text: profileId ? `${agentId} (profile ${profileId})` : agentId });
-				}
-				for (const agentId of facts.gone ?? []) open.delete(agentId);
-			}
-			return [...open.values()];
-		},
-		// No header of its own: the tag the message path renders around this says
-		// which recap it is, and a body that repeated it would frame the text twice.
-		render: (subjects) => {
-			const named = subjects.map((subject) => subject.text).join(", ");
-			if (cause === "fork") {
-				return (
-					`The agents named earlier in this conversation - ${named} - belong to the session this one was forked ` +
-					"from and are not in your agent tree. A copy of each of their sessions came with the fork and " +
-					"list_agents shows those as closed, but none of them can be messaged or disposed from here. Spawn your " +
-					"own if you still need that work done."
-				);
-			}
-			return (
-				`The agents you created before this resume have been closed: ${named}. Their sessions are still readable ` +
-				"through list_agents, but none of them can be messaged or disposed. Spawn new ones if you still need them."
-			);
-		},
-	};
 }
 
 /**

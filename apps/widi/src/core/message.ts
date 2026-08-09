@@ -221,7 +221,7 @@ export type BuiltInMessageProducer =
 	  }
 	| {
 			readonly kind: "recap";
-			/** Which recap this is - `spawn_tree_closed`, `carried_over_jobs`. */
+			/** Which recap this is - `orphaned_job_handles`, `carried_over_jobs`. */
 			readonly recap: string;
 			/**
 			 * What this recap accounts for, in whatever ids the sender names its

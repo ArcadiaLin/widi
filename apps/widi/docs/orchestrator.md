@@ -130,13 +130,11 @@ extension 拿到与 agent host 同名的五个方法，作用域与结构由「�
 
 **recap 机制随之可自建。** recap 实质是三件事：读分支、比对还欠什么、不唤醒地写进模型上下文。extension 现在三件都有——`session.getTree()` 返回的就是 `collect` 的入参类型，`findEntries` 的私有命名空间做幂等比 core 把 id 编进 `MessageSource.details` 还干净，写入就是 `precede`。`RecapDefinition` / `selectOwedRecap` 是否还要导出到 `extension/api.ts`，取决于 recap 定位成 core 内部机制还是公开原语，未定。
 
-**扩展工具可以参与 recap（已开放）。** `readAgentBranchFacts` 定义在 `ToolDefinition` 上，而 extension 贡献的正是 `ToolDefinition`。所以一个由扩展提供、会创建 agent 的工具可以声明自己的 branch reader，core 的 spawn-tree recap 会认。这是依赖反转的顺带结果，不是刻意设计——写在这里以免被误撞发现。
-
 ### 有意的越权面
 
 `ExtensionSendOptions.source` 被原样透传（含 `details`），消息落盘时成为条目的 `details.source`；而 `recapEntryIds` 只凭 `source.kind === "recap"` 加 `details.recap` 判定一条 recap 是否已给过。
 
-于是扩展可以发一条 `source: { kind: "recap", details: { recap: "spawn_tree", ids: [...] } }` 的消息，让 core 自己对这些 id 的 recap 永久闭嘴。
+于是扩展可以发一条 `source: { kind: "recap", details: { recap: "orphaned_job_handles", ids: [...] } }` 的消息，让 core 自己对这些 id 的 recap 永久闭嘴。
 
 **这是允许的，不是待修的缺陷。** core 保留的 `kind` 不做校验，扩展可以借此接管或压制 core 的某类 recap。代价是 recap 命名空间从此是共享的：排查「core 的 recap 不出现了」，第一步查扩展，不是查 core。
 

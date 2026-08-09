@@ -11,8 +11,6 @@ import type { OrchestratorEvent } from "../../src/core/types.ts";
 import { startBackgroundedJob } from "../helpers/background-jobs.ts";
 import {
 	agentSink,
-	appendSpawnResult,
-	createCoreAgentToolRegistry,
 	createOrchestrator,
 	defaultProfile,
 	harnessEventDriver,
@@ -358,18 +356,23 @@ describe("AgentOrchestrator message interception", () => {
 	// are recorded either way, so a block degrades the same.
 	it("delivers a blocked recap anyway, with a diagnostic", async () => {
 		const env = new MemoryExecutionEnv();
-		// The recap reads the branch through the tool that wrote each result, so the
-		// collaboration tools have to be registered for a spawn record to be legible.
-		const toolRegistry = createCoreAgentToolRegistry();
-		const first = await createOrchestrator(env, { toolRegistry });
+		const first = await createOrchestrator(env);
 		const agentId = await first.spawnAgent({ origin: { kind: "new" } });
-		// The branch has to be owed the recap: an agent it spawned and never disposed.
-		await appendSpawnResult(first, agentId, "call-1", "worker-9c3f");
+		// The branch has to be owed the recap: a t0 handle no job history recorded.
+		await requireAgentHarness(first, agentId).appendMessage({
+			role: "toolResult",
+			toolCallId: "call-1",
+			toolName: "bash",
+			content: [{ type: "text", text: "moved to the background as job-1" }],
+			details: { jobId: "job-1", toolCallId: "call-1", toolName: "bash", backgrounded: true },
+			isError: false,
+			timestamp: Date.now(),
+		});
 		const reference = first.sessionManager.getAgentSessionRef(agentId);
 		if (reference === undefined) throw new Error(`Expected a persisted session for ${agentId}.`);
 
 		// A second runtime over the same files: the process died, the session did not.
-		const second = await createOrchestrator(env, { toolRegistry: createCoreAgentToolRegistry() });
+		const second = await createOrchestrator(env);
 		second.registerExtension("policy", (api) => {
 			api.intercept("input", () => ({ block: true, reason: "Nothing gets in." }));
 		});
@@ -385,6 +388,6 @@ describe("AgentOrchestrator message interception", () => {
 		);
 		// Delivered anyway: the recap is on the branch the model resumes with.
 		const snapshot = await second.getAgentSession(resumed);
-		expect(JSON.stringify(snapshot.pathToRoot)).toContain('<recap type=\\"spawn_tree\\">');
+		expect(JSON.stringify(snapshot.pathToRoot)).toContain('<recap type=\\"orphaned_job_handles\\">');
 	});
 });
