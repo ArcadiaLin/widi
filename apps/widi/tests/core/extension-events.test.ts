@@ -269,6 +269,71 @@ describe("extension event bus", () => {
 		expect(generations).toEqual([2]);
 	});
 
+	it("delivers to a registered non-runner subscriber, and stops on detach", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const seen: ExtensionEventEnvelope[] = [];
+		const detach = orchestrator.registerExtensionEventSubscriber({
+			deliver: (envelope) => {
+				seen.push(envelope);
+			},
+		});
+		orchestrator.registerExtension("sender", () => {});
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+
+		await requireActions(orchestrator, agentId).emitExtensionEvent("herdr:blocked", { pane: 3 });
+		detach();
+		await requireActions(orchestrator, agentId).emitExtensionEvent("herdr:blocked");
+
+		expect(seen).toHaveLength(1);
+		expect(seen[0]?.payload).toEqual({ pane: 3 });
+		expect(seen[0]?.sourceExtensionId).toBe("sender");
+		expect(seen[0]?.sourceAgentId).toBe(agentId);
+	});
+
+	// A host is out-of-core code: it may not take the fan-out or the emitter down.
+	it("contains a throwing subscriber as a diagnostic", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const diagnostics = collectDiagnostics(orchestrator);
+		const reached: string[] = [];
+		orchestrator.registerExtensionEventSubscriber({
+			deliver: () => {
+				throw new Error("host exploded");
+			},
+		});
+		orchestrator.registerExtensionEventSubscriber({
+			deliver: () => {
+				reached.push("second");
+			},
+		});
+		orchestrator.registerExtension("sender", () => {});
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+
+		await expect(requireActions(orchestrator, agentId).emitExtensionEvent("ping")).resolves.toBeUndefined();
+
+		expect(reached).toEqual(["second"]);
+		const failure = diagnostics.find((diagnostic) => diagnostic.code === "extension.event_subscriber_failed");
+		expect(failure?.message).toContain("host exploded");
+	});
+
+	it("emits on behalf of a host through the public entry point", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const received: ExtensionEventEnvelope[] = [];
+		orchestrator.registerExtension("listener", (api: ExtensionActivationApi) => {
+			api.onExtensionEvent("drill:step", (envelope) => {
+				received.push(envelope);
+			});
+		});
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+
+		await orchestrator.emitExtensionEvent(agentId, "drill", "drill:step", { index: 1 });
+
+		expect(received).toHaveLength(1);
+		expect(received[0]?.sourceExtensionId).toBe("drill");
+		expect(received[0]?.sourceAgentId).toBe(agentId);
+		await expect(orchestrator.emitExtensionEvent(agentId, "drill", "has space")).rejects.toThrow(TypeError);
+		await expect(orchestrator.emitExtensionEvent("missing", "drill", "drill:step")).rejects.toThrow();
+	});
+
 	it("lists bus subscriptions among the inspectable hooks", async () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		orchestrator.registerExtension("sender", (api: ExtensionActivationApi) => {

@@ -28,6 +28,7 @@ import { OperationHintView } from "./components/operation-hint.ts";
 import { QueuedInputView } from "./components/queued-input.ts";
 import { StagedInputView } from "./components/staged-input.ts";
 import { StatusView } from "./components/status.ts";
+import { WorkingLineView } from "./components/working-line.ts";
 import { WidiEditor } from "./editor.ts";
 import { applyAgentSnapshot, EventProjector } from "./event-projector.ts";
 import { TuiExtensionHost } from "./extension-host/index.ts";
@@ -58,12 +59,18 @@ import {
 } from "./state.ts";
 import { flushStreaming, STREAM_FLUSH_MS } from "./streaming-flush.ts";
 import { loadThemes, theme } from "./theme/theme.ts";
+import { hasLiveTransientVoice, setSteadyVoice, setTransientVoice } from "./voice.ts";
 
 const NOTIFICATION_TTL_MS = 5_000;
 /** Staged drafts held for one agent before the buffer lands itself. */
 const MAX_STAGED_DRAFTS = 20;
 /** Spinner frame cadence while the visible agent is running. */
 const SPINNER_TICK_MS = 160;
+/** Repaint cadence while the working line is holding a line that expires. */
+const VOICE_TICK_MS = 250;
+/** Interrupts or steers inside this window before the agent says something about it. */
+const POKE_WINDOW_MS = 10_000;
+const POKE_THRESHOLD = 3;
 
 export interface WidiTuiOptions {
 	readonly cwd: string;
@@ -108,6 +115,8 @@ export class WidiTuiApplication {
 	private readonly drafts = new Map<string, string>();
 	private nextPendingFollowUpId = 1;
 	private nextStagedId = 1;
+	/** Recent interrupt/steer timestamps behind the "stop poking me" line. */
+	private pokes: number[] = [];
 	private started = false;
 	private shutdownPromise?: Promise<void>;
 	private resolveClosed?: () => void;
@@ -167,6 +176,16 @@ export class WidiTuiApplication {
 				},
 				diagnostics: this.state.diagnostics,
 				copyText: (text) => copyToClipboard(text),
+				setVoicePack: (pack) => {
+					this.state.voicePack = pack;
+					// Every line on screen was rolled from the old pack. Re-rolling the
+					// steady one is what makes the switch visible without waiting for
+					// the next transition; a transient is a moment and simply passes.
+					for (const agent of this.state.agents.values()) {
+						agent.voice = undefined;
+						setSteadyVoice(agent, pack, agent.status === "running" ? "working" : "idle");
+					}
+				},
 			}),
 		]) {
 			const diagnostic = this.engine.register(command);
@@ -258,10 +277,19 @@ export class WidiTuiApplication {
 			{ key: "notices", slot: "notices", scope: "global", factory: () => new NoticeView(this.state) },
 			{ key: "chat", slot: "chat", scope: "global", factory: () => new ChatView(this.state) },
 			{ key: "status", slot: "status", scope: "global", factory: () => new StatusView(this.state) },
-			// Closer to the editor means more settled: a request is still waiting
-			// on the human, staged text can still be rewritten, and the queue is
-			// decided and only waiting for its turn. The dock is last because it
-			// takes the editor's own place.
+			// The working line sits directly under the transcript because that is
+			// what it continues: the run the transcript is being written by. Below
+			// it, closer to the editor means more settled - a request is still
+			// waiting on the human, staged text can still be rewritten, and the
+			// queue is decided and only waiting for its turn. The dock is last
+			// because it takes the editor's own place.
+			{
+				key: "workingLine",
+				slot: "aboveEditor",
+				order: 0,
+				scope: "global",
+				factory: () => new WorkingLineView({ state: this.state, engine: this.engine, editor: this.editor }),
+			},
 			{ key: "humanRequests", slot: "aboveEditor", order: 1, scope: "global", factory: () => this.humanRequests },
 			{
 				key: "stagedInput",
@@ -382,6 +410,20 @@ export class WidiTuiApplication {
 				reportDiagnostic: (diagnostic) => this.reportHostDiagnostic(diagnostic),
 				stageMessage: (extensionId, text) => {
 					this.stageDraft(text, extensionId);
+				},
+				events: {
+					// The visible agent is the attribution a TUI half gets: it belongs
+					// to no agent of its own, and the one on screen is what its action
+					// is about. Core requires a live agent, so refuse plainly rather
+					// than emit under a stale id.
+					emit: async (extensionId, name, payload) => {
+						const agentId = this.state.activeAgentId;
+						if (!agentId) {
+							throw new Error(`Extension '${extensionId}' cannot emit '${name}': no agent is visible yet.`);
+						}
+						await this.orchestrator.emitExtensionEvent(agentId, extensionId, name, payload);
+					},
+					subscribe: (handler) => this.orchestrator.registerExtensionEventSubscriber({ deliver: handler }),
 				},
 			});
 			await this.extensionHost.activate();
@@ -600,7 +642,9 @@ export class WidiTuiApplication {
 
 	/**
 	 * Tick re-renders while anything animated is on screen. The visible running
-	 * agent has spinner frames advancing every 160ms; with only live background
+	 * agent has spinner frames advancing every 160ms; a working line still
+	 * saying what just happened has to be repainted once its line expires, or
+	 * "Job's done." stays up until the next keystroke; with only live background
 	 * jobs, one tick per second keeps the panel's elapsed times fresh. The
 	 * interval is rebuilt when the cadence changes and stopped when nothing
 	 * needs it.
@@ -611,7 +655,13 @@ export class WidiTuiApplication {
 		);
 		const activeAgent = this.state.activeAgentId ? this.state.agents.get(this.state.activeAgentId) : undefined;
 		const hasVisibleRunningAgent = activeAgent?.status === "running";
-		const interval = hasVisibleRunningAgent ? SPINNER_TICK_MS : hasLiveJob ? 1_000 : undefined;
+		const interval = hasVisibleRunningAgent
+			? SPINNER_TICK_MS
+			: hasLiveTransientVoice(activeAgent?.voice)
+				? VOICE_TICK_MS
+				: hasLiveJob
+					? 1_000
+					: undefined;
 		if (interval === this.jobsTickerInterval) return;
 		if (this.jobsTicker) {
 			clearInterval(this.jobsTicker);
@@ -619,7 +669,12 @@ export class WidiTuiApplication {
 		}
 		this.jobsTickerInterval = interval;
 		if (interval !== undefined) {
-			this.jobsTicker = setInterval(() => this.tui.requestRender(), interval);
+			// Recomputed from inside the tick as well: a voice line expiring is not
+			// an event, so nothing else would ever wind this cadence back down.
+			this.jobsTicker = setInterval(() => {
+				this.tui.requestRender();
+				this.updateJobsTicker();
+			}, interval);
 			this.jobsTicker.unref();
 		}
 	}
@@ -1025,6 +1080,7 @@ export class WidiTuiApplication {
 		this.editor.setText("");
 		this.drafts.set(agentId, "");
 		this.editor.addToHistory(text);
+		this.notePoke(agent);
 		this.track(
 			this.flushStaged(agentId)
 				.then(() => this.messages.send({ targetAgentId: agentId, body: text, mode: "interrupt" }))
@@ -1374,6 +1430,8 @@ export class WidiTuiApplication {
 		}
 		this.pendingAgents.cancel();
 		const agent = setActiveAgent(this.state, agentId);
+		// An agent nobody has looked at yet has never had a transition to roll on.
+		setSteadyVoice(agent, this.state.voicePack, agent.status === "running" ? "working" : "idle");
 		this.updateJobsTicker();
 		this.editor.setText(this.drafts.get(agentId) ?? "");
 		clearDockedFocus(this.state);
@@ -1558,12 +1616,32 @@ export class WidiTuiApplication {
 				this.addApplicationNotice(`${maintenanceLabel(agent.maintenance)} in progress; abort is unavailable.`, agentId);
 				return;
 			}
+			this.notePoke(agent);
 			this.track(
 				this.orchestrator.abortAgent(agentId, "human").catch((error) => {
 					this.addApplicationNotice(errorMessage(error), agentId);
 				}),
 			);
 		}
+	}
+
+	/**
+	 * Count the times in a row the user grabbed a running agent by the collar.
+	 * Purely a TUI observation: nothing about the run changes, the agent just
+	 * says something about being poked. The window resets on the third, so a
+	 * long argument is one remark rather than a running commentary.
+	 */
+	private notePoke(agent: AgentViewState): void {
+		const at = Date.now();
+		const recent = this.pokes.filter((poke) => at - poke < POKE_WINDOW_MS);
+		recent.push(at);
+		if (recent.length >= POKE_THRESHOLD) {
+			setTransientVoice(agent, this.state.voicePack, "poked", at);
+			this.pokes = [];
+			this.updateJobsTicker();
+			return;
+		}
+		this.pokes = recent;
 	}
 
 	private updateEditorAvailability(): void {

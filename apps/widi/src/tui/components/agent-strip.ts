@@ -348,12 +348,18 @@ function formatAgent(state: TuiApplicationState, agent: AgentViewState, active: 
 	const label = agentIdentityLabel(state, agent);
 	const statusText =
 		agent.status === "running" && agent.maintenance ? maintenanceLabel(agent.maintenance).toLowerCase() : agent.status;
+	// How far into the run it is. Only while it runs: after the fact the count
+	// says nothing the transcript does not, and a stale one reads as live.
+	const progress =
+		agent.status === "running" && !agent.maintenance && agent.runToolCount > 0
+			? `${statusText} · ${agent.runToolCount} tool_use`
+			: statusText;
 	const base =
 		agent.attention === "human-request"
 			? "needs input"
 			: agent.unreadCount > 0
-				? `${statusText} · ${agent.unreadCount} unread`
-				: statusText;
+				? `${progress} · ${agent.unreadCount} unread`
+				: progress;
 	const detail = agent.backgroundJobCount > 0 ? `${base} · ${agent.backgroundJobCount} bg` : base;
 	// Agent-strip statuses mark the agent item itself: just the icon, painted
 	// with its tone, one per publishing extension status.

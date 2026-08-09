@@ -3,6 +3,7 @@ import type { AgentOrchestrator } from "../../../src/core/agent-orchestrator.ts"
 import { applicationCommands } from "../../../src/tui/commands/app-commands.ts";
 import { CommandEngine } from "../../../src/tui/commands/engine.ts";
 import { DiagnosticsLog } from "../../../src/tui/diagnostics-log.ts";
+import type { VoicePackId } from "../../../src/tui/voice.ts";
 
 const NOW = "2026-08-09T10:00:00.000Z";
 
@@ -12,6 +13,7 @@ function setup(status: "idle" | "running" = "idle") {
 		newSessionCalls: [] as Array<string | undefined>,
 		disposeAgentCalls: [] as string[],
 		copied: [] as string[],
+		voicePacks: [] as VoicePackId[],
 		diagnostics: new DiagnosticsLog(),
 		quit() {
 			this.quitCalls += 1;
@@ -24,6 +26,9 @@ function setup(status: "idle" | "running" = "idle") {
 		},
 		async copyText(text: string) {
 			this.copied.push(text);
+		},
+		setVoicePack(pack: VoicePackId) {
+			this.voicePacks.push(pack);
 		},
 	};
 	const engine = new CommandEngine(applicationCommands(host));

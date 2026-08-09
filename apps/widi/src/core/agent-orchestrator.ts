@@ -39,6 +39,7 @@ import {
 	type ThinkingLevel,
 } from "@widi/agent-core";
 import { formatError } from "../utils/errors.ts";
+import type { JsonValue } from "../utils/json.ts";
 import type { AgentProfile, AgentProfileOverride, AgentProfileRegistry, AgentProfileSource } from "./agent-profile.js";
 import { parseAgentProfileReference } from "./agent-profile.js";
 import type {
@@ -76,7 +77,7 @@ import { AgentContextMonitor } from "./context-monitor.ts";
 import { type OrchestratorDiagnostic, OrchestratorError, validateExtensionDiagnosticDraft } from "./diagnostics.ts";
 import type { EventPublishOptions } from "./event-bus.ts";
 import { OrchestratorEventBus } from "./event-bus.ts";
-import type { ExtensionEventEnvelope } from "./extension/events.ts";
+import type { ExtensionEventEnvelope, ExtensionEventSubscriber } from "./extension/events.ts";
 import type { ExtensionContextActions, ExtensionCoreActions, ExtensionIdentity } from "./extension/index.ts";
 import {
 	EXTENSION_OBSERVED_EVENT_NAMES,
@@ -426,6 +427,7 @@ export class AgentOrchestrator {
 
 	private readonly _extensionStatuses = new ExtensionStatusRegistry();
 	private readonly _extensionEventDispatchContext = new AsyncLocalStorage<number>();
+	private readonly _extensionEventSubscribers = new Set<ExtensionEventSubscriber>();
 	private readonly _extensionCausedScope = new AsyncLocalStorage<true>();
 	private readonly _extensionCoreActions: ExtensionCoreActions;
 
@@ -2948,10 +2950,40 @@ export class AgentOrchestrator {
 	// -----------------------------------------------------------------------
 
 	/**
-	 * Relay one named extension event to every live runner's subscribers.
-	 * Runtime-level by construction: the runners are the subscriber set, so a
-	 * reload swaps subscriptions with the runner it replaced and disposal drops
-	 * them, with no second lifecycle to keep in step.
+	 * Attach a bus subscriber that is not an extension runner, and hand back the
+	 * detach. The registrant owns its lifetime: nothing about an agent's disposal
+	 * says whether a host's subscription is still wanted.
+	 */
+	registerExtensionEventSubscriber(subscriber: ExtensionEventSubscriber): () => void {
+		this._extensionEventSubscribers.add(subscriber);
+		return () => {
+			this._extensionEventSubscribers.delete(subscriber);
+		};
+	}
+
+	/**
+	 * Emit onto the bus on behalf of one extension. `agentId` is the attribution
+	 * the envelope carries and must name a live agent. A host emitting for a
+	 * `tui` half - which belongs to no agent - names the agent the user is
+	 * looking at, because that is the one its action is about.
+	 */
+	async emitExtensionEvent(agentId: AgentId, extensionId: string, name: string, payload?: JsonValue): Promise<void> {
+		this._requireLiveAgent(agentId);
+		await this._emitExtensionEvent({
+			name: validateExtensionEventName(name),
+			payload: validateExtensionEventPayload(payload),
+			sourceExtensionId: extensionId,
+			sourceAgentId: agentId,
+			emittedAt: now(),
+		});
+	}
+
+	/**
+	 * Relay one named extension event to every live runner's subscribers, then to
+	 * the registered non-runner subscribers. Runtime-level by construction: the
+	 * runners are most of the subscriber set, so a reload swaps subscriptions
+	 * with the runner it replaced and disposal drops them, with no second
+	 * lifecycle to keep in step. The rest is the hosts, which keep their own.
 	 */
 	private async _emitExtensionEvent(envelope: ExtensionEventEnvelope): Promise<void> {
 		const immutable = freezeExtensionEventEnvelope(envelope);
@@ -2974,6 +3006,24 @@ export class AgentOrchestrator {
 				const runner = liveAgent.extensionRunner;
 				if (runner.isStale()) continue;
 				await this._recordAndPublishExtensionDiagnostics(agentId, await runner.emitExtensionEvent(immutable));
+			}
+			for (const subscriber of [...this._extensionEventSubscribers]) {
+				// A host lives outside core and outside any agent: a throw from one
+				// must not cut the fan-out short or reject the emitter's call.
+				try {
+					await subscriber.deliver(immutable);
+				} catch (error) {
+					await this._publishDiagnostic(
+						{
+							severity: "warning",
+							code: "extension.event_subscriber_failed",
+							message: `A subscriber failed on extension event '${immutable.name}' from '${immutable.sourceExtensionId}': ${formatError(error)}`,
+							agentId: immutable.sourceAgentId,
+							extensionId: immutable.sourceExtensionId,
+						},
+						{ observeExtensions: false },
+					);
+				}
 			}
 		});
 	}
@@ -3169,14 +3219,7 @@ export class AgentOrchestrator {
 				await this.waitForAgentIdle(agentId, options);
 			},
 			emitExtensionEvent: async (agentId, extensionId, name, payload) => {
-				this._requireLiveAgent(agentId);
-				await this._emitExtensionEvent({
-					name: validateExtensionEventName(name),
-					payload: validateExtensionEventPayload(payload),
-					sourceExtensionId: extensionId,
-					sourceAgentId: agentId,
-					emittedAt: now(),
-				});
+				await this.emitExtensionEvent(agentId, extensionId, name, payload);
 			},
 			requestRuntimeShutdown: async (agentId, extensionId, reason) => {
 				this._requireLiveAgent(agentId);

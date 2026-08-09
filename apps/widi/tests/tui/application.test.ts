@@ -11,6 +11,7 @@ import { WidiTuiApplication } from "../../src/tui/application.ts";
 import type { CommandEngine } from "../../src/tui/commands/engine.ts";
 import type { WidiEditor } from "../../src/tui/editor.ts";
 import { ensureAgentProjection, type StagedDraft, setActiveAgent } from "../../src/tui/state.ts";
+import { setSteadyVoice, setTransientVoice } from "../../src/tui/voice.ts";
 
 describe("WidiTuiApplication lazy agent spawn", () => {
 	it("does not spawn an agent when the TUI starts", async () => {
@@ -297,6 +298,85 @@ describe("WidiTuiApplication animation ticker", () => {
 
 		ticker.switchAgent("main");
 		expect(ticker.jobsTickerInterval).toBeUndefined();
+	});
+
+	// A voice line expiring is not an event; without a tick "Job's done." would
+	// stay on screen until the next keystroke.
+	it("ticks while the working line is holding a line that expires", async () => {
+		const harness = await createApplicationHarness();
+		const agent = setActiveAgent(harness.application.state, "main");
+		agent.status = "idle";
+		const ticker = harness.application as unknown as { updateJobsTicker(): void; jobsTickerInterval?: number };
+
+		setTransientVoice(agent, harness.application.state.voicePack, "done");
+		ticker.updateJobsTicker();
+		expect(ticker.jobsTickerInterval).toBe(250);
+
+		agent.voice = undefined;
+		ticker.updateJobsTicker();
+		expect(ticker.jobsTickerInterval).toBeUndefined();
+	});
+});
+
+describe("WidiTuiApplication working line", () => {
+	function interrupt(application: WidiTuiApplication): void {
+		(application as unknown as { interrupt(): void }).interrupt();
+	}
+
+	it("rolls a line for an agent the user just switched to", async () => {
+		const harness = await createApplicationHarness();
+		const agent = ensureAgentProjection(harness.application.state, "worker", "running");
+		(harness.application as unknown as { hydratedAgents: Set<string> }).hydratedAgents.add("worker");
+
+		(harness.application as unknown as { switchAgent(agentId: string): void }).switchAgent("worker");
+
+		expect(agent.voice?.steady.state).toBe("working");
+	});
+
+	it("says something after the third interrupt in a row", async () => {
+		const harness = await createApplicationHarness();
+		const agent = setActiveAgent(harness.application.state, "main");
+		agent.status = "running";
+
+		interrupt(harness.application);
+		interrupt(harness.application);
+		expect(agent.voice?.transient).toBeUndefined();
+
+		interrupt(harness.application);
+		expect(agent.voice?.transient?.state).toBe("poked");
+		expect(harness.abortAgent).toHaveBeenCalledTimes(3);
+	});
+
+	it("keeps quiet when the interrupts are spread out", async () => {
+		const harness = await createApplicationHarness();
+		const agent = setActiveAgent(harness.application.state, "main");
+		agent.status = "running";
+		const now = vi.spyOn(Date, "now");
+
+		try {
+			now.mockReturnValue(0);
+			interrupt(harness.application);
+			now.mockReturnValue(11_000);
+			interrupt(harness.application);
+			now.mockReturnValue(22_000);
+			interrupt(harness.application);
+		} finally {
+			now.mockRestore();
+		}
+
+		expect(agent.voice?.transient).toBeUndefined();
+	});
+
+	it("re-rolls every line when /voice changes the pack", async () => {
+		const harness = await createApplicationHarness();
+		const agent = setActiveAgent(harness.application.state, "main");
+		agent.status = "idle";
+		setSteadyVoice(agent, "peon", "idle");
+
+		await submit(harness.application, "/voice off");
+
+		expect(harness.application.state.voicePack).toBe("off");
+		expect(agent.voice?.steady).toEqual({ state: "idle", text: "Ready" });
 	});
 });
 
@@ -690,11 +770,13 @@ async function createApplicationHarness(options: { agentDir?: string; extensionL
 		return disposedAgentIds.has(agentId) ? { ...inspected, status: "disposed" as const, hasHarness: false } : inspected;
 	});
 	const disposeAll = vi.fn(async () => {});
+	const abortAgent = vi.fn(async () => ({ kind: "aborted" as const }));
 	const orchestrator = {
 		subscribe: () => () => {},
 		registerClient: () => () => {},
 		disposeAll,
 		disposeAgent,
+		abortAgent,
 		spawnAgent,
 		promptAgent,
 		sendMessage,
@@ -748,6 +830,7 @@ async function createApplicationHarness(options: { agentDir?: string; extensionL
 		application,
 		tuiStart,
 		disposeAll,
+		abortAgent,
 		spawnAgent,
 		promptAgent,
 		sendMessage,

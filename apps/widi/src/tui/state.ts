@@ -9,6 +9,7 @@ import type { MessageSource } from "../core/message.ts";
 import type { AgentId, AgentMaintenanceKind, OrchestratorEvent, RuntimeModel } from "../core/types.ts";
 import type { CommandError } from "./commands/types.ts";
 import { DiagnosticsLog } from "./diagnostics-log.ts";
+import type { AgentVoice, VoicePackId } from "./voice.ts";
 
 export type TimelineDurability = "durable" | "ephemeral";
 export type NoticeTextMode = "compact" | "full";
@@ -77,6 +78,9 @@ export interface ToolExecutionItem {
 	 * "cancelled".
 	 */
 	status: "preparing" | "running" | "completed" | "cancelled";
+	/** When execution actually began; unset while the call is still preparing. */
+	startedAt?: string;
+	endedAt?: string;
 	/**
 	 * Per-item expand override (parity §4.3-3): set, it wins over the global
 	 * toolOutputExpanded toggle; unset, the item follows the global state.
@@ -302,6 +306,14 @@ export interface AgentViewState {
 	pendingInput?: PendingInput;
 	/** When the current run started; set while status is "running". */
 	runStartedAt?: string;
+	/** Tool calls started in the current run, reset when one begins. */
+	runToolCount: number;
+	/** Tool failures in a row within the current run; any success clears it. */
+	runToolErrorStreak: number;
+	/** Totals of the run that just ended, for the working line's completion form. */
+	lastRun?: { readonly startedAt: string; readonly endedAt: string; readonly toolCount: number };
+	/** What the working line is saying about this agent. Rolled on transitions only. */
+	voice?: AgentVoice;
 	queue: QueueState;
 	/** Optimistic projection while sendMessage is waiting for a deliverable phase. */
 	pendingFollowUps: PendingFollowUp[];
@@ -411,6 +423,8 @@ export interface TuiApplicationState {
 	shuttingDown: boolean;
 	/** Global toggle: show full transcript details instead of collapsed previews. */
 	toolOutputExpanded: boolean;
+	/** Which voice the working line speaks in; "off" is the plain wording. */
+	voicePack: VoicePackId;
 }
 
 export function createTuiApplicationState(): TuiApplicationState {
@@ -425,6 +439,7 @@ export function createTuiApplicationState(): TuiApplicationState {
 		},
 		shuttingDown: false,
 		toolOutputExpanded: false,
+		voicePack: "peon",
 	};
 }
 
@@ -499,6 +514,8 @@ export function createAgentViewState(agentId: AgentId, status: AgentViewStatus =
 		backgroundJobs: new Map(),
 		hydration: "ready",
 		bufferedEvents: [],
+		runToolCount: 0,
+		runToolErrorStreak: 0,
 		queue: { steer: [], followUp: [], nextTurn: 0 },
 		pendingFollowUps: [],
 		staged: [],

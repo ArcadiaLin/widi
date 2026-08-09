@@ -11,6 +11,7 @@ import { HeaderView } from "../../src/tui/components/header.ts";
 import { OperationHintView } from "../../src/tui/components/operation-hint.ts";
 import { StatusView } from "../../src/tui/components/status.ts";
 import { renderTimelineItem } from "../../src/tui/components/timeline-item.ts";
+import { WorkingLineView } from "../../src/tui/components/working-line.ts";
 import { boundedText, sanitizeTerminalText, singleLine } from "../../src/tui/format.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
 import {
@@ -22,6 +23,7 @@ import {
 	setActiveAgent,
 } from "../../src/tui/state.ts";
 import { theme } from "../../src/tui/theme/theme.ts";
+import { setSteadyVoice } from "../../src/tui/voice.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 
@@ -152,6 +154,22 @@ describe("TUI views", () => {
 		const output = new AgentStripView(state).render(160).join("\n").replace(ANSI_SEQUENCE, "");
 
 		expect(output).toContain("2 bg");
+	});
+
+	it("shows how far into its run a running agent is", () => {
+		const state = createTuiApplicationState();
+		const agent = setActiveAgent(state, "widi-dev");
+		agent.snapshot = snapshot("widi-dev", "/sessions/source.jsonl");
+		agent.status = "running";
+		agent.runToolCount = 15;
+
+		expect(new AgentStripView(state).render(160).join("\n").replace(ANSI_SEQUENCE, "")).toContain(
+			"running · 15 tool_use",
+		);
+
+		// A count left over from a finished run would read as one still going.
+		agent.status = "idle";
+		expect(new AgentStripView(state).render(160).join("\n").replace(ANSI_SEQUENCE, "")).not.toContain("tool_use");
 	});
 
 	it("keeps terminal control sequences out of the panel and selects by raw value", () => {
@@ -309,18 +327,19 @@ describe("TUI views", () => {
 		expect(line).not.toContain("Panel only");
 	});
 
-	it("renders the running steer action only once across footer and operation hint", () => {
+	it("renders the running steer action only once across footer, working line and operation hint", () => {
 		setKeybindings(createWidiKeybindings());
 		const state = createTuiApplicationState();
-		setActiveAgent(state, "main").status = "running";
+		const agent = setActiveAgent(state, "main");
+		agent.status = "running";
+		agent.runStartedAt = new Date().toISOString();
+		setSteadyVoice(agent, state.voicePack, "working");
+		const engine = new CommandEngine(builtInCommands);
+		const editor = { getText: () => "", isShowingAutocomplete: () => false };
 		const output = [
 			...new FooterView(state, "/workspace").render(120),
-			...new OperationHintView({
-				state,
-				engine: new CommandEngine(builtInCommands),
-				editor: { getText: () => "", isShowingAutocomplete: () => false },
-				selectorHint: () => undefined,
-			}).render(120),
+			...new WorkingLineView({ state, engine, editor }).render(120),
+			...new OperationHintView({ state, engine, editor, selectorHint: () => undefined }).render(120),
 		]
 			.join("\n")
 			.replace(ANSI_SEQUENCE, "");

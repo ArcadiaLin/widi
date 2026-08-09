@@ -41,10 +41,9 @@ chat_notes/
 docs/superpowers/
 .pi-subagents
 
-# Repo-local runtime config: the sample extension, MCP config, and profiles are
+# Repo-local runtime config: the checked-in extensions and profiles are
 # tracked; everything the runtime writes there is not.
 .widi/*
 !.widi/extensions/
-!.widi/mcp.json
 !.widi/profiles/
 !.widi/profiles/**

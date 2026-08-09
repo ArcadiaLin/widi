@@ -6,7 +6,9 @@ import { CommandEngine } from "../../src/tui/commands/engine.ts";
 import {
 	formatOperationHintKey,
 	OperationHintView,
+	operationHintKeys,
 	resolveOperationHint,
+	resolveOperationHintDetail,
 } from "../../src/tui/components/operation-hint.ts";
 import { DiagnosticsLog } from "../../src/tui/diagnostics-log.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
@@ -84,6 +86,7 @@ describe("resolveOperationHint", () => {
 				disposeAgent: async () => {},
 				diagnostics: new DiagnosticsLog(),
 				copyText: async () => {},
+				setVoicePack: () => {},
 			}),
 		]);
 		const state = createTuiApplicationState();
@@ -292,10 +295,26 @@ describe("resolveOperationHint", () => {
 		);
 	});
 
-	it("omits unbound running controls in the view", () => {
+	it("omits unbound running controls", () => {
 		const keybindings = createWidiKeybindings();
 		keybindings.setUserBindings({ "app.interrupt": [], "app.steer": "alt+s", "tui.input.submit": [] });
 		setKeybindings(keybindings);
+		const state = createTuiApplicationState();
+		setActiveAgent(state, "main").status = "running";
+
+		expect(
+			resolveOperationHintDetail({
+				state,
+				engine,
+				editorText: "",
+				editorAutocompleteVisible: false,
+				keys: operationHintKeys(),
+			}),
+		).toEqual({ kind: "run", text: "Alt+S steer" });
+	});
+
+	it("leaves the run hint to the working line", () => {
+		setKeybindings(createWidiKeybindings());
 		const state = createTuiApplicationState();
 		setActiveAgent(state, "main").status = "running";
 		const view = new OperationHintView({
@@ -305,9 +324,7 @@ describe("resolveOperationHint", () => {
 			selectorHint: () => undefined,
 		});
 
-		const rendered = view.render(80).join("\n").replace(ANSI_SEQUENCE, "");
-
-		expect(rendered).toBe("Alt+S steer");
+		expect(view.render(80)).toEqual([]);
 	});
 
 	it("prioritizes pending human requests over running controls", () => {
@@ -467,19 +484,21 @@ describe("resolveOperationHint", () => {
 		expect(pending).toBe("Enter starts session · /model or /thinking configures before first prompt");
 	});
 
+	// Which maintenance it is belongs to the working line, which names the phase
+	// beside how long it has been running; the hint carries only the keys.
 	it("offers only the follow-up queue while maintenance work runs", () => {
 		const state = createTuiApplicationState();
 		const main = setActiveAgent(state, "main");
 		main.status = "running";
 		main.maintenance = "compaction";
 
-		expect(resolveOperationHint({ state, engine, editorText: "", editorAutocompleteVisible: false, keys })).toBe(
-			"Compacting… · Enter queue follow-up",
-		);
+		expect(
+			resolveOperationHintDetail({ state, engine, editorText: "", editorAutocompleteVisible: false, keys }),
+		).toEqual({ kind: "maintenance", text: "Enter queue follow-up" });
 
 		main.maintenance = "tree-navigation";
 		expect(resolveOperationHint({ state, engine, editorText: "typing", editorAutocompleteVisible: false, keys })).toBe(
-			"Navigating… · Enter queue follow-up",
+			"Enter queue follow-up",
 		);
 	});
 });

@@ -1,13 +1,15 @@
 import type { Component } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, it } from "vitest";
 import type { OrchestratorDiagnostic } from "../../src/core/diagnostics.ts";
-import type { ExtensionMessage } from "../../src/core/extension/api.ts";
+import type { ExtensionEventEnvelope, ExtensionMessage } from "../../src/core/extension/api.ts";
 import type { ExtensionIdentity } from "../../src/core/extension/loader.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
 import type { CommandDefinition } from "../../src/tui/commands/types.ts";
 import { renderTimelineItem, type TimelineRenderContext } from "../../src/tui/components/timeline-item.ts";
 import {
 	resetExtensionRenderers,
+	type TuiExtensionEventBus,
+	type TuiExtensionEventHandler,
 	TuiExtensionHost,
 	type TuiExtensionModuleImporter,
 	type WidiTuiExtensionApi,
@@ -17,6 +19,7 @@ import { LayoutSlots } from "../../src/tui/layout/slots.ts";
 import { createTuiApplicationState, type PersistentMessageItem, type ToolExecutionItem } from "../../src/tui/state.ts";
 import { resetThemes } from "../../src/tui/theme/theme.ts";
 import { defineLinesPresenter, presentToolExecution, unregisterToolPresenter } from "../../src/tui/tool-presenter.ts";
+import type { JsonValue } from "../../src/utils/json.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 
@@ -125,7 +128,32 @@ function createHostFixture() {
 		},
 		createTuiApplicationState(),
 	);
-	const activate = (entries: readonly [string, ExtensionIdentity][]) =>
+	// A loop-back stand-in for the runtime bus: emitting reaches the host's own
+	// subscribers, the way core's fan-out does not exclude the sender.
+	const emitted: { extensionId: string; name: string; payload?: JsonValue }[] = [];
+	const busHandlers: TuiExtensionEventHandler[] = [];
+	const events: TuiExtensionEventBus = {
+		emit: async (extensionId, name, payload) => {
+			emitted.push({ extensionId, name, ...(payload !== undefined ? { payload } : {}) });
+			for (const handler of [...busHandlers]) {
+				await handler({
+					name,
+					...(payload !== undefined ? { payload } : {}),
+					sourceExtensionId: extensionId,
+					sourceAgentId: "agent-1",
+					emittedAt: "2026-01-01T00:00:00.000Z",
+				});
+			}
+		},
+		subscribe: (handler) => {
+			busHandlers.push(handler);
+			return () => {
+				const index = busHandlers.indexOf(handler);
+				if (index >= 0) busHandlers.splice(index, 1);
+			};
+		},
+	};
+	const activate = (entries: readonly [string, ExtensionIdentity][], options?: { readonly bus?: false }) =>
 		new TuiExtensionHost({
 			identities: entries.map(([, id]) => id),
 			commandEngine: engine,
@@ -137,6 +165,7 @@ function createHostFixture() {
 			},
 			reportDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
 			moduleImporter,
+			...(options?.bus === false ? {} : { events }),
 		});
 	return {
 		modules,
@@ -146,6 +175,8 @@ function createHostFixture() {
 		shownOverlays,
 		editor,
 		activate,
+		emitted,
+		busSubscriberCount: () => busHandlers.length,
 		renderRequests: () => renderRequests,
 	};
 }
@@ -776,5 +807,134 @@ describe("extension renderers (host doc §6.3/§6.5)", () => {
 		expect(plain(renderTimelineItem(item, 60, renderContext)).some((line) => line.includes("built-in body"))).toBe(
 			true,
 		);
+	});
+});
+
+/**
+ * The dual-end bus: the one channel between the `tui` half of an extension and
+ * everything on the core side, which otherwise never see each other.
+ */
+describe("TuiExtensionHost extension events", () => {
+	it("carries an event from one half to another extension's subscriber", async () => {
+		const fixture = createHostFixture();
+		const received: ExtensionEventEnvelope[] = [];
+		fixture.modules.set("/ext/alpha/index.ts", {
+			tui: (api: WidiTuiExtensionApi) => {
+				api.onExtensionEvent("drill:step", (envelope) => {
+					received.push(envelope);
+				});
+			},
+		});
+		fixture.modules.set("/ext/beta/index.ts", {
+			tui: async (api: WidiTuiExtensionApi) => {
+				await api.emitExtensionEvent("drill:step", { index: 1 });
+				await api.emitExtensionEvent("drill:other");
+			},
+		});
+		const host = fixture.activate([
+			["alpha", identity("alpha", "/ext/alpha/index.ts")],
+			["beta", identity("beta", "/ext/beta/index.ts")],
+		]);
+
+		await host.activate();
+
+		expect(fixture.emitted).toEqual([
+			{ extensionId: "beta", name: "drill:step", payload: { index: 1 } },
+			{ extensionId: "beta", name: "drill:other" },
+		]);
+		expect(received).toHaveLength(1);
+		expect(received[0]).toMatchObject({ name: "drill:step", payload: { index: 1 }, sourceExtensionId: "beta" });
+		expect(fixture.diagnostics).toEqual([]);
+	});
+
+	// One subscription for the whole host, and only once somebody asks for it.
+	it("joins the bus once and leaves it on dispose", async () => {
+		const fixture = createHostFixture();
+		fixture.modules.set("/ext/quiet/index.ts", { tui: () => {} });
+		const quiet = fixture.activate([["quiet", identity("quiet", "/ext/quiet/index.ts")]]);
+		await quiet.activate();
+		expect(fixture.busSubscriberCount()).toBe(0);
+
+		fixture.modules.set("/ext/alpha/index.ts", {
+			tui: (api: WidiTuiExtensionApi) => {
+				api.onExtensionEvent("one", () => {});
+				api.onExtensionEvent("two", () => {});
+			},
+		});
+		const host = fixture.activate([["alpha", identity("alpha", "/ext/alpha/index.ts")]]);
+		await host.activate();
+		expect(fixture.busSubscriberCount()).toBe(1);
+
+		await host.dispose();
+		expect(fixture.busSubscriberCount()).toBe(0);
+	});
+
+	it("reports a throwing handler and still reaches the next one", async () => {
+		const fixture = createHostFixture();
+		const reached: string[] = [];
+		fixture.modules.set("/ext/alpha/index.ts", {
+			tui: (api: WidiTuiExtensionApi) => {
+				api.onExtensionEvent("ping", () => {
+					throw new Error("handler exploded");
+				});
+			},
+		});
+		fixture.modules.set("/ext/beta/index.ts", {
+			tui: async (api: WidiTuiExtensionApi) => {
+				api.onExtensionEvent("ping", () => {
+					reached.push("beta");
+				});
+				await api.emitExtensionEvent("ping");
+			},
+		});
+		const host = fixture.activate([
+			["alpha", identity("alpha", "/ext/alpha/index.ts")],
+			["beta", identity("beta", "/ext/beta/index.ts")],
+		]);
+
+		await host.activate();
+
+		expect(reached).toEqual(["beta"]);
+		expect(fixture.diagnostics[0]).toMatchObject({
+			severity: "warning",
+			code: "tui_extension.event_handler_failed",
+			extensionId: "alpha",
+		});
+		expect(fixture.diagnostics[0]?.message).toContain("handler exploded");
+	});
+
+	it("refuses a malformed subscription name at registration", async () => {
+		const fixture = createHostFixture();
+		fixture.modules.set("/ext/alpha/index.ts", {
+			tui: (api: WidiTuiExtensionApi) => {
+				api.onExtensionEvent("has space", () => {});
+			},
+		});
+		const host = fixture.activate([["alpha", identity("alpha", "/ext/alpha/index.ts")]]);
+
+		await host.activate();
+
+		expect(fixture.busSubscriberCount()).toBe(0);
+		expect(fixture.diagnostics[0]).toMatchObject({
+			severity: "warning",
+			code: "tui_extension.event_name_invalid",
+			extensionId: "alpha",
+		});
+	});
+
+	it("rejects an emit when the host has no bus behind it", async () => {
+		const fixture = createHostFixture();
+		let failure: unknown;
+		fixture.modules.set("/ext/alpha/index.ts", {
+			tui: async (api: WidiTuiExtensionApi) => {
+				failure = await api.emitExtensionEvent("ping").catch((error: unknown) => error);
+			},
+		});
+		const host = fixture.activate([["alpha", identity("alpha", "/ext/alpha/index.ts")]], { bus: false });
+
+		await host.activate();
+
+		expect(failure).toBeInstanceOf(Error);
+		expect((failure as Error).message).toContain("no extension event bus");
 	});
 });

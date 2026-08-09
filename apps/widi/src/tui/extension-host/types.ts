@@ -1,4 +1,6 @@
 import type { Component, KeyId } from "@earendil-works/pi-tui";
+import type { ExtensionEventEnvelope } from "../../core/extension/events.ts";
+import type { JsonValue } from "../../utils/json.ts";
 import type { CommandDefinition } from "../commands/types.ts";
 import type { AppOverlayHandle, ShowOverlayOptions } from "../layout/overlay-stack.ts";
 import type { Theme, ThemeInfo } from "../theme/theme.ts";
@@ -42,6 +44,26 @@ export interface TuiExtensionWidgetOptions {
 	 * registry implements "global" only, so scope is not an option yet.
 	 */
 	readonly placement: "aboveEditor" | "belowEditor";
+}
+
+/**
+ * What a TUI-side bus subscriber is handed. No context argument, unlike the
+ * core half's handler: there is no agent behind a `tui` half to describe. The
+ * envelope names who emitted and from which agent, and that is the whole of it.
+ */
+export type TuiExtensionEventHandler = (event: ExtensionEventEnvelope) => void | Promise<void>;
+
+/**
+ * The extension event bus as the TUI host sees it: emit in one direction,
+ * subscribe in the other, and nothing else. Deliberately not an orchestrator
+ * handle - the host has no business reaching further into core, and this way
+ * the whole of what the two halves can say to each other is two functions.
+ */
+export interface TuiExtensionEventBus {
+	/** Rejects the way the core half's emit does: bad name, oversized payload. */
+	emit(extensionId: string, name: string, payload?: JsonValue): Promise<void>;
+	/** Returns the detach. */
+	subscribe(handler: TuiExtensionEventHandler): () => void;
 }
 
 /** The slice of the TUI editor the host hands extensions for text access. */
@@ -118,6 +140,27 @@ export interface WidiTuiExtensionApi {
 	 * types again belongs on the core half's `precede`, not here.
 	 */
 	stage(text: string): void;
+
+	/**
+	 * Emit onto the runtime-level extension event bus - the one channel between
+	 * the two halves of a dual-entry extension, which otherwise never see each
+	 * other. Every live core runtime and every TUI subscriber receives it,
+	 * this host included, because two halves of the same extension talking is
+	 * exactly what the bus is for.
+	 *
+	 * The envelope is attributed to the agent the user is looking at: a `tui`
+	 * half belongs to no agent, and that is the one its action is about.
+	 * Rejects when no agent is visible yet, when the name is malformed, or when
+	 * the payload exceeds the bus limit.
+	 */
+	emitExtensionEvent(name: string, payload?: JsonValue): Promise<void>;
+
+	/**
+	 * Subscribe to one event name on that bus. Validated here rather than at
+	 * delivery, since a typo in a subscription otherwise looks exactly like an
+	 * event nobody has sent yet. Subscriptions end when the host disposes.
+	 */
+	onExtensionEvent(name: string, handler: TuiExtensionEventHandler): void;
 
 	/** The editor's current draft text. */
 	getEditorText(): string;

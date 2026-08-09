@@ -39,6 +39,10 @@ import {
 } from "./state.ts";
 import { flushStreaming } from "./streaming-flush.ts";
 import { applyTimelineWindow } from "./timeline-window.ts";
+import { setSteadyVoice, setTransientVoice } from "./voice.ts";
+
+/** Failures in a row before the working line stops calling it a tool result. */
+const TOOL_ERROR_STREAK_VOICE = 3;
 
 const ATTENTION_PRIORITY: Record<AgentAttention, number> = {
 	none: 0,
@@ -209,6 +213,14 @@ export class EventProjector {
 				const wasRunning = agent.status === "running";
 				agent.status = event.activity;
 				agent.maintenance = event.activity === "running" ? event.maintenance : undefined;
+				if (event.activity === "running" && !wasRunning) {
+					agent.runToolCount = 0;
+					agent.runToolErrorStreak = 0;
+				}
+				if (wasRunning && event.activity !== "running" && agent.runStartedAt) {
+					agent.lastRun = { startedAt: agent.runStartedAt, endedAt: event.changedAt, toolCount: agent.runToolCount };
+				}
+				setSteadyVoice(agent, this.state.voicePack, event.activity === "running" ? "working" : "idle");
 				agent.runStartedAt = event.activity === "running" ? event.changedAt : undefined;
 				// Experience indicator: covers the model's first-token latency
 				// after submit; completes (renders empty) once the run leaves
@@ -232,6 +244,26 @@ export class EventProjector {
 				}
 				if (wasRunning && event.activity === "idle" && this.state.activeAgentId !== event.agentId) {
 					raiseAttention(agent, "completed");
+				}
+				return;
+			}
+			// Only the working line reads this: `agent_status_changed` says the run
+			// ended, this says how it ended. `ready` and `maintenance` are not stops
+			// a person was waiting on, so they get no line of their own.
+			case "agent_idle": {
+				const agent = ensureAgentProjection(this.state, event.agentId);
+				if (event.reason === "settled") {
+					setTransientVoice(agent, this.state.voicePack, "done");
+				} else if (event.reason === "aborted") {
+					setTransientVoice(
+						agent,
+						this.state.voicePack,
+						event.abortedBy === "human"
+							? "aborted-by-human"
+							: event.abortedBy === "extension"
+								? "aborted-by-extension"
+								: "aborted",
+					);
 				}
 				return;
 			}
@@ -577,6 +609,7 @@ export class EventProjector {
 			case "tool_execution_start":
 				flushStreaming(agent);
 				startToolExecution(agent, event.toolCallId, event.toolName, event.args);
+				agent.runToolCount++;
 				this.markBackgroundActivity(agent.agentId);
 				return;
 			case "tool_execution_update": {
@@ -603,6 +636,7 @@ export class EventProjector {
 				tool.result = event.result;
 				tool.isError = event.isError;
 				tool.status = "completed";
+				tool.endedAt = now();
 				upsertTimeline(agent, tool);
 				// Experience indicator: the agent is still running and now waits
 				// for the next assistant message; show thinking through that gap.
@@ -611,6 +645,14 @@ export class EventProjector {
 				// background agents get a transient warning in the strip.
 				if (event.isError) {
 					this.markBackgroundActivity(agent.agentId, false, "warning");
+					agent.runToolErrorStreak++;
+					// One failed call is a tool result; a run that keeps failing is the
+					// agent going nowhere, and that is worth saying out loud once.
+					if (agent.runToolErrorStreak === TOOL_ERROR_STREAK_VOICE) {
+						setTransientVoice(agent, this.state.voicePack, "error");
+					}
+				} else {
+					agent.runToolErrorStreak = 0;
 				}
 				return;
 			}
@@ -860,7 +902,16 @@ function startToolExecution(agent: AgentViewState, toolCallId: string, toolName:
 	const existing = preparing ?? findTool(agent, toolCallId);
 	if (existing) {
 		const index = agent.timeline.indexOf(existing);
-		agent.timeline[index] = { ...existing, toolCallId, toolName, args, status: "running" } satisfies ToolExecutionItem;
+		agent.timeline[index] = {
+			...existing,
+			toolCallId,
+			toolName,
+			args,
+			// The preparing placeholder was created while the call was still being
+			// streamed; the run starts here, not there.
+			startedAt: now(),
+			status: "running",
+		} satisfies ToolExecutionItem;
 		return;
 	}
 	upsertTimeline(agent, {
@@ -869,6 +920,7 @@ function startToolExecution(agent: AgentViewState, toolCallId: string, toolName:
 		toolCallId,
 		durability: "durable",
 		createdAt: now(),
+		startedAt: now(),
 		toolName,
 		args,
 		status: "running",

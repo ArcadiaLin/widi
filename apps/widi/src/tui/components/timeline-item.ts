@@ -49,7 +49,8 @@ export function renderDeps(item: TimelineItem, context: TimelineRenderContext): 
 			];
 		}
 		case "tool-execution":
-			// The preparing glyph spins, so the cache must expire per frame.
+			// The preparing glyph spins and a running row's duration counts up, so
+			// the cache must expire with each of them.
 			return [
 				item.status,
 				item.isError,
@@ -58,8 +59,10 @@ export function renderDeps(item: TimelineItem, context: TimelineRenderContext): 
 				item.partialResult,
 				item.result,
 				item.expanded,
+				item.endedAt,
 				context.toolOutputExpanded,
 				...(item.status === "preparing" ? [spinnerTick()] : []),
+				...(item.status === "running" ? [secondTick()] : []),
 			];
 		case "thinking-status":
 			// The spinner and the rolling preview both animate while thinking.
@@ -190,6 +193,11 @@ function boundLines(lines: string[], maxLines = 24): string[] {
 /** Current spinner frame index; advances every 160ms (see spinnerFrame). */
 function spinnerTick(): number {
 	return Math.floor(Date.now() / 160);
+}
+
+/** Whole seconds since the epoch: the cadence a live duration changes at. */
+function secondTick(): number {
+	return Math.floor(Date.now() / 1_000);
 }
 
 /** Key label for the transcript-expand toggle, for collapsed-marker hints. */

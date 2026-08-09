@@ -19,6 +19,8 @@ export {
 	type TuiExtensionComponentFactory,
 	type TuiExtensionDispose,
 	type TuiExtensionEditorAccess,
+	type TuiExtensionEventBus,
+	type TuiExtensionEventHandler,
 	type TuiExtensionModule,
 	type TuiExtensionShortcutContext,
 	type TuiExtensionShortcutOptions,

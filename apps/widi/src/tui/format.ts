@@ -29,6 +29,19 @@ export function formatRelativeAge(milliseconds: number): string {
 	return `${Math.floor(seconds / 60)}m`;
 }
 
+/**
+ * How long something took, to the second. Unlike formatRelativeAge this keeps
+ * the smaller unit: a run reported as "1m" would look frozen for the minute it
+ * takes to reach "2m", which is the opposite of what a live duration is for.
+ */
+export function formatElapsed(milliseconds: number): string {
+	const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	if (minutes < 60) return `${minutes}m${String(seconds % 60).padStart(2, "0")}s`;
+	return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}m`;
+}
+
 export function boundedText(text: string, options: { maxLines?: number; maxCharacters?: number } = {}): string {
 	const maxLines = options.maxLines ?? 16;
 	const maxCharacters = options.maxCharacters ?? 4_000;

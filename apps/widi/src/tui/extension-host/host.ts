@@ -1,8 +1,10 @@
 import type { Component, KeybindingDefinitions, KeybindingsConfig } from "@earendil-works/pi-tui";
 import type { OrchestratorDiagnostic } from "../../core/diagnostics.ts";
+import { validateExtensionEventName } from "../../core/extension/events.ts";
 import type { ExtensionIdentity, ExtensionSource } from "../../core/extension/loader.ts";
 import { JitiExtensionModuleImporter } from "../../core/extension/module-importer.ts";
 import { formatError } from "../../utils/errors.ts";
+import type { JsonValue } from "../../utils/json.ts";
 import type { CommandEngine } from "../commands/engine.ts";
 import type { CommandDefinition } from "../commands/types.ts";
 import type { AppOverlayHandle, ShowOverlayOptions } from "../layout/overlay-stack.ts";
@@ -25,6 +27,8 @@ import {
 	type TuiExtensionComponentFactory,
 	type TuiExtensionDispose,
 	type TuiExtensionEditorAccess,
+	type TuiExtensionEventBus,
+	type TuiExtensionEventHandler,
 	type TuiExtensionShortcutOptions,
 	type TuiExtensionWidgetOptions,
 	type WidiTuiExtensionApi,
@@ -58,6 +62,11 @@ export interface TuiExtensionHostOptions {
 	readonly reportDiagnostic: (diagnostic: OrchestratorDiagnostic) => void;
 	/** Stages text for the visible agent on behalf of one extension. */
 	readonly stageMessage?: (extensionId: string, text: string) => void;
+	/**
+	 * The runtime extension event bus. Absent in embeddings that have no core
+	 * behind them, where emitting rejects and subscriptions never fire.
+	 */
+	readonly events?: TuiExtensionEventBus;
 	/** Repaint request after a visible change (theme switch, overlay, edit). */
 	readonly requestRender?: () => void;
 	readonly moduleImporter?: TuiExtensionModuleImporter;
@@ -66,6 +75,11 @@ export interface TuiExtensionHostOptions {
 interface HostDisposer {
 	readonly extensionId: string;
 	readonly dispose: TuiExtensionDispose;
+}
+
+interface EventSubscription {
+	readonly extensionId: string;
+	readonly handler: TuiExtensionEventHandler;
 }
 
 /**
@@ -89,6 +103,9 @@ export class TuiExtensionHost {
 	private readonly requestRender: () => void;
 	private readonly moduleImporter: TuiExtensionModuleImporter;
 	private readonly disposers: HostDisposer[] = [];
+	private readonly events?: TuiExtensionEventBus;
+	private readonly eventSubscriptions = new Map<string, EventSubscription[]>();
+	private detachFromBus?: () => void;
 	private activated = false;
 
 	constructor(options: TuiExtensionHostOptions) {
@@ -99,6 +116,7 @@ export class TuiExtensionHost {
 		this.editor = options.editor;
 		this.reportDiagnostic = options.reportDiagnostic;
 		this.stageMessage = options.stageMessage;
+		this.events = options.events;
 		this.requestRender = options.requestRender ?? (() => {});
 		this.moduleImporter = options.moduleImporter ?? new JitiExtensionModuleImporter();
 		this.shortcuts = new ExtensionShortcutRegistry({ reportDiagnostic: options.reportDiagnostic });
@@ -130,6 +148,9 @@ export class TuiExtensionHost {
 
 	/** Reverse-order dispose; each failure is reported and the rest still run. */
 	async dispose(): Promise<void> {
+		this.detachFromBus?.();
+		this.detachFromBus = undefined;
+		this.eventSubscriptions.clear();
 		const pending = this.disposers.splice(0).reverse();
 		for (const disposer of pending) {
 			try {
@@ -143,6 +164,32 @@ export class TuiExtensionHost {
 				});
 			}
 		}
+	}
+
+	/**
+	 * One bus subscription for the whole host, attached the first time an
+	 * extension asks for one. A host whose extensions never subscribe stays off
+	 * the bus entirely.
+	 */
+	private subscribeToBus(extensionId: string, name: string, handler: TuiExtensionEventHandler): void {
+		const subscriptions = this.eventSubscriptions.get(name) ?? [];
+		subscriptions.push({ extensionId, handler });
+		this.eventSubscriptions.set(name, subscriptions);
+		if (this.detachFromBus || !this.events) return;
+		this.detachFromBus = this.events.subscribe(async (envelope) => {
+			for (const subscription of this.eventSubscriptions.get(envelope.name) ?? []) {
+				try {
+					await subscription.handler(envelope);
+				} catch (error) {
+					this.reportDiagnostic({
+						severity: "warning",
+						code: "tui_extension.event_handler_failed",
+						message: `Extension '${subscription.extensionId}' failed handling extension event '${envelope.name}': ${formatError(error)}`,
+						extensionId: subscription.extensionId,
+					});
+				}
+			}
+		});
 	}
 
 	private async activateOne(identity: ExtensionIdentity): Promise<void> {
@@ -313,6 +360,27 @@ export class TuiExtensionHost {
 			},
 			stage: (text: string) => {
 				this.stageMessage?.(extensionId, text);
+			},
+			emitExtensionEvent: async (name: string, payload?: JsonValue) => {
+				if (!this.events) {
+					throw new Error(`Extension '${extensionId}' cannot emit '${name}': this host has no extension event bus.`);
+				}
+				await this.events.emit(extensionId, name, payload);
+			},
+			onExtensionEvent: (name: string, handler: TuiExtensionEventHandler) => {
+				let eventName: string;
+				try {
+					eventName = validateExtensionEventName(name);
+				} catch (error) {
+					this.reportDiagnostic({
+						severity: "warning",
+						code: "tui_extension.event_name_invalid",
+						message: `Extension '${extensionId}' subscribed to an invalid extension event name: ${formatError(error)}`,
+						extensionId,
+					});
+					return;
+				}
+				this.subscribeToBus(extensionId, eventName, handler);
 			},
 			getEditorText: () => this.editor.getText(),
 			setEditorText: (text: string) => {

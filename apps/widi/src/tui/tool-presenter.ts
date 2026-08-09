@@ -1,7 +1,7 @@
 import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
 import type { OrchestratorDiagnostic } from "../core/diagnostics.ts";
 import { renderDiffText } from "./diff.ts";
-import { formatUnknown, sanitizeTerminalText, singleLine, spinnerFrame } from "./format.ts";
+import { formatElapsed, formatUnknown, sanitizeTerminalText, singleLine, spinnerFrame } from "./format.ts";
 import type { ToolExecutionItem } from "./state.ts";
 import { theme } from "./theme/theme.ts";
 
@@ -139,6 +139,20 @@ export function defineLinesPresenter(spec: LinesToolPresenterSpec): ToolPresente
 }
 
 /**
+ * How long the call took, or has been taking. Under a second is left off: a
+ * row that finished instantly gains nothing from a "0s", and every tool row
+ * carrying one would bury the ones that are actually slow.
+ */
+function toolDuration(item: ToolExecutionItem): string {
+	if (!item.startedAt) return "";
+	const startedAt = Date.parse(item.startedAt);
+	const endedAt = item.endedAt ? Date.parse(item.endedAt) : Date.now();
+	const elapsed = endedAt - startedAt;
+	if (!Number.isFinite(elapsed) || elapsed < 1_000) return "";
+	return ` · ${formatElapsed(elapsed)}`;
+}
+
+/**
  * Shared lines frame: semantic headline plus a bounded result preview. The
  * per-tool spec supplies the headline and the success presentation; glyphs,
  * budgets, truncation, and the preparing/cancelled/error paths live here.
@@ -180,7 +194,7 @@ function presentLines(
 
 	const headline = `${glyph} ${theme.bold(theme.accent(singleLine(verb, 80)))}${
 		target ? ` ${singleLine(target, 400)}` : ""
-	}${success?.suffix ? theme.dim(success.suffix) : ""}`;
+	}${success?.suffix ? theme.dim(success.suffix) : ""}${theme.dim(toolDuration(item))}`;
 	const lines = [truncateToWidth(headline, Math.max(8, width), "…")];
 
 	// Errors preview the raw result text. A success spec may override the
