@@ -107,7 +107,7 @@ function createHostFixture() {
 		["queuedInput", "aboveEditor"],
 		["editor", "editor"],
 		["footer", "footer"],
-		["operationHint", "belowEditor"],
+		["operationHint", "belowFooter"],
 	] as const;
 	for (const [key, slot] of anchors) {
 		layout.register({ key, slot, scope: "global", factory: () => ({ render: () => [key], invalidate: () => {} }) });
@@ -519,9 +519,9 @@ describe("TuiExtensionHost", () => {
 			["header"],
 			["queuedInput"],
 			["editor"],
+			["clock-v2"],
 			["footer"],
 			["operationHint"],
-			["clock-v2"],
 		]);
 		expect(disposed).toEqual(["v1"]);
 

@@ -47,9 +47,11 @@ import {
 	clearDockedFocus,
 	createTuiApplicationState,
 	ensureAgentProjection,
+	hasDockedFocus,
 	type NoticeTextMode,
 	setActiveAgent,
 	type TuiApplicationState,
+	topDockedFocus,
 } from "./state.ts";
 import { flushStreaming, STREAM_FLUSH_MS } from "./streaming-flush.ts";
 import { loadThemes, theme } from "./theme/theme.ts";
@@ -198,11 +200,7 @@ export class WidiTuiApplication {
 			host: this.tui,
 			state: this.state,
 			editor: this.editor,
-			dockedFocusTarget: () => {
-				// The selector dock is the newer claimant when both are somehow open.
-				if (this.selectorDock.isOpen) return this.selectorDock;
-				return this.humanRequests.isOpen ? this.humanRequests : undefined;
-			},
+			dockedFocusTarget: () => this.dockedFocusTarget(),
 		});
 
 		// The built-in views dogfood the same slot registry extension widgets
@@ -233,16 +231,17 @@ export class WidiTuiApplication {
 		this.editor.onSteer = () => this.steerFromEditor();
 		this.editor.onOpenRequests = () => this.humanRequests.openLatest();
 		this.editor.onOpenTree = () => this.track(this.openTreeSelectorDirect());
+		this.editor.onViewSystemPrompt = () => this.track(this.printSystemPrompt());
 		this.editor.onExit = () => {
 			void this.shutdown("user exit").catch(() => {});
 		};
 	}
 
 	/**
-	 * Every mounted view registers as a slot entry, in render order. Views the
-	 * application itself drives (editor, human requests, jobs panel, agent
-	 * strip) are constructed beforehand and their factories return the held
-	 * instance.
+	 * Every mounted view registers as a slot entry. Render order comes from the
+	 * slot, not from this list. Views the application itself drives (editor,
+	 * human requests, jobs panel, agent strip) are constructed beforehand and
+	 * their factories return the held instance.
 	 */
 	private registerBuiltInSlots(): void {
 		const entries: LayoutSlotEntry[] = [
@@ -251,9 +250,9 @@ export class WidiTuiApplication {
 			{ key: "chat", slot: "chat", scope: "global", factory: () => new ChatView(this.state) },
 			{ key: "status", slot: "status", scope: "global", factory: () => new StatusView(this.state) },
 			{ key: "queuedInput", slot: "aboveEditor", scope: "global", factory: () => new QueuedInputView(this.state) },
-			{ key: "jobsPanel", slot: "jobsPanel", scope: "global", factory: () => this.jobsPanel },
 			{ key: "humanRequests", slot: "aboveEditor", scope: "global", factory: () => this.humanRequests },
 			{ key: "selectorDock", slot: "aboveEditor", scope: "global", factory: () => this.selectorDock },
+			{ key: "jobsPanel", slot: "jobsPanel", scope: "global", factory: () => this.jobsPanel },
 			{
 				key: "editor",
 				slot: "editor",
@@ -261,7 +260,9 @@ export class WidiTuiApplication {
 				factory: () => this.editor,
 				// Like pi's showSelector, an open command selector takes the editor's
 				// place: the editor leaves the layout while the dock holds a view.
-				visible: (state) => state.focus.docked !== "selector",
+				// Being preempted does not give the place back — the dock still
+				// holds the view, it just is not the one reading keys.
+				visible: (state) => !hasDockedFocus(state, "selector"),
 			},
 			{
 				key: "footer",
@@ -274,7 +275,9 @@ export class WidiTuiApplication {
 			},
 			{
 				key: "operationHint",
-				slot: "belowEditor",
+				// Below the footer, not below the editor: it has always rendered
+				// there, and "belowEditor" is now literally the editor/footer gap.
+				slot: "belowFooter",
 				scope: "global",
 				factory: () =>
 					new OperationHintView({
@@ -287,6 +290,20 @@ export class WidiTuiApplication {
 			{ key: "agentStrip", slot: "agentStrip", scope: "global", factory: () => this.agentPanel },
 		];
 		for (const entry of entries) this.layout.register(entry);
+	}
+
+	/** The docked component the focus stack says should be taking keys. */
+	private dockedFocusTarget(): Component | undefined {
+		switch (topDockedFocus(this.state)) {
+			case "selector":
+				return this.selectorDock;
+			case "human-request":
+				return this.humanRequests;
+			case "agent-panel":
+				return this.agentPanel;
+			default:
+				return undefined;
+		}
 	}
 
 	/** Hint context of the selector currently docked in the editor's place, if any. */
@@ -1278,6 +1295,23 @@ export class WidiTuiApplication {
 		});
 	}
 
+	/**
+	 * What the next turn would be built with, printed into the transcript
+	 * rather than an overlay: pi-tui has no scrollable view, and a system prompt
+	 * is thousands of lines. In the transcript the terminal's own scrollback is
+	 * the pager, and the text is selectable the way any other output is.
+	 */
+	private async printSystemPrompt(): Promise<void> {
+		const agentId = this.state.activeAgentId;
+		if (!agentId) return;
+		try {
+			const prompt = await this.orchestrator.getAgentSystemPrompt(agentId);
+			this.addApplicationNotice(`System prompt of the next turn:\n\n${prompt}`, agentId, { textMode: "full" });
+		} catch (error) {
+			this.addApplicationNotice(errorMessage(error), agentId);
+		}
+	}
+
 	private addApplicationNotice(
 		text: string,
 		agentId?: string,
@@ -1320,12 +1354,18 @@ export class WidiTuiApplication {
 
 	private interrupt(): void {
 		if (this.overlays.dismiss()) return;
-		// A docked selector goes away before the running agent is aborted, same
-		// as the dismissible overlay it used to be. Closing skips onCancel, so
-		// the submitted command is not restored (the overlay behaved the same).
-		if (this.selectorDock.isOpen) {
-			this.selectorDock.close();
-			return;
+		// Docked claimants go away one layer at a time before the running agent
+		// is aborted, same as the dismissible overlay a selector used to be.
+		// Closing skips onCancel, so a submitted command is not restored. The
+		// human request menu is absent on purpose: it holds focus while it is
+		// on top and answers app.interrupt itself.
+		switch (topDockedFocus(this.state)) {
+			case "selector":
+				this.selectorDock.close();
+				return;
+			case "agent-panel":
+				this.agentPanel.close();
+				return;
 		}
 		const agentId = this.state.activeAgentId;
 		if (!agentId) return;

@@ -12,13 +12,50 @@ function entry(key: string, overrides: Partial<LayoutSlotEntry> = {}): LayoutSlo
 }
 
 describe("LayoutSlots", () => {
-	it("keeps entries in registration order", () => {
+	it("keeps entries of one slot in registration order", () => {
 		const slots = new LayoutSlots();
 		slots.register(entry("first"));
 		slots.register(entry("second"));
 		slots.register(entry("third"));
 
 		expect(slots.entries().map((registered) => registered.key)).toEqual(["first", "second", "third"]);
+	});
+
+	it("orders entries by slot regardless of registration order", () => {
+		const slots = new LayoutSlots();
+		slots.register(entry("strip", { slot: "agentStrip" }));
+		slots.register(entry("editor", { slot: "editor" }));
+		slots.register(entry("header", { slot: "header" }));
+		slots.register(entry("footer", { slot: "footer" }));
+		slots.register(entry("chat", { slot: "chat" }));
+
+		expect(slots.entries().map((registered) => registered.key)).toEqual([
+			"header",
+			"chat",
+			"editor",
+			"footer",
+			"strip",
+		]);
+	});
+
+	it("puts belowEditor between the editor and the footer, and belowFooter after it", () => {
+		const slots = new LayoutSlots();
+		slots.register(entry("footer", { slot: "footer" }));
+		slots.register(entry("hint", { slot: "belowFooter" }));
+		slots.register(entry("working", { slot: "belowEditor" }));
+		slots.register(entry("editor", { slot: "editor" }));
+
+		expect(slots.entries().map((registered) => registered.key)).toEqual(["editor", "working", "footer", "hint"]);
+	});
+
+	it("breaks ties within a slot by order, then by registration", () => {
+		const slots = new LayoutSlots();
+		slots.register(entry("default"));
+		slots.register(entry("last", { order: 10 }));
+		slots.register(entry("first", { order: -10 }));
+		slots.register(entry("alsoDefault"));
+
+		expect(slots.entries().map((registered) => registered.key)).toEqual(["first", "default", "alsoDefault", "last"]);
 	});
 
 	it("refuses a duplicate key with a diagnostic and keeps the first entry", () => {
@@ -43,10 +80,10 @@ describe("LayoutSlots", () => {
 		expect(slots.entries().map((registered) => registered.key)).toEqual(["second"]);
 	});
 
-	it("mounts instantiated components in registration order", () => {
+	it("mounts instantiated components in slot order", () => {
 		const slots = new LayoutSlots();
-		slots.register(entry("header", { slot: "header" }));
 		slots.register(entry("footer", { slot: "footer" }));
+		slots.register(entry("header", { slot: "header" }));
 		const mounted: Component[] = [];
 
 		slots.mount({ addChild: (component) => mounted.push(component) }, createTuiApplicationState());
@@ -115,6 +152,18 @@ describe("LayoutSlots runtime mounting", () => {
 		slots.register(entry("widget", { slot: "belowEditor" }));
 
 		expect(children.map((component) => component.render(80))).toEqual([["header"], ["widget"]]);
+	});
+
+	it("lands a runtime registration in its slot even when that slot is empty", () => {
+		const { slots, children } = createMountedHost([
+			entry("header", { slot: "header" }),
+			entry("editor", { slot: "editor" }),
+			entry("footer", { slot: "footer" }),
+		]);
+
+		slots.register(entry("widget", { slot: "status" }));
+
+		expect(children.map((component) => component.render(80))).toEqual([["header"], ["widget"], ["editor"], ["footer"]]);
 	});
 
 	it("removes a runtime registration from the host and disposes it", () => {

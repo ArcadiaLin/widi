@@ -221,10 +221,10 @@ class CustomInstructionsStep implements Component {
 			...this.input.render(width),
 			"",
 			theme.dim(singleLine("Guides the branch summary written before navigating.", 200)),
-			"",
-			theme.dim(hints),
-			rule,
 		];
+		// Preempted: the keys would go to whoever took focus, so do not offer them.
+		if (this.focused) lines.push("", theme.dim(hints));
+		lines.push(rule);
 		return lines.map((line) => truncateToWidth(line, width, ""));
 	}
 }

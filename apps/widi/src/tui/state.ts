@@ -355,12 +355,17 @@ export interface TuiOverlayFocusEntry {
 /**
  * The single source of truth behind `state.mode`. The application overlay
  * stack pushes/pops overlay entries as overlays open and close; docked
- * components claim and release `docked` as they take and lose input focus.
- * Nobody writes `mode` directly.
+ * components claim and release their place on `docked` as they take and lose
+ * input focus. Nobody writes `mode` directly.
+ *
+ * `docked` is a stack rather than one slot so a claimant can preempt another
+ * without evicting it: an arriving human request takes the keys while the open
+ * selector keeps its filter text and its place in the layout, and answering
+ * hands the keys back to whoever had them. Each claimant appears at most once.
  */
 export interface TuiFocusState {
 	readonly overlays: TuiOverlayFocusEntry[];
-	docked?: TuiDockedFocus;
+	readonly docked: TuiDockedFocus[];
 }
 
 export interface TuiApplicationState {
@@ -381,7 +386,7 @@ export function createTuiApplicationState(): TuiApplicationState {
 		agents: new Map(),
 		globalNotices: [],
 		humanRequests: [],
-		focus: { overlays: [] },
+		focus: { overlays: [], docked: [] },
 		get mode() {
 			return interactionMode(this);
 		},
@@ -400,7 +405,20 @@ export function interactionMode(state: TuiApplicationState): TuiInteractionMode 
 		const mode = state.focus.overlays[i]?.mode;
 		if (mode) return mode;
 	}
-	return state.focus.docked ?? "editor";
+	return topDockedFocus(state) ?? "editor";
+}
+
+/** The docked claimant holding the keys, if any. */
+export function topDockedFocus(state: TuiApplicationState): TuiDockedFocus | undefined {
+	return state.focus.docked[state.focus.docked.length - 1];
+}
+
+/**
+ * Whether a claimant is on the stack at all. Not the same question as who has
+ * the keys: a preempted selector is still docked and still owns its position.
+ */
+export function hasDockedFocus(state: TuiApplicationState, docked: TuiDockedFocus): boolean {
+	return state.focus.docked.includes(docked);
 }
 
 /** Record an opened overlay at the top of the focus stack. */
@@ -414,14 +432,26 @@ export function removeOverlayFocus(state: TuiApplicationState, entry: TuiOverlay
 	if (index >= 0) state.focus.overlays.splice(index, 1);
 }
 
-/** A docked component takes input focus. */
+/** A docked component takes input focus; re-claiming raises it to the top. */
 export function setDockedFocus(state: TuiApplicationState, docked: TuiDockedFocus): void {
-	state.focus.docked = docked;
+	const existing = state.focus.docked.indexOf(docked);
+	if (existing >= 0) state.focus.docked.splice(existing, 1);
+	state.focus.docked.push(docked);
 }
 
-/** Release the docked focus claim; a mismatched claimant leaves it alone. */
+/**
+ * Release one claimant's place, wherever it sits — a preempted component that
+ * closes must not linger under the one that preempted it. A claimant that
+ * never claimed leaves the stack alone. Omitting it clears every claim, which
+ * is what switching agents does.
+ */
 export function clearDockedFocus(state: TuiApplicationState, docked?: TuiDockedFocus): void {
-	if (docked === undefined || state.focus.docked === docked) state.focus.docked = undefined;
+	if (docked === undefined) {
+		state.focus.docked.length = 0;
+		return;
+	}
+	const index = state.focus.docked.indexOf(docked);
+	if (index >= 0) state.focus.docked.splice(index, 1);
 }
 
 export function createAgentViewState(agentId: AgentId, status: AgentViewStatus = "creating"): AgentViewState {

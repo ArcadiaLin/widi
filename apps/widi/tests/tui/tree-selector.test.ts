@@ -84,6 +84,7 @@ describe("TreeSelector", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(NOW);
 		const selector = new TreeSelector({ title: "/tree", rows: branchRows(), onSelect: () => {}, onClose: () => {} });
+		selector.focused = true;
 
 		const rendered = plainRender(selector);
 		expect(rendered).toContain("─");

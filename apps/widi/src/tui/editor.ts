@@ -13,6 +13,7 @@ export class WidiEditor extends Editor {
 	onSteer?: () => void;
 	onOpenRequests?: () => void;
 	onOpenTree?: () => void;
+	onViewSystemPrompt?: () => void;
 	/** Extension shortcut dispatch; returning true consumes the input. */
 	onExtensionShortcut?: (data: string) => boolean;
 
@@ -51,12 +52,16 @@ export class WidiEditor extends Editor {
 
 	override handleInput(data: string): void {
 		const keybindings = getKeybindings();
-		if (keybindings.matches(data, "app.tools.expand")) {
+		if (keybindings.matches(data, "app.expand")) {
 			this.onToggleToolOutput?.();
 			return;
 		}
 		if (keybindings.matches(data, "app.jobs.expand")) {
 			this.onToggleJobs?.();
+			return;
+		}
+		if (keybindings.matches(data, "app.prompt.view")) {
+			this.onViewSystemPrompt?.();
 			return;
 		}
 		if (keybindings.matches(data, "app.steer")) {

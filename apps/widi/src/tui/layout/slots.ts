@@ -3,28 +3,43 @@ import type { OrchestratorDiagnostic } from "../../core/diagnostics.ts";
 import type { TuiApplicationState } from "../state.ts";
 
 /**
- * Named positions in the application layout (parity §4.2). "chat" and "editor"
- * go beyond the plan's eight extension-facing slots so the whole mounted
- * sequence lives in one ordered registry; the fixed anchors stay registered
- * entries like everything else.
+ * Named positions in the application layout, top to bottom. "chat" and
+ * "editor" go beyond the extension-facing slots so the whole mounted sequence
+ * lives in one ordered registry; the fixed anchors stay registered entries
+ * like everything else.
+ *
+ * This declaration order *is* the render order: SLOT_ORDER below derives from
+ * it and every entry sorts by it, so where a widget lands is a property of its
+ * slot, never of when it happened to register.
  */
-export type LayoutSlot =
-	| "header"
-	| "notices"
-	| "chat"
-	| "status"
-	| "aboveEditor"
-	| "jobsPanel"
-	| "editor"
-	| "belowEditor"
-	| "footer"
-	| "agentStrip";
+export const SLOT_ORDER = [
+	"header",
+	"notices",
+	"chat",
+	"status",
+	"aboveEditor",
+	"jobsPanel",
+	"editor",
+	"belowEditor",
+	"footer",
+	"belowFooter",
+	"agentStrip",
+] as const;
+
+export type LayoutSlot = (typeof SLOT_ORDER)[number];
+
+const SLOT_RANK = new Map<string, number>(SLOT_ORDER.map((slot, index) => [slot, index]));
 
 export interface LayoutSlotEntry {
 	/** Unique within the registry; the handle for unregister(). */
 	readonly key: string;
 	readonly slot: LayoutSlot;
 	readonly factory: () => Component;
+	/**
+	 * Tie-break within one slot; entries without it sort as 0. Equal order
+	 * keeps registration order, so the built-in anchors need no numbers.
+	 */
+	readonly order?: number;
 	/**
 	 * Parity §4.2 also defines an "agent" scope (render only while that agent
 	 * is visible). No consumer exists yet, so only "global" is implemented;
@@ -54,16 +69,14 @@ interface MountedLayout {
 }
 
 /**
- * Ordered registry of layout entries. Registration order is render order:
- * mount() adds the instantiated components to the host top to bottom exactly
- * as registered, so the registry is a drop-in replacement for the hardcoded
- * addChild sequence it replaces. Built-in views register through the same
- * path extension widgets will use.
+ * Ordered registry of layout entries. The registry is kept sorted by
+ * (slot, order, registration), so render order follows SLOT_ORDER whether an
+ * entry registered at startup or an hour into the session. Built-in views
+ * register through the same path extension widgets will use.
  *
  * After mount() the registry stays live: register() instantiates and inserts
- * the new entry at its slot's position (a runtime widget joins the entries
- * already mounted for that slot instead of landing at the very bottom), and
- * unregister() removes the mounted component from the host and disposes it.
+ * the new entry at its slot's position, and unregister() removes the mounted
+ * component from the host and disposes it.
  */
 export class LayoutSlots {
 	private readonly registrations: LayoutSlotEntry[] = [];
@@ -82,22 +95,10 @@ export class LayoutSlots {
 				message: `Layout entry "${entry.key}" is already registered; the new registration was refused.`,
 			};
 		}
-		if (!this.mounted) {
-			this.registrations.push(entry);
-			return undefined;
-		}
-		// Runtime registration: a widget belongs with its slot, not at the end
-		// of the mounted sequence. Insert it after the last entry of the same
-		// slot (there is always one for the extension-facing slots: the built-in
-		// anchor), or at the end when the slot has no anchor yet.
 		let index = this.registrations.length;
-		for (let i = this.registrations.length - 1; i >= 0; i--) {
-			if (this.registrations[i]?.slot === entry.slot) {
-				index = i + 1;
-				break;
-			}
-		}
+		while (index > 0 && compareEntries(this.registrations[index - 1] as LayoutSlotEntry, entry) > 0) index--;
 		this.registrations.splice(index, 0, entry);
+		if (!this.mounted) return undefined;
 		try {
 			this.mountEntry(entry);
 		} catch (error) {
@@ -125,6 +126,11 @@ export class LayoutSlots {
 	/** Ordered snapshot of the registered entries. */
 	entries(): readonly LayoutSlotEntry[] {
 		return [...this.registrations];
+	}
+
+	/** The mounted component for a key, gate included when the entry has one. */
+	component(key: string): Component | undefined {
+		return this.mounted?.components.get(key);
 	}
 
 	/**
@@ -173,6 +179,15 @@ export class LayoutSlots {
 		const mounted = this.mounted;
 		return entry.visible && mounted ? new SlotVisibilityGate(component, entry.visible, mounted.state) : component;
 	}
+}
+
+/**
+ * Slot first, then order. An unknown slot sorts to the very end rather than
+ * to the top: a JS extension passing garbage should not land above the header.
+ */
+function compareEntries(left: LayoutSlotEntry, right: LayoutSlotEntry): number {
+	const slotDelta = (SLOT_RANK.get(left.slot) ?? SLOT_ORDER.length) - (SLOT_RANK.get(right.slot) ?? SLOT_ORDER.length);
+	return slotDelta !== 0 ? slotDelta : (left.order ?? 0) - (right.order ?? 0);
 }
 
 /** Run the optional teardown of a layout component (host doc §6.3 factory). */
