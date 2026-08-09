@@ -71,7 +71,83 @@ describe("renderTimelineItem", () => {
 		};
 
 		expect(plain(renderTimelineItem(item, 60, context))).toContain("↳ Slack @arcadia");
-		expect(renderDeps(item, context)).toEqual(["why is CI red", "slack-bridge", "Slack @arcadia"]);
+		expect(renderDeps(item, context)).toEqual(["why is CI red", "slack-bridge", "Slack @arcadia", undefined, false]);
+	});
+
+	it("says on the attribution line when a human rewrote the body", () => {
+		const item: OrchestratorMessageItem = {
+			type: "orchestrator-message",
+			id: "msg-3",
+			durability: "durable",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			source: { kind: "extension:notes", label: "notes" },
+			text: "the reviewer asked for benchmarks",
+			editedByHuman: true,
+		};
+
+		expect(plain(renderTimelineItem(item, 60, context))).toContain("↳ extension notes, edited by you");
+	});
+
+	it("collapses an orchestrator message to two lines until the transcript is expanded", () => {
+		const item: OrchestratorMessageItem = {
+			type: "orchestrator-message",
+			id: "msg-3",
+			durability: "durable",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			source: { kind: "agent", label: "worker-7" },
+			text: "one\ntwo\nthree\nfour",
+		};
+
+		const collapsed = plain(renderTimelineItem(item, 60, context)).join("\n");
+		expect(collapsed).toContain("two");
+		expect(collapsed).not.toContain("three");
+		expect(collapsed).toContain("[truncated]");
+
+		const expanded = plain(renderTimelineItem(item, 60, { ...context, toolOutputExpanded: true })).join("\n");
+		expect(expanded).toContain("four");
+		expect(expanded).not.toContain("[truncated]");
+	});
+
+	it("paints a tool row with the surface its outcome earned, at full width", () => {
+		const base = {
+			type: "tool-execution",
+			id: "tool-1",
+			toolCallId: "call-1",
+			durability: "durable",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			toolName: "read",
+			args: { path: "a.ts" },
+		} as const;
+		const surfaceOf = (item: ToolExecutionItem): string => {
+			const lines = renderTimelineItem(item, 30, context);
+			expect(lines.length).toBeGreaterThan(0);
+			for (const line of lines) expect(visibleWidth(line)).toBe(30);
+			return lines[0].slice(0, lines[0].indexOf("m") + 1);
+		};
+
+		expect(surfaceOf({ ...base, status: "running" })).toBe(paintOpen(theme.toolPending));
+		expect(surfaceOf({ ...base, status: "completed", result: "ok" })).toBe(paintOpen(theme.toolSuccess));
+		expect(surfaceOf({ ...base, status: "completed", isError: true, result: "boom" })).toBe(paintOpen(theme.toolError));
+		expect(surfaceOf({ ...base, status: "cancelled" })).toBe(paintOpen(theme.toolError));
+	});
+
+	it("paints an orchestrator message with the message surface", () => {
+		const item: OrchestratorMessageItem = {
+			type: "orchestrator-message",
+			id: "msg-4",
+			durability: "durable",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			source: { kind: "agent", label: "worker-7" },
+			text: "done",
+		};
+
+		const lines = renderTimelineItem(item, 30, context);
+
+		expect(lines.length).toBeGreaterThan(0);
+		for (const line of lines) {
+			expect(line.startsWith(paintOpen(theme.messageSurface))).toBe(true);
+			expect(visibleWidth(line)).toBe(30);
+		}
 	});
 
 	it("paints user message rows with the surface background at full width", () => {

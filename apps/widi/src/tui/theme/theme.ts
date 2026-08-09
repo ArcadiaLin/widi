@@ -55,6 +55,14 @@ export interface ThemePalette {
 	rule: string;
 	/** Row background that lifts a line off the terminal's black. */
 	surface: string;
+	/** Row background of a tool still working. Falls back to `surface`. */
+	toolPending?: string;
+	/** Row background of a tool that finished cleanly. Falls back to `surface`. */
+	toolSuccess?: string;
+	/** Row background of a failed tool. Falls back to `surface`. */
+	toolError?: string;
+	/** Row background of a message nobody typed. Falls back to `surface`. */
+	messageSurface?: string;
 }
 
 /**
@@ -75,6 +83,10 @@ export const defaultPalette: ThemePalette = {
 	faint: "#5b7186",
 	rule: "#2f4d6b",
 	surface: "#1e2833",
+	toolPending: "#1b2a2e",
+	toolSuccess: "#1c2a24",
+	toolError: "#2c2023",
+	messageSurface: "#1a222c",
 };
 
 /**
@@ -124,6 +136,14 @@ export class Theme {
 	readonly selection: Paint;
 	/** Background of user message rows in the transcript. */
 	readonly surface: Paint;
+	/**
+	 * Transcript row backgrounds. A theme file written before these existed
+	 * falls back to `surface`, so it keeps working and simply looks flatter.
+	 */
+	readonly toolPending: Paint;
+	readonly toolSuccess: Paint;
+	readonly toolError: Paint;
+	readonly messageSurface: Paint;
 
 	readonly selectListTheme: SelectListTheme;
 	readonly editorTheme: EditorTheme;
@@ -162,6 +182,10 @@ export class Theme {
 		this.title = this.accent;
 		this.selection = this.accent;
 		this.surface = backgroundRgb(palette.surface);
+		this.toolPending = backgroundRgb(palette.toolPending ?? palette.surface);
+		this.toolSuccess = backgroundRgb(palette.toolSuccess ?? palette.surface);
+		this.toolError = backgroundRgb(palette.toolError ?? palette.surface);
+		this.messageSurface = backgroundRgb(palette.messageSurface ?? palette.surface);
 
 		this.selectListTheme = {
 			selectedPrefix: this.selection,
@@ -200,6 +224,8 @@ export class Theme {
 
 const DEFAULT_THEME_NAME = "default";
 const PALETTE_KEYS = ["accent", "ok", "warn", "error", "info", "muted", "faint", "rule", "surface"] as const;
+/** Validated when present, absent is fine: see ThemePalette for the fallbacks. */
+const OPTIONAL_PALETTE_KEYS = ["toolPending", "toolSuccess", "toolError", "messageSurface"] as const;
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 
 interface RegisteredTheme {
@@ -294,6 +320,12 @@ function paletteErrors(value: unknown): string[] {
 		const color = candidate[key];
 		if (typeof color !== "string" || !HEX_COLOR.test(color)) {
 			errors.push(`"${key}" must be a #rrggbb hex string`);
+		}
+	}
+	for (const key of OPTIONAL_PALETTE_KEYS) {
+		const color = candidate[key];
+		if (color !== undefined && (typeof color !== "string" || !HEX_COLOR.test(color))) {
+			errors.push(`"${key}" must be a #rrggbb hex string when present`);
 		}
 	}
 	return errors;

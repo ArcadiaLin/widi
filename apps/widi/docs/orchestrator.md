@@ -43,7 +43,7 @@ harness 是单 agent 的执行内核——模型轮次、会话树、资源、�
 
 ### API 形状
 
-- `MessageRequest = { targetAgentId, body, source?, render?, images?, mode }`，`mode: "next_turn" | "interrupt" | "precede"`（next_turn 不打断在飞 turn；interrupt 打断；precede 不唤醒目标，落在分支上等下次输入一起读）。
+- `MessageRequest = { targetAgentId, body, source?, render?, images?, mode, editedByHuman? }`，`mode: "next_turn" | "interrupt" | "precede"`（next_turn 不打断在飞 turn；interrupt 打断；precede 不唤醒目标，落在分支上等下次输入一起读）。`editedByHuman` 只记录不参与判断：文本在送出前被人改写过，而 `source` 说的仍是原生产者，不记就等于把人写的话记在别人名下。合并批次时批内任一条带它，合并后的条目就带它——合并后的 body 说不清哪句是谁写的。
 - `MessageSinkBinding = { source, policy, render?, plainEntry? }`——sink 代持者固定的一切。`plainEntry` 仅 shell 输入为真（落盘为无类型的普通 user 条目，保证既有会话可读回不变）。
 - `messageSinkFor(binding): MessageSink` 是 orchestrator 暴露的唯一工厂，返回 `{ send, prompt }`。`send` 不要求目标空闲；`prompt` 要求空闲（忙目标拒绝而非排队）并等待 assistant message 返回。
 - `messageBindingFor(producer)` 为五种内置生产者给出预置 binding：human（可打断、enforce、plainEntry）、agent（enforce，渲染加 `[Message from <id>]` 前缀）、background_job（ignore 阻塞、失败重试、按 mergeKey 合并）、runtime notice（ignore）、extension（enforce，加前缀）。

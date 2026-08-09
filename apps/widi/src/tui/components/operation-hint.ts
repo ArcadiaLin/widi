@@ -6,7 +6,7 @@ import { singleLine } from "../format.ts";
 import type { SelectorHintContext } from "../selectors/hints.ts";
 import type { TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
-import { activeAgent, maintenanceLabel } from "./common.ts";
+import { activeAgent } from "./common.ts";
 
 export interface OperationHintKeys {
 	readonly agents?: string;
@@ -32,11 +32,37 @@ export interface ResolveOperationHintOptions {
 	readonly keys: OperationHintKeys;
 }
 
+/**
+ * Which situation the hint is describing. The working line takes the hint over
+ * for the two run kinds and prints it next to what the run is doing; everything
+ * else stays on the hint line under the footer. Naming the kind is what keeps
+ * that split from re-deriving these branches somewhere else.
+ */
+export type OperationHintKind =
+	| "agent-panel"
+	| "selector"
+	| "autocomplete"
+	| "requests"
+	| "maintenance"
+	| "run"
+	| "agents"
+	| "pending";
+
+export interface OperationHint {
+	readonly kind: OperationHintKind;
+	readonly text: string;
+}
+
 export function resolveOperationHint(options: ResolveOperationHintOptions): string | undefined {
+	return resolveOperationHintDetail(options)?.text;
+}
+
+export function resolveOperationHintDetail(options: ResolveOperationHintOptions): OperationHint | undefined {
 	if (options.state.mode === "human-request") return undefined;
 
 	if (options.state.mode === "agent-panel") {
-		return hintParts(
+		return hint(
+			"agent-panel",
 			keyAction(options.keys.selectUp, "back"),
 			keyPair(options.keys.agentsPrevious, options.keys.agentsNext, "agent"),
 			keyAction(options.keys.selectDown, "tree"),
@@ -47,7 +73,8 @@ export function resolveOperationHint(options: ResolveOperationHintOptions): stri
 
 	const selector = options.selector;
 	if (selector) {
-		return hintParts(
+		return hint(
+			"selector",
 			selector.title,
 			selector.description,
 			keyPair(options.keys.selectUp, options.keys.selectDown, "choose"),
@@ -71,13 +98,13 @@ export function resolveOperationHint(options: ResolveOperationHintOptions): stri
 		];
 		if (command) {
 			const usage = command.argumentHint ? `/${command.name} ${command.argumentHint}` : `/${command.name}`;
-			return hintParts(usage, command.description, ...controls);
+			return hint("autocomplete", usage, command.description, ...controls);
 		}
-		return hintParts("Commands", ...controls);
+		return hint("autocomplete", "Commands", ...controls);
 	}
 
 	if (options.state.humanRequests.length > 0) {
-		return hintParts(keyAction(options.keys.requests, "open requests"));
+		return hint("requests", keyAction(options.keys.requests, "open requests"));
 	}
 
 	const agent = activeAgent(options.state);
@@ -85,15 +112,15 @@ export function resolveOperationHint(options: ResolveOperationHintOptions): stri
 		// Maintenance work (compaction, tree navigation) has no agent loop to
 		// steer or abort; the only input that applies is the follow-up queue.
 		if (agent.maintenance) {
-			return hintParts(
-				`${maintenanceLabel(agent.maintenance)}…`,
-				keyAction(options.keys.inputSubmit, "queue follow-up"),
-			);
+			// Which maintenance it is belongs to the working line, which names the
+			// phase next to how long it has been running.
+			return hint("maintenance", keyAction(options.keys.inputSubmit, "queue follow-up"));
 		}
 		// With an empty editor the steer key promotes what enter already queued,
 		// so the hint has to say which of the two it would do.
 		const steersQueue = options.editorText.trim().length === 0 && agent.queue.followUp.length > 0;
-		return hintParts(
+		return hint(
+			"run",
 			keyAction(options.keys.interrupt, "abort"),
 			keyAction(options.keys.steer, steersQueue ? "steer queued" : "steer"),
 			keyAction(options.keys.inputSubmit, "queue follow-up"),
@@ -103,18 +130,25 @@ export function resolveOperationHint(options: ResolveOperationHintOptions): stri
 		(candidate) => candidate.status !== "disposed",
 	).length;
 	if (agent && visibleAgentCount > 1) {
-		return hintParts(
+		return hint(
+			"agents",
 			options.editorText.length === 0 ? keyAction(options.keys.agents, "switch agent") : undefined,
 			"/dispose close current",
 		);
 	}
 	if (!agent && options.state.pendingAgent) {
-		return hintParts(
+		return hint(
+			"pending",
 			keyAction(options.keys.inputSubmit, "starts session"),
 			"/model or /thinking configures before first prompt",
 		);
 	}
 	return undefined;
+}
+
+function hint(kind: OperationHintKind, ...parts: Array<string | undefined>): OperationHint | undefined {
+	const text = hintParts(...parts);
+	return text === undefined ? undefined : { kind, text };
 }
 
 function keyAction(key: string | undefined, action: string): string | undefined {
@@ -173,6 +207,29 @@ export function formatOperationHintKey(key: KeyId): string {
 	return [...modifiers, baseLabel].join("+");
 }
 
+/** The first bound key for every action the hint can name. */
+export function operationHintKeys(): OperationHintKeys {
+	const keybindings = getKeybindings();
+	const key = (action: Parameters<typeof keybindings.getKeys>[0]): string | undefined => {
+		const keyId = keybindings.getKeys(action)[0];
+		return keyId ? formatOperationHintKey(keyId) : undefined;
+	};
+	return {
+		agents: key("app.agents.open"),
+		agentsPrevious: key("app.agents.previous"),
+		agentsNext: key("app.agents.next"),
+		interrupt: key("app.interrupt"),
+		steer: key("app.steer"),
+		requests: key("app.request.open"),
+		selectUp: key("tui.select.up"),
+		selectDown: key("tui.select.down"),
+		selectConfirm: key("tui.select.confirm"),
+		selectCancel: key("tui.select.cancel"),
+		inputTab: key("tui.input.tab"),
+		inputSubmit: key("tui.input.submit"),
+	};
+}
+
 export class OperationHintView implements Component {
 	private readonly state: TuiApplicationState;
 	private readonly engine: CommandEngine;
@@ -194,32 +251,17 @@ export class OperationHintView implements Component {
 	invalidate(): void {}
 
 	render(width: number): string[] {
-		const keybindings = getKeybindings();
-		const key = (action: Parameters<typeof keybindings.getKeys>[0]): string | undefined => {
-			const keyId = keybindings.getKeys(action)[0];
-			return keyId ? formatOperationHintKey(keyId) : undefined;
-		};
-		const hint = resolveOperationHint({
+		const detail = resolveOperationHintDetail({
 			state: this.state,
 			engine: this.engine,
 			editorText: this.editor.getText(),
 			editorAutocompleteVisible: this.editor.isShowingAutocomplete(),
 			selector: this.selectorHint(),
-			keys: {
-				agents: key("app.agents.open"),
-				agentsPrevious: key("app.agents.previous"),
-				agentsNext: key("app.agents.next"),
-				interrupt: key("app.interrupt"),
-				steer: key("app.steer"),
-				requests: key("app.request.open"),
-				selectUp: key("tui.select.up"),
-				selectDown: key("tui.select.down"),
-				selectConfirm: key("tui.select.confirm"),
-				selectCancel: key("tui.select.cancel"),
-				inputTab: key("tui.input.tab"),
-				inputSubmit: key("tui.input.submit"),
-			},
+			keys: operationHintKeys(),
 		});
-		return hint ? [theme.dim(truncateToWidth(hint, width, "…"))] : [];
+		// The working line prints the run hint beside what the run is doing; the
+		// same keys a row further down would be the only thing on screen twice.
+		if (!detail || detail.kind === "run" || detail.kind === "maintenance") return [];
+		return [theme.dim(truncateToWidth(detail.text, width, "…"))];
 	}
 }

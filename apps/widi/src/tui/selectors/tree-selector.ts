@@ -103,7 +103,10 @@ export class TreeSelector implements Component {
 			}
 			lines.push(theme.faint(`  (${this.cursor + 1}/${rows.length})`));
 		}
-		lines.push("", theme.dim(selectorKeyHints({ confirmLabel: "switch" })), rule);
+		// Preempted by another docked claimant: the keys listed here would go to
+		// whoever took focus, so do not offer them.
+		if (this.focused) lines.push("", theme.dim(selectorKeyHints({ confirmLabel: "switch" })));
+		lines.push(rule);
 		return lines.map((line) => truncateToWidth(line, width, ""));
 	}
 
@@ -133,7 +136,7 @@ export class TreeSelector implements Component {
 		const marker = row.current ? `${theme.info("●")} ` : "";
 		const age = formatEntryAge(row.timestamp);
 		const content = `${theme.dim(prefix)}${marker}${this.kindText(row)}${age ? ` ${theme.dim(age)}` : ""}`;
-		const line = selected ? theme.inverse(content) : content;
+		const line = selected && this.focused ? theme.inverse(content) : content;
 		return truncateToWidth(line, Math.max(1, width), "…");
 	}
 

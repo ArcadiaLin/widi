@@ -31,6 +31,22 @@ export interface ExtensionEventEnvelope {
 	readonly emittedAt: string;
 }
 
+/**
+ * A bus subscriber that is not an extension runtime.
+ *
+ * The TUI extension host is the only one today: the `tui` half of a dual-entry
+ * extension runs in the terminal process, outside any agent, so it has no
+ * runner to carry its subscriptions. Delivery is the same detached envelope
+ * every runner gets, and a subscriber is no more excluded from what it emitted
+ * itself than a runner is.
+ *
+ * Lifetime belongs to whoever registered it. That is the difference from a
+ * runner, whose subscriptions come and go with the agent behind it.
+ */
+export interface ExtensionEventSubscriber {
+	deliver(envelope: ExtensionEventEnvelope): void | Promise<void>;
+}
+
 // Same character set as an input presentation's customType: the ecosystem's
 // convention for these names is `owner:event` (`herdr:blocked`), so ':' is part
 // of the contract rather than a namespace core imposes.

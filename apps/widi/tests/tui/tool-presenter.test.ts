@@ -219,6 +219,41 @@ describe("tool presenter registry", () => {
 		expect(plain(presentToolExecution(item, 80))).toEqual(["✓ List src · 1 entries"]);
 	});
 
+	it("reports how long a call took", () => {
+		const item = toolItem({
+			toolName: "deploy",
+			args: {},
+			result: textResult("ok"),
+			startedAt: "2026-01-01T00:00:00.000Z",
+			endedAt: "2026-01-01T00:01:12.000Z",
+		});
+
+		expect(plain(presentToolExecution(item, 80))[0]).toContain("· 1m12s");
+	});
+
+	it("leaves the duration off a call that returned at once", () => {
+		const item = toolItem({
+			toolName: "deploy",
+			args: {},
+			result: textResult("ok"),
+			startedAt: "2026-01-01T00:00:00.000Z",
+			endedAt: "2026-01-01T00:00:00.400Z",
+		});
+
+		expect(plain(presentToolExecution(item, 80))[0]).not.toContain("·");
+	});
+
+	it("counts up while the call is still running", () => {
+		const item = toolItem({
+			toolName: "deploy",
+			args: {},
+			status: "running",
+			startedAt: new Date(Date.now() - 5_000).toISOString(),
+		});
+
+		expect(plain(presentToolExecution(item, 80))[0]).toContain("· 5s");
+	});
+
 	it("keeps the generic fallback for unregistered tools", () => {
 		const item = toolItem({ toolName: "deploy", args: { target: "staging", dryRun: true }, result: textResult("ok") });
 

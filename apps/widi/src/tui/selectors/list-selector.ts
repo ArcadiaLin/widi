@@ -144,12 +144,16 @@ export class ListSelector implements Component {
 			}
 			if (start > 0 || end < count) lines.push(theme.faint(`  (${this.selectedIndex + 1}/${count})`));
 		}
-		lines.push("", theme.dim(selectorKeyHints({ filter: true })), rule);
+		// Preempted by another docked claimant: the keys listed here would go to
+		// whoever took focus, so do not offer them.
+		if (this.focused) lines.push("", theme.dim(selectorKeyHints({ filter: true })));
+		lines.push(rule);
 		return lines.map((line) => truncateToWidth(line, width, ""));
 	}
 
-	private renderRow(item: SelectItem, selected: boolean, width: number): string {
-		const prefix = selected ? theme.selection("→ ") : "  ";
+	private renderRow(item: SelectItem, cursor: boolean, width: number): string {
+		const selected = cursor && this.focused;
+		const prefix = cursor ? (selected ? theme.selection("→ ") : theme.dim("→ ")) : "  ";
 		const label = selected ? theme.selection(singleLine(item.label, 200)) : singleLine(item.label, 200);
 		const description = item.description ? ` ${theme.dim(singleLine(item.description, 200))}` : "";
 		return truncateToWidth(`${prefix}${label}${description}`, Math.max(1, width), "…");

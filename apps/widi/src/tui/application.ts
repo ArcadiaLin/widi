@@ -8,6 +8,7 @@ import { type OrchestratorDiagnostic, OrchestratorError } from "../core/diagnost
 import { type MessageSink, messageBindingFor } from "../core/message.ts";
 import { createWidiRuntime, type WidiRuntime } from "../core/runtime-service.ts";
 import type { AgentActivitySnapshot, CandidateItem, OrchestratorEvent } from "../core/types.ts";
+import { copyToClipboard } from "../utils/clipboard.ts";
 import { forkSourceAgentId } from "./agent-identity.ts";
 import { WidiCommandAutocompleteProvider } from "./autocomplete.ts";
 import { applicationCommands } from "./commands/app-commands.ts";
@@ -25,7 +26,9 @@ import { JobsPanelView } from "./components/jobs-panel.ts";
 import { NoticeView } from "./components/notices.ts";
 import { OperationHintView } from "./components/operation-hint.ts";
 import { QueuedInputView } from "./components/queued-input.ts";
+import { StagedInputView } from "./components/staged-input.ts";
 import { StatusView } from "./components/status.ts";
+import { WorkingLineView } from "./components/working-line.ts";
 import { WidiEditor } from "./editor.ts";
 import { applyAgentSnapshot, EventProjector } from "./event-projector.ts";
 import { TuiExtensionHost } from "./extension-host/index.ts";
@@ -47,16 +50,27 @@ import {
 	clearDockedFocus,
 	createTuiApplicationState,
 	ensureAgentProjection,
+	hasDockedFocus,
 	type NoticeTextMode,
+	type StagedDraft,
 	setActiveAgent,
 	type TuiApplicationState,
+	topDockedFocus,
 } from "./state.ts";
 import { flushStreaming, STREAM_FLUSH_MS } from "./streaming-flush.ts";
 import { loadThemes, theme } from "./theme/theme.ts";
+import { hasLiveTransientVoice, setSteadyVoice, setTransientVoice } from "./voice.ts";
 
 const NOTIFICATION_TTL_MS = 5_000;
+/** Staged drafts held for one agent before the buffer lands itself. */
+const MAX_STAGED_DRAFTS = 20;
 /** Spinner frame cadence while the visible agent is running. */
 const SPINNER_TICK_MS = 160;
+/** Repaint cadence while the working line is holding a line that expires. */
+const VOICE_TICK_MS = 250;
+/** Interrupts or steers inside this window before the agent says something about it. */
+const POKE_WINDOW_MS = 10_000;
+const POKE_THRESHOLD = 3;
 
 export interface WidiTuiOptions {
 	readonly cwd: string;
@@ -100,6 +114,9 @@ export class WidiTuiApplication {
 	private readonly lifecycleTasks = new Set<Promise<unknown>>();
 	private readonly drafts = new Map<string, string>();
 	private nextPendingFollowUpId = 1;
+	private nextStagedId = 1;
+	/** Recent interrupt/steer timestamps behind the "stop poking me" line. */
+	private pokes: number[] = [];
 	private started = false;
 	private shutdownPromise?: Promise<void>;
 	private resolveClosed?: () => void;
@@ -157,6 +174,18 @@ export class WidiTuiApplication {
 				disposeAgent: async (agentId) => {
 					await this.disposeAgent(agentId);
 				},
+				diagnostics: this.state.diagnostics,
+				copyText: (text) => copyToClipboard(text),
+				setVoicePack: (pack) => {
+					this.state.voicePack = pack;
+					// Every line on screen was rolled from the old pack. Re-rolling the
+					// steady one is what makes the switch visible without waiting for
+					// the next transition; a transient is a moment and simply passes.
+					for (const agent of this.state.agents.values()) {
+						agent.voice = undefined;
+						setSteadyVoice(agent, pack, agent.status === "running" ? "working" : "idle");
+					}
+				},
 			}),
 		]) {
 			const diagnostic = this.engine.register(command);
@@ -198,11 +227,7 @@ export class WidiTuiApplication {
 			host: this.tui,
 			state: this.state,
 			editor: this.editor,
-			dockedFocusTarget: () => {
-				// The selector dock is the newer claimant when both are somehow open.
-				if (this.selectorDock.isOpen) return this.selectorDock;
-				return this.humanRequests.isOpen ? this.humanRequests : undefined;
-			},
+			dockedFocusTarget: () => this.dockedFocusTarget(),
 		});
 
 		// The built-in views dogfood the same slot registry extension widgets
@@ -233,16 +258,18 @@ export class WidiTuiApplication {
 		this.editor.onSteer = () => this.steerFromEditor();
 		this.editor.onOpenRequests = () => this.humanRequests.openLatest();
 		this.editor.onOpenTree = () => this.track(this.openTreeSelectorDirect());
+		this.editor.onViewSystemPrompt = () => this.track(this.printSystemPrompt());
+		this.editor.onEditStaged = () => this.takeStagedIntoEditor();
 		this.editor.onExit = () => {
 			void this.shutdown("user exit").catch(() => {});
 		};
 	}
 
 	/**
-	 * Every mounted view registers as a slot entry, in render order. Views the
-	 * application itself drives (editor, human requests, jobs panel, agent
-	 * strip) are constructed beforehand and their factories return the held
-	 * instance.
+	 * Every mounted view registers as a slot entry. Render order comes from the
+	 * slot, not from this list. Views the application itself drives (editor,
+	 * human requests, jobs panel, agent strip) are constructed beforehand and
+	 * their factories return the held instance.
 	 */
 	private registerBuiltInSlots(): void {
 		const entries: LayoutSlotEntry[] = [
@@ -250,10 +277,36 @@ export class WidiTuiApplication {
 			{ key: "notices", slot: "notices", scope: "global", factory: () => new NoticeView(this.state) },
 			{ key: "chat", slot: "chat", scope: "global", factory: () => new ChatView(this.state) },
 			{ key: "status", slot: "status", scope: "global", factory: () => new StatusView(this.state) },
-			{ key: "queuedInput", slot: "aboveEditor", scope: "global", factory: () => new QueuedInputView(this.state) },
+			// The working line sits directly under the transcript because that is
+			// what it continues: the run the transcript is being written by. Below
+			// it, closer to the editor means more settled - a request is still
+			// waiting on the human, staged text can still be rewritten, and the
+			// queue is decided and only waiting for its turn. The dock is last
+			// because it takes the editor's own place.
+			{
+				key: "workingLine",
+				slot: "aboveEditor",
+				order: 0,
+				scope: "global",
+				factory: () => new WorkingLineView({ state: this.state, engine: this.engine, editor: this.editor }),
+			},
+			{ key: "humanRequests", slot: "aboveEditor", order: 1, scope: "global", factory: () => this.humanRequests },
+			{
+				key: "stagedInput",
+				slot: "aboveEditor",
+				order: 2,
+				scope: "global",
+				factory: () => new StagedInputView(this.state),
+			},
+			{
+				key: "queuedInput",
+				slot: "aboveEditor",
+				order: 3,
+				scope: "global",
+				factory: () => new QueuedInputView(this.state),
+			},
+			{ key: "selectorDock", slot: "aboveEditor", order: 4, scope: "global", factory: () => this.selectorDock },
 			{ key: "jobsPanel", slot: "jobsPanel", scope: "global", factory: () => this.jobsPanel },
-			{ key: "humanRequests", slot: "aboveEditor", scope: "global", factory: () => this.humanRequests },
-			{ key: "selectorDock", slot: "aboveEditor", scope: "global", factory: () => this.selectorDock },
 			{
 				key: "editor",
 				slot: "editor",
@@ -261,7 +314,9 @@ export class WidiTuiApplication {
 				factory: () => this.editor,
 				// Like pi's showSelector, an open command selector takes the editor's
 				// place: the editor leaves the layout while the dock holds a view.
-				visible: (state) => state.focus.docked !== "selector",
+				// Being preempted does not give the place back — the dock still
+				// holds the view, it just is not the one reading keys.
+				visible: (state) => !hasDockedFocus(state, "selector"),
 			},
 			{
 				key: "footer",
@@ -274,7 +329,9 @@ export class WidiTuiApplication {
 			},
 			{
 				key: "operationHint",
-				slot: "belowEditor",
+				// Below the footer, not below the editor: it has always rendered
+				// there, and "belowEditor" is now literally the editor/footer gap.
+				slot: "belowFooter",
 				scope: "global",
 				factory: () =>
 					new OperationHintView({
@@ -287,6 +344,20 @@ export class WidiTuiApplication {
 			{ key: "agentStrip", slot: "agentStrip", scope: "global", factory: () => this.agentPanel },
 		];
 		for (const entry of entries) this.layout.register(entry);
+	}
+
+	/** The docked component the focus stack says should be taking keys. */
+	private dockedFocusTarget(): Component | undefined {
+		switch (topDockedFocus(this.state)) {
+			case "selector":
+				return this.selectorDock;
+			case "human-request":
+				return this.humanRequests;
+			case "agent-panel":
+				return this.agentPanel;
+			default:
+				return undefined;
+		}
 	}
 
 	/** Hint context of the selector currently docked in the editor's place, if any. */
@@ -337,6 +408,23 @@ export class WidiTuiApplication {
 				editor: this.editor,
 				requestRender: () => this.tui.requestRender(),
 				reportDiagnostic: (diagnostic) => this.reportHostDiagnostic(diagnostic),
+				stageMessage: (extensionId, text) => {
+					this.stageDraft(text, extensionId);
+				},
+				events: {
+					// The visible agent is the attribution a TUI half gets: it belongs
+					// to no agent of its own, and the one on screen is what its action
+					// is about. Core requires a live agent, so refuse plainly rather
+					// than emit under a stale id.
+					emit: async (extensionId, name, payload) => {
+						const agentId = this.state.activeAgentId;
+						if (!agentId) {
+							throw new Error(`Extension '${extensionId}' cannot emit '${name}': no agent is visible yet.`);
+						}
+						await this.orchestrator.emitExtensionEvent(agentId, extensionId, name, payload);
+					},
+					subscribe: (handler) => this.orchestrator.registerExtensionEventSubscriber({ deliver: handler }),
+				},
 			});
 			await this.extensionHost.activate();
 		} catch (error) {
@@ -387,6 +475,7 @@ export class WidiTuiApplication {
 		for (const diagnostic of this.userConfigDiagnostics) {
 			this.projectDiagnostic(diagnostic);
 		}
+		this.state.diagnostics.phase = "runtime";
 		this.addStartupSummary();
 		this.configurePendingEditor();
 		this.updateEditorAvailability();
@@ -451,6 +540,14 @@ export class WidiTuiApplication {
 			case "agent_status_changed":
 				this.schedule(() => this.syncAgent(event.agentId));
 				this.updateEditorAvailability();
+				// A turn this shell did not start (another agent's message, an
+				// extension prompt) begins inside core, where the buffer is not
+				// visible. Landing it now puts it after that turn rather than
+				// before it: late, but never lost. A turn the shell did start has
+				// already flushed, so there is nothing here to do.
+				if (event.activity === "running" && !event.maintenance) {
+					this.track(this.flushStaged(event.agentId));
+				}
 				break;
 			case "agent_session_info_changed":
 				if (event.agentId === this.state.activeAgentId) {
@@ -545,7 +642,9 @@ export class WidiTuiApplication {
 
 	/**
 	 * Tick re-renders while anything animated is on screen. The visible running
-	 * agent has spinner frames advancing every 160ms; with only live background
+	 * agent has spinner frames advancing every 160ms; a working line still
+	 * saying what just happened has to be repainted once its line expires, or
+	 * "Job's done." stays up until the next keystroke; with only live background
 	 * jobs, one tick per second keeps the panel's elapsed times fresh. The
 	 * interval is rebuilt when the cadence changes and stopped when nothing
 	 * needs it.
@@ -556,7 +655,13 @@ export class WidiTuiApplication {
 		);
 		const activeAgent = this.state.activeAgentId ? this.state.agents.get(this.state.activeAgentId) : undefined;
 		const hasVisibleRunningAgent = activeAgent?.status === "running";
-		const interval = hasVisibleRunningAgent ? SPINNER_TICK_MS : hasLiveJob ? 1_000 : undefined;
+		const interval = hasVisibleRunningAgent
+			? SPINNER_TICK_MS
+			: hasLiveTransientVoice(activeAgent?.voice)
+				? VOICE_TICK_MS
+				: hasLiveJob
+					? 1_000
+					: undefined;
 		if (interval === this.jobsTickerInterval) return;
 		if (this.jobsTicker) {
 			clearInterval(this.jobsTicker);
@@ -564,7 +669,12 @@ export class WidiTuiApplication {
 		}
 		this.jobsTickerInterval = interval;
 		if (interval !== undefined) {
-			this.jobsTicker = setInterval(() => this.tui.requestRender(), interval);
+			// Recomputed from inside the tick as well: a voice line expiring is not
+			// an event, so nothing else would ever wind this cadence back down.
+			this.jobsTicker = setInterval(() => {
+				this.tui.requestRender();
+				this.updateJobsTicker();
+			}, interval);
 			this.jobsTicker.unref();
 		}
 	}
@@ -579,6 +689,10 @@ export class WidiTuiApplication {
 		const matchedCommand = parsed ? this.engine.match(text) : undefined;
 		const initialAgentId = this.state.activeAgentId;
 		const scopeId = initialAgentId ?? "pending";
+		// Submitting a staged draft is the human adopting it: it leaves the
+		// buffer for good and lands as their own input, attribution included.
+		const editingAgent = initialAgentId ? this.state.agents.get(initialAgentId) : undefined;
+		if (editingAgent) editingAgent.stagedEditing = undefined;
 		if (parsed && !matchedCommand) {
 			const pending = this.pendingUnknownCommand;
 			if (pending?.scopeId !== scopeId || pending.text !== text) {
@@ -735,7 +849,136 @@ export class WidiTuiApplication {
 		}
 	}
 
+	/**
+	 * Hold text back from the branch until the next human-initiated turn, so a
+	 * human can still read, rewrite or drop it. Producers are TUI-side only
+	 * (an extension's tui half today): core-side producers must land on the
+	 * branch whether or not a human ever types again.
+	 */
+	stageDraft(text: string, extensionId?: string): StagedDraft | undefined {
+		const agentId = this.state.activeAgentId;
+		const body = text.trim();
+		if (!agentId || !body) return undefined;
+		const agent = ensureAgentProjection(this.state, agentId);
+		const draft: StagedDraft = {
+			id: this.nextStagedId,
+			text: body,
+			...(extensionId === undefined ? undefined : { extensionId }),
+		};
+		this.nextStagedId += 1;
+		agent.staged.push(draft);
+		if (agent.staged.length > MAX_STAGED_DRAFTS) {
+			// Same discipline as every other payload bound: over the limit it
+			// lands rather than being dropped or held forever.
+			this.projectDiagnostic({
+				severity: "warning",
+				code: "tui.staging_overflow",
+				message: `More than ${MAX_STAGED_DRAFTS} staged messages; the buffer was sent to the branch.`,
+				agentId,
+				...(extensionId === undefined ? undefined : { extensionId }),
+			});
+			this.track(this.flushStaged(agentId));
+		}
+		this.tui.requestRender();
+		return draft;
+	}
+
+	/**
+	 * Land the staged buffer on the branch in order, ahead of whatever the
+	 * caller is about to send. Each draft goes out through its own producer's
+	 * sink, so what the branch records is the producer, not this shell.
+	 */
+	private async flushStaged(agentId: string): Promise<void> {
+		const agent = this.state.agents.get(agentId);
+		if (!agent) return;
+		while (agent.staged.length > 0) {
+			const draft = agent.staged[0];
+			if (!draft) break;
+			try {
+				const sink =
+					draft.extensionId === undefined
+						? this.messages
+						: this.orchestrator.messageSinkFor(
+								messageBindingFor({ kind: "extension", extensionId: draft.extensionId }),
+							);
+				const outcome = await sink.send({
+					targetAgentId: agentId,
+					body: draft.text,
+					mode: "precede",
+					...(draft.editedByHuman === undefined ? undefined : { editedByHuman: draft.editedByHuman }),
+				});
+				if (outcome.kind === "blocked") this.addApplicationNotice(blockedInputNotice(outcome), agentId);
+			} catch (error) {
+				// It has not landed, and dropping it is the one thing staging
+				// promises never to do. Leaving it at the head keeps the order for
+				// the next flush.
+				this.addApplicationNotice(`Staged message not sent: ${errorMessage(error)}`, agentId);
+				return;
+			}
+			const index = agent.staged.indexOf(draft);
+			if (index >= 0) agent.staged.splice(index, 1);
+		}
+		this.tui.requestRender();
+	}
+
+	/**
+	 * app.staged.edit: take the newest staged draft out of the buffer and into
+	 * the editor. Out of the buffer, because a draft left in it could be
+	 * flushed halfway through being rewritten.
+	 */
+	private takeStagedIntoEditor(): void {
+		const agentId = this.state.activeAgentId;
+		if (!agentId) return;
+		const agent = ensureAgentProjection(this.state, agentId);
+		if (agent.stagedEditing) return;
+		const index = agent.staged.length - 1;
+		const draft = agent.staged[index];
+		if (!draft) return;
+		if (this.editor.getText().trim()) {
+			this.addApplicationNotice(
+				"Send or clear your own draft first; editing a staged message needs the editor.",
+				agentId,
+			);
+			return;
+		}
+		agent.staged.splice(index, 1);
+		agent.stagedEditing = { draft, index };
+		this.editor.setText(draft.text);
+		this.tui.requestRender();
+	}
+
+	/**
+	 * Esc while the editor holds a staged draft puts it back where it came
+	 * from, edits included. Emptying the editor first is the discard gesture,
+	 * and the only one: nothing else throws staged text away.
+	 */
+	private returnStagedDraft(): boolean {
+		const agentId = this.state.activeAgentId;
+		const agent = agentId ? this.state.agents.get(agentId) : undefined;
+		const editing = agent?.stagedEditing;
+		if (!agent || !agentId || !editing) return false;
+		const text = this.editor.getText().trim();
+		agent.stagedEditing = undefined;
+		this.editor.setText("");
+		this.drafts.set(agentId, "");
+		if (text === "") {
+			this.addApplicationNotice("Staged message discarded.", agentId);
+		} else {
+			const draft = editing.draft;
+			if (text !== draft.text) {
+				draft.text = text;
+				// Only worth recording when someone else produced it: the branch
+				// would otherwise file the human's words under that producer.
+				if (draft.extensionId !== undefined) draft.editedByHuman = true;
+			}
+			agent.staged.splice(Math.min(editing.index, agent.staged.length), 0, draft);
+		}
+		this.tui.requestRender();
+		return true;
+	}
+
 	private async submitPrompt(agentId: string, rawText: string, text: string): Promise<void> {
+		await this.flushStaged(agentId);
 		const agent = ensureAgentProjection(this.state, agentId);
 		agent.pendingInput = { originalText: rawText, submittedAt: new Date().toISOString() };
 		this.editor.addToHistory(rawText);
@@ -770,6 +1013,7 @@ export class WidiTuiApplication {
 	 * input must not be bypassed by typing while the agent happens to be running.
 	 */
 	private async submitFollowUp(agentId: string, rawText: string, text: string): Promise<void> {
+		await this.flushStaged(agentId);
 		this.editor.addToHistory(rawText);
 		const pending = { id: this.nextPendingFollowUpId, text: rawText };
 		this.nextPendingFollowUpId += 1;
@@ -836,9 +1080,10 @@ export class WidiTuiApplication {
 		this.editor.setText("");
 		this.drafts.set(agentId, "");
 		this.editor.addToHistory(text);
+		this.notePoke(agent);
 		this.track(
-			this.messages
-				.send({ targetAgentId: agentId, body: text, mode: "interrupt" })
+			this.flushStaged(agentId)
+				.then(() => this.messages.send({ targetAgentId: agentId, body: text, mode: "interrupt" }))
 				.then((outcome) => {
 					if (outcome.kind !== "blocked") return;
 					this.restoreEditor(text, agentId);
@@ -1185,6 +1430,8 @@ export class WidiTuiApplication {
 		}
 		this.pendingAgents.cancel();
 		const agent = setActiveAgent(this.state, agentId);
+		// An agent nobody has looked at yet has never had a transition to roll on.
+		setSteadyVoice(agent, this.state.voicePack, agent.status === "running" ? "working" : "idle");
 		this.updateJobsTicker();
 		this.editor.setText(this.drafts.get(agentId) ?? "");
 		clearDockedFocus(this.state);
@@ -1257,6 +1504,10 @@ export class WidiTuiApplication {
 			onViewDiagnostics: () => {
 				this.fatalOverlayShown = false;
 				handle?.close();
+				// The overlay is only the way in; what it opens is the same
+				// /diagnostics selector the command opens, submitted the same way
+				// so cancelling behaves the way cancelling any selector does.
+				this.track(this.submit("/diagnostics"));
 			},
 		});
 		handle = this.overlays.show(view, { width: "70%", minWidth: 36, maxHeight: "70%", anchor: "center", margin: 1 });
@@ -1276,6 +1527,23 @@ export class WidiTuiApplication {
 			createdAt: new Date().toISOString(),
 			text,
 		});
+	}
+
+	/**
+	 * What the next turn would be built with, printed into the transcript
+	 * rather than an overlay: pi-tui has no scrollable view, and a system prompt
+	 * is thousands of lines. In the transcript the terminal's own scrollback is
+	 * the pager, and the text is selectable the way any other output is.
+	 */
+	private async printSystemPrompt(): Promise<void> {
+		const agentId = this.state.activeAgentId;
+		if (!agentId) return;
+		try {
+			const prompt = await this.orchestrator.getAgentSystemPrompt(agentId);
+			this.addApplicationNotice(`System prompt of the next turn:\n\n${prompt}`, agentId, { textMode: "full" });
+		} catch (error) {
+			this.addApplicationNotice(errorMessage(error), agentId);
+		}
 	}
 
 	private addApplicationNotice(
@@ -1320,13 +1588,23 @@ export class WidiTuiApplication {
 
 	private interrupt(): void {
 		if (this.overlays.dismiss()) return;
-		// A docked selector goes away before the running agent is aborted, same
-		// as the dismissible overlay it used to be. Closing skips onCancel, so
-		// the submitted command is not restored (the overlay behaved the same).
-		if (this.selectorDock.isOpen) {
-			this.selectorDock.close();
-			return;
+		// Docked claimants go away one layer at a time before the running agent
+		// is aborted, same as the dismissible overlay a selector used to be.
+		// Closing skips onCancel, so a submitted command is not restored. The
+		// human request menu is absent on purpose: it holds focus while it is
+		// on top and answers app.interrupt itself.
+		switch (topDockedFocus(this.state)) {
+			case "selector":
+				this.selectorDock.close();
+				return;
+			case "agent-panel":
+				this.agentPanel.close();
+				return;
 		}
+		// A staged draft held in the editor goes back to the buffer before esc
+		// means anything to the agent: it is the only thing on screen that would
+		// be lost by moving on.
+		if (this.returnStagedDraft()) return;
 		const agentId = this.state.activeAgentId;
 		if (!agentId) return;
 		const agent = ensureAgentProjection(this.state, agentId);
@@ -1338,12 +1616,32 @@ export class WidiTuiApplication {
 				this.addApplicationNotice(`${maintenanceLabel(agent.maintenance)} in progress; abort is unavailable.`, agentId);
 				return;
 			}
+			this.notePoke(agent);
 			this.track(
 				this.orchestrator.abortAgent(agentId, "human").catch((error) => {
 					this.addApplicationNotice(errorMessage(error), agentId);
 				}),
 			);
 		}
+	}
+
+	/**
+	 * Count the times in a row the user grabbed a running agent by the collar.
+	 * Purely a TUI observation: nothing about the run changes, the agent just
+	 * says something about being poked. The window resets on the third, so a
+	 * long argument is one remark rather than a running commentary.
+	 */
+	private notePoke(agent: AgentViewState): void {
+		const at = Date.now();
+		const recent = this.pokes.filter((poke) => at - poke < POKE_WINDOW_MS);
+		recent.push(at);
+		if (recent.length >= POKE_THRESHOLD) {
+			setTransientVoice(agent, this.state.voicePack, "poked", at);
+			this.pokes = [];
+			this.updateJobsTicker();
+			return;
+		}
+		this.pokes = recent;
 	}
 
 	private updateEditorAvailability(): void {

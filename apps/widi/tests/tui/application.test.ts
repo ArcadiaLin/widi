@@ -9,7 +9,9 @@ import type { WidiRuntime, WidiRuntimeServices } from "../../src/core/runtime-se
 import type { OrchestratorEvent, RuntimeModel } from "../../src/core/types.ts";
 import { WidiTuiApplication } from "../../src/tui/application.ts";
 import type { CommandEngine } from "../../src/tui/commands/engine.ts";
-import { ensureAgentProjection, setActiveAgent } from "../../src/tui/state.ts";
+import type { WidiEditor } from "../../src/tui/editor.ts";
+import { ensureAgentProjection, type StagedDraft, setActiveAgent } from "../../src/tui/state.ts";
+import { setSteadyVoice, setTransientVoice } from "../../src/tui/voice.ts";
 
 describe("WidiTuiApplication lazy agent spawn", () => {
 	it("does not spawn an agent when the TUI starts", async () => {
@@ -297,6 +299,85 @@ describe("WidiTuiApplication animation ticker", () => {
 		ticker.switchAgent("main");
 		expect(ticker.jobsTickerInterval).toBeUndefined();
 	});
+
+	// A voice line expiring is not an event; without a tick "Job's done." would
+	// stay on screen until the next keystroke.
+	it("ticks while the working line is holding a line that expires", async () => {
+		const harness = await createApplicationHarness();
+		const agent = setActiveAgent(harness.application.state, "main");
+		agent.status = "idle";
+		const ticker = harness.application as unknown as { updateJobsTicker(): void; jobsTickerInterval?: number };
+
+		setTransientVoice(agent, harness.application.state.voicePack, "done");
+		ticker.updateJobsTicker();
+		expect(ticker.jobsTickerInterval).toBe(250);
+
+		agent.voice = undefined;
+		ticker.updateJobsTicker();
+		expect(ticker.jobsTickerInterval).toBeUndefined();
+	});
+});
+
+describe("WidiTuiApplication working line", () => {
+	function interrupt(application: WidiTuiApplication): void {
+		(application as unknown as { interrupt(): void }).interrupt();
+	}
+
+	it("rolls a line for an agent the user just switched to", async () => {
+		const harness = await createApplicationHarness();
+		const agent = ensureAgentProjection(harness.application.state, "worker", "running");
+		(harness.application as unknown as { hydratedAgents: Set<string> }).hydratedAgents.add("worker");
+
+		(harness.application as unknown as { switchAgent(agentId: string): void }).switchAgent("worker");
+
+		expect(agent.voice?.steady.state).toBe("working");
+	});
+
+	it("says something after the third interrupt in a row", async () => {
+		const harness = await createApplicationHarness();
+		const agent = setActiveAgent(harness.application.state, "main");
+		agent.status = "running";
+
+		interrupt(harness.application);
+		interrupt(harness.application);
+		expect(agent.voice?.transient).toBeUndefined();
+
+		interrupt(harness.application);
+		expect(agent.voice?.transient?.state).toBe("poked");
+		expect(harness.abortAgent).toHaveBeenCalledTimes(3);
+	});
+
+	it("keeps quiet when the interrupts are spread out", async () => {
+		const harness = await createApplicationHarness();
+		const agent = setActiveAgent(harness.application.state, "main");
+		agent.status = "running";
+		const now = vi.spyOn(Date, "now");
+
+		try {
+			now.mockReturnValue(0);
+			interrupt(harness.application);
+			now.mockReturnValue(11_000);
+			interrupt(harness.application);
+			now.mockReturnValue(22_000);
+			interrupt(harness.application);
+		} finally {
+			now.mockRestore();
+		}
+
+		expect(agent.voice?.transient).toBeUndefined();
+	});
+
+	it("re-rolls every line when /voice changes the pack", async () => {
+		const harness = await createApplicationHarness();
+		const agent = setActiveAgent(harness.application.state, "main");
+		agent.status = "idle";
+		setSteadyVoice(agent, "peon", "idle");
+
+		await submit(harness.application, "/voice off");
+
+		expect(harness.application.state.voicePack).toBe("off");
+		expect(agent.voice?.steady).toEqual({ state: "idle", text: "Ready" });
+	});
 });
 
 describe("WidiTuiApplication follow-up projection", () => {
@@ -315,6 +396,175 @@ describe("WidiTuiApplication follow-up projection", () => {
 		delivery.resolve({ kind: "accepted" });
 		await submitting;
 		expect(agent.pendingFollowUps).toEqual([]);
+	});
+});
+
+describe("WidiTuiApplication staging", () => {
+	function stage(application: WidiTuiApplication, text: string, extensionId?: string) {
+		return (
+			application as unknown as { stageDraft(text: string, extensionId?: string): StagedDraft | undefined }
+		).stageDraft(text, extensionId);
+	}
+
+	function editStaged(application: WidiTuiApplication): void {
+		(application as unknown as { takeStagedIntoEditor(): void }).takeStagedIntoEditor();
+	}
+
+	function interrupt(application: WidiTuiApplication): void {
+		(application as unknown as { interrupt(): void }).interrupt();
+	}
+
+	function editor(application: WidiTuiApplication): WidiEditor {
+		return (application as unknown as { editor: WidiEditor }).editor;
+	}
+
+	async function readyAgent(harness: Awaited<ReturnType<typeof createApplicationHarness>>) {
+		const agent = setActiveAgent(harness.application.state, "main");
+		agent.status = "idle";
+		agent.snapshot = snapshot("main", model());
+		return agent;
+	}
+
+	it("lands staged text on the branch before the human's own prompt", async () => {
+		const harness = await createApplicationHarness();
+		const agent = await readyAgent(harness);
+		stage(harness.application, "read docs/pi-fork.md first", "notes");
+
+		await submit(harness.application, "now fix the build");
+
+		expect(harness.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ body: "read docs/pi-fork.md first", mode: "precede" }),
+		);
+		expect(harness.messageSinkFor).toHaveBeenCalledWith(
+			expect.objectContaining({ source: { kind: "extension:notes", label: "notes" } }),
+		);
+		expect(harness.promptAgent).toHaveBeenCalledWith(expect.objectContaining({ body: "now fix the build" }));
+		expect(agent.staged).toEqual([]);
+	});
+
+	it("keeps a draft staged when its delivery fails, and keeps the order", async () => {
+		const harness = await createApplicationHarness();
+		const agent = await readyAgent(harness);
+		stage(harness.application, "first", "notes");
+		stage(harness.application, "second", "notes");
+		harness.sendMessage.mockRejectedValueOnce(new Error("no route to agent"));
+
+		await submit(harness.application, "go");
+
+		expect(agent.staged.map((draft) => draft.text)).toEqual(["first", "second"]);
+	});
+
+	it("lands the buffer on a turn this shell did not start", async () => {
+		const harness = await createApplicationHarness();
+		await readyAgent(harness);
+		stage(harness.application, "context for the next turn", "notes");
+
+		deliverEvent(harness.application, {
+			type: "agent_status_changed",
+			agentId: "main",
+			activity: "running",
+			changedAt: new Date(0).toISOString(),
+		});
+		await vi.waitFor(() =>
+			expect(harness.sendMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ body: "context for the next turn", mode: "precede" }),
+			),
+		);
+	});
+
+	it("takes the newest draft into the editor and puts an edit back in its place", async () => {
+		const harness = await createApplicationHarness();
+		const agent = await readyAgent(harness);
+		stage(harness.application, "older", "notes");
+		stage(harness.application, "newer", "notes");
+
+		editStaged(harness.application);
+		expect(editor(harness.application).getText()).toBe("newer");
+		expect(agent.staged.map((draft) => draft.text)).toEqual(["older"]);
+
+		editor(harness.application).setText("newer, rewritten");
+		interrupt(harness.application);
+
+		expect(agent.staged.map((draft) => draft.text)).toEqual(["older", "newer, rewritten"]);
+		expect(agent.staged[1]?.editedByHuman).toBe(true);
+		expect(editor(harness.application).getText()).toBe("");
+	});
+
+	it("records the human edit on the entry that lands", async () => {
+		const harness = await createApplicationHarness();
+		await readyAgent(harness);
+		stage(harness.application, "as written by the extension", "notes");
+		editStaged(harness.application);
+		editor(harness.application).setText("as rewritten by the human");
+		interrupt(harness.application);
+
+		await submit(harness.application, "go");
+
+		expect(harness.sendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ body: "as rewritten by the human", editedByHuman: true }),
+		);
+	});
+
+	it("does not mark the human's own staged text as edited by a human", async () => {
+		const harness = await createApplicationHarness();
+		const agent = await readyAgent(harness);
+		stage(harness.application, "note to self");
+
+		editStaged(harness.application);
+		editor(harness.application).setText("note to self, revised");
+		interrupt(harness.application);
+
+		expect(agent.staged[0]).toMatchObject({ text: "note to self, revised" });
+		expect(agent.staged[0]?.editedByHuman).toBeUndefined();
+	});
+
+	it("discards a staged draft only when the editor is emptied first", async () => {
+		const harness = await createApplicationHarness();
+		const agent = await readyAgent(harness);
+		stage(harness.application, "never mind this", "notes");
+
+		editStaged(harness.application);
+		editor(harness.application).setText("");
+		interrupt(harness.application);
+
+		expect(agent.staged).toEqual([]);
+		expect(agent.timeline.some((item) => item.type === "application-notice")).toBe(true);
+	});
+
+	it("refuses to take a draft into an editor the human is already using", async () => {
+		const harness = await createApplicationHarness();
+		const agent = await readyAgent(harness);
+		stage(harness.application, "staged", "notes");
+		editor(harness.application).setText("half-typed thought");
+
+		editStaged(harness.application);
+
+		expect(agent.staged.map((draft) => draft.text)).toEqual(["staged"]);
+		expect(editor(harness.application).getText()).toBe("half-typed thought");
+	});
+
+	it("submitting an edited draft adopts it as the human's own message", async () => {
+		const harness = await createApplicationHarness();
+		const agent = await readyAgent(harness);
+		stage(harness.application, "extension wording", "notes");
+		editStaged(harness.application);
+
+		await submit(harness.application, "human wording");
+
+		expect(agent.staged).toEqual([]);
+		expect(agent.stagedEditing).toBeUndefined();
+		expect(harness.promptAgent).toHaveBeenCalledWith(expect.objectContaining({ body: "human wording" }));
+		expect(harness.sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ mode: "precede" }));
+	});
+
+	it("lands the buffer instead of growing it past the cap", async () => {
+		const harness = await createApplicationHarness();
+		const agent = await readyAgent(harness);
+		for (let i = 0; i < 21; i++) stage(harness.application, `draft ${i}`, "notes");
+
+		await vi.waitFor(() => expect(agent.staged).toEqual([]));
+		expect(harness.sendMessage).toHaveBeenCalledTimes(21);
+		expect(agent.timeline.some((item) => item.type === "diagnostic")).toBe(true);
 	});
 });
 
@@ -509,7 +759,8 @@ async function createApplicationHarness(options: { agentDir?: string; extensionL
 	const setAgentModelByReference = vi.fn(async () => runtimeModel);
 	const setAgentThinkingLevelByName = vi.fn(async () => "high");
 	const setAgentSessionName = vi.fn(async () => {});
-	const sendMessage = vi.fn(async () => ({ kind: "accepted" as const }));
+	const sendMessage = vi.fn(async (_request?: unknown) => ({ kind: "accepted" as const }));
+	const messageSinkFor = vi.fn((_binding?: unknown) => ({ send: sendMessage, prompt: promptAgent }));
 	const disposedAgentIds = new Set<string>();
 	const disposeAgent = vi.fn(async (agentId: string) => {
 		disposedAgentIds.add(agentId);
@@ -519,16 +770,18 @@ async function createApplicationHarness(options: { agentDir?: string; extensionL
 		return disposedAgentIds.has(agentId) ? { ...inspected, status: "disposed" as const, hasHarness: false } : inspected;
 	});
 	const disposeAll = vi.fn(async () => {});
+	const abortAgent = vi.fn(async () => ({ kind: "aborted" as const }));
 	const orchestrator = {
 		subscribe: () => () => {},
 		registerClient: () => () => {},
 		disposeAll,
 		disposeAgent,
+		abortAgent,
 		spawnAgent,
 		promptAgent,
 		sendMessage,
 		// The shell holds one sink; every submit path goes through it.
-		messageSinkFor: () => ({ send: sendMessage, prompt: promptAgent }),
+		messageSinkFor,
 		setAgentModelByReference,
 		setAgentThinkingLevelByName,
 		setAgentSessionName,
@@ -577,9 +830,11 @@ async function createApplicationHarness(options: { agentDir?: string; extensionL
 		application,
 		tuiStart,
 		disposeAll,
+		abortAgent,
 		spawnAgent,
 		promptAgent,
 		sendMessage,
+		messageSinkFor,
 		disposeAgent,
 		inspectAgent,
 		setAgentModelByReference,

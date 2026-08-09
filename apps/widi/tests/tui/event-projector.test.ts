@@ -980,6 +980,122 @@ describe("EventProjector", () => {
 	});
 });
 
+describe("EventProjector run accounting", () => {
+	it("rolls a working line when a run starts and an idle one when it ends", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+
+		projector.apply({ type: "agent_status_changed", agentId: "main", activity: "running", changedAt: timestamp(1) });
+		expect(state.agents.get("main")?.voice?.steady.state).toBe("working");
+
+		projector.apply({ type: "agent_status_changed", agentId: "main", activity: "idle", changedAt: timestamp(9) });
+		expect(state.agents.get("main")?.voice?.steady.state).toBe("idle");
+	});
+
+	it("counts the run's tool calls and keeps the totals once it ends", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+
+		projector.apply({ type: "agent_status_changed", agentId: "main", activity: "running", changedAt: timestamp(1) });
+		projector.apply(harness("main", { type: "tool_execution_start", toolCallId: "a", toolName: "Bash", args: {} }));
+		projector.apply(harness("main", { type: "tool_execution_start", toolCallId: "b", toolName: "Read", args: {} }));
+		expect(state.agents.get("main")?.runToolCount).toBe(2);
+
+		projector.apply({ type: "agent_status_changed", agentId: "main", activity: "idle", changedAt: timestamp(9) });
+		expect(state.agents.get("main")?.lastRun).toEqual({ startedAt: timestamp(1), endedAt: timestamp(9), toolCount: 2 });
+
+		projector.apply({ type: "agent_status_changed", agentId: "main", activity: "running", changedAt: timestamp(10) });
+		expect(state.agents.get("main")?.runToolCount).toBe(0);
+	});
+
+	it("stamps a tool call with when it ran", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+		projector.apply(harness("main", { type: "tool_execution_start", toolCallId: "a", toolName: "Bash", args: {} }));
+		projector.apply(
+			harness("main", { type: "tool_execution_end", toolCallId: "a", toolName: "Bash", result: "ok", isError: false }),
+		);
+
+		const tool = state.agents.get("main")?.timeline.find((item) => item.type === "tool-execution");
+		expect(tool).toMatchObject({ status: "completed", startedAt: expect.any(String), endedAt: expect.any(String) });
+	});
+
+	// The reason a run ended is only on agent_idle; the status event says the
+	// run ended and nothing about how.
+	it("says who stopped a run", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+
+		projector.apply({
+			type: "agent_idle",
+			agentId: "main",
+			reason: "aborted",
+			abortedBy: "human",
+			liveJobCount: 0,
+			idleAt: timestamp(2),
+		});
+		expect(state.agents.get("main")?.voice?.transient?.state).toBe("aborted-by-human");
+
+		projector.apply({
+			type: "agent_idle",
+			agentId: "main",
+			reason: "aborted",
+			abortedBy: "extension",
+			liveJobCount: 0,
+			idleAt: timestamp(3),
+		});
+		expect(state.agents.get("main")?.voice?.transient?.state).toBe("aborted-by-extension");
+
+		projector.apply({ type: "agent_idle", agentId: "main", reason: "aborted", liveJobCount: 0, idleAt: timestamp(4) });
+		expect(state.agents.get("main")?.voice?.transient?.state).toBe("aborted");
+
+		projector.apply({ type: "agent_idle", agentId: "main", reason: "settled", liveJobCount: 0, idleAt: timestamp(5) });
+		expect(state.agents.get("main")?.voice?.transient?.state).toBe("done");
+	});
+
+	it("keeps quiet about an idle nobody was waiting on", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+
+		projector.apply({ type: "agent_idle", agentId: "main", reason: "ready", liveJobCount: 0, idleAt: timestamp(1) });
+
+		expect(state.agents.get("main")?.voice).toBeUndefined();
+	});
+
+	it("speaks up only once a run keeps failing", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+		const fail = (id: string) =>
+			projector.apply(
+				harness("main", { type: "tool_execution_end", toolCallId: id, toolName: "Bash", result: "no", isError: true }),
+			);
+
+		fail("a");
+		fail("b");
+		expect(state.agents.get("main")?.voice?.transient).toBeUndefined();
+
+		fail("c");
+		expect(state.agents.get("main")?.voice?.transient?.state).toBe("error");
+	});
+
+	it("forgets the failures once a call succeeds", () => {
+		const state = createTuiApplicationState();
+		const projector = new EventProjector(state);
+		const end = (id: string, isError: boolean) =>
+			projector.apply(
+				harness("main", { type: "tool_execution_end", toolCallId: id, toolName: "Bash", result: "x", isError }),
+			);
+
+		end("a", true);
+		end("b", true);
+		end("c", false);
+		end("d", true);
+
+		expect(state.agents.get("main")?.runToolErrorStreak).toBe(1);
+		expect(state.agents.get("main")?.voice?.transient).toBeUndefined();
+	});
+});
+
 function harness(
 	agentId: string,
 	event: Extract<OrchestratorEvent, { type: "agent_harness_event" }>["event"],

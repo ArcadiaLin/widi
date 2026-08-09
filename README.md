@@ -59,8 +59,7 @@ agent 目录是 WIDI 的配置根目录，常见结构如下：
 ├── profiles/*.md          # Agent Profile
 ├── skills/*/SKILL.md      # Skill
 ├── prompts/*.md           # Prompt 模板
-├── extensions/*/          # 扩展
-└── mcp.json               # MCP 服务配置
+└── extensions/*/          # 扩展
 ```
 
 Profile 是带 YAML frontmatter 的 Markdown 文件，可声明角色名称、系统提示词、持久化行为、允许使用的工具、Skill 和项目上下文。模型由 `agent/models.json` 配置；密钥可以通过环境变量引用，例如 `$MOONSHOT_API_KEY` 或 `$ANTHROPIC_API_KEY`，不应提交真实密钥。项目目录中的 `.widi/` 配置属于项目本地代码，只有在项目被信任后才会加载；这避免了打开未知项目时自动执行其扩展或读取其指令。

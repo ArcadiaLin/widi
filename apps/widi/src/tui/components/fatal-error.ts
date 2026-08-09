@@ -5,7 +5,7 @@ import { theme } from "../theme/theme.ts";
 /**
  * Modal view for the only two overlay-worthy failures: startup without any
  * usable agent and an uncaught fatal application error. Quit exits; View
- * diagnostics closes the overlay to read the diagnostics view beneath it.
+ * diagnostics closes the overlay and opens the session's diagnostics list.
  */
 export class FatalErrorView implements Component {
 	focused = false;

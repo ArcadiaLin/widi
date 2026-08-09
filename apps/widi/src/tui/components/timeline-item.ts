@@ -11,7 +11,7 @@ import {
 } from "../extension-host/presentation.ts";
 import { renderExtensionEntry, renderExtensionMessageBody } from "../extension-host/renderers.ts";
 import { boundedText, sanitizeTerminalText, singleLine, spinnerFrame } from "../format.ts";
-import type { TimelineItem } from "../state.ts";
+import type { TimelineItem, ToolExecutionItem } from "../state.ts";
 import { theme } from "../theme/theme.ts";
 import { presentToolExecution } from "../tool-presenter.ts";
 import { diagnosticGlyph, tonePaint } from "./common.ts";
@@ -33,7 +33,7 @@ export function renderDeps(item: TimelineItem, context: TimelineRenderContext): 
 		case "user-message":
 			return [item.text];
 		case "orchestrator-message":
-			return [item.text, item.source.kind, item.source.label];
+			return [item.text, item.source.kind, item.source.label, item.editedByHuman, context.toolOutputExpanded];
 		case "assistant-message": {
 			const liveThinking = context.liveThinkingIds.has(`${item.id}:thinking`);
 			const livePreparing = context.livePreparingAssistantIds.has(item.id);
@@ -49,7 +49,8 @@ export function renderDeps(item: TimelineItem, context: TimelineRenderContext): 
 			];
 		}
 		case "tool-execution":
-			// The preparing glyph spins, so the cache must expire per frame.
+			// The preparing glyph spins and a running row's duration counts up, so
+			// the cache must expire with each of them.
 			return [
 				item.status,
 				item.isError,
@@ -58,8 +59,10 @@ export function renderDeps(item: TimelineItem, context: TimelineRenderContext): 
 				item.partialResult,
 				item.result,
 				item.expanded,
+				item.endedAt,
 				context.toolOutputExpanded,
 				...(item.status === "preparing" ? [spinnerTick()] : []),
+				...(item.status === "running" ? [secondTick()] : []),
 			];
 		case "thinking-status":
 			// The spinner and the rolling preview both animate while thinking.
@@ -192,9 +195,14 @@ function spinnerTick(): number {
 	return Math.floor(Date.now() / 160);
 }
 
+/** Whole seconds since the epoch: the cadence a live duration changes at. */
+function secondTick(): number {
+	return Math.floor(Date.now() / 1_000);
+}
+
 /** Key label for the transcript-expand toggle, for collapsed-marker hints. */
 function expandKeyLabel(): string | undefined {
-	const key = getKeybindings().getKeys("app.tools.expand")[0];
+	const key = getKeybindings().getKeys("app.expand")[0];
 	return key ? formatOperationHintKey(key) : undefined;
 }
 
@@ -216,13 +224,25 @@ function orchestratorMessageTitle(kind: string, label: string): string {
 	return label;
 }
 
+/** Pad each row to the full width so a background color spans the whole line. */
+function paintRows(lines: string[], paint: (text: string) => string, width: number): string[] {
+	return lines.map((line) => paint(line + " ".repeat(Math.max(0, width - visibleWidth(line)))));
+}
+
+/** Outcome at a glance, before reading a word of the row. */
+function toolRowSurface(item: ToolExecutionItem): (text: string) => string {
+	if (item.status === "preparing" || item.status === "running") return theme.toolPending;
+	return item.isError || item.status === "cancelled" ? theme.toolError : theme.toolSuccess;
+}
+
 export function renderTimelineItem(item: TimelineItem, width: number, context: TimelineRenderContext): string[] {
 	switch (item.type) {
-		case "user-message": {
-			const lines = new Text(`${theme.bold("❯")} ${boundedText(item.text)}`, 1, 0).render(width);
-			// Pad to the full row so the surface background spans the line.
-			return lines.map((line) => theme.surface(line + " ".repeat(Math.max(0, width - visibleWidth(line)))));
-		}
+		case "user-message":
+			return paintRows(
+				new Text(`${theme.bold("❯")} ${boundedText(item.text)}`, 1, 0).render(width),
+				theme.surface,
+				width,
+			);
 		// Everything that entered the model's context without the person typing
 		// it. The source line carries the attribution, so the body is shown
 		// unprefixed even though the model read the prefixed form: repeating
@@ -233,12 +253,16 @@ export function renderTimelineItem(item: TimelineItem, width: number, context: T
 		// same shape as every other branch rather than an error path.
 		case "orchestrator-message": {
 			const label = item.source.label ?? item.source.kind;
-			const title = orchestratorMessageTitle(item.source.kind, label);
-			return new Text(
-				`${theme.dim(`↳ ${title}`)}\n${boundedText(item.text, { maxLines: 24, maxCharacters: 8_000 })}`,
-				1,
-				0,
-			).render(width);
+			const title = `${orchestratorMessageTitle(item.source.kind, label)}${
+				item.editedByHuman ? ", edited by you" : ""
+			}`;
+			// Nobody typed this, so it stays out of the way until asked for: two
+			// lines of summary collapsed, the whole thing expanded.
+			const body = context.toolOutputExpanded
+				? boundedText(item.text, { maxLines: 24, maxCharacters: 8_000 })
+				: boundedText(item.text, { maxLines: 2, maxCharacters: Math.max(80, width * 2) });
+			const lines = new Text(`${theme.dim(`↳ ${title}`)}\n${body}`, 1, 0).render(width);
+			return paintRows(lines, theme.messageSurface, width);
 		}
 		case "assistant-message": {
 			const text = item.text.trim();
@@ -283,14 +307,16 @@ export function renderTimelineItem(item: TimelineItem, width: number, context: T
 			}
 			return new Text(lines.join("\n"), 1, 0).render(width);
 		}
-		case "tool-execution":
-			return new Text(
+		case "tool-execution": {
+			const lines = new Text(
 				presentToolExecution(item, Math.max(8, width - 2), {
 					expanded: item.expanded ?? context.toolOutputExpanded,
 				}).join("\n"),
 				1,
 				0,
 			).render(width);
+			return paintRows(lines, toolRowSurface(item), width);
+		}
 		case "diagnostic": {
 			const color = theme.severityPaint(item.diagnostic.severity);
 			return new Text(

@@ -43,10 +43,7 @@
   ],
   "packages": [],
   "extensions": [],
-  "enabledExtensions": [
-    "mcp",
-    "plan-demo"
-  ],
+  "enabledExtensions": [],
   "extensionDivisions": {},
   "skills": [],
   "prompts": [],

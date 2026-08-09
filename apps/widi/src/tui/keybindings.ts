@@ -17,8 +17,10 @@ declare module "@earendil-works/pi-tui" {
 		"app.agents.next": true;
 		"app.interrupt": true;
 		"app.exit": true;
-		"app.tools.expand": true;
+		"app.expand": true;
 		"app.jobs.expand": true;
+		"app.staged.edit": true;
+		"app.prompt.view": true;
 		"app.steer": true;
 		"app.request.open": true;
 		"app.request.previous": true;
@@ -46,8 +48,12 @@ export const WIDI_KEYBINDINGS = {
 	"app.agents.next": { defaultKeys: "right", description: "Move to the next agent in the agent panel" },
 	"app.interrupt": { defaultKeys: "escape", description: "Close the current interaction or abort the active agent" },
 	"app.exit": { defaultKeys: "ctrl+d", description: "Exit when the editor is empty" },
-	"app.tools.expand": { defaultKeys: "ctrl+o", description: "Toggle expanded transcript details" },
+	"app.expand": { defaultKeys: "ctrl+o", description: "Toggle expanded transcript details" },
 	"app.jobs.expand": { defaultKeys: "ctrl+t", description: "Toggle expanded background job panel" },
+	// ctrl+e belongs to pi-tui's cursorLineEnd; taking it would shadow an
+	// editing key every emacs-handed user expects.
+	"app.staged.edit": { defaultKeys: "ctrl+x", description: "Take the newest staged message back into the editor" },
+	"app.prompt.view": { defaultKeys: "ctrl+p", description: "Print the system prompt of the next turn" },
 	"app.steer": { defaultKeys: "ctrl+s", description: "Send the editor text as a steer to the running agent" },
 	"app.request.open": { defaultKeys: "ctrl+r", description: "Jump to the most recent pending human request" },
 	"app.request.previous": { defaultKeys: "left", description: "Focus the previous pending human request" },
@@ -143,6 +149,16 @@ export function isKeyId(value: string): boolean {
 	return rest.length === 1 || SPECIAL_KEYS.has(rest);
 }
 
+/**
+ * Old action names still accepted from keybindings.json, mapped to what they
+ * are called now. Dropping one silently would kill a user's binding with an
+ * "unknown action" warning that reads like a typo.
+ */
+const RENAMED_ACTIONS: Record<string, string> = {
+	// Renamed once ctrl+o grew past tool output into every collapsed detail.
+	"app.tools.expand": "app.expand",
+};
+
 export interface UserKeybindingsLoad {
 	readonly bindings: KeybindingsConfig;
 	readonly diagnostics: CoreDiagnostic[];
@@ -191,7 +207,16 @@ export function loadUserKeybindings(agentDir: string, extraDefinitions?: Keybind
 	}
 	const bindings: KeybindingsConfig = {};
 	const diagnostics: CoreDiagnostic[] = [];
-	for (const [action, value] of Object.entries(raw)) {
+	for (const [rawAction, value] of Object.entries(raw)) {
+		const renamed = RENAMED_ACTIONS[rawAction];
+		const action = renamed ?? rawAction;
+		if (renamed) {
+			diagnostics.push({
+				severity: "warning",
+				code: "keybindings.renamed_action",
+				message: `${path}: "${rawAction}" is now "${renamed}"; the binding was applied under the new name. Rename it to silence this.`,
+			});
+		}
 		if (
 			!(action in WIDI_KEYBINDINGS) &&
 			!(action in TUI_KEYBINDINGS) &&

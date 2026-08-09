@@ -40,6 +40,7 @@ describe("ListSelector", () => {
 			onSelect: () => {},
 			onClose: () => {},
 		});
+		selector.focused = true;
 
 		const rendered = plainRender(selector);
 		expect(rendered).toContain("─");
@@ -191,7 +192,7 @@ describe("WidiTuiApplication command selector", () => {
 		const dock = requireDock(application);
 		expect(dock.current).toBeInstanceOf(ListSelector);
 		// The editor leaves the layout while the selector is docked, pi-style.
-		const editorSlot = application.tui.children[application.tui.children.indexOf(dock) + 1];
+		const editorSlot = application.layout.component("editor");
 		expect(editorSlot?.render(80)).toEqual([]);
 
 		dock.current?.handleInput?.(ESCAPE);

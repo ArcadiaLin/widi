@@ -72,6 +72,17 @@ describe("loadUserKeybindings", () => {
 		expect(keybindings.matches("\x11", "app.interrupt")).toBe(true);
 	});
 
+	it("applies a renamed action under its new name and says so", async () => {
+		await writeFile(join(agentDir, "keybindings.json"), JSON.stringify({ "app.tools.expand": "ctrl+w" }));
+
+		const load = loadUserKeybindings(agentDir);
+
+		expect(load.bindings).toEqual({ "app.expand": "ctrl+w" });
+		expect(load.diagnostics).toHaveLength(1);
+		expect(load.diagnostics[0]).toMatchObject({ severity: "warning", code: "keybindings.renamed_action" });
+		expect(createWidiKeybindings(load.bindings).matches("\x17", "app.expand")).toBe(true);
+	});
+
 	it("reports an unparseable file and keeps defaults", async () => {
 		await writeFile(join(agentDir, "keybindings.json"), "{ not json");
 

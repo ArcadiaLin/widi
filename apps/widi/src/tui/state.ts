@@ -8,6 +8,8 @@ import type { HumanRequestEnvelope, HumanRequestKind } from "../core/human-reque
 import type { MessageSource } from "../core/message.ts";
 import type { AgentId, AgentMaintenanceKind, OrchestratorEvent, RuntimeModel } from "../core/types.ts";
 import type { CommandError } from "./commands/types.ts";
+import { DiagnosticsLog } from "./diagnostics-log.ts";
+import type { AgentVoice, VoicePackId } from "./voice.ts";
 
 export type TimelineDurability = "durable" | "ephemeral";
 export type NoticeTextMode = "compact" | "full";
@@ -43,6 +45,8 @@ export interface OrchestratorMessageItem {
 	readonly source: MessageSource;
 	text: string;
 	modelText?: string;
+	/** A human rewrote the body before it was sent; the source is still the producer. */
+	readonly editedByHuman?: true;
 }
 
 export interface AssistantMessageItem {
@@ -74,6 +78,9 @@ export interface ToolExecutionItem {
 	 * "cancelled".
 	 */
 	status: "preparing" | "running" | "completed" | "cancelled";
+	/** When execution actually began; unset while the call is still preparing. */
+	startedAt?: string;
+	endedAt?: string;
 	/**
 	 * Per-item expand override (parity §4.3-3): set, it wins over the global
 	 * toolOutputExpanded toggle; unset, the item follows the global state.
@@ -250,6 +257,24 @@ export interface PendingFollowUp {
 }
 
 /**
+ * Text held back from the branch until the next human-initiated turn, so a
+ * human can still read, rewrite or drop it. Staging is delay, not discard:
+ * every exit path lands it, none throws it away behind the user's back.
+ */
+export interface StagedDraft {
+	readonly id: number;
+	/**
+	 * The extension whose tui half staged it, which is also who the branch will
+	 * record. Absent when the human staged their own text, and then it lands as
+	 * plain human input like anything else they type.
+	 */
+	readonly extensionId?: string;
+	text: string;
+	/** Set once a human took it into the editor and changed it. */
+	editedByHuman?: true;
+}
+
+/**
  * Lifecycle of one agent row.
  *
  * Core reports only `idle` and `running`, and only for an agent that is live;
@@ -281,9 +306,26 @@ export interface AgentViewState {
 	pendingInput?: PendingInput;
 	/** When the current run started; set while status is "running". */
 	runStartedAt?: string;
+	/** Tool calls started in the current run, reset when one begins. */
+	runToolCount: number;
+	/** Tool failures in a row within the current run; any success clears it. */
+	runToolErrorStreak: number;
+	/** Totals of the run that just ended, for the working line's completion form. */
+	lastRun?: { readonly startedAt: string; readonly endedAt: string; readonly toolCount: number };
+	/** What the working line is saying about this agent. Rolled on transitions only. */
+	voice?: AgentVoice;
 	queue: QueueState;
 	/** Optimistic projection while sendMessage is waiting for a deliverable phase. */
 	pendingFollowUps: PendingFollowUp[];
+	/**
+	 * TUI-layer staging buffer, oldest first. The invariant this layer can hold
+	 * is "on the branch before the next *human-initiated* turn": a turn someone
+	 * else starts begins inside core, where this buffer is not visible, and the
+	 * fallback flush lands it after that turn instead of before it.
+	 */
+	staged: StagedDraft[];
+	/** The staged draft currently held in the editor, and the slot to put it back into. */
+	stagedEditing?: { readonly draft: StagedDraft; readonly index: number };
 	display: AgentDisplayFacts;
 	/** The live assistant item currently receiving message_update events. */
 	currentAssistantId?: string;
@@ -355,12 +397,17 @@ export interface TuiOverlayFocusEntry {
 /**
  * The single source of truth behind `state.mode`. The application overlay
  * stack pushes/pops overlay entries as overlays open and close; docked
- * components claim and release `docked` as they take and lose input focus.
- * Nobody writes `mode` directly.
+ * components claim and release their place on `docked` as they take and lose
+ * input focus. Nobody writes `mode` directly.
+ *
+ * `docked` is a stack rather than one slot so a claimant can preempt another
+ * without evicting it: an arriving human request takes the keys while the open
+ * selector keeps its filter text and its place in the layout, and answering
+ * hands the keys back to whoever had them. Each claimant appears at most once.
  */
 export interface TuiFocusState {
 	readonly overlays: TuiOverlayFocusEntry[];
-	docked?: TuiDockedFocus;
+	readonly docked: TuiDockedFocus[];
 }
 
 export interface TuiApplicationState {
@@ -369,11 +416,15 @@ export interface TuiApplicationState {
 	agents: Map<AgentId, AgentViewState>;
 	globalNotices: NoticeItem[];
 	humanRequests: PendingHumanRequestView[];
+	/** Every diagnostic reported this session, outliving the notice that announced it. */
+	readonly diagnostics: DiagnosticsLog;
 	readonly focus: TuiFocusState;
 	readonly mode: TuiInteractionMode;
 	shuttingDown: boolean;
 	/** Global toggle: show full transcript details instead of collapsed previews. */
 	toolOutputExpanded: boolean;
+	/** Which voice the working line speaks in; "off" is the plain wording. */
+	voicePack: VoicePackId;
 }
 
 export function createTuiApplicationState(): TuiApplicationState {
@@ -381,12 +432,14 @@ export function createTuiApplicationState(): TuiApplicationState {
 		agents: new Map(),
 		globalNotices: [],
 		humanRequests: [],
-		focus: { overlays: [] },
+		diagnostics: new DiagnosticsLog(),
+		focus: { overlays: [], docked: [] },
 		get mode() {
 			return interactionMode(this);
 		},
 		shuttingDown: false,
 		toolOutputExpanded: false,
+		voicePack: "peon",
 	};
 }
 
@@ -400,7 +453,20 @@ export function interactionMode(state: TuiApplicationState): TuiInteractionMode 
 		const mode = state.focus.overlays[i]?.mode;
 		if (mode) return mode;
 	}
-	return state.focus.docked ?? "editor";
+	return topDockedFocus(state) ?? "editor";
+}
+
+/** The docked claimant holding the keys, if any. */
+export function topDockedFocus(state: TuiApplicationState): TuiDockedFocus | undefined {
+	return state.focus.docked[state.focus.docked.length - 1];
+}
+
+/**
+ * Whether a claimant is on the stack at all. Not the same question as who has
+ * the keys: a preempted selector is still docked and still owns its position.
+ */
+export function hasDockedFocus(state: TuiApplicationState, docked: TuiDockedFocus): boolean {
+	return state.focus.docked.includes(docked);
 }
 
 /** Record an opened overlay at the top of the focus stack. */
@@ -414,14 +480,26 @@ export function removeOverlayFocus(state: TuiApplicationState, entry: TuiOverlay
 	if (index >= 0) state.focus.overlays.splice(index, 1);
 }
 
-/** A docked component takes input focus. */
+/** A docked component takes input focus; re-claiming raises it to the top. */
 export function setDockedFocus(state: TuiApplicationState, docked: TuiDockedFocus): void {
-	state.focus.docked = docked;
+	const existing = state.focus.docked.indexOf(docked);
+	if (existing >= 0) state.focus.docked.splice(existing, 1);
+	state.focus.docked.push(docked);
 }
 
-/** Release the docked focus claim; a mismatched claimant leaves it alone. */
+/**
+ * Release one claimant's place, wherever it sits — a preempted component that
+ * closes must not linger under the one that preempted it. A claimant that
+ * never claimed leaves the stack alone. Omitting it clears every claim, which
+ * is what switching agents does.
+ */
 export function clearDockedFocus(state: TuiApplicationState, docked?: TuiDockedFocus): void {
-	if (docked === undefined || state.focus.docked === docked) state.focus.docked = undefined;
+	if (docked === undefined) {
+		state.focus.docked.length = 0;
+		return;
+	}
+	const index = state.focus.docked.indexOf(docked);
+	if (index >= 0) state.focus.docked.splice(index, 1);
 }
 
 export function createAgentViewState(agentId: AgentId, status: AgentViewStatus = "creating"): AgentViewState {
@@ -436,8 +514,11 @@ export function createAgentViewState(agentId: AgentId, status: AgentViewStatus =
 		backgroundJobs: new Map(),
 		hydration: "ready",
 		bufferedEvents: [],
+		runToolCount: 0,
+		runToolErrorStreak: 0,
 		queue: { steer: [], followUp: [], nextTurn: 0 },
 		pendingFollowUps: [],
+		staged: [],
 		display: { activeToolNames: [], rehydrateRequested: false },
 		nextLiveItemId: 1,
 	};
