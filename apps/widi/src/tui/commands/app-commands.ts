@@ -1,3 +1,7 @@
+import { diagnosticGlyph } from "../components/common.ts";
+import type { DiagnosticsLog } from "../diagnostics-log.ts";
+import { diagnosticSource, formatDiagnosticRecord } from "../diagnostics-log.ts";
+import { singleLine } from "../format.ts";
 import type { CommandDefinition } from "./types.ts";
 
 /**
@@ -11,6 +15,9 @@ export interface ApplicationCommandHost {
 	/** Close the current agent and stage an empty session on the same profile. */
 	newSession(sourceAgentId: string | undefined): Promise<void>;
 	disposeAgent(agentId: string): Promise<void>;
+	readonly diagnostics: DiagnosticsLog;
+	/** Put text on the system clipboard; throws when no clipboard could be reached. */
+	copyText(text: string): Promise<void>;
 }
 
 /** Commands that operate on the application itself, not the orchestrator. */
@@ -41,6 +48,37 @@ export function applicationCommands(host: ApplicationCommandHost): readonly Comm
 			name: "clear",
 			description: "Close the current agent and start a new session on the same profile.",
 			execute: newSession,
+		},
+		{
+			kind: "action",
+			agentPolicy: "runtime",
+			name: "diagnostics",
+			description: "Browse the warnings and errors reported this session.",
+			argumentHint: "[entry]",
+			argumentCompletes: true,
+			// Severity, code, source and phase all live in the label because the
+			// selector filters on label and value only: "extension" narrows to
+			// what the extensions reported, "startup" to the boot batch.
+			complete: async () =>
+				host.diagnostics
+					.list()
+					.map((record) => ({
+						value: record.id,
+						label: `${diagnosticGlyph(record.diagnostic)} ${record.diagnostic.code}${
+							record.count > 1 ? ` ×${record.count}` : ""
+						} · ${diagnosticSource(record.diagnostic)} · ${record.phase}`,
+						description: singleLine(record.diagnostic.message, 200),
+					})),
+			// Reached with an empty argument only when there is nothing to pick
+			// from: with candidates the engine opens the selector instead.
+			execute: async (_context, argument) => {
+				const id = argument.trim();
+				if (!id) return "No diagnostics reported this session.";
+				const record = host.diagnostics.get(id);
+				if (!record) throw new Error(`No diagnostic ${id} was reported this session.`);
+				await host.copyText(formatDiagnosticRecord(record));
+				return `Copied ${record.diagnostic.code} to the clipboard.`;
+			},
 		},
 		{
 			kind: "action",

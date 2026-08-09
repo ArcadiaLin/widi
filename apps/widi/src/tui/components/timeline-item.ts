@@ -33,7 +33,7 @@ export function renderDeps(item: TimelineItem, context: TimelineRenderContext): 
 		case "user-message":
 			return [item.text];
 		case "orchestrator-message":
-			return [item.text, item.source.kind, item.source.label, context.toolOutputExpanded];
+			return [item.text, item.source.kind, item.source.label, item.editedByHuman, context.toolOutputExpanded];
 		case "assistant-message": {
 			const liveThinking = context.liveThinkingIds.has(`${item.id}:thinking`);
 			const livePreparing = context.livePreparingAssistantIds.has(item.id);
@@ -245,7 +245,9 @@ export function renderTimelineItem(item: TimelineItem, width: number, context: T
 		// same shape as every other branch rather than an error path.
 		case "orchestrator-message": {
 			const label = item.source.label ?? item.source.kind;
-			const title = orchestratorMessageTitle(item.source.kind, label);
+			const title = `${orchestratorMessageTitle(item.source.kind, label)}${
+				item.editedByHuman ? ", edited by you" : ""
+			}`;
 			// Nobody typed this, so it stays out of the way until asked for: two
 			// lines of summary collapsed, the whole thing expanded.
 			const body = context.toolOutputExpanded

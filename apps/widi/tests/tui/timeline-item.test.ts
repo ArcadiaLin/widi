@@ -71,7 +71,21 @@ describe("renderTimelineItem", () => {
 		};
 
 		expect(plain(renderTimelineItem(item, 60, context))).toContain("↳ Slack @arcadia");
-		expect(renderDeps(item, context)).toEqual(["why is CI red", "slack-bridge", "Slack @arcadia", false]);
+		expect(renderDeps(item, context)).toEqual(["why is CI red", "slack-bridge", "Slack @arcadia", undefined, false]);
+	});
+
+	it("says on the attribution line when a human rewrote the body", () => {
+		const item: OrchestratorMessageItem = {
+			type: "orchestrator-message",
+			id: "msg-3",
+			durability: "durable",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			source: { kind: "extension:notes", label: "notes" },
+			text: "the reviewer asked for benchmarks",
+			editedByHuman: true,
+		};
+
+		expect(plain(renderTimelineItem(item, 60, context))).toContain("↳ extension notes, edited by you");
 	});
 
 	it("collapses an orchestrator message to two lines until the transcript is expanded", () => {

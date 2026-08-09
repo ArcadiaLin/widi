@@ -105,6 +105,8 @@ export interface MessageRequest {
 	readonly render?: (body: string) => string;
 	readonly images?: readonly ImageContent[];
 	readonly mode: MessageDeliveryMode;
+	/** Recorded on the entry, never acted on. See {@link MessageEntryDetails.editedByHuman}. */
+	readonly editedByHuman?: true;
 }
 
 /** A request resolved against the sink it arrived through. */
@@ -537,6 +539,12 @@ export interface MessageEntryDetails {
 	/** The body before rendering: what a UI shows, as opposed to what the model read. */
 	readonly body: string;
 	readonly transformedBy?: readonly string[];
+	/**
+	 * A human rewrote this body before it was sent. The source still names
+	 * whoever produced it, which on its own would file the human's words under
+	 * them; a reader has no way to tell from the text.
+	 */
+	readonly editedByHuman?: true;
 }
 
 /**
@@ -888,12 +896,17 @@ function mergeEntryPayloads(batch: readonly QueuedMessage[]): MessageEntryPayloa
 	if (!head?.entry) return undefined;
 	if (batch.length === 1) return head.entry;
 	const transformedBy = batch.flatMap((message) => message.entry?.details.transformedBy ?? []);
+	// One human-edited body in the batch makes the merged body human-edited:
+	// the merged entry cannot say which part they wrote, and claiming none of
+	// it is theirs is the answer that misleads.
+	const editedByHuman = batch.some((message) => message.entry?.details.editedByHuman);
 	return {
 		customType: head.entry.customType,
 		details: {
 			source: mergeEntrySources(batch),
 			body: batch.map((message) => message.entry?.details.body ?? message.text).join("\n\n"),
 			...(transformedBy.length === 0 ? undefined : { transformedBy }),
+			...(editedByHuman ? { editedByHuman: true as const } : undefined),
 		},
 	};
 }

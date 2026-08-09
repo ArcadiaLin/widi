@@ -6,7 +6,7 @@ import { formatError } from "../../utils/errors.ts";
 import type { CommandEngine } from "../commands/engine.ts";
 import type { CommandDefinition } from "../commands/types.ts";
 import type { AppOverlayHandle, ShowOverlayOptions } from "../layout/overlay-stack.ts";
-import type { LayoutSlots } from "../layout/slots.ts";
+import { EXTENSION_WIDGET_ORDER, type LayoutSlots } from "../layout/slots.ts";
 import { getAllThemes, setTheme, theme } from "../theme/theme.ts";
 import { registerToolPresenter } from "../tool-presenter.ts";
 import {
@@ -56,6 +56,8 @@ export interface TuiExtensionHostOptions {
 	/** Editor text access for getEditorText/setEditorText/pasteToEditor. */
 	readonly editor: TuiExtensionEditorAccess;
 	readonly reportDiagnostic: (diagnostic: OrchestratorDiagnostic) => void;
+	/** Stages text for the visible agent on behalf of one extension. */
+	readonly stageMessage?: (extensionId: string, text: string) => void;
 	/** Repaint request after a visible change (theme switch, overlay, edit). */
 	readonly requestRender?: () => void;
 	readonly moduleImporter?: TuiExtensionModuleImporter;
@@ -83,6 +85,7 @@ export class TuiExtensionHost {
 	private readonly overlays: TuiExtensionHostOptions["overlays"];
 	private readonly editor: TuiExtensionEditorAccess;
 	private readonly reportDiagnostic: (diagnostic: OrchestratorDiagnostic) => void;
+	private readonly stageMessage?: (extensionId: string, text: string) => void;
 	private readonly requestRender: () => void;
 	private readonly moduleImporter: TuiExtensionModuleImporter;
 	private readonly disposers: HostDisposer[] = [];
@@ -95,6 +98,7 @@ export class TuiExtensionHost {
 		this.overlays = options.overlays;
 		this.editor = options.editor;
 		this.reportDiagnostic = options.reportDiagnostic;
+		this.stageMessage = options.stageMessage;
 		this.requestRender = options.requestRender ?? (() => {});
 		this.moduleImporter = options.moduleImporter ?? new JitiExtensionModuleImporter();
 		this.shortcuts = new ExtensionShortcutRegistry({ reportDiagnostic: options.reportDiagnostic });
@@ -226,7 +230,7 @@ export class TuiExtensionHost {
 			}
 			// Re-setting a key replaces the widget; unregister disposes the old one.
 			this.layout.unregister(key);
-			const diagnostic = this.layout.register({ key, slot, scope: "global", factory });
+			const diagnostic = this.layout.register({ key, slot, scope: "global", factory, order: EXTENSION_WIDGET_ORDER });
 			if (diagnostic) {
 				this.reportDiagnostic({ ...diagnostic, extensionId });
 				return;
@@ -306,6 +310,9 @@ export class TuiExtensionHost {
 				});
 				this.requestRender();
 				return handle;
+			},
+			stage: (text: string) => {
+				this.stageMessage?.(extensionId, text);
 			},
 			getEditorText: () => this.editor.getText(),
 			setEditorText: (text: string) => {

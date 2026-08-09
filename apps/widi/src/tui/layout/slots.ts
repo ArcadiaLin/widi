@@ -30,6 +30,12 @@ export type LayoutSlot = (typeof SLOT_ORDER)[number];
 
 const SLOT_RANK = new Map<string, number>(SLOT_ORDER.map((slot, index) => [slot, index]));
 
+/**
+ * Order every extension widget registers with, so extension widgets stay after
+ * the built-in entries of the same slot however the built-ins are numbered.
+ */
+export const EXTENSION_WIDGET_ORDER = 100;
+
 export interface LayoutSlotEntry {
 	/** Unique within the registry; the handle for unregister(). */
 	readonly key: string;

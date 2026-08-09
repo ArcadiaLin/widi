@@ -22,6 +22,7 @@ import type { MessageEntryDetails } from "../core/message.ts";
 import { ORCHESTRATOR_MESSAGE_CUSTOM_TYPE } from "../core/session-manager.ts";
 import type { AgentId, OrchestratorEvent } from "../core/types.ts";
 import { maintenanceLabel } from "./components/common.ts";
+import { diagnosticKey } from "./diagnostics-log.ts";
 import type { HydrationResult } from "./session-hydrator.ts";
 import {
 	type AgentAttention,
@@ -691,6 +692,9 @@ export class EventProjector {
 	}
 
 	private applyDiagnostic(diagnostic: OrchestratorDiagnostic, createdAt: string): void {
+		// The only funnel every diagnostic passes through, whether it came from
+		// core as an event or from the application's own config loading.
+		this.state.diagnostics.record(diagnostic, createdAt);
 		if (!diagnostic.agentId) {
 			const id = diagnosticKey(diagnostic);
 			if (!this.state.globalNotices.some((notice) => notice.id === id)) {
@@ -940,12 +944,6 @@ function raiseDiagnosticAttention(agent: AgentViewState, diagnostic: Orchestrato
 	else if (diagnostic.severity === "warning") raiseAttention(agent, "warning");
 }
 
-function diagnosticKey(diagnostic: OrchestratorDiagnostic): string {
-	// The message is part of the key so same-code reports about different
-	// subjects (e.g. different MCP servers) stay distinct items.
-	return `diagnostic:${diagnostic.code}:${diagnostic.agentId ?? ""}:${diagnostic.extensionId ?? ""}:${diagnostic.message}`;
-}
-
 function summarizeHumanResponse(
 	request: {
 		kind: HumanRequestKind;
@@ -1024,6 +1022,7 @@ function toLiveOrchestratorMessage(id: string, message: CustomMessage): Orchestr
 		source: message.details.source,
 		text: message.details.body,
 		...(message.details.body === modelText ? undefined : { modelText }),
+		...(message.details.editedByHuman ? { editedByHuman: true as const } : undefined),
 	};
 }
 

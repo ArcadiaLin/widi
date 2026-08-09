@@ -8,6 +8,7 @@ import {
 	OperationHintView,
 	resolveOperationHint,
 } from "../../src/tui/components/operation-hint.ts";
+import { DiagnosticsLog } from "../../src/tui/diagnostics-log.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
 import {
 	createTuiApplicationState,
@@ -77,7 +78,13 @@ describe("resolveOperationHint", () => {
 	it("uses application-owned command metadata for autocomplete help", () => {
 		const applicationEngine = new CommandEngine([
 			...builtInCommands,
-			...applicationCommands({ quit: () => {}, newSession: async () => {}, disposeAgent: async () => {} }),
+			...applicationCommands({
+				quit: () => {},
+				newSession: async () => {},
+				disposeAgent: async () => {},
+				diagnostics: new DiagnosticsLog(),
+				copyText: async () => {},
+			}),
 		]);
 		const state = createTuiApplicationState();
 

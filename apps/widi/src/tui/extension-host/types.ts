@@ -109,6 +109,16 @@ export interface WidiTuiExtensionApi {
 	 */
 	showOverlay(component: Component, options?: ShowOverlayOptions): AppOverlayHandle;
 
+	/**
+	 * Hold text back from the branch until just before the next turn the human
+	 * starts, where they can still read, rewrite or drop it. Unlike the core
+	 * half's `precede`, nothing is written until then - and the human may
+	 * rewrite the text, in which case the entry says so while still naming this
+	 * extension. Text that must reach the model whether or not a human ever
+	 * types again belongs on the core half's `precede`, not here.
+	 */
+	stage(text: string): void;
+
 	/** The editor's current draft text. */
 	getEditorText(): string;
 

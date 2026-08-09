@@ -183,6 +183,7 @@ function toOrchestratorMessage(
 		source: details.source,
 		text: details.body,
 		...(details.body === modelText ? undefined : { modelText }),
+		...(details.editedByHuman ? { editedByHuman: true as const } : undefined),
 	};
 }
 

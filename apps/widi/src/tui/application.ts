@@ -8,6 +8,7 @@ import { type OrchestratorDiagnostic, OrchestratorError } from "../core/diagnost
 import { type MessageSink, messageBindingFor } from "../core/message.ts";
 import { createWidiRuntime, type WidiRuntime } from "../core/runtime-service.ts";
 import type { AgentActivitySnapshot, CandidateItem, OrchestratorEvent } from "../core/types.ts";
+import { copyToClipboard } from "../utils/clipboard.ts";
 import { forkSourceAgentId } from "./agent-identity.ts";
 import { WidiCommandAutocompleteProvider } from "./autocomplete.ts";
 import { applicationCommands } from "./commands/app-commands.ts";
@@ -25,6 +26,7 @@ import { JobsPanelView } from "./components/jobs-panel.ts";
 import { NoticeView } from "./components/notices.ts";
 import { OperationHintView } from "./components/operation-hint.ts";
 import { QueuedInputView } from "./components/queued-input.ts";
+import { StagedInputView } from "./components/staged-input.ts";
 import { StatusView } from "./components/status.ts";
 import { WidiEditor } from "./editor.ts";
 import { applyAgentSnapshot, EventProjector } from "./event-projector.ts";
@@ -49,6 +51,7 @@ import {
 	ensureAgentProjection,
 	hasDockedFocus,
 	type NoticeTextMode,
+	type StagedDraft,
 	setActiveAgent,
 	type TuiApplicationState,
 	topDockedFocus,
@@ -57,6 +60,8 @@ import { flushStreaming, STREAM_FLUSH_MS } from "./streaming-flush.ts";
 import { loadThemes, theme } from "./theme/theme.ts";
 
 const NOTIFICATION_TTL_MS = 5_000;
+/** Staged drafts held for one agent before the buffer lands itself. */
+const MAX_STAGED_DRAFTS = 20;
 /** Spinner frame cadence while the visible agent is running. */
 const SPINNER_TICK_MS = 160;
 
@@ -102,6 +107,7 @@ export class WidiTuiApplication {
 	private readonly lifecycleTasks = new Set<Promise<unknown>>();
 	private readonly drafts = new Map<string, string>();
 	private nextPendingFollowUpId = 1;
+	private nextStagedId = 1;
 	private started = false;
 	private shutdownPromise?: Promise<void>;
 	private resolveClosed?: () => void;
@@ -159,6 +165,8 @@ export class WidiTuiApplication {
 				disposeAgent: async (agentId) => {
 					await this.disposeAgent(agentId);
 				},
+				diagnostics: this.state.diagnostics,
+				copyText: (text) => copyToClipboard(text),
 			}),
 		]) {
 			const diagnostic = this.engine.register(command);
@@ -232,6 +240,7 @@ export class WidiTuiApplication {
 		this.editor.onOpenRequests = () => this.humanRequests.openLatest();
 		this.editor.onOpenTree = () => this.track(this.openTreeSelectorDirect());
 		this.editor.onViewSystemPrompt = () => this.track(this.printSystemPrompt());
+		this.editor.onEditStaged = () => this.takeStagedIntoEditor();
 		this.editor.onExit = () => {
 			void this.shutdown("user exit").catch(() => {});
 		};
@@ -249,9 +258,26 @@ export class WidiTuiApplication {
 			{ key: "notices", slot: "notices", scope: "global", factory: () => new NoticeView(this.state) },
 			{ key: "chat", slot: "chat", scope: "global", factory: () => new ChatView(this.state) },
 			{ key: "status", slot: "status", scope: "global", factory: () => new StatusView(this.state) },
-			{ key: "queuedInput", slot: "aboveEditor", scope: "global", factory: () => new QueuedInputView(this.state) },
-			{ key: "humanRequests", slot: "aboveEditor", scope: "global", factory: () => this.humanRequests },
-			{ key: "selectorDock", slot: "aboveEditor", scope: "global", factory: () => this.selectorDock },
+			// Closer to the editor means more settled: a request is still waiting
+			// on the human, staged text can still be rewritten, and the queue is
+			// decided and only waiting for its turn. The dock is last because it
+			// takes the editor's own place.
+			{ key: "humanRequests", slot: "aboveEditor", order: 1, scope: "global", factory: () => this.humanRequests },
+			{
+				key: "stagedInput",
+				slot: "aboveEditor",
+				order: 2,
+				scope: "global",
+				factory: () => new StagedInputView(this.state),
+			},
+			{
+				key: "queuedInput",
+				slot: "aboveEditor",
+				order: 3,
+				scope: "global",
+				factory: () => new QueuedInputView(this.state),
+			},
+			{ key: "selectorDock", slot: "aboveEditor", order: 4, scope: "global", factory: () => this.selectorDock },
 			{ key: "jobsPanel", slot: "jobsPanel", scope: "global", factory: () => this.jobsPanel },
 			{
 				key: "editor",
@@ -354,6 +380,9 @@ export class WidiTuiApplication {
 				editor: this.editor,
 				requestRender: () => this.tui.requestRender(),
 				reportDiagnostic: (diagnostic) => this.reportHostDiagnostic(diagnostic),
+				stageMessage: (extensionId, text) => {
+					this.stageDraft(text, extensionId);
+				},
 			});
 			await this.extensionHost.activate();
 		} catch (error) {
@@ -404,6 +433,7 @@ export class WidiTuiApplication {
 		for (const diagnostic of this.userConfigDiagnostics) {
 			this.projectDiagnostic(diagnostic);
 		}
+		this.state.diagnostics.phase = "runtime";
 		this.addStartupSummary();
 		this.configurePendingEditor();
 		this.updateEditorAvailability();
@@ -468,6 +498,14 @@ export class WidiTuiApplication {
 			case "agent_status_changed":
 				this.schedule(() => this.syncAgent(event.agentId));
 				this.updateEditorAvailability();
+				// A turn this shell did not start (another agent's message, an
+				// extension prompt) begins inside core, where the buffer is not
+				// visible. Landing it now puts it after that turn rather than
+				// before it: late, but never lost. A turn the shell did start has
+				// already flushed, so there is nothing here to do.
+				if (event.activity === "running" && !event.maintenance) {
+					this.track(this.flushStaged(event.agentId));
+				}
 				break;
 			case "agent_session_info_changed":
 				if (event.agentId === this.state.activeAgentId) {
@@ -596,6 +634,10 @@ export class WidiTuiApplication {
 		const matchedCommand = parsed ? this.engine.match(text) : undefined;
 		const initialAgentId = this.state.activeAgentId;
 		const scopeId = initialAgentId ?? "pending";
+		// Submitting a staged draft is the human adopting it: it leaves the
+		// buffer for good and lands as their own input, attribution included.
+		const editingAgent = initialAgentId ? this.state.agents.get(initialAgentId) : undefined;
+		if (editingAgent) editingAgent.stagedEditing = undefined;
 		if (parsed && !matchedCommand) {
 			const pending = this.pendingUnknownCommand;
 			if (pending?.scopeId !== scopeId || pending.text !== text) {
@@ -752,7 +794,136 @@ export class WidiTuiApplication {
 		}
 	}
 
+	/**
+	 * Hold text back from the branch until the next human-initiated turn, so a
+	 * human can still read, rewrite or drop it. Producers are TUI-side only
+	 * (an extension's tui half today): core-side producers must land on the
+	 * branch whether or not a human ever types again.
+	 */
+	stageDraft(text: string, extensionId?: string): StagedDraft | undefined {
+		const agentId = this.state.activeAgentId;
+		const body = text.trim();
+		if (!agentId || !body) return undefined;
+		const agent = ensureAgentProjection(this.state, agentId);
+		const draft: StagedDraft = {
+			id: this.nextStagedId,
+			text: body,
+			...(extensionId === undefined ? undefined : { extensionId }),
+		};
+		this.nextStagedId += 1;
+		agent.staged.push(draft);
+		if (agent.staged.length > MAX_STAGED_DRAFTS) {
+			// Same discipline as every other payload bound: over the limit it
+			// lands rather than being dropped or held forever.
+			this.projectDiagnostic({
+				severity: "warning",
+				code: "tui.staging_overflow",
+				message: `More than ${MAX_STAGED_DRAFTS} staged messages; the buffer was sent to the branch.`,
+				agentId,
+				...(extensionId === undefined ? undefined : { extensionId }),
+			});
+			this.track(this.flushStaged(agentId));
+		}
+		this.tui.requestRender();
+		return draft;
+	}
+
+	/**
+	 * Land the staged buffer on the branch in order, ahead of whatever the
+	 * caller is about to send. Each draft goes out through its own producer's
+	 * sink, so what the branch records is the producer, not this shell.
+	 */
+	private async flushStaged(agentId: string): Promise<void> {
+		const agent = this.state.agents.get(agentId);
+		if (!agent) return;
+		while (agent.staged.length > 0) {
+			const draft = agent.staged[0];
+			if (!draft) break;
+			try {
+				const sink =
+					draft.extensionId === undefined
+						? this.messages
+						: this.orchestrator.messageSinkFor(
+								messageBindingFor({ kind: "extension", extensionId: draft.extensionId }),
+							);
+				const outcome = await sink.send({
+					targetAgentId: agentId,
+					body: draft.text,
+					mode: "precede",
+					...(draft.editedByHuman === undefined ? undefined : { editedByHuman: draft.editedByHuman }),
+				});
+				if (outcome.kind === "blocked") this.addApplicationNotice(blockedInputNotice(outcome), agentId);
+			} catch (error) {
+				// It has not landed, and dropping it is the one thing staging
+				// promises never to do. Leaving it at the head keeps the order for
+				// the next flush.
+				this.addApplicationNotice(`Staged message not sent: ${errorMessage(error)}`, agentId);
+				return;
+			}
+			const index = agent.staged.indexOf(draft);
+			if (index >= 0) agent.staged.splice(index, 1);
+		}
+		this.tui.requestRender();
+	}
+
+	/**
+	 * app.staged.edit: take the newest staged draft out of the buffer and into
+	 * the editor. Out of the buffer, because a draft left in it could be
+	 * flushed halfway through being rewritten.
+	 */
+	private takeStagedIntoEditor(): void {
+		const agentId = this.state.activeAgentId;
+		if (!agentId) return;
+		const agent = ensureAgentProjection(this.state, agentId);
+		if (agent.stagedEditing) return;
+		const index = agent.staged.length - 1;
+		const draft = agent.staged[index];
+		if (!draft) return;
+		if (this.editor.getText().trim()) {
+			this.addApplicationNotice(
+				"Send or clear your own draft first; editing a staged message needs the editor.",
+				agentId,
+			);
+			return;
+		}
+		agent.staged.splice(index, 1);
+		agent.stagedEditing = { draft, index };
+		this.editor.setText(draft.text);
+		this.tui.requestRender();
+	}
+
+	/**
+	 * Esc while the editor holds a staged draft puts it back where it came
+	 * from, edits included. Emptying the editor first is the discard gesture,
+	 * and the only one: nothing else throws staged text away.
+	 */
+	private returnStagedDraft(): boolean {
+		const agentId = this.state.activeAgentId;
+		const agent = agentId ? this.state.agents.get(agentId) : undefined;
+		const editing = agent?.stagedEditing;
+		if (!agent || !agentId || !editing) return false;
+		const text = this.editor.getText().trim();
+		agent.stagedEditing = undefined;
+		this.editor.setText("");
+		this.drafts.set(agentId, "");
+		if (text === "") {
+			this.addApplicationNotice("Staged message discarded.", agentId);
+		} else {
+			const draft = editing.draft;
+			if (text !== draft.text) {
+				draft.text = text;
+				// Only worth recording when someone else produced it: the branch
+				// would otherwise file the human's words under that producer.
+				if (draft.extensionId !== undefined) draft.editedByHuman = true;
+			}
+			agent.staged.splice(Math.min(editing.index, agent.staged.length), 0, draft);
+		}
+		this.tui.requestRender();
+		return true;
+	}
+
 	private async submitPrompt(agentId: string, rawText: string, text: string): Promise<void> {
+		await this.flushStaged(agentId);
 		const agent = ensureAgentProjection(this.state, agentId);
 		agent.pendingInput = { originalText: rawText, submittedAt: new Date().toISOString() };
 		this.editor.addToHistory(rawText);
@@ -787,6 +958,7 @@ export class WidiTuiApplication {
 	 * input must not be bypassed by typing while the agent happens to be running.
 	 */
 	private async submitFollowUp(agentId: string, rawText: string, text: string): Promise<void> {
+		await this.flushStaged(agentId);
 		this.editor.addToHistory(rawText);
 		const pending = { id: this.nextPendingFollowUpId, text: rawText };
 		this.nextPendingFollowUpId += 1;
@@ -854,8 +1026,8 @@ export class WidiTuiApplication {
 		this.drafts.set(agentId, "");
 		this.editor.addToHistory(text);
 		this.track(
-			this.messages
-				.send({ targetAgentId: agentId, body: text, mode: "interrupt" })
+			this.flushStaged(agentId)
+				.then(() => this.messages.send({ targetAgentId: agentId, body: text, mode: "interrupt" }))
 				.then((outcome) => {
 					if (outcome.kind !== "blocked") return;
 					this.restoreEditor(text, agentId);
@@ -1274,6 +1446,10 @@ export class WidiTuiApplication {
 			onViewDiagnostics: () => {
 				this.fatalOverlayShown = false;
 				handle?.close();
+				// The overlay is only the way in; what it opens is the same
+				// /diagnostics selector the command opens, submitted the same way
+				// so cancelling behaves the way cancelling any selector does.
+				this.track(this.submit("/diagnostics"));
 			},
 		});
 		handle = this.overlays.show(view, { width: "70%", minWidth: 36, maxHeight: "70%", anchor: "center", margin: 1 });
@@ -1367,6 +1543,10 @@ export class WidiTuiApplication {
 				this.agentPanel.close();
 				return;
 		}
+		// A staged draft held in the editor goes back to the buffer before esc
+		// means anything to the agent: it is the only thing on screen that would
+		// be lost by moving on.
+		if (this.returnStagedDraft()) return;
 		const agentId = this.state.activeAgentId;
 		if (!agentId) return;
 		const agent = ensureAgentProjection(this.state, agentId);

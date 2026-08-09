@@ -1816,6 +1816,7 @@ export class AgentOrchestrator {
 							source: draft.source,
 							body: outcome.text,
 							...(transformedBy === undefined ? undefined : { transformedBy }),
+							...(draft.editedByHuman ? { editedByHuman: true as const } : undefined),
 						},
 					};
 		const receipt = await this._messages.enqueue({

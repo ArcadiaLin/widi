@@ -8,6 +8,7 @@ import type { HumanRequestEnvelope, HumanRequestKind } from "../core/human-reque
 import type { MessageSource } from "../core/message.ts";
 import type { AgentId, AgentMaintenanceKind, OrchestratorEvent, RuntimeModel } from "../core/types.ts";
 import type { CommandError } from "./commands/types.ts";
+import { DiagnosticsLog } from "./diagnostics-log.ts";
 
 export type TimelineDurability = "durable" | "ephemeral";
 export type NoticeTextMode = "compact" | "full";
@@ -43,6 +44,8 @@ export interface OrchestratorMessageItem {
 	readonly source: MessageSource;
 	text: string;
 	modelText?: string;
+	/** A human rewrote the body before it was sent; the source is still the producer. */
+	readonly editedByHuman?: true;
 }
 
 export interface AssistantMessageItem {
@@ -250,6 +253,24 @@ export interface PendingFollowUp {
 }
 
 /**
+ * Text held back from the branch until the next human-initiated turn, so a
+ * human can still read, rewrite or drop it. Staging is delay, not discard:
+ * every exit path lands it, none throws it away behind the user's back.
+ */
+export interface StagedDraft {
+	readonly id: number;
+	/**
+	 * The extension whose tui half staged it, which is also who the branch will
+	 * record. Absent when the human staged their own text, and then it lands as
+	 * plain human input like anything else they type.
+	 */
+	readonly extensionId?: string;
+	text: string;
+	/** Set once a human took it into the editor and changed it. */
+	editedByHuman?: true;
+}
+
+/**
  * Lifecycle of one agent row.
  *
  * Core reports only `idle` and `running`, and only for an agent that is live;
@@ -284,6 +305,15 @@ export interface AgentViewState {
 	queue: QueueState;
 	/** Optimistic projection while sendMessage is waiting for a deliverable phase. */
 	pendingFollowUps: PendingFollowUp[];
+	/**
+	 * TUI-layer staging buffer, oldest first. The invariant this layer can hold
+	 * is "on the branch before the next *human-initiated* turn": a turn someone
+	 * else starts begins inside core, where this buffer is not visible, and the
+	 * fallback flush lands it after that turn instead of before it.
+	 */
+	staged: StagedDraft[];
+	/** The staged draft currently held in the editor, and the slot to put it back into. */
+	stagedEditing?: { readonly draft: StagedDraft; readonly index: number };
 	display: AgentDisplayFacts;
 	/** The live assistant item currently receiving message_update events. */
 	currentAssistantId?: string;
@@ -374,6 +404,8 @@ export interface TuiApplicationState {
 	agents: Map<AgentId, AgentViewState>;
 	globalNotices: NoticeItem[];
 	humanRequests: PendingHumanRequestView[];
+	/** Every diagnostic reported this session, outliving the notice that announced it. */
+	readonly diagnostics: DiagnosticsLog;
 	readonly focus: TuiFocusState;
 	readonly mode: TuiInteractionMode;
 	shuttingDown: boolean;
@@ -386,6 +418,7 @@ export function createTuiApplicationState(): TuiApplicationState {
 		agents: new Map(),
 		globalNotices: [],
 		humanRequests: [],
+		diagnostics: new DiagnosticsLog(),
 		focus: { overlays: [], docked: [] },
 		get mode() {
 			return interactionMode(this);
@@ -468,6 +501,7 @@ export function createAgentViewState(agentId: AgentId, status: AgentViewStatus =
 		bufferedEvents: [],
 		queue: { steer: [], followUp: [], nextTurn: 0 },
 		pendingFollowUps: [],
+		staged: [],
 		display: { activeToolNames: [], rehydrateRequested: false },
 		nextLiveItemId: 1,
 	};
