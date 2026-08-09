@@ -284,8 +284,8 @@ describe("WidiTuiApplication command selector", () => {
 
 		await submit(application, "/model");
 
-		const hint = application.tui.children.find((child) => child instanceof OperationHintView);
-		if (!hint) throw new Error("Expected the operation hint to be mounted.");
+		const hint = application.layout.component("operationHint");
+		if (!(hint instanceof OperationHintView)) throw new Error("Expected the operation hint to be mounted.");
 		const rendered = hint.render(120).join("\n").replace(ANSI_SEQUENCE, "");
 		expect(rendered).toContain("/model");
 		expect(rendered).toContain("apply");
@@ -356,8 +356,8 @@ describe("WidiTuiApplication command selector", () => {
 		editor.handleInput("\x1b[B");
 
 		expect(application.state.mode).toBe("agent-panel");
-		const panel = application.tui.children.find((child) => child instanceof AgentStripView);
-		if (!panel) throw new Error("Expected the agent panel to be mounted.");
+		const panel = application.layout.component("agentStrip");
+		if (!(panel instanceof AgentStripView)) throw new Error("Expected the agent panel to be mounted.");
 		expect(panel.focused).toBe(true);
 		expect(panel.cursor).toBe("agent-1");
 

@@ -68,8 +68,13 @@ export interface LayoutSlotHost {
 	children?: Component[];
 }
 
+export interface LayoutSlotHosts {
+	readonly transcript: LayoutSlotHost;
+	readonly dock: LayoutSlotHost;
+}
+
 interface MountedLayout {
-	readonly host: LayoutSlotHost;
+	readonly hosts: LayoutSlotHosts;
 	readonly state: TuiApplicationState;
 	readonly components: Map<string, Component>;
 }
@@ -119,11 +124,11 @@ export class LayoutSlots {
 	unregister(key: string): boolean {
 		const index = this.registrations.findIndex((entry) => entry.key === key);
 		if (index < 0) return false;
-		this.registrations.splice(index, 1);
+		const [entry] = this.registrations.splice(index, 1);
 		const mounted = this.mounted?.components.get(key);
-		if (this.mounted && mounted) {
+		if (this.mounted && mounted && entry) {
 			this.mounted.components.delete(key);
-			this.mounted.host.removeChild?.(mounted);
+			this.hostFor(entry).removeChild?.(mounted);
 			disposeComponent(mounted);
 		}
 		return true;
@@ -145,12 +150,13 @@ export class LayoutSlots {
 	 * predicate on every render, so state-driven visibility needs no event
 	 * subscription of its own.
 	 */
-	mount(host: LayoutSlotHost, state: TuiApplicationState): void {
-		this.mounted = { host, state, components: new Map() };
+	mount(host: LayoutSlotHost | LayoutSlotHosts, state: TuiApplicationState): void {
+		const hosts = "addChild" in host ? { transcript: host, dock: host } : host;
+		this.mounted = { hosts, state, components: new Map() };
 		for (const entry of this.registrations) {
 			const component = this.instantiate(entry);
 			this.mounted.components.set(entry.key, component);
-			host.addChild(component);
+			this.hostFor(entry).addChild(component);
 		}
 	}
 
@@ -160,21 +166,31 @@ export class LayoutSlots {
 		if (!mounted) return;
 		const component = this.instantiate(entry);
 		mounted.components.set(entry.key, component);
+		const host = this.hostFor(entry);
 		const anchor = this.nextMountedComponent(entry);
-		const siblings = mounted.host.children;
+		const siblings = host.children;
 		const at = anchor && siblings ? siblings.indexOf(anchor) : -1;
 		if (anchor && siblings && at >= 0) {
 			siblings.splice(at, 0, component);
 			return;
 		}
-		mounted.host.addChild(component);
+		host.addChild(component);
 	}
 
-	/** The mounted component directly below the entry, if any. */
+	private hostFor(entry: LayoutSlotEntry): LayoutSlotHost {
+		const hosts = this.mounted?.hosts;
+		if (!hosts) throw new Error("Layout slots are not mounted.");
+		return isTranscriptSlot(entry.slot) ? hosts.transcript : hosts.dock;
+	}
+
+	/** The next mounted component in the same layout region, if any. */
 	private nextMountedComponent(entry: LayoutSlotEntry): Component | undefined {
 		const index = this.registrations.indexOf(entry);
+		const splitHosts = this.mounted?.hosts.transcript !== this.mounted?.hosts.dock;
 		for (let i = index + 1; i < this.registrations.length; i++) {
-			const component = this.mounted?.components.get(this.registrations[i]?.key ?? "");
+			const candidate = this.registrations[i];
+			if (!candidate || (splitHosts && isTranscriptSlot(candidate.slot) !== isTranscriptSlot(entry.slot))) continue;
+			const component = this.mounted?.components.get(candidate.key);
 			if (component) return component;
 		}
 		return undefined;
@@ -191,6 +207,10 @@ export class LayoutSlots {
  * Slot first, then order. An unknown slot sorts to the very end rather than
  * to the top: a JS extension passing garbage should not land above the header.
  */
+function isTranscriptSlot(slot: LayoutSlot): boolean {
+	return slot === "header" || slot === "notices" || slot === "chat";
+}
+
 function compareEntries(left: LayoutSlotEntry, right: LayoutSlotEntry): number {
 	const slotDelta = (SLOT_RANK.get(left.slot) ?? SLOT_ORDER.length) - (SLOT_RANK.get(right.slot) ?? SLOT_ORDER.length);
 	return slotDelta !== 0 ? slotDelta : (left.order ?? 0) - (right.order ?? 0);

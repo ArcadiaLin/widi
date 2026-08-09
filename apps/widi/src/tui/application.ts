@@ -1,6 +1,14 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { type Component, ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	Container,
+	ProcessTerminal,
+	ScrollView,
+	setKeybindings,
+	TuiAltScreen,
+	VStack,
+} from "@earendil-works/pi-tui";
 import type { NavigateTreeResult } from "@widi/agent-core";
 import type { AgentOrchestrator } from "../core/agent-orchestrator.ts";
 import { DEFAULT_AGENT_DIR } from "../core/constants.js";
@@ -83,7 +91,7 @@ export class WidiTuiApplication {
 	readonly runtime: WidiRuntime;
 	readonly orchestrator: AgentOrchestrator;
 	readonly state: TuiApplicationState;
-	readonly tui: TUI;
+	readonly tui: TuiAltScreen;
 	/** Everything this shell puts into an agent's context goes through here. */
 	readonly messages: MessageSink;
 
@@ -197,7 +205,7 @@ export class WidiTuiApplication {
 		// they exist; the constructor starts on defaults.
 		setKeybindings(createWidiKeybindings());
 		this.userConfigDiagnostics.push(...loadThemes(runtime.services.agentDir));
-		this.tui = new TUI(new ProcessTerminal());
+		this.tui = new TuiAltScreen(new ProcessTerminal());
 		this.editor = new WidiEditor(this.tui, theme.editorTheme, { autocompleteMaxVisible: 8 });
 		this.editor.onExtensionShortcut = (data) => this.extensionHost?.handleShortcut(data) ?? false;
 		this.editor.setArgumentHintProvider((text) => {
@@ -234,7 +242,21 @@ export class WidiTuiApplication {
 		// will use; registration order is the render order the hardcoded
 		// addChild sequence used to fix.
 		this.registerBuiltInSlots();
-		this.layout.mount(this.tui, this.state);
+		const transcript = new Container();
+		const dock = new Container();
+		this.layout.mount({ transcript, dock }, this.state);
+		const transcriptScrollView = new ScrollView(transcript, {
+			follow: "end",
+			primary: true,
+			overscroll: "chain",
+			scrollbar: "auto",
+		});
+		this.tui.setLayoutRoot(
+			new VStack([
+				{ component: transcriptScrollView, basis: 0, grow: 1, shrink: 1, minSize: 1 },
+				{ component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
+			]),
+		);
 		this.tui.setFocus(this.editor);
 
 		this.editor.onSubmit = (text) => {

@@ -333,8 +333,8 @@ describe("WidiTuiApplication /tree selector", () => {
 
 		await submit(application, "/tree");
 
-		const hint = application.tui.children.find((child) => child instanceof OperationHintView);
-		if (!hint) throw new Error("Expected the operation hint to be mounted.");
+		const hint = application.layout.component("operationHint");
+		if (!(hint instanceof OperationHintView)) throw new Error("Expected the operation hint to be mounted.");
 		const rendered = hint.render(120).join("\n").replace(ANSI_SEQUENCE, "");
 		expect(rendered).toContain("/tree");
 		expect(rendered).toContain("switch");

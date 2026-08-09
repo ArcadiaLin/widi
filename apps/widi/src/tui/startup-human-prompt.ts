@@ -1,4 +1,4 @@
-import { ProcessTerminal, setKeybindings, TUI } from "@earendil-works/pi-tui";
+import { ProcessTerminal, setKeybindings, type TUI, TuiMainScreen } from "@earendil-works/pi-tui";
 import type { HumanRequestHandler } from "../core/human-request.ts";
 import { HumanRequestMenu } from "./human-request.ts";
 import { createWidiKeybindings } from "./keybindings.ts";
@@ -19,7 +19,7 @@ export class StartupHumanPrompt {
 	private ensureMenu(): HumanRequestMenu {
 		if (this.menu) return this.menu;
 		setKeybindings(createWidiKeybindings());
-		const tui = new TUI(new ProcessTerminal());
+		const tui = new TuiMainScreen(new ProcessTerminal());
 		const menu = new HumanRequestMenu({
 			host: tui,
 			state: createTuiApplicationState(),
