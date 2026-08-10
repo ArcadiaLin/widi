@@ -390,7 +390,7 @@ export class TuiExtensionHost {
 				}
 				this.subscribeToBus(extensionId, eventName, handler);
 			},
-			capability: (key: string) => this.capabilities?.get(key),
+			capability: (key: string) => this.capabilities?.get(key, extensionId),
 			getEditorText: () => this.editor.getText(),
 			setEditorText: (text: string) => {
 				this.editor.setText(text);

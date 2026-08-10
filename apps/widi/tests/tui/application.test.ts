@@ -765,6 +765,158 @@ describe("WidiTuiApplication capabilities", () => {
 			expect(editor.getText()).toBe("");
 		});
 	});
+
+	it("runs a command and leaves the same transcript trace a typed one leaves", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "hello");
+		const commands = harness.application.capabilities.get("commands");
+		if (!commands) throw new Error("Expected the commands capability to be published.");
+
+		const outcome = await commands.run("/model:test/next-model");
+
+		expect(outcome).toMatchObject({ kind: "executed", name: "model" });
+		expect(harness.setAgentModelByReference).toHaveBeenCalledWith("main", "test/next-model");
+		expect(harness.application.state.agents.get("main")?.timeline.at(-1)).toMatchObject({
+			type: "command-result",
+			name: "model",
+			status: "completed",
+		});
+	});
+
+	it("lists commands with availability, and reports a failing one without throwing", async () => {
+		const harness = await createApplicationHarness();
+		const commands = harness.application.capabilities.get("commands");
+		if (!commands) throw new Error("Expected the commands capability to be published.");
+
+		expect(commands.list().map((command) => command.name)).toContain("inspect");
+
+		// /inspect needs an active agent and there is none yet.
+		expect(await commands.run("/inspect")).toMatchObject({ kind: "failed", name: "inspect" });
+	});
+
+	it("hands back candidates instead of opening a picker, and prompt text instead of sending it", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "hello");
+		const commands = harness.application.capabilities.get("commands");
+		if (!commands) throw new Error("Expected the commands capability to be published.");
+		harness.promptAgent.mockClear();
+
+		expect(await commands.run("/model")).toMatchObject({
+			kind: "needs-argument",
+			name: "model",
+			candidates: [{ value: "test/next-model" }],
+		});
+		(harness.application as unknown as { engine: CommandEngine }).engine.register({
+			kind: "prompt",
+			agentPolicy: "active",
+			name: "expander",
+			description: "expands into prompt text",
+			expand: async () => "expanded prompt text",
+		});
+		expect(await commands.run("/expander")).toEqual({ kind: "expanded", text: "expanded prompt text" });
+		expect(await commands.run("plain text")).toEqual({ kind: "not-a-command" });
+		expect(harness.promptAgent).not.toHaveBeenCalled();
+		// The expansion left nothing behind: the row belongs to a prompt that was
+		// never sent.
+		expect(
+			harness.application.state.agents.get("main")?.timeline.filter((item) => item.type === "command-result"),
+		).toEqual([]);
+	});
+
+	it("reports the visible agent and every change of it", async () => {
+		const harness = await createApplicationHarness();
+		const strip = harness.application.capabilities.get("agentStrip");
+		if (!strip) throw new Error("Expected the agent strip capability to be published.");
+		const seen: Array<string | undefined> = [];
+		const detach = strip.onVisibleAgentChanged((agentId) => seen.push(agentId));
+
+		expect(strip.visibleAgentId()).toBeUndefined();
+		expect(strip.list()).toEqual([]);
+		await submit(harness.application, "hello");
+
+		expect(strip.visibleAgentId()).toBe("main");
+		expect(strip.list()).toEqual([
+			{ agentId: "main", label: "Main Agent", depth: 0, status: "idle", spawnedBy: undefined, unreadCount: 0 },
+		]);
+		expect(seen).toEqual(["main"]);
+
+		detach();
+		await submit(harness.application, "/new");
+		expect(seen).toEqual(["main"]);
+	});
+
+	it("switches and disposes agents after the frame", async () => {
+		const harness = await createApplicationHarness();
+		const strip = harness.application.capabilities.get("agentStrip");
+		if (!strip) throw new Error("Expected the agent strip capability to be published.");
+		await submit(harness.application, "hello");
+		await submit(harness.application, "/new");
+		await submit(harness.application, "second");
+		expect(strip.visibleAgentId()).toBe("main-2");
+
+		strip.switchTo("main-2");
+		await strip.dispose("main-2");
+
+		expect(harness.disposeAgent).toHaveBeenCalledWith("main-2", expect.objectContaining({ intent: "removed" }));
+		expect(strip.visibleAgentId()).toBeUndefined();
+	});
+
+	it("writes an attributed ephemeral row and takes it back", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "hello");
+		const chat = harness.application.capabilities.get("chat", "drill");
+		if (!chat) throw new Error("Expected the chat capability to be published.");
+		const timeline = () => harness.application.state.agents.get("main")?.timeline ?? [];
+
+		chat.insert("step", "chapter one");
+		await vi.waitFor(() => {
+			expect(timeline().at(-1)).toMatchObject({
+				type: "extension-output",
+				extensionId: "drill",
+				durability: "ephemeral",
+				text: "chapter one",
+			});
+		});
+
+		// The same id is an update, not a second row.
+		const before = timeline().length;
+		chat.insert("step", "chapter one, revised");
+		await vi.waitFor(() => {
+			expect(timeline().at(-1)).toMatchObject({ text: "chapter one, revised" });
+		});
+		expect(timeline()).toHaveLength(before);
+
+		chat.remove("step");
+		await vi.waitFor(() => {
+			expect(timeline().filter((item) => item.type === "extension-output")).toEqual([]);
+		});
+	});
+
+	it("posts a notice that expires, and one that waits to be dismissed", async () => {
+		vi.useFakeTimers();
+		try {
+			const harness = await createApplicationHarness();
+			const notices = harness.application.capabilities.get("notices", "drill");
+			if (!notices) throw new Error("Expected the notices capability to be published.");
+			const texts = () => harness.application.state.globalNotices.map((notice) => notice.text);
+
+			notices.post("hint", "type /drill next", { ttlMs: 1_000 });
+			notices.post("pinned", "waiting for you", { ttlMs: 0 });
+			await vi.advanceTimersByTimeAsync(0);
+			expect(texts()).toEqual(expect.arrayContaining(["type /drill next", "waiting for you"]));
+			expect(harness.application.state.globalNotices.at(-1)?.extensionId).toBe("drill");
+
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(texts()).not.toContain("type /drill next");
+			expect(texts()).toContain("waiting for you");
+
+			notices.dismiss("pinned");
+			await vi.advanceTimersByTimeAsync(0);
+			expect(texts()).not.toContain("waiting for you");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
 
 async function createApplicationHarness(options: { agentDir?: string; extensionLoad?: unknown } = {}) {

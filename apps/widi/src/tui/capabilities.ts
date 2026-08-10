@@ -21,6 +21,10 @@
  * shape makes the hazard unreachable instead of reporting it.
  */
 
+import type { CandidateItem } from "../core/types.ts";
+import type { CommandView } from "./commands/types.ts";
+import type { AgentViewStatus } from "./state.ts";
+
 /** Text access to the editor. Submitting is deliberately absent - see below. */
 export interface EditorCapability {
 	getText(): string;
@@ -40,6 +44,122 @@ export interface EditorCapability {
 	clear(): void;
 }
 
+/** What `CommandsCapability.run` did with the input. */
+export type CommandRunOutcome =
+	| { readonly kind: "executed"; readonly name: string; readonly value: unknown; readonly display?: string }
+	| { readonly kind: "failed"; readonly name: string; readonly error: string }
+	/**
+	 * A prompt command ran and produced text. It is handed back rather than
+	 * sent, for the same reason the editor has no submit: the message would land
+	 * on the branch as the human's. Put it in the editor and let them press
+	 * enter.
+	 */
+	| { readonly kind: "expanded"; readonly text: string }
+	/**
+	 * The command wants an argument it was not given. The candidates are the
+	 * ones the picker would have shown; choose one and run the command again
+	 * with it. Nothing was opened on screen.
+	 */
+	| { readonly kind: "needs-argument"; readonly name: string; readonly candidates: readonly CandidateItem[] }
+	| { readonly kind: "not-a-command" };
+
+/** The command engine, as an extension sees it. */
+export interface CommandsCapability {
+	/** Every registered command, availability computed against the visible agent. */
+	list(): readonly CommandView[];
+	/**
+	 * Run `/name argument` against the visible agent. Deferred to after the
+	 * current frame; the promise settles when the command does.
+	 *
+	 * A command runs with the same transcript trace a typed one leaves, and
+	 * commands that switch agents switch this one too. What it will not do is
+	 * materialize a pending agent or send anything to the model.
+	 */
+	run(input: string): Promise<CommandRunOutcome>;
+}
+
+/** Who a scoped capability attributes its writes to when nobody said. */
+export const APPLICATION_CALLER = "widi";
+
+/** One row of the agent strip. */
+export interface AgentBrief {
+	readonly agentId: string;
+	readonly label: string;
+	/** 0 for a top-level agent, +1 per spawn generation below it. */
+	readonly depth: number;
+	readonly status: AgentViewStatus;
+	/** The agent whose tool spawned this one; unset for user-side spawns. */
+	readonly spawnedBy?: string;
+	readonly unreadCount: number;
+}
+
+/**
+ * The agent strip: which agents exist, which one the transcript is showing,
+ * and how to change that.
+ *
+ * There is no spawn. Creating an agent is core's, and a TUI half that wants
+ * one asks its core half to spawn it - the strip picks the new agent up from
+ * the runtime event either way, and `switchTo` brings it on screen. A second
+ * spawn path here would only be a copy of the pending-session state machine
+ * that drifts from it.
+ */
+export interface AgentStripCapability {
+	/** Every live agent in strip order: each one followed by its subtree. */
+	list(): readonly AgentBrief[];
+	/** The agent the transcript is showing; undefined while a session is pending. */
+	visibleAgentId(): string | undefined;
+	/** Bring an agent on screen. Deferred to after the current frame. */
+	switchTo(agentId: string): void;
+	/**
+	 * Close an agent, leaving its session file behind, and move on to a
+	 * sensible neighbour. Deferred; the promise settles once it is gone.
+	 */
+	dispose(agentId: string): Promise<void>;
+	/**
+	 * Fires whenever the visible agent changes, with the new one (undefined
+	 * while a session is pending). Returns the detach.
+	 *
+	 * This is what makes the event bus usable from a TUI half: an envelope
+	 * carries the agent it came from, and a core half that lives in every agent
+	 * emits from all of them at once. Knowing which one is on screen is how the
+	 * TUI half tells its own instance's traffic from the rest.
+	 */
+	onVisibleAgentChanged(listener: (agentId: string | undefined) => void): () => void;
+}
+
+/**
+ * Rows in an agent's transcript.
+ *
+ * Ephemeral is the whole surface, and that is a boundary rather than a
+ * shortcoming. A durable entry is one the model reads on every resume and
+ * every fork inherits; putting one there is a decision about the branch, the
+ * branch belongs to core, and the way to it is the core half's
+ * `publishMessage`. What is left here is what the terminal is for: saying
+ * something to the person looking at it.
+ */
+export interface ChatCapability {
+	/**
+	 * Add a row, or replace the one already under this id. The id is namespaced
+	 * to the caller, so two extensions cannot overwrite each other. Defaults to
+	 * the visible agent. Deferred to after the current frame.
+	 */
+	insert(id: string, text: string, options?: { readonly agentId?: string }): void;
+	/** Remove a row this caller inserted. Deferred; an unknown id does nothing. */
+	remove(id: string, options?: { readonly agentId?: string }): void;
+}
+
+/** The notice area above the transcript. */
+export interface NoticesCapability {
+	/**
+	 * Post a notice, or replace the one already under this id. Notices expire on
+	 * their own; pass `ttlMs: 0` for one that stays until it is dismissed.
+	 * Deferred to after the current frame.
+	 */
+	post(id: string, text: string, options?: { readonly ttlMs?: number }): void;
+	/** Take a notice down early. Deferred; an unknown id does nothing. */
+	dismiss(id: string): void;
+}
+
 /**
  * The built-in capability keys and what each one hands back.
  *
@@ -49,6 +169,10 @@ export interface EditorCapability {
  */
 export interface TuiCapabilityMap {
 	readonly editor: EditorCapability;
+	readonly commands: CommandsCapability;
+	readonly agentStrip: AgentStripCapability;
+	readonly chat: ChatCapability;
+	readonly notices: NoticesCapability;
 }
 
 export type TuiCapabilityKey = keyof TuiCapabilityMap;
@@ -60,19 +184,38 @@ export type TuiCapabilityKey = keyof TuiCapabilityMap;
  */
 export class TuiCapabilityRegistry {
 	private readonly published = new Map<string, object>();
+	private readonly binders = new Map<string, (caller: string) => object>();
+	private readonly bound = new Map<string, object>();
 
 	publish<TKey extends TuiCapabilityKey>(key: TKey, capability: TuiCapabilityMap[TKey]): void {
 		this.published.set(key, capability);
 	}
 
-	get<TKey extends TuiCapabilityKey>(key: TKey): TuiCapabilityMap[TKey] | undefined;
-	get(key: string): unknown;
-	get(key: string): unknown {
-		return this.published.get(key);
+	/**
+	 * Publish a capability whose writes carry the caller's name - a transcript
+	 * row and a notice both say who put them there, and asking the caller to
+	 * pass its own id would make that a claim rather than a fact. One instance
+	 * per caller, so a handle held from activation keeps working.
+	 */
+	publishScoped<TKey extends TuiCapabilityKey>(key: TKey, bind: (caller: string) => TuiCapabilityMap[TKey]): void {
+		this.binders.set(key, bind);
+	}
+
+	get<TKey extends TuiCapabilityKey>(key: TKey, caller?: string): TuiCapabilityMap[TKey] | undefined;
+	get(key: string, caller?: string): unknown;
+	get(key: string, caller = APPLICATION_CALLER): unknown {
+		const bind = this.binders.get(key);
+		if (!bind) return this.published.get(key);
+		const boundKey = `${key} ${caller}`;
+		const existing = this.bound.get(boundKey);
+		if (existing) return existing;
+		const capability = bind(caller);
+		this.bound.set(boundKey, capability);
+		return capability;
 	}
 
 	/** Published keys, for `/layout` and the drill coverage ledger. */
 	keys(): readonly string[] {
-		return [...this.published.keys()];
+		return [...this.published.keys(), ...this.binders.keys()];
 	}
 }

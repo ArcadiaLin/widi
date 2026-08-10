@@ -18,8 +18,9 @@ import { createWidiRuntime, type WidiRuntime } from "../core/runtime-service.ts"
 import type { AgentActivitySnapshot, CandidateItem, OrchestratorEvent } from "../core/types.ts";
 import { copyToClipboard } from "../utils/clipboard.ts";
 import { forkSourceAgentId } from "./agent-identity.ts";
+import { buildAgentTree, flattenAgentTree } from "./agent-tree.ts";
 import { WidiCommandAutocompleteProvider } from "./autocomplete.ts";
-import { TuiCapabilityRegistry } from "./capabilities.ts";
+import { type CommandRunOutcome, TuiCapabilityRegistry } from "./capabilities.ts";
 import { applicationCommands } from "./commands/app-commands.ts";
 import { builtInCommands } from "./commands/built-ins.ts";
 import { CommandEngine, switchedAgentId } from "./commands/engine.ts";
@@ -57,8 +58,10 @@ import {
 	type AgentViewState,
 	clearDockedFocus,
 	createTuiApplicationState,
+	type ExtensionOutputItem,
 	ensureAgentProjection,
 	hasDockedFocus,
+	type NoticeItem,
 	type NoticeTextMode,
 	type StagedDraft,
 	setActiveAgent,
@@ -119,6 +122,8 @@ export class WidiTuiApplication {
 	readonly layout = new LayoutSlots();
 	/** What the layout's named parts can be told to do; see capabilities.ts. */
 	readonly capabilities = new TuiCapabilityRegistry();
+	private readonly visibleAgentListeners = new Set<(agentId: string | undefined) => void>();
+	private notifiedVisibleAgentId?: string;
 	private readonly pendingTasks = new Set<Promise<unknown>>();
 	private readonly lifecycleTasks = new Set<Promise<unknown>>();
 	private readonly drafts = new Map<string, string>();
@@ -296,6 +301,113 @@ export class WidiTuiApplication {
 			insertAtCursor: (text) => this.scheduleEditorEdit(() => this.editor.insertTextAtCursor(text)),
 			clear: () => this.scheduleEditorEdit(() => this.editor.setText("")),
 		});
+		this.capabilities.publishScoped("chat", (caller) => ({
+			insert: (id, text, options) =>
+				this.schedule(() => {
+					const agent = this.capabilityAgent(options?.agentId);
+					if (!agent) return;
+					const item: ExtensionOutputItem = {
+						type: "extension-output",
+						id: scopedId(caller, id),
+						presentationId: scopedId(caller, id),
+						durability: "ephemeral",
+						createdAt: new Date().toISOString(),
+						extensionId: caller,
+						text,
+					};
+					const existing = agent.timeline.findIndex((candidate) => candidate.id === item.id);
+					if (existing === -1) agent.timeline.push(item);
+					else agent.timeline[existing] = item;
+					this.tui.requestRender();
+				}),
+			remove: (id, options) =>
+				this.schedule(() => {
+					const agent = this.capabilityAgent(options?.agentId);
+					if (!agent) return;
+					agent.timeline = agent.timeline.filter((item) => item.id !== scopedId(caller, id));
+					this.tui.requestRender();
+				}),
+		}));
+		this.capabilities.publishScoped("notices", (caller) => ({
+			post: (id, text, options) =>
+				this.schedule(() => {
+					const noticeId = scopedId(caller, id);
+					const notice: NoticeItem = {
+						id: noticeId,
+						kind: "extension-notification",
+						createdAt: new Date().toISOString(),
+						text,
+						extensionId: caller,
+					};
+					const existing = this.state.globalNotices.findIndex((candidate) => candidate.id === noticeId);
+					if (existing === -1) this.state.globalNotices.push(notice);
+					else this.state.globalNotices[existing] = notice;
+					if (options?.ttlMs !== 0) this.expireNotification(noticeId, options?.ttlMs);
+					this.tui.requestRender();
+				}),
+			dismiss: (id) =>
+				this.schedule(() => {
+					const noticeId = scopedId(caller, id);
+					const timer = this.notificationTimers.get(noticeId);
+					if (timer) clearTimeout(timer);
+					this.notificationTimers.delete(noticeId);
+					this.state.globalNotices = this.state.globalNotices.filter((notice) => notice.id !== noticeId);
+					this.tui.requestRender();
+				}),
+		}));
+		this.capabilities.publish("agentStrip", {
+			list: () =>
+				flattenAgentTree(buildAgentTree(this.state)).map((entry) => ({
+					agentId: entry.agent.agentId,
+					label: agentLabel(entry.agent),
+					depth: entry.depth,
+					status: entry.agent.status,
+					spawnedBy: entry.agent.spawnedBy,
+					unreadCount: entry.agent.unreadCount,
+				})),
+			visibleAgentId: () => this.state.activeAgentId,
+			switchTo: (agentId) =>
+				this.schedule(() => {
+					if (!this.state.agents.has(agentId)) throw new Error(`No agent ${agentId} is on the strip.`);
+					this.switchAgent(agentId);
+				}),
+			dispose: (agentId) =>
+				new Promise((resolve, reject) => {
+					this.schedule(() => this.disposeAgent(agentId).then(resolve, reject));
+				}),
+			onVisibleAgentChanged: (listener) => {
+				this.visibleAgentListeners.add(listener);
+				return () => {
+					this.visibleAgentListeners.delete(listener);
+				};
+			},
+		});
+		this.capabilities.publish("commands", {
+			list: () => {
+				const agentId = this.state.activeAgentId;
+				return this.engine.list(toCommandActivity(agentId ? this.state.agents.get(agentId) : undefined));
+			},
+			run: (input) =>
+				new Promise((resolve, reject) => {
+					this.schedule(async () => {
+						try {
+							resolve(await this.runExtensionCommand(input));
+						} catch (error) {
+							reject(error instanceof Error ? error : new Error(errorMessage(error)));
+						}
+					});
+				}),
+		});
+	}
+
+	/**
+	 * Which projection a transcript-writing capability call lands in. A pending
+	 * session has no projection to write to, and materializing one to hold an
+	 * extension's row would start a conversation nobody asked for.
+	 */
+	private capabilityAgent(agentId: string | undefined): AgentViewState | undefined {
+		const target = agentId ?? this.state.activeAgentId;
+		return target ? this.state.agents.get(target) : undefined;
 	}
 
 	private scheduleEditorEdit(edit: () => void): void {
@@ -303,6 +415,35 @@ export class WidiTuiApplication {
 			edit();
 			this.tui.requestRender();
 		});
+	}
+
+	/**
+	 * The capability half of `submit`. It shares the engine call and its
+	 * transcript bookkeeping and stops where attribution starts: prompt text
+	 * goes back to the caller instead of to the model, and a missing argument
+	 * comes back as candidates instead of a docked picker the human did not ask
+	 * for.
+	 */
+	private async runExtensionCommand(input: string): Promise<CommandRunOutcome> {
+		const text = input.trim();
+		if (!text || !parseLineCommand(text)) return { kind: "not-a-command" };
+
+		const agentId = this.state.activeAgentId;
+		const outcome = await this.runCommandInput(agentId, text);
+		this.tui.requestRender();
+		switch (outcome.kind) {
+			case "pass":
+				return { kind: "not-a-command" };
+			case "expanded":
+				return { kind: "expanded", text: outcome.text };
+			case "executed":
+				return { kind: "executed", name: outcome.name, value: outcome.value, display: outcome.display };
+			case "failed":
+				return { kind: "failed", name: outcome.name, error: outcome.error.message };
+			case "needs-argument":
+			case "open-selector":
+				return { kind: "needs-argument", name: outcome.command.name, candidates: outcome.candidates };
+		}
 	}
 
 	/**
@@ -591,7 +732,7 @@ export class WidiTuiApplication {
 				break;
 			case "agent_session_info_changed":
 				if (event.agentId === this.state.activeAgentId) {
-					this.updateTerminalTitle();
+					this.refreshVisibleAgent();
 				}
 				break;
 			case "agent_session_forked":
@@ -757,7 +898,75 @@ export class WidiTuiApplication {
 		}
 
 		let outcome: EngineOutcome;
+		try {
+			outcome = await this.runCommandInput(agentId, text);
+		} catch (error) {
+			this.restoreEditor(rawText, agentId);
+			this.addApplicationNotice(errorMessage(error), agentId);
+			return;
+		}
+
+		switch (outcome.kind) {
+			case "pass":
+			case "expanded": {
+				if (!agentId || !agent) {
+					this.restoreEditor(rawText, agentId);
+					this.addApplicationNotice("No active agent is available.");
+					return;
+				}
+				const prompt = outcome.kind === "expanded" ? outcome.text : text;
+				if (agent.status === "running") {
+					await this.submitFollowUp(agentId, rawText, prompt);
+					return;
+				}
+				await this.submitPrompt(agentId, rawText, prompt);
+				return;
+			}
+			case "executed": {
+				this.editor.addToHistory(rawText);
+				if (outcome.name === "tree") {
+					// Navigating to a user message un-sends it: the harness returns its
+					// text so the editor can offer it back for editing/resubmission.
+					const navigation = outcome.value as NavigateTreeResult;
+					if (navigation.cancelled) this.restoreEditor(rawText, agentId);
+					else if (navigation.editorText !== undefined) this.editor.setText(navigation.editorText);
+				}
+				this.tui.requestRender();
+				return;
+			}
+			case "failed": {
+				this.editor.addToHistory(rawText);
+				this.tui.requestRender();
+				return;
+			}
+			case "needs-argument":
+				await this.openCommandSelector(agentId, rawText, outcome.command, outcome.candidates);
+				return;
+			case "open-selector":
+				await this.openCommandSelector(agentId, rawText, outcome.command, outcome.candidates, outcome.query);
+				return;
+		}
+	}
+
+	/**
+	 * Runs input through the command engine and keeps the transcript in step: a
+	 * running row per started command, replaced by its result, and dropped again
+	 * when the input turns out to be prompt text after all.
+	 *
+	 * What follows from the outcome is the caller's, because the callers differ
+	 * exactly there - a human submit may fall through to the model and open a
+	 * selector, an extension may do neither.
+	 */
+	private async runCommandInput(agentId: string | undefined, text: string): Promise<EngineOutcome> {
 		const startedCommands: Array<{ commandId: string; argument: string }> = [];
+		const forget = (except?: string) => {
+			this.removeCommandItems(
+				agentId,
+				startedCommands.filter((started) => started.commandId !== except).map((started) => started.commandId),
+			);
+		};
+
+		let outcome: EngineOutcome;
 		try {
 			outcome = await this.engine.handleInput(
 				text,
@@ -771,89 +980,41 @@ export class WidiTuiApplication {
 				},
 			);
 		} catch (error) {
-			this.removeCommandItems(
-				agentId,
-				startedCommands.map((started) => started.commandId),
-			);
-			this.restoreEditor(rawText, agentId);
-			this.addApplicationNotice(errorMessage(error), agentId);
-			return;
+			forget();
+			throw error;
 		}
 
 		switch (outcome.kind) {
-			case "pass":
-				if (!agentId || !agent) {
-					this.restoreEditor(rawText, agentId);
-					this.addApplicationNotice("No active agent is available.");
-					return;
-				}
-				if (agent.status === "running") {
-					await this.submitFollowUp(agentId, rawText, text);
-					return;
-				}
-				await this.submitPrompt(agentId, rawText, text);
-				return;
-			case "expanded":
-				this.removeCommandItems(
-					agentId,
-					startedCommands.map((started) => started.commandId),
-				);
-				if (!agentId || !agent) {
-					this.restoreEditor(rawText, agentId);
-					this.addApplicationNotice("No active agent is available.");
-					return;
-				}
-				if (agent.status === "running") {
-					await this.submitFollowUp(agentId, rawText, outcome.text);
-					return;
-				}
-				await this.submitPrompt(agentId, rawText, outcome.text);
-				return;
-			case "executed": {
-				this.editor.addToHistory(rawText);
+			case "executed":
 				this.upsertCommandItem(agentId, outcome.commandId, {
 					name: outcome.name,
 					status: "completed",
 					result: outcome.value,
 					display: outcome.display,
 				});
-				if (outcome.name === "tree") {
-					// Navigating to a user message un-sends it: the harness returns its
-					// text so the editor can offer it back for editing/resubmission.
-					const navigation = outcome.value as NavigateTreeResult;
-					if (navigation.cancelled) this.restoreEditor(rawText, agentId);
-					else if (navigation.editorText !== undefined) this.editor.setText(navigation.editorText);
-				}
-				const nextAgentId = switchedAgentId(outcome);
-				if (nextAgentId) await this.activateNavigationAgent(nextAgentId);
-				this.tui.requestRender();
-				return;
-			}
+				break;
 			case "failed": {
 				const failedStart = startedCommands.find((started) => started.commandId === outcome.commandId);
-				this.removeCommandItems(
-					agentId,
-					startedCommands
-						.filter((started) => started.commandId !== outcome.commandId)
-						.map((started) => started.commandId),
-				);
-				this.editor.addToHistory(rawText);
+				forget(outcome.commandId);
 				this.upsertCommandItem(agentId, outcome.commandId, {
 					name: outcome.name,
 					argument: failedStart?.argument ?? parseLineCommand(text)?.argument,
 					status: "failed",
 					error: outcome.error,
 				});
-				this.tui.requestRender();
-				return;
+				break;
 			}
-			case "needs-argument":
-				await this.openCommandSelector(agentId, rawText, outcome.command, outcome.candidates);
-				return;
-			case "open-selector":
-				await this.openCommandSelector(agentId, rawText, outcome.command, outcome.candidates, outcome.query);
-				return;
+			default:
+				// A prompt command starts before it expands, so its row exists and has
+				// to go: the prompt itself is the transcript entry. The remaining
+				// outcomes never reached onCommandStart and have nothing to drop.
+				forget();
+				return outcome;
 		}
+
+		const nextAgentId = switchedAgentId(outcome);
+		if (nextAgentId) await this.activateNavigationAgent(nextAgentId);
+		return outcome;
 	}
 
 	private async materializePendingAgent(rawText: string): Promise<string | undefined> {
@@ -1352,7 +1513,7 @@ export class WidiTuiApplication {
 		this.pendingUnknownCommand = undefined;
 		this.editor.setText("");
 		this.configurePendingEditor();
-		this.updateTerminalTitle();
+		this.refreshVisibleAgent();
 		this.updateEditorAvailability();
 		this.tui.setFocus(this.editor);
 		this.tui.requestRender();
@@ -1386,7 +1547,7 @@ export class WidiTuiApplication {
 		this.pendingUnknownCommand = undefined;
 		this.editor.setText("");
 		this.configurePendingEditor();
-		this.updateTerminalTitle();
+		this.refreshVisibleAgent();
 		this.updateEditorAvailability();
 		this.tui.setFocus(this.editor);
 		this.tui.requestRender();
@@ -1478,7 +1639,7 @@ export class WidiTuiApplication {
 				cwd: this.runtime.services.cwd,
 			}),
 		);
-		this.updateTerminalTitle();
+		this.refreshVisibleAgent();
 		this.tui.setFocus(this.editor);
 		this.tui.requestRender();
 		if (!this.hydratedAgents.has(agentId) && agent.hydration !== "pending") {
@@ -1605,14 +1766,14 @@ export class WidiTuiApplication {
 		this.tui.requestRender();
 	}
 
-	private expireNotification(id: string): void {
+	private expireNotification(id: string, ttlMs = NOTIFICATION_TTL_MS): void {
 		const existing = this.notificationTimers.get(id);
 		if (existing) clearTimeout(existing);
 		const timer = setTimeout(() => {
 			this.notificationTimers.delete(id);
 			this.state.globalNotices = this.state.globalNotices.filter((notice) => notice.id !== id);
 			this.tui.requestRender();
-		}, NOTIFICATION_TTL_MS);
+		}, ttlMs);
 		timer.unref();
 		this.notificationTimers.set(id, timer);
 	}
@@ -1710,10 +1871,25 @@ export class WidiTuiApplication {
 		}
 	}
 
-	private updateTerminalTitle(): void {
+	/**
+	 * The one funnel every change of the visible agent passes through, which is
+	 * why the capability's listeners hang off it rather than off each caller.
+	 * A session rename comes through here too and notifies nobody: the id is
+	 * what the listeners are watching.
+	 */
+	private refreshVisibleAgent(): void {
 		const agentId = this.state.activeAgentId;
 		const agent = agentId ? this.state.agents.get(agentId) : undefined;
 		this.tui.terminal.setTitle(agent ? `WIDI - ${agentLabel(agent)}` : "WIDI");
+		if (agentId === this.notifiedVisibleAgentId) return;
+		this.notifiedVisibleAgentId = agentId;
+		for (const listener of [...this.visibleAgentListeners]) {
+			try {
+				listener(agentId);
+			} catch (error) {
+				this.addApplicationNotice(errorMessage(error), agentId);
+			}
+		}
 	}
 
 	private schedule(task: () => void | Promise<void>): void {
@@ -1780,6 +1956,11 @@ function toCommandActivity(agent: AgentViewState | undefined): AgentActivitySnap
 	return agent.status === "running"
 		? { activity: "running", ...(agent.maintenance === undefined ? undefined : { maintenance: agent.maintenance }) }
 		: { activity: "idle" };
+}
+
+/** Namespaces the ids a capability caller chooses, so two callers cannot collide. */
+function scopedId(caller: string, id: string): string {
+	return `ext:${caller}:${id}`;
 }
 
 function errorMessage(error: unknown): string {
