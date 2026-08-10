@@ -3395,10 +3395,6 @@ export class AgentOrchestrator {
 		});
 	}
 
-	/**
-	 * What the next turn would be built with. Read-only: `before_agent_start` can
-	 * still replace this text for one turn without changing what this returns.
-	 */
 	async getAgentSystemPrompt(agentId: AgentId): Promise<string> {
 		const { harness } = this._requireLiveAgent(agentId);
 		return this._composeAgentSystemPrompt(agentId, harness.getActiveTools());
@@ -3442,13 +3438,8 @@ export class AgentOrchestrator {
 		return {
 			agentId,
 			listProfiles: async () => await this._listProfileBriefs(),
-			// Discovery is tree-scoped, while exact ids stay runtime-wide addresses
-			// through `describe` and `sendMessage` - the deliberate soft bridge
-			// between otherwise isolated trees.
 			listAgents: async () => await this._listAgentTree(agentId),
 			describe: (targetAgentId) => this._describeAgentForCaller(agentId, targetAgentId),
-			// The caller becomes the parent, so the child is rendered under it and
-			// swept by its subtree dispose, whichever origin its context came from.
 			spawn: async (request) =>
 				await this._spawnForCaller(agentId, toSpawnAgentOrigin(request.origin), request.model, request.thinkingLevel),
 			sendMessage: async (targetAgentId, body) =>
@@ -3456,7 +3447,6 @@ export class AgentOrchestrator {
 					{
 						targetAgentId,
 						body,
-						// Never preempts a turn in flight: the target decides when to read.
 						mode: "next_turn",
 					},
 					messageBindingFor({ kind: "agent", senderAgentId: agentId }),
@@ -3471,8 +3461,6 @@ export class AgentOrchestrator {
 					messageBindingFor({ kind: "agent", senderAgentId: notification.aboutAgentId, notice: notification.notice }),
 				),
 			dispose: async (targetAgentId, options) => await this._disposeForCaller(agentId, targetAgentId, options),
-			// The attachment's own capabilities, not an id-taking forwarder: they carry
-			// the owner and generation the job table authorizes against.
 			jobs: attachment.host,
 			requestHuman: async (request) =>
 				await this._requestHumanForAgent(agentId, { ...request, source: { kind: "agent", agentId } }),

@@ -109,13 +109,6 @@ export interface AgentSnapshot {
 	readonly profile: AgentProfileRecordReference;
 	readonly spawnedBy?: AgentId;
 	readonly sessionMetadata?: AgentSessionMetadata;
-	/**
-	 * Address of the persisted session, absent for an ephemeral agent.
-	 *
-	 * The session header's own lineage - `spawnedBy`, `forkedFrom` - names other
-	 * sessions by this same address, so a consumer holding a set of agents can
-	 * resolve one to another without learning anything about storage layout.
-	 */
 	readonly sessionRef?: string;
 	readonly model: RuntimeModel;
 	readonly thinkingLevel: ReturnType<WidiAgentHarness["getThinkingLevel"]>;
