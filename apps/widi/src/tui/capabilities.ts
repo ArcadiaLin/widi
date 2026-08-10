@@ -23,6 +23,7 @@
 
 import type { CandidateItem } from "../core/types.ts";
 import type { CommandView } from "./commands/types.ts";
+import type { Segment } from "./segments.ts";
 import type { AgentViewStatus } from "./state.ts";
 
 /** Text access to the editor. Submitting is deliberately absent - see below. */
@@ -148,6 +149,30 @@ export interface ChatCapability {
 	remove(id: string, options?: { readonly agentId?: string }): void;
 }
 
+/**
+ * Named text in one of the composed rows - the header, the footer, the hint
+ * line, the status panel, the working line. Published under all five keys, one
+ * interface, because those five differ in how they paint a row and not at all
+ * in what they are being handed.
+ *
+ * Where a segment lands in its row, and what a narrow terminal drops first, is
+ * the component's decision and not the caller's. The header appends after the
+ * model; the footer joins the queue counters; the status panel gives each one a
+ * row; the working line puts them ahead of the keys, because the keys are named
+ * again under the footer and a segment is not.
+ */
+export interface SegmentsCapability {
+	/**
+	 * Add or replace one piece of text. The id is namespaced to the caller.
+	 * Replacing keeps the position it first took. Deferred to after the frame.
+	 */
+	set(id: string, text: string, options?: { readonly order?: number }): void;
+	/** Take one away. Deferred; an unknown id does nothing. */
+	remove(id: string): void;
+	/** This caller's segments in this row, in the order they render. */
+	list(): readonly Segment[];
+}
+
 /** The notice area above the transcript. */
 export interface NoticesCapability {
 	/**
@@ -173,7 +198,17 @@ export interface TuiCapabilityMap {
 	readonly agentStrip: AgentStripCapability;
 	readonly chat: ChatCapability;
 	readonly notices: NoticesCapability;
+	readonly header: SegmentsCapability;
+	readonly footer: SegmentsCapability;
+	readonly operationHint: SegmentsCapability;
+	readonly status: SegmentsCapability;
+	readonly workingLine: SegmentsCapability;
 }
+
+/** The five keys that take named text; `SEGMENT_SLOTS[i]` is a layout key. */
+export const SEGMENT_SLOTS = ["header", "footer", "operationHint", "status", "workingLine"] as const;
+
+export type SegmentSlot = (typeof SEGMENT_SLOTS)[number];
 
 export type TuiCapabilityKey = keyof TuiCapabilityMap;
 

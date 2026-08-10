@@ -45,6 +45,8 @@ export class FooterView implements Component {
 			);
 		}
 
+		queueParts.push(...this.state.segments.texts("footer"));
+
 		const context = contextReadout(this.state);
 		const right = context ? theme.dim(context) : "";
 		// Model identity sits directly under the editor, ahead of where the run

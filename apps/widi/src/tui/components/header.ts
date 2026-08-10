@@ -18,10 +18,7 @@ export class HeaderView implements Component {
 		const pending = this.state.pendingAgent;
 		const label = agent ? agentLabel(agent) : (pending?.display.profileLabel ?? "starting");
 		const model = agent?.display.model?.id ?? agent?.snapshot?.model.id ?? pending?.display.model.id ?? "model";
-		return new Text(
-			`${theme.bold(theme.title("WIDI"))} ${theme.dim(`· ${label} · ${singleLine(model, 120)}`)}`,
-			1,
-			1,
-		).render(width);
+		const parts = [label, singleLine(model, 120), ...this.state.segments.texts("header")];
+		return new Text(`${theme.bold(theme.title("WIDI"))} ${theme.dim(`· ${parts.join(" · ")}`)}`, 1, 1).render(width);
 	}
 }

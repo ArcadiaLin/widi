@@ -20,7 +20,7 @@ import { copyToClipboard } from "../utils/clipboard.ts";
 import { forkSourceAgentId } from "./agent-identity.ts";
 import { buildAgentTree, flattenAgentTree } from "./agent-tree.ts";
 import { WidiCommandAutocompleteProvider } from "./autocomplete.ts";
-import { type CommandRunOutcome, TuiCapabilityRegistry } from "./capabilities.ts";
+import { type CommandRunOutcome, SEGMENT_SLOTS, TuiCapabilityRegistry } from "./capabilities.ts";
 import { applicationCommands } from "./commands/app-commands.ts";
 import { builtInCommands } from "./commands/built-ins.ts";
 import { CommandEngine, switchedAgentId } from "./commands/engine.ts";
@@ -46,6 +46,7 @@ import { createWidiKeybindings, loadUserKeybindings } from "./keybindings.ts";
 import { type AppOverlayHandle, OverlayStack } from "./layout/overlay-stack.ts";
 import { type LayoutSlotEntry, LayoutSlots } from "./layout/slots.ts";
 import { PendingAgentController, type PendingAgentDisplay } from "./pending-agent.ts";
+import { hasLiveTransientQuip, setSteadyQuip, setTransientQuip } from "./quips.ts";
 import { SelectorDock } from "./selectors/dock.ts";
 import type { SelectorHintContext } from "./selectors/hints.ts";
 import { ListSelector, type ListSelectorRequest } from "./selectors/list-selector.ts";
@@ -70,7 +71,6 @@ import {
 } from "./state.ts";
 import { flushStreaming, STREAM_FLUSH_MS } from "./streaming-flush.ts";
 import { loadThemes, theme } from "./theme/theme.ts";
-import { hasLiveTransientVoice, setSteadyVoice, setTransientVoice } from "./voice.ts";
 
 const NOTIFICATION_TTL_MS = 5_000;
 /** Staged drafts held for one agent before the buffer lands itself. */
@@ -78,7 +78,7 @@ const MAX_STAGED_DRAFTS = 20;
 /** Spinner frame cadence while the visible agent is running. */
 const SPINNER_TICK_MS = 160;
 /** Repaint cadence while the working line is holding a line that expires. */
-const VOICE_TICK_MS = 250;
+const QUIP_TICK_MS = 250;
 /** Interrupts or steers inside this window before the agent says something about it. */
 const POKE_WINDOW_MS = 10_000;
 const POKE_THRESHOLD = 3;
@@ -189,16 +189,6 @@ export class WidiTuiApplication {
 				},
 				diagnostics: this.state.diagnostics,
 				copyText: (text) => copyToClipboard(text),
-				setVoicePack: (pack) => {
-					this.state.voicePack = pack;
-					// Every line on screen was rolled from the old pack. Re-rolling the
-					// steady one is what makes the switch visible without waiting for
-					// the next transition; a transient is a moment and simply passes.
-					for (const agent of this.state.agents.values()) {
-						agent.voice = undefined;
-						setSteadyVoice(agent, pack, agent.status === "running" ? "working" : "idle");
-					}
-				},
 			}),
 		]) {
 			const diagnostic = this.engine.register(command);
@@ -301,6 +291,21 @@ export class WidiTuiApplication {
 			insertAtCursor: (text) => this.scheduleEditorEdit(() => this.editor.insertTextAtCursor(text)),
 			clear: () => this.scheduleEditorEdit(() => this.editor.setText("")),
 		});
+		for (const slot of SEGMENT_SLOTS) {
+			this.capabilities.publishScoped(slot, (caller) => ({
+				set: (id, text, options) =>
+					this.schedule(() => {
+						this.state.segments.set(slot, { id: scopedId(caller, id), text, order: options?.order ?? 0 });
+						this.tui.requestRender();
+					}),
+				remove: (id) =>
+					this.schedule(() => {
+						this.state.segments.remove(slot, scopedId(caller, id));
+						this.tui.requestRender();
+					}),
+				list: () => this.state.segments.list(slot).filter((segment) => segment.id.startsWith(scopedId(caller, ""))),
+			}));
+		}
 		this.capabilities.publishScoped("chat", (caller) => ({
 			insert: (id, text, options) =>
 				this.schedule(() => {
@@ -832,8 +837,8 @@ export class WidiTuiApplication {
 		const hasVisibleRunningAgent = activeAgent?.status === "running";
 		const interval = hasVisibleRunningAgent
 			? SPINNER_TICK_MS
-			: hasLiveTransientVoice(activeAgent?.voice)
-				? VOICE_TICK_MS
+			: hasLiveTransientQuip(activeAgent?.quip)
+				? QUIP_TICK_MS
 				: undefined;
 		if (interval === this.animationTickerInterval) return;
 		if (this.animationTicker) {
@@ -842,7 +847,7 @@ export class WidiTuiApplication {
 		}
 		this.animationTickerInterval = interval;
 		if (interval !== undefined) {
-			// Recomputed from inside the tick as well: a voice line expiring is not
+			// Recomputed from inside the tick as well: a quip expiring is not
 			// an event, so nothing else would ever wind this cadence back down.
 			this.animationTicker = setInterval(() => {
 				this.tui.requestRender();
@@ -1624,7 +1629,7 @@ export class WidiTuiApplication {
 		this.pendingAgents.cancel();
 		const agent = setActiveAgent(this.state, agentId);
 		// An agent nobody has looked at yet has never had a transition to roll on.
-		setSteadyVoice(agent, this.state.voicePack, agent.status === "running" ? "working" : "idle");
+		setSteadyQuip(agent, agent.status === "running" ? "working" : "idle");
 		this.updateAnimationTicker();
 		this.editor.setText(this.drafts.get(agentId) ?? "");
 		clearDockedFocus(this.state);
@@ -1827,7 +1832,7 @@ export class WidiTuiApplication {
 		const recent = this.pokes.filter((poke) => at - poke < POKE_WINDOW_MS);
 		recent.push(at);
 		if (recent.length >= POKE_THRESHOLD) {
-			setTransientVoice(agent, this.state.voicePack, "poked", at);
+			setTransientQuip(agent, "poked", at);
 			this.pokes = [];
 			this.updateAnimationTicker();
 			return;

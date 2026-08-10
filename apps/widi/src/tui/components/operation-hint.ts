@@ -261,7 +261,12 @@ export class OperationHintView implements Component {
 		});
 		// The working line prints the run hint beside what the run is doing; the
 		// same keys a row further down would be the only thing on screen twice.
-		if (!detail || detail.kind === "run" || detail.kind === "maintenance") return [];
-		return [theme.dim(truncateToWidth(detail.text, width, "…"))];
+		// Segments stay either way: they are not about the run.
+		const hintText = !detail || detail.kind === "run" || detail.kind === "maintenance" ? undefined : detail.text;
+		const parts = [hintText, ...this.state.segments.texts("operationHint")].filter(
+			(part): part is string => part !== undefined,
+		);
+		if (parts.length === 0) return [];
+		return [theme.dim(truncateToWidth(parts.join(" · "), width, "…"))];
 	}
 }

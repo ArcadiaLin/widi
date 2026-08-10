@@ -19,7 +19,8 @@ export class StatusView implements Component {
 		// The panel is the default region; footer and agent-strip statuses are
 		// surfaced by their own components.
 		const statuses = extensionStatusesInRegion(agent, "panel");
-		if (statuses.length === 0) return [];
+		const segments = this.state.segments.texts("status");
+		if (statuses.length === 0 && segments.length === 0) return [];
 		const lines = statuses.slice(0, 4).map((entry) => {
 			const paint = tonePaint(entry.status.tone);
 			const progress = entry.status.progress;
@@ -41,6 +42,9 @@ export class StatusView implements Component {
 		if (statuses.length > 4) {
 			lines.push(theme.dim(`+${statuses.length - 4} more extension statuses`));
 		}
+		// A row of its own rather than a suffix: the panel is a list, and a
+		// segment here is another entry in it.
+		lines.push(...segments);
 		return new Text(lines.join("\n"), 1, 0).render(width);
 	}
 }

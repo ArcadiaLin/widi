@@ -8,10 +8,11 @@ import type { AgentSnapshot } from "../../src/core/agent-types.ts";
 import type { WidiRuntime, WidiRuntimeServices } from "../../src/core/runtime-service.ts";
 import type { OrchestratorEvent, RuntimeModel } from "../../src/core/types.ts";
 import { WidiTuiApplication } from "../../src/tui/application.ts";
+import { SEGMENT_SLOTS } from "../../src/tui/capabilities.ts";
 import type { CommandEngine } from "../../src/tui/commands/engine.ts";
 import type { WidiEditor } from "../../src/tui/editor.ts";
+import { setTransientQuip } from "../../src/tui/quips.ts";
 import { ensureAgentProjection, type StagedDraft, setActiveAgent } from "../../src/tui/state.ts";
-import { setSteadyVoice, setTransientVoice } from "../../src/tui/voice.ts";
 
 describe("WidiTuiApplication lazy agent spawn", () => {
 	it("does not spawn an agent when the TUI starts", async () => {
@@ -300,7 +301,7 @@ describe("WidiTuiApplication animation ticker", () => {
 		expect(ticker.animationTickerInterval).toBeUndefined();
 	});
 
-	// A voice line expiring is not an event; without a tick "Job's done." would
+	// A quip expiring is not an event; without a tick "Job's done." would
 	// stay on screen until the next keystroke.
 	it("ticks while the working line is holding a line that expires", async () => {
 		const harness = await createApplicationHarness();
@@ -311,11 +312,11 @@ describe("WidiTuiApplication animation ticker", () => {
 			animationTickerInterval?: number;
 		};
 
-		setTransientVoice(agent, harness.application.state.voicePack, "done");
+		setTransientQuip(agent, "done");
 		ticker.updateAnimationTicker();
 		expect(ticker.animationTickerInterval).toBe(250);
 
-		agent.voice = undefined;
+		agent.quip = undefined;
 		ticker.updateAnimationTicker();
 		expect(ticker.animationTickerInterval).toBeUndefined();
 	});
@@ -333,7 +334,7 @@ describe("WidiTuiApplication working line", () => {
 
 		(harness.application as unknown as { switchAgent(agentId: string): void }).switchAgent("worker");
 
-		expect(agent.voice?.steady.state).toBe("working");
+		expect(agent.quip?.steady.state).toBe("working");
 	});
 
 	it("says something after the third interrupt in a row", async () => {
@@ -343,10 +344,10 @@ describe("WidiTuiApplication working line", () => {
 
 		interrupt(harness.application);
 		interrupt(harness.application);
-		expect(agent.voice?.transient).toBeUndefined();
+		expect(agent.quip?.transient).toBeUndefined();
 
 		interrupt(harness.application);
-		expect(agent.voice?.transient?.state).toBe("poked");
+		expect(agent.quip?.transient?.state).toBe("poked");
 		expect(harness.abortAgent).toHaveBeenCalledTimes(3);
 	});
 
@@ -367,19 +368,7 @@ describe("WidiTuiApplication working line", () => {
 			now.mockRestore();
 		}
 
-		expect(agent.voice?.transient).toBeUndefined();
-	});
-
-	it("re-rolls every line when /voice changes the pack", async () => {
-		const harness = await createApplicationHarness();
-		const agent = setActiveAgent(harness.application.state, "main");
-		agent.status = "idle";
-		setSteadyVoice(agent, "peon", "idle");
-
-		await submit(harness.application, "/voice off");
-
-		expect(harness.application.state.voicePack).toBe("off");
-		expect(agent.voice?.steady).toEqual({ state: "idle", text: "Ready" });
+		expect(agent.quip?.transient).toBeUndefined();
 	});
 });
 
@@ -889,6 +878,33 @@ describe("WidiTuiApplication capabilities", () => {
 		chat.remove("step");
 		await vi.waitFor(() => {
 			expect(timeline().filter((item) => item.type === "extension-output")).toEqual([]);
+		});
+	});
+
+	it("puts named text into all five composed rows", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "hello");
+		const state = harness.application.state;
+
+		for (const slot of SEGMENT_SLOTS) {
+			const segments = harness.application.capabilities.get(slot, "drill");
+			if (!segments) throw new Error(`Expected the ${slot} capability to be published.`);
+			segments.set("mark", `${slot} mark`);
+		}
+
+		await vi.waitFor(() => {
+			expect(state.segments.texts("header")).toEqual(["header mark"]);
+		});
+		expect(state.segments.texts("workingLine")).toEqual(["workingLine mark"]);
+		expect(harness.application.capabilities.get("footer", "drill")?.list()).toEqual([
+			{ id: "ext:drill:mark", text: "footer mark", order: 0 },
+		]);
+		// Scoped: a second extension neither sees nor can drop the first one's text.
+		expect(harness.application.capabilities.get("footer", "other")?.list()).toEqual([]);
+
+		harness.application.capabilities.get("status", "drill")?.remove("mark");
+		await vi.waitFor(() => {
+			expect(state.segments.texts("status")).toEqual([]);
 		});
 	});
 
