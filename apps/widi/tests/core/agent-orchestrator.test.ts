@@ -3504,7 +3504,7 @@ describe("AgentOrchestrator", () => {
 		});
 	});
 
-	it("routes the ask_human tool through the human request broker with agent source", async () => {
+	it("routes the ask_human tool through the human request broker, naming the call", async () => {
 		const env = new MemoryExecutionEnv();
 		const toolRegistry = new ToolRegistry();
 		registerCoreInteractionTools(toolRegistry);
@@ -3534,7 +3534,7 @@ describe("AgentOrchestrator", () => {
 			kind: "select",
 			title: "Pick a color",
 			options: ["red", "green"],
-			source: { kind: "agent", agentId },
+			source: { kind: "tool", agentId, toolCallId: "call-1", toolName: "ask_human" },
 		});
 		expect(result.content).toEqual([{ type: "text", text: "The human selected: green" }]);
 	});

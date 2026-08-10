@@ -48,7 +48,7 @@ function envelope(overrides: Partial<HumanRequestEnvelope> & Pick<HumanRequestEn
 	return {
 		id: "request-1",
 		agentId: "main",
-		source: { kind: "agent", agentId: "main" },
+		source: { kind: "tool", agentId: "main", toolCallId: "call-1", toolName: "ask_human" },
 		title: "Question",
 		createdAt: new Date(0).toISOString(),
 		...overrides,
@@ -222,23 +222,22 @@ describe("HumanRequestMenu", () => {
 		await expect(response).resolves.toEqual({ kind: "select", value: "teal" });
 	});
 
-	// A yes/no has nowhere to carry words; the input shape is the only one that
-	// can, and the asker reads it as an answer rather than a refusal.
-	it("answers a confirm with words when the human chooses to say something", async () => {
+	// Yes and no are the whole of what a confirm asks; a third row there is noise.
+	it("leaves a confirm as two options", async () => {
 		const { menu } = createMenu();
 		const response = menu.request(envelope({ kind: "confirm", title: "Deploy?" }));
 
-		menu.handleInput("3"); // Yes / No / Chat about this
-		menu.focused = true;
-		for (const character of "not yet") menu.handleInput(character);
-		menu.handleInput(KEY.enter);
-		menu.handleInput(KEY.enter); // Submit
+		const rendered = plain(menu);
+		expect(rendered).toContain("[1] Yes");
+		expect(rendered).toContain("[2] No");
+		expect(rendered).not.toContain("Chat about this");
 
-		await expect(response).resolves.toEqual({ kind: "input", value: "not yet" });
+		menu.close();
+		await expect(response).rejects.toThrow();
 	});
 
-	// Deferring is this layer's call, keyed off where the request came from: an
-	// agent is blocked on its answer, an extension asking is not.
+	// Deferring is this layer's call, keyed off who asked: a tool call is a turn
+	// standing still, an extension asking is not - and it picks its own kind.
 	it("answers an extension's confirm on the spot, with no Submit tab", async () => {
 		const { menu } = createMenu();
 		const response = menu.request(
@@ -258,7 +257,7 @@ describe("HumanRequestMenu", () => {
 			envelope({
 				id: "request-1",
 				agentId: "reviewer",
-				source: { kind: "agent", agentId: "reviewer" },
+				source: { kind: "tool", agentId: "reviewer", toolCallId: "call-2", toolName: "ask_human" },
 				kind: "confirm",
 				title: "Deploy?",
 			}),
@@ -285,7 +284,7 @@ describe("HumanRequestMenu", () => {
 			envelope({
 				id: "request-2",
 				agentId: "reviewer",
-				source: { kind: "agent", agentId: "reviewer" },
+				source: { kind: "tool", agentId: "reviewer", toolCallId: "call-2", toolName: "ask_human" },
 				kind: "select",
 				title: "Pick target",
 				options: ["staging", "prod"],

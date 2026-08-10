@@ -19,16 +19,20 @@ const SUBMIT_ACTIONS = ["Submit", "Cancel"] as const;
 /**
  * Whether this request's answers wait for the Submit tab.
  *
- * A decision this layer makes, not the asker's. Nothing in a request says how
- * much ceremony its answer deserves, and the side that posed the question is
- * the wrong side to ask: it cannot see the panel. What an agent is blocked on
- * gets the review pass, because a misclick there costs a turn. A batch is
- * several answers committed together and has nowhere else to commit them, and
- * a multi-select is not finished until the human says it is. Everything else
- * answers on the spot.
+ * A decision this layer makes, not the asker's: nothing in a request says how
+ * much ceremony its answer deserves, and the side that posed the question
+ * cannot see the panel.
+ *
+ * A tool asking is a turn standing still until the answer arrives, so it gets
+ * the pass where a misclick can still be taken back - `ask_human` is the only
+ * one today, and the tool-scoped source is how it says so. A batch is several
+ * answers committed together and has nowhere else to commit them; a
+ * multi-select is not finished until the human says it is. Everything else -
+ * an extension asking, the auth flow asking - answers on the spot, and picks
+ * the kind that suits it.
  */
 function defersAnswers(request: HumanRequestEnvelope): boolean {
-	return request.source.kind === "agent" || request.kind === "questions" || request.kind === "multi-select";
+	return request.source.kind === "tool" || request.kind === "questions" || request.kind === "multi-select";
 }
 
 /**
@@ -416,11 +420,6 @@ export class HumanRequestMenu implements Component {
 		const question = entry.questions[0];
 		if (!question) return fallbackResponse(entry.request);
 		if (question.kind === "confirm") {
-			// A yes/no has nowhere to carry words, so a human who chose to say
-			// something instead answers in the one shape that can hold them. The
-			// asker reads it as an answer rather than as a refusal, which is what
-			// it is.
-			if (question.freeValue !== undefined) return { kind: "input", value: question.freeValue };
 			return { kind: "confirm", confirmed: question.single === "yes" };
 		}
 		if (question.kind === "multi-select") {
@@ -829,11 +828,15 @@ export class HumanRequestMenu implements Component {
 }
 
 /**
- * Every choice question ends with the free-text option, whatever the request
- * asked for: the options are the asker's guess at the answer space, and a human
- * who has a different answer should not have to dismiss the question to give
- * it. `allowFreeInput` on the request therefore changes nothing here - it is
- * already always on.
+ * A question over options always ends with the free-text one, whatever the
+ * request asked for: the options are the asker's guess at the answer space, and
+ * a human with a different answer should not have to dismiss the question to
+ * give it. `allowFreeInput` on the request therefore changes nothing here - it
+ * is already always on.
+ *
+ * A confirm is the exception, and not by omission. Yes and no are the whole of
+ * what it asks, the shape it is answered in holds nothing else, and a question
+ * that only has two answers is the one place a third option would be noise.
  */
 function makeQuestion(
 	kind: QuestionState["kind"],
@@ -846,7 +849,7 @@ function makeQuestion(
 		title,
 		header: extra.header,
 		message: extra.message,
-		options: [...options, { value: FREE_INPUT_VALUE, label: FREE_INPUT_LABEL }],
+		options: kind === "confirm" ? options : [...options, { value: FREE_INPUT_VALUE, label: FREE_INPUT_LABEL }],
 		cursor: 0,
 		multi: new Set<string>(),
 		editing: false,

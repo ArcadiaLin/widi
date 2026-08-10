@@ -35,6 +35,7 @@ describe("ask_human tool", () => {
 		);
 		expect(drafts).toEqual([
 			{
+				tool: { toolCallId: "call-1", toolName: "ask_human" },
 				kind: "confirm",
 				title: "Delete the branch?",
 				message: undefined,

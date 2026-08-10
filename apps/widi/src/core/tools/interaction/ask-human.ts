@@ -2,6 +2,8 @@ import { type Static, Type } from "typebox";
 import { type HumanQuestionAnswer, type HumanResponse, normalizeHumanRequestOptions } from "../../human-request.ts";
 import type { ToolDefinition } from "../types.ts";
 
+const ASK_HUMAN_TOOL_NAME = "ask_human";
+
 const optionSchema = Type.Union([
 	Type.String(),
 	Type.Object({ label: Type.String(), value: Type.Optional(Type.String()), description: Type.Optional(Type.String()) }),
@@ -67,7 +69,7 @@ export interface AskHumanToolDetails {
  */
 export function createAskHumanToolDefinition(): ToolDefinition<typeof askHumanSchema, AskHumanToolDetails> {
 	return {
-		name: "ask_human",
+		name: ASK_HUMAN_TOOL_NAME,
 		label: "ask human",
 		description:
 			"Ask the human operator a question and wait for the answer. Use confirm for yes/no decisions, select to choose one option, multi-select to choose any number of options, and input for free-form text. Blocks until the human answers or dismisses the request; a dismissal is reported as no answer, not an error.",
@@ -82,12 +84,15 @@ export function createAskHumanToolDefinition(): ToolDefinition<typeof askHumanSc
 		// A pending question is modal for the human; never run it concurrently
 		// with other tool calls.
 		executionMode: "sequential",
-		execute: async (_toolCallId, input, context) => {
+		execute: async (toolCallId, input, context) => {
 			validateAskHumanInput(input);
 			if (!context.human) {
 				throw new Error("Human requests are not available in this runtime.");
 			}
 			const response = await context.human.request({
+				// Naming the call is what lets a client tell a question the agent is
+				// blocked on from one the runtime or an extension raised on its own.
+				tool: { toolCallId, toolName: ASK_HUMAN_TOOL_NAME },
 				kind: input.kind,
 				title: input.title.trim(),
 				message: input.message,

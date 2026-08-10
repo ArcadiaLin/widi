@@ -3236,8 +3236,13 @@ export class AgentOrchestrator {
 		const extensionRunner = liveAgent.extensionRunner;
 		return {
 			human: {
-				request: async (request) =>
-					await this._requestHumanForAgent(agentId, { ...request, source: { kind: "agent", agentId } }),
+				request: async ({ tool, ...draft }) =>
+					await this._requestHumanForAgent(agentId, {
+						...draft,
+						source: tool
+							? { kind: "tool", agentId, toolCallId: tool.toolCallId, toolName: tool.toolName }
+							: { kind: "agent", agentId },
+					}),
 			},
 			agents: this._createAgentHost(agentId),
 			humanInterrupts: this._humanInterrupts.watch(agentId),
