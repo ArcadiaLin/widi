@@ -12,9 +12,24 @@ import { clearDockedFocus, setDockedFocus, type TuiApplicationState } from "./st
 import { theme } from "./theme/theme.ts";
 
 const FREE_INPUT_VALUE = "\x00free-input";
-const FREE_INPUT_LABEL = "Type another answer…";
+const FREE_INPUT_LABEL = "Chat about this…";
 const MAX_VISIBLE_OPTIONS = 8;
 const SUBMIT_ACTIONS = ["Submit", "Cancel"] as const;
+
+/**
+ * Whether this request's answers wait for the Submit tab.
+ *
+ * A decision this layer makes, not the asker's. Nothing in a request says how
+ * much ceremony its answer deserves, and the side that posed the question is
+ * the wrong side to ask: it cannot see the panel. What an agent is blocked on
+ * gets the review pass, because a misclick there costs a turn. A batch is
+ * several answers committed together and has nowhere else to commit them, and
+ * a multi-select is not finished until the human says it is. Everything else
+ * answers on the spot.
+ */
+function defersAnswers(request: HumanRequestEnvelope): boolean {
+	return request.source.kind === "agent" || request.kind === "questions" || request.kind === "multi-select";
+}
 
 /**
  * One deferred question shown as its own tab. A confirm request becomes a
@@ -29,7 +44,6 @@ interface QuestionState {
 	readonly header?: string;
 	readonly message?: string;
 	readonly options: NormalizedHumanRequestOption[];
-	readonly allowFreeInput: boolean;
 	cursor: number;
 	/** Chosen value for confirm/select (includes a free-text literal). */
 	single?: string;
@@ -49,8 +63,10 @@ interface PendingEntry {
 	readonly reject: (error: Error) => void;
 	abortListener?: () => void;
 	settled: boolean;
-	/** deferred: choice questions committed via Submit. input: immediate row. */
-	mode: "deferred" | "input";
+	/** choice: questions with options. input: an immediate free-text row. */
+	mode: "choice" | "input";
+	/** Choice answers wait for the Submit tab; see defersAnswers. */
+	defers: boolean;
 	readonly questions: QuestionState[];
 	input?: Input;
 }
@@ -189,10 +205,10 @@ export class HumanRequestMenu implements Component {
 			return;
 		}
 		const question = entry.questions[tab.question];
-		if (question) this.handleQuestionInput(question, data);
+		if (question) this.handleQuestionInput(entry, question, data);
 	}
 
-	private handleQuestionInput(question: QuestionState, data: string): void {
+	private handleQuestionInput(entry: PendingEntry, question: QuestionState, data: string): void {
 		const keybindings = getKeybindings();
 		if (question.editing) {
 			this.handleFreeEditInput(question, data);
@@ -211,17 +227,17 @@ export class HumanRequestMenu implements Component {
 		if (this.switchTab(data)) return;
 		const index = matchRequestOptionIndex(data);
 		if (index !== undefined && index < question.options.length) {
-			this.activateOption(question, index);
+			this.activateOption(entry, question, index);
 			this.host.requestRender();
 			return;
 		}
 		if (question.kind === "multi-select" && keybindings.matches(data, "app.request.toggle")) {
-			this.activateOption(question, question.cursor);
+			this.activateOption(entry, question, question.cursor);
 			this.host.requestRender();
 			return;
 		}
 		if (keybindings.matches(data, "tui.select.confirm")) {
-			this.activateOption(question, question.cursor);
+			this.activateOption(entry, question, question.cursor);
 			this.host.requestRender();
 		}
 	}
@@ -301,12 +317,12 @@ export class HumanRequestMenu implements Component {
 		question.cursor = (question.cursor + delta + total) % total;
 	}
 
-	private activateOption(question: QuestionState, index: number): void {
+	private activateOption(entry: PendingEntry, question: QuestionState, index: number): void {
 		const option = question.options[index];
 		if (!option) return;
 		question.cursor = index;
 		if (option.value === FREE_INPUT_VALUE) {
-			this.enterFreeInput(question);
+			this.enterFreeInput(entry, question);
 			return;
 		}
 		if (question.kind === "multi-select") {
@@ -316,18 +332,18 @@ export class HumanRequestMenu implements Component {
 		}
 		question.single = option.value;
 		question.freeValue = undefined;
-		this.advanceAfterSingle();
+		this.advanceAfterSingle(entry);
 	}
 
-	private enterFreeInput(question: QuestionState): void {
+	private enterFreeInput(entry: PendingEntry, question: QuestionState): void {
 		question.editing = true;
 		const input = new Input();
 		input.setValue(question.freeValue ?? "");
-		input.onSubmit = (value) => this.commitFreeInput(question, value);
+		input.onSubmit = (value) => this.commitFreeInput(entry, question, value);
 		question.freeInput = input;
 	}
 
-	private commitFreeInput(question: QuestionState, rawValue: string): void {
+	private commitFreeInput(entry: PendingEntry, question: QuestionState, rawValue: string): void {
 		const value = rawValue.trim();
 		question.editing = false;
 		if (value.length === 0) {
@@ -336,14 +352,21 @@ export class HumanRequestMenu implements Component {
 			return;
 		}
 		question.freeValue = value;
-		question.single = value;
+		// A multi-select's free answer joins its selections; a single answer
+		// replaces whatever option was picked.
+		if (question.kind === "multi-select") question.multi.add(value);
+		else question.single = value;
 		question.freeInput = undefined;
-		this.advanceAfterSingle();
+		this.advanceAfterSingle(entry);
 		this.host.requestRender();
 	}
 
-	/** Move to the next unanswered question, or the Submit tab when none. */
-	private advanceAfterSingle(): void {
+	/**
+	 * Move to the next unanswered question, or the Submit tab when none. An
+	 * entry that does not defer has no Submit tab to move to and is finished
+	 * here instead, as soon as its one question has an answer.
+	 */
+	private advanceAfterSingle(entry: PendingEntry): void {
 		const tabs = this.tabs();
 		for (let i = this.focusedTab + 1; i < tabs.length; i++) {
 			const tab = tabs[i];
@@ -354,6 +377,12 @@ export class HumanRequestMenu implements Component {
 					return;
 				}
 			}
+		}
+		if (!entry.defers) {
+			if (entry.questions.every((question) => this.isAnswered(question))) {
+				this.finish(entry, this.assembleResponse(entry));
+			}
+			return;
 		}
 		const submit = tabs.findIndex((tab) => tab.kind === "submit");
 		if (submit >= 0) this.focusedTab = submit;
@@ -369,7 +398,7 @@ export class HumanRequestMenu implements Component {
 
 	private submitAll(): void {
 		for (const entry of [...this.entries]) {
-			if (entry.mode !== "deferred") continue;
+			if (!this.awaitsSubmit(entry)) continue;
 			this.finish(entry, this.assembleResponse(entry));
 		}
 	}
@@ -387,6 +416,11 @@ export class HumanRequestMenu implements Component {
 		const question = entry.questions[0];
 		if (!question) return fallbackResponse(entry.request);
 		if (question.kind === "confirm") {
+			// A yes/no has nowhere to carry words, so a human who chose to say
+			// something instead answers in the one shape that can hold them. The
+			// asker reads it as an answer rather than as a refusal, which is what
+			// it is.
+			if (question.freeValue !== undefined) return { kind: "input", value: question.freeValue };
 			return { kind: "confirm", confirmed: question.single === "yes" };
 		}
 		if (question.kind === "multi-select") {
@@ -497,11 +531,14 @@ export class HumanRequestMenu implements Component {
 		index: number,
 		width: number,
 	): string[] {
+		const isFreeInput = option.value === FREE_INPUT_VALUE;
 		const isCursor = index === question.cursor;
 		const isSelected =
 			question.kind === "multi-select" ? question.multi.has(option.value) : question.single === option.value;
 		let prefix: string;
-		if (question.kind === "multi-select") {
+		// The free row opens an editor rather than toggling a box, so it keeps the
+		// arrow form even in a multi-select.
+		if (question.kind === "multi-select" && !isFreeInput) {
 			prefix = `  [${isSelected ? "✓" : " "}] `;
 		} else {
 			prefix = isCursor ? `  → [${index + 1}] ` : `    [${index + 1}] `;
@@ -515,10 +552,10 @@ export class HumanRequestMenu implements Component {
 						? theme.selection
 						: theme.dim;
 		let label = option.label;
-		if (option.value === FREE_INPUT_VALUE && question.editing && isCursor) {
+		if (isFreeInput && question.editing && isCursor) {
 			const value = question.freeInput?.getValue() ?? "";
 			label = `${option.label}: ${value}█`;
-		} else if (option.value === FREE_INPUT_VALUE && question.freeValue) {
+		} else if (isFreeInput && question.freeValue) {
 			label = `${option.label}: ${question.freeValue}`;
 		}
 		const room = Math.max(1, width - visibleWidth(prefix) - 1);
@@ -538,7 +575,7 @@ export class HumanRequestMenu implements Component {
 		}
 		lines.push("");
 		for (const entry of this.entries) {
-			if (entry.mode !== "deferred") continue;
+			if (!this.awaitsSubmit(entry)) continue;
 			for (const question of entry.questions) {
 				const title = question.title || entry.request.title;
 				lines.push(`  ${theme.dim("Q")} ${truncateToWidth(singleLine(title, 400), Math.max(1, width - 5), "…")}`);
@@ -617,8 +654,12 @@ export class HumanRequestMenu implements Component {
 
 	private hasUnanswered(): boolean {
 		return this.entries.some(
-			(entry) => entry.mode === "deferred" && entry.questions.some((question) => !this.isAnswered(question)),
+			(entry) => this.awaitsSubmit(entry) && entry.questions.some((question) => !this.isAnswered(question)),
 		);
+	}
+
+	private awaitsSubmit(entry: PendingEntry): boolean {
+		return entry.mode === "choice" && entry.defers;
 	}
 
 	// ── Tabs / focus ──────────────────────────────────────────────────────
@@ -631,7 +672,7 @@ export class HumanRequestMenu implements Component {
 				tabs.push({ kind: "input", entry: entryIndex });
 				continue;
 			}
-			hasDeferred = true;
+			if (entry.defers) hasDeferred = true;
 			for (let question = 0; question < entry.questions.length; question++) {
 				tabs.push({ kind: "question", entry: entryIndex, question });
 			}
@@ -684,7 +725,16 @@ export class HumanRequestMenu implements Component {
 		// buildInput's onSubmit closes over this exact entry object, so every
 		// path must attach the input to it and return it unchanged — never a
 		// spread copy, or finish() would target an entry that is not in the list.
-		const entry: PendingEntry = { request, signal, resolve, reject, settled: false, mode: "deferred", questions: [] };
+		const entry: PendingEntry = {
+			request,
+			signal,
+			resolve,
+			reject,
+			settled: false,
+			mode: "choice",
+			defers: defersAnswers(request),
+			questions: [],
+		};
 		if (request.kind === "input" || request.kind === "custom") {
 			entry.mode = "input";
 			entry.input = this.buildInput(entry);
@@ -723,14 +773,7 @@ export class HumanRequestMenu implements Component {
 			entry.input = this.buildInput(entry);
 			return entry;
 		}
-		if (request.kind === "select" && request.allowFreeInput) {
-			options.push({ value: FREE_INPUT_VALUE, label: FREE_INPUT_LABEL });
-		}
-		entry.questions.push(
-			makeQuestion(request.kind, request.title, options, {
-				allowFreeInput: request.kind === "select" && request.allowFreeInput,
-			}),
-		);
+		entry.questions.push(makeQuestion(request.kind, request.title, options));
 		return entry;
 	}
 
@@ -785,19 +828,25 @@ export class HumanRequestMenu implements Component {
 	}
 }
 
+/**
+ * Every choice question ends with the free-text option, whatever the request
+ * asked for: the options are the asker's guess at the answer space, and a human
+ * who has a different answer should not have to dismiss the question to give
+ * it. `allowFreeInput` on the request therefore changes nothing here - it is
+ * already always on.
+ */
 function makeQuestion(
 	kind: QuestionState["kind"],
 	title: string,
 	options: NormalizedHumanRequestOption[],
-	extra: { header?: string; message?: string; allowFreeInput?: boolean } = {},
+	extra: { header?: string; message?: string } = {},
 ): QuestionState {
 	return {
 		kind,
 		title,
 		header: extra.header,
 		message: extra.message,
-		options,
-		allowFreeInput: extra.allowFreeInput ?? false,
+		options: [...options, { value: FREE_INPUT_VALUE, label: FREE_INPUT_LABEL }],
 		cursor: 0,
 		multi: new Set<string>(),
 		editing: false,

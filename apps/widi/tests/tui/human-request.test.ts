@@ -68,7 +68,7 @@ describe("HumanRequestMenu", () => {
 		expect(rendered).toContain("Select a model");
 		expect(rendered).toContain("agent: main");
 		expect(rendered).toContain("anthropic/claude");
-		expect(rendered).toContain("Type another answer");
+		expect(rendered).toContain("Chat about this");
 		expect(rendered).toContain("Submit");
 		expect(rendered).toContain("─");
 
@@ -203,6 +203,53 @@ describe("HumanRequestMenu", () => {
 				{ kind: "select", value: undefined },
 			],
 		});
+	});
+
+	// The options are the asker's guess at the answer space; a human with a
+	// different answer should not have to dismiss the question to give it.
+	it("offers a free answer on every choice question, asked for or not", async () => {
+		const { menu } = createMenu();
+		const response = menu.request(envelope({ kind: "select", title: "Pick a color", options: ["red", "green"] }));
+
+		expect(plain(menu)).toContain("Chat about this");
+		menu.handleInput("3"); // the free row
+		menu.focused = true;
+		for (const character of "teal") menu.handleInput(character);
+		menu.handleInput(KEY.enter); // commits the text, advances to Submit
+		expect(plain(menu)).toContain("teal");
+		menu.handleInput(KEY.enter); // Submit
+
+		await expect(response).resolves.toEqual({ kind: "select", value: "teal" });
+	});
+
+	// A yes/no has nowhere to carry words; the input shape is the only one that
+	// can, and the asker reads it as an answer rather than a refusal.
+	it("answers a confirm with words when the human chooses to say something", async () => {
+		const { menu } = createMenu();
+		const response = menu.request(envelope({ kind: "confirm", title: "Deploy?" }));
+
+		menu.handleInput("3"); // Yes / No / Chat about this
+		menu.focused = true;
+		for (const character of "not yet") menu.handleInput(character);
+		menu.handleInput(KEY.enter);
+		menu.handleInput(KEY.enter); // Submit
+
+		await expect(response).resolves.toEqual({ kind: "input", value: "not yet" });
+	});
+
+	// Deferring is this layer's call, keyed off where the request came from: an
+	// agent is blocked on its answer, an extension asking is not.
+	it("answers an extension's confirm on the spot, with no Submit tab", async () => {
+		const { menu } = createMenu();
+		const response = menu.request(
+			envelope({ kind: "confirm", title: "Reload?", source: { kind: "extension", extensionId: "drill" } }),
+		);
+
+		expect(plain(menu)).not.toContain("Submit");
+		menu.handleInput("1");
+
+		await expect(response).resolves.toEqual({ kind: "confirm", confirmed: true });
+		expect(menu.pendingCount).toBe(0);
 	});
 
 	it("keeps background requests out of focus and shows a pending hint", async () => {
