@@ -11,7 +11,7 @@ import {
 import { AuthStorage, type AuthStorageBackend, type LockResult } from "../../src/core/auth-storage.ts";
 import type { ExtensionContext, ExtensionMessage } from "../../src/core/extension/api.ts";
 import { ModelRegistry, type OAuthProviderConfig } from "../../src/core/model-registry.ts";
-import { createCorePersistenceRegistry } from "../../src/core/persistence-registry.ts";
+import { PersistenceRegistry } from "../../src/core/persistence/index.ts";
 import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
 import { ResourceLoader } from "../../src/core/resource-loader.ts";
 import {
@@ -106,7 +106,7 @@ async function writeRunSession(env: MemoryExecutionEnv, agentId: string): Promis
 		fs: env,
 		cwd: "/workspace/project",
 		sessionsRoot: "/sessions",
-		registry: createCorePersistenceRegistry(),
+		registry: new PersistenceRegistry(),
 	});
 	await sessions.createAgentSession({ agentId, agentProfile: restoredProfile });
 	return sessionRef(sessions, agentId);
@@ -232,7 +232,7 @@ describe("AgentOrchestrator", () => {
 				fs: env,
 				cwd: "/workspace/project",
 				sessionsRoot: "/sessions",
-				registry: createCorePersistenceRegistry(),
+				registry: new PersistenceRegistry(),
 			}),
 			settingManager,
 			modelRegistry,
@@ -273,7 +273,7 @@ describe("AgentOrchestrator", () => {
 				fs: env,
 				cwd: "/workspace/project",
 				sessionsRoot: "/sessions",
-				registry: createCorePersistenceRegistry(),
+				registry: new PersistenceRegistry(),
 			}),
 			settingManager: new SettingManager(),
 			modelRegistry: await createModelRegistry(env),
@@ -306,7 +306,7 @@ describe("AgentOrchestrator", () => {
 			fs: env,
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
-			registry: createCorePersistenceRegistry(),
+			registry: new PersistenceRegistry(),
 		});
 		const session = await sessionManager.createAgentSession({ agentId: "worker-agent", agentProfile: restoredProfile });
 		await session.appendModelChange(restoredModel.provider, restoredModel.id);
@@ -377,7 +377,7 @@ describe("AgentOrchestrator", () => {
 			fs: env,
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
-			registry: createCorePersistenceRegistry(),
+			registry: new PersistenceRegistry(),
 		});
 		await sessionManager.createAgentSession({ agentId: "worker-agent", agentProfile: restoredProfile });
 		const orchestrator = new AgentOrchestrator({
@@ -415,7 +415,7 @@ describe("AgentOrchestrator", () => {
 			fs: env,
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
-			registry: createCorePersistenceRegistry(),
+			registry: new PersistenceRegistry(),
 		});
 		const session = await sessionManager.createAgentSession({ agentId: "worker-agent", agentProfile: restoredProfile });
 		await session.appendModelChange(restoredModel.provider, restoredModel.id);
@@ -1570,7 +1570,7 @@ describe("AgentOrchestrator", () => {
 			fs: env,
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
-			registry: createCorePersistenceRegistry(),
+			registry: new PersistenceRegistry(),
 		});
 		const session = await sessionManager.createAgentSession({ agentId: "worker-agent", agentProfile: restoredProfile });
 		await session.appendActiveToolsChange(["echo", "ghost"]);
@@ -1578,7 +1578,7 @@ describe("AgentOrchestrator", () => {
 			fs: env,
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
-			registry: createCorePersistenceRegistry(),
+			registry: new PersistenceRegistry(),
 		});
 		const orchestrator = new AgentOrchestrator({
 			executionEnv: env,

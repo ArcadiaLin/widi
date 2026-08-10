@@ -17,7 +17,6 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentHarnessEvent, CompactResult } from "@widi/agent-core";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
-import type { OwnerAttachment } from "../../src/core/background/index.ts";
 import type { AgentToOrchestratorHost } from "../../src/core/host.ts";
 import { messageBindingFor } from "../../src/core/message.ts";
 import { SettingManager } from "../../src/core/setting-manager.ts";
@@ -31,8 +30,6 @@ import {
 	harnessInputText,
 	MemoryExecutionEnv,
 	requireAgentHarness,
-	requireAgentJobs,
-	requireLiveAgent,
 	stubCompaction,
 } from "../helpers/orchestrator.ts";
 
@@ -71,10 +68,8 @@ function createDeferred(): Deferred {
 
 function agentHost(orchestrator: AgentOrchestrator, agentId: string): AgentToOrchestratorHost {
 	return (
-		orchestrator as unknown as {
-			_createAgentHost: (agentId: string, attachment: OwnerAttachment) => AgentToOrchestratorHost;
-		}
-	)._createAgentHost(agentId, requireLiveAgent(orchestrator, agentId).backgroundAttachment);
+		orchestrator as unknown as { _createAgentHost: (agentId: string) => AgentToOrchestratorHost }
+	)._createAgentHost(agentId);
 }
 
 function toolContext<TDetails>(orchestrator: AgentOrchestrator, agentId: string): ToolExecutionContext<TDetails> {
@@ -84,7 +79,6 @@ function toolContext<TDetails>(orchestrator: AgentOrchestrator, agentId: string)
 		extension: undefined,
 		human: undefined,
 		agents: agentHost(orchestrator, agentId),
-		jobs: requireAgentJobs(orchestrator, agentId),
 	};
 }
 
@@ -316,29 +310,9 @@ describe("agent watches", () => {
 		expect(inbox.texts).toHaveLength(0);
 	});
 
-	it("stays silent while the worker waits on a job it started", async () => {
-		const { orchestrator, watch, watcherAgentId, workerAgentId } = await createPair();
-		const inbox = watchInbox(orchestrator, watcherAgentId);
-		await watch(watcherAgentId, workerAgentId);
-
-		const started = requireAgentJobs(orchestrator, workerAgentId).startLocal({
-			toolCallId: "call-1",
-			toolName: "bash",
-		});
-		expect(started.ok).toBe(true);
-		if (started.ok) expect(started.execution.acceptBackground().ok).toBe(true);
-
-		await runAndStop(orchestrator, workerAgentId, assistantMessage("started the build"));
-		await settle();
-
-		// It stopped, but it is waiting on its own work and will be woken by it.
-		expect(inbox.texts).toHaveLength(0);
-	});
-
 	/**
-	 * The gate a delegation without a job needs. A worker waiting on its own
-	 * subagent holds no job, so the job count says it is done; only its own watch
-	 * says otherwise.
+	 * A worker waiting on its own subagent has stopped, but not in any sense its
+	 * own watcher cares about; only its own watch says so.
 	 */
 	it("stays silent while the worker waits on a subagent of its own", async () => {
 		const { orchestrator, watch, watcherAgentId, workerAgentId } = await createPair();

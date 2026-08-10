@@ -30,7 +30,6 @@ import { agentLabel, maintenanceLabel } from "./components/common.ts";
 import { FatalErrorView } from "./components/fatal-error.ts";
 import { FooterView } from "./components/footer.ts";
 import { HeaderView } from "./components/header.ts";
-import { JobsPanelView } from "./components/jobs-panel.ts";
 import { NoticeView } from "./components/notices.ts";
 import { OperationHintView } from "./components/operation-hint.ts";
 import { QueuedInputView } from "./components/queued-input.ts";
@@ -113,9 +112,8 @@ export class WidiTuiApplication {
 	private readonly hydratedAgents = new Set<string>();
 	private readonly notificationTimers = new Map<string, NodeJS.Timeout>();
 	private streamingFlushTimer?: NodeJS.Timeout;
-	private jobsTicker?: NodeJS.Timeout;
-	private jobsTickerInterval?: number;
-	private readonly jobsPanel: JobsPanelView;
+	private animationTicker?: NodeJS.Timeout;
+	private animationTickerInterval?: number;
 	/** Layout assembly: every mounted view is a registered slot entry. */
 	readonly layout = new LayoutSlots();
 	private readonly pendingTasks = new Set<Promise<unknown>>();
@@ -164,7 +162,6 @@ export class WidiTuiApplication {
 		this.messages = this.orchestrator.messageSinkFor(messageBindingFor({ kind: "human" }));
 		this.state = createTuiApplicationState();
 		this.projector = new EventProjector(this.state);
-		this.jobsPanel = new JobsPanelView(this.state);
 		this.pendingAgents = new PendingAgentController(this.state, this.orchestrator, this.defaultPendingDisplay());
 
 		// Built-ins go through the same runtime registration path extension
@@ -272,10 +269,6 @@ export class WidiTuiApplication {
 			this.state.toolOutputExpanded = !this.state.toolOutputExpanded;
 			this.tui.requestRender();
 		};
-		this.editor.onToggleJobs = () => {
-			this.jobsPanel.toggleExpanded();
-			this.tui.requestRender();
-		};
 		this.editor.onInterrupt = () => this.interrupt();
 		this.editor.onSteer = () => this.steerFromEditor();
 		this.editor.onOpenRequests = () => this.humanRequests.openLatest();
@@ -290,8 +283,8 @@ export class WidiTuiApplication {
 	/**
 	 * Every mounted view registers as a slot entry. Render order comes from the
 	 * slot, not from this list. Views the application itself drives (editor,
-	 * human requests, jobs panel, agent strip) are constructed beforehand and
-	 * their factories return the held instance.
+	 * human requests, agent strip) are constructed beforehand and their
+	 * factories return the held instance.
 	 */
 	private registerBuiltInSlots(): void {
 		const entries: LayoutSlotEntry[] = [
@@ -328,7 +321,6 @@ export class WidiTuiApplication {
 				factory: () => new QueuedInputView(this.state),
 			},
 			{ key: "selectorDock", slot: "aboveEditor", order: 4, scope: "global", factory: () => this.selectorDock },
-			{ key: "jobsPanel", slot: "jobsPanel", scope: "global", factory: () => this.jobsPanel },
 			{
 				key: "editor",
 				slot: "editor",
@@ -526,10 +518,10 @@ export class WidiTuiApplication {
 			clearTimeout(this.streamingFlushTimer);
 			this.streamingFlushTimer = undefined;
 		}
-		if (this.jobsTicker) {
-			clearInterval(this.jobsTicker);
-			this.jobsTicker = undefined;
-			this.jobsTickerInterval = undefined;
+		if (this.animationTicker) {
+			clearInterval(this.animationTicker);
+			this.animationTicker = undefined;
+			this.animationTickerInterval = undefined;
 		}
 		for (const agent of this.state.agents.values()) flushStreaming(agent);
 		this.removeLifecycleHandlers();
@@ -551,7 +543,7 @@ export class WidiTuiApplication {
 
 	private handleEvent(event: OrchestratorEvent): void {
 		this.projector.apply(event);
-		this.updateJobsTicker();
+		this.updateAnimationTicker();
 
 		switch (event.type) {
 			case "agent_spawned":
@@ -666,38 +658,31 @@ export class WidiTuiApplication {
 	 * Tick re-renders while anything animated is on screen. The visible running
 	 * agent has spinner frames advancing every 160ms; a working line still
 	 * saying what just happened has to be repainted once its line expires, or
-	 * "Job's done." stays up until the next keystroke; with only live background
-	 * jobs, one tick per second keeps the panel's elapsed times fresh. The
-	 * interval is rebuilt when the cadence changes and stopped when nothing
-	 * needs it.
+	 * "Job's done." stays up until the next keystroke. The interval is rebuilt
+	 * when the cadence changes and stopped when nothing needs it.
 	 */
-	private updateJobsTicker(): void {
-		const hasLiveJob = [...this.state.agents.values()].some((agent) =>
-			[...agent.backgroundJobs.values()].some((job) => job.status === "live" || job.status === "aborting"),
-		);
+	private updateAnimationTicker(): void {
 		const activeAgent = this.state.activeAgentId ? this.state.agents.get(this.state.activeAgentId) : undefined;
 		const hasVisibleRunningAgent = activeAgent?.status === "running";
 		const interval = hasVisibleRunningAgent
 			? SPINNER_TICK_MS
 			: hasLiveTransientVoice(activeAgent?.voice)
 				? VOICE_TICK_MS
-				: hasLiveJob
-					? 1_000
-					: undefined;
-		if (interval === this.jobsTickerInterval) return;
-		if (this.jobsTicker) {
-			clearInterval(this.jobsTicker);
-			this.jobsTicker = undefined;
+				: undefined;
+		if (interval === this.animationTickerInterval) return;
+		if (this.animationTicker) {
+			clearInterval(this.animationTicker);
+			this.animationTicker = undefined;
 		}
-		this.jobsTickerInterval = interval;
+		this.animationTickerInterval = interval;
 		if (interval !== undefined) {
 			// Recomputed from inside the tick as well: a voice line expiring is not
 			// an event, so nothing else would ever wind this cadence back down.
-			this.jobsTicker = setInterval(() => {
+			this.animationTicker = setInterval(() => {
 				this.tui.requestRender();
-				this.updateJobsTicker();
+				this.updateAnimationTicker();
 			}, interval);
-			this.jobsTicker.unref();
+			this.animationTicker.unref();
 		}
 	}
 
@@ -1337,7 +1322,7 @@ export class WidiTuiApplication {
 		}
 		await this.closeAgentForNewSession(sourceAgentId);
 		this.pendingAgents.beginNewSession({ profileId: source.profileId, model: source.display.model }, source.display);
-		this.updateJobsTicker();
+		this.updateAnimationTicker();
 		this.pendingUnknownCommand = undefined;
 		this.editor.setText("");
 		this.configurePendingEditor();
@@ -1371,7 +1356,7 @@ export class WidiTuiApplication {
 
 	private beginDefaultSession(): void {
 		this.pendingAgents.beginDefault(this.defaultPendingDisplay());
-		this.updateJobsTicker();
+		this.updateAnimationTicker();
 		this.pendingUnknownCommand = undefined;
 		this.editor.setText("");
 		this.configurePendingEditor();
@@ -1454,7 +1439,7 @@ export class WidiTuiApplication {
 		const agent = setActiveAgent(this.state, agentId);
 		// An agent nobody has looked at yet has never had a transition to roll on.
 		setSteadyVoice(agent, this.state.voicePack, agent.status === "running" ? "working" : "idle");
-		this.updateJobsTicker();
+		this.updateAnimationTicker();
 		this.editor.setText(this.drafts.get(agentId) ?? "");
 		clearDockedFocus(this.state);
 		this.updateEditorAvailability();
@@ -1479,11 +1464,10 @@ export class WidiTuiApplication {
 	private async syncAgent(agentId: string): Promise<void> {
 		try {
 			applyAgentSnapshot(this.state, this.orchestrator.inspectAgent(agentId));
-			this.projector.seedBackgroundJobs(agentId, this.orchestrator.listAgentBackgroundJobs(agentId));
 		} catch {
 			return;
 		}
-		this.updateJobsTicker();
+		this.updateAnimationTicker();
 		this.updateEditorAvailability();
 		this.tui.requestRender();
 	}
@@ -1500,7 +1484,6 @@ export class WidiTuiApplication {
 			if (this.hydrationGeneration.get(agentId) !== generation) return;
 			result.display.sessionName ??= snapshot.name;
 			this.projector.completeHydration(agentId, result, statuses);
-			this.projector.seedBackgroundJobs(agentId, this.orchestrator.listAgentBackgroundJobs(agentId));
 			this.hydratedAgents.add(agentId);
 		} catch (error) {
 			if (this.hydrationGeneration.get(agentId) !== generation) return;
@@ -1660,7 +1643,7 @@ export class WidiTuiApplication {
 		if (recent.length >= POKE_THRESHOLD) {
 			setTransientVoice(agent, this.state.voicePack, "poked", at);
 			this.pokes = [];
-			this.updateJobsTicker();
+			this.updateAnimationTicker();
 			return;
 		}
 		this.pokes = recent;

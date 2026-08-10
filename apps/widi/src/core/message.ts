@@ -2,7 +2,7 @@
  * Agent message domain.
  *
  * Everything an agent reads as user input is a message: human text, an
- * agent-to-agent message, a background job result (t1), or a system notice.
+ * agent-to-agent message, or a system notice.
  * This module owns what a message is, how extensions may transform or reject
  * it, how its model-facing text is rendered, and in what order concurrent
  * messages reach one target's harness.
@@ -30,7 +30,7 @@ import { maintenanceKindOf } from "./types.ts";
  * handed out and cannot be overridden.
  */
 export interface MessageSource {
-	/** Core knows `human`, `agent`, `background_job`, `recap`; anything else is rendered generically. */
+	/** Core knows `human` and `agent`; anything else is rendered generically. */
 	readonly kind: string;
 	/** One human-readable line; what a UI shows when it does not know the kind. */
 	readonly label?: string;
@@ -192,17 +192,15 @@ export type MessageTransformOutcome =
  * What a `block` from the input pipeline means for this message.
  *
  * `enforce` ends the message: the human sees a blocked input, an agent sees its
- * tool call fail. `ignore` is for the senders with nobody left to tell - a
- * background job result the model is already waiting for, a recap whose records
- * are written whether or not the model hears about them. There a
+ * tool call fail. `ignore` is for the senders with nobody left to tell. There a
  * block degrades to a diagnostic and the original body is delivered.
  */
 export type MessageBlockPolicy = "enforce" | "ignore";
 
 /**
  * The producers core ships with. Anyone else declares its own source and gets
- * the generic treatment; these five are the ones whose identity, delivery
- * policy and default rendering core decides.
+ * the generic treatment; these are the ones whose identity, delivery policy and
+ * default rendering core decides.
  */
 export type BuiltInMessageProducer =
 	| { readonly kind: "human" }
@@ -214,25 +212,6 @@ export type BuiltInMessageProducer =
 			 * relaying something it said. See {@link AgentNotice}.
 			 */
 			readonly notice?: AgentNotice;
-	  }
-	| {
-			readonly kind: "background_job";
-			readonly ownerAgentId: AgentId;
-			readonly jobId: string;
-			readonly mode: MessageDeliveryMode;
-	  }
-	| {
-			readonly kind: "recap";
-			/** Which recap this is - `orphaned_job_handles`, `carried_over_jobs`. */
-			readonly recap: string;
-			/**
-			 * What this recap accounts for, in whatever ids the sender names its
-			 * subjects by: spawned agents, job handles. It is recorded in the entry's
-			 * source so a later resume can read the branch and tell a fact already
-			 * recapped from one still owed. A recap with nothing enumerable to name
-			 * omits it and stays idempotent by some other means.
-			 */
-			readonly ids?: readonly string[];
 	  }
 	| { readonly kind: "extension"; readonly extensionId: string };
 
@@ -264,42 +243,12 @@ export interface AgentNoticeSourceDetails {
 export const AGENT_NOTICE_MERGE_KEY = "agent_notice";
 
 /**
- * Same framing as {@link renderRecapText}, and the same non-guarantee: bodies
- * are not escaped, so the tag is a convention, not an isolation boundary.
+ * Bodies are not escaped, so the tag is a convention, not an isolation boundary.
  */
 export function renderAgentNoticeText(senderAgentId: AgentId, notice: AgentNotice, body: string): string {
 	const reason = notice.reason === undefined ? "" : ` reason="${notice.reason}"`;
 	const abortedBy = notice.abortedBy === undefined ? "" : ` aborted-by="${notice.abortedBy}"`;
 	return `<agent-notification from="${senderAgentId}" status="${notice.status}"${reason}${abortedBy}>\n${body}\n</agent-notification>`;
-}
-
-/**
- * What a recap records about itself in `MessageSource.details`. It is the only
- * source payload core reads back: a recap that has already been given is not
- * owed again, and the branch is the only place that answer survives a restart.
- */
-export interface RecapSourceDetails {
-	readonly recap: string;
-	readonly ids?: readonly string[];
-}
-
-/**
- * What a recap looks like to the model: the body inside a tag naming which recap
- * it is.
- *
- * A recap arrives as user text, in a turn that also carries whatever the person
- * typed, and it is describing the conversation rather than continuing it. The
- * tag is what makes that legible without a sentence of preamble - a delimiter
- * the model reads as a frame, so the text inside is understood as the runtime
- * speaking about the session and never as an instruction the person gave.
- *
- * It is rendered here rather than written into each body so that every recap
- * gets the same frame, including the one the background job layer sends. Bodies
- * are plain prose and are not escaped; nothing interpolates untrusted text into
- * the tag itself, which carries only a recap name this codebase declares.
- */
-export function renderRecapText(recap: string, body: string): string {
-	return `<recap type="${recap}">\n${body}\n</recap>`;
 }
 
 /**
@@ -312,9 +261,7 @@ export function renderRecapText(recap: string, body: string): string {
  * to two of the three reads as a bug in the third.
  *
  * Attribution is rendered only where the reader needs to know the text is not
- * its own and the body does not already say so. A job result says it in its own
- * header, which it has to keep - that header is what the model matches its open
- * t0 handle against. A recap says it in a tag, {@link renderRecapText}.
+ * its own and the body does not already say so.
  */
 export function messageBindingFor(producer: BuiltInMessageProducer): MessageSinkBinding {
 	switch (producer.kind) {
@@ -355,41 +302,6 @@ export function messageBindingFor(producer: BuiltInMessageProducer): MessageSink
 					mergeKey: AGENT_NOTICE_MERGE_KEY,
 				},
 				render: (body) => renderAgentNoticeText(senderAgentId, notice, body),
-			};
-		}
-		case "background_job":
-			// `retryOnFailure` because the tool call already returned: nobody is left
-			// to be told the text was lost, and the model waits for exactly one
-			// result that no one will resend.
-			return {
-				source: {
-					kind: "background_job",
-					label: `job ${producer.jobId}`,
-					details: { ownerAgentId: producer.ownerAgentId, jobId: producer.jobId },
-				},
-				policy: {
-					humanInterrupt: false,
-					blockPolicy: "ignore",
-					retryOnFailure: true,
-					mergeKey: backgroundResultMergeKey(producer.mode),
-				},
-				render: (body) => body,
-			};
-		case "recap": {
-			const recap = producer.recap;
-			// `ignore` because the facts a recap states are recorded either way; a
-			// block would leave the records written and the model uninformed.
-			return {
-				source: {
-					kind: "recap",
-					label: recap.replaceAll("_", " "),
-					details: {
-						recap,
-						...(producer.ids === undefined ? undefined : { ids: [...producer.ids] }),
-					} satisfies RecapSourceDetails,
-				},
-				policy: { humanInterrupt: false, blockPolicy: "ignore", retryOnFailure: false },
-				render: (body) => renderRecapText(recap, body),
 			};
 		}
 		case "extension": {
@@ -547,27 +459,6 @@ export interface MessageEntryDetails {
 	readonly editedByHuman?: true;
 }
 
-/**
- * The subjects a branch entry says this recap already covered, empty for every
- * entry that is not one.
- *
- * Read defensively rather than cast: the entry may have been written by an older
- * build, by a hand-edited session, or by another recap entirely, and a recap
- * that mistakes one of those for its own record stays silent about a fact it
- * still owes.
- */
-export function recapEntryIds(details: unknown, recap: string): readonly string[] {
-	if (typeof details !== "object" || details === null) return [];
-	const source = (details as { source?: unknown }).source;
-	if (typeof source !== "object" || source === null) return [];
-	if ((source as MessageSource).kind !== "recap") return [];
-	const payload = (source as { details?: unknown }).details;
-	if (typeof payload !== "object" || payload === null) return [];
-	const record = payload as Partial<RecapSourceDetails>;
-	if (record.recap !== recap || !Array.isArray(record.ids)) return [];
-	return record.ids.filter((id): id is string => typeof id === "string");
-}
-
 export interface MessageDeliveryRequest {
 	readonly agentId: AgentId;
 	readonly method: MessageDeliveryMethod;
@@ -607,9 +498,9 @@ export interface MessageEnqueueInput {
 	/**
 	 * Keep the message queued when delivery fails for a reason retrying might
 	 * fix, instead of rejecting acceptance. Set for messages whose sender has
-	 * already moved on and would otherwise never learn the text was lost - a
-	 * background job result the model is waiting for is the motivating case.
-	 * A caller awaiting its own run sets it false so the error reaches it.
+	 * already moved on and would otherwise never learn the text was lost - an
+	 * agent notice its watcher is waiting for is the motivating case. A caller
+	 * awaiting its own run sets it false so the error reaches it.
 	 */
 	readonly retryOnFailure: boolean;
 	/** Notified each time such a failure defers the message. */
@@ -630,20 +521,6 @@ interface QueuedMessage {
 	readonly resolve: (receipt: MessageDeliveryReceipt) => void;
 	readonly reject: (error: unknown) => void;
 	settled: boolean;
-}
-
-/**
- * Merge key for background job results: consecutive settlements for one target
- * collapse into a single user message, which is what the previous per-agent
- * result buffer did.
- *
- * Merging is for text that already carries its own attribution and arrives in
- * bursts - job results and agent notices ({@link AGENT_NOTICE_MERGE_KEY}). A
- * human prompt owns its own run, and an ordinary agent message is one agent
- * addressing another, so neither merges.
- */
-export function backgroundResultMergeKey(mode: MessageDeliveryMode): string {
-	return `background_job:${mode}`;
 }
 
 /**
@@ -793,8 +670,8 @@ export class MessageDeliveryQueue {
 				// queued, report once, and wait for the next phase change. Never
 				// retry inline - that could spin against a broken harness.
 				const retryable = isRetryableDeliveryError(failure.error);
-				// `retryOnFailure` outranks that judgement, because a background
-				// job result has nobody left to report to. It does not outrank a
+				// `retryOnFailure` outranks that judgement, because such a message
+				// has nobody left to report to. It does not outrank a
 				// terminal one: waiting for a phase change on a harness that has
 				// been shut down would leave the sender queued behind an agent that
 				// can never take it, until an unrelated cancel notices.
@@ -912,10 +789,10 @@ function mergeEntryPayloads(batch: readonly QueuedMessage[]): MessageEntryPayloa
 }
 
 /**
- * Naming the head would file the whole batch under whoever was first: job
- * results differ in which job settled, notices in which agent stopped. The kind
- * is unanimous (a `mergeKey` is kind-scoped) so it stays; anything the batch
- * disagrees on is dropped rather than guessed. Nothing is lost - the merged
+ * Naming the head would file the whole batch under whoever was first: notices
+ * differ in which agent stopped. The kind is unanimous (a `mergeKey` is
+ * kind-scoped) so it stays; anything the batch disagrees on is dropped rather
+ * than guessed. Nothing is lost - the merged
  * text is self-attributing, each message keeping its own header or tag.
  */
 function mergeEntrySources(batch: readonly QueuedMessage[]): MessageSource {

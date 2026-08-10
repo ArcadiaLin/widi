@@ -1,7 +1,6 @@
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
 import type { AgentHarnessEvent } from "@widi/agent-core";
 import type { AgentSnapshot } from "../core/agent-types.ts";
-import type { BackgroundJobReportSnapshot } from "../core/background/index.ts";
 import type { OrchestratorDiagnostic } from "../core/diagnostics.ts";
 import type { ExtensionMessage, ExtensionStatusSnapshot } from "../core/extension/api.ts";
 import type { HumanRequestEnvelope, HumanRequestKind } from "../core/human-request.ts";
@@ -25,7 +24,7 @@ export interface UserMessageItem {
 
 /**
  * Input the runtime put into this agent's context on someone else's behalf: a
- * peer agent, a settled background job, an extension, or the runtime itself.
+ * peer agent, an extension, or the runtime itself.
  *
  * Distinct from `user-message`, which is only what the person at this keyboard
  * typed. The two are indistinguishable to the model - both reach it as user
@@ -34,8 +33,8 @@ export interface UserMessageItem {
  *
  * `text` is the semantic body and `modelText` the rendered form the model
  * actually read, present only when the source's renderer changed it. The
- * attribution prefix lives in `modelText`; on screen it is the source line's
- * job, so the same fact is never shown twice.
+ * attribution prefix lives in `modelText`; on screen the source line carries
+ * it, so the same fact is never shown twice.
  */
 export interface OrchestratorMessageItem {
 	readonly type: "orchestrator-message";
@@ -297,10 +296,6 @@ export interface AgentViewState {
 	extensionStatuses: Map<string, ExtensionStatusSnapshot>;
 	unreadCount: number;
 	attention: AgentAttention;
-	/** Live background jobs (backgrounded, not yet settled) owned by this agent. */
-	backgroundJobCount: number;
-	/** Per-job view state backing the jobs panel; includes retained settled jobs. */
-	backgroundJobs: Map<string, BackgroundJobViewState>;
 	hydration: "pending" | "ready" | "failed";
 	bufferedEvents: OrchestratorEvent[];
 	pendingInput?: PendingInput;
@@ -346,24 +341,6 @@ export interface PendingAssistantText {
 export interface PendingToolUpdate {
 	readonly args: unknown;
 	readonly partialResult: unknown;
-}
-
-/** Panel-facing view of one background job; settled jobs are retained until
- * the next user turn starts. */
-export interface BackgroundJobViewState {
-	readonly jobId: string;
-	readonly toolName: string;
-	/** Short label the caller named this job with; absent when unnamed. */
-	readonly name?: string;
-	readonly description?: string;
-	status: "live" | "aborting" | "completed" | "failed" | "cancelled";
-	readonly startedAt: number;
-	endedAt?: number;
-	totalBytesSeen: number;
-	/** Latest structured report accepted for this job. */
-	report?: BackgroundJobReportSnapshot;
-	/** Last non-empty output line, decoded from progress increments. */
-	lastLine?: string;
 }
 
 export interface NoticeItem {
@@ -510,8 +487,6 @@ export function createAgentViewState(agentId: AgentId, status: AgentViewStatus =
 		extensionStatuses: new Map(),
 		unreadCount: 0,
 		attention: "none",
-		backgroundJobCount: 0,
-		backgroundJobs: new Map(),
 		hydration: "ready",
 		bufferedEvents: [],
 		runToolCount: 0,

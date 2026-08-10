@@ -27,18 +27,6 @@ function resolveTimeoutMs(timeout: number | undefined): number | undefined {
 const bashSchema = Type.Object({
 	command: Type.String({ description: "Bash command to execute" }),
 	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
-	background: Type.Optional(
-		Type.Boolean({
-			description:
-				"Run in the background: the call returns immediately with a job handle instead of blocking, and the command's output arrives later as a separate background job result message. Use for long-running commands you do not need to wait on inline (servers, watchers, long builds). Omit for normal commands whose output you need in this turn.",
-		}),
-	),
-	name: Type.Optional(
-		Type.String({
-			description:
-				'Short label for this command when it runs in the background, in a few words and in the imperative ("run the e2e suite", "watch the docs build"). It is how the job is listed to the user and how you can refer to it later. Ignored without background: true.',
-		}),
-	),
 });
 
 export type BashToolInput = Static<typeof bashSchema>;
@@ -153,14 +141,8 @@ export function createBashToolDefinition(
 		promptGuidelines: [
 			"Use bash for building, testing, version control, and commands not covered by a dedicated tool.",
 			"Do not use bash to replace read, grep, find, or ls; the dedicated tools are more precise.",
-			"Set background: true only for commands you intend to keep running without blocking; their result comes back later as a separate message.",
-			"Give a background command a short name: it is what the user sees in the job list, where a bare command line is hard to recognize.",
-			"For a background job: read_job shows its live output, wait_for_jobs blocks until it finishes, kill_job terminates it.",
 		],
 		parameters: bashSchema,
-		backgroundable: true,
-		backgroundDescription: ({ command }) => command,
-		backgroundName: ({ name }) => name,
 		execute: async (_toolCallId, { command, timeout }, context) => {
 			const signal = context.signal;
 			const onUpdate = context.onUpdate;
@@ -215,9 +197,6 @@ export function createBashToolDefinition(
 			const handleData = (data: Buffer) => {
 				if (!acceptingOutput) return;
 				output.append(data);
-				// Mirror raw output into the job's rolling tail when this call runs as
-				// a background job, so job-control surfaces can peek at live progress.
-				context.job?.output.append(data);
 				scheduleOutputUpdate();
 			};
 

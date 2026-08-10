@@ -83,8 +83,7 @@ export interface ExtensionMessageEntryData {
 
 /**
  * Core-owned type for every message the runtime puts into a model's context on
- * someone else's behalf: another agent, a settled background job, an extension,
- * or the runtime itself.
+ * someone else's behalf: another agent, an extension, or the runtime itself.
  *
  * One type rather than one per source, because the dispatch key is
  * `details.source.kind` and that is open - a holder names its own source, so a
@@ -173,7 +172,6 @@ export interface SessionManagerConfigs {
 	fs: FileSystem;
 	cwd: string;
 	sessionsRoot: string;
-	/** Which persistence namespaces this build can read; see `persistence-registry.ts`. */
 	registry: PersistenceRegistry;
 }
 

@@ -37,8 +37,8 @@ export const MAX_PERSISTENCE_REF_BYTES = 2048;
  *
  * A fork is the only operation that puts somebody else's state on a branch, so
  * it is the only thing that sets this. Downstream reads it to decide whether
- * the state's contents can still be trusted: a job history copied out of
- * another session names processes that were never this session's.
+ * the state's contents can still be trusted: a record copied out of another
+ * session may name things that were never this session's.
  *
  * This records what happened, not what to do about it. The decision belongs to
  * whoever activates the state - see the module doc of `custom-storage.ts`.

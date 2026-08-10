@@ -282,22 +282,22 @@ describe("WidiTuiApplication animation ticker", () => {
 		setActiveAgent(harness.application.state, "main").status = "idle";
 		ensureAgentProjection(harness.application.state, "background", "running");
 		const ticker = harness.application as unknown as {
-			updateJobsTicker(): void;
+			updateAnimationTicker(): void;
 			switchAgent(agentId: string): void;
-			jobsTickerInterval?: number;
+			animationTickerInterval?: number;
 			hydratedAgents: Set<string>;
 		};
 		ticker.hydratedAgents.add("main");
 		ticker.hydratedAgents.add("background");
 
-		ticker.updateJobsTicker();
-		expect(ticker.jobsTickerInterval).toBeUndefined();
+		ticker.updateAnimationTicker();
+		expect(ticker.animationTickerInterval).toBeUndefined();
 
 		ticker.switchAgent("background");
-		expect(ticker.jobsTickerInterval).toBe(160);
+		expect(ticker.animationTickerInterval).toBe(160);
 
 		ticker.switchAgent("main");
-		expect(ticker.jobsTickerInterval).toBeUndefined();
+		expect(ticker.animationTickerInterval).toBeUndefined();
 	});
 
 	// A voice line expiring is not an event; without a tick "Job's done." would
@@ -306,15 +306,18 @@ describe("WidiTuiApplication animation ticker", () => {
 		const harness = await createApplicationHarness();
 		const agent = setActiveAgent(harness.application.state, "main");
 		agent.status = "idle";
-		const ticker = harness.application as unknown as { updateJobsTicker(): void; jobsTickerInterval?: number };
+		const ticker = harness.application as unknown as {
+			updateAnimationTicker(): void;
+			animationTickerInterval?: number;
+		};
 
 		setTransientVoice(agent, harness.application.state.voicePack, "done");
-		ticker.updateJobsTicker();
-		expect(ticker.jobsTickerInterval).toBe(250);
+		ticker.updateAnimationTicker();
+		expect(ticker.animationTickerInterval).toBe(250);
 
 		agent.voice = undefined;
-		ticker.updateJobsTicker();
-		expect(ticker.jobsTickerInterval).toBeUndefined();
+		ticker.updateAnimationTicker();
+		expect(ticker.animationTickerInterval).toBeUndefined();
 	});
 });
 

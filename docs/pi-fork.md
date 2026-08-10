@@ -109,7 +109,7 @@ On re-sync, harness-v2's record model has to answer the same requirement - an ap
 
 ### The typed input widening
 
-Every message WIDI puts into an agent's context goes through one path, and each one records who wrote it - a peer agent, a settled background job, an extension, the runtime itself. That record has to reach the branch, because a session read back later has to render the same way the live client did, and a bare `role:"user"` entry carries nothing to render from.
+Every message WIDI puts into an agent's context goes through one path, and each one records who wrote it - a peer agent, an extension, the runtime itself. That record has to reach the branch, because a session read back later has to render the same way the live client did, and a bare `role:"user"` entry carries nothing to render from.
 
 `CustomMessage` is already the answer. It is an `AgentMessage` union member, it carries `customType`, `display` and `details`, and `convertToLlm` maps it to `role:"user"` with the content verbatim - so the model reads exactly what it read before. The agent loop already persists whatever messages it is handed, and `nextTurnQueue` was already `AgentMessage[]`.
 
@@ -235,10 +235,9 @@ Source reading survives: both tarballs ship declaration maps with `sourcesConten
 Revisit this arrangement when all of the following hold:
 
 1. harness-v2 has landed upstream and its API has stopped moving across at least two releases.
-2. The three gaps WIDI needs are answered, or we have accepted owning them:
+2. The two gaps WIDI needs are answered, or we have accepted owning them:
    - **Follow-up promotion.** harness-v2's lane queues are `steer`/`followUp`/`nextRun` with no promotion. Our patch does not port as written: its rollback works by splicing in-memory arrays, and harness-v2's queues are append-only durable records, so promotion has to become a record-level operation.
    - **Human-in-the-loop suspension.** `SuspendedOperation.reason` is `crash | deferred`. WIDI's `ask_human` awaits a person inside a tool call, which harness-v2 recovery treats as an interrupted tool and closes with a synthetic result. A third reason is needed.
-   - **Background jobs.** harness-v2 has no t0/t1 split. Our backgroundable tools resolve a handle at t0 and deliver the outcome later as a message; that composes with harness-v2's step model, and `queue_enqueued` would make t1 delivery durable, but job execution stays as mortal as it is today. `BackgroundJobStore` does not go away.
 3. The migration is priced. The method surface maps almost one to one, including all five hooks (`before_agent_start` to `before_run`, `before_provider_request` to `before_request`/`before_payload`, `context` to `transform_context`, `tool_call` to `before_tool`, `tool_result` to `after_tool`). The real work is the storage adapter, the session snapshot and tree queries behind `SessionHydrator`, and the loss of the harness's type parameters - `WidiAgentHarness` instantiates two and harness-v2 keeps only the tool context, so `ResolvedAgentHarnessTool`'s extra fields need a new home. The resource removal above already paid the other half of that bill: the two resource parameters harness-v2 also drops are gone.
 
 Until then, harness-v2 is a design to mine rather than a dependency to track. Part II of that document - the record model, provisioned ids, and recovery - is backend-neutral and does not require lanes, which is the part worth adopting into our own layer first. Lanes themselves model shared history across parallel positions; WIDI isolates agents by spawn tree and passes messages, so lanes are the one piece to leave alone.

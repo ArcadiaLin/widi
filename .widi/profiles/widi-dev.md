@@ -3,7 +3,7 @@ id: widi-dev
 label: WIDI Dev
 description: Local WIDI development profile for comprehensive harness self-checks.
 persist: true
-tools: [read, bash, edit, write, grep, find, ls, ask_human, wait_for_jobs, read_job, kill_job, list_agents, dispose_agent, send_message, spawn_agent, watch_agent]
+tools: [read, bash, edit, write, grep, find, ls, ask_human, list_agents, dispose_agent, send_message, spawn_agent, watch_agent]
 skills: [self-check, econ-deep-research]
 projectContext: [AGENTS.md]
 includeCwd: true

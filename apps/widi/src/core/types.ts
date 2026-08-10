@@ -1,11 +1,6 @@
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import type { AgentHarnessEvent, AgentHarnessPhase } from "@widi/agent-core";
 import type { AgentProfile } from "./agent-profile.js";
-import type {
-	BackgroundJobReportSnapshot,
-	BackgroundJobSnapshot,
-	BackgroundJobTransition,
-} from "./background/index.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
 import type { ExtensionMessage, ExtensionStatus } from "./extension/types.ts";
 import type { HumanRequestEvent } from "./human-request.ts";
@@ -118,23 +113,14 @@ export type OrchestratorEvent =
 	// arrival at idle, not one per fact that re-confirms it.
 	//
 	// Deliberately not the same question as "the work is finished". An agent
-	// that stopped mid-task, was interrupted, or is waiting on jobs it started
-	// is idle here too; `reason` and `liveJobCount` are what a consumer judges
-	// that from.
+	// that stopped mid-task or was interrupted is idle here too; `reason` is
+	// what a consumer judges that from.
 	| {
 			readonly type: "agent_idle";
 			agentId: AgentId;
 			reason: AgentIdleReason;
 			/** Only with `aborted`, and only when the abort was asked for. */
 			abortedBy?: AgentAbortOrigin;
-			/**
-			 * Backgrounded jobs the agent still owns at this moment, including
-			 * tasks delegated to other agents. An idle with live jobs is an agent
-			 * waiting, not an agent done - it will be woken by their results.
-			 * Carried here because idleness itself does not consider them: an
-			 * agent whose jobs never settle would otherwise look permanently done.
-			 */
-			liveJobCount: number;
 			idleAt: string;
 	  }
 	// Input interception facts (ME slice 6): the model-facing text can differ
@@ -301,62 +287,6 @@ export type OrchestratorEvent =
 			stateRoot: string | null;
 			entryId: string;
 			changedAt: string;
-	  }
-	// Per-job lifecycle fact for the agent's pseudo-async background jobs,
-	// emitted for every observable transition (backgrounded at t0, an abort
-	// request, settlement). The job is an immutable snapshot, not the live
-	// table view; output content is not carried here - surfaces pull it via
-	// `readAgentBackgroundJobOutput`. `liveCount` is the number of live
-	// backgrounded jobs after this change, so count displays need no job
-	// bookkeeping of their own.
-	| {
-			readonly type: "agent_background_job_changed";
-			agentId: AgentId;
-			job: BackgroundJobSnapshot;
-			transition: BackgroundJobTransition;
-			liveCount: number;
-			changedAt: string;
-	  }
-	// Latest structured, tool-owned report for a live backgrounded job. This is
-	// a replace-only register rather than a delta stream: consumers keep the
-	// highest revision they have seen and may safely skip intermediate events.
-	| {
-			readonly type: "agent_background_job_report_updated";
-			agentId: AgentId;
-			jobId: string;
-			report: BackgroundJobReportSnapshot;
-			changedAt: string;
-			/** Originating tool call id, for correlating the report to its operation. */
-			operationRef?: string;
-	  }
-	// Incremental output of a live backgrounded job. Best-effort and coalesced:
-	// throttled to ~100ms and merged under backpressure, so consumers must treat
-	// it as a lossy stream keyed by absolute byte offsets rather than a guaranteed
-	// per-chunk feed. `chunk` is the new output since the previous event encoded
-	// as Base64; a `startByte` past the previous `endByte` (and a rising
-	// `progressDroppedBytes`) marks a gap where the increment buffer overflowed.
-	// Extensions persist by Base64-decoding `chunk` and writing those exact bytes
-	// at `startByte`; read_job still serves the current rolling tail.
-	| {
-			readonly type: "agent_background_job_progress";
-			agentId: AgentId;
-			jobId: string;
-			/** Per-job monotonic counter of emitted progress events (0-based). */
-			sequence: number;
-			/** New output bytes since the previous event, encoded as Base64. */
-			chunk: string;
-			/** Absolute offset of the first byte in `chunk`. */
-			startByte: number;
-			/** Absolute offset just past the last byte in `chunk`. */
-			endByte: number;
-			/** Total bytes ever appended to the job's output. */
-			totalBytesSeen: number;
-			/** Cumulative bytes dropped from the progress buffer and never forwarded. */
-			progressDroppedBytes: number;
-			/** ISO timestamp when the increment was observed. */
-			observedAt: string;
-			/** Originating tool call id, for correlating the job to its operation. */
-			operationRef?: string;
 	  };
 
 export type OrchestratorEventListener = (event: OrchestratorEvent) => Promise<void> | void;

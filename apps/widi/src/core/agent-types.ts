@@ -1,7 +1,6 @@
 import type { AgentHarness, Skill } from "@widi/agent-core";
 import type { AgentProfile, AgentProfileSource } from "./agent-profile.js";
 import { toAgentProfileReference } from "./agent-profile.js";
-import type { OwnerAttachment } from "./background/index.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
 import type { ExtensionRunner, ExtensionRunnerSnapshot } from "./extension/index.ts";
 import type { ResourceSource } from "./resource-loader.js";
@@ -95,7 +94,6 @@ export interface LiveAgent {
 	readonly systemPrompt: AgentSystemPromptFacts;
 	readonly harness: WidiAgentHarness;
 	readonly settings: AgentSettings;
-	readonly backgroundAttachment: OwnerAttachment;
 	extensionRunner: ExtensionRunner;
 	extensionBindings: ExtensionRunnerBindings;
 	toolPolicy: AgentToolPolicy;

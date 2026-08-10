@@ -134,8 +134,9 @@ export function killProcessTree(pid: number): void {
 /**
  * Detached child processes are tracked so they can be killed when the WIDI
  * process exits, otherwise a killed parent can orphan a process group. Graceful
- * shutdown aborts jobs (which kills their trees and untracks the pids); this set
- * plus the `exit` hook below is a last-resort net for normal event-loop exit and
+ * shutdown aborts the tool calls that own them (which kills their trees and
+ * untracks the pids); this set plus the `exit` hook below is a last-resort net
+ * for normal event-loop exit and
  * `process.exit()`. Signal termination and fatal native failures can bypass
  * Node's `exit` event, so every process host must also call
  * {@link killTrackedDetachedChildren} from its own synchronous shutdown path.

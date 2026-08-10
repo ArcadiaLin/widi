@@ -18,7 +18,6 @@ declare module "@earendil-works/pi-tui" {
 		"app.interrupt": true;
 		"app.exit": true;
 		"app.expand": true;
-		"app.jobs.expand": true;
 		"app.staged.edit": true;
 		"app.prompt.view": true;
 		"app.steer": true;
@@ -49,7 +48,6 @@ export const WIDI_KEYBINDINGS = {
 	"app.interrupt": { defaultKeys: "escape", description: "Close the current interaction or abort the active agent" },
 	"app.exit": { defaultKeys: "ctrl+d", description: "Exit when the editor is empty" },
 	"app.expand": { defaultKeys: "ctrl+o", description: "Toggle expanded transcript details" },
-	"app.jobs.expand": { defaultKeys: "ctrl+t", description: "Toggle expanded background job panel" },
 	// ctrl+e belongs to pi-tui's cursorLineEnd; taking it would shadow an
 	// editing key every emacs-handed user expects.
 	"app.staged.edit": { defaultKeys: "ctrl+x", description: "Take the newest staged message back into the editor" },

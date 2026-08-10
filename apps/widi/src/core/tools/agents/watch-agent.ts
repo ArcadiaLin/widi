@@ -102,10 +102,9 @@ export class AgentWatches {
 			}
 			const watch = this._watches.get(targetAgentId);
 			if (watch?.watcherAgentId !== host.agentId) return;
-			// `ready` and `maintenance` have no turn behind them; live jobs and an
-			// unanswered delegation mean it is waiting on work that will wake it.
+			// `ready` and `maintenance` have no turn behind them; an unanswered
+			// delegation means it is waiting on work that will wake it.
 			if (stop.reason === "ready" || stop.reason === "maintenance") continue;
-			if (stop.liveJobCount > 0) continue;
 			if (this._awaitsSubagent(targetAgentId)) continue;
 			const awaited = watch.pending;
 			// A human taking the agent over answers nothing the watcher handed it, so

@@ -3,7 +3,6 @@ import { AgentHarness } from "@widi/agent-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import { AgentProfileRegistry, InMemoryProfileStorageBackend } from "../../src/core/agent-profile.ts";
-import type { OwnerAttachment } from "../../src/core/background/index.ts";
 import type { AgentToOrchestratorHost } from "../../src/core/host.ts";
 import { createDisposeAgentToolDefinition } from "../../src/core/tools/agents/dispose-agent.ts";
 import { createListAgentsToolDefinition, type ListAgentsDetails } from "../../src/core/tools/agents/list-agents.ts";
@@ -17,8 +16,6 @@ import {
 	harnessInputText,
 	MemoryExecutionEnv,
 	requireAgentHarness,
-	requireAgentJobs,
-	requireLiveAgent,
 	restoredProfile,
 	spawnParentOf,
 } from "../helpers/orchestrator.ts";
@@ -36,22 +33,13 @@ afterEach(() => {
 
 /**
  * The execution context an agent's own turn would carry: the real host closure
- * the orchestrator builds for that agent, plus that agent's own job table.
+ * the orchestrator builds for that agent.
  */
 function toolContext<TDetails>(orchestrator: AgentOrchestrator, agentId: string): ToolExecutionContext<TDetails> {
 	const host = (
-		orchestrator as unknown as {
-			_createAgentHost: (agentId: string, attachment: OwnerAttachment) => AgentToOrchestratorHost;
-		}
-	)._createAgentHost(agentId, requireLiveAgent(orchestrator, agentId).backgroundAttachment);
-	return {
-		signal: undefined,
-		onUpdate: undefined,
-		extension: undefined,
-		human: undefined,
-		agents: host,
-		jobs: requireAgentJobs(orchestrator, agentId),
-	};
+		orchestrator as unknown as { _createAgentHost: (agentId: string) => AgentToOrchestratorHost }
+	)._createAgentHost(agentId);
+	return { signal: undefined, onUpdate: undefined, extension: undefined, human: undefined, agents: host };
 }
 
 /**
@@ -191,7 +179,7 @@ describe("list_agents live and resumable sections", () => {
 	});
 
 	// §5.2: the old listing refused to say what an agent was doing because the
-	// task lived in a job table. Activity is to hand now; who is watching whom is
+	// task lived in a runtime table. Activity is to hand now; who is watching whom is
 	// not this tool's to know.
 	it("reports each agent's activity", async () => {
 		const { orchestrator, owner, worker } = await createPair();
@@ -297,7 +285,7 @@ describe("list_agents live and resumable sections", () => {
 });
 
 describe("spawn_agent", () => {
-	it("creates an idle unwatched agent and registers no job", async () => {
+	it("creates an idle unwatched agent", async () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		const caller = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 		const context = toolContext(orchestrator, caller);
@@ -307,7 +295,6 @@ describe("spawn_agent", () => {
 		const status = result.details.agents[0];
 		expect(status).toMatchObject({ origin: "new", profileId: "worker", watching: false });
 		expect(orchestrator.getAgentActivity(status?.agentId ?? "").activity).toBe("idle");
-		expect(context.jobs?.list()).toEqual([]);
 	});
 
 	// Batch is the whole reason the schema takes an array: several agents in one
@@ -340,7 +327,7 @@ describe("spawn_agent", () => {
 		expect(orchestrator.listAgents().agents).toHaveLength(3);
 	});
 
-	// The task is an ordinary message now, not an assignment: no job is opened and
+	// The task is an ordinary message now, not an assignment: nothing is opened and
 	// the worker has nothing to remember to settle.
 	it("sends the first task as a message and watches the agent by default", async () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
@@ -358,7 +345,6 @@ describe("spawn_agent", () => {
 		const status = result.details.agents[0];
 		expect(status).toMatchObject({ profileId: "worker", watching: true });
 		expect(harnessInputText(prompt.mock.calls[0]?.[0])).toBe(`[Message from ${caller}]\n\naudit the parser`);
-		expect(requireAgentJobs(orchestrator, caller).list()).toEqual([]);
 		expect(watches.isWatchedBy(status?.agentId ?? "", caller)).toBe(true);
 	});
 
@@ -510,7 +496,7 @@ describe("send_message", () => {
 		const result = await sendMessage.execute(
 			"call-1",
 			{ agentId: worker, message: "rename the module", watch: true },
-			{ signal: undefined, onUpdate: undefined, extension: undefined, human: undefined, agents: host, jobs: undefined },
+			{ signal: undefined, onUpdate: undefined, extension: undefined, human: undefined, agents: host },
 		);
 
 		expect(order).toEqual([`watch:${worker}`, `send:${worker}`]);

@@ -29,10 +29,6 @@ export type { JsonValue } from "../../utils/json.ts";
 export type { AgentProfile, AgentProfileOverride, AgentProfileReference } from "../agent-profile.js";
 // WIDI core types named in author-facing signatures are re-exported here so
 // a third-party extension never imports core internals directly.
-export type {
-	BackgroundJobReport,
-	BackgroundJobReportSnapshot,
-} from "../background/index.ts";
 export type { CoreDiagnostic, ExtensionDiagnosticDraft } from "../diagnostics.ts";
 // The cross-agent vocabulary, shared with the agent host: what a profile looks
 // like in a listing, what a live agent looks like, and what a tree walk returns.
@@ -63,8 +59,6 @@ export {
 // are a contract between an extension and whoever renders it, so they live with
 // the renderer, not here.
 export type {
-	BackgroundJobExecutionContext,
-	BackgroundJobReportAdapter,
 	ExtensionActions,
 	ExtensionActivationApi,
 	ExtensionCompactionResult,

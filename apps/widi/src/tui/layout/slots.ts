@@ -18,7 +18,6 @@ export const SLOT_ORDER = [
 	"chat",
 	"status",
 	"aboveEditor",
-	"jobsPanel",
 	"editor",
 	"belowEditor",
 	"footer",

@@ -360,7 +360,7 @@ function formatAgent(state: TuiApplicationState, agent: AgentViewState, active: 
 			: agent.unreadCount > 0
 				? `${progress} · ${agent.unreadCount} unread`
 				: progress;
-	const detail = agent.backgroundJobCount > 0 ? `${base} · ${agent.backgroundJobCount} bg` : base;
+	const detail = base;
 	// Agent-strip statuses mark the agent item itself: just the icon, painted
 	// with its tone, one per publishing extension status.
 	const markers = extensionStatusesInRegion(agent, "agent-strip").map((entry) =>

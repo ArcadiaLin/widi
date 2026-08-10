@@ -43,13 +43,7 @@ export const OBJECTS_FILE_NAME = "objects.jsonl";
 export const MAX_SESSION_DEPTH = 8;
 
 /** Directories a session directory owns that are never child sessions. */
-const RESERVED_SESSION_DIR_NAMES: ReadonlySet<string> = new Set([
-	AGENTS_DIR_NAME,
-	PERSISTENCE_DIR_NAME,
-	// Pre-migration sidecars. Reserved so a legacy directory is never mistaken
-	// for a child session while both layouts coexist.
-	"jobs",
-]);
+const RESERVED_SESSION_DIR_NAMES: ReadonlySet<string> = new Set([AGENTS_DIR_NAME, PERSISTENCE_DIR_NAME]);
 
 /**
  * A session's logical address inside one cwd group: the root directory name,
@@ -120,9 +114,9 @@ export function namespaceObjectsSegments(key: SessionKey, namespace: string): st
 /**
  * Directory name for a namespace.
  *
- * Namespaces read as `core:jobs`, and `:` is not a legal Windows path
+ * Namespaces read as `core:notes`, and `:` is not a legal Windows path
  * character. The separator is doubled rather than replaced by `-` so
- * `core:jobs` and a hypothetical `core-jobs` cannot collide.
+ * `core:notes` and a hypothetical `core-notes` cannot collide.
  */
 export function encodeNamespaceDirName(namespace: string): string {
 	return namespace.replace(/:/g, "__");

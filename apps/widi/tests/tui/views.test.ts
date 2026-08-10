@@ -144,18 +144,6 @@ describe("TUI views", () => {
 		expect(output).toContain("WIDI Dev [fork from widi-dev · 547da47e]");
 	});
 
-	it("shows the live background job count in the agent strip", () => {
-		const state = createTuiApplicationState();
-		const agent = setActiveAgent(state, "widi-dev");
-		agent.status = "idle";
-		agent.snapshot = snapshot("widi-dev", "/sessions/source.jsonl");
-		agent.backgroundJobCount = 2;
-
-		const output = new AgentStripView(state).render(160).join("\n").replace(ANSI_SEQUENCE, "");
-
-		expect(output).toContain("2 bg");
-	});
-
 	it("shows how far into its run a running agent is", () => {
 		const state = createTuiApplicationState();
 		const agent = setActiveAgent(state, "widi-dev");

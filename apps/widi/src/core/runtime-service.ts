@@ -29,7 +29,7 @@ import {
 import { applyHttpProxySettings, configureHttpDispatcher } from "./http-dispatcher.ts";
 import { HumanRequestBroker, type HumanRequestHandler } from "./human-request.ts";
 import { ModelRegistry } from "./model-registry.js";
-import { createCorePersistenceRegistry } from "./persistence-registry.ts";
+import { PersistenceRegistry } from "./persistence/index.ts";
 import {
 	createProjectExtensionTrustDiagnostics,
 	type ProjectTrustResolution,
@@ -44,7 +44,6 @@ import { ToolRegistry } from "./tool-registry.ts";
 import { registerCoreAgentTools } from "./tools/agents/builtin.ts";
 import { registerCoreCodingTools } from "./tools/coding/builtin.ts";
 import { registerCoreInteractionTools } from "./tools/interaction/builtin.ts";
-import { registerCoreJobTools } from "./tools/jobs/builtin.ts";
 import type { RuntimeModel } from "./types.ts";
 
 export interface CreateWidiRuntimeOptions {
@@ -535,7 +534,7 @@ export async function createWidiRuntime(options: CreateWidiRuntimeOptions): Prom
 		fs: executionEnv,
 		cwd,
 		sessionsRoot: sessionRoot,
-		registry: createCorePersistenceRegistry(),
+		registry: new PersistenceRegistry(),
 	});
 	const extensionLoader =
 		options.extensionLoader ??
@@ -562,7 +561,6 @@ export async function createWidiRuntime(options: CreateWidiRuntimeOptions): Prom
 		blockImages: imageSettings.blockImages,
 	});
 	registerCoreInteractionTools(toolRegistry);
-	registerCoreJobTools(toolRegistry);
 	registerCoreAgentTools(toolRegistry);
 	const orchestratorConfig: AgentOrchestratorConfig = {
 		executionEnv,

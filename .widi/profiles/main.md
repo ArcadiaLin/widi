@@ -9,7 +9,7 @@ whenToUse: |
   Do not spawn a second main: it is the only role that can spawn, and a nested
   one would go on delegating instead of doing the work you handed it.
 persist: true
-tools: [read, bash, edit, write, grep, find, ls, ask_human, wait_for_jobs, read_job, kill_job, list_agents, spawn_agent, send_message, watch_agent, dispose_agent]
+tools: [read, bash, edit, write, grep, find, ls, ask_human, list_agents, spawn_agent, send_message, watch_agent, dispose_agent]
 projectContext: [AGENTS.md]
 includeCwd: true
 skillsListing: true

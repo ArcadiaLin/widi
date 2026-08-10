@@ -22,9 +22,9 @@ import { isNativeOrigin, parsePersistenceRef } from "./persistence-ref.ts";
 /**
  * Where the state in force came from, for a caller deciding what to do with it.
  *
- * The framework produces this fact and stops there. Whether a `forked` job
- * history should be replayed, dropped or shown greyed out is not something this
- * layer can know, because the answer depends on things it cannot see - see
+ * The framework produces this fact and stops there. Whether `forked` state
+ * should be replayed, dropped or shown greyed out is not something this layer
+ * can know, because the answer depends on things it cannot see - see
  * "What persistence does not decide" in `custom-storage.ts`.
  *
  * `migrated` is computed at resolve time rather than read off the branch, since

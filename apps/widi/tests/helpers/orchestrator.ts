@@ -21,12 +21,11 @@ import {
 } from "../../src/core/agent-profile.ts";
 import type { LiveAgent, WidiAgentHarness } from "../../src/core/agent-types.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
-import type { BackgroundJobHost } from "../../src/core/background/index.ts";
 import type { AgentContextMonitor } from "../../src/core/context-monitor.ts";
 import type { OrchestratorDiagnostic } from "../../src/core/diagnostics.ts";
 import { type MessageSink, messageBindingFor } from "../../src/core/message.ts";
 import { ModelRegistry } from "../../src/core/model-registry.ts";
-import { createCorePersistenceRegistry } from "../../src/core/persistence-registry.ts";
+import { PersistenceRegistry } from "../../src/core/persistence/index.ts";
 import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
 import { ResourceLoader } from "../../src/core/resource-loader.ts";
 import { type AgentSessionMetadata, SessionManager } from "../../src/core/session-manager.ts";
@@ -376,7 +375,7 @@ export async function createOrchestrator(
 			fs: env,
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
-			registry: createCorePersistenceRegistry(),
+			registry: new PersistenceRegistry(),
 		}),
 		settingManager: options.settingManager ?? new SettingManager(),
 		modelRegistry: options.modelRegistry ?? (await createModelRegistry(env)),
@@ -490,11 +489,6 @@ export function harnessEventDriver(
 /** The spawn-tree parent the runtime holds in memory for this agent. */
 export function spawnParentOf(orchestrator: AgentOrchestrator, agentId: string): string | undefined {
 	return (orchestrator as unknown as { _spawnParent: Map<string, string> })._spawnParent.get(agentId);
-}
-
-/** The owner-scoped job capabilities the agent's own tools were handed. */
-export function requireAgentJobs(orchestrator: AgentOrchestrator, agentId: string): BackgroundJobHost {
-	return requireLiveAgent(orchestrator, agentId).backgroundAttachment.host;
 }
 
 /**
