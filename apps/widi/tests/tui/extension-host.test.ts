@@ -94,15 +94,6 @@ function createHostFixture() {
 		},
 	};
 	const editorState = { text: "" };
-	const editor = {
-		getText: () => editorState.text,
-		setText: (text: string) => {
-			editorState.text = text;
-		},
-		insertTextAtCursor: (text: string) => {
-			editorState.text += text;
-		},
-	};
 	let renderRequests = 0;
 	const children: Component[] = [];
 	const layout = new LayoutSlots();
@@ -167,14 +158,16 @@ function createHostFixture() {
 			editorState.text = "";
 		},
 	});
-	const activate = (entries: readonly [string, ExtensionIdentity][], options?: { readonly bus?: false }) =>
+	const activate = (
+		entries: readonly [string, ExtensionIdentity][],
+		options?: { readonly bus?: false; readonly capabilities?: false },
+	) =>
 		new TuiExtensionHost({
 			identities: entries.map(([, id]) => id),
 			commandEngine: engine,
 			layout,
-			capabilities,
+			...(options?.capabilities === false ? {} : { capabilities }),
 			overlays,
-			editor,
 			requestRender: () => {
 				renderRequests++;
 			},
@@ -188,7 +181,7 @@ function createHostFixture() {
 		diagnostics,
 		children,
 		shownOverlays,
-		editor,
+		editorState,
 		activate,
 		emitted,
 		busSubscriberCount: () => busHandlers.length,
@@ -680,7 +673,9 @@ describe("TuiExtensionHost", () => {
 		}
 	});
 
-	it("reads, replaces, and pastes editor text", async () => {
+	// The three shorthands are the editor capability, not a second path to the
+	// editor: whatever timing the capability has, they have.
+	it("reads, replaces, and pastes editor text through the editor capability", async () => {
 		const fixture = createHostFixture();
 		let api: WidiTuiExtensionApi | undefined;
 		fixture.modules.set("/ext/acme/index.ts", {
@@ -694,10 +689,28 @@ describe("TuiExtensionHost", () => {
 
 		expect(api?.getEditorText()).toBe("");
 		api?.setEditorText("hello");
-		expect(api?.getEditorText()).toBe("hello");
+		expect(fixture.editorState.text).toBe("hello");
 		api?.pasteToEditor(" world");
+		expect(fixture.editorState.text).toBe("hello world");
 		expect(api?.getEditorText()).toBe("hello world");
-		expect(fixture.renderRequests()).toBe(2);
+	});
+
+	it("degrades quietly with no application behind the host", async () => {
+		const fixture = createHostFixture();
+		let api: WidiTuiExtensionApi | undefined;
+		fixture.modules.set("/ext/acme/index.ts", {
+			tui: (hostApi: WidiTuiExtensionApi) => {
+				api = hostApi;
+			},
+		});
+
+		const host = fixture.activate([["acme", identity("acme", "/ext/acme/index.ts")]], { capabilities: false });
+		await host.activate();
+
+		api?.setEditorText("hello");
+		expect(api?.getEditorText()).toBe("");
+		expect(api?.capability("editor")).toBeUndefined();
+		expect(fixture.diagnostics).toEqual([]);
 	});
 });
 

@@ -27,7 +27,6 @@ import {
 	type TuiExtensionActivate,
 	type TuiExtensionComponentFactory,
 	type TuiExtensionDispose,
-	type TuiExtensionEditorAccess,
 	type TuiExtensionEventBus,
 	type TuiExtensionEventHandler,
 	type TuiExtensionShortcutOptions,
@@ -58,8 +57,6 @@ export interface TuiExtensionHostOptions {
 	readonly layout: LayoutSlots;
 	/** The application overlay stack extension overlays open on. */
 	readonly overlays: { show(component: Component, options?: ShowOverlayOptions): AppOverlayHandle };
-	/** Editor text access for getEditorText/setEditorText/pasteToEditor. */
-	readonly editor: TuiExtensionEditorAccess;
 	/**
 	 * The application's published control surfaces. Absent in embeddings that
 	 * mount the host without an application behind it, where every lookup misses.
@@ -103,7 +100,6 @@ export class TuiExtensionHost {
 	private readonly commandEngine: CommandEngine;
 	private readonly layout: LayoutSlots;
 	private readonly overlays: TuiExtensionHostOptions["overlays"];
-	private readonly editor: TuiExtensionEditorAccess;
 	private readonly capabilities?: TuiCapabilityRegistry;
 	private readonly reportDiagnostic: (diagnostic: OrchestratorDiagnostic) => void;
 	private readonly stageMessage?: (extensionId: string, text: string) => void;
@@ -120,7 +116,6 @@ export class TuiExtensionHost {
 		this.commandEngine = options.commandEngine;
 		this.layout = options.layout;
 		this.overlays = options.overlays;
-		this.editor = options.editor;
 		this.capabilities = options.capabilities;
 		this.reportDiagnostic = options.reportDiagnostic;
 		this.stageMessage = options.stageMessage;
@@ -391,19 +386,9 @@ export class TuiExtensionHost {
 				this.subscribeToBus(extensionId, eventName, handler);
 			},
 			capability: (key: string) => this.capabilities?.get(key, extensionId),
-			getEditorText: () => this.editor.getText(),
-			setEditorText: (text: string) => {
-				this.editor.setText(text);
-				this.requestRender();
-			},
-			pasteToEditor: (text: string) => {
-				if (this.editor.insertTextAtCursor) {
-					this.editor.insertTextAtCursor(text);
-				} else {
-					this.editor.setText(this.editor.getText() + text);
-				}
-				this.requestRender();
-			},
+			getEditorText: () => this.capabilities?.get("editor")?.getText() ?? "",
+			setEditorText: (text: string) => this.capabilities?.get("editor")?.setText(text),
+			pasteToEditor: (text: string) => this.capabilities?.get("editor")?.insertAtCursor(text),
 			theme,
 			setTheme: (name: string) => {
 				const switched = setTheme(name);

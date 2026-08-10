@@ -586,7 +586,6 @@ export class WidiTuiApplication {
 				layout: this.layout,
 				capabilities: this.capabilities,
 				overlays: this.overlays,
-				editor: this.editor,
 				requestRender: () => this.tui.requestRender(),
 				reportDiagnostic: (diagnostic) => this.reportHostDiagnostic(diagnostic),
 				stageMessage: (extensionId, text) => {

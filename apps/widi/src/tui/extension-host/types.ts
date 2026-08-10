@@ -67,13 +67,6 @@ export interface TuiExtensionEventBus {
 	subscribe(handler: TuiExtensionEventHandler): () => void;
 }
 
-/** The slice of the TUI editor the host hands extensions for text access. */
-export interface TuiExtensionEditorAccess {
-	getText(): string;
-	setText(text: string): void;
-	insertTextAtCursor?(text: string): void;
-}
-
 /**
  * The API object the host hands to a `tui` half at activation: the
  * registration-class surface (commands, shortcuts, presenters, renderers)
@@ -178,13 +171,22 @@ export interface WidiTuiExtensionApi {
 	capability<TKey extends TuiCapabilityKey>(key: TKey): TuiCapabilityMap[TKey] | undefined;
 	capability(key: string): unknown;
 
-	/** The editor's current draft text. */
+	/**
+	 * Shorthand for the three most-reached-for `capability("editor")` methods.
+	 * They are that capability, not a second path to the editor, so the writes
+	 * land after the current frame like every other capability write. Reading
+	 * returns the draft as it stands, which is not yet what a write in the same
+	 * turn put there.
+	 *
+	 * Without an application behind the host there is no editor: reading gives
+	 * "" and writing does nothing.
+	 */
 	getEditorText(): string;
 
-	/** Replace the editor's draft text. */
+	/** Replace the editor's draft text. Deferred to after the current frame. */
 	setEditorText(text: string): void;
 
-	/** Insert text at the cursor, keeping the rest of the draft. */
+	/** Insert at the cursor, keeping the rest of the draft. Deferred. */
 	pasteToEditor(text: string): void;
 
 	/**

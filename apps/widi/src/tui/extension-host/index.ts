@@ -18,7 +18,6 @@ export {
 	type TuiExtensionActivateResult,
 	type TuiExtensionComponentFactory,
 	type TuiExtensionDispose,
-	type TuiExtensionEditorAccess,
 	type TuiExtensionEventBus,
 	type TuiExtensionEventHandler,
 	type TuiExtensionModule,
