@@ -19,6 +19,7 @@ import type { AgentActivitySnapshot, CandidateItem, OrchestratorEvent } from "..
 import { copyToClipboard } from "../utils/clipboard.ts";
 import { forkSourceAgentId } from "./agent-identity.ts";
 import { WidiCommandAutocompleteProvider } from "./autocomplete.ts";
+import { TuiCapabilityRegistry } from "./capabilities.ts";
 import { applicationCommands } from "./commands/app-commands.ts";
 import { builtInCommands } from "./commands/built-ins.ts";
 import { CommandEngine, switchedAgentId } from "./commands/engine.ts";
@@ -116,6 +117,8 @@ export class WidiTuiApplication {
 	private animationTickerInterval?: number;
 	/** Layout assembly: every mounted view is a registered slot entry. */
 	readonly layout = new LayoutSlots();
+	/** What the layout's named parts can be told to do; see capabilities.ts. */
+	readonly capabilities = new TuiCapabilityRegistry();
 	private readonly pendingTasks = new Set<Promise<unknown>>();
 	private readonly lifecycleTasks = new Set<Promise<unknown>>();
 	private readonly drafts = new Map<string, string>();
@@ -239,6 +242,7 @@ export class WidiTuiApplication {
 		// will use; registration order is the render order the hardcoded
 		// addChild sequence used to fix.
 		this.registerBuiltInSlots();
+		this.publishCapabilities();
 		const transcript = new Container();
 		const dock = new Container();
 		this.layout.mount({ transcript, dock }, this.state);
@@ -278,6 +282,27 @@ export class WidiTuiApplication {
 		this.editor.onExit = () => {
 			void this.shutdown("user exit").catch(() => {});
 		};
+	}
+
+	/**
+	 * Publish the control surfaces under the same keys `registerBuiltInSlots`
+	 * uses. Every mutating method goes through `schedule`, so a capability call
+	 * made from inside a render lands after the frame instead of re-entering it.
+	 */
+	private publishCapabilities(): void {
+		this.capabilities.publish("editor", {
+			getText: () => this.editor.getText(),
+			setText: (text) => this.scheduleEditorEdit(() => this.editor.setText(text)),
+			insertAtCursor: (text) => this.scheduleEditorEdit(() => this.editor.insertTextAtCursor(text)),
+			clear: () => this.scheduleEditorEdit(() => this.editor.setText("")),
+		});
+	}
+
+	private scheduleEditorEdit(edit: () => void): void {
+		this.schedule(() => {
+			edit();
+			this.tui.requestRender();
+		});
 	}
 
 	/**
@@ -418,6 +443,7 @@ export class WidiTuiApplication {
 				identities: this.runtime.services.extensionLoad.loaded,
 				commandEngine: this.engine,
 				layout: this.layout,
+				capabilities: this.capabilities,
 				overlays: this.overlays,
 				editor: this.editor,
 				requestRender: () => this.tui.requestRender(),

@@ -5,6 +5,7 @@ import type { ExtensionIdentity, ExtensionSource } from "../../core/extension/lo
 import { JitiExtensionModuleImporter } from "../../core/extension/module-importer.ts";
 import { formatError } from "../../utils/errors.ts";
 import type { JsonValue } from "../../utils/json.ts";
+import type { TuiCapabilityRegistry } from "../capabilities.ts";
 import type { CommandEngine } from "../commands/engine.ts";
 import type { CommandDefinition } from "../commands/types.ts";
 import type { AppOverlayHandle, ShowOverlayOptions } from "../layout/overlay-stack.ts";
@@ -59,6 +60,11 @@ export interface TuiExtensionHostOptions {
 	readonly overlays: { show(component: Component, options?: ShowOverlayOptions): AppOverlayHandle };
 	/** Editor text access for getEditorText/setEditorText/pasteToEditor. */
 	readonly editor: TuiExtensionEditorAccess;
+	/**
+	 * The application's published control surfaces. Absent in embeddings that
+	 * mount the host without an application behind it, where every lookup misses.
+	 */
+	readonly capabilities?: TuiCapabilityRegistry;
 	readonly reportDiagnostic: (diagnostic: OrchestratorDiagnostic) => void;
 	/** Stages text for the visible agent on behalf of one extension. */
 	readonly stageMessage?: (extensionId: string, text: string) => void;
@@ -98,6 +104,7 @@ export class TuiExtensionHost {
 	private readonly layout: LayoutSlots;
 	private readonly overlays: TuiExtensionHostOptions["overlays"];
 	private readonly editor: TuiExtensionEditorAccess;
+	private readonly capabilities?: TuiCapabilityRegistry;
 	private readonly reportDiagnostic: (diagnostic: OrchestratorDiagnostic) => void;
 	private readonly stageMessage?: (extensionId: string, text: string) => void;
 	private readonly requestRender: () => void;
@@ -114,6 +121,7 @@ export class TuiExtensionHost {
 		this.layout = options.layout;
 		this.overlays = options.overlays;
 		this.editor = options.editor;
+		this.capabilities = options.capabilities;
 		this.reportDiagnostic = options.reportDiagnostic;
 		this.stageMessage = options.stageMessage;
 		this.events = options.events;
@@ -382,6 +390,7 @@ export class TuiExtensionHost {
 				}
 				this.subscribeToBus(extensionId, eventName, handler);
 			},
+			capability: (key: string) => this.capabilities?.get(key),
 			getEditorText: () => this.editor.getText(),
 			setEditorText: (text: string) => {
 				this.editor.setText(text);

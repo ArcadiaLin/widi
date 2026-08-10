@@ -730,6 +730,43 @@ describe("WidiTuiApplication TUI extension host", () => {
 	});
 });
 
+/**
+ * The capability layer's load-bearing claim: a write is deferred past the
+ * current frame, which is what makes calling one from inside a render safe
+ * rather than something an extension author has to remember not to do.
+ */
+describe("WidiTuiApplication capabilities", () => {
+	it("publishes the editor surface under its layout key", async () => {
+		const harness = await createApplicationHarness();
+
+		expect(harness.application.capabilities.keys()).toContain("editor");
+		expect(harness.application.capabilities.get("no-such-part")).toBeUndefined();
+	});
+
+	it("reads immediately and writes after the frame", async () => {
+		const harness = await createApplicationHarness();
+		const editor = harness.application.capabilities.get("editor");
+		if (!editor) throw new Error("Expected the editor capability to be published.");
+
+		editor.setText("from an extension");
+		expect(editor.getText()).toBe("");
+
+		await vi.waitFor(() => {
+			expect(editor.getText()).toBe("from an extension");
+		});
+
+		editor.insertAtCursor("!");
+		await vi.waitFor(() => {
+			expect(editor.getText()).toBe("from an extension!");
+		});
+
+		editor.clear();
+		await vi.waitFor(() => {
+			expect(editor.getText()).toBe("");
+		});
+	});
+});
+
 async function createApplicationHarness(options: { agentDir?: string; extensionLoad?: unknown } = {}) {
 	const runtimeModel = model();
 	// The first spawn is the startup agent; later ones are the sessions /new

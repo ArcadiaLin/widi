@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { OrchestratorDiagnostic } from "../../src/core/diagnostics.ts";
 import type { ExtensionEventEnvelope, ExtensionMessage } from "../../src/core/extension/api.ts";
 import type { ExtensionIdentity } from "../../src/core/extension/loader.ts";
+import { TuiCapabilityRegistry } from "../../src/tui/capabilities.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
 import type { CommandDefinition } from "../../src/tui/commands/types.ts";
 import { renderTimelineItem, type TimelineRenderContext } from "../../src/tui/components/timeline-item.ts";
@@ -153,11 +154,25 @@ function createHostFixture() {
 			};
 		},
 	};
+	const capabilities = new TuiCapabilityRegistry();
+	capabilities.publish("editor", {
+		getText: () => editorState.text,
+		setText: (text) => {
+			editorState.text = text;
+		},
+		insertAtCursor: (text) => {
+			editorState.text += text;
+		},
+		clear: () => {
+			editorState.text = "";
+		},
+	});
 	const activate = (entries: readonly [string, ExtensionIdentity][], options?: { readonly bus?: false }) =>
 		new TuiExtensionHost({
 			identities: entries.map(([, id]) => id),
 			commandEngine: engine,
 			layout,
+			capabilities,
 			overlays,
 			editor,
 			requestRender: () => {
@@ -936,5 +951,45 @@ describe("TuiExtensionHost extension events", () => {
 
 		expect(failure).toBeInstanceOf(Error);
 		expect((failure as Error).message).toContain("no extension event bus");
+	});
+});
+
+/**
+ * Capabilities: the second half of "one name, two answers" - the key an
+ * extension mounts a widget under is the key it drives the built-in through.
+ */
+describe("TuiExtensionHost capabilities", () => {
+	it("hands an extension the published surface under a layout key", async () => {
+		const fixture = createHostFixture();
+		let text: string | undefined;
+		fixture.modules.set("/ext/alpha/index.ts", {
+			tui: (api: WidiTuiExtensionApi) => {
+				const editor = api.capability("editor");
+				editor?.setText("from the extension");
+				text = editor?.getText();
+			},
+		});
+		const host = fixture.activate([["alpha", identity("alpha", "/ext/alpha/index.ts")]]);
+
+		await host.activate();
+
+		expect(text).toBe("from the extension");
+		expect(fixture.diagnostics).toEqual([]);
+	});
+
+	it("reads back undefined for a key nobody published", async () => {
+		const fixture = createHostFixture();
+		let seen: unknown = "unset";
+		fixture.modules.set("/ext/alpha/index.ts", {
+			tui: (api: WidiTuiExtensionApi) => {
+				seen = api.capability("no-such-part");
+			},
+		});
+		const host = fixture.activate([["alpha", identity("alpha", "/ext/alpha/index.ts")]]);
+
+		await host.activate();
+
+		expect(seen).toBeUndefined();
+		expect(fixture.diagnostics).toEqual([]);
 	});
 });
