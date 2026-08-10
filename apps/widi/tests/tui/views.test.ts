@@ -1,7 +1,7 @@
 import { setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import type { AgentSnapshot } from "../../src/core/agent-types.ts";
-import { builtInCommands } from "../../src/tui/commands/built-ins.ts";
+import { builtInCommands } from "../../src/tui/commands/built-in/index.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
 import { AgentStripView } from "../../src/tui/components/agent-strip.ts";
 import { ChatView } from "../../src/tui/components/chat.ts";
@@ -19,6 +19,7 @@ import {
 	type AssistantMessageItem,
 	type CommandResultItem,
 	createTuiApplicationState,
+	type ExtensionOutputItem,
 	ensureAgentProjection,
 	type HumanRequestTraceItem,
 	setActiveAgent,
@@ -494,6 +495,38 @@ describe("TUI views", () => {
 		const expanded = view.render(80).join("\n").replace(ANSI_SEQUENCE, "");
 		expect(expanded).toContain("six");
 		expect(expanded).not.toContain("… +2 lines");
+	});
+
+	// An extension row is written and rewritten under one id, so its cache has to
+	// expire on the text; nothing else about the row ever changes.
+	it("re-renders an extension row when its text or expansion changes", () => {
+		const state = createTuiApplicationState();
+		const agent = setActiveAgent(state, "main");
+		const row: ExtensionOutputItem = {
+			type: "extension-output",
+			id: "ext:drill:step",
+			presentationId: "ext:drill:step",
+			durability: "ephemeral",
+			createdAt: timestamp(1),
+			extensionId: "drill",
+			text: "chapter one",
+		};
+		agent.timeline.push(row);
+		const view = new ChatView(state);
+		const plain = () => view.render(80).join("\n").replace(ANSI_SEQUENCE, "");
+
+		expect(plain()).toContain("chapter one");
+
+		agent.timeline[0] = { ...row, text: "chapter one, revised" };
+		expect(plain()).toContain("chapter one, revised");
+
+		const long = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`).join("\n");
+		agent.timeline[0] = { ...row, text: long };
+		expect(plain()).toContain("… [truncated]");
+		expect(plain()).not.toContain("line 20");
+
+		agent.timeline[0] = { ...row, text: long, expanded: true };
+		expect(plain()).toContain("line 20");
 	});
 
 	it("renders a completed command with its result", () => {

@@ -251,6 +251,39 @@ describe("HumanRequestMenu", () => {
 		expect(menu.pendingCount).toBe(0);
 	});
 
+	// The options say what may be decided; a presenter says what it is about -
+	// the diff behind an edit approval being the case that motivated it.
+	it("shows a presenter's block inside the request it speaks for", async () => {
+		const { menu } = createMenu();
+		const seen: string[] = [];
+		const detach = menu.present((request) => {
+			seen.push(request.id);
+			return request.source.kind === "tool" && request.source.toolName === "edit"
+				? ["- old line", "+ new line"]
+				: undefined;
+		});
+
+		const edit = menu.request(
+			envelope({
+				kind: "confirm",
+				title: "Apply this edit?",
+				source: { kind: "tool", agentId: "main", toolCallId: "call-9", toolName: "edit" },
+			}),
+		);
+		expect(plain(menu)).toContain("+ new line");
+		expect(seen).toContain("request-1");
+		menu.handleInput(KEY.escape);
+		await expect(edit).resolves.toEqual({ kind: "confirm", confirmed: false });
+
+		// A request the presenter has nothing to say about is left alone.
+		const other = menu.request(envelope({ id: "request-2", kind: "confirm", title: "Deploy?" }));
+		expect(plain(menu)).not.toContain("+ new line");
+
+		detach();
+		menu.close();
+		await expect(other).rejects.toThrow();
+	});
+
 	it("keeps background requests out of focus and shows a pending hint", async () => {
 		const { menu, focusLog } = createMenu();
 		const response = menu.request(

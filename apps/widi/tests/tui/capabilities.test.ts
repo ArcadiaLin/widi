@@ -42,7 +42,7 @@ describe("TuiCapabilityRegistry", () => {
 	it("lists what it published, for /layout and the drill ledger", () => {
 		const registry = new TuiCapabilityRegistry();
 		registry.publish("editor", editorCapability({ text: "" }));
-		registry.publishScoped("chat", () => ({ insert: () => {}, remove: () => {} }));
+		registry.publishScoped("chat", () => ({ insert: () => {}, remove: () => {}, setExpanded: () => {} }));
 
 		expect(registry.keys()).toEqual(["editor", "chat"]);
 	});
@@ -52,7 +52,7 @@ describe("TuiCapabilityRegistry", () => {
 		const callers: string[] = [];
 		registry.publishScoped("chat", (caller) => {
 			callers.push(caller);
-			return { insert: () => {}, remove: () => {} };
+			return { insert: () => {}, remove: () => {}, setExpanded: () => {} };
 		});
 
 		const first = registry.get("chat", "drill");

@@ -5,7 +5,7 @@ import {
 	registerCommandPresenter,
 	unregisterCommandPresenter,
 } from "../../src/tui/command-presenter.ts";
-import { builtInCommands } from "../../src/tui/commands/built-ins.ts";
+import { builtInCommands } from "../../src/tui/commands/built-in/index.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
 import type { ActionCommand } from "../../src/tui/commands/types.ts";
 import type { CommandResultItem } from "../../src/tui/state.ts";

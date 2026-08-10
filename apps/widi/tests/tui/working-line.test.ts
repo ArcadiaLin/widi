@@ -1,6 +1,6 @@
 import { setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it } from "vitest";
-import { builtInCommands } from "../../src/tui/commands/built-ins.ts";
+import { builtInCommands } from "../../src/tui/commands/built-in/index.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
 import { WorkingLineView } from "../../src/tui/components/working-line.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";

@@ -75,6 +75,8 @@ export function renderDeps(item: TimelineItem, context: TimelineRenderContext): 
 			return [item.summary, context.toolOutputExpanded, expandKeyLabel()];
 		case "human-request-trace":
 			return [context.toolOutputExpanded];
+		case "extension-output":
+			return [item.text, item.expanded];
 		case "application-notice":
 			return [item.text, item.textMode];
 		default:
@@ -336,7 +338,11 @@ export function renderTimelineItem(item: TimelineItem, width: number, context: T
 			).render(width);
 		case "extension-output":
 			return new Text(
-				`${theme.dim(`[${item.extensionId}]`)} ${boundedText(item.text, { maxLines: 16, maxCharacters: 4_000 })}`,
+				`${theme.dim(`[${item.extensionId}]`)} ${
+					item.expanded
+						? sanitizeTerminalText(item.text)
+						: boundedText(item.text, { maxLines: 16, maxCharacters: 4_000 })
+				}`,
 				1,
 				0,
 			).render(width);

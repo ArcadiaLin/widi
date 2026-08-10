@@ -11,7 +11,9 @@ import { WidiTuiApplication } from "../../src/tui/application.ts";
 import { SEGMENT_SLOTS } from "../../src/tui/capabilities.ts";
 import type { CommandEngine } from "../../src/tui/commands/engine.ts";
 import type { WidiEditor } from "../../src/tui/editor.ts";
+import type { HumanRequestMenu } from "../../src/tui/human-request.ts";
 import { setTransientQuip } from "../../src/tui/quips.ts";
+import type { SelectorDock } from "../../src/tui/selectors/dock.ts";
 import { ensureAgentProjection, type StagedDraft, setActiveAgent } from "../../src/tui/state.ts";
 
 describe("WidiTuiApplication lazy agent spawn", () => {
@@ -622,6 +624,10 @@ async function submit(application: WidiTuiApplication, text: string): Promise<vo
 	await new Promise<void>((resolve) => queueMicrotask(resolve));
 }
 
+function selectorInput(application: WidiTuiApplication, data: string): void {
+	(application as unknown as { selectorDock: SelectorDock }).selectorDock.handleInput(data);
+}
+
 function deliverEvent(application: WidiTuiApplication, event: OrchestratorEvent): void {
 	(application as unknown as { handleEvent(event: OrchestratorEvent): void }).handleEvent(event);
 }
@@ -881,6 +887,213 @@ describe("WidiTuiApplication capabilities", () => {
 		});
 	});
 
+	it("expands a row it wrote, and keeps it open across a rewrite", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "hello");
+		const chat = harness.application.capabilities.get("chat", "drill");
+		if (!chat) throw new Error("Expected the chat capability to be published.");
+		const row = () =>
+			harness.application.state.agents.get("main")?.timeline.find((item) => item.type === "extension-output");
+
+		chat.insert("step", "chapter one");
+		chat.setExpanded("step", true);
+		await vi.waitFor(() => {
+			expect(row()).toMatchObject({ expanded: true });
+		});
+
+		chat.insert("step", "chapter one, revised");
+		await vi.waitFor(() => {
+			expect(row()).toMatchObject({ text: "chapter one, revised", expanded: true });
+		});
+
+		chat.setExpanded("step", false);
+		await vi.waitFor(() => {
+			expect(row()).toMatchObject({ expanded: false });
+		});
+
+		// Another extension's id is not this one's, so it reaches nothing.
+		harness.application.capabilities.get("chat", "other")?.setExpanded("step", true);
+		await vi.waitFor(() => {
+			expect(row()).toMatchObject({ expanded: false });
+		});
+	});
+
+	it("reads the whole staging buffer and writes only its own entries", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "hello");
+		const staged = harness.application.capabilities.get("stagedInput", "drill");
+		if (!staged) throw new Error("Expected the staged input capability to be published.");
+		const buffer = () => harness.application.state.agents.get("main")?.staged ?? [];
+
+		const mine = await staged.add("from the extension");
+		const theirs = harness.application.stageDraft("from the human");
+		expect(mine).toBe(1);
+		expect(staged.list()).toEqual([
+			{ id: 1, text: "from the extension", extensionId: "drill" },
+			{ id: 2, text: "from the human" },
+		]);
+
+		staged.update(1, "rewritten by its own producer");
+		await vi.waitFor(() => {
+			expect(buffer()[0]?.text).toBe("rewritten by its own producer");
+		});
+
+		// The human's entry is not this caller's to rewrite or drop: the branch
+		// would file words under a producer that never wrote them.
+		staged.update(theirs?.id ?? 0, "hijacked");
+		staged.remove(theirs?.id ?? 0);
+		await vi.waitFor(() => {
+			expect(buffer()).toHaveLength(2);
+		});
+		expect(buffer()[1]?.text).toBe("from the human");
+
+		staged.remove(1);
+		await vi.waitFor(() => {
+			expect(staged.list()).toEqual([{ id: 2, text: "from the human" }]);
+		});
+	});
+
+	// Left out of the listing, an extension polling the buffer would watch its
+	// own text vanish and stage it a second time.
+	it("still lists a draft a human took into the editor", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "hello");
+		const staged = harness.application.capabilities.get("stagedInput", "drill");
+		if (!staged) throw new Error("Expected the staged input capability to be published.");
+
+		await staged.add("first");
+		await staged.add("second");
+		(harness.application as unknown as { takeStagedIntoEditor(): void }).takeStagedIntoEditor();
+
+		expect(staged.list()).toEqual([
+			{ id: 1, text: "first", extensionId: "drill" },
+			{ id: 2, text: "second", extensionId: "drill", heldInEditor: true },
+		]);
+		// It is out of the buffer while a human is rewriting it, and theirs until
+		// they put it back.
+		staged.update(2, "taken back mid-edit");
+		await vi.waitFor(() => {
+			expect(harness.application.state.agents.get("main")?.stagedEditing?.draft.text).toBe("second");
+		});
+	});
+
+	it("reports the input queue and promotes it to steering", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "hello");
+		const queued = harness.application.capabilities.get("queuedInput");
+		if (!queued) throw new Error("Expected the queued input capability to be published.");
+		const agent = harness.application.state.agents.get("main");
+		if (!agent) throw new Error("Expected the agent projection.");
+		agent.queue = { steer: ["stop that"], followUp: ["then this", "and this"], nextTurn: 0 };
+		agent.pendingFollowUps = [{ id: 1, text: "on its way" }];
+
+		expect(queued.list()).toEqual({
+			steer: ["stop that"],
+			followUp: ["then this", "and this"],
+			unacknowledged: ["on its way"],
+		});
+
+		expect(await queued.steer()).toBe(2);
+		expect(harness.steerQueuedFollowUps).toHaveBeenCalledWith("main");
+		// The queue row empties on core's own event; nothing is said on top of it.
+		expect(harness.application.state.globalNotices.some((notice) => notice.text.includes("steering"))).toBe(false);
+	});
+
+	it("docks a selection of its own and waits for the answer", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "hello");
+		const dock = harness.application.capabilities.get("selectorDock");
+		if (!dock) throw new Error("Expected the selector dock capability to be published.");
+
+		const answer = dock.open({
+			title: "Which chapter?",
+			description: "pick where the drill starts",
+			choices: [{ value: "one", label: "Chapter one" }, { value: "two" }],
+		});
+		await vi.waitFor(() => {
+			expect(dock.isOpen()).toBe(true);
+		});
+		// The selection took the editor's place rather than floating over it.
+		expect(harness.application.state.mode).toBe("selector");
+
+		selectorInput(harness.application, "\r");
+		expect(await answer).toBe("one");
+		expect(dock.isOpen()).toBe(false);
+		expect(harness.application.state.mode).toBe("editor");
+	});
+
+	it("resolves a docked selection as a cancel however it was taken down", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "hello");
+		const dock = harness.application.capabilities.get("selectorDock");
+		if (!dock) throw new Error("Expected the selector dock capability to be published.");
+		const choices = [{ value: "one" }];
+
+		const escaped = dock.open({ title: "Escaped", choices });
+		await vi.waitFor(() => expect(dock.isOpen()).toBe(true));
+		selectorInput(harness.application, "\x1b");
+		expect(await escaped).toBeUndefined();
+
+		const withdrawn = dock.open({ title: "Withdrawn", choices });
+		await vi.waitFor(() => expect(dock.isOpen()).toBe(true));
+		dock.close();
+		expect(await withdrawn).toBeUndefined();
+
+		// Nothing reaches the view on this path, so only the dock can report it.
+		const interrupted = dock.open({ title: "Interrupted", choices });
+		await vi.waitFor(() => expect(dock.isOpen()).toBe(true));
+		(harness.application as unknown as { interrupt(): void }).interrupt();
+		expect(await interrupted).toBeUndefined();
+
+		// An occupied dock belongs to whoever the human is answering.
+		const held = dock.open({ title: "Held", choices });
+		await vi.waitFor(() => expect(dock.isOpen()).toBe(true));
+		await expect(dock.open({ title: "Second", choices })).rejects.toThrow("already docked");
+		dock.close();
+		expect(await held).toBeUndefined();
+	});
+
+	it("lists pending requests and reports a presenter that throws exactly once", async () => {
+		const harness = await createApplicationHarness();
+		const runPromise = harness.application.run();
+		try {
+			await submit(harness.application, "hello");
+			const requests = harness.application.capabilities.get("humanRequests", "drill");
+			if (!requests) throw new Error("Expected the human requests capability to be published.");
+			const menu = (harness.application as unknown as { humanRequests: HumanRequestMenu }).humanRequests;
+			requests.present(() => {
+				throw new Error("presenter is broken");
+			});
+
+			const answer = menu.request({
+				id: "request-1",
+				agentId: "main",
+				source: { kind: "tool", agentId: "main", toolCallId: "call-1", toolName: "ask_human" },
+				kind: "confirm",
+				title: "Deploy?",
+				createdAt: new Date(0).toISOString(),
+			});
+			expect(requests.list()).toEqual([expect.objectContaining({ id: "request-1", title: "Deploy?" })]);
+
+			menu.render(80);
+			menu.render(80);
+			const reported = harness.application.state.diagnostics
+				.list()
+				.filter((record) => record.diagnostic.code === "tui_extension.request_presenter_failed");
+			expect(reported).toHaveLength(1);
+			// Once, not once per frame: the log's own dedupe would still count two.
+			expect(reported[0]?.count).toBe(1);
+			expect(reported[0]?.diagnostic.extensionId).toBe("drill");
+
+			menu.close();
+			await expect(answer).rejects.toThrow();
+			expect(requests.list()).toEqual([]);
+		} finally {
+			await harness.application.shutdown("test cleanup");
+			await runPromise;
+		}
+	});
+
 	it("puts named text into all five composed rows", async () => {
 		const harness = await createApplicationHarness();
 		await submit(harness.application, "hello");
@@ -979,12 +1192,14 @@ async function createApplicationHarness(options: { agentDir?: string; extensionL
 	});
 	const disposeAll = vi.fn(async () => {});
 	const abortAgent = vi.fn(async () => ({ kind: "aborted" as const }));
+	const steerQueuedFollowUps = vi.fn(async () => 2);
 	const orchestrator = {
 		subscribe: () => () => {},
 		registerClient: () => () => {},
 		disposeAll,
 		disposeAgent,
 		abortAgent,
+		steerQueuedFollowUps,
 		spawnAgent,
 		promptAgent,
 		sendMessage,
@@ -1039,6 +1254,7 @@ async function createApplicationHarness(options: { agentDir?: string; extensionL
 		tuiStart,
 		disposeAll,
 		abortAgent,
+		steerQueuedFollowUps,
 		spawnAgent,
 		promptAgent,
 		sendMessage,

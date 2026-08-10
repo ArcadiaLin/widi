@@ -80,6 +80,13 @@ type Tab =
 	| { readonly kind: "input"; readonly entry: number }
 	| { readonly kind: "submit" };
 
+/**
+ * Extra lines shown inside a pending request, under its message and above its
+ * options. Returning nothing keeps the presenter out of a request it has
+ * nothing to say about.
+ */
+export type HumanRequestPresenter = (request: HumanRequestEnvelope, width: number) => readonly string[] | undefined;
+
 /** The slice of TUI the menu needs; kept minimal so tests can fake it. */
 export interface HumanRequestMenuHost {
 	setFocus(component: Component | null): void;
@@ -102,6 +109,7 @@ export class HumanRequestMenu implements Component {
 	private readonly resolveAgentLabel: (agentId: string | undefined) => string;
 	private readonly restoreFocus: () => void;
 	private readonly entries: PendingEntry[] = [];
+	private readonly presenters = new Set<HumanRequestPresenter>();
 	private focusedTab = 0;
 	private submitActionIndex = 0;
 	private opened = false;
@@ -125,6 +133,24 @@ export class HumanRequestMenu implements Component {
 
 	get pendingCount(): number {
 		return this.entries.length;
+	}
+
+	/** The requests waiting on an answer right now, in arrival order. */
+	get pending(): readonly HumanRequestEnvelope[] {
+		return this.entries.map((entry) => entry.request);
+	}
+
+	/**
+	 * Let something outside the panel put its own lines inside a request - the
+	 * diff an approval is about, the file a question names. Returns the detach.
+	 */
+	present(presenter: HumanRequestPresenter): () => void {
+		this.presenters.add(presenter);
+		this.host.requestRender();
+		return () => {
+			this.presenters.delete(presenter);
+			this.host.requestRender();
+		};
 	}
 
 	request(request: HumanRequestEnvelope, signal?: AbortSignal): Promise<HumanResponse> {
@@ -506,6 +532,7 @@ export class HumanRequestMenu implements Component {
 				lines.push(theme.dim(truncateToWidth(line, Math.max(1, width - 2), "…")));
 			}
 		}
+		this.pushPresented(lines, entry, width);
 		lines.push("");
 		const start = windowStart(question.cursor, question.options.length);
 		const end = Math.min(start + MAX_VISIBLE_OPTIONS, question.options.length);
@@ -602,6 +629,7 @@ export class HumanRequestMenu implements Component {
 				lines.push(theme.dim(truncateToWidth(line, Math.max(1, width - 2), "…")));
 			}
 		}
+		this.pushPresented(lines, entry, width);
 		if (entry.request.placeholder && !entry.input?.getValue()) {
 			lines.push(theme.dim(singleLine(entry.request.placeholder, 200)));
 		}
@@ -611,6 +639,19 @@ export class HumanRequestMenu implements Component {
 			lines.push(...input.render(Math.max(8, width - 2)));
 		}
 		lines.push(theme.dim("enter submit · ←/→ tabs · esc cancel"));
+	}
+
+	/**
+	 * Whatever the presenters have to say about this request, each block set off
+	 * by a blank line. The panel truncates every line to width at the end, so a
+	 * presenter that overruns costs the panel nothing.
+	 */
+	private pushPresented(lines: string[], entry: PendingEntry, width: number): void {
+		for (const presenter of this.presenters) {
+			const block = presenter(entry.request, Math.max(8, width - 2));
+			if (!block || block.length === 0) continue;
+			lines.push("", ...block);
+		}
 	}
 
 	private pushHeading(lines: string[], entry: PendingEntry, width: number): void {

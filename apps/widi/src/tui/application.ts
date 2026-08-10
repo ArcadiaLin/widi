@@ -20,9 +20,14 @@ import { copyToClipboard } from "../utils/clipboard.ts";
 import { forkSourceAgentId } from "./agent-identity.ts";
 import { buildAgentTree, flattenAgentTree } from "./agent-tree.ts";
 import { WidiCommandAutocompleteProvider } from "./autocomplete.ts";
-import { type CommandRunOutcome, SEGMENT_SLOTS, TuiCapabilityRegistry } from "./capabilities.ts";
-import { applicationCommands } from "./commands/app-commands.ts";
-import { builtInCommands } from "./commands/built-ins.ts";
+import {
+	APPLICATION_CALLER,
+	type CommandRunOutcome,
+	SEGMENT_SLOTS,
+	type StagedInputEntry,
+	TuiCapabilityRegistry,
+} from "./capabilities.ts";
+import { applicationCommands, builtInCommands } from "./commands/built-in/index.ts";
 import { CommandEngine, switchedAgentId } from "./commands/engine.ts";
 import { parseLineCommand } from "./commands/parse.ts";
 import type { CommandDefinition, CommandError, EngineOutcome } from "./commands/types.ts";
@@ -122,6 +127,8 @@ export class WidiTuiApplication {
 	readonly layout = new LayoutSlots();
 	/** What the layout's named parts can be told to do; see capabilities.ts. */
 	readonly capabilities = new TuiCapabilityRegistry();
+	/** The selection a capability caller opened, so its close() cannot take down a command's. */
+	private capabilitySelector?: { readonly view: Component; readonly settle: (value?: string) => void };
 	private readonly visibleAgentListeners = new Set<(agentId: string | undefined) => void>();
 	private notifiedVisibleAgentId?: string;
 	private readonly pendingTasks = new Set<Promise<unknown>>();
@@ -311,18 +318,24 @@ export class WidiTuiApplication {
 				this.schedule(() => {
 					const agent = this.capabilityAgent(options?.agentId);
 					if (!agent) return;
+					const itemId = scopedId(caller, id);
+					const at = agent.timeline.findIndex((candidate) => candidate.id === itemId);
+					const previous = at === -1 ? undefined : agent.timeline[at];
 					const item: ExtensionOutputItem = {
 						type: "extension-output",
-						id: scopedId(caller, id),
-						presentationId: scopedId(caller, id),
+						id: itemId,
+						presentationId: itemId,
 						durability: "ephemeral",
 						createdAt: new Date().toISOString(),
 						extensionId: caller,
 						text,
+						// New text is not a request to collapse a row someone opened.
+						...(previous?.type === "extension-output" && previous.expanded !== undefined
+							? { expanded: previous.expanded }
+							: undefined),
 					};
-					const existing = agent.timeline.findIndex((candidate) => candidate.id === item.id);
-					if (existing === -1) agent.timeline.push(item);
-					else agent.timeline[existing] = item;
+					if (at === -1) agent.timeline.push(item);
+					else agent.timeline[at] = item;
 					this.tui.requestRender();
 				}),
 			remove: (id, options) =>
@@ -332,7 +345,45 @@ export class WidiTuiApplication {
 					agent.timeline = agent.timeline.filter((item) => item.id !== scopedId(caller, id));
 					this.tui.requestRender();
 				}),
+			setExpanded: (id, expanded, options) =>
+				this.schedule(() => {
+					const itemId = scopedId(caller, id);
+					const item = this.capabilityAgent(options?.agentId)?.timeline.find((candidate) => candidate.id === itemId);
+					if (item?.type !== "extension-output") return;
+					item.expanded = expanded;
+					this.tui.requestRender();
+				}),
 		}));
+		this.capabilities.publishScoped("stagedInput", (caller) => {
+			// The application staging on its own behalf is the human's own text,
+			// which is exactly what an absent producer means to the branch.
+			const owner = caller === APPLICATION_CALLER ? undefined : caller;
+			const owned = (id: number) =>
+				this.capabilityAgent(undefined)?.staged.find((draft) => draft.id === id && draft.extensionId === owner);
+			return {
+				list: () => stagedEntries(this.capabilityAgent(undefined)),
+				add: (text) =>
+					new Promise((resolve) => {
+						this.schedule(() => resolve(this.stageDraft(text, owner)?.id));
+					}),
+				update: (id, text) =>
+					this.schedule(() => {
+						const draft = owned(id);
+						const body = text.trim();
+						if (!draft || !body) return;
+						draft.text = body;
+						this.tui.requestRender();
+					}),
+				remove: (id) =>
+					this.schedule(() => {
+						const agent = this.capabilityAgent(undefined);
+						const draft = owned(id);
+						if (!agent || !draft) return;
+						agent.staged = agent.staged.filter((candidate) => candidate !== draft);
+						this.tui.requestRender();
+					}),
+			};
+		});
 		this.capabilities.publishScoped("notices", (caller) => ({
 			post: (id, text, options) =>
 				this.schedule(() => {
@@ -360,6 +411,96 @@ export class WidiTuiApplication {
 					this.tui.requestRender();
 				}),
 		}));
+		this.capabilities.publishScoped("humanRequests", (caller) => ({
+			list: () => this.humanRequests.pending,
+			present: (presenter) => {
+				// Reported once: a presenter that throws will throw on every frame,
+				// and the panel is not the place to watch it happen.
+				let reported = false;
+				return this.humanRequests.present((request, width) => {
+					try {
+						return presenter(request, width);
+					} catch (error) {
+						if (!reported) {
+							reported = true;
+							this.reportHostDiagnostic({
+								severity: "warning",
+								code: "tui_extension.request_presenter_failed",
+								message: `Extension '${caller}' failed to render inside a human request: ${errorMessage(error)}`,
+								extensionId: caller,
+							});
+						}
+						return undefined;
+					}
+				});
+			},
+		}));
+		this.capabilities.publish("selectorDock", {
+			isOpen: () => this.selectorDock.isOpen,
+			open: (request) =>
+				new Promise((resolve, reject) => {
+					this.schedule(() => {
+						if (this.selectorDock.isOpen) {
+							reject(new Error("Another selection is already docked."));
+							return;
+						}
+						let decided = false;
+						const settle = (value?: string) => {
+							if (decided) return;
+							decided = true;
+							this.capabilitySelector = undefined;
+							resolve(value);
+						};
+						const view = new ListSelector({
+							title: request.title,
+							items: request.choices.map((choice) => ({
+								value: choice.value,
+								label: choice.label ?? choice.value,
+								description: choice.description,
+							})),
+							...(request.description === undefined
+								? undefined
+								: { operation: { description: request.description, confirmVerb: "apply" } }),
+							...(request.filter ? { initialFilter: request.filter } : undefined),
+							onClose: () => this.selectorDock.close(),
+							onSelect: (item) => settle(item.value),
+							onCancel: () => settle(),
+						});
+						this.capabilitySelector = { view, settle };
+						// The selector's own close runs before it reports the answer, so
+						// the leaving-the-dock fallback has to wait a turn: by then a
+						// decision has settled this and there is nothing left to cancel.
+						this.selectorDock.open(view, () => this.schedule(() => settle()));
+						this.tui.requestRender();
+					});
+				}),
+			close: () =>
+				this.schedule(() => {
+					if (this.capabilitySelector?.view !== this.selectorDock.current) return;
+					this.selectorDock.close();
+				}),
+		});
+		this.capabilities.publish("queuedInput", {
+			list: (options) => {
+				const agent = this.capabilityAgent(options?.agentId);
+				return {
+					steer: agent?.queue.steer ?? [],
+					followUp: agent?.queue.followUp ?? [],
+					unacknowledged: agent?.pendingFollowUps.map((pending) => pending.text) ?? [],
+				};
+			},
+			steer: (options) =>
+				new Promise((resolve, reject) => {
+					this.schedule(() => {
+						const agentId = options?.agentId ?? this.state.activeAgentId;
+						if (!agentId) {
+							reject(new Error("No agent is visible to steer."));
+							return;
+						}
+						this.orchestrator.steerQueuedFollowUps(agentId).then(resolve, reject);
+					});
+				}),
+		});
 		this.capabilities.publish("agentStrip", {
 			list: () =>
 				flattenAgentTree(buildAgentTree(this.state)).map((entry) => ({
@@ -1960,6 +2101,22 @@ function toCommandActivity(agent: AgentViewState | undefined): AgentActivitySnap
 	return agent.status === "running"
 		? { activity: "running", ...(agent.maintenance === undefined ? undefined : { maintenance: agent.maintenance }) }
 		: { activity: "idle" };
+}
+
+/**
+ * The staging buffer as the capability reports it. A draft a human took into
+ * the editor is listed at the slot it will go back to rather than left out: an
+ * extension polling the buffer would otherwise watch its own text disappear and
+ * stage it a second time.
+ */
+function stagedEntries(agent: AgentViewState | undefined): readonly StagedInputEntry[] {
+	if (!agent) return [];
+	const entries: StagedInputEntry[] = agent.staged.map((draft) => ({ ...draft }));
+	const editing = agent.stagedEditing;
+	if (editing) {
+		entries.splice(Math.min(editing.index, entries.length), 0, { ...editing.draft, heldInEditor: true });
+	}
+	return entries;
 }
 
 /** Namespaces the ids a capability caller chooses, so two callers cannot collide. */

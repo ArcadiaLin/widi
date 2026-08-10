@@ -2,7 +2,7 @@ import { setKeybindings, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import { WidiCommandAutocompleteProvider } from "../../src/tui/autocomplete.ts";
-import { builtInCommands } from "../../src/tui/commands/built-ins.ts";
+import { builtInCommands } from "../../src/tui/commands/built-in/index.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
 import { WidiEditor } from "../../src/tui/editor.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";

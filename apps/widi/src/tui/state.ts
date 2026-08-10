@@ -132,6 +132,12 @@ export interface ExtensionOutputItem {
 	readonly createdAt: string;
 	readonly extensionId: string;
 	readonly text: string;
+	/**
+	 * Show the whole text instead of the bounded preview. The producer's own
+	 * switch, not the global tool-output toggle: what an extension writes here is
+	 * not tool output, and one key should not decide for both.
+	 */
+	expanded?: boolean;
 }
 
 export interface PersistentMessageItem {

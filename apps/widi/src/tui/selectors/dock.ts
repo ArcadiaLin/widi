@@ -21,6 +21,7 @@ export class SelectorDock implements Component {
 	private readonly state: TuiApplicationState;
 	private readonly restoreFocus: () => void;
 	private view?: Component;
+	private onClosed?: () => void;
 
 	constructor(options: {
 		readonly host: SelectorDockHost;
@@ -49,18 +50,29 @@ export class SelectorDock implements Component {
 		return this.view;
 	}
 
-	open(view: Component): void {
+	/**
+	 * Dock a view. `onClosed` fires whenever that view leaves the dock, by any
+	 * path - its own close, a replacement, or an interrupt that never reaches
+	 * it - which is what lets a caller waiting on an answer stop waiting.
+	 */
+	open(view: Component, onClosed?: () => void): void {
+		const replaced = this.onClosed;
 		this.view = view;
+		this.onClosed = onClosed;
 		setDockedFocus(this.state, "selector");
 		this.host.setFocus(this);
+		replaced?.();
 		this.host.requestRender();
 	}
 
 	close(): void {
 		if (!this.view) return;
+		const closed = this.onClosed;
 		this.view = undefined;
+		this.onClosed = undefined;
 		clearDockedFocus(this.state, "selector");
 		this.restoreFocus();
+		closed?.();
 		this.host.requestRender();
 	}
 

@@ -21,8 +21,10 @@
  * shape makes the hazard unreachable instead of reporting it.
  */
 
+import type { HumanRequestEnvelope } from "../core/human-request.ts";
 import type { CandidateItem } from "../core/types.ts";
 import type { CommandView } from "./commands/types.ts";
+import type { HumanRequestPresenter } from "./human-request.ts";
 import type { Segment } from "./segments.ts";
 import type { AgentViewStatus } from "./state.ts";
 
@@ -147,6 +149,57 @@ export interface ChatCapability {
 	insert(id: string, text: string, options?: { readonly agentId?: string }): void;
 	/** Remove a row this caller inserted. Deferred; an unknown id does nothing. */
 	remove(id: string, options?: { readonly agentId?: string }): void;
+	/**
+	 * Show a row this caller inserted in full, or back to its bounded preview.
+	 * Deferred; an unknown id does nothing. It survives a re-insert under the
+	 * same id, so replacing the text does not collapse the row under a reader.
+	 *
+	 * This is the producer's own switch, deliberately not the global tool-output
+	 * toggle: an extension's row is not tool output, and one key deciding for
+	 * both would hide one of them from whoever wanted the other.
+	 */
+	setExpanded(id: string, expanded: boolean, options?: { readonly agentId?: string }): void;
+}
+
+/** One item in the staging buffer. */
+export interface StagedInputEntry {
+	readonly id: number;
+	readonly text: string;
+	/** Who staged it; absent when the text is the human's own. */
+	readonly extensionId?: string;
+	/** A human took it into the editor and changed it before it landed. */
+	readonly editedByHuman?: true;
+	/** A human is rewriting it right now, so it is out of the buffer until they finish. */
+	readonly heldInEditor?: true;
+}
+
+/**
+ * The staging buffer of the visible agent: text held back from the branch until
+ * the next human-initiated turn.
+ *
+ * Only the visible agent, because that is what staging is about - the turn the
+ * person at the keyboard is about to start. Text meant for an agent they are
+ * not looking at has no such turn coming and belongs on that branch directly,
+ * through the core half.
+ *
+ * Reads see the whole buffer, writes only this caller's own entries. The buffer
+ * is one queue and its order decides what lands first, so a producer that could
+ * not see the rest could not judge what to add - but rewriting someone else's
+ * staged text would file words on the branch under a producer who never wrote
+ * them, which is the one thing the attribution here exists to prevent.
+ */
+export interface StagedInputCapability {
+	/** The buffer in landing order, whoever staged each entry. */
+	list(): readonly StagedInputEntry[];
+	/**
+	 * Stage text at the end of the buffer. Deferred; resolves with the id it
+	 * took, or undefined when the text was blank or no agent was visible.
+	 */
+	add(text: string): Promise<number | undefined>;
+	/** Rewrite an entry this caller staged. Deferred; ignores anything else. */
+	update(id: number, text: string): void;
+	/** Drop an entry this caller staged. Deferred; ignores anything else. */
+	remove(id: number): void;
 }
 
 /**
@@ -173,6 +226,109 @@ export interface SegmentsCapability {
 	list(): readonly Segment[];
 }
 
+/** What an agent has waiting, as the queued-input row shows it. */
+export interface QueuedInput {
+	/** Text that interrupts the run at the next turn boundary. */
+	readonly steer: readonly string[];
+	/** Text core consumes when the run ends. */
+	readonly followUp: readonly string[];
+	/**
+	 * Follow-ups this shell has accepted but core has not acknowledged yet.
+	 * Separate because `steer` cannot move them: they are not in the queue it
+	 * promotes, they are on their way to it.
+	 */
+	readonly unacknowledged: readonly string[];
+}
+
+/**
+ * The input queue of a running agent.
+ *
+ * Read-only apart from the promotion, and that is core's boundary rather than a
+ * choice made here: the queue lives in core and its entries are plain text with
+ * no identity, so there is nothing to address a single removal or reorder to.
+ */
+export interface QueuedInputCapability {
+	list(options?: { readonly agentId?: string }): QueuedInput;
+	/**
+	 * Turn every queued follow-up into steering, read at the next turn boundary
+	 * instead of after the run. Deferred; resolves with how many moved, and
+	 * rejects if the agent is not in a state that can be steered.
+	 *
+	 * Nothing is said to the human about it: the queue row empties on its own,
+	 * and what else is worth telling them is the caller's to decide.
+	 */
+	steer(options?: { readonly agentId?: string }): Promise<number>;
+}
+
+/** One row of a docked selection. */
+export interface SelectorChoice {
+	readonly value: string;
+	/** Shown instead of the value. */
+	readonly label?: string;
+	/** Dim text beside the label. */
+	readonly description?: string;
+}
+
+export interface SelectorRequest {
+	readonly title: string;
+	readonly choices: readonly SelectorChoice[];
+	/** What the choice is for, shown in the hint line under the editor. */
+	readonly description?: string;
+	/** Pre-filled filter text. */
+	readonly filter?: string;
+}
+
+/**
+ * The place a selection takes the editor's own, at the bottom of the screen.
+ *
+ * Not a slot to put a view in - the layout registry is where a runtime replaces
+ * what a selection looks like. This is the other direction: asking for one and
+ * waiting for the answer, the way a command that needs an argument does.
+ */
+export interface SelectorDockCapability {
+	/** Whether anything is docked, this caller's selection or a command's. */
+	isOpen(): boolean;
+	/**
+	 * Dock a list and wait. Deferred; resolves with the chosen value, or
+	 * undefined when the human cancelled or the selection was taken down some
+	 * other way.
+	 *
+	 * One at a time, and an occupied dock rejects rather than evicting what is
+	 * there: the human is in the middle of answering it, and a cancel they never
+	 * made is not a fact worth reporting to either caller.
+	 */
+	open(request: SelectorRequest): Promise<string | undefined>;
+	/** Take down a selection this caller opened, resolving it as a cancel. Deferred. */
+	close(): void;
+}
+
+/**
+ * The panel a human answers questions in.
+ *
+ * Answering is not here and will not be: the panel exists because a person is
+ * the one being asked, and a runtime that could answer for them would make
+ * every request a lie about who decided.
+ */
+export interface HumanRequestsCapability {
+	/** Requests waiting on an answer right now, in arrival order. */
+	list(): readonly HumanRequestEnvelope[];
+	/**
+	 * Show something of your own inside a request, under its message and above
+	 * its options - the diff an edit approval is about, the file a question
+	 * names. Returns the detach.
+	 *
+	 * The presenter is handed every request and decides which ones it has
+	 * anything to say about. `source.kind === "tool"` carries the `toolName` and
+	 * `toolCallId` an approval is about, which is what makes that decidable
+	 * rather than guesswork over the title.
+	 *
+	 * It runs inside the panel's own render, so it reads and paints and does
+	 * nothing else; a throwing presenter is dropped from that frame and reported
+	 * once.
+	 */
+	present(presenter: HumanRequestPresenter): () => void;
+}
+
 /** The notice area above the transcript. */
 export interface NoticesCapability {
 	/**
@@ -197,6 +353,10 @@ export interface TuiCapabilityMap {
 	readonly commands: CommandsCapability;
 	readonly agentStrip: AgentStripCapability;
 	readonly chat: ChatCapability;
+	readonly stagedInput: StagedInputCapability;
+	readonly queuedInput: QueuedInputCapability;
+	readonly selectorDock: SelectorDockCapability;
+	readonly humanRequests: HumanRequestsCapability;
 	readonly notices: NoticesCapability;
 	readonly header: SegmentsCapability;
 	readonly footer: SegmentsCapability;

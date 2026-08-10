@@ -1,7 +1,6 @@
 import { setKeybindings } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it } from "vitest";
-import { applicationCommands } from "../../src/tui/commands/app-commands.ts";
-import { builtInCommands } from "../../src/tui/commands/built-ins.ts";
+import { applicationCommands, builtInCommands } from "../../src/tui/commands/built-in/index.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
 import {
 	formatOperationHintKey,

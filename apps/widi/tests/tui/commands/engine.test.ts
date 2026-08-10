@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../../src/core/agent-orchestrator.ts";
-import { builtInCommands } from "../../../src/tui/commands/built-ins.ts";
+import { builtInCommands } from "../../../src/tui/commands/built-in/index.ts";
 import { CommandEngine, switchedAgentId } from "../../../src/tui/commands/engine.ts";
 import type { ActionCommand, CommandDefinition } from "../../../src/tui/commands/types.ts";
 
