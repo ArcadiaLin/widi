@@ -2,9 +2,9 @@ import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/p
 import type { CommandEngine } from "../commands/engine.ts";
 import type { WidiEditor } from "../editor.ts";
 import { formatElapsed } from "../format.ts";
+import { currentQuip, QUIP_COLUMN_WIDTH, type Quip } from "../quips.ts";
 import type { AgentViewState, TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
-import { currentVoiceLine, type VoiceLine, type VoicePackId, voiceColumnWidth } from "../voice.ts";
 import { activeAgent, maintenanceLabel } from "./common.ts";
 import { operationHintKeys, resolveOperationHintDetail } from "./operation-hint.ts";
 
@@ -19,16 +19,16 @@ const SEGMENT_GAP = 2;
 const RUNNING_TOOL_SCAN = 50;
 
 /**
- * The line that says what is happening right now, in three segments: a voice
- * line, the facts behind it, and the keys that apply.
+ * The line that says what is happening right now, in three segments: a quip,
+ * the facts behind it, and the keys that apply.
  *
- * The voice column is pinned to the widest line the current pack can produce.
- * Anything else and the two segments to its right shift sideways every time
- * the wording changes, which reads as the whole row twitching.
+ * The quip column is pinned to the widest line the pool can produce. Anything
+ * else and the two segments to its right shift sideways every time the wording
+ * changes, which reads as the whole row twitching.
  *
  * Segments drop right to left as the terminal narrows: the keys go first (they
  * are named again under the footer for every state this line does not cover),
- * then the facts lose their subject and keep their duration, then the voice
+ * then the facts lose their subject and keep their duration, then the quip
  * itself degrades to its glyph and the dots.
  */
 export class WorkingLineView implements Component {
@@ -52,24 +52,28 @@ export class WorkingLineView implements Component {
 		const agent = activeAgent(this.state);
 		if (!agent) return [];
 		const now = Date.now();
-		const line = currentVoiceLine(agent.voice, now);
+		const line = currentQuip(agent.quip, now);
 		if (!line) return [];
 
-		const voice = renderVoice(line, this.state.voicePack, now);
+		const quip = renderQuip(line, now);
 		const facts = renderFacts(agent, line, now);
 		const hint = this.runHint();
 		const keys = hint === undefined ? undefined : theme.faint(hint);
+		// Ahead of the keys in the drop order: the keys are named again under the
+		// footer, and something posted here is not.
+		const extra = this.state.segments.texts("workingLine").join(theme.faint(" · "));
 
 		// Text's own left padding is one column; keep one on the right so the
 		// line never touches either edge.
 		const usable = Math.max(1, width - 2);
-		let body = voice.text;
+		let body = quip.text;
 		for (const candidate of [
-			joinSegments(voice.text, facts?.full, keys),
-			joinSegments(voice.text, facts?.full, undefined),
-			joinSegments(voice.text, facts?.compact, undefined),
-			voice.text,
-			`${voice.glyph} ${dots(now)}`,
+			joinSegments(quip.text, facts?.full, extra, keys),
+			joinSegments(quip.text, facts?.full, extra, undefined),
+			joinSegments(quip.text, facts?.full, undefined, undefined),
+			joinSegments(quip.text, facts?.compact, undefined, undefined),
+			quip.text,
+			`${quip.glyph} ${dots(now)}`,
 		]) {
 			body = candidate;
 			if (visibleWidth(candidate) <= usable) break;
@@ -94,9 +98,14 @@ export class WorkingLineView implements Component {
 	}
 }
 
-function joinSegments(voice: string, facts: string | undefined, keys: string | undefined): string {
+function joinSegments(
+	quip: string,
+	facts: string | undefined,
+	extra: string | undefined,
+	keys: string | undefined,
+): string {
 	const gap = " ".repeat(SEGMENT_GAP);
-	return [voice, facts, keys].filter((part): part is string => part !== undefined && part !== "").join(gap);
+	return [quip, facts, extra, keys].filter((part): part is string => part !== undefined && part !== "").join(gap);
 }
 
 function dots(now: number): string {
@@ -104,24 +113,24 @@ function dots(now: number): string {
 	return `${".".repeat(count)}${" ".repeat(DOT_WIDTH - count)}`;
 }
 
-interface RenderedVoice {
+interface RenderedQuip {
 	readonly glyph: string;
 	readonly text: string;
 }
 
-function renderVoice(line: VoiceLine, pack: VoicePackId, now: number): RenderedVoice {
-	const paint = voiceHue(line.state);
-	const glyph = theme.bold(paint(voiceGlyph(line.state)));
+function renderQuip(line: Quip, now: number): RenderedQuip {
+	const paint = quipHue(line.state);
+	const glyph = theme.bold(paint(quipGlyph(line.state)));
 	// Only a state that continues gets a pulse; a moment that already passed
 	// would be claiming to still be happening.
 	const tail = line.state === "working" || line.state === "poked" ? dots(now) : " ".repeat(DOT_WIDTH);
-	const padding = " ".repeat(Math.max(0, voiceColumnWidth(pack) - visibleWidth(line.text)));
+	const padding = " ".repeat(Math.max(0, QUIP_COLUMN_WIDTH - visibleWidth(line.text)));
 	// Italic on the spoken line alone: it is the one part of this row that is a
-	// voice rather than a fact.
+	// remark rather than a fact.
 	return { glyph, text: `${glyph} ${paint(theme.italic(line.text))}${padding}${paint(tail)}` };
 }
 
-function voiceGlyph(state: VoiceLine["state"]): string {
+function quipGlyph(state: Quip["state"]): string {
 	switch (state) {
 		case "done":
 			return "✔";
@@ -140,7 +149,7 @@ function voiceGlyph(state: VoiceLine["state"]): string {
  * One hue per state, carried by the glyph, the line and the pulse together, so
  * the row's color alone says how the run is going before a word is read.
  */
-function voiceHue(state: VoiceLine["state"]): (text: string) => string {
+function quipHue(state: Quip["state"]): (text: string) => string {
 	switch (state) {
 		case "working":
 			return theme.info;
@@ -166,11 +175,11 @@ interface RenderedFacts {
 }
 
 /**
- * What the voice line is talking about. A running agent reports the work in
+ * What the quip is talking about. A running agent reports the work in
  * front of it; a run that just ended reports what it cost. Neither is the
- * voice's business, which is why they are separate segments.
+ * quip's business, which is why they are separate segments.
  */
-function renderFacts(agent: AgentViewState, line: VoiceLine, now: number): RenderedFacts | undefined {
+function renderFacts(agent: AgentViewState, line: Quip, now: number): RenderedFacts | undefined {
 	if (agent.status === "running" && agent.runStartedAt) {
 		const elapsed = formatElapsed(now - Date.parse(agent.runStartedAt));
 		const subject = agent.maintenance ? maintenanceLabel(agent.maintenance) : activeToolLabel(agent);

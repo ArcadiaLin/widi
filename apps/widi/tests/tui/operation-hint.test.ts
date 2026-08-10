@@ -86,7 +86,6 @@ describe("resolveOperationHint", () => {
 				disposeAgent: async () => {},
 				diagnostics: new DiagnosticsLog(),
 				copyText: async () => {},
-				setVoicePack: () => {},
 			}),
 		]);
 		const state = createTuiApplicationState();

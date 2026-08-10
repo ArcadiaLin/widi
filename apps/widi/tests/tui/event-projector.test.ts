@@ -759,10 +759,10 @@ describe("EventProjector run accounting", () => {
 		const projector = new EventProjector(state);
 
 		projector.apply({ type: "agent_status_changed", agentId: "main", activity: "running", changedAt: timestamp(1) });
-		expect(state.agents.get("main")?.voice?.steady.state).toBe("working");
+		expect(state.agents.get("main")?.quip?.steady.state).toBe("working");
 
 		projector.apply({ type: "agent_status_changed", agentId: "main", activity: "idle", changedAt: timestamp(9) });
-		expect(state.agents.get("main")?.voice?.steady.state).toBe("idle");
+		expect(state.agents.get("main")?.quip?.steady.state).toBe("idle");
 	});
 
 	it("counts the run's tool calls and keeps the totals once it ends", () => {
@@ -806,7 +806,7 @@ describe("EventProjector run accounting", () => {
 			abortedBy: "human",
 			idleAt: timestamp(2),
 		});
-		expect(state.agents.get("main")?.voice?.transient?.state).toBe("aborted-by-human");
+		expect(state.agents.get("main")?.quip?.transient?.state).toBe("aborted-by-human");
 
 		projector.apply({
 			type: "agent_idle",
@@ -815,13 +815,13 @@ describe("EventProjector run accounting", () => {
 			abortedBy: "extension",
 			idleAt: timestamp(3),
 		});
-		expect(state.agents.get("main")?.voice?.transient?.state).toBe("aborted-by-extension");
+		expect(state.agents.get("main")?.quip?.transient?.state).toBe("aborted-by-extension");
 
 		projector.apply({ type: "agent_idle", agentId: "main", reason: "aborted", idleAt: timestamp(4) });
-		expect(state.agents.get("main")?.voice?.transient?.state).toBe("aborted");
+		expect(state.agents.get("main")?.quip?.transient?.state).toBe("aborted");
 
 		projector.apply({ type: "agent_idle", agentId: "main", reason: "settled", idleAt: timestamp(5) });
-		expect(state.agents.get("main")?.voice?.transient?.state).toBe("done");
+		expect(state.agents.get("main")?.quip?.transient?.state).toBe("done");
 	});
 
 	it("keeps quiet about an idle nobody was waiting on", () => {
@@ -830,7 +830,7 @@ describe("EventProjector run accounting", () => {
 
 		projector.apply({ type: "agent_idle", agentId: "main", reason: "ready", idleAt: timestamp(1) });
 
-		expect(state.agents.get("main")?.voice).toBeUndefined();
+		expect(state.agents.get("main")?.quip).toBeUndefined();
 	});
 
 	it("speaks up only once a run keeps failing", () => {
@@ -843,10 +843,10 @@ describe("EventProjector run accounting", () => {
 
 		fail("a");
 		fail("b");
-		expect(state.agents.get("main")?.voice?.transient).toBeUndefined();
+		expect(state.agents.get("main")?.quip?.transient).toBeUndefined();
 
 		fail("c");
-		expect(state.agents.get("main")?.voice?.transient?.state).toBe("error");
+		expect(state.agents.get("main")?.quip?.transient?.state).toBe("error");
 	});
 
 	it("forgets the failures once a call succeeds", () => {
@@ -863,7 +863,7 @@ describe("EventProjector run accounting", () => {
 		end("d", true);
 
 		expect(state.agents.get("main")?.runToolErrorStreak).toBe(1);
-		expect(state.agents.get("main")?.voice?.transient).toBeUndefined();
+		expect(state.agents.get("main")?.quip?.transient).toBeUndefined();
 	});
 });
 

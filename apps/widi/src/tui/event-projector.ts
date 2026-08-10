@@ -15,6 +15,7 @@ import { ORCHESTRATOR_MESSAGE_CUSTOM_TYPE } from "../core/session-manager.ts";
 import type { AgentId, OrchestratorEvent } from "../core/types.ts";
 import { maintenanceLabel } from "./components/common.ts";
 import { diagnosticKey } from "./diagnostics-log.ts";
+import { setSteadyQuip, setTransientQuip } from "./quips.ts";
 import type { HydrationResult } from "./session-hydrator.ts";
 import {
 	type AgentAttention,
@@ -30,10 +31,9 @@ import {
 } from "./state.ts";
 import { flushStreaming } from "./streaming-flush.ts";
 import { applyTimelineWindow } from "./timeline-window.ts";
-import { setSteadyVoice, setTransientVoice } from "./voice.ts";
 
 /** Failures in a row before the working line stops calling it a tool result. */
-const TOOL_ERROR_STREAK_VOICE = 3;
+const TOOL_ERROR_STREAK_QUIP = 3;
 
 const ATTENTION_PRIORITY: Record<AgentAttention, number> = {
 	none: 0,
@@ -184,7 +184,7 @@ export class EventProjector {
 				if (wasRunning && event.activity !== "running" && agent.runStartedAt) {
 					agent.lastRun = { startedAt: agent.runStartedAt, endedAt: event.changedAt, toolCount: agent.runToolCount };
 				}
-				setSteadyVoice(agent, this.state.voicePack, event.activity === "running" ? "working" : "idle");
+				setSteadyQuip(agent, event.activity === "running" ? "working" : "idle");
 				agent.runStartedAt = event.activity === "running" ? event.changedAt : undefined;
 				// Experience indicator: covers the model's first-token latency
 				// after submit; completes (renders empty) once the run leaves
@@ -217,11 +217,10 @@ export class EventProjector {
 			case "agent_idle": {
 				const agent = ensureAgentProjection(this.state, event.agentId);
 				if (event.reason === "settled") {
-					setTransientVoice(agent, this.state.voicePack, "done");
+					setTransientQuip(agent, "done");
 				} else if (event.reason === "aborted") {
-					setTransientVoice(
+					setTransientQuip(
 						agent,
-						this.state.voicePack,
 						event.abortedBy === "human"
 							? "aborted-by-human"
 							: event.abortedBy === "extension"
@@ -475,8 +474,8 @@ export class EventProjector {
 					agent.runToolErrorStreak++;
 					// One failed call is a tool result; a run that keeps failing is the
 					// agent going nowhere, and that is worth saying out loud once.
-					if (agent.runToolErrorStreak === TOOL_ERROR_STREAK_VOICE) {
-						setTransientVoice(agent, this.state.voicePack, "error");
+					if (agent.runToolErrorStreak === TOOL_ERROR_STREAK_QUIP) {
+						setTransientQuip(agent, "error");
 					}
 				} else {
 					agent.runToolErrorStreak = 0;

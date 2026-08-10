@@ -2,19 +2,7 @@ import { diagnosticGlyph } from "../components/common.ts";
 import type { DiagnosticsLog } from "../diagnostics-log.ts";
 import { diagnosticSource, formatDiagnosticRecord } from "../diagnostics-log.ts";
 import { singleLine } from "../format.ts";
-import { VOICE_PACK_IDS, type VoicePackId } from "../voice.ts";
 import type { CommandDefinition } from "./types.ts";
-
-const VOICE_PACK_DESCRIPTIONS: Readonly<Record<VoicePackId, string>> = {
-	off: "Plain wording: Working, Done, Stopped.",
-	peon: "Orc peon.",
-	peasant: "Human peasant.",
-	random: "Either voice, rolled per line.",
-};
-
-function isVoicePackId(value: string): value is VoicePackId {
-	return (VOICE_PACK_IDS as readonly string[]).includes(value);
-}
 
 /**
  * Application-level actions exposed to application-owned commands. quit()
@@ -30,7 +18,6 @@ export interface ApplicationCommandHost {
 	readonly diagnostics: DiagnosticsLog;
 	/** Put text on the system clipboard; throws when no clipboard could be reached. */
 	copyText(text: string): Promise<void>;
-	setVoicePack(pack: VoicePackId): void;
 }
 
 /** Commands that operate on the application itself, not the orchestrator. */
@@ -91,24 +78,6 @@ export function applicationCommands(host: ApplicationCommandHost): readonly Comm
 				if (!record) throw new Error(`No diagnostic ${id} was reported this session.`);
 				await host.copyText(formatDiagnosticRecord(record));
 				return `Copied ${record.diagnostic.code} to the clipboard.`;
-			},
-		},
-		{
-			kind: "action",
-			agentPolicy: "runtime",
-			name: "voice",
-			description: "Choose the voice the working line speaks in.",
-			argumentHint: "[pack]",
-			argumentCompletes: true,
-			complete: async () =>
-				VOICE_PACK_IDS.map((id) => ({ value: id, label: id, description: VOICE_PACK_DESCRIPTIONS[id] })),
-			execute: async (_context, argument) => {
-				const pack = argument.trim();
-				if (!isVoicePackId(pack)) {
-					throw new Error(`Unknown voice ${pack}. Pick one of ${VOICE_PACK_IDS.join(", ")}.`);
-				}
-				host.setVoicePack(pack);
-				return `Working line voice: ${pack}.`;
 			},
 		},
 		{

@@ -14,6 +14,7 @@ import { renderTimelineItem } from "../../src/tui/components/timeline-item.ts";
 import { WorkingLineView } from "../../src/tui/components/working-line.ts";
 import { boundedText, sanitizeTerminalText, singleLine } from "../../src/tui/format.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
+import { setSteadyQuip } from "../../src/tui/quips.ts";
 import {
 	type AssistantMessageItem,
 	type CommandResultItem,
@@ -23,7 +24,6 @@ import {
 	setActiveAgent,
 } from "../../src/tui/state.ts";
 import { theme } from "../../src/tui/theme/theme.ts";
-import { setSteadyVoice } from "../../src/tui/voice.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 
@@ -321,7 +321,7 @@ describe("TUI views", () => {
 		const agent = setActiveAgent(state, "main");
 		agent.status = "running";
 		agent.runStartedAt = new Date().toISOString();
-		setSteadyVoice(agent, state.voicePack, "working");
+		setSteadyQuip(agent, "working");
 		const engine = new CommandEngine(builtInCommands);
 		const editor = { getText: () => "", isShowingAutocomplete: () => false };
 		const output = [

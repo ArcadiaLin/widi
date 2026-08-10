@@ -4,13 +4,13 @@ import { builtInCommands } from "../../src/tui/commands/built-ins.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
 import { WorkingLineView } from "../../src/tui/components/working-line.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
+import { setSteadyQuip, setTransientQuip } from "../../src/tui/quips.ts";
 import {
 	type AgentViewState,
 	createTuiApplicationState,
 	setActiveAgent,
 	type TuiApplicationState,
 } from "../../src/tui/state.ts";
-import { setSteadyVoice, setTransientVoice } from "../../src/tui/voice.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 const engine = new CommandEngine(builtInCommands);
@@ -24,7 +24,7 @@ function running(state: TuiApplicationState, startedMsAgo = 72_000): AgentViewSt
 	const agent = setActiveAgent(state, "main");
 	agent.status = "running";
 	agent.runStartedAt = new Date(Date.now() - startedMsAgo).toISOString();
-	setSteadyVoice(agent, state.voicePack, "working", () => 0);
+	setSteadyQuip(agent, "working", () => 0);
 	return agent;
 }
 
@@ -52,7 +52,7 @@ describe("WorkingLineView", () => {
 		expect(lines[0]).toBe("");
 	});
 
-	it("reports the voice, the run and the keys that apply", () => {
+	it("reports the quip, the run and the keys that apply", () => {
 		const state = createTuiApplicationState();
 		const agent = running(state);
 		agent.timeline.push({
@@ -68,7 +68,7 @@ describe("WorkingLineView", () => {
 
 		const line = render(state);
 
-		expect(line).toContain("Work work.");
+		expect(line).toContain("Working");
 		expect(line).toContain("Bash · 1m12s");
 		expect(line).toContain("Esc abort");
 	});
@@ -97,12 +97,12 @@ describe("WorkingLineView", () => {
 		const agent = setActiveAgent(state, "main");
 		agent.status = "idle";
 		agent.lastRun = { startedAt: new Date(0).toISOString(), endedAt: new Date(108_000).toISOString(), toolCount: 3 };
-		setTransientVoice(agent, state.voicePack, "done", Date.now(), () => 0);
+		setTransientQuip(agent, "done", Date.now(), () => 0);
 
 		const line = render(state);
 
 		expect(line).toContain("✔");
-		expect(line).toContain("Job's done.");
+		expect(line).toContain("Done");
 		expect(line).toContain("3 tools · 1m48s");
 	});
 
@@ -112,23 +112,23 @@ describe("WorkingLineView", () => {
 		agent.status = "idle";
 		agent.lastRun = { startedAt: new Date(0).toISOString(), endedAt: new Date(4_000).toISOString(), toolCount: 0 };
 
-		setTransientVoice(agent, state.voicePack, "aborted-by-human", Date.now(), () => 0);
+		setTransientQuip(agent, "aborted-by-human", Date.now(), () => 0);
 		expect(render(state)).toContain("aborted by you · 4s");
 
-		setTransientVoice(agent, state.voicePack, "aborted-by-extension", Date.now(), () => 0);
+		setTransientQuip(agent, "aborted-by-extension", Date.now(), () => 0);
 		expect(render(state)).toContain("aborted by an extension · 4s");
 	});
 
 	// The whole point of pinning the column: the two segments to its right must
-	// land in the same place whatever the voice happens to be saying.
-	it("keeps the segments after the voice from moving", () => {
+	// land in the same place whatever the quip happens to be saying.
+	it("keeps the segments after the quip from moving", () => {
 		const state = createTuiApplicationState();
 		const agent = running(state, 5_000);
 
-		setSteadyVoice(agent, state.voicePack, "idle", () => 0);
+		setSteadyQuip(agent, "idle", () => 0);
 		const short = render(state).indexOf("5s");
-		agent.voice = undefined;
-		setSteadyVoice(agent, state.voicePack, "working", () => 0.4);
+		agent.quip = undefined;
+		setSteadyQuip(agent, "working", () => 0.4);
 		const other = render(state).indexOf("5s");
 
 		expect(short).toBeGreaterThan(0);
@@ -140,7 +140,7 @@ describe("WorkingLineView", () => {
 		running(state, 5_000);
 
 		expect(render(state, 120)).toContain("Esc abort");
-		const narrow = render(state, 46);
+		const narrow = render(state, 48);
 		expect(narrow).not.toContain("Esc abort");
 		expect(narrow).toContain("thinking · 5s");
 		const narrower = render(state, 36);

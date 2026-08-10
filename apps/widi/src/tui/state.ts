@@ -8,7 +8,8 @@ import type { MessageSource } from "../core/message.ts";
 import type { AgentId, AgentMaintenanceKind, OrchestratorEvent, RuntimeModel } from "../core/types.ts";
 import type { CommandError } from "./commands/types.ts";
 import { DiagnosticsLog } from "./diagnostics-log.ts";
-import type { AgentVoice, VoicePackId } from "./voice.ts";
+import type { AgentQuip } from "./quips.ts";
+import { SegmentStore } from "./segments.ts";
 
 export type TimelineDurability = "durable" | "ephemeral";
 export type NoticeTextMode = "compact" | "full";
@@ -308,7 +309,7 @@ export interface AgentViewState {
 	/** Totals of the run that just ended, for the working line's completion form. */
 	lastRun?: { readonly startedAt: string; readonly endedAt: string; readonly toolCount: number };
 	/** What the working line is saying about this agent. Rolled on transitions only. */
-	voice?: AgentVoice;
+	quip?: AgentQuip;
 	queue: QueueState;
 	/** Optimistic projection while sendMessage is waiting for a deliverable phase. */
 	pendingFollowUps: PendingFollowUp[];
@@ -400,8 +401,8 @@ export interface TuiApplicationState {
 	shuttingDown: boolean;
 	/** Global toggle: show full transcript details instead of collapsed previews. */
 	toolOutputExpanded: boolean;
-	/** Which voice the working line speaks in; "off" is the plain wording. */
-	voicePack: VoicePackId;
+	/** Text other runtimes added to the composed rows, keyed by layout slot. */
+	readonly segments: SegmentStore;
 }
 
 export function createTuiApplicationState(): TuiApplicationState {
@@ -416,7 +417,7 @@ export function createTuiApplicationState(): TuiApplicationState {
 		},
 		shuttingDown: false,
 		toolOutputExpanded: false,
-		voicePack: "peon",
+		segments: new SegmentStore(),
 	};
 }
 
