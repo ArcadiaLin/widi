@@ -2,6 +2,7 @@ import type { Component, SelectItem } from "@earendil-works/pi-tui";
 import type { AgentOrchestrator } from "../../core/agent-orchestrator.ts";
 import type { AgentActivitySnapshot, CandidateItem, RuntimeModel } from "../../core/types.ts";
 import type { CommandPresenter } from "../command-presenter.ts";
+import type { ListSelectorOperation } from "../selectors/list-selector.ts";
 
 export type CommandAgentPolicy = "runtime" | "materialize" | "active";
 
@@ -11,10 +12,15 @@ export interface CommandContext {
 	readonly pendingModel?: RuntimeModel;
 }
 
-/** What the application hands a command's dedicated Enter-time selector. */
+/**
+ * What the application hands a command's dedicated Enter-time selector. It is
+ * the request the default ListSelector would have been built from, so a
+ * command that only wants to adjust the list can spread it into one.
+ */
 export interface CommandSelectorRequest {
 	readonly title: string;
 	readonly items: readonly SelectItem[];
+	readonly operation?: ListSelectorOperation;
 	/** Pre-filled filter text (a query the submit path already tried). */
 	readonly initialFilter?: string;
 	onSelect(item: SelectItem): void;

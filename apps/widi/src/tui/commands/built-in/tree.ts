@@ -5,73 +5,81 @@ import { TreeNavigationSelector } from "../../selectors/tree-navigation.ts";
 import { buildSessionEntryRows, findSessionEntryRow } from "../../session-tree.ts";
 import type { CommandResultItem } from "../../state.ts";
 import type { CommandDefinition } from "../types.ts";
+import type { CommandHost } from "./command-host.ts";
 import { requireAgentId } from "./utils/agents.ts";
 import { listUserMessageEntryCandidates } from "./utils/sessions.ts";
 
-export const treeCommand: CommandDefinition = {
-	kind: "action",
-	agentPolicy: "active",
-	name: "tree",
-	description: "Inspect or navigate the current session tree.",
-	argumentHint: "[entry]",
-	complete: async (context) => await listUserMessageEntryCandidates(context),
-	argumentCompletes: true,
-	resolveArgument: async (context, argument) => {
-		// Navigation targets are every entry in the tree, not just the
-		// user-message candidates the completer lists, so ids resolve against
-		// the tree itself. The selector's summarize choice rides along as the
-		// "summarize" modifier, custom instructions behind a "--" separator.
-		const parsed = parseTreeArgument(argument);
-		if (!parsed) return { kind: "open-selector", query: argument };
-		const tree = await context.orchestrator.getAgentSessionTree(requireAgentId(context));
-		return tree.entries.some((entry) => entry.id === parsed.targetId)
-			? { kind: "resolved", value: argument.trim() }
-			: { kind: "open-selector", query: argument };
-	},
-	// The graph picker needs the entry tree itself, not the flat candidate
-	// list, so it fetches the snapshot again rather than reading request.items.
-	selector: async (request, context) => {
-		const tree = await context.orchestrator.getAgentSessionTree(requireAgentId(context));
-		const rows = buildSessionEntryRows(tree);
-		const initialEntryId = request.initialFilter ? findSessionEntryRow(rows, request.initialFilter) : undefined;
-		return new TreeNavigationSelector({
-			title: request.title,
-			rows,
-			...(initialEntryId === undefined ? undefined : { initialEntryId }),
-			// The summarize choice rides along in the resubmitted argument:
-			// "/tree <entryId> summarize", custom instructions behind "--".
-			onNavigate: (entryId, summarize, customInstructions) =>
-				request.onSelect({
-					value: customInstructions
-						? `${entryId} summarize -- ${customInstructions}`
-						: summarize
-							? `${entryId} summarize`
-							: entryId,
-					label: entryId,
-				}),
-			onCancel: request.onCancel,
-			onClose: request.onClose,
-		});
-	},
-	execute: async (context, argument) => {
-		const agentId = requireAgentId(context);
-		const parsed = parseTreeArgument(argument);
-		if (!parsed) {
-			return await context.orchestrator.getAgentSessionTree(agentId);
-		}
-		return await context.orchestrator.navigateAgentTree(
-			agentId,
-			parsed.targetId,
-			parsed.summarize
-				? {
-						summarize: true,
-						...(parsed.customInstructions === undefined ? {} : { customInstructions: parsed.customInstructions }),
-					}
-				: undefined,
-		);
-	},
-	presenter: { kind: "lines", present: (item, width, options) => presentTreeResult(item, width, options) },
-};
+export function treeCommand(host: CommandHost): CommandDefinition {
+	return {
+		kind: "action",
+		agentPolicy: "active",
+		name: "tree",
+		description: "Inspect or navigate the current session tree.",
+		argumentHint: "[entry]",
+		complete: async (context) => await listUserMessageEntryCandidates(context),
+		argumentCompletes: true,
+		resolveArgument: async (context, argument) => {
+			// Navigation targets are every entry in the tree, not just the
+			// user-message candidates the completer lists, so ids resolve against
+			// the tree itself. The selector's summarize choice rides along as the
+			// "summarize" modifier, custom instructions behind a "--" separator.
+			const parsed = parseTreeArgument(argument);
+			if (!parsed) return { kind: "open-selector", query: argument };
+			const tree = await context.orchestrator.getAgentSessionTree(requireAgentId(context));
+			return tree.entries.some((entry) => entry.id === parsed.targetId)
+				? { kind: "resolved", value: argument.trim() }
+				: { kind: "open-selector", query: argument };
+		},
+		// The graph picker needs the entry tree itself, not the flat candidate
+		// list, so it fetches the snapshot again rather than reading request.items.
+		selector: async (request, context) => {
+			const tree = await context.orchestrator.getAgentSessionTree(requireAgentId(context));
+			const rows = buildSessionEntryRows(tree);
+			const initialEntryId = request.initialFilter ? findSessionEntryRow(rows, request.initialFilter) : undefined;
+			return new TreeNavigationSelector({
+				title: request.title,
+				rows,
+				...(initialEntryId === undefined ? undefined : { initialEntryId }),
+				// The summarize choice rides along in the resubmitted argument:
+				// "/tree <entryId> summarize", custom instructions behind "--".
+				onNavigate: (entryId, summarize, customInstructions) =>
+					request.onSelect({
+						value: customInstructions
+							? `${entryId} summarize -- ${customInstructions}`
+							: summarize
+								? `${entryId} summarize`
+								: entryId,
+						label: entryId,
+					}),
+				onCancel: request.onCancel,
+				onClose: request.onClose,
+			});
+		},
+		execute: async (context, argument) => {
+			const agentId = requireAgentId(context);
+			const parsed = parseTreeArgument(argument);
+			if (!parsed) {
+				return await context.orchestrator.getAgentSessionTree(agentId);
+			}
+			const navigation = await context.orchestrator.navigateAgentTree(
+				agentId,
+				parsed.targetId,
+				parsed.summarize
+					? {
+							summarize: true,
+							...(parsed.customInstructions === undefined ? {} : { customInstructions: parsed.customInstructions }),
+						}
+					: undefined,
+			);
+			// Navigating to a user message un-sends it: the harness returns its
+			// text so the editor can offer it back for editing and resubmission.
+			if (navigation.cancelled) host.restoreSubmittedText();
+			else if (navigation.editorText !== undefined) host.setEditorText(navigation.editorText);
+			return navigation;
+		},
+		presenter: { kind: "lines", present: (item, width, options) => presentTreeResult(item, width, options) },
+	};
+}
 
 interface TreeArgument {
 	readonly targetId: string;

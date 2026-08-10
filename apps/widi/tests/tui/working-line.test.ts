@@ -1,6 +1,6 @@
 import { setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it } from "vitest";
-import { builtInCommands } from "../../src/tui/commands/built-in/index.ts";
+import { widiCommands } from "../../src/tui/commands/built-in/index.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
 import { WorkingLineView } from "../../src/tui/components/working-line.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
@@ -11,9 +11,10 @@ import {
 	setActiveAgent,
 	type TuiApplicationState,
 } from "../../src/tui/state.ts";
+import { stubCommandHost } from "../helpers/command-host.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
-const engine = new CommandEngine(builtInCommands);
+const engine = new CommandEngine(widiCommands(stubCommandHost()));
 const editor = { getText: () => "", isShowingAutocomplete: () => false };
 
 function render(state: TuiApplicationState, width = 120): string {

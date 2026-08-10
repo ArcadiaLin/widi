@@ -1,6 +1,6 @@
 import { setKeybindings } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it } from "vitest";
-import { applicationCommands, builtInCommands } from "../../src/tui/commands/built-in/index.ts";
+import { widiCommands } from "../../src/tui/commands/built-in/index.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
 import {
 	formatOperationHintKey,
@@ -9,7 +9,6 @@ import {
 	resolveOperationHint,
 	resolveOperationHintDetail,
 } from "../../src/tui/components/operation-hint.ts";
-import { DiagnosticsLog } from "../../src/tui/diagnostics-log.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
 import {
 	createTuiApplicationState,
@@ -17,8 +16,9 @@ import {
 	setActiveAgent,
 	setDockedFocus,
 } from "../../src/tui/state.ts";
+import { stubCommandHost } from "../helpers/command-host.ts";
 
-const engine = new CommandEngine(builtInCommands);
+const engine = new CommandEngine(widiCommands(stubCommandHost()));
 const keys = {
 	agents: "←",
 	interrupt: "Esc",
@@ -76,28 +76,12 @@ describe("resolveOperationHint", () => {
 		).toContain("/thinking [level] · Set the current agent thinking level.");
 	});
 
-	it("uses application-owned command metadata for autocomplete help", () => {
-		const applicationEngine = new CommandEngine([
-			...builtInCommands,
-			...applicationCommands({
-				quit: () => {},
-				newSession: async () => {},
-				disposeAgent: async () => {},
-				diagnostics: new DiagnosticsLog(),
-				copyText: async () => {},
-			}),
-		]);
+	it("uses host-backed command metadata for autocomplete help", () => {
 		const state = createTuiApplicationState();
 
 		expect(
-			resolveOperationHint({
-				state,
-				engine: applicationEngine,
-				editorText: "/new",
-				editorAutocompleteVisible: true,
-				keys,
-			}),
-		).toContain("/new · Close the current agent and start a new session on the same profile.");
+			resolveOperationHint({ state, engine, editorText: "/new", editorAutocompleteVisible: true, keys }),
+		).toContain("/new [profile] · Stage a new agent on a profile, keeping the current one.");
 	});
 
 	it("prioritizes completion over autocomplete", () => {

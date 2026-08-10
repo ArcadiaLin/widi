@@ -9,7 +9,6 @@ import {
 	TuiAltScreen,
 	VStack,
 } from "@earendil-works/pi-tui";
-import type { NavigateTreeResult } from "@widi/agent-core";
 import type { AgentOrchestrator } from "../core/agent-orchestrator.ts";
 import { DEFAULT_AGENT_DIR } from "../core/constants.js";
 import { type OrchestratorDiagnostic, OrchestratorError } from "../core/diagnostics.ts";
@@ -27,8 +26,8 @@ import {
 	type StagedInputEntry,
 	TuiCapabilityRegistry,
 } from "./capabilities.ts";
-import { applicationCommands, builtInCommands } from "./commands/built-in/index.ts";
-import { CommandEngine, switchedAgentId } from "./commands/engine.ts";
+import { widiCommands } from "./commands/built-in/index.ts";
+import { CommandEngine } from "./commands/engine.ts";
 import { parseLineCommand } from "./commands/parse.ts";
 import type { CommandDefinition, CommandError, EngineOutcome } from "./commands/types.ts";
 import { AgentStripView } from "./components/agent-strip.ts";
@@ -114,6 +113,8 @@ export class WidiTuiApplication {
 	private readonly pendingAgents: PendingAgentController;
 	/** Unknown "/" input awaiting a confirming second enter (v2 §11.2). */
 	private pendingUnknownCommand?: { scopeId: string; text: string };
+	/** The line a command is executing under, so the command can hand it back. */
+	private runningSubmit?: { readonly rawText: string; readonly agentId: string | undefined };
 	private readonly engine = new CommandEngine();
 	private unsubscribeEvents?: () => void;
 	private unregisterClient?: () => void;
@@ -182,22 +183,31 @@ export class WidiTuiApplication {
 		// Built-ins go through the same runtime registration path extension
 		// commands will use (Step 6); a name conflict becomes a startup
 		// diagnostic instead of a silent override.
-		for (const command of [
-			...builtInCommands,
-			...applicationCommands({
-				quit: () => {
-					void this.shutdown("user exit").catch(() => {});
-				},
-				newSession: async (sourceAgentId) => {
-					await this.beginNewSession(sourceAgentId);
-				},
-				disposeAgent: async (agentId) => {
-					await this.disposeAgent(agentId);
-				},
-				diagnostics: this.state.diagnostics,
-				copyText: (text) => copyToClipboard(text),
-			}),
-		]) {
+		for (const command of widiCommands({
+			quit: () => {
+				void this.shutdown("user exit").catch(() => {});
+			},
+			newAgent: async (profileId) => {
+				await this.beginNewAgent(profileId);
+			},
+			newSession: async (sourceAgentId) => {
+				await this.beginNewSession(sourceAgentId);
+			},
+			disposeAgent: async (agentId) => {
+				await this.disposeAgent(agentId);
+			},
+			switchToAgent: async (agentId) => {
+				await this.activateNavigationAgent(agentId);
+			},
+			setEditorText: (text) => {
+				this.editor.setText(text);
+			},
+			restoreSubmittedText: () => {
+				if (this.runningSubmit) this.restoreEditor(this.runningSubmit.rawText, this.runningSubmit.agentId);
+			},
+			diagnostics: this.state.diagnostics,
+			copyText: (text) => copyToClipboard(text),
+		})) {
 			const diagnostic = this.engine.register(command);
 			if (diagnostic) this.userConfigDiagnostics.push(diagnostic);
 		}
@@ -1043,12 +1053,15 @@ export class WidiTuiApplication {
 		}
 
 		let outcome: EngineOutcome;
+		this.runningSubmit = { rawText, agentId };
 		try {
 			outcome = await this.runCommandInput(agentId, text);
 		} catch (error) {
 			this.restoreEditor(rawText, agentId);
 			this.addApplicationNotice(errorMessage(error), agentId);
 			return;
+		} finally {
+			this.runningSubmit = undefined;
 		}
 
 		switch (outcome.kind) {
@@ -1069,13 +1082,6 @@ export class WidiTuiApplication {
 			}
 			case "executed": {
 				this.editor.addToHistory(rawText);
-				if (outcome.name === "tree") {
-					// Navigating to a user message un-sends it: the harness returns its
-					// text so the editor can offer it back for editing/resubmission.
-					const navigation = outcome.value as NavigateTreeResult;
-					if (navigation.cancelled) this.restoreEditor(rawText, agentId);
-					else if (navigation.editorText !== undefined) this.editor.setText(navigation.editorText);
-				}
 				this.tui.requestRender();
 				return;
 			}
@@ -1157,8 +1163,6 @@ export class WidiTuiApplication {
 				return outcome;
 		}
 
-		const nextAgentId = switchedAgentId(outcome);
-		if (nextAgentId) await this.activateNavigationAgent(nextAgentId);
 		return outcome;
 	}
 
@@ -1536,13 +1540,6 @@ export class WidiTuiApplication {
 			label: candidate.label ?? candidate.value,
 			description: candidate.description,
 		}));
-		if (command.name === "fork") {
-			items.unshift({
-				value: "",
-				label: "Fork here (current position)",
-				description: "Use the current session position",
-			});
-		}
 		const request: ListSelectorRequest = {
 			title: `/${command.name}`,
 			items,
@@ -1641,10 +1638,28 @@ export class WidiTuiApplication {
 	}
 
 	/**
-	 * /new and /clear: close the current conversation and open an empty one on
-	 * the same role. The agent and its context are gone from the runtime - only
-	 * its session file remains, resumable through /resume - so the source facts
-	 * are captured before the dispose, not read back from it afterwards.
+	 * /new: stage a second conversation beside the current one. The live agent
+	 * keeps its place in the strip, so its draft is parked the way switching
+	 * away parks it.
+	 */
+	private async beginNewAgent(profileId: string | undefined): Promise<void> {
+		const resolved = profileId ?? this.runtime.services.defaultProfile.id;
+		const candidates = await this.orchestrator.listAgentProfileCandidates();
+		const label = candidates.profiles.find((profile) => profile.value === resolved)?.label ?? resolved;
+		if (this.state.activeAgentId) this.drafts.set(this.state.activeAgentId, this.editor.getText());
+		const model = this.orchestrator.getDefaultModel();
+		this.pendingAgents.beginNewSession(
+			{ profileId: resolved, model },
+			{ profileLabel: label, model, thinkingLevel: this.orchestrator.getDefaultThinkingLevel() },
+		);
+		this.showPendingAgent();
+	}
+
+	/**
+	 * /clear: close the current conversation and open an empty one on the same
+	 * role. The agent and its context are gone from the runtime - only its
+	 * session file remains, resumable through /resume - so the source facts are
+	 * captured before the dispose, not read back from it afterwards.
 	 */
 	private async beginNewSession(sourceAgentId: string | undefined): Promise<void> {
 		const source = sourceAgentId ? this.newSessionSource(sourceAgentId) : undefined;
@@ -1654,25 +1669,33 @@ export class WidiTuiApplication {
 		}
 		await this.closeAgentForNewSession(sourceAgentId);
 		this.pendingAgents.beginNewSession({ profileId: source.profileId, model: source.display.model }, source.display);
-		this.updateAnimationTicker();
-		this.pendingUnknownCommand = undefined;
-		this.editor.setText("");
-		this.configurePendingEditor();
-		this.refreshVisibleAgent();
-		this.updateEditorAvailability();
-		this.tui.setFocus(this.editor);
-		this.tui.requestRender();
+		this.showPendingAgent();
 	}
 
+	/**
+	 * Disposing a parent takes its descendants with it: left alone they would
+	 * keep running with nobody to report back to, and the strip would promote
+	 * them to roots the user never opened.
+	 */
 	private async disposeAgent(agentId: string): Promise<void> {
 		const disposed = ensureAgentProjection(this.state, agentId);
 		const sourceAgentId = forkSourceAgentId(this.state, disposed);
-		await this.orchestrator.disposeAgent(agentId, { intent: "removed", reason: "Disposed from the TUI." });
-		disposed.status = "disposed";
-		await this.syncAgent(agentId);
+		const disposedIds = new Set(
+			await this.orchestrator.disposeAgent(agentId, {
+				intent: "removed",
+				reason: "Disposed from the TUI.",
+				scope: "subtree",
+			}),
+		);
+		disposedIds.add(agentId);
+		for (const id of disposedIds) {
+			const agent = this.state.agents.get(id);
+			if (agent) agent.status = "disposed";
+			await this.syncAgent(id);
+		}
 
 		const isUsableNavigationTarget = (agent: AgentViewState) =>
-			agent.agentId !== agentId && (agent.status === "idle" || agent.status === "running");
+			!disposedIds.has(agent.agentId) && (agent.status === "idle" || agent.status === "running");
 		const source = sourceAgentId ? this.state.agents.get(sourceAgentId) : undefined;
 		if (source && isUsableNavigationTarget(source)) {
 			this.switchAgent(source.agentId);
@@ -1688,6 +1711,11 @@ export class WidiTuiApplication {
 
 	private beginDefaultSession(): void {
 		this.pendingAgents.beginDefault(this.defaultPendingDisplay());
+		this.showPendingAgent();
+	}
+
+	/** Put the staged agent on screen, whatever staged it. */
+	private showPendingAgent(): void {
 		this.updateAnimationTicker();
 		this.pendingUnknownCommand = undefined;
 		this.editor.setText("");

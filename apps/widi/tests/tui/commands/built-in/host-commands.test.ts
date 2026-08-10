@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentOrchestrator } from "../../../../src/core/agent-orchestrator.ts";
-import { applicationCommands } from "../../../../src/tui/commands/built-in/index.ts";
+import { widiCommands } from "../../../../src/tui/commands/built-in/index.ts";
 import { CommandEngine } from "../../../../src/tui/commands/engine.ts";
 import { DiagnosticsLog } from "../../../../src/tui/diagnostics-log.ts";
 
@@ -9,12 +9,19 @@ const NOW = "2026-08-09T10:00:00.000Z";
 function setup(status: "idle" | "running" = "idle") {
 	const host = {
 		quitCalls: 0,
+		newAgentCalls: [] as Array<string | undefined>,
 		newSessionCalls: [] as Array<string | undefined>,
 		disposeAgentCalls: [] as string[],
 		copied: [] as string[],
 		diagnostics: new DiagnosticsLog(),
 		quit() {
 			this.quitCalls += 1;
+		},
+		async switchToAgent() {},
+		setEditorText() {},
+		restoreSubmittedText() {},
+		async newAgent(profileId: string | undefined) {
+			this.newAgentCalls.push(profileId);
 		},
 		async newSession(sourceAgentId: string | undefined) {
 			this.newSessionCalls.push(sourceAgentId);
@@ -26,23 +33,24 @@ function setup(status: "idle" | "running" = "idle") {
 			this.copied.push(text);
 		},
 	};
-	const engine = new CommandEngine(applicationCommands(host));
+	const engine = new CommandEngine(widiCommands(host));
 	const context = {
 		agentId: "agent-1",
-		orchestrator: { getAgentStatus: () => status } as unknown as AgentOrchestrator,
+		orchestrator: {
+			getAgentStatus: () => status,
+			listAgentProfileCandidates: async () => ({
+				profiles: [
+					{ value: "main", label: "Main Agent" },
+					{ value: "reviewer", label: "Reviewer" },
+				],
+			}),
+		} as unknown as AgentOrchestrator,
 	};
 	return { engine, host, context };
 }
 
-describe("applicationCommands", () => {
-	it("executes /quit through the engine and notifies the host", async () => {
-		const { engine, host, context } = setup();
-		const outcome = await engine.handleInput("/quit", context);
-		expect(outcome).toMatchObject({ kind: "executed", name: "quit" });
-		expect(host.quitCalls).toBe(1);
-	});
-
-	it("executes /exit as an alias of /quit", async () => {
+describe("host-backed commands", () => {
+	it("executes /exit through the engine and notifies the host", async () => {
 		const { engine, host, context } = setup();
 		const outcome = await engine.handleInput("/exit", context);
 		expect(outcome).toMatchObject({ kind: "executed", name: "exit" });
@@ -51,10 +59,11 @@ describe("applicationCommands", () => {
 
 	it("stays available while the agent is running", async () => {
 		const { engine, host, context } = setup("running");
-		for (const view of engine.list({ activity: "running" })) {
-			expect(view.available).toBe(true);
+		const views = engine.list({ activity: "running" });
+		for (const name of ["exit", "new", "clear", "diagnostics", "dispose"]) {
+			expect(views.find((view) => view.name === name)?.available).toBe(true);
 		}
-		const outcome = await engine.handleInput("/quit", context);
+		const outcome = await engine.handleInput("/exit", context);
 		expect(outcome.kind).toBe("executed");
 		expect(host.quitCalls).toBe(1);
 		const disposeOutcome = await engine.handleInput("/dispose", context);
@@ -62,20 +71,30 @@ describe("applicationCommands", () => {
 		expect(host.disposeAgentCalls).toEqual(["agent-1"]);
 	});
 
-	it("hands /new to the application without creating a core agent", async () => {
+	it("hands the named profile to /new without touching the current session", async () => {
+		const { engine, host, context } = setup();
+		const outcome = await engine.handleInput("/new reviewer", context);
+
+		expect(outcome).toMatchObject({ kind: "executed", name: "new" });
+		expect(host.newAgentCalls).toEqual(["reviewer"]);
+		expect(host.newSessionCalls).toEqual([]);
+	});
+
+	it("offers the profiles when /new names none", async () => {
 		const { engine, host, context } = setup();
 		const outcome = await engine.handleInput("/new", context);
 
-		expect(outcome).toMatchObject({ kind: "executed", name: "new" });
-		expect(host.newSessionCalls).toEqual(["agent-1"]);
+		expect(outcome).toMatchObject({ kind: "needs-argument", candidates: [{ value: "main" }, { value: "reviewer" }] });
+		expect(host.newAgentCalls).toEqual([]);
 	});
 
-	it("executes /clear as an alias of /new", async () => {
+	it("closes the current session on /clear", async () => {
 		const { engine, host, context } = setup();
 		const outcome = await engine.handleInput("/clear", context);
 
 		expect(outcome).toMatchObject({ kind: "executed", name: "clear" });
 		expect(host.newSessionCalls).toEqual(["agent-1"]);
+		expect(host.newAgentCalls).toEqual([]);
 	});
 
 	it("hands /dispose to the application for the active agent", async () => {

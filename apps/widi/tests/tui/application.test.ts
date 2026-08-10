@@ -70,20 +70,16 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		expect(harness.promptAgent).not.toHaveBeenCalled();
 	});
 
-	it("closes the current agent on /new and keeps the session pending", async () => {
+	it("keeps the current agent on /new and stages a second one beside it", async () => {
 		const harness = await createApplicationHarness();
 		await submit(harness.application, "first");
 		harness.promptAgent.mockClear();
 		harness.spawnAgent.mockClear();
 
-		await submit(harness.application, "/new");
+		await submit(harness.application, "/new main");
 
-		expect(harness.disposeAgent).toHaveBeenCalledWith(
-			"main",
-			expect.objectContaining({ reason: expect.stringContaining("new session") }),
-		);
-		// The replaced agent leaves no projection behind: nothing to switch back to.
-		expect(harness.application.state.agents.has("main")).toBe(false);
+		expect(harness.disposeAgent).not.toHaveBeenCalled();
+		expect(harness.application.state.agents.has("main")).toBe(true);
 		expect(harness.application.state.activeAgentId).toBeUndefined();
 		expect(harness.spawnAgent).not.toHaveBeenCalled();
 		expect(harness.application.state.pendingAgent?.start).toEqual({
@@ -91,11 +87,22 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 			profileId: "main",
 			model: model(),
 		});
+		// The row belongs to the conversation the command was typed in.
 		expect(
-			harness.application.state.pendingAgent?.timeline.find(
-				(item) => item.type === "command-result" && item.name === "new",
-			),
+			harness.application.state.agents
+				.get("main")
+				?.timeline.find((item) => item.type === "command-result" && item.name === "new"),
 		).toMatchObject({ type: "command-result", status: "completed" });
+	});
+
+	it("picks the profile when /new names none", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "first");
+
+		const outcome = await harness.application.capabilities.get("commands")?.run("/new");
+
+		expect(outcome).toMatchObject({ kind: "needs-argument", name: "new", candidates: [{ value: "main" }] });
+		expect(harness.application.state.pendingAgent).toBeUndefined();
 	});
 
 	it("creates the /new session when its first message is submitted", async () => {
@@ -104,7 +111,7 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		harness.promptAgent.mockClear();
 		harness.spawnAgent.mockClear();
 
-		await submit(harness.application, "/new");
+		await submit(harness.application, "/new main");
 		await submit(harness.application, "second");
 
 		expect(harness.spawnAgent).toHaveBeenCalledOnce();
@@ -257,12 +264,12 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		});
 	});
 
-	it("keeps the current agent selected when /new disposal fails", async () => {
+	it("keeps the current agent selected when /clear disposal fails", async () => {
 		const harness = await createApplicationHarness();
 		await submit(harness.application, "first");
 		harness.disposeAgent.mockRejectedValueOnce(new Error("dispose failed"));
 
-		await submit(harness.application, "/new");
+		await submit(harness.application, "/clear");
 
 		expect(harness.application.state.activeAgentId).toBe("main");
 		expect(harness.application.state.agents.has("main")).toBe(true);
@@ -270,7 +277,7 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		expect(
 			harness.application.state.agents
 				.get("main")
-				?.timeline.find((item) => item.type === "command-result" && item.name === "new"),
+				?.timeline.find((item) => item.type === "command-result" && item.name === "clear"),
 		).toMatchObject({
 			type: "command-result",
 			status: "failed",
@@ -783,10 +790,10 @@ describe("WidiTuiApplication capabilities", () => {
 		const commands = harness.application.capabilities.get("commands");
 		if (!commands) throw new Error("Expected the commands capability to be published.");
 
-		expect(commands.list().map((command) => command.name)).toContain("inspect");
+		expect(commands.list().map((command) => command.name)).toContain("status");
 
-		// /inspect needs an active agent and there is none yet.
-		expect(await commands.run("/inspect")).toMatchObject({ kind: "failed", name: "inspect" });
+		// /status needs an active agent and there is none yet.
+		expect(await commands.run("/status")).toMatchObject({ kind: "failed", name: "status" });
 	});
 
 	it("hands back candidates instead of opening a picker, and prompt text instead of sending it", async () => {
@@ -836,7 +843,7 @@ describe("WidiTuiApplication capabilities", () => {
 		expect(seen).toEqual(["main"]);
 
 		detach();
-		await submit(harness.application, "/new");
+		await submit(harness.application, "/new main");
 		expect(seen).toEqual(["main"]);
 	});
 
@@ -845,7 +852,7 @@ describe("WidiTuiApplication capabilities", () => {
 		const strip = harness.application.capabilities.get("agentStrip");
 		if (!strip) throw new Error("Expected the agent strip capability to be published.");
 		await submit(harness.application, "hello");
-		await submit(harness.application, "/new");
+		await submit(harness.application, "/new main");
 		await submit(harness.application, "second");
 		expect(strip.visibleAgentId()).toBe("main-2");
 
@@ -853,7 +860,8 @@ describe("WidiTuiApplication capabilities", () => {
 		await strip.dispose("main-2");
 
 		expect(harness.disposeAgent).toHaveBeenCalledWith("main-2", expect.objectContaining({ intent: "removed" }));
-		expect(strip.visibleAgentId()).toBeUndefined();
+		// /new left the first conversation alive, so disposal falls back to it.
+		expect(strip.visibleAgentId()).toBe("main");
 	});
 
 	it("writes an attributed ephemeral row and takes it back", async () => {
@@ -1210,6 +1218,7 @@ async function createApplicationHarness(options: { agentDir?: string; extensionL
 		setAgentSessionName,
 		// Argument resolution consults the completers before execute.
 		listAvailableModelCandidates: async () => ({ models: [{ value: "test/next-model", label: "Next Model" }] }),
+		listAgentProfileCandidates: async () => ({ profiles: [{ value: "main", label: "Main Agent" }] }),
 		listAgentThinkingLevelCandidates: () => ({
 			levels: [
 				{ value: "high", label: "high" },

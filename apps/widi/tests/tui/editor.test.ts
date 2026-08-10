@@ -2,11 +2,12 @@ import { setKeybindings, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import { WidiCommandAutocompleteProvider } from "../../src/tui/autocomplete.ts";
-import { builtInCommands } from "../../src/tui/commands/built-in/index.ts";
+import { widiCommands } from "../../src/tui/commands/built-in/index.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
 import { WidiEditor } from "../../src/tui/editor.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
 import { theme } from "../../src/tui/theme/theme.ts";
+import { stubCommandHost } from "../helpers/command-host.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 const strip = (line: string) => line.replace(ANSI_SEQUENCE, "");
@@ -69,7 +70,7 @@ describe("WidiEditor argument completion", () => {
 		const editor = createEditor();
 		editor.setAutocompleteProvider(
 			new WidiCommandAutocompleteProvider({
-				engine: new CommandEngine(builtInCommands),
+				engine: new CommandEngine(widiCommands(stubCommandHost())),
 				agentId: "main",
 				orchestrator: orchestrator as unknown as AgentOrchestrator,
 				getActivity: () => ({ activity: "idle" }),

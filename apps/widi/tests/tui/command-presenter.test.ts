@@ -5,10 +5,11 @@ import {
 	registerCommandPresenter,
 	unregisterCommandPresenter,
 } from "../../src/tui/command-presenter.ts";
-import { builtInCommands } from "../../src/tui/commands/built-in/index.ts";
+import { widiCommands } from "../../src/tui/commands/built-in/index.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
 import type { ActionCommand } from "../../src/tui/commands/types.ts";
 import type { CommandResultItem } from "../../src/tui/state.ts";
+import { stubCommandHost } from "../helpers/command-host.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 
@@ -114,7 +115,7 @@ describe("CommandEngine presenter sync", () => {
 describe("/tree presenter", () => {
 	// The engine constructor syncs the built-in presenters into the registry.
 	beforeAll(() => {
-		new CommandEngine(builtInCommands);
+		new CommandEngine(widiCommands(stubCommandHost()));
 	});
 
 	it("summarizes a bare /tree snapshot on the headline", () => {

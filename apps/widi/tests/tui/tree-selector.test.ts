@@ -6,7 +6,6 @@ import type { AgentSnapshot } from "../../src/core/agent-types.ts";
 import type { WidiRuntime } from "../../src/core/runtime-service.ts";
 import type { AgentSessionTreeSnapshot } from "../../src/core/session-manager.ts";
 import { WidiTuiApplication } from "../../src/tui/application.ts";
-import { switchedAgentId } from "../../src/tui/commands/engine.ts";
 import { OperationHintView } from "../../src/tui/components/operation-hint.ts";
 import type { WidiEditor } from "../../src/tui/editor.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
@@ -356,11 +355,7 @@ describe("WidiTuiApplication /tree selector", () => {
 		await flush();
 
 		expect(navigateAgentTree).toHaveBeenCalledWith("agent-1", "u2", undefined);
-		// Tree navigation moves the session, not the agent: no fork/resume-style
-		// agent switch fires for it.
-		expect(switchedAgentId({ kind: "executed", commandId: "c1", name: "tree", value: { cancelled: false } })).toBe(
-			undefined,
-		);
+		// Tree navigation moves the session, not the agent.
 		expect(application.state.activeAgentId).toBe("agent-1");
 		expect(application.state.mode).toBe("editor");
 		expect(application.tui.hasOverlay()).toBe(false);

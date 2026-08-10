@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../../src/core/agent-orchestrator.ts";
-import { builtInCommands } from "../../../src/tui/commands/built-in/index.ts";
-import { CommandEngine, switchedAgentId } from "../../../src/tui/commands/engine.ts";
+import { widiCommands } from "../../../src/tui/commands/built-in/index.ts";
+import { CommandEngine } from "../../../src/tui/commands/engine.ts";
 import type { ActionCommand, CommandDefinition } from "../../../src/tui/commands/types.ts";
+import { stubCommandHost } from "../../helpers/command-host.ts";
 
 function stubOrchestrator(overrides: Record<string, unknown>): AgentOrchestrator {
 	// Status gates read `getAgentActivity`; the overrides may replace it.
@@ -23,24 +24,25 @@ function pendingContext(overrides: Record<string, unknown> = {}) {
 }
 
 describe("CommandEngine.handleInput", () => {
-	const engine = new CommandEngine(builtInCommands);
+	const engine = new CommandEngine(widiCommands(stubCommandHost()));
 
 	it("passes plain prompts through", async () => {
 		expect(await engine.handleInput("hello world", context())).toEqual({ kind: "pass" });
 	});
 
 	it("executes a line command against orchestrator atomics", async () => {
-		let aborted = 0;
+		let reloads = 0;
 		const outcome = await engine.handleInput(
-			"/abort",
+			"/reload",
 			context({
-				abortAgent: async () => {
-					aborted += 1;
+				reloadExtensions: async () => {
+					reloads += 1;
+					return { catalog: { loaded: [] }, agents: [] };
 				},
 			}),
 		);
 		expect(outcome.kind).toBe("executed");
-		expect(aborted).toBe(1);
+		expect(reloads).toBe(1);
 	});
 
 	it("returns needs-argument for a bare command with completion", async () => {
@@ -121,60 +123,23 @@ describe("CommandEngine.handleInput", () => {
 	});
 
 	it("fails unavailable commands with a CommandError", async () => {
-		const outcome = await engine.handleInput("/steer:go", context());
+		const reloadExtensions = vi.fn(async () => ({ catalog: { loaded: [] }, agents: [] }));
+		const outcome = await engine.handleInput(
+			"/resume:session-1",
+			context({ getAgentActivity: () => ({ activity: "running" }), reloadExtensions }),
+		);
 		expect(outcome.kind).toBe("failed");
 		if (outcome.kind === "failed") {
 			expect(outcome.error.message).toContain("running");
 		}
-	});
-
-	it("blocks turn-control commands during maintenance", async () => {
-		const abortAgent = vi.fn(async () => {});
-		const sendMessage = vi.fn(async () => ({ kind: "accepted" as const }));
-		const commandContext = context({
-			getAgentActivity: () => ({ activity: "running", maintenance: "compaction" }),
-			abortAgent,
-			sendMessage,
-		});
-
-		for (const input of ["/abort", "/follow-up later", "/steer now"]) {
-			const outcome = await engine.handleInput(input, commandContext);
-			expect(outcome).toMatchObject({ kind: "failed", error: { message: expect.stringContaining("compaction") } });
-		}
-		expect(abortAgent).not.toHaveBeenCalled();
-		expect(sendMessage).not.toHaveBeenCalled();
-	});
-
-	it("routes /steer through the human interrupt message path", async () => {
-		let message: unknown;
-		const outcome = await engine.handleInput(
-			"/steer go now",
-			context({
-				getAgentActivity: () => ({ activity: "running" }),
-				sendMessage: async (draft: unknown, binding: unknown) => {
-					message = { draft, binding };
-					return { kind: "accepted" as const };
-				},
-			}),
-		);
-
-		expect(outcome).toMatchObject({ kind: "executed", name: "steer" });
-		// The request names only what it wants said; the sink's binding is what
-		// makes it count as the human interrupting.
-		expect(message).toEqual({
-			draft: { targetAgentId: "agent-1", body: "go now", mode: "interrupt" },
-			binding: expect.objectContaining({
-				source: { kind: "human" },
-				policy: expect.objectContaining({ humanInterrupt: true }),
-			}),
-		});
+		expect(reloadExtensions).not.toHaveBeenCalled();
 	});
 
 	it("wraps execute exceptions as failed outcomes", async () => {
 		const outcome = await engine.handleInput(
-			"/abort",
+			"/reload",
 			context({
-				abortAgent: async () => {
+				reloadExtensions: async () => {
 					throw new Error("boom");
 				},
 			}),
@@ -185,11 +150,14 @@ describe("CommandEngine.handleInput", () => {
 
 	it("executes runtime commands without an active agent", async () => {
 		const outcome = await engine.handleInput(
-			"/session",
-			pendingContext({ listAgentSessions: async () => ({ sessions: [] }) }),
+			"/logout test",
+			pendingContext({
+				listAuthCredentialCandidates: async () => ({ providers: [{ value: "test" }] }),
+				logoutAuthProvider: async () => ({ removed: true, providerId: "test" }),
+			}),
 		);
 
-		expect(outcome).toMatchObject({ kind: "executed", name: "session" });
+		expect(outcome).toMatchObject({ kind: "executed", name: "logout" });
 	});
 
 	it("carries the command's formatResult as display text", async () => {
@@ -412,7 +380,7 @@ describe("CommandEngine argument resolution", () => {
 
 	it("resolves a unique model prefix to the full reference", async () => {
 		const setAgentModelByReference = vi.fn(async () => ({ provider: "vllm", id: "hello-world" }));
-		const engine = new CommandEngine(builtInCommands);
+		const engine = new CommandEngine(widiCommands(stubCommandHost()));
 
 		const outcome = await engine.handleInput(
 			"/model vllm/hello",
@@ -430,23 +398,13 @@ describe("CommandEngine argument resolution", () => {
 });
 
 describe("CommandEngine.list and match", () => {
-	const engine = new CommandEngine(builtInCommands);
+	const engine = new CommandEngine(widiCommands(stubCommandHost()));
 
 	it("marks status-gated commands unavailable", () => {
-		const steer = engine.list({ activity: "idle" }).find((view) => view.name === "steer");
-		expect(steer?.available).toBe(false);
-		const running = engine.list({ activity: "running" }).find((view) => view.name === "steer");
-		expect(running?.available).toBe(true);
-	});
-
-	it("marks turn controls unavailable during maintenance", () => {
-		const views = engine.list({ activity: "running", maintenance: "tree-navigation" });
-		for (const name of ["abort", "follow-up", "steer"]) {
-			expect(views.find((view) => view.name === name)).toMatchObject({
-				available: false,
-				unavailableReason: expect.stringContaining("tree navigation"),
-			});
-		}
+		const idle = engine.list({ activity: "idle" }).find((view) => view.name === "resume");
+		expect(idle?.available).toBe(true);
+		const running = engine.list({ activity: "running" }).find((view) => view.name === "resume");
+		expect(running?.available).toBe(false);
 	});
 
 	it("marks active commands unavailable without an agent", () => {
@@ -457,25 +415,34 @@ describe("CommandEngine.list and match", () => {
 			unavailableReason: expect.stringContaining("active agent"),
 		});
 		expect(views.find((view) => view.name === "model")?.available).toBe(true);
-		expect(views.find((view) => view.name === "session")?.available).toBe(true);
+		expect(views.find((view) => view.name === "resume")?.available).toBe(true);
 	});
 
 	it("matches known line commands only", () => {
-		expect(engine.match("/abort")?.name).toBe("abort");
+		expect(engine.match("/reload")?.name).toBe("reload");
 		expect(engine.match("/nope:x")).toBeUndefined();
 		expect(engine.match("plain text")).toBeUndefined();
 	});
 });
 
-describe("switchedAgentId", () => {
-	it("extracts the agent id from fork/resume results only", () => {
-		expect(switchedAgentId({ kind: "executed", commandId: "c1", name: "resume", value: { agentId: "agent-9" } })).toBe(
-			"agent-9",
+describe("agent-switching commands", () => {
+	it("moves the application onto the agent they opened, and nothing else does", async () => {
+		const switched: string[] = [];
+		const engine = new CommandEngine(
+			widiCommands(stubCommandHost({ switchToAgent: async (id) => void switched.push(id) })),
 		);
-		expect(
-			switchedAgentId({ kind: "executed", commandId: "c2", name: "status", value: { agentId: "agent-9" } }),
-		).toBeUndefined();
-		expect(switchedAgentId({ kind: "pass" })).toBeUndefined();
+		const orchestrator = {
+			spawnAgent: async () => "agent-9",
+			inspectAgent: () => ({ agentId: "agent-9", profile: { reference: { id: "d" } }, model: { id: "m" } }),
+			listAgentSessions: async () => ({ sessions: [{ id: "s1", ref: "s1", createdAt: "", cwd: "/w" }] }),
+			getAgentSessionTree: async () => ({ entries: [] }),
+		};
+
+		await engine.handleInput("/fork:", context(orchestrator));
+		await engine.handleInput("/resume s1", context(orchestrator));
+		await engine.handleInput("/status", context({ getAgentActivity: () => ({ activity: "idle" }) }));
+
+		expect(switched).toEqual(["agent-9", "agent-9"]);
 	});
 });
 

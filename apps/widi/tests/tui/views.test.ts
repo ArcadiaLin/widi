@@ -1,7 +1,7 @@
 import { setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import type { AgentSnapshot } from "../../src/core/agent-types.ts";
-import { builtInCommands } from "../../src/tui/commands/built-in/index.ts";
+import { widiCommands } from "../../src/tui/commands/built-in/index.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
 import { AgentStripView } from "../../src/tui/components/agent-strip.ts";
 import { ChatView } from "../../src/tui/components/chat.ts";
@@ -25,6 +25,7 @@ import {
 	setActiveAgent,
 } from "../../src/tui/state.ts";
 import { theme } from "../../src/tui/theme/theme.ts";
+import { stubCommandHost } from "../helpers/command-host.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 
@@ -104,7 +105,7 @@ describe("TUI views", () => {
 			new FooterView(state, "/home/arcadia/projs/widi"),
 			new OperationHintView({
 				state,
-				engine: new CommandEngine(builtInCommands),
+				engine: new CommandEngine(widiCommands(stubCommandHost())),
 				editor: { getText: () => "", isShowingAutocomplete: () => false },
 				selectorHint: () => undefined,
 			}),
@@ -122,7 +123,7 @@ describe("TUI views", () => {
 		setActiveAgent(state, "main").status = "idle";
 		const view = new OperationHintView({
 			state,
-			engine: new CommandEngine(builtInCommands),
+			engine: new CommandEngine(widiCommands(stubCommandHost())),
 			editor: { getText: () => "", isShowingAutocomplete: () => false },
 			selectorHint: () => undefined,
 		});
@@ -323,7 +324,7 @@ describe("TUI views", () => {
 		agent.status = "running";
 		agent.runStartedAt = new Date().toISOString();
 		setSteadyQuip(agent, "working");
-		const engine = new CommandEngine(builtInCommands);
+		const engine = new CommandEngine(widiCommands(stubCommandHost()));
 		const editor = { getText: () => "", isShowingAutocomplete: () => false };
 		const output = [
 			...new FooterView(state, "/workspace").render(120),
@@ -345,7 +346,7 @@ describe("TUI views", () => {
 			...new FooterView(state, "/workspace").render(120),
 			...new OperationHintView({
 				state,
-				engine: new CommandEngine(builtInCommands),
+				engine: new CommandEngine(widiCommands(stubCommandHost())),
 				editor: { getText: () => "", isShowingAutocomplete: () => false },
 				selectorHint: () => undefined,
 			}).render(120),
@@ -599,10 +600,10 @@ describe("TUI views", () => {
 			commandId: "command-1",
 			durability: "ephemeral",
 			createdAt: timestamp(1),
-			name: "steer",
-			argument: "go",
+			name: "resume",
+			argument: "some-session",
 			status: "failed",
-			error: { message: "requires a running agent" },
+			error: { message: "not available while the agent is running" },
 		};
 		const text = renderTimelineItem(item, 80, {
 			liveThinkingIds: new Set(),
@@ -612,8 +613,8 @@ describe("TUI views", () => {
 			.join("\n")
 			.replace(ANSI_SEQUENCE, "");
 
-		expect(text).toContain("/steer");
-		expect(text).toContain("requires a running agent");
+		expect(text).toContain("/resume");
+		expect(text).toContain("not available while the agent is running");
 	});
 
 	it("renders a multi-select trace as a joined summary and an expanded list", () => {

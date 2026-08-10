@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { AgentOrchestrator } from "../../../../src/core/agent-orchestrator.ts";
 import { ExtensionDivisionResolver } from "../../../../src/core/extension/division.ts";
 import type { ExtensionDivisionDeclaration, ExtensionDivisionSelection } from "../../../../src/core/extension/types.ts";
-import { builtInCommands } from "../../../../src/tui/commands/built-in/index.ts";
+import { widiCommands } from "../../../../src/tui/commands/built-in/index.ts";
 import { CommandEngine } from "../../../../src/tui/commands/engine.ts";
+import { stubCommandHost } from "../../../helpers/command-host.ts";
 
 const DECLARATIONS: readonly ExtensionDivisionDeclaration[] = [
 	{ id: "basic", label: "Basic chapter" },
@@ -58,7 +59,7 @@ function setup(
 	} as unknown as AgentOrchestrator;
 
 	return {
-		engine: new CommandEngine(builtInCommands),
+		engine: new CommandEngine(widiCommands(stubCommandHost())),
 		context: { agentId: "agent-1", orchestrator },
 		globalSelections: () => globalSelections,
 		divisions: () => divisions,

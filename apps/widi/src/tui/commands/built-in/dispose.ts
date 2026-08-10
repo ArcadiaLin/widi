@@ -1,8 +1,8 @@
 import type { CommandDefinition } from "../types.ts";
-import type { ApplicationCommandHost } from "./application-host.ts";
+import type { CommandHost } from "./command-host.ts";
 import { requireAgentId } from "./utils/agents.ts";
 
-export function disposeCommand(host: ApplicationCommandHost): CommandDefinition {
+export function disposeCommand(host: CommandHost): CommandDefinition {
 	return {
 		kind: "action",
 		agentPolicy: "active",

@@ -413,18 +413,18 @@ describe("WidiTuiApplication command submission", () => {
 	});
 
 	it("preserves a status-gated line command argument in its failed item", async () => {
-		const { application } = await createApplication();
+		const { application } = await createApplication({ getAgentActivity: () => ({ activity: "running" }) });
 
-		await submit(application, "/steer:go");
+		await submit(application, "/resume:some-session");
 
 		expect(
 			application.state.agents.get("agent-1")?.timeline.filter((item) => item.type === "command-result"),
 		).toMatchObject([
 			{
-				name: "steer",
-				argument: "go",
+				name: "resume",
+				argument: "some-session",
 				status: "failed",
-				error: { message: "Command /steer requires a running agent (status: idle)." },
+				error: { message: "Command /resume is not available while the agent is running." },
 			},
 		]);
 	});

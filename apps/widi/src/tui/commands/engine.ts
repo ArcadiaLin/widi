@@ -185,19 +185,6 @@ export class CommandEngine {
 	}
 }
 
-export function switchedAgentId(outcome: EngineOutcome): string | undefined {
-	if (outcome.kind !== "executed") return undefined;
-	if (outcome.name !== "fork" && outcome.name !== "resume") {
-		return undefined;
-	}
-	const value = outcome.value;
-	if (typeof value !== "object" || value === null || !("agentId" in value)) {
-		return undefined;
-	}
-	const agentId = (value as { agentId?: unknown }).agentId;
-	return typeof agentId === "string" && agentId.length > 0 ? agentId : undefined;
-}
-
 function tryReadActivity(context: CommandContext): AgentActivitySnapshot | undefined {
 	if (!context.agentId) return undefined;
 	try {

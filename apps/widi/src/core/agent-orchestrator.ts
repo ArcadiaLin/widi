@@ -241,6 +241,10 @@ export interface AgentSkillCandidateListResult {
 	readonly skills: readonly CandidateItem[];
 }
 
+export interface AgentProfileCandidateListResult {
+	readonly profiles: readonly CandidateItem[];
+}
+
 export type ExtensionReloadAgentStatus = "reloaded" | "skipped" | "failed";
 
 /** `running` covers every non-idle phase: a replacement would swap the interceptors an operation is midway through. */
@@ -3498,6 +3502,23 @@ export class AgentOrchestrator {
 		await this._requireLiveAgent(agentId).harness.setModel(model);
 		// The cached measurement names the previous model and its window.
 		await this._context.invalidate(agentId);
+	}
+
+	/**
+	 * The roles a new agent can be opened as. Same briefs the model sees through
+	 * `list_agents`, so a profile the runtime policy disabled is offered to
+	 * neither.
+	 */
+	async listAgentProfileCandidates(): Promise<AgentProfileCandidateListResult> {
+		const briefs = await this._listProfileBriefs();
+		return {
+			profiles: briefs.map((brief) => {
+				// whenToUse is the sentence written to help a caller choose; the
+				// description only says what the role is.
+				const description = brief.whenToUse ?? brief.description;
+				return { value: brief.id, label: brief.label, ...(description === undefined ? undefined : { description }) };
+			}),
+		};
 	}
 
 	async listAvailableModelCandidates(): Promise<AgentModelCandidateListResult> {

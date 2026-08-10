@@ -2,9 +2,9 @@ import { diagnosticGlyph } from "../../components/common.ts";
 import { diagnosticSource, formatDiagnosticRecord } from "../../diagnostics-log.ts";
 import { singleLine } from "../../format.ts";
 import type { CommandDefinition } from "../types.ts";
-import type { ApplicationCommandHost } from "./application-host.ts";
+import type { CommandHost } from "./command-host.ts";
 
-export function diagnosticsCommand(host: ApplicationCommandHost): CommandDefinition {
+export function diagnosticsCommand(host: CommandHost): CommandDefinition {
 	return {
 		kind: "action",
 		agentPolicy: "runtime",
