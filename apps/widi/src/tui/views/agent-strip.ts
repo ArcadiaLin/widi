@@ -7,6 +7,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { agentIdentityLabel } from "../agent-identity.ts";
 import { type AgentTree, type AgentTreeEntry, buildAgentTree, flattenAgentTree } from "../agent-tree.ts";
+import { singleLine } from "../format.ts";
 import { maintenanceLabel } from "../labels.ts";
 import { type AgentViewState, clearDockedFocus, setDockedFocus, type TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
@@ -15,9 +16,26 @@ import { extensionStatusesInRegion, tonePaint } from "./utils/extension-status.t
 const TREE_INDENT = 4;
 /** Visible width of `├── ` / `└── `. */
 const TREE_PREFIX_WIDTH = 4;
+/** Kept clear at a column's right edge so neighbours never read as one label. */
 const COLUMN_GAP = 4;
 /** Smallest top-row label: glyph, a space, and an ellipsis. */
 const MIN_LABEL_WIDTH = 3;
+/** Top-level columns per page. Beyond this the rest become a page to the right. */
+const TOP_LEVEL_PAGE_SIZE = 4;
+/** Subtree rows a column shows before the remainder collapse into one marker. */
+const MAX_SUBTREE_ROWS = 3;
+
+/** A top-row column: a top-level agent, or the staged session, which has no id. */
+interface StripColumn {
+	readonly agentId?: string;
+	readonly label: string;
+}
+
+/** Where a column landed, so its subtree can be drawn inside the same span. */
+interface ColumnPlacement {
+	readonly start: number;
+	readonly width: number;
+}
 
 export interface AgentPanelHost {
 	setFocus(component: Component | null): void;
@@ -116,14 +134,15 @@ export class AgentStripView implements Component {
 	render(width: number): string[] {
 		const tree = buildAgentTree(this.state);
 		const entries = flattenAgentTree(tree);
+		const staged = formatStagedAgent(this.state);
 		if (entries.length === 0) {
 			// Nothing left to navigate; hand focus back instead of trapping the
 			// user. Deferred because render itself must stay side-effect free.
 			if (this.focused) queueMicrotask(() => this.close());
-			return [];
+			return staged ? [truncateToWidth(staged, width, "…")] : [];
 		}
 		this.ensureCursor(entries);
-		const top = this.layoutTopRow(tree, width);
+		const top = this.layoutTopRow(tree, width, staged);
 		const lines = [top.line];
 
 		// Child rows: every visible top-level agent's subtree hangs directly
@@ -132,47 +151,53 @@ export class AgentStripView implements Component {
 		// another column's tree away from its parent.
 		const columns = tree.topLevel
 			.filter((agent) => top.columns.has(agent.agentId))
-			.map((agent) => ({
-				start: top.columns.get(agent.agentId) ?? 0,
-				rows: flattenAgentTree({ topLevel: [agent], childrenOf: tree.childrenOf })
-					.filter((entry) => entry.depth > 0)
-					.map((entry) => {
-						const selected = this.focused && entry.agent.agentId === this.cursorAgentId;
-						const agentContent = formatAgent(
-							this.state,
-							entry.agent,
-							entry.agent.agentId === this.state.activeAgentId,
-							selected,
-						);
-						return {
-							depth: entry.depth,
-							selected,
-							agentContent,
-							content: `${theme.dim(entry.last ? "└──" : "├──")} ${agentContent}`,
-						};
-					}),
-			}));
+			.map((agent) => {
+				const placement = top.columns.get(agent.agentId) ?? { start: 0, width: width };
+				const descendants = flattenAgentTree({ topLevel: [agent], childrenOf: tree.childrenOf }).filter(
+					(entry) => entry.depth > 0,
+				);
+				const window = this.subtreeWindow(descendants);
+				const rows = window.visible.map((entry) => {
+					const selected = this.focused && entry.agent.agentId === this.cursorAgentId;
+					const agentContent = formatAgent(
+						this.state,
+						entry.agent,
+						entry.agent.agentId === this.state.activeAgentId,
+						selected,
+					);
+					return {
+						depth: entry.depth,
+						selected,
+						agentContent,
+						content: `${theme.dim(entry.last ? "└──" : "├──")} ${agentContent}`,
+					};
+				});
+				// The marker counts everything the window leaves out, above and
+				// below alike: it says how much more there is, not which way to go.
+				if (window.hidden > 0) {
+					const marker = theme.dim(`… +${window.hidden}`);
+					rows.push({ depth: 1, selected: false, agentContent: marker, content: marker });
+				}
+				return { placement, rows };
+			});
 		const height = Math.max(0, ...columns.map((column) => column.rows.length));
 		for (let row = 0; row < height; row++) {
 			let line = "";
-			for (const [index, column] of columns.entries()) {
+			for (const column of columns) {
 				const entry = column.rows[row];
 				if (!entry) continue;
-				// The segment ends where the next column with a row at this height
-				// begins, so a long label never overprints a neighbor's tree.
-				let limit = width;
-				for (let next = index + 1; next < columns.length; next++) {
-					if (columns[next].rows[row]) {
-						limit = columns[next].start;
-						break;
-					}
-				}
-				const desiredIndent = column.start + (entry.depth - 1) * TREE_INDENT;
-				// Deep indentation can consume a narrow column completely. Keep
-				// the selected agent visible by dropping its tree prefix and using
-				// the whole column segment as a compact fallback.
-				const compactSelected = entry.selected && limit - desiredIndent < TREE_PREFIX_WIDTH + MIN_LABEL_WIDTH;
-				const indent = compactSelected ? column.start : desiredIndent;
+				// A column owns its span and nothing beyond it, whether or not the
+				// neighbour has a row at this height, so a long label never reads as
+				// part of the tree next to it.
+				const limit = column.placement.start + column.placement.width - COLUMN_GAP;
+				const desiredIndent = column.placement.start + (entry.depth - 1) * TREE_INDENT;
+				// Indentation eats the column a level at a time, and the id is at the
+				// far end of the line. When the selected row would lose any of it,
+				// drop the tree prefix and take the whole column instead: which agent
+				// the cursor is on matters more than how deep it sits.
+				const compactSelected =
+					entry.selected && limit - desiredIndent < TREE_PREFIX_WIDTH + visibleWidth(entry.agentContent);
+				const indent = compactSelected ? column.placement.start : desiredIndent;
 				if (indent >= limit) continue;
 				const padding = indent - visibleWidth(line);
 				if (padding < 0) continue;
@@ -205,83 +230,81 @@ export class AgentStripView implements Component {
 		return true;
 	}
 
-	private layoutTopRow(tree: AgentTree, width: number): { line: string; columns: Map<string, number> } {
-		const topLevel = tree.topLevel;
-		const labels = topLevel.map((agent) =>
-			formatAgent(
+	/**
+	 * The top row: one page of top-level columns, each given the same slice of
+	 * the width. Even division rather than left packing, so a column keeps its
+	 * place when a neighbour's label grows or its agent starts running, and the
+	 * subtree under it stays where the eye last found it.
+	 */
+	private layoutTopRow(
+		tree: AgentTree,
+		width: number,
+		staged?: string,
+	): { line: string; columns: Map<string, ColumnPlacement> } {
+		const all: StripColumn[] = tree.topLevel.map((agent) => ({
+			agentId: agent.agentId,
+			label: formatAgent(
 				this.state,
 				agent,
 				agent.agentId === this.state.activeAgentId,
 				this.focused && agent.agentId === this.cursorAgentId,
 			),
-		);
-		const cursorTop = this.focused ? topLevelColumnIndex(tree, this.cursorAgentId) : -1;
-		// The window is recomputed per render: anchored as far left as possible
-		// while containing the cursor, so widening the terminal or moving the
-		// cursor back left always reveals more agents instead of sticking to a
-		// previously scrolled position.
-		let start = 0;
-		while (start < topLevel.length) {
-			// Each window position retries the full tail: the fit must contain the
-			// cursor, not just whatever happened to remain from the last attempt.
-			let end = topLevel.length;
-			while (end > start) {
-				const layout = this.tryFitTopRow(topLevel, labels, start, end, width);
-				if (layout) {
-					if (!this.focused || (cursorTop >= start && cursorTop < end)) {
-						return layout;
-					}
-					// The cursor fell off the right edge: slide the window right.
-					break;
-				}
-				end--;
-			}
-			start++;
+		}));
+		if (staged) all.push({ label: staged });
+
+		const first = this.pageStart(tree, all.length);
+		const visible = all.slice(first, first + TOP_LEVEL_PAGE_SIZE);
+		const hiddenAfter = all.length - first - visible.length;
+		const leftIndicator = first > 0 ? theme.dim(`‹${first} `) : "";
+		const rightIndicator = hiddenAfter > 0 ? theme.dim(` ${hiddenAfter}›`) : "";
+		const origin = visibleWidth(leftIndicator);
+		const available = Math.max(visible.length, width - origin - visibleWidth(rightIndicator));
+		const columnWidth = Math.floor(available / visible.length);
+
+		const columns = new Map<string, ColumnPlacement>();
+		let line = leftIndicator;
+		for (const [index, column] of visible.entries()) {
+			const last = index === visible.length - 1;
+			// The last column absorbs the rounding remainder; every other one is
+			// exactly a share wide, which is what keeps the starts predictable.
+			const span = last ? available - index * columnWidth : columnWidth;
+			const columnStart = origin + index * columnWidth;
+			const padding = columnStart - visibleWidth(line);
+			if (padding < 0) continue;
+			line += `${" ".repeat(padding)}${truncateToWidth(column.label, Math.max(MIN_LABEL_WIDTH, span - COLUMN_GAP), "…")}`;
+			if (column.agentId) columns.set(column.agentId, { start: columnStart, width: span });
 		}
-		// Degenerate width: the cursor (or first) agent alone, hard-truncated.
-		const index = cursorTop >= 0 ? cursorTop : 0;
-		const line = truncateToWidth(labels[index] ?? "", Math.max(1, width), "…");
-		return { line, columns: new Map([[topLevel[index].agentId, 0]]) };
+		if (rightIndicator) {
+			line += `${" ".repeat(Math.max(0, width - visibleWidth(rightIndicator) - visibleWidth(line)))}${rightIndicator}`;
+		}
+		return { line: truncateToWidth(line, width, ""), columns };
 	}
 
 	/**
-	 * Lay out top-level agents [start, end) within the width, shrinking the
-	 * longest label one column at a time so as many agents as possible stay
-	 * visible. Returns undefined when even the minimum-width labels overflow.
+	 * Index of the first column on the page the user is on. Pages are fixed
+	 * blocks rather than a window that slides one agent at a time: an agent's
+	 * page is a property of where it sits, so paging right and back left returns
+	 * the same view.
 	 */
-	private tryFitTopRow(
-		topLevel: readonly AgentViewState[],
-		labels: readonly string[],
-		start: number,
-		end: number,
-		width: number,
-	): { line: string; columns: Map<string, number> } | undefined {
-		const rightHidden = topLevel.length - end;
-		const leftIndicator =
-			start > 0 ? theme.dim(`‹${start} `) : !this.focused && rightHidden > 0 ? theme.dim(`+${rightHidden} `) : "";
-		const rightIndicator = this.focused && rightHidden > 0 ? theme.dim(` ${rightHidden}›`) : "";
-		const available = width - visibleWidth(leftIndicator) - visibleWidth(rightIndicator);
-		const widths = labels.slice(start, end).map((label) => visibleWidth(label));
-		const truncated = labels.slice(start, end);
-		const gaps = (truncated.length - 1) * COLUMN_GAP;
-		const total = () => widths.reduce((sum, value) => sum + value, 0) + gaps;
-		while (total() > available) {
-			let longest = 0;
-			for (const [index, value] of widths.entries()) {
-				if (value > widths[longest]) longest = index;
-			}
-			if (widths[longest] <= MIN_LABEL_WIDTH) return undefined;
-			widths[longest]--;
-			truncated[longest] = truncateToWidth(labels[start + longest], widths[longest], "…");
-		}
-		const columns = new Map<string, number>();
-		let column = visibleWidth(leftIndicator);
-		for (const [index, value] of widths.entries()) {
-			columns.set(topLevel[start + index].agentId, column);
-			column += value + COLUMN_GAP;
-		}
-		const line = `${leftIndicator}${truncated.join(" ".repeat(COLUMN_GAP))}${rightIndicator}`;
-		return { line: truncateToWidth(line, width, ""), columns };
+	private pageStart(tree: AgentTree, columnCount: number): number {
+		const anchor = this.focused ? this.cursorAgentId : this.state.activeAgentId;
+		const index = topLevelColumnIndex(tree, anchor);
+		// No anchored agent means the staged session is what is on screen, and it
+		// is always the last column.
+		const column = index >= 0 ? index : columnCount - 1;
+		return Math.floor(Math.max(0, column) / TOP_LEVEL_PAGE_SIZE) * TOP_LEVEL_PAGE_SIZE;
+	}
+
+	/**
+	 * The descendants a column shows: at most MAX_SUBTREE_ROWS of them, as a
+	 * window that follows the cursor down. A spawn tree has no bound, and a strip
+	 * that grows with it takes the terminal one row at a time.
+	 */
+	private subtreeWindow(rows: readonly AgentTreeEntry[]): { visible: readonly AgentTreeEntry[]; hidden: number } {
+		if (rows.length <= MAX_SUBTREE_ROWS) return { visible: rows, hidden: 0 };
+		const cursor = this.focused ? rows.findIndex((entry) => entry.agent.agentId === this.cursorAgentId) : -1;
+		const from = Math.min(Math.max(0, cursor - MAX_SUBTREE_ROWS + 1), rows.length - MAX_SUBTREE_ROWS);
+		return { visible: rows.slice(from, from + MAX_SUBTREE_ROWS), hidden: rows.length - MAX_SUBTREE_ROWS };
 	}
 }
 
@@ -371,6 +394,18 @@ function formatAgent(state: TuiApplicationState, agent: AgentViewState, active: 
 		markers.length > 0 ? ` ${markers.join(" ")}` : ""
 	}`;
 	return selected ? theme.inverse(text) : text;
+}
+
+/**
+ * The staged session as a column of its own: the profile it will run, and no id
+ * because nothing has been created yet. Display only - there is no agent to
+ * switch to, so the cursor never reaches it, and it disappears the moment the
+ * session is either started or dropped.
+ */
+function formatStagedAgent(state: TuiApplicationState): string | undefined {
+	const staged = state.pendingAgent;
+	if (!staged) return undefined;
+	return `${theme.ok("●")} ${theme.bold(singleLine(staged.display.profileId, 80))} ${theme.dim("not started")}`;
 }
 
 function agentGlyph(agent: AgentViewState, active: boolean): string {

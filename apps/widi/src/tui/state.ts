@@ -235,7 +235,13 @@ export interface PendingAgentViewState {
 	readonly start: PendingAgentStart;
 	timeline: TimelineItem[];
 	draft: string;
-	display: { readonly profileLabel: string; model: RuntimeModel; thinkingLevel?: string; sessionName?: string };
+	display: {
+		readonly profileId: string;
+		readonly profileLabel: string;
+		model: RuntimeModel;
+		thinkingLevel?: string;
+		sessionName?: string;
+	};
 	nextLiveItemId: number;
 }
 

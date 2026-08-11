@@ -810,6 +810,12 @@ export class WidiTuiApplication {
 					this.track(this.flushStaged(event.agentId));
 				}
 				break;
+			case "agent_disposed":
+				// Not only `/dispose`: another agent's `dispose_agent` call, or a
+				// subtree dispose taken above this one, ends an agent this shell is
+				// still showing.
+				if (event.intent === "removed") this.schedule(() => this.releaseDisposedAgent(event.agentId));
+				break;
 			case "agent_session_info_changed":
 				if (event.agentId === this.state.activeAgentId) {
 					this.refreshVisibleAgent();
@@ -1575,7 +1581,7 @@ export class WidiTuiApplication {
 		const model = this.orchestrator.getDefaultModel();
 		this.pendingAgents.beginNewSession(
 			{ profileId: resolved, model },
-			{ profileLabel: label, model, thinkingLevel: this.orchestrator.getDefaultThinkingLevel() },
+			{ profileId: resolved, profileLabel: label, model, thinkingLevel: this.orchestrator.getDefaultThinkingLevel() },
 		);
 		this.showPendingAgent();
 	}
@@ -1601,10 +1607,14 @@ export class WidiTuiApplication {
 	 * Disposing a parent takes its descendants with it: left alone they would
 	 * keep running with nobody to report back to, and the strip would promote
 	 * them to roots the user never opened.
+	 *
+	 * The call answers with everything it destroyed, which is what the subtree is
+	 * read from here rather than from the events it also publishes. Where the
+	 * user lands is this path's own: someone who disposes a fork means to go back
+	 * to what they forked.
 	 */
 	private async disposeAgent(agentId: string): Promise<void> {
-		const disposed = ensureAgentProjection(this.state, agentId);
-		const sourceAgentId = forkSourceAgentId(this.state, disposed);
+		const sourceAgentId = forkSourceAgentId(this.state, ensureAgentProjection(this.state, agentId));
 		const disposedIds = new Set(
 			await this.orchestrator.disposeAgent(agentId, {
 				intent: "removed",
@@ -1618,15 +1628,36 @@ export class WidiTuiApplication {
 			if (agent) agent.status = "disposed";
 			await this.syncAgent(id);
 		}
-
-		const isUsableNavigationTarget = (agent: AgentViewState) =>
-			!disposedIds.has(agent.agentId) && (agent.status === "idle" || agent.status === "running");
 		const source = sourceAgentId ? this.state.agents.get(sourceAgentId) : undefined;
-		if (source && isUsableNavigationTarget(source)) {
+		if (source && !disposedIds.has(source.agentId) && isLiveAgent(source)) {
 			this.switchAgent(source.agentId);
 			return;
 		}
-		const remaining = [...this.state.agents.values()].find(isUsableNavigationTarget);
+		this.landOnRemainingAgent(disposedIds);
+	}
+
+	/**
+	 * An agent on screen can be destroyed by something other than the user: a
+	 * `dispose_agent` call in another agent's turn, or a subtree dispose taken
+	 * above this one. The projection is already marked, so what is left is to
+	 * stop showing an agent that no longer exists.
+	 */
+	private releaseDisposedAgent(agentId: string): void {
+		this.updateEditorAvailability();
+		if (this.state.activeAgentId !== agentId) {
+			this.tui.requestRender();
+			return;
+		}
+		this.landOnRemainingAgent();
+	}
+
+	/**
+	 * `gone` names agents this call knows are destroyed regardless of what their
+	 * projection still says: a snapshot read taken while the teardown is in
+	 * flight can answer with the activity the agent had a moment ago.
+	 */
+	private landOnRemainingAgent(gone?: ReadonlySet<string>): void {
+		const remaining = [...this.state.agents.values()].find((agent) => !gone?.has(agent.agentId) && isLiveAgent(agent));
 		if (remaining) {
 			this.switchAgent(remaining.agentId);
 			return;
@@ -1653,6 +1684,7 @@ export class WidiTuiApplication {
 
 	private defaultPendingDisplay(): PendingAgentDisplay {
 		return {
+			profileId: this.runtime.services.defaultProfile.id,
 			profileLabel: this.runtime.services.defaultProfile.id,
 			model: this.orchestrator.getDefaultModel(),
 			thinkingLevel: this.orchestrator.getDefaultThinkingLevel(),
@@ -1680,6 +1712,7 @@ export class WidiTuiApplication {
 		return {
 			profileId: reference.id,
 			display: {
+				profileId: reference.id,
 				profileLabel: reference.label ?? reference.id,
 				model: projection?.display.model ?? snapshot.model,
 				thinkingLevel: this.orchestrator.getDefaultThinkingLevel(),
@@ -1720,7 +1753,7 @@ export class WidiTuiApplication {
 		if (previousAgentId) {
 			this.drafts.set(previousAgentId, this.editor.getText());
 		}
-		this.pendingAgents.cancel();
+		this.dropStagedAgent();
 		const agent = setActiveAgent(this.state, agentId);
 		// An agent nobody has looked at yet has never had a transition to roll on.
 		setSteadyQuip(agent, agent.status === "running" ? "working" : "idle");
@@ -1743,6 +1776,21 @@ export class WidiTuiApplication {
 		if (!this.hydratedAgents.has(agentId) && agent.hydration !== "pending") {
 			this.projector.beginHydration(agentId);
 			this.schedule(() => this.hydrateAgent(agentId));
+		}
+	}
+
+	/**
+	 * Leaving a staged session throws it away; it has no id to come back to.
+	 * Text the user already typed into it goes with it, which is worth saying
+	 * out loud - everywhere else in the shell a draft survives being left.
+	 */
+	private dropStagedAgent(): void {
+		const staged = this.state.pendingAgent;
+		if (!staged) return;
+		const draft = (staged.draft || this.editor.getText()).trim();
+		this.pendingAgents.cancel();
+		if (draft) {
+			this.addApplicationNotice(`Dropped the staged ${staged.display.profileId} session and the text typed into it.`);
 		}
 	}
 
@@ -2042,6 +2090,11 @@ export class WidiTuiApplication {
 export async function runWidiTui(options: WidiTuiOptions): Promise<void> {
 	const application = await WidiTuiApplication.create(options);
 	await application.run();
+}
+
+/** Somewhere the user can be put: still in the runtime, and past its build. */
+function isLiveAgent(agent: AgentViewState): boolean {
+	return agent.status === "idle" || agent.status === "running";
 }
 
 /**

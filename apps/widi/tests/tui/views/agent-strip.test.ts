@@ -6,6 +6,7 @@ import { createWidiKeybindings } from "../../../src/tui/keybindings.ts";
 import {
 	createTuiApplicationState,
 	ensureAgentProjection,
+	type PendingAgentViewState,
 	setActiveAgent,
 	type TuiApplicationState,
 } from "../../../src/tui/state.ts";
@@ -154,26 +155,89 @@ describe("AgentStripView tree rendering", () => {
 
 	it("hangs every column's subtree directly beneath its parent, row-aligned", () => {
 		const state = createTuiApplicationState();
-		setActiveAgent(state, "alpha-main").status = "idle";
-		const alphaOne = ensureAgentProjection(state, "alpha-child-one", "idle");
-		alphaOne.spawnedBy = "alpha-main";
-		const alphaTwo = ensureAgentProjection(state, "alpha-child-two", "idle");
-		alphaTwo.spawnedBy = "alpha-main";
-		ensureAgentProjection(state, "beta-main", "idle");
-		const betaOne = ensureAgentProjection(state, "beta-child-one", "idle");
-		betaOne.spawnedBy = "beta-main";
+		setActiveAgent(state, "alpha-main-0ovu").status = "idle";
+		const alphaOne = ensureAgentProjection(state, "alpha-1234", "idle");
+		alphaOne.spawnedBy = "alpha-main-0ovu";
+		const alphaTwo = ensureAgentProjection(state, "alpha-5678", "idle");
+		alphaTwo.spawnedBy = "alpha-main-0ovu";
+		ensureAgentProjection(state, "beta-main-3c8o", "idle");
+		const betaOne = ensureAgentProjection(state, "beta-9abc", "idle");
+		betaOne.spawnedBy = "beta-main-3c8o";
 
 		const lines = renderPlain(state);
 
 		// beta's only child sits on the first subtree row right under its
 		// parent, not pushed below alpha's taller subtree.
 		expect(lines).toHaveLength(3);
-		expect(lines[1]).toContain("alpha-child-one");
-		expect(lines[1]).toContain("beta-child-one");
-		const betaColumn = lines[0].indexOf("○ beta-main");
-		expect(lines[1].indexOf("└── ○ beta-child-one")).toBe(betaColumn);
-		expect(lines[2]).toContain("alpha-child-two");
+		expect(lines[1]).toContain("alpha-1234");
+		expect(lines[1]).toContain("beta-9abc");
+		const betaColumn = lines[0].indexOf("○ beta-main-3c8o");
+		expect(lines[1].indexOf("└── ○ beta-9abc")).toBe(betaColumn);
+		expect(lines[2]).toContain("alpha-5678");
 		expect(lines[2]).not.toContain("beta");
+	});
+});
+
+describe("AgentStripView column layout", () => {
+	it("gives every column on the page an equal share of the width", () => {
+		const state = createTuiApplicationState();
+		setActiveAgent(state, "alpha-0ovu").status = "idle";
+		ensureAgentProjection(state, "beta-3c8o", "idle");
+
+		const [top] = renderPlain(state, 80);
+
+		// Two agents, so the second starts at the halfway mark rather than
+		// wherever the first one's label happened to end.
+		expect(top.indexOf("○ beta-3c8o")).toBe(40);
+	});
+
+	it("keeps a column in place when a neighbour's label grows", () => {
+		const state = createTuiApplicationState();
+		const alpha = setActiveAgent(state, "alpha-0ovu");
+		alpha.status = "idle";
+		ensureAgentProjection(state, "beta-3c8o", "idle");
+		const before = renderPlain(state, 80)[0].indexOf("○ beta-3c8o");
+
+		alpha.status = "running";
+		alpha.runToolCount = 15;
+
+		expect(renderPlain(state, 80)[0]).toContain("running · 15 tool_use");
+		expect(renderPlain(state, 80)[0].indexOf("○ beta-3c8o")).toBe(before);
+	});
+
+	it("shows three descendants and counts the rest", () => {
+		const state = createTuiApplicationState();
+		setActiveAgent(state, "main-0ovu").status = "idle";
+		for (let index = 1; index <= 6; index++) {
+			ensureAgentProjection(state, `explore-c${index}`, "idle").spawnedBy = "main-0ovu";
+		}
+
+		const lines = renderPlain(state, 80);
+
+		expect(lines).toHaveLength(5);
+		expect(lines[1]).toContain("explore-c1");
+		expect(lines[3]).toContain("explore-c3");
+		expect(lines[4]).toContain("… +3");
+		expect(lines.join("\n")).not.toContain("explore-c4");
+	});
+
+	it("scrolls the descendant window down with the cursor", () => {
+		const state = createTuiApplicationState();
+		setActiveAgent(state, "main-0ovu").status = "idle";
+		for (let index = 1; index <= 6; index++) {
+			ensureAgentProjection(state, `explore-c${index}`, "idle").spawnedBy = "main-0ovu";
+		}
+		const { panel } = createPanel(state);
+		panel.open();
+		for (let step = 0; step < 4; step++) panel.handleInput(DOWN);
+		expect(panel.cursor).toBe("explore-c4");
+
+		const lines = renderPlain(state, 80, panel);
+
+		expect(lines.join("\n")).toContain("explore-c4");
+		expect(lines.join("\n")).not.toContain("explore-c1");
+		// Three rows plus the marker, however far down the cursor goes.
+		expect(lines).toHaveLength(5);
 	});
 });
 
@@ -192,17 +256,18 @@ describe("AgentStripView width adaptation", () => {
 		expect((top.match(/○|●/g) ?? []).length).toBe(3);
 	});
 
-	it("counts hidden main agents on the left when even minimal labels overflow", () => {
+	it("counts the agents left on the next page", () => {
 		const state = createTuiApplicationState();
 		setActiveAgent(state, "main-agent-number-one").status = "idle";
 		for (let index = 2; index <= 6; index++) {
 			ensureAgentProjection(state, `main-agent-number-${index}`, "idle");
 		}
 
-		const [top] = renderPlain(state, 24);
+		const [top] = renderPlain(state, 80);
 
-		expect(top.length).toBeLessThanOrEqual(24);
-		expect(top).toMatch(/^\+\d+ /);
+		// Four to a page, the other two counted on the right edge.
+		expect((top.match(/○|●/g) ?? []).length).toBe(4);
+		expect(top.trimEnd().endsWith("2›")).toBe(true);
 	});
 
 	it("keeps every column on the top row when the cursor sits in a subtree", () => {
@@ -255,11 +320,12 @@ describe("AgentStripView width adaptation", () => {
 		const { panel } = createPanel(state);
 		panel.open();
 
-		const [top] = renderPlain(state, 24, panel);
+		const [top] = renderPlain(state, 80, panel);
 
-		// The window scrolled just enough to keep the active (last) agent
-		// visible: agents 4-6 stay on the row, three hidden on the left.
-		expect(top.startsWith("‹3 ")).toBe(true);
+		// The cursor sits on the sixth agent, which is on the second page:
+		// the first four are counted on the left and the page holds the rest.
+		expect(top.startsWith("‹4 ")).toBe(true);
+		expect((top.match(/○|●/g) ?? []).length).toBe(2);
 		expect(panel.cursor).toBe("main-agent-number-6");
 	});
 
@@ -286,7 +352,7 @@ describe("AgentStripView width adaptation", () => {
 		panel.handleInput(DOWN);
 		expect(panel.cursor).toBe("a3");
 
-		for (const width of [14, 20]) {
+		for (const width of [24, 40]) {
 			const rendered = panel.render(width).join("\n");
 			expect(rendered).toContain("\x1b[7m");
 			expect(rendered.replace(ANSI_SEQUENCE, "")).toContain("a3");
@@ -462,20 +528,55 @@ describe("moveAgentCursor", () => {
 	});
 });
 
+// A staged session has no id and nothing to switch to, so the strip is the
+// only place it can be seen at all.
+describe("AgentStripView staged session", () => {
+	it("shows the staged profile alone before any agent exists", () => {
+		const state = createTuiApplicationState();
+		state.pendingAgent = pendingAgent("widi-dev");
+
+		expect(renderPlain(state)).toEqual(["● widi-dev not started"]);
+	});
+
+	it("puts the staged profile beside the agents already running", () => {
+		const state = createTuiApplicationState();
+		ensureAgentProjection(state, "widi-dev-0ovu", "idle");
+		state.pendingAgent = pendingAgent("explore");
+
+		const line = renderPlain(state)[0];
+
+		expect(line).toContain("○ widi-dev-0ovu");
+		expect(line.indexOf("● explore not started")).toBeGreaterThan(line.indexOf("widi-dev-0ovu"));
+	});
+
+	it("never lets the cursor land on it", () => {
+		const state = createTuiApplicationState();
+		const agent = setActiveAgent(state, "widi-dev-0ovu");
+		agent.status = "idle";
+		state.pendingAgent = pendingAgent("explore");
+		const panel = new AgentStripView(state);
+		panel.open();
+
+		panel.handleInput(RIGHT);
+
+		expect(panel.cursor).toBe("widi-dev-0ovu");
+	});
+});
+
 describe("AgentStripView identity and activity", () => {
 	it("distinguishes source and fork labels in the agent strip", () => {
 		const state = createTuiApplicationState();
-		const source = setActiveAgent(state, "widi-dev");
+		const source = setActiveAgent(state, "widi-dev-0ovu");
 		source.status = "idle";
-		source.snapshot = snapshot("widi-dev", "/sessions/source.jsonl");
-		const fork = ensureAgentProjection(state, "019f784f-4342-781c-8472-93e6547da47e", "idle");
+		source.snapshot = snapshot("widi-dev-0ovu", "/sessions/source.jsonl");
+		const fork = ensureAgentProjection(state, "widi-dev-3c8o", "idle");
 		fork.snapshot = snapshot(fork.agentId, "/sessions/fork.jsonl", "/sessions/source.jsonl");
 		fork.display.forkedFromAgentId = source.agentId;
 
 		const output = new AgentStripView(state).render(160).join("\n").replace(ANSI_SEQUENCE, "");
 
-		expect(output).toContain("WIDI Dev [widi-dev]");
-		expect(output).toContain("WIDI Dev [fork from widi-dev · 547da47e]");
+		expect(output).toContain("widi-dev-0ovu");
+		expect(output).toContain("widi-dev-3c8o ← widi-dev-0ovu");
 	});
 
 	it("shows how far into its run a running agent is", () => {
@@ -525,6 +626,16 @@ describe("AgentStripView identity and activity", () => {
 		expect(selectedAgentId).toBe(agentId);
 	});
 });
+
+function pendingAgent(profileId: string): PendingAgentViewState {
+	return {
+		start: { kind: "default" },
+		timeline: [],
+		draft: "",
+		display: { profileId, profileLabel: profileId, model: snapshot("x", "/x").model },
+		nextLiveItemId: 1,
+	};
+}
 
 function snapshot(agentId: string, path: string, parentSessionPath?: string): AgentSnapshot {
 	return {

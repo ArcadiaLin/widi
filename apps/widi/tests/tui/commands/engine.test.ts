@@ -389,6 +389,7 @@ describe("CommandEngine argument resolution", () => {
 					models: [{ value: "vllm/hello-world" }, { value: "openai/gpt-5" }],
 				}),
 				setAgentModelByReference,
+				setDefaultModel: () => {},
 			}),
 		);
 

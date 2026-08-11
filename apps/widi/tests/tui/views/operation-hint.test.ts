@@ -383,6 +383,7 @@ describe("resolveOperationHint", () => {
 			timeline: [],
 			draft: "",
 			display: {
+				profileId: "widi-dev",
 				profileLabel: "Main",
 				model: {
 					id: "test-model",
@@ -445,6 +446,7 @@ describe("resolveOperationHint", () => {
 			timeline: [],
 			draft: "",
 			display: {
+				profileId: "widi-dev",
 				profileLabel: "Main",
 				model: {
 					id: "test-model",

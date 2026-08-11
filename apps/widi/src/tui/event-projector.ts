@@ -243,6 +243,14 @@ export class EventProjector {
 				agent.hydration = "pending";
 				return;
 			}
+			// Not `ensureAgentProjection`: an agent this shell never projected has
+			// nothing to mark, and creating a row for it only to bury it would put
+			// it back in a tree that filters on this very status.
+			case "agent_disposed": {
+				const agent = this.state.agents.get(event.agentId);
+				if (agent) agent.status = "disposed";
+				return;
+			}
 			case "agent_session_info_changed":
 				ensureAgentProjection(this.state, event.agentId).display.sessionName = event.name;
 				return;

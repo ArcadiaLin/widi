@@ -80,7 +80,7 @@ function createController(
 }
 
 function display(): PendingAgentDisplay {
-	return { profileLabel: "Main Agent", model: model(), thinkingLevel: "medium" };
+	return { profileId: "main-agent", profileLabel: "Main Agent", model: model(), thinkingLevel: "medium" };
 }
 
 function model(): RuntimeModel {

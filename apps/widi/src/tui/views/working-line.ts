@@ -133,15 +133,15 @@ function renderQuip(line: Quip, now: number): RenderedQuip {
 function quipGlyph(state: Quip["state"]): string {
 	switch (state) {
 		case "done":
-			return "✔";
+			return "✔ ";
 		case "error":
-			return "✕";
+			return "✕ ";
 		case "aborted":
 		case "aborted-by-human":
 		case "aborted-by-extension":
-			return "⊘";
+			return "⊘ ";
 		default:
-			return "⚒";
+			return "⚒ ";
 	}
 }
 

@@ -244,6 +244,75 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		expect(harness.application.state.activeAgentId).toBe("worker");
 	});
 
+	// The staged session has no id, so leaving it is losing it. Everywhere else
+	// in the shell a draft survives being left, which is why this one says so.
+	it("says the staged session is gone when leaving it drops typed text", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "first");
+		await submit(harness.application, "/new main");
+		const staged = harness.application.state.pendingAgent;
+		if (!staged) throw new Error("Expected a staged session.");
+		staged.draft = "half a thought";
+
+		harness.application.capabilities.get("agentStrip")?.switchTo("main");
+		await new Promise<void>((resolve) => queueMicrotask(resolve));
+
+		expect(harness.application.state.pendingAgent).toBeUndefined();
+		expect(harness.application.state.globalNotices.at(-1)?.text).toContain("Dropped the staged main session");
+	});
+
+	it("says nothing when the staged session it drops is empty", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "first");
+		const notices = harness.application.state.globalNotices.length;
+		await submit(harness.application, "/new main");
+
+		harness.application.capabilities.get("agentStrip")?.switchTo("main");
+		await new Promise<void>((resolve) => queueMicrotask(resolve));
+
+		expect(harness.application.state.pendingAgent).toBeUndefined();
+		expect(harness.application.state.globalNotices).toHaveLength(notices);
+	});
+
+	// Nothing in this shell asked: another agent's `dispose_agent` call, or a
+	// subtree dispose taken above this one, arrives only as an event.
+	it("leaves an agent disposed outside the shell", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "first");
+		const worker = ensureAgentProjection(harness.application.state, "worker", "idle");
+		worker.snapshot = snapshot("worker", model());
+		setActiveAgent(harness.application.state, "worker");
+
+		deliverEvent(harness.application, {
+			type: "agent_disposed",
+			agentId: "worker",
+			intent: "removed",
+			disposedAt: new Date(0).toISOString(),
+		});
+		await new Promise<void>((resolve) => queueMicrotask(resolve));
+
+		expect(harness.application.state.agents.get("worker")?.status).toBe("disposed");
+		expect(harness.application.state.activeAgentId).toBe("main");
+	});
+
+	it("keeps showing the current agent when another one is disposed", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "first");
+		const worker = ensureAgentProjection(harness.application.state, "worker", "idle");
+		worker.snapshot = snapshot("worker", model());
+
+		deliverEvent(harness.application, {
+			type: "agent_disposed",
+			agentId: "worker",
+			intent: "removed",
+			disposedAt: new Date(0).toISOString(),
+		});
+		await new Promise<void>((resolve) => queueMicrotask(resolve));
+
+		expect(harness.application.state.agents.get("worker")?.status).toBe("disposed");
+		expect(harness.application.state.activeAgentId).toBe("main");
+	});
+
 	it("keeps the current agent selected when disposal fails", async () => {
 		const harness = await createApplicationHarness();
 		await submit(harness.application, "first");
@@ -1186,13 +1255,16 @@ async function createApplicationHarness(options: { agentDir?: string; extensionL
 		},
 	}));
 	const setAgentModelByReference = vi.fn(async () => runtimeModel);
+	const setDefaultModel = vi.fn(() => {});
 	const setAgentThinkingLevelByName = vi.fn(async () => "high");
 	const setAgentSessionName = vi.fn(async () => {});
 	const sendMessage = vi.fn(async (_request?: unknown) => ({ kind: "accepted" as const }));
 	const messageSinkFor = vi.fn((_binding?: unknown) => ({ send: sendMessage, prompt: promptAgent }));
 	const disposedAgentIds = new Set<string>();
+	// Core answers with every agent it destroyed; a leaf answers with itself.
 	const disposeAgent = vi.fn(async (agentId: string) => {
 		disposedAgentIds.add(agentId);
+		return [agentId];
 	});
 	const inspectAgent = vi.fn((agentId: string) => {
 		const inspected = snapshot(agentId, runtimeModel);
@@ -1214,6 +1286,7 @@ async function createApplicationHarness(options: { agentDir?: string; extensionL
 		// The shell holds one sink; every submit path goes through it.
 		messageSinkFor,
 		setAgentModelByReference,
+		setDefaultModel,
 		setAgentThinkingLevelByName,
 		setAgentSessionName,
 		// Argument resolution consults the completers before execute.

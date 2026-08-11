@@ -3,6 +3,8 @@ import type { RuntimeModel } from "../core/types.ts";
 import type { PendingAgentStart, PendingAgentViewState, TuiApplicationState } from "./state.ts";
 
 export interface PendingAgentDisplay {
+	/** The profile's own id, which is also the prefix of the id it will be given. */
+	readonly profileId: string;
 	readonly profileLabel: string;
 	readonly model: RuntimeModel;
 	readonly thinkingLevel?: string;

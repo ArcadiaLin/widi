@@ -133,6 +133,7 @@ describe("composed views", () => {
 			timeline: [],
 			draft: "",
 			display: {
+				profileId: "widi-dev",
 				profileLabel: "Main Agent",
 				model: {
 					id: "pending-model",

@@ -495,8 +495,16 @@ export class AgentOrchestrator {
 		return this._defaultModel;
 	}
 
+	/**
+	 * What a top-level agent starts under, for this run and the next. Persisted
+	 * because `/model` is the only way a user picks a model at all: a choice that
+	 * lived until the process exited would have to be made again every run, and
+	 * the settings file would keep naming a model the user stopped using. An
+	 * agent already running is not touched - its model is on its own branch.
+	 */
 	setDefaultModel(model: RuntimeModel): void {
 		this._defaultModel = model;
+		this.settingManager.setDefaultModelAndProvider(model.provider, model.id);
 	}
 
 	getDefaultThinkingLevel(): ThinkingLevel | undefined {
@@ -999,6 +1007,12 @@ export class AgentOrchestrator {
 
 		const resolvedProfile = await this._resolveCreateProfile(options.origin);
 		const agentId = this._allocateAgentId(resolvedProfile.profile);
+		// A spawn inherits the spawner's model and thinking level, exactly as a
+		// fork does: a caller that switched model and then delegates means the
+		// delegate to run under it too, and a profile names a role, never a model.
+		// Only a top-level agent, which has no spawner to follow, takes the
+		// runtime defaults.
+		const parent = options.parent === undefined ? undefined : this._requireLiveAgent(options.parent);
 		// The spawner's session directory owns the new one. That nesting is the
 		// only record of the agent tree - `notes/develop/ZH/agent-tree-persistence.md` §1 -
 		// so it is established here, at the one moment the parent is known.
@@ -1016,8 +1030,8 @@ export class AgentOrchestrator {
 			resolvedProfile,
 			session,
 			sessionMetadata: await session.getMetadata(),
-			model: options.model ?? this._defaultModel,
-			thinkingLevel: options.thinkingLevel ?? this._defaultThinkingLevel,
+			model: options.model ?? parent?.harness.getModel() ?? this._defaultModel,
+			thinkingLevel: options.thinkingLevel ?? parent?.harness.getThinkingLevel() ?? this._defaultThinkingLevel,
 			settings,
 			toolPolicy: { requestedToolNames: resolvedProfile.profile.tools, activeToolSelection: { mode: "default_all" } },
 			parent: options.parent,
