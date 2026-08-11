@@ -300,6 +300,25 @@ describe("ChatView timeline rendering", () => {
 		expect(output.match(/preparing…/g)).toHaveLength(1);
 	});
 
+	it("closes a painted block with painted edge rows and one plain line between blocks", () => {
+		const state = createTuiApplicationState();
+		const agent = setActiveAgent(state, "main");
+		agent.timeline.push(
+			{ type: "user-message", id: "m1", durability: "durable", createdAt: timestamp(1), text: "hello" },
+			toolItem({ result: { content: [{ type: "text", text: "one" }] } }),
+		);
+
+		const lines = new ChatView(state).render(40);
+
+		const background = (line: string) => line.includes(`${String.fromCharCode(27)}[48;2;`);
+		expect(lines.map(background)).toEqual([true, true, true, false, true, true, true, true]);
+		// The edge rows carry the color and nothing else, so the block reads as a
+		// card rather than a clipped row.
+		expect(stripAnsi([lines[0] ?? "", lines[2] ?? ""])).toEqual(["", ""]);
+		expect(stripAnsi(lines)[1]).toBe(" ❯ hello");
+		expect(stripAnsi(lines)[3]).toBe("");
+	});
+
 	it("renders tool executions through the presentation registry", () => {
 		const state = createTuiApplicationState();
 		const agent = setActiveAgent(state, "main");

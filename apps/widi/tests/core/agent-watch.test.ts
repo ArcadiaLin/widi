@@ -3,9 +3,10 @@
  *
  * The property under test is that the report does not depend on the stopped
  * agent doing anything. It is delivered when the agent is interrupted, when it
- * stops silently, and when it is disposed - the three cases a voluntary "I am
- * finished" call loses. The gates are the other half: an agent that paused to
- * wait on work it started has not stopped, and must not be reported as though
+ * stops silently, and when it is disposed before reporting - the cases a
+ * voluntary "I am finished" call loses. The gates are the other half: an
+ * agent that paused to wait on work it started has not stopped, and must not
+ * be reported as though
  * it had.
  *
  * Driven through the tool, because the tool is where all of this lives. The
@@ -343,6 +344,19 @@ describe("agent watches", () => {
 		await vi.waitFor(() => expect(inbox.texts).toHaveLength(1));
 		expect(inbox.texts[0]).toContain(`<agent-notification from="${workerAgentId}" status="gone">`);
 		expect(inbox.texts[0]).toContain("will not report");
+	});
+
+	it("does not repeat a settled report when the worker is disposed", async () => {
+		const { orchestrator, watch, watcherAgentId, workerAgentId } = await createPair();
+		const inbox = watchInbox(orchestrator, watcherAgentId);
+		await watch(watcherAgentId, workerAgentId);
+
+		await runAndStop(orchestrator, workerAgentId, assistantMessage("done"));
+		await vi.waitFor(() => expect(inbox.texts).toHaveLength(1));
+		await orchestrator.disposeAgent(workerAgentId, { intent: "removed" });
+		await settle();
+
+		expect(inbox.texts).toHaveLength(1);
 	});
 
 	it("drops the watches a disposed watcher held", async () => {

@@ -187,6 +187,9 @@ export class ChatView implements Component {
 			seen.add(key);
 			const rendered = this.renderItem(item, width, context, key);
 			if (rendered.length === 0) continue;
+			// Exactly one unpainted line between two items. The air inside a block
+			// belongs to the block - a painted row carries its own edge lines, so
+			// adding more here would put uncolored gaps inside the color.
 			if (lines.length > 0 && lines.at(-1) !== "") lines.push("");
 			lines.push(...rendered);
 		}

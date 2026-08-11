@@ -235,9 +235,10 @@ describe("renderTimelineItem", () => {
 			display: "resumed agent-2 · Default · test-model",
 		};
 
-		const lines = plain(renderTimelineItem(item, 80, context));
+		const lines = renderTimelineItem(item, 80, context);
 
-		expect(lines).toEqual(["/resume", "resumed agent-2 · Default · test-model"]);
+		expect(plain(lines)).toEqual(["", "/resume", "resumed agent-2 · Default · test-model", ""]);
+		expect(lines.every((line) => line.startsWith(paintOpen(theme.commandSurface)))).toBe(true);
 	});
 
 	it("sanitizes and bounds formatted command display text", () => {
@@ -285,9 +286,10 @@ describe("renderTimelineItem", () => {
 			result: "idle",
 		};
 
-		const lines = plain(renderTimelineItem(item, 80, context));
+		const lines = renderTimelineItem(item, 80, context);
 
-		expect(lines).toEqual(["/status", "idle"]);
+		expect(plain(lines)).toEqual(["", "/status", "idle", ""]);
+		expect(lines.every((line) => line.startsWith(paintOpen(theme.commandSurface)))).toBe(true);
 	});
 
 	it("wraps full application notices without abbreviating login URLs", () => {

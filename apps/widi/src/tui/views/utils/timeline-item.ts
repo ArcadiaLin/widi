@@ -13,7 +13,7 @@ import { renderExtensionEntry, renderExtensionMessageBody } from "../../extensio
 import { boundedText, sanitizeTerminalText, singleLine, spinnerFrame } from "../../format.ts";
 import { formatKeyLabel } from "../../keybindings.ts";
 import { diagnosticGlyph } from "../../labels.ts";
-import type { TimelineItem, ToolExecutionItem } from "../../state.ts";
+import type { CommandResultItem, TimelineItem, ToolExecutionItem } from "../../state.ts";
 import { theme } from "../../theme/theme.ts";
 import { presentToolExecution } from "../../tool-presenter.ts";
 import { tonePaint } from "./extension-status.ts";
@@ -226,15 +226,28 @@ function orchestratorMessageTitle(kind: string, label: string): string {
 	return label;
 }
 
-/** Pad each row to the full width so a background color spans the whole line. */
+/**
+ * Pad each row to the full width so a background color spans the whole line,
+ * and close the block with a painted blank row at each edge. The background is
+ * what marks where a block begins and ends, so it needs a line of air inside it
+ * - text flush against the color's edge reads as a clipped row, not a card.
+ */
 function paintRows(lines: string[], paint: (text: string) => string, width: number): string[] {
-	return lines.map((line) => paint(line + " ".repeat(Math.max(0, width - visibleWidth(line)))));
+	const edge = paint(" ".repeat(width));
+	return [edge, ...lines.map((line) => paint(line + " ".repeat(Math.max(0, width - visibleWidth(line))))), edge];
 }
 
 /** Outcome at a glance, before reading a word of the row. */
 function toolRowSurface(item: ToolExecutionItem): (text: string) => string {
 	if (item.status === "preparing" || item.status === "running") return theme.toolPending;
 	return item.isError || item.status === "cancelled" ? theme.toolError : theme.toolSuccess;
+}
+
+/** Commands paint like the action they are: working and failed rows echo the tool rows. */
+function commandRowSurface(item: CommandResultItem): (text: string) => string {
+	if (item.status === "running") return theme.toolPending;
+	if (item.status === "failed") return theme.toolError;
+	return theme.commandSurface;
 }
 
 export function renderTimelineItem(item: TimelineItem, width: number, context: TimelineRenderContext): string[] {
@@ -329,14 +342,16 @@ export function renderTimelineItem(item: TimelineItem, width: number, context: T
 				0,
 			).render(width);
 		}
-		case "command-result":
+		case "command-result": {
 			// Running/failed and the unregistered fallback live in the shared
 			// frame; a completed result may carry its own presenter.
-			return new Text(
+			const lines = new Text(
 				presentCommandResult(item, Math.max(8, width - 2), { expanded: context.toolOutputExpanded }).join("\n"),
 				1,
 				0,
 			).render(width);
+			return paintRows(lines, commandRowSurface(item), width);
+		}
 		case "extension-output":
 			return new Text(
 				`${theme.dim(`[${item.extensionId}]`)} ${

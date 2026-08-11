@@ -181,9 +181,11 @@ interface RenderedFacts {
  */
 function renderFacts(agent: AgentViewState, line: Quip, now: number): RenderedFacts | undefined {
 	if (agent.status === "running" && agent.runStartedAt) {
-		const elapsed = formatElapsed(now - Date.parse(agent.runStartedAt));
+		// Waiting on the model is not a fact worth a segment: the transcript
+		// already carries a live "Thinking…" row, and the dots after the quip
+		// already say the run has not stopped. Only work with a name reports.
 		const subject = agent.maintenance ? maintenanceLabel(agent.maintenance) : activeToolLabel(agent);
-		return facts(subject, elapsed);
+		return subject ? facts(subject, formatElapsed(now - Date.parse(agent.runStartedAt))) : undefined;
 	}
 	const lastRun = agent.lastRun;
 	if (!lastRun) return undefined;
@@ -210,11 +212,11 @@ function facts(subject: string | undefined, elapsed: string): RenderedFacts {
 }
 
 /**
- * The tool the agent is inside, or the wait for the next assistant message.
- * Read off the timeline rather than `display.activeToolNames`, which is the set
- * of tools the agent may call, not the one it is calling.
+ * The tool the agent is inside, or undefined while it is only waiting on the
+ * model. Read off the timeline rather than `display.activeToolNames`, which is
+ * the set of tools the agent may call, not the one it is calling.
  */
-function activeToolLabel(agent: AgentViewState): string {
+function activeToolLabel(agent: AgentViewState): string | undefined {
 	const timeline = agent.timeline;
 	const floor = Math.max(0, timeline.length - RUNNING_TOOL_SCAN);
 	for (let index = timeline.length - 1; index >= floor; index--) {
@@ -223,5 +225,5 @@ function activeToolLabel(agent: AgentViewState): string {
 			return item.toolName;
 		}
 	}
-	return "thinking";
+	return undefined;
 }

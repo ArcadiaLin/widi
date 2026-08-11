@@ -95,8 +95,8 @@ export class AgentWatches {
 				if (ended?.watcherAgentId !== host.agentId) return;
 				this._watches.delete(targetAgentId);
 				// A watcher that is gone has no turn left to read anything in.
-				if (error instanceof AgentGoneError && error.agentId === targetAgentId) {
-					await this._deliver(host, targetAgentId, { status: "gone" }, ended.pending);
+				if (error instanceof AgentGoneError && error.agentId === targetAgentId && ended.pending) {
+					await this._deliver(host, targetAgentId, { status: "gone" }, true);
 				}
 				return;
 			}

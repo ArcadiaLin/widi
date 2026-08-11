@@ -63,6 +63,8 @@ export interface ThemePalette {
 	toolError?: string;
 	/** Row background of a message nobody typed. Falls back to `surface`. */
 	messageSurface?: string;
+	/** Row background of a completed slash command. Falls back to `surface`. */
+	commandSurface?: string;
 }
 
 /**
@@ -87,6 +89,7 @@ export const defaultPalette: ThemePalette = {
 	toolSuccess: "#1c2a24",
 	toolError: "#2c2023",
 	messageSurface: "#1a222c",
+	commandSurface: "#1c2a3d",
 };
 
 /**
@@ -144,6 +147,7 @@ export class Theme {
 	readonly toolSuccess: Paint;
 	readonly toolError: Paint;
 	readonly messageSurface: Paint;
+	readonly commandSurface: Paint;
 
 	readonly selectListTheme: SelectListTheme;
 	readonly editorTheme: EditorTheme;
@@ -186,6 +190,7 @@ export class Theme {
 		this.toolSuccess = backgroundRgb(palette.toolSuccess ?? palette.surface);
 		this.toolError = backgroundRgb(palette.toolError ?? palette.surface);
 		this.messageSurface = backgroundRgb(palette.messageSurface ?? palette.surface);
+		this.commandSurface = backgroundRgb(palette.commandSurface ?? palette.surface);
 
 		this.selectListTheme = {
 			selectedPrefix: this.selection,
@@ -225,7 +230,7 @@ export class Theme {
 const DEFAULT_THEME_NAME = "default";
 const PALETTE_KEYS = ["accent", "ok", "warn", "error", "info", "muted", "faint", "rule", "surface"] as const;
 /** Validated when present, absent is fine: see ThemePalette for the fallbacks. */
-const OPTIONAL_PALETTE_KEYS = ["toolPending", "toolSuccess", "toolError", "messageSurface"] as const;
+const OPTIONAL_PALETTE_KEYS = ["toolPending", "toolSuccess", "toolError", "messageSurface", "commandSurface"] as const;
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 
 interface RegisteredTheme {

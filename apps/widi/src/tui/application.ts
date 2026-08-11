@@ -782,7 +782,12 @@ export class WidiTuiApplication {
 		} catch {
 			// Shutdown is best-effort; terminal restoration is mandatory.
 		} finally {
-			this.tui.stop();
+			// Leave the shell exactly as WIDI found it. pi-tui's default is to
+			// replay the last frame into the primary buffer on the way out, which
+			// in fullscreen mode is not a transcript - the transcript never left
+			// the alternate screen - but a stray copy of the editor rules, footer
+			// and agent strip, repeated once per run.
+			this.tui.stop({ preserveScreen: true });
 			this.resolveClosed?.();
 			this.resolveClosed = undefined;
 		}

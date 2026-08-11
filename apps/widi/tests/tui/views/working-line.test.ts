@@ -29,6 +29,21 @@ function running(state: TuiApplicationState, startedMsAgo = 72_000): AgentViewSt
 	return agent;
 }
 
+/** A named subject for the facts segment, which only a tool call gives it. */
+function withRunningTool(agent: AgentViewState, toolName = "Bash"): AgentViewState {
+	agent.timeline.push({
+		type: "tool-execution",
+		id: "call-1",
+		toolCallId: "call-1",
+		durability: "durable",
+		createdAt: new Date().toISOString(),
+		startedAt: new Date().toISOString(),
+		toolName,
+		status: "running",
+	});
+	return agent;
+}
+
 beforeEach(() => {
 	setKeybindings(createWidiKeybindings());
 });
@@ -55,17 +70,7 @@ describe("WorkingLineView", () => {
 
 	it("reports the quip, the run and the keys that apply", () => {
 		const state = createTuiApplicationState();
-		const agent = running(state);
-		agent.timeline.push({
-			type: "tool-execution",
-			id: "call-1",
-			toolCallId: "call-1",
-			durability: "durable",
-			createdAt: new Date().toISOString(),
-			startedAt: new Date().toISOString(),
-			toolName: "Bash",
-			status: "running",
-		});
+		withRunningTool(running(state));
 
 		const line = render(state);
 
@@ -74,11 +79,17 @@ describe("WorkingLineView", () => {
 		expect(line).toContain("Esc abort");
 	});
 
-	it("waits on the model when no tool is running", () => {
+	// The transcript already shows a live "Thinking…" row, so this line saying it
+	// again would be the same fact in two places; the dots carry the liveness.
+	it("says nothing but the quip while the run only waits on the model", () => {
 		const state = createTuiApplicationState();
 		running(state, 8_000);
 
-		expect(render(state)).toContain("thinking · 8s");
+		const line = render(state);
+
+		expect(line).toContain("Working");
+		expect(line).not.toContain("thinking");
+		expect(line).not.toContain("8s");
 	});
 
 	it("names the maintenance phase instead of a tool", () => {
@@ -124,7 +135,7 @@ describe("WorkingLineView", () => {
 	// land in the same place whatever the quip happens to be saying.
 	it("keeps the segments after the quip from moving", () => {
 		const state = createTuiApplicationState();
-		const agent = running(state, 5_000);
+		const agent = withRunningTool(running(state, 5_000));
 
 		setSteadyQuip(agent, "idle", () => 0);
 		const short = render(state).indexOf("5s");
@@ -138,14 +149,14 @@ describe("WorkingLineView", () => {
 
 	it("drops the keys first, then the subject, as the terminal narrows", () => {
 		const state = createTuiApplicationState();
-		running(state, 5_000);
+		withRunningTool(running(state, 5_000), "Bash");
 
 		expect(render(state, 120)).toContain("Esc abort");
 		const narrow = render(state, 48);
 		expect(narrow).not.toContain("Esc abort");
-		expect(narrow).toContain("thinking · 5s");
-		const narrower = render(state, 36);
-		expect(narrower).not.toContain("thinking");
+		expect(narrow).toContain("Bash · 5s");
+		const narrower = render(state, 40);
+		expect(narrower).not.toContain("Bash");
 		expect(narrower).toContain("5s");
 	});
 
