@@ -129,12 +129,13 @@ describe("composed views", () => {
 	it("renders an empty pending agent without a core projection", () => {
 		const state = createTuiApplicationState();
 		state.pendingAgent = {
-			start: { kind: "default" },
+			start: { kind: "default", cwd: "/workspace/project" },
 			timeline: [],
 			draft: "",
 			display: {
 				profileId: "widi-dev",
 				profileLabel: "Main Agent",
+				cwd: "/workspace/project",
 				model: {
 					id: "pending-model",
 					name: "Pending Model",

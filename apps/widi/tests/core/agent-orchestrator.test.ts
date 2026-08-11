@@ -13,7 +13,6 @@ import type { ExtensionContext, ExtensionMessage } from "../../src/core/extensio
 import { ModelRegistry, type OAuthProviderConfig } from "../../src/core/model-registry.ts";
 import { PersistenceRegistry } from "../../src/core/persistence/index.ts";
 import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
-import { ResourceLoader } from "../../src/core/resource-loader.ts";
 import {
 	EXTENSION_MESSAGE_CUSTOM_TYPE,
 	ORCHESTRATOR_MESSAGE_CUSTOM_TYPE,
@@ -41,11 +40,13 @@ import {
 	harnessEventDriver,
 	humanSink,
 	MemoryExecutionEnv,
+	openWorkspaceResolver,
 	reasoningModel,
 	requireAgentHarness,
 	requireLiveAgent,
 	restoredModel,
 	restoredProfile,
+	testWorkspaceResolver,
 } from "../helpers/orchestrator.ts";
 
 // Drives the private harness-event bridge directly (same private-access
@@ -227,7 +228,7 @@ describe("AgentOrchestrator", () => {
 		const settingManager = await SettingManager.fromStorage(new FailingSettingsStorage());
 		const orchestrator = new AgentOrchestrator({
 			executionEnv: env,
-			resourceLoader: new ResourceLoader({ executionEnv: env, cwd: "/workspace/project" }),
+			workspaces: testWorkspaceResolver(env),
 			sessionManager: new SessionManager({
 				fs: env,
 				cwd: "/workspace/project",
@@ -268,7 +269,7 @@ describe("AgentOrchestrator", () => {
 		);
 		const orchestrator = new AgentOrchestrator({
 			executionEnv: env,
-			resourceLoader: new ResourceLoader({ executionEnv: env, cwd: "/workspace/project" }),
+			workspaces: testWorkspaceResolver(env),
 			sessionManager: new SessionManager({
 				fs: env,
 				cwd: "/workspace/project",
@@ -316,7 +317,7 @@ describe("AgentOrchestrator", () => {
 
 		const orchestrator = new AgentOrchestrator({
 			executionEnv: env,
-			resourceLoader: new ResourceLoader({ executionEnv: env, cwd: "/workspace/project" }),
+			workspaces: testWorkspaceResolver(env),
 			sessionManager,
 			settingManager: new SettingManager(),
 			modelRegistry,
@@ -382,7 +383,7 @@ describe("AgentOrchestrator", () => {
 		await sessionManager.createAgentSession({ agentId: "worker-agent", agentProfile: restoredProfile });
 		const orchestrator = new AgentOrchestrator({
 			executionEnv: env,
-			resourceLoader: new ResourceLoader({ executionEnv: env, cwd: "/workspace/project" }),
+			workspaces: testWorkspaceResolver(env),
 			sessionManager,
 			settingManager: new SettingManager(),
 			modelRegistry: await createModelRegistry(env),
@@ -422,7 +423,7 @@ describe("AgentOrchestrator", () => {
 		await session.appendThinkingLevelChange("medium");
 		const orchestrator = new AgentOrchestrator({
 			executionEnv: env,
-			resourceLoader: new ResourceLoader({ executionEnv: env, cwd: "/workspace/project" }),
+			workspaces: testWorkspaceResolver(env),
 			sessionManager,
 			settingManager: new SettingManager(),
 			modelRegistry: await createEmptyModelRegistry(env),
@@ -1582,7 +1583,7 @@ describe("AgentOrchestrator", () => {
 		});
 		const orchestrator = new AgentOrchestrator({
 			executionEnv: env,
-			resourceLoader: new ResourceLoader({ executionEnv: env, cwd: "/workspace/project" }),
+			workspaces: testWorkspaceResolver(env),
 			sessionManager: resumeSessionManager,
 			settingManager: new SettingManager(),
 			modelRegistry: await createModelRegistry(env),
@@ -4105,5 +4106,68 @@ describe("AgentOrchestrator", () => {
 			}),
 		);
 		await expect(orchestrator.cancelHumanRequest(pending.request.id)).resolves.toBe(false);
+	});
+});
+
+describe("AgentOrchestrator workspaces", () => {
+	async function multiWorkspaceOrchestrator(env: MemoryExecutionEnv): Promise<AgentOrchestrator> {
+		return await createOrchestrator(env, { workspaces: openWorkspaceResolver(env) });
+	}
+
+	it("runs a top-level agent in the workspace it names and stores it under that group", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await multiWorkspaceOrchestrator(env);
+
+		const here = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const there = await orchestrator.spawnAgent({ origin: { kind: "new" }, cwd: "/workspace/other" });
+
+		expect(requireLiveAgent(orchestrator, here).workspace.cwd).toBe("/workspace/project");
+		expect(requireLiveAgent(orchestrator, there).workspace.cwd).toBe("/workspace/other");
+		// The storage group follows the agent's cwd, so each directory lists only
+		// its own sessions - the invariant the whole design rests on.
+		const inProject = await orchestrator.sessionManager.listAgentSessionCandidates("/workspace/project");
+		const inOther = await orchestrator.sessionManager.listAgentSessionCandidates("/workspace/other");
+		expect(inProject.map((candidate) => candidate.id)).toEqual([here]);
+		expect(inOther.map((candidate) => candidate.id)).toEqual([there]);
+	});
+
+	it("gives a spawned agent its spawner's workspace and ignores any cwd asked for", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await multiWorkspaceOrchestrator(env);
+		const parent = await orchestrator.spawnAgent({ origin: { kind: "new" }, cwd: "/workspace/other" });
+
+		const child = await orchestrator.spawnAgent({ origin: { kind: "new" }, parent, cwd: "/workspace/somewhere-else" });
+
+		expect(requireLiveAgent(orchestrator, child).workspace.cwd).toBe("/workspace/other");
+	});
+
+	it("resolves every tool call against the executing agent's workspace", async () => {
+		const env = new MemoryExecutionEnv();
+		const orchestrator = await multiWorkspaceOrchestrator(env);
+		const here = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const there = await orchestrator.spawnAgent({ origin: { kind: "new" }, cwd: "/workspace/other" });
+
+		const hereContext = await resolveHarnessToolContext(requireAgentHarness(orchestrator, here));
+		const thereContext = await resolveHarnessToolContext(requireAgentHarness(orchestrator, there));
+
+		expect(hereContext.workspace.cwd).toBe("/workspace/project");
+		expect(thereContext.workspace.cwd).toBe("/workspace/other");
+	});
+
+	it("reopens a resumed session in the workspace it was written in", async () => {
+		const env = new MemoryExecutionEnv();
+		const first = await multiWorkspaceOrchestrator(env);
+		const agentId = await first.spawnAgent({ origin: { kind: "new" }, cwd: "/workspace/other" });
+		const [candidate] = await first.sessionManager.listAgentSessionCandidates("/workspace/other");
+		await first.disposeAll("test");
+
+		const second = await multiWorkspaceOrchestrator(env);
+		const resumed = await second.spawnAgent({
+			origin: { kind: "resume", reference: candidate.ref },
+			cwd: "/workspace/other",
+		});
+
+		expect(resumed).toBe(agentId);
+		expect(requireLiveAgent(second, resumed).workspace.cwd).toBe("/workspace/other");
 	});
 });

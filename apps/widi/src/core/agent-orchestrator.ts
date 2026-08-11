@@ -149,7 +149,6 @@ import {
 	sessionKeysEqual,
 } from "./persistence/index.ts";
 import type { ConfigValueResolver } from "./resolve-config-value.js";
-import type { ResourceLoader } from "./resource-loader.js";
 import type {
 	AgentSessionCandidate,
 	AgentSessionMetadata,
@@ -189,6 +188,7 @@ import type {
 	RuntimeShutdownRequest,
 } from "./types.ts";
 import { maintenanceDescription, maintenanceKindOf } from "./types.ts";
+import type { Workspace, WorkspaceResolver } from "./workspace.ts";
 
 export type { AgentSnapshot, LiveAgent } from "./agent-types.ts";
 export type {
@@ -200,7 +200,7 @@ export type {
 
 export interface AgentOrchestratorConfig {
 	executionEnv: ExecutionEnv;
-	resourceLoader: ResourceLoader;
+	workspaces: WorkspaceResolver;
 	sessionManager: SessionManager;
 	settingManager: SettingManager;
 	modelRegistry: ModelRegistry;
@@ -274,6 +274,17 @@ export interface SpawnAgentOptions {
 	readonly origin: SpawnAgentOrigin;
 	/** Absent means top-level; present records `spawnedBy` and the tree edge. */
 	readonly parent?: AgentId;
+	/**
+	 * The workspace this spawn happens in, defaulting to the one the process
+	 * started in. Read only when `parent` is absent: a spawned agent always works
+	 * where its spawner does, so a whole tree shares one cwd and one storage
+	 * group.
+	 *
+	 * For a resume it names the group the reference is looked up in, not the
+	 * workspace the agent gets: a stored session already says where it belongs,
+	 * and reopening it anywhere else would split its tree across two groups.
+	 */
+	readonly cwd?: string;
 	readonly model?: RuntimeModel;
 	readonly thinkingLevel?: ThinkingLevel;
 }
@@ -359,6 +370,7 @@ interface ResolvedAgentProfile {
 interface AgentBuildRequest {
 	readonly agentId: AgentId;
 	readonly origin: SpawnAgentOrigin["kind"];
+	readonly workspace: Workspace;
 	readonly resolvedProfile: ResolvedAgentProfile;
 	readonly session: Session<AgentSessionMetadata>;
 	readonly sessionMetadata?: AgentSessionMetadata;
@@ -381,7 +393,7 @@ interface DisposedLiveAgent {
 
 export class AgentOrchestrator {
 	readonly executionEnv: ExecutionEnv;
-	readonly resourceLoader: ResourceLoader;
+	readonly workspaces: WorkspaceResolver;
 	readonly sessionManager: SessionManager;
 	readonly settingManager: SettingManager;
 	readonly modelRegistry: ModelRegistry;
@@ -441,7 +453,7 @@ export class AgentOrchestrator {
 
 	constructor(config: AgentOrchestratorConfig) {
 		this.executionEnv = config.executionEnv;
-		this.resourceLoader = config.resourceLoader;
+		this.workspaces = config.workspaces;
 		this.sessionManager = config.sessionManager;
 		this.settingManager = config.settingManager;
 		this.modelRegistry = config.modelRegistry;
@@ -511,8 +523,12 @@ export class AgentOrchestrator {
 		return this._defaultThinkingLevel;
 	}
 
+	/** Persisted for the same reason `setDefaultModel` is. */
 	setDefaultThinkingLevel(level: ThinkingLevel | undefined): void {
 		this._defaultThinkingLevel = level;
+		// A level is either on or absent; there is no "unset" to write, so
+		// clearing it leaves the file naming the last level that was chosen.
+		if (level !== undefined) this.settingManager.setDefaultThinkingLevel(level);
 	}
 
 	getDefaultProfileId(): string {
@@ -616,6 +632,7 @@ export class AgentOrchestrator {
 		return {
 			agentId,
 			generation: liveAgent.generation,
+			cwd: liveAgent.workspace.cwd,
 			profile: liveAgent.profile,
 			...(spawnedBy === undefined ? undefined : { spawnedBy }),
 			...(liveAgent.sessionMetadata === undefined ? undefined : { sessionMetadata: liveAgent.sessionMetadata }),
@@ -931,7 +948,7 @@ export class AgentOrchestrator {
 		if (options.origin.kind === "resume") {
 			const info =
 				typeof options.origin.reference === "string"
-					? await this.sessionManager.resolveAgentSessionReference(options.origin.reference)
+					? await this.sessionManager.resolveAgentSessionReference(options.origin.reference, options.cwd)
 					: options.origin.reference;
 			const resolvedProfile = await this._resolveResumeProfile(info.metadata.id, info.metadata);
 			const agentId = this._resumeAgentId(info, resolvedProfile.profile);
@@ -940,6 +957,10 @@ export class AgentOrchestrator {
 			return {
 				agentId,
 				origin: "resume",
+				// Not the caller's choice and not the default: a session is stored
+				// under the directory it was written in, and reopening it anywhere
+				// else would put its continuation in a different storage group.
+				workspace: await this.workspaces.resolve(info.metadata.cwd),
 				resolvedProfile,
 				session,
 				sessionMetadata: await session.getMetadata(),
@@ -988,6 +1009,7 @@ export class AgentOrchestrator {
 			return {
 				agentId,
 				origin: "fork",
+				workspace: source.workspace,
 				// The source's exact profile, overrides included: re-resolving could
 				// hand the fork a profile the branch it inherits was never written under.
 				resolvedProfile: {
@@ -1013,6 +1035,14 @@ export class AgentOrchestrator {
 		// Only a top-level agent, which has no spawner to follow, takes the
 		// runtime defaults.
 		const parent = options.parent === undefined ? undefined : this._requireLiveAgent(options.parent);
+		// A spawned agent works where its spawner does, and `options.cwd` is not
+		// consulted at all in that case. That is the whole of "no cross-workspace
+		// subagents": there is no check to pass because there is no way to ask.
+		const workspace = parent
+			? parent.workspace
+			: options.cwd === undefined
+				? this.workspaces.startup
+				: await this.workspaces.resolve(options.cwd);
 		// The spawner's session directory owns the new one. That nesting is the
 		// only record of the agent tree - `notes/develop/ZH/agent-tree-persistence.md` §1 -
 		// so it is established here, at the one moment the parent is known.
@@ -1020,6 +1050,7 @@ export class AgentOrchestrator {
 		const session = await this.sessionManager.createAgentSession({
 			agentId,
 			agentProfile: resolvedProfile.profile,
+			cwd: workspace.cwd,
 			...(options.parent === undefined ? undefined : { parentAgentId: options.parent }),
 			diagnostics,
 		});
@@ -1027,6 +1058,7 @@ export class AgentOrchestrator {
 		return {
 			agentId,
 			origin: "new",
+			workspace,
 			resolvedProfile,
 			session,
 			sessionMetadata: await session.getMetadata(),
@@ -1075,7 +1107,7 @@ export class AgentOrchestrator {
 			await this._applyExtensionProviderContributions(agentId, extensionRunner);
 			this._assertBuildNotCancelled(agentId, reservation);
 
-			const loaded = await this.resourceLoader.loadAgentResources(profile);
+			const loaded = await request.workspace.resourceLoader.loadAgentResources(profile);
 			const resourceDiagnostics = loaded.diagnostics.map((diagnostic) => ({ ...diagnostic, agentId }));
 			await this._publishDiagnostics(resourceDiagnostics);
 			this._addAgentDiagnostics(agentId, resourceDiagnostics);
@@ -1096,9 +1128,9 @@ export class AgentOrchestrator {
 				appendSections: profile.appendSystemPrompt ? [profile.appendSystemPrompt] : [],
 				contextFiles: loaded.contextFiles,
 				...(profile.skillsListing === undefined ? undefined : { includeSkills: profile.skillsListing }),
-				// The resource loader's cwd, not the execution env's: the file tools
+				// The agent's own workspace, not the execution env's: the file tools
 				// resolve relative paths against it, and the prompt must name the same one.
-				...((profile.includeCwd ?? true) ? { cwd: this.resourceLoader.getCwd() } : undefined),
+				...((profile.includeCwd ?? true) ? { cwd: request.workspace.cwd } : undefined),
 			};
 
 			const resolvedTools = await this._resolveAgentToolsForBuild(agentId, request.toolPolicy, extensionRunner);
@@ -1125,6 +1157,7 @@ export class AgentOrchestrator {
 			const liveAgent: LiveAgent = {
 				agentId,
 				generation,
+				workspace: request.workspace,
 				profile: createAgentProfileRecordReference(resolvedProfile),
 				resolvedProfile: profile,
 				...(request.sessionMetadata === undefined ? undefined : { sessionMetadata: request.sessionMetadata }),
@@ -2552,7 +2585,11 @@ export class AgentOrchestrator {
 				// conversation in this project, so they carry the same bar as exec.
 				listSessions: async (extensionId) => {
 					this._requireProjectTrustForExtension(agentId, extensionId, "list the project's sessions");
-					const candidates = await this.sessionManager.listAgentSessionCandidates();
+					// The caller's own workspace: "this project" is the one the agent
+					// runs in, not the one the process happened to start in.
+					const candidates = await this.sessionManager.listAgentSessionCandidates(
+						this._requireLiveAgent(agentId).workspace.cwd,
+					);
 					return candidates.map((candidate) => ({
 						ref: this.sessionManager.toSessionHandle(candidate.ref),
 						id: candidate.id,
@@ -3253,6 +3290,7 @@ export class AgentOrchestrator {
 		const liveAgent = this._requireLiveAgent(agentId);
 		const extensionRunner = liveAgent.extensionRunner;
 		return {
+			workspace: { cwd: liveAgent.workspace.cwd },
 			human: {
 				request: async ({ tool, ...draft }) =>
 					await this._requestHumanForAgent(agentId, {
@@ -3675,8 +3713,8 @@ export class AgentOrchestrator {
 
 	/** Reloaded per listing: a template the user just edited should be usable at once. */
 	private async _loadAgentPromptTemplates(agentId: AgentId): Promise<readonly PromptTemplate[]> {
-		this._requireLiveAgent(agentId);
-		const loaded = await this.resourceLoader.loadPromptTemplates();
+		const { workspace } = this._requireLiveAgent(agentId);
+		const loaded = await workspace.resourceLoader.loadPromptTemplates();
 		await this._publishDiagnostics(
 			loaded.diagnostics.map((diagnostic) => ({
 				severity: "warning" as const,
@@ -3714,8 +3752,8 @@ export class AgentOrchestrator {
 
 	/** Same freshness rule as prompt templates, narrowed by the agent's profile. */
 	private async _loadAgentSkills(agentId: AgentId): Promise<readonly Skill[]> {
-		const { resolvedProfile } = this._requireLiveAgent(agentId);
-		const loaded = await this.resourceLoader.loadSkills(resolvedProfile.skills);
+		const { resolvedProfile, workspace } = this._requireLiveAgent(agentId);
+		const loaded = await workspace.resourceLoader.loadSkills(resolvedProfile.skills);
 		await this._publishDiagnostics(
 			loaded.diagnostics.map((diagnostic) => ({
 				severity: "warning" as const,
@@ -3734,8 +3772,9 @@ export class AgentOrchestrator {
 	// harness, which owns the session file while an operation is running.
 	// -----------------------------------------------------------------------
 
-	async listAgentSessions(): Promise<AgentSessionListResult> {
-		return { sessions: await this.sessionManager.listAgentSessionCandidates() };
+	/** Top-level sessions of one workspace; the startup one when none is named. */
+	async listAgentSessions(cwd?: string): Promise<AgentSessionListResult> {
+		return { sessions: await this.sessionManager.listAgentSessionCandidates(cwd ?? this.workspaces.startup.cwd) };
 	}
 
 	async getAgentSession(agentId: AgentId): Promise<AgentSessionSnapshot> {

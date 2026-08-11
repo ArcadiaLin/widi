@@ -396,6 +396,28 @@ describe("CommandEngine argument resolution", () => {
 		expect(outcome).toMatchObject({ kind: "executed", name: "model" });
 		expect(setAgentModelByReference).toHaveBeenCalledWith("agent-1", "vllm/hello-world");
 	});
+
+	// Picking either one picks it for what is spawned next and for the next run,
+	// which is the only way a user ever sets these at all.
+	it("carries a model and a thinking level into the runtime defaults", async () => {
+		const setDefaultModel = vi.fn(() => {});
+		const setDefaultThinkingLevel = vi.fn(() => {});
+		const engine = new CommandEngine(widiCommands(stubCommandHost()));
+		const orchestrator = {
+			listAvailableModelCandidates: async () => ({ models: [{ value: "vllm/hello-world" }] }),
+			listAgentThinkingLevelCandidates: () => ({ levels: [{ value: "high" }] }),
+			setAgentModelByReference: async () => ({ provider: "vllm", id: "hello-world" }),
+			setAgentThinkingLevelByName: async () => ({ level: "high" }),
+			setDefaultModel,
+			setDefaultThinkingLevel,
+		};
+
+		await engine.handleInput("/model vllm/hello-world", context(orchestrator));
+		await engine.handleInput("/thinking high", context(orchestrator));
+
+		expect(setDefaultModel).toHaveBeenCalledWith({ provider: "vllm", id: "hello-world" });
+		expect(setDefaultThinkingLevel).toHaveBeenCalledWith("high");
+	});
 });
 
 describe("CommandEngine.list and match", () => {

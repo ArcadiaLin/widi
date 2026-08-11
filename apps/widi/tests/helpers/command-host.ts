@@ -7,6 +7,7 @@ export function stubCommandHost(overrides: Partial<CommandHost> = {}): CommandHo
 		quit: () => {},
 		newAgent: async () => {},
 		newSession: async () => {},
+		setWorkspace: async (path) => `Staged session will open in ${path}`,
 		disposeAgent: async () => {},
 		switchToAgent: async () => {},
 		setEditorText: () => {},

@@ -227,9 +227,17 @@ export interface PendingInput {
  * disposed before the pending session is staged, so it is no longer there to
  * answer questions about itself.
  */
-export type PendingAgentStart =
+export type PendingAgentStart = {
+	/**
+	 * Where the agent will run. Set before it exists because it cannot be set
+	 * after: a workspace is frozen at spawn, so staging is the only moment the
+	 * choice is open.
+	 */
+	readonly cwd: string;
+} & (
 	| { readonly kind: "default" }
-	| { readonly kind: "new-session"; readonly profileId: string; readonly model: RuntimeModel };
+	| { readonly kind: "new-session"; readonly profileId: string; readonly model: RuntimeModel }
+);
 
 export interface PendingAgentViewState {
 	readonly start: PendingAgentStart;
@@ -238,6 +246,7 @@ export interface PendingAgentViewState {
 	display: {
 		readonly profileId: string;
 		readonly profileLabel: string;
+		readonly cwd: string;
 		model: RuntimeModel;
 		thinkingLevel?: string;
 		sessionName?: string;
@@ -252,6 +261,8 @@ export interface QueueState {
 }
 
 export interface AgentDisplayFacts {
+	/** The agent's workspace, which the footer and the header both name. */
+	cwd?: string;
 	model?: RuntimeModel;
 	thinkingLevel?: string;
 	/** Total tokens of the latest assistant turn (input+output+cache), for the footer context readout. */

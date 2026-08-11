@@ -54,10 +54,7 @@ export interface LsToolOptions {
 	operations?: LsOperations;
 }
 
-export function createLsToolDefinition(
-	cwd: string,
-	options: LsToolOptions = {},
-): ToolDefinition<typeof lsSchema, LsToolDetails> {
+export function createLsToolDefinition(options: LsToolOptions = {}): ToolDefinition<typeof lsSchema, LsToolDetails> {
 	const operations = options.operations ?? createLocalLsOperations();
 
 	return {
@@ -70,7 +67,7 @@ export function createLsToolDefinition(
 		execute: async (_toolCallId, input, context) => {
 			validateLsInput(input);
 			const inputPath = input.path ?? ".";
-			const absolutePath = resolveToCwd(inputPath, cwd);
+			const absolutePath = resolveToCwd(inputPath, context.workspace.cwd);
 			const entryLimit = input.limit ?? DEFAULT_ENTRY_LIMIT;
 			throwIfAborted(context.signal);
 

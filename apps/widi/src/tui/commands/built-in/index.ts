@@ -19,6 +19,7 @@ import { skillCommand } from "./skill.ts";
 import { statusCommand } from "./status.ts";
 import { thinkingCommand } from "./thinking.ts";
 import { treeCommand } from "./tree.ts";
+import { workspaceCommand } from "./workspace.ts";
 
 export type { CommandHost } from "./command-host.ts";
 
@@ -49,5 +50,6 @@ export function widiCommands(host: CommandHost): readonly CommandDefinition[] {
 		clearCommand(host),
 		diagnosticsCommand(host),
 		disposeCommand(host),
+		workspaceCommand(host),
 	];
 }

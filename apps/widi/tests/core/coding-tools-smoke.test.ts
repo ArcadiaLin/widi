@@ -25,7 +25,7 @@ describe("core coding tools smoke", () => {
 	}
 
 	async function execute(name: string, toolCallId: string, params: unknown) {
-		return await tool(name).execute(toolCallId, params, undefined, undefined, {});
+		return await tool(name).execute(toolCallId, params, undefined, undefined, { workspace: { cwd } });
 	}
 
 	function textOf(result: { content: { type: string; text?: string }[] }): string {
@@ -39,7 +39,7 @@ describe("core coding tools smoke", () => {
 	beforeAll(async () => {
 		cwd = await mkdtemp(join(tmpdir(), "widi-smoke-"));
 		const registry = new ToolRegistry();
-		registerCoreCodingTools(registry, cwd);
+		registerCoreCodingTools(registry);
 		const resolved = registry.resolve();
 		expect(resolved.diagnostics).toEqual([]);
 		tools = new Map(
@@ -53,7 +53,7 @@ describe("core coding tools smoke", () => {
 
 	it("resolves the seven core tools in fixed order when no profile allowlist is set", () => {
 		const registry = new ToolRegistry();
-		registerCoreCodingTools(registry, cwd);
+		registerCoreCodingTools(registry);
 		const resolved = registry.resolve();
 		expect(resolved.toolNames).toEqual(["read", "bash", "edit", "write", "grep", "find", "ls"]);
 		// No allowlist means every resolved tool is visible and active.
@@ -62,7 +62,7 @@ describe("core coding tools smoke", () => {
 
 	it("validates resumed active tool names against the registry without aliases", () => {
 		const registry = new ToolRegistry();
-		registerCoreCodingTools(registry, cwd);
+		registerCoreCodingTools(registry);
 		const resolved = registry.resolve({ activeToolNames: ["read", "run_shell", "grep"] });
 		expect(resolved.activeToolNames).toEqual(["read", "grep"]);
 		expect(resolved.diagnostics.map((diagnostic) => diagnostic.code)).toEqual(["tool.active_missing"]);

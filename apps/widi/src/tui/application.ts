@@ -184,6 +184,7 @@ export class WidiTuiApplication {
 			newSession: async (sourceAgentId) => {
 				await this.beginNewSession(sourceAgentId);
 			},
+			setWorkspace: async (path) => await this.setPendingWorkspace(path),
 			disposeAgent: async (agentId) => {
 				await this.disposeAgent(agentId);
 			},
@@ -728,6 +729,9 @@ export class WidiTuiApplication {
 
 		this.tui.start();
 		this.tui.terminal.setTitle("WIDI");
+		// The startup boot prompt is gone by now, so this shell is the only human
+		// a workspace opened later can be asked about.
+		this.runtime.services.workspaces.confirmTrust = async (cwd) => await this.confirmProjectTrust(cwd);
 		// Every startup diagnostic is a warning or error and gets projected;
 		// the routine resolution facts collapse to one synthesized summary line.
 		for (const diagnostic of this.runtime.diagnostics) {
@@ -1057,7 +1061,12 @@ export class WidiTuiApplication {
 		try {
 			outcome = await this.engine.handleInput(
 				text,
-				{ agentId, orchestrator: this.orchestrator, pendingModel: this.state.pendingAgent?.display.model },
+				{
+					agentId,
+					orchestrator: this.orchestrator,
+					pendingModel: this.state.pendingAgent?.display.model,
+					workspaceCwd: this.currentWorkspaceCwd(),
+				},
 				{
 					onCommandStart: (commandId, name, argument) => {
 						startedCommands.push({ commandId, argument });
@@ -1497,6 +1506,7 @@ export class WidiTuiApplication {
 						agentId,
 						orchestrator: this.orchestrator,
 						pendingModel: this.state.pendingAgent?.display.model,
+						workspaceCwd: this.currentWorkspaceCwd(),
 					})
 				: new ListSelector(request);
 		} catch (error) {
@@ -1586,7 +1596,13 @@ export class WidiTuiApplication {
 		const model = this.orchestrator.getDefaultModel();
 		this.pendingAgents.beginNewSession(
 			{ profileId: resolved, model },
-			{ profileId: resolved, profileLabel: label, model, thinkingLevel: this.orchestrator.getDefaultThinkingLevel() },
+			{
+				profileId: resolved,
+				profileLabel: label,
+				cwd: this.currentWorkspaceCwd(),
+				model,
+				thinkingLevel: this.orchestrator.getDefaultThinkingLevel(),
+			},
 		);
 		this.showPendingAgent();
 	}
@@ -1606,6 +1622,50 @@ export class WidiTuiApplication {
 		await this.closeAgentForNewSession(sourceAgentId);
 		this.pendingAgents.beginNewSession({ profileId: source.profileId, model: source.display.model }, source.display);
 		this.showPendingAgent();
+	}
+
+	/** The same question startup asks, for a project opened after startup. */
+	private async confirmProjectTrust(cwd: string): Promise<boolean> {
+		try {
+			const response = await this.humanRequests.request({
+				id: `project-trust:${cwd}`,
+				createdAt: new Date().toISOString(),
+				source: { kind: "system" },
+				kind: "confirm",
+				title: "Trust this project?",
+				message: `WIDI found project-local configuration in ${cwd} (settings, profiles, skills, prompts, extensions). It stays disabled until the project is trusted.\n\nTrust this project and remember the decision?`,
+			});
+			return response.kind === "confirm" && response.confirmed;
+		} catch {
+			// Dismissed or aborted: stay untrusted rather than block the move.
+			return false;
+		}
+	}
+
+	/**
+	 * /workspace: move the staged session to another directory.
+	 *
+	 * Trust is resolved here rather than at spawn because everything the user
+	 * does next depends on the answer - which profiles are offered, which
+	 * instruction files load - and because being asked about a project after
+	 * typing the first message is too late to be a decision.
+	 */
+	private async setPendingWorkspace(path: string): Promise<string> {
+		if (!this.state.pendingAgent) throw new Error("There is no staged session to move.");
+		const resolved = await this.orchestrator.executionEnv.absolutePath(path);
+		if (!resolved.ok) throw new Error(`Cannot resolve ${path}: ${resolved.error.message}`);
+		const info = await this.orchestrator.executionEnv.fileInfo(resolved.value);
+		if (!info.ok || info.value.kind !== "directory") {
+			throw new Error(`Not a directory: ${resolved.value}`);
+		}
+		const workspace = await this.runtime.services.workspaces.resolve(resolved.value);
+		this.pendingAgents.setWorkspace(workspace.cwd);
+		// `@file` completes against the project the next prompt will run in.
+		this.configurePendingEditor();
+		this.tui.requestRender();
+		return workspace.trust.trusted
+			? `Staged session will open in ${workspace.cwd}`
+			: `Staged session will open in ${workspace.cwd} (untrusted: project-local settings, profiles, skills and prompts stay disabled)`;
 	}
 
 	/**
@@ -1691,9 +1751,21 @@ export class WidiTuiApplication {
 		return {
 			profileId: this.runtime.services.defaultProfile.id,
 			profileLabel: this.runtime.services.defaultProfile.id,
+			cwd: this.currentWorkspaceCwd(),
 			model: this.orchestrator.getDefaultModel(),
 			thinkingLevel: this.orchestrator.getDefaultThinkingLevel(),
 		};
+	}
+
+	/**
+	 * Where the next staged session should open: wherever the user is working
+	 * right now. Following the open agent matters most after a /clear or a
+	 * dispose, when the agent that named the directory is already gone and the
+	 * startup cwd would silently move the user back to where they began.
+	 */
+	private currentWorkspaceCwd(): string {
+		const agent = this.state.activeAgentId ? this.state.agents.get(this.state.activeAgentId) : undefined;
+		return agent?.display.cwd ?? this.state.pendingAgent?.display.cwd ?? this.runtime.services.cwd;
 	}
 
 	/**
@@ -1719,6 +1791,9 @@ export class WidiTuiApplication {
 			display: {
 				profileId: reference.id,
 				profileLabel: reference.label ?? reference.id,
+				// The replaced agent's own workspace: /clear reopens the same
+				// conversation elsewhere only if the user asks for that.
+				cwd: snapshot.cwd,
 				model: projection?.display.model ?? snapshot.model,
 				thinkingLevel: this.orchestrator.getDefaultThinkingLevel(),
 			},
@@ -1748,7 +1823,9 @@ export class WidiTuiApplication {
 				orchestrator: this.orchestrator,
 				getActivity: () => undefined,
 				getPendingModel: () => this.state.pendingAgent?.display.model,
-				cwd: this.runtime.services.cwd,
+				// The staged session's directory, so `@file` completes against the
+				// project the next prompt will actually run in.
+				cwd: this.currentWorkspaceCwd(),
 			}),
 		);
 	}
@@ -1772,7 +1849,7 @@ export class WidiTuiApplication {
 				agentId,
 				orchestrator: this.orchestrator,
 				getActivity: () => toCommandActivity(this.state.agents.get(agentId)),
-				cwd: this.runtime.services.cwd,
+				cwd: this.state.agents.get(agentId)?.display.cwd ?? this.runtime.services.cwd,
 			}),
 		);
 		this.refreshVisibleAgent();

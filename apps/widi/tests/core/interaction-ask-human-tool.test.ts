@@ -6,7 +6,14 @@ import type { ToolExecutionContext } from "../../src/core/tools/types.ts";
 function makeContext(
 	overrides: Partial<ToolExecutionContext<AskHumanToolDetails>> = {},
 ): ToolExecutionContext<AskHumanToolDetails> {
-	return { signal: undefined, onUpdate: undefined, extension: undefined, human: undefined, ...overrides };
+	return {
+		signal: undefined,
+		onUpdate: undefined,
+		workspace: { cwd: "/workspace/project" },
+		extension: undefined,
+		human: undefined,
+		...overrides,
+	};
 }
 
 function makeHumanHost(response: HumanResponse): { host: ToolHumanHost; drafts: HumanRequestDraft[] } {

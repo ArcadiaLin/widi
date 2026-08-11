@@ -37,7 +37,7 @@ import {
 	resolveProjectTrust,
 } from "./project-trust.js";
 import { ConfigValueResolver } from "./resolve-config-value.js";
-import { ResourceLoader, type ResourceRoot } from "./resource-loader.js";
+import type { ResourceLoader } from "./resource-loader.js";
 import { SessionManager } from "./session-manager.js";
 import { SettingManager } from "./setting-manager.js";
 import { ToolRegistry } from "./tool-registry.ts";
@@ -45,6 +45,7 @@ import { registerCoreAgentTools } from "./tools/agents/builtin.ts";
 import { registerCoreCodingTools } from "./tools/coding/builtin.ts";
 import { registerCoreInteractionTools } from "./tools/interaction/builtin.ts";
 import type { RuntimeModel } from "./types.ts";
+import { createWorkspaceResourceLoader, WorkspaceRegistry } from "./workspace.ts";
 
 export interface CreateWidiRuntimeOptions {
 	readonly cwd: string;
@@ -104,7 +105,9 @@ export interface WidiRuntimeServices {
 	readonly authStorage: AuthStorage;
 	readonly modelRegistry: ModelRegistry;
 	readonly profileRegistry: AgentProfileRegistry;
+	/** The workspace the process started in; also `workspaces.startup`. */
 	readonly resourceLoader: ResourceLoader;
+	readonly workspaces: WorkspaceRegistry;
 	readonly sessionManager: SessionManager;
 	readonly toolRegistry: ToolRegistry;
 	readonly extensionLoader: ExtensionLoader;
@@ -163,27 +166,6 @@ async function joinPath(executionEnv: ExecutionEnv, parts: readonly string[]): P
 
 async function absolutePath(executionEnv: ExecutionEnv, path: string): Promise<string> {
 	return unwrapResult(await executionEnv.absolutePath(path));
-}
-
-async function resolveSettingsPaths(executionEnv: ExecutionEnv, paths: readonly string[]): Promise<ResourceRoot[]> {
-	return await Promise.all(
-		paths.map(async (path) => ({ kind: "settings" as const, path: await absolutePath(executionEnv, path) })),
-	);
-}
-
-async function createResourceRoots(options: {
-	readonly executionEnv: ExecutionEnv;
-	readonly cwd: string;
-	readonly agentDir: string;
-	readonly projectConfigDir: string;
-	readonly projectTrusted: boolean;
-	readonly settingsPaths: readonly string[];
-}): Promise<ResourceRoot[]> {
-	return [
-		...(await resolveSettingsPaths(options.executionEnv, options.settingsPaths)),
-		...(options.projectTrusted ? [{ kind: "cwd" as const, path: options.cwd }] : []),
-		{ kind: "agent_dir" as const, path: options.agentDir },
-	];
 }
 
 async function createExtensionRoots(options: {
@@ -501,35 +483,32 @@ export async function createWidiRuntime(options: CreateWidiRuntimeOptions): Prom
 			settingManager.getSessionDir() ??
 			(await joinPath(executionEnv, [agentDir, DEFAULT_AGENT_PERSISTENCE_DIR])),
 	);
-	const skillRoots = await createResourceRoots({
+	const workspaceDiagnostics: CoreDiagnostic[] = [];
+	const workspaces = new WorkspaceRegistry({
 		executionEnv,
-		cwd,
 		agentDir,
+		trustStore,
+		defaultProjectTrust,
+		trustOverride: options.trustOverride,
 		projectConfigDir,
-		projectTrusted: projectTrust.trusted,
-		settingsPaths: settingManager.getSkillPaths(),
+		skillPaths: settingManager.getSkillPaths(),
+		promptTemplatePaths: settingManager.getPromptTemplatePaths(),
+		publishDiagnostic: async (diagnostic: CoreDiagnostic) => {
+			workspaceDiagnostics.push(diagnostic);
+		},
 	});
-	const promptTemplateRoots = await createResourceRoots({
+	// The startup workspace is built here rather than through resolve(): its
+	// trust was already decided above, including the interactive ask, and the
+	// registry must not run that a second time.
+	const resourceLoader = await createWorkspaceResourceLoader({
 		executionEnv,
 		cwd,
 		agentDir,
-		projectConfigDir,
 		projectTrusted: projectTrust.trusted,
-		settingsPaths: settingManager.getPromptTemplatePaths(),
+		skillPaths: settingManager.getSkillPaths(),
+		promptTemplatePaths: settingManager.getPromptTemplatePaths(),
 	});
-	const resourceLoader = new ResourceLoader({
-		executionEnv,
-		cwd,
-		agentDir,
-		skillRoots,
-		promptTemplateRoots,
-		// Project instruction files are project-local content like any other:
-		// an untrusted project contributes none, leaving only the agent dir's.
-		contextFileRoots: [
-			{ kind: "agent_dir" as const, path: agentDir },
-			...(projectTrust.trusted ? [{ kind: "cwd" as const, path: cwd }] : []),
-		],
-	});
+	workspaces.adopt({ cwd, trust: projectTrust, resourceLoader });
 	const sessionManager = new SessionManager({
 		fs: executionEnv,
 		cwd,
@@ -553,7 +532,7 @@ export async function createWidiRuntime(options: CreateWidiRuntimeOptions): Prom
 	const extensionDiscovery = extensionLoad.discovery;
 	const toolRegistry = options.toolRegistry ?? new ToolRegistry();
 	const imageSettings = settingManager.getImageSettings();
-	registerCoreCodingTools(toolRegistry, cwd, {
+	registerCoreCodingTools(toolRegistry, {
 		shellPath: settingManager.getShellPath(),
 		shellCommandPrefix: settingManager.getShellCommandPrefix(),
 		rgPath: settingManager.getRgPath(),
@@ -564,7 +543,7 @@ export async function createWidiRuntime(options: CreateWidiRuntimeOptions): Prom
 	registerCoreAgentTools(toolRegistry);
 	const orchestratorConfig: AgentOrchestratorConfig = {
 		executionEnv,
-		resourceLoader,
+		workspaces,
 		sessionManager,
 		settingManager,
 		modelRegistry,
@@ -596,6 +575,7 @@ export async function createWidiRuntime(options: CreateWidiRuntimeOptions): Prom
 		modelRegistry,
 		profileRegistry,
 		resourceLoader,
+		workspaces,
 		sessionManager,
 		toolRegistry,
 		extensionLoader,
@@ -611,6 +591,7 @@ export async function createWidiRuntime(options: CreateWidiRuntimeOptions): Prom
 		...defaultProfile.diagnostics,
 		...projectExtensionTrustDiagnostics,
 		...extensionLoad.diagnostics,
+		...workspaceDiagnostics,
 	];
 
 	return { services, orchestrator, diagnostics };

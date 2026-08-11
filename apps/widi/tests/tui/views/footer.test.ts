@@ -97,3 +97,31 @@ describe("FooterView", () => {
 function timestamp(offset: number): string {
 	return new Date(Date.UTC(2026, 0, 1, 0, 0, offset)).toISOString();
 }
+
+describe("FooterView workspaces", () => {
+	it("names the workspace of whatever is on screen, not the one WIDI started in", () => {
+		const state = createTuiApplicationState();
+		const here = setActiveAgent(state, "here");
+		here.display.cwd = "/home/arcadia/projs/widi";
+		const there = setActiveAgent(state, "there");
+		there.display.cwd = "/home/arcadia/projs/other";
+		const view = new FooterView(state, "/home/arcadia/startup");
+		const plain = () => (view.render(120)[0] ?? "").replace(ANSI_SEQUENCE, "");
+
+		state.activeAgentId = "here";
+		expect(plain()).toContain("widi");
+		expect(plain()).not.toContain("other");
+
+		state.activeAgentId = "there";
+		expect(plain()).toContain("other");
+		expect(plain()).not.toContain("/widi");
+	});
+
+	it("falls back to the startup directory before any agent exists", () => {
+		const state = createTuiApplicationState();
+
+		const plain = (new FooterView(state, "/home/arcadia/startup").render(120)[0] ?? "").replace(ANSI_SEQUENCE, "");
+
+		expect(plain).toContain("startup");
+	});
+});

@@ -178,6 +178,8 @@ export interface SessionManagerConfigs {
 type CreateAgentSessionOptions = {
 	agentId: AgentId;
 	agentProfile: AgentProfile;
+	/** Workspace the agent runs in. Defaults to the one the process started in. */
+	cwd?: string;
 	/** The agent that spawned this one; its session directory holds the new one. */
 	parentAgentId?: AgentId;
 	diagnostics?: PersistenceDiagnostics;
@@ -188,6 +190,11 @@ type ResumeAgentSessionOptions = { agentId: AgentId; info: PersistedSessionInfo 
 export class SessionManager {
 	readonly repo: JsonlPersistenceRepo;
 	private readonly _fs: FileSystem;
+	/**
+	 * The workspace the process started in. Only a default now: an agent may run
+	 * in another directory, and its session is stored under that one instead. A
+	 * whole agent tree shares one cwd, so a group still holds exactly one tree.
+	 */
 	private readonly _cwd: string;
 	private readonly _agentSessions: Map<AgentId, Session<AgentSessionMetadata>> = new Map();
 	/** Runtime AgentId to the session directory it is bound to; ephemeral agents have none. */
@@ -215,8 +222,8 @@ export class SessionManager {
 	 * restored - through it. Offering one in a resume picker would open the same
 	 * conversation twice.
 	 */
-	async listAgentSessionCandidates(): Promise<AgentSessionCandidate[]> {
-		const sessions = await this.repo.list({ cwd: this._cwd });
+	async listAgentSessionCandidates(cwd: string = this._cwd): Promise<AgentSessionCandidate[]> {
+		const sessions = await this.repo.list({ cwd });
 		return await Promise.all(
 			sessions.map(async (info) => ({
 				...toAgentSessionCandidate(info),
@@ -299,17 +306,17 @@ export class SessionManager {
 	 * and repeats across runs, so it can be ambiguous, and an ambiguous one fails
 	 * loudly rather than picking a session.
 	 */
-	async resolveAgentSessionReference(reference: string): Promise<PersistedSessionInfo> {
+	async resolveAgentSessionReference(reference: string, cwd: string = this._cwd): Promise<PersistedSessionInfo> {
 		const normalized = reference.trim();
 		if (!normalized) {
 			throw new AgentSessionResolutionError({ reason: "not_found", reference, candidates: [] });
 		}
 
 		const key = parseSessionKey(normalized);
-		const addressed = key === undefined ? undefined : await this._readSessionInfo({ cwd: this._cwd, key });
+		const addressed = key === undefined ? undefined : await this._readSessionInfo({ cwd, key });
 		if (addressed) return addressed;
 
-		const sessions = await this.repo.list({ cwd: this._cwd });
+		const sessions = await this.repo.list({ cwd });
 		const idMatches = sessions.filter((session) => session.metadata.id === normalized);
 		if (idMatches.length === 1) return idMatches[0];
 		if (idMatches.length > 1) {
@@ -571,7 +578,7 @@ export class SessionManager {
 		// and consumers address a session by ref.
 		const parent = options.parentAgentId === undefined ? undefined : this._agentAddresses.get(options.parentAgentId);
 		const persisted = await this.repo.create({
-			cwd: this._cwd,
+			cwd: options.cwd ?? this._cwd,
 			sessionId: options.agentId,
 			...(parent === undefined ? undefined : { parent: parent.key }),
 			metadata: { profile: toAgentProfileReference(options.agentProfile) },

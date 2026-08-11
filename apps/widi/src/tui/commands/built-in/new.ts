@@ -19,7 +19,7 @@ export function newCommand(host: CommandHost): CommandDefinition {
 		// with candidates the engine opens the picker instead.
 		execute: async (_context, argument) => {
 			await host.newAgent(argument.trim() || undefined);
-			return undefined;
+			return `Agent: ${argument.trim()}`;
 		},
 	};
 }

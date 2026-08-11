@@ -34,6 +34,7 @@ import { ToolRegistry } from "../../src/core/tool-registry.ts";
 import { registerCoreCodingTools } from "../../src/core/tools/coding/builtin.ts";
 import type { ToolDefinition } from "../../src/core/tools/types.ts";
 import type { AgentContextUsage } from "../../src/core/types.ts";
+import { singleWorkspaceResolver, type Workspace, type WorkspaceResolver } from "../../src/core/workspace.ts";
 
 export class MemoryExecutionEnv implements ExecutionEnv {
 	cwd = "/workspace";
@@ -357,6 +358,35 @@ export async function createEmptyModelRegistry(env: MemoryExecutionEnv): Promise
 	return await ModelRegistry.inMemory({ executionEnv: env, authStorage, configValueResolver });
 }
 
+/** The single workspace every orchestrator test runs in. */
+export function testWorkspaceResolver(env: MemoryExecutionEnv, cwd = "/workspace/project"): WorkspaceResolver {
+	return singleWorkspaceResolver({
+		cwd,
+		trust: { trusted: true, source: "override" },
+		resourceLoader: new ResourceLoader({ executionEnv: env, cwd }),
+	});
+}
+
+/** Opens any directory asked for, so a test can spawn across workspaces. */
+export function openWorkspaceResolver(env: MemoryExecutionEnv, startupCwd = "/workspace/project"): WorkspaceResolver {
+	const workspace = (cwd: string): Workspace => ({
+		cwd,
+		trust: { trusted: true, source: "override" },
+		resourceLoader: new ResourceLoader({ executionEnv: env, cwd }),
+	});
+	const opened = new Map<string, Workspace>([[startupCwd, workspace(startupCwd)]]);
+	return {
+		startup: opened.get(startupCwd) as Workspace,
+		resolve: async (cwd) => {
+			const existing = opened.get(cwd);
+			if (existing) return existing;
+			const created = workspace(cwd);
+			opened.set(cwd, created);
+			return created;
+		},
+	};
+}
+
 export async function createOrchestrator(
 	env: MemoryExecutionEnv,
 	options: {
@@ -366,11 +396,12 @@ export async function createOrchestrator(
 		modelRegistry?: ModelRegistry;
 		toolRegistry?: ToolRegistry;
 		settingManager?: SettingManager;
+		workspaces?: WorkspaceResolver;
 	} = {},
 ): Promise<AgentOrchestrator> {
 	return new AgentOrchestrator({
 		executionEnv: env,
-		resourceLoader: new ResourceLoader({ executionEnv: env, cwd: "/workspace/project" }),
+		workspaces: options.workspaces ?? testWorkspaceResolver(env),
 		sessionManager: new SessionManager({
 			fs: env,
 			cwd: "/workspace/project",
@@ -413,7 +444,7 @@ export function createToolRegistry(...tools: ToolDefinition[]): ToolRegistry {
 
 export function createCoreCodingToolRegistry(): ToolRegistry {
 	const registry = new ToolRegistry();
-	registerCoreCodingTools(registry, "/workspace/project");
+	registerCoreCodingTools(registry);
 	return registry;
 }
 

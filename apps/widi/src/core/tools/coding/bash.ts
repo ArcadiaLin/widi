@@ -127,7 +127,6 @@ export interface BashToolOptions {
 }
 
 export function createBashToolDefinition(
-	cwd: string,
 	options: BashToolOptions = {},
 ): ToolDefinition<typeof bashSchema, BashToolDetails | undefined> {
 	const ops = options.operations ?? createLocalBashOperations({ shellPath: options.shellPath });
@@ -235,7 +234,11 @@ export function createBashToolDefinition(
 			try {
 				let exitCode: number | null;
 				try {
-					const result = await ops.exec(resolvedCommand, cwd, { onData: handleData, signal, timeout });
+					const result = await ops.exec(resolvedCommand, context.workspace.cwd, {
+						onData: handleData,
+						signal,
+						timeout,
+					});
 					exitCode = result.exitCode;
 				} catch (err) {
 					const snapshot = await finishOutput();

@@ -15,6 +15,8 @@ export interface CommandHost {
 	newAgent(profileId: string | undefined): Promise<void>;
 	/** Close the current agent and stage an empty session on the same profile. */
 	newSession(sourceAgentId: string | undefined): Promise<void>;
+	/** Move the staged session to another directory; answers with what to show. */
+	setWorkspace(path: string): Promise<string>;
 	disposeAgent(agentId: string): Promise<void>;
 	/** Make an agent the visible one, bringing it into the strip first. */
 	switchToAgent(agentId: string): Promise<void>;

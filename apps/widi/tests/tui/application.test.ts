@@ -86,6 +86,8 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 			kind: "new-session",
 			profileId: "main",
 			model: model(),
+			// The staged session opens where the agent it was typed beside runs.
+			cwd: "/workspace",
 		});
 		// The row belongs to the conversation the command was typed in.
 		expect(
@@ -115,7 +117,11 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		await submit(harness.application, "second");
 
 		expect(harness.spawnAgent).toHaveBeenCalledOnce();
-		expect(harness.spawnAgent).toHaveBeenCalledWith({ origin: { kind: "new", profileId: "main" }, model: model() });
+		expect(harness.spawnAgent).toHaveBeenCalledWith({
+			origin: { kind: "new", profileId: "main" },
+			model: model(),
+			cwd: "/workspace",
+		});
 		expect(harness.promptAgent).toHaveBeenCalledWith(
 			expect.objectContaining({ targetAgentId: "main-2", body: "second" }),
 		);
@@ -183,7 +189,7 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 
 		expect(harness.application.state.agents.get("main")?.status).toBe("disposed");
 		expect(harness.application.state.activeAgentId).toBeUndefined();
-		expect(harness.application.state.pendingAgent?.start).toEqual({ kind: "default" });
+		expect(harness.application.state.pendingAgent?.start).toEqual({ kind: "default", cwd: "/workspace" });
 		expect(harness.spawnAgent).not.toHaveBeenCalled();
 	});
 
@@ -228,7 +234,7 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		await submit(harness.application, "/dispose");
 
 		expect(harness.application.state.activeAgentId).toBeUndefined();
-		expect(harness.application.state.pendingAgent?.start).toEqual({ kind: "default" });
+		expect(harness.application.state.pendingAgent?.start).toEqual({ kind: "default", cwd: "/workspace" });
 		expect(harness.spawnAgent).not.toHaveBeenCalled();
 	});
 
@@ -1309,12 +1315,18 @@ async function createApplicationHarness(options: { agentDir?: string; extensionL
 		}),
 		listExtensionStatuses: () => [],
 		listAgents: () => ({ agents: [] }),
+		// /workspace resolves and stats the path before staging it.
+		executionEnv: {
+			absolutePath: async (path: string) => ({ ok: true as const, value: path.startsWith("/") ? path : `/${path}` }),
+			fileInfo: async (path: string) => ({ ok: true as const, value: { kind: "directory" as const, path } }),
+		},
 	} as unknown as AgentOrchestrator;
 	const runtime = {
 		orchestrator,
 		diagnostics: [],
 		services: {
 			cwd: "/workspace",
+			workspaces: { startup: { cwd: "/workspace" }, resolve: async (cwd: string) => ({ cwd }) },
 			agentDir: options.agentDir ?? "/workspace/.widi-test-missing",
 			defaultProfile: { id: "main", source: "builtin_fallback", profileSource: { kind: "builtin" } },
 			defaultModel: { provider: runtimeModel.provider, modelId: runtimeModel.id, source: "runtime_override" },
@@ -1361,6 +1373,7 @@ function snapshot(agentId: string, runtimeModel: RuntimeModel) {
 	return {
 		agentId,
 		generation: 1,
+		cwd: "/workspace",
 		profile: {
 			reference: { id: "main", label: "Main Agent" },
 			source: { kind: "memory", priority: 0 },
@@ -1398,3 +1411,29 @@ function model(): RuntimeModel {
 		maxTokens: 100,
 	};
 }
+
+describe("WidiTuiApplication workspaces", () => {
+	it("moves the staged session with /workspace and spawns it there", async () => {
+		const harness = await createApplicationHarness();
+
+		await submit(harness.application, "/workspace /workspace/other");
+
+		expect(harness.application.state.pendingAgent?.start).toEqual({ kind: "default", cwd: "/workspace/other" });
+		expect(harness.spawnAgent).not.toHaveBeenCalled();
+
+		await submit(harness.application, "first");
+
+		expect(harness.spawnAgent).toHaveBeenCalledWith({ origin: { kind: "new" }, cwd: "/workspace/other" });
+	});
+
+	it("refuses to move a conversation that already exists", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "first");
+
+		await submit(harness.application, "/workspace /workspace/other");
+
+		// The agent stays where it was spawned; only its own notice says why.
+		expect(harness.application.state.agents.get("main")?.display.cwd).toBe("/workspace");
+		expect(harness.application.state.pendingAgent).toBeUndefined();
+	});
+});

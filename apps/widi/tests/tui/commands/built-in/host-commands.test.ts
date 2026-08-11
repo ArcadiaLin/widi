@@ -12,6 +12,7 @@ function setup(status: "idle" | "running" = "idle") {
 		newAgentCalls: [] as Array<string | undefined>,
 		newSessionCalls: [] as Array<string | undefined>,
 		disposeAgentCalls: [] as string[],
+		workspaceCalls: [] as string[],
 		copied: [] as string[],
 		diagnostics: new DiagnosticsLog(),
 		quit() {
@@ -28,6 +29,10 @@ function setup(status: "idle" | "running" = "idle") {
 		},
 		async disposeAgent(agentId: string) {
 			this.disposeAgentCalls.push(agentId);
+		},
+		async setWorkspace(path: string) {
+			this.workspaceCalls.push(path);
+			return `Staged session will open in ${path}`;
 		},
 		async copyText(text: string) {
 			this.copied.push(text);
@@ -170,5 +175,31 @@ describe("host-backed commands", () => {
 
 		expect(outcome).toMatchObject({ kind: "open-selector", query: "d9" });
 		expect(host.copied).toEqual([]);
+	});
+});
+
+describe("/workspace", () => {
+	it("moves the staged session and refuses once an agent exists", async () => {
+		const { engine, host, context } = setup();
+
+		const staged = await engine.handleInput("/workspace ../other", { ...context, agentId: undefined });
+		expect(staged).toMatchObject({ kind: "executed", name: "workspace" });
+		expect(host.workspaceCalls).toEqual(["../other"]);
+
+		// An agent's workspace is frozen at spawn, so there is nothing here to
+		// change and saying so beats silently editing a staged session elsewhere.
+		const running = await engine.handleInput("/workspace ../other", context);
+		expect(running).toMatchObject({ kind: "failed", name: "workspace" });
+		expect(host.workspaceCalls).toEqual(["../other"]);
+	});
+
+	it("is listed as unavailable while an agent is open", async () => {
+		const { engine } = setup();
+
+		expect(engine.list(undefined).find((view) => view.name === "workspace")?.available).toBe(true);
+		expect(engine.list({ activity: "idle" }).find((view) => view.name === "workspace")).toMatchObject({
+			available: false,
+			unavailableReason: expect.stringContaining("has not started yet"),
+		});
 	});
 });

@@ -12,9 +12,6 @@ export const compactCommand: CommandDefinition = {
 		await context.orchestrator.compactAgent(requireAgentId(context), argument.trim() || undefined),
 	formatResult: (result) => {
 		const compact = result as CompactResult;
-		// The summary itself stays in the session (shown as a collapsed
-		// "Compacted session" marker); its first line was always the "## Goal"
-		// heading, which meant nothing here.
 		return `compacted ${compact.tokensBefore} tokens`;
 	},
 };

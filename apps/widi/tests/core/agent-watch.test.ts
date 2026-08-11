@@ -77,6 +77,7 @@ function toolContext<TDetails>(orchestrator: AgentOrchestrator, agentId: string)
 	return {
 		signal: undefined,
 		onUpdate: undefined,
+		workspace: { cwd: "/workspace/project" },
 		extension: undefined,
 		human: undefined,
 		agents: agentHost(orchestrator, agentId),

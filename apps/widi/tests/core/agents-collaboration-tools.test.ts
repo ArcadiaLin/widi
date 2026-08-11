@@ -39,7 +39,14 @@ function toolContext<TDetails>(orchestrator: AgentOrchestrator, agentId: string)
 	const host = (
 		orchestrator as unknown as { _createAgentHost: (agentId: string) => AgentToOrchestratorHost }
 	)._createAgentHost(agentId);
-	return { signal: undefined, onUpdate: undefined, extension: undefined, human: undefined, agents: host };
+	return {
+		signal: undefined,
+		onUpdate: undefined,
+		workspace: { cwd: "/workspace/project" },
+		extension: undefined,
+		human: undefined,
+		agents: host,
+	};
 }
 
 /**
@@ -496,7 +503,14 @@ describe("send_message", () => {
 		const result = await sendMessage.execute(
 			"call-1",
 			{ agentId: worker, message: "rename the module", watch: true },
-			{ signal: undefined, onUpdate: undefined, extension: undefined, human: undefined, agents: host },
+			{
+				signal: undefined,
+				onUpdate: undefined,
+				workspace: { cwd: "/workspace/project" },
+				extension: undefined,
+				human: undefined,
+				agents: host,
+			},
 		);
 
 		expect(order).toEqual([`watch:${worker}`, `send:${worker}`]);

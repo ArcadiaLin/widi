@@ -11,6 +11,7 @@ import type {
 	ToolExecutionContext,
 	ToolExtensionContext,
 	ToolSource,
+	ToolWorkspaceContext,
 } from "./tools/types.ts";
 
 type RegistryToolDefinition = ToolDefinition<TSchema, unknown>;
@@ -64,6 +65,8 @@ export interface ToolRegistryResolveResult {
 }
 
 export interface ToolAdapterContext {
+	/** Where the agent this context belongs to works. */
+	workspace: ToolWorkspaceContext;
 	human?: ToolHumanHost;
 	/** Collaboration port bound to the agent this context belongs to. */
 	agents?: AgentToOrchestratorHost;
@@ -423,6 +426,7 @@ function createToolExecutionContext(
 	const bindContext = (source: ToolSource) => ({
 		signal,
 		onUpdate,
+		workspace: context.workspace,
 		extension: context.createExtensionContext?.(source, resolvedTool.definition.name),
 		human: context.human,
 		agents: context.agents,
@@ -448,6 +452,7 @@ function restoreInnerToolExecutionContext<TDetails>(
 	return {
 		signal: context.signal,
 		onUpdate: context.onUpdate,
+		workspace: context.workspace,
 		extension: innerContext.extension,
 		human: context.human,
 		agents: context.agents,

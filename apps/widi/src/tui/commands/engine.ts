@@ -63,7 +63,9 @@ export class CommandEngine {
 					? `Command /${command.name} requires an active agent.`
 					: activity === undefined
 						? undefined
-						: command.checkActivity?.(activity);
+						: command.agentPolicy === "pending"
+							? pendingOnlyReason(command.name)
+							: command.checkActivity?.(activity);
 			views.push({
 				name: command.name,
 				description: command.description,
@@ -103,6 +105,9 @@ export class CommandEngine {
 		const commandId = this.createCommandId();
 		if (!context.agentId && command.agentPolicy === "active") {
 			return failed(commandId, command.name, { message: `Command /${command.name} requires an active agent.` });
+		}
+		if (context.agentId && command.agentPolicy === "pending") {
+			return failed(commandId, command.name, { message: pendingOnlyReason(command.name) });
 		}
 		// A gone agent has no activity to read. The command is let through and
 		// fails on its own terms, which says more than "requires a running agent".
@@ -192,6 +197,11 @@ function tryReadActivity(context: CommandContext): AgentActivitySnapshot | undef
 	} catch {
 		return undefined;
 	}
+}
+
+/** Why a staged-session command cannot touch an agent that already exists. */
+function pendingOnlyReason(name: string): string {
+	return `Command /${name} only applies to a session that has not started yet. Use /new to stage one.`;
 }
 
 function failed(commandId: string, name: string, error: CommandError): EngineOutcome {

@@ -587,6 +587,7 @@ function agentSnapshot(agentId: string): AgentSnapshot {
 	return {
 		agentId,
 		generation: 1,
+		cwd: "/workspace/project",
 		profile: {
 			reference: { id: "default-agent", label: agentId },
 			source: { kind: "memory", priority: 0 },

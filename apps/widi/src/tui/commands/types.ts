@@ -4,12 +4,27 @@ import type { AgentActivitySnapshot, CandidateItem, RuntimeModel } from "../../c
 import type { CommandPresenter } from "../command-presenter.ts";
 import type { ListSelectorOperation } from "../selectors/list-selector.ts";
 
-export type CommandAgentPolicy = "runtime" | "materialize" | "active";
+/**
+ * Which agent a command needs.
+ *
+ * - `runtime`: none; it acts on the runtime or the application.
+ * - `active`: an agent must be open.
+ * - `materialize`: an agent must be open, and a staged session is spawned first.
+ * - `pending`: the opposite of `active` - it edits a session that has not been
+ *   created yet, so an already-running agent has nothing for it to change.
+ */
+export type CommandAgentPolicy = "runtime" | "materialize" | "active" | "pending";
 
 export interface CommandContext {
 	readonly agentId?: string;
 	readonly orchestrator: AgentOrchestrator;
 	readonly pendingModel?: RuntimeModel;
+	/**
+	 * The workspace the command runs in: the open agent's, or the staged
+	 * session's. Anything that reads or writes the project - listing sessions,
+	 * resuming one - has to say which project it means.
+	 */
+	readonly workspaceCwd?: string;
 }
 
 /**

@@ -13,9 +13,24 @@ import type { ToolHumanHost } from "../human-request.ts";
  * harness context with per-call facts such as abort, update, extension, and
  * human request handling.
  */
+/**
+ * The workspace a tool call runs in. Required rather than optional because
+ * every tool call happens somewhere: a relative path with no cwd behind it is
+ * a wiring mistake, not a capability an execution can go without.
+ */
+export interface ToolWorkspaceContext {
+	readonly cwd: string;
+}
+
 export interface ToolExecutionContext<TDetails> {
 	/** Abort signal for the current tool call. */
 	signal: AbortSignal | undefined;
+	/**
+	 * Where the agent whose turn is executing works. Read at execution time,
+	 * not captured by the tool definition: the tool table is registered once for
+	 * the whole runtime while the cwd belongs to the agent.
+	 */
+	workspace: ToolWorkspaceContext;
 	/** Pi-compatible callback for streaming tool updates. */
 	onUpdate: AgentToolUpdateCallback<TDetails> | undefined;
 	/** Extension context bound to the tool source currently executing. */

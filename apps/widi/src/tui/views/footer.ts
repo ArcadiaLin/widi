@@ -7,13 +7,34 @@ import { latestExtensionStatus, tonePaint } from "./utils/extension-status.ts";
 
 export class FooterView implements Component {
 	private readonly state: TuiApplicationState;
-	private readonly cwd: string;
-	private readonly git: GitBranchCache;
+	/** Where the process started: what to show before any agent exists. */
+	private readonly startupCwd: string;
+	private readonly onRefresh: () => void;
+	/**
+	 * One cache per directory. Agents may run in different workspaces, and a
+	 * single cache would report the branch of whichever one was asked for last.
+	 */
+	private readonly git = new Map<string, GitBranchCache>();
 
 	constructor(state: TuiApplicationState, cwd: string, onRefresh?: () => void) {
 		this.state = state;
-		this.cwd = cwd;
-		this.git = new GitBranchCache(cwd, onRefresh ?? (() => {}));
+		this.startupCwd = cwd;
+		this.onRefresh = onRefresh ?? (() => {});
+	}
+
+	/** The workspace of whatever is on screen: an open agent, or the staged session. */
+	private currentCwd(): string {
+		const agent = activeAgent(this.state);
+		return agent?.display.cwd ?? this.state.pendingAgent?.display.cwd ?? this.startupCwd;
+	}
+
+	private branchOf(cwd: string): string | undefined {
+		let cache = this.git.get(cwd);
+		if (!cache) {
+			cache = new GitBranchCache(cwd, this.onRefresh);
+			this.git.set(cwd, cache);
+		}
+		return cache.current();
 	}
 
 	invalidate(): void {}
@@ -23,7 +44,8 @@ export class FooterView implements Component {
 		const pending = this.state.pendingAgent;
 		const model = agent?.display.model ?? agent?.snapshot?.model ?? pending?.display.model;
 		const thinkingLevel = agent?.display.thinkingLevel ?? (!agent ? pending?.display.thinkingLevel : undefined);
-		const branch = this.git.current();
+		const cwd = this.currentCwd();
+		const branch = this.branchOf(cwd);
 		const queueParts: string[] = [];
 		if (agent?.queue.steer.length) {
 			queueParts.push(`${agent.queue.steer.length} steer`);
@@ -63,7 +85,7 @@ export class FooterView implements Component {
 					dropped < 1 ? optionalParts[0] : undefined,
 					model ? singleLine(model.id, 60) : undefined,
 					dropped < 2 ? optionalParts[1] : undefined,
-					shortCwd(this.cwd),
+					shortCwd(cwd),
 					dropped < 3 ? optionalParts[2] : undefined,
 					...queueParts,
 				]

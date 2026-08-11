@@ -629,10 +629,10 @@ describe("AgentStripView identity and activity", () => {
 
 function pendingAgent(profileId: string): PendingAgentViewState {
 	return {
-		start: { kind: "default" },
+		start: { kind: "default", cwd: "/workspace/project" },
 		timeline: [],
 		draft: "",
-		display: { profileId, profileLabel: profileId, model: snapshot("x", "/x").model },
+		display: { profileId, profileLabel: profileId, cwd: "/workspace/project", model: snapshot("x", "/x").model },
 		nextLiveItemId: 1,
 	};
 }
@@ -641,6 +641,7 @@ function snapshot(agentId: string, path: string, parentSessionPath?: string): Ag
 	return {
 		agentId,
 		generation: 1,
+		cwd: "/workspace/project",
 		profile: {
 			reference: { id: "widi-dev", label: "WIDI Dev" },
 			source: { kind: "memory", priority: 0 },

@@ -936,6 +936,7 @@ function snapshot(agentId: string, path: string, parentSessionPath?: string): Ag
 	return {
 		agentId,
 		generation: 1,
+		cwd: "/workspace/project",
 		profile: {
 			reference: { id: "widi-dev", label: "WIDI Dev" },
 			source: { kind: "memory", priority: 0 },

@@ -82,7 +82,6 @@ function validateEditInput(input: EditToolInput): { path: string; edits: Edit[] 
 }
 
 export function createEditToolDefinition(
-	cwd: string,
 	options: EditToolOptions = {},
 ): ToolDefinition<typeof editSchema, EditToolDetails> {
 	const operations = options.operations ?? createLocalCodingToolFileOperations();
@@ -103,7 +102,7 @@ export function createEditToolDefinition(
 		prepareArguments: prepareEditArguments,
 		execute: async (_toolCallId, input, context) => {
 			const { path, edits } = validateEditInput(input);
-			const absolutePath = resolveToCwd(path, cwd);
+			const absolutePath = resolveToCwd(path, context.workspace.cwd);
 
 			return withFileMutationQueue(
 				absolutePath,

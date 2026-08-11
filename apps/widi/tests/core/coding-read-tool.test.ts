@@ -31,7 +31,13 @@ class MemoryReadOperations {
 	}
 }
 
-const emptyExecutionContext = { signal: undefined, onUpdate: undefined, extension: undefined, human: undefined };
+const emptyExecutionContext = {
+	signal: undefined,
+	onUpdate: undefined,
+	workspace: { cwd: "/workspace/project" },
+	extension: undefined,
+	human: undefined,
+};
 
 /** Valid PNG header: signature plus a minimal IHDR chunk. */
 const PNG_FILE = Buffer.concat([
@@ -61,7 +67,7 @@ describe("core read tool", () => {
 	it("reads UTF-8 text files relative to cwd", async () => {
 		const operations = new MemoryReadOperations();
 		operations.set("/workspace/project/src/file.ts", "alpha\nbeta\n");
-		const tool = createReadToolDefinition("/workspace/project", { operations });
+		const tool = createReadToolDefinition({ operations });
 
 		const result = await tool.execute("call-1", { path: "src/file.ts" }, emptyExecutionContext);
 
@@ -80,7 +86,7 @@ describe("core read tool", () => {
 	it("honors offset and limit with continuation notice", async () => {
 		const operations = new MemoryReadOperations();
 		operations.set("/workspace/project/file.txt", "one\ntwo\nthree\nfour");
-		const tool = createReadToolDefinition("/workspace/project", { operations });
+		const tool = createReadToolDefinition({ operations });
 
 		const result = await tool.execute("call-1", { path: "file.txt", offset: 2, limit: 2 }, emptyExecutionContext);
 
@@ -93,7 +99,7 @@ describe("core read tool", () => {
 	it("reports truncation by line limit with typed details", async () => {
 		const operations = new MemoryReadOperations();
 		operations.set("/workspace/project/file.txt", "one\ntwo\nthree");
-		const tool = createReadToolDefinition("/workspace/project", { operations, maxLines: 2, maxBytes: 100 });
+		const tool = createReadToolDefinition({ operations, maxLines: 2, maxBytes: 100 });
 
 		const result = await tool.execute("call-1", { path: "file.txt" }, emptyExecutionContext);
 
@@ -106,7 +112,7 @@ describe("core read tool", () => {
 	it("does not return partial lines when byte limit cuts the first line", async () => {
 		const operations = new MemoryReadOperations();
 		operations.set("/workspace/project/file.txt", "123456\nok");
-		const tool = createReadToolDefinition("/workspace/project", { operations, maxLines: 10, maxBytes: 4 });
+		const tool = createReadToolDefinition({ operations, maxLines: 10, maxBytes: 4 });
 
 		const result = await tool.execute("call-1", { path: "file.txt" }, emptyExecutionContext);
 
@@ -120,7 +126,7 @@ describe("core read tool", () => {
 		const operations = new MemoryReadOperations();
 		// PNG signature without an IHDR chunk fails image detection.
 		operations.set("/workspace/project/image.png", Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
-		const tool = createReadToolDefinition("/workspace/project", { operations });
+		const tool = createReadToolDefinition({ operations });
 
 		const result = await tool.execute("call-1", { path: "image.png" }, emptyExecutionContext);
 
@@ -133,7 +139,7 @@ describe("core read tool", () => {
 	it("reports binary files as unsupported structured results", async () => {
 		const operations = new MemoryReadOperations();
 		operations.set("/workspace/project/blob.bin", Buffer.from([0x66, 0x00, 0x67]));
-		const tool = createReadToolDefinition("/workspace/project", { operations });
+		const tool = createReadToolDefinition({ operations });
 
 		const result = await tool.execute("call-1", { path: "blob.bin" }, emptyExecutionContext);
 
@@ -149,7 +155,7 @@ describe("core read tool", () => {
 	it("rejects invalid line windows", async () => {
 		const operations = new MemoryReadOperations();
 		operations.set("/workspace/project/file.txt", "one\ntwo");
-		const tool = createReadToolDefinition("/workspace/project", { operations });
+		const tool = createReadToolDefinition({ operations });
 
 		await expect(tool.execute("call-1", { path: "file.txt", offset: 3 }, emptyExecutionContext)).rejects.toThrow(
 			"Offset 3 is beyond end of file (2 lines total).",
@@ -168,7 +174,7 @@ describe("core read tool", () => {
 			expect(Buffer.from(bytes).equals(PNG_FILE)).toBe(true);
 			return { ok: true, data: "cHJvY2Vzc2Vk", mimeType: "image/png" };
 		});
-		const tool = createReadToolDefinition("/workspace/project", { operations, imageOperations });
+		const tool = createReadToolDefinition({ operations, imageOperations });
 
 		const result = await tool.execute("call-1", { path: "image.png" }, emptyExecutionContext);
 
@@ -187,7 +193,7 @@ describe("core read tool", () => {
 	it("notes conversion and resize hints with dimension details", async () => {
 		const operations = new MemoryReadOperations();
 		operations.set("/workspace/project/photo.png", PNG_FILE);
-		const tool = createReadToolDefinition("/workspace/project", {
+		const tool = createReadToolDefinition({
 			operations,
 			imageOperations: makeImageOperations(
 				successProcessor({
@@ -223,7 +229,7 @@ describe("core read tool", () => {
 		const operations = new MemoryReadOperations();
 		operations.set("/workspace/project/image.png", PNG_FILE);
 		let seenAutoResize: boolean | undefined;
-		const tool = createReadToolDefinition("/workspace/project", {
+		const tool = createReadToolDefinition({
 			operations,
 			autoResizeImages: false,
 			imageOperations: makeImageOperations(async (_bytes, _mime, options) => {
@@ -241,7 +247,7 @@ describe("core read tool", () => {
 		const operations = new MemoryReadOperations();
 		operations.set("/workspace/project/image.png", PNG_FILE);
 		let processorCalled = false;
-		const tool = createReadToolDefinition("/workspace/project", {
+		const tool = createReadToolDefinition({
 			operations,
 			blockImages: true,
 			imageOperations: makeImageOperations(async () => {
@@ -265,7 +271,7 @@ describe("core read tool", () => {
 	it("returns a text-only omitted note when image processing fails", async () => {
 		const operations = new MemoryReadOperations();
 		operations.set("/workspace/project/image.png", PNG_FILE);
-		const tool = createReadToolDefinition("/workspace/project", {
+		const tool = createReadToolDefinition({
 			operations,
 			imageOperations: makeImageOperations(async () => ({
 				ok: false,
@@ -290,10 +296,7 @@ describe("core read tool", () => {
 	it("rejects offset and limit for image files", async () => {
 		const operations = new MemoryReadOperations();
 		operations.set("/workspace/project/image.png", PNG_FILE);
-		const tool = createReadToolDefinition("/workspace/project", {
-			operations,
-			imageOperations: makeImageOperations(successProcessor()),
-		});
+		const tool = createReadToolDefinition({ operations, imageOperations: makeImageOperations(successProcessor()) });
 
 		await expect(tool.execute("call-1", { path: "image.png", offset: 1 }, emptyExecutionContext)).rejects.toThrow(
 			"offset and limit are not supported for image files",
@@ -308,17 +311,16 @@ describe("core read tool", () => {
 		operations.set("/workspace/project/image.png", PNG_FILE);
 		const registry = new ToolRegistry();
 		registry.defineTool(
-			createReadToolDefinition("/workspace/project", {
-				operations,
-				imageOperations: makeImageOperations(successProcessor()),
-			}),
+			createReadToolDefinition({ operations, imageOperations: makeImageOperations(successProcessor()) }),
 			{ kind: "core", id: "builtin" },
 		);
 		const resolved = registry.resolve().getTool("read");
 		if (!resolved) throw new Error("Expected read tool to resolve.");
 		const agentTool = createAgentHarnessToolFromResolvedTool(resolved);
 
-		const result = await agentTool.execute("call-1", { path: "image.png" }, undefined, undefined, {});
+		const result = await agentTool.execute("call-1", { path: "image.png" }, undefined, undefined, {
+			workspace: { cwd: "/workspace/project" },
+		});
 
 		expect(result.content).toEqual([
 			{ type: "text", text: "Read image file [image/png]" },
@@ -330,15 +332,14 @@ describe("core read tool", () => {
 		const operations = new MemoryReadOperations();
 		operations.set("/workspace/project/file.txt", "hello");
 		const registry = new ToolRegistry();
-		registry.defineTool(createReadToolDefinition("/workspace/project", { operations }), {
-			kind: "core",
-			id: "builtin",
-		});
+		registry.defineTool(createReadToolDefinition({ operations }), { kind: "core", id: "builtin" });
 		const resolved = registry.resolve().getTool("read");
 		if (!resolved) throw new Error("Expected read tool to resolve.");
 		const agentTool = createAgentHarnessToolFromResolvedTool(resolved);
 
-		const result = await agentTool.execute("call-1", { path: "file.txt" }, undefined, undefined, {});
+		const result = await agentTool.execute("call-1", { path: "file.txt" }, undefined, undefined, {
+			workspace: { cwd: "/workspace/project" },
+		});
 
 		expect(result).toMatchObject({
 			content: [{ type: "text", text: "hello" }],

@@ -379,12 +379,13 @@ describe("resolveOperationHint", () => {
 		state.activeAgentId = undefined;
 		state.agents.clear();
 		state.pendingAgent = {
-			start: { kind: "default" },
+			start: { kind: "default", cwd: "/workspace/project" },
 			timeline: [],
 			draft: "",
 			display: {
 				profileId: "widi-dev",
 				profileLabel: "Main",
+				cwd: "/workspace/project",
 				model: {
 					id: "test-model",
 					name: "Test Model",
@@ -442,12 +443,13 @@ describe("resolveOperationHint", () => {
 		state.activeAgentId = undefined;
 		state.agents.clear();
 		state.pendingAgent = {
-			start: { kind: "default" },
+			start: { kind: "default", cwd: "/workspace/project" },
 			timeline: [],
 			draft: "",
 			display: {
 				profileId: "widi-dev",
 				profileLabel: "Main",
+				cwd: "/workspace/project",
 				model: {
 					id: "test-model",
 					name: "Test Model",

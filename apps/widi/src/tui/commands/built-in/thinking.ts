@@ -17,6 +17,11 @@ export const thinkingCommand: CommandDefinition = {
 		return getSupportedThinkingLevels(context.pendingModel).map((level) => ({ value: level, label: level }));
 	},
 	argumentCompletes: true,
-	execute: async (context, argument) =>
-		await context.orchestrator.setAgentThinkingLevelByName(requireAgentId(context), argument.trim()),
+	execute: async (context, argument) => {
+		const result = await context.orchestrator.setAgentThinkingLevelByName(requireAgentId(context), argument.trim());
+		// Same rule as /model: choosing a level chooses it for what comes next and
+		// for the next run, not only for the agent that happens to be open.
+		context.orchestrator.setDefaultThinkingLevel(result.level);
+		return result;
+	},
 };

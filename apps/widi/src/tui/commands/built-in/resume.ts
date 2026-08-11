@@ -12,8 +12,11 @@ export function resumeCommand(host: CommandHost): CommandDefinition {
 		argumentHint: "[session]",
 		checkActivity: (activity) =>
 			activity.activity === "running" ? "Command /resume is not available while the agent is running." : undefined,
-		complete: async ({ orchestrator }) =>
-			(await orchestrator.listAgentSessions()).sessions.map((session) => ({
+		// The workspace the user is in, not the one the process started in: a
+		// session resumed from another directory would land its continuation in a
+		// storage group its own tree does not belong to.
+		complete: async ({ orchestrator, workspaceCwd }) =>
+			(await orchestrator.listAgentSessions(workspaceCwd)).sessions.map((session) => ({
 				// Resolve by address, not id: the session id equals the creating
 				// agent's id and repeats across runs, making bare ids ambiguous.
 				value: session.ref,
@@ -21,8 +24,11 @@ export function resumeCommand(host: CommandHost): CommandDefinition {
 				description: sessionCandidateDescription(session),
 			})),
 		argumentCompletes: true,
-		execute: async ({ orchestrator }, argument) => {
-			const agentId = await orchestrator.spawnAgent({ origin: { kind: "resume", reference: argument.trim() } });
+		execute: async ({ orchestrator, workspaceCwd }, argument) => {
+			const agentId = await orchestrator.spawnAgent({
+				origin: { kind: "resume", reference: argument.trim() },
+				...(workspaceCwd === undefined ? undefined : { cwd: workspaceCwd }),
+			});
 			await host.switchToAgent(agentId);
 			return orchestrator.inspectAgent(agentId);
 		},

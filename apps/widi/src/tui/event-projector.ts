@@ -640,6 +640,7 @@ export function applyAgentSnapshot(state: TuiApplicationState, snapshot: AgentSn
 	agent.snapshot = snapshot;
 	agent.status = snapshot.activity.activity;
 	agent.maintenance = snapshot.activity.maintenance;
+	agent.display.cwd = snapshot.cwd;
 	agent.display.model = snapshot.model;
 	if (snapshot.spawnedBy !== undefined) agent.spawnedBy = snapshot.spawnedBy;
 	agent.display.activeToolNames = [...snapshot.tools.activeToolNames];

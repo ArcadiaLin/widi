@@ -9,9 +9,17 @@ import type { ToolExecutionContext } from "../../src/core/tools/types.ts";
 type LsResult = AgentToolResult<LsToolDetails>;
 
 function makeContext(
+	cwd: string,
 	overrides: Partial<ToolExecutionContext<LsToolDetails>> = {},
 ): ToolExecutionContext<LsToolDetails> {
-	return { signal: undefined, onUpdate: undefined, extension: undefined, human: undefined, ...overrides };
+	return {
+		signal: undefined,
+		onUpdate: undefined,
+		workspace: { cwd },
+		extension: undefined,
+		human: undefined,
+		...overrides,
+	};
 }
 
 function textOf(result: LsResult): string {
@@ -41,8 +49,8 @@ describe("ls tool", () => {
 		await writeFile(join(cwd, "Beta.txt"), "b");
 		await writeFile(join(cwd, "alpha.txt"), "a");
 		await mkdir(join(cwd, "charlie"));
-		const tool = createLsToolDefinition(cwd);
-		const result = await tool.execute("call-1", {}, makeContext());
+		const tool = createLsToolDefinition();
+		const result = await tool.execute("call-1", {}, makeContext(cwd));
 		expect(textOf(result)).toBe("alpha.txt\nBeta.txt\ncharlie/");
 		expect(result.details).toMatchObject({ path: ".", absolutePath: cwd });
 	});
@@ -51,8 +59,8 @@ describe("ls tool", () => {
 		const cwd = await tempCwd();
 		await writeFile(join(cwd, ".hidden"), "h");
 		await writeFile(join(cwd, "visible.txt"), "v");
-		const tool = createLsToolDefinition(cwd);
-		const result = await tool.execute("call-1", {}, makeContext());
+		const tool = createLsToolDefinition();
+		const result = await tool.execute("call-1", {}, makeContext(cwd));
 		expect(textOf(result)).toBe(".hidden\nvisible.txt");
 	});
 
@@ -60,16 +68,16 @@ describe("ls tool", () => {
 		const cwd = await tempCwd();
 		await mkdir(join(cwd, "sub"));
 		await writeFile(join(cwd, "sub", "inner.txt"), "i");
-		const tool = createLsToolDefinition(cwd);
-		const result = await tool.execute("call-1", { path: "sub" }, makeContext());
+		const tool = createLsToolDefinition();
+		const result = await tool.execute("call-1", { path: "sub" }, makeContext(cwd));
 		expect(textOf(result)).toBe("inner.txt");
 		expect(result.details).toMatchObject({ path: "sub", absolutePath: join(cwd, "sub") });
 	});
 
 	it("returns (empty directory) for an empty directory", async () => {
 		const cwd = await tempCwd();
-		const tool = createLsToolDefinition(cwd);
-		const result = await tool.execute("call-1", {}, makeContext());
+		const tool = createLsToolDefinition();
+		const result = await tool.execute("call-1", {}, makeContext(cwd));
 		expect(textOf(result)).toBe("(empty directory)");
 	});
 
@@ -78,8 +86,8 @@ describe("ls tool", () => {
 		for (let i = 0; i < 5; i++) {
 			await writeFile(join(cwd, `file-${i}.txt`), String(i));
 		}
-		const tool = createLsToolDefinition(cwd);
-		const result = await tool.execute("call-1", { limit: 3 }, makeContext());
+		const tool = createLsToolDefinition();
+		const result = await tool.execute("call-1", { limit: 3 }, makeContext(cwd));
 		expect(textOf(result)).toBe(
 			"file-0.txt\nfile-1.txt\nfile-2.txt\n\n[3 entries limit reached. Use limit=6 for more]",
 		);
@@ -92,8 +100,8 @@ describe("ls tool", () => {
 		for (let i = 0; i < 300; i++) {
 			await writeFile(join(cwd, `${longName}-${String(i).padStart(3, "0")}`), "");
 		}
-		const tool = createLsToolDefinition(cwd);
-		const result = await tool.execute("call-1", {}, makeContext());
+		const tool = createLsToolDefinition();
+		const result = await tool.execute("call-1", {}, makeContext(cwd));
 		expect(result.details.truncation?.truncated).toBe(true);
 		expect(textOf(result)).toMatch(/\[50\.0KB limit reached\]/);
 	});
@@ -102,18 +110,18 @@ describe("ls tool", () => {
 		const cwd = await tempCwd();
 		await writeFile(join(cwd, "good.txt"), "g");
 		await symlink(join(cwd, "missing-target"), join(cwd, "broken-link"));
-		const tool = createLsToolDefinition(cwd);
-		const result = await tool.execute("call-1", {}, makeContext());
+		const tool = createLsToolDefinition();
+		const result = await tool.execute("call-1", {}, makeContext(cwd));
 		expect(textOf(result)).toBe("good.txt");
 	});
 
 	it("rejects an invalid limit", async () => {
 		const cwd = await tempCwd();
-		const tool = createLsToolDefinition(cwd);
-		await expect(tool.execute("call-1", { limit: 0 }, makeContext())).rejects.toThrow(
+		const tool = createLsToolDefinition();
+		await expect(tool.execute("call-1", { limit: 0 }, makeContext(cwd))).rejects.toThrow(
 			/limit must be a positive integer/,
 		);
-		await expect(tool.execute("call-1", { limit: 1.5 }, makeContext())).rejects.toThrow(
+		await expect(tool.execute("call-1", { limit: 1.5 }, makeContext(cwd))).rejects.toThrow(
 			/limit must be a positive integer/,
 		);
 	});
@@ -121,17 +129,17 @@ describe("ls tool", () => {
 	it("throws distinct errors for missing paths and non-directories", async () => {
 		const cwd = await tempCwd();
 		await writeFile(join(cwd, "file.txt"), "f");
-		const tool = createLsToolDefinition(cwd);
-		await expect(tool.execute("call-1", { path: "no-such-dir" }, makeContext())).rejects.toThrow(/Path not found/);
-		await expect(tool.execute("call-1", { path: "file.txt" }, makeContext())).rejects.toThrow(/Not a directory/);
+		const tool = createLsToolDefinition();
+		await expect(tool.execute("call-1", { path: "no-such-dir" }, makeContext(cwd))).rejects.toThrow(/Path not found/);
+		await expect(tool.execute("call-1", { path: "file.txt" }, makeContext(cwd))).rejects.toThrow(/Not a directory/);
 	});
 
 	it("aborts when the signal is already aborted", async () => {
 		const cwd = await tempCwd();
-		const tool = createLsToolDefinition(cwd);
+		const tool = createLsToolDefinition();
 		const controller = new AbortController();
 		controller.abort();
-		await expect(tool.execute("call-1", {}, makeContext({ signal: controller.signal }))).rejects.toThrow(
+		await expect(tool.execute("call-1", {}, makeContext(cwd, { signal: controller.signal }))).rejects.toThrow(
 			/Operation aborted/,
 		);
 	});
