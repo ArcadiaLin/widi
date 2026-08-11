@@ -1,43 +1,12 @@
-import type { OrchestratorDiagnostic } from "../../core/diagnostics.ts";
-import type { ExtensionStatusSnapshot } from "../../core/extension/api.ts";
-import type { AgentMaintenanceKind } from "../../core/types.ts";
+import type { ExtensionStatusSnapshot } from "../../../core/extension/api.ts";
 import {
 	type ExtensionStatus,
 	type ExtensionStatusRegion,
 	type ExtensionTone,
 	parseExtensionStatus,
-} from "../extension-host/presentation.ts";
-import { singleLine } from "../format.ts";
-import type { AgentViewState, TuiApplicationState } from "../state.ts";
-import { theme } from "../theme/theme.ts";
-
-export function activeAgent(state: TuiApplicationState): AgentViewState | undefined {
-	return state.activeAgentId ? state.agents.get(state.activeAgentId) : undefined;
-}
-
-/** Display word for maintenance work, e.g. "Compacting" in "Compacting…". */
-export function maintenanceLabel(kind: AgentMaintenanceKind): string {
-	return kind === "compaction" ? "Compacting" : "Navigating";
-}
-
-export function agentLabel(agent: AgentViewState): string {
-	return singleLine(
-		agent.display.sessionName ??
-			agent.snapshot?.profile.reference.label ??
-			agent.snapshot?.profile.reference.id ??
-			agent.agentId,
-		80,
-	);
-}
-
-export function diagnosticGlyph(diagnostic: OrchestratorDiagnostic): string {
-	switch (diagnostic.severity) {
-		case "error":
-			return "✕";
-		case "warning":
-			return "▲";
-	}
-}
+} from "../../extension-host/presentation.ts";
+import type { AgentViewState } from "../../state.ts";
+import { theme } from "../../theme/theme.ts";
 
 /**
  * Map an extension tone onto the theme's status hues. Tones are semantic

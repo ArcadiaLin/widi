@@ -1,8 +1,8 @@
 import { type Component, Text } from "@earendil-works/pi-tui";
 import { formatRelativeAge, singleLine } from "../format.ts";
-import type { TuiApplicationState } from "../state.ts";
+import { activeAgent, type TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
-import { activeAgent, extensionStatusesInRegion, tonePaint } from "./common.ts";
+import { extensionStatusesInRegion, tonePaint } from "./utils/extension-status.ts";
 
 export class StatusView implements Component {
 	private readonly state: TuiApplicationState;

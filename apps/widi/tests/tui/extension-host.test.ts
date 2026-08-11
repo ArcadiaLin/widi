@@ -6,7 +6,6 @@ import type { ExtensionIdentity } from "../../src/core/extension/loader.ts";
 import { TuiCapabilityRegistry } from "../../src/tui/capabilities.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
 import type { CommandDefinition } from "../../src/tui/commands/types.ts";
-import { renderTimelineItem, type TimelineRenderContext } from "../../src/tui/components/timeline-item.ts";
 import {
 	resetExtensionRenderers,
 	type TuiExtensionEventBus,
@@ -20,6 +19,7 @@ import { LayoutSlots } from "../../src/tui/layout/slots.ts";
 import { createTuiApplicationState, type PersistentMessageItem, type ToolExecutionItem } from "../../src/tui/state.ts";
 import { resetThemes } from "../../src/tui/theme/theme.ts";
 import { defineLinesPresenter, presentToolExecution, unregisterToolPresenter } from "../../src/tui/tool-presenter.ts";
+import { renderTimelineItem, type TimelineRenderContext } from "../../src/tui/views/utils/timeline-item.ts";
 import type { JsonValue } from "../../src/utils/json.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");

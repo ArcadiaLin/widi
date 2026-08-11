@@ -1,8 +1,8 @@
 import { type Component, Text } from "@earendil-works/pi-tui";
 import { singleLine } from "../format.ts";
-import type { TuiApplicationState } from "../state.ts";
+import { agentLabel } from "../labels.ts";
+import { activeAgent, type TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
-import { activeAgent, agentLabel } from "./common.ts";
 
 export class HeaderView implements Component {
 	private readonly state: TuiApplicationState;

@@ -5,11 +5,11 @@ import {
 	type HumanResponse,
 	type NormalizedHumanRequestOption,
 	normalizeHumanRequestOptions,
-} from "../core/human-request.ts";
-import { boundedText, singleLine } from "./format.ts";
-import { matchRequestOptionIndex } from "./keybindings.ts";
-import { clearDockedFocus, setDockedFocus, type TuiApplicationState } from "./state.ts";
-import { theme } from "./theme/theme.ts";
+} from "../../core/human-request.ts";
+import { boundedText, singleLine } from "../format.ts";
+import { matchRequestOptionIndex } from "../keybindings.ts";
+import { clearDockedFocus, setDockedFocus, type TuiApplicationState } from "../state.ts";
+import { theme } from "../theme/theme.ts";
 
 const FREE_INPUT_VALUE = "\x00free-input";
 const FREE_INPUT_LABEL = "Chat about this…";

@@ -2,20 +2,19 @@ import { setKeybindings } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it } from "vitest";
 import { widiCommands } from "../../src/tui/commands/built-in/index.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
-import {
-	formatOperationHintKey,
-	OperationHintView,
-	operationHintKeys,
-	resolveOperationHint,
-	resolveOperationHintDetail,
-} from "../../src/tui/components/operation-hint.ts";
-import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
+import { createWidiKeybindings, formatKeyLabel } from "../../src/tui/keybindings.ts";
 import {
 	createTuiApplicationState,
 	ensureAgentProjection,
 	setActiveAgent,
 	setDockedFocus,
 } from "../../src/tui/state.ts";
+import { OperationHintView } from "../../src/tui/views/operation-hint.ts";
+import {
+	operationHintKeys,
+	resolveOperationHint,
+	resolveOperationHintDetail,
+} from "../../src/tui/views/utils/operation-hint.ts";
 import { stubCommandHost } from "../helpers/command-host.ts";
 
 const engine = new CommandEngine(widiCommands(stubCommandHost()));
@@ -39,16 +38,16 @@ beforeEach(() => {
 
 describe("resolveOperationHint", () => {
 	it("formats KeyIds as compact readable labels", () => {
-		expect(formatOperationHintKey("up")).toBe("↑");
-		expect(formatOperationHintKey("down")).toBe("↓");
-		expect(formatOperationHintKey("left")).toBe("←");
-		expect(formatOperationHintKey("right")).toBe("→");
-		expect(formatOperationHintKey("escape")).toBe("Esc");
-		expect(formatOperationHintKey("enter")).toBe("Enter");
-		expect(formatOperationHintKey("tab")).toBe("Tab");
-		expect(formatOperationHintKey("ctrl+s")).toBe("Ctrl+S");
-		expect(formatOperationHintKey("shift+enter")).toBe("Shift+Enter");
-		expect(formatOperationHintKey("shift+ctrl+s")).toBe("Shift+Ctrl+S");
+		expect(formatKeyLabel("up")).toBe("↑");
+		expect(formatKeyLabel("down")).toBe("↓");
+		expect(formatKeyLabel("left")).toBe("←");
+		expect(formatKeyLabel("right")).toBe("→");
+		expect(formatKeyLabel("escape")).toBe("Esc");
+		expect(formatKeyLabel("enter")).toBe("Enter");
+		expect(formatKeyLabel("tab")).toBe("Tab");
+		expect(formatKeyLabel("ctrl+s")).toBe("Ctrl+S");
+		expect(formatKeyLabel("shift+enter")).toBe("Shift+Enter");
+		expect(formatKeyLabel("shift+ctrl+s")).toBe("Shift+Ctrl+S");
 	});
 
 	it("prioritizes a command completion menu and includes command-specific help", () => {

@@ -1,7 +1,6 @@
 import { setKeybindings } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentTree } from "../../src/tui/agent-tree.ts";
-import { AgentStripView, moveAgentCursor } from "../../src/tui/components/agent-strip.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
 import {
 	createTuiApplicationState,
@@ -9,6 +8,7 @@ import {
 	setActiveAgent,
 	type TuiApplicationState,
 } from "../../src/tui/state.ts";
+import { AgentStripView, moveAgentCursor } from "../../src/tui/views/agent-strip.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 const UP = "\x1b[A";

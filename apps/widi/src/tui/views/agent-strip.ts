@@ -7,9 +7,10 @@ import {
 } from "@earendil-works/pi-tui";
 import { agentIdentityLabel } from "../agent-identity.ts";
 import { type AgentTree, type AgentTreeEntry, buildAgentTree, flattenAgentTree } from "../agent-tree.ts";
+import { maintenanceLabel } from "../labels.ts";
 import { type AgentViewState, clearDockedFocus, setDockedFocus, type TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
-import { extensionStatusesInRegion, maintenanceLabel, tonePaint } from "./common.ts";
+import { extensionStatusesInRegion, tonePaint } from "./utils/extension-status.ts";
 
 const TREE_INDENT = 4;
 /** Visible width of `├── ` / `└── `. */

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { agentTreePrefix, buildAgentTree, flattenAgentTree } from "../../src/tui/agent-tree.ts";
-import { AgentStripView } from "../../src/tui/components/agent-strip.ts";
 import { createTuiApplicationState, ensureAgentProjection, setActiveAgent } from "../../src/tui/state.ts";
+import { AgentStripView } from "../../src/tui/views/agent-strip.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 

@@ -131,6 +131,50 @@ const SPECIAL_KEYS = new Set([
 	"f12",
 ]);
 
+const KEY_LABELS: Record<string, string> = {
+	up: "↑",
+	down: "↓",
+	left: "←",
+	right: "→",
+	escape: "Esc",
+	esc: "Esc",
+	enter: "Enter",
+	return: "Enter",
+	tab: "Tab",
+	space: "Space",
+	backspace: "Backspace",
+	delete: "Delete",
+	insert: "Insert",
+	clear: "Clear",
+	home: "Home",
+	end: "End",
+	pageUp: "PageUp",
+	pageDown: "PageDown",
+};
+
+/** How a key sequence is written wherever the TUI names one: `Ctrl+S`, `↑`. */
+export function formatKeyLabel(key: KeyId): string {
+	const modifiers: string[] = [];
+	let base: string = key;
+	for (;;) {
+		const separator = base.indexOf("+");
+		if (separator <= 0 || !KEY_MODIFIERS.has(base.slice(0, separator))) break;
+		const modifier = base.slice(0, separator);
+		modifiers.push(modifier === "ctrl" ? "Ctrl" : modifier[0]?.toUpperCase() + modifier.slice(1));
+		base = base.slice(separator + 1);
+	}
+	return [...modifiers, KEY_LABELS[base] ?? base.toUpperCase()].join("+");
+}
+
+/**
+ * Label of the first key bound to an action, or undefined when it is unbound.
+ * Read live so a user remap shows up wherever the key is named.
+ */
+export function actionKeyLabel(action: Parameters<KeybindingsManager["getKeys"]>[0]): string | undefined {
+	const key = getKeybindings().getKeys(action)[0];
+	return key ? formatKeyLabel(key) : undefined;
+}
+
 /**
  * Runtime shape check for a pi-tui `KeyId` (the type only exists at compile
  * time): optional modifier prefixes, then a single character or a named

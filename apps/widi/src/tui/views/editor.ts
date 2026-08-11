@@ -1,5 +1,5 @@
 import { Editor, getKeybindings, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { theme } from "./theme/theme.ts";
+import { theme } from "../theme/theme.ts";
 
 /** Esc within this window of a completion keystroke cancels the completion. */
 const COMPLETION_KEY_SWALLOW_MS = 250;

@@ -3,15 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { AgentSnapshot } from "../../src/core/agent-types.ts";
 import { widiCommands } from "../../src/tui/commands/built-in/index.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
-import { AgentStripView } from "../../src/tui/components/agent-strip.ts";
-import { ChatView } from "../../src/tui/components/chat.ts";
-import { FatalErrorView } from "../../src/tui/components/fatal-error.ts";
-import { FooterView } from "../../src/tui/components/footer.ts";
-import { HeaderView } from "../../src/tui/components/header.ts";
-import { OperationHintView } from "../../src/tui/components/operation-hint.ts";
-import { StatusView } from "../../src/tui/components/status.ts";
-import { renderTimelineItem } from "../../src/tui/components/timeline-item.ts";
-import { WorkingLineView } from "../../src/tui/components/working-line.ts";
+import { FatalErrorView } from "../../src/tui/fatal-error.ts";
 import { boundedText, sanitizeTerminalText, singleLine } from "../../src/tui/format.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
 import { setSteadyQuip } from "../../src/tui/quips.ts";
@@ -25,6 +17,14 @@ import {
 	setActiveAgent,
 } from "../../src/tui/state.ts";
 import { theme } from "../../src/tui/theme/theme.ts";
+import { AgentStripView } from "../../src/tui/views/agent-strip.ts";
+import { ChatView } from "../../src/tui/views/chat.ts";
+import { FooterView } from "../../src/tui/views/footer.ts";
+import { HeaderView } from "../../src/tui/views/header.ts";
+import { OperationHintView } from "../../src/tui/views/operation-hint.ts";
+import { StatusView } from "../../src/tui/views/status.ts";
+import { renderTimelineItem } from "../../src/tui/views/utils/timeline-item.ts";
+import { WorkingLineView } from "../../src/tui/views/working-line.ts";
 import { stubCommandHost } from "../helpers/command-host.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");

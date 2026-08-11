@@ -1,7 +1,7 @@
 import { parseSessionOrigin } from "../core/persistence/index.ts";
 import type { AgentId } from "../core/types.ts";
-import { agentLabel } from "./components/common.ts";
 import { singleLine } from "./format.ts";
+import { agentLabel } from "./labels.ts";
 import type { AgentViewState, TuiApplicationState } from "./state.ts";
 
 const COMPACT_ID_LENGTH = 12;

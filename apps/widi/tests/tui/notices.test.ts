@@ -1,7 +1,7 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
-import { NoticeView } from "../../src/tui/components/notices.ts";
 import { createTuiApplicationState } from "../../src/tui/state.ts";
+import { NoticeView } from "../../src/tui/views/notices.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 

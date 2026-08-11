@@ -1,12 +1,12 @@
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { CommandEngine } from "../commands/engine.ts";
-import type { WidiEditor } from "../editor.ts";
 import { formatElapsed } from "../format.ts";
+import { maintenanceLabel } from "../labels.ts";
 import { currentQuip, QUIP_COLUMN_WIDTH, type Quip } from "../quips.ts";
-import type { AgentViewState, TuiApplicationState } from "../state.ts";
+import { type AgentViewState, activeAgent, type TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
-import { activeAgent, maintenanceLabel } from "./common.ts";
-import { operationHintKeys, resolveOperationHintDetail } from "./operation-hint.ts";
+import type { WidiEditor } from "./editor.ts";
+import { operationHintKeys, resolveOperationHintDetail } from "./utils/operation-hint.ts";
 
 /** One full `.` `..` `...` cycle. Slower than the spinner, which at 160ms
  * turns three dots into a blur. */

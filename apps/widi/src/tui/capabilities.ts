@@ -24,9 +24,9 @@
 import type { HumanRequestEnvelope } from "../core/human-request.ts";
 import type { CandidateItem } from "../core/types.ts";
 import type { CommandView } from "./commands/types.ts";
-import type { HumanRequestPresenter } from "./human-request.ts";
 import type { Segment } from "./segments.ts";
 import type { AgentViewStatus } from "./state.ts";
+import type { HumanRequestPresenter } from "./views/human-request.ts";
 
 /** Text access to the editor. Submitting is deliberately absent - see below. */
 export interface EditorCapability {

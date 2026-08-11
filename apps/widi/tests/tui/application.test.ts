@@ -10,11 +10,11 @@ import type { OrchestratorEvent, RuntimeModel } from "../../src/core/types.ts";
 import { WidiTuiApplication } from "../../src/tui/application.ts";
 import { SEGMENT_SLOTS } from "../../src/tui/capabilities.ts";
 import type { CommandEngine } from "../../src/tui/commands/engine.ts";
-import type { WidiEditor } from "../../src/tui/editor.ts";
-import type { HumanRequestMenu } from "../../src/tui/human-request.ts";
 import { setTransientQuip } from "../../src/tui/quips.ts";
-import type { SelectorDock } from "../../src/tui/selectors/dock.ts";
 import { ensureAgentProjection, type StagedDraft, setActiveAgent } from "../../src/tui/state.ts";
+import type { WidiEditor } from "../../src/tui/views/editor.ts";
+import type { HumanRequestMenu } from "../../src/tui/views/human-request.ts";
+import type { SelectorDock } from "../../src/tui/views/selector-dock.ts";
 
 describe("WidiTuiApplication lazy agent spawn", () => {
 	it("does not spawn an agent when the TUI starts", async () => {

@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { registerCommandPresenter, unregisterCommandPresenter } from "../../src/tui/command-presenter.ts";
-import { ChatView } from "../../src/tui/components/chat.ts";
 import {
 	type CommandResultItem,
 	createTuiApplicationState,
@@ -13,6 +12,7 @@ import {
 } from "../../src/tui/state.ts";
 import { loadThemes, resetThemes, setTheme, type ThemePalette } from "../../src/tui/theme/theme.ts";
 import { registerToolPresenter, unregisterToolPresenter } from "../../src/tui/tool-presenter.ts";
+import { ChatView } from "../../src/tui/views/chat.ts";
 
 const ALT_PALETTE: ThemePalette = {
 	accent: "#ff0000",

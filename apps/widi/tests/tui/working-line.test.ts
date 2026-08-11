@@ -2,7 +2,6 @@ import { setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it } from "vitest";
 import { widiCommands } from "../../src/tui/commands/built-in/index.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
-import { WorkingLineView } from "../../src/tui/components/working-line.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
 import { setSteadyQuip, setTransientQuip } from "../../src/tui/quips.ts";
 import {
@@ -11,6 +10,7 @@ import {
 	setActiveAgent,
 	type TuiApplicationState,
 } from "../../src/tui/state.ts";
+import { WorkingLineView } from "../../src/tui/views/working-line.ts";
 import { stubCommandHost } from "../helpers/command-host.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");

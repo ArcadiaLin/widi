@@ -1,8 +1,8 @@
 import { ProcessTerminal, setKeybindings, type TUI, TuiMainScreen } from "@earendil-works/pi-tui";
 import type { HumanRequestHandler } from "../core/human-request.ts";
-import { HumanRequestMenu } from "./human-request.ts";
 import { createWidiKeybindings } from "./keybindings.ts";
 import { createTuiApplicationState } from "./state.ts";
+import { HumanRequestMenu } from "./views/human-request.ts";
 
 /**
  * Lazy pre-runtime human-request surface. The project-trust confirmation (and

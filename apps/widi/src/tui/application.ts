@@ -30,28 +30,15 @@ import { widiCommands } from "./commands/built-in/index.ts";
 import { CommandEngine } from "./commands/engine.ts";
 import { parseLineCommand } from "./commands/parse.ts";
 import type { CommandDefinition, CommandError, EngineOutcome } from "./commands/types.ts";
-import { AgentStripView } from "./components/agent-strip.ts";
-import { ChatView } from "./components/chat.ts";
-import { agentLabel, maintenanceLabel } from "./components/common.ts";
-import { FatalErrorView } from "./components/fatal-error.ts";
-import { FooterView } from "./components/footer.ts";
-import { HeaderView } from "./components/header.ts";
-import { NoticeView } from "./components/notices.ts";
-import { OperationHintView } from "./components/operation-hint.ts";
-import { QueuedInputView } from "./components/queued-input.ts";
-import { StagedInputView } from "./components/staged-input.ts";
-import { StatusView } from "./components/status.ts";
-import { WorkingLineView } from "./components/working-line.ts";
-import { WidiEditor } from "./editor.ts";
 import { applyAgentSnapshot, EventProjector } from "./event-projector.ts";
 import { TuiExtensionHost } from "./extension-host/index.ts";
-import { HumanRequestMenu } from "./human-request.ts";
+import { FatalErrorView } from "./fatal-error.ts";
 import { createWidiKeybindings, loadUserKeybindings } from "./keybindings.ts";
+import { agentLabel, maintenanceLabel } from "./labels.ts";
 import { type AppOverlayHandle, OverlayStack } from "./layout/overlay-stack.ts";
-import { type LayoutSlotEntry, LayoutSlots } from "./layout/slots.ts";
+import { LayoutSlots } from "./layout/slots.ts";
 import { PendingAgentController, type PendingAgentDisplay } from "./pending-agent.ts";
 import { hasLiveTransientQuip, setSteadyQuip, setTransientQuip } from "./quips.ts";
-import { SelectorDock } from "./selectors/dock.ts";
 import type { SelectorHintContext } from "./selectors/hints.ts";
 import { ListSelector, type ListSelectorRequest } from "./selectors/list-selector.ts";
 import { TreeNavigationSelector } from "./selectors/tree-navigation.ts";
@@ -65,7 +52,6 @@ import {
 	createTuiApplicationState,
 	type ExtensionOutputItem,
 	ensureAgentProjection,
-	hasDockedFocus,
 	type NoticeItem,
 	type NoticeTextMode,
 	type StagedDraft,
@@ -75,6 +61,11 @@ import {
 } from "./state.ts";
 import { flushStreaming, STREAM_FLUSH_MS } from "./streaming-flush.ts";
 import { loadThemes, theme } from "./theme/theme.ts";
+import { AgentStripView } from "./views/agent-strip.ts";
+import { WidiEditor } from "./views/editor.ts";
+import { HumanRequestMenu } from "./views/human-request.ts";
+import { widiSlots } from "./views/index.ts";
+import { SelectorDock } from "./views/selector-dock.ts";
 
 const NOTIFICATION_TTL_MS = 5_000;
 /** Staged drafts held for one agent before the buffer lands itself. */
@@ -253,7 +244,21 @@ export class WidiTuiApplication {
 		// The built-in views dogfood the same slot registry extension widgets
 		// will use; registration order is the render order the hardcoded
 		// addChild sequence used to fix.
-		this.registerBuiltInSlots();
+		for (const entry of widiSlots({
+			state: this.state,
+			engine: this.engine,
+			cwd: this.runtime.services.cwd,
+			editor: this.editor,
+			humanRequests: this.humanRequests,
+			selectorDock: this.selectorDock,
+			agentStrip: this.agentPanel,
+			requestRender: () => {
+				this.tui.requestRender();
+			},
+			selectorHint: () => this.topSelectorHint(),
+		})) {
+			this.layout.register(entry);
+		}
 		this.publishCapabilities();
 		const transcript = new Container();
 		const dock = new Container();
@@ -600,86 +605,6 @@ export class WidiTuiApplication {
 			case "open-selector":
 				return { kind: "needs-argument", name: outcome.command.name, candidates: outcome.candidates };
 		}
-	}
-
-	/**
-	 * Every mounted view registers as a slot entry. Render order comes from the
-	 * slot, not from this list. Views the application itself drives (editor,
-	 * human requests, agent strip) are constructed beforehand and their
-	 * factories return the held instance.
-	 */
-	private registerBuiltInSlots(): void {
-		const entries: LayoutSlotEntry[] = [
-			{ key: "header", slot: "header", scope: "global", factory: () => new HeaderView(this.state) },
-			{ key: "notices", slot: "notices", scope: "global", factory: () => new NoticeView(this.state) },
-			{ key: "chat", slot: "chat", scope: "global", factory: () => new ChatView(this.state) },
-			{ key: "status", slot: "status", scope: "global", factory: () => new StatusView(this.state) },
-			// The working line sits directly under the transcript because that is
-			// what it continues: the run the transcript is being written by. Below
-			// it, closer to the editor means more settled - a request is still
-			// waiting on the human, staged text can still be rewritten, and the
-			// queue is decided and only waiting for its turn. The dock is last
-			// because it takes the editor's own place.
-			{
-				key: "workingLine",
-				slot: "aboveEditor",
-				order: 0,
-				scope: "global",
-				factory: () => new WorkingLineView({ state: this.state, engine: this.engine, editor: this.editor }),
-			},
-			{ key: "humanRequests", slot: "aboveEditor", order: 1, scope: "global", factory: () => this.humanRequests },
-			{
-				key: "stagedInput",
-				slot: "aboveEditor",
-				order: 2,
-				scope: "global",
-				factory: () => new StagedInputView(this.state),
-			},
-			{
-				key: "queuedInput",
-				slot: "aboveEditor",
-				order: 3,
-				scope: "global",
-				factory: () => new QueuedInputView(this.state),
-			},
-			{ key: "selectorDock", slot: "aboveEditor", order: 4, scope: "global", factory: () => this.selectorDock },
-			{
-				key: "editor",
-				slot: "editor",
-				scope: "global",
-				factory: () => this.editor,
-				// Like pi's showSelector, an open command selector takes the editor's
-				// place: the editor leaves the layout while the dock holds a view.
-				// Being preempted does not give the place back — the dock still
-				// holds the view, it just is not the one reading keys.
-				visible: (state) => !hasDockedFocus(state, "selector"),
-			},
-			{
-				key: "footer",
-				slot: "footer",
-				scope: "global",
-				factory: () =>
-					new FooterView(this.state, this.runtime.services.cwd, () => {
-						this.tui.requestRender();
-					}),
-			},
-			{
-				key: "operationHint",
-				// Below the footer, not below the editor: it has always rendered
-				// there, and "belowEditor" is now literally the editor/footer gap.
-				slot: "belowFooter",
-				scope: "global",
-				factory: () =>
-					new OperationHintView({
-						state: this.state,
-						engine: this.engine,
-						editor: this.editor,
-						selectorHint: () => this.topSelectorHint(),
-					}),
-			},
-			{ key: "agentStrip", slot: "agentStrip", scope: "global", factory: () => this.agentPanel },
-		];
-		for (const entry of entries) this.layout.register(entry);
 	}
 
 	/** The docked component the focus stack says should be taking keys. */

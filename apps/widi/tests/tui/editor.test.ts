@@ -4,9 +4,9 @@ import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import { WidiCommandAutocompleteProvider } from "../../src/tui/autocomplete.ts";
 import { widiCommands } from "../../src/tui/commands/built-in/index.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
-import { WidiEditor } from "../../src/tui/editor.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
 import { theme } from "../../src/tui/theme/theme.ts";
+import { WidiEditor } from "../../src/tui/views/editor.ts";
 import { stubCommandHost } from "../helpers/command-host.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");

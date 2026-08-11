@@ -1,6 +1,6 @@
 import { type Component, SelectList, truncateToWidth } from "@earendil-works/pi-tui";
-import { boundedText, singleLine } from "../format.ts";
-import { theme } from "../theme/theme.ts";
+import { boundedText, singleLine } from "./format.ts";
+import { theme } from "./theme/theme.ts";
 
 /**
  * Modal view for the only two overlay-worthy failures: startup without any

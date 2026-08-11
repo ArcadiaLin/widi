@@ -13,8 +13,8 @@ import {
 import type { MessageEntryDetails } from "../core/message.ts";
 import { ORCHESTRATOR_MESSAGE_CUSTOM_TYPE } from "../core/session-manager.ts";
 import type { AgentId, OrchestratorEvent } from "../core/types.ts";
-import { maintenanceLabel } from "./components/common.ts";
 import { diagnosticKey } from "./diagnostics-log.ts";
+import { maintenanceLabel } from "./labels.ts";
 import { setSteadyQuip, setTransientQuip } from "./quips.ts";
 import type { HydrationResult } from "./session-hydrator.ts";
 import {

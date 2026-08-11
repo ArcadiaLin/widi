@@ -1,11 +1,16 @@
 import { type Component, Text } from "@earendil-works/pi-tui";
 import { fixCjkLineStarts } from "../cjk-wrap.ts";
 import { lookupCommandPresenter } from "../command-presenter.ts";
-import type { CommandResultItem, TimelineItem, ToolExecutionItem, TuiApplicationState } from "../state.ts";
+import {
+	activeAgent,
+	type CommandResultItem,
+	type TimelineItem,
+	type ToolExecutionItem,
+	type TuiApplicationState,
+} from "../state.ts";
 import { theme, themeGeneration } from "../theme/theme.ts";
 import { lookupToolPresenter } from "../tool-presenter.ts";
-import { activeAgent } from "./common.ts";
-import { renderDeps, renderTimelineItem, type TimelineRenderContext } from "./timeline-item.ts";
+import { renderDeps, renderTimelineItem, type TimelineRenderContext } from "./utils/timeline-item.ts";
 
 interface CachedItemRender {
 	readonly deps: readonly unknown[];

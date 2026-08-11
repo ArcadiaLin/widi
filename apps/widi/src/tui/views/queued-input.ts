@@ -1,9 +1,8 @@
 import { type Component, getKeybindings, Text } from "@earendil-works/pi-tui";
 import { singleLine } from "../format.ts";
-import type { TuiApplicationState } from "../state.ts";
+import { formatKeyLabel } from "../keybindings.ts";
+import { activeAgent, type TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
-import { activeAgent } from "./common.ts";
-import { formatOperationHintKey } from "./operation-hint.ts";
 
 const MAX_VISIBLE_MESSAGES = 4;
 
@@ -32,9 +31,7 @@ export class QueuedInputView implements Component {
 		// (compaction, tree navigation) there is no run to steer into.
 		const steerKey = getKeybindings().getKeys("app.steer")[0];
 		const steerHint =
-			steerKey && agent.status === "running" && !agent.maintenance
-				? ` · ${formatOperationHintKey(steerKey)} steer now`
-				: "";
+			steerKey && agent.status === "running" && !agent.maintenance ? ` · ${formatKeyLabel(steerKey)} steer now` : "";
 		const lines = [theme.dim(`queued · follow-up (sent when the agent is ready)${steerHint}`)];
 		for (const text of queued.slice(-MAX_VISIBLE_MESSAGES)) {
 			lines.push(`${theme.dim("❯")} ${theme.dim(singleLine(text, 400))}`);

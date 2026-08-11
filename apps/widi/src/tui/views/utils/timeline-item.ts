@@ -1,21 +1,22 @@
 import { getKeybindings, Markdown, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { ExtensionMessage } from "../../core/extension/api.ts";
-import { presentCommandResult } from "../command-presenter.ts";
-import { renderDiffText } from "../diff.ts";
+import type { ExtensionMessage } from "../../../core/extension/api.ts";
+import { presentCommandResult } from "../../command-presenter.ts";
+import { renderDiffText } from "../../diff.ts";
 import {
 	type BuiltInExtensionMessage,
 	type ExtensionFieldsMessage,
 	type ExtensionTableMessage,
 	MAX_EXTENSION_MESSAGE_CELL_BYTES,
 	parseBuiltInMessage,
-} from "../extension-host/presentation.ts";
-import { renderExtensionEntry, renderExtensionMessageBody } from "../extension-host/renderers.ts";
-import { boundedText, sanitizeTerminalText, singleLine, spinnerFrame } from "../format.ts";
-import type { TimelineItem, ToolExecutionItem } from "../state.ts";
-import { theme } from "../theme/theme.ts";
-import { presentToolExecution } from "../tool-presenter.ts";
-import { diagnosticGlyph, tonePaint } from "./common.ts";
-import { formatOperationHintKey } from "./operation-hint.ts";
+} from "../../extension-host/presentation.ts";
+import { renderExtensionEntry, renderExtensionMessageBody } from "../../extension-host/renderers.ts";
+import { boundedText, sanitizeTerminalText, singleLine, spinnerFrame } from "../../format.ts";
+import { formatKeyLabel } from "../../keybindings.ts";
+import { diagnosticGlyph } from "../../labels.ts";
+import type { TimelineItem, ToolExecutionItem } from "../../state.ts";
+import { theme } from "../../theme/theme.ts";
+import { presentToolExecution } from "../../tool-presenter.ts";
+import { tonePaint } from "./extension-status.ts";
 
 export interface TimelineRenderContext {
 	readonly liveThinkingIds: ReadonlySet<string>;
@@ -205,7 +206,7 @@ function secondTick(): number {
 /** Key label for the transcript-expand toggle, for collapsed-marker hints. */
 function expandKeyLabel(): string | undefined {
 	const key = getKeybindings().getKeys("app.expand")[0];
-	return key ? formatOperationHintKey(key) : undefined;
+	return key ? formatKeyLabel(key) : undefined;
 }
 
 /** `── title ─────…` filled to the render width: a visible section break. */

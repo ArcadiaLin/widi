@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { singleLine } from "../format.ts";
-import type { TuiApplicationState } from "../state.ts";
+import { activeAgent, type TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
-import { activeAgent, latestExtensionStatus, tonePaint } from "./common.ts";
+import { latestExtensionStatus, tonePaint } from "./utils/extension-status.ts";
 
 export class FooterView implements Component {
 	private readonly state: TuiApplicationState;

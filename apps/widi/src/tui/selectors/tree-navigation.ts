@@ -1,6 +1,6 @@
 import { type Component, getKeybindings, Input, truncateToWidth } from "@earendil-works/pi-tui";
-import { formatOperationHintKey } from "../components/operation-hint.ts";
 import { singleLine } from "../format.ts";
+import { actionKeyLabel } from "../keybindings.ts";
 import type { SessionEntryTreeRow } from "../session-tree.ts";
 import { theme } from "../theme/theme.ts";
 import type { SelectorHintContext } from "./hints.ts";
@@ -202,15 +202,9 @@ class CustomInstructionsStep implements Component {
 
 	render(width: number): string[] {
 		const rule = theme.border("─".repeat(Math.max(1, width)));
-		const keybindings = getKeybindings();
-		const key = (action: Parameters<typeof keybindings.getKeys>[0]): string | undefined => {
-			const keyId = keybindings.getKeys(action)[0];
-			return keyId ? formatOperationHintKey(keyId) : undefined;
-		};
-		const hints = [
-			key("tui.select.confirm") && `${key("tui.select.confirm")} apply`,
-			key("tui.select.cancel") && `${key("tui.select.cancel")} back`,
-		]
+		const confirm = actionKeyLabel("tui.select.confirm");
+		const cancel = actionKeyLabel("tui.select.cancel");
+		const hints = [confirm && `${confirm} apply`, cancel && `${cancel} back`]
 			.filter((part): part is string => Boolean(part))
 			.join("  ");
 		const lines = [

@@ -1,9 +1,8 @@
 import { type Component, getKeybindings, Text } from "@earendil-works/pi-tui";
 import { singleLine } from "../format.ts";
-import type { TuiApplicationState } from "../state.ts";
+import { formatKeyLabel } from "../keybindings.ts";
+import { activeAgent, type TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
-import { activeAgent } from "./common.ts";
-import { formatOperationHintKey } from "./operation-hint.ts";
 
 const MAX_VISIBLE_MESSAGES = 3;
 
@@ -29,7 +28,7 @@ export class StagedInputView implements Component {
 		// edit path accepts: it takes the draft out of the buffer and into the
 		// editor, and there is nowhere to put a draft the human is mid-way
 		// through typing.
-		const editHint = editKey && agent.stagedEditing === undefined ? ` · ${formatOperationHintKey(editKey)} edit` : "";
+		const editHint = editKey && agent.stagedEditing === undefined ? ` · ${formatKeyLabel(editKey)} edit` : "";
 		const count = agent.staged.length;
 		const lines = [
 			theme.dim(`staged · ${count} ${count === 1 ? "message" : "messages"} (sent before your next input)${editHint}`),

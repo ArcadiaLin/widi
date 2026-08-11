@@ -1,6 +1,6 @@
-import { diagnosticGlyph } from "../../components/common.ts";
 import { diagnosticSource, formatDiagnosticRecord } from "../../diagnostics-log.ts";
 import { singleLine } from "../../format.ts";
+import { diagnosticGlyph } from "../../labels.ts";
 import type { CommandDefinition } from "../types.ts";
 import type { CommandHost } from "./command-host.ts";
 

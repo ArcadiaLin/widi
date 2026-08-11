@@ -1,12 +1,9 @@
-import { type Component, getKeybindings, type KeyId, truncateToWidth } from "@earendil-works/pi-tui";
-import type { CommandEngine } from "../commands/engine.ts";
-import { parseLineCommand } from "../commands/parse.ts";
-import type { WidiEditor } from "../editor.ts";
-import { singleLine } from "../format.ts";
-import type { SelectorHintContext } from "../selectors/hints.ts";
-import type { TuiApplicationState } from "../state.ts";
-import { theme } from "../theme/theme.ts";
-import { activeAgent } from "./common.ts";
+import type { CommandEngine } from "../../commands/engine.ts";
+import { parseLineCommand } from "../../commands/parse.ts";
+import { singleLine } from "../../format.ts";
+import { actionKeyLabel } from "../../keybindings.ts";
+import type { SelectorHintContext } from "../../selectors/hints.ts";
+import { activeAgent, type TuiApplicationState } from "../../state.ts";
 
 export interface OperationHintKeys {
 	readonly agents?: string;
@@ -21,6 +18,24 @@ export interface OperationHintKeys {
 	readonly selectCancel?: string;
 	readonly inputTab?: string;
 	readonly inputSubmit?: string;
+}
+
+/** The first bound key for every action the hint can name. */
+export function operationHintKeys(): OperationHintKeys {
+	return {
+		agents: actionKeyLabel("app.agents.open"),
+		agentsPrevious: actionKeyLabel("app.agents.previous"),
+		agentsNext: actionKeyLabel("app.agents.next"),
+		interrupt: actionKeyLabel("app.interrupt"),
+		steer: actionKeyLabel("app.steer"),
+		requests: actionKeyLabel("app.request.open"),
+		selectUp: actionKeyLabel("tui.select.up"),
+		selectDown: actionKeyLabel("tui.select.down"),
+		selectConfirm: actionKeyLabel("tui.select.confirm"),
+		selectCancel: actionKeyLabel("tui.select.cancel"),
+		inputTab: actionKeyLabel("tui.input.tab"),
+		inputSubmit: actionKeyLabel("tui.input.submit"),
+	};
 }
 
 export interface ResolveOperationHintOptions {
@@ -147,8 +162,8 @@ export function resolveOperationHintDetail(options: ResolveOperationHintOptions)
 }
 
 function hint(kind: OperationHintKind, ...parts: Array<string | undefined>): OperationHint | undefined {
-	const text = hintParts(...parts);
-	return text === undefined ? undefined : { kind, text };
+	const safeParts = parts.map((part) => safePart(part)).filter((part): part is string => part !== undefined);
+	return safeParts.length === 0 ? undefined : { kind, text: safeParts.join(" · ") };
 }
 
 function keyAction(key: string | undefined, action: string): string | undefined {
@@ -161,112 +176,8 @@ function keyPair(first: string | undefined, second: string | undefined, action: 
 	return keys.length > 0 ? `${keys.join("/")} ${action}` : undefined;
 }
 
-function hintParts(...parts: Array<string | undefined>): string | undefined {
-	const safeParts = parts.map((part) => safePart(part)).filter((part): part is string => part !== undefined);
-	return safeParts.length > 0 ? safeParts.join(" · ") : undefined;
-}
-
 function safePart(value: string | undefined): string | undefined {
 	if (!value) return undefined;
 	const safe = singleLine(value, value.length);
 	return safe || undefined;
-}
-
-export function formatOperationHintKey(key: KeyId): string {
-	const modifiers: string[] = [];
-	let base: string = key;
-	while (true) {
-		const separatorIndex = base.indexOf("+");
-		if (separatorIndex < 0) break;
-		const modifier = base.slice(0, separatorIndex);
-		if (!["ctrl", "shift", "alt", "super"].includes(modifier)) break;
-		modifiers.push(modifier === "ctrl" ? "Ctrl" : modifier[0]?.toUpperCase() + modifier.slice(1));
-		base = base.slice(separatorIndex + 1);
-	}
-	const baseLabel =
-		{
-			up: "↑",
-			down: "↓",
-			left: "←",
-			right: "→",
-			escape: "Esc",
-			esc: "Esc",
-			enter: "Enter",
-			return: "Enter",
-			tab: "Tab",
-			space: "Space",
-			backspace: "Backspace",
-			delete: "Delete",
-			insert: "Insert",
-			clear: "Clear",
-			home: "Home",
-			end: "End",
-			pageUp: "PageUp",
-			pageDown: "PageDown",
-		}[base] ?? base.toUpperCase();
-	return [...modifiers, baseLabel].join("+");
-}
-
-/** The first bound key for every action the hint can name. */
-export function operationHintKeys(): OperationHintKeys {
-	const keybindings = getKeybindings();
-	const key = (action: Parameters<typeof keybindings.getKeys>[0]): string | undefined => {
-		const keyId = keybindings.getKeys(action)[0];
-		return keyId ? formatOperationHintKey(keyId) : undefined;
-	};
-	return {
-		agents: key("app.agents.open"),
-		agentsPrevious: key("app.agents.previous"),
-		agentsNext: key("app.agents.next"),
-		interrupt: key("app.interrupt"),
-		steer: key("app.steer"),
-		requests: key("app.request.open"),
-		selectUp: key("tui.select.up"),
-		selectDown: key("tui.select.down"),
-		selectConfirm: key("tui.select.confirm"),
-		selectCancel: key("tui.select.cancel"),
-		inputTab: key("tui.input.tab"),
-		inputSubmit: key("tui.input.submit"),
-	};
-}
-
-export class OperationHintView implements Component {
-	private readonly state: TuiApplicationState;
-	private readonly engine: CommandEngine;
-	private readonly editor: Pick<WidiEditor, "getText" | "isShowingAutocomplete">;
-	private readonly selectorHint: () => SelectorHintContext | undefined;
-
-	constructor(options: {
-		readonly state: TuiApplicationState;
-		readonly engine: CommandEngine;
-		readonly editor: Pick<WidiEditor, "getText" | "isShowingAutocomplete">;
-		readonly selectorHint: () => SelectorHintContext | undefined;
-	}) {
-		this.state = options.state;
-		this.engine = options.engine;
-		this.editor = options.editor;
-		this.selectorHint = options.selectorHint;
-	}
-
-	invalidate(): void {}
-
-	render(width: number): string[] {
-		const detail = resolveOperationHintDetail({
-			state: this.state,
-			engine: this.engine,
-			editorText: this.editor.getText(),
-			editorAutocompleteVisible: this.editor.isShowingAutocomplete(),
-			selector: this.selectorHint(),
-			keys: operationHintKeys(),
-		});
-		// The working line prints the run hint beside what the run is doing; the
-		// same keys a row further down would be the only thing on screen twice.
-		// Segments stay either way: they are not about the run.
-		const hintText = !detail || detail.kind === "run" || detail.kind === "maintenance" ? undefined : detail.text;
-		const parts = [hintText, ...this.state.segments.texts("operationHint")].filter(
-			(part): part is string => part !== undefined,
-		);
-		if (parts.length === 0) return [];
-		return [theme.dim(truncateToWidth(parts.join(" · "), width, "…"))];
-	}
 }

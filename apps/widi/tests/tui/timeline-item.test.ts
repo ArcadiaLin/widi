@@ -2,7 +2,6 @@ import { setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import type { ExtensionMessage } from "../../src/core/extension/api.ts";
 import { EXTENSION_MESSAGE_CUSTOM_TYPE } from "../../src/core/session-manager.ts";
-import { renderDeps, renderTimelineItem, type TimelineRenderContext } from "../../src/tui/components/timeline-item.ts";
 import { SPINNER_FRAMES } from "../../src/tui/format.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
 import { hydrateSessionEntries } from "../../src/tui/session-hydrator.ts";
@@ -18,6 +17,7 @@ import type {
 	UserMessageItem,
 } from "../../src/tui/state.ts";
 import { theme } from "../../src/tui/theme/theme.ts";
+import { renderDeps, renderTimelineItem, type TimelineRenderContext } from "../../src/tui/views/utils/timeline-item.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 

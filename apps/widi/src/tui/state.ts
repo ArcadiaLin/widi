@@ -518,6 +518,11 @@ export function ensureAgentProjection(
 	return created;
 }
 
+/** The agent every view renders against, or undefined while one is pending. */
+export function activeAgent(state: TuiApplicationState): AgentViewState | undefined {
+	return state.activeAgentId ? state.agents.get(state.activeAgentId) : undefined;
+}
+
 export function setActiveAgent(state: TuiApplicationState, agentId: AgentId): AgentViewState {
 	const agent = ensureAgentProjection(state, agentId);
 	state.activeAgentId = agentId;

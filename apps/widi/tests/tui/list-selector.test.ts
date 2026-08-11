@@ -4,13 +4,13 @@ import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import type { AgentSnapshot } from "../../src/core/agent-types.ts";
 import type { WidiRuntime } from "../../src/core/runtime-service.ts";
 import { WidiTuiApplication } from "../../src/tui/application.ts";
-import { AgentStripView } from "../../src/tui/components/agent-strip.ts";
-import { OperationHintView } from "../../src/tui/components/operation-hint.ts";
-import type { WidiEditor } from "../../src/tui/editor.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
-import type { SelectorDock } from "../../src/tui/selectors/dock.ts";
 import { ListSelector } from "../../src/tui/selectors/list-selector.ts";
 import { ensureAgentProjection } from "../../src/tui/state.ts";
+import { AgentStripView } from "../../src/tui/views/agent-strip.ts";
+import type { WidiEditor } from "../../src/tui/views/editor.ts";
+import { OperationHintView } from "../../src/tui/views/operation-hint.ts";
+import type { SelectorDock } from "../../src/tui/views/selector-dock.ts";
 
 const ESCAPE = String.fromCharCode(27);
 const ANSI_SEQUENCE = new RegExp(`${ESCAPE}\\[[0-9;]*m`, "g");

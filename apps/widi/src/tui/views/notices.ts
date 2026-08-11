@@ -1,8 +1,8 @@
 import { type Component, Text } from "@earendil-works/pi-tui";
 import { sanitizeTerminalText, singleLine } from "../format.ts";
+import { diagnosticGlyph } from "../labels.ts";
 import type { TuiApplicationState } from "../state.ts";
 import { theme } from "../theme/theme.ts";
-import { diagnosticGlyph } from "./common.ts";
 
 export class NoticeView implements Component {
 	private readonly state: TuiApplicationState;
