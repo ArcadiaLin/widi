@@ -4,12 +4,13 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import { WidiCommandAutocompleteProvider } from "../../src/tui/autocomplete.ts";
-import { builtInCommands } from "../../src/tui/commands/built-ins.ts";
+import { widiCommands } from "../../src/tui/commands/built-in/index.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
+import { stubCommandHost } from "../helpers/command-host.ts";
 
 function provider(overrides: Record<string, unknown> = {}) {
 	return new WidiCommandAutocompleteProvider({
-		engine: new CommandEngine(builtInCommands),
+		engine: new CommandEngine(widiCommands(stubCommandHost())),
 		agentId: "main",
 		orchestrator: overrides as unknown as AgentOrchestrator,
 		getActivity: () => ({ activity: "idle" }),
@@ -18,7 +19,7 @@ function provider(overrides: Record<string, unknown> = {}) {
 
 function pendingProvider(overrides: Record<string, unknown> = {}) {
 	return new WidiCommandAutocompleteProvider({
-		engine: new CommandEngine(builtInCommands),
+		engine: new CommandEngine(widiCommands(stubCommandHost())),
 		orchestrator: overrides as unknown as AgentOrchestrator,
 		getActivity: () => undefined,
 	});
@@ -26,7 +27,7 @@ function pendingProvider(overrides: Record<string, unknown> = {}) {
 
 function atProvider(cwd: string) {
 	return new WidiCommandAutocompleteProvider({
-		engine: new CommandEngine(builtInCommands),
+		engine: new CommandEngine(widiCommands(stubCommandHost())),
 		agentId: "main",
 		orchestrator: {} as unknown as AgentOrchestrator,
 		getActivity: () => ({ activity: "idle" }),
@@ -145,22 +146,15 @@ describe("WidiCommandAutocompleteProvider", () => {
 	});
 
 	it("marks status-gated commands unavailable in suggestions", async () => {
-		const commandProvider = provider();
-		const result = await commandProvider.getSuggestions(["/st"], 0, 3, { signal: signal() });
-		const steer = result?.items.find((item) => item.label === "/steer");
-		expect(steer?.description).toContain("unavailable: Command /steer requires a running agent");
-	});
-
-	it("marks turn controls unavailable during maintenance", async () => {
 		const commandProvider = new WidiCommandAutocompleteProvider({
-			engine: new CommandEngine(builtInCommands),
+			engine: new CommandEngine(widiCommands(stubCommandHost())),
 			agentId: "main",
 			orchestrator: {} as unknown as AgentOrchestrator,
-			getActivity: () => ({ activity: "running", maintenance: "compaction" }),
+			getActivity: () => ({ activity: "running" }),
 		});
-		const result = await commandProvider.getSuggestions(["/ab"], 0, 3, { signal: signal() });
-		const abort = result?.items.find((item) => item.label === "/abort");
-		expect(abort?.description).toContain("unavailable: Command /abort is not available during compaction");
+		const result = await commandProvider.getSuggestions(["/re"], 0, 3, { signal: signal() });
+		const resume = result?.items.find((item) => item.label === "/resume");
+		expect(resume?.description).toContain("unavailable: Command /resume is not available while the agent is running");
 	});
 
 	it("marks active commands unavailable in pending suggestions", async () => {

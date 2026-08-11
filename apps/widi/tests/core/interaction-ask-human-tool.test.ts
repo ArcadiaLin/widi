@@ -6,7 +6,14 @@ import type { ToolExecutionContext } from "../../src/core/tools/types.ts";
 function makeContext(
 	overrides: Partial<ToolExecutionContext<AskHumanToolDetails>> = {},
 ): ToolExecutionContext<AskHumanToolDetails> {
-	return { signal: undefined, onUpdate: undefined, extension: undefined, human: undefined, ...overrides };
+	return {
+		signal: undefined,
+		onUpdate: undefined,
+		workspace: { cwd: "/workspace/project" },
+		extension: undefined,
+		human: undefined,
+		...overrides,
+	};
 }
 
 function makeHumanHost(response: HumanResponse): { host: ToolHumanHost; drafts: HumanRequestDraft[] } {
@@ -35,6 +42,7 @@ describe("ask_human tool", () => {
 		);
 		expect(drafts).toEqual([
 			{
+				tool: { toolCallId: "call-1", toolName: "ask_human" },
 				kind: "confirm",
 				title: "Delete the branch?",
 				message: undefined,

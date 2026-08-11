@@ -4,13 +4,13 @@ import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import type { AgentSnapshot } from "../../src/core/agent-types.ts";
 import type { WidiRuntime } from "../../src/core/runtime-service.ts";
 import { WidiTuiApplication } from "../../src/tui/application.ts";
-import { AgentStripView } from "../../src/tui/components/agent-strip.ts";
-import { OperationHintView } from "../../src/tui/components/operation-hint.ts";
-import type { WidiEditor } from "../../src/tui/editor.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
-import type { SelectorDock } from "../../src/tui/selectors/dock.ts";
 import { ListSelector } from "../../src/tui/selectors/list-selector.ts";
 import { ensureAgentProjection } from "../../src/tui/state.ts";
+import { AgentStripView } from "../../src/tui/views/agent-strip.ts";
+import type { WidiEditor } from "../../src/tui/views/editor.ts";
+import { OperationHintView } from "../../src/tui/views/operation-hint.ts";
+import type { SelectorDock } from "../../src/tui/views/selector-dock.ts";
 
 const ESCAPE = String.fromCharCode(27);
 const ANSI_SEQUENCE = new RegExp(`${ESCAPE}\\[[0-9;]*m`, "g");
@@ -284,8 +284,8 @@ describe("WidiTuiApplication command selector", () => {
 
 		await submit(application, "/model");
 
-		const hint = application.tui.children.find((child) => child instanceof OperationHintView);
-		if (!hint) throw new Error("Expected the operation hint to be mounted.");
+		const hint = application.layout.component("operationHint");
+		if (!(hint instanceof OperationHintView)) throw new Error("Expected the operation hint to be mounted.");
 		const rendered = hint.render(120).join("\n").replace(ANSI_SEQUENCE, "");
 		expect(rendered).toContain("/model");
 		expect(rendered).toContain("apply");
@@ -356,8 +356,8 @@ describe("WidiTuiApplication command selector", () => {
 		editor.handleInput("\x1b[B");
 
 		expect(application.state.mode).toBe("agent-panel");
-		const panel = application.tui.children.find((child) => child instanceof AgentStripView);
-		if (!panel) throw new Error("Expected the agent panel to be mounted.");
+		const panel = application.layout.component("agentStrip");
+		if (!(panel instanceof AgentStripView)) throw new Error("Expected the agent panel to be mounted.");
 		expect(panel.focused).toBe(true);
 		expect(panel.cursor).toBe("agent-1");
 
@@ -413,18 +413,18 @@ describe("WidiTuiApplication command submission", () => {
 	});
 
 	it("preserves a status-gated line command argument in its failed item", async () => {
-		const { application } = await createApplication();
+		const { application } = await createApplication({ getAgentActivity: () => ({ activity: "running" }) });
 
-		await submit(application, "/steer:go");
+		await submit(application, "/resume:some-session");
 
 		expect(
 			application.state.agents.get("agent-1")?.timeline.filter((item) => item.type === "command-result"),
 		).toMatchObject([
 			{
-				name: "steer",
-				argument: "go",
+				name: "resume",
+				argument: "some-session",
 				status: "failed",
-				error: { message: "Command /steer requires a running agent (status: idle)." },
+				error: { message: "Command /resume is not available while the agent is running." },
 			},
 		]);
 	});
@@ -466,6 +466,7 @@ function agentSnapshot(agentId: string): AgentSnapshot {
 	return {
 		agentId,
 		generation: 1,
+		cwd: "/workspace/project",
 		profile: {
 			reference: { id: "default-agent", label: agentId },
 			source: { kind: "memory", priority: 0 },

@@ -10,7 +10,7 @@
 
 答案只有一条原则：**会话树是权威。** 一份状态由分支上的一条 ref entry 命名，回退到那条 entry 之前它自动失效，分叉一条分支就自动带走它能看见的全部状态。没有任何一种状态可以为回退或分叉定义自己的规则。
 
-这条原则要覆盖的不只是 pi 的对话历史本身。core 模块（第一个是 background 的任务历史）和 extension 都有"希望随会话一起恢复、回退、分叉"的状态。因此这一层在会话存储之上提供 custom storage 契约：任何模块注册一个 namespace，就能获得一个受会话树管理的可恢复存储，而不需要仓库认识它。
+这条原则要覆盖的不只是 pi 的对话历史本身。core 模块与 extension 都有"希望随会话一起恢复、回退、分叉"的状态。因此这一层在会话存储之上提供 custom storage 契约：任何模块注册一个 namespace，就能获得一个受会话树管理的可恢复存储，而不需要仓库认识它。
 
 ## 2. 磁盘布局
 
@@ -20,8 +20,8 @@
     20260801T120345Z_root/               # 一个顶层会话目录
       session.jsonl                      # 对话历史，唯一的权威
       persistence/
-        core__jobs/objects.jsonl         # 一个 namespace 的对象日志
-        core__jobs/output/               # namespace 自己的附属文件
+        core__notes/objects.jsonl         # 一个 namespace 的对象日志
+        core__notes/output/               # namespace 自己的附属文件
       agents/                            # 这个会话 spawn 出的子会话
         20260801T120400Z_coder-1/
           session.jsonl
@@ -32,7 +32,7 @@
 布局规则由 `utils/layout.ts` 独占：
 
 - **目录即所有权。** 会话目录拥有自己的历史、custom storage 和子会话目录。删除根会话递归删除整棵子树，fork 根会话复制整棵子树，子会话只能经父到达。
-- **子会话在 `agents/` 下**，不与 `session.jsonl` 平级，嵌套路径段严格交替 `<dir>/agents/<dir>`。列举会话目录时因此永远不需要判断某个子目录是不是保留目录。保留名：`agents`、`persistence`、`jobs`（遗留 sidecar）。
+- **子会话在 `agents/` 下**，不与 `session.jsonl` 平级，嵌套路径段严格交替 `<dir>/agents/<dir>`。列举会话目录时因此永远不需要判断某个子目录是不是保留目录。保留名：`agents`、`persistence`。
 - **嵌套深度上限 `MAX_SESSION_DEPTH = 8`**（每级两层目录段，Windows 260 字符限制）。超深的 spawn 降级为顶层会话并报 `persistence.nesting_limit`，spawn 本身不失败。
 - 目录名为 `<compactTimestamp>_<sessionId>`。时间戳供人按时间阅读，唯一性靠 id 中的随机字符与 repo 的空位检查（冲突时追加 `-2`、`-3` 后缀）。
 - **`SessionKey` 是会话的逻辑地址**（`readonly string[]`，根目录名加每代一个目录名），`SessionAddress = { cwd, key }` 是完整定位。持久化记录指向另一个会话时永远存 `SessionKey`，绝不存文件系统路径——磁盘布局可以演进而不必迁移任何记录。
@@ -86,7 +86,7 @@ custom storage 在自己 `persistence/` 目录下的内部形状不受会话层�
 
 ### PersistenceNamespaceDefinition（注册时提交的声明）
 
-- `namespace`：稳定且全局唯一，形如 `core:jobs`，注册时按 `NAMESPACE_PATTERN` 校验。
+- `namespace`：稳定且全局唯一，形如 `core:notes`，注册时按 `NAMESPACE_PATTERN` 校验。
 - `version`：namespace 自己的数据格式版本，写入对象日志 header。
 - `owner?`：有权使用该目录的身份（如 extension id），写入 header 并在打开时校验；必须稳定、不含版本号。
 - `forkPolicy`：`"copy"`（纯数据状态，原样复制）、`"omit"`（状态是外部句柄——pid、socket、凭据——复制会造成假象，不带入 fork）、`"degrade"`（两者皆是：历史值得带走，活进程不值得）。
@@ -144,4 +144,4 @@ ref 是普通 entry 这一点就是全部机制：它有 id、parentId、timesta
 
 ## 延伸阅读
 
-实现期设计与排期文档在 `notes/develop/`（scratch，未入 git 追踪）：`ZH/persistence.md`（使用指南）、`ZH/persistence-ref-writer.md`、`ZH/agent-tree-persistence.md`、`session-tree-persistence-plan.md`。接入示例见 `background.md` §6（`core:jobs` namespace）。
+实现期设计与排期文档在 `notes/develop/`（scratch，未入 git 追踪）：`ZH/persistence.md`（使用指南）、`ZH/persistence-ref-writer.md`、`ZH/agent-tree-persistence.md`、`session-tree-persistence-plan.md`。

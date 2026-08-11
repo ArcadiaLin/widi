@@ -1,6 +1,5 @@
-import type { AgentHarnessTool, AgentToolResult, AgentToolUpdateCallback } from "@widi/agent-core";
+import type { AgentHarnessTool, AgentToolUpdateCallback } from "@widi/agent-core";
 import type { TSchema } from "typebox";
-import { type BackgroundJobHost, createBackgroundJobStartedResult } from "./background/index.ts";
 import type { CoreDiagnostic, DiagnosticSeverity } from "./diagnostics.ts";
 import type { AgentToOrchestratorHost } from "./host.ts";
 import type { HumanInterruptWatch } from "./human-interrupt.ts";
@@ -12,6 +11,7 @@ import type {
 	ToolExecutionContext,
 	ToolExtensionContext,
 	ToolSource,
+	ToolWorkspaceContext,
 } from "./tools/types.ts";
 
 type RegistryToolDefinition = ToolDefinition<TSchema, unknown>;
@@ -65,17 +65,12 @@ export interface ToolRegistryResolveResult {
 }
 
 export interface ToolAdapterContext {
+	/** Where the agent this context belongs to works. */
+	workspace: ToolWorkspaceContext;
 	human?: ToolHumanHost;
 	/** Collaboration port bound to the agent this context belongs to. */
 	agents?: AgentToOrchestratorHost;
 	createExtensionContext?: (source: ToolSource, toolName: string) => ToolExtensionContext | undefined;
-	/**
-	 * Owner-scoped capabilities of the background job runtime. When provided, a
-	 * `backgroundable` tool races a deadline and may settle its call with a job
-	 * handle (t0) while the real work continues in the background. When omitted,
-	 * every tool runs fully synchronously regardless of `backgroundable`.
-	 */
-	jobs?: BackgroundJobHost;
 	/** Pending human steers for the agent this context belongs to. */
 	humanInterrupts?: HumanInterruptWatch;
 }
@@ -364,10 +359,6 @@ export interface ResolvedAgentHarnessTool extends AgentHarnessTool<ToolAdapterCo
 	promptSnippet?: string;
 	/** Optional prompt guidance bullets copied from the WIDI tool definition. */
 	promptGuidelines?: readonly string[];
-	/** Pseudo-async opt-in copied from the WIDI tool definition. */
-	backgroundable?: boolean;
-	/** Background timeout deadline copied from the WIDI tool definition. */
-	backgroundTimeoutMs?: number;
 }
 
 export function createAgentHarnessToolFromResolvedTool(resolvedTool: ResolvedTool): ResolvedAgentHarnessTool {
@@ -378,27 +369,10 @@ export function createAgentHarnessToolFromResolvedTool(resolvedTool: ResolvedToo
 		description: definition.description,
 		promptSnippet: definition.promptSnippet,
 		promptGuidelines: definition.promptGuidelines,
-		backgroundable: definition.backgroundable,
-		backgroundTimeoutMs: definition.backgroundTimeoutMs,
 		parameters: definition.parameters,
 		prepareArguments: definition.prepareArguments,
 		executionMode: definition.executionMode,
 		execute: (toolCallId, params, signal, onUpdate, context) => {
-			if (definition.backgroundable && context.jobs) {
-				const deadlineMs = resolveBackgroundDeadlineMs(definition, params);
-				if (deadlineMs !== undefined) {
-					return runBackgroundableToolCall({
-						resolvedTool,
-						context,
-						jobs: context.jobs,
-						toolCallId,
-						params,
-						signal,
-						onUpdate,
-						deadlineMs,
-					});
-				}
-			}
 			return definition.execute(
 				toolCallId,
 				params,
@@ -406,203 +380,6 @@ export function createAgentHarnessToolFromResolvedTool(resolvedTool: ResolvedToo
 			);
 		},
 	};
-}
-
-/**
- * Decide when, if ever, a `backgroundable` call should move to the background.
- *
- * An explicit `background: true` argument is the primary trigger and backgrounds
- * as soon as the call has not settled essentially immediately (deadline 0). A
- * configured `backgroundTimeoutMs` is an opt-in wall-clock safety net. With
- * neither, the call stays fully synchronous (undefined), so marking a tool
- * `backgroundable` never changes its behavior until a caller or the tool asks
- * for it.
- */
-function resolveBackgroundDeadlineMs(definition: RegistryToolDefinition, params: unknown): number | undefined {
-	if (isBackgroundRequested(params)) return 0;
-	const configured = definition.backgroundTimeoutMs;
-	if (typeof configured === "number" && Number.isFinite(configured) && configured >= 0) {
-		return configured;
-	}
-	return undefined;
-}
-
-/** Max length of a stored background job description; longer labels are elided. */
-const MAX_BACKGROUND_DESCRIPTION_LENGTH = 200;
-/**
- * Max length of a job name. Far shorter than the description: a name shares one
- * line with the job's status and elapsed time, and a caller that writes a
- * paragraph there has written a description instead.
- */
-const MAX_BACKGROUND_NAME_LENGTH = 60;
-
-/**
- * Resolve the human-readable label for a backgrounded call from the tool's
- * optional describer, collapsing whitespace and eliding an over-long result so
- * the snapshot carries a compact label rather than a full command dump.
- */
-function resolveBackgroundDescription(definition: RegistryToolDefinition, params: unknown): string | undefined {
-	return compactBackgroundLabel(definition.backgroundDescription?.(params), MAX_BACKGROUND_DESCRIPTION_LENGTH);
-}
-
-/** Resolve the caller-chosen name for a backgrounded call, when the tool takes one. */
-function resolveBackgroundName(definition: RegistryToolDefinition, params: unknown): string | undefined {
-	return compactBackgroundLabel(definition.backgroundName?.(params), MAX_BACKGROUND_NAME_LENGTH);
-}
-
-function compactBackgroundLabel(raw: string | undefined, maxLength: number): string | undefined {
-	if (raw === undefined) return undefined;
-	const collapsed = raw.replace(/\s+/g, " ").trim();
-	if (collapsed.length === 0) return undefined;
-	return collapsed.length > maxLength ? `${collapsed.slice(0, maxLength - 1)}…` : collapsed;
-}
-
-/** True when tool arguments explicitly opt this call into background execution. */
-function isBackgroundRequested(params: unknown): boolean {
-	return typeof params === "object" && params !== null && (params as { background?: unknown }).background === true;
-}
-
-interface RunBackgroundableToolCallOptions {
-	resolvedTool: ResolvedTool;
-	context: ToolAdapterContext;
-	jobs: BackgroundJobHost;
-	toolCallId: string;
-	params: unknown;
-	signal: AbortSignal | undefined;
-	onUpdate: AgentToolUpdateCallback<unknown> | undefined;
-	/** Resolved deadline for this call; 0 backgrounds essentially immediately. */
-	deadlineMs: number;
-}
-
-/**
- * Run a `backgroundable` tool call against a deadline.
- *
- * The tool executes with the job's own abort signal so its lifetime is
- * decoupled from the originating tool_use once backgrounded. If it settles
- * before the deadline, the real result is returned inline (the common case). If
- * the deadline wins, the call is moved to the background and settled with a job
- * handle (t0); the still-running promise records its terminal outcome on the
- * job, which is what produces the later t1 message.
- *
- * A refused `startLocal` - the owner was disposed mid-call - is not an error
- * here: the call simply runs as an ordinary synchronous tool call, which is
- * what it would have been without a background runtime at all.
- */
-function runBackgroundableToolCall(options: RunBackgroundableToolCallOptions): Promise<AgentToolResult<unknown>> {
-	const definition = options.resolvedTool.definition;
-	const timeoutMs = options.deadlineMs;
-	const started = options.jobs.startLocal({
-		toolCallId: options.toolCallId,
-		toolName: definition.name,
-		name: resolveBackgroundName(definition, options.params),
-		description: resolveBackgroundDescription(definition, options.params),
-		report: definition.backgroundReport?.initial?.(options.params),
-	});
-	if (!started.ok) {
-		return Promise.resolve(
-			definition.execute(
-				options.toolCallId,
-				options.params,
-				createToolExecutionContext(options.resolvedTool, options.context, options.signal, options.onUpdate),
-			),
-		);
-	}
-	const execution = started.execution;
-
-	// The tool runs on a signal of this adapter's own, aborted by the job (which
-	// owns the work from t0 on) and, only during the synchronous window before
-	// t0, by the run signal: while pi still treats this as an in-flight tool
-	// call, a user interrupt must cancel it. The run-signal forward is detached
-	// the moment the race resolves, so once the call is backgrounded the run
-	// signal no longer owns the work.
-	const toolAbort = new AbortController();
-	const abortTool = (reason?: unknown) => {
-		if (!toolAbort.signal.aborted) toolAbort.abort(reason);
-	};
-	if (execution.signal.aborted) abortTool(execution.signal.reason);
-	else execution.signal.addEventListener("abort", () => abortTool(execution.signal.reason), { once: true });
-	const signal = options.signal;
-	const forwardAbort = () => abortTool(signal?.reason);
-	const detachForwardAbort = () => signal?.removeEventListener("abort", forwardAbort);
-	if (signal) {
-		if (signal.aborted) forwardAbort();
-		else signal.addEventListener("abort", forwardAbort, { once: true });
-	}
-
-	const reportFromUpdate = definition.backgroundReport?.fromUpdate;
-	const onUpdate: AgentToolUpdateCallback<unknown> | undefined =
-		reportFromUpdate === undefined
-			? options.onUpdate
-			: (partialResult) => {
-					const report = reportFromUpdate(partialResult);
-					if (report !== undefined) {
-						execution.setReport(report);
-					}
-					options.onUpdate?.(partialResult);
-				};
-	const toolContext = createToolExecutionContext(options.resolvedTool, options.context, toolAbort.signal, onUpdate, {
-		id: execution.jobId,
-		output: execution.output,
-		setReport: (report) => execution.setReport(report).ok,
-	});
-	// An untyped execute may throw synchronously or return a plain result instead
-	// of a promise. Either would otherwise skip settlement, the race, or
-	// abort-listener cleanup and orphan the job in the runtime. Normalize every
-	// return shape at this adapter boundary so the rest of the pipeline always
-	// operates on a real promise.
-	let executePromise: Promise<AgentToolResult<unknown>>;
-	try {
-		executePromise = Promise.resolve(definition.execute(options.toolCallId, options.params, toolContext));
-	} catch (error) {
-		executePromise = Promise.reject(error);
-	}
-
-	// Record the terminal outcome for the job. When it has already been
-	// backgrounded this is what produces t1; otherwise the inline return below
-	// delivers the result and nothing was ever observable.
-	executePromise.then(
-		(result) => execution.settle({ status: "completed", result }),
-		(error) => execution.settle({ status: toolAbort.signal.aborted ? "cancelled" : "failed", error }),
-	);
-
-	return raceSettlement(executePromise, timeoutMs).then((winner) => {
-		// The race is resolved: the tool_use is now settled (t0 for the
-		// backgrounded branch, or the real result for the inline branch). Detach
-		// the run-signal forward so a later abortAgent() cannot cancel a
-		// backgrounded job; its lifetime belongs to the background runtime from
-		// here (dispose cascade or explicit abort).
-		detachForwardAbort();
-		if (winner === "timeout") {
-			const accepted = execution.acceptBackground();
-			if (accepted.ok) {
-				return createBackgroundJobStartedResult({
-					jobId: accepted.job.jobId,
-					toolCallId: options.toolCallId,
-					toolName: definition.name,
-					name: accepted.job.name,
-				});
-			}
-		}
-		// Settled before the deadline (or the deadline lost the microtask race):
-		// return or throw the real result inline.
-		return executePromise;
-	});
-}
-
-/**
- * Resolve `"settled"` when `promise` settles or `"timeout"` when `timeoutMs`
- * elapses first, whichever comes first. Never rejects: both branches only report
- * the winner, so the caller decides how to consume the settled promise.
- */
-function raceSettlement(promise: Promise<unknown>, timeoutMs: number): Promise<"settled" | "timeout"> {
-	return new Promise((resolve) => {
-		const timer = setTimeout(() => resolve("timeout"), timeoutMs);
-		const onSettled = () => {
-			clearTimeout(timer);
-			resolve("settled");
-		};
-		promise.then(onSettled, onSettled);
-	});
 }
 
 export function createAgentHarnessToolsFromResolvedTools(
@@ -645,17 +422,15 @@ function createToolExecutionContext(
 	context: ToolAdapterContext,
 	signal: AbortSignal | undefined,
 	onUpdate: AgentToolUpdateCallback<unknown> | undefined,
-	job?: ToolExecutionContext<unknown>["job"],
 ): ToolExecutionContext<unknown> {
 	const bindContext = (source: ToolSource) => ({
 		signal,
 		onUpdate,
+		workspace: context.workspace,
 		extension: context.createExtensionContext?.(source, resolvedTool.definition.name),
 		human: context.human,
 		agents: context.agents,
-		jobs: context.jobs,
 		humanInterrupts: context.humanInterrupts,
-		job,
 		[bindToolExecutionContextSymbol]: bindContext,
 	});
 	return bindContext(resolvedTool.source);
@@ -677,12 +452,11 @@ function restoreInnerToolExecutionContext<TDetails>(
 	return {
 		signal: context.signal,
 		onUpdate: context.onUpdate,
+		workspace: context.workspace,
 		extension: innerContext.extension,
 		human: context.human,
 		agents: context.agents,
-		jobs: context.jobs,
 		humanInterrupts: context.humanInterrupts,
-		job: context.job,
 		...(bindContext ? { [bindToolExecutionContextSymbol]: bindContext } : undefined),
 	};
 }

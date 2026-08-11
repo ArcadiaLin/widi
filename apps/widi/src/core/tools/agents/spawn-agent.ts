@@ -30,7 +30,7 @@ const spawnAgentItemSchema = Type.Object({
 			description: "Be told when this agent stops. Defaults to true when task is given, false otherwise.",
 		}),
 	),
-	model: Type.Optional(Type.String({ description: "Model reference as provider/id. Defaults to the profile's." })),
+	model: Type.Optional(Type.String({ description: "Model reference as provider/id. Defaults to the one you run." })),
 	thinking: Type.Optional(
 		Type.Union(
 			[
@@ -42,7 +42,7 @@ const spawnAgentItemSchema = Type.Object({
 				Type.Literal("xhigh"),
 				Type.Literal("max"),
 			],
-			{ description: "Reasoning effort for the new agent. Defaults to the profile's." },
+			{ description: "Reasoning effort for the new agent. Defaults to the one you run." },
 		),
 	),
 });

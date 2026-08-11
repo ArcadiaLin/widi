@@ -31,23 +31,22 @@ export interface CoreCodingToolOptions {
  * of the runtime ExecutionEnv; delegating tool backends to other environments
  * is an operations-injection or extension patchTool concern, not a registration
  * concern.
+ *
+ * No cwd here: one registration serves every workspace, and each call resolves
+ * its paths against the cwd of the agent whose turn is executing.
  */
-export function registerCoreCodingTools(
-	registry: ToolRegistry,
-	cwd: string,
-	options: CoreCodingToolOptions = {},
-): void {
+export function registerCoreCodingTools(registry: ToolRegistry, options: CoreCodingToolOptions = {}): void {
 	registry.defineTool(
-		createReadToolDefinition(cwd, { autoResizeImages: options.autoResizeImages, blockImages: options.blockImages }),
+		createReadToolDefinition({ autoResizeImages: options.autoResizeImages, blockImages: options.blockImages }),
 		coreBuiltinToolSource,
 	);
 	registry.defineTool(
-		createBashToolDefinition(cwd, { shellPath: options.shellPath, commandPrefix: options.shellCommandPrefix }),
+		createBashToolDefinition({ shellPath: options.shellPath, commandPrefix: options.shellCommandPrefix }),
 		coreBuiltinToolSource,
 	);
-	registry.defineTool(createEditToolDefinition(cwd), coreBuiltinToolSource);
-	registry.defineTool(createWriteToolDefinition(cwd), coreBuiltinToolSource);
-	registry.defineTool(createGrepToolDefinition(cwd, { rgPath: options.rgPath }), coreBuiltinToolSource);
-	registry.defineTool(createFindToolDefinition(cwd, { rgPath: options.rgPath }), coreBuiltinToolSource);
-	registry.defineTool(createLsToolDefinition(cwd), coreBuiltinToolSource);
+	registry.defineTool(createEditToolDefinition(), coreBuiltinToolSource);
+	registry.defineTool(createWriteToolDefinition(), coreBuiltinToolSource);
+	registry.defineTool(createGrepToolDefinition({ rgPath: options.rgPath }), coreBuiltinToolSource);
+	registry.defineTool(createFindToolDefinition({ rgPath: options.rgPath }), coreBuiltinToolSource);
+	registry.defineTool(createLsToolDefinition(), coreBuiltinToolSource);
 }

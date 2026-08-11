@@ -17,36 +17,14 @@ export type AgentProfile = {
 	readonly id: string;
 	readonly label: string;
 	readonly description?: string;
-	/**
-	 * When a caller should reach for this role, written for the model picking a
-	 * spawn target. `description` says what the role is; this says why you would
-	 * choose it over its neighbours, so it is usually a sentence or two and is
-	 * the part `list_agent_profiles` leans on.
-	 */
 	readonly whenToUse?: string;
 	readonly systemPrompt: string;
-	/** Whether newly-created agents should use persistent session storage. */
 	readonly persist: boolean;
 	readonly tools?: readonly string[];
 	readonly skills?: readonly string[];
-	/**
-	 * Which of the project's own instruction files are inlined into this role's
-	 * system prompt. `true` - the default - takes the first conventional name
-	 * that exists in each root, AGENTS.md ahead of CLAUDE.md; `false` inlines
-	 * none. A list names the files itself, and every named file that exists is
-	 * inlined, so a role can ask for AGENTS.md and CLAUDE.md together.
-	 */
 	readonly projectContext?: boolean | readonly string[];
-	/** Whether the system prompt states the working directory. Default: true. */
 	readonly includeCwd?: boolean;
-	/**
-	 * Whether the system prompt lists this role's skills. Unset means no listing:
-	 * the listing tells the model to go read a skill file, and whether this role's
-	 * tools can open one is the role's own judgement, not something core guesses
-	 * from the active tool names.
-	 */
 	readonly skillsListing?: boolean;
-	/** Extra text appended to this role's system prompt, ahead of the extensions' own. */
 	readonly appendSystemPrompt?: string;
 };
 
@@ -220,7 +198,7 @@ export const BUILTIN_DEFAULT_PROFILE_ID = "main";
 const BUILTIN_DEFAULT_PROFILE: AgentProfile = {
 	id: BUILTIN_DEFAULT_PROFILE_ID,
 	label: "Main Agent",
-	systemPrompt: "You are WIDI.",
+	systemPrompt: "You are WIDI, a helpful assistant.",
 	persist: true,
 };
 
@@ -228,10 +206,6 @@ export function toAgentProfileReference(profile: Pick<AgentProfile, "id" | "labe
 	return { id: profile.id, label: profile.label };
 }
 
-/**
- * Narrow an untyped session header metadata value to a profile reference.
- * Storage keeps header metadata opaque, so consumers validate the shape here.
- */
 export function parseAgentProfileReference(value: unknown): AgentProfileReference | undefined {
 	if (typeof value !== "object" || value === null) return undefined;
 	const record = value as { id?: unknown; label?: unknown };

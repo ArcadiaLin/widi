@@ -8,7 +8,6 @@ import {
 } from "../../src/core/agent-profile.ts";
 import { MessageError } from "../../src/core/message.ts";
 import type { OrchestratorEvent } from "../../src/core/types.ts";
-import { startBackgroundedJob } from "../helpers/background-jobs.ts";
 import {
 	agentSink,
 	createOrchestrator,
@@ -18,7 +17,6 @@ import {
 	humanSink,
 	MemoryExecutionEnv,
 	requireAgentHarness,
-	requireAgentJobs,
 	stubCompaction,
 	stubPromptRun,
 } from "../helpers/orchestrator.ts";
@@ -149,7 +147,7 @@ describe("AgentOrchestrator.sendMessage", () => {
 	// The harness builds the turn context, session metadata, and tool context
 	// asynchronously before its agent loop starts, and the user message is not
 	// persisted until then. Reporting acceptance earlier would drop a message the
-	// target never received - fatal for a job result nobody is left to resend.
+	// target never received - fatal for a notice nobody is left to resend.
 	it("waits for the agent loop before reporting a message accepted", async () => {
 		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
 		const targetAgentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
@@ -319,75 +317,5 @@ describe("AgentOrchestrator message interception", () => {
 		});
 		expect(prompt).not.toHaveBeenCalled();
 		expect(events).toContainEqual(expect.objectContaining({ type: "input_blocked", blockedBy: "policy" }));
-	});
-
-	// The model holds this job's t0 handle and is waiting for exactly one result.
-	it("delivers a blocked background job result anyway, with a diagnostic", async () => {
-		const orchestrator = await createExtensionOrchestrator("policy");
-		orchestrator.registerExtension("policy", (api) => {
-			api.intercept("input", () => ({ block: true, reason: "Nothing gets in." }));
-		});
-		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
-		const prompt = vi
-			.spyOn(requireAgentHarness(orchestrator, agentId), "prompt")
-			.mockResolvedValue({} as AssistantMessage);
-		const events: OrchestratorEvent[] = [];
-		orchestrator.subscribe((event) => {
-			events.push(event);
-		});
-
-		const { execution } = startBackgroundedJob(requireAgentJobs(orchestrator, agentId), {
-			toolCallId: "call-1",
-			toolName: "sleeper",
-		});
-		execution.settle({
-			status: "completed",
-			result: { content: [{ type: "text", text: "build done" }], details: undefined },
-		});
-
-		await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
-		expect(harnessInputText(prompt.mock.calls[0]?.[0])).toContain("build done");
-		expect(events.filter((event) => event.type === "diagnostic").map((event) => event.diagnostic.code)).toContain(
-			"orchestrator.message_block_ignored",
-		);
-	});
-
-	// A recap is the other `blockPolicy: "ignore"` producer: the facts it states
-	// are recorded either way, so a block degrades the same.
-	it("delivers a blocked recap anyway, with a diagnostic", async () => {
-		const env = new MemoryExecutionEnv();
-		const first = await createOrchestrator(env);
-		const agentId = await first.spawnAgent({ origin: { kind: "new" } });
-		// The branch has to be owed the recap: a t0 handle no job history recorded.
-		await requireAgentHarness(first, agentId).appendMessage({
-			role: "toolResult",
-			toolCallId: "call-1",
-			toolName: "bash",
-			content: [{ type: "text", text: "moved to the background as job-1" }],
-			details: { jobId: "job-1", toolCallId: "call-1", toolName: "bash", backgrounded: true },
-			isError: false,
-			timestamp: Date.now(),
-		});
-		const reference = first.sessionManager.getAgentSessionRef(agentId);
-		if (reference === undefined) throw new Error(`Expected a persisted session for ${agentId}.`);
-
-		// A second runtime over the same files: the process died, the session did not.
-		const second = await createOrchestrator(env);
-		second.registerExtension("policy", (api) => {
-			api.intercept("input", () => ({ block: true, reason: "Nothing gets in." }));
-		});
-		const events: OrchestratorEvent[] = [];
-		second.subscribe((event) => {
-			events.push(event);
-		});
-
-		const resumed = await second.spawnAgent({ origin: { kind: "resume", reference } });
-
-		expect(events.filter((event) => event.type === "diagnostic").map((event) => event.diagnostic.code)).toContain(
-			"orchestrator.message_block_ignored",
-		);
-		// Delivered anyway: the recap is on the branch the model resumes with.
-		const snapshot = await second.getAgentSession(resumed);
-		expect(JSON.stringify(snapshot.pathToRoot)).toContain('<recap type=\\"orphaned_job_handles\\">');
 	});
 });

@@ -1,7 +1,6 @@
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
 import type { AgentHarnessEvent } from "@widi/agent-core";
 import type { AgentSnapshot } from "../core/agent-types.ts";
-import type { BackgroundJobReportSnapshot } from "../core/background/index.ts";
 import type { OrchestratorDiagnostic } from "../core/diagnostics.ts";
 import type { ExtensionMessage, ExtensionStatusSnapshot } from "../core/extension/api.ts";
 import type { HumanRequestEnvelope, HumanRequestKind } from "../core/human-request.ts";
@@ -9,7 +8,8 @@ import type { MessageSource } from "../core/message.ts";
 import type { AgentId, AgentMaintenanceKind, OrchestratorEvent, RuntimeModel } from "../core/types.ts";
 import type { CommandError } from "./commands/types.ts";
 import { DiagnosticsLog } from "./diagnostics-log.ts";
-import type { AgentVoice, VoicePackId } from "./voice.ts";
+import type { AgentQuip } from "./quips.ts";
+import { SegmentStore } from "./segments.ts";
 
 export type TimelineDurability = "durable" | "ephemeral";
 export type NoticeTextMode = "compact" | "full";
@@ -25,7 +25,7 @@ export interface UserMessageItem {
 
 /**
  * Input the runtime put into this agent's context on someone else's behalf: a
- * peer agent, a settled background job, an extension, or the runtime itself.
+ * peer agent, an extension, or the runtime itself.
  *
  * Distinct from `user-message`, which is only what the person at this keyboard
  * typed. The two are indistinguishable to the model - both reach it as user
@@ -34,8 +34,8 @@ export interface UserMessageItem {
  *
  * `text` is the semantic body and `modelText` the rendered form the model
  * actually read, present only when the source's renderer changed it. The
- * attribution prefix lives in `modelText`; on screen it is the source line's
- * job, so the same fact is never shown twice.
+ * attribution prefix lives in `modelText`; on screen the source line carries
+ * it, so the same fact is never shown twice.
  */
 export interface OrchestratorMessageItem {
 	readonly type: "orchestrator-message";
@@ -132,6 +132,12 @@ export interface ExtensionOutputItem {
 	readonly createdAt: string;
 	readonly extensionId: string;
 	readonly text: string;
+	/**
+	 * Show the whole text instead of the bounded preview. The producer's own
+	 * switch, not the global tool-output toggle: what an extension writes here is
+	 * not tool output, and one key should not decide for both.
+	 */
+	expanded?: boolean;
 }
 
 export interface PersistentMessageItem {
@@ -221,15 +227,30 @@ export interface PendingInput {
  * disposed before the pending session is staged, so it is no longer there to
  * answer questions about itself.
  */
-export type PendingAgentStart =
+export type PendingAgentStart = {
+	/**
+	 * Where the agent will run. Set before it exists because it cannot be set
+	 * after: a workspace is frozen at spawn, so staging is the only moment the
+	 * choice is open.
+	 */
+	readonly cwd: string;
+} & (
 	| { readonly kind: "default" }
-	| { readonly kind: "new-session"; readonly profileId: string; readonly model: RuntimeModel };
+	| { readonly kind: "new-session"; readonly profileId: string; readonly model: RuntimeModel }
+);
 
 export interface PendingAgentViewState {
 	readonly start: PendingAgentStart;
 	timeline: TimelineItem[];
 	draft: string;
-	display: { readonly profileLabel: string; model: RuntimeModel; thinkingLevel?: string; sessionName?: string };
+	display: {
+		readonly profileId: string;
+		readonly profileLabel: string;
+		readonly cwd: string;
+		model: RuntimeModel;
+		thinkingLevel?: string;
+		sessionName?: string;
+	};
 	nextLiveItemId: number;
 }
 
@@ -240,6 +261,8 @@ export interface QueueState {
 }
 
 export interface AgentDisplayFacts {
+	/** The agent's workspace, which the footer and the header both name. */
+	cwd?: string;
 	model?: RuntimeModel;
 	thinkingLevel?: string;
 	/** Total tokens of the latest assistant turn (input+output+cache), for the footer context readout. */
@@ -297,10 +320,6 @@ export interface AgentViewState {
 	extensionStatuses: Map<string, ExtensionStatusSnapshot>;
 	unreadCount: number;
 	attention: AgentAttention;
-	/** Live background jobs (backgrounded, not yet settled) owned by this agent. */
-	backgroundJobCount: number;
-	/** Per-job view state backing the jobs panel; includes retained settled jobs. */
-	backgroundJobs: Map<string, BackgroundJobViewState>;
 	hydration: "pending" | "ready" | "failed";
 	bufferedEvents: OrchestratorEvent[];
 	pendingInput?: PendingInput;
@@ -313,7 +332,7 @@ export interface AgentViewState {
 	/** Totals of the run that just ended, for the working line's completion form. */
 	lastRun?: { readonly startedAt: string; readonly endedAt: string; readonly toolCount: number };
 	/** What the working line is saying about this agent. Rolled on transitions only. */
-	voice?: AgentVoice;
+	quip?: AgentQuip;
 	queue: QueueState;
 	/** Optimistic projection while sendMessage is waiting for a deliverable phase. */
 	pendingFollowUps: PendingFollowUp[];
@@ -346,24 +365,6 @@ export interface PendingAssistantText {
 export interface PendingToolUpdate {
 	readonly args: unknown;
 	readonly partialResult: unknown;
-}
-
-/** Panel-facing view of one background job; settled jobs are retained until
- * the next user turn starts. */
-export interface BackgroundJobViewState {
-	readonly jobId: string;
-	readonly toolName: string;
-	/** Short label the caller named this job with; absent when unnamed. */
-	readonly name?: string;
-	readonly description?: string;
-	status: "live" | "aborting" | "completed" | "failed" | "cancelled";
-	readonly startedAt: number;
-	endedAt?: number;
-	totalBytesSeen: number;
-	/** Latest structured report accepted for this job. */
-	report?: BackgroundJobReportSnapshot;
-	/** Last non-empty output line, decoded from progress increments. */
-	lastLine?: string;
 }
 
 export interface NoticeItem {
@@ -423,8 +424,8 @@ export interface TuiApplicationState {
 	shuttingDown: boolean;
 	/** Global toggle: show full transcript details instead of collapsed previews. */
 	toolOutputExpanded: boolean;
-	/** Which voice the working line speaks in; "off" is the plain wording. */
-	voicePack: VoicePackId;
+	/** Text other runtimes added to the composed rows, keyed by layout slot. */
+	readonly segments: SegmentStore;
 }
 
 export function createTuiApplicationState(): TuiApplicationState {
@@ -439,7 +440,7 @@ export function createTuiApplicationState(): TuiApplicationState {
 		},
 		shuttingDown: false,
 		toolOutputExpanded: false,
-		voicePack: "peon",
+		segments: new SegmentStore(),
 	};
 }
 
@@ -510,8 +511,6 @@ export function createAgentViewState(agentId: AgentId, status: AgentViewStatus =
 		extensionStatuses: new Map(),
 		unreadCount: 0,
 		attention: "none",
-		backgroundJobCount: 0,
-		backgroundJobs: new Map(),
 		hydration: "ready",
 		bufferedEvents: [],
 		runToolCount: 0,
@@ -534,6 +533,11 @@ export function ensureAgentProjection(
 	const created = createAgentViewState(agentId, status);
 	state.agents.set(agentId, created);
 	return created;
+}
+
+/** The agent every view renders against, or undefined while one is pending. */
+export function activeAgent(state: TuiApplicationState): AgentViewState | undefined {
+	return state.activeAgentId ? state.agents.get(state.activeAgentId) : undefined;
 }
 
 export function setActiveAgent(state: TuiApplicationState, agentId: AgentId): AgentViewState {

@@ -330,16 +330,13 @@ describe("createWidiRuntime", () => {
 			"find",
 			"ls",
 			"ask_human",
-			"wait_for_jobs",
-			"read_job",
-			"kill_job",
 			"list_agents",
 			"spawn_agent",
 			"send_message",
 			"watch_agent",
 			"dispose_agent",
 		]);
-		for (const name of ["read", "bash", "edit", "write", "grep", "find", "ls", "ask_human", "wait_for_jobs"]) {
+		for (const name of ["read", "bash", "edit", "write", "grep", "find", "ls", "ask_human"]) {
 			expect(resolved.getTool(name)?.source).toEqual({ kind: "core", id: "builtin" });
 		}
 		expect(resolved.diagnostics).toEqual([]);

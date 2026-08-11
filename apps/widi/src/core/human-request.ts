@@ -82,7 +82,17 @@ export interface HumanRequest {
 	provisional?: boolean;
 }
 
-export type HumanRequestDraft = Omit<HumanRequest, "source">;
+export type HumanRequestDraft = Omit<HumanRequest, "source"> & {
+	/**
+	 * The call this request belongs to, when a tool is the one asking. The
+	 * orchestrator turns it into the tool-scoped source; the agent id stays its
+	 * own to fill in, so a tool can name itself and nothing beyond that.
+	 *
+	 * Without it the request is attributed to the agent as a whole, which is
+	 * all a caller that is not a tool can honestly claim.
+	 */
+	tool?: { readonly toolCallId: string; readonly toolName: string };
+};
 
 export interface HumanRequestEnvelope extends Omit<HumanRequest, "signal"> {
 	id: string;

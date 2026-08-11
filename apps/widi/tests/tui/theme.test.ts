@@ -2,7 +2,6 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { renderTimelineItem, type TimelineRenderContext } from "../../src/tui/components/timeline-item.ts";
 import type { PersistentMessageItem } from "../../src/tui/state.ts";
 import {
 	defaultPalette,
@@ -14,6 +13,7 @@ import {
 	type ThemePalette,
 	theme,
 } from "../../src/tui/theme/theme.ts";
+import { renderTimelineItem, type TimelineRenderContext } from "../../src/tui/views/utils/timeline-item.ts";
 
 const HOT_PALETTE: ThemePalette = {
 	accent: "#ff0000",

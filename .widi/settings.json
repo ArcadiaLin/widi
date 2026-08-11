@@ -1,6 +1,6 @@
 {
-  "defaultProvider": "vllm",
-  "defaultModel": "qwen3.6-35b-a3b",
+  "defaultProvider": "kimi-coding",
+  "defaultModel": "k3",
   "defaultThinkingLevel": "medium",
   "defaultProfile": "widi-dev",
   "enabledProfiles": [

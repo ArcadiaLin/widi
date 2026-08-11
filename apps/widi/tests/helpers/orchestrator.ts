@@ -21,12 +21,11 @@ import {
 } from "../../src/core/agent-profile.ts";
 import type { LiveAgent, WidiAgentHarness } from "../../src/core/agent-types.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
-import type { BackgroundJobHost } from "../../src/core/background/index.ts";
 import type { AgentContextMonitor } from "../../src/core/context-monitor.ts";
 import type { OrchestratorDiagnostic } from "../../src/core/diagnostics.ts";
 import { type MessageSink, messageBindingFor } from "../../src/core/message.ts";
 import { ModelRegistry } from "../../src/core/model-registry.ts";
-import { createCorePersistenceRegistry } from "../../src/core/persistence-registry.ts";
+import { PersistenceRegistry } from "../../src/core/persistence/index.ts";
 import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
 import { ResourceLoader } from "../../src/core/resource-loader.ts";
 import { type AgentSessionMetadata, SessionManager } from "../../src/core/session-manager.ts";
@@ -35,6 +34,7 @@ import { ToolRegistry } from "../../src/core/tool-registry.ts";
 import { registerCoreCodingTools } from "../../src/core/tools/coding/builtin.ts";
 import type { ToolDefinition } from "../../src/core/tools/types.ts";
 import type { AgentContextUsage } from "../../src/core/types.ts";
+import { singleWorkspaceResolver, type Workspace, type WorkspaceResolver } from "../../src/core/workspace.ts";
 
 export class MemoryExecutionEnv implements ExecutionEnv {
 	cwd = "/workspace";
@@ -358,6 +358,35 @@ export async function createEmptyModelRegistry(env: MemoryExecutionEnv): Promise
 	return await ModelRegistry.inMemory({ executionEnv: env, authStorage, configValueResolver });
 }
 
+/** The single workspace every orchestrator test runs in. */
+export function testWorkspaceResolver(env: MemoryExecutionEnv, cwd = "/workspace/project"): WorkspaceResolver {
+	return singleWorkspaceResolver({
+		cwd,
+		trust: { trusted: true, source: "override" },
+		resourceLoader: new ResourceLoader({ executionEnv: env, cwd }),
+	});
+}
+
+/** Opens any directory asked for, so a test can spawn across workspaces. */
+export function openWorkspaceResolver(env: MemoryExecutionEnv, startupCwd = "/workspace/project"): WorkspaceResolver {
+	const workspace = (cwd: string): Workspace => ({
+		cwd,
+		trust: { trusted: true, source: "override" },
+		resourceLoader: new ResourceLoader({ executionEnv: env, cwd }),
+	});
+	const opened = new Map<string, Workspace>([[startupCwd, workspace(startupCwd)]]);
+	return {
+		startup: opened.get(startupCwd) as Workspace,
+		resolve: async (cwd) => {
+			const existing = opened.get(cwd);
+			if (existing) return existing;
+			const created = workspace(cwd);
+			opened.set(cwd, created);
+			return created;
+		},
+	};
+}
+
 export async function createOrchestrator(
 	env: MemoryExecutionEnv,
 	options: {
@@ -367,16 +396,17 @@ export async function createOrchestrator(
 		modelRegistry?: ModelRegistry;
 		toolRegistry?: ToolRegistry;
 		settingManager?: SettingManager;
+		workspaces?: WorkspaceResolver;
 	} = {},
 ): Promise<AgentOrchestrator> {
 	return new AgentOrchestrator({
 		executionEnv: env,
-		resourceLoader: new ResourceLoader({ executionEnv: env, cwd: "/workspace/project" }),
+		workspaces: options.workspaces ?? testWorkspaceResolver(env),
 		sessionManager: new SessionManager({
 			fs: env,
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
-			registry: createCorePersistenceRegistry(),
+			registry: new PersistenceRegistry(),
 		}),
 		settingManager: options.settingManager ?? new SettingManager(),
 		modelRegistry: options.modelRegistry ?? (await createModelRegistry(env)),
@@ -414,7 +444,7 @@ export function createToolRegistry(...tools: ToolDefinition[]): ToolRegistry {
 
 export function createCoreCodingToolRegistry(): ToolRegistry {
 	const registry = new ToolRegistry();
-	registerCoreCodingTools(registry, "/workspace/project");
+	registerCoreCodingTools(registry);
 	return registry;
 }
 
@@ -490,11 +520,6 @@ export function harnessEventDriver(
 /** The spawn-tree parent the runtime holds in memory for this agent. */
 export function spawnParentOf(orchestrator: AgentOrchestrator, agentId: string): string | undefined {
 	return (orchestrator as unknown as { _spawnParent: Map<string, string> })._spawnParent.get(agentId);
-}
-
-/** The owner-scoped job capabilities the agent's own tools were handed. */
-export function requireAgentJobs(orchestrator: AgentOrchestrator, agentId: string): BackgroundJobHost {
-	return requireLiveAgent(orchestrator, agentId).backgroundAttachment.host;
 }
 
 /**

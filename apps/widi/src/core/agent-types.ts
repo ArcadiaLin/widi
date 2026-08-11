@@ -1,7 +1,6 @@
 import type { AgentHarness, Skill } from "@widi/agent-core";
 import type { AgentProfile, AgentProfileSource } from "./agent-profile.js";
 import { toAgentProfileReference } from "./agent-profile.js";
-import type { OwnerAttachment } from "./background/index.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
 import type { ExtensionRunner, ExtensionRunnerSnapshot } from "./extension/index.ts";
 import type { ResourceSource } from "./resource-loader.js";
@@ -9,6 +8,7 @@ import type { AgentSessionMetadata } from "./session-manager.ts";
 import type { ProjectContextFile } from "./system-prompt.ts";
 import type { ResolvedAgentHarnessTool, ToolAdapterContext } from "./tool-registry.ts";
 import type { AgentActivitySnapshot, AgentContextUsage, AgentId, AgentToolsSnapshot, RuntimeModel } from "./types.ts";
+import type { Workspace } from "./workspace.ts";
 
 /**
  * The serializable identity of a live agent's profile, for display and for the
@@ -86,6 +86,12 @@ export interface ExtensionRunnerBindings {
 export interface LiveAgent {
 	readonly agentId: AgentId;
 	readonly generation: number;
+	/**
+	 * Where this agent works. Written once at spawn and never again: a running
+	 * agent's paths, its system prompt and its stored session all name this
+	 * directory, and there is no way to make them all change together.
+	 */
+	readonly workspace: Workspace;
 	readonly profile: AgentProfileRecordReference;
 	readonly resolvedProfile: AgentProfile;
 	readonly sessionMetadata?: AgentSessionMetadata;
@@ -95,7 +101,6 @@ export interface LiveAgent {
 	readonly systemPrompt: AgentSystemPromptFacts;
 	readonly harness: WidiAgentHarness;
 	readonly settings: AgentSettings;
-	readonly backgroundAttachment: OwnerAttachment;
 	extensionRunner: ExtensionRunner;
 	extensionBindings: ExtensionRunnerBindings;
 	toolPolicy: AgentToolPolicy;
@@ -106,16 +111,11 @@ export interface LiveAgent {
 export interface AgentSnapshot {
 	readonly agentId: AgentId;
 	readonly generation: number;
+	/** The directory this agent's paths, prompt and stored session all name. */
+	readonly cwd: string;
 	readonly profile: AgentProfileRecordReference;
 	readonly spawnedBy?: AgentId;
 	readonly sessionMetadata?: AgentSessionMetadata;
-	/**
-	 * Address of the persisted session, absent for an ephemeral agent.
-	 *
-	 * The session header's own lineage - `spawnedBy`, `forkedFrom` - names other
-	 * sessions by this same address, so a consumer holding a set of agents can
-	 * resolve one to another without learning anything about storage layout.
-	 */
 	readonly sessionRef?: string;
 	readonly model: RuntimeModel;
 	readonly thinkingLevel: ReturnType<WidiAgentHarness["getThinkingLevel"]>;

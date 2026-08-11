@@ -3,9 +3,10 @@
  *
  * The property under test is that the report does not depend on the stopped
  * agent doing anything. It is delivered when the agent is interrupted, when it
- * stops silently, and when it is disposed - the three cases a voluntary "I am
- * finished" call loses. The gates are the other half: an agent that paused to
- * wait on work it started has not stopped, and must not be reported as though
+ * stops silently, and when it is disposed before reporting - the cases a
+ * voluntary "I am finished" call loses. The gates are the other half: an
+ * agent that paused to wait on work it started has not stopped, and must not
+ * be reported as though
  * it had.
  *
  * Driven through the tool, because the tool is where all of this lives. The
@@ -17,7 +18,6 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentHarnessEvent, CompactResult } from "@widi/agent-core";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
-import type { OwnerAttachment } from "../../src/core/background/index.ts";
 import type { AgentToOrchestratorHost } from "../../src/core/host.ts";
 import { messageBindingFor } from "../../src/core/message.ts";
 import { SettingManager } from "../../src/core/setting-manager.ts";
@@ -31,8 +31,6 @@ import {
 	harnessInputText,
 	MemoryExecutionEnv,
 	requireAgentHarness,
-	requireAgentJobs,
-	requireLiveAgent,
 	stubCompaction,
 } from "../helpers/orchestrator.ts";
 
@@ -71,20 +69,18 @@ function createDeferred(): Deferred {
 
 function agentHost(orchestrator: AgentOrchestrator, agentId: string): AgentToOrchestratorHost {
 	return (
-		orchestrator as unknown as {
-			_createAgentHost: (agentId: string, attachment: OwnerAttachment) => AgentToOrchestratorHost;
-		}
-	)._createAgentHost(agentId, requireLiveAgent(orchestrator, agentId).backgroundAttachment);
+		orchestrator as unknown as { _createAgentHost: (agentId: string) => AgentToOrchestratorHost }
+	)._createAgentHost(agentId);
 }
 
 function toolContext<TDetails>(orchestrator: AgentOrchestrator, agentId: string): ToolExecutionContext<TDetails> {
 	return {
 		signal: undefined,
 		onUpdate: undefined,
+		workspace: { cwd: "/workspace/project" },
 		extension: undefined,
 		human: undefined,
 		agents: agentHost(orchestrator, agentId),
-		jobs: requireAgentJobs(orchestrator, agentId),
 	};
 }
 
@@ -316,29 +312,9 @@ describe("agent watches", () => {
 		expect(inbox.texts).toHaveLength(0);
 	});
 
-	it("stays silent while the worker waits on a job it started", async () => {
-		const { orchestrator, watch, watcherAgentId, workerAgentId } = await createPair();
-		const inbox = watchInbox(orchestrator, watcherAgentId);
-		await watch(watcherAgentId, workerAgentId);
-
-		const started = requireAgentJobs(orchestrator, workerAgentId).startLocal({
-			toolCallId: "call-1",
-			toolName: "bash",
-		});
-		expect(started.ok).toBe(true);
-		if (started.ok) expect(started.execution.acceptBackground().ok).toBe(true);
-
-		await runAndStop(orchestrator, workerAgentId, assistantMessage("started the build"));
-		await settle();
-
-		// It stopped, but it is waiting on its own work and will be woken by it.
-		expect(inbox.texts).toHaveLength(0);
-	});
-
 	/**
-	 * The gate a delegation without a job needs. A worker waiting on its own
-	 * subagent holds no job, so the job count says it is done; only its own watch
-	 * says otherwise.
+	 * A worker waiting on its own subagent has stopped, but not in any sense its
+	 * own watcher cares about; only its own watch says so.
 	 */
 	it("stays silent while the worker waits on a subagent of its own", async () => {
 		const { orchestrator, watch, watcherAgentId, workerAgentId } = await createPair();
@@ -369,6 +345,19 @@ describe("agent watches", () => {
 		await vi.waitFor(() => expect(inbox.texts).toHaveLength(1));
 		expect(inbox.texts[0]).toContain(`<agent-notification from="${workerAgentId}" status="gone">`);
 		expect(inbox.texts[0]).toContain("will not report");
+	});
+
+	it("does not repeat a settled report when the worker is disposed", async () => {
+		const { orchestrator, watch, watcherAgentId, workerAgentId } = await createPair();
+		const inbox = watchInbox(orchestrator, watcherAgentId);
+		await watch(watcherAgentId, workerAgentId);
+
+		await runAndStop(orchestrator, workerAgentId, assistantMessage("done"));
+		await vi.waitFor(() => expect(inbox.texts).toHaveLength(1));
+		await orchestrator.disposeAgent(workerAgentId, { intent: "removed" });
+		await settle();
+
+		expect(inbox.texts).toHaveLength(1);
 	});
 
 	it("drops the watches a disposed watcher held", async () => {

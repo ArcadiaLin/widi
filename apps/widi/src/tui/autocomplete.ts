@@ -186,7 +186,12 @@ export class WidiCommandAutocompleteProvider implements AutocompleteProvider {
 	}
 
 	private commandContext() {
-		return { agentId: this.agentId, orchestrator: this.orchestrator, pendingModel: this.getPendingModel?.() };
+		return {
+			agentId: this.agentId,
+			orchestrator: this.orchestrator,
+			pendingModel: this.getPendingModel?.(),
+			...(this.cwd === undefined ? undefined : { workspaceCwd: this.cwd }),
+		};
 	}
 }
 

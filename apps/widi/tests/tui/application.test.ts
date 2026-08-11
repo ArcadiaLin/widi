@@ -8,10 +8,13 @@ import type { AgentSnapshot } from "../../src/core/agent-types.ts";
 import type { WidiRuntime, WidiRuntimeServices } from "../../src/core/runtime-service.ts";
 import type { OrchestratorEvent, RuntimeModel } from "../../src/core/types.ts";
 import { WidiTuiApplication } from "../../src/tui/application.ts";
+import { SEGMENT_SLOTS } from "../../src/tui/capabilities.ts";
 import type { CommandEngine } from "../../src/tui/commands/engine.ts";
-import type { WidiEditor } from "../../src/tui/editor.ts";
+import { setTransientQuip } from "../../src/tui/quips.ts";
 import { ensureAgentProjection, type StagedDraft, setActiveAgent } from "../../src/tui/state.ts";
-import { setSteadyVoice, setTransientVoice } from "../../src/tui/voice.ts";
+import type { WidiEditor } from "../../src/tui/views/editor.ts";
+import type { HumanRequestMenu } from "../../src/tui/views/human-request.ts";
+import type { SelectorDock } from "../../src/tui/views/selector-dock.ts";
 
 describe("WidiTuiApplication lazy agent spawn", () => {
 	it("does not spawn an agent when the TUI starts", async () => {
@@ -67,32 +70,41 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		expect(harness.promptAgent).not.toHaveBeenCalled();
 	});
 
-	it("closes the current agent on /new and keeps the session pending", async () => {
+	it("keeps the current agent on /new and stages a second one beside it", async () => {
 		const harness = await createApplicationHarness();
 		await submit(harness.application, "first");
 		harness.promptAgent.mockClear();
 		harness.spawnAgent.mockClear();
 
-		await submit(harness.application, "/new");
+		await submit(harness.application, "/new main");
 
-		expect(harness.disposeAgent).toHaveBeenCalledWith(
-			"main",
-			expect.objectContaining({ reason: expect.stringContaining("new session") }),
-		);
-		// The replaced agent leaves no projection behind: nothing to switch back to.
-		expect(harness.application.state.agents.has("main")).toBe(false);
+		expect(harness.disposeAgent).not.toHaveBeenCalled();
+		expect(harness.application.state.agents.has("main")).toBe(true);
 		expect(harness.application.state.activeAgentId).toBeUndefined();
 		expect(harness.spawnAgent).not.toHaveBeenCalled();
 		expect(harness.application.state.pendingAgent?.start).toEqual({
 			kind: "new-session",
 			profileId: "main",
 			model: model(),
+			// The staged session opens where the agent it was typed beside runs.
+			cwd: "/workspace",
 		});
+		// The row belongs to the conversation the command was typed in.
 		expect(
-			harness.application.state.pendingAgent?.timeline.find(
-				(item) => item.type === "command-result" && item.name === "new",
-			),
+			harness.application.state.agents
+				.get("main")
+				?.timeline.find((item) => item.type === "command-result" && item.name === "new"),
 		).toMatchObject({ type: "command-result", status: "completed" });
+	});
+
+	it("picks the profile when /new names none", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "first");
+
+		const outcome = await harness.application.capabilities.get("commands")?.run("/new");
+
+		expect(outcome).toMatchObject({ kind: "needs-argument", name: "new", candidates: [{ value: "main" }] });
+		expect(harness.application.state.pendingAgent).toBeUndefined();
 	});
 
 	it("creates the /new session when its first message is submitted", async () => {
@@ -101,11 +113,15 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		harness.promptAgent.mockClear();
 		harness.spawnAgent.mockClear();
 
-		await submit(harness.application, "/new");
+		await submit(harness.application, "/new main");
 		await submit(harness.application, "second");
 
 		expect(harness.spawnAgent).toHaveBeenCalledOnce();
-		expect(harness.spawnAgent).toHaveBeenCalledWith({ origin: { kind: "new", profileId: "main" }, model: model() });
+		expect(harness.spawnAgent).toHaveBeenCalledWith({
+			origin: { kind: "new", profileId: "main" },
+			model: model(),
+			cwd: "/workspace",
+		});
 		expect(harness.promptAgent).toHaveBeenCalledWith(
 			expect.objectContaining({ targetAgentId: "main-2", body: "second" }),
 		);
@@ -173,7 +189,7 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 
 		expect(harness.application.state.agents.get("main")?.status).toBe("disposed");
 		expect(harness.application.state.activeAgentId).toBeUndefined();
-		expect(harness.application.state.pendingAgent?.start).toEqual({ kind: "default" });
+		expect(harness.application.state.pendingAgent?.start).toEqual({ kind: "default", cwd: "/workspace" });
 		expect(harness.spawnAgent).not.toHaveBeenCalled();
 	});
 
@@ -218,7 +234,7 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		await submit(harness.application, "/dispose");
 
 		expect(harness.application.state.activeAgentId).toBeUndefined();
-		expect(harness.application.state.pendingAgent?.start).toEqual({ kind: "default" });
+		expect(harness.application.state.pendingAgent?.start).toEqual({ kind: "default", cwd: "/workspace" });
 		expect(harness.spawnAgent).not.toHaveBeenCalled();
 	});
 
@@ -232,6 +248,75 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		await submit(harness.application, "/dispose");
 
 		expect(harness.application.state.activeAgentId).toBe("worker");
+	});
+
+	// The staged session has no id, so leaving it is losing it. Everywhere else
+	// in the shell a draft survives being left, which is why this one says so.
+	it("says the staged session is gone when leaving it drops typed text", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "first");
+		await submit(harness.application, "/new main");
+		const staged = harness.application.state.pendingAgent;
+		if (!staged) throw new Error("Expected a staged session.");
+		staged.draft = "half a thought";
+
+		harness.application.capabilities.get("agentStrip")?.switchTo("main");
+		await new Promise<void>((resolve) => queueMicrotask(resolve));
+
+		expect(harness.application.state.pendingAgent).toBeUndefined();
+		expect(harness.application.state.globalNotices.at(-1)?.text).toContain("Dropped the staged main session");
+	});
+
+	it("says nothing when the staged session it drops is empty", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "first");
+		const notices = harness.application.state.globalNotices.length;
+		await submit(harness.application, "/new main");
+
+		harness.application.capabilities.get("agentStrip")?.switchTo("main");
+		await new Promise<void>((resolve) => queueMicrotask(resolve));
+
+		expect(harness.application.state.pendingAgent).toBeUndefined();
+		expect(harness.application.state.globalNotices).toHaveLength(notices);
+	});
+
+	// Nothing in this shell asked: another agent's `dispose_agent` call, or a
+	// subtree dispose taken above this one, arrives only as an event.
+	it("leaves an agent disposed outside the shell", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "first");
+		const worker = ensureAgentProjection(harness.application.state, "worker", "idle");
+		worker.snapshot = snapshot("worker", model());
+		setActiveAgent(harness.application.state, "worker");
+
+		deliverEvent(harness.application, {
+			type: "agent_disposed",
+			agentId: "worker",
+			intent: "removed",
+			disposedAt: new Date(0).toISOString(),
+		});
+		await new Promise<void>((resolve) => queueMicrotask(resolve));
+
+		expect(harness.application.state.agents.get("worker")?.status).toBe("disposed");
+		expect(harness.application.state.activeAgentId).toBe("main");
+	});
+
+	it("keeps showing the current agent when another one is disposed", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "first");
+		const worker = ensureAgentProjection(harness.application.state, "worker", "idle");
+		worker.snapshot = snapshot("worker", model());
+
+		deliverEvent(harness.application, {
+			type: "agent_disposed",
+			agentId: "worker",
+			intent: "removed",
+			disposedAt: new Date(0).toISOString(),
+		});
+		await new Promise<void>((resolve) => queueMicrotask(resolve));
+
+		expect(harness.application.state.agents.get("worker")?.status).toBe("disposed");
+		expect(harness.application.state.activeAgentId).toBe("main");
 	});
 
 	it("keeps the current agent selected when disposal fails", async () => {
@@ -254,12 +339,12 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		});
 	});
 
-	it("keeps the current agent selected when /new disposal fails", async () => {
+	it("keeps the current agent selected when /clear disposal fails", async () => {
 		const harness = await createApplicationHarness();
 		await submit(harness.application, "first");
 		harness.disposeAgent.mockRejectedValueOnce(new Error("dispose failed"));
 
-		await submit(harness.application, "/new");
+		await submit(harness.application, "/clear");
 
 		expect(harness.application.state.activeAgentId).toBe("main");
 		expect(harness.application.state.agents.has("main")).toBe(true);
@@ -267,7 +352,7 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		expect(
 			harness.application.state.agents
 				.get("main")
-				?.timeline.find((item) => item.type === "command-result" && item.name === "new"),
+				?.timeline.find((item) => item.type === "command-result" && item.name === "clear"),
 		).toMatchObject({
 			type: "command-result",
 			status: "failed",
@@ -282,39 +367,42 @@ describe("WidiTuiApplication animation ticker", () => {
 		setActiveAgent(harness.application.state, "main").status = "idle";
 		ensureAgentProjection(harness.application.state, "background", "running");
 		const ticker = harness.application as unknown as {
-			updateJobsTicker(): void;
+			updateAnimationTicker(): void;
 			switchAgent(agentId: string): void;
-			jobsTickerInterval?: number;
+			animationTickerInterval?: number;
 			hydratedAgents: Set<string>;
 		};
 		ticker.hydratedAgents.add("main");
 		ticker.hydratedAgents.add("background");
 
-		ticker.updateJobsTicker();
-		expect(ticker.jobsTickerInterval).toBeUndefined();
+		ticker.updateAnimationTicker();
+		expect(ticker.animationTickerInterval).toBeUndefined();
 
 		ticker.switchAgent("background");
-		expect(ticker.jobsTickerInterval).toBe(160);
+		expect(ticker.animationTickerInterval).toBe(160);
 
 		ticker.switchAgent("main");
-		expect(ticker.jobsTickerInterval).toBeUndefined();
+		expect(ticker.animationTickerInterval).toBeUndefined();
 	});
 
-	// A voice line expiring is not an event; without a tick "Job's done." would
+	// A quip expiring is not an event; without a tick "Job's done." would
 	// stay on screen until the next keystroke.
 	it("ticks while the working line is holding a line that expires", async () => {
 		const harness = await createApplicationHarness();
 		const agent = setActiveAgent(harness.application.state, "main");
 		agent.status = "idle";
-		const ticker = harness.application as unknown as { updateJobsTicker(): void; jobsTickerInterval?: number };
+		const ticker = harness.application as unknown as {
+			updateAnimationTicker(): void;
+			animationTickerInterval?: number;
+		};
 
-		setTransientVoice(agent, harness.application.state.voicePack, "done");
-		ticker.updateJobsTicker();
-		expect(ticker.jobsTickerInterval).toBe(250);
+		setTransientQuip(agent, "done");
+		ticker.updateAnimationTicker();
+		expect(ticker.animationTickerInterval).toBe(250);
 
-		agent.voice = undefined;
-		ticker.updateJobsTicker();
-		expect(ticker.jobsTickerInterval).toBeUndefined();
+		agent.quip = undefined;
+		ticker.updateAnimationTicker();
+		expect(ticker.animationTickerInterval).toBeUndefined();
 	});
 });
 
@@ -330,7 +418,7 @@ describe("WidiTuiApplication working line", () => {
 
 		(harness.application as unknown as { switchAgent(agentId: string): void }).switchAgent("worker");
 
-		expect(agent.voice?.steady.state).toBe("working");
+		expect(agent.quip?.steady.state).toBe("working");
 	});
 
 	it("says something after the third interrupt in a row", async () => {
@@ -340,10 +428,10 @@ describe("WidiTuiApplication working line", () => {
 
 		interrupt(harness.application);
 		interrupt(harness.application);
-		expect(agent.voice?.transient).toBeUndefined();
+		expect(agent.quip?.transient).toBeUndefined();
 
 		interrupt(harness.application);
-		expect(agent.voice?.transient?.state).toBe("poked");
+		expect(agent.quip?.transient?.state).toBe("poked");
 		expect(harness.abortAgent).toHaveBeenCalledTimes(3);
 	});
 
@@ -364,19 +452,7 @@ describe("WidiTuiApplication working line", () => {
 			now.mockRestore();
 		}
 
-		expect(agent.voice?.transient).toBeUndefined();
-	});
-
-	it("re-rolls every line when /voice changes the pack", async () => {
-		const harness = await createApplicationHarness();
-		const agent = setActiveAgent(harness.application.state, "main");
-		agent.status = "idle";
-		setSteadyVoice(agent, "peon", "idle");
-
-		await submit(harness.application, "/voice off");
-
-		expect(harness.application.state.voicePack).toBe("off");
-		expect(agent.voice?.steady).toEqual({ state: "idle", text: "Ready" });
+		expect(agent.quip?.transient).toBeUndefined();
 	});
 });
 
@@ -630,6 +706,10 @@ async function submit(application: WidiTuiApplication, text: string): Promise<vo
 	await new Promise<void>((resolve) => queueMicrotask(resolve));
 }
 
+function selectorInput(application: WidiTuiApplication, data: string): void {
+	(application as unknown as { selectorDock: SelectorDock }).selectorDock.handleInput(data);
+}
+
 function deliverEvent(application: WidiTuiApplication, event: OrchestratorEvent): void {
 	(application as unknown as { handleEvent(event: OrchestratorEvent): void }).handleEvent(event);
 }
@@ -727,6 +807,430 @@ describe("WidiTuiApplication TUI extension host", () => {
 	});
 });
 
+/**
+ * The capability layer's load-bearing claim: a write is deferred past the
+ * current frame, which is what makes calling one from inside a render safe
+ * rather than something an extension author has to remember not to do.
+ */
+describe("WidiTuiApplication capabilities", () => {
+	it("publishes the editor surface under its layout key", async () => {
+		const harness = await createApplicationHarness();
+
+		expect(harness.application.capabilities.keys()).toContain("editor");
+		expect(harness.application.capabilities.get("no-such-part")).toBeUndefined();
+	});
+
+	it("reads immediately and writes after the frame", async () => {
+		const harness = await createApplicationHarness();
+		const editor = harness.application.capabilities.get("editor");
+		if (!editor) throw new Error("Expected the editor capability to be published.");
+
+		editor.setText("from an extension");
+		expect(editor.getText()).toBe("");
+
+		await vi.waitFor(() => {
+			expect(editor.getText()).toBe("from an extension");
+		});
+
+		editor.insertAtCursor("!");
+		await vi.waitFor(() => {
+			expect(editor.getText()).toBe("from an extension!");
+		});
+
+		editor.clear();
+		await vi.waitFor(() => {
+			expect(editor.getText()).toBe("");
+		});
+	});
+
+	it("runs a command and leaves the same transcript trace a typed one leaves", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "hello");
+		const commands = harness.application.capabilities.get("commands");
+		if (!commands) throw new Error("Expected the commands capability to be published.");
+
+		const outcome = await commands.run("/model:test/next-model");
+
+		expect(outcome).toMatchObject({ kind: "executed", name: "model" });
+		expect(harness.setAgentModelByReference).toHaveBeenCalledWith("main", "test/next-model");
+		expect(harness.application.state.agents.get("main")?.timeline.at(-1)).toMatchObject({
+			type: "command-result",
+			name: "model",
+			status: "completed",
+		});
+	});
+
+	it("lists commands with availability, and reports a failing one without throwing", async () => {
+		const harness = await createApplicationHarness();
+		const commands = harness.application.capabilities.get("commands");
+		if (!commands) throw new Error("Expected the commands capability to be published.");
+
+		expect(commands.list().map((command) => command.name)).toContain("status");
+
+		// /status needs an active agent and there is none yet.
+		expect(await commands.run("/status")).toMatchObject({ kind: "failed", name: "status" });
+	});
+
+	it("hands back candidates instead of opening a picker, and prompt text instead of sending it", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "hello");
+		const commands = harness.application.capabilities.get("commands");
+		if (!commands) throw new Error("Expected the commands capability to be published.");
+		harness.promptAgent.mockClear();
+
+		expect(await commands.run("/model")).toMatchObject({
+			kind: "needs-argument",
+			name: "model",
+			candidates: [{ value: "test/next-model" }],
+		});
+		(harness.application as unknown as { engine: CommandEngine }).engine.register({
+			kind: "prompt",
+			agentPolicy: "active",
+			name: "expander",
+			description: "expands into prompt text",
+			expand: async () => "expanded prompt text",
+		});
+		expect(await commands.run("/expander")).toEqual({ kind: "expanded", text: "expanded prompt text" });
+		expect(await commands.run("plain text")).toEqual({ kind: "not-a-command" });
+		expect(harness.promptAgent).not.toHaveBeenCalled();
+		// The expansion left nothing behind: the row belongs to a prompt that was
+		// never sent.
+		expect(
+			harness.application.state.agents.get("main")?.timeline.filter((item) => item.type === "command-result"),
+		).toEqual([]);
+	});
+
+	it("reports the visible agent and every change of it", async () => {
+		const harness = await createApplicationHarness();
+		const strip = harness.application.capabilities.get("agentStrip");
+		if (!strip) throw new Error("Expected the agent strip capability to be published.");
+		const seen: Array<string | undefined> = [];
+		const detach = strip.onVisibleAgentChanged((agentId) => seen.push(agentId));
+
+		expect(strip.visibleAgentId()).toBeUndefined();
+		expect(strip.list()).toEqual([]);
+		await submit(harness.application, "hello");
+
+		expect(strip.visibleAgentId()).toBe("main");
+		expect(strip.list()).toEqual([
+			{ agentId: "main", label: "Main Agent", depth: 0, status: "idle", spawnedBy: undefined, unreadCount: 0 },
+		]);
+		expect(seen).toEqual(["main"]);
+
+		detach();
+		await submit(harness.application, "/new main");
+		expect(seen).toEqual(["main"]);
+	});
+
+	it("switches and disposes agents after the frame", async () => {
+		const harness = await createApplicationHarness();
+		const strip = harness.application.capabilities.get("agentStrip");
+		if (!strip) throw new Error("Expected the agent strip capability to be published.");
+		await submit(harness.application, "hello");
+		await submit(harness.application, "/new main");
+		await submit(harness.application, "second");
+		expect(strip.visibleAgentId()).toBe("main-2");
+
+		strip.switchTo("main-2");
+		await strip.dispose("main-2");
+
+		expect(harness.disposeAgent).toHaveBeenCalledWith("main-2", expect.objectContaining({ intent: "removed" }));
+		// /new left the first conversation alive, so disposal falls back to it.
+		expect(strip.visibleAgentId()).toBe("main");
+	});
+
+	it("writes an attributed ephemeral row and takes it back", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "hello");
+		const chat = harness.application.capabilities.get("chat", "drill");
+		if (!chat) throw new Error("Expected the chat capability to be published.");
+		const timeline = () => harness.application.state.agents.get("main")?.timeline ?? [];
+
+		chat.insert("step", "chapter one");
+		await vi.waitFor(() => {
+			expect(timeline().at(-1)).toMatchObject({
+				type: "extension-output",
+				extensionId: "drill",
+				durability: "ephemeral",
+				text: "chapter one",
+			});
+		});
+
+		// The same id is an update, not a second row.
+		const before = timeline().length;
+		chat.insert("step", "chapter one, revised");
+		await vi.waitFor(() => {
+			expect(timeline().at(-1)).toMatchObject({ text: "chapter one, revised" });
+		});
+		expect(timeline()).toHaveLength(before);
+
+		chat.remove("step");
+		await vi.waitFor(() => {
+			expect(timeline().filter((item) => item.type === "extension-output")).toEqual([]);
+		});
+	});
+
+	it("expands a row it wrote, and keeps it open across a rewrite", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "hello");
+		const chat = harness.application.capabilities.get("chat", "drill");
+		if (!chat) throw new Error("Expected the chat capability to be published.");
+		const row = () =>
+			harness.application.state.agents.get("main")?.timeline.find((item) => item.type === "extension-output");
+
+		chat.insert("step", "chapter one");
+		chat.setExpanded("step", true);
+		await vi.waitFor(() => {
+			expect(row()).toMatchObject({ expanded: true });
+		});
+
+		chat.insert("step", "chapter one, revised");
+		await vi.waitFor(() => {
+			expect(row()).toMatchObject({ text: "chapter one, revised", expanded: true });
+		});
+
+		chat.setExpanded("step", false);
+		await vi.waitFor(() => {
+			expect(row()).toMatchObject({ expanded: false });
+		});
+
+		// Another extension's id is not this one's, so it reaches nothing.
+		harness.application.capabilities.get("chat", "other")?.setExpanded("step", true);
+		await vi.waitFor(() => {
+			expect(row()).toMatchObject({ expanded: false });
+		});
+	});
+
+	it("reads the whole staging buffer and writes only its own entries", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "hello");
+		const staged = harness.application.capabilities.get("stagedInput", "drill");
+		if (!staged) throw new Error("Expected the staged input capability to be published.");
+		const buffer = () => harness.application.state.agents.get("main")?.staged ?? [];
+
+		const mine = await staged.add("from the extension");
+		const theirs = harness.application.stageDraft("from the human");
+		expect(mine).toBe(1);
+		expect(staged.list()).toEqual([
+			{ id: 1, text: "from the extension", extensionId: "drill" },
+			{ id: 2, text: "from the human" },
+		]);
+
+		staged.update(1, "rewritten by its own producer");
+		await vi.waitFor(() => {
+			expect(buffer()[0]?.text).toBe("rewritten by its own producer");
+		});
+
+		// The human's entry is not this caller's to rewrite or drop: the branch
+		// would file words under a producer that never wrote them.
+		staged.update(theirs?.id ?? 0, "hijacked");
+		staged.remove(theirs?.id ?? 0);
+		await vi.waitFor(() => {
+			expect(buffer()).toHaveLength(2);
+		});
+		expect(buffer()[1]?.text).toBe("from the human");
+
+		staged.remove(1);
+		await vi.waitFor(() => {
+			expect(staged.list()).toEqual([{ id: 2, text: "from the human" }]);
+		});
+	});
+
+	// Left out of the listing, an extension polling the buffer would watch its
+	// own text vanish and stage it a second time.
+	it("still lists a draft a human took into the editor", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "hello");
+		const staged = harness.application.capabilities.get("stagedInput", "drill");
+		if (!staged) throw new Error("Expected the staged input capability to be published.");
+
+		await staged.add("first");
+		await staged.add("second");
+		(harness.application as unknown as { takeStagedIntoEditor(): void }).takeStagedIntoEditor();
+
+		expect(staged.list()).toEqual([
+			{ id: 1, text: "first", extensionId: "drill" },
+			{ id: 2, text: "second", extensionId: "drill", heldInEditor: true },
+		]);
+		// It is out of the buffer while a human is rewriting it, and theirs until
+		// they put it back.
+		staged.update(2, "taken back mid-edit");
+		await vi.waitFor(() => {
+			expect(harness.application.state.agents.get("main")?.stagedEditing?.draft.text).toBe("second");
+		});
+	});
+
+	it("reports the input queue and promotes it to steering", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "hello");
+		const queued = harness.application.capabilities.get("queuedInput");
+		if (!queued) throw new Error("Expected the queued input capability to be published.");
+		const agent = harness.application.state.agents.get("main");
+		if (!agent) throw new Error("Expected the agent projection.");
+		agent.queue = { steer: ["stop that"], followUp: ["then this", "and this"], nextTurn: 0 };
+		agent.pendingFollowUps = [{ id: 1, text: "on its way" }];
+
+		expect(queued.list()).toEqual({
+			steer: ["stop that"],
+			followUp: ["then this", "and this"],
+			unacknowledged: ["on its way"],
+		});
+
+		expect(await queued.steer()).toBe(2);
+		expect(harness.steerQueuedFollowUps).toHaveBeenCalledWith("main");
+		// The queue row empties on core's own event; nothing is said on top of it.
+		expect(harness.application.state.globalNotices.some((notice) => notice.text.includes("steering"))).toBe(false);
+	});
+
+	it("docks a selection of its own and waits for the answer", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "hello");
+		const dock = harness.application.capabilities.get("selectorDock");
+		if (!dock) throw new Error("Expected the selector dock capability to be published.");
+
+		const answer = dock.open({
+			title: "Which chapter?",
+			description: "pick where the drill starts",
+			choices: [{ value: "one", label: "Chapter one" }, { value: "two" }],
+		});
+		await vi.waitFor(() => {
+			expect(dock.isOpen()).toBe(true);
+		});
+		// The selection took the editor's place rather than floating over it.
+		expect(harness.application.state.mode).toBe("selector");
+
+		selectorInput(harness.application, "\r");
+		expect(await answer).toBe("one");
+		expect(dock.isOpen()).toBe(false);
+		expect(harness.application.state.mode).toBe("editor");
+	});
+
+	it("resolves a docked selection as a cancel however it was taken down", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "hello");
+		const dock = harness.application.capabilities.get("selectorDock");
+		if (!dock) throw new Error("Expected the selector dock capability to be published.");
+		const choices = [{ value: "one" }];
+
+		const escaped = dock.open({ title: "Escaped", choices });
+		await vi.waitFor(() => expect(dock.isOpen()).toBe(true));
+		selectorInput(harness.application, "\x1b");
+		expect(await escaped).toBeUndefined();
+
+		const withdrawn = dock.open({ title: "Withdrawn", choices });
+		await vi.waitFor(() => expect(dock.isOpen()).toBe(true));
+		dock.close();
+		expect(await withdrawn).toBeUndefined();
+
+		// Nothing reaches the view on this path, so only the dock can report it.
+		const interrupted = dock.open({ title: "Interrupted", choices });
+		await vi.waitFor(() => expect(dock.isOpen()).toBe(true));
+		(harness.application as unknown as { interrupt(): void }).interrupt();
+		expect(await interrupted).toBeUndefined();
+
+		// An occupied dock belongs to whoever the human is answering.
+		const held = dock.open({ title: "Held", choices });
+		await vi.waitFor(() => expect(dock.isOpen()).toBe(true));
+		await expect(dock.open({ title: "Second", choices })).rejects.toThrow("already docked");
+		dock.close();
+		expect(await held).toBeUndefined();
+	});
+
+	it("lists pending requests and reports a presenter that throws exactly once", async () => {
+		const harness = await createApplicationHarness();
+		const runPromise = harness.application.run();
+		try {
+			await submit(harness.application, "hello");
+			const requests = harness.application.capabilities.get("humanRequests", "drill");
+			if (!requests) throw new Error("Expected the human requests capability to be published.");
+			const menu = (harness.application as unknown as { humanRequests: HumanRequestMenu }).humanRequests;
+			requests.present(() => {
+				throw new Error("presenter is broken");
+			});
+
+			const answer = menu.request({
+				id: "request-1",
+				agentId: "main",
+				source: { kind: "tool", agentId: "main", toolCallId: "call-1", toolName: "ask_human" },
+				kind: "confirm",
+				title: "Deploy?",
+				createdAt: new Date(0).toISOString(),
+			});
+			expect(requests.list()).toEqual([expect.objectContaining({ id: "request-1", title: "Deploy?" })]);
+
+			menu.render(80);
+			menu.render(80);
+			const reported = harness.application.state.diagnostics
+				.list()
+				.filter((record) => record.diagnostic.code === "tui_extension.request_presenter_failed");
+			expect(reported).toHaveLength(1);
+			// Once, not once per frame: the log's own dedupe would still count two.
+			expect(reported[0]?.count).toBe(1);
+			expect(reported[0]?.diagnostic.extensionId).toBe("drill");
+
+			menu.close();
+			await expect(answer).rejects.toThrow();
+			expect(requests.list()).toEqual([]);
+		} finally {
+			await harness.application.shutdown("test cleanup");
+			await runPromise;
+		}
+	});
+
+	it("puts named text into all five composed rows", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "hello");
+		const state = harness.application.state;
+
+		for (const slot of SEGMENT_SLOTS) {
+			const segments = harness.application.capabilities.get(slot, "drill");
+			if (!segments) throw new Error(`Expected the ${slot} capability to be published.`);
+			segments.set("mark", `${slot} mark`);
+		}
+
+		await vi.waitFor(() => {
+			expect(state.segments.texts("header")).toEqual(["header mark"]);
+		});
+		expect(state.segments.texts("workingLine")).toEqual(["workingLine mark"]);
+		expect(harness.application.capabilities.get("footer", "drill")?.list()).toEqual([
+			{ id: "ext:drill:mark", text: "footer mark", order: 0 },
+		]);
+		// Scoped: a second extension neither sees nor can drop the first one's text.
+		expect(harness.application.capabilities.get("footer", "other")?.list()).toEqual([]);
+
+		harness.application.capabilities.get("status", "drill")?.remove("mark");
+		await vi.waitFor(() => {
+			expect(state.segments.texts("status")).toEqual([]);
+		});
+	});
+
+	it("posts a notice that expires, and one that waits to be dismissed", async () => {
+		vi.useFakeTimers();
+		try {
+			const harness = await createApplicationHarness();
+			const notices = harness.application.capabilities.get("notices", "drill");
+			if (!notices) throw new Error("Expected the notices capability to be published.");
+			const texts = () => harness.application.state.globalNotices.map((notice) => notice.text);
+
+			notices.post("hint", "type /drill next", { ttlMs: 1_000 });
+			notices.post("pinned", "waiting for you", { ttlMs: 0 });
+			await vi.advanceTimersByTimeAsync(0);
+			expect(texts()).toEqual(expect.arrayContaining(["type /drill next", "waiting for you"]));
+			expect(harness.application.state.globalNotices.at(-1)?.extensionId).toBe("drill");
+
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(texts()).not.toContain("type /drill next");
+			expect(texts()).toContain("waiting for you");
+
+			notices.dismiss("pinned");
+			await vi.advanceTimersByTimeAsync(0);
+			expect(texts()).not.toContain("waiting for you");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
 async function createApplicationHarness(options: { agentDir?: string; extensionLoad?: unknown } = {}) {
 	const runtimeModel = model();
 	// The first spawn is the startup agent; later ones are the sessions /new
@@ -757,13 +1261,16 @@ async function createApplicationHarness(options: { agentDir?: string; extensionL
 		},
 	}));
 	const setAgentModelByReference = vi.fn(async () => runtimeModel);
+	const setDefaultModel = vi.fn(() => {});
 	const setAgentThinkingLevelByName = vi.fn(async () => "high");
 	const setAgentSessionName = vi.fn(async () => {});
 	const sendMessage = vi.fn(async (_request?: unknown) => ({ kind: "accepted" as const }));
 	const messageSinkFor = vi.fn((_binding?: unknown) => ({ send: sendMessage, prompt: promptAgent }));
 	const disposedAgentIds = new Set<string>();
+	// Core answers with every agent it destroyed; a leaf answers with itself.
 	const disposeAgent = vi.fn(async (agentId: string) => {
 		disposedAgentIds.add(agentId);
+		return [agentId];
 	});
 	const inspectAgent = vi.fn((agentId: string) => {
 		const inspected = snapshot(agentId, runtimeModel);
@@ -771,22 +1278,26 @@ async function createApplicationHarness(options: { agentDir?: string; extensionL
 	});
 	const disposeAll = vi.fn(async () => {});
 	const abortAgent = vi.fn(async () => ({ kind: "aborted" as const }));
+	const steerQueuedFollowUps = vi.fn(async () => 2);
 	const orchestrator = {
 		subscribe: () => () => {},
 		registerClient: () => () => {},
 		disposeAll,
 		disposeAgent,
 		abortAgent,
+		steerQueuedFollowUps,
 		spawnAgent,
 		promptAgent,
 		sendMessage,
 		// The shell holds one sink; every submit path goes through it.
 		messageSinkFor,
 		setAgentModelByReference,
+		setDefaultModel,
 		setAgentThinkingLevelByName,
 		setAgentSessionName,
 		// Argument resolution consults the completers before execute.
 		listAvailableModelCandidates: async () => ({ models: [{ value: "test/next-model", label: "Next Model" }] }),
+		listAgentProfileCandidates: async () => ({ profiles: [{ value: "main", label: "Main Agent" }] }),
 		listAgentThinkingLevelCandidates: () => ({
 			levels: [
 				{ value: "high", label: "high" },
@@ -804,12 +1315,18 @@ async function createApplicationHarness(options: { agentDir?: string; extensionL
 		}),
 		listExtensionStatuses: () => [],
 		listAgents: () => ({ agents: [] }),
+		// /workspace resolves and stats the path before staging it.
+		executionEnv: {
+			absolutePath: async (path: string) => ({ ok: true as const, value: path.startsWith("/") ? path : `/${path}` }),
+			fileInfo: async (path: string) => ({ ok: true as const, value: { kind: "directory" as const, path } }),
+		},
 	} as unknown as AgentOrchestrator;
 	const runtime = {
 		orchestrator,
 		diagnostics: [],
 		services: {
 			cwd: "/workspace",
+			workspaces: { startup: { cwd: "/workspace" }, resolve: async (cwd: string) => ({ cwd }) },
 			agentDir: options.agentDir ?? "/workspace/.widi-test-missing",
 			defaultProfile: { id: "main", source: "builtin_fallback", profileSource: { kind: "builtin" } },
 			defaultModel: { provider: runtimeModel.provider, modelId: runtimeModel.id, source: "runtime_override" },
@@ -831,6 +1348,7 @@ async function createApplicationHarness(options: { agentDir?: string; extensionL
 		tuiStart,
 		disposeAll,
 		abortAgent,
+		steerQueuedFollowUps,
 		spawnAgent,
 		promptAgent,
 		sendMessage,
@@ -855,6 +1373,7 @@ function snapshot(agentId: string, runtimeModel: RuntimeModel) {
 	return {
 		agentId,
 		generation: 1,
+		cwd: "/workspace",
 		profile: {
 			reference: { id: "main", label: "Main Agent" },
 			source: { kind: "memory", priority: 0 },
@@ -892,3 +1411,29 @@ function model(): RuntimeModel {
 		maxTokens: 100,
 	};
 }
+
+describe("WidiTuiApplication workspaces", () => {
+	it("moves the staged session with /workspace and spawns it there", async () => {
+		const harness = await createApplicationHarness();
+
+		await submit(harness.application, "/workspace /workspace/other");
+
+		expect(harness.application.state.pendingAgent?.start).toEqual({ kind: "default", cwd: "/workspace/other" });
+		expect(harness.spawnAgent).not.toHaveBeenCalled();
+
+		await submit(harness.application, "first");
+
+		expect(harness.spawnAgent).toHaveBeenCalledWith({ origin: { kind: "new" }, cwd: "/workspace/other" });
+	});
+
+	it("refuses to move a conversation that already exists", async () => {
+		const harness = await createApplicationHarness();
+		await submit(harness.application, "first");
+
+		await submit(harness.application, "/workspace /workspace/other");
+
+		// The agent stays where it was spawned; only its own notice says why.
+		expect(harness.application.state.agents.get("main")?.display.cwd).toBe("/workspace");
+		expect(harness.application.state.pendingAgent).toBeUndefined();
+	});
+});

@@ -8,10 +8,10 @@
  * facts. The exceptions are enumerated in `notes/develop/agent-harness-ownership-plan.md`.
  *
  * A collaborator earns its own class only when it owns state whose invariant it
- * can maintain without consulting `_live`. Four qualify: `BackgroundJobRuntime`,
- * `OrchestratorEventBus`, `AgentContextMonitor`, `AuthRuntimeController`.
- * Everything whose central judgement is a join across `_live`, harness phase,
- * the spawn tree, or background jobs stays here.
+ * can maintain without consulting `_live`. Three qualify: `OrchestratorEventBus`,
+ * `AgentContextMonitor`, `AuthRuntimeController`. Everything whose central
+ * judgement is a join across `_live`, harness phase, or the spawn tree stays
+ * here.
  *
  * Design: `docs/orchestrator.pseudo.ts`.
  */
@@ -60,18 +60,6 @@ import type {
 	AuthProviderLogoutResult,
 } from "./auth-controller.ts";
 import { AuthRuntimeController } from "./auth-controller.ts";
-import {
-	type BackgroundJobEvent,
-	BackgroundJobRuntime,
-	type BackgroundJobSnapshot,
-	JOBS_NAMESPACE,
-	type JobBranchPort,
-	type JobCloseCause,
-	type JobHistoryEntry,
-	JobHistoryStorage,
-	type OwnerAttachment,
-	SessionJobStore,
-} from "./background/index.ts";
 import type { OrchestratorClient } from "./client.ts";
 import { AgentContextMonitor } from "./context-monitor.ts";
 import { type OrchestratorDiagnostic, OrchestratorError, validateExtensionDiagnosticDraft } from "./diagnostics.ts";
@@ -153,19 +141,14 @@ import {
 } from "./model-registry.js";
 import type { ProviderConfigInput } from "./model-registry.ts";
 import {
-	createPersistenceRefData,
-	type NamespaceProjection,
 	PERSISTENCE_REF_CUSTOM_TYPE,
 	type PersistedSessionInfo,
 	type PersistenceDiagnostic,
 	PersistenceDiagnostics,
 	type PersistenceRefData,
-	projectBranch,
 	sessionKeysEqual,
 } from "./persistence/index.ts";
-import { createOrphanedJobHandlesRecap, type RecapDefinition, selectOwedRecap } from "./recap.ts";
 import type { ConfigValueResolver } from "./resolve-config-value.js";
-import type { ResourceLoader } from "./resource-loader.js";
 import type {
 	AgentSessionCandidate,
 	AgentSessionMetadata,
@@ -205,6 +188,7 @@ import type {
 	RuntimeShutdownRequest,
 } from "./types.ts";
 import { maintenanceDescription, maintenanceKindOf } from "./types.ts";
+import type { Workspace, WorkspaceResolver } from "./workspace.ts";
 
 export type { AgentSnapshot, LiveAgent } from "./agent-types.ts";
 export type {
@@ -216,7 +200,7 @@ export type {
 
 export interface AgentOrchestratorConfig {
 	executionEnv: ExecutionEnv;
-	resourceLoader: ResourceLoader;
+	workspaces: WorkspaceResolver;
 	sessionManager: SessionManager;
 	settingManager: SettingManager;
 	modelRegistry: ModelRegistry;
@@ -257,6 +241,10 @@ export interface AgentSkillCandidateListResult {
 	readonly skills: readonly CandidateItem[];
 }
 
+export interface AgentProfileCandidateListResult {
+	readonly profiles: readonly CandidateItem[];
+}
+
 export type ExtensionReloadAgentStatus = "reloaded" | "skipped" | "failed";
 
 /** `running` covers every non-idle phase: a replacement would swap the interceptors an operation is midway through. */
@@ -286,6 +274,17 @@ export interface SpawnAgentOptions {
 	readonly origin: SpawnAgentOrigin;
 	/** Absent means top-level; present records `spawnedBy` and the tree edge. */
 	readonly parent?: AgentId;
+	/**
+	 * The workspace this spawn happens in, defaulting to the one the process
+	 * started in. Read only when `parent` is absent: a spawned agent always works
+	 * where its spawner does, so a whole tree shares one cwd and one storage
+	 * group.
+	 *
+	 * For a resume it names the group the reference is looked up in, not the
+	 * workspace the agent gets: a stored session already says where it belongs,
+	 * and reopening it anywhere else would split its tree across two groups.
+	 */
+	readonly cwd?: string;
 	readonly model?: RuntimeModel;
 	readonly thinkingLevel?: ThinkingLevel;
 }
@@ -371,6 +370,7 @@ interface ResolvedAgentProfile {
 interface AgentBuildRequest {
 	readonly agentId: AgentId;
 	readonly origin: SpawnAgentOrigin["kind"];
+	readonly workspace: Workspace;
 	readonly resolvedProfile: ResolvedAgentProfile;
 	readonly session: Session<AgentSessionMetadata>;
 	readonly sessionMetadata?: AgentSessionMetadata;
@@ -393,7 +393,7 @@ interface DisposedLiveAgent {
 
 export class AgentOrchestrator {
 	readonly executionEnv: ExecutionEnv;
-	readonly resourceLoader: ResourceLoader;
+	readonly workspaces: WorkspaceResolver;
 	readonly sessionManager: SessionManager;
 	readonly settingManager: SettingManager;
 	readonly modelRegistry: ModelRegistry;
@@ -403,7 +403,6 @@ export class AgentOrchestrator {
 
 	// -- Independent runtimes ------------------------------------------------
 
-	private readonly _backgroundJobs: BackgroundJobRuntime;
 	private readonly _events: OrchestratorEventBus;
 	private readonly _context: AgentContextMonitor;
 	private readonly _auth: AuthRuntimeController;
@@ -454,7 +453,7 @@ export class AgentOrchestrator {
 
 	constructor(config: AgentOrchestratorConfig) {
 		this.executionEnv = config.executionEnv;
-		this.resourceLoader = config.resourceLoader;
+		this.workspaces = config.workspaces;
 		this.sessionManager = config.sessionManager;
 		this.settingManager = config.settingManager;
 		this.modelRegistry = config.modelRegistry;
@@ -497,13 +496,6 @@ export class AgentOrchestrator {
 			diagnose: async (diagnostic) => await this._publishDiagnostic(diagnostic),
 			diagnoseMany: async (diagnostics) => await this._publishDiagnostics(diagnostics),
 		});
-		this._backgroundJobs = new BackgroundJobRuntime({
-			openOwnerStore: async (owner) => await this._openAgentJobStore(owner.agentId),
-			messageSinkFor: (binding) => this.messageSinkFor(binding),
-			// Translated here so the runtime's vocabulary stays free of agents.
-			publish: async (event) => await this._emit(toOrchestratorBackgroundEvent(event)),
-			diagnose: async (diagnostic) => await this._publishDiagnostic(diagnostic),
-		});
 		this._messages = new MessageDeliveryQueue({
 			resolvePhase: (agentId) => this._resolveDeliveryPhase(agentId),
 			deliver: async (request) => await this._deliverQueuedMessage(request),
@@ -515,16 +507,28 @@ export class AgentOrchestrator {
 		return this._defaultModel;
 	}
 
+	/**
+	 * What a top-level agent starts under, for this run and the next. Persisted
+	 * because `/model` is the only way a user picks a model at all: a choice that
+	 * lived until the process exited would have to be made again every run, and
+	 * the settings file would keep naming a model the user stopped using. An
+	 * agent already running is not touched - its model is on its own branch.
+	 */
 	setDefaultModel(model: RuntimeModel): void {
 		this._defaultModel = model;
+		this.settingManager.setDefaultModelAndProvider(model.provider, model.id);
 	}
 
 	getDefaultThinkingLevel(): ThinkingLevel | undefined {
 		return this._defaultThinkingLevel;
 	}
 
+	/** Persisted for the same reason `setDefaultModel` is. */
 	setDefaultThinkingLevel(level: ThinkingLevel | undefined): void {
 		this._defaultThinkingLevel = level;
+		// A level is either on or absent; there is no "unset" to write, so
+		// clearing it leaves the file naming the last level that was chosen.
+		if (level !== undefined) this.settingManager.setDefaultThinkingLevel(level);
 	}
 
 	getDefaultProfileId(): string {
@@ -628,6 +632,7 @@ export class AgentOrchestrator {
 		return {
 			agentId,
 			generation: liveAgent.generation,
+			cwd: liveAgent.workspace.cwd,
 			profile: liveAgent.profile,
 			...(spawnedBy === undefined ? undefined : { spawnedBy }),
 			...(liveAgent.sessionMetadata === undefined ? undefined : { sessionMetadata: liveAgent.sessionMetadata }),
@@ -902,12 +907,6 @@ export class AgentOrchestrator {
 			// activity from `agent_status_changed` must not have to special-case
 			// arrival by reading the registry once at subscribe time.
 			await this._publishAgentActivityEdge(agentId, build.liveAgent.harness.getPhase());
-			if (request.origin === "resume") {
-				// Written into the context the model resumes with, before it is
-				// routable: an unanswered t0 handle is a fact of the resume, not a
-				// message arriving after it.
-				await this._reconcileAgentJobBranch(agentId, "resume", "The runtime that started this job is gone.");
-			}
 			// The first arrival at idle, stamped `ready` by `_installLiveAgent`. It
 			// has no turn behind it, and a consumer that waits to be told an agent is
 			// ready has nothing else to wait for.
@@ -949,7 +948,7 @@ export class AgentOrchestrator {
 		if (options.origin.kind === "resume") {
 			const info =
 				typeof options.origin.reference === "string"
-					? await this.sessionManager.resolveAgentSessionReference(options.origin.reference)
+					? await this.sessionManager.resolveAgentSessionReference(options.origin.reference, options.cwd)
 					: options.origin.reference;
 			const resolvedProfile = await this._resolveResumeProfile(info.metadata.id, info.metadata);
 			const agentId = this._resumeAgentId(info, resolvedProfile.profile);
@@ -958,6 +957,10 @@ export class AgentOrchestrator {
 			return {
 				agentId,
 				origin: "resume",
+				// Not the caller's choice and not the default: a session is stored
+				// under the directory it was written in, and reopening it anywhere
+				// else would put its continuation in a different storage group.
+				workspace: await this.workspaces.resolve(info.metadata.cwd),
 				resolvedProfile,
 				session,
 				sessionMetadata: await session.getMetadata(),
@@ -1006,6 +1009,7 @@ export class AgentOrchestrator {
 			return {
 				agentId,
 				origin: "fork",
+				workspace: source.workspace,
 				// The source's exact profile, overrides included: re-resolving could
 				// hand the fork a profile the branch it inherits was never written under.
 				resolvedProfile: {
@@ -1025,6 +1029,20 @@ export class AgentOrchestrator {
 
 		const resolvedProfile = await this._resolveCreateProfile(options.origin);
 		const agentId = this._allocateAgentId(resolvedProfile.profile);
+		// A spawn inherits the spawner's model and thinking level, exactly as a
+		// fork does: a caller that switched model and then delegates means the
+		// delegate to run under it too, and a profile names a role, never a model.
+		// Only a top-level agent, which has no spawner to follow, takes the
+		// runtime defaults.
+		const parent = options.parent === undefined ? undefined : this._requireLiveAgent(options.parent);
+		// A spawned agent works where its spawner does, and `options.cwd` is not
+		// consulted at all in that case. That is the whole of "no cross-workspace
+		// subagents": there is no check to pass because there is no way to ask.
+		const workspace = parent
+			? parent.workspace
+			: options.cwd === undefined
+				? this.workspaces.startup
+				: await this.workspaces.resolve(options.cwd);
 		// The spawner's session directory owns the new one. That nesting is the
 		// only record of the agent tree - `notes/develop/ZH/agent-tree-persistence.md` §1 -
 		// so it is established here, at the one moment the parent is known.
@@ -1032,6 +1050,7 @@ export class AgentOrchestrator {
 		const session = await this.sessionManager.createAgentSession({
 			agentId,
 			agentProfile: resolvedProfile.profile,
+			cwd: workspace.cwd,
 			...(options.parent === undefined ? undefined : { parentAgentId: options.parent }),
 			diagnostics,
 		});
@@ -1039,11 +1058,12 @@ export class AgentOrchestrator {
 		return {
 			agentId,
 			origin: "new",
+			workspace,
 			resolvedProfile,
 			session,
 			sessionMetadata: await session.getMetadata(),
-			model: options.model ?? this._defaultModel,
-			thinkingLevel: options.thinkingLevel ?? this._defaultThinkingLevel,
+			model: options.model ?? parent?.harness.getModel() ?? this._defaultModel,
+			thinkingLevel: options.thinkingLevel ?? parent?.harness.getThinkingLevel() ?? this._defaultThinkingLevel,
 			settings,
 			toolPolicy: { requestedToolNames: resolvedProfile.profile.tools, activeToolSelection: { mode: "default_all" } },
 			parent: options.parent,
@@ -1054,10 +1074,10 @@ export class AgentOrchestrator {
 	 * Build everything in local variables; the live registry is not touched until
 	 * this succeeds.
 	 *
-	 * Order matters: attach background, activate the runner, apply provider
-	 * contributions, resolve scoped tools against those contributions, create the
-	 * harness, then bind. The reservation is re-checked after every await, and any
-	 * failure releases in reverse order.
+	 * Order matters: activate the runner, apply provider contributions, resolve
+	 * scoped tools against those contributions, create the harness, then bind.
+	 * The reservation is re-checked after every await, and any failure releases
+	 * in reverse order.
 	 */
 	private async _buildLiveAgent(
 		request: AgentBuildRequest,
@@ -1067,7 +1087,6 @@ export class AgentOrchestrator {
 		const { profile } = resolvedProfile;
 		const generation = (this._agentGenerations.get(agentId) ?? 0) + 1;
 		const partial: {
-			backgroundAttachment?: OwnerAttachment;
 			extensionRunner?: ExtensionRunner;
 			extensionBindings?: ExtensionRunnerBindings;
 			harness?: WidiAgentHarness;
@@ -1075,10 +1094,7 @@ export class AgentOrchestrator {
 		} = {};
 
 		try {
-			const sessionId = (await request.session.getMetadata()).id;
 			const sessionRef = this.sessionManager.getAgentSessionRef(agentId);
-			partial.backgroundAttachment = await this._backgroundJobs.attachAgent({ agentId, sessionId });
-			this._assertBuildNotCancelled(agentId, reservation);
 
 			const extensionRunner = await this._createExtensionRunner(agentId, profile.id);
 			partial.extensionRunner = extensionRunner;
@@ -1091,7 +1107,7 @@ export class AgentOrchestrator {
 			await this._applyExtensionProviderContributions(agentId, extensionRunner);
 			this._assertBuildNotCancelled(agentId, reservation);
 
-			const loaded = await this.resourceLoader.loadAgentResources(profile);
+			const loaded = await request.workspace.resourceLoader.loadAgentResources(profile);
 			const resourceDiagnostics = loaded.diagnostics.map((diagnostic) => ({ ...diagnostic, agentId }));
 			await this._publishDiagnostics(resourceDiagnostics);
 			this._addAgentDiagnostics(agentId, resourceDiagnostics);
@@ -1112,9 +1128,9 @@ export class AgentOrchestrator {
 				appendSections: profile.appendSystemPrompt ? [profile.appendSystemPrompt] : [],
 				contextFiles: loaded.contextFiles,
 				...(profile.skillsListing === undefined ? undefined : { includeSkills: profile.skillsListing }),
-				// The resource loader's cwd, not the execution env's: the file tools
+				// The agent's own workspace, not the execution env's: the file tools
 				// resolve relative paths against it, and the prompt must name the same one.
-				...((profile.includeCwd ?? true) ? { cwd: this.resourceLoader.getCwd() } : undefined),
+				...((profile.includeCwd ?? true) ? { cwd: request.workspace.cwd } : undefined),
 			};
 
 			const resolvedTools = await this._resolveAgentToolsForBuild(agentId, request.toolPolicy, extensionRunner);
@@ -1141,6 +1157,7 @@ export class AgentOrchestrator {
 			const liveAgent: LiveAgent = {
 				agentId,
 				generation,
+				workspace: request.workspace,
 				profile: createAgentProfileRecordReference(resolvedProfile),
 				resolvedProfile: profile,
 				...(request.sessionMetadata === undefined ? undefined : { sessionMetadata: request.sessionMetadata }),
@@ -1149,7 +1166,6 @@ export class AgentOrchestrator {
 				systemPrompt,
 				harness,
 				settings: request.settings,
-				backgroundAttachment: partial.backgroundAttachment,
 				extensionRunner,
 				extensionBindings: { release: async () => {} },
 				toolPolicy: resolvedTools.policy,
@@ -1208,7 +1224,6 @@ export class AgentOrchestrator {
 	private async _releaseFailedBuild(
 		agentId: AgentId,
 		build: {
-			backgroundAttachment?: OwnerAttachment;
 			extensionRunner?: ExtensionRunner;
 			extensionBindings?: ExtensionRunnerBindings;
 			harness?: WidiAgentHarness;
@@ -1239,7 +1254,6 @@ export class AgentOrchestrator {
 		await this._tryTeardown(agentId, "withdraw providers", async () => {
 			await this._withdrawExtensionProviderContributions(agentId);
 		});
-		this._backgroundJobs.detachAgent(agentId);
 		await this._clearExtensionStatusesForAgent(agentId);
 		this._agentDiagnostics.delete(agentId);
 		await this._publishDiagnostic({
@@ -1248,104 +1262,6 @@ export class AgentOrchestrator {
 			message: `Cannot create agent ${agentId}: ${formatError(error)}`,
 			agentId,
 		});
-	}
-
-	/**
-	 * Answer every t0 handle this branch has open that nothing in this runtime is
-	 * going to answer. Two moments need it and they are not the same: a resume
-	 * inherits handles whose executor died with the previous process, while a
-	 * navigation lands on a branch whose handles this runtime may well have
-	 * already answered somewhere else.
-	 *
-	 * The branch decides what is owed, and it is asked directly: a job the branch
-	 * still has open is one no runtime ever closed. The old criterion searched the
-	 * branch text for a result header, which is reading absence as evidence - text
-	 * is restated by the model, rewritten by compaction, pasted by the user.
-	 *
-	 * **Session write.** A `precede` recap, which lands as a `custom_message`
-	 * entry on the branch, because these outcomes have to be in the session the
-	 * moment this returns - a second interrupted resume has to find them and stay
-	 * idempotent. At resume it runs before the agent is routable, so a stale
-	 * result is context rather than a message arriving into it. The records follow
-	 * the message, never precede it.
-	 */
-	private async _reconcileAgentJobBranch(agentId: AgentId, cause: JobCloseCause, stopReason: string): Promise<void> {
-		let announced = 0;
-		try {
-			announced = await this._backgroundJobs.reconcileBranch(agentId, { cause, stopReason });
-		} catch (error) {
-			await this._recordAgentLifecycleFailure(
-				agentId,
-				"orchestrator.background_jobs_interrupted",
-				`Failed to reconcile background jobs for agent ${agentId}: ${formatError(error)}`,
-			);
-			return;
-		}
-		// The handles the job layer itself never knew about. Its history is the one
-		// input the branch cannot supply: a handle this runtime is tracking is one
-		// the reconciliation above has already answered.
-		announced += await this._recap(
-			agentId,
-			createOrphanedJobHandlesRecap(new Set(this._backgroundJobs.history(agentId).map((job) => job.toolCallId))),
-		);
-		if (announced === 0) return;
-		await this._publishDiagnostic({
-			severity: "warning",
-			code: "orchestrator.background_jobs_interrupted",
-			message: `Agent ${agentId} has ${announced} background job(s) this runtime is not running; their outcomes were written into the session after the ${cause}.`,
-			agentId,
-		});
-	}
-
-	/**
-	 * Give one recap, if the branch is still owed it.
-	 *
-	 * The whole of the mechanism: read the branch, ask the definition what it
-	 * shows, drop what an earlier recap already covered, and say the rest. Every
-	 * kind of recap goes through here, so what is owed is decided one way and the
-	 * subjects a recap covered are marked one way - see `recap.ts` for why the
-	 * mark is the recap's own entry.
-	 *
-	 * The branch read is the compaction-aware one, because a recap corrects what
-	 * the model believes and compaction is what it stopped believing. It cuts both
-	 * ways and has to: a subject compaction dropped is not recapped, and a recap
-	 * compaction dropped is given again if its subject is still there.
-	 *
-	 * `precede` rather than a wake: no recap is news the agent should stop for,
-	 * and all of it is what it must already know by the time it reads anything
-	 * else. It goes through the ordinary message path like every other producer,
-	 * so it meets the same interception and lands with the same record of who
-	 * wrote it.
-	 *
-	 * A failure is reported and swallowed. A recap describes a situation the
-	 * runtime is already in; failing the resume over an unsent one would trade a
-	 * model that is missing context for a conversation that cannot be opened.
-	 *
-	 * **Session write.** A `custom_message` entry per recap given, on the branch
-	 * because that is the only place it survives the process: the model has to
-	 * read it after the next restart too, and the ids on it are what stop it being
-	 * given twice. Both callers run it before the agent is routable at a resume,
-	 * so it is context rather than a message arriving into it.
-	 */
-	private async _recap(agentId: AgentId, definition: RecapDefinition): Promise<number> {
-		if (!this._live.has(agentId)) return 0;
-		try {
-			const branch = await this.sessionManager.getAgentSessionContextBranch(agentId);
-			const owed = selectOwedRecap(branch, definition);
-			if (owed === undefined) return 0;
-			await this.sendMessage(
-				{ targetAgentId: agentId, body: owed.body, mode: "precede" },
-				messageBindingFor({ kind: "recap", recap: definition.recap, ids: owed.ids }),
-			);
-			return owed.ids.length;
-		} catch (error) {
-			await this._recordAgentLifecycleFailure(
-				agentId,
-				"orchestrator.recap_failed",
-				`Failed to record the ${definition.recap} recap for agent ${agentId}: ${formatError(error)}`,
-			);
-			return 0;
-		}
 	}
 
 	/** A readable AgentId that collides with no live agent and no tombstone. */
@@ -1503,11 +1419,10 @@ export class AgentOrchestrator {
 	 * Complete the cutover with no await. `_spawnParent` is not deleted here: the
 	 * edge belongs to surviving descendants.
 	 *
-	 * Two orderings are contractual. The background detach must come after the
-	 * agent is marked as going away and before any other teardown. Cancelling the
-	 * queue must precede the harness teardown: a cancelled queue swaps its array,
-	 * which is how requeue logic decides an undeliverable message is
-	 * `target_unavailable` instead of taking an extra lap through a shutdown code.
+	 * Cancelling the queue must precede the harness teardown: a cancelled queue
+	 * swaps its array, which is how requeue logic decides an undeliverable message
+	 * is `target_unavailable` instead of taking an extra lap through a shutdown
+	 * code.
 	 */
 	private _cutOverDisposed(targets: readonly AgentId[], options: DisposeAgentOptions): readonly DisposedLiveAgent[] {
 		const disposed: DisposedLiveAgent[] = [];
@@ -1524,10 +1439,7 @@ export class AgentOrchestrator {
 				agentId,
 				options.reason ?? `Agent ${agentId} was disposed before the message was delivered.`,
 			);
-			// Kept writable across the teardown that follows: detaching cancels this
-			// agent's jobs, and the records saying so still have to reach the branch.
 			if (liveAgent) this._disposingHarnesses.set(agentId, liveAgent.harness);
-			this._backgroundJobs.detachAgent(agentId);
 			disposed.push(liveAgent ? { agentId, liveAgent } : { agentId });
 		}
 		return disposed;
@@ -1571,15 +1483,6 @@ export class AgentOrchestrator {
 		this._publishedAgentActivities.delete(agentId);
 
 		if (liveAgent) {
-			// Before anything is torn down. The cutover cancelled every job this
-			// agent owned; sealing here both waits for those records to land and
-			// closes whatever the branch still shows open. A closing record written
-			// after the harness is shut down is a record that was never written.
-			await this._tryTeardown(agentId, "seal background job history", async () => {
-				// The `dispose` cause is what keeps this silent: the records are
-				// written, but the agent has no next turn to read a closing message in.
-				await this._backgroundJobs.reconcileBranch(agentId, { cause: "dispose", stopReason: reason });
-			});
 			await this._tryTeardown(agentId, "abort", async () => {
 				await liveAgent.harness.abort();
 			});
@@ -1953,8 +1856,8 @@ export class AgentOrchestrator {
 	 *
 	 * Acceptance waits for the harness's own `agent_start`, racing the run
 	 * promise's rejection: a failure before that event means the user message was
-	 * never persisted, and resolving early would let the queue drop a background
-	 * job t1 the model is waiting for.
+	 * never persisted, and resolving early would let the queue drop a message
+	 * the model is waiting for.
 	 */
 	private async _startPrompt(
 		target: DeliveryTarget,
@@ -2160,10 +2063,6 @@ export class AgentOrchestrator {
 	/**
 	 * Waiters first, then the event: waiters resolve synchronously while a
 	 * listener may take as long as it likes.
-	 *
-	 * `liveJobCount` is a query, not a term in the judgement: an unsettled job
-	 * never makes its owner busy, it only tells a consumer that this idle is an
-	 * agent waiting rather than an agent done.
 	 */
 	private async _settleAgentIdle(agentId: AgentId): Promise<void> {
 		this._settleAgentIdleWaiters(agentId);
@@ -2177,13 +2076,11 @@ export class AgentOrchestrator {
 		if (this._publishedAgentIdles.has(agentId)) return;
 		this._publishedAgentIdles.add(agentId);
 		const cause = this._agentIdleCauses.get(agentId) ?? { reason: "settled" };
-		const liveJobCount = this._backgroundJobs.liveJobCount(agentId);
 		await this._emit({
 			type: "agent_idle",
 			agentId,
 			reason: cause.reason,
 			...(cause.abortedBy === undefined ? undefined : { abortedBy: cause.abortedBy }),
-			liveJobCount,
 			idleAt: now(),
 		});
 	}
@@ -2208,7 +2105,6 @@ export class AgentOrchestrator {
 						resolve({
 							reason: event.reason,
 							...(event.abortedBy === undefined ? undefined : { abortedBy: event.abortedBy }),
-							liveJobCount: event.liveJobCount,
 						});
 					} else if (event.type === "agent_disposed" && event.agentId === agentId) {
 						reject(new AgentGoneError(agentId));
@@ -2401,18 +2297,9 @@ export class AgentOrchestrator {
 	 * onto the branch the leaf moved to.
 	 *
 	 * Navigation is the one operation that changes which state is in force
-	 * without anything having been written, so both consumers have to be told
-	 * afterwards rather than noticing: the context gauge describes a branch that
-	 * is no longer current, and a job store's chain head can now belong to a
-	 * branch nobody is on.
-	 *
-	 * **This writes on a navigation that only looked.** The design would rather
-	 * defer the records until the new branch is actually extended
-	 * (`notes/develop/ZH/background-job-persistence.md` 4.3), which needs a pending state
-	 * threaded through every write path. What lands here instead is one custom
-	 * entry per job the branch had open and this runtime cannot account for -
-	 * true of that branch either way, invisible to the model, and cheaper than
-	 * leaving the store bound to a chain it has left.
+	 * without anything having been written, so the context gauge has to be told
+	 * afterwards rather than noticing: it describes a branch that is no longer
+	 * current.
 	 */
 	async navigateAgentTree(
 		agentId: AgentId,
@@ -2432,13 +2319,6 @@ export class AgentOrchestrator {
 			// Comparing in `finally` still reaches both consumers on that path, while
 			// cancellation and no-op navigation leave them intact.
 			if ((await this.sessionManager.getAgentSessionLeafId(agentId)) !== previousLeafId) {
-				// Reconciliation extends the branch, so the gauge is dropped after it
-				// rather than before, and its own failure never masks the navigation's.
-				await this._reconcileAgentJobBranch(
-					agentId,
-					"navigate",
-					"The conversation moved to a branch this job is not on.",
-				);
 				await this._context.invalidate(agentId);
 			}
 		}
@@ -2705,7 +2585,11 @@ export class AgentOrchestrator {
 				// conversation in this project, so they carry the same bar as exec.
 				listSessions: async (extensionId) => {
 					this._requireProjectTrustForExtension(agentId, extensionId, "list the project's sessions");
-					const candidates = await this.sessionManager.listAgentSessionCandidates();
+					// The caller's own workspace: "this project" is the one the agent
+					// runs in, not the one the process happened to start in.
+					const candidates = await this.sessionManager.listAgentSessionCandidates(
+						this._requireLiveAgent(agentId).workspace.cwd,
+					);
 					return candidates.map((candidate) => ({
 						ref: this.sessionManager.toSessionHandle(candidate.ref),
 						id: candidate.id,
@@ -3100,9 +2984,6 @@ export class AgentOrchestrator {
 			setAgentActiveTools: async (agentId, toolNames) => {
 				await this.setAgentActiveTools(agentId, toolNames);
 			},
-			listAgentBackgroundJobs: (agentId) => this.listAgentBackgroundJobs(agentId),
-			readAgentBackgroundJobOutput: (agentId, jobId) => this.readAgentBackgroundJobOutput(agentId, jobId),
-			abortAgentBackgroundJob: (agentId, jobId, reason) => this.abortAgentBackgroundJob(agentId, jobId, reason),
 			requestHuman: async (agentId, extensionId, request) =>
 				await this._requestHumanForAgent(agentId, { ...request, source: { kind: "extension", extensionId } }),
 			emitOutput: async (agentId, extensionId, text) => {
@@ -3395,10 +3276,6 @@ export class AgentOrchestrator {
 		});
 	}
 
-	/**
-	 * What the next turn would be built with. Read-only: `before_agent_start` can
-	 * still replace this text for one turn without changing what this returns.
-	 */
 	async getAgentSystemPrompt(agentId: AgentId): Promise<string> {
 		const { harness } = this._requireLiveAgent(agentId);
 		return this._composeAgentSystemPrompt(agentId, harness.getActiveTools());
@@ -3413,14 +3290,17 @@ export class AgentOrchestrator {
 		const liveAgent = this._requireLiveAgent(agentId);
 		const extensionRunner = liveAgent.extensionRunner;
 		return {
+			workspace: { cwd: liveAgent.workspace.cwd },
 			human: {
-				request: async (request) =>
-					await this._requestHumanForAgent(agentId, { ...request, source: { kind: "agent", agentId } }),
+				request: async ({ tool, ...draft }) =>
+					await this._requestHumanForAgent(agentId, {
+						...draft,
+						source: tool
+							? { kind: "tool", agentId, toolCallId: tool.toolCallId, toolName: tool.toolName }
+							: { kind: "agent", agentId },
+					}),
 			},
-			agents: this._createAgentHost(agentId, liveAgent.backgroundAttachment),
-			// The attachment's own capability, so a backgroundable call registers
-			// against the generation that started it rather than an id looked up later.
-			jobs: liveAgent.backgroundAttachment.host,
+			agents: this._createAgentHost(agentId),
 			humanInterrupts: this._humanInterrupts.watch(agentId),
 			createExtensionContext: (source) => {
 				if (source.kind !== "extension") return undefined;
@@ -3434,31 +3314,21 @@ export class AgentOrchestrator {
 
 	/**
 	 * Bind the orchestrator's collaboration surface to one agent. Everything the
-	 * bound methods decide - who sent a message, who owns a job, which agents are
-	 * discoverable, what a dispose may reach - resolves from this `agentId` over
-	 * private runtime state, so a holder cannot ask as anyone else.
+	 * bound methods decide - who sent a message, which agents are discoverable,
+	 * what a dispose may reach - resolves from this `agentId` over private
+	 * runtime state, so a holder cannot ask as anyone else.
 	 */
-	private _createAgentHost(agentId: AgentId, attachment: OwnerAttachment): AgentToOrchestratorHost {
+	private _createAgentHost(agentId: AgentId): AgentToOrchestratorHost {
 		return {
 			agentId,
 			listProfiles: async () => await this._listProfileBriefs(),
-			// Discovery is tree-scoped, while exact ids stay runtime-wide addresses
-			// through `describe` and `sendMessage` - the deliberate soft bridge
-			// between otherwise isolated trees.
 			listAgents: async () => await this._listAgentTree(agentId),
 			describe: (targetAgentId) => this._describeAgentForCaller(agentId, targetAgentId),
-			// The caller becomes the parent, so the child is rendered under it and
-			// swept by its subtree dispose, whichever origin its context came from.
 			spawn: async (request) =>
 				await this._spawnForCaller(agentId, toSpawnAgentOrigin(request.origin), request.model, request.thinkingLevel),
 			sendMessage: async (targetAgentId, body) =>
 				await this.sendMessage(
-					{
-						targetAgentId,
-						body,
-						// Never preempts a turn in flight: the target decides when to read.
-						mode: "next_turn",
-					},
+					{ targetAgentId, body, mode: "next_turn" },
 					messageBindingFor({ kind: "agent", senderAgentId: agentId }),
 				),
 			sharesTree: (targetAgentId) => this._live.has(targetAgentId) && this._agentsShareTree(agentId, targetAgentId),
@@ -3471,9 +3341,6 @@ export class AgentOrchestrator {
 					messageBindingFor({ kind: "agent", senderAgentId: notification.aboutAgentId, notice: notification.notice }),
 				),
 			dispose: async (targetAgentId, options) => await this._disposeForCaller(agentId, targetAgentId, options),
-			// The attachment's own capabilities, not an id-taking forwarder: they carry
-			// the owner and generation the job table authorizes against.
-			jobs: attachment.host,
 			requestHuman: async (request) =>
 				await this._requestHumanForAgent(agentId, { ...request, source: { kind: "agent", agentId } }),
 		};
@@ -3689,6 +3556,23 @@ export class AgentOrchestrator {
 		await this._context.invalidate(agentId);
 	}
 
+	/**
+	 * The roles a new agent can be opened as. Same briefs the model sees through
+	 * `list_agents`, so a profile the runtime policy disabled is offered to
+	 * neither.
+	 */
+	async listAgentProfileCandidates(): Promise<AgentProfileCandidateListResult> {
+		const briefs = await this._listProfileBriefs();
+		return {
+			profiles: briefs.map((brief) => {
+				// whenToUse is the sentence written to help a caller choose; the
+				// description only says what the role is.
+				const description = brief.whenToUse ?? brief.description;
+				return { value: brief.id, label: brief.label, ...(description === undefined ? undefined : { description }) };
+			}),
+		};
+	}
+
 	async listAvailableModelCandidates(): Promise<AgentModelCandidateListResult> {
 		const models = await this.modelRegistry.getAvailable();
 		return {
@@ -3829,8 +3713,8 @@ export class AgentOrchestrator {
 
 	/** Reloaded per listing: a template the user just edited should be usable at once. */
 	private async _loadAgentPromptTemplates(agentId: AgentId): Promise<readonly PromptTemplate[]> {
-		this._requireLiveAgent(agentId);
-		const loaded = await this.resourceLoader.loadPromptTemplates();
+		const { workspace } = this._requireLiveAgent(agentId);
+		const loaded = await workspace.resourceLoader.loadPromptTemplates();
 		await this._publishDiagnostics(
 			loaded.diagnostics.map((diagnostic) => ({
 				severity: "warning" as const,
@@ -3868,8 +3752,8 @@ export class AgentOrchestrator {
 
 	/** Same freshness rule as prompt templates, narrowed by the agent's profile. */
 	private async _loadAgentSkills(agentId: AgentId): Promise<readonly Skill[]> {
-		const { resolvedProfile } = this._requireLiveAgent(agentId);
-		const loaded = await this.resourceLoader.loadSkills(resolvedProfile.skills);
+		const { resolvedProfile, workspace } = this._requireLiveAgent(agentId);
+		const loaded = await workspace.resourceLoader.loadSkills(resolvedProfile.skills);
 		await this._publishDiagnostics(
 			loaded.diagnostics.map((diagnostic) => ({
 				severity: "warning" as const,
@@ -3888,8 +3772,9 @@ export class AgentOrchestrator {
 	// harness, which owns the session file while an operation is running.
 	// -----------------------------------------------------------------------
 
-	async listAgentSessions(): Promise<AgentSessionListResult> {
-		return { sessions: await this.sessionManager.listAgentSessionCandidates() };
+	/** Top-level sessions of one workspace; the startup one when none is named. */
+	async listAgentSessions(cwd?: string): Promise<AgentSessionListResult> {
+		return { sessions: await this.sessionManager.listAgentSessionCandidates(cwd ?? this.workspaces.startup.cwd) };
 	}
 
 	async getAgentSession(agentId: AgentId): Promise<AgentSessionSnapshot> {
@@ -3920,98 +3805,11 @@ export class AgentOrchestrator {
 	// Branch state
 	//
 	// A branch is the register of what every persistence namespace holds, and
-	// only the harness may write one. So the modules that own such state - the
-	// background job runtime today - never reach for the branch: they ask through
-	// a port bound to their own namespace and this class does the writing.
+	// only the harness may write one. So the modules that own such state never
+	// reach for the branch: they ask through a port bound to their own namespace
+	// and this class does the writing.
 	// `notes/develop/ZH/persistence-ref-writer.md` is why the split runs exactly here.
 	// -----------------------------------------------------------------------
-
-	/**
-	 * Open one agent's job history, or nothing for an agent with no session
-	 * directory. An ephemeral agent still runs jobs; it just leaves no record.
-	 *
-	 * The storage comes from the repository rather than being opened against a
-	 * computed path, so the namespace lands where the registered definition says
-	 * it does. What comes back is whatever `core:jobs` registered; a foreign
-	 * storage under that name means the registry was tampered with, and there is
-	 * nothing sensible to do with it.
-	 */
-	private async _openAgentJobStore(agentId: AgentId): Promise<SessionJobStore | undefined> {
-		const address = this.sessionManager.getAgentSessionAddress(agentId);
-		if (address === undefined) return undefined;
-		const diagnostics = new PersistenceDiagnostics();
-		const storage = await this.sessionManager.repo.openStorage(address, JOBS_NAMESPACE, diagnostics);
-		try {
-			if (!(storage instanceof JobHistoryStorage)) {
-				throw new Error(`Persistence namespace ${JOBS_NAMESPACE} is not registered as the job history.`);
-			}
-			return await SessionJobStore.open({ storage, branch: this._openBranchState(agentId, JOBS_NAMESPACE) });
-		} finally {
-			await this._publishPersistenceDiagnostics(agentId, diagnostics.entries);
-		}
-	}
-
-	/**
-	 * One namespace's view of one agent's branch: what it holds, and how to
-	 * record a new root on it.
-	 *
-	 * The namespace is bound here rather than passed per call. A caller that
-	 * names its own namespace could clear somebody else's state, since `null` is
-	 * a legitimate root meaning "this namespace now holds nothing".
-	 */
-	private _openBranchState(agentId: AgentId, namespace: string): JobBranchPort {
-		return {
-			projection: async () => await this._projectBranchState(agentId, namespace),
-			commit: async (stateRoot) => await this._commitBranchState(agentId, namespace, stateRoot),
-		};
-	}
-
-	/**
-	 * The complete root-to-leaf path decides, not the model's view of it: a ref
-	 * older than a compaction checkpoint is still in force, because the model
-	 * forgetting a fact does not make the fact untrue.
-	 */
-	private async _projectBranchState(agentId: AgentId, namespace: string): Promise<NamespaceProjection | undefined> {
-		const snapshot = await this.sessionManager.getAgentSessionSnapshot(agentId);
-		const projection = projectBranch(snapshot.pathToRoot);
-		// A ref this build cannot read leaves its namespace unrestored, which is a
-		// fact worth reporting and never a reason to fail the read.
-		for (const rejection of projection.rejected) {
-			await this._publishDiagnostic({
-				severity: "warning",
-				code: "orchestrator.persistence_ref_unreadable",
-				message: `Agent ${agentId} carries a persistence ref this build cannot read (${rejection.problem}): ${rejection.detail}`,
-				agentId,
-			});
-		}
-		return projection.namespaces.get(namespace);
-	}
-
-	/**
-	 * **Session write.** `harness.appendCustomEntry` of a `widi:persistence-ref`.
-	 *
-	 * The branch is the right place because it is the only one that answers the
-	 * question being asked: rewinding past this entry takes the state with it and
-	 * forking carries it, and neither follows from a file beside the session. It
-	 * never becomes model context - refs have no entry projector - so it costs
-	 * the branch bytes and the model nothing.
-	 *
-	 * Throws on failure rather than degrading. What a failed write means -
-	 * retry, degrade, or abandon the record - depends on where in its own
-	 * lifecycle the caller is, which only the caller knows.
-	 */
-	private async _commitBranchState(agentId: AgentId, namespace: string, stateRoot: string | null): Promise<void> {
-		const harness = this._live.get(agentId)?.harness ?? this._disposingHarnesses.get(agentId);
-		if (!harness) {
-			throw new OrchestratorError({
-				severity: "error",
-				code: "orchestrator.branch_state_unwritable",
-				message: `Agent ${agentId} has no harness to record ${namespace} state on its branch.`,
-				agentId,
-			});
-		}
-		await harness.appendCustomEntry(PERSISTENCE_REF_CUSTOM_TYPE, createPersistenceRefData({ namespace, stateRoot }));
-	}
 
 	/** Persistence reports in its own vocabulary; the codes are republished as they are. */
 	private async _publishPersistenceDiagnostics(
@@ -4021,43 +3819,6 @@ export class AgentOrchestrator {
 		await this._publishDiagnostics(
 			diagnostics.map((entry) => ({ severity: entry.severity, code: entry.code, message: entry.message, agentId })),
 		);
-	}
-
-	// -----------------------------------------------------------------------
-	// Background jobs
-	//
-	// Forwarding, plus the liveness gate this class owns: the runtime answers by
-	// owner id and knows nothing about `_live`, so without the gate a tombstoned
-	// agent's jobs would still be listable.
-	// -----------------------------------------------------------------------
-
-	/** Live backgrounded jobs: the t0 handles the model is currently holding. */
-	listAgentBackgroundJobs(agentId: AgentId): BackgroundJobSnapshot[] {
-		this._requireLiveAgent(agentId);
-		return [...this._backgroundJobs.listJobs(agentId)];
-	}
-
-	/** Rolling output tail of a live job. Output is pull-only: events never carry it. */
-	readAgentBackgroundJobOutput(agentId: AgentId, jobId: string): string | undefined {
-		this._requireLiveAgent(agentId);
-		const result = this._backgroundJobs.readJobOutput(agentId, jobId);
-		return result.ok ? result.read.output : undefined;
-	}
-
-	/**
-	 * A request, not a kill: a local job stops only if its tool honours the
-	 * signal, while an external job is cancelled by the runtime itself. False
-	 * means there was no such live job - it may have settled since it was listed.
-	 */
-	abortAgentBackgroundJob(agentId: AgentId, jobId: string, reason?: string): boolean {
-		this._requireLiveAgent(agentId);
-		return this._backgroundJobs.abortJob(agentId, jobId, reason).ok;
-	}
-
-	/** Every job this session has on record, including runs before this process. */
-	agentBackgroundJobHistory(agentId: AgentId): readonly JobHistoryEntry[] {
-		this._requireLiveAgent(agentId);
-		return this._backgroundJobs.history(agentId);
 	}
 
 	// -----------------------------------------------------------------------
@@ -4293,43 +4054,6 @@ function toActivitySnapshot(phase: AgentHarnessPhase): AgentActivitySnapshot {
 function queuedMessageCount(harness: WidiAgentHarness): number {
 	const counts = harness.getQueuedMessageCounts();
 	return counts.steer + counts.followUp + counts.nextTurn;
-}
-
-/** One background-runtime event, renamed into the orchestrator's vocabulary. */
-function toOrchestratorBackgroundEvent(event: BackgroundJobEvent): OrchestratorEvent {
-	if (event.type === "job_changed") {
-		return {
-			type: "agent_background_job_changed",
-			agentId: event.agentId,
-			job: event.job,
-			transition: event.transition,
-			liveCount: event.liveCount,
-			changedAt: event.changedAt,
-		};
-	}
-	if (event.type === "job_report") {
-		return {
-			type: "agent_background_job_report_updated",
-			agentId: event.agentId,
-			jobId: event.jobId,
-			report: event.report,
-			changedAt: event.changedAt,
-			operationRef: event.operationRef,
-		};
-	}
-	return {
-		type: "agent_background_job_progress",
-		agentId: event.agentId,
-		jobId: event.jobId,
-		sequence: event.sequence,
-		chunk: event.chunk,
-		startByte: event.startByte,
-		endByte: event.endByte,
-		totalBytesSeen: event.totalBytesSeen,
-		progressDroppedBytes: event.progressDroppedBytes,
-		observedAt: event.observedAt,
-		operationRef: event.operationRef,
-	};
 }
 
 /** Four base36 characters: the half of an agent id that does not repeat across runs. */

@@ -58,7 +58,6 @@ export interface FindToolOptions {
 }
 
 export function createFindToolDefinition(
-	cwd: string,
 	options: FindToolOptions = {},
 ): ToolDefinition<typeof findSchema, FindToolDetails> {
 	const operations = options.operations ?? createLocalFindOperations({ rgPath: options.rgPath });
@@ -73,7 +72,7 @@ export function createFindToolDefinition(
 		execute: async (_toolCallId, input, context) => {
 			validateFindInput(input);
 			const inputPath = input.path ?? ".";
-			const searchPath = resolveToCwd(inputPath, cwd);
+			const searchPath = resolveToCwd(inputPath, context.workspace.cwd);
 			const resultLimit = input.limit ?? DEFAULT_RESULT_LIMIT;
 			// WIDI matches the pattern itself: a positive `rg --glob` overrides
 			// ignore rules and would resurface gitignored files.

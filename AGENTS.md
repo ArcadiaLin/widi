@@ -36,7 +36,7 @@ Why the fork exists, its complete divergence from upstream, the invariants that 
 - Root `npm run tui` starts the TUI against the repo-local `.widi` config (vllm local model by default; `moonshot`/`anthropic` providers activate via `$MOONSHOT_API_KEY`/`$ANTHROPIC_API_KEY`). Override with `--agent-dir`/`--profile`; the runtime cwd is inherited from the terminal.
 - `pi-ai` and `pi-tui` ship prebuilt dists, and `pi-ai` ships its generated model catalogs in `dist/providers/data/*.json`. No model-data generation and no network access are needed to build. Only `packages/agent` is built locally, by `npm --workspace apps/widi run build:deps`.
 - `pi-ai` and `pi-tui` are pinned to exact versions, never caret ranges, and `typebox` must stay at exactly the version published `pi-ai` pins (1.3.7 today) because `TSchema` crosses the package boundary. `docs/pi-fork.md` explains both failure modes.
-- `.widi/extensions/mcp/` is the checked-in sample MCP extension (loaded via the repo-local agent dir; config in `.widi/mcp.json`). It is gitignore-excepted from the blanket `.widi/*` ignore rule.
+- `.widi/extensions/` holds the checked-in extensions loaded through the repo-local agent dir; it is gitignore-excepted from the blanket `.widi/*` ignore rule. The MCP and plan-demo samples were removed - `drill` is the one demonstration extension.
 
 ## Dependencies
 

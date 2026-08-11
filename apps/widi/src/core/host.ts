@@ -6,7 +6,6 @@
  */
 
 import type { ThinkingLevel } from "@widi/agent-core";
-import type { BackgroundJobHost } from "./background/index.ts";
 import type { HumanRequestDraft, HumanResponse } from "./human-request.ts";
 import type { AgentNotice, MessageDeliveryMode, MessageSendOutcome } from "./message.ts";
 import type { AgentAbortOrigin, AgentActivity, AgentId, AgentIdleReason } from "./types.ts";
@@ -52,7 +51,6 @@ export interface AgentStop {
 	readonly reason: AgentIdleReason;
 	/** Only with `aborted`, and only when the abort was asked for. */
 	readonly abortedBy?: AgentAbortOrigin;
-	readonly liveJobCount: number;
 }
 
 /** Something the runtime tells an agent about another agent. */
@@ -152,10 +150,6 @@ export type AgentRequestedDisposeOutcome =
  * runtime allowed to act as the agent: `spawn` parents under it, `listAgents`
  * scopes to its level, `dispose` checks their shared tree, and `sendMessage`
  * attributes to it, whoever is holding the object. Tools are the first holder.
- *
- * Modules that are not agent-scoped hold something else: the background runtime
- * serves every agent and speaks as a job rather than as an agent, so it takes a
- * message sink and none of this.
  */
 export interface AgentToOrchestratorHost {
 	readonly agentId: AgentId;
@@ -183,6 +177,5 @@ export interface AgentToOrchestratorHost {
 	 */
 	notifySelf(notification: AgentSelfNotification): Promise<MessageSendOutcome>;
 	dispose(agentId: AgentId, options: AgentRequestedDisposeOptions): Promise<AgentRequestedDisposeOutcome>;
-	readonly jobs: BackgroundJobHost;
 	requestHuman(request: HumanRequestDraft): Promise<HumanResponse>;
 }

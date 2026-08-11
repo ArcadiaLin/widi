@@ -1,6 +1,5 @@
 import type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode } from "@widi/agent-core";
 import type { Static, TSchema } from "typebox";
-import type { BackgroundJobHost, BackgroundJobOutputWriter, BackgroundJobReport } from "../background/index.ts";
 import type { AgentToOrchestratorHost } from "../host.ts";
 import type { HumanInterruptWatch } from "../human-interrupt.ts";
 import type { ToolHumanHost } from "../human-request.ts";
@@ -14,9 +13,24 @@ import type { ToolHumanHost } from "../human-request.ts";
  * harness context with per-call facts such as abort, update, extension, and
  * human request handling.
  */
+/**
+ * The workspace a tool call runs in. Required rather than optional because
+ * every tool call happens somewhere: a relative path with no cwd behind it is
+ * a wiring mistake, not a capability an execution can go without.
+ */
+export interface ToolWorkspaceContext {
+	readonly cwd: string;
+}
+
 export interface ToolExecutionContext<TDetails> {
 	/** Abort signal for the current tool call. */
 	signal: AbortSignal | undefined;
+	/**
+	 * Where the agent whose turn is executing works. Read at execution time,
+	 * not captured by the tool definition: the tool table is registered once for
+	 * the whole runtime while the cwd belongs to the agent.
+	 */
+	workspace: ToolWorkspaceContext;
 	/** Pi-compatible callback for streaming tool updates. */
 	onUpdate: AgentToolUpdateCallback<TDetails> | undefined;
 	/** Extension context bound to the tool source currently executing. */
@@ -30,39 +44,11 @@ export interface ToolExecutionContext<TDetails> {
 	 */
 	agents?: AgentToOrchestratorHost;
 	/**
-	 * Owner-scoped background job capabilities, bound to the agent whose turn is
-	 * executing, when the runtime wired a background runtime. Job-control tools
-	 * such as `wait_for_jobs` read live jobs and observe their settlements
-	 * through it; most tools ignore it.
-	 */
-	jobs?: BackgroundJobHost;
-	/**
 	 * Pending human steers for the agent whose turn is executing. Only tools that
 	 * deliberately block read it, so the user does not have to wait out a barrier
 	 * to be heard; everything else ignores it.
 	 */
 	humanInterrupts?: HumanInterruptWatch;
-	/**
-	 * Set when this call executes as a pseudo-async job (a `backgroundable`
-	 * call the background runtime accepted); undefined for plain synchronous
-	 * calls. The tool streams its raw output into `output` so job-control
-	 * surfaces can peek at live progress. The runtime's cooperative output
-	 * ceiling only counts bytes appended here, and termination still requires
-	 * the tool to honor `signal`; the tool's eventual result size is independent
-	 * of this buffer.
-	 */
-	job?: BackgroundJobExecutionContext;
-}
-
-/** Capabilities scoped to the pseudo-async job executing this tool call. */
-export interface BackgroundJobExecutionContext {
-	readonly id: string;
-	readonly output: BackgroundJobOutputWriter;
-	/**
-	 * Replace the job's structured report. Returns false if the job already
-	 * settled before the update was published.
-	 */
-	readonly setReport: (report: BackgroundJobReport) => boolean;
 }
 
 /**
@@ -134,18 +120,6 @@ export interface ToolSource {
 }
 
 /**
- * Declarative bridge from a tool's existing arguments/partial results into its
- * structured background job report. This is opt-in: arbitrary `details` are
- * never treated as job state without a tool-owned mapper.
- */
-export interface BackgroundJobReportAdapter<TParamsSchema extends TSchema = TSchema, TDetails = unknown> {
-	/** Seed the first report when the adapter creates the job. */
-	initial?: (params: Static<TParamsSchema>) => BackgroundJobReport | undefined;
-	/** Replace the report when the tool publishes a partial result. */
-	fromUpdate?: (partialResult: AgentToolResult<TDetails>) => BackgroundJobReport | undefined;
-}
-
-/**
  * WIDI-owned tool definition.
  *
  * This is not Pi's runtime closure directly. It is the declarative/runtime
@@ -176,51 +150,6 @@ export interface ToolDefinition<TParamsSchema extends TSchema = TSchema, TDetail
 
 	/** Pi tool execution scheduling mode. */
 	executionMode?: ToolExecutionMode;
-
-	/**
-	 * Opt in to pseudo-async execution. When true, the runtime may turn a
-	 * still-running call into a background job at a timeout deadline: it
-	 * settles the tool call immediately with a job handle (t0) and delivers
-	 * the eventual result later as a separate background job result message
-	 * (t1). Default (false/omitted) keeps the tool fully synchronous.
-	 *
-	 * Only mark tools whose handle-first return is safe and whose result is
-	 * still meaningful when delivered out of band (long-running bash, spawned
-	 * agents). Never mark tools whose result must be consumed inline in the
-	 * same turn (read before edit, and similar).
-	 */
-	backgroundable?: boolean;
-	/**
-	 * Wall-clock deadline in milliseconds after which a `backgroundable` call
-	 * that is still running is moved to the background. This is an opt-in safety
-	 * net, not the primary trigger: when omitted, the call is never
-	 * auto-backgrounded on a timer and only moves to the background when the tool
-	 * arguments explicitly request it (a `background: true` argument). Ignored
-	 * unless `backgroundable` is true.
-	 */
-	backgroundTimeoutMs?: number;
-	/**
-	 * Produce a short human-readable label for a backgrounded call from its
-	 * arguments (for bash, the command). Surfaced on the job snapshot and
-	 * progress/lifecycle events; falls back to the tool name when omitted.
-	 * Ignored unless `backgroundable` is true.
-	 */
-	backgroundDescription?: (params: Static<TParamsSchema>) => string;
-	/**
-	 * Read the name the caller gave this call out of its own arguments, for tools
-	 * that take one. It is what surfaces show first: `backgroundDescription` is
-	 * derived from the call and describes it, a name is chosen and identifies it
-	 * ("run the e2e suite" rather than the command that happens to do it).
-	 * Ignored unless `backgroundable` is true.
-	 */
-	backgroundName?: (params: Static<TParamsSchema>) => string | undefined;
-	/**
-	 * Optional declarative projection of arguments and streaming updates into a
-	 * structured background job report. Tools that need direct control can call
-	 * `context.job.setReport` instead. If both paths are used, accepted writes are
-	 * ordered normally and the latest full replacement wins.
-	 */
-	backgroundReport?: BackgroundJobReportAdapter<TParamsSchema, TDetails>;
 
 	/** Execute the tool after arguments have been prepared and validated. */
 	execute: ToolExecute<TParamsSchema, TDetails>;

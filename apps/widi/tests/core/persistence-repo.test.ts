@@ -487,9 +487,9 @@ describe("fork", () => {
 	it("marks what a degrade policy rewrote", async () => {
 		const { repo } = makeRepo([
 			counterNamespace({
-				namespace: "test:jobs",
+				namespace: "test:notes",
 				forkPolicy: "degrade",
-				// A live job cannot survive the copy; its history can.
+				// A live handle cannot survive the copy; the record of it can.
 				async fork({ source, target, roots }) {
 					const root = roots[0] as string;
 					const state = (await source.resolveState(root)) as CounterState;
@@ -498,13 +498,13 @@ describe("fork", () => {
 			}),
 		]);
 		const root = await repo.create({ cwd: CWD, sessionId: "root" });
-		await commitState(repo, root, "test:jobs", { count: 3 });
+		await commitState(repo, root, "test:notes", { count: 3 });
 
 		const forked = await repo.fork(root.address, { sessionId: "forked" });
 		const resolved = await repo.resolveState(forked.session.address);
-		expect(resolved.states.get("test:jobs")?.state).toEqual({ count: 3, interrupted: true });
-		expect(resolved.states.get("test:jobs")?.provenance).toBe("degraded");
-		expect(counted((await repo.resolveState(root.address)).states, "test:jobs")).toBe(3);
+		expect(resolved.states.get("test:notes")?.state).toEqual({ count: 3, interrupted: true });
+		expect(resolved.states.get("test:notes")?.provenance).toBe("degraded");
+		expect(counted((await repo.resolveState(root.address)).states, "test:notes")).toBe(3);
 	});
 
 	// Rewinding decides what the conversation and the namespace states say, and

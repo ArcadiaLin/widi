@@ -213,10 +213,6 @@ export class ExtensionRunner {
 				errors.push(error);
 			}
 		}
-		// Contexts pinned by in-flight background jobs keep this runner alive
-		// past disposal. Keep only the inspectable snapshot and drop the loaded
-		// scope so they do not retain every handler closure and extension
-		// module until the job settles.
 		this._disposedSnapshot = this.inspect();
 		this._loadedScope = {
 			agentId: this.agentId,
@@ -632,18 +628,6 @@ export class ExtensionRunner {
 				this._assertActive();
 				return this._actions.getAgentTools(agentId);
 			},
-			listJobs: () => {
-				this._assertActive();
-				return this._actions.listAgentBackgroundJobs(agentId);
-			},
-			readJobOutput: (jobId) => {
-				this._assertActive();
-				return this._actions.readAgentBackgroundJobOutput(agentId, jobId);
-			},
-			killJob: async (jobId, reason) =>
-				await this._runReportedAction(failure("killJob"), async () =>
-					this._actions.abortAgentBackgroundJob(agentId, jobId, reason),
-				),
 			setTools: async (toolNames, activeToolNames) => {
 				await this._runReportedAction(failure("setTools"), async () => {
 					await this._actions.setAgentTools(agentId, toolNames, activeToolNames);
@@ -1021,9 +1005,6 @@ function createUnboundActions(): ExtensionCoreActions {
 		spawnAgentFor: async () => notBound(),
 		disposeAgentFor: async () => notBound(),
 		getAgentTools: () => notBound(),
-		listAgentBackgroundJobs: () => notBound(),
-		readAgentBackgroundJobOutput: () => notBound(),
-		abortAgentBackgroundJob: () => notBound(),
 		setAgentTools: async () => notBound(),
 		setAgentActiveTools: async () => notBound(),
 		requestHuman: async () => notBound(),

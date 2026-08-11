@@ -18,7 +18,6 @@ import type { TSchema } from "typebox";
 import { freezeJsonValue, type JsonValue, normalizeJsonValue } from "../../utils/json.ts";
 import { utf8ByteLength } from "../../utils/text.ts";
 import type { AgentProfileOverride, AgentProfileReference } from "../agent-profile.js";
-import type { BackgroundJobSnapshot } from "../background/index.ts";
 import type { ExtensionDiagnosticDraft } from "../diagnostics.ts";
 import type {
 	AgentBrief,
@@ -45,8 +44,6 @@ import type { ExtensionEventEnvelope } from "./events.ts";
 // inversion); the extension layer consumes and re-exports it for its own
 // consumers.
 export type {
-	BackgroundJobExecutionContext,
-	BackgroundJobReportAdapter,
 	ToolDefinition,
 	ToolDefinitionPatch,
 	ToolExecute,
@@ -111,9 +108,6 @@ export type ExtensionObservedEvent = Extract<
 	OrchestratorEvent,
 	{
 		type:
-			| "agent_background_job_changed"
-			| "agent_background_job_progress"
-			| "agent_background_job_report_updated"
 			| "agent_context_usage_changed"
 			| "agent_disposed"
 			| "agent_harness_event"
@@ -147,9 +141,6 @@ export type ExtensionObservedEventFor<TName extends ExtensionObservedEventName> 
  * declared observable while the dispatcher silently dropped it.
  */
 export const EXTENSION_OBSERVED_EVENT_NAMES: Readonly<Record<ExtensionObservedEventName, true>> = {
-	agent_background_job_changed: true,
-	agent_background_job_progress: true,
-	agent_background_job_report_updated: true,
 	agent_context_usage_changed: true,
 	agent_disposed: true,
 	agent_harness_event: true,
@@ -215,13 +206,12 @@ export type ExtensionInterceptorName =
 
 /**
  * WIDI-native input interceptor event (ME slice 6). Fired by `sendMessage` for
- * every message ingress, not only human text: an agent-to-agent message, a
- * background job result, and a system notice all run the same pipeline, so no
- * input path bypasses an input policy. Not a Pi harness hook.
+ * every message ingress, not only human text: an agent-to-agent message and a
+ * system notice run the same pipeline, so no input path bypasses an input
+ * policy. Not a Pi harness hook.
  *
  * `source` tells the cases apart. A handler that only means to rewrite human
- * input must check it, or it will also rewrite tool results the model is
- * waiting for. `targetAgentId` is the agent that will read the message, which
+ * input must check it, or it will also rewrite what the runtime wrote. `targetAgentId` is the agent that will read the message, which
  * is not the handler's own agent for cross-agent delivery.
  */
 export interface ExtensionInputEvent {
@@ -238,9 +228,8 @@ export interface ExtensionInputEvent {
  * and feeds the next handler. A block result rejects the whole input and
  * short-circuits the pipeline; there is no pi-style "handled" escape hatch.
  *
- * A block is only enforced for sources whose caller can be told: background job
- * results are delivered anyway, because the model already holds the job handle
- * and would otherwise wait forever for a result that was silently dropped.
+ * A block is only enforced for sources whose caller can be told: a runtime
+ * notice is delivered anyway, because nobody is left to learn it was dropped.
  */
 export type ExtensionInputResult =
 	| { text: string; images?: readonly ImageContent[] }
@@ -462,20 +451,6 @@ export interface ExtensionActions {
 	 */
 	disposeAgent(agentId: string, options: AgentRequestedDisposeOptions): Promise<AgentRequestedDisposeOutcome>;
 	getTools(): AgentToolsSnapshot;
-	// The agent's live backgrounded jobs: the ones whose t0 handles the model is
-	// currently holding. Pairs with the three job observers, which report
-	// transitions but never carry output.
-	listJobs(): BackgroundJobSnapshot[];
-	// Current rolling output tail of a live job, or undefined once it settles.
-	// Pull-only, and the tail is bounded: an extension that needs the complete
-	// stream must accumulate `agent_background_job_progress` increments instead,
-	// which this cannot reconstruct after the head has been dropped.
-	readJobOutput(jobId: string): string | undefined;
-	// Request that a live job terminate, recording `reason` on its snapshot and
-	// its result message. False when no such job is live - a listed job may have
-	// settled since. This is a request: a job ends only when its tool honors the
-	// signal.
-	killJob(jobId: string, reason?: string): Promise<boolean>;
 	setTools(toolNames: string[], activeToolNames?: string[]): Promise<void>;
 	setActiveTools(toolNames: string[]): Promise<void>;
 	// The request source is injected by the runner as
@@ -605,9 +580,6 @@ export interface ExtensionCoreActions {
 		options: AgentRequestedDisposeOptions,
 	): Promise<AgentRequestedDisposeOutcome>;
 	getAgentTools(agentId: string): AgentToolsSnapshot;
-	listAgentBackgroundJobs(agentId: string): BackgroundJobSnapshot[];
-	readAgentBackgroundJobOutput(agentId: string, jobId: string): string | undefined;
-	abortAgentBackgroundJob(agentId: string, jobId: string, reason?: string): boolean;
 	setAgentTools(agentId: string, toolNames: string[], activeToolNames?: string[]): Promise<void>;
 	setAgentActiveTools(agentId: string, toolNames: string[]): Promise<void>;
 	requestHuman(agentId: string, extensionId: string, request: HumanRequestDraft): Promise<HumanResponse>;
@@ -783,7 +755,6 @@ export interface ExtensionActionFailure {
 		| "getSnapshot"
 		| "getSystemPrompt"
 		| "getTree"
-		| "killJob"
 		| "listAgents"
 		| "listModelCandidates"
 		| "listProfiles"

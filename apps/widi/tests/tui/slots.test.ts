@@ -91,6 +91,26 @@ describe("LayoutSlots", () => {
 		expect(mounted.map((component) => component.render(80))).toEqual([["header"], ["footer"]]);
 	});
 
+	it("routes transcript slots separately from the fixed dock", () => {
+		const slots = new LayoutSlots();
+		slots.register(entry("footer", { slot: "footer" }));
+		slots.register(entry("chat", { slot: "chat" }));
+		slots.register(entry("header", { slot: "header" }));
+		const transcript: Component[] = [];
+		const dock: Component[] = [];
+
+		slots.mount(
+			{
+				transcript: { addChild: (component) => transcript.push(component), children: transcript },
+				dock: { addChild: (component) => dock.push(component), children: dock },
+			},
+			createTuiApplicationState(),
+		);
+
+		expect(transcript.map((component) => component.render(80))).toEqual([["header"], ["chat"]]);
+		expect(dock.map((component) => component.render(80))).toEqual([["footer"]]);
+	});
+
 	it("gates a visible? entry per render from current state", () => {
 		const state = createTuiApplicationState();
 		const slots = new LayoutSlots();
@@ -144,6 +164,27 @@ describe("LayoutSlots runtime mounting", () => {
 			["editor"],
 			["footer"],
 		]);
+	});
+
+	it("inserts runtime entries into their layout region", () => {
+		const transcript: Component[] = [];
+		const dock: Component[] = [];
+		const slots = new LayoutSlots();
+		slots.register(entry("header", { slot: "header" }));
+		slots.register(entry("editor", { slot: "editor" }));
+		slots.mount(
+			{
+				transcript: { addChild: (component) => transcript.push(component), children: transcript },
+				dock: { addChild: (component) => dock.push(component), children: dock },
+			},
+			createTuiApplicationState(),
+		);
+
+		slots.register(entry("notices", { slot: "notices" }));
+		slots.register(entry("footer", { slot: "footer" }));
+
+		expect(transcript.map((component) => component.render(80))).toEqual([["header"], ["notices"]]);
+		expect(dock.map((component) => component.render(80))).toEqual([["editor"], ["footer"]]);
 	});
 
 	it("appends a runtime registration whose slot has no mounted anchor", () => {

@@ -47,7 +47,7 @@ describe("session layout", () => {
 	// session directory could not tell a child session from persistence/.
 	it("refuses directory segments that are not a session path", () => {
 		expect(sessionKeyFromDirSegments(["root", "persistence"])).toBeUndefined();
-		expect(sessionKeyFromDirSegments(["root", "jobs", "x"])).toBeUndefined();
+		expect(sessionKeyFromDirSegments(["root", "persistence", "x"])).toBeUndefined();
 		expect(sessionKeyFromDirSegments(["root", "agents"])).toBeUndefined();
 		expect(sessionKeyFromDirSegments([])).toBeUndefined();
 		expect(sessionKeyFromDirSegments(["agents", "agents", "x"])).toBeUndefined();
@@ -82,14 +82,14 @@ describe("session layout", () => {
 	});
 
 	// ':' is not a legal Windows path character, and collapsing it to '-' would
-	// let core:jobs and a hypothetical core-jobs share a directory.
+	// let core:notes and a hypothetical core-notes share a directory.
 	it("encodes a namespace into a portable directory name", () => {
-		expect(namespaceDirSegments(["root"], "core:jobs")).toEqual(["root", "persistence", "core__jobs"]);
-		expect(namespaceDirSegments(["root"], "core-jobs")).not.toEqual(namespaceDirSegments(["root"], "core:jobs"));
-		expect(namespaceObjectsSegments(["root"], "core:jobs")).toEqual([
+		expect(namespaceDirSegments(["root"], "core:notes")).toEqual(["root", "persistence", "core__notes"]);
+		expect(namespaceDirSegments(["root"], "core-notes")).not.toEqual(namespaceDirSegments(["root"], "core:notes"));
+		expect(namespaceObjectsSegments(["root"], "core:notes")).toEqual([
 			"root",
 			"persistence",
-			"core__jobs",
+			"core__notes",
 			"objects.jsonl",
 		]);
 	});

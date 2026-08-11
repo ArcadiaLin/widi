@@ -70,7 +70,8 @@ export type PersistenceFileSystem = Pick<
  * `copy` is for state that is just data. `omit` is for state that is a handle
  * on something outside the session - a pid, a socket, a credential - which a
  * copy would misrepresent as still valid. `degrade` is for state that is both:
- * a job's history is worth carrying, its live process is not.
+ * the record of what happened is worth carrying, the live handle inside it is
+ * not.
  */
 export type PersistenceForkPolicy = "copy" | "omit" | "degrade";
 
@@ -189,7 +190,7 @@ export interface NamespaceLocateRequest {
 }
 
 export interface PersistenceNamespaceDefinition {
-	/** Stable and globally unique, e.g. `core:jobs`. */
+	/** Stable and globally unique, e.g. `core:notes`. */
 	readonly namespace: string;
 
 	/** Format version of this namespace's objects, written into its log. */
@@ -251,9 +252,9 @@ export interface PersistenceNamespaceDefinition {
 	 * object set. Omitted means the default: copy the closure and keep the root.
 	 *
 	 * A fork never writes to the source. A `degrade` policy has to invent an
-	 * object - a job history with its running job marked interrupted - and that
-	 * object belongs to the new session, not to the one being read: writing it
-	 * into the source would leave it holding state only somebody else needs.
+	 * object - the same record with its live handles marked interrupted - and
+	 * that object belongs to the new session, not to the one being read: writing
+	 * it into the source would leave it holding state only somebody else needs.
 	 */
 	fork?(request: NamespaceForkRequest): Promise<NamespaceForkResult>;
 
@@ -277,7 +278,7 @@ export interface PersistenceNamespaceDefinition {
 }
 
 /**
- * Two or more lowercase segments joined by colons, as in `core:jobs`.
+ * Two or more lowercase segments joined by colons, as in `core:notes`.
  *
  * Checked at registration, where the name is still a programming decision and
  * the error can name the definition that made it. It is a naming rule and not a

@@ -32,12 +32,18 @@ class MemoryWriteOperations {
 	}
 }
 
-const emptyExecutionContext = { signal: undefined, onUpdate: undefined, extension: undefined, human: undefined };
+const emptyExecutionContext = {
+	signal: undefined,
+	onUpdate: undefined,
+	workspace: { cwd: "/workspace/project" },
+	extension: undefined,
+	human: undefined,
+};
 
 describe("core write tool", () => {
 	it("creates a new file relative to cwd with parent directories", async () => {
 		const operations = new MemoryWriteOperations();
-		const tool = createWriteToolDefinition("/workspace/project", { operations });
+		const tool = createWriteToolDefinition({ operations });
 
 		const result = await tool.execute(
 			"call-1",
@@ -59,7 +65,7 @@ describe("core write tool", () => {
 	it("overwrites an existing file and reports created: false", async () => {
 		const operations = new MemoryWriteOperations();
 		operations.files.set("/workspace/project/file.txt", "old");
-		const tool = createWriteToolDefinition("/workspace/project", { operations });
+		const tool = createWriteToolDefinition({ operations });
 
 		const result = await tool.execute("call-1", { path: "file.txt", content: "new content" }, emptyExecutionContext);
 
@@ -69,7 +75,7 @@ describe("core write tool", () => {
 
 	it("reports byte count, not character count, for multibyte content", async () => {
 		const operations = new MemoryWriteOperations();
-		const tool = createWriteToolDefinition("/workspace/project", { operations });
+		const tool = createWriteToolDefinition({ operations });
 
 		const result = await tool.execute("call-1", { path: "file.txt", content: "中文" }, emptyExecutionContext);
 
@@ -79,7 +85,7 @@ describe("core write tool", () => {
 
 	it("serializes concurrent writes to the same resolved path", async () => {
 		const operations = new MemoryWriteOperations();
-		const tool = createWriteToolDefinition("/workspace/project", { operations });
+		const tool = createWriteToolDefinition({ operations });
 
 		await Promise.all([
 			tool.execute("call-1", { path: "file.txt", content: "first" }, emptyExecutionContext),
@@ -94,7 +100,7 @@ describe("core write tool", () => {
 		const operations = new MemoryWriteOperations();
 		const controller = new AbortController();
 		controller.abort();
-		const tool = createWriteToolDefinition("/workspace/project", { operations });
+		const tool = createWriteToolDefinition({ operations });
 
 		await expect(
 			tool.execute(
@@ -112,7 +118,7 @@ describe("core write tool", () => {
 		operations.access = async () => {
 			throw Object.assign(new Error("Permission denied"), { code: "EACCES" });
 		};
-		const tool = createWriteToolDefinition("/workspace/project", { operations });
+		const tool = createWriteToolDefinition({ operations });
 
 		await expect(tool.execute("call-1", { path: "file.txt", content: "data" }, emptyExecutionContext)).rejects.toThrow(
 			"Permission denied",
@@ -122,15 +128,14 @@ describe("core write tool", () => {
 	it("executes through the registry adapter with typed details", async () => {
 		const operations = new MemoryWriteOperations();
 		const registry = new ToolRegistry();
-		registry.defineTool(createWriteToolDefinition("/workspace/project", { operations }), {
-			kind: "core",
-			id: "builtin",
-		});
+		registry.defineTool(createWriteToolDefinition({ operations }), { kind: "core", id: "builtin" });
 		const resolved = registry.resolve().getTool("write");
 		if (!resolved) throw new Error("Expected write tool to resolve.");
 		const agentTool = createAgentHarnessToolFromResolvedTool(resolved);
 
-		const result = await agentTool.execute("call-1", { path: "file.txt", content: "hello" }, undefined, undefined, {});
+		const result = await agentTool.execute("call-1", { path: "file.txt", content: "hello" }, undefined, undefined, {
+			workspace: { cwd: "/workspace/project" },
+		});
 
 		expect(result).toMatchObject({
 			content: [{ type: "text", text: "Successfully wrote 5 bytes to file.txt" }],

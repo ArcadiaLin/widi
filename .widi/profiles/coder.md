@@ -10,7 +10,7 @@ whenToUse: |
   Hand it a task that states the goal, the files or area involved, and how to
   verify the result. It cannot see your conversation.
 persist: false
-tools: [read, bash, edit, write, grep, find, ls, wait_for_jobs, read_job, kill_job, send_message]
+tools: [read, bash, edit, write, grep, find, ls, send_message]
 projectContext: [AGENTS.md]
 includeCwd: true
 skillsListing: true

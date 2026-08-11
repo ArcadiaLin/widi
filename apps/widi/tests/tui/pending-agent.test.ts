@@ -44,7 +44,11 @@ describe("PendingAgentController", () => {
 		controller.beginNewSession({ profileId: "main-agent", model: sourceModel }, display());
 
 		await expect(controller.materialize()).resolves.toBe("main-2");
-		expect(spawnAgent).toHaveBeenCalledWith({ origin: { kind: "new", profileId: "main-agent" }, model: sourceModel });
+		expect(spawnAgent).toHaveBeenCalledWith({
+			origin: { kind: "new", profileId: "main-agent" },
+			model: sourceModel,
+			cwd: "/workspace/project",
+		});
 	});
 
 	// The orchestrator reads `options.origin` before anything else, so a default
@@ -55,7 +59,7 @@ describe("PendingAgentController", () => {
 		controller.beginDefault(display());
 
 		await expect(controller.materialize()).resolves.toBe("main");
-		expect(spawnAgent).toHaveBeenCalledWith({ origin: { kind: "new" } });
+		expect(spawnAgent).toHaveBeenCalledWith({ origin: { kind: "new" }, cwd: "/workspace/project" });
 	});
 
 	it("keeps the pending intent after materialization fails", async () => {
@@ -67,7 +71,7 @@ describe("PendingAgentController", () => {
 		controller.beginDefault(display());
 
 		await expect(controller.materialize()).rejects.toThrow("spawn failed");
-		expect(state.pendingAgent?.start).toEqual({ kind: "default" });
+		expect(state.pendingAgent?.start).toEqual({ kind: "default", cwd: "/workspace/project" });
 	});
 });
 
@@ -80,7 +84,13 @@ function createController(
 }
 
 function display(): PendingAgentDisplay {
-	return { profileLabel: "Main Agent", model: model(), thinkingLevel: "medium" };
+	return {
+		profileId: "main-agent",
+		profileLabel: "Main Agent",
+		cwd: "/workspace/project",
+		model: model(),
+		thinkingLevel: "medium",
+	};
 }
 
 function model(): RuntimeModel {

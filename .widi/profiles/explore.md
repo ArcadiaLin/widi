@@ -12,7 +12,7 @@ whenToUse: |
   Spawn several in parallel for independent questions. It cannot edit anything;
   use coder for that.
 persist: false
-tools: [read, bash, grep, find, ls, wait_for_jobs, read_job, kill_job, send_message]
+tools: [read, bash, grep, find, ls, send_message]
 projectContext: [AGENTS.md]
 includeCwd: true
 skillsListing: true

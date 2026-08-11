@@ -1,6 +1,7 @@
 import type { Component, KeyId } from "@earendil-works/pi-tui";
 import type { ExtensionEventEnvelope } from "../../core/extension/events.ts";
 import type { JsonValue } from "../../utils/json.ts";
+import type { TuiCapabilityKey, TuiCapabilityMap } from "../capabilities.ts";
 import type { CommandDefinition } from "../commands/types.ts";
 import type { AppOverlayHandle, ShowOverlayOptions } from "../layout/overlay-stack.ts";
 import type { Theme, ThemeInfo } from "../theme/theme.ts";
@@ -64,13 +65,6 @@ export interface TuiExtensionEventBus {
 	emit(extensionId: string, name: string, payload?: JsonValue): Promise<void>;
 	/** Returns the detach. */
 	subscribe(handler: TuiExtensionEventHandler): () => void;
-}
-
-/** The slice of the TUI editor the host hands extensions for text access. */
-export interface TuiExtensionEditorAccess {
-	getText(): string;
-	setText(text: string): void;
-	insertTextAtCursor?(text: string): void;
 }
 
 /**
@@ -162,13 +156,37 @@ export interface WidiTuiExtensionApi {
 	 */
 	onExtensionEvent(name: string, handler: TuiExtensionEventHandler): void;
 
-	/** The editor's current draft text. */
+	/**
+	 * The control surface published under one layout key - the same name the
+	 * widget is registered and wrapped under, so what an extension can draw over
+	 * and what it can drive are one vocabulary.
+	 *
+	 * A built-in key hands back its declared interface; anything else reads back
+	 * as `unknown`, because nobody promised a shape for it. Capabilities live as
+	 * long as the application does, so holding one from activation is fine.
+	 *
+	 * Mutating methods take effect after the current frame. That is what makes
+	 * calling one from inside a component's render safe rather than forbidden.
+	 */
+	capability<TKey extends TuiCapabilityKey>(key: TKey): TuiCapabilityMap[TKey] | undefined;
+	capability(key: string): unknown;
+
+	/**
+	 * Shorthand for the three most-reached-for `capability("editor")` methods.
+	 * They are that capability, not a second path to the editor, so the writes
+	 * land after the current frame like every other capability write. Reading
+	 * returns the draft as it stands, which is not yet what a write in the same
+	 * turn put there.
+	 *
+	 * Without an application behind the host there is no editor: reading gives
+	 * "" and writing does nothing.
+	 */
 	getEditorText(): string;
 
-	/** Replace the editor's draft text. */
+	/** Replace the editor's draft text. Deferred to after the current frame. */
 	setEditorText(text: string): void;
 
-	/** Insert text at the cursor, keeping the rest of the draft. */
+	/** Insert at the cursor, keeping the rest of the draft. Deferred. */
 	pasteToEditor(text: string): void;
 
 	/**

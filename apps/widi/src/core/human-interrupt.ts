@@ -2,10 +2,9 @@
  * "The human is trying to break in" as an observable fact.
  *
  * A steer never preempts a turn already in flight: the agent loop reads its
- * steering queue only at a turn boundary. A tool that deliberately blocks -
- * `wait_for_jobs` is a barrier of up to ten minutes - therefore holds the turn
- * open long after the user typed, and from the user's side the steer looks
- * lost. This registry is the missing signal: the orchestrator records a human
+ * steering queue only at a turn boundary. A tool that deliberately blocks
+ * therefore holds the turn open long after the user typed, and from the user's
+ * side the steer looks lost. This registry is the missing signal: the orchestrator records a human
  * steer the moment the harness accepts it, and a blocking tool can stop waiting
  * and hand the turn back so the loop reaches the boundary that drains it.
  *

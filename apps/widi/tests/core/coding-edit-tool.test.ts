@@ -31,10 +31,16 @@ class MemoryEditOperations {
 	}
 }
 
-const emptyExecutionContext = { signal: undefined, onUpdate: undefined, extension: undefined, human: undefined };
+const emptyExecutionContext = {
+	signal: undefined,
+	onUpdate: undefined,
+	workspace: { cwd: "/workspace/project" },
+	extension: undefined,
+	human: undefined,
+};
 
 function createTool(operations: MemoryEditOperations) {
-	return createEditToolDefinition("/workspace/project", { operations });
+	return createEditToolDefinition({ operations });
 }
 
 describe("core edit tool", () => {
@@ -228,10 +234,7 @@ describe("core edit tool", () => {
 		const operations = new MemoryEditOperations();
 		operations.files.set("/workspace/project/file.txt", "alpha\n");
 		const registry = new ToolRegistry();
-		registry.defineTool(createEditToolDefinition("/workspace/project", { operations }), {
-			kind: "core",
-			id: "builtin",
-		});
+		registry.defineTool(createEditToolDefinition({ operations }), { kind: "core", id: "builtin" });
 		const resolved = registry.resolve().getTool("edit");
 		if (!resolved) throw new Error("Expected edit tool to resolve.");
 		const agentTool = createAgentHarnessToolFromResolvedTool(resolved);
@@ -241,7 +244,9 @@ describe("core edit tool", () => {
 
 		// The pi agent loop applies prepareArguments before execute.
 		const prepared = agentTool.prepareArguments({ path: "file.txt", oldText: "alpha", newText: "beta" });
-		const result = await agentTool.execute("call-1", prepared, undefined, undefined, {});
+		const result = await agentTool.execute("call-1", prepared, undefined, undefined, {
+			workspace: { cwd: "/workspace/project" },
+		});
 
 		expect(operations.files.get("/workspace/project/file.txt")).toBe("beta\n");
 		expect(result).toMatchObject({

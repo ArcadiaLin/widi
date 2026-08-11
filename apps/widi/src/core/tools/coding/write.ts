@@ -28,7 +28,6 @@ export interface WriteToolOptions {
 }
 
 export function createWriteToolDefinition(
-	cwd: string,
 	options: WriteToolOptions = {},
 ): ToolDefinition<typeof writeSchema, WriteToolDetails> {
 	const operations = options.operations ?? createLocalCodingToolFileOperations();
@@ -42,7 +41,7 @@ export function createWriteToolDefinition(
 		promptGuidelines: ["Use write only for new files or complete rewrites; use edit for partial changes."],
 		parameters: writeSchema,
 		execute: async (_toolCallId, input, context) => {
-			const absolutePath = resolveToCwd(input.path, cwd);
+			const absolutePath = resolveToCwd(input.path, context.workspace.cwd);
 			return withFileMutationQueue(
 				absolutePath,
 				async () => {

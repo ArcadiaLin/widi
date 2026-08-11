@@ -1,5 +1,4 @@
-import { getKeybindings } from "@earendil-works/pi-tui";
-import { formatOperationHintKey } from "../components/operation-hint.ts";
+import { actionKeyLabel } from "../keybindings.ts";
 
 /** What an open selector contributes to the operation hint line. */
 export interface SelectorHintContext {
@@ -22,23 +21,16 @@ export interface SelectorKeyHintOptions {
  * so user remaps show up here.
  */
 export function selectorKeyHints(options: SelectorKeyHintOptions = {}): string {
-	const keybindings = getKeybindings();
-	const key = (action: Parameters<typeof keybindings.getKeys>[0]): string | undefined => {
-		const keyId = keybindings.getKeys(action)[0];
-		return keyId ? formatOperationHintKey(keyId) : undefined;
-	};
-	const keyAction = (action: Parameters<typeof keybindings.getKeys>[0], label: string): string | undefined => {
-		const keyId = key(action);
-		return keyId ? `${keyId} ${label}` : undefined;
-	};
-	const navigate = [key("tui.select.up"), key("tui.select.down")]
+	const confirm = actionKeyLabel("tui.select.confirm");
+	const cancel = actionKeyLabel("tui.select.cancel");
+	const navigate = [actionKeyLabel("tui.select.up"), actionKeyLabel("tui.select.down")]
 		.filter((candidate): candidate is string => candidate !== undefined)
 		.join("/");
 	const parts = [
 		navigate ? `${navigate} navigate` : undefined,
 		options.filter ? "type to filter" : undefined,
-		keyAction("tui.select.confirm", options.confirmLabel ?? "select"),
-		keyAction("tui.select.cancel", "cancel"),
+		confirm && `${confirm} ${options.confirmLabel ?? "select"}`,
+		cancel && `${cancel} cancel`,
 	];
-	return parts.filter((part): part is string => part !== undefined).join("  ");
+	return parts.filter((part): part is string => Boolean(part)).join("  ");
 }

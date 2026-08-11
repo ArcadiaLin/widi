@@ -3,7 +3,11 @@ import type { RuntimeModel } from "../core/types.ts";
 import type { PendingAgentStart, PendingAgentViewState, TuiApplicationState } from "./state.ts";
 
 export interface PendingAgentDisplay {
+	/** The profile's own id, which is also the prefix of the id it will be given. */
+	readonly profileId: string;
 	readonly profileLabel: string;
+	/** The workspace the session will open in; `/workspace` rewrites it. */
+	readonly cwd: string;
 	readonly model: RuntimeModel;
 	readonly thinkingLevel?: string;
 }
@@ -28,7 +32,7 @@ export class PendingAgentController {
 
 	beginDefault(display: PendingAgentDisplay): void {
 		this.state.activeAgentId = undefined;
-		this.state.pendingAgent = createPendingAgent({ kind: "default" }, display);
+		this.state.pendingAgent = createPendingAgent({ kind: "default", cwd: display.cwd }, display);
 	}
 
 	beginNewSession(
@@ -37,13 +41,23 @@ export class PendingAgentController {
 	): void {
 		this.state.activeAgentId = undefined;
 		this.state.pendingAgent = createPendingAgent(
-			{ kind: "new-session", profileId: source.profileId, model: source.model },
+			{ kind: "new-session", profileId: source.profileId, model: source.model, cwd: display.cwd },
 			display,
 		);
 	}
 
 	cancel(): void {
 		this.state.pendingAgent = undefined;
+	}
+
+	/**
+	 * Move the staged session to another directory. Only reachable while nothing
+	 * has been spawned, which is the whole reason the intent exists as a value.
+	 */
+	setWorkspace(cwd: string): void {
+		const pending = this.state.pendingAgent;
+		if (!pending) throw new Error("No pending agent is available.");
+		this.state.pendingAgent = { ...pending, start: { ...pending.start, cwd }, display: { ...pending.display, cwd } };
 	}
 
 	async materialize(): Promise<string> {
@@ -67,8 +81,12 @@ export class PendingAgentController {
 	}
 
 	private async start(start: PendingAgentStart): Promise<string> {
-		if (start.kind === "default") return await this.runtime.spawnAgent({ origin: { kind: "new" } });
-		return await this.runtime.spawnAgent({ origin: { kind: "new", profileId: start.profileId }, model: start.model });
+		if (start.kind === "default") return await this.runtime.spawnAgent({ origin: { kind: "new" }, cwd: start.cwd });
+		return await this.runtime.spawnAgent({
+			origin: { kind: "new", profileId: start.profileId },
+			model: start.model,
+			cwd: start.cwd,
+		});
 	}
 }
 

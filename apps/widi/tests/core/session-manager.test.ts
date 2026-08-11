@@ -3,8 +3,7 @@ import { err, ok, FileError as PiFileError } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import type { AgentProfile } from "../../src/core/agent-profile.ts";
 import type { SessionAddress } from "../../src/core/persistence/index.ts";
-import { formatSessionKey, parseSessionOrigin } from "../../src/core/persistence/index.ts";
-import { createCorePersistenceRegistry } from "../../src/core/persistence-registry.ts";
+import { formatSessionKey, PersistenceRegistry, parseSessionOrigin } from "../../src/core/persistence/index.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 
 class MemoryFileSystem implements FileSystem {
@@ -197,7 +196,7 @@ describe("SessionManager", () => {
 			fs,
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
-			registry: createCorePersistenceRegistry(),
+			registry: new PersistenceRegistry(),
 		});
 
 		await manager.createAgentSession({ agentId: "main", agentProfile: profile });
@@ -222,7 +221,7 @@ describe("SessionManager", () => {
 			fs,
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
-			registry: createCorePersistenceRegistry(),
+			registry: new PersistenceRegistry(),
 		});
 		const session = await manager.createAgentSession({ agentId: "main", agentProfile: profile });
 		const metadata = await session.getMetadata();
@@ -244,7 +243,7 @@ describe("SessionManager", () => {
 			fs: new MemoryFileSystem(),
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
-			registry: createCorePersistenceRegistry(),
+			registry: new PersistenceRegistry(),
 		});
 		await manager.createAgentSession({ agentId: "scratch", agentProfile: { ...profile, persist: false } });
 
@@ -258,7 +257,7 @@ describe("SessionManager", () => {
 			fs,
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
-			registry: createCorePersistenceRegistry(),
+			registry: new PersistenceRegistry(),
 		});
 		await manager.createAgentSession({ agentId: "main", agentProfile: profile });
 		const address = requireAddress(manager, "main");
@@ -283,7 +282,7 @@ describe("SessionManager", () => {
 			fs,
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
-			registry: createCorePersistenceRegistry(),
+			registry: new PersistenceRegistry(),
 		});
 
 		await expect(manager.listAgentSessionCandidates()).resolves.toEqual([
@@ -337,7 +336,7 @@ describe("SessionManager", () => {
 			fs,
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
-			registry: createCorePersistenceRegistry(),
+			registry: new PersistenceRegistry(),
 		});
 
 		const [candidate] = await manager.listAgentSessionCandidates();
@@ -354,7 +353,7 @@ describe("SessionManager", () => {
 			fs,
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
-			registry: createCorePersistenceRegistry(),
+			registry: new PersistenceRegistry(),
 		});
 
 		await expect(manager.resolveAgentSessionReference("same")).resolves.toMatchObject({
@@ -376,7 +375,7 @@ describe("SessionManager", () => {
 			fs,
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
-			registry: createCorePersistenceRegistry(),
+			registry: new PersistenceRegistry(),
 		});
 
 		await expect(manager.resolveAgentSessionReference("same")).rejects.toMatchObject({
@@ -391,7 +390,7 @@ describe("SessionManager", () => {
 			fs,
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
-			registry: createCorePersistenceRegistry(),
+			registry: new PersistenceRegistry(),
 		});
 		const session = await manager.createAgentSession({ agentId: "main", agentProfile: profile });
 
@@ -431,7 +430,7 @@ describe("SessionManager", () => {
 			fs,
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
-			registry: createCorePersistenceRegistry(),
+			registry: new PersistenceRegistry(),
 		});
 		const session = await manager.createAgentSession({ agentId: "main", agentProfile: profile });
 		await session.appendMessage({ role: "user", content: "first", timestamp: 1 });
@@ -466,7 +465,7 @@ describe("SessionManager", () => {
 			fs: new MemoryFileSystem(),
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
-			registry: createCorePersistenceRegistry(),
+			registry: new PersistenceRegistry(),
 		});
 		const session = await manager.createAgentSession({ agentId: "main", agentProfile: profile });
 		await session.appendModelChange("test", "model-2");
@@ -502,7 +501,7 @@ describe("SessionManager", () => {
 			fs,
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
-			registry: createCorePersistenceRegistry(),
+			registry: new PersistenceRegistry(),
 		});
 		const session = await manager.createAgentSession({ agentId: "main", agentProfile: profile });
 		const userEntryId = await session.appendMessage({ role: "user", content: "hello", timestamp: 1 });
@@ -543,7 +542,7 @@ describe("SessionManager", () => {
 			fs,
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
-			registry: createCorePersistenceRegistry(),
+			registry: new PersistenceRegistry(),
 		});
 		await manager.createAgentSession({ agentId: "root", agentProfile: profile });
 		await manager.createAgentSession({ agentId: "child", agentProfile: profile, parentAgentId: "root" });
@@ -577,7 +576,7 @@ describe("SessionManager", () => {
 			fs,
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
-			registry: createCorePersistenceRegistry(),
+			registry: new PersistenceRegistry(),
 		});
 		const root = await manager.createAgentSession({ agentId: "root", agentProfile: profile });
 		await root.appendMessage({ role: "user", content: "plan it", timestamp: 1 });
@@ -614,7 +613,7 @@ describe("SessionManager", () => {
 			fs: new MemoryFileSystem(),
 			cwd: "/workspace/project",
 			sessionsRoot: "/sessions",
-			registry: createCorePersistenceRegistry(),
+			registry: new PersistenceRegistry(),
 		});
 		await manager.createAgentSession({ agentId: "main", agentProfile: profile });
 		const circular: { self?: unknown } = {};

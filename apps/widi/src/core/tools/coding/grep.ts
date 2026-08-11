@@ -76,7 +76,6 @@ interface RgMatch {
 }
 
 export function createGrepToolDefinition(
-	cwd: string,
 	options: GrepToolOptions = {},
 ): ToolDefinition<typeof grepSchema, GrepToolDetails> {
 	const operations = options.operations ?? createLocalGrepOperations({ rgPath: options.rgPath });
@@ -91,7 +90,7 @@ export function createGrepToolDefinition(
 		execute: async (_toolCallId, input, context) => {
 			validateGrepInput(input);
 			const inputPath = input.path ?? ".";
-			const searchPath = resolveToCwd(inputPath, cwd);
+			const searchPath = resolveToCwd(inputPath, context.workspace.cwd);
 			const contextLines = input.context ?? 0;
 			const matchLimit = input.limit ?? DEFAULT_MATCH_LIMIT;
 			throwIfAborted(context.signal);

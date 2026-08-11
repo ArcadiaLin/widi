@@ -1,8 +1,8 @@
 import { AgentHarnessError } from "@widi/agent-core";
 import { describe, expect, it, vi } from "vitest";
 import {
+	AGENT_NOTICE_MERGE_KEY,
 	type BuiltInMessageProducer,
-	backgroundResultMergeKey,
 	decideMessageDelivery,
 	type MessageDeliveryPhase,
 	type MessageDeliveryPorts,
@@ -100,15 +100,6 @@ describe("message bindings", () => {
 		expect(render({ kind: "human" })).toBe("hello");
 		expect(render({ kind: "agent", senderAgentId: "agent-7" })).toBe("[Message from agent-7]\n\nhello");
 		expect(render({ kind: "extension", extensionId: "watchdog" })).toBe("[Input from extension watchdog]\n\nhello");
-		// A job result already carries its own job id, tool, and status header.
-		expect(render({ kind: "background_job", ownerAgentId: "agent-1", jobId: "job-2", mode: "interrupt" })).toBe(
-			"hello",
-		);
-		// A recap is framed instead: it describes the session rather than continuing
-		// it, and the tag is what says so without a sentence of preamble.
-		expect(render({ kind: "recap", recap: "carried_over_jobs" })).toBe(
-			'<recap type="carried_over_jobs">\nhello\n</recap>',
-		);
 	});
 
 	// The two halves of a binding are bound for opposite reasons: a request may
@@ -159,23 +150,6 @@ describe("message interception", () => {
 		const outcome = await run(createDraft(), { kind: "block", reason: "denied", blockedBy: "guard" });
 		expect(outcome).toEqual({ kind: "block", reason: "denied", blockedBy: "guard" });
 	});
-
-	// The model already holds this job's t0 handle and is waiting for exactly one
-	// result. Dropping it would strand the model, so the block is not enforced.
-	it("delivers a blocked background job result anyway", async () => {
-		const binding = messageBindingFor({
-			kind: "background_job",
-			ownerAgentId: "agent-1",
-			jobId: "job-2",
-			mode: "interrupt",
-		});
-		expect(binding.policy.blockPolicy).toBe("ignore");
-		const outcome = await run(createDraft({ binding, source: binding.source, body: "job done" }), {
-			kind: "block",
-			blockedBy: "guard",
-		});
-		expect(outcome).toEqual({ kind: "pass", text: "job done", images: undefined });
-	});
 });
 
 describe("delivery decisions", () => {
@@ -221,16 +195,16 @@ describe("MessageDeliveryQueue", () => {
 
 	it("merges adjacent results sharing a key into one user message", async () => {
 		const fixture = createQueue({ phase: "turn" });
-		const mergeKey = backgroundResultMergeKey("next_turn");
+		const mergeKey = AGENT_NOTICE_MERGE_KEY;
 
 		await Promise.all([
-			enqueue(fixture, { text: "job-1 done", mergeKey }),
-			enqueue(fixture, { text: "job-2 done", mergeKey }),
+			enqueue(fixture, { text: "notice-1 sent", mergeKey }),
+			enqueue(fixture, { text: "notice-2 sent", mergeKey }),
 			enqueue(fixture, { text: "a message" }),
 		]);
 
 		expect(fixture.delivered).toEqual([
-			{ method: "follow_up", text: "job-1 done\n\njob-2 done" },
+			{ method: "follow_up", text: "notice-1 sent\n\nnotice-2 sent" },
 			{ method: "follow_up", text: "a message" },
 		]);
 	});
@@ -284,8 +258,8 @@ describe("MessageDeliveryQueue", () => {
 		expect(fixture.queue.hasPending("agent-target")).toBe(false);
 	});
 
-	// A background job result has no sender left to tell, so losing it would
-	// leave the model waiting forever for a t1 that never arrives.
+	// An agent notice has no sender left to tell, so losing it would leave the
+	// watcher waiting forever for a report that never arrives.
 	it("keeps an unexpected failure queued when its sender has moved on", async () => {
 		let attempts = 0;
 		const fixture = createQueue({
@@ -299,7 +273,7 @@ describe("MessageDeliveryQueue", () => {
 		const deferred: unknown[] = [];
 
 		const accepted = enqueue(fixture, {
-			text: "job-1 done",
+			text: "notice-1 sent",
 			retryOnFailure: true,
 			onDeferredFailure: (error) => deferred.push(error),
 		});
@@ -308,7 +282,7 @@ describe("MessageDeliveryQueue", () => {
 
 		fixture.queue.wake("agent-target");
 		await accepted;
-		expect(fixture.delivered).toEqual([{ method: "prompt", text: "job-1 done" }]);
+		expect(fixture.delivered).toEqual([{ method: "prompt", text: "notice-1 sent" }]);
 	});
 
 	// The batch has already left the queue array while the harness call is in

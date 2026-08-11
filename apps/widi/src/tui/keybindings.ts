@@ -18,7 +18,6 @@ declare module "@earendil-works/pi-tui" {
 		"app.interrupt": true;
 		"app.exit": true;
 		"app.expand": true;
-		"app.jobs.expand": true;
 		"app.staged.edit": true;
 		"app.prompt.view": true;
 		"app.steer": true;
@@ -49,7 +48,6 @@ export const WIDI_KEYBINDINGS = {
 	"app.interrupt": { defaultKeys: "escape", description: "Close the current interaction or abort the active agent" },
 	"app.exit": { defaultKeys: "ctrl+d", description: "Exit when the editor is empty" },
 	"app.expand": { defaultKeys: "ctrl+o", description: "Toggle expanded transcript details" },
-	"app.jobs.expand": { defaultKeys: "ctrl+t", description: "Toggle expanded background job panel" },
 	// ctrl+e belongs to pi-tui's cursorLineEnd; taking it would shadow an
 	// editing key every emacs-handed user expects.
 	"app.staged.edit": { defaultKeys: "ctrl+x", description: "Take the newest staged message back into the editor" },
@@ -132,6 +130,50 @@ const SPECIAL_KEYS = new Set([
 	"f11",
 	"f12",
 ]);
+
+const KEY_LABELS: Record<string, string> = {
+	up: "↑",
+	down: "↓",
+	left: "←",
+	right: "→",
+	escape: "Esc",
+	esc: "Esc",
+	enter: "Enter",
+	return: "Enter",
+	tab: "Tab",
+	space: "Space",
+	backspace: "Backspace",
+	delete: "Delete",
+	insert: "Insert",
+	clear: "Clear",
+	home: "Home",
+	end: "End",
+	pageUp: "PageUp",
+	pageDown: "PageDown",
+};
+
+/** How a key sequence is written wherever the TUI names one: `Ctrl+S`, `↑`. */
+export function formatKeyLabel(key: KeyId): string {
+	const modifiers: string[] = [];
+	let base: string = key;
+	for (;;) {
+		const separator = base.indexOf("+");
+		if (separator <= 0 || !KEY_MODIFIERS.has(base.slice(0, separator))) break;
+		const modifier = base.slice(0, separator);
+		modifiers.push(modifier === "ctrl" ? "Ctrl" : modifier[0]?.toUpperCase() + modifier.slice(1));
+		base = base.slice(separator + 1);
+	}
+	return [...modifiers, KEY_LABELS[base] ?? base.toUpperCase()].join("+");
+}
+
+/**
+ * Label of the first key bound to an action, or undefined when it is unbound.
+ * Read live so a user remap shows up wherever the key is named.
+ */
+export function actionKeyLabel(action: Parameters<KeybindingsManager["getKeys"]>[0]): string | undefined {
+	const key = getKeybindings().getKeys(action)[0];
+	return key ? formatKeyLabel(key) : undefined;
+}
 
 /**
  * Runtime shape check for a pi-tui `KeyId` (the type only exists at compile

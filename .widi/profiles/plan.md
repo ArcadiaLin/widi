@@ -10,7 +10,7 @@ whenToUse: |
   It reads and searches but has no shell and no edit tools, so the plan is the
   whole deliverable. Give it the goal and any constraints you already know; if
   the codebase is unfamiliar, run explore first and pass what it found.
-persist: false
+persist: true
 tools: [read, grep, find, ls, send_message]
 projectContext: [AGENTS.md]
 includeCwd: true

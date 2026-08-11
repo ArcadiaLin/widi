@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.83.0",
-    "@earendil-works/pi-tui": "0.83.0",
+    "@earendil-works/pi-tui": "0.84.1",
     "@silvia-odwyer/photon-node": "^0.3.4",
     "@widi/agent-core": "*",
     "diff": "8.0.4",

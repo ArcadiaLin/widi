@@ -867,6 +867,15 @@ export class SettingManager {
 		return structuredClone(this.settings.extensionDivisions ?? {});
 	}
 
+	/**
+	 * The global layer alone, which is what an editor of global rules must start
+	 * from: `getExtensionDivisionSelections` returns the merged view, and writing
+	 * that back would copy the project's rules into the global file.
+	 */
+	getGlobalExtensionDivisionSelections(): Record<string, ExtensionDivisionSelection> {
+		return structuredClone(this.globalSettings.extensionDivisions ?? {});
+	}
+
 	setExtensionDivisionSelections(selections: Record<string, ExtensionDivisionSelection>): void {
 		this.globalSettings.extensionDivisions = structuredClone(selections);
 		this.markModified("extensionDivisions");

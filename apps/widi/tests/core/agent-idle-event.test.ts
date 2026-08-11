@@ -11,14 +11,12 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import { messageBindingFor } from "../../src/core/message.ts";
 import type { OrchestratorEvent } from "../../src/core/types.ts";
-import { startBackgroundedJob } from "../helpers/background-jobs.ts";
 import {
 	createOrchestrator,
 	defaultModel,
 	harnessEventDriver,
 	MemoryExecutionEnv,
 	requireAgentHarness,
-	requireAgentJobs,
 } from "../helpers/orchestrator.ts";
 
 type IdleEvent = Extract<OrchestratorEvent, { type: "agent_idle" }>;
@@ -124,7 +122,7 @@ describe("agent_idle", () => {
 		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
 
 		expect(events).toHaveLength(1);
-		expect(events[0]).toMatchObject({ agentId, reason: "ready", liveJobCount: 0 });
+		expect(events[0]).toMatchObject({ agentId, reason: "ready" });
 	});
 
 	it("fires once per arrival at idle, not once per confirming fact", async () => {
@@ -190,21 +188,6 @@ describe("agent_idle", () => {
 		await setQueuedSteer(orchestrator, agentId, 0);
 		expect(events).toHaveLength(2);
 		expect(events[1]?.reason).toBe("settled");
-	});
-
-	it("reports the jobs an idle agent is still waiting on", async () => {
-		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
-		const events = collectIdleEvents(orchestrator);
-		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
-
-		startBackgroundedJob(requireAgentJobs(orchestrator, agentId), { toolName: "bash", description: "a long build" });
-
-		const run = await startPromptRun(orchestrator, agentId);
-		run.resolve(assistantMessage());
-
-		// The ready edge from the build, then the one this run settled into.
-		await vi.waitFor(() => expect(events).toHaveLength(2));
-		expect(events[1]?.liveJobCount).toBe(1);
 	});
 
 	it("allows a ready-idle listener to dispose the agent it observes", async () => {

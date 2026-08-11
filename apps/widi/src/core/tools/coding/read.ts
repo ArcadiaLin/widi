@@ -81,7 +81,6 @@ export interface ReadToolOptions {
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 export function createReadToolDefinition(
-	cwd: string,
 	options: ReadToolOptions = {},
 ): ToolDefinition<typeof readSchema, ReadToolDetails> {
 	const operations = options.operations ?? createLocalCodingToolFileOperations();
@@ -103,7 +102,7 @@ export function createReadToolDefinition(
 		parameters: readSchema,
 		execute: async (_toolCallId, input, context) => {
 			validateReadInput(input);
-			const absolutePath = resolveToCwd(input.path, cwd);
+			const absolutePath = resolveToCwd(input.path, context.workspace.cwd);
 			throwIfAborted(context.signal);
 			await operations.access(absolutePath, "read");
 			throwIfAborted(context.signal);

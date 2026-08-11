@@ -1,32 +1,25 @@
 import { parseSessionOrigin } from "../core/persistence/index.ts";
 import type { AgentId } from "../core/types.ts";
-import { agentLabel } from "./components/common.ts";
 import { singleLine } from "./format.ts";
 import type { AgentViewState, TuiApplicationState } from "./state.ts";
 
-const COMPACT_ID_LENGTH = 12;
-const LONG_ID_SUFFIX_LENGTH = 8;
-
-export function shortAgentId(agentId: AgentId): string {
-	const sanitizedAgentId = singleLine(agentId, agentId.length);
-	return sanitizedAgentId.length <= COMPACT_ID_LENGTH
-		? sanitizedAgentId
-		: sanitizedAgentId.slice(-LONG_ID_SUFFIX_LENGTH);
+/**
+ * How the strip names an agent: its id, exactly as the model is handed it and
+ * exactly as `send_message` and `dispose_agent` take it back. Anything shorter
+ * still looks like an id while resolving to nothing, and the id already carries
+ * the profile - `explore-ycfk` - so repeating the profile label beside it says
+ * the same word twice. A session name set with `/rename` belongs to the header,
+ * which is where a human-readable name for the open agent already lives.
+ */
+export function agentIdentityLabel(state: TuiApplicationState, agent: AgentViewState): string {
+	const ownId = agentIdText(agent.agentId);
+	const source = findForkSource(state, agent);
+	return source ? `${ownId} ← ${agentIdText(source.agentId)}` : ownId;
 }
 
-export function agentIdentityLabel(state: TuiApplicationState, agent: AgentViewState): string {
-	const label = agentLabel(agent);
-	const visibleAgents = [...state.agents.values()].filter((candidate) => candidate.status !== "disposed");
-	if (visibleAgents.length <= 1) return label;
-
-	const ownToken = shortAgentId(agent.agentId);
-	const source = findForkSource(state, agent);
-	if (source) {
-		const sessionName = source.display.sessionName ? singleLine(source.display.sessionName) : undefined;
-		const sourceToken = sessionName || shortAgentId(source.agentId);
-		return `${label} [fork from ${sourceToken} · ${ownToken}]`;
-	}
-	return hasForkParent(agent) ? `${label} [fork · ${ownToken}]` : `${label} [${ownToken}]`;
+/** Sanitized but never shortened; the strip truncates to the width it has. */
+function agentIdText(agentId: AgentId): string {
+	return singleLine(agentId, agentId.length);
 }
 
 export function forkSourceAgentId(state: TuiApplicationState, agent: AgentViewState): AgentId | undefined {
@@ -48,10 +41,6 @@ function findForkSource(state: TuiApplicationState, agent: AgentViewState): Agen
 	const forkedFrom = forkSourceRef(agent);
 	if (!forkedFrom) return undefined;
 	return [...state.agents.values()].find((candidate) => candidate.snapshot?.sessionRef === forkedFrom);
-}
-
-function hasForkParent(agent: AgentViewState): boolean {
-	return agent.display.forkedFromAgentId !== undefined || forkSourceRef(agent) !== undefined;
 }
 
 function forkSourceRef(agent: AgentViewState): string | undefined {

@@ -1,14 +1,6 @@
-import { TextDecoder } from "node:util";
 import type { AssistantMessage, TextContent, ToolCall, UserMessage } from "@earendil-works/pi-ai";
 import type { AgentHarnessEvent, AgentMessage, CustomMessage } from "@widi/agent-core";
 import type { AgentSnapshot } from "../core/agent-types.ts";
-import type {
-	BackgroundJobReportSnapshot,
-	BackgroundJobSnapshot,
-	BackgroundJobStatus,
-	BackgroundJobTransition,
-	ObservableBackgroundJobState,
-} from "../core/background/index.ts";
 import type { OrchestratorDiagnostic } from "../core/diagnostics.ts";
 import type { ExtensionStatusSnapshot } from "../core/extension/api.ts";
 import {
@@ -21,13 +13,13 @@ import {
 import type { MessageEntryDetails } from "../core/message.ts";
 import { ORCHESTRATOR_MESSAGE_CUSTOM_TYPE } from "../core/session-manager.ts";
 import type { AgentId, OrchestratorEvent } from "../core/types.ts";
-import { maintenanceLabel } from "./components/common.ts";
 import { diagnosticKey } from "./diagnostics-log.ts";
+import { maintenanceLabel } from "./labels.ts";
+import { setSteadyQuip, setTransientQuip } from "./quips.ts";
 import type { HydrationResult } from "./session-hydrator.ts";
 import {
 	type AgentAttention,
 	type AgentViewState,
-	type BackgroundJobViewState,
 	ensureAgentProjection,
 	extensionStatusKey,
 	isTimelineEvent,
@@ -39,10 +31,9 @@ import {
 } from "./state.ts";
 import { flushStreaming } from "./streaming-flush.ts";
 import { applyTimelineWindow } from "./timeline-window.ts";
-import { setSteadyVoice, setTransientVoice } from "./voice.ts";
 
 /** Failures in a row before the working line stops calling it a tool result. */
-const TOOL_ERROR_STREAK_VOICE = 3;
+const TOOL_ERROR_STREAK_QUIP = 3;
 
 const ATTENTION_PRIORITY: Record<AgentAttention, number> = {
 	none: 0,
@@ -52,12 +43,6 @@ const ATTENTION_PRIORITY: Record<AgentAttention, number> = {
 	error: 4,
 };
 
-interface JobProgressState {
-	readonly decoder: TextDecoder;
-	expectedByte: number;
-	lineBuffer: string;
-}
-
 interface ThinkingPreviewState {
 	readonly agentId: AgentId;
 	completedLines: string[];
@@ -66,33 +51,12 @@ interface ThinkingPreviewState {
 
 const THINKING_PREVIEW_LINE_CHARACTERS = 2_000;
 
-function jobProgressKey(agentId: AgentId, jobId: string): string {
-	return `${agentId}\0${jobId}`;
-}
-
 function thinkingPreviewKey(agentId: AgentId, assistantId: string): string {
 	return `${agentId}\0${assistantId}`;
 }
 
-/** The three states a settled job can be in, as the panel labels them. */
-function isTerminalJobState(state: ObservableBackgroundJobState): state is BackgroundJobStatus {
-	return state === "completed" || state === "failed" || state === "cancelled";
-}
-
-function latestJobReport(
-	current: BackgroundJobReportSnapshot | undefined,
-	incoming: BackgroundJobReportSnapshot | undefined,
-): BackgroundJobReportSnapshot | undefined {
-	if (!incoming || (current && current.revision >= incoming.revision)) {
-		return current;
-	}
-	return incoming;
-}
-
 export class EventProjector {
 	readonly state: TuiApplicationState;
-	/** Per-job decode state for lossy Base64 progress increments. */
-	private readonly jobProgress = new Map<string, JobProgressState>();
 	/** Bounded, incremental tails for live thinking streams. */
 	private readonly thinkingPreviews = new Map<string, ThinkingPreviewState>();
 
@@ -220,7 +184,7 @@ export class EventProjector {
 				if (wasRunning && event.activity !== "running" && agent.runStartedAt) {
 					agent.lastRun = { startedAt: agent.runStartedAt, endedAt: event.changedAt, toolCount: agent.runToolCount };
 				}
-				setSteadyVoice(agent, this.state.voicePack, event.activity === "running" ? "working" : "idle");
+				setSteadyQuip(agent, event.activity === "running" ? "working" : "idle");
 				agent.runStartedAt = event.activity === "running" ? event.changedAt : undefined;
 				// Experience indicator: covers the model's first-token latency
 				// after submit; completes (renders empty) once the run leaves
@@ -253,11 +217,10 @@ export class EventProjector {
 			case "agent_idle": {
 				const agent = ensureAgentProjection(this.state, event.agentId);
 				if (event.reason === "settled") {
-					setTransientVoice(agent, this.state.voicePack, "done");
+					setTransientQuip(agent, "done");
 				} else if (event.reason === "aborted") {
-					setTransientVoice(
+					setTransientQuip(
 						agent,
-						this.state.voicePack,
 						event.abortedBy === "human"
 							? "aborted-by-human"
 							: event.abortedBy === "extension"
@@ -278,6 +241,14 @@ export class EventProjector {
 				const agent = ensureAgentProjection(this.state, event.agentId);
 				agent.display.model = event.model;
 				agent.hydration = "pending";
+				return;
+			}
+			// Not `ensureAgentProjection`: an agent this shell never projected has
+			// nothing to mark, and creating a row for it only to bury it would put
+			// it back in a tree that filters on this very status.
+			case "agent_disposed": {
+				const agent = this.state.agents.get(event.agentId);
+				if (agent) agent.status = "disposed";
 				return;
 			}
 			case "agent_session_info_changed":
@@ -372,143 +343,6 @@ export class EventProjector {
 				return;
 			case "input_transformed":
 				return;
-			case "agent_background_job_changed":
-				this.applyBackgroundJobChange(
-					ensureAgentProjection(this.state, event.agentId),
-					event.job,
-					event.transition,
-					event.liveCount,
-				);
-				return;
-			case "agent_background_job_report_updated":
-				this.applyBackgroundJobReport(ensureAgentProjection(this.state, event.agentId), event.jobId, event.report);
-				return;
-			case "agent_background_job_progress":
-				this.applyBackgroundJobProgress(ensureAgentProjection(this.state, event.agentId), {
-					jobId: event.jobId,
-					chunk: event.chunk,
-					startByte: event.startByte,
-					endByte: event.endByte,
-					totalBytesSeen: event.totalBytesSeen,
-				});
-				return;
-		}
-	}
-
-	/**
-	 * Replace the agent's live job set from a pull of the orchestrator (after
-	 * sync/hydration). Retained settled entries survive; entries the core no
-	 * longer reports as live are dropped.
-	 */
-	seedBackgroundJobs(agentId: AgentId, jobs: readonly BackgroundJobSnapshot[]): void {
-		const agent = ensureAgentProjection(this.state, agentId);
-		const seeded = new Map<string, BackgroundJobViewState>();
-		for (const snapshot of jobs) {
-			const existing = agent.backgroundJobs.get(snapshot.jobId);
-			seeded.set(snapshot.jobId, {
-				jobId: snapshot.jobId,
-				toolName: snapshot.toolName,
-				name: snapshot.name,
-				description: snapshot.description,
-				status: existing?.status === "aborting" ? "aborting" : "live",
-				startedAt: snapshot.startedAt,
-				totalBytesSeen: snapshot.totalBytesSeen,
-				report: latestJobReport(existing?.report, snapshot.report),
-				lastLine: existing?.lastLine,
-			});
-		}
-		for (const [jobId, job] of agent.backgroundJobs) {
-			if (job.status !== "live" && job.status !== "aborting") {
-				seeded.set(jobId, job);
-			}
-		}
-		agent.backgroundJobs = seeded;
-		agent.backgroundJobCount = jobs.length;
-	}
-
-	private applyBackgroundJobChange(
-		agent: AgentViewState,
-		snapshot: BackgroundJobSnapshot,
-		transition: BackgroundJobTransition,
-		liveCount: number,
-	): void {
-		agent.backgroundJobCount = liveCount;
-		if (transition === "backgrounded") {
-			agent.backgroundJobs.set(snapshot.jobId, {
-				jobId: snapshot.jobId,
-				toolName: snapshot.toolName,
-				name: snapshot.name,
-				description: snapshot.description,
-				status: "live",
-				startedAt: snapshot.startedAt,
-				totalBytesSeen: snapshot.totalBytesSeen,
-				report: snapshot.report,
-			});
-			return;
-		}
-		const existing = agent.backgroundJobs.get(snapshot.jobId);
-		if (!existing) return;
-		if (transition === "abort_requested") {
-			existing.status = "aborting";
-			existing.report = latestJobReport(existing.report, snapshot.report);
-			return;
-		}
-		// Settled jobs stay on the panel until the next user turn starts.
-		existing.status = isTerminalJobState(snapshot.state) ? snapshot.state : "completed";
-		existing.endedAt = snapshot.endedAt;
-		existing.totalBytesSeen = snapshot.totalBytesSeen;
-		existing.report = latestJobReport(existing.report, snapshot.report);
-		this.jobProgress.delete(jobProgressKey(agent.agentId, snapshot.jobId));
-	}
-
-	private applyBackgroundJobReport(agent: AgentViewState, jobId: string, report: BackgroundJobReportSnapshot): void {
-		const job = agent.backgroundJobs.get(jobId);
-		if (!job) return;
-		job.report = latestJobReport(job.report, report);
-	}
-
-	private applyBackgroundJobProgress(
-		agent: AgentViewState,
-		event: { jobId: string; chunk: string; startByte: number; endByte: number; totalBytesSeen: number },
-	): void {
-		const job = agent.backgroundJobs.get(event.jobId);
-		if (!job) return;
-		job.totalBytesSeen = event.totalBytesSeen;
-		const key = jobProgressKey(agent.agentId, event.jobId);
-		let progress = this.jobProgress.get(key);
-		if (!progress) {
-			progress = { decoder: new TextDecoder("utf-8"), expectedByte: event.startByte, lineBuffer: "" };
-			this.jobProgress.set(key, progress);
-		}
-		if (event.startByte !== progress.expectedByte) {
-			// The increment stream is lossy: on a gap or overlap, drop the
-			// partial line instead of stitching unrelated bytes together.
-			progress.lineBuffer = "";
-			progress.expectedByte = event.startByte;
-		}
-		// Each chunk is an independently padded Base64 encoding of its own
-		// bytes (see drainIncrement); stream: true keeps multi-byte UTF-8
-		// sequences split across chunks intact.
-		const bytes = Buffer.from(event.chunk, "base64");
-		progress.expectedByte = event.endByte;
-		const lines = (progress.lineBuffer + progress.decoder.decode(bytes, { stream: true })).split("\n");
-		progress.lineBuffer = lines.at(-1) ?? "";
-		for (let i = lines.length - 1; i >= 0; i--) {
-			const candidate = lines[i] ?? "";
-			if (candidate.trim().length > 0) {
-				job.lastLine = candidate.slice(0, 200);
-				break;
-			}
-		}
-	}
-
-	/** Settled jobs yield the panel when a new user turn starts. */
-	private clearSettledBackgroundJobs(agent: AgentViewState): void {
-		for (const [jobId, job] of agent.backgroundJobs) {
-			if (job.status !== "live" && job.status !== "aborting") {
-				agent.backgroundJobs.delete(jobId);
-				this.jobProgress.delete(jobProgressKey(agent.agentId, jobId));
-			}
 		}
 	}
 
@@ -648,8 +482,8 @@ export class EventProjector {
 					agent.runToolErrorStreak++;
 					// One failed call is a tool result; a run that keeps failing is the
 					// agent going nowhere, and that is worth saying out loud once.
-					if (agent.runToolErrorStreak === TOOL_ERROR_STREAK_VOICE) {
-						setTransientVoice(agent, this.state.voicePack, "error");
+					if (agent.runToolErrorStreak === TOOL_ERROR_STREAK_QUIP) {
+						setTransientQuip(agent, "error");
 					}
 				} else {
 					agent.runToolErrorStreak = 0;
@@ -686,14 +520,13 @@ export class EventProjector {
 		const id = `live-message:${agent.agentId}:${agent.nextLiveItemId++}`;
 		// Everything the runtime put into context on someone else's behalf. It
 		// opens a turn exactly as a user message does - the model is reading it
-		// either way - so the window and job housekeeping are the same.
+		// either way - so the window housekeeping is the same.
 		if (message.role === "custom") {
 			const item = toLiveOrchestratorMessage(id, message);
 			if (!item) return;
 			upsertTimeline(agent, item);
 			if (agent.status === "running") upsertAwaitingThinking(agent);
 			applyTimelineWindow(agent);
-			this.clearSettledBackgroundJobs(agent);
 			this.markBackgroundActivity(agent.agentId);
 			return;
 		}
@@ -715,7 +548,6 @@ export class EventProjector {
 			// A new user message opens a turn; this is the only live-event path
 			// where the turn count can grow.
 			applyTimelineWindow(agent);
-			this.clearSettledBackgroundJobs(agent);
 		} else if (message.role === "assistant") {
 			// The real stream is starting; the gap-filling indicator yields.
 			completeAwaitingThinking(agent);
@@ -808,6 +640,7 @@ export function applyAgentSnapshot(state: TuiApplicationState, snapshot: AgentSn
 	agent.snapshot = snapshot;
 	agent.status = snapshot.activity.activity;
 	agent.maintenance = snapshot.activity.maintenance;
+	agent.display.cwd = snapshot.cwd;
 	agent.display.model = snapshot.model;
 	if (snapshot.spawnedBy !== undefined) agent.spawnedBy = snapshot.spawnedBy;
 	agent.display.activeToolNames = [...snapshot.tools.activeToolNames];

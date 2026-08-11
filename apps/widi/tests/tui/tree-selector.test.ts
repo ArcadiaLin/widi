@@ -6,15 +6,14 @@ import type { AgentSnapshot } from "../../src/core/agent-types.ts";
 import type { WidiRuntime } from "../../src/core/runtime-service.ts";
 import type { AgentSessionTreeSnapshot } from "../../src/core/session-manager.ts";
 import { WidiTuiApplication } from "../../src/tui/application.ts";
-import { switchedAgentId } from "../../src/tui/commands/engine.ts";
-import { OperationHintView } from "../../src/tui/components/operation-hint.ts";
-import type { WidiEditor } from "../../src/tui/editor.ts";
 import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
-import type { SelectorDock } from "../../src/tui/selectors/dock.ts";
 import { TreeNavigationSelector } from "../../src/tui/selectors/tree-navigation.ts";
 import { TreeSelector } from "../../src/tui/selectors/tree-selector.ts";
 import { buildSessionEntryRows, type SessionEntryTreeRow } from "../../src/tui/session-tree.ts";
 import { ensureAgentProjection } from "../../src/tui/state.ts";
+import type { WidiEditor } from "../../src/tui/views/editor.ts";
+import { OperationHintView } from "../../src/tui/views/operation-hint.ts";
+import type { SelectorDock } from "../../src/tui/views/selector-dock.ts";
 
 const ESCAPE = String.fromCharCode(27);
 const ANSI_SEQUENCE = new RegExp(`${ESCAPE}\\[[0-9;]*m`, "g");
@@ -333,8 +332,8 @@ describe("WidiTuiApplication /tree selector", () => {
 
 		await submit(application, "/tree");
 
-		const hint = application.tui.children.find((child) => child instanceof OperationHintView);
-		if (!hint) throw new Error("Expected the operation hint to be mounted.");
+		const hint = application.layout.component("operationHint");
+		if (!(hint instanceof OperationHintView)) throw new Error("Expected the operation hint to be mounted.");
 		const rendered = hint.render(120).join("\n").replace(ANSI_SEQUENCE, "");
 		expect(rendered).toContain("/tree");
 		expect(rendered).toContain("switch");
@@ -356,11 +355,7 @@ describe("WidiTuiApplication /tree selector", () => {
 		await flush();
 
 		expect(navigateAgentTree).toHaveBeenCalledWith("agent-1", "u2", undefined);
-		// Tree navigation moves the session, not the agent: no fork/resume-style
-		// agent switch fires for it.
-		expect(switchedAgentId({ kind: "executed", commandId: "c1", name: "tree", value: { cancelled: false } })).toBe(
-			undefined,
-		);
+		// Tree navigation moves the session, not the agent.
 		expect(application.state.activeAgentId).toBe("agent-1");
 		expect(application.state.mode).toBe("editor");
 		expect(application.tui.hasOverlay()).toBe(false);
@@ -592,6 +587,7 @@ function agentSnapshot(agentId: string): AgentSnapshot {
 	return {
 		agentId,
 		generation: 1,
+		cwd: "/workspace/project",
 		profile: {
 			reference: { id: "default-agent", label: agentId },
 			source: { kind: "memory", priority: 0 },

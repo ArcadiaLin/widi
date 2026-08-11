@@ -61,7 +61,9 @@ describe("ToolRegistry", () => {
 		expect(resolvedTool.patches.map((patch) => patch.source.id)).toEqual(["audit", "sandbox"]);
 
 		const agentTool = createAgentHarnessToolFromResolvedTool(resolvedTool);
-		const toolResult = await agentTool.execute("call-1", {}, undefined, undefined, {});
+		const toolResult = await agentTool.execute("call-1", {}, undefined, undefined, {
+			workspace: { cwd: "/workspace/project" },
+		});
 
 		expect(toolResult.content).toEqual([{ type: "text", text: "base" }]);
 		expect(calls).toEqual(["sandbox:before", "audit:before", "audit:after", "sandbox:after"]);
@@ -168,6 +170,7 @@ describe("ToolRegistry", () => {
 		const agentTool = createAgentHarnessToolFromResolvedTool(resolvedTool);
 
 		await agentTool.execute("call-1", {}, undefined, undefined, {
+			workspace: { cwd: "/workspace/project" },
 			createExtensionContext: (source) => ({ extensionId: source.id }),
 		});
 
@@ -198,9 +201,11 @@ describe("ToolRegistry", () => {
 		const agentTool = createAgentHarnessToolFromResolvedTool(resolvedTool);
 
 		const first = await agentTool.execute("call-1", {}, undefined, undefined, {
+			workspace: { cwd: "/workspace/project" },
 			human: { request: async () => ({ kind: "confirm", confirmed: true }) },
 		});
 		const second = await agentTool.execute("call-2", {}, undefined, undefined, {
+			workspace: { cwd: "/workspace/project" },
 			human: { request: async () => ({ kind: "confirm", confirmed: false }) },
 		});
 
