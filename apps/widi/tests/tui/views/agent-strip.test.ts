@@ -1,14 +1,15 @@
 import { setKeybindings } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
-import { buildAgentTree } from "../../src/tui/agent-tree.ts";
-import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
+import type { AgentSnapshot } from "../../../src/core/agent-types.ts";
+import { buildAgentTree } from "../../../src/tui/agent-tree.ts";
+import { createWidiKeybindings } from "../../../src/tui/keybindings.ts";
 import {
 	createTuiApplicationState,
 	ensureAgentProjection,
 	setActiveAgent,
 	type TuiApplicationState,
-} from "../../src/tui/state.ts";
-import { AgentStripView, moveAgentCursor } from "../../src/tui/views/agent-strip.ts";
+} from "../../../src/tui/state.ts";
+import { AgentStripView, moveAgentCursor } from "../../../src/tui/views/agent-strip.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 const UP = "\x1b[A";
@@ -460,3 +461,106 @@ describe("moveAgentCursor", () => {
 		expect(moveAgentCursor(tree, "main", "up")).toBeUndefined();
 	});
 });
+
+describe("AgentStripView identity and activity", () => {
+	it("distinguishes source and fork labels in the agent strip", () => {
+		const state = createTuiApplicationState();
+		const source = setActiveAgent(state, "widi-dev");
+		source.status = "idle";
+		source.snapshot = snapshot("widi-dev", "/sessions/source.jsonl");
+		const fork = ensureAgentProjection(state, "019f784f-4342-781c-8472-93e6547da47e", "idle");
+		fork.snapshot = snapshot(fork.agentId, "/sessions/fork.jsonl", "/sessions/source.jsonl");
+		fork.display.forkedFromAgentId = source.agentId;
+
+		const output = new AgentStripView(state).render(160).join("\n").replace(ANSI_SEQUENCE, "");
+
+		expect(output).toContain("WIDI Dev [widi-dev]");
+		expect(output).toContain("WIDI Dev [fork from widi-dev · 547da47e]");
+	});
+
+	it("shows how far into its run a running agent is", () => {
+		const state = createTuiApplicationState();
+		const agent = setActiveAgent(state, "widi-dev");
+		agent.snapshot = snapshot("widi-dev", "/sessions/source.jsonl");
+		agent.status = "running";
+		agent.runToolCount = 15;
+
+		expect(new AgentStripView(state).render(160).join("\n").replace(ANSI_SEQUENCE, "")).toContain(
+			"running · 15 tool_use",
+		);
+
+		// A count left over from a finished run would read as one still going.
+		agent.status = "idle";
+		expect(new AgentStripView(state).render(160).join("\n").replace(ANSI_SEQUENCE, "")).not.toContain("tool_use");
+	});
+
+	it("keeps terminal control sequences out of the panel and selects by raw value", () => {
+		const state = createTuiApplicationState();
+		const sanitizedAgentId = `${"a".repeat(260)}tail-123`;
+		const agentId = `\u001b]0;owned\u0007${sanitizedAgentId}\u001b[2J`;
+		const agent = ensureAgentProjection(state, agentId, "idle");
+		agent.snapshot = snapshot(agentId, "/sessions/agent.jsonl");
+		state.activeAgentId = agentId;
+		let selectedAgentId: string | undefined;
+		const panel = new AgentStripView(
+			state,
+			{
+				setFocus: (component) => {
+					panel.focused = component === panel;
+				},
+				requestRender: () => {},
+			},
+			(selected) => {
+				selectedAgentId = selected;
+			},
+		);
+
+		panel.open();
+		const output = panel.render(500).join("\n").replace(ANSI_SEQUENCE, "");
+		expect(output).not.toContain("\u001b");
+		expect(output).not.toContain("\u0007");
+
+		panel.handleInput("\r");
+
+		expect(selectedAgentId).toBe(agentId);
+	});
+});
+
+function snapshot(agentId: string, path: string, parentSessionPath?: string): AgentSnapshot {
+	return {
+		agentId,
+		generation: 1,
+		profile: {
+			reference: { id: "widi-dev", label: "WIDI Dev" },
+			source: { kind: "memory", priority: 0 },
+			entryId: "entry-1",
+		},
+		sessionMetadata: { id: agentId, createdAt: new Date(0).toISOString(), cwd: "/workspace", path, parentSessionPath },
+		model: {
+			id: "test-model",
+			name: "Test Model",
+			api: "anthropic-messages",
+			provider: "test",
+			baseUrl: "https://example.test",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1000,
+			maxTokens: 100,
+		},
+		thinkingLevel: "off",
+		tools: { toolNames: [], activeToolNames: [] },
+		activity: { activity: "idle" },
+		extensions: {
+			extensionIds: [],
+			extensions: [],
+			hooks: [],
+			toolContributions: [],
+			providerContributions: [],
+			systemPromptContributions: [],
+			divisions: [],
+			stale: { stale: false },
+		},
+		diagnostics: [],
+	};
+}

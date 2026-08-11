@@ -1,9 +1,9 @@
 import { type Component, setKeybindings } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
-import type { HumanRequestEnvelope } from "../../src/core/human-request.ts";
-import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
-import { createTuiApplicationState, setActiveAgent } from "../../src/tui/state.ts";
-import { HumanRequestMenu } from "../../src/tui/views/human-request.ts";
+import type { HumanRequestEnvelope } from "../../../src/core/human-request.ts";
+import { createWidiKeybindings } from "../../../src/tui/keybindings.ts";
+import { createTuiApplicationState, setActiveAgent } from "../../../src/tui/state.ts";
+import { HumanRequestMenu } from "../../../src/tui/views/human-request.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 

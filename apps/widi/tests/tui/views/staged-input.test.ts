@@ -1,8 +1,8 @@
 import { setKeybindings } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it } from "vitest";
-import { createWidiKeybindings } from "../../src/tui/keybindings.ts";
-import { createTuiApplicationState, setActiveAgent } from "../../src/tui/state.ts";
-import { StagedInputView } from "../../src/tui/views/staged-input.ts";
+import { createWidiKeybindings } from "../../../src/tui/keybindings.ts";
+import { createTuiApplicationState, setActiveAgent } from "../../../src/tui/state.ts";
+import { StagedInputView } from "../../../src/tui/views/staged-input.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 

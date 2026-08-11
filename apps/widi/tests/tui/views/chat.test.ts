@@ -2,17 +2,18 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { registerCommandPresenter, unregisterCommandPresenter } from "../../src/tui/command-presenter.ts";
+import { registerCommandPresenter, unregisterCommandPresenter } from "../../../src/tui/command-presenter.ts";
 import {
 	type CommandResultItem,
 	createTuiApplicationState,
+	type ExtensionOutputItem,
 	setActiveAgent,
 	type TimelineItem,
 	type ToolExecutionItem,
-} from "../../src/tui/state.ts";
-import { loadThemes, resetThemes, setTheme, type ThemePalette } from "../../src/tui/theme/theme.ts";
-import { registerToolPresenter, unregisterToolPresenter } from "../../src/tui/tool-presenter.ts";
-import { ChatView } from "../../src/tui/views/chat.ts";
+} from "../../../src/tui/state.ts";
+import { loadThemes, resetThemes, setTheme, type ThemePalette } from "../../../src/tui/theme/theme.ts";
+import { registerToolPresenter, unregisterToolPresenter } from "../../../src/tui/tool-presenter.ts";
+import { ChatView } from "../../../src/tui/views/chat.ts";
 
 const ALT_PALETTE: ThemePalette = {
 	accent: "#ff0000",
@@ -241,3 +242,146 @@ describe("ChatView command component presenters", () => {
 		expect(lines.some((line) => line.includes("/demo …"))).toBe(true);
 	});
 });
+
+describe("ChatView timeline rendering", () => {
+	it("shows only one thinking indicator while an assistant message streams", () => {
+		const state = createTuiApplicationState();
+		const agent = setActiveAgent(state, "main");
+		agent.timeline.push(
+			{
+				type: "assistant-message",
+				id: "live-1",
+				durability: "durable",
+				createdAt: timestamp(1),
+				text: "",
+				streaming: true,
+			},
+			{
+				type: "thinking-status",
+				id: "live-1:thinking",
+				durability: "ephemeral",
+				createdAt: timestamp(2),
+				status: "thinking",
+			},
+		);
+
+		const output = new ChatView(state).render(80).join("\n");
+
+		expect(output.match(/Thinking…/g)).toHaveLength(1);
+	});
+
+	it("replaces the generic thinking indicator with a preparing tool", () => {
+		const state = createTuiApplicationState();
+		const agent = setActiveAgent(state, "main");
+		agent.timeline.push(
+			{
+				type: "assistant-message",
+				id: "live-1",
+				durability: "durable",
+				createdAt: timestamp(1),
+				text: "",
+				streaming: true,
+			},
+			{
+				type: "tool-execution",
+				id: "preparing-tool:live-1:0",
+				toolCallId: "tool-1",
+				durability: "durable",
+				createdAt: timestamp(2),
+				sourceAssistantId: "live-1",
+				toolName: "read",
+				status: "preparing",
+			},
+		);
+
+		const output = new ChatView(state).render(80).join("\n");
+
+		expect(output).not.toContain("Thinking…");
+		expect(output.match(/preparing…/g)).toHaveLength(1);
+	});
+
+	it("renders tool executions through the presentation registry", () => {
+		const state = createTuiApplicationState();
+		const agent = setActiveAgent(state, "main");
+		agent.timeline.push({
+			type: "tool-execution",
+			id: "tool-1",
+			toolCallId: "tool-1",
+			durability: "durable",
+			createdAt: timestamp(1),
+			toolName: "ls",
+			args: { path: "src" },
+			result: { content: [{ type: "text", text: "a.ts\nb.ts" }] },
+			isError: false,
+			status: "completed",
+		});
+
+		const output = new ChatView(state).render(80).join("\n").replace(ANSI_SEQUENCE, "");
+
+		expect(output).toContain("✓ List src · 2 entries");
+		expect(output).not.toContain('{ "path": "src" }');
+	});
+
+	it("re-renders cached tool output when the expand toggle flips", () => {
+		const state = createTuiApplicationState();
+		const agent = setActiveAgent(state, "main");
+		agent.timeline.push({
+			type: "tool-execution",
+			id: "tool-1",
+			toolCallId: "tool-1",
+			durability: "durable",
+			createdAt: timestamp(1),
+			toolName: "bash",
+			args: { command: "ls" },
+			result: { content: [{ type: "text", text: "one\ntwo\nthree\nfour\nfive\nsix" }] },
+			isError: false,
+			status: "completed",
+		});
+		const view = new ChatView(state);
+
+		const collapsed = view.render(80).join("\n").replace(ANSI_SEQUENCE, "");
+		expect(collapsed).toContain("… +2 lines");
+		expect(collapsed).not.toContain("six");
+
+		state.toolOutputExpanded = true;
+		const expanded = view.render(80).join("\n").replace(ANSI_SEQUENCE, "");
+		expect(expanded).toContain("six");
+		expect(expanded).not.toContain("… +2 lines");
+	});
+
+	// An extension row is written and rewritten under one id, so its cache has to
+	// expire on the text; nothing else about the row ever changes.
+	it("re-renders an extension row when its text or expansion changes", () => {
+		const state = createTuiApplicationState();
+		const agent = setActiveAgent(state, "main");
+		const row: ExtensionOutputItem = {
+			type: "extension-output",
+			id: "ext:drill:step",
+			presentationId: "ext:drill:step",
+			durability: "ephemeral",
+			createdAt: timestamp(1),
+			extensionId: "drill",
+			text: "chapter one",
+		};
+		agent.timeline.push(row);
+		const view = new ChatView(state);
+		const plain = () => view.render(80).join("\n").replace(ANSI_SEQUENCE, "");
+
+		expect(plain()).toContain("chapter one");
+
+		agent.timeline[0] = { ...row, text: "chapter one, revised" };
+		expect(plain()).toContain("chapter one, revised");
+
+		const long = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`).join("\n");
+		agent.timeline[0] = { ...row, text: long };
+		expect(plain()).toContain("… [truncated]");
+		expect(plain()).not.toContain("line 20");
+
+		agent.timeline[0] = { ...row, text: long, expanded: true };
+		expect(plain()).toContain("line 20");
+	});
+});
+
+function timestamp(offset: number): string {
+	return new Date(Date.UTC(2026, 0, 1, 0, 0, offset)).toISOString();
+}

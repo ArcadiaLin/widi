@@ -1,21 +1,21 @@
 import { setKeybindings } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it } from "vitest";
-import { widiCommands } from "../../src/tui/commands/built-in/index.ts";
-import { CommandEngine } from "../../src/tui/commands/engine.ts";
-import { createWidiKeybindings, formatKeyLabel } from "../../src/tui/keybindings.ts";
+import { widiCommands } from "../../../src/tui/commands/built-in/index.ts";
+import { CommandEngine } from "../../../src/tui/commands/engine.ts";
+import { createWidiKeybindings, formatKeyLabel } from "../../../src/tui/keybindings.ts";
 import {
 	createTuiApplicationState,
 	ensureAgentProjection,
 	setActiveAgent,
 	setDockedFocus,
-} from "../../src/tui/state.ts";
-import { OperationHintView } from "../../src/tui/views/operation-hint.ts";
+} from "../../../src/tui/state.ts";
+import { OperationHintView } from "../../../src/tui/views/operation-hint.ts";
 import {
 	operationHintKeys,
 	resolveOperationHint,
 	resolveOperationHintDetail,
-} from "../../src/tui/views/utils/operation-hint.ts";
-import { stubCommandHost } from "../helpers/command-host.ts";
+} from "../../../src/tui/views/utils/operation-hint.ts";
+import { stubCommandHost } from "../../helpers/command-host.ts";
 
 const engine = new CommandEngine(widiCommands(stubCommandHost()));
 const keys = {
@@ -481,5 +481,20 @@ describe("resolveOperationHint", () => {
 		expect(resolveOperationHint({ state, engine, editorText: "typing", editorAutocompleteVisible: false, keys })).toBe(
 			"Enter queue follow-up",
 		);
+	});
+});
+
+describe("OperationHintView", () => {
+	it("renders no operation hint for a single idle agent", () => {
+		const state = createTuiApplicationState();
+		setActiveAgent(state, "main").status = "idle";
+		const view = new OperationHintView({
+			state,
+			engine: new CommandEngine(widiCommands(stubCommandHost())),
+			editor: { getText: () => "", isShowingAutocomplete: () => false },
+			selectorHint: () => undefined,
+		});
+
+		expect(view.render(80)).toEqual([]);
 	});
 });
