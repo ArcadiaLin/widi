@@ -2,9 +2,11 @@
 # WIDI installer: builds from this clone, installs the `widi` command as a
 # ~/.local/bin shim, and seeds ~/.widi from preset/.
 #
-# Preset-managed files (profiles, themes, extensions/drill) are overwritten on
-# every run; state files (settings.json, agent/models.json, auth.json,
-# trust.json, runs/) are seeded when missing and never touched afterwards.
+# Preset-managed files (profiles, themes) are overwritten on every run; state
+# files (settings.json, agent/models.json, auth.json, trust.json, runs/) are
+# seeded when missing and never touched afterwards. extensions/drill is a
+# symlink into this clone: its sources import the app code by relative path,
+# which only resolves when the files stay where they were written.
 #
 # Set WIDI_HOME to install the agent dir somewhere other than ~/.widi.
 set -euo pipefail
@@ -43,7 +45,7 @@ mkdir -p "$AGENT_DIR/profiles" "$AGENT_DIR/themes" "$AGENT_DIR/extensions" "$AGE
 cp -R "$PRESET_DIR/profiles/." "$AGENT_DIR/profiles/"
 cp -R "$PRESET_DIR/themes/." "$AGENT_DIR/themes/"
 rm -rf "$AGENT_DIR/extensions/drill"
-cp -R "$PRESET_DIR/extensions/drill" "$AGENT_DIR/extensions/drill"
+ln -s "$PRESET_DIR/extensions/drill" "$AGENT_DIR/extensions/drill"
 [ -f "$AGENT_DIR/settings.json" ] || cp "$PRESET_DIR/settings.json" "$AGENT_DIR/settings.json"
 [ -f "$AGENT_DIR/agent/models.json" ] || cp "$PRESET_DIR/agent/models.json" "$AGENT_DIR/agent/models.json"
 

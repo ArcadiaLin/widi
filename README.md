@@ -25,7 +25,7 @@ git clone <repo-url> && cd widi
 ./install.sh
 ```
 
-`install.sh` 会安装依赖并构建，把 `widi` 命令装进 `~/.local/bin`（指向本 clone 的 `apps/widi/dist/cli.js`），并把 `preset/` 种到 `~/.widi`。重复运行会覆盖 preset 管理的文件（profiles、themes、`extensions/drill`），但不会动 `settings.json`、`agent/models.json`、`auth.json`、`trust.json`、`runs/` 等状态文件。之后 `git pull` 并重跑 `install.sh` 即完成升级。
+`install.sh` 会安装依赖并构建，把 `widi` 命令装进 `~/.local/bin`（指向本 clone 的 `apps/widi/dist/cli.js`），并把 `preset/` 种到 `~/.widi`。重复运行会覆盖 preset 管理的文件（profiles、themes），但不会动 `settings.json`、`agent/models.json`、`auth.json`、`trust.json`、`runs/` 等状态文件。`extensions/drill` 是指向本 clone 的符号链接（它的源码按相对路径引用 app 代码，拷贝出去会断），所以 `git pull` 后它随即更新，其余部分重跑 `install.sh` 即完成升级。
 
 默认模型是 `kimi-coding/k3`（Kimi for Coding），在 TUI 内登录即可；也可以设 `MOONSHOT_API_KEY` / `ANTHROPIC_API_KEY` 使用 `~/.widi/agent/models.json` 里预定义的 moonshot 和 anthropic 提供方。
 
