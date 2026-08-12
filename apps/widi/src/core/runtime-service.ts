@@ -67,7 +67,7 @@ export interface CreateWidiRuntimeOptions {
 }
 
 export type RuntimeDefaultProfileSource = "runtime_override" | "settings" | "builtin_fallback";
-export type RuntimeDefaultModelSource = "runtime_override" | "settings" | "available_fallback";
+export type RuntimeDefaultModelSource = "runtime_override" | "settings" | "available_fallback" | "none";
 export type RuntimeDefaultThinkingLevelSource = "runtime_override" | "settings" | "builtin_fallback";
 
 export interface RuntimeDefaultProfileResolution {
@@ -77,8 +77,9 @@ export interface RuntimeDefaultProfileResolution {
 }
 
 export interface RuntimeDefaultModelResolution {
-	readonly provider: string;
-	readonly modelId: string;
+	/** Absent when source is "none": nothing authenticated to name. */
+	readonly provider?: string;
+	readonly modelId?: string;
 	readonly source: RuntimeDefaultModelSource;
 }
 
@@ -323,16 +324,21 @@ async function resolveDefaultModel(options: {
 	readonly modelRegistry: ModelRegistry;
 	readonly settingManager: SettingManager;
 	readonly explicitDefaultModel?: RuntimeModel;
-}): Promise<{ readonly model: RuntimeModel; readonly resolution: RuntimeDefaultModelResolution }> {
+}): Promise<{
+	readonly model: RuntimeModel | undefined;
+	readonly resolution: RuntimeDefaultModelResolution;
+	readonly diagnostics: readonly CoreDiagnostic[];
+}> {
 	if (options.explicitDefaultModel) {
 		const resolution: RuntimeDefaultModelResolution = {
 			provider: options.explicitDefaultModel.provider,
 			modelId: options.explicitDefaultModel.id,
 			source: "runtime_override",
 		};
-		return { model: options.explicitDefaultModel, resolution };
+		return { model: options.explicitDefaultModel, resolution, diagnostics: [] };
 	}
 
+	const diagnostics: CoreDiagnostic[] = [];
 	const defaultProvider = options.settingManager.getDefaultProvider();
 	const defaultModelId = options.settingManager.getDefaultModel();
 	if (defaultProvider && defaultModelId) {
@@ -343,12 +349,12 @@ async function resolveDefaultModel(options: {
 				modelId: model.id,
 				source: "settings",
 			};
-			return { model, resolution };
+			return { model, resolution, diagnostics };
 		}
-		throw new OrchestratorError({
-			severity: "error",
+		diagnostics.push({
+			severity: "warning",
 			code: "model.default_unavailable",
-			message: `Default model is unavailable: ${defaultProvider}/${defaultModelId}.`,
+			message: `Default model ${defaultProvider}/${defaultModelId} is unavailable: not registered or no auth configured.`,
 		});
 	}
 
@@ -359,20 +365,24 @@ async function resolveDefaultModel(options: {
 			modelId: availableModel.id,
 			source: "available_fallback",
 		};
-		return { model: availableModel, resolution };
+		return { model: availableModel, resolution, diagnostics };
 	}
 
-	throw new OrchestratorError({
-		severity: "error",
-		code: "model.default_missing",
-		message: "No configured model is available. Configure auth or pass an explicit default model.",
+	// No authenticated model is not fatal: the TUI must still start so the
+	// user can /login (OAuth only exists inside it). Spawning refuses later.
+	diagnostics.push({
+		severity: "warning",
+		code: "model.none_available",
+		message:
+			"No model has configured auth. Log in with /login or set a provider API key, then pick a model with /model.",
 	});
+	return { model: undefined, resolution: { source: "none" }, diagnostics };
 }
 
 const DEFAULT_THINKING_LEVEL: ThinkingLevel = "medium";
 
 function resolveDefaultThinkingLevel(options: {
-	readonly model: RuntimeModel;
+	readonly model: RuntimeModel | undefined;
 	readonly explicitDefaultThinkingLevel?: ThinkingLevel;
 	readonly settingsDefaultThinkingLevel?: ThinkingLevel;
 }): { readonly resolution: RuntimeDefaultThinkingLevelResolution } {
@@ -384,7 +394,7 @@ function resolveDefaultThinkingLevel(options: {
 			: options.settingsDefaultThinkingLevel !== undefined
 				? "settings"
 				: "builtin_fallback";
-	const level = clampThinkingLevel(options.model, requestedLevel) as ThinkingLevel;
+	const level = options.model ? (clampThinkingLevel(options.model, requestedLevel) as ThinkingLevel) : requestedLevel;
 	const resolution: RuntimeDefaultThinkingLevelResolution = {
 		level,
 		requestedLevel,
@@ -620,6 +630,7 @@ export async function createWidiRuntime(options: CreateWidiRuntimeOptions): Prom
 		...authStorage.drainDiagnostics(),
 		...modelRegistry.drainDiagnostics(),
 		...defaultProfile.diagnostics,
+		...defaultModel.diagnostics,
 		...projectExtensionTrustDiagnostics,
 		...extensionLoad.diagnostics,
 		...workspaceDiagnostics,

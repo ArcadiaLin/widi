@@ -36,7 +36,7 @@ export function widiCommands(host: CommandHost): readonly CommandDefinition[] {
 		forkCommand(host),
 		loginCommand,
 		logoutCommand,
-		modelCommand,
+		modelCommand(host),
 		thinkingCommand,
 		renameCommand,
 		reloadCommand,

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentOrchestrator } from "../../../../src/core/agent-orchestrator.ts";
+import type { RuntimeModel } from "../../../../src/core/types.ts";
 import { widiCommands } from "../../../../src/tui/commands/built-in/index.ts";
 import { CommandEngine } from "../../../../src/tui/commands/engine.ts";
 import { DiagnosticsLog } from "../../../../src/tui/diagnostics-log.ts";
@@ -34,6 +35,9 @@ function setup(status: "idle" | "running" = "idle") {
 		async setWorkspace(path: string) {
 			this.workspaceCalls.push(path);
 			return `Staged session will open in ${path}`;
+		},
+		setPendingModel(model: RuntimeModel) {
+			return `Staged session will use ${model.provider}/${model.id}`;
 		},
 		setTheme(name: string) {
 			this.themeCalls.push(name);

@@ -236,7 +236,8 @@ export type PendingAgentStart = {
 	readonly cwd: string;
 } & (
 	| { readonly kind: "default" }
-	| { readonly kind: "new-session"; readonly profileId: string; readonly model: RuntimeModel }
+	/** model is absent only while the runtime has no authenticated model at all. */
+	| { readonly kind: "new-session"; readonly profileId: string; readonly model: RuntimeModel | undefined }
 );
 
 export interface PendingAgentViewState {
@@ -247,7 +248,7 @@ export interface PendingAgentViewState {
 		readonly profileId: string;
 		readonly profileLabel: string;
 		readonly cwd: string;
-		model: RuntimeModel;
+		model: RuntimeModel | undefined;
 		thinkingLevel?: string;
 		sessionName?: string;
 	};

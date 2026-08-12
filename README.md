@@ -16,9 +16,20 @@ WIDI 是一个可扩展的终端 coding agent。在单 Agent 内核之上，它�
 - **异步后台任务**：支持后台 shell 任务的读取、等待和取消，也可用于 Agent 委派任务。
 - **人工交互**：Agent 可以向人请求确认或输入。
 
-## 快速开始
+## 安装
 
 前置条件：Node.js `>= 22.19.0` 和 npm。
+
+```bash
+git clone <repo-url> && cd widi
+./install.sh
+```
+
+`install.sh` 会安装依赖并构建，把 `widi` 命令装进 `~/.local/bin`（指向本 clone 的 `apps/widi/dist/cli.js`），并把 `preset/` 种到 `~/.widi`。重复运行会覆盖 preset 管理的文件（profiles、themes、`extensions/drill`），但不会动 `settings.json`、`agent/models.json`、`auth.json`、`trust.json`、`runs/` 等状态文件。之后 `git pull` 并重跑 `install.sh` 即完成升级。
+
+默认模型是 `kimi-coding/k3`（Kimi for Coding），在 TUI 内登录即可；也可以设 `MOONSHOT_API_KEY` / `ANTHROPIC_API_KEY` 使用 `~/.widi/agent/models.json` 里预定义的 moonshot 和 anthropic 提供方。
+
+## 开发运行
 
 ```bash
 npm install
@@ -26,7 +37,7 @@ npm run build
 npm run tui
 ```
 
-`npm run tui` 使用仓库内的 `.widi/` 配置，并继承当前终端的工作目录。默认配置面向本仓库的本地开发环境。
+`npm run tui` 使用仓库内的 `.widi/` 配置，并继承当前终端的工作目录。默认配置面向本仓库的本地开发环境，与 `install.sh` 安装的 `~/.widi` 互不影响。
 
 ## TUI 使用
 

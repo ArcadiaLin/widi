@@ -864,24 +864,86 @@ You are extension-profile.`,
 		}
 	});
 
-	it("fails fast when settings default model is unavailable", async () => {
-		const env = new MemoryExecutionEnv();
-		env.addFile(
-			"/home/user/.widi/settings.json",
-			JSON.stringify({ defaultProvider: "settings-provider", defaultModel: "missing-model" }),
-		);
-		env.addFile("/home/user/.widi/agent/models.json", modelsJson("settings-provider", "settings-model"));
+	it("warns and falls back when the settings default model is unavailable", async () => {
+		// Built-in providers resolve ambient env credentials (e.g. HF_TOKEN), so
+		// scrub the process environment to keep availability deterministic.
+		for (const name of Object.keys(process.env)) {
+			vi.stubEnv(name, "");
+		}
+		try {
+			const env = new MemoryExecutionEnv();
+			env.addFile(
+				"/home/user/.widi/settings.json",
+				JSON.stringify({ defaultProvider: "settings-provider", defaultModel: "missing-model" }),
+			);
+			env.addFile("/home/user/.widi/agent/models.json", modelsJson("settings-provider", "settings-model"));
 
-		await expect(
-			createWidiRuntime({ cwd: "/workspace/project", agentDir: "/home/user/.widi", executionEnv: env }),
-		).rejects.toMatchObject({
-			code: "model.default_unavailable",
-			diagnostic: expect.objectContaining({
-				severity: "error",
-				code: "model.default_unavailable",
-				message: "Default model is unavailable: settings-provider/missing-model.",
-			}),
-		});
+			const runtime = await createWidiRuntime({
+				cwd: "/workspace/project",
+				agentDir: "/home/user/.widi",
+				executionEnv: env,
+			});
+
+			expect(runtime.services.defaultModel).toEqual({
+				provider: "settings-provider",
+				modelId: "settings-model",
+				source: "available_fallback",
+			});
+			expect(runtime.diagnostics).toContainEqual(
+				expect.objectContaining({ severity: "warning", code: "model.default_unavailable" }),
+			);
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+
+	it("starts without a default model when nothing has configured auth", async () => {
+		for (const name of Object.keys(process.env)) {
+			vi.stubEnv(name, "");
+		}
+		try {
+			const env = new MemoryExecutionEnv();
+			// A provider with no apiKey and no auth.json entry is not available.
+			env.addFile(
+				"/home/user/.widi/agent/models.json",
+				JSON.stringify({
+					providers: {
+						"unauthenticated-provider": {
+							api: "openai-completions",
+							baseUrl: "https://example.test/v1",
+							models: [
+								{
+									id: "unauthenticated-model",
+									name: "unauthenticated-model",
+									reasoning: false,
+									input: ["text"],
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+									contextWindow: 1000,
+									maxTokens: 100,
+								},
+							],
+						},
+					},
+				}),
+			);
+
+			const runtime = await createWidiRuntime({
+				cwd: "/workspace/project",
+				agentDir: "/home/user/.widi",
+				executionEnv: env,
+			});
+
+			expect(runtime.services.defaultModel).toEqual({ source: "none" });
+			expect(runtime.diagnostics).toContainEqual(
+				expect.objectContaining({ severity: "warning", code: "model.none_available" }),
+			);
+			// The refusal lands at the first spawn, not at startup.
+			await expect(runtime.orchestrator.spawnAgent({ origin: { kind: "new" } })).rejects.toMatchObject({
+				code: "model.none_available",
+			});
+		} finally {
+			vi.unstubAllEnvs();
+		}
 	});
 
 	it("prefers explicit session root over settings and fallback", async () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../../src/core/agent-orchestrator.ts";
+import type { RuntimeModel } from "../../../src/core/types.ts";
 import { widiCommands } from "../../../src/tui/commands/built-in/index.ts";
 import { CommandEngine } from "../../../src/tui/commands/engine.ts";
 import type { ActionCommand, CommandDefinition } from "../../../src/tui/commands/types.ts";
@@ -198,10 +199,36 @@ describe("CommandEngine.handleInput", () => {
 		expect(outcome).toMatchObject({ kind: "needs-argument", candidates: [{ value: "openai/gpt-5" }] });
 	});
 
-	it("requires materialization before executing a setting command", async () => {
-		const outcome = await engine.handleInput("/model:openai/gpt-5", pendingContext());
+	it("stages the model on the staged session when no agent is open", async () => {
+		const resolved: string[] = [];
+		const staged: string[] = [];
+		const model = { provider: "openai", id: "gpt-5" } as RuntimeModel;
+		const engine = new CommandEngine(
+			widiCommands(
+				stubCommandHost({
+					setPendingModel: (stagedModel) => {
+						staged.push(`${stagedModel.provider}/${stagedModel.id}`);
+						return `Staged session will use ${stagedModel.provider}/${stagedModel.id}`;
+					},
+				}),
+			),
+		);
 
-		expect(outcome).toMatchObject({ kind: "failed", error: { message: expect.stringContaining("active agent") } });
+		const outcome = await engine.handleInput(
+			"/model:openai/gpt-5",
+			pendingContext({
+				listAvailableModelCandidates: async () => ({ models: [{ value: "openai/gpt-5" }] }),
+				resolveModelByReference: async (reference: string) => {
+					resolved.push(reference);
+					return model;
+				},
+				setDefaultModel: () => {},
+			}),
+		);
+
+		expect(outcome).toMatchObject({ kind: "executed", name: "model" });
+		expect(resolved).toEqual(["openai/gpt-5"]);
+		expect(staged).toEqual(["openai/gpt-5"]);
 	});
 
 	it("reports command start through hooks", async () => {

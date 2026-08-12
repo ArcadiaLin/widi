@@ -8,7 +8,8 @@ export interface PendingAgentDisplay {
 	readonly profileLabel: string;
 	/** The workspace the session will open in; `/workspace` rewrites it. */
 	readonly cwd: string;
-	readonly model: RuntimeModel;
+	/** Undefined while the runtime has no authenticated model to offer. */
+	readonly model: RuntimeModel | undefined;
 	readonly thinkingLevel?: string;
 }
 
@@ -36,7 +37,7 @@ export class PendingAgentController {
 	}
 
 	beginNewSession(
-		source: { readonly profileId: string; readonly model: RuntimeModel },
+		source: { readonly profileId: string; readonly model: RuntimeModel | undefined },
 		display: PendingAgentDisplay,
 	): void {
 		this.state.activeAgentId = undefined;
@@ -48,6 +49,13 @@ export class PendingAgentController {
 
 	cancel(): void {
 		this.state.pendingAgent = undefined;
+	}
+
+	setModel(model: RuntimeModel): void {
+		const pending = this.state.pendingAgent;
+		if (!pending) throw new Error("No pending agent is available.");
+		const start = pending.start.kind === "new-session" ? { ...pending.start, model } : pending.start;
+		this.state.pendingAgent = { ...pending, start, display: { ...pending.display, model } };
 	}
 
 	/**

@@ -40,13 +40,18 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		expect(harness.promptAgent).toHaveBeenCalledWith(expect.objectContaining({ targetAgentId: "main", body: "hello" }));
 	});
 
-	it("spawns and persists a setting command before the first prompt", async () => {
+	it("stages the picked model on the pending session before the first prompt", async () => {
 		const harness = await createApplicationHarness();
 
 		await submit(harness.application, "/model:test/next-model");
 
-		expect(harness.spawnAgent).toHaveBeenCalledTimes(1);
-		expect(harness.setAgentModelByReference).toHaveBeenCalledWith("main", "test/next-model");
+		// No agent exists yet, so there is nothing to retarget: the model lands
+		// on the staged session and becomes the runtime default, and spawning
+		// waits for the first prompt.
+		expect(harness.spawnAgent).not.toHaveBeenCalled();
+		expect(harness.resolveModelByReference).toHaveBeenCalledWith("test/next-model");
+		expect(harness.setDefaultModel).toHaveBeenCalled();
+		expect(harness.setAgentModelByReference).not.toHaveBeenCalled();
 		expect(harness.promptAgent).not.toHaveBeenCalled();
 	});
 
@@ -1295,6 +1300,7 @@ async function createApplicationHarness(options: { agentDir?: string; extensionL
 		},
 	}));
 	const setAgentModelByReference = vi.fn(async () => runtimeModel);
+	const resolveModelByReference = vi.fn(async () => runtimeModel);
 	const setDefaultModel = vi.fn(() => {});
 	const setAgentThinkingLevelByName = vi.fn(async () => "high");
 	const setAgentSessionName = vi.fn(async () => {});
@@ -1326,6 +1332,7 @@ async function createApplicationHarness(options: { agentDir?: string; extensionL
 		// The shell holds one sink; every submit path goes through it.
 		messageSinkFor,
 		setAgentModelByReference,
+		resolveModelByReference,
 		setDefaultModel,
 		setAgentThinkingLevelByName,
 		setAgentSessionName,
@@ -1395,6 +1402,8 @@ async function createApplicationHarness(options: { agentDir?: string; extensionL
 		disposeAgent,
 		inspectAgent,
 		setAgentModelByReference,
+		resolveModelByReference,
+		setDefaultModel,
 		setAgentThinkingLevelByName,
 		setAgentSessionName,
 	};

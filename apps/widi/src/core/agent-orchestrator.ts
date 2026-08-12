@@ -211,7 +211,8 @@ export interface AgentOrchestratorConfig {
 	extensionLoader?: ExtensionLoader;
 	defaultProfileId: string;
 	enabledProfileIds?: readonly string[];
-	defaultModel: RuntimeModel;
+	/** Undefined on a fresh install with no authenticated model; spawning refuses. */
+	defaultModel: RuntimeModel | undefined;
 	defaultThinkingLevel?: ThinkingLevel;
 }
 
@@ -447,7 +448,7 @@ export class AgentOrchestrator {
 
 	// -- Runtime defaults ----------------------------------------------------
 
-	private _defaultModel: RuntimeModel;
+	private _defaultModel: RuntimeModel | undefined;
 	private _defaultThinkingLevel: ThinkingLevel | undefined;
 	private _defaultProfileId: string;
 	private _enabledProfileIds: readonly string[] | undefined;
@@ -507,7 +508,22 @@ export class AgentOrchestrator {
 		this._extensionCoreActions = this._createExtensionCoreActions();
 	}
 
-	getDefaultModel(): RuntimeModel {
+	getDefaultModel(): RuntimeModel | undefined {
+		return this._defaultModel;
+	}
+
+	/**
+	 * A fresh install boots with no authenticated model so the user can reach
+	 * /login; the refusal lands here, at the first spawn that needs one.
+	 */
+	private _requireDefaultModel(): RuntimeModel {
+		if (!this._defaultModel) {
+			throw new OrchestratorError({
+				severity: "error",
+				code: "model.none_available",
+				message: "No model is available. Log in with /login or set a provider API key, then pick one with /model.",
+			});
+		}
 		return this._defaultModel;
 	}
 
@@ -1066,7 +1082,7 @@ export class AgentOrchestrator {
 			resolvedProfile,
 			session,
 			sessionMetadata: await session.getMetadata(),
-			model: options.model ?? parent?.harness.getModel() ?? this._defaultModel,
+			model: options.model ?? parent?.harness.getModel() ?? this._requireDefaultModel(),
 			thinkingLevel: options.thinkingLevel ?? parent?.harness.getThinkingLevel() ?? this._defaultThinkingLevel,
 			settings,
 			toolPolicy: { requestedToolNames: resolvedProfile.profile.tools, activeToolSelection: { mode: "default_all" } },
@@ -3558,7 +3574,7 @@ export class AgentOrchestrator {
 	private _resolveResumeModel(
 		contextModel: { readonly provider: string; readonly modelId: string } | null,
 	): RuntimeModel {
-		if (!contextModel) return this._defaultModel;
+		if (!contextModel) return this._requireDefaultModel();
 		const model = this.modelRegistry.find(contextModel.provider, contextModel.modelId);
 		if (!model) {
 			throw new OrchestratorError({
@@ -3620,6 +3636,10 @@ export class AgentOrchestrator {
 				description: modelReference(model),
 			})),
 		};
+	}
+
+	async resolveModelByReference(reference: string): Promise<RuntimeModel> {
+		return await this._resolveModelByReference(reference);
 	}
 
 	async setAgentModelByReference(agentId: AgentId, reference: string): Promise<RuntimeModel> {

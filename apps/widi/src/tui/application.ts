@@ -14,7 +14,7 @@ import { DEFAULT_AGENT_DIR } from "../core/constants.js";
 import { type OrchestratorDiagnostic, OrchestratorError } from "../core/diagnostics.ts";
 import { type MessageSink, messageBindingFor } from "../core/message.ts";
 import { createWidiRuntime, type WidiRuntime } from "../core/runtime-service.ts";
-import type { AgentActivitySnapshot, CandidateItem, OrchestratorEvent } from "../core/types.ts";
+import type { AgentActivitySnapshot, CandidateItem, OrchestratorEvent, RuntimeModel } from "../core/types.ts";
 import { copyToClipboard } from "../utils/clipboard.ts";
 import { forkSourceAgentId } from "./agent-identity.ts";
 import { buildAgentTree, flattenAgentTree } from "./agent-tree.ts";
@@ -185,6 +185,7 @@ export class WidiTuiApplication {
 				await this.beginNewSession(sourceAgentId);
 			},
 			setWorkspace: async (path) => await this.setPendingWorkspace(path),
+			setPendingModel: (model) => this.setPendingModel(model),
 			setTheme: (name) => this.applyTheme(name),
 			disposeAgent: async (agentId) => {
 				await this.disposeAgent(agentId);
@@ -1671,6 +1672,12 @@ export class WidiTuiApplication {
 	 * instruction files load - and because being asked about a project after
 	 * typing the first message is too late to be a decision.
 	 */
+	private setPendingModel(model: RuntimeModel): string {
+		this.pendingAgents.setModel(model);
+		this.tui.requestRender();
+		return `Staged session will use ${model.provider}/${model.id}`;
+	}
+
 	private async setPendingWorkspace(path: string): Promise<string> {
 		if (!this.state.pendingAgent) throw new Error("There is no staged session to move.");
 		const resolved = await this.orchestrator.executionEnv.absolutePath(path);
@@ -1979,7 +1986,10 @@ export class WidiTuiApplication {
 	private addStartupSummary(): void {
 		// The one-line summary is always synthesized from the resolved services.
 		const services = this.runtime.services;
-		const text = `${services.defaultProfile.id} · ${services.defaultModel.provider}/${services.defaultModel.modelId} · thinking ${services.defaultThinkingLevel.level}`;
+		const modelText = services.defaultModel.provider
+			? `${services.defaultModel.provider}/${services.defaultModel.modelId}`
+			: "no model";
+		const text = `${services.defaultProfile.id} · ${modelText} · thinking ${services.defaultThinkingLevel.level}`;
 		this.state.globalNotices.push({
 			id: "startup:summary",
 			kind: "startup",
