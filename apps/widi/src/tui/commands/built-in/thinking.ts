@@ -1,4 +1,5 @@
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import type { AgentThinkingLevelResult } from "../../../core/agent-orchestrator.ts";
 import type { CommandDefinition } from "../types.ts";
 import { requireAgentId } from "./utils/agents.ts";
 
@@ -24,4 +25,5 @@ export const thinkingCommand: CommandDefinition = {
 		context.orchestrator.setDefaultThinkingLevel(result.level);
 		return result;
 	},
+	formatResult: (result) => `Thinking level set to ${(result as AgentThinkingLevelResult).level}`,
 };

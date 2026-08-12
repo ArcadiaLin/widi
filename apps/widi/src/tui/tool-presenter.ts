@@ -173,7 +173,7 @@ function presentLines(
 		const targetText = target ? ` ${singleLine(target, 400)}` : "";
 		const headline =
 			item.status === "preparing"
-				? `${theme.info(spinnerFrame())} ${theme.bold(theme.accent(verbText))}${targetText} ${theme.dim("preparing…")}`
+				? `${theme.info(spinnerFrame())} ${theme.bold(theme.info(verbText))}${targetText} ${theme.dim("preparing…")}`
 				: `${theme.muted("⊘")} ${theme.dim(`${verbText}${targetText}`)}`;
 		return [truncateToWidth(headline, Math.max(8, width), "…")];
 	}
@@ -192,7 +192,7 @@ function presentLines(
 	const completedOk = item.status === "completed" && !item.isError;
 	const success = completedOk ? spec.success?.(item, resultLines) : undefined;
 
-	const headline = `${glyph} ${theme.bold(theme.accent(singleLine(verb, 80)))}${
+	const headline = `${glyph} ${theme.bold(theme.info(singleLine(verb, 80)))}${
 		target ? ` ${singleLine(target, 400)}` : ""
 	}${success?.suffix ? theme.dim(success.suffix) : ""}${theme.dim(toolDuration(item))}`;
 	const lines = [truncateToWidth(headline, Math.max(8, width), "…")];

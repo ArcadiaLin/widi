@@ -47,6 +47,8 @@ export interface ThemePalette {
 	error: string;
 	/** Activity in progress, informational. */
 	info: string;
+	/** Slash commands: the recognized token in the editor, the row's name. Falls back to `accent`. */
+	command?: string;
 	/** De-emphasized text. */
 	muted: string;
 	/** Barely-there text (scroll info, placeholders). */
@@ -129,6 +131,8 @@ export class Theme {
 	readonly warn: Paint;
 	readonly error: Paint;
 	readonly info: Paint;
+	/** Slash commands, in the editor and in the transcript row they produce. */
+	readonly command: Paint;
 	readonly muted: Paint;
 	readonly faint: Paint;
 
@@ -178,6 +182,7 @@ export class Theme {
 		this.warn = foregroundRgb(palette.warn);
 		this.error = foregroundRgb(palette.error);
 		this.info = foregroundRgb(palette.info);
+		this.command = foregroundRgb(palette.command ?? palette.accent);
 		this.muted = foregroundRgb(palette.muted);
 		this.faint = foregroundRgb(palette.faint);
 
@@ -230,7 +235,14 @@ export class Theme {
 const DEFAULT_THEME_NAME = "default";
 const PALETTE_KEYS = ["accent", "ok", "warn", "error", "info", "muted", "faint", "rule", "surface"] as const;
 /** Validated when present, absent is fine: see ThemePalette for the fallbacks. */
-const OPTIONAL_PALETTE_KEYS = ["toolPending", "toolSuccess", "toolError", "messageSurface", "commandSurface"] as const;
+const OPTIONAL_PALETTE_KEYS = [
+	"command",
+	"toolPending",
+	"toolSuccess",
+	"toolError",
+	"messageSurface",
+	"commandSurface",
+] as const;
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 
 interface RegisteredTheme {

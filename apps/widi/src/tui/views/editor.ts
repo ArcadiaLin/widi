@@ -18,10 +18,16 @@ export class WidiEditor extends Editor {
 	onExtensionShortcut?: (data: string) => boolean;
 
 	private argumentHintProvider?: (text: string) => string | undefined;
+	private commandRecognizer?: (name: string) => boolean;
 	private lastCompletionKeyAt = 0;
 
 	setArgumentHintProvider(provider: (text: string) => string | undefined): void {
 		this.argumentHintProvider = provider;
+	}
+
+	/** Decides whether a typed `/name` is a command that exists. */
+	setCommandRecognizer(recognizer: (name: string) => boolean): void {
+		this.commandRecognizer = recognizer;
 	}
 
 	override render(width: number): string[] {
@@ -32,9 +38,27 @@ export class WidiEditor extends Editor {
 		this.borderColor = text.trimStart().startsWith("/") ? theme.borderActive : theme.border;
 		const rendered = super.render(width);
 		if (rendered.length >= 3) {
+			this.applyCommandHighlight(rendered);
 			this.applyArgumentHint(rendered, width, text);
 		}
 		return rendered;
+	}
+
+	/**
+	 * Paint the leading `/name` once it names a command that exists, so a typo
+	 * is the absence of color rather than an error after Enter.
+	 *
+	 * pi-tui renders the draft as plain text with an inverse cursor spliced in,
+	 * so this repaints the token in the rendered line. The pattern cannot match
+	 * across that escape sequence, which is what keeps the highlight off a token
+	 * the cursor is standing inside - it would otherwise paint half of one.
+	 */
+	private applyCommandHighlight(rendered: string[]): void {
+		const line = rendered[1];
+		if (line === undefined) return;
+		const match = /^(\s*)(\/[A-Za-z][\w-]*)/u.exec(line);
+		if (!match || !this.commandRecognizer?.(match[2].slice(1))) return;
+		rendered[1] = `${match[1]}${theme.bold(theme.command(match[2]))}${line.slice(match[0].length)}`;
 	}
 
 	private applyArgumentHint(rendered: string[], width: number, text: string): void {

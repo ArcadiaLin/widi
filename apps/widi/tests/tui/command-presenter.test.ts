@@ -9,6 +9,7 @@ import { widiCommands } from "../../src/tui/commands/built-in/index.ts";
 import { CommandEngine } from "../../src/tui/commands/engine.ts";
 import type { ActionCommand } from "../../src/tui/commands/types.ts";
 import type { CommandResultItem } from "../../src/tui/state.ts";
+import { theme } from "../../src/tui/theme/theme.ts";
 import { stubCommandHost } from "../helpers/command-host.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
@@ -49,13 +50,28 @@ describe("presentCommandResult frame", () => {
 
 	it("falls back to the formatResult display when no presenter is registered", () => {
 		const lines = plain(presentCommandResult(commandItem({ name: "compact", display: "compacted 12000 tokens" }), 80));
-		expect(lines).toEqual(["/compact", "compacted 12000 tokens"]);
+		expect(lines).toEqual(["✓ /compact compacted 12000 tokens"]);
 	});
 
 	it("falls back to the raw result without a display or presenter", () => {
 		const lines = plain(presentCommandResult(commandItem({ name: "agents", result: { count: 2 } }), 80));
-		expect(lines[0]).toBe("/agents");
+		expect(lines[0]).toBe("✓ /agents");
 		expect(lines.join("\n")).toContain("count");
+	});
+
+	// The command hue is what ties the token typed in the editor to the row it
+	// produced; a completed row is the half of that pair the transcript owns.
+	it("paints the name of a completed row in the command hue", () => {
+		const hex = theme.palette.command ?? theme.palette.accent;
+		const value = Number.parseInt(hex.slice(1), 16);
+		const sgr = `38;2;${(value >> 16) & 0xff};${(value >> 8) & 0xff};${value & 0xff}`;
+
+		const completed = presentCommandResult(commandItem({ name: "compact", display: "done" }), 80);
+		expect(completed[0]).toContain(sgr);
+
+		// In flight and failed rows stay on the frame's dim name: the outcome
+		// glyph is not there yet, or the error message owns the line.
+		expect(presentCommandResult(commandItem({ name: "compact", status: "running" }), 80)[0]).not.toContain(sgr);
 	});
 });
 
@@ -89,7 +105,7 @@ describe("command presenter registry", () => {
 
 		const lines = plain(presentCommandResult(commandItem({ name: "demo", display: "fallback" }), 80));
 
-		expect(lines).toEqual(["/demo", "fallback"]);
+		expect(lines).toEqual(["✓ /demo fallback"]);
 	});
 });
 

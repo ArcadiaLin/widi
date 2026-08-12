@@ -17,6 +17,8 @@ export interface CommandHost {
 	newSession(sourceAgentId: string | undefined): Promise<void>;
 	/** Move the staged session to another directory; answers with what to show. */
 	setWorkspace(path: string): Promise<string>;
+	/** Repaint in a registered color scheme and remember it; answers with what to show. */
+	setTheme(name: string): string;
 	disposeAgent(agentId: string): Promise<void>;
 	/** Make an agent the visible one, bringing it into the strip first. */
 	switchToAgent(agentId: string): Promise<void>;

@@ -1327,6 +1327,11 @@ async function createApplicationHarness(options: { agentDir?: string; extensionL
 		services: {
 			cwd: "/workspace",
 			workspaces: { startup: { cwd: "/workspace" }, resolve: async (cwd: string) => ({ cwd }) },
+			settingManager: {
+				getTheme: () => undefined,
+				setTheme: () => {},
+				getTerminalSettings: () => ({ wheelScrollLines: 3 }),
+			},
 			agentDir: options.agentDir ?? "/workspace/.widi-test-missing",
 			defaultProfile: { id: "main", source: "builtin_fallback", profileSource: { kind: "builtin" } },
 			defaultModel: { provider: runtimeModel.provider, modelId: runtimeModel.id, source: "runtime_override" },

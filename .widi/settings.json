@@ -12,7 +12,7 @@
   ],
   "steeringMode": "one-at-a-time",
   "followUpMode": "one-at-a-time",
-  "theme": "dark",
+  "theme": "prism",
   "compaction": {
     "enabled": true,
     "reserveTokens": 16384,

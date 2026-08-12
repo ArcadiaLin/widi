@@ -157,6 +157,19 @@ describe("SettingManager", () => {
 		expect(manager.getCompactionSettings()).toEqual({ enabled: true, reserveTokens: 1000, keepRecentTokens: 2000 });
 	});
 
+	// pi-tui moves one line per wheel notch, which in a full-screen transcript
+	// reads as a stuck scroll. The default here is what the terminal's own
+	// scrollback does.
+	it("scrolls three lines a wheel notch unless the settings say otherwise", async () => {
+		const byDefault = await SettingManager.fromStorage(new InMemorySettingsStorage({}));
+		expect(byDefault.getTerminalSettings().wheelScrollLines).toBe(3);
+
+		const configured = await SettingManager.fromStorage(
+			new InMemorySettingsStorage({ terminal: { wheelScrollLines: 8 } }),
+		);
+		expect(configured.getTerminalSettings().wheelScrollLines).toBe(8);
+	});
+
 	it("merges extension division rules per extension id", async () => {
 		const storage = new InMemorySettingsStorage(
 			{ extensionDivisions: { mcp: { disable: ["tools"] }, plan: { enable: ["experimental"] } } },

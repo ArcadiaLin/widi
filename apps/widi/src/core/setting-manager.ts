@@ -5,6 +5,12 @@ import { DEFAULT_AGENT_DIR } from "./constants.js";
 import type { CoreDiagnostic } from "./diagnostics.ts";
 import type { ExtensionDivisionSelection } from "./extension/types.ts";
 
+/**
+ * Three lines a notch, the step most terminals use for their own scrollback.
+ * pi-tui defaults to one, which in a full-screen transcript reads as a stall.
+ */
+const DEFAULT_WHEEL_SCROLL_LINES = 3;
+
 export interface CompactionSettings {
 	/** Default: true. */
 	enabled?: boolean;
@@ -49,6 +55,11 @@ export interface TerminalSettings {
 	clearOnShrink?: boolean;
 	/** Default: false. Use terminal progress indicators when supported. */
 	showTerminalProgress?: boolean;
+	/**
+	 * Default: 3. Logical lines the fullscreen viewport moves per mouse-wheel
+	 * notch. Read once when the TUI is built, so a change needs a restart.
+	 */
+	wheelScrollLines?: number;
 }
 
 export interface ImageSettings {
@@ -952,6 +963,7 @@ export class SettingManager {
 			imageWidthCells: this.settings.terminal?.imageWidthCells ?? 60,
 			clearOnShrink: this.settings.terminal?.clearOnShrink ?? false,
 			showTerminalProgress: this.settings.terminal?.showTerminalProgress ?? false,
+			wheelScrollLines: this.settings.terminal?.wheelScrollLines ?? DEFAULT_WHEEL_SCROLL_LINES,
 		};
 	}
 

@@ -60,7 +60,7 @@ import {
 	topDockedFocus,
 } from "./state.ts";
 import { flushStreaming, STREAM_FLUSH_MS } from "./streaming-flush.ts";
-import { loadThemes, theme } from "./theme/theme.ts";
+import { getAllThemes, loadThemes, setTheme, theme } from "./theme/theme.ts";
 import { AgentStripView } from "./views/agent-strip.ts";
 import { WidiEditor } from "./views/editor.ts";
 import { HumanRequestMenu } from "./views/human-request.ts";
@@ -185,6 +185,7 @@ export class WidiTuiApplication {
 				await this.beginNewSession(sourceAgentId);
 			},
 			setWorkspace: async (path) => await this.setPendingWorkspace(path),
+			setTheme: (name) => this.applyTheme(name),
 			disposeAgent: async (agentId) => {
 				await this.disposeAgent(agentId);
 			},
@@ -209,13 +210,27 @@ export class WidiTuiApplication {
 		// they exist; the constructor starts on defaults.
 		setKeybindings(createWidiKeybindings());
 		this.userConfigDiagnostics.push(...loadThemes(runtime.services.agentDir));
-		this.tui = new TuiAltScreen(new ProcessTerminal());
+		// Before the editor is built: it captures the editor sub-theme, and while
+		// that reference is live, starting on the wrong palette would still paint
+		// one frame in it.
+		const savedTheme = runtime.services.settingManager.getTheme();
+		if (savedTheme !== undefined && !setTheme(savedTheme)) {
+			this.userConfigDiagnostics.push({
+				severity: "warning",
+				code: "theme.unknown",
+				message: `Settings name the theme "${savedTheme}", which no themes directory provides; the default is used.`,
+			});
+		}
+		this.tui = new TuiAltScreen(new ProcessTerminal(), undefined, undefined, {
+			wheelScrollLines: runtime.services.settingManager.getTerminalSettings().wheelScrollLines,
+		});
 		this.editor = new WidiEditor(this.tui, theme.editorTheme, { autocompleteMaxVisible: 8 });
 		this.editor.onExtensionShortcut = (data) => this.extensionHost?.handleShortcut(data) ?? false;
 		this.editor.setArgumentHintProvider((text) => {
 			const name = /^\/(\S+)\s*$/.exec(text)?.[1];
 			return name ? this.engine.get(name)?.argumentHint : undefined;
 		});
+		this.editor.setCommandRecognizer((name) => this.engine.get(name) !== undefined);
 		this.humanRequests = new HumanRequestMenu({
 			host: this.tui,
 			state: this.state,
@@ -1666,6 +1681,24 @@ export class WidiTuiApplication {
 		return workspace.trust.trusted
 			? `Staged session will open in ${workspace.cwd}`
 			: `Staged session will open in ${workspace.cwd} (untrusted: project-local settings, profiles, skills and prompts stay disabled)`;
+	}
+
+	/**
+	 * /theme: repaint in a registered scheme and remember the choice.
+	 *
+	 * Every view paints through the live `theme` holder, so the switch itself is
+	 * one assignment; the render that follows is what makes it visible.
+	 */
+	private applyTheme(name: string): string {
+		if (!setTheme(name)) {
+			const known = getAllThemes()
+				.map((entry) => entry.name)
+				.join(", ");
+			throw new Error(`Unknown theme "${name}". Registered: ${known}`);
+		}
+		this.runtime.services.settingManager.setTheme(name);
+		this.tui.requestRender();
+		return `Theme set to ${name}`;
 	}
 
 	/**

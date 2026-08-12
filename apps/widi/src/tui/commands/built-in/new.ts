@@ -18,8 +18,11 @@ export function newCommand(host: CommandHost): CommandDefinition {
 		// Reached with an empty argument only when no profile could be offered:
 		// with candidates the engine opens the picker instead.
 		execute: async (_context, argument) => {
-			await host.newAgent(argument.trim() || undefined);
-			return `Agent: ${argument.trim()}`;
+			const profileId = argument.trim() || undefined;
+			await host.newAgent(profileId);
+			return profileId
+				? `Staged a new agent on ${profileId}; it spawns with the first message.`
+				: "Staged a new agent on the default profile; it spawns with the first message.";
 		},
 	};
 }
