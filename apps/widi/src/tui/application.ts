@@ -993,8 +993,7 @@ export class WidiTuiApplication {
 
 		let agentId = initialAgentId;
 		const materializesPendingAgent =
-			!agentId &&
-			(!parsed || !matchedCommand || (matchedCommand.agentPolicy === "materialize" && parsed.argument.trim() !== ""));
+			!agentId && (!parsed || !matchedCommand || materializesOnSubmit(matchedCommand, parsed.argument));
 		if (materializesPendingAgent) {
 			agentId = await this.materializePendingAgent(rawText);
 			if (!agentId) return;
@@ -2205,6 +2204,23 @@ export class WidiTuiApplication {
 export async function runWidiTui(options: WidiTuiOptions): Promise<void> {
 	const application = await WidiTuiApplication.create(options);
 	await application.run();
+}
+
+/**
+ * Whether submitting this command should start the staged session.
+ *
+ * A `materialize` command needs an agent to act on, but its bare form is often a
+ * picker rather than the command itself: `/model` with nothing after it asks
+ * which model, and spawning a session to answer a question the human may cancel
+ * would charge them for the question. So the test is not whether an argument was
+ * typed, it is whether the engine will run the command or stop to ask for one -
+ * the same predicate the engine itself uses to answer `needs-argument`. A
+ * command that takes no argument at all therefore materializes on a bare submit,
+ * which is the only way one can ever run from a cold start.
+ */
+function materializesOnSubmit(command: CommandDefinition, argument: string): boolean {
+	if (command.agentPolicy !== "materialize") return false;
+	return argument.trim() !== "" || (command.requiresArgument !== true && command.complete === undefined);
 }
 
 /** Somewhere the user can be put: still in the runtime, and past its build. */

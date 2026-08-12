@@ -1,4 +1,4 @@
-import type { AgentHarnessEvent } from "@widi/agent-core";
+import type { AgentHarnessEvent } from "@arcadialin/agent-core";
 import { describe, expect, it } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import {

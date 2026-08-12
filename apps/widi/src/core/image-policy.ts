@@ -1,5 +1,5 @@
+import type { AgentMessage } from "@arcadialin/agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
-import type { AgentMessage } from "@widi/agent-core";
 
 /**
  * Runtime policy for the images.blockImages setting.

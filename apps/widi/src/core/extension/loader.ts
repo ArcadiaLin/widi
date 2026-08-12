@@ -1,4 +1,4 @@
-import type { ExecutionEnv, FileInfo } from "@widi/agent-core";
+import type { ExecutionEnv, FileInfo } from "@arcadialin/agent-core";
 import { formatError } from "../../utils/errors.ts";
 import type { CoreDiagnostic, DiagnosticSeverity } from "../diagnostics.ts";
 import { EXTENSION_API_VERSION, isSupportedExtensionApiVersion, MIN_SUPPORTED_EXTENSION_API_VERSION } from "./api.ts";

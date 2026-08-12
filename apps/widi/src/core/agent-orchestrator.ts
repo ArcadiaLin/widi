@@ -17,7 +17,6 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
-import { type AssistantMessage, getSupportedThinkingLevels, type TextContent } from "@earendil-works/pi-ai";
 import {
 	type AbortResult,
 	AgentHarness,
@@ -37,7 +36,8 @@ import {
 	type Skill,
 	shouldCompact,
 	type ThinkingLevel,
-} from "@widi/agent-core";
+} from "@arcadialin/agent-core";
+import { type AssistantMessage, getSupportedThinkingLevels, type TextContent } from "@earendil-works/pi-ai";
 import { formatError } from "../utils/errors.ts";
 import type { JsonValue } from "../utils/json.ts";
 import type { AgentProfile, AgentProfileOverride, AgentProfileRegistry, AgentProfileSource } from "./agent-profile.js";

@@ -1,4 +1,4 @@
-import type { ExecutionEnv, FileError, FileInfo } from "@widi/agent-core";
+import type { ExecutionEnv, FileError, FileInfo } from "@arcadialin/agent-core";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { formatError } from "../utils/errors.ts";
 import { DEFAULT_AGENT_DIR, DEFAULT_PROFILE_DIR, DEFAULT_PROFILE_FILE_EXTENSION } from "./constants.js";

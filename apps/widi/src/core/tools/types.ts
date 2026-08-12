@@ -1,4 +1,4 @@
-import type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode } from "@widi/agent-core";
+import type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode } from "@arcadialin/agent-core";
 import type { Static, TSchema } from "typebox";
 import type { AgentToOrchestratorHost } from "../host.ts";
 import type { HumanInterruptWatch } from "../human-interrupt.ts";

@@ -1,4 +1,3 @@
-import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
 import type {
 	AgentHarnessEvent,
 	CompactResult,
@@ -9,8 +8,9 @@ import type {
 	Result,
 	Session,
 	ShellExecOptions,
-} from "@widi/agent-core";
-import { err, ok, ExecutionError as PiExecutionError, FileError as PiFileError } from "@widi/agent-core";
+} from "@arcadialin/agent-core";
+import { err, ok, ExecutionError as PiExecutionError, FileError as PiFileError } from "@arcadialin/agent-core";
+import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { type MockInstance, vi } from "vitest";
 import { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";

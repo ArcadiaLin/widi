@@ -1,4 +1,3 @@
-import type { ImageContent } from "@earendil-works/pi-ai";
 import type {
 	AgentHarnessEventResultMap,
 	BeforeAgentStartEvent,
@@ -13,7 +12,8 @@ import type {
 	ThinkingLevel,
 	ToolCallEvent,
 	ToolResultEvent,
-} from "@widi/agent-core";
+} from "@arcadialin/agent-core";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import type { TSchema } from "typebox";
 import { freezeJsonValue, type JsonValue, normalizeJsonValue } from "../../utils/json.ts";
 import { utf8ByteLength } from "../../utils/text.ts";

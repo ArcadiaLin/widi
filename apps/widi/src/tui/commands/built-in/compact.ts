@@ -1,4 +1,4 @@
-import type { CompactResult } from "@widi/agent-core";
+import type { CompactResult } from "@arcadialin/agent-core";
 import type { CommandDefinition } from "../types.ts";
 import { requireAgentId } from "./utils/agents.ts";
 

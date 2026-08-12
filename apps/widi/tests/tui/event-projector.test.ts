@@ -1,5 +1,5 @@
+import type { CustomMessage } from "@arcadialin/agent-core";
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
-import type { CustomMessage } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import type { AgentSnapshot } from "../../src/core/agent-types.ts";
 import { ORCHESTRATOR_MESSAGE_CUSTOM_TYPE } from "../../src/core/session-manager.ts";

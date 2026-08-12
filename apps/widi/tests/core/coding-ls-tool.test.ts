@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentToolResult } from "@widi/agent-core";
+import type { AgentToolResult } from "@arcadialin/agent-core";
 import { afterEach, describe, expect, it } from "vitest";
 import { createLsToolDefinition, type LsToolDetails } from "../../src/core/tools/coding/ls.ts";
 import type { ToolExecutionContext } from "../../src/core/tools/types.ts";

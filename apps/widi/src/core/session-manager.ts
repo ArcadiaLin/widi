@@ -24,8 +24,13 @@ import type {
 	SessionForkOptions,
 	SessionMetadata,
 	SessionTreeEntry,
-} from "@widi/agent-core";
-import { buildSessionContext, getFileSystemResultOrThrow, InMemorySessionStore, toSession } from "@widi/agent-core";
+} from "@arcadialin/agent-core";
+import {
+	buildSessionContext,
+	getFileSystemResultOrThrow,
+	InMemorySessionStore,
+	toSession,
+} from "@arcadialin/agent-core";
 import { formatError } from "../utils/errors.ts";
 import type { AgentProfile, AgentProfileReference } from "./agent-profile.js";
 import { parseAgentProfileReference, toAgentProfileReference } from "./agent-profile.js";

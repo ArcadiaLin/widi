@@ -1,6 +1,6 @@
+import type { ExecutionEnv, ThinkingLevel } from "@arcadialin/agent-core";
+import { NodeExecutionEnv } from "@arcadialin/agent-core/node";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
-import type { ExecutionEnv, ThinkingLevel } from "@widi/agent-core";
-import { NodeExecutionEnv } from "@widi/agent-core/node";
 import { formatError } from "../utils/errors.ts";
 import { unwrapResult } from "../utils/result.ts";
 import { AgentOrchestrator, type AgentOrchestratorConfig } from "./agent-orchestrator.js";

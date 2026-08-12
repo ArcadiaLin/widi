@@ -10,11 +10,11 @@ const repoRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 // resolve from node_modules, which is what the runtime resolves as well.
 const sourceAliases = [
 	{
-		find: "@widi/agent-core/node",
+		find: "@arcadialin/agent-core/node",
 		replacement: resolve(repoRoot, "packages/agent/src/node.ts"),
 	},
 	{
-		find: "@widi/agent-core",
+		find: "@arcadialin/agent-core",
 		replacement: resolve(repoRoot, "packages/agent/src/index.ts"),
 	},
 ];

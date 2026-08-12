@@ -1,6 +1,13 @@
+import type {
+	ExecutionEnv,
+	ExecutionError,
+	FileError,
+	FileInfo,
+	Result,
+	ShellExecOptions,
+} from "@arcadialin/agent-core";
+import { err, ok, ExecutionError as PiExecutionError, FileError as PiFileError } from "@arcadialin/agent-core";
 import type { OAuthAuth } from "@earendil-works/pi-ai";
-import type { ExecutionEnv, ExecutionError, FileError, FileInfo, Result, ShellExecOptions } from "@widi/agent-core";
-import { err, ok, ExecutionError as PiExecutionError, FileError as PiFileError } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import {
 	AuthStorage,

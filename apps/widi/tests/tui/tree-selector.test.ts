@@ -1,5 +1,5 @@
+import type { MessageEntry, SessionTreeEntry } from "@arcadialin/agent-core";
 import { setKeybindings } from "@earendil-works/pi-tui";
-import type { MessageEntry, SessionTreeEntry } from "@widi/agent-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import type { AgentSnapshot } from "../../src/core/agent-types.ts";

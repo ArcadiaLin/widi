@@ -1,5 +1,11 @@
-import type { ExecutionEnv, PromptTemplate, PromptTemplateDiagnostic, Skill, SkillDiagnostic } from "@widi/agent-core";
-import { loadSourcedPromptTemplates, loadSourcedSkills } from "@widi/agent-core";
+import type {
+	ExecutionEnv,
+	PromptTemplate,
+	PromptTemplateDiagnostic,
+	Skill,
+	SkillDiagnostic,
+} from "@arcadialin/agent-core";
+import { loadSourcedPromptTemplates, loadSourcedSkills } from "@arcadialin/agent-core";
 import type { AgentProfile } from "./agent-profile.js";
 import {
 	DEFAULT_AGENT_DIR,

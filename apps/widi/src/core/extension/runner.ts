@@ -1,4 +1,3 @@
-import type { ImageContent } from "@earendil-works/pi-ai";
 import type {
 	AgentHarnessStreamOptions,
 	AgentHarnessStreamOptionsPatch,
@@ -7,7 +6,8 @@ import type {
 	ContextResult,
 	ToolCallResult,
 	ToolResultPatch,
-} from "@widi/agent-core";
+} from "@arcadialin/agent-core";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import { formatError } from "../../utils/errors.ts";
 import type { CoreDiagnostic } from "../diagnostics.ts";
 import type { MessageDeliveryMode, MessageRequest } from "../message.ts";

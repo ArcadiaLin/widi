@@ -9,7 +9,7 @@
  * The two intended divergences get their own tests at the bottom.
  */
 
-import { JsonlSessionStorage, type SessionTreeEntry } from "@widi/agent-core";
+import { JsonlSessionStorage, type SessionTreeEntry } from "@arcadialin/agent-core";
 import { describe, expect, it } from "vitest";
 import {
 	contentHash,

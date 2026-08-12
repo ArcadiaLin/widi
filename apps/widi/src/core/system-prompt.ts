@@ -7,8 +7,8 @@
  * directory. This module is where those facts get their wording.
  */
 
-import type { Skill } from "@widi/agent-core";
-import { formatSkillsForSystemPrompt } from "@widi/agent-core";
+import type { Skill } from "@arcadialin/agent-core";
+import { formatSkillsForSystemPrompt } from "@arcadialin/agent-core";
 import type { AgentId } from "./types.ts";
 
 /**

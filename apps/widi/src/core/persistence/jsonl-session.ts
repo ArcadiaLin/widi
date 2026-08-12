@@ -27,8 +27,8 @@ import type {
 	SessionStats,
 	SessionStorage,
 	SessionTreeEntry,
-} from "@widi/agent-core";
-import { getFileSystemResultOrThrow, SessionError, toError, uuidv7 } from "@widi/agent-core";
+} from "@arcadialin/agent-core";
+import { getFileSystemResultOrThrow, SessionError, toError, uuidv7 } from "@arcadialin/agent-core";
 import type { PersistenceFileSystem } from "./custom-storage.ts";
 
 export const SESSION_FORMAT_VERSION = 3;

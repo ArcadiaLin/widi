@@ -1,4 +1,4 @@
-import type { ExecutionEnv } from "@widi/agent-core";
+import type { ExecutionEnv } from "@arcadialin/agent-core";
 import { AsyncLock } from "../utils/async-lock.ts";
 import { unwrapResult } from "../utils/result.ts";
 import { DEFAULT_AGENT_DIR } from "./constants.js";

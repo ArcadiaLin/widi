@@ -1,4 +1,4 @@
-import { formatSkillInvocation } from "@widi/agent-core";
+import { formatSkillInvocation } from "@arcadialin/agent-core";
 import { splitLeadingToken } from "../parse.ts";
 import type { CommandDefinition } from "../types.ts";
 import { requireAgentId } from "./utils/agents.ts";

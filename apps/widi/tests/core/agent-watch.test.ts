@@ -14,8 +14,8 @@
  * delivers a message.
  */
 
+import type { AgentHarnessEvent, CompactResult } from "@arcadialin/agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { AgentHarnessEvent, CompactResult } from "@widi/agent-core";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import type { AgentToOrchestratorHost } from "../../src/core/host.ts";

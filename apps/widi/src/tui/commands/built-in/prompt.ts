@@ -1,4 +1,4 @@
-import { formatPromptTemplateInvocation, parseCommandArgs } from "@widi/agent-core";
+import { formatPromptTemplateInvocation, parseCommandArgs } from "@arcadialin/agent-core";
 import type { CommandDefinition } from "../types.ts";
 import { requireAgentId } from "./utils/agents.ts";
 

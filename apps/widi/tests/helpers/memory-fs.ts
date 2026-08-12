@@ -10,8 +10,8 @@
  * writer would produce.
  */
 
-import type { FileError, FileInfo, Result } from "@widi/agent-core";
-import { err, ok, FileError as PiFileError } from "@widi/agent-core";
+import type { FileError, FileInfo, Result } from "@arcadialin/agent-core";
+import { err, ok, FileError as PiFileError } from "@arcadialin/agent-core";
 import type { PersistenceFileSystem } from "../../src/core/persistence/index.ts";
 
 export class MemoryFileSystem implements PersistenceFileSystem {

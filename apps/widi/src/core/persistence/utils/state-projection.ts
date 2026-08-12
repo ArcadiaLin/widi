@@ -15,7 +15,7 @@
  * without a filesystem.
  */
 
-import type { SessionTreeEntry } from "@widi/agent-core";
+import type { SessionTreeEntry } from "@arcadialin/agent-core";
 import type { PersistenceRef, PersistenceRefRejection } from "./persistence-ref.ts";
 import { isNativeOrigin, parsePersistenceRef } from "./persistence-ref.ts";
 

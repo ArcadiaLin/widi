@@ -1,4 +1,4 @@
-import type { AgentHarness, Skill } from "@widi/agent-core";
+import type { AgentHarness, Skill } from "@arcadialin/agent-core";
 import type { AgentProfile, AgentProfileSource } from "./agent-profile.js";
 import { toAgentProfileReference } from "./agent-profile.js";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";

@@ -1,4 +1,4 @@
-import type { ExecutionEnv } from "@widi/agent-core";
+import type { ExecutionEnv } from "@arcadialin/agent-core";
 import type { CoreDiagnostic } from "./diagnostics.ts";
 import { type ProjectTrustResolution, type ProjectTrustStore, resolveProjectTrust } from "./project-trust.ts";
 import { ResourceLoader, type ResourceRoot } from "./resource-loader.ts";

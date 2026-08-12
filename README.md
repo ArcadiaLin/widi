@@ -70,12 +70,12 @@ Profile 是带 YAML frontmatter 的 Markdown 文件，可声明角色名称、�
 
 WIDI 的单 Agent 内核来自 Pi 的 `AgentHarness`：模型调用、工具循环、流式事件和会话树仍由它负责。WIDI 在其外层实现多 Agent 生命周期、运行时依赖解析、跨 Agent 消息、后台任务、客户端事件分发和扩展机制。
 
-Pi 上游正在持续迭代 `AgentHarness` 与存储模型。WIDI 当前从 Pi `v0.83.0` fork 并维护 `packages/agent`，包名为 `@widi/agent-core`；`@earendil-works/pi-ai` 与 `@earendil-works/pi-tui` 仍使用 npm 上的固定版本。随着上游新 harness 稳定，WIDI 会评估接入其新模型的时机与迁移路径。当前 fork 的维护约束、差异和重新同步条件见 [`docs/pi-fork.md`](docs/pi-fork.md)。
+Pi 上游正在持续迭代 `AgentHarness` 与存储模型。WIDI 当前从 Pi `v0.83.0` fork 并维护 `packages/agent`，包名为 `@arcadialin/agent-core`；`@earendil-works/pi-ai` 与 `@earendil-works/pi-tui` 仍使用 npm 上的固定版本。随着上游新 harness 稳定，WIDI 会评估接入其新模型的时机与迁移路径。当前 fork 的维护约束、差异和重新同步条件见 [`docs/pi-fork.md`](docs/pi-fork.md)。
 
 ## 仓库结构
 
 - [`apps/widi`](apps/widi)：WIDI 的运行时、内置工具、扩展系统和终端 TUI；构建后提供 `widi-harness` 二进制。
-- [`packages/agent`](packages/agent)：从 Pi fork 的 `@widi/agent-core`，作为 WIDI 的单 Agent 执行内核。
+- [`packages/agent`](packages/agent)：从 Pi fork 的 `@arcadialin/agent-core`，作为 WIDI 的单 Agent 执行内核。
 - [`docs/pi-fork.md`](docs/pi-fork.md)：Pi fork 的维护约束和设计背景。
 - [`CONTEXT.md`](CONTEXT.md)：运行时领域术语表。
 - [`apps/widi/docs`](apps/widi/docs)：persistence、orchestrator、background 三个核心模块的理念文档；实现期设计文档在 `notes/develop/`（scratch）。

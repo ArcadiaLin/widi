@@ -1,5 +1,5 @@
+import type { SessionTreeEntry } from "@arcadialin/agent-core";
 import type { AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
-import type { SessionTreeEntry } from "@widi/agent-core";
 import { type ExtensionMessage, validateExtensionMessage } from "../core/extension/api.ts";
 import type { MessageEntryDetails } from "../core/message.ts";
 import {

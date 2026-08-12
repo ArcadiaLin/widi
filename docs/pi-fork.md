@@ -12,7 +12,7 @@ This is a freeze, not a divorce. Re-sync is expected; the conditions are at the 
 
 | Package | How we consume it | Why |
 | --- | --- | --- |
-| `packages/agent` (`@widi/agent-core`) | vendored into this repo | The only package harness-v2 rewrites, and the one we extend. |
+| `packages/agent` (`@arcadialin/agent-core`) | vendored into this repo | The only package harness-v2 rewrites, and the one we extend. |
 | `@earendil-works/pi-ai` | published tarball, exact version | Fast-moving, additive for us. harness-v2 only adds `fetchDeferred`/`cancelDeferred`. |
 | `@earendil-works/pi-tui` | published tarball, exact version | Independent: its only dependencies are `get-east-asian-width` and `marked`. Untouched by harness-v2. |
 | `reference/pi` | untracked local clone, read only | Source of upstream history for cherry-picks, and the reference implementation we calibrate behavior against. |
@@ -24,6 +24,8 @@ Upstream `packages/storage/sqlite-node` is deliberately not vendored: WIDI persi
 ## Baseline and complete divergence
 
 Vendored from upstream commit `845d6ff1f6643aba440341cce877ce1c43ebbc39` (`v0.83.0`). The `version` field in `packages/agent/package.json` tracks that release and is bumped only on re-sync.
+
+The rest of `packages/agent/package.json` carries publish metadata upstream does not have: the `@arcadialin/agent-core` name, `files`, `publishConfig`, `repository`, and `prepublishOnly`. These exist so the fork can be published to npm as `apps/widi`'s registry dependency; on a re-sync, keep all of them and take only upstream's dependency and script changes.
 
 Two sets of post-release commits are cherry-picked on top of that baseline, both landed on upstream `main` after v0.83.0 and not yet published.
 
@@ -48,7 +50,7 @@ The first set is the harness shutdown lifecycle, `82c485983`, `bc031ae45`, `871a
 - `test/harness/agent-harness.test.ts`, upstream's own "awaits concurrent idle session mutations before shutdown resolves": its `BlockingSessionStorage(3)` waits for three writes to reach storage at once, which serialization makes impossible. It expects one now. The guarantee under test - shutdown does not resolve until every idle mutation has landed - is unchanged.
 - `test/harness/agent-harness.test.ts`, the three upstream shutdown tests that assert a rejection code: `invalid_state` becomes `shutdown`. Same rejections, renamed.
 - `test/scratch/simple.ts`: composes the skills listing and expands the prompt template itself, then passes the harness a plain string.
-- `test/harness/session-test-utils.ts`: the package self-reference now names `@widi/agent-core`.
+- `test/harness/session-test-utils.ts`: the package self-reference now names `@arcadialin/agent-core`.
 - `test/harness/sqlite-migrations.test.ts` and `test/harness/sqlite-node.test.ts`: removed. They import `packages/storage/sqlite-node`, which is not vendored.
 
 Nothing in `packages/agent/src` references SQLite, so removing those tests costs no source coverage.
@@ -215,7 +217,7 @@ Breaking any of these is how this arrangement fails.
 
 **Pin `pi-ai` and `pi-tui` to exact versions, never a caret range.** They iterate fast and have broken us: v0.83.0 added a five-minute proactive OAuth refresh window in `src/auth/resolve.ts`, which sent a WIDI test at the real GitHub API. Bump deliberately, with the test suite as the gate. A caret range on a fast-moving dependency is also what produced the shadowing bug below.
 
-**A version range that the workspace cannot satisfy is silently fatal.** When `apps/widi` still asked for `^0.81.1` while the workspace held 0.83.0, npm installed published 0.81.1 into `apps/widi/node_modules/@earendil-works/` and shadowed the workspace packages. The root type check stayed green because it resolves through path mappings; only `tsconfig.build.json`, which resolves from `node_modules`, failed. Renaming the vendored package to `@widi/agent-core` removes the collision for the agent package - do not rename it back.
+**A version range that the workspace cannot satisfy is silently fatal.** When `apps/widi` still asked for `^0.81.1` while the workspace held 0.83.0, npm installed published 0.81.1 into `apps/widi/node_modules/@earendil-works/` and shadowed the workspace packages. The root type check stayed green because it resolves through path mappings; only `tsconfig.build.json`, which resolves from `node_modules`, failed. Renaming the vendored package to `@arcadialin/agent-core` removes the collision for the agent package - do not rename it back.
 
 **Do not reformat `packages/agent`.** Root `biome.json` applies upstream's formatter settings (tab, width 3, line width 120) and upstream's lint relaxations to `packages/agent/**`, while `apps/**` keeps WIDI's defaults (tab, width 2, line width 80). The partition exists so `npm run check --write` cannot rewrite ten thousand vendored lines.
 

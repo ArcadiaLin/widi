@@ -1,4 +1,4 @@
-import { err, type FileInfo, FileError as PiFileError, type Result } from "@widi/agent-core";
+import { err, type FileInfo, FileError as PiFileError, type Result } from "@arcadialin/agent-core";
 import { describe, expect, it } from "vitest";
 import { ResourceLoader, type ResourceLoaderOptions } from "../../src/core/resource-loader.ts";
 import { MemoryExecutionEnv } from "../helpers/orchestrator.ts";

@@ -1,5 +1,5 @@
+import type { AgentHarnessEvent, AgentMessage, CustomMessage } from "@arcadialin/agent-core";
 import type { AssistantMessage, TextContent, ToolCall, UserMessage } from "@earendil-works/pi-ai";
-import type { AgentHarnessEvent, AgentMessage, CustomMessage } from "@widi/agent-core";
 import type { AgentSnapshot } from "../core/agent-types.ts";
 import type { OrchestratorDiagnostic } from "../core/diagnostics.ts";
 import type { ExtensionStatusSnapshot } from "../core/extension/api.ts";
