@@ -174,7 +174,7 @@ describe("renderTimelineItem", () => {
 		}
 	});
 
-	it("bounds long assistant replies by default and expands them on demand", () => {
+	it("never bounds an assistant reply", () => {
 		const text = Array.from({ length: 400 }, (_, i) => `row ${i}`).join("\n");
 		const item: AssistantMessageItem = {
 			type: "assistant-message",
@@ -185,13 +185,63 @@ describe("renderTimelineItem", () => {
 			streaming: false,
 		};
 
-		const collapsed = plain(renderTimelineItem(item, 80, context));
+		const lines = plain(renderTimelineItem(item, 80, context));
+
+		expect(lines.some((line) => line.includes("[truncated]"))).toBe(false);
+		expect(lines).toContain("row 0");
+		expect(lines).toContain("row 399");
+	});
+
+	it("says so when the model stopped at its output limit", () => {
+		const item: AssistantMessageItem = {
+			type: "assistant-message",
+			id: "assistant-1",
+			durability: "durable",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			text: "a reply that stops mid-",
+			streaming: false,
+			message: {
+				role: "assistant",
+				content: [],
+				api: "openai-completions",
+				provider: "huggingface",
+				model: "moonshotai/Kimi-K2.7-Code",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "length",
+				timestamp: 0,
+			},
+		};
+
+		const lines = plain(renderTimelineItem(item, 80, context));
+
+		expect(lines).toContain("a reply that stops mid-");
+		expect(lines.some((line) => line.includes("Response was truncated before completion."))).toBe(true);
+	});
+
+	it("bounds a long typed message by default and expands it on demand", () => {
+		const item: UserMessageItem = {
+			type: "user-message",
+			id: "user-1",
+			durability: "durable",
+			createdAt: "2026-01-01T00:00:00.000Z",
+			text: Array.from({ length: 400 }, (_, i) => `row ${i}`).join("\n"),
+		};
+
+		const collapsed = plain(renderTimelineItem(item, 80, context)).map((line) => line.trim());
 
 		expect(collapsed.some((line) => line.includes("[truncated]"))).toBe(true);
-		expect(collapsed).toContain("row 0");
 		expect(collapsed).not.toContain("row 399");
 
-		const expanded = plain(renderTimelineItem(item, 80, { ...context, toolOutputExpanded: true }));
+		const expanded = plain(renderTimelineItem(item, 80, { ...context, toolOutputExpanded: true })).map((line) =>
+			line.trim(),
+		);
 		expect(expanded.some((line) => line.includes("[truncated]"))).toBe(false);
 		expect(expanded).toContain("row 399");
 	});
@@ -237,7 +287,7 @@ describe("renderTimelineItem", () => {
 
 		const lines = renderTimelineItem(item, 80, context);
 
-		expect(plain(lines)).toEqual(["", "/resume", "resumed agent-2 · Default · test-model", ""]);
+		expect(plain(lines)).toEqual(["", "✓ /resume resumed agent-2 · Default · test-model", ""]);
 		expect(lines.every((line) => line.startsWith(paintOpen(theme.commandSurface)))).toBe(true);
 	});
 
@@ -288,7 +338,7 @@ describe("renderTimelineItem", () => {
 
 		const lines = renderTimelineItem(item, 80, context);
 
-		expect(plain(lines)).toEqual(["", "/status", "idle", ""]);
+		expect(plain(lines)).toEqual(["", "✓ /status idle", ""]);
 		expect(lines.every((line) => line.startsWith(paintOpen(theme.commandSurface)))).toBe(true);
 	});
 

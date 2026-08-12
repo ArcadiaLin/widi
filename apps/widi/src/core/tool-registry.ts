@@ -1,4 +1,4 @@
-import type { AgentHarnessTool, AgentToolUpdateCallback } from "@widi/agent-core";
+import type { AgentHarnessTool, AgentToolUpdateCallback } from "@arcadialin/agent-core";
 import type { TSchema } from "typebox";
 import type { CoreDiagnostic, DiagnosticSeverity } from "./diagnostics.ts";
 import type { AgentToOrchestratorHost } from "./host.ts";

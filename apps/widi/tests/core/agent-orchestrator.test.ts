@@ -1,6 +1,6 @@
+import type { AgentHarnessEvent, BeforeAgentStartEvent } from "@arcadialin/agent-core";
+import { ok } from "@arcadialin/agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { AgentHarnessEvent, BeforeAgentStartEvent } from "@widi/agent-core";
-import { ok } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import {

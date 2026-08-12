@@ -1,5 +1,5 @@
+import type { MessageEntry, SessionTreeEntry } from "@arcadialin/agent-core";
 import { setKeybindings } from "@earendil-works/pi-tui";
-import type { MessageEntry, SessionTreeEntry } from "@widi/agent-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import type { AgentSnapshot } from "../../src/core/agent-types.ts";
@@ -567,7 +567,16 @@ async function createApplication(overrides: Record<string, unknown> = {}) {
 	} as unknown as AgentOrchestrator;
 	const runtime = {
 		orchestrator,
-		services: { cwd: "/repo", agentDir: "/repo/.widi-test-missing", defaultProfile: { id: "default-agent" } },
+		services: {
+			cwd: "/repo",
+			agentDir: "/repo/.widi-test-missing",
+			defaultProfile: { id: "default-agent" },
+			settingManager: {
+				getTheme: () => undefined,
+				setTheme: () => {},
+				getTerminalSettings: () => ({ wheelScrollLines: 3 }),
+			},
+		},
 		diagnostics: [],
 	} as unknown as WidiRuntime;
 	const application = await WidiTuiApplication.create({ cwd: "/repo", runtime });

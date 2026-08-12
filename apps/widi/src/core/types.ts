@@ -1,5 +1,5 @@
+import type { AgentHarnessEvent, AgentHarnessPhase } from "@arcadialin/agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
-import type { AgentHarnessEvent, AgentHarnessPhase } from "@widi/agent-core";
 import type { AgentProfile } from "./agent-profile.js";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
 import type { ExtensionMessage, ExtensionStatus } from "./extension/types.ts";

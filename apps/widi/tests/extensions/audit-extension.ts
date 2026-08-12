@@ -1,4 +1,4 @@
-import type { AgentHarnessEvent } from "@widi/agent-core";
+import type { AgentHarnessEvent } from "@arcadialin/agent-core";
 import type { ExtensionFactory, ExtensionObservedEventName } from "../../src/core/extension/api.ts";
 
 export const AUDIT_EVENT_ENTRY_TYPE = "event";

@@ -1,5 +1,5 @@
-import type { FileError, FileInfo, FileSystem, Result } from "@widi/agent-core";
-import { err, ok, FileError as PiFileError } from "@widi/agent-core";
+import type { FileError, FileInfo, FileSystem, Result } from "@arcadialin/agent-core";
+import { err, ok, FileError as PiFileError } from "@arcadialin/agent-core";
 import { describe, expect, it } from "vitest";
 import type { AgentProfile } from "../../src/core/agent-profile.ts";
 import type { SessionAddress } from "../../src/core/persistence/index.ts";

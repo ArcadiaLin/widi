@@ -7,6 +7,7 @@
  * ConfigValueResolver.
  */
 
+import type { ExecutionEnv } from "@arcadialin/agent-core";
 import type {
 	AuthInteraction,
 	CredentialInfo,
@@ -16,7 +17,6 @@ import type {
 	OAuthLoginCallbacks,
 	Credential as PiCredential,
 } from "@earendil-works/pi-ai";
-import type { ExecutionEnv } from "@widi/agent-core";
 import { AsyncLock } from "../utils/async-lock.ts";
 import { DEFAULT_AGENT_DIR } from "./constants.js";
 import type { CoreDiagnostic } from "./diagnostics.ts";

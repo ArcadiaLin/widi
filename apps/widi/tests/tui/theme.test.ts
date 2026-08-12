@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { PersistentMessageItem } from "../../src/tui/state.ts";
 import {
@@ -144,6 +145,11 @@ describe("theme registry and holder", () => {
 		expect(loadThemes(agentDir)).toEqual([]);
 	});
 
+	it("falls back to the accent hue when a palette names no command color", () => {
+		expect(defaultPalette.command).toBeUndefined();
+		expect(theme.command("x")).toBe(theme.accent("x"));
+	});
+
 	it("restores the default palette on reset", async () => {
 		await writeTheme(agentDir, "hot.json", HOT_PALETTE);
 		loadThemes(agentDir);
@@ -154,5 +160,23 @@ describe("theme registry and holder", () => {
 		expect(getThemeName()).toBe("default");
 		expect(getAllThemes().map((entry) => entry.name)).toEqual(["default"]);
 		expect(theme.palette).toEqual(defaultPalette);
+	});
+});
+
+// The palette WIDI ships in `.widi/themes` is a data file no compiler checks;
+// a typo in one hex string is a warning at startup and a missing theme.
+describe("the shipped prism theme", () => {
+	afterEach(() => {
+		resetThemes();
+	});
+
+	it("loads without diagnostics and paints every role", () => {
+		const repoAgentDir = fileURLToPath(new URL("../../../../.widi", import.meta.url));
+
+		expect(loadThemes(repoAgentDir)).toEqual([]);
+		expect(setTheme("prism")).toBe(true);
+		expect(theme.accent("x")).toContain("38;2;171;158;239");
+		expect(theme.surface("x")).toContain("48;2;42;41;59");
+		expect(theme.command("x")).toContain("38;2;255;216;110");
 	});
 });

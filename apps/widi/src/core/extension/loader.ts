@@ -1,5 +1,6 @@
-import type { ExecutionEnv, FileInfo } from "@widi/agent-core";
+import type { ExecutionEnv, FileInfo } from "@arcadialin/agent-core";
 import { formatError } from "../../utils/errors.ts";
+import type { AgentProfile } from "../agent-profile.js";
 import type { CoreDiagnostic, DiagnosticSeverity } from "../diagnostics.ts";
 import { EXTENSION_API_VERSION, isSupportedExtensionApiVersion, MIN_SUPPORTED_EXTENSION_API_VERSION } from "./api.ts";
 import {
@@ -36,6 +37,13 @@ export interface ExtensionProviderContribution {
 	readonly extensionId: string;
 	readonly providerName: string;
 	readonly config: ExtensionProviderConfig;
+	readonly divisionId?: string;
+}
+
+/** A role an extension ships, registered for as long as the extension is loaded. */
+export interface ExtensionProfileContribution {
+	readonly extensionId: string;
+	readonly profile: AgentProfile;
 	readonly divisionId?: string;
 }
 
@@ -162,6 +170,7 @@ export interface LoadedExtensionScope {
 	diagnostics: readonly CoreDiagnostic[];
 	toolContributions: readonly ExtensionToolContribution[];
 	providerContributions: readonly ExtensionProviderContribution[];
+	profileContributions: readonly ExtensionProfileContribution[];
 	systemPromptContributions: readonly ExtensionSystemPromptContribution[];
 	observerHandlers: ReadonlyMap<ExtensionObservedEventName, readonly ExtensionObserverRegistration[]>;
 	interceptorHandlers: ReadonlyMap<
@@ -236,19 +245,26 @@ export class ExtensionLoader {
 				continue;
 			}
 
-			if (infoResult.value.kind === "directory" && (await hasDirectoryEntry(executionEnv, infoResult.value.path))) {
-				candidates.push({ id: basename(infoResult.value.path), root, path: infoResult.value.path, kind: "directory" });
+			// fileInfo does not follow symlinks, but a symlink is a supported
+			// install layout (install.sh links drill from the preset into the
+			// agent dir). Resolve to the target so discovery sees the real kind
+			// and the entry imports relative to the real location.
+			const info = await followSymlink(executionEnv, infoResult.value);
+			if (!info) continue;
+
+			if (info.kind === "directory" && (await hasDirectoryEntry(executionEnv, info.path))) {
+				candidates.push({ id: basename(info.path), root, path: info.path, kind: "directory" });
 				continue;
 			}
 
-			if (infoResult.value.kind === "directory") {
-				const result = await discoverDirectory(executionEnv, root);
+			if (info.kind === "directory") {
+				const result = await discoverDirectory(executionEnv, root, info.path);
 				candidates.push(...result.candidates);
 				diagnostics.push(...result.diagnostics);
 				continue;
 			}
 
-			const candidate = candidateFromFileInfo(root, infoResult.value);
+			const candidate = await candidateFromFileInfo(executionEnv, root, info);
 			if (candidate) {
 				candidates.push(candidate);
 			}
@@ -408,6 +424,7 @@ export class ExtensionLoader {
 		const diagnostics: CoreDiagnostic[] = [];
 		const toolContributions: ExtensionToolContribution[] = [];
 		const providerContributions: ExtensionProviderContribution[] = [];
+		const profileContributions: ExtensionProfileContribution[] = [];
 		const systemPromptContributions: ExtensionSystemPromptContribution[] = [];
 		const observerHandlers = new Map<ExtensionObservedEventName, ExtensionObserverRegistration[]>();
 		const interceptorHandlers = new Map<
@@ -481,6 +498,7 @@ export class ExtensionLoader {
 				divisionDiagnostics: [],
 				toolContributions,
 				providerContributions,
+				profileContributions,
 				systemPromptContributions,
 				observerHandlers,
 				interceptorHandlers,
@@ -575,6 +593,7 @@ export class ExtensionLoader {
 			diagnostics,
 			toolContributions,
 			providerContributions,
+			profileContributions,
 			systemPromptContributions,
 			observerHandlers,
 			interceptorHandlers,
@@ -862,6 +881,7 @@ interface ExtensionActivationScope {
 	readonly divisionDiagnostics: CoreDiagnostic[];
 	readonly toolContributions: ExtensionToolContribution[];
 	readonly providerContributions: ExtensionProviderContribution[];
+	readonly profileContributions: ExtensionProfileContribution[];
 	readonly systemPromptContributions: ExtensionSystemPromptContribution[];
 	readonly observerHandlers: Map<ExtensionObservedEventName, ExtensionObserverRegistration[]>;
 	readonly interceptorHandlers: Map<
@@ -953,6 +973,16 @@ function createActivationApi(scope: ExtensionActivationScope, divisionId?: strin
 			}
 			scope.providerContributions.push({ extensionId, providerName: normalized, config, divisionId });
 		},
+		registerProfile: (profile) => {
+			const id = profile.id.trim();
+			if (!id) {
+				throw new Error("Extension profile id must not be empty.");
+			}
+			if (!profile.systemPrompt.trim()) {
+				throw new Error(`Extension profile '${id}' must define a system prompt.`);
+			}
+			scope.profileContributions.push({ extensionId, profile: { ...profile, id }, divisionId });
+		},
 		appendSystemPrompt: (text) => {
 			const normalized = text.trim();
 			if (!normalized) {
@@ -1005,11 +1035,12 @@ function normalizeExtensionIds(extensionIds: readonly string[]): string[] {
 async function discoverDirectory(
 	executionEnv: ExecutionEnv,
 	root: ExtensionRoot,
+	directoryPath: string,
 ): Promise<{
 	readonly candidates: readonly ExtensionDiscoveryCandidate[];
 	readonly diagnostics: readonly CoreDiagnostic[];
 }> {
-	const listResult = await executionEnv.listDir(root.path);
+	const listResult = await executionEnv.listDir(directoryPath);
 	if (!listResult.ok) {
 		return {
 			candidates: [],
@@ -1017,7 +1048,7 @@ async function discoverDirectory(
 				createExtensionDiscoveryDiagnostic({
 					code: "extension.list_failed",
 					severity: "error",
-					message: `Failed to list extension source ${root.path}: ${listResult.error.message}`,
+					message: `Failed to list extension source ${directoryPath}: ${listResult.error.message}`,
 					root,
 				}),
 			],
@@ -1026,30 +1057,47 @@ async function discoverDirectory(
 
 	// Sorted within the directory so one root's contents load in a stable order;
 	// the caller keeps roots in their own order rather than sorting across them.
+	const candidates = await Promise.all(listResult.value.map((entry) => candidateFromFileInfo(executionEnv, root, entry)));
 	return {
-		candidates: listResult.value
-			.flatMap((entry) => {
-				const candidate = candidateFromFileInfo(root, entry);
-				return candidate ? [candidate] : [];
-			})
+		candidates: candidates
+			.flatMap((candidate) => (candidate ? [candidate] : []))
 			.sort((left, right) => left.path.localeCompare(right.path)),
 		diagnostics: [],
 	};
 }
 
-function candidateFromFileInfo(root: ExtensionRoot, fileInfo: FileInfo): ExtensionDiscoveryCandidate | undefined {
-	if (fileInfo.kind === "directory") {
-		return { id: basename(fileInfo.path), root, path: fileInfo.path, kind: "directory" };
+/**
+ * fileInfo does not follow symlinks. A dangling link is not a candidate; a
+ * live one is discovered under its real path, so the entry imports relative
+ * to where the files actually live.
+ */
+async function followSymlink(executionEnv: ExecutionEnv, info: FileInfo): Promise<FileInfo | undefined> {
+	if (info.kind !== "symlink") return info;
+	const canonicalPath = await executionEnv.canonicalPath(info.path);
+	if (!canonicalPath.ok) return undefined;
+	const target = await executionEnv.fileInfo(canonicalPath.value);
+	return target.ok ? target.value : undefined;
+}
+
+async function candidateFromFileInfo(
+	executionEnv: ExecutionEnv,
+	root: ExtensionRoot,
+	fileInfo: FileInfo,
+): Promise<ExtensionDiscoveryCandidate | undefined> {
+	const info = await followSymlink(executionEnv, fileInfo);
+	if (!info) return undefined;
+	if (info.kind === "directory") {
+		return { id: basename(info.path), root, path: info.path, kind: "directory" };
 	}
-	if (fileInfo.kind !== "file") {
+	if (info.kind !== "file") {
 		return undefined;
 	}
 
-	const id = extensionFileId(fileInfo.path);
+	const id = extensionFileId(info.path);
 	if (!id) {
 		return undefined;
 	}
-	return { id, root, path: fileInfo.path, kind: "file" };
+	return { id, root, path: info.path, kind: "file" };
 }
 
 function extensionFileId(path: string): string | undefined {

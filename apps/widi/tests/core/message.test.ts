@@ -1,4 +1,4 @@
-import { AgentHarnessError } from "@widi/agent-core";
+import { AgentHarnessError } from "@arcadialin/agent-core";
 import { describe, expect, it, vi } from "vitest";
 import {
 	AGENT_NOTICE_MERGE_KEY,

@@ -8,7 +8,7 @@
 	],
 	"scripts": {
 		"clean": "npm run clean --workspaces",
-		"build": "npm --workspace @widi/agent-core run build && npm --workspace apps/widi run build",
+		"build": "npm --workspace @arcadialin/agent-core run build && npm --workspace apps/widi run build",
 		"check": "biome check --write --error-on-warnings apps/widi/src apps/widi/tests apps/widi/docs packages/agent/src packages/agent/test && tsgo --noEmit -p tsconfig.json",
 		"cli": "npm --workspace apps/widi run cli",
 		"tui": "npm --workspace apps/widi run tui",

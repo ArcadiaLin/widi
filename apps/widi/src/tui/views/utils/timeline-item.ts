@@ -32,7 +32,7 @@ export interface TimelineRenderContext {
 export function renderDeps(item: TimelineItem, context: TimelineRenderContext): readonly unknown[] {
 	switch (item.type) {
 		case "user-message":
-			return [item.text];
+			return [item.text, context.toolOutputExpanded];
 		case "orchestrator-message":
 			return [item.text, item.source.kind, item.source.label, item.editedByHuman, context.toolOutputExpanded];
 		case "assistant-message": {
@@ -43,9 +43,10 @@ export function renderDeps(item: TimelineItem, context: TimelineRenderContext): 
 			return [
 				item.text,
 				item.streaming,
+				item.message?.stopReason,
+				item.message?.errorMessage,
 				liveThinking,
 				livePreparing,
-				context.toolOutputExpanded,
 				...(showsSpinner ? [spinnerTick()] : []),
 			];
 		}
@@ -252,12 +253,15 @@ function commandRowSurface(item: CommandResultItem): (text: string) => string {
 
 export function renderTimelineItem(item: TimelineItem, width: number, context: TimelineRenderContext): string[] {
 	switch (item.type) {
-		case "user-message":
-			return paintRows(
-				new Text(`${theme.bold("❯")} ${boundedText(item.text)}`, 1, 0).render(width),
-				theme.surface,
-				width,
-			);
+		// What the person typed is never summarized away: the bound is only there
+		// so one pasted log cannot make every frame wrap fifty thousand lines, and
+		// expanding lifts it entirely.
+		case "user-message": {
+			const text = context.toolOutputExpanded
+				? sanitizeTerminalText(item.text)
+				: boundedText(item.text, { maxLines: 200, maxCharacters: 30_000 });
+			return paintRows(new Text(`${theme.bold("❯")} ${text}`, 1, 0).render(width), theme.surface, width);
+		}
 		// Everything that entered the model's context without the person typing
 		// it. The source line carries the attribution, so the body is shown
 		// unprefixed even though the model read the prefixed form: repeating
@@ -284,7 +288,15 @@ export function renderTimelineItem(item: TimelineItem, width: number, context: T
 			// A failed run (stopReason "error", e.g. provider timeout after a
 			// model switch) often carries no text at all; without this the
 			// failure is completely invisible in the transcript.
-			const errorMessage = item.message?.stopReason === "error" ? item.message.errorMessage : undefined;
+			const errorMessage =
+				item.message?.stopReason === "error"
+					? item.message.errorMessage
+					: // The model hit its output limit, so the text below stops
+						// mid-sentence through no fault of the transcript. Say so, or the
+						// reply reads as if the model simply chose to stop there.
+						item.message?.stopReason === "length"
+						? "Response was truncated before completion."
+						: undefined;
 			if (!text) {
 				if (errorMessage) {
 					return new Text(`${theme.error("✕")} ${theme.error(singleLine(errorMessage, 400))}`, 1, 0).render(width);
@@ -300,10 +312,10 @@ export function renderTimelineItem(item: TimelineItem, width: number, context: T
 				}
 				return [];
 			}
-			const renderedText = context.toolOutputExpanded
-				? sanitizeTerminalText(text)
-				: boundedText(text, { maxLines: 200, maxCharacters: 30_000 });
-			const lines = new Markdown(renderedText, 1, 0, theme.markdownTheme).render(width);
+			// Unbounded on purpose: the model's own output limit is the bound, and
+			// a reply cut short by the renderer is indistinguishable from one the
+			// model ended there.
+			const lines = new Markdown(sanitizeTerminalText(text), 1, 0, theme.markdownTheme).render(width);
 			if (errorMessage) {
 				lines.push(
 					...new Text(`${theme.error("✕")} ${theme.error(singleLine(errorMessage, 400))}`, 1, 0).render(width),

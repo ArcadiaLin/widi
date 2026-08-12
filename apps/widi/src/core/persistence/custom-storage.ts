@@ -45,7 +45,7 @@
  * failure would then destroy the state of a working extension.
  */
 
-import type { FileSystem } from "@widi/agent-core";
+import type { FileSystem } from "@arcadialin/agent-core";
 import type { PersistenceDiagnostics } from "./utils/diagnostics.ts";
 import type { SessionAddress, SessionKey } from "./utils/layout.ts";
 import type { PersistenceRefOrigin } from "./utils/persistence-ref.ts";

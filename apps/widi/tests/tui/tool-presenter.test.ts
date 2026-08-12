@@ -170,7 +170,7 @@ describe("presentToolExecution", () => {
 		}
 	});
 
-	it("renders a streamed call as preparing, with the verb in accent blue", () => {
+	it("renders a streamed call as preparing, with the verb in the activity hue", () => {
 		const item = toolItem({ toolName: "read", status: "preparing", args: { path: "notes.txt" } });
 
 		const lines = presentToolExecution(item, 80);
@@ -180,8 +180,8 @@ describe("presentToolExecution", () => {
 		expect(rendered).toHaveLength(1);
 		expect(SPINNER_FRAMES).toContain(rendered[0]?.[0]);
 		expect(rendered[0]?.slice(1)).toBe(" Read notes.txt preparing…");
-		// #4899c3 accent on the verb, no preview lines.
-		expect(lines[0]).toContain("38;2;72;153;195");
+		// #7ab9cd info on the verb, no preview lines.
+		expect(lines[0]).toContain("38;2;122;185;205");
 	});
 
 	it("renders a cancelled call dimmed without a preview", () => {

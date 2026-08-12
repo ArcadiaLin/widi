@@ -1,6 +1,7 @@
+import { isAbsolute } from "node:path";
+import type { ExecutionEnv, ThinkingLevel } from "@arcadialin/agent-core";
+import { NodeExecutionEnv } from "@arcadialin/agent-core/node";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
-import type { ExecutionEnv, ThinkingLevel } from "@widi/agent-core";
-import { NodeExecutionEnv } from "@widi/agent-core/node";
 import { formatError } from "../utils/errors.ts";
 import { unwrapResult } from "../utils/result.ts";
 import { AgentOrchestrator, type AgentOrchestratorConfig } from "./agent-orchestrator.js";
@@ -10,6 +11,7 @@ import {
 	BUILTIN_DEFAULT_PROFILE_ID,
 	createBuiltinProfileStorageBackend,
 	createDefaultProfileRoots,
+	ExtensionProfileStorageBackend,
 	type FileProfileRoot,
 	FileProfileStorageBackend,
 	type ProfileStorageBackend,
@@ -65,7 +67,7 @@ export interface CreateWidiRuntimeOptions {
 }
 
 export type RuntimeDefaultProfileSource = "runtime_override" | "settings" | "builtin_fallback";
-export type RuntimeDefaultModelSource = "runtime_override" | "settings" | "available_fallback";
+export type RuntimeDefaultModelSource = "runtime_override" | "settings" | "available_fallback" | "none";
 export type RuntimeDefaultThinkingLevelSource = "runtime_override" | "settings" | "builtin_fallback";
 
 export interface RuntimeDefaultProfileResolution {
@@ -75,8 +77,9 @@ export interface RuntimeDefaultProfileResolution {
 }
 
 export interface RuntimeDefaultModelResolution {
-	readonly provider: string;
-	readonly modelId: string;
+	/** Absent when source is "none": nothing authenticated to name. */
+	readonly provider?: string;
+	readonly modelId?: string;
 	readonly source: RuntimeDefaultModelSource;
 }
 
@@ -168,6 +171,29 @@ async function absolutePath(executionEnv: ExecutionEnv, path: string): Promise<s
 	return unwrapResult(await executionEnv.absolutePath(path));
 }
 
+/**
+ * Where the session store lives, when a settings file has an opinion about it.
+ *
+ * A relative `sessionDir` is resolved against the agent dir rather than the cwd,
+ * because sessions are not project files. Resolving against the working
+ * directory would give one store per directory anyone ever launched from, each
+ * invisible to the others - `/resume` filters by workspace inside a root, so it
+ * cannot offer a session that ended up in a different root. The store stays put
+ * and the workspace becomes a group inside it.
+ *
+ * An explicit `--session-root` is not routed through here: it is typed in a
+ * shell, and a path typed in a shell means what that shell means by it.
+ */
+async function resolveSettingsSessionRoot(
+	executionEnv: ExecutionEnv,
+	agentDir: string,
+	sessionDir: string | undefined,
+): Promise<string> {
+	if (sessionDir === undefined) return await joinPath(executionEnv, [agentDir, DEFAULT_AGENT_PERSISTENCE_DIR]);
+	if (isAbsolute(sessionDir)) return sessionDir;
+	return await joinPath(executionEnv, [agentDir, sessionDir]);
+}
+
 async function createExtensionRoots(options: {
 	readonly executionEnv: ExecutionEnv;
 	readonly cwd: string;
@@ -213,20 +239,27 @@ async function createProfileRegistry(options: {
 	readonly cwd: string;
 	readonly agentDir: string;
 	readonly projectTrusted: boolean;
-}): Promise<{ readonly registry: AgentProfileRegistry; readonly roots: readonly FileProfileRoot[] }> {
+}): Promise<{
+	readonly registry: AgentProfileRegistry;
+	readonly extensionProfiles: ExtensionProfileStorageBackend;
+	readonly roots: readonly FileProfileRoot[];
+}> {
 	const roots = await createDefaultProfileRoots({
 		executionEnv: options.executionEnv,
 		cwd: options.cwd,
 		agentDir: options.agentDir,
 	});
 	const trustedRoots = options.projectTrusted ? roots : roots.filter((root) => root.kind !== "cwd");
+	const extensionProfiles = new ExtensionProfileStorageBackend();
 	return {
 		registry: new AgentProfileRegistry(
 			new CompositeProfileStorageBackend([
 				new FileProfileStorageBackend(options.executionEnv, trustedRoots),
+				extensionProfiles,
 				createBuiltinProfileStorageBackend(),
 			]),
 		),
+		extensionProfiles,
 		roots: trustedRoots,
 	};
 }
@@ -291,16 +324,21 @@ async function resolveDefaultModel(options: {
 	readonly modelRegistry: ModelRegistry;
 	readonly settingManager: SettingManager;
 	readonly explicitDefaultModel?: RuntimeModel;
-}): Promise<{ readonly model: RuntimeModel; readonly resolution: RuntimeDefaultModelResolution }> {
+}): Promise<{
+	readonly model: RuntimeModel | undefined;
+	readonly resolution: RuntimeDefaultModelResolution;
+	readonly diagnostics: readonly CoreDiagnostic[];
+}> {
 	if (options.explicitDefaultModel) {
 		const resolution: RuntimeDefaultModelResolution = {
 			provider: options.explicitDefaultModel.provider,
 			modelId: options.explicitDefaultModel.id,
 			source: "runtime_override",
 		};
-		return { model: options.explicitDefaultModel, resolution };
+		return { model: options.explicitDefaultModel, resolution, diagnostics: [] };
 	}
 
+	const diagnostics: CoreDiagnostic[] = [];
 	const defaultProvider = options.settingManager.getDefaultProvider();
 	const defaultModelId = options.settingManager.getDefaultModel();
 	if (defaultProvider && defaultModelId) {
@@ -311,12 +349,12 @@ async function resolveDefaultModel(options: {
 				modelId: model.id,
 				source: "settings",
 			};
-			return { model, resolution };
+			return { model, resolution, diagnostics };
 		}
-		throw new OrchestratorError({
-			severity: "error",
+		diagnostics.push({
+			severity: "warning",
 			code: "model.default_unavailable",
-			message: `Default model is unavailable: ${defaultProvider}/${defaultModelId}.`,
+			message: `Default model ${defaultProvider}/${defaultModelId} is unavailable: not registered or no auth configured.`,
 		});
 	}
 
@@ -327,20 +365,24 @@ async function resolveDefaultModel(options: {
 			modelId: availableModel.id,
 			source: "available_fallback",
 		};
-		return { model: availableModel, resolution };
+		return { model: availableModel, resolution, diagnostics };
 	}
 
-	throw new OrchestratorError({
-		severity: "error",
-		code: "model.default_missing",
-		message: "No configured model is available. Configure auth or pass an explicit default model.",
+	// No authenticated model is not fatal: the TUI must still start so the
+	// user can /login (OAuth only exists inside it). Spawning refuses later.
+	diagnostics.push({
+		severity: "warning",
+		code: "model.none_available",
+		message:
+			"No model has configured auth. Log in with /login or set a provider API key, then pick a model with /model.",
 	});
+	return { model: undefined, resolution: { source: "none" }, diagnostics };
 }
 
 const DEFAULT_THINKING_LEVEL: ThinkingLevel = "medium";
 
 function resolveDefaultThinkingLevel(options: {
-	readonly model: RuntimeModel;
+	readonly model: RuntimeModel | undefined;
 	readonly explicitDefaultThinkingLevel?: ThinkingLevel;
 	readonly settingsDefaultThinkingLevel?: ThinkingLevel;
 }): { readonly resolution: RuntimeDefaultThinkingLevelResolution } {
@@ -352,7 +394,7 @@ function resolveDefaultThinkingLevel(options: {
 			: options.settingsDefaultThinkingLevel !== undefined
 				? "settings"
 				: "builtin_fallback";
-	const level = clampThinkingLevel(options.model, requestedLevel) as ThinkingLevel;
+	const level = options.model ? (clampThinkingLevel(options.model, requestedLevel) as ThinkingLevel) : requestedLevel;
 	const resolution: RuntimeDefaultThinkingLevelResolution = {
 		level,
 		requestedLevel,
@@ -479,9 +521,7 @@ export async function createWidiRuntime(options: CreateWidiRuntimeOptions): Prom
 	});
 	const sessionRoot = await absolutePath(
 		executionEnv,
-		options.sessionRoot ??
-			settingManager.getSessionDir() ??
-			(await joinPath(executionEnv, [agentDir, DEFAULT_AGENT_PERSISTENCE_DIR])),
+		options.sessionRoot ?? (await resolveSettingsSessionRoot(executionEnv, agentDir, settingManager.getSessionDir())),
 	);
 	const workspaceDiagnostics: CoreDiagnostic[] = [];
 	const workspaces = new WorkspaceRegistry({
@@ -548,6 +588,7 @@ export async function createWidiRuntime(options: CreateWidiRuntimeOptions): Prom
 		settingManager,
 		modelRegistry,
 		profileRegistry,
+		extensionProfiles: profileRegistryResult.extensionProfiles,
 		toolRegistry,
 		extensionLoader,
 		defaultProfileId: defaultProfile.resolution.id,
@@ -589,6 +630,7 @@ export async function createWidiRuntime(options: CreateWidiRuntimeOptions): Prom
 		...authStorage.drainDiagnostics(),
 		...modelRegistry.drainDiagnostics(),
 		...defaultProfile.diagnostics,
+		...defaultModel.diagnostics,
 		...projectExtensionTrustDiagnostics,
 		...extensionLoad.diagnostics,
 		...workspaceDiagnostics,

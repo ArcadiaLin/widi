@@ -1,4 +1,4 @@
-import type { AgentHarnessStreamOptionsPatch } from "@widi/agent-core";
+import type { AgentHarnessStreamOptionsPatch } from "@arcadialin/agent-core";
 import type { ExtensionFactory, ExtensionProviderConfig } from "../../src/core/extension/index.ts";
 
 export interface ProviderExtensionOptions {

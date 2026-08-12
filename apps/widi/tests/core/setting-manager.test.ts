@@ -1,5 +1,12 @@
-import type { ExecutionEnv, ExecutionError, FileError, FileInfo, Result, ShellExecOptions } from "@widi/agent-core";
-import { err, ok, ExecutionError as PiExecutionError, FileError as PiFileError } from "@widi/agent-core";
+import type {
+	ExecutionEnv,
+	ExecutionError,
+	FileError,
+	FileInfo,
+	Result,
+	ShellExecOptions,
+} from "@arcadialin/agent-core";
+import { err, ok, ExecutionError as PiExecutionError, FileError as PiFileError } from "@arcadialin/agent-core";
 import { describe, expect, it } from "vitest";
 import {
 	InMemorySettingsStorage,
@@ -155,6 +162,19 @@ describe("SettingManager", () => {
 		expect(manager.getDefaultProfile()).toBe("project-main");
 		expect(manager.getEnabledProfiles()).toEqual(["project-main"]);
 		expect(manager.getCompactionSettings()).toEqual({ enabled: true, reserveTokens: 1000, keepRecentTokens: 2000 });
+	});
+
+	// pi-tui moves one line per wheel notch, which in a full-screen transcript
+	// reads as a stuck scroll. The default here is what the terminal's own
+	// scrollback does.
+	it("scrolls three lines a wheel notch unless the settings say otherwise", async () => {
+		const byDefault = await SettingManager.fromStorage(new InMemorySettingsStorage({}));
+		expect(byDefault.getTerminalSettings().wheelScrollLines).toBe(3);
+
+		const configured = await SettingManager.fromStorage(
+			new InMemorySettingsStorage({ terminal: { wheelScrollLines: 8 } }),
+		);
+		expect(configured.getTerminalSettings().wheelScrollLines).toBe(8);
 	});
 
 	it("merges extension division rules per extension id", async () => {

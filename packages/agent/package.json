@@ -1,7 +1,6 @@
 {
-	"name": "@widi/agent-core",
+	"name": "@arcadialin/agent-core",
 	"version": "0.83.0",
-	"private": true,
 	"description": "WIDI agent core, forked from @earendil-works/pi-agent-core. The version tracks the upstream release this fork is based on.",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -20,6 +19,7 @@
 	"scripts": {
 		"clean": "shx rm -rf dist",
 		"build": "tsgo -p tsconfig.build.json",
+		"prepublishOnly": "npm run build",
 		"check": "tsgo --noEmit -p tsconfig.build.json",
 		"test": "vitest --run",
 		"test:harness": "vitest --run --config vitest.harness.config.ts",
@@ -39,6 +39,17 @@
 		"transport",
 		"state-management"
 	],
+	"files": [
+		"dist"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ArcadiaLin/widi.git",
+		"directory": "packages/agent"
+	},
 	"author": "Mario Zechner",
 	"license": "MIT",
 	"engines": {

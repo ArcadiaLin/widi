@@ -63,6 +63,22 @@ describe("WidiEditor chrome", () => {
 		const top = editor.render(60)[0] ?? "";
 		expect(top).toContain(paletteSgr(theme.palette.rule));
 	});
+
+	it("paints a recognized command token and leaves an unknown one plain", () => {
+		const editor = createEditor();
+		editor.setCommandRecognizer((name) => name === "model");
+		const commandHue = paletteSgr(theme.palette.command ?? theme.palette.accent);
+
+		editor.setText("/model gpt");
+		expect(editor.render(60)[1]).toContain(commandHue);
+		expect(strip(editor.render(60)[1] ?? "")).toMatch(/^\/model gpt\s+$/u);
+
+		editor.setText("/mode gpt");
+		expect(editor.render(60)[1]).not.toContain(commandHue);
+
+		editor.setText("model gpt");
+		expect(editor.render(60)[1]).not.toContain(commandHue);
+	});
 });
 
 describe("WidiEditor argument completion", () => {

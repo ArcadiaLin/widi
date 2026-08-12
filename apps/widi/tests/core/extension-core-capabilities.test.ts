@@ -5,8 +5,8 @@
  * section 4) is what picked these four.
  */
 
+import type { AgentMessage } from "@arcadialin/agent-core";
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
-import type { AgentMessage } from "@widi/agent-core";
 import { describe, expect, it } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import type { ExtensionObservedEventName } from "../../src/core/extension/api.ts";

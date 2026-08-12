@@ -1,4 +1,4 @@
-import { calculateContextTokens, getLastAssistantUsage } from "@widi/agent-core";
+import { calculateContextTokens, getLastAssistantUsage } from "@arcadialin/agent-core";
 import { formatError } from "../utils/errors.ts";
 import type { OrchestratorDiagnostic } from "./diagnostics.ts";
 import { modelReference } from "./model-registry.js";

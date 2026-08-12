@@ -104,6 +104,9 @@ export type {
 	ToolSource,
 } from "./types.ts";
 export {
+	// Exhaustive by construction, and exported so a consumer counting coverage
+	// checks against the same list the dispatcher does rather than a copy.
+	EXTENSION_OBSERVED_EVENT_NAMES,
 	MAX_EXTENSION_MESSAGE_BYTES,
 	MAX_EXTENSION_MESSAGE_KIND_BYTES,
 	MAX_EXTENSION_NOTIFICATION_BYTES,

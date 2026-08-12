@@ -7,7 +7,7 @@
  * what the definition declares - it never learns what a counter is.
  */
 
-import type { SessionTreeEntry } from "@widi/agent-core";
+import type { SessionTreeEntry } from "@arcadialin/agent-core";
 import { describe, expect, it } from "vitest";
 import type {
 	CustomStorage,

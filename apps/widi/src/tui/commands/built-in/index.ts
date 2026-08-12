@@ -17,6 +17,7 @@ import { renameCommand } from "./rename.ts";
 import { resumeCommand } from "./resume.ts";
 import { skillCommand } from "./skill.ts";
 import { statusCommand } from "./status.ts";
+import { themeCommand } from "./theme.ts";
 import { thinkingCommand } from "./thinking.ts";
 import { treeCommand } from "./tree.ts";
 import { workspaceCommand } from "./workspace.ts";
@@ -35,7 +36,7 @@ export function widiCommands(host: CommandHost): readonly CommandDefinition[] {
 		forkCommand(host),
 		loginCommand,
 		logoutCommand,
-		modelCommand,
+		modelCommand(host),
 		thinkingCommand,
 		renameCommand,
 		reloadCommand,
@@ -50,6 +51,7 @@ export function widiCommands(host: CommandHost): readonly CommandDefinition[] {
 		clearCommand(host),
 		diagnosticsCommand(host),
 		disposeCommand(host),
+		themeCommand(host),
 		workspaceCommand(host),
 	];
 }

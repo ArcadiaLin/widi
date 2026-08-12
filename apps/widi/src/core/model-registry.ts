@@ -2,6 +2,7 @@
  * Model registry - manages built-in and custom models, resolves request auth.
  */
 
+import type { ExecutionEnv, ThinkingLevel } from "@arcadialin/agent-core";
 import {
 	type AnthropicMessagesCompat,
 	type Api,
@@ -45,7 +46,6 @@ import { openAICodexResponsesApi } from "@earendil-works/pi-ai/api/openai-codex-
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { builtinProviders, getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
-import type { ExecutionEnv, ThinkingLevel } from "@widi/agent-core";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";

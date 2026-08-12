@@ -1,4 +1,4 @@
-import type { NavigateTreeResult } from "@widi/agent-core";
+import type { NavigateTreeResult } from "@arcadialin/agent-core";
 import type { AgentSessionTreeSnapshot } from "../../../core/session-manager.ts";
 import { commandHeadline, commandPreviewLines, type PresentCommandOptions } from "../../command-presenter.ts";
 import { TreeNavigationSelector } from "../../selectors/tree-navigation.ts";

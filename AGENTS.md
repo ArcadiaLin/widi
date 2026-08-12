@@ -7,13 +7,13 @@
 Workspace packages:
 
 - `apps/widi`: WIDI terminal coding harness. This is the active product code.
-- `packages/agent`: `@widi/agent-core`, a fork of `@earendil-works/pi-agent-core` vendored at pi `v0.83.0`.
+- `packages/agent`: `@arcadialin/agent-core`, a fork of `@earendil-works/pi-agent-core` vendored at pi `v0.83.0`.
 
 `@earendil-works/pi-ai` and `@earendil-works/pi-tui` are ordinary dependencies installed from the registry at exact versions. They are not workspace packages and their source is not in this repository.
 
 The upstream pi repository is no longer part of this repository. Clone it into `reference/pi` (gitignored, never built, safe to pull or check out at any ref) when you need upstream history for a cherry-pick or the reference implementation (`packages/coding-agent`) that WIDI calibrates behavior against. The vendored baseline is recorded in `docs/pi-fork.md`, not in a submodule pointer.
 
-`pi-agent-harness` specifically refers to `packages/agent/src/harness`, the harness module inside `@widi/agent-core`.
+`pi-agent-harness` specifically refers to `packages/agent/src/harness`, the harness module inside `@arcadialin/agent-core`.
 
 Why the fork exists, its complete divergence from upstream, the invariants that keep it working, and the re-sync conditions: `docs/pi-fork.md`. Read it before changing anything under `packages/agent`, the pi dependency versions, or `biome.json`.
 
@@ -28,7 +28,7 @@ Why the fork exists, its complete divergence from upstream, the invariants that 
 
 - Root package: private ESM package named `widi`.
 - Node engine: `>=22.19.0`.
-- Root TypeScript config maps `@widi/agent-core` imports to `packages/agent/src`; `pi-ai` and `pi-tui` resolve from `node_modules` through their published type declarations.
+- Root TypeScript config maps `@arcadialin/agent-core` imports to `packages/agent/src`; `pi-ai` and `pi-tui` resolve from `node_modules` through their published type declarations.
 - Root check covers `packages/agent/{src,test}` and `apps/widi/{src,tests}`. The app's own `check` script only sees the app, and the app's `tsconfig.build.json` deliberately has no path mappings so it resolves exactly what the runtime resolves.
 - Root `biome.json` partitions formatting: `apps/**` uses WIDI's defaults (tab, width 2, line width 80), `packages/agent/**` keeps upstream's settings (tab, width 3, line width 120) plus upstream's lint relaxations. Never reformat `packages/agent` into WIDI style.
 - `apps/widi` builds from `src` to `dist` with `tsgo`.
@@ -42,7 +42,7 @@ Why the fork exists, its complete divergence from upstream, the invariants that 
 
 `apps/widi` depends on:
 
-- Agent core: `@widi/agent-core` (workspace).
+- Agent core: `@arcadialin/agent-core` (workspace).
 - Pi packages from the registry, pinned exactly: `@earendil-works/pi-ai`, `@earendil-works/pi-tui`.
 - Model/runtime packages: `openai`, `@anthropic-ai/sandbox-runtime`.
 - Config/schema utilities: `dotenv`, `smol-toml`, `typebox`.
@@ -93,7 +93,7 @@ Useful package commands:
 npm --workspace apps/widi run build
 npm --workspace apps/widi run check
 npm --workspace apps/widi run test
-npm --workspace @widi/agent-core run test
+npm --workspace @arcadialin/agent-core run test
 npm run test                                  # both workspaces
 ```
 

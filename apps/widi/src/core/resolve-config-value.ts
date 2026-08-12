@@ -1,4 +1,4 @@
-import type { ExecutionEnv } from "@widi/agent-core";
+import type { ExecutionEnv } from "@arcadialin/agent-core";
 
 export type MaybePromise<T> = T | Promise<T>;
 export type GetEnv = (name: string) => MaybePromise<string | undefined>;

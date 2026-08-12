@@ -1,4 +1,4 @@
-import type { MessageEntry, SessionTreeEntry } from "@widi/agent-core";
+import type { MessageEntry, SessionTreeEntry } from "@arcadialin/agent-core";
 import { describe, expect, it } from "vitest";
 import type { AgentSessionTreeSnapshot } from "../../src/core/session-manager.ts";
 import { buildSessionEntryRows, findSessionEntryRow, userMessageHeadline } from "../../src/tui/session-tree.ts";

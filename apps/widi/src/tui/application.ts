@@ -14,7 +14,7 @@ import { DEFAULT_AGENT_DIR } from "../core/constants.js";
 import { type OrchestratorDiagnostic, OrchestratorError } from "../core/diagnostics.ts";
 import { type MessageSink, messageBindingFor } from "../core/message.ts";
 import { createWidiRuntime, type WidiRuntime } from "../core/runtime-service.ts";
-import type { AgentActivitySnapshot, CandidateItem, OrchestratorEvent } from "../core/types.ts";
+import type { AgentActivitySnapshot, CandidateItem, OrchestratorEvent, RuntimeModel } from "../core/types.ts";
 import { copyToClipboard } from "../utils/clipboard.ts";
 import { forkSourceAgentId } from "./agent-identity.ts";
 import { buildAgentTree, flattenAgentTree } from "./agent-tree.ts";
@@ -60,7 +60,7 @@ import {
 	topDockedFocus,
 } from "./state.ts";
 import { flushStreaming, STREAM_FLUSH_MS } from "./streaming-flush.ts";
-import { loadThemes, theme } from "./theme/theme.ts";
+import { getAllThemes, loadThemes, setTheme, theme } from "./theme/theme.ts";
 import { AgentStripView } from "./views/agent-strip.ts";
 import { WidiEditor } from "./views/editor.ts";
 import { HumanRequestMenu } from "./views/human-request.ts";
@@ -185,6 +185,8 @@ export class WidiTuiApplication {
 				await this.beginNewSession(sourceAgentId);
 			},
 			setWorkspace: async (path) => await this.setPendingWorkspace(path),
+			setPendingModel: (model) => this.setPendingModel(model),
+			setTheme: (name) => this.applyTheme(name),
 			disposeAgent: async (agentId) => {
 				await this.disposeAgent(agentId);
 			},
@@ -209,13 +211,27 @@ export class WidiTuiApplication {
 		// they exist; the constructor starts on defaults.
 		setKeybindings(createWidiKeybindings());
 		this.userConfigDiagnostics.push(...loadThemes(runtime.services.agentDir));
-		this.tui = new TuiAltScreen(new ProcessTerminal());
+		// Before the editor is built: it captures the editor sub-theme, and while
+		// that reference is live, starting on the wrong palette would still paint
+		// one frame in it.
+		const savedTheme = runtime.services.settingManager.getTheme();
+		if (savedTheme !== undefined && !setTheme(savedTheme)) {
+			this.userConfigDiagnostics.push({
+				severity: "warning",
+				code: "theme.unknown",
+				message: `Settings name the theme "${savedTheme}", which no themes directory provides; the default is used.`,
+			});
+		}
+		this.tui = new TuiAltScreen(new ProcessTerminal(), undefined, undefined, {
+			wheelScrollLines: runtime.services.settingManager.getTerminalSettings().wheelScrollLines,
+		});
 		this.editor = new WidiEditor(this.tui, theme.editorTheme, { autocompleteMaxVisible: 8 });
 		this.editor.onExtensionShortcut = (data) => this.extensionHost?.handleShortcut(data) ?? false;
 		this.editor.setArgumentHintProvider((text) => {
 			const name = /^\/(\S+)\s*$/.exec(text)?.[1];
 			return name ? this.engine.get(name)?.argumentHint : undefined;
 		});
+		this.editor.setCommandRecognizer((name) => this.engine.get(name) !== undefined);
 		this.humanRequests = new HumanRequestMenu({
 			host: this.tui,
 			state: this.state,
@@ -781,7 +797,14 @@ export class WidiTuiApplication {
 		await this.extensionHost?.dispose();
 		try {
 			await this.orchestrator.disposeAll(reason);
-			await Promise.allSettled([...this.lifecycleTasks, ...this.pendingTasks]);
+			// Bounded, because a tracked task is not always one that ends. A command
+			// that waits on a person - an extension walking someone through
+			// something - is still pending when they decide to quit, and waiting on
+			// it forever would make exit the one thing they cannot do.
+			await Promise.race([
+				Promise.allSettled([...this.lifecycleTasks, ...this.pendingTasks]),
+				delay(SHUTDOWN_TASK_GRACE_MS),
+			]);
 			await this.orchestrator.disposeAll(`${reason} (final cleanup)`);
 		} catch {
 			// Shutdown is best-effort; terminal restoration is mandatory.
@@ -978,8 +1001,7 @@ export class WidiTuiApplication {
 
 		let agentId = initialAgentId;
 		const materializesPendingAgent =
-			!agentId &&
-			(!parsed || !matchedCommand || (matchedCommand.agentPolicy === "materialize" && parsed.argument.trim() !== ""));
+			!agentId && (!parsed || !matchedCommand || materializesOnSubmit(matchedCommand, parsed.argument));
 		if (materializesPendingAgent) {
 			agentId = await this.materializePendingAgent(rawText);
 			if (!agentId) return;
@@ -1650,6 +1672,12 @@ export class WidiTuiApplication {
 	 * instruction files load - and because being asked about a project after
 	 * typing the first message is too late to be a decision.
 	 */
+	private setPendingModel(model: RuntimeModel): string {
+		this.pendingAgents.setModel(model);
+		this.tui.requestRender();
+		return `Staged session will use ${model.provider}/${model.id}`;
+	}
+
 	private async setPendingWorkspace(path: string): Promise<string> {
 		if (!this.state.pendingAgent) throw new Error("There is no staged session to move.");
 		const resolved = await this.orchestrator.executionEnv.absolutePath(path);
@@ -1666,6 +1694,24 @@ export class WidiTuiApplication {
 		return workspace.trust.trusted
 			? `Staged session will open in ${workspace.cwd}`
 			: `Staged session will open in ${workspace.cwd} (untrusted: project-local settings, profiles, skills and prompts stay disabled)`;
+	}
+
+	/**
+	 * /theme: repaint in a registered scheme and remember the choice.
+	 *
+	 * Every view paints through the live `theme` holder, so the switch itself is
+	 * one assignment; the render that follows is what makes it visible.
+	 */
+	private applyTheme(name: string): string {
+		if (!setTheme(name)) {
+			const known = getAllThemes()
+				.map((entry) => entry.name)
+				.join(", ");
+			throw new Error(`Unknown theme "${name}". Registered: ${known}`);
+		}
+		this.runtime.services.settingManager.setTheme(name);
+		this.tui.requestRender();
+		return `Theme set to ${name}`;
 	}
 
 	/**
@@ -1940,7 +1986,10 @@ export class WidiTuiApplication {
 	private addStartupSummary(): void {
 		// The one-line summary is always synthesized from the resolved services.
 		const services = this.runtime.services;
-		const text = `${services.defaultProfile.id} · ${services.defaultModel.provider}/${services.defaultModel.modelId} · thinking ${services.defaultThinkingLevel.level}`;
+		const modelText = services.defaultModel.provider
+			? `${services.defaultModel.provider}/${services.defaultModel.modelId}`
+			: "no model";
+		const text = `${services.defaultProfile.id} · ${modelText} · thinking ${services.defaultThinkingLevel.level}`;
 		this.state.globalNotices.push({
 			id: "startup:summary",
 			kind: "startup",
@@ -2172,6 +2221,30 @@ export class WidiTuiApplication {
 export async function runWidiTui(options: WidiTuiOptions): Promise<void> {
 	const application = await WidiTuiApplication.create(options);
 	await application.run();
+}
+
+/** How long shutdown gives in-flight tasks to settle before it stops waiting. */
+const SHUTDOWN_TASK_GRACE_MS = 2_000;
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Whether submitting this command should start the staged session.
+ *
+ * A `materialize` command needs an agent to act on, but its bare form is often a
+ * picker rather than the command itself: `/model` with nothing after it asks
+ * which model, and spawning a session to answer a question the human may cancel
+ * would charge them for the question. So the test is not whether an argument was
+ * typed, it is whether the engine will run the command or stop to ask for one -
+ * the same predicate the engine itself uses to answer `needs-argument`. A
+ * command that takes no argument at all therefore materializes on a bare submit,
+ * which is the only way one can ever run from a cold start.
+ */
+function materializesOnSubmit(command: CommandDefinition, argument: string): boolean {
+	if (command.agentPolicy !== "materialize") return false;
+	return argument.trim() !== "" || (command.requiresArgument !== true && command.complete === undefined);
 }
 
 /** Somewhere the user can be put: still in the runtime, and past its build. */

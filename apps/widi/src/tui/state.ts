@@ -1,5 +1,5 @@
+import type { AgentHarnessEvent } from "@arcadialin/agent-core";
 import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
-import type { AgentHarnessEvent } from "@widi/agent-core";
 import type { AgentSnapshot } from "../core/agent-types.ts";
 import type { OrchestratorDiagnostic } from "../core/diagnostics.ts";
 import type { ExtensionMessage, ExtensionStatusSnapshot } from "../core/extension/api.ts";
@@ -236,7 +236,8 @@ export type PendingAgentStart = {
 	readonly cwd: string;
 } & (
 	| { readonly kind: "default" }
-	| { readonly kind: "new-session"; readonly profileId: string; readonly model: RuntimeModel }
+	/** model is absent only while the runtime has no authenticated model at all. */
+	| { readonly kind: "new-session"; readonly profileId: string; readonly model: RuntimeModel | undefined }
 );
 
 export interface PendingAgentViewState {
@@ -247,7 +248,7 @@ export interface PendingAgentViewState {
 		readonly profileId: string;
 		readonly profileLabel: string;
 		readonly cwd: string;
-		model: RuntimeModel;
+		model: RuntimeModel | undefined;
 		thinkingLevel?: string;
 		sessionName?: string;
 	};

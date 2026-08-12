@@ -77,16 +77,29 @@ export function presentCommandResult(
 	return fallbackLines(item, usableWidth, options);
 }
 
-/** The unregistered rendering: the formatResult display, else the raw value. */
+/**
+ * The unregistered rendering, in the same frame a registered presenter builds
+ * from: the outcome glyph, the name, and the answer. A one-line answer rides
+ * the headline - a command whose whole result is "Theme set to prism" should
+ * not cost two rows - and anything longer becomes the dim body under it.
+ *
+ * A command that answers with nothing renders nothing, and the row disappears.
+ * That is a command's own choice to make (/exit has nowhere to draw), so it is
+ * left as one rather than forced into an empty frame here.
+ */
 function fallbackLines(item: CommandResultItem, width: number, options: PresentCommandOptions): string[] {
-	if (item.display !== undefined) {
-		const display = options.expanded ? sanitizeTerminalText(item.display) : boundedText(item.display);
-		return [theme.dim(`/${item.name}`), ...display.split("\n")].map((line) => truncateToWidth(line, width, "…"));
+	const answer = item.display ?? (item.result === undefined ? undefined : formatUnknown(item.result));
+	if (answer === undefined) return [];
+	const text = options.expanded ? sanitizeTerminalText(answer) : boundedText(answer);
+	const lines = text.split("\n");
+	if (lines.length <= 1) {
+		const suffix = lines[0]?.trim();
+		return [truncateToWidth(commandHeadline(item.name, suffix ? ` ${suffix}` : undefined), width, "…")];
 	}
-	if (item.result === undefined) return [];
-	return [theme.dim(`/${item.name}`), ...formatUnknown(item.result).split("\n")].map((line) =>
-		truncateToWidth(line, width, "…"),
-	);
+	return [
+		truncateToWidth(commandHeadline(item.name), width, "…"),
+		...lines.map((line) => theme.dim(truncateToWidth(line, width, "…"))),
+	];
 }
 
 // --- Shared row idioms ------------------------------------------------------
@@ -96,7 +109,7 @@ function fallbackLines(item: CommandResultItem, width: number, options: PresentC
 // dim preview instead of re-deriving the paint.
 
 export function commandHeadline(name: string, suffix?: string): string {
-	return `${theme.ok("✓")} ${theme.bold(theme.accent(`/${name}`))}${suffix ? theme.dim(suffix) : ""}`;
+	return `${theme.ok("✓")} ${theme.bold(theme.command(`/${name}`))}${suffix ? theme.dim(suffix) : ""}`;
 }
 
 /** Dim preview body with collapsed/expanded line budgets, after the tool rows. */

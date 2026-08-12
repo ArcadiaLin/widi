@@ -5,7 +5,7 @@
  * the surface is built, not what it is for.
  */
 
-import type { ThinkingLevel } from "@widi/agent-core";
+import type { ThinkingLevel } from "@arcadialin/agent-core";
 import type { HumanRequestDraft, HumanResponse } from "./human-request.ts";
 import type { AgentNotice, MessageDeliveryMode, MessageSendOutcome } from "./message.ts";
 import type { AgentAbortOrigin, AgentActivity, AgentId, AgentIdleReason } from "./types.ts";

@@ -12,7 +12,7 @@
   ],
   "steeringMode": "one-at-a-time",
   "followUpMode": "one-at-a-time",
-  "theme": "dark",
+  "theme": "prism",
   "compaction": {
     "enabled": true,
     "reserveTokens": 16384,
@@ -43,7 +43,9 @@
   ],
   "packages": [],
   "extensions": [],
-  "enabledExtensions": [],
+  "enabledExtensions": [
+    "drill"
+  ],
   "extensionDivisions": {},
   "skills": [],
   "prompts": [],
@@ -74,7 +76,6 @@
   "warnings": {
     "anthropicExtraUsage": true
   },
-  "sessionDir": ".widi/runs",
   "httpProxy": "",
   "httpIdleTimeoutMs": 300000,
   "websocketConnectTimeoutMs": 15000

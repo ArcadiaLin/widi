@@ -6,7 +6,7 @@
  * or a runtime.
  */
 
-import type { SessionTreeEntry } from "@widi/agent-core";
+import type { SessionTreeEntry } from "@arcadialin/agent-core";
 import { describe, expect, it } from "vitest";
 import {
 	contentHash,

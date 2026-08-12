@@ -22,8 +22,8 @@
  * nobody has open yet.
  */
 
-import type { FileInfo, JsonlSessionMetadata, SessionTreeEntry } from "@widi/agent-core";
-import { createTimestamp, getFileSystemResultOrThrow, SessionError, toError } from "@widi/agent-core";
+import type { FileInfo, JsonlSessionMetadata, SessionTreeEntry } from "@arcadialin/agent-core";
+import { createTimestamp, getFileSystemResultOrThrow, SessionError, toError } from "@arcadialin/agent-core";
 import type {
 	CustomStorage,
 	PersistenceFileSystem,

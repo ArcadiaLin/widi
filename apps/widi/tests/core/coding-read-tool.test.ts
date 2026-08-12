@@ -1,4 +1,4 @@
-import type { AgentToolResult } from "@widi/agent-core";
+import type { AgentToolResult } from "@arcadialin/agent-core";
 import { describe, expect, it } from "vitest";
 import { createAgentHarnessToolFromResolvedTool, ToolRegistry } from "../../src/core/tool-registry.ts";
 import {

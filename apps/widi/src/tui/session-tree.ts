@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
+import type { MessageEntry, SessionTreeEntry } from "@arcadialin/agent-core";
 import type { TextContent, UserMessage } from "@earendil-works/pi-ai";
-import type { MessageEntry, SessionTreeEntry } from "@widi/agent-core";
 import type { AgentSessionTreeSnapshot } from "../core/session-manager.ts";
 import { singleLine } from "./format.ts";
 

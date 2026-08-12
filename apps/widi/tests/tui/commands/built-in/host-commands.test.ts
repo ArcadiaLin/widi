@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentOrchestrator } from "../../../../src/core/agent-orchestrator.ts";
+import type { RuntimeModel } from "../../../../src/core/types.ts";
 import { widiCommands } from "../../../../src/tui/commands/built-in/index.ts";
 import { CommandEngine } from "../../../../src/tui/commands/engine.ts";
 import { DiagnosticsLog } from "../../../../src/tui/diagnostics-log.ts";
@@ -13,6 +14,7 @@ function setup(status: "idle" | "running" = "idle") {
 		newSessionCalls: [] as Array<string | undefined>,
 		disposeAgentCalls: [] as string[],
 		workspaceCalls: [] as string[],
+		themeCalls: [] as string[],
 		copied: [] as string[],
 		diagnostics: new DiagnosticsLog(),
 		quit() {
@@ -33,6 +35,13 @@ function setup(status: "idle" | "running" = "idle") {
 		async setWorkspace(path: string) {
 			this.workspaceCalls.push(path);
 			return `Staged session will open in ${path}`;
+		},
+		setPendingModel(model: RuntimeModel) {
+			return `Staged session will use ${model.provider}/${model.id}`;
+		},
+		setTheme(name: string) {
+			this.themeCalls.push(name);
+			return `Theme set to ${name}`;
 		},
 		async copyText(text: string) {
 			this.copied.push(text);
@@ -201,5 +210,44 @@ describe("/workspace", () => {
 			available: false,
 			unavailableReason: expect.stringContaining("has not started yet"),
 		});
+	});
+});
+
+describe("/theme", () => {
+	it("switches through the host and completes with the registered themes", async () => {
+		const { engine, host, context } = setup();
+
+		const outcome = await engine.handleInput("/theme default", context);
+
+		expect(outcome).toMatchObject({ kind: "executed", name: "theme", value: "Theme set to default" });
+		expect(host.themeCalls).toEqual(["default"]);
+
+		const candidates = await engine.get("theme")?.complete?.(context, "");
+		expect(candidates).toEqual([{ value: "default", description: "active" }]);
+	});
+});
+
+// A command that answers with nothing renders no row, and a person cannot tell
+// that from a keystroke the editor dropped. /exit is the one exception: it is
+// leaving, and there is no transcript left to draw in.
+describe("every command answers", () => {
+	it("returns something to show for the commands that retire their own agent", async () => {
+		const { engine, context } = setup();
+
+		for (const input of ["/clear", "/dispose", "/new main"]) {
+			const outcome = await engine.handleInput(input, context);
+			expect(outcome).toMatchObject({ kind: "executed" });
+			if (outcome.kind !== "executed") continue;
+			expect(typeof outcome.value).toBe("string");
+			expect(outcome.value).not.toBe("");
+		}
+	});
+
+	it("leaves /exit with nothing to say", async () => {
+		const { engine, context } = setup();
+
+		const outcome = await engine.handleInput("/exit", context);
+
+		expect(outcome).toMatchObject({ kind: "executed", name: "exit", value: undefined });
 	});
 });

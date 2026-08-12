@@ -18,7 +18,7 @@
  * written first and leaves only collectable garbage if the ref never lands.
  */
 
-import type { SessionTreeEntry } from "@widi/agent-core";
+import type { SessionTreeEntry } from "@arcadialin/agent-core";
 import { isContentHash } from "./content-hash.ts";
 
 export const PERSISTENCE_REF_CUSTOM_TYPE = "widi:persistence-ref";

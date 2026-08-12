@@ -40,13 +40,18 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		expect(harness.promptAgent).toHaveBeenCalledWith(expect.objectContaining({ targetAgentId: "main", body: "hello" }));
 	});
 
-	it("spawns and persists a setting command before the first prompt", async () => {
+	it("stages the picked model on the pending session before the first prompt", async () => {
 		const harness = await createApplicationHarness();
 
 		await submit(harness.application, "/model:test/next-model");
 
-		expect(harness.spawnAgent).toHaveBeenCalledTimes(1);
-		expect(harness.setAgentModelByReference).toHaveBeenCalledWith("main", "test/next-model");
+		// No agent exists yet, so there is nothing to retarget: the model lands
+		// on the staged session and becomes the runtime default, and spawning
+		// waits for the first prompt.
+		expect(harness.spawnAgent).not.toHaveBeenCalled();
+		expect(harness.resolveModelByReference).toHaveBeenCalledWith("test/next-model");
+		expect(harness.setDefaultModel).toHaveBeenCalled();
+		expect(harness.setAgentModelByReference).not.toHaveBeenCalled();
 		expect(harness.promptAgent).not.toHaveBeenCalled();
 	});
 
@@ -68,6 +73,40 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		expect(harness.spawnAgent).toHaveBeenCalledTimes(1);
 		expect(harness.setAgentSessionName).toHaveBeenCalledWith("main", "planned session");
 		expect(harness.promptAgent).not.toHaveBeenCalled();
+	});
+
+	// A command with nothing to ask for never reaches the engine's needs-argument
+	// exit, so a bare submit is the only form it has. Refusing to materialize on
+	// it would leave the command unreachable until the human had paid for a turn.
+	it("spawns for an argument-less setting command on a cold start", async () => {
+		const harness = await createApplicationHarness();
+		const ran = vi.fn();
+		(harness.application as unknown as { engine: CommandEngine }).engine.register({
+			kind: "action",
+			agentPolicy: "materialize",
+			name: "rehearse",
+			description: "needs an agent, asks for nothing",
+			execute: async () => {
+				ran();
+				return "done";
+			},
+		});
+
+		await submit(harness.application, "/rehearse");
+
+		expect(harness.spawnAgent).toHaveBeenCalledTimes(1);
+		expect(ran).toHaveBeenCalledTimes(1);
+		expect(harness.promptAgent).not.toHaveBeenCalled();
+	});
+
+	// The counter-case the rule exists for: a bare picker must not cost a session
+	// to answer a question the human can still cancel.
+	it("does not spawn when a bare setting command only opens its picker", async () => {
+		const harness = await createApplicationHarness();
+
+		await submit(harness.application, "/model");
+
+		expect(harness.spawnAgent).not.toHaveBeenCalled();
 	});
 
 	it("keeps the current agent on /new and stages a second one beside it", async () => {
@@ -1261,6 +1300,7 @@ async function createApplicationHarness(options: { agentDir?: string; extensionL
 		},
 	}));
 	const setAgentModelByReference = vi.fn(async () => runtimeModel);
+	const resolveModelByReference = vi.fn(async () => runtimeModel);
 	const setDefaultModel = vi.fn(() => {});
 	const setAgentThinkingLevelByName = vi.fn(async () => "high");
 	const setAgentSessionName = vi.fn(async () => {});
@@ -1292,6 +1332,7 @@ async function createApplicationHarness(options: { agentDir?: string; extensionL
 		// The shell holds one sink; every submit path goes through it.
 		messageSinkFor,
 		setAgentModelByReference,
+		resolveModelByReference,
 		setDefaultModel,
 		setAgentThinkingLevelByName,
 		setAgentSessionName,
@@ -1327,6 +1368,11 @@ async function createApplicationHarness(options: { agentDir?: string; extensionL
 		services: {
 			cwd: "/workspace",
 			workspaces: { startup: { cwd: "/workspace" }, resolve: async (cwd: string) => ({ cwd }) },
+			settingManager: {
+				getTheme: () => undefined,
+				setTheme: () => {},
+				getTerminalSettings: () => ({ wheelScrollLines: 3 }),
+			},
 			agentDir: options.agentDir ?? "/workspace/.widi-test-missing",
 			defaultProfile: { id: "main", source: "builtin_fallback", profileSource: { kind: "builtin" } },
 			defaultModel: { provider: runtimeModel.provider, modelId: runtimeModel.id, source: "runtime_override" },
@@ -1356,6 +1402,8 @@ async function createApplicationHarness(options: { agentDir?: string; extensionL
 		disposeAgent,
 		inspectAgent,
 		setAgentModelByReference,
+		resolveModelByReference,
+		setDefaultModel,
 		setAgentThinkingLevelByName,
 		setAgentSessionName,
 	};

@@ -1,4 +1,4 @@
-import type { ExecutionEnv, FileError, FileInfo } from "@widi/agent-core";
+import type { ExecutionEnv, FileError, FileInfo } from "@arcadialin/agent-core";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { formatError } from "../utils/errors.ts";
 import { DEFAULT_AGENT_DIR, DEFAULT_PROFILE_DIR, DEFAULT_PROFILE_FILE_EXTENSION } from "./constants.js";
@@ -48,7 +48,7 @@ export type AgentProfileDiagnosticCode =
 
 export type AgentProfileDiagnosticSeverity = DiagnosticSeverity;
 
-export type AgentProfileSourceKind = "cwd" | "agent_dir" | "memory" | "builtin";
+export type AgentProfileSourceKind = "cwd" | "agent_dir" | "memory" | "builtin" | "extension";
 
 export type AgentProfileSource = {
 	readonly kind: AgentProfileSourceKind;
@@ -401,6 +401,88 @@ export class InMemoryProfileStorageBackend implements ProfileStorageBackend {
 					severity: "error",
 					code: "profile.read_failed",
 					message: `Unknown profile storage entry: ${entryId}`,
+				}),
+			};
+		}
+		return { ok: true, entry: item.entry, content: item.content };
+	}
+}
+
+/**
+ * Above the built-in default and below anything the user wrote: an extension may
+ * ship a role, and a file of the user's with the same id still shadows it.
+ */
+export const EXTENSION_PROFILE_PRIORITY = 50;
+
+/**
+ * Profiles registered by extensions at activation.
+ *
+ * Leased per agent, exactly like an extension's provider registration: every
+ * runtime that activates the extension renews the same entry, and the profile
+ * survives until the last of them is gone. That is what makes it usable at all -
+ * an agent spawned on the profile activates the extension again and renews the
+ * lease it is standing on.
+ */
+export class ExtensionProfileStorageBackend implements ProfileStorageBackend {
+	private readonly entries: Map<string, { entry: ProfileStorageEntry; content: string; holders: Set<string> }> =
+		new Map();
+
+	/** Register or renew one profile for one agent; true when the table changed. */
+	register(extensionId: string, agentId: string, profile: AgentProfile): boolean {
+		const entryId = `extension:${extensionId}:${profile.id}`;
+		const content = serializeProfile(profile);
+		const existing = this.entries.get(entryId);
+		if (existing) {
+			const added = !existing.holders.has(agentId);
+			existing.holders.add(agentId);
+			// A reload can change what the same extension declares, so the content
+			// is replaced rather than assumed stable across leases.
+			if (existing.content === content) return added;
+			this.entries.set(entryId, { entry: existing.entry, content, holders: existing.holders });
+			return true;
+		}
+		this.entries.set(entryId, {
+			entry: {
+				entryId,
+				source: { kind: "extension", priority: EXTENSION_PROFILE_PRIORITY, label: extensionId },
+				displayName: `${profile.id}.md`,
+				filenameId: profile.id,
+			},
+			content,
+			holders: new Set([agentId]),
+		});
+		return true;
+	}
+
+	/** Drop every lease this agent held; true when the table changed. */
+	release(agentId: string): boolean {
+		let changed = false;
+		for (const [entryId, item] of this.entries) {
+			if (!item.holders.delete(agentId)) continue;
+			changed = true;
+			if (item.holders.size === 0) this.entries.delete(entryId);
+		}
+		return changed;
+	}
+
+	/** Profile ids currently registered, for the enablement ruling. */
+	profileIds(): readonly string[] {
+		return [...this.entries.values()].map((item) => item.entry.filenameId ?? "").filter((id) => id !== "");
+	}
+
+	async listEntries(): Promise<ProfileStorageListResult> {
+		return { entries: [...this.entries.values()].map(({ entry }) => entry), diagnostics: [] };
+	}
+
+	async readEntry(entryId: string): Promise<ProfileStorageReadResult> {
+		const item = this.entries.get(entryId);
+		if (!item) {
+			return {
+				ok: false,
+				diagnostic: createProfileDiagnostic({
+					severity: "error",
+					code: "profile.read_failed",
+					message: `Unknown extension profile entry: ${entryId}`,
 				}),
 			};
 		}

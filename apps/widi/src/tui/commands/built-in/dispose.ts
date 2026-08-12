@@ -9,8 +9,9 @@ export function disposeCommand(host: CommandHost): CommandDefinition {
 		name: "dispose",
 		description: "Close the current runtime agent without deleting its session.",
 		execute: async (context) => {
-			await host.disposeAgent(requireAgentId(context));
-			return undefined;
+			const agentId = requireAgentId(context);
+			await host.disposeAgent(agentId);
+			return `Closed ${agentId}; its session is kept and can be resumed.`;
 		},
 	};
 }

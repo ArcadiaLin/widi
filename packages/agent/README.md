@@ -1,4 +1,4 @@
-# @widi/agent-core
+# @arcadialin/agent-core
 
 Stateful agent with tool execution and event streaming. Built on `@earendil-works/pi-ai`.
 
@@ -17,7 +17,7 @@ The SQLite session backend and the `node:sqlite` adapter live in a separate pack
 ## Quick Start
 
 ```typescript
-import { Agent } from "@widi/agent-core";
+import { Agent } from "@arcadialin/agent-core";
 import { createModels } from "@earendil-works/pi-ai";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 
@@ -374,7 +374,7 @@ Follow-up messages are checked only when there are no more tool calls and no ste
 Extend `AgentMessage` via declaration merging:
 
 ```typescript
-declare module "@widi/agent-core" {
+declare module "@arcadialin/agent-core" {
   interface CustomAgentMessages {
     notification: { role: "notification"; text: string; timestamp: number };
   }
@@ -456,7 +456,7 @@ Return `terminate: true` from `execute()` or `afterToolCall` to hint that the ag
 For browser apps that proxy through a backend:
 
 ```typescript
-import { Agent, streamProxy } from "@widi/agent-core";
+import { Agent, streamProxy } from "@arcadialin/agent-core";
 
 const agent = new Agent({
   streamFn: (model, context, options) =>
@@ -473,7 +473,7 @@ const agent = new Agent({
 For direct control without the Agent class:
 
 ```typescript
-import { agentLoop, agentLoopContinue } from "@widi/agent-core";
+import { agentLoop, agentLoopContinue } from "@arcadialin/agent-core";
 
 const context: AgentContext = {
   systemPrompt: "You are helpful.",

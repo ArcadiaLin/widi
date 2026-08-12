@@ -36,7 +36,7 @@ describe("ListSelector", () => {
 		const selector = new ListSelector({
 			title: "/model",
 			items,
-			operation: { description: "Set the current agent model.", confirmVerb: "apply" },
+			operation: { description: "Set the current agent or staged session model.", confirmVerb: "apply" },
 			onSelect: () => {},
 			onClose: () => {},
 		});
@@ -53,7 +53,7 @@ describe("ListSelector", () => {
 		expect(rendered).toContain("Esc cancel");
 		expect(selector.hintContext).toEqual({
 			title: "/model",
-			description: "Set the current agent model.",
+			description: "Set the current agent or staged session model.",
 			confirmVerb: "apply",
 			itemCount: 3,
 		});
@@ -261,7 +261,7 @@ describe("WidiTuiApplication command selector", () => {
 		expect(plainRender(selector)).toContain("Qwen 3.6");
 		expect(selector.hintContext).toEqual({
 			title: "/model",
-			description: "Set the current agent model.",
+			description: "Set the current agent or staged session model.",
 			confirmVerb: "apply",
 			itemCount: 1,
 		});
@@ -446,7 +446,16 @@ async function createApplication(overrides: Record<string, unknown> = {}) {
 	} as unknown as AgentOrchestrator;
 	const runtime = {
 		orchestrator,
-		services: { cwd: "/repo", agentDir: "/repo/.widi-test-missing", defaultProfile: { id: "default-agent" } },
+		services: {
+			cwd: "/repo",
+			agentDir: "/repo/.widi-test-missing",
+			defaultProfile: { id: "default-agent" },
+			settingManager: {
+				getTheme: () => undefined,
+				setTheme: () => {},
+				getTerminalSettings: () => ({ wheelScrollLines: 3 }),
+			},
+		},
 		diagnostics: [],
 	} as unknown as WidiRuntime;
 	const application = await WidiTuiApplication.create({ cwd: "/repo", runtime });

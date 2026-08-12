@@ -1,5 +1,12 @@
-import type { ExecutionEnv, ExecutionError, FileError, FileInfo, Result, ShellExecOptions } from "@widi/agent-core";
-import { err, ok, ExecutionError as PiExecutionError, FileError as PiFileError } from "@widi/agent-core";
+import type {
+	ExecutionEnv,
+	ExecutionError,
+	FileError,
+	FileInfo,
+	Result,
+	ShellExecOptions,
+} from "@arcadialin/agent-core";
+import { err, ok, ExecutionError as PiExecutionError, FileError as PiFileError } from "@arcadialin/agent-core";
 import { describe, expect, it } from "vitest";
 import { ConfigValueResolver } from "../../src/core/resolve-config-value.ts";
 

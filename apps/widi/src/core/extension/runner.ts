@@ -1,4 +1,3 @@
-import type { ImageContent } from "@earendil-works/pi-ai";
 import type {
 	AgentHarnessStreamOptions,
 	AgentHarnessStreamOptionsPatch,
@@ -7,7 +6,8 @@ import type {
 	ContextResult,
 	ToolCallResult,
 	ToolResultPatch,
-} from "@widi/agent-core";
+} from "@arcadialin/agent-core";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import { formatError } from "../../utils/errors.ts";
 import type { CoreDiagnostic } from "../diagnostics.ts";
 import type { MessageDeliveryMode, MessageRequest } from "../message.ts";
@@ -16,6 +16,7 @@ import type { ExtensionEventEnvelope } from "./events.ts";
 import type {
 	ExtensionIdentity,
 	ExtensionInterceptorRegistration,
+	ExtensionProfileContribution,
 	ExtensionProviderContribution,
 	ExtensionToolContribution,
 	LoadedExtensionScope,
@@ -186,6 +187,10 @@ export class ExtensionRunner {
 		return this._loadedScope.providerContributions;
 	}
 
+	getProfileContributions(): readonly ExtensionProfileContribution[] {
+		return this._loadedScope.profileContributions;
+	}
+
 	/** The appended system prompt sections, in registration order. */
 	getSystemPromptAppends(): readonly string[] {
 		return this._loadedScope.systemPromptContributions.map((contribution) => contribution.text);
@@ -222,6 +227,7 @@ export class ExtensionRunner {
 			diagnostics: this.diagnostics,
 			toolContributions: [],
 			providerContributions: [],
+			profileContributions: [],
 			systemPromptContributions: [],
 			observerHandlers: new Map(),
 			interceptorHandlers: new Map(),

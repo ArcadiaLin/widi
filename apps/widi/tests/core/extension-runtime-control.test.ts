@@ -4,7 +4,7 @@
  * `disposeRuntime` escape hatch.
  */
 
-import type { AgentHarnessEvent } from "@widi/agent-core";
+import type { AgentHarnessEvent } from "@arcadialin/agent-core";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import type { OrchestratorEvent } from "../../src/core/types.ts";

@@ -3,9 +3,9 @@
 	"compilerOptions": {
 		"noEmit": true,
 		"paths": {
-			"@widi/agent-core": ["../../packages/agent/src/index.ts"],
-			"@widi/agent-core/node": ["../../packages/agent/src/node.ts"],
-			"@widi/agent-core/*": ["../../packages/agent/src/*.ts"]
+			"@arcadialin/agent-core": ["../../packages/agent/src/index.ts"],
+			"@arcadialin/agent-core/node": ["../../packages/agent/src/node.ts"],
+			"@arcadialin/agent-core/*": ["../../packages/agent/src/*.ts"]
 		}
 	},
 	"include": ["src/**/*.ts", "tests/**/*.ts"],
