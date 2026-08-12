@@ -318,6 +318,52 @@ describe("createWidiRuntime", () => {
 		expect(runtime.orchestrator.getDefaultThinkingLevel()).toBe("off");
 	});
 
+	it("resolves a relative settings sessionDir against the agent dir, not the cwd", async () => {
+		const env = new MemoryExecutionEnv();
+		env.addFile("/home/user/.widi/settings.json", JSON.stringify({ sessionDir: "sessions" }));
+
+		const runtime = await createWidiRuntime({
+			cwd: "/workspace/project",
+			agentDir: "/home/user/.widi",
+			executionEnv: env,
+			defaultModel,
+		});
+
+		// Against the cwd this would be one store per launch directory, each
+		// unable to offer the others' sessions to /resume.
+		expect(runtime.services.sessionRoot).toBe("/home/user/.widi/sessions");
+	});
+
+	it("keeps an absolute settings sessionDir as written", async () => {
+		const env = new MemoryExecutionEnv();
+		env.addFile("/home/user/.widi/settings.json", JSON.stringify({ sessionDir: "/var/widi/sessions" }));
+
+		const runtime = await createWidiRuntime({
+			cwd: "/workspace/project",
+			agentDir: "/home/user/.widi",
+			executionEnv: env,
+			defaultModel,
+		});
+
+		expect(runtime.services.sessionRoot).toBe("/var/widi/sessions");
+	});
+
+	it("resolves an explicit session root against the cwd", async () => {
+		const env = new MemoryExecutionEnv();
+		env.addFile("/home/user/.widi/settings.json", JSON.stringify({ sessionDir: "sessions" }));
+
+		const runtime = await createWidiRuntime({
+			cwd: "/workspace/project",
+			agentDir: "/home/user/.widi",
+			executionEnv: env,
+			defaultModel,
+			sessionRoot: "runs",
+		});
+
+		// A path typed in a shell means what that shell means by it.
+		expect(runtime.services.sessionRoot).toBe("/workspace/project/runs");
+	});
+
 	it("registers core built-in coding and interaction tools in the tool registry", async () => {
 		const env = new MemoryExecutionEnv();
 		const runtime = await createWidiRuntime({

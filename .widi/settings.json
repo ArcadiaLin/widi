@@ -76,7 +76,6 @@
   "warnings": {
     "anthropicExtraUsage": true
   },
-  "sessionDir": ".widi/runs",
   "httpProxy": "",
   "httpIdleTimeoutMs": 300000,
   "websocketConnectTimeoutMs": 15000

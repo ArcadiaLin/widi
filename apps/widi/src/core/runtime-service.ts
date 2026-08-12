@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import type { ExecutionEnv, ThinkingLevel } from "@arcadialin/agent-core";
 import { NodeExecutionEnv } from "@arcadialin/agent-core/node";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
@@ -167,6 +168,29 @@ async function joinPath(executionEnv: ExecutionEnv, parts: readonly string[]): P
 
 async function absolutePath(executionEnv: ExecutionEnv, path: string): Promise<string> {
 	return unwrapResult(await executionEnv.absolutePath(path));
+}
+
+/**
+ * Where the session store lives, when a settings file has an opinion about it.
+ *
+ * A relative `sessionDir` is resolved against the agent dir rather than the cwd,
+ * because sessions are not project files. Resolving against the working
+ * directory would give one store per directory anyone ever launched from, each
+ * invisible to the others - `/resume` filters by workspace inside a root, so it
+ * cannot offer a session that ended up in a different root. The store stays put
+ * and the workspace becomes a group inside it.
+ *
+ * An explicit `--session-root` is not routed through here: it is typed in a
+ * shell, and a path typed in a shell means what that shell means by it.
+ */
+async function resolveSettingsSessionRoot(
+	executionEnv: ExecutionEnv,
+	agentDir: string,
+	sessionDir: string | undefined,
+): Promise<string> {
+	if (sessionDir === undefined) return await joinPath(executionEnv, [agentDir, DEFAULT_AGENT_PERSISTENCE_DIR]);
+	if (isAbsolute(sessionDir)) return sessionDir;
+	return await joinPath(executionEnv, [agentDir, sessionDir]);
 }
 
 async function createExtensionRoots(options: {
@@ -487,9 +511,7 @@ export async function createWidiRuntime(options: CreateWidiRuntimeOptions): Prom
 	});
 	const sessionRoot = await absolutePath(
 		executionEnv,
-		options.sessionRoot ??
-			settingManager.getSessionDir() ??
-			(await joinPath(executionEnv, [agentDir, DEFAULT_AGENT_PERSISTENCE_DIR])),
+		options.sessionRoot ?? (await resolveSettingsSessionRoot(executionEnv, agentDir, settingManager.getSessionDir())),
 	);
 	const workspaceDiagnostics: CoreDiagnostic[] = [];
 	const workspaces = new WorkspaceRegistry({

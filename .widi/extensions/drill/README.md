@@ -75,7 +75,7 @@ Two run-time facts a written script cannot hold have escapes rather than guesses
 
 ## The helper role
 
-The tour delegates, and delegation needs a profile id. A script cannot know what roles a given installation has, so drill ships its own through `api.registerProfile` (`core/profile.ts`) - no tools, no persistence, spawned to answer one line and disposed.
+The tour delegates, and delegation needs a profile id. A script cannot know what roles a given installation has, so drill ships its own through `api.registerProfile` (`core/profile.ts`) - no tools, spawned to answer one line and disposed. Its session is kept, because the dispose act tells the person a closed agent's transcript survives - the one claim in the tour they can walk away and verify.
 
 An extension-registered profile needs no entry in `enabledProfiles`: enabling the extension is the decision, and asking for the same consent twice would make every such extension look broken on install. A profile of the user's own with the same id still shadows it. The registration is leased per agent like a provider's, so it lives exactly as long as some agent has the extension loaded.
 
