@@ -10,6 +10,7 @@ import {
 	BUILTIN_DEFAULT_PROFILE_ID,
 	createBuiltinProfileStorageBackend,
 	createDefaultProfileRoots,
+	ExtensionProfileStorageBackend,
 	type FileProfileRoot,
 	FileProfileStorageBackend,
 	type ProfileStorageBackend,
@@ -213,20 +214,27 @@ async function createProfileRegistry(options: {
 	readonly cwd: string;
 	readonly agentDir: string;
 	readonly projectTrusted: boolean;
-}): Promise<{ readonly registry: AgentProfileRegistry; readonly roots: readonly FileProfileRoot[] }> {
+}): Promise<{
+	readonly registry: AgentProfileRegistry;
+	readonly extensionProfiles: ExtensionProfileStorageBackend;
+	readonly roots: readonly FileProfileRoot[];
+}> {
 	const roots = await createDefaultProfileRoots({
 		executionEnv: options.executionEnv,
 		cwd: options.cwd,
 		agentDir: options.agentDir,
 	});
 	const trustedRoots = options.projectTrusted ? roots : roots.filter((root) => root.kind !== "cwd");
+	const extensionProfiles = new ExtensionProfileStorageBackend();
 	return {
 		registry: new AgentProfileRegistry(
 			new CompositeProfileStorageBackend([
 				new FileProfileStorageBackend(options.executionEnv, trustedRoots),
+				extensionProfiles,
 				createBuiltinProfileStorageBackend(),
 			]),
 		),
+		extensionProfiles,
 		roots: trustedRoots,
 	};
 }
@@ -548,6 +556,7 @@ export async function createWidiRuntime(options: CreateWidiRuntimeOptions): Prom
 		settingManager,
 		modelRegistry,
 		profileRegistry,
+		extensionProfiles: profileRegistryResult.extensionProfiles,
 		toolRegistry,
 		extensionLoader,
 		defaultProfileId: defaultProfile.resolution.id,

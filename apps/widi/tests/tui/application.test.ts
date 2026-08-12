@@ -70,6 +70,40 @@ describe("WidiTuiApplication lazy agent spawn", () => {
 		expect(harness.promptAgent).not.toHaveBeenCalled();
 	});
 
+	// A command with nothing to ask for never reaches the engine's needs-argument
+	// exit, so a bare submit is the only form it has. Refusing to materialize on
+	// it would leave the command unreachable until the human had paid for a turn.
+	it("spawns for an argument-less setting command on a cold start", async () => {
+		const harness = await createApplicationHarness();
+		const ran = vi.fn();
+		(harness.application as unknown as { engine: CommandEngine }).engine.register({
+			kind: "action",
+			agentPolicy: "materialize",
+			name: "rehearse",
+			description: "needs an agent, asks for nothing",
+			execute: async () => {
+				ran();
+				return "done";
+			},
+		});
+
+		await submit(harness.application, "/rehearse");
+
+		expect(harness.spawnAgent).toHaveBeenCalledTimes(1);
+		expect(ran).toHaveBeenCalledTimes(1);
+		expect(harness.promptAgent).not.toHaveBeenCalled();
+	});
+
+	// The counter-case the rule exists for: a bare picker must not cost a session
+	// to answer a question the human can still cancel.
+	it("does not spawn when a bare setting command only opens its picker", async () => {
+		const harness = await createApplicationHarness();
+
+		await submit(harness.application, "/model");
+
+		expect(harness.spawnAgent).not.toHaveBeenCalled();
+	});
+
 	it("keeps the current agent on /new and stages a second one beside it", async () => {
 		const harness = await createApplicationHarness();
 		await submit(harness.application, "first");

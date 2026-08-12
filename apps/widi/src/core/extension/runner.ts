@@ -16,6 +16,7 @@ import type { ExtensionEventEnvelope } from "./events.ts";
 import type {
 	ExtensionIdentity,
 	ExtensionInterceptorRegistration,
+	ExtensionProfileContribution,
 	ExtensionProviderContribution,
 	ExtensionToolContribution,
 	LoadedExtensionScope,
@@ -186,6 +187,10 @@ export class ExtensionRunner {
 		return this._loadedScope.providerContributions;
 	}
 
+	getProfileContributions(): readonly ExtensionProfileContribution[] {
+		return this._loadedScope.profileContributions;
+	}
+
 	/** The appended system prompt sections, in registration order. */
 	getSystemPromptAppends(): readonly string[] {
 		return this._loadedScope.systemPromptContributions.map((contribution) => contribution.text);
@@ -222,6 +227,7 @@ export class ExtensionRunner {
 			diagnostics: this.diagnostics,
 			toolContributions: [],
 			providerContributions: [],
+			profileContributions: [],
 			systemPromptContributions: [],
 			observerHandlers: new Map(),
 			interceptorHandlers: new Map(),

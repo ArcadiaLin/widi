@@ -41,7 +41,7 @@ import { type AssistantMessage, getSupportedThinkingLevels, type TextContent } f
 import { formatError } from "../utils/errors.ts";
 import type { JsonValue } from "../utils/json.ts";
 import type { AgentProfile, AgentProfileOverride, AgentProfileRegistry, AgentProfileSource } from "./agent-profile.js";
-import { parseAgentProfileReference } from "./agent-profile.js";
+import { ExtensionProfileStorageBackend, parseAgentProfileReference } from "./agent-profile.js";
 import type {
 	AgentResourcesSnapshot,
 	AgentSettings,
@@ -205,6 +205,8 @@ export interface AgentOrchestratorConfig {
 	settingManager: SettingManager;
 	modelRegistry: ModelRegistry;
 	profileRegistry: AgentProfileRegistry;
+	/** Where `registerProfile` contributions land; absent when nobody publishes them. */
+	extensionProfiles?: ExtensionProfileStorageBackend;
 	toolRegistry?: ToolRegistry;
 	extensionLoader?: ExtensionLoader;
 	defaultProfileId: string;
@@ -398,6 +400,7 @@ export class AgentOrchestrator {
 	readonly settingManager: SettingManager;
 	readonly modelRegistry: ModelRegistry;
 	readonly profileRegistry: AgentProfileRegistry;
+	readonly extensionProfiles: ExtensionProfileStorageBackend;
 	readonly toolRegistry: ToolRegistry;
 	readonly extensionLoader: ExtensionLoader;
 
@@ -458,6 +461,7 @@ export class AgentOrchestrator {
 		this.settingManager = config.settingManager;
 		this.modelRegistry = config.modelRegistry;
 		this.profileRegistry = config.profileRegistry;
+		this.extensionProfiles = config.extensionProfiles ?? new ExtensionProfileStorageBackend();
 		this.toolRegistry = config.toolRegistry ?? new ToolRegistry();
 		this.extensionLoader = config.extensionLoader ?? new ExtensionLoader();
 		this._defaultProfileId = config.defaultProfileId;
@@ -1105,6 +1109,7 @@ export class AgentOrchestrator {
 			// Before the harness exists, so contributed models are selectable from the
 			// first turn. This spawn's own model resolution already happened.
 			await this._applyExtensionProviderContributions(agentId, extensionRunner);
+			this._applyExtensionProfileContributions(agentId, extensionRunner);
 			this._assertBuildNotCancelled(agentId, reservation);
 
 			const loaded = await request.workspace.resourceLoader.loadAgentResources(profile);
@@ -1253,6 +1258,7 @@ export class AgentOrchestrator {
 		}
 		await this._tryTeardown(agentId, "withdraw providers", async () => {
 			await this._withdrawExtensionProviderContributions(agentId);
+			this._withdrawExtensionProfileContributions(agentId);
 		});
 		await this._clearExtensionStatusesForAgent(agentId);
 		this._agentDiagnostics.delete(agentId);
@@ -1499,6 +1505,7 @@ export class AgentOrchestrator {
 			});
 			await this._tryTeardown(agentId, "withdraw providers", async () => {
 				await this._withdrawExtensionProviderContributions(agentId);
+				this._withdrawExtensionProfileContributions(agentId);
 			});
 			await this._tryTeardown(agentId, "shut down harness", async () => {
 				await withTimeout(
@@ -2463,7 +2470,9 @@ export class AgentOrchestrator {
 			// Provider registrations follow the runner: the stale runner's leases are
 			// withdrawn before the replacement re-registers its own.
 			await this._withdrawExtensionProviderContributions(agentId);
+			this._withdrawExtensionProfileContributions(agentId);
 			await this._applyExtensionProviderContributions(agentId, candidate);
+			this._applyExtensionProfileContributions(agentId, candidate);
 			await this._disposeExtensionRunner(
 				agentId,
 				previousRunner,
@@ -2754,6 +2763,26 @@ export class AgentOrchestrator {
 				`Failed to withdraw extension providers for agent ${agentId}: ${formatError(error)}`,
 			);
 		}
+	}
+
+	/**
+	 * Register this runner's declared roles, leased to its agent.
+	 *
+	 * No trust ruling and no diagnostics of its own: a profile is inert data, the
+	 * extension it came from is already loaded, and a duplicate id is a shadowing
+	 * rule the profile registry decides rather than a failure here.
+	 */
+	private _applyExtensionProfileContributions(agentId: AgentId, runner: ExtensionRunner): void {
+		let changed = false;
+		for (const contribution of runner.getProfileContributions()) {
+			if (this.extensionProfiles.register(contribution.extensionId, agentId, contribution.profile)) changed = true;
+		}
+		if (changed) this.profileRegistry.invalidate();
+	}
+
+	/** Withdraw this agent's profile leases, leaving every other agent's alone. */
+	private _withdrawExtensionProfileContributions(agentId: AgentId): void {
+		if (this.extensionProfiles.release(agentId)) this.profileRegistry.invalidate();
 	}
 
 	/** Make the contexts stale, revoke bindings, run every `onDispose` handler. */
@@ -3425,8 +3454,17 @@ export class AgentOrchestrator {
 	// no longer registered.
 	// -----------------------------------------------------------------------
 
+	/**
+	 * A role an extension registered is enabled by that extension being enabled.
+	 *
+	 * `enabledProfiles` is a list of the user's own roles, and a profile that only
+	 * exists because they installed something has already been consented to. Asking
+	 * for the name a second time would make every such extension look broken on
+	 * install, and the answer would always be yes.
+	 */
 	private _isProfileEnabled(profileId: string): boolean {
-		return this._enabledProfileIds === undefined || this._enabledProfileIds.includes(profileId);
+		if (this._enabledProfileIds === undefined) return true;
+		return this._enabledProfileIds.includes(profileId) || this.extensionProfiles.profileIds().includes(profileId);
 	}
 
 	private async _resolveCreateProfile(

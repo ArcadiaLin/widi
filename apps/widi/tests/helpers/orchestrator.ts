@@ -17,6 +17,7 @@ import { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import {
 	type AgentProfile,
 	AgentProfileRegistry,
+	type ExtensionProfileStorageBackend,
 	InMemoryProfileStorageBackend,
 } from "../../src/core/agent-profile.ts";
 import type { LiveAgent, WidiAgentHarness } from "../../src/core/agent-types.ts";
@@ -392,6 +393,7 @@ export async function createOrchestrator(
 	options: {
 		enabledProfileIds?: readonly string[];
 		profileRegistry?: AgentProfileRegistry;
+		extensionProfiles?: ExtensionProfileStorageBackend;
 		defaultProfileId?: string;
 		modelRegistry?: ModelRegistry;
 		toolRegistry?: ToolRegistry;
@@ -411,6 +413,7 @@ export async function createOrchestrator(
 		settingManager: options.settingManager ?? new SettingManager(),
 		modelRegistry: options.modelRegistry ?? (await createModelRegistry(env)),
 		profileRegistry: options.profileRegistry ?? createProfileRegistry(),
+		extensionProfiles: options.extensionProfiles,
 		toolRegistry: options.toolRegistry,
 		defaultProfileId: options.defaultProfileId ?? defaultProfile.id,
 		enabledProfileIds: options.enabledProfileIds,

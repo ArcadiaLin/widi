@@ -17,7 +17,7 @@ import type { ImageContent } from "@earendil-works/pi-ai";
 import type { TSchema } from "typebox";
 import { freezeJsonValue, type JsonValue, normalizeJsonValue } from "../../utils/json.ts";
 import { utf8ByteLength } from "../../utils/text.ts";
-import type { AgentProfileOverride, AgentProfileReference } from "../agent-profile.js";
+import type { AgentProfile, AgentProfileOverride, AgentProfileReference } from "../agent-profile.js";
 import type { ExtensionDiagnosticDraft } from "../diagnostics.ts";
 import type {
 	AgentBrief,
@@ -855,6 +855,18 @@ export interface ExtensionActivationApi {
 		patch: ToolDefinitionPatch<TParamsSchema, TDetails>,
 	): void;
 	registerProvider(providerName: string, config: ExtensionProviderConfig): void;
+	/**
+	 * Ship a role agents can be spawned on, for as long as this extension is
+	 * loaded. It needs no entry in the enabled-profiles setting: enabling the
+	 * extension is the decision, and asking for the same consent twice would only
+	 * make an extension look broken on install.
+	 *
+	 * A profile of the user's own with the same id shadows it, so an extension
+	 * cannot quietly change what a role the user wrote means. Registration is
+	 * leased per agent like a provider's: every runtime that activates the
+	 * extension renews it, and it is withdrawn when the last one is gone.
+	 */
+	registerProfile(profile: AgentProfile): void;
 	/**
 	 * Append a section to the agent's system prompt, after the role's own text
 	 * and the tool guidance. Sections keep registration order, and one from a

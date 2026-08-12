@@ -796,7 +796,14 @@ export class WidiTuiApplication {
 		await this.extensionHost?.dispose();
 		try {
 			await this.orchestrator.disposeAll(reason);
-			await Promise.allSettled([...this.lifecycleTasks, ...this.pendingTasks]);
+			// Bounded, because a tracked task is not always one that ends. A command
+			// that waits on a person - an extension walking someone through
+			// something - is still pending when they decide to quit, and waiting on
+			// it forever would make exit the one thing they cannot do.
+			await Promise.race([
+				Promise.allSettled([...this.lifecycleTasks, ...this.pendingTasks]),
+				delay(SHUTDOWN_TASK_GRACE_MS),
+			]);
 			await this.orchestrator.disposeAll(`${reason} (final cleanup)`);
 		} catch {
 			// Shutdown is best-effort; terminal restoration is mandatory.
@@ -2204,6 +2211,13 @@ export class WidiTuiApplication {
 export async function runWidiTui(options: WidiTuiOptions): Promise<void> {
 	const application = await WidiTuiApplication.create(options);
 	await application.run();
+}
+
+/** How long shutdown gives in-flight tasks to settle before it stops waiting. */
+const SHUTDOWN_TASK_GRACE_MS = 2_000;
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**

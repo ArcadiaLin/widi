@@ -1,5 +1,6 @@
 import type { ExecutionEnv, FileInfo } from "@arcadialin/agent-core";
 import { formatError } from "../../utils/errors.ts";
+import type { AgentProfile } from "../agent-profile.js";
 import type { CoreDiagnostic, DiagnosticSeverity } from "../diagnostics.ts";
 import { EXTENSION_API_VERSION, isSupportedExtensionApiVersion, MIN_SUPPORTED_EXTENSION_API_VERSION } from "./api.ts";
 import {
@@ -36,6 +37,13 @@ export interface ExtensionProviderContribution {
 	readonly extensionId: string;
 	readonly providerName: string;
 	readonly config: ExtensionProviderConfig;
+	readonly divisionId?: string;
+}
+
+/** A role an extension ships, registered for as long as the extension is loaded. */
+export interface ExtensionProfileContribution {
+	readonly extensionId: string;
+	readonly profile: AgentProfile;
 	readonly divisionId?: string;
 }
 
@@ -162,6 +170,7 @@ export interface LoadedExtensionScope {
 	diagnostics: readonly CoreDiagnostic[];
 	toolContributions: readonly ExtensionToolContribution[];
 	providerContributions: readonly ExtensionProviderContribution[];
+	profileContributions: readonly ExtensionProfileContribution[];
 	systemPromptContributions: readonly ExtensionSystemPromptContribution[];
 	observerHandlers: ReadonlyMap<ExtensionObservedEventName, readonly ExtensionObserverRegistration[]>;
 	interceptorHandlers: ReadonlyMap<
@@ -408,6 +417,7 @@ export class ExtensionLoader {
 		const diagnostics: CoreDiagnostic[] = [];
 		const toolContributions: ExtensionToolContribution[] = [];
 		const providerContributions: ExtensionProviderContribution[] = [];
+		const profileContributions: ExtensionProfileContribution[] = [];
 		const systemPromptContributions: ExtensionSystemPromptContribution[] = [];
 		const observerHandlers = new Map<ExtensionObservedEventName, ExtensionObserverRegistration[]>();
 		const interceptorHandlers = new Map<
@@ -481,6 +491,7 @@ export class ExtensionLoader {
 				divisionDiagnostics: [],
 				toolContributions,
 				providerContributions,
+				profileContributions,
 				systemPromptContributions,
 				observerHandlers,
 				interceptorHandlers,
@@ -575,6 +586,7 @@ export class ExtensionLoader {
 			diagnostics,
 			toolContributions,
 			providerContributions,
+			profileContributions,
 			systemPromptContributions,
 			observerHandlers,
 			interceptorHandlers,
@@ -862,6 +874,7 @@ interface ExtensionActivationScope {
 	readonly divisionDiagnostics: CoreDiagnostic[];
 	readonly toolContributions: ExtensionToolContribution[];
 	readonly providerContributions: ExtensionProviderContribution[];
+	readonly profileContributions: ExtensionProfileContribution[];
 	readonly systemPromptContributions: ExtensionSystemPromptContribution[];
 	readonly observerHandlers: Map<ExtensionObservedEventName, ExtensionObserverRegistration[]>;
 	readonly interceptorHandlers: Map<
@@ -952,6 +965,16 @@ function createActivationApi(scope: ExtensionActivationScope, divisionId?: strin
 				throw new Error("Extension provider name must not be empty.");
 			}
 			scope.providerContributions.push({ extensionId, providerName: normalized, config, divisionId });
+		},
+		registerProfile: (profile) => {
+			const id = profile.id.trim();
+			if (!id) {
+				throw new Error("Extension profile id must not be empty.");
+			}
+			if (!profile.systemPrompt.trim()) {
+				throw new Error(`Extension profile '${id}' must define a system prompt.`);
+			}
+			scope.profileContributions.push({ extensionId, profile: { ...profile, id }, divisionId });
 		},
 		appendSystemPrompt: (text) => {
 			const normalized = text.trim();
