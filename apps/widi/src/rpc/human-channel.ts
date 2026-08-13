@@ -9,38 +9,70 @@
  *
  * That mirrors what the TUI does with `StartupHumanPrompt`, minus the placeholder:
  * here the boot-phase asker and the running-phase asker are one object.
+ *
+ * Every request this channel abandons is announced with `human_request_withdrawn`.
+ * Core's own withdrawal events (`human_request_timeout`, `_cancelled`) only cover
+ * withdrawals core decided, and none of the three reaches the client when the
+ * *handler* is the one giving up - which is exactly the abort, timeout and
+ * shutdown paths below. Without the frame the client would hold a prompt open
+ * against a request nobody will ever read an answer to.
  */
 
 import type { HumanRequestEnvelope, HumanResponse } from "../core/human-request.ts";
-import type { RpcHumanRequestFrame, RpcHumanResponseFrame } from "./types.ts";
+import { RpcError } from "./errors.ts";
+import type { RpcHumanOutboundFrame, RpcHumanResponseFrame } from "./types.ts";
 
 interface PendingRequest {
 	readonly resolve: (response: HumanResponse) => void;
 	readonly reject: (error: Error) => void;
-	readonly detachAbort: () => void;
+	readonly cleanup: () => void;
+}
+
+export interface RpcHumanChannelOptions {
+	readonly send: (frame: RpcHumanOutboundFrame) => void;
+	/**
+	 * How long to hold a request open with no answer and no cancel. Unset means
+	 * forever, which is right for an interactive client and wrong for a batch one
+	 * that answers nothing: there the agent would wait out the whole run.
+	 */
+	readonly timeoutMs?: number;
 }
 
 export class RpcHumanChannel {
-	private readonly _send: (frame: RpcHumanRequestFrame) => void;
+	private readonly _send: (frame: RpcHumanOutboundFrame) => void;
+	private readonly _timeoutMs: number | undefined;
 	private readonly _pending = new Map<string, PendingRequest>();
 
-	constructor(options: { readonly send: (frame: RpcHumanRequestFrame) => void }) {
+	constructor(options: RpcHumanChannelOptions) {
 		this._send = options.send;
+		this._timeoutMs = options.timeoutMs;
 	}
 
 	/** The `HumanRequestHandler` shape, bound so it can be passed as a value. */
 	readonly request = (request: HumanRequestEnvelope, signal?: AbortSignal): Promise<HumanResponse> => {
 		return new Promise<HumanResponse>((resolve, reject) => {
-			const onAbort = () => {
-				this._pending.delete(request.id);
-				reject(new Error(`Human request ${request.id} was aborted.`));
+			const withdraw = (error: RpcError): void => {
+				if (!this._pending.delete(request.id)) return;
+				cleanup();
+				this._send({ type: "human_request_withdrawn", requestId: request.id, reason: error.message });
+				reject(error);
 			};
+			const onAbort = () => withdraw(new RpcError("aborted", `Human request ${request.id} was aborted.`));
+			const timer =
+				this._timeoutMs === undefined
+					? undefined
+					: setTimeout(() => {
+							withdraw(
+								new RpcError("timeout", `Human request ${request.id} went unanswered for ${this._timeoutMs}ms.`),
+							);
+						}, this._timeoutMs);
+			const cleanup = () => {
+				if (timer !== undefined) clearTimeout(timer);
+				signal?.removeEventListener("abort", onAbort);
+			};
+
 			signal?.addEventListener("abort", onAbort, { once: true });
-			this._pending.set(request.id, {
-				resolve,
-				reject,
-				detachAbort: () => signal?.removeEventListener("abort", onAbort),
-			});
+			this._pending.set(request.id, { resolve, reject, cleanup });
 			this._send({ type: "human_request", request });
 		});
 	};
@@ -54,9 +86,9 @@ export class RpcHumanChannel {
 		const pending = this._pending.get(frame.requestId);
 		if (!pending) return false;
 		this._pending.delete(frame.requestId);
-		pending.detachAbort();
+		pending.cleanup();
 		if ("cancelled" in frame) {
-			pending.reject(new Error(`Human request ${frame.requestId} was cancelled by the client.`));
+			pending.reject(new RpcError("aborted", `Human request ${frame.requestId} was cancelled by the client.`));
 			return true;
 		}
 		pending.resolve(frame.response);
@@ -67,8 +99,9 @@ export class RpcHumanChannel {
 	closeAll(reason: string): void {
 		for (const [requestId, pending] of [...this._pending]) {
 			this._pending.delete(requestId);
-			pending.detachAbort();
-			pending.reject(new Error(reason));
+			pending.cleanup();
+			this._send({ type: "human_request_withdrawn", requestId, reason });
+			pending.reject(new RpcError("shutting_down", reason));
 		}
 	}
 }

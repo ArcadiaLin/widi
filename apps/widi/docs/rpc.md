@@ -61,6 +61,7 @@ JSONL：一行一个 JSON 对象，UTF-8，`\n` 分隔（读取端容忍 `\r\n`�
 | `response` | 某条命令的答复 |
 | `event` | 一条编织后的 orchestrator 事件，见 §5 |
 | `human_request` | 需要人答复，见 §6 |
+| `human_request_withdrawn` | 一条 human request 不再等答复了，见 §6.2 |
 
 **入向（stdin）**
 
@@ -96,12 +97,32 @@ JSONL：一行一个 JSON 对象，UTF-8，`\n` 分隔（读取端容忍 `\r\n`�
 
 ```json
 { "type": "response", "id": "2", "cmd": "inspect", "ok": false,
-  "error": "Unknown agent: nope", "code": "orchestrator.agent_unknown" }
+  "error": "Unknown agent: nope", "code": "unknown_agent" }
 ```
 
-`id` 原样回显；客户端不关联时可以省略。`code` 在失败携带了 core 诊断码或消息错误码时出现，否则缺席（缺口见 §9.4）。
+`id` 原样回显；客户端不关联时可以省略。
 
 成功响应的 `data` 由 `cmd` 决定，类型上按命令名分发，客户端在 `ok` 与 `cmd` 上收窄之后即可直接读取 `data`，无需断言。
+
+### 3.3 失败码
+
+`code` **在每一条失败响应上都存在**，是协议的一部分；`error` 是给人读的自由文本，不稳定，客户端可以记录但不得据以分支。
+
+| `code` | 含义 | 同一条命令重试 |
+| --- | --- | --- |
+| `invalid_command` | 帧本身不对：未知 `cmd`、参数不合法、`id` 与在飞命令冲突 | 无意义 |
+| `unknown_agent` | 这个 runtime 从来没有这个 id | 无意义 |
+| `agent_busy` | 目标当下被占用（含正在创建） | **可能成功** |
+| `agent_unavailable` | 目标存在过，但再也不能接受了（已 dispose、harness 已关停） | 永远不会成功 |
+| `model_unavailable` | 模型引用格式对，但没注册 | 无意义 |
+| `timeout` | 命令的 deadline 到了，见 §4.4 | 视情况 |
+| `aborted` | 被 `cancel`、`abort` 或 dispose 撤下 | 视情况 |
+| `shutting_down` | runtime 正在关闭，不再接受新工作 | 不会 |
+| `internal` | 未分类。客户端只能上报 | 未知 |
+
+`agent_busy` 与 `agent_unavailable` 的区分是这张表存在的理由：一个批量驱动唯一要问的问题是"这次失败对下一次尝试意味着什么"。
+
+**core 自己的错误码不上线**。`OrchestratorError` 带的是诊断码（`orchestrator.agent_busy`），`MessageError` 是第二套词汇（`target_unavailable`），`AgentHarnessError` 是第三套（`busy`），三者都属于 core、随 core 变，且都不覆盖"不属于这三类"的失败。映射在 `src/rpc/errors.ts` 一处完成。
 
 ## 4. 命令表
 
@@ -111,16 +132,17 @@ JSONL：一行一个 JSON 对象，UTF-8，`\n` 分隔（读取端容忍 `\r\n`�
 | --- | --- | --- | --- |
 | `spawn` | `origin`, `parent?`, `cwd?`, `model?`, `thinkingLevel?` | `{ agentId }` | `spawnAgent` |
 | `send` | `agentId`, `body`, `mode`, `images?` | `MessageSendOutcome` | 人类 sink 的 `send` |
-| `prompt` | `agentId`, `body`, `images?` | `PromptOutcome` | 人类 sink 的 `prompt` |
+| `prompt` | `agentId`, `body`, `images?`, `deadlineMs?` | `PromptOutcome` | 人类 sink 的 `prompt` |
 | `abort` | `agentId` | `AbortResult` | `abortAgent(id, "human")` |
 | `dispose` | `agentId`, `scope?`, `reason?` | `{ agentIds }` | `disposeAgent` |
 | `compact` | `agentId`, `customInstructions?` | `CompactResult` | `compactAgent` |
-| `wait_idle` | `agentId` | `{}` | `waitForAgentIdle` |
+| `wait_idle` | `agentId`, `deadlineMs?` | `{}` | `waitForAgentIdle` |
 | `list_agents` | — | `{ agents: AgentSnapshot[] }` | `listAgents` |
 | `inspect` | `agentId` | `AgentSnapshot` | `inspectAgent` |
 | `set_model` | `agentId`, `model` | `RuntimeModel` | `setAgentModelByReference` |
 | `set_thinking_level` | `agentId`, `level` | `{}` | `setAgentThinkingLevel` |
 | `cancel_human_request` | `requestId`, `reason?` | `{ cancelled }` | `cancelHumanRequest` |
+| `cancel` | `commandId` | `{ cancelled }` | §4.4 |
 | `shutdown` | `reason?` | `{}` | §2.3 |
 
 命令**按到达顺序派发，不互相排队**：对一个 agent 的 `wait_idle` 不得挡住对另一个 agent 的 `send`。因此响应顺序与命令顺序无关，客户端必须靠 `id` 关联。
@@ -166,6 +188,21 @@ CompactResult      = { summary, firstKeptEntryId?, tokensBefore, usage?, retaine
 
 `AssistantMessage` 带 `usage`（input/output/cacheRead/cacheWrite/reasoning?/totalTokens/cost）、`stopReason`、`responseModel`（实际响应的模型）。
 
+### 4.4 deadline 与取消
+
+只有 `prompt` 与 `wait_idle` 可以无限等待，因此也只有这两条接受 `deadlineMs`、只有这两条能被 `cancel` 撤下。其余命令要么立即返回，要么被单次 harness 调用界定。
+
+`deadlineMs` 是**这条命令的** deadline，不是 agent 的；到期时 agent 会怎样按命令而定：
+
+| 命令 | 到期/被取消后 | 答复 |
+| --- | --- | --- |
+| `prompt` | **abort 该 agent，并等它真正停下**，然后才答复 | `timeout` / `aborted` |
+| `wait_idle` | 停止等待，**agent 一动不动**——这条命令从头到尾只是在看 | `timeout` / `aborted` |
+
+`prompt` 那条"等它真正停下"是刻意的保证：**答复到达时该 agent 已经 idle，属于它的事件也已经全部在流上**，批量驱动可以直接进入下一个样本，不必和上一个的尾巴赛跑。放弃 run 提前答复会留下一个仍在写事件的模型循环，而客户端已经认为那条命令结束了。
+
+`cancel` 按 `id` 撤下在飞命令，因此**没有 `id` 的命令不可取消**——`id` 是唯一的把手。`commandId` 找不到（包括已经答复过的）返回 `{ cancelled: false }`，不算失败。复用一个仍在飞的 `id` 会被拒（`invalid_command`）：接受它的代价是两条不同命令共用一个关联 id。
+
 ## 5. 事件流
 
 `event` 帧包一条 `OrchestratorEvent`。事件类型的完整清单见 `core/types.ts`；每条都带 `agentId`（少数运行时级事件除外）。
@@ -202,11 +239,22 @@ core 的一等概念（`core/human-request.ts` 的 `HumanRequestBroker`），RPC
 出向  { "type": "human_request", "request": { "id": "human-request-1", "kind": "confirm", "title": "...", ... } }
 入向  { "type": "human_response", "requestId": "human-request-1", "response": { "kind": "confirm", "confirmed": true } }
 入向  { "type": "human_response", "requestId": "human-request-1", "cancelled": true }
+出向  { "type": "human_request_withdrawn", "requestId": "human-request-1", "reason": "..." }
 ```
 
 `kind` 为 `confirm | select | multi-select | questions | input | custom`，答复的 `kind` 必须与之相符。请求生命周期另有四个事件（`human_request_pending | resolved | timeout | cancelled`）走普通事件流。
 
-`request.timeoutMs` 存在时由 core 计时并在超时后拒绝调用方。客户端也可以用 `cancel_human_request` 命令主动取消。**当前 RPC 层不设默认超时**——缺口见 §9.5。
+### 6.1 超时
+
+`request.timeoutMs` 存在时由 core 计时并在超时后拒绝调用方；那是**提问方**设的。客户端也可以用 `cancel_human_request` 主动取消。
+
+RPC 层自己的默认超时用 `--human-timeout <ms>` 设置，**默认不设**：对交互式客户端"一直等"是对的，对一条也不答的批量客户端则意味着 agent 会把整轮跑的时间耗在这里。做批量评测时应当设它。
+
+### 6.2 撤回
+
+`human_request_withdrawn` 说的是"这条请求不再等答复了"。它不是对客户端任何输入的答复，所以不带 `id`：客户端关掉 `requestId` 对应的界面，什么也不用回。
+
+三条路径会发它：RPC 超时、提问方撤回（agent 被 dispose 等）、输入流结束时清空全部待答。这三条都是**handler 侧**放弃，core 自己的 `human_request_timeout` / `_cancelled` 事件只覆盖 core 决定的撤回，都到不了客户端——没有这一帧，客户端会一直挂着一个永远不会有人读答案的提问框。
 
 ## 7. stdout 独占与回压
 
@@ -243,14 +291,27 @@ harness emitAny → await listener        packages/agent/src/harness/agent-harne
 
 `ready.protocolVersion` 是协议版本，当前为 `1`。
 
-- **不 bump**：新增命令、在帧或结果中新增可选字段、新增事件类型、放宽校验。客户端必须忽略不认识的字段与事件类型。
-- **bump**：删除或重命名字段、收紧既有字段的取值、改变既有命令的语义或既有事件的含义。
+- **不 bump**：新增命令、在帧或结果中新增可选字段、新增事件类型、新增出向帧类型、放宽校验、**在 §3.3 表里新增失败码**。客户端必须忽略不认识的字段、事件类型与帧类型，并把不认识的失败码当作 `internal`。
+- **bump**：删除或重命名字段、收紧既有字段的取值、改变既有命令的语义或既有事件的含义、**改变既有失败码的含义或它映射的失败集合**。
 
 客户端应当检查 `protocolVersion` 并在大于自己所知时拒绝运行或降级，不要假设向前兼容。
 
-## 9. 已知缺口与计划
+## 9. 落地顺序与剩余缺口
 
-按依赖顺序排列。§9.1–9.3 一组，做完之后外部客户端才有稳定契约可写，且有测试守住它。
+排序标准是"什么会让一次评测产出错的数或者产不出数"，不是"什么阻塞契约"。一个挂住的样本会挂住整批，一个分不了类的失败会让整批结果无法归因——这两条先做；校验过浅伤的是写客户端时的调试成本，是一次性的，往后放。
+
+| 组 | 内容 | 状态 |
+| --- | --- | --- |
+| 一 | 失败码分类（§3.3）、deadline 与命令级取消（§4.4）、human request 超时与撤回（§6.1、§6.2） | **已落地** |
+| 二 | 子进程级端到端测试（§9.3） | 待做 |
+| 三 | typebox schema：运行时校验 + 可发布 JSON Schema（§9.1、§9.2） | 待做 |
+| 四 | 并发模型定案（§9.8 后半），然后 `run_summary`（§9.6） | 待做，需决定 |
+| 五 | 客户端 → 扩展方向（§9.7） | 待做，条件项 |
+| 六 | 生效配置快照（§9.8 前半） | 待做 |
+
+第一组为什么是一组：deadline 到期要答一个 `timeout`、取消要答一个 `aborted`，两者都得先有码表；反过来码表如果不含这两个码，也没有任何东西会产生它们。它们是一件事的两半。
+
+第二组紧接其后，是因为它之后是其余各组的测试台架——`run_summary`、schema 拒绝、stdout 洁净都只有在真进程里才验得准。第三组往后放的理由在上面。第五组是条件项：客户端只用 `prompt` + 事件流的话可以完全不做；要用双端扩展注入任务或收结构化结果，它就得提到第二位。
 
 ### 9.1 边界校验过浅
 
@@ -264,24 +325,21 @@ harness emitAny → await listener        packages/agent/src/harness/agent-harne
 
 ### 9.3 缺少子进程级端到端测试
 
-现有 `tests/rpc/` 27 例覆盖分帧、入向分类、stdout 保序与回压、命令派发、human request 往返、事件投影，但**没有真正启动 `--mode rpc` 进程**。端到端只手工验证过。
+现有 `tests/rpc/` 38 例覆盖分帧、入向分类、stdout 保序与回压、命令派发、失败码分类、deadline 与取消、human request 往返与撤回、事件投影，但**没有真正启动 `--mode rpc` 进程**。端到端只手工验证过。
 
 **计划**：spawn 真进程，驱动 ready → spawn → prompt → 事件 → abort → shutdown，并断言 **stdout 只含协议帧**（这是 §7.1 唯一有效的验证方式）、诊断落在 stderr。
 
-### 9.4 错误分类不稳定
+### 9.4 `send` 没有 deadline
 
-`code` 只在底层错误恰好是 `OrchestratorError` 或 `MessageError` 时出现，其余失败只有自由文本 `error`。客户端无法可靠地区分"超时""目标忙""agent 不存在""模型不可用"。
+§4.4 只给了 `prompt` 与 `wait_idle`。`send` 在目标处于维护相位（compaction、branch summary）时会在投递队列里无限期 defer，而队列没有对外的取消入口——`MessageDeliveryQueue.cancel` 只在 dispose 时按 agent 整体调用。
 
-**计划**：定义稳定的 `code` 枚举（`timeout | aborted | busy | unknown_agent | invalid_command | model_unavailable | …`），每条失败路径映射到其中之一，并写明各自之后 agent 处于什么状态。
+给它加 deadline 需要先决定语义：`send` 在**被接受**时就返回，超时能保证的只是"还没被接受"，不是"没有送到"。一个没有干净保证的超时不如没有，所以这条挂着，等 §9.6 定口径时一起解决。
 
-### 9.5 超时与取消语义不完整
+### 9.5 已落地：deadline、取消、human 超时
 
-已有 agent 级 `abort` 与 `cancel_human_request`；`HumanRequest.timeoutMs` 的机制也已在 core。缺的是：
+规范见 §3.3、§4.4、§6.1、§6.2。当时列的四项：`prompt` deadline（做了，并且保证答复时 agent 已 idle）、命令级取消（做了，按 `id`）、human request 默认超时（做了，`--human-timeout`）、超时后 agent 状态的明确保证（做了，写进 §4.4 的表）。`send` 的 deadline 拆出去成了 §9.4。
 
-- `prompt`/`send` 的 deadline
-- 命令级取消（按 `id` 取消一条在飞的命令）
-- RPC 层的 human request 默认超时（**当前不设**，客户端既不答复也不取消时会一直等）
-- 超时后 agent 状态的明确保证
+顺带修掉了一个当时没被算作缺口的实际缺陷：core 撤回一条 human request 时（agent 被 dispose）客户端从来收不到通知，会永久挂着提问界面。现在有 `human_request_withdrawn`（§6.2）。
 
 ### 9.6 缺少运行摘要
 

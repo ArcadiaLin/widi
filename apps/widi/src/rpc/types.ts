@@ -31,6 +31,7 @@ import type { AgentDisposeScope } from "../core/host.ts";
 import type { HumanRequestEnvelope, HumanResponse } from "../core/human-request.ts";
 import type { MessageDeliveryMode, MessageSendOutcome } from "../core/message.ts";
 import type { AgentId, PromptOutcome, RuntimeModel } from "../core/types.ts";
+import type { RpcErrorCode } from "./errors.ts";
 import type { WireOrchestratorEvent } from "./wire-event.ts";
 
 export const RPC_PROTOCOL_VERSION = 1;
@@ -49,8 +50,21 @@ export type RpcSpawnOrigin =
 	| { readonly kind: "fork"; readonly sourceAgentId: AgentId; readonly entryId?: string };
 
 interface RpcCommandBase {
-	/** Echoed on the response. Absent means the caller is not correlating. */
+	/**
+	 * Echoed on the response. Absent means the caller is not correlating - and for
+	 * the two commands `cancel` can reach, absent also means it cannot be
+	 * cancelled, since the id is the only handle on a command in flight.
+	 */
 	readonly id?: string;
+}
+
+/**
+ * Carried by the two commands that can wait indefinitely. A deadline is the
+ * command's own, not the agent's: what happens to the agent when one expires
+ * differs per command and is stated with each.
+ */
+interface RpcDeadline {
+	readonly deadlineMs?: number;
 }
 
 export type RpcCommand =
@@ -70,12 +84,13 @@ export type RpcCommand =
 			readonly mode: MessageDeliveryMode;
 			readonly images?: readonly ImageContent[];
 	  })
-	| (RpcCommandBase & {
-			readonly cmd: "prompt";
-			readonly agentId: AgentId;
-			readonly body: string;
-			readonly images?: readonly ImageContent[];
-	  })
+	| (RpcCommandBase &
+			RpcDeadline & {
+				readonly cmd: "prompt";
+				readonly agentId: AgentId;
+				readonly body: string;
+				readonly images?: readonly ImageContent[];
+			})
 	| (RpcCommandBase & { readonly cmd: "abort"; readonly agentId: AgentId })
 	| (RpcCommandBase & {
 			readonly cmd: "dispose";
@@ -84,7 +99,7 @@ export type RpcCommand =
 			readonly reason?: string;
 	  })
 	| (RpcCommandBase & { readonly cmd: "compact"; readonly agentId: AgentId; readonly customInstructions?: string })
-	| (RpcCommandBase & { readonly cmd: "wait_idle"; readonly agentId: AgentId })
+	| (RpcCommandBase & RpcDeadline & { readonly cmd: "wait_idle"; readonly agentId: AgentId })
 	| (RpcCommandBase & { readonly cmd: "list_agents" })
 	| (RpcCommandBase & { readonly cmd: "inspect"; readonly agentId: AgentId })
 	| (RpcCommandBase & {
@@ -95,6 +110,11 @@ export type RpcCommand =
 	  })
 	| (RpcCommandBase & { readonly cmd: "set_thinking_level"; readonly agentId: AgentId; readonly level: ThinkingLevel })
 	| (RpcCommandBase & { readonly cmd: "cancel_human_request"; readonly requestId: string; readonly reason?: string })
+	| (RpcCommandBase & {
+			readonly cmd: "cancel";
+			/** The `id` of a command still in flight. */
+			readonly commandId: string;
+	  })
 	| (RpcCommandBase & { readonly cmd: "shutdown"; readonly reason?: string });
 
 export type RpcCommandName = RpcCommand["cmd"];
@@ -113,6 +133,8 @@ export interface RpcCommandResults {
 	set_model: RuntimeModel;
 	set_thinking_level: Record<string, never>;
 	cancel_human_request: { readonly cancelled: boolean };
+	/** False when nothing by that id was in flight, including a command that had already answered. */
+	cancel: { readonly cancelled: boolean };
 	shutdown: Record<string, never>;
 }
 
@@ -159,9 +181,10 @@ export interface RpcErrorFrame {
 	/** Whatever the client asked for, which need not be a known command. */
 	readonly cmd: string;
 	readonly ok: false;
+	/** Human-readable and unstable. Log it; never branch on it. */
 	readonly error: string;
-	/** Present when the failure carried a core diagnostic code. */
-	readonly code?: string;
+	/** Always present. Branch on this. */
+	readonly code: RpcErrorCode;
 }
 
 export type RpcResponseFrame = RpcSuccessFrame | RpcErrorFrame;
@@ -176,4 +199,18 @@ export interface RpcHumanRequestFrame {
 	readonly request: HumanRequestEnvelope;
 }
 
-export type RpcOutbound = RpcReadyFrame | RpcResponseFrame | RpcEventFrame | RpcHumanRequestFrame;
+/**
+ * A request the runtime stopped waiting for. It is not an answer to anything the
+ * client sent, so it carries no `id`: the client drops the prompt it had open
+ * for `requestId` and sends nothing back.
+ */
+export interface RpcHumanRequestWithdrawnFrame {
+	readonly type: "human_request_withdrawn";
+	readonly requestId: string;
+	readonly reason: string;
+}
+
+/** What the human channel alone can write, before any orchestrator exists. */
+export type RpcHumanOutboundFrame = RpcHumanRequestFrame | RpcHumanRequestWithdrawnFrame;
+
+export type RpcOutbound = RpcReadyFrame | RpcResponseFrame | RpcEventFrame | RpcHumanOutboundFrame;

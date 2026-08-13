@@ -15,19 +15,30 @@
  *
  * Commands are dispatched as they arrive rather than queued behind each other:
  * a `wait_idle` on one agent must not stall a `send` to another.
+ *
+ * The two commands that can wait indefinitely - `prompt` and `wait_idle` - run
+ * under a signal, which a deadline or a `cancel` trips. They are also the only
+ * two: everything else either returns at once or is bounded by one harness call.
  */
 
+import type { ImageContent } from "@earendil-works/pi-ai";
 import type { AgentOrchestrator } from "../core/agent-orchestrator.ts";
 import type { OrchestratorClient } from "../core/client.ts";
-import { OrchestratorError } from "../core/diagnostics.ts";
 import type { HumanRequestEnvelope, HumanResponse } from "../core/human-request.ts";
-import { MessageError, type MessageSink, messageBindingFor } from "../core/message.ts";
+import { type MessageSink, messageBindingFor } from "../core/message.ts";
 import type { ModelRegistry } from "../core/model-registry.ts";
-import type { OrchestratorEvent, RuntimeModel } from "../core/types.ts";
+import type { AgentId, OrchestratorEvent, PromptOutcome, RuntimeModel } from "../core/types.ts";
 import { formatError } from "../utils/errors.ts";
+import { classifyError, RpcError, type RpcErrorCode } from "./errors.ts";
 import type { RpcHumanChannel } from "./human-channel.ts";
 import type { RpcCommand, RpcCommandName, RpcCommandResults, RpcOutbound, RpcSuccessFrame } from "./types.ts";
 import { toWireEvent } from "./wire-event.ts";
+
+/** A command in flight under a signal, and the way to stop being one. */
+interface CommandRun {
+	readonly signal: AbortSignal;
+	end(): void;
+}
 
 export interface RpcServerOptions {
 	readonly orchestrator: AgentOrchestrator;
@@ -55,6 +66,7 @@ export class RpcServer implements OrchestratorClient<OrchestratorEvent> {
 	private readonly _drain: (() => Promise<void>) | undefined;
 	private readonly _onShutdown: ((reason?: string) => void) | undefined;
 	private readonly _sink: MessageSink;
+	private readonly _inFlight = new Map<string, AbortController>();
 
 	constructor(options: RpcServerOptions) {
 		this._orchestrator = options.orchestrator;
@@ -80,27 +92,61 @@ export class RpcServer implements OrchestratorClient<OrchestratorEvent> {
 	 */
 	handleCommand(command: RpcCommand): void {
 		void this._dispatch(command).catch((error: unknown) => {
-			this.fail(command.id, command.cmd, formatError(error), errorCode(error));
+			this.fail(command.id, command.cmd, formatError(error), classifyError(error));
 		});
 	}
 
-	fail(id: string | undefined, cmd: string, error: string, code?: string): void {
-		this._send(
-			code === undefined
-				? { type: "response", id, cmd, ok: false, error }
-				: { type: "response", id, cmd, ok: false, error, code },
-		);
+	fail(id: string | undefined, cmd: string, error: string, code: RpcErrorCode): void {
+		this._send({ type: "response", id, cmd, ok: false, error, code });
 	}
 
 	private async _dispatch(command: RpcCommand): Promise<void> {
-		const data = await this._run(command);
-		// The switch in `_run` pairs each `cmd` with its own result, which the
-		// distributed response type states but no inference can carry across the
-		// call. The cast is that pairing, asserted once here.
-		this._send({ type: "response", id: command.id, cmd: command.cmd, ok: true, data } as RpcSuccessFrame);
+		const run = this._beginRun(command);
+		try {
+			const data = await this._run(command, run?.signal);
+			// The switch in `_run` pairs each `cmd` with its own result, which the
+			// distributed response type states but no inference can carry across the
+			// call. The cast is that pairing, asserted once here.
+			this._send({ type: "response", id: command.id, cmd: command.cmd, ok: true, data } as RpcSuccessFrame);
+		} finally {
+			run?.end();
+		}
 	}
 
-	private async _run(command: RpcCommand): Promise<RpcCommandResults[RpcCommandName]> {
+	/**
+	 * Put a command under a signal, if it is one that can wait. The deadline and a
+	 * `cancel` trip the same signal and each aborts with its own `RpcError`, so
+	 * whichever fired is what the client is told - the code comes from the reason
+	 * rather than from asking afterwards which of the two it was.
+	 */
+	private _beginRun(command: RpcCommand): CommandRun | undefined {
+		if (command.cmd !== "prompt" && command.cmd !== "wait_idle") return undefined;
+		const { id, deadlineMs } = command;
+		if (id !== undefined && this._inFlight.has(id)) {
+			throw new RpcError("invalid_command", `Command id ${id} is already in flight.`);
+		}
+		if (deadlineMs !== undefined && (!Number.isFinite(deadlineMs) || deadlineMs <= 0)) {
+			throw new RpcError("invalid_command", `deadlineMs must be a positive number of milliseconds: ${deadlineMs}`);
+		}
+
+		const controller = new AbortController();
+		if (id !== undefined) this._inFlight.set(id, controller);
+		const timer =
+			deadlineMs === undefined
+				? undefined
+				: setTimeout(() => {
+						controller.abort(new RpcError("timeout", `${command.cmd} exceeded its ${deadlineMs}ms deadline.`));
+					}, deadlineMs);
+		return {
+			signal: controller.signal,
+			end: () => {
+				if (timer !== undefined) clearTimeout(timer);
+				if (id !== undefined && this._inFlight.get(id) === controller) this._inFlight.delete(id);
+			},
+		};
+	}
+
+	private async _run(command: RpcCommand, signal?: AbortSignal): Promise<RpcCommandResults[RpcCommandName]> {
 		const orchestrator = this._orchestrator;
 		switch (command.cmd) {
 			case "spawn": {
@@ -121,12 +167,7 @@ export class RpcServer implements OrchestratorClient<OrchestratorEvent> {
 					images: command.images,
 				});
 			case "prompt":
-				return await this._sink.prompt({
-					targetAgentId: command.agentId,
-					body: command.body,
-					mode: "next_turn",
-					images: command.images,
-				});
+				return await this._prompt(command.agentId, { body: command.body, images: command.images }, signal);
 			case "abort":
 				return await orchestrator.abortAgent(command.agentId, "human");
 			case "dispose": {
@@ -140,7 +181,9 @@ export class RpcServer implements OrchestratorClient<OrchestratorEvent> {
 			case "compact":
 				return await orchestrator.compactAgent(command.agentId, command.customInstructions);
 			case "wait_idle":
-				await orchestrator.waitForAgentIdle(command.agentId);
+				// A stopped wait leaves the agent exactly as it was: this command only
+				// ever watched it.
+				await orchestrator.waitForAgentIdle(command.agentId, signal === undefined ? {} : { signal });
 				return {};
 			case "list_agents":
 				return { agents: orchestrator.listAgents().agents };
@@ -153,6 +196,12 @@ export class RpcServer implements OrchestratorClient<OrchestratorEvent> {
 				return {};
 			case "cancel_human_request":
 				return { cancelled: await orchestrator.cancelHumanRequest(command.requestId, command.reason) };
+			case "cancel": {
+				const controller = this._inFlight.get(command.commandId);
+				if (!controller) return { cancelled: false };
+				controller.abort(new RpcError("aborted", `Command ${command.commandId} was cancelled by the client.`));
+				return { cancelled: true };
+			}
 			case "shutdown":
 				this._onShutdown?.(command.reason);
 				return {};
@@ -160,7 +209,46 @@ export class RpcServer implements OrchestratorClient<OrchestratorEvent> {
 				// The union is exhaustive above; this is a frame off the wire, so the
 				// name is whatever the client typed. Answering `ok` with no data
 				// would let a typo read as success.
-				throw new Error(`Unknown command: ${(command as { cmd: string }).cmd}`);
+				throw new RpcError("invalid_command", `Unknown command: ${(command as { cmd: string }).cmd}`);
+		}
+	}
+
+	/**
+	 * A prompt, and if it is under a signal, a prompt whose end is guaranteed
+	 * before the answer goes out.
+	 *
+	 * A tripped signal aborts the agent and then *awaits the run it aborted*. That
+	 * is the point: when the `timeout` or `aborted` response arrives, the agent has
+	 * settled and its remaining events are already on the stream, so a batch runner
+	 * can move to the next sample without racing the last one's tail. Abandoning
+	 * the run and answering early would leave a live model loop writing events
+	 * attributed to a command the client considers finished.
+	 */
+	private async _prompt(
+		agentId: AgentId,
+		input: { readonly body: string; readonly images?: readonly ImageContent[] },
+		signal?: AbortSignal,
+	): Promise<PromptOutcome> {
+		const run = this._sink.prompt({
+			targetAgentId: agentId,
+			body: input.body,
+			mode: "next_turn",
+			images: input.images,
+		});
+		if (!signal) return await run;
+
+		const stopped = new Promise<never>((_resolve, reject) => {
+			signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+		});
+		try {
+			return await Promise.race([run, stopped]);
+		} catch (error) {
+			if (!signal.aborted) throw error;
+			// Both are best-effort: the agent may already be gone, and the run's own
+			// failure is not what the client asked about.
+			await this._orchestrator.abortAgent(agentId, "human").catch(() => {});
+			await run.catch(() => {});
+			throw signal.reason;
 		}
 	}
 
@@ -172,16 +260,10 @@ export class RpcServer implements OrchestratorClient<OrchestratorEvent> {
 	private _requireModel(reference: string): RuntimeModel {
 		const separator = reference.indexOf("/");
 		if (separator <= 0 || separator === reference.length - 1) {
-			throw new Error(`Model reference must be 'provider/id': ${reference}`);
+			throw new RpcError("invalid_command", `Model reference must be 'provider/id': ${reference}`);
 		}
 		const model = this._models.find(reference.slice(0, separator), reference.slice(separator + 1));
-		if (!model) throw new Error(`Unknown model reference: ${reference}`);
+		if (!model) throw new RpcError("model_unavailable", `Unknown model reference: ${reference}`);
 		return model;
 	}
-}
-
-function errorCode(error: unknown): string | undefined {
-	if (error instanceof OrchestratorError) return error.code;
-	if (error instanceof MessageError) return error.code;
-	return undefined;
 }

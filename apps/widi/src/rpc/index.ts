@@ -36,6 +36,8 @@ export interface WidiRpcOptions {
 	readonly profileId?: string;
 	/** Start with no agent at all; the client spawns whatever it needs. */
 	readonly noRoot?: boolean;
+	/** How long a human request waits for an answer. Unset waits forever. */
+	readonly humanTimeoutMs?: number;
 }
 
 export async function runWidiRpc(options: WidiRpcOptions): Promise<void> {
@@ -58,7 +60,7 @@ export async function runWidiRpc(options: WidiRpcOptions): Promise<void> {
 	const send = (frame: RpcOutbound): void => {
 		stdout.write(serializeJsonLine(frame));
 	};
-	const human = new RpcHumanChannel({ send });
+	const human = new RpcHumanChannel({ send, timeoutMs: options.humanTimeoutMs });
 
 	let server: RpcServer | undefined;
 	/**
@@ -84,7 +86,9 @@ export async function runWidiRpc(options: WidiRpcOptions): Promise<void> {
 	const route = (line: string): void => {
 		const parsed = parseInbound(line);
 		if (parsed.kind === "invalid") {
-			afterReady(() => send({ type: "response", cmd: "parse", ok: false, error: parsed.message }));
+			afterReady(() =>
+				send({ type: "response", cmd: "parse", ok: false, error: parsed.message, code: "invalid_command" }),
+			);
 			return;
 		}
 		if (parsed.kind === "human_response") {
@@ -95,6 +99,7 @@ export async function runWidiRpc(options: WidiRpcOptions): Promise<void> {
 						cmd: "human_response",
 						ok: false,
 						error: `Unknown human request: ${parsed.frame.requestId}`,
+						code: "invalid_command",
 					}),
 				);
 			}
@@ -187,6 +192,7 @@ export async function runWidiRpc(options: WidiRpcOptions): Promise<void> {
 	await closed;
 }
 
+export { classifyError, RpcError, type RpcErrorCode } from "./errors.ts";
 export { RpcServer } from "./server.ts";
 export * from "./types.ts";
 export type { WireAssistantMessageEvent, WireHarnessEvent, WireOrchestratorEvent } from "./wire-event.ts";

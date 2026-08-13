@@ -12,6 +12,7 @@ interface EntryOptions {
 	agentDir?: string;
 	profileId?: string;
 	noRoot?: boolean;
+	humanTimeoutMs?: number;
 }
 
 function parseArgs(argv: string[]): EntryOptions {
@@ -34,6 +35,9 @@ function parseArgs(argv: string[]): EntryOptions {
 			case "--no-root":
 				options.noRoot = true;
 				break;
+			case "--human-timeout":
+				options.humanTimeoutMs = requirePositiveInteger(requireValue(argv, ++index, argument), argument);
+				break;
 			default:
 				throw new Error(`Unknown argument: ${argument}`);
 		}
@@ -50,6 +54,14 @@ function requireValue(argv: string[], index: number, flag: string): string {
 	const value = argv[index];
 	if (value === undefined) throw new Error(`Missing value for ${flag}`);
 	return value;
+}
+
+function requirePositiveInteger(value: string, flag: string): number {
+	const parsed = Number(value);
+	if (!Number.isInteger(parsed) || parsed <= 0) {
+		throw new Error(`${flag} expects a positive whole number of milliseconds, got: ${value}`);
+	}
+	return parsed;
 }
 
 // From the environment alone, before anything can issue a request. The runtime

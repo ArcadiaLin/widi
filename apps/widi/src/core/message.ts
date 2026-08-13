@@ -153,7 +153,12 @@ export type MessageDeliveryMethod = "prompt" | "follow_up" | "steer" | "append";
 export type MessageDeliveryDecision =
 	| { readonly kind: "deliver"; readonly method: MessageDeliveryMethod }
 	| { readonly kind: "defer" }
-	| { readonly kind: "reject"; readonly reason: string };
+	/**
+	 * The code travels with the reason because the two rejections mean opposite
+	 * things to a caller - one is worth retrying and the other never will be - and
+	 * only this function knows which it produced.
+	 */
+	| { readonly kind: "reject"; readonly code: MessageErrorCode; readonly reason: string };
 
 /**
  * Result of running the extension input pipeline over a message. Structurally
@@ -324,7 +329,12 @@ export type MessageSendOutcome =
 	| { readonly kind: "accepted" }
 	| { readonly kind: "blocked"; readonly inputId: string; readonly reason?: string; readonly blockedBy: string };
 
-export type MessageErrorCode = "message_invalid" | "target_unavailable" | "delivery_rejected";
+export type MessageErrorCode =
+	| "message_invalid"
+	/** The target can never take this message. */
+	| "target_unavailable"
+	/** The target's phase refused it. The same message may be accepted later. */
+	| "target_busy";
 
 export class MessageError extends Error {
 	readonly code: MessageErrorCode;
@@ -404,14 +414,22 @@ export function decideMessageDelivery(input: {
 }): MessageDeliveryDecision {
 	const { phase, targetAgentId } = input;
 	if (phase === undefined) {
-		return { kind: "reject", reason: `Agent ${targetAgentId} can no longer receive messages.` };
+		return {
+			kind: "reject",
+			code: "target_unavailable",
+			reason: `Agent ${targetAgentId} can no longer receive messages.`,
+		};
 	}
 	// An append drives no agent loop and joins no queue, so no phase can refuse
 	// it: the harness buffers the write behind whatever is running and lands it
 	// at that operation's save point. It is the one method with no phase gate.
 	if (input.mode === "precede") return { kind: "deliver", method: "append" };
 	if (input.requiresIdle && phase !== "idle") {
-		return { kind: "reject", reason: `Agent ${targetAgentId} cannot accept a prompt while ${phase}.` };
+		return {
+			kind: "reject",
+			code: "target_busy",
+			reason: `Agent ${targetAgentId} cannot accept a prompt while ${phase}.`,
+		};
 	}
 	// Maintenance work does not run an agent loop, so a steer or follow-up would
 	// be accepted into a queue nothing drains. It waits for the next phase change
@@ -633,7 +651,7 @@ export class MessageDeliveryQueue {
 				if (decision.kind === "defer") break;
 				if (decision.kind === "reject") {
 					queue.shift();
-					this._fail(head, new MessageError("delivery_rejected", decision.reason));
+					this._fail(head, new MessageError(decision.code, decision.reason));
 					continue;
 				}
 
