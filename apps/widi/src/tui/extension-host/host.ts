@@ -21,6 +21,7 @@ import {
 	unregisterExtensionEntryRenderer,
 	unregisterExtensionMessageRenderer,
 } from "./renderers.ts";
+import { wrapExtensionComponent, wrapExtensionComponentFactory } from "./safe-component.ts";
 import { ExtensionShortcutRegistry } from "./shortcuts.ts";
 import {
 	TUI_EXTENSION_API_VERSION,
@@ -280,7 +281,18 @@ export class TuiExtensionHost {
 			}
 			// Re-setting a key replaces the widget; unregister disposes the old one.
 			this.layout.unregister(key);
-			const diagnostic = this.layout.register({ key, slot, scope: "global", factory, order: EXTENSION_WIDGET_ORDER });
+			const safeFactory = wrapExtensionComponentFactory(factory, {
+				extensionId,
+				label: `${slot} widget '${key}'`,
+				reportDiagnostic: this.reportDiagnostic,
+			});
+			const diagnostic = this.layout.register({
+				key,
+				slot,
+				scope: "global",
+				factory: safeFactory,
+				order: EXTENSION_WIDGET_ORDER,
+			});
 			if (diagnostic) {
 				this.reportDiagnostic({ ...diagnostic, extensionId });
 				return;
@@ -351,7 +363,12 @@ export class TuiExtensionHost {
 				setLayoutComponent("header", `ext.${extensionId}.header`, factory);
 			},
 			showOverlay: (component, options) => {
-				const handle = this.overlays.show(component, { dismissible: true, ...options });
+				const safeComponent = wrapExtensionComponent(component, {
+					extensionId,
+					label: "overlay",
+					reportDiagnostic: this.reportDiagnostic,
+				});
+				const handle = this.overlays.show(safeComponent, { dismissible: true, ...options });
 				this.disposers.push({
 					extensionId,
 					dispose: () => {
@@ -359,7 +376,15 @@ export class TuiExtensionHost {
 					},
 				});
 				this.requestRender();
-				return handle;
+				// The stack holds the guarded component; the extension gets its own
+				// back, so the handle stays the one it can compare and reuse.
+				return {
+					component,
+					get closed() {
+						return handle.closed;
+					},
+					close: () => handle.close(),
+				};
 			},
 			stage: (text: string) => {
 				this.stageMessage?.(extensionId, text);

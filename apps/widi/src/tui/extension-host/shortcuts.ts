@@ -5,6 +5,7 @@ import {
 	KeybindingsManager,
 } from "@earendil-works/pi-tui";
 import type { OrchestratorDiagnostic } from "../../core/diagnostics.ts";
+import { formatError } from "../../utils/errors.ts";
 import { isKeyId } from "../keybindings.ts";
 import type { TuiExtensionShortcutContext, TuiExtensionShortcutOptions } from "./types.ts";
 
@@ -108,8 +109,10 @@ export class ExtensionShortcutRegistry {
 
 	/**
 	 * Invoke the handler of the matching action. Returns whether the input was
-	 * consumed. A throwing handler is contained: one broken shortcut must not
-	 * take the input path down with it.
+	 * consumed. A failing handler is contained: one broken shortcut must not
+	 * take the input path down with it. An async handler is contained too - its
+	 * rejection arrives after dispatch has returned, where nothing but the
+	 * application's fatal-error boundary would be left to catch it.
 	 */
 	dispatch(data: string): boolean {
 		const actionId = this.matchAction(data);
@@ -117,19 +120,30 @@ export class ExtensionShortcutRegistry {
 		if (!actionId || !record) return false;
 		const context: TuiExtensionShortcutContext = { extensionId: record.extensionId, actionId };
 		try {
-			record.handler(context);
+			const result = record.handler(context);
+			if (isPromiseLike(result)) {
+				void Promise.resolve(result).catch((error: unknown) => this.reportFailure(actionId, record, error));
+			}
 		} catch (error) {
-			this.reportDiagnostic({
-				severity: "warning",
-				code: "tui_extension.shortcut_failed",
-				message: `Shortcut action "${actionId}" failed: ${error instanceof Error ? error.message : String(error)}`,
-				extensionId: record.extensionId,
-			});
+			this.reportFailure(actionId, record, error);
 		}
 		return true;
+	}
+
+	private reportFailure(actionId: string, record: ExtensionShortcutRecord, error: unknown): void {
+		this.reportDiagnostic({
+			severity: "warning",
+			code: "tui_extension.shortcut_failed",
+			message: `Shortcut action "${actionId}" failed: ${formatError(error)}`,
+			extensionId: record.extensionId,
+		});
 	}
 
 	private rebuild(): void {
 		this.manager = new KeybindingsManager(this.keybindingDefinitions, this.userBindings);
 	}
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+	return typeof (value as PromiseLike<unknown> | undefined)?.then === "function";
 }

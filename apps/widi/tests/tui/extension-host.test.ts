@@ -24,6 +24,10 @@ import type { JsonValue } from "../../src/utils/json.ts";
 
 const ANSI_SEQUENCE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 
+function stripAnsi(line: string): string {
+	return line.replace(ANSI_SEQUENCE, "");
+}
+
 function identity(id: string, entryPath: string): ExtensionIdentity {
 	return {
 		id,
@@ -434,6 +438,36 @@ describe("TuiExtensionHost", () => {
 		});
 	});
 
+	it("contains a rejecting async shortcut handler", async () => {
+		const fixture = createHostFixture();
+		fixture.modules.set("/ext/acme/index.ts", {
+			tui: (api: WidiTuiExtensionApi) => {
+				api.registerShortcut("poke", {
+					defaultKeys: "ctrl+x",
+					handler: async () => {
+						await Promise.resolve();
+						throw new Error("async handler boom");
+					},
+				});
+			},
+		});
+
+		const host = fixture.activate([["acme", identity("acme", "/ext/acme/index.ts")]]);
+		await host.activate();
+
+		// Dispatch returns before the handler settles; the rejection lands later,
+		// where an unwatched promise would reach the process instead.
+		expect(host.handleShortcut("\x18")).toBe(true);
+		expect(fixture.diagnostics).toEqual([]);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(fixture.diagnostics[0]).toMatchObject({
+			severity: "warning",
+			code: "tui_extension.shortcut_failed",
+			message: expect.stringContaining("async handler boom"),
+			extensionId: "acme",
+		});
+	});
+
 	it("forwards the built-in override diagnostic when a presenter shadows one", async () => {
 		const fixture = createHostFixture();
 		fixture.modules.set("/ext/acme/index.ts", {
@@ -599,6 +633,95 @@ describe("TuiExtensionHost", () => {
 		]);
 	});
 
+	it("contains a widget that throws while rendering", async () => {
+		const fixture = createHostFixture();
+		fixture.modules.set("/ext/acme/index.ts", {
+			tui: (api: WidiTuiExtensionApi) => {
+				api.setWidget(
+					"clock",
+					() => ({
+						render: () => {
+							throw new Error("widget exploded");
+						},
+						invalidate: () => {},
+					}),
+					{ placement: "aboveEditor" },
+				);
+			},
+		});
+
+		const host = fixture.activate([["acme", identity("acme", "/ext/acme/index.ts")]]);
+		await host.activate();
+
+		const rendered = fixture.children.map((component) => component.render(80).map(stripAnsi));
+		expect(rendered[2]?.[0]).toContain("widget exploded");
+		expect(fixture.diagnostics).toHaveLength(1);
+		expect(fixture.diagnostics[0]).toMatchObject({
+			severity: "warning",
+			code: "tui_extension.component_failed",
+			extensionId: "acme",
+		});
+
+		// Every later frame renders the placeholder again without adding a
+		// diagnostic per frame.
+		fixture.children.map((component) => component.render(80));
+		expect(fixture.diagnostics).toHaveLength(1);
+	});
+
+	it("contains a widget factory that throws", async () => {
+		const fixture = createHostFixture();
+		fixture.modules.set("/ext/acme/index.ts", {
+			tui: (api: WidiTuiExtensionApi) => {
+				api.setWidget(
+					"clock",
+					() => {
+						throw new Error("factory exploded");
+					},
+					{ placement: "aboveEditor" },
+				);
+			},
+		});
+
+		const host = fixture.activate([["acme", identity("acme", "/ext/acme/index.ts")]]);
+		await host.activate();
+
+		const rendered = fixture.children.map((component) => component.render(80).map(stripAnsi));
+		expect(rendered[2]?.[0]).toContain("factory exploded");
+		expect(fixture.diagnostics[0]).toMatchObject({
+			severity: "warning",
+			code: "tui_extension.component_failed",
+			extensionId: "acme",
+		});
+	});
+
+	it("contains an overlay that throws while rendering", async () => {
+		const fixture = createHostFixture();
+		let api: WidiTuiExtensionApi | undefined;
+		fixture.modules.set("/ext/acme/index.ts", {
+			tui: (hostApi: WidiTuiExtensionApi) => {
+				api = hostApi;
+			},
+		});
+
+		const host = fixture.activate([["acme", identity("acme", "/ext/acme/index.ts")]]);
+		await host.activate();
+
+		api?.showOverlay({
+			render: () => {
+				throw new Error("overlay exploded");
+			},
+			invalidate: () => {},
+		});
+
+		const lines = fixture.shownOverlays[0]?.component.render(40).map(stripAnsi) ?? [];
+		expect(lines[0]).toContain("overlay exploded");
+		expect(fixture.diagnostics[0]).toMatchObject({
+			severity: "warning",
+			code: "tui_extension.component_failed",
+			extensionId: "acme",
+		});
+	});
+
 	it("refuses a widget with an invalid key", async () => {
 		const fixture = createHostFixture();
 		fixture.modules.set("/ext/acme/index.ts", {
@@ -633,7 +756,10 @@ describe("TuiExtensionHost", () => {
 		const overlay: Component = { render: () => ["overlay"], invalidate: () => {} };
 		const handle = api?.showOverlay(overlay);
 		expect(fixture.shownOverlays).toHaveLength(1);
-		expect(fixture.shownOverlays[0]?.component).toBe(overlay);
+		// The stack holds the render-guarded stand-in; the extension's handle
+		// still names the component it passed in.
+		expect(fixture.shownOverlays[0]?.component.render(80)).toEqual(["overlay"]);
+		expect(handle?.component).toBe(overlay);
 		expect(fixture.shownOverlays[0]?.options?.dismissible).toBe(true);
 		expect(fixture.renderRequests()).toBe(1);
 		expect(handle?.closed).toBe(false);

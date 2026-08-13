@@ -8,12 +8,24 @@
  * exactly the failure this layer exists to prevent.
  */
 
+import type { FileError, Result } from "@arcadialin/agent-core";
+import { err, FileError as PiFileError } from "@arcadialin/agent-core";
 import { describe, expect, it } from "vitest";
 import { contentHash, JsonlObjectStore, PersistenceDiagnostics } from "../../src/core/persistence/index.ts";
 import { MemoryFileSystem } from "../helpers/memory-fs.ts";
 
 const DIR = "/runs/--w--/root/persistence/test__counter";
 const LOG = `${DIR}/objects.jsonl`;
+
+/** A file system whose reads fail the way an EMFILE or EACCES burst does. */
+class UnreadableFileSystem extends MemoryFileSystem {
+	failReads = false;
+
+	override async readTextFile(path: string): Promise<Result<string, FileError>> {
+		if (this.failReads) return err(new PiFileError("unknown", `Could not read ${path}`, path));
+		return await super.readTextFile(path);
+	}
+}
 
 async function openStore(
 	fs: MemoryFileSystem,
@@ -120,6 +132,46 @@ describe("JsonlObjectStore", () => {
 		await openStore(fs, { diagnostics });
 		expect(diagnostics.entries.map((entry) => entry.code)).toEqual(["persistence.corrupt_log"]);
 		expect(diagnostics.hasErrors).toBe(true);
+	});
+
+	// A log that exists but could not be read is the most dangerous state there
+	// is: the first write would take the "no file yet" path and rewrite the
+	// header over everything the namespace ever stored.
+	it("refuses to write a log it could not read", async () => {
+		const fs = new UnreadableFileSystem();
+		const store = await openStore(fs);
+		const root = await store.putObject({ data: { count: 1 } });
+		const before = fs.files.get(LOG);
+
+		fs.failReads = true;
+		const diagnostics = new PersistenceDiagnostics();
+		const reopened = await openStore(fs, { diagnostics });
+		fs.failReads = false;
+
+		await expect(reopened.putObject({ data: { count: 2 } })).rejects.toThrow();
+		expect(fs.files.get(LOG)).toBe(before);
+		expect(diagnostics.entries.map((entry) => entry.code)).toEqual(["persistence.corrupt_log"]);
+
+		// The seal is this handle's, not the log's: the next open reads it fine.
+		const later = await openStore(fs);
+		expect(later.has(root)).toBe(true);
+	});
+
+	// Appending under an unreadable header would write objects no later open can
+	// reach, and the refs naming them go on the branch regardless.
+	it("refuses to write a log whose header is torn", async () => {
+		const fs = new MemoryFileSystem();
+		const store = await openStore(fs);
+		await store.putObject({ data: { count: 1 } });
+		const lines = logLines(fs);
+		await fs.writeFile(LOG, `{"type":"persistence-obje\n${lines[1]}\n`);
+		const before = fs.files.get(LOG);
+
+		const diagnostics = new PersistenceDiagnostics();
+		const reopened = await openStore(fs, { diagnostics });
+		await expect(reopened.putObject({ data: { count: 2 } })).rejects.toThrow();
+		expect(fs.files.get(LOG)).toBe(before);
+		expect(new Set(diagnostics.entries.map((entry) => entry.code))).toEqual(new Set(["persistence.corrupt_log"]));
 	});
 
 	it("stops at a log written by a newer build instead of guessing", async () => {

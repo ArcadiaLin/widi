@@ -53,6 +53,7 @@ export class OutputAccumulator {
 
 	private tempFilePath: string | undefined;
 	private tempFileStream: WriteStream | undefined;
+	private tempFileError: Error | undefined;
 
 	constructor(options: OutputAccumulatorOptions = {}) {
 		this.maxLines = options.maxLines ?? DEFAULT_MAX_LINES;
@@ -119,10 +120,10 @@ export class OutputAccumulator {
 		const stream = this.tempFileStream;
 		this.tempFileStream = undefined;
 
-		await new Promise<void>((resolve, reject) => {
-			const onError = (error: Error) => {
+		await new Promise<void>((resolve) => {
+			const onError = () => {
 				stream.off("finish", onFinish);
-				reject(error);
+				resolve();
 			};
 			const onFinish = () => {
 				stream.off("error", onError);
@@ -132,6 +133,11 @@ export class OutputAccumulator {
 			stream.once("finish", onFinish);
 			stream.end();
 		});
+	}
+
+	/** Why the full output was not preserved, when the overflow file failed. */
+	getTempFileError(): Error | undefined {
+		return this.tempFileError;
 	}
 
 	getLastLineBytes(): number {
@@ -201,14 +207,28 @@ export class OutputAccumulator {
 		);
 	}
 
+	/**
+	 * Opens the overflow file, or degrades to the in-memory tail if it cannot be
+	 * written. A stream 'error' with no listener is an uncaughtException, so the
+	 * listener is attached before anything can fail: a full disk must not take
+	 * the process down over output nobody asked to keep.
+	 */
 	private ensureTempFile(): void {
-		if (this.tempFilePath) {
+		if (this.tempFilePath || this.tempFileError) {
 			return;
 		}
-		this.tempFilePath = defaultTempFilePath(this.tempFilePrefix);
-		this.tempFileStream = createWriteStream(this.tempFilePath);
+		const path = defaultTempFilePath(this.tempFilePrefix);
+		const stream = createWriteStream(path);
+		stream.on("error", (error: Error) => {
+			this.tempFileError = error;
+			this.tempFilePath = undefined;
+			this.tempFileStream = undefined;
+			stream.destroy();
+		});
+		this.tempFilePath = path;
+		this.tempFileStream = stream;
 		for (const chunk of this.rawChunks) {
-			this.tempFileStream.write(chunk);
+			stream.write(chunk);
 		}
 		this.rawChunks = [];
 	}

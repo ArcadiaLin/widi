@@ -175,7 +175,10 @@ export class JsonlObjectStore implements CustomStorage {
 		if (!exists.ok || !exists.value) return;
 		const read = await this._fs.readTextFile(this._filePath);
 		if (!read.ok) {
-			this._report("error", "persistence.corrupt_log", `Failed to read ${this._filePath}: ${read.error.message}`);
+			// The log exists and its contents are unknown, which is the one state
+			// a write must not act on: appending would start by rewriting the
+			// header over objects that are still there.
+			this._seal("error", "persistence.corrupt_log", `Failed to read ${this._filePath}: ${read.error.message}`);
 			return;
 		}
 		this._fileReady = true;
@@ -198,11 +201,11 @@ export class JsonlObjectStore implements CustomStorage {
 			if (header === undefined) {
 				header = toObjectLogHeader(parsed);
 				if (!header) {
-					this._report(
-						"error",
-						"persistence.corrupt_log",
-						`${this._filePath} does not start with an object log header.`,
-					);
+					// Without a readable header nothing that follows can be trusted,
+					// and appending to it would hide the new objects too: the next
+					// open stops here again and never reaches them, leaving the refs
+					// that name them dangling.
+					this._seal("error", "persistence.corrupt_log", `${this._filePath} does not start with an object log header.`);
 					return;
 				}
 				this._storedFormatVersion = header.formatVersion;

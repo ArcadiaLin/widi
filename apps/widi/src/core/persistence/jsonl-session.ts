@@ -15,6 +15,12 @@
  * - {@link getEntriesToFork}, which for the same reason must not hand a fork
  *   the compaction-truncated prefix - the refs above the checkpoint would be
  *   silently dropped and the new session would come back missing state.
+ * - Recovery from a torn last line. pi refuses the whole file, which for a log
+ *   appended to on every message means a killed run costs the conversation.
+ *   The layer's own promise is that recovery always produces a readable
+ *   conversation (`utils/diagnostics.ts`), so an unfinished trailing line is
+ *   dropped and reported. Damage of any other shape still throws exactly what
+ *   pi throws.
  *
  * It knows what a persistence ref *is* only far enough to find one. What a
  * namespace's state means never enters here.
@@ -171,11 +177,47 @@ function headerToSessionMetadata(header: SessionHeader, path: string): JsonlSess
 	};
 }
 
+/**
+ * A trailing fragment of a line the writer never finished.
+ *
+ * `content` is the file without it, which is what a later write has to put back
+ * on disk: leaving the fragment in place would turn a tear at the end into a
+ * hole in the middle, and a hole is not recoverable.
+ */
+interface TornTail {
+	readonly text: string;
+	readonly content: string;
+}
+
+/**
+ * Split off an unterminated final line that is not parseable JSON.
+ *
+ * This is the exact shape a killed writer leaves: `appendFile` writes
+ * `<entry>\n`, so a partial write ends mid-line with no newline after it.
+ * Damage that *is* newline-terminated is a hole rather than a tear and still
+ * throws, as does an unparseable line anywhere else in the file.
+ */
+function splitTornTail(content: string): { content: string; tornTail?: TornTail } {
+	const lastNewline = content.lastIndexOf("\n");
+	const trailing = content.slice(lastNewline + 1);
+	if (!trailing.trim()) return { content };
+	try {
+		JSON.parse(trailing);
+		return { content };
+	} catch {
+		return {
+			content: content.slice(0, lastNewline + 1),
+			tornTail: { text: trailing, content: content.slice(0, lastNewline + 1) },
+		};
+	}
+}
+
 async function loadJsonlStorage(
 	fs: PersistenceFileSystem,
 	filePath: string,
-): Promise<{ header: SessionHeader; entries: SessionTreeEntry[]; leafId: string | null }> {
-	const content = getFileSystemResultOrThrow(await fs.readTextFile(filePath), `Failed to read session ${filePath}`);
+): Promise<{ header: SessionHeader; entries: SessionTreeEntry[]; leafId: string | null; tornTail?: TornTail }> {
+	const raw = getFileSystemResultOrThrow(await fs.readTextFile(filePath), `Failed to read session ${filePath}`);
+	const { content, tornTail } = splitTornTail(raw);
 	const lines = content.split("\n").filter((line) => line.trim());
 	if (lines.length === 0) {
 		throw invalidSession(filePath, "missing session header");
@@ -189,7 +231,7 @@ async function loadJsonlStorage(
 		entries.push(entry);
 		leafId = leafIdAfterEntry(entry);
 	}
-	return { header, entries, leafId };
+	return { header, entries, leafId, ...(tornTail === undefined ? undefined : { tornTail }) };
 }
 
 /**
@@ -292,6 +334,7 @@ export class JsonlSession implements SessionStorage<JsonlSessionMetadata> {
 	private _byId: Map<string, SessionTreeEntry>;
 	private _labelsById: Map<string, string>;
 	private _currentLeafId: string | null;
+	private _tornTail: TornTail | undefined;
 
 	private constructor(
 		fs: PersistenceFileSystem,
@@ -299,6 +342,7 @@ export class JsonlSession implements SessionStorage<JsonlSessionMetadata> {
 		header: SessionHeader,
 		entries: SessionTreeEntry[],
 		leafId: string | null,
+		tornTail?: TornTail,
 	) {
 		this._fs = fs;
 		this._filePath = filePath;
@@ -307,11 +351,12 @@ export class JsonlSession implements SessionStorage<JsonlSessionMetadata> {
 		this._byId = new Map(entries.map((entry) => [entry.id, entry]));
 		this._labelsById = buildLabelsById(entries);
 		this._currentLeafId = leafId;
+		this._tornTail = tornTail;
 	}
 
 	static async open(fs: PersistenceFileSystem, filePath: string): Promise<JsonlSession> {
 		const loaded = await loadJsonlStorage(fs, filePath);
-		return new JsonlSession(fs, filePath, loaded.header, loaded.entries, loaded.leafId);
+		return new JsonlSession(fs, filePath, loaded.header, loaded.entries, loaded.leafId, loaded.tornTail);
 	}
 
 	static async create(
@@ -349,6 +394,31 @@ export class JsonlSession implements SessionStorage<JsonlSessionMetadata> {
 		return this._filePath;
 	}
 
+	/**
+	 * The unfinished line this session was opened past, if there was one. The
+	 * caller reports it: losing the last thing a killed run was writing is worth
+	 * a word, and it is the only sign the file was not intact.
+	 */
+	get recoveredTornTail(): string | undefined {
+		return this._tornTail?.text;
+	}
+
+	/**
+	 * Drop the torn tail from the file before anything is appended after it.
+	 *
+	 * Deferred to the first write so that opening a damaged session to read it -
+	 * listing, inspecting, forking - never modifies the file.
+	 */
+	private async _repairTornTail(): Promise<void> {
+		const torn = this._tornTail;
+		if (!torn) return;
+		this._tornTail = undefined;
+		getFileSystemResultOrThrow(
+			await this._fs.writeFile(this._filePath, torn.content),
+			`Failed to repair session ${this._filePath}`,
+		);
+	}
+
 	async getMetadata(): Promise<JsonlSessionMetadata> {
 		return this._metadata;
 	}
@@ -371,6 +441,7 @@ export class JsonlSession implements SessionStorage<JsonlSessionMetadata> {
 			timestamp: new Date().toISOString(),
 			targetId: leafId,
 		};
+		await this._repairTornTail();
 		getFileSystemResultOrThrow(
 			await this._fs.appendFile(this._filePath, `${JSON.stringify(entry)}\n`),
 			`Failed to append session leaf ${entry.id}`,
@@ -386,6 +457,7 @@ export class JsonlSession implements SessionStorage<JsonlSessionMetadata> {
 	}
 
 	async appendEntry(entry: SessionTreeEntry): Promise<void> {
+		await this._repairTornTail();
 		getFileSystemResultOrThrow(
 			await this._fs.appendFile(this._filePath, `${JSON.stringify(entry)}\n`),
 			`Failed to append session entry ${entry.id}`,
