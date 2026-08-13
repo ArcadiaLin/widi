@@ -240,6 +240,25 @@ describe("coding tool shared primitives", () => {
 		expect(() => acc.append(Buffer.from("more"))).toThrow("Cannot append to a finished output accumulator");
 	});
 
+	it("degrades to the in-memory tail when the temp file cannot be opened", async () => {
+		const acc = new OutputAccumulator({ maxLines: 1, maxBytes: 1000, tempFilePrefix: "no-such-dir/widi-output" });
+		acc.append(Buffer.from("first line is long\n"));
+		acc.append(Buffer.from("second line is also long\n"));
+		acc.finish();
+
+		// The open failure surfaces as a stream 'error' on a later tick; an
+		// unlistened one would take the whole process down.
+		while (!acc.getTempFileError()) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+
+		const snapshot = acc.snapshot({ persistIfTruncated: true });
+		expect(snapshot.fullOutputPath).toBeUndefined();
+		expect(snapshot.truncation.truncated).toBe(true);
+		expect(snapshot.content).toBe("second line is also long");
+		await expect(acc.closeTempFile()).resolves.toBeUndefined();
+	});
+
 	it("spills the full raw output to a temp file without loss", async () => {
 		const acc = new OutputAccumulator({ maxLines: 1, maxBytes: 8 });
 		const chunk1 = Buffer.from("first line is long\n");
