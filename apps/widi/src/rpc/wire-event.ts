@@ -4,7 +4,7 @@
  * Every event but one crosses unchanged: the persistence layer already writes
  * session entries with `JSON.stringify`, so everything reachable from a branch
  * is JSON-safe by construction, and the remaining payloads were audited to be
- * plain data (`notes/develop/rpc-mode.md`, "已核实的事实").
+ * plain data (`docs/rpc.md` section 5).
  *
  * The exception is `message_update`, which carries the whole assistant message
  * accumulated so far - twice, as `message` and as `assistantMessageEvent

@@ -1,6 +1,9 @@
 /**
  * The RPC protocol: three blocks and no fourth.
  *
+ * `docs/rpc.md` is the specification and wins over this file when the two
+ * disagree; an external client is written against it, not against these types.
+ *
  * 1. Commands, a mechanical projection of the orchestrator's public methods
  *    (`apps/widi/docs/orchestrator.md` section 6). Every command that concerns
  *    one agent names it: there is no "current agent" here, because there is

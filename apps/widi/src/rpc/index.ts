@@ -15,8 +15,7 @@
  *
  * Only the core halves of extensions load here. That is not a degradation: the
  * dual-entry contract keeps every UI capability on the `tui` export, so a core
- * half has nothing to lose by there being no terminal - see
- * `notes/develop/rpc-mode.md`.
+ * half has nothing to lose by there being no terminal - see `docs/rpc.md`.
  */
 
 import { homedir } from "node:os";
