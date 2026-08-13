@@ -260,6 +260,58 @@ describe("what the port deliberately does not inherit", () => {
 		expect(full.namespaces.get("test:late")?.stateRoot).toBe(ROOT_LATE);
 	});
 
+	// pi refuses the whole file. This log is appended to on every message, so a
+	// killed run would cost the conversation - and the layer promises recovery
+	// always produces a readable one.
+	it("opens past a torn last line pi refuses", async () => {
+		const fs = fixture();
+		fs.files.set(PATH, `${fs.files.get(PATH) ?? ""}{"type":"message","id":"u3000`);
+
+		const widi = await JsonlSession.open(fs, PATH);
+		expect((await widi.getEntries()).map((entry) => entry.id)).toEqual(
+			ENTRIES.map((entry) => (entry as { id: string }).id),
+		);
+		expect(widi.recoveredTornTail).toBe('{"type":"message","id":"u3000');
+		expect((await errorCodes(fs))[1]).toBe("invalid_entry");
+	});
+
+	// Appending after the fragment would move the damage into the middle of the
+	// file, where nothing can recover from it.
+	it("drops the torn tail before writing after it", async () => {
+		const fs = fixture();
+		const intact = fs.files.get(PATH) ?? "";
+		fs.files.set(PATH, `${intact}{"type":"message","id":"u3000`);
+
+		const widi = await JsonlSession.open(fs, PATH);
+		await widi.appendEntry({
+			type: "session_info",
+			id: "s2000000",
+			parentId: "f1000000",
+			timestamp: "2026-08-01T00:00:12.000Z",
+			name: "after recovery",
+		});
+
+		expect(fs.files.get(PATH)?.startsWith(intact)).toBe(true);
+		expect(widi.recoveredTornTail).toBeUndefined();
+		const [reopened, pi] = await bothOpen(fs);
+		expect(await reopened.getSessionName()).toBe("after recovery");
+		expect(await pi.getSessionName()).toBe("after recovery");
+	});
+
+	// Damage that is not a tear stays fatal: a newline-terminated bad line is a
+	// hole, and a hole cannot be sized.
+	it("still refuses damage that is not an unfinished line", async () => {
+		const fs = fixture();
+		fs.files.set(PATH, `${fs.files.get(PATH) ?? ""}{"type":"message","id":"u3000\n`);
+		expect(await errorCodes(fs)).toEqual(["invalid_entry", "invalid_entry"]);
+
+		const middle = fixture();
+		const lines = (middle.files.get(PATH) ?? "").split("\n");
+		lines.splice(2, 0, "{ torn");
+		middle.files.set(PATH, lines.join("\n"));
+		expect(await errorCodes(middle)).toEqual(["invalid_entry", "invalid_entry"]);
+	});
+
 	it("throws on a cycle rather than walking it", async () => {
 		const entries: SessionTreeEntry[] = [
 			{ type: "session_info", id: "a", parentId: "b", timestamp: "2026-08-01T00:00:01.000Z", name: "a" },

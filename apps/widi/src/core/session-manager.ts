@@ -190,7 +190,7 @@ type CreateAgentSessionOptions = {
 	diagnostics?: PersistenceDiagnostics;
 };
 
-type ResumeAgentSessionOptions = { agentId: AgentId; info: PersistedSessionInfo };
+type ResumeAgentSessionOptions = { agentId: AgentId; info: PersistedSessionInfo; diagnostics?: PersistenceDiagnostics };
 
 export class SessionManager {
 	readonly repo: JsonlPersistenceRepo;
@@ -364,7 +364,9 @@ export class SessionManager {
 		if (cachedSession) {
 			return cachedSession;
 		}
-		const persisted = await this.repo.open(options.info.address);
+		const persisted = await this.repo.open(options.info.address, {
+			...(options.diagnostics === undefined ? undefined : { diagnostics: options.diagnostics }),
+		});
 		const session = toSession(persisted.session);
 		this._agentSessions.set(options.agentId, session);
 		this._agentAddresses.set(options.agentId, options.info.address);

@@ -972,7 +972,9 @@ export class AgentOrchestrator {
 					: options.origin.reference;
 			const resolvedProfile = await this._resolveResumeProfile(info.metadata.id, info.metadata);
 			const agentId = this._resumeAgentId(info, resolvedProfile.profile);
-			const session = await this.sessionManager.resumeAgentSession({ agentId, info });
+			const diagnostics = new PersistenceDiagnostics();
+			const session = await this.sessionManager.resumeAgentSession({ agentId, info, diagnostics });
+			await this._publishPersistenceDiagnostics(agentId, diagnostics.entries);
 			const context = await this.sessionManager.buildAgentSessionContext(agentId);
 			return {
 				agentId,

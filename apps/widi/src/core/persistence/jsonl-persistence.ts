@@ -174,12 +174,24 @@ export class JsonlPersistenceRepo {
 		});
 	}
 
-	async open(address: SessionAddress): Promise<PersistedSession> {
+	async open(
+		address: SessionAddress,
+		options?: { readonly diagnostics?: PersistenceDiagnostics },
+	): Promise<PersistedSession> {
 		const filePath = await this.sessionFilePath(address);
 		if (!getFileSystemResultOrThrow(await this._fs.exists(filePath), `Failed to check session ${filePath}`)) {
 			throw new SessionError("not_found", `Session not found: ${filePath}`);
 		}
 		const session = await JsonlSession.open(this._fs, filePath);
+		const torn = session.recoveredTornTail;
+		if (torn !== undefined) {
+			options?.diagnostics?.report({
+				severity: "warning",
+				code: "persistence.corrupt_log",
+				message: `${filePath} ended with an unfinished line (${torn.length} bytes); it was dropped so the session could be opened.`,
+				sessionKey: address.key,
+			});
+		}
 		return { address, metadata: await session.getMetadata(), session };
 	}
 
