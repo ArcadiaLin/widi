@@ -1057,7 +1057,9 @@ async function discoverDirectory(
 
 	// Sorted within the directory so one root's contents load in a stable order;
 	// the caller keeps roots in their own order rather than sorting across them.
-	const candidates = await Promise.all(listResult.value.map((entry) => candidateFromFileInfo(executionEnv, root, entry)));
+	const candidates = await Promise.all(
+		listResult.value.map((entry) => candidateFromFileInfo(executionEnv, root, entry)),
+	);
 	return {
 		candidates: candidates
 			.flatMap((candidate) => (candidate ? [candidate] : []))
