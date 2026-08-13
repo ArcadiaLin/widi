@@ -1,18 +1,27 @@
 #!/usr/bin/env node
 import { configureHttpDispatcher } from "./core/http-dispatcher.ts";
+import { runWidiRpc } from "./rpc/index.ts";
 import { runWidiTui } from "./tui/application.ts";
 
+/** The front end core is driven through. `tui` is the default. */
+type EntryMode = "tui" | "rpc";
+
 interface EntryOptions {
+	mode: EntryMode;
 	cwd: string;
 	agentDir?: string;
 	profileId?: string;
+	noRoot?: boolean;
 }
 
 function parseArgs(argv: string[]): EntryOptions {
-	const options: EntryOptions = { cwd: process.cwd() };
+	const options: EntryOptions = { mode: "tui", cwd: process.cwd() };
 	for (let index = 0; index < argv.length; index++) {
 		const argument = argv[index];
 		switch (argument) {
+			case "--mode":
+				options.mode = requireMode(requireValue(argv, ++index, argument));
+				break;
 			case "--cwd":
 				options.cwd = requireValue(argv, ++index, argument);
 				break;
@@ -22,11 +31,19 @@ function parseArgs(argv: string[]): EntryOptions {
 			case "--profile":
 				options.profileId = requireValue(argv, ++index, argument);
 				break;
+			case "--no-root":
+				options.noRoot = true;
+				break;
 			default:
 				throw new Error(`Unknown argument: ${argument}`);
 		}
 	}
 	return options;
+}
+
+function requireMode(value: string): EntryMode {
+	if (value === "tui" || value === "rpc") return value;
+	throw new Error(`Unknown mode: ${value}. Expected 'tui' or 'rpc'.`);
 }
 
 function requireValue(argv: string[], index: number, flag: string): string {
@@ -40,7 +57,11 @@ function requireValue(argv: string[], index: number, flag: string): string {
 // proxy or idle timeout.
 configureHttpDispatcher();
 
-runWidiTui(parseArgs(process.argv.slice(2))).catch((error) => {
+const options = parseArgs(process.argv.slice(2));
+
+// Errors go to stderr in both modes, which stays true in RPC: the protocol owns
+// stdout and everything else is pushed to stderr by the takeover.
+(options.mode === "rpc" ? runWidiRpc(options) : runWidiTui(options)).catch((error) => {
 	process.stderr.write(`${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
 	process.exitCode = 1;
 });
