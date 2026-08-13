@@ -27,7 +27,11 @@ export interface TuiExtensionShortcutOptions {
 	/** Default key sequence(s); the user can override them in keybindings.json. */
 	readonly defaultKeys: KeyId | KeyId[];
 	readonly description?: string;
-	readonly handler: (context: TuiExtensionShortcutContext) => void;
+	/**
+	 * Dispatch does not wait for an async handler, but it does watch it: a
+	 * rejected promise is reported as a diagnostic like a thrown error.
+	 */
+	readonly handler: (context: TuiExtensionShortcutContext) => void | Promise<void>;
 }
 
 /**

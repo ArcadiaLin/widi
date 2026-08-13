@@ -438,6 +438,36 @@ describe("TuiExtensionHost", () => {
 		});
 	});
 
+	it("contains a rejecting async shortcut handler", async () => {
+		const fixture = createHostFixture();
+		fixture.modules.set("/ext/acme/index.ts", {
+			tui: (api: WidiTuiExtensionApi) => {
+				api.registerShortcut("poke", {
+					defaultKeys: "ctrl+x",
+					handler: async () => {
+						await Promise.resolve();
+						throw new Error("async handler boom");
+					},
+				});
+			},
+		});
+
+		const host = fixture.activate([["acme", identity("acme", "/ext/acme/index.ts")]]);
+		await host.activate();
+
+		// Dispatch returns before the handler settles; the rejection lands later,
+		// where an unwatched promise would reach the process instead.
+		expect(host.handleShortcut("\x18")).toBe(true);
+		expect(fixture.diagnostics).toEqual([]);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(fixture.diagnostics[0]).toMatchObject({
+			severity: "warning",
+			code: "tui_extension.shortcut_failed",
+			message: expect.stringContaining("async handler boom"),
+			extensionId: "acme",
+		});
+	});
+
 	it("forwards the built-in override diagnostic when a presenter shadows one", async () => {
 		const fixture = createHostFixture();
 		fixture.modules.set("/ext/acme/index.ts", {
