@@ -26,7 +26,7 @@
 | 边界校验只到信封 | 自己保证 payload 形状正确，错的字段不会得到干净的报错 | §9.2 |
 | 没有可发布的 JSON Schema | 照着本文手写客户端类型 | §9.3 |
 | 没有 `run_summary` | 自己在事件流上聚合请求数/token/费用，注意维护工作（compaction）自带 provider 调用，不属于它后面那次 turn | §9.5 |
-| 客户端 → 扩展方向不通 | 双端扩展只能单向汇报，客户端注入不了 | §9.6 |
+| 客户端 → 扩展方向不通 | 无须处理：扩展照常触发、照常汇报，缺的只是客户端主动推事件，已决定不做 | §9.6 |
 | 没有生效配置快照 | 复现性靠自己记录 | §9.7 |
 | `send` 没有 deadline | 目标处于维护相位时投递会无限期 defer | §9.8 |
 
@@ -393,8 +393,8 @@ harness emitAny → await listener        packages/agent/src/harness/agent-harne
 | 三 | 完成信号与两条漏掉的投影（§4.6、§9.9） | **已落地** |
 | 四 | typebox schema：运行时校验 + 可发布 JSON Schema（§9.2、§9.3） | 待做 |
 | 五 | `run_summary`（§9.5） | 待做 |
-| 六 | 客户端 → 扩展方向（§9.6） | 待做，条件项 |
-| 七 | 生效配置快照（§9.7） | 待做 |
+| 六 | 生效配置快照（§9.7） | 待做 |
+| — | 客户端 → 扩展方向（§9.6） | **决定不做**，理由见该节 |
 | — | `send` 的 deadline（§9.8） | 挂起，等第五组定口径 |
 
 **下一步是第四组。**
@@ -403,7 +403,9 @@ harness emitAny → await listener        packages/agent/src/harness/agent-harne
 
 第二组紧接其后，是因为它之后是其余各组的测试台架——`run_summary`、schema 拒绝、stdout 洁净都只有在真进程里才验得准。
 
-第三组插到 schema 之前，是第二组的直接产物：e2e 证明了 `prompt` 的答复和"这棵树跑完"是两回事，而**判错样本边界会静默产出错的数**，比校验过浅（伤的是一次性的调试成本）严重一个量级。第六组是条件项：客户端只用 `prompt` + 事件流的话可以完全不做；要用双端扩展注入任务或收结构化结果，它就得提到第二位。
+第三组插到 schema 之前，是第二组的直接产物：e2e 证明了 `prompt` 的答复和"这棵树跑完"是两回事，而**判错样本边界会静默产出错的数**。
+
+第四组的重心是 §9.2 的运行时校验，不是 §9.3 的 schema 文件——理由同上，它防的同样是静默算错（`mode` 现在直接 cast 上线，一个拼错的 `precede` 会变成起一整轮 turn）。§9.3 在 typebox 之上几乎零成本，顺手产出，只覆盖入向；出向帧不写 schema，客户端读事件流按原始 JSON 处理即可。
 
 ### 9.1 已落地：子进程级端到端测试
 
@@ -447,13 +449,15 @@ harness emitAny → await listener        packages/agent/src/harness/agent-harne
 
 **不在范围内**：扩展内部的 API 调用（例如某个检索扩展自己发出的 HTTP 请求）core 没有钩子，也不应该有；这类计数由扩展自报。
 
-### 9.6 客户端与扩展之间只通了一半
+### 9.6 客户端与扩展之间只通了一半（**决定不做**）
 
-扩展 → 客户端已通：`extension_message_published`、`extension_output`、`extension_notification`、`extension_status_changed` 都是 `OrchestratorEvent`。
+先说清楚范围，因为这条容易被读成比实际严重：**RPC 触发扩展没有问题，扩展影响 RPC 也没有问题**。core 半完整加载，observer / interceptor 照常触发，`registerTool` 的工具 agent 能调，`appendSystemPrompt`、`registerProvider` 全部生效；扩展 → 客户端方向也已经通了，`extension_message_published`、`extension_output`、`extension_notification`、`extension_status_changed` 都是 `OrchestratorEvent`，`publishMessage` 就是扩展往外送结构化结果的正路。
 
-客户端 → 扩展不通：扩展事件总线（`emitExtensionEvent` / `registerExtensionEventSubscriber`）不走 `OrchestratorEvent`，RPC 客户端既收不到也发不出。
+不通的只有一条独立通道：**扩展事件总线**（`core/extension/events.ts` 的 `emitExtensionEvent` / `registerExtensionEventSubscriber`）。它与 `OrchestratorEvent` 完全并行，用于扩展之间协调，也是双端扩展的另一半接进来的方式——TUI 正是这么接的（`tui/application.ts:702-704`）。`RpcServer` 没有接。
 
-**计划**：新增 `emit_extension_event` 命令与 `extension_event` 出向帧。补上之后 RPC 客户端就能扮演双端扩展的"第二半"——与 TUI 半同等地位，与 core 半经总线对话。结构化结果的传输与关联因此由扩展自己定义（用 `publishMessage` 发自己的 kind，用客户端先发的关联 id 串起来），RPC 不需要理解任何领域结构。
+**唯一后果：RPC 客户端当不了双端扩展的 `tui` 那一半**，既不能主动给扩展推一条命名事件，也看不见扩展之间互发的事件。
+
+**决定不做。** 评测场景下样本配置在启动时经 agent dir / profile / 环境变量交代即可，不需要在 run 中途往扩展里推东西。要做的话是新增 `emit_extension_event` 命令与 `extension_event` 出向帧，两端都只搬运 `ExtensionEventEnvelope`，RPC 不需要理解任何领域结构——但在有人真的需要之前不加这个面。
 
 ### 9.7 缺少生效配置快照
 
