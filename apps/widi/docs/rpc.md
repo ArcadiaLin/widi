@@ -6,7 +6,13 @@
 
 ## 0. 当前进度
 
-`protocolVersion: 1`。**可以拿去驱动评测了**，但有几件事得先知道。
+`protocolVersion: 1`。**面向评测的部分已经齐了**：一个样本的完整路径——选 profile 启动、输入 prompt、等它自己调工具、判样本边界、取输出、取成本——每一步都有对应的命令，且都有子进程级测试守着。剩下的缺口没有一条在这条路径上（§9）。
+
+跑之前要知道的三件事：
+
+1. **判样本边界用 `wait_tree_idle`，不要用 `prompt` 的答复**（§4.5）。这条错了会静默产出错的数。
+2. **`--human-timeout` 实际上是必填的**，且 profile 的 `tools` 白名单去掉 `ask_human` 只堵住两个来源之一（§6.3）。
+3. **`defaultProjectTrust` 不能留 `ask`**，否则启动阶段就会问，而那时还没有 orchestrator（§6.3）。
 
 **已经可以依赖的**
 
@@ -26,7 +32,7 @@
 | 缺口 | 客户端要做什么 | 详情 |
 | --- | --- | --- |
 | 客户端 → 扩展方向不通 | 无须处理：扩展照常触发、照常汇报，缺的只是客户端主动推事件，已决定不做 | §9.6 |
-| 没有生效配置快照 | 复现性靠自己记录 | §9.7 |
+| 没有生效配置快照 | 复现性靠自己记录：checkout 的 sha、agentDir、profile 记进样本元数据 | §9.7 |
 | `send` 没有 deadline | 目标处于维护相位时投递会无限期 defer | §9.8 |
 | 维护工作的**调用数**数不出来 | 用 `run_summary` 的 usage 判成本，不要用它的次数判调用数 | §4.7 |
 
@@ -377,13 +383,28 @@ core 的一等概念（`core/human-request.ts` 的 `HumanRequestBroker`），RPC
 
 `request.timeoutMs` 存在时由 core 计时并在超时后拒绝调用方；那是**提问方**设的。客户端也可以用 `cancel_human_request` 主动取消。
 
-RPC 层自己的默认超时用 `--human-timeout <ms>` 设置，**默认不设**：对交互式客户端"一直等"是对的，对一条也不答的批量客户端则意味着 agent 会把整轮跑的时间耗在这里。做批量评测时应当设它。
+RPC 层自己的默认超时用 `--human-timeout <ms>` 设置，**默认不设**：对交互式客户端"一直等"是对的，对一条也不答的批量客户端则意味着 agent 会把整轮跑的时间耗在这里。无人值守时怎么配见 §6.3。
 
 ### 6.2 撤回
 
 `human_request_withdrawn` 说的是"这条请求不再等答复了"。它不是对客户端任何输入的答复，所以不带 `id`：客户端关掉 `requestId` 对应的界面，什么也不用回。
 
 三条路径会发它：RPC 超时、提问方撤回（agent 被 dispose 等）、输入流结束时清空全部待答。这三条都是**handler 侧**放弃，core 自己的 `human_request_timeout` / `_cancelled` 事件只覆盖 core 决定的撤回，都到不了客户端——没有这一帧，客户端会一直挂着一个永远不会有人读答案的提问框。
+
+### 6.3 无人值守：一条都不答的客户端
+
+评测驱动一条人类请求都不答，所以要按"请求一定会出现，只是希望不出现"来配置。
+
+**`--human-timeout` 实际上是必填的。** 不设的话一条请求会挂到 `prompt` 的 `deadlineMs` 才被连带撤掉，整个样本作废。设了的行为是干净的：请求被撤回、发起它的工具调用失败、run 继续跑完并照常产出答复——代价是**每次询问烧掉一个完整窗口**。
+
+请求有两个来源，堵住一个不等于堵住另一个：
+
+1. **模型主动调 `ask_human` 工具。** 用 profile 的 `tools` 白名单不包含它来彻底移除——这比超时干净，因为工具不存在时模型不会去试。
+2. **扩展调 `actions.requestHuman`。** 白名单管不到它。所以 `--human-timeout` 仍然要设，当兜底。
+
+另外 `defaultProjectTrust` **不能留默认的 `ask`**：项目信任是在 `createWidiRuntime` 里问的，那时 orchestrator 还不存在（§2.1），请求经 human channel 直接发出而客户端很可能还没读到 `ready`。设成 `always` 或 `never`。
+
+`run_summary` 的 `humanRequests` 是这件事的事后检查：无人值守运行的期望值是 0，非 0 就说明有样本把时间花在等一个没人回的问题上（§4.7）。
 
 ## 7. stdout 独占与回压
 
@@ -444,11 +465,11 @@ harness emitAny → await listener        packages/agent/src/harness/agent-harne
 | 三 | 完成信号与两条漏掉的投影（§4.6、§9.9） | **已落地** |
 | 四 | typebox schema：运行时校验 + 可发布 JSON Schema（§3.3、§9.2、§9.3） | **已落地** |
 | 五 | `run_summary`（§4.7、§9.5） | **已落地** |
-| 六 | 生效配置快照（§9.7） | 待做 |
+| — | 生效配置快照（§9.7） | **暂不做**，理由见该节 |
 | — | 客户端 → 扩展方向（§9.6） | **决定不做**，理由见该节 |
 | — | `send` 的 deadline（§9.8） | 挂起，理由见该节 |
 
-**下一步是第六组。**
+**面向评测的部分到第五组为止已经齐了，没有第六组。** 剩下三条都不是评测路径上的：§9.7 的可复现性由驱动侧记录更可信，§9.6 只影响双端扩展，§9.8 要等投递队列有按条目取消的入口。三条都写清了重新开工的条件——在有人真的撞上之前不动。
 
 第一组为什么是一组：deadline 到期要答一个 `timeout`、取消要答一个 `aborted`，两者都得先有码表；反过来码表如果不含这两个码，也没有任何东西会产生它们。它们是一件事的两半。
 
@@ -526,12 +547,16 @@ UPDATE_RPC_SCHEMA=1 npm --workspace apps/widi run test -- tests/rpc/frames.test.
 
 **决定不做。** 评测场景下样本配置在启动时经 agent dir / profile / 环境变量交代即可，不需要在 run 中途往扩展里推东西。要做的话是新增 `emit_extension_event` 命令与 `extension_event` 出向帧，两端都只搬运 `ExtensionEventEnvelope`，RPC 不需要理解任何领域结构——但在有人真的需要之前不加这个面。
 
-### 9.7 缺少生效配置快照
+### 9.7 缺少生效配置快照（**暂不做**）
 
 `ready` 有 `protocolVersion` / `cwd` / `agentDir` / `diagnostics`，`inspect` 有 profile / model / tools / extensions / thinkingLevel，`AssistantMessage.responseModel` 有实际响应的模型。缺一份统一快照，且两项字段并不存在：
 
 - **widi revision**：需要在 build 时注入 package version + git sha。
 - **extension 版本**：widi 没有这个概念，只有 `declaredApiVersion`（扩展声明的 API 版本）与源路径。要保证可复现，只能新造源文件内容 hash。
+
+**暂不做。** 快照里能便宜拿到的部分已经能拿到了，只是分散在 `ready` 与 `inspect` 两处；要造的恰好是上面那两项版本标识，而它们各自都要新增一套机制（build 期注入、源内容 hash），代价与"少一次聚合"不成比例。评测侧本来就更清楚这件事：驱动知道自己 checkout 的是哪个 sha、用的是哪个 agentDir 与 profile，把这些记进样本元数据比让 runtime 自报更可信。
+
+要重新开工的条件：需要在**不控制启动方式**的环境里归因结果（别人交来一批 run 记录，要判断它们是否同一配置产出）。那时 widi revision 是刚需，extension hash 紧随其后。
 
 ### 9.8 `send` 没有 deadline
 
