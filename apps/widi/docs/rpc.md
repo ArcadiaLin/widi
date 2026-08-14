@@ -4,6 +4,34 @@
 
 本文是 RPC 协议的规范：帧格式、命令表、事件流、生命周期、版本策略，以及已知缺口与补全计划。外部客户端应当只依赖本文写下的内容；`src/rpc/types.ts` 是它的 TypeScript 表达，两者不一致时以本文为准，并且该不一致本身是缺陷。
 
+## 0. 当前进度
+
+`protocolVersion: 1`。**可以拿去驱动评测了**，但有几件事得先知道。
+
+**已经可以依赖的**
+
+- 协议骨架：`ready` 无条件首帧、JSONL 双向、命令按到达顺序并发派发、四条关闭路径统一（§2、§3）。
+- 17 条命令，是 orchestrator 公开方法的投影（§4）。仍未投影的只剩 `isAgentIdle` 与 `agentHasPendingMessages`，两者都被 `wait_idle` / `wait_tree_idle` 覆盖了。
+- 每条失败响应都带稳定的 `code`，并且区分"重试可能成功"与"永远不会"（§3.3）。
+- `prompt` 与三条 wait 的 `deadlineMs`，以及命令级 `cancel`；`prompt` 超时保证 agent 已停稳才答复（§4.4）。
+- 树级完成信号 `wait_tree_idle`，用来判样本边界——**不要用 `prompt` 的答复判**（§4.5、§4.6）。
+- human request 的超时与撤回（§6）。
+- stdout 独占：扩展的 `console.log` 不会撞进协议流（§7.1，有子进程级测试守着）。
+- core 半扩展完整加载（§1.3）。
+
+**还不行、需要客户端自己兜的**
+
+| 缺口 | 客户端要做什么 | 详情 |
+| --- | --- | --- |
+| 边界校验只到信封 | 自己保证 payload 形状正确，错的字段不会得到干净的报错 | §9.2 |
+| 没有可发布的 JSON Schema | 照着本文手写客户端类型 | §9.3 |
+| 没有 `run_summary` | 自己在事件流上聚合请求数/token/费用，注意维护工作（compaction）自带 provider 调用，不属于它后面那次 turn | §9.5 |
+| 客户端 → 扩展方向不通 | 双端扩展只能单向汇报，客户端注入不了 | §9.6 |
+| 没有生效配置快照 | 复现性靠自己记录 | §9.7 |
+| `send` 没有 deadline | 目标处于维护相位时投递会无限期 defer | §9.8 |
+
+**测试覆盖**：`tests/rpc/server.test.ts`（协议行为，进程内）与 `tests/rpc/e2e.test.ts`（真子进程 + 真 provider 往返，§9.1）。落地顺序与后续计划见 §9。
+
 ## 1. 定位与三条不变量
 
 RPC 是 core 的**第二个前端，与 TUI 平级**，不是它的下层。TUI 通过 `orchestrator.registerClient` 接入（`tui/application.ts`），RPC 走同一个接口（`core/client.ts` 的 `OrchestratorClient`）——因此这个模式没有为自己新增任何 core 接缝。
@@ -367,6 +395,9 @@ harness emitAny → await listener        packages/agent/src/harness/agent-harne
 | 五 | `run_summary`（§9.5） | 待做 |
 | 六 | 客户端 → 扩展方向（§9.6） | 待做，条件项 |
 | 七 | 生效配置快照（§9.7） | 待做 |
+| — | `send` 的 deadline（§9.8） | 挂起，等第五组定口径 |
+
+**下一步是第四组。**
 
 第一组为什么是一组：deadline 到期要答一个 `timeout`、取消要答一个 `aborted`，两者都得先有码表；反过来码表如果不含这两个码，也没有任何东西会产生它们。它们是一件事的两半。
 
