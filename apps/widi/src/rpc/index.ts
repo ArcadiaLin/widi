@@ -87,7 +87,16 @@ export async function runWidiRpc(options: WidiRpcOptions): Promise<void> {
 		const parsed = parseInbound(line);
 		if (parsed.kind === "invalid") {
 			afterReady(() =>
-				send({ type: "response", cmd: "parse", ok: false, error: parsed.message, code: "invalid_command" }),
+				send({
+					type: "response",
+					id: parsed.id,
+					// `parse` only when the frame did not name a command it could be
+					// answered under - unparseable JSON, or no `cmd` at all.
+					cmd: parsed.cmd ?? "parse",
+					ok: false,
+					error: parsed.message,
+					code: "invalid_command",
+				}),
 			);
 			return;
 		}

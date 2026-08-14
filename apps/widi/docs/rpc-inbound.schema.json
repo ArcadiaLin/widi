@@ -1,0 +1,916 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://github.com/ArcadiaLin/widi/blob/main/apps/widi/docs/rpc-inbound.schema.json",
+	"title": "WIDI RPC inbound frames",
+	"description": "Everything a client may write to a `widi --mode rpc` process. Protocol version 1; see apps/widi/docs/rpc.md.",
+	"oneOf": [
+		{
+			"$ref": "#/$defs/abort"
+		},
+		{
+			"$ref": "#/$defs/cancel"
+		},
+		{
+			"$ref": "#/$defs/cancel_human_request"
+		},
+		{
+			"$ref": "#/$defs/compact"
+		},
+		{
+			"$ref": "#/$defs/dispose"
+		},
+		{
+			"$ref": "#/$defs/inspect"
+		},
+		{
+			"$ref": "#/$defs/list_agents"
+		},
+		{
+			"$ref": "#/$defs/prompt"
+		},
+		{
+			"$ref": "#/$defs/read_report"
+		},
+		{
+			"$ref": "#/$defs/send"
+		},
+		{
+			"$ref": "#/$defs/set_model"
+		},
+		{
+			"$ref": "#/$defs/set_thinking_level"
+		},
+		{
+			"$ref": "#/$defs/shutdown"
+		},
+		{
+			"$ref": "#/$defs/spawn"
+		},
+		{
+			"$ref": "#/$defs/wait_idle"
+		},
+		{
+			"$ref": "#/$defs/wait_stop"
+		},
+		{
+			"$ref": "#/$defs/wait_tree_idle"
+		},
+		{
+			"$ref": "#/$defs/human_response"
+		}
+	],
+	"$defs": {
+		"abort": {
+			"type": "object",
+			"required": [
+				"cmd",
+				"agentId"
+			],
+			"properties": {
+				"cmd": {
+					"type": "string",
+					"const": "abort"
+				},
+				"agentId": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Id of an agent in this runtime."
+				},
+				"id": {
+					"type": "string",
+					"description": "Echoed on the response, and the only handle `cancel` has on this command."
+				}
+			},
+			"additionalProperties": false,
+			"title": "abort"
+		},
+		"cancel": {
+			"type": "object",
+			"required": [
+				"cmd",
+				"commandId"
+			],
+			"properties": {
+				"cmd": {
+					"type": "string",
+					"const": "cancel"
+				},
+				"commandId": {
+					"type": "string",
+					"minLength": 1,
+					"description": "The `id` of a command still in flight."
+				},
+				"id": {
+					"type": "string",
+					"description": "Echoed on the response, and the only handle `cancel` has on this command."
+				}
+			},
+			"additionalProperties": false,
+			"title": "cancel"
+		},
+		"cancel_human_request": {
+			"type": "object",
+			"required": [
+				"cmd",
+				"requestId"
+			],
+			"properties": {
+				"cmd": {
+					"type": "string",
+					"const": "cancel_human_request"
+				},
+				"requestId": {
+					"type": "string",
+					"minLength": 1
+				},
+				"reason": {
+					"type": "string"
+				},
+				"id": {
+					"type": "string",
+					"description": "Echoed on the response, and the only handle `cancel` has on this command."
+				}
+			},
+			"additionalProperties": false,
+			"title": "cancel_human_request"
+		},
+		"compact": {
+			"type": "object",
+			"required": [
+				"cmd",
+				"agentId"
+			],
+			"properties": {
+				"cmd": {
+					"type": "string",
+					"const": "compact"
+				},
+				"agentId": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Id of an agent in this runtime."
+				},
+				"customInstructions": {
+					"type": "string"
+				},
+				"id": {
+					"type": "string",
+					"description": "Echoed on the response, and the only handle `cancel` has on this command."
+				}
+			},
+			"additionalProperties": false,
+			"title": "compact"
+		},
+		"dispose": {
+			"type": "object",
+			"required": [
+				"cmd",
+				"agentId"
+			],
+			"properties": {
+				"cmd": {
+					"type": "string",
+					"const": "dispose"
+				},
+				"agentId": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Id of an agent in this runtime."
+				},
+				"scope": {
+					"anyOf": [
+						{
+							"type": "string",
+							"const": "agent"
+						},
+						{
+							"type": "string",
+							"const": "subtree"
+						}
+					]
+				},
+				"reason": {
+					"type": "string"
+				},
+				"id": {
+					"type": "string",
+					"description": "Echoed on the response, and the only handle `cancel` has on this command."
+				}
+			},
+			"additionalProperties": false,
+			"title": "dispose"
+		},
+		"inspect": {
+			"type": "object",
+			"required": [
+				"cmd",
+				"agentId"
+			],
+			"properties": {
+				"cmd": {
+					"type": "string",
+					"const": "inspect"
+				},
+				"agentId": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Id of an agent in this runtime."
+				},
+				"id": {
+					"type": "string",
+					"description": "Echoed on the response, and the only handle `cancel` has on this command."
+				}
+			},
+			"additionalProperties": false,
+			"title": "inspect"
+		},
+		"list_agents": {
+			"type": "object",
+			"required": [
+				"cmd"
+			],
+			"properties": {
+				"cmd": {
+					"type": "string",
+					"const": "list_agents"
+				},
+				"id": {
+					"type": "string",
+					"description": "Echoed on the response, and the only handle `cancel` has on this command."
+				}
+			},
+			"additionalProperties": false,
+			"title": "list_agents"
+		},
+		"prompt": {
+			"type": "object",
+			"required": [
+				"cmd",
+				"agentId",
+				"body"
+			],
+			"properties": {
+				"cmd": {
+					"type": "string",
+					"const": "prompt"
+				},
+				"agentId": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Id of an agent in this runtime."
+				},
+				"body": {
+					"type": "string"
+				},
+				"images": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"required": [
+							"type",
+							"data",
+							"mimeType"
+						],
+						"properties": {
+							"type": {
+								"type": "string",
+								"const": "image"
+							},
+							"data": {
+								"type": "string",
+								"description": "Base64 image data."
+							},
+							"mimeType": {
+								"type": "string",
+								"minLength": 1
+							}
+						},
+						"additionalProperties": false
+					}
+				},
+				"deadlineMs": {
+					"type": "number",
+					"exclusiveMinimum": 0,
+					"description": "Milliseconds this command may wait before it is given up on."
+				},
+				"id": {
+					"type": "string",
+					"description": "Echoed on the response, and the only handle `cancel` has on this command."
+				}
+			},
+			"additionalProperties": false,
+			"title": "prompt"
+		},
+		"read_report": {
+			"type": "object",
+			"required": [
+				"cmd",
+				"agentId"
+			],
+			"properties": {
+				"cmd": {
+					"type": "string",
+					"const": "read_report"
+				},
+				"agentId": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Id of an agent in this runtime."
+				},
+				"id": {
+					"type": "string",
+					"description": "Echoed on the response, and the only handle `cancel` has on this command."
+				}
+			},
+			"additionalProperties": false,
+			"title": "read_report"
+		},
+		"send": {
+			"type": "object",
+			"required": [
+				"cmd",
+				"agentId",
+				"body",
+				"mode"
+			],
+			"properties": {
+				"cmd": {
+					"type": "string",
+					"const": "send"
+				},
+				"agentId": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Id of an agent in this runtime."
+				},
+				"body": {
+					"type": "string"
+				},
+				"mode": {
+					"anyOf": [
+						{
+							"type": "string",
+							"const": "next_turn"
+						},
+						{
+							"type": "string",
+							"const": "interrupt"
+						},
+						{
+							"type": "string",
+							"const": "precede"
+						}
+					]
+				},
+				"images": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"required": [
+							"type",
+							"data",
+							"mimeType"
+						],
+						"properties": {
+							"type": {
+								"type": "string",
+								"const": "image"
+							},
+							"data": {
+								"type": "string",
+								"description": "Base64 image data."
+							},
+							"mimeType": {
+								"type": "string",
+								"minLength": 1
+							}
+						},
+						"additionalProperties": false
+					}
+				},
+				"id": {
+					"type": "string",
+					"description": "Echoed on the response, and the only handle `cancel` has on this command."
+				}
+			},
+			"additionalProperties": false,
+			"title": "send"
+		},
+		"set_model": {
+			"type": "object",
+			"required": [
+				"cmd",
+				"agentId",
+				"model"
+			],
+			"properties": {
+				"cmd": {
+					"type": "string",
+					"const": "set_model"
+				},
+				"agentId": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Id of an agent in this runtime."
+				},
+				"model": {
+					"type": "string",
+					"pattern": "^[^/]+/.+$",
+					"description": "Model reference, `provider/id`."
+				},
+				"id": {
+					"type": "string",
+					"description": "Echoed on the response, and the only handle `cancel` has on this command."
+				}
+			},
+			"additionalProperties": false,
+			"title": "set_model"
+		},
+		"set_thinking_level": {
+			"type": "object",
+			"required": [
+				"cmd",
+				"agentId",
+				"level"
+			],
+			"properties": {
+				"cmd": {
+					"type": "string",
+					"const": "set_thinking_level"
+				},
+				"agentId": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Id of an agent in this runtime."
+				},
+				"level": {
+					"anyOf": [
+						{
+							"type": "string",
+							"const": "minimal"
+						},
+						{
+							"type": "string",
+							"const": "low"
+						},
+						{
+							"type": "string",
+							"const": "medium"
+						},
+						{
+							"type": "string",
+							"const": "high"
+						},
+						{
+							"type": "string",
+							"const": "xhigh"
+						},
+						{
+							"type": "string",
+							"const": "max"
+						}
+					]
+				},
+				"id": {
+					"type": "string",
+					"description": "Echoed on the response, and the only handle `cancel` has on this command."
+				}
+			},
+			"additionalProperties": false,
+			"title": "set_thinking_level"
+		},
+		"shutdown": {
+			"type": "object",
+			"required": [
+				"cmd"
+			],
+			"properties": {
+				"cmd": {
+					"type": "string",
+					"const": "shutdown"
+				},
+				"reason": {
+					"type": "string"
+				},
+				"id": {
+					"type": "string",
+					"description": "Echoed on the response, and the only handle `cancel` has on this command."
+				}
+			},
+			"additionalProperties": false,
+			"title": "shutdown"
+		},
+		"spawn": {
+			"type": "object",
+			"required": [
+				"cmd",
+				"origin"
+			],
+			"properties": {
+				"cmd": {
+					"type": "string",
+					"const": "spawn"
+				},
+				"origin": {
+					"anyOf": [
+						{
+							"type": "object",
+							"required": [
+								"kind"
+							],
+							"properties": {
+								"kind": {
+									"type": "string",
+									"const": "new"
+								},
+								"profileId": {
+									"type": "string",
+									"minLength": 1
+								},
+								"profileOverride": {
+									"type": "object",
+									"properties": {},
+									"additionalProperties": true,
+									"description": "Profile fields to override; core defines the shape."
+								}
+							},
+							"additionalProperties": false
+						},
+						{
+							"type": "object",
+							"required": [
+								"kind",
+								"reference"
+							],
+							"properties": {
+								"kind": {
+									"type": "string",
+									"const": "resume"
+								},
+								"reference": {
+									"type": "string",
+									"minLength": 1
+								}
+							},
+							"additionalProperties": false
+						},
+						{
+							"type": "object",
+							"required": [
+								"kind",
+								"sourceAgentId"
+							],
+							"properties": {
+								"kind": {
+									"type": "string",
+									"const": "fork"
+								},
+								"sourceAgentId": {
+									"type": "string",
+									"minLength": 1,
+									"description": "Id of an agent in this runtime."
+								},
+								"entryId": {
+									"type": "string",
+									"minLength": 1
+								}
+							},
+							"additionalProperties": false
+						}
+					]
+				},
+				"parent": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Id of an agent in this runtime."
+				},
+				"cwd": {
+					"type": "string",
+					"minLength": 1
+				},
+				"model": {
+					"type": "string",
+					"pattern": "^[^/]+/.+$",
+					"description": "Model reference, `provider/id`."
+				},
+				"thinkingLevel": {
+					"anyOf": [
+						{
+							"type": "string",
+							"const": "minimal"
+						},
+						{
+							"type": "string",
+							"const": "low"
+						},
+						{
+							"type": "string",
+							"const": "medium"
+						},
+						{
+							"type": "string",
+							"const": "high"
+						},
+						{
+							"type": "string",
+							"const": "xhigh"
+						},
+						{
+							"type": "string",
+							"const": "max"
+						}
+					]
+				},
+				"id": {
+					"type": "string",
+					"description": "Echoed on the response, and the only handle `cancel` has on this command."
+				}
+			},
+			"additionalProperties": false,
+			"title": "spawn"
+		},
+		"wait_idle": {
+			"type": "object",
+			"required": [
+				"cmd",
+				"agentId"
+			],
+			"properties": {
+				"cmd": {
+					"type": "string",
+					"const": "wait_idle"
+				},
+				"agentId": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Id of an agent in this runtime."
+				},
+				"deadlineMs": {
+					"type": "number",
+					"exclusiveMinimum": 0,
+					"description": "Milliseconds this command may wait before it is given up on."
+				},
+				"id": {
+					"type": "string",
+					"description": "Echoed on the response, and the only handle `cancel` has on this command."
+				}
+			},
+			"additionalProperties": false,
+			"title": "wait_idle"
+		},
+		"wait_stop": {
+			"type": "object",
+			"required": [
+				"cmd",
+				"agentId"
+			],
+			"properties": {
+				"cmd": {
+					"type": "string",
+					"const": "wait_stop"
+				},
+				"agentId": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Id of an agent in this runtime."
+				},
+				"deadlineMs": {
+					"type": "number",
+					"exclusiveMinimum": 0,
+					"description": "Milliseconds this command may wait before it is given up on."
+				},
+				"id": {
+					"type": "string",
+					"description": "Echoed on the response, and the only handle `cancel` has on this command."
+				}
+			},
+			"additionalProperties": false,
+			"title": "wait_stop"
+		},
+		"wait_tree_idle": {
+			"type": "object",
+			"required": [
+				"cmd",
+				"agentId"
+			],
+			"properties": {
+				"cmd": {
+					"type": "string",
+					"const": "wait_tree_idle"
+				},
+				"agentId": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Id of an agent in this runtime."
+				},
+				"quietMs": {
+					"type": "number",
+					"minimum": 0,
+					"description": "How long the tree must stay idle. Default 250."
+				},
+				"deadlineMs": {
+					"type": "number",
+					"exclusiveMinimum": 0,
+					"description": "Milliseconds this command may wait before it is given up on."
+				},
+				"id": {
+					"type": "string",
+					"description": "Echoed on the response, and the only handle `cancel` has on this command."
+				}
+			},
+			"additionalProperties": false,
+			"title": "wait_tree_idle"
+		},
+		"human_response": {
+			"anyOf": [
+				{
+					"type": "object",
+					"required": [
+						"type",
+						"requestId",
+						"response"
+					],
+					"properties": {
+						"type": {
+							"type": "string",
+							"const": "human_response"
+						},
+						"requestId": {
+							"type": "string",
+							"minLength": 1
+						},
+						"response": {
+							"anyOf": [
+								{
+									"type": "object",
+									"required": [
+										"kind",
+										"confirmed"
+									],
+									"properties": {
+										"kind": {
+											"type": "string",
+											"const": "confirm"
+										},
+										"confirmed": {
+											"type": "boolean"
+										}
+									},
+									"additionalProperties": false
+								},
+								{
+									"type": "object",
+									"required": [
+										"kind"
+									],
+									"properties": {
+										"kind": {
+											"type": "string",
+											"const": "select"
+										},
+										"value": {
+											"type": "string"
+										}
+									},
+									"additionalProperties": false
+								},
+								{
+									"type": "object",
+									"required": [
+										"kind"
+									],
+									"properties": {
+										"kind": {
+											"type": "string",
+											"const": "multi-select"
+										},
+										"values": {
+											"type": "array",
+											"items": {
+												"type": "string"
+											}
+										}
+									},
+									"additionalProperties": false
+								},
+								{
+									"type": "object",
+									"required": [
+										"kind",
+										"answers"
+									],
+									"properties": {
+										"kind": {
+											"type": "string",
+											"const": "questions"
+										},
+										"answers": {
+											"type": "array",
+											"items": {
+												"anyOf": [
+													{
+														"type": "object",
+														"required": [
+															"kind"
+														],
+														"properties": {
+															"kind": {
+																"type": "string",
+																"const": "select"
+															},
+															"value": {
+																"type": "string"
+															}
+														},
+														"additionalProperties": false,
+														"title": "select"
+													},
+													{
+														"type": "object",
+														"required": [
+															"kind"
+														],
+														"properties": {
+															"kind": {
+																"type": "string",
+																"const": "multi-select"
+															},
+															"values": {
+																"type": "array",
+																"items": {
+																	"type": "string"
+																}
+															}
+														},
+														"additionalProperties": false,
+														"title": "multi-select"
+													}
+												]
+											}
+										}
+									},
+									"additionalProperties": false
+								},
+								{
+									"type": "object",
+									"required": [
+										"kind"
+									],
+									"properties": {
+										"kind": {
+											"type": "string",
+											"const": "input"
+										},
+										"value": {
+											"type": "string"
+										}
+									},
+									"additionalProperties": false
+								},
+								{
+									"type": "object",
+									"required": [
+										"kind",
+										"value"
+									],
+									"properties": {
+										"kind": {
+											"type": "string",
+											"const": "custom"
+										},
+										"value": {}
+									},
+									"additionalProperties": false
+								}
+							]
+						}
+					},
+					"additionalProperties": false
+				},
+				{
+					"type": "object",
+					"required": [
+						"type",
+						"requestId",
+						"cancelled"
+					],
+					"properties": {
+						"type": {
+							"type": "string",
+							"const": "human_response"
+						},
+						"requestId": {
+							"type": "string",
+							"minLength": 1
+						},
+						"cancelled": {
+							"type": "boolean",
+							"const": true
+						}
+					},
+					"additionalProperties": false
+				}
+			]
+		}
+	}
+}

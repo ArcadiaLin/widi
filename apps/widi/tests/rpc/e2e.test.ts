@@ -247,7 +247,12 @@ class RpcProcess {
 	}
 
 	send(frame: RpcInbound): void {
-		this._child.stdin.write(`${JSON.stringify(frame)}\n`);
+		this.sendRaw(JSON.stringify(frame));
+	}
+
+	/** For frames the protocol types would not let a test construct. */
+	sendRaw(line: string): void {
+		this._child.stdin.write(`${line}\n`);
 	}
 
 	closeInput(): void {
@@ -330,14 +335,21 @@ describe("widi --mode rpc as a subprocess", () => {
 			// be read as "stop now" - both commands still have to run.
 			running.send({ id: "1", cmd: "spawn", origin: { kind: "new" } });
 			running.send({ id: "2", cmd: "list_agents" });
+			// Validation reaches the wire, not just `parseInbound`'s own tests: this
+			// frame would have been cast straight through before.
+			running.sendRaw('{"id":"3","cmd":"send","agentId":"a","body":"x","mode":"preced"}');
 			running.closeInput();
 
 			expect(await running.waitForExit()).toBe(0);
 			expect(running.frames[0]?.type).toBe("ready");
 			const spawned = running.frames.find(responseTo("1"));
 			const listed = running.frames.find(responseTo("2"));
+			const refused = running.frames.find(responseTo("3"));
 			expect(spawned?.ok).toBe(true);
 			expect(listed?.ok).toBe(true);
+			expect(refused?.ok).toBe(false);
+			expect(refused?.ok === false && refused.code).toBe("invalid_command");
+			expect(refused?.ok === false && refused.error).toContain("/mode");
 			expect(running.stderr).toBe("");
 		},
 		TEST_TIMEOUT_MS,

@@ -12,7 +12,8 @@
 
 - 协议骨架：`ready` 无条件首帧、JSONL 双向、命令按到达顺序并发派发、四条关闭路径统一（§2、§3）。
 - 17 条命令，是 orchestrator 公开方法的投影（§4）。仍未投影的只剩 `isAgentIdle` 与 `agentHasPendingMessages`，两者都被 `wait_idle` / `wait_tree_idle` 覆盖了。
-- 每条失败响应都带稳定的 `code`，并且区分"重试可能成功"与"永远不会"（§3.3）。
+- 每条失败响应都带稳定的 `code`，并且区分"重试可能成功"与"永远不会"（§3.4）。
+- 入向帧按 schema 校验，拒绝时指出出错路径并回显 `id`；契约以 JSON Schema 发布（§3.3）。
 - `prompt` 与三条 wait 的 `deadlineMs`，以及命令级 `cancel`；`prompt` 超时保证 agent 已停稳才答复（§4.4）。
 - 树级完成信号 `wait_tree_idle`，用来判样本边界——**不要用 `prompt` 的答复判**（§4.5、§4.6）。
 - human request 的超时与撤回（§6）。
@@ -23,14 +24,12 @@
 
 | 缺口 | 客户端要做什么 | 详情 |
 | --- | --- | --- |
-| 边界校验只到信封 | 自己保证 payload 形状正确，错的字段不会得到干净的报错 | §9.2 |
-| 没有可发布的 JSON Schema | 照着本文手写客户端类型 | §9.3 |
 | 没有 `run_summary` | 自己在事件流上聚合请求数/token/费用，注意维护工作（compaction）自带 provider 调用，不属于它后面那次 turn | §9.5 |
 | 客户端 → 扩展方向不通 | 无须处理：扩展照常触发、照常汇报，缺的只是客户端主动推事件，已决定不做 | §9.6 |
 | 没有生效配置快照 | 复现性靠自己记录 | §9.7 |
 | `send` 没有 deadline | 目标处于维护相位时投递会无限期 defer | §9.8 |
 
-**测试覆盖**：`tests/rpc/server.test.ts`（协议行为，进程内）与 `tests/rpc/e2e.test.ts`（真子进程 + 真 provider 往返，§9.1）。落地顺序与后续计划见 §9。
+**测试覆盖**：`tests/rpc/frames.test.ts`（入向校验与发布用 schema）、`tests/rpc/server.test.ts`（协议行为，进程内）、`tests/rpc/e2e.test.ts`（真子进程 + 真 provider 往返，§9.1）。落地顺序与后续计划见 §9。
 
 ## 1. 定位与三条不变量
 
@@ -135,11 +134,28 @@ JSONL：一行一个 JSON 对象，UTF-8，`\n` 分隔（读取端容忍 `\r\n`�
   "error": "Unknown agent: nope", "code": "unknown_agent" }
 ```
 
-`id` 原样回显；客户端不关联时可以省略。
+`id` 原样回显；客户端不关联时可以省略。**被校验拒绝的帧同样回显它自己写的 `id` 与 `cmd`**——一个手上有若干条在飞命令的客户端，收到"其中某条格式不对"是没法处理的。只有在帧连 `cmd` 都没写明（JSON 都解不开、或者压根没有 `cmd`）时 `cmd` 才是 `"parse"`。
 
 成功响应的 `data` 由 `cmd` 决定，类型上按命令名分发，客户端在 `ok` 与 `cmd` 上收窄之后即可直接读取 `data`，无需断言。
 
-### 3.3 失败码
+### 3.3 入向校验
+
+**每条入向帧都按 schema 校验**（`src/rpc/schema.ts`），失败答 `invalid_command`，`error` 指出具体位置：
+
+```json
+{ "type": "response", "id": "3", "cmd": "send", "ok": false, "code": "invalid_command",
+  "error": "Invalid send frame at /mode: must be one of \"next_turn\", \"interrupt\", \"precede\"." }
+```
+
+**未知属性会被拒绝。** 入向严格、出向宽容是刻意的不对称：客户端多写的字段几乎总是拼错（`deadlinems` 静默等于没有 deadline，样本就永远挂着），而出向多出来的字段是新版 runtime 在照顾旧客户端。新客户端配旧 runtime 由 `protocolVersion` 负责（§8）。
+
+字面量集合（`mode`、`thinkingLevel`、`scope`、`origin.kind`）逐个校验。这是这层校验存在的首要理由：`decideMessageDelivery` 没有"未知 mode"这一支，所以在有校验之前，一个拼错的 `precede` 打到空闲 agent 上会被当成普通投递、**起一整轮 turn**——不报错，而且只是有时候。
+
+属于 core 的复合形状（`profileOverride`）只校验到"是个对象"。core 是那些形状的事实来源，在这里复述一遍等于每次 core 变动都要跟着改。
+
+可发布的 JSON Schema 见 [`rpc-inbound.schema.json`](./rpc-inbound.schema.json)，由同一份定义生成，测试保证不漂移。它只覆盖入向：客户端不需要校验 runtime 发给它的东西，而出向 payload 包的是 core 类型。
+
+### 3.4 失败码
 
 `code` **在每一条失败响应上都存在**，是协议的一部分；`error` 是给人读的自由文本，不稳定，客户端可以记录但不得据以分支。
 
@@ -377,7 +393,7 @@ harness emitAny → await listener        packages/agent/src/harness/agent-harne
 
 `ready.protocolVersion` 是协议版本，当前为 `1`。
 
-- **不 bump**：新增命令、在帧或结果中新增可选字段、新增事件类型、新增出向帧类型、放宽校验、**在 §3.3 表里新增失败码**。客户端必须忽略不认识的字段、事件类型与帧类型，并把不认识的失败码当作 `internal`。
+- **不 bump**：新增命令、在帧或结果中新增可选字段、新增事件类型、新增出向帧类型、放宽校验、**在 §3.4 表里新增失败码**。客户端必须忽略不认识的字段、事件类型与帧类型，并把不认识的失败码当作 `internal`。
 - **bump**：删除或重命名字段、收紧既有字段的取值、改变既有命令的语义或既有事件的含义、**改变既有失败码的含义或它映射的失败集合**。
 
 客户端应当检查 `protocolVersion` 并在大于自己所知时拒绝运行或降级，不要假设向前兼容。
@@ -388,16 +404,16 @@ harness emitAny → await listener        packages/agent/src/harness/agent-harne
 
 | 组 | 内容 | 状态 |
 | --- | --- | --- |
-| 一 | 失败码分类（§3.3）、deadline 与命令级取消（§4.4）、human request 超时与撤回（§6.1、§6.2） | **已落地** |
+| 一 | 失败码分类（§3.4）、deadline 与命令级取消（§4.4）、human request 超时与撤回（§6.1、§6.2） | **已落地** |
 | 二 | 子进程级端到端测试（§9.1） | **已落地** |
 | 三 | 完成信号与两条漏掉的投影（§4.6、§9.9） | **已落地** |
-| 四 | typebox schema：运行时校验 + 可发布 JSON Schema（§9.2、§9.3） | 待做 |
+| 四 | typebox schema：运行时校验 + 可发布 JSON Schema（§3.3、§9.2、§9.3） | **已落地** |
 | 五 | `run_summary`（§9.5） | 待做 |
 | 六 | 生效配置快照（§9.7） | 待做 |
 | — | 客户端 → 扩展方向（§9.6） | **决定不做**，理由见该节 |
 | — | `send` 的 deadline（§9.8） | 挂起，等第五组定口径 |
 
-**下一步是第四组。**
+**下一步是第五组。**
 
 第一组为什么是一组：deadline 到期要答一个 `timeout`、取消要答一个 `aborted`，两者都得先有码表；反过来码表如果不含这两个码，也没有任何东西会产生它们。它们是一件事的两半。
 
@@ -405,7 +421,7 @@ harness emitAny → await listener        packages/agent/src/harness/agent-harne
 
 第三组插到 schema 之前，是第二组的直接产物：e2e 证明了 `prompt` 的答复和"这棵树跑完"是两回事，而**判错样本边界会静默产出错的数**。
 
-第四组的重心是 §9.2 的运行时校验，不是 §9.3 的 schema 文件——理由同上，它防的同样是静默算错（`mode` 现在直接 cast 上线，一个拼错的 `precede` 会变成起一整轮 turn）。§9.3 在 typebox 之上几乎零成本，顺手产出，只覆盖入向；出向帧不写 schema，客户端读事件流按原始 JSON 处理即可。
+第四组的重心是 §9.2 的运行时校验，不是 §9.3 的 schema 文件——理由同上，它防的同样是静默算错。§9.3 在 typebox 之上几乎零成本，顺手产出，只覆盖入向；出向帧不写 schema，客户端读事件流按原始 JSON 处理即可。
 
 ### 9.1 已落地：子进程级端到端测试
 
@@ -425,15 +441,28 @@ harness emitAny → await listener        packages/agent/src/harness/agent-harne
 
 两条都有测试守住：把修复撤掉，对应的用例会失败。
 
-### 9.2 边界校验过浅
+### 9.2 已落地：入向校验
 
-`frames.ts` 只校验信封：帧是对象、`cmd` 是字符串、`id` 是字符串、human response 有必要字段。其余 payload 直接 cast——错误的 `agentId`、`origin`、`mode`、`images`、`thinkingLevel` 结构得不到稳定、可分类的校验错误。
+契约与实现见 §3.3。原来的状态是 `frames.ts` 只看信封、其余 payload 直接 cast，所以错的 `mode` / `origin` / `images` / `thinkingLevel` 得不到任何可分类的报错，其中 `mode` 那条还会静默改变行为。
 
-**计划**：用 typebox 给每个命令写 schema（项目已依赖 typebox，工具参数就用它），在分类之后做边界校验。一份 schema 同时产出运行时校验、TS 类型和给外部客户端的 JSON Schema，不手写三份。失败返回 `code: "invalid_command"` 加上出错路径。
+`src/rpc/schema.ts` 现在是入向那一半的**唯一**事实来源：`RpcCommand` 与 `RpcHumanResponseFrame` 都由 schema 推出（`Static<>`），手写的 union 已经删掉，校验器和类型不可能各说各话。`types.ts` 只保留出向那一半，因为它引的是 core 的结果类型。
 
-### 9.3 缺少可发布的 JSON Schema
+做的时候顺手发现并修掉的两处：
 
-本文与 `types.ts` 是当前仅有的契约表达，外部客户端只能照着读。§9.2 的 schema 落地后从同一份定义导出 JSON Schema 并随文档发布。
+- **"人类什么都没选"没法表达**。core 把它写成必填属性上的 `value: string | undefined`，而 JSON 送不出 `undefined`（`{"type":"undefined"}` 也不是合法 schema）。线上它是**缺省的属性**，schema 现在这么写，TS 类型仍由 `Type.Unsafe` 保持为 core 的。`null` 刻意不接受——它会作为第三种状态漏进 core，而那些 union 没有对应分支。
+- **被拒绝的帧不回显 `id`**。一个手上有若干在飞命令的驱动，收到"其中某条格式不对"是没法处理的。现在 `id` 与 `cmd` 都原样带回（§3.2）。
+
+### 9.3 已落地：可发布的 JSON Schema
+
+[`docs/rpc-inbound.schema.json`](./rpc-inbound.schema.json)，由 `src/rpc/json-schema.ts` 从 §9.2 那份定义生成。`tests/rpc/frames.test.ts` 断言签入的文件与生成结果一致，所以它不可能漂移；重新生成用：
+
+```bash
+UPDATE_RPC_SCHEMA=1 npm --workspace apps/widi run test -- tests/rpc/frames.test.ts
+```
+
+比较的是内容不是字节——文件在 `docs/` 下，排版归仓库 formatter 管，而生成器对排版没有发言权。
+
+只覆盖入向。出向不做的理由见 §3.3。
 
 ### 9.4 已查清：一次 turn 就是一次 provider 调用
 
