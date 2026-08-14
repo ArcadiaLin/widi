@@ -11,11 +11,12 @@
 **已经可以依赖的**
 
 - 协议骨架：`ready` 无条件首帧、JSONL 双向、命令按到达顺序并发派发、四条关闭路径统一（§2、§3）。
-- 17 条命令，是 orchestrator 公开方法的投影（§4）。仍未投影的只剩 `isAgentIdle` 与 `agentHasPendingMessages`，两者都被 `wait_idle` / `wait_tree_idle` 覆盖了。
+- 18 条命令，其中 17 条是 orchestrator 公开方法的投影（§4）。仍未投影的只剩 `isAgentIdle` 与 `agentHasPendingMessages`，两者都被 `wait_idle` / `wait_tree_idle` 覆盖了。
 - 每条失败响应都带稳定的 `code`，并且区分"重试可能成功"与"永远不会"（§3.4）。
 - 入向帧按 schema 校验，拒绝时指出出错路径并回显 `id`；契约以 JSON Schema 发布（§3.3）。
 - `prompt` 与三条 wait 的 `deadlineMs`，以及命令级 `cancel`；`prompt` 超时保证 agent 已停稳才答复（§4.4）。
 - 树级完成信号 `wait_tree_idle`，用来判样本边界——**不要用 `prompt` 的答复判**（§4.5、§4.6）。
+- 运行摘要 `run_summary`：请求数、重试、工具调用、token 与费用分项、分相位时延，维护工作与 turn 分开计（§4.7）。
 - human request 的超时与撤回（§6）。
 - stdout 独占：扩展的 `console.log` 不会撞进协议流（§7.1，有子进程级测试守着）。
 - core 半扩展完整加载（§1.3）。
@@ -24,12 +25,12 @@
 
 | 缺口 | 客户端要做什么 | 详情 |
 | --- | --- | --- |
-| 没有 `run_summary` | 自己在事件流上聚合请求数/token/费用，注意维护工作（compaction）自带 provider 调用，不属于它后面那次 turn | §9.5 |
 | 客户端 → 扩展方向不通 | 无须处理：扩展照常触发、照常汇报，缺的只是客户端主动推事件，已决定不做 | §9.6 |
 | 没有生效配置快照 | 复现性靠自己记录 | §9.7 |
 | `send` 没有 deadline | 目标处于维护相位时投递会无限期 defer | §9.8 |
+| 维护工作的**调用数**数不出来 | 用 `run_summary` 的 usage 判成本，不要用它的次数判调用数 | §4.7 |
 
-**测试覆盖**：`tests/rpc/frames.test.ts`（入向校验与发布用 schema）、`tests/rpc/server.test.ts`（协议行为，进程内）、`tests/rpc/e2e.test.ts`（真子进程 + 真 provider 往返，§9.1）。落地顺序与后续计划见 §9。
+**测试覆盖**：`tests/rpc/frames.test.ts`（入向校验与发布用 schema）、`tests/rpc/run-summary.test.ts`（计费算术）、`tests/rpc/server.test.ts`（协议行为，进程内）、`tests/rpc/e2e.test.ts`（真子进程 + 真 provider 往返，§9.1）。落地顺序与后续计划见 §9。
 
 ## 1. 定位与三条不变量
 
@@ -179,6 +180,8 @@ JSONL：一行一个 JSON 对象，UTF-8，`\n` 分隔（读取端容忍 `\r\n`�
 
 命令是 orchestrator 公开方法（`docs/orchestrator.md` §6）的机械投影。新增一个 orchestrator 方法就是新增一个 case，不为每个方法发明新动词。
 
+唯一的例外是 `run_summary`，它读的是 RPC 层自己在转发事件时记的账（§4.7）——core 里没有对应的东西可投影，不是投影规则被放宽了。
+
 | `cmd` | 参数 | `data` | 对应方法 |
 | --- | --- | --- | --- |
 | `spawn` | `origin`, `parent?`, `cwd?`, `model?`, `thinkingLevel?` | `{ agentId }` | `spawnAgent` |
@@ -191,6 +194,7 @@ JSONL：一行一个 JSON 对象，UTF-8，`\n` 分隔（读取端容忍 `\r\n`�
 | `wait_stop` | `agentId`, `deadlineMs?` | `AgentStop` | `waitForAgentStop` |
 | `wait_tree_idle` | `agentId`, `quietMs?`, `deadlineMs?` | `{ agentIds }` | §4.6 |
 | `read_report` | `agentId` | `{ report? }` | `readAgentReport` |
+| `run_summary` | — | `RpcRunSummary` | §4.7（无对应方法） |
 | `list_agents` | — | `{ agents: AgentSnapshot[] }` | `listAgents` |
 | `inspect` | `agentId` | `AgentSnapshot` | `inspectAgent` |
 | `set_model` | `agentId`, `model` | `RuntimeModel` | `setAgentModelByReference` |
@@ -295,7 +299,38 @@ agent 之间的协作工具（`spawn_agent` / `send_message` / `watch_agent` / `
 
 答复里的 `agentIds` 是**settle 那一刻**树里活着的 agent，根在前。整棵子树在等待期间被 dispose 光了会答 `agent_unavailable`；`agentId` 本身从来不是活 agent 则答 `unknown_agent`。
 
-`read_report` 读回某个 agent 最后一轮说的话（扫到上一条 user message 为止），一个字都没说时 `report` 缺省。它读的是 session 分支，不是事件流的重放，因此和 watch 通知里带的报告是同一份文本。
+`read_report` 读回某个 agent **自上一条 user message 之后说过的全部话**，用空行拼接，一个字都没说时 `report` 缺省。它读的是 session 分支，不是事件流的重放，因此和 watch 通知里带的报告是同一份文本。
+
+"上一条 user message"这个边界比"最后一轮"宽，而且宽得正好：下级的汇报回灌、上级发来的消息都是 `role: "custom"` 的分支条目，扫描**不会**在它们那里停。所以一次委派往返之后，根 agent 的 `read_report` 会包含它两轮各说的话——对评测来说这正是"本样本的完整输出"。只要最后一轮，自己切最后一段。
+
+### 4.7 运行摘要：`run_summary`
+
+一次样本花了多少，由服务端算一次，而不是每个客户端各算一遍。原始事实本来就都在事件流上，`run_summary` 加的不是可见性，是**口径**。
+
+做成命令而不是自动推一帧：样本边界是客户端定的，runtime 不知道它在哪；命令让客户端在自己的边界上读（通常是 `wait_tree_idle` 答复之后），也允许读两次做差。
+
+结果分 `total`（全部 agent 相加，再加上不属于任何 agent 的部分）与 `agents`（按首次出现顺序，被 dispose 的仍在）。每个桶里：
+
+| 字段 | 含义 |
+| --- | --- |
+| `turns` / `turnUsage` | 完成的 assistant 回复数，以及它们的 token 与费用分项（含 `cacheRead` / `cacheWrite`） |
+| `providerResponses` / `providerErrors` | turn 循环里的 provider HTTP 响应数（**每次尝试一条**，重试算多次）与其中 4xx/5xx 的条数 |
+| `maintenance` | compaction / branch summary 的次数、重试次数，以及它们**自己**的 token 与费用 |
+| `tools` | 调用总数、失败数、按工具名分项 |
+| `phaseMs` | 各 harness 相位的墙上时间。`total` 里是各 agent 相加，因此是 agent-时间，并发时会超过 `durationMs` |
+| `humanRequests` | 发起过的人类请求数。无人值守的运行期望值是 0，非 0 就是花在等一个没人回的问题上的时间 |
+| `lastStopReason` / `lastIdleReason` | 前者是 provider 对最后一条 assistant message 的说法（`stop` / `length` / `error` / …），后者是 orchestrator 对最后一次到达 idle 的说法（`settled` / `aborted` / …）。两个不同的问题 |
+
+**核心口径：维护工作自带 provider 调用，不算在它后面那次 turn 上。** compaction 和 branch summary 各自会调模型，一个恰好触发了 compaction 的样本不能因此显得贵一截。这条不是靠时序猜的，是结构性的：turn 循环的调用表现为 assistant `message_end` 与 `after_provider_response`，而维护工作根本不走那个循环（`compact()` 直接拿 `Models`），只以 `session_compact` / `session_tree` 的形式带着它那次调用的 usage 出现。
+
+**不计入**：工具在自己结果上报的 usage（委派工具的成本已经记在干活那个 agent 名下，再加一次就是重复）；扩展自己发出的 API 调用（core 没有钩子，也不该有，由扩展自报）。
+
+**两条精度限制，读数之前要知道**：
+
+1. 记账从 `ready` 之前开始，而根 agent 是在客户端注册之前创建的（§5.3），所以它的 `agent_spawned` 不在被记的事件里。那个窗口里不产生任何花费——agent 是 idle 创建的——但一个 agent 只有在做了什么之后才会出现在 `agents` 里。
+2. 维护工作能数的是**操作数**，不是**调用数**。一次 split-turn 的 compaction 会调两次模型、只发一条 `session_compact`。usage 两种情况下都是完整的，调用数不是，而事件流上没有任何东西能补上它。
+
+`tests/rpc/run-summary.test.ts` 钉住算术，`tests/rpc/e2e.test.ts` 在真进程上把 `providerResponses` 与假 provider 自己数的请求数对齐——后者是唯一能验证"计数等于真实调用数"的地方。
 
 ## 5. 事件流
 
@@ -408,12 +443,12 @@ harness emitAny → await listener        packages/agent/src/harness/agent-harne
 | 二 | 子进程级端到端测试（§9.1） | **已落地** |
 | 三 | 完成信号与两条漏掉的投影（§4.6、§9.9） | **已落地** |
 | 四 | typebox schema：运行时校验 + 可发布 JSON Schema（§3.3、§9.2、§9.3） | **已落地** |
-| 五 | `run_summary`（§9.5） | 待做 |
+| 五 | `run_summary`（§4.7、§9.5） | **已落地** |
 | 六 | 生效配置快照（§9.7） | 待做 |
 | — | 客户端 → 扩展方向（§9.6） | **决定不做**，理由见该节 |
-| — | `send` 的 deadline（§9.8） | 挂起，等第五组定口径 |
+| — | `send` 的 deadline（§9.8） | 挂起，理由见该节 |
 
-**下一步是第五组。**
+**下一步是第六组。**
 
 第一组为什么是一组：deadline 到期要答一个 `timeout`、取消要答一个 `aborted`，两者都得先有码表；反过来码表如果不含这两个码，也没有任何东西会产生它们。它们是一件事的两半。
 
@@ -433,6 +468,7 @@ harness emitAny → await listener        packages/agent/src/harness/agent-harne
 4. provider 不回应时 deadline 生效，随后 `shutdown` 在客户端仍持有 stdin 的情况下结束进程——§4.4 与 §2.3 的第一条保证。
 5. agent 用 `spawn_agent` 委派、下级带归属地收到任务、报告回来把上级唤醒跑第二轮，而 `prompt` **在这之前就答复了**——§4.5。
 6. 同一场委派下 `wait_tree_idle` 等到了全部结束才答复，`prompt` 的答复排在它前面——§4.6，也是第 5 条那个坑的解法。
+7. 同一场委派下 `run_summary` 数出的 provider 响应数**等于假 provider 自己数的请求数**——§4.7 的口径对上真实调用的唯一验证点，`RunAccounting` 自己的测试喂的就是事件，而事件正是可能错的东西。
 
 这轮测试直接暴露了两个缺陷，都已修复：
 
@@ -470,13 +506,15 @@ UPDATE_RPC_SCHEMA=1 npm --workspace apps/widi run test -- tests/rpc/frames.test.
 
 留下的口径结论仍然成立、且要写进 §9.5：**维护工作（compaction、branch summary）自己会发 provider 请求，不属于它后面那次 turn**。费用按 turn 归集时必须把它们分开，否则一次恰好触发了 compaction 的样本会凭空贵一截。
 
-### 9.5 缺少运行摘要
+### 9.5 已落地：运行摘要
 
-原始事实已经全部在线上：`before_provider_request` / `after_provider_response`、`retry_scheduled` / `retry_attempt_start` / `retry_finished`、`tool_execution_start` / `tool_execution_end`、每条 assistant message 的 usage 与 cost。**缺的不是可见性，是口径**——总数由谁按什么规则算。
+契约与口径见 §4.7，实现在 `src/rpc/run-summary.ts`。做成 `run_summary` 命令而不是自动推的帧，理由在 §4.7 开头。
 
-**计划**：由 RPC 层聚合它已经看到的事件，发一帧 `run_summary`：LLM 请求数、retry 次数、工具调用数、token 与费用分项、缓存命中、分阶段时延、终止原因。口径在服务端定义并实现一次；让每个客户端自己算必然漂移。
+做的时候先纠正了本节原来记错的一件事：**`before_provider_request` 不在事件流上**。它是 hook 而不是广播事件——`emitBeforeProviderRequest` 只发给注册了这个事件名的 handler，没有 handler 就直接返回，从不经过 `emitOwn` 的订阅者通道（`packages/agent/src/harness/agent-harness.ts:314`）。同一类的还有 `context` / `before_provider_payload` / `tool_call` / `tool_result` / `session_before_*`：扩展能拦，RPC 客户端看不见。所以"provider 调用数"只能从 `after_provider_response` 数（它是 `emitOwn`），而那正好是**每次 HTTP 尝试一条**，于是重试次数也一起有了——这比原计划里的 `retry_*` 更准，因为那三个事件只覆盖 compaction 与 branch summary（`RetryScheduledEvent.operation` 的类型就只有这两个值），turn 自己的重试它们根本不报。
 
-**不在范围内**：扩展内部的 API 调用（例如某个检索扩展自己发出的 HTTP 请求）core 没有钩子，也不应该有；这类计数由扩展自报。
+维护工作与 turn 的分离最后没有用相位启发式，而是结构性的，理由见 §4.7。这也说明 §9.4 留下的那条口径结论是对的，只是原因比"要小心归集"更强：维护工作的调用**根本不产生** turn 那一侧的事件，不存在被误归的可能，缺的只是它自己那一份数据——`session_compact` / `session_tree` 补上了。
+
+**不在范围内**：扩展内部的 API 调用（例如某个检索扩展自己发出的 HTTP 请求）core 没有钩子，也不应该有；这类计数由扩展自报。工具在结果上报的 usage 同样不计，理由见 §4.7。
 
 ### 9.6 客户端与扩展之间只通了一半（**决定不做**）
 
@@ -499,7 +537,9 @@ UPDATE_RPC_SCHEMA=1 npm --workspace apps/widi run test -- tests/rpc/frames.test.
 
 §4.4 只给了 `prompt` 与 `wait_idle`。`send` 在目标处于维护相位（compaction、branch summary）时会在投递队列里无限期 defer，而队列没有对外的取消入口——`MessageDeliveryQueue.cancel` 只在 dispose 时按 agent 整体调用。
 
-给它加 deadline 需要先决定语义：`send` 在**被接受**时就返回，超时能保证的只是"还没被接受"，不是"没有送到"。一个没有干净保证的超时不如没有，所以这条挂着，等 §9.5 定口径时一起解决。
+给它加 deadline 需要先决定语义：`send` 在**被接受**时就返回，超时能保证的只是"还没被接受"，不是"没有送到"。一个没有干净保证的超时不如没有。
+
+第五组落地后这条并**没有**被解开：它卡的是投递语义，不是计费口径，原来把它挂在 §9.5 下面是挂错了地方。第五组给的是事后诊断——`run_summary` 的 `phaseMs.compaction` 大于 0 就说明这次运行里确实出现过维护相位，一次可疑的长 `send` 能对上号。要真解决，得先给投递队列一个按条目取消的入口（今天 `MessageDeliveryQueue.cancel` 只在 dispose 时按 agent 整体调用），那时"超时即撤回"才是个干净的保证。
 
 ### 9.9 已落地：树级完成信号与两条漏掉的投影
 

@@ -531,6 +531,26 @@ describe("widi --mode rpc as a subprocess", () => {
 			expect(replies.length).toBeGreaterThan(1);
 			expect(Math.max(...replies)).toBeLessThan(settledAt);
 
+			// The accounting, against ground truth the fake provider counted itself.
+			// This is the only place that can check it: `RunAccounting`'s own tests
+			// feed it events, and events are exactly what could be wrong.
+			process.send({ id: "m", cmd: "run_summary" });
+			const summary = await process.waitFor(responseTo("m"));
+			if (!summary.ok || summary.cmd !== "run_summary") throw new Error(`summary failed: ${JSON.stringify(summary)}`);
+			const { total, agents } = summary.data;
+			expect(total.providerResponses).toBe(provider.requestCount());
+			// Root's tool-call turn, root's reply to the tool result, the subagent's
+			// report, and the root's second run after the report woke it.
+			expect(total.turns).toBe(4);
+			expect(total.turnUsage.totalTokens).toBe(4 * 15);
+			expect(total.tools.byName.spawn_agent).toBe(1);
+			expect(total.maintenance.compactions).toBe(0);
+			expect(total.humanRequests).toBe(0);
+			expect(agents.map((agent) => agent.agentId).sort()).toEqual(settled.data.agentIds.slice().sort());
+			// Both ran, so agent-time exceeds neither nothing nor the run's own clock
+			// by accident: the point is that the phases were actually observed.
+			expect(total.phaseMs.turn).toBeGreaterThan(0);
+
 			process.send({ id: "s", cmd: "shutdown" });
 			expect(await process.waitForExit()).toBe(0);
 		},

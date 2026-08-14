@@ -15,7 +15,9 @@
  *
  * The command set stays a projection on purpose. Inventing a verb per method
  * is how pi ended up with two hand-written unions to keep aligned; here a new
- * orchestrator method is a new case and nothing else.
+ * orchestrator method is a new case and nothing else. `run_summary` is the one
+ * exception, and it is one because there is nothing in core to project: it reads
+ * what this layer counted while relaying events (`run-summary.ts`).
  *
  * What is written by hand here is the outbound half. It names core's own result
  * types rather than restating them, and a client has no need to validate what
@@ -35,11 +37,20 @@ import type { HumanRequestEnvelope } from "../core/human-request.ts";
 import type { MessageSendOutcome } from "../core/message.ts";
 import type { AgentId, PromptOutcome, RuntimeModel } from "../core/types.ts";
 import type { RpcErrorCode } from "./errors.ts";
+import type { RpcRunSummary } from "./run-summary.ts";
 import type { RpcCommandName } from "./schema.ts";
 import type { WireOrchestratorEvent } from "./wire-event.ts";
 
 export const RPC_PROTOCOL_VERSION = 1;
 
+export type {
+	RpcAgentRunSummary,
+	RpcMaintenanceTotals,
+	RpcRunSummary,
+	RpcRunTotals,
+	RpcToolTotals,
+	RpcUsageTotals,
+} from "./run-summary.ts";
 export type {
 	RpcCommand,
 	RpcCommandName,
@@ -61,6 +72,8 @@ export interface RpcCommandResults {
 	wait_tree_idle: { readonly agentIds: readonly AgentId[] };
 	/** Absent when the agent's last run produced no assistant text at all. */
 	read_report: { readonly report?: string };
+	/** A reading of the RPC layer's own accounting, not a core call. */
+	run_summary: RpcRunSummary;
 	list_agents: { readonly agents: readonly AgentSnapshot[] };
 	inspect: AgentSnapshot;
 	set_model: RuntimeModel;

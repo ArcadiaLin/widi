@@ -32,6 +32,9 @@
 			"$ref": "#/$defs/read_report"
 		},
 		{
+			"$ref": "#/$defs/run_summary"
+		},
+		{
 			"$ref": "#/$defs/send"
 		},
 		{
@@ -324,6 +327,24 @@
 			},
 			"additionalProperties": false,
 			"title": "read_report"
+		},
+		"run_summary": {
+			"type": "object",
+			"required": [
+				"cmd"
+			],
+			"properties": {
+				"cmd": {
+					"type": "string",
+					"const": "run_summary"
+				},
+				"id": {
+					"type": "string",
+					"description": "Echoed on the response, and the only handle `cancel` has on this command."
+				}
+			},
+			"additionalProperties": false,
+			"title": "run_summary"
 		},
 		"send": {
 			"type": "object",

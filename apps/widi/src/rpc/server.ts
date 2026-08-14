@@ -32,6 +32,7 @@ import type { AgentId, OrchestratorEvent, PromptOutcome, RuntimeModel } from "..
 import { formatError } from "../utils/errors.ts";
 import { classifyError, RpcError, type RpcErrorCode } from "./errors.ts";
 import type { RpcHumanChannel } from "./human-channel.ts";
+import { RunAccounting } from "./run-summary.ts";
 import type { RpcCommand, RpcCommandName, RpcCommandResults, RpcOutbound, RpcSuccessFrame } from "./types.ts";
 import { toWireEvent } from "./wire-event.ts";
 
@@ -77,6 +78,7 @@ export class RpcServer implements OrchestratorClient<OrchestratorEvent> {
 	private readonly _onShutdown: ((reason?: string) => void) | undefined;
 	private readonly _onCommandsDrained: (() => void) | undefined;
 	private readonly _sink: MessageSink;
+	private readonly _accounting = new RunAccounting();
 	private readonly _inFlight = new Map<string, AbortController>();
 	private readonly _treeWaiters = new Set<() => void>();
 	private _outstanding = 0;
@@ -96,6 +98,9 @@ export class RpcServer implements OrchestratorClient<OrchestratorEvent> {
 	}
 
 	async receive(event: OrchestratorEvent): Promise<void> {
+		// Before the send, so a summary read cannot answer with an event counted
+		// only after the client had already been told about it.
+		this._accounting.record(event);
 		this._send({ type: "event", event: toWireEvent(event) });
 		// Before the drain, so a tree's quiet window is measured from when the
 		// runtime did something and not from when the consumer got round to it.
@@ -235,6 +240,8 @@ export class RpcServer implements OrchestratorClient<OrchestratorEvent> {
 				const report = await orchestrator.readAgentReport(command.agentId);
 				return report === undefined ? {} : { report };
 			}
+			case "run_summary":
+				return this._accounting.summarize();
 			case "list_agents":
 				return { agents: orchestrator.listAgents().agents };
 			case "inspect":

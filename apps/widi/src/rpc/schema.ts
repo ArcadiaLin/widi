@@ -154,6 +154,12 @@ export const RPC_COMMAND_SCHEMAS = {
 		deadlineMs: DeadlineSchema,
 	}),
 	read_report: command("read_report", { cmd: Type.Literal("read_report"), agentId: AgentIdSchema }),
+	/**
+	 * The one command that is not an orchestrator method. It reads the RPC
+	 * layer's own accounting of the events it has already sent, so there is
+	 * nothing in core for it to project - see `run-summary.ts`.
+	 */
+	run_summary: command("run_summary", { cmd: Type.Literal("run_summary") }),
 	list_agents: command("list_agents", { cmd: Type.Literal("list_agents") }),
 	inspect: command("inspect", { cmd: Type.Literal("inspect"), agentId: AgentIdSchema }),
 	set_model: command("set_model", {
