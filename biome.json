@@ -4,6 +4,10 @@
 	"linter": { "enabled": true, "rules": { "recommended": true } },
 	"overrides": [
 		{
+			"includes": ["apps/widi/docs/rpc-inbound.schema.json"],
+			"formatter": { "enabled": false }
+		},
+		{
 			"includes": ["packages/agent/**"],
 			"formatter": { "indentStyle": "tab", "indentWidth": 3, "lineWidth": 120, "expand": "auto" },
 			"linter": {
