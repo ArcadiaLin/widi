@@ -734,6 +734,21 @@ export class AgentOrchestrator {
 		return ordered;
 	}
 
+	/**
+	 * Live agents in this agent's spawn subtree, itself first if it is live.
+	 *
+	 * Walks the spawn edges rather than the live registry, so a grandchild whose
+	 * parent has been disposed is still in its root's subtree - the edge outlives
+	 * the agent. `listAgentTree` answers a richer question and reads sessions to
+	 * do it; this is the synchronous membership test a caller joining over the
+	 * tree needs.
+	 */
+	listAgentSubtree(agentId: AgentId): readonly AgentId[] {
+		return this._collectAgentSubtreePostOrder(agentId)
+			.filter((id) => this._live.has(id))
+			.reverse();
+	}
+
 	private async _listAgentTree(agentId: AgentId): Promise<AgentTreeListing> {
 		const rootAgentId = this._resolveAgentTreeRoot(agentId);
 		const liveInTree = [...this._live.values()].filter(
@@ -2114,9 +2129,13 @@ export class AgentOrchestrator {
 	 * The next `agent_idle` this agent publishes. Edge-triggered, unlike
 	 * `waitForAgentIdle`, which answers about now: a caller handing over work
 	 * wants the stop that follows it, not the idle it started from.
+	 *
+	 * `waiterAgentId` is undefined when the waiter is not an agent - a front end
+	 * waits from beside the orchestrator and has no disposal of its own to end
+	 * the wait.
 	 */
 	async waitForAgentStop(
-		waiterAgentId: AgentId,
+		waiterAgentId: AgentId | undefined,
 		agentId: AgentId,
 		options: { readonly signal?: AbortSignal } = {},
 	): Promise<AgentStop> {

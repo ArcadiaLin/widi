@@ -108,10 +108,26 @@ export async function runWidiRpc(options: WidiRpcOptions): Promise<void> {
 		afterReady(() => server?.handleCommand(parsed.command));
 	};
 
+	/**
+	 * End of input means "nothing more will be sent", not "stop now".
+	 *
+	 * A piped client (`printf '...' | widi --mode rpc`) hits EOF before the runtime
+	 * has even finished starting, and everything it wrote is still held or still
+	 * running. Shutting down on that edge would defeat the whole hold-until-ready
+	 * rule, so the close is remembered and acted on once startup is done and every
+	 * accepted command has been answered.
+	 */
+	let inputClosed = false;
+	const shutdownIfInputDone = (): void => {
+		if (!inputClosed || !server || server.outstandingCommands > 0) return;
+		void shutdown("input stream ended");
+	};
+
 	const detachReader = attachJsonlLineReader(process.stdin, {
 		onLine: route,
 		onEnd: () => {
-			void shutdown("input stream ended");
+			inputClosed = true;
+			shutdownIfInputDone();
 		},
 	});
 
@@ -127,6 +143,14 @@ export async function runWidiRpc(options: WidiRpcOptions): Promise<void> {
 		if (shuttingDown) return;
 		shuttingDown = true;
 		detachReader();
+		// Reading stdin left its handle referenced, and a client that sent
+		// `shutdown` normally keeps its end of the pipe open - so without this the
+		// process would answer the command and then live on with an empty event
+		// loop, waiting for input nobody will send. Releasing it here rather than in
+		// the reader's detach: stdin is this function's to own, the reader only
+		// borrowed it.
+		process.stdin.pause();
+		process.stdin.unref();
 		human.closeAll(`Shutting down: ${reason}`);
 		unregisterClient?.();
 		try {
@@ -157,6 +181,19 @@ export async function runWidiRpc(options: WidiRpcOptions): Promise<void> {
 			await runtime.orchestrator.disposeAll(reason);
 		};
 
+		// A shutdown that arrived mid-startup could not dispose a runtime that did
+		// not exist yet. Now it does, so do that part and stop here: no root agent,
+		// no `ready`, no client registration for a process already on its way out.
+		if (shuttingDown) {
+			try {
+				await disposeRuntime("shut down before startup finished");
+			} catch (error) {
+				process.stderr.write(`widi rpc: shutdown failed: ${formatError(error)}\n`);
+			}
+			await closed;
+			return;
+		}
+
 		const rootAgentId = options.noRoot ? undefined : await runtime.orchestrator.spawnAgent({ origin: { kind: "new" } });
 
 		server = new RpcServer({
@@ -168,6 +205,7 @@ export async function runWidiRpc(options: WidiRpcOptions): Promise<void> {
 			onShutdown: (reason) => {
 				void shutdown(reason ?? "client requested shutdown");
 			},
+			onCommandsDrained: shutdownIfInputDone,
 		});
 
 		send({
@@ -184,6 +222,10 @@ export async function runWidiRpc(options: WidiRpcOptions): Promise<void> {
 		// After `ready` and after the client is registered, so a held command's
 		// events reach the stream in the same order a fresh one's would.
 		for (const work of heldUntilReady.splice(0)) work();
+
+		// Covers a client that closed its end during startup and sent nothing, or
+		// only frames that answered synchronously.
+		shutdownIfInputDone();
 	} catch (error) {
 		await shutdown("startup failed");
 		throw error;

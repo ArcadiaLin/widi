@@ -17,6 +17,7 @@
 
 import { AgentHarnessError } from "@arcadialin/agent-core";
 import { OrchestratorError } from "../core/diagnostics.ts";
+import { AgentGoneError } from "../core/host.ts";
 import { MessageError } from "../core/message.ts";
 
 export type RpcErrorCode =
@@ -57,6 +58,9 @@ export class RpcError extends Error {
 export function classifyError(error: unknown): RpcErrorCode {
 	if (error instanceof RpcError) return error.code;
 	if (error instanceof OrchestratorError) return fromOrchestratorCode(error.code);
+	// Raised by the waits, not by a command against the agent: whoever the wait
+	// depended on was torn down under it, and repeating the wait cannot help.
+	if (error instanceof AgentGoneError) return "agent_unavailable";
 	if (error instanceof MessageError) {
 		switch (error.code) {
 			case "message_invalid":

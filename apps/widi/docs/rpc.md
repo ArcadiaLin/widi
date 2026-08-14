@@ -47,7 +47,14 @@ RPC 客户端不是 agent，它站在 orchestrator 这一侧，与 TUI 同侧。
 
 ### 2.3 关闭
 
-`shutdown` 命令、stdin 结束、`SIGINT`/`SIGTERM`、stdout 写失败，四条路都进同一个关闭流程：摘掉 reader、终止全部挂起的 human request、注销 client、`disposeAll`、排空 stdout、还原 stdout。
+`shutdown` 命令、stdin 结束、`SIGINT`/`SIGTERM`、stdout 写失败，四条路都进同一个关闭流程：摘掉 reader、释放 stdin、终止全部挂起的 human request、注销 client、`disposeAll`、排空 stdout、还原 stdout。
+
+两条保证：
+
+- **`shutdown` 命令自己就会结束进程**，不需要客户端再关掉管道。交互式客户端与批量驱动通常都保持自己那端开着，等管道关闭才退出的实现会把它们全都挂住。
+- **stdin 结束意味着"不会再发了"，不是"立刻停"**。管道客户端（`printf ... | widi --mode rpc`）在 runtime 还没启动完时就已经 EOF，它写的东西还全在持有队列里。所以流关闭只被记下，等启动完成**且已接受的命令全部答复完毕**才真正关闭。否则 §2.2 的持有规则等于不存在。
+
+第二条同时决定了一件事：**一条 `prompt` 可以整个跑在管道模式下**——写命令、关 stdin、等进程退出，答复与事件都在 stdout 上。
 
 ## 3. 帧格式
 
@@ -137,6 +144,9 @@ JSONL：一行一个 JSON 对象，UTF-8，`\n` 分隔（读取端容忍 `\r\n`�
 | `dispose` | `agentId`, `scope?`, `reason?` | `{ agentIds }` | `disposeAgent` |
 | `compact` | `agentId`, `customInstructions?` | `CompactResult` | `compactAgent` |
 | `wait_idle` | `agentId`, `deadlineMs?` | `{}` | `waitForAgentIdle` |
+| `wait_stop` | `agentId`, `deadlineMs?` | `AgentStop` | `waitForAgentStop` |
+| `wait_tree_idle` | `agentId`, `quietMs?`, `deadlineMs?` | `{ agentIds }` | §4.6 |
+| `read_report` | `agentId` | `{ report? }` | `readAgentReport` |
 | `list_agents` | — | `{ agents: AgentSnapshot[] }` | `listAgents` |
 | `inspect` | `agentId` | `AgentSnapshot` | `inspectAgent` |
 | `set_model` | `agentId`, `model` | `RuntimeModel` | `setAgentModelByReference` |
@@ -171,6 +181,8 @@ JSONL：一行一个 JSON 对象，UTF-8，`\n` 分隔（读取端容忍 `\r\n`�
 
 **`prompt` 返回的是整个 run 跑完之后的最终 assistant message**，不是第一个 turn 的。链路是 `promptAgent` → `harness.prompt()` → `executeTurn` → `runAgentLoop`，工具调用的所有轮次都在里面。这是编写评测驱动时最要紧的一条语义。
 
+**但"这个 run"只是目标 agent 自己的 run，不是它那棵树的。** 详见 §4.5。
+
 binding 固定为人类 binding（可打断、enforce、plainEntry），请求不可覆盖投递策略——这是 orchestrator 的既定规矩：policy 在发放 sink 时绑定。
 
 ### 4.3 结果形状
@@ -190,18 +202,56 @@ CompactResult      = { summary, firstKeptEntryId?, tokensBefore, usage?, retaine
 
 ### 4.4 deadline 与取消
 
-只有 `prompt` 与 `wait_idle` 可以无限等待，因此也只有这两条接受 `deadlineMs`、只有这两条能被 `cancel` 撤下。其余命令要么立即返回，要么被单次 harness 调用界定。
+可以无限等待的命令只有 `prompt` 和三条 wait，因此也只有它们接受 `deadlineMs`、只有它们能被 `cancel` 撤下。其余命令要么立即返回，要么被单次 harness 调用界定。
 
 `deadlineMs` 是**这条命令的** deadline，不是 agent 的；到期时 agent 会怎样按命令而定：
 
 | 命令 | 到期/被取消后 | 答复 |
 | --- | --- | --- |
 | `prompt` | **abort 该 agent，并等它真正停下**，然后才答复 | `timeout` / `aborted` |
-| `wait_idle` | 停止等待，**agent 一动不动**——这条命令从头到尾只是在看 | `timeout` / `aborted` |
+| `wait_idle` / `wait_stop` / `wait_tree_idle` | 停止等待，**agent 一动不动**——这些命令从头到尾只是在看 | `timeout` / `aborted` |
 
 `prompt` 那条"等它真正停下"是刻意的保证：**答复到达时该 agent 已经 idle，属于它的事件也已经全部在流上**，批量驱动可以直接进入下一个样本，不必和上一个的尾巴赛跑。放弃 run 提前答复会留下一个仍在写事件的模型循环，而客户端已经认为那条命令结束了。
 
 `cancel` 按 `id` 撤下在飞命令，因此**没有 `id` 的命令不可取消**——`id` 是唯一的把手。`commandId` 找不到（包括已经答复过的）返回 `{ cancelled: false }`，不算失败。复用一个仍在飞的 `id` 会被拒（`invalid_command`）：接受它的代价是两条不同命令共用一个关联 id。
+
+### 4.5 多 agent 协作：`prompt` 答复不等于这棵树跑完
+
+agent 之间的协作工具（`spawn_agent` / `send_message` / `watch_agent` / `dispose_agent`）在 RPC 下**完全正常**，与 TUI 下无差别：它们绑定 `AgentToOrchestratorHost`，那一层不知道前端是什么。客户端还可以用 `spawn` 的 `parent` 参数直接搭出拓扑——那条边进 `_spawnParent`，于是新 agent 就在 parent 的树里，parent 的 `list_agents` 能发现它、能给它发消息、能 watch、能 dispose。agent 之间的消息经 agent binding 投递，带 `[Message from <id>]` 归属，客户端在事件流上全程可见。
+
+**要小心的是完成语义。** `prompt` 在**目标 agent 自己的 run 结束**时答复，而一个把活交出去的 agent 正是靠结束自己这一轮来等下级的。于是：
+
+- 下级慢：根 agent 的 run 先结束，`prompt` 答复，**协作还在进行**；下级报告到达后 watch 通知把根唤醒，跑第二轮——这一轮已经在 `prompt` 的答复之外。
+- 下级快：报告在根的 run 还在飞时就到了，以 `interrupt` 折进同一个 run，`prompt` 答复时协作已经结束。
+
+**两种都会发生，取决于时序。** 这比"总是提前返回"更危险：一个把 `prompt` 答复当作"样本结束"的驱动，在下级快的时候看起来完全正确。两条路径都由 `tests/rpc/e2e.test.ts` 实测过。
+
+要判断一轮协作真正结束，用 `wait_tree_idle`（§4.6），不要用 `prompt` 的答复。
+
+### 4.6 完成信号：`wait_idle` / `wait_stop` / `wait_tree_idle`
+
+三条 wait 回答的是三个不同的问题，用错一条就是样本边界判错。
+
+| 命令 | 问题 | 触发方式 |
+| --- | --- | --- |
+| `wait_idle` | 这个 agent **现在**闲着吗 | 电平。已经 idle 就立刻答复 |
+| `wait_stop` | 这个 agent **下一次**停在哪 | 边沿。已经 idle 也要等下一次 `agent_idle` |
+| `wait_tree_idle` | 这**棵树**跑完了吗 | 见下 |
+
+`wait_idle` 与 `wait_stop` 的差别是把活交出去的人最容易踩的坑：`send` 之后紧跟 `wait_idle`，投递还在队列里、目标还没动，`wait_idle` 立刻返回，驱动就把起点当成了终点。交出工作后要等它的那次停止，用 `wait_stop`；它答复的 `AgentStop` 带 `reason`（`settled` / `aborted` / …）与 `abortedBy`。
+
+`wait_tree_idle` 是给批量驱动判样本边界用的，做两件事：
+
+1. **在子树上做 join**：`agentId` 的 spawn 子树里每个活着的 agent 都 idle 才算数。走的是 spawn 边而不是活 agent 表，所以父 agent 已被 dispose 的孙 agent 仍然算在树里。这一半是决定性的——§4.5 那个"根 idle 而下级在跑"的场景由它排除。
+2. **延后复核**：条件第一次成立时不采信，等一个静默窗口（`quietMs`，默认 250）后重新求值；期间任何 runtime 事件都会重新计时。
+
+第 2 条是启发式，理由要说清楚：两个 agent 之间的交接不是原子的。下级停止到上级被唤醒之间，`AgentWatches` 要先从 session 读回报告再投递，这中间整棵树都读作 idle。**测试证明的是"延后复核"本身**（`tests/rpc/server.test.ts`），它挡掉所有在一个事件循环回合内完成的交接；**没有**测试能证明窗口的**长度**有用——只有那次 session 读真的落到磁盘时它才买到东西。设成非零而不是 0，是因为早答一次是样本被静默截断，晚答一次只损失一个窗口。想只要复核、不要猜，传 `quietMs: 0`。
+
+彻底不猜需要 orchestrator 知道 watch 表，而 watch 表在 tool registry 之下。在那之前，窗口可调，并且由**任何**事件重新计时——这在"一个样本一个进程"（§7.4）下是安全的。
+
+答复里的 `agentIds` 是**settle 那一刻**树里活着的 agent，根在前。整棵子树在等待期间被 dispose 光了会答 `agent_unavailable`；`agentId` 本身从来不是活 agent 则答 `unknown_agent`。
+
+`read_report` 读回某个 agent 最后一轮说的话（扫到上一条 user message 为止），一个字都没说时 `report` 缺省。它读的是 session 分支，不是事件流的重放，因此和 watch 通知里带的报告是同一份文本。
 
 ## 5. 事件流
 
@@ -285,7 +335,15 @@ harness emitAny → await listener        packages/agent/src/harness/agent-harne
 
 所有 agent 的事件经过同一条 bus、同一个 client、同一条写尾链。**客户端读得慢会把全部 agent 的模型循环一起堵住**，不只是它当时在读的那个。这是构造性的，不是概率问题。
 
-取舍是刻意的：回压传到模型循环是想要的性质（否则内存无界），"全部一起慢下来"是安全的失败模式。要真正解耦得给每个 agent 独立写队列加各自水位，等于在协议里引入多路复用。对并发批量场景的影响见 §9.8。
+取舍是刻意的：回压传到模型循环是想要的性质（否则内存无界），"全部一起慢下来"是安全的失败模式。要真正解耦得给每个 agent 独立写队列加各自水位，等于在协议里引入多路复用。
+
+### 7.4 并发批量：每个样本一个进程
+
+这是**已定的**运行方式，不是建议：批量评测时，**一个样本一个 widi 进程**，不要在一个进程里并发跑多个样本 agent。
+
+§7.3 是直接原因——同进程内一个慢读者造成的回压停顿会污染其它 agent 的时延，而分阶段时延正是评测要报的数（§9.5）。除此之外还有三条：失败互不牵连（一个样本打爆进程不影响其余）、`cwd` 与 agent dir 天然隔离、`shutdown` 之后进程退出即是干净的资源边界。实现成本为零：客户端起进程、写命令、读 stdout，多进程与单进程是同一段代码。
+
+一个进程里多 agent 的能力**并没有被取消**——`spawn` 的 `parent`、跨 agent 消息、agent 树都照常工作。不建议的只是"用多 agent 并发跑互不相关的样本"这一种用法。
 
 ## 8. 版本与兼容策略
 
@@ -303,45 +361,54 @@ harness emitAny → await listener        packages/agent/src/harness/agent-harne
 | 组 | 内容 | 状态 |
 | --- | --- | --- |
 | 一 | 失败码分类（§3.3）、deadline 与命令级取消（§4.4）、human request 超时与撤回（§6.1、§6.2） | **已落地** |
-| 二 | 子进程级端到端测试（§9.3） | 待做 |
-| 三 | typebox schema：运行时校验 + 可发布 JSON Schema（§9.1、§9.2） | 待做 |
-| 四 | 并发模型定案（§9.8 后半），然后 `run_summary`（§9.6） | 待做，需决定 |
-| 五 | 客户端 → 扩展方向（§9.7） | 待做，条件项 |
-| 六 | 生效配置快照（§9.8 前半） | 待做 |
+| 二 | 子进程级端到端测试（§9.1） | **已落地** |
+| 三 | 完成信号与两条漏掉的投影（§4.6、§9.9） | **已落地** |
+| 四 | typebox schema：运行时校验 + 可发布 JSON Schema（§9.2、§9.3） | 待做 |
+| 五 | `run_summary`（§9.5） | 待做 |
+| 六 | 客户端 → 扩展方向（§9.6） | 待做，条件项 |
+| 七 | 生效配置快照（§9.7） | 待做 |
 
 第一组为什么是一组：deadline 到期要答一个 `timeout`、取消要答一个 `aborted`，两者都得先有码表；反过来码表如果不含这两个码，也没有任何东西会产生它们。它们是一件事的两半。
 
-第二组紧接其后，是因为它之后是其余各组的测试台架——`run_summary`、schema 拒绝、stdout 洁净都只有在真进程里才验得准。第三组往后放的理由在上面。第五组是条件项：客户端只用 `prompt` + 事件流的话可以完全不做；要用双端扩展注入任务或收结构化结果，它就得提到第二位。
+第二组紧接其后，是因为它之后是其余各组的测试台架——`run_summary`、schema 拒绝、stdout 洁净都只有在真进程里才验得准。
 
-### 9.1 边界校验过浅
+第三组插到 schema 之前，是第二组的直接产物：e2e 证明了 `prompt` 的答复和"这棵树跑完"是两回事，而**判错样本边界会静默产出错的数**，比校验过浅（伤的是一次性的调试成本）严重一个量级。第六组是条件项：客户端只用 `prompt` + 事件流的话可以完全不做；要用双端扩展注入任务或收结构化结果，它就得提到第二位。
+
+### 9.1 已落地：子进程级端到端测试
+
+`tests/rpc/e2e.test.ts` 启动真进程，用临时 agent dir（自带 provider、profile、信任设置，不碰开发者的 `~/.widi`）与一个说 OpenAI completions 线格式的本地 HTTP 服务，因此有真实 provider 往返而不需要网络或密钥。每条断言各自对应一件单元测试够不着的事：
+
+1. 管道输入被答复，且输入结束后进程退出——§2.2 的持有与 §2.3 的第二条保证。
+2. 扩展的 `console.log` 落在 stderr，stdout 每一行都是可解析的帧——**§7.1 唯一有效的验证方式**。
+3. 真实 `prompt` 跑通，一次 turn 恰好一次 provider 调用，且线上的 `message_update` 既无 `partial` 也无 `message`——§5 在真实流上验证，而不是在合成事件上。
+4. provider 不回应时 deadline 生效，随后 `shutdown` 在客户端仍持有 stdin 的情况下结束进程——§4.4 与 §2.3 的第一条保证。
+5. agent 用 `spawn_agent` 委派、下级带归属地收到任务、报告回来把上级唤醒跑第二轮，而 `prompt` **在这之前就答复了**——§4.5。
+6. 同一场委派下 `wait_tree_idle` 等到了全部结束才答复，`prompt` 的答复排在它前面——§4.6，也是第 5 条那个坑的解法。
+
+这轮测试直接暴露了两个缺陷，都已修复：
+
+- **stdin EOF 会在启动中途触发关闭**，进而还原 stdout。之后加载的所有扩展的输出都直接落进协议流——§7.1 在管道模式下形同虚设，而这正是最常见的用法。同一个 bug 还让 `disposeAll` 被跳过。
+- **`shutdown` 命令不结束进程**：读过 stdin 之后其句柄仍被引用，客户端不关管道进程就一直活着。
+
+两条都有测试守住：把修复撤掉，对应的用例会失败。
+
+### 9.2 边界校验过浅
 
 `frames.ts` 只校验信封：帧是对象、`cmd` 是字符串、`id` 是字符串、human response 有必要字段。其余 payload 直接 cast——错误的 `agentId`、`origin`、`mode`、`images`、`thinkingLevel` 结构得不到稳定、可分类的校验错误。
 
-**计划**：用 typebox 给每个命令写 schema（项目已依赖 typebox，工具参数就用它），在分类之后做边界校验。一份 schema 同时产出运行时校验、TS 类型和给外部客户端的 JSON Schema，不手写三份。失败返回 `{ ok: false, code: "rpc.invalid_command", error, path }`。
+**计划**：用 typebox 给每个命令写 schema（项目已依赖 typebox，工具参数就用它），在分类之后做边界校验。一份 schema 同时产出运行时校验、TS 类型和给外部客户端的 JSON Schema，不手写三份。失败返回 `code: "invalid_command"` 加上出错路径。
 
-### 9.2 缺少可发布的 JSON Schema
+### 9.3 缺少可发布的 JSON Schema
 
-本文与 `types.ts` 是当前仅有的契约表达，外部客户端只能照着读。§9.1 的 schema 落地后从同一份定义导出 JSON Schema 并随文档发布。
+本文与 `types.ts` 是当前仅有的契约表达，外部客户端只能照着读。§9.2 的 schema 落地后从同一份定义导出 JSON Schema 并随文档发布。
 
-### 9.3 缺少子进程级端到端测试
+### 9.4 已查清：一次 turn 就是一次 provider 调用
 
-现有 `tests/rpc/` 38 例覆盖分帧、入向分类、stdout 保序与回压、命令派发、失败码分类、deadline 与取消、human request 往返与撤回、事件投影，但**没有真正启动 `--mode rpc` 进程**。端到端只手工验证过。
+之前记的"一次 `prompt` 发出两次 provider 请求"是 e2e fixture 自己造成的：测试模型的 `contextWindow` 是 8192，而 compaction 的 `reserveTokens` 默认 16384，于是每次 settle 都触发一次 compaction，每次 compaction 又是一次 provider 调用。把 fixture 的 `contextWindow` 提到 20 万之后，一次 `prompt` 就是一次调用，测试现在断言的是精确值 `1`。
 
-**计划**：spawn 真进程，驱动 ready → spawn → prompt → 事件 → abort → shutdown，并断言 **stdout 只含协议帧**（这是 §7.1 唯一有效的验证方式）、诊断落在 stderr。
+留下的口径结论仍然成立、且要写进 §9.5：**维护工作（compaction、branch summary）自己会发 provider 请求，不属于它后面那次 turn**。费用按 turn 归集时必须把它们分开，否则一次恰好触发了 compaction 的样本会凭空贵一截。
 
-### 9.4 `send` 没有 deadline
-
-§4.4 只给了 `prompt` 与 `wait_idle`。`send` 在目标处于维护相位（compaction、branch summary）时会在投递队列里无限期 defer，而队列没有对外的取消入口——`MessageDeliveryQueue.cancel` 只在 dispose 时按 agent 整体调用。
-
-给它加 deadline 需要先决定语义：`send` 在**被接受**时就返回，超时能保证的只是"还没被接受"，不是"没有送到"。一个没有干净保证的超时不如没有，所以这条挂着，等 §9.6 定口径时一起解决。
-
-### 9.5 已落地：deadline、取消、human 超时
-
-规范见 §3.3、§4.4、§6.1、§6.2。当时列的四项：`prompt` deadline（做了，并且保证答复时 agent 已 idle）、命令级取消（做了，按 `id`）、human request 默认超时（做了，`--human-timeout`）、超时后 agent 状态的明确保证（做了，写进 §4.4 的表）。`send` 的 deadline 拆出去成了 §9.4。
-
-顺带修掉了一个当时没被算作缺口的实际缺陷：core 撤回一条 human request 时（agent 被 dispose）客户端从来收不到通知，会永久挂着提问界面。现在有 `human_request_withdrawn`（§6.2）。
-
-### 9.6 缺少运行摘要
+### 9.5 缺少运行摘要
 
 原始事实已经全部在线上：`before_provider_request` / `after_provider_response`、`retry_scheduled` / `retry_attempt_start` / `retry_finished`、`tool_execution_start` / `tool_execution_end`、每条 assistant message 的 usage 与 cost。**缺的不是可见性，是口径**——总数由谁按什么规则算。
 
@@ -349,7 +416,7 @@ harness emitAny → await listener        packages/agent/src/harness/agent-harne
 
 **不在范围内**：扩展内部的 API 调用（例如某个检索扩展自己发出的 HTTP 请求）core 没有钩子，也不应该有；这类计数由扩展自报。
 
-### 9.7 客户端与扩展之间只通了一半
+### 9.6 客户端与扩展之间只通了一半
 
 扩展 → 客户端已通：`extension_message_published`、`extension_output`、`extension_notification`、`extension_status_changed` 都是 `OrchestratorEvent`。
 
@@ -357,14 +424,35 @@ harness emitAny → await listener        packages/agent/src/harness/agent-harne
 
 **计划**：新增 `emit_extension_event` 命令与 `extension_event` 出向帧。补上之后 RPC 客户端就能扮演双端扩展的"第二半"——与 TUI 半同等地位，与 core 半经总线对话。结构化结果的传输与关联因此由扩展自己定义（用 `publishMessage` 发自己的 kind，用客户端先发的关联 id 串起来），RPC 不需要理解任何领域结构。
 
-### 9.8 缺少生效配置快照，以及并发模型未定
+### 9.7 缺少生效配置快照
 
 `ready` 有 `protocolVersion` / `cwd` / `agentDir` / `diagnostics`，`inspect` 有 profile / model / tools / extensions / thinkingLevel，`AssistantMessage.responseModel` 有实际响应的模型。缺一份统一快照，且两项字段并不存在：
 
 - **widi revision**：需要在 build 时注入 package version + git sha。
 - **extension 版本**：widi 没有这个概念，只有 `declaredApiVersion`（扩展声明的 API 版本）与源路径。要保证可复现，只能新造源文件内容 hash。
 
-**并发模型是一个待决定项**，且与 §9.6 想要的"分阶段时延"直接冲突：按 §7.3，同一进程内并发跑多个 agent 时，一个慢读者造成的回压停顿会污染其它 agent 的时延测量。两条路——每个样本一个进程（真隔离，时延互不污染，失败互不牵连，实现成本为零），或给每个 agent 独立写队列（协议引入多路复用）。**倾向前者**，但要显式决定并写进本文。
+### 9.8 `send` 没有 deadline
+
+§4.4 只给了 `prompt` 与 `wait_idle`。`send` 在目标处于维护相位（compaction、branch summary）时会在投递队列里无限期 defer，而队列没有对外的取消入口——`MessageDeliveryQueue.cancel` 只在 dispose 时按 agent 整体调用。
+
+给它加 deadline 需要先决定语义：`send` 在**被接受**时就返回，超时能保证的只是"还没被接受"，不是"没有送到"。一个没有干净保证的超时不如没有，所以这条挂着，等 §9.5 定口径时一起解决。
+
+### 9.9 已落地：树级完成信号与两条漏掉的投影
+
+§4.5 的后果是客户端判断不了"这一轮多 agent 协作结束了"。补了三条命令，语义见 §4.6：
+
+- **`read_report`** ← `readAgentReport`。运行时全域、不绑调用方身份，本来就符合 §4 的投影标准，是漏的。没有它，客户端要拿一个**不是自己 prompt 的** agent（某个 agent 自己 spawn 的下级）的最终输出，只能从事件流里自己重建 `message_end`。
+- **`wait_stop`** ← `waitForAgentStop`。边沿触发，补上 `wait_idle` 的电平语义在"交出工作后等它停"这个场景下的错位。
+- **`wait_tree_idle`**。做成命令而不是留给客户端自己算：这个判断做错一次整批样本的边界就都错，而它只该被实现一次。
+
+顺带修的两处：
+
+- `waitForAgentStop` 的 `waiterAgentId` 放宽成可选。它只用于"等待方自己被 dispose 就拒绝"，而 RPC 客户端站在 orchestrator 旁边，没有自己的 dispose。
+- `AgentGoneError` 之前落到 `internal`。它是 wait 类命令的正常失败——等待所依赖的 agent 被拆了——现在分类成 `agent_unavailable`。
+
+新增的 core 投影只有一个：`AgentOrchestrator.listAgentSubtree`（走 spawn 边、同步、只返回活着的）。`_listAgentTree` 回答的是更丰富的问题并且要读 session，不是这里要的东西。
+
+剩下的不确定性在 §4.6 说清楚了：静默窗口的**长度**没有测试能证明其必要性，它是防御而不是对已观察故障的修复。要彻底不猜，得让 orchestrator 能看到 `AgentWatches` 的 pending 状态，而那张表在 tool registry 之下——目前不值得为它开这条依赖。
 
 ## 延伸阅读
 

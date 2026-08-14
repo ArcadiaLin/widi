@@ -27,7 +27,7 @@ import type { ImageContent } from "@earendil-works/pi-ai";
 import type { AgentProfileOverride } from "../core/agent-profile.ts";
 import type { AgentSnapshot } from "../core/agent-types.ts";
 import type { CoreDiagnostic } from "../core/diagnostics.ts";
-import type { AgentDisposeScope } from "../core/host.ts";
+import type { AgentDisposeScope, AgentStop } from "../core/host.ts";
 import type { HumanRequestEnvelope, HumanResponse } from "../core/human-request.ts";
 import type { MessageDeliveryMode, MessageSendOutcome } from "../core/message.ts";
 import type { AgentId, PromptOutcome, RuntimeModel } from "../core/types.ts";
@@ -100,6 +100,16 @@ export type RpcCommand =
 	  })
 	| (RpcCommandBase & { readonly cmd: "compact"; readonly agentId: AgentId; readonly customInstructions?: string })
 	| (RpcCommandBase & RpcDeadline & { readonly cmd: "wait_idle"; readonly agentId: AgentId })
+	| (RpcCommandBase & RpcDeadline & { readonly cmd: "wait_stop"; readonly agentId: AgentId })
+	| (RpcCommandBase &
+			RpcDeadline & {
+				readonly cmd: "wait_tree_idle";
+				/** The root of the subtree; its own spawn edges define the rest. */
+				readonly agentId: AgentId;
+				/** How long the tree must stay idle before it counts. Default 250. */
+				readonly quietMs?: number;
+			})
+	| (RpcCommandBase & { readonly cmd: "read_report"; readonly agentId: AgentId })
 	| (RpcCommandBase & { readonly cmd: "list_agents" })
 	| (RpcCommandBase & { readonly cmd: "inspect"; readonly agentId: AgentId })
 	| (RpcCommandBase & {
@@ -128,6 +138,11 @@ export interface RpcCommandResults {
 	dispose: { readonly agentIds: readonly AgentId[] };
 	compact: CompactResult;
 	wait_idle: Record<string, never>;
+	wait_stop: AgentStop;
+	/** The live tree as it stood when it settled, root first. */
+	wait_tree_idle: { readonly agentIds: readonly AgentId[] };
+	/** Absent when the agent's last run produced no assistant text at all. */
+	read_report: { readonly report?: string };
 	list_agents: { readonly agents: readonly AgentSnapshot[] };
 	inspect: AgentSnapshot;
 	set_model: RuntimeModel;

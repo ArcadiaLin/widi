@@ -16,9 +16,10 @@
  * Commands are dispatched as they arrive rather than queued behind each other:
  * a `wait_idle` on one agent must not stall a `send` to another.
  *
- * The two commands that can wait indefinitely - `prompt` and `wait_idle` - run
+ * The commands that can wait indefinitely - `prompt` and the three waits - run
  * under a signal, which a deadline or a `cancel` trips. They are also the only
- * two: everything else either returns at once or is bounded by one harness call.
+ * ones: everything else either returns at once or is bounded by one harness
+ * call.
  */
 
 import type { ImageContent } from "@earendil-works/pi-ai";
@@ -34,6 +35,13 @@ import type { RpcHumanChannel } from "./human-channel.ts";
 import type { RpcCommand, RpcCommandName, RpcCommandResults, RpcOutbound, RpcSuccessFrame } from "./types.ts";
 import { toWireEvent } from "./wire-event.ts";
 
+/**
+ * How long a delegation tree has to stay idle before `wait_tree_idle` believes
+ * it. Sized for one session-branch read, which is the gap it covers; see
+ * {@link RpcServer._waitTreeIdle}.
+ */
+const DEFAULT_TREE_QUIET_MS = 250;
+
 /** A command in flight under a signal, and the way to stop being one. */
 interface CommandRun {
 	readonly signal: AbortSignal;
@@ -48,6 +56,8 @@ export interface RpcServerOptions {
 	/** Awaited after each event frame. Omitted means no backpressure coupling. */
 	readonly drain?: () => Promise<void>;
 	readonly onShutdown?: (reason?: string) => void;
+	/** Every accepted command has been answered. See {@link RpcServer.outstandingCommands}. */
+	readonly onCommandsDrained?: () => void;
 }
 
 export class RpcServer implements OrchestratorClient<OrchestratorEvent> {
@@ -65,8 +75,11 @@ export class RpcServer implements OrchestratorClient<OrchestratorEvent> {
 	private readonly _send: (frame: RpcOutbound) => void;
 	private readonly _drain: (() => Promise<void>) | undefined;
 	private readonly _onShutdown: ((reason?: string) => void) | undefined;
+	private readonly _onCommandsDrained: (() => void) | undefined;
 	private readonly _sink: MessageSink;
 	private readonly _inFlight = new Map<string, AbortController>();
+	private readonly _treeWaiters = new Set<() => void>();
+	private _outstanding = 0;
 
 	constructor(options: RpcServerOptions) {
 		this._orchestrator = options.orchestrator;
@@ -75,6 +88,7 @@ export class RpcServer implements OrchestratorClient<OrchestratorEvent> {
 		this._send = options.send;
 		this._drain = options.drain;
 		this._onShutdown = options.onShutdown;
+		this._onCommandsDrained = options.onCommandsDrained;
 		// Fixed at construction, like every other sink holder: the policy belongs
 		// to the binding and a request may not override it. An RPC peer speaks in
 		// the human's place, so it gets the human binding.
@@ -83,7 +97,20 @@ export class RpcServer implements OrchestratorClient<OrchestratorEvent> {
 
 	async receive(event: OrchestratorEvent): Promise<void> {
 		this._send({ type: "event", event: toWireEvent(event) });
+		// Before the drain, so a tree's quiet window is measured from when the
+		// runtime did something and not from when the consumer got round to it.
+		for (const restart of [...this._treeWaiters]) restart();
 		await this._drain?.();
+	}
+
+	/**
+	 * Accepted but not yet answered. Counted from `handleCommand` rather than from
+	 * inside the dispatch so it is already correct when this call returns: a caller
+	 * deciding whether it may shut down must not read zero for a command it just
+	 * handed over.
+	 */
+	get outstandingCommands(): number {
+		return this._outstanding;
 	}
 
 	/**
@@ -91,9 +118,15 @@ export class RpcServer implements OrchestratorClient<OrchestratorEvent> {
 	 * refused command never reaches the process as an unhandled rejection.
 	 */
 	handleCommand(command: RpcCommand): void {
-		void this._dispatch(command).catch((error: unknown) => {
-			this.fail(command.id, command.cmd, formatError(error), classifyError(error));
-		});
+		this._outstanding += 1;
+		void this._dispatch(command)
+			.catch((error: unknown) => {
+				this.fail(command.id, command.cmd, formatError(error), classifyError(error));
+			})
+			.finally(() => {
+				this._outstanding -= 1;
+				if (this._outstanding === 0) this._onCommandsDrained?.();
+			});
 	}
 
 	fail(id: string | undefined, cmd: string, error: string, code: RpcErrorCode): void {
@@ -120,7 +153,14 @@ export class RpcServer implements OrchestratorClient<OrchestratorEvent> {
 	 * rather than from asking afterwards which of the two it was.
 	 */
 	private _beginRun(command: RpcCommand): CommandRun | undefined {
-		if (command.cmd !== "prompt" && command.cmd !== "wait_idle") return undefined;
+		if (
+			command.cmd !== "prompt" &&
+			command.cmd !== "wait_idle" &&
+			command.cmd !== "wait_stop" &&
+			command.cmd !== "wait_tree_idle"
+		) {
+			return undefined;
+		}
 		const { id, deadlineMs } = command;
 		if (id !== undefined && this._inFlight.has(id)) {
 			throw new RpcError("invalid_command", `Command id ${id} is already in flight.`);
@@ -185,6 +225,16 @@ export class RpcServer implements OrchestratorClient<OrchestratorEvent> {
 				// ever watched it.
 				await orchestrator.waitForAgentIdle(command.agentId, signal === undefined ? {} : { signal });
 				return {};
+			case "wait_stop":
+				// No waiter agent: an RPC client stands beside the orchestrator, so the
+				// only disposal that can end this wait is the watched agent's own.
+				return await orchestrator.waitForAgentStop(undefined, command.agentId, signal === undefined ? {} : { signal });
+			case "wait_tree_idle":
+				return await this._waitTreeIdle(command.agentId, command.quietMs ?? DEFAULT_TREE_QUIET_MS, signal);
+			case "read_report": {
+				const report = await orchestrator.readAgentReport(command.agentId);
+				return report === undefined ? {} : { report };
+			}
 			case "list_agents":
 				return { agents: orchestrator.listAgents().agents };
 			case "inspect":
@@ -250,6 +300,95 @@ export class RpcServer implements OrchestratorClient<OrchestratorEvent> {
 			await run.catch(() => {});
 			throw signal.reason;
 		}
+	}
+
+	/**
+	 * When a whole delegation tree has stopped, which is the question a batch
+	 * runner is actually asking and the one no single event answers.
+	 *
+	 * `prompt` and `wait_idle` speak about one agent, and a root that delegated is
+	 * idle for as long as its subagent works. The join over the subtree is what
+	 * answers the real question, and it is the load-bearing half.
+	 *
+	 * The other half is the deferred re-check, and it needs its claim stated
+	 * precisely. The handover between two agents is not atomic anywhere this code
+	 * can see: a subagent's stop becomes the watcher's wake-up inside
+	 * `AgentWatches`, which reads the report from the session in between and only
+	 * then enqueues. So the tree can read idle while it is not finished, and the
+	 * condition is never believed at the instant it first holds - it is re-checked
+	 * after a delay, and any runtime event restarts that delay.
+	 *
+	 * What the tests demonstrate is the re-check, which catches everything the
+	 * handover completes within one turn of the event loop. They do not
+	 * demonstrate the *length* of the window, and no fixture here can: it only
+	 * buys anything if that session read reaches disk. It is set rather than zero
+	 * because being early costs a silently truncated sample and being late costs
+	 * one window.
+	 *
+	 * Removing the guesswork means the orchestrator knowing about the watch table,
+	 * which lives under the tool registry and below it. Until that is worth doing,
+	 * the window is tunable - `quietMs: 0` keeps the re-check and drops the guess.
+	 * Restarting on every event, not just this tree's, is safe because a sample
+	 * owns its process (`docs/rpc.md` section 7.4).
+	 */
+	private async _waitTreeIdle(
+		agentId: AgentId,
+		quietMs: number,
+		signal?: AbortSignal,
+	): Promise<{ readonly agentIds: readonly AgentId[] }> {
+		if (!Number.isFinite(quietMs) || quietMs < 0) {
+			throw new RpcError("invalid_command", `quietMs must be a non-negative number of milliseconds: ${quietMs}`);
+		}
+		// Rejects now rather than waiting out a deadline on an id that was never a
+		// live agent. A tree that empties later is a different case, handled below.
+		this._orchestrator.inspectAgent(agentId);
+
+		const settledTree = (): readonly AgentId[] | undefined => {
+			const tree = this._orchestrator.listAgentSubtree(agentId);
+			return tree.length > 0 && tree.every((id) => this._orchestrator.isAgentIdle(id)) ? tree : undefined;
+		};
+
+		return await new Promise<{ readonly agentIds: readonly AgentId[] }>((resolve, reject) => {
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			let restart = (): void => {};
+			const finish = (settle: () => void): void => {
+				if (timer !== undefined) clearTimeout(timer);
+				this._treeWaiters.delete(restart);
+				signal?.removeEventListener("abort", onAbort);
+				settle();
+			};
+			const onAbort = (): void => finish(() => reject(signal?.reason));
+
+			restart = (): void => {
+				if (timer !== undefined) {
+					clearTimeout(timer);
+					timer = undefined;
+				}
+				if (!settledTree()) return;
+				timer = setTimeout(() => {
+					timer = undefined;
+					const tree = settledTree();
+					// An empty tree is the whole subtree having been disposed while this
+					// waited. There is nothing left to be idle, and saying so is more
+					// useful than answering with an empty list.
+					if (this._orchestrator.listAgentSubtree(agentId).length === 0) {
+						finish(() => reject(new RpcError("agent_unavailable", `Agent ${agentId}'s tree is gone.`)));
+					} else if (tree) {
+						finish(() => resolve({ agentIds: tree }));
+					}
+				}, quietMs);
+			};
+
+			this._treeWaiters.add(restart);
+			if (signal) {
+				if (signal.aborted) {
+					finish(() => reject(signal.reason));
+					return;
+				}
+				signal.addEventListener("abort", onAbort, { once: true });
+			}
+			restart();
+		});
 	}
 
 	/**

@@ -250,6 +250,140 @@ describe("RpcServer deadlines and cancel", () => {
 	});
 });
 
+describe("RpcServer completion signals", () => {
+	async function spawn(fixture: Fixture, id: string, parent?: string): Promise<string> {
+		const spawned = await call(fixture, { id, cmd: "spawn", origin: { kind: "new" }, parent });
+		if (!spawned.ok || spawned.cmd !== "spawn") throw new Error("spawn failed");
+		return spawned.data.agentId;
+	}
+
+	/** The answering frame for a command still in flight, or undefined. */
+	function answerFor(fixture: Fixture, id: string): RpcResponseFrame | undefined {
+		return fixture.frames.find((frame): frame is RpcResponseFrame => frame.type === "response" && frame.id === id);
+	}
+
+	it("reads back what the agent said in its last run", async () => {
+		const fixture = await createFixture();
+		const agentId = await spawn(fixture, "s");
+		const harness = requireAgentHarness(fixture.orchestrator, agentId);
+		await harness.appendMessage({ role: "user", content: "question", timestamp: 1 });
+		await harness.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "the answer" }],
+			timestamp: 2,
+		} as AssistantMessage);
+
+		const answer = await call(fixture, { id: "r", cmd: "read_report", agentId });
+		if (!answer.ok || answer.cmd !== "read_report") throw new Error("read_report failed");
+		expect(answer.data.report).toBe("the answer");
+	});
+
+	it("omits the report when the agent has said nothing", async () => {
+		const fixture = await createFixture();
+		const answer = await call(fixture, { id: "r", cmd: "read_report", agentId: await spawn(fixture, "s") });
+		if (!answer.ok || answer.cmd !== "read_report") throw new Error("read_report failed");
+		expect(answer.data.report).toBeUndefined();
+	});
+
+	it("waits for the next stop rather than the idle it started from", async () => {
+		const fixture = await createFixture();
+		const agentId = await spawn(fixture, "s");
+		const run = stubPromptRun(requireAgentHarness(fixture.orchestrator, agentId));
+
+		// The agent is idle right now. Level-triggered would answer here, and a
+		// caller that handed over work would read its own starting state as the end.
+		fixture.server.handleCommand({ id: "w", cmd: "wait_stop", agentId });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(answerFor(fixture, "w")).toBeUndefined();
+
+		fixture.server.handleCommand({ id: "p", cmd: "prompt", agentId, body: "work" });
+		await vi.waitFor(() => expect(run.prompt).toHaveBeenCalledTimes(1));
+		run.resolve({} as AssistantMessage);
+
+		const answer = await vi.waitFor(() => {
+			const frame = answerFor(fixture, "w");
+			if (!frame) throw new Error("no stop yet");
+			return frame;
+		});
+		if (!answer.ok || answer.cmd !== "wait_stop") throw new Error("wait_stop failed");
+		expect(answer.data.reason).toBe("settled");
+	});
+
+	it("holds wait_tree_idle open while a child works under an idle root", async () => {
+		const fixture = await createFixture();
+		const rootId = await spawn(fixture, "s1");
+		const childId = await spawn(fixture, "s2", rootId);
+		const run = stubPromptRun(requireAgentHarness(fixture.orchestrator, childId));
+
+		fixture.server.handleCommand({ id: "p", cmd: "prompt", agentId: childId, body: "work" });
+		await vi.waitFor(() => expect(run.prompt).toHaveBeenCalledTimes(1));
+
+		// The root is idle throughout: `wait_idle` on it would answer at once, which
+		// is exactly the truncated sample this command exists to prevent.
+		expect(fixture.orchestrator.isAgentIdle(rootId)).toBe(true);
+		fixture.server.handleCommand({ id: "t", cmd: "wait_tree_idle", agentId: rootId, quietMs: 10 });
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		expect(answerFor(fixture, "t")).toBeUndefined();
+
+		run.resolve({} as AssistantMessage);
+		const answer = await vi.waitFor(() => {
+			const frame = answerFor(fixture, "t");
+			if (!frame) throw new Error("tree still busy");
+			return frame;
+		});
+		if (!answer.ok || answer.cmd !== "wait_tree_idle") throw new Error("wait_tree_idle failed");
+		expect([...answer.data.agentIds].sort()).toEqual([rootId, childId].sort());
+	});
+
+	it("does not answer wait_tree_idle for a tree that goes busy again inside the window", async () => {
+		const fixture = await createFixture();
+		const rootId = await spawn(fixture, "s1");
+		const childId = await spawn(fixture, "s2", rootId);
+		const run = stubPromptRun(requireAgentHarness(fixture.orchestrator, childId));
+
+		// The whole tree is idle at this instant, so a join evaluated once would
+		// answer here. That instant is the handover gap in miniature: between one
+		// agent stopping and the next being woken, everything reads idle.
+		fixture.server.handleCommand({ id: "t", cmd: "wait_tree_idle", agentId: rootId, quietMs: 60 });
+		fixture.server.handleCommand({ id: "p", cmd: "prompt", agentId: childId, body: "work" });
+		await vi.waitFor(() => expect(run.prompt).toHaveBeenCalledTimes(1));
+		await new Promise((resolve) => setTimeout(resolve, 120));
+		expect(answerFor(fixture, "t")).toBeUndefined();
+
+		run.resolve({} as AssistantMessage);
+		await vi.waitFor(() => expect(answerFor(fixture, "t")).toBeDefined());
+	});
+
+	it("times out wait_tree_idle on a tree that never settles", async () => {
+		const fixture = await createFixture();
+		const rootId = await spawn(fixture, "s1");
+		const childId = await spawn(fixture, "s2", rootId);
+		const run = stubPromptRun(requireAgentHarness(fixture.orchestrator, childId));
+		fixture.server.handleCommand({ id: "p", cmd: "prompt", agentId: childId, body: "work" });
+		await vi.waitFor(() => expect(run.prompt).toHaveBeenCalledTimes(1));
+
+		const answer = await call(fixture, {
+			id: "t",
+			cmd: "wait_tree_idle",
+			agentId: rootId,
+			quietMs: 10,
+			deadlineMs: 40,
+		});
+		if (answer.ok) throw new Error("expected a timeout");
+		expect(answer.code).toBe("timeout");
+
+		await fixture.orchestrator.abortAgent(childId, "human");
+		run.resolve({} as AssistantMessage);
+	});
+
+	it("refuses wait_tree_idle for an agent that never existed", async () => {
+		const fixture = await createFixture();
+		const answer = await call(fixture, { id: "t", cmd: "wait_tree_idle", agentId: "no-such-agent" });
+		if (answer.ok) throw new Error("expected a refusal");
+		expect(answer.code).toBe("unknown_agent");
+	});
+});
+
 describe("RpcServer human requests", () => {
 	it("emits a request frame and resolves from the client's answer", async () => {
 		const fixture = await createFixture();
