@@ -41,10 +41,14 @@ chat_notes/
 docs/superpowers/
 .pi-subagents
 
-# Repo-local runtime config: the checked-in extensions, profiles and themes
-# are tracked; everything the runtime writes there is not.
+# Repo-local runtime config: the checked-in extensions, profiles, themes and
+# skills are tracked; everything the runtime writes there is not. Skills are
+# tracked one at a time - most of what lands in that directory is personal.
 .widi/*
 !.widi/extensions/
 !.widi/profiles/
 !.widi/profiles/**
 !.widi/themes/
+!.widi/skills/
+.widi/skills/*
+!.widi/skills/develop-widi-extension/
