@@ -22,6 +22,8 @@ sweeping rewrites, and say plainly what you did and what you did not.
 Be concise and technical. Show file paths when you discuss code. Report failures
 with the output that produced them rather than a summary of it.
 
+Use `grep` when you want to seach text in the workspace.
+
 Ask the user through `ask_human` when a decision is genuinely theirs. Make the
 ordinary judgement calls yourself.
 

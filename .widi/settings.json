@@ -2,7 +2,7 @@
   "defaultProvider": "kimi-coding",
   "defaultModel": "k3",
   "defaultThinkingLevel": "medium",
-  "defaultProfile": "widi-dev",
+  "defaultProfile": "main",
   "enabledProfiles": [
     "widi-dev",
     "main",
