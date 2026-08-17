@@ -170,7 +170,7 @@ context.isIdle();
 
 | 类别 | 主要方法 |
 | --- | --- |
-| Agent tree | `listProfiles`、`listAgents`、`describeAgent`、`spawnAgent`、`disposeAgent`、`readReport`、`waitForStop` |
+| Agent tree | `listProfiles`、`listAgents`、`describeAgent`、`spawnAgent`、`disposeAgent`、`readReport`、`waitForStop`、`waitForTreeIdle` |
 | 工具 | `getTools`、`setTools`、`setActiveTools` |
 | 模型 | `getModel`、`setModel`、`listModelCandidates`、读写 thinking level |
 | 人工交互 | `requestHuman` |
@@ -189,6 +189,7 @@ context.isIdle();
 - 返回的 `AgentStop.reason` 才区分「做完了」和「被打断了」：被 `abort` 的 agent 在这里同样算停下，`reason` 为 `aborted`（并带 `abortedBy`）。不要把 resolve 当成任务成功。
 - 一个把活交给下级的 agent，结束自己这一轮就算停下，此时下级可能仍在跑。要判一棵树整体跑完，`waitForStop` 不够。
 - `readReport(agentId)` 读的是 branch 上那一轮的 assistant 文本，扫到上一条 user 消息为止；该轮没有任何文本时返回 `undefined`。它读 session，所以 agent 一旦被 dispose 就读不到了：**先取结果，再 dispose**。
+- 要判「这一步连同它委派出去的活都跑完了」，用 `waitForTreeIdle(agentId, { quietMs })`：它在 `agentId` 的 spawn 子树上做 join，并在条件首次成立后等一个静默窗口（默认 250ms，任何 runtime 事件重新计时）再复核。答复的 `agentIds` 是 settle 那一刻树里活着的 agent；整棵子树被 dispose 光则拒绝。窗口是启发式，理由见 `docs/rpc.md` §4.6；只要复核不要猜就传 `quietMs: 0`。
 
 ### 向模型发送文本
 

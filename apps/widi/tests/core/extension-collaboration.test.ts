@@ -164,6 +164,32 @@ describe("extension readReport and waitForStop", () => {
 
 		await expect(actions.readReport(outsider)).rejects.toThrow(/outside/);
 		await expect(actions.waitForStop(outsider)).rejects.toThrow(/outside/);
+		await expect(actions.waitForTreeIdle(outsider)).rejects.toThrow(/outside/);
+	});
+
+	it("waits out a child's whole subtree, which its own stop does not cover", async () => {
+		const { orchestrator, actions } = await createHarness();
+		const childId = await actions.spawnAgent({ origin: { kind: "new" } });
+		const grandchildId = await orchestrator.spawnAgent({ origin: { kind: "new" }, parent: childId });
+		const run = stubPromptRun(requireAgentHarness(orchestrator, grandchildId));
+
+		const prompted = actions.prompt("work", { target: grandchildId });
+		await vi.waitFor(() => expect(run.prompt).toHaveBeenCalledTimes(1));
+		// The child never ran, so `waitForStop` on it would never answer at all and
+		// `isAgentIdle` would say the delegation is done.
+		expect(orchestrator.isAgentIdle(childId)).toBe(true);
+		let settled = false;
+		const idle = actions.waitForTreeIdle(childId, { quietMs: 10 }).then((result) => {
+			settled = true;
+			return result;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		expect(settled).toBe(false);
+
+		run.resolve({} as AssistantMessage);
+
+		expect([...(await idle).agentIds].sort()).toEqual([childId, grandchildId].sort());
+		await prompted;
 	});
 
 	it("waits for the next stop rather than the idle it started from", async () => {

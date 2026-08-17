@@ -198,7 +198,7 @@ JSONL：一行一个 JSON 对象，UTF-8，`\n` 分隔（读取端容忍 `\r\n`�
 | `compact` | `agentId`, `customInstructions?` | `CompactResult` | `compactAgent` |
 | `wait_idle` | `agentId`, `deadlineMs?` | `{}` | `waitForAgentIdle` |
 | `wait_stop` | `agentId`, `deadlineMs?` | `AgentStop` | `waitForAgentStop` |
-| `wait_tree_idle` | `agentId`, `quietMs?`, `deadlineMs?` | `{ agentIds }` | §4.6 |
+| `wait_tree_idle` | `agentId`, `quietMs?`, `deadlineMs?` | `{ agentIds }` | `waitForAgentTreeIdle` |
 | `read_report` | `agentId` | `{ report? }` | `readAgentReport` |
 | `run_summary` | — | `RpcRunSummary` | §4.7（无对应方法） |
 | `list_agents` | — | `{ agents: AgentSnapshot[] }` | `listAgents` |
@@ -299,9 +299,11 @@ agent 之间的协作工具（`spawn_agent` / `send_message` / `watch_agent` / `
 1. **在子树上做 join**：`agentId` 的 spawn 子树里每个活着的 agent 都 idle 才算数。走的是 spawn 边而不是活 agent 表，所以父 agent 已被 dispose 的孙 agent 仍然算在树里。这一半是决定性的——§4.5 那个"根 idle 而下级在跑"的场景由它排除。
 2. **延后复核**：条件第一次成立时不采信，等一个静默窗口（`quietMs`，默认 250）后重新求值；期间任何 runtime 事件都会重新计时。
 
-第 2 条是启发式，理由要说清楚：两个 agent 之间的交接不是原子的。下级停止到上级被唤醒之间，`AgentWatches` 要先从 session 读回报告再投递，这中间整棵树都读作 idle。**测试证明的是"延后复核"本身**（`tests/rpc/server.test.ts`），它挡掉所有在一个事件循环回合内完成的交接；**没有**测试能证明窗口的**长度**有用——只有那次 session 读真的落到磁盘时它才买到东西。设成非零而不是 0，是因为早答一次是样本被静默截断，晚答一次只损失一个窗口。想只要复核、不要猜，传 `quietMs: 0`。
+第 2 条是启发式，理由要说清楚：两个 agent 之间的交接不是原子的。下级停止到上级被唤醒之间，`AgentWatches` 要先从 session 读回报告再投递，这中间整棵树都读作 idle。**测试证明的是"延后复核"本身**（`tests/core/agent-idle-event.test.ts` 与 `tests/rpc/server.test.ts`），它挡掉所有在一个事件循环回合内完成的交接；**没有**测试能证明窗口的**长度**有用——只有那次 session 读真的落到磁盘时它才买到东西。设成非零而不是 0，是因为早答一次是样本被静默截断，晚答一次只损失一个窗口。想只要复核、不要猜，传 `quietMs: 0`。
 
 彻底不猜需要 orchestrator 知道 watch 表，而 watch 表在 tool registry 之下。在那之前，窗口可调，并且由**任何**事件重新计时——这在"一个样本一个进程"（§7.4）下是安全的。
+
+这两件事都住在 `AgentOrchestrator.waitForAgentTreeIdle`，不在 RPC 层：extension 的 `waitForTreeIdle` 走的是同一份实现，判断只该被实现一次。重新计时由 orchestrator 自己的 listener 驱动，因此窗口从"runtime 做了事"起算，而不是从"消费者读到"起算。
 
 答复里的 `agentIds` 是**settle 那一刻**树里活着的 agent，根在前。整棵子树在等待期间被 dispose 光了会答 `agent_unavailable`；`agentId` 本身从来不是活 agent 则答 `unknown_agent`。
 
@@ -580,6 +582,8 @@ UPDATE_RPC_SCHEMA=1 npm --workspace apps/widi run test -- tests/rpc/frames.test.
 - `AgentGoneError` 之前落到 `internal`。它是 wait 类命令的正常失败——等待所依赖的 agent 被拆了——现在分类成 `agent_unavailable`。
 
 新增的 core 投影只有一个：`AgentOrchestrator.listAgentSubtree`（走 spawn 边、同步、只返回活着的）。`_listAgentTree` 回答的是更丰富的问题并且要读 session，不是这里要的东西。
+
+**后续修正**：`wait_tree_idle` 的实现最初落在 RPC 层，是投影规则的第二个例外。它已上移进 `AgentOrchestrator.waitForAgentTreeIdle`，命令退回成普通投影，例外只剩 `run_summary`。上移时顺带修掉一个不可达分支：整棵树被 dispose 光时，原实现要靠一个已经排好的定时器恰好在 dispose 事件之前触发才会拒绝，正常路径上会一直挂到 deadline；现在子树一空就立即拒绝。
 
 剩下的不确定性在 §4.6 说清楚了：静默窗口的**长度**没有测试能证明其必要性，它是防御而不是对已观察故障的修复。要彻底不猜，得让 orchestrator 能看到 `AgentWatches` 的 pending 状态，而那张表在 tool registry 之下——目前不值得为它开这条依赖。
 

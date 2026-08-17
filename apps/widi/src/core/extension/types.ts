@@ -25,6 +25,7 @@ import type {
 	AgentRequestedDisposeOptions,
 	AgentRequestedDisposeOutcome,
 	AgentStop,
+	AgentTreeIdle,
 	AgentTreeListing,
 } from "../host.ts";
 import type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
@@ -476,6 +477,15 @@ export interface ExtensionActions {
 	 * extension's own agent, for the reason `waitForIdle` gives below.
 	 */
 	waitForStop(agentId: string, options?: { signal?: AbortSignal }): Promise<AgentStop>;
+	/**
+	 * When a same-tree agent's whole subtree has stopped, which is what
+	 * `waitForStop` cannot answer for an agent that delegates.
+	 *
+	 * The join is re-checked after a quiet window (`quietMs`, default 250) that
+	 * any runtime event restarts, because the handover between two agents is not
+	 * atomic. Rejects once nothing in that subtree is left alive.
+	 */
+	waitForTreeIdle(agentId: string, options?: { quietMs?: number; signal?: AbortSignal }): Promise<AgentTreeIdle>;
 	getTools(): AgentToolsSnapshot;
 	setTools(toolNames: string[], activeToolNames?: string[]): Promise<void>;
 	setActiveTools(toolNames: string[]): Promise<void>;
@@ -620,6 +630,11 @@ export interface ExtensionCoreActions {
 		targetAgentId: string,
 		options?: { signal?: AbortSignal },
 	): Promise<AgentStop>;
+	waitForAgentTreeIdleFor(
+		callerAgentId: string,
+		targetAgentId: string,
+		options?: { quietMs?: number; signal?: AbortSignal },
+	): Promise<AgentTreeIdle>;
 	getAgentTools(agentId: string): AgentToolsSnapshot;
 	setAgentTools(agentId: string, toolNames: string[], activeToolNames?: string[]): Promise<void>;
 	setAgentActiveTools(agentId: string, toolNames: string[]): Promise<void>;
@@ -819,7 +834,8 @@ export interface ExtensionActionFailure {
 		| "spawnAgent"
 		| "steer"
 		| "waitForIdle"
-		| "waitForStop";
+		| "waitForStop"
+		| "waitForTreeIdle";
 	code: string;
 	error: unknown;
 }

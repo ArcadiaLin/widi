@@ -41,6 +41,7 @@ export type {
 	AgentStop,
 	AgentTreeClosedEntry,
 	AgentTreeEntry,
+	AgentTreeIdle,
 	AgentTreeListing,
 	AgentTreeRunningEntry,
 } from "../host.ts";

@@ -53,6 +53,11 @@ export interface AgentStop {
 	readonly abortedBy?: AgentAbortOrigin;
 }
 
+/** A whole subtree at rest: every live agent the join covered, root first. */
+export interface AgentTreeIdle {
+	readonly agentIds: readonly AgentId[];
+}
+
 /** Something the runtime tells an agent about another agent. */
 export interface AgentSelfNotification {
 	/** Whose stop this is; the text is attributed to it, not to the caller. */

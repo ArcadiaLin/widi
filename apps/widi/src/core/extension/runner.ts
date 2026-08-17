@@ -640,6 +640,11 @@ export class ExtensionRunner {
 					failure("waitForStop"),
 					async () => await this._actions.waitForAgentStopFor(agentId, targetAgentId, options),
 				),
+			waitForTreeIdle: async (targetAgentId, options) =>
+				await this._runReportedAction(
+					failure("waitForTreeIdle"),
+					async () => await this._actions.waitForAgentTreeIdleFor(agentId, targetAgentId, options),
+				),
 			getTools: () => {
 				this._assertActive();
 				return this._actions.getAgentTools(agentId);
@@ -1025,6 +1030,7 @@ function createUnboundActions(): ExtensionCoreActions {
 		disposeAgentFor: async () => notBound(),
 		readAgentReportFor: async () => notBound(),
 		waitForAgentStopFor: async () => notBound(),
+		waitForAgentTreeIdleFor: async () => notBound(),
 		getAgentTools: () => notBound(),
 		setAgentTools: async () => notBound(),
 		setAgentActiveTools: async () => notBound(),

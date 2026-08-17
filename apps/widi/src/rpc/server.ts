@@ -36,13 +36,6 @@ import { RunAccounting } from "./run-summary.ts";
 import type { RpcCommand, RpcCommandName, RpcCommandResults, RpcOutbound, RpcSuccessFrame } from "./types.ts";
 import { toWireEvent } from "./wire-event.ts";
 
-/**
- * How long a delegation tree has to stay idle before `wait_tree_idle` believes
- * it. Sized for one session-branch read, which is the gap it covers; see
- * {@link RpcServer._waitTreeIdle}.
- */
-const DEFAULT_TREE_QUIET_MS = 250;
-
 /** A command in flight under a signal, and the way to stop being one. */
 interface CommandRun {
 	readonly signal: AbortSignal;
@@ -80,7 +73,6 @@ export class RpcServer implements OrchestratorClient<OrchestratorEvent> {
 	private readonly _sink: MessageSink;
 	private readonly _accounting = new RunAccounting();
 	private readonly _inFlight = new Map<string, AbortController>();
-	private readonly _treeWaiters = new Set<() => void>();
 	private _outstanding = 0;
 
 	constructor(options: RpcServerOptions) {
@@ -102,9 +94,6 @@ export class RpcServer implements OrchestratorClient<OrchestratorEvent> {
 		// only after the client had already been told about it.
 		this._accounting.record(event);
 		this._send({ type: "event", event: toWireEvent(event) });
-		// Before the drain, so a tree's quiet window is measured from when the
-		// runtime did something and not from when the consumer got round to it.
-		for (const restart of [...this._treeWaiters]) restart();
 		await this._drain?.();
 	}
 
@@ -235,7 +224,10 @@ export class RpcServer implements OrchestratorClient<OrchestratorEvent> {
 				// only disposal that can end this wait is the watched agent's own.
 				return await orchestrator.waitForAgentStop(undefined, command.agentId, signal === undefined ? {} : { signal });
 			case "wait_tree_idle":
-				return await this._waitTreeIdle(command.agentId, command.quietMs ?? DEFAULT_TREE_QUIET_MS, signal);
+				return await orchestrator.waitForAgentTreeIdle(command.agentId, {
+					...(command.quietMs === undefined ? undefined : { quietMs: command.quietMs }),
+					...(signal === undefined ? undefined : { signal }),
+				});
 			case "read_report": {
 				const report = await orchestrator.readAgentReport(command.agentId);
 				return report === undefined ? {} : { report };
@@ -307,95 +299,6 @@ export class RpcServer implements OrchestratorClient<OrchestratorEvent> {
 			await run.catch(() => {});
 			throw signal.reason;
 		}
-	}
-
-	/**
-	 * When a whole delegation tree has stopped, which is the question a batch
-	 * runner is actually asking and the one no single event answers.
-	 *
-	 * `prompt` and `wait_idle` speak about one agent, and a root that delegated is
-	 * idle for as long as its subagent works. The join over the subtree is what
-	 * answers the real question, and it is the load-bearing half.
-	 *
-	 * The other half is the deferred re-check, and it needs its claim stated
-	 * precisely. The handover between two agents is not atomic anywhere this code
-	 * can see: a subagent's stop becomes the watcher's wake-up inside
-	 * `AgentWatches`, which reads the report from the session in between and only
-	 * then enqueues. So the tree can read idle while it is not finished, and the
-	 * condition is never believed at the instant it first holds - it is re-checked
-	 * after a delay, and any runtime event restarts that delay.
-	 *
-	 * What the tests demonstrate is the re-check, which catches everything the
-	 * handover completes within one turn of the event loop. They do not
-	 * demonstrate the *length* of the window, and no fixture here can: it only
-	 * buys anything if that session read reaches disk. It is set rather than zero
-	 * because being early costs a silently truncated sample and being late costs
-	 * one window.
-	 *
-	 * Removing the guesswork means the orchestrator knowing about the watch table,
-	 * which lives under the tool registry and below it. Until that is worth doing,
-	 * the window is tunable - `quietMs: 0` keeps the re-check and drops the guess.
-	 * Restarting on every event, not just this tree's, is safe because a sample
-	 * owns its process (`docs/rpc.md` section 7.4).
-	 */
-	private async _waitTreeIdle(
-		agentId: AgentId,
-		quietMs: number,
-		signal?: AbortSignal,
-	): Promise<{ readonly agentIds: readonly AgentId[] }> {
-		if (!Number.isFinite(quietMs) || quietMs < 0) {
-			throw new RpcError("invalid_command", `quietMs must be a non-negative number of milliseconds: ${quietMs}`);
-		}
-		// Rejects now rather than waiting out a deadline on an id that was never a
-		// live agent. A tree that empties later is a different case, handled below.
-		this._orchestrator.inspectAgent(agentId);
-
-		const settledTree = (): readonly AgentId[] | undefined => {
-			const tree = this._orchestrator.listAgentSubtree(agentId);
-			return tree.length > 0 && tree.every((id) => this._orchestrator.isAgentIdle(id)) ? tree : undefined;
-		};
-
-		return await new Promise<{ readonly agentIds: readonly AgentId[] }>((resolve, reject) => {
-			let timer: ReturnType<typeof setTimeout> | undefined;
-			let restart = (): void => {};
-			const finish = (settle: () => void): void => {
-				if (timer !== undefined) clearTimeout(timer);
-				this._treeWaiters.delete(restart);
-				signal?.removeEventListener("abort", onAbort);
-				settle();
-			};
-			const onAbort = (): void => finish(() => reject(signal?.reason));
-
-			restart = (): void => {
-				if (timer !== undefined) {
-					clearTimeout(timer);
-					timer = undefined;
-				}
-				if (!settledTree()) return;
-				timer = setTimeout(() => {
-					timer = undefined;
-					const tree = settledTree();
-					// An empty tree is the whole subtree having been disposed while this
-					// waited. There is nothing left to be idle, and saying so is more
-					// useful than answering with an empty list.
-					if (this._orchestrator.listAgentSubtree(agentId).length === 0) {
-						finish(() => reject(new RpcError("agent_unavailable", `Agent ${agentId}'s tree is gone.`)));
-					} else if (tree) {
-						finish(() => resolve({ agentIds: tree }));
-					}
-				}, quietMs);
-			};
-
-			this._treeWaiters.add(restart);
-			if (signal) {
-				if (signal.aborted) {
-					finish(() => reject(signal.reason));
-					return;
-				}
-				signal.addEventListener("abort", onAbort, { once: true });
-			}
-			restart();
-		});
 	}
 
 	/**
