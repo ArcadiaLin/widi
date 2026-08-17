@@ -4,7 +4,7 @@
  * Everything a third-party extension may depend on is exported from this
  * module, plus the upstream types enumerated by reference in the public
  * contract (docs/zh-CN/core/extensions.md): the Pi typed hook events/results, the
- * raw `AgentHarnessEvent`, `ImageContent`, `ThinkingLevel`,
+ * raw `AgentHarnessEvent`, `AssistantMessage`, `ImageContent`, `ThinkingLevel`,
  * `ShellExecOptions`, `Result`/`ExecutionError`, and typebox `TSchema`.
  *
  * Versioning policy (presentation-protocol ruling): the extension API has no
@@ -48,6 +48,7 @@ export type {
 	AgentContextUsage,
 	AgentToolsSnapshot,
 	CandidateItem,
+	PromptOutcome,
 	RuntimeModel,
 } from "../types.ts";
 export type { ExtensionEventEnvelope } from "./events.ts";

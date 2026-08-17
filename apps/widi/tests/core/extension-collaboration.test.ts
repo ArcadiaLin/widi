@@ -4,7 +4,8 @@
  * paths, and which observed events reach a tree rather than one agent.
  */
 
-import { describe, expect, it } from "vitest";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
 import type { ExtensionActions, ExtensionObservedEvent } from "../../src/core/extension/api.ts";
 import { messageBindingFor } from "../../src/core/message.ts";
@@ -68,6 +69,64 @@ describe("extension precede", () => {
 		// and the harness holds the write until the running operation's save point.
 		expect(orchestrator.agentHasPendingMessages(agentId)).toBe(false);
 		expect(await branchText(orchestrator, agentId)).not.toContain("context for later");
+	});
+});
+
+describe("extension prompt", () => {
+	it("answers with the assistant message the run ended on", async () => {
+		const { orchestrator, actions } = await createHarness();
+		const childId = await actions.spawnAgent({ origin: { kind: "new" } });
+		const run = stubPromptRun(requireAgentHarness(orchestrator, childId));
+		// The usage rides on this message, which is what makes one prompt of a
+		// single-turn agent a step an extension can put a price on.
+		const message = {
+			role: "assistant",
+			stopReason: "stop",
+			usage: {
+				input: 12,
+				output: 3,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 15,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+		} as AssistantMessage;
+
+		const outcome = actions.prompt("do the step", { target: childId });
+		await vi.waitFor(() => expect(run.prompt).toHaveBeenCalledTimes(1));
+		run.resolve(message);
+
+		await expect(outcome).resolves.toEqual({ kind: "completed", message });
+	});
+
+	it("reports an input policy's refusal as an outcome rather than a failure", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		orchestrator.registerExtension("collab", () => {});
+		orchestrator.registerExtension("gate", (api) => {
+			api.intercept("input", (event) =>
+				event.text.includes("refuse") ? { block: true, reason: "policy" } : undefined,
+			);
+		});
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+
+		await expect(requireActions(orchestrator, agentId).prompt("please refuse this")).resolves.toMatchObject({
+			kind: "blocked",
+			reason: "policy",
+			blockedBy: "gate",
+		});
+	});
+
+	it("refuses a busy target instead of queueing behind its run", async () => {
+		const { orchestrator, actions } = await createHarness();
+		const childId = await actions.spawnAgent({ origin: { kind: "new" } });
+		const run = stubPromptRun(requireAgentHarness(orchestrator, childId));
+
+		const first = actions.prompt("first", { target: childId });
+		await vi.waitFor(() => expect(run.prompt).toHaveBeenCalledTimes(1));
+		await expect(actions.prompt("second", { target: childId })).rejects.toThrow(/cannot accept a prompt while turn/);
+
+		run.resolve({} as AssistantMessage);
+		await first;
 	});
 });
 

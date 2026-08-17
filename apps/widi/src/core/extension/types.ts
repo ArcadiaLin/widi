@@ -36,6 +36,7 @@ import type {
 	AgentToolsSnapshot,
 	CandidateItem,
 	OrchestratorEvent,
+	PromptOutcome,
 	RuntimeModel,
 } from "../types.ts";
 import type { ExtensionEventEnvelope } from "./events.ts";
@@ -491,7 +492,16 @@ export interface ExtensionActions {
 	// message pipeline, so the text meets the same interception as any other
 	// producer's and lands with the same record of who wrote it. `prompt`
 	// refuses a busy agent instead of queueing; steer and followUp always queue.
-	prompt(text: string, options?: ExtensionSendOptions): Promise<void>;
+	//
+	// `prompt` alone answers with a result, because it alone waits for one: the
+	// assistant message the run ended on, every tool round included, with the
+	// usage and cost of that run on it. A `blocked` outcome is an input policy
+	// having refused the text, which is an answer and not a failure.
+	//
+	// That run is the target's own, not its tree's. An agent that delegates ends
+	// its turn to wait for the work, so a prompt to it can answer while the
+	// delegation is still running.
+	prompt(text: string, options?: ExtensionSendOptions): Promise<PromptOutcome>;
 	steer(text: string, options?: ExtensionSendOptions): Promise<void>;
 	followUp(text: string, options?: ExtensionSendOptions): Promise<void>;
 	// Model-readable text that does not wake anything. Alone among the four it

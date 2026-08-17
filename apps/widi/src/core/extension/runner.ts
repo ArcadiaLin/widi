@@ -679,11 +679,14 @@ export class ExtensionRunner {
 					await this._actions.reportDiagnostic(agentId, extensionId, draft);
 				});
 			},
-			prompt: async (text, options) => {
-				await this._runReportedAction(failure("prompt"), async () => {
-					await this._actions.messageSinkFor(extensionId).prompt(toMessageRequest(agentId, text, "next_turn", options));
-				});
-			},
+			prompt: async (text, options) =>
+				await this._runReportedAction(
+					failure("prompt"),
+					async () =>
+						await this._actions
+							.messageSinkFor(extensionId)
+							.prompt(toMessageRequest(agentId, text, "next_turn", options)),
+				),
 			steer: async (text, options) => {
 				await this._runReportedAction(failure("steer"), async () => {
 					await this._actions.messageSinkFor(extensionId).send(toMessageRequest(agentId, text, "interrupt", options));

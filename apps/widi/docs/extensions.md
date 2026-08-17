@@ -192,6 +192,13 @@ context.isIdle();
 
 四者都可传 `{ target, images, source, render }`。`target` 可寻址 runtime 中另一 agent；但 `spawnAgent` 只会创建当前 agent 的子 agent，`disposeAgent` 只能处置同一 tree。
 
+只有 `prompt` 有返回值 `PromptOutcome`，因为只有它在等结果：
+
+- `{ kind: "completed", message }`：该 run **跑完之后**的最终 assistant message，中间的工具轮次都在里面；`message.usage` 带 token 与 cost，是这一次调用的账。
+- `{ kind: "blocked", inputId, reason?, blockedBy }`：被某个 `input` interceptor 拒绝。这是答复不是失败，调用方必须处理这一支。
+
+要点：**`prompt` 等的是目标 agent 自己的 run，不是它那棵树的**。一个把活交给下级的 agent 靠结束自己这一轮来等下级，因此 `prompt` 返回时协作可能仍在进行。用 `prompt` 驱动一个会自己委派的 agent 时，返回值只说明「它这一轮说完了」。
+
 ## 6. 会话与展示
 
 `context.session` 是 extension 私有的会话状态面：
