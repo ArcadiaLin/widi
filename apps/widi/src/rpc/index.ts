@@ -142,6 +142,7 @@ export async function runWidiRpc(options: WidiRpcOptions): Promise<void> {
 
 	let shuttingDown = false;
 	let unregisterClient: (() => void) | undefined;
+	let unsubscribeExtensionEvents: (() => void) | undefined;
 	let disposeRuntime: ((reason: string) => Promise<void>) | undefined;
 	let resolveClosed: (() => void) | undefined;
 	const closed = new Promise<void>((resolve) => {
@@ -162,6 +163,7 @@ export async function runWidiRpc(options: WidiRpcOptions): Promise<void> {
 		process.stdin.unref();
 		human.closeAll(`Shutting down: ${reason}`);
 		unregisterClient?.();
+		unsubscribeExtensionEvents?.();
 		try {
 			await disposeRuntime?.(reason);
 		} catch (error) {
@@ -227,6 +229,14 @@ export async function runWidiRpc(options: WidiRpcOptions): Promise<void> {
 		});
 
 		unregisterClient = runtime.orchestrator.registerClient(server);
+		// A bus subscriber beside the client, not under it: extension events are not
+		// orchestrator events and never reach `receive`.
+		unsubscribeExtensionEvents = runtime.orchestrator.registerExtensionEventSubscriber({
+			deliver: async (event) => {
+				send({ type: "extension_event", event });
+				await stdout.drain();
+			},
+		});
 
 		// After `ready` and after the client is registered, so a held command's
 		// events reach the stream in the same order a fresh one's would.

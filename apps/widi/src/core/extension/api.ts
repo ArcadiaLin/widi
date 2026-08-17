@@ -106,6 +106,7 @@ export type {
 	ToolExecuteMiddleware,
 	ToolExecutionContext,
 	ToolExtensionContext,
+	ToolExtensionHost,
 	ToolSource,
 } from "./types.ts";
 export {

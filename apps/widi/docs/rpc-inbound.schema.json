@@ -20,6 +20,9 @@
 			"$ref": "#/$defs/dispose"
 		},
 		{
+			"$ref": "#/$defs/emit_extension_event"
+		},
+		{
 			"$ref": "#/$defs/inspect"
 		},
 		{
@@ -202,6 +205,45 @@
 			},
 			"additionalProperties": false,
 			"title": "dispose"
+		},
+		"emit_extension_event": {
+			"type": "object",
+			"required": [
+				"cmd",
+				"agentId",
+				"extensionId",
+				"name"
+			],
+			"properties": {
+				"cmd": {
+					"type": "string",
+					"const": "emit_extension_event"
+				},
+				"agentId": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Id of an agent in this runtime."
+				},
+				"extensionId": {
+					"type": "string",
+					"minLength": 1,
+					"description": "The extension this client speaks for."
+				},
+				"name": {
+					"type": "string",
+					"minLength": 1,
+					"description": "Event name; `owner:event` by convention."
+				},
+				"payload": {
+					"description": "Any JSON value. Core bounds its size and reads nothing in it."
+				},
+				"id": {
+					"type": "string",
+					"description": "Echoed on the response, and the only handle `cancel` has on this command."
+				}
+			},
+			"additionalProperties": false,
+			"title": "emit_extension_event"
 		},
 		"inspect": {
 			"type": "object",

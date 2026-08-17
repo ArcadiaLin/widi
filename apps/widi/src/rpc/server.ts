@@ -30,6 +30,7 @@ import { type MessageSink, messageBindingFor } from "../core/message.ts";
 import type { ModelRegistry } from "../core/model-registry.ts";
 import type { AgentId, OrchestratorEvent, PromptOutcome, RuntimeModel } from "../core/types.ts";
 import { formatError } from "../utils/errors.ts";
+import type { JsonValue } from "../utils/json.ts";
 import { classifyError, RpcError, type RpcErrorCode } from "./errors.ts";
 import type { RpcHumanChannel } from "./human-channel.ts";
 import { RunAccounting } from "./run-summary.ts";
@@ -243,6 +244,9 @@ export class RpcServer implements OrchestratorClient<OrchestratorEvent> {
 			case "set_thinking_level":
 				await orchestrator.setAgentThinkingLevel(command.agentId, command.level);
 				return {};
+			case "emit_extension_event":
+				await this._emitExtensionEvent(command.agentId, command.extensionId, command.name, command.payload);
+				return {};
 			case "cancel_human_request":
 				return { cancelled: await orchestrator.cancelHumanRequest(command.requestId, command.reason) };
 			case "cancel": {
@@ -298,6 +302,31 @@ export class RpcServer implements OrchestratorClient<OrchestratorEvent> {
 			await this._orchestrator.abortAgent(agentId, "human").catch(() => {});
 			await run.catch(() => {});
 			throw signal.reason;
+		}
+	}
+
+	/**
+	 * The client declares which extension it speaks for, the way the TUI host
+	 * does: core's unforgeable attribution binds extensions to each other, not
+	 * the hosts beside the orchestrator.
+	 *
+	 * The bus validators raise plain TypeError/RangeError for a bad name or an
+	 * oversized payload. Those are faults in the frame, so they are classified
+	 * here rather than reaching the client as `internal`.
+	 */
+	private async _emitExtensionEvent(
+		agentId: AgentId,
+		extensionId: string,
+		name: string,
+		payload: JsonValue | undefined,
+	): Promise<void> {
+		try {
+			await this._orchestrator.emitExtensionEvent(agentId, extensionId, name, payload);
+		} catch (error) {
+			if (error instanceof TypeError || error instanceof RangeError) {
+				throw new RpcError("invalid_command", formatError(error));
+			}
+			throw error;
 		}
 	}
 

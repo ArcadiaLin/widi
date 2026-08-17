@@ -53,6 +53,7 @@ export type {
 	ToolExecuteMiddleware,
 	ToolExecutionContext,
 	ToolExtensionContext,
+	ToolExtensionHost,
 	ToolSource,
 } from "../tools/types.ts";
 

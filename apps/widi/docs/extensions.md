@@ -122,6 +122,20 @@ api.registerTool({
 
 工具执行失败应 `throw`，不要以返回值模拟错误。工具输出必须自行限制大小，避免无界内容进入模型上下文。工具可能并行执行；自行实现读改写文件的工具应处理同一文件的并发竞争。
 
+execute 的第三个参数 `context.extension`（类型 `ToolExtensionContext`）带 `host: ToolExtensionHost`，即 `{ agentId, profileId, actions }`——与 observer/interceptor handler 拿到的是同一份运行时操作面。工具因此可以 spawn 子 agent、`prompt` 它、`waitForTreeIdle` 再 `readReport`，不需要经由 extension event bus 绕回 handler：
+
+```ts
+async execute(_toolCallId, params, context) {
+  const actions = context.extension?.host?.actions;
+  if (!actions) throw new Error("This tool requires the extension runtime.");
+  const childId = await actions.spawnAgent({ origin: { kind: "new" } });
+  const outcome = await actions.prompt(params.task, { target: childId });
+  // ...
+}
+```
+
+`host` 只在没有 orchestrator 绑定的运行时才缺席（例如只装了 tool registry 的嵌入场景），所以上面的检查是防御而不是常态分支。
+
 ## 4. 事件与拦截器
 
 ### 拦截器
@@ -303,7 +317,7 @@ api.onExtensionEvent("my-extension:open", async (event, context) => {
 await api.emitExtensionEvent("my-extension:open", { source: "toolbar" });
 ```
 
-总线广播给每个 live Core runtime，以及 TUI 订阅者，也包括发送者自身。载荷会被复制冻结；不要依赖对象身份或试图修改它。级联派发深度有限，handler 间不能设计无条件互相回应的协议。
+总线广播给每个 live Core runtime，以及 TUI 订阅者，也包括发送者自身。RPC 客户端与 TUI half 站在同一位置：它用 `emit_extension_event` 命令发事件、以 `extension_event` 帧收事件（`docs/rpc.md` §4.8），因此一个双端 extension 在无终端的 RPC 模式下仍然可以被外部驱动。载荷会被复制冻结；不要依赖对象身份或试图修改它。级联派发深度有限，handler 间不能设计无条件互相回应的协议。
 
 Core 的 `onDispose()` 和 TUI 的 `onDispose()` 都必须释放 extension 自己启动的长生命周期资源。Core runner 会在 agent dispose 或 Core reload 时失效；此后捕获的 `context`、`actions`、`session` 都不可再用。
 

@@ -26,6 +26,7 @@
 import { type Static, type TSchema, Type } from "typebox";
 import type { AgentProfileOverride } from "../core/agent-profile.ts";
 import type { HumanQuestionAnswer, HumanResponse } from "../core/human-request.ts";
+import type { JsonValue } from "../utils/json.ts";
 
 const AgentIdSchema = Type.String({ minLength: 1, description: "Id of an agent in this runtime." });
 
@@ -67,6 +68,11 @@ const ImageContentSchema = Type.Object(
 		mimeType: Type.String({ minLength: 1 }),
 	},
 	{ additionalProperties: false },
+);
+
+/** Opaque to this layer and to core: bounded and frozen, never interpreted. */
+const PayloadSchema = Type.Unsafe<JsonValue>(
+	Type.Unknown({ description: "Any JSON value. Core bounds its size and reads nothing in it." }),
 );
 
 const ProfileOverrideSchema = Type.Unsafe<AgentProfileOverride>(
@@ -171,6 +177,18 @@ export const RPC_COMMAND_SCHEMAS = {
 		cmd: Type.Literal("set_thinking_level"),
 		agentId: AgentIdSchema,
 		level: ThinkingLevelSchema,
+	}),
+	/**
+	 * Emit onto the extension bus in an extension's name. A client stands where
+	 * the TUI host stands, so it declares which extension it speaks for and which
+	 * agent the action is about; core stamps both onto the envelope.
+	 */
+	emit_extension_event: command("emit_extension_event", {
+		cmd: Type.Literal("emit_extension_event"),
+		agentId: AgentIdSchema,
+		extensionId: Type.String({ minLength: 1, description: "The extension this client speaks for." }),
+		name: Type.String({ minLength: 1, description: "Event name; `owner:event` by convention." }),
+		payload: Type.Optional(PayloadSchema),
 	}),
 	cancel_human_request: command("cancel_human_request", {
 		cmd: Type.Literal("cancel_human_request"),

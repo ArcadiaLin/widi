@@ -2,6 +2,7 @@ import type { AbortResult } from "@arcadialin/agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
+import { type ExtensionEventEnvelope, MAX_EXTENSION_EVENT_PAYLOAD_BYTES } from "../../src/core/extension/events.ts";
 import type { HumanResponse } from "../../src/core/human-request.ts";
 import { RpcHumanChannel } from "../../src/rpc/human-channel.ts";
 import { RpcServer } from "../../src/rpc/server.ts";
@@ -381,6 +382,81 @@ describe("RpcServer completion signals", () => {
 		const answer = await call(fixture, { id: "t", cmd: "wait_tree_idle", agentId: "no-such-agent" });
 		if (answer.ok) throw new Error("expected a refusal");
 		expect(answer.code).toBe("unknown_agent");
+	});
+});
+
+describe("RpcServer extension events", () => {
+	/** What a loaded extension saw on the bus, in arrival order. */
+	function collectBusEvents(fixture: Fixture, extensionId: string, eventName: string): ExtensionEventEnvelope[] {
+		const seen: ExtensionEventEnvelope[] = [];
+		fixture.orchestrator.registerExtension(extensionId, (api) => {
+			api.onExtensionEvent(eventName, (event) => {
+				seen.push(event);
+			});
+		});
+		return seen;
+	}
+
+	it("puts a client's event on the bus in the extension's name", async () => {
+		const fixture = await createFixture();
+		const seen = collectBusEvents(fixture, "workflow", "driver:run");
+		const spawned = await call(fixture, { id: "s", cmd: "spawn", origin: { kind: "new" } });
+		if (!spawned.ok || spawned.cmd !== "spawn") throw new Error("spawn failed");
+		const agentId = spawned.data.agentId;
+
+		const answer = await call(fixture, {
+			id: "e",
+			cmd: "emit_extension_event",
+			agentId,
+			extensionId: "workflow",
+			name: "driver:run",
+			payload: { sample: 7 },
+		});
+
+		expect(answer.ok).toBe(true);
+		// Attribution is what the client declared, stamped by core: a client stands
+		// beside the orchestrator, so it says who it speaks for.
+		expect(seen).toEqual([
+			expect.objectContaining({
+				name: "driver:run",
+				payload: { sample: 7 },
+				sourceExtensionId: "workflow",
+				sourceAgentId: agentId,
+			}),
+		]);
+	});
+
+	it("refuses an event attributed to an agent that is not live", async () => {
+		const fixture = await createFixture();
+
+		const answer = await call(fixture, {
+			id: "e",
+			cmd: "emit_extension_event",
+			agentId: "no-such-agent",
+			extensionId: "workflow",
+			name: "driver:run",
+		});
+
+		if (answer.ok) throw new Error("expected a refusal");
+		expect(answer.code).toBe("unknown_agent");
+	});
+
+	it("refuses a payload past the bus limit as a bad frame, not a runtime fault", async () => {
+		const fixture = await createFixture();
+		const spawned = await call(fixture, { id: "s", cmd: "spawn", origin: { kind: "new" } });
+		if (!spawned.ok || spawned.cmd !== "spawn") throw new Error("spawn failed");
+
+		const answer = await call(fixture, {
+			id: "e",
+			cmd: "emit_extension_event",
+			agentId: spawned.data.agentId,
+			extensionId: "workflow",
+			name: "driver:run",
+			payload: { blob: "x".repeat(MAX_EXTENSION_EVENT_PAYLOAD_BYTES + 1) },
+		});
+
+		if (answer.ok) throw new Error("expected a refusal");
+		expect(answer.code).toBe("invalid_command");
 	});
 });
 

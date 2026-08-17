@@ -101,8 +101,11 @@ JSONL：一行一个 JSON 对象，UTF-8，`\n` 分隔（读取端容忍 `\r\n`�
 | `ready` | 首帧，见 §2.2 |
 | `response` | 某条命令的答复 |
 | `event` | 一条编织后的 orchestrator 事件，见 §5 |
+| `extension_event` | 一条 extension bus 事件，见 §4.8 |
 | `human_request` | 需要人答复，见 §6 |
 | `human_request_withdrawn` | 一条 human request 不再等答复了，见 §6.2 |
+
+**客户端必须忽略 `type` 不认识的出向帧。** 入向严格、出向宽容是刻意的不对称（§3.3）：客户端没写对的字段是笔误，而运行时多写的字段或多发的帧型是新版本在多说话。`switch (frame.type)` 的 `default` 分支应当跳过而不是抛错——`extension_event` 就是在协议版本没有变化的情况下新增的帧型。真正的版本不兼容由 `protocolVersion` 表达。
 
 **入向（stdin）**
 
@@ -205,6 +208,7 @@ JSONL：一行一个 JSON 对象，UTF-8，`\n` 分隔（读取端容忍 `\r\n`�
 | `inspect` | `agentId` | `AgentSnapshot` | `inspectAgent` |
 | `set_model` | `agentId`, `model` | `RuntimeModel` | `setAgentModelByReference` |
 | `set_thinking_level` | `agentId`, `level` | `{}` | `setAgentThinkingLevel` |
+| `emit_extension_event` | `agentId`, `extensionId`, `name`, `payload?` | `{}` | `emitExtensionEvent` |
 | `cancel_human_request` | `requestId`, `reason?` | `{ cancelled }` | `cancelHumanRequest` |
 | `cancel` | `commandId` | `{ cancelled }` | §4.4 |
 | `shutdown` | `reason?` | `{}` | §2.3 |
@@ -340,6 +344,19 @@ agent 之间的协作工具（`spawn_agent` / `send_message` / `watch_agent` / `
 
 `tests/rpc/run-summary.test.ts` 钉住算术，`tests/rpc/e2e.test.ts` 在真进程上把 `providerResponses` 与假 provider 自己数的请求数对齐——后者是唯一能验证"计数等于真实调用数"的地方。
 
+### 4.8 Extension bus：`emit_extension_event` 与 `extension_event` 帧
+
+Extension bus 是 extension 之间（以及 extension 与 host 之间）的通道，与 `event` 流没有关系：bus 事件不是 `OrchestratorEvent`，不经过 §5 的编织，只是 `ExtensionEventEnvelope` 原样两头搬运。RPC 不理解任何领域结构。
+
+- **出向**：runtime 里任何一次 bus 发射都会以 `{ "type": "extension_event", "event": <envelope> }` 到达客户端，**包括客户端自己刚发的那一条**——runner 也是这样收自己的，这里不做例外。
+- **入向**：`emit_extension_event` 把一条事件放上 bus。`name` 是自由名（约定 `owner:event`），`payload` 是任意 JSON（core 只限大小、冻结，不读内容）。
+
+归属语义是这条命令唯一需要想清楚的地方：**RPC 客户端与 TUI host 站在同一位置**——它不是 extension，也不是 agent。所以它像 TUI half 一样**声明**自己代表哪个 extension（`extensionId`）、动作关于哪个 agent（`agentId`，必须是活 agent），core 把这两项原样盖在 envelope 上。core 那句"归属由 core 注入、不可伪造"约束的是 extension 之间，不约束站在 orchestrator 旁边的 host。
+
+`name` 不合法或 `payload` 超出上限（65536 字节）答 `invalid_command`；`agentId` 不是活 agent 答 `unknown_agent`。
+
+新增出向帧型没有 bump `protocolVersion`：按 §3，客户端本来就必须忽略不认识的 `type`。
+
 ## 5. 事件流
 
 `event` 帧包一条 `OrchestratorEvent`。事件类型的完整清单见 `core/types.ts`；每条都带 `agentId`（少数运行时级事件除外）。
@@ -468,7 +485,7 @@ harness emitAny → await listener        packages/agent/src/harness/agent-harne
 | 四 | typebox schema：运行时校验 + 可发布 JSON Schema（§3.3、§9.2、§9.3） | **已落地** |
 | 五 | `run_summary`（§4.7、§9.5） | **已落地** |
 | — | 生效配置快照（§9.7） | **暂不做**，理由见该节 |
-| — | 客户端 → 扩展方向（§9.6） | **决定不做**，理由见该节 |
+| 六 | 客户端 → 扩展方向（§4.8、§9.6） | **已落地**（推翻了原先的"决定不做"） |
 | — | `send` 的 deadline（§9.8） | 挂起，理由见该节 |
 
 **面向评测的部分到第五组为止已经齐了，没有第六组。** 剩下三条都不是评测路径上的：§9.7 的可复现性由驱动侧记录更可信，§9.6 只影响双端扩展，§9.8 要等投递队列有按条目取消的入口。三条都写清了重新开工的条件——在有人真的撞上之前不动。
@@ -539,15 +556,17 @@ UPDATE_RPC_SCHEMA=1 npm --workspace apps/widi run test -- tests/rpc/frames.test.
 
 **不在范围内**：扩展内部的 API 调用（例如某个检索扩展自己发出的 HTTP 请求）core 没有钩子，也不应该有；这类计数由扩展自报。工具在结果上报的 usage 同样不计，理由见 §4.7。
 
-### 9.6 客户端与扩展之间只通了一半（**决定不做**）
+### 9.6 客户端与扩展之间只通了一半（**已落地**）
 
 先说清楚范围，因为这条容易被读成比实际严重：**RPC 触发扩展没有问题，扩展影响 RPC 也没有问题**。core 半完整加载，observer / interceptor 照常触发，`registerTool` 的工具 agent 能调，`appendSystemPrompt`、`registerProvider` 全部生效；扩展 → 客户端方向也已经通了，`extension_message_published`、`extension_output`、`extension_notification`、`extension_status_changed` 都是 `OrchestratorEvent`，`publishMessage` 就是扩展往外送结构化结果的正路。
 
-不通的只有一条独立通道：**扩展事件总线**（`core/extension/events.ts` 的 `emitExtensionEvent` / `registerExtensionEventSubscriber`）。它与 `OrchestratorEvent` 完全并行，用于扩展之间协调，也是双端扩展的另一半接进来的方式——TUI 正是这么接的（`tui/application.ts:702-704`）。`RpcServer` 没有接。
+不通的只有一条独立通道：**扩展事件总线**（`core/extension/events.ts` 的 `emitExtensionEvent` / `registerExtensionEventSubscriber`）。它与 `OrchestratorEvent` 完全并行，用于扩展之间协调，也是双端扩展的另一半接进来的方式——TUI 正是这么接的（`tui/application.ts:702-704`）。当时 `RpcServer` 没有接。
 
-**唯一后果：RPC 客户端当不了双端扩展的 `tui` 那一半**，既不能主动给扩展推一条命名事件，也看不见扩展之间互发的事件。
+**当时的唯一后果：RPC 客户端当不了双端扩展的 `tui` 那一半**，既不能主动给扩展推一条命名事件，也看不见扩展之间互发的事件。
 
-**决定不做。** 评测场景下样本配置在启动时经 agent dir / profile / 环境变量交代即可，不需要在 run 中途往扩展里推东西。要做的话是新增 `emit_extension_event` 命令与 `extension_event` 出向帧，两端都只搬运 `ExtensionEventEnvelope`，RPC 不需要理解任何领域结构——但在有人真的需要之前不加这个面。
+**原决策：不做。** 理由是评测场景下样本配置在启动时经 agent dir / profile / 环境变量交代即可，不需要在 run 中途往扩展里推东西；但同时写明了重开条件——"在有人真的需要之前不加这个面"。
+
+**已推翻并落地。** 那个人出现了：workflow extension 把一次评测样本定义成 extension 内的一段编排，benchmark driver 必须能从外部触发它（`workflow:run`），而这正是双端扩展 `tui` 那一半平时做的事。落地形状与原先设想的一致——`emit_extension_event` 命令加 `extension_event` 出向帧，两端只搬运 `ExtensionEventEnvelope`——语义见 §4.8。协议版本未 bump，理由见 §3。
 
 ### 9.7 缺少生效配置快照（**暂不做**）
 
