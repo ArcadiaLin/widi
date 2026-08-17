@@ -1,0 +1,48 @@
+{
+	"name": "@arcadialin/widi-trajectory",
+	"version": "0.1.0",
+	"description": "Turn a WIDI session tree into a self-contained multi-agent trajectory page",
+	"type": "module",
+	"bin": {
+		"widi-trajectory": "dist/cli.js"
+	},
+	"files": [
+		"dist"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ArcadiaLin/widi.git",
+		"directory": "apps/widi-trajectory"
+	},
+	"keywords": [
+		"ai",
+		"agent",
+		"trajectory",
+		"session",
+		"viewer"
+	],
+	"scripts": {
+		"clean": "shx rm -rf dist",
+		"build": "npm run build:viewer && npm run build:app",
+		"build:app": "tsgo -p tsconfig.build.json",
+		"build:viewer": "esbuild src/viewer/index.ts --bundle --format=iife --target=es2022 --outfile=dist/viewer/bundle.js --log-level=warning && esbuild src/viewer/style.css --bundle --outfile=dist/viewer/bundle.css --log-level=warning",
+		"prepublishOnly": "npm run build",
+		"check": "tsgo --noEmit -p tsconfig.json && tsgo --noEmit -p tsconfig.viewer.json",
+		"test": "vitest --run",
+		"cli": "npm run build:viewer && tsx src/cli.ts"
+	},
+	"devDependencies": {
+		"@types/node": "^24.3.0",
+		"esbuild": "^0.28.0",
+		"happy-dom": "^20.11.2",
+		"tsx": "^4.23.0",
+		"vitest": "^3.2.4"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	}
+}

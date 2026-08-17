@@ -1,0 +1,12 @@
+{
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"lib": ["ES2022", "DOM", "DOM.Iterable"],
+		"types": [],
+		"module": "ESNext",
+		"moduleResolution": "Bundler"
+	},
+	"include": ["src/viewer/**/*.ts"],
+	"exclude": ["node_modules", "dist"]
+}

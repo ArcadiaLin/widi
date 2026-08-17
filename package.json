@@ -4,14 +4,16 @@
 	"type": "module",
 	"workspaces": [
 		"packages/agent",
-		"apps/widi"
+		"apps/widi",
+		"apps/widi-trajectory"
 	],
 	"scripts": {
 		"clean": "npm run clean --workspaces",
-		"build": "npm --workspace @arcadialin/agent-core run build && npm --workspace apps/widi run build",
-		"check": "biome check --write --error-on-warnings apps/widi/src apps/widi/tests apps/widi/docs packages/agent/src packages/agent/test && tsgo --noEmit -p tsconfig.json",
+		"build": "npm --workspace @arcadialin/agent-core run build && npm --workspace apps/widi run build && npm --workspace apps/widi-trajectory run build",
+		"check": "biome check --write --error-on-warnings apps/widi/src apps/widi/tests apps/widi/docs apps/widi-trajectory/src apps/widi-trajectory/tests packages/agent/src packages/agent/test && tsgo --noEmit -p tsconfig.json && npm --workspace apps/widi-trajectory run check",
 		"cli": "npm --workspace apps/widi run cli",
 		"tui": "npm --workspace apps/widi run tui",
+		"trajectory": "npm --workspace apps/widi-trajectory run cli --",
 		"test": "npm run test --workspaces --if-present"
 	},
 	"devDependencies": {
