@@ -3043,6 +3043,17 @@ export class AgentOrchestrator {
 				),
 			disposeAgentFor: async (callerAgentId, targetAgentId, options) =>
 				await this._disposeForCaller(callerAgentId, targetAgentId, options),
+			readAgentReportFor: async (callerAgentId, targetAgentId) =>
+				await this.readAgentReport(this._requireSameTreeAgent(callerAgentId, targetAgentId)),
+			// The waiter is the extension's own agent, not `undefined`: an extension
+			// waits from inside a runtime that its agent's disposal takes down, so
+			// that disposal has to end the wait.
+			waitForAgentStopFor: async (callerAgentId, targetAgentId, options) =>
+				await this.waitForAgentStop(
+					callerAgentId,
+					this._requireSameTreeAgent(callerAgentId, targetAgentId),
+					options ?? {},
+				),
 			getAgentTools: (agentId) => this.getAgentTools(agentId),
 			setAgentTools: async (agentId, toolNames, activeToolNames) => {
 				await this.setAgentTools(agentId, toolNames, activeToolNames);
@@ -3442,6 +3453,23 @@ export class AgentOrchestrator {
 	private _describeAgentForCaller(_callerAgentId: AgentId, targetAgentId: AgentId): AgentBrief | undefined {
 		const liveAgent = this._live.get(targetAgentId);
 		return liveAgent ? describeAgentForTools(liveAgent) : undefined;
+	}
+
+	/**
+	 * Scope gate for the reads a caller makes about another agent's run. Both of
+	 * them answer with that agent's own words or its own stop, so reaching outside
+	 * the tree would open a channel between runs that never agreed to share one.
+	 *
+	 * Throws rather than answering emptily: `undefined` already means "that agent
+	 * said nothing", and a wait for an event that can never arrive is a mistake,
+	 * not a state to handle.
+	 */
+	private _requireSameTreeAgent(callerAgentId: AgentId, targetAgentId: AgentId): AgentId {
+		if (!this._live.has(targetAgentId)) throw new AgentGoneError(targetAgentId);
+		if (!this._agentsShareTree(callerAgentId, targetAgentId)) {
+			throw new Error(`Agent ${targetAgentId} is outside agent ${callerAgentId}'s tree.`);
+		}
+		return targetAgentId;
 	}
 
 	private async _spawnForCaller(

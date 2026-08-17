@@ -630,6 +630,16 @@ export class ExtensionRunner {
 					failure("disposeAgent"),
 					async () => await this._actions.disposeAgentFor(agentId, targetAgentId, options),
 				),
+			readReport: async (targetAgentId) =>
+				await this._runReportedAction(
+					failure("readReport"),
+					async () => await this._actions.readAgentReportFor(agentId, targetAgentId),
+				),
+			waitForStop: async (targetAgentId, options) =>
+				await this._runReportedAction(
+					failure("waitForStop"),
+					async () => await this._actions.waitForAgentStopFor(agentId, targetAgentId, options),
+				),
 			getTools: () => {
 				this._assertActive();
 				return this._actions.getAgentTools(agentId);
@@ -1013,6 +1023,8 @@ function createUnboundActions(): ExtensionCoreActions {
 		describeAgentFor: () => notBound(),
 		spawnAgentFor: async () => notBound(),
 		disposeAgentFor: async () => notBound(),
+		readAgentReportFor: async () => notBound(),
+		waitForAgentStopFor: async () => notBound(),
 		getAgentTools: () => notBound(),
 		setAgentTools: async () => notBound(),
 		setAgentActiveTools: async () => notBound(),

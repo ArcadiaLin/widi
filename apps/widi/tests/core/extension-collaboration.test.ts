@@ -7,7 +7,7 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentOrchestrator } from "../../src/core/agent-orchestrator.ts";
-import type { ExtensionActions, ExtensionObservedEvent } from "../../src/core/extension/api.ts";
+import type { AgentStop, ExtensionActions, ExtensionObservedEvent } from "../../src/core/extension/api.ts";
 import { messageBindingFor } from "../../src/core/message.ts";
 import type { OrchestratorEvent } from "../../src/core/types.ts";
 import {
@@ -127,6 +127,98 @@ describe("extension prompt", () => {
 
 		run.resolve({} as AssistantMessage);
 		await first;
+	});
+});
+
+describe("extension readReport and waitForStop", () => {
+	it("reads back what a child agent said in its last run", async () => {
+		const { orchestrator, actions } = await createHarness();
+		const childId = await actions.spawnAgent({ origin: { kind: "new" } });
+		// Written straight to the branch because a real run is what would otherwise
+		// put it there, and the point under test is what the reader scans, not what
+		// a model would have produced.
+		const harness = requireAgentHarness(orchestrator, childId);
+		await harness.appendMessage({ role: "user", content: "question", timestamp: 1 });
+		await harness.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "the answer" }],
+			timestamp: 2,
+		} as AssistantMessage);
+
+		await expect(actions.readReport(childId)).resolves.toBe("the answer");
+	});
+
+	it("has nothing to read once the agent that said it is gone", async () => {
+		const { actions } = await createHarness();
+		const childId = await actions.spawnAgent({ origin: { kind: "new" } });
+		await actions.disposeAgent(childId, { scope: "agent", reason: "done" });
+
+		// Not undefined: "said nothing" and "cannot be asked" are different answers,
+		// and collapsing them would make `dispose` then `readReport` look workable.
+		await expect(actions.readReport(childId)).rejects.toThrow(/is gone/);
+	});
+
+	it("refuses both reads for an agent in another tree", async () => {
+		const { orchestrator, actions } = await createHarness();
+		const outsider = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+
+		await expect(actions.readReport(outsider)).rejects.toThrow(/outside/);
+		await expect(actions.waitForStop(outsider)).rejects.toThrow(/outside/);
+	});
+
+	it("waits for the next stop rather than the idle it started from", async () => {
+		const { orchestrator, actions } = await createHarness();
+		const childId = await actions.spawnAgent({ origin: { kind: "new" } });
+		const run = stubPromptRun(requireAgentHarness(orchestrator, childId));
+
+		// The child is idle right now. Level-triggered would answer here, and a
+		// caller that just handed over work would read its own starting state as
+		// the end of it.
+		expect(orchestrator.isAgentIdle(childId)).toBe(true);
+		let stop: AgentStop | undefined;
+		const stopped = actions.waitForStop(childId).then((result) => {
+			stop = result;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(stop).toBeUndefined();
+
+		const prompted = actions.prompt("work", { target: childId });
+		await vi.waitFor(() => expect(run.prompt).toHaveBeenCalledTimes(1));
+		run.resolve({} as AssistantMessage);
+
+		await stopped;
+		expect(stop).toEqual({ reason: "settled" });
+		await prompted;
+	});
+
+	it("carries the abort origin, so a stop is not read as a completion", async () => {
+		const { orchestrator, actions } = await createHarness();
+		const childId = await actions.spawnAgent({ origin: { kind: "new" } });
+		const run = stubPromptRun(requireAgentHarness(orchestrator, childId));
+		const stopped = actions.waitForStop(childId);
+
+		const prompted = actions.prompt("work", { target: childId });
+		await vi.waitFor(() => expect(run.prompt).toHaveBeenCalledTimes(1));
+		// Not awaited here: the abort itself waits for the harness to leave the
+		// turn, which is what resolving the stubbed run below does.
+		const aborting = orchestrator.abortAgent(childId, "extension");
+		run.resolve({} as AssistantMessage);
+
+		await expect(stopped).resolves.toEqual({ reason: "aborted", abortedBy: "extension" });
+		await aborting;
+		await prompted;
+	});
+
+	it("ends an in-flight wait when the waiting extension's own agent is disposed", async () => {
+		const { orchestrator, agentId, actions } = await createHarness();
+		const childId = await actions.spawnAgent({ origin: { kind: "new" } });
+		const stopped = actions.waitForStop(childId);
+
+		// The runtime that would receive the answer is the one being torn down, so
+		// the wait cannot be left standing.
+		await orchestrator.disposeAgent(agentId, { intent: "removed", scope: "agent" });
+
+		await expect(stopped).rejects.toThrow(/is gone/);
 	});
 });
 

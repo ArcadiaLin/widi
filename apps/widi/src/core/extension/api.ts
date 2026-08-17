@@ -38,6 +38,7 @@ export type {
 	AgentProfileBrief,
 	AgentRequestedDisposeOptions,
 	AgentRequestedDisposeOutcome,
+	AgentStop,
 	AgentTreeClosedEntry,
 	AgentTreeEntry,
 	AgentTreeListing,
@@ -45,7 +46,9 @@ export type {
 } from "../host.ts";
 export type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
 export type {
+	AgentAbortOrigin,
 	AgentContextUsage,
+	AgentIdleReason,
 	AgentToolsSnapshot,
 	CandidateItem,
 	PromptOutcome,

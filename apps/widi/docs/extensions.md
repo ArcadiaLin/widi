@@ -170,7 +170,7 @@ context.isIdle();
 
 | 类别 | 主要方法 |
 | --- | --- |
-| Agent tree | `listProfiles`、`listAgents`、`describeAgent`、`spawnAgent`、`disposeAgent` |
+| Agent tree | `listProfiles`、`listAgents`、`describeAgent`、`spawnAgent`、`disposeAgent`、`readReport`、`waitForStop` |
 | 工具 | `getTools`、`setTools`、`setActiveTools` |
 | 模型 | `getModel`、`setModel`、`listModelCandidates`、读写 thinking level |
 | 人工交互 | `requestHuman` |
@@ -179,7 +179,16 @@ context.isIdle();
 | 本地执行 | `exec(command, options)`，要求 project trust |
 | 瞬时展示 | `emitOutput`、`notify`、`setStatus`、`clearStatus`、`reportDiagnostic` |
 
-`waitForIdle()` 不能从 `tool_call` 或 `context` interceptor 内 await：当前 turn 必须先等该 handler 返回，等待会构成死锁。
+`waitForIdle()` 不能从 `tool_call` 或 `context` interceptor 内 await：当前 turn 必须先等该 handler 返回，等待会构成死锁。对自己的 agent 调用 `waitForStop()` 同理。
+
+### 等另一个 agent 停下并取回它的结果
+
+`readReport(agentId)` 与 `waitForStop(agentId)` 只接受**同一 tree** 内的 agent，越界直接拒绝而不是返回空值。
+
+- `waitForStop(agentId, { signal })` 是**边沿触发**：等的是下一次 `agent_idle`，因此对一个当前已经空闲的 agent 调用不会立刻返回。目标或 extension 自己的 agent 在等待期间被 dispose 时拒绝。
+- 返回的 `AgentStop.reason` 才区分「做完了」和「被打断了」：被 `abort` 的 agent 在这里同样算停下，`reason` 为 `aborted`（并带 `abortedBy`）。不要把 resolve 当成任务成功。
+- 一个把活交给下级的 agent，结束自己这一轮就算停下，此时下级可能仍在跑。要判一棵树整体跑完，`waitForStop` 不够。
+- `readReport(agentId)` 读的是 branch 上那一轮的 assistant 文本，扫到上一条 user 消息为止；该轮没有任何文本时返回 `undefined`。它读 session，所以 agent 一旦被 dispose 就读不到了：**先取结果，再 dispose**。
 
 ### 向模型发送文本
 
