@@ -1,0 +1,121 @@
+name: survey
+version: 1
+description: Break a question into angles, probe each one, then merge the answers into a brief.
+
+# The worst case, not the expected case: every attempt used, every fan-out full,
+# every loop to its last pass. `/workflows` prints what the audit computes, and a
+# flow that prices above these numbers is refused before an agent is spawned.
+budget:
+  modelCalls: 20
+  agentSpawns: 10
+  wallClockMs: 600000
+
+state:
+  angles: { type: list }
+  proposed: { type: list }
+  asked: { type: set }
+  findings: { type: list }
+  brief: { type: text }
+
+persist:
+  path: runs/survey.jsonl
+  records: [run, step, output, result]
+
+steps:
+  - id: plan
+    kind: agent
+    maxAttempts: 2
+    role:
+      label: Survey Planner
+      systemPrompt: >
+        You split a question into distinct angles of enquiry. Each angle is a short
+        noun phrase that could be investigated on its own.
+    task: |
+      Question: $input
+
+      Name up to 4 angles worth investigating.
+    output:
+      type: object
+      required: [angles]
+      properties:
+        angles:
+          type: array
+          maxItems: 4
+          items: { type: string, maxLength: 120 }
+    assign:
+      - { into: state.angles, set: $output.angles, dedupe: true, limit: 4 }
+
+  - id: rounds
+    kind: loop
+    maxIterations: 2
+    until: { empty: state.angles }
+    body:
+      - id: probe
+        kind: fanout
+        over: state.angles
+        maxItems: 4
+        maxConcurrency: 2
+        body:
+          - id: answer
+            kind: agent
+            maxAttempts: 2
+            role:
+              label: Survey Probe
+              systemPrompt: >
+                You answer one narrow question from your own knowledge, in at most four
+                sentences. You also name one angle your answer leaves open, when there is one.
+            task: |
+              Question: $input
+              Angle: $item
+            output:
+              type: object
+              required: [answer]
+              properties:
+                answer: { type: string, maxLength: 1200 }
+                next: { type: string, maxLength: 120 }
+            assign:
+              - { into: state.findings, append: { angle: $item, answer: $output.answer } }
+              - { into: state.asked, append: $item }
+              - { into: state.proposed, append: $output.next, when: present }
+
+      # The expansions this round proposed become next round's work, minus
+      # anything already asked. Clearing first is what stops a second pass from
+      # re-probing the angles the first one just answered.
+      - id: promote
+        kind: transform
+        ops:
+          - { clear: state.angles }
+          - { move: state.proposed, into: state.angles, against: state.asked, dedupe: true, limit: 4 }
+
+  # What the last model call is allowed to see, and therefore what it costs.
+  # A flow bounds its own context or nothing does.
+  - id: trim
+    kind: transform
+    ops:
+      - { take: state.findings, count: 6 }
+
+  - id: brief
+    kind: agent
+    maxAttempts: 2
+    role:
+      label: Survey Synthesist
+      systemPrompt: >
+        You merge findings into a brief of at most eight sentences. You say where the
+        findings disagree and what none of them covered, and you never invent a finding
+        that is not in front of you.
+    task: |
+      Question: $input
+
+      Findings:
+      $state.findings
+    output:
+      type: object
+      required: [brief]
+      properties:
+        brief: { type: string, maxLength: 2000 }
+    assign:
+      - { into: state.brief, set: $output.brief }
+
+report:
+  summary: state.brief
+  items: state.findings

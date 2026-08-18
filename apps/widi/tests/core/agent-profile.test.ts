@@ -236,6 +236,29 @@ describe("AgentProfileRegistry", () => {
 		expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: "profile.duplicate_id" }));
 	});
 
+	// Extension-registered profiles are leased per agent, so every dispose
+	// invalidates the registry - and a fan-out disposes one agent while spawning
+	// the next. A resolution that already holds an index must keep reading the
+	// text that came with it, or a warm cache answers profile_missing.
+	it("resolves against the index it already holds when invalidated mid-resolution", async () => {
+		const registry = new AgentProfileRegistry(
+			new InMemoryProfileStorageBackend([
+				{
+					entryId: "memory:a",
+					filenameId: "worker",
+					source: { kind: "memory", priority: 100 },
+					content: "---\nid: worker\n---\nWorker prompt",
+				},
+			]),
+		);
+		expect((await registry.resolveProfile("worker")).ok).toBe(true);
+
+		const pending = registry.resolveProfile("worker");
+		registry.invalidate();
+
+		expect((await pending).ok).toBe(true);
+	});
+
 	// Extensions and prompt templates left the profile schema. An older profile
 	// file still naming them has to keep working: the runtime reads those
 	// decisions elsewhere now, and failing the role over a stale line would take

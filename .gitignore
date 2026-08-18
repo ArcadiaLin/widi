@@ -52,3 +52,7 @@ docs/superpowers/
 !.widi/skills/
 .widi/skills/*
 !.widi/skills/develop-widi-extension/
+!.widi/skills/author-workflow/
+# Flows are tracked; what a run writes beside them is not.
+!.widi/workflows/
+.widi/workflows/runs/

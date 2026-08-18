@@ -186,6 +186,8 @@ type ProfileIndex = {
 	readonly candidates: ParsedProfileCandidate[];
 	readonly candidatesByProfileId: Map<string, ParsedProfileCandidate[]>;
 	readonly diagnostics: AgentProfileDiagnostic[];
+	/** Source text by entry id, held here so a resolution reads one snapshot. */
+	readonly content: Map<string, string>;
 };
 
 /**
@@ -541,7 +543,6 @@ export class CompositeProfileStorageBackend implements ProfileStorageBackend {
 export class AgentProfileRegistry {
 	private readonly storage: ProfileStorageBackend;
 	private index: ProfileIndex | undefined;
-	private readonly rawContent: Map<string, string> = new Map();
 
 	constructor(storage: ProfileStorageBackend) {
 		this.storage = storage;
@@ -549,7 +550,6 @@ export class AgentProfileRegistry {
 
 	reload(): void {
 		this.index = undefined;
-		this.rawContent.clear();
 	}
 
 	invalidate(): void {
@@ -592,7 +592,7 @@ export class AgentProfileRegistry {
 			return { ok: false, reason: "invalid_profile", profileId: normalizedProfileId, diagnostics };
 		}
 
-		const content = this.rawContent.get(selected.entry.entryId);
+		const content = index.content.get(selected.entry.entryId);
 		if (content === undefined) {
 			return { ok: false, reason: "profile_missing", profileId: normalizedProfileId, diagnostics };
 		}
@@ -679,6 +679,7 @@ export class AgentProfileRegistry {
 		const listResult = await this.storage.listEntries();
 		const candidates: ParsedProfileCandidate[] = [];
 		const diagnostics: AgentProfileDiagnostic[] = [...listResult.diagnostics];
+		const content = new Map<string, string>();
 
 		for (const entry of listResult.entries) {
 			const readResult = await this.storage.readEntry(entry.entryId);
@@ -693,7 +694,7 @@ export class AgentProfileRegistry {
 				continue;
 			}
 
-			this.rawContent.set(entry.entryId, readResult.content);
+			content.set(entry.entryId, readResult.content);
 			const parsed = parseProfileMarkdown(readResult.content);
 			if (!parsed.ok) {
 				const diagnostic = diagnosticForEntry(entry, "error", "profile.parse_failed", parsed.error);
@@ -720,7 +721,9 @@ export class AgentProfileRegistry {
 		const candidatesByProfileId = groupCandidatesByProfileId(candidates);
 		applyCandidateStatuses(candidatesByProfileId);
 		diagnostics.push(...caseConflictDiagnostics(candidatesByProfileId));
-		this.index = { candidates, candidatesByProfileId, diagnostics };
+		// Published as one object: a resolution that already holds an index must
+		// keep reading the text that came with it, whatever `invalidate` does next.
+		this.index = { candidates, candidatesByProfileId, diagnostics, content };
 		return this.index;
 	}
 }
