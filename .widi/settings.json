@@ -44,8 +44,7 @@
   "packages": [],
   "extensions": [],
   "enabledExtensions": [
-    "drill",
-    "workflow"
+    "drill"
   ],
   "extensionDivisions": {},
   "skills": [],

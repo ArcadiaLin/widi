@@ -1,6 +1,6 @@
 # Extension 开发
 
-代码位置：`apps/widi/src/core/extension/`、`apps/widi/src/tui/extension-host/`；完整示例：`.widi/extensions/drill/`（双入口基准）与 `.widi/extensions/workflow/`（跨 agent 操作面与外部驱动）。
+代码位置：`apps/widi/src/core/extension/`、`apps/widi/src/tui/extension-host/`；完整示例：`.widi/extensions/drill/`。
 
 WIDI extension 是自己的运行时协议，**不是** Pi coding-agent 的 `ExtensionAPI`。不要在 WIDI extension 中使用 Pi 文档里的 `pi.registerTool()`、`pi.on()` 等 API；应使用本项目的 Core/TUI 契约。
 
@@ -350,4 +350,3 @@ npx biome check .widi/extensions/my-extension
 - `apps/widi/src/tui/extension-host/types.ts`：TUI API。
 - `apps/widi/docs/orchestrator.md` §4：extension 与多 agent、消息和会话的运行时语义。
 - `.widi/extensions/drill/README.md`：双入口示例的设计约束。
-- `.widi/extensions/workflow/README.md`：`spawnAgent`/`prompt`/`waitForTreeIdle`/`readReport` 的调用顺序，以及同一个 extension 如何被 TUI 命令和 RPC 客户端用同一组事件驱动。
