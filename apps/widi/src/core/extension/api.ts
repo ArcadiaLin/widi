@@ -38,14 +38,18 @@ export type {
 	AgentProfileBrief,
 	AgentRequestedDisposeOptions,
 	AgentRequestedDisposeOutcome,
+	AgentStop,
 	AgentTreeClosedEntry,
 	AgentTreeEntry,
+	AgentTreeIdle,
 	AgentTreeListing,
 	AgentTreeRunningEntry,
 } from "../host.ts";
 export type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
 export type {
+	AgentAbortOrigin,
 	AgentContextUsage,
+	AgentIdleReason,
 	AgentToolsSnapshot,
 	CandidateItem,
 	PromptOutcome,
@@ -102,6 +106,7 @@ export type {
 	ToolExecuteMiddleware,
 	ToolExecutionContext,
 	ToolExtensionContext,
+	ToolExtensionHost,
 	ToolSource,
 } from "./types.ts";
 export {

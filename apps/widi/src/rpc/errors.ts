@@ -104,6 +104,7 @@ function fromOrchestratorCode(code: string): RpcErrorCode {
 		case "orchestrator.agent_busy":
 			return "agent_busy";
 		case "orchestrator.agent_not_forkable":
+		case "orchestrator.invalid_argument":
 			return "invalid_command";
 		case "orchestrator.shutdown":
 			return "shutting_down";

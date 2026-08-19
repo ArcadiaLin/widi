@@ -122,6 +122,20 @@ api.registerTool({
 
 工具执行失败应 `throw`，不要以返回值模拟错误。工具输出必须自行限制大小，避免无界内容进入模型上下文。工具可能并行执行；自行实现读改写文件的工具应处理同一文件的并发竞争。
 
+execute 的第三个参数 `context.extension`（类型 `ToolExtensionContext`）带 `host: ToolExtensionHost`，即 `{ agentId, profileId, actions }`——与 observer/interceptor handler 拿到的是同一份运行时操作面。工具因此可以 spawn 子 agent、`prompt` 它、`waitForTreeIdle` 再 `readReport`，不需要经由 extension event bus 绕回 handler：
+
+```ts
+async execute(_toolCallId, params, context) {
+  const actions = context.extension?.host?.actions;
+  if (!actions) throw new Error("This tool requires the extension runtime.");
+  const childId = await actions.spawnAgent({ origin: { kind: "new" } });
+  const outcome = await actions.prompt(params.task, { target: childId });
+  // ...
+}
+```
+
+`host` 只在没有 orchestrator 绑定的运行时才缺席（例如只装了 tool registry 的嵌入场景），所以上面的检查是防御而不是常态分支。
+
 ## 4. 事件与拦截器
 
 ### 拦截器
@@ -170,7 +184,7 @@ context.isIdle();
 
 | 类别 | 主要方法 |
 | --- | --- |
-| Agent tree | `listProfiles`、`listAgents`、`describeAgent`、`spawnAgent`、`disposeAgent` |
+| Agent tree | `listProfiles`、`listAgents`、`describeAgent`、`spawnAgent`、`disposeAgent`、`readReport`、`waitForStop`、`waitForTreeIdle` |
 | 工具 | `getTools`、`setTools`、`setActiveTools` |
 | 模型 | `getModel`、`setModel`、`listModelCandidates`、读写 thinking level |
 | 人工交互 | `requestHuman` |
@@ -179,7 +193,17 @@ context.isIdle();
 | 本地执行 | `exec(command, options)`，要求 project trust |
 | 瞬时展示 | `emitOutput`、`notify`、`setStatus`、`clearStatus`、`reportDiagnostic` |
 
-`waitForIdle()` 不能从 `tool_call` 或 `context` interceptor 内 await：当前 turn 必须先等该 handler 返回，等待会构成死锁。
+`waitForIdle()` 不能从 `tool_call` 或 `context` interceptor 内 await：当前 turn 必须先等该 handler 返回，等待会构成死锁。对自己的 agent 调用 `waitForStop()` 同理。
+
+### 等另一个 agent 停下并取回它的结果
+
+`readReport(agentId)` 与 `waitForStop(agentId)` 只接受**同一 tree** 内的 agent，越界直接拒绝而不是返回空值。
+
+- `waitForStop(agentId, { signal })` 是**边沿触发**：等的是下一次 `agent_idle`，因此对一个当前已经空闲的 agent 调用不会立刻返回。目标或 extension 自己的 agent 在等待期间被 dispose 时拒绝。
+- 返回的 `AgentStop.reason` 才区分「做完了」和「被打断了」：被 `abort` 的 agent 在这里同样算停下，`reason` 为 `aborted`（并带 `abortedBy`）。不要把 resolve 当成任务成功。
+- 一个把活交给下级的 agent，结束自己这一轮就算停下，此时下级可能仍在跑。要判一棵树整体跑完，`waitForStop` 不够。
+- `readReport(agentId)` 读的是 branch 上那一轮的 assistant 文本，扫到上一条 user 消息为止；该轮没有任何文本时返回 `undefined`。它读 session，所以 agent 一旦被 dispose 就读不到了：**先取结果，再 dispose**。
+- 要判「这一步连同它委派出去的活都跑完了」，用 `waitForTreeIdle(agentId, { quietMs })`：它在 `agentId` 的 spawn 子树上做 join，并在条件首次成立后等一个静默窗口（默认 250ms，任何 runtime 事件重新计时）再复核。答复的 `agentIds` 是 settle 那一刻树里活着的 agent；整棵子树被 dispose 光则拒绝。窗口是启发式，理由见 `docs/rpc.md` §4.6；只要复核不要猜就传 `quietMs: 0`。
 
 ### 向模型发送文本
 
@@ -293,7 +317,7 @@ api.onExtensionEvent("my-extension:open", async (event, context) => {
 await api.emitExtensionEvent("my-extension:open", { source: "toolbar" });
 ```
 
-总线广播给每个 live Core runtime，以及 TUI 订阅者，也包括发送者自身。载荷会被复制冻结；不要依赖对象身份或试图修改它。级联派发深度有限，handler 间不能设计无条件互相回应的协议。
+总线广播给每个 live Core runtime，以及 TUI 订阅者，也包括发送者自身。RPC 客户端与 TUI half 站在同一位置：它用 `emit_extension_event` 命令发事件、以 `extension_event` 帧收事件（`docs/rpc.md` §4.8），因此一个双端 extension 在无终端的 RPC 模式下仍然可以被外部驱动。载荷会被复制冻结；不要依赖对象身份或试图修改它。级联派发深度有限，handler 间不能设计无条件互相回应的协议。
 
 Core 的 `onDispose()` 和 TUI 的 `onDispose()` 都必须释放 extension 自己启动的长生命周期资源。Core runner 会在 agent dispose 或 Core reload 时失效；此后捕获的 `context`、`actions`、`session` 都不可再用。
 

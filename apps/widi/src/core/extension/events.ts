@@ -34,11 +34,11 @@ export interface ExtensionEventEnvelope {
 /**
  * A bus subscriber that is not an extension runtime.
  *
- * The TUI extension host is the only one today: the `tui` half of a dual-entry
+ * Two today: the TUI extension host, because the `tui` half of a dual-entry
  * extension runs in the terminal process, outside any agent, so it has no
- * runner to carry its subscriptions. Delivery is the same detached envelope
- * every runner gets, and a subscriber is no more excluded from what it emitted
- * itself than a runner is.
+ * runner to carry its subscriptions; and an RPC client, which stands in the
+ * same place. Delivery is the same detached envelope every runner gets, and a
+ * subscriber is no more excluded from what it emitted itself than a runner is.
  *
  * Lifetime belongs to whoever registered it. That is the difference from a
  * runner, whose subscriptions come and go with the agent behind it.

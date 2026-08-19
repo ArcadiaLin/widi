@@ -24,6 +24,8 @@ import type {
 	AgentProfileBrief,
 	AgentRequestedDisposeOptions,
 	AgentRequestedDisposeOutcome,
+	AgentStop,
+	AgentTreeIdle,
 	AgentTreeListing,
 } from "../host.ts";
 import type { HumanRequestDraft, HumanResponse } from "../human-request.ts";
@@ -51,6 +53,7 @@ export type {
 	ToolExecuteMiddleware,
 	ToolExecutionContext,
 	ToolExtensionContext,
+	ToolExtensionHost,
 	ToolSource,
 } from "../tools/types.ts";
 
@@ -451,6 +454,39 @@ export interface ExtensionActions {
 	 * call's result.
 	 */
 	disposeAgent(agentId: string, options: AgentRequestedDisposeOptions): Promise<AgentRequestedDisposeOutcome>;
+	/**
+	 * What a same-tree agent said in the run that just ended, read from its
+	 * branch, or undefined when that run produced no assistant text at all.
+	 *
+	 * Reads the session rather than the event stream, so it is the same text a
+	 * watch notice carries. A disposed agent has no session to read here: read the
+	 * answer before disposing the agent that gave it.
+	 */
+	readReport(agentId: string): Promise<string | undefined>;
+	/**
+	 * A same-tree agent's *next* stop, edge-triggered: an agent that is idle
+	 * already keeps this waiting until it runs and stops again. Rejects when
+	 * either that agent or the extension's own is disposed while waiting.
+	 *
+	 * `reason` is what tells a stop from a completion - an interrupted agent is
+	 * idle here too - so judge it instead of assuming the work got done. And a
+	 * delegating agent stops when its own turn ends, which is not when its
+	 * children are done.
+	 *
+	 * Both of these refuse an agent outside the extension's tree, and both
+	 * deadlock in a `tool_call` or `context` interceptor waiting on the
+	 * extension's own agent, for the reason `waitForIdle` gives below.
+	 */
+	waitForStop(agentId: string, options?: { signal?: AbortSignal }): Promise<AgentStop>;
+	/**
+	 * When a same-tree agent's whole subtree has stopped, which is what
+	 * `waitForStop` cannot answer for an agent that delegates.
+	 *
+	 * The join is re-checked after a quiet window (`quietMs`, default 250) that
+	 * any runtime event restarts, because the handover between two agents is not
+	 * atomic. Rejects once nothing in that subtree is left alive.
+	 */
+	waitForTreeIdle(agentId: string, options?: { quietMs?: number; signal?: AbortSignal }): Promise<AgentTreeIdle>;
 	getTools(): AgentToolsSnapshot;
 	setTools(toolNames: string[], activeToolNames?: string[]): Promise<void>;
 	setActiveTools(toolNames: string[]): Promise<void>;
@@ -589,6 +625,17 @@ export interface ExtensionCoreActions {
 		targetAgentId: string,
 		options: AgentRequestedDisposeOptions,
 	): Promise<AgentRequestedDisposeOutcome>;
+	readAgentReportFor(callerAgentId: string, targetAgentId: string): Promise<string | undefined>;
+	waitForAgentStopFor(
+		callerAgentId: string,
+		targetAgentId: string,
+		options?: { signal?: AbortSignal },
+	): Promise<AgentStop>;
+	waitForAgentTreeIdleFor(
+		callerAgentId: string,
+		targetAgentId: string,
+		options?: { quietMs?: number; signal?: AbortSignal },
+	): Promise<AgentTreeIdle>;
 	getAgentTools(agentId: string): AgentToolsSnapshot;
 	setAgentTools(agentId: string, toolNames: string[], activeToolNames?: string[]): Promise<void>;
 	setAgentActiveTools(agentId: string, toolNames: string[]): Promise<void>;
@@ -774,6 +821,7 @@ export interface ExtensionActionFailure {
 		| "precede"
 		| "prompt"
 		| "publishMessage"
+		| "readReport"
 		| "readSession"
 		| "reportDiagnostic"
 		| "requestHuman"
@@ -786,7 +834,9 @@ export interface ExtensionActionFailure {
 		| "setTools"
 		| "spawnAgent"
 		| "steer"
-		| "waitForIdle";
+		| "waitForIdle"
+		| "waitForStop"
+		| "waitForTreeIdle";
 	code: string;
 	error: unknown;
 }

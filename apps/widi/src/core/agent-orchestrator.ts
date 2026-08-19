@@ -106,6 +106,7 @@ import type {
 	AgentStop,
 	AgentToOrchestratorHost,
 	AgentTreeEntry,
+	AgentTreeIdle,
 	AgentTreeListing,
 } from "./host.ts";
 import { AgentGoneError } from "./host.ts";
@@ -2172,6 +2173,92 @@ export class AgentOrchestrator {
 	}
 
 	/**
+	 * When a whole subtree has stopped, which no single event answers: a root that
+	 * delegated is idle while its subagent works. The join is re-checked after a
+	 * quiet window because the handover between two agents is not atomic.
+	 */
+	async waitForAgentTreeIdle(
+		agentId: AgentId,
+		options: { readonly quietMs?: number; readonly signal?: AbortSignal } = {},
+	): Promise<AgentTreeIdle> {
+		const quietMs = options.quietMs ?? DEFAULT_TREE_QUIET_MS;
+		if (!Number.isFinite(quietMs) || quietMs < 0) {
+			throw new OrchestratorError({
+				severity: "error",
+				code: "orchestrator.invalid_argument",
+				message: `quietMs must be a non-negative number of milliseconds: ${quietMs}`,
+				agentId,
+			});
+		}
+		// Rejects now rather than waiting out a deadline on an id that was never a
+		// live agent. A tree that empties later is a different case, handled below.
+		this.inspectAgent(agentId);
+		const signal = options.signal;
+
+		const settledTree = (): readonly AgentId[] | undefined => {
+			const tree = this.listAgentSubtree(agentId);
+			return tree.length > 0 && tree.every((id) => this.isAgentIdle(id)) ? tree : undefined;
+		};
+
+		return await new Promise<AgentTreeIdle>((resolve, reject) => {
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			let unsubscribe = () => {};
+			const finish = (settle: () => void): void => {
+				if (timer !== undefined) clearTimeout(timer);
+				unsubscribe();
+				signal?.removeEventListener("abort", onAbort);
+				settle();
+			};
+			const onAbort = (): void => finish(() => reject(signal?.reason));
+			// An empty subtree is the whole tree having been disposed under this wait.
+			// Answering with an empty list would read as a tree that finished.
+			const treeGone = (): void =>
+				finish(() =>
+					reject(
+						new OrchestratorError({
+							severity: "error",
+							code: "orchestrator.agent_gone",
+							message: `Agent ${agentId}'s tree is gone.`,
+							agentId,
+						}),
+					),
+				);
+
+			const restart = (): void => {
+				if (timer !== undefined) {
+					clearTimeout(timer);
+					timer = undefined;
+				}
+				if (this.listAgentSubtree(agentId).length === 0) {
+					treeGone();
+					return;
+				}
+				if (!settledTree()) return;
+				timer = setTimeout(() => {
+					timer = undefined;
+					const tree = settledTree();
+					if (this.listAgentSubtree(agentId).length === 0) treeGone();
+					else if (tree) finish(() => resolve({ agentIds: tree }));
+				}, quietMs);
+			};
+
+			// A listener, not a client: the window runs from when the runtime did
+			// something, not from when a consumer got round to hearing about it.
+			unsubscribe = this.subscribe(() => {
+				restart();
+			});
+			if (signal) {
+				if (signal.aborted) {
+					finish(() => reject(signal.reason));
+					return;
+				}
+				signal.addEventListener("abort", onAbort, { once: true });
+			}
+			restart();
+		});
+	}
+
+	/**
 	 * What this agent said in the run that just ended, read from its branch:
 	 * `turn_end` and `agent_end` both flush the harness's pending writes, so the
 	 * branch is durable by the time an agent is idle. The scan stops at the last
@@ -3043,6 +3130,19 @@ export class AgentOrchestrator {
 				),
 			disposeAgentFor: async (callerAgentId, targetAgentId, options) =>
 				await this._disposeForCaller(callerAgentId, targetAgentId, options),
+			readAgentReportFor: async (callerAgentId, targetAgentId) =>
+				await this.readAgentReport(this._requireSameTreeAgent(callerAgentId, targetAgentId)),
+			// The waiter is the extension's own agent, not `undefined`: an extension
+			// waits from inside a runtime that its agent's disposal takes down, so
+			// that disposal has to end the wait.
+			waitForAgentStopFor: async (callerAgentId, targetAgentId, options) =>
+				await this.waitForAgentStop(
+					callerAgentId,
+					this._requireSameTreeAgent(callerAgentId, targetAgentId),
+					options ?? {},
+				),
+			waitForAgentTreeIdleFor: async (callerAgentId, targetAgentId, options) =>
+				await this.waitForAgentTreeIdle(this._requireSameTreeAgent(callerAgentId, targetAgentId), options),
 			getAgentTools: (agentId) => this.getAgentTools(agentId),
 			setAgentTools: async (agentId, toolNames, activeToolNames) => {
 				await this.setAgentTools(agentId, toolNames, activeToolNames);
@@ -3442,6 +3542,23 @@ export class AgentOrchestrator {
 	private _describeAgentForCaller(_callerAgentId: AgentId, targetAgentId: AgentId): AgentBrief | undefined {
 		const liveAgent = this._live.get(targetAgentId);
 		return liveAgent ? describeAgentForTools(liveAgent) : undefined;
+	}
+
+	/**
+	 * Scope gate for the reads a caller makes about another agent's run. Both of
+	 * them answer with that agent's own words or its own stop, so reaching outside
+	 * the tree would open a channel between runs that never agreed to share one.
+	 *
+	 * Throws rather than answering emptily: `undefined` already means "that agent
+	 * said nothing", and a wait for an event that can never arrive is a mistake,
+	 * not a state to handle.
+	 */
+	private _requireSameTreeAgent(callerAgentId: AgentId, targetAgentId: AgentId): AgentId {
+		if (!this._live.has(targetAgentId)) throw new AgentGoneError(targetAgentId);
+		if (!this._agentsShareTree(callerAgentId, targetAgentId)) {
+			throw new Error(`Agent ${targetAgentId} is outside agent ${callerAgentId}'s tree.`);
+		}
+		return targetAgentId;
 	}
 
 	private async _spawnForCaller(
@@ -4086,6 +4203,9 @@ export class AgentOrchestrator {
 
 /** How long a dispose waits for `shutdown()`; the wait is otherwise unbounded. */
 const AGENT_SHUTDOWN_TIMEOUT_MS = 10_000;
+
+/** How long a tree must stay idle before `waitForAgentTreeIdle` believes it. */
+export const DEFAULT_TREE_QUIET_MS = 250;
 
 async function withTimeout(work: Promise<void>, timeoutMs: number, message: string): Promise<void> {
 	let timer: ReturnType<typeof setTimeout> | undefined;

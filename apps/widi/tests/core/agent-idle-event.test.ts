@@ -214,3 +214,82 @@ describe("agent_idle", () => {
 		expect(events).toHaveLength(0);
 	});
 });
+
+describe("waitForAgentTreeIdle", () => {
+	async function createTree(): Promise<{
+		readonly orchestrator: AgentOrchestrator;
+		readonly rootId: string;
+		readonly childId: string;
+	}> {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		const rootId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const childId = await orchestrator.spawnAgent({ origin: { kind: "new" }, parent: rootId });
+		return { orchestrator, rootId, childId };
+	}
+
+	it("holds while a child works under an idle root", async () => {
+		const { orchestrator, rootId, childId } = await createTree();
+		const run = await startPromptRun(orchestrator, childId);
+
+		// `waitForAgentIdle` on the root would answer at once, which is exactly the
+		// truncated sample the subtree join exists to prevent.
+		expect(orchestrator.isAgentIdle(rootId)).toBe(true);
+		let settled = false;
+		const idle = orchestrator.waitForAgentTreeIdle(rootId, { quietMs: 10 }).then((result) => {
+			settled = true;
+			return result;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		expect(settled).toBe(false);
+
+		run.resolve(assistantMessage());
+
+		expect([...(await idle).agentIds].sort()).toEqual([rootId, childId].sort());
+	});
+
+	it("does not answer for a tree that goes busy again inside the quiet window", async () => {
+		const { orchestrator, rootId, childId } = await createTree();
+
+		// The whole tree is idle at this instant, so a join evaluated once would
+		// answer here. That instant is the handover gap in miniature.
+		let settled = false;
+		const idle = orchestrator.waitForAgentTreeIdle(rootId, { quietMs: 60 }).then((result) => {
+			settled = true;
+			return result;
+		});
+		const run = await startPromptRun(orchestrator, childId);
+		await new Promise((resolve) => setTimeout(resolve, 120));
+		expect(settled).toBe(false);
+
+		run.resolve(assistantMessage());
+		await idle;
+	});
+
+	it("rejects once nothing in the tree is left alive", async () => {
+		const { orchestrator, rootId } = await createTree();
+		const idle = orchestrator.waitForAgentTreeIdle(rootId, { quietMs: 10 });
+
+		await orchestrator.disposeAgent(rootId, { intent: "removed", scope: "subtree" });
+
+		await expect(idle).rejects.toThrow(/tree is gone/);
+	});
+
+	it("ends on the caller's signal, leaving the tree as it was", async () => {
+		const { orchestrator, rootId, childId } = await createTree();
+		const run = await startPromptRun(orchestrator, childId);
+		const controller = new AbortController();
+		const idle = orchestrator.waitForAgentTreeIdle(rootId, { quietMs: 10, signal: controller.signal });
+
+		controller.abort(new Error("caller gave up"));
+
+		await expect(idle).rejects.toThrow(/caller gave up/);
+		expect(orchestrator.isAgentIdle(childId)).toBe(false);
+		run.resolve(assistantMessage());
+	});
+
+	it("refuses a quiet window that is not a non-negative number of milliseconds", async () => {
+		const { orchestrator, rootId } = await createTree();
+
+		await expect(orchestrator.waitForAgentTreeIdle(rootId, { quietMs: -1 })).rejects.toThrow(/quietMs/);
+	});
+});

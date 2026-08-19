@@ -12,6 +12,7 @@ import {
 import type { AgentOrchestrator } from "../core/agent-orchestrator.ts";
 import { DEFAULT_AGENT_DIR } from "../core/constants.js";
 import { type OrchestratorDiagnostic, OrchestratorError } from "../core/diagnostics.ts";
+import type { RuntimeEntryOptions } from "../core/entry-options.ts";
 import { type MessageSink, messageBindingFor } from "../core/message.ts";
 import { createWidiRuntime, type WidiRuntime } from "../core/runtime-service.ts";
 import type { AgentActivitySnapshot, CandidateItem, OrchestratorEvent, RuntimeModel } from "../core/types.ts";
@@ -78,10 +79,8 @@ const QUIP_TICK_MS = 250;
 const POKE_WINDOW_MS = 10_000;
 const POKE_THRESHOLD = 3;
 
-export interface WidiTuiOptions {
-	readonly cwd: string;
-	readonly agentDir?: string;
-	readonly profileId?: string;
+export interface WidiTuiOptions extends RuntimeEntryOptions {
+	/** An already-built runtime; every other option was applied when it was made. */
 	readonly runtime?: WidiRuntime;
 }
 
@@ -659,6 +658,13 @@ export class WidiTuiApplication {
 				cwd: options.cwd,
 				agentDir: options.agentDir ?? join(homedir(), DEFAULT_AGENT_DIR),
 				defaultProfileId: options.profileId,
+				enabledProfileIds: options.enabledProfileIds,
+				defaultModelReference: options.model,
+				defaultThinkingLevel: options.thinkingLevel,
+				sessionRoot: options.sessionRoot,
+				trustOverride: options.trustOverride,
+				noExtensions: options.noExtensions,
+				extensionPaths: options.extensionPaths,
 				requestHuman: startupPrompt.requestHuman,
 			});
 			const application = new WidiTuiApplication(runtime);

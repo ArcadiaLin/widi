@@ -46,6 +46,7 @@ import {
 	requireLiveAgent,
 	restoredModel,
 	restoredProfile,
+	spawnParentOf,
 	testWorkspaceResolver,
 } from "../helpers/orchestrator.ts";
 
@@ -64,9 +65,8 @@ async function resolveHarnessToolContext(harness: ReturnType<typeof requireAgent
 }
 
 function requireExtensionToolActions(context: ToolAdapterContext, extensionId: string): ExtensionContext["actions"] {
-	const extensionContext = context.createExtensionContext?.({ kind: "extension", id: extensionId }, "probe");
-	const host = extensionContext?.host as { actions?: ExtensionContext["actions"] } | undefined;
-	if (!host?.actions) throw new Error("Expected extension tool actions.");
+	const host = context.createExtensionContext?.({ kind: "extension", id: extensionId }, "probe")?.host;
+	if (!host) throw new Error("Expected extension tool actions.");
 	return host.actions;
 }
 
@@ -2454,6 +2454,23 @@ describe("AgentOrchestrator", () => {
 		});
 		expect(Object.hasOwn(clearEvent ?? {}, "status")).toBe(false);
 		expect(() => oldContext.actions.getTools()).toThrow("Extension runtime has been reloaded.");
+	});
+
+	it("hands an extension's tool the same runtime surface its handlers hold", async () => {
+		const orchestrator = await createOrchestrator(new MemoryExecutionEnv());
+		orchestrator.registerExtension("sample", (api) => {
+			api.registerTool(createToolDefinition("alpha"));
+		});
+		const agentId = await orchestrator.spawnAgent({ origin: { kind: "new" } });
+		const toolContext = await resolveHarnessToolContext(requireAgentHarness(orchestrator, agentId));
+
+		const host = toolContext.createExtensionContext?.({ kind: "extension", id: "sample" }, "alpha")?.host;
+
+		// Bound to the agent whose turn is executing, which is what makes the
+		// actions safe to hand over: a tool cannot ask as another agent.
+		expect(host).toMatchObject({ agentId, profileId: defaultProfile.id });
+		const childId = await host?.actions.spawnAgent({ origin: { kind: "new" } });
+		expect(spawnParentOf(orchestrator, childId ?? "")).toBe(agentId);
 	});
 
 	it("switches new turn contexts to the reloaded runner without rebinding old snapshots", async () => {

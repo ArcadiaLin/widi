@@ -32,6 +32,7 @@
 import type { AbortResult, CompactResult } from "@arcadialin/agent-core";
 import type { AgentSnapshot } from "../core/agent-types.ts";
 import type { CoreDiagnostic } from "../core/diagnostics.ts";
+import type { ExtensionEventEnvelope } from "../core/extension/events.ts";
 import type { AgentStop } from "../core/host.ts";
 import type { HumanRequestEnvelope } from "../core/human-request.ts";
 import type { MessageSendOutcome } from "../core/message.ts";
@@ -78,6 +79,8 @@ export interface RpcCommandResults {
 	inspect: AgentSnapshot;
 	set_model: RuntimeModel;
 	set_thinking_level: Record<string, never>;
+	/** Accepted onto the bus. What subscribers did with it is not reported back. */
+	emit_extension_event: Record<string, never>;
 	cancel_human_request: { readonly cancelled: boolean };
 	/** False when nothing by that id was in flight, including a command that had already answered. */
 	cancel: { readonly cancelled: boolean };
@@ -132,6 +135,16 @@ export interface RpcEventFrame {
 	readonly event: WireOrchestratorEvent;
 }
 
+/**
+ * One extension bus event, relayed unchanged. Not an answer to anything the
+ * client sent - it carries no `id` - and it arrives for events this client
+ * emitted itself, exactly as it does for a runner.
+ */
+export interface RpcExtensionEventFrame {
+	readonly type: "extension_event";
+	readonly event: ExtensionEventEnvelope;
+}
+
 export interface RpcHumanRequestFrame {
 	readonly type: "human_request";
 	readonly request: HumanRequestEnvelope;
@@ -151,4 +164,9 @@ export interface RpcHumanRequestWithdrawnFrame {
 /** What the human channel alone can write, before any orchestrator exists. */
 export type RpcHumanOutboundFrame = RpcHumanRequestFrame | RpcHumanRequestWithdrawnFrame;
 
-export type RpcOutbound = RpcReadyFrame | RpcResponseFrame | RpcEventFrame | RpcHumanOutboundFrame;
+export type RpcOutbound =
+	| RpcReadyFrame
+	| RpcResponseFrame
+	| RpcEventFrame
+	| RpcExtensionEventFrame
+	| RpcHumanOutboundFrame;

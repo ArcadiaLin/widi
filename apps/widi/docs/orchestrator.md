@@ -30,6 +30,8 @@ harness 是单 agent 的执行内核——模型轮次、会话树、资源、�
 
 `isAgentIdle` 是四源 join：harness 相位为 idle、harness 的两个内部队列均为空、消息投递队列无 pending、没有在飞的 prompt run。`waitForAgentIdle` 在满足时结算并发出 `agent_idle` 事件（原因分 `ready | settled | aborted | maintenance`）；agent 在等待期间消失时 reject 而非永远挂起。
 
+三个等待回答三个不同的问题：`waitForAgentIdle` 是电平（现在闲着吗），`waitForAgentStop` 是边沿（下一次停在哪，带 `AgentStop.reason`），`waitForAgentTreeIdle` 是子树 join（这棵树跑完了吗）。委派型 agent 结束自己那一轮就算停下，因此判"一次多 agent 协作结束"只有第三个成立。第三个还带一个静默窗口复核（`quietMs`，默认 250，任何 runtime 事件重新计时），理由与其局限见 `docs/rpc.md` §4.6；RPC 与 extension 都投影这一份实现。
+
 ## 3. 消息中枢
 
 `message.ts` 是依赖图的叶子，任何模块都可以依赖它。核心规则：**所有会进入某个 agent 模型上下文的文本，都经过 orchestrator 的同一个投递方法。** 运行时没有私有投递通道。
@@ -179,6 +181,7 @@ client 收全部 `OrchestratorEvent`；human request 路由给第一个带 `requ
 
 - **生命周期**：`spawnAgent`、`disposeAgent`、`disposeAll`、`navigateAgentTree`、`compactAgent`、`abortAgent`、`steerQueuedFollowUps`。
 - **消息**：`messageSinkFor`、`sendMessage`、`promptAgent`、`isAgentIdle`、`waitForAgentIdle`、`agentHasPendingMessages`。
+- **完成信号**：`waitForAgentStop`、`waitForAgentTreeIdle`、`listAgentSubtree`、`readAgentReport`。
 - **查询**：`inspectAgent`、`listAgents`、`getAgentActivity`、`getAgentSession`、`getAgentSessionTree`、`listAgentSessions`、`getAgentSessionName`、`setAgentSessionName`（唯一会话名写路径）。
 - **工具/模型/资源**：`getAgentTools`、`setAgentTools`、`setAgentActiveTools`、`getAgentSystemPrompt`、`getAgentModel`、`setAgentModel`、`setAgentModelByReference`、`listAvailableModelCandidates`、`listAgentThinkingLevelCandidates`、`get/setAgentThinkingLevel`、`listAgentPromptTemplateCandidates`、`listAgentSkillCandidates`。
 - **认证**：`listAuthProviderCandidates`、`listAuthCredentialCandidates`、`loginAuthProvider`、`logoutAuthProvider`。

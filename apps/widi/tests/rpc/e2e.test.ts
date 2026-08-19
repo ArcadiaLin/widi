@@ -139,7 +139,10 @@ function delegatingModel(subagentDelayMs: number): (res: ServerResponse, body: s
  * set is empty by default, so nothing here depends on the developer's own
  * `~/.widi` or on this repository's.
  */
-async function createAgentDir(baseUrl: string, options: { readonly noisyExtension?: boolean } = {}): Promise<string> {
+async function createAgentDir(
+	baseUrl: string,
+	options: { readonly noisyExtension?: boolean; readonly echoExtension?: boolean } = {},
+): Promise<string> {
 	const root = await mkdtemp(join(tmpdir(), "widi-rpc-e2e-"));
 	const agentDir = join(root, "agentdir");
 	await mkdir(join(agentDir, "agent"), { recursive: true });
@@ -173,7 +176,7 @@ async function createAgentDir(baseUrl: string, options: { readonly noisyExtensio
 			defaultProfile: "e2e",
 			enabledProfiles: ["e2e"],
 			enabledModels: ["e2e/*"],
-			enabledExtensions: options.noisyExtension ? ["noisy"] : [],
+			enabledExtensions: [...(options.noisyExtension ? ["noisy"] : []), ...(options.echoExtension ? ["echo"] : [])],
 			defaultProjectTrust: "always",
 			quietStartup: true,
 			retry: { enabled: false },
@@ -193,6 +196,24 @@ async function createAgentDir(baseUrl: string, options: { readonly noisyExtensio
 				"export default {",
 				"\tapiVersion: 1,",
 				'\tactivate: () => { console.log("noisy extension speaking at activate"); },',
+				"};",
+				"",
+			].join("\n"),
+		);
+	}
+
+	if (options.echoExtension) {
+		await mkdir(join(agentDir, "extensions", "echo"), { recursive: true });
+		await writeFile(
+			join(agentDir, "extensions", "echo", "index.ts"),
+			[
+				"export default {",
+				"\tapiVersion: 1,",
+				"\tactivate: (api) => {",
+				'\t\tapi.onExtensionEvent("driver:run", async (event, context) => {',
+				'\t\t\tawait context.actions.emitExtensionEvent("echo:done", { saw: event.payload });',
+				"\t\t});",
+				"\t},",
 				"};",
 				"",
 			].join("\n"),
@@ -553,6 +574,46 @@ describe("widi --mode rpc as a subprocess", () => {
 
 			process.send({ id: "s", cmd: "shutdown" });
 			expect(await process.waitForExit()).toBe(0);
+		},
+		TEST_TIMEOUT_MS,
+	);
+
+	it(
+		"carries a client's extension event to a loaded extension and its answer back",
+		async () => {
+			provider = await startFakeProvider(replyWith("unused"));
+			root = await createAgentDir(provider.baseUrl, { echoExtension: true });
+			running = new RpcProcess(root, []);
+
+			const ready = await running.waitFor((frame) => frame.type === "ready");
+			if (ready.type !== "ready" || ready.rootAgentId === undefined) throw new Error("no root agent");
+			running.send({
+				id: "e",
+				cmd: "emit_extension_event",
+				agentId: ready.rootAgentId,
+				extensionId: "driver",
+				name: "driver:run",
+				payload: { sample: 7 },
+			});
+
+			// Both directions, which is the whole point of the pair: the client's own
+			// event comes back to it exactly as it reaches a runner, and the extension
+			// that handled it answers on the same bus.
+			const echoed = await running.waitFor(
+				(frame) => frame.type === "extension_event" && frame.event.name === "driver:run",
+			);
+			if (echoed.type !== "extension_event") throw new Error("not an extension event");
+			expect(echoed.event).toMatchObject({ sourceExtensionId: "driver", sourceAgentId: ready.rootAgentId });
+
+			const answered = await running.waitFor(
+				(frame) => frame.type === "extension_event" && frame.event.name === "echo:done",
+			);
+			if (answered.type !== "extension_event") throw new Error("not an extension event");
+			expect(answered.event).toMatchObject({ sourceExtensionId: "echo", payload: { saw: { sample: 7 } } });
+
+			running.send({ id: "s", cmd: "shutdown" });
+			expect(await running.waitForExit()).toBe(0);
+			expect(running.stderr).toBe("");
 		},
 		TEST_TIMEOUT_MS,
 	);

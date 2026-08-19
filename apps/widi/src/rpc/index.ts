@@ -21,6 +21,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_AGENT_DIR } from "../core/constants.ts";
+import type { RuntimeEntryOptions } from "../core/entry-options.ts";
 import { createWidiRuntime } from "../core/runtime-service.ts";
 import { formatError } from "../utils/errors.ts";
 import { parseInbound } from "./frames.ts";
@@ -30,10 +31,7 @@ import { RpcServer } from "./server.ts";
 import { ProtocolStdout, takeOverStdout } from "./stdout-guard.ts";
 import { RPC_PROTOCOL_VERSION, type RpcOutbound } from "./types.ts";
 
-export interface WidiRpcOptions {
-	readonly cwd: string;
-	readonly agentDir?: string;
-	readonly profileId?: string;
+export interface WidiRpcOptions extends RuntimeEntryOptions {
 	/** Start with no agent at all; the client spawns whatever it needs. */
 	readonly noRoot?: boolean;
 	/** How long a human request waits for an answer. Unset waits forever. */
@@ -142,6 +140,7 @@ export async function runWidiRpc(options: WidiRpcOptions): Promise<void> {
 
 	let shuttingDown = false;
 	let unregisterClient: (() => void) | undefined;
+	let unsubscribeExtensionEvents: (() => void) | undefined;
 	let disposeRuntime: ((reason: string) => Promise<void>) | undefined;
 	let resolveClosed: (() => void) | undefined;
 	const closed = new Promise<void>((resolve) => {
@@ -162,6 +161,7 @@ export async function runWidiRpc(options: WidiRpcOptions): Promise<void> {
 		process.stdin.unref();
 		human.closeAll(`Shutting down: ${reason}`);
 		unregisterClient?.();
+		unsubscribeExtensionEvents?.();
 		try {
 			await disposeRuntime?.(reason);
 		} catch (error) {
@@ -184,6 +184,13 @@ export async function runWidiRpc(options: WidiRpcOptions): Promise<void> {
 			cwd: options.cwd,
 			agentDir: options.agentDir ?? join(homedir(), DEFAULT_AGENT_DIR),
 			defaultProfileId: options.profileId,
+			enabledProfileIds: options.enabledProfileIds,
+			defaultModelReference: options.model,
+			defaultThinkingLevel: options.thinkingLevel,
+			sessionRoot: options.sessionRoot,
+			trustOverride: options.trustOverride,
+			noExtensions: options.noExtensions,
+			extensionPaths: options.extensionPaths,
 			requestHuman: human.request,
 		});
 		disposeRuntime = async (reason) => {
@@ -227,6 +234,14 @@ export async function runWidiRpc(options: WidiRpcOptions): Promise<void> {
 		});
 
 		unregisterClient = runtime.orchestrator.registerClient(server);
+		// A bus subscriber beside the client, not under it: extension events are not
+		// orchestrator events and never reach `receive`.
+		unsubscribeExtensionEvents = runtime.orchestrator.registerExtensionEventSubscriber({
+			deliver: async (event) => {
+				send({ type: "extension_event", event });
+				await stdout.drain();
+			},
+		});
 
 		// After `ready` and after the client is registered, so a held command's
 		// events reach the stream in the same order a fresh one's would.

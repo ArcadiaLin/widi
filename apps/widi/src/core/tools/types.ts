@@ -1,5 +1,9 @@
 import type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode } from "@arcadialin/agent-core";
 import type { Static, TSchema } from "typebox";
+// Type-only, and only for the host below. The tool contract is the lower layer
+// and the extension layer builds on it; naming a shape from there is erased at
+// emit, so the edge this file actually has is unchanged.
+import type { ExtensionActions } from "../extension/types.ts";
 import type { AgentToOrchestratorHost } from "../host.ts";
 import type { HumanInterruptWatch } from "../human-interrupt.ts";
 import type { ToolHumanHost } from "../human-request.ts";
@@ -52,17 +56,24 @@ export interface ToolExecutionContext<TDetails> {
 }
 
 /**
- * Context visible to extension-contributed tool code.
- *
- * The shape is deliberately small until the extension runner is designed. It
- * identifies the extension and leaves `host` as the future controlled capability
- * surface, rather than exposing core internals directly.
+ * What an extension's tool is given beyond the execution context: the same
+ * runtime surface its handlers hold, bound to the agent whose turn is running.
+ * A tool reaches other agents through `actions`, not through core internals.
+ */
+export interface ToolExtensionHost {
+	readonly agentId: string;
+	readonly profileId: string;
+	readonly actions: ExtensionActions;
+}
+
+/**
+ * Context visible to extension-contributed tool code. `host` is absent only
+ * where nothing bound it - a runtime with no orchestrator behind the registry.
  */
 export interface ToolExtensionContext {
 	/** Stable id of the extension whose contribution is executing. */
 	extensionId: string;
-	/** Future extension host/capability object. */
-	host?: unknown;
+	host?: ToolExtensionHost;
 }
 
 /** Execute function implemented by a WIDI tool definition. */
