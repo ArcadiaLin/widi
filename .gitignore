@@ -46,13 +46,11 @@ docs/superpowers/
 # tracked one at a time - most of what lands in that directory is personal.
 .widi/*
 !.widi/extensions/
+# The workflow extension is local-only experimental code, not a checked-in demo.
+.widi/extensions/workflow/
 !.widi/profiles/
 !.widi/profiles/**
 !.widi/themes/
 !.widi/skills/
 .widi/skills/*
 !.widi/skills/develop-widi-extension/
-!.widi/skills/author-workflow/
-# Flows are tracked; what a run writes beside them is not.
-!.widi/workflows/
-.widi/workflows/runs/
