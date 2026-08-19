@@ -30,7 +30,7 @@ import {
 } from "./extension/index.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./http-dispatcher.ts";
 import { HumanRequestBroker, type HumanRequestHandler } from "./human-request.ts";
-import { ModelRegistry } from "./model-registry.js";
+import { ModelRegistry, parseModelReference } from "./model-registry.js";
 import { PersistenceRegistry } from "./persistence/index.ts";
 import {
 	createProjectExtensionTrustDiagnostics,
@@ -59,8 +59,17 @@ export interface CreateWidiRuntimeOptions {
 	readonly sessionRoot?: string;
 	readonly defaultProfileId?: string;
 	readonly defaultModel?: RuntimeModel;
+	/**
+	 * `provider/id` for a caller that has no registry to resolve it against yet -
+	 * a shell, typically. Refused rather than ignored when nothing matches.
+	 */
+	readonly defaultModelReference?: string;
 	readonly defaultThinkingLevel?: ThinkingLevel;
 	readonly enabledProfileIds?: readonly string[];
+	/** Skip discovery of the settings, project and agent-dir extension roots. */
+	readonly noExtensions?: boolean;
+	/** Extension paths to load on top, still searched under `noExtensions`. */
+	readonly extensionPaths?: readonly string[];
 	readonly toolRegistry?: ToolRegistry;
 	readonly extensionLoader?: ExtensionLoader;
 	readonly extensionModuleImporter?: ExtensionModuleImporter;
@@ -201,24 +210,33 @@ async function createExtensionRoots(options: {
 	readonly projectConfigDir: string;
 	readonly projectTrusted: boolean;
 	readonly settingsPaths: readonly string[];
+	readonly noExtensions: boolean;
+	readonly explicitPaths: readonly string[];
 }): Promise<ExtensionRoot[]> {
-	const settingsRoots = await Promise.all(
-		options.settingsPaths.map(async (path) => ({
-			kind: "settings" as const,
-			path: await absolutePath(options.executionEnv, path),
-		})),
-	);
+	const namedPath = async (path: string): Promise<ExtensionRoot> => ({
+		kind: "settings" as const,
+		path: await absolutePath(options.executionEnv, path),
+	});
+	// A path someone named on purpose outranks the discovered roots, and survives
+	// `noExtensions`: naming one is how a broken installation gets debugged.
+	const explicitRoots = await Promise.all(options.explicitPaths.map(namedPath));
+	const settingsRoots = options.noExtensions ? [] : await Promise.all(options.settingsPaths.map(namedPath));
 	const roots: ExtensionRoot[] = [
+		...explicitRoots,
 		...settingsRoots,
-		...(options.projectTrusted
-			? [
-					{
-						kind: "cwd" as const,
-						path: await joinPath(options.executionEnv, [options.cwd, options.projectConfigDir, "extensions"]),
-					},
-				]
-			: []),
-		{ kind: "agent_dir" as const, path: await joinPath(options.executionEnv, [options.agentDir, "extensions"]) },
+		...(options.noExtensions
+			? []
+			: [
+					...(options.projectTrusted
+						? [
+								{
+									kind: "cwd" as const,
+									path: await joinPath(options.executionEnv, [options.cwd, options.projectConfigDir, "extensions"]),
+								},
+							]
+						: []),
+					{ kind: "agent_dir" as const, path: await joinPath(options.executionEnv, [options.agentDir, "extensions"]) },
+				]),
 	];
 
 	// The agent dir may itself be the cwd's config directory, the way the repo's
@@ -324,18 +342,22 @@ async function resolveDefaultModel(options: {
 	readonly modelRegistry: ModelRegistry;
 	readonly settingManager: SettingManager;
 	readonly explicitDefaultModel?: RuntimeModel;
+	readonly explicitDefaultModelReference?: string;
 }): Promise<{
 	readonly model: RuntimeModel | undefined;
 	readonly resolution: RuntimeDefaultModelResolution;
 	readonly diagnostics: readonly CoreDiagnostic[];
 }> {
-	if (options.explicitDefaultModel) {
+	const explicitModel = options.explicitDefaultModelReference
+		? await resolveExplicitModelReference(options.modelRegistry, options.explicitDefaultModelReference)
+		: options.explicitDefaultModel;
+	if (explicitModel) {
 		const resolution: RuntimeDefaultModelResolution = {
-			provider: options.explicitDefaultModel.provider,
-			modelId: options.explicitDefaultModel.id,
+			provider: explicitModel.provider,
+			modelId: explicitModel.id,
 			source: "runtime_override",
 		};
-		return { model: options.explicitDefaultModel, resolution, diagnostics: [] };
+		return { model: explicitModel, resolution, diagnostics: [] };
 	}
 
 	const diagnostics: CoreDiagnostic[] = [];
@@ -379,6 +401,38 @@ async function resolveDefaultModel(options: {
 	return { model: undefined, resolution: { source: "none" }, diagnostics };
 }
 
+/**
+ * A model named from outside is a demand, not a preference: falling back to
+ * whatever else is authenticated would run the request against a model the
+ * caller did not ask for and charge them for it.
+ */
+async function resolveExplicitModelReference(modelRegistry: ModelRegistry, reference: string): Promise<RuntimeModel> {
+	const parsed = parseModelReference(reference);
+	if (!parsed) {
+		throw new OrchestratorError({
+			severity: "error",
+			code: "model.reference_invalid",
+			message: `Model reference must use provider/model syntax: ${reference}`,
+		});
+	}
+	const model = modelRegistry.find(parsed.provider, parsed.modelId);
+	if (!model) {
+		throw new OrchestratorError({
+			severity: "error",
+			code: "model.not_available",
+			message: `Model is not registered: ${parsed.provider}/${parsed.modelId}.`,
+		});
+	}
+	if (!(await modelRegistry.hasConfiguredAuth(model))) {
+		throw new OrchestratorError({
+			severity: "error",
+			code: "model.not_available",
+			message: `Model ${parsed.provider}/${parsed.modelId} has no configured auth.`,
+		});
+	}
+	return model;
+}
+
 const DEFAULT_THINKING_LEVEL: ThinkingLevel = "medium";
 
 function resolveDefaultThinkingLevel(options: {
@@ -402,6 +456,24 @@ function resolveDefaultThinkingLevel(options: {
 		clamped: level !== requestedLevel,
 	};
 	return { resolution };
+}
+
+/**
+ * An extension that fails during load leaves the shell no way to fix it from
+ * inside the shell, so the way out is named where the failure is reported.
+ */
+function extensionEscapeHatchHint(
+	noExtensions: boolean,
+	extensionDiagnostics: readonly CoreDiagnostic[],
+): readonly CoreDiagnostic[] {
+	if (noExtensions || !extensionDiagnostics.some((diagnostic) => diagnostic.severity === "error")) return [];
+	return [
+		{
+			severity: "warning",
+			code: "extension.load_escape_hatch",
+			message: "Hint: retry with --no-extensions to start without them.",
+		},
+	];
 }
 
 export async function createWidiRuntime(options: CreateWidiRuntimeOptions): Promise<WidiRuntime> {
@@ -513,6 +585,7 @@ export async function createWidiRuntime(options: CreateWidiRuntimeOptions): Prom
 		modelRegistry,
 		settingManager,
 		explicitDefaultModel: options.defaultModel,
+		explicitDefaultModelReference: options.defaultModelReference,
 	});
 	const defaultThinkingLevel = resolveDefaultThinkingLevel({
 		model: defaultModel.model,
@@ -566,6 +639,8 @@ export async function createWidiRuntime(options: CreateWidiRuntimeOptions): Prom
 				projectConfigDir,
 				projectTrusted: projectTrust.trusted,
 				settingsPaths: settingManager.getExtensionPaths(),
+				noExtensions: options.noExtensions === true,
+				explicitPaths: options.extensionPaths ?? [],
 			}),
 		});
 	const extensionLoad = await extensionLoader.loadAvailableExtensions(executionEnv);
@@ -633,6 +708,7 @@ export async function createWidiRuntime(options: CreateWidiRuntimeOptions): Prom
 		...defaultModel.diagnostics,
 		...projectExtensionTrustDiagnostics,
 		...extensionLoad.diagnostics,
+		...extensionEscapeHatchHint(options.noExtensions === true, extensionLoad.diagnostics),
 		...workspaceDiagnostics,
 	];
 
