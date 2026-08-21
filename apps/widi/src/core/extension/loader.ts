@@ -1112,9 +1112,18 @@ function extensionFileId(path: string): string | undefined {
 	return undefined;
 }
 
+/**
+ * The last segment of a path, which is where an extension's id comes from.
+ *
+ * Both separators, because this one runs on a real path from the host: on
+ * Windows an agent dir is `D:\...\extensions\scholar-search`, which contains no
+ * forward slash at all. Splitting on `/` alone made the whole absolute path the
+ * id, so no `enabledExtensions` entry could ever match it and every extension
+ * reported `factory_missing`.
+ */
 function basename(path: string): string {
-	const normalized = path.replace(/\/+$/, "");
-	const index = normalized.lastIndexOf("/");
+	const normalized = path.replace(/[/\\]+$/, "");
+	const index = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
 	return index === -1 ? normalized : normalized.slice(index + 1);
 }
 

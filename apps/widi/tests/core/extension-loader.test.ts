@@ -16,33 +16,56 @@ import {
 import type { ExtensionFactory } from "../../src/core/extension/types.ts";
 
 class MemoryExecutionEnv implements ExecutionEnv {
-	cwd = "/workspace";
+	cwd: string;
 	readonly files = new Map<string, string>();
-	readonly dirs = new Set<string>(["/"]);
+	readonly dirs: Set<string>;
+	private readonly separator: "/" | "\\";
+	private readonly rootPath: string;
 
+	// The separator is a parameter because an env that only ever speaks `/`
+	// cannot express a Windows host, and that is precisely the shape in which
+	// path handling breaks.
+	constructor(separator: "/" | "\\" = "/") {
+		this.separator = separator;
+		this.rootPath = separator === "\\" ? "D:\\" : "/";
+		this.cwd = separator === "\\" ? "D:\\workspace" : "/workspace";
+		this.dirs = new Set<string>([this.rootPath]);
+	}
+
+	private isAbsolute(path: string): boolean {
+		return this.separator === "\\" ? /^[a-zA-Z]:[/\\]/.test(path) : path.startsWith("/");
+	}
+
+	// Accepts either separator on input, the way a Windows host does, and answers
+	// in its own.
 	private normalize(path: string): string {
-		const absolute = path.startsWith("/") ? path : `${this.cwd}/${path}`;
-		return absolute.replace(/\/+/g, "/").replace(/\/$/, "") || "/";
+		const absolute = this.isAbsolute(path) ? path : `${this.cwd}${this.separator}${path}`;
+		const prefixLength = this.rootPath.length;
+		const segments = absolute
+			.slice(prefixLength)
+			.split(/[/\\]+/)
+			.filter((segment) => segment !== "" && segment !== ".");
+		return segments.length === 0 ? this.rootPath : this.rootPath + segments.join(this.separator);
 	}
 
 	private dirname(path: string): string {
 		const normalized = this.normalize(path);
-		if (normalized === "/") return "/";
-		const index = normalized.lastIndexOf("/");
-		return index <= 0 ? "/" : normalized.slice(0, index);
+		if (normalized === this.rootPath) return this.rootPath;
+		const index = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
+		return index < this.rootPath.length ? this.rootPath : normalized.slice(0, index);
 	}
 
 	private basename(path: string): string {
 		const normalized = this.normalize(path);
-		if (normalized === "/") return "/";
-		const index = normalized.lastIndexOf("/");
+		if (normalized === this.rootPath) return normalized;
+		const index = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
 		return index === -1 ? normalized : normalized.slice(index + 1);
 	}
 
 	addDir(path: string): void {
 		const normalized = this.normalize(path);
-		if (normalized === "/") {
-			this.dirs.add("/");
+		if (normalized === this.rootPath) {
+			this.dirs.add(this.rootPath);
 			return;
 		}
 		this.addDir(this.dirname(normalized));
@@ -451,5 +474,67 @@ describe("ExtensionLoader api version gate", () => {
 		expect(result.diagnostics).toContainEqual(
 			expect.objectContaining({ code: "extension.factory_invalid", extensionId: "sample" }),
 		);
+	});
+});
+
+// An id is derived from the last path segment, and on Windows the separator is
+// `\`. Splitting on `/` alone made the entire absolute path the id, so no
+// `enabledExtensions` entry could match and every extension on the platform
+// reported `factory_missing`.
+describe("ExtensionLoader on a Windows host", () => {
+	it("derives a directory extension's id from the last segment, not the whole path", async () => {
+		const env = new MemoryExecutionEnv("\\");
+		env.addFile("D:\\agent\\extensions\\scholar-search\\index.ts");
+		const importer = new FakeModuleImporter();
+		importer.setFactory("D:\\agent\\extensions\\scholar-search/index.ts", () => {});
+		const loader = new ExtensionLoader({
+			roots: [{ kind: "agent_dir", path: "D:\\agent\\extensions" }],
+			moduleImporter: importer,
+		});
+
+		const result = await loader.loadAvailableExtensions(env);
+
+		expect(result.diagnostics).toEqual([]);
+		expect(loader.listAvailableExtensionIds()).toEqual(["scholar-search"]);
+	});
+
+	it("activates a Windows-discovered extension for an agent that names it", async () => {
+		const env = new MemoryExecutionEnv("\\");
+		env.addFile("D:\\agent\\extensions\\scholar-search\\index.ts");
+		let activated = false;
+		const importer = new FakeModuleImporter();
+		importer.setFactory("D:\\agent\\extensions\\scholar-search/index.ts", () => {
+			activated = true;
+		});
+		const loader = new ExtensionLoader({
+			roots: [{ kind: "agent_dir", path: "D:\\agent\\extensions" }],
+			moduleImporter: importer,
+		});
+
+		await loader.loadAvailableExtensions(env);
+		const scope = await loader.loadForAgent({
+			agentId: "agent",
+			profileId: "profile",
+			extensionIds: ["scholar-search"],
+		});
+
+		expect(activated).toBe(true);
+		expect(scope.extensions.map((extension) => extension.id)).toEqual(["scholar-search"]);
+		expect(scope.diagnostics).toEqual([]);
+	});
+
+	it("derives a file extension's id from the last segment too", async () => {
+		const env = new MemoryExecutionEnv("\\");
+		env.addFile("D:\\agent\\extensions\\solo.ts");
+		const importer = new FakeModuleImporter();
+		importer.setFactory("D:\\agent\\extensions\\solo.ts", () => {});
+		const loader = new ExtensionLoader({
+			roots: [{ kind: "agent_dir", path: "D:\\agent\\extensions" }],
+			moduleImporter: importer,
+		});
+
+		await loader.loadAvailableExtensions(env);
+
+		expect(loader.listAvailableExtensionIds()).toEqual(["solo"]);
 	});
 });
