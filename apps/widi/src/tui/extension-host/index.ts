@@ -1,3 +1,12 @@
+export {
+	type Component,
+	getKeybindings,
+	type KeyId,
+	matchesKey,
+	truncateToWidth,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "./drawing.ts";
 export { TuiExtensionHost, type TuiExtensionHostOptions, type TuiExtensionModuleImporter } from "./host.ts";
 export {
 	registerExtensionEntryRenderer,

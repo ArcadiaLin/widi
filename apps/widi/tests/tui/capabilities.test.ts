@@ -4,6 +4,7 @@ import { APPLICATION_CALLER, type EditorCapability, TuiCapabilityRegistry } from
 function editorCapability(state: { text: string }): EditorCapability {
 	return {
 		getText: () => state.text,
+		getCursor: () => ({ line: 0, col: state.text.length }),
 		setText: (text) => {
 			state.text = text;
 		},

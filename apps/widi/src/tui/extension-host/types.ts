@@ -30,8 +30,15 @@ export interface TuiExtensionShortcutOptions {
 	/**
 	 * Dispatch does not wait for an async handler, but it does watch it: a
 	 * rejected promise is reported as a diagnostic like a thrown error.
+	 *
+	 * Returning `false` declines the keystroke, which then carries on to the
+	 * editor as if nothing had claimed it. That is what lets a shortcut bind a
+	 * key the editor also uses and take it only in the position where the editor
+	 * would have done nothing with it. Anything else - including every async
+	 * handler, since the decision has to be made before the key moves on -
+	 * consumes the input.
 	 */
-	readonly handler: (context: TuiExtensionShortcutContext) => void | Promise<void>;
+	readonly handler: (context: TuiExtensionShortcutContext) => boolean | void | Promise<void>;
 }
 
 /**
@@ -174,6 +181,16 @@ export interface WidiTuiExtensionApi {
 	 */
 	capability<TKey extends TuiCapabilityKey>(key: TKey): TuiCapabilityMap[TKey] | undefined;
 	capability(key: string): unknown;
+
+	/**
+	 * Ask for a repaint. Key-driven changes need none - the terminal renders
+	 * after every dispatched keystroke - and a capability write schedules its
+	 * own. This is for the third case: a mounted component whose content changed
+	 * because something outside the terminal did, an event off the bus being the
+	 * one that matters. Without it a widget can only redraw when the human
+	 * happens to type.
+	 */
+	requestRender(): void;
 
 	/**
 	 * Shorthand for the three most-reached-for `capability("editor")` methods.

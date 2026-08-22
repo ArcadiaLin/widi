@@ -411,6 +411,7 @@ export class TuiExtensionHost {
 				this.subscribeToBus(extensionId, eventName, handler);
 			},
 			capability: (key: string) => this.capabilities?.get(key, extensionId),
+			requestRender: () => this.requestRender(),
 			getEditorText: () => this.capabilities?.get("editor")?.getText() ?? "",
 			setEditorText: (text: string) => this.capabilities?.get("editor")?.setText(text),
 			pasteToEditor: (text: string) => this.capabilities?.get("editor")?.insertAtCursor(text),

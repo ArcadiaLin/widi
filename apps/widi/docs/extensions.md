@@ -290,15 +290,18 @@ const extension: ExtensionDefinition = {
 TUI half 得到 `WidiTuiExtensionApi`，可扩展：
 
 - 命令：`registerCommand()`；命令使用 TUI 的 `CommandDefinition`，并声明 `agentPolicy`。
-- 快捷键：`registerShortcut(bindingId, { defaultKeys, handler })`。实际 action id 是 `ext.<extensionId>.<bindingId>`，用户可在 `keybindings.json` 覆盖；不要在 extension 中硬编码按键判断。
+- 快捷键：`registerShortcut(bindingId, { defaultKeys, handler })`。实际 action id 是 `ext.<extensionId>.<bindingId>`，用户可在 `keybindings.json` 覆盖；不要在 extension 中硬编码按键判断。handler 同步返回 `false` 表示放弃这次按键，输入照常落到 editor——这样才能绑一个 editor 也在用的键，只在 editor 对它无所作为的位置接管。异步 handler 一律视为已消费。
 - 工具与消息展示：`registerToolPresenter()`、`registerMessageRenderer()`、`registerEntryRenderer()`。
-- 布局：`setWidget()`、`setHeader()`、`setFooter()`、`showOverlay()`。
-- 编辑器：`getEditorText()`、`setEditorText()`、`pasteToEditor()`。
+- 布局：`setWidget()`、`setHeader()`、`setFooter()`、`showOverlay()`；`requestRender()` 请求一次重绘，用于组件内容因终端之外的原因（典型是总线事件）发生变化时——按键与 capability 写入都会自己触发重绘，不需要调它。
+  overlay 是按 `maxHeight` 硬截断的，不走布局引擎，所以 `ScrollView` 在 overlay 里得不到 viewport；overlay 内的滚动要组件自己实现。
+- 编辑器：`getEditorText()`、`setEditorText()`、`pasteToEditor()`。光标位置在 `capability("editor").getCursor()` 上，不在这三个简写里；草稿的两端都是 pi-tui 的 no-op，绑在那里的按键不会夺走任何既有行为。
 - 主题：`theme`、`setTheme()`、`getAllThemes()`。
 - 应用 capability：`capability(key)`；只有已声明的 capability 才有稳定形状。
 - 生命周期：`onDispose()`。
 
 TUI half 不绑定一个 agent。需要针对当前可见 agent 的动作时，通过 capability 或向 event bus 发事件，让对应 Core runtime 执行。`stage(text)` 仅将文本暂存到 editor，用户下次提交前仍可修改或丢弃；它不保证写 session，更不保证模型会读取。
+
+绘制所需的 pi-tui 出口（`Component`、`getKeybindings`、`visibleWidth`、`wrapTextWithAnsi`、`truncateToWidth`）从 `src/tui/extension-host/drawing.ts` 转出。extension 目录没有自己的 `node_modules`，按包名 import 无法解析，所以画东西一律走这个叶子模块。
 
 TUI 组件和 renderer 必须容忍调用失败。host 会隔离 extension 的加载、激活和渲染错误，保留诊断并让其余 UI 继续运行。
 

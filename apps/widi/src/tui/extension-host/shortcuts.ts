@@ -113,6 +113,12 @@ export class ExtensionShortcutRegistry {
 	 * take the input path down with it. An async handler is contained too - its
 	 * rejection arrives after dispatch has returned, where nothing but the
 	 * application's fatal-error boundary would be left to catch it.
+	 *
+	 * A handler that returns `false` declines the keystroke and it goes on to the
+	 * editor. Only a synchronous `false` can do that, because the caller needs
+	 * the answer now; an async handler has already taken the key by the time it
+	 * settles, and a throwing one still consumes - letting a broken shortcut's
+	 * key reach the editor would turn one failure into a second, stranger one.
 	 */
 	dispatch(data: string): boolean {
 		const actionId = this.matchAction(data);
@@ -123,11 +129,13 @@ export class ExtensionShortcutRegistry {
 			const result = record.handler(context);
 			if (isPromiseLike(result)) {
 				void Promise.resolve(result).catch((error: unknown) => this.reportFailure(actionId, record, error));
+				return true;
 			}
+			return result !== false;
 		} catch (error) {
 			this.reportFailure(actionId, record, error);
+			return true;
 		}
-		return true;
 	}
 
 	private reportFailure(actionId: string, record: ExtensionShortcutRecord, error: unknown): void {

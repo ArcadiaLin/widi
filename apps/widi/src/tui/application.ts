@@ -325,6 +325,7 @@ export class WidiTuiApplication {
 	private publishCapabilities(): void {
 		this.capabilities.publish("editor", {
 			getText: () => this.editor.getText(),
+			getCursor: () => this.editor.getCursor(),
 			setText: (text) => this.scheduleEditorEdit(() => this.editor.setText(text)),
 			insertAtCursor: (text) => this.scheduleEditorEdit(() => this.editor.insertTextAtCursor(text)),
 			clear: () => this.scheduleEditorEdit(() => this.editor.setText("")),

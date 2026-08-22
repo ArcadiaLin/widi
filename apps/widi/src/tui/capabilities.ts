@@ -28,9 +28,25 @@ import type { Segment } from "./segments.ts";
 import type { AgentViewStatus } from "./state.ts";
 import type { HumanRequestPresenter } from "./views/human-request.ts";
 
+/** Where the caret sits in the draft, both zero-based. */
+export interface EditorCursor {
+	readonly line: number;
+	readonly col: number;
+}
+
 /** Text access to the editor. Submitting is deliberately absent - see below. */
 export interface EditorCapability {
 	getText(): string;
+	/**
+	 * The caret, so a shortcut can gate on where it is rather than only on what
+	 * the draft says. The two ends of a draft are pi-tui no-ops - left at the
+	 * very start moves nothing, down at the very end jumps to a line end it is
+	 * already at - and that is what makes them free to bind: the built-in
+	 * `app.agents.open` already claims the bottom one. Without the caret an
+	 * extension can only tell an empty draft from a non-empty one, which is a
+	 * cruder question than the one the key is answering.
+	 */
+	getCursor(): EditorCursor;
 	/**
 	 * Replace the draft. Deferred to after the current frame.
 	 *

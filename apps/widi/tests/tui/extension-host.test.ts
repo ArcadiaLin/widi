@@ -152,6 +152,7 @@ function createHostFixture() {
 	const capabilities = new TuiCapabilityRegistry();
 	capabilities.publish("editor", {
 		getText: () => editorState.text,
+		getCursor: () => ({ line: 0, col: editorState.text.length }),
 		setText: (text) => {
 			editorState.text = text;
 		},
@@ -412,6 +413,32 @@ describe("TuiExtensionHost", () => {
 			"tui_extension.shortcut_invalid",
 			"tui_extension.shortcut_conflict",
 		]);
+	});
+
+	it("lets a handler decline the keystroke so the editor still gets it", async () => {
+		const fixture = createHostFixture();
+		const calls: string[] = [];
+		let take = false;
+		fixture.modules.set("/ext/acme/index.ts", {
+			tui: (api: WidiTuiExtensionApi) => {
+				api.registerShortcut("poke", {
+					defaultKeys: "ctrl+x",
+					handler: () => {
+						calls.push("poke");
+						return take;
+					},
+				});
+			},
+		});
+
+		const host = fixture.activate([["acme", identity("acme", "/ext/acme/index.ts")]]);
+		await host.activate();
+
+		// The handler ran either way; only whether the key carries on differs.
+		expect(host.handleShortcut("\x18")).toBe(false);
+		take = true;
+		expect(host.handleShortcut("\x18")).toBe(true);
+		expect(calls).toEqual(["poke", "poke"]);
 	});
 
 	it("contains a throwing shortcut handler", async () => {
