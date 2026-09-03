@@ -97,6 +97,7 @@ export async function runWidiPrint(options: WidiPrintOptions): Promise<PrintExit
 				{
 					prompts,
 					...(options.emit === undefined ? undefined : { emit: options.emit }),
+					...(options.resume === undefined ? undefined : { resume: options.resume }),
 					...(options.images === undefined ? undefined : { images: options.images }),
 					...(options.deadlineMs === undefined ? undefined : { deadlineMs: options.deadlineMs }),
 					...(options.quietMs === undefined ? undefined : { quietMs: options.quietMs }),

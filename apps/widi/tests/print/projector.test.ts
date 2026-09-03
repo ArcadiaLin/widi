@@ -119,6 +119,7 @@ describe("PrintTextOutput", () => {
 			type: "ready",
 			protocolVersion: 1,
 			rootAgentId: "agent-1",
+			origin: "new",
 			cwd: "/w",
 			agentDir: "/a",
 			diagnostics: [{ severity: "warning", code: "model.none_available", message: "no auth" }],
@@ -126,6 +127,18 @@ describe("PrintTextOutput", () => {
 
 		expect(writer.text).toBe("");
 		expect(notes.join("")).toContain("model.none_available: no auth");
+	});
+
+	it("says which session a resumed run continues, and says nothing for a new one", () => {
+		const notes: string[] = [];
+		const output = new PrintTextOutput({ writer: new MemoryWriter(), note: (text) => notes.push(text) });
+		const ready = { type: "ready", protocolVersion: 1, cwd: "/w", agentDir: "/a", diagnostics: [] } as const;
+
+		output.emit({ ...ready, origin: "new", sessionRef: "2026-fresh" });
+		expect(notes).toEqual([]);
+
+		output.emit({ ...ready, origin: "resume", sessionRef: "2026-earlier" });
+		expect(notes.join("")).toContain("resumed 2026-earlier");
 	});
 
 	it("closes an open line of assistant text before the report and the totals", () => {

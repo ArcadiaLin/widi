@@ -30,6 +30,11 @@ Print mode
                              run is called done.
   --emit <json>              Send one event to the extension bus, as
                              {"name":"owner:event","payload":{}}. Repeatable.
+  --resume <session>         Reopen a stored session as the root agent, by the
+                             reference the ready frame reports. It keeps the
+                             profile, model, thinking level and workspace it was
+                             written under, so --profile, --profiles, --model
+                             and --thinking are refused alongside it.
   @file                      Attach a file to the run.
   prompt                     Positional prompts, delivered in order.
 

@@ -282,6 +282,60 @@ describe("--emit", () => {
 	});
 });
 
+describe("--resume", () => {
+	it("belongs to print and carries the reference through", () => {
+		const invocation = run(["-p", "go", "--resume", "2026-01-02-main-ab12"]);
+		if (invocation.mode !== "print") throw new Error("expected print");
+		expect(invocation.options.resume).toBe("2026-01-02-main-ab12");
+		expect(run(["-p", "go"]).options).toMatchObject({ resume: undefined });
+		expect(usageError(["--mode", "tui", "--resume", "x"])).toBe("--resume is only valid with --mode print");
+	});
+
+	it("takes a nested session address, which is a reference and not a path", () => {
+		const invocation = run(["-p", "go", "--resume", "root-a1b2/agents/child-c3d4"]);
+		if (invocation.mode !== "print") throw new Error("expected print");
+		expect(invocation.options.resume).toBe("root-a1b2/agents/child-c3d4");
+	});
+
+	it("refuses a file path, which would otherwise be read as an address", () => {
+		expect(usageError(["-p", "go", "--resume", "/sessions/x/session.jsonl"])).toContain("not a file path");
+		expect(usageError(["-p", "go", "--resume", "./session.jsonl"])).toContain("not a file path");
+		expect(usageError(["-p", "go", "--resume", "session.jsonl"])).toContain("not a file path");
+		expect(usageError(["-p", "go", "--resume", "C:\\sessions\\x"])).toContain("not a file path");
+	});
+
+	it("refuses an empty reference and a missing value", () => {
+		expect(usageError(["-p", "go", "--resume", "  "])).toContain("expects a session reference");
+		expect(usageError(["-p", "go", "--resume"])).toBe("Missing value for --resume");
+	});
+
+	it("refuses the flags a resumed session would ignore", () => {
+		for (const [flag, value] of [
+			["--profile", "dev"],
+			["--profiles", "dev"],
+			["--model", "vllm/local"],
+			["--thinking", "high"],
+		]) {
+			const message = usageError(["-p", "go", "--resume", "ref", flag, value]);
+			expect(message).toContain(`${flag} cannot be combined with --resume`);
+		}
+		expect(usageError(["-p", "go", "--resume", "ref", "--profile", "dev", "--model", "vllm/local"])).toContain(
+			"--profile, --model cannot be combined",
+		);
+	});
+
+	it("leaves the flags a resume can honour alone", () => {
+		const invocation = run(["-p", "go", "--resume", "ref", "--approve", "-ne", "--deadline", "10"]);
+		if (invocation.mode !== "print") throw new Error("expected print");
+		expect(invocation.options).toMatchObject({
+			resume: "ref",
+			trustOverride: true,
+			noExtensions: true,
+			deadlineMs: 10,
+		});
+	});
+});
+
 describe("help and version", () => {
 	it("wins over everything else on the line", () => {
 		expect(parse(["--help"]).kind).toBe("help");

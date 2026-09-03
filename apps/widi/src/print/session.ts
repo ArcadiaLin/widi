@@ -28,10 +28,11 @@
  */
 
 import type { ImageContent } from "@earendil-works/pi-ai";
-import type { AgentOrchestrator } from "../core/agent-orchestrator.ts";
+import type { AgentOrchestrator, SpawnAgentOrigin } from "../core/agent-orchestrator.ts";
 import type { OrchestratorClient } from "../core/client.ts";
 import type { CoreDiagnostic } from "../core/diagnostics.ts";
 import { type MessageSink, messageBindingFor } from "../core/message.ts";
+import { AgentSessionResolutionError } from "../core/session-manager.ts";
 import type { AgentId, OrchestratorEvent, PromptOutcome } from "../core/types.ts";
 import { RunAccounting } from "../rpc/run-summary.ts";
 import { toWireEvent } from "../rpc/wire-event.ts";
@@ -61,6 +62,8 @@ export interface PrintSessionOptions {
 	/** Already assembled: files and piped stdin are folded in by `input.ts`. */
 	readonly prompts: readonly string[];
 	readonly emit?: readonly PrintExtensionEmit[];
+	/** A stored session to reopen as the root; unset builds an empty one. */
+	readonly resume?: string;
 	readonly images?: readonly ImageContent[];
 	readonly deadlineMs?: number;
 	readonly quietMs?: number;
@@ -122,16 +125,23 @@ export async function runPrintSession(
 					`Startup reported ${fatal.length} error diagnostic(s): ${fatal.map((diagnostic) => `${diagnostic.code}: ${diagnostic.message}`).join("; ")}`,
 				);
 			}
-			rootAgentId = await underSignal(orchestrator.spawnAgent({ origin: { kind: "new" } }), deadline.signal);
+			const origin = await underSignal(resolveRootOrigin(runtime, options.resume), deadline.signal);
+			rootAgentId = await underSignal(orchestrator.spawnAgent({ origin }), deadline.signal);
 		} catch (error) {
 			fail(error);
 		}
 
+		// Read off the root rather than off this process: a resumed root runs in the
+		// directory its session was written in, and the frame has to say where the
+		// run actually happened.
+		const root = rootAgentId === undefined ? undefined : orchestrator.inspectAgent(rootAgentId);
 		output.emit({
 			type: "ready",
 			protocolVersion: PRINT_PROTOCOL_VERSION,
 			...(rootAgentId === undefined ? undefined : { rootAgentId }),
-			cwd: runtime.cwd,
+			origin: options.resume === undefined ? "new" : "resume",
+			...(root?.sessionRef === undefined ? undefined : { sessionRef: root.sessionRef }),
+			cwd: root?.cwd ?? runtime.cwd,
 			agentDir: runtime.agentDir,
 			diagnostics: runtime.diagnostics,
 		});
@@ -200,6 +210,31 @@ export async function runPrintSession(
 	} finally {
 		if (timer !== undefined) clearTimeout(timer);
 		stop?.removeEventListener("abort", onStop);
+	}
+}
+
+/**
+ * What the root is built from.
+ *
+ * The reference is resolved here rather than left to the spawn, for two
+ * reasons. A session is addressed inside the group of the directory it was
+ * written in, so a run pointed at another workspace does not find it at all -
+ * and "not found" alone leaves the caller guessing which of the two facts was
+ * wrong. And the resolved session is what the spawn should use: passing the
+ * reference on would resolve it a second time.
+ */
+async function resolveRootOrigin(runtime: PrintRuntimeFacts, resume: string | undefined): Promise<SpawnAgentOrigin> {
+	if (resume === undefined) return { kind: "new" };
+	try {
+		const info = await runtime.orchestrator.sessionManager.resolveAgentSessionReference(resume, runtime.cwd);
+		return { kind: "resume", reference: info };
+	} catch (error) {
+		if (error instanceof AgentSessionResolutionError && error.reason === "not_found") {
+			throw new Error(
+				`No session '${resume}' under ${runtime.cwd}. A session belongs to the directory it was written in, and only a run in that directory can resume it.`,
+			);
+		}
+		throw error;
 	}
 }
 

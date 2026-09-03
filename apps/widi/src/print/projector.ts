@@ -37,6 +37,9 @@ export class PrintTextOutput implements PrintOutput {
 	emit(frame: PrintFrame): void {
 		switch (frame.type) {
 			case "ready":
+				// Which conversation this is continuing, since text mode shows none of
+				// what the branch already holds.
+				if (frame.origin === "resume") this._note(`widi print: resumed ${frame.sessionRef ?? "session"}\n`);
 				for (const diagnostic of frame.diagnostics) {
 					this._note(`widi print: ${diagnostic.severity}: ${diagnostic.code}: ${diagnostic.message}\n`);
 				}

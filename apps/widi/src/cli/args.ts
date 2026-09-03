@@ -46,9 +46,21 @@ const FLAG_MODE_OWNER = new Map<string, EntryMode>([
 	["--deadline", "print"],
 	["--quiet-ms", "print"],
 	["--emit", "print"],
+	["--resume", "print"],
 	["--no-root", "rpc"],
 	["--human-timeout", "rpc"],
 ]);
+
+/**
+ * Flags a resume must not carry.
+ *
+ * A stored session already says what it ran as, and a resume re-resolves the
+ * profile from its metadata and the model from its context rather than from
+ * these. Accepting them would mean accepting a flag that does nothing - and a
+ * benchmark that recorded `--model` beside a sample would be recording
+ * something the run never used.
+ */
+const RESUME_CONFLICTS = ["--profile", "--profiles", "--model", "--thinking"];
 
 class UsageError extends Error {}
 
@@ -77,6 +89,7 @@ function parseOrThrow(argv: readonly string[], env: CliParseEnvironment): CliPar
 	let output: PrintOutputFormat = "text";
 	let deadlineMs: number | undefined;
 	let quietMs: number | undefined;
+	let resume: string | undefined;
 	const extensionPaths: string[] = [];
 	const emit: PrintExtensionEmit[] = [];
 	const prompts: string[] = [];
@@ -155,6 +168,9 @@ function parseOrThrow(argv: readonly string[], env: CliParseEnvironment): CliPar
 			case "--emit":
 				emit.push(requireEmitRequest(requireValue(argv, ++index, argument), emit.length + 1));
 				break;
+			case "--resume":
+				resume = requireSessionReference(requireValue(argv, ++index, argument));
+				break;
 			case "--no-root":
 				noRoot = true;
 				break;
@@ -212,9 +228,17 @@ function parseOrThrow(argv: readonly string[], env: CliParseEnvironment): CliPar
 			if (!hasPrompt && fileArgs.length === 0 && emit.length === 0 && env.stdinIsTty) {
 				throw new UsageError("Print mode needs a prompt, an @file, --emit, or input on stdin");
 			}
+			if (resume !== undefined) {
+				const conflicting = RESUME_CONFLICTS.filter((flag) => seenFlags.includes(flag));
+				if (conflicting.length > 0) {
+					throw new UsageError(
+						`${conflicting.join(", ")} cannot be combined with --resume: a resumed session keeps the profile, model and thinking level it was written under`,
+					);
+				}
+			}
 			return {
 				kind: "run",
-				invocation: { mode, options: { ...entry, prompts, fileArgs, emit, output, deadlineMs, quietMs } },
+				invocation: { mode, options: { ...entry, prompts, fileArgs, emit, output, deadlineMs, quietMs, resume } },
 			};
 		}
 	}
@@ -288,6 +312,27 @@ function requireEmitRequest(value: string, ordinal: number): PrintExtensionEmit 
 	// a CLI that validated it would be a second, wrong source of truth. The name
 	// is not checked either - the bus owns the `owner:event` rule.
 	return "payload" in parsed ? { name, payload: parsed.payload } : { name };
+}
+
+/**
+ * A session address or header id, the two forms `/resume` completes and every
+ * other reference carries. A path is refused rather than tried: a key is a
+ * sequence of directory names, so an absolute path parses as a key made of its
+ * segments and would fail as a missing session instead of as the wrong kind of
+ * argument.
+ */
+function requireSessionReference(value: string): string {
+	const reference = value.trim();
+	if (reference === "") throw new UsageError("--resume expects a session reference");
+	if (
+		reference.startsWith("/") ||
+		reference.startsWith(".") ||
+		reference.includes("\\") ||
+		reference.endsWith(".jsonl")
+	) {
+		throw new UsageError(`--resume expects a session reference, not a file path: ${value}`);
+	}
+	return reference;
 }
 
 function requirePositiveInteger(value: string, flag: string): number {

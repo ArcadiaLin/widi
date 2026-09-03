@@ -67,6 +67,16 @@ export interface WidiPrintOptions {
 	readonly fileArgs?: readonly string[];
 	/** Bus events emitted once the root exists and before the first prompt. */
 	readonly emit?: readonly PrintExtensionEmit[];
+	/**
+	 * A stored session to reopen as the root, addressed the way `/resume`
+	 * addresses one. Unset starts an empty root instead.
+	 *
+	 * What the session recorded wins over what this process was configured with:
+	 * the profile comes from its metadata, the model and thinking level from its
+	 * context, and the workspace from the directory it was written in. The CLI
+	 * refuses the flags that would otherwise look like they overrode those.
+	 */
+	readonly resume?: string;
 	readonly images?: readonly ImageContent[];
 	readonly output: PrintOutputFormat;
 	/** Wall-clock ceiling for the whole run. Unset runs until the tree settles. */

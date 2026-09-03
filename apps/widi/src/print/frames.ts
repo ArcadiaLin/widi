@@ -32,11 +32,22 @@ export type PrintRunStatus = "ok" | "failed" | "deadline_exceeded";
 /**
  * First frame on the stream, in RPC's shape. `rootAgentId` is absent only when
  * the run failed before an agent existed.
+ *
+ * The three fields RPC has no use for are what a driver files the sample under:
+ * whether this run bootstrapped its own root or continued a stored one, which
+ * session it is writing into, and where that session lives. `sessionRef` is
+ * written for a new root too - it is the only place the address of a session
+ * this run just created is announced, and a later `--resume` needs it.
  */
 export interface PrintReadyFrame {
 	readonly type: "ready";
 	readonly protocolVersion: number;
 	readonly rootAgentId?: AgentId;
+	/** Whether the root was created for this run or reopened from a session. */
+	readonly origin: "new" | "resume";
+	/** Address of the root's stored session; absent for an ephemeral profile. */
+	readonly sessionRef?: string;
+	/** The root's workspace, which on a resume is the session's own directory. */
 	readonly cwd: string;
 	readonly agentDir: string;
 	readonly diagnostics: readonly CoreDiagnostic[];
