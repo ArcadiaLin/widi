@@ -1257,10 +1257,15 @@ describe("AgentOrchestrator", () => {
 		await expect(orchestrator.getAgentSessionTree(agentId)).resolves.toMatchObject({
 			name: "Planning Session",
 			entries: [
+				expect.objectContaining({ type: "thinking_level_change" }),
 				expect.objectContaining({ id: userEntryId, type: "message" }),
 				expect.objectContaining({ type: "session_info", name: "Planning Session" }),
 			],
-			pathToRoot: [expect.objectContaining({ id: userEntryId }), expect.objectContaining({ type: "session_info" })],
+			pathToRoot: [
+				expect.objectContaining({ type: "thinking_level_change" }),
+				expect.objectContaining({ id: userEntryId }),
+				expect.objectContaining({ type: "session_info" }),
+			],
 		});
 	});
 
@@ -1271,12 +1276,18 @@ describe("AgentOrchestrator", () => {
 		const session = await orchestrator.sessionManager.createAgentSession({ agentId, agentProfile: defaultProfile });
 		const userEntryId = await session.appendMessage({ role: "user", content: "edit this", timestamp: 1 });
 		await session.appendMessage({ role: "user", content: "current leaf", timestamp: 2 });
+		// The thinking-level stamp written at spawn stays ahead of the first message,
+		// so editing that message rewinds to the stamp rather than to an empty branch.
+		const stampEntryId = (await orchestrator.getAgentSessionTree(agentId)).entries[0]?.id ?? null;
 
 		await expect(orchestrator.navigateAgentTree(agentId, userEntryId)).resolves.toMatchObject({
 			cancelled: false,
 			editorText: "edit this",
 		});
-		await expect(orchestrator.getAgentSession(agentId)).resolves.toMatchObject({ leafId: null, pathToRoot: [] });
+		await expect(orchestrator.getAgentSession(agentId)).resolves.toMatchObject({
+			leafId: stampEntryId,
+			pathToRoot: [expect.objectContaining({ type: "thinking_level_change" })],
+		});
 	});
 
 	it("forks the current session into an idle runtime agent", async () => {
@@ -1302,7 +1313,10 @@ describe("AgentOrchestrator", () => {
 		expect(forkedTree).toMatchObject({
 			ref: sessionRef(orchestrator.sessionManager, forkedAgentId),
 			metadata: { id: forkedAgentId, parentSessionPath: undefined },
-			entries: [expect.objectContaining({ id: keptEntryId })],
+			entries: [
+				expect.objectContaining({ type: "thinking_level_change" }),
+				expect.objectContaining({ id: keptEntryId }),
+			],
 			leafId: keptEntryId,
 		});
 		expect(forkedTree.entries.some((entry) => entry.id === targetEntryId)).toBe(false);

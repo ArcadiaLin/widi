@@ -1193,6 +1193,13 @@ export class AgentOrchestrator {
 			});
 			partial.harness = harness;
 
+			if (request.origin === "new") {
+				// Freeze the effective level onto the branch: resume replays this entry,
+				// so a later change to the runtime default cannot silently re-level the
+				// session. Resume and fork already inherit the recorded entry.
+				await harness.setThinkingLevel(harness.getThinkingLevel());
+			}
+
 			const liveAgent: LiveAgent = {
 				agentId,
 				generation,
@@ -4449,7 +4456,8 @@ function isBlockedExtensionDiagnostic(diagnostic: OrchestratorDiagnostic): boole
 }
 
 /** A thinking level recorded in a session, rejected rather than coerced. */
-function resolveThinkingLevel(level: string): ThinkingLevel | undefined {
+function resolveThinkingLevel(level: string | null | undefined): ThinkingLevel | undefined {
+	if (level === null || level === undefined) return undefined;
 	const parsed = parseThinkingLevel(level);
 	return parsed === level ? parsed : undefined;
 }

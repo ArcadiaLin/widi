@@ -460,7 +460,7 @@ export type SessionTreeEntry =
 
 export interface SessionContext {
 	messages: AgentMessage[];
-	thinkingLevel: string;
+	thinkingLevel: string | null;
 	model: { provider: string; modelId: string } | null;
 	activeToolNames: string[] | null;
 }
