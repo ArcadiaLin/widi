@@ -40,6 +40,13 @@ async function runSessionSuite(
 			expect(context.model).toEqual({ provider: "openai", modelId: "gpt-4.1" });
 		});
 
+		it("leaves the thinking level unset when no change was recorded", async () => {
+			const session = new Session(await createStorage());
+			await session.appendMessage(createUserMessage("one"));
+			const context = await session.buildContext();
+			expect(context.thinkingLevel).toBeNull();
+		});
+
 		it("supports branching by moving the leaf and appending a new branch", async () => {
 			const session = new Session(await createStorage());
 			const user1 = await session.appendMessage(createUserMessage("one"));

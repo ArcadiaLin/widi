@@ -39,7 +39,10 @@ export interface SessionContextBuildOptions {
 }
 
 function deriveSessionContextState(pathEntries: readonly SessionTreeEntry[]): Omit<SessionContext, "messages"> {
-	let thinkingLevel = "off";
+	// A session that never recorded a thinking level must not read back as "off":
+	// "off" is a choice, and resuming would pin the agent to it instead of the
+	// runtime's default the session was created under.
+	let thinkingLevel: string | null = null;
 	let model: { provider: string; modelId: string } | null = null;
 	let activeToolNames: string[] | null = null;
 

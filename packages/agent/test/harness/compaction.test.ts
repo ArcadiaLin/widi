@@ -469,6 +469,10 @@ describe("harness compaction", () => {
 		const compaction = createCompactionEntry("already compacted", "entry-keep");
 		expect(getOrThrow(prepareCompaction([compaction], DEFAULT_COMPACTION_SETTINGS))).toBeUndefined();
 		expect(getOrThrow(prepareCompaction([], DEFAULT_COMPACTION_SETTINGS))).toBeUndefined();
+		// Configuration entries without a single message carry nothing to summarize.
+		expect(
+			getOrThrow(prepareCompaction([createThinkingLevelEntry("high")], DEFAULT_COMPACTION_SETTINGS)),
+		).toBeUndefined();
 	});
 
 	it("serializes conversation with truncated tool results", () => {

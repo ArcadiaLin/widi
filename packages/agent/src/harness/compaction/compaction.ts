@@ -645,6 +645,12 @@ export function prepareCompaction(
 		return ok(undefined);
 	}
 
+	// A branch can hold configuration entries (model, thinking level, active
+	// tools) without a single message; there is nothing to summarize.
+	if (buildSessionContext(pathEntries).messages.length === 0) {
+		return ok(undefined);
+	}
+
 	let prevCompactionIndex = -1;
 	for (let i = pathEntries.length - 1; i >= 0; i--) {
 		if (pathEntries[i].type === "compaction") {
